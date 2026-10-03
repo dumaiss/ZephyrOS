@@ -32,6 +32,7 @@ BANNER = (
     b"HALT\r\n"
 )
 SELFTEST_OK = b"syscall selftest: OK\r\n"
+IRQ_SELFTEST_OK = b"irq selftest: OK\r\n"
 
 
 def main(argv):
@@ -40,7 +41,7 @@ def main(argv):
     parser.add_argument(
         "--baud", type=int, default=int(os.environ.get("ZOS_SERIAL_BAUD", "115200"))
     )
-    parser.add_argument("--mode", choices=("normal", "selftest"), default="normal")
+    parser.add_argument("--mode", choices=("normal", "selftest", "irq"), default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
     )
@@ -86,6 +87,8 @@ def main(argv):
                     break
                 if args.mode == "selftest" and BANNER in data and SELFTEST_OK in data:
                     break
+                if args.mode == "irq" and BANNER in data and IRQ_SELFTEST_OK in data:
+                    break
     finally:
         link.close()
 
@@ -96,9 +99,12 @@ def main(argv):
     if args.mode == "normal":
         ok = BANNER in data
         expected = "the exact M0 banner"
-    else:
+    elif args.mode == "selftest":
         ok = BANNER in data and SELFTEST_OK in data
         expected = "the banner plus 'syscall selftest: OK'"
+    else:
+        ok = BANNER in data and IRQ_SELFTEST_OK in data
+        expected = "the banner plus 'irq selftest: OK'"
 
     if not ok:
         print("serial_smoke: FAIL - %s was not observed (timeout %gs)"

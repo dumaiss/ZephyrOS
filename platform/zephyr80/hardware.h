@@ -19,6 +19,7 @@
 /* Z80 SIO channel 0, port B: early console */
 #define ZOS_SIO0B_DATA              0x22u
 #define ZOS_SIO0B_CTRL              0x23u
+#define ZOS_CTC0_PORT               0x40u
 
 /* --- Memory/banking latch fields --- */
 
@@ -64,5 +65,12 @@
 /* Finite TX-ready poll budget for the early console.  A missing or
  * disconnected terminal must not hang the kernel forever. */
 #define ZOS_SIO_TX_TIMEOUT          0xFFFFu
+
+/* M2 CTC0 interrupt bring-up (physical channel 0 only). */
+#define ZOS_CTC0_VECTOR_BASE        0x00u
+#define ZOS_CTC0_CONTROL_TEST       0xA7u
+#define ZOS_CTC0_TIME_CONSTANT      0x00u
+#define ZOS_CTC0_RESET              0x03u
+#define ZOS_IM2_I_VALUE             0xFDu
 
 #endif /* ZEPHYR80_HARDWARE_H */

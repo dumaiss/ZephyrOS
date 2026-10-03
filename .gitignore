@@ -4,6 +4,7 @@
 # Build output (all generated artifacts live under build/)
 build/
 build-selftest/
+build-irq-selftest/
 work/
 
 # Object files

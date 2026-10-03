@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ZephyrOS M1 map/layout checker.
+"""ZephyrOS M2 map/layout checker.
 
 Validates the sdldz80 map against the implemented mode 10/11 memory
 ownership contract (see docs/memory.md):
@@ -31,6 +31,16 @@ BANK7_BASE = 0x2000
 BANK7_LOAD_END = 0xC000
 BANK7_RUNTIME_END = 0xE000
 COMMON_BASE = 0xE000
+COMMON_CODE_END = 0xFD00
+IRQ_VECTOR_BASE = 0xFD00
+IRQ_VECTOR_SIZE = 0x0101
+IRQ_STATE_BASE = 0xFE01
+IRQ_STACK_BASE = 0xFE80
+IRQ_STACK_TOP = 0xFF00
+IRQ_STACK_SIZE = 0x0080
+IRQ_ISR_STACK_BASE = 0xDF00
+IRQ_ISR_STACK_TOP = 0xE000
+IRQ_ISR_STACK_SIZE = 0x0100
 STACK_BASE = 0xFF00
 MEM_TOP = 0x10000
 GATE_STACK_SIZE = 64
@@ -50,14 +60,28 @@ def parse_memory_inc(path):
 def apply_layout(values):
     """Apply layout declarations from memory.inc."""
     global PAGE_ZERO_END, RESET_TOP, BANK7_BASE, BANK7_LOAD_END
-    global BANK7_RUNTIME_END, COMMON_BASE, STACK_BASE, GATE_STACK_SIZE, OWNED_AREAS
+    global BANK7_RUNTIME_END, COMMON_BASE, COMMON_CODE_END, STACK_BASE
+    global IRQ_VECTOR_BASE, IRQ_VECTOR_SIZE, IRQ_STATE_BASE
+    global IRQ_STACK_BASE, IRQ_STACK_TOP, IRQ_STACK_SIZE
+    global IRQ_ISR_STACK_BASE, IRQ_ISR_STACK_TOP, IRQ_ISR_STACK_SIZE
+    global GATE_STACK_SIZE, OWNED_AREAS
     PAGE_ZERO_END = values["ZOS_PAGE_ZERO_END"]
     RESET_TOP = values["ZOS_RESET_TOP"]
     BANK7_BASE = values["ZOS_BANK7_BASE"]
     BANK7_LOAD_END = values["ZOS_BANK7_LOAD_END"]
     COMMON_BASE = values["ZOS_COMMON_BASE"]
     STACK_BASE = values["ZOS_COMMON_STACK_BASE"]
-    BANK7_RUNTIME_END = COMMON_BASE
+    BANK7_RUNTIME_END = values["ZOS_BANK7_RUNTIME_END"]
+    COMMON_CODE_END = values["ZOS_COMMON_CODE_END"]
+    IRQ_VECTOR_BASE = values["ZOS_IRQ_VECTOR_BASE"]
+    IRQ_VECTOR_SIZE = values["ZOS_IRQ_VECTOR_SIZE"]
+    IRQ_STATE_BASE = values["ZOS_IRQ_STATE_BASE"]
+    IRQ_STACK_BASE = values["ZOS_IRQ_STACK_BASE"]
+    IRQ_STACK_TOP = values["ZOS_IRQ_STACK_TOP"]
+    IRQ_STACK_SIZE = values["ZOS_IRQ_STACK_SIZE"]
+    IRQ_ISR_STACK_BASE = values["ZOS_IRQ_ISR_STACK_BASE"]
+    IRQ_ISR_STACK_TOP = values["ZOS_IRQ_ISR_STACK_TOP"]
+    IRQ_ISR_STACK_SIZE = values["ZOS_IRQ_ISR_STACK_SIZE"]
     GATE_STACK_SIZE = values["ZOS_GATE_STACK_SIZE"]
     OWNED_AREAS = {
         "_CODE": (BANK7_BASE, BANK7_LOAD_END),
@@ -67,8 +91,8 @@ def apply_layout(values):
         "_GSFINAL": (BANK7_BASE, BANK7_LOAD_END),
         "_DATA": (BANK7_LOAD_END, BANK7_RUNTIME_END),
         "_INITIALIZED": (BANK7_LOAD_END, BANK7_RUNTIME_END),
-        "_COMMON": (COMMON_BASE, STACK_BASE),
-        "_COMMON_DATA": (COMMON_BASE, STACK_BASE),
+        "_COMMON": (COMMON_BASE, COMMON_CODE_END),
+        "_COMMON_DATA": (COMMON_BASE, COMMON_CODE_END),
     }
 
 
@@ -81,8 +105,8 @@ OWNED_AREAS = {
     "_GSFINAL": (BANK7_BASE, BANK7_LOAD_END),
     "_DATA": (BANK7_LOAD_END, BANK7_RUNTIME_END),
     "_INITIALIZED": (BANK7_LOAD_END, BANK7_RUNTIME_END),
-    "_COMMON": (COMMON_BASE, STACK_BASE),
-    "_COMMON_DATA": (COMMON_BASE, STACK_BASE),
+    "_COMMON": (COMMON_BASE, COMMON_CODE_END),
+    "_COMMON_DATA": (COMMON_BASE, COMMON_CODE_END),
 }
 
 # Every routine that changes the memory mapping, or is needed immediately
@@ -103,10 +127,16 @@ COMMON_ROUTINES = (
     "_early_console_putc",
     "_early_console_puts",
     "_panic",
+    "irq_ctc0_stub",
+    "irq_ff_unexpected",
+    "irq_common_entry",
+    "_irq_arch_lock",
+    "_irq_arch_unlock",
+    "_irq_arch_init",
 )
 
 # Bank-7 internal routines (visible only while mode 11 is active).
-BANK7_ROUTINES = ("zos_syscall_dispatch",)
+BANK7_ROUTINES = ("zos_syscall_dispatch", "_irq_dispatch")
 
 # Transition-critical state block (common RAM).
 COMMON_STATE = (
@@ -117,6 +147,10 @@ COMMON_STATE = (
     "zos_gate_result_c",
     "zos_gate_stack",
     "zos_gate_stack_top",
+)
+
+IRQ_STATE = (
+    "irq_saved_latch", "irq_saved_sp", "irq_common_sp", "_irq_active_source",
 )
 
 
@@ -208,6 +242,19 @@ def check_areas(areas, symbols):
             raise MapError("%s is missing from the area table but l__%s != 0"
                            % (name, base))
 
+    # Ordinary bank-7 data stops below the dedicated ISR stack, and
+    # ordinary common allocation stops below the IM2 page.
+    for name in ("_DATA", "_INITIALIZED"):
+        if name in areas:
+            addr, size = areas[name]
+            if addr + size > IRQ_ISR_STACK_BASE:
+                raise MapError("%s overlaps the bank-7 ISR stack at DF00h" % name)
+    for name in ("_COMMON", "_COMMON_DATA"):
+        if name in areas:
+            addr, size = areas[name]
+            if addr + size > IRQ_VECTOR_BASE:
+                raise MapError("%s overlaps the IM2 reservation at FD00h" % name)
+
 
 def check_symbols(areas, symbols):
     page_zero_areas = [n for n in areas if n.startswith("_PAGE_ZERO")]
@@ -217,7 +264,7 @@ def check_symbols(areas, symbols):
         if name not in symbols:
             raise MapError("map has no symbol %s" % name)
         addr = symbols[name]
-        if not (COMMON_BASE <= addr < STACK_BASE):
+        if not (COMMON_BASE <= addr < COMMON_CODE_END):
             raise MapError(
                 "%s at %04Xh is not in the common region E000h-FEFFh" % (name, addr)
             )
@@ -245,6 +292,37 @@ def check_symbols(areas, symbols):
     stack_size = symbols["zos_gate_stack_top"] - symbols["zos_gate_stack"]
     if stack_size != GATE_STACK_SIZE:
         raise MapError("gate stack is %d bytes, expected %d" % (stack_size, GATE_STACK_SIZE))
+
+    # M2 fixed absolute reservations.  ABS area start symbols are not
+    # useful in sdld maps, so validate their exported boundary labels.
+    required = {
+        "irq_vector_page": IRQ_VECTOR_BASE,
+        "irq_vector_guard": IRQ_VECTOR_BASE + 0x100,
+        "irq_transition_stack": IRQ_STACK_BASE,
+        "irq_transition_stack_top": IRQ_STACK_TOP,
+        "irq_isr_stack": IRQ_ISR_STACK_BASE,
+        "irq_isr_stack_top": IRQ_ISR_STACK_TOP,
+    }
+    for name, expected in required.items():
+        if symbols.get(name) != expected:
+            raise MapError("%s is at %04Xh, expected %04Xh"
+                           % (name, symbols.get(name, -1), expected))
+    if IRQ_VECTOR_SIZE != 0x101:
+        raise MapError("IM2 page plus guard size is %d, expected 257" % IRQ_VECTOR_SIZE)
+    if symbols["irq_transition_stack_top"] - symbols["irq_transition_stack"] != IRQ_STACK_SIZE:
+        raise MapError("IRQ transition stack size is not %d" % IRQ_STACK_SIZE)
+    if symbols["irq_isr_stack_top"] - symbols["irq_isr_stack"] != IRQ_ISR_STACK_SIZE:
+        raise MapError("bank-7 ISR stack size is not %d" % IRQ_ISR_STACK_SIZE)
+    for name in IRQ_STATE:
+        addr = symbols.get(name)
+        if addr is None or not (IRQ_STATE_BASE <= addr < IRQ_STACK_BASE):
+            raise MapError("%s is not in IRQ transition state FE01h-FE7Fh" % name)
+
+    code_end = symbols.get("_irq_kernel_code_end")
+    expected_end = symbols["s__CODE"] + symbols["l__CODE"]
+    if code_end != expected_end:
+        raise MapError("_irq_kernel_code_end is %04Xh, linked _CODE ends at %04Xh"
+                       % (code_end if code_end is not None else -1, expected_end))
 
     # Kernel body must be in bank 7.
     if "_kernel_main" not in symbols:

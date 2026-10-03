@@ -12,6 +12,7 @@ ZOS_SIO0A_DATA          = 0x20
 ZOS_SIO0A_CTRL          = 0x21
 ZOS_SIO0B_DATA          = 0x22
 ZOS_SIO0B_CTRL          = 0x23
+ZOS_CTC0_PORT           = 0x40
 
 ; --- Memory/banking latch fields ---
 
@@ -54,3 +55,10 @@ ZOS_SIO_WR5_TX8_DTR_RTS_RELEASE = 0xE8
 ZOS_SIO_WR1_INT_DISABLED        = 0x00
 
 ZOS_SIO_TX_TIMEOUT      = 0xFFFF
+
+; --- M2 CTC0 interrupt bring-up ---
+ZOS_CTC0_VECTOR_BASE    = 0x00
+ZOS_CTC0_CONTROL_TEST   = 0xA7
+ZOS_CTC0_TIME_CONSTANT  = 0x00
+ZOS_CTC0_RESET          = 0x03
+ZOS_IM2_I_VALUE         = 0xFD

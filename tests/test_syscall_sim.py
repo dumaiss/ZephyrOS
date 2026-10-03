@@ -23,7 +23,8 @@ sys.path.insert(0, HERE)
 from z80sim import Z80, read_symbols  # noqa: E402
 
 
-def run_selftest_bank(page0, page1, syms, bank):
+def run_selftest_bank(page0, page1, syms, bank, interrupts_enabled=False,
+                      return_cpu=False):
     z = Z80(page0, page1)
     run = syms["_zos_selftest_run"]
     driver = syms["_zos_run_syscall_selftest"]
@@ -35,6 +36,7 @@ def run_selftest_bank(page0, page1, syms, bank):
     z.sp = 0xFEFE
     z.pc = run
     z.a = bank
+    z.iff1 = z.iff2 = interrupts_enabled
     z.push16(ret_site)
     z.sp = 0xFEFC
 
@@ -46,7 +48,8 @@ def run_selftest_bank(page0, page1, syms, bank):
         self_error = "simulation did not return to the driver (PC=%04X)" % z.pc
         raise AssertionError(self_error)
 
-    return z.bank0[syms["_zos_selftest_result"]]
+    result = z.bank0[syms["_zos_selftest_result"]]
+    return (result, z) if return_cpu else result
 
 
 class TestSyscallSelftestSim(unittest.TestCase):
@@ -69,6 +72,14 @@ class TestSyscallSelftestSim(unittest.TestCase):
             self.image[:0x10000], self.image[0x10000:], self.syms, 6
         )
         self.assertEqual(result, 0x00, "bank 6 round trip failed with code 0x%02X" % result)
+
+    def test_enabled_interrupt_state_is_restored(self):
+        result, cpu = run_selftest_bank(
+            self.image[:0x10000], self.image[0x10000:], self.syms, 0,
+            interrupts_enabled=True, return_cpu=True,
+        )
+        self.assertEqual(result, 0x00)
+        self.assertTrue(cpu.iff1)
 
 
 if __name__ == "__main__":

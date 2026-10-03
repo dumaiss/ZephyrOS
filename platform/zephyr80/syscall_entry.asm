@@ -36,6 +36,8 @@
 	.globl zos_gate_result_hl
 	.globl zos_gate_result_a
 	.globl zos_gate_result_c
+	.globl zos_gate_saved_iff
+	.globl zos_gate_saved_a
 	.globl zos_gate_stack_top
 	.globl _kernel_syscall_dispatch
 	.globl _zos_syscall_number
@@ -56,11 +58,20 @@
 ; Clobbers: none observable (see ABI); internally AF/HL/C/SP.
 ; ---------------------------------------------------------------------------
 zos_syscall_entry::
-	; Save the caller SP without a push (HL is an output, not preserved,
-	; and the argument-block pointer is stashed below).
-	ld	hl,#0x0000
-	add	hl,sp
-	ld	(zos_gate_saved_sp),hl
+	; Save A before LD A,I, then atomically snapshot IFF2 and mask IRQs.
+	; An IRQ between the first store and DI cannot observe transition state:
+	; no mapping or stack state has changed yet, and IRQ state is disjoint.
+	ld	(zos_gate_saved_a),a
+	ld	a,i
+	di
+	ld	a,#0
+	jp	po,001$
+	inc	a
+001$:
+	ld	(zos_gate_saved_iff),a
+
+	; ED 73 captures SP without consuming HL or touching the caller stack.
+	ld	(zos_gate_saved_sp),sp
 
 	; Switch to the reserved common gate stack BEFORE the mapping changes,
 	; then save the ABI-preserved registers before any of them is used as
@@ -71,6 +82,7 @@ zos_syscall_entry::
 	push	ix
 	push	iy
 	push	hl			; argument-block pointer for the dispatcher
+	ld	a,(zos_gate_saved_a)
 	push	af			; syscall number for the dispatcher
 
 	; Validate the entry state: mode 10 over an application bank 0-6.
@@ -118,20 +130,29 @@ zos_syscall_entry::
 	; Back to application mode over the caller bank (common code; the
 	; next instructions are fetched from memory mapped in both modes).
 	ld	a,(zos_gate_saved_latch)
-	and	#ZOS_BANK_MASK
-	or	#ZOS_MODE_APPLICATION
 	out	(ZOS_MEMCTL_PORT),a
 
 	; Restore the exact caller SP; the caller stack is visible again.
 	ld	hl,(zos_gate_saved_sp)
 	ld	sp,hl
 
-	; Rebuild the ABI results (carry from bit 0 of the saved flag byte).
+	; Restore the prior interrupt state immediately before returning.  The
+	; result setup is duplicated so testing saved IFF cannot alter carry.
+	ld	a,(zos_gate_saved_iff)
+	or	a
+	jr	z,002$
 	ld	a,(zos_gate_result_c)
-	rra			; bit 0 -> carry
+	rra
 	ld	a,(zos_gate_result_a)
 	ld	hl,(zos_gate_result_hl)
-	ret			; pop the caller's return PC (RST-pushed)
+	ei
+	ret
+002$:
+	ld	a,(zos_gate_result_c)
+	rra
+	ld	a,(zos_gate_result_a)
+	ld	hl,(zos_gate_result_hl)
+	ret
 
 	.area _CODE
 

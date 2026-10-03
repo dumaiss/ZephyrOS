@@ -40,6 +40,7 @@ class MinimalImageCase:
         reset = [0xF3] + [0x00] * 5 + [0xC3, 0x00, 0xE0]  # di; ...; jp 0xE000
         kernel = [0xC3, 0x30, 0x20]  # jp 0x2030
         common = [0xC9]  # ret
+        irq_target = 0xE130
         stub = [0xC3, rst30_target & 0xFF, (rst30_target >> 8) & 0xFF]
         self.ihx = make_ihx(
             [
@@ -47,6 +48,7 @@ class MinimalImageCase:
                 (0x0030, stub),
                 (0x2000, kernel),
                 (0xE000, common),
+                (0xFDFF, [irq_target & 0xFF, irq_target >> 8]),
             ]
         )
         self.map_text = "\n".join(
@@ -61,8 +63,15 @@ class MinimalImageCase:
                 "     0000E030  _early_console_puts              early_console",
                 "     0000E040  _panic                           panic",
                 "     0000E0F0  zos_syscall_entry                syscall_entry",
+                "     0000E110  irq_ctc0_stub                   irq_entry",
+                "     0000E130  irq_ff_unexpected               irq_entry",
+                "     0000E140  irq_common_entry                irq_entry",
+                "     0000E1A0  _irq_arch_init                  platform_irq",
+                "     0000FD00  irq_vector_page                 irq_vectors",
+                "     0000FE00  irq_vector_guard                irq_vectors",
                 "     00002000  _kernel_main                     main",
                 "     00002100  zos_syscall_dispatch             syscall_entry",
+                "     00002200  _irq_dispatch                    irq",
             ]
         )
 
@@ -121,6 +130,14 @@ class TestSyntheticPacking(unittest.TestCase):
         )
         with self.assertRaises(pack_image.LayoutError):
             pack_image.pack(self.case.ihx, bad_map, None)
+
+    def test_broken_ff_guard_rejected(self):
+        bad = self.case.ihx.replace(
+            ihx_record(0xFDFF, [0x30, 0xE1]),
+            ihx_record(0xFDFF, [0x31, 0xE1]),
+        )
+        with self.assertRaises(pack_image.LayoutError):
+            pack_image.pack(bad, self.case.map_text, None)
 
     def test_symbol_out_of_region_rejected(self):
         bad_map = self.case.map_text.replace(

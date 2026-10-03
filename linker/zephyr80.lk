@@ -10,8 +10,14 @@ build/start.rel
 build/banking.rel
 build/page_zero.rel
 build/syscall_entry.rel
+build/irq_entry.rel
+build/irq_vectors.rel
+build/platform_irq.rel
 build/early_console.rel
 build/panic.rel
 build/main.rel
 build/syscall.rel
+build/irq.rel
+build/irq_sources.rel
+build/irq_code_end.rel
 -e

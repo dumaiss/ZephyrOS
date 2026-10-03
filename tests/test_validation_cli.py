@@ -24,6 +24,7 @@ MAPCHECK = os.path.join(ROOT, "tools", "mapcheck.py")
 PACK_IMAGE = os.path.join(ROOT, "tools", "pack_image.py")
 
 GATE = 0xE0A8  # zos_syscall_entry address used by the valid IHX fixture
+IRQ_FF = 0xE130
 
 
 def ihx_record(addr, data):
@@ -39,6 +40,7 @@ def valid_ihx():
         ihx_record(0x0030, [0xC3, GATE & 0xFF, (GATE >> 8) & 0xFF]),  # RST 30h
         ihx_record(0x2000, [0xC3, 0x30, 0x20]),               # kernel
         ihx_record(0xE000, [0xC9]),                           # common
+        ihx_record(0xFDFF, [IRQ_FF & 0xFF, IRQ_FF >> 8]),     # FFh guard
         ":00000001FF",
     ]) + "\n"
 
@@ -139,7 +141,7 @@ class TestMapcheckRejections(ValidatorCLIBase):
 
     def test_common_section_leaves_region(self):
         self.check(make_map(symbols={"s__COMMON": 0xDF00}),
-                   r"outside E000h-FEFFh")
+                   r"outside E000h-FCFFh")
 
     def test_common_section_overlaps_stack(self):
         self.check(make_map(areas={"_COMMON_DATA": (0xE100, 0x1E10)}),
@@ -160,6 +162,18 @@ class TestMapcheckRejections(ValidatorCLIBase):
     def test_mapping_path_outside_common(self):
         self.check(make_map(symbols={"_platform_memctl_write": 0x3000}),
                    r"_platform_memctl_write .* not in the common region")
+
+    def test_im2_page_misaligned(self):
+        self.check(make_map(symbols={"irq_vector_page": 0xFD01}),
+                   r"irq_vector_page .* expected FD00h")
+
+    def test_irq_transition_stack_wrong_size(self):
+        self.check(make_map(symbols={"irq_transition_stack_top": 0xFEF0}),
+                   r"irq_transition_stack_top")
+
+    def test_irq_isr_stack_wrong_size(self):
+        self.check(make_map(symbols={"irq_isr_stack": 0xDF10}),
+                   r"irq_isr_stack")
 
 
 class TestPackerRejections(ValidatorCLIBase):
@@ -195,6 +209,13 @@ class TestPackerRejections(ValidatorCLIBase):
     def test_vector_symbol_missing(self):
         self.check(valid_ihx(), make_map(symbols={"_zos_rst30_vector": None}),
                    r"expected 0030h")
+
+    def test_broken_ff_guard(self):
+        bad = valid_ihx().replace(
+            ihx_record(0xFDFF, [IRQ_FF & 0xFF, IRQ_FF >> 8]),
+            ihx_record(0xFDFF, [(IRQ_FF + 1) & 0xFF, IRQ_FF >> 8]),
+        )
+        self.check(bad, make_map(), r"word_at\(FDFFh\)")
 
 
 if __name__ == "__main__":

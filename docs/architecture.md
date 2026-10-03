@@ -1,6 +1,6 @@
 # ZephyrOS Architecture
 
-**Status:** M0/M1 complete; M2-M4 architecture defined  
+**Status:** M0/M1/M2 complete; M3-M4 architecture defined  
 **Scope:** Milestones M0 through M4  
 **Target:** Zephyr-80  
 **Language/toolchain:** SDCC + sdasz80/sdldz80, GNU Make, Python host tools

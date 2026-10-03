@@ -1,4 +1,4 @@
-# ZephyrOS Native Syscall ABI (M1)
+# ZephyrOS Native Syscall ABI (M2)
 
 This document defines the only stable interface between native ZephyrOS
 callers and the kernel at M1.  C names, argument layouts, and SDCC calling
@@ -53,10 +53,15 @@ set for every syscall number.
 
 ## 4. Reentrancy and interrupts
 
-- The gate is single-entry and non-reentrant; the common transition state
-  is single-depth.
-- Interrupts remain disabled across the entire crossing.  M1 has no
-  interrupt entry, IM2 setup, or interrupt ABI.
+- The syscall gate remains single-entry and non-reentrant; its common
+  transition state is single-depth.
+- On entry the common gate snapshots IFF2 with `LD A,I` and executes `DI`
+  before changing stack or mapping state.  It performs the entire mode
+  crossing with maskable interrupts disabled, then restores the caller's
+  prior enabled/disabled state immediately before `RET`.
+- The M2 IRQ executive uses separate common transition state and separate
+  common/bank-7 stacks, so it can never observe a partially changed syscall
+  transition.
 
 ## 5. How the crossing works
 
@@ -67,6 +72,7 @@ application, mode 10 over bank N
 0030h: JP zos_syscall_entry        page zero
     ▼
 common memory, still mode 10
+    ├── save A, snapshot IFF2, and DI
     ├── save caller SP without a push   (the stack may live in 2000h-DFFFh
     │                                   and disappears above 1FFFh in mode 11)
     ├── validate mode 10 and bank 0-6; anything else -> fatal path
@@ -84,6 +90,7 @@ return path (common memory):
     ├── write 10h|N to port 00h
     ├── restore the exact caller SP
     ├── rebuild A, HL, carry
+    ├── restore the caller's prior IFF state
     └── RET                             (pops the caller's RST-pushed PC)
 ```
 
@@ -99,3 +106,30 @@ return path (common memory):
   Capture and verify it on hardware with
   `make smoke-hardware-selftest SERIAL_PORT=/dev/ttyUSB0`.
 - The dated acceptance record is `docs/validation/`.
+
+## 7. M2 interrupt delivery contract
+
+M2 adds a kernel-owned IM2 interrupt executive that is transparent to
+interrupted code.  This is not a syscall interface, but it is a documented
+kernel contract because an interrupt may be delivered at any instruction
+boundary once the foreground enables maskable interrupts:
+
+- Entry: IM2 vector `I=FDh`, vector page `FD00h-FDFFh` plus the `FE00h`
+  guard byte.  Every enabled vector resolves to common-memory entry code;
+  vector `FFh` resolves to `irq_ff_unexpected` (build-verified identity
+  `word_at(FDFFh) == address_of(irq_ff_unexpected)`).
+- Preserved across delivery: `AF BC DE HL IX IY`, alternate
+  `AF' BC' DE' HL'`, `SP`, the selected bank and mode (exact port-`00h`
+  latch restored), and `PC` (via `RETI`).  The `I` register stays `FDh`.
+- Entry from mode `10` crosses to `18h|saved_bank`; entry from mode `11`
+  retains the mapping.  The executive runs handlers on the bank-7 ISR
+  stack (`DF00h-DFFFh`) in mode `11`, with maskable interrupts disabled
+  for the entire delivery; there is no nesting.  The executive owns the
+  final `RETI`.
+- Handlers are bank-7 code registered per logical source
+  (`irq_claim`/`irq_release`); unexpected or unclaimed interrupts take a
+  compact counter/source record and, for CTC0, a safe quiesce.
+- The `irq-selftest` image exercises mode-10 delivery (banks 0 and 6,
+  stack above `2000h`), mode-11 delivery, repeated delivery, exact `AF`
+  restoration, the unclaimed path, and the syscall gate's IFF restore
+  (`make irq-selftest`, then `make smoke-hardware-irq SERIAL_PORT=...`).

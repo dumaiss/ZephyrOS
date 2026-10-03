@@ -1,4 +1,4 @@
-# ZephyrOS Memory Model (M1, implemented)
+# ZephyrOS Memory Model (M2, implemented)
 
 This is the implemented, linker-enforced memory ownership table for the
 mode `10`/`11` Zephyr-80 architecture.  The contract is in
@@ -26,8 +26,13 @@ E000h +-------------------------------+
 | `0000h-00FFh` | caller window | ZephyrOS-owned native page zero: reset copier (`0000h-0026h`) and the three-byte `RST 30h` vector (`JP zos_syscall_entry`) at `0030h-0032h`; the rest is reserved |
 | `0100h-1FFFh` | caller window | unused (FF-filled in the image); at M1, native syscall argument blocks must lie here |
 | `2000h-BFFFh` | bank 7 in mode 11 | loadable kernel image (code, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`) |
-| `C000h-DFFFh` | bank 7 in mode 11 | zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded |
-| `E000h-FEFFh` | physical bank 0 | permanent common code/data (`_COMMON`, `_COMMON_DATA`) |
+| `C000h-DEFFh` | bank 7 in mode 11 | zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded |
+| `DF00h-DFFFh` | bank 7 in mode 11 | 256-byte M2 ISR stack; initial `SP=E000h` |
+| `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`) |
+| `FD00h-FDFFh` | physical bank 0 | 256-byte-aligned IM2 vector page (`I=FDh`) |
+| `FE00h` | physical bank 0 | vector-`FFh` guard byte |
+| `FE01h-FE7Fh` | physical bank 0 | common IRQ transition state |
+| `FE80h-FEFFh` | physical bank 0 | 128-byte common IRQ transition stack |
 | `FF00h-FFFFh` | physical bank 0 | common boot/runtime stack; `SP = 0000h` (top-exclusive `10000h`), grows down |
 
 Mode `10` maps the selected application bank at `0000h-DFFFh`; mode `11`
@@ -66,10 +71,13 @@ Every owned region exports `s__<area>`/`l__<area>` start/size symbols
 | `_HOME` | `2000h-BFFFh` | static helpers |
 | `_INITIALIZER` | `2000h-BFFFh` | ROM image of initialized data |
 | `_GSINIT`/`_GSFINAL` | `2000h-BFFFh` | static initializers + terminator |
-| `_DATA` | `C000h-DFFFh` | zeroed globals/statics |
-| `_INITIALIZED` | `C000h-DFFFh` | RAM image of initialized data |
-| `_COMMON` | `E000h-FEFFh` | boot entry, gates, console, panic, their strings |
-| `_COMMON_DATA` | `E000h-FEFFh` | transition-critical M1 state (below) |
+| `_DATA` | `C000h-DEFFh` | zeroed globals/statics |
+| `_INITIALIZED` | `C000h-DEFFh` | RAM image of initialized data |
+| `_COMMON` | `E000h-FCFFh` | boot entry, gates, IRQ stubs, console, panic |
+| `_COMMON_DATA` | `E000h-FCFFh` | transition-critical state |
+| `_IRQ_ISR_STACK` | `DF00h-DFFFh` | bank-7 handler stack |
+| `_IRQ_VECTOR` | `FD00h-FE00h` | IM2 page plus guard |
+| `_IRQ_COMMON_STATE` | `FE01h-FEFFh` | IRQ state plus transition stack |
 | (reserved) | `FF00h-FFFFh` | common boot/runtime stack; nothing may link here |
 
 ## 3. Common-resident routines
@@ -85,6 +93,12 @@ zos_enter_os_mode      mode 10 -> 11 gate (common continuation)
 zos_leave_os_mode      mode 11 -> 10 gate
 zos_os_continuation    post-transition common continuation
 zos_syscall_entry      RST 30h syscall gate
+irq_ctc0_stub          IM2 source stub (CTC0 vector 00h)
+irq_ff_unexpected      IM2 vector FFh / default vector target
+irq_common_entry       generic common IRQ gate (full context + mode cross)
+_irq_arch_lock         IFF2 snapshot + DI (returns prior state in L)
+_irq_arch_unlock       conditional EI restore
+_irq_arch_init         IM2 page fill, I=FDh, IM2 select, EI
 _platform_memctl_*     latch read/write primitives
 _platform_bank_get/set selected-bank primitives
 _early_console_*       early serial console
@@ -118,6 +132,26 @@ Self-test builds only (`make syscall-selftest`) add a second small block
 (`zos_selftest_kernel_sp`, `_zos_selftest_bank`, `_zos_selftest_result`)
 in the same common data area.
 
+## 4.1 M2 IRQ state, stacks, and vector page
+
+Fixed absolute reservations (validated by `mapcheck.py` and the packer):
+
+```text
+_IRQ_VECTOR       FD00h-FE00h   IM2 page plus the FFh-vector guard byte;
+                                the image word at FDFFh/FE00h must equal the
+                                linked irq_ff_unexpected address
+_IRQ_COMMON_STATE FE01h-FE7Fh   irq_saved_latch, irq_saved_sp,
+                                irq_common_sp, irq_active_source, and the
+                                128-byte common transition stack FE80h-FEFFh
+_IRQ_ISR_STACK    DF00h-DFFFh   bank-7 handler stack; initial SP=E000h
+```
+
+The IM2 page is initialized at runtime by `irq_arch_init()` (every vector
+targets `irq_ff_unexpected`, vector `00h` targets `irq_ctc0_stub`); the
+linked image carries the guard identity for build-time verification.
+`_DATA`/`_INITIALIZED` must end below `DF00h` and
+`_COMMON`/`_COMMON_DATA` below `FD00h`.
+
 ## 5. Banking primitives
 
 Implemented in `platform/zephyr80/banking.asm` (assembly, common-resident):
@@ -137,13 +171,22 @@ in `2000h-DFFFh` would disappear when the mode changes.
 ## 6. Validation
 
 - `tools/pack_image.py` — byte-level image checks: exact 128 KiB size,
-  FF fill, out-of-region rejection, copier mirroring, entry-point regions.
+  FF fill, out-of-region rejection, copier mirroring, entry-point regions,
+  and the `word_at(FDFFh) == irq_ff_unexpected` guard identity.
 - `tools/mapcheck.py` — map-level checks: area ownership per this table,
-  common-resident gate/console/panic placement, gate-stack size, page-zero
-  and stack-reservation bounds (`make check`).
-- `tests/test_m1.py` — C/assembly constant parity, latch formulas,
-  bank-identity preservation across `10h`/`18h`, bank-7 rejection,
-  mapcheck unit cases, and banner regression on real artifacts.
+  common-resident gate/console/panic/IRQ placement, gate-stack and both
+  IRQ-stack sizes, the IM2 page/guard/state addresses, `_irq_kernel_code_end`
+  at the linked `_CODE` end, page-zero and stack-reservation bounds
+  (`make check`).
+- `tests/test_m1.py` — C/assembly constant parity (hardware, syscall
+  self-test, and IRQ self-test header pairs), latch formulas, bank-identity
+  preservation across `10h`/`18h`, bank-7 rejection, mapcheck unit cases
+  (including negative IRQ fixtures), banner regression, and FF-guard
+  identity on real artifacts.
+- `tests/test_irq_sim.py` — Z80 replay of the real linked IRQ entry/return
+  bytes (IM2 acceptance, alternate registers, `I`/IFF2, `RETI`) for both
+  modes and the FF guard path, plus the full `irq-selftest` driver round
+  trip with injected CTC0 deliveries.
 - Runtime: boot asserts mode `11` over bank 0 (assembly latch read-back and
   a C re-check in `kernel_main()`), then exercises the bank primitives; any
   failure prints a fault through the early console and halts.

@@ -19,9 +19,12 @@ ASFLAGS   := -Iplatform
 CFLAGS    := -mz80 -c --nostdinc --Werror -I include -I platform
 
 ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
-             $(BUILD)/page_zero.rel $(BUILD)/syscall_entry.rel
+             $(BUILD)/page_zero.rel $(BUILD)/syscall_entry.rel \
+             $(BUILD)/irq_entry.rel $(BUILD)/irq_vectors.rel \
+             $(BUILD)/platform_irq.rel
 C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
-             $(BUILD)/syscall.rel
+             $(BUILD)/syscall.rel $(BUILD)/irq.rel $(BUILD)/irq_sources.rel
+END_OBJ   := $(BUILD)/irq_code_end.rel
 OBJS      := $(ASM_OBJS) $(C_OBJS)
 
 # Target-side syscall self-test (extra object + compile define, distinct
@@ -35,10 +38,19 @@ SELFTEST_OBJS :=
 PK_SUFFIX :=
 endif
 
+ifeq ($(ZOS_IRQ_SELFTEST),1)
+CFLAGS    += -DZOS_IRQ_SELFTEST=1
+IRQ_SELFTEST_OBJS := $(BUILD)/irq_selftest_asm.rel $(BUILD)/irq_selftest_c.rel
+PK_SUFFIX := -irq-selftest
+else
+IRQ_SELFTEST_OBJS :=
+endif
+
 IMAGE := $(BUILD)/zephyros$(PK_SUFFIX).bin
 MAME_IMAGE := $(BUILD)/zephyr80$(PK_SUFFIX).bin
 
-.PHONY: all test check check-fast clean syscall-selftest smoke-hardware smoke-hardware-selftest
+.PHONY: all test check check-fast clean syscall-selftest irq-selftest \
+	smoke-hardware smoke-hardware-selftest smoke-hardware-irq
 
 all: $(IMAGE) $(MAME_IMAGE)
 
@@ -66,10 +78,35 @@ $(BUILD)/syscall_entry.rel: platform/zephyr80/syscall_entry.asm \
 		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
+$(BUILD)/irq_entry.rel: kernel/irq/entry.asm platform/zephyr80/hardware.inc \
+		platform/zephyr80/memory.inc | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/irq_vectors.rel: kernel/irq/vectors.asm \
+		platform/zephyr80/memory.inc | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/platform_irq.rel: platform/zephyr80/irq.asm \
+		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/irq_code_end.rel: kernel/irq/code_end.asm | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
 $(BUILD)/selftest.rel: platform/zephyr80/selftest.asm \
 		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc \
 		platform/zephyr80/selftest.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/irq_selftest_asm.rel: platform/zephyr80/irq_selftest.asm \
+		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc \
+		platform/zephyr80/irq_selftest.inc | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/irq_selftest_c.rel: kernel/irq/irq_selftest.c \
+		include/zephyros/irq.h include/zephyros/irq_selftest.h \
+		include/zephyros/kernel.h include/zephyros/platform.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- compile -----------------------------------------------------------------
 # early_console.c and panic.c are compiled into the _COMMON segment so the
@@ -87,7 +124,16 @@ $(BUILD)/panic.rel: kernel/panic.c \
 	$(SDCC) $(CFLAGS) --codeseg COMMON $< -o $@
 
 $(BUILD)/main.rel: kernel/main.c include/zephyros/kernel.h \
-		include/zephyros/syscall.h | $(BUILD)
+		include/zephyros/syscall.h include/zephyros/irq.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/irq.rel: kernel/irq/irq.c include/zephyros/irq.h \
+		include/zephyros/types.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/irq_sources.rel: platform/zephyr80/irq_sources.c \
+		include/zephyros/irq.h include/zephyros/platform.h \
+		platform/zephyr80/hardware.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/syscall.rel: kernel/syscall.c include/zephyros/syscall.h \
@@ -99,21 +145,21 @@ $(BUILD)/syscall.rel: kernel/syscall.c include/zephyros/syscall.h \
 
 ifeq ($(ZOS_SELFTEST),1)
 # Self-test build: generated linker file with the extra object.
-$(BUILD)/zephyr80.lk: $(OBJS) $(SELFTEST_OBJS) | $(BUILD)
+$(BUILD)/zephyr80.lk: $(OBJS) $(SELFTEST_OBJS) $(IRQ_SELFTEST_OBJS) $(END_OBJ) | $(BUILD)
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
 	  printf '%s\n' '-i $(BUILD)/zephyros.ihx'; \
 	  printf '%s\n' '-b _CODE = 0x2000' '-b _DATA = 0xC000' \
 	                '-b _COMMON = 0xE000'; \
-	  printf '%s\n' $(OBJS) $(SELFTEST_OBJS); \
+	  printf '%s\n' $(OBJS) $(SELFTEST_OBJS) $(IRQ_SELFTEST_OBJS) $(END_OBJ); \
 	  printf '%s\n' '-e'; \
 	} > $@
 
-$(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(OBJS) $(SELFTEST_OBJS) \
+$(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(OBJS) $(SELFTEST_OBJS) $(IRQ_SELFTEST_OBJS) $(END_OBJ) \
 		$(BUILD)/zephyr80.lk | $(BUILD)
 	$(SDLDZ80) -f $(BUILD)/zephyr80.lk
 else
-$(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(OBJS) linker/zephyr80.lk | $(BUILD)
+$(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(OBJS) $(END_OBJ) linker/zephyr80.lk | $(BUILD)
 	$(SDLDZ80) -f linker/zephyr80.lk
 endif
 
@@ -165,7 +211,7 @@ check-fast:
 	@echo "make check: OK"
 
 clean:
-	rm -rf $(BUILD) build-selftest
+	rm -rf $(BUILD) build-selftest build-irq-selftest
 
 # --- syscall self-test image (target-side RST 30h round trip) ----------------
 
@@ -174,6 +220,13 @@ syscall-selftest:
 		build-selftest/zephyros-selftest.bin build-selftest/zephyr80-selftest.bin
 	$(PYTHON) tools/mapcheck.py build-selftest/zephyros.map platform/zephyr80/memory.inc
 	@echo "syscall-selftest image: build-selftest/zephyros-selftest.bin"
+
+irq-selftest:
+	$(MAKE) BUILD=build-irq-selftest ZOS_SELFTEST=1 ZOS_IRQ_SELFTEST=1 \
+		build-irq-selftest/zephyros-irq-selftest.bin \
+		build-irq-selftest/zephyr80-irq-selftest.bin
+	$(PYTHON) tools/mapcheck.py build-irq-selftest/zephyros.map platform/zephyr80/memory.inc
+	@echo "irq-selftest image: build-irq-selftest/zephyros-irq-selftest.bin"
 
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching ROM
@@ -184,3 +237,6 @@ smoke-hardware:
 
 smoke-hardware-selftest:
 	$(PYTHON) tools/serial_smoke.py --mode selftest --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-irq:
+	$(PYTHON) tools/serial_smoke.py --mode irq --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

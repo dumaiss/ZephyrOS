@@ -41,6 +41,10 @@ PAGE_ZERO_END = 0x0100
 BANK7_BASE = 0x2000
 BANK7_LOAD_END = 0xC000     # C000h-DFFFh is runtime, never ROM-loaded
 COMMON_BASE = 0xE000
+COMMON_CODE_END = 0xFD00
+IRQ_VECTOR_BASE = 0xFD00
+IRQ_VECTOR_END = 0xFE01
+IRQ_STATE_BASE = 0xFE01
 STACK_BASE = 0xFF00
 MEM_TOP = 0x10000
 
@@ -51,7 +55,9 @@ REGIONS = [
     (PAGE_ZERO_END, BANK7_BASE, "page-1 caller-window gap", False),
     (BANK7_BASE, BANK7_LOAD_END, "bank-7 loadable kernel", True),
     (BANK7_LOAD_END, COMMON_BASE, "bank-7 runtime area (never ROM-loaded)", False),
-    (COMMON_BASE, STACK_BASE, "permanent common region", True),
+    (COMMON_BASE, COMMON_CODE_END, "permanent common code/data", True),
+    (IRQ_VECTOR_BASE, IRQ_VECTOR_END, "IM2 vector page plus guard", True),
+    (IRQ_STATE_BASE, STACK_BASE, "IRQ transition state/stacks", False),
     (STACK_BASE, MEM_TOP, "common boot/runtime stack", False),
 ]
 
@@ -64,8 +70,12 @@ COMMON_SYMBOLS = (
     "_early_console_puts",
     "_panic",
     "zos_syscall_entry",
+    "irq_ctc0_stub",
+    "irq_ff_unexpected",
+    "irq_common_entry",
+    "_irq_arch_init",
 )
-BANK7_SYMBOLS = ("_kernel_main", "zos_syscall_dispatch")
+BANK7_SYMBOLS = ("_kernel_main", "zos_syscall_dispatch", "_irq_dispatch")
 
 RST30_VECTOR = 0x0030
 
@@ -170,6 +180,21 @@ def verify_rst30_stub(mem, symbols):
             )
 
 
+def verify_im2_guard(mem, symbols):
+    """FDFFh/FE00h must encode the linked irq_ff_unexpected address."""
+    if symbols.get("irq_vector_page") != IRQ_VECTOR_BASE:
+        raise LayoutError("irq_vector_page is not at FD00h")
+    if symbols.get("irq_vector_guard") != 0xFE00:
+        raise LayoutError("irq_vector_guard is not at FE00h")
+    target = symbols.get("irq_ff_unexpected")
+    if target is None:
+        raise LayoutError("map has no symbol irq_ff_unexpected")
+    actual = mem.get(0xFDFF, FILL) | (mem.get(0xFE00, FILL) << 8)
+    if actual != target:
+        raise LayoutError("word_at(FDFFh) is %04Xh, expected irq_ff_unexpected %04Xh"
+                          % (actual, target))
+
+
 def build_pages(mem):
     """Assemble the two 64 KiB pages from the validated image."""
     page0 = bytearray([FILL] * PAGE_SIZE)
@@ -229,7 +254,7 @@ def check_symbol_regions(symbols):
         if name not in symbols:
             raise LayoutError("map has no symbol %s" % name)
         addr = symbols[name]
-        if not (COMMON_BASE <= addr < STACK_BASE):
+        if not (COMMON_BASE <= addr < COMMON_CODE_END):
             raise LayoutError(
                 "%s at %04Xh is outside the common region E000h-FEFFh"
                 % (name, addr)
@@ -256,6 +281,9 @@ def write_manifest(build_dir, suffix, image, page0, page1, symbols):
             "_reset", "_zos_rst30_vector", "_kernel_main",
             "zos_syscall_entry", "zos_syscall_dispatch",
             "zos_gate_stack", "zos_gate_stack_top",
+            "irq_vector_page", "irq_vector_guard", "irq_ff_unexpected",
+            "irq_transition_stack", "irq_transition_stack_top",
+            "irq_isr_stack", "irq_isr_stack_top",
         )
     }
     manifest = {
@@ -314,6 +342,7 @@ def pack(ihx_text, map_text, build_dir, suffix=""):
     symbols = parse_map_symbols(map_text)
     check_symbol_regions(symbols)
     verify_rst30_stub(mem, symbols)
+    verify_im2_guard(mem, symbols)
     verify_no_banked_latch_writes(mem)
     page0, page1 = build_pages(mem)
     image = build_image(page0, page1)

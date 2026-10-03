@@ -20,6 +20,11 @@ M0 boot mechanics.
   common-memory entry/exit gate, bank-7 dispatcher returning `ZOS_ENOSYS`
   (`docs/abi.md`), target-side smoke self-test (`make syscall-selftest`).
   Accepted on physical hardware 2026-10-02 (`syscall selftest: OK`).
+- **M2 — Interrupt executive**: kernel-owned IM2 (`I=FDh`), fixed-source
+  one-owner registry, mode-safe full-context IRQ entry/return with
+  dedicated common/bank-7 stacks, `FFh` guard identity, CTC0 acceptance
+  image, and linked-byte simulation.  Accepted on physical hardware
+  2026-10-02 (`irq selftest: OK`).
 - Stage `04-m1-validation-acceptance` is pending.
 
 ## Prerequisites
@@ -39,10 +44,14 @@ make test          # host image/layout/ABI tests + artifact integrity checks
 make check         # reproducible-rebuild proof + full validation stack
 make syscall-selftest
                    # target-side RST 30h round-trip image (build-selftest/)
+make irq-selftest
+                   # target-side M2 IRQ executive image (build-irq-selftest/)
 make smoke-hardware SERIAL_PORT=/dev/ttyUSB0
                    # capture + verify the banner from physical hardware
 make smoke-hardware-selftest SERIAL_PORT=/dev/ttyUSB0
                    # capture + verify 'syscall selftest: OK'
+make smoke-hardware-irq SERIAL_PORT=/dev/ttyUSB0
+                   # capture + verify 'irq selftest: OK'
 make clean         # remove generated files under build/ and build-selftest/
 ```
 

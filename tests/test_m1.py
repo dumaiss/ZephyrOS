@@ -21,6 +21,8 @@ HARDWARE_H = os.path.join(ROOT, "platform", "zephyr80", "hardware.h")
 HARDWARE_INC = os.path.join(ROOT, "platform", "zephyr80", "hardware.inc")
 SELFTEST_H = os.path.join(ROOT, "include", "zephyros", "selftest.h")
 SELFTEST_INC = os.path.join(ROOT, "platform", "zephyr80", "selftest.inc")
+IRQ_SELFTEST_H = os.path.join(ROOT, "include", "zephyros", "irq_selftest.h")
+IRQ_SELFTEST_INC = os.path.join(ROOT, "platform", "zephyr80", "irq_selftest.inc")
 
 REQUIRED_CONSTANTS = (
     "ZOS_MEMCTL_PORT",
@@ -36,6 +38,8 @@ REQUIRED_CONSTANTS = (
     "ZOS_SIO_WR0_CHANNEL_RESET", "ZOS_SIO_WR4_X16_1STOP_NOPARITY",
     "ZOS_SIO_WR3_RX8_AUTO_ENABLES", "ZOS_SIO_WR5_TX8_DTR_RTS_RELEASE",
     "ZOS_SIO_WR1_INT_DISABLED", "ZOS_SIO_TX_TIMEOUT",
+    "ZOS_CTC0_PORT", "ZOS_CTC0_VECTOR_BASE", "ZOS_CTC0_CONTROL_TEST",
+    "ZOS_CTC0_TIME_CONSTANT", "ZOS_CTC0_RESET", "ZOS_IM2_I_VALUE",
 )
 
 
@@ -206,6 +210,30 @@ class TestSelftestConstantParity(unittest.TestCase):
         self.assertEqual(cv, av, "ZOS_ENOSYS differs: errno.h=%d selftest.inc=%d" % (cv, av))
 
 
+class TestIrqSelftestConstantParity(unittest.TestCase):
+    """irq_selftest.h and irq_selftest.inc must stay value-identical."""
+
+    def test_irq_selftest_constants_match(self):
+        c = parse_c_header(IRQ_SELFTEST_H)
+        asm = parse_asm_inc(IRQ_SELFTEST_INC)
+        self.assertTrue(set(c), "irq_selftest.h parsed no constants")
+        for name in sorted(c):
+            self.assertIn(name, asm, "irq_selftest.inc missing %s" % name)
+            cv = evaluate(c[name], c)
+            av = evaluate(asm[name], asm)
+            self.assertEqual(cv, av, "%s differs: C=%d asm=%d" % (name, cv, av))
+
+    def test_irq_selftest_enosys_matches_errno_header(self):
+        errno_c = parse_c_header(os.path.join(ROOT, "include", "zephyros", "errno.h"))
+        asm = parse_asm_inc(IRQ_SELFTEST_INC)
+        self.assertIn("ZOS_IST_ENOSYS", asm, "irq_selftest.inc missing ZOS_IST_ENOSYS")
+        cv = evaluate(errno_c["ZOS_ENOSYS"], errno_c)
+        av = evaluate(asm["ZOS_IST_ENOSYS"], asm)
+        self.assertEqual(cv, av,
+                         "ZOS_ENOSYS differs: errno.h=%d irq_selftest.inc=%d"
+                         % (cv, av))
+
+
 class TestLatchFormulas(unittest.TestCase):
     """Latch semantics the banking primitives must implement."""
 
@@ -293,6 +321,15 @@ def make_map(overrides=None, **kw):
         "_platform_bank_get": 0xE0B8, "_platform_bank_set": 0xE0BC,
         "_early_console_init": 0xE0C0, "_early_console_putc": 0xE0E0,
         "_early_console_puts": 0xE0F0, "_panic": 0xE0F8,
+        "irq_ctc0_stub": 0xE110, "irq_ff_unexpected": 0xE130,
+        "irq_common_entry": 0xE140, "_irq_arch_lock": 0xE190,
+        "_irq_arch_unlock": 0xE198, "_irq_arch_init": 0xE1A0,
+        "_irq_dispatch": 0x2200, "_irq_kernel_code_end": 0x206E,
+        "irq_vector_page": 0xFD00, "irq_vector_guard": 0xFE00,
+        "irq_saved_latch": 0xFE01, "irq_saved_sp": 0xFE02,
+        "irq_common_sp": 0xFE04, "_irq_active_source": 0xFE06,
+        "irq_transition_stack": 0xFE80, "irq_transition_stack_top": 0xFF00,
+        "irq_isr_stack": 0xDF00, "irq_isr_stack_top": 0xE000,
         "zos_gate_saved_sp": 0xE100, "zos_gate_saved_latch": 0xE102,
         "zos_gate_result_hl": 0xE103, "zos_gate_result_a": 0xE105,
         "zos_gate_result_c": 0xE106,
@@ -349,6 +386,26 @@ class TestMapcheck(unittest.TestCase):
 
     def test_gate_stack_wrong_size(self):
         text = make_map(symbols={"zos_gate_stack_top": 0xE153})
+        with self.assertRaises(mapcheck.MapError):
+            mapcheck.check_map(text)
+
+    def test_irq_vector_misaligned(self):
+        text = make_map(symbols={"irq_vector_page": 0xFD01})
+        with self.assertRaises(mapcheck.MapError):
+            mapcheck.check_map(text)
+
+    def test_irq_transition_stack_wrong_size(self):
+        text = make_map(symbols={"irq_transition_stack_top": 0xFEF0})
+        with self.assertRaises(mapcheck.MapError):
+            mapcheck.check_map(text)
+
+    def test_irq_isr_stack_wrong_size(self):
+        text = make_map(symbols={"irq_isr_stack": 0xDF10})
+        with self.assertRaises(mapcheck.MapError):
+            mapcheck.check_map(text)
+
+    def test_linked_kernel_code_end_mismatch(self):
+        text = make_map(symbols={"_irq_kernel_code_end": 0x2070})
         with self.assertRaises(mapcheck.MapError):
             mapcheck.check_map(text)
 
@@ -464,6 +521,28 @@ class TestRealArtifacts(unittest.TestCase):
         if os.path.exists(self.bin_path):
             normal = open(self.bin_path, "rb").read()
             self.assertNotIn(b"syscall selftest", normal)
+
+    def test_ff_guard_encodes_irq_ff_unexpected(self):
+        """word_at(FDFFh) must be the linked irq_ff_unexpected address."""
+        if not os.path.exists(self.bin_path) or not os.path.exists(self.map_path):
+            self.skipTest("build artifacts missing; run `make` first")
+        image = open(self.bin_path, "rb").read()
+        _, symbols = mapcheck.parse_map(open(self.map_path).read())
+        word = image[0xFDFF] | (image[0xFE00] << 8)
+        self.assertEqual(word, symbols["irq_ff_unexpected"],
+                         "word_at(FDFFh)=%04Xh != irq_ff_unexpected %04Xh"
+                         % (word, symbols["irq_ff_unexpected"]))
+
+    def test_irq_selftest_image_contains_harness(self):
+        irq_bin = os.path.join(ROOT, "build-irq-selftest", "zephyros-irq-selftest.bin")
+        if not os.path.exists(irq_bin):
+            self.skipTest("irq-selftest image missing; run `make irq-selftest`")
+        image = open(irq_bin, "rb").read()
+        self.assertEqual(len(image), 131072)
+        self.assertIn(b"irq selftest", image[0x10000:])
+        if os.path.exists(self.bin_path):
+            normal = open(self.bin_path, "rb").read()
+            self.assertNotIn(b"irq selftest", normal)
 
 
 if __name__ == "__main__":

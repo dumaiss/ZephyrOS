@@ -37,6 +37,8 @@
 	.globl zos_gate_result_hl
 	.globl zos_gate_result_a
 	.globl zos_gate_result_c
+	.globl zos_gate_saved_iff
+	.globl zos_gate_saved_a
 	.globl zos_gate_stack
 	.globl zos_gate_stack_top
 	; External (kernel/boot) entry points used by the gates.
@@ -178,6 +180,10 @@ zos_gate_result_hl::
 zos_gate_result_a::
 	.ds	1
 zos_gate_result_c::
+	.ds	1
+zos_gate_saved_iff::
+	.ds	1
+zos_gate_saved_a::
 	.ds	1
 zos_gate_stack::
 	.ds	ZOS_GATE_STACK_SIZE

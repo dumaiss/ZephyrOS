@@ -27,10 +27,30 @@ class Z80:
         self.d = self.e = 0
         self.h = self.l = 0
         self.ix = self.iy = 0
+        self.alt_a = self.alt_f = 0
+        self.alt_b = self.alt_c = 0
+        self.alt_d = self.alt_e = 0
+        self.alt_h = self.alt_l = 0
         self.cycles = 0
         self.halted = False
         self.interrupts = False
         self.iff1 = False
+        self.iff2 = False
+        self.ei_delay = 0
+        self.i = 0
+        self.im = 0
+        self.int_pending = False
+        self.int_vector = 0
+
+    def accept_interrupt(self, vector):
+        """Accept one maskable IM2 interrupt and fetch its linked target."""
+        if not self.iff1 or self.im != 2:
+            raise AssertionError("interrupt not enabled in IM2")
+        self.halted = False
+        self.iff1 = False
+        self.push16(self.pc)
+        pointer = ((self.i << 8) | (vector & 0xFF)) & 0xFFFF
+        self.pc = self.rd16(pointer)
 
     # ---- flags ----
     def _sf(self, bit, on):
@@ -59,6 +79,47 @@ class Z80:
     @SNF.setter
     def SNF(self, v):
         self._sf(0x80, v)
+
+    @property
+    def PV(self):
+        return (self.f >> 2) & 1
+
+    @PV.setter
+    def PV(self, v):
+        self._sf(0x04, v)
+
+    # ---- interrupts ----
+    def assert_int(self, vector):
+        """Assert INT with the given IM2 vector byte; delivered when the
+        CPU next accepts maskable interrupts."""
+        self.int_vector = vector & 0xFF
+        self.int_pending = True
+
+    def _accept_interrupt(self):
+        self.int_pending = False
+        self.iff1 = False
+        self.iff2 = False
+        self.push16(self.pc)
+        self.pc = self.rd16(((self.i << 8) | self.int_vector) & 0xFFFF)
+        self.halted = False
+
+    def _interrupt_check(self):
+        if self.int_pending and self.iff1 and not self.ei_delay and self.im == 2:
+            self._accept_interrupt()
+            return True
+        return False
+
+    def _cond(self, cc):
+        return {0: not self.ZF, 1: self.ZF, 2: not self.CF, 3: self.CF,
+                4: not self.PV, 5: self.PV, 6: not self.SNF, 7: self.SNF}[cc]
+
+    @property
+    def PF(self):
+        return (self.f >> 2) & 1
+
+    @PF.setter
+    def PF(self, v):
+        self._sf(0x04, v)
 
     # ---- memory mapping ----
     def bank_of(self, addr):
@@ -128,19 +189,54 @@ class Z80:
         return self.sp
 
     def step(self):
+        # HALT: only an accepted interrupt wakes the CPU.
+        if self.halted:
+            if self.int_pending and self.iff1:
+                self._accept_interrupt()
+            return
+        # IM2 acceptance before the next instruction (blocked for exactly
+        # one instruction after EI).
+        if self._interrupt_check():
+            return
         self.cycles += 1
         op = self.fetch()
         x, y, z, p, q = (op >> 6) & 3, (op >> 3) & 7, op & 7, (op >> 4) & 3, (op >> 5) & 1
         if op == 0x00: pass
+        elif op == 0x07:  # rlca
+            c = (self.a >> 7) & 1
+            self.a = ((self.a << 1) | c) & 0xFF
+            self.CF = c
         elif op == 0x76: self.halted = True
-        elif op == 0xF3: self.iff1 = False
-        elif op == 0xFB: self.iff1 = True
+        elif op == 0xF3: self.iff1 = self.iff2 = False
+        elif op == 0xFB:
+            self.iff1 = self.iff2 = True
+            # EI admits an interrupt only after the following instruction.
+            # The per-step countdown below consumes one tick for EI itself.
+            self.ei_delay = 2
+        elif op == 0x08:  # ex af,af'
+            self.a, self.f, self.alt_a, self.alt_f = \
+                self.alt_a, self.alt_f, self.a, self.f
+        elif op == 0x10:  # djnz d
+            off = self.fetch()
+            if off & 0x80: off -= 256
+            self.b = (self.b - 1) & 0xFF
+            if self.b:
+                self.pc = (self.pc + off) & 0xFFFF
+        elif op == 0xD9:  # exx
+            self.b, self.c, self.alt_b, self.alt_c = \
+                self.alt_b, self.alt_c, self.b, self.c
+            self.d, self.e, self.alt_d, self.alt_e = \
+                self.alt_d, self.alt_e, self.d, self.e
+            self.h, self.l, self.alt_h, self.alt_l = \
+                self.alt_h, self.alt_l, self.h, self.l
         elif op == 0xF9:  # ld sp,hl
             self.sp = (self.h << 8) | self.l
         elif op == 0xED and False: pass
         elif op == 0xC9:  # ret
             self.pc = self.pop16()
         elif op == 0xC3: self.pc = self.fetch16()
+        elif op == 0xE9:  # jp (hl)
+            self.pc = (self.h << 8) | self.l
         elif op in (0x18, 0x28, 0x20, 0x38, 0x30):
             off = self.fetch()
             if off & 0x80: off -= 256
@@ -149,12 +245,22 @@ class Z80:
                 self.pc = (self.pc + off) & 0xFFFF
         elif op in (0xC2, 0xCA, 0xD2, 0xDA, 0xE2, 0xEA, 0xF2, 0xFA):
             nn = self.fetch16()
-            cond = {(0xC2, 0xD2, 0xE2, 0xF2): not self.ZF,
-                    (0xCA, 0xDA, 0xEA, 0xFA): self.ZF}.get(tuple(sorted([op])))
-            if op in (0xD2, 0xDA, 0xF2, 0xFA) and not self.CF:
+            cond = {
+                0xC2: not self.ZF, 0xCA: self.ZF,
+                0xD2: not self.CF, 0xDA: self.CF,
+                0xE2: not self.PF, 0xEA: self.PF,
+                0xF2: not self.SNF, 0xFA: self.SNF,
+            }[op]
+            if cond:
                 self.pc = nn
-            elif op in (0xE2, 0xEA) and (self.pc == self.pc):
-                pass
+        elif op in (0xC4, 0xCC, 0xD4, 0xDC, 0xE4, 0xEC, 0xF4, 0xFC):
+            nn = self.fetch16()
+            if self._cond((op >> 3) & 7):
+                self.push16(self.pc)
+                self.pc = nn
+        elif op in (0xC0, 0xC8, 0xD0, 0xD8, 0xE0, 0xE8, 0xF0, 0xF8):
+            if self._cond((op >> 3) & 7):
+                self.pc = self.pop16()
         elif op == 0xCD:  # call
             target = self.fetch16()
             self.push16(self.pc)
@@ -174,6 +280,8 @@ class Z80:
             else: self.a, self.f = v >> 8, v & 0xFF
         elif op in (0xDD, 0xFD):
             self.step_prefix(op)
+        elif op == 0xCB:
+            self.step_cb()
         elif op in (0xD3, 0xDB):
             port = self.fetch()
             if op == 0xD3:
@@ -186,6 +294,12 @@ class Z80:
                     self.a = 0xFF
         elif op in (0x01, 0x11, 0x21, 0x31):
             self.set_rr((op >> 4) & 3, self.fetch16())
+        elif op == 0x09:  # add hl,bc
+            self.hl = self._add16(self.get_rr(2), self.get_rr(0))
+        elif op == 0x19:  # add hl,de
+            self.hl = self._add16(self.get_rr(2), self.get_rr(1))
+        elif op == 0x29:  # add hl,hl
+            self.hl = self._add16(self.get_rr(2), self.get_rr(2))
         elif op == 0x22:  # ld (nn),hl
             self.wr16(self.fetch16(), (self.h << 8) | self.l)
         elif op == 0x2A:  # ld hl,(nn)
@@ -196,6 +310,18 @@ class Z80:
             self.a = self.rd(self.fetch16())
         elif op == 0x36:  # ld (hl),n
             self.wr((self.h << 8) | self.l, self.fetch())
+        elif op == 0x34:  # inc (hl)
+            addr = (self.h << 8) | self.l
+            v = (self.rd(addr) + 1) & 0xFF
+            self.wr(addr, v)
+            self.ZF = v == 0
+            self.SNF = (v & 0x80) != 0
+        elif op == 0x35:  # dec (hl)
+            addr = (self.h << 8) | self.l
+            v = (self.rd(addr) - 1) & 0xFF
+            self.wr(addr, v)
+            self.ZF = v == 0
+            self.SNF = (v & 0x80) != 0
         elif op == 0x39:  # add hl,sp
             hl = (self.h << 8) | self.l
             res = hl + self.sp
@@ -206,8 +332,19 @@ class Z80:
                     0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5D,
                     0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D):
             self.ld_reg(op)
+        elif op in (0x46, 0x4E, 0x56, 0x5E, 0x66, 0x6E):  # ld r,(hl)
+            regs = {0x46: 'b', 0x4E: 'c', 0x56: 'd', 0x5E: 'e', 0x66: 'h', 0x6E: 'l'}
+            setattr(self, regs[op], self.rd((self.h << 8) | self.l))
+        elif op in (0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x77):  # ld (hl),r
+            regs = {0x70: 'b', 0x71: 'c', 0x72: 'd', 0x73: 'e',
+                    0x74: 'h', 0x75: 'l', 0x77: 'a'}
+            self.wr((self.h << 8) | self.l, getattr(self, regs[op]))
         elif op == 0x7E: self.a = self.rd((self.h << 8) | self.l)
         elif op == 0x77: self.wr((self.h << 8) | self.l, self.a)
+        elif op == 0x02: self.wr((self.b << 8) | self.c, self.a)
+        elif op == 0x0A: self.a = self.rd((self.b << 8) | self.c)
+        elif op == 0x12: self.wr((self.d << 8) | self.e, self.a)
+        elif op == 0x1A: self.a = self.rd((self.d << 8) | self.e)
         elif op == 0x3E: self.a = self.fetch()
         elif op in (0x06, 0x0E, 0x16, 0x1E, 0x26, 0x2E):
             regs = {0x06: 'b', 0x0E: 'c', 0x16: 'd', 0x1E: 'e', 0x26: 'h', 0x2E: 'l'}
@@ -235,7 +372,11 @@ class Z80:
         elif op == 0xF6: self.a = self._logic(self.a | self.fetch())
         elif op == 0xFE: self._logic(self.a - self.fetch(), sub=True)
         elif op == 0xD6: self._sub(self.fetch())
+        elif op == 0xDE:  # sbc a,n (approx: carry-in ignored)
+            self._sub(self.fetch())
         elif op == 0xC6: self._add(self.fetch())
+        elif op == 0xCE:  # adc a,n (approx: carry-in ignored)
+            self._add(self.fetch())
         elif op == 0xEB:  # ex de,hl
             self.d, self.e, self.h, self.l = self.h, self.l, self.d, self.e
         elif op == 0xE3:  # ex (sp),hl
@@ -245,12 +386,37 @@ class Z80:
         elif op == 0x0B: self.set_rr(0, (self.get_rr(0) - 1) & 0xFFFF)
         elif op == 0x1B: self.set_rr(1, (self.get_rr(1) - 1) & 0xFFFF)
         elif op == 0x2B: self.hl = (self.get_rr(2) - 1) & 0xFFFF
+        elif op in (0x04, 0x0C, 0x14, 0x1C, 0x24, 0x2C, 0x3C):  # inc r
+            regs = {0x04: 'b', 0x0C: 'c', 0x14: 'd', 0x1C: 'e',
+                    0x24: 'h', 0x2C: 'l', 0x3C: 'a'}
+            v = (getattr(self, regs[op]) + 1) & 0xFF
+            setattr(self, regs[op], v)
+            self.ZF = v == 0
+            self.SNF = (v & 0x80) != 0
+        elif op in (0x05, 0x0D, 0x15, 0x1D, 0x25, 0x2D, 0x3D):  # dec r
+            regs = {0x05: 'b', 0x0D: 'c', 0x15: 'd', 0x1D: 'e',
+                    0x25: 'h', 0x2D: 'l', 0x3D: 'a'}
+            v = (getattr(self, regs[op]) - 1) & 0xFF
+            setattr(self, regs[op], v)
+            self.ZF = v == 0
+            self.SNF = (v & 0x80) != 0
         elif op == 0x3B: self.sp = (self.sp - 1) & 0xFFFF
         elif op == 0x23: self.hl = (self.get_rr(2) + 1) & 0xFFFF
+        elif op == 0x33: self.sp = (self.sp + 1) & 0xFFFF
         elif op == 0xED:
             self.step_ed()
         else:
             raise SystemExit("sim: unsupported opcode %02X at %04X" % (op, (self.pc - 1) & 0xFFFF))
+        # The one-instruction EI delay must survive the EI step itself:
+        # EI sets the delay, the instruction after EI runs while the check
+        # is blocked, and only then does the delay expire.
+        if self.ei_delay and op != 0xFB:
+            self.ei_delay -= 1
+
+    def _add16(self, hl, rr):
+        res = hl + rr
+        self._sf(1, (res & 0x10000) != 0)
+        return res & 0xFFFF
 
     @property
     def hl(self):
@@ -298,16 +464,24 @@ class Z80:
         if dst and src:
             setattr(self, dst, getattr(self, src))
 
-    def _logic(self, res, sub=False):
-        res &= 0xFF
+    def _logic(self, res, sub=False, add=False):
+        raw = res
+        res = raw & 0xFF
         self.ZF = res == 0
         self.SNF = (res & 0x80) != 0
         if sub:
             self._sf(0x10, res & 0x10)  # H (approx)
-            self.CF = res > 0xFF or res < 0
+            self._sf(0x02, 1)           # N = 1
+            self.CF = raw < 0
+        elif add:
+            self._sf(0x10, 0)
+            self._sf(0x02, 0)           # N = 0
+            self.CF = raw > 0xFF
         else:
             self._sf(0x10, 0)
+            self._sf(0x02, 0)           # N = 0
             self.CF = 0
+            self.PV = (bin(res).count('1') & 1) == 0
         return res
 
     def _sub(self, n):
@@ -316,7 +490,7 @@ class Z80:
 
     def _add(self, n):
         v = self.a + n
-        self.a = self._logic(v, sub=False)
+        self.a = self._logic(v, add=True)
 
     def alu(self, op):
         srcs = {0: 'b', 1: 'c', 2: 'd', 3: 'e', 4: 'h', 5: 'l', 7: 'a'}
@@ -355,27 +529,119 @@ class Z80:
             self.ZF = 0
         elif op == 0x7B:  # ld sp,(nn)
             self.sp = self.rd16(self.fetch16())
-        elif op == 0x4D:  # reti
+        elif op == 0x73:  # ld (nn),sp
+            self.wr16(self.fetch16(), self.sp)
+        elif op == 0x5B:  # ld de,(nn)
+            self.de = self.rd16(self.fetch16())
+        elif op == 0x4B:  # ld bc,(nn)
+            self.bc = self.rd16(self.fetch16())
+        elif op == 0x53:  # ld (nn),de
+            self.wr16(self.fetch16(), (self.d << 8) | self.e)
+        elif op == 0x43:  # ld (nn),bc
+            self.wr16(self.fetch16(), (self.b << 8) | self.c)
+        elif op == 0x47:  # ld i,a
+            self.i = self.a
+        elif op == 0x57:  # ld a,i (P/V reflects IFF2)
+            self.a = self.i
+            self._sf(0x04, self.iff2)
+        elif op in (0x46, 0x56, 0x5E):
+            self.im = {0x46: 0, 0x56: 1, 0x5E: 2}[op]
+        elif op == 0x4D:  # reti: IFF1 <- IFF2
             self.pc = self.pop16()
-            self.iff1 = True
+            self.iff1 = self.iff2
+        elif op == 0x45:  # retn: IFF1 <- IFF2
+            self.pc = self.pop16()
+            self.iff1 = self.iff2
         else:
             raise SystemExit("sim: unsupported ED %02X at %04X" % (op, (self.pc - 2) & 0xFFFF))
+
+    @property
+    def de(self):
+        return (self.d << 8) | self.e
+
+    @de.setter
+    def de(self, v):
+        self.d, self.e = (v >> 8) & 0xFF, v & 0xFF
+
+    @property
+    def bc(self):
+        return (self.b << 8) | self.c
+
+    @bc.setter
+    def bc(self, v):
+        self.b, self.c = (v >> 8) & 0xFF, v & 0xFF
+
+    def step_cb(self):
+        op = self.fetch()
+        regs = {0: 'b', 1: 'c', 2: 'd', 3: 'e', 4: 'h', 5: 'l', 7: 'a'}
+        r = op & 7
+        if r == 6:
+            raise SystemExit("sim: unsupported CB %02X (mem)" % op)
+        name = regs[r]
+        if op < 0x40:  # rotate/shift (flags approximated; Z/S accurate)
+            v = getattr(self, name)
+            grp = (op >> 3) & 7
+            if grp == 0:    # rlc
+                c = (v >> 7) & 1
+                v = ((v << 1) | c) & 0xFF
+                self.CF = c
+            elif grp == 1:  # rrc
+                c = v & 1
+                v = ((v >> 1) | (c << 7)) & 0xFF
+                self.CF = c
+            elif grp == 2:  # rl
+                c = (v >> 7) & 1
+                v = ((v << 1) | self.CF) & 0xFF
+                self.CF = c
+            elif grp == 3:  # rr
+                c = v & 1
+                v = ((v >> 1) | (self.CF << 7)) & 0xFF
+                self.CF = c
+            elif grp == 4:  # sla
+                c = (v >> 7) & 1
+                v = (v << 1) & 0xFF
+                self.CF = c
+            elif grp == 5:  # sra
+                c = v & 1
+                v = (v >> 1) | (v & 0x80)
+                self.CF = c
+            else:           # srl
+                c = v & 1
+                v = v >> 1
+                self.CF = c
+            setattr(self, name, v)
+            self.ZF = v == 0
+            self.SNF = (v & 0x80) != 0
+            self.PV = (bin(v).count('1') & 1) == 0
+        elif op < 0x80:  # bit n,r: Z = !bit
+            bit = (op >> 3) & 7
+            self.ZF = not ((getattr(self, name) >> bit) & 1)
+        elif op < 0xC0:  # res n,r
+            bit = (op >> 3) & 7
+            setattr(self, name, getattr(self, name) & ~(1 << bit) & 0xFF)
+        else:            # set n,r
+            bit = (op >> 3) & 7
+            setattr(self, name, getattr(self, name) | (1 << bit))
 
     def step_prefix(self, op):
         op2 = self.fetch()
         if op == 0xDD:
             reg = self.ix
-            push = 0xDD, 0xE5
-            pop = 0xDD, 0xE1
         else:
             reg = self.iy
-            push = 0xFD, 0xE5
-            pop = 0xFD, 0xE1
         if op2 == 0x21:
             if op == 0xDD:
                 self.ix = self.fetch16()
             else:
                 self.iy = self.fetch16()
+        elif op2 == 0x2A:  # ld ix/iy,(nn)
+            v = self.rd16(self.fetch16())
+            if op == 0xDD:
+                self.ix = v
+            else:
+                self.iy = v
+        elif op2 == 0x22:  # ld (nn),ix/iy
+            self.wr16(self.fetch16(), reg)
         elif op2 == 0xE5:  # push ix/iy
             self.push16(self.ix if op == 0xDD else self.iy)
         elif op2 == 0xE1:  # pop ix/iy
@@ -384,6 +650,55 @@ class Z80:
                 self.ix = v
             else:
                 self.iy = v
+        elif op2 == 0xE9:  # jp (ix)/(iy)
+            self.pc = reg
+        elif op2 == 0xF9:  # ld sp,ix/iy
+            self.sp = reg
+        elif op2 == 0x39:  # add ix/iy,sp (flags approximated)
+            res = reg + self.sp
+            if op == 0xDD:
+                self.ix = res & 0xFFFF
+            else:
+                self.iy = res & 0xFFFF
+            self._sf(1, (res & 0x10000) != 0)
+        elif op2 == 0x36:  # ld (ix+d),n
+            off = self.fetch()
+            if off & 0x80: off -= 256
+            self.wr((reg + off) & 0xFFFF, self.fetch())
+        elif op2 in (0x46, 0x4E, 0x56, 0x5E, 0x66, 0x6E, 0x7E):  # ld r,(ix+d)
+            off = self.fetch()
+            if off & 0x80: off -= 256
+            v = self.rd((reg + off) & 0xFFFF)
+            regs = {0x46: 'b', 0x4E: 'c', 0x56: 'd', 0x5E: 'e',
+                    0x66: 'h', 0x6E: 'l', 0x7E: 'a'}
+            setattr(self, regs[op2], v)
+        elif op2 in (0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x77):  # ld (ix+d),r
+            off = self.fetch()
+            if off & 0x80: off -= 256
+            regs = {0x70: 'b', 0x71: 'c', 0x72: 'd', 0x73: 'e',
+                    0x74: 'h', 0x75: 'l', 0x77: 'a'}
+            self.wr((reg + off) & 0xFFFF, getattr(self, regs[op2]))
+        elif op2 in (0x86, 0x8E, 0x96, 0x9E, 0xA6, 0xAE, 0xB6, 0xBE):  # alu a,(ix+d)
+            off = self.fetch()
+            if off & 0x80: off -= 256
+            v = self.rd((reg + off) & 0xFFFF)
+            grp = op2 & 0xF8
+            if grp == 0x80:
+                self._add(v)
+            elif grp == 0x88:
+                self._add(v)  # adc (approx)
+            elif grp == 0x90:
+                self._sub(v)
+            elif grp == 0x98:
+                self._sub(v)  # sbc (approx)
+            elif grp == 0xA0:
+                self.a = self._logic(self.a & v)
+            elif grp == 0xA8:
+                self.a = self._logic(self.a ^ v)
+            elif grp == 0xB0:
+                self.a = self._logic(self.a | v)
+            else:
+                self._logic(self.a - v, sub=True)  # cp
         else:
             raise SystemExit("sim: unsupported %02X %02X" % (op, op2))
 
