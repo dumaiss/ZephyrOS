@@ -28,6 +28,8 @@
 #include "zephyros/console.h"
 #include "zephyros/module.h"
 #include "zephyros/kernel.h"
+#include "zephyros/romfs.h"
+#include "zephyros/device.h"
 
 #include "m6_selftest.h"
 
@@ -280,6 +282,56 @@ void zos_run_m6_selftest(void)
 	if (!m6_idle_ok()) {
 		m6_fail(ZOS_M6ST_FAIL_LEAK, 0x11);
 		return;
+	}
+
+	/* 7. M8 ROMFS resource imports (driver ABI v2): name-resolved,
+	 *    DATA-only, and bounded; byte-identical to the internal reader. */
+	{
+		romfs_file_t file;
+		uint16_t rsize = 0;
+		uint8_t res_buf[8];
+		uint8_t ref_buf[8];
+		uint16_t n;
+		uint16_t j;
+
+		if (romfs_resource_size(ZOS_M6ST_DATA_NAME, &rsize) != 0 ||
+		    rsize == 0) {
+			m6_fail(ZOS_M6ST_FAIL_RESOURCE, 1); return;
+		}
+		if (romfs_lookup(ZOS_M6ST_DATA_NAME, &file) != 0 ||
+		    file.flags != ROMFS_FLAG_DATA || file.size != rsize) {
+			m6_fail(ZOS_M6ST_FAIL_RESOURCE, 2); return;
+		}
+		n = rsize < (uint16_t)sizeof(res_buf) ? rsize :
+			(uint16_t)sizeof(res_buf);
+		if (romfs_resource_read(ZOS_M6ST_DATA_NAME, 0, res_buf, n) !=
+				(int)n ||
+		    romfs_read(&file, 0, ref_buf, n) != (int)n) {
+			m6_fail(ZOS_M6ST_FAIL_RESOURCE, 3); return;
+		}
+		for (j = 0; j < n; ++j) {
+			if (res_buf[j] != ref_buf[j]) {
+				m6_fail(ZOS_M6ST_FAIL_RESOURCE, 4); return;
+			}
+		}
+		/* Exact tail read succeeds; one byte past EOF is rejected. */
+		if (romfs_resource_read(ZOS_M6ST_DATA_NAME,
+					(uint16_t)(rsize - n), res_buf, n) !=
+				(int)n ||
+		    romfs_resource_read(ZOS_M6ST_DATA_NAME, rsize, res_buf, 1) !=
+				ZDEV_EINVAL) {
+			m6_fail(ZOS_M6ST_FAIL_RESOURCE, 5); return;
+		}
+		/* ZMOD/ZEX files are not importable; missing names and null
+		 * buffers fail predictably. */
+		if (romfs_resource_size(ZOS_M6ST_ZEXTEST_NAME, &rsize) !=
+				ZDEV_EINVAL ||
+		    romfs_resource_size("sio.zmod", &rsize) != ZDEV_EINVAL ||
+		    romfs_resource_size("absent.bin", &rsize) != ZDEV_ENOENT ||
+		    romfs_resource_read(ZOS_M6ST_DATA_NAME, 0, (void *)0, 1) !=
+				ZDEV_EINVAL) {
+			m6_fail(ZOS_M6ST_FAIL_RESOURCE, 6); return;
+		}
 	}
 
 	m6_selftest_result = ZOS_M6ST_OK;

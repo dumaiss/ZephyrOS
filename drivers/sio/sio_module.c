@@ -26,6 +26,7 @@ static const struct zdevice_desc sio0b_desc = {
 	ZCAP_CHAR_IN | ZCAP_CHAR_OUT | ZCAP_CONSOLE_IN | ZCAP_CONSOLE_OUT,
 	"sio0.b",
 	&sio0b_ops,
+	(const void *)0,
 	&sio0b_state
 };
 

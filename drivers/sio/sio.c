@@ -103,7 +103,7 @@ int sio0b_getc(void *state)
 	return (int)sio0b_read_data();
 }
 
-const struct zdevice_ops sio0b_ops = {
+const struct zchar_ops sio0b_ops = {
 	sio0b_putc,
 	sio0b_write,
 	sio0b_poll,

@@ -20,7 +20,7 @@
 #define ZOS_PAGE_ZERO_END           0x0100u
 
 /* Bank-7 OS body, visible in mode 11.  The loadable (ROM-initialized) part
- * must end below ZOS_DRIVER_ARENA_BASE; C000h-DFFFh is zero-initialized
+ * ends at the linked __kernel_code_end; C000h-DFFFh is zero-initialized
  * runtime area that is never loaded from ROM. */
 #define ZOS_BANK7_BASE              0x2000u
 #define ZOS_BANK7_LOAD_END          0xC000u
@@ -29,14 +29,23 @@
 #define ZOS_IRQ_ISR_STACK_TOP       0xE000u
 #define ZOS_IRQ_ISR_STACK_SIZE      0x0100u
 
-/* M4 bank-7 driver arena: 16 contiguous 512-byte granules reserved between
- * the loadable kernel image and the zero-initialized runtime area.  Loader
- * code must use the linked __driver_arena_start/__driver_arena_end symbols,
- * not these values. */
+/* Driver arena.  Production (M8) derives the start from the aligned end
+ * of the linked kernel and exports __kernel_code_end /
+ * __driver_arena_start / __driver_arena_end through kernel/module/arena.asm
+ * and the generated build/arena_geometry.inc.  The committed constants
+ * below are the legacy M1-M7 acceptance/variant geometry kept for
+ * reproducible pre-M8 images (including the shifted-placement build);
+ * ZOS_DRIVER_ARENA_DERIVED selects which mechanism a build uses and is
+ * replaced with 1 in the generated memory.inc variant.  The minimum is a
+ * build-time contract for derived production geometry; C000h-DFFFh is
+ * never part of the allocator. */
+#define ZOS_DRIVER_ARENA_DERIVED    0u
 #define ZOS_DRIVER_ARENA_BASE       0xA000u
 #define ZOS_DRIVER_ARENA_END        0xC000u
 #define ZOS_DRIVER_GRANULE_SIZE     0x0200u
 #define ZOS_DRIVER_GRANULES         16u
+#define ZOS_DRIVER_ARENA_MIN_SIZE   0x4000u
+#define ZOS_DRIVER_ARENA_MIN_GRANULES 32u
 
 /* Permanent common code/data in physical SRAM bank 0.  ZOS_COMMON_CODE_END
  * is the exclusive end of ordinary common content; the IM2 vector page and

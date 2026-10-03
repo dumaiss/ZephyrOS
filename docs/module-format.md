@@ -87,7 +87,7 @@ directly after the table.
 | `00h` | 4 | `magic[4]` | `"ZMOD"` |
 | `04h` | 1 | `format_version` | `1` |
 | `05h` | 1 | `module_type` | `1` = `DRIVER` (only supported type) |
-| `06h` | 1 | `driver_abi` | must equal `ZDRIVER_ABI_VERSION` (1) |
+| `06h` | 1 | `driver_abi` | must equal `ZDRIVER_ABI_VERSION` (2) |
 | `07h` | 1 | `flags` | `0` (reserved) |
 | `08h` | 2 | `image_size` | payload bytes loaded at `load_base` |
 | `0Ah` | 2 | `bss_size` | zero-initialized bytes after the image |
@@ -129,8 +129,20 @@ express it, `ZREL_ABS16` is the only relocation type M4 supports.
 * A module may reach the kernel only through the `const struct
   zdriver_api *` passed to its init entry.  Direct references to kernel
   symbols are unresolved externals and are rejected at pack time.
-* Kernel imports are limited to the driver ABI v1 services:
-  `device_register`, `irq_claim`, `irq_release`.
+* Kernel imports are limited to the driver ABI v2 services:
+  `device_register`, `irq_claim`, `irq_release`, `device_find`,
+  `device_interface`, `resource_size`, `resource_read`.  The callback
+  order in `struct zdriver_api` is part of the ABI (pinned by
+  compile-time assertions and host tests).
+* `device_find(class_id, required_caps, after)` selects by class plus
+  required capabilities (`ZDEV_CLASS_ANY` = any class; zero
+  `required_caps` is invalid); `device_interface(handle, class, &ops,
+  &state)` verifies the class and a non-null class interface.  Both are
+  read-only; the registry exposes no mutation path.
+* `resource_size(name, &size)` and `resource_read(name, offset, dst,
+  length)` resolve only ROMFS entries carrying `ROMFS_FLAG_DATA` and
+  bound every read to the resource; `romfs_file_t` and the mutable
+  filesystem state stay kernel-private.
 * SDCC emits byte-fragmented address stores (relocation modes `09h`/`89h`)
   for stack-built structures whose pointer fields are written with
   `ld (ix+d), #<sym` / `# >sym`.  These cannot be relocated by a 16-bit
@@ -154,7 +166,7 @@ express it, `ZREL_ABS16` is the only relocation type M4 supports.
 {
   "name": "m4.probe",
   "type": "driver",
-  "abi": 1,
+  "abi": 2,
   "flags": 0,
   "objects": ["m4_probe.rel", "sdcc_indirect_calls.rel"],
   "image_areas": ["_CODE"],
@@ -176,14 +188,14 @@ For each output the packer reports:
 
 ```text
 build/modules/m4_probe.zmod
-  format:        ZMOD v1 driver, ABI 1
-  image:         174 bytes
+  format:        ZMOD v1 driver, ABI 2
+  image:         182 bytes
   bss:           2 bytes
   relocations:   16 (ZREL_ABS16)
   init:          +0x0037
   fini:          none
   total:         266 bytes
-  allocation:    1 x 512-byte granules (15 free at boot)
+  allocation:    1 x 512-byte granules
 ```
 
 The tool rejects, deterministically: bad radix/escape encodings,
@@ -205,7 +217,10 @@ module_load(name, blob, size)        module_load_source(name, source)
                                        and every relocation record, read
                                        through the bounded source and
                                        validated before the arena is touched
-  ├─ first-fit granule allocation      bitmap over 16 granules;
+  ├─ first-fit granule allocation      bitmap over the architectural
+  │                                    maximum (80 granules); live count
+  │                                    derived from the linked arena
+  │                                    bounds at module_loader_init();
   │                                    required_granules cross-checked
   ├─ descriptor ← LOADING              owner token for registrations/claims
   ├─ stream image copy, zero BSS,      image and relocations are read in
@@ -223,7 +238,9 @@ module_load(name, blob, size)        module_load_source(name, source)
   historical `module_load()` wraps the memory blob; `romfs_load_zmod()`
   wraps a ROMFS file.  Both share the same validation, copy, relocation,
   and transaction code — there is no second loader.
-* **Allocator.**  Fixed first-fit over `granule_used[16]`.  Allocation
+* **Allocator.**  First-fit over a 512-byte granule bitmap sized to the
+  architectural maximum (80 granules), with the live granule count
+  derived from the linked arena bounds at loader init.  Allocation
   rounds `image_size + bss_size` up to 512 bytes, rejects zero, 16-bit
   overflow, a `required_granules` mismatch, and exhaustion (`ZMOD_ENOSPC`).
   Slack inside an allocation belongs to the module.  No public unload
@@ -280,9 +297,10 @@ through to diagnostics.  See section 6 for the per-image selection.
 
 | Fixture | Purpose | Image | BSS | Granules |
 | --- | --- | ---: | ---: | ---: |
-| `m4.probe` | picks device `m4.probe.a`/`m4.probe.b` from bit 9 of its relocated state pointer; the even-granule instance additionally claims `IRQ_CTC0` with an in-image handler | 174 | 2 | 1 |
-| `m4.fail` | registers `m4.fail` and claims `IRQ_CTC1`, then returns failure so rollback is observable | 126 | 2 | 1 |
+| `m4.probe` | picks device `m4.probe.a`/`m4.probe.b` from bit 9 of its relocated state pointer; the even-granule instance additionally claims `IRQ_CTC0` with an in-image handler | 182 | 2 | 1 |
+| `m4.fail` | registers `m4.fail` and claims `IRQ_CTC1`, then returns failure so rollback is observable | 130 | 2 | 1 |
 | `m4.filler` | verifies its 600-byte BSS pad is zero and registers nothing; used to exhaust the arena | 48 | 602 | 2 |
+| `m8.api` | driver ABI v2 discovery/resource-import fixture: class+capability `device_find` iteration, `device_interface` success/mismatch/stale errors, and resource imports before ROMFS is published | 1129 | 6 | 3 |
 
 `make m4-loader-selftest` builds the fixture modules with the real
 toolchain, packs them, embeds them, and runs `zos_run_m4_selftest` after
@@ -290,19 +308,29 @@ the production boot section (the boot catalog's SIO module is already
 resident, so all fixture checks are relative to that baseline):
 
 1. boot module presence and baseline counts,
-2. fixture loads (`probe` and `filler` load; `fail` rolls back),
-3. identical bytes loaded twice initialize at different arena addresses
+2. the `m8.api` fixture loads and runs its ABI v2 checks inside its own
+   relocated image (class+capability discovery, interface errors,
+   resource-import errors before ROMFS is published); later baselines
+   are re-captured after it,
+3. fixture loads (`probe` and `filler` load; `fail` rolls back),
+4. a hand-patched ABI v1 copy of the probe container is rejected with
+   `ZMOD_ENOTSUP` and leaves module/granule accounting untouched,
+5. identical bytes loaded twice initialize at different arena addresses
    with the registered `state` pointer equal to `load_base + image_size`
    (each instance picks its device name from its own relocated state
    parity), plus rollback evidence, BSS zeroing, IRQ ownership, and
    handler-address accept/reject checks,
-4. 2-granule fillers exhaust the arena; the next load fails with
+6. 2-granule fillers exhaust the arena; the next load fails with
    `ZMOD_ENOSPC` and all resident modules remain intact,
-5. dynamic SIO acceptance: the bound console device must be the resident
-   boot module, its relocated ops/state/name pointers must lie inside the
-   allocation, CTC0/CTC1 must be unclaimed after init, and the load
-   address is reported (`m4 selftest: sio at 0x....`), then
-   `m4 selftest: OK`.
+7. dynamic SIO acceptance: the bound console device must be the resident
+   boot module, its relocated char-ops/state/name pointers must lie
+   inside the allocation, CTC0/CTC1 must be unclaimed after init, and the
+   load address is reported (`m4 selftest: sio at 0x....`),
+8. M8 console binding policy: synthetic HID/VIDEO/OTHER devices prove the
+   preferred-class selection beats registration order, an input-only
+   device keeps the input bound while the output reports `ZDEV_ENODEV`
+   (one missing direction never clears the other), and the SIO fallback
+   is restored in both directions afterward, then `m4 selftest: OK`.
 
 Host coverage:
 
@@ -328,9 +356,9 @@ and packed through three manifests — the production manifest under
 
 | Module | Manifest | Module entry | Image | BSS | Granules |
 | --- | --- | --- | ---: | ---: | ---: |
-| `sio.zmod` | `modules/manifests/sio.json` | `sio_module_init` | 309 | 4 | 1 |
-| `sio-irq.zmod` | `tests/modules/sio-irq.json` | `sio_irq_module_init` | 582 | 8 | 2 |
-| `sio-fail.zmod` | `tests/modules/sio-fail.json` | `sio_fail_module_init` | 372 | 4 | 1 |
+| `sio.zmod` | `modules/manifests/sio.json` | `sio_module_init` | 313 | 4 | 1 |
+| `sio-irq.zmod` | `tests/modules/sio-irq.json` | `sio_irq_module_init` | 586 | 8 | 2 |
+| `sio-fail.zmod` | `tests/modules/sio-fail.json` | `sio_fail_module_init` | 376 | 4 | 1 |
 
 The IRQ self-test variant (`tests/modules/sio_irq_module.c`) claims
 `IRQ_CTC0` inside its relocated init, verifies a second claim returns

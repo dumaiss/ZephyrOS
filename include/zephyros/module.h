@@ -1,4 +1,4 @@
-/* ZephyrOS M4 module loader contract.
+/* ZephyrOS module loader contract (ZMOD v1 containers, driver ABI v2).
  *
  * This header defines:
  *   - the ZMOD v1 on-disk container (packed little-endian, 28-byte header),
@@ -8,9 +8,10 @@
  *     from stage 08 on, by catalog loading at boot.
  *
  * ZMOD is a generic relocatable container; only module type DRIVER and
- * driver ABI v1 are supported in M4.  All addresses stored inside the
- * loaded image are offsets relative to the module allocation base; the
- * loader patches ZREL_ABS16 records with the chosen load address.
+ * driver ABI v2 are supported from M8 on (ABI v1 containers are
+ * rejected).  All addresses stored inside the loaded image are offsets
+ * relative to the module allocation base; the loader patches ZREL_ABS16
+ * records with the chosen load address.
  *
  * The on-disk structures are byte-packed little-endian.  SDCC z80 does
  * not insert padding, so the structs may be overlaid on container bytes;
@@ -119,10 +120,18 @@ _Static_assert(__builtin_offsetof(struct zmod_reloc, patch_offset) == 0x02,
 
 /* --- loader policy ---------------------------------------------------- */
 
-/* Granule geometry mirrors platform/zephyr80/memory.inc; test_m4.py
- * cross-checks the values so the two cannot drift. */
+/* Granule geometry.  Allocation granularity is fixed at 512 bytes; the
+ * runtime granule count is derived from the linked driver-arena symbols
+ * (`__driver_arena_start`/`__driver_arena_end`) and may never exceed the
+ * architectural maximum `(C000h-2000h)/512 = 80` granules, which bounds
+ * every loader table.  There is deliberately no compiled arena count:
+ * production derives the start from the aligned end of the linked
+ * kernel, while pre-M8 acceptance/variant images keep their fixed
+ * platform geometry (both are validated against these bounds). */
 #define ZMOD_GRANULE_SIZE 512u
-#define ZMOD_GRANULE_COUNT 16u
+#define ZMOD_ARCH_BASE     0x2000u
+#define ZMOD_ARCH_END      0xC000u
+#define ZMOD_MAX_GRANULES  80u
 #define ZMOD_MAX_MODULES   16u
 #define ZMOD_MAX_TOTAL_SIZE 0xFFFFu
 
@@ -214,7 +223,7 @@ extern const struct zmod_catalog_entry zmod_catalog[];
 int module_loader_init(void);
 
 /* Validate `blob` and, if valid, allocate granules, copy/relocate the
- * image, zero BSS, and run the module init with driver API v1.  On any
+ * image, zero BSS, and run the module init with driver ABI v2.  On any
  * failure the allocation, device registrations, and IRQ claims made by
  * the module are rolled back and the descriptor is freed.  Returns the
  * module index (>= 0) on success, a negative error otherwise. */
@@ -232,6 +241,7 @@ int module_load_source(const char *name, const struct zmod_source *source);
 uint8_t module_catalog_load_all(void);
 uint8_t module_count(void);
 uint8_t module_free_granules(void);
+uint8_t module_granule_count(void);
 uint8_t module_failed_count(void);
 const struct zmod_module *module_get(uint8_t index);
 

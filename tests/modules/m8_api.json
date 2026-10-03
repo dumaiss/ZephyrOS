@@ -1,0 +1,11 @@
+{
+  "name": "m8.api",
+  "type": "driver",
+  "abi": 2,
+  "flags": 0,
+  "objects": ["m8_api.rel", "sdcc_indirect_calls.rel"],
+  "image_areas": ["_CODE"],
+  "bss_areas": ["_DATA"],
+  "init": "m8_api_init",
+  "fini": null
+}

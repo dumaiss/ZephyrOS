@@ -23,7 +23,7 @@ static int m4_fail_noop(void *state, char ch)
 	return ZDEV_OK;
 }
 
-static const struct zdevice_ops m4_fail_ops = {
+static const struct zchar_ops m4_fail_ops = {
 	m4_fail_noop,
 	(int (*)(void *, const char *, uint16_t))0,
 	(int (*)(void *))0,
@@ -35,6 +35,7 @@ static const struct zdevice_desc m4_fail_desc = {
 	0,
 	"m4.fail",
 	&m4_fail_ops,
+	(const void *)0,
 	&m4_fail_state
 };
 

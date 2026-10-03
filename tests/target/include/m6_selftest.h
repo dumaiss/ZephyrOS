@@ -21,6 +21,7 @@
 #define ZOS_M6ST_FAIL_RESERVE  0x09u /* allocator reservation mismatch    */
 #define ZOS_M6ST_FAIL_ARG      0x0Au /* API argument handling mismatch    */
 #define ZOS_M6ST_FAIL_CONSOLE  0x0Bu /* acceptance console line failed    */
+#define ZOS_M6ST_FAIL_RESOURCE 0x0Cu /* M8 ROMFS resource import mismatch */
 
 /* zextest program exit status: pass = PASS | bank, fail = FAIL | code.
  * A bank in the low byte proves which application bank executed the
@@ -40,6 +41,8 @@
 #define ZOS_M6ST_RETURN_NAME  "zex-return.zex"
 #define ZOS_M6ST_FAILURE_NAME "zextest.zex" /* truncated in the failure image */
 #define ZOS_M6ST_FAILURE_OK_NAME "zexok.zex"
+/* DATA-flagged fixture used by the M8 resource-import checks. */
+#define ZOS_M6ST_DATA_NAME    "zex-wrong-type.dat"
 
 /* Fixture descriptor emitted into the generated m6_expect.inc table. */
 struct m6_fixture_desc {

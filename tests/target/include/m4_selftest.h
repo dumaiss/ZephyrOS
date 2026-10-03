@@ -23,6 +23,9 @@
 #define ZOS_M4ST_FAIL_STATE    0x09u
 #define ZOS_M4ST_FAIL_BOOT     0x0Au
 #define ZOS_M4ST_FAIL_BIND     0x0Bu
+#define ZOS_M4ST_FAIL_ABI1     0x0Cu
+#define ZOS_M4ST_FAIL_API      0x0Du
+#define ZOS_M4ST_FAIL_BIND_POLICY 0x0Eu
 
 /* Device names registered by tests/modules/m4_probe.c, used by the target
  * self-test to verify relocated device state pointers. */
@@ -34,6 +37,7 @@
 #define ZOS_M4ST_CATALOG_PROBE  "m4.probe"
 #define ZOS_M4ST_CATALOG_FAIL   "m4.fail"
 #define ZOS_M4ST_CATALOG_FILLER "m4.filler"
+#define ZOS_M4ST_CATALOG_API    "m8.api"
 
 /* Test fixture catalog: defined in tests/target/m4/m4_fixture_catalog.c
  * and linked only into acceptance images.  Null-terminated. */

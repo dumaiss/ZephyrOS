@@ -35,7 +35,7 @@ static int m4_probe_noop(void *state, char ch)
 	return ZDEV_OK;
 }
 
-static const struct zdevice_ops m4_probe_ops = {
+static const struct zchar_ops m4_probe_ops = {
 	m4_probe_noop,
 	(int (*)(void *, const char *, uint16_t))0,
 	(int (*)(void *))0,
@@ -47,6 +47,7 @@ static const struct zdevice_desc m4_probe_desc_a = {
 	0,
 	"m4.probe.a",
 	&m4_probe_ops,
+	(const void *)0,
 	&m4_probe_state
 };
 
@@ -55,6 +56,7 @@ static const struct zdevice_desc m4_probe_desc_b = {
 	0,
 	"m4.probe.b",
 	&m4_probe_ops,
+	(const void *)0,
 	&m4_probe_state
 };
 

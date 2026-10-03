@@ -1,4 +1,4 @@
-# ZephyrOS Memory Model (M5, implemented)
+# ZephyrOS Memory Model (M8, implemented)
 
 This is the implemented, linker-enforced memory ownership table for the
 mode `10`/`11` Zephyr-80 architecture.  The contract is in
@@ -25,8 +25,8 @@ E000h +-------------------------------+
 | --- | --- | --- |
 | `0000h-00FFh` | caller window | ZephyrOS-owned native page zero: reset copier (`0000h-0026h`) and the three-byte `RST 30h` vector (`JP zos_syscall_entry`) at `0030h-0032h`; the rest is reserved |
 | `0100h-1FFFh` | caller window | unused (FF-filled in the image); at M1, native syscall argument blocks must lie here |
-| `2000h-9FFFh` | bank 7 in mode 11 | loadable kernel image (code, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`) |
-| `A000h-BFFFh` | bank 7 in mode 11 | M4 driver arena: 16 x 512-byte granules reserved for loaded modules; never part of the ROM payload and never linked by the kernel |
+| `2000h-arena start` | bank 7 in mode 11 | loadable kernel image (code, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`); ends at the linked `__kernel_code_end` |
+| `arena start-C000h` | bank 7 in mode 11 | M8 production driver arena: aligned linked-kernel end (`__driver_arena_start`) to `C000h`, at least 32 x 512-byte granules (16 KiB); pre-M8 acceptance/variant images keep the legacy `A000h-BFFFh` 16-granule fixed arena. Never part of the ROM payload and never linked by content |
 | `C000h-DEFFh` | bank 7 in mode 11 | zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded |
 | `DF00h-DFFFh` | bank 7 in mode 11 | 256-byte M2 ISR stack; initial `SP=E000h` |
 | `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`), including the M5 ROM-access staging buffer; `EEFEh-EF07h` is the fixed ROM-access transition block (trampoline + mirrored stub) |
@@ -84,10 +84,10 @@ Every owned region exports `s__<area>`/`l__<area>` start/size symbols
 | --- | --- | --- |
 | `_RESET` | `0000h-0026h` | stackless reset copier (`.org 0`, ABS) |
 | `_PAGE_ZERO` | `0030h-0032h` | `RST 30h` vector: `JP zos_syscall_entry` (ABS) |
-| `_CODE` | `2000h-9FFFh` | kernel C code, driver/service code, string literals |
-| `_HOME` | `2000h-9FFFh` | static helpers |
-| `_INITIALIZER` | `2000h-9FFFh` | ROM image of initialized data |
-| `_GSINIT`/`_GSFINAL` | `2000h-9FFFh` | static initializers + terminator |
+| `_CODE` | `2000h-arena start` | kernel C code, driver/service code, string literals |
+| `_HOME` | `2000h-arena start` | static helpers |
+| `_INITIALIZER` | `2000h-arena start` | ROM image of initialized data |
+| `_GSINIT`/`_GSFINAL` | `2000h-arena start` | static initializers + terminator |
 | `_DATA` | `C000h-DEFFh` | zeroed globals/statics, registry table, driver state |
 | `_INITIALIZED` | `C000h-DEFFh` | RAM image of initialized data (ops/descriptor tables) |
 | `_COMMON` | `E000h-FCFFh` | boot entry, gates, IRQ stubs, console, panic |
@@ -109,26 +109,46 @@ this both by explicit symbol list and by a prefix sweep over
 `_device_`, `_console_`, `_sio0b_`, `_sio_`, `_driver_`,
 `_boot_drivers`, and `_m3_` symbols.  See `docs/devices.md`.
 
-## 2.2 M4 driver-arena placement
+## 2.2 Driver arena (M8 production geometry)
 
-The `A000h-BFFFh` driver arena is reserved between the loadable kernel
-image and the runtime data area: 16 contiguous 512-byte granules (8192
-bytes) that no kernel section, stack, initialized data, or ROM payload
-may occupy.  `platform/zephyr80/memory.inc` declares the geometry;
-`kernel/module/arena.asm` exports `__driver_arena_start`/`__driver_arena_end`;
+Production derives the arena from the linked kernel in a deterministic
+two-pass build: a probe link measures the exclusive end of every loadable
+bank-7 area (`_CODE`, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`),
+`tools/mapcheck.py geometry derive` aligns that `__kernel_code_end` value
+up to the 512-byte granule and writes `__driver_arena_start`; the end is
+exactly `C000h` and the build fails when fewer than 32 granules (16 KiB)
+remain.  `kernel/module/arena.asm` exports `__kernel_code_end`,
+`__driver_arena_start`, and `__driver_arena_end` from the generated
+`build/arena_geometry.inc`; no linked content may occupy the arena,
+`C000h-DFFFh` stays outside the allocator, and the loader computes its
+granule count from the linked bounds (bounded by the architectural
+maximum `(C000h-2000h)/512 = 80`).
+
+Pre-M8 acceptance images and the shifted-placement variant keep the
+legacy fixed `A000h-BFFFh` 16-granule geometry: the committed
+`platform/zephyr80/memory.inc` declares it (`ZOS_DRIVER_ARENA_DERIVED =
+0`, `ZOS_DRIVER_ARENA_BASE/END/GRANULES`, plus the derived-build minimum
+constants), a generated include carries the same values into `arena.asm`,
+and every pre-M8 transcript and check is preserved.
+
 `tools/mapcheck.py` rejects any linked area overlapping the arena and
-validates the exported bounds, and `tools/pack_image.py` treats the
-region as non-ROM-loadable.  `tools/mapcheck.py` additionally enforces
-bank-7 placement for the loader/relocator routines and a prefix sweep
-over `_module_`, `_zmod_`, `_z4_`, `_m4_`, and `_irq_registry_` symbols.
-Loaded modules are placed inside the arena by the M4 loader (see
-`docs/module-format.md`).
+validates the exported bounds; in derived builds it additionally pins
+`__driver_arena_start == align_up(__kernel_code_end, 512)`, the 16-KiB
+minimum, and the presence of `__kernel_code_end`.  `tools/pack_image.py`
+treats the region as non-ROM-loadable and reconciles the boot-set plan
+(per-module image+BSS/granules, used/free totals; see
+`docs/module-format.md`).  The loader/relocator routines are bank-7 code
+enforced by an explicit list and a prefix sweep over `_module_`,
+`_zmod_`, `_z4_`, `_m4_`, and `_irq_registry_` symbols.  Loaded modules
+are placed inside the arena by the loader.
 
-## 2.3 M5 ROMFS placement
+## 2.3 ROMFS placement
 
 The ROMFS reader (`_romfs_init`, `_romfs_lookup`, `_romfs_read`,
-`_romfs_load_zmod`) is bank-7 code; mapcheck requires the `_romfs_`
-prefix sweep to stay below the ISR stack.  The ROM-access primitive
+`_romfs_load_zmod`) and the module-facing resource imports
+(`_romfs_resource_size`, `_romfs_resource_read`) are bank-7 code;
+mapcheck requires the `_romfs_` prefix sweep to stay below the ISR
+stack.  The ROM-access primitive
 (`_rom_access_copy`) is common code, and its staging buffer and saved
 latch/IFF/request state are common data: they must all sit in
 `E000h-FEFFh` and the staging size must equal `ZOS_ROMFS_STAGING_SIZE`

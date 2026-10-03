@@ -32,7 +32,7 @@ Manifest (JSON), paths resolved against --objdir (default: manifest dir):
     {
       "name": "m4.probe",
       "type": "driver",              # only "driver"
-      "abi": 1,                      # driver ABI v1
+      "abi": 2,                      # driver ABI v2
       "flags": 0,
       "objects": ["m4_probe.rel", "m4_sdcc_glue.rel"],
       "image_areas": ["_CODE"],      # concatenated in this order
@@ -47,11 +47,19 @@ Usage:
     zmodpack.py validate <container.zmod> [...]
     zmodpack.py dump <container.zmod> [...]
     zmodpack.py emit-asm <out.asm> SYMBOL=container.zmod [...]
+    zmodpack.py plan --geometry <memory.inc> [--report FILE]
+                     <container.zmod> [...]
+
+The `plan` command reports every module's image/BSS/granules and the
+boot-set totals against the arena declared by a memory.inc (legacy or
+generated derived variant), and fails when the declared boot set cannot
+coexist in the arena.
 """
 
 import hashlib
 import json
 import os
+import re
 import sys
 
 HEADER_SIZE = 28
@@ -62,8 +70,9 @@ FLAG_NONE = 0
 ZREL_ABS16 = 1
 NO_ENTRY = 0xFFFF
 GRANULE_SIZE = 512
-GRANULE_COUNT = 16
-DRIVER_ABI_VERSION = 1
+# Architectural maximum: (ZMOD_ARCH_END - ZMOD_ARCH_BASE) / GRANULE_SIZE.
+MAX_GRANULES = 80
+DRIVER_ABI_VERSION = 2
 A_BYTES = 4
 
 R_WORD = 0x00
@@ -585,9 +594,9 @@ def pack_manifest(manifest):
     bss_size = layout["total_size"] - image_size
     total = image_size + bss_size
     required = (total + GRANULE_SIZE - 1) // GRANULE_SIZE
-    if required == 0 or required > GRANULE_COUNT:
-        raise ZmodError("module needs %d granules; arena holds %d"
-                        % (required, GRANULE_COUNT))
+    if required == 0 or required > MAX_GRANULES:
+        raise ZmodError("module needs %d granules; the architectural maximum "
+                        "is %d" % (required, MAX_GRANULES))
 
     packed = Packed(manifest["name"])
     packed.image = image
@@ -698,9 +707,10 @@ def parse_container(data, source="<container>"):
     if required_check == 0 or required_check != required:
         raise ZmodError("%s: required_granules %d != computed %d"
                         % (source, required, required_check))
-    if required_check > GRANULE_COUNT:
-        raise ZmodError("%s: module needs %d granules; arena holds %d"
-                        % (source, required_check, GRANULE_COUNT))
+    if required_check > MAX_GRANULES:
+        raise ZmodError("%s: module needs %d granules; the architectural "
+                        "maximum is %d"
+                        % (source, required_check, MAX_GRANULES))
 
     relocs = []
     for i in range(reloc_count):
@@ -749,9 +759,8 @@ def format_report(info, name=None):
     else:
         lines.append("  fini:          +0x%04X" % info["fini_offset"])
     lines.append("  total:         %d bytes" % info["total_size"])
-    lines.append("  allocation:    %d x %d-byte granules (%d free at boot)"
-                 % (info["required_granules"], GRANULE_SIZE,
-                    GRANULE_COUNT - info["required_granules"]))
+    lines.append("  allocation:    %d x %d-byte granules"
+                 % (info["required_granules"], GRANULE_SIZE))
     return "\n".join(lines)
 
 
@@ -900,6 +909,97 @@ def cmd_emit_asm(args):
     return 0
 
 
+def parse_geometry_inc(path):
+    """Parse NAME = value declarations from a memory/geometry .inc."""
+    values = {}
+    for line in open(path):
+        line = line.split(";")[0].strip()
+        match = re.match(r"([A-Za-z_]\w*)\s+=\s+(0[xX][0-9a-fA-F]+|\d+)$",
+                         line)
+        if match:
+            values[match.group(1)] = int(match.group(2), 0)
+    return values
+
+
+def cmd_plan(args):
+    geometry_path = None
+    report_path = None
+    modules = []
+    rest = list(args)
+    while rest:
+        item = rest.pop(0)
+        if item == "--geometry" and rest:
+            geometry_path = rest.pop(0)
+        elif item == "--report" and rest:
+            report_path = rest.pop(0)
+        else:
+            modules.append(item)
+    if geometry_path is None or not modules:
+        raise ZmodError("usage: zmodpack.py plan --geometry <memory.inc> "
+                        "[--report FILE] <container.zmod> [...]")
+
+    values = parse_geometry_inc(geometry_path)
+    start = values["ZOS_DRIVER_ARENA_BASE"]
+    end = values["ZOS_DRIVER_ARENA_END"]
+    granule = values.get("ZOS_DRIVER_GRANULE_SIZE", GRANULE_SIZE)
+    declared = values["ZOS_DRIVER_GRANULES"]
+    size = end - start
+    if size <= 0 or size % granule != 0 or size // granule != declared:
+        raise ZmodError("arena geometry %s is inconsistent "
+                        "(%04Xh-%04Xh, %d granules)" % (geometry_path, start,
+                                                        end, declared))
+
+    entries = []
+    used = 0
+    for path in modules:
+        data = open(path, "rb").read()
+        info = parse_container(data, path)
+        name = os.path.splitext(os.path.basename(path))[0]
+        used += info["required_granules"]
+        entries.append({
+            "name": name,
+            "path": path,
+            "image_size": info["image_size"],
+            "bss_size": info["bss_size"],
+            "total_size": info["image_size"] + info["bss_size"],
+            "granules": info["required_granules"],
+        })
+
+    if used > declared:
+        raise ZmodError(
+            "declared boot set needs %d granules; the arena holds %d "
+            "(%04Xh-%04Xh)" % (used, declared, start, end))
+
+    plan = {
+        "arena": {
+            "start": start,
+            "end": end,
+            "size": size,
+            "granule_size": granule,
+            "granules": declared,
+            "derived": bool(values.get("ZOS_DRIVER_ARENA_DERIVED", 0)),
+            "used_granules": used,
+            "free_granules": declared - used,
+        },
+        "modules": entries,
+    }
+    print("zmodpack: arena %04Xh-%04Xh: %d granules (%s)"
+          % (start, end - 1, declared,
+             "derived" if plan["arena"]["derived"] else "legacy"))
+    for entry in entries:
+        print("zmodpack:   %-12s image %5d + bss %5d = %5d bytes, "
+              "%d granules" % (entry["name"], entry["image_size"],
+                               entry["bss_size"], entry["total_size"],
+                               entry["granules"]))
+    print("zmodpack: boot set uses %d of %d granules; %d free"
+          % (used, declared, declared - used))
+    if report_path:
+        with open(report_path, "w") as handle:
+            json.dump(plan, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    return 0
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -914,6 +1014,8 @@ def main(argv):
             return cmd_dump(argv[2:])
         if command == "emit-asm":
             return cmd_emit_asm(argv[2:])
+        if command == "plan":
+            return cmd_plan(argv[2:])
         raise ZmodError("unknown command %r" % command)
     except ZmodError as exc:
         print("zmodpack: error: %s" % exc, file=sys.stderr)

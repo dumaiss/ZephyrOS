@@ -119,6 +119,8 @@ OWNER_FILES = (
     "tests/modules/sio-fail.json",
     "tests/modules/sio_irq_module.c",
     "tests/modules/sio_fail_module.c",
+    "tests/modules/m8_api.c",
+    "tests/modules/m8_api.json",
     "tests/target/m1/selftest.asm",
     "tests/target/m1/syscall_test.c",
     "tests/target/m2/irq_selftest.asm",

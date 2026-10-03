@@ -1,7 +1,7 @@
 {
   "name": "sio",
   "type": "driver",
-  "abi": 1,
+  "abi": 2,
   "flags": 0,
   "objects": ["sio.rel", "sio_io.rel", "sio_module.rel", "sdcc_indirect_calls.rel"],
   "image_areas": ["_CODE"],

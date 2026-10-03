@@ -1,9 +1,15 @@
-/* ZephyrOS M5 ROMFS kernel reader.
+/* ZephyrOS ROMFS kernel reader.
  *
  * Allocation-free reader over the platform recovery ROM pages.  The full
  * header and directory are validated by `romfs_init()` before the
  * filesystem is published; a malformed image is rejected as a whole and
  * no read can then be driven by unvalidated metadata.
+ *
+ * M8 adds the narrow module-facing resource imports
+ * (`romfs_resource_size` / `romfs_resource_read`): name-resolved,
+ * DATA-flag-only, 16-bit-bounded access that never exposes
+ * `romfs_file_t` or the mutable filesystem state.  These are the only
+ * filesystem-like callbacks in the driver ABI.
  *
  * Reads are staged in bounded chunks through the common ROM-access
  * primitive (`kernel/romfs/rom_access.asm`), which enters the mode-00
@@ -317,6 +323,73 @@ static int romfs_source_read(const void *ctx, uint16_t offset, uint8_t *dst,
 	const romfs_file_t *file = (const romfs_file_t *)ctx;
 
 	return romfs_read(file, (uint32_t)offset, dst, length);
+}
+
+/* --- module-facing resource imports (driver ABI v2) --------------------
+ * Narrow, kernel-owned wrappers: resolve by name, require exactly
+ * ROMFS_FLAG_DATA, bound every access, and never expose romfs_file_t or
+ * the mutable filesystem state.  A module sees only these two callbacks
+ * through zdriver_api. */
+
+static int romfs_resource_lookup(const char *name, romfs_file_t *file)
+{
+	int result;
+
+	if (name == (const char *)0) {
+		return -ZOS_EINVAL;
+	}
+	result = romfs_lookup(name, file);
+	if (result != 0) {
+		return result;
+	}
+	if (file->flags != ROMFS_FLAG_DATA) {
+		return -ZOS_EINVAL; /* only data resources are importable */
+	}
+	return 0;
+}
+
+int romfs_resource_size(const char *name, uint16_t *out_size)
+{
+	romfs_file_t file;
+	int result;
+
+	if (out_size == (uint16_t *)0) {
+		return -ZOS_EINVAL;
+	}
+	result = romfs_resource_lookup(name, &file);
+	if (result != 0) {
+		return result;
+	}
+	if (file.size > 0xFFFFu) {
+		return -ZOS_ENOSPC; /* import sizes are 16-bit bounded */
+	}
+	*out_size = (uint16_t)file.size;
+	return 0;
+}
+
+int romfs_resource_read(const char *name, uint16_t offset, void *dst,
+			uint16_t length)
+{
+	romfs_file_t file;
+	int result;
+
+	if (dst == (void *)0 && length != 0) {
+		return -ZOS_EINVAL;
+	}
+	result = romfs_resource_lookup(name, &file);
+	if (result != 0) {
+		return result;
+	}
+	if ((uint32_t)offset > file.size) {
+		return -ZOS_EINVAL;
+	}
+	if ((uint32_t)length > (file.size - (uint32_t)offset)) {
+		return -ZOS_EINVAL; /* bounded: never read past the resource */
+	}
+	if (length == 0) {
+		return 0;
+	}
+	return romfs_read(&file, (uint32_t)offset, dst, length);
 }
 
 int romfs_load_zmod(const char *name, const char *romfs_name)

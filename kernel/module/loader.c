@@ -1,23 +1,30 @@
-/* ZephyrOS M4/M5 deterministic first-fit module loader.
+/* ZephyrOS deterministic first-fit module loader (driver ABI v2).
  *
- * The driver arena is 16 contiguous 512-byte granules.  Allocation is a
- * first-fit scan over a granule bitmap; the requested size is
- * image_size + bss_size rounded up to whole granules and cross-checked
- * against the container's required_granules.  Slack inside an allocation
- * belongs to the module and is never reused.
+ * The driver arena lies between the linked `__driver_arena_start` and
+ * `__driver_arena_end` symbols.  Production derives the start from the
+ * aligned end of the linked kernel (`__kernel_code_end`); pre-M8
+ * acceptance/variant images keep their fixed platform geometry.  The
+ * loader computes the granule count from the linked bounds at init and
+ * bounds it by the architectural maximum (2000h-C000h), so no compiled
+ * arena count can drift from the link.
+ *
+ * Allocation is a first-fit scan over a granule bitmap; the requested
+ * size is image_size + bss_size rounded up to whole granules and
+ * cross-checked against the container's required_granules.  Slack inside
+ * an allocation belongs to the module and is never reused.
  *
  * Loading is transactional: header validation happens before the arena is
  * touched; after allocation the image is copied, BSS zeroed, relocations
- * applied, and the relocated init entry is called with driver API v1
+ * applied, and the relocated init entry is called with driver ABI v2
  * under device/IRQ registry checkpoints owned by the loading module.  A
  * failed load invokes the optional fini (cleanup only), rolls back that
  * module's registrations and IRQ claims, zeroes and frees its granules,
  * and leaves earlier modules untouched.  Successful modules stay
  * RESIDENT until reboot; M4 exposes no unload operation.
  *
- * M5 routes every container byte through a bounded read source: the
- * historical module_load() wraps a memory blob, romfs_load_zmod() wraps a
- * recovery-store file, and both share module_load_source() and the
+ * Every container byte flows through a bounded read source: the
+ * historical module_load() wraps a memory blob, romfs_load_zmod() wraps
+ * a recovery-store file, and both share module_load_source() and the
  * validation/relocation code in relocate.c.
  */
 
@@ -25,19 +32,28 @@
 #include "zephyros/driver.h"
 #include "zephyros/device.h"
 #include "zephyros/irq.h"
+#include "zephyros/platform.h"
+#include "zephyros/romfs.h"
 
 /* Linker-exported arena bounds (never hard-coded in module code). */
 extern uint8_t __driver_arena_start[];
 extern uint8_t __driver_arena_end[];
 
-/* The only kernel services offered to a loaded module (driver ABI v1). */
+/* The only kernel services offered to a loaded module (driver ABI v2).
+ * Callback order is part of the ABI: it is pinned by compile-time
+ * assertions in driver.h and by host tests. */
 static const struct zdriver_api module_driver_api = {
 	device_register,
 	irq_claim,
-	irq_release
+	irq_release,
+	device_find,
+	device_interface,
+	romfs_resource_size,
+	romfs_resource_read
 };
 
-static uint8_t granule_used[ZMOD_GRANULE_COUNT];
+static uint8_t granule_used[ZMOD_MAX_GRANULES];
+static uint8_t granule_count;
 static struct zmod_module module_table[ZMOD_MAX_MODULES];
 static struct zmod_module *module_active;
 static uint8_t module_resident_count;
@@ -48,20 +64,32 @@ int module_loader_init(void)
 {
 	uint16_t start = (uint16_t)__driver_arena_start;
 	uint16_t end = (uint16_t)__driver_arena_end;
+	uint16_t bytes;
+	uint8_t count;
 	uint8_t i;
 
 	if (start == 0 || end <= start) {
 		return ZMOD_EFORMAT;
 	}
-	if ((uint16_t)(end - start) !=
-	    (uint16_t)(ZMOD_GRANULE_COUNT * ZMOD_GRANULE_SIZE)) {
-		return ZMOD_EFORMAT;
-	}
 	if ((start & (ZMOD_GRANULE_SIZE - 1u)) != 0) {
 		return ZMOD_EFORMAT;
 	}
+	/* The arena may never leave the architectural bank-7 loadable
+	 * window 2000h-C000h nor exceed its maximum granule count. */
+	if (start < ZOS_BANK7_BASE || end > ZOS_BANK7_LOAD_END) {
+		return ZMOD_EFORMAT;
+	}
+	bytes = (uint16_t)(end - start);
+	if ((bytes & (ZMOD_GRANULE_SIZE - 1u)) != 0) {
+		return ZMOD_EFORMAT;
+	}
+	count = (uint8_t)(bytes >> 9);
+	if (count == 0 || count > ZMOD_MAX_GRANULES) {
+		return ZMOD_EFORMAT;
+	}
+	granule_count = count;
 
-	for (i = 0; i < ZMOD_GRANULE_COUNT; ++i) {
+	for (i = 0; i < ZMOD_MAX_GRANULES; ++i) {
 		granule_used[i] = 0;
 	}
 	for (i = 0; i < ZMOD_MAX_MODULES; ++i) {
@@ -91,10 +119,10 @@ static int arena_alloc(uint8_t count)
 	uint8_t run = 0;
 	uint8_t first = 0;
 
-	if (count == 0 || count > ZMOD_GRANULE_COUNT) {
+	if (count == 0 || count > granule_count) {
 		return -1;
 	}
-	for (i = 0; i < ZMOD_GRANULE_COUNT; ++i) {
+	for (i = 0; i < granule_count; ++i) {
 		if (granule_used[i] == 0) {
 			if (run == 0) {
 				first = i;
@@ -131,7 +159,7 @@ static uint8_t arena_free_count(void)
 	uint8_t i;
 	uint8_t free_count = 0;
 
-	for (i = 0; i < ZMOD_GRANULE_COUNT; ++i) {
+	for (i = 0; i < granule_count; ++i) {
 		if (granule_used[i] == 0) {
 			++free_count;
 		}
@@ -299,6 +327,11 @@ uint8_t module_count(void)
 uint8_t module_free_granules(void)
 {
 	return arena_free_count();
+}
+
+uint8_t module_granule_count(void)
+{
+	return granule_count;
 }
 
 uint8_t module_failed_count(void)

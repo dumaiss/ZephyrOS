@@ -70,10 +70,16 @@ class TestDeviceConstants(unittest.TestCase):
 
     def test_class_ids_are_distinct_and_ordered(self):
         names = ["ZDEV_SERIAL", "ZDEV_VIDEO", "ZDEV_STORAGE",
-                 "ZDEV_INPUT", "ZDEV_TRANSPORT", "ZDEV_OTHER"]
+                 "ZDEV_HID", "ZDEV_IOC", "ZDEV_OTHER"]
         values = [evaluate(name, self.env) for name in names]
         self.assertEqual(values, [1, 2, 3, 4, 5, 6])
         self.assertEqual(len(set(values)), len(values))
+        # The M3 placeholder names were refined in ABI v2; the obsolete
+        # identifiers must not remain as a second model (declarations
+        # only; the header comment records the rename).
+        text = re.sub(r"/\*.*?\*/", "", open(DEVICE_H).read(), flags=re.S)
+        self.assertNotIn("ZDEV_INPUT", text)
+        self.assertNotIn("ZDEV_TRANSPORT", text)
 
     def test_capability_bits_are_single_distinct_bits(self):
         names = ["ZCAP_CHAR_IN", "ZCAP_CHAR_OUT",
@@ -83,6 +89,29 @@ class TestDeviceConstants(unittest.TestCase):
         for value in values:
             self.assertEqual(value & (value - 1), 0, "not a single bit")
         self.assertEqual(len(set(values)), len(values))
+
+    def test_class_capability_ranges_are_documented_and_disjoint(self):
+        ranges = {
+            "ZCAP_VIDEO_": range(8, 15),
+            "ZCAP_HID_": range(16, 19),
+            "ZCAP_IOC_": range(24, 28),
+        }
+        seen = set()
+        for prefix, expected_bits in ranges.items():
+            names = [name for name in self.env if name.startswith(prefix)]
+            self.assertTrue(names, "no capabilities for %s" % prefix)
+            bits = []
+            for name in names:
+                value = evaluate(name, self.env)
+                self.assertEqual(value & (value - 1), 0,
+                                 "%s is not a single bit" % name)
+                bit = value.bit_length() - 1
+                bits.append(bit)
+                self.assertNotIn(bit, seen,
+                                 "capability bit %d used twice" % bit)
+                seen.add(bit)
+            self.assertEqual(sorted(bits), list(expected_bits),
+                             "%s bits drifted" % prefix)
 
     def test_internal_errors_are_negated_errno_values(self):
         self.assertEqual(evaluate("ZDEV_OK", self.env), 0)
@@ -110,18 +139,33 @@ class TestDriverConstants(unittest.TestCase):
         self.env.update(self.driver)
 
     def test_abi_version(self):
-        self.assertEqual(evaluate("ZDRIVER_ABI_VERSION", self.env), 1)
+        self.assertEqual(evaluate("ZDRIVER_ABI_VERSION", self.env), 2)
 
     def test_init_result_convention(self):
         self.assertEqual(evaluate("ZDRIVER_OK", self.env), 0)
         self.assertEqual(evaluate("ZDRIVER_FAIL", self.env), -1)
 
-    def test_api_exposes_only_the_three_m3_services(self):
+    def test_api_exposes_the_v2_services_in_pinned_order(self):
         # Comments may mention the retired mechanism; only declarations
         # matter here.
         text = re.sub(r"/\*.*?\*/", "", open(DRIVER_H).read(), flags=re.S)
-        for member in ("device_register", "irq_claim", "irq_release"):
+        for member in ("device_register", "irq_claim", "irq_release",
+                       "device_find", "device_interface",
+                       "resource_size", "resource_read"):
             self.assertIn(member, text)
+        body = text.split("struct zdriver_api {", 1)[1].split("};", 1)[0]
+        order = [member for member in (
+            "device_register", "irq_claim", "irq_release", "device_find",
+            "device_interface", "resource_size", "resource_read")
+            if member in body]
+        self.assertEqual(order,
+                         ["device_register", "irq_claim", "irq_release",
+                          "device_find", "device_interface",
+                          "resource_size", "resource_read"],
+                         "zdriver_api callback order drifted")
+        positions = [body.index(member) for member in order]
+        self.assertEqual(positions, sorted(positions),
+                         "zdriver_api declaration order drifted")
         # The retired M3 static-driver table must not be declared.
         self.assertNotIn("boot_drivers", text)
         self.assertNotIn("driver_init_static", text)

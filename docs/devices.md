@@ -1,17 +1,21 @@
-# ZephyrOS Device, Driver, and Console Model (M3 + M4, implemented)
+# ZephyrOS Device, Driver, and Console Model (through M8 ABI v2)
 
 This document describes the implemented device layer: the fixed device
-registry, the driver contract and driver table, the SIO0/B driver (a
-dynamically loaded module since M4 stage 08), and the console service.
-The architectural contract is `docs/architecture.md` sections 20-22; this
-file records what the build actually places where and how it is validated.
+registry, the driver ABI (v2 since M8), the SIO0/B driver (a dynamically
+loaded module since M4), and the console service.  The architectural
+contract is `docs/architecture.md` sections 20-22 and 30.2-30.3; this
+file records what the build actually places where and how it is
+validated.
 
 M3 introduced the model with every driver statically linked.  M4 replaced
 the *source of driver code*: the SIO driver is packed as a relocatable
 ZMOD module (`docs/module-format.md`) and loaded into the bank-7 driver
-arena from the embedded catalog during boot.  The registry, capability,
-and driver-ABI model below did not change; the only static drivers left
-are the test-only ones compiled into `ZOS_M3_SELFTEST` builds.
+arena during boot.  M8 (work package 14) moves the container header to
+driver ABI 2: capabilities are a 32-bit class-scoped mask, descriptors
+and registry entries carry separate `char_ops` and `class_ops` pointers,
+driver-to-driver discovery is read-only by class plus capabilities, and
+the production arena is derived from the aligned end of the linked
+kernel.  The M3 test-only static drivers remain retired.
 
 ## 1. Concepts
 
@@ -28,12 +32,20 @@ SIO driver (drivers/sio)
     └── device "sio0.b"
           ├── class: ZDEV_SERIAL
           ├── caps:  CHAR_IN | CHAR_OUT | CONSOLE_IN | CONSOLE_OUT
-          └── ops:   putc/write/poll/getc (polling)
+          └── char:  putc/write/poll/getc (polling)
 ```
 
-A capability may be provided by different devices in the future (a
-V9958 provides `VIDEO` + `CONSOLE_OUT`; an HID device provides `INPUT` +
-`CONSOLE_IN`), so console input and output bind independently.
+A device may expose generic character operations (`char_ops`), a
+class-specific interface (`class_ops`, type determined by `class_id`),
+or both.  Capabilities are authoritative: unsupported class operations
+fail predictably rather than being inferred from the device name.  Class
+values are stable: SERIAL=1, VIDEO=2, STORAGE=3, HID=4 (formerly INPUT),
+IOC=5 (formerly TRANSPORT), OTHER=6; capability ranges are documented per
+class (generic 0-3, VIDEO 8-14, HID 16-18, IOC 24-27).
+
+A capability may be provided by different devices (a V9958 provides
+VIDEO + CONSOLE_OUT; an HID device provides HID + CONSOLE_IN), so console
+input and output bind independently.
 
 ## 2. Device registry
 
@@ -43,16 +55,23 @@ Fixed-size, heap-free, bank-7 kernel data
 - 16 entries; handles are the slot index + 1, issued in the range
   `1..16`.  Handle `0` is invalid.  Handles are valid for one boot and are
   not an external ABI.
-- Each entry stores copied metadata (class, capabilities, name pointer)
-  and the driver-owned `ops`/`state` pointers; the registry never absorbs
-  driver-private state.
-- Registration rejects null descriptors, null/empty names, null ops,
-  out-of-range classes, duplicate instance names (`ZDEV_EBUSY`), and
-  registry overflow (`ZDEV_ENOSPC`) without touching existing entries.
-- Membership lookup is by capability:
-  `device_find_capability(required_caps, after)` returns the first
-  registered device whose capability mask contains every required bit,
-  starting after `after`; `0` means "no such device".
+- Each entry stores copied metadata (class, 32-bit capabilities, name
+  pointer) and the driver-owned `char_ops`/`class_ops`/`state` pointers;
+  the registry never absorbs driver-private state.
+- Registration rejects null descriptors, null/empty names, descriptors
+  with neither a character nor a class interface, out-of-range classes,
+  duplicate instance names (`ZDEV_EBUSY`), and registry overflow
+  (`ZDEV_ENOSPC`) without touching existing entries.
+- Discovery is read-only:
+  `device_find(class_id, required_caps, after)` returns the first
+  registered device at or after cursor `after` whose class matches
+  (`ZDEV_CLASS_ANY` = any) and whose 32-bit mask contains every required
+  bit; zero `required_caps` and invalid classes/cursors yield handle `0`.
+  `device_interface(handle, expected_class, &class_ops, &state)` verifies
+  the live handle, the class, and a non-null class interface; it returns
+  `ZDEV_EINVAL` (invalid handle/class/null outputs), `ZDEV_ENODEV`
+  (stale/freed slot), or `ZDEV_ENOTSUP` (class mismatch or no class
+  interface).  No client can mutate the registry.
 - Registry mutation runs with maskable interrupts disabled through the M2
   executive lock (`irq_arch_lock`/`irq_arch_unlock`).
 
@@ -78,14 +97,28 @@ is the same transaction boundary M4 reuses for module loads.
 `include/zephyros/driver.h`:
 
 ```c
-#define ZDRIVER_ABI_VERSION 1u
+#define ZDRIVER_ABI_VERSION 2u
 
 struct zdriver_api {
         int (*device_register)(const struct zdevice_desc *, zdev_handle_t *);
         int (*irq_claim)(irq_source_t, irq_handler_t, void *);
         int (*irq_release)(irq_source_t);
+        zdev_handle_t (*device_find)(uint8_t class_id,
+                                     zdev_caps_t required_caps,
+                                     zdev_handle_t after);
+        int (*device_interface)(zdev_handle_t, uint8_t expected_class,
+                                const void **class_ops, void **state);
+        int (*resource_size)(const char *name, uint16_t *out_size);
+        int (*resource_read)(const char *name, uint16_t offset, void *dst,
+                             uint16_t length);
 };
 ```
+
+The callback order and structure layouts are pinned by compile-time
+assertions and host tests.  The two discovery calls expose no registry
+mutation; the two resource imports resolve only ROMFS `DATA` entries,
+bound every read, and never hand out `romfs_file_t` or mutable kernel
+state.
 
 - Init convention: `ZDRIVER_OK` (0) or `ZDRIVER_FAIL` (-1).
 - This API is the interface the M4 loader passes to a loaded ZMOD
@@ -157,11 +190,21 @@ output never depends on the registry, the driver, or the console service.
 
 `kernel/device/console.c`, `include/zephyros/console.h`:
 
-- Stores separate input and output handles.
-- `console_bind_defaults()` finds the first device advertising
-  `ZCAP_CONSOLE_OUT` and the first with `ZCAP_CONSOLE_IN`; it never
-  compares driver or instance names.  A missing direction clears the
-  binding and returns `ZDEV_ENODEV`.
+- Stores separate input and output handles; operations dispatch through
+  the bound device's generic `struct zchar_ops`.
+- `console_bind_defaults()` selects by class preference first and falls
+  back independently per direction to any device carrying the generic
+  console capability:
+
+  ```text
+  input   ZDEV_HID   + ZCAP_CONSOLE_IN, else any + ZCAP_CONSOLE_IN
+  output  ZDEV_VIDEO + ZCAP_CONSOLE_OUT, else any + ZCAP_CONSOLE_OUT
+  ```
+
+  A missing direction never clears a valid other direction: whichever
+  handles were found stay bound and the call returns `ZDEV_ENODEV` only
+  when at least one direction is unbound.  SIO remains the
+  both-direction fallback.
 - `console_bind(input, output)` validates non-zero handles against the
   matching capability; either handle may be `ZDEV_HANDLE_INVALID` to leave
   that direction unbound.
@@ -218,18 +261,27 @@ module stays polling-only.  Two test paths prove the IRQ integration:
 
 All driver/service code, descriptors, ops tables, and state live in
 bank 7 (linked `_CODE`/`_DATA` for the remaining kernel objects; the
-loaded module inside the reserved arena).  None of it may enter permanent
-common memory.  `tools/mapcheck.py` enforces this with an explicit symbol
-list and a prefix sweep over `_device_`, `_console_`, and `_m3_` symbols
-(the M3 acceptance symbols remain bank-7-resident in test images).  A
+loaded module inside the M8 driver arena).  None of it may enter
+permanent common memory.  Production derives the arena start from the
+aligned linked-kernel end (at least 16 KiB before `C000h`); pre-M8
+acceptance images keep the fixed `A000h-BFFFh` 16-granule geometry (see
+`docs/memory.md` section 2.2 and `docs/module-format.md` section 1).
+`tools/mapcheck.py` enforces this with an explicit symbol list and a
+prefix sweep over `_device_`, `_console_`, and `_m3_` symbols (the M3
+acceptance symbols remain bank-7-resident in test images).  A
 rejection sweep fails the build on any linked `_sio_`, `_sio0b_`, or
 `_sio_driver` symbol (the SIO driver may exist only as a module), and
 `mapcheck.py --production` additionally rejects every acceptance symbol
-(static-driver remnants, test runners/results, fixture catalogs, test SIO
-module entries) in the production image.
+(static-driver remnants, test runners/results, fixture catalogs, test
+SIO module entries) in the production image.
 
 Host validation layers:
 
+- `tests/test_m8.py` – driver ABI v2 structure/order and capability-range
+  contract, derived-arena geometry (alignment, 16-KiB minimum, unaligned
+  relation, linked bytes in the arena), the boot-set arena plan and its
+  overflow rejection, ABI v1 rejection, and the architectural granule
+  bound.
 - `tests/test_m3.py`, `tests/test_m4.py` – constant contracts, mapcheck
   rules (including the static-SIO rejection and arena ownership),
   catalog embedding identity, placement-base shift, fallback image
@@ -243,7 +295,11 @@ Host validation layers:
   `console: dynamic sio0.b OK`.
 - `tests/test_m4_sim.py` – replays the loader and the dynamic-driver
   acceptance images (module catalog load with injected CTC0 deliveries,
-  failure-image rollback, shifted placement) in the same simulator.
+  M8 ABI v2 fixture, ABI v1 rejection, console binding policy, failure-
+  image rollback, shifted placement) in the same simulator.
+- `tests/test_m6_sim.py` – replays the M6 acceptance image, including
+  the driver-API ROMFS resource-import checks (DATA-only, bounded,
+  byte-identical to the internal reader).
 - `make m3-selftest` / `make m4-selftest` / `make m4-placement-selftest`
   / `make m4-failure-selftest` – the physical acceptance images.
 - `make smoke-hardware-m3 SERIAL_PORT=...` – driving the acceptance image:
@@ -260,8 +316,12 @@ behavior.
 
 ## 8. Out of scope
 
-No heap, no module unload or hot-plug, no filesystem, no process API, and
+No heap, no module unload or hot-plug, no filesystem API for modules
+(beyond the two bounded DATA resource imports), no process API here, and
 no user-visible device syscall.  M4 stages 07-08 (this document plus
 `docs/module-format.md`) delivered the loader and the embedded
-relocatable SIO driver; the registry, capability, and console model above
-is unchanged from M3.
+relocatable SIO driver; M8 work package 14 delivered driver ABI v2, the
+read-only discovery calls, the per-class capability ranges, the
+preferred-direction console policy, and the derived production arena.
+The M3 numeric registry model still holds; its placeholder class names
+were refined in place.

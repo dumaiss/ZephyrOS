@@ -78,7 +78,7 @@ def simple_manifest(objects, init, image_areas=("_CODE",),
     return {
         "name": name,
         "type": "driver",
-        "abi": 1,
+        "abi": 2,
         "flags": 0,
         "objects": list(objects),
         "image_areas": list(image_areas),
@@ -138,8 +138,15 @@ class TestModuleConstants(unittest.TestCase):
             os.path.join(ROOT, "platform", "zephyr80", "memory.inc"))
         self.assertEqual(evaluate("ZMOD_GRANULE_SIZE", self.env),
                          layout["ZOS_DRIVER_GRANULE_SIZE"])
-        self.assertEqual(evaluate("ZMOD_GRANULE_COUNT", self.env),
-                         layout["ZOS_DRIVER_GRANULES"])
+        # The loader/codec bound is the architectural maximum from
+        # 2000h-C000h, not a compiled arena size.
+        self.assertEqual(evaluate("ZMOD_ARCH_BASE", self.env), 0x2000)
+        self.assertEqual(evaluate("ZMOD_ARCH_END", self.env), 0xC000)
+        self.assertEqual(
+            evaluate("ZMOD_MAX_GRANULES", self.env),
+            (evaluate("ZMOD_ARCH_END", self.env) -
+             evaluate("ZMOD_ARCH_BASE", self.env)) //
+            evaluate("ZMOD_GRANULE_SIZE", self.env))
 
     def test_loader_error_codes_are_negative_and_distinct(self):
         values = [evaluate(name, self.env) for name in
@@ -423,7 +430,7 @@ class TestFixtureArtifacts(unittest.TestCase):
         if not os.path.isdir(FIXTURE_MODULES):
             self.skipTest("build/modules/ missing; run `make zmod-test`")
         self.containers = {}
-        for name in ("m4_probe", "m4_fail", "m4_filler"):
+        for name in ("m4_probe", "m4_fail", "m4_filler", "m8_api"):
             path = os.path.join(FIXTURE_MODULES, name + ".zmod")
             if not os.path.exists(path):
                 self.skipTest("%s missing; run `make zmod-test`" % path)
@@ -433,12 +440,17 @@ class TestFixtureArtifacts(unittest.TestCase):
     def test_expected_sizes(self):
         probe = self.containers["m4_probe"]
         filler = self.containers["m4_filler"]
+        api = self.containers["m8_api"]
         self.assertEqual(probe["bss_size"], 2)
         self.assertEqual(probe["required_granules"], 1)
         self.assertGreater(probe["reloc_count"], 0)
         # 2 BSS bytes of magic + 600-byte pad + image -> 2 granules.
         self.assertEqual(filler["required_granules"], 2)
         self.assertGreater(filler["bss_size"], 600)
+        # The ABI v2 discovery fixture: three marker words + image.
+        self.assertEqual(api["bss_size"], 6)
+        self.assertGreater(api["required_granules"], 0)
+        self.assertGreater(api["reloc_count"], 0)
 
     def test_sdldz80_agrees_with_the_mini_linker(self):
         """Link the same objects with sdldz80 at the packer's bases and
@@ -449,7 +461,7 @@ class TestFixtureArtifacts(unittest.TestCase):
                            stderr=subprocess.DEVNULL)
         except OSError:
             self.skipTest("sdldz80 not available")
-        for name in ("m4_probe", "m4_fail", "m4_filler"):
+        for name in ("m4_probe", "m4_fail", "m4_filler", "m8_api"):
             manifest_path = os.path.join(FIXTURE_MANIFESTS, name + ".json")
             manifest = zmodpack.load_manifest(manifest_path, FIXTURE_MODULES)
             layout = zmodpack.build_layout(manifest)

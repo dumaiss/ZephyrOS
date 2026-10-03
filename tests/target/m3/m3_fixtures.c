@@ -35,13 +35,13 @@ static int m3_fixture_getc(void *state)
 	return ZDEV_EAGAIN;
 }
 
-const struct zdevice_ops m3_fixture_ops = {
+const struct zchar_ops m3_fixture_ops = {
 	m3_fixture_putc,
 	m3_fixture_write,
 	m3_fixture_poll,
 	m3_fixture_getc
 };
 
-const struct zdevice_ops m3_fixture_caponly_ops = {
+const struct zchar_ops m3_fixture_caponly_ops = {
 	0, 0, 0, 0
 };

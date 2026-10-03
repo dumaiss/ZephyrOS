@@ -1680,7 +1680,7 @@ CONSOLE_OUT
 while a future HID device may provide:
 
 ```text
-INPUT
+HID
 CONSOLE_IN
 ```
 
@@ -1698,10 +1698,16 @@ Initial classes should include:
 ZDEV_SERIAL
 ZDEV_VIDEO
 ZDEV_STORAGE
-ZDEV_INPUT
-ZDEV_TRANSPORT
+ZDEV_HID
+ZDEV_IOC
 ZDEV_OTHER
 ```
+
+> **M8 update (section 30.3).** The M3 placeholder names `ZDEV_INPUT`
+> and `ZDEV_TRANSPORT` were refined to `ZDEV_HID` (4) and `ZDEV_IOC`
+> (5); the numeric slots are unchanged.  Driver ABI v2 makes
+> `capabilities` a 32-bit mask with documented per-class ranges
+> (generic 0-3, VIDEO 8-14, HID 16-18, IOC 24-27).
 
 Initial capability bits should include only what is needed by real drivers, beginning with:
 
@@ -1724,23 +1730,26 @@ M3 uses a fixed-size registry allocated by the kernel.
 
 No heap allocator is required.
 
-Conceptually:
+Conceptually (updated for driver ABI v2; see section 30.3):
 
 ```c
 typedef uint8_t zdev_handle_t;
+typedef uint32_t zdev_caps_t;
 
 struct zdevice {
-    zdev_handle_t handle;
-    uint8_t       class_id;
-    uint16_t      capabilities;
-    const char   *name;
-    const void   *ops;
-    void         *state;
-    const void   *driver;
+    zdev_handle_t          handle;
+    uint8_t                class_id;
+    zdev_caps_t            capabilities;
+    const char            *name;
+    const struct zchar_ops *char_ops;  /* optional generic interface */
+    const void            *class_ops;  /* type by class_id           */
+    void                  *state;
+    const void            *driver;
 };
 ```
 
-The exact C layout is internal and may evolve.
+The exact C layout is internal, pinned to the driver ABI version, and
+asserted at compile time.
 
 Required registry operations are semantically equivalent to:
 
@@ -1752,10 +1761,14 @@ int device_register(const struct zdevice_desc *desc,
 
 const struct zdevice *device_get(zdev_handle_t handle);
 
-zdev_handle_t device_find_capability(
-    uint16_t required_caps,
-    zdev_handle_t after
-);
+zdev_handle_t device_find(uint8_t class_id,
+                          zdev_caps_t required_caps,
+                          zdev_handle_t after);
+
+int device_interface(zdev_handle_t handle,
+                     uint8_t expected_class,
+                     const void **class_ops,
+                     void **state);
 ```
 
 Rules:

@@ -77,6 +77,26 @@ int romfs_read(const romfs_file_t *file, uint32_t offset, void *dst,
  * Returns the loader result (module index >= 0) or a negative error. */
 int romfs_load_zmod(const char *name, const char *romfs_name);
 
+/* --- module-facing resource imports (driver ABI v2) --------------------
+ * The only filesystem-like services a loaded module receives.  Both
+ * accept a name and operate on entries carrying exactly ROMFS_FLAG_DATA;
+ * ZMOD/ZEX entries are rejected with -ZOS_EINVAL.  `romfs_file_t` and the
+ * mutable filesystem state stay kernel-private; a resource larger than
+ * 16 bits is rejected with -ZOS_ENOSPC.  The functions validate the
+ * complete ROMFS image at init, so a lookup can never be driven by
+ * unvalidated metadata. */
+
+/* Size lookup by name.  Returns 0 and stores the 16-bit size, or a
+ * negative error (-ZOS_EINVAL invalid/not DATA, -ZOS_ENOENT missing,
+ * -ZOS_ENOSPC size > 0xFFFF, -ZOS_EINVAL before romfs_init()). */
+int romfs_resource_size(const char *name, uint16_t *out_size);
+
+/* Bounded read by name: `offset + length` may not leave the resource.
+ * Returns the number of bytes copied, or a negative error (-ZOS_EINVAL
+ * invalid/not DATA/out of bounds, -ZOS_ENOENT missing). */
+int romfs_resource_read(const char *name, uint16_t offset, void *dst,
+			uint16_t length);
+
 /* --- internal ROM-access ABI -------------------------------------------
  * kernel/romfs/rom_access.asm owns the mapping transition: it validates
  * the request, locks interrupts, saves the exact latch/IFF state, enters

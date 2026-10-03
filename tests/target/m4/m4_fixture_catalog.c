@@ -16,6 +16,7 @@
 extern const uint8_t z4_fixture_probe[];
 extern const uint8_t z4_fixture_fail[];
 extern const uint8_t z4_fixture_filler[];
+extern const uint8_t z4_fixture_api[];
 
 const struct zmod_catalog_entry zmod_fixture_catalog[] = {
 	{ ZOS_M4ST_CATALOG_PROBE, z4_fixture_probe,
@@ -24,5 +25,7 @@ const struct zmod_catalog_entry zmod_fixture_catalog[] = {
 	  Z4_FIXTURE_FAIL_SIZE },
 	{ ZOS_M4ST_CATALOG_FILLER, z4_fixture_filler,
 	  Z4_FIXTURE_FILLER_SIZE },
+	{ ZOS_M4ST_CATALOG_API, z4_fixture_api,
+	  Z4_FIXTURE_API_SIZE },
 	{ (const char *)0, (const uint8_t *)0, 0 }
 };

@@ -159,6 +159,29 @@ class M4SimBase(unittest.TestCase):
         size = z.bank7[ptr + 9] | (z.bank7[ptr + 10] << 8)
         return base, size
 
+    def module_name(self, z, index):
+        """Read the resident module name at descriptor `index`."""
+        ptr = self.module_get_ptr(z, index)
+        if ptr == 0:
+            return None
+        # zmod_module: state(0) first_granule(1) granule_count(2) name(3).
+        nptr = z.bank7[ptr + 3] | (z.bank7[ptr + 4] << 8)
+        chars = []
+        for i in range(24):
+            byte = z.bank7[nptr + i]
+            if byte == 0:
+                break
+            chars.append(byte)
+        return bytes(chars).decode("ascii")
+
+    def module_indices(self, z, name):
+        """All resident module indices whose diagnostic name is `name`."""
+        found = []
+        for index in range(16):
+            if self.module_name(z, index) == name:
+                found.append(index)
+        return found
+
 
 class TestM4SelftestReplay(M4SimBase):
     def test_full_selftest_round_trip(self):
@@ -182,11 +205,14 @@ class TestM4SelftestReplay(M4SimBase):
         info = zmodpack.parse_container(blob, "probe.zmod")
         sites = {patch for _, patch in info["relocs"]}
 
-        # Slots after the production boot: 0 = boot SIO module, 1 = first
-        # probe, 2 = filler, 3 = second probe (the failed load rolled
-        # back to EMPTY).
-        first, first_size = self.module_geometry(z, 1)
-        second, second_size = self.module_geometry(z, 3)
+        # Locate the two resident probe instances by name: the M8 API
+        # fixture owns a descriptor slot between the boot module and the
+        # probe loads, so slot indices are not stable.
+        probe_slots = self.module_indices(z, "m4.probe")
+        self.assertEqual(len(probe_slots), 2,
+                         "expected two resident probe modules")
+        first, first_size = self.module_geometry(z, probe_slots[0])
+        second, second_size = self.module_geometry(z, probe_slots[1])
         self.assertEqual(first_size, info["image_size"])
         self.assertEqual(second_size, info["image_size"])
         self.assertGreater(second, first)

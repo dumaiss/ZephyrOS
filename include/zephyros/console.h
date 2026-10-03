@@ -1,9 +1,16 @@
-/* ZephyrOS M3 console service (internal kernel interface).
+/* ZephyrOS console service (internal kernel interface).
  *
  * The console service is a thin binding layer over registered devices:
- * it stores separate input and output handles and never compares device
- * or driver names.  Default binding finds the first device advertising
- * ZCAP_CONSOLE_OUT / ZCAP_CONSOLE_IN.
+ * it stores separate input and output handles and dispatches through the
+ * device's generic `struct zchar_ops`; it never compares device or driver
+ * names.
+ *
+ * M8 default binding selects by class preference first and falls back to
+ * any device carrying the generic console capability:
+ *   input   ZDEV_HID   + ZCAP_CONSOLE_IN, else any + ZCAP_CONSOLE_IN
+ *   output  ZDEV_VIDEO + ZCAP_CONSOLE_OUT, else any + ZCAP_CONSOLE_OUT
+ * The two directions bind independently: a missing direction never
+ * clears a valid one.  SIO remains the both-direction fallback.
  *
  * The early console (`early_console_*`) remains the permanent fallback
  * diagnostic path and is not routed through this service; kernel panic

@@ -1,22 +1,34 @@
 /* ZephyrOS driver module contract (internal kernel/module ABI).
  *
  * A ZMOD driver module implements an init entry that the loader calls
- * with the single `zdriver_api` block.  The API exposes only three kernel
- * services:
+ * with the single `zdriver_api` block.  The ABI v2 API exposes:
  *
  *   device_register   publish one device instance
  *   irq_claim         claim one M2 logical IRQ source (bank-7 handler)
  *   irq_release       release a previously claimed source
+ *   device_find       read-only class+capability device discovery
+ *   device_interface  read-only class interface lookup
+ *   resource_size     ROMFS DATA resource size lookup by name
+ *   resource_read     bounded ROMFS DATA resource read by name
+ *
+ * The two discovery calls expose no registry mutation.  The resource
+ * imports expose neither `romfs_file_t` nor mutable kernel state and are
+ * deliberately the only filesystem-like service a module receives.
  *
  * Drivers never modify I, the IM2 vector page, the memory mode, IRQ
  * stacks, or execute RETI; the M2 executive owns all of that.
  *
  * M3 used this same API through an explicit compile-time static driver
  * table (`struct zdriver`, `driver_init_static()`); that mechanism is
- * retired.  Since M4 the kernel boots only embedded ZMOD drivers and no
- * static driver table is linked into production images.  The static
- * design is kept as historical milestone documentation in
+ * retired.  Since M4 the kernel boots only ZMOD driver modules (from the
+ * embedded acceptance catalogs, and from the ROMFS recovery store since
+ * M5) and no static driver table is linked into production images.  The
+ * static design is kept as historical milestone documentation in
  * docs/architecture.md and docs/devices.md.
+ *
+ * Callback order and structure layout are part of the ABI: the field
+ * order below is pinned by compile-time assertions and host tests, and
+ * is documented in docs/module-format.md.
  */
 
 #ifndef ZEPHYROS_DRIVER_H
@@ -27,7 +39,7 @@
 #include "zephyros/irq.h"
 
 /* Driver ABI version accepted by this kernel build. */
-#define ZDRIVER_ABI_VERSION 1u
+#define ZDRIVER_ABI_VERSION 2u
 
 /* Driver init convention: 0 = success, negative = failure. */
 #define ZDRIVER_OK   0
@@ -39,6 +51,33 @@ struct zdriver_api {
 	int (*irq_claim)(irq_source_t source, irq_handler_t handler,
 			 void *context);
 	int (*irq_release)(irq_source_t source);
+	zdev_handle_t (*device_find)(uint8_t class_id,
+				     zdev_caps_t required_caps,
+				     zdev_handle_t after);
+	int (*device_interface)(zdev_handle_t handle, uint8_t expected_class,
+				const void **class_ops, void **state);
+	int (*resource_size)(const char *name, uint16_t *out_size);
+	int (*resource_read)(const char *name, uint16_t offset, void *dst,
+			     uint16_t length);
 };
+
+#if defined(__SDCC)
+/* Pin the ABI v2 callback order: the loader's static API table and every
+ * module call site must agree on these offsets. */
+_Static_assert(sizeof(struct zdriver_api) == 14,
+	       "zdriver_api must be 14 packed bytes");
+_Static_assert(__builtin_offsetof(struct zdriver_api, irq_claim) == 2,
+	       "zdriver_api irq_claim offset");
+_Static_assert(__builtin_offsetof(struct zdriver_api, irq_release) == 4,
+	       "zdriver_api irq_release offset");
+_Static_assert(__builtin_offsetof(struct zdriver_api, device_find) == 6,
+	       "zdriver_api device_find offset");
+_Static_assert(__builtin_offsetof(struct zdriver_api, device_interface) == 8,
+	       "zdriver_api device_interface offset");
+_Static_assert(__builtin_offsetof(struct zdriver_api, resource_size) == 10,
+	       "zdriver_api resource_size offset");
+_Static_assert(__builtin_offsetof(struct zdriver_api, resource_read) == 12,
+	       "zdriver_api resource_read offset");
+#endif /* __SDCC */
 
 #endif /* ZEPHYROS_DRIVER_H */

@@ -23,8 +23,8 @@
 #include "m3_selftest.h"
 
 extern int m3_irq_probe_run(void);
-extern const struct zdevice_ops m3_fixture_ops;
-extern const struct zdevice_ops m3_fixture_caponly_ops;
+extern const struct zchar_ops m3_fixture_ops;
+extern const struct zchar_ops m3_fixture_caponly_ops;
 
 volatile uint8_t m3_selftest_result;
 volatile uint16_t m3_selftest_pacing;
@@ -75,15 +75,16 @@ static zdev_handle_t m3_find_by_name(const char *name)
 	return ZDEV_HANDLE_INVALID;
 }
 
-static int m3_register_named(const char *name, uint16_t caps,
-			     const struct zdevice_ops *ops)
+static int m3_register_named(const char *name, zdev_caps_t caps,
+			     const struct zchar_ops *ops)
 {
 	struct zdevice_desc desc;
 
 	desc.class_id = ZDEV_OTHER;
 	desc.capabilities = caps;
 	desc.name = name;
-	desc.ops = ops;
+	desc.char_ops = ops;
+	desc.class_ops = (const void *)0;
 	desc.state = (void *)0;
 	return device_register(&desc, (zdev_handle_t *)0);
 }
@@ -93,7 +94,8 @@ static void m3_valid_desc(struct zdevice_desc *desc)
 	desc->class_id = ZDEV_OTHER;
 	desc->capabilities = 0;
 	desc->name = "test.desc";
-	desc->ops = &m3_fixture_ops;
+	desc->char_ops = &m3_fixture_ops;
+	desc->class_ops = (const void *)0;
 	desc->state = (void *)0;
 }
 
@@ -120,8 +122,8 @@ void zos_run_m3_selftest(void)
 	if (device_get(ZDEV_MAX_DEVICES + 1u) != (const struct zdevice *)0) {
 		m3_fail(ZOS_M3ST_FAIL_REGISTRY); return;
 	}
-	sio_out = device_find_capability(ZCAP_CONSOLE_OUT, 0);
-	sio_in = device_find_capability(ZCAP_CONSOLE_IN, 0);
+	sio_out = device_find(ZDEV_CLASS_ANY, ZCAP_CONSOLE_OUT, 0);
+	sio_in = device_find(ZDEV_CLASS_ANY, ZCAP_CONSOLE_IN, 0);
 	if (sio_out == ZDEV_HANDLE_INVALID || sio_in == ZDEV_HANDLE_INVALID) {
 		m3_fail(ZOS_M3ST_FAIL_CAPABILITY); return;
 	}
@@ -137,15 +139,15 @@ void zos_run_m3_selftest(void)
 	     ZCAP_CONSOLE_IN | ZCAP_CONSOLE_OUT)) {
 		m3_fail(ZOS_M3ST_FAIL_CAPABILITY); return;
 	}
-	if (device_find_capability(ZCAP_CHAR_IN | ZCAP_CONSOLE_IN, 0) ==
+	if (device_find(ZDEV_CLASS_ANY, ZCAP_CHAR_IN | ZCAP_CONSOLE_IN, 0) ==
 	    ZDEV_HANDLE_INVALID) {
 		m3_fail(ZOS_M3ST_FAIL_CAPABILITY); return;
 	}
-	if (device_find_capability(ZCAP_CONSOLE_OUT, sio_out) !=
+	if (device_find(ZDEV_CLASS_ANY, ZCAP_CONSOLE_OUT, sio_out) !=
 	    ZDEV_HANDLE_INVALID) {
 		m3_fail(ZOS_M3ST_FAIL_CAPABILITY); return;
 	}
-	if (device_find_capability(0, 0) != ZDEV_HANDLE_INVALID) {
+	if (device_find(ZDEV_CLASS_ANY, 0, 0) != ZDEV_HANDLE_INVALID) {
 		m3_fail(ZOS_M3ST_FAIL_CAPABILITY); return;
 	}
 	if (console_input_handle() != sio_in ||
@@ -172,11 +174,11 @@ void zos_run_m3_selftest(void)
 		m3_fail(ZOS_M3ST_FAIL_INVALID); return;
 	}
 	desc.name = "test.desc";
-	desc.ops = (const struct zdevice_ops *)0;
+	desc.char_ops = (const struct zchar_ops *)0;
 	if (device_register(&desc, (zdev_handle_t *)0) != ZDEV_EINVAL) {
 		m3_fail(ZOS_M3ST_FAIL_INVALID); return;
 	}
-	desc.ops = &m3_fixture_ops;
+	desc.char_ops = &m3_fixture_ops;
 	desc.class_id = 0;
 	if (device_register(&desc, (zdev_handle_t *)0) != ZDEV_EINVAL) {
 		m3_fail(ZOS_M3ST_FAIL_INVALID); return;

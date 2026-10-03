@@ -1,10 +1,9 @@
-/* ZephyrOS M3 console service.
+/* ZephyrOS console service (M8 binding policy).
  *
  * Binds separate output and input device handles and forwards operations
- * to the registered device.  Binding is capability-based: the service
- * never compares driver or instance names.  Operations fail cleanly when
- * unbound (ZDEV_ENODEV) or when the bound device does not implement the
- * operation (ZDEV_ENOTSUP).
+ * through the device's generic character interface (`struct zchar_ops`).
+ * The service never compares driver or instance names; selection is by
+ * class plus generic console capability.
  *
  * Kernel panic and early boot deliberately do not use this service; they
  * stay on the common-resident early console.
@@ -31,7 +30,8 @@ void console_unbind(void)
 	console_out_handle = ZDEV_HANDLE_INVALID;
 }
 
-static int console_handle_has_capability(zdev_handle_t handle, uint16_t cap)
+static int console_handle_has_capability(zdev_handle_t handle,
+					 zdev_caps_t cap)
 {
 	const struct zdevice *dev = device_get(handle);
 
@@ -56,16 +56,38 @@ int console_bind(zdev_handle_t input, zdev_handle_t output)
 	return ZDEV_OK;
 }
 
+/* Preferred input: a HID console-in device; preferred output: a VIDEO
+ * console-out device.  Each direction falls back independently to any
+ * registered device carrying the matching generic console capability,
+ * so one missing direction never clears a valid other direction.
+ * Returns ZDEV_OK only when both directions are bound. */
 int console_bind_defaults(void)
 {
-	zdev_handle_t input = device_find_capability(ZCAP_CONSOLE_IN, 0);
-	zdev_handle_t output = device_find_capability(ZCAP_CONSOLE_OUT, 0);
+	zdev_handle_t input = device_find(ZDEV_HID, ZCAP_CONSOLE_IN, 0);
+	zdev_handle_t output = device_find(ZDEV_VIDEO, ZCAP_CONSOLE_OUT, 0);
+
+	if (input == ZDEV_HANDLE_INVALID) {
+		input = device_find(ZDEV_CLASS_ANY, ZCAP_CONSOLE_IN, 0);
+	}
+	if (output == ZDEV_HANDLE_INVALID) {
+		output = device_find(ZDEV_CLASS_ANY, ZCAP_CONSOLE_OUT, 0);
+	}
+	if (input != ZDEV_HANDLE_INVALID &&
+	    console_handle_has_capability(input, ZCAP_CONSOLE_IN) != ZDEV_OK) {
+		input = ZDEV_HANDLE_INVALID;
+	}
+	if (output != ZDEV_HANDLE_INVALID &&
+	    console_handle_has_capability(output, ZCAP_CONSOLE_OUT) != ZDEV_OK) {
+		output = ZDEV_HANDLE_INVALID;
+	}
+
+	console_in_handle = input;
+	console_out_handle = output;
 
 	if (input == ZDEV_HANDLE_INVALID || output == ZDEV_HANDLE_INVALID) {
-		console_unbind();
 		return ZDEV_ENODEV;
 	}
-	return console_bind(input, output);
+	return ZDEV_OK;
 }
 
 int console_putc(char ch)
@@ -75,10 +97,11 @@ int console_putc(char ch)
 	if (dev == (const struct zdevice *)0) {
 		return ZDEV_ENODEV;
 	}
-	if (dev->ops == (const struct zdevice_ops *)0 || dev->ops->putc == 0) {
+	if (dev->char_ops == (const struct zchar_ops *)0 ||
+	    dev->char_ops->putc == 0) {
 		return ZDEV_ENOTSUP;
 	}
-	return dev->ops->putc(dev->state, ch);
+	return dev->char_ops->putc(dev->state, ch);
 }
 
 int console_write(const char *buf, uint16_t len)
@@ -88,10 +111,11 @@ int console_write(const char *buf, uint16_t len)
 	if (dev == (const struct zdevice *)0) {
 		return ZDEV_ENODEV;
 	}
-	if (dev->ops == (const struct zdevice_ops *)0 || dev->ops->write == 0) {
+	if (dev->char_ops == (const struct zchar_ops *)0 ||
+	    dev->char_ops->write == 0) {
 		return ZDEV_ENOTSUP;
 	}
-	return dev->ops->write(dev->state, buf, len);
+	return dev->char_ops->write(dev->state, buf, len);
 }
 
 int console_poll(void)
@@ -101,10 +125,11 @@ int console_poll(void)
 	if (dev == (const struct zdevice *)0) {
 		return ZDEV_ENODEV;
 	}
-	if (dev->ops == (const struct zdevice_ops *)0 || dev->ops->poll == 0) {
+	if (dev->char_ops == (const struct zchar_ops *)0 ||
+	    dev->char_ops->poll == 0) {
 		return ZDEV_ENOTSUP;
 	}
-	return dev->ops->poll(dev->state);
+	return dev->char_ops->poll(dev->state);
 }
 
 int console_getc(void)
@@ -114,8 +139,9 @@ int console_getc(void)
 	if (dev == (const struct zdevice *)0) {
 		return ZDEV_ENODEV;
 	}
-	if (dev->ops == (const struct zdevice_ops *)0 || dev->ops->getc == 0) {
+	if (dev->char_ops == (const struct zchar_ops *)0 ||
+	    dev->char_ops->getc == 0) {
 		return ZDEV_ENOTSUP;
 	}
-	return dev->ops->getc(dev->state);
+	return dev->char_ops->getc(dev->state);
 }

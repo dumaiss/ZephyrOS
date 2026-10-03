@@ -12,8 +12,10 @@ Region contract (see docs/architecture.md, docs/boot.md):
     0000h-002Fh   reset copier (page zero, both boot pages, byte-identical)
     0030h-00FFh   page-zero reservation (must stay empty)
     0100h-1FFFh   page-1 caller-window gap (must stay empty)
-    2000h-9FFFh   bank-7 loadable kernel image
-    A000h-BFFFh   M4 driver arena (load-time only; no ROM payload)
+    2000h-9FFFh   bank-7 loadable kernel (up to the driver arena start)
+    arena         M8 production: aligned linked-kernel end .. C000h;
+                  pre-M8 acceptance/variant images: A000h-BFFFh
+                  (load-time only; no ROM payload)
     C000h-DFFFh   bank-7 zero-initialized runtime area (must stay empty in
                   the ROM image; it is never loaded from ROM)
     E000h-FEFFh   permanent common code/data (physical bank 0)
@@ -71,8 +73,11 @@ RESET_TOP = 0x0030          # M1 installs RST 30h at 0030h
 PAGE_ZERO_END = 0x0100
 BANK7_BASE = 0x2000
 BANK7_LOAD_END = 0xC000     # C000h-DFFFh is runtime, never ROM-loaded
-ARENA_BASE = 0xA000         # M4 driver arena, load-time only (see memory.inc)
+ARENA_BASE = 0xA000         # legacy default; overridden from memory.inc
 ARENA_END = 0xC000
+ARENA_DERIVED = 0
+ARENA_MIN_SIZE = 0x4000
+ARENA_MIN_GRANULES = 32
 GRANULE_SIZE = 0x0200
 GRANULE_COUNT = 16
 COMMON_BASE = 0xE000
@@ -106,6 +111,7 @@ REGIONS = make_regions()
 def apply_memory_inc(path):
     """Override the arena/ROMFS declarations from platform memory.inc."""
     global ARENA_BASE, ARENA_END, GRANULE_SIZE, GRANULE_COUNT, REGIONS
+    global ARENA_DERIVED, ARENA_MIN_SIZE, ARENA_MIN_GRANULES
     global ROMFS_FIRST_PAGE, ROMFS_PAGE_COUNT, ROMFS_WINDOW_SIZE
     global ROMFS_CAPACITY, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
     values = {}
@@ -114,8 +120,11 @@ def apply_memory_inc(path):
         match = re.match(r"([A-Za-z_]\w*)\s+=\s+(0[xX][0-9a-fA-F]+|\d+)$", line)
         if match:
             values[match.group(1)] = int(match.group(2), 0)
+    ARENA_DERIVED = values.get("ZOS_DRIVER_ARENA_DERIVED", 0)
     ARENA_BASE = values["ZOS_DRIVER_ARENA_BASE"]
     ARENA_END = values["ZOS_DRIVER_ARENA_END"]
+    ARENA_MIN_SIZE = values.get("ZOS_DRIVER_ARENA_MIN_SIZE", 0x4000)
+    ARENA_MIN_GRANULES = values.get("ZOS_DRIVER_ARENA_MIN_GRANULES", 32)
     GRANULE_SIZE = values["ZOS_DRIVER_GRANULE_SIZE"]
     GRANULE_COUNT = values["ZOS_DRIVER_GRANULES"]
     ROMFS_FIRST_PAGE = values["ZOS_ROMFS_FIRST_PAGE"]
@@ -439,8 +448,10 @@ def check_symbol_regions(symbols):
         raise LayoutError("_reset is at %04Xh, expected 0000h"
                           % (reset if reset is not None else -1))
 
-    # M4 exported arena bounds: the ROM image never contains arena bytes,
-    # but the linked symbols must describe the reserved region exactly.
+    # M4/M8 exported arena bounds: the ROM image never contains arena
+    # bytes, but the linked symbols must describe the reserved region
+    # exactly.  Derived (production) builds additionally pin the start to
+    # the aligned linked-kernel end and enforce the 16-KiB minimum.
     arena_start = symbols.get("__driver_arena_start")
     arena_end = symbols.get("__driver_arena_end")
     if arena_start != ARENA_BASE or arena_end != ARENA_END:
@@ -450,6 +461,21 @@ def check_symbol_regions(symbols):
         )
     if (arena_end - arena_start) != GRANULE_COUNT * GRANULE_SIZE:
         raise LayoutError("driver arena geometry does not match granules")
+    if ARENA_DERIVED:
+        kernel_end = symbols.get("__kernel_code_end")
+        if kernel_end is None:
+            raise LayoutError("derived build has no __kernel_code_end")
+        expected = (kernel_end + GRANULE_SIZE - 1) & ~(GRANULE_SIZE - 1)
+        if arena_start != expected:
+            raise LayoutError(
+                "__driver_arena_start %04Xh is not align_up(%04Xh) = %04Xh"
+                % (arena_start, kernel_end, expected))
+        if (arena_end - arena_start) < ARENA_MIN_SIZE:
+            raise LayoutError("derived driver arena below the %d-byte minimum"
+                              % ARENA_MIN_SIZE)
+        if GRANULE_COUNT < ARENA_MIN_GRANULES:
+            raise LayoutError("derived driver arena below the %d-granule "
+                              "minimum" % ARENA_MIN_GRANULES)
 
 
 def romfs_placement(size):
@@ -472,7 +498,41 @@ def romfs_placement(size):
     return placement
 
 
-def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem):
+def load_arena_plan(build_dir):
+    """Load the boot-set arena plan emitted by tools/zmodpack.py plan.
+
+    Returns None when no plan was generated (legacy host tests).  The
+    plan must agree with the declared arena geometry; a boot set that
+    cannot coexist is a build error here as well as in the planner.
+    """
+    if build_dir is None:
+        return None
+    path = Path(build_dir) / "arena.plan.json"
+    if not path.exists():
+        return None
+    try:
+        plan = json.loads(path.read_text())
+    except ValueError as exc:
+        raise LayoutError("arena.plan.json is malformed: %s" % exc)
+    arena = plan.get("arena", {})
+    for field, expected in (("start", ARENA_BASE), ("end", ARENA_END),
+                            ("granules", GRANULE_COUNT)):
+        if arena.get(field) != expected:
+            raise LayoutError(
+                "arena plan %s is %r, expected %r"
+                % (field, arena.get(field), expected))
+    used = sum(entry["granules"] for entry in plan.get("modules", []))
+    if used != arena.get("used_granules"):
+        raise LayoutError("arena plan used_granules does not match modules")
+    if used > GRANULE_COUNT:
+        raise LayoutError(
+            "declared boot set needs %d granules; arena holds %d"
+            % (used, GRANULE_COUNT))
+    return plan
+
+
+def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
+                   plan=None):
     """Emit a small machine-readable manifest for debugging/reproducibility."""
     entries = {
         name: symbols.get(name) for name in (
@@ -482,12 +542,14 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem):
             "irq_vector_page", "irq_vector_guard", "irq_ff_unexpected",
             "irq_transition_stack", "irq_transition_stack_top",
             "irq_isr_stack", "irq_isr_stack_top",
+            "__kernel_code_end",
             "__driver_arena_start", "__driver_arena_end",
             "rom_access_trampoline", "rom_access_sync",
             "rom_access_sync_end",
         )
     }
     stub = rom_access_stub_bytes(mem)
+    used = sum(entry["granules"] for entry in plan["modules"]) if plan else 0
     manifest = {
         "tool": "pack_image.py",
         "layout": {
@@ -497,6 +559,9 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem):
             "bank7_load_end": BANK7_LOAD_END,
             "driver_arena_base": ARENA_BASE,
             "driver_arena_end": ARENA_END,
+            "driver_arena_derived": bool(ARENA_DERIVED),
+            "driver_arena_min_size": ARENA_MIN_SIZE,
+            "driver_arena_min_granules": ARENA_MIN_GRANULES,
             "common_base": COMMON_BASE,
             "stack_base": STACK_BASE,
             "rom_page_size": PAGE_SIZE,
@@ -514,8 +579,9 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem):
             "size": ARENA_END - ARENA_BASE,
             "granule_size": GRANULE_SIZE,
             "granules": GRANULE_COUNT,
-            "free_granules": GRANULE_COUNT,
-            "modules": [],
+            "used_granules": used,
+            "free_granules": GRANULE_COUNT - used,
+            "modules": plan["modules"] if plan else [],
         },
         "image": {"size": len(image), "sha256": hashlib.sha256(image).hexdigest()},
         "pages": [
@@ -613,7 +679,9 @@ def pack(ihx_text, map_text, build_dir, suffix="", romfs=None):
             (build / ("page%d%s.bin" % (index, suffix))).write_bytes(bytes(page))
         (build / ("zephyros%s.bin" % suffix)).write_bytes(image)
         (build / ("zephyr80%s.bin" % suffix)).write_bytes(image)
-        write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem)
+        plan = load_arena_plan(build_dir)
+        write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
+                       plan)
     return image
 
 
@@ -634,11 +702,23 @@ def main(argv):
     except LayoutError as exc:
         print("pack_image.py: layout error: %s" % exc, file=sys.stderr)
         return 1
+    symbols = parse_map_symbols(map_text)
     digest = hashlib.sha256(image).hexdigest()
     print("pack_image.py: %d bytes, sha256 %s" % (len(image), digest))
-    print("pack_image.py: driver arena %04Xh-%04Xh: %d granules (%d free "
-          "at boot)" % (ARENA_BASE, ARENA_END - 1, GRANULE_COUNT,
-                         GRANULE_COUNT))
+    kernel_end = symbols.get("__kernel_code_end")
+    print("pack_image.py: static kernel end %s; driver arena %04Xh-%04Xh: "
+          "%d bytes, %d granules, %s"
+          % (("%04Xh" % kernel_end) if kernel_end is not None else "n/a",
+             ARENA_BASE, ARENA_END - 1, ARENA_END - ARENA_BASE,
+             GRANULE_COUNT,
+             "derived" if ARENA_DERIVED else "legacy reserved"))
+    plan = load_arena_plan(build_dir)
+    if plan is not None:
+        print("pack_image.py: boot set uses %d granules (%s), %d free"
+              % (plan["arena"]["used_granules"],
+                 ", ".join("%s x%d" % (entry["name"], entry["granules"])
+                           for entry in plan["modules"]),
+                 plan["arena"]["free_granules"]))
     print("pack_image.py: rom-access stub %d bytes at %04Xh mirrored into "
           "recovery pages %d-%d"
           % (ROM_ACCESS_SIZE, ROM_ACCESS_BASE, ROMFS_FIRST_PAGE,

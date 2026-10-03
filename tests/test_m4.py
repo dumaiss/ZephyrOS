@@ -36,8 +36,8 @@ class TestM4Constants(unittest.TestCase):
         self.env.update(parse_c_header(MODULE_H))
         self.env.update(parse_c_header(DRIVER_H))
 
-    def test_driver_abi_is_frozen_at_one(self):
-        self.assertEqual(evaluate("ZDRIVER_ABI_VERSION", self.env), 1)
+    def test_driver_abi_is_frozen_at_two(self):
+        self.assertEqual(evaluate("ZDRIVER_ABI_VERSION", self.env), 2)
 
     def test_new_errno_codes_stable_and_distinct(self):
         self.assertEqual(evaluate("ZOS_EIO", self.env), 0x0A)
@@ -45,7 +45,7 @@ class TestM4Constants(unittest.TestCase):
 
     def test_loader_limits(self):
         self.assertEqual(evaluate("ZMOD_GRANULE_SIZE", self.env), 512)
-        self.assertEqual(evaluate("ZMOD_GRANULE_COUNT", self.env), 16)
+        self.assertEqual(evaluate("ZMOD_MAX_GRANULES", self.env), 80)
         self.assertEqual(evaluate("ZMOD_MAX_MODULES", self.env), 16)
         self.assertEqual(evaluate("ZMOD_HEADER_SIZE", self.env), 28)
         self.assertEqual(evaluate("ZREL_ABS16", self.env), 1)
@@ -137,26 +137,53 @@ class TestM4MapRules(unittest.TestCase):
 
 
 class TestM4Artifacts(unittest.TestCase):
-    def test_arena_reserved_in_memory_inc(self):
+    def test_legacy_arena_reserved_in_memory_inc(self):
+        # The committed inc carries the pre-M8 fixed acceptance/variant
+        # geometry and the derived-build minimums; production overrides
+        # it with a generated variant (checked in test_m8.py).
         layout = mapcheck.parse_memory_inc(MEMORY_INC)
+        self.assertEqual(layout["ZOS_DRIVER_ARENA_DERIVED"], 0)
         self.assertEqual(layout["ZOS_DRIVER_ARENA_BASE"], 0xA000)
         self.assertEqual(layout["ZOS_DRIVER_ARENA_END"], 0xC000)
         self.assertEqual(layout["ZOS_DRIVER_GRANULE_SIZE"], 512)
         self.assertEqual(layout["ZOS_DRIVER_GRANULES"], 16)
+        self.assertEqual(layout["ZOS_DRIVER_ARENA_MIN_SIZE"], 0x4000)
+        self.assertEqual(layout["ZOS_DRIVER_ARENA_MIN_GRANULES"], 32)
 
-    def test_normal_manifest_reports_arena(self):
+    def test_normal_manifest_reports_derived_arena(self):
         path = os.path.join(ROOT, "build", "zephyros.manifest.json")
         if not os.path.exists(path):
             self.skipTest("build manifest missing; run `make` first")
         manifest = json.load(open(path))
         arena = manifest["arena"]
-        self.assertEqual(arena["start"], 0xA000)
+        self.assertTrue(manifest["layout"]["driver_arena_derived"])
         self.assertEqual(arena["end"], 0xC000)
-        self.assertEqual(arena["granules"], 16)
-        self.assertEqual(arena["free_granules"], 16)
-        self.assertEqual(arena["modules"], [])
-        self.assertEqual(manifest["entries"]["__driver_arena_start"], 0xA000)
-        self.assertEqual(manifest["entries"]["__driver_arena_end"], 0xC000)
+        self.assertEqual(arena["granule_size"], 512)
+        self.assertEqual(arena["size"],
+                         (arena["end"] - arena["start"]))
+        self.assertEqual(arena["size"] / 512, arena["granules"])
+        # Production minimum: 32 granules / 16 KiB.
+        self.assertGreaterEqual(arena["granules"], 32)
+        self.assertGreaterEqual(arena["size"], 0x4000)
+        # The start is exactly the aligned linked-kernel end, and the
+        # boot-set plan reconciles used/free granules.
+        kernel_end = manifest["entries"]["__kernel_code_end"]
+        self.assertEqual(arena["start"],
+                         (kernel_end + 511) & ~511)
+        self.assertEqual(manifest["entries"]["__driver_arena_start"],
+                         arena["start"])
+        self.assertEqual(manifest["entries"]["__driver_arena_end"],
+                         0xC000)
+        modules = arena["modules"]
+        self.assertEqual([entry["name"] for entry in modules], ["sio"])
+        self.assertEqual(arena["used_granules"],
+                         sum(entry["granules"] for entry in modules))
+        self.assertEqual(arena["used_granules"] + arena["free_granules"],
+                         arena["granules"])
+        for entry in modules:
+            self.assertEqual(
+                entry["granules"],
+                (entry["image_size"] + entry["bss_size"] + 511) // 512)
 
     def test_normal_image_has_empty_catalog_and_no_selftest_strings(self):
         bin_path = os.path.join(ROOT, "build", "zephyros.bin")
@@ -280,11 +307,11 @@ class TestM4Artifacts(unittest.TestCase):
             "build-m4-loader-selftest",
             "zephyros-m4-loader-selftest.bin")
         for fixture in ("_z4_fixture_probe", "_z4_fixture_fail",
-                        "_z4_fixture_filler"):
+                        "_z4_fixture_filler", "_z4_fixture_api"):
             self.assertIn(fixture, loader_syms)
         _, prod_syms = self.read_artifact("build", "zephyros.bin")
         for fixture in ("_z4_fixture_probe", "_z4_fixture_fail",
-                        "_z4_fixture_filler"):
+                        "_z4_fixture_filler", "_z4_fixture_api"):
             self.assertNotIn(fixture, prod_syms)
 
     def test_m4_loader_selftest_image_markers(self):

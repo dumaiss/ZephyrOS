@@ -106,7 +106,7 @@ static int zmod_validate_header(const struct zmod_header *h, uint16_t size,
 	if (need == 0 || need != h->required_granules) {
 		return ZMOD_EFORMAT;
 	}
-	if (need > ZMOD_GRANULE_COUNT) {
+	if (need > ZMOD_MAX_GRANULES) {
 		return ZMOD_ENOSPC;
 	}
 

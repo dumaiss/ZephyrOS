@@ -33,6 +33,7 @@ SDLDZ80   ?= sdldz80
 PYTHON    ?= python3
 
 BUILD     := build
+.DEFAULT_GOAL := all
 
 # Zephyr-80 platform build configuration (include paths and the
 # declarative constant files consumed by the build and layout tools).
@@ -193,6 +194,18 @@ endif
 
 OBJS      := $(ASM_OBJS) $(C_OBJS)
 
+# --- M8 driver-arena geometry selection --------------------------------------
+# Production (no acceptance flags) derives the arena from the aligned end
+# of the linked kernel with a two-pass link.  Every pre-M8 acceptance
+# image and the shifted-placement variant keeps the legacy fixed
+# geometry; their transcripts and checks are preserved unchanged.
+ZOS_ACCEPTANCE_BUILD := $(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) \
+	$(ZOS_M3_SELFTEST) $(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) \
+	$(ZOS_M4_FAILURE_SELFTEST) $(ZOS_M4_PLACEMENT) $(ZOS_M5_SELFTEST) \
+	$(ZOS_M5_CORRUPT_SELFTEST) $(ZOS_M6_SELFTEST) \
+	$(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST))
+ZOS_ARENA_DERIVED ?= $(if $(ZOS_ACCEPTANCE_BUILD),0,1)
+
 # Common acceptance wiring: the single guard plus the shared runner.
 ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
 	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST) \
@@ -220,14 +233,93 @@ IMAGE := $(BUILD)/zephyros$(PK_SUFFIX).bin
 MAME_IMAGE := $(BUILD)/zephyr80$(PK_SUFFIX).bin
 
 # Memory-layout source for this build.  The placement image regenerates
-# platform/zephyr80/memory.inc with a shifted driver arena and includes the
-# variant first, so every assembly unit (and mapcheck) sees it.
+# platform/zephyr80/memory.inc with a shifted legacy driver arena and
+# includes the variant first, so every assembly unit (and mapcheck) sees
+# it.  Derived (production) builds generate a full memory.inc variant from
+# the probe map for the layout tools.
 ifeq ($(ZOS_M4_PLACEMENT),1)
 VARIANT_MEMORY := $(BUILD)/platform/zephyr80/memory.inc
 ASFLAGS   := -I$(BUILD)/platform $(ZOS_PLATFORM_ASFLAGS) -Itests/target/include
-MEMORY_INC := $(VARIANT_MEMORY)
+LEGACY_MEMORY := $(VARIANT_MEMORY)
 else
-MEMORY_INC := $(ZOS_PLATFORM_MEMORY_INC)
+LEGACY_MEMORY := $(ZOS_PLATFORM_MEMORY_INC)
+endif
+
+GEOMETRY_DIR       := $(BUILD)/geometry
+GEOMETRY_PROBE_DIR := $(BUILD)/probe
+GEOMETRY_INC       := $(GEOMETRY_DIR)/arena_geometry.inc
+
+ifeq ($(ZOS_ARENA_DERIVED),1)
+GEOMETRY_MEMORY := $(GEOMETRY_DIR)/memory.inc
+MEMORY_INC := $(GEOMETRY_MEMORY)
+else
+GEOMETRY_MEMORY :=
+MEMORY_INC := $(LEGACY_MEMORY)
+endif
+
+# --- M8 arena geometry generation --------------------------------------------
+# kernel/module/arena.asm always includes the generated
+# arena_geometry.inc.  Legacy builds copy the fixed platform geometry.
+# Derived builds first link a probe image (the same object list with a
+# bootstrap arena object), measure the loadable areas in its map, then
+# regenerate the include and the memory.inc variant before the real link.
+# The final map is re-verified by mapcheck.py, so a stale generated value
+# cannot survive.
+ifeq ($(ZOS_ARENA_DERIVED),1)
+
+$(GEOMETRY_INC) $(GEOMETRY_MEMORY): $(BUILD)/zephyros.probe.map \
+		tools/mapcheck.py $(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
+	mkdir -p $(GEOMETRY_DIR)
+	$(PYTHON) tools/mapcheck.py geometry derive $(BUILD)/zephyros.probe.map \
+		$(ZOS_PLATFORM_MEMORY_INC) $(GEOMETRY_INC) $(GEOMETRY_MEMORY)
+
+$(GEOMETRY_PROBE_DIR)/arena_geometry.inc: $(ZOS_PLATFORM_MEMORY_INC) \
+		tools/mapcheck.py | $(BUILD)
+	mkdir -p $(GEOMETRY_PROBE_DIR)
+	$(PYTHON) tools/mapcheck.py geometry probe $(ZOS_PLATFORM_MEMORY_INC) $@
+
+$(GEOMETRY_PROBE_DIR)/arena.rel: kernel/module/arena.asm \
+		$(GEOMETRY_PROBE_DIR)/arena_geometry.inc | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -I$(GEOMETRY_PROBE_DIR) -o $@ $<
+
+# Probe link: identical objects, bootstrap arena symbols.  Kept under
+# build/probe/ so the canonical build/ object list stays exactly the
+# committed linker file's list.
+PROBE_OBJS := $(filter-out $(BUILD)/arena.rel,$(OBJS) $(END_OBJ)) \
+		$(GEOMETRY_PROBE_DIR)/arena.rel
+
+$(BUILD)/zephyros.probe.lk: $(PROBE_OBJS) | $(BUILD)
+	{ \
+	  printf '%s\n' '-n' '-m' '-w'; \
+	  printf '%s\n' '-i $(BUILD)/zephyros.probe.ihx'; \
+	  printf '%s\n' '-b _CODE = 0x2000' '-b _DATA = 0xC000' \
+	                '-b _COMMON = 0xE000'; \
+	  printf '%s\n' $(PROBE_OBJS); \
+	  printf '%s\n' '-e'; \
+	} > $@
+
+$(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
+		$(BUILD)/zephyros.probe.lk
+	$(SDLDZ80) -f $(BUILD)/zephyros.probe.lk
+
+else
+
+$(GEOMETRY_INC): $(LEGACY_MEMORY) tools/mapcheck.py | $(BUILD)
+	mkdir -p $(GEOMETRY_DIR)
+	$(PYTHON) tools/mapcheck.py geometry legacy $(LEGACY_MEMORY) $@
+
+endif
+
+# Declared boot-set arena plan (derived builds only): per-module
+# image+BSS/granules and the used/free totals; the build fails here when
+# the declared boot set cannot coexist in the linked arena.
+ifeq ($(ZOS_ARENA_DERIVED),1)
+ARENA_PLAN := $(BUILD)/arena.plan.json
+$(ARENA_PLAN): $(BOOT_ZMOD) tools/zmodpack.py $(MEMORY_INC) | $(BUILD)
+	$(PYTHON) tools/zmodpack.py plan --geometry $(MEMORY_INC) \
+		--report $@ $(BOOT_ZMOD)
+else
+ARENA_PLAN :=
 endif
 
 .PHONY: all test check check-fast clean syscall-selftest irq-selftest \
@@ -290,8 +382,8 @@ $(BUILD)/platform_irq.rel: kernel/irq/init.asm \
 $(BUILD)/sdcc_helpers.rel: kernel/runtime/sdcc_helpers.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/arena.rel: kernel/module/arena.asm $(MEMORY_INC) | $(BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
+$(BUILD)/arena.rel: kernel/module/arena.asm $(GEOMETRY_INC) | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -I$(dir $(GEOMETRY_INC)) -o $@ $<
 
 $(BUILD)/rom_access.rel: kernel/romfs/rom_access.asm \
 		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
@@ -496,12 +588,21 @@ $(MODULES)/m4_filler.rel: tests/modules/m4_filler.c \
 		include/zephyros/driver.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) $< -o $@
 
+$(MODULES)/m8_api.rel: tests/modules/m8_api.c \
+		include/zephyros/device.h include/zephyros/driver.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/m8_api.zmod: tests/modules/m8_api.json $(MODULES)/m8_api.rel \
+		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
+	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
+		--report $(MODULES)/m8_api.report.json
+
 $(MODULES)/%.zmod: tests/modules/%.json $(MODULES)/%.rel \
 		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES)
 
 FIXTURE_ZMODS := $(MODULES)/m4_probe.zmod $(MODULES)/m4_fail.zmod \
-		$(MODULES)/m4_filler.zmod
+		$(MODULES)/m4_filler.zmod $(MODULES)/m8_api.zmod
 
 # --- embedded catalogs (production boot module + test fixture catalog) ---
 # The production catalog (kernel/module/embedded.c) carries only the boot
@@ -531,6 +632,7 @@ $(FIXTURE_CATALOG_ASM): $(FIXTURE_ZMODS) tools/zmodpack.py | $(BUILD)
 		z4_fixture_probe=$(MODULES)/m4_probe.zmod \
 		z4_fixture_fail=$(MODULES)/m4_fail.zmod \
 		z4_fixture_filler=$(MODULES)/m4_filler.zmod \
+		z4_fixture_api=$(MODULES)/m8_api.zmod \
 		--header $(FIXTURE_CATALOG_INC)
 
 $(FIXTURE_CATALOG_INC): $(FIXTURE_CATALOG_ASM) ;
@@ -831,7 +933,7 @@ endif
 # complete.
 
 $(IMAGE): $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map \
-		$(BUILD)/recovery.romfs \
+		$(BUILD)/recovery.romfs $(ARENA_PLAN) \
 		tools/pack_image.py tools/mapcheck.py $(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) $(BUILD)/zephyros.map \
 		$(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)

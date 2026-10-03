@@ -10,12 +10,41 @@ import os
 import re
 import sys
 import unittest
+import contextlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import mapcheck  # noqa: E402
+
+# Layout globals apply_layout()/apply_irq_layout() mutate; snapshot and
+# restore them around tests that need a specific generated memory.inc so
+# synthetic-map tests keep the committed defaults.
+_LAYOUT_GLOBALS = (
+    "PAGE_ZERO_END", "RESET_TOP", "BANK7_BASE", "BANK7_LOAD_END",
+    "BANK7_RUNTIME_END", "COMMON_BASE", "COMMON_CODE_END", "STACK_BASE",
+    "IRQ_ISR_STACK_BASE", "IRQ_ISR_STACK_TOP", "IRQ_ISR_STACK_SIZE",
+    "GATE_STACK_SIZE", "OWNED_AREAS", "DRIVER_ARENA_BASE",
+    "DRIVER_ARENA_END", "DRIVER_GRANULE_SIZE", "DRIVER_GRANULES",
+    "DRIVER_ARENA_DERIVED", "DRIVER_ARENA_MIN_SIZE",
+    "DRIVER_ARENA_MIN_GRANULES", "ROMFS_STAGING_SIZE", "ROM_ACCESS_BASE",
+    "ROM_ACCESS_SIZE", "IRQ_VECTOR_BASE", "IRQ_VECTOR_SIZE",
+    "IRQ_STATE_BASE", "IRQ_STACK_BASE", "IRQ_STACK_TOP", "IRQ_STACK_SIZE",
+)
+
+
+@contextlib.contextmanager
+def layout_context(layout_inc, irq_inc):
+    """Apply a layout for one check and restore the module defaults."""
+    saved = {name: getattr(mapcheck, name) for name in _LAYOUT_GLOBALS}
+    try:
+        mapcheck.apply_layout(mapcheck.parse_inc(layout_inc))
+        mapcheck.apply_irq_layout(mapcheck.parse_inc(irq_inc))
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(mapcheck, name, value)
 
 PLATFORM_DIR = os.path.join(ROOT, "platform", "zephyr80")
 TARGET_TEST_INC = os.path.join(ROOT, "tests", "target", "include")
@@ -55,6 +84,8 @@ REQUIRED_MEMORY_CONSTANTS = (
     "ZOS_IRQ_ISR_STACK_SIZE",
     "ZOS_DRIVER_ARENA_BASE", "ZOS_DRIVER_ARENA_END",
     "ZOS_DRIVER_GRANULE_SIZE", "ZOS_DRIVER_GRANULES",
+    "ZOS_DRIVER_ARENA_DERIVED",
+    "ZOS_DRIVER_ARENA_MIN_SIZE", "ZOS_DRIVER_ARENA_MIN_GRANULES",
     "ZOS_COMMON_BASE", "ZOS_COMMON_CODE_END", "ZOS_COMMON_STACK_BASE",
     "ZOS_STACK_INIT_SP", "ZOS_GATE_STACK_SIZE",
     "ZOS_ROM_PAGE_SIZE", "ZOS_ROM_PAGE_COUNT", "ZOS_BOOT_IMAGE_SIZE",
@@ -411,7 +442,8 @@ def make_map(overrides=None, **kw):
         "_irq_arch_unlock": 0xE198, "_irq_arch_init": 0xE1A0,
         "_irq_dispatch": 0x2200, "_irq_kernel_code_end": 0x206E,
         "_device_registry_init": 0x2300, "_device_register": 0x2320,
-        "_device_get": 0x2340, "_device_find_capability": 0x2360,
+        "_device_get": 0x2340, "_device_find": 0x2360,
+        "_device_interface": 0x2370,
         "_device_registry_checkpoint": 0x2380,
         "_device_registry_rollback": 0x23A0,
         "_driver_init_static": 0x23C0,
@@ -432,6 +464,8 @@ def make_map(overrides=None, **kw):
         "_zmod_zero_allocation": 0x2900,
         "_romfs_init": 0x2A00, "_romfs_lookup": 0x2A80,
         "_romfs_read": 0x2B00, "_romfs_load_zmod": 0x2B80,
+        "_romfs_resource_size": 0x2BA0,
+        "_romfs_resource_read": 0x2BC0,
         "_rom_access_copy": 0xE1B0,
         "_rom_access_staging": 0xE200,
         "rom_access_saved_latch": 0xE280,
@@ -629,7 +663,12 @@ class TestRealArtifacts(unittest.TestCase):
     def test_real_map_passes_mapcheck(self):
         if not os.path.exists(self.map_path):
             self.skipTest("build artifacts missing; run `make` first")
-        mapcheck.check_map(open(self.map_path).read())
+        # Production builds carry a generated derived-geometry memory.inc;
+        # validate the real map against whichever layout the build used.
+        generated = os.path.join(ROOT, "build", "geometry", "memory.inc")
+        layout_inc = generated if os.path.exists(generated) else MEMORY_INC
+        with layout_context(layout_inc, IRQ_INC):
+            mapcheck.check_map(open(self.map_path).read())
 
     def test_m0_banner_unchanged(self):
         if not os.path.exists(self.bin_path):
