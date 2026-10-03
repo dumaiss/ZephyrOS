@@ -1,7 +1,7 @@
 # ZephyrOS Architecture
 
-**Status:** M0/M1/M2/M3/M4 complete; M5-M7 architecture defined (M4 stage 07 loader, stage 08 dynamic-driver acceptance — acceptance, placement, and failure images hardware-validated 2026-10-02)  
-**Scope:** Milestones M0 through M7  
+**Status:** M0-M6 complete; M7-M8 architecture defined (M4 dynamic-driver acceptance hardware-validated 2026-10-02; M5/M6 physically accepted 2026-10-03)  
+**Scope:** Milestones M0 through M8  
 **Target:** Zephyr-80  
 **Language/toolchain:** SDCC + sdasz80/sdldz80, GNU Make, Python host tools
 
@@ -20,11 +20,12 @@ The milestones covered by this document are:
 - **M2 — Interrupt executive:** establish kernel-owned IM2, safe mode-crossing IRQ entry/return, source ownership, and the first hardware interrupt. **Complete.**
 - **M3 — Device registry and static drivers:** establish the driver/device model and prove it with statically linked hardware drivers. **Complete.**
 - **M4 — Dynamic driver/module loading:** load relocatable driver modules into a managed bank-7 driver arena and register their devices at boot. **Complete.**
-- **M5 — ROM recovery filesystem:** provide a tiny read-only ROM-backed recovery store for boot modules and native recovery programs.
-- **M6 — Native process and ZEX execution:** establish single-tasking native process lifecycle and execute a single-bank native program from ROMFS.
+- **M5 — ROM recovery filesystem:** provide a tiny read-only ROM-backed recovery store for boot modules and native recovery programs. **Complete.**
+- **M6 — Native process and ZEX execution:** establish single-tasking native process lifecycle and execute a single-bank native program from ROMFS. **Complete.**
 - **M7 — Native monitor / diagnostic foundation:** port the Zephyr monitor as the first useful native ZEX and establish the foundation for the later diagnostic suite.
+- **M8 — Native device stack completion:** provide the normal V9958/HID console and IOC transport through class-aware dynamically loaded drivers.
 
-The native V9958/HID console, IOC/FAT filesystem, shell and full userland, complete diagnostic suite, and extended/far-memory services remain later native ZephyrOS milestones. CP/M work begins only after those native facilities are complete.
+The native FAT filesystem, shell and full userland, complete diagnostic suite, and extended/far-memory services remain later native ZephyrOS milestones. CP/M work begins only after those native facilities are complete.
 
 ---
 
@@ -1988,6 +1989,8 @@ geometry plus free granules, and `zephyros.manifest.json` carries an
 `arena` object. Concrete loader behavior, error codes, and tooling are
 documented in `docs/module-format.md`.
 
+This `A000h-BFFFh` geometry is the historical M4 acceptance geometry, not the long-term production budget. M8 supersedes it with a linker-derived arena sized from the end of the linked kernel to `C000h`; see section 30.2.
+
 ---
 
 ## 22.3 Module format
@@ -2363,136 +2366,31 @@ The M4 module loader does not change. M5 replaces the embedded-module byte sourc
 
 ## 24.2 ROM access under the Zephyr memory model
 
-Normal runtime modes `10` and `11` have ROM disabled.  Runtime ROM reads
-therefore require a controlled mapping transition through **mode 00**,
-the only mode that selects ROM — and it selects ROM for every read
-(including instruction fetch), while every write still targets the
-selected SRAM bank.  There is no mode that exposes ROM together with a
-SRAM common region; `08h` is a flat view of one SRAM bank.
+Normal runtime modes `10` and `11` have ROM disabled. Runtime ROM reads therefore require a controlled mapping transition through **mode 00**, the only mode that selects ROM — and it selects ROM for every read (including instruction fetch), while every write still targets the selected SRAM bank. There is no mode that exposes ROM together with a SRAM common region; `08h` is a flat view of one SRAM bank.
 
-The transition therefore follows the same pattern as this machine's
-drive-A ROM primitive: a small stub is mirrored into every recovery ROM
-page at the same address as its common-SRAM copy; a two-byte trampoline
-`OUT` switches to mode 00; the stub runs stackless (`LDIR`, then the
-latch-restoring `OUT`); ordinary common code resumes in mode 11:
+The transition therefore follows the same pattern as this machine's drive-A ROM primitive: a small stub is mirrored into every recovery ROM page at the same address as its common-SRAM copy; a two-byte trampoline `OUT` switches to mode 00; the stub runs stackless (`LDIR`, then the latch-restoring `OUT`); ordinary common code resumes in mode 11.
 
-```text
-mode 00 window (one bounded copy)
-0000h-FFFFh   reads: selected ROM page
-              writes: selected SRAM bank (bank 0 for staging)
-```
-
-This has three consequences:
-
-1. the code executing between the two `OUT`s must be byte-identical in
-   common SRAM and in every selected ROM page, must not touch the stack,
-   and must not read any SRAM variable (registers only);
-2. the logical ROMFS payload uses only `0000h-BFFFh` of each allocated
-   ROM page; the `C000h-FFFFh` half is never file data (it carries the
-   fixed stub mirror at `ZOS_ROM_ACCESS_BASE` and `FFh` elsewhere);
-3. the common staging destination is reached correctly because the
-   mode-00 latch selects SRAM bank 0, and mode-00 writes land in bank 0
-   across the whole address space.
-
-The logical ROMFS page payload is therefore:
+Only `0000h-BFFFh` of each allocated ROM page is logical ROMFS payload. The `C000h-FFFFh` half is never file data.
 
 ```text
 ROMFS_PAGE_BYTES = C000h = 48 KiB
 ```
 
-The `C000h-FFFFh` ROM bytes are not part of the runtime recovery
-filesystem because that window is reserved for the stub mirror.
-
-The exact ROM pages assigned to ROMFS are build/platform configuration. M5 must not hard-code assumptions that collide with page 0 boot contents, page 1's kernel image, or any ROM-backed assets retained elsewhere.
-
 ---
 
 ## 24.3 Common ROM-access primitive
 
-A ROM read temporarily hides all runtime mappings, so the actual mapping
-transition and copy loop execute from code that exists in both worlds:
-the mirrored stub in the ROM page and its byte-identical copy in common
-SRAM.
-
-Conceptually:
-
-```text
-kernel in mode 11
-    │
-    ├── validate ROM page / offset / length
-    ├── save the exact latch; lock interrupts; claim the busy flag
-    ├── arm registers: HL=source, DE=staging, BC=length,
-    │       A=mode-00 latch, A'=exact caller latch
-    │
-    ├── trampoline OUT (00h): mode 00, page p, bank 0
-    │
-    ▼
-mirrored stub in the selected ROM page (stackless)
-    │
-    ├── LDIR: ROM (HL) -> SRAM bank 0 staging (DE), BC bytes
-    ├── OUT (00h): restore the exact caller latch
-    │
-    ▼
-common epilogue, mode 11 restored
-    │
-    ├── release the busy flag; restore IFF; return
-```
-
-The ROM-access routine must never execute, return into, or stack on
-`2000h-DFFFh` while mode 00 is active, and it must not use the stack at
-all between the two `OUT`s; the simulator pins the executed window to the
-mirrored stub and rejects any stack movement.
-
-The initial implementation may stage small chunks rather than trying to map an entire file at once.
+The common path validates page/offset/length, saves exact latch/IFF state, locks interrupts, arms registers, switches to mode 00, executes only the mirrored stackless copy stub, restores the exact latch, and returns through common code. It must never use the stack while ROM is visible.
 
 ---
 
 ## 24.4 Recovery filesystem format
 
-ROMFS v1 is intentionally simple and read-only.
-
-It uses a flat native namespace. Directories, permissions, timestamps, allocation, deletion, and write support are unnecessary for recovery.
-
-A host-built image contains:
-
-```text
-ROMFS header
-file table
-file payloads
-```
-
-The header contains at minimum:
-
-```text
-magic
-format_version
-file_count
-directory_size
-image_size
-```
-
-Each file-table entry contains at minimum:
-
-```text
-name
-logical_offset
-size
-flags/type
-```
-
-A checksum/CRC may be added if it materially improves recovery diagnostics, but M5 does not require a general filesystem integrity subsystem.
-
-`logical_offset` is measured across the concatenated 48-KiB usable windows of the configured ROMFS pages; the reader translates it into `(ROM page, offset within 0000h-BFFFh)`.
-
-Names are native ZephyrOS recovery names, not CP/M 8.3 names.
+ROMFS v1 is a simple deterministic flat read-only namespace containing a header, file table and file payloads. Entries contain native name, logical offset, size and flags/type. Directories, permissions, timestamps, allocation and write support are unnecessary for recovery.
 
 ---
 
 ## 24.5 Kernel ROMFS interface
-
-The M5 API should remain small and allocation-free.
-
-Semantics equivalent to the following are sufficient:
 
 ```c
 int romfs_init(void);
@@ -2503,154 +2401,31 @@ int romfs_read(const romfs_file_t *file,
                uint16_t length);
 ```
 
-`romfs_file_t` is immutable metadata identifying one ROMFS entry.
-
-M5 does not expose this API as the future native filesystem ABI. M9 will define the normal path/handle/directory filesystem services for FAT/SD and may later adapt ROMFS beneath that interface.
-
-Keeping the recovery reader separate prevents the tiny ROM bootstrap requirement from constraining the real filesystem design.
+This private recovery interface does not constrain the M9 native filesystem API.
 
 ---
 
 ## 24.6 Host-side ROMFS construction
 
-`tools/romfspack.py` builds and validates the recovery image from a manifest.
-
-Conceptually:
-
-```text
-recovery/manifest.json
-    │
-    ├── sio.zmod
-    ├── monitor.zex        (added by M7)
-    └── recovery assets
-    │
-    ▼
-romfspack.py
-    │
-    ▼
-recovery.romfs
-    │
-    ▼
-pack_image.py
-    │
-    └── configured ROM pages
-```
-
-The packer must:
-
-- reject duplicate names;
-- reject files or tables outside the configured ROMFS capacity;
-- verify that no payload uses the inaccessible `C000h-FFFFh` part of a page;
-- produce deterministic output;
-- emit a human-readable manifest/map showing each file's logical offset, ROM page(s), and size.
+`tools/romfspack.py` builds/validates the recovery stream from `recovery/manifest.json`; `tools/pack_image.py` places it into configured recovery pages, preserves boot pages and rejects capacity/window violations.
 
 ---
 
 ## 24.7 Boot-module source transition
 
-M5 changes the normal production boot path from:
-
-```text
-embedded_modules[]
-    -> module_load()
-```
-
-to:
-
-```text
-ROMFS
-    -> romfs_lookup("sio.zmod")
-    -> module byte source
-    -> module_load()
-```
-
-The M4 ZMOD binary, relocation records, arena allocation, driver API, registration, and console binding remain unchanged.
-
-The embedded catalog may remain available in M5 test images if useful, but the production acceptance path must prove that the SIO driver can be obtained from ROMFS rather than from a C/assembly byte array linked into the kernel.
+Production boot changes from embedded module blobs to `romfs_lookup("sio.zmod")` plus the shared M4 source-backed loader. ZMOD bytes, relocation and registration semantics remain unchanged.
 
 ---
 
 ## 24.8 M5 implementation notes (stage 11)
 
-Implemented 2026-10-03; host-validated, and physically accepted with both
-smoke transcripts (success and corrupt) captured in
-`docs/validation/2026-10-03-m5-romfs.md` after the mode-00
-hardware-conformance fix.  The concrete implementation is:
-
-- the programmed image is eight 64-KiB pages (512 KiB).  Pages 0 and 1
-  remain the boot pages copied by the reset copier; pages 2-7 carry the
-  recovery store.  Only `0000h-BFFFh` of each recovery page is a logical
-  ROMFS window (six 48-KiB windows, 288 KiB capacity); the `C000h-FFFFh`
-  half carries only the fixed ROM-access stub mirror at
-  `ZOS_ROM_ACCESS_BASE` (`EF00h`, 8 bytes mirrored from the linked common
-  copy) and is never part of the logical stream;
-- `tools/romfspack.py` (`pack`/`validate`/`dump`) builds the deterministic
-  ROMFS v1 stream from `recovery/manifest.json`; `tools/pack_image.py`
-  places it (logical byte `L` at offset `L % C000h` of page `2 + L/C000h`),
-  keeps the boot pages untouched, rejects capacity/overflow conditions, and
-  records per-page hashes plus the ROMFS placement in the image manifest;
-- `kernel/romfs/rom_access.asm` is the common-resident transition
-  primitive: it validates page/offset/length, then locks interrupts,
-  saves the exact latch/IFF state, enters the mode-00 window through the
-  fixed trampoline, runs the mirrored stackless stub (LDIR plus the
-  latch-restoring OUT), and restores the exact latch and IFF state in a
-  common epilogue.  It is non-reentrant and never executes from, returns
-  into, or stacks on `2000h-DFFFh` while ROM is visible; the simulator
-  pins every ROM-visible step to the mirrored stub and rejects stack
-  movement;
-- `tools/pack_image.py` mirrors the linked stub bytes into every recovery
-  page (pattern-checked) so the mode-00 fetch stream matches its common
-  copy byte-for-byte;
-- **hardware-conformance correction (2026-10-03):** the first
-  implementation assumed `08h` exposed ROM with SRAM bank 0 above
-  `C000h`.  The physical machine contradicted that: `MEM_DECODER`
-  revision 12 defines `08h` as a flat view of one SRAM bank, and only
-  mode 00 selects ROM at all.  The implementation, the simulator's
-  decoder model, the packer, and this document were corrected to the
-  mode-00 mirrored-stub mechanism (the pattern the machine's own ROM
-  primitive uses).  A failure-only diagnostic now prints the raw init
-  code, live latch, and staged header bytes before the panic marker so a
-  mapping regression is visible without a debugger;
-- `kernel/romfs/romfs.c` is the allocation-free reader: `romfs_init()`
-  fully validates the header and directory before publishing the
-  filesystem; `romfs_lookup()` resolves native case-sensitive names;
-  `romfs_read()` is strictly bounded, handles EOF, and splits reads at the
-  48-KiB window boundaries without 32-bit division;
-- module loading is source-backed: `struct zmod_source` and
-  `module_load_source()` share header/relocation validation, streaming
-  copy, relocation, init transaction, and rollback with the blob-based
-  `module_load()`; the ZMOD on-disk format and the `sio.zmod` bytes are
-  unchanged;
-- the production/M5 boot path is `romfs_init()` ->
-  `romfs_lookup("sio.zmod")` -> shared loader.  A corrupt recovery image
-  fails before any module execution through the early-console panic marker
-  `PANIC: romfs: corrupt recovery image`.  The embedded catalog loader is
-  now an acceptance-image artifact only; `tools/mapcheck.py --production`
-  rejects embedded boot blob/catalog symbols;
-- `docs/romfs-format.md` is the normative format/behavior reference and
-  `docs/validation/2026-10-03-m5-romfs.md` records the host evidence and
-  the pending physical gates.
+Implemented 2026-10-03; host-validated and physically accepted. The authoritative concrete format, mode-00 mirrored-stub access mechanism, six-page 288-KiB recovery geometry, source-backed module loading and validation evidence are recorded in `docs/romfs-format.md` and `docs/validation/2026-10-03-m5-romfs.md`.
 
 ---
 
 # 25. M5 acceptance criteria
 
-M5 is accepted when:
-
-- a deterministic ROMFS image is generated from `recovery/manifest.json`;
-- the image is placed only in ROM pages/regions declared for recovery use;
-- lookup finds valid files and rejects absent/duplicate/corrupt entries predictably;
-- reads work at the start/end of files and across a 48-KiB ROM page boundary;
-- every temporary ROM-visible transition is stackless, executes only code
-  that exists byte-identically in the selected ROM page and in common
-  SRAM, and restores the exact previous memory latch;
-- an invalid page/offset/length cannot read outside the configured ROMFS region;
-- the production boot obtains `sio.zmod` from ROMFS and loads it through the unchanged M4 loader;
-- the dynamically loaded SIO driver registers `sio0.b` and the normal serial console still works on physical hardware;
-- deliberately corrupt ROMFS metadata fails through the early-console/panic path rather than executing arbitrary ROM bytes;
-- `romfspack.py` and image-layout tests detect capacity and page-window violations before hardware testing.
-
-M5 remains usable without IOC, SD, FAT, or CP/M code present.
+M5 is accepted when deterministic packing, bounded/cross-page reads, exact mapping restoration, corruption rejection, ROMFS-backed SIO ZMOD boot and physical-console validation all pass. M5 remains usable without IOC, SD, FAT or CP/M.
 
 ---
 
@@ -2658,337 +2433,95 @@ M5 remains usable without IOC, SD, FAT, or CP/M code present.
 
 ## 26.1 Objective
 
-M6 introduces the first native ZephyrOS process lifecycle and the ability to execute a native program.
-
-M6 remains deliberately single-tasking:
+M6 introduces the first native process lifecycle:
 
 ```text
-parent runs
-    -> exec child
-    -> parent suspended
-    -> child runs alone
-    -> child exits
-    -> parent resumes
+parent runs -> exec child -> parent suspended -> child runs -> child exits -> parent resumes
 ```
 
-There is no scheduler and no preemption requirement.
-
-The first acceptance parent may be the kernel launcher. The process model must nevertheless be structured so the later native shell can become an ordinary parent process without redesigning `exec`/`exit`.
+There is no scheduler or preemption requirement.
 
 ---
 
 ## 26.2 Process descriptor
 
-The kernel keeps process descriptors in bank 7.
-
-A descriptor contains at least the state needed to suspend and restore a process:
-
-```text
-process id / slot
-state: FREE, RUNNING, SUSPENDED
-application bank 0-6
-parent process id or kernel-parent marker
-saved application SP / return context as required
-exit status
-process flags
-```
-
-The table may be fixed-size; M6 does not require a heap.
-
-Bank 7 is never a process bank.
-
-Only one process is RUNNING at a time.
+Bank-7 descriptors track slot/state, application bank `0-6`, parent, saved context/status and flags. Bank 7 is never a process bank; only one process runs at a time.
 
 ---
 
 ## 26.3 Native page zero
 
-Every native process receives a ZephyrOS-owned page zero in its own application bank.
-
-At minimum it contains the native syscall gateway already reserved by M1:
-
-```text
-0030h   RST 30h entry / JP zos_syscall_gate
-```
-
-Other bytes are initialized by ZephyrOS rather than inherited from a previous program.
-
-This is a native page zero. It does not contain CP/M `CALL 0005h`, FCBs, command tail, or other compatibility structures.
-
-A small process-startup block may be placed in the caller-visible low 8 KiB so it remains accessible in both mode `10` and mode `11`. Its versioned structure can later carry command-line/environment information; M6 may launch with zero arguments.
+Every process receives a freshly constructed native page zero containing the `RST 30h` syscall gateway and no CP/M structures.
 
 ---
 
 ## 26.4 ZEX v1: single-bank native executable
 
-M6 defines the first **ZEX** executable contract.
+M6 ZEX is deliberately single-bank: one code/data image, BSS, entry and stack, linked at logical `0100h`. Choosing a different physical application bank does not change logical addresses and therefore does not require M4-style base relocation.
 
-The M6 form is intentionally simpler than the later far-code/far-data format:
-
-- one application bank;
-- one main code/data image;
-- one zero-initialized BSS region;
-- one entry point;
-- one normal process stack;
-- no auxiliary-bank allocations;
-- no far-call or far-data segments.
-
-The executable's logical load address is fixed at:
-
-```text
-0100h
-```
-
-This is important: selecting a different physical application bank does **not** change the Z80 logical addresses seen by the program. A normal single-bank ZEX linked at `0100h` therefore does not need M4-style base relocation merely because it is loaded into bank 0, 1, 2, etc.
-
-M12 may extend ZEX with segment/relocation metadata for auxiliary far code/data without changing this simple primary-bank model.
+M12 may extend ZEX for auxiliary far code/data.
 
 ---
 
 ## 26.5 ZEX v1 header
 
-A ZEX v1 header contains at minimum:
-
-```text
-magic               "ZEX1"
-format_version      1
-abi_version
-flags
-image_size
-bss_size
-entry_offset
-stack_size
-header_size
-```
-
-The effective entry address is:
-
-```text
-0100h + entry_offset
-```
-
-The loader validates that:
-
-- the image and BSS fit below the reserved stack;
-- entry lies inside executable image space;
-- arithmetic cannot wrap the 16-bit logical address space;
-- no payload overlaps page zero or `E000h-FFFFh` common memory.
-
-The exact packed byte layout belongs in a dedicated executable-format document once implemented.
+The header carries magic/version/ABI/flags, image size, BSS size, entry offset, stack size and header size; the loader validates all geometry before execution.
 
 ---
 
 ## 26.6 Native process memory layout
 
-A simple M6 process sees:
-
 ```text
-0000h-00FFh   ZephyrOS native page zero
+0000h-00FFh   native page zero
 0100h-....    ZEX image
-....          zero-initialized BSS
-....          free process memory
-....-DFFFh    process stack growing downward
-E000h-FFFFh   permanent physical bank-0 common memory
+....          BSS/free memory
+....-DFFFh    process stack
+E000h-FFFFh   common memory, not process-owned
 ```
-
-The loader chooses/validates the initial stack position from `stack_size` and the actual image+BSS end.
-
-The process does not own common memory.
 
 ---
 
 ## 26.7 ZEX load/launch sequence
 
-M6 loads programs from M5 ROMFS.
-
-Conceptually:
-
-```text
-exec("zextest.zex")
-    │
-    ├── ROMFS lookup
-    ├── validate ZEX header
-    ├── allocate application bank N (0-6)
-    ├── clear/build native page zero
-    ├── copy image to bank N:0100h
-    ├── zero BSS
-    ├── construct startup block
-    ├── initialize process descriptor and stack
-    │
-    ▼
-common process-launch gate
-    │
-    ├── switch to mode 10 | N
-    ├── install application SP
-    └── enter ZEX entry point
-```
-
-The bank-copy/loading mechanism is kernel-owned. A user program never selects bank 7 or directly manipulates the memory-control latch as part of normal execution.
+ROMFS lookup -> validate -> allocate bank -> construct page zero -> copy image -> zero BSS -> initialize descriptor/stack -> common launch gate -> mode 10 -> entry.
 
 ---
 
 ## 26.8 Minimal native syscall set
-
-M6 makes the M1 syscall scaffold useful.
-
-The minimum services required to execute a real interactive native program are:
 
 ```text
 SYS_EXIT
 SYS_CONSOLE_WRITE
 SYS_CONSOLE_READ
 SYS_CONSOLE_POLL
-SYS_GETINFO             small process/system information as needed
+SYS_GETINFO
 ```
 
-Exact syscall numbers and argument blocks must be declared in a native ABI header rather than inferred from C function layout.
-
-Console syscalls go through the normal console service and registered device(s). They do not call the early console except through panic/fatal fallback paths.
-
-This means a ZEX does not know whether its console is currently SIO0/B or, later, V9958 output plus HID input.
+Console calls use the normal registered console service and therefore remain device-independent.
 
 ---
 
 ## 26.9 Exit and parent restoration
 
-`SYS_EXIT` enters the kernel through the normal common syscall gate.
-
-The kernel:
-
-1. records the child's exit status;
-2. releases the child's process bank and process-local resources;
-3. restores the suspended parent descriptor/context;
-4. switches back to the parent's bank/mode;
-5. resumes the parent after its `exec` call.
-
-For the initial kernel-parent acceptance case, step 3 returns to the kernel launcher instead of another user process.
-
-Process exit is the native mechanism. Later CP/M `BDOS 0` / `JP 0000h` semantics will translate to it rather than defining a second lifecycle.
+`SYS_EXIT` records status, releases the child bank/resources, restores the parent/kernel-launcher context, mapping and stack, then resumes after `exec`.
 
 ---
 
 ## 26.10 M6 non-goals
 
-M6 does not require:
-
-- multitasking or scheduling;
-- signals;
-- pipes or redirection;
-- dynamic linking;
-- runtime module unload;
-- a writable filesystem;
-- far-code/far-data allocations;
-- CP/M `.COM` execution;
-- a shell.
-
-A process occupies one application bank for its normal code/data/stack.
+No scheduling, signals, pipes, dynamic linking, writable filesystem, far allocations, CP/M COM or shell.
 
 ---
 
 ## 26.11 M6 implementation notes (stage 12)
 
-Implemented 2026-10-03; host-validated end to end (simulator replay of
-both acceptance images plus the negative control) and physically
-accepted with both smoke transcripts (success and failure) captured in
-`docs/validation/2026-10-03-m6-zex.md`.  The concrete implementation is:
-
-- `kernel/process/process.c` (bank 7) owns the fixed 7-slot descriptor
-  table (`state` FREE/RUNNING/SUSPENDED, `pid`, `bank`, `parent`,
-  `flags`, `exit_status`), the running-pid/last-status globals, the
-  lowest-free-bank allocator over banks `0-6`, and the reserve/release
-  bitmask.  Bank 7 is never allocatable and `process_bank_release(7)` is
-  a no-op.  A slot exists only while it is RUNNING; `process_exit()`
-  stores the status, frees the slot and bank, clears the running pid, and
-  re-enters the common resume gate, which restores the parent's exact
-  SP/latch/IFF state and returns from the original `exec` call.  The
-  kernel launcher acts as the initial kernel-parent;
-- `kernel/process/exec.c` (bank 7) is `process_exec()`: ROMFS lookup
-  (wrong media type -> `ZEX_EXEC_ERR_TYPE`), header read, the 14-step
-  geometry validation documented in `docs/zex-format.md`, then slot +
-  lowest-free-bank allocation, bank zero fill, page-zero vector
-  construction, 64-byte chunked image copy through the common staging
-  block, BSS zero fill, descriptor fill, and entry through the common
-  launch gate.  Every failure path releases the slot and bank before
-  returning, so a rejected program leaves the table and allocator
-  byte-identical to their pre-call state.  `zex_validate_header()` is
-  shared with the target tests and mirrors `tools/zexpack.py`;
-- `kernel/process/launch.asm` (common) is the process transition gate:
-  it validates the target bank/mode, snapshots IFF2 with `LD A,I`
-  *before* `DI` (DI clears IFF2), switches to mode `10 | bank`, installs
-  `SP = E000h - stack_size`, pushes the common return trap under the
-  entry address, and enters the program with `HL = 0`.  A raw `RET` from
-  a program therefore lands in the common trap, which restores the
-  kernel mapping and exits the process with `ZOS_EFAULT`; the page-zero
-  template `C3 <entry>` also lives in common data so the loader can copy
-  it through the copy gate.  `_zos_process_resume` restores the saved
-  latch and SP and returns from the launch call site;
-- `kernel/memory/user_copy.asm` (common) is the single bank-copy gate
-  used by both the loader and the syscall layer.  The caller passes a
-  packed `struct zos_bank_copy_req` (`bank`, `op`, `addr`, `buffer`,
-  `length`); the gate rejects bank 7 and ops outside READ/WRITE/ZERO with
-  `ZOS_EINVAL`, snapshots IFF2 before `DI`, switches to its dedicated
-  common 16-byte copy stack, enters mode `10 | bank`, performs one
-  bounded `LDIR` (or a forward fill for ZERO), and restores the exact
-  latch, SP, and IFF state.  The 64-byte staging buffer in common RAM is
-  the only window a process's data may cross through;
-- `kernel/syscall.c` (bank 7) implements the M6 set - `EXIT 0`,
-  `WRITE 1`, `READ 2`, `POLL 3`, `GETINFO 4` - behind the unchanged
-  common gate.  Argument blocks must lie in `0100h-1FFFh`; buffers may
-  span `0100h-DFFFh`.  `WRITE` copies through the staging block in
-  64-byte chunks and calls the normal console service (partial writes
-  return the byte count; failures return the negated errno); `READ` is
-  non-blocking, drains the available bytes without moving the mapping,
-  and stages the result back; `POLL` returns `0`/`1`; `GETINFO` fills a
-  6-byte versioned record (`size`, `abi`, `pid`, `bank`, `flags` with
-  `PROCESS_INFO_FLAG_KERNEL_PARENT`) and returns its size.  `EXIT` reads
-  the u16 status and never returns; a raw `RET` rejects through the trap
-  with `ZOS_EFAULT`.  The gate's carry boundary now derives from
-  `_zos_syscall_result_c` so dispatch results survive the mode switch;
-- `user/runtime/zex_runtime.{h,asm}` is the SDCC `sdcccall(1)` runtime
-  for ZEX programs (`zex_exit`, `zex_write`, `zex_read`, `zex_poll`,
-  `zex_getinfo`) with an 8-byte image-resident argument scratch;
-- acceptance evidence lives in `tests/target/m6/` (`zextest.c`: BSS/stack/
-  GETINFO checks, prints `zextest: bank=N pid=P` and `zextest: OK`,
-  exits `0xA500 | bank`; `m6_test.c`: two-bank and repeated-cycle runs,
-  raw-return fault check, exact rejection of all 16 malformed fixtures,
-  ENOSPC and argument checks).  `tests/m6/manifest.json` packs the
-  program plus one fixture per rejection boundary into ROMFS;
-  `tests/m6/manifest-failure.json` swaps in a truncated ZEX to prove
-  rollback and that the untouched valid copy still runs;
-- `tests/test_m6_sim.py` replays the real images in the simulator,
-  including a mutated-image negative control, bank-1 byte-identity
-  checks against the packed `zextest.zex`, and focused copy-gate tests
-  (round trip, zero fill, bank-7/bad-op rejection, IFF restore).  The
-  simulator's flag model had to be corrected while validating signed
-  SDCC comparisons (`jp po`/`jr m` idioms after `add`/`sub`/`cp`) -
-  a host test-infrastructure fix, not a kernel change;
-- `tools/zexpack.py` packs/validates/dumps/deterministically reports ZEX
-  files and mirrors every `process_exec` boundary; `make zex-test`
-  proves tool/kernel constant parity against `include/zephyros/zex.h`;
-- physical validation uses `make smoke-hardware-m6` /
-  `make smoke-hardware-m6-failure` with the markers checked verbatim by
-  `tests/test_zex.py`.
+Implemented 2026-10-03; host-validated end to end and physically accepted. The concrete process table, bank-copy gate, syscall implementation, ZEX runtime/packer, negative fixtures and evidence are recorded in `docs/zex-format.md` and `docs/validation/2026-10-03-m6-zex.md`.
 
 ---
 
 # 27. M6 acceptance criteria
 
-M6 is accepted when:
-
-- process banks are allocated only from `0-6` and released on exit/failure;
-- a native page zero is constructed deterministically in the chosen bank;
-- `zextest.zex` is found in ROMFS, validated, loaded at logical `0100h`, and entered in mode `10`;
-- its BSS starts zeroed and its stack does not overlap image/BSS;
-- the program writes through the native console syscall using the normal dynamic SIO console driver;
-- the program exits with a known status through `SYS_EXIT`;
-- the kernel/parent resumes with its own stack and bank state intact;
-- the same ZEX binary runs unchanged from at least two different physical application banks;
-- repeated exec/exit cycles do not leak process slots or banks;
-- malformed headers, oversized images, bad entry points, and stack collisions fail before execution;
-- a process cannot allocate or enter bank 7 through the normal process API;
-- early-console diagnostics remain available if process loading or launch fails.
-
-The acceptance program is intentionally small; M7 supplies the first useful native program.
+M6 is accepted when banks `0-6` allocate/release safely, page zero is deterministic, valid ZEX loads/runs/exits/resumes correctly in multiple physical banks, BSS/stack geometry is correct, syscalls use the dynamic console, malformed images roll back cleanly and bank 7 remains inaccessible as a process bank.
 
 ---
 
@@ -3174,12 +2707,472 @@ M7 establishes the interactive native recovery environment that remains availabl
 
 ---
 
-# 30. Deferred architecture after M7
+# 30. Milestone M8 — Native device stack completion
 
-The following remain intentionally deferred until after M7:
+## 30.1 Objective
 
-- V9958 native video/console driver and HID native input driver;
-- IOC native transport driver completion;
+M8 establishes the normal native ZephyrOS device environment:
+
+```text
+normal console input   -> HID keyboard
+normal console output  -> V9958
+IOC transport          -> command + bulk services for HID and later FAT/storage
+serial fallback        -> SIO0/B registered driver
+early/panic console    -> direct SIO0/B, permanently independent
+```
+
+M8 turns the M3/M4 character-device proof into a class-aware device architecture. The registry remains the common discovery mechanism, but video, HID and IOC gain explicit class contracts rather than being forced through a single character-device operations shape.
+
+The V9958, HID and IOC drivers are ordinary resident ZMOD modules sourced from ROMFS and relocated by the M4 loader.
+
+### M8 source-tree additions
+
+M8 adds, conceptually:
+
+```text
+include/zephyros/video.h
+include/zephyros/hid.h
+include/zephyros/ioc.h
+
+drivers/v9958/
+drivers/hid/
+drivers/ioc/
+
+modules/manifests/v9958.json
+modules/manifests/hid.json
+modules/manifests/ioc.json
+```
+
+Their implementation remains under `drivers/`; only hardware constants belong under `platform/zephyr80/`.
+
+---
+
+## 30.2 Production driver-area sizing
+
+The fixed M4 arena at `A000h-BFFFh` was an acceptance geometry, not a viable production budget. Eight KiB would be consumed too quickly by the native device set; the V9958 implementation alone is approximately 4 KiB before HID, IOC, SIO and future drivers are considered.
+
+M8 therefore removes `A000h` as a production architectural boundary and makes the arena consume the loadable bank-7 space left after the linked static kernel:
+
+```text
+2000h
+    linked static kernel
+    ...
+__kernel_code_end
+    align upward to 512-byte granule
+__driver_arena_start
+    resident ZMOD allocations
+    ...
+__driver_arena_end = C000h
+
+C000h-DFFFh
+    bank-7 runtime/system workspace
+    kernel state and stacks
+    later filesystem/cache/deblocking buffers
+    IOC/storage scratch
+```
+
+The production relationship is conceptually:
+
+```text
+__driver_arena_start = align_up(__kernel_code_end, 0x0200)
+__driver_arena_end   = 0xC000
+```
+
+Rules:
+
+- allocation granularity remains 512 bytes;
+- the production build must fail if the resulting arena is less than **16 KiB** (`4000h`);
+- 16 KiB is a minimum, not a fixed reservation: a smaller linked kernel automatically yields a larger driver arena;
+- `C000h-DFFFh` is not available to the module allocator and remains runtime/system workspace;
+- the build reports static-kernel end, arena start/end/size, each module's image+BSS size, allocated granules and remaining free granules;
+- moving the arena start must not require rebuilding a ZMOD: the M4 relocation model already makes placement a loader decision;
+- large immutable driver resources such as fonts, icons or boot graphics should remain in ROMFS/resource storage rather than consuming resident module memory unless they are intrinsically required resident tables.
+
+The exact linker/build mechanism used to derive the aligned start may be implementation-specific, but a fixed `A000h` production base is no longer architectural.
+
+---
+
+## 30.3 Driver ABI v2 and class-aware operations
+
+M3/M4 currently use a 16-bit capability mask and a single `putc/write/poll/getc` operations shape. M8 introduces a new internal driver ABI version so a device may expose generic character behavior and/or a class-specific interface.
+
+Conceptually:
+
+```c
+#define ZDRIVER_ABI_VERSION 2u
+
+typedef uint32_t zdev_caps_t;
+
+struct zchar_ops {
+    int (*putc)(void *state, char ch);
+    int (*write)(void *state, const char *buf, uint16_t len);
+    int (*poll)(void *state);
+    int (*getc)(void *state);
+};
+
+struct zdevice_desc {
+    uint8_t                 class_id;
+    zdev_caps_t             capabilities;
+    const char             *name;
+    const struct zchar_ops *char_ops;   /* optional */
+    const void             *class_ops;  /* type determined by class */
+    void                   *state;
+};
+```
+
+The generic capabilities remain:
+
+```text
+ZCAP_CHAR_IN
+ZCAP_CHAR_OUT
+ZCAP_CONSOLE_IN
+ZCAP_CONSOLE_OUT
+```
+
+Capability bits are authoritative. A device may expose character operations, class operations or both. Unsupported class operations fail predictably rather than being inferred from the device name.
+
+M8 refines two M3 placeholder class names while retaining their numeric slots in ABI v2:
+
+```text
+ZDEV_INPUT      -> ZDEV_HID
+ZDEV_TRANSPORT  -> ZDEV_IOC
+```
+
+`ZDEV_VIDEO` becomes a concrete class rather than a reserved future name. `ZDEV_SERIAL`, `ZDEV_STORAGE` and `ZDEV_OTHER` remain available.
+
+---
+
+## 30.4 VIDEO class and V9958
+
+The native VIDEO class is modeled around the useful semantic shape of the current ZSDOS `VIDEO_SEND` call:
+
+```text
+operation + payload pointer + payload length -> status
+```
+
+The important part carried forward is the device-oriented operation vocabulary, not the historical Virtual Drip framing.
+
+Conceptually:
+
+```c
+struct zvideo_ops {
+    int (*send)(void *state,
+                uint8_t operation,
+                const void *payload,
+                uint16_t length);
+};
+```
+
+Initial native operations:
+
+```text
+ZVIDEO_CTRL_WRITE
+ZVIDEO_DATA_WRITE
+ZVIDEO_DATA_BLOCK
+ZVIDEO_PALETTE_WRITE
+ZVIDEO_INDIRECT_WRITE
+ZVIDEO_PRESENT
+ZVIDEO_RESET
+```
+
+Associated capabilities:
+
+```text
+ZCAP_VIDEO_CTRL_WRITE
+ZCAP_VIDEO_DATA_WRITE
+ZCAP_VIDEO_DATA_BLOCK
+ZCAP_VIDEO_PALETTE
+ZCAP_VIDEO_INDIRECT
+ZCAP_VIDEO_PRESENT
+ZCAP_VIDEO_RESET
+```
+
+The native operation numbers are not required to equal the historical `VIDEO_SEND` / Virtual Drip packet numbers. The later CP/M personality translates that frozen compatibility ABI to native operations.
+
+Likewise, native ZephyrOS does **not** inherit the historical 16-byte non-block payload ceiling. That ceiling belongs to the old Virtual Drip transport contract, not to a directly attached V9958.
+
+The V9958 module registers a device such as:
+
+```text
+name:   v9958.0
+class:  ZDEV_VIDEO
+caps:   supported ZCAP_VIDEO_*
+        ZCAP_CHAR_OUT
+        ZCAP_CONSOLE_OUT
+```
+
+It therefore exposes two independent uses of the same hardware:
+
+```text
+video/graphics clients -> zvideo_ops.send()
+normal text console    -> zchar_ops.putc/write()
+```
+
+The V9958 driver owns VDP register/data programming, its 6x8 text renderer/terminal behavior and private state. The console service only consumes the character interface.
+
+M8 does not require VDP interrupt-driven operation for acceptance. If the driver enables `/INT`, it must use the M2 `IRQ_VDP_FF` path and must not install a private vector or bypass the common IRQ executive.
+
+---
+
+## 30.5 HID class
+
+The HID class is the native human-input abstraction. It sits above the IOC transport; it does not own SIO1 framing or hardware status pins.
+
+Suggested HID capabilities:
+
+```text
+ZCAP_HID_TEXT
+ZCAP_HID_KEY_EVENTS      optional/reserved in M8
+ZCAP_HID_GAMEPAD         optional/reserved in M8
+```
+
+A keyboard/text instance also advertises:
+
+```text
+ZCAP_CHAR_IN
+ZCAP_CONSOLE_IN
+```
+
+Conceptual operations:
+
+```c
+struct zhid_ops {
+    int (*read_text)(void *state,
+                     uint8_t *dst,
+                     uint16_t max_len);
+
+    int (*read_gamepad)(void *state,
+                        uint8_t index,
+                        struct zhid_gamepad_state *out);
+};
+```
+
+Unsupported methods may be absent; capabilities define what the instance provides.
+
+A module may register multiple HID instances, for example:
+
+```text
+hid.keyboard0   ZDEV_HID   HID_TEXT | CHAR_IN | CONSOLE_IN
+hid.gamepad0    ZDEV_HID   HID_GAMEPAD
+hid.gamepad1    ZDEV_HID   HID_GAMEPAD
+```
+
+M8 acceptance requires the keyboard/text path. Gamepad and richer key-event support may be implemented later without changing the class boundary.
+
+### HID over IOC
+
+The current MCU keeps translated keyboard bytes in its queue and signals when input is pending. Under ZephyrOS:
+
+```text
+HID driver
+    -> asks IOC semantic status for HID_PENDING
+    -> sends the IOC HID-input command only when needed
+    -> buffers/presents characters through zchar_ops
+```
+
+The HID driver must not sample `/CTSB`, RR0 bits or SIO1 ports directly. Those are IOC implementation details.
+
+---
+
+## 30.6 IOC class
+
+The IOC class owns the Zephyr Z80-to-MCU transport itself.
+
+The IOC module owns:
+
+```text
+SIO1/B   command/reply lane
+SIO1/A   bulk lane
+```
+
+Suggested capabilities:
+
+```text
+ZCAP_IOC_COMMAND
+ZCAP_IOC_BULK_READ
+ZCAP_IOC_BULK_WRITE
+ZCAP_IOC_STATUS
+```
+
+Conceptual operations:
+
+```c
+struct zioc_ops {
+    int (*command)(void *state,
+                   const struct zioc_frame *request,
+                   struct zioc_frame *reply);
+
+    int (*bulk_read)(void *state,
+                     void *dst,
+                     uint16_t length);
+
+    int (*bulk_write)(void *state,
+                      const void *src,
+                      uint16_t length);
+
+    uint16_t (*status)(void *state);
+};
+```
+
+The IOC driver owns:
+
+- SIO1 register programming;
+- command/reply framing and synchronization;
+- bulk-lane framing and synchronization;
+- lane serialization and bulk-admission state;
+- transport timeouts/recovery;
+- interpretation of physical doorbell/status signals.
+
+Consumers see semantic status bits such as:
+
+```text
+ZIOC_STATUS_HID_PENDING
+```
+
+rather than raw `/CTSB` or RR0 bit positions.
+
+`bulk_read()` / `bulk_write()` are valid only after the appropriate command-lane admission. The IOC driver owns that protocol state and rejects invalid sequencing. M9's FAT/storage implementation consumes this same IOC class instead of duplicating transport code.
+
+---
+
+## 30.7 Driver-to-driver discovery
+
+M8 introduces the first normal case where one loaded driver consumes another device: HID depends on IOC.
+
+Direct references to another module's symbols and lookup by instance name are forbidden. Driver ABI v2 therefore adds read-only discovery/interface access semantically equivalent to:
+
+```c
+zdev_handle_t (*device_find)(uint8_t class_id,
+                             zdev_caps_t required_caps,
+                             zdev_handle_t after);
+
+int (*device_interface)(zdev_handle_t handle,
+                        uint8_t expected_class,
+                        const void **class_ops,
+                        void **state);
+```
+
+Rules:
+
+- dependencies are selected by class plus required capabilities;
+- `device_interface()` verifies the expected class;
+- returned state is opaque and remains owned by the providing driver;
+- consumers receive no arbitrary registry mutation access;
+- no lifetime reference counting is needed because successfully loaded M8 modules remain resident until reboot.
+
+M8 does not require a general dependency resolver. Boot-module order remains explicit and deterministic.
+
+---
+
+## 30.8 Boot order
+
+A normal M8 boot is conceptually:
+
+```text
+sio.zmod
+    -> serial fallback device available
+
+ioc.zmod
+    -> ZDEV_IOC command/bulk/status available
+
+hid.zmod
+    -> discovers ZDEV_IOC
+    -> registers keyboard/text input
+
+v9958.zmod
+    -> registers video + character output
+
+console_bind_defaults()
+    -> bind preferred native console
+
+exec monitor.zex
+```
+
+V9958 has no IOC dependency and may load earlier/later as long as all console candidates are registered before final binding.
+
+A failed IOC/HID/V9958 module must not invalidate an already loaded SIO fallback.
+
+---
+
+## 30.9 Console binding policy
+
+M8 changes default console selection from simply taking the first generic console-capability match to a preference policy using class plus capability.
+
+Preferred normal console:
+
+```text
+input:   ZDEV_HID   + ZCAP_CONSOLE_IN
+output:  ZDEV_VIDEO + ZCAP_CONSOLE_OUT
+```
+
+If a preferred direction is unavailable, the service falls back to any registered device carrying the required generic console capability; normally this is SIO0/B.
+
+Expected behavior:
+
+```text
+HID + V9958 available:
+    HID -> console -> V9958
+
+V9958 unavailable:
+    HID -> console -> SIO
+
+HID unavailable:
+    SIO -> console -> V9958
+
+HID + V9958 unavailable:
+    SIO -> console -> SIO
+
+panic / very early boot:
+    direct early SIO regardless of registry state
+```
+
+The same `monitor.zex` built for M7 must operate unchanged through all valid normal-console bindings because it uses the native console syscall ABI only.
+
+---
+
+## 30.10 M8 non-goals
+
+M8 does not implement:
+
+- the native FAT filesystem or SD file/path semantics;
+- the native shell;
+- the complete diagnostic suite;
+- module unload/hot-plug;
+- far-code/far-data services;
+- CP/M compatibility.
+
+It establishes the device foundation those later milestones consume.
+
+---
+
+# 31. M8 acceptance criteria
+
+M8 is accepted when:
+
+- production driver-arena start is derived from the aligned linked-kernel end rather than fixed at `A000h`;
+- driver-arena end remains `C000h`, allocation remains 512-byte granular, and a production arena smaller than 16 KiB is a build error;
+- the build reports total/used/free arena space and per-module allocations;
+- `C000h-DFFFh` remains outside the module arena for runtime/system and later filesystem/cache/deblocking use;
+- driver ABI v2 supports 32-bit capability masks, optional character operations and class-specific operations;
+- SIO remains the dynamically loaded serial/character fallback device;
+- IOC registers `ZDEV_IOC` and proves command, bulk-read, bulk-write and semantic status behavior;
+- HID discovers IOC by class/capability rather than symbol/name, registers a keyboard/text `ZDEV_HID`, and provides `ZCAP_CHAR_IN | ZCAP_CONSOLE_IN`;
+- V9958 registers `ZDEV_VIDEO`, exposes supported `ZVIDEO_*` operations, and provides `ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT` through its text renderer;
+- native video operations are not constrained by the historical Virtual Drip 16-byte non-block ceiling;
+- normal console binding selects HID input and V9958 output when available;
+- each defined HID/V9958 failure combination falls back cleanly without losing the direct early/panic SIO path;
+- the exact M7 `monitor.zex` runs interactively through HID/V9958 without SIO-specific changes;
+- unsupported/malformed class operations fail predictably rather than calling invalid pointers;
+- all production M8 modules fit simultaneously while satisfying the 16-KiB minimum-arena invariant.
+
+Physical Zephyr-80 hardware is authoritative for V9958 wait/timing behavior, IOC/HID transport and the complete console interaction.
+
+---
+
+# 32. Deferred architecture after M8
+
+The following remain intentionally deferred until after M8:
+
 - native FAT filesystem on SD with paths, directories, file handles, CWD, and normal byte-oriented I/O;
 - native shell and core userland;
 - complete bundled native diagnostic suite;
@@ -3190,105 +3183,50 @@ The following remain intentionally deferred until after M7:
 - driver unload/hot-plug;
 - preemptive multitasking or scheduling.
 
-The first six items above are **native ZephyrOS** work. CP/M compatibility begins only after the native console, storage/filesystem, processes/executables, shell/userland, diagnostics, and extended-memory facilities are complete.
+The first four items above are **native ZephyrOS** work. CP/M compatibility begins only after the native filesystem, shell/userland, diagnostics and extended-memory facilities are complete.
 
 ---
 
-# 31. Milestone summary
+# 33. Milestone summary
 
 ```text
 M0  COMPLETE
-│
-├── enter kernel
-├── establish stack
-├── initialize early serial
-├── call C successfully
-├── print banner
-└── halt
-    │
-    ▼
 M1  COMPLETE
-│
-├── establish mode 10/11 kernel memory model
-├── formalize platform banking boundary
-├── own native page zero
-├── reserve syscall RST
-├── create common kernel gate
-├── define ABI scaffold
-├── generate/validate link map
-└── retain early panic console
-    │
-    ▼
 M2  COMPLETE
-│
-├── kernel-owned IM2
-├── common IRQ crossing gate
-├── common transition + bank-7 ISR stacks
-├── source ownership registry
-├── safe FFh vector
-└── CTC0 hardware interrupt
-    │
-    ▼
 M3  COMPLETE
-│
-├── device registry
-├── capability model
-├── static SIO0/B driver
-└── normal console service over registered device
-    │
-    ▼
 M4  COMPLETE
-│
-├── bank-7 driver arena
-├── 512-byte granule allocator
-├── ZMOD v1 driver format
-├── relocation + BSS
-├── dynamic SIO module
-└── hardware-validated dynamic console
-    │
-    ▼
-M5
-│
-├── safe runtime ROM access
-├── read-only recovery filesystem
-├── host ROMFS packer
-└── boot ZMOD source moves from embedded catalog to ROMFS
-    │
-    ▼
-M6
-│
-├── fixed process descriptors
-├── application-bank allocation
-├── native page zero
-├── single-bank ZEX v1
-├── native console/exit syscalls
-└── exec child -> exit -> resume parent
-    │
-    ▼
+M5  COMPLETE
+M6  COMPLETE
 M7
 │
 ├── monitor.zex in ROMFS
-├── first useful native application
 ├── native diagnostic syscall boundary
 ├── reusable diagnostic support
 └── default interactive environment before the shell
+    │
+    ▼
+M8
+│
+├── linker-derived production driver arena, minimum 16 KiB
+├── driver ABI v2 + class-specific operations
+├── IOC command/bulk/status class
+├── HID keyboard/input class over IOC
+├── V9958 video + console-output class
+├── preferred HID/V9958 console binding
+└── SIO registered fallback + direct panic path
 ```
 
-At the end of M7, ZephyrOS can boot from its own ROM recovery store, load dynamic drivers, execute a native application, interact through the normal console service, and provide a useful native diagnostic monitor without any CP/M layer present.
+At the end of M8, ZephyrOS can boot from ROMFS, load the native device stack dynamically, execute native programs, use the V9958/HID console, communicate with the IOC, and retain serial recovery/fallback — all without any CP/M layer.
 
 ---
 
-# 32. Later milestone roadmap
+# 34. Later milestone roadmap
 
-The intended sequence after M7 is:
+The intended sequence after M8 is:
 
 ```text
-M8  Native device stack completion
-    - V9958 video / console output
-    - HID keyboard / input
-    - IOC transport
-
 M9  Native FAT filesystem on SD
+    - IOC-backed FAT filesystem
     - paths and real directories
     - file handles / byte-oriented I/O
     - CWD and normal native filesystem semantics
@@ -3315,4 +3253,4 @@ M15 CP/M BDOS / FCB / filesystem compatibility
 
 M12 is part of native ZephyrOS, not a compatibility extension. The CP/M layer begins at M13 and translates CP/M semantics onto native ZephyrOS services that already work independently.
 
-The milestone names after M7 define intended sequencing. Their detailed architecture should be added as each milestone is approached rather than prematurely constraining the implementation.
+The milestone names after M8 define intended sequencing. Their detailed architecture should be added as each milestone is approached rather than prematurely constraining the implementation.
