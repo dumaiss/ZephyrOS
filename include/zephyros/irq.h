@@ -37,6 +37,14 @@ void platform_irq_quiesce(irq_source_t source);
 void platform_ctc0_test_start(void);
 void platform_ctc0_stop(void);
 
+/* Internal interrupt-state lock used by kernel subsystems that mutate
+ * shared state (registry, drivers).  irq_arch_lock() disables maskable
+ * interrupts and returns the previous IFF state; irq_arch_unlock()
+ * re-enables only when that state was enabled.  Both are common-resident
+ * assembly helpers of the M2 executive, not a driver ABI. */
+uint8_t irq_arch_lock(void);
+void irq_arch_unlock(uint8_t enabled);
+
 #if ZOS_IRQ_SELFTEST
 void zos_run_irq_selftest(void);
 #endif

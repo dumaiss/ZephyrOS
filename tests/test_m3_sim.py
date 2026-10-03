@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""Host-side functional test: replay the target-side M3 self-test in a
+minimal Z80 simulator.
+
+Executes the real linked kernel code from the m3-selftest image exactly as
+the boot path would:
+
+  1. the boot C-runtime initialization (zero/copy/GSINIT), because M3
+     driver ops tables are initialized data,
+  2. irq_init(), device_registry_init(), driver_init_static(), and
+     console_bind_defaults(),
+  3. the full `zos_run_m3_selftest` C driver: registry semantics,
+     checkpoint/rollback, exhaustion, ABI rejection, console TX/RX, and
+     the static IRQ probe claiming CTC0 through the M2 executive (one
+     injected vector per EI window while the probe waits).
+
+The SIO model captures data-port writes (console transcript evidence) and
+feeds one queued RX byte for the RX test.  Physical hardware remains
+authoritative for real UART and CTC timing.
+
+Skipped when the m3-selftest image has not been built
+(`make m3-selftest`).
+"""
+
+import os
+import sys
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+
+from z80sim import Z80, read_symbols  # noqa: E402
+
+RET = 0x1234
+STEP_LIMIT = 8000000
+
+SIO_INIT_SEQUENCE = bytes(
+    [0x18, 0x04, 0x44, 0x03, 0xE1, 0x05, 0xE8, 0x01, 0x00]
+)
+
+M3_TX_OK = b"m3 selftest: console TX OK\r\n"
+M3_RX_READY = b"m3 selftest: ready for RX\r\n"
+M3_RX_OK = b"m3 selftest: RX OK\r\n"
+M3_OK = b"m3 selftest: OK\r\n"
+M3_RX_BYTE = 0x52  # 'R'
+
+
+def run_function(z, addr, limit=STEP_LIMIT):
+    """Call the function at `addr` and run until it returns."""
+    z.push16(RET)
+    z.pc = addr
+    for _ in range(limit):
+        z.step()
+        if z.pc == RET:
+            return
+    raise AssertionError("function at %04X did not return (PC=%04X)"
+                         % (addr, z.pc))
+
+
+def run_m3_boot(z, syms):
+    """Mirror kernel_main's M3 section (without the ~1 s connect delay)."""
+    run_function(z, syms["__zos_crt0_init"])
+    run_function(z, syms["_irq_init"])
+    run_function(z, syms["_device_registry_init"])
+    run_function(z, syms["_driver_init_static"])
+    run_function(z, syms["_console_bind_defaults"])
+
+
+def run_m3_selftest(z, syms):
+    """Run the C self-test, injecting CTC0 while the IRQ probe waits."""
+    probe_wait = syms["_m3_irq_probe_wait"]
+    hits_addr = syms["_m3_irq_probe_hits"]
+    armed = False
+
+    z.push16(RET)
+    z.pc = syms["_zos_run_m3_selftest"]
+    for _ in range(STEP_LIMIT):
+        op = z.rd(z.pc)
+        if probe_wait <= z.pc < probe_wait + 0x80 and op == 0xFB:
+            armed = True
+        if armed:
+            hits = z.bank7[hits_addr] | (z.bank7[hits_addr + 1] << 8)
+            if hits >= 3:
+                armed = False
+            elif z.iff1 and not z.ei_delay and not z.int_pending:
+                z.assert_int(0x00)
+        z.step()
+        if z.pc == RET:
+            break
+    else:
+        raise AssertionError("m3 selftest did not return (PC=%04X)" % z.pc)
+
+    return z.bank7[syms["_m3_selftest_result"]]
+
+
+class TestM3SelftestSim(unittest.TestCase):
+    """Full target-side self-test replay (requires the m3-selftest image)."""
+
+    def setUp(self):
+        self.bin_path = os.path.join(
+            ROOT, "build-m3-selftest", "zephyros-m3-selftest.bin"
+        )
+        if not os.path.exists(self.bin_path):
+            self.skipTest("m3-selftest image missing; run `make m3-selftest`")
+        self.image = open(self.bin_path, "rb").read()
+        map_path = os.path.join(ROOT, "build-m3-selftest", "zephyros.map")
+        self.syms = read_symbols(map_path)
+        self.page0, self.page1 = self.image[:0x10000], self.image[0x10000:]
+
+    def make_cpu(self):
+        z = Z80(self.page0, self.page1)
+        z.latch = 0x18          # mode 11 over bank 0 (post-boot state)
+        z.sp = 0xFFFE           # common boot stack; not the IRQ stacks
+        return z
+
+    def test_full_selftest_round_trip(self):
+        z = self.make_cpu()
+        run_m3_boot(z, self.syms)
+
+        # Driver table: sio + probe OK, partial + bad-ABI failed.  SDCC
+        # returns uint8_t values in A.
+        run_function(z, self.syms["_driver_static_count"])
+        self.assertEqual(z.a, 4, "driver table size")
+        run_function(z, self.syms["_driver_static_failed"])
+        self.assertEqual(z.a, 2, "failed driver count")
+
+        # The RX test consumes exactly the byte the operator/script sends.
+        z.sio_rx.append(M3_RX_BYTE)
+        result = run_m3_selftest(z, self.syms)
+        self.assertEqual(result, 0x00,
+                         "m3 selftest failed with code 0x%02X" % result)
+
+        tx = bytes(z.sio_tx)
+        for expected in (M3_TX_OK, M3_RX_READY, M3_RX_OK, M3_OK):
+            self.assertIn(expected, tx,
+                          "console transcript missing %r" % expected)
+        self.assertFalse(z.sio_rx, "RX byte was not consumed")
+
+    def test_sio_driver_reprograms_documented_state(self):
+        z = self.make_cpu()
+        run_m3_boot(z, self.syms)
+        self.assertTrue(
+            bytes(z.sio_ctrl_writes).endswith(SIO_INIT_SEQUENCE),
+            "driver init did not write the 115200 8N1 sequence: %s"
+            % bytes(z.sio_ctrl_writes).hex(),
+        )
+
+    def test_default_binding_selects_registered_handle(self):
+        z = self.make_cpu()
+        run_m3_boot(z, self.syms)
+        run_function(z, self.syms["_console_output_handle"])
+        out_handle = z.a
+        run_function(z, self.syms["_console_input_handle"])
+        in_handle = z.a
+        self.assertNotEqual(out_handle, 0, "console output unbound")
+        self.assertNotEqual(in_handle, 0, "console input unbound")
+        # Both directions must have selected the single registered
+        # console-capable device, and the handle must be in the issued
+        # range 1..16.
+        self.assertEqual(in_handle, out_handle)
+        self.assertTrue(1 <= out_handle <= 16)
+
+    def test_console_tx_reaches_the_sio_port(self):
+        z = self.make_cpu()
+        run_m3_boot(z, self.syms)
+        # Write a known buffer through the console service.  The string is
+        # placed in bank-7 RAM after the image; console_write copies it
+        # byte-by-byte to the SIO data port.
+        message = b"host replay\r\n"
+        length = len(message)
+        dest = 0xC400
+        for i, byte in enumerate(message):
+            z.bank7[dest + i] = byte
+        # int console_write(const char *buf, uint16_t len): pointer in HL,
+        # length in DE; 16-bit result in DE (sdcccall(1)).
+        z.hl = dest
+        z.de = length
+        run_function(z, self.syms["_console_write"])
+        self.assertEqual(z.de, length, "console_write returned a short count")
+        self.assertEqual(bytes(z.sio_tx), message)
+
+
+class TestM3ProductionBoot(unittest.TestCase):
+    """Replay kernel_main on the production image (no self-test objects).
+
+    The ~1 s serial-connect delay is skipped by recognizing its exported
+    entry symbol, so the replay runs the real boot sequence: bank
+    validation, irq_init, early banner, registry/driver/console init, and
+    the console-service acceptance line, ending in the halt loop.
+    """
+
+    def setUp(self):
+        bin_path = os.path.join(ROOT, "build", "zephyros.bin")
+        map_path = os.path.join(ROOT, "build", "zephyros.map")
+        if not os.path.exists(bin_path):
+            self.skipTest("normal image missing; run make")
+        image = open(bin_path, "rb").read()
+        self.page0, self.page1 = image[:0x10000], image[0x10000:]
+        self.syms = read_symbols(map_path)
+
+    def test_boot_reaches_console_service_line(self):
+        z = Z80(self.page0, self.page1)
+        z.latch = 0x18
+        z.sp = 0xFFFE
+        z.push16(RET)
+        z.pc = self.syms["_kernel_main"]
+
+        delay = self.syms["_kernel_serial_connect_delay"]
+        for _ in range(100000):
+            z.step()
+            if z.pc == delay:
+                break
+        else:
+            self.fail("kernel_main never called the connect delay")
+
+        # Skip the delay body: pop the return address the call pushed.
+        z.pc = z.pop16()
+
+        for _ in range(STEP_LIMIT):
+            z.step()
+            if z.halted:
+                break
+        else:
+            self.fail("kernel_main did not reach the halt loop (PC=%04X)"
+                      % z.pc)
+
+        tx = bytes(z.sio_tx)
+        for line in (b"ZephyrOS 0.0\r\n", b"platform: Zephyr-80\r\n",
+                     b"kernel entry: OK\r\n", b"serial: OK\r\n",
+                     b"HALT\r\n", b"console: sio0.b OK\r\n"):
+            self.assertIn(line, tx, "boot transcript missing %r" % line)
+        self.assertNotIn(b"PANIC", tx)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -99,13 +99,18 @@ irq_common_entry::
 	pop	af
 	reti
 
-; Capture IFF2 through LD A,I, then mask.  sdcccall(1): uint8_t result in L.
+; Capture IFF2 through LD A,I, then mask.  SDCC consumes a uint8_t return
+; in A; provide the state in both A and L so every caller convention sees
+; the same value.  (The pre-M3 comment claiming "result in L" was wrong:
+; callers read A, which previously leaked I=FDh into the unlock state.)
 _irq_arch_lock::
 	ld	a,i
 	di
 	ld	l,#0
-	ret	po
+	jp	po,100$
 	inc	l
+100$:
+	ld	a,l
 	ret
 
 ; sdcccall(1): uint8_t argument in A.  EI takes effect after RET.

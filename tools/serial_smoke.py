@@ -6,6 +6,11 @@ captures output with a bounded timeout, and verifies the expected output:
 
     --mode normal    the exact M0 banner, then the halt loop
     --mode selftest  the banner plus "syscall selftest: OK"
+    --mode irq       the banner plus "irq selftest: OK"
+    --mode m3        the M3 image: banner, "console: sio0.b OK" through the
+                     normal console service, all embedded self-tests, and
+                     the interactive console RX check (the tool sends 'R'
+                     when the kernel announces "ready for RX")
 
 The device is given with --port or the ZOS_SERIAL_PORT environment
 variable (the SERIAL_PORT make variable is passed through).  A missing or
@@ -13,7 +18,7 @@ unopenable device fails clearly; ordinary host-only `make test` never
 invokes this tool.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -33,6 +38,10 @@ BANNER = (
 )
 SELFTEST_OK = b"syscall selftest: OK\r\n"
 IRQ_SELFTEST_OK = b"irq selftest: OK\r\n"
+CONSOLE_OK = b"console: sio0.b OK\r\n"
+M3_RX_PROMPT = b"m3 selftest: ready for RX\r\n"
+M3_SELFTEST_OK = b"m3 selftest: OK\r\n"
+M3_RX_BYTE = b"R"
 
 
 def main(argv):
@@ -41,7 +50,8 @@ def main(argv):
     parser.add_argument(
         "--baud", type=int, default=int(os.environ.get("ZOS_SERIAL_BAUD", "115200"))
     )
-    parser.add_argument("--mode", choices=("normal", "selftest", "irq"), default="normal")
+    parser.add_argument("--mode", choices=("normal", "selftest", "irq", "m3"),
+                        default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
     )
@@ -78,6 +88,7 @@ def main(argv):
           % (args.port, args.baud, args.mode, args.timeout))
     deadline = time.monotonic() + args.timeout
     data = b""
+    rx_byte_sent = False
     try:
         while time.monotonic() < deadline:
             chunk = link.read(256)
@@ -89,6 +100,14 @@ def main(argv):
                     break
                 if args.mode == "irq" and BANNER in data and IRQ_SELFTEST_OK in data:
                     break
+                if args.mode == "m3":
+                    if M3_RX_PROMPT in data and not rx_byte_sent:
+                        link.write(M3_RX_BYTE)
+                        link.flush()
+                        rx_byte_sent = True
+                        print("serial_smoke: sent RX byte %r" % M3_RX_BYTE)
+                    if CONSOLE_OK in data and M3_SELFTEST_OK in data:
+                        break
     finally:
         link.close()
 
@@ -102,9 +121,15 @@ def main(argv):
     elif args.mode == "selftest":
         ok = BANNER in data and SELFTEST_OK in data
         expected = "the banner plus 'syscall selftest: OK'"
-    else:
+    elif args.mode == "irq":
         ok = BANNER in data and IRQ_SELFTEST_OK in data
         expected = "the banner plus 'irq selftest: OK'"
+    else:
+        ok = (BANNER in data and CONSOLE_OK in data and
+              SELFTEST_OK in data and IRQ_SELFTEST_OK in data and
+              M3_SELFTEST_OK in data)
+        expected = ("the banner, console service line, syscall/irq/m3 "
+                    "self-tests, and the console RX round trip")
 
     if not ok:
         print("serial_smoke: FAIL - %s was not observed (timeout %gs)"

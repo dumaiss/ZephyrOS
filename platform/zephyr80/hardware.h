@@ -73,4 +73,10 @@
 #define ZOS_CTC0_RESET              0x03u
 #define ZOS_IM2_I_VALUE             0xFDu
 
+/* M2 bank-7 ISR stack (mirrors ZOS_IRQ_ISR_STACK_* in memory.inc).  Driver
+ * handlers run on this stack; handlers may use these bounds to verify
+ * their placement. */
+#define ZOS_IRQ_ISR_STACK_BASE      0xDF00u
+#define ZOS_IRQ_ISR_STACK_TOP       0xE000u
+
 #endif /* ZEPHYR80_HARDWARE_H */

@@ -197,6 +197,8 @@ bounded timeout and verifies the expected output:
 ```sh
 make smoke-hardware SERIAL_PORT=/dev/ttyUSB0                 # exact banner
 make smoke-hardware-selftest SERIAL_PORT=/dev/ttyUSB0        # + selftest OK
+make smoke-hardware-m3 SERIAL_PORT=/dev/ttyUSB0              # M3 acceptance image;
+                                                             # sends the RX byte
 ```
 
 The device can also be passed via the `ZOS_SERIAL_PORT` / `ZOS_SERIAL_BAUD`
@@ -223,7 +225,8 @@ compatible with the Zephyr-80 ROM socket.
 2. Program `build/zephyros.bin` into the ROM device.
 3. Connect a 115200 8N1 serial terminal to SIO0/B (data `22h`).
 4. Apply power / assert reset.
-5. Expected: the exact six-line banner, then silence (halt loop).
+5. Expected: the exact six-line banner, then the M3 console-service line
+   `console: sio0.b OK`, then the halt loop.
 6. Record: image SHA-256, programmer used, serial adapter used, and the
    captured terminal output.
 

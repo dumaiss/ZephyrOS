@@ -17,6 +17,19 @@
 #include "zephyros/kernel.h"
 #include "zephyros/syscall.h"
 #include "zephyros/irq.h"
+#include "zephyros/console.h"
+#include "zephyros/driver.h"
+#include "zephyros/m3_selftest.h"
+
+/* M3 build options.  Both default to 0; the m3-fallback make targets set
+ * them to prove that early boot/panic diagnostics stay on the independent
+ * early console when the device layer is deliberately disabled. */
+#ifndef ZOS_M3_NO_STATIC_DRIVERS
+#define ZOS_M3_NO_STATIC_DRIVERS 0
+#endif
+#ifndef ZOS_M3_NO_CONSOLE_BIND
+#define ZOS_M3_NO_CONSOLE_BIND 0
+#endif
 
 /* ~1 second no-op delay at kernel entry (Z80 @ 10 MHz, no wait states) so
  * the operator can connect the serial terminal before the banner prints.
@@ -24,8 +37,11 @@
  * Cycle math: the inner djnz loop with B=0 runs 256 passes
  * (255*13 + 8 = 3323 cycles); one outer pass is 7 + 3323 + 6 + 4 + 4 + 12
  * = 3356 cycles (3351 on the final pass).  2979 passes plus setup totals
- * 9,997,529 cycles ≈ 1.00 s.  Purely a no-op spin; no I/O is touched. */
-static void kernel_serial_connect_delay(void)
+ * 9,997,529 cycles ≈ 1.00 s.  Purely a no-op spin; no I/O is touched.
+ *
+ * Not static: the host replays (tests/test_m3_sim.py) recognize this symbol
+ * to skip the wall-clock delay when replaying kernel_main. */
+void kernel_serial_connect_delay(void)
 {
 	__asm__(
 		"ld de,#0x0BA3\n"	/* 2979 outer passes */
@@ -91,6 +107,37 @@ void kernel_main(void)
 
 #if ZOS_IRQ_SELFTEST
 	zos_run_irq_selftest();
+#endif
+
+	/* --- M3: registry, static drivers, console service ---------------
+	 * The early console above stays authoritative; the normal console
+	 * service is initialized afterwards and proves itself with the
+	 * distinct acceptance line.  If it cannot bind or write, the
+	 * fallback diagnostic still goes through the early console. */
+	device_registry_init();
+#if ZOS_M3_NO_STATIC_DRIVERS
+	early_console_puts("console: static drivers disabled\r\n");
+#else
+	driver_init_static();
+#if ZOS_M3_NO_CONSOLE_BIND
+	early_console_puts("console: binding disabled\r\n");
+#else
+	if (console_bind_defaults() != ZDEV_OK) {
+		early_console_puts("console: unbound\r\n");
+	} else {
+		static const char m3_console_ok[] = "console: sio0.b OK\r\n";
+
+		if (console_write(m3_console_ok,
+				  (uint16_t)(sizeof(m3_console_ok) - 1u)) !=
+		    (int)(sizeof(m3_console_ok) - 1u)) {
+			early_console_puts("console: service failed\r\n");
+		}
+	}
+#endif
+#endif
+
+#if ZOS_M3_SELFTEST
+	zos_run_m3_selftest();
 #endif
 
 	__asm__("di");

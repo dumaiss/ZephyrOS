@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ZephyrOS M2 map/layout checker.
+"""ZephyrOS M3 map/layout checker.
 
 Validates the sdldz80 map against the implemented mode 10/11 memory
 ownership contract (see docs/memory.md):
@@ -10,13 +10,18 @@ ownership contract (see docs/memory.md):
     common         E000h-FEFFh  _COMMON/_COMMON_DATA, gates, console, panic
     common stack   FF00h-FFFFh  reserved; nothing may be linked there
 
+M3 adds placement checks for the device registry, console service, static
+driver descriptors/ops, and driver-private state: all of it must live in
+bank 7 (loadable or runtime area, below the ISR stack) and none of it may
+enter permanent common memory.
+
 Empty areas do not get an area-table entry in sdldz80 maps; they still get
 s__<area>/l__<area> symbols, so ownership is checked through the symbol
 table and empty areas are accepted when their zero-length placement address
 lies inside the expected region.
 
 Usage:
-    mapcheck.py <zephyros.map>
+    mapcheck.py <zephyros.map> [platform/zephyr80/memory.inc]
 """
 
 import re
@@ -137,6 +142,58 @@ COMMON_ROUTINES = (
 
 # Bank-7 internal routines (visible only while mode 11 is active).
 BANK7_ROUTINES = ("zos_syscall_dispatch", "_irq_dispatch")
+
+# M3 device/driver/service routines: bank 7 only.  These are the real
+# linked symbols of kernel/device/*.c and drivers/sio/*.
+M3_BANK7_ROUTINES = (
+    "_device_registry_init",
+    "_device_register",
+    "_device_get",
+    "_device_find_capability",
+    "_device_registry_checkpoint",
+    "_device_registry_rollback",
+    "_driver_init_static",
+    "_console_bind",
+    "_console_bind_defaults",
+    "_console_putc",
+    "_console_write",
+    "_console_poll",
+    "_console_getc",
+    "_sio0b_hw_init",
+    "_sio0b_putc",
+    "_sio0b_write",
+    "_sio0b_poll",
+    "_sio0b_getc",
+    "_sio0b_status",
+    "_sio0b_write_ctrl",
+    "_sio0b_read_data",
+    "_sio0b_write_data",
+)
+
+# M3 registry/console/driver objects and private state: bank-7 data or
+# code, never common memory.
+M3_BANK7_OBJECTS = (
+    "_device_table",
+    "_console_in_handle",
+    "_console_out_handle",
+    "_sio0b_ops",
+    "_sio0b_state",
+    "_sio_driver",
+    "_boot_drivers",
+)
+
+# Any symbol with one of these prefixes is M3 driver/service code or state
+# and must be bank-7 resident (this sweep also covers the test-only driver
+# objects present in the m3-selftest image).
+M3_BANK7_PREFIXES = (
+    "_device_",
+    "_console_",
+    "_sio0b_",
+    "_sio_",
+    "_driver_",
+    "_boot_drivers",
+    "_m3_",
+)
 
 # Transition-critical state block (common RAM).
 COMMON_STATE = (
@@ -279,6 +336,26 @@ def check_symbols(areas, symbols):
                 "%s at %04Xh is outside the bank-7 loadable region "
                 "2000h-BFFFh" % (name, addr)
             )
+
+    # M3: registry, console service, static drivers, ops tables, and
+    # driver-private state live in bank 7 (code or runtime data), never in
+    # the permanently mapped common region.
+    for name in M3_BANK7_ROUTINES + M3_BANK7_OBJECTS:
+        if name not in symbols:
+            raise MapError("map has no M3 symbol %s" % name)
+        addr = symbols[name]
+        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            raise MapError(
+                "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
+                % (name, addr)
+            )
+    for name, addr in symbols.items():
+        if addr != 0 and name.startswith(M3_BANK7_PREFIXES):
+            if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+                raise MapError(
+                    "driver/service symbol %s at %04Xh is not bank-7 "
+                    "resident" % (name, addr)
+                )
 
     # Transition state block: common RAM, gate stack of the exact size.
     for name in COMMON_STATE:

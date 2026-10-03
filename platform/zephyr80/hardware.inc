@@ -62,3 +62,7 @@ ZOS_CTC0_CONTROL_TEST   = 0xA7
 ZOS_CTC0_TIME_CONSTANT  = 0x00
 ZOS_CTC0_RESET          = 0x03
 ZOS_IM2_I_VALUE         = 0xFD
+
+; --- M2 bank-7 ISR stack (mirrors memory.inc) ---
+ZOS_IRQ_ISR_STACK_BASE  = 0xDF00
+ZOS_IRQ_ISR_STACK_TOP   = 0xE000

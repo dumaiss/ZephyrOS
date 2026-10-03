@@ -1,6 +1,6 @@
 # ZephyrOS Architecture
 
-**Status:** M0/M1/M2 complete; M3-M4 architecture defined  
+**Status:** M0/M1/M2/M3 complete; M4 architecture defined  
 **Scope:** Milestones M0 through M4  
 **Target:** Zephyr-80  
 **Language/toolchain:** SDCC + sdasz80/sdldz80, GNU Make, Python host tools
@@ -53,7 +53,34 @@ Hardware definitions and low-level primitives belong under:
 platform/zephyr80/
 ```
 
-The kernel may depend on platform functions, but should avoid depending directly on port numbers or hardware register layouts.
+is **declarative only**. It describes what the Zephyr-80 machine is:
+
+- I/O port numbers;
+- register-bit constants;
+- memory-mode constants;
+- physical bank ownership;
+- fixed memory-layout constants;
+- IRQ/vector wiring facts;
+- board-specific channel mappings;
+- build-time configuration values.
+
+It must not contain executable implementation.
+
+In particular, `platform/zephyr80/` must contain **no `.c` or `.asm` translation units**, and its include files must not define instruction-emitting routines or executable macros.
+
+Active code belongs to the subsystem that owns the behavior:
+
+```text
+boot/       reset, ROM-to-RAM copy, initial kernel handoff
+kernel/     banking, syscall crossing, IRQ executive, registries, loaders
+drivers/    SIO, CTC, V9958, IOC, storage and other device behavior
+```
+
+Those implementations consume constants from `platform/zephyr80/`.
+
+The rule is:
+
+> **Platform describes the machine; boot, kernel, and drivers operate the machine.**
 
 ### 2.3 Early debug output is special
 
@@ -105,12 +132,20 @@ ZephyrOS/
 │       └── module.h
 │
 ├── boot/
-│   └── start.asm
+│   ├── start.asm
+│   └── shadow_copy.asm
 │
 ├── kernel/
 │   ├── main.c
 │   ├── panic.c
 │   ├── early_console.c
+│   ├── early_console_io.asm
+│   │
+│   ├── memory/
+│   │   └── banking.asm
+│   │
+│   ├── syscall/
+│   │   └── entry.asm
 │   │
 │   ├── irq/
 │   │   ├── irq.c
@@ -128,21 +163,22 @@ ZephyrOS/
 │       └── embedded.c
 │
 ├── drivers/
-│   └── sio/
-│       ├── sio.c
-│       ├── sio_io.asm
-│       └── driver.c
+│   ├── sio/
+│   │   ├── sio.c
+│   │   ├── sio_io.asm
+│   │   └── driver.c
+│   └── ctc/
+│       └── ctc.c
 │
 ├── platform/
 │   └── zephyr80/
 │       ├── hardware.h
 │       ├── hardware.inc
+│       ├── memory.h
 │       ├── memory.inc
-│       ├── reset.asm
-│       ├── banking.asm
-│       ├── serial.asm
-│       ├── irq.asm
-│       └── irq_sources.c
+│       ├── irq.h
+│       ├── irq.inc
+│       └── config.mk
 │
 ├── linker/
 │   └── zephyr80.lk
@@ -153,6 +189,98 @@ ZephyrOS/
 ```
 
 Directories for filesystems, processes, CP/M compatibility, libc, and userland remain deferred.
+
+## 3.1 Directory ownership rules
+
+The source tree is an architectural boundary, not merely an organizational preference.
+
+### `platform/zephyr80/`
+
+**Configuration and constants only.**
+
+Allowed content includes:
+
+```text
+#define / enum constants
+.equ constants
+port numbers
+register masks
+memory addresses and region bounds
+memory-mode values
+IRQ source/vector/channel mappings
+board wiring facts
+Makefile configuration variables
+```
+
+Disallowed content includes:
+
+```text
+C functions
+assembly routines
+ISR bodies
+bank-switch routines
+reset code
+device initialization sequences
+polling loops
+driver operations
+instruction-emitting assembly macros
+```
+
+A useful test is:
+
+> If the file emits executable bytes or contains a function/routine that runs on the Z80, it does not belong in `platform/zephyr80/`.
+
+### `boot/`
+
+Owns executable code that runs before the normal kernel environment exists:
+
+- reset/start entry;
+- ROM-to-RAM installation;
+- initial memory-mode transition;
+- handoff to the kernel.
+
+It may include platform constants, but the implementation remains under `boot/`.
+
+### `kernel/`
+
+Owns operating-system mechanisms:
+
+- mode/bank transition routines;
+- syscall entry/return;
+- IRQ entry/return and dispatch;
+- device registry;
+- service binding;
+- module loading;
+- panic and early diagnostic policy.
+
+A mechanism remains kernel code even when its implementation is Zephyr-specific.
+
+For example, the fact that bank switching uses I/O port `00h` is platform configuration; the routine that safely changes modes and preserves caller state is kernel implementation.
+
+### `drivers/`
+
+Owns active device behavior:
+
+- register programming;
+- initialization sequences;
+- polling;
+- interrupt service logic after kernel IRQ dispatch;
+- device operations;
+- driver-private state.
+
+For example, SIO ports `22h/23h` are declared by the platform description; the code that writes WR3/WR4/WR5 or polls RR0 belongs to the SIO driver, except for the deliberately separate early-console implementation in `kernel/`.
+
+### `linker/`
+
+Owns link placement and section layout.
+
+The linker may consume values derived from the platform description, but linker scripts are not executable target code.
+
+### `tools/`
+
+Owns host-side build, validation, packing, and inspection tools.
+
+These rules apply equally to M0-M4 and to later milestones.
 
 ---
 
@@ -292,7 +420,7 @@ mode 10: 10h | N
 mode 11: 18h | N
 ```
 
-Reads from port `00h` return the current latch value and may be used by platform code when preserving or validating the active bank.
+Reads from port `00h` return the current latch value and may be used by the kernel banking implementation when preserving or validating the active bank. The port number itself comes from the platform description.
 
 ### 5.2.3 Initial ROM-to-RAM handoff
 
@@ -540,7 +668,7 @@ M1 still does not need a useful syscall implementation.
 
 The hardware bank/mode register is I/O port `00h`.
 
-M1 platform code owns all direct access to this latch. Generic kernel code must not issue raw `IN` or `OUT` instructions to port `00h`.
+The M1 kernel banking implementation owns all direct access to this latch. Other kernel subsystems must not issue raw `IN` or `OUT` instructions to port `00h`; they call the banking mechanism instead. The latch address and bit definitions come from `platform/zephyr80/`.
 
 Required constants:
 
@@ -570,17 +698,17 @@ Bank `7` is reserved to ZephyrOS and must not be exposed as an ordinary applicat
 The minimum platform API for M1 should provide semantics equivalent to:
 
 ```c
-uint8_t platform_memctl_read(void);
-void platform_memctl_write(uint8_t value);
+uint8_t memctl_read(void);
+void memctl_write(uint8_t value);
 
-uint8_t platform_bank_get(void);
-void platform_enter_application_mode(uint8_t bank);
-void platform_enter_os_mode(uint8_t bank);
+uint8_t bank_get(void);
+void enter_application_mode(uint8_t bank);
+void enter_os_mode(uint8_t bank);
 ```
 
 The exact C/assembly signatures are not yet ABI and may be adjusted during implementation.
 
-`platform_enter_os_mode()` and `platform_enter_application_mode()` must preserve the selected application-bank identity in `D0-D2`. Entering or leaving the OS changes the mode bit, not the identity of the suspended caller.
+`enter_os_mode()` and `enter_application_mode()` must preserve the selected application-bank identity in `D0-D2`. Entering or leaving the OS changes the mode bit, not the identity of the suspended caller.
 
 For example:
 
@@ -846,6 +974,8 @@ The M1 build must generate a map file.
 
 A host-side validation tool should fail the build if:
 
+- `platform/zephyr80/` contains target executable `.c` or `.asm` translation units;
+- platform include files contain instruction-emitting routines rather than constants/configuration;
 - page-zero content exceeds `0000h-00FFh`,
 - the native RST stub is not at its required page-zero vector,
 - common transition code is placed outside `E000h-FFFFh`,
@@ -1011,7 +1141,7 @@ M1 is accepted when:
 
 - the memory map is documented,
 - the linker enforces the intended memory placement,
-- platform code can read/write the memory latch at canonical port `00h`,
+- the kernel banking implementation can read/write the memory latch at the platform-declared canonical port `00h`,
 - application banks `0-6` can enter mode `10` as `10h|N`,
 - mode `11` can be entered as `18h|N` without losing caller-bank identity,
 - a mapping test demonstrates that:
@@ -1184,7 +1314,7 @@ M2 need not enable the V9958 interrupt yet; it must make the `FFh` path safe bef
 
 ## 18.4 Platform IRQ sources
 
-The executive uses logical source IDs. Hardware vector values and port mappings belong to `platform/zephyr80/irq_sources.c`.
+The executive uses logical source IDs. Hardware vector values, port numbers, and board channel mappings are declared as constants in `platform/zephyr80/irq.h` / `irq.inc`. Active mapping and dispatch logic remains in `kernel/irq/`.
 
 The initial source namespace should reserve at least:
 
@@ -1605,6 +1735,8 @@ This table is intentionally simple. M4 replaces the source of driver code, not t
 ## 20.7 Driver placement and private state
 
 Static M3 driver code and private state live in bank 7.
+
+Driver implementation files live under `drivers/`, never under `platform/zephyr80/`. The platform tree supplies only the register addresses, bit definitions, and wiring constants consumed by those drivers.
 
 A driver's private state belongs to that driver and should be colocated conceptually with it rather than scattered through common memory.
 

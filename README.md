@@ -25,7 +25,15 @@ M0 boot mechanics.
   dedicated common/bank-7 stacks, `FFh` guard identity, CTC0 acceptance
   image, and linked-byte simulation.  Accepted on physical hardware
   2026-10-02 (`irq selftest: OK`).
-- Stage `04-m1-validation-acceptance` is pending.
+- **M3 — Device registry and static drivers**: fixed 16-entry bank-7
+  device registry with capability lookup and registration
+  checkpoint/rollback, versioned driver ABI with an explicit static driver
+  table, polling SIO0/B driver (`sio0.b`), capability-bound console
+  service, and a test-only bank-7 IRQ probe claiming CTC0 through the M2
+  executive (`docs/devices.md`).  Accepted on physical hardware
+  2026-10-02 (`console: sio0.b OK`, `m3 selftest: OK`, console RX round
+  trip; see `docs/validation/2026-10-02-m3-acceptance.md`).
+- Stage `04-m1-validation-acceptance` is accepted.
 
 ## Prerequisites
 
@@ -46,13 +54,22 @@ make syscall-selftest
                    # target-side RST 30h round-trip image (build-selftest/)
 make irq-selftest
                    # target-side M2 IRQ executive image (build-irq-selftest/)
+make m3-selftest
+                   # M3 acceptance image: banner + console service line +
+                   # syscall/IRQ/M3 self-tests (build-m3-selftest/)
+make m3-fallback
+                   # disabled-drivers / disabled-binding fallback images
+                   # (build-m3-nodrv/, build-m3-nobind/)
 make smoke-hardware SERIAL_PORT=/dev/ttyUSB0
                    # capture + verify the banner from physical hardware
 make smoke-hardware-selftest SERIAL_PORT=/dev/ttyUSB0
                    # capture + verify 'syscall selftest: OK'
 make smoke-hardware-irq SERIAL_PORT=/dev/ttyUSB0
                    # capture + verify 'irq selftest: OK'
-make clean         # remove generated files under build/ and build-selftest/
+make smoke-hardware-m3 SERIAL_PORT=/dev/ttyUSB0
+                   # capture the M3 transcript; sends 'R' for the console
+                   # RX round trip when the kernel announces readiness
+make clean         # remove generated files under build*/
 ```
 
 Every build automatically runs `tools/mapcheck.py` (authoritative
@@ -62,8 +79,8 @@ hashes, fill counts, and entry addresses).  `make check` additionally
 proves that a clean rebuild reproduces the identical binary.
 
 Physical-hardware validation uses `tools/serial_smoke.py` (115200 8N1,
-bounded timeout).  The dated acceptance record is
-`docs/validation/2026-10-02-m1-acceptance.md`.
+bounded timeout).  Dated acceptance records live under `docs/validation/`
+(M1, M2, and the M3 record).
 
 Artifacts (all under `build/`):
 
@@ -86,7 +103,7 @@ documented in `docs/memory.md`.
 ## Run in the emulator
 
 See `docs/boot.md` for the MAME invocation and the physical-ROM test
-checklist.  Expected output:
+checklist.  Expected output (M3 adds the console-service line):
 
 ```text
 ZephyrOS 0.0
@@ -94,6 +111,7 @@ platform: Zephyr-80
 kernel entry: OK
 serial: OK
 HALT
+console: sio0.b OK
 ```
 
 ## Layout
@@ -101,15 +119,20 @@ HALT
 ```text
 ZephyrOS/
 ├── Makefile
-├── docs/                  architecture.md, boot.md, memory.md, abi.md
+├── docs/                  architecture.md, boot.md, memory.md, abi.md,
+│                          devices.md
 ├── include/zephyros/      types.h, platform.h, kernel.h, syscall.h,
-│                          errno.h, selftest.h
+│                          errno.h, selftest.h, irq.h, device.h,
+│                          driver.h, console.h, m3_selftest.h
 ├── boot/start.asm         common boot entry + C runtime initialization
-├── kernel/                main.c, panic.c, early_console.c, syscall.c
+├── kernel/                main.c, panic.c, early_console.c, syscall.c,
+│                          device/ (registry.c, driver.c, console.c),
+│                          irq/
+├── drivers/               sio/ (SIO0/B static driver)
 ├── platform/zephyr80/     hardware.h/.inc, memory.inc, reset.asm,
 │                          banking.asm, page_zero.asm, syscall_entry.asm,
-│                          selftest.asm/.inc
-├── linker/zephyr80.lk     sdldz80 control
-├── tools/                 pack_image.py, mapcheck.py
-└── tests/                 host-side image/layout/ABI tests
+│                          sdcc_helpers.asm, selftest.asm/.inc
+├── linker/zephyr80.lk     sdldz80 control (canonical build/)
+├── tools/                 pack_image.py, mapcheck.py, serial_smoke.py
+└── tests/                 host-side image/layout/ABI tests + Z80 replays
 ```

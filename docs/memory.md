@@ -1,4 +1,4 @@
-# ZephyrOS Memory Model (M2, implemented)
+# ZephyrOS Memory Model (M3, implemented)
 
 This is the implemented, linker-enforced memory ownership table for the
 mode `10`/`11` Zephyr-80 architecture.  The contract is in
@@ -67,18 +67,30 @@ Every owned region exports `s__<area>`/`l__<area>` start/size symbols
 | --- | --- | --- |
 | `_RESET` | `0000h-0026h` | stackless reset copier (`.org 0`, ABS) |
 | `_PAGE_ZERO` | `0030h-0032h` | `RST 30h` vector: `JP zos_syscall_entry` (ABS) |
-| `_CODE` | `2000h-BFFFh` | kernel C code and string literals |
+| `_CODE` | `2000h-BFFFh` | kernel C code, driver/service code, string literals |
 | `_HOME` | `2000h-BFFFh` | static helpers |
 | `_INITIALIZER` | `2000h-BFFFh` | ROM image of initialized data |
 | `_GSINIT`/`_GSFINAL` | `2000h-BFFFh` | static initializers + terminator |
-| `_DATA` | `C000h-DEFFh` | zeroed globals/statics |
-| `_INITIALIZED` | `C000h-DEFFh` | RAM image of initialized data |
+| `_DATA` | `C000h-DEFFh` | zeroed globals/statics, registry table, driver state |
+| `_INITIALIZED` | `C000h-DEFFh` | RAM image of initialized data (ops/descriptor tables) |
 | `_COMMON` | `E000h-FCFFh` | boot entry, gates, IRQ stubs, console, panic |
 | `_COMMON_DATA` | `E000h-FCFFh` | transition-critical state |
 | `_IRQ_ISR_STACK` | `DF00h-DFFFh` | bank-7 handler stack |
 | `_IRQ_VECTOR` | `FD00h-FE00h` | IM2 page plus guard |
 | `_IRQ_COMMON_STATE` | `FE01h-FEFFh` | IRQ state plus transition stack |
 | (reserved) | `FF00h-FFFFh` | common boot/runtime stack; nothing may link here |
+
+## 2.1 M3 device-layer placement
+
+The M3 device registry, console service, static driver descriptors, ops
+tables, and driver-private state are all bank-7 residents: code in
+`_CODE`, state in `_DATA`/`_INITIALIZED`, below the `DF00h` ISR stack.
+Nothing from the device layer enters `_COMMON`/`_COMMON_DATA`; only the
+M2 source stubs, the common IRQ crossing machinery, and the early
+console/panic path are common-resident.  `tools/mapcheck.py` enforces
+this both by explicit symbol list and by a prefix sweep over
+`_device_`, `_console_`, `_sio0b_`, `_sio_`, `_driver_`,
+`_boot_drivers`, and `_m3_` symbols.  See `docs/devices.md`.
 
 ## 3. Common-resident routines
 
@@ -176,8 +188,8 @@ in `2000h-DFFFh` would disappear when the mode changes.
 - `tools/mapcheck.py` — map-level checks: area ownership per this table,
   common-resident gate/console/panic/IRQ placement, gate-stack and both
   IRQ-stack sizes, the IM2 page/guard/state addresses, `_irq_kernel_code_end`
-  at the linked `_CODE` end, page-zero and stack-reservation bounds
-  (`make check`).
+  at the linked `_CODE` end, page-zero and stack-reservation bounds, and
+  the M3 bank-7 device-layer placement rules (`make check`).
 - `tests/test_m1.py` — C/assembly constant parity (hardware, syscall
   self-test, and IRQ self-test header pairs), latch formulas, bank-identity
   preservation across `10h`/`18h`, bank-7 rejection, mapcheck unit cases
@@ -187,6 +199,12 @@ in `2000h-DFFFh` would disappear when the mode changes.
   bytes (IM2 acceptance, alternate registers, `I`/IFF2, `RETI`) for both
   modes and the FF guard path, plus the full `irq-selftest` driver round
   trip with injected CTC0 deliveries.
+- `tests/test_m3.py` — M3 constant contract, mapcheck bank-7 M3 rules,
+  fallback-image artifacts, and static linker-file/object consistency.
+- `tests/test_m3_sim.py` — Z80 replay of the real M3 code: registry
+  semantics, checkpoint/rollback, exhaustion, ABI rejection, console
+  TX/RX through the SIO port model, the CTC0 probe through the M2
+  executive, and a production `kernel_main` boot replay.
 - Runtime: boot asserts mode `11` over bank 0 (assembly latch read-back and
   a C re-check in `kernel_main()`), then exercises the bank primitives; any
   failure prints a fault through the early console and halts.

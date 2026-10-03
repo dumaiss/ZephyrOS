@@ -41,6 +41,15 @@ class Z80:
         self.im = 0
         self.int_pending = False
         self.int_vector = 0
+        # SIO0/B emulation (ports 22h data / 23h control).  Bytes written
+        # to the data port are captured in sio_tx; bytes queued in sio_rx
+        # are returned by data-port reads and make RR0's RX-available bit
+        # set on control-port reads.  Without pending input the control
+        # port reports TX-empty/CTS but no RX-ready, so polling drivers
+        # see "no data" instead of the previous 0xFF alias.
+        self.sio_tx = bytearray()
+        self.sio_rx = bytearray()
+        self.sio_ctrl_writes = bytearray()
 
     def accept_interrupt(self, vector):
         """Accept one maskable IM2 interrupt and fetch its linked target."""
@@ -206,6 +215,18 @@ class Z80:
             c = (self.a >> 7) & 1
             self.a = ((self.a << 1) | c) & 0xFF
             self.CF = c
+        elif op == 0x0F:  # rrca
+            c = self.a & 1
+            self.a = ((self.a >> 1) | (c << 7)) & 0xFF
+            self.CF = c
+        elif op == 0x17:  # rla
+            c = (self.a >> 7) & 1
+            self.a = ((self.a << 1) | (1 if self.CF else 0)) & 0xFF
+            self.CF = c
+        elif op == 0x1F:  # rra
+            c = self.a & 1
+            self.a = ((self.a >> 1) | ((1 if self.CF else 0) << 7)) & 0xFF
+            self.CF = c
         elif op == 0x76: self.halted = True
         elif op == 0xF3: self.iff1 = self.iff2 = False
         elif op == 0xFB:
@@ -287,9 +308,19 @@ class Z80:
             if op == 0xD3:
                 if port == 0x00:
                     self.latch = self.a & 0xFF
+                elif port == 0x22:
+                    self.sio_tx.append(self.a & 0xFF)
+                elif port == 0x23:
+                    self.sio_ctrl_writes.append(self.a & 0xFF)
             else:
                 if port == 0x00:
                     self.a = self.latch
+                elif port == 0x22:
+                    self.a = self.sio_rx.pop(0) if self.sio_rx else 0xFF
+                elif port == 0x23:
+                    # RR0: TX-empty + CTS set; RX-available only when a
+                    # byte is queued.
+                    self.a = 0xFE | (0x01 if self.sio_rx else 0x00)
                 else:
                     self.a = 0xFF
         elif op in (0x01, 0x11, 0x21, 0x31):
@@ -363,20 +394,24 @@ class Z80:
         elif op == 0xAF: self.a = 0
         elif op == 0xA7: self._logic(self.a & self.a)
         elif op == 0xB7: self._logic(self.a | self.a)
-        elif op in (0x87, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4,
+        elif op in (0x87, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85,
+                    0x86, 0x8E, 0x96, 0x9E, 0xA6, 0xAE, 0xB6, 0xBE,
+                    0x90, 0x91, 0x92, 0x93, 0x94, 0x95,
+                    0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9D,
+                    0xA0, 0xA1, 0xA2, 0xA3, 0xA4,
                     0xA5, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC,
-                    0xBD):
+                    0xBD, 0xBF):
             self.alu(op)
         elif op == 0xE6: self.a = self._logic(self.a & self.fetch())
         elif op == 0xEE: self.a = self._logic(self.a ^ self.fetch())
         elif op == 0xF6: self.a = self._logic(self.a | self.fetch())
         elif op == 0xFE: self._logic(self.a - self.fetch(), sub=True)
         elif op == 0xD6: self._sub(self.fetch())
-        elif op == 0xDE:  # sbc a,n (approx: carry-in ignored)
-            self._sub(self.fetch())
+        elif op == 0xDE:  # sbc a,n
+            self._sub(self.fetch(), 1 if self.CF else 0)
         elif op == 0xC6: self._add(self.fetch())
-        elif op == 0xCE:  # adc a,n (approx: carry-in ignored)
-            self._add(self.fetch())
+        elif op == 0xCE:  # adc a,n
+            self._add(self.fetch(), 1 if self.CF else 0)
         elif op == 0xEB:  # ex de,hl
             self.d, self.e, self.h, self.l = self.h, self.l, self.d, self.e
         elif op == 0xE3:  # ex (sp),hl
@@ -401,6 +436,8 @@ class Z80:
             self.ZF = v == 0
             self.SNF = (v & 0x80) != 0
         elif op == 0x3B: self.sp = (self.sp - 1) & 0xFFFF
+        elif op == 0x03: self.set_rr(0, (self.get_rr(0) + 1) & 0xFFFF)
+        elif op == 0x13: self.set_rr(1, (self.get_rr(1) + 1) & 0xFFFF)
         elif op == 0x23: self.hl = (self.get_rr(2) + 1) & 0xFFFF
         elif op == 0x33: self.sp = (self.sp + 1) & 0xFFFF
         elif op == 0xED:
@@ -484,25 +521,30 @@ class Z80:
             self.PV = (bin(res).count('1') & 1) == 0
         return res
 
-    def _sub(self, n):
-        v = self.a - n
+    def _sub(self, n, carry=0):
+        v = self.a - n - carry
         self.a = self._logic(v, sub=True)
 
-    def _add(self, n):
-        v = self.a + n
+    def _add(self, n, carry=0):
+        v = self.a + n + carry
         self.a = self._logic(v, add=True)
 
     def alu(self, op):
         srcs = {0: 'b', 1: 'c', 2: 'd', 3: 'e', 4: 'h', 5: 'l', 7: 'a'}
         r = op & 7
-        if r == 6:
-            raise SystemExit("sim: unsupported (hl) alu op %02X" % op)
-        v = getattr(self, srcs[r])
+        if r == 6:  # (hl)
+            v = self.rd((self.h << 8) | self.l)
+        else:
+            v = getattr(self, srcs[r])
         grp = op & 0xF8
         if grp == 0x80:
             self._add(v)
+        elif grp == 0x88:  # adc
+            self._add(v, 1 if self.CF else 0)
         elif grp == 0x90:
             self._sub(v)
+        elif grp == 0x98:  # sbc
+            self._sub(v, 1 if self.CF else 0)
         elif grp == 0xA0:
             self.a = self._logic(self.a & v)
         elif grp == 0xA8:
@@ -552,6 +594,19 @@ class Z80:
         elif op == 0x45:  # retn: IFF1 <- IFF2
             self.pc = self.pop16()
             self.iff1 = self.iff2
+        elif op in (0x42, 0x52, 0x62, 0x72,
+                    0x4A, 0x5A, 0x6A, 0x7A):  # sbc/adc hl,rr
+            rr = (op >> 4) & 3
+            carry = 1 if self.CF else 0
+            if op & 0x08:  # adc hl,rr
+                res = self.hl + self.get_rr(rr) + carry
+                self.CF = res > 0xFFFF
+            else:          # sbc hl,rr
+                res = self.hl - self.get_rr(rr) - carry
+                self.CF = res < 0
+            self.hl = res & 0xFFFF
+            self.ZF = self.hl == 0
+            self.SNF = (self.hl & 0x8000) != 0
         else:
             raise SystemExit("sim: unsupported ED %02X at %04X" % (op, (self.pc - 2) & 0xFFFF))
 
@@ -654,8 +709,9 @@ class Z80:
             self.pc = reg
         elif op2 == 0xF9:  # ld sp,ix/iy
             self.sp = reg
-        elif op2 == 0x39:  # add ix/iy,sp (flags approximated)
-            res = reg + self.sp
+        elif op2 in (0x09, 0x19, 0x29, 0x39):  # add ix/iy,rr (flags approx.)
+            rr = (op2 >> 4) & 3
+            res = reg + self.get_rr(rr)
             if op == 0xDD:
                 self.ix = res & 0xFFFF
             else:
@@ -686,11 +742,11 @@ class Z80:
             if grp == 0x80:
                 self._add(v)
             elif grp == 0x88:
-                self._add(v)  # adc (approx)
+                self._add(v, 1 if self.CF else 0)  # adc (ix+d)
             elif grp == 0x90:
                 self._sub(v)
             elif grp == 0x98:
-                self._sub(v)  # sbc (approx)
+                self._sub(v, 1 if self.CF else 0)  # sbc (ix+d)
             elif grp == 0xA0:
                 self.a = self._logic(self.a & v)
             elif grp == 0xA8:
@@ -699,6 +755,15 @@ class Z80:
                 self.a = self._logic(self.a | v)
             else:
                 self._logic(self.a - v, sub=True)  # cp
+        elif op2 in (0x34, 0x35):  # inc/dec (ix+d)
+            off = self.fetch()
+            if off & 0x80: off -= 256
+            addr = (reg + off) & 0xFFFF
+            v = self.rd(addr)
+            v = (v + 1) & 0xFF if op2 == 0x34 else (v - 1) & 0xFF
+            self.wr(addr, v)
+            self.ZF = v == 0
+            self.SNF = (v & 0x80) != 0
         else:
             raise SystemExit("sim: unsupported %02X %02X" % (op, op2))
 

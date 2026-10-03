@@ -5,7 +5,11 @@
 build/
 build-selftest/
 build-irq-selftest/
+build-m3-selftest/
+build-m3-nodrv/
+build-m3-nobind/
 work/
+docs/validation/
 
 # Object files
 *.o
