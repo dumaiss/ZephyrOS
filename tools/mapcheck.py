@@ -247,6 +247,7 @@ PRODUCTION_FORBIDDEN = (
     "_module_catalog_load_all",
     "_target_test",
     "_zos_run_",
+    "_m7_",
     "_sio_module_irq",
     "_sio_irq_module",
     "_sio_fail_module",
@@ -309,6 +310,25 @@ M6_BANK7_ROUTINES = (
 )
 
 M6_BANK7_PREFIXES = ("_process_", "_zex_")
+
+# M7 diagnostic services and the shared dispatcher helpers: bank-7
+# kernel code only.  The services reuse the M6 common copy gate, so no
+# new permanent-common symbol is introduced.
+M7_BANK7_ROUTINES = (
+    "_zos_diag_mem_read",
+    "_zos_diag_mem_write",
+    "_zos_diag_io_in",
+    "_zos_diag_io_out",
+    "_zos_diag_bank_info",
+    "_zos_diag_system_info",
+    "_zos_diag_hw_in",
+    "_zos_diag_hw_out",
+    "_zos_syscall_success",
+    "_zos_syscall_error",
+    "_zos_syscall_block_ok",
+)
+
+M7_BANK7_PREFIXES = ("_zos_diag_",)
 
 # M6 transition state and the syscall copy staging block (common RAM).
 M6_COMMON_STATE = (
@@ -670,6 +690,23 @@ def check_symbols(areas, symbols, production=False):
                 raise MapError(
                     "process symbol %s at %04Xh is not bank-7 resident"
                     % (name, addr))
+
+    # M7: diagnostic services and shared dispatcher helpers are bank-7
+    # kernel code; they add no permanent-common state.
+    for name in M7_BANK7_ROUTINES:
+        if name not in symbols:
+            raise MapError("map has no M7 symbol %s" % name)
+        addr = symbols[name]
+        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            raise MapError(
+                "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
+                % (name, addr))
+    for name, addr in symbols.items():
+        if addr != 0 and name.startswith(M7_BANK7_PREFIXES):
+            if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+                raise MapError(
+                    "diagnostic symbol %s at %04Xh is not bank-7 "
+                    "resident" % (name, addr))
 
     # M6: the copy staging block and process transition state are common;
     # the staging size and copy stack sizes are part of the contract.

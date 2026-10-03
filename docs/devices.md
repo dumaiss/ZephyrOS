@@ -137,10 +137,10 @@ module-runtime glue `modules/runtime/sdcc_indirect_calls.asm`):
 - Registers exactly one device named `sio0.b`, class `ZDEV_SERIAL`, with
   `ZCAP_CHAR_IN | ZCAP_CHAR_OUT | ZCAP_CONSOLE_IN | ZCAP_CONSOLE_OUT`.
 - Init explicitly re-establishes the documented programming sequence
-  (`18h, WR4=44h, WR3=E1h, WR5=E8h, WR1=00h`); it is idempotent with the
+  (`18h, WR4=44h, WR3=C1h, WR5=EAh, WR1=00h`); it is idempotent with the
   early console's setup.
 - Operations are bounded polling:
-  - `putc` waits for TX-empty + CTS with a finite budget
+  - `putc` waits for TX-empty with a finite budget
     (`ZOS_SIO_TX_TIMEOUT`) and returns `ZDEV_ETIMEDOUT` on expiry;
   - `write` returns the number of bytes written (partial count on a
     timeout after the first byte);

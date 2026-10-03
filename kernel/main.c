@@ -19,6 +19,7 @@
 #include "zephyros/console.h"
 #include "zephyros/module.h"
 #include "zephyros/romfs.h"
+#include "zephyros/process.h"
 
 /* Single integration seam for target acceptance builds; the runner and
  * milestone selection live in tests/target/support/target_test.c.  The
@@ -49,6 +50,15 @@ void zos_target_test_late(void);
  * embedded test catalogs. */
 #ifndef ZOS_ROMFS_BOOT
 #define ZOS_ROMFS_BOOT 1
+#endif
+
+/* Temporary pre-shell launcher selection.  Production and the M7
+ * acceptance image (ZOS_MONITOR_BOOT=1, the default) run `monitor.zex`
+ * through the unchanged M6 exec path and re-exec it after every normal
+ * exit.  Earlier acceptance images set ZOS_MONITOR_BOOT=0 so their
+ * transcripts and behavior stay exactly as accepted. */
+#ifndef ZOS_MONITOR_BOOT
+#define ZOS_MONITOR_BOOT 1
 #endif
 
 #if ZOS_ROMFS_BOOT
@@ -175,6 +185,126 @@ static void kernel_exercise_banking(void)
 	}
 }
 
+#if ZOS_MONITOR_BOOT
+/* --- temporary pre-shell launcher (M7) --------------------------------
+ *
+ * Production and the M7 acceptance image run the ROMFS `monitor.zex`
+ * through the unchanged M6 `process_exec()` path and re-exec it after
+ * every normal exit, until the M10 shell replaces this policy.  The
+ * child's exit status and the recovered process/bank counts are printed
+ * after each cycle (normal console when bound, early console otherwise);
+ * a launch failure is reported on the early console and takes the
+ * controlled halt path. */
+
+static char *kernel_monitor_put_hex16(char *out, uint16_t value)
+{
+	static const char digits[] = "0123456789ABCDEF";
+	uint8_t shift;
+
+	for (shift = 0; shift < 16; shift += 4) {
+		*out++ = digits[(value >> (12 - shift)) & 0x0Fu];
+	}
+	return out;
+}
+
+static char *kernel_monitor_put_dec(char *out, uint8_t value)
+{
+	uint8_t hundreds = 0;
+	uint8_t tens = 0;
+
+	while (value >= 100u) {
+		value = (uint8_t)(value - 100u);
+		++hundreds;
+	}
+	while (value >= 10u) {
+		value = (uint8_t)(value - 10u);
+		++tens;
+	}
+	if (hundreds != 0) {
+		*out++ = (char)('0' + hundreds);
+	}
+	if (hundreds != 0 || tens != 0) {
+		*out++ = (char)('0' + tens);
+	}
+	*out++ = (char)('0' + value);
+	return out;
+}
+
+static void kernel_monitor_emit(const char *line, uint16_t length)
+{
+	if (console_output_handle() != 0) {
+		(void)console_write(line, length);
+		return;
+	}
+	early_console_puts(line); /* line is always NUL-terminated */
+}
+
+/* Report one normal monitor exit with the recovered counts.  A repeated
+ * identical line proves the exec/exit cycle leaked no process state. */
+static void kernel_monitor_report(uint16_t status)
+{
+	char line[64];
+	static const char prefix[] = "monitor: exit status 0x";
+	static const char active[] = " active ";
+	static const char free_banks[] = " free-banks ";
+	char *out = line;
+	const char *scan;
+
+	for (scan = prefix; *scan != '\0'; ++scan) {
+		*out++ = *scan;
+	}
+	out = kernel_monitor_put_hex16(out, status);
+	for (scan = active; *scan != '\0'; ++scan) {
+		*out++ = *scan;
+	}
+	out = kernel_monitor_put_dec(out, process_active_count());
+	for (scan = free_banks; *scan != '\0'; ++scan) {
+		*out++ = *scan;
+	}
+	out = kernel_monitor_put_dec(out, process_free_banks());
+	*out++ = '\r';
+	*out++ = '\n';
+	*out = '\0';
+	kernel_monitor_emit(line, (uint16_t)(out - line));
+}
+
+/* Launch failure: early console and the controlled halt loop.  Never
+ * returns. */
+static void kernel_monitor_fail(uint16_t code)
+{
+	char line[40];
+	static const char prefix[] = "monitor: launch failed 0x";
+	char *out = line;
+	const char *scan;
+
+	for (scan = prefix; *scan != '\0'; ++scan) {
+		*out++ = *scan;
+	}
+	out = kernel_monitor_put_hex16(out, code);
+	*out++ = '\r';
+	*out++ = '\n';
+	*out = '\0';
+	early_console_puts(line);
+	__asm__("di");
+	for (;;) {
+		__asm__("halt");
+	}
+}
+
+static void kernel_monitor_launcher(void)
+{
+	for (;;) {
+		uint16_t status = 0;
+		int result = process_exec("monitor.zex", &status);
+
+		if (result != ZEX_EXEC_OK) {
+			kernel_monitor_fail((uint16_t)(0u - (uint16_t)result));
+		}
+		kernel_monitor_report(status);
+	}
+}
+#endif /* ZOS_MONITOR_BOOT */
+
 void kernel_main(void)
 {
 	kernel_serial_connect_delay();
@@ -240,6 +370,13 @@ void kernel_main(void)
 #if ZOS_TARGET_TEST_BUILD
 	/* TEST-ONLY HOOK: m3/m4 acceptance phases (target_test.c). */
 	zos_target_test_late();
+#endif
+
+#if ZOS_MONITOR_BOOT
+	/* Temporary pre-shell launcher: exec the ROMFS monitor through the
+	 * unchanged M6 process path; normal exits are reported and the
+	 * monitor is re-executed (see kernel_monitor_launcher above). */
+	kernel_monitor_launcher();
 #endif
 
 	__asm__("di");

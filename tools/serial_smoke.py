@@ -33,6 +33,19 @@ captures output with a bounded timeout, and verifies the expected output:
     --mode m6-failure  the M6 failure image: banner, the rejected
                      truncated ZEX rolling back cleanly, the valid copy
                      still running, and "m6 failure selftest: OK"
+    --mode m7        the M7 native-monitor image: the kernel-side
+                     "m7 selftest: OK", then a scripted interactive
+                     monitor session (help, system info, dumps of the
+                     monitor bank and a selected bank, scratch-byte
+                     modify/readback, harmless port input, rejected
+                     latch-port output, invalid bank 7, bad syntax) and
+                     two Q exit/relaunch cycles with identical launcher
+                     count lines.  The boot log is printed once, before
+                     any monitor command can run: this mode must be
+                     listening before the board boots.  Start it, then
+                     power-cycle the board or press RESET while it
+                     waits; an already-running board fails with an
+                     explicit hint instead of a partial transcript.
 
 The device is given with --port or the ZOS_SERIAL_PORT environment
 variable (the SERIAL_PORT make variable is passed through).  A missing or
@@ -40,7 +53,7 @@ unopenable device fails clearly; ordinary host-only `make test` never
 invokes this tool.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure|m7]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -48,6 +61,7 @@ Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
 
 import argparse
 import os
+import re
 import sys
 import time
 
@@ -83,6 +97,143 @@ M6_REJECTED_OK = b"m6 selftest: malformed rejected\r\n"
 M6_SELFTEST_OK = b"m6 selftest: OK\r\n"
 M6_FAILURE_OK = b"m6 failure selftest: OK\r\n"
 
+# --- M7 native monitor ------------------------------------------------------
+M7_SELFTEST_OK = b"m7 selftest: OK\r\n"
+M7_PROMPT = b"Z80> "
+M7_BANNER = b"ZephyrOS native monitor\r\n"
+M7_SYSINFO = (b"system: abi 01 app 10 os 18 common E000 kernel-bank 07 "
+              b"romfs 02\r\n")
+M7_BANK_INFO = b"bank: current 00 mask 7F\r\n"
+M7_OK = b"OK\r\n"
+M7_ERR_ARG = b"ERR: ARG\r\n"
+M7_EXIT = b"monitor: exit status 0x0000 active 0 free-banks 7\r\n"
+M7_SCRATCH_RE = re.compile(rb"scratch=([0-9A-F]{4})")
+
+# Per-byte pacing for scripted monitor commands.  The console RX path is
+# a polled SIO register (no burst buffering), so a command sent as one
+# fast burst can overrun while the monitor is echoing/printing; sending
+# at typed-input speed keeps the script reliable on hardware.
+M7_SEND_DELAY = 0.002
+
+
+def _expect_bytes(needle):
+    def check(tail):
+        index = tail.find(needle)
+        return None if index < 0 else index + len(needle)
+    return check
+
+
+def _expect_regex(pattern):
+    compiled = re.compile(pattern)
+
+    def check(tail):
+        match = compiled.search(tail)
+        return None if match is None else match.end()
+    return check
+
+
+class _M7Session:
+    """Scripted interactive acceptance for the M7 monitor image.
+
+    Steps run strictly in order; each command is sent only after the
+    previous response has fully completed (its trailing prompt was
+    observed), and command bytes are paced like typed input.  Both rules
+    are required on hardware: the polled console RX register has no
+    burst buffering, so input sent during output, or faster than the
+    monitor's echo loop, is lost.  Each step then waits for its marker
+    in the newly received bytes after the previous step, so repeated
+    text (the prompt, OK, ERR: ARG) cannot satisfy a later step early.
+    The operator scratch address is taken from the monitor banner and
+    used for the modify/readback step.
+    """
+
+    send_delay = M7_SEND_DELAY
+
+    def __init__(self, link):
+        self.link = link
+        self.pos = 0
+        self.step = 0
+        self.scratch = None
+        self.error = None
+        h = _expect_bytes
+        r = _expect_regex
+
+        def send_m():
+            return b"M %04X A5" % self.scratch
+
+        def send_d():
+            return b"D %04X 1" % self.scratch
+
+        def readback(tail):
+            needle = ("%04X: A5 " % self.scratch).encode("ascii")
+            index = tail.find(needle)
+            return None if index < 0 else index + len(needle)
+
+        self.steps = [
+            (None, h(M7_PROMPT), None),
+            (b"H", h(b"Q              quit\r\n"), None),
+            (None, h(M7_PROMPT), None),
+            (b"R", h(M7_SYSINFO), self._grab_scratch),
+            (None, h(M7_PROMPT), None),
+            (send_m, h(M7_OK), None),
+            (None, h(M7_PROMPT), None),
+            (send_d, readback, None),
+            (None, h(M7_PROMPT), None),
+            (b"D 0100 20", h(b"0110: "), None),
+            (None, h(M7_PROMPT), None),
+            (b"I 20", r(rb"IN=[0-9A-F]{2}\r\n"), None),
+            (None, h(M7_PROMPT), None),
+            (b"O 00 18", h(M7_ERR_ARG), None),
+            (None, h(M7_PROMPT), None),
+            (b"DB 7 0100 1", h(M7_ERR_ARG), None),
+            (None, h(M7_PROMPT), None),
+            (b"D ZZZ", h(M7_ERR_ARG), None),
+            (None, h(M7_PROMPT), None),
+            (b"Q", h(M7_EXIT), None),
+            (None, h(M7_PROMPT), None),
+            (b"R", h(M7_BANK_INFO), None),
+            (None, h(M7_PROMPT), None),
+            (b"Q", h(M7_EXIT), None),
+        ]
+        self.sent = False
+
+    def _grab_scratch(self, data):
+        match = M7_SCRATCH_RE.search(data)
+        if match is None:
+            self.error = "monitor banner did not print scratch=XXXX"
+            return
+        self.scratch = int(match.group(1), 16)
+
+    def _send(self, line):
+        """Send one command line paced byte-by-byte (typed-input speed)."""
+        data = line + b"\r"
+        for index, byte in enumerate(data):
+            self.link.write(bytes((byte,)))
+            self.link.flush()
+            if self.send_delay and index + 1 < len(data):
+                time.sleep(self.send_delay)
+
+    def update(self, data):
+        """Feed accumulated data; returns True when the script is done."""
+        while self.step < len(self.steps):
+            send, check, after = self.steps[self.step]
+            if send is not None and not self.sent:
+                line = send() if callable(send) else send
+                self._send(line)
+                self.sent = True
+            tail = data[self.pos:]
+            end = check(tail)
+            if end is None:
+                return False
+            self.pos += end
+            self.step += 1
+            self.sent = False
+            if after is not None:
+                after(data)
+                if self.error is not None:
+                    return True
+        return True
+
 
 def main(argv):
     parser = argparse.ArgumentParser(description="ZephyrOS serial smoke check")
@@ -92,7 +243,8 @@ def main(argv):
     )
     parser.add_argument("--mode", choices=("normal", "selftest", "irq", "m3",
                                            "m4", "m4-failure", "m5",
-                                           "m5-corrupt", "m6", "m6-failure"),
+                                           "m5-corrupt", "m6", "m6-failure",
+                                           "m7"),
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
@@ -128,21 +280,47 @@ def main(argv):
 
     print("serial_smoke: listening on %s at %d 8N1 (mode=%s, timeout=%gs)"
           % (args.port, args.baud, args.mode, args.timeout))
+    if args.mode == "m7":
+        print("serial_smoke: mode m7 checks the boot log; power-cycle the "
+              "board or press RESET now so the boot is captured")
     deadline = time.monotonic() + args.timeout
     data = b""
     rx_byte_sent = False
+    m7_session = None
+    m7_session_base = 0
+    m7_warm_hinted = False
     try:
         while time.monotonic() < deadline:
             chunk = link.read(256)
             if chunk:
                 data += chunk
-                if args.mode == "normal" and BANNER in data:
+                if args.mode == "m7":
+                    if m7_session is None:
+                        if (BANNER in data and CONSOLE_DYNAMIC_OK in data
+                                and M7_SELFTEST_OK in data):
+                            # Boot log captured; run the session strictly
+                            # from the bytes after the selftest marker so
+                            # a stale warm prompt (if any) cannot satisfy
+                            # the first step early.
+                            m7_session_base = (data.find(M7_SELFTEST_OK)
+                                               + len(M7_SELFTEST_OK))
+                            m7_session = _M7Session(link)
+                        elif M7_PROMPT in data and not m7_warm_hinted:
+                            m7_warm_hinted = True
+                            print("serial_smoke: the board is already "
+                                  "running the monitor; press RESET (or "
+                                  "power-cycle) now to capture the boot "
+                                  "log")
+                    if m7_session is not None and \
+                            m7_session.update(data[m7_session_base:]):
+                        break
+                elif args.mode == "normal" and BANNER in data:
                     break
-                if args.mode == "selftest" and BANNER in data and SELFTEST_OK in data:
+                elif args.mode == "selftest" and BANNER in data and SELFTEST_OK in data:
                     break
-                if args.mode == "irq" and BANNER in data and IRQ_SELFTEST_OK in data:
+                elif args.mode == "irq" and BANNER in data and IRQ_SELFTEST_OK in data:
                     break
-                if args.mode == "m3":
+                elif args.mode == "m3":
                     if M3_RX_PROMPT in data and not rx_byte_sent:
                         link.write(M3_RX_BYTE)
                         link.flush()
@@ -151,24 +329,24 @@ def main(argv):
                     if (CONSOLE_DYNAMIC_OK in data and
                             M3_SELFTEST_OK in data):
                         break
-                if args.mode == "m4":
+                elif args.mode == "m4":
                     if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
                             M4_SELFTEST_OK in data and
                             M4_SIO_PREFIX in data and
                             M4_ACCEPT_OK in data):
                         break
-                if args.mode == "m4-failure":
+                elif args.mode == "m4-failure":
                     if (BANNER in data and CONSOLE_DYNAMIC_FAIL in data and
                             M4_FAILURE_OK in data):
                         break
-                if args.mode == "m5":
+                elif args.mode == "m5":
                     if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
                             M5_SELFTEST_OK in data):
                         break
-                if args.mode == "m5-corrupt":
+                elif args.mode == "m5-corrupt":
                     if BANNER in data and M5_CORRUPT_PANIC in data:
                         break
-                if args.mode == "m6":
+                elif args.mode == "m6":
                     if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
                             M6_STATUS_PASS in data and
                             M6_STATUS_PASS_BANK1 in data and
@@ -178,7 +356,7 @@ def main(argv):
                             M6_REJECTED_OK in data and
                             M6_SELFTEST_OK in data):
                         break
-                if args.mode == "m6-failure":
+                elif args.mode == "m6-failure":
                     if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
                             M6_ZEXTEST_OK in data and
                             M6_FAILURE_OK in data):
@@ -245,6 +423,18 @@ def main(argv):
         expected = ("the banner, the dynamic console line, the valid "
                     "copy running after the truncated ZEX rolled back, "
                     "and 'm6 failure selftest: OK'")
+    elif args.mode == "m7":
+        ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
+              M7_SELFTEST_OK in data and M7_BANNER in data and
+              m7_session is not None and m7_session.step == len(m7_session.steps)
+              and m7_session.error is None and
+              data.count(M7_EXIT) == 2 and
+              b"m7 selftest: FAIL" not in data and
+              b"FAIL" not in data and b"PANIC" not in data)
+        expected = ("the kernel-side 'm7 selftest: OK', the monitor "
+                    "banner and prompt, the scripted help/system-info/"
+                    "dump/modify/readback/port/rejection commands, and "
+                    "two identical Q exit/relaunch count lines")
     else:
         ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
               SELFTEST_OK in data and IRQ_SELFTEST_OK in data and
@@ -329,6 +519,44 @@ def _explain_wrong_image(mode, data):
             print("serial_smoke: hint: the M5 success marker was observed; "
                   "an M5 image may be flashed instead of "
                   "build-m6-failure-selftest/zephyros-m6-failure.bin",
+                  file=sys.stderr)
+    elif mode == "m7":
+        if M6_SELFTEST_OK in data:
+            print("serial_smoke: hint: the M6 success marker was observed; "
+                  "flash build-m7-selftest/zephyros-m7-selftest.bin and "
+                  "rerun --mode m7", file=sys.stderr)
+        elif M5_CORRUPT_PANIC in data:
+            print("serial_smoke: hint: ROMFS init failed with the exact "
+                  "m5-corrupt acceptance transcript; the m5-corrupt image "
+                  "from the M5 pass is probably still flashed.  Flash "
+                  "build-m7-selftest/zephyros-m7-selftest.bin and rerun "
+                  "--mode m7", file=sys.stderr)
+        elif not (BANNER in data and CONSOLE_DYNAMIC_OK in data
+                  and M7_SELFTEST_OK in data):
+            if BANNER in data:
+                print("serial_smoke: hint: the captured boot log is "
+                      "incomplete (missing the dynamic console line "
+                      "and/or 'm7 selftest: OK'); the capture may have "
+                      "started mid-boot or the wrong image is flashed.  "
+                      "Start this tool first, then power-cycle the board "
+                      "or press RESET while it waits; if it persists, "
+                      "flash build-m7-selftest/zephyros-m7-selftest.bin "
+                      "and rerun --mode m7", file=sys.stderr)
+            else:
+                print("serial_smoke: hint: no boot log was captured.  The "
+                      "boot lines (M0 banner, dynamic console line, "
+                      "'m7 selftest: OK') print once at boot; if the "
+                      "board was already running, the FT230X only kept "
+                      "the last few dozen bytes.  Start this tool first, "
+                      "then power-cycle the board or press RESET while "
+                      "it waits, and rerun", file=sys.stderr)
+        elif M7_BANNER in data and data.count(M7_EXIT) < 2:
+            print("serial_smoke: hint: the monitor started but the "
+                  "scripted session did not complete; the captured "
+                  "transcript above shows how far it got.  The script "
+                  "waits for the prompt before each paced command, so a "
+                  "truncated command echo means the console link is "
+                  "dropping bytes (check cabling/flow control)",
                   file=sys.stderr)
 
 

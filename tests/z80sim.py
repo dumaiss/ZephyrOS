@@ -74,6 +74,31 @@ class Z80:
         pointer = ((self.i << 8) | (vector & 0xFF)) & 0xFFFF
         self.pc = self.rd16(pointer)
 
+    # ---- I/O ports ----
+    def io_in(self, port):
+        """Read one I/O port (the single port model for IN forms)."""
+        port &= 0xFF
+        if port == 0x00:
+            return self.latch
+        if port == 0x22:
+            return self.sio_rx.pop(0) if self.sio_rx else 0xFF
+        if port == 0x23:
+            # RR0: TX-empty + CTS set; RX-available only when a byte
+            # is queued.
+            return 0xFE | (0x01 if self.sio_rx else 0x00)
+        return 0xFF
+
+    def io_out(self, port, value):
+        """Write one I/O port (the single port model for OUT forms)."""
+        port &= 0xFF
+        value &= 0xFF
+        if port == 0x00:
+            self.latch = value
+        elif port == 0x22:
+            self.sio_tx.append(value)
+        elif port == 0x23:
+            self.sio_ctrl_writes.append(value)
+
     # ---- flags ----
     def _sf(self, bit, on):
         self.f = (self.f | bit) if on else (self.f & ~bit)
@@ -219,6 +244,32 @@ class Z80:
         if code == 2: return (self.h << 8) | self.l
         return self.sp
 
+    # ---- 8-bit register-file helpers (r codes 0-7; 6 is (HL)) ----
+    def read_r(self, code):
+        if code == 0: return self.b
+        if code == 1: return self.c
+        if code == 2: return self.d
+        if code == 3: return self.e
+        if code == 4: return self.h
+        if code == 5: return self.l
+        if code == 6: return self.rd(self.hl)
+        return self.a
+
+    def write_r(self, code, value):
+        value &= 0xFF
+        if code == 0: self.b = value
+        elif code == 1: self.c = value
+        elif code == 2: self.d = value
+        elif code == 3: self.e = value
+        elif code == 4: self.h = value
+        elif code == 5: self.l = value
+        elif code == 6: self.wr(self.hl, value)
+        else: self.a = value
+
+    def parity(self, value):
+        """P/V for IN r,(C): set on even parity."""
+        return 0 if bin(value & 0xFF).count("1") % 2 else 1
+
     def step(self):
         # HALT: only an accepted interrupt wakes the CPU.
         if self.halted:
@@ -328,23 +379,9 @@ class Z80:
         elif op in (0xD3, 0xDB):
             port = self.fetch()
             if op == 0xD3:
-                if port == 0x00:
-                    self.latch = self.a & 0xFF
-                elif port == 0x22:
-                    self.sio_tx.append(self.a & 0xFF)
-                elif port == 0x23:
-                    self.sio_ctrl_writes.append(self.a & 0xFF)
+                self.io_out(port, self.a)
             else:
-                if port == 0x00:
-                    self.a = self.latch
-                elif port == 0x22:
-                    self.a = self.sio_rx.pop(0) if self.sio_rx else 0xFF
-                elif port == 0x23:
-                    # RR0: TX-empty + CTS set; RX-available only when a
-                    # byte is queued.
-                    self.a = 0xFE | (0x01 if self.sio_rx else 0x00)
-                else:
-                    self.a = 0xFF
+                self.a = self.io_in(port)
         elif op in (0x01, 0x11, 0x21, 0x31):
             self.set_rr((op >> 4) & 3, self.fetch16())
         elif op == 0x09:  # add hl,bc
@@ -647,6 +684,18 @@ class Z80:
             self.hl = res & 0xFFFF
             self.ZF = self.hl == 0
             self.SNF = (self.hl & 0x8000) != 0
+        elif (op & 0xC7) == 0x40:  # in r,(c); op 70h reads and discards
+            value = self.io_in(self.c)
+            code = (op >> 3) & 7
+            if code != 6:
+                self.write_r(code, value)
+            self.ZF = value == 0
+            self.SNF = (value & 0x80) != 0
+            self.PV = self.parity(value)
+        elif (op & 0xC7) == 0x41:  # out (c),r; op 71h writes zero
+            code = (op >> 3) & 7
+            value = 0 if op == 0x71 else self.read_r(code)
+            self.io_out(self.c, value)
         else:
             raise SystemExit("sim: unsupported ED %02X at %04X" % (op, (self.pc - 2) & 0xFFFF))
 

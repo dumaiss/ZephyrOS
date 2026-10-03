@@ -1,4 +1,4 @@
-/* ZephyrOS M6 native syscall dispatcher (bank 7).
+/* ZephyrOS M6/M7 native syscall dispatcher (bank 7).
  *
  * The stable register ABI (docs/abi.md) is converted to internal C state
  * by the assembly boundary zos_syscall_dispatch (kernel/syscall/entry.asm);
@@ -15,6 +15,10 @@
  *     through the common-resident copy gates;
  *   - bank 7 and arithmetic wrap are rejected.
  *
+ * M7 adds the diagnostic set (SYS_DIAG_*) implemented in
+ * kernel/syscall/diag.c; this file owns the dispatch switch and the
+ * shared result/window helpers it uses.
+ *
  * Failure returns A = ZOS_E* with carry set and HL = 0; success returns
  * carry clear with HL = primary result.  Process bookkeeping is never
  * damaged by a failed operation.
@@ -24,6 +28,8 @@
 #include "zephyros/syscall.h"
 #include "zephyros/process.h"
 #include "zephyros/console.h"
+
+#include "syscall/diag.h"
 
 /* Dispatcher input/output state (written by the asm boundary, read by C). */
 uint8_t zos_syscall_number;
@@ -71,14 +77,17 @@ static uint16_t read_le16(const uint8_t *p)
 	return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
 }
 
-static void syscall_success(uint16_t result)
+/* The result publication and argument-window helpers are shared with
+ * kernel/syscall/diag.c (declared in diag.h); the M6 service bodies
+ * below keep their short local names. */
+void zos_syscall_success(uint16_t result)
 {
 	zos_syscall_result_hl = result;
 	zos_syscall_result_a = 0;
 	zos_syscall_result_c = 0;
 }
 
-static void syscall_error(uint8_t err)
+void zos_syscall_error(uint8_t err)
 {
 	zos_syscall_result_hl = 0;
 	zos_syscall_result_a = err;
@@ -86,7 +95,7 @@ static void syscall_error(uint8_t err)
 }
 
 /* Argument block: 0100h-1FFFh, every byte inside the caller window. */
-static uint8_t block_ok(uint16_t addr, uint16_t len)
+uint8_t zos_syscall_block_ok(uint16_t addr, uint16_t len)
 {
 	if (addr < ZOS_SYSCALL_WINDOW_BASE ||
 	    addr >= ZOS_SYSCALL_WINDOW_END) {
@@ -94,6 +103,10 @@ static uint8_t block_ok(uint16_t addr, uint16_t len)
 	}
 	return len <= (uint16_t)(ZOS_SYSCALL_WINDOW_END - addr);
 }
+
+#define syscall_success	zos_syscall_success
+#define syscall_error	zos_syscall_error
+#define block_ok	zos_syscall_block_ok
 
 /* Read/write buffer: 0100h-DFFFh, no length wrap. */
 static uint8_t buffer_ok(uint16_t addr, uint16_t len)
@@ -185,7 +198,10 @@ static void syscall_console_read(uint8_t bank, uint16_t block)
 	}
 
 	/* Non-blocking drain: return 0 when no byte is available.  After
-	 * the first byte, stop as soon as console_poll() reports empty. */
+	 * the first byte, stop as soon as console_poll() reports empty.
+	 * The normal console driver reports ZDEV_EAGAIN for an empty
+	 * poll; that is the documented "nothing pending" result, not an
+	 * error (docs/abi.md SYS_CONSOLE_READ). */
 	while ((uint16_t)(done + count) < args.length) {
 		int available;
 		int ch;
@@ -198,6 +214,10 @@ static void syscall_console_read(uint8_t bank, uint16_t block)
 		}
 		ch = console_getc();
 		if (ch < 0) {
+			if (done == 0 && count == 0 && ch == ZDEV_EAGAIN) {
+				syscall_success(0);
+				return;
+			}
 			if (done == 0 && count == 0) {
 				syscall_error(console_errno(ch));
 				return;
@@ -289,6 +309,24 @@ void kernel_syscall_dispatch(void)
 		break;
 	case ZOS_SYSCALL_GETINFO:
 		syscall_getinfo(zos_syscall_args);
+		break;
+	case ZOS_SYSCALL_DIAG_MEM_READ:
+		zos_diag_mem_read(zos_syscall_args);
+		break;
+	case ZOS_SYSCALL_DIAG_MEM_WRITE:
+		zos_diag_mem_write(zos_syscall_args);
+		break;
+	case ZOS_SYSCALL_DIAG_IO_IN:
+		zos_diag_io_in(zos_syscall_args);
+		break;
+	case ZOS_SYSCALL_DIAG_IO_OUT:
+		zos_diag_io_out(zos_syscall_args);
+		break;
+	case ZOS_SYSCALL_DIAG_BANK_INFO:
+		zos_diag_bank_info();
+		break;
+	case ZOS_SYSCALL_DIAG_SYSTEM_INFO:
+		zos_diag_system_info(zos_syscall_args);
 		break;
 	default:
 		break;

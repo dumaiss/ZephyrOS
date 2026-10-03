@@ -55,10 +55,10 @@ void sio0b_hw_init(void)
 	sio0b_write_ctrl(ZOS_SIO_WR4_X16_1STOP_NOPARITY);
 
 	sio0b_write_ctrl(ZOS_SIO_WR_SELECT_WR3);
-	sio0b_write_ctrl(ZOS_SIO_WR3_RX8_AUTO_ENABLES);
+	sio0b_write_ctrl(ZOS_SIO_WR3_RX8_NO_AUTO_ENABLES);
 
 	sio0b_write_ctrl(ZOS_SIO_WR_SELECT_WR5);
-	sio0b_write_ctrl(ZOS_SIO_WR5_TX8_DTR_RTS_RELEASE);
+	sio0b_write_ctrl(ZOS_SIO_WR5_TX8_DTR_RTS_ASSERT);
 
 	sio0b_write_ctrl(ZOS_SIO_WR_SELECT_WR1);
 	sio0b_write_ctrl(ZOS_SIO_WR1_INT_DISABLED);

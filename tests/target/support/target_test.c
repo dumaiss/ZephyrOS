@@ -32,6 +32,9 @@
 #if ZOS_M6_SELFTEST || ZOS_M6_FAILURE_SELFTEST
 #include "m6_selftest.h"
 #endif
+#if ZOS_M7_SELFTEST
+#include "m7_selftest.h"
+#endif
 
 void zos_target_test_early(void)
 {
@@ -62,5 +65,8 @@ void zos_target_test_late(void)
 #endif
 #if ZOS_M6_FAILURE_SELFTEST
 	zos_run_m6_failure_selftest();
+#endif
+#if ZOS_M7_SELFTEST
+	zos_run_m7_selftest();
 #endif
 }

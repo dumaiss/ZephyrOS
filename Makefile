@@ -46,10 +46,12 @@ ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/irq_entry.rel $(BUILD)/irq_vectors.rel \
              $(BUILD)/platform_irq.rel $(BUILD)/sdcc_helpers.rel \
              $(BUILD)/arena.rel $(BUILD)/rom_access.rel \
-             $(BUILD)/process_launch.rel $(BUILD)/user_copy.rel
+             $(BUILD)/process_launch.rel $(BUILD)/user_copy.rel \
+             $(BUILD)/diag_io.rel
 C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
-             $(BUILD)/syscall.rel $(BUILD)/irq.rel $(BUILD)/irq_sources.rel \
-             $(BUILD)/registry.rel $(BUILD)/console.rel \
+             $(BUILD)/syscall.rel $(BUILD)/diag.rel $(BUILD)/irq.rel \
+             $(BUILD)/irq_sources.rel $(BUILD)/registry.rel \
+             $(BUILD)/console.rel \
              $(BUILD)/module_relocate.rel $(BUILD)/module_loader.rel \
              $(BUILD)/romfs.rel $(BUILD)/process.rel $(BUILD)/process_exec.rel
 END_OBJ   := $(BUILD)/irq_code_end.rel
@@ -150,6 +152,27 @@ TARGET_TEST_OBJS += $(BUILD)/m6_test.rel
 PK_SUFFIX := -m6-failure
 endif
 
+# M7 success image: boots the SIO module and the native monitor from
+# ROMFS, runs the kernel-side diagnostic selftest, then hands control to
+# the temporary launcher for the scripted interactive acceptance.
+ifeq ($(ZOS_M7_SELFTEST),1)
+CFLAGS    += -DZOS_M7_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m7_test.rel
+PK_SUFFIX := -m7-selftest
+endif
+
+# Temporary pre-shell monitor launcher (kernel/main.c).  Production and
+# the M7 image enable it; every earlier acceptance image disables it so
+# its accepted behavior is preserved byte-for-byte where possible.
+ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
+	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST) \
+	$(ZOS_M4_PLACEMENT) $(ZOS_M5_SELFTEST) $(ZOS_M5_CORRUPT_SELFTEST) \
+	$(ZOS_M6_SELFTEST) $(ZOS_M6_FAILURE_SELFTEST)),)
+ZOS_MONITOR_BOOT := 0
+endif
+ZOS_MONITOR_BOOT ?= 1
+CFLAGS    += -DZOS_MONITOR_BOOT=$(ZOS_MONITOR_BOOT)
+
 # Boot-module source selection.  Pre-M5 acceptance images (M1-M4) keep
 # their embedded test catalogs; production and the M5 images boot the SIO
 # module from the ROMFS recovery store.
@@ -174,7 +197,7 @@ OBJS      := $(ASM_OBJS) $(C_OBJS)
 ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
 	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST) \
 	$(ZOS_M5_SELFTEST) $(ZOS_M6_SELFTEST) \
-	$(ZOS_M6_FAILURE_SELFTEST)),)
+	$(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
 endif
@@ -211,10 +234,12 @@ endif
 	m3-selftest zmod-test m4-loader-selftest m4-selftest \
 	m4-placement-selftest m4-failure-selftest romfs-test m5-selftest \
 	m5-corrupt-selftest zex-test m6-selftest m6-failure-selftest \
+	monitor-test m7-selftest \
 	smoke-hardware \
 	smoke-hardware-selftest smoke-hardware-irq smoke-hardware-m3 \
 	smoke-hardware-m4 smoke-hardware-m4-failure smoke-hardware-m5 \
-	smoke-hardware-m5-corrupt smoke-hardware-m6 smoke-hardware-m6-failure
+	smoke-hardware-m5-corrupt smoke-hardware-m6 smoke-hardware-m6-failure \
+	smoke-hardware-m7
 
 all: $(IMAGE) $(MAME_IMAGE)
 
@@ -280,6 +305,9 @@ $(BUILD)/user_copy.rel: kernel/memory/user_copy.asm \
 		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
+$(BUILD)/diag_io.rel: kernel/syscall/diag_io.asm | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
 $(BUILD)/m3_probe_io.rel: tests/target/m3/m3_probe_io.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
@@ -318,7 +346,7 @@ $(BUILD)/panic.rel: kernel/panic.c \
 
 $(BUILD)/main.rel: kernel/main.c include/zephyros/kernel.h \
 		include/zephyros/irq.h include/zephyros/console.h \
-		include/zephyros/module.h | $(BUILD)
+		include/zephyros/module.h include/zephyros/process.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/irq.rel: kernel/irq/irq.c include/zephyros/irq.h \
@@ -330,9 +358,15 @@ $(BUILD)/irq_sources.rel: drivers/ctc/ctc.c \
 		platform/zephyr80/hardware.h platform/zephyr80/irq.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/syscall.rel: kernel/syscall.c include/zephyros/syscall.h \
-		include/zephyros/errno.h include/zephyros/kernel.h \
-		include/zephyros/process.h include/zephyros/console.h | $(BUILD)
+$(BUILD)/syscall.rel: kernel/syscall.c kernel/syscall/diag.h \
+		include/zephyros/syscall.h include/zephyros/errno.h \
+		include/zephyros/kernel.h include/zephyros/process.h \
+		include/zephyros/console.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/diag.rel: kernel/syscall/diag.c kernel/syscall/diag.h \
+		include/zephyros/syscall.h include/zephyros/process.h \
+		include/zephyros/platform.h include/zephyros/errno.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M3 device/driver/service objects (bank-7 code and data) -----------------
@@ -558,6 +592,13 @@ $(BUILD)/m6_test.rel: tests/target/m6/m6_test.c \
 		tests/target/include/m6_selftest.h $(BUILD)/m6_expect.inc | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
+$(BUILD)/m7_test.rel: tests/target/m7/m7_test.c \
+		include/zephyros/process.h include/zephyros/syscall.h \
+		include/zephyros/console.h include/zephyros/module.h \
+		include/zephyros/kernel.h include/zephyros/platform.h \
+		tests/target/include/m7_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
 # --- M6 native program (ZEXTEST) ---------------------------------------------
 # One ZEX program linked as a flat image at 0100h: _CODE is the image and
 # _DATA is the zero-initialized region the loader fills at
@@ -607,6 +648,91 @@ $(MODULES)/zextest.zex: $(ZEX_TEST_JSON) $(ZEX_TEST_BUILD)/zextest.ihx \
 	$(PYTHON) tools/zexpack.py pack $(ZEX_TEST_JSON) $@ \
 		--objdir $(ZEX_TEST_BUILD) --report $(MODULES)/zextest.report.json
 
+# --- M7 native monitor (MONITOR.ZEX) -----------------------------------------
+# The monitor is an ordinary M6 ZEX linked as a flat 0100h image from the
+# shared user/runtime components plus user/monitor; geometry comes from
+# user/monitor/monitor.json and zexpack validates the linked map against
+# it.  It links no kernel object and contains no device knowledge.
+
+MONITOR_JSON := user/monitor/monitor.json
+MONITOR_BUILD := $(BUILD)/monitor
+MONITOR_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(MONITOR_JSON) image_size)
+MONITOR_DATA_BASE  := $(shell printf '0x%04X' $$((0x0100 + $(MONITOR_IMAGE_SIZE))))
+
+MONITOR_USER_CFLAGS := -mz80 -c --nostdinc --Werror \
+	-I user/runtime -I user/monitor
+
+MONITOR_OBJECTS := $(MONITOR_BUILD)/monitor_entry.rel \
+		$(MONITOR_BUILD)/monitor.rel $(MONITOR_BUILD)/monitor_mem.rel \
+		$(MONITOR_BUILD)/monitor_io.rel \
+		$(MONITOR_BUILD)/console_io.rel $(MONITOR_BUILD)/hexfmt.rel \
+		$(MONITOR_BUILD)/hexdump.rel $(MONITOR_BUILD)/status.rel \
+		$(MONITOR_BUILD)/zex_runtime.rel \
+		$(MONITOR_BUILD)/zex_diag_runtime.rel
+
+$(MONITOR_BUILD):
+	mkdir -p $@
+
+$(MONITOR_BUILD)/monitor_entry.rel: user/monitor/monitor_entry.asm | $(MONITOR_BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(MONITOR_BUILD)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(MONITOR_BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(MONITOR_BUILD)/zex_diag_runtime.rel: user/runtime/zex_diag_runtime.asm | $(MONITOR_BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(MONITOR_BUILD)/monitor.rel: user/monitor/monitor.c user/monitor/monitor.h \
+		user/runtime/zex_runtime.h user/runtime/console_io.h \
+		user/runtime/hexfmt.h user/runtime/status.h | $(MONITOR_BUILD)
+	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
+
+$(MONITOR_BUILD)/monitor_mem.rel: user/monitor/monitor_mem.c \
+		user/monitor/monitor.h user/runtime/zex_runtime.h \
+		user/runtime/console_io.h user/runtime/hexfmt.h \
+		user/runtime/hexdump.h user/runtime/status.h | $(MONITOR_BUILD)
+	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
+
+$(MONITOR_BUILD)/monitor_io.rel: user/monitor/monitor_io.c \
+		user/monitor/monitor.h user/runtime/zex_runtime.h \
+		user/runtime/console_io.h user/runtime/hexfmt.h \
+		user/runtime/status.h | $(MONITOR_BUILD)
+	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
+
+$(MONITOR_BUILD)/console_io.rel: user/runtime/console_io.c \
+		user/runtime/console_io.h user/runtime/zex_runtime.h \
+		| $(MONITOR_BUILD)
+	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
+
+$(MONITOR_BUILD)/hexfmt.rel: user/runtime/hexfmt.c user/runtime/hexfmt.h \
+		| $(MONITOR_BUILD)
+	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
+
+$(MONITOR_BUILD)/hexdump.rel: user/runtime/hexdump.c user/runtime/hexdump.h \
+		user/runtime/hexfmt.h | $(MONITOR_BUILD)
+	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
+
+$(MONITOR_BUILD)/status.rel: user/runtime/status.c user/runtime/status.h \
+		user/runtime/console_io.h user/runtime/hexfmt.h | $(MONITOR_BUILD)
+	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
+
+$(MONITOR_BUILD)/monitor.lk: $(MONITOR_OBJECTS) $(MONITOR_JSON) | $(MONITOR_BUILD)
+	{ \
+	  printf '%s\n' '-n' '-m' '-w'; \
+	  printf '%s\n' '-i $(MONITOR_BUILD)/monitor.ihx'; \
+	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(MONITOR_DATA_BASE)'; \
+	  printf '%s\n' $(MONITOR_OBJECTS); \
+	  printf '%s\n' '-e'; \
+	} > $@
+
+$(MONITOR_BUILD)/monitor.ihx $(MONITOR_BUILD)/monitor.map: $(MONITOR_BUILD)/monitor.lk
+	$(SDLDZ80) -f $(MONITOR_BUILD)/monitor.lk
+
+$(MODULES)/monitor.zex: $(MONITOR_JSON) $(MONITOR_BUILD)/monitor.ihx \
+		$(MONITOR_BUILD)/monitor.map tools/zexpack.py | $(MODULES)
+	$(PYTHON) tools/zexpack.py pack $(MONITOR_JSON) $@ \
+		--objdir $(MONITOR_BUILD) --report $(MODULES)/monitor.report.json
+
 # Deterministic malformed fixtures (one per validation boundary; see
 # tests/m6/gen_fixtures.py) shared by the M6 acceptance manifests.
 $(MODULES)/zex-fixtures.stamp: tests/m6/gen_fixtures.py tools/zexpack.py | $(MODULES)
@@ -630,9 +756,12 @@ ROMFS_EXTRA_DEPS := $(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
 else ifeq ($(ZOS_M6_FAILURE_SELFTEST),1)
 ROMFS_MANIFEST := tests/m6/manifest-failure.json
 ROMFS_EXTRA_DEPS := $(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
+else ifeq ($(ZOS_M7_SELFTEST),1)
+ROMFS_MANIFEST := tests/m7/manifest.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 else
 ROMFS_MANIFEST := recovery/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/zextest.zex
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 endif
 
 $(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(MODULES)/sio.zmod \
@@ -665,7 +794,7 @@ ZOS_TEST_LINK := $(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) \
 		$(ZOS_M3_SELFTEST) $(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) \
 		$(ZOS_M4_FAILURE_SELFTEST) $(ZOS_M5_SELFTEST) \
 		$(ZOS_M5_CORRUPT_SELFTEST) $(ZOS_M6_SELFTEST) \
-		$(ZOS_M6_FAILURE_SELFTEST))
+		$(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -891,6 +1020,27 @@ m6-failure-selftest:
 	$(PYTHON) -m unittest discover -s tests -p 'test_m6_sim.py' -v
 	@echo "m6-failure image: build-m6-failure-selftest/zephyros-m6-failure.bin"
 
+# --- M7 native monitor tooling and acceptance image --------------------------
+# monitor-test proves the ZEX layout and the monitor/runtime source
+# contract; m7-selftest builds the bootable M7 image (kernel-side
+# diagnostic selftest plus the interactive monitor over ROMFS) and
+# replays the scripted interactive transcript in the simulator.
+
+monitor-test: $(MODULES)/monitor.zex
+	$(PYTHON) tools/zexpack.py validate $(MODULES)/monitor.zex
+	$(PYTHON) tools/zexpack.py dump $(MODULES)/monitor.zex
+	$(PYTHON) -m unittest discover -s tests -p 'test_monitor.py' -v
+	@echo "monitor-test: OK"
+
+m7-selftest:
+	$(MAKE) BUILD=build-m7-selftest ZOS_M7_SELFTEST=1 \
+		build-m7-selftest/zephyros-m7-selftest.bin \
+		build-m7-selftest/zephyr80-m7-selftest.bin
+	$(PYTHON) tools/mapcheck.py build-m7-selftest/zephyros.map \
+		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m7_sim.py' -v
+	@echo "m7-selftest image: build-m7-selftest/zephyros-m7-selftest.bin"
+
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching ROM
 # programmed.  Pass SERIAL_PORT=/dev/ttyUSB0 (or export ZOS_SERIAL_PORT).
@@ -924,3 +1074,6 @@ smoke-hardware-m6:
 
 smoke-hardware-m6-failure:
 	$(PYTHON) tools/serial_smoke.py --mode m6-failure --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m7:
+	$(PYTHON) tools/serial_smoke.py --mode m7 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

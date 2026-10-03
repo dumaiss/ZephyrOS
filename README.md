@@ -68,6 +68,24 @@ M0 boot mechanics.
   changed, the physical smoke runs must be repeated before citing
   hardware acceptance for the new images (see `docs/validation/`).
 - Stage `04-m1-validation-acceptance` is accepted.
+- **M5 — ROM recovery filesystem**: safe runtime ROM access through the
+  mirrored stackless stub, a validated read-only ROMFS v1 recovery store
+  (pages 2-7 of the 512 KiB ROM) with the host packer, and the boot ZMOD
+  source moved from the embedded catalog to ROMFS.  Accepted on physical
+  hardware 2026-10-03 (success and corrupt-metadata images; see
+  `docs/validation/2026-10-03-m5-romfs.md`).
+- **M6 — Native process and ZEX v1**: fixed process descriptors, lowest
+  free application-bank allocation, a deterministic native page zero,
+  the packed single-bank ZEX v1 executable format (`docs/zex-format.md`),
+  the native console/exit/getinfo syscalls, and synchronous child
+  exec/exit with exact parent restoration.  Accepted on physical
+  hardware 2026-10-03 (`docs/validation/2026-10-03-m6-zex.md`).
+- **M7 — Native monitor and diagnostic foundation**: `monitor.zex` as an
+  ordinary ZEX in ROMFS, the `SYS_DIAG_*` recovery boundary, reusable
+  `user/runtime/` program support, the temporary pre-shell launcher, and
+  the interactive monitor (`docs/monitor.md`).  Host-validated and
+  physically accepted 2026-10-03
+  (`docs/validation/2026-10-03-m7-monitor.md`).
 
 ## Prerequisites
 
@@ -108,6 +126,24 @@ make m4-placement-selftest
 make m4-failure-selftest
                    # init-failure module + rollback verification
                    # (build-m4-failure/)
+make m5-selftest
+                   # M5 ROMFS success image + simulator replay
+                   # (build-m5-selftest/)
+make m5-corrupt-selftest
+                   # M5 corrupt-recovery-image panic image
+                   # (build-m5-corrupt-selftest/)
+make m6-selftest
+                   # M6 ZEX acceptance: two-bank/repeated-cycle/raw-return/
+                   # malformed-matrix runs + simulator replay
+                   # (build-m6-selftest/)
+make m6-failure-selftest
+                   # truncated ZEX rollback + valid-copy image
+                   # (build-m6-failure-selftest/)
+make monitor-test
+                   # pack/validate monitor.zex + ABI/layout/dependency tests
+make m7-selftest
+                   # M7 image: kernel diagnostic selftest + scripted
+                   # interactive monitor replay (build-m7-selftest/)
 make smoke-hardware SERIAL_PORT=/dev/ttyUSB0
                    # capture + verify the banner from physical hardware
 make smoke-hardware-selftest SERIAL_PORT=/dev/ttyUSB0
@@ -125,6 +161,19 @@ make smoke-hardware-m4-failure SERIAL_PORT=/dev/ttyUSB0
                    # capture the M4 failure transcript: banner +
                    # 'console: dynamic driver failed' +
                    # 'm4 failure selftest: OK'
+make smoke-hardware-m5 SERIAL_PORT=/dev/ttyUSB0
+                   # capture + verify the M5 ROMFS success transcript
+make smoke-hardware-m5-corrupt SERIAL_PORT=/dev/ttyUSB0
+                   # capture + verify the M5 corrupt-image panic marker
+make smoke-hardware-m6 SERIAL_PORT=/dev/ttyUSB0
+                   # capture + verify the M6 ZEX acceptance transcript
+make smoke-hardware-m6-failure SERIAL_PORT=/dev/ttyUSB0
+                   # capture + verify the M6 rollback transcript
+make smoke-hardware-m7 SERIAL_PORT=/dev/ttyUSB0
+                   # script + verify the M7 monitor session (help, R,
+                   # dumps, modify/readback, I/O, rejections, two Q
+                   # cycles); start it first, then power-cycle/RESET the
+                   # board so the boot log is captured
 make clean         # remove generated files under build*/
 ```
 
@@ -135,8 +184,11 @@ hashes, fill counts, and entry addresses).  `make check` additionally
 proves that a clean rebuild reproduces the identical binary.
 
 Physical-hardware validation uses `tools/serial_smoke.py` (115200 8N1,
-bounded timeout).  Dated acceptance records live under `docs/validation/`
-(M1, M2, the M3 record, and the M4 loader/acceptance records).
+bounded timeout).  The M7 mode must be listening before the board
+boots: start the tool, then power-cycle or press RESET (the boot-log
+lines are printed once).  Dated acceptance records live under
+`docs/validation/` (M1, M2, the M3 record, and the M4 loader/acceptance
+records).
 
 Artifacts (all under `build/`):
 
@@ -178,18 +230,23 @@ console: dynamic sio0.b OK
 ZephyrOS/
 ├── Makefile
 ├── docs/                  architecture.md, boot.md, memory.md, abi.md,
-│                          devices.md, module-format.md
+│                          devices.md, module-format.md,
+│                          romfs-format.md, zex-format.md, monitor.md
 ├── include/zephyros/      types.h, platform.h, kernel.h, syscall.h,
 │                          errno.h, irq.h, device.h, driver.h,
-│                          console.h, module.h
+│                          console.h, module.h, romfs.h, process.h,
+│                          zex.h
 ├── boot/start.asm         common boot entry + C runtime initialization
 ├── boot/shadow_copy.asm   reset/ROM-to-SRAM copier
 ├── kernel/                main.c, panic.c, early_console.c, syscall.c,
-│                          memory/ (banking.asm), syscall/ (entry.asm,
-│                          page_zero.asm), runtime/ (sdcc_helpers.asm),
+│                          memory/ (banking.asm, user_copy.asm),
+│                          syscall/ (entry.asm, page_zero.asm, diag.c,
+│                          diag_io.asm), runtime/ (sdcc_helpers.asm),
 │                          device/ (registry.c, console.c),
 │                          irq/, module/ (arena.asm, loader.c,
-│                          relocate.c, embedded.c)
+│                          relocate.c, embedded.c),
+│                          romfs/ (romfs.c, rom_access.asm),
+│                          process/ (process.c, exec.c, launch.asm)
 ├── drivers/               sio/ (sio.c, sio_io.asm, sio_module.c),
 │                          ctc/ (ctc.c)
 ├── modules/               manifests/ (production ZMOD metadata),
@@ -197,11 +254,17 @@ ZephyrOS/
 ├── platform/zephyr80/     constants/configuration only: hardware.h/.inc,
 │                          memory.h/.inc, irq.h/.inc, config.mk
 ├── linker/zephyr80.lk     sdldz80 control (canonical build/)
+├── user/                  runtime/ (M6 syscall + M7 diagnostic wrappers,
+│                          console/hex/dump/status components),
+│                          monitor/ (native monitor.zex sources)
+├── recovery/manifest.json production ROMFS contents (sio.zmod,
+│                          monitor.zex)
 ├── tools/                 pack_image.py, mapcheck.py, zmodpack.py,
-│                          serial_smoke.py
+│                          romfspack.py, zexpack.py, serial_smoke.py
 ├── tests/                 host-side image/layout/ABI tests + Z80 replays;
+│                          m5/..m7 (manifests, fixtures, generators);
 │                          modules/ (test ZMOD sources + manifests);
-│                          target/ (m1..m4 acceptance code, headers,
+│                          target/ (m1..m7 acceptance code, headers,
 │                          shared runner)
 └── work/                  milestone worker contracts
 ```

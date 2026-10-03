@@ -1,6 +1,6 @@
 # ZephyrOS Architecture
 
-**Status:** M0-M6 complete and physically accepted; M7 implemented and host-validated, physical acceptance pending (see `docs/validation/2026-10-03-m7-monitor.md`)
+**Status:** M0-M6 complete and physically accepted; M7 complete and physically accepted (see `docs/validation/2026-10-03-m7-monitor.md`)
 **Scope:** Milestones M0 through M7
 **Target:** Zephyr-80  
 **Language/toolchain:** SDCC + sdasz80/sdldz80, GNU Make, Python host tools
@@ -3171,8 +3171,10 @@ The monitor therefore becomes a permanent recovery/diagnostic asset, not a tempo
 ### 28.8 M7 implementation notes (stage 13)
 
 Implemented 2026-10-03; host-validated end to end (simulator replay of
-the scripted interactive session plus focused dispatcher tests) with
-physical acceptance pending.  The concrete implementation is:
+the scripted interactive session plus focused dispatcher tests) and
+physically accepted 2026-10-03 (scripted smoke transcript plus the
+human interactive pass; see `docs/validation/2026-10-03-m7-monitor.md`).
+The concrete implementation is:
 
 - `kernel/syscall/diag.{c,h}` (bank 7) implements the six
   `SYS_DIAG_*` bodies declared in `include/zephyros/syscall.h`.  Every
@@ -3229,7 +3231,10 @@ physical acceptance pending.  The concrete implementation is:
 - `tools/mapcheck.py` adds the M7 bank-7 placement rules for the
   diagnostic services and helpers and forbids `_m7_*` acceptance symbols
   in production images; `tools/serial_smoke.py --mode m7` scripts the
-  physical session and checks the markers verbatim.
+  physical session and checks the markers verbatim.  Start it before the
+  board boots (it prints a reset reminder and refuses a warm-board
+  session): the boot log is printed once and cannot be recovered from an
+  already-running board.
 
 ---
 
@@ -3248,6 +3253,10 @@ M7 is accepted when:
 - repeated monitor exec/exit cycles remain stable;
 - a monitor fault or invalid diagnostic request does not silently corrupt kernel bookkeeping;
 - the monitor contains no dependency on SIO0/B port numbers, so later console rebinding can occur without rebuilding the monitor for a different device.
+
+All criteria above were met on physical hardware on 2026-10-03: the
+scripted smoke transcript and the human interactive pass are recorded
+in `docs/validation/2026-10-03-m7-monitor.md`.
 
 M7 establishes the interactive native recovery environment that remains available while M8-M12 complete the rest of native ZephyrOS.
 
@@ -3768,7 +3777,7 @@ M6  COMPLETE
 └── exec child -> exit -> resume parent
     │
     ▼
-M7  IMPLEMENTED (host-validated; physical acceptance pending)
+M7  COMPLETE (host + physical acceptance passed)
 │
 ├── monitor.zex in ROMFS
 ├── native diagnostic syscall boundary

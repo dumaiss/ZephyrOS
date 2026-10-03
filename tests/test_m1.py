@@ -42,7 +42,7 @@ REQUIRED_HARDWARE_CONSTANTS = (
     "ZOS_SIO_RR0_RX_AVAILABLE", "ZOS_SIO_RR0_TX_EMPTY", "ZOS_SIO_RR0_CTS",
     "ZOS_SIO_TX_READY",
     "ZOS_SIO_WR0_CHANNEL_RESET", "ZOS_SIO_WR4_X16_1STOP_NOPARITY",
-    "ZOS_SIO_WR3_RX8_AUTO_ENABLES", "ZOS_SIO_WR5_TX8_DTR_RTS_RELEASE",
+    "ZOS_SIO_WR3_RX8_NO_AUTO_ENABLES", "ZOS_SIO_WR5_TX8_DTR_RTS_ASSERT",
     "ZOS_SIO_WR1_INT_DISABLED", "ZOS_SIO_TX_TIMEOUT",
     "ZOS_CTC0_PORT", "ZOS_CTC0_CONTROL_TEST",
     "ZOS_CTC0_TIME_CONSTANT", "ZOS_CTC0_RESET",
@@ -477,6 +477,14 @@ def make_map(overrides=None, **kw):
         "_process_launch_child": 0x2D20, "_zex_validate_header": 0x2D40,
         "_process_table": 0xC400, "_process_running_pid": 0xC500,
         "_process_last_status": 0xC501,
+        # M7 diagnostic services and shared dispatcher helpers (bank-7
+        # kernel code; no new common state).
+        "_zos_diag_mem_read": 0x2E00, "_zos_diag_mem_write": 0x2E40,
+        "_zos_diag_io_in": 0x2E80, "_zos_diag_io_out": 0x2EA0,
+        "_zos_diag_bank_info": 0x2EC0, "_zos_diag_system_info": 0x2EE0,
+        "_zos_diag_hw_in": 0x2010, "_zos_diag_hw_out": 0x2016,
+        "_zos_syscall_success": 0x2632, "_zos_syscall_error": 0x263D,
+        "_zos_syscall_block_ok": 0x264C,
     }
     if kw.get("areas") is not None:
         areas = dict(areas)

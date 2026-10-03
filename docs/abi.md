@@ -199,9 +199,93 @@ Native programs use `user/runtime/zex_runtime.h` (`zex_exit`,
 numbers with the private SDCC convention; programs never call `RST 30h`
 directly unless they re-implement that convention.
 
+Implementation note: `SYS_CONSOLE_READ` is the non-blocking drain
+described above; an empty drain reports `HL = 0`.  The M6 wording
+"blocks for the first byte" predates the shipped drain behavior; the
+runtime's blocking `zrt_getc()` polls this call until a byte arrives.
+
 Validation: `make m6-selftest` runs `zextest.zex` from ROMFS in two
 application banks and checks the exact exit statuses; the simulator
 replays the full image transcript (`tests/test_m6_sim.py`), including
 the raw-return fault path and the malformed-ZEX matrix.  The physical
 gate is `make smoke-hardware-m6 SERIAL_PORT=/dev/ttyUSB0` with the
 transcript expectations pinned in `tools/serial_smoke.py`.
+
+## 9. M7 diagnostic services
+
+M7 adds six recovery/diagnostic services behind the unchanged gate.
+They exist for the native monitor (and, later, the M11 diagnostic
+suite); ordinary programs keep to the ordinary services and never gain
+bank-7 access through them.  The boundary is architectural, not
+hardware-enforced (the Z80 has no privilege mode).
+
+```text
+28h  SYS_DIAG_MEM_READ     args {bank:u8, reserved:u8, address:u16}
+                           -> byte in HL
+29h  SYS_DIAG_MEM_WRITE    args {bank:u8, value:u8, address:u16}
+2Ah  SYS_DIAG_IO_IN        args {port:u8}        -> byte in HL
+2Bh  SYS_DIAG_IO_OUT       args {port:u8, value:u8}
+2Ch  SYS_DIAG_BANK_INFO    no args               -> mask:bank in HL
+2Dh  SYS_DIAG_SYSTEM_INFO  record written at the argument pointer
+                           -> size in HL
+```
+
+Argument blocks observe the section 8 window rule (`0100h-1FFFh`); the
+load/validation sequence is the same.  Every failure is side-effect
+free (no bank content, latch, or process bookkeeping changes) and every
+service restores the exact active latch: memory transfers reuse the
+checked M6 bank-copy gate, and the port helpers never touch the latch.
+
+Memory access rules:
+
+- `SYS_DIAG_MEM_READ` accepts banks `0-6` and addresses `0000h-DFFFh`
+  (page-zero inspection is allowed); `reserved` must be zero.
+- `SYS_DIAG_MEM_WRITE` accepts banks `0-6` and addresses
+  `0100h-DFFFh`.  The native page zero `0000h-00FFh` and common memory
+  are protected.
+- Bank `7`, out-of-range addresses, arithmetic wrap, and a nonzero
+  reserved field are rejected with `ZOS_EINVAL`.
+
+Port rules:
+
+- `SYS_DIAG_IO_IN` / `SYS_DIAG_IO_OUT` accept ports `10h-FFh` only.
+  Ports `00h-0Fh` alias the memory-control latch; an access there would
+  be a bank/mode operation in disguise, so `ZOS_EINVAL` is returned
+  before anything is executed.
+
+`SYS_DIAG_BANK_INFO` returns `HL = (mask << 8) | bank`:
+
+- `bank` (L) is the calling process' application bank `0-6`; in kernel
+  context (no running process) it is the selected latch bank clamped to
+  `0-6`;
+- `mask` (H) is `7Fh`: bit N set means bank N is a valid application
+  bank.  Bit 7 is always clear - bank 7 is kernel-only - so callers
+  validate "bank usable" with `(mask >> bank) & 1`.
+
+`SYS_DIAG_SYSTEM_INFO` writes the eight-byte v1 record and returns `8`
+in `HL`:
+
+| Offset | Size | Field | Value |
+| --- | --- | --- | --- |
+| `0` | 1 | `size` | 8 |
+| `1` | 1 | `abi` | 1 |
+| `2` | 1 | `app_mode` | application mapping mode (`10h`) |
+| `3` | 1 | `os_mode` | OS mapping mode (`18h`) |
+| `4` | 2 | `common_base` | `E000h` |
+| `6` | 1 | `kernel_bank` | 7 |
+| `7` | 1 | `romfs_first_page` | 2 |
+
+The packed numbers and block layouts are declared in
+`include/zephyros/syscall.h` (kernel side) and mirrored by
+`user/runtime/zex_runtime.h` (`zex_diag_*` wrappers in
+`user/runtime/zex_diag_runtime.asm`); host tests pin the two headers
+and the assembly wrapper constants together.
+
+Validation: `make m7-selftest` boots the monitor image, runs the
+kernel-side diagnostic selftest (`tests/target/m7/m7_test.c`) and
+replays the scripted interactive session (`tests/test_m7_sim.py`),
+including per-class rejections, canary/table stability, and exact
+latch/SP/IFF restoration; `make monitor-test` checks the monitor ZEX
+layout and its source/map freedom from kernel/serial dependencies.  The
+physical gate is `make smoke-hardware-m7 SERIAL_PORT=/dev/ttyUSB0` (see
+`docs/monitor.md`).

@@ -52,8 +52,9 @@
 #define ZOS_SIO_RR0_RX_AVAILABLE    0x01u
 #define ZOS_SIO_RR0_TX_EMPTY        0x04u
 #define ZOS_SIO_RR0_CTS             0x20u
-/* Both TX-empty and CTS are required before writing the data port. */
-#define ZOS_SIO_TX_READY            (ZOS_SIO_RR0_TX_EMPTY | ZOS_SIO_RR0_CTS)
+/* Only TX-empty is required before writing the data port: the console is
+ * not gated by the FT230X modem-handshake crossover (see WR3/WR5 below). */
+#define ZOS_SIO_TX_READY            ZOS_SIO_RR0_TX_EMPTY
 
 /* --- SIO register programming values (115200 8N1, polled) --- */
 
@@ -64,8 +65,13 @@
 
 #define ZOS_SIO_WR0_CHANNEL_RESET       0x18u
 #define ZOS_SIO_WR4_X16_1STOP_NOPARITY  0x44u
-#define ZOS_SIO_WR3_RX8_AUTO_ENABLES    0xE1u
-#define ZOS_SIO_WR5_TX8_DTR_RTS_RELEASE 0xE8u
+/* Auto Enables off: with them on the transmitter/receiver follow CTS/DCD,
+ * and on this board CTS is the FT230X RTS# line — a host that leaves RTS
+ * released would silently mute the console. */
+#define ZOS_SIO_WR3_RX8_NO_AUTO_ENABLES 0xC1u
+/* RTS asserted: drives the FT230X CTS# input low so terminals using
+ * hardware flow control are always allowed to send. */
+#define ZOS_SIO_WR5_TX8_DTR_RTS_ASSERT  0xEAu
 #define ZOS_SIO_WR1_INT_DISABLED        0x00u
 
 /* Finite TX-ready poll budget for the early console.  A missing or

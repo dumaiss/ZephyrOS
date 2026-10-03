@@ -116,9 +116,14 @@ The manifest is JSON:
 ```
 
 Input paths resolve against `--objdir` (default: the manifest directory).
-The production manifest is `recovery/manifest.json`; the M5 acceptance
-image uses `tests/m5/manifest.json`, which adds the deterministic
-cross-page pattern asset `m5-crosspage.bin` (byte `i` is
+The production manifest is `recovery/manifest.json`, which carries the
+boot SIO module (`sio.zmod`) and the native monitor (`monitor.zex`) in
+every image; the M7 acceptance image uses `tests/m7/manifest.json` with
+the same two entries, and the M6 acceptance images use
+`tests/m6/manifest.json` / `manifest-failure.json` (zextest plus the
+malformed-ZEX fixture matrix).  The M5 acceptance image uses
+`tests/m5/manifest.json`, which adds the deterministic cross-page
+pattern asset `m5-crosspage.bin` (byte `i` is
 `(i & 0xFF) ^ ((i >> 8) & 0xFF)`; it is 0xC040 bytes and spans the
 48-KiB window boundary).
 

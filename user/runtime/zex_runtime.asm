@@ -30,6 +30,7 @@
 	.globl _zex_read
 	.globl _zex_poll
 	.globl _zex_getinfo
+	.globl _zex_runtime_error
 	.globl _zos_runtime_scratch
 	.globl zos_runtime_scratch
 
@@ -54,7 +55,7 @@ _zex_write::
 	ld	a,#0x01			; SYS_CONSOLE_WRITE
 	ld	hl,#_zos_runtime_scratch
 	rst	0x30
-	jp	c,zex_runtime_error
+	jp	c,_zex_runtime_error
 	ex	de,hl			; count -> DE
 	ret
 
@@ -65,7 +66,7 @@ _zex_read::
 	ld	a,#0x02			; SYS_CONSOLE_READ
 	ld	hl,#_zos_runtime_scratch
 	rst	0x30
-	jp	c,zex_runtime_error
+	jp	c,_zex_runtime_error
 	ex	de,hl
 	ret
 
@@ -74,7 +75,7 @@ _zex_poll::
 	ld	a,#0x03			; SYS_CONSOLE_POLL
 	ld	hl,#0x0000		; no argument block
 	rst	0x30
-	jp	c,zex_runtime_error
+	jp	c,_zex_runtime_error
 	ex	de,hl
 	ret
 
@@ -84,7 +85,7 @@ _zex_getinfo::
 	ld	a,#0x04			; SYS_GETINFO
 	ld	hl,#_zos_runtime_scratch
 	rst	0x30
-	jp	c,zex_runtime_error
+	jp	c,_zex_runtime_error
 	; Copy the six-byte record from the scratch block to the caller
 	; (LDIR copies HL -> DE).
 	ld	de,(_zos_runtime_scratch+6)
@@ -94,8 +95,9 @@ _zex_getinfo::
 	ld	de,#6
 	ret
 
-; Map a carry-set return (A = errno) to DE = -errno.
-zex_runtime_error:
+; Map a carry-set return (A = errno) to DE = -errno.  Exported so
+; sibling runtime modules (zex_diag_runtime.asm) share one mapper.
+_zex_runtime_error::
 	ld	e,a
 	ld	d,#0
 	xor	a

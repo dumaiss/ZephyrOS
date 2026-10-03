@@ -60,5 +60,6 @@ dkms.conf
 
 # debug information files
 *.dwo
+__pycache__/
 tools/__pycache__/
 tests/__pycache__/

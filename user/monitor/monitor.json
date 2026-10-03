@@ -1,0 +1,15 @@
+{
+  "format": "zex-v1",
+  "name": "monitor.zex",
+  "input": "monitor.ihx",
+  "map": "monitor.map",
+  "entry": "mon_entry",
+  "entry_offset": 0,
+  "image_size": 3526,
+  "bss_size": 1024,
+  "stack_size": 512,
+  "scratch": {
+    "symbol": "zex_diag_scratch",
+    "size": 12
+  }
+}

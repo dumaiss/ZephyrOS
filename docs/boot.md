@@ -146,16 +146,16 @@ disabled:
 ```text
 WR0 = 18h  channel reset
 WR4 = 44h  x16 clock, 1 stop bit, no parity
-WR3 = E1h  8-bit RX, RX enabled, Auto Enables on
-WR5 = E8h  TX enabled, 8-bit TX, DTR asserted, RTS released
+WR3 = C1h  8-bit RX, RX enabled, Auto Enables off
+WR5 = EAh  TX enabled, 8-bit TX, DTR asserted, RTS asserted
 WR1 = 00h  interrupts disabled
 ```
 
-Transmit polls RR0 until TX-empty (`04h`) and CTS (`20h`) are both set,
-with a finite timeout (`0xFFFF` polls) so a missing terminal cannot hang
-the kernel.  The whole console path — code and strings — is linked into the
-common segment and is therefore available during mode/bank transitions and
-kernel failures.
+Transmit polls RR0 until TX-empty (`04h`) is set, with a finite timeout
+(`0xFFFF` polls) so a missing terminal cannot hang the kernel; the console
+is not gated by the board's FT230X CTS/RTS crossover.  The whole console
+path — code and strings — is linked into the common segment and is
+therefore available during mode/bank transitions and kernel failures.
 
 ## 6. Expected output
 

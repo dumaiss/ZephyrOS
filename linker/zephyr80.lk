@@ -18,6 +18,8 @@ build/early_console.rel
 build/panic.rel
 build/main.rel
 build/syscall.rel
+build/diag.rel
+build/diag_io.rel
 build/irq.rel
 build/irq_sources.rel
 build/registry.rel

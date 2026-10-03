@@ -7,9 +7,9 @@
       "path": "sio.zmod"
     },
     {
-      "name": "zextest.zex",
+      "name": "monitor.zex",
       "type": "ZEX",
-      "path": "zextest.zex"
+      "path": "monitor.zex"
     }
   ]
 }
