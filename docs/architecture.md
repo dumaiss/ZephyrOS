@@ -20,11 +20,12 @@ The milestones covered by this document are:
 - **M2 — Interrupt executive:** establish kernel-owned IM2, safe mode-crossing IRQ entry/return, source ownership, and the first hardware interrupt. **Complete.**
 - **M3 — Device registry and static drivers:** establish the driver/device model and prove it with statically linked hardware drivers. **Complete.**
 - **M4 — Dynamic driver/module loading:** load relocatable driver modules into a managed bank-7 driver arena and register their devices at boot. **Complete.**
-- **M5 — ROM recovery filesystem:** provide a tiny read-only ROM-backed recovery store for boot modules and native recovery programs.
-- **M6 — Native process and ZEX execution:** establish single-tasking native process lifecycle and execute a single-bank native program from ROMFS.
+- **M5 — ROM recovery filesystem:** provide a tiny read-only ROM-backed recovery store for boot modules and native recovery programs. **Complete.**
+- **M6 — Native process and ZEX execution:** establish single-tasking native process lifecycle and execute a single-bank native program from ROMFS. **Complete.**
 - **M7 — Native monitor / diagnostic foundation:** port the Zephyr monitor as the first useful native ZEX and establish the foundation for the later diagnostic suite.
+- **M8 — Native device stack completion:** provide the normal V9958/HID console and IOC transport through class-aware dynamically loaded drivers.
 
-The native V9958/HID console, IOC/FAT filesystem, shell and full userland, complete diagnostic suite, and extended/far-memory services remain later native ZephyrOS milestones. CP/M work begins only after those native facilities are complete.
+The native FAT filesystem, shell and full userland, complete diagnostic suite, and extended/far-memory services remain later native ZephyrOS milestones. CP/M work begins only after those native facilities are complete.
 
 ---
 
@@ -2001,6 +2002,8 @@ geometry plus free granules, and `zephyros.manifest.json` carries an
 `arena` object. Concrete loader behavior, error codes, and tooling are
 documented in `docs/module-format.md`.
 
+This `A000h-BFFFh` geometry is the historical M4 acceptance geometry, not the long-term production budget. M8 supersedes it with a linker-derived arena sized from the end of the linked kernel to `C000h`; see section 30.2.
+
 ---
 
 ## 22.3 Module format
@@ -3250,12 +3253,472 @@ M7 establishes the interactive native recovery environment that remains availabl
 
 ---
 
-# 30. Deferred architecture after M7
+# 30. Milestone M8 — Native device stack completion
 
-The following remain intentionally deferred until after M7:
+## 30.1 Objective
 
-- V9958 native video/console driver and HID native input driver;
-- IOC native transport driver completion;
+M8 establishes the normal native ZephyrOS device environment:
+
+```text
+normal console input   -> HID keyboard
+normal console output  -> V9958
+IOC transport          -> command + bulk services for HID and later FAT/storage
+serial fallback        -> SIO0/B registered driver
+early/panic console    -> direct SIO0/B, permanently independent
+```
+
+M8 turns the M3/M4 character-device proof into a class-aware device architecture. The registry remains the common discovery mechanism, but video, HID and IOC gain explicit class contracts rather than being forced through a single character-device operations shape.
+
+The V9958, HID and IOC drivers are ordinary resident ZMOD modules sourced from ROMFS and relocated by the M4 loader.
+
+### M8 source-tree additions
+
+M8 adds, conceptually:
+
+```text
+include/zephyros/video.h
+include/zephyros/hid.h
+include/zephyros/ioc.h
+
+drivers/v9958/
+drivers/hid/
+drivers/ioc/
+
+modules/manifests/v9958.json
+modules/manifests/hid.json
+modules/manifests/ioc.json
+```
+
+Their implementation remains under `drivers/`; only hardware constants belong under `platform/zephyr80/`.
+
+---
+
+## 30.2 Production driver-area sizing
+
+The fixed M4 arena at `A000h-BFFFh` was an acceptance geometry, not a viable production budget. Eight KiB would be consumed too quickly by the native device set; the V9958 implementation alone is approximately 4 KiB before HID, IOC, SIO and future drivers are considered.
+
+M8 therefore removes `A000h` as a production architectural boundary and makes the arena consume the loadable bank-7 space left after the linked static kernel:
+
+```text
+2000h
+    linked static kernel
+    ...
+__kernel_code_end
+    align upward to 512-byte granule
+__driver_arena_start
+    resident ZMOD allocations
+    ...
+__driver_arena_end = C000h
+
+C000h-DFFFh
+    bank-7 runtime/system workspace
+    kernel state and stacks
+    later filesystem/cache/deblocking buffers
+    IOC/storage scratch
+```
+
+The production relationship is conceptually:
+
+```text
+__driver_arena_start = align_up(__kernel_code_end, 0x0200)
+__driver_arena_end   = 0xC000
+```
+
+Rules:
+
+- allocation granularity remains 512 bytes;
+- the production build must fail if the resulting arena is less than **16 KiB** (`4000h`);
+- 16 KiB is a minimum, not a fixed reservation: a smaller linked kernel automatically yields a larger driver arena;
+- `C000h-DFFFh` is not available to the module allocator and remains runtime/system workspace;
+- the build reports static-kernel end, arena start/end/size, each module's image+BSS size, allocated granules and remaining free granules;
+- moving the arena start must not require rebuilding a ZMOD: the M4 relocation model already makes placement a loader decision;
+- large immutable driver resources such as fonts, icons or boot graphics should remain in ROMFS/resource storage rather than consuming resident module memory unless they are intrinsically required resident tables.
+
+The exact linker/build mechanism used to derive the aligned start may be implementation-specific, but a fixed `A000h` production base is no longer architectural.
+
+---
+
+## 30.3 Driver ABI v2 and class-aware operations
+
+M3/M4 currently use a 16-bit capability mask and a single `putc/write/poll/getc` operations shape. M8 introduces a new internal driver ABI version so a device may expose generic character behavior and/or a class-specific interface.
+
+Conceptually:
+
+```c
+#define ZDRIVER_ABI_VERSION 2u
+
+typedef uint32_t zdev_caps_t;
+
+struct zchar_ops {
+    int (*putc)(void *state, char ch);
+    int (*write)(void *state, const char *buf, uint16_t len);
+    int (*poll)(void *state);
+    int (*getc)(void *state);
+};
+
+struct zdevice_desc {
+    uint8_t                 class_id;
+    zdev_caps_t             capabilities;
+    const char             *name;
+    const struct zchar_ops *char_ops;   /* optional */
+    const void             *class_ops;  /* type determined by class */
+    void                   *state;
+};
+```
+
+The generic capabilities remain:
+
+```text
+ZCAP_CHAR_IN
+ZCAP_CHAR_OUT
+ZCAP_CONSOLE_IN
+ZCAP_CONSOLE_OUT
+```
+
+Capability bits are authoritative. A device may expose character operations, class operations or both. Unsupported class operations fail predictably rather than being inferred from the device name.
+
+M8 refines two M3 placeholder class names while retaining their numeric slots in ABI v2:
+
+```text
+ZDEV_INPUT      -> ZDEV_HID
+ZDEV_TRANSPORT  -> ZDEV_IOC
+```
+
+`ZDEV_VIDEO` becomes a concrete class rather than a reserved future name. `ZDEV_SERIAL`, `ZDEV_STORAGE` and `ZDEV_OTHER` remain available.
+
+---
+
+## 30.4 VIDEO class and V9958
+
+The native VIDEO class is modeled around the useful semantic shape of the current ZSDOS `VIDEO_SEND` call:
+
+```text
+operation + payload pointer + payload length -> status
+```
+
+The important part carried forward is the device-oriented operation vocabulary, not the historical Virtual Drip framing.
+
+Conceptually:
+
+```c
+struct zvideo_ops {
+    int (*send)(void *state,
+                uint8_t operation,
+                const void *payload,
+                uint16_t length);
+};
+```
+
+Initial native operations:
+
+```text
+ZVIDEO_CTRL_WRITE
+ZVIDEO_DATA_WRITE
+ZVIDEO_DATA_BLOCK
+ZVIDEO_PALETTE_WRITE
+ZVIDEO_INDIRECT_WRITE
+ZVIDEO_PRESENT
+ZVIDEO_RESET
+```
+
+Associated capabilities:
+
+```text
+ZCAP_VIDEO_CTRL_WRITE
+ZCAP_VIDEO_DATA_WRITE
+ZCAP_VIDEO_DATA_BLOCK
+ZCAP_VIDEO_PALETTE
+ZCAP_VIDEO_INDIRECT
+ZCAP_VIDEO_PRESENT
+ZCAP_VIDEO_RESET
+```
+
+The native operation numbers are not required to equal the historical `VIDEO_SEND` / Virtual Drip packet numbers. The later CP/M personality translates that frozen compatibility ABI to native operations.
+
+Likewise, native ZephyrOS does **not** inherit the historical 16-byte non-block payload ceiling. That ceiling belongs to the old Virtual Drip transport contract, not to a directly attached V9958.
+
+The V9958 module registers a device such as:
+
+```text
+name:   v9958.0
+class:  ZDEV_VIDEO
+caps:   supported ZCAP_VIDEO_*
+        ZCAP_CHAR_OUT
+        ZCAP_CONSOLE_OUT
+```
+
+It therefore exposes two independent uses of the same hardware:
+
+```text
+video/graphics clients -> zvideo_ops.send()
+normal text console    -> zchar_ops.putc/write()
+```
+
+The V9958 driver owns VDP register/data programming, its 6x8 text renderer/terminal behavior and private state. The console service only consumes the character interface.
+
+M8 does not require VDP interrupt-driven operation for acceptance. If the driver enables `/INT`, it must use the M2 `IRQ_VDP_FF` path and must not install a private vector or bypass the common IRQ executive.
+
+---
+
+## 30.5 HID class
+
+The HID class is the native human-input abstraction. It sits above the IOC transport; it does not own SIO1 framing or hardware status pins.
+
+Suggested HID capabilities:
+
+```text
+ZCAP_HID_TEXT
+ZCAP_HID_KEY_EVENTS      optional/reserved in M8
+ZCAP_HID_GAMEPAD         optional/reserved in M8
+```
+
+A keyboard/text instance also advertises:
+
+```text
+ZCAP_CHAR_IN
+ZCAP_CONSOLE_IN
+```
+
+Conceptual operations:
+
+```c
+struct zhid_ops {
+    int (*read_text)(void *state,
+                     uint8_t *dst,
+                     uint16_t max_len);
+
+    int (*read_gamepad)(void *state,
+                        uint8_t index,
+                        struct zhid_gamepad_state *out);
+};
+```
+
+Unsupported methods may be absent; capabilities define what the instance provides.
+
+A module may register multiple HID instances, for example:
+
+```text
+hid.keyboard0   ZDEV_HID   HID_TEXT | CHAR_IN | CONSOLE_IN
+hid.gamepad0    ZDEV_HID   HID_GAMEPAD
+hid.gamepad1    ZDEV_HID   HID_GAMEPAD
+```
+
+M8 acceptance requires the keyboard/text path. Gamepad and richer key-event support may be implemented later without changing the class boundary.
+
+### HID over IOC
+
+The current MCU keeps translated keyboard bytes in its queue and signals when input is pending. Under ZephyrOS:
+
+```text
+HID driver
+    -> asks IOC semantic status for HID_PENDING
+    -> sends the IOC HID-input command only when needed
+    -> buffers/presents characters through zchar_ops
+```
+
+The HID driver must not sample `/CTSB`, RR0 bits or SIO1 ports directly. Those are IOC implementation details.
+
+---
+
+## 30.6 IOC class
+
+The IOC class owns the Zephyr Z80-to-MCU transport itself.
+
+The IOC module owns:
+
+```text
+SIO1/B   command/reply lane
+SIO1/A   bulk lane
+```
+
+Suggested capabilities:
+
+```text
+ZCAP_IOC_COMMAND
+ZCAP_IOC_BULK_READ
+ZCAP_IOC_BULK_WRITE
+ZCAP_IOC_STATUS
+```
+
+Conceptual operations:
+
+```c
+struct zioc_ops {
+    int (*command)(void *state,
+                   const struct zioc_frame *request,
+                   struct zioc_frame *reply);
+
+    int (*bulk_read)(void *state,
+                     void *dst,
+                     uint16_t length);
+
+    int (*bulk_write)(void *state,
+                      const void *src,
+                      uint16_t length);
+
+    uint16_t (*status)(void *state);
+};
+```
+
+The IOC driver owns:
+
+- SIO1 register programming;
+- command/reply framing and synchronization;
+- bulk-lane framing and synchronization;
+- lane serialization and bulk-admission state;
+- transport timeouts/recovery;
+- interpretation of physical doorbell/status signals.
+
+Consumers see semantic status bits such as:
+
+```text
+ZIOC_STATUS_HID_PENDING
+```
+
+rather than raw `/CTSB` or RR0 bit positions.
+
+`bulk_read()` / `bulk_write()` are valid only after the appropriate command-lane admission. The IOC driver owns that protocol state and rejects invalid sequencing. M9's FAT/storage implementation consumes this same IOC class instead of duplicating transport code.
+
+---
+
+## 30.7 Driver-to-driver discovery
+
+M8 introduces the first normal case where one loaded driver consumes another device: HID depends on IOC.
+
+Direct references to another module's symbols and lookup by instance name are forbidden. Driver ABI v2 therefore adds read-only discovery/interface access semantically equivalent to:
+
+```c
+zdev_handle_t (*device_find)(uint8_t class_id,
+                             zdev_caps_t required_caps,
+                             zdev_handle_t after);
+
+int (*device_interface)(zdev_handle_t handle,
+                        uint8_t expected_class,
+                        const void **class_ops,
+                        void **state);
+```
+
+Rules:
+
+- dependencies are selected by class plus required capabilities;
+- `device_interface()` verifies the expected class;
+- returned state is opaque and remains owned by the providing driver;
+- consumers receive no arbitrary registry mutation access;
+- no lifetime reference counting is needed because successfully loaded M8 modules remain resident until reboot.
+
+M8 does not require a general dependency resolver. Boot-module order remains explicit and deterministic.
+
+---
+
+## 30.8 Boot order
+
+A normal M8 boot is conceptually:
+
+```text
+sio.zmod
+    -> serial fallback device available
+
+ioc.zmod
+    -> ZDEV_IOC command/bulk/status available
+
+hid.zmod
+    -> discovers ZDEV_IOC
+    -> registers keyboard/text input
+
+v9958.zmod
+    -> registers video + character output
+
+console_bind_defaults()
+    -> bind preferred native console
+
+exec monitor.zex
+```
+
+V9958 has no IOC dependency and may load earlier/later as long as all console candidates are registered before final binding.
+
+A failed IOC/HID/V9958 module must not invalidate an already loaded SIO fallback.
+
+---
+
+## 30.9 Console binding policy
+
+M8 changes default console selection from simply taking the first generic console-capability match to a preference policy using class plus capability.
+
+Preferred normal console:
+
+```text
+input:   ZDEV_HID   + ZCAP_CONSOLE_IN
+output:  ZDEV_VIDEO + ZCAP_CONSOLE_OUT
+```
+
+If a preferred direction is unavailable, the service falls back to any registered device carrying the required generic console capability; normally this is SIO0/B.
+
+Expected behavior:
+
+```text
+HID + V9958 available:
+    HID -> console -> V9958
+
+V9958 unavailable:
+    HID -> console -> SIO
+
+HID unavailable:
+    SIO -> console -> V9958
+
+HID + V9958 unavailable:
+    SIO -> console -> SIO
+
+panic / very early boot:
+    direct early SIO regardless of registry state
+```
+
+The same `monitor.zex` built for M7 must operate unchanged through all valid normal-console bindings because it uses the native console syscall ABI only.
+
+---
+
+## 30.10 M8 non-goals
+
+M8 does not implement:
+
+- the native FAT filesystem or SD file/path semantics;
+- the native shell;
+- the complete diagnostic suite;
+- module unload/hot-plug;
+- far-code/far-data services;
+- CP/M compatibility.
+
+It establishes the device foundation those later milestones consume.
+
+---
+
+# 31. M8 acceptance criteria
+
+M8 is accepted when:
+
+- production driver-arena start is derived from the aligned linked-kernel end rather than fixed at `A000h`;
+- driver-arena end remains `C000h`, allocation remains 512-byte granular, and a production arena smaller than 16 KiB is a build error;
+- the build reports total/used/free arena space and per-module allocations;
+- `C000h-DFFFh` remains outside the module arena for runtime/system and later filesystem/cache/deblocking use;
+- driver ABI v2 supports 32-bit capability masks, optional character operations and class-specific operations;
+- SIO remains the dynamically loaded serial/character fallback device;
+- IOC registers `ZDEV_IOC` and proves command, bulk-read, bulk-write and semantic status behavior;
+- HID discovers IOC by class/capability rather than symbol/name, registers a keyboard/text `ZDEV_HID`, and provides `ZCAP_CHAR_IN | ZCAP_CONSOLE_IN`;
+- V9958 registers `ZDEV_VIDEO`, exposes supported `ZVIDEO_*` operations, and provides `ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT` through its text renderer;
+- native video operations are not constrained by the historical Virtual Drip 16-byte non-block ceiling;
+- normal console binding selects HID input and V9958 output when available;
+- each defined HID/V9958 failure combination falls back cleanly without losing the direct early/panic SIO path;
+- the exact M7 `monitor.zex` runs interactively through HID/V9958 without SIO-specific changes;
+- unsupported/malformed class operations fail predictably rather than calling invalid pointers;
+- all production M8 modules fit simultaneously while satisfying the 16-KiB minimum-arena invariant.
+
+Physical Zephyr-80 hardware is authoritative for V9958 wait/timing behavior, IOC/HID transport and the complete console interaction.
+
+---
+
+# 32. Deferred architecture after M8
+
+The following remain intentionally deferred until after M8:
+
 - native FAT filesystem on SD with paths, directories, file handles, CWD, and normal byte-oriented I/O;
 - native shell and core userland;
 - complete bundled native diagnostic suite;
@@ -3266,53 +3729,17 @@ The following remain intentionally deferred until after M7:
 - driver unload/hot-plug;
 - preemptive multitasking or scheduling.
 
-The first six items above are **native ZephyrOS** work. CP/M compatibility begins only after the native console, storage/filesystem, processes/executables, shell/userland, diagnostics, and extended-memory facilities are complete.
+The first four items above are **native ZephyrOS** work. CP/M compatibility begins only after the native filesystem, shell/userland, diagnostics and extended-memory facilities are complete.
 
 ---
 
-# 31. Milestone summary
+# 33. Milestone summary
 
 ```text
 M0  COMPLETE
-│
-├── enter kernel
-├── establish stack
-├── initialize early serial
-├── call C successfully
-├── print banner
-└── halt
-    │
-    ▼
 M1  COMPLETE
-│
-├── establish mode 10/11 kernel memory model
-├── formalize platform banking boundary
-├── own native page zero
-├── reserve syscall RST
-├── create common kernel gate
-├── define ABI scaffold
-├── generate/validate link map
-└── retain early panic console
-    │
-    ▼
 M2  COMPLETE
-│
-├── kernel-owned IM2
-├── common IRQ crossing gate
-├── common transition + bank-7 ISR stacks
-├── source ownership registry
-├── safe FFh vector
-└── CTC0 hardware interrupt
-    │
-    ▼
 M3  COMPLETE
-│
-├── device registry
-├── capability model
-├── static SIO0/B driver
-└── normal console service over registered device
-    │
-    ▼
 M4  COMPLETE
 │
 ├── bank-7 driver arena
@@ -3344,27 +3771,33 @@ M6  COMPLETE
 M7  IMPLEMENTED (host-validated; physical acceptance pending)
 │
 ├── monitor.zex in ROMFS
-├── first useful native application
 ├── native diagnostic syscall boundary
 ├── reusable diagnostic support
 └── default interactive environment before the shell
+    │
+    ▼
+M8
+│
+├── linker-derived production driver arena, minimum 16 KiB
+├── driver ABI v2 + class-specific operations
+├── IOC command/bulk/status class
+├── HID keyboard/input class over IOC
+├── V9958 video + console-output class
+├── preferred HID/V9958 console binding
+└── SIO registered fallback + direct panic path
 ```
 
-At the end of M7, ZephyrOS can boot from its own ROM recovery store, load dynamic drivers, execute a native application, interact through the normal console service, and provide a useful native diagnostic monitor without any CP/M layer present.
+At the end of M8, ZephyrOS can boot from ROMFS, load the native device stack dynamically, execute native programs, use the V9958/HID console, communicate with the IOC, and retain serial recovery/fallback — all without any CP/M layer.
 
 ---
 
-# 32. Later milestone roadmap
+# 34. Later milestone roadmap
 
-The intended sequence after M7 is:
+The intended sequence after M8 is:
 
 ```text
-M8  Native device stack completion
-    - V9958 video / console output
-    - HID keyboard / input
-    - IOC transport
-
 M9  Native FAT filesystem on SD
+    - IOC-backed FAT filesystem
     - paths and real directories
     - file handles / byte-oriented I/O
     - CWD and normal native filesystem semantics
@@ -3391,4 +3824,4 @@ M15 CP/M BDOS / FCB / filesystem compatibility
 
 M12 is part of native ZephyrOS, not a compatibility extension. The CP/M layer begins at M13 and translates CP/M semantics onto native ZephyrOS services that already work independently.
 
-The milestone names after M7 define intended sequencing. Their detailed architecture should be added as each milestone is approached rather than prematurely constraining the implementation.
+The milestone names after M8 define intended sequencing. Their detailed architecture should be added as each milestone is approached rather than prematurely constraining the implementation.
