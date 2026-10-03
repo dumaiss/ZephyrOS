@@ -52,7 +52,7 @@ void zos_target_test_late(void);
 #define ZOS_ROMFS_BOOT 1
 #endif
 
-/* IOC command-lane boot load.  Production and the M8 images carry
+/* IOC transport boot load.  Production and the M8 images carry
  * `ioc.zmod` in the recovery store and load it deterministically after
  * the SIO fallback; a failed load or a failed link bring-up is rolled
  * back by the loader and must not invalidate the already loaded SIO
@@ -62,6 +62,17 @@ void zos_target_test_late(void);
 #define ZOS_IOC_BOOT 1
 #endif
 
+/* HID keyboard/text boot load.  Production and the M8 images carry
+ * `hid.zmod` in the recovery store and load it after the IOC transport;
+ * the module discovers IOC by class/capability and a missing or
+ * malformed dependency is a load failure rolled back by the loader.
+ * The SIO fallback and the IOC transport are never disturbed.  Pre-M8
+ * acceptance images compile this block out so their accepted boot stays
+ * exactly as validated. */
+#ifndef ZOS_HID_BOOT
+#define ZOS_HID_BOOT 1
+#endif
+
 /* Temporary pre-shell launcher selection.  Production and the M7
  * acceptance image (ZOS_MONITOR_BOOT=1, the default) run `monitor.zex`
  * through the unchanged M6 exec path and re-exec it after every normal
@@ -69,6 +80,19 @@ void zos_target_test_late(void);
  * transcripts and behavior stay exactly as accepted. */
 #ifndef ZOS_MONITOR_BOOT
 #define ZOS_MONITOR_BOOT 1
+#endif
+
+/* Hardware-smoke host sync.  Diagnostic images built with
+ * ZOS_SMOKE_HOST_SYNC=1 (the M8 IOC smoke image) replace the blind
+ * one-second connect delay with a wait for the host's two-byte sync
+ * sequence on SIO0/B before the banner.  On this bench the board's reset
+ * line also resets the USB bridge, so the boot log is only capturable if
+ * the board holds off until the host has reopened the port and sent the
+ * sequence (tools/serial_smoke.py sends it once the port is open and
+ * repeats it until the first byte arrives).  Production and every other
+ * image compile the gate out. */
+#ifndef ZOS_SMOKE_HOST_SYNC
+#define ZOS_SMOKE_HOST_SYNC 0
 #endif
 
 #if ZOS_ROMFS_BOOT
@@ -134,12 +158,21 @@ static uint8_t kernel_boot_module(void)
 		return 1;
 	}
 #if ZOS_IOC_BOOT
-	/* Deterministic boot order after the SIO fallback: the IOC command
-	 * lane.  A module whose init fails (including a failed link
-	 * bring-up) is rolled back by the loader and reported here; the
-	 * console still binds to SIO below. */
+	/* Deterministic boot order after the SIO fallback: the IOC
+	 * command+bulk transport.  A module whose init fails (including a
+	 * failed link bring-up) is rolled back by the loader and reported
+	 * here; the console still binds to SIO below. */
 	if (romfs_load_zmod("ioc", "ioc.zmod") < 0) {
 		early_console_puts("ioc: unavailable\r\n");
+	}
+#endif
+#if ZOS_HID_BOOT
+	/* Then the HID keyboard/text input module.  HID depends on the
+	 * IOC class; a missing/malformed dependency fails its init, the
+	 * loader rolls the (empty) registration set back, and the SIO
+	 * fallback plus the IOC transport remain usable. */
+	if (romfs_load_zmod("hid", "hid.zmod") < 0) {
+		early_console_puts("hid: unavailable\r\n");
 	}
 #endif
 	return 0;
@@ -324,9 +357,49 @@ static void kernel_monitor_launcher(void)
 }
 #endif /* ZOS_MONITOR_BOOT */
 
+#if ZOS_SMOKE_HOST_SYNC
+/* TEST-ONLY HOOK: hold the first banner byte until the host is listening.
+ * The SIO0/B receiver is live from early_console_init (boot/start.asm);
+ * the channel reset that follows a board reset clears any stale bytes, so
+ * the wait is only entered on a fresh boot.  The two-state scan discards
+ * every byte that does not continue the sequence, which makes repeated
+ * sends and glitch bytes harmless. */
+static __sfr __at ZOS_SIO0B_CTRL kernel_host_sync_ctrl;
+static __sfr __at ZOS_SIO0B_DATA kernel_host_sync_data;
+
+static void kernel_host_sync_wait(void)
+{
+	uint8_t matched_first = 0;
+
+	for (;;) {
+		uint8_t ch;
+
+		while ((kernel_host_sync_ctrl & ZOS_SIO_RR0_RX_AVAILABLE)
+		       == 0u) {
+			/* Nothing has been printed yet. */
+		}
+		ch = kernel_host_sync_data;
+		if (ch == ZOS_SMOKE_HOST_SYNC_FIRST) {
+			matched_first = 1u;
+		} else if (matched_first != 0u &&
+			   ch == ZOS_SMOKE_HOST_SYNC_SECOND) {
+			return;
+		} else {
+			matched_first = 0u;
+		}
+	}
+}
+#endif /* ZOS_SMOKE_HOST_SYNC */
+
 void kernel_main(void)
 {
+#if ZOS_SMOKE_HOST_SYNC
+	/* TEST-ONLY HOOK: hold the first byte until the host is listening
+	 * (bench quirk: the board's reset also resets the USB bridge). */
+	kernel_host_sync_wait();
+#else
 	kernel_serial_connect_delay();
+#endif
 	kernel_assert_os_mode();
 	kernel_exercise_banking();
 	irq_init();

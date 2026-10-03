@@ -1,0 +1,25 @@
+{
+  "format": "romfs-v1",
+  "files": [
+    {
+      "name": "sio.zmod",
+      "type": "ZMOD",
+      "path": "sio.zmod"
+    },
+    {
+      "name": "ioc.zmod",
+      "type": "ZMOD",
+      "path": "fakeioc.zmod"
+    },
+    {
+      "name": "hid.zmod",
+      "type": "ZMOD",
+      "path": "hid.zmod"
+    },
+    {
+      "name": "monitor.zex",
+      "type": "ZEX",
+      "path": "monitor.zex"
+    }
+  ]
+}

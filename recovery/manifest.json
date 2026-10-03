@@ -12,6 +12,11 @@
       "path": "ioc.zmod"
     },
     {
+      "name": "hid.zmod",
+      "type": "ZMOD",
+      "path": "hid.zmod"
+    },
+    {
       "name": "monitor.zex",
       "type": "ZEX",
       "path": "monitor.zex"

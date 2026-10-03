@@ -3540,6 +3540,24 @@ HID driver
 
 The HID driver must not sample `/CTSB`, RR0 bits or SIO1 ports directly. Those are IOC implementation details.
 
+Implementation status (M8): work package 17 implements the keyboard/text
+path as `drivers/hid/`, a resident ABI-v2 ZMOD loaded after IOC.  It
+retrieves the IOC dependency exclusively through the ABI-v2 discovery
+calls (`device_find(ZDEV_IOC, ZCAP_IOC_COMMAND | ZCAP_IOC_STATUS, ...)`
+plus `device_interface()`) and registers exactly `hid.keyboard0` with
+`ZCAP_HID_TEXT | ZCAP_CHAR_IN | ZCAP_CONSOLE_IN` and an input-only
+`zchar_ops` table.  The key-event and gamepad capabilities stay reserved
+and their methods null; an absent capability is reported as
+`ZDEV_ENOTSUP` by a dispatcher rather than inferred from the name.  HID
+keeps the proven 16-byte local ring and fetches `CMD_HID_INPUT` only
+while the semantic doorbell is asserted, asking for exactly the ring's
+free space because the controller dequeues what it sends; every reply is
+validated before a byte is committed, and the proven 64-call
+stuck-doorbell penalty keeps a dead controller from putting an IOC
+timeout on every console poll.  With HID registered, the console policy
+of 30.9 selects HID input plus the SIO output fallback until the V9958
+packages land.
+
 ---
 
 ## 30.6 IOC class
@@ -3601,11 +3619,23 @@ rather than raw `/CTSB` or RR0 bit positions.
 
 `bulk_read()` / `bulk_write()` are valid only after the appropriate command-lane admission. The IOC driver owns that protocol state and rejects invalid sequencing. M9's FAT/storage implementation consumes this same IOC class instead of duplicating transport code.
 
-Implementation status (M8): work package 15 establishes `ioc.0` with
+Implementation status (M8): work package 15 established `ioc.0` with
 the command and semantic-status operations over the deployed host
-contract level `08h`.  The two bulk pointers are null and their
-capability bits absent until the bulk package lands; clients must
-select the interface by capabilities, never by name.
+contract level `08h`; work package 16 completes the class with the
+bulk-read and bulk-write operations (SIO1/A, 1..512 DATA bytes) and the
+strict READY/DONE admission lifecycle.  A READY reply admits exactly
+one bulk phase bound to its transfer id, direction, length, and
+TYPE/sequence, and it is recognized only on the reply to a request
+class the pinned firmware can use to arm the bulk lane: several
+immutable non-bulk replies are also eight bytes long, so the byte shape
+alone must never change the phase.  A write is not complete until a
+matching `CMD_XFER_STATUS` DONE record reports the same id and success,
+and a bulk-lane fault arms bounded whole-link recovery before normal
+traffic.  The M8 smoke image reports the bulk-write criterion PENDING
+only when the writable open is answered with the verified
+unknown-command class; a real filesystem/media status is a failure, and
+a PENDING run never prints the OK marker.  Clients must select the
+interface by capabilities, never by name.
 
 ---
 

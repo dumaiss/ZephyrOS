@@ -1,10 +1,10 @@
 /* ZephyrOS IOC driver module entry (ZMOD `ioc`).
  *
- * Production module: it programs SIO1/B once, performs the bounded
- * CMD_LINK_SYNC bring-up, and only then registers the `ioc.0` device
- * with the command and semantic-status capabilities.  Bulk read/write
- * arrive with the next package; their capability bits are absent and
- * their ops pointers are null.
+ * Production module: it programs SIO1/B and SIO1/A once, performs the
+ * bounded CMD_LINK_SYNC bring-up (which establishes both lanes as one
+ * generation), and only then registers the `ioc.0` device with all four
+ * IOC capabilities: command, bulk read, bulk write, and semantic
+ * status.
  *
  * The module reaches the kernel only through the passed `zdriver_api`;
  * it contains no kernel symbol references.  Port I/O and the streaming
@@ -26,7 +26,8 @@
 
 static const struct zdevice_desc ioc0_desc = {
 	ZDEV_IOC,
-	ZCAP_IOC_COMMAND | ZCAP_IOC_STATUS,
+	ZCAP_IOC_COMMAND | ZCAP_IOC_BULK_READ | ZCAP_IOC_BULK_WRITE |
+		ZCAP_IOC_STATUS,
 	"ioc.0",
 	(const struct zchar_ops *)0,
 	(const void *)&ioc_ops,

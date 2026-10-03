@@ -176,9 +176,9 @@ class TestM4Artifacts(unittest.TestCase):
                          0xC000)
         modules = arena["modules"]
         # Deterministic boot set: SIO fallback first, then the IOC
-        # command lane loaded after it (M8).
+        # command lane, then the HID keyboard/text input module (M8).
         self.assertEqual([entry["name"] for entry in modules],
-                         ["sio", "ioc"])
+                         ["sio", "ioc", "hid"])
         self.assertEqual(arena["used_granules"],
                          sum(entry["granules"] for entry in modules))
         self.assertEqual(arena["used_granules"] + arena["free_granules"],

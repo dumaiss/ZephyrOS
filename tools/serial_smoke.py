@@ -46,21 +46,52 @@ captures output with a bounded timeout, and verifies the expected output:
                      power-cycle the board or press RESET while it
                      waits; an already-running board fails with an
                      explicit hint instead of a partial transcript.
-    --mode m8-ioc-command  the M8 IOC command-lane image: banner, the
-                     dynamic console line, the host contract level line
-                     (08h), the controller firmware level returned by
-                     PING (4Ah for the pinned deployment), four repeated
-                     PING exchanges, one HID semantic-status sample, and
-                     "m8 ioc selftest: OK".  The boot log is captured
+    --mode m8-ioc  the M8 IOC image: banner, the dynamic console line,
+                     the host contract level line (08h), the controller
+                     firmware level returned by PING (4Ah for the pinned
+                     deployment), four repeated PING exchanges, the bulk
+                     write 1/128/512-byte sections with matching DONE
+                     records, the bulk read-back of all three sections,
+                     the delete proven by a reopen answered exactly with
+                     the frozen no-file status (`m8 ioc: cleanup OK
+                     0x34`), one HID semantic-status sample, and
+                     "m8 ioc selftest: OK".
+                     If the deployed firmware answers the writable /SHARED
+                     open with the unknown-command class, the transcript
+                     carries "m8 ioc: bulk write PENDING 0xFE" and "m8
+                     ioc selftest: PENDING 0xFE" instead: the tool then
+                     reports PENDING explicitly and exits nonzero (3),
+                     never printing its OK result.  Any other marker
+                     value is a failure.  The boot log is captured
                      once, so start this tool first and reset the board.
+    --mode m8-hid  the M8 HID image: banner, the dynamic console line,
+                     the HID keyboard registration, the scripted
+                     USB-keyboard pass, the typed-byte echo lines in
+                     exact order (`m8 hid: rx XX` for a B 3 Enter
+                     Backspace Ctrl-X Arrow-Up), the forced SIO input
+                     fallback byte, and "m8 hid selftest: OK".  This
+                     pass needs a USB keyboard: when "m8 hid: ready for
+                     input" appears, type exactly the listed keys (the
+                     operator types; the tool validates the transcript
+                     and sends the fallback `R` over the serial link
+                     when the image asks for it).  The boot log is
+                     captured once, so start this tool first and reset
+                     the board.
 
 The device is given with --port or the ZOS_SERIAL_PORT environment
 variable (the SERIAL_PORT make variable is passed through).  A missing or
 unopenable device fails clearly; ordinary host-only `make test` never
 invokes this tool.
 
+On benches where the target's reset line also resets the USB bridge, the
+TTY drops off the bus when the board is reset.  The tool reopens the same
+device path and keeps capturing.  The M8 IOC smoke image additionally
+waits for the host sync sequence (M8IOC_HOST_SYNC) before it prints
+anything, so mode m8-ioc sends that sequence once its port is open and
+repeats it until the first byte arrives.
+
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure|m7|m8-ioc-command]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure|m7|m8-ioc]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -116,14 +147,113 @@ M7_ERR_ARG = b"ERR: ARG\r\n"
 M7_EXIT = b"monitor: exit status 0x0000 active 0 free-banks 7\r\n"
 M7_SCRATCH_RE = re.compile(rb"scratch=([0-9A-F]{4})")
 
-# --- M8 IOC command lane ----------------------------------------------------
+# --- M8 IOC command + bulk transport ----------------------------------------
 M8IOC_TRANSPORT_LEVEL = b"m8 ioc: transport level 08\r\n"
 M8IOC_CONTROLLER_LEVEL = b"m8 ioc: controller level 4A\r\n"
 M8IOC_PING_OK = b"m8 ioc: ping x4 OK\r\n"
+M8IOC_BULK_WRITE_OK = b"m8 ioc: bulk write 1/128/512 OK\r\n"
+# The PENDING outcome is exactly the verified unknown-command class 0FEh;
+# any other code in either marker is a failure, never PENDING.
+M8IOC_BULK_WRITE_PENDING_RE = re.compile(
+    rb"m8 ioc: bulk write PENDING 0xFE\r\n")
+M8IOC_BULK_READ_OK = b"m8 ioc: bulk read 1/128/512 OK\r\n"
+M8IOC_DONE_OK = b"m8 ioc: done x3 OK\r\n"
+# Deletion is proven only by the frozen no-file status 34h; any other
+# code (a media/filesystem error, for example) is not cleanup evidence.
+M8IOC_CLEANUP_RE = re.compile(rb"m8 ioc: cleanup OK 0x34\r\n")
 M8IOC_HID_STATUS_RE = re.compile(rb"m8 ioc: hid status [0-9A-F]{2}\r\n")
 M8IOC_SELFTEST_OK = b"m8 ioc selftest: OK\r\n"
+M8IOC_SELFTEST_PENDING_RE = re.compile(
+    rb"m8 ioc selftest: PENDING 0xFE\r\n")
 M8IOC_FAIL = b"m8 ioc selftest: FAIL"
 M8IOC_UNAVAILABLE = b"ioc: unavailable\r\n"
+
+# --- M8 HID keyboard/text input ---------------------------------------------
+M8HID_KEYBOARD_OK = b"m8 hid: keyboard0 OK\r\n"
+M8HID_READY = b"m8 hid: ready for input\r\n"
+# The MCU's translation of the scripted key pass: a, B, 3, Enter,
+# Backspace, Ctrl-X, Arrow-Up (ESC [ A).  Every byte must appear exactly
+# once, in this order, in the `m8 hid: rx XX` echo lines.
+M8HID_RX_RE = re.compile(rb"m8 hid: rx ([0-9A-F]{2})\r\n")
+M8HID_TYPED_BYTES = (0x61, 0x42, 0x33, 0x0D, 0x08, 0x18, 0x1B, 0x5B, 0x41)
+M8HID_TYPED_OK = b"m8 hid: typed pass OK\r\n"
+M8HID_SIO_PROMPT = b"m8 hid: sio fallback, send R\r\n"
+M8HID_FALLBACK_OK = b"m8 hid: sio fallback OK\r\n"
+M8HID_SELFTEST_OK = b"m8 hid selftest: OK\r\n"
+M8HID_FAIL = b"m8 hid selftest: FAIL"
+M8HID_UNAVAILABLE = b"hid: unavailable\r\n"
+M8HID_FALLBACK_BYTE = b"R"
+
+# Host sync the smoke image waits for before the banner (bench quirk: the
+# board's reset line also resets the USB bridge, so the board must not
+# print until the host has reopened its port).  Mirrors
+# ZOS_SMOKE_HOST_SYNC_FIRST/SECOND in platform/zephyr80/hardware.{h,inc};
+# modes m8-ioc and m8-hid send it on every open and repeat it until the
+# first byte.
+M8IOC_HOST_SYNC = b"\xaa\x55"
+
+
+def _m8ioc_complete(data):
+    """True when the full write/read/cleanup/OK transcript is present."""
+    if not (BANNER in data and CONSOLE_DYNAMIC_OK in data and
+            M8IOC_TRANSPORT_LEVEL in data and
+            M8IOC_CONTROLLER_LEVEL in data and M8IOC_PING_OK in data and
+            M8IOC_SELFTEST_OK in data):
+        return False
+    return (M8IOC_BULK_WRITE_OK in data and M8IOC_DONE_OK in data and
+            M8IOC_BULK_READ_OK in data and
+            M8IOC_CLEANUP_RE.search(data) is not None)
+
+
+def _m8ioc_pending(data):
+    """True only for the documented PENDING outcome: the deployed firmware
+    answered the writable /SHARED open with the unknown-command class.
+    It never mixes with the OK path and is never acceptance evidence."""
+    if (M8IOC_SELFTEST_OK in data or M8IOC_BULK_WRITE_OK in data or
+            M8IOC_DONE_OK in data or M8IOC_BULK_READ_OK in data or
+            M8IOC_CLEANUP_RE.search(data) is not None):
+        return False
+    return (BANNER in data and CONSOLE_DYNAMIC_OK in data and
+            M8IOC_TRANSPORT_LEVEL in data and
+            M8IOC_CONTROLLER_LEVEL in data and M8IOC_PING_OK in data and
+            M8IOC_BULK_WRITE_PENDING_RE.search(data) is not None and
+            M8IOC_SELFTEST_PENDING_RE.search(data) is not None)
+
+
+def _m8ioc_result(data):
+    """The m8-ioc outcome: "ok", "pending" or "fail", mutually
+    exclusive.  PENDING is its own nonzero result - never a pass."""
+    if M8IOC_FAIL in data or M8IOC_UNAVAILABLE in data or b"PANIC" in data:
+        return "fail"
+    if _m8ioc_complete(data):
+        if (M8IOC_HID_STATUS_RE.search(data) is not None and
+                b"FAIL" not in data):
+            return "ok"
+        return "fail"
+    if _m8ioc_pending(data):
+        return "pending"
+    return "fail"
+
+
+def _m8hid_result(data):
+    """The m8-hid outcome: "ok" only when the boot log, the HID
+    registration, the scripted typed-byte echo lines (exact bytes, exact
+    order), the forced SIO fallback byte and the final marker all
+    completed.  The USB-keyboard half cannot be verified without the
+    echoed transcript, so a missing byte is a failure."""
+    if M8HID_FAIL in data or M8HID_UNAVAILABLE in data or \
+            b"PANIC" in data:
+        return "fail"
+    for needle in (BANNER, CONSOLE_DYNAMIC_OK, M8HID_KEYBOARD_OK,
+                   M8HID_READY, M8HID_TYPED_OK, M8HID_SIO_PROMPT,
+                   M8HID_FALLBACK_OK, M8HID_SELFTEST_OK):
+        if needle not in data:
+            return "fail"
+    found = tuple(int(match.group(1), 16)
+                  for match in M8HID_RX_RE.finditer(data))
+    if found != M8HID_TYPED_BYTES:
+        return "fail"
+    return "ok"
 
 # Per-byte pacing for scripted monitor commands.  The console RX path is
 # a polled SIO register (no burst buffering), so a command sent as one
@@ -260,7 +390,7 @@ def main(argv):
     parser.add_argument("--mode", choices=("normal", "selftest", "irq", "m3",
                                            "m4", "m4-failure", "m5",
                                            "m5-corrupt", "m6", "m6-failure",
-                                           "m7", "m8-ioc-command"),
+                                           "m7", "m8-ioc", "m8-hid"),
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
@@ -281,8 +411,8 @@ def main(argv):
               file=sys.stderr)
         return 2
 
-    try:
-        link = serial.Serial(
+    def _open_link():
+        return serial.Serial(
             port=args.port,
             baudrate=args.baud,
             bytesize=serial.EIGHTBITS,
@@ -290,6 +420,9 @@ def main(argv):
             stopbits=serial.STOPBITS_ONE,
             timeout=0.2,
         )
+
+    try:
+        link = _open_link()
     except serial.SerialException as exc:
         print("serial_smoke: cannot open %s: %s" % (args.port, exc), file=sys.stderr)
         return 2
@@ -299,19 +432,72 @@ def main(argv):
     if args.mode == "m7":
         print("serial_smoke: mode m7 checks the boot log; power-cycle the "
               "board or press RESET now so the boot is captured")
-    if args.mode == "m8-ioc-command":
-        print("serial_smoke: mode m8-ioc-command checks the boot log; "
+    if args.mode == "m8-ioc":
+        print("serial_smoke: mode m8-ioc checks the boot log; "
               "power-cycle the board or press RESET now so the boot "
-              "(including the IOC selftest) is captured")
+              "(including the IOC selftest) is captured; the image waits "
+              "for the host sync sequence, which this tool sends whenever "
+              "the port is open")
+    if args.mode == "m8-hid":
+        print("serial_smoke: mode m8-hid checks the boot log and the "
+              "scripted console phases; power-cycle the board or press "
+              "RESET now so the boot (including the HID selftest) is "
+              "captured; the image waits for the host sync sequence")
+        print("serial_smoke: when 'm8 hid: ready for input' appears, type "
+              "on the USB keyboard exactly: a B 3 Enter Backspace Ctrl-X "
+              "Arrow-Up; the tool validates the echo and sends the "
+              "fallback R over the serial link when asked")
     deadline = time.monotonic() + args.timeout
     data = b""
+    bridge_drops = 0
+    host_sync_at = 0.0
     rx_byte_sent = False
     m7_session = None
     m7_session_base = 0
     m7_warm_hinted = False
     try:
         while time.monotonic() < deadline:
-            chunk = link.read(256)
+            if link is None:
+                # The board's reset line can reset the USB bridge itself
+                # (observed on this bench): the TTY drops off the bus while
+                # the bridge's UART keeps receiving into its buffer.  Reopen
+                # the same device path and keep capturing; bytes that
+                # arrived while USB re-enumerated are delivered on reopen.
+                try:
+                    link = _open_link()
+                except (serial.SerialException, OSError):
+                    time.sleep(0.2)
+                    continue
+                print("serial_smoke: %s is back (drop %d); still capturing"
+                      % (args.port, bridge_drops))
+                host_sync_at = 0.0
+            if (args.mode in ("m8-ioc", "m8-hid") and
+                    BANNER not in data and
+                    time.monotonic() >= host_sync_at):
+                # The smoke image holds the banner for this sequence; keep
+                # sending until the boot log actually arrives.  The board
+                # discards bytes that do not complete the sequence, and a
+                # board already past its gate may echo stray bytes (e.g.
+                # the monitor echoing input), so "any byte received" must
+                # not stop the nudging.
+                host_sync_at = time.monotonic() + 1.0
+                try:
+                    link.write(M8IOC_HOST_SYNC)
+                    link.flush()
+                except (serial.SerialException, OSError):
+                    pass  # the read below notices a dropped link
+            try:
+                chunk = link.read(256)
+            except (serial.SerialException, OSError) as exc:
+                bridge_drops += 1
+                print("serial_smoke: %s dropped (%s); waiting for it to "
+                      "re-enumerate" % (args.port, exc))
+                try:
+                    link.close()
+                except Exception:
+                    pass
+                link = None
+                continue
             if chunk:
                 data += chunk
                 if args.mode == "m7":
@@ -381,18 +567,32 @@ def main(argv):
                             M6_ZEXTEST_OK in data and
                             M6_FAILURE_OK in data):
                         break
-                elif args.mode == "m8-ioc-command":
-                    if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-                            M8IOC_TRANSPORT_LEVEL in data and
-                            M8IOC_CONTROLLER_LEVEL in data and
-                            M8IOC_PING_OK in data and
-                            M8IOC_HID_STATUS_RE.search(data) is not None and
-                            M8IOC_SELFTEST_OK in data):
+                elif args.mode == "m8-ioc":
+                    if (_m8ioc_complete(data) or _m8ioc_pending(data)):
+                        break
+                elif args.mode == "m8-hid":
+                    if M8HID_SIO_PROMPT in data and not rx_byte_sent:
+                        try:
+                            link.write(M8HID_FALLBACK_BYTE)
+                            link.flush()
+                        except (serial.SerialException, OSError):
+                            pass  # the read notices a dropped link
+                        rx_byte_sent = True
+                        print("serial_smoke: sent fallback byte %r"
+                              % M8HID_FALLBACK_BYTE)
+                    if _m8hid_result(data) == "ok" or \
+                            M8HID_FAIL in data or \
+                            M8HID_UNAVAILABLE in data:
                         break
     finally:
-        link.close()
+        if link is not None:
+            try:
+                link.close()
+            except Exception:
+                pass
 
-    print("serial_smoke: captured %d bytes" % len(data))
+    print("serial_smoke: captured %d bytes (%d USB bridge drop(s) during "
+          "capture)" % (len(data), bridge_drops))
     print("serial_smoke: transcript follows")
     sys.stdout.buffer.write(data + (b"" if data.endswith(b"\n") else b"\n"))
 
@@ -463,20 +663,29 @@ def main(argv):
                     "banner and prompt, the scripted help/system-info/"
                     "dump/modify/readback/port/rejection commands, and "
                     "two identical Q exit/relaunch count lines")
-    elif args.mode == "m8-ioc-command":
-        ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-              M8IOC_TRANSPORT_LEVEL in data and
-              M8IOC_CONTROLLER_LEVEL in data and
-              M8IOC_PING_OK in data and
-              M8IOC_HID_STATUS_RE.search(data) is not None and
-              M8IOC_SELFTEST_OK in data and
-              M8IOC_FAIL not in data and
-              M8IOC_UNAVAILABLE not in data and
-              b"FAIL" not in data and b"PANIC" not in data)
+    elif args.mode == "m8-ioc":
+        verdict = _m8ioc_result(data)
+        ok = verdict == "ok"
+        if verdict == "pending":
+            print("serial_smoke: PENDING - the deployed firmware answers "
+                  "the writable /SHARED open with the unknown-command "
+                  "class; the bulk-write criterion is not acceptance "
+                  "evidence")
+            return 3
         expected = ("the banner, the dynamic console line, host transport "
                     "level 08h, the controller level 4Ah returned by PING, "
-                    "repeated PINGs, a HID semantic-status sample, and "
-                    "'m8 ioc selftest: OK'")
+                    "repeated PINGs, the bulk 1/128/512 write with matching "
+                    "DONE records, the read-back of all three sections, "
+                    "the delete proven by a reopen answered with the "
+                    "frozen no-file status, a HID semantic-status sample, "
+                    "and 'm8 ioc selftest: OK'")
+    elif args.mode == "m8-hid":
+        ok = _m8hid_result(data) == "ok"
+        expected = ("the banner, the dynamic console line, the HID "
+                    "keyboard registration, the scripted USB-keyboard "
+                    "typed-byte echo lines in exact order (a B 3 Enter "
+                    "Backspace Ctrl-X Arrow-Up), the forced SIO fallback "
+                    "byte, and 'm8 hid selftest: OK'")
     else:
         ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
               SELFTEST_OK in data and IRQ_SELFTEST_OK in data and
@@ -490,6 +699,10 @@ def main(argv):
               % (expected, args.timeout), file=sys.stderr)
         return 1
     print("serial_smoke: OK (%s)" % expected)
+    if bridge_drops:
+        print("serial_smoke: note: the USB bridge dropped %d time(s) during "
+              "this capture; the transcript above was reassembled across "
+              "the reconnect(s)" % bridge_drops)
     return 0
 
 
@@ -600,24 +813,66 @@ def _explain_wrong_image(mode, data):
                   "truncated command echo means the console link is "
                   "dropping bytes (check cabling/flow control)",
                   file=sys.stderr)
-    elif mode == "m8-ioc-command":
+    elif mode == "m8-ioc":
         if M8IOC_UNAVAILABLE in data or M8IOC_FAIL in data:
-            print("serial_smoke: hint: the IOC bring-up did not complete "
-                  "(the module rejected the link or never answered).  "
-                  "Check the IOC MCU is running, the command lane wiring, "
-                  "and that build-m8-ioc-command-selftest/"
-                  "zephyros-m8-ioc-command-selftest.bin is flashed",
+            print("serial_smoke: hint: the IOC selftest did not complete "
+                  "(the module rejected the link, the transport failed, "
+                  "or the /SHARED check failed).  Check the IOC MCU is "
+                  "running, the command and bulk lane wiring, the card "
+                  "and /SHARED folder, and that "
+                  "build-m8-ioc-selftest/"
+                  "zephyros-m8-ioc-selftest.bin is flashed",
                   file=sys.stderr)
         elif M7_SELFTEST_OK in data:
             print("serial_smoke: hint: the M7 marker was observed; the M7 "
                   "image is probably flashed instead of "
-                  "build-m8-ioc-command-selftest/"
-                  "zephyros-m8-ioc-command-selftest.bin", file=sys.stderr)
+                  "build-m8-ioc-selftest/"
+                  "zephyros-m8-ioc-selftest.bin", file=sys.stderr)
         elif not BANNER in data:
-            print("serial_smoke: hint: no boot log was captured.  The "
-                  "boot lines print once at boot; start this tool first, "
-                  "then power-cycle the board or press RESET while it "
-                  "waits, and rerun", file=sys.stderr)
+            print("serial_smoke: hint: no boot log was captured.  This "
+                  "image waits for the host sync sequence before the "
+                  "banner; start this tool first, then power-cycle the "
+                  "board or press RESET while it waits, and rerun",
+                  file=sys.stderr)
+        elif M8IOC_SELFTEST_PENDING_RE.search(data) is not None:
+            print("serial_smoke: hint: the transcript is a PENDING run "
+                  "(the deployed firmware has no writable /SHARED "
+                  "service); if this is unexpected, check the IOC MCU "
+                  "firmware level and that CMD_FS_OPEN is served",
+                  file=sys.stderr)
+        elif M8IOC_SELFTEST_OK in data and not _m8ioc_complete(data):
+            print("serial_smoke: hint: the selftest line was observed but "
+                  "the bulk/cleanup markers are incomplete; the "
+                  "transcript above shows how far it got", file=sys.stderr)
+    elif mode == "m8-hid":
+        found_typed = len(M8HID_RX_RE.findall(data))
+        if M8HID_UNAVAILABLE in data or M8HID_FAIL in data:
+            print("serial_smoke: hint: the HID selftest did not complete "
+                  "(HID is unavailable or the typing/fallback phase "
+                  "failed).  Check the IOC MCU is running, the USB "
+                  "keyboard is attached, and that "
+                  "build-m8-hid-selftest/"
+                  "zephyros-m8-hid-selftest.bin is flashed; the "
+                  "transcript above shows how far it got",
+                  file=sys.stderr)
+        elif M8IOC_SELFTEST_OK in data:
+            print("serial_smoke: hint: the M8 IOC marker was observed; "
+                  "the IOC image is probably flashed instead of "
+                  "build-m8-hid-selftest/"
+                  "zephyros-m8-hid-selftest.bin", file=sys.stderr)
+        elif not BANNER in data:
+            print("serial_smoke: hint: no boot log was captured.  This "
+                  "image waits for the host sync sequence before the "
+                  "banner; start this tool first, then power-cycle the "
+                  "board or press RESET while it waits, and rerun",
+                  file=sys.stderr)
+        elif found_typed < len(M8HID_TYPED_BYTES):
+            print("serial_smoke: hint: the USB-keyboard pass is "
+                  "incomplete: %d of %d scripted bytes were echoed.  "
+                  "Type exactly a B 3 Enter Backspace Ctrl-X Arrow-Up "
+                  "when the prompt appears (the bytes are echoed as "
+                  "'m8 hid: rx XX' lines)"
+                  % (found_typed, len(M8HID_TYPED_BYTES)), file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -16,19 +16,34 @@
  *     reply frame.  On success the complete reply (type, status, length,
  *     and DATA bytes 0..length-1) is populated; DATA beyond the declared
  *     length is cleared.
+ *   - A successful command reply to a class the controller can use to
+ *     arm the bulk lane, shaped exactly like a bulk READY (status 0,
+ *     length 8, nonzero transfer id, a known direction, and a length of
+ *     1..512), admits one bulk phase.  The class gate matters: several
+ *     immutable non-bulk replies are eight bytes long, and none of them
+ *     may ever change the bulk phase.  While admitted, only
+ *     `bulk_read()`/`bulk_write()` matching the READY direction and
+ *     exact length are accepted; any other command fails with
+ *     `ZIOC_EBUSY`.
+ *   - `bulk_read()` completes and returns the lane to idle (a DONE
+ *     query is optional for a read).  `bulk_write()` returning success
+ *     means the bytes reached the MCU, not that they were stored: the
+ *     instance then accepts only `command(CMD_XFER_STATUS)` and reports
+ *     success only for a matching DONE record.  A failed or mismatched
+ *     DONE is never reported as a completed write, and the next
+ *     operation performs bounded whole-link recovery first.
  *   - `struct zioc_ops.status()` returns semantic status bits only,
  *     such as ZIOC_STATUS_HID_PENDING.  Raw SIO/`/CTSB`/RR0 bits are an
  *     IOC implementation detail and are never exposed.
- *   - `bulk_read()`/`bulk_write()` are implemented by the M8 bulk
- *     package.  In this stage the capability bits are absent and the
- *     pointers are null; clients must select the interface by
- *     capabilities, not by name.
  *
  * Transport results: zero is success; failures are the negative values
  * below.  ZIOC_EINVAL covers null/malformed arguments and an oversize
  * DATA length, ZIOC_EBUSY an overlapping/recursive use of the IOC
- * instance, and the remaining codes describe bounded-wait expiry and
- * peer-frame violations.
+ * instance or an invalid bulk-phase sequence (no READY, wrong direction
+ * or length, or a command other than the DONE query while a write is
+ * awaiting it), ZIOC_EIO a hardware handshake fault or a controller
+ * DONE status reporting that the transfer failed, and the remaining
+ * codes describe bounded-wait expiry and peer-frame violations.
  *
  * The driver implements the pinned deployed host contract; consumers
  * never issue firmware changes to recover a different pairing.
@@ -49,6 +64,9 @@
 /* Maximum command DATA bytes carried by one zioc_frame / wire packet. */
 #define ZIOC_MAX_DATA 26u
 
+/* Longest bulk DATA payload carried by one bulk_read()/bulk_write(). */
+#define ZIOC_BULK_MAX 512u
+
 /* Packed frame size: TYPE + STATUS + LENGTH + DATA. */
 #define ZIOC_FRAME_SIZE (3u + ZIOC_MAX_DATA)
 
@@ -63,6 +81,7 @@
 #define ZIOC_EBADFRAME (-ZOS_EPROTO)
 #define ZIOC_EBADCRC   (-ZOS_ECRC)
 #define ZIOC_EBADSEQ   (-ZOS_EBADSEQ)
+#define ZIOC_EIO       (-ZOS_EIO)
 
 /* Native command/reply frame.  `length` is the number of valid DATA
  * bytes in a request, and the number of reply DATA bytes on success. */

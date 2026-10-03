@@ -11,21 +11,25 @@
 
 #include "zephyros/ioc.h"
 
-/* One-time SIO1/B programming: channel reset, WR1 interrupts/WAIT off,
- * External Sync x1, FFh fill, RX disabled, TX enabled with RTS inactive.
- * Never called during an ordinary transaction. */
+/* One-time SIO1/B (command) and SIO1/A (bulk) programming: channel reset,
+ * WR1 interrupts/WAIT off, External Sync x1, FFh/AAh fill, RX disabled
+ * (command) / enabled without Hunt (bulk), TX idle.  Never called during
+ * an ordinary transaction. */
 void ioc_hw_init(void);
 
-/* Bounded CMD_LINK_SYNC bring-up.  Each attempt re-arms local Hunt so
- * the MCU emits a fresh /SYNC edge; success requires a CRC-verified
- * LINK_SYNC reply with the matching sequence.  Returns ZIOC_OK or
- * ZIOC_ETIMEDOUT. */
+/* Bounded CMD_LINK_SYNC bring-up.  Each attempt clears BOTH lane sync
+ * flags and re-arms local Hunt so the MCU emits a fresh /SYNC edge;
+ * success requires a CRC-verified LINK_SYNC reply with the matching
+ * sequence.  Also the explicit whole-link recovery path.  Returns
+ * ZIOC_OK or ZIOC_ETIMEDOUT. */
 int ioc_link_bringup(void);
 
 /* The class operation implementations (exposed for the descriptor and
  * for focused host tests). */
 int ioc_command(void *state, const struct zioc_frame *request,
 		struct zioc_frame *reply);
+int ioc_bulk_read(void *state, void *dst, uint16_t length);
+int ioc_bulk_write(void *state, const void *src, uint16_t length);
 uint16_t ioc_status(void *state);
 
 extern const struct zioc_ops ioc_ops;

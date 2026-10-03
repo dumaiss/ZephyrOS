@@ -35,8 +35,11 @@
 #if ZOS_M7_SELFTEST
 #include "m7_selftest.h"
 #endif
-#if ZOS_M8_IOC_COMMAND_SELFTEST
+#if ZOS_M8_IOC_SELFTEST
 #include "m8_ioc_selftest.h"
+#endif
+#if ZOS_M8_HID_SELFTEST || ZOS_M8_HID_NOIOC || ZOS_M8_HID_BADIOC
+#include "m8_hid_selftest.h"
 #endif
 
 void zos_target_test_early(void)
@@ -72,7 +75,10 @@ void zos_target_test_late(void)
 #if ZOS_M7_SELFTEST
 	zos_run_m7_selftest();
 #endif
-#if ZOS_M8_IOC_COMMAND_SELFTEST
+#if ZOS_M8_IOC_SELFTEST
 	zos_run_m8_ioc_selftest();
+#endif
+#if ZOS_M8_HID_SELFTEST || ZOS_M8_HID_NOIOC || ZOS_M8_HID_BADIOC
+	zos_run_m8_hid_selftest();
 #endif
 }

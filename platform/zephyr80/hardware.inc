@@ -123,6 +123,40 @@ ZOS_IOC_CMD_LINK_SYNC       = 0x0C
 ZOS_IOC_RSP_LINK_SYNC       = 0x8C
 ZOS_IOC_LINK_BRINGUP_TRIES  = 0x04
 
+; --- IOC bulk lane (SIO1/A, External Sync) -----------------------------
+;
+; Ports 30h/31h.  Same common packet envelope and persistent External
+; Sync as the command lane; DATA is 1-512 bytes.  The deployed pair runs
+; with bulk DATA CRC bypassed on both sides; framing, marker, header and
+; admission validation are never bypassed.  Values are the C pair of
+; platform/zephyr80/hardware.h; the parity tests compare every shared
+; name.
+
+ZOS_IOC_WR0_RESET_RX_CRC    = 0x40
+ZOS_IOC_WR0_RESET_TX_CRC    = 0x80
+
+ZOS_IOC_WR_SELECT_WR6       = 0x06
+
+ZOS_IOC_WR3_BULK_RX_HUNT    = 0xD9
+ZOS_IOC_WR3_BULK_RX_NO_HUNT = 0xC9
+ZOS_IOC_WR3_BULK_TX         = 0xC1
+
+ZOS_IOC_WR5_BULK_RTS_ON     = 0xEB
+ZOS_IOC_WR5_BULK_RTS_OFF    = 0xE9
+ZOS_IOC_WR5_BULK_IDLE       = 0xE0
+
+ZOS_IOC_BULK_SYNC_FILL      = 0xAA
+
+ZOS_IOC_BULK_LEADIN         = 0x00
+ZOS_IOC_BULK_SCAN_LIMIT     = 0x08
+ZOS_IOC_BULK_MAX_LEN        = 512
+ZOS_IOC_BULK_UNDERRUN_GUARD = 128
+ZOS_IOC_BULK_CRC_BYPASS     = 1
+
+; Hardware-smoke host sync sequence (kernel/main.c kernel_host_sync_wait).
+ZOS_SMOKE_HOST_SYNC_FIRST   = 0xAA
+ZOS_SMOKE_HOST_SYNC_SECOND  = 0x55
+
 ZOS_SIO_TX_TIMEOUT      = 0xFFFF
 
 ; --- M2 CTC0 interrupt bring-up (vector mapping lives in irq.inc) ---

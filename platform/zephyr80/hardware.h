@@ -154,6 +154,64 @@
 #define ZOS_IOC_RSP_LINK_SYNC       0x8Cu
 #define ZOS_IOC_LINK_BRINGUP_TRIES  0x04u
 
+/* --- IOC bulk lane (SIO1/A, External Sync) -----------------------------
+ *
+ * Ports 30h/31h.  Same common packet envelope and persistent External
+ * Sync as the command lane; DATA is 1-512 bytes.  The deployed pair runs
+ * with bulk DATA CRC bypassed on both sides: the MCU sends a zeroed
+ * trailer and ignores the host's trailer.  Framing, marker, header and
+ * admission validation are never bypassed, and the host still consumes
+ * the two trailer bytes. */
+
+/* WR0 commands used by the bulk lane in addition to the shared ones. */
+#define ZOS_IOC_WR0_RESET_RX_CRC    0x40u /* receive CRC generator reset  */
+#define ZOS_IOC_WR0_RESET_TX_CRC    0x80u /* transmit CRC generator reset */
+
+/* WR6 register select (WR7 reuses ZOS_IOC_WR_SELECT_WR7). */
+#define ZOS_IOC_WR_SELECT_WR6       0x06u
+
+/* WR3 bulk receive modes: 8-bit RX, auto enables off, Rx CRC enabled.
+ * Hunt is used only until the first verified bulk packet; NO_HUNT keeps
+ * the established character boundary.  BULK_TX is the write-direction
+ * value: the receiver stays enabled while the host transmits. */
+#define ZOS_IOC_WR3_BULK_RX_HUNT    0xD9u
+#define ZOS_IOC_WR3_BULK_RX_NO_HUNT 0xC9u
+#define ZOS_IOC_WR3_BULK_TX         0xC1u
+
+/* WR5 bulk values: 8-bit TX, DTR, Tx CRC armed; RTS on/off/idle. */
+#define ZOS_IOC_WR5_BULK_RTS_ON     0xEBu
+#define ZOS_IOC_WR5_BULK_RTS_OFF    0xE9u
+#define ZOS_IOC_WR5_BULK_IDLE       0xE0u /* TX disabled, RTS off         */
+
+/* WR6/WR7 synchronous fill.  AAh cannot contain the A5 5A marker (strict
+ * bit alternation) and is not the zero a reset CRC register reads. */
+#define ZOS_IOC_BULK_SYNC_FILL      0xAAu
+
+/* Sacrificial lead-in shifted before the real marker (00h on purpose). */
+#define ZOS_IOC_BULK_LEADIN         0x00u
+/* Bounded marker scan for the complete A5 5A after any pipeline bytes. */
+#define ZOS_IOC_BULK_SCAN_LIMIT     0x08u
+/* Longest bulk DATA payload: one SD sector / one /SHARED chunk. */
+#define ZOS_IOC_BULK_MAX_LEN        512u
+/* Measured CRC-completion guard after the terminating underrun: two CRC
+ * characters at the wire rate, with margin. */
+#define ZOS_IOC_BULK_UNDERRUN_GUARD 128u
+
+/* Deployed pair mode: bulk DATA CRC is bypassed on both ends.  The host
+ * consumes the two-byte trailer and never compares it; the write path
+ * still arms the SIO TX CRC generator.  The constant is declared in the
+ * paired C/assembly headers so a one-sided change cannot build. */
+#define ZOS_IOC_BULK_CRC_BYPASS     1u
+
+/* Hardware-smoke host sync: diagnostic images built with
+ * ZOS_SMOKE_HOST_SYNC=1 wait for this two-byte sequence on SIO0/B before
+ * printing the banner, because the bench's reset line also resets the USB
+ * bridge (the capture can only start once the host has reopened the
+ * port).  tools/serial_smoke.py sends the sequence; the kernel scan
+ * discards everything that does not match. */
+#define ZOS_SMOKE_HOST_SYNC_FIRST   0xAAu
+#define ZOS_SMOKE_HOST_SYNC_SECOND  0x55u
+
 /* Finite TX-ready poll budget for the early console.  A missing or
  * disconnected terminal must not hang the kernel forever. */
 #define ZOS_SIO_TX_TIMEOUT          0xFFFFu

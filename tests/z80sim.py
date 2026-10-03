@@ -34,8 +34,13 @@ class IocCommandPeer:
         /CTSB HID doorbell;
       - /RTSB as the held "unacknowledged request" level (WR5 bit 1),
         with preload-vs-underrun detection on the capture window;
-      - request parsing and CRC-16-CCITT replies for LINK_SYNC and PING
-        (the deployed MCU also emits one trailing FFh pipeline byte);
+      - request parsing and CRC-16-CCITT replies for LINK_SYNC, PING and
+        the HID input fetch (the deployed MCU also emits one trailing
+        FFh pipeline byte);
+      - the HID input queue: /CTSB is held while queued bytes exist,
+        CMD_HID_INPUT dequeues up to the wanted count and answers
+        `queued`/`dropped` plus data, and one-shot malformed replies can
+        be injected;
       - fault injection: arbitrary leading (full-duplex) bytes, delayed
         readiness, delayed replies, stalled clocks, CRC/length/type/
         sequence faults, and a held HID doorbell.
@@ -47,11 +52,43 @@ class IocCommandPeer:
 
     CMD_LINK_SYNC = 0x0C
     CMD_PING = 0x01
+    CMD_XFER_STATUS = 0x06
+    CMD_FS_OPEN = 0x22
+    CMD_FS_READ = 0x23
+    CMD_FS_WRITE = 0x24
+    CMD_FS_CLOSE = 0x25
+    CMD_FS_DELETE = 0x27
+    CMD_HID_INPUT = 0x0E
+    RSP_FS_OPEN = 0xA2
+    RSP_FS_READ = 0xA3
+    RSP_FS_WRITE = 0xA4
+    RSP_FS_CLOSE = 0xA5
+    RSP_FS_DELETE = 0xA7
+    RSP_HID_INPUT = 0x8E
+    RSP_XFER_STATUS = 0x86
+    DIR_MCU_TO_Z80 = 0
+    DIR_Z80_TO_MCU = 1
+    ST_OK = 0x00
+    ST_BULK_FAIL = 0x20
+    ST_BULK_NO_SYNC = 0x22
+    ST_FS_NO_FILE = 0x34
+    ST_FS_BAD_NAME = 0x35
+    ST_FS_NO_HANDLE = 0x36
+    ST_FS_RANGE = 0x37
+    ST_FS_ERROR = 0x38
+    ST_UNKNOWN_CMD = 0x02   # IOC_STATUS_UNKNOWN_CMD (unknown-class reply)
 
     def __init__(self, leading=(0xFF,), reply_delay=8, ready_delay=0,
                  never_ready=False, stall=False, fault=None,
                  link_faults=None, doorbell=False, level=0x4A,
-                 echo_len=16, ping_len=26, reply_tail=b"\xff"):
+                 echo_len=16, ping_len=26, reply_tail=b"\xff",
+                 fs_files=None, read_fault=None, write_fault=None,
+                 dcd_delay=2, cts_delay=2, commit_delay=1,
+                 pipeline_residue=2, read_trailer=b"\x00\x00",
+                 stall_bytes=None, fs_open_fault=None,
+                 fs_delete_reopen_fault=None,
+                 arbitrary_ready=None, custom_replies=None,
+                 hid_bytes=b"", hid_faults=None):
         self.ptr = 0
         self.wr = {}
         self.rx = collections.deque()
@@ -74,6 +111,74 @@ class IocCommandPeer:
         self.link_faults = list(link_faults) if link_faults else []
         self.ready_delay = ready_delay
         self.never_ready = never_ready
+        # --- SIO1/A bulk-lane model ---------------------------------
+        self.a_ptr = 0
+        self.a_wr = {}
+        self.a_rx = collections.deque()  # bytes available to host reads
+        self.a_tx_window = bytearray()   # host -> MCU capture
+        self.a_rts = False
+        self.a_tx_enabled = False
+        self.dcd = False                 # /DCDA: read admission level
+        self.cts = False                 # /CTSA: phase-active level
+        self.tx_underrun = False         # RR0 D6 for the write path
+        self.admit_countdown = 0
+        self.cts_off_countdown = 0
+        self.armed_send = None   # (id, rsp_type, seq, payload)
+        self.armed_recv = None   # (id, cmd_type, seq, name, offset, len)
+        self.a_delivered = False
+        self.read_fault = read_fault
+        self.write_fault = write_fault
+        self.done_fault = None
+        self.dcd_delay = dcd_delay
+        self.cts_delay = cts_delay
+        self.commit_delay = commit_delay
+        self.pipeline_residue = pipeline_residue
+        self.read_trailer = bytes(read_trailer)
+        self.stall_bytes = stall_bytes
+        self.a_channel_resets = 0
+        self.a_hunt_writes = 0
+        self.a_rts_asserts = 0
+        self.a_rts_releases = 0
+        self.a_wr3_writes = []
+        self.bulk_requests = []  # parsed write captures
+        self.bulk_sends = []     # wire bytes pushed to the host
+        self.a_drain_reads = 0
+        self.a_data_reads = 0
+        self.last_xfer_id = 0
+        self.last_status = 0
+        self.last_bulk_capture = b""
+        self.xfer_id = 0
+        # --- /SHARED file model -------------------------------------
+        self.fs_files = {k: bytearray(v)
+                         for k, v in (fs_files or {}).items()}
+        self.fs_open_name = None
+        self.fs_handle = 0
+        self.fs_next_handle = 1
+        self.fs_writing = False
+        # --- READY-admission test shaping ---------------------------
+        # fs_open_fault: None | "unknown" (RSP_UNKNOWN_COMMAND plus the
+        # unknown-command status) | "unknown_status" (unknown class with a
+        # filesystem status) | status int | ("class", reply_class).
+        # arbitrary_ready: {request type: (direction, length[, status])}
+        # arms a READY for any bulk-arming class under test.
+        # custom_replies: {request type: (reply class, payload)}.
+        self.fs_open_fault = fs_open_fault
+        self.fs_delete_reopen_fault = fs_delete_reopen_fault
+        self.arbitrary_ready = arbitrary_ready
+        self.custom_replies = dict(custom_replies or {})
+        # --- HID input queue model -----------------------------------
+        # The deployed firmware translates USB boot-keyboard reports into
+        # terminal bytes, holds them in its own queue and asserts /CTSB
+        # while it is non-empty.  CMD_HID_INPUT dequeues what it returns,
+        # so the reply carries `queued`/`dropped` then up to the wanted
+        # count of bytes.  hid_faults injects malformed replies one at a
+        # time ("unknown", "wrong_type", "status", "short",
+        # "over_count").
+        self.hid_queue = collections.deque(hid_bytes)
+        self.hid_faults = list(hid_faults) if hid_faults else []
+        self.hid_requests = []   # requested maximum per CMD_HID_INPUT
+        self.hid_dropped = 0
+        self.hid_delivered = 0
         # observability
         self.channel_resets = 0
         self.rts_asserts = 0
@@ -96,8 +201,8 @@ class IocCommandPeer:
             value |= 0x01       # RX character available
         if self._ready():
             value |= 0x08       # /DCDB: COMMAND_READY
-        if self.doorbell:
-            value |= 0x20       # /CTSB: HID doorbell
+        if self.doorbell or self.hid_queue:
+            value |= 0x20       # /CTSB: HID doorbell (held while queued)
         return value
 
     def data_read(self):
@@ -205,8 +310,81 @@ class IocCommandPeer:
         if self.stall:
             return
         self.reply_pending = (self._apply_fault(
-            self._build_reply(rtype, seq, data), rtype) + self.reply_tail)
+            self._handle_request(rtype, seq, data), rtype) +
+            self.reply_tail)
         self.reply_countdown = self.reply_delay
+
+    def _handle_request(self, rtype, seq, data):
+        """Reply to one command, arming the bulk lane for READY replies."""
+        if self.custom_replies and rtype in self.custom_replies:
+            cls, payload = self.custom_replies[rtype]
+            return self._wrap(cls, seq, self.ST_OK, bytes(payload))
+        if self.arbitrary_ready and rtype in self.arbitrary_ready:
+            entry = self.arbitrary_ready[rtype]
+            status = entry[2] if len(entry) > 2 else self.ST_OK
+            return self._ready_reply(rtype, seq, entry[0], entry[1], status)
+        if rtype == self.CMD_HID_INPUT:
+            return self._build_hid_reply(seq, data)
+        if rtype in (self.CMD_FS_OPEN, self.CMD_FS_READ, self.CMD_FS_WRITE,
+                     self.CMD_FS_CLOSE, self.CMD_FS_DELETE,
+                     self.CMD_XFER_STATUS):
+            return self._build_fs_reply(rtype, seq, data)
+        return self._build_reply(rtype, seq, data)
+
+    def _hid_take(self):
+        """One byte from the MCU queue, or a synthetic fill byte when a
+        fault injected more than the queue holds."""
+        if self.hid_queue:
+            self.hid_delivered += 1
+            return self.hid_queue.popleft()
+        return 0xEA
+
+    def _build_hid_reply(self, seq, data):
+        """CMD_HID_INPUT: `queued`, `dropped`, then queued terminal bytes
+        (dequeued as they are sent), capped to the wanted count and the
+        protocol's 24-byte DATA maximum.  hid_faults poisons exactly one
+        reply: unknown class/status, a wrong response class, a nonzero
+        controller status, a short (< 2 DATA) reply, or a reply carrying
+        more bytes than requested."""
+        wanted = data[0] if data else 0
+        self.hid_requests.append(wanted)
+        fault = self.hid_faults.pop(0) if self.hid_faults else None
+        if fault == "unknown":
+            return self._wrap(0xFE, seq, self.ST_UNKNOWN_CMD)
+        if fault == "wrong_type":
+            return self._wrap(0xFE, seq, self.ST_OK)
+        if fault == "short":
+            return self._wrap(self.RSP_HID_INPUT, seq, self.ST_OK, b"\x00")
+        if fault == "status":
+            return self._wrap(self.RSP_HID_INPUT, seq, 0x07,
+                              bytes([len(self.hid_queue), self.hid_dropped]))
+        if fault == "over_count":
+            count = min(wanted + 1, 24)
+            payload = bytes(self._hid_take() for _ in range(count))
+            return self._wrap(self.RSP_HID_INPUT, seq, self.ST_OK,
+                              bytes([len(self.hid_queue), self.hid_dropped]) +
+                              payload)
+        count = min(len(self.hid_queue), wanted, 24)
+        payload = bytes(self._hid_take() for _ in range(count))
+        return self._wrap(self.RSP_HID_INPUT, seq, self.ST_OK,
+                          bytes([len(self.hid_queue), self.hid_dropped]) +
+                          payload)
+
+    def _ready_reply(self, rtype, seq, direction, length, status=None):
+        """A READY (or its failed twin) for one bulk-arming class."""
+        if status is None:
+            status = self.ST_OK
+        ident = self._next_xfer_id()
+        ready = (bytes([ident, direction, length & 0xFF,
+                        (length >> 8) & 0xFF]) + bytes(4))
+        if status == self.ST_OK:
+            if direction == self.DIR_MCU_TO_Z80:
+                payload = bytes(((i * 7) & 0xFF) for i in range(length))
+                self.armed_send = (ident, (rtype | 0x80) & 0xFF, seq,
+                                   payload)
+            else:
+                self.armed_recv = (ident, rtype, seq, None, 0, length)
+        return self._wrap((rtype | 0x80) & 0xFF, seq, status, ready)
 
     def _build_reply(self, rtype, seq, data):
         if rtype == self.CMD_LINK_SYNC:
@@ -257,6 +435,338 @@ class IocCommandPeer:
             reply[-2] = (crc >> 8) & 0xFF
             reply[-1] = crc & 0xFF
         return bytes(reply)
+
+    # -- /SHARED filesystem subset (mirrors fs_share.c) ----------------
+    def _wrap(self, cls, seq, status, payload=b""):
+        body = bytes([cls, seq, status]) + bytes(payload)
+        head = bytes([len(body) & 0xFF, (len(body) >> 8) & 0xFF])
+        crc = ioc_crc16(head + body)
+        return (b"\xa5\x5a" + head + body +
+                bytes([(crc >> 8) & 0xFF, crc & 0xFF]))
+
+    def _next_xfer_id(self):
+        self.xfer_id = self.xfer_id % 255 + 1
+        return self.xfer_id
+
+    def _pack_name(self, raw11):
+        return raw11.rstrip(b" ").decode("ascii")
+
+    def _fs_close_current(self):
+        self.fs_open_name = None
+        self.fs_handle = 0
+        self.fs_writing = False
+
+    def _build_fs_reply(self, rtype, seq, data):
+        if rtype == self.CMD_FS_OPEN and self.fs_open_fault is not None:
+            fault = self.fs_open_fault
+            if fault == "unknown":
+                return self._wrap(0xFE, seq, self.ST_UNKNOWN_CMD)
+            if fault == "unknown_status":
+                return self._wrap(0xFE, seq, self.ST_FS_ERROR)
+            if isinstance(fault, tuple):
+                return self._wrap(fault[1], seq, self.ST_OK)
+            return self._wrap(self.RSP_FS_OPEN, seq, fault)
+        if rtype == self.CMD_FS_OPEN:
+            mode = data[0] if len(data) >= 1 else 0
+            name = self._pack_name(bytes(data[1:12])) if len(data) >= 12 \
+                else ""
+            if (not name or
+                    any(c in name for c in "/\\:.") or
+                    not all(0x21 <= ord(c) <= 0x7E for c in name)):
+                return self._wrap(self.RSP_FS_OPEN, seq, self.ST_FS_BAD_NAME)
+            self._fs_close_current()
+            if mode == 1:
+                self.fs_files[name] = bytearray()
+            elif name not in self.fs_files:
+                # Post-delete reopen (the acceptance fixture's cleanup
+                # proof): the frozen answer is the no-file failure with
+                # an empty payload.  Tests may inject a media/fs error or
+                # a nonempty failure reply here.
+                fault = self.fs_delete_reopen_fault
+                if fault is not None:
+                    if isinstance(fault, tuple):
+                        return self._wrap(self.RSP_FS_OPEN, seq, fault[0],
+                                          fault[1])
+                    return self._wrap(self.RSP_FS_OPEN, seq, fault)
+                return self._wrap(self.RSP_FS_OPEN, seq, self.ST_FS_NO_FILE)
+            self.fs_open_name = name
+            self.fs_handle = self.fs_next_handle
+            self.fs_next_handle = self.fs_next_handle % 255 + 1
+            self.fs_writing = (mode == 1)
+            size = len(self.fs_files[name])
+            return self._wrap(
+                self.RSP_FS_OPEN, seq, self.ST_OK,
+                bytes([self.fs_handle]) + size.to_bytes(4, "little"))
+
+        if rtype == self.CMD_FS_WRITE:
+            if (len(data) < 7 or data[0] != self.fs_handle or
+                    not self.fs_writing or self.fs_open_name is None):
+                return self._wrap(self.RSP_FS_WRITE, seq,
+                                  self.ST_FS_NO_HANDLE)
+            offset = int.from_bytes(bytes(data[1:5]), "little")
+            length = int.from_bytes(bytes(data[5:7]), "little")
+            if not 1 <= length <= 512:
+                return self._wrap(self.RSP_FS_WRITE, seq, self.ST_FS_RANGE)
+            ident = self._next_xfer_id()
+            self.armed_recv = (ident, rtype, seq, self.fs_open_name,
+                               offset, length)
+            self.a_tx_window = bytearray()
+            self.tx_underrun = False
+            ready = (bytes([ident, self.DIR_Z80_TO_MCU,
+                            length & 0xFF, (length >> 8) & 0xFF]) +
+                     offset.to_bytes(4, "little"))
+            return self._wrap(self.RSP_FS_WRITE, seq, self.ST_OK, ready)
+
+        if rtype == self.CMD_FS_READ:
+            if len(data) < 7 or data[0] != self.fs_handle or \
+                    self.fs_open_name is None:
+                return self._wrap(self.RSP_FS_READ, seq,
+                                  self.ST_FS_NO_HANDLE)
+            offset = int.from_bytes(bytes(data[1:5]), "little")
+            length = int.from_bytes(bytes(data[5:7]), "little")
+            if not 1 <= length <= 512:
+                return self._wrap(self.RSP_FS_READ, seq, self.ST_FS_RANGE)
+            content = self.fs_files.get(self.fs_open_name, bytearray())
+            got = max(0, min(length, len(content) - offset))
+            out = bytearray(8)
+            if got:
+                ident = self._next_xfer_id()
+                out[0] = ident
+                out[1] = self.DIR_MCU_TO_Z80
+                out[2] = got & 0xFF
+                out[3] = (got >> 8) & 0xFF
+                out[4:8] = offset.to_bytes(4, "little")
+                self.armed_send = (ident, self.RSP_FS_READ, seq,
+                                   bytes(content[offset:offset + got]))
+            return self._wrap(self.RSP_FS_READ, seq, self.ST_OK, out)
+
+        if rtype == self.CMD_FS_CLOSE:
+            if len(data) < 5 or data[0] != self.fs_handle:
+                return self._wrap(self.RSP_FS_CLOSE, seq,
+                                  self.ST_FS_NO_HANDLE)
+            size = int.from_bytes(bytes(data[1:5]), "little")
+            if (self.fs_writing and self.fs_open_name in self.fs_files and
+                    size < len(self.fs_files[self.fs_open_name])):
+                del self.fs_files[self.fs_open_name][size:]
+            self._fs_close_current()
+            return self._wrap(self.RSP_FS_CLOSE, seq, self.ST_OK)
+
+        if rtype == self.CMD_FS_DELETE:
+            name = self._pack_name(bytes(data[:11])) if len(data) >= 11 \
+                else ""
+            self._fs_close_current()
+            if name in self.fs_files:
+                del self.fs_files[name]
+                return self._wrap(self.RSP_FS_DELETE, seq, self.ST_OK)
+            return self._wrap(self.RSP_FS_DELETE, seq, self.ST_FS_NO_FILE)
+
+        # CMD_XFER_STATUS: the DONE record.
+        ident = self.last_xfer_id
+        status = self.last_status
+        if self.done_fault == "id":
+            ident = (ident % 255) + 1
+        elif self.done_fault == "status":
+            status = self.ST_BULK_FAIL
+        self.done_fault = None
+        out = bytearray(20)
+        out[0] = ident
+        out[1] = status
+        return self._wrap(self.RSP_XFER_STATUS, seq, self.ST_OK, out)
+
+    # -- SIO1/A bulk-lane port behaviour -------------------------------
+    def bulk_data_read(self):
+        self._a_tick()
+        if self.a_rx:
+            self.a_data_reads += 1
+            if not self.a_delivered:
+                self.a_drain_reads += 1
+            return self.a_rx.popleft()
+        return 0xFF
+
+    def bulk_data_write(self, value):
+        value &= 0xFF
+        self.a_tx_window.append(value)
+        if self.armed_recv is not None:
+            length = self.armed_recv[5]
+            if len(self.a_tx_window) >= length + 8:
+                self.tx_underrun = True
+
+    def bulk_ctrl_read(self):
+        self._a_tick()
+        value = 0x04                 # TX buffer empty
+        if self.a_rx:
+            value |= 0x01            # RX character available
+        if self.tx_underrun:
+            value |= 0x40            # RR0 D6: transmitter ran dry
+        if self.dcd:
+            value |= 0x08            # /DCDA: read admission
+        if self.cts:
+            value |= 0x20            # /CTSA: phase active
+        return value
+
+    def bulk_ctrl_write(self, value):
+        value &= 0xFF
+        if self.a_ptr:
+            reg = self.a_ptr
+            self.a_ptr = 0
+            self._a_write_reg(reg, value)
+            return
+        low = value & 0x07
+        if low:
+            self.a_ptr = low
+            return
+        cmd = (value >> 3) & 0x07
+        reset = (value >> 6) & 0x03
+        if cmd == 3 and reset == 0:  # WR0 18h: channel reset
+            self.a_channel_resets += 1
+            self.a_wr.clear()
+            self.a_rx.clear()
+            self.a_rts = False
+            self.a_tx_enabled = False
+            self.dcd = False
+            self.cts = False
+            self.tx_underrun = False
+            self.armed_send = None
+            self.armed_recv = None
+        # reset == 1/2/3 (Rx CRC, Tx CRC, EOM latch), ext-status and
+        # error resets carry no separate modelled state here.
+
+    def _a_write_reg(self, reg, value):
+        self.a_wr[reg] = value
+        if reg == 3:
+            self.a_wr3_writes.append(value)
+            if value & 0x10:         # Enter Hunt Phase
+                self.a_hunt_writes += 1
+        elif reg == 5:
+            rts = (value & 0x02) != 0
+            self.a_tx_enabled = (value & 0x08) != 0
+            if rts and not self.a_rts:
+                self._a_rts_assert()
+            elif self.a_rts and not rts:
+                self._a_rts_release()
+
+    def _a_rts_assert(self):
+        self.a_rts = True
+        self.a_rts_asserts += 1
+        self.a_delivered = False
+        if self.armed_send is not None:
+            self.admit_countdown = self.dcd_delay
+        elif self.armed_recv is not None:
+            self.admit_countdown = self.cts_delay
+
+    def _a_rts_release(self):
+        self.a_rts = False
+        self.a_rts_releases += 1
+        if self.armed_send is not None:
+            # MCU -> Z80 phase ended.  Whatever the host did not consume
+            # is gone with the clock; only the persistent pipeline
+            # residue remains for the next bounded drain.
+            self.a_rx.clear()
+            if (self.read_fault != "no_cts_release" and
+                    self.pipeline_residue and self.a_delivered):
+                self.a_rx.extend(bytes([0xAA]) * self.pipeline_residue)
+            if self.read_fault != "no_cts_release":
+                self.dcd = False
+                self.cts = False
+            self.armed_send = None
+            # The next drain counts as pre-delivery once again.
+            self.a_delivered = False
+        elif self.armed_recv is not None:
+            self._finish_receive()
+
+    def _a_tick(self):
+        """Advance the admission / commit state machines on a control read."""
+        if (self.a_rts and self.armed_send is not None and not self.dcd and
+                self.read_fault != "no_dcd"):
+            if self.admit_countdown > 0:
+                self.admit_countdown -= 1
+            if self.admit_countdown == 0:
+                self.dcd = True
+                self.cts = True
+                self._start_send()
+        if (self.a_rts and self.armed_recv is not None and not self.cts and
+                self.write_fault != "no_cts"):
+            if self.admit_countdown > 0:
+                self.admit_countdown -= 1
+            if self.admit_countdown == 0:
+                self.cts = True
+        if not self.a_rts and self.cts_off_countdown > 0:
+            self.cts_off_countdown -= 1
+            if self.cts_off_countdown == 0:
+                self.dcd = False
+                self.cts = False
+
+    def _start_send(self):
+        ident, rtype, seq, payload = self.armed_send
+        length = 3 + len(payload)
+        rtype_w = rtype
+        seq_w = seq
+        len_w = length
+        status_w = 0
+        if self.read_fault == "header_type":
+            rtype_w = (rtype + 1) & 0xFF
+        elif self.read_fault == "header_seq":
+            seq_w = (seq + 0x11) & 0xFF
+        elif self.read_fault == "header_len":
+            len_w = length + 1
+        elif self.read_fault == "header_status":
+            status_w = 0x40
+        packet = (bytes([0xA5, 0x5A, len_w & 0xFF, (len_w >> 8) & 0xFF,
+                         rtype_w, seq_w, status_w]) + bytes(payload) +
+                  self.read_trailer)
+        if self.read_fault == "stall":
+            cut = self.stall_bytes
+            if cut is None:
+                cut = 8 + (len(payload) // 2)
+            packet = packet[:cut]
+        self.a_rx.extend(packet)
+        self.bulk_sends.append(bytes(packet))
+        self.a_delivered = True
+
+    def _finish_receive(self):
+        ident, rtype, seq, name, offset, length = self.armed_recv
+        capture = bytes(self.a_tx_window)
+        self.a_tx_window = bytearray()
+        self.armed_recv = None
+        self.last_bulk_capture = capture
+
+        start = capture.find(b"\xa5\x5a")
+        status = self.ST_OK
+        payload = b""
+        parsed = None
+        if start < 0 or start + 5 > len(capture):
+            status = self.ST_BULK_NO_SYNC
+        else:
+            wire_len = capture[start + 2] | (capture[start + 3] << 8)
+            wtype = capture[start + 4]
+            wseq = capture[start + 5]
+            wstatus = capture[start + 6]
+            if (wire_len != length + 3 or wtype != rtype or
+                    wseq != seq or wstatus != 0):
+                status = self.ST_BULK_FAIL
+            elif len(capture) < start + 7 + length:
+                status = self.ST_BULK_FAIL   # short stream: host underran
+            else:
+                payload = capture[start + 7:start + 7 + length]
+                parsed = (wtype, wseq, wstatus, payload)
+        if self.write_fault == "underrun" and status == self.ST_OK:
+            status = self.ST_BULK_FAIL
+            payload = payload[:-1] + b"\xAA"
+        if parsed is not None:
+            self.bulk_requests.append((parsed[0], parsed[1], parsed[2],
+                                       parsed[3]))
+        self.last_xfer_id = ident
+        self.last_status = status
+        if status == self.ST_OK and parsed is not None and name is not None:
+            content = self.fs_files.setdefault(name, bytearray())
+            need = offset + length
+            if len(content) < need:
+                content.extend(b"\x00" * (need - len(content)))
+            content[offset:offset + length] = payload
+        if self.write_fault == "no_cts_deassert":
+            self.cts_off_countdown = -1  # never deasserts
+        else:
+            self.cts_off_countdown = max(self.commit_delay, 1)
 
 
 def ioc_crc16(data):
@@ -345,6 +855,10 @@ class Z80:
                 return self.ioc_peer.data_read()
             if port == 0x33:
                 return self.ioc_peer.ctrl_read()
+            if port == 0x30:
+                return self.ioc_peer.bulk_data_read()
+            if port == 0x31:
+                return self.ioc_peer.bulk_ctrl_read()
         return 0xFF
 
     def io_out(self, port, value):
@@ -362,6 +876,10 @@ class Z80:
                 self.ioc_peer.data_write(value)
             elif port == 0x33:
                 self.ioc_peer.ctrl_write(value)
+            elif port == 0x30:
+                self.ioc_peer.bulk_data_write(value)
+            elif port == 0x31:
+                self.ioc_peer.bulk_ctrl_write(value)
 
     # ---- flags ----
     def _sf(self, bit, on):
@@ -948,6 +1466,24 @@ class Z80:
             self.hl = res & 0xFFFF
             self.ZF = self.hl == 0
             self.SNF = (self.hl & 0x8000) != 0
+        elif op == 0xA2:  # ini: (HL) <- in(C), HL++, B--
+            value = self.io_in(self.c)
+            self.wr((self.h << 8) | self.l, value)
+            self.hl = (self.hl + 1) & 0xFFFF
+            self.b = (self.b - 1) & 0xFF
+            self.ZF = self.b == 0
+            self.SNF = (value & 0x80) != 0
+            self._sf(0x02, 1)
+            self.PV = self.parity(value)
+        elif op == 0xA3:  # outi: out(C) <- (HL), HL++, B--
+            value = self.rd((self.h << 8) | self.l)
+            self.io_out(self.c, value)
+            self.hl = (self.hl + 1) & 0xFFFF
+            self.b = (self.b - 1) & 0xFF
+            self.ZF = self.b == 0
+            self.SNF = (value & 0x80) != 0
+            self._sf(0x02, 1)
+            self.PV = self.parity(value)
         elif (op & 0xC7) == 0x40:  # in r,(c); op 70h reads and discards
             value = self.io_in(self.c)
             code = (op >> 3) & 7
@@ -983,53 +1519,62 @@ class Z80:
         op = self.fetch()
         regs = {0: 'b', 1: 'c', 2: 'd', 3: 'e', 4: 'h', 5: 'l', 7: 'a'}
         r = op & 7
-        if r == 6:
-            raise SystemExit("sim: unsupported CB %02X (mem)" % op)
-        name = regs[r]
+        mem = r == 6
+        value = self.rd(self.hl) if mem else getattr(self, regs[r])
         if op < 0x40:  # rotate/shift (flags approximated; Z/S accurate)
-            v = getattr(self, name)
             grp = (op >> 3) & 7
             if grp == 0:    # rlc
-                c = (v >> 7) & 1
-                v = ((v << 1) | c) & 0xFF
+                c = (value >> 7) & 1
+                value = ((value << 1) | c) & 0xFF
                 self.CF = c
             elif grp == 1:  # rrc
-                c = v & 1
-                v = ((v >> 1) | (c << 7)) & 0xFF
+                c = value & 1
+                value = ((value >> 1) | (c << 7)) & 0xFF
                 self.CF = c
             elif grp == 2:  # rl
-                c = (v >> 7) & 1
-                v = ((v << 1) | self.CF) & 0xFF
+                c = (value >> 7) & 1
+                value = ((value << 1) | self.CF) & 0xFF
                 self.CF = c
             elif grp == 3:  # rr
-                c = v & 1
-                v = ((v >> 1) | (self.CF << 7)) & 0xFF
+                c = value & 1
+                value = ((value >> 1) | (self.CF << 7)) & 0xFF
                 self.CF = c
             elif grp == 4:  # sla
-                c = (v >> 7) & 1
-                v = (v << 1) & 0xFF
+                c = (value >> 7) & 1
+                value = (value << 1) & 0xFF
                 self.CF = c
             elif grp == 5:  # sra
-                c = v & 1
-                v = (v >> 1) | (v & 0x80)
+                c = value & 1
+                value = (value >> 1) | (value & 0x80)
                 self.CF = c
             else:           # srl
-                c = v & 1
-                v = v >> 1
+                c = value & 1
+                value = value >> 1
                 self.CF = c
-            setattr(self, name, v)
-            self.ZF = v == 0
-            self.SNF = (v & 0x80) != 0
-            self.PV = (bin(v).count('1') & 1) == 0
-        elif op < 0x80:  # bit n,r: Z = !bit
+            if mem:
+                self.wr(self.hl, value)
+            else:
+                setattr(self, regs[r], value)
+            self.ZF = value == 0
+            self.SNF = (value & 0x80) != 0
+            self.PV = (bin(value).count('1') & 1) == 0
+        elif op < 0x80:  # bit n,r / bit n,(hl): Z = !bit
             bit = (op >> 3) & 7
-            self.ZF = not ((getattr(self, name) >> bit) & 1)
-        elif op < 0xC0:  # res n,r
+            self.ZF = not ((value >> bit) & 1)
+        elif op < 0xC0:  # res n,r / res n,(hl)
             bit = (op >> 3) & 7
-            setattr(self, name, getattr(self, name) & ~(1 << bit) & 0xFF)
-        else:            # set n,r
+            value = value & ~(1 << bit) & 0xFF
+            if mem:
+                self.wr(self.hl, value)
+            else:
+                setattr(self, regs[r], value)
+        else:            # set n,r / set n,(hl)
             bit = (op >> 3) & 7
-            setattr(self, name, getattr(self, name) | (1 << bit))
+            value = value | (1 << bit)
+            if mem:
+                self.wr(self.hl, value)
+            else:
+                setattr(self, regs[r], value)
 
     def step_prefix(self, op):
         op2 = self.fetch()
@@ -1189,16 +1734,18 @@ class Z80:
 def read_symbols(map_path):
     import re
     syms = {}
-    for line in open(map_path):
-        m = re.match(r"\s*([0-9A-Fa-f]{8})\s+(\S+)", line)
-        if m:
-            syms[m.group(2)] = int(m.group(1), 16)
+    with open(map_path) as handle:
+        for line in handle:
+            m = re.match(r"\s*([0-9A-Fa-f]{8})\s+(\S+)", line)
+            if m:
+                syms[m.group(2)] = int(m.group(1), 16)
     return syms
 
 
 def main():
     img_path = sys.argv[1]
-    img = open(img_path, "rb").read()
+    with open(img_path, "rb") as handle:
+        img = handle.read()
     page0, page1 = img[:0x10000], img[0x10000:]
     z = Z80(page0, page1)
     syms = read_symbols(img_path.replace("zephyros-selftest.bin", "zephyros.map"))

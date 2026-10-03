@@ -1,27 +1,43 @@
-/* ZephyrOS IOC command/status driver implementation (drivers/ioc/).
+/* ZephyrOS IOC command + bulk transport driver implementation (drivers/ioc/).
  *
  * The class surface lives in include/zephyros/ioc.h.  This file owns the
- * command exchange: sequence stamping, exact common-packet construction
- * and CRC, reply capture/validation, state, and the foreground busy
- * guard.  All SIO1/B port I/O and the streaming loops live in ioc_io.asm;
- * the descriptor and module entry live in ioc_module.c.
+ * command exchange (sequence stamping, exact common-packet construction
+ * and CRC, reply capture/validation) and the READY/DONE bulk admission
+ * state.  All SIO1 port I/O and the timing-critical streaming loops live
+ * in ioc_io.asm; the descriptor and module entry live in ioc_module.c.
  *
  * Wire discipline (deployed host contract level 08h, never re-negotiated):
  *
  *   A5 5A LEN_LO LEN_HI TYPE SEQ STATUS DATA... CRC_HI CRC_LO
  *
- *   LEN counts TYPE + SEQ + STATUS + DATA (3..29 on this lane); the CRC
- *   is CRC-16-CCITT (1021h, preset 0, MSB-first, no final XOR) over
- *   LEN_LO through the final DATA byte.
+ * Both lanes use it.  LEN counts TYPE + SEQ + STATUS + DATA (3..29 on the
+ * command lane, 4..515 on the bulk lane); the CRC is CRC-16-CCITT (1021h,
+ * preset 0, MSB-first, no final XOR) over LEN_LO through the final DATA
+ * byte.  The deployed pair runs the bulk lane with DATA CRC bypassed on
+ * both ends: this driver still consumes the two trailer bytes and never
+ * compares them, but marker, header, and admission validation are never
+ * bypassed.
  *
- * The receiver boundary is established once by the LINK_SYNC bring-up
- * reply and then left alone: an ordinary transaction never issues a
- * channel reset or Enter Hunt.  Every wait is bounded and every exit
- * restores the exact entry interrupt state.
+ * Lane discipline:
  *
- * This source is compiled into the IOC ZMOD module; the state below
- * lives in module BSS (`_DATA`) and is relocated with the module image.
- * The module reaches the kernel only through the passed `zdriver_api`.
+ *   - The command-lane receiver boundary is established once by the
+ *     LINK_SYNC bring-up reply and then left alone: an ordinary command
+ *     never issues a channel reset or Enter Hunt.
+ *   - The bulk lane is armed per transfer; Enter Hunt is used only until
+ *     the first verified bulk packet.  A READY reply binds the following
+ *     bulk packet to its transfer id, direction, length, and TYPE/SEQ.
+ *   - A write is not complete until a matching CMD_XFER_STATUS DONE
+ *     record reports the same id and success; until then only that query
+ *     is accepted, and a failed DONE is never reported as success.
+ *   - Any bulk-lane failure clears the admission state and marks the
+ *     link for whole-link recovery: the next command performs the
+ *     bounded LINK_SYNC sequence before normal traffic.
+ *
+ * Every wait is bounded and every exit restores the exact entry interrupt
+ * state.  This source is compiled into the IOC ZMOD module; the state
+ * below lives in module BSS (`_DATA`) and is relocated with the module
+ * image.  The module reaches the kernel only through the passed
+ * `zdriver_api`.
  */
 
 #include "zephyros/platform.h"
@@ -31,18 +47,36 @@
 #include "ioc_driver.h"
 #include "ioc_proto.h"
 
+/* The deployed pair bypasses bulk DATA CRC on both sides.  Fail the build
+ * if the paired platform headers ever disagree with this driver's mode
+ * instead of silently growing a one-sided check. */
+#if ZOS_IOC_BULK_CRC_BYPASS != 1
+#error "IOC bulk driver expects the deployed pair's CRC bypass mode"
+#endif
+
 /* Largest raw wire frame: markers + LEN + fixed header + DATA + CRC. */
 #define IOC_WIRE_MAX (2u + 2u + ZOS_IOC_PACKET_FIXED_LEN + \
 		      ZOS_IOC_CMD_MAX_DATA + ZOS_IOC_PACKET_CRC_BYTES)
 
-/* Reply capture outcomes reported by ioc_io.asm. */
+/* Reply capture outcomes reported by ioc_io.asm (command lane). */
 #define IOC_RX_CAPTURED     0u
 #define IOC_RX_TIMEOUT      1u
 #define IOC_RX_BAD_SCAN     3u
 #define IOC_RX_BAD_HEADER   5u
 
-/* Shared block for the assembly transport routines (offsets pinned by
- * the comments in ioc_io.asm). */
+/* Bulk-lane outcomes reported by ioc_io.asm. */
+#define IOC_BULK_OK         0u
+#define IOC_BULK_TIMEOUT    1u
+#define IOC_BULK_BAD_FRAME  3u
+#define IOC_BULK_HW_ERROR   4u
+
+/* Foreground admission phase of the bulk lifecycle. */
+#define IOC_PHASE_IDLE          0u
+#define IOC_PHASE_ADMITTED      1u
+#define IOC_PHASE_DONE_REQUIRED 2u
+
+/* Shared block for the assembly command transport routines (offsets
+ * pinned by the comments in ioc_io.asm). */
 struct ioc_io_block {
 	uint8_t *buf;
 	uint8_t len;
@@ -50,21 +84,44 @@ struct ioc_io_block {
 	uint8_t resume;
 };
 
+/* Shared block for the assembly bulk-lane routines (offsets pinned by
+ * the comments in ioc_io.asm).  A read captures the header bytes; a
+ * write has them built here before the lane is entered. */
+struct ioc_bulk_block {
+	uint8_t *buf;      /* payload source/destination           */
+	uint16_t len;      /* payload byte count, 1..512           */
+	uint8_t hunt;      /* read: 1 = Enter Hunt before the scan */
+	uint8_t header[5]; /* LEN_LO LEN_HI TYPE SEQ STATUS        */
+};
+
 extern uint8_t ioc_io_wait_ready(void);
 extern void ioc_io_ctrl_write(uint8_t value);
 extern uint8_t ioc_io_tx(struct ioc_io_block *io);
 extern uint8_t ioc_io_rx(struct ioc_io_block *io);
+extern void ioc_io_bulk_init(void);
+extern uint8_t ioc_io_bulk_read(struct ioc_bulk_block *io);
+extern uint8_t ioc_io_bulk_write(struct ioc_bulk_block *io);
 extern uint8_t ioc_io_status_sample(void);
 extern uint8_t ioc_io_irq_save_disable(void);
 extern void ioc_io_irq_restore(uint8_t token);
 
 struct ioc_state {
-	uint8_t busy;      /* foreground bus/serialization guard          */
-	uint8_t rx_synced; /* command-lane character boundary established */
-	uint8_t seq;       /* rolling transaction sequence                */
-	uint8_t irq_token; /* entry IFF across the masked transaction     */
+	uint8_t busy;        /* foreground bus/serialization guard        */
+	uint8_t rx_synced;   /* command-lane character boundary proven    */
+	uint8_t bulk_synced; /* bulk-lane character boundary proven       */
+	uint8_t seq;         /* rolling transaction sequence              */
+	uint8_t irq_token;   /* entry IFF across the masked transaction   */
+	uint8_t phase;       /* IDLE / ADMITTED / DONE_REQUIRED           */
+	uint8_t admit_dir;   /* READY direction while admitted            */
+	uint8_t admit_id;    /* READY transfer id                         */
+	uint16_t admit_len;  /* READY DATA length                         */
+	uint8_t admit_tx_type; /* write: command TYPE the MCU armed       */
+	uint8_t admit_rx_type; /* read: response TYPE the MCU armed       */
+	uint8_t admit_seq;   /* exchange sequence the packet is bound to  */
+	uint8_t recover;     /* whole-link recovery required before use   */
 	uint8_t packet[IOC_WIRE_MAX];
 	uint8_t raw[IOC_WIRE_MAX];
+	struct ioc_bulk_block bulk;
 };
 
 struct ioc_state ioc_state;
@@ -117,8 +174,8 @@ static void ioc_build_request(struct ioc_state *state,
 
 void ioc_hw_init(void)
 {
-	/* The one and only channel reset: after this, ordinary
-	 * transactions never touch synchronisation state. */
+	/* The command lane's one and only channel reset: after this,
+	 * ordinary transactions never touch synchronisation state. */
 	ioc_io_ctrl_write(ZOS_IOC_WR0_RESET_CHANNEL);
 
 	/* WR1: no interrupts, no WAIT/DMA. */
@@ -140,26 +197,100 @@ void ioc_hw_init(void)
 	/* WR5: 8-bit TX enabled, RTS inactive. */
 	ioc_io_ctrl_write(ZOS_SIO_WR_SELECT_WR5);
 	ioc_io_ctrl_write(ZOS_IOC_WR5_TX_RTS_OFF);
+
+	/* The bulk lane is programmed once here too, in module-owned
+	 * assembly: channel reset, External Sync x1, AAh fill, receiver
+	 * left enabled without Hunt, transmitter idle.  The first
+	 * verified bulk read enters Hunt exactly once; after that the
+	 * boundary is never disturbed. */
+	ioc_io_bulk_init();
 }
 
-int ioc_command(void *vstate, const struct zioc_frame *request,
-		struct zioc_frame *reply)
+/* Is `type` a request class the pinned firmware can use to arm the bulk
+ * lane?  READY has no independent tag on the wire, and immutable
+ * successful non-bulk replies are also eight bytes long (an HID fetch
+ * whose `queued`/`dropped` header looks like id/direction/length, or a
+ * PROFILE bulk-tx page).  Without this gate an ordinary success would
+ * strand the phase as ADMITTED and reject real commands as busy. */
+static uint8_t ioc_bulk_arming_request(uint8_t type)
 {
-	struct ioc_state *state = (struct ioc_state *)vstate;
+	switch (type) {
+	case IOC_CMD_BULK_TEST:
+	case IOC_CMD_SD_READ_BULK:
+	case IOC_CMD_SD_WRITE_BULK:
+	case IOC_CMD_SD_READ_REC:
+	case IOC_CMD_SD_WRITE_REC:
+	case IOC_CMD_SD_READ_BLOCK:
+	case IOC_CMD_FS_READ:
+	case IOC_CMD_FS_WRITE:
+	case IOC_CMD_FS2_READ:
+	case IOC_CMD_FS2_WRITE:
+		return 1u;
+	default:
+		return 0u;
+	}
+}
+
+/* Recognize the exact READY payload shape and bind the following bulk
+ * phase to it.  `type`/`seq` were already verified by the caller; this
+ * only adds the bulk-specific shape checks.  Returns 1 when a bulk phase
+ * was admitted. */
+static uint8_t ioc_ready_admit(struct ioc_state *state,
+			       const struct zioc_frame *request,
+			       const struct zioc_frame *reply)
+{
+	uint8_t id = reply->data[IOC_OFF_READY_XFER_ID];
+	uint8_t dir = reply->data[IOC_OFF_READY_DIRECTION];
+	uint16_t len = (uint16_t)reply->data[IOC_OFF_READY_LEN_LO] |
+		       ((uint16_t)reply->data[IOC_OFF_READY_LEN_HI] << 8);
+
+	/* Nonzero transfer id, known direction, 1..512 bytes.  Anything
+	 * else is an ordinary successful reply that happens to be 8
+	 * bytes long. */
+	if (id == 0u || dir > IOC_BULK_DIR_Z80_TO_MCU ||
+	    len == 0u || len > ZIOC_BULK_MAX) {
+		return 0u;
+	}
+
+	state->phase = IOC_PHASE_ADMITTED;
+	state->admit_id = id;
+	state->admit_dir = dir;
+	state->admit_len = len;
+	state->admit_seq = state->seq;
+	if (dir == IOC_BULK_DIR_Z80_TO_MCU) {
+		/* The MCU armed its receiver with the request class. */
+		state->admit_tx_type = request->type;
+	} else {
+		/* The MCU sends the response class it armed with. */
+		state->admit_rx_type = reply->type;
+	}
+	return 1u;
+}
+
+/* One command exchange, including the READY/DONE admission state.
+ * ioc_command() adds the whole-link recovery gate. */
+static int ioc_command_inner(struct ioc_state *state,
+			     const struct zioc_frame *request,
+			     struct zioc_frame *reply)
+{
 	uint8_t result;
 	uint8_t data_len;
 	uint8_t i;
 	uint16_t crc;
 
-	if (state == (struct ioc_state *)0 ||
-	    request == (const struct zioc_frame *)0 ||
-	    reply == (struct zioc_frame *)0) {
-		return ZIOC_EINVAL;
-	}
 	if (request->length > ZIOC_MAX_DATA) {
 		return ZIOC_EINVAL;
 	}
 	if (state->busy != 0u) {
+		return ZIOC_EBUSY;
+	}
+	/* A READY admits exactly one bulk phase; no command may displace
+	 * it.  A write awaiting its DONE record accepts only that query. */
+	if (state->phase == IOC_PHASE_ADMITTED) {
+		return ZIOC_EBUSY;
+	}
+	if (state->phase == IOC_PHASE_DONE_REQUIRED &&
+	    request->type != IOC_CMD_XFER_STATUS) {
 		return ZIOC_EBUSY;
 	}
 	state->busy = 1u;
@@ -249,6 +380,189 @@ int ioc_command(void *vstate, const struct zioc_frame *request,
 	for (i = data_len; i < ZIOC_MAX_DATA; ++i) {
 		reply->data[i] = 0u;
 	}
+
+	/* DONE interlock: a completed write is complete only when the
+	 * matching DONE record reports the same transfer id and success.
+	 * A mismatch is an error/recovery state and never success. */
+	if (state->phase == IOC_PHASE_DONE_REQUIRED) {
+		state->phase = IOC_PHASE_IDLE;
+		if (reply->type != IOC_RSP_XFER_STATUS ||
+		    reply->length < IOC_DONE_MIN_DATA) {
+			state->recover = 1u;
+			return ZIOC_EBADFRAME;
+		}
+		if (reply->data[IOC_OFF_DONE_XFER_ID] != state->admit_id) {
+			state->recover = 1u;
+			return ZIOC_EBADFRAME;
+		}
+		if (reply->data[IOC_OFF_DONE_STATUS] != IOC_STATUS_OK) {
+			state->recover = 1u;
+			return ZIOC_EIO;
+		}
+		return ZIOC_OK;
+	}
+
+	/* Exact READY shape from a request class that can arm the bulk lane?
+	 * Then the bulk phase is admitted.  The class gate is what keeps
+	 * every ordinary eight-byte success (HID fetch, PROFILE page) from
+	 * ever changing the bulk phase. */
+	if (ioc_bulk_arming_request(request->type) != 0u &&
+	    reply->status == 0u && reply->length == IOC_READY_PAYLOAD_LEN) {
+		(void)ioc_ready_admit(state, request, reply);
+	}
+	return ZIOC_OK;
+}
+
+int ioc_command(void *vstate, const struct zioc_frame *request,
+		struct zioc_frame *reply)
+{
+	struct ioc_state *state = (struct ioc_state *)vstate;
+
+	if (state == (struct ioc_state *)0 ||
+	    request == (const struct zioc_frame *)0 ||
+	    reply == (struct zioc_frame *)0) {
+		return ZIOC_EINVAL;
+	}
+	if (request->length > ZIOC_MAX_DATA) {
+		return ZIOC_EINVAL;
+	}
+	if (state->busy != 0u) {
+		return ZIOC_EBUSY;
+	}
+
+	/* A failed bulk phase leaves the bulk lane untrusted; the next
+	 * operation re-establishes both lanes together before any normal
+	 * traffic.  Malformed arguments never trigger I/O. */
+	if (state->recover != 0u) {
+		if (ioc_link_bringup() != ZIOC_OK) {
+			return ZIOC_ETIMEDOUT;
+		}
+	}
+	return ioc_command_inner(state, request, reply);
+}
+
+int ioc_bulk_read(void *vstate, void *dst, uint16_t length)
+{
+	struct ioc_state *state = (struct ioc_state *)vstate;
+	struct ioc_bulk_block *bulk;
+	uint16_t wire_len;
+	uint8_t result;
+
+	if (state == (struct ioc_state *)0 || dst == (void *)0) {
+		return ZIOC_EINVAL;
+	}
+	if (length == 0u || length > ZIOC_BULK_MAX) {
+		return ZIOC_EINVAL;
+	}
+	if (state->busy != 0u) {
+		return ZIOC_EBUSY;
+	}
+	/* Invalid sequencing fails before any lane I/O: a bulk phase must
+	 * have been admitted by a READY, with the same direction and the
+	 * exact length. */
+	if (state->phase != IOC_PHASE_ADMITTED ||
+	    state->admit_dir != IOC_BULK_DIR_MCU_TO_Z80 ||
+	    state->admit_len != length) {
+		return ZIOC_EBUSY;
+	}
+	state->busy = 1u;
+
+	bulk = &state->bulk;
+	bulk->buf = (uint8_t *)dst;
+	bulk->len = length;
+	/* Enter Hunt only until the first verified bulk packet. */
+	bulk->hunt = (state->bulk_synced == 0u) ? 1u : 0u;
+
+	result = ioc_io_bulk_read(bulk);
+
+	state->busy = 0u;
+	state->phase = IOC_PHASE_IDLE;
+
+	if (result != IOC_BULK_OK) {
+		state->recover = 1u;
+		if (result == IOC_BULK_TIMEOUT) {
+			return ZIOC_ETIMEDOUT;
+		}
+		if (result == IOC_BULK_HW_ERROR) {
+			return ZIOC_EIO;
+		}
+		return ZIOC_EBADFRAME;
+	}
+
+	/* The captured header must be exactly the packet the READY
+	 * authorized: wire length, TYPE, sequence, and a zero STATUS.
+	 * Validation happens after the stream is safely in RAM. */
+	wire_len = (uint16_t)(length + ZOS_IOC_PACKET_FIXED_LEN);
+	if (bulk->header[0] != (uint8_t)wire_len ||
+	    bulk->header[1] != (uint8_t)(wire_len >> 8) ||
+	    bulk->header[2] != state->admit_rx_type ||
+	    bulk->header[3] != state->admit_seq ||
+	    bulk->header[4] != 0u) {
+		state->recover = 1u;
+		return ZIOC_EBADFRAME;
+	}
+
+	/* A fully validated bulk read is the only proof the bulk-lane
+	 * character boundary is real; from here the lane is left alone. */
+	state->bulk_synced = 1u;
+	return ZIOC_OK;
+}
+
+int ioc_bulk_write(void *vstate, const void *src, uint16_t length)
+{
+	struct ioc_state *state = (struct ioc_state *)vstate;
+	struct ioc_bulk_block *bulk;
+	uint16_t wire_len;
+	uint8_t result;
+
+	if (state == (struct ioc_state *)0 || src == (const void *)0) {
+		return ZIOC_EINVAL;
+	}
+	if (length == 0u || length > ZIOC_BULK_MAX) {
+		return ZIOC_EINVAL;
+	}
+	if (state->busy != 0u) {
+		return ZIOC_EBUSY;
+	}
+	if (state->phase != IOC_PHASE_ADMITTED ||
+	    state->admit_dir != IOC_BULK_DIR_Z80_TO_MCU ||
+	    state->admit_len != length) {
+		return ZIOC_EBUSY;
+	}
+	state->busy = 1u;
+
+	/* The header is built before the lane is entered: the OUTI-shaped
+	 * stream cannot afford arithmetic between bytes, and the packet is
+	 * bound to the READY's TYPE and sequence. */
+	bulk = &state->bulk;
+	bulk->buf = (uint8_t *)src;
+	bulk->len = length;
+	bulk->hunt = 0u;
+	wire_len = (uint16_t)(length + ZOS_IOC_PACKET_FIXED_LEN);
+	bulk->header[0] = (uint8_t)wire_len;
+	bulk->header[1] = (uint8_t)(wire_len >> 8);
+	bulk->header[2] = state->admit_tx_type;
+	bulk->header[3] = state->admit_seq;
+	bulk->header[4] = 0u;
+
+	result = ioc_io_bulk_write(bulk);
+
+	state->busy = 0u;
+	state->phase = IOC_PHASE_IDLE;
+
+	if (result != IOC_BULK_OK) {
+		state->recover = 1u;
+		if (result == IOC_BULK_TIMEOUT) {
+			return ZIOC_ETIMEDOUT;
+		}
+		return ZIOC_EIO;
+	}
+
+	/* The lane carried the bytes, but bytes reaching the controller is
+	 * not proof they were stored: only the matching DONE record can
+	 * report the write complete, and until it arrives only the DONE
+	 * query is accepted. */
+	state->phase = IOC_PHASE_DONE_REQUIRED;
 	return ZIOC_OK;
 }
 
@@ -281,24 +595,33 @@ int ioc_link_bringup(void)
 
 	while (tries != 0u) {
 		--tries;
-		/* Re-arm local Hunt for every attempt: the MCU clears its
-		 * own established flag on each LINK_SYNC request, so each
-		 * reply can carry a fresh /SYNC edge - but a reply the host
-		 * never completed must not leave us believing otherwise. */
+		/* Re-arm BOTH lanes for every attempt: the MCU's LINK_SYNC
+		 * handler resynchronises command and bulk together, so the
+		 * two ends must agree on which boundaries are valid.  A
+		 * reply the host never completed must not leave us
+		 * believing otherwise. */
 		ioc_state.rx_synced = 0u;
-		result = ioc_command(&ioc_state, &request, &reply);
+		ioc_state.bulk_synced = 0u;
+		ioc_state.phase = IOC_PHASE_IDLE;
+		ioc_state.recover = 0u;
+		/* The recovery exchange itself must bypass the recovery
+		 * gate: call the inner exchange, not ioc_command(). */
+		result = ioc_command_inner(&ioc_state, &request, &reply);
 		if (result == ZIOC_OK &&
 		    reply.type == ZOS_IOC_RSP_LINK_SYNC) {
 			return ZIOC_OK;
 		}
 	}
 	ioc_state.rx_synced = 0u;
+	ioc_state.bulk_synced = 0u;
+	ioc_state.phase = IOC_PHASE_IDLE;
+	ioc_state.recover = 1u;
 	return ZIOC_ETIMEDOUT;
 }
 
 const struct zioc_ops ioc_ops = {
 	ioc_command,
-	0,
-	0,
+	ioc_bulk_read,
+	ioc_bulk_write,
 	ioc_status
 };

@@ -232,7 +232,7 @@ PRODUCTION_SELFTEST_MACROS = (
     "ZOS_M6_SELFTEST",
     "ZOS_M6_FAILURE_SELFTEST",
     "ZOS_M7_SELFTEST",
-    "ZOS_M8_IOC_COMMAND_SELFTEST",
+    "ZOS_M8_IOC_SELFTEST",
 )
 
 # Generated-output names that must be ignored and cleaned.  build-modules is
@@ -251,7 +251,7 @@ BUILD_VARIANTS = (
     "build-m6-selftest",
     "build-m6-failure-selftest",
     "build-m7-selftest",
-    "build-m8-ioc-command-selftest",
+    "build-m8-ioc-selftest",
     "build-modules",
 )
 

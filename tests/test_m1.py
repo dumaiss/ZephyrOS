@@ -211,21 +211,24 @@ def _strip_comment(text, marker):
 
 def parse_c_header(path):
     env = {}
-    for line in open(path):
-        line = _strip_comment(line, "//").strip()
-        match = re.match(r"#define\s+([A-Za-z_]\w*)\s+(.+)$", line)
-        if match:
-            env[match.group(1)] = _strip_comment(match.group(2), "/*").strip()
+    with open(path) as handle:
+        for line in handle:
+            line = _strip_comment(line, "//").strip()
+            match = re.match(r"#define\s+([A-Za-z_]\w*)\s+(.+)$", line)
+            if match:
+                env[match.group(1)] = _strip_comment(match.group(2),
+                                                     "/*").strip()
     return env
 
 
 def parse_asm_inc(path):
     env = {}
-    for line in open(path):
-        line = _strip_comment(line, ";").strip()
-        match = re.match(r"([A-Za-z_]\w*)\s+=\s+(.+)$", line)
-        if match:
-            env[match.group(1)] = match.group(2).strip()
+    with open(path) as handle:
+        for line in handle:
+            line = _strip_comment(line, ";").strip()
+            match = re.match(r"([A-Za-z_]\w*)\s+=\s+(.+)$", line)
+            if match:
+                env[match.group(1)] = match.group(2).strip()
     return env
 
 
