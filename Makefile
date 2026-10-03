@@ -1,16 +1,25 @@
-# ZephyrOS build (M3)
+# ZephyrOS build (M4)
 #
 # Freestanding SDCC/sdasz80/sdldz80 build.  No hosted CRT and no standard
 # library are linked; the tiny C runtime initialization ZephyrOS needs is
 # implemented in boot/start.asm.  The two SDCC indirect-call helpers the
 # freestanding build needs for device ops tables are provided by
-# platform/zephyr80/sdcc_helpers.asm.
+# kernel/runtime/sdcc_helpers.asm.
+#
+# Platform build configuration (include paths and declarative constant
+# files) comes from platform/zephyr80/config.mk.
+#
+# The SIO driver is no longer statically linked: it is packed as a ZMOD
+# module (build/modules/sio.zmod) and embedded into each image's catalog
+# through the generated assembly emitted by tools/zmodpack.py.
 #
 #   make          build the ROM images under build/
 #   make test     run host-side image/layout tests and integrity checks
 #   make check    reproducible rebuild + full host validation stack
-#   make m3-selftest     build the M3 acceptance image (all self-tests)
-#   make m3-fallback     build the disabled-drivers/binding fallback images
+#   make m3-selftest          build the M3 acceptance image
+#   make m4-selftest          build the M4 dynamic-SIO acceptance image
+#   make m4-placement-selftest  same module bytes at a shifted arena base
+#   make m4-failure-selftest  deliberately failing test module + rollback
 #   make clean    remove all generated files
 
 SDCC      ?= sdcc
@@ -20,73 +29,144 @@ PYTHON    ?= python3
 
 BUILD     := build
 
-ASFLAGS   := -Iplatform
-CFLAGS    := -mz80 -c --nostdinc --Werror -I include -I platform
+# Zephyr-80 platform build configuration (include paths and the
+# declarative constant files consumed by the build and layout tools).
+include platform/zephyr80/config.mk
+
+ASFLAGS   := $(ZOS_PLATFORM_ASFLAGS) -Itests/target/include
+CFLAGS    := -mz80 -c --nostdinc --Werror $(ZOS_PLATFORM_CFLAGS)
 
 ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/page_zero.rel $(BUILD)/syscall_entry.rel \
              $(BUILD)/irq_entry.rel $(BUILD)/irq_vectors.rel \
              $(BUILD)/platform_irq.rel $(BUILD)/sdcc_helpers.rel \
-             $(BUILD)/sio_io.rel
+             $(BUILD)/arena.rel $(BUILD)/m4_catalog_blobs.rel
 C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
              $(BUILD)/syscall.rel $(BUILD)/irq.rel $(BUILD)/irq_sources.rel \
-             $(BUILD)/registry.rel $(BUILD)/driver.rel $(BUILD)/console.rel \
-             $(BUILD)/sio.rel $(BUILD)/sio_driver.rel
+             $(BUILD)/registry.rel $(BUILD)/console.rel \
+             $(BUILD)/module_relocate.rel $(BUILD)/module_loader.rel \
+             $(BUILD)/module_embedded.rel
 END_OBJ   := $(BUILD)/irq_code_end.rel
 OBJS      := $(ASM_OBJS) $(C_OBJS)
 
-# Target-side syscall self-test (extra object + compile define, distinct
-# artifact names so the images cannot be mixed up when flashing).
+# --- target acceptance build selection ---------------------------------
+# Acceptance images link the shared runner (tests/target/support/) plus
+# the per-milestone test code under tests/target/; production images link
+# none of it.  ZOS_TARGET_TEST_BUILD is the single production-side guard
+# (kernel/main.c holds only the two TEST-ONLY HOOKs).
+TARGET_TEST_OBJS :=
+PK_SUFFIX :=
+
+# Target-side syscall acceptance (M1); distinct artifact names so the
+# images cannot be mixed up when flashing.
 ifeq ($(ZOS_SELFTEST),1)
 CFLAGS    += -DZOS_SYSCALL_SELFTEST=1
-SELFTEST_OBJS := $(BUILD)/selftest.rel
+TARGET_TEST_OBJS += $(BUILD)/syscall_test.rel $(BUILD)/selftest_asm.rel
 PK_SUFFIX := -selftest
-else
-SELFTEST_OBJS :=
-PK_SUFFIX :=
 endif
 
 ifeq ($(ZOS_IRQ_SELFTEST),1)
 CFLAGS    += -DZOS_IRQ_SELFTEST=1
-IRQ_SELFTEST_OBJS := $(BUILD)/irq_selftest_asm.rel $(BUILD)/irq_selftest_c.rel
+TARGET_TEST_OBJS += $(BUILD)/irq_test.rel $(BUILD)/irq_selftest_asm.rel
 PK_SUFFIX := -irq-selftest
-else
-IRQ_SELFTEST_OBJS :=
 endif
 
 ifeq ($(ZOS_M3_SELFTEST),1)
 CFLAGS    += -DZOS_M3_SELFTEST=1
-M3_SELFTEST_OBJS := $(BUILD)/m3_selftest.rel $(BUILD)/irq_probe.rel \
-                    $(BUILD)/irq_probe_io.rel $(BUILD)/fixtures.rel
+TARGET_TEST_OBJS += $(BUILD)/m3_test.rel $(BUILD)/m3_irq_probe.rel \
+                    $(BUILD)/m3_probe_io.rel $(BUILD)/m3_fixtures.rel
 PK_SUFFIX := -m3-selftest
-else
-M3_SELFTEST_OBJS :=
 endif
 
-# M3 fallback build options: deliberately disable the device layer to
-# prove that early boot/panic diagnostics do not depend on it.
-ifneq ($(ZOS_M3_NO_STATIC_DRIVERS),)
-CFLAGS    += -DZOS_M3_NO_STATIC_DRIVERS=1
+# M4 self-test / acceptance build options.  The boot catalog always carries
+# the packed SIO module; these options select which variant is embedded and
+# which target-side acceptance code is compiled.
+ifeq ($(ZOS_M4_SELFTEST),1)
+CFLAGS    += -DZOS_M4_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m4_test.rel $(BUILD)/m4_fixture_catalog.rel \
+                    $(BUILD)/m4_fixture_blobs.rel
+PK_SUFFIX := -m4-loader-selftest
 endif
-ifneq ($(ZOS_M3_NO_CONSOLE_BIND),)
-CFLAGS    += -DZOS_M3_NO_CONSOLE_BIND=1
+
+# M4 acceptance image: IRQ self-test variant of the SIO module; the kernel
+# keeps CTC0 live while the test module init claims/counts/releases it.
+ifeq ($(ZOS_M4_SIO_IRQ),1)
+CFLAGS    += -DZOS_M4_SIO_IRQ=1
+PK_SUFFIX := -m4-selftest
 endif
+
+# M4 failure image: init-failing SIO test module + rollback verification.
+ifeq ($(ZOS_M4_FAILURE_SELFTEST),1)
+CFLAGS    += -DZOS_M4_FAILURE_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m4_test.rel
+PK_SUFFIX := -m4-failure
+endif
+
+# M4 placement image: shift the linker-defined arena base by whole 512-byte
+# granules (the packed module bytes are untouched: same .zmod files).
+ifeq ($(ZOS_M4_PLACEMENT),1)
+ZOS_M4_ARENA_BASE ?= 0x9E00
+ZOS_M4_ARENA_END := $(shell printf '0x%04X' $$(( $(ZOS_M4_ARENA_BASE) + 0x2000 )))
+PK_SUFFIX := -m4-placement-selftest
+endif
+
+# Common acceptance wiring: the single guard plus the shared runner.
+ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
+	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST)),)
+CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -Itests/target/include
+TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
+endif
+
+# Production images (no acceptance objects) must reject every acceptance
+# symbol in the linked map; mapcheck --production enforces this.
+MAPCHECK_FLAGS := $(if $(TARGET_TEST_OBJS),,--production)
+
+# Per-image boot module selection (identical bytes across placement builds).
+ifeq ($(ZOS_M4_SIO_IRQ),1)
+BOOT_ZMOD := build/modules/sio-irq.zmod
+else ifeq ($(ZOS_M4_FAILURE_SELFTEST),1)
+BOOT_ZMOD := build/modules/sio-fail.zmod
+else
+BOOT_ZMOD := build/modules/sio.zmod
+endif
+
 
 IMAGE := $(BUILD)/zephyros$(PK_SUFFIX).bin
 MAME_IMAGE := $(BUILD)/zephyr80$(PK_SUFFIX).bin
 
+# Memory-layout source for this build.  The placement image regenerates
+# platform/zephyr80/memory.inc with a shifted driver arena and includes the
+# variant first, so every assembly unit (and mapcheck) sees it.
+ifeq ($(ZOS_M4_PLACEMENT),1)
+VARIANT_MEMORY := $(BUILD)/platform/zephyr80/memory.inc
+ASFLAGS   := -I$(BUILD)/platform $(ZOS_PLATFORM_ASFLAGS) -Itests/target/include
+MEMORY_INC := $(VARIANT_MEMORY)
+else
+MEMORY_INC := $(ZOS_PLATFORM_MEMORY_INC)
+endif
+
 .PHONY: all test check check-fast clean syscall-selftest irq-selftest \
-	m3-selftest m3-fallback smoke-hardware smoke-hardware-selftest \
-	smoke-hardware-irq smoke-hardware-m3
+	m3-selftest zmod-test m4-loader-selftest m4-selftest \
+	m4-placement-selftest m4-failure-selftest smoke-hardware \
+	smoke-hardware-selftest smoke-hardware-irq smoke-hardware-m3 \
+	smoke-hardware-m4 smoke-hardware-m4-failure
 
 all: $(IMAGE) $(MAME_IMAGE)
 
 $(BUILD):
 	mkdir -p $@
 
+ifeq ($(ZOS_M4_PLACEMENT),1)
+$(VARIANT_MEMORY): $(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
+	mkdir -p $(dir $@)
+	sed -e 's|^ZOS_DRIVER_ARENA_BASE .*|ZOS_DRIVER_ARENA_BASE   = $(ZOS_M4_ARENA_BASE)|' \
+	    -e 's|^ZOS_DRIVER_ARENA_END .*|ZOS_DRIVER_ARENA_END    = $(ZOS_M4_ARENA_END)|' \
+	    $< > $@
+endif
+
 # --- assemble ----------------------------------------------------------------
 
-$(BUILD)/reset.rel: platform/zephyr80/reset.asm \
+$(BUILD)/reset.rel: boot/shadow_copy.asm \
 		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
@@ -94,55 +174,54 @@ $(BUILD)/start.rel: boot/start.asm \
 		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/banking.rel: platform/zephyr80/banking.asm \
+$(BUILD)/banking.rel: kernel/memory/banking.asm \
 		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/page_zero.rel: platform/zephyr80/page_zero.asm | $(BUILD)
+$(BUILD)/page_zero.rel: kernel/syscall/page_zero.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/syscall_entry.rel: platform/zephyr80/syscall_entry.asm \
+$(BUILD)/syscall_entry.rel: kernel/syscall/entry.asm \
 		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/irq_entry.rel: kernel/irq/entry.asm platform/zephyr80/hardware.inc \
-		platform/zephyr80/memory.inc | $(BUILD)
+		platform/zephyr80/memory.inc platform/zephyr80/irq.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/irq_vectors.rel: kernel/irq/vectors.asm \
-		platform/zephyr80/memory.inc | $(BUILD)
+		platform/zephyr80/irq.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/platform_irq.rel: platform/zephyr80/irq.asm \
-		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
+$(BUILD)/platform_irq.rel: kernel/irq/init.asm \
+		platform/zephyr80/irq.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/sdcc_helpers.rel: platform/zephyr80/sdcc_helpers.asm | $(BUILD)
+$(BUILD)/sdcc_helpers.rel: kernel/runtime/sdcc_helpers.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/sio_io.rel: drivers/sio/sio_io.asm \
-		platform/zephyr80/hardware.inc | $(BUILD)
+$(BUILD)/arena.rel: kernel/module/arena.asm $(MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/irq_probe_io.rel: drivers/test/irq_probe_io.asm | $(BUILD)
+$(BUILD)/m3_probe_io.rel: tests/target/m3/m3_probe_io.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/irq_code_end.rel: kernel/irq/code_end.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/selftest.rel: platform/zephyr80/selftest.asm \
+$(BUILD)/selftest_asm.rel: tests/target/m1/selftest.asm \
 		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc \
-		platform/zephyr80/selftest.inc | $(BUILD)
+		tests/target/include/selftest.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/irq_selftest_asm.rel: platform/zephyr80/irq_selftest.asm \
+$(BUILD)/irq_selftest_asm.rel: tests/target/m2/irq_selftest.asm \
 		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc \
-		platform/zephyr80/irq_selftest.inc | $(BUILD)
+		tests/target/include/irq_selftest.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/irq_selftest_c.rel: kernel/irq/irq_selftest.c \
-		include/zephyros/irq.h include/zephyros/irq_selftest.h \
-		include/zephyros/kernel.h include/zephyros/platform.h | $(BUILD)
+$(BUILD)/irq_test.rel: tests/target/m2/irq_test.c \
+		include/zephyros/irq.h include/zephyros/kernel.h \
+		include/zephyros/platform.h tests/target/include/irq_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- compile -----------------------------------------------------------------
@@ -161,21 +240,21 @@ $(BUILD)/panic.rel: kernel/panic.c \
 	$(SDCC) $(CFLAGS) --codeseg COMMON $< -o $@
 
 $(BUILD)/main.rel: kernel/main.c include/zephyros/kernel.h \
-		include/zephyros/syscall.h include/zephyros/irq.h | $(BUILD)
+		include/zephyros/irq.h include/zephyros/console.h \
+		include/zephyros/module.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/irq.rel: kernel/irq/irq.c include/zephyros/irq.h \
 		include/zephyros/types.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/irq_sources.rel: platform/zephyr80/irq_sources.c \
+$(BUILD)/irq_sources.rel: drivers/ctc/ctc.c \
 		include/zephyros/irq.h include/zephyros/platform.h \
-		platform/zephyr80/hardware.h | $(BUILD)
+		platform/zephyr80/hardware.h platform/zephyr80/irq.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/syscall.rel: kernel/syscall.c include/zephyros/syscall.h \
-		include/zephyros/errno.h include/zephyros/kernel.h \
-		include/zephyros/selftest.h | $(BUILD)
+		include/zephyros/errno.h include/zephyros/kernel.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M3 device/driver/service objects (bank-7 code and data) -----------------
@@ -185,35 +264,186 @@ $(BUILD)/registry.rel: kernel/device/registry.c include/zephyros/device.h \
 		include/zephyros/types.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/driver.rel: kernel/device/driver.c include/zephyros/driver.h \
-		include/zephyros/device.h include/zephyros/irq.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
 $(BUILD)/console.rel: kernel/device/console.c include/zephyros/console.h \
 		include/zephyros/device.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/sio.rel: drivers/sio/sio.c drivers/sio/sio.h \
-		include/zephyros/device.h include/zephyros/platform.h | $(BUILD)
-	$(SDCC) $(CFLAGS) -I drivers/sio $< -o $@
+# --- M4 module loader objects (bank-7 code and data) -------------------------
 
-$(BUILD)/sio_driver.rel: drivers/sio/driver.c drivers/sio/sio.h \
-		include/zephyros/driver.h | $(BUILD)
-	$(SDCC) $(CFLAGS) -I drivers/sio $< -o $@
-
-# --- M3 self-test objects (ZOS_M3_SELFTEST builds only) ----------------------
-
-$(BUILD)/m3_selftest.rel: kernel/device/m3_selftest.c \
-		include/zephyros/console.h include/zephyros/driver.h \
-		include/zephyros/kernel.h include/zephyros/m3_selftest.h \
-		include/zephyros/platform.h | $(BUILD)
+$(BUILD)/module_relocate.rel: kernel/module/relocate.c \
+		include/zephyros/module.h include/zephyros/driver.h \
+		include/zephyros/errno.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/irq_probe.rel: drivers/test/irq_probe.c include/zephyros/driver.h \
-		include/zephyros/platform.h | $(BUILD)
+$(BUILD)/module_loader.rel: kernel/module/loader.c \
+		include/zephyros/module.h include/zephyros/driver.h \
+		include/zephyros/device.h include/zephyros/irq.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/fixtures.rel: drivers/test/fixtures.c include/zephyros/driver.h | $(BUILD)
+$(BUILD)/module_embedded.rel: kernel/module/embedded.c \
+		include/zephyros/module.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+# --- ZMOD modules (host-built, packed, embedded per-image catalogs) ----------
+# The SIO driver module and the synthetic M4 fixtures are built once under
+# build/modules/ -- shared by every image, so each variant's packed bytes
+# are identical across placement builds.  Each image embeds the boot module
+# plus (in self-test builds) the fixtures through a generated assembly blob
+# emitted by tools/zmodpack.py.
+
+MODULES   := build/modules
+MOD_CFLAGS := -mz80 -c --nostdinc --Werror -I include -I platform -I drivers/sio
+
+$(MODULES):
+	mkdir -p $@
+
+# --- SIO module objects (production source + test-variant entries) ---
+
+$(MODULES)/sio.rel: drivers/sio/sio.c drivers/sio/sio.h \
+		include/zephyros/device.h include/zephyros/platform.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/sio_io.rel: drivers/sio/sio_io.asm \
+		platform/zephyr80/hardware.inc | $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(MODULES)/sio_module.rel: drivers/sio/sio_module.c drivers/sio/sio.h \
+		include/zephyros/driver.h include/zephyros/device.h \
+		include/zephyros/irq.h include/zephyros/errno.h \
+		include/zephyros/platform.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/sio_irq_module.rel: tests/modules/sio_irq_module.c \
+		drivers/sio/sio.h include/zephyros/driver.h \
+		include/zephyros/device.h include/zephyros/irq.h \
+		include/zephyros/errno.h include/zephyros/platform.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/sio_fail_module.rel: tests/modules/sio_fail_module.c \
+		drivers/sio/sio.h include/zephyros/driver.h \
+		include/zephyros/device.h include/zephyros/irq.h \
+		include/zephyros/errno.h include/zephyros/platform.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/sdcc_indirect_calls.rel: modules/runtime/sdcc_indirect_calls.asm \
+		| $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+SIO_MODULE_OBJS := $(MODULES)/sio.rel $(MODULES)/sio_io.rel \
+		$(MODULES)/sio_module.rel $(MODULES)/sdcc_indirect_calls.rel
+
+$(MODULES)/sio.zmod: modules/manifests/sio.json $(SIO_MODULE_OBJS) \
+		tools/zmodpack.py
+	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
+		--report $(MODULES)/sio.report.json
+
+$(MODULES)/sio-irq.zmod: tests/modules/sio-irq.json $(MODULES)/sio.rel \
+		$(MODULES)/sio_io.rel $(MODULES)/sio_irq_module.rel \
+		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
+	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
+		--report $(MODULES)/sio-irq.report.json
+
+$(MODULES)/sio-fail.zmod: tests/modules/sio-fail.json $(MODULES)/sio.rel \
+		$(MODULES)/sio_io.rel $(MODULES)/sio_fail_module.rel \
+		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
+	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
+		--report $(MODULES)/sio-fail.report.json
+
+# --- synthetic M4 fixtures ---
+
+$(MODULES)/m4_probe.rel: tests/modules/m4_probe.c \
+		include/zephyros/device.h include/zephyros/driver.h \
+		include/zephyros/irq.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/m4_fail.rel: tests/modules/m4_fail.c \
+		include/zephyros/device.h include/zephyros/driver.h \
+		include/zephyros/irq.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/m4_filler.rel: tests/modules/m4_filler.c \
+		include/zephyros/driver.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/%.zmod: tests/modules/%.json $(MODULES)/%.rel \
+		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
+	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES)
+
+FIXTURE_ZMODS := $(MODULES)/m4_probe.zmod $(MODULES)/m4_fail.zmod \
+		$(MODULES)/m4_filler.zmod
+
+# --- embedded catalogs (production boot module + test fixture catalog) ---
+# The production catalog (kernel/module/embedded.c) carries only the boot
+# module in every image; the loader-fixture catalog is a test artifact
+# (tests/target/m4/m4_fixture_catalog.c) built only for acceptance images.
+
+CATALOG_ASM := $(BUILD)/m4_catalog.asm
+CATALOG_INC := $(BUILD)/m4_catalog.inc
+
+$(CATALOG_ASM): $(BOOT_ZMOD) tools/zmodpack.py | $(BUILD)
+	$(PYTHON) tools/zmodpack.py emit-asm $@ z4_module_boot=$(BOOT_ZMOD) \
+		--header $(CATALOG_INC)
+
+$(CATALOG_INC): $(CATALOG_ASM) ;
+
+$(BUILD)/m4_catalog_blobs.rel: $(CATALOG_ASM) | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+# embedded.c includes the generated catalog header in every configuration.
+$(BUILD)/module_embedded.rel: $(CATALOG_INC)
+
+FIXTURE_CATALOG_ASM := $(BUILD)/m4_fixture_blobs.asm
+FIXTURE_CATALOG_INC := $(BUILD)/m4_fixture_blobs.inc
+
+$(FIXTURE_CATALOG_ASM): $(FIXTURE_ZMODS) tools/zmodpack.py | $(BUILD)
+	$(PYTHON) tools/zmodpack.py emit-asm $@ \
+		z4_fixture_probe=$(MODULES)/m4_probe.zmod \
+		z4_fixture_fail=$(MODULES)/m4_fail.zmod \
+		z4_fixture_filler=$(MODULES)/m4_filler.zmod \
+		--header $(FIXTURE_CATALOG_INC)
+
+$(FIXTURE_CATALOG_INC): $(FIXTURE_CATALOG_ASM) ;
+
+$(BUILD)/m4_fixture_blobs.rel: $(FIXTURE_CATALOG_ASM) | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+# --- target acceptance objects (tests/target/, acceptance builds only) -------
+
+$(BUILD)/target_test.rel: tests/target/support/target_test.c \
+		include/zephyros/kernel.h tests/target/include/selftest.h \
+		tests/target/include/irq_selftest.h \
+		tests/target/include/m3_selftest.h \
+		tests/target/include/m4_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/syscall_test.rel: tests/target/m1/syscall_test.c \
+		include/zephyros/kernel.h tests/target/include/selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/m3_test.rel: tests/target/m3/m3_test.c \
+		include/zephyros/console.h include/zephyros/device.h \
+		include/zephyros/kernel.h include/zephyros/platform.h \
+		tests/target/include/m3_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/m3_irq_probe.rel: tests/target/m3/m3_irq_probe.c \
+		include/zephyros/irq.h include/zephyros/platform.h \
+		platform/zephyr80/memory.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/m3_fixtures.rel: tests/target/m3/m3_fixtures.c \
+		include/zephyros/device.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/m4_test.rel: tests/target/m4/m4_test.c \
+		include/zephyros/module.h include/zephyros/kernel.h \
+		include/zephyros/device.h include/zephyros/irq.h \
+		include/zephyros/console.h tests/target/include/m4_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/m4_fixture_catalog.rel: tests/target/m4/m4_fixture_catalog.c \
+		include/zephyros/module.h tests/target/include/m4_selftest.h \
+		$(FIXTURE_CATALOG_INC) | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- link --------------------------------------------------------------------
@@ -222,9 +452,11 @@ $(BUILD)/fixtures.rel: drivers/test/fixtures.c include/zephyros/driver.h | $(BUI
 # objects) generates its linker file from the same object list the link
 # step depends on, so the lists cannot drift apart.
 
-ZOS_SELFTEST_BUILD := $(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST))
+ZOS_TEST_LINK := $(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) \
+		$(ZOS_M3_SELFTEST) $(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) \
+		$(ZOS_M4_FAILURE_SELFTEST))
 ifeq ($(BUILD),build)
-ifneq ($(ZOS_SELFTEST_BUILD),)
+ifneq ($(ZOS_TEST_LINK),)
 GENERATED_LK := 1
 endif
 else
@@ -232,21 +464,18 @@ GENERATED_LK := 1
 endif
 
 ifeq ($(GENERATED_LK),1)
-$(BUILD)/zephyr80.lk: $(OBJS) $(SELFTEST_OBJS) $(IRQ_SELFTEST_OBJS) \
-		$(M3_SELFTEST_OBJS) $(END_OBJ) | $(BUILD)
+$(BUILD)/zephyr80.lk: $(OBJS) $(TARGET_TEST_OBJS) $(END_OBJ) | $(BUILD)
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
 	  printf '%s\n' '-i $(BUILD)/zephyros.ihx'; \
 	  printf '%s\n' '-b _CODE = 0x2000' '-b _DATA = 0xC000' \
 	                '-b _COMMON = 0xE000'; \
-	  printf '%s\n' $(OBJS) $(SELFTEST_OBJS) $(IRQ_SELFTEST_OBJS) \
-	                $(M3_SELFTEST_OBJS) $(END_OBJ); \
+	  printf '%s\n' $(OBJS) $(TARGET_TEST_OBJS) $(END_OBJ); \
 	  printf '%s\n' '-e'; \
 	} > $@
 
-$(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(OBJS) $(SELFTEST_OBJS) \
-		$(IRQ_SELFTEST_OBJS) $(M3_SELFTEST_OBJS) $(END_OBJ) \
-		$(BUILD)/zephyr80.lk | $(BUILD)
+$(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(OBJS) $(TARGET_TEST_OBJS) \
+		$(END_OBJ) $(BUILD)/zephyr80.lk | $(BUILD)
 	$(SDLDZ80) -f $(BUILD)/zephyr80.lk
 else
 $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(OBJS) $(END_OBJ) linker/zephyr80.lk | $(BUILD)
@@ -260,10 +489,11 @@ endif
 # automatically on every build, before the ROM is considered complete.
 
 $(IMAGE): $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map \
-		tools/pack_image.py tools/mapcheck.py platform/zephyr80/memory.inc
-	$(PYTHON) tools/mapcheck.py $(BUILD)/zephyros.map platform/zephyr80/memory.inc
+		tools/pack_image.py tools/mapcheck.py $(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) $(BUILD)/zephyros.map \
+		$(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) tools/pack_image.py $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map \
-		$(BUILD) $(PK_SUFFIX)
+		$(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC)
 
 $(MAME_IMAGE): $(IMAGE)
 	cp $< $@
@@ -294,29 +524,32 @@ check:
 
 check-fast:
 	$(PYTHON) -m unittest discover -s tests -v
-	$(PYTHON) tools/mapcheck.py $(BUILD)/zephyros.map platform/zephyr80/memory.inc
-	$(PYTHON) tools/pack_image.py $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map $(BUILD) $(PK_SUFFIX)
+	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) $(BUILD)/zephyros.map \
+		$(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) tools/pack_image.py $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map \
+		$(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC)
 	sha256sum $(IMAGE) $(MAME_IMAGE)
 	cmp $(IMAGE) $(MAME_IMAGE)
 	@echo "make check: OK"
 
 clean:
-	rm -rf $(BUILD) build-selftest build-irq-selftest build-m3-selftest \
-		build-m3-nodrv build-m3-nobind
+	rm -rf $(BUILD) build-*
 
 # --- syscall self-test image (target-side RST 30h round trip) ----------------
 
 syscall-selftest:
 	$(MAKE) BUILD=build-selftest ZOS_SELFTEST=1 \
 		build-selftest/zephyros-selftest.bin build-selftest/zephyr80-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-selftest/zephyros.map platform/zephyr80/memory.inc
+	$(PYTHON) tools/mapcheck.py build-selftest/zephyros.map \
+		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
 	@echo "syscall-selftest image: build-selftest/zephyros-selftest.bin"
 
 irq-selftest:
 	$(MAKE) BUILD=build-irq-selftest ZOS_SELFTEST=1 ZOS_IRQ_SELFTEST=1 \
 		build-irq-selftest/zephyros-irq-selftest.bin \
 		build-irq-selftest/zephyr80-irq-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-irq-selftest/zephyros.map platform/zephyr80/memory.inc
+	$(PYTHON) tools/mapcheck.py build-irq-selftest/zephyros.map \
+		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
 	@echo "irq-selftest image: build-irq-selftest/zephyros-irq-selftest.bin"
 
 # --- M3 acceptance image (syscall + irq + device/console/IRQ driver) ---------
@@ -326,19 +559,70 @@ m3-selftest:
 		ZOS_M3_SELFTEST=1 \
 		build-m3-selftest/zephyros-m3-selftest.bin \
 		build-m3-selftest/zephyr80-m3-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-m3-selftest/zephyros.map platform/zephyr80/memory.inc
+	$(PYTHON) tools/mapcheck.py build-m3-selftest/zephyros.map \
+		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
 	@echo "m3-selftest image: build-m3-selftest/zephyros-m3-selftest.bin"
 
-# --- M3 fallback images (device layer deliberately disabled) -----------------
+# --- M4 host-side ZMOD tooling tests ----------------------------------------
+# Builds the SIO module variants and the synthetic fixtures with the real
+# toolchain, packs and validates them, then runs the host ZMOD test suite
+# (fixture-dependent tests are skipped by plain `make test` when the packed
+# modules are absent).
 
-m3-fallback:
-	$(MAKE) BUILD=build-m3-nodrv ZOS_M3_NO_STATIC_DRIVERS=1 \
-		build-m3-nodrv/zephyros.bin
-	$(PYTHON) tools/mapcheck.py build-m3-nodrv/zephyros.map platform/zephyr80/memory.inc
-	$(MAKE) BUILD=build-m3-nobind ZOS_M3_NO_CONSOLE_BIND=1 \
-		build-m3-nobind/zephyros.bin
-	$(PYTHON) tools/mapcheck.py build-m3-nobind/zephyros.map platform/zephyr80/memory.inc
-	@echo "m3-fallback images: build-m3-nodrv/zephyros.bin build-m3-nobind/zephyros.bin"
+zmod-test: $(MODULES)/sio.zmod $(MODULES)/sio-irq.zmod \
+		$(MODULES)/sio-fail.zmod $(FIXTURE_ZMODS)
+	$(PYTHON) tools/zmodpack.py validate $(MODULES)/sio.zmod \
+		$(MODULES)/sio-irq.zmod $(MODULES)/sio-fail.zmod
+	$(PYTHON) tools/zmodpack.py validate $(FIXTURE_ZMODS)
+	$(PYTHON) tools/zmodpack.py dump $(MODULES)/sio.zmod
+	$(PYTHON) -m unittest discover -s tests -p 'test_zmod.py' -v
+	@echo "zmod-test: OK"
+
+# --- M4 loader acceptance image (synthetic fixtures, no dynamic boot device) -
+
+m4-loader-selftest:
+	$(MAKE) BUILD=build-m4-loader-selftest ZOS_M4_SELFTEST=1 \
+		build-m4-loader-selftest/zephyros-m4-loader-selftest.bin \
+		build-m4-loader-selftest/zephyr80-m4-loader-selftest.bin
+	$(PYTHON) tools/mapcheck.py build-m4-loader-selftest/zephyros.map \
+		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m4_sim.py' -v
+	@echo "m4-loader-selftest image: build-m4-loader-selftest/zephyros-m4-loader-selftest.bin"
+
+# --- M4 dynamic-driver acceptance image (SIO module + IRQ self-test) ---------
+
+m4-selftest:
+	$(MAKE) BUILD=build-m4-selftest ZOS_M4_SELFTEST=1 ZOS_M4_SIO_IRQ=1 \
+		build-m4-selftest/zephyros-m4-selftest.bin \
+		build-m4-selftest/zephyr80-m4-selftest.bin
+	$(PYTHON) tools/mapcheck.py build-m4-selftest/zephyros.map \
+		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m4_sim.py' -v
+	@echo "m4-selftest image: build-m4-selftest/zephyros-m4-selftest.bin"
+
+# Same packed module bytes, arena base shifted 0x0200 lower (9E00h-BE00h).
+
+m4-placement-selftest:
+	$(MAKE) BUILD=build-m4-placement-selftest ZOS_M4_SELFTEST=1 \
+		ZOS_M4_PLACEMENT=1 \
+		build-m4-placement-selftest/zephyros-m4-placement-selftest.bin \
+		build-m4-placement-selftest/zephyr80-m4-placement-selftest.bin
+	$(PYTHON) tools/mapcheck.py build-m4-placement-selftest/zephyros.map \
+		build-m4-placement-selftest/platform/zephyr80/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m4_sim.py' -v
+	@echo "m4-placement-selftest image: build-m4-placement-selftest/zephyros-m4-placement-selftest.bin"
+
+# --- M4 failure image (module init fails; rollback must be exact) ------------
+
+m4-failure-selftest:
+	$(MAKE) BUILD=build-m4-failure ZOS_M4_FAILURE_SELFTEST=1 \
+		build-m4-failure/zephyros-m4-failure.bin \
+		build-m4-failure/zephyr80-m4-failure.bin
+	$(PYTHON) tools/mapcheck.py build-m4-failure/zephyros.map \
+		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m4_sim.py' -v
+	@echo "m4-failure image: build-m4-failure/zephyros-m4-failure.bin"
 
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching ROM
@@ -355,3 +639,9 @@ smoke-hardware-irq:
 
 smoke-hardware-m3:
 	$(PYTHON) tools/serial_smoke.py --mode m3 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m4:
+	$(PYTHON) tools/serial_smoke.py --mode m4 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m4-failure:
+	$(PYTHON) tools/serial_smoke.py --mode m4-failure --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

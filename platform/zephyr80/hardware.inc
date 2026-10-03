@@ -1,7 +1,11 @@
 ; -----------------------------------------------------------------------------
 ; Zephyr-80 hardware constants (assembly visible).
 ;
-; Keep this file value-identical with hardware.h.
+; Raw I/O port numbers, latch fields, memory modes, and SIO/CTC register
+; values.  Memory-region geometry is declared in memory.inc; IM2 vector-page
+; and IRQ transition wiring constants are declared in irq.inc.
+;
+; Keep this file value-identical with hardware.h (parity-tested).
 ; -----------------------------------------------------------------------------
 
 ; --- I/O ports ---
@@ -56,13 +60,7 @@ ZOS_SIO_WR1_INT_DISABLED        = 0x00
 
 ZOS_SIO_TX_TIMEOUT      = 0xFFFF
 
-; --- M2 CTC0 interrupt bring-up ---
-ZOS_CTC0_VECTOR_BASE    = 0x00
+; --- M2 CTC0 interrupt bring-up (vector mapping lives in irq.inc) ---
 ZOS_CTC0_CONTROL_TEST   = 0xA7
 ZOS_CTC0_TIME_CONSTANT  = 0x00
 ZOS_CTC0_RESET          = 0x03
-ZOS_IM2_I_VALUE         = 0xFD
-
-; --- M2 bank-7 ISR stack (mirrors memory.inc) ---
-ZOS_IRQ_ISR_STACK_BASE  = 0xDF00
-ZOS_IRQ_ISR_STACK_TOP   = 0xE000

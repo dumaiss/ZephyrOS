@@ -25,7 +25,8 @@ E000h +-------------------------------+
 | --- | --- | --- |
 | `0000h-00FFh` | caller window | ZephyrOS-owned native page zero: reset copier (`0000h-0026h`) and the three-byte `RST 30h` vector (`JP zos_syscall_entry`) at `0030h-0032h`; the rest is reserved |
 | `0100h-1FFFh` | caller window | unused (FF-filled in the image); at M1, native syscall argument blocks must lie here |
-| `2000h-BFFFh` | bank 7 in mode 11 | loadable kernel image (code, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`) |
+| `2000h-9FFFh` | bank 7 in mode 11 | loadable kernel image (code, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`) |
+| `A000h-BFFFh` | bank 7 in mode 11 | M4 driver arena: 16 x 512-byte granules reserved for loaded modules; never part of the ROM payload and never linked by the kernel |
 | `C000h-DEFFh` | bank 7 in mode 11 | zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded |
 | `DF00h-DFFFh` | bank 7 in mode 11 | 256-byte M2 ISR stack; initial `SP=E000h` |
 | `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`) |
@@ -67,10 +68,10 @@ Every owned region exports `s__<area>`/`l__<area>` start/size symbols
 | --- | --- | --- |
 | `_RESET` | `0000h-0026h` | stackless reset copier (`.org 0`, ABS) |
 | `_PAGE_ZERO` | `0030h-0032h` | `RST 30h` vector: `JP zos_syscall_entry` (ABS) |
-| `_CODE` | `2000h-BFFFh` | kernel C code, driver/service code, string literals |
-| `_HOME` | `2000h-BFFFh` | static helpers |
-| `_INITIALIZER` | `2000h-BFFFh` | ROM image of initialized data |
-| `_GSINIT`/`_GSFINAL` | `2000h-BFFFh` | static initializers + terminator |
+| `_CODE` | `2000h-9FFFh` | kernel C code, driver/service code, string literals |
+| `_HOME` | `2000h-9FFFh` | static helpers |
+| `_INITIALIZER` | `2000h-9FFFh` | ROM image of initialized data |
+| `_GSINIT`/`_GSFINAL` | `2000h-9FFFh` | static initializers + terminator |
 | `_DATA` | `C000h-DEFFh` | zeroed globals/statics, registry table, driver state |
 | `_INITIALIZED` | `C000h-DEFFh` | RAM image of initialized data (ops/descriptor tables) |
 | `_COMMON` | `E000h-FCFFh` | boot entry, gates, IRQ stubs, console, panic |
@@ -91,6 +92,21 @@ console/panic path are common-resident.  `tools/mapcheck.py` enforces
 this both by explicit symbol list and by a prefix sweep over
 `_device_`, `_console_`, `_sio0b_`, `_sio_`, `_driver_`,
 `_boot_drivers`, and `_m3_` symbols.  See `docs/devices.md`.
+
+## 2.2 M4 driver-arena placement
+
+The `A000h-BFFFh` driver arena is reserved between the loadable kernel
+image and the runtime data area: 16 contiguous 512-byte granules (8192
+bytes) that no kernel section, stack, initialized data, or ROM payload
+may occupy.  `platform/zephyr80/memory.inc` declares the geometry;
+`kernel/module/arena.asm` exports `__driver_arena_start`/`__driver_arena_end`;
+`tools/mapcheck.py` rejects any linked area overlapping the arena and
+validates the exported bounds, and `tools/pack_image.py` treats the
+region as non-ROM-loadable.  `tools/mapcheck.py` additionally enforces
+bank-7 placement for the loader/relocator routines and a prefix sweep
+over `_module_`, `_zmod_`, `_z4_`, `_m4_`, and `_irq_registry_` symbols.
+Loaded modules are placed inside the arena by the M4 loader (see
+`docs/module-format.md`).
 
 ## 3. Common-resident routines
 
@@ -146,7 +162,9 @@ in the same common data area.
 
 ## 4.1 M2 IRQ state, stacks, and vector page
 
-Fixed absolute reservations (validated by `mapcheck.py` and the packer):
+Fixed absolute reservations (validated by `mapcheck.py` and the packer);
+the vector-page, transition-state, and transition-stack bounds are
+declared in `platform/zephyr80/irq.inc`:
 
 ```text
 _IRQ_VECTOR       FD00h-FE00h   IM2 page plus the FFh-vector guard byte;
@@ -166,7 +184,7 @@ linked image carries the guard identity for build-time verification.
 
 ## 5. Banking primitives
 
-Implemented in `platform/zephyr80/banking.asm` (assembly, common-resident):
+Implemented in `kernel/memory/banking.asm` (assembly, common-resident):
 
 ```c
 uint8_t platform_memctl_read(void);          /* raw latch value            */
@@ -212,6 +230,12 @@ in `2000h-DFFFh` would disappear when the mode changes.
 ## 7. Constants are single-sourced
 
 Every memory boundary and latch bit is defined once for C
-(`platform/zephyr80/hardware.h`, `memory.inc`) and once for assembly
-(`hardware.inc`), with an explicit parity check in `tests/test_m1.py` so the
-two representations cannot silently drift.
+(`platform/zephyr80/hardware.h`, `memory.h`, `irq.h`) and once for assembly
+(`hardware.inc`, `memory.inc`, `irq.inc`), with explicit parity checks in
+`tests/test_m1.py` so the representations cannot silently drift.  Hardware
+ports and register constants stay in `hardware.h/.inc`; general region
+geometry (including the bank-7 ISR stack) stays in `memory.h/.inc`; IM2
+vector-page and IRQ transition wiring stays in `irq.h/.inc`.  The Zephyr-80
+build include paths and the declarative file names live in
+`platform/zephyr80/config.mk`; `tests/test_source_layout.py` enforces that
+the platform tree contains no executable code.

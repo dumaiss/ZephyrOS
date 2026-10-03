@@ -137,7 +137,12 @@ class TestMapcheckRejections(ValidatorCLIBase):
     def test_bank7_section_leaves_region(self):
         self.check(make_map(areas={"_CODE": (0xBF00, 0x200)},
                             symbols={"s__CODE": 0xBF00, "l__CODE": 0x200}),
-                   r"leaves 2000h-BFFFh")
+                   r"overlaps the driver arena|leaves 2000h-9FFFh")
+
+    def test_bank7_section_in_forbidden_arena(self):
+        self.check(make_map(areas={"_CODE": (0xA100, 0x100)},
+                            symbols={"s__CODE": 0xA100, "l__CODE": 0x100}),
+                   r"overlaps the driver arena")
 
     def test_common_section_leaves_region(self):
         self.check(make_map(symbols={"s__COMMON": 0xDF00}),

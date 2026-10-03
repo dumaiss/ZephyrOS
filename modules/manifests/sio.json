@@ -1,0 +1,11 @@
+{
+  "name": "sio",
+  "type": "driver",
+  "abi": 1,
+  "flags": 0,
+  "objects": ["sio.rel", "sio_io.rel", "sio_module.rel", "sdcc_indirect_calls.rel"],
+  "image_areas": ["_CODE"],
+  "bss_areas": ["_DATA"],
+  "init": "sio_module_init",
+  "fini": null
+}

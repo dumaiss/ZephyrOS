@@ -15,20 +15,31 @@
  */
 
 #include "zephyros/kernel.h"
-#include "zephyros/syscall.h"
 #include "zephyros/irq.h"
 #include "zephyros/console.h"
-#include "zephyros/driver.h"
-#include "zephyros/m3_selftest.h"
+#include "zephyros/module.h"
 
-/* M3 build options.  Both default to 0; the m3-fallback make targets set
- * them to prove that early boot/panic diagnostics stay on the independent
- * early console when the device layer is deliberately disabled. */
-#ifndef ZOS_M3_NO_STATIC_DRIVERS
-#define ZOS_M3_NO_STATIC_DRIVERS 0
+/* Single integration seam for target acceptance builds; the runner and
+ * milestone selection live in tests/target/support/target_test.c.  The
+ * one unavoidable boot-phase hook (ZOS_M4_SIO_IRQ) is marked TEST-ONLY
+ * HOOK below with its test-owned implementation path. */
+#ifndef ZOS_TARGET_TEST_BUILD
+#define ZOS_TARGET_TEST_BUILD 0
 #endif
-#ifndef ZOS_M3_NO_CONSOLE_BIND
-#define ZOS_M3_NO_CONSOLE_BIND 0
+
+#if ZOS_TARGET_TEST_BUILD
+/* TEST-ONLY HOOK: target acceptance runner; implementation and milestone
+ * selection live in tests/target/support/target_test.c (acceptance images
+ * only).  The early hook runs before the module catalog load; the late
+ * hook runs after console binding. */
+void zos_target_test_early(void);
+void zos_target_test_late(void);
+#endif
+
+/* Set only by the m4-selftest acceptance build: keep CTC0 pending across
+ * the boot-module load while tests/modules/sio_irq_module.c claims it. */
+#ifndef ZOS_M4_SIO_IRQ
+#define ZOS_M4_SIO_IRQ 0
 #endif
 
 /* ~1 second no-op delay at kernel entry (Z80 @ 10 MHz, no wait states) so
@@ -100,44 +111,57 @@ void kernel_main(void)
 	early_console_puts("serial: OK\r\n");
 	early_console_puts("HALT\r\n");
 
-#if ZOS_SYSCALL_SELFTEST
-	/* Target-side RST 30h round trip; prints the selftest result. */
-	zos_run_syscall_selftest();
+#if ZOS_TARGET_TEST_BUILD
+	/* TEST-ONLY HOOK: m1/m2 acceptance phases (target_test.c). */
+	zos_target_test_early();
 #endif
 
-#if ZOS_IRQ_SELFTEST
-	zos_run_irq_selftest();
-#endif
-
-	/* --- M3: registry, static drivers, console service ---------------
-	 * The early console above stays authoritative; the normal console
-	 * service is initialized afterwards and proves itself with the
-	 * distinct acceptance line.  If it cannot bind or write, the
-	 * fallback diagnostic still goes through the early console. */
+/* --- registry, module catalog, console service ---------------------
+	 * The early console above stays authoritative.  The device registry
+	 * is initialized first, the embedded module catalog is loaded
+	 * through the generic M4 loader, and only then is the console
+	 * service bound.  Load and binding diagnostics go to the early
+	 * console before any dynamic device is used. */
 	device_registry_init();
-#if ZOS_M3_NO_STATIC_DRIVERS
-	early_console_puts("console: static drivers disabled\r\n");
-#else
-	driver_init_static();
-#if ZOS_M3_NO_CONSOLE_BIND
-	early_console_puts("console: binding disabled\r\n");
-#else
-	if (console_bind_defaults() != ZDEV_OK) {
-		early_console_puts("console: unbound\r\n");
-	} else {
-		static const char m3_console_ok[] = "console: sio0.b OK\r\n";
+	{
+		uint8_t module_failures;
 
-		if (console_write(m3_console_ok,
-				  (uint16_t)(sizeof(m3_console_ok) - 1u)) !=
-		    (int)(sizeof(m3_console_ok) - 1u)) {
-			early_console_puts("console: service failed\r\n");
+		(void)module_loader_init();
+#if ZOS_M4_SIO_IRQ
+		/* TEST-ONLY HOOK: keep CTC0 pending across the load until the
+		 * acceptance module owns the source; the concrete test lives in
+		 * tests/target/support/target_test.c and
+		 * tests/modules/sio_irq_module.c. */
+		{
+			uint8_t irq_enabled = irq_arch_lock();
+
+			platform_ctc0_test_start();
+			module_failures = module_catalog_load_all();
+			platform_ctc0_stop();
+			irq_arch_unlock(irq_enabled);
+		}
+#else
+		module_failures = module_catalog_load_all();
+#endif
+		if (module_failures != 0) {
+			early_console_puts("console: dynamic driver failed\r\n");
+		} else if (console_bind_defaults() != ZDEV_OK) {
+			early_console_puts("console: unbound\r\n");
+		} else {
+			static const char m4_console_ok[] =
+				"console: dynamic sio0.b OK\r\n";
+
+			if (console_write(m4_console_ok,
+					  (uint16_t)(sizeof(m4_console_ok) - 1u)) !=
+				    (int)(sizeof(m4_console_ok) - 1u)) {
+				early_console_puts("console: service failed\r\n");
+			}
 		}
 	}
-#endif
-#endif
 
-#if ZOS_M3_SELFTEST
-	zos_run_m3_selftest();
+#if ZOS_TARGET_TEST_BUILD
+	/* TEST-ONLY HOOK: m3/m4 acceptance phases (target_test.c). */
+	zos_target_test_late();
 #endif
 
 	__asm__("di");

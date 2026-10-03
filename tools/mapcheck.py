@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""ZephyrOS M3 map/layout checker.
+"""ZephyrOS M4 map/layout checker.
 
 Validates the sdldz80 map against the implemented mode 10/11 memory
 ownership contract (see docs/memory.md):
 
     page zero     0000h-00FFh   reset copier only, below 0030h
-    bank 7 load   2000h-BFFFh   _CODE/_HOME/_INITIALIZER/_GSINIT/_GSFINAL
+    bank 7 kernel 2000h-9FFFh   _CODE/_HOME/_INITIALIZER/_GSINIT/_GSFINAL
+    driver arena  A000h-BFFFh   M4: no linked content; bounds exported
     bank 7 runtime C000h-DFFFh  _DATA/_INITIALIZED (never ROM-loaded)
     common         E000h-FEFFh  _COMMON/_COMMON_DATA, gates, console, panic
     common stack   FF00h-FFFFh  reserved; nothing may be linked there
@@ -15,26 +16,42 @@ driver descriptors/ops, and driver-private state: all of it must live in
 bank 7 (loadable or runtime area, below the ISR stack) and none of it may
 enter permanent common memory.
 
+M4 reserves the bank-7 driver arena: linked sections must end below
+A000h, no area may overlap the arena, and __driver_arena_start/end must
+match the platform declarations and granule geometry.  Loader/relocator
+routines and module/catalog symbols must stay bank-7 resident.
+
 Empty areas do not get an area-table entry in sdldz80 maps; they still get
 s__<area>/l__<area> symbols, so ownership is checked through the symbol
 table and empty areas are accepted when their zero-length placement address
 lies inside the expected region.
 
 Usage:
-    mapcheck.py <zephyros.map> [platform/zephyr80/memory.inc]
+    mapcheck.py [--production] <zephyros.map>
+                [platform/zephyr80/memory.inc
+                 [platform/zephyr80/irq.inc]]
+
+--production additionally rejects every acceptance symbol (retired static
+driver symbols, target-test runners/results, fixture catalogs, and test
+SIO module entries) so acceptance code cannot leak into production images.
 """
 
 import re
 import sys
 
-# Defaults; overridden from platform/zephyr80/memory.inc when the path is
-# given on the command line, so the checker derives its facts from the
-# actual layout declarations rather than a second copy of the memory map.
+# Defaults; overridden from platform/zephyr80/memory.inc and irq.inc when
+# those paths are given on the command line, so the checker derives its
+# facts from the actual layout declarations rather than a second copy of
+# the memory map.
 PAGE_ZERO_END = 0x0100
 RESET_TOP = 0x0030
 BANK7_BASE = 0x2000
 BANK7_LOAD_END = 0xC000
 BANK7_RUNTIME_END = 0xE000
+DRIVER_ARENA_BASE = 0xA000
+DRIVER_ARENA_END = 0xC000
+DRIVER_GRANULE_SIZE = 0x0200
+DRIVER_GRANULES = 16
 COMMON_BASE = 0xE000
 COMMON_CODE_END = 0xFD00
 IRQ_VECTOR_BASE = 0xFD00
@@ -51,8 +68,8 @@ MEM_TOP = 0x10000
 GATE_STACK_SIZE = 64
 
 
-def parse_memory_inc(path):
-    """Parse the layout declarations in platform/zephyr80/memory.inc."""
+def parse_inc(path):
+    """Parse NAME = value declarations from a platform .inc file."""
     values = {}
     for line in open(path):
         line = line.split(";")[0].strip()
@@ -62,14 +79,19 @@ def parse_memory_inc(path):
     return values
 
 
+def parse_memory_inc(path):
+    """Parse the layout declarations in platform/zephyr80/memory.inc."""
+    return parse_inc(path)
+
+
 def apply_layout(values):
-    """Apply layout declarations from memory.inc."""
+    """Apply memory-region declarations from memory.inc."""
     global PAGE_ZERO_END, RESET_TOP, BANK7_BASE, BANK7_LOAD_END
     global BANK7_RUNTIME_END, COMMON_BASE, COMMON_CODE_END, STACK_BASE
-    global IRQ_VECTOR_BASE, IRQ_VECTOR_SIZE, IRQ_STATE_BASE
-    global IRQ_STACK_BASE, IRQ_STACK_TOP, IRQ_STACK_SIZE
     global IRQ_ISR_STACK_BASE, IRQ_ISR_STACK_TOP, IRQ_ISR_STACK_SIZE
     global GATE_STACK_SIZE, OWNED_AREAS
+    global DRIVER_ARENA_BASE, DRIVER_ARENA_END, DRIVER_GRANULE_SIZE
+    global DRIVER_GRANULES
     PAGE_ZERO_END = values["ZOS_PAGE_ZERO_END"]
     RESET_TOP = values["ZOS_RESET_TOP"]
     BANK7_BASE = values["ZOS_BANK7_BASE"]
@@ -78,22 +100,20 @@ def apply_layout(values):
     STACK_BASE = values["ZOS_COMMON_STACK_BASE"]
     BANK7_RUNTIME_END = values["ZOS_BANK7_RUNTIME_END"]
     COMMON_CODE_END = values["ZOS_COMMON_CODE_END"]
-    IRQ_VECTOR_BASE = values["ZOS_IRQ_VECTOR_BASE"]
-    IRQ_VECTOR_SIZE = values["ZOS_IRQ_VECTOR_SIZE"]
-    IRQ_STATE_BASE = values["ZOS_IRQ_STATE_BASE"]
-    IRQ_STACK_BASE = values["ZOS_IRQ_STACK_BASE"]
-    IRQ_STACK_TOP = values["ZOS_IRQ_STACK_TOP"]
-    IRQ_STACK_SIZE = values["ZOS_IRQ_STACK_SIZE"]
     IRQ_ISR_STACK_BASE = values["ZOS_IRQ_ISR_STACK_BASE"]
     IRQ_ISR_STACK_TOP = values["ZOS_IRQ_ISR_STACK_TOP"]
     IRQ_ISR_STACK_SIZE = values["ZOS_IRQ_ISR_STACK_SIZE"]
     GATE_STACK_SIZE = values["ZOS_GATE_STACK_SIZE"]
+    DRIVER_ARENA_BASE = values["ZOS_DRIVER_ARENA_BASE"]
+    DRIVER_ARENA_END = values["ZOS_DRIVER_ARENA_END"]
+    DRIVER_GRANULE_SIZE = values["ZOS_DRIVER_GRANULE_SIZE"]
+    DRIVER_GRANULES = values["ZOS_DRIVER_GRANULES"]
     OWNED_AREAS = {
-        "_CODE": (BANK7_BASE, BANK7_LOAD_END),
-        "_HOME": (BANK7_BASE, BANK7_LOAD_END),
-        "_INITIALIZER": (BANK7_BASE, BANK7_LOAD_END),
-        "_GSINIT": (BANK7_BASE, BANK7_LOAD_END),
-        "_GSFINAL": (BANK7_BASE, BANK7_LOAD_END),
+        "_CODE": (BANK7_BASE, DRIVER_ARENA_BASE),
+        "_HOME": (BANK7_BASE, DRIVER_ARENA_BASE),
+        "_INITIALIZER": (BANK7_BASE, DRIVER_ARENA_BASE),
+        "_GSINIT": (BANK7_BASE, DRIVER_ARENA_BASE),
+        "_GSFINAL": (BANK7_BASE, DRIVER_ARENA_BASE),
         "_DATA": (BANK7_LOAD_END, BANK7_RUNTIME_END),
         "_INITIALIZED": (BANK7_LOAD_END, BANK7_RUNTIME_END),
         "_COMMON": (COMMON_BASE, COMMON_CODE_END),
@@ -101,13 +121,27 @@ def apply_layout(values):
     }
 
 
-# Owned areas and their allowed placement range.
+def apply_irq_layout(values):
+    """Apply IM2 vector/transition declarations from irq.inc."""
+    global IRQ_VECTOR_BASE, IRQ_VECTOR_SIZE, IRQ_STATE_BASE
+    global IRQ_STACK_BASE, IRQ_STACK_TOP, IRQ_STACK_SIZE
+    IRQ_VECTOR_BASE = values.get("ZOS_IRQ_VECTOR_BASE", IRQ_VECTOR_BASE)
+    IRQ_VECTOR_SIZE = values.get("ZOS_IRQ_VECTOR_SIZE", IRQ_VECTOR_SIZE)
+    IRQ_STATE_BASE = values.get("ZOS_IRQ_STATE_BASE", IRQ_STATE_BASE)
+    IRQ_STACK_BASE = values.get("ZOS_IRQ_STACK_BASE", IRQ_STACK_BASE)
+    IRQ_STACK_TOP = values.get("ZOS_IRQ_STACK_TOP", IRQ_STACK_TOP)
+    IRQ_STACK_SIZE = values.get("ZOS_IRQ_STACK_SIZE", IRQ_STACK_SIZE)
+
+
+# Owned areas and their allowed placement range.  Loadable bank-7 sections
+# must end below the M4 driver arena (A000h); the arena itself is reserved
+# for load-time modules and never carries linked content.  
 OWNED_AREAS = {
-    "_CODE": (BANK7_BASE, BANK7_LOAD_END),
-    "_HOME": (BANK7_BASE, BANK7_LOAD_END),
-    "_INITIALIZER": (BANK7_BASE, BANK7_LOAD_END),
-    "_GSINIT": (BANK7_BASE, BANK7_LOAD_END),
-    "_GSFINAL": (BANK7_BASE, BANK7_LOAD_END),
+    "_CODE": (BANK7_BASE, DRIVER_ARENA_BASE),
+    "_HOME": (BANK7_BASE, DRIVER_ARENA_BASE),
+    "_INITIALIZER": (BANK7_BASE, DRIVER_ARENA_BASE),
+    "_GSINIT": (BANK7_BASE, DRIVER_ARENA_BASE),
+    "_GSFINAL": (BANK7_BASE, DRIVER_ARENA_BASE),
     "_DATA": (BANK7_LOAD_END, BANK7_RUNTIME_END),
     "_INITIALIZED": (BANK7_LOAD_END, BANK7_RUNTIME_END),
     "_COMMON": (COMMON_BASE, COMMON_CODE_END),
@@ -143,8 +177,10 @@ COMMON_ROUTINES = (
 # Bank-7 internal routines (visible only while mode 11 is active).
 BANK7_ROUTINES = ("zos_syscall_dispatch", "_irq_dispatch")
 
-# M3 device/driver/service routines: bank 7 only.  These are the real
-# linked symbols of kernel/device/*.c and drivers/sio/*.
+# M3 device/service routines: bank 7 only.  The SIO driver is not
+# statically linked (M4 loads it as a ZMOD module) and the static driver
+# table was retired; what remains here is the registry, the console
+# service, and their state.
 M3_BANK7_ROUTINES = (
     "_device_registry_init",
     "_device_register",
@@ -152,48 +188,80 @@ M3_BANK7_ROUTINES = (
     "_device_find_capability",
     "_device_registry_checkpoint",
     "_device_registry_rollback",
-    "_driver_init_static",
     "_console_bind",
     "_console_bind_defaults",
     "_console_putc",
     "_console_write",
     "_console_poll",
     "_console_getc",
-    "_sio0b_hw_init",
-    "_sio0b_putc",
-    "_sio0b_write",
-    "_sio0b_poll",
-    "_sio0b_getc",
-    "_sio0b_status",
-    "_sio0b_write_ctrl",
-    "_sio0b_read_data",
-    "_sio0b_write_data",
 )
 
-# M3 registry/console/driver objects and private state: bank-7 data or
-# code, never common memory.
+# M3 registry/console objects and private state: bank-7 data or code,
+# never common memory.
 M3_BANK7_OBJECTS = (
     "_device_table",
     "_console_in_handle",
     "_console_out_handle",
-    "_sio0b_ops",
-    "_sio0b_state",
-    "_sio_driver",
-    "_boot_drivers",
 )
 
-# Any symbol with one of these prefixes is M3 driver/service code or state
-# and must be bank-7 resident (this sweep also covers the test-only driver
-# objects present in the m3-selftest image).
+# Any symbol with one of these prefixes is M3 device/service code or state
+# and must be bank-7 resident (the sweep also covers the test-only M3
+# symbols present in the m3-selftest image).
 M3_BANK7_PREFIXES = (
     "_device_",
     "_console_",
-    "_sio0b_",
-    "_sio_",
-    "_driver_",
-    "_boot_drivers",
     "_m3_",
 )
+
+# Production images must not link any acceptance artifact: retired static
+# driver symbols, target-test runners/results, fixture catalogs, or test
+# SIO module entries/counters.  Enabled with --production (the Makefile
+# passes it for non-acceptance images).
+PRODUCTION_FORBIDDEN = (
+    "_driver_init_static",
+    "_boot_drivers",
+    "_driver_static_",
+    "_m3_",
+    "_m4_selftest",
+    "_m4_fixture",
+    "_zmod_fixture",
+    "_z4_fixture",
+    "_target_test",
+    "_zos_run_",
+    "_sio_module_irq",
+    "_sio_irq_module",
+    "_sio_fail_module",
+)
+
+# M4 acceptance: the SIO driver must exist only as a dynamically loaded
+# module.  Any linked SIO symbol means a static copy crept back into the
+# kernel image.
+STATIC_SIO_PREFIXES = ("_sio_", "_sio0b_", "_sio_driver")
+
+# M4 module-loader routines: bank-7 code and data only, and never inside
+# the driver arena (which has no linked content by design).  The prefix
+# sweep also covers the test-only fixture symbols in selftest images.
+M4_BANK7_ROUTINES = (
+    "_module_loader_init",
+    "_module_load",
+    "_module_catalog_load_all",
+    "_module_count",
+    "_module_free_granules",
+    "_module_failed_count",
+    "_module_get",
+    "_module_code_allowed",
+    "_zmod_validate_container",
+    "_zmod_copy_image",
+    "_zmod_zero_bss",
+    "_zmod_apply_relocations",
+    "_zmod_zero_allocation",
+    "_irq_registry_checkpoint",
+    "_irq_registry_rollback",
+    "_irq_registry_set_owner",
+)
+
+M4_BANK7_PREFIXES = ("_module_", "_zmod_", "_z4_", "_m4_",
+                    "_irq_registry_")
 
 # Transition-critical state block (common RAM).
 COMMON_STATE = (
@@ -267,6 +335,18 @@ def check_areas(areas, symbols):
                 "reservation FF00h-FFFFh" % (name, addr, size)
             )
 
+    # M4: nothing linked may occupy the driver arena A000h-BFFFh (only
+    # zero-length marker/declaration areas may sit on its boundaries).
+    for name, (addr, size) in sorted(areas.items()):
+        if size == 0:
+            continue
+        if addr < DRIVER_ARENA_END and addr + size > DRIVER_ARENA_BASE:
+            raise MapError(
+                "%s at %04Xh (size %d) overlaps the driver arena "
+                "%04Xh-%04Xh" % (name, addr, size, DRIVER_ARENA_BASE,
+                                  DRIVER_ARENA_END - 1)
+            )
+
     # Region ownership via s__/l__ symbols; the linker drops the area's
     # leading underscore in synthesized symbols (_CODE -> s__CODE).
     # Empty areas have no area-table entry but still get zero-length
@@ -313,8 +393,19 @@ def check_areas(areas, symbols):
                 raise MapError("%s overlaps the IM2 reservation at FD00h" % name)
 
 
-def check_symbols(areas, symbols):
+def check_symbols(areas, symbols, production=False):
     page_zero_areas = [n for n in areas if n.startswith("_PAGE_ZERO")]
+
+    if production:
+        for name, addr in symbols.items():
+            if addr == 0:
+                continue
+            for prefix in PRODUCTION_FORBIDDEN:
+                if name.startswith(prefix):
+                    raise MapError(
+                        "acceptance symbol %s at %04Xh must not be linked "
+                        "into a production image" % (name, addr)
+                    )
 
     # Mapping-changing routines and immediate continuations: common only.
     for name in COMMON_ROUTINES:
@@ -356,6 +447,54 @@ def check_symbols(areas, symbols):
                     "driver/service symbol %s at %04Xh is not bank-7 "
                     "resident" % (name, addr)
                 )
+
+    # M4: the SIO driver is a dynamically loaded module; no static copy
+    # may appear in the kernel map.
+    for name, addr in symbols.items():
+        if addr != 0 and name.startswith(STATIC_SIO_PREFIXES):
+            raise MapError(
+                "static SIO symbol %s at %04Xh must not be linked; the SIO "
+                "driver is loaded from a ZMOD module" % (name, addr)
+            )
+
+    # M4: loader/relocator code and catalog/fixture data must stay in the
+    # bank-7 window below the ISR stack.
+    for name in M4_BANK7_ROUTINES:
+        if name not in symbols:
+            raise MapError("map has no M4 symbol %s" % name)
+        addr = symbols[name]
+        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            raise MapError(
+                "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
+                % (name, addr)
+            )
+    for name, addr in symbols.items():
+        if addr != 0 and name.startswith(M4_BANK7_PREFIXES):
+            if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+                raise MapError(
+                    "module symbol %s at %04Xh is not bank-7 resident"
+                    % (name, addr)
+                )
+
+    # M4: exported arena bounds must match the platform layout and granule
+    # geometry exactly.
+    arena_start = symbols.get("__driver_arena_start")
+    arena_end = symbols.get("__driver_arena_end")
+    if arena_start != DRIVER_ARENA_BASE:
+        raise MapError("__driver_arena_start is %04Xh, expected %04Xh"
+                       % (arena_start if arena_start is not None else -1,
+                          DRIVER_ARENA_BASE))
+    if arena_end != DRIVER_ARENA_END:
+        raise MapError("__driver_arena_end is %04Xh, expected %04Xh"
+                       % (arena_end if arena_end is not None else -1,
+                          DRIVER_ARENA_END))
+    if (arena_start & (DRIVER_GRANULE_SIZE - 1)) != 0:
+        raise MapError("driver arena is not granule aligned")
+    if (arena_end - arena_start) != DRIVER_GRANULES * DRIVER_GRANULE_SIZE:
+        raise MapError(
+            "driver arena is %d bytes, expected %d granules x %d"
+            % (arena_end - arena_start, DRIVER_GRANULES, DRIVER_GRANULE_SIZE)
+        )
 
     # Transition state block: common RAM, gate stack of the exact size.
     for name in COMMON_STATE:
@@ -429,25 +568,36 @@ def check_symbols(areas, symbols):
         raise MapError("RST 30h vector is %d bytes, expected exactly 3" % vector_size)
 
 
-def check_map(text):
+def check_map(text, production=False):
     areas, symbols = parse_map(text)
     check_areas(areas, symbols)
-    check_symbols(areas, symbols)
+    check_symbols(areas, symbols, production)
     return areas, symbols
 
 
 def main(argv):
-    if len(argv) not in (2, 3):
+    production = "--production" in argv
+    argv = [arg for arg in argv if arg != "--production"]
+    if len(argv) not in (2, 3, 4):
         print(__doc__)
         return 2
-    if len(argv) == 3:
-        apply_layout(parse_memory_inc(argv[2]))
+    if len(argv) >= 3:
+        apply_layout(parse_inc(argv[2]))
+    if len(argv) == 4:
+        apply_irq_layout(parse_inc(argv[3]))
     try:
-        areas, symbols = check_map(open(argv[1]).read())
+        areas, symbols = check_map(open(argv[1]).read(), production)
     except MapError as exc:
         print("mapcheck: %s" % exc, file=sys.stderr)
         return 1
-    print("mapcheck: OK (%d areas, %d symbols)" % (len(areas), len(symbols)))
+    print("mapcheck: OK (%d areas, %d symbols)%s"
+          % (len(areas), len(symbols),
+             " [production]" if production else ""))
+    print("mapcheck: driver arena %04Xh-%04Xh: %d bytes, %d granules, "
+          "reserved (free %d at boot)"
+          % (DRIVER_ARENA_BASE, DRIVER_ARENA_END - 1,
+             DRIVER_ARENA_END - DRIVER_ARENA_BASE, DRIVER_GRANULES,
+             DRIVER_GRANULES))
     return 0
 
 

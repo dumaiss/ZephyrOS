@@ -24,9 +24,10 @@ from test_m1 import evaluate, make_map, parse_c_header  # noqa: E402
 DEVICE_H = os.path.join(ROOT, "include", "zephyros", "device.h")
 DRIVER_H = os.path.join(ROOT, "include", "zephyros", "driver.h")
 CONSOLE_H = os.path.join(ROOT, "include", "zephyros", "console.h")
-M3_SELFTEST_H = os.path.join(ROOT, "include", "zephyros", "m3_selftest.h")
+M3_SELFTEST_H = os.path.join(ROOT, "tests", "target", "include",
+                             "m3_selftest.h")
 ERRNO_H = os.path.join(ROOT, "include", "zephyros", "errno.h")
-HARDWARE_H = os.path.join(ROOT, "platform", "zephyr80", "hardware.h")
+MEMORY_H = os.path.join(ROOT, "platform", "zephyr80", "memory.h")
 MEMORY_INC = os.path.join(ROOT, "platform", "zephyr80", "memory.inc")
 
 INTERNAL_ERRORS = (
@@ -116,11 +117,15 @@ class TestDriverConstants(unittest.TestCase):
         self.assertEqual(evaluate("ZDRIVER_FAIL", self.env), -1)
 
     def test_api_exposes_only_the_three_m3_services(self):
-        text = open(DRIVER_H).read()
+        # Comments may mention the retired mechanism; only declarations
+        # matter here.
+        text = re.sub(r"/\*.*?\*/", "", open(DRIVER_H).read(), flags=re.S)
         for member in ("device_register", "irq_claim", "irq_release"):
             self.assertIn(member, text)
-        # The explicit table must be declared, not linker-discovered.
-        self.assertIn("boot_drivers", text)
+        # The retired M3 static-driver table must not be declared.
+        self.assertNotIn("boot_drivers", text)
+        self.assertNotIn("driver_init_static", text)
+        self.assertNotIn("struct zdriver {", text)
 
     def test_console_service_surface(self):
         text = open(CONSOLE_H).read()
@@ -145,7 +150,7 @@ class TestM3SelftestConstants(unittest.TestCase):
         self.assertGreater(evaluate("ZOS_M3ST_RX_ATTEMPTS", env), 0)
 
     def test_isr_stack_constants_match_memory_inc(self):
-        env = parse_c_header(HARDWARE_H)
+        env = parse_c_header(MEMORY_H)
         layout = mapcheck.parse_memory_inc(MEMORY_INC)
         self.assertEqual(evaluate("ZOS_IRQ_ISR_STACK_BASE", env),
                          layout["ZOS_IRQ_ISR_STACK_BASE"])
@@ -167,10 +172,14 @@ class TestMapcheckM3Rules(unittest.TestCase):
         with self.assertRaises(mapcheck.MapError):
             mapcheck.check_map(text)
 
-    def test_driver_state_in_isr_stack_rejected(self):
-        text = make_map(symbols={"_sio0b_state": 0xDF10})
-        with self.assertRaises(mapcheck.MapError):
-            mapcheck.check_map(text)
+    def test_static_sio_symbols_rejected(self):
+        # The SIO driver is a dynamically loaded module since M4; any
+        # linked SIO symbol is a build error, wherever it would sit.
+        for name in ("_sio0b_state", "_sio0b_putc", "_sio_driver"):
+            text = make_map(symbols={name: 0xC310})
+            with self.assertRaisesRegex(mapcheck.MapError,
+                                        "must not be linked"):
+                mapcheck.check_map(text)
 
     def test_missing_m3_symbol_rejected(self):
         text = make_map(symbols={"_device_register": None})
@@ -208,7 +217,7 @@ class TestM3Artifacts(unittest.TestCase):
 
     def test_normal_image_contains_console_lines(self):
         image = self.read_image("build", "zephyros.bin")
-        self.assertIn(b"console: sio0.b OK\r\n", image)
+        self.assertIn(b"console: dynamic sio0.b OK\r\n", image)
         self.assertIn(b"console: unbound\r\n", image)
         self.assertIn(b"sio0.b", image)
         # The self-test harness must not leak into the production image.
@@ -218,23 +227,11 @@ class TestM3Artifacts(unittest.TestCase):
         image = self.read_image("build-m3-selftest",
                                 "zephyros-m3-selftest.bin")
         self.assertEqual(len(image), 131072)
-        for marker in (b"m3 selftest", b"console: sio0.b OK\r\n",
+        for marker in (b"m3 selftest", b"console: dynamic sio0.b OK\r\n",
                        b"m3 selftest: ready for RX\r\n"):
             self.assertIn(marker, image)
         normal = self.read_image("build", "zephyros.bin")
         self.assertNotIn(b"m3 selftest", normal)
-
-    def test_fallback_nodrv_image(self):
-        image = self.read_image("build-m3-nodrv", "zephyros.bin")
-        self.assertIn(b"console: static drivers disabled\r\n", image)
-        self.assertNotIn(b"console: sio0.b OK\r\n", image)
-        self.assertIn(b"ZephyrOS 0.0\r\n", image)
-
-    def test_fallback_nobind_image(self):
-        image = self.read_image("build-m3-nobind", "zephyros.bin")
-        self.assertIn(b"console: binding disabled\r\n", image)
-        self.assertNotIn(b"console: sio0.b OK\r\n", image)
-        self.assertIn(b"ZephyrOS 0.0\r\n", image)
 
     def test_static_linker_file_matches_build_objects(self):
         lk_path = os.path.join(ROOT, "linker", "zephyr80.lk")

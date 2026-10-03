@@ -1,9 +1,10 @@
 /* ZephyrOS platform interface.
  *
- * This header is the only platform entry point kernel code needs at M0:
- * public fixed-width types plus the Zephyr-80 hardware constants that belong
- * under platform/zephyr80/.  Kernel code must not hard-code port numbers or
- * board constants; it includes this header instead.
+ * This header is the single platform entry point kernel code needs: public
+ * fixed-width types plus the Zephyr-80 constant headers that belong under
+ * platform/zephyr80/ (hardware ports/registers, memory regions, IRQ/vector
+ * wiring).  Kernel code must not hard-code port numbers or board constants;
+ * it includes this header instead.
  */
 
 #ifndef ZEPHYROS_PLATFORM_H
@@ -11,6 +12,8 @@
 
 #include "zephyros/types.h"
 #include "zephyr80/hardware.h"
+#include "zephyr80/memory.h"
+#include "zephyr80/irq.h"
 
 /* --- M1 platform banking primitives ------------------------------------
  *
@@ -33,7 +36,7 @@ void platform_bank_set(uint8_t bank);
 
 /* Mode 10/11 transitions are assembly gates with explicit common-memory
  * continuations (zos_enter_os_mode / zos_leave_os_mode in
- * platform/zephyr80/banking.asm), not C functions: a C return address in
+ * kernel/memory/banking.asm), not C functions: a C return address in
  * 2000h-DFFFh would disappear when the mode changes. */
 
 #endif /* ZEPHYROS_PLATFORM_H */

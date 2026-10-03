@@ -12,7 +12,8 @@ Region contract (see docs/architecture.md, docs/boot.md):
     0000h-002Fh   reset copier (page zero, both pages, byte-identical)
     0030h-00FFh   page-zero reservation (must stay empty at M0)
     0100h-1FFFh   page-1 caller-window gap (must stay empty)
-    2000h-BFFFh   bank-7 loadable kernel image
+    2000h-9FFFh   bank-7 loadable kernel image
+    A000h-BFFFh   M4 driver arena (load-time only; no ROM payload)
     C000h-DFFFh   bank-7 zero-initialized runtime area (must stay empty in
                   the ROM image; it is never loaded from ROM)
     E000h-FEFFh   permanent common code/data (physical bank 0)
@@ -22,7 +23,12 @@ Any linked byte outside its assigned region is a build error, as are map
 symbols whose addresses fall outside their expected region.
 
 Usage:
-    pack_image.py <zephyros.ihx> <zephyros.map> <build_dir>
+    pack_image.py <zephyros.ihx> <zephyros.map> <build_dir> [suffix]
+                  [platform/zephyr80/memory.inc]
+
+The optional memory.inc overrides the driver-arena declarations (the M4
+placement build shifts the arena base; the ROM contract is otherwise
+unchanged).
 """
 
 import json
@@ -40,6 +46,10 @@ RESET_TOP = 0x0030          # M1 installs RST 30h at 0030h
 PAGE_ZERO_END = 0x0100
 BANK7_BASE = 0x2000
 BANK7_LOAD_END = 0xC000     # C000h-DFFFh is runtime, never ROM-loaded
+ARENA_BASE = 0xA000         # M4 driver arena, load-time only (see memory.inc)
+ARENA_END = 0xC000
+GRANULE_SIZE = 0x0200
+GRANULE_COUNT = 16
 COMMON_BASE = 0xE000
 COMMON_CODE_END = 0xFD00
 IRQ_VECTOR_BASE = 0xFD00
@@ -49,17 +59,39 @@ STACK_BASE = 0xFF00
 MEM_TOP = 0x10000
 
 # (start, end, description, expected)
-REGIONS = [
-    (RESET_BASE, RESET_TOP, "page-zero reset copier", True),
-    (RESET_TOP, PAGE_ZERO_END, "page-zero reservation", False),
-    (PAGE_ZERO_END, BANK7_BASE, "page-1 caller-window gap", False),
-    (BANK7_BASE, BANK7_LOAD_END, "bank-7 loadable kernel", True),
-    (BANK7_LOAD_END, COMMON_BASE, "bank-7 runtime area (never ROM-loaded)", False),
-    (COMMON_BASE, COMMON_CODE_END, "permanent common code/data", True),
-    (IRQ_VECTOR_BASE, IRQ_VECTOR_END, "IM2 vector page plus guard", True),
-    (IRQ_STATE_BASE, STACK_BASE, "IRQ transition state/stacks", False),
-    (STACK_BASE, MEM_TOP, "common boot/runtime stack", False),
-]
+def make_regions():
+    return [
+        (RESET_BASE, RESET_TOP, "page-zero reset copier", True),
+        (RESET_TOP, PAGE_ZERO_END, "page-zero reservation", False),
+        (PAGE_ZERO_END, BANK7_BASE, "page-1 caller-window gap", False),
+        (BANK7_BASE, ARENA_BASE, "bank-7 loadable kernel", True),
+        (ARENA_BASE, ARENA_END, "bank-7 driver arena (load-time only)", False),
+        (BANK7_LOAD_END, COMMON_BASE,
+         "bank-7 runtime area (never ROM-loaded)", False),
+        (COMMON_BASE, COMMON_CODE_END, "permanent common code/data", True),
+        (IRQ_VECTOR_BASE, IRQ_VECTOR_END, "IM2 vector page plus guard", True),
+        (IRQ_STATE_BASE, STACK_BASE, "IRQ transition state/stacks", False),
+        (STACK_BASE, MEM_TOP, "common boot/runtime stack", False),
+    ]
+
+
+REGIONS = make_regions()
+
+
+def apply_memory_inc(path):
+    """Override the arena declarations from platform/zephyr80/memory.inc."""
+    global ARENA_BASE, ARENA_END, GRANULE_SIZE, GRANULE_COUNT, REGIONS
+    values = {}
+    for line in open(path):
+        line = line.split(";")[0].strip()
+        match = re.match(r"([A-Za-z_]\w*)\s+=\s+(0[xX][0-9a-fA-F]+|\d+)$", line)
+        if match:
+            values[match.group(1)] = int(match.group(2), 0)
+    ARENA_BASE = values["ZOS_DRIVER_ARENA_BASE"]
+    ARENA_END = values["ZOS_DRIVER_ARENA_END"]
+    GRANULE_SIZE = values["ZOS_DRIVER_GRANULE_SIZE"]
+    GRANULE_COUNT = values["ZOS_DRIVER_GRANULES"]
+    REGIONS = make_regions()
 
 # Common-resident entry points (must be callable through the permanently
 # mapped E000h-FEFFh region).
@@ -213,8 +245,10 @@ def build_pages(mem):
     for addr in range(COMMON_BASE, STACK_BASE):
         page0[addr] = mem.get(addr, FILL)
 
-    # Page 1 additionally carries the bank-7 loadable kernel.
-    for addr in range(BANK7_BASE, BANK7_LOAD_END):
+    # Page 1 additionally carries the bank-7 loadable kernel, up to the
+    # M4 driver arena.  The arena is never part of a ROM payload; the
+    # module loader fills it from catalog bytes at boot.
+    for addr in range(BANK7_BASE, ARENA_BASE):
         page1[addr] = mem.get(addr, FILL)
 
     # Copier mirroring: instruction fetch continues across the ROM-page
@@ -273,6 +307,18 @@ def check_symbol_regions(symbols):
         raise LayoutError("_reset is at %04Xh, expected 0000h"
                           % (reset if reset is not None else -1))
 
+    # M4 exported arena bounds: the ROM image never contains arena bytes,
+    # but the linked symbols must describe the reserved region exactly.
+    arena_start = symbols.get("__driver_arena_start")
+    arena_end = symbols.get("__driver_arena_end")
+    if arena_start != ARENA_BASE or arena_end != ARENA_END:
+        raise LayoutError(
+            "driver arena symbols are %s/%s, expected %04Xh/%04Xh"
+            % (arena_start, arena_end, ARENA_BASE, ARENA_END)
+        )
+    if (arena_end - arena_start) != GRANULE_COUNT * GRANULE_SIZE:
+        raise LayoutError("driver arena geometry does not match granules")
+
 
 def write_manifest(build_dir, suffix, image, page0, page1, symbols):
     """Emit a small machine-readable manifest for debugging/reproducibility."""
@@ -284,6 +330,7 @@ def write_manifest(build_dir, suffix, image, page0, page1, symbols):
             "irq_vector_page", "irq_vector_guard", "irq_ff_unexpected",
             "irq_transition_stack", "irq_transition_stack_top",
             "irq_isr_stack", "irq_isr_stack_top",
+            "__driver_arena_start", "__driver_arena_end",
         )
     }
     manifest = {
@@ -293,8 +340,19 @@ def write_manifest(build_dir, suffix, image, page0, page1, symbols):
             "page_zero_end": PAGE_ZERO_END,
             "bank7_base": BANK7_BASE,
             "bank7_load_end": BANK7_LOAD_END,
+            "driver_arena_base": ARENA_BASE,
+            "driver_arena_end": ARENA_END,
             "common_base": COMMON_BASE,
             "stack_base": STACK_BASE,
+        },
+        "arena": {
+            "start": ARENA_BASE,
+            "end": ARENA_END,
+            "size": ARENA_END - ARENA_BASE,
+            "granule_size": GRANULE_SIZE,
+            "granules": GRANULE_COUNT,
+            "free_granules": GRANULE_COUNT,
+            "modules": [],
         },
         "image": {"size": len(image), "sha256": hashlib.sha256(image).hexdigest()},
         "page0": {
@@ -359,11 +417,15 @@ def pack(ihx_text, map_text, build_dir, suffix=""):
 
 
 def main(argv):
-    if len(argv) not in (4, 5):
+    if len(argv) not in (4, 5, 6):
         print(__doc__)
         return 2
     ihx_path, map_path, build_dir = argv[1:4]
-    suffix = argv[4] if len(argv) == 5 else ""
+    suffix = argv[4] if len(argv) >= 5 else ""
+    if len(argv) == 6:
+        apply_memory_inc(argv[5])
+    else:
+        apply_memory_inc("platform/zephyr80/memory.inc")
     ihx_text = Path(ihx_path).read_text()
     map_text = Path(map_path).read_text()
     try:
@@ -373,6 +435,9 @@ def main(argv):
         return 1
     digest = hashlib.sha256(image).hexdigest()
     print("pack_image.py: %d bytes, sha256 %s" % (len(image), digest))
+    print("pack_image.py: driver arena %04Xh-%04Xh: %d granules (%d free "
+          "at boot)" % (ARENA_BASE, ARENA_END - 1, GRANULE_COUNT,
+                         GRANULE_COUNT))
     return 0
 
 

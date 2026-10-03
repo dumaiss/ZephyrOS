@@ -1,8 +1,10 @@
 /* Zephyr-80 hardware constants (C visible).
  *
- * All raw I/O port numbers, latch fields, and SIO register values live here
- * (and in hardware.inc for assembly).  Kernel code must not hard-code port
- * numbers or board constants; include <zephyros/platform.h> instead.
+ * Raw I/O port numbers, latch fields, memory modes, and SIO/CTC register
+ * values live here (and in hardware.inc for assembly).  Memory-region
+ * geometry is declared in memory.h; IM2 vector-page and IRQ transition
+ * wiring constants are declared in irq.h.  Kernel code must not hard-code
+ * port numbers or board constants; include <zephyros/platform.h> instead.
  */
 
 #ifndef ZEPHYR80_HARDWARE_H
@@ -66,17 +68,10 @@
  * disconnected terminal must not hang the kernel forever. */
 #define ZOS_SIO_TX_TIMEOUT          0xFFFFu
 
-/* M2 CTC0 interrupt bring-up (physical channel 0 only). */
-#define ZOS_CTC0_VECTOR_BASE        0x00u
+/* M2 CTC0 interrupt bring-up (physical channel 0 only).  The CTC0 vector
+ * mapping is declared in irq.h; the bank-7 ISR stack bounds in memory.h. */
 #define ZOS_CTC0_CONTROL_TEST       0xA7u
 #define ZOS_CTC0_TIME_CONSTANT      0x00u
 #define ZOS_CTC0_RESET              0x03u
-#define ZOS_IM2_I_VALUE             0xFDu
-
-/* M2 bank-7 ISR stack (mirrors ZOS_IRQ_ISR_STACK_* in memory.inc).  Driver
- * handlers run on this stack; handlers may use these bounds to verify
- * their placement. */
-#define ZOS_IRQ_ISR_STACK_BASE      0xDF00u
-#define ZOS_IRQ_ISR_STACK_TOP       0xE000u
 
 #endif /* ZEPHYR80_HARDWARE_H */

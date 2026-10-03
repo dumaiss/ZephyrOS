@@ -37,7 +37,7 @@ STEP_LIMIT = 5000000
 
 def _find_call_site(page1, syms, caller, target):
     """Locate the return address after `call target` inside `caller`."""
-    code = bytes(page1[a] for a in range(caller, caller + 0x100))
+    code = bytes(page1[a] for a in range(caller, caller + 0x800))
     call_bytes = bytes([0xCD, target & 0xFF, (target >> 8) & 0xFF])
     return caller + code.index(call_bytes) + 3
 
@@ -158,8 +158,11 @@ def run_irq_selftest(page0, page1, syms):
     # enables interrupts with the source cell armed (FFh) - including the
     # HALT delivery windows.  The syscall-gate IFF probe runs with the
     # source cell at 00h and must NOT receive an injected interrupt.
+    # kernel_main calls the shared acceptance runner; the runner may
+    # tail-call the M2 entry, so return directly to kernel_main's call
+    # site exactly as the real return path would.
     ret_site = _find_call_site(
-        page1, syms, syms["_kernel_main"], syms["_zos_run_irq_selftest"]
+        page1, syms, syms["_kernel_main"], syms["_zos_target_test_early"]
     )
     z.pc = syms["_zos_run_irq_selftest"]
     z.push16(ret_site)

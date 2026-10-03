@@ -394,13 +394,9 @@ class Z80:
         elif op == 0xAF: self.a = 0
         elif op == 0xA7: self._logic(self.a & self.a)
         elif op == 0xB7: self._logic(self.a | self.a)
-        elif op in (0x87, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85,
-                    0x86, 0x8E, 0x96, 0x9E, 0xA6, 0xAE, 0xB6, 0xBE,
-                    0x90, 0x91, 0x92, 0x93, 0x94, 0x95,
-                    0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9D,
-                    0xA0, 0xA1, 0xA2, 0xA3, 0xA4,
-                    0xA5, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC,
-                    0xBD, 0xBF):
+        elif op == 0x87:
+            self.alu(op)
+        elif 0x80 <= op <= 0xBF:
             self.alu(op)
         elif op == 0xE6: self.a = self._logic(self.a & self.fetch())
         elif op == 0xEE: self.a = self._logic(self.a ^ self.fetch())
@@ -684,7 +680,60 @@ class Z80:
             reg = self.ix
         else:
             reg = self.iy
-        if op2 == 0x21:
+        if op2 == 0xCB:  # DD/FD CB d op: rotate/bit/res/set on (ix+d)
+            off = self.fetch()
+            if off & 0x80: off -= 256
+            addr = (reg + off) & 0xFFFF
+            op3 = self.fetch()
+            v = self.rd(addr)
+            regs = {0: 'b', 1: 'c', 2: 'd', 3: 'e', 4: 'h', 5: 'l', 7: 'a'}
+            if op3 < 0x40:  # rotate/shift memory, copy to register
+                grp = (op3 >> 3) & 7
+                if grp == 0:    # rlc
+                    c = (v >> 7) & 1
+                    v = ((v << 1) | c) & 0xFF
+                    self.CF = c
+                elif grp == 1:  # rrc
+                    c = v & 1
+                    v = ((v >> 1) | (c << 7)) & 0xFF
+                    self.CF = c
+                elif grp == 2:  # rl
+                    c = (v >> 7) & 1
+                    v = ((v << 1) | self.CF) & 0xFF
+                    self.CF = c
+                elif grp == 3:  # rr
+                    c = v & 1
+                    v = ((v >> 1) | (self.CF << 7)) & 0xFF
+                    self.CF = c
+                elif grp == 4:  # sla
+                    c = (v >> 7) & 1
+                    v = (v << 1) & 0xFF
+                    self.CF = c
+                elif grp == 5:  # sra
+                    c = v & 1
+                    v = (v >> 1) | (v & 0x80)
+                    self.CF = c
+                else:           # srl
+                    c = v & 1
+                    v = v >> 1
+                    self.CF = c
+                self.wr(addr, v)
+                r = op3 & 7
+                if r != 6:
+                    setattr(self, regs[r], v)
+                self.ZF = v == 0
+                self.SNF = (v & 0x80) != 0
+                self.PV = (bin(v).count('1') & 1) == 0
+            elif op3 < 0x80:  # bit n,(ix+d)
+                bit = (op3 >> 3) & 7
+                self.ZF = not ((v >> bit) & 1)
+            elif op3 < 0xC0:  # res n,(ix+d)
+                bit = (op3 >> 3) & 7
+                self.wr(addr, v & ~(1 << bit) & 0xFF)
+            else:             # set n,(ix+d)
+                bit = (op3 >> 3) & 7
+                self.wr(addr, v | (1 << bit))
+        elif op2 == 0x21:
             if op == 0xDD:
                 self.ix = self.fetch16()
             else:
@@ -697,6 +746,16 @@ class Z80:
                 self.iy = v
         elif op2 == 0x22:  # ld (nn),ix/iy
             self.wr16(self.fetch16(), reg)
+        elif op2 == 0x23:  # inc ix/iy
+            if op == 0xDD:
+                self.ix = (self.ix + 1) & 0xFFFF
+            else:
+                self.iy = (self.iy + 1) & 0xFFFF
+        elif op2 == 0x2B:  # dec ix/iy
+            if op == 0xDD:
+                self.ix = (self.ix - 1) & 0xFFFF
+            else:
+                self.iy = (self.iy - 1) & 0xFFFF
         elif op2 == 0xE5:  # push ix/iy
             self.push16(self.ix if op == 0xDD else self.iy)
         elif op2 == 0xE1:  # pop ix/iy

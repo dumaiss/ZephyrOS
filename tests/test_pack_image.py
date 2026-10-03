@@ -72,6 +72,8 @@ class MinimalImageCase:
                 "     00002000  _kernel_main                     main",
                 "     00002100  zos_syscall_dispatch             syscall_entry",
                 "     00002200  _irq_dispatch                    irq",
+                "     0000A000  __driver_arena_start             arena",
+                "     0000C000  __driver_arena_end               arena",
             ]
         )
 

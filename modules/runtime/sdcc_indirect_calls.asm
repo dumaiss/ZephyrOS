@@ -1,0 +1,26 @@
+; -----------------------------------------------------------------------------
+; Module-local SDCC runtime glue, shared by every ZMOD that needs it.
+;
+; A ZMOD is linked at base zero and may not import kernel symbols, so the
+; freestanding indirect-call trampolines the SDCC z80 code generator emits
+; (___sdcc_call_iy / ___sdcc_call_hl) must be provided inside each module
+; image.  The kernel's own copy (kernel/runtime/sdcc_helpers.asm) is
+; deliberately NOT referenced: importing it would be a forbidden external
+; reference, while these intra-module calls are made position-independent
+; by ZREL_ABS16 relocation once the loader has chosen an arena address.
+;
+; This one source is compiled to a relocatable object and packed into every
+; ZMOD that needs it (the SIO module variants and the synthetic test
+; fixtures); each packed container carries its own copy.
+; -----------------------------------------------------------------------------
+
+	.module sdcc_indirect_calls
+	.globl ___sdcc_call_iy, ___sdcc_call_hl
+
+	.area _CODE
+
+___sdcc_call_iy::
+	jp	(iy)
+
+___sdcc_call_hl::
+	jp	(hl)

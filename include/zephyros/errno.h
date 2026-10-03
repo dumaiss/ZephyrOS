@@ -23,5 +23,7 @@
 #define ZOS_ENOTSUP   0x07 /* operation not supported by the device */
 #define ZOS_ETIMEDOUT 0x08 /* bounded poll expired */
 #define ZOS_EAGAIN    0x09 /* no data available right now */
+#define ZOS_EIO       0x0A /* corrupt/truncated/overlapping data */
+#define ZOS_EINIT     0x0B /* module/driver initialization refused */
 
 #endif /* ZEPHYROS_ERRNO_H */

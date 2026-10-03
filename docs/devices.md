@@ -1,15 +1,17 @@
-# ZephyrOS Device, Driver, and Console Model (M3, implemented)
+# ZephyrOS Device, Driver, and Console Model (M3 + M4, implemented)
 
-This document describes the implemented M3 device layer: the fixed device
-registry, the driver contract and static driver table, the SIO0/B driver,
-and the console service.  The architectural contract is
-`docs/architecture.md` sections 20-21; this file records what the build
-actually places where and how it is validated.
+This document describes the implemented device layer: the fixed device
+registry, the driver contract and driver table, the SIO0/B driver (a
+dynamically loaded module since M4 stage 08), and the console service.
+The architectural contract is `docs/architecture.md` sections 20-22; this
+file records what the build actually places where and how it is validated.
 
-M3 keeps every driver statically linked into the kernel image.  M4 will
-replace the *source of driver code* (relocatable modules loaded into the
-bank-7 driver arena); the registry, capability, and driver-ABI model below
-does not change.
+M3 introduced the model with every driver statically linked.  M4 replaced
+the *source of driver code*: the SIO driver is packed as a relocatable
+ZMOD module (`docs/module-format.md`) and loaded into the bank-7 driver
+arena from the embedded catalog during boot.  The registry, capability,
+and driver-ABI model below did not change; the only static drivers left
+are the test-only ones compiled into `ZOS_M3_SELFTEST` builds.
 
 ## 1. Concepts
 
@@ -71,7 +73,7 @@ that snapshot (wrap-safe generation comparison) and returns how many were
 removed.  Entries registered by earlier drivers are never touched.  This
 is the same transaction boundary M4 reuses for module loads.
 
-## 3. Driver contract and static table
+## 3. Driver contract (module API)
 
 `include/zephyros/driver.h`:
 
@@ -83,43 +85,53 @@ struct zdriver_api {
         int (*irq_claim)(irq_source_t, irq_handler_t, void *);
         int (*irq_release)(irq_source_t);
 };
-
-struct zdriver {
-        const char *name;
-        uint8_t abi_version;
-        int (*init)(const struct zdriver_api *api);
-};
 ```
 
 - Init convention: `ZDRIVER_OK` (0) or `ZDRIVER_FAIL` (-1).
-- The explicit null-terminated `boot_drivers[]` table lives in
-  `kernel/device/driver.c`; there is no linker-section discovery.
-- `driver_init_static()` rejects drivers whose `abi_version` does not
-  match `ZDRIVER_ABI_VERSION` (their init never runs), runs each accepted
-  init through the checkpoint/rollback transaction, and returns the number
-  of failed drivers.
-- Drivers are not offered any other kernel service at M3.  In particular
-  they never touch `I`, the IM2 page, the memory mode, the IRQ stacks, or
-  `RETI`; those belong to the M2 executive.
+- This API is the interface the M4 loader passes to a loaded ZMOD
+  module.  The M3 static driver table (`struct zdriver`,
+  `boot_drivers[]`, `driver_init_static()`) is **retired**: no static
+  driver table is linked into production images, and
+  `tools/mapcheck.py --production` rejects any acceptance or
+  static-driver symbol that would creep back in.
+- Drivers are not offered any other kernel service: they never touch `I`,
+  the IM2 page, the memory mode, the IRQ stacks, or `RETI`; those belong
+  to the M2 executive.
 
 Boot order in `kernel_main()` (after the M1/M2 stages):
 
 ```text
 irq_init()
 banner (early console)
-[M1/M2 self-tests in test builds]
+[TEST-ONLY HOOK: zos_target_test_early() in acceptance builds]
 device_registry_init()
-driver_init_static()          ; each driver registers its device(s)
+module_loader_init()
+[platform_ctc0_test_start() in the M4 IRQ acceptance image]
+module_catalog_load_all()     ; the packed SIO module registers sio0.b
+[platform_ctc0_stop()]
 console_bind_defaults()       ; capability lookup
-console line via console service
-[M3 self-test in test builds]
+dynamic console line via console service
+[TEST-ONLY HOOK: zos_target_test_late() in acceptance builds]
 halt loop
 ```
 
-## 4. SIO0/B static driver
+Acceptance code is selected only under `tests/target/support/`; the two
+hooks above are the entire production-side integration surface.
 
-`drivers/sio/` (`sio_io.asm`, `sio.c`, `driver.c`, `sio.h`):
+## 4. SIO0/B module driver
 
+`drivers/sio/` (`sio_io.asm`, `sio.c`, `sio_module.c`, `sio.h`, plus the
+production manifest `modules/manifests/sio.json` and the shared
+module-runtime glue `modules/runtime/sdcc_indirect_calls.asm`):
+
+- The driver code is built, packed, and embedded as a ZMOD module; no SIO
+  symbol is linked into the kernel image (enforced by `mapcheck.py`).
+  Module sources must avoid byte-fragmented relocations, so the device
+  descriptor is a `static const` and the module provides its own
+  `___sdcc_call_iy/hl` glue (`docs/module-format.md` section 6).
+  `sio_module.c` is production-only; the IRQ self-test and init-failure
+  entries live under `tests/modules/` (`sio_irq_module.c`,
+  `sio_fail_module.c`) with their own manifests.
 - Ports: data `22h`, control `23h`; 115200 8N1, polled, interrupts stay
   disabled (`WR1 = 00h`).
 - Registers exactly one device named `sio0.b`, class `ZDEV_SERIAL`, with
@@ -134,8 +146,8 @@ halt loop
     timeout after the first byte);
   - `poll` returns 1/0 for RX-available;
   - `getc` returns the byte, or `ZDEV_EAGAIN` when nothing is pending.
-- Driver-private state (`sio0b_state`, bank-7 data) tracks timeout/read
-  counters; the registry only holds an opaque pointer to it.
+- Driver-private state lives in the module's zero-initialized allocation
+  (relocated `_DATA`); the registry only holds the relocated pointer.
 
 The early console (`kernel/early_console.c`, common memory) remains a
 completely separate, direct access path used by boot and panic.  Panic
@@ -162,73 +174,94 @@ output never depends on the registry, the driver, or the console service.
 | `console_poll` | `ZDEV_ENODEV` | `ZDEV_ENOTSUP` | 1/0 / error |
 | `console_getc` | `ZDEV_ENODEV` | `ZDEV_ENOTSUP` | byte / `ZDEV_EAGAIN` |
 
-Normal boot prints its acceptance line through this service:
+Normal boot prints its acceptance line through this service (the device
+is the dynamically loaded module):
 
 ```text
-console: sio0.b OK
+console: dynamic sio0.b OK
 ```
 
-### 5.1 Fallback build options
+### 5.1 Failure-path evidence
 
-Two compile-time options prove that the early diagnostic path is
-independent of the device layer:
+The retired M3 fallback flags (`ZOS_M3_NO_STATIC_DRIVERS`,
+`ZOS_M3_NO_CONSOLE_BIND`) no longer exist.  The M4 acceptance matrix is
+the fallback evidence:
 
-```sh
-make m3-fallback      # builds both variant images
-```
-
-| Option | Behavior | Early-console diagnostic |
+| Scenario | Behavior | Early-console diagnostic |
 | --- | --- | --- |
-| `ZOS_M3_NO_STATIC_DRIVERS=1` | skips `driver_init_static()` and binding | `console: static drivers disabled` |
-| `ZOS_M3_NO_CONSOLE_BIND=1` | runs drivers, skips binding | `console: binding disabled` |
+| runtime failure | module load/init reports failures (`make m4-failure-selftest`, `tests/modules/sio_fail_module.c`) | `console: dynamic driver failed` |
 | runtime failure | binding finds no suitable device | `console: unbound` |
 | runtime service failure | bound device reports an error | `console: service failed` |
 
-The fallback images keep the full M0 banner and panic path.
+Every production image keeps the full M0 banner and panic path.
 
 ## 6. Drivers and interrupts
 
-A static driver may claim an M2 logical source through
+A loaded module may claim an M2 logical source through
 `zdriver_api.irq_claim` and receives a bank-7 handler; the executive maps
 bank 7 before dispatch and owns the final `RETI`.  The production SIO
-driver stays polling-only.  The test-only probe driver
-(`drivers/test/irq_probe.c`, `ZOS_M3_SELFTEST` builds) proves the path on
-hardware: it claims `IRQ_CTC0` during init, a bounded EI spin receives
-repeated deliveries, the handler records mode-11 mapping and bank-7 ISR
-stack placement, then the source is released and CTC0 quiesced.
+module stays polling-only.  Two test paths prove the IRQ integration:
+
+- the M3 target test (`tests/target/m3/m3_irq_probe.c`) claims
+  `IRQ_CTC0` directly, a bounded EI spin receives repeated deliveries,
+  the handler records mode-11 mapping and bank-7 ISR stack placement,
+  then the source is released and CTC0 quiesced;
+- the SIO IRQ self-test module variant
+  (`tests/modules/sio_irq_module.c`, `tests/modules/sio-irq.json`,
+  `make m4-selftest`) claims `IRQ_CTC0` from its *relocated* init while
+  the kernel keeps CTC0 running with the M2 lock held (pre-claim ticks
+  stay pending — an unowned dispatch would quiesce the timer), counts
+  three deliveries inside a bounded EI spin, verifies its relocated
+  state pointer, and releases the source before registering the device.
 
 ## 7. Placement and validation
 
-All M3 driver/service code, descriptors, ops tables, and private state
-live in bank 7 (`_CODE`/`_DATA`, below the `DF00h` ISR stack); none of it
-may enter permanent common memory.  `tools/mapcheck.py` enforces this
-with an explicit symbol list and a prefix sweep over `_device_`,
-`_console_`, `_sio0b_`, `_sio_`, `_driver_`, `_boot_drivers`, `_m3_`
-symbols.
+All driver/service code, descriptors, ops tables, and state live in
+bank 7 (linked `_CODE`/`_DATA` for the remaining kernel objects; the
+loaded module inside the reserved arena).  None of it may enter permanent
+common memory.  `tools/mapcheck.py` enforces this with an explicit symbol
+list and a prefix sweep over `_device_`, `_console_`, and `_m3_` symbols
+(the M3 acceptance symbols remain bank-7-resident in test images).  A
+rejection sweep fails the build on any linked `_sio_`, `_sio0b_`, or
+`_sio_driver` symbol (the SIO driver may exist only as a module), and
+`mapcheck.py --production` additionally rejects every acceptance symbol
+(static-driver remnants, test runners/results, fixture catalogs, test SIO
+module entries) in the production image.
 
 Host validation layers:
 
-- `tests/test_m3.py` – constant contract (classes, capabilities, negated
-  errno statuses, driver ABI version), mapcheck bank-7 rules, fallback
-  image artifacts, and static linker-file/object consistency.
+- `tests/test_m3.py`, `tests/test_m4.py` – constant contracts, mapcheck
+  rules (including the static-SIO rejection and arena ownership),
+  catalog embedding identity, placement-base shift, fallback image
+  artifacts, and linker-file/object consistency.
 - `tests/test_m3_sim.py` – replays the real linked M3 code in the Z80
-  simulator: boot C-runtime init, registry/driver/console sequence, the
-  full target self-test (registry semantics, rollback, exhaustion, ABI
-  rejection, console TX/RX through the SIO ports, IRQ probe through the
-  M2 executive with injected CTC0 vectors), and a production `kernel_main`
-  boot replay ending at `console: sio0.b OK`.
-- `make m3-selftest` – the physical acceptance image (banner + syscall +
-  IRQ + M3 self-tests + interactive console RX).
+  simulator: boot C-runtime init, registry/driver/module-load/console
+  sequence, the full target self-test (registry semantics, rollback,
+  exhaustion, ABI rejection, console TX/RX through the SIO ports, IRQ
+  probe through the M2 executive with injected CTC0 vectors), and a
+  production `kernel_main` boot replay ending at
+  `console: dynamic sio0.b OK`.
+- `tests/test_m4_sim.py` – replays the loader and the dynamic-driver
+  acceptance images (module catalog load with injected CTC0 deliveries,
+  failure-image rollback, shifted placement) in the same simulator.
+- `make m3-selftest` / `make m4-selftest` / `make m4-placement-selftest`
+  / `make m4-failure-selftest` – the physical acceptance images.
 - `make smoke-hardware-m3 SERIAL_PORT=...` – driving the acceptance image:
   captures the transcript and sends the `R` byte when the kernel announces
   `m3 selftest: ready for RX`.
+- `make smoke-hardware-m4 SERIAL_PORT=...` /
+  `make smoke-hardware-m4-failure SERIAL_PORT=...` – capture the dynamic
+  console line plus `m4 selftest: OK` (or the failure transcript plus
+  `m4 failure selftest: OK`).
 
 SIO0/B timings, CTC0 delivery, and console RX remain physical-hardware
 authorities; the simulations cover control flow and register-level
 behavior.
 
-## 8. Out of scope at M3
+## 8. Out of scope
 
-No heap, no dynamic modules/unload, no hot-plug, no filesystem, no process
-API, and no user-visible device syscall.  M4 adds the module loader and
-the embedded relocatable SIO driver on top of this unchanged model.
+No heap, no module unload or hot-plug, no filesystem, no process API, and
+no user-visible device syscall.  M4 stages 07-08 (this document plus
+`docs/module-format.md`) delivered the loader and the embedded
+relocatable SIO driver; the registry, capability, and console model above
+is unchanged from M3.

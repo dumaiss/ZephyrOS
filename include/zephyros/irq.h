@@ -27,6 +27,17 @@ void irq_init(void);
 int irq_claim(irq_source_t source, irq_handler_t handler, void *context);
 int irq_release(irq_source_t source);
 
+/* Claim transactions used around module/driver initialization.  A
+ * checkpoint snapshots the claim serial; rollback releases exactly the
+ * claims made after it (wrap-safe) and returns how many were released.
+ * Claims made before the checkpoint are never touched.  The owner token
+ * is recorded with each claim for diagnostics/ownership checks. */
+typedef uint16_t irq_checkpoint_t;
+irq_checkpoint_t irq_registry_checkpoint(void);
+int irq_registry_rollback(irq_checkpoint_t checkpoint);
+void irq_registry_set_owner(const void *owner);
+const void *irq_registry_owner(void);
+
 uint16_t irq_unexpected_count(void);
 uint16_t irq_unclaimed_count(void);
 irq_source_t irq_last_source(void);
@@ -44,9 +55,5 @@ void platform_ctc0_stop(void);
  * assembly helpers of the M2 executive, not a driver ABI. */
 uint8_t irq_arch_lock(void);
 void irq_arch_unlock(uint8_t enabled);
-
-#if ZOS_IRQ_SELFTEST
-void zos_run_irq_selftest(void);
-#endif
 
 #endif

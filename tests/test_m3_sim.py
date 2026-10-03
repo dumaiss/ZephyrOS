@@ -7,8 +7,9 @@ the boot path would:
 
   1. the boot C-runtime initialization (zero/copy/GSINIT), because M3
      driver ops tables are initialized data,
-  2. irq_init(), device_registry_init(), driver_init_static(), and
-     console_bind_defaults(),
+  2. irq_init(), device_registry_init(), driver_init_static(), the M4
+     module loader initialization and the embedded SIO module catalog
+     load, and finally console_bind_defaults(),
   3. the full `zos_run_m3_selftest` C driver: registry semantics,
      checkpoint/rollback, exhaustion, ABI rejection, console TX/RX, and
      the static IRQ probe claiming CTC0 through the M2 executive (one
@@ -59,11 +60,14 @@ def run_function(z, addr, limit=STEP_LIMIT):
 
 
 def run_m3_boot(z, syms):
-    """Mirror kernel_main's M3 section (without the ~1 s connect delay)."""
+    """Mirror kernel_main's device-layer boot section (without the
+    ~1 s connect delay): registry, the embedded SIO module through the
+    dynamic loader, then the console binding."""
     run_function(z, syms["__zos_crt0_init"])
     run_function(z, syms["_irq_init"])
     run_function(z, syms["_device_registry_init"])
-    run_function(z, syms["_driver_init_static"])
+    run_function(z, syms["_module_loader_init"])
+    run_function(z, syms["_module_catalog_load_all"])
     run_function(z, syms["_console_bind_defaults"])
 
 
@@ -118,12 +122,12 @@ class TestM3SelftestSim(unittest.TestCase):
         z = self.make_cpu()
         run_m3_boot(z, self.syms)
 
-        # Driver table: sio + probe OK, partial + bad-ABI failed.  SDCC
-        # returns uint8_t values in A.
-        run_function(z, self.syms["_driver_static_count"])
-        self.assertEqual(z.a, 4, "driver table size")
-        run_function(z, self.syms["_driver_static_failed"])
-        self.assertEqual(z.a, 2, "failed driver count")
+        # The SIO device arrives through the module catalog load only;
+        # the retired static driver table must not be linked anywhere.
+        run_function(z, self.syms["_module_count"])
+        self.assertEqual(z.a, 1, "boot module not resident")
+        run_function(z, self.syms["_module_free_granules"])
+        self.assertEqual(z.a, 15, "boot module granule accounting")
 
         # The RX test consumes exactly the byte the operator/script sends.
         z.sio_rx.append(M3_RX_BYTE)
@@ -186,7 +190,7 @@ class TestM3ProductionBoot(unittest.TestCase):
 
     The ~1 s serial-connect delay is skipped by recognizing its exported
     entry symbol, so the replay runs the real boot sequence: bank
-    validation, irq_init, early banner, registry/driver/console init, and
+    validation, irq_init, early banner, registry loader/console boot, and
     the console-service acceptance line, ending in the halt loop.
     """
 
@@ -228,7 +232,7 @@ class TestM3ProductionBoot(unittest.TestCase):
         tx = bytes(z.sio_tx)
         for line in (b"ZephyrOS 0.0\r\n", b"platform: Zephyr-80\r\n",
                      b"kernel entry: OK\r\n", b"serial: OK\r\n",
-                     b"HALT\r\n", b"console: sio0.b OK\r\n"):
+                     b"HALT\r\n", b"console: dynamic sio0.b OK\r\n"):
             self.assertIn(line, tx, "boot transcript missing %r" % line)
         self.assertNotIn(b"PANIC", tx)
 

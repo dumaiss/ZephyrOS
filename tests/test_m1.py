@@ -17,14 +17,20 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import mapcheck  # noqa: E402
 
-HARDWARE_H = os.path.join(ROOT, "platform", "zephyr80", "hardware.h")
-HARDWARE_INC = os.path.join(ROOT, "platform", "zephyr80", "hardware.inc")
-SELFTEST_H = os.path.join(ROOT, "include", "zephyros", "selftest.h")
-SELFTEST_INC = os.path.join(ROOT, "platform", "zephyr80", "selftest.inc")
-IRQ_SELFTEST_H = os.path.join(ROOT, "include", "zephyros", "irq_selftest.h")
-IRQ_SELFTEST_INC = os.path.join(ROOT, "platform", "zephyr80", "irq_selftest.inc")
+PLATFORM_DIR = os.path.join(ROOT, "platform", "zephyr80")
+TARGET_TEST_INC = os.path.join(ROOT, "tests", "target", "include")
+HARDWARE_H = os.path.join(PLATFORM_DIR, "hardware.h")
+HARDWARE_INC = os.path.join(PLATFORM_DIR, "hardware.inc")
+MEMORY_H = os.path.join(PLATFORM_DIR, "memory.h")
+MEMORY_INC = os.path.join(PLATFORM_DIR, "memory.inc")
+IRQ_H = os.path.join(PLATFORM_DIR, "irq.h")
+IRQ_INC = os.path.join(PLATFORM_DIR, "irq.inc")
+SELFTEST_H = os.path.join(TARGET_TEST_INC, "selftest.h")
+SELFTEST_INC = os.path.join(TARGET_TEST_INC, "selftest.inc")
+IRQ_SELFTEST_H = os.path.join(TARGET_TEST_INC, "irq_selftest.h")
+IRQ_SELFTEST_INC = os.path.join(TARGET_TEST_INC, "irq_selftest.inc")
 
-REQUIRED_CONSTANTS = (
+REQUIRED_HARDWARE_CONSTANTS = (
     "ZOS_MEMCTL_PORT",
     "ZOS_SIO0A_DATA", "ZOS_SIO0A_CTRL",
     "ZOS_SIO0B_DATA", "ZOS_SIO0B_CTRL",
@@ -38,8 +44,27 @@ REQUIRED_CONSTANTS = (
     "ZOS_SIO_WR0_CHANNEL_RESET", "ZOS_SIO_WR4_X16_1STOP_NOPARITY",
     "ZOS_SIO_WR3_RX8_AUTO_ENABLES", "ZOS_SIO_WR5_TX8_DTR_RTS_RELEASE",
     "ZOS_SIO_WR1_INT_DISABLED", "ZOS_SIO_TX_TIMEOUT",
-    "ZOS_CTC0_PORT", "ZOS_CTC0_VECTOR_BASE", "ZOS_CTC0_CONTROL_TEST",
-    "ZOS_CTC0_TIME_CONSTANT", "ZOS_CTC0_RESET", "ZOS_IM2_I_VALUE",
+    "ZOS_CTC0_PORT", "ZOS_CTC0_CONTROL_TEST",
+    "ZOS_CTC0_TIME_CONSTANT", "ZOS_CTC0_RESET",
+)
+
+REQUIRED_MEMORY_CONSTANTS = (
+    "ZOS_RESET_TOP", "ZOS_PAGE_ZERO_END",
+    "ZOS_BANK7_BASE", "ZOS_BANK7_LOAD_END", "ZOS_BANK7_RUNTIME_END",
+    "ZOS_IRQ_ISR_STACK_BASE", "ZOS_IRQ_ISR_STACK_TOP",
+    "ZOS_IRQ_ISR_STACK_SIZE",
+    "ZOS_DRIVER_ARENA_BASE", "ZOS_DRIVER_ARENA_END",
+    "ZOS_DRIVER_GRANULE_SIZE", "ZOS_DRIVER_GRANULES",
+    "ZOS_COMMON_BASE", "ZOS_COMMON_CODE_END", "ZOS_COMMON_STACK_BASE",
+    "ZOS_STACK_INIT_SP", "ZOS_GATE_STACK_SIZE",
+    "ZOS_ROM_PAGE_SIZE", "ZOS_BOOT_IMAGE_SIZE",
+)
+
+REQUIRED_IRQ_CONSTANTS = (
+    "ZOS_IRQ_VECTOR_BASE", "ZOS_IRQ_VECTOR_SIZE",
+    "ZOS_IRQ_STATE_BASE", "ZOS_IRQ_STATE_HEADER_SIZE",
+    "ZOS_IRQ_STACK_BASE", "ZOS_IRQ_STACK_TOP", "ZOS_IRQ_STACK_SIZE",
+    "ZOS_IM2_I_VALUE", "ZOS_CTC0_VECTOR_BASE",
 )
 
 
@@ -175,9 +200,64 @@ class TestConstantParity(unittest.TestCase):
         self.asm = parse_asm_inc(HARDWARE_INC)
 
     def test_required_constants_present_in_both(self):
-        for name in REQUIRED_CONSTANTS:
+        for name in REQUIRED_HARDWARE_CONSTANTS:
             self.assertIn(name, self.c, "hardware.h missing %s" % name)
             self.assertIn(name, self.asm, "hardware.inc missing %s" % name)
+
+    def test_shared_constants_have_identical_values(self):
+        for name in sorted(set(self.c) & set(self.asm)):
+            cv = evaluate(self.c[name], self.c)
+            av = evaluate(self.asm[name], self.asm)
+            self.assertEqual(cv, av,
+                             "%s differs: C %s = %d, asm %s = %d"
+                             % (name, self.c[name], cv, self.asm[name], av))
+
+    def test_moved_constants_not_duplicated(self):
+        moved = ("ZOS_IM2_I_VALUE", "ZOS_CTC0_VECTOR_BASE")
+        for name in moved:
+            self.assertNotIn(name, self.c, "hardware.h still defines %s" % name)
+            self.assertNotIn(name, self.asm, "hardware.inc still defines %s" % name)
+
+
+class TestMemoryConstantParity(unittest.TestCase):
+    """memory.h and memory.inc must stay value-identical."""
+
+    def setUp(self):
+        self.c = parse_c_header(MEMORY_H)
+        self.asm = parse_asm_inc(MEMORY_INC)
+
+    def test_required_constants_present_in_both(self):
+        for name in REQUIRED_MEMORY_CONSTANTS:
+            self.assertIn(name, self.c, "memory.h missing %s" % name)
+            self.assertIn(name, self.asm, "memory.inc missing %s" % name)
+
+    def test_shared_constants_have_identical_values(self):
+        for name in sorted(set(self.c) & set(self.asm)):
+            cv = evaluate(self.c[name], self.c)
+            av = evaluate(self.asm[name], self.asm)
+            self.assertEqual(cv, av,
+                             "%s differs: C %s = %d, asm %s = %d"
+                             % (name, self.c[name], cv, self.asm[name], av))
+
+    def test_irq_wiring_constants_not_duplicated(self):
+        for name in ("ZOS_IRQ_VECTOR_BASE", "ZOS_IRQ_STATE_BASE",
+                     "ZOS_IRQ_STACK_BASE", "ZOS_IM2_I_VALUE",
+                     "ZOS_CTC0_VECTOR_BASE"):
+            self.assertNotIn(name, self.c, "memory.h still defines %s" % name)
+            self.assertNotIn(name, self.asm, "memory.inc still defines %s" % name)
+
+
+class TestIrqConstantParity(unittest.TestCase):
+    """irq.h and irq.inc must stay value-identical."""
+
+    def setUp(self):
+        self.c = parse_c_header(IRQ_H)
+        self.asm = parse_asm_inc(IRQ_INC)
+
+    def test_required_constants_present_in_both(self):
+        for name in REQUIRED_IRQ_CONSTANTS:
+            self.assertIn(name, self.c, "irq.h missing %s" % name)
+            self.assertIn(name, self.asm, "irq.inc missing %s" % name)
 
     def test_shared_constants_have_identical_values(self):
         for name in sorted(set(self.c) & set(self.asm)):
@@ -333,14 +413,19 @@ def make_map(overrides=None, **kw):
         "_console_bind": 0x2400, "_console_bind_defaults": 0x2430,
         "_console_putc": 0x2460, "_console_write": 0x2480,
         "_console_poll": 0x24A0, "_console_getc": 0x24B0,
-        "_sio0b_hw_init": 0x2500, "_sio0b_putc": 0x2520,
-        "_sio0b_write": 0x2540, "_sio0b_poll": 0x2560,
-        "_sio0b_getc": 0x2580, "_sio0b_status": 0x25A0,
-        "_sio0b_write_ctrl": 0x25B0, "_sio0b_read_data": 0x25C0,
-        "_sio0b_write_data": 0x25D0, "_sio_driver": 0x2600,
         "_device_table": 0xC200, "_console_in_handle": 0xC300,
-        "_console_out_handle": 0xC301, "_sio0b_ops": 0xC310,
-        "_sio0b_state": 0xC330, "_boot_drivers": 0xC340,
+        "_console_out_handle": 0xC301, "_boot_drivers": 0xC340,
+        "_module_loader_init": 0x2700, "_module_load": 0x2720,
+        "_module_catalog_load_all": 0x2780, "_module_count": 0x27A0,
+        "_module_free_granules": 0x27B0, "_module_failed_count": 0x27C0,
+        "_module_get": 0x27D0, "_module_code_allowed": 0x27E0,
+        "_zmod_validate_container": 0x2800, "_zmod_copy_image": 0x2880,
+        "_zmod_zero_bss": 0x28A0, "_zmod_apply_relocations": 0x28C0,
+        "_zmod_zero_allocation": 0x2900,
+        "_irq_registry_checkpoint": 0x2920,
+        "_irq_registry_rollback": 0x2940,
+        "_irq_registry_set_owner": 0x2960,
+        "__driver_arena_start": 0xA000, "__driver_arena_end": 0xC000,
         "irq_vector_page": 0xFD00, "irq_vector_guard": 0xFE00,
         "irq_saved_latch": 0xFE01, "irq_saved_sp": 0xFE02,
         "irq_common_sp": 0xFE04, "_irq_active_source": 0xFE06,

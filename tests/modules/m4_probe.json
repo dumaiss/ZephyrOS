@@ -1,0 +1,11 @@
+{
+  "name": "m4.probe",
+  "type": "driver",
+  "abi": 1,
+  "flags": 0,
+  "objects": ["m4_probe.rel", "sdcc_indirect_calls.rel"],
+  "image_areas": ["_CODE"],
+  "bss_areas": ["_DATA"],
+  "init": "m4_probe_init",
+  "fini": null
+}

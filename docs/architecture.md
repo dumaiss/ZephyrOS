@@ -1,6 +1,6 @@
 # ZephyrOS Architecture
 
-**Status:** M0/M1/M2/M3 complete; M4 architecture defined  
+**Status:** M0/M1/M2/M3 complete; M4 complete (stage 07 loader, stage 08 dynamic-driver acceptance — acceptance, placement, and failure images hardware-validated 2026-10-02)  
 **Scope:** Milestones M0 through M4  
 **Target:** Zephyr-80  
 **Language/toolchain:** SDCC + sdasz80/sdldz80, GNU Make, Python host tools
@@ -154,21 +154,36 @@ ZephyrOS/
 │   │
 │   ├── device/
 │   │   ├── registry.c
-│   │   ├── driver.c
 │   │   └── console.c
 │   │
 │   └── module/
 │       ├── loader.c
 │       ├── relocate.c
+│       ├── arena.asm
 │       └── embedded.c
 │
 ├── drivers/
 │   ├── sio/
 │   │   ├── sio.c
+│   │   ├── sio.h
 │   │   ├── sio_io.asm
-│   │   └── driver.c
+│   │   └── sio_module.c
 │   └── ctc/
 │       └── ctc.c
+│
+├── modules/
+│   ├── manifests/
+│   │   └── sio.json
+│   └── runtime/
+│       └── sdcc_indirect_calls.asm
+│
+├── tests/
+│   ├── modules/
+│   │   └── sio_irq_module.c, sio_fail_module.c, *.json
+│   └── target/
+│       ├── m1/ .. m4/
+│       ├── include/
+│       └── support/
 │
 ├── platform/
 │   └── zephyr80/
@@ -1682,6 +1697,15 @@ Rules:
 
 ## 20.5 Driver descriptor
 
+> **Retirement notice (stage 10).** The static driver table described in
+> sections 20.5-20.7 (`struct zdriver`, `boot_drivers[]`,
+> `driver_init_static()`) is **retired**.  Since M4 the kernel boots only
+> embedded ZMOD drivers; production images link no static driver table.
+> These sections are retained as M3 milestone history and must not be read
+> as the current production tree.  The `zdriver_api` contract itself is
+> still current: it is the interface the loader passes to a loaded module
+> (`drivers/sio/sio_module.c` is the production example).
+
 A statically linked driver exposes a descriptor and initialization entry.
 
 Conceptually:
@@ -1747,6 +1771,8 @@ If a static driver claims an IRQ source, its handler may remain in bank 7 becaus
 ---
 
 ## 20.8 SIO0/B static driver
+
+*(M3 history: since M4 stage 08 this driver is loaded as a ZMOD module\ninstead of being linked; see sections 22.9 and 22.13.  The registry,\ncapability, and console contracts below are unchanged.)*
 
 The first M3 driver wraps the same physical channel used by the early console:
 
@@ -1892,6 +1918,16 @@ __driver_arena_end
 
 The build must report arena usage.
 
+Implemented geometry (stage `07-m4-module-loader`): the initial arena is
+`A000h-BFFFh` (8192 bytes, 16 granules) between the loadable kernel image
+and the `C000h-DFFFh` runtime area, declared in
+`platform/zephyr80/memory.inc`, exported by `kernel/module/arena.asm`, and
+enforced by `tools/mapcheck.py` / `tools/pack_image.py` (no kernel
+section, stack, or ROM payload may occupy it).  The build prints arena
+geometry plus free granules, and `zephyros.manifest.json` carries an
+`arena` object.  Concrete loader behavior, error codes, and tooling are
+documented in `docs/module-format.md`.
+
 ---
 
 ## 22.3 Module format
@@ -1921,6 +1957,11 @@ fini_offset         optional / may be zero
 reloc_offset
 reloc_count
 ```
+
+Implemented header (stage 07): a packed little-endian 28-byte structure
+with `payload_offset`, `total_size`, and a `reserved` word, pinned by
+`include/zephyros/module.h` compile-time assertions.  `docs/module-format.md`
+records the byte table and the manifest/packer contract.
 
 All addresses stored in the module are offsets relative to the module load base unless explicitly defined otherwise by a relocation record.
 
@@ -2151,6 +2192,65 @@ Numbers above are illustrative; the build reports the real values.
 
 ---
 
+## 22.13 M4 implementation notes (stages 07-08)
+
+The loader half of M4 is implemented as:
+
+```text
+include/zephyros/module.h       ZMOD v1 definitions, errors, catalog,
+                                descriptors, loader API, size asserts
+kernel/module/arena.asm         __driver_arena_start/__driver_arena_end
+kernel/module/relocate.c        container validation, copy, BSS,
+                                ZREL_ABS16 application
+kernel/module/loader.c          first-fit granule allocator, descriptors,
+                                transactional module_load, catalog load,
+                                module_code_allowed (IRQ validation hook)
+kernel/module/embedded.c        production boot-module catalog
+                                (tests/target/m4/ holds the fixture catalog)
+tests/target/m4/m4_test.c       loader/dynamic-driver acceptance test
+tools/zmodpack.py               pack/validate/dump/emit-asm
+```
+
+M2's registry gained claim serials, owner tokens, and
+checkpoint/rollback (`irq_registry_checkpoint/rollback/set_owner`) so a
+failed module init rolls back its IRQ claims exactly like its device
+registrations.  `irq_claim` now accepts handler addresses that are linked
+bank-7 code or lie inside the active/committed module images; see
+`docs/module-format.md` section 4.1.
+
+Stage 08 (`08-m4-dynamic-driver-acceptance`) then removed the static SIO
+driver from the kernel entirely; stage 10 separated production drivers,
+module packaging/runtime support, and acceptance code:
+
+```text
+drivers/sio/sio.c               SIO implementation (packed into the module)
+drivers/sio/sio_io.asm          SIO port I/O
+drivers/sio/sio_module.c        production module entry (descriptor + init)
+modules/manifests/sio.json      production module manifest
+modules/runtime/sdcc_indirect_calls.asm  shared module-local SDCC glue
+tests/modules/sio_irq_module.c  IRQ self-test variant entry
+tests/modules/sio_fail_module.c init-failure variant entry
+```
+
+* the M3 static driver table is retired: no `boot_drivers[]`,
+  `driver_init_static()`, or `_driver_static_*` symbol is linked, and
+  `tools/mapcheck.py --production` rejects any acceptance symbol;
+* every image embeds a boot module through the generated catalog:
+  `sio.zmod` (production, loader image, placement image),
+  `sio-irq.zmod` (`make m4-selftest`), or `sio-fail.zmod`
+  (`make m4-failure-selftest`);
+* the placement image regenerates `platform/zephyr80/memory.inc` with the
+  arena shifted to 9E00h-BE00h and embeds byte-identical module files;
+* `kernel_main()` prints `console: dynamic sio0.b OK` through the bound
+  module (or `console: dynamic driver failed` on load failure);
+* `tools/mapcheck.py` rejects any linked `_sio_`/`_sio0b_`/`_sio_driver`
+  symbol, so the static driver cannot return unnoticed.
+
+See `docs/module-format.md` section 6 for the pipeline and
+`docs/devices.md` for the resulting device-layer behavior.
+
+---
+
 # 23. M4 acceptance criteria
 
 M4 is accepted when:
@@ -2171,6 +2271,13 @@ M4 is accepted when:
 - a dynamically loaded handler can claim an M2 IRQ source and execute correctly from its relocated bank-7 address;
 - failed module initialization rolls back its arena allocation and registry changes;
 - no runtime unload capability is required.
+
+Evidence mapping: `tests/test_m4.py`/`tests/test_m4_sim.py` and
+`tests/test_zmod.py` prove every criterion on host (including the shifted
+placement and the failure rollback); `make m4-selftest`,
+`make m4-placement-selftest`, `make m4-failure-selftest` and the
+corresponding `smoke-hardware-*` captures provide the physical-hardware
+record (`docs/validation/2026-10-02-m4-acceptance.md`).
 
 ---
 

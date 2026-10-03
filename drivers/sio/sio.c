@@ -1,4 +1,4 @@
-/* ZephyrOS M3 static SIO0/B driver (bank 7).
+/* ZephyrOS SIO0/B driver implementation (drivers/sio/).
  *
  * Wraps the same physical channel as the early console (data 22h,
  * control 23h, 115200 8N1) but as a registered device with bounded
@@ -9,8 +9,10 @@
  * The early console and panic paths keep their direct common-resident
  * access to the hardware and do not depend on this driver.
  *
- * Driver-private state lives here, in bank-7 kernel data, and is handed
- * to the registry only as an opaque pointer.
+ * This source is compiled into the SIO ZMOD modules; the driver-private
+ * state below lives in module BSS and is relocated with the module image.
+ * The module entries (drivers/sio/sio_module.c and the test variants
+ * under tests/modules/) own the descriptor and init entry.
  */
 
 #include "zephyros/device.h"

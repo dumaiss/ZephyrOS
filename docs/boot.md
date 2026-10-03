@@ -225,8 +225,9 @@ compatible with the Zephyr-80 ROM socket.
 2. Program `build/zephyros.bin` into the ROM device.
 3. Connect a 115200 8N1 serial terminal to SIO0/B (data `22h`).
 4. Apply power / assert reset.
-5. Expected: the exact six-line banner, then the M3 console-service line
-   `console: sio0.b OK`, then the halt loop.
+5. Expected: the exact six-line banner, then the console-service line
+   `console: dynamic sio0.b OK` (the SIO driver is loaded from the
+   embedded module catalog since M4), then the halt loop.
 6. Record: image SHA-256, programmer used, serial adapter used, and the
    captured terminal output.
 

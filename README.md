@@ -32,7 +32,41 @@ M0 boot mechanics.
   service, and a test-only bank-7 IRQ probe claiming CTC0 through the M2
   executive (`docs/devices.md`).  Accepted on physical hardware
   2026-10-02 (`console: sio0.b OK`, `m3 selftest: OK`, console RX round
-  trip; see `docs/validation/2026-10-02-m3-acceptance.md`).
+  trip; see `docs/validation/2026-10-02-m3-acceptance.md`).  M4 builds of
+  the same image print `console: dynamic sio0.b OK` because the driver is
+  then loaded from the module catalog.
+- **M4 — Module loader (stage 07)**: linker-reserved `A000h-BFFFh`
+  bank-7 driver arena (16 x 512-byte granules), packed ZMOD v1 driver
+  containers, host `tools/zmodpack.py` (pack/validate/dump), a
+  transactional first-fit kernel loader with relocation, BSS, device/IRQ
+  claim rollback, and `module_code_allowed` handler validation, plus
+  synthetic fixture modules proven by `make zmod-test` and
+  `make m4-loader-selftest`.  Hardware-validated on the physical
+  Zephyr-80 2026-10-02 (`m4 loader selftest: OK`; see
+  `docs/validation/2026-10-02-m4-loader-hardware.md`).
+- **M4 — Dynamic driver acceptance (stage 08)**: the SIO driver is no
+  longer linked into the kernel.  It is packed as a ZMOD module
+  (`build/modules/sio.zmod`, plus IRQ self-test and init-failure
+  variants), embedded in every image's boot catalog, loaded through the
+  generic loader at boot, and bound by the console service
+  (`console: dynamic sio0.b OK`).  A placement image at a shifted arena
+  base (9E00h-BE00h) embeds the identical module bytes, and a failure
+  image proves exact rollback.  Hardware-validated on the physical
+  Zephyr-80 2026-10-02 after fixing a CTC0 start/claim race
+  (`console: dynamic sio0.b OK`, `m4 selftest: sio at 0xA000`; placement
+  run `sio at 0x9E00`; failure run `m4 failure selftest: OK`).
+  Proven by `make m4-selftest`, `make m4-placement-selftest`, and
+  `make m4-failure-selftest`; see `docs/module-format.md` and
+  `docs/validation/2026-10-02-m4-acceptance.md`.
+- **Stage 10 — production/test layout cleanup**: driver directories now
+  contain device implementation only (`drivers/sio/sio_module.c` is the
+  production module entry), ZMOD manifests/runtime support live under
+  `modules/`, all milestone acceptance code lives under `tests/target/`
+  and `tests/modules/` behind the single `ZOS_TARGET_TEST_BUILD` seam,
+  and the M3 static-driver path is retired.  Host validation is green
+  (`make check` plus every acceptance target); because the kernel layout
+  changed, the physical smoke runs must be repeated before citing
+  hardware acceptance for the new images (see `docs/validation/`).
 - Stage `04-m1-validation-acceptance` is accepted.
 
 ## Prerequisites
@@ -56,10 +90,24 @@ make irq-selftest
                    # target-side M2 IRQ executive image (build-irq-selftest/)
 make m3-selftest
                    # M3 acceptance image: banner + console service line +
-                   # syscall/IRQ/M3 self-tests (build-m3-selftest/)
-make m3-fallback
-                   # disabled-drivers / disabled-binding fallback images
-                   # (build-m3-nodrv/, build-m3-nobind/)
+                   # syscall/IRQ/M3 acceptance tests (build-m3-selftest/)
+make zmod-test
+                   # build/pack/validate the SIO module variants and the
+                   # synthetic ZMOD fixtures; host packer tests
+                   # (build/modules/)
+make m4-loader-selftest
+                   # M4 loader acceptance image + simulator replay
+                   # (build-m4-loader-selftest/)
+make m4-selftest
+                   # M4 dynamic-driver acceptance: embedded SIO module
+                   # (IRQ self-test variant) + simulator replay
+                   # (build-m4-selftest/)
+make m4-placement-selftest
+                   # identical module bytes at a shifted arena base
+                   # (build-m4-placement-selftest/)
+make m4-failure-selftest
+                   # init-failure module + rollback verification
+                   # (build-m4-failure/)
 make smoke-hardware SERIAL_PORT=/dev/ttyUSB0
                    # capture + verify the banner from physical hardware
 make smoke-hardware-selftest SERIAL_PORT=/dev/ttyUSB0
@@ -69,6 +117,14 @@ make smoke-hardware-irq SERIAL_PORT=/dev/ttyUSB0
 make smoke-hardware-m3 SERIAL_PORT=/dev/ttyUSB0
                    # capture the M3 transcript; sends 'R' for the console
                    # RX round trip when the kernel announces readiness
+make smoke-hardware-m4 SERIAL_PORT=/dev/ttyUSB0
+                   # capture the M4 acceptance transcript: banner +
+                   # 'console: dynamic sio0.b OK' + 'm4 loader selftest:
+                   # OK' + 'm4 selftest: sio at 0x...' + 'm4 selftest: OK'
+make smoke-hardware-m4-failure SERIAL_PORT=/dev/ttyUSB0
+                   # capture the M4 failure transcript: banner +
+                   # 'console: dynamic driver failed' +
+                   # 'm4 failure selftest: OK'
 make clean         # remove generated files under build*/
 ```
 
@@ -80,7 +136,7 @@ proves that a clean rebuild reproduces the identical binary.
 
 Physical-hardware validation uses `tools/serial_smoke.py` (115200 8N1,
 bounded timeout).  Dated acceptance records live under `docs/validation/`
-(M1, M2, and the M3 record).
+(M1, M2, the M3 record, and the M4 loader/acceptance records).
 
 Artifacts (all under `build/`):
 
@@ -91,6 +147,8 @@ page0.bin      ROM page 0 (64 KiB, copied to SRAM bank 0)
 page1.bin      ROM page 1 (64 KiB, copied to SRAM bank 7)
 zephyros.bin   128 KiB boot image (FF-filled)
 zephyr80.bin   identical copy for MAME
+modules/       packed ZMOD modules (+ dump/report JSON); embedded into
+               each image through the generated catalog blob
 ```
 
 The image is exactly 131072 bytes: ROM page 0 followed by ROM page 1.
@@ -103,7 +161,7 @@ documented in `docs/memory.md`.
 ## Run in the emulator
 
 See `docs/boot.md` for the MAME invocation and the physical-ROM test
-checklist.  Expected output (M3 adds the console-service line):
+checklist.  Expected output (M4 adds the dynamic console-service line):
 
 ```text
 ZephyrOS 0.0
@@ -111,7 +169,7 @@ platform: Zephyr-80
 kernel entry: OK
 serial: OK
 HALT
-console: sio0.b OK
+console: dynamic sio0.b OK
 ```
 
 ## Layout
@@ -120,19 +178,30 @@ console: sio0.b OK
 ZephyrOS/
 ├── Makefile
 ├── docs/                  architecture.md, boot.md, memory.md, abi.md,
-│                          devices.md
+│                          devices.md, module-format.md
 ├── include/zephyros/      types.h, platform.h, kernel.h, syscall.h,
-│                          errno.h, selftest.h, irq.h, device.h,
-│                          driver.h, console.h, m3_selftest.h
+│                          errno.h, irq.h, device.h, driver.h,
+│                          console.h, module.h
 ├── boot/start.asm         common boot entry + C runtime initialization
+├── boot/shadow_copy.asm   reset/ROM-to-SRAM copier
 ├── kernel/                main.c, panic.c, early_console.c, syscall.c,
-│                          device/ (registry.c, driver.c, console.c),
-│                          irq/
-├── drivers/               sio/ (SIO0/B static driver)
-├── platform/zephyr80/     hardware.h/.inc, memory.inc, reset.asm,
-│                          banking.asm, page_zero.asm, syscall_entry.asm,
-│                          sdcc_helpers.asm, selftest.asm/.inc
+│                          memory/ (banking.asm), syscall/ (entry.asm,
+│                          page_zero.asm), runtime/ (sdcc_helpers.asm),
+│                          device/ (registry.c, console.c),
+│                          irq/, module/ (arena.asm, loader.c,
+│                          relocate.c, embedded.c)
+├── drivers/               sio/ (sio.c, sio_io.asm, sio_module.c),
+│                          ctc/ (ctc.c)
+├── modules/               manifests/ (production ZMOD metadata),
+│                          runtime/ (shared module-local SDCC glue)
+├── platform/zephyr80/     constants/configuration only: hardware.h/.inc,
+│                          memory.h/.inc, irq.h/.inc, config.mk
 ├── linker/zephyr80.lk     sdldz80 control (canonical build/)
-├── tools/                 pack_image.py, mapcheck.py, serial_smoke.py
-└── tests/                 host-side image/layout/ABI tests + Z80 replays
+├── tools/                 pack_image.py, mapcheck.py, zmodpack.py,
+│                          serial_smoke.py
+├── tests/                 host-side image/layout/ABI tests + Z80 replays;
+│                          modules/ (test ZMOD sources + manifests);
+│                          target/ (m1..m4 acceptance code, headers,
+│                          shared runner)
+└── work/                  milestone worker contracts
 ```

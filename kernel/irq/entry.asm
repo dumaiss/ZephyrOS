@@ -2,6 +2,7 @@
 	.module irq_entry
 	.include "zephyr80/hardware.inc"
 	.include "zephyr80/memory.inc"
+	.include "zephyr80/irq.inc"
 
 	.globl _irq_dispatch
 	.globl _irq_active_source

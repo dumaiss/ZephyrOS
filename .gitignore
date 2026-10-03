@@ -1,13 +1,10 @@
 # Prerequisites
 *.d
 
-# Build output (all generated artifacts live under build/)
-build/
-build-selftest/
-build-irq-selftest/
-build-m3-selftest/
-build-m3-nodrv/
-build-m3-nobind/
+# Build output (all generated artifacts live under build* directories;
+# source directories never use a build prefix)
+/build/
+/build-*/
 work/
 docs/validation/
 

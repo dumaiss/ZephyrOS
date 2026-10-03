@@ -1,8 +1,8 @@
-/* ZephyrOS M3 driver contract (internal kernel/driver ABI).
+/* ZephyrOS driver module contract (internal kernel/module ABI).
  *
- * A statically linked driver exposes a `struct zdriver` descriptor and an
- * init entry that the kernel calls with the single `zdriver_api` block.
- * M3 intentionally exposes only three kernel services to drivers:
+ * A ZMOD driver module implements an init entry that the loader calls
+ * with the single `zdriver_api` block.  The API exposes only three kernel
+ * services:
  *
  *   device_register   publish one device instance
  *   irq_claim         claim one M2 logical IRQ source (bank-7 handler)
@@ -10,6 +10,13 @@
  *
  * Drivers never modify I, the IM2 vector page, the memory mode, IRQ
  * stacks, or execute RETI; the M2 executive owns all of that.
+ *
+ * M3 used this same API through an explicit compile-time static driver
+ * table (`struct zdriver`, `driver_init_static()`); that mechanism is
+ * retired.  Since M4 the kernel boots only embedded ZMOD drivers and no
+ * static driver table is linked into production images.  The static
+ * design is kept as historical milestone documentation in
+ * docs/architecture.md and docs/devices.md.
  */
 
 #ifndef ZEPHYROS_DRIVER_H
@@ -33,27 +40,5 @@ struct zdriver_api {
 			 void *context);
 	int (*irq_release)(irq_source_t source);
 };
-
-struct zdriver {
-	const char *name;
-	uint8_t abi_version;
-	int (*init)(const struct zdriver_api *api);
-};
-
-/* Explicit compile-time driver table, null-terminated.  M3 deliberately
- * does not use linker-section discovery; M4 replaces the source of driver
- * code, not this registry model. */
-extern const struct zdriver *const boot_drivers[];
-
-/* Initialize every driver in boot_drivers[] in order.  Each attempt runs
- * inside a registry checkpoint: a driver that fails after registering
- * devices is rolled back without touching earlier drivers.  Drivers with
- * a mismatched ABI version or an invalid descriptor are rejected before
- * their init runs.  Returns the number of failed drivers (0 = all OK). */
-int driver_init_static(void);
-
-uint8_t driver_static_count(void);
-uint8_t driver_static_failed(void);
-const struct zdriver *driver_static_last_failed(void);
 
 #endif /* ZEPHYROS_DRIVER_H */

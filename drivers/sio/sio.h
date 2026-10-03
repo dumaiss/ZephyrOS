@@ -1,7 +1,9 @@
-/* Internal interface of the static SIO0/B driver (drivers/sio/).
+/* Internal interface of the SIO0/B driver implementation (drivers/sio/).
  *
- * sio.c owns the operation table and the driver-private state; driver.c
- * owns the zdriver descriptor and init entry.  Not a kernel ABI.
+ * sio.c owns the operation table and the driver-private state; the module
+ * entries (drivers/sio/sio_module.c and the test variants under
+ * tests/modules/) own the zdevice descriptor and the module init entry.
+ * Not a kernel ABI.
  */
 
 #ifndef ZEPHYROS_DRIVERS_SIO_H
