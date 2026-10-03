@@ -5,6 +5,11 @@
       "name": "sio.zmod",
       "type": "ZMOD",
       "path": "sio.zmod"
+    },
+    {
+      "name": "zextest.zex",
+      "type": "ZEX",
+      "path": "zextest.zex"
     }
   ]
 }

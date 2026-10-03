@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS M1 native syscall gate and dispatch boundary.
+; ZephyrOS native syscall gate and dispatch boundary.
 ;
 ; Native entry is RST 30h; page zero at 0030h holds JP zos_syscall_entry
 ; (see page_zero.asm).  Everything on the crossing path is in permanent
@@ -9,16 +9,17 @@
 ; Entry state (documented ABI, docs/abi.md):
 ;   mode 10 active, interrupts disabled
 ;   A  = syscall number
-;   HL = pointer to the argument block (must lie in 0000h-1FFFh at M1)
+;   HL = pointer to the argument block (must lie in 0000h-1FFFh)
 ;   SP = caller stack, possibly in 2000h-DFFFh (hidden by mode 11)
 ;
 ; Return state:
-;   carry set, A = error code, HL = primary result
+;   carry set, A = error code, HL = primary result (carry clear: success)
 ;   BC, DE, IX, IY preserved; SP and the selected bank restored;
 ;   mode 10 restored; other flags unspecified
 ;
-; M1 is single-entry and non-reentrant; the common transition state is
-; single-depth.
+; Single-entry and non-reentrant; the common transition state is
+; single-depth.  SYS_EXIT never takes this return path: the C dispatcher
+; tears the process down and resumes the parent through the process gate.
 ;
 ; Register clobbers are documented per routine.  Nothing here exposes SDCC
 ; calling conventions to syscall callers.
@@ -43,6 +44,7 @@
 	.globl _zos_syscall_number
 	.globl _zos_syscall_args
 	.globl _zos_syscall_result_a
+	.globl _zos_syscall_result_c
 	.globl _zos_syscall_result_hl
 
 	.area _COMMON
@@ -161,14 +163,19 @@ zos_syscall_entry::
 ; ABI to the internal (private) C calling convention.
 ;
 ; In:  A = syscall number, HL = argument block pointer.
-; Out: HL = primary result, A = error code, carry set.
+; Out: HL = primary result, A = error code; carry set on failure and
+;      clear on success (the C dispatcher publishes it in
+;      _zos_syscall_result_c).
 ; Clobbers: AF, BC, DE, HL (internal; the gate restores the ABI state).
 ; ---------------------------------------------------------------------------
 zos_syscall_dispatch::
 	ld	(_zos_syscall_number),a
 	ld	(_zos_syscall_args),hl
 	call	_kernel_syscall_dispatch
+	; Rebuild the result: carry = bit 0 of the C result flag.  RRA moves
+	; the flag bit into carry; the subsequent loads preserve it.
+	ld	a,(_zos_syscall_result_c)
+	rra
 	ld	a,(_zos_syscall_result_a)
 	ld	hl,(_zos_syscall_result_hl)
-	scf
 	ret

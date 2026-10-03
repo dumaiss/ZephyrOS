@@ -456,6 +456,27 @@ def make_map(overrides=None, **kw):
         "zos_gate_result_hl": 0xE103, "zos_gate_result_a": 0xE105,
         "zos_gate_result_c": 0xE106,
         "zos_gate_stack": 0xE107, "zos_gate_stack_top": 0xE147,
+        # M6 process gates (common), copy state (common), and bank-7
+        # process/ZEX code and data.
+        "_zos_process_launch": 0xE300, "_zos_process_resume": 0xE310,
+        "zos_process_return_trap": 0xE320,
+        "_zos_process_page_zero_vector": 0xE330,
+        "_zos_bank_copy": 0xE340,
+        "_zos_user_copy_staging": 0xE370,
+        "zos_copy_op": 0xE3B0, "zos_copy_bank": 0xE3B1,
+        "zos_copy_addr": 0xE3B2, "zos_copy_buffer": 0xE3B4,
+        "zos_copy_length": 0xE3B6, "zos_copy_saved_sp": 0xE3B8,
+        "zos_copy_saved_latch": 0xE3BA, "zos_copy_saved_iff": 0xE3BB,
+        "zos_copy_stack": 0xE3BC, "zos_copy_stack_top": 0xE3CC,
+        "zos_proc_saved_sp": 0xE3D0, "zos_proc_saved_latch": 0xE3D2,
+        "zos_proc_saved_iff": 0xE3D3, "zos_proc_bank": 0xE3D4,
+        "zos_proc_entry": 0xE3D5,
+        "_process_exec": 0x2C00, "_process_exit": 0x2C80,
+        "_process_abort": 0x2CA0, "_process_alloc_bank": 0x2CC0,
+        "_process_slot_alloc": 0x2CE0, "_process_slot_release": 0x2D00,
+        "_process_launch_child": 0x2D20, "_zex_validate_header": 0x2D40,
+        "_process_table": 0xC400, "_process_running_pid": 0xC500,
+        "_process_last_status": 0xC501,
     }
     if kw.get("areas") is not None:
         areas = dict(areas)

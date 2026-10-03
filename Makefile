@@ -45,12 +45,13 @@ ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/page_zero.rel $(BUILD)/syscall_entry.rel \
              $(BUILD)/irq_entry.rel $(BUILD)/irq_vectors.rel \
              $(BUILD)/platform_irq.rel $(BUILD)/sdcc_helpers.rel \
-             $(BUILD)/arena.rel $(BUILD)/rom_access.rel
+             $(BUILD)/arena.rel $(BUILD)/rom_access.rel \
+             $(BUILD)/process_launch.rel $(BUILD)/user_copy.rel
 C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
              $(BUILD)/syscall.rel $(BUILD)/irq.rel $(BUILD)/irq_sources.rel \
              $(BUILD)/registry.rel $(BUILD)/console.rel \
              $(BUILD)/module_relocate.rel $(BUILD)/module_loader.rel \
-             $(BUILD)/romfs.rel
+             $(BUILD)/romfs.rel $(BUILD)/process.rel $(BUILD)/process_exec.rel
 END_OBJ   := $(BUILD)/irq_code_end.rel
 # OBJS is assigned after the acceptance/catalog selection below, once
 # every conditional object append has been decided.
@@ -130,6 +131,25 @@ CFLAGS    += -DZOS_M5_CORRUPT_SELFTEST=1
 PK_SUFFIX := -m5-corrupt
 endif
 
+# M6 success image: boots the SIO module from ROMFS, runs zextest from
+# ROMFS in two application banks with repeated cycles, checks exact
+# parent restoration, and verifies rejection of every malformed ZEX
+# fixture by exact result code.
+ifeq ($(ZOS_M6_SELFTEST),1)
+CFLAGS    += -DZOS_M6_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m6_test.rel
+PK_SUFFIX := -m6-selftest
+endif
+
+# M6 failure image: the ROMFS "zextest.zex" entry is a deliberately
+# truncated ZEX; the load must roll back exactly, and the valid copy
+# under "zexok.zex" must still run afterwards.
+ifeq ($(ZOS_M6_FAILURE_SELFTEST),1)
+CFLAGS    += -DZOS_M6_FAILURE_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m6_test.rel
+PK_SUFFIX := -m6-failure
+endif
+
 # Boot-module source selection.  Pre-M5 acceptance images (M1-M4) keep
 # their embedded test catalogs; production and the M5 images boot the SIO
 # module from the ROMFS recovery store.
@@ -153,7 +173,8 @@ OBJS      := $(ASM_OBJS) $(C_OBJS)
 # Common acceptance wiring: the single guard plus the shared runner.
 ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
 	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST) \
-	$(ZOS_M5_SELFTEST)),)
+	$(ZOS_M5_SELFTEST) $(ZOS_M6_SELFTEST) \
+	$(ZOS_M6_FAILURE_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
 endif
@@ -189,10 +210,11 @@ endif
 .PHONY: all test check check-fast clean syscall-selftest irq-selftest \
 	m3-selftest zmod-test m4-loader-selftest m4-selftest \
 	m4-placement-selftest m4-failure-selftest romfs-test m5-selftest \
-	m5-corrupt-selftest smoke-hardware \
+	m5-corrupt-selftest zex-test m6-selftest m6-failure-selftest \
+	smoke-hardware \
 	smoke-hardware-selftest smoke-hardware-irq smoke-hardware-m3 \
 	smoke-hardware-m4 smoke-hardware-m4-failure smoke-hardware-m5 \
-	smoke-hardware-m5-corrupt
+	smoke-hardware-m5-corrupt smoke-hardware-m6 smoke-hardware-m6-failure
 
 all: $(IMAGE) $(MAME_IMAGE)
 
@@ -250,6 +272,14 @@ $(BUILD)/rom_access.rel: kernel/romfs/rom_access.asm \
 		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
+$(BUILD)/process_launch.rel: kernel/process/launch.asm \
+		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/user_copy.rel: kernel/memory/user_copy.asm \
+		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
 $(BUILD)/m3_probe_io.rel: tests/target/m3/m3_probe_io.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
@@ -301,7 +331,8 @@ $(BUILD)/irq_sources.rel: drivers/ctc/ctc.c \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/syscall.rel: kernel/syscall.c include/zephyros/syscall.h \
-		include/zephyros/errno.h include/zephyros/kernel.h | $(BUILD)
+		include/zephyros/errno.h include/zephyros/kernel.h \
+		include/zephyros/process.h include/zephyros/console.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M3 device/driver/service objects (bank-7 code and data) -----------------
@@ -336,6 +367,18 @@ $(BUILD)/module_embedded.rel: kernel/module/embedded.c \
 $(BUILD)/romfs.rel: kernel/romfs/romfs.c include/zephyros/romfs.h \
 		include/zephyros/module.h include/zephyros/platform.h \
 		platform/zephyr80/memory.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+# --- M6 process lifecycle objects (bank-7 code and data) --------------------
+
+$(BUILD)/process.rel: kernel/process/process.c \
+		include/zephyros/process.h include/zephyros/zex.h \
+		include/zephyros/kernel.h include/zephyros/errno.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/process_exec.rel: kernel/process/exec.c \
+		include/zephyros/process.h include/zephyros/zex.h \
+		include/zephyros/romfs.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- ZMOD modules (host-built, packed, embedded per-image catalogs) ----------
@@ -467,7 +510,9 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		include/zephyros/kernel.h tests/target/include/selftest.h \
 		tests/target/include/irq_selftest.h \
 		tests/target/include/m3_selftest.h \
-		tests/target/include/m4_selftest.h | $(BUILD)
+		tests/target/include/m4_selftest.h \
+		tests/target/include/m5_selftest.h \
+		tests/target/include/m6_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/syscall_test.rel: tests/target/m1/syscall_test.c \
@@ -506,6 +551,68 @@ $(BUILD)/m5_test.rel: tests/target/m5/m5_test.c \
 		tests/target/include/m5_selftest.h $(BUILD)/m5_expect.inc | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
+$(BUILD)/m6_test.rel: tests/target/m6/m6_test.c \
+		include/zephyros/process.h include/zephyros/syscall.h \
+		include/zephyros/console.h include/zephyros/module.h \
+		include/zephyros/kernel.h \
+		tests/target/include/m6_selftest.h $(BUILD)/m6_expect.inc | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+# --- M6 native program (ZEXTEST) ---------------------------------------------
+# One ZEX program linked as a flat image at 0100h: _CODE is the image and
+# _DATA is the zero-initialized region the loader fills at
+# 0100h+image_size.  Geometry comes from tests/m6/zextest.json; zexpack
+# validates the linked map against it and writes the reproducible report.
+
+ZEX_TEST_JSON := tests/m6/zextest.json
+ZEX_TEST_BUILD := $(BUILD)/zextest
+ZEX_TEST_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(ZEX_TEST_JSON) image_size)
+ZEX_TEST_DATA_BASE  := $(shell printf '0x%04X' $$((0x0100 + $(ZEX_TEST_IMAGE_SIZE))))
+
+$(ZEX_TEST_BUILD):
+	mkdir -p $@
+
+$(BUILD)/m6_expect.inc: $(ZEX_TEST_JSON) tests/m6/gen_expect.py \
+		tests/m6/gen_fixtures.py tools/zexpack.py | $(BUILD)
+	$(PYTHON) tests/m6/gen_expect.py $(ZEX_TEST_JSON) $@
+
+$(ZEX_TEST_BUILD)/zextest_entry.rel: tests/target/m6/zextest_entry.asm | $(ZEX_TEST_BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(ZEX_TEST_BUILD)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(ZEX_TEST_BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(ZEX_TEST_BUILD)/zextest.rel: tests/target/m6/zextest.c user/runtime/zex_runtime.h \
+		tests/target/include/m6_selftest.h $(BUILD)/m6_expect.inc | $(ZEX_TEST_BUILD)
+	$(SDCC) -mz80 -c --nostdinc --Werror -I user/runtime \
+		-I tests/target/include -I $(BUILD) $< -o $@
+
+$(ZEX_TEST_BUILD)/zextest.lk: $(ZEX_TEST_BUILD)/zextest_entry.rel \
+		$(ZEX_TEST_BUILD)/zextest.rel $(ZEX_TEST_BUILD)/zex_runtime.rel | $(ZEX_TEST_BUILD)
+	{ \
+	  printf '%s\n' '-n' '-m' '-w'; \
+	  printf '%s\n' '-i $(ZEX_TEST_BUILD)/zextest.ihx'; \
+	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(ZEX_TEST_DATA_BASE)'; \
+	  printf '%s\n' $(ZEX_TEST_BUILD)/zextest_entry.rel \
+	                $(ZEX_TEST_BUILD)/zextest.rel \
+	                $(ZEX_TEST_BUILD)/zex_runtime.rel; \
+	  printf '%s\n' '-e'; \
+	} > $@
+
+$(ZEX_TEST_BUILD)/zextest.ihx $(ZEX_TEST_BUILD)/zextest.map: $(ZEX_TEST_BUILD)/zextest.lk
+	$(SDLDZ80) -f $(ZEX_TEST_BUILD)/zextest.lk
+
+$(MODULES)/zextest.zex: $(ZEX_TEST_JSON) $(ZEX_TEST_BUILD)/zextest.ihx \
+		$(ZEX_TEST_BUILD)/zextest.map tools/zexpack.py | $(MODULES)
+	$(PYTHON) tools/zexpack.py pack $(ZEX_TEST_JSON) $@ \
+		--objdir $(ZEX_TEST_BUILD) --report $(MODULES)/zextest.report.json
+
+# Deterministic malformed fixtures (one per validation boundary; see
+# tests/m6/gen_fixtures.py) shared by the M6 acceptance manifests.
+$(MODULES)/zex-fixtures.stamp: tests/m6/gen_fixtures.py tools/zexpack.py | $(MODULES)
+	$(PYTHON) tests/m6/gen_fixtures.py $(MODULES)
+	touch $@
+
 # --- ROMFS recovery store (ROM pages 2-7) ------------------------------------
 # Production images pack recovery/manifest.json; the M5 acceptance images
 # use the test manifest (SIO module + deterministic cross-page pattern
@@ -517,9 +624,15 @@ ROMFS_EXTRA_DEPS := $(MODULES)/m5_crosspage.bin tests/m5/corrupt_romfs.py
 else ifeq ($(ZOS_M5_SELFTEST),1)
 ROMFS_MANIFEST := tests/m5/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/m5_crosspage.bin
+else ifeq ($(ZOS_M6_SELFTEST),1)
+ROMFS_MANIFEST := tests/m6/manifest.json
+ROMFS_EXTRA_DEPS := $(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
+else ifeq ($(ZOS_M6_FAILURE_SELFTEST),1)
+ROMFS_MANIFEST := tests/m6/manifest-failure.json
+ROMFS_EXTRA_DEPS := $(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
 else
 ROMFS_MANIFEST := recovery/manifest.json
-ROMFS_EXTRA_DEPS :=
+ROMFS_EXTRA_DEPS := $(MODULES)/zextest.zex
 endif
 
 $(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(MODULES)/sio.zmod \
@@ -551,7 +664,8 @@ $(BUILD)/m5_expect.inc: $(MODULES)/sio.zmod tests/m5/gen_expect.py | $(BUILD)
 ZOS_TEST_LINK := $(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) \
 		$(ZOS_M3_SELFTEST) $(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) \
 		$(ZOS_M4_FAILURE_SELFTEST) $(ZOS_M5_SELFTEST) \
-		$(ZOS_M5_CORRUPT_SELFTEST))
+		$(ZOS_M5_CORRUPT_SELFTEST) $(ZOS_M6_SELFTEST) \
+		$(ZOS_M6_FAILURE_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -751,6 +865,32 @@ m5-corrupt-selftest:
 		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
 	@echo "m5-corrupt image: build-m5-corrupt-selftest/zephyros-m5-corrupt.bin"
 
+# --- M6 ZEX tooling, acceptance image, and failure image ---------------------
+
+zex-test: $(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
+	$(PYTHON) tools/zexpack.py validate $(MODULES)/zextest.zex
+	$(PYTHON) tools/zexpack.py dump $(MODULES)/zextest.zex
+	$(PYTHON) -m unittest discover -s tests -p 'test_zex.py' -v
+	@echo "zex-test: OK"
+
+m6-selftest:
+	$(MAKE) BUILD=build-m6-selftest ZOS_M6_SELFTEST=1 \
+		build-m6-selftest/zephyros-m6-selftest.bin \
+		build-m6-selftest/zephyr80-m6-selftest.bin
+	$(PYTHON) tools/mapcheck.py build-m6-selftest/zephyros.map \
+		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m6_sim.py' -v
+	@echo "m6-selftest image: build-m6-selftest/zephyros-m6-selftest.bin"
+
+m6-failure-selftest:
+	$(MAKE) BUILD=build-m6-failure-selftest ZOS_M6_FAILURE_SELFTEST=1 \
+		build-m6-failure-selftest/zephyros-m6-failure.bin \
+		build-m6-failure-selftest/zephyr80-m6-failure.bin
+	$(PYTHON) tools/mapcheck.py build-m6-failure-selftest/zephyros.map \
+		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m6_sim.py' -v
+	@echo "m6-failure image: build-m6-failure-selftest/zephyros-m6-failure.bin"
+
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching ROM
 # programmed.  Pass SERIAL_PORT=/dev/ttyUSB0 (or export ZOS_SERIAL_PORT).
@@ -778,3 +918,9 @@ smoke-hardware-m5:
 
 smoke-hardware-m5-corrupt:
 	$(PYTHON) tools/serial_smoke.py --mode m5-corrupt --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m6:
+	$(PYTHON) tools/serial_smoke.py --mode m6 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m6-failure:
+	$(PYTHON) tools/serial_smoke.py --mode m6-failure --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

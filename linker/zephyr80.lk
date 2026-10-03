@@ -25,7 +25,11 @@ build/console.rel
 build/module_relocate.rel
 build/module_loader.rel
 build/romfs.rel
+build/process.rel
+build/process_exec.rel
 build/arena.rel
 build/rom_access.rel
+build/process_launch.rel
+build/user_copy.rel
 build/irq_code_end.rel
 -e

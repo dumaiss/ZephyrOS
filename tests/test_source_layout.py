@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Source-tree ownership tests (work packages 09-10).
+"""Source-tree ownership tests (work packages 09-10, extended for M6).
 
-Enforces docs/architecture.md section 3.1 and the M4-era layout:
+Enforces docs/architecture.md section 3.1 and the current layout:
 
 - implemented sources live under their owning boot/kernel/driver/test
   directories, and driver directories contain device implementation only;
@@ -9,6 +9,10 @@ Enforces docs/architecture.md section 3.1 and the M4-era layout:
   with no executable content or instruction-emitting macros;
 - production module metadata and shared module runtime support have
   explicit non-driver owners (modules/manifests, modules/runtime);
+- the M6 process lifecycle (kernel/process), the common transition gates
+  (kernel/memory), and the user runtime (user/runtime) have explicit
+  owners, with the ZEX program sources under tests/target/m6 and the
+  ZEX tooling/fixtures under tools/ and tests/m6;
 - all milestone acceptance code lives under tests/target/ (or
   tests/modules/ for test ZMODs), behind the single ZOS_TARGET_TEST_BUILD
   seam; production sources contain no self-test implementations;
@@ -57,14 +61,32 @@ OWNER_FILES = (
     "kernel/module/relocate.c",
     "kernel/romfs/romfs.c",
     "kernel/romfs/rom_access.asm",
+    "kernel/process/process.c",
+    "kernel/process/exec.c",
+    "kernel/process/launch.asm",
+    "kernel/memory/user_copy.asm",
     "include/zephyros/romfs.h",
+    "include/zephyros/process.h",
+    "include/zephyros/zex.h",
+    "user/runtime/zex_runtime.asm",
+    "user/runtime/zex_runtime.h",
+    "tools/zexpack.py",
     "recovery/manifest.json",
     "tests/m5/manifest.json",
     "tests/m5/gen_asset.py",
     "tests/m5/gen_expect.py",
     "tests/m5/corrupt_romfs.py",
+    "tests/m6/manifest.json",
+    "tests/m6/manifest-failure.json",
+    "tests/m6/zextest.json",
+    "tests/m6/gen_fixtures.py",
+    "tests/m6/gen_expect.py",
     "tests/target/m5/m5_test.c",
+    "tests/target/m6/zextest.c",
+    "tests/target/m6/zextest_entry.asm",
+    "tests/target/m6/m6_test.c",
     "tests/target/include/m5_selftest.h",
+    "tests/target/include/m6_selftest.h",
     "drivers/ctc/ctc.c",
     "drivers/sio/sio.c",
     "drivers/sio/sio.h",
@@ -136,13 +158,15 @@ REMOVED_PATHS = (
 REQUIRED_DIRS = (
     "boot",
     "kernel/memory", "kernel/syscall", "kernel/irq", "kernel/runtime",
-    "kernel/module", "kernel/romfs",
+    "kernel/module", "kernel/romfs", "kernel/process",
     "drivers/sio", "drivers/ctc",
     "modules/manifests", "modules/runtime",
+    "user/runtime",
     "recovery",
-    "tests/m5", "tests/modules",
+    "tests/m5", "tests/m6", "tests/modules",
     "tests/target/m1", "tests/target/m2", "tests/target/m3",
-    "tests/target/m4", "tests/target/m5", "tests/target/include",
+    "tests/target/m4", "tests/target/m5", "tests/target/m6",
+    "tests/target/include",
     "tests/target/support",
 )
 
@@ -172,6 +196,8 @@ PRODUCTION_SELFTEST_MACROS = (
     "ZOS_M4_FAILURE_SELFTEST",
     "ZOS_M5_SELFTEST",
     "ZOS_M5_CORRUPT_SELFTEST",
+    "ZOS_M6_SELFTEST",
+    "ZOS_M6_FAILURE_SELFTEST",
 )
 
 # Generated-output names that must be ignored and cleaned.  build-modules is
@@ -187,6 +213,8 @@ BUILD_VARIANTS = (
     "build-m4-failure",
     "build-m5-selftest",
     "build-m5-corrupt-selftest",
+    "build-m6-selftest",
+    "build-m6-failure-selftest",
     "build-modules",
 )
 

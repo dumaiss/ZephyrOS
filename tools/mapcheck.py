@@ -180,6 +180,14 @@ COMMON_ROUTINES = (
     "_irq_arch_unlock",
     "_irq_arch_init",
     "_rom_access_copy",
+    # M6: process launch/resume/trap and the application-bank copy gate
+    # all switch the memory mapping; the page-zero vector is copied into
+    # process banks from common data.
+    "_zos_process_launch",
+    "_zos_process_resume",
+    "zos_process_return_trap",
+    "_zos_process_page_zero_vector",
+    "_zos_bank_copy",
 )
 
 # Bank-7 internal routines (visible only while mode 11 is active).
@@ -286,6 +294,44 @@ ROMFS_BANK7_ROUTINES = (
 )
 
 ROMFS_BANK7_PREFIXES = ("_romfs_",)
+
+# M6 process/ZEX code and state: bank 7 only, below the ISR stack (the
+# common-resident gates are listed in COMMON_ROUTINES instead).
+M6_BANK7_ROUTINES = (
+    "_process_exec",
+    "_process_exit",
+    "_process_abort",
+    "_process_alloc_bank",
+    "_process_slot_alloc",
+    "_process_slot_release",
+    "_process_launch_child",
+    "_zex_validate_header",
+)
+
+M6_BANK7_PREFIXES = ("_process_", "_zex_")
+
+# M6 transition state and the syscall copy staging block (common RAM).
+M6_COMMON_STATE = (
+    "_zos_user_copy_staging",
+    "zos_copy_op",
+    "zos_copy_bank",
+    "zos_copy_addr",
+    "zos_copy_buffer",
+    "zos_copy_length",
+    "zos_copy_saved_sp",
+    "zos_copy_saved_latch",
+    "zos_copy_saved_iff",
+    "zos_copy_stack",
+    "zos_copy_stack_top",
+    "zos_proc_saved_sp",
+    "zos_proc_saved_latch",
+    "zos_proc_saved_iff",
+    "zos_proc_bank",
+    "zos_proc_entry",
+)
+
+USER_COPY_STAGING_SIZE = 64
+USER_COPY_STACK_SIZE = 16
 
 # M5 ROM-access transition state: permanent common memory only.  The
 # staging buffer and saved latch/IFF/request state are what the
@@ -608,6 +654,43 @@ def check_symbols(areas, symbols, production=False):
         raise MapError(
             "ROM-access transition block %04Xh-%04Xh leaves common memory"
             % (ROM_ACCESS_BASE - 2, ROM_ACCESS_BASE + ROM_ACCESS_SIZE - 1))
+
+    # M6: process/ZEX code and the process table stay bank-7 resident.
+    for name in M6_BANK7_ROUTINES:
+        if name not in symbols:
+            raise MapError("map has no M6 symbol %s" % name)
+        addr = symbols[name]
+        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            raise MapError(
+                "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
+                % (name, addr))
+    for name, addr in symbols.items():
+        if addr != 0 and name.startswith(M6_BANK7_PREFIXES):
+            if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+                raise MapError(
+                    "process symbol %s at %04Xh is not bank-7 resident"
+                    % (name, addr))
+
+    # M6: the copy staging block and process transition state are common;
+    # the staging size and copy stack sizes are part of the contract.
+    for name in M6_COMMON_STATE:
+        if name not in symbols:
+            raise MapError("map has no M6 common-state symbol %s" % name)
+        addr = symbols[name]
+        if not (COMMON_BASE <= addr < STACK_BASE):
+            raise MapError(
+                "%s at %04Xh is not in the common region E000h-FEFFh"
+                % (name, addr))
+    staging_delta = (symbols["zos_copy_op"]
+                     - symbols["_zos_user_copy_staging"])
+    if staging_delta != USER_COPY_STAGING_SIZE:
+        raise MapError("user copy staging is %d bytes, expected %d"
+                       % (staging_delta, USER_COPY_STAGING_SIZE))
+    stack_delta = (symbols["zos_copy_stack_top"]
+                   - symbols["zos_copy_stack"])
+    if stack_delta != USER_COPY_STACK_SIZE:
+        raise MapError("user copy stack is %d bytes, expected %d"
+                       % (stack_delta, USER_COPY_STACK_SIZE))
 
     # M4: exported arena bounds must match the platform layout and granule
     # geometry exactly.

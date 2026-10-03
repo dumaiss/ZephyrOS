@@ -8,6 +8,11 @@
  * that internal int-returning APIs can signal failure as the negated
  * code (e.g. -ZOS_EINVAL); see ZDEV_E* in device.h.  None of these are
  * syscall-visible and the numeric values are internal.
+ *
+ * M6 makes a subset of these syscall-visible: the native syscall
+ * dispatcher returns the raw ZOS_E* value in A with carry set, and
+ * ZOS_EFAULT is the status the kernel synthesizes when a process entry
+ * returns through the common trap instead of calling SYS_EXIT.
  */
 
 #ifndef ZEPHYROS_ERRNO_H
@@ -25,5 +30,6 @@
 #define ZOS_EAGAIN    0x09 /* no data available right now */
 #define ZOS_EIO       0x0A /* corrupt/truncated/overlapping data */
 #define ZOS_EINIT     0x0B /* module/driver initialization refused */
+#define ZOS_EFAULT    0x0C /* invalid process entry/exit fault (M6) */
 
 #endif /* ZEPHYROS_ERRNO_H */

@@ -26,6 +26,13 @@ captures output with a bounded timeout, and verifies the expected output:
     --mode m5-corrupt  the M5 corrupt-metadata image: banner and the
                      precise early-console panic marker; no dynamic
                      console line (the module is never executed)
+    --mode m6        the M6 success image: banner, the dynamic console
+                     line, two zextest runs (bank 0 and bank 1), the
+                     repeated-cycle/two-bank/raw-return/malformed
+                     milestones, and "m6 selftest: OK"
+    --mode m6-failure  the M6 failure image: banner, the rejected
+                     truncated ZEX rolling back cleanly, the valid copy
+                     still running, and "m6 failure selftest: OK"
 
 The device is given with --port or the ZOS_SERIAL_PORT environment
 variable (the SERIAL_PORT make variable is passed through).  A missing or
@@ -33,7 +40,7 @@ unopenable device fails clearly; ordinary host-only `make test` never
 invokes this tool.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -64,6 +71,17 @@ M4_ACCEPT_OK = b"m4 selftest: OK\r\n"
 M4_FAILURE_OK = b"m4 failure selftest: OK\r\n"
 M5_SELFTEST_OK = b"m5 romfs selftest: OK\r\n"
 M5_CORRUPT_PANIC = b"PANIC: romfs: corrupt recovery image\r\n"
+M6_ZEXTEST_BANK0 = b"zextest: bank=0 "
+M6_ZEXTEST_BANK1 = b"zextest: bank=1 "
+M6_ZEXTEST_OK = b"zextest: OK\r\n"
+M6_STATUS_PASS = b"m6 selftest: zextest status 0xA500\r\n"
+M6_STATUS_PASS_BANK1 = b"m6 selftest: zextest status 0xA501\r\n"
+M6_REPEAT_OK = b"m6 selftest: repeated cycles OK\r\n"
+M6_TWO_BANK_OK = b"m6 selftest: two-bank OK\r\n"
+M6_RAW_RETURN_OK = b"m6 selftest: raw return EFAULT\r\n"
+M6_REJECTED_OK = b"m6 selftest: malformed rejected\r\n"
+M6_SELFTEST_OK = b"m6 selftest: OK\r\n"
+M6_FAILURE_OK = b"m6 failure selftest: OK\r\n"
 
 
 def main(argv):
@@ -74,7 +92,7 @@ def main(argv):
     )
     parser.add_argument("--mode", choices=("normal", "selftest", "irq", "m3",
                                            "m4", "m4-failure", "m5",
-                                           "m5-corrupt"),
+                                           "m5-corrupt", "m6", "m6-failure"),
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
@@ -150,6 +168,21 @@ def main(argv):
                 if args.mode == "m5-corrupt":
                     if BANNER in data and M5_CORRUPT_PANIC in data:
                         break
+                if args.mode == "m6":
+                    if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
+                            M6_STATUS_PASS in data and
+                            M6_STATUS_PASS_BANK1 in data and
+                            M6_TWO_BANK_OK in data and
+                            M6_REPEAT_OK in data and
+                            M6_RAW_RETURN_OK in data and
+                            M6_REJECTED_OK in data and
+                            M6_SELFTEST_OK in data):
+                        break
+                if args.mode == "m6-failure":
+                    if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
+                            M6_ZEXTEST_OK in data and
+                            M6_FAILURE_OK in data):
+                        break
     finally:
         link.close()
 
@@ -192,6 +225,26 @@ def main(argv):
         expected = ("the banner and the early-console marker "
                     "'PANIC: romfs: corrupt recovery image' with no module "
                     "execution")
+    elif args.mode == "m6":
+        ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
+              M6_ZEXTEST_BANK0 in data and M6_ZEXTEST_BANK1 in data and
+              M6_ZEXTEST_OK in data and M6_STATUS_PASS in data and
+              M6_STATUS_PASS_BANK1 in data and M6_REPEAT_OK in data and
+              M6_TWO_BANK_OK in data and M6_RAW_RETURN_OK in data and
+              M6_REJECTED_OK in data and M6_SELFTEST_OK in data and
+              b"FAIL" not in data and b"PANIC" not in data)
+        expected = ("the banner, the dynamic console line, zextest in "
+                    "bank 0 and bank 1, the repeated-cycle/two-bank/"
+                    "raw-return/malformed milestones, and "
+                    "'m6 selftest: OK'")
+    elif args.mode == "m6-failure":
+        ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
+              M6_ZEXTEST_OK in data and M6_FAILURE_OK in data and
+              M6_SELFTEST_OK not in data and b"FAIL" not in data and
+              b"PANIC" not in data)
+        expected = ("the banner, the dynamic console line, the valid "
+                    "copy running after the truncated ZEX rolled back, "
+                    "and 'm6 failure selftest: OK'")
     else:
         ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
               SELFTEST_OK in data and IRQ_SELFTEST_OK in data and
@@ -242,6 +295,40 @@ def _explain_wrong_image(mode, data):
                   "the panic marker; the production or an older image may be "
                   "flashed instead of "
                   "build-m5-corrupt-selftest/zephyros-m5-corrupt.bin",
+                  file=sys.stderr)
+    elif mode == "m6":
+        if M5_CORRUPT_PANIC in data:
+            print("serial_smoke: hint: ROMFS init failed with the exact "
+                  "m5-corrupt acceptance transcript; the m5-corrupt image "
+                  "from the M5 pass is probably still flashed (it rejects "
+                  "at the header reserved field, code 0x0A, while the "
+                  "staged header still reads ZRFS).  Flash "
+                  "build-m6-selftest/zephyros-m6-selftest.bin and rerun "
+                  "--mode m6", file=sys.stderr)
+        elif M6_FAILURE_OK in data:
+            print("serial_smoke: hint: the M6 failure marker was observed; "
+                  "the m6-failure image is probably flashed "
+                  "(use --mode m6-failure)", file=sys.stderr)
+        elif M5_SELFTEST_OK in data:
+            print("serial_smoke: hint: the M5 success marker was observed; "
+                  "an M5 image may be flashed instead of "
+                  "build-m6-selftest/zephyros-m6-selftest.bin",
+                  file=sys.stderr)
+    elif mode == "m6-failure":
+        if M5_CORRUPT_PANIC in data:
+            print("serial_smoke: hint: ROMFS init failed with the exact "
+                  "m5-corrupt acceptance transcript; the m5-corrupt image "
+                  "from the M5 pass is probably still flashed.  Flash "
+                  "build-m6-failure-selftest/zephyros-m6-failure.bin and "
+                  "rerun --mode m6-failure", file=sys.stderr)
+        elif M6_SELFTEST_OK in data:
+            print("serial_smoke: hint: the M6 success marker was observed; "
+                  "the M6 success image is probably flashed "
+                  "(use --mode m6)", file=sys.stderr)
+        elif M5_SELFTEST_OK in data:
+            print("serial_smoke: hint: the M5 success marker was observed; "
+                  "an M5 image may be flashed instead of "
+                  "build-m6-failure-selftest/zephyros-m6-failure.bin",
                   file=sys.stderr)
 
 

@@ -365,16 +365,16 @@ class Z80:
             self.wr((self.h << 8) | self.l, self.fetch())
         elif op == 0x34:  # inc (hl)
             addr = (self.h << 8) | self.l
-            v = (self.rd(addr) + 1) & 0xFF
+            old = self.rd(addr)
+            v = (old + 1) & 0xFF
             self.wr(addr, v)
-            self.ZF = v == 0
-            self.SNF = (v & 0x80) != 0
+            self._inc_flags(old, v)
         elif op == 0x35:  # dec (hl)
             addr = (self.h << 8) | self.l
-            v = (self.rd(addr) - 1) & 0xFF
+            old = self.rd(addr)
+            v = (old - 1) & 0xFF
             self.wr(addr, v)
-            self.ZF = v == 0
-            self.SNF = (v & 0x80) != 0
+            self._dec_flags(old, v)
         elif op == 0x39:  # add hl,sp
             hl = (self.h << 8) | self.l
             res = hl + self.sp
@@ -423,7 +423,9 @@ class Z80:
         elif op == 0xE6: self.a = self._logic(self.a & self.fetch())
         elif op == 0xEE: self.a = self._logic(self.a ^ self.fetch())
         elif op == 0xF6: self.a = self._logic(self.a | self.fetch())
-        elif op == 0xFE: self._logic(self.a - self.fetch(), sub=True)
+        elif op == 0xFE:  # cp n
+            n = self.fetch()
+            self._logic(self.a - n, sub=True, operand=n, left=self.a)
         elif op == 0xD6: self._sub(self.fetch())
         elif op == 0xDE:  # sbc a,n
             self._sub(self.fetch(), 1 if self.CF else 0)
@@ -442,17 +444,17 @@ class Z80:
         elif op in (0x04, 0x0C, 0x14, 0x1C, 0x24, 0x2C, 0x3C):  # inc r
             regs = {0x04: 'b', 0x0C: 'c', 0x14: 'd', 0x1C: 'e',
                     0x24: 'h', 0x2C: 'l', 0x3C: 'a'}
-            v = (getattr(self, regs[op]) + 1) & 0xFF
+            old = getattr(self, regs[op])
+            v = (old + 1) & 0xFF
             setattr(self, regs[op], v)
-            self.ZF = v == 0
-            self.SNF = (v & 0x80) != 0
+            self._inc_flags(old, v)
         elif op in (0x05, 0x0D, 0x15, 0x1D, 0x25, 0x2D, 0x3D):  # dec r
             regs = {0x05: 'b', 0x0D: 'c', 0x15: 'd', 0x1D: 'e',
                     0x25: 'h', 0x2D: 'l', 0x3D: 'a'}
-            v = (getattr(self, regs[op]) - 1) & 0xFF
+            old = getattr(self, regs[op])
+            v = (old - 1) & 0xFF
             setattr(self, regs[op], v)
-            self.ZF = v == 0
-            self.SNF = (v & 0x80) != 0
+            self._dec_flags(old, v)
         elif op == 0x3B: self.sp = (self.sp - 1) & 0xFFFF
         elif op == 0x03: self.set_rr(0, (self.get_rr(0) + 1) & 0xFFFF)
         elif op == 0x13: self.set_rr(1, (self.get_rr(1) + 1) & 0xFFFF)
@@ -519,19 +521,23 @@ class Z80:
         if dst and src:
             setattr(self, dst, getattr(self, src))
 
-    def _logic(self, res, sub=False, add=False):
+    def _logic(self, res, sub=False, add=False, operand=0, left=0):
         raw = res
         res = raw & 0xFF
         self.ZF = res == 0
         self.SNF = (res & 0x80) != 0
         if sub:
-            self._sf(0x10, res & 0x10)  # H (approx)
+            self._sf(0x10, ((left ^ operand ^ res) & 0x10) != 0)
             self._sf(0x02, 1)           # N = 1
             self.CF = raw < 0
+            # Signed overflow for SBC/SUB/CP.  SDCC's signed comparison
+            # idioms test P/V, so a stale value mis-runs valid code.
+            self.PV = ((left ^ operand) & (left ^ res) & 0x80) != 0
         elif add:
-            self._sf(0x10, 0)
+            self._sf(0x10, ((left ^ operand ^ res) & 0x10) != 0)
             self._sf(0x02, 0)           # N = 0
             self.CF = raw > 0xFF
+            self.PV = ((left ^ res) & (operand ^ res) & 0x80) != 0
         else:
             self._sf(0x10, 0)
             self._sf(0x02, 0)           # N = 0
@@ -540,12 +546,28 @@ class Z80:
         return res
 
     def _sub(self, n, carry=0):
-        v = self.a - n - carry
-        self.a = self._logic(v, sub=True)
+        left = self.a
+        v = left - n - carry
+        self.a = self._logic(v, sub=True, operand=n, left=left)
 
     def _add(self, n, carry=0):
-        v = self.a + n + carry
-        self.a = self._logic(v, add=True)
+        left = self.a
+        v = left + n + carry
+        self.a = self._logic(v, add=True, operand=n, left=left)
+
+    def _inc_flags(self, old, res):
+        self.ZF = res == 0
+        self.SNF = (res & 0x80) != 0
+        self._sf(0x10, (old & 0x0F) == 0x0F)
+        self._sf(0x02, 0)
+        self.PV = res == 0x80
+
+    def _dec_flags(self, old, res):
+        self.ZF = res == 0
+        self.SNF = (res & 0x80) != 0
+        self._sf(0x10, (old & 0x0F) == 0x00)
+        self._sf(0x02, 1)
+        self.PV = res == 0x7F
 
     def alu(self, op):
         srcs = {0: 'b', 1: 'c', 2: 'd', 3: 'e', 4: 'h', 5: 'l', 7: 'a'}
@@ -570,7 +592,7 @@ class Z80:
         elif grp == 0xB0:
             self.a = self._logic(self.a | v)
         elif grp == 0xB8:  # cp r: flags only, A unchanged
-            self._logic(self.a - v, sub=True)
+            self._logic(self.a - v, sub=True, operand=v, left=self.a)
         else:
             raise SystemExit("sim: unsupported alu op %02X" % op)
 
@@ -840,11 +862,13 @@ class Z80:
             off = self.fetch()
             if off & 0x80: off -= 256
             addr = (reg + off) & 0xFFFF
-            v = self.rd(addr)
-            v = (v + 1) & 0xFF if op2 == 0x34 else (v - 1) & 0xFF
+            old = self.rd(addr)
+            v = (old + 1) & 0xFF if op2 == 0x34 else (old - 1) & 0xFF
             self.wr(addr, v)
-            self.ZF = v == 0
-            self.SNF = (v & 0x80) != 0
+            if op2 == 0x34:
+                self._inc_flags(old, v)
+            else:
+                self._dec_flags(old, v)
         else:
             raise SystemExit("sim: unsupported %02X %02X" % (op, op2))
 

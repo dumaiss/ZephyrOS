@@ -2885,6 +2885,92 @@ A process occupies one application bank for its normal code/data/stack.
 
 ---
 
+## 26.11 M6 implementation notes (stage 12)
+
+Implemented 2026-10-03; host-validated end to end (simulator replay of
+both acceptance images plus the negative control) and physically
+accepted with both smoke transcripts (success and failure) captured in
+`docs/validation/2026-10-03-m6-zex.md`.  The concrete implementation is:
+
+- `kernel/process/process.c` (bank 7) owns the fixed 7-slot descriptor
+  table (`state` FREE/RUNNING/SUSPENDED, `pid`, `bank`, `parent`,
+  `flags`, `exit_status`), the running-pid/last-status globals, the
+  lowest-free-bank allocator over banks `0-6`, and the reserve/release
+  bitmask.  Bank 7 is never allocatable and `process_bank_release(7)` is
+  a no-op.  A slot exists only while it is RUNNING; `process_exit()`
+  stores the status, frees the slot and bank, clears the running pid, and
+  re-enters the common resume gate, which restores the parent's exact
+  SP/latch/IFF state and returns from the original `exec` call.  The
+  kernel launcher acts as the initial kernel-parent;
+- `kernel/process/exec.c` (bank 7) is `process_exec()`: ROMFS lookup
+  (wrong media type -> `ZEX_EXEC_ERR_TYPE`), header read, the 14-step
+  geometry validation documented in `docs/zex-format.md`, then slot +
+  lowest-free-bank allocation, bank zero fill, page-zero vector
+  construction, 64-byte chunked image copy through the common staging
+  block, BSS zero fill, descriptor fill, and entry through the common
+  launch gate.  Every failure path releases the slot and bank before
+  returning, so a rejected program leaves the table and allocator
+  byte-identical to their pre-call state.  `zex_validate_header()` is
+  shared with the target tests and mirrors `tools/zexpack.py`;
+- `kernel/process/launch.asm` (common) is the process transition gate:
+  it validates the target bank/mode, snapshots IFF2 with `LD A,I`
+  *before* `DI` (DI clears IFF2), switches to mode `10 | bank`, installs
+  `SP = E000h - stack_size`, pushes the common return trap under the
+  entry address, and enters the program with `HL = 0`.  A raw `RET` from
+  a program therefore lands in the common trap, which restores the
+  kernel mapping and exits the process with `ZOS_EFAULT`; the page-zero
+  template `C3 <entry>` also lives in common data so the loader can copy
+  it through the copy gate.  `_zos_process_resume` restores the saved
+  latch and SP and returns from the launch call site;
+- `kernel/memory/user_copy.asm` (common) is the single bank-copy gate
+  used by both the loader and the syscall layer.  The caller passes a
+  packed `struct zos_bank_copy_req` (`bank`, `op`, `addr`, `buffer`,
+  `length`); the gate rejects bank 7 and ops outside READ/WRITE/ZERO with
+  `ZOS_EINVAL`, snapshots IFF2 before `DI`, switches to its dedicated
+  common 16-byte copy stack, enters mode `10 | bank`, performs one
+  bounded `LDIR` (or a forward fill for ZERO), and restores the exact
+  latch, SP, and IFF state.  The 64-byte staging buffer in common RAM is
+  the only window a process's data may cross through;
+- `kernel/syscall.c` (bank 7) implements the M6 set - `EXIT 0`,
+  `WRITE 1`, `READ 2`, `POLL 3`, `GETINFO 4` - behind the unchanged
+  common gate.  Argument blocks must lie in `0100h-1FFFh`; buffers may
+  span `0100h-DFFFh`.  `WRITE` copies through the staging block in
+  64-byte chunks and calls the normal console service (partial writes
+  return the byte count; failures return the negated errno); `READ` is
+  non-blocking, drains the available bytes without moving the mapping,
+  and stages the result back; `POLL` returns `0`/`1`; `GETINFO` fills a
+  6-byte versioned record (`size`, `abi`, `pid`, `bank`, `flags` with
+  `PROCESS_INFO_FLAG_KERNEL_PARENT`) and returns its size.  `EXIT` reads
+  the u16 status and never returns; a raw `RET` rejects through the trap
+  with `ZOS_EFAULT`.  The gate's carry boundary now derives from
+  `_zos_syscall_result_c` so dispatch results survive the mode switch;
+- `user/runtime/zex_runtime.{h,asm}` is the SDCC `sdcccall(1)` runtime
+  for ZEX programs (`zex_exit`, `zex_write`, `zex_read`, `zex_poll`,
+  `zex_getinfo`) with an 8-byte image-resident argument scratch;
+- acceptance evidence lives in `tests/target/m6/` (`zextest.c`: BSS/stack/
+  GETINFO checks, prints `zextest: bank=N pid=P` and `zextest: OK`,
+  exits `0xA500 | bank`; `m6_test.c`: two-bank and repeated-cycle runs,
+  raw-return fault check, exact rejection of all 16 malformed fixtures,
+  ENOSPC and argument checks).  `tests/m6/manifest.json` packs the
+  program plus one fixture per rejection boundary into ROMFS;
+  `tests/m6/manifest-failure.json` swaps in a truncated ZEX to prove
+  rollback and that the untouched valid copy still runs;
+- `tests/test_m6_sim.py` replays the real images in the simulator,
+  including a mutated-image negative control, bank-1 byte-identity
+  checks against the packed `zextest.zex`, and focused copy-gate tests
+  (round trip, zero fill, bank-7/bad-op rejection, IFF restore).  The
+  simulator's flag model had to be corrected while validating signed
+  SDCC comparisons (`jp po`/`jr m` idioms after `add`/`sub`/`cp`) -
+  a host test-infrastructure fix, not a kernel change;
+- `tools/zexpack.py` packs/validates/dumps/deterministically reports ZEX
+  files and mirrors every `process_exec` boundary; `make zex-test`
+  proves tool/kernel constant parity against `include/zephyros/zex.h`;
+- physical validation uses `make smoke-hardware-m6` /
+  `make smoke-hardware-m6-failure` with the markers checked verbatim by
+  `tests/test_zex.py`.
+
+---
+
 # 27. M6 acceptance criteria
 
 M6 is accepted when:
