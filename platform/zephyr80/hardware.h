@@ -203,6 +203,86 @@
  * paired C/assembly headers so a one-sided change cannot build. */
 #define ZOS_IOC_BULK_CRC_BYPASS     1u
 
+/* --- LunchCrema V9958 video (ports A0h-A4h) ----------------------------
+ *
+ * Direct-hardware GRAPHIC 6 settings verified on the physical Zephyr-80
+ * (LunchCrema bring-up record, MANDELV5 path): 10 MHz Z80, four 64Kx4
+ * DRAMs providing 128 KiB of VDP VRAM, R#25 WTE/VDS discipline and the
+ * U11 front porch.  Declarative port, latch, register and delay values
+ * only: every instruction sequence, loop and behavior lives in
+ * drivers/v9958/.
+ *
+ * The configuration latch captures D0 (VDP interrupt route) and D1
+ * (/WS_EN) together, so every write uses a software shadow and preserves
+ * D0.  D1=1 bypasses only the porch while the paced bootstrap runs;
+ * D1=0 enables it after native WAIT is turned on. */
+
+#define ZOS_V9958_DATA_PORT         0xA0u
+#define ZOS_V9958_CMD_PORT          0xA1u
+#define ZOS_V9958_PALETTE_PORT      0xA2u
+#define ZOS_V9958_INDIRECT_PORT     0xA3u
+#define ZOS_V9958_CONFIG_PORT       0xA4u
+
+#define ZOS_V9958_CONFIG_INT_ROUTE  0x01u /* D0: interrupt route (preserved) */
+#define ZOS_V9958_CONFIG_PORCH_OFF  0x02u /* D1=1: /WS_EN bypasses the porch */
+
+/* Command-port register select: value first, then register | 80h. */
+#define ZOS_V9958_REG_SELECT        0x80u
+
+/* Status register 2 (selected through R#15) bit 0: command engine busy. */
+#define ZOS_V9958_STATUS2_CE        0x01u
+
+/* Command-engine register block R#32..R#46, streamed through A3h. */
+#define ZOS_V9958_CMD_REGISTER_BASE  32u
+#define ZOS_V9958_CMD_REGISTER_COUNT 15u
+
+/* VDP register numbers used by the proven GRAPHIC 6 bring-up. */
+#define ZOS_V9958_REG_R0            0u
+#define ZOS_V9958_REG_R1            1u
+#define ZOS_V9958_REG_R2            2u
+#define ZOS_V9958_REG_R3            3u
+#define ZOS_V9958_REG_R4            4u
+#define ZOS_V9958_REG_R5            5u
+#define ZOS_V9958_REG_R6            6u
+#define ZOS_V9958_REG_R7            7u
+#define ZOS_V9958_REG_R8            8u
+#define ZOS_V9958_REG_R9            9u
+#define ZOS_V9958_REG_R10           10u
+#define ZOS_V9958_REG_R11           11u
+#define ZOS_V9958_REG_R14           14u
+#define ZOS_V9958_REG_R15           15u
+#define ZOS_V9958_REG_R16           16u
+#define ZOS_V9958_REG_R17           17u
+#define ZOS_V9958_REG_R18           18u
+#define ZOS_V9958_REG_R23           23u
+#define ZOS_V9958_REG_R25           25u
+#define ZOS_V9958_REG_R26           26u
+#define ZOS_V9958_REG_R27           27u
+#define ZOS_V9958_REG_R46           46u
+
+/* Required register values from the bring-up record: R#0=0Ah (M5+M3:
+ * GRAPHIC 6), R#2=1Fh (real-V9958 page-zero addressing), R#8=08h (VR=1,
+ * 64Kx4 DRAMs), R#9=88h (212 lines, interlace), R#25 WTE=1/VDS=0. */
+#define ZOS_V9958_R0_G6             0x0Au
+#define ZOS_V9958_R1_DISPLAY_OFF    0x00u
+#define ZOS_V9958_R1_DISPLAY_ON     0x40u
+#define ZOS_V9958_R2_G6             0x1Fu
+#define ZOS_V9958_R5_SPRITE_BASE    0xE4u
+#define ZOS_V9958_R6_SPRITE_PATTERN 0x3Fu
+#define ZOS_V9958_R7_BORDER         0x04u
+#define ZOS_V9958_R8_64K_DRAM       0x08u
+#define ZOS_V9958_R9_212_INTERLACE  0x88u
+#define ZOS_V9958_R11_SPRITE_ATTR   0x03u
+#define ZOS_V9958_R15_STATUS2       0x02u
+#define ZOS_V9958_R23_TEXT_BASE     0xFCu /* 100h - 4-line display offset */
+#define ZOS_V9958_R25_WAIT_OFF      0x00u /* WTE=0, VDS=0 (CPUCLK kept)    */
+#define ZOS_V9958_R25_WAIT_ON       0x04u /* WTE=1, VDS=0 (native WAIT)    */
+
+/* Bounded bootstrap delay count.  Every register write made while
+ * R#25 WTE is disabled is spaced by this many djnz iterations; the
+ * proven pacing never relies on incidental instruction timing. */
+#define ZOS_V9958_BOOT_DELAY_COUNT  16u
+
 /* Hardware-smoke host sync: diagnostic images built with
  * ZOS_SMOKE_HOST_SYNC=1 wait for this two-byte sequence on SIO0/B before
  * printing the banner, because the bench's reset line also resets the USB

@@ -174,6 +174,7 @@ class TestHidModuleArtifact(unittest.TestCase):
         manifest = _load_json(RECOVERY_MANIFEST)
         names = [entry["name"] for entry in manifest["files"]]
         self.assertEqual(names, ["sio.zmod", "ioc.zmod", "hid.zmod",
+                                 "v9958.zmod", "v9958-6x8.font",
                                  "monitor.zex"])
         main = _read(MAIN_C)
         sio = main.index('romfs_load_zmod("sio"')

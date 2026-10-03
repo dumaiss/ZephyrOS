@@ -77,6 +77,17 @@ captures output with a bounded timeout, and verifies the expected output:
                      when the image asks for it).  The boot log is
                      captured once, so start this tool first and reset
                      the board.
+    --mode m8-v9958  the M8 V9958 video image: banner, the dynamic
+                     console line, the v9958.0 VIDEO registration, the
+                     malformed-request rejection, the RESET pass, the
+                     presented fill, the drawn pattern, and
+                     "m8 v9958 selftest: OK".  The tool validates the
+                     serial transcript; the operator must also confirm
+                     the documented pattern on the V9958 output (a
+                     white 64x64 rectangle, a white-then-magenta band,
+                     default blue background).  The image waits for the
+                     host sync sequence; start this tool first and
+                     reset the board.
 
 The device is given with --port or the ZOS_SERIAL_PORT environment
 variable (the SERIAL_PORT make variable is passed through).  A missing or
@@ -85,13 +96,13 @@ invokes this tool.
 
 On benches where the target's reset line also resets the USB bridge, the
 TTY drops off the bus when the board is reset.  The tool reopens the same
-device path and keeps capturing.  The M8 IOC smoke image additionally
-waits for the host sync sequence (M8IOC_HOST_SYNC) before it prints
-anything, so mode m8-ioc sends that sequence once its port is open and
-repeats it until the first byte arrives.
+device path and keeps capturing.  The M8 IOC/HID/V9958 smoke images
+additionally wait for the host sync sequence (M8IOC_HOST_SYNC) before
+they print anything, so those modes send that sequence once the port is
+open and repeat it until the first byte arrives.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure|m7|m8-ioc]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure|m7|m8-ioc|m8-hid|m8-v9958]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -183,6 +194,16 @@ M8HID_SELFTEST_OK = b"m8 hid selftest: OK\r\n"
 M8HID_FAIL = b"m8 hid selftest: FAIL"
 M8HID_UNAVAILABLE = b"hid: unavailable\r\n"
 M8HID_FALLBACK_BYTE = b"R"
+
+# --- M8 V9958 video core -----------------------------------------------------
+M8V9958_VIDEO_OK = b"m8 v9958: video0 OK\r\n"
+M8V9958_MALFORMED_OK = b"m8 v9958: malformed rejected\r\n"
+M8V9958_RESET_OK = b"m8 v9958: reset OK\r\n"
+M8V9958_FILL_OK = b"m8 v9958: fill presented\r\n"
+M8V9958_PATTERN_OK = b"m8 v9958: pattern drawn\r\n"
+M8V9958_SELFTEST_OK = b"m8 v9958 selftest: OK\r\n"
+M8V9958_FAIL = b"m8 v9958 selftest: FAIL"
+M8V9958_UNAVAILABLE = b"v9958: unavailable\r\n"
 
 # Host sync the smoke image waits for before the banner (bench quirk: the
 # board's reset line also resets the USB bridge, so the board must not
@@ -381,6 +402,16 @@ class _M7Session:
         return True
 
 
+def _m8v9958_result(data):
+    """True when the full video acceptance transcript is present."""
+    if M8V9958_FAIL in data or M8V9958_UNAVAILABLE in data:
+        return False
+    return (BANNER in data and CONSOLE_DYNAMIC_OK in data and
+            M8V9958_VIDEO_OK in data and M8V9958_MALFORMED_OK in data and
+            M8V9958_RESET_OK in data and M8V9958_FILL_OK in data and
+            M8V9958_PATTERN_OK in data and M8V9958_SELFTEST_OK in data)
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="ZephyrOS serial smoke check")
     parser.add_argument("--port", default=os.environ.get("ZOS_SERIAL_PORT", ""))
@@ -390,7 +421,8 @@ def main(argv):
     parser.add_argument("--mode", choices=("normal", "selftest", "irq", "m3",
                                            "m4", "m4-failure", "m5",
                                            "m5-corrupt", "m6", "m6-failure",
-                                           "m7", "m8-ioc", "m8-hid"),
+                                           "m7", "m8-ioc", "m8-hid",
+                                           "m8-v9958"),
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
@@ -447,6 +479,15 @@ def main(argv):
               "on the USB keyboard exactly: a B 3 Enter Backspace Ctrl-X "
               "Arrow-Up; the tool validates the echo and sends the "
               "fallback R over the serial link when asked")
+    if args.mode == "m8-v9958":
+        print("serial_smoke: mode m8-v9958 checks the boot log and the "
+              "video acceptance pass; power-cycle the board or press "
+              "RESET now so the boot (including the V9958 selftest) is "
+              "captured; the image waits for the host sync sequence")
+        print("serial_smoke: visually confirm on the V9958 output: a "
+              "white 64x64 rectangle near the upper left, a white-then-"
+              "magenta band below it, and the default blue background "
+              "(see docs/validation/2026-10-03-m8-v9958.md)")
     deadline = time.monotonic() + args.timeout
     data = b""
     bridge_drops = 0
@@ -471,7 +512,7 @@ def main(argv):
                 print("serial_smoke: %s is back (drop %d); still capturing"
                       % (args.port, bridge_drops))
                 host_sync_at = 0.0
-            if (args.mode in ("m8-ioc", "m8-hid") and
+            if (args.mode in ("m8-ioc", "m8-hid", "m8-v9958") and
                     BANNER not in data and
                     time.monotonic() >= host_sync_at):
                 # The smoke image holds the banner for this sequence; keep
@@ -584,6 +625,10 @@ def main(argv):
                             M8HID_FAIL in data or \
                             M8HID_UNAVAILABLE in data:
                         break
+                elif args.mode == "m8-v9958":
+                    if _m8v9958_result(data) or M8V9958_FAIL in data or \
+                            M8V9958_UNAVAILABLE in data:
+                        break
     finally:
         if link is not None:
             try:
@@ -686,6 +731,13 @@ def main(argv):
                     "typed-byte echo lines in exact order (a B 3 Enter "
                     "Backspace Ctrl-X Arrow-Up), the forced SIO fallback "
                     "byte, and 'm8 hid selftest: OK'")
+    elif args.mode == "m8-v9958":
+        ok = _m8v9958_result(data)
+        expected = ("the banner, the dynamic console line, the v9958.0 "
+                    "registration, the malformed-request rejection, the "
+                    "RESET pass, the presented fill, the drawn pattern, "
+                    "and 'm8 v9958 selftest: OK'; the operator must also "
+                    "confirm the documented pattern visually")
     else:
         ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
               SELFTEST_OK in data and IRQ_SELFTEST_OK in data and
@@ -873,6 +925,31 @@ def _explain_wrong_image(mode, data):
                   "when the prompt appears (the bytes are echoed as "
                   "'m8 hid: rx XX' lines)"
                   % (found_typed, len(M8HID_TYPED_BYTES)), file=sys.stderr)
+    elif mode == "m8-v9958":
+        if M8V9958_UNAVAILABLE in data or M8V9958_FAIL in data:
+            print("serial_smoke: hint: the V9958 selftest did not "
+                  "complete (the module is unavailable or the "
+                  "operation/pattern phase failed).  Check the LCD/CRT "
+                  "output, and that "
+                  "build-m8-v9958-selftest/"
+                  "zephyros-m8-v9958-selftest.bin is flashed",
+                  file=sys.stderr)
+        elif M8HID_SELFTEST_OK in data:
+            print("serial_smoke: hint: the M8 HID marker was observed; "
+                  "the HID image is probably flashed instead of "
+                  "build-m8-v9958-selftest/"
+                  "zephyros-m8-v9958-selftest.bin", file=sys.stderr)
+        elif not BANNER in data:
+            print("serial_smoke: hint: no boot log was captured.  This "
+                  "image waits for the host sync sequence before the "
+                  "banner; start this tool first, then power-cycle the "
+                  "board or press RESET while it waits, and rerun",
+                  file=sys.stderr)
+        else:
+            print("serial_smoke: hint: the transcript is incomplete; the "
+                  "last marker above shows how far the video pass got.  "
+                  "Also confirm the documented pattern visually on the "
+                  "V9958 output", file=sys.stderr)
 
 
 if __name__ == "__main__":

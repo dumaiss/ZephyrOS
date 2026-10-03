@@ -782,6 +782,185 @@ def ioc_crc16(data):
     return crc
 
 
+class V9958Peer:
+    """Register/VRAM-level model of the LunchCrema V9958 (ports A0h-A4h).
+
+    Models exactly what the ZephyrOS v9958 driver can observe:
+
+      - the command-port two-byte protocol: a first byte is latched, the
+        second byte selects a register (bit 7) or the VRAM address
+        organisation (bit 6), using R#14 for A16:A14;
+      - the indirect port (A3h): writes reach R#17 and auto-increment the
+        command-register pointer; a write to R#46 starts the command;
+      - the data port (A0h): auto-increment VRAM writes over the full
+        17-bit (128 KiB) address space;
+      - the palette port (A2h): two-byte entries selected through R#16,
+        auto-advancing after every entry;
+      - status register 2 (selected through R#15=2): CE stays set while a
+        command executes;
+      - HMMV fills execute into the modeled VRAM (HMMM is recorded);
+      - the configuration latch: D0 (interrupt route) and D1 (/WS_EN)
+        are recorded for every write;
+      - instruction-timestamped traces for paced-bootstrap and
+        WAIT-enabled-phases validation (the Z80 fills `now` with its
+        instruction count before each port access).
+
+    Observability: latch_writes, reg_writes, addr_writes, palette_writes,
+    palette, vram_writes, status_reads, indirect_writes, commands,
+    protocol_errors.
+    """
+
+    PORT_DATA = 0xA0
+    PORT_CMD = 0xA1
+    PORT_PALETTE = 0xA2
+    PORT_INDIRECT = 0xA3
+    PORT_CONFIG = 0xA4
+
+    REG_SELECT = 0x80
+    VRAM_FLAG = 0x40
+    STATUS2_SELECT = 2
+    CE = 0x01
+    REG_INDIRECT_PTR = 17
+    REG_COMMAND = 46
+    CMD_BLOCK_BASE = 32
+    CMD_BLOCK_COUNT = 15
+    OP_HMMV = 0xC0
+    OP_HMMM = 0xD0
+
+    def __init__(self, command_busy=400):
+        self.now = 0
+        self.command_busy = command_busy
+        self.regs = [0x00] * 47
+        self.addr = 0
+        self.vram = bytearray(0x20000)
+        self.cmd_first = True
+        self.cmd_latch = 0
+        self.busy_until = 0
+        self.pal_index = 0
+        self.pal_half = 0
+        self.palette = [[0x00, 0x00] for _ in range(16)]
+        self.latch = 0x00
+        # Observability.
+        self.latch_writes = []     # (now, value)
+        self.reg_writes = []       # (value, reg, now)
+        self.addr_writes = []      # (now, addr)
+        self.palette_writes = []   # (now, value, entry, half)
+        self.vram_writes = []      # (addr, value) from the data port
+        self.status_reads = []     # (now, ce)
+        self.indirect_writes = []  # (now, register)
+        self.commands = []         # dict per command-engine start
+        self.protocol_errors = []  # (now, kind, value)
+
+    # -- driver-visible port behaviour ---------------------------------
+    def data_read(self):
+        value = self.vram[self.addr]
+        self.addr = (self.addr + 1) & 0x1FFFF
+        return value
+
+    def data_write(self, value):
+        value &= 0xFF
+        self.vram[self.addr] = value
+        self.vram_writes.append((self.addr, value))
+        self.addr = (self.addr + 1) & 0x1FFFF
+
+    def status_read(self):
+        ce = 1 if self.now < self.busy_until else 0
+        self.status_reads.append((self.now, ce))
+        if (self.regs[15] & 0x0F) == self.STATUS2_SELECT:
+            value = 0x00
+            if ce:
+                value |= self.CE
+            if ce:
+                value |= 0x40  # VR high only while the engine is busy
+            return value
+        return 0xFE  # S#0: no collision, vblank set
+
+    def ctrl_write(self, value):
+        value &= 0xFF
+        if self.cmd_first:
+            self.cmd_first = False
+            self.cmd_latch = value
+            return
+        self.cmd_first = True
+        if value & self.REG_SELECT:
+            self._write_reg(value & 0x3F, self.cmd_latch)
+        elif value & self.VRAM_FLAG:
+            self.addr = (((self.regs[14] & 0x07) << 14) |
+                         ((value & 0x3F) << 8) | self.cmd_latch) & 0x1FFFF
+            self.addr_writes.append((self.now, self.addr))
+        else:
+            self.protocol_errors.append((self.now, "ctrl", value))
+
+    def indirect_write(self, value):
+        value &= 0xFF
+        reg = self.regs[self.REG_INDIRECT_PTR] & 0x3F
+        self.indirect_writes.append((self.now, reg))
+        self.regs[reg] = value
+        self.regs[self.REG_INDIRECT_PTR] = (reg + 1) & 0x3F
+        if reg == self.REG_COMMAND:
+            self._command_start(value)
+
+    def palette_write(self, value):
+        value &= 0xFF
+        entry = self.pal_index & 0x0F
+        self.palette_writes.append((self.now, value, entry, self.pal_half))
+        self.palette[entry][self.pal_half] = value
+        if self.pal_half == 0:
+            self.pal_half = 1
+        else:
+            self.pal_half = 0
+            self.pal_index = (entry + 1) & 0x0F
+
+    def latch_write(self, value):
+        self.latch = value & 0x03
+        self.latch_writes.append((self.now, value))
+
+    # -- internal ------------------------------------------------------
+    def _write_reg(self, reg, value):
+        reg &= 0x3F
+        value &= 0xFF
+        self.regs[reg] = value
+        self.reg_writes.append((value, reg, self.now))
+        if reg == 16:
+            self.pal_index = value & 0x0F
+            self.pal_half = 0
+        elif reg == self.REG_COMMAND:
+            self._command_start(value)
+
+    def _command_start(self, code):
+        block = list(self.regs[self.CMD_BLOCK_BASE:
+                               self.CMD_BLOCK_BASE + self.CMD_BLOCK_COUNT])
+        entry = {"code": code, "block": block, "start": self.now,
+                 "busy_until": None}
+        if (code & 0xF0) == self.OP_HMMV:
+            dx = block[4] | (block[5] << 8)
+            dy = block[6] | (block[7] << 8)
+            nx = block[8] | (block[9] << 8)
+            ny = block[10] | (block[11] << 8)
+            color = block[12]
+            entry["fill"] = (dx, dy, nx, ny, color)
+            self._fill(dx, dy, nx, ny, color)
+            entry["busy_until"] = self.now + self.command_busy
+            self.busy_until = entry["busy_until"]
+        elif (code & 0xF0) == self.OP_HMMM:
+            entry["busy_until"] = self.now + self.command_busy
+            self.busy_until = entry["busy_until"]
+        self.commands.append(entry)
+
+    def _fill(self, dx, dy, nx, ny, color):
+        if nx == 0 or ny == 0:
+            return
+        first = dx // 2
+        last = (dx + nx) // 2
+        for y in range(dy, dy + ny):
+            base = (y * 256) & 0x1FFFF
+            for offset in range(first, last):
+                self.vram[(base + offset) & 0x1FFFF] = color
+
+    def busy(self):
+        return self.now < self.busy_until
+
+
 class Z80:
     def __init__(self, page0, page1, rom_pages=None):
         self.bank0 = bytearray(page0)
@@ -827,6 +1006,11 @@ class Z80:
         # Optional IOC command-lane peer on SIO1/B (ports 32h/33h).
         # Tests that boot an IOC image install one before running.
         self.ioc_peer = None
+        # Optional V9958 peer on A0h-A4h.  Tests that boot the v9958
+        # module install one before running; the peer's `now` is
+        # refreshed with the instruction count before every access so
+        # paced-bootstrap and WAIT-phase behaviour can be validated.
+        self.vdp_peer = None
 
     def accept_interrupt(self, vector):
         """Accept one maskable IM2 interrupt and fetch its linked target."""
@@ -844,6 +1028,17 @@ class Z80:
         port &= 0xFF
         if port == 0x00:
             return self.latch
+        if self.vdp_peer is not None and 0xA0 <= port <= 0xA4:
+            self.vdp_peer.now = self.cycles
+            if port == V9958Peer.PORT_DATA:
+                return self.vdp_peer.data_read()
+            if port == V9958Peer.PORT_CMD:
+                return self.vdp_peer.status_read()
+            if port == V9958Peer.PORT_PALETTE:
+                return 0xFF
+            if port == V9958Peer.PORT_INDIRECT:
+                return 0xFF
+            return self.vdp_peer.latch
         if port == 0x22:
             return self.sio_rx.pop(0) if self.sio_rx else 0xFF
         if port == 0x23:
@@ -867,6 +1062,18 @@ class Z80:
         value &= 0xFF
         if port == 0x00:
             self.latch = value
+        elif self.vdp_peer is not None and 0xA0 <= port <= 0xA4:
+            self.vdp_peer.now = self.cycles
+            if port == V9958Peer.PORT_DATA:
+                self.vdp_peer.data_write(value)
+            elif port == V9958Peer.PORT_CMD:
+                self.vdp_peer.ctrl_write(value)
+            elif port == V9958Peer.PORT_PALETTE:
+                self.vdp_peer.palette_write(value)
+            elif port == V9958Peer.PORT_INDIRECT:
+                self.vdp_peer.indirect_write(value)
+            else:
+                self.vdp_peer.latch_write(value)
         elif port == 0x22:
             self.sio_tx.append(value)
         elif port == 0x23:

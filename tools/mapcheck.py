@@ -398,6 +398,10 @@ STATIC_IOC_PREFIXES = ("_ioc_",)
 # means a static copy crept back into the kernel image.
 STATIC_HID_PREFIXES = ("_hid_",)
 
+# M8: the V9958 video driver is module-only too; any linked `_v9958_`
+# symbol means a static copy crept back into the kernel image.
+STATIC_V9958_PREFIXES = ("_v9958_",)
+
 # M4 module-loader routines: bank-7 code and data only, and never inside
 # the driver arena (which has no linked content by design).  The prefix
 # sweep also covers the test-only fixture symbols in selftest images.
@@ -747,6 +751,14 @@ def check_symbols(areas, symbols, production=False):
             raise MapError(
                 "static HID symbol %s at %04Xh must not be linked; the "
                 "HID driver is loaded from a ZMOD module" % (name, addr)
+            )
+
+    # M8: the V9958 video driver is module-only as well.
+    for name, addr in symbols.items():
+        if addr != 0 and name.startswith(STATIC_V9958_PREFIXES):
+            raise MapError(
+                "static V9958 symbol %s at %04Xh must not be linked; the "
+                "V9958 driver is loaded from a ZMOD module" % (name, addr)
             )
 
     # M4: loader/relocator code and catalog/fixture data must stay in the

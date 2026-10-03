@@ -386,7 +386,8 @@ discovered the IOC class; the MCU firmware is untouched.
   SIO, then IOC, then HID; a failed HID load prints `hid: unavailable`
   and the console still binds SIO.  With HID registered,
   `console_bind_defaults()` selects HID input and the SIO fallback
-  output (there is no VIDEO console device until package 18/19).
+  output (the V9958 VIDEO device registers in package 18 but
+  deliberately has no `ZCAP_CONSOLE_OUT` until package 19).
 - Host validation: `tests/test_hid.py` pins the class contract,
   protocol constants, module artifact, boot order, source discipline
   (no port/status constants, no direct IN/OUT, discovery only through
@@ -403,7 +404,83 @@ discovered the IOC class; the MCU firmware is untouched.
   operator, the tool validates the echoed `m8 hid: rx XX` transcript,
   and then sends the forced SIO-fallback byte.
 
-## 7. Console service
+## 7. V9958 video core (M8)
+
+`drivers/v9958/` (`v9958.c`, `v9958_io.asm`, `v9958_module.c`,
+`v9958_driver.h`, `assets/font_cp850_6x8.inc`; manifest
+`modules/manifests/v9958.json`) is the fourth production ZMOD module:
+the direct-hardware LunchCrema V9958 core ported from the pinned
+Zephyr-80 reference.  It delivers the hardware-safe initialization, the
+native VIDEO class operation surface, the ROMFS-backed font atlas and
+the low-level graphics/command primitives; the character renderer and
+`zchar_ops` follow with the console package, so this stage registers a
+VIDEO device without advertising character/console output.
+
+- Class and capabilities: `v9958.0`, class `ZDEV_VIDEO`, with exactly
+  the seven `ZCAP_VIDEO_*` bits (control/data/block/palette/indirect/
+  present/reset).  `char_ops` is null and `ZCAP_CHAR_OUT` /
+  `ZCAP_CONSOLE_OUT` are absent, so `console_bind_defaults()` keeps the
+  SIO output fallback; no character interface can be inferred.
+- Native operations (`include/zephyros/video.h`):
+  `ZVIDEO_CTRL_WRITE` (1), `ZVIDEO_DATA_WRITE` (2),
+  `ZVIDEO_DATA_BLOCK` (3), `ZVIDEO_PALETTE_WRITE` (4),
+  `ZVIDEO_INDIRECT_WRITE` (5), `ZVIDEO_PRESENT` (6), `ZVIDEO_RESET`
+  (7), dispatched through `zvideo_ops.send`.  The numbers are native,
+  not Virtual Drip packet numbers.  `send` validates before any I/O:
+  write operations require a non-null payload and a nonzero length and
+  stream the full 16-bit length (native ZephyrOS does not inherit the
+  historical 16-byte non-block ceiling); PRESENT/RESET require zero
+  length; unknown operations return `ZDEV_ENOTSUP`, malformed requests
+  `ZDEV_EINVAL`, and a null instance `ZDEV_ENODEV`.  Capabilities are
+  authoritative.
+- Hardware discipline (ports A0h-A4h; declarative ports, latch bits,
+  register values and the bounded bootstrap delay live in
+  `platform/zephyr80/hardware.{h,inc}`, paired and parity-tested): the
+  latch shadow preserves D0 while the porch is disabled for the paced
+  bootstrap; R#25 WTE=0/VDS=0, R#8=08h (64Kx4 DRAM organization), stop
+  any prior command, then the full GRAPHIC 6 register/selector state
+  (R#0=0Ah, R#2=1Fh, R#9=88h, R#15=2, R#23=100h-4, ...), then R#25=04h
+  (WTE=1/VDS=0) and the porch; the palette is programmed only under
+  native WAIT; both precolored font atlases upload, the circular
+  page-zero bitmap clears to the 44h background, the sprite cursor
+  initializes, the frame presents, and the display enables.
+  `ZVIDEO_RESET` re-establishes every owned register and VRAM asset and
+  preserves D0.  Status register 2 stays selected while the driver owns
+  the VDP and command starts wait for CE completion.  `/INT` stays
+  disabled: `IRQ_VDP_FF` is never claimed in M8.
+- Font: the reviewable asset `assets/font_cp850_6x8.inc` (the pinned
+  2048-byte CP850 6x8 font; SHA-256 `6db207e0...`) is emitted
+  deterministically by `tools/fontpack.py` as ROMFS DATA
+  (`v9958-6x8.font`) and is never embedded in the resident module image
+  or BSS.  The driver validates the resource size before any port I/O,
+  streams it through the ABI-v2 resource imports in bounded 256-byte
+  chunks, and converts each 32-glyph group into the normal and reverse
+  atlases at 10000h and 14000h in the 128-KiB VRAM space.
+- Boot integration: production images carry `v9958.zmod` and
+  `v9958-6x8.font` in the ROMFS recovery store and load the module
+  after HID (every console candidate is registered before binding).  A
+  missing/undersized font resource or a failed VDP sequence fails the
+  init, the loader rolls the (empty) registration set back, and the SIO
+  fallback, IOC transport and HID remain untouched (`v9958:
+  unavailable` on the early console).
+- Host validation: `tests/test_v9958.py` pins the class contract, the
+  paired platform constants, the font asset pipeline, the module
+  artifact, the ROMFS boot set and the source discipline (all port
+  I/O in `v9958_io.asm`; no CP/M tables, fixed BIOS addresses, Virtual
+  Drip framing or IOC/HID imports; no interrupt claim;
+  validate-before-I/O; the proven initialization order).
+  `tests/test_v9958_sim.py` replays the real acceptance image against
+  the simulator's register/VRAM-level V9958 peer: registration and
+  binding, latch preservation, paced bootstrap ordering, the
+  WAIT-enabled palette phase, the exact register sequence, both atlases
+  byte-for-byte, CE command-completion waits, 128-KiB R#14 addressing,
+  RESET, the deterministic visible pattern, malformed no-I/O cases, a
+  4096-byte `DATA_BLOCK`, and the font-failure rollback.  The physical
+  acceptance image is `build-m8-v9958-selftest/`, driven by
+  `make smoke-hardware-m8-v9958`; the operator also confirms the
+  documented pattern visually.
+
+## 8. Console service
 
 `kernel/device/console.c`, `include/zephyros/console.h`:
 
@@ -455,7 +532,7 @@ the fallback evidence:
 
 Every production image keeps the full M0 banner and panic path.
 
-## 8. Drivers and interrupts
+## 9. Drivers and interrupts
 
 A loaded module may claim an M2 logical source through
 `zdriver_api.irq_claim` and receives a bank-7 handler; the executive maps
@@ -474,7 +551,7 @@ module stays polling-only.  Two test paths prove the IRQ integration:
   three deliveries inside a bounded EI spin, verifies its relocated
   state pointer, and releases the source before registering the device.
 
-## 9. Placement and validation
+## 10. Placement and validation
 
 All driver/service code, descriptors, ops tables, and state live in
 bank 7 (linked `_CODE`/`_DATA` for the remaining kernel objects; the
@@ -487,8 +564,8 @@ acceptance images keep the fixed `A000h-BFFFh` 16-granule geometry (see
 prefix sweep over `_device_`, `_console_`, and `_m3_` symbols (the M3
 acceptance symbols remain bank-7-resident in test images).  A
 rejection sweep fails the build on any linked `_sio_`, `_sio0b_`,
-`_sio_driver`, `_ioc_`, or `_hid_` symbol (the SIO, IOC and HID drivers
-may exist only as modules), and
+`_sio_driver`, `_ioc_`, `_hid_`, or `_v9958_` symbol (the SIO, IOC, HID
+and V9958 drivers may exist only as modules), and
 `mapcheck.py --production` additionally rejects every acceptance symbol
 (static-driver remnants, test runners/results, fixture catalogs, test
 SIO module entries) in the production image.
@@ -520,6 +597,9 @@ Host validation layers:
   byte-identical to the internal reader).
 - `tests/test_hid.py` / `tests/test_hid_sim.py` – the HID class/driver
   contract and the real SIO+IOC+HID image replay (section 6).
+- `tests/test_v9958.py` / `tests/test_v9958_sim.py` – the V9958 VIDEO
+  class/driver contract, the font asset pipeline, and the real
+  SIO+IOC+HID+V9958 image replay against the V9958 peer (section 7).
 - `make m3-selftest` / `make m4-selftest` / `make m4-placement-selftest`
   / `make m4-failure-selftest` – the physical acceptance images.
 - `make smoke-hardware-m3 SERIAL_PORT=...` – driving the acceptance image:
@@ -536,7 +616,7 @@ simulations cover control flow and register-level behavior.  HID input
 arrives from the deployed MCU translation; physical USB-keyboard
 acceptance is typed by the operator into the smoke run.
 
-## 10. Out of scope
+## 11. Out of scope
 
 No heap, no module unload or hot-plug, no filesystem API for modules
 (beyond the two bounded DATA resource imports), no process API here, and
@@ -548,5 +628,9 @@ preferred-direction console policy, and the derived production arena;
 M8 work packages 15-16 delivered the IOC command+bulk class and its
 deterministic boot load after SIO; M8 work package 17 delivered the HID
 keyboard/text class, its boot load after IOC, and the input-only
-`hid.keyboard0` device.  The M3 numeric registry model still holds; its
-placeholder class names were refined in place.
+`hid.keyboard0` device; M8 work package 18 delivered the V9958 video
+core: the `v9958.0` VIDEO device with the seven native operations, the
+ROMFS-backed font atlases and the command/VRAM primitives, loaded after
+HID (character output and the terminal remain with the console
+package).  The M3 numeric registry model still holds; its placeholder
+class names were refined in place.

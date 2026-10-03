@@ -397,10 +397,12 @@ class TestIocModuleArtifact(unittest.TestCase):
         self.assertIn("$(IOC_MODULE_OBJS)", makefile)
         self.assertIn("ZOS_M8_IOC_SELFTEST", makefile)
         # The boot-set plan must carry the IOC boot module (and, since
-        # package 17, the HID module loaded after it).
+        # package 17, the HID module loaded after it; since package 18,
+        # the V9958 video core loaded last).
         self.assertIn("BOOT_ZMODS", makefile)
         self.assertIn("BOOT_ZMODS += $(BOOT_IOC_ZMOD)", makefile)
         self.assertIn("BOOT_ZMODS += $(MODULES)/hid.zmod", makefile)
+        self.assertIn("BOOT_ZMODS += $(MODULES)/v9958.zmod", makefile)
 
     def test_production_map_has_no_linked_ioc_or_m8_symbols(self):
         if not os.path.exists(MAP):

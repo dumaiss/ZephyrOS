@@ -73,6 +73,18 @@ void zos_target_test_late(void);
 #define ZOS_HID_BOOT 1
 #endif
 
+/* V9958 video boot load.  Production and the M8 images carry
+ * `v9958.zmod` (and its ROMFS DATA font) in the recovery store and load
+ * it after HID; the module has no IOC dependency.  A missing font
+ * resource or a failed VDP bring-up fails the module init, the loader
+ * rolls the (empty) registration set back, and the SIO fallback, the
+ * IOC transport and HID remain usable.  Pre-M8 acceptance images
+ * compile this block out so their accepted boot stays exactly as
+ * validated. */
+#ifndef ZOS_V9958_BOOT
+#define ZOS_V9958_BOOT 1
+#endif
+
 /* Temporary pre-shell launcher selection.  Production and the M7
  * acceptance image (ZOS_MONITOR_BOOT=1, the default) run `monitor.zex`
  * through the unchanged M6 exec path and re-exec it after every normal
@@ -173,6 +185,18 @@ static uint8_t kernel_boot_module(void)
 	 * fallback plus the IOC transport remain usable. */
 	if (romfs_load_zmod("hid", "hid.zmod") < 0) {
 		early_console_puts("hid: unavailable\r\n");
+	}
+#endif
+#if ZOS_V9958_BOOT
+	/* Then the V9958 video core.  It has no IOC dependency and
+	 * registers the VIDEO class device only after its full bring-up
+	 * and the ROMFS font upload succeeded; a missing/undersized font
+	 * or a failed VDP sequence fails the init and the loader rolls it
+	 * back without disturbing the earlier devices.  The normal console
+	 * stays on the SIO output fallback until the console package adds
+	 * the V9958 character interface. */
+	if (romfs_load_zmod("v9958", "v9958.zmod") < 0) {
+		early_console_puts("v9958: unavailable\r\n");
 	}
 #endif
 	return 0;

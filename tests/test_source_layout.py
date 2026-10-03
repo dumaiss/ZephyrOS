@@ -120,6 +120,22 @@ OWNER_FILES = (
     "drivers/ioc/ioc_proto.h",
     "include/zephyros/ioc.h",
     "modules/manifests/ioc.json",
+    "drivers/hid/hid.c",
+    "drivers/hid/hid_driver.h",
+    "drivers/hid/hid_module.c",
+    "include/zephyros/hid.h",
+    "modules/manifests/hid.json",
+    "drivers/v9958/v9958.c",
+    "drivers/v9958/v9958_driver.h",
+    "drivers/v9958/v9958_io.asm",
+    "drivers/v9958/v9958_module.c",
+    "drivers/v9958/assets/font_cp850_6x8.inc",
+    "include/zephyros/video.h",
+    "modules/manifests/v9958.json",
+    "tests/m8/manifest-v9958-fontfail.json",
+    "tests/m8/v9958-font-stub.bin",
+    "tests/target/m8/m8_v9958_test.c",
+    "tests/target/include/m8_v9958_selftest.h",
     "tests/target/m8/m8_ioc_test.c",
     "tests/target/include/m8_ioc_selftest.h",
     "modules/manifests/sio.json",
@@ -191,11 +207,11 @@ REQUIRED_DIRS = (
     "boot",
     "kernel/memory", "kernel/syscall", "kernel/irq", "kernel/runtime",
     "kernel/module", "kernel/romfs", "kernel/process",
-    "drivers/sio", "drivers/ctc", "drivers/ioc",
-    "modules/manifests", "modules/runtime",
+    "drivers/sio", "drivers/ctc", "drivers/ioc", "drivers/hid",
+    "drivers/v9958", "modules/manifests", "modules/runtime",
     "user/runtime", "user/monitor",
     "recovery",
-    "tests/m5", "tests/m6", "tests/m7", "tests/modules",
+    "tests/m5", "tests/m6", "tests/m7", "tests/m8", "tests/modules",
     "tests/target/m1", "tests/target/m2", "tests/target/m3",
     "tests/target/m4", "tests/target/m5", "tests/target/m6",
     "tests/target/m7", "tests/target/m8",
@@ -233,6 +249,11 @@ PRODUCTION_SELFTEST_MACROS = (
     "ZOS_M6_FAILURE_SELFTEST",
     "ZOS_M7_SELFTEST",
     "ZOS_M8_IOC_SELFTEST",
+    "ZOS_M8_HID_SELFTEST",
+    "ZOS_M8_HID_NOIOC",
+    "ZOS_M8_HID_BADIOC",
+    "ZOS_M8_V9958_SELFTEST",
+    "ZOS_M8_V9958_FONTFAIL",
 )
 
 # Generated-output names that must be ignored and cleaned.  build-modules is
@@ -252,6 +273,11 @@ BUILD_VARIANTS = (
     "build-m6-failure-selftest",
     "build-m7-selftest",
     "build-m8-ioc-selftest",
+    "build-m8-hid-selftest",
+    "build-m8-hid-noioc-selftest",
+    "build-m8-hid-badioc-selftest",
+    "build-m8-v9958-selftest",
+    "build-m8-v9958-fontfail-selftest",
     "build-modules",
 )
 
@@ -336,6 +362,11 @@ class TestProductionTestSeparation(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "ioc"))),
                          ["ioc.c", "ioc_driver.h", "ioc_io.asm",
                           "ioc_module.c", "ioc_proto.h"])
+        self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "hid"))),
+                         ["hid.c", "hid_driver.h", "hid_module.c"])
+        self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "v9958"))),
+                         ["assets", "v9958.c", "v9958_driver.h",
+                          "v9958_io.asm", "v9958_module.c"])
 
     def test_no_json_manifests_under_drivers(self):
         for path in _walk("drivers"):

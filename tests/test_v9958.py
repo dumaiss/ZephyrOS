@@ -1,0 +1,623 @@
+#!/usr/bin/env python3
+"""Host-side M8 V9958 video class and driver contract tests (work
+package 18).
+
+Covers the declarative and structural surface that can be checked
+without executing target code:
+
+  - include/zephyros/video.h: the exact native operation values
+    (CTRL_WRITE=1 .. RESET=7), the zvideo_ops.send shape, the
+    capability-authoritative ZDEV_ENOTSUP convention and the documented
+    no-I/O validation rules; the matching capability bits stay in
+    device.h (allocated by package 14) and are not redefined;
+  - platform/zephyr80/hardware.{h,inc}: paired ports A0h-A4h, latch
+    bits, required GRAPHIC 6 register values and the bounded bootstrap
+    delay count, value-identical between the C and assembly headers;
+  - modules/manifests/v9958.json and the packed container: 512-byte
+    granules, module-only symbols, and the font is NOT embedded in the
+    resident image/BSS;
+  - the font asset pipeline: the reviewable .inc source parses to the
+    exact pinned 2048 bytes with the pinned SHA-256, and fontpack.py
+    emits it deterministically as ROMFS DATA;
+  - the driver source discipline: every in/out lives in v9958_io.asm,
+    no CP/M tables or fixed BIOS addresses, no Virtual Drip framing, no
+    IOC/HID import or symbol, no VDP interrupt claim, the proven init
+    order, validate-before-I/O, and the reset path;
+  - the ROMFS boot set (sio, ioc, hid, v9958.zmod, v9958-6x8.font,
+    monitor.zex) and the ZOS_V9958_BOOT gate (pre-M8 images compile it
+    out);
+  - mapcheck rejects linked V9958 driver symbols (module-only);
+  - the smoke tool's m8-v9958 markers and result classification.
+
+Executable behavior is replayed from the real linked images by
+tests/test_v9958_sim.py.
+"""
+
+import json
+import os
+import re
+import sys
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+sys.path.insert(0, HERE)
+
+import mapcheck  # noqa: E402
+import zmodpack  # noqa: E402
+import fontpack  # noqa: E402
+from test_ioc import struct_member_order  # noqa: E402
+from test_m1 import (  # noqa: E402
+    HARDWARE_H, HARDWARE_INC, evaluate, parse_asm_inc, parse_c_header)
+
+VIDEO_H = os.path.join(ROOT, "include", "zephyros", "video.h")
+DEVICE_H = os.path.join(ROOT, "include", "zephyros", "device.h")
+DRIVER_H = os.path.join(ROOT, "drivers", "v9958", "v9958_driver.h")
+DRIVER_C = os.path.join(ROOT, "drivers", "v9958", "v9958.c")
+DRIVER_ASM = os.path.join(ROOT, "drivers", "v9958", "v9958_io.asm")
+MODULE_C = os.path.join(ROOT, "drivers", "v9958", "v9958_module.c")
+FONT_INC = os.path.join(ROOT, "drivers", "v9958", "assets",
+                        "font_cp850_6x8.inc")
+MANIFEST = os.path.join(ROOT, "modules", "manifests", "v9958.json")
+RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
+FONTFAIL_MANIFEST = os.path.join(ROOT, "tests", "m8",
+                                 "manifest-v9958-fontfail.json")
+FONT_STUB = os.path.join(ROOT, "tests", "m8", "v9958-font-stub.bin")
+TARGET_TEST_C = os.path.join(ROOT, "tests", "target", "m8",
+                             "m8_v9958_test.c")
+TARGET_HEADER = os.path.join(ROOT, "tests", "target", "include",
+                             "m8_v9958_selftest.h")
+TARGET_RUNNER = os.path.join(ROOT, "tests", "target", "support",
+                             "target_test.c")
+MAIN_C = os.path.join(ROOT, "kernel", "main.c")
+MAKEFILE = os.path.join(ROOT, "Makefile")
+ZMOD = os.path.join(ROOT, "build", "modules", "v9958.zmod")
+FONT_BIN = os.path.join(ROOT, "build", "modules", "v9958-6x8.font")
+MAP = os.path.join(ROOT, "build", "zephyros.map")
+
+PINNED_FONT_SHA256 = (
+    "6db207e0466a05af42894d378261f876da51bb391240e1beda4f1d5f12ec442f"
+)
+
+V9958_CONSTANTS = {
+    "ZOS_V9958_DATA_PORT": 0xA0,
+    "ZOS_V9958_CMD_PORT": 0xA1,
+    "ZOS_V9958_PALETTE_PORT": 0xA2,
+    "ZOS_V9958_INDIRECT_PORT": 0xA3,
+    "ZOS_V9958_CONFIG_PORT": 0xA4,
+    "ZOS_V9958_CONFIG_INT_ROUTE": 0x01,
+    "ZOS_V9958_CONFIG_PORCH_OFF": 0x02,
+    "ZOS_V9958_REG_SELECT": 0x80,
+    "ZOS_V9958_STATUS2_CE": 0x01,
+    "ZOS_V9958_CMD_REGISTER_BASE": 32,
+    "ZOS_V9958_CMD_REGISTER_COUNT": 15,
+    "ZOS_V9958_REG_R0": 0,
+    "ZOS_V9958_REG_R1": 1,
+    "ZOS_V9958_REG_R2": 2,
+    "ZOS_V9958_REG_R3": 3,
+    "ZOS_V9958_REG_R4": 4,
+    "ZOS_V9958_REG_R5": 5,
+    "ZOS_V9958_REG_R6": 6,
+    "ZOS_V9958_REG_R7": 7,
+    "ZOS_V9958_REG_R8": 8,
+    "ZOS_V9958_REG_R9": 9,
+    "ZOS_V9958_REG_R10": 10,
+    "ZOS_V9958_REG_R11": 11,
+    "ZOS_V9958_REG_R14": 14,
+    "ZOS_V9958_REG_R15": 15,
+    "ZOS_V9958_REG_R16": 16,
+    "ZOS_V9958_REG_R17": 17,
+    "ZOS_V9958_REG_R18": 18,
+    "ZOS_V9958_REG_R23": 23,
+    "ZOS_V9958_REG_R25": 25,
+    "ZOS_V9958_REG_R26": 26,
+    "ZOS_V9958_REG_R27": 27,
+    "ZOS_V9958_REG_R46": 46,
+    "ZOS_V9958_R0_G6": 0x0A,
+    "ZOS_V9958_R1_DISPLAY_OFF": 0x00,
+    "ZOS_V9958_R1_DISPLAY_ON": 0x40,
+    "ZOS_V9958_R2_G6": 0x1F,
+    "ZOS_V9958_R5_SPRITE_BASE": 0xE4,
+    "ZOS_V9958_R6_SPRITE_PATTERN": 0x3F,
+    "ZOS_V9958_R7_BORDER": 0x04,
+    "ZOS_V9958_R8_64K_DRAM": 0x08,
+    "ZOS_V9958_R9_212_INTERLACE": 0x88,
+    "ZOS_V9958_R11_SPRITE_ATTR": 0x03,
+    "ZOS_V9958_R15_STATUS2": 0x02,
+    "ZOS_V9958_R23_TEXT_BASE": 0xFC,
+    "ZOS_V9958_R25_WAIT_OFF": 0x00,
+    "ZOS_V9958_R25_WAIT_ON": 0x04,
+    "ZOS_V9958_BOOT_DELAY_COUNT": 16,
+}
+
+VIDEO_OPS = {
+    "ZVIDEO_CTRL_WRITE": 1,
+    "ZVIDEO_DATA_WRITE": 2,
+    "ZVIDEO_DATA_BLOCK": 3,
+    "ZVIDEO_PALETTE_WRITE": 4,
+    "ZVIDEO_INDIRECT_WRITE": 5,
+    "ZVIDEO_PRESENT": 6,
+    "ZVIDEO_RESET": 7,
+}
+
+
+def _read(path, mode="r"):
+    with open(path, mode) as handle:
+        return handle.read()
+
+
+def _load_json(path):
+    with open(path) as handle:
+        return json.load(handle)
+
+
+def _code_only(path):
+    text = _read(path)
+    if path.endswith((".c", ".h")):
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+        text = re.sub(r"//[^\n]*", "", text)
+    elif path.endswith(".asm"):
+        text = "\n".join(line.split(";")[0] for line in text.splitlines())
+    return text
+
+
+class TestVideoClassContract(unittest.TestCase):
+    def setUp(self):
+        self.text = _read(VIDEO_H)
+        self.env = parse_c_header(VIDEO_H)
+
+    def test_exact_operation_values(self):
+        for name, value in VIDEO_OPS.items():
+            self.assertIn(name, self.env, "video.h missing %s" % name)
+            self.assertEqual(evaluate(name, self.env), value, name)
+
+    def test_ops_shape(self):
+        self.assertEqual(
+            struct_member_order(self.text, "zvideo_ops",
+                                function_pointers=True),
+            ["send"])
+        self.assertIn("sizeof(struct zvideo_ops) == 2", self.text)
+
+    def test_capability_bits_stay_allocated_in_device_h(self):
+        device = parse_c_header(DEVICE_H)
+        caps = {
+            "ZCAP_VIDEO_CTRL_WRITE": 0x00000100,
+            "ZCAP_VIDEO_DATA_WRITE": 0x00000200,
+            "ZCAP_VIDEO_DATA_BLOCK": 0x00000400,
+            "ZCAP_VIDEO_PALETTE": 0x00000800,
+            "ZCAP_VIDEO_INDIRECT": 0x00001000,
+            "ZCAP_VIDEO_PRESENT": 0x00002000,
+            "ZCAP_VIDEO_RESET": 0x00004000,
+        }
+        for name, value in caps.items():
+            self.assertIn(name, device, "device.h missing %s" % name)
+            self.assertEqual(evaluate(name, device), value, name)
+        # video.h documents them but does not redefine them.
+        for name in caps:
+            self.assertNotIn("#define " + name, self.text)
+
+    def test_capabilities_are_authoritative_and_validation_documented(self):
+        for needle in ("Capabilities are\n * authoritative",
+                       "ZDEV_ENOTSUP",
+                       "malformed request performs no I/O",
+                       "16-byte", "ZDEV_EINVAL", "ZDEV_ENODEV"):
+            self.assertIn(needle, self.text)
+
+
+class TestPlatformConstants(unittest.TestCase):
+    def setUp(self):
+        self.c = parse_c_header(HARDWARE_H)
+        self.asm = parse_asm_inc(HARDWARE_INC)
+
+    def test_verified_constants_present_and_exact(self):
+        for name, value in sorted(V9958_CONSTANTS.items()):
+            self.assertIn(name, self.c, "hardware.h missing %s" % name)
+            self.assertIn(name, self.asm, "hardware.inc missing %s" % name)
+            self.assertEqual(evaluate(self.c[name], self.c), value,
+                             "hardware.h %s" % name)
+            self.assertEqual(evaluate(self.asm[name], self.asm), value,
+                             "hardware.inc %s" % name)
+
+    def test_derived_relations(self):
+        env = dict(self.c)
+        # Latch: porch-off is the /WS_EN bit one above the D0 route.
+        self.assertEqual(evaluate("ZOS_V9958_CONFIG_PORCH_OFF", env),
+                         evaluate("ZOS_V9958_CONFIG_INT_ROUTE", env) << 1)
+        # R#25: waiting is the WTE bit; the off value clears VDS too.
+        self.assertEqual(evaluate("ZOS_V9958_R25_WAIT_ON", env), 0x04)
+        self.assertEqual(evaluate("ZOS_V9958_R25_WAIT_OFF", env), 0x00)
+        # R#23 = 100h - 4 (the proven 4-line display offset).
+        self.assertEqual(evaluate("ZOS_V9958_R23_TEXT_BASE", env) + 4,
+                         0x100)
+        # The command block covers R#32..R#46 inclusive.
+        self.assertEqual(evaluate("ZOS_V9958_CMD_REGISTER_BASE", env) +
+                         evaluate("ZOS_V9958_CMD_REGISTER_COUNT", env) - 1,
+                         evaluate("ZOS_V9958_REG_R46", env))
+        # The data/command/palette/indirect/config ports form the A0h-A4h
+        # block in order.
+        base = evaluate("ZOS_V9958_DATA_PORT", env)
+        for offset, name in enumerate(("ZOS_V9958_DATA_PORT",
+                                       "ZOS_V9958_CMD_PORT",
+                                       "ZOS_V9958_PALETTE_PORT",
+                                       "ZOS_V9958_INDIRECT_PORT",
+                                       "ZOS_V9958_CONFIG_PORT")):
+            self.assertEqual(evaluate(name, env), base + offset, name)
+
+    def test_shared_names_are_value_identical(self):
+        for name in sorted(set(self.c) & set(self.asm)):
+            self.assertEqual(evaluate(self.c[name], self.c),
+                             evaluate(self.asm[name], self.asm),
+                             "%s differs between hardware.h/.inc" % name)
+
+
+class TestFontAsset(unittest.TestCase):
+    def test_source_asset_is_the_pinned_2048_bytes(self):
+        data = fontpack.parse_font(FONT_INC)
+        self.assertEqual(len(data), 2048)
+        digest = fontpack.verify(data, FONT_INC)
+        self.assertEqual(digest, PINNED_FONT_SHA256)
+        # The header comment declares the same hash (reviewability).
+        self.assertIn(PINNED_FONT_SHA256, _read(FONT_INC))
+
+    def test_fontpack_verifies(self):
+        self.assertEqual(fontpack.main(["fontpack.py", "verify",
+                                        FONT_INC]), 0)
+        self.assertEqual(fontpack.main(["fontpack.py"]), 2)
+
+    def test_built_font_artifact_matches(self):
+        if not os.path.exists(FONT_BIN):
+            self.skipTest("build/modules/v9958-6x8.font missing")
+        data = _read(FONT_BIN, "rb")
+        self.assertEqual(len(data), 2048)
+        import hashlib
+        self.assertEqual(hashlib.sha256(data).hexdigest(),
+                         PINNED_FONT_SHA256)
+
+
+class TestModuleArtifact(unittest.TestCase):
+    def test_manifest_shape(self):
+        manifest = _load_json(MANIFEST)
+        self.assertEqual(manifest["name"], "v9958")
+        self.assertEqual(manifest["type"], "driver")
+        self.assertEqual(manifest["abi"], 2)
+        self.assertEqual(manifest["init"], "v9958_module_init")
+        self.assertEqual(manifest["image_areas"], ["_CODE"])
+        self.assertEqual(manifest["bss_areas"], ["_DATA"])
+        self.assertEqual(manifest["objects"],
+                         ["v9958.rel", "v9958_io.rel", "v9958_module.rel",
+                          "sdcc_indirect_calls.rel"])
+
+    def test_packed_container_and_no_resident_font(self):
+        if not os.path.exists(ZMOD):
+            self.skipTest("build/modules/v9958.zmod missing; build first")
+        data = _read(ZMOD, "rb")
+        info = zmodpack.parse_container(data, "v9958.zmod")
+        self.assertGreater(info["image_size"], 0)
+        self.assertGreater(info["bss_size"], 0)
+        self.assertNotEqual(info["init_offset"], 0xFFFF)
+        granule = 512
+        self.assertEqual(info["required_granules"],
+                         (info["image_size"] + info["bss_size"] +
+                          granule - 1) // granule)
+        # The resident image+BSS is far smaller than the 2048-byte font:
+        # the font is ROMFS DATA, not module storage.
+        self.assertLess(info["image_size"] + info["bss_size"], 2048 +
+                        512)
+        asset = fontpack.parse_font(FONT_INC)
+        self.assertNotIn(asset, bytes(info["payload"]),
+                         "the font must not be embedded in the module")
+        for rtype, _patch in info["relocs"]:
+            self.assertEqual(rtype, 1)
+
+    def test_romfs_entry_and_boot_order(self):
+        manifest = _load_json(RECOVERY_MANIFEST)
+        names = [entry["name"] for entry in manifest["files"]]
+        self.assertEqual(names, ["sio.zmod", "ioc.zmod", "hid.zmod",
+                                 "v9958.zmod", "v9958-6x8.font",
+                                 "monitor.zex"])
+        types = {entry["name"]: entry["type"]
+                 for entry in manifest["files"]}
+        self.assertEqual(types["v9958.zmod"], "ZMOD")
+        self.assertEqual(types["v9958-6x8.font"], "DATA")
+        main = _read(MAIN_C)
+        sio = main.index('romfs_load_zmod("sio"')
+        ioc = main.index('romfs_load_zmod("ioc"')
+        hid = main.index('romfs_load_zmod("hid"')
+        v9958 = main.index('romfs_load_zmod("v9958"')
+        self.assertLess(sio, ioc)
+        self.assertLess(ioc, hid)
+        self.assertLess(hid, v9958,
+                        "V9958 must load after HID (all console candidates "
+                        "registered before binding)")
+        self.assertIn('early_console_puts("v9958: unavailable', main)
+        self.assertIn("#if ZOS_V9958_BOOT", main)
+
+    def test_fontfail_manifest_maps_font_to_stub(self):
+        manifest = _load_json(FONTFAIL_MANIFEST)
+        entries = {entry["name"]: entry["path"]
+                   for entry in manifest["files"]}
+        self.assertEqual(entries["v9958-6x8.font"],
+                         "v9958-font-stub.bin")
+        self.assertEqual(entries["v9958.zmod"], "v9958.zmod")
+        self.assertEqual(entries["hid.zmod"], "hid.zmod")
+        self.assertIn("sio.zmod", entries)
+        self.assertEqual(os.path.getsize(FONT_STUB), 16)
+
+    def test_makefile_targets_and_gates(self):
+        makefile = _read(MAKEFILE)
+        for target in ("v9958-test:", "m8-v9958-selftest:",
+                       "m8-v9958-fontfail-selftest:",
+                       "smoke-hardware-m8-v9958:"):
+            self.assertIn(target, makefile)
+        self.assertIn("$(MODULES)/v9958.zmod", makefile)
+        self.assertIn("$(V9958_MODULE_OBJS)", makefile)
+        self.assertIn("$(MODULES)/v9958-6x8.font", makefile)
+        self.assertIn("ZOS_M8_V9958_SELFTEST", makefile)
+        self.assertIn("ZOS_M8_V9958_FONTFAIL", makefile)
+        self.assertIn("ZOS_V9958_BOOT", makefile)
+        self.assertIn("BOOT_ZMODS += $(MODULES)/v9958.zmod", makefile)
+
+    def test_pre_m8_images_compile_v9958_boot_out(self):
+        makefile = _read(MAKEFILE)
+        index = makefile.index("ZOS_V9958_BOOT := 0")
+        gate = makefile[index - 700:index]
+        for flag in ("ZOS_SELFTEST", "ZOS_M3_SELFTEST", "ZOS_M4_SELFTEST",
+                     "ZOS_M5_SELFTEST", "ZOS_M6_SELFTEST",
+                     "ZOS_M7_SELFTEST"):
+            self.assertIn(flag, gate,
+                          "%s must keep V9958 compiled out" % flag)
+
+
+class TestDriverSourceDiscipline(unittest.TestCase):
+    def setUp(self):
+        self.c = _code_only(DRIVER_C)
+        self.header = _code_only(DRIVER_H)
+        self.module = _code_only(MODULE_C)
+        self.asm = _code_only(DRIVER_ASM)
+        self.sources = (self.c, self.header, self.module)
+        self.init = self.c.split("static int v9958_init_display")[1].split(
+            "/* --- class operations")[0]
+        self.send = self.c.split("int v9958_send")[1].split(
+            "const struct zvideo_ops")[0]
+
+    def test_all_port_io_lives_in_the_asm_file(self):
+        for body in self.sources:
+            for needle in ("__sfr", "__asm", "__endasm", "0xA0", "0xA1",
+                           "0xA2", "0xA3", "0xA4"):
+                self.assertNotIn(needle, body,
+                                 "driver C must not contain %r" % needle)
+            self.assertNotRegex(body, r"(?m)^\s*(in|out)\s")
+        self.assertIn("out\t(ZOS_V9958_DATA_PORT),a", self.asm)
+        self.assertIn("out\t(ZOS_V9958_CMD_PORT),a", self.asm)
+        self.assertIn("out\t(ZOS_V9958_PALETTE_PORT),a", self.asm)
+        self.assertIn("out\t(ZOS_V9958_INDIRECT_PORT),a", self.asm)
+        self.assertIn("out\t(ZOS_V9958_CONFIG_PORT),a", self.asm)
+        self.assertIn("in\ta,(ZOS_V9958_CMD_PORT)", self.asm)
+
+    def test_no_cpm_bios_or_vdrip_remnants(self):
+        for body in self.sources + (self.asm,):
+            for needle in ("CBIOS", "BIOS", "CONOUT", "CONIN", "BDOS",
+                           "WBOOT", "Vdrip", "VDRIP", "Virtual Drip",
+                           "8000h", "0x8000", "command_buffer",
+                           "print_run", "TEXT_LOG_COLUMNS",
+                           "CONSOLE_FONT_ROM_BASE", "esc_press"):
+                self.assertNotIn(needle, body,
+                                 "reference-only remnant survives: %r"
+                                 % needle)
+
+    def test_no_ioc_or_hid_import_and_no_kernel_symbols(self):
+        for body in self.sources + (self.asm,):
+            for needle in ("zephyros/ioc.h", "zephyros/hid.h",
+                           "ioc_proto.h", "_ioc_", "_hid_", "_romfs_",
+                           "_kernel_", "_device_", "_console_"):
+                self.assertNotIn(needle, body,
+                                 "V9958 must not reference %r" % needle)
+        # The only services come from the passed zdriver_api.
+        self.assertIn("v9958_state.api->resource_read", self.c)
+        self.assertIn("api->resource_size", self.c)
+
+    def test_no_vdp_interrupt_claim(self):
+        for body in self.sources + (self.asm,):
+            for needle in ("irq_claim", "irq_release", "ZOS_IRQ",
+                           "IRQ_VDP"):
+                self.assertNotIn(needle, body,
+                                 "V9958 must keep /INT disabled: %r"
+                                 % needle)
+
+    def test_proven_initialization_order(self):
+        # Porch off, paced R#25/R#8/stop/R#0..R#11, R#25 WTE on, porch
+        # on, palette, atlases, clear, cursor, present, display on.
+        order = [
+            "v9958_porch_off();",
+            "ZOS_V9958_R25_WAIT_OFF",
+            "ZOS_V9958_R8_64K_DRAM",
+            "ZOS_V9958_REG_R46",
+            "v9958_g6_registers",
+            "ZOS_V9958_R23_TEXT_BASE",
+            "ZOS_V9958_R25_WAIT_ON",
+            "v9958_porch_on();",
+            "v9958_init_palette();",
+            "v9958_upload_font_atlas()",
+            "v9958_clear_screen();",
+            "v9958_cursor_init();",
+            "v9958_io_wait_command();",
+            "ZOS_V9958_R1_DISPLAY_ON",
+        ]
+        positions = []
+        cursor = 0
+        for needle in order:
+            index = self.c.find(needle, cursor)
+            self.assertNotEqual(index, -1,
+                                "initialization step missing: %r" % needle)
+            positions.append(index)
+            cursor = index
+        self.assertEqual(positions, sorted(positions),
+                         "initialization order changed")
+
+    def test_pacing_and_latch_shadow(self):
+        # Paced helper used while WTE=0, non-paced after; D0 preserved.
+        self.assertIn("v9958_io_reg_paced", self.c)
+        self.assertIn("v9958_io_reg(", self.c)
+        porch = self.c.split("static void v9958_porch_off")[1].split(
+            "static void v9958_porch_on")[0]
+        self.assertIn("ZOS_V9958_CONFIG_INT_ROUTE", porch)
+        self.assertIn("ZOS_V9958_CONFIG_PORCH_OFF", porch)
+        latch = self.c.split("static void v9958_porch_on")[1].split(
+            "/* Write one precolored")[0]
+        self.assertIn("ZOS_V9958_CONFIG_INT_ROUTE", latch)
+        self.assertNotIn("ZOS_V9958_CONFIG_PORCH_OFF", latch)
+        self.assertIn("v9958_io_latch_write", latch)
+        # The delay primitive is the bounded platform count.
+        self.assertIn("ZOS_V9958_BOOT_DELAY_COUNT", self.asm)
+
+    def test_validate_before_io(self):
+        validation = self.send.index("payload == (const void *)0")
+        reject = self.send.index("return ZDEV_EINVAL", validation)
+        streams = [self.send.index(name) for name in
+                   ("v9958_io_stream_ctrl", "v9958_io_stream_data",
+                    "v9958_io_stream_palette", "v9958_io_stream_indirect")]
+        self.assertLess(reject, min(streams),
+                        "the write branch must validate before any I/O")
+        present = self.send.split("case ZVIDEO_PRESENT:")[1]
+        self.assertLess(present.index("length != 0u"),
+                        present.index("v9958_io_wait_command"))
+        reset = self.send.split("case ZVIDEO_RESET:")[1]
+        self.assertLess(reset.index("length != 0u"),
+                        reset.index("v9958_init_display"))
+        self.assertIn("return ZDEV_ENOTSUP;", self.send)
+        self.assertIn("return ZDEV_ENODEV;", self.send)
+
+    def test_font_is_streamed_not_resident(self):
+        # Bounded 256-byte resource reads, group-wise atlas conversion.
+        self.assertIn("V9958_FONT_CHUNK", self.c)
+        self.assertIn("v9958_font_group", self.c)
+        self.assertIn("v9958_atlas_row", self.c)
+        # No font byte table: the driver C contains no data initializer
+        # with hundreds of bytes.
+        self.assertNotIn("0x70u, 0x88u", self.c)
+        self.assertLess(len(self.c), 20000)
+
+    def test_descriptor_is_exact_and_video_only(self):
+        self.assertIn("static const struct zdevice_desc "
+                      "v9958_video0_desc", self.module)
+        self.assertIn('"v9958.0"', self.module)
+        for cap in ("ZCAP_VIDEO_CTRL_WRITE", "ZCAP_VIDEO_DATA_WRITE",
+                    "ZCAP_VIDEO_DATA_BLOCK", "ZCAP_VIDEO_PALETTE",
+                    "ZCAP_VIDEO_INDIRECT", "ZCAP_VIDEO_PRESENT",
+                    "ZCAP_VIDEO_RESET"):
+            self.assertIn(cap, self.module)
+        for absent in ("ZCAP_CHAR_OUT", "ZCAP_CONSOLE_OUT",
+                       "ZCAP_CHAR_IN", "ZCAP_CONSOLE_IN"):
+            self.assertNotIn(absent, self.module)
+        self.assertIn("(const struct zchar_ops *)0", self.module)
+        self.assertIn("&v9958_video_ops", self.module)
+        self.assertIn("&v9958_state", self.module)
+        # The device registers only after the full bring-up.
+        init = self.module.split("int v9958_module_init")[1]
+        self.assertLess(init.index("v9958_driver_init(api)"),
+                        init.index("api->device_register"))
+
+
+class TestMapcheckRules(unittest.TestCase):
+    def test_v9958_symbols_are_module_only(self):
+        self.assertIn("_v9958_", mapcheck.STATIC_V9958_PREFIXES)
+        with self.assertRaises(mapcheck.MapError):
+            mapcheck.check_symbols({}, {"_v9958_send": 0x2000})
+        with self.assertRaises(mapcheck.MapError):
+            mapcheck.check_symbols({}, {"_v9958_module_init": 0x3000})
+
+    def test_production_map_has_no_linked_v9958_symbols(self):
+        if not os.path.exists(MAP):
+            self.skipTest("build/zephyros.map missing; build first")
+        syms = {}
+        with open(MAP) as handle:
+            for line in handle:
+                match = re.match(r"\s*([0-9A-Fa-f]{8})\s+(\S+)", line)
+                if match:
+                    syms[match.group(2)] = int(match.group(1), 16)
+        linked = [name for name in syms if name.startswith("_v9958_")]
+        self.assertEqual(linked, [],
+                         "V9958 driver symbols must not be linked into "
+                         "the kernel image: %s" % linked)
+
+
+class TestTargetAcceptanceContract(unittest.TestCase):
+    def setUp(self):
+        self.test = _read(TARGET_TEST_C)
+        self.header = _read(TARGET_HEADER)
+
+    def test_result_codes_and_entry(self):
+        for name in ("ZOS_M8V9958_OK", "ZOS_M8V9958_FAIL_BOOT",
+                     "ZOS_M8V9958_FAIL_SHAPE",
+                     "ZOS_M8V9958_FAIL_MALFORMED", "ZOS_M8V9958_FAIL_OPS",
+                     "ZOS_M8V9958_FAIL_BIND", "ZOS_M8V9958_FAIL_PRESENT",
+                     "ZOS_M8V9958_FAIL_DEVICES"):
+            self.assertIn(name, self.header)
+        self.assertIn("void zos_run_m8_v9958_selftest(void);", self.header)
+        self.assertIn("extern uint8_t m8_v9958_selftest_result;",
+                      self.header)
+        runner = _read(TARGET_RUNNER)
+        self.assertIn("#if ZOS_M8_V9958_SELFTEST || ZOS_M8_V9958_FONTFAIL",
+                      runner)
+        self.assertIn("zos_run_m8_v9958_selftest();", runner)
+
+    def test_target_exercises_the_seven_operations_and_pattern(self):
+        for needle in ("ZVIDEO_CTRL_WRITE", "ZVIDEO_DATA_WRITE",
+                       "ZVIDEO_DATA_BLOCK", "ZVIDEO_PALETTE_WRITE",
+                       "ZVIDEO_INDIRECT_WRITE", "ZVIDEO_PRESENT",
+                       "ZVIDEO_RESET"):
+            self.assertIn(needle, self.test)
+        for needle in ("m8 v9958: video0 OK", "m8 v9958: malformed rejected",
+                       "m8 v9958: reset OK", "m8 v9958: fill presented",
+                       "m8 v9958: pattern drawn", "m8 v9958 selftest: OK",
+                       "m8 v9958 selftest: FAIL 0x"):
+            self.assertIn(needle, self.test)
+        # Malformed coverage: zero-length PRESENT/RESET, null/zero
+        # writes, unknown operation, null state.
+        for needle in ("ZDEV_EINVAL", "ZDEV_ENOTSUP", "ZDEV_ENODEV",
+                       "ZDEV_EINVAL"):
+            self.assertIn(needle, self.test)
+        # The 200-byte DATA_BLOCK is far above the historical ceiling.
+        self.assertIn("M8V9958_BAND_BYTES", self.test)
+        self.assertIn("200u", self.test)
+        # Font-failure image coverage.
+        for needle in ("ZOS_M8_V9958_FONTFAIL",
+                       "m8 v9958: absent after font failure",
+                       "m8 v9958 fontfail selftest: OK"):
+            self.assertIn(needle, self.test)
+
+    def test_smoke_tool_contract(self):
+        import serial_smoke
+
+        tool = serial_smoke
+        for constant, prefix in (
+                (tool.M8V9958_VIDEO_OK, b"m8 v9958: video0 OK"),
+                (tool.M8V9958_MALFORMED_OK, b"m8 v9958: malformed rejected"),
+                (tool.M8V9958_RESET_OK, b"m8 v9958: reset OK"),
+                (tool.M8V9958_FILL_OK, b"m8 v9958: fill presented"),
+                (tool.M8V9958_PATTERN_OK, b"m8 v9958: pattern drawn"),
+                (tool.M8V9958_SELFTEST_OK, b"m8 v9958 selftest: OK")):
+            self.assertTrue(constant.startswith(prefix),
+                            "%r does not start with %r" % (constant, prefix))
+        base = (tool.BANNER + tool.CONSOLE_DYNAMIC_OK +
+                b"m8 v9958: video0 OK\r\n"
+                b"m8 v9958: malformed rejected\r\n"
+                b"m8 v9958: reset OK\r\n"
+                b"m8 v9958: fill presented\r\n"
+                b"m8 v9958: pattern drawn\r\n"
+                b"m8 v9958 selftest: OK\r\n")
+        self.assertTrue(tool._m8v9958_result(base))
+        for wrong in (
+                base.replace(b"m8 v9958: pattern drawn\r\n", b""),
+                base.replace(b"m8 v9958 selftest: OK\r\n", b""),
+                base + b"m8 v9958 selftest: FAIL 0x03 detail 0x01\r\n",
+                base.replace(b"console: dynamic sio0.b OK\r\n",
+                             b"v9958: unavailable\r\n")):
+            self.assertFalse(tool._m8v9958_result(wrong),
+                             "misclassified: %r" % wrong[-60:])
+        self.assertIn("m8-v9958", tool.__doc__)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -153,6 +153,68 @@ ZOS_IOC_BULK_MAX_LEN        = 512
 ZOS_IOC_BULK_UNDERRUN_GUARD = 128
 ZOS_IOC_BULK_CRC_BYPASS     = 1
 
+; --- LunchCrema V9958 video (ports A0h-A4h) ----------------------------
+;
+; Direct-hardware GRAPHIC 6 settings verified on the physical Zephyr-80.
+; Declarative port, latch, register and delay values only: every
+; instruction sequence, loop and behavior lives in drivers/v9958/.
+; Value-identical with the hardware.h pair (parity-tested).
+
+ZOS_V9958_DATA_PORT         = 0xA0
+ZOS_V9958_CMD_PORT          = 0xA1
+ZOS_V9958_PALETTE_PORT      = 0xA2
+ZOS_V9958_INDIRECT_PORT     = 0xA3
+ZOS_V9958_CONFIG_PORT       = 0xA4
+
+ZOS_V9958_CONFIG_INT_ROUTE  = 0x01
+ZOS_V9958_CONFIG_PORCH_OFF  = 0x02
+
+ZOS_V9958_REG_SELECT        = 0x80
+ZOS_V9958_STATUS2_CE        = 0x01
+
+ZOS_V9958_CMD_REGISTER_BASE  = 32
+ZOS_V9958_CMD_REGISTER_COUNT = 15
+
+ZOS_V9958_REG_R0            = 0
+ZOS_V9958_REG_R1            = 1
+ZOS_V9958_REG_R2            = 2
+ZOS_V9958_REG_R3            = 3
+ZOS_V9958_REG_R4            = 4
+ZOS_V9958_REG_R5            = 5
+ZOS_V9958_REG_R6            = 6
+ZOS_V9958_REG_R7            = 7
+ZOS_V9958_REG_R8            = 8
+ZOS_V9958_REG_R9            = 9
+ZOS_V9958_REG_R10           = 10
+ZOS_V9958_REG_R11           = 11
+ZOS_V9958_REG_R14           = 14
+ZOS_V9958_REG_R15           = 15
+ZOS_V9958_REG_R16           = 16
+ZOS_V9958_REG_R17           = 17
+ZOS_V9958_REG_R18           = 18
+ZOS_V9958_REG_R23           = 23
+ZOS_V9958_REG_R25           = 25
+ZOS_V9958_REG_R26           = 26
+ZOS_V9958_REG_R27           = 27
+ZOS_V9958_REG_R46           = 46
+
+ZOS_V9958_R0_G6             = 0x0A
+ZOS_V9958_R1_DISPLAY_OFF    = 0x00
+ZOS_V9958_R1_DISPLAY_ON     = 0x40
+ZOS_V9958_R2_G6             = 0x1F
+ZOS_V9958_R5_SPRITE_BASE    = 0xE4
+ZOS_V9958_R6_SPRITE_PATTERN = 0x3F
+ZOS_V9958_R7_BORDER         = 0x04
+ZOS_V9958_R8_64K_DRAM       = 0x08
+ZOS_V9958_R9_212_INTERLACE  = 0x88
+ZOS_V9958_R11_SPRITE_ATTR   = 0x03
+ZOS_V9958_R15_STATUS2       = 0x02
+ZOS_V9958_R23_TEXT_BASE     = 0xFC
+ZOS_V9958_R25_WAIT_OFF      = 0x00
+ZOS_V9958_R25_WAIT_ON       = 0x04
+
+ZOS_V9958_BOOT_DELAY_COUNT  = 16
+
 ; Hardware-smoke host sync sequence (kernel/main.c kernel_host_sync_wait).
 ZOS_SMOKE_HOST_SYNC_FIRST   = 0xAA
 ZOS_SMOKE_HOST_SYNC_SECOND  = 0x55

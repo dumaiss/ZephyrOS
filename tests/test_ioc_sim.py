@@ -47,7 +47,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import Z80, IocCommandPeer, ioc_crc16, read_symbols  # noqa: E402
+from z80sim import Z80, IocCommandPeer, V9958Peer, ioc_crc16, read_symbols  # noqa: E402
 
 RET = 0x1234
 STACK = 0xFFFE
@@ -169,6 +169,9 @@ class IocSimBase(unittest.TestCase):
         z.latch = 0x18
         z.sp = STACK
         z.ioc_peer = peer if peer is not None else IocCommandPeer()
+        # The M8 IOC image boots the full production stack, including
+        # the V9958 video core; the peer absorbs its A0h-A4h bring-up.
+        z.vdp_peer = V9958Peer()
         return z
 
     def skip_delay(self, z):

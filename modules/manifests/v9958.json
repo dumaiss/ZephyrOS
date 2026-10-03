@@ -1,0 +1,11 @@
+{
+  "name": "v9958",
+  "type": "driver",
+  "abi": 2,
+  "flags": 0,
+  "objects": ["v9958.rel", "v9958_io.rel", "v9958_module.rel", "sdcc_indirect_calls.rel"],
+  "image_areas": ["_CODE"],
+  "bss_areas": ["_DATA"],
+  "init": "v9958_module_init",
+  "fini": null
+}

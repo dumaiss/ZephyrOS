@@ -31,7 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from z80sim import Z80, read_symbols  # noqa: E402
+from z80sim import Z80, V9958Peer, read_symbols  # noqa: E402
 
 RET = 0x1234
 STEP_LIMIT = 8000000
@@ -209,6 +209,10 @@ class TestM3ProductionBoot(unittest.TestCase):
         z = Z80(self.page0, self.page1, rom_pages=self.rom_pages)
         z.latch = 0x18
         z.sp = 0xFFFE
+        # The production boot stack loads the V9958 video core; the peer
+        # absorbs its A0h-A4h bring-up (the module's CE wait is not a
+        # bounded poll).
+        z.vdp_peer = V9958Peer()
         z.push16(RET)
         z.pc = self.syms["_kernel_main"]
 

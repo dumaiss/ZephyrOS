@@ -3480,6 +3480,24 @@ The V9958 driver owns VDP register/data programming, its 6x8 text renderer/termi
 
 M8 does not require VDP interrupt-driven operation for acceptance. If the driver enables `/INT`, it must use the M2 `IRQ_VDP_FF` path and must not install a private vector or bypass the common IRQ executive.
 
+Implementation status (M8): work package 18 implements the
+`drivers/v9958/` video core as a resident ABI-v2 ZMOD loaded after
+HID.  It registers exactly `v9958.0` with the seven `ZCAP_VIDEO_*`
+bits and a `zvideo_ops.send` that validates every request before any
+I/O: write operations stream the full 16-bit length, PRESENT/RESET
+require zero length, unsupported operations report `ZDEV_ENOTSUP`, and
+malformed requests report `ZDEV_EINVAL` without touching the ports.  It
+ports the hardware-proven GRAPHIC 6 initialization discipline (latch
+shadow preserving D0, paced bootstrap with the porch bypassed, R#25
+WTE/VDS, R#8=08h, the full register/selector state, palette only under
+native WAIT), uploads the pinned 2048-byte CP850 6x8 font from ROMFS
+DATA in bounded chunks (never resident module storage), drives the
+sprite cursor and command engine (CE completion), and keeps `/INT`
+disabled (`IRQ_VDP_FF` unclaimed).  Because this stage deliberately has
+no character interface yet, `char_ops` is null and the console binding
+keeps the SIO output fallback; the `ZCAP_CHAR_OUT |
+ZCAP_CONSOLE_OUT` text renderer arrives with the console package.
+
 ---
 
 ## 30.5 HID class
@@ -3684,7 +3702,9 @@ hid.zmod
     -> registers keyboard/text input
 
 v9958.zmod
-    -> registers video + character output
+    -> registers video + character output (video core in work
+       package 18; the character renderer follows with the console
+       package)
 
 console_bind_defaults()
     -> bind preferred native console
@@ -3761,7 +3781,7 @@ M8 is accepted when:
 - SIO remains the dynamically loaded serial/character fallback device;
 - IOC registers `ZDEV_IOC` and proves command, bulk-read, bulk-write and semantic status behavior;
 - HID discovers IOC by class/capability rather than symbol/name, registers a keyboard/text `ZDEV_HID`, and provides `ZCAP_CHAR_IN | ZCAP_CONSOLE_IN`;
-- V9958 registers `ZDEV_VIDEO`, exposes supported `ZVIDEO_*` operations, and provides `ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT` through its text renderer;
+- V9958 registers `ZDEV_VIDEO`, exposes supported `ZVIDEO_*` operations, and provides `ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT` through its text renderer (work package 18 delivers the video core, the native operations, the ROMFS font atlases and the command primitives with `char_ops` null; the character/console-output interface follows with the console package);
 - native video operations are not constrained by the historical Virtual Drip 16-byte non-block ceiling;
 - normal console binding selects HID input and V9958 output when available;
 - each defined HID/V9958 failure combination falls back cleanly without losing the direct early/panic SIO path;
