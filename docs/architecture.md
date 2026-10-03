@@ -1,7 +1,7 @@
 # ZephyrOS Architecture
 
-**Status:** M0/M1/M2/M3/M4 complete; M5-M7 architecture defined (M4 stage 07 loader, stage 08 dynamic-driver acceptance — acceptance, placement, and failure images hardware-validated 2026-10-02)  
-**Scope:** Milestones M0 through M7  
+**Status:** M0-M6 complete and physically accepted; M7 implemented and host-validated, physical acceptance pending (see `docs/validation/2026-10-03-m7-monitor.md`)
+**Scope:** Milestones M0 through M7
 **Target:** Zephyr-80  
 **Language/toolchain:** SDCC + sdasz80/sdldz80, GNU Make, Python host tools
 
@@ -156,7 +156,10 @@ ZephyrOS/
 │   │
 │   ├── syscall/
 │   │   ├── entry.asm
-│   │   └── dispatch.c
+│   │   ├── page_zero.asm
+│   │   ├── diag.c
+│   │   ├── diag.h
+│   │   └── diag_io.asm
 │   │
 │   ├── irq/
 │   │   ├── irq.c
@@ -205,8 +208,18 @@ ZephyrOS/
 │
 ├── user/
 │   ├── runtime/
+│   │   ├── zex_runtime.asm/.h
+│   │   ├── zex_diag_runtime.asm
+│   │   ├── console_io.c/.h
+│   │   ├── hexfmt.c/.h
+│   │   ├── hexdump.c/.h
+│   │   └── status.c/.h
 │   └── monitor/
-│       └── ...
+│       ├── monitor.json
+│       ├── monitor_entry.asm
+│       ├── monitor.c/.h
+│       ├── monitor_mem.c
+│       └── monitor_io.c
 │
 ├── tests/
 │   ├── modules/
@@ -3152,6 +3165,69 @@ M7 monitor over SIO
 
 The monitor therefore becomes a permanent recovery/diagnostic asset, not a temporary bootstrap program that is discarded when the shell exists.
 
+### 28.8 M7 implementation notes (stage 13)
+
+Implemented 2026-10-03; host-validated end to end (simulator replay of
+the scripted interactive session plus focused dispatcher tests) with
+physical acceptance pending.  The concrete implementation is:
+
+- `kernel/syscall/diag.{c,h}` (bank 7) implements the six
+  `SYS_DIAG_*` bodies declared in `include/zephyros/syscall.h`.  Every
+  service validates its complete request first (window `0100h-1FFFh`,
+  bank `0-6`, read range `0000h-DFFFh`, write range `0100h-DFFFh`,
+  nonzero reserved field, ports `10h-FFh`) and then publishes the
+  result through the shared dispatcher helpers.  Memory transfers reuse
+  the M6 checked copy gate in 1-byte requests, so the exact latch, SP,
+  and IFF state are restored; `kernel/syscall/diag_io.asm` provides the
+  bank-7 `IN A,(C)` / `OUT (C),A` leaves, which touch no mapping state.
+  Failures are side-effect free;
+- `kernel/syscall.c` hosts the dispatch switch plus the shared
+  `zos_syscall_success/error/block_ok` helpers.  `SYS_CONSOLE_READ` now
+  returns the documented `0` for an empty non-blocking drain (the M6
+  implementation returned the console driver's `-EAGAIN`; the shipped
+  comment, `docs/abi.md`, and the runtime header all specified `0`);
+- `user/runtime/` gains the reusable program support: diagnostic
+  wrappers with their own low-window scratch
+  (`zex_diag_runtime.asm`), console byte/string I/O plus bounded line
+  editing (`console_io.c`), hex parsing/formatting (`hexfmt.c`),
+  16-byte row formatting (`hexdump.c`), and shared status/error output
+  (`status.c`).  `zex_runtime.asm` gained only an exported errno mapper
+  (the M6 `zextest.zex` payload stays byte-identical);
+- `user/monitor/` is the monitor itself: `monitor_entry.asm` (first
+  `_CODE` object), `monitor.c` (banner/info/help/dispatch), and
+  `monitor_mem.c` / `monitor_io.c` (D/DB/M/MB and I/O).  The binary
+  links only the runtime modules; the linked map and a source scan prove
+  there is no SIO, early-console, CP/M, inline-assembly, or
+  kernel-private dependency, so console rebinding in M8 cannot require a
+  rebuild;
+- `kernel/main.c` holds the temporary pre-shell launcher behind
+  `ZOS_MONITOR_BOOT` (production + M7 image; disabled for all earlier
+  acceptance images).  It calls `process_exec("monitor.zex", &status)`
+  in a loop, prints
+  `monitor: exit status 0xssss active A free-banks F` after each normal
+  exit (normal console when bound, early console otherwise) and re-execs;
+  a launch failure is reported on the early console and takes the
+  controlled halt path;
+- `tests/m7/manifest.json` packs `sio.zmod` + `monitor.zex`;
+  `recovery/manifest.json` now carries the boot ZMOD and the monitor.
+  `tests/target/m7/m7_test.c` drives the real dispatcher from kernel
+  context for the kernel-side acceptance (BANK_INFO/SYSTEM_INFO records,
+  round trips, every rejection class, canary/latch/table stability);
+- `tests/test_monitor.py` pins ABI/tool constant parity, the packed ZEX
+  layout, the module set of the linked monitor, and the forbidden
+  dependency scan; `tests/test_m7_sim.py` replays the full boot and a
+  scripted interactive session (help, info, dumps, scratch
+  modify/readback, port input, latch-port/bank-7/syntax rejections, line
+  overflow with bell + recovery, backspace editing, CRLF handling, two
+  Q/relaunch cycles with identical launcher count lines) and the
+  focused dispatcher rejection/restoration tests.  `tests/z80sim.py`
+  gained the ED-block `IN r,(C)` / `OUT (C),r` opcodes and a single
+  shared port model (host test infrastructure only);
+- `tools/mapcheck.py` adds the M7 bank-7 placement rules for the
+  diagnostic services and helpers and forbids `_m7_*` acceptance symbols
+  in production images; `tools/serial_smoke.py --mode m7` scripts the
+  physical session and checks the markers verbatim.
+
 ---
 
 # 29. M7 acceptance criteria
@@ -3247,7 +3323,7 @@ M4  COMPLETE
 └── hardware-validated dynamic console
     │
     ▼
-M5
+M5  COMPLETE
 │
 ├── safe runtime ROM access
 ├── read-only recovery filesystem
@@ -3255,7 +3331,7 @@ M5
 └── boot ZMOD source moves from embedded catalog to ROMFS
     │
     ▼
-M6
+M6  COMPLETE
 │
 ├── fixed process descriptors
 ├── application-bank allocation
@@ -3265,7 +3341,7 @@ M6
 └── exec child -> exit -> resume parent
     │
     ▼
-M7
+M7  IMPLEMENTED (host-validated; physical acceptance pending)
 │
 ├── monitor.zex in ROMFS
 ├── first useful native application
