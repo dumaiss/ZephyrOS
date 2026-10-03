@@ -143,9 +143,26 @@ enum {
 	ZMOD_STATE_RESIDENT
 };
 
-/* Validated container summary (offsets are relative to container start). */
+/* Bounded container byte source (M5): the loader reads every container
+ * byte through this adapter, so a container may live in memory or in the
+ * ROMFS recovery store.  `read` returns the number of bytes copied
+ * (equal to `length`) or a negative error; it must never read outside
+ * [0, size). */
+typedef int (*zmod_source_read_fn)(const void *ctx, uint16_t offset,
+				   uint8_t *dst, uint16_t length);
+
+struct zmod_source {
+	zmod_source_read_fn read;
+	const void *ctx;
+	uint16_t size; /* total container bytes */
+};
+
+/* Validated container summary (offsets are relative to container start).
+ * Exactly one byte source is recorded: `blob` for memory containers or
+ * `source` for bounded read-source containers (M5 ROMFS). */
 struct zmod_container {
 	const uint8_t *blob;
+	const struct zmod_source *source;
 	uint16_t total_size;
 	uint16_t image_size;
 	uint16_t bss_size;
@@ -172,17 +189,20 @@ struct zmod_module {
 	uint16_t fini_offset;
 };
 
-/* Embedded catalog entry: name plus container bytes.  The catalog is the
- * only module source in M4; the loader never assumes a filesystem. */
+/* Embedded catalog entry: name plus container bytes.  Embedded catalogs
+ * are acceptance-image artifacts (M3/M4 images); production and M5 boot
+ * from the ROMFS recovery store through the generic source adapter. */
 struct zmod_catalog_entry {
 	const char *name;
 	const uint8_t *blob;
 	uint16_t size;
 };
 
-/* Embedded boot-module catalog (kernel/module/embedded.c).  zmod_catalog
- * carries the boot modules loaded by the kernel boot path; the generic
- * loader never looks at names beyond passing them through.  The table is
+/* Embedded boot-module catalog (kernel/module/embedded.c).  Acceptance
+ * images only since M5: production boots from the ROMFS recovery store
+ * and mapcheck --production rejects these symbols.  zmod_catalog carries
+ * the boot modules loaded by the catalog boot path; the generic loader
+ * never looks at names beyond passing them through.  The table is
  * null-terminated.  Test fixture catalogs are defined under tests/target/
  * and linked only into acceptance images. */
 extern const struct zmod_catalog_entry zmod_catalog[];
@@ -200,8 +220,15 @@ int module_loader_init(void);
  * module index (>= 0) on success, a negative error otherwise. */
 int module_load(const char *name, const uint8_t *blob, uint16_t size);
 
-/* Load every entry of zmod_catalog[]; returns the number of failed
- * modules (0 = all loaded). */
+/* Generic bounded read-source load (M5): identical validation, arena
+ * allocation, streaming copy, relocation, init transaction, and rollback
+ * as module_load(); the container bytes are read only through `source`.
+ * The entire container structure is validated before the arena is
+ * touched.  Returns the module index (>= 0) or a negative error. */
+int module_load_source(const char *name, const struct zmod_source *source);
+
+/* Load every entry of zmod_catalog[] (kernel/module/embedded.c; acceptance
+ * images only).  Returns the number of failed modules (0 = all loaded). */
 uint8_t module_catalog_load_all(void);
 uint8_t module_count(void);
 uint8_t module_free_granules(void);
@@ -217,7 +244,9 @@ uint8_t module_code_allowed(uint16_t address);
  * shared with the target self-test through this header. */
 int zmod_validate_container(const uint8_t *blob, uint16_t size,
 			    struct zmod_container *out);
-void zmod_copy_image(uint8_t *load_base, const struct zmod_container *c);
+int zmod_validate_source(const struct zmod_source *source,
+			 struct zmod_container *out);
+int zmod_copy_image(uint8_t *load_base, const struct zmod_container *c);
 void zmod_zero_bss(uint8_t *load_base, const struct zmod_container *c);
 int zmod_apply_relocations(uint8_t *load_base,
 			   const struct zmod_container *c);

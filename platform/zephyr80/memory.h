@@ -53,8 +53,34 @@
  * mode 11.  Lives in the common data area, below the boot stack. */
 #define ZOS_GATE_STACK_SIZE         64u
 
-/* ROM geometry of the 128 KiB boot image. */
+/* ROM geometry of the programmed 512 KiB image: eight 64-KiB pages.
+ * Pages 0 and 1 are the boot pages copied to SRAM by the reset copier;
+ * pages 2-7 carry the read-only recovery store (ROMFS). */
 #define ZOS_ROM_PAGE_SIZE           0x10000u
+#define ZOS_ROM_PAGE_COUNT          8u
 #define ZOS_BOOT_IMAGE_SIZE         0x20000u
+#define ZOS_ROM_IMAGE_SIZE          0x80000u
+
+/* ROMFS recovery-store geometry (platform assignment).  Only the
+ * 0000h-BFFFh window of each recovery page is part of the logical
+ * stream; C000h-FFFFh is never addressed as file data.  While a page is
+ * visible the machine is in mode 00, so C000h-FFFFh reads come from the
+ * ROM page as well; the fixed ROM-access stub mirror lives there.
+ * Capacity = ZOS_ROMFS_PAGE_COUNT x window = 288 KiB. */
+#define ZOS_ROMFS_FIRST_PAGE        2u
+#define ZOS_ROMFS_PAGE_COUNT        6u
+#define ZOS_ROMFS_WINDOW_SIZE       0xC000u
+#define ZOS_ROMFS_CAPACITY          0x48000u
+
+/* ROM-access transition block in permanent common memory
+ * (kernel/romfs/rom_access.asm).  A two-byte trampoline switches to
+ * mode 00 at ZOS_ROM_ACCESS_BASE-2 and falls through into the mirrored
+ * stub at ZOS_ROM_ACCESS_BASE: LDIR plus the latch-restoring OUT, then
+ * a JP back to ordinary common code.  The stub is byte-identical in
+ * common SRAM and in every recovery ROM page, so instruction fetch
+ * survives the mode change. */
+#define ZOS_ROMFS_STAGING_SIZE      128u
+#define ZOS_ROM_ACCESS_BASE         0xEF00u
+#define ZOS_ROM_ACCESS_SIZE         8u
 
 #endif /* ZEPHYR80_MEMORY_H */

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""ZephyrOS M0 ROM image packer and layout validator.
+"""ZephyrOS ROM image packer and layout validator.
 
-Builds the 128 KiB boot image from the linked Intel HEX output:
+Builds the 512 KiB programmed image from the linked Intel HEX output:
 
-    page 0  (64 KiB, loaded into SRAM bank 0 by the reset copier)
-        +-------------------------------+
-    page 1  (64 KiB, loaded into SRAM bank 7 by the reset copier)
+    page 0  (64 KiB, copied into SRAM bank 0 by the reset copier)
+    page 1  (64 KiB, copied into SRAM bank 7 by the reset copier)
+    pages 2-7  (384 KiB, read-only ROMFS recovery store)
 
 Region contract (see docs/architecture.md, docs/boot.md):
 
-    0000h-002Fh   reset copier (page zero, both pages, byte-identical)
-    0030h-00FFh   page-zero reservation (must stay empty at M0)
+    0000h-002Fh   reset copier (page zero, both boot pages, byte-identical)
+    0030h-00FFh   page-zero reservation (must stay empty)
     0100h-1FFFh   page-1 caller-window gap (must stay empty)
     2000h-9FFFh   bank-7 loadable kernel image
     A000h-BFFFh   M4 driver arena (load-time only; no ROM payload)
@@ -19,6 +19,15 @@ Region contract (see docs/architecture.md, docs/boot.md):
     E000h-FEFFh   permanent common code/data (physical bank 0)
     FF00h-FFFFh   common boot/runtime stack (must stay empty in the image)
 
+Pages 2-7 carry the logical ROMFS stream (build/recovery.romfs, produced
+from recovery/manifest.json by tools/romfspack.py): logical byte L is
+placed at offset L % C000h of page (ZOS_ROMFS_FIRST_PAGE + L / C000h);
+the C000h-FFFFh half of every recovery page and every unused byte are
+FFh, except the fixed ROM-access stub mirror at ZOS_ROM_ACCESS_BASE
+(linked in common at the same address and copied into every recovery
+page here, so instruction fetch survives the mode-00 window).  The boot
+pages 0/1 never receive recovery content.
+
 Any linked byte outside its assigned region is a build error, as are map
 symbols whose addresses fall outside their expected region.
 
@@ -26,9 +35,11 @@ Usage:
     pack_image.py <zephyros.ihx> <zephyros.map> <build_dir> [suffix]
                   [platform/zephyr80/memory.inc]
 
-The optional memory.inc overrides the driver-arena declarations (the M4
-placement build shifts the arena base; the ROM contract is otherwise
-unchanged).
+The optional memory.inc overrides the driver-arena and ROMFS declarations
+(the M4 placement build shifts the arena base; the ROM contract is
+otherwise unchanged).  When <build_dir> is given, <build_dir>/recovery.romfs
+must exist and is placed into pages 2-7; when it is None (host unit tests)
+an all-FF recovery store is emitted unless `romfs` is passed explicitly.
 """
 
 import json
@@ -39,7 +50,21 @@ from pathlib import Path
 
 FILL = 0xFF
 PAGE_SIZE = 0x10000
-IMAGE_SIZE = 0x20000
+PAGE_COUNT = 8
+IMAGE_SIZE = 0x80000
+
+# ROMFS recovery-store geometry (defaults; overridden from memory.inc).
+ROMFS_FIRST_PAGE = 2
+ROMFS_PAGE_COUNT = 6
+ROMFS_WINDOW_SIZE = 0xC000
+ROMFS_CAPACITY = 0x48000
+ROMFS_HEADER_SIZE = 16  # tools/romfspack.py owns full content validation
+
+# ROM-access transition stub (kernel/romfs/rom_access.asm): linked in
+# common at ZOS_ROM_ACCESS_BASE and mirrored into every recovery page so
+# the mode-00 window can execute it from ROM.  Pattern-checked below.
+ROM_ACCESS_BASE = 0xEF00
+ROM_ACCESS_SIZE = 8
 
 RESET_BASE = 0x0000
 RESET_TOP = 0x0030          # M1 installs RST 30h at 0030h
@@ -79,8 +104,10 @@ REGIONS = make_regions()
 
 
 def apply_memory_inc(path):
-    """Override the arena declarations from platform/zephyr80/memory.inc."""
+    """Override the arena/ROMFS declarations from platform memory.inc."""
     global ARENA_BASE, ARENA_END, GRANULE_SIZE, GRANULE_COUNT, REGIONS
+    global ROMFS_FIRST_PAGE, ROMFS_PAGE_COUNT, ROMFS_WINDOW_SIZE
+    global ROMFS_CAPACITY, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
     values = {}
     for line in open(path):
         line = line.split(";")[0].strip()
@@ -91,6 +118,12 @@ def apply_memory_inc(path):
     ARENA_END = values["ZOS_DRIVER_ARENA_END"]
     GRANULE_SIZE = values["ZOS_DRIVER_GRANULE_SIZE"]
     GRANULE_COUNT = values["ZOS_DRIVER_GRANULES"]
+    ROMFS_FIRST_PAGE = values["ZOS_ROMFS_FIRST_PAGE"]
+    ROMFS_PAGE_COUNT = values["ZOS_ROMFS_PAGE_COUNT"]
+    ROMFS_WINDOW_SIZE = values["ZOS_ROMFS_WINDOW_SIZE"]
+    ROMFS_CAPACITY = values["ZOS_ROMFS_CAPACITY"]
+    ROM_ACCESS_BASE = values["ZOS_ROM_ACCESS_BASE"]
+    ROM_ACCESS_SIZE = values["ZOS_ROM_ACCESS_SIZE"]
     REGIONS = make_regions()
 
 # Common-resident entry points (must be callable through the permanently
@@ -227,44 +260,143 @@ def verify_im2_guard(mem, symbols):
                           % (actual, target))
 
 
-def build_pages(mem):
-    """Assemble the two 64 KiB pages from the validated image."""
-    page0 = bytearray([FILL] * PAGE_SIZE)
-    page1 = bytearray([FILL] * PAGE_SIZE)
+def build_pages(mem, romfs=None):
+    """Assemble the eight 64 KiB pages from the validated image."""
+    pages = [bytearray([FILL] * PAGE_SIZE) for _ in range(PAGE_COUNT)]
 
-    # Both pages carry the page-zero material (reset copier + RST 30h
+    # Both boot pages carry the page-zero material (reset copier + RST 30h
     # vector): instruction fetch continues across the ROM-page latch
     # change, and the kernel needs the vector bytes available in bank 7
     # when constructing native page zero for application banks.
     for addr in range(RESET_BASE, PAGE_ZERO_END):
         byte = mem.get(addr, FILL)
-        page0[addr] = byte
-        page1[addr] = byte
+        pages[0][addr] = byte
+        pages[1][addr] = byte
 
     # Page 0 additionally carries the common region (lands in SRAM bank 0).
     for addr in range(COMMON_BASE, STACK_BASE):
-        page0[addr] = mem.get(addr, FILL)
+        pages[0][addr] = mem.get(addr, FILL)
 
     # Page 1 additionally carries the bank-7 loadable kernel, up to the
     # M4 driver arena.  The arena is never part of a ROM payload; the
-    # module loader fills it from catalog bytes at boot.
+    # module loader fills it from the recovery store at boot.
     for addr in range(BANK7_BASE, ARENA_BASE):
-        page1[addr] = mem.get(addr, FILL)
+        pages[1][addr] = mem.get(addr, FILL)
 
     # Copier mirroring: instruction fetch continues across the ROM-page
     # latch change, so page 1 must carry identical copier bytes.
-    if page0[:RESET_TOP] != page1[:RESET_TOP]:
+    if pages[0][:RESET_TOP] != pages[1][:RESET_TOP]:
         raise LayoutError(
             "reset copier bytes differ between ROM page 0 and ROM page 1"
         )
-    if page0[RESET_BASE] == FILL:
+    if pages[0][RESET_BASE] == FILL:
         raise LayoutError("reset vector at 0000h is not present")
 
-    return page0, page1
+    place_romfs(pages, romfs)
+    mirror_rom_access_stub(pages, mem)
+    return pages
 
 
-def build_image(page0, page1):
-    image = page0 + page1
+def rom_access_stub_bytes(mem):
+    """Extract and pattern-check the linked ROM-access stub bytes.
+
+    The stub is the fixed block at ZOS_ROM_ACCESS_BASE: one mirrored
+    copy in common SRAM, one byte-identical copy per recovery ROM page.
+    Checking the encoding here catches any layout drift before an image
+    is programmed.
+    """
+    stub = bytes(mem.get(ROM_ACCESS_BASE + i, FILL)
+                 for i in range(ROM_ACCESS_SIZE))
+    expected = {
+        0: (0xED, "LDIR prefix"),
+        1: (0xB0, "LDIR opcode"),
+        2: (0x08, "EX AF,AF'"),
+        3: (0xD3, "OUT (n),A opcode"),
+        4: (0x00, "OUT (00h),A port"),
+        5: (0xC3, "JP opcode"),
+    }
+    for index, (byte, what) in expected.items():
+        if stub[index] != byte:
+            raise LayoutError(
+                "ROM-access stub byte %d at %04Xh is %02Xh, expected %02Xh "
+                "(%s); kernel/romfs/rom_access.asm layout changed?"
+                % (index, ROM_ACCESS_BASE + index, stub[index], byte, what))
+    if stub[6] == FILL and stub[7] == FILL:
+        raise LayoutError(
+            "ROM-access stub JP target at %04Xh is unlinked"
+            % (ROM_ACCESS_BASE + 6))
+    # The trampoline immediately before the stub must switch modes.
+    for offset, byte in ((-2, 0xD3), (-1, 0x00)):
+        actual = mem.get(ROM_ACCESS_BASE + offset, FILL)
+        if actual != byte:
+            raise LayoutError(
+                "ROM-access trampoline byte at %04Xh is %02Xh, expected "
+                "%02Xh (OUT (00h),A)" % (ROM_ACCESS_BASE + offset, actual,
+                                          byte))
+    return stub
+
+
+def mirror_rom_access_stub(pages, mem):
+    """Copy the linked ROM-access stub into every recovery ROM page.
+
+    Mode 00 answers instruction fetch from the selected ROM page, so the
+    stub must be byte-identical to its common-SRAM copy at the same
+    address (the machine's drive-A ROM primitive uses the same scheme).
+    """
+    stub = rom_access_stub_bytes(mem)
+    for page in range(ROMFS_FIRST_PAGE, ROMFS_FIRST_PAGE + ROMFS_PAGE_COUNT):
+        target = pages[page]
+        for i in range(ROM_ACCESS_SIZE):
+            addr = ROM_ACCESS_BASE + i
+            if target[addr] != FILL:
+                raise LayoutError(
+                    "ROM-access stub mirror collides with content at page "
+                    "%d offset %04Xh" % (page, addr))
+        target[ROM_ACCESS_BASE:ROM_ACCESS_BASE + ROM_ACCESS_SIZE] = stub
+
+
+def place_romfs(pages, romfs):
+    """Place the logical ROMFS stream across the recovery pages.
+
+    Logical byte L goes to offset L % window of page first_page + L / window.
+    The C000h-FFFFh half of every recovery page and every unused byte stay
+    FFh.  Recovery pages may not already carry non-FF content (collision),
+    and the stream must fit the declared capacity and page count.
+    """
+    if romfs is None or len(romfs) == 0:
+        if romfs is not None:
+            raise LayoutError("recovery.romfs is empty")
+        return
+    if len(romfs) < ROMFS_HEADER_SIZE:
+        raise LayoutError(
+            "recovery.romfs is %d bytes, shorter than a ROMFS header"
+            % len(romfs))
+    if len(romfs) > ROMFS_CAPACITY:
+        raise LayoutError(
+            "recovery.romfs is %d bytes and exceeds the %d-byte ROMFS "
+            "capacity" % (len(romfs), ROMFS_CAPACITY))
+    logical = 0
+    while logical < len(romfs):
+        window = logical // ROMFS_WINDOW_SIZE
+        page = ROMFS_FIRST_PAGE + window
+        if window >= ROMFS_PAGE_COUNT or page >= len(pages):
+            raise LayoutError(
+                "recovery.romfs logical offset %d maps outside the declared "
+                "recovery pages" % logical)
+        offset = logical % ROMFS_WINDOW_SIZE
+        chunk = min(ROMFS_WINDOW_SIZE - offset, len(romfs) - logical)
+        target = pages[page]
+        for i in range(chunk):
+            if target[offset + i] != FILL:
+                raise LayoutError(
+                    "recovery byte for logical %d collides with content at "
+                    "page %d offset %04Xh" % (logical + i, page, offset + i))
+        target[offset:offset + chunk] = romfs[logical:logical + chunk]
+        logical += chunk
+
+
+def build_image(pages):
+    image = b"".join(bytes(page) for page in pages)
     if len(image) != IMAGE_SIZE:
         raise LayoutError(
             "image size is %d bytes, expected exactly %d" % (len(image), IMAGE_SIZE)
@@ -320,7 +452,27 @@ def check_symbol_regions(symbols):
         raise LayoutError("driver arena geometry does not match granules")
 
 
-def write_manifest(build_dir, suffix, image, page0, page1, symbols):
+def romfs_placement(size):
+    """Per-recovery-page placement of a logical ROMFS stream."""
+    placement = []
+    logical = 0
+    while logical < size:
+        window = logical // ROMFS_WINDOW_SIZE
+        page = ROMFS_FIRST_PAGE + window
+        offset = logical % ROMFS_WINDOW_SIZE
+        chunk = min(ROMFS_WINDOW_SIZE - offset, size - logical)
+        placement.append({
+            "page": page,
+            "logical_offset": logical,
+            "length": chunk,
+            "page_offset": offset,
+            "physical_offset": page * PAGE_SIZE + offset,
+        })
+        logical += chunk
+    return placement
+
+
+def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem):
     """Emit a small machine-readable manifest for debugging/reproducibility."""
     entries = {
         name: symbols.get(name) for name in (
@@ -331,8 +483,11 @@ def write_manifest(build_dir, suffix, image, page0, page1, symbols):
             "irq_transition_stack", "irq_transition_stack_top",
             "irq_isr_stack", "irq_isr_stack_top",
             "__driver_arena_start", "__driver_arena_end",
+            "rom_access_trampoline", "rom_access_sync",
+            "rom_access_sync_end",
         )
     }
+    stub = rom_access_stub_bytes(mem)
     manifest = {
         "tool": "pack_image.py",
         "layout": {
@@ -344,6 +499,14 @@ def write_manifest(build_dir, suffix, image, page0, page1, symbols):
             "driver_arena_end": ARENA_END,
             "common_base": COMMON_BASE,
             "stack_base": STACK_BASE,
+            "rom_page_size": PAGE_SIZE,
+            "rom_page_count": PAGE_COUNT,
+            "romfs_first_page": ROMFS_FIRST_PAGE,
+            "romfs_page_count": ROMFS_PAGE_COUNT,
+            "romfs_window_size": ROMFS_WINDOW_SIZE,
+            "romfs_capacity": ROMFS_CAPACITY,
+            "rom_access_base": ROM_ACCESS_BASE,
+            "rom_access_size": ROM_ACCESS_SIZE,
         },
         "arena": {
             "start": ARENA_BASE,
@@ -355,15 +518,40 @@ def write_manifest(build_dir, suffix, image, page0, page1, symbols):
             "modules": [],
         },
         "image": {"size": len(image), "sha256": hashlib.sha256(image).hexdigest()},
+        "pages": [
+            {
+                "index": index,
+                "size": len(page),
+                "sha256": hashlib.sha256(bytes(page)).hexdigest(),
+                "fill_bytes": page.count(FILL),
+            }
+            for index, page in enumerate(pages)
+        ],
         "page0": {
-            "size": len(page0),
-            "sha256": hashlib.sha256(page0).hexdigest(),
-            "fill_bytes": page0.count(FILL),
+            "size": len(pages[0]),
+            "sha256": hashlib.sha256(bytes(pages[0])).hexdigest(),
+            "fill_bytes": pages[0].count(FILL),
         },
         "page1": {
-            "size": len(page1),
-            "sha256": hashlib.sha256(page1).hexdigest(),
-            "fill_bytes": page1.count(FILL),
+            "size": len(pages[1]),
+            "sha256": hashlib.sha256(bytes(pages[1])).hexdigest(),
+            "fill_bytes": pages[1].count(FILL),
+        },
+        "romfs": {
+            "present": romfs is not None and len(romfs) > 0,
+            "size": len(romfs) if romfs else 0,
+            "sha256": hashlib.sha256(romfs).hexdigest() if romfs else None,
+            "first_page": ROMFS_FIRST_PAGE,
+            "page_count": ROMFS_PAGE_COUNT,
+            "window_size": ROMFS_WINDOW_SIZE,
+            "capacity": ROMFS_CAPACITY,
+            "placement": romfs_placement(len(romfs)) if romfs else [],
+        },
+        "rom_access": {
+            "base": ROM_ACCESS_BASE,
+            "size": ROM_ACCESS_SIZE,
+            "mirror_pages": ROMFS_PAGE_COUNT,
+            "sha256": hashlib.sha256(stub).hexdigest(),
         },
         "entries": entries,
     }
@@ -394,7 +582,7 @@ def verify_no_banked_latch_writes(mem):
                 )
 
 
-def pack(ihx_text, map_text, build_dir, suffix=""):
+def pack(ihx_text, map_text, build_dir, suffix="", romfs=None):
     mem = parse_ihx(ihx_text)
     validate_layout(mem)
     symbols = parse_map_symbols(map_text)
@@ -402,17 +590,30 @@ def pack(ihx_text, map_text, build_dir, suffix=""):
     verify_rst30_stub(mem, symbols)
     verify_im2_guard(mem, symbols)
     verify_no_banked_latch_writes(mem)
-    page0, page1 = build_pages(mem)
-    image = build_image(page0, page1)
+
+    # The recovery store is part of the programmed image: when an output
+    # build directory is given, build/recovery.romfs must exist (the
+    # Makefile generates it with tools/romfspack.py before this step).
+    if romfs is None and build_dir is not None:
+        romfs_path = Path(build_dir) / "recovery.romfs"
+        if not romfs_path.exists():
+            raise LayoutError(
+                "recovery.romfs missing from %s; the recovery store is part "
+                "of the image contract (build it with tools/romfspack.py)"
+                % build_dir)
+        romfs = romfs_path.read_bytes()
+
+    pages = build_pages(mem, romfs)
+    image = build_image(pages)
 
     if build_dir is not None:
         build = Path(build_dir)
         build.mkdir(parents=True, exist_ok=True)
-        (build / ("page0%s.bin" % suffix)).write_bytes(page0)
-        (build / ("page1%s.bin" % suffix)).write_bytes(page1)
+        for index, page in enumerate(pages):
+            (build / ("page%d%s.bin" % (index, suffix))).write_bytes(bytes(page))
         (build / ("zephyros%s.bin" % suffix)).write_bytes(image)
         (build / ("zephyr80%s.bin" % suffix)).write_bytes(image)
-        write_manifest(build_dir, suffix, image, page0, page1, symbols)
+        write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem)
     return image
 
 
@@ -438,6 +639,19 @@ def main(argv):
     print("pack_image.py: driver arena %04Xh-%04Xh: %d granules (%d free "
           "at boot)" % (ARENA_BASE, ARENA_END - 1, GRANULE_COUNT,
                          GRANULE_COUNT))
+    print("pack_image.py: rom-access stub %d bytes at %04Xh mirrored into "
+          "recovery pages %d-%d"
+          % (ROM_ACCESS_SIZE, ROM_ACCESS_BASE, ROMFS_FIRST_PAGE,
+             ROMFS_FIRST_PAGE + ROMFS_PAGE_COUNT - 1))
+    romfs_path = Path(build_dir) / "recovery.romfs"
+    if romfs_path.exists():
+        romfs = romfs_path.read_bytes()
+        last_page = ROMFS_FIRST_PAGE + ((len(romfs) - 1) // ROMFS_WINDOW_SIZE
+                                        if romfs else 0)
+        print("pack_image.py: romfs %d bytes in recovery pages %d-%d "
+              "(capacity %d, sha256 %s)"
+              % (len(romfs), ROMFS_FIRST_PAGE, last_page, ROMFS_CAPACITY,
+                 hashlib.sha256(romfs).hexdigest()))
     return 0
 
 

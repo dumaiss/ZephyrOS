@@ -27,15 +27,19 @@
 
 #define ZOS_BANK_MASK               0x07u   /* D2..D0 selected SRAM bank   */
 #define ZOS_LATCH_NON_BANK_MASK     0xF8u   /* D7..D3 (bank update keeps)  */
-#define ZOS_RAM_SHADOW              0x08u   /* D3 RAM shadow / OS mode     */
-#define ZOS_ROM_DIS                 0x10u   /* D4 RAM-only runtime         */
+#define ZOS_MEM_MODE0               0x08u   /* D3 memory-mode bit 0        */
+#define ZOS_MEM_MODE1               0x10u   /* D4 memory-mode bit 1        */
 #define ZOS_MODE_MASK               0x18u   /* D4:D3 memory mode           */
 #define ZOS_ROM_PAGE_SHIFT          5
 #define ZOS_ROM_PAGE_MASK           0xE0u   /* D7..D5 selected ROM page    */
 
-/* Memory modes */
-#define ZOS_MODE_BOOT               0x00u
-#define ZOS_MODE_SHADOW             0x08u
+/* Memory modes (MEM_DECODER rev 12; D4:D3 are a mapping select, not
+ * feature flags).  Only mode 00 answers reads from ROM, and it answers
+ * every read from ROM: code running there must be mirrored in the ROM
+ * page and must not use a stack.  08h is a flat 64 KiB view of the
+ * selected SRAM bank with no ROM and no common region. */
+#define ZOS_MODE_BOOT               0x00u   /* ROM access / RAM destination */
+#define ZOS_MODE_FLAT               0x08u   /* flat selected SRAM bank     */
 #define ZOS_MODE_APPLICATION        0x10u
 #define ZOS_MODE_OS                 0x18u
 

@@ -52,6 +52,19 @@ OWNER_FILES = (
     "kernel/irq/entry.asm",
     "kernel/irq/vectors.asm",
     "kernel/runtime/sdcc_helpers.asm",
+    "kernel/module/arena.asm",
+    "kernel/module/loader.c",
+    "kernel/module/relocate.c",
+    "kernel/romfs/romfs.c",
+    "kernel/romfs/rom_access.asm",
+    "include/zephyros/romfs.h",
+    "recovery/manifest.json",
+    "tests/m5/manifest.json",
+    "tests/m5/gen_asset.py",
+    "tests/m5/gen_expect.py",
+    "tests/m5/corrupt_romfs.py",
+    "tests/target/m5/m5_test.c",
+    "tests/target/include/m5_selftest.h",
     "drivers/ctc/ctc.c",
     "drivers/sio/sio.c",
     "drivers/sio/sio.h",
@@ -123,11 +136,14 @@ REMOVED_PATHS = (
 REQUIRED_DIRS = (
     "boot",
     "kernel/memory", "kernel/syscall", "kernel/irq", "kernel/runtime",
+    "kernel/module", "kernel/romfs",
     "drivers/sio", "drivers/ctc",
     "modules/manifests", "modules/runtime",
-    "tests/modules",
+    "recovery",
+    "tests/m5", "tests/modules",
     "tests/target/m1", "tests/target/m2", "tests/target/m3",
-    "tests/target/m4", "tests/target/include", "tests/target/support",
+    "tests/target/m4", "tests/target/m5", "tests/target/include",
+    "tests/target/support",
 )
 
 # The retired M3 static-driver mechanism must not reappear in live sources.
@@ -154,6 +170,8 @@ PRODUCTION_SELFTEST_MACROS = (
     "ZOS_M3_SELFTEST",
     "ZOS_M4_SELFTEST",
     "ZOS_M4_FAILURE_SELFTEST",
+    "ZOS_M5_SELFTEST",
+    "ZOS_M5_CORRUPT_SELFTEST",
 )
 
 # Generated-output names that must be ignored and cleaned.  build-modules is
@@ -167,6 +185,8 @@ BUILD_VARIANTS = (
     "build-m4-selftest",
     "build-m4-placement-selftest",
     "build-m4-failure",
+    "build-m5-selftest",
+    "build-m5-corrupt-selftest",
     "build-modules",
 )
 

@@ -200,11 +200,13 @@ class TestM3ProductionBoot(unittest.TestCase):
         if not os.path.exists(bin_path):
             self.skipTest("normal image missing; run make")
         image = open(bin_path, "rb").read()
-        self.page0, self.page1 = image[:0x10000], image[0x10000:]
+        self.page0, self.page1 = image[:0x10000], image[0x10000:0x20000]
+        self.rom_pages = {n: image[n * 0x10000:(n + 1) * 0x10000]
+                          for n in range(2, 8)}
         self.syms = read_symbols(map_path)
 
     def test_boot_reaches_console_service_line(self):
-        z = Z80(self.page0, self.page1)
+        z = Z80(self.page0, self.page1, rom_pages=self.rom_pages)
         z.latch = 0x18
         z.sp = 0xFFFE
         z.push16(RET)

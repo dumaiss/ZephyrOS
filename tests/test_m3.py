@@ -226,7 +226,7 @@ class TestM3Artifacts(unittest.TestCase):
     def test_m3_selftest_image_contains_harness(self):
         image = self.read_image("build-m3-selftest",
                                 "zephyros-m3-selftest.bin")
-        self.assertEqual(len(image), 131072)
+        self.assertEqual(len(image), 0x80000)
         for marker in (b"m3 selftest", b"console: dynamic sio0.b OK\r\n",
                        b"m3 selftest: ready for RX\r\n"):
             self.assertIn(marker, image)

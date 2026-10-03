@@ -1,9 +1,15 @@
-/* ZephyrOS M4 module relocation and container validation.
+/* ZephyrOS M4/M5 module relocation and container validation.
  *
  * The ZMOD v1 container is validated completely before the loader touches
  * the driver arena: magic/version/type/ABI, reserved fields, all sizes
  * and offsets, granule arithmetic (in 16-bit intermediates that cannot
  * wrap), and every relocation record (type, reserved byte, patch range).
+ *
+ * M5 adds a bounded read-source container (struct zmod_source): the same
+ * shared header/record validation and the same copy/relocate code paths
+ * consume either a resident blob or streamed bytes (ROMFS), so there is
+ * only one loader.  Every source read is bounded against the container
+ * size before it is narrowed.
  *
  * The loader afterwards copies the payload, zeroes BSS, and applies each
  * ZREL_ABS16 record as `word += load_base`; a patch may never touch a
@@ -26,24 +32,17 @@ static uint8_t zmod_magic_ok(const uint8_t *p)
 			 p[2] == ZMOD_MAGIC_2 && p[3] == ZMOD_MAGIC_3);
 }
 
-int zmod_validate_container(const uint8_t *blob, uint16_t size,
-			    struct zmod_container *out)
+/* Shared header validation: everything a container must satisfy before the
+ * arena may be touched.  Only scalar fields are copied out; the caller's
+ * header bytes (memory blob or stack staging copy) stay caller-owned. */
+static int zmod_validate_header(const struct zmod_header *h, uint16_t size,
+				struct zmod_container *out)
 {
-	const struct zmod_header *h;
 	uint16_t payload_end;
 	uint16_t reloc_end;
 	uint16_t total;
 	uint16_t need;
-	uint16_t i;
 
-	if (blob == (const uint8_t *)0 || out == (struct zmod_container *)0) {
-		return ZMOD_EINVAL;
-	}
-	if (size < ZMOD_HEADER_SIZE) {
-		return ZMOD_EFORMAT;
-	}
-
-	h = (const struct zmod_header *)blob;
 	if (!zmod_magic_ok(h->magic)) {
 		return ZMOD_EINVAL;
 	}
@@ -111,25 +110,6 @@ int zmod_validate_container(const uint8_t *blob, uint16_t size,
 		return ZMOD_ENOSPC;
 	}
 
-	/* Every relocation record must be well-formed and patch in range. */
-	for (i = 0; i < h->reloc_count; ++i) {
-		const uint8_t *rec = blob + h->reloc_offset +
-				     (uint16_t)(i << 2);
-		uint16_t offset = zmod_read_u16(rec + 2);
-
-		if (rec[0] != ZREL_ABS16) {
-			return ZMOD_ENOTSUP;
-		}
-		if (rec[1] != 0) {
-			return ZMOD_EINVAL;
-		}
-		if (offset >= h->image_size ||
-		    (uint16_t)(h->image_size - offset) < 2u) {
-			return ZMOD_EFORMAT;
-		}
-	}
-
-	out->blob = blob;
 	out->total_size = h->total_size;
 	out->image_size = h->image_size;
 	out->bss_size = h->bss_size;
@@ -142,13 +122,176 @@ int zmod_validate_container(const uint8_t *blob, uint16_t size,
 	return ZMOD_OK;
 }
 
-void zmod_copy_image(uint8_t *load_base, const struct zmod_container *c)
+/* Shared relocation-record validation. */
+static int zmod_check_reloc(uint8_t type, uint8_t reserved,
+			    uint16_t patch_offset, uint16_t image_size)
+{
+	if (type != ZREL_ABS16) {
+		return ZMOD_ENOTSUP;
+	}
+	if (reserved != 0) {
+		return ZMOD_EINVAL;
+	}
+	if (patch_offset >= image_size ||
+	    (uint16_t)(image_size - patch_offset) < 2u) {
+		return ZMOD_EFORMAT;
+	}
+	return ZMOD_OK;
+}
+
+/* Bounded read through the container's byte source; every offset/length is
+ * checked against the validated container size before narrowing. */
+static int zmod_source_read_checked(const struct zmod_source *s,
+				    uint16_t offset, uint8_t *dst,
+				    uint16_t length)
+{
+	if ((uint32_t)offset + length > s->size) {
+		return ZMOD_EFORMAT;
+	}
+	if (length == 0) {
+		return ZMOD_OK;
+	}
+	if (s->read(s->ctx, offset, dst, length) < 0) {
+		return ZMOD_EFORMAT;
+	}
+	return ZMOD_OK;
+}
+
+#define ZMOD_STREAM_CHUNK 128u
+
+static int zmod_container_read(const struct zmod_container *c,
+			       uint16_t offset, uint8_t *dst, uint16_t length)
 {
 	uint16_t i;
 
-	for (i = 0; i < c->image_size; ++i) {
-		load_base[i] = c->blob[c->payload_offset + i];
+	if ((uint32_t)offset + length > c->total_size) {
+		return ZMOD_EFORMAT;
 	}
+	if (c->blob != (const uint8_t *)0) {
+		for (i = 0; i < length; ++i) {
+			dst[i] = c->blob[offset + i];
+		}
+		return ZMOD_OK;
+	}
+	if (c->source == (const struct zmod_source *)0) {
+		return ZMOD_EFORMAT;
+	}
+	return zmod_source_read_checked(c->source, offset, dst, length);
+}
+
+int zmod_validate_container(const uint8_t *blob, uint16_t size,
+			    struct zmod_container *out)
+{
+	const struct zmod_header *h;
+	int result;
+	uint16_t i;
+
+	if (blob == (const uint8_t *)0 || out == (struct zmod_container *)0) {
+		return ZMOD_EINVAL;
+	}
+	if (size < ZMOD_HEADER_SIZE) {
+		return ZMOD_EFORMAT;
+	}
+
+	h = (const struct zmod_header *)blob;
+	result = zmod_validate_header(h, size, out);
+	if (result != ZMOD_OK) {
+		return result;
+	}
+	out->blob = blob;
+	out->source = (const struct zmod_source *)0;
+
+	/* Every relocation record must be well-formed and patch in range. */
+	for (i = 0; i < h->reloc_count; ++i) {
+		const uint8_t *rec = blob + h->reloc_offset +
+				     (uint16_t)(i << 2);
+
+		result = zmod_check_reloc(rec[0], rec[1],
+					  zmod_read_u16(rec + 2),
+					  h->image_size);
+		if (result != ZMOD_OK) {
+			return result;
+		}
+	}
+	return ZMOD_OK;
+}
+
+int zmod_validate_source(const struct zmod_source *source,
+			 struct zmod_container *out)
+{
+	uint8_t header[ZMOD_HEADER_SIZE];
+	uint8_t rec[ZMOD_RELOC_SIZE];
+	const struct zmod_header *h =
+		(const struct zmod_header *)header;
+	uint16_t reloc_offset;
+	uint16_t reloc_count;
+	uint16_t image_size;
+	int result;
+	uint16_t i;
+
+	if (source == (const struct zmod_source *)0 ||
+	    source->read == (zmod_source_read_fn)0 ||
+	    out == (struct zmod_container *)0) {
+		return ZMOD_EINVAL;
+	}
+	if (source->size < ZMOD_HEADER_SIZE) {
+		return ZMOD_EFORMAT;
+	}
+	result = zmod_source_read_checked(source, 0, header, ZMOD_HEADER_SIZE);
+	if (result != ZMOD_OK) {
+		return ZMOD_EFORMAT;
+	}
+	result = zmod_validate_header(h, source->size, out);
+	if (result != ZMOD_OK) {
+		return result;
+	}
+	out->blob = (const uint8_t *)0;
+	out->source = source;
+
+	reloc_offset = h->reloc_offset;
+	reloc_count = h->reloc_count;
+	image_size = h->image_size;
+	for (i = 0; i < reloc_count; ++i) {
+		uint16_t at = (uint16_t)(reloc_offset +
+					 (uint16_t)(i << 2));
+
+		result = zmod_source_read_checked(source, at, rec,
+						  ZMOD_RELOC_SIZE);
+		if (result != ZMOD_OK) {
+			return ZMOD_EFORMAT;
+		}
+		result = zmod_check_reloc(rec[0], rec[1],
+					  zmod_read_u16(rec + 2), image_size);
+		if (result != ZMOD_OK) {
+			return result;
+		}
+	}
+	return ZMOD_OK;
+}
+
+int zmod_copy_image(uint8_t *load_base, const struct zmod_container *c)
+{
+	uint16_t done = 0;
+
+	if (load_base == (uint8_t *)0 || c == (const struct zmod_container *)0) {
+		return ZMOD_EINVAL;
+	}
+	while (done < c->image_size) {
+		uint16_t chunk = (uint16_t)(c->image_size - done);
+		int result;
+
+		if (chunk > ZMOD_STREAM_CHUNK) {
+			chunk = ZMOD_STREAM_CHUNK;
+		}
+		result = zmod_container_read(
+			c, (uint16_t)(c->payload_offset + done),
+			load_base + done, chunk);
+		if (result != ZMOD_OK) {
+			return result;
+		}
+		done = (uint16_t)(done + chunk);
+	}
+	return ZMOD_OK;
 }
 
 void zmod_zero_bss(uint8_t *load_base, const struct zmod_container *c)
@@ -165,19 +308,27 @@ int zmod_apply_relocations(uint8_t *load_base, const struct zmod_container *c)
 	uint16_t base = (uint16_t)load_base;
 	uint16_t i;
 
+	if (load_base == (uint8_t *)0 || c == (const struct zmod_container *)0) {
+		return ZMOD_EINVAL;
+	}
 	for (i = 0; i < c->reloc_count; ++i) {
-		const uint8_t *rec = c->blob + c->reloc_offset +
-				     (uint16_t)(i << 2);
-		uint16_t offset = zmod_read_u16(rec + 2);
+		uint8_t rec[ZMOD_RELOC_SIZE];
+		uint16_t offset;
 		uint16_t value;
+		int result = zmod_container_read(
+			c, (uint16_t)(c->reloc_offset + (uint16_t)(i << 2)),
+			rec, ZMOD_RELOC_SIZE);
 
-		if (rec[0] != ZREL_ABS16 || rec[1] != 0) {
-			return ZMOD_EFORMAT; /* validate again, defensively */
+		if (result != ZMOD_OK) {
+			return ZMOD_EFORMAT; /* re-validated defensively */
 		}
-		if (offset >= c->image_size ||
-		    (uint16_t)(c->image_size - offset) < 2u) {
-			return ZMOD_EFORMAT;
+		result = zmod_check_reloc(rec[0], rec[1],
+					  zmod_read_u16(rec + 2),
+					  c->image_size);
+		if (result != ZMOD_OK) {
+			return result;
 		}
+		offset = zmod_read_u16(rec + 2);
 		value = zmod_read_u16(load_base + offset);
 		if (value > (uint16_t)(0xFFFFu - base)) {
 			return ZMOD_EFORMAT; /* relocation overflow */

@@ -22,15 +22,19 @@ ZOS_CTC0_PORT           = 0x40
 
 ZOS_BANK_MASK           = 0x07
 ZOS_LATCH_NON_BANK_MASK = 0xF8
-ZOS_RAM_SHADOW          = 0x08
-ZOS_ROM_DIS             = 0x10
+ZOS_MEM_MODE0           = 0x08
+ZOS_MEM_MODE1           = 0x10
 ZOS_MODE_MASK           = 0x18
 ZOS_ROM_PAGE_SHIFT      = 5
 ZOS_ROM_PAGE_MASK       = 0xE0
 
-; Memory modes
+; Memory modes (MEM_DECODER rev 12; D4:D3 are a mapping select, not
+; feature flags).  Only mode 00 answers reads from ROM, and it answers
+; every read from ROM: code running there must be mirrored in the ROM
+; page and must not use a stack.  08h is a flat 64 KiB view of the
+; selected SRAM bank with no ROM and no common region.
 ZOS_MODE_BOOT           = 0x00
-ZOS_MODE_SHADOW         = 0x08
+ZOS_MODE_FLAT           = 0x08
 ZOS_MODE_APPLICATION    = 0x10
 ZOS_MODE_OS             = 0x18
 

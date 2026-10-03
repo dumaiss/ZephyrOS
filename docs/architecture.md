@@ -449,8 +449,8 @@ The latch layout is:
 | Bits | Meaning |
 | --- | --- |
 | `D0-D2` | selected SRAM bank, `0-7` |
-| `D3` | `RAM_SHADOW`; with ROM disabled, selects OS mode |
-| `D4` | `ROM_DIS`; `1` selects RAM-only runtime operation |
+| `D3` | `MEM_MODE0`; memory-mode bit 0 |
+| `D4` | `MEM_MODE1`; memory-mode bit 1 |
 | `D5-D7` | selected ROM page, `0-7` |
 
 For ROM page `p`, SRAM bank `b`, and mode value `m`:
@@ -459,15 +459,26 @@ For ROM page `p`, SRAM bank `b`, and mode value `m`:
 latch = ((p & 7) << 5) | m | (b & 7)
 ```
 
-The four hardware modes are:
+The four hardware modes select complete memory mappings; no single bit
+is a feature flag ("decoder revision 12" semantics, matching the
+Zephyr-80 machine reference "Memory Management":
 
 ```text
 D4 D3   value   meaning
- 0  0    00h    boot / ROM-visible
- 0  1    08h    shadow / ROM-to-RAM copy
- 1  0    10h    application execution
- 1  1    18h    OS execution
+ 0  0    00h    mode 00: ROM access / RAM destination
+                (reads: selected ROM page everywhere;
+                 writes: selected SRAM bank everywhere)
+ 0  1    08h    mode 01: flat selected SRAM bank
+                (no ROM, no forced bank, no common region)
+ 1  0    10h    mode 10: application + common
+ 1  1    18h    mode 11: application low + bank-7 OS + common
 ```
+
+Only mode 00 selects ROM, and it selects ROM for **every** read; a
+stack cannot survive it, because a `PUSH` writes SRAM while the matching
+`POP` would read ROM.  08h does **not** expose ROM (earlier revisions of
+this document called it "shadow/copy" and claimed a ROM window; that was
+wrong — see 24.2 for the ROM-access pattern this actually requires).
 
 Runtime mode values for application bank `N` are therefore:
 
@@ -486,17 +497,17 @@ The minimal required sequence is:
 
 ```text
 RESET
-  │
-  │ latch = 00h
+  │ latch = 00h (mode 00: ROM page 0 everywhere on reads)
   ▼
-ROM page 0 bootstrap
+ROM page 0 bootstrap (stackless between latch changes)
   │
   ├── DI
-  ├── copy the high ROM/bootstrap/common region into hidden SRAM bank 0
-  ├── enter shadow/copy mode
-  ├── install the bank-0 runtime/common image
-  ├── copy the ZephyrOS bank-7 image from ROM page 7 into SRAM bank 7
-  ├── enter RAM-only mode 10 over bank 0
+  ├── one full-page LDIR: ROM page 0 -> SRAM bank 0      (latch 00h)
+  ├── latch 27h: ROM page 1, mode 00, SRAM bank 7
+  ├── one full-page LDIR: ROM page 1 -> SRAM bank 7
+  ├── latch 10h: mode 10 over bank 0
+  │      (both boot pages carry byte-identical bootstrap bytes at the
+  │       switch address, so the fetch after each OUT is identical)
   │
   ▼
 common transition code in E000h-FFFFh
@@ -511,7 +522,11 @@ bank 7 visible at 2000h-DFFFh
 kernel entry
 ```
 
-Shadow/copy mode exposes ROM at `0000h-BFFFh` while writes target the selected SRAM bank. Consequently, the **loadable bank-7 kernel image must fit below `C000h`**.
+Mode 00 answers every read (including instruction fetch) from the
+selected ROM page, so the copy loops must be stackless and may only
+change the latch into an address whose ROM bytes are identical to the
+running code.  The two boot pages satisfy that by sharing a
+byte-identical low bootstrap region.
 
 For M0/M1:
 
@@ -524,7 +539,9 @@ bank 0:
     E000h-FFFFh   permanent common code/state
 ```
 
-The exact amount of `C000h-DFFFh` used at M0/M1 is linker-defined, but it must not contain ROM-initialized data that depends on the shadow-copy operation.
+The exact amount of `C000h-DFFFh` used at M0/M1 is linker-defined; the
+region is zero-initialized at boot and holds runtime state, so it must
+not depend on ROM-initialized content.
 
 The transition from mode 10 to mode 11 must execute from the permanent common range `E000h-FFFFh`. Code executing in `2000h-DFFFh` would change underneath the CPU when `D3` is changed.
 
@@ -1225,12 +1242,14 @@ Memory control
 Port 00h       banking/memory latch (canonical address; hardware decodes 00h-0Fh)
 
 D0-D2          SRAM bank
-D3             RAM_SHADOW / OS-mode select
-D4             ROM_DIS
+D3             memory-mode bit 0 (MEM_MODE0)
+D4             memory-mode bit 1 (MEM_MODE1)
 D5-D7          ROM page
 
-00h            boot / ROM-visible
-08h            shadow / copy
+00h            mode 00: ROM reads everywhere / writes to the selected
+               SRAM bank (stackless-only; used by the reset copier and
+               the ROM-access stub)
+08h            mode 01: flat selected SRAM bank (no ROM)
 10h|N          application mode, bank N
 18h|N          OS mode over caller bank N
 
@@ -2344,20 +2363,36 @@ The M4 module loader does not change. M5 replaces the embedded-module byte sourc
 
 ## 24.2 ROM access under the Zephyr memory model
 
-Normal runtime modes `10` and `11` have ROM disabled. Runtime ROM reads therefore require a controlled mapping transition.
+Normal runtime modes `10` and `11` have ROM disabled.  Runtime ROM reads
+therefore require a controlled mapping transition through **mode 00**,
+the only mode that selects ROM — and it selects ROM for every read
+(including instruction fetch), while every write still targets the
+selected SRAM bank.  There is no mode that exposes ROM together with a
+SRAM common region; `08h` is a flat view of one SRAM bank.
 
-M5 uses the existing **shadow/copy mode (`08h`)** because it preserves high SRAM while exposing the selected ROM page:
+The transition therefore follows the same pattern as this machine's
+drive-A ROM primitive: a small stub is mirrored into every recovery ROM
+page at the same address as its common-SRAM copy; a two-byte trampoline
+`OUT` switches to mode 00; the stub runs stackless (`LDIR`, then the
+latch-restoring `OUT`); ordinary common code resumes in mode 11:
 
 ```text
-mode 01 / shadow-copy
-0000h-BFFFh   selected ROM page
-C000h-FFFFh   physical SRAM bank 0
+mode 00 window (one bounded copy)
+0000h-FFFFh   reads: selected ROM page
+              writes: selected SRAM bank (bank 0 for staging)
 ```
 
-This has two consequences:
+This has three consequences:
 
-1. all code and stack state used while ROM is visible must remain in common SRAM;
-2. runtime ROMFS payload must use only the `0000h-BFFFh` portion of each allocated ROM page.
+1. the code executing between the two `OUT`s must be byte-identical in
+   common SRAM and in every selected ROM page, must not touch the stack,
+   and must not read any SRAM variable (registers only);
+2. the logical ROMFS payload uses only `0000h-BFFFh` of each allocated
+   ROM page; the `C000h-FFFFh` half is never file data (it carries the
+   fixed stub mirror at `ZOS_ROM_ACCESS_BASE` and `FFh` elsewhere);
+3. the common staging destination is reached correctly because the
+   mode-00 latch selects SRAM bank 0, and mode-00 writes land in bank 0
+   across the whole address space.
 
 The logical ROMFS page payload is therefore:
 
@@ -2365,15 +2400,19 @@ The logical ROMFS page payload is therefore:
 ROMFS_PAGE_BYTES = C000h = 48 KiB
 ```
 
-The `C000h-FFFFh` ROM bytes are not part of the runtime recovery filesystem because that window is intentionally SRAM during the safe access mode.
+The `C000h-FFFFh` ROM bytes are not part of the runtime recovery
+filesystem because that window is reserved for the stub mirror.
 
-The exact ROM pages assigned to ROMFS are build/platform configuration. M5 must not hard-code assumptions that collide with page 0 boot contents, page 7's kernel image, or any ROM-backed assets retained elsewhere.
+The exact ROM pages assigned to ROMFS are build/platform configuration. M5 must not hard-code assumptions that collide with page 0 boot contents, page 1's kernel image, or any ROM-backed assets retained elsewhere.
 
 ---
 
 ## 24.3 Common ROM-access primitive
 
-A ROM read may temporarily hide the bank-7 body, so the actual mapping transition and copy loop execute from common memory.
+A ROM read temporarily hides all runtime mappings, so the actual mapping
+transition and copy loop execute from code that exists in both worlds:
+the mirrored stub in the ROM page and its byte-identical copy in common
+SRAM.
 
 Conceptually:
 
@@ -2381,25 +2420,28 @@ Conceptually:
 kernel in mode 11
     │
     ├── validate ROM page / offset / length
-    ├── save current latch
-    ├── switch to common transition stack
+    ├── save the exact latch; lock interrupts; claim the busy flag
+    ├── arm registers: HL=source, DE=staging, BC=length,
+    │       A=mode-00 latch, A'=exact caller latch
     │
-    ├── select ROM page + mode 01
-    │
-    ▼
-common ROM-access routine
-    │
-    ├── copy bounded bytes from 0000h-BFFFh
-    │      into common staging memory
-    ├── restore saved latch
+    ├── trampoline OUT (00h): mode 00, page p, bank 0
     │
     ▼
-mode 11 restored
+mirrored stub in the selected ROM page (stackless)
     │
-    └── copy/consume staged bytes normally
+    ├── LDIR: ROM (HL) -> SRAM bank 0 staging (DE), BC bytes
+    ├── OUT (00h): restore the exact caller latch
+    │
+    ▼
+common epilogue, mode 11 restored
+    │
+    ├── release the busy flag; restore IFF; return
 ```
 
-The ROM-access routine must never execute or use a stack from `2000h-DFFFh` while mode `01` is active.
+The ROM-access routine must never execute, return into, or stack on
+`2000h-DFFFh` while mode 00 is active, and it must not use the stack at
+all between the two `OUT`s; the simulator pins the executed window to the
+mirrored stub and rejects any stack movement.
 
 The initial implementation may stage small chunks rather than trying to map an entire file at once.
 
@@ -2528,6 +2570,69 @@ The embedded catalog may remain available in M5 test images if useful, but the p
 
 ---
 
+## 24.8 M5 implementation notes (stage 11)
+
+Implemented 2026-10-03; host-validated, and physically accepted with both
+smoke transcripts (success and corrupt) captured in
+`docs/validation/2026-10-03-m5-romfs.md` after the mode-00
+hardware-conformance fix.  The concrete implementation is:
+
+- the programmed image is eight 64-KiB pages (512 KiB).  Pages 0 and 1
+  remain the boot pages copied by the reset copier; pages 2-7 carry the
+  recovery store.  Only `0000h-BFFFh` of each recovery page is a logical
+  ROMFS window (six 48-KiB windows, 288 KiB capacity); the `C000h-FFFFh`
+  half carries only the fixed ROM-access stub mirror at
+  `ZOS_ROM_ACCESS_BASE` (`EF00h`, 8 bytes mirrored from the linked common
+  copy) and is never part of the logical stream;
+- `tools/romfspack.py` (`pack`/`validate`/`dump`) builds the deterministic
+  ROMFS v1 stream from `recovery/manifest.json`; `tools/pack_image.py`
+  places it (logical byte `L` at offset `L % C000h` of page `2 + L/C000h`),
+  keeps the boot pages untouched, rejects capacity/overflow conditions, and
+  records per-page hashes plus the ROMFS placement in the image manifest;
+- `kernel/romfs/rom_access.asm` is the common-resident transition
+  primitive: it validates page/offset/length, then locks interrupts,
+  saves the exact latch/IFF state, enters the mode-00 window through the
+  fixed trampoline, runs the mirrored stackless stub (LDIR plus the
+  latch-restoring OUT), and restores the exact latch and IFF state in a
+  common epilogue.  It is non-reentrant and never executes from, returns
+  into, or stacks on `2000h-DFFFh` while ROM is visible; the simulator
+  pins every ROM-visible step to the mirrored stub and rejects stack
+  movement;
+- `tools/pack_image.py` mirrors the linked stub bytes into every recovery
+  page (pattern-checked) so the mode-00 fetch stream matches its common
+  copy byte-for-byte;
+- **hardware-conformance correction (2026-10-03):** the first
+  implementation assumed `08h` exposed ROM with SRAM bank 0 above
+  `C000h`.  The physical machine contradicted that: `MEM_DECODER`
+  revision 12 defines `08h` as a flat view of one SRAM bank, and only
+  mode 00 selects ROM at all.  The implementation, the simulator's
+  decoder model, the packer, and this document were corrected to the
+  mode-00 mirrored-stub mechanism (the pattern the machine's own ROM
+  primitive uses).  A failure-only diagnostic now prints the raw init
+  code, live latch, and staged header bytes before the panic marker so a
+  mapping regression is visible without a debugger;
+- `kernel/romfs/romfs.c` is the allocation-free reader: `romfs_init()`
+  fully validates the header and directory before publishing the
+  filesystem; `romfs_lookup()` resolves native case-sensitive names;
+  `romfs_read()` is strictly bounded, handles EOF, and splits reads at the
+  48-KiB window boundaries without 32-bit division;
+- module loading is source-backed: `struct zmod_source` and
+  `module_load_source()` share header/relocation validation, streaming
+  copy, relocation, init transaction, and rollback with the blob-based
+  `module_load()`; the ZMOD on-disk format and the `sio.zmod` bytes are
+  unchanged;
+- the production/M5 boot path is `romfs_init()` ->
+  `romfs_lookup("sio.zmod")` -> shared loader.  A corrupt recovery image
+  fails before any module execution through the early-console panic marker
+  `PANIC: romfs: corrupt recovery image`.  The embedded catalog loader is
+  now an acceptance-image artifact only; `tools/mapcheck.py --production`
+  rejects embedded boot blob/catalog symbols;
+- `docs/romfs-format.md` is the normative format/behavior reference and
+  `docs/validation/2026-10-03-m5-romfs.md` records the host evidence and
+  the pending physical gates.
+
+---
+
 # 25. M5 acceptance criteria
 
 M5 is accepted when:
@@ -2536,7 +2641,9 @@ M5 is accepted when:
 - the image is placed only in ROM pages/regions declared for recovery use;
 - lookup finds valid files and rejects absent/duplicate/corrupt entries predictably;
 - reads work at the start/end of files and across a 48-KiB ROM page boundary;
-- every temporary ROM-visible transition runs from common code on a common stack and restores the exact previous memory latch;
+- every temporary ROM-visible transition is stackless, executes only code
+  that exists byte-identically in the selected ROM page and in common
+  SRAM, and restores the exact previous memory latch;
 - an invalid page/offset/length cannot read outside the configured ROMFS region;
 - the production boot obtains `sio.zmod` from ROMFS and loads it through the unchanged M4 loader;
 - the dynamically loaded SIO driver registers `sio0.b` and the normal serial console still works on physical hardware;

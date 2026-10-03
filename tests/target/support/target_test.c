@@ -8,7 +8,8 @@
  *
  * Boot phases:
  *   early  before the boot catalog load (M1 syscall gate, M2 IRQ)
- *   late   after console binding (M3 device layer, M4 loader/dynamic)
+ *   late   after console binding (M3 device layer, M4 loader/dynamic,
+ *          M5 ROMFS)
  */
 
 #include "zephyros/kernel.h"
@@ -24,6 +25,9 @@
 #endif
 #if ZOS_M4_SELFTEST || ZOS_M4_FAILURE_SELFTEST
 #include "m4_selftest.h"
+#endif
+#if ZOS_M5_SELFTEST
+#include "m5_selftest.h"
 #endif
 
 void zos_target_test_early(void)
@@ -46,5 +50,8 @@ void zos_target_test_late(void)
 #endif
 #if ZOS_M4_FAILURE_SELFTEST
 	zos_run_m4_failure_selftest();
+#endif
+#if ZOS_M5_SELFTEST
+	zos_run_m5_selftest();
 #endif
 }

@@ -1,4 +1,4 @@
-# ZephyrOS Memory Model (M3, implemented)
+# ZephyrOS Memory Model (M5, implemented)
 
 This is the implemented, linker-enforced memory ownership table for the
 mode `10`/`11` Zephyr-80 architecture.  The contract is in
@@ -29,7 +29,7 @@ E000h +-------------------------------+
 | `A000h-BFFFh` | bank 7 in mode 11 | M4 driver arena: 16 x 512-byte granules reserved for loaded modules; never part of the ROM payload and never linked by the kernel |
 | `C000h-DEFFh` | bank 7 in mode 11 | zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded |
 | `DF00h-DFFFh` | bank 7 in mode 11 | 256-byte M2 ISR stack; initial `SP=E000h` |
-| `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`) |
+| `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`), including the M5 ROM-access staging buffer; `EEFEh-EF07h` is the fixed ROM-access transition block (trampoline + mirrored stub) |
 | `FD00h-FDFFh` | physical bank 0 | 256-byte-aligned IM2 vector page (`I=FDh`) |
 | `FE00h` | physical bank 0 | vector-`FFh` guard byte |
 | `FE01h-FE7Fh` | physical bank 0 | common IRQ transition state |
@@ -39,6 +39,22 @@ E000h +-------------------------------+
 Mode `10` maps the selected application bank at `0000h-DFFFh`; mode `11`
 keeps the caller bank at `0000h-1FFFh` and maps bank 7 at `2000h-DFFFh`.
 Bank 7 is reserved to ZephyrOS and is never an application bank.
+
+### 1.1 ROM side: the 512 KiB programmed image
+
+The programmed ROM is eight 64-KiB pages.  Pages 0/1 are the boot pages
+(see `docs/boot.md`); pages 2-7 hold the read-only ROMFS recovery store.
+ROM is only ever selected in mode 00, which answers *every* read
+(including instruction fetch) from the selected ROM page while every
+write targets the selected SRAM bank — so the ROM-access transition is a
+stackless mirrored stub (`EEFEh-EF07h`: trampoline `OUT` plus `LDIR` and
+the latch-restoring `OUT`), byte-identical in common SRAM and in every
+recovery page.  Each recovery page therefore contributes a 48-KiB
+logical window (`ZOS_ROMFS_WINDOW_SIZE`) at `0000h-BFFFh`; the
+`C000h-FFFFh` half carries only the stub mirror and is never file data.
+Six windows total (`ZOS_ROMFS_CAPACITY` = 288 KiB).  The geometry is
+declared in `platform/zephyr80/memory.h/.inc`, mirrored into the image by
+`tools/pack_image.py`, and recorded in `docs/romfs-format.md`.
 
 ## 2. Linker area ownership
 
@@ -108,6 +124,25 @@ over `_module_`, `_zmod_`, `_z4_`, `_m4_`, and `_irq_registry_` symbols.
 Loaded modules are placed inside the arena by the M4 loader (see
 `docs/module-format.md`).
 
+## 2.3 M5 ROMFS placement
+
+The ROMFS reader (`_romfs_init`, `_romfs_lookup`, `_romfs_read`,
+`_romfs_load_zmod`) is bank-7 code; mapcheck requires the `_romfs_`
+prefix sweep to stay below the ISR stack.  The ROM-access primitive
+(`_rom_access_copy`) is common code, and its staging buffer and saved
+latch/IFF/request state are common data: they must all sit in
+`E000h-FEFFh` and the staging size must equal `ZOS_ROMFS_STAGING_SIZE`
+(128).  The fixed transition block is pinned too: `rom_access_trampoline`
+at `ZOS_ROM_ACCESS_BASE - 2` (`EEFEh`), `rom_access_sync` at
+`ZOS_ROM_ACCESS_BASE` (`EF00h`), and `rom_access_sync_end`
+`ZOS_ROM_ACCESS_SIZE` (8) bytes later; the `_ROM_ACCESS_STUB` area must
+match that extent and nothing else may overlap it.  The busy flag is
+initialized by a `.db 0` byte because `.ds` reservations are `FFh` in
+the ROM image.  The embedded boot catalog (M3/M4 acceptance images only)
+is checked as a pair: `_zmod_catalog` and `_module_catalog_load_all` must
+be linked together or not at all, and `--production` rejects them
+outright.
+
 ## 3. Common-resident routines
 
 Every routine that changes the memory mapping, or that must run immediately
@@ -131,6 +166,7 @@ _platform_memctl_*     latch read/write primitives
 _platform_bank_get/set selected-bank primitives
 _early_console_*       early serial console
 _panic                 fatal path
+_rom_access_copy       M5 ROMFS access primitive (mode-00 window)
 ```
 
 The bank-7 syscall boundary (`zos_syscall_dispatch`) and the C dispatcher
@@ -151,6 +187,27 @@ zos_gate_result_hl     2 bytes   dispatcher result staging
 zos_gate_result_a      1 byte    error code staging
 zos_gate_result_c      1 byte    carry staging (0/1)
 zos_gate_stack        64 bytes   common gate stack used while crossing modes
+```
+
+M5 adds the ROM-access block in the same common data area:
+
+```text
+_rom_access_staging   128 bytes  bounded copy staging buffer
+rom_access_saved_latch 1 byte    exact caller latch byte
+rom_access_saved_iff   1 byte    exact IFF2/IFF1 state
+rom_access_page/offset/length    validated request
+rom_access_busy        1 byte    non-reentrancy flag (.db 0)
+```
+
+There is deliberately no transition stack: mode 00 reads ROM at every
+address, so a stack could not survive the window.  The transition itself
+is the fixed mirrored stub block `EEFEh-EF07h`:
+
+```text
+rom_access_trampoline  EEFEh     OUT (00h),A: enter mode 00
+rom_access_sync        EF00h     LDIR (ROM -> bank-0 staging); EX AF,AF';
+                                 OUT (00h),A: restore the exact latch
+rom_access_sync_end    EF08h     stub extent mirrored into pages 2-7
 ```
 
 The gate stack size is validated exactly (`zos_gate_stack_top - zos_gate_stack
@@ -200,14 +257,17 @@ in `2000h-DFFFh` would disappear when the mode changes.
 
 ## 6. Validation
 
-- `tools/pack_image.py` — byte-level image checks: exact 128 KiB size,
-  FF fill, out-of-region rejection, copier mirroring, entry-point regions,
-  and the `word_at(FDFFh) == irq_ff_unexpected` guard identity.
+- `tools/pack_image.py` — byte-level image checks: exact 512 KiB size,
+  FF fill, out-of-region rejection, copier mirroring, the ROM-access
+  stub pattern/trampoline, stub mirror identity in pages 2-7, entry-point
+  regions, and the `word_at(FDFFh) == irq_ff_unexpected` guard identity.
 - `tools/mapcheck.py` — map-level checks: area ownership per this table,
   common-resident gate/console/panic/IRQ placement, gate-stack and both
-  IRQ-stack sizes, the IM2 page/guard/state addresses, `_irq_kernel_code_end`
-  at the linked `_CODE` end, page-zero and stack-reservation bounds, and
-  the M3 bank-7 device-layer placement rules (`make check`).
+  IRQ-stack sizes, ROM-access staging size plus trampoline/sync placement
+  and stub-area extent, the IM2 page/guard/state addresses,
+  `_irq_kernel_code_end` at the linked `_CODE` end, page-zero and
+  stack-reservation bounds, and the M3 bank-7 device-layer placement
+  rules (`make check`).
 - `tests/test_m1.py` — C/assembly constant parity (hardware, syscall
   self-test, and IRQ self-test header pairs), latch formulas, bank-identity
   preservation across `10h`/`18h`, bank-7 rejection, mapcheck unit cases
@@ -223,6 +283,11 @@ in `2000h-DFFFh` would disappear when the mode changes.
   semantics, checkpoint/rollback, exhaustion, ABI rejection, console
   TX/RX through the SIO port model, the CTC0 probe through the M2
   executive, and a production `kernel_main` boot replay.
+- `tests/test_romfs.py` / `tests/test_romfs_sim.py` — M5 ROMFS tooling,
+  constant/placement contracts, corrupted-metadata rejection, the
+  ROM-access transition replay (stackless mode-00 window pinned to the
+  mirrored stub, exact latch/IFF restoration, bounds and reentry
+  rejection), and the source-backed module load.
 - Runtime: boot asserts mode `11` over bank 0 (assembly latch read-back and
   a C re-check in `kernel_main()`), then exercises the bank primitives; any
   failure prints a fault through the early console and halts.

@@ -24,8 +24,8 @@ build/registry.rel
 build/console.rel
 build/module_relocate.rel
 build/module_loader.rel
-build/module_embedded.rel
+build/romfs.rel
 build/arena.rel
-build/m4_catalog_blobs.rel
+build/rom_access.rel
 build/irq_code_end.rel
 -e

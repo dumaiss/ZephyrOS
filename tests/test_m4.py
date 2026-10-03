@@ -227,10 +227,13 @@ class TestM4Artifacts(unittest.TestCase):
         self.assertEqual(manifest["arena"]["granules"], 16)
 
     def test_no_static_sio_symbols_in_any_image_map(self):
+        # M5: production and the M5 images boot from ROMFS and carry no
+        # embedded catalog; the pre-M5 acceptance images still do.
+        catalog_images = ("build-m3-selftest", "build-m4-selftest",
+                          "build-m4-loader-selftest",
+                          "build-m4-placement-selftest", "build-m4-failure")
         checked = 0
-        for subdir in ("build", "build-m3-selftest", "build-m4-selftest",
-                       "build-m4-loader-selftest",
-                       "build-m4-placement-selftest", "build-m4-failure"):
+        for subdir in ("build",) + catalog_images:
             map_path = os.path.join(ROOT, subdir, "zephyros.map")
             if not os.path.exists(map_path):
                 continue
@@ -245,8 +248,15 @@ class TestM4Artifacts(unittest.TestCase):
                     name.startswith("_driver_") or name == "_boot_drivers",
                     "retired static-driver symbol %s linked in %s"
                     % (name, subdir))
-            self.assertIn("_z4_module_boot", syms,
-                          "boot catalog missing in %s" % subdir)
+            if subdir in catalog_images:
+                self.assertIn("_z4_module_boot", syms,
+                              "boot catalog missing in %s" % subdir)
+            else:
+                self.assertNotIn("_z4_module_boot", syms,
+                                 "embedded boot blob leaked into %s"
+                                 % subdir)
+                self.assertNotIn("_zmod_catalog", syms,
+                                 "embedded catalog leaked into %s" % subdir)
             checked += 1
         if checked == 0:
             self.skipTest("no image maps present; build first")
@@ -280,7 +290,7 @@ class TestM4Artifacts(unittest.TestCase):
     def test_m4_loader_selftest_image_markers(self):
         image, _ = self.read_artifact("build-m4-loader-selftest",
                                       "zephyros-m4-loader-selftest.bin")
-        self.assertEqual(len(image), 131072)
+        self.assertEqual(len(image), 0x80000)
         self.assertIn(b"m4 loader selftest: OK\r\n", image)
         self.assertIn(b"console: dynamic sio0.b OK\r\n", image)
         # Fixture device names are packed into the embedded catalogs.
@@ -290,7 +300,7 @@ class TestM4Artifacts(unittest.TestCase):
     def test_m4_acceptance_image_markers(self):
         image, _ = self.read_artifact("build-m4-selftest",
                                       "zephyros-m4-selftest.bin")
-        self.assertEqual(len(image), 131072)
+        self.assertEqual(len(image), 0x80000)
         for marker in (b"console: dynamic sio0.b OK\r\n",
                        b"m4 loader selftest: OK\r\n",
                        b"m4 selftest: sio at ",
@@ -300,7 +310,7 @@ class TestM4Artifacts(unittest.TestCase):
     def test_m4_failure_image_markers(self):
         image, _ = self.read_artifact("build-m4-failure",
                                       "zephyros-m4-failure.bin")
-        self.assertEqual(len(image), 131072)
+        self.assertEqual(len(image), 0x80000)
         # The success literal still exists in kernel_main's code (both
         # branches are compiled); only the runtime transcript differs,
         # which the smoke tool and the failure replay verify.
@@ -337,8 +347,7 @@ class TestM4Artifacts(unittest.TestCase):
                 listed.add(line)
         for expected in ("build/arena.rel", "build/module_loader.rel",
                          "build/module_relocate.rel",
-                         "build/module_embedded.rel",
-                         "build/m4_catalog_blobs.rel"):
+                         "build/romfs.rel", "build/rom_access.rel"):
             self.assertIn(expected, listed)
         build_dir = os.path.join(ROOT, "build")
         if not os.path.isdir(build_dir):

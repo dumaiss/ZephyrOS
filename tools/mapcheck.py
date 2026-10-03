@@ -66,6 +66,9 @@ IRQ_ISR_STACK_SIZE = 0x0100
 STACK_BASE = 0xFF00
 MEM_TOP = 0x10000
 GATE_STACK_SIZE = 64
+ROMFS_STAGING_SIZE = 0x80
+ROM_ACCESS_BASE = 0xEF00
+ROM_ACCESS_SIZE = 8
 
 
 def parse_inc(path):
@@ -92,6 +95,7 @@ def apply_layout(values):
     global GATE_STACK_SIZE, OWNED_AREAS
     global DRIVER_ARENA_BASE, DRIVER_ARENA_END, DRIVER_GRANULE_SIZE
     global DRIVER_GRANULES
+    global ROMFS_STAGING_SIZE, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
     PAGE_ZERO_END = values["ZOS_PAGE_ZERO_END"]
     RESET_TOP = values["ZOS_RESET_TOP"]
     BANK7_BASE = values["ZOS_BANK7_BASE"]
@@ -108,6 +112,9 @@ def apply_layout(values):
     DRIVER_ARENA_END = values["ZOS_DRIVER_ARENA_END"]
     DRIVER_GRANULE_SIZE = values["ZOS_DRIVER_GRANULE_SIZE"]
     DRIVER_GRANULES = values["ZOS_DRIVER_GRANULES"]
+    ROMFS_STAGING_SIZE = values["ZOS_ROMFS_STAGING_SIZE"]
+    ROM_ACCESS_BASE = values["ZOS_ROM_ACCESS_BASE"]
+    ROM_ACCESS_SIZE = values["ZOS_ROM_ACCESS_SIZE"]
     OWNED_AREAS = {
         "_CODE": (BANK7_BASE, DRIVER_ARENA_BASE),
         "_HOME": (BANK7_BASE, DRIVER_ARENA_BASE),
@@ -172,6 +179,7 @@ COMMON_ROUTINES = (
     "_irq_arch_lock",
     "_irq_arch_unlock",
     "_irq_arch_init",
+    "_rom_access_copy",
 )
 
 # Bank-7 internal routines (visible only while mode 11 is active).
@@ -214,9 +222,9 @@ M3_BANK7_PREFIXES = (
 )
 
 # Production images must not link any acceptance artifact: retired static
-# driver symbols, target-test runners/results, fixture catalogs, or test
-# SIO module entries/counters.  Enabled with --production (the Makefile
-# passes it for non-acceptance images).
+# driver symbols, target-test runners/results, fixture catalogs, embedded
+# boot catalogs (M5 boots from ROMFS), or test SIO module entries.  Enabled
+# with --production (the Makefile passes it for non-acceptance images).
 PRODUCTION_FORBIDDEN = (
     "_driver_init_static",
     "_boot_drivers",
@@ -226,6 +234,9 @@ PRODUCTION_FORBIDDEN = (
     "_m4_fixture",
     "_zmod_fixture",
     "_z4_fixture",
+    "_z4_module_boot",
+    "_zmod_catalog",
+    "_module_catalog_load_all",
     "_target_test",
     "_zos_run_",
     "_sio_module_irq",
@@ -244,13 +255,14 @@ STATIC_SIO_PREFIXES = ("_sio_", "_sio0b_", "_sio_driver")
 M4_BANK7_ROUTINES = (
     "_module_loader_init",
     "_module_load",
-    "_module_catalog_load_all",
+    "_module_load_source",
     "_module_count",
     "_module_free_granules",
     "_module_failed_count",
     "_module_get",
     "_module_code_allowed",
     "_zmod_validate_container",
+    "_zmod_validate_source",
     "_zmod_copy_image",
     "_zmod_zero_bss",
     "_zmod_apply_relocations",
@@ -262,6 +274,36 @@ M4_BANK7_ROUTINES = (
 
 M4_BANK7_PREFIXES = ("_module_", "_zmod_", "_z4_", "_m4_",
                     "_irq_registry_")
+
+# M5 ROMFS reader routines: bank-7 code only.  The embedded catalog loader
+# (_module_catalog_load_all, kernel/module/embedded.c) is an acceptance
+# artifact and is checked through the table/loader pairing below.
+ROMFS_BANK7_ROUTINES = (
+    "_romfs_init",
+    "_romfs_lookup",
+    "_romfs_read",
+    "_romfs_load_zmod",
+)
+
+ROMFS_BANK7_PREFIXES = ("_romfs_",)
+
+# M5 ROM-access transition state: permanent common memory only.  The
+# staging buffer and saved latch/IFF/request state are what the
+# mode-00 window depends on; the transition itself is a mirrored,
+# stackless stub, so there is deliberately no transition stack.
+ROMFS_COMMON_STATE = (
+    "_rom_access_staging",
+    "rom_access_saved_latch",
+    "rom_access_saved_iff",
+    "rom_access_page",
+    "rom_access_offset",
+    "rom_access_length",
+    "rom_access_busy",
+)
+
+# Embedded catalog table and loader (acceptance images only).  Either both
+# are linked or neither is; --production requires neither.
+CATALOG_SYMBOLS = ("_zmod_catalog", "_module_catalog_load_all")
 
 # Transition-critical state block (common RAM).
 COMMON_STATE = (
@@ -345,6 +387,32 @@ def check_areas(areas, symbols):
                 "%s at %04Xh (size %d) overlaps the driver arena "
                 "%04Xh-%04Xh" % (name, addr, size, DRIVER_ARENA_BASE,
                                   DRIVER_ARENA_END - 1)
+            )
+
+    # M5: the ROM-access transition block is a fixed reservation.  Only
+    # the _ROM_ACCESS_STUB area itself may occupy it.  sdld lists ABS
+    # areas as <name>0 with address 0 (only the size is meaningful); the
+    # exported trampoline/sync labels above pin the real placement.
+    block_start = ROM_ACCESS_BASE - 2
+    block_end = ROM_ACCESS_BASE + ROM_ACCESS_SIZE
+    stub_size = None
+    for name, (addr, size) in areas.items():
+        if name.startswith("_ROM_ACCESS_STUB"):
+            stub_size = size if stub_size is None else stub_size + size
+    if stub_size is None:
+        raise MapError("map has no _ROM_ACCESS_STUB area")
+    if stub_size != ROM_ACCESS_SIZE + 2:
+        raise MapError(
+            "_ROM_ACCESS_STUB is %d bytes, expected %d (trampoline plus "
+            "mirrored stub)" % (stub_size, ROM_ACCESS_SIZE + 2))
+    for name, (addr, size) in sorted(areas.items()):
+        if name.startswith("_ROM_ACCESS_STUB") or size == 0 or addr == 0:
+            continue
+        if addr < block_end and addr + size > block_start:
+            raise MapError(
+                "%s at %04Xh (size %d) overlaps the ROM-access transition "
+                "block %04Xh-%04Xh" % (name, addr, size, block_start,
+                                       block_end - 1)
             )
 
     # Region ownership via s__/l__ symbols; the linker drops the area's
@@ -475,6 +543,71 @@ def check_symbols(areas, symbols, production=False):
                     "module symbol %s at %04Xh is not bank-7 resident"
                     % (name, addr)
                 )
+
+    # Embedded catalog pairing: the table and its loader are acceptance
+    # artifacts that must be linked together or not at all.
+    catalog_present = [name for name in CATALOG_SYMBOLS
+                       if symbols.get(name, 0) != 0]
+    if len(catalog_present) == 1:
+        raise MapError(
+            "embedded catalog symbols must be linked together (found %s)"
+            % ", ".join(catalog_present))
+    for name in catalog_present:
+        addr = symbols[name]
+        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            raise MapError(
+                "embedded catalog symbol %s at %04Xh is not bank-7 "
+                "resident" % (name, addr))
+
+    # M5 ROMFS: the allocation-free reader is bank-7 code; the ROM-access
+    # primitive, its staging buffer, and the saved transition state are
+    # permanent common memory.
+    for name in ROMFS_BANK7_ROUTINES:
+        if name not in symbols:
+            raise MapError("map has no ROMFS symbol %s" % name)
+        addr = symbols[name]
+        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            raise MapError(
+                "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
+                % (name, addr))
+    for name, addr in symbols.items():
+        if addr != 0 and name.startswith(ROMFS_BANK7_PREFIXES):
+            if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+                raise MapError(
+                    "ROMFS symbol %s at %04Xh is not bank-7 resident"
+                    % (name, addr))
+    for name in ROMFS_COMMON_STATE:
+        if name not in symbols:
+            raise MapError("map has no ROM-access state symbol %s" % name)
+        addr = symbols[name]
+        if not (COMMON_BASE <= addr < STACK_BASE):
+            raise MapError(
+                "%s at %04Xh is not in the common region E000h-FEFFh"
+                % (name, addr))
+    staging = symbols["rom_access_saved_latch"] - symbols["_rom_access_staging"]
+    if staging != ROMFS_STAGING_SIZE:
+        raise MapError("ROM-access staging buffer is %d bytes, expected %d"
+                       % (staging, ROMFS_STAGING_SIZE))
+
+    # M5 ROM-access transition block: the trampoline lands exactly two
+    # bytes before the mirrored stub at ZOS_ROM_ACCESS_BASE, the stub is
+    # ROM_ACCESS_SIZE bytes, and the whole block is common-resident.
+    expected_block = {
+        "rom_access_trampoline": ROM_ACCESS_BASE - 2,
+        "rom_access_sync": ROM_ACCESS_BASE,
+        "rom_access_sync_end": ROM_ACCESS_BASE + ROM_ACCESS_SIZE,
+    }
+    for name, expected in expected_block.items():
+        actual = symbols.get(name)
+        if actual != expected:
+            raise MapError("%s is at %04Xh, expected %04Xh"
+                           % (name, actual if actual is not None else -1,
+                              expected))
+    if not (COMMON_BASE <= ROM_ACCESS_BASE - 2
+            and ROM_ACCESS_BASE + ROM_ACCESS_SIZE <= COMMON_CODE_END):
+        raise MapError(
+            "ROM-access transition block %04Xh-%04Xh leaves common memory"
+            % (ROM_ACCESS_BASE - 2, ROM_ACCESS_BASE + ROM_ACCESS_SIZE - 1))
 
     # M4: exported arena bounds must match the platform layout and granule
     # geometry exactly.

@@ -18,6 +18,7 @@
 #include "zephyros/irq.h"
 #include "zephyros/console.h"
 #include "zephyros/module.h"
+#include "zephyros/romfs.h"
 
 /* Single integration seam for target acceptance builds; the runner and
  * milestone selection live in tests/target/support/target_test.c.  The
@@ -41,6 +42,82 @@ void zos_target_test_late(void);
 #ifndef ZOS_M4_SIO_IRQ
 #define ZOS_M4_SIO_IRQ 0
 #endif
+
+/* Boot-module source selection.  Production and M5 images boot the SIO
+ * ZMOD from the ROMFS recovery store (the default); the pre-M5
+ * acceptance images set ZOS_ROMFS_BOOT=0 in the Makefile and keep their
+ * embedded test catalogs. */
+#ifndef ZOS_ROMFS_BOOT
+#define ZOS_ROMFS_BOOT 1
+#endif
+
+#if ZOS_ROMFS_BOOT
+/* Failure-only hardware bring-up aid (never runs on a healthy image):
+ * report the raw init status, the live latch value, and the first eight
+ * bytes of recovery page 2 offset 0 staged by the ROM-access primitive.
+ * A genuinely corrupt image shows the real "ZRFS" magic here; a wrong
+ * mapping or page selection shows different bytes instead of costing a
+ * flash cycle.  The success transcript never sees these lines. */
+static void romfs_diagnose(int result)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	struct rom_access_req probe;
+	uint8_t status;
+	uint8_t latch;
+	uint8_t i;
+	unsigned code = (unsigned)(-result);
+
+	early_console_puts("romfs: init failed, code 0x");
+	early_console_putc(hex[(code >> 4) & 0x0F]);
+	early_console_putc(hex[code & 0x0F]);
+	latch = platform_memctl_read();
+	early_console_puts(", latch 0x");
+	early_console_putc(hex[(latch >> 4) & 0x0F]);
+	early_console_putc(hex[latch & 0x0F]);
+
+	probe.page = ZOS_ROMFS_FIRST_PAGE;
+	probe.offset = 0;
+	probe.length = 8;
+	status = rom_access_copy(&probe);
+	if (status == 0) {
+		early_console_puts(", header");
+		for (i = 0; i < 8; ++i) {
+			uint8_t b = rom_access_staging[i];
+
+			early_console_putc(' ');
+			early_console_putc(hex[(b >> 4) & 0x0F]);
+			early_console_putc(hex[b & 0x0F]);
+		}
+	} else {
+		early_console_puts(", probe status 0x");
+		early_console_putc(hex[(status >> 4) & 0x0F]);
+		early_console_putc(hex[status & 0x0F]);
+	}
+	early_console_puts("\r\n");
+}
+#endif
+
+/* Resolve and load the boot module through the selected source.  Returns
+ * 0 when the module is resident, non-zero otherwise.  A corrupt recovery
+ * store fails here through the early-console panic path, before any
+ * module code is ever executed. */
+static uint8_t kernel_boot_module(void)
+{
+#if ZOS_ROMFS_BOOT
+	int result = romfs_init();
+
+	if (result != 0) {
+		romfs_diagnose(result);
+		panic("romfs: corrupt recovery image");
+	}
+	if (romfs_load_zmod("sio", "sio.zmod") < 0) {
+		return 1;
+	}
+	return 0;
+#else
+	return module_catalog_load_all();
+#endif
+}
 
 /* ~1 second no-op delay at kernel entry (Z80 @ 10 MHz, no wait states) so
  * the operator can connect the serial terminal before the banner prints.
@@ -118,8 +195,9 @@ void kernel_main(void)
 
 /* --- registry, module catalog, console service ---------------------
 	 * The early console above stays authoritative.  The device registry
-	 * is initialized first, the embedded module catalog is loaded
-	 * through the generic M4 loader, and only then is the console
+	 * is initialized first, the boot module is loaded through the M4
+	 * loader (from ROMFS in production/M5, from the embedded test catalog
+	 * in pre-M5 acceptance images), and only then is the console
 	 * service bound.  Load and binding diagnostics go to the early
 	 * console before any dynamic device is used. */
 	device_registry_init();
@@ -136,12 +214,12 @@ void kernel_main(void)
 			uint8_t irq_enabled = irq_arch_lock();
 
 			platform_ctc0_test_start();
-			module_failures = module_catalog_load_all();
+			module_failures = kernel_boot_module();
 			platform_ctc0_stop();
 			irq_arch_unlock(irq_enabled);
 		}
 #else
-		module_failures = module_catalog_load_all();
+		module_failures = kernel_boot_module();
 #endif
 		if (module_failures != 0) {
 			early_console_puts("console: dynamic driver failed\r\n");

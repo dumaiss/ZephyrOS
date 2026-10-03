@@ -6,17 +6,20 @@ validate the result in the emulator and on physical hardware.
 
 ## 1. Boot image format
 
-The M0/M1 boot ROM is a single 128 KiB image:
+The ZephyrOS boot ROM is a single 512 KiB image of eight 64 KiB pages:
 
 ```text
-offset        content
-00000h-0FFFFh ROM page 0   (copied to SRAM bank 0 by the reset copier)
-10000h-1FFFFh ROM page 1   (copied to SRAM bank 7 by the reset copier)
+offset          content
+00000h-0FFFFh   ROM page 0   (copied to SRAM bank 0 by the reset copier)
+10000h-1FFFFh   ROM page 1   (copied to SRAM bank 7 by the reset copier)
+20000h-7FFFFh   ROM pages 2-7: ROMFS recovery store (read-only, mapped
+                on demand; never copied to SRAM)
 ```
 
-Both pages are exactly 64 KiB; every byte that is not linked content is
-filled with `FFh`.  ROM page numbering is independent of SRAM bank identity;
-page 1 is the ZephyrOS OS page, not "page 7".
+All eight pages are exactly 64 KiB; every byte that is not linked
+content or recovery-store data is filled with `FFh`.  ROM page numbering
+is independent of SRAM bank identity; page 1 is the ZephyrOS OS page,
+not "page 7".
 
 Region contract per page (enforced at build time by `tools/pack_image.py`):
 
@@ -33,7 +36,18 @@ ROM page 1:
     2000h-BFFFh   bank-7 loadable kernel image (must end below C000h)
     C000h-DFFFh   FFh (bank-7 zero-initialized runtime area, never loaded)
     E000h-FFFFh   FFh (not visible in mode 11)
+
+ROM pages 2-7 (recovery):
+    0000h-BFFFh   logical ROMFS window (see docs/romfs-format.md)
+    EF00h-EF07h   mirrored ROM-access stub (mode-00 fetch stream; the
+                  common copy is linked at the same address)
+    C000h-FFFFh   FFh otherwise (never part of the logical stream)
 ```
+
+The recovery-page stub mirror exists for the same reason as the page-1
+copier mirror: the ROM-access trampoline switches to mode 00, and the next
+instruction fetch comes from the selected ROM page, so the bytes at
+`EF00h-EF07h` must be identical in every recovery page and in common SRAM.
 
 The page-1 copier mirror exists because instruction fetch continues while
 the ROM-page latch changes: the bytes at the copier addresses must be
@@ -161,24 +175,30 @@ prints `PANIC: kernel_main returned` and enters the same halt loop.
 Everything is generated under `build/` (git-ignored):
 
 ```text
-build/zephyros.ihx   sdldz80 Intel HEX output
-build/zephyros.map   linker map (symbols and area placement)
-build/page0.bin      ROM page 0, 64 KiB
-build/page1.bin      ROM page 1, 64 KiB
-build/zephyros.bin   128 KiB boot image (page 0 + page 1, FF-filled)
-build/zephyr80.bin   byte-identical copy for MAME
+build/recovery.romfs  logical ROMFS recovery stream (pages 2-7 payload)
+build/modules/sio.zmod  packed SIO driver module (unchanged M4 format)
+build/zephyros.ihx    sdldz80 Intel HEX output
+build/zephyros.map    linker map (symbols and area placement)
+build/page0.bin ... page7.bin   the eight ROM pages, 64 KiB each
+build/zephyros.bin    512 KiB boot image (page 0..7, FF-filled)
+build/zephyr80.bin    byte-identical copy for MAME
+build/zephyros.manifest.json  sizes, per-page hashes, ROMFS placement
 ```
 
-`tools/pack_image.py` validates the layout and fails the build if any byte
-is linked outside its assigned region or if a key entry point symbol is
-outside its required region.  It also verifies the page-zero `RST 30h`
-vector (`JP zos_syscall_entry`, exactly three bytes at `0030h`), rejects
-conflicting/ambiguous IHX records and any latch-write encoding in bank 7,
-and emits `build/zephyros.manifest.json` (sizes, hashes, fill counts,
-entry addresses).  `tools/mapcheck.py` runs automatically on every build
-as the authoritative post-link layout check, deriving all boundaries from
-`platform/zephyr80/memory.inc`; `make check` proves a clean rebuild
-reproduces the identical binary.
+`tools/romfspack.py` builds and validates `build/recovery.romfs` from
+`recovery/manifest.json` (see `docs/romfs-format.md`).
+`tools/pack_image.py` validates the layout, places the recovery stream at
+logical offset `L` into offset `L % C000h` of page `2 + L / C000h`, keeps
+the boot pages untouched, and fails the build if any byte is linked
+outside its assigned region, if a key entry point symbol is outside its
+required region, or if the recovery stream exceeds the declared capacity.
+It also verifies the page-zero `RST 30h` vector (`JP zos_syscall_entry`,
+exactly three bytes at `0030h`), rejects conflicting/ambiguous IHX
+records and any latch-write encoding in bank 7, and emits
+`build/zephyros.manifest.json`.  `tools/mapcheck.py` runs automatically on
+every build as the authoritative post-link layout check, deriving all
+boundaries from `platform/zephyr80/memory.inc`; `make check` proves a
+clean rebuild reproduces the identical binary.
 
 ### Syscall self-test image
 
@@ -199,6 +219,8 @@ make smoke-hardware SERIAL_PORT=/dev/ttyUSB0                 # exact banner
 make smoke-hardware-selftest SERIAL_PORT=/dev/ttyUSB0        # + selftest OK
 make smoke-hardware-m3 SERIAL_PORT=/dev/ttyUSB0              # M3 acceptance image;
                                                              # sends the RX byte
+make smoke-hardware-m5 SERIAL_PORT=/dev/ttyUSB0              # M5 ROMFS success image
+make smoke-hardware-m5-corrupt SERIAL_PORT=/dev/ttyUSB0      # M5 corrupt image
 ```
 
 The device can also be passed via the `ZOS_SERIAL_PORT` / `ZOS_SERIAL_BAUD`
@@ -217,17 +239,17 @@ available; M0 acceptance therefore rests on the physical test below.
 
 ## 10. Physical-ROM test checklist
 
-Prerequisite: EPROM/Flash programmer with a 128 KiB (or larger) image
+Prerequisite: EPROM/Flash programmer with a 512 KiB (or larger) image
 compatible with the Zephyr-80 ROM socket.
 
 1. `make clean && make && make test` — all host tests pass;
-   `build/zephyros.bin` is exactly 131072 bytes.
+   `build/zephyros.bin` is exactly 524288 bytes.
 2. Program `build/zephyros.bin` into the ROM device.
 3. Connect a 115200 8N1 serial terminal to SIO0/B (data `22h`).
 4. Apply power / assert reset.
 5. Expected: the exact six-line banner, then the console-service line
-   `console: dynamic sio0.b OK` (the SIO driver is loaded from the
-   embedded module catalog since M4), then the halt loop.
+   `console: dynamic sio0.b OK` (the SIO driver is loaded from the ROMFS
+   recovery store since M5), then the halt loop.
 6. Record: image SHA-256, programmer used, serial adapter used, and the
    captured terminal output.
 

@@ -1,4 +1,4 @@
-/* ZephyrOS M4 deterministic first-fit module loader.
+/* ZephyrOS M4/M5 deterministic first-fit module loader.
  *
  * The driver arena is 16 contiguous 512-byte granules.  Allocation is a
  * first-fit scan over a granule bitmap; the requested size is
@@ -14,6 +14,11 @@
  * module's registrations and IRQ claims, zeroes and frees its granules,
  * and leaves earlier modules untouched.  Successful modules stay
  * RESIDENT until reboot; M4 exposes no unload operation.
+ *
+ * M5 routes every container byte through a bounded read source: the
+ * historical module_load() wraps a memory blob, romfs_load_zmod() wraps a
+ * recovery-store file, and both share module_load_source() and the
+ * validation/relocation code in relocate.c.
  */
 
 #include "zephyros/module.h"
@@ -165,7 +170,37 @@ static void module_release(struct zmod_module *m)
 	m->fini_offset = ZMOD_NO_ENTRY;
 }
 
+/* Memory-blob byte source: the historical M4 behavior, expressed through
+ * the same bounded source adapter as ROMFS. */
+static int module_memory_read(const void *ctx, uint16_t offset,
+			      uint8_t *dst, uint16_t length)
+{
+	const uint8_t *blob = (const uint8_t *)ctx;
+	uint16_t i;
+
+	if (blob == (const uint8_t *)0) {
+		return ZMOD_EINVAL;
+	}
+	for (i = 0; i < length; ++i) {
+		dst[i] = blob[offset + i];
+	}
+	return (int)length;
+}
+
 int module_load(const char *name, const uint8_t *blob, uint16_t size)
+{
+	struct zmod_source source;
+
+	if (blob == (const uint8_t *)0) {
+		return ZMOD_EINVAL;
+	}
+	source.read = module_memory_read;
+	source.ctx = blob;
+	source.size = size;
+	return module_load_source(name, &source);
+}
+
+int module_load_source(const char *name, const struct zmod_source *source)
 {
 	struct zmod_container container;
 	struct zmod_module *m;
@@ -182,7 +217,7 @@ int module_load(const char *name, const uint8_t *blob, uint16_t size)
 		}
 	}
 
-	result = zmod_validate_container(blob, size, &container);
+	result = zmod_validate_source(source, &container);
 	if (result != ZMOD_OK) {
 		return result;
 	}
@@ -201,7 +236,7 @@ int module_load(const char *name, const uint8_t *blob, uint16_t size)
 	m->first_granule = (uint8_t)first;
 	m->granule_count = (uint8_t)container.required_granules;
 	m->name = name;
-	m->container = blob;
+	m->container = container.blob;
 	m->load_base = (uint16_t)((uint16_t)__driver_arena_start +
 				  (uint16_t)((uint16_t)first << 9));
 	m->image_size = container.image_size;
@@ -210,9 +245,12 @@ int module_load(const char *name, const uint8_t *blob, uint16_t size)
 	m->fini_offset = container.fini_offset;
 	module_active = m;
 
-	zmod_copy_image((uint8_t *)m->load_base, &container);
-	zmod_zero_bss((uint8_t *)m->load_base, &container);
-	result = zmod_apply_relocations((uint8_t *)m->load_base, &container);
+	result = zmod_copy_image((uint8_t *)m->load_base, &container);
+	if (result == ZMOD_OK) {
+		zmod_zero_bss((uint8_t *)m->load_base, &container);
+		result = zmod_apply_relocations((uint8_t *)m->load_base,
+						&container);
+	}
 	if (result != ZMOD_OK) {
 		module_release(m);
 		module_active = (struct zmod_module *)0;
@@ -251,20 +289,6 @@ int module_load(const char *name, const uint8_t *blob, uint16_t size)
 	m->state = ZMOD_STATE_RESIDENT;
 	++module_resident_count;
 	return slot;
-}
-
-uint8_t module_catalog_load_all(void)
-{
-	const struct zmod_catalog_entry *entry = zmod_catalog;
-	uint8_t failed = 0;
-
-	while (entry->name != (const char *)0) {
-		if (module_load(entry->name, entry->blob, entry->size) < 0) {
-			++failed;
-		}
-		++entry;
-	}
-	return failed;
 }
 
 uint8_t module_count(void)

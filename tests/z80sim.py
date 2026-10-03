@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Minimal Z80 simulator to replay the ZephyrOS syscall selftest flow.
+"""Minimal Z80 simulator to replay the ZephyrOS selftest flows.
 
-Models the banking latch (mode 10: 0000-DFFF=bankN, E000+=bank0;
-mode 11: 0000-1FFF=bankN, 2000-DFFF=bank7, E000+=bank0) and executes the
-real instructions from the selftest image.
+Models the banking latch (MEM_DECODER rev 12):
+  mode 00: 0000-FFFF reads from the selected ROM page; writes target the
+           selected SRAM bank (reset copier and ROM-access stub);
+  mode 08: flat view of the selected SRAM bank over the whole 64 KiB;
+           no ROM and no forced bank (MEM_MODE_FLAT);
+  mode 10: 0000-DFFF = bankN, E000+ = bank0 (application);
+  mode 11: 0000-1FFF = bankN, 2000-DFFF = bank7, E000+ = bank0 (OS).
+
+Boot pages 0/1 come from the provided images; the M5 recovery pages 2-7
+are supplied separately (rom_pages) when a replay exercises ROMFS boot.
 
 Usage: sim.py <selftest-image> [start-pc] [trace]
 """
@@ -15,10 +22,16 @@ FILL = 0xFF
 
 
 class Z80:
-    def __init__(self, page0, page1):
+    def __init__(self, page0, page1, rom_pages=None):
         self.bank0 = bytearray(page0)
         self.bank7 = bytearray(page1)
         self.banks = {n: bytearray([FILL] * SZ) for n in range(1, 7)}
+        # ROM images for the ROM-read modes.  Page 0/1 mirror the boot
+        # images; recovery pages are provided by the caller.
+        self.rom = {0: bytearray(page0), 1: bytearray(page1)}
+        if rom_pages:
+            for number, data in rom_pages.items():
+                self.rom[number] = bytearray(data)
         self.latch = 0x00
         self.pc = 0
         self.sp = 0
@@ -131,7 +144,15 @@ class Z80:
         self._sf(0x04, v)
 
     # ---- memory mapping ----
+    def _sram(self, bank):
+        if bank == 0:
+            return self.bank0
+        if bank == 7:
+            return self.bank7
+        return self.banks[bank]
+
     def bank_of(self, addr):
+        """SRAM bank backing `addr` in the RAM-only modes (10h/18h)."""
         mode = self.latch & 0x18
         bank = self.latch & 0x07
         if addr >= 0xE000:
@@ -140,27 +161,28 @@ class Z80:
             return bank
         if mode == 0x18:          # OS
             return 7 if addr >= 0x2000 else bank
-        raise SystemExit("sim: unsupported mode %02Xh" % mode)
+        raise SystemExit("sim: bank_of unsupported mode %02Xh" % mode)
 
     def rd(self, addr):
-        bank = self.bank_of(addr)
-        if bank == 0:
-            return self.bank0[addr]
-        if bank == 7:
-            return self.bank7[addr]
-        return self.banks[bank][addr]
+        mode = self.latch & 0x18
+        if mode == 0x00:
+            # ROM access: every read (including instruction fetch) is the
+            # selected ROM page; writes still land in the selected bank.
+            return self.rom[(self.latch >> 5) & 0x07][addr]
+        if mode == 0x08:
+            # Flat SRAM: the selected bank over the whole address space.
+            return self._sram(self.latch & 0x07)[addr]
+        return self._sram(self.bank_of(addr))[addr]
 
     def rd16(self, addr):
         return self.rd(addr) | (self.rd((addr + 1) & 0xFFFF) << 8)
 
     def wr(self, addr, v):
-        bank = self.bank_of(addr)
-        if bank == 0:
-            self.bank0[addr] = v & 0xFF
-        elif bank == 7:
-            self.bank7[addr] = v & 0xFF
-        else:
-            self.banks[bank][addr] = v & 0xFF
+        mode = self.latch & 0x18
+        if mode in (0x00, 0x08):
+            self._sram(self.latch & 0x07)[addr] = v & 0xFF
+            return
+        self._sram(self.bank_of(addr))[addr] = v & 0xFF
 
     def wr16(self, addr, v):
         self.wr(addr, v & 0xFF)

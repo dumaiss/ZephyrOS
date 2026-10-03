@@ -27,6 +27,17 @@ GATE = 0xE0A8  # zos_syscall_entry address used by the valid IHX fixture
 IRQ_FF = 0xE130
 
 
+def minimal_romfs(size=16):
+    """A structurally plausible recovery stream (the packer only checks
+    the size; romfspack owns content validation)."""
+    header = bytearray(16)
+    header[0:4] = b"ZRFS"
+    header[4] = 1
+    header[5] = 36
+    header[12:16] = size.to_bytes(4, "little")
+    return bytes(header) + b"\x00" * (size - 16)
+
+
 def ihx_record(addr, data):
     length = len(data)
     body = bytes([length, (addr >> 8) & 0xFF, addr & 0xFF, 0x00]) + bytes(data)
@@ -40,6 +51,9 @@ def valid_ihx():
         ihx_record(0x0030, [0xC3, GATE & 0xFF, (GATE >> 8) & 0xFF]),  # RST 30h
         ihx_record(0x2000, [0xC3, 0x30, 0x20]),               # kernel
         ihx_record(0xE000, [0xC9]),                           # common
+        ihx_record(0xEEFE, [0xD3, 0x00]),                     # trampoline
+        ihx_record(0xEF00, [0xED, 0xB0, 0x08, 0xD3, 0x00,
+                            0xC3, 0xF0, 0xE0]),               # stub
         ihx_record(0xFDFF, [IRQ_FF & 0xFF, IRQ_FF >> 8]),     # FFh guard
         ":00000001FF",
     ]) + "\n"
@@ -56,6 +70,8 @@ class ValidatorCLIBase(unittest.TestCase):
         self.ihx_path = os.path.join(self.tmp, "fixture.ihx")
         self.write_map(make_map())
         self.write_ihx(valid_ihx())
+        with open(os.path.join(self.tmp, "recovery.romfs"), "wb") as fh:
+            fh.write(minimal_romfs())
 
     def write_map(self, text):
         with open(self.map_path, "w") as fh:
@@ -100,11 +116,14 @@ class TestValidatorCLISuccess(unittest.TestCase):
             ihx_path = os.path.join(tmp, "ok.ihx")
             open(map_path, "w").write(make_map())
             open(ihx_path, "w").write(valid_ihx())
+            open(os.path.join(tmp, "recovery.romfs"), "wb").write(
+                minimal_romfs())
             result = subprocess.run(
                 [sys.executable, PACK_IMAGE, ihx_path, map_path, tmp],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("131072 bytes", result.stdout)
+            self.assertIn("524288 bytes", result.stdout)
+            self.assertIn("romfs 16 bytes", result.stdout)
 
 
 class TestMapcheckRejections(ValidatorCLIBase):
@@ -221,6 +240,27 @@ class TestPackerRejections(ValidatorCLIBase):
             ihx_record(0xFDFF, [(IRQ_FF + 1) & 0xFF, IRQ_FF >> 8]),
         )
         self.check(bad, make_map(), r"word_at\(FDFFh\)")
+
+    def test_bad_rom_access_stub_rejected(self):
+        good = ihx_record(0xEF00, [0xED, 0xB0, 0x08, 0xD3, 0x00,
+                                   0xC3, 0xF0, 0xE0])
+        bad = ihx_record(0xEF00, [0x00, 0xB0, 0x08, 0xD3, 0x00,
+                                  0xC3, 0xF0, 0xE0])
+        self.check(valid_ihx().replace(good, bad), make_map(),
+                   r"ROM-access stub byte 0")
+
+    def test_missing_recovery_romfs(self):
+        os.remove(os.path.join(self.tmp, "recovery.romfs"))
+        self.assert_fails_with(
+            PACK_IMAGE, (self.ihx_path, self.map_path, self.tmp),
+            r"recovery.romfs missing")
+
+    def test_oversized_recovery_romfs(self):
+        with open(os.path.join(self.tmp, "recovery.romfs"), "wb") as fh:
+            fh.write(minimal_romfs(0x10000) + b"\x00" * 0x48000)
+        self.assert_fails_with(
+            PACK_IMAGE, (self.ihx_path, self.map_path, self.tmp),
+            r"capacity")
 
 
 if __name__ == "__main__":

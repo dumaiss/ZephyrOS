@@ -35,9 +35,9 @@ REQUIRED_HARDWARE_CONSTANTS = (
     "ZOS_SIO0A_DATA", "ZOS_SIO0A_CTRL",
     "ZOS_SIO0B_DATA", "ZOS_SIO0B_CTRL",
     "ZOS_BANK_MASK", "ZOS_LATCH_NON_BANK_MASK",
-    "ZOS_RAM_SHADOW", "ZOS_ROM_DIS", "ZOS_MODE_MASK",
+    "ZOS_MEM_MODE0", "ZOS_MEM_MODE1", "ZOS_MODE_MASK",
     "ZOS_ROM_PAGE_SHIFT", "ZOS_ROM_PAGE_MASK",
-    "ZOS_MODE_BOOT", "ZOS_MODE_SHADOW",
+    "ZOS_MODE_BOOT", "ZOS_MODE_FLAT",
     "ZOS_MODE_APPLICATION", "ZOS_MODE_OS",
     "ZOS_SIO_RR0_RX_AVAILABLE", "ZOS_SIO_RR0_TX_EMPTY", "ZOS_SIO_RR0_CTS",
     "ZOS_SIO_TX_READY",
@@ -57,7 +57,11 @@ REQUIRED_MEMORY_CONSTANTS = (
     "ZOS_DRIVER_GRANULE_SIZE", "ZOS_DRIVER_GRANULES",
     "ZOS_COMMON_BASE", "ZOS_COMMON_CODE_END", "ZOS_COMMON_STACK_BASE",
     "ZOS_STACK_INIT_SP", "ZOS_GATE_STACK_SIZE",
-    "ZOS_ROM_PAGE_SIZE", "ZOS_BOOT_IMAGE_SIZE",
+    "ZOS_ROM_PAGE_SIZE", "ZOS_ROM_PAGE_COUNT", "ZOS_BOOT_IMAGE_SIZE",
+    "ZOS_ROM_IMAGE_SIZE",
+    "ZOS_ROMFS_FIRST_PAGE", "ZOS_ROMFS_PAGE_COUNT",
+    "ZOS_ROMFS_WINDOW_SIZE", "ZOS_ROMFS_CAPACITY",
+    "ZOS_ROMFS_STAGING_SIZE", "ZOS_ROM_ACCESS_BASE", "ZOS_ROM_ACCESS_SIZE",
 )
 
 REQUIRED_IRQ_CONSTANTS = (
@@ -377,6 +381,7 @@ def make_map(overrides=None, **kw):
         "_GSFINAL": (0x206E, 0x01),
         "_COMMON": (0xE000, 0x100),
         "_COMMON_DATA": (0xE100, 0x43),
+        "_ROM_ACCESS_STUB0": (0x0000, 0x0A),
     }
     symbols = {
         "s__CODE": 0x2000, "l__CODE": 0x6E,
@@ -416,12 +421,28 @@ def make_map(overrides=None, **kw):
         "_device_table": 0xC200, "_console_in_handle": 0xC300,
         "_console_out_handle": 0xC301, "_boot_drivers": 0xC340,
         "_module_loader_init": 0x2700, "_module_load": 0x2720,
+        "_module_load_source": 0x2740,
         "_module_catalog_load_all": 0x2780, "_module_count": 0x27A0,
+        "_zmod_catalog": 0x26A0,
         "_module_free_granules": 0x27B0, "_module_failed_count": 0x27C0,
         "_module_get": 0x27D0, "_module_code_allowed": 0x27E0,
         "_zmod_validate_container": 0x2800, "_zmod_copy_image": 0x2880,
+        "_zmod_validate_source": 0x28E0,
         "_zmod_zero_bss": 0x28A0, "_zmod_apply_relocations": 0x28C0,
         "_zmod_zero_allocation": 0x2900,
+        "_romfs_init": 0x2A00, "_romfs_lookup": 0x2A80,
+        "_romfs_read": 0x2B00, "_romfs_load_zmod": 0x2B80,
+        "_rom_access_copy": 0xE1B0,
+        "_rom_access_staging": 0xE200,
+        "rom_access_saved_latch": 0xE280,
+        "rom_access_saved_iff": 0xE281,
+        "rom_access_page": 0xE282,
+        "rom_access_offset": 0xE283,
+        "rom_access_length": 0xE285,
+        "rom_access_busy": 0xE287,
+        "rom_access_trampoline": 0xEEFE,
+        "rom_access_sync": 0xEF00,
+        "rom_access_sync_end": 0xEF08,
         "_irq_registry_checkpoint": 0x2920,
         "_irq_registry_rollback": 0x2940,
         "_irq_registry_set_owner": 0x2960,
@@ -616,7 +637,7 @@ class TestRealArtifacts(unittest.TestCase):
         if not os.path.exists(selftest_bin):
             self.skipTest("selftest image missing; run `make syscall-selftest`")
         image = open(selftest_bin, "rb").read()
-        self.assertEqual(len(image), 131072)
+        self.assertEqual(len(image), 0x80000)
         self.assertIn(b"syscall selftest", image[0x10000:])
         # Normal image must not carry the harness strings.
         if os.path.exists(self.bin_path):
@@ -639,7 +660,7 @@ class TestRealArtifacts(unittest.TestCase):
         if not os.path.exists(irq_bin):
             self.skipTest("irq-selftest image missing; run `make irq-selftest`")
         image = open(irq_bin, "rb").read()
-        self.assertEqual(len(image), 131072)
+        self.assertEqual(len(image), 0x80000)
         self.assertIn(b"irq selftest", image[0x10000:])
         if os.path.exists(self.bin_path):
             normal = open(self.bin_path, "rb").read()
