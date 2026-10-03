@@ -1,0 +1,17 @@
+-n
+-m
+-w
+-i build/zephyros.ihx
+-b _CODE = 0x2000
+-b _DATA = 0xC000
+-b _COMMON = 0xE000
+build/reset.rel
+build/start.rel
+build/banking.rel
+build/page_zero.rel
+build/syscall_entry.rel
+build/early_console.rel
+build/panic.rel
+build/main.rel
+build/syscall.rel
+-e
