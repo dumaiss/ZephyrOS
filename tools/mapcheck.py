@@ -377,6 +377,7 @@ PRODUCTION_FORBIDDEN = (
     "_target_test",
     "_zos_run_",
     "_m7_",
+    "_m8",
     "_sio_module_irq",
     "_sio_irq_module",
     "_sio_fail_module",
@@ -386,6 +387,12 @@ PRODUCTION_FORBIDDEN = (
 # module.  Any linked SIO symbol means a static copy crept back into the
 # kernel image.
 STATIC_SIO_PREFIXES = ("_sio_", "_sio0b_", "_sio_driver")
+
+# M8: the IOC driver is a dynamically loaded module too.  Any linked
+# `_ioc_` symbol means a static copy crept back into the kernel image
+# (the target-test runner symbols use the `_m8` prefix and are handled
+# by the production/catalog rules).
+STATIC_IOC_PREFIXES = ("_ioc_",)
 
 # M4 module-loader routines: bank-7 code and data only, and never inside
 # the driver arena (which has no linked content by design).  The prefix
@@ -720,6 +727,14 @@ def check_symbols(areas, symbols, production=False):
             raise MapError(
                 "static SIO symbol %s at %04Xh must not be linked; the SIO "
                 "driver is loaded from a ZMOD module" % (name, addr)
+            )
+
+    # M8: the IOC driver is module-only as well.
+    for name, addr in symbols.items():
+        if addr != 0 and name.startswith(STATIC_IOC_PREFIXES):
+            raise MapError(
+                "static IOC symbol %s at %04Xh must not be linked; the "
+                "IOC driver is loaded from a ZMOD module" % (name, addr)
             )
 
     # M4: loader/relocator code and catalog/fixture data must stay in the

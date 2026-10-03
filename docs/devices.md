@@ -2,7 +2,8 @@
 
 This document describes the implemented device layer: the fixed device
 registry, the driver ABI (v2 since M8), the SIO0/B driver (a dynamically
-loaded module since M4), and the console service.  The architectural
+loaded module since M4), the IOC command/status driver (a dynamically
+loaded module since M8), and the console service.  The architectural
 contract is `docs/architecture.md` sections 20-22 and 30.2-30.3; this
 file records what the build actually places where and how it is
 validated.
@@ -15,7 +16,10 @@ driver ABI 2: capabilities are a 32-bit class-scoped mask, descriptors
 and registry entries carry separate `char_ops` and `class_ops` pointers,
 driver-to-driver discovery is read-only by class plus capabilities, and
 the production arena is derived from the aligned end of the linked
-kernel.  The M3 test-only static drivers remain retired.
+kernel.  M8 (work package 15) adds the IOC command lane: a second
+production ZMOD module loaded after SIO that speaks the deployed MCU
+transport without any firmware change.  The M3 test-only static drivers
+remain retired.
 
 ## 1. Concepts
 
@@ -140,7 +144,13 @@ banner (early console)
 device_registry_init()
 module_loader_init()
 [platform_ctc0_test_start() in the M4 IRQ acceptance image]
-module_catalog_load_all()     ; the packed SIO module registers sio0.b
+boot module source (kernel_boot_module()):
+    pre-M5 images -> module_catalog_load_all()
+                     (embedded SIO module registers sio0.b)
+    ROMFS images  -> romfs_init()
+                     romfs_load_zmod("sio", "sio.zmod")
+                     romfs_load_zmod("ioc", "ioc.zmod")   ; M8
+                     (failure: "ioc: unavailable", SIO untouched)
 [platform_ctc0_stop()]
 console_bind_defaults()       ; capability lookup
 dynamic console line via console service
@@ -186,7 +196,77 @@ The early console (`kernel/early_console.c`, common memory) remains a
 completely separate, direct access path used by boot and panic.  Panic
 output never depends on the registry, the driver, or the console service.
 
-## 5. Console service
+## 5. IOC command/status driver (M8)
+
+`drivers/ioc/` (`ioc.c`, `ioc_io.asm`, `ioc_module.c`, `ioc_driver.h`,
+`ioc_proto.h`; manifest `modules/manifests/ioc.json`) is the second
+production ZMOD module.  It implements the deployed Zephyr-80 host
+transport contract (level 08h) over SIO1/B, the MCU command/reply lane,
+without any IOC firmware change, and registers `ioc.0` only after its
+bounded link bring-up produced a CRC-verified matching reply.
+
+- Class and capabilities: `ZDEV_IOC` with
+  `ZCAP_IOC_COMMAND | ZCAP_IOC_STATUS`.  `bulk_read`/`bulk_write` are
+  null and their capability bits are absent; the bulk lane arrives with
+  the next M8 package.  The architecture's operation order
+  (`command`, `bulk_read`, `bulk_write`, `status`) is pinned by
+  `include/zephyros/ioc.h`.
+- Native API: `struct zioc_frame` is TYPE, STATUS, DATA length, and up
+  to 26 DATA bytes.  The rolling sequence and the wire CRC are
+  transport-private.  `command()` maps one frame to the exact
+  `A5 5A LEN_LO LEN_HI TYPE SEQ STATUS DATA... CRC` packet
+  (CRC-16-CCITT, `1021h`, preset zero, MSB-first, no final XOR) and
+  validates the reply frame, CRC, sequence, and exchange type binding
+  (`reply = request | 80h`, or the explicit unknown-class reply `FEh`).
+  `status()` returns semantic bits only (`ZIOC_STATUS_HID_PENDING`)
+  sampled from `/CTSB`; raw SIO/RR0 bits never leave the module.
+  Transport results are the distinct negative `ZIOC_E*` codes
+  (`EBADFRAME`, `EBADCRC`, `EBADSEQ`, `ETIMEDOUT`, `EBUSY`, `EINVAL`).
+- SIO1/B programming happens once, in the module init: channel reset,
+  `WR1 = 00h` (no interrupts/WAIT), External Sync x1 (`WR4 = 30h`),
+  `FFh` underrun fill (`WR7`), receiver disabled (`WR3 = C0h`), TX
+  enabled with RTS inactive (`WR5 = 68h`).  A channel reset, receiver
+  disable, or Enter Hunt destroys character synchronisation, so an
+  ordinary transaction never issues one.
+- Link bring-up: up to four `CMD_LINK_SYNC` attempts; each attempt
+  re-arms local Hunt (the MCU clears its established flag per request),
+  and `ioc.0` registers only when the reply is CRC-verified and is
+  `RSP_LINK_SYNC`.  A failure returns `ZDRIVER_FAIL`; the loader rolls
+  back, no device is published, and the SIO fallback is unaffected.
+- One command transaction: reject null/malformed/oversize frames
+  without any lane I/O; wait for COMMAND_READY on `/DCDB` (bounded,
+  with `WR0` Reset External/Status before each sample); stamp the
+  rolling sequence; build the packet and CRC; preload `A5`, reset the
+  EOM latch, assert RTS, stream the frame with interrupts masked, add
+  two `FFh` trailers, release RTS by disabling TX, then arm the
+  receiver before restoring the exact entry IFF.  The receive path
+  clears the error latch without resetting the channel, drains at most
+  the three-byte FIFO depth, uses Enter Hunt only until the first
+  verified reply, scans a bounded window for the full `A5 5A` marker,
+  captures and validates header/body/CRC/sequence, clears unused reply
+  DATA, and leaves the receiver enabled.  Every wait is bounded by the
+  verified platform budgets.
+- Serialization: a module-private foreground busy guard makes
+  recursive/overlapping use fail with `ZDEV_EBUSY`; the M2 registry
+  lock is never held over transport I/O.
+- Boot integration: production images carry `sio.zmod`, `ioc.zmod`, and
+  `monitor.zex` in the ROMFS recovery store and load SIO first, then
+  IOC, as part of the deterministic boot set reported by the arena
+  plan.  A failed IOC load/bring-up prints `ioc: unavailable` and the
+  console still binds to SIO.  Pre-M8 acceptance images compile the IOC
+  load out (`ZOS_IOC_BOOT=0`) and stay byte-identical to their accepted
+  builds.
+- Host validation: `tests/test_ioc.py` pins the platform constants,
+  class contract, module artifact, boot order, and mapcheck rules;
+  `tests/test_ioc_sim.py` replays the real M8 acceptance image against
+  the simulator's IOC command-lane peer (exact wire bytes, one-time
+  Hunt, fault injection, bounded failure, retry/recovery, IFF
+  restoration, rollback, and semantic status).  The physical acceptance
+  image is `build-m8-ioc-command-selftest/` and is driven by
+  `make smoke-hardware-m8-ioc-command`; board timing remains a physical
+  hardware authority.
+
+## 6. Console service
 
 `kernel/device/console.c`, `include/zephyros/console.h`:
 
@@ -224,7 +304,7 @@ is the dynamically loaded module):
 console: dynamic sio0.b OK
 ```
 
-### 5.1 Failure-path evidence
+### 6.1 Failure-path evidence
 
 The retired M3 fallback flags (`ZOS_M3_NO_STATIC_DRIVERS`,
 `ZOS_M3_NO_CONSOLE_BIND`) no longer exist.  The M4 acceptance matrix is
@@ -238,7 +318,7 @@ the fallback evidence:
 
 Every production image keeps the full M0 banner and panic path.
 
-## 6. Drivers and interrupts
+## 7. Drivers and interrupts
 
 A loaded module may claim an M2 logical source through
 `zdriver_api.irq_claim` and receives a bank-7 handler; the executive maps
@@ -257,7 +337,7 @@ module stays polling-only.  Two test paths prove the IRQ integration:
   three deliveries inside a bounded EI spin, verifies its relocated
   state pointer, and releases the source before registering the device.
 
-## 7. Placement and validation
+## 8. Placement and validation
 
 All driver/service code, descriptors, ops tables, and state live in
 bank 7 (linked `_CODE`/`_DATA` for the remaining kernel objects; the
@@ -310,11 +390,11 @@ Host validation layers:
   console line plus `m4 selftest: OK` (or the failure transcript plus
   `m4 failure selftest: OK`).
 
-SIO0/B timings, CTC0 delivery, and console RX remain physical-hardware
-authorities; the simulations cover control flow and register-level
-behavior.
+SIO0/B timings, CTC0 delivery, console RX, and the IOC command-lane
+transport remain physical-hardware authorities; the simulations cover
+control flow and register-level behavior.
 
-## 8. Out of scope
+## 9. Out of scope
 
 No heap, no module unload or hot-plug, no filesystem API for modules
 (beyond the two bounded DATA resource imports), no process API here, and
@@ -322,6 +402,7 @@ no user-visible device syscall.  M4 stages 07-08 (this document plus
 `docs/module-format.md`) delivered the loader and the embedded
 relocatable SIO driver; M8 work package 14 delivered driver ABI v2, the
 read-only discovery calls, the per-class capability ranges, the
-preferred-direction console policy, and the derived production arena.
-The M3 numeric registry model still holds; its placeholder class names
-were refined in place.
+preferred-direction console policy, and the derived production arena;
+M8 work package 15 delivered the IOC command/status class and its
+deterministic boot load after SIO.  The M3 numeric registry model still
+holds; its placeholder class names were refined in place.

@@ -162,6 +162,17 @@ TARGET_TEST_OBJS += $(BUILD)/m7_test.rel
 PK_SUFFIX := -m7-selftest
 endif
 
+# M8 IOC command-lane acceptance image: production-style boot (derived
+# arena, SIO + IOC from ROMFS), the M8 target diagnostic reporting through
+# the direct early SIO, then the unchanged monitor launcher.  It keeps the
+# derived arena so the acceptance image exercises the production geometry
+# with the target objects linked in.
+ifeq ($(ZOS_M8_IOC_COMMAND_SELFTEST),1)
+CFLAGS    += -DZOS_M8_IOC_COMMAND_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m8_ioc_test.rel
+PK_SUFFIX := -m8-ioc-command-selftest
+endif
+
 # Temporary pre-shell monitor launcher (kernel/main.c).  Production and
 # the M7 image enable it; every earlier acceptance image disables it so
 # its accepted behavior is preserved byte-for-byte where possible.
@@ -192,6 +203,19 @@ ASM_OBJS  += $(BUILD)/m4_catalog_blobs.rel
 C_OBJS    += $(BUILD)/module_embedded.rel
 endif
 
+# IOC command-lane boot load (kernel/main.c): production and the M8
+# images load ioc.zmod from the recovery store after the SIO fallback;
+# the pre-M8 acceptance images do not carry the module and keep their
+# accepted boot byte-for-byte by compiling the block out.
+ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
+	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST) \
+	$(ZOS_M4_PLACEMENT) $(ZOS_M5_SELFTEST) $(ZOS_M5_CORRUPT_SELFTEST) \
+	$(ZOS_M6_SELFTEST) $(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST)),)
+ZOS_IOC_BOOT := 0
+endif
+ZOS_IOC_BOOT ?= 1
+CFLAGS    += -DZOS_IOC_BOOT=$(ZOS_IOC_BOOT)
+
 OBJS      := $(ASM_OBJS) $(C_OBJS)
 
 # --- M8 driver-arena geometry selection --------------------------------------
@@ -210,7 +234,8 @@ ZOS_ARENA_DERIVED ?= $(if $(ZOS_ACCEPTANCE_BUILD),0,1)
 ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
 	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST) \
 	$(ZOS_M5_SELFTEST) $(ZOS_M6_SELFTEST) \
-	$(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST)),)
+	$(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST) \
+	$(ZOS_M8_IOC_COMMAND_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
 endif
@@ -226,6 +251,16 @@ else ifeq ($(ZOS_M4_FAILURE_SELFTEST),1)
 BOOT_ZMOD := build/modules/sio-fail.zmod
 else
 BOOT_ZMOD := build/modules/sio.zmod
+endif
+
+# Declared boot set for the derived-arena plan.  Every ROMFS-boot image
+# loads the SIO fallback module and then the IOC command lane; the
+# pre-M5 embedded-catalog images keep their single boot module.  (MODULES
+# is defined below this point, so keep this a recursive assignment.)
+ifeq ($(ZOS_ROMFS_BOOT),0)
+BOOT_ZMODS = $(BOOT_ZMOD)
+else
+BOOT_ZMODS = $(BOOT_ZMOD) $(MODULES)/ioc.zmod
 endif
 
 
@@ -284,8 +319,10 @@ $(GEOMETRY_PROBE_DIR)/arena.rel: kernel/module/arena.asm \
 
 # Probe link: identical objects, bootstrap arena symbols.  Kept under
 # build/probe/ so the canonical build/ object list stays exactly the
-# committed linker file's list.
-PROBE_OBJS := $(filter-out $(BUILD)/arena.rel,$(OBJS) $(END_OBJ)) \
+# committed linker file's list.  Target-test objects (acceptance images)
+# are part of the real link and therefore part of the geometry probe.
+PROBE_OBJS := $(filter-out $(BUILD)/arena.rel,$(OBJS) $(TARGET_TEST_OBJS) \
+		$(END_OBJ)) \
 		$(GEOMETRY_PROBE_DIR)/arena.rel
 
 $(BUILD)/zephyros.probe.lk: $(PROBE_OBJS) | $(BUILD)
@@ -310,28 +347,16 @@ $(GEOMETRY_INC): $(LEGACY_MEMORY) tools/mapcheck.py | $(BUILD)
 
 endif
 
-# Declared boot-set arena plan (derived builds only): per-module
-# image+BSS/granules and the used/free totals; the build fails here when
-# the declared boot set cannot coexist in the linked arena.
-ifeq ($(ZOS_ARENA_DERIVED),1)
-ARENA_PLAN := $(BUILD)/arena.plan.json
-$(ARENA_PLAN): $(BOOT_ZMOD) tools/zmodpack.py $(MEMORY_INC) | $(BUILD)
-	$(PYTHON) tools/zmodpack.py plan --geometry $(MEMORY_INC) \
-		--report $@ $(BOOT_ZMOD)
-else
-ARENA_PLAN :=
-endif
-
 .PHONY: all test check check-fast clean syscall-selftest irq-selftest \
 	m3-selftest zmod-test m4-loader-selftest m4-selftest \
 	m4-placement-selftest m4-failure-selftest romfs-test m5-selftest \
 	m5-corrupt-selftest zex-test m6-selftest m6-failure-selftest \
-	monitor-test m7-selftest \
+	monitor-test m7-selftest ioc-command-test m8-ioc-command-selftest \
 	smoke-hardware \
 	smoke-hardware-selftest smoke-hardware-irq smoke-hardware-m3 \
 	smoke-hardware-m4 smoke-hardware-m4-failure smoke-hardware-m5 \
 	smoke-hardware-m5-corrupt smoke-hardware-m6 smoke-hardware-m6-failure \
-	smoke-hardware-m7
+	smoke-hardware-m7 smoke-hardware-m8-ioc-command
 
 all: $(IMAGE) $(MAME_IMAGE)
 
@@ -515,10 +540,23 @@ $(BUILD)/process_exec.rel: kernel/process/exec.c \
 # emitted by tools/zmodpack.py.
 
 MODULES   := build/modules
-MOD_CFLAGS := -mz80 -c --nostdinc --Werror -I include -I platform -I drivers/sio
+MOD_CFLAGS := -mz80 -c --nostdinc --Werror -I include -I platform -I drivers/sio \
+	-I drivers/ioc
 
 $(MODULES):
 	mkdir -p $@
+
+# Declared boot-set arena plan (derived builds only): per-module
+# image+BSS/granules and the used/free totals; the build fails here when
+# the declared boot set cannot coexist in the linked arena.
+ifeq ($(ZOS_ARENA_DERIVED),1)
+ARENA_PLAN := $(BUILD)/arena.plan.json
+$(ARENA_PLAN): $(BOOT_ZMODS) tools/zmodpack.py $(MEMORY_INC) | $(BUILD)
+	$(PYTHON) tools/zmodpack.py plan --geometry $(MEMORY_INC) \
+		--report $@ $(BOOT_ZMODS)
+else
+ARENA_PLAN :=
+endif
 
 # --- SIO module objects (production source + test-variant entries) ---
 
@@ -571,6 +609,30 @@ $(MODULES)/sio-fail.zmod: tests/modules/sio-fail.json $(MODULES)/sio.rel \
 		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
 		--report $(MODULES)/sio-fail.report.json
+
+# --- IOC module objects (production source) ---
+
+$(MODULES)/ioc.rel: drivers/ioc/ioc.c drivers/ioc/ioc_driver.h \
+		drivers/ioc/ioc_proto.h include/zephyros/ioc.h \
+		include/zephyros/device.h include/zephyros/platform.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/ioc_io.rel: drivers/ioc/ioc_io.asm \
+		platform/zephyr80/hardware.inc | $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(MODULES)/ioc_module.rel: drivers/ioc/ioc_module.c drivers/ioc/ioc_driver.h \
+		include/zephyros/driver.h include/zephyros/device.h \
+		include/zephyros/ioc.h include/zephyros/platform.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+IOC_MODULE_OBJS := $(MODULES)/ioc.rel $(MODULES)/ioc_io.rel \
+		$(MODULES)/ioc_module.rel $(MODULES)/sdcc_indirect_calls.rel
+
+$(MODULES)/ioc.zmod: modules/manifests/ioc.json $(IOC_MODULE_OBJS) \
+		tools/zmodpack.py
+	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
+		--report $(MODULES)/ioc.report.json
 
 # --- synthetic M4 fixtures ---
 
@@ -700,6 +762,12 @@ $(BUILD)/m7_test.rel: tests/target/m7/m7_test.c \
 		include/zephyros/kernel.h include/zephyros/platform.h \
 		tests/target/include/m7_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/m8_ioc_test.rel: tests/target/m8/m8_ioc_test.c \
+		include/zephyros/device.h include/zephyros/ioc.h \
+		include/zephyros/kernel.h drivers/ioc/ioc_proto.h \
+		tests/target/include/m8_ioc_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) -Idrivers/ioc $< -o $@
 
 # --- M6 native program (ZEXTEST) ---------------------------------------------
 # One ZEX program linked as a flat image at 0100h: _CODE is the image and
@@ -867,7 +935,7 @@ ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 endif
 
 $(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(MODULES)/sio.zmod \
-		$(ROMFS_EXTRA_DEPS) tools/romfspack.py \
+		$(MODULES)/ioc.zmod $(ROMFS_EXTRA_DEPS) tools/romfspack.py \
 		$(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
 ifeq ($(ZOS_M5_CORRUPT_SELFTEST),1)
 	$(PYTHON) tools/romfspack.py --memory-inc $(ZOS_PLATFORM_MEMORY_INC) pack \
@@ -896,7 +964,8 @@ ZOS_TEST_LINK := $(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) \
 		$(ZOS_M3_SELFTEST) $(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) \
 		$(ZOS_M4_FAILURE_SELFTEST) $(ZOS_M5_SELFTEST) \
 		$(ZOS_M5_CORRUPT_SELFTEST) $(ZOS_M6_SELFTEST) \
-		$(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST))
+		$(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST) \
+		$(ZOS_M8_IOC_COMMAND_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -1143,6 +1212,30 @@ m7-selftest:
 	$(PYTHON) -m unittest discover -s tests -p 'test_m7_sim.py' -v
 	@echo "m7-selftest image: build-m7-selftest/zephyros-m7-selftest.bin"
 
+# --- M8 IOC command-lane tooling, acceptance image, and hardware smoke -------
+# ioc-command-test proves the packed module and the source/constant
+# contracts on the host; m8-ioc-command-selftest builds the production-
+# geometry acceptance image (SIO + IOC from ROMFS) and replays it in the
+# simulator against the IOC command-lane peer; the smoke target drives the
+# flashed image over SIO0/B at 115200 8N1.
+
+ioc-command-test: $(MODULES)/ioc.zmod
+	$(PYTHON) tools/zmodpack.py validate $(MODULES)/ioc.zmod
+	$(PYTHON) tools/zmodpack.py dump $(MODULES)/ioc.zmod
+	$(PYTHON) -m unittest discover -s tests -p 'test_ioc.py' -v
+	@echo "ioc-command-test: OK"
+
+m8-ioc-command-selftest:
+	$(MAKE) BUILD=build-m8-ioc-command-selftest ZOS_M8_IOC_COMMAND_SELFTEST=1 \
+		build-m8-ioc-command-selftest/zephyros-m8-ioc-command-selftest.bin \
+		build-m8-ioc-command-selftest/zephyr80-m8-ioc-command-selftest.bin
+	$(PYTHON) tools/mapcheck.py \
+		build-m8-ioc-command-selftest/zephyros.map \
+		build-m8-ioc-command-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_ioc_sim.py' -v
+	@echo "m8-ioc-command image: build-m8-ioc-command-selftest/zephyros-m8-ioc-command-selftest.bin"
+
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching ROM
 # programmed.  Pass SERIAL_PORT=/dev/ttyUSB0 (or export ZOS_SERIAL_PORT).
@@ -1179,3 +1272,6 @@ smoke-hardware-m6-failure:
 
 smoke-hardware-m7:
 	$(PYTHON) tools/serial_smoke.py --mode m7 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m8-ioc-command:
+	$(PYTHON) tools/serial_smoke.py --mode m8-ioc-command --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

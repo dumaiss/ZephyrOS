@@ -16,9 +16,260 @@ Usage: sim.py <selftest-image> [start-pc] [trace]
 """
 
 import sys
+import collections
 
 SZ = 0x10000
 FILL = 0xFF
+
+
+class IocCommandPeer:
+    """Register-level model of the deployed MCU IOC command-lane peer.
+
+    Models exactly what the ZephyrOS IOC driver can observe through
+    SIO1/B (data port 32h, control port 33h):
+
+      - the WR0 command / register-pointer protocol, including channel
+        reset, Reset External/Status, error reset and EOM reset;
+      - RR0 status: RX-available, TX-empty, /DCDB COMMAND_READY and the
+        /CTSB HID doorbell;
+      - /RTSB as the held "unacknowledged request" level (WR5 bit 1),
+        with preload-vs-underrun detection on the capture window;
+      - request parsing and CRC-16-CCITT replies for LINK_SYNC and PING
+        (the deployed MCU also emits one trailing FFh pipeline byte);
+      - fault injection: arbitrary leading (full-duplex) bytes, delayed
+        readiness, delayed replies, stalled clocks, CRC/length/type/
+        sequence faults, and a held HID doorbell.
+
+    Observability for the host tests: channel_resets, rts_asserts/
+    rts_releases, hunt_writes, frame_start/preload_present, drain reads,
+    parsed requests, delivered replies.
+    """
+
+    CMD_LINK_SYNC = 0x0C
+    CMD_PING = 0x01
+
+    def __init__(self, leading=(0xFF,), reply_delay=8, ready_delay=0,
+                 never_ready=False, stall=False, fault=None,
+                 link_faults=None, doorbell=False, level=0x4A,
+                 echo_len=16, ping_len=26, reply_tail=b"\xff"):
+        self.ptr = 0
+        self.wr = {}
+        self.rx = collections.deque()
+        self.tx_window = bytearray()
+        self.capture = bytearray()
+        self.rts = False
+        self.tx_enabled = False
+        self.doorbell = doorbell
+        self.level = level
+        self.echo_len = echo_len
+        self.ping_len = ping_len
+        self.reply_tail = reply_tail
+        self.leading = tuple(leading)
+        self.reply_delay = reply_delay
+        self.reply_countdown = 0
+        self.reply_pending = None
+        self.reply_queued = False
+        self.stall = stall
+        self.fault = fault
+        self.link_faults = list(link_faults) if link_faults else []
+        self.ready_delay = ready_delay
+        self.never_ready = never_ready
+        # observability
+        self.channel_resets = 0
+        self.rts_asserts = 0
+        self.rts_releases = 0
+        self.hunt_writes = 0
+        self.wr3_writes = []
+        self.preload_present = False
+        self.frame_start = None
+        self.drain_data_reads = 0
+        self.data_reads = 0
+        self.requests = []      # (type, seq, status, data)
+        self.replies = []       # delivered wire bytes
+        self.captures = []      # (frame_start, captured request bytes)
+
+    # -- driver-visible port behaviour ---------------------------------
+    def ctrl_read(self):
+        self._tick()
+        value = 0x04            # TX buffer empty
+        if self.rx:
+            value |= 0x01       # RX character available
+        if self._ready():
+            value |= 0x08       # /DCDB: COMMAND_READY
+        if self.doorbell:
+            value |= 0x20       # /CTSB: HID doorbell
+        return value
+
+    def data_read(self):
+        if not self.reply_queued:
+            self.drain_data_reads += 1
+        if self.rx:
+            self.data_reads += 1
+            return self.rx.popleft()
+        return 0xFF
+
+    def data_write(self, value):
+        self.tx_window.append(value & 0xFF)
+
+    def ctrl_write(self, value):
+        value &= 0xFF
+        if self.ptr:
+            reg = self.ptr
+            self.ptr = 0
+            self._write_reg(reg, value)
+            return
+        low = value & 0x07
+        if low:
+            self.ptr = low
+            return
+        if (value & 0xF8) == 0x18:      # WR0 channel reset
+            self.channel_resets += 1
+            self.wr.clear()
+            self.rx.clear()
+            self.rts = False
+            self.tx_enabled = False
+            self.reply_pending = None
+        # WR0 10h (ext/status reset), 30h (error reset), C0h (EOM reset)
+        # and 00h carry no additional state here.
+
+    # -- internal ------------------------------------------------------
+    def _ready(self):
+        if self.never_ready:
+            return False
+        if self.rts or self.reply_pending is not None:
+            return False
+        if self.ready_delay > 0:
+            self.ready_delay -= 1
+            return False
+        return True
+
+    def _tick(self):
+        if self.reply_pending is not None:
+            if self.reply_countdown > 0:
+                self.reply_countdown -= 1
+            if self.reply_countdown == 0:
+                self.rx.extend(self.reply_pending)
+                self.replies.append(bytes(self.reply_pending))
+                self.reply_pending = None
+                self.reply_queued = True
+
+    def _write_reg(self, reg, value):
+        self.wr[reg] = value
+        if reg == 3:
+            self.wr3_writes.append(value)
+            if value & 0x10:            # Enter Hunt Phase
+                self.hunt_writes += 1
+        elif reg == 5:
+            rts = (value & 0x02) != 0
+            self.tx_enabled = (value & 0x08) != 0
+            if rts and not self.rts:
+                self._rts_assert()
+            elif self.rts and not rts:
+                self._rts_release()
+
+    def _rts_assert(self):
+        self.rts = True
+        self.rts_asserts += 1
+        # A transmitter that is empty when RTS is granted emits underrun
+        # fill first; the preload discipline is what prevents it.
+        self.preload_present = len(self.tx_window) > 0
+        self.capture = bytearray()
+        if not self.preload_present:
+            self.capture.append(0xFF)
+        self.reply_queued = False
+        self.reply_pending = None
+        # Full-duplex idle bytes the host receiver sees while it sends.
+        self.rx.extend(self.leading)
+
+    def _rts_release(self):
+        self.rts = False
+        self.rts_releases += 1
+        self.capture.extend(self.tx_window)
+        self.tx_window.clear()
+        self._schedule_reply(bytes(self.capture))
+
+    def _schedule_reply(self, capture):
+        start = capture.find(b"\xa5\x5a")
+        self.frame_start = start
+        self.captures.append((start, bytes(capture)))
+        if start < 0 or start + 5 > len(capture):
+            return
+        length = capture[start + 2] | (capture[start + 3] << 8)
+        if length < 3 or length > 29 or start + 6 + length > len(capture):
+            return
+        rtype = capture[start + 4]
+        seq = capture[start + 5]
+        status = capture[start + 6]
+        data = capture[start + 7:start + 7 + (length - 3)]
+        self.requests.append((rtype, seq, status, bytes(data)))
+        if self.stall:
+            return
+        self.reply_pending = (self._apply_fault(
+            self._build_reply(rtype, seq, data), rtype) + self.reply_tail)
+        self.reply_countdown = self.reply_delay
+
+    def _build_reply(self, rtype, seq, data):
+        if rtype == self.CMD_LINK_SYNC:
+            rsp = 0x8C
+            out = b""
+        elif rtype == self.CMD_PING:
+            rsp = 0x81
+            echo = bytearray(data[:self.echo_len])
+            echo.extend(b"\x00" * (self.echo_len - len(echo)))
+            out = bytearray(self.ping_len)
+            out[0:self.echo_len] = echo
+            out[16] = self.level
+            out[17] = 0x40              # IOC_PING_LINK_SYNCED
+            out = bytes(out)
+        else:
+            rsp = 0xFE
+            out = b""
+        payload = bytes([rsp, seq, 0x00]) + out
+        length = len(payload)
+        body = bytes([length & 0xFF, (length >> 8) & 0xFF]) + payload
+        crc = ioc_crc16(body)
+        return (b"\xa5\x5a" + body +
+                bytes([(crc >> 8) & 0xFF, crc & 0xFF]))
+
+    def _apply_fault(self, reply, rtype):
+        reply = bytearray(reply)
+        if rtype == self.CMD_LINK_SYNC and self.link_faults:
+            fault = self.link_faults.pop(0)
+        else:
+            fault = self.fault
+        if fault == "crc":
+            reply[-1] ^= 0xFF
+        elif fault == "len":
+            reply[2] = 0x1E             # LEN beyond the 26-byte maximum
+        elif fault == "type":
+            # A structurally valid frame carrying the wrong response
+            # class: the CRC must be recomputed or the fault would be
+            # rejected as a checksum error instead.
+            reply[4] = 0x02
+            length = reply[2] | (reply[3] << 8)
+            crc = ioc_crc16(reply[2:2 + 2 + length])
+            reply[-2] = (crc >> 8) & 0xFF
+            reply[-1] = crc & 0xFF
+        elif fault == "seq":
+            reply[5] = (reply[5] + 0x11) & 0xFF
+            length = reply[2] | (reply[3] << 8)
+            crc = ioc_crc16(reply[2:2 + 2 + length])
+            reply[-2] = (crc >> 8) & 0xFF
+            reply[-1] = crc & 0xFF
+        return bytes(reply)
+
+
+def ioc_crc16(data):
+    """CRC-16-CCITT (1021h, preset 0, MSB-first, no final XOR)."""
+    crc = 0
+    for byte in data:
+        crc ^= (byte << 8) & 0xFFFF
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return crc
 
 
 class Z80:
@@ -63,6 +314,9 @@ class Z80:
         self.sio_tx = bytearray()
         self.sio_rx = bytearray()
         self.sio_ctrl_writes = bytearray()
+        # Optional IOC command-lane peer on SIO1/B (ports 32h/33h).
+        # Tests that boot an IOC image install one before running.
+        self.ioc_peer = None
 
     def accept_interrupt(self, vector):
         """Accept one maskable IM2 interrupt and fetch its linked target."""
@@ -86,6 +340,11 @@ class Z80:
             # RR0: TX-empty + CTS set; RX-available only when a byte
             # is queued.
             return 0xFE | (0x01 if self.sio_rx else 0x00)
+        if self.ioc_peer is not None:
+            if port == 0x32:
+                return self.ioc_peer.data_read()
+            if port == 0x33:
+                return self.ioc_peer.ctrl_read()
         return 0xFF
 
     def io_out(self, port, value):
@@ -98,6 +357,11 @@ class Z80:
             self.sio_tx.append(value)
         elif port == 0x23:
             self.sio_ctrl_writes.append(value)
+        elif self.ioc_peer is not None:
+            if port == 0x32:
+                self.ioc_peer.data_write(value)
+            elif port == 0x33:
+                self.ioc_peer.ctrl_write(value)
 
     # ---- flags ----
     def _sf(self, bit, on):

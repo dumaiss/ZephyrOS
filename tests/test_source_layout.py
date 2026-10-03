@@ -113,6 +113,15 @@ OWNER_FILES = (
     "drivers/sio/sio.h",
     "drivers/sio/sio_io.asm",
     "drivers/sio/sio_module.c",
+    "drivers/ioc/ioc.c",
+    "drivers/ioc/ioc_driver.h",
+    "drivers/ioc/ioc_io.asm",
+    "drivers/ioc/ioc_module.c",
+    "drivers/ioc/ioc_proto.h",
+    "include/zephyros/ioc.h",
+    "modules/manifests/ioc.json",
+    "tests/target/m8/m8_ioc_test.c",
+    "tests/target/include/m8_ioc_selftest.h",
     "modules/manifests/sio.json",
     "modules/runtime/sdcc_indirect_calls.asm",
     "tests/modules/sio-irq.json",
@@ -182,14 +191,14 @@ REQUIRED_DIRS = (
     "boot",
     "kernel/memory", "kernel/syscall", "kernel/irq", "kernel/runtime",
     "kernel/module", "kernel/romfs", "kernel/process",
-    "drivers/sio", "drivers/ctc",
+    "drivers/sio", "drivers/ctc", "drivers/ioc",
     "modules/manifests", "modules/runtime",
     "user/runtime", "user/monitor",
     "recovery",
     "tests/m5", "tests/m6", "tests/m7", "tests/modules",
     "tests/target/m1", "tests/target/m2", "tests/target/m3",
     "tests/target/m4", "tests/target/m5", "tests/target/m6",
-    "tests/target/m7",
+    "tests/target/m7", "tests/target/m8",
     "tests/target/include",
     "tests/target/support",
 )
@@ -223,6 +232,7 @@ PRODUCTION_SELFTEST_MACROS = (
     "ZOS_M6_SELFTEST",
     "ZOS_M6_FAILURE_SELFTEST",
     "ZOS_M7_SELFTEST",
+    "ZOS_M8_IOC_COMMAND_SELFTEST",
 )
 
 # Generated-output names that must be ignored and cleaned.  build-modules is
@@ -241,6 +251,7 @@ BUILD_VARIANTS = (
     "build-m6-selftest",
     "build-m6-failure-selftest",
     "build-m7-selftest",
+    "build-m8-ioc-command-selftest",
     "build-modules",
 )
 
@@ -322,6 +333,9 @@ class TestProductionTestSeparation(unittest.TestCase):
                          ["sio.c", "sio.h", "sio_io.asm", "sio_module.c"])
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "ctc"))),
                          ["ctc.c"])
+        self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "ioc"))),
+                         ["ioc.c", "ioc_driver.h", "ioc_io.asm",
+                          "ioc_module.c", "ioc_proto.h"])
 
     def test_no_json_manifests_under_drivers(self):
         for path in _walk("drivers"):

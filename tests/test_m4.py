@@ -175,7 +175,10 @@ class TestM4Artifacts(unittest.TestCase):
         self.assertEqual(manifest["entries"]["__driver_arena_end"],
                          0xC000)
         modules = arena["modules"]
-        self.assertEqual([entry["name"] for entry in modules], ["sio"])
+        # Deterministic boot set: SIO fallback first, then the IOC
+        # command lane loaded after it (M8).
+        self.assertEqual([entry["name"] for entry in modules],
+                         ["sio", "ioc"])
         self.assertEqual(arena["used_granules"],
                          sum(entry["granules"] for entry in modules))
         self.assertEqual(arena["used_granules"] + arena["free_granules"],

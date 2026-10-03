@@ -46,6 +46,13 @@ captures output with a bounded timeout, and verifies the expected output:
                      power-cycle the board or press RESET while it
                      waits; an already-running board fails with an
                      explicit hint instead of a partial transcript.
+    --mode m8-ioc-command  the M8 IOC command-lane image: banner, the
+                     dynamic console line, the host contract level line
+                     (08h), the controller firmware level returned by
+                     PING (4Ah for the pinned deployment), four repeated
+                     PING exchanges, one HID semantic-status sample, and
+                     "m8 ioc selftest: OK".  The boot log is captured
+                     once, so start this tool first and reset the board.
 
 The device is given with --port or the ZOS_SERIAL_PORT environment
 variable (the SERIAL_PORT make variable is passed through).  A missing or
@@ -53,7 +60,7 @@ unopenable device fails clearly; ordinary host-only `make test` never
 invokes this tool.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure|m7]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure|m7|m8-ioc-command]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -108,6 +115,15 @@ M7_OK = b"OK\r\n"
 M7_ERR_ARG = b"ERR: ARG\r\n"
 M7_EXIT = b"monitor: exit status 0x0000 active 0 free-banks 7\r\n"
 M7_SCRATCH_RE = re.compile(rb"scratch=([0-9A-F]{4})")
+
+# --- M8 IOC command lane ----------------------------------------------------
+M8IOC_TRANSPORT_LEVEL = b"m8 ioc: transport level 08\r\n"
+M8IOC_CONTROLLER_LEVEL = b"m8 ioc: controller level 4A\r\n"
+M8IOC_PING_OK = b"m8 ioc: ping x4 OK\r\n"
+M8IOC_HID_STATUS_RE = re.compile(rb"m8 ioc: hid status [0-9A-F]{2}\r\n")
+M8IOC_SELFTEST_OK = b"m8 ioc selftest: OK\r\n"
+M8IOC_FAIL = b"m8 ioc selftest: FAIL"
+M8IOC_UNAVAILABLE = b"ioc: unavailable\r\n"
 
 # Per-byte pacing for scripted monitor commands.  The console RX path is
 # a polled SIO register (no burst buffering), so a command sent as one
@@ -244,7 +260,7 @@ def main(argv):
     parser.add_argument("--mode", choices=("normal", "selftest", "irq", "m3",
                                            "m4", "m4-failure", "m5",
                                            "m5-corrupt", "m6", "m6-failure",
-                                           "m7"),
+                                           "m7", "m8-ioc-command"),
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
@@ -283,6 +299,10 @@ def main(argv):
     if args.mode == "m7":
         print("serial_smoke: mode m7 checks the boot log; power-cycle the "
               "board or press RESET now so the boot is captured")
+    if args.mode == "m8-ioc-command":
+        print("serial_smoke: mode m8-ioc-command checks the boot log; "
+              "power-cycle the board or press RESET now so the boot "
+              "(including the IOC selftest) is captured")
     deadline = time.monotonic() + args.timeout
     data = b""
     rx_byte_sent = False
@@ -361,6 +381,14 @@ def main(argv):
                             M6_ZEXTEST_OK in data and
                             M6_FAILURE_OK in data):
                         break
+                elif args.mode == "m8-ioc-command":
+                    if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
+                            M8IOC_TRANSPORT_LEVEL in data and
+                            M8IOC_CONTROLLER_LEVEL in data and
+                            M8IOC_PING_OK in data and
+                            M8IOC_HID_STATUS_RE.search(data) is not None and
+                            M8IOC_SELFTEST_OK in data):
+                        break
     finally:
         link.close()
 
@@ -435,6 +463,20 @@ def main(argv):
                     "banner and prompt, the scripted help/system-info/"
                     "dump/modify/readback/port/rejection commands, and "
                     "two identical Q exit/relaunch count lines")
+    elif args.mode == "m8-ioc-command":
+        ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
+              M8IOC_TRANSPORT_LEVEL in data and
+              M8IOC_CONTROLLER_LEVEL in data and
+              M8IOC_PING_OK in data and
+              M8IOC_HID_STATUS_RE.search(data) is not None and
+              M8IOC_SELFTEST_OK in data and
+              M8IOC_FAIL not in data and
+              M8IOC_UNAVAILABLE not in data and
+              b"FAIL" not in data and b"PANIC" not in data)
+        expected = ("the banner, the dynamic console line, host transport "
+                    "level 08h, the controller level 4Ah returned by PING, "
+                    "repeated PINGs, a HID semantic-status sample, and "
+                    "'m8 ioc selftest: OK'")
     else:
         ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
               SELFTEST_OK in data and IRQ_SELFTEST_OK in data and
@@ -558,6 +600,24 @@ def _explain_wrong_image(mode, data):
                   "truncated command echo means the console link is "
                   "dropping bytes (check cabling/flow control)",
                   file=sys.stderr)
+    elif mode == "m8-ioc-command":
+        if M8IOC_UNAVAILABLE in data or M8IOC_FAIL in data:
+            print("serial_smoke: hint: the IOC bring-up did not complete "
+                  "(the module rejected the link or never answered).  "
+                  "Check the IOC MCU is running, the command lane wiring, "
+                  "and that build-m8-ioc-command-selftest/"
+                  "zephyros-m8-ioc-command-selftest.bin is flashed",
+                  file=sys.stderr)
+        elif M7_SELFTEST_OK in data:
+            print("serial_smoke: hint: the M7 marker was observed; the M7 "
+                  "image is probably flashed instead of "
+                  "build-m8-ioc-command-selftest/"
+                  "zephyros-m8-ioc-command-selftest.bin", file=sys.stderr)
+        elif not BANNER in data:
+            print("serial_smoke: hint: no boot log was captured.  The "
+                  "boot lines print once at boot; start this tool first, "
+                  "then power-cycle the board or press RESET while it "
+                  "waits, and rerun", file=sys.stderr)
 
 
 if __name__ == "__main__":

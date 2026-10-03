@@ -3601,6 +3601,12 @@ rather than raw `/CTSB` or RR0 bit positions.
 
 `bulk_read()` / `bulk_write()` are valid only after the appropriate command-lane admission. The IOC driver owns that protocol state and rejects invalid sequencing. M9's FAT/storage implementation consumes this same IOC class instead of duplicating transport code.
 
+Implementation status (M8): work package 15 establishes `ioc.0` with
+the command and semantic-status operations over the deployed host
+contract level `08h`.  The two bulk pointers are null and their
+capability bits absent until the bulk package lands; clients must
+select the interface by capabilities, never by name.
+
 ---
 
 ## 30.7 Driver-to-driver discovery

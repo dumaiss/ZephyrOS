@@ -52,6 +52,16 @@ void zos_target_test_late(void);
 #define ZOS_ROMFS_BOOT 1
 #endif
 
+/* IOC command-lane boot load.  Production and the M8 images carry
+ * `ioc.zmod` in the recovery store and load it deterministically after
+ * the SIO fallback; a failed load or a failed link bring-up is rolled
+ * back by the loader and must not invalidate the already loaded SIO
+ * console.  Pre-M8 acceptance images do not carry the module and compile
+ * this block out so their accepted boot stays exactly as validated. */
+#ifndef ZOS_IOC_BOOT
+#define ZOS_IOC_BOOT 1
+#endif
+
 /* Temporary pre-shell launcher selection.  Production and the M7
  * acceptance image (ZOS_MONITOR_BOOT=1, the default) run `monitor.zex`
  * through the unchanged M6 exec path and re-exec it after every normal
@@ -123,6 +133,15 @@ static uint8_t kernel_boot_module(void)
 	if (romfs_load_zmod("sio", "sio.zmod") < 0) {
 		return 1;
 	}
+#if ZOS_IOC_BOOT
+	/* Deterministic boot order after the SIO fallback: the IOC command
+	 * lane.  A module whose init fails (including a failed link
+	 * bring-up) is rolled back by the loader and reported here; the
+	 * console still binds to SIO below. */
+	if (romfs_load_zmod("ioc", "ioc.zmod") < 0) {
+		early_console_puts("ioc: unavailable\r\n");
+	}
+#endif
 	return 0;
 #else
 	return module_catalog_load_all();

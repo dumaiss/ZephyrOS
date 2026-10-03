@@ -32,4 +32,12 @@
 #define ZOS_EINIT     0x0B /* module/driver initialization refused */
 #define ZOS_EFAULT    0x0C /* invalid process entry/exit fault (M6) */
 
+/* M8 adds internal transport-class errors for the native IOC class
+ * (include/zephyros/ioc.h): a peer frame that violates the wire
+ * framing rules, a checksum mismatch, and a stale or mismatched
+ * exchange sequence.  They are internal and never syscall-visible. */
+#define ZOS_EPROTO    0x0D /* peer framing/length/type violation */
+#define ZOS_ECRC      0x0E /* checksum verification failed */
+#define ZOS_EBADSEQ   0x0F /* wrong or stale exchange sequence */
+
 #endif /* ZEPHYROS_ERRNO_H */

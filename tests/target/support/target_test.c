@@ -35,6 +35,9 @@
 #if ZOS_M7_SELFTEST
 #include "m7_selftest.h"
 #endif
+#if ZOS_M8_IOC_COMMAND_SELFTEST
+#include "m8_ioc_selftest.h"
+#endif
 
 void zos_target_test_early(void)
 {
@@ -68,5 +71,8 @@ void zos_target_test_late(void)
 #endif
 #if ZOS_M7_SELFTEST
 	zos_run_m7_selftest();
+#endif
+#if ZOS_M8_IOC_COMMAND_SELFTEST
+	zos_run_m8_ioc_selftest();
 #endif
 }
