@@ -1,4 +1,11 @@
-# ZephyrOS Boot (M0)
+# ZephyrOS Boot
+
+**Scope:** the reset/ROM-copy sequence, memory map, early console, and
+image layout in this document are the current, unchanged boot path.  The
+banner transcript and the M0 acceptance checklist are the historical M0
+record; since then `kernel_main()` continues past the banner into the
+current M8 boot (section 2.1).  The literal `HALT` banner line is a
+retained historical marker, not the terminal M8 state.
 
 This document describes the Zephyr-80 boot image, the reset/ROM-copy
 sequence, the memory mapping at kernel entry, the build output, and how to
@@ -92,12 +99,39 @@ latch value   meaning                            effect
 4. calls `early_console_init()` (common-resident),
 5. prepares the SDCC C runtime (below),
 6. calls `kernel_main()` in bank 7, which re-checks the latch state,
-   exercises the banking primitives, prints the banner, and halts.
+   exercises the banking primitives, and prints the M0-era banner (whose
+   literal `HALT` line is a retained historical marker -- the kernel does
+   not halt there).
 
-Interrupts stay disabled for the entire path; `EI` is never executed.
+The reset/copy sequence and the early kernel-entry phase run with
+maskable interrupts disabled.  The M2 interrupt executive is
+initialized later in `kernel_main()` (section 2.1); the monitor ZEX
+launch is the first path that enables interrupts (`EI`), so `EI` is not
+executed anywhere in the reset path itself.
 
 The implemented linker-enforced memory ownership table is in
 `docs/memory.md`.
+
+### 2.1 Current M8 boot (post-banner)
+
+After the banner lines, `kernel_main()` continues (the historical M0
+transcript stops reading at `HALT`):
+
+1. `irq_init()` establishes the M2 IM2 executive (kernel-owned vectors,
+   IRQ stacks, and source registry).
+2. `device_registry_init()` and `module_loader_init()` prepare the
+   registry and the derived bank-7 driver arena.
+3. the boot module set loads in order -- SIO, then IOC, then HID, then
+   V9958 -- from the ROMFS recovery store (the SIO fallback loads first
+   and stays resident if a later module fails).
+4. `console_bind_defaults()` performs the single console bind (HID input
+   / V9958 output, else the SIO fallback).
+5. the monitor launcher `process_exec("monitor.zex")` starts the
+   unchanged M7 monitor; that launch is where interrupts are first
+   enabled.
+
+Acceptance builds interpose the `TEST-ONLY HOOK` seam here; see
+`docs/devices.md` section 3 and `docs/architecture.md` section 30.
 
 ## 3. Memory map at kernel entry
 
@@ -157,7 +191,7 @@ is not gated by the board's FT230X CTS/RTS crossover.  The whole console
 path — code and strings — is linked into the common segment and is
 therefore available during mode/bank transitions and kernel failures.
 
-## 6. Expected output
+## 6. Banner output (historical M0 transcript, still emitted)
 
 ```text
 ZephyrOS 0.0
@@ -167,8 +201,13 @@ serial: OK
 HALT
 ```
 
-Each line is CRLF-terminated.  If `kernel_main()` returns, the boot entry
-prints `PANIC: kernel_main returned` and enters the same halt loop.
+Each line is CRLF-terminated.  This exact banner is still emitted, and the
+literal `HALT` line is a retained historical M0 marker (see the scope note
+above): on the current M8 image `kernel_main()` does not halt there but
+continues (section 2.1), so the live console then shows the module/console
+lines and the monitor.  The historical M0 transcript ended after `HALT`.
+If `kernel_main()` returns, the boot entry prints
+`PANIC: kernel_main returned` and enters the halt loop.
 
 ## 7. Build artifacts
 
@@ -239,6 +278,11 @@ available; M0 acceptance therefore rests on the physical test below.
 
 ## 10. Physical-ROM test checklist
 
+This is the historical M0 bring-up checklist; the current M8 physical
+acceptance procedure and evidence live in
+`docs/validation/2026-10-03-m8-device-stack.md` and
+`docs/devices.md` section 8.2.
+
 Prerequisite: EPROM/Flash programmer with a 512 KiB (or larger) image
 compatible with the Zephyr-80 ROM socket.
 
@@ -247,20 +291,22 @@ compatible with the Zephyr-80 ROM socket.
 2. Program `build/zephyros.bin` into the ROM device.
 3. Connect a 115200 8N1 serial terminal to SIO0/B (data `22h`).
 4. Apply power / assert reset.
-5. Expected: the exact six-line banner, then the console-service line
-   `console: dynamic sio0.b OK` (the SIO driver is loaded from the ROMFS
-   recovery store since M5), then the halt loop.
+5. Expected: the five-line banner (ending in the historical `HALT`
+   marker), then the console-service line `console: dynamic sio0.b OK`
+   (the SIO driver is loaded from the ROMFS recovery store since M5), and
+   on the current M8 image the monitor launch rather than a halt loop.
 6. Record: image SHA-256, programmer used, serial adapter used, and the
    captured terminal output.
 
-M0 is fully accepted only after the same banner is observed on physical
+M0 is fully accepted only after the banner is observed on physical
 hardware.  Until then the emulator run is the recorded acceptance evidence.
 
 ### Recorded result
 
-- **2026-10-02 — M0 physical test executed: PASS.**  The exact six-line
-  banner was observed on the Zephyr-80 hardware and the machine entered
-  the halt loop.  M0 is accepted.
+- **2026-10-02 — M0 physical test executed: PASS.**  The exact five-line
+  banner ending in the historical `HALT` marker was observed on the
+  Zephyr-80 hardware and the M0 machine entered the halt loop.  M0 is
+  accepted; the current M8 image continues past that banner.
 - **2026-10-02 — M1 re-flash executed: PASS.**  Same banner on hardware
   after the M1 banking changes (boot assertion, bank primitives, common
   state block) — no boot regression.  M1 memory banking is accepted.

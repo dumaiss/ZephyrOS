@@ -25,6 +25,7 @@
 #include "zephyros/device.h"
 #include "zephyros/kernel.h"
 
+#include "kernel/device/registry.h"
 #include "m8_fallback_selftest.h"
 
 #if ZOS_M8_FALLBACK_SELFTEST

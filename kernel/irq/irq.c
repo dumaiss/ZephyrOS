@@ -2,11 +2,10 @@
 #include "zephyros/irq.h"
 #include "zephyros/module.h"
 
+#include "irq_private.h"
+
 extern volatile uint8_t irq_active_source;
 extern uint8_t irq_kernel_code_end;
-extern uint8_t irq_arch_lock(void);
-extern void irq_arch_unlock(uint8_t enabled);
-extern void irq_arch_init(void);
 
 static irq_handler_t handlers[IRQ_SOURCE_COUNT];
 static void *contexts[IRQ_SOURCE_COUNT];

@@ -20,6 +20,10 @@
 #include "zephyros/kernel.h"
 #include "zephyros/platform.h"
 
+#include "kernel/irq/irq_private.h"
+#include "kernel/memory/banking.h"
+
+#include "ctc_test.h"
 #include "irq_selftest.h"
 
 /* Common test state owned by tests/target/m2/irq_selftest.asm. */
@@ -80,7 +84,7 @@ void zos_run_irq_selftest(void)
 
 	/* --- mode-10 delivery: application banks 0 and 6 --- */
 	for (bank = 0; bank < 7; bank += 6) {
-		platform_ctc0_test_start();
+		zos_ctc0_test_start();
 		zos_irq_test_result = ZOS_IST_RESULT_ARMED;
 		zos_irq_test_delivered = 0;
 		zos_irq_test_evidence = 0;
@@ -104,12 +108,12 @@ void zos_run_irq_selftest(void)
 			return;
 		}
 	}
-	platform_ctc0_stop();
+	zos_ctc0_test_stop();
 
 	/* --- mode-11 delivery + the unclaimed-source path --- */
 	if (irq_release(IRQ_CTC0) != IRQ_OK)
 		goto fail_registry;
-	platform_ctc0_test_start();
+	zos_ctc0_test_start();
 	zos_irq_test_result = ZOS_IST_RESULT_ARMED;
 	zos_irq_test_mode11();
 	if (zos_irq_test_result != ZOS_IST_OK) {
@@ -124,7 +128,7 @@ void zos_run_irq_selftest(void)
 		irq_selftest_report_fail(ZOS_IST_FAIL_COUNTERS);
 		return;
 	}
-	platform_ctc0_stop();
+	zos_ctc0_test_stop();
 
 	/* --- clean teardown: no source may remain claimed --- */
 	if (irq_release(IRQ_CTC0) != IRQ_ENOENT)

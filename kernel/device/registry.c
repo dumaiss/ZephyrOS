@@ -18,6 +18,9 @@
 #include "zephyros/device.h"
 #include "zephyros/irq.h"
 
+#include "kernel/device/registry.h"
+#include "kernel/irq/irq_private.h"
+
 struct zdevice device_table[ZDEV_MAX_DEVICES];
 
 static uint8_t device_used[ZDEV_MAX_DEVICES];

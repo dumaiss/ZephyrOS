@@ -29,6 +29,9 @@ Run with: make test
 
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -58,6 +61,9 @@ OWNER_FILES = (
     "kernel/irq/init.asm",
     "kernel/irq/entry.asm",
     "kernel/irq/vectors.asm",
+    "kernel/irq/irq_private.h",
+    "kernel/device/registry.h",
+    "kernel/memory/banking.h",
     "kernel/runtime/sdcc_helpers.asm",
     "kernel/module/arena.asm",
     "kernel/module/loader.c",
@@ -119,6 +125,7 @@ OWNER_FILES = (
     "drivers/ioc/ioc_module.c",
     "drivers/ioc/ioc_proto.h",
     "include/zephyros/ioc.h",
+    "include/zephyros/ioc_protocol.h",
     "modules/manifests/ioc.json",
     "drivers/hid/hid.c",
     "drivers/hid/hid_driver.h",
@@ -160,7 +167,9 @@ OWNER_FILES = (
     "tests/target/include/irq_selftest.inc",
     "tests/target/include/m3_selftest.h",
     "tests/target/include/m4_selftest.h",
+    "tests/target/include/ctc_test.h",
     "tests/target/support/target_test.c",
+    "tests/target/support/ctc_test.c",
 )
 
 # Implementation paths removed by the ownership refactors.  None of these
@@ -332,6 +341,184 @@ def _walk(root_name, suffixes=None):
             yield os.path.join(dirpath, name)
 
 
+# Production source roots scanned for cross-driver private includes.  Test
+# trees are excluded: a test-only IOC diagnostic may use the private
+# include path when it exercises transport-private behavior.
+PRODUCTION_SOURCE_ROOTS = ("boot", "drivers", "include", "kernel",
+                           "modules", "user")
+SOURCE_SUFFIXES = (".c", ".h", ".asm", ".inc")
+
+DRIVERS_DIR = os.path.join(ROOT, "drivers")
+
+
+def _driver_private_headers():
+    """Map every driver-private header basename to its owning driver dir."""
+    owners = {}
+    for name in sorted(os.listdir(DRIVERS_DIR)):
+        directory = os.path.join(DRIVERS_DIR, name)
+        if not os.path.isdir(directory):
+            continue
+        for entry in sorted(os.listdir(directory)):
+            if entry.endswith((".h", ".inc")):
+                owners[entry] = "drivers/" + name
+    return owners
+
+
+def _owning_driver(rel_path):
+    """Return the drivers/<name> directory owning a repo-relative path."""
+    parts = rel_path.replace(os.sep, "/").split("/")
+    if len(parts) >= 3 and parts[0] == "drivers":
+        return "drivers/" + parts[1]
+    return None
+
+
+def _sibling_private_includes(rel_path, text, owners):
+    """Return quoted includes that pull a sibling driver's private header.
+
+    `owners` maps a header basename to its owning `drivers/<name>`.  A
+    file owned by `drivers/<A>` may include its own directory's headers,
+    but not a header basename owned by another driver, nor a relative or
+    explicit path that lands inside another driver's directory.
+    """
+    own = _owning_driver(rel_path)
+    own_name = own.split("/")[1] if own is not None else None
+    own_dir = os.path.dirname(rel_path.replace(os.sep, "/"))
+    violations = []
+    body = _strip_comments(rel_path, text)
+    for match in re.finditer(r'#\s*include\s+"([^"]+)"', body):
+        include = match.group(1).replace("\\", "/")
+        owner = None
+        if "/" not in include and include in owners:
+            owner = owners[include]
+        else:
+            resolved = os.path.normpath(
+                os.path.join(own_dir, include)).replace(os.sep, "/")
+            if resolved.startswith("drivers/"):
+                candidate = resolved.split("/")[1]
+                if candidate != own_name:
+                    owner = "drivers/" + candidate
+        if owner is not None and owner != own:
+            violations.append((rel_path, include, owner))
+    return violations
+
+
+def _tab_recipe_lines(text):
+    """Yield (owning_rule_header, recipe_line) for tab-indented recipe lines.
+
+    Only lines whose preceding non-indented statement looks like a rule
+    (a `target: prereq` line, not a `VAR := value` assignment) are bound
+    to that rule; continuation prerequisite lines are ignored for
+    ownership because they do not name an include path.
+    """
+    header = ""
+    for line in text.splitlines():
+        if line.startswith("\t"):
+            yield header, line
+        elif line.strip() and not line.lstrip().startswith("#"):
+            header = line if (":" in line and ":=" not in line) else ""
+        else:
+            header = ""
+
+
+# The headers a ZMOD module author may read: the ABI, the class headers,
+# and the narrow board-constant header a hardware-owning driver includes.
+# (kernel/... is deliberately not reachable from the module build.)
+MODULE_FACING_HEADERS = (
+    "include/zephyros/driver.h",
+    "include/zephyros/device.h",
+    "include/zephyros/irq.h",
+    "include/zephyros/ioc.h",
+    "include/zephyros/hid.h",
+    "include/zephyros/video.h",
+    "platform/zephyr80/hardware.h",
+)
+
+# Declarations that must not appear anywhere in the module-facing include
+# closure.  ABI field names (`device_register`, `irq_claim`,
+# `irq_release`) are intentionally absent: they are the module service
+# surface.  These are the kernel registry transaction/owner/storage,
+# executive lifecycle, diagnostics, platform hooks, and raw memory
+# primitives (work package 22).
+KERNEL_ONLY_IDENTIFIERS = (
+    "device_registry_init", "device_get", "device_registry_checkpoint",
+    "device_registry_rollback", "device_registry_set_owner",
+    "device_registry_owner", "device_table",
+    "irq_init", "irq_registry_checkpoint", "irq_registry_rollback",
+    "irq_registry_set_owner", "irq_registry_owner",
+    "irq_unexpected_count", "irq_unclaimed_count", "irq_last_source",
+    "irq_arch_lock", "irq_arch_unlock", "irq_arch_init",
+    "platform_irq_vector", "platform_irq_quiesce",
+    "platform_ctc0_test_start", "platform_ctc0_stop",
+    "platform_memctl_read", "platform_memctl_write",
+    "platform_bank_get", "platform_bank_set",
+)
+
+# The include paths a representative module is compiled with: only the
+# shared include/ and platform/ surfaces plus its own driver directory.
+MODULE_PROBE_FLAGS = ("-mz80", "-c", "--nostdinc", "--Werror", "-I", "include",
+                      "-I", "platform", "-I", "drivers/sio")
+
+_MODULE_PROBE_SOURCE = """\
+#include "zephyros/driver.h"
+#include "zephyros/device.h"
+#include "zephyros/irq.h"
+#include "zephyros/ioc.h"
+#include "zephyros/hid.h"
+#include "zephyros/video.h"
+#include "zephyr80/hardware.h"
+
+static const struct zdevice_desc probe_desc = {
+\tZDEV_HID, ZCAP_HID_TEXT, "probe", (const struct zchar_ops *)0,
+\t(const void *)0, (void *)0
+};
+
+int probe_init(const struct zdriver_api *api)
+{
+\tzdev_handle_t handle;
+\tif (api->device_register(&probe_desc, &handle) != ZDRIVER_OK) {
+\t\treturn ZDRIVER_FAIL;
+\t}
+\treturn api->device_find(ZDEV_HID, ZCAP_HID_TEXT, 0u) == handle ?
+\t\tZDRIVER_OK : ZDRIVER_FAIL;
+}
+"""
+
+
+def _resolve_quoted_include(name, origin_dir):
+    """Resolve a quoted include the way the module build does."""
+    candidates = [os.path.join(origin_dir, name)]
+    if name.startswith("zephyr80/"):
+        candidates.append(os.path.join(ROOT, "platform", name))
+    else:
+        candidates.append(os.path.join(ROOT, "include", name))
+        candidates.append(os.path.join(ROOT, "platform", name))
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _header_closure(rel_paths):
+    """Return the reachable repo-relative quote-include closure."""
+    seen = []
+    pending = list(rel_paths)
+    while pending:
+        rel = pending.pop(0)
+        if rel in seen:
+            continue
+        seen.append(rel)
+        text = _read(os.path.join(ROOT, rel))
+        origin = os.path.dirname(os.path.join(ROOT, rel))
+        for match in re.finditer(r'#\s*include\s+"([^"]+)"', text):
+            resolved = _resolve_quoted_include(match.group(1), origin)
+            if resolved is not None:
+                candidate = os.path.relpath(resolved, ROOT).replace(
+                    os.sep, "/")
+                if candidate not in seen:
+                    pending.append(candidate)
+    return seen
+
+
 class TestOwnerLayout(unittest.TestCase):
     def test_owner_files_exist(self):
         for rel in OWNER_FILES:
@@ -434,9 +621,24 @@ class TestProductionTestSeparation(unittest.TestCase):
         self.assertIn("TEST-ONLY HOOK", main)
         self.assertIn("tests/modules/sio_irq_module.c", main)
 
+    def test_production_sources_have_no_ctc_acceptance_helpers(self):
+        # The CTC0 programming is test-owned; no production source may
+        # define, declare, or call it, and the obsolete vector lookup is
+        # gone (work package 23).
+        for root_name in ("boot", "drivers", "kernel", "modules"):
+            for path in _walk(root_name, SOURCE_SUFFIXES):
+                body = _code_only(path)
+                for token in ("platform_ctc0_test_start",
+                              "platform_ctc0_stop", "platform_irq_vector",
+                              "zos_ctc0_test_start", "zos_ctc0_test_stop"):
+                    self.assertNotIn(
+                        token, body,
+                        "%s contains acceptance-only CTC code %r"
+                        % (os.path.relpath(path, ROOT), token))
+
     def test_production_headers_declare_no_test_runners(self):
         for name in ("irq.h", "module.h", "driver.h", "device.h",
-                     "console.h", "platform.h", "kernel.h"):
+                     "console.h", "platform.h", "kernel.h", "syscall.h"):
             body = _code_only(os.path.join(ROOT, "include", "zephyros", name))
             self.assertNotIn("zos_run_", body,
                              "%s declares a target-test runner" % name)
@@ -447,6 +649,127 @@ class TestProductionTestSeparation(unittest.TestCase):
         self.assertIn("tests/target/include", text)
         self.assertIn("target_test.rel", text)
         self.assertNotIn("SELFTEST_OBJS", text)
+
+
+class TestCrossDriverIncludeBoundary(unittest.TestCase):
+    """A production driver reaches a sibling only through a public header
+    (include/, platform/) or its own directory's private headers.  A
+    sibling driver's private include path and private headers are never a
+    production dependency edge (work package 21)."""
+
+    def test_global_module_flags_do_not_expose_ioc_private_dir(self):
+        text = _read(os.path.join(ROOT, "Makefile"))
+        match = re.search(r"^MOD_CFLAGS\s*:?=\s*(.*?)$", text, re.M)
+        self.assertIsNotNone(match, "Makefile has no MOD_CFLAGS assignment")
+        self.assertNotIn(
+            "drivers/ioc", match.group(1),
+            "the shared module flags still expose drivers/ioc/")
+
+    def test_only_test_rules_use_the_ioc_private_include_path(self):
+        text = _read(os.path.join(ROOT, "Makefile"))
+        offenders = []
+        for header, recipe in _tab_recipe_lines(text):
+            if "-Idrivers/ioc" in recipe or "-I drivers/ioc" in recipe:
+                if "tests/" not in header:
+                    offenders.append("%s -> %s"
+                                     % (header.strip(), recipe.strip()))
+        self.assertEqual(
+            offenders, [],
+            "a production rule uses the IOC private include path:\n%s"
+            % "\n".join(offenders))
+
+    def test_production_sources_have_no_sibling_private_includes(self):
+        owners = _driver_private_headers()
+        violations = []
+        for root_name in PRODUCTION_SOURCE_ROOTS:
+            for path in _walk(root_name, SOURCE_SUFFIXES):
+                rel = os.path.relpath(path, ROOT)
+                violations += _sibling_private_includes(
+                    rel, _read(path), owners)
+        self.assertEqual(
+            violations, [],
+            "production sources include sibling-driver private headers:\n%s"
+            % "\n".join("%s includes %r (owned by %s)" % item
+                        for item in violations))
+
+    def test_sibling_private_include_checker_detects_a_leak(self):
+        # Negative fixture: the checker must flag a deliberate
+        # sibling-driver private-header edge (the original HID -> IOC
+        # bug) and accept the public contract and same-directory headers.
+        owners = {"ioc_proto.h": "drivers/ioc",
+                  "hid_driver.h": "drivers/hid"}
+        leaked = ('#include "zephyros/device.h"\n'
+                  '#include "ioc_proto.h"\n')
+        self.assertTrue(_sibling_private_includes(
+            "drivers/hid/hid.c", leaked, owners))
+        relative = '#include "../ioc/ioc_proto.h"\n'
+        self.assertTrue(_sibling_private_includes(
+            "drivers/hid/hid.c", relative, owners))
+        allowed = ('#include "zephyros/ioc_protocol.h"\n'
+                   '#include "hid_driver.h"\n')
+        self.assertEqual(_sibling_private_includes(
+            "drivers/hid/hid.c", allowed, owners), [])
+
+
+class TestModuleFacingHeaderBoundary(unittest.TestCase):
+    """A module author reads the ABI types and callbacks in driver.h and
+    its class headers, but not kernel registry transactions, IRQ-executive
+    lifecycle controls, platform hooks, or raw memory primitives (work
+    package 22)."""
+
+    def test_module_facing_closure_has_no_kernel_only_declarations(self):
+        closure = _header_closure(MODULE_FACING_HEADERS)
+        offenders = []
+        for rel in closure:
+            text = _strip_comments(rel, _read(os.path.join(ROOT, rel)))
+            for ident in KERNEL_ONLY_IDENTIFIERS:
+                if re.search(r"\b%s\b" % re.escape(ident), text):
+                    offenders.append("%s declares %s" % (rel, ident))
+        self.assertEqual(
+            offenders, [],
+            "kernel-only declarations leak into the module-facing header "
+            "closure:\n%s" % "\n".join(offenders))
+
+    def test_module_facing_closure_keeps_the_abi_surface(self):
+        headers = _header_closure(MODULE_FACING_HEADERS)
+        text = "".join(_read(os.path.join(ROOT, rel)) for rel in headers)
+        for needle in ("struct zdriver_api", "struct zdevice_desc",
+                       "struct zchar_ops", "irq_source_t", "irq_handler_t",
+                       "ZCAP_IOC_COMMAND", "ZDEV_HID"):
+            self.assertIn(needle, text)
+
+    @unittest.skipUnless(shutil.which("sdcc"), "sdcc not available")
+    def test_representative_module_compiles_against_module_headers_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "probe.c")
+            with open(source, "w") as handle:
+                handle.write(_MODULE_PROBE_SOURCE)
+            result = subprocess.run(
+                ["sdcc"] + list(MODULE_PROBE_FLAGS) +
+                ["-o", os.path.join(tmp, "probe.rel"), source],
+                cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True)
+            self.assertEqual(
+                result.returncode, 0,
+                "a representative module failed to compile against the "
+                "module-facing headers alone:\n%s" % result.stdout)
+            # A kernel-only reference must not resolve against these
+            # headers alone; this is the negative half of the boundary.
+            leak = os.path.join(tmp, "leak.c")
+            with open(leak, "w") as handle:
+                handle.write('#include "zephyros/device.h"\n'
+                             "int probe_leak(void) {\n"
+                             "\tdevice_registry_rollback(0u);\n"
+                             "\treturn 0;\n}\n")
+            result = subprocess.run(
+                ["sdcc"] + list(MODULE_PROBE_FLAGS) +
+                ["-o", os.path.join(tmp, "leak.rel"), leak],
+                cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True)
+            self.assertNotEqual(
+                result.returncode, 0,
+                "a kernel-only symbol resolved from the module-facing "
+                "headers:\n%s" % result.stdout)
 
 
 class TestPlatformBoundary(unittest.TestCase):

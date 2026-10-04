@@ -25,7 +25,6 @@
  */
 
 #include "zephyros/driver.h"
-#include "zephyros/platform.h"
 
 #include "hid_driver.h"
 

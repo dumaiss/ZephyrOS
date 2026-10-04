@@ -21,6 +21,10 @@
 #include "zephyros/romfs.h"
 #include "zephyros/process.h"
 
+#include "kernel/device/registry.h"
+#include "kernel/irq/irq_private.h"
+#include "kernel/memory/banking.h"
+
 /* Single integration seam for target acceptance builds; the runner and
  * milestone selection live in tests/target/support/target_test.c.  The
  * one unavoidable boot-phase hook (ZOS_M4_SIO_IRQ) is marked TEST-ONLY
@@ -33,9 +37,12 @@
 /* TEST-ONLY HOOK: target acceptance runner; implementation and milestone
  * selection live in tests/target/support/target_test.c (acceptance images
  * only).  The early hook runs before the module catalog load; the late
- * hook runs after console binding. */
+ * hook runs after console binding; the hold hooks keep a test-owned timer
+ * source pending across the boot-module load. */
 void zos_target_test_early(void);
 void zos_target_test_late(void);
+void zos_target_test_irq_hold_begin(void);
+void zos_target_test_irq_hold_end(void);
 #endif
 
 /* Set only by the m4-selftest acceptance build: keep CTC0 pending across
@@ -489,16 +496,16 @@ void kernel_main(void)
 
 		(void)module_loader_init();
 #if ZOS_M4_SIO_IRQ
-		/* TEST-ONLY HOOK: keep CTC0 pending across the load until the
-		 * acceptance module owns the source; the concrete test lives in
-		 * tests/target/support/target_test.c and
-		 * tests/modules/sio_irq_module.c. */
+		/* TEST-ONLY HOOK: keep a test-owned timer source pending across
+		 * the load until the acceptance module owns it; the concrete
+		 * programming lives in tests/target/support/ctc_test.c and the
+		 * module in tests/modules/sio_irq_module.c. */
 		{
 			uint8_t irq_enabled = irq_arch_lock();
 
-			platform_ctc0_test_start();
+			zos_target_test_irq_hold_begin();
 			module_failures = kernel_boot_module();
-			platform_ctc0_stop();
+			zos_target_test_irq_hold_end();
 			irq_arch_unlock(irq_enabled);
 		}
 #else

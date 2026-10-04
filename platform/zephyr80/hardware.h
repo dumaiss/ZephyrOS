@@ -3,8 +3,10 @@
  * Raw I/O port numbers, latch fields, memory modes, and SIO/CTC register
  * values live here (and in hardware.inc for assembly).  Memory-region
  * geometry is declared in memory.h; IM2 vector-page and IRQ transition
- * wiring constants are declared in irq.h.  Kernel code must not hard-code
- * port numbers or board constants; include <zephyros/platform.h> instead.
+ * wiring constants are declared in irq.h.  Kernel code includes
+ * <zephyros/platform.h> rather than hard-coding board constants; a
+ * hardware-owning driver implementation includes this narrow header
+ * directly.
  */
 
 #ifndef ZEPHYR80_HARDWARE_H

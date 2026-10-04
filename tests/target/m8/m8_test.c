@@ -28,7 +28,9 @@
 #include "zephyros/module.h"
 #include "zephyros/video.h"
 
-#include "ioc_proto.h"
+#include "zephyros/ioc_protocol.h"
+
+#include "kernel/device/registry.h"
 #include "m8_selftest.h"
 
 #if ZOS_M8_SELFTEST

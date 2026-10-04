@@ -423,7 +423,7 @@ class TestM4BootAcceptance(M4SimBase):
         self.assertTrue(z.iff1, "interrupts should be enabled at boot")
         enabled = self.call_uint8(z, "_irq_arch_lock")
         self.assertFalse(z.iff1, "M2 lock did not mask interrupts")
-        run_function(z, self.syms["_platform_ctc0_test_start"])
+        run_function(z, self.syms["_zos_ctc0_test_start"])
 
         # One tick during the load prologue must stay pending: the source
         # is not claimed yet, and an unowned dispatch would quiesce CTC0
@@ -450,7 +450,7 @@ class TestM4BootAcceptance(M4SimBase):
         else:
             raise AssertionError("module_catalog_load_all did not return")
         load_failures = z.a
-        run_function(z, self.syms["_platform_ctc0_stop"])
+        run_function(z, self.syms["_zos_ctc0_test_stop"])
         z.a = enabled
         run_function(z, self.syms["_irq_arch_unlock"])
         self.assertTrue(z.iff1, "interrupt state was not restored")
@@ -504,7 +504,7 @@ class TestM4BootAcceptance(M4SimBase):
         self.boot_partial(z)
         run_function(z, self.syms["_module_loader_init"])
         self.assertTrue(z.iff1)
-        run_function(z, self.syms["_platform_ctc0_test_start"])
+        run_function(z, self.syms["_zos_ctc0_test_start"])
         z.assert_int(0x00)  # first tick arrives before the module claims
         run_function(z, self.syms["_module_catalog_load_all"])
         load_failures = z.a

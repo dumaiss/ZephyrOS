@@ -8,10 +8,11 @@ without executing target code:
     gamepad shapes, layout assertions, and the capability-authoritative
     ZDEV_ENOTSUP convention (absent methods are null and are never
     called);
-  - the private MCU HID protocol constants shared with the
-    protocol-aware IOC clients (drivers/ioc/ioc_proto.h): CMD_HID_INPUT
-    0Eh, RSP_HID_INPUT 8Eh, 2 metadata bytes and a 24-byte reply maximum
-    (26 with metadata);
+  - the client-visible MCU HID service vocabulary shared through the
+    public IOC protocol contract (include/zephyros/ioc_protocol.h):
+    CMD_HID_INPUT 0Eh, RSP_HID_INPUT 8Eh, 2 metadata bytes and a 24-byte
+    reply maximum (26 with metadata), never the IOC driver's private
+    transport header;
   - the packed hid.zmod container, manifest, ROMFS entry and boot order
     (SIO, then IOC, then HID), with a failed/malformed dependency not
     invalidating earlier devices;
@@ -48,7 +49,8 @@ from test_m1 import evaluate, parse_c_header  # noqa: E402
 
 HID_H = os.path.join(ROOT, "include", "zephyros", "hid.h")
 DEVICE_H = os.path.join(ROOT, "include", "zephyros", "device.h")
-PROTO_H = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.h")
+PROTO_H = os.path.join(ROOT, "include", "zephyros", "ioc_protocol.h")
+IOC_PRIVATE_H = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.h")
 DRIVER_H = os.path.join(ROOT, "drivers", "hid", "hid_driver.h")
 DRIVER_C = os.path.join(ROOT, "drivers", "hid", "hid.c")
 MODULE_C = os.path.join(ROOT, "drivers", "hid", "hid_module.c")
@@ -135,13 +137,25 @@ class TestHidProtocolConstants(unittest.TestCase):
             "IOC_HID_INPUT_MAX_DATA": 24,
         }
         for name, value in expected.items():
-            self.assertIn(name, self.env, "ioc_proto.h missing %s" % name)
+            self.assertIn(name, self.env,
+                          "ioc_protocol.h missing %s" % name)
             self.assertEqual(evaluate(name, self.env), value, name)
 
     def test_reply_maximum_matches_the_wire_bound(self):
         # metadata + translated bytes = 26 = the command-frame DATA cap.
         self.assertEqual(evaluate("IOC_HID_INPUT_META_LEN", self.env) +
                          evaluate("IOC_HID_INPUT_MAX_DATA", self.env), 26)
+
+    def test_hid_vocabulary_is_not_duplicated_in_the_private_header(self):
+        # The HID service vocabulary has exactly one owner: the public
+        # client-visible contract.  The IOC driver's private header may
+        # extend it but must not redeclare it.
+        private = parse_c_header(IOC_PRIVATE_H)
+        for name in ("IOC_CMD_HID_INPUT", "IOC_RSP_HID_INPUT",
+                     "IOC_OFF_HID_INPUT_MAX", "IOC_HID_INPUT_META_LEN",
+                     "IOC_HID_INPUT_MAX_DATA"):
+            self.assertNotIn(name, private,
+                             "IOC private header duplicates %s" % name)
 
 
 class TestHidModuleArtifact(unittest.TestCase):

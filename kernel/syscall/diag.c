@@ -21,6 +21,8 @@
 #include "zephyros/kernel.h"
 #include "zephyros/process.h"
 
+#include "kernel/memory/banking.h"
+
 #include "diag.h"
 
 /* Common-resident staging block owned by the copy contract. */

@@ -20,6 +20,8 @@
 #include "zephyros/kernel.h"
 #include "zephyros/platform.h"
 
+#include "kernel/device/registry.h"
+
 #include "m3_selftest.h"
 
 extern int m3_irq_probe_run(void);

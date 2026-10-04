@@ -20,7 +20,6 @@
  */
 
 #include "zephyros/driver.h"
-#include "zephyros/platform.h"
 
 #include "ioc_driver.h"
 

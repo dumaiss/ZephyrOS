@@ -164,11 +164,6 @@ _Static_assert(__builtin_offsetof(struct zdevice, driver) == 14,
 	       "zdevice driver offset");
 #endif /* __SDCC */
 
-/* Registry lifecycle. */
-void device_registry_init(void);
-int device_register(const struct zdevice_desc *desc, zdev_handle_t *out_handle);
-const struct zdevice *device_get(zdev_handle_t handle);
-
 /* Read-only discovery.  Returns the first registered device at or after
  * class/capability cursor `after` (0 = start of the registry) whose class
  * matches `class_id` (ZDEV_CLASS_ANY = any class) and whose capability
@@ -187,21 +182,9 @@ zdev_handle_t device_find(uint8_t class_id, zdev_caps_t required_caps,
 int device_interface(zdev_handle_t handle, uint8_t expected_class,
 		     const void **class_ops, void **state);
 
-/* Registration transaction boundaries used around each driver init (M4
- * reuses the same operations).  A checkpoint records the current
- * registration generation; rollback removes exactly the entries created
- * after that checkpoint and returns how many were removed.  Entries
- * registered earlier are never touched. */
-typedef uint16_t zdev_checkpoint_t;
-zdev_checkpoint_t device_registry_checkpoint(void);
-int device_registry_rollback(zdev_checkpoint_t checkpoint);
-
-/* Owner token recorded in entries registered while a driver init runs. */
-void device_registry_set_owner(const void *owner);
-const void *device_registry_owner(void);
-
-/* Registry storage: bank-7 kernel data.  The symbol is intentionally
- * global so tools/mapcheck.py can prove bank-7 placement. */
-extern struct zdevice device_table[ZDEV_MAX_DEVICES];
+/* The registry lifecycle, the registration transaction (checkpoint,
+ * rollback, owner), and the bank-7 registry storage are kernel-private
+ * and live in kernel/device/registry.h.  A ZMOD module publishes a
+ * device only through the loader's `zdriver_api.device_register`. */
 
 #endif /* ZEPHYROS_DEVICE_H */

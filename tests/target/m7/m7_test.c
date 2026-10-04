@@ -25,6 +25,8 @@
 #include "zephyros/kernel.h"
 #include "zephyros/platform.h"
 
+#include "kernel/memory/banking.h"
+
 #include "m7_selftest.h"
 
 #if ZOS_M7_SELFTEST

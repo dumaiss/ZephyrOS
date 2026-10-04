@@ -38,10 +38,11 @@
  * `zdriver_api`.
  */
 
-#include "zephyros/platform.h"
 #include "zephyros/device.h"
 #include "zephyros/driver.h"
 #include "zephyros/video.h"
+
+#include "zephyr80/hardware.h"
 
 #include "v9958_driver.h"
 

@@ -58,7 +58,9 @@ input and output bind independently.
 ## 2. Device registry
 
 Fixed-size, heap-free, bank-7 kernel data
-(`kernel/device/registry.c`, `include/zephyros/device.h`):
+(`kernel/device/registry.c`, `include/zephyros/device.h` for the
+module-facing types, `kernel/device/registry.h` for the kernel-private
+lifecycle and storage):
 
 - 16 entries; handles are the slot index + 1, issued in the range
   `1..16`.  Handle `0` is invalid.  Handles are valid for one boot and are
@@ -82,6 +84,15 @@ Fixed-size, heap-free, bank-7 kernel data
   interface).  No client can mutate the registry.
 - Registry mutation runs with maskable interrupts disabled through the M2
   executive lock (`irq_arch_lock`/`irq_arch_unlock`).
+
+The module-facing `include/zephyros/device.h` carries only the ABI types,
+the descriptor and registry-entry layouts, the class/capability values,
+and the read-only discovery calls.  The lifecycle
+(`device_registry_init`, `device_get`), the registration transaction
+(`device_registry_checkpoint`/`_rollback`), the owner token, and the
+bank-7 `device_table` storage are declared in the kernel-private
+`kernel/device/registry.h`; a ZMOD module reaches registration only
+through `zdriver_api.device_register`.
 
 ### 2.1 Registration transactions
 
@@ -128,6 +139,19 @@ mutation; the two resource imports resolve only ROMFS `DATA` entries,
 bound every read, and never hand out `romfs_file_t` or mutable kernel
 state.
 
+`driver.h` and its class headers are the complete module-facing
+compile-time surface.  They expose the ABI types and callbacks a driver
+uses but no kernel-only declaration: the device registry lifecycle and
+storage (`kernel/device/registry.h`), the IRQ-executive lifecycle,
+claim transaction, diagnostics, platform hooks and interrupt-state lock
+(`kernel/irq/irq_private.h`), and the raw memory-latch/bank primitives
+(`kernel/memory/banking.h`) are all kernel-private.  Hardware-owning
+driver implementations include the narrow `platform/zephyr80/`
+constant header they require; `zephyros/platform.h` remains the
+kernel's declarative constant aggregator.  `tests/test_source_layout.py`
+resolves the module-facing include closure and compiles a representative
+module against only those headers to keep the boundary mechanical.
+
 - Init convention: `ZDRIVER_OK` (0) or `ZDRIVER_FAIL` (-1).
 - This API is the interface the M4 loader passes to a loaded ZMOD
   module.  The M3 static driver table (`struct zdriver`,
@@ -147,7 +171,9 @@ banner (early console)
 [TEST-ONLY HOOK: zos_target_test_early() in acceptance builds]
 device_registry_init()
 module_loader_init()
-[platform_ctc0_test_start() in the M4 IRQ acceptance image]
+[TEST-ONLY HOOK: zos_target_test_irq_hold_begin() in the M4 IRQ
+ acceptance image only -- the concrete CTC0 programming is test-owned
+ (tests/target/support/ctc_test.c)]
 boot module source (kernel_boot_module()):
     pre-M5 images -> module_catalog_load_all()
                      (embedded SIO module registers sio0.b)
@@ -162,7 +188,7 @@ boot module source (kernel_boot_module()):
                       an exhausted arena 0x06 or a refused init 0x0B;
                       the SIO fallback and every earlier resident
                       module are untouched)
-[platform_ctc0_stop()]
+[TEST-ONLY HOOK: zos_target_test_irq_hold_end()]
 console_bind_defaults()       ; one final call, after all four loads
 dynamic console line via console service
 [TEST-ONLY HOOK: zos_target_test_late() in acceptance builds]
@@ -218,6 +244,16 @@ command/reply and SIO1/A for bulk DATA -- without any IOC firmware
 change, and registers `ioc.0` only after its bounded link bring-up
 produced a CRC-verified matching reply.
 
+- Client contract: `include/zephyros/ioc.h` is the class ABI;
+  `include/zephyros/ioc_protocol.h` is the client-visible service
+  vocabulary -- the deployed MCU command/reply classes and DATA payload
+  offsets (PING, HID input fetch) a protocol-aware driver or target
+  diagnostic may share.  `drivers/ioc/ioc_proto.h` is transport-private
+  and extends that vocabulary with the READY/DONE bulk constants, the
+  frozen bulk-arming class gate, and the controller status bytes; no
+  production driver other than the IOC driver includes it.  A driver
+  reaches its own directory's private headers through same-directory
+  quote includes, never through a shared `-I drivers/<name>` module flag.
 - Class and capabilities: `ZDEV_IOC` with
   `ZCAP_IOC_COMMAND | ZCAP_IOC_BULK_READ | ZCAP_IOC_BULK_WRITE |
   ZCAP_IOC_STATUS`.  The architecture's operation order (`command`,
@@ -371,7 +407,9 @@ discovered the IOC class; the MCU firmware is untouched.
 - Dependency discovery is by class/capability/interface only:
   `device_find(ZDEV_IOC, ZCAP_IOC_COMMAND | ZCAP_IOC_STATUS, ...)` plus
   `device_interface()`.  The module contains no imported IOC symbol and
-  no name lookup.  A missing or malformed dependency (null command or
+  no name lookup; its only IOC compile-time surface is the public
+  `include/zephyros/ioc_protocol.h` vocabulary, never the IOC driver's
+  private headers.  A missing or malformed dependency (null command or
   status operation, class mismatch, no class interface) fails the init;
   the loader rolls the (empty) registration set back and the SIO
   fallback and IOC transport stay untouched.
@@ -696,6 +734,15 @@ module stays polling-only.  Two test paths prove the IRQ integration:
   stay pending — an unowned dispatch would quiesce the timer), counts
   three deliveries inside a bounded EI spin, verifies its relocated
   state pointer, and releases the source before registering the device.
+
+The CTC0 programming these acceptance paths need is test-owned
+(`tests/target/include/ctc_test.h`, `tests/target/support/ctc_test.c`)
+and is linked only into the M2/M3/M4 acceptance images.  The production
+CTC owner (`drivers/ctc/ctc.c`) keeps only `platform_irq_quiesce()`;
+`platform_ctc0_test_start()`, `platform_ctc0_stop()`, and the obsolete
+`platform_irq_vector()` are not declared or linked in production, and
+the kernel's M4 boot phase reaches the test timer only through the
+generic `zos_target_test_irq_hold_begin()`/`_end()` seam hooks.
 
 ## 10. Placement and validation
 

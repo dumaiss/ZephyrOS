@@ -16,7 +16,8 @@
  */
 
 #include "zephyros/device.h"
-#include "zephyros/platform.h"
+
+#include "zephyr80/hardware.h"
 
 #include "sio.h"
 

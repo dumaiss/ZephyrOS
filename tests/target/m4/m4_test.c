@@ -25,6 +25,9 @@
 #include "zephyros/irq.h"
 #include "zephyros/console.h"
 
+#include "kernel/device/registry.h"
+#include "kernel/irq/irq_private.h"
+
 #include "m4_selftest.h"
 
 volatile uint8_t m4_selftest_result;

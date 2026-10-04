@@ -40,7 +40,10 @@ BUILD     := build
 include platform/zephyr80/config.mk
 
 ASFLAGS   := $(ZOS_PLATFORM_ASFLAGS) -Itests/target/include
-CFLAGS    := -mz80 -c --nostdinc --Werror $(ZOS_PLATFORM_CFLAGS)
+# Kernel and acceptance sources include their private interfaces by
+# explicit owning path (kernel/...); the module build (MOD_CFLAGS) does
+# not get this path, so a ZMOD cannot reach a kernel-private header.
+CFLAGS    := -mz80 -c --nostdinc --Werror $(ZOS_PLATFORM_CFLAGS) -I .
 
 ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/page_zero.rel $(BUILD)/syscall_entry.rel \
@@ -102,6 +105,13 @@ endif
 ifeq ($(ZOS_M4_SIO_IRQ),1)
 CFLAGS    += -DZOS_M4_SIO_IRQ=1
 PK_SUFFIX := -m4-selftest
+endif
+
+# Test-owned CTC0 helper: exactly one copy for every acceptance image that
+# arms CTC0 (M2 IRQ, M3, and the M4 IRQ boot-phase hook).  Added once even
+# when an image selects several of these flags.
+ifneq ($(filter 1,$(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) $(ZOS_M4_SIO_IRQ)),)
+TARGET_TEST_OBJS += $(BUILD)/ctc_test.rel
 endif
 
 # M4 failure image: init-failing SIO test module + rollback verification.
@@ -728,8 +738,10 @@ $(BUILD)/process_exec.rel: kernel/process/exec.c \
 # emitted by tools/zmodpack.py.
 
 MODULES   := build/modules
-MOD_CFLAGS := -mz80 -c --nostdinc --Werror -I include -I platform -I drivers/sio \
-	-I drivers/ioc
+# Every module sees the shared include/ and platform/ surfaces plus its own
+# driver directory context; no sibling driver's private path is offered here.
+# A driver's local headers resolve through same-directory quote includes.
+MOD_CFLAGS := -mz80 -c --nostdinc --Werror -I include -I platform -I drivers/sio
 
 $(MODULES):
 	mkdir -p $@
@@ -802,6 +814,7 @@ $(MODULES)/sio-fail.zmod: tests/modules/sio-fail.json $(MODULES)/sio.rel \
 
 $(MODULES)/ioc.rel: drivers/ioc/ioc.c drivers/ioc/ioc_driver.h \
 		drivers/ioc/ioc_proto.h include/zephyros/ioc.h \
+		include/zephyros/ioc_protocol.h \
 		include/zephyros/device.h include/zephyros/platform.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) $< -o $@
 
@@ -824,12 +837,13 @@ $(MODULES)/ioc.zmod: modules/manifests/ioc.json $(IOC_MODULE_OBJS) \
 
 # --- HID module objects (production source) ---
 # The driver talks to the IOC class only through the discovered interface
-# (no imported IOC-module symbol); the private protocol constants it
-# needs are the compile-time CMD/RSP_HID_INPUT names it shares with the
-# protocol-aware IOC clients (drivers/ioc/ioc_proto.h).
+# (no imported IOC-module symbol); the compile-time CMD/RSP_HID_INPUT
+# vocabulary it needs is the client-visible service contract shared with
+# the protocol-aware target diagnostics (include/zephyros/ioc_protocol.h).
+# It never includes the IOC driver's private header.
 
 $(MODULES)/hid.rel: drivers/hid/hid.c drivers/hid/hid_driver.h \
-		drivers/ioc/ioc_proto.h include/zephyros/hid.h \
+		include/zephyros/ioc_protocol.h include/zephyros/hid.h \
 		include/zephyros/ioc.h include/zephyros/device.h \
 		include/zephyros/platform.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) $< -o $@
@@ -983,6 +997,7 @@ $(BUILD)/m4_fixture_blobs.rel: $(FIXTURE_CATALOG_ASM) | $(BUILD)
 $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		include/zephyros/kernel.h tests/target/include/selftest.h \
 		tests/target/include/irq_selftest.h \
+		tests/target/include/ctc_test.h \
 		tests/target/include/m3_selftest.h \
 		tests/target/include/m4_selftest.h \
 		tests/target/include/m5_selftest.h \
@@ -992,6 +1007,14 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/m8_console_selftest.h \
 		tests/target/include/m8_selftest.h \
 		tests/target/include/m8_fallback_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+# Test-owned CTC0 programming helper (acceptance images only): linked in
+# place of the retired production helper so no acceptance-only CTC code
+# reaches the production map.
+$(BUILD)/ctc_test.rel: tests/target/support/ctc_test.c \
+		tests/target/include/ctc_test.h \
+		platform/zephyr80/hardware.h platform/zephyr80/irq.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/syscall_test.rel: tests/target/m1/syscall_test.c \
@@ -1044,9 +1067,14 @@ $(BUILD)/m7_test.rel: tests/target/m7/m7_test.c \
 		tests/target/include/m7_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
+# The IOC transport diagnostic is the one explicitly test-only rule allowed
+# a private IOC include path: it exercises the READY/DONE admission state,
+# the bulk-arming class gate, and the unknown-class reply, which are
+# transport-private by design.
 $(BUILD)/m8_ioc_test.rel: tests/target/m8/m8_ioc_test.c \
 		include/zephyros/device.h include/zephyros/ioc.h \
 		include/zephyros/kernel.h drivers/ioc/ioc_proto.h \
+		include/zephyros/ioc_protocol.h \
 		tests/target/include/m8_ioc_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) -Idrivers/ioc $< -o $@
 
@@ -1073,9 +1101,9 @@ $(BUILD)/m8_test.rel: tests/target/m8/m8_test.c \
 		include/zephyros/console.h include/zephyros/device.h \
 		include/zephyros/hid.h include/zephyros/ioc.h \
 		include/zephyros/kernel.h include/zephyros/module.h \
-		include/zephyros/video.h drivers/ioc/ioc_proto.h \
+		include/zephyros/video.h include/zephyros/ioc_protocol.h \
 		tests/target/include/m8_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) -Idrivers/ioc $< -o $@
+	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/m8_fallback_test.rel: tests/target/m8/m8_fallback_test.c \
 		include/zephyros/console.h include/zephyros/device.h \

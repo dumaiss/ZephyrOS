@@ -43,11 +43,10 @@
  * The module reaches the kernel only through the passed `zdriver_api`.
  */
 
-#include "zephyros/platform.h"
 #include "zephyros/device.h"
 #include "zephyros/hid.h"
 
-#include "ioc_proto.h"
+#include "zephyros/ioc_protocol.h"
 
 #include "hid_driver.h"
 

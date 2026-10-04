@@ -191,9 +191,7 @@ _Static_assert(__builtin_offsetof(struct zos_diag_system_info,
 	       "diag system-info romfs_first_page offset");
 #endif
 
-#if ZOS_SYSCALL_SELFTEST
-/* Internal target-side self-test driver (build option only, not ABI). */
-void zos_run_syscall_selftest(void);
-#endif
+/* The M1 target self-test runner is declared by the test-owned seam
+ * header tests/target/include/selftest.h, not by this ABI header. */
 
 #endif /* ZEPHYROS_SYSCALL_H */

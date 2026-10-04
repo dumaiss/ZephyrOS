@@ -43,8 +43,10 @@ Usage:
                 <out_arena_geometry.inc> [<out_memory_variant.inc>]
 
 --production additionally rejects every acceptance symbol (retired static
-driver symbols, target-test runners/results, fixture catalogs, and test
-SIO module entries) so acceptance code cannot leak into production images.
+driver symbols, target-test runners/results and their generic seam hooks,
+CTC0 acceptance helpers, the obsolete IRQ vector lookup, fixture catalogs,
+and test SIO module entries) so acceptance code cannot leak into
+production images.
 
 The `geometry` commands implement the M8 two-pass driver-arena build.  The
 `legacy` mode emits the fixed pre-M8 acceptance/variant geometry and the
@@ -359,9 +361,11 @@ M3_BANK7_PREFIXES = (
 )
 
 # Production images must not link any acceptance artifact: retired static
-# driver symbols, target-test runners/results, fixture catalogs, embedded
-# boot catalogs (M5 boots from ROMFS), or test SIO module entries.  Enabled
-# with --production (the Makefile passes it for non-acceptance images).
+# driver symbols, target-test runners/results and their generic seam hooks,
+# CTC0 acceptance helpers, the obsolete IRQ vector lookup, fixture
+# catalogs, embedded boot catalogs (M5 boots from ROMFS), or test SIO
+# module entries.  Enabled with --production (the Makefile passes it for
+# non-acceptance images).
 PRODUCTION_FORBIDDEN = (
     "_driver_init_static",
     "_boot_drivers",
@@ -376,6 +380,10 @@ PRODUCTION_FORBIDDEN = (
     "_module_catalog_load_all",
     "_target_test",
     "_zos_run_",
+    "_zos_target_test_",
+    "_zos_ctc0_",
+    "_platform_ctc0_",
+    "_platform_irq_vector",
     "_m7_",
     "_m8",
     "_sio_module_irq",

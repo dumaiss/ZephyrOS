@@ -1,64 +1,28 @@
-/* Private MCU command-lane protocol constants (drivers/ioc).
+/* Private IOC transport constants (drivers/ioc).
  *
- * This is NOT part of the public device API (include/zephyros/ioc.h).
- * It pins the deployed Zephyr-80 IOC firmware vocabulary that the
- * ZephyrOS IOC driver and its protocol-aware clients speak: MCU command
- * and response types, the PING payload layout, and the pinned firmware
- * level of the deployment.  The firmware is never modified; the
- * constants document what it advertises.
- *
- * Ordinary clients use `struct zioc_frame` / `struct zioc_ops` and never
- * include this header.  Protocol-aware clients (the HID driver, storage,
- * and the M8 target diagnostics) include it to name command types and
- * decode payload offsets as native-frame DATA offsets.
+ * This is NOT part of the public device API (include/zephyros/ioc.h) and
+ * NOT a client contract.  It extends the client-visible service
+ * vocabulary in include/zephyros/ioc_protocol.h with the constants only
+ * the IOC driver (and the test-only IOC transport diagnostic) may see:
+ * the explicit unknown-class reply, the bulk READY/DONE vocabulary and
+ * directions, the frozen set of request classes the pinned firmware can
+ * use to arm the bulk lane, and the controller status bytes.  Wire
+ * framing, frame construction, CRC/sequence handling, lane setup, the
+ * READY/DONE admission state, and bulk recovery all stay under
+ * drivers/ioc/; no production driver other than the IOC driver includes
+ * this header.  The firmware is never modified.
  */
 
 #ifndef ZEPHYROS_DRIVERS_IOC_PROTO_H
 #define ZEPHYROS_DRIVERS_IOC_PROTO_H
 
-/* MCU command classes (Z80 -> MCU) and their replies.  The deployed
- * firmware answers `type | 80h`; RSP_UNKNOWN_COMMAND is the explicit
- * unknown-class reply and the only response outside that rule. */
-#define IOC_CMD_PING          0x01u
-#define IOC_RSP_PING          0x81u
+#include "zephyros/ioc_protocol.h"
+
+/* The deployed firmware answers `type | 80h`; RSP_UNKNOWN_COMMAND is the
+ * explicit unknown-class reply and the only response outside that rule.
+ * Only the transport itself and the test-only IOC transport diagnostic
+ * decode it; the client-visible PING vocabulary is in ioc_protocol.h. */
 #define IOC_RSP_UNKNOWN_CMD   0xFEu
-
-/* PING request/reply DATA layout (DATA offset = compatibility-mailbox
- * offset minus the four mailbox header bytes).  The request carries the
- * echo pattern; the reply echoes those bytes and appends diagnostics. */
-#define IOC_PING_ECHO_BYTES   16u /* echoed request bytes             */
-#define IOC_PING_DATA_ECHO    0u
-#define IOC_PING_DATA_LEVEL   16u /* controller firmware level        */
-#define IOC_PING_DATA_POWER   17u /* power/link handshake snapshot    */
-#define IOC_PING_DATA_LEN     26u /* reply declares the full payload  */
-
-/* IOC_PING_DATA_POWER bit: the MCU reports the command lane as
- * established.  The pinned deployment drives /SYNC low for the session
- * once synchronised. */
-#define IOC_PING_LINK_SYNCED  0x40u
-
-/* Pinned deployment: controller firmware level 74 (4Ah).  Reported by
- * PING; recorded and validated by the M8 target diagnostic.  A driver
- * never *requires* this value, it reports what the controller returns. */
-#define IOC_FW_LEVEL_PINNED   74u
-
-/* HID input fetch (CMD_HID_INPUT / RSP_HID_INPUT).
- *
- * The one-byte request DATA is the maximum number of translated bytes
- * wanted.  The reply DATA begins with the MCU's `queued` counter and
- * its saturating `dropped` counter, followed by up to
- * IOC_HID_INPUT_MAX_DATA terminal bytes.  The controller DEQUEUES the
- * bytes it returns, so a fetch must ask for exactly the free space of
- * its local buffer: anything that does not fit locally is lost rather
- * than left queued.  Reply DATA length is therefore
- * IOC_HID_INPUT_META_LEN plus 0..IOC_HID_INPUT_MAX_DATA bytes.  The
- * translation is the MCU's; these bytes are terminal input, not raw
- * USB reports. */
-#define IOC_CMD_HID_INPUT      0x0Eu
-#define IOC_RSP_HID_INPUT      0x8Eu
-#define IOC_OFF_HID_INPUT_MAX  0u  /* request DATA 0: wanted byte count */
-#define IOC_HID_INPUT_META_LEN 2u  /* reply DATA: queued, dropped       */
-#define IOC_HID_INPUT_MAX_DATA 24u /* reply DATA: most translated bytes */
 
 /* Bulk READY / DONE lifecycle (mirrors the frozen ioc_frame.h of the
  * pinned deployment; the MCU firmware is never modified).

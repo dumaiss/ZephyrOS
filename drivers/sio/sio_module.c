@@ -17,7 +17,6 @@
  */
 
 #include "zephyros/driver.h"
-#include "zephyros/platform.h"
 
 #include "sio.h"
 

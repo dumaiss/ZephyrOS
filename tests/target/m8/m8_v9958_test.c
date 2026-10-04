@@ -42,6 +42,7 @@
 #include "zephyros/kernel.h"
 #include "zephyros/video.h"
 
+#include "kernel/device/registry.h"
 #include "m8_v9958_selftest.h"
 
 #if ZOS_M8_V9958_SELFTEST || ZOS_M8_V9958_FONTFAIL

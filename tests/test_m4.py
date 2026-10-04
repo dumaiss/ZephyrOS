@@ -26,6 +26,7 @@ M4_SELFTEST_H = os.path.join(ROOT, "tests", "target", "include",
                              "m4_selftest.h")
 DRIVER_H = os.path.join(ROOT, "include", "zephyros", "driver.h")
 IRQ_H = os.path.join(ROOT, "include", "zephyros", "irq.h")
+IRQ_PRIVATE_H = os.path.join(ROOT, "kernel", "irq", "irq_private.h")
 ERRNO_H = os.path.join(ROOT, "include", "zephyros", "errno.h")
 MEMORY_INC = os.path.join(ROOT, "platform", "zephyr80", "memory.inc")
 
@@ -130,10 +131,16 @@ class TestM4MapRules(unittest.TestCase):
     def test_irq_module_validation_hook_is_declared(self):
         text = open(MODULE_H).read()
         self.assertIn("module_code_allowed", text)
+        # The claim transaction is kernel-private; the module-facing IRQ
+        # header carries only the types and result codes.
         irq = open(IRQ_H).read()
         for member in ("irq_registry_checkpoint", "irq_registry_rollback",
                        "irq_registry_set_owner"):
-            self.assertIn(member, irq)
+            self.assertNotIn(member, irq)
+        private = open(IRQ_PRIVATE_H).read()
+        for member in ("irq_registry_checkpoint", "irq_registry_rollback",
+                       "irq_registry_set_owner"):
+            self.assertIn(member, private)
 
 
 class TestM4Artifacts(unittest.TestCase):
@@ -391,6 +398,26 @@ class TestM4Artifacts(unittest.TestCase):
             "only in lk=%s, only in build=%s"
             % (sorted(listed - built), sorted(built - listed)),
         )
+
+
+class TestProductionMapRejectsCtcHelpers(unittest.TestCase):
+    """The production map keeps the CTC quiesce hook but must reject the
+    retired CTC acceptance helpers, the obsolete vector lookup, and the
+    generic test-seam hooks (work package 23)."""
+
+    def test_ctc_acceptance_symbols_are_forbidden(self):
+        for symbol in ("_platform_irq_vector", "_platform_ctc0_test_start",
+                       "_platform_ctc0_stop", "_zos_ctc0_test_start",
+                       "_zos_ctc0_test_stop",
+                       "_zos_target_test_irq_hold_begin"):
+            with self.assertRaises(mapcheck.MapError):
+                mapcheck.check_symbols({}, {symbol: 0x2000}, production=True)
+
+    def test_quiesce_is_not_forbidden(self):
+        self.assertFalse(
+            any("_platform_irq_quiesce".startswith(prefix)
+                for prefix in mapcheck.PRODUCTION_FORBIDDEN),
+            "the production quiesce hook must stay linkable")
 
 
 if __name__ == "__main__":

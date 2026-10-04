@@ -53,6 +53,9 @@
 #if ZOS_M8_FALLBACK_SELFTEST
 #include "m8_fallback_selftest.h"
 #endif
+#if ZOS_M4_SIO_IRQ
+#include "ctc_test.h"
+#endif
 
 void zos_target_test_early(void)
 {
@@ -106,3 +109,20 @@ void zos_target_test_late(void)
 	zos_run_m8_fallback_selftest();
 #endif
 }
+
+#if ZOS_M4_SIO_IRQ
+/* Generic test-seam hooks: the kernel's M4 acceptance boot phase keeps a
+ * test-owned timer source pending across the boot-module load; the
+ * concrete CTC0 programming stays test-owned (tests/target/support/
+ * ctc_test.c).  Defined only for the image that uses them so no other
+ * acceptance image grows a dead symbol. */
+void zos_target_test_irq_hold_begin(void)
+{
+	zos_ctc0_test_start();
+}
+
+void zos_target_test_irq_hold_end(void)
+{
+	zos_ctc0_test_stop();
+}
+#endif

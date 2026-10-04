@@ -25,7 +25,6 @@
  */
 
 #include "zephyros/driver.h"
-#include "zephyros/platform.h"
 
 #include "v9958_driver.h"
 

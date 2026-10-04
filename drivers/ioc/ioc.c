@@ -40,9 +40,10 @@
  * `zdriver_api`.
  */
 
-#include "zephyros/platform.h"
 #include "zephyros/device.h"
 #include "zephyros/ioc.h"
+
+#include "zephyr80/hardware.h"
 
 #include "ioc_driver.h"
 #include "ioc_proto.h"

@@ -1,12 +1,16 @@
 # ZMOD v1 Module Format and Loader Lifecycle
 
-**Status:** implemented through M5 stage `11-m5-rom-recovery-filesystem`.
-The SIO driver ships as a packed ZMOD module and is loaded during boot
+**Status:** current through M8, driver ABI v2.  The SIO, IOC, HID, and
+V9958 drivers ship as packed ZMOD modules and are loaded during boot
 through the generic M4 loader; since M5 the container bytes come from the
 ROMFS recovery store through the bounded read-source adapter (the
-on-disk ZMOD format is unchanged).  The production kernel and M5 images
-link no embedded boot blob at all (`tools/mapcheck.py --production`
-rejects embedded boot blob/catalog symbols).  The stage-07 loader was
+on-disk ZMOD format is unchanged).  Since M8 the header `driver_abi`
+must equal `ZDRIVER_ABI_VERSION` (2) and production derives the driver
+arena from the aligned linked kernel end in a two-pass link.  The
+production kernel and every ROMFS-boot image (M5 onward) link no embedded
+boot blob at all (`tools/mapcheck.py --production` rejects embedded boot
+blob/catalog symbols).  The M4/M5 paragraphs below are retained as
+historical acceptance evidence.  The stage-07 loader was
 hardware-validated on 2026-10-02 (`m4 loader selftest: OK`; see
 `docs/validation/2026-10-02-m4-loader-hardware.md`); stage 08 added the
 dynamic-console transcript, the IRQ self-test module variant, a
@@ -23,7 +27,8 @@ M5 host evidence is recorded in `docs/validation/2026-10-03-m5-romfs.md`.
 
 The M3/M4 acceptance images still link their embedded test catalog
 (`kernel/module/embedded.c` + the generated blob assembly) so the earlier
-acceptance behavior stays reproducible; production and M5 images do not.
+acceptance behavior stays reproducible; production and ROMFS-boot images
+do not.
 
 This document is the authoritative description of the ZephyrOS module
 container (`ZMOD v1`), the bank-7 driver arena, the host packer, and the
@@ -36,10 +41,13 @@ that is now implemented and pinned by `include/zephyros/module.h` and
 
 ## 1. Driver arena
 
-The arena is a linker-reserved region of bank 7:
+The arena is a linker-reserved region of bank 7.  Since M8 production
+derives its bounds from the aligned linked kernel end in a two-pass link.
+The fixed rectangle below is **historical acceptance geometry only**:
 
 ```text
 A000h-BFFFh   8192 bytes   16 contiguous 512-byte granules
+              (legacy pre-M8 acceptance geometry; not current production)
 ```
 
 *Since M8 this fixed geometry is the **legacy acceptance** rectangle:
@@ -57,14 +65,17 @@ symbols in both geometries; nothing below depends on the numeric base.*
   `kernel/module/arena.asm`.  The loader uses the symbols, never the
   numeric values; module code uses neither.
 * Loadable kernel sections (`_CODE`, `_HOME`, `_GSINIT`, `_GSFINAL`,
-  `_INITIALIZER`) must end below `A000h`.  `tools/mapcheck.py` rejects any
-  area overlapping the arena and `tools/pack_image.py` rejects ROM payload
-  bytes inside it; the 128 KiB boot image carries no arena content.
+  `_INITIALIZER`) must end below the arena start (`__driver_arena_start`:
+  the fixed legacy `A000h`, or the derived production base).  Production
+  places the derived base at the aligned linked-kernel end, so the two
+  passes must agree.  `tools/mapcheck.py` rejects any area overlapping the
+  arena and `tools/pack_image.py` rejects ROM payload bytes inside it; the
+  512 KiB boot image carries no arena content.
 * `_DATA`/`_INITIALIZED` keep their established `C000h-DFFFh` runtime
   region; the M2 ISR stack keeps `DF00h`.
 * Only the loader allocates granules, at boot, from its byte source:
-  the ROMFS recovery store in production/M5 images, or the embedded test
-  catalog in the pre-M5 acceptance images.
+  the ROMFS recovery store in production/ROMFS-boot images, or the
+  embedded test catalog in the pre-M5 acceptance images.
 
 The build reports arena geometry and free granules:
 `mapcheck.py` and `pack_image.py` both print the arena summary, and
@@ -99,7 +110,7 @@ directly after the table.
 | `07h` | 1 | `flags` | `0` (reserved) |
 | `08h` | 2 | `image_size` | payload bytes loaded at `load_base` |
 | `0Ah` | 2 | `bss_size` | zero-initialized bytes after the image |
-| `0Ch` | 2 | `required_granules` | `ceil((image+bss)/512)`, 1..16 |
+| `0Ch` | 2 | `required_granules` | `ceil((image+bss)/512)`, 1..80 (format maximum), further bounded by the linked arena's live granule count |
 | `0Eh` | 2 | `init_offset` | image-relative init entry (required) |
 | `10h` | 2 | `fini_offset` | image-relative cleanup entry, `FFFFh` = none |
 | `12h` | 2 | `reloc_offset` | offset of the relocation table |
@@ -234,7 +245,7 @@ module_load(name, blob, size)        module_load_source(name, source)
   ├─ stream image copy, zero BSS,      image and relocations are read in
   │  apply relocations                 bounded chunks (128 bytes);
   │                                    ZREL_ABS16: word += load_base
-  ├─ init(load_base + init_offset)     driver API v1, under device and IRQ
+  ├─ init(load_base + init_offset)     driver ABI v2, under device and IRQ
   │                                    registry checkpoints
   │     ├─ success → RESIDENT          never freed; no unload operation
   │     └─ failure → fini (optional)   device/IRQ rollback, allocation

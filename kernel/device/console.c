@@ -11,6 +11,8 @@
 
 #include "zephyros/console.h"
 
+#include "kernel/device/registry.h"
+
 zdev_handle_t console_in_handle;
 zdev_handle_t console_out_handle;
 

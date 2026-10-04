@@ -46,6 +46,7 @@ from test_m1 import (  # noqa: E402
 IOC_H = os.path.join(ROOT, "include", "zephyros", "ioc.h")
 ERRNO_H = os.path.join(ROOT, "include", "zephyros", "errno.h")
 PROTO_H = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.h")
+IOC_PROTOCOL_H = os.path.join(ROOT, "include", "zephyros", "ioc_protocol.h")
 DRIVER_H = os.path.join(ROOT, "drivers", "ioc", "ioc_driver.h")
 DRIVER_C = os.path.join(ROOT, "drivers", "ioc", "ioc.c")
 DRIVER_ASM = os.path.join(ROOT, "drivers", "ioc", "ioc_io.asm")
@@ -318,13 +319,17 @@ class TestIocClassContract(unittest.TestCase):
             self.assertIn(needle, self.text)
 
     def test_general_api_keeps_mcu_command_numbers_private(self):
-        # Command numbers live in the driver-private protocol header,
-        # never in the public class API.
+        # The class ABI (ioc.h) never names MCU commands.  The
+        # client-visible service vocabulary lives in the owning public
+        # header and is not duplicated in the transport-private header.
         self.assertNotIn("CMD_PING", self.text)
         self.assertNotIn("CMD_HID", self.text)
+        protocol = _read(IOC_PROTOCOL_H)
+        self.assertIn("#define IOC_CMD_PING", protocol)
+        self.assertIn("IOC_FW_LEVEL_PINNED   74u", protocol)
         proto = _read(PROTO_H)
-        self.assertIn("#define IOC_CMD_PING", proto)
-        self.assertIn("IOC_FW_LEVEL_PINNED   74u", proto)
+        self.assertNotIn("IOC_CMD_PING", proto)
+        self.assertNotIn("IOC_HID_INPUT_META_LEN", proto)
 
 
 class TestIocErrorCodes(unittest.TestCase):

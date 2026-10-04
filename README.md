@@ -4,14 +4,17 @@ ZephyrOS is the native operating system for the Zephyr-80.  The early
 milestones establish a clean boot path, a stable kernel execution
 environment, and the architectural boundaries later subsystems will build
 on.  See `docs/architecture.md` for the contract and `docs/boot.md` for the
-M0 boot mechanics.
+reset/boot path (it separates the historical M0 banner transcript from the
+current M8 boot).
 
 ## Status
 
-- **M0 — Kernel bring-up**: boot from the 128 KiB ROM image, copy into
-  SRAM, enter the kernel in memory mode `11`, initialize the polled early
-  serial console, print the banner, and halt.  Accepted on physical
-  hardware 2026-10-02 (exact banner observed; see `docs/boot.md`).
+- **M0 — Kernel bring-up**: boot from the M0-era 128 KiB ROM image (the
+  current image is 512 KiB; see the artifact list below), copy into SRAM,
+  enter the kernel in memory mode `11`, initialize the polled early serial
+  console, and print the banner the M0 image then halted after.  Accepted
+  on physical hardware 2026-10-02 (exact banner observed; see
+  `docs/boot.md`).
 - **M1 — Memory/banking foundation**: explicit mode `10`/`11` region
   ownership (`docs/memory.md`), common-resident banking primitives and
   mode gates, page-zero and transition-state reservation, boot-time latch
@@ -245,15 +248,18 @@ Artifacts (all under `build/`):
 ```text
 zephyros.ihx   linker output
 zephyros.map   symbol/area map
-page0.bin      ROM page 0 (64 KiB, copied to SRAM bank 0)
-page1.bin      ROM page 1 (64 KiB, copied to SRAM bank 7)
-zephyros.bin   128 KiB boot image (FF-filled)
+page0.bin ... page7.bin   the eight 64 KiB ROM pages
+zephyros.bin   512 KiB boot image (pages 0-7, FF-filled)
 zephyr80.bin   identical copy for MAME
-modules/       packed ZMOD modules (+ dump/report JSON); embedded into
-               each image through the generated catalog blob
+recovery.romfs logical ROMFS recovery stream (pages 2-7 payload)
+modules/       packed ZMOD modules (+ dump/report JSON); the production
+               boot set is sourced from ROMFS, while pre-M5 acceptance
+               images embed a catalog blob
 ```
 
-The image is exactly 131072 bytes: ROM page 0 followed by ROM page 1.
+The image is exactly 524288 bytes: eight 64 KiB pages -- ROM page 0 and
+page 1 (the mirrored boot copies) followed by the ROMFS recovery store in
+pages 2-7.
 `tools/pack_image.py` turns memory-layout violations into build errors
 (out-of-region content, copier mirroring, entry-point placement), and
 `tools/mapcheck.py` validates area ownership, common-resident gate

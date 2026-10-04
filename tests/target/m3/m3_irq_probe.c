@@ -13,6 +13,11 @@
 #include "zephyros/irq.h"
 #include "zephyros/platform.h"
 
+#include "kernel/irq/irq_private.h"
+#include "kernel/memory/banking.h"
+
+#include "ctc_test.h"
+
 extern uint16_t zos_m3_probe_sp(void);
 
 volatile uint16_t m3_irq_probe_hits;
@@ -58,13 +63,13 @@ int m3_irq_probe_wait(uint8_t target)
 {
 	uint16_t spins;
 
-	platform_ctc0_test_start();
+	zos_ctc0_test_start();
 	for (spins = 0; spins < 0x8000u && m3_irq_probe_hits < target;
 	     ++spins) {
 		__asm__("ei");
 	}
 	__asm__("di");
-	platform_ctc0_stop();
+	zos_ctc0_test_stop();
 
 	if (m3_irq_probe_hits < target) {
 		return -1;

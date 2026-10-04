@@ -35,6 +35,9 @@
 #include "zephyros/platform.h"
 #include "zephyros/romfs.h"
 
+#include "kernel/device/registry.h"
+#include "kernel/irq/irq_private.h"
+
 /* Linker-exported arena bounds (never hard-coded in module code). */
 extern uint8_t __driver_arena_start[];
 extern uint8_t __driver_arena_end[];

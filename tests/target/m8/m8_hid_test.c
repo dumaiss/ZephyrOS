@@ -35,6 +35,7 @@
 #include "zephyros/hid.h"
 #include "zephyros/kernel.h"
 
+#include "kernel/device/registry.h"
 #include "m8_hid_selftest.h"
 
 #if ZOS_M8_HID_SELFTEST || ZOS_M8_HID_NOIOC || ZOS_M8_HID_BADIOC
