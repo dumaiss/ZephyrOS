@@ -97,6 +97,39 @@ captures output with a bounded timeout, and verifies the expected output:
                      physical keyboard and display.  The image waits
                      for the host sync sequence; start this tool first
                      and reset the board.
+    --mode m8        the M8 integration acceptance image: banner, the
+                     binding report (hid.keyboard0 input class 04,
+                     v9958.0 output class 02), the device count, the
+                     controller level returned by PING, the
+                     malformed-call invariants and "m8 selftest: OK"
+                     over the direct early SIO.  The interactive
+                     monitor session runs over the HID input and the
+                     V9958 output and is the human gate; the image
+                     waits for the host sync sequence.
+    --mode m8-fb-nohid  the fallback image with no hid.zmod in the
+                     recovery store: `hid: unavailable 0x05`, input
+                     falls back to sio0.b, output stays v9958.0; the
+                     tool sends the invited input byte and the operator
+                     confirms the console marker on the display.
+    --mode m8-fb-nohid-nov9958  HID and V9958 both absent:
+                     `hid: unavailable 0x05` and `v9958: unavailable
+                     0x05`; the console binds SIO/SIO, so both the
+                     invited input byte and the console marker are
+                     verified in this serial transcript.
+    --mode m8-fb-badioc  the malformed-IOC fallback: the fixture IOC
+                     (null command operation) fails HID init
+                     (`hid: unavailable 0x0B`) while V9958 still
+                     loads; the console binds SIO/V9958 (input byte
+                     scripted, output marker on the display).
+    --mode m8-fb-arena  the arena-exhaustion fallback: the v9958.zmod
+                     entry is an oversized allocation (`v9958:
+                     unavailable 0x06`); HID stays the input, SIO the
+                     output, so the console marker is verified in this
+                     serial transcript.
+
+All new M8 modes send the host sync sequence while the banner is
+pending, because the acceptance builds hold the first byte until the
+host is listening (the bench reset also resets the USB bridge).
 
 The device is given with --port or the ZOS_SERIAL_PORT environment
 variable (the SERIAL_PORT make variable is passed through).  A missing or
@@ -111,7 +144,7 @@ before they print anything, so those modes send that sequence once the
 port is open and repeat it until the first byte arrives.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure|m7|m8-ioc|m8-hid|m8-v9958|m8-console]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure|m7|m8-ioc|m8-hid|m8-v9958|m8-console|m8|m8-fb-nohid|m8-fb-nohid-nov9958|m8-fb-badioc|m8-fb-arena]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -186,7 +219,10 @@ M8IOC_SELFTEST_OK = b"m8 ioc selftest: OK\r\n"
 M8IOC_SELFTEST_PENDING_RE = re.compile(
     rb"m8 ioc selftest: PENDING 0xFE\r\n")
 M8IOC_FAIL = b"m8 ioc selftest: FAIL"
-M8IOC_UNAVAILABLE = b"ioc: unavailable\r\n"
+# The precise failure diagnostic is "<name>: unavailable 0x<ZOS_E*>"
+# (kernel/main.c kernel_module_unavailable); the prefix is the stable
+# part used for wrong-image classification.
+M8IOC_UNAVAILABLE = b"ioc: unavailable"
 
 # --- M8 HID keyboard/text input ---------------------------------------------
 M8HID_KEYBOARD_OK = b"m8 hid: keyboard0 OK\r\n"
@@ -201,7 +237,7 @@ M8HID_SIO_PROMPT = b"m8 hid: sio fallback, send R\r\n"
 M8HID_FALLBACK_OK = b"m8 hid: sio fallback OK\r\n"
 M8HID_SELFTEST_OK = b"m8 hid selftest: OK\r\n"
 M8HID_FAIL = b"m8 hid selftest: FAIL"
-M8HID_UNAVAILABLE = b"hid: unavailable\r\n"
+M8HID_UNAVAILABLE = b"hid: unavailable"
 M8HID_FALLBACK_BYTE = b"R"
 
 # --- M8 V9958 video core -----------------------------------------------------
@@ -213,7 +249,7 @@ M8V9958_FILL_OK = b"m8 v9958: fill presented\r\n"
 M8V9958_PATTERN_OK = b"m8 v9958: pattern drawn\r\n"
 M8V9958_SELFTEST_OK = b"m8 v9958 selftest: OK\r\n"
 M8V9958_FAIL = b"m8 v9958 selftest: FAIL"
-M8V9958_UNAVAILABLE = b"v9958: unavailable\r\n"
+M8V9958_UNAVAILABLE = b"v9958: unavailable"
 
 # --- M8 console (HID input / V9958 output) ------------------------------------
 # The console image's early-SIO transcript reports the selected console
@@ -224,6 +260,118 @@ M8CONSOLE_INPUT_OK = b"m8 console: input hid.keyboard0 class 04\r\n"
 M8CONSOLE_OUTPUT_OK = b"m8 console: output v9958.0 class 02\r\n"
 M8CONSOLE_SELFTEST_OK = b"m8 console selftest: OK\r\n"
 M8CONSOLE_FAIL = b"m8 console selftest: FAIL"
+
+# --- M8 integration acceptance (package 20) ---------------------------------
+# The integration image's early-SIO transcript: the binding report, the
+# device count, the controller level returned by PING, the rejected-call
+# invariants and the final marker.  All optional-module diagnostics stay
+# absent (every module loaded); the interactive session runs over the
+# HID input / V9958 output and is the human gate.
+M8_INPUT_OK = b"m8 selftest: input hid.keyboard0 class 04\r\n"
+M8_OUTPUT_OK = b"m8 selftest: output v9958.0 class 02\r\n"
+M8_DEVICES_OK = b"m8 selftest: devices 04\r\n"
+M8_IOC_LEVEL_OK = b"m8 selftest: ioc level 4A\r\n"
+M8_REJECTED_OK = b"m8 selftest: rejected calls OK\r\n"
+M8_SELFTEST_OK = b"m8 selftest: OK\r\n"
+M8_FAIL = b"m8 selftest: FAIL"
+M8_UNAVAILABLE_ANY = b": unavailable 0x"
+
+# --- M8 fallback matrix (package 20) ----------------------------------------
+M8FB_INPUT_RE = re.compile(
+    rb"m8 fallback: input ([A-Za-z0-9._]+) class ([0-9A-F]{2})\r\n")
+M8FB_OUTPUT_RE = re.compile(
+    rb"m8 fallback: output ([A-Za-z0-9._]+) class ([0-9A-F]{2})\r\n")
+M8FB_DEVICES_RE = re.compile(rb"m8 fallback: devices (\d{1,2})\r\n")
+M8FB_SEND_INPUT = b"m8 fallback: send input\r\n"
+M8FB_INPUT_BYTE = b"R"
+M8FB_INPUT_OK_RE = re.compile(rb"m8 fallback: input OK 0x([0-9A-F]{2})\r\n")
+M8FB_INPUT_NONE = b"m8 fallback: input none\r\n"
+M8FB_CONSOLE_MARKER = b"m8 fallback: console output\r\n"
+M8FB_WRITE_OK = b"m8 fallback: console write OK\r\n"
+M8FB_SELFTEST_OK = b"m8 fallback selftest: OK\r\n"
+M8FB_FAIL = b"m8 fallback selftest: FAIL"
+
+# Observable contract per failure variant: the bound console pair, the
+# exact early-SIO diagnostics (ZOS_E* code), and whether the console
+# marker must be visible in the serial transcript (output = SIO) or is
+# display-only and must therefore NOT appear on the link (output =
+# V9958).  A serial-bound input must show the scripted byte read back
+# through the console service.
+M8FB_MODES = {
+    "m8-fb-nohid": {
+        "input": (b"sio0.b", b"01"),
+        "output": (b"v9958.0", b"02"),
+        "diagnostics": (b"hid: unavailable 0x05\r\n",),
+        "serial_marker": False,
+    },
+    "m8-fb-nohid-nov9958": {
+        "input": (b"sio0.b", b"01"),
+        "output": (b"sio0.b", b"01"),
+        "diagnostics": (b"hid: unavailable 0x05\r\n",
+                        b"v9958: unavailable 0x05\r\n"),
+        "serial_marker": True,
+    },
+    "m8-fb-badioc": {
+        "input": (b"sio0.b", b"01"),
+        "output": (b"v9958.0", b"02"),
+        "diagnostics": (b"hid: unavailable 0x0B\r\n",),
+        "serial_marker": False,
+    },
+    "m8-fb-arena": {
+        "input": (b"hid.keyboard0", b"04"),
+        "output": (b"sio0.b", b"01"),
+        "diagnostics": (b"v9958: unavailable 0x06\r\n",),
+        "serial_marker": True,
+    },
+}
+
+
+def _m8_result(data):
+    """True when the integration image's serial portion completed: the
+    binding report, the PING level, the rejected-call invariants, no
+    optional-module diagnostic, no failure marker."""
+    if M8_FAIL in data or b"PANIC" in data or M8_UNAVAILABLE_ANY in data:
+        return False
+    for needle in (BANNER, M8_INPUT_OK, M8_OUTPUT_OK, M8_DEVICES_OK,
+                   M8_IOC_LEVEL_OK, M8_REJECTED_OK, M8_SELFTEST_OK):
+        if needle not in data:
+            return False
+    return True
+
+
+def _m8fb_result(mode, data):
+    """True when the variant's observable contract is complete."""
+    spec = M8FB_MODES[mode]
+    if M8FB_FAIL in data or b"PANIC" in data:
+        return False
+    for needle in (BANNER, M8FB_WRITE_OK, M8FB_SELFTEST_OK):
+        if needle not in data:
+            return False
+    match = M8FB_INPUT_RE.search(data)
+    if match is None or (match.group(1), match.group(2)) != spec["input"]:
+        return False
+    match = M8FB_OUTPUT_RE.search(data)
+    if match is None or (match.group(1), match.group(2)) != spec["output"]:
+        return False
+    if M8FB_DEVICES_RE.search(data) is None:
+        return False
+    for needle in spec["diagnostics"]:
+        if data.count(needle) != 1:
+            return False
+    if spec["input"][1] == b"01":
+        if M8FB_SEND_INPUT not in data or M8FB_INPUT_NONE in data:
+            return False
+        match = M8FB_INPUT_OK_RE.search(data)
+        if match is None or match.group(1) != b"52":
+            return False
+    if spec["serial_marker"]:
+        if M8FB_CONSOLE_MARKER not in data:
+            return False
+    elif M8FB_CONSOLE_MARKER in data:
+        # The bound output is the V9958 display: a marker on the serial
+        # link would contradict the reported binding.
+        return False
+    return True
 
 # Host sync the smoke image waits for before the banner (bench quirk: the
 # board's reset line also resets the USB bridge, so the board must not
@@ -455,7 +603,10 @@ def main(argv):
                                            "m4", "m4-failure", "m5",
                                            "m5-corrupt", "m6", "m6-failure",
                                            "m7", "m8-ioc", "m8-hid",
-                                           "m8-v9958", "m8-console"),
+                                           "m8-v9958", "m8-console", "m8",
+                                           "m8-fb-nohid",
+                                           "m8-fb-nohid-nov9958",
+                                           "m8-fb-badioc", "m8-fb-arena"),
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
@@ -531,6 +682,35 @@ def main(argv):
               "keyboard/display that the monitor banner and prompt are "
               "visible and that the documented command pass works "
               "(see docs/validation/2026-10-03-m8-console.md)")
+    if args.mode == "m8":
+        print("serial_smoke: mode m8 checks the integration image's "
+              "serial portion (binding report, PING level, rejected-call "
+              "invariants); power-cycle the board or press RESET now so "
+              "the boot is captured; the image waits for the host sync "
+              "sequence")
+        print("serial_smoke: the interactive monitor session runs over "
+              "the HID input and the V9958 output; confirm the banner, "
+              "prompt and documented command pass on the physical "
+              "keyboard/display")
+    if args.mode in M8FB_MODES:
+        spec = M8FB_MODES[args.mode]
+        print("serial_smoke: mode %s checks the fallback boot log "
+              "(expected %s input / %s output); power-cycle the board or "
+              "press RESET now so the boot is captured; the image waits "
+              "for the host sync sequence"
+              % (args.mode, spec["input"][0].decode(),
+                 spec["output"][0].decode()))
+        if spec["input"][1] == b"01":
+            print("serial_smoke: when 'm8 fallback: send input' appears, "
+                  "this tool sends the invited byte over the serial link "
+                  "and validates the read-back")
+        if spec["serial_marker"]:
+            print("serial_smoke: the console output is the SIO fallback; "
+                  "the marker is verified in this transcript")
+        else:
+            print("serial_smoke: the console output is the V9958; "
+                  "visually confirm 'm8 fallback: console output' on the "
+                  "display")
     deadline = time.monotonic() + args.timeout
     data = b""
     bridge_drops = 0
@@ -556,7 +736,9 @@ def main(argv):
                       % (args.port, bridge_drops))
                 host_sync_at = 0.0
             if (args.mode in ("m8-ioc", "m8-hid", "m8-v9958",
-                              "m8-console") and
+                              "m8-console", "m8", "m8-fb-nohid",
+                              "m8-fb-nohid-nov9958", "m8-fb-badioc",
+                              "m8-fb-arena") and
                     BANNER not in data and
                     time.monotonic() >= host_sync_at):
                 # The smoke image holds the banner for this sequence; keep
@@ -676,6 +858,21 @@ def main(argv):
                 elif args.mode == "m8-console":
                     if _m8console_result(data) or M8CONSOLE_FAIL in data:
                         break
+                elif args.mode == "m8":
+                    if _m8_result(data) or M8_FAIL in data:
+                        break
+                elif args.mode in M8FB_MODES:
+                    if M8FB_SEND_INPUT in data and not rx_byte_sent:
+                        try:
+                            link.write(M8FB_INPUT_BYTE)
+                            link.flush()
+                        except (serial.SerialException, OSError):
+                            pass  # the read notices a dropped link
+                        rx_byte_sent = True
+                        print("serial_smoke: sent invited input byte %r"
+                              % M8FB_INPUT_BYTE)
+                    if _m8fb_result(args.mode, data) or M8FB_FAIL in data:
+                        break
     finally:
         if link is not None:
             try:
@@ -792,6 +989,25 @@ def main(argv):
                     "output class report, and 'm8 console selftest: OK'; "
                     "the operator must also confirm the visible monitor "
                     "session on the V9958 display with the USB keyboard")
+    elif args.mode == "m8":
+        ok = _m8_result(data)
+        expected = ("the banner, the binding report (hid.keyboard0 input "
+                    "class 04, v9958.0 output class 02), the device "
+                    "count, the PING controller level, the rejected-call "
+                    "invariants and 'm8 selftest: OK', with no optional-"
+                    "module diagnostic; the operator must also confirm "
+                    "the visible monitor session on the V9958 display "
+                    "with the USB keyboard")
+    elif args.mode in M8FB_MODES:
+        ok = _m8fb_result(args.mode, data)
+        spec = M8FB_MODES[args.mode]
+        expected = ("the %s/%s binding report, its exact early-SIO "
+                    "diagnostic(s), the scripted serial input byte where "
+                    "the input is SIO, the console marker where it is "
+                    "serial-visible (otherwise confirmed on the display), "
+                    "and 'm8 fallback selftest: OK'"
+                    % (spec["input"][0].decode(),
+                       spec["output"][0].decode()))
     else:
         ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
               SELFTEST_OK in data and IRQ_SELFTEST_OK in data and
@@ -1030,6 +1246,41 @@ def _explain_wrong_image(mode, data):
                   "The interactive session runs over the HID input "
                   "and the V9958 output and must be confirmed on the "
                   "physical keyboard and display", file=sys.stderr)
+    elif mode == "m8":
+        if M8IOC_SELFTEST_OK in data or M8CONSOLE_SELFTEST_OK in data:
+            print("serial_smoke: hint: an earlier M8 image marker was "
+                  "observed; flash build-m8-selftest/"
+                  "zephyros-m8-selftest.bin (the integration image)",
+                  file=sys.stderr)
+        elif M8_UNAVAILABLE_ANY in data:
+            print("serial_smoke: hint: an optional module reported "
+                  "unavailable; the integration image carries all four "
+                  "modules, so the recovery store or the flashed image "
+                  "is wrong.  The exact code above names the failed load",
+                  file=sys.stderr)
+        elif not BANNER in data:
+            print("serial_smoke: hint: no boot log was captured.  This "
+                  "image waits for the host sync sequence before the "
+                  "banner; start this tool first, then power-cycle the "
+                  "board or press RESET while it waits, and rerun",
+                  file=sys.stderr)
+        else:
+            print("serial_smoke: hint: the integration transcript is "
+                  "incomplete; the last marker above shows how far the "
+                  "boot got.  The interactive monitor session must be "
+                  "confirmed on the physical keyboard and display",
+                  file=sys.stderr)
+    elif mode in M8FB_MODES:
+        spec = M8FB_MODES[mode]
+        if b"m8 selftest: OK" in data:
+            print("serial_smoke: hint: the integration image appears to "
+                  "be flashed; use --mode m8", file=sys.stderr)
+        print("serial_smoke: hint: this mode expects the %s/%s binding "
+              "and the exact diagnostic '%s'; the transcript above shows "
+              "what the flashed image actually provides"
+              % (spec["input"][0].decode(), spec["output"][0].decode(),
+                 spec["diagnostics"][0].decode().rstrip()),
+              file=sys.stderr)
 
 
 if __name__ == "__main__":

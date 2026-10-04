@@ -182,7 +182,9 @@ class TestHidModuleArtifact(unittest.TestCase):
         hid = main.index('romfs_load_zmod("hid"')
         self.assertLess(sio, ioc, "IOC must load after the SIO fallback")
         self.assertLess(ioc, hid, "HID must load after the IOC transport")
-        self.assertIn('early_console_puts("hid: unavailable', main)
+        # A failed HID load reports the module and the ZOS_E* code and
+        # must not disturb the IOC transport or the SIO fallback.
+        self.assertIn('kernel_module_unavailable("hid", result)', main)
         self.assertIn("#if ZOS_HID_BOOT", main)
 
     def test_makefile_targets_and_module_rule(self):
@@ -474,7 +476,7 @@ class TestHidSmokeToolContract(unittest.TestCase):
                              b"m8 hid: rx 33\r\nm8 hid: rx 42\r\n"),
                 base + b"m8 hid selftest: FAIL 0x05 detail 0x00\r\n",
                 base.replace(b"m8 hid: keyboard0 OK\r\n",
-                             b"hid: unavailable\r\n")):
+                             b"hid: unavailable 0x0B\r\n")):
             self.assertEqual(self.tool._m8hid_result(wrong), "fail",
                              "misclassified: %r" % wrong[-80:])
 

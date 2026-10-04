@@ -298,6 +298,11 @@ class TestMonitorSourceDependencies(unittest.TestCase):
     FORBIDDEN_PATTERNS = (
         (re.compile(r"\bearly_console\w*"), "early-console dependency"),
         (re.compile(r"\bSIO\w*|\bsio0\w*"), "SIO dependency"),
+        # M8 device classes: the monitor must run unchanged over any
+        # console binding and therefore knows none of them.
+        (re.compile(r"\bv9958\b", re.IGNORECASE), "V9958 dependency"),
+        (re.compile(r"\bhid\b", re.IGNORECASE), "HID dependency"),
+        (re.compile(r"\bioc\b", re.IGNORECASE), "IOC dependency"),
         (re.compile(r"\bBDOS\b|\bBIOS\b|\bWBOOT\b"), "CP/M dependency"),
         (re.compile(r"\b__asm\w*\b"), "inline assembly in monitor C"),
         (re.compile(r"\b(IN|OUT)\s+A?\s*,?\s*\("), "direct port I/O"),

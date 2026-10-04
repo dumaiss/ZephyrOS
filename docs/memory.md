@@ -137,7 +137,12 @@ validates the exported bounds; in derived builds it additionally pins
 minimum, and the presence of `__kernel_code_end`.  `tools/pack_image.py`
 treats the region as non-ROM-loadable and reconciles the boot-set plan
 (per-module image+BSS/granules, used/free totals; see
-`docs/module-format.md`).  The loader/relocator routines are bank-7 code
+`docs/module-format.md`).  Package 20 pins the whole reconciliation in
+`tests/test_m8.py`: the image manifest's arena block must equal the
+plan, every per-module size/granule count must match the packed
+container the plan names, the four production modules must fit with a
+non-negative remainder, and the arena must end exactly at the `C000h`
+runtime boundary.  The loader/relocator routines are bank-7 code
 enforced by an explicit list and a prefix sweep over `_module_`,
 `_zmod_`, `_z4_`, `_m4_`, and `_irq_registry_` symbols.  Loaded modules
 are placed inside the arena by the loader.

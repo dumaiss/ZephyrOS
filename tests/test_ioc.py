@@ -384,8 +384,9 @@ class TestIocModuleArtifact(unittest.TestCase):
         sio = main.index('romfs_load_zmod("sio"')
         ioc = main.index('romfs_load_zmod("ioc"')
         self.assertLess(sio, ioc, "IOC must load after the SIO fallback")
-        # A failed IOC load must not take the SIO binding path with it.
-        self.assertIn('early_console_puts("ioc: unavailable', main)
+        # A failed IOC load must not take the SIO binding path with it;
+        # the diagnostic names the module and the ZOS_E* code.
+        self.assertIn('kernel_module_unavailable("ioc", result)', main)
         self.assertIn("#if ZOS_IOC_BOOT", main)
 
     def test_makefile_targets_and_module_rule(self):

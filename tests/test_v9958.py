@@ -333,7 +333,9 @@ class TestModuleArtifact(unittest.TestCase):
         self.assertLess(hid, v9958,
                         "V9958 must load after HID (all console candidates "
                         "registered before binding)")
-        self.assertIn('early_console_puts("v9958: unavailable', main)
+        # A failed V9958 load reports the module and the ZOS_E* code and
+        # must not disturb the earlier devices.
+        self.assertIn('kernel_module_unavailable("v9958", result)', main)
         self.assertIn("#if ZOS_V9958_BOOT", main)
 
     def test_fontfail_manifest_maps_font_to_stub(self):
@@ -688,7 +690,7 @@ class TestTargetAcceptanceContract(unittest.TestCase):
                 base.replace(b"m8 v9958: console v9958.0 OK\r\n", b""),
                 base + b"m8 v9958 selftest: FAIL 0x03 detail 0x01\r\n",
                 base.replace(b"m8 v9958: reset OK\r\n",
-                             b"v9958: unavailable\r\n")):
+                             b"v9958: unavailable 0x0B\r\n")):
             self.assertFalse(tool._m8v9958_result(wrong),
                              "misclassified: %r" % wrong[-60:])
         self.assertIn("m8-v9958", tool.__doc__)

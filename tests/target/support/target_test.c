@@ -47,6 +47,12 @@
 #if ZOS_M8_CONSOLE_SELFTEST
 #include "m8_console_selftest.h"
 #endif
+#if ZOS_M8_SELFTEST
+#include "m8_selftest.h"
+#endif
+#if ZOS_M8_FALLBACK_SELFTEST
+#include "m8_fallback_selftest.h"
+#endif
 
 void zos_target_test_early(void)
 {
@@ -92,5 +98,11 @@ void zos_target_test_late(void)
 #endif
 #if ZOS_M8_CONSOLE_SELFTEST
 	zos_run_m8_console_selftest();
+#endif
+#if ZOS_M8_SELFTEST
+	zos_run_m8_selftest();
+#endif
+#if ZOS_M8_FALLBACK_SELFTEST
+	zos_run_m8_fallback_selftest();
 #endif
 }

@@ -42,6 +42,14 @@ The arena is a linker-reserved region of bank 7:
 A000h-BFFFh   8192 bytes   16 contiguous 512-byte granules
 ```
 
+*Since M8 this fixed geometry is the **legacy acceptance** rectangle:
+pre-M8 self-test images and the shifted-placement variant keep it
+byte-stably, while production derives the arena from the aligned linked
+kernel end (minimum 16 KiB before `C000h`) in a two-pass link -- see
+`docs/memory.md` section 2.2 and `docs/architecture.md` section 30.2.
+The loader and the generated `arena_geometry.inc` consume the linked
+symbols in both geometries; nothing below depends on the numeric base.*
+
 * Reserved by `platform/zephyr80/memory.inc`
   (`ZOS_DRIVER_ARENA_BASE/END`, `ZOS_DRIVER_GRANULE_SIZE`,
   `ZOS_DRIVER_GRANULES`) and exported as the link symbols
@@ -400,14 +408,22 @@ acceptance image:
 | `build-m4-selftest/` (`make m4-selftest`) | embedded catalog: `sio-irq.zmod` |
 | `build-m4-placement-selftest/` (`make m4-placement-selftest`) | embedded catalog: `sio.zmod`, arena shifted to 9E00h-BE00h |
 | `build-m4-failure/` (`make m4-failure-selftest`) | embedded catalog: `sio-fail.zmod` |
+| `build-m8-selftest/` (`make m8-selftest`) | ROMFS: `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod` + font + monitor |
+| `build-m8-fb-*/` (`make m8-fallback-selftests`) | ROMFS failure variants (missing/substituted entries), same load order |
 
 `kernel/main.c` runs `module_loader_init()` and then loads the boot
 module through the compile-time selected source: `romfs_init()` +
 `romfs_load_zmod("sio", "sio.zmod")` by default, or
 `module_catalog_load_all()` for the pre-M5 acceptance builds
-(`-DZOS_ROMFS_BOOT=0`).  The console is then bound with
-`console_bind_defaults()` (capability-based, name-agnostic).  Module
-failures print `console: dynamic driver failed`; success prints
+(`-DZOS_ROMFS_BOOT=0`).  Since M8 the ROMFS path continues with the
+deterministic `ioc.zmod`, `hid.zmod`, `v9958.zmod` sequence (each load
+gated by `ZOS_IOC_BOOT` / `ZOS_HID_BOOT` / `ZOS_V9958_BOOT`), and a
+failed optional module is rolled back by the loader and reported as
+`<name>: unavailable 0x<ZOS_E*>` on the direct early SIO; every earlier
+resident stays registered.  The console is then bound with
+`console_bind_defaults()` (capability-based, name-agnostic) and the
+monitor launcher runs.  Module failures of the required SIO fallback
+print `console: dynamic driver failed`; success prints
 `console: dynamic sio0.b OK` through the bound module.  A corrupt
 recovery image panics with `PANIC: romfs: corrupt recovery image` before
 any module execution.  The loader makes no assumptions about the module

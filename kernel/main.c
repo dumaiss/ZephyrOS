@@ -153,10 +153,46 @@ static void romfs_diagnose(int result)
 }
 #endif
 
+/* Failure-only early-SIO diagnostic for one optional boot module: the
+ * module name plus the two-hex-digit ZOS_E* code behind the failed load
+ * (the loader and ROMFS return negated codes).  A missing ROMFS entry
+ * (0x05), a malformed container (0x0A), an allocation that no longer
+ * fits (0x06) and a refused init (0x0B) therefore all distinguish on
+ * the serial link without any code from the failed module being
+ * executed.  Optional modules never take the SIO fallback or an already
+ * resident module down with them.
+ *
+ * Compiled only when an optional load exists, so pre-M8 acceptance
+ * images (which compile every optional block out) keep their bytes. */
+#if ZOS_IOC_BOOT || ZOS_HID_BOOT || ZOS_V9958_BOOT
+static void kernel_module_unavailable(const char *name, int result)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	unsigned code = (unsigned)(-result) & 0xFFu;
+
+	early_console_puts(name);
+	early_console_puts(": unavailable 0x");
+	early_console_putc(hex[(code >> 4) & 0x0Fu]);
+	early_console_putc(hex[code & 0x0Fu]);
+	early_console_puts("\r\n");
+}
+#endif
+
 /* Resolve and load the boot module through the selected source.  Returns
  * 0 when the module is resident, non-zero otherwise.  A corrupt recovery
  * store fails here through the early-console panic path, before any
- * module code is ever executed. */
+ * module code is ever executed.
+ *
+ * Production boot order is explicit and deterministic (no general
+ * dependency resolver): the required SIO fallback first, then the IOC
+ * command+bulk transport, then HID (which discovers IOC by
+ * class/capability at init), then the V9958 video+console device.  Only
+ * after all four loads does kernel_main() run the single
+ * console_bind_defaults() and hand off to the unchanged
+ * process_exec("monitor.zex") launcher.  A failed optional module is
+ * rolled back by the loader -- earlier resident modules are never
+ * disturbed -- and the boot continues; the diagnostic names the module
+ * and the exact failure. */
 static uint8_t kernel_boot_module(void)
 {
 #if ZOS_ROMFS_BOOT
@@ -170,33 +206,34 @@ static uint8_t kernel_boot_module(void)
 		return 1;
 	}
 #if ZOS_IOC_BOOT
-	/* Deterministic boot order after the SIO fallback: the IOC
-	 * command+bulk transport.  A module whose init fails (including a
-	 * failed link bring-up) is rolled back by the loader and reported
-	 * here; the console still binds to SIO below. */
-	if (romfs_load_zmod("ioc", "ioc.zmod") < 0) {
-		early_console_puts("ioc: unavailable\r\n");
+	/* The IOC command+bulk transport.  A module whose init fails
+	 * (including a failed link bring-up) is rolled back by the loader
+	 * and reported here; the console still binds to SIO below. */
+	result = romfs_load_zmod("ioc", "ioc.zmod");
+	if (result < 0) {
+		kernel_module_unavailable("ioc", result);
 	}
 #endif
 #if ZOS_HID_BOOT
-	/* Then the HID keyboard/text input module.  HID depends on the
-	 * IOC class; a missing/malformed dependency fails its init, the
+	/* The HID keyboard/text input module.  HID depends on the IOC
+	 * class; a missing/malformed dependency fails its init, the
 	 * loader rolls the (empty) registration set back, and the SIO
 	 * fallback plus the IOC transport remain usable. */
-	if (romfs_load_zmod("hid", "hid.zmod") < 0) {
-		early_console_puts("hid: unavailable\r\n");
+	result = romfs_load_zmod("hid", "hid.zmod");
+	if (result < 0) {
+		kernel_module_unavailable("hid", result);
 	}
 #endif
 #if ZOS_V9958_BOOT
-	/* Then the V9958 video core.  It has no IOC dependency and
-	 * registers the VIDEO class device only after its full bring-up
-	 * and the ROMFS font upload succeeded; a missing/undersized font
-	 * or a failed VDP sequence fails the init and the loader rolls it
-	 * back without disturbing the earlier devices.  The normal console
-	 * stays on the SIO output fallback until the console package adds
-	 * the V9958 character interface. */
-	if (romfs_load_zmod("v9958", "v9958.zmod") < 0) {
-		early_console_puts("v9958: unavailable\r\n");
+	/* The V9958 video core and text console.  It has no IOC
+	 * dependency and registers the VIDEO class device only after its
+	 * full bring-up and the ROMFS font upload succeeded; a
+	 * missing/undersized font or a failed VDP sequence fails the init
+	 * and the loader rolls it back without disturbing the earlier
+	 * devices. */
+	result = romfs_load_zmod("v9958", "v9958.zmod");
+	if (result < 0) {
+		kernel_module_unavailable("v9958", result);
 	}
 #endif
 	return 0;

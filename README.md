@@ -86,6 +86,21 @@ M0 boot mechanics.
   the interactive monitor (`docs/monitor.md`).  Host-validated and
   physically accepted 2026-10-03
   (`docs/validation/2026-10-03-m7-monitor.md`).
+- **M8 — Native device stack**: driver ABI v2 with a linker-derived
+  production driver arena, the IOC command+bulk transport, the HID
+  keyboard/text class over IOC, the V9958 video core with the ported
+  85x26 terminal renderer, the preferred HID/V9958 console binding with
+  SIO fallback, and the independent direct early/panic SIO path
+  (`docs/devices.md` sections 5-8.2).  Packages 14-19 are individually
+  accepted; the package-20 integration acceptance (deterministic boot
+  order, precise failure diagnostics, the failure/fallback image matrix,
+  production-byte simulator replay, build/manifest reconciliation and
+  the final physical gate) is recorded in
+  `docs/validation/2026-10-03-m8-device-stack.md`.  **Status: complete
+  — host/simulator validation and the integrated physical acceptance
+  (serial smoke, the full human HID/V9958 monitor pass and the
+  fallback-image matrix with its display confirmations) passed
+  2026-10-04.**
 
 ## Prerequisites
 
@@ -144,6 +159,25 @@ make monitor-test
 make m7-selftest
                    # M7 image: kernel diagnostic selftest + scripted
                    # interactive monitor replay (build-m7-selftest/)
+make ioc-test
+                   # pack/validate ioc.zmod + host transport contract suite
+make hid-test
+                   # pack/validate hid.zmod + host class/artifact suite
+make v9958-test
+                   # pack/validate v9958.zmod + font pipeline + renderer
+                   # model suites
+make m8-selftest
+                   # M8 integration acceptance: full four-module image +
+                   # package-20 target diagnostic + monitor launcher, and
+                   # the production-byte simulator replay (boot order,
+                   # binding, IOC command/bulk, HID queue, scripted
+                   # monitor session, post-fault recovery)
+                   # (build-m8-selftest/)
+make m8-fallback-selftests
+                   # builds every failure/fallback variant image (no HID,
+                   # no HID+V9958, malformed IOC, arena exhaustion, font
+                   # failure, HID rollback) and replays each against its
+                   # exact binding and early-SIO diagnostics
 make smoke-hardware SERIAL_PORT=/dev/ttyUSB0
                    # capture + verify the banner from physical hardware
 make smoke-hardware-selftest SERIAL_PORT=/dev/ttyUSB0
@@ -174,6 +208,17 @@ make smoke-hardware-m7 SERIAL_PORT=/dev/ttyUSB0
                    # dumps, modify/readback, I/O, rejections, two Q
                    # cycles); start it first, then power-cycle/RESET the
                    # board so the boot log is captured
+make smoke-hardware-m8 SERIAL_PORT=/dev/ttyUSB0
+                   # capture + verify the integration image's serial
+                   # portion (binding report, PING level, rejected-call
+                   # invariants, 'm8 selftest: OK'); then perform the
+                   # human HID/V9958 monitor pass on the display
+make smoke-hardware-m8-fb-nohid SERIAL_PORT=/dev/ttyUSB0
+                   # fallback variants (also -fb-nohid-nov9958,
+                   # -fb-badioc, -fb-arena): each verifies its exact
+                   # binding, early-SIO diagnostic and scripted serial
+                   # input where the input is SIO; V9958-bound output is
+                   # confirmed on the display by the operator
 make clean         # remove generated files under build*/
 ```
 
@@ -184,11 +229,16 @@ hashes, fill counts, and entry addresses).  `make check` additionally
 proves that a clean rebuild reproduces the identical binary.
 
 Physical-hardware validation uses `tools/serial_smoke.py` (115200 8N1,
-bounded timeout).  The M7 mode must be listening before the board
-boots: start the tool, then power-cycle or press RESET (the boot-log
-lines are printed once).  Dated acceptance records live under
-`docs/validation/` (M1, M2, the M3 record, and the M4 loader/acceptance
-records).
+bounded timeout).  The M7 and M8 modes must be listening before the
+board boots: start the tool, then power-cycle or press RESET (the
+boot-log lines are printed once; the M8 images additionally wait for
+the tool's host-sync sequence before the banner).  The `m8` and
+`m8-fb-*` modes assert the exact binding and diagnostics of the
+integration and fallback images, scripting the serial input where the
+bound input is SIO; V9958-bound output is confirmed on the display by
+the operator.  Dated acceptance records live under `docs/validation/`
+(M1, M2, the M3 record, the M4 loader/acceptance records, M5-M7, and
+the package-20 M8 device-stack record).
 
 Artifacts (all under `build/`):
 
@@ -224,6 +274,13 @@ HALT
 console: dynamic sio0.b OK
 ```
 
+On the M8 production stack the console-service line is written through
+the *bound* console (HID input / V9958 output), so it appears on the
+V9958 display rather than the serial link; the serial transcript keeps
+the early-SIO banner and any `<name>: unavailable 0x<ZOS_E*>`
+diagnostics.  `make smoke-hardware-m8` verifies the serial portion of
+the integration image.
+
 ## Layout
 
 ```text
@@ -235,7 +292,7 @@ ZephyrOS/
 ├── include/zephyros/      types.h, platform.h, kernel.h, syscall.h,
 │                          errno.h, irq.h, device.h, driver.h,
 │                          console.h, module.h, romfs.h, process.h,
-│                          zex.h
+│                          zex.h, ioc.h, hid.h, video.h
 ├── boot/start.asm         common boot entry + C runtime initialization
 ├── boot/shadow_copy.asm   reset/ROM-to-SRAM copier
 ├── kernel/                main.c, panic.c, early_console.c, syscall.c,
@@ -248,6 +305,7 @@ ZephyrOS/
 │                          romfs/ (romfs.c, rom_access.asm),
 │                          process/ (process.c, exec.c, launch.asm)
 ├── drivers/               sio/ (sio.c, sio_io.asm, sio_module.c),
+│                          ioc/, hid/, v9958/ (M8 device modules),
 │                          ctc/ (ctc.c)
 ├── modules/               manifests/ (production ZMOD metadata),
 │                          runtime/ (shared module-local SDCC glue)
@@ -257,14 +315,16 @@ ZephyrOS/
 ├── user/                  runtime/ (M6 syscall + M7 diagnostic wrappers,
 │                          console/hex/dump/status components),
 │                          monitor/ (native monitor.zex sources)
-├── recovery/manifest.json production ROMFS contents (sio.zmod,
+├── recovery/manifest.json production ROMFS contents (sio.zmod, ioc.zmod,
+│                          hid.zmod, v9958.zmod, v9958-6x8.font,
 │                          monitor.zex)
 ├── tools/                 pack_image.py, mapcheck.py, zmodpack.py,
-│                          romfspack.py, zexpack.py, serial_smoke.py
+│                          romfspack.py, zexpack.py, fontpack.py,
+│                          serial_smoke.py
 ├── tests/                 host-side image/layout/ABI tests + Z80 replays;
-│                          m5/..m7 (manifests, fixtures, generators);
+│                          m5/..m8 (manifests, fixtures, generators);
 │                          modules/ (test ZMOD sources + manifests);
-│                          target/ (m1..m7 acceptance code, headers,
+│                          target/ (m1..m8 acceptance code, headers,
 │                          shared runner)
 └── work/                  milestone worker contracts
 ```

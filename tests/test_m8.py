@@ -411,13 +411,209 @@ class TestBootSetPlan(unittest.TestCase):
             self.skipTest("derived production build missing; run make")
         values = mapcheck.parse_inc(geometry_inc)
         self.assertEqual(values["ZOS_ARENA_DERIVED"], 1)
-        manifest = json.load(open(manifest_path))
+        manifest = _read_json(manifest_path)
         arena = manifest["arena"]
         self.assertEqual(values["ZOS_KERNEL_CODE_END"],
                          manifest["entries"]["__kernel_code_end"])
         self.assertEqual(values["ZOS_DRIVER_ARENA_BASE"], arena["start"])
         self.assertEqual(values["ZOS_DRIVER_ARENA_END"], arena["end"])
         self.assertGreaterEqual(arena["granules"], 32)
+        # Package 20: the arena is the aligned-up linked kernel end, ends
+        # exactly at the C000h runtime boundary and keeps the 16-KiB
+        # minimum as a build invariant.
+        kernel_end = manifest["entries"]["__kernel_code_end"]
+        self.assertEqual(arena["start"], (kernel_end + 0x1FF) & ~0x1FF,
+                         "arena start is not align_up(kernel end, 512)")
+        self.assertEqual(arena["end"], 0xC000)
+        self.assertGreaterEqual(arena["size"], 0x4000)
+        self.assertEqual(arena["granules"], arena["size"] // 512)
+        self.assertEqual(arena["granule_size"], 512)
+
+    def test_production_plan_reconciles_with_packed_modules(self):
+        plan_path = os.path.join(ROOT, "build", "arena.plan.json")
+        manifest_path = os.path.join(ROOT, "build",
+                                     "zephyros.manifest.json")
+        if not (os.path.exists(plan_path)
+                and os.path.exists(manifest_path)):
+            self.skipTest("derived production build missing; run make")
+        plan = _read_json(plan_path)
+        manifest = _read_json(manifest_path)
+        self.assertEqual([entry["name"] for entry in plan["modules"]],
+                         ["sio", "ioc", "hid", "v9958"],
+                         "the four production modules must all fit")
+        used = 0
+        for entry in plan["modules"]:
+            with open(entry["path"], "rb") as handle:
+                data = handle.read()
+            info = zmodpack.parse_container(data, entry["path"])
+            self.assertEqual(entry["image_size"], info["image_size"])
+            self.assertEqual(entry["bss_size"], info["bss_size"])
+            self.assertEqual(entry["total_size"],
+                             info["image_size"] + info["bss_size"])
+            self.assertEqual(entry["granules"], info["required_granules"])
+            used += entry["granules"]
+        arena = plan["arena"]
+        self.assertEqual(arena["used_granules"], used)
+        self.assertEqual(arena["free_granules"],
+                         arena["granules"] - used)
+        self.assertGreaterEqual(arena["free_granules"], 0)
+        # The packed image report carries the same boot-set plan, and the
+        # arena never reaches into the C000h-DFFFh runtime workspace.
+        self.assertEqual(manifest["arena"]["modules"], plan["modules"])
+        self.assertEqual(manifest["arena"]["end"], 0xC000)
+        self.assertEqual(manifest["arena"]["granule_size"], 512)
+
+
+M8_MANIFEST_DIR = os.path.join(ROOT, "tests", "m8")
+
+
+def _read_json(path):
+    with open(path) as handle:
+        return json.load(handle)
+
+
+# Package 20: every M8 manifest carries the required media types; the
+# failure variants substitute fixture bytes only for named slots or drop
+# only the module(s) whose absence is the point of the variant.
+M8_REQUIRED_TYPES = {
+    "sio.zmod": "ZMOD",
+    "ioc.zmod": "ZMOD",
+    "hid.zmod": "ZMOD",
+    "v9958.zmod": "ZMOD",
+    "v9958-6x8.font": "DATA",
+    "monitor.zex": "ZEX",
+}
+M8_FULL_SET = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
+               "v9958-6x8.font", "monitor.zex"]
+
+
+class TestM8Manifests(unittest.TestCase):
+    def check(self, path, names):
+        manifest = _read_json(path)
+        self.assertEqual(manifest["format"], "romfs-v1")
+        self.assertEqual([entry["name"] for entry in manifest["files"]],
+                         names)
+        for entry in manifest["files"]:
+            self.assertEqual(entry["type"], M8_REQUIRED_TYPES[entry["name"]],
+                             entry["name"])
+        index = {entry["name"]: i
+                 for i, entry in enumerate(manifest["files"])}
+        self.assertEqual(index["sio.zmod"], 0,
+                         "SIO is the required first boot module")
+        if "hid.zmod" in index:
+            self.assertLess(index["ioc.zmod"], index["hid.zmod"],
+                            "IOC must be bootable before HID")
+        if "v9958.zmod" in index:
+            self.assertLess(index["v9958.zmod"], index["monitor.zex"])
+        self.assertEqual(index["monitor.zex"], len(names) - 1,
+                         "the monitor launcher is last")
+
+    def test_production_and_failure_manifests(self):
+        cases = (
+            (os.path.join(ROOT, "recovery", "manifest.json"), M8_FULL_SET),
+            (os.path.join(M8_MANIFEST_DIR, "manifest-hid-badioc.json"),
+             M8_FULL_SET),
+            (os.path.join(M8_MANIFEST_DIR, "manifest-v9958-fontfail.json"),
+             M8_FULL_SET),
+            (os.path.join(M8_MANIFEST_DIR,
+                          "manifest-fallback-arena.json"), M8_FULL_SET),
+            (os.path.join(M8_MANIFEST_DIR, "manifest-fallback-nohid.json"),
+             ["sio.zmod", "ioc.zmod", "v9958.zmod", "v9958-6x8.font",
+              "monitor.zex"]),
+            (os.path.join(M8_MANIFEST_DIR,
+                          "manifest-fallback-nohid-nov9958.json"),
+             ["sio.zmod", "ioc.zmod", "monitor.zex"]),
+        )
+        for path, names in cases:
+            with self.subTest(manifest=os.path.basename(path)):
+                self.check(path, names)
+
+    def test_production_manifest_names_are_the_artifacts(self):
+        manifest = _read_json(os.path.join(ROOT, "recovery",
+                                           "manifest.json"))
+        for entry in manifest["files"]:
+            self.assertEqual(entry["path"], entry["name"],
+                             "production manifests must not substitute "
+                             "fixture bytes")
+
+    def test_failure_manifests_substitute_only_named_slots(self):
+        substitutions = {
+            "manifest-hid-badioc.json": {"ioc.zmod": "fakeioc.zmod"},
+            "manifest-v9958-fontfail.json": {
+                "v9958-6x8.font": "v9958-font-stub.bin"},
+            "manifest-fallback-arena.json": {
+                "v9958.zmod": "m8regfill.zmod"},
+            "manifest-fallback-nohid.json": {},
+            "manifest-fallback-nohid-nov9958.json": {},
+        }
+        for name, mapping in substitutions.items():
+            manifest = _read_json(os.path.join(M8_MANIFEST_DIR, name))
+            paths = {entry["name"]: entry["path"]
+                     for entry in manifest["files"]}
+            for slot, path in mapping.items():
+                self.assertEqual(paths[slot], path, name)
+            for slot, path in paths.items():
+                if slot not in mapping:
+                    self.assertEqual(path, slot,
+                                     "%s: unexpected substitution" % name)
+
+    def test_makefile_acceptance_targets_and_flags(self):
+        with open(os.path.join(ROOT, "Makefile")) as handle:
+            makefile = handle.read()
+        for target in ("m8-selftest:", "m8-fallback-selftests:",
+                       "smoke-hardware-m8:", "smoke-hardware-m8-fb-nohid:",
+                       "smoke-hardware-m8-fb-nohid-nov9958:",
+                       "smoke-hardware-m8-fb-badioc:",
+                       "smoke-hardware-m8-fb-arena:"):
+            self.assertIn(target, makefile)
+        for flag in ("ZOS_M8_SELFTEST", "ZOS_M8_FALLBACK_SELFTEST",
+                     "ZOS_M8_FALLBACK"):
+            self.assertIn(flag, makefile)
+
+    def test_target_runner_wires_package20_tests(self):
+        with open(os.path.join(ROOT, "tests", "target", "support",
+                               "target_test.c")) as handle:
+            runner = handle.read()
+        self.assertIn('#include "m8_selftest.h"', runner)
+        self.assertIn('#include "m8_fallback_selftest.h"', runner)
+        self.assertIn("zos_run_m8_selftest()", runner)
+        self.assertIn("zos_run_m8_fallback_selftest()", runner)
+
+    def test_serial_smoke_modes_classify_the_matrix(self):
+        import serial_smoke as tool
+        self.assertEqual(
+            sorted(tool.M8FB_MODES),
+            ["m8-fb-arena", "m8-fb-badioc", "m8-fb-nohid",
+             "m8-fb-nohid-nov9958"])
+        for mode in tool.M8FB_MODES:
+            self.assertIn(mode, tool.__doc__)
+        base = (tool.BANNER +
+                b"hid: unavailable 0x05\r\n" +
+                b"m8 fallback: input sio0.b class 01\r\n" +
+                b"m8 fallback: output v9958.0 class 02\r\n" +
+                b"m8 fallback: devices 3\r\n" +
+                b"m8 fallback: send input\r\n" +
+                b"m8 fallback: input OK 0x52\r\n" +
+                b"m8 fallback: console write OK\r\n" +
+                b"m8 fallback selftest: OK\r\n")
+        self.assertTrue(tool._m8fb_result("m8-fb-nohid", base))
+        self.assertFalse(tool._m8fb_result(
+            "m8-fb-nohid", base + tool.M8FB_CONSOLE_MARKER))
+        self.assertFalse(tool._m8fb_result(
+            "m8-fb-nohid", base.replace(b"v9958.0", b"sio0.b")))
+        self.assertFalse(tool._m8fb_result(
+            "m8-fb-nohid", base.replace(b"input OK 0x52", b"input none")))
+        integration = (tool.BANNER +
+                       b"m8 selftest: input hid.keyboard0 class 04\r\n" +
+                       b"m8 selftest: output v9958.0 class 02\r\n" +
+                       b"m8 selftest: devices 04\r\n" +
+                       b"m8 selftest: ioc level 4A\r\n" +
+                       b"m8 selftest: rejected calls OK\r\n" +
+                       b"m8 selftest: OK\r\n")
+        self.assertTrue(tool._m8_result(integration))
+        self.assertFalse(tool._m8_result(
+            integration + b"hid: unavailable 0x05\r\n"))
+        self.assertIn("m8", tool.__doc__)
 
 
 if __name__ == "__main__":

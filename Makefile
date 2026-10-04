@@ -257,6 +257,47 @@ TARGET_TEST_OBJS += $(BUILD)/m8_console_test.rel
 PK_SUFFIX := -m8-console-selftest
 endif
 
+# M8 integration acceptance image (package 20): the full production
+# stack (SIO + IOC + HID + the V9958 video/console module) from ROMFS,
+# the integration target diagnostic (class/capability discovery of all
+# four residents, the single default binding, PING command/status,
+# malformed/null/class/capability rejections and their invariants)
+# reported over the direct early SIO, then the unchanged M7
+# `monitor.zex` launcher for the human HID/V9958 session.  This is the
+# image the final physical acceptance gate builds and flashes;
+# tests/test_m8_acceptance.py replays these exact bytes plus the
+# production image.
+ifeq ($(ZOS_M8_SELFTEST),1)
+CFLAGS    += -DZOS_M8_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m8_test.rel
+PK_SUFFIX := -m8-selftest
+endif
+
+# M8 fallback-matrix images (package 20): the same four-module boot
+# contract with one deliberate failure injected through the variant's
+# ROMFS manifest (`ZOS_M8_FALLBACK` = nohid, nohid-nov9958, badioc or
+# arena).  The kernel boot gates stay at their production values, so
+# every variant exercises the real sequential load path, the precise
+# early-SIO diagnostic and the console fallback policy.  The shared
+# target diagnostic reports the surviving binding; the expected binding
+# and direction per variant are asserted by tests/test_m8_fallback.py
+# and the matching serial_smoke modes.
+ifeq ($(ZOS_M8_FALLBACK_SELFTEST),1)
+CFLAGS    += -DZOS_M8_FALLBACK_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m8_fallback_test.rel
+ifeq ($(ZOS_M8_FALLBACK),nohid)
+PK_SUFFIX := -m8-fb-nohid
+else ifeq ($(ZOS_M8_FALLBACK),nohid-nov9958)
+PK_SUFFIX := -m8-fb-nohid-nov9958
+else ifeq ($(ZOS_M8_FALLBACK),badioc)
+PK_SUFFIX := -m8-fb-badioc
+else ifeq ($(ZOS_M8_FALLBACK),arena)
+PK_SUFFIX := -m8-fb-arena
+else
+$(error ZOS_M8_FALLBACK_SELFTEST needs ZOS_M8_FALLBACK=nohid|nohid-nov9958|badioc|arena)
+endif
+endif
+
 # Hardware-smoke host sync (kernel/main.c): the M8 IOC smoke image waits
 # for the host's two-byte sync sequence on SIO0/B before the banner,
 # because this bench's reset line also resets the USB bridge.  Only
@@ -362,7 +403,8 @@ ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
 	$(ZOS_M8_IOC_SELFTEST) $(ZOS_M8_HID_SELFTEST) \
 	$(ZOS_M8_HID_NOIOC) $(ZOS_M8_HID_BADIOC) \
 	$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL) \
-	$(ZOS_M8_CONSOLE_SELFTEST)),)
+	$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
+	$(ZOS_M8_FALLBACK_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
 endif
@@ -493,12 +535,16 @@ endif
 	m8-hid-selftest m8-hid-noioc-selftest m8-hid-badioc-selftest \
 	v9958-test m8-v9958-selftest m8-v9958-fontfail-selftest \
 	m8-console-selftest \
+	m8-selftest m8-fallback-selftests \
 	smoke-hardware \
 	smoke-hardware-selftest smoke-hardware-irq smoke-hardware-m3 \
 	smoke-hardware-m4 smoke-hardware-m4-failure smoke-hardware-m5 \
 	smoke-hardware-m5-corrupt smoke-hardware-m6 smoke-hardware-m6-failure \
 	smoke-hardware-m7 smoke-hardware-m8-ioc smoke-hardware-m8-hid \
-	smoke-hardware-m8-v9958 smoke-hardware-m8-console
+	smoke-hardware-m8-v9958 smoke-hardware-m8-console \
+	smoke-hardware-m8 smoke-hardware-m8-fb-nohid \
+	smoke-hardware-m8-fb-nohid-nov9958 smoke-hardware-m8-fb-badioc \
+	smoke-hardware-m8-fb-arena
 
 all: $(IMAGE) $(MAME_IMAGE)
 
@@ -881,6 +927,14 @@ $(MODULES)/m8_api.zmod: tests/modules/m8_api.json $(MODULES)/m8_api.rel \
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
 		--report $(MODULES)/m8_api.report.json
 
+# Arena-exhaustion fixture for the package-20 fallback matrix: a tiny
+# image with a 36-granule BSS pad, large enough that its allocation can
+# never succeed in the derived production arena.  Loaded as `v9958.zmod`
+# by tests/m8/manifest-fallback-arena.json; the init is never reached.
+$(MODULES)/m8regfill.rel: tests/modules/m8_regfill.c \
+		include/zephyros/driver.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
 $(MODULES)/%.zmod: tests/modules/%.json $(MODULES)/%.rel \
 		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES)
@@ -935,7 +989,9 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/m6_selftest.h \
 		tests/target/include/m8_hid_selftest.h \
 		tests/target/include/m8_v9958_selftest.h \
-		tests/target/include/m8_console_selftest.h | $(BUILD)
+		tests/target/include/m8_console_selftest.h \
+		tests/target/include/m8_selftest.h \
+		tests/target/include/m8_fallback_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/syscall_test.rel: tests/target/m1/syscall_test.c \
@@ -1011,6 +1067,20 @@ $(BUILD)/m8_console_test.rel: tests/target/m8/m8_console_test.c \
 		include/zephyros/kernel.h include/zephyros/video.h \
 		include/zephyros/hid.h \
 		tests/target/include/m8_console_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/m8_test.rel: tests/target/m8/m8_test.c \
+		include/zephyros/console.h include/zephyros/device.h \
+		include/zephyros/hid.h include/zephyros/ioc.h \
+		include/zephyros/kernel.h include/zephyros/module.h \
+		include/zephyros/video.h drivers/ioc/ioc_proto.h \
+		tests/target/include/m8_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) -Idrivers/ioc $< -o $@
+
+$(BUILD)/m8_fallback_test.rel: tests/target/m8/m8_fallback_test.c \
+		include/zephyros/console.h include/zephyros/device.h \
+		include/zephyros/kernel.h \
+		tests/target/include/m8_fallback_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M6 native program (ZEXTEST) ---------------------------------------------
@@ -1179,6 +1249,32 @@ ROMFS_EXTRA_DEPS := $(MODULES)/fakeioc.zmod $(MODULES)/monitor.zex
 else ifeq ($(ZOS_M8_V9958_FONTFAIL),1)
 ROMFS_MANIFEST := tests/m8/manifest-v9958-fontfail.json
 ROMFS_EXTRA_DEPS := $(MODULES)/v9958-font-stub.bin $(MODULES)/monitor.zex
+else ifeq ($(ZOS_M8_FALLBACK),nohid)
+# Failure variant: the required set minus hid.zmod, so the kernel's HID
+# load takes the missing-ROMFS-entry path (-ZOS_ENOENT) and the console
+# falls back to SIO input with the V9958 output.
+ROMFS_MANIFEST := tests/m8/manifest-fallback-nohid.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+else ifeq ($(ZOS_M8_FALLBACK),nohid-nov9958)
+# Failure variant: HID and V9958 both absent; only the SIO fallback and
+# the IOC transport survive, and the console binds SIO/SIO.
+ROMFS_MANIFEST := tests/m8/manifest-fallback-nohid-nov9958.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+else ifeq ($(ZOS_M8_FALLBACK),badioc)
+# Failure variant: a malformed IOC interface (fixture device with a null
+# command operation) makes HID init fail and roll back while the real
+# V9958 still loads; the console binds SIO/V9958.
+ROMFS_MANIFEST := tests/m8/manifest-hid-badioc.json
+ROMFS_EXTRA_DEPS := $(MODULES)/fakeioc.zmod $(MODULES)/monitor.zex
+else ifeq ($(ZOS_M8_FALLBACK),arena)
+# Failure variant: the v9958.zmod entry carries an oversized BSS filler,
+# so the last boot module fails allocation (ZMOD_ENOSPC) after SIO, IOC
+# and HID are resident; the console binds HID/SIO.  The declared boot
+# set (BOOT_ZMODS) keeps the real v9958 bytes for the build-time arena
+# plan; this image intentionally exercises the runtime allocation
+# failure, which the plan cannot express.
+ROMFS_MANIFEST := tests/m8/manifest-fallback-arena.json
+ROMFS_EXTRA_DEPS := $(MODULES)/m8regfill.zmod $(MODULES)/monitor.zex
 else
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
@@ -1219,7 +1315,8 @@ ZOS_TEST_LINK := $(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) \
 		$(ZOS_M8_IOC_SELFTEST) $(ZOS_M8_HID_SELFTEST) \
 		$(ZOS_M8_HID_NOIOC) $(ZOS_M8_HID_BADIOC) \
 		$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL) \
-		$(ZOS_M8_CONSOLE_SELFTEST))
+		$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
+		$(ZOS_M8_FALLBACK_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -1603,6 +1700,77 @@ m8-console-selftest:
 	$(PYTHON) -m unittest discover -s tests -p 'test_m8_sim.py' -v
 	@echo "m8-console image: build-m8-console-selftest/zephyros-m8-console-selftest.bin"
 
+# --- M8 integration acceptance and fallback matrix (package 20) --------------
+# m8-selftest is the final acceptance image: the full production stack
+# plus the integration target diagnostic and the unchanged monitor
+# launcher.  tests/test_m8_acceptance.py replays the production bytes
+# (build/zephyros.bin) and these bytes: boot order, binding, IOC
+# command/status/bulk sequencing, HID queue traffic, the V9958 trace,
+# the split console, the scripted monitor session with two exit/relaunch
+# cycles, post-fault recovery and the malformed-call invariants.
+#
+# m8-fallback-selftests builds every observable failure variant plus
+# the accepted font-failure image and replays the matrix
+# (tests/test_m8_fallback.py); each variant's exact binding, early-SIO
+# diagnostic and direction are asserted from the real linked bytes.
+
+m8-selftest: all
+	$(MAKE) BUILD=build-m8-selftest ZOS_M8_SELFTEST=1 ZOS_SMOKE_HOST_SYNC=1 \
+		build-m8-selftest/zephyros-m8-selftest.bin \
+		build-m8-selftest/zephyr80-m8-selftest.bin
+	$(PYTHON) tools/mapcheck.py \
+		build-m8-selftest/zephyros.map \
+		build-m8-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m8_acceptance.py' -v
+	@echo "m8 integration image: build-m8-selftest/zephyros-m8-selftest.bin"
+
+m8-fallback-selftests: all
+	$(MAKE) BUILD=build-m8-fb-nohid ZOS_M8_FALLBACK_SELFTEST=1 \
+		ZOS_M8_FALLBACK=nohid ZOS_SMOKE_HOST_SYNC=1 \
+		build-m8-fb-nohid/zephyros-m8-fb-nohid.bin \
+		build-m8-fb-nohid/zephyr80-m8-fb-nohid.bin
+	$(MAKE) BUILD=build-m8-fb-nohid-nov9958 ZOS_M8_FALLBACK_SELFTEST=1 \
+		ZOS_M8_FALLBACK=nohid-nov9958 ZOS_SMOKE_HOST_SYNC=1 \
+		build-m8-fb-nohid-nov9958/zephyros-m8-fb-nohid-nov9958.bin \
+		build-m8-fb-nohid-nov9958/zephyr80-m8-fb-nohid-nov9958.bin
+	$(MAKE) BUILD=build-m8-fb-badioc ZOS_M8_FALLBACK_SELFTEST=1 \
+		ZOS_M8_FALLBACK=badioc ZOS_SMOKE_HOST_SYNC=1 \
+		build-m8-fb-badioc/zephyros-m8-fb-badioc.bin \
+		build-m8-fb-badioc/zephyr80-m8-fb-badioc.bin
+	$(MAKE) BUILD=build-m8-fb-arena ZOS_M8_FALLBACK_SELFTEST=1 \
+		ZOS_M8_FALLBACK=arena ZOS_SMOKE_HOST_SYNC=1 \
+		build-m8-fb-arena/zephyros-m8-fb-arena.bin \
+		build-m8-fb-arena/zephyr80-m8-fb-arena.bin
+	$(MAKE) BUILD=build-m8-v9958-fontfail-selftest ZOS_M8_V9958_FONTFAIL=1 \
+		ZOS_SMOKE_HOST_SYNC=1 \
+		build-m8-v9958-fontfail-selftest/zephyros-m8-v9958-fontfail-selftest.bin \
+		build-m8-v9958-fontfail-selftest/zephyr80-m8-v9958-fontfail-selftest.bin
+	$(MAKE) BUILD=build-m8-hid-noioc-selftest ZOS_M8_HID_NOIOC=1 \
+		ZOS_SMOKE_HOST_SYNC=1 \
+		build-m8-hid-noioc-selftest/zephyros-m8-hid-noioc-selftest.bin \
+		build-m8-hid-noioc-selftest/zephyr80-m8-hid-noioc-selftest.bin
+	$(MAKE) BUILD=build-m8-hid-badioc-selftest ZOS_M8_HID_BADIOC=1 \
+		ZOS_SMOKE_HOST_SYNC=1 \
+		build-m8-hid-badioc-selftest/zephyros-m8-hid-badioc-selftest.bin \
+		build-m8-hid-badioc-selftest/zephyr80-m8-hid-badioc-selftest.bin
+	$(PYTHON) tools/mapcheck.py build-m8-fb-nohid/zephyros.map \
+		build-m8-fb-nohid/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) tools/mapcheck.py build-m8-fb-nohid-nov9958/zephyros.map \
+		build-m8-fb-nohid-nov9958/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) tools/mapcheck.py build-m8-fb-badioc/zephyros.map \
+		build-m8-fb-badioc/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) tools/mapcheck.py build-m8-fb-arena/zephyros.map \
+		build-m8-fb-arena/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m8_fallback.py' -v
+	@echo "m8 fallback matrix images:"
+	@echo "  build-m8-fb-nohid/zephyros-m8-fb-nohid.bin"
+	@echo "  build-m8-fb-nohid-nov9958/zephyros-m8-fb-nohid-nov9958.bin"
+	@echo "  build-m8-fb-badioc/zephyros-m8-fb-badioc.bin"
+	@echo "  build-m8-fb-arena/zephyros-m8-fb-arena.bin"
+	@echo "  build-m8-v9958-fontfail-selftest/zephyros-m8-v9958-fontfail-selftest.bin"
+	@echo "  build-m8-selftest/zephyros-m8-selftest.bin + build/zephyros.bin (all-modules row)"
+
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching ROM
 # programmed.  Pass SERIAL_PORT=/dev/ttyUSB0 (or export ZOS_SERIAL_PORT).
@@ -1651,3 +1819,25 @@ smoke-hardware-m8-v9958:
 
 smoke-hardware-m8-console:
 	$(PYTHON) tools/serial_smoke.py --mode m8-console --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+# Package-20 modes: the full integration image (serial portion: early
+# diagnostics, binding report and the target selftest; the interactive
+# monitor session over HID/V9958 is the human gate) and the four
+# observable failure variants, each asserting its exact binding.  The
+# host sync is sent while the banner is pending, as for the other M8
+# smoke modes.
+
+smoke-hardware-m8:
+	$(PYTHON) tools/serial_smoke.py --mode m8 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m8-fb-nohid:
+	$(PYTHON) tools/serial_smoke.py --mode m8-fb-nohid --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m8-fb-nohid-nov9958:
+	$(PYTHON) tools/serial_smoke.py --mode m8-fb-nohid-nov9958 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m8-fb-badioc:
+	$(PYTHON) tools/serial_smoke.py --mode m8-fb-badioc --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m8-fb-arena:
+	$(PYTHON) tools/serial_smoke.py --mode m8-fb-arena --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

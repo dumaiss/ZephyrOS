@@ -604,7 +604,7 @@ class TestM8IocBoot(IocSimBase):
         # the unchanged monitor to its prompt.
         self.assertIsNone(self.ioc_device(z))
         self.assertIn(FAIL_LINE + b" 0x01", tx)
-        self.assertIn(b"ioc: unavailable\r\n", tx)
+        self.assertIn(b"ioc: unavailable 0x0B\r\n", tx)
         self.assertIn(b"console: dynamic sio0.b OK", tx)
         self.assertIn(PROMPT, tx)
         self.assertNotIn(b"PANIC", tx)

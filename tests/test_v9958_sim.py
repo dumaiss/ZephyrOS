@@ -598,7 +598,7 @@ class TestV9958FontFailure(V9958SimBase):
         peer = V9958Peer()
         z = self.boot_to(peer, b"m8 v9958 fontfail selftest: OK\r\n")
         tx = bytes(z.sio_tx)
-        self.assertIn(b"v9958: unavailable\r\n", tx)
+        self.assertIn(b"v9958: unavailable 0x0B\r\n", tx)
         self.assertIn(b"m8 v9958: absent after font failure\r\n", tx)
         self.assertNotIn(b"m8 v9958: video0 OK", tx)
 

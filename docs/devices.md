@@ -153,14 +153,20 @@ boot module source (kernel_boot_module()):
                      (embedded SIO module registers sio0.b)
     ROMFS images  -> romfs_init()
                      romfs_load_zmod("sio", "sio.zmod")
-                     romfs_load_zmod("ioc", "ioc.zmod")   ; M8
-                     romfs_load_zmod("hid", "hid.zmod")   ; M8
-                     (failure: "ioc: unavailable" / "hid: unavailable",
-                      SIO untouched)
+                     romfs_load_zmod("ioc", "ioc.zmod")    ; M8
+                     romfs_load_zmod("hid", "hid.zmod")    ; M8
+                     romfs_load_zmod("v9958", "v9958.zmod") ; M8
+                     (failure: "<name>: unavailable 0x<ZOS_E*>"
+                      on the early console -- the exact code names a
+                      missing entry 0x05, a malformed container 0x0A,
+                      an exhausted arena 0x06 or a refused init 0x0B;
+                      the SIO fallback and every earlier resident
+                      module are untouched)
 [platform_ctc0_stop()]
-console_bind_defaults()       ; capability lookup
+console_bind_defaults()       ; one final call, after all four loads
 dynamic console line via console service
 [TEST-ONLY HOOK: zos_target_test_late() in acceptance builds]
+monitor launcher (unchanged process_exec("monitor.zex"))
 halt loop
 ```
 
@@ -310,7 +316,13 @@ produced a CRC-verified matching reply.
   `hid.zmod`, and `monitor.zex` in the ROMFS recovery store and load
   SIO first, then IOC, then HID, as part of the deterministic boot set
   reported by the arena plan.  A failed IOC load/bring-up prints
-  `ioc: unavailable` and the console still binds to SIO.  Pre-M8
+  `ioc: unavailable 0x<ZOS_E*>` and the console still binds to SIO.
+  Package 20 adds the observable failure variants: the fallback images
+  (`build-m8-fb-nohid`, `-nohid-nov9958`, `-badioc`, `-arena`, plus
+  the font-failure and HID rollback images) boot the same four-module
+  sequence with one manifest/interface failure and are replayed
+  against their exact bindings by `tests/test_m8_fallback.py` (see
+  section 8.2).  Pre-M8
   acceptance images compile the IOC and HID loads out (`ZOS_IOC_BOOT=0`
   / `ZOS_HID_BOOT=0`) and stay byte-identical to their accepted builds.
 - Host validation: `tests/test_ioc.py` pins the platform constants of
@@ -383,11 +395,13 @@ discovered the IOC class; the MCU firmware is untouched.
   status stays an IOC implementation detail.
 - Boot integration: production images carry `sio.zmod`, `ioc.zmod`,
   `hid.zmod`, and `monitor.zex` in the ROMFS recovery store and load
-  SIO, then IOC, then HID; a failed HID load prints `hid: unavailable`
-  and the console still binds SIO.  With HID registered,
-  `console_bind_defaults()` selects HID input and the SIO fallback
-  output (the V9958 VIDEO device registers in package 18 but
-  deliberately has no `ZCAP_CONSOLE_OUT` until package 19).
+  SIO, then IOC, then HID; a failed HID load prints
+  `hid: unavailable 0x<ZOS_E*>` and the console still binds SIO (the
+  `build-m8-fb-badioc` malformed-IOC and `build-m8-fb-nohid`
+  missing-entry variants prove both failure classes -- section 8.2).
+  With HID registered, `console_bind_defaults()` selects HID input and
+  the preferred V9958 output, or the SIO output fallback when the
+  V9958 device is absent.
 - Host validation: `tests/test_hid.py` pins the class contract,
   protocol constants, module artifact, boot order, source discipline
   (no port/status constants, no direct IN/OUT, discovery only through
@@ -497,7 +511,9 @@ same hardware serves graphics clients and the normal text console.
   missing/undersized font resource or a failed VDP sequence fails the
   init, the loader rolls the (empty) registration set back, and the SIO
   fallback, IOC transport and HID remain untouched (`v9958:
-  unavailable` on the early console).
+  unavailable 0x<ZOS_E*>` on the early console; the font-failure image
+  and the `build-m8-fb-arena` allocation-exhaustion image cover both
+  paths -- section 8.2).
 - Host validation: `tests/test_v9958.py` pins the class contract, the
   paired platform constants, the font asset pipeline, the module
   artifact (including the console-capable descriptor and the private
@@ -591,7 +607,10 @@ neither module knows about the other.  The acceptance image
 `build-m8-console-selftest/` binds HID input to V9958 output and runs the
 unchanged M7 `monitor.zex` through that pair; `make
 smoke-hardware-m8-console` validates the early-SIO boot transcript while
-the operator confirms the visible session.
+the operator confirms the visible session.  The package-20 integration
+image `build-m8-selftest/` binds the same pair, runs the package-20
+target diagnostic, and is driven by `make smoke-hardware-m8` followed by
+the human monitor pass (section 8.2).
 
 ### 6.1 Failure-path evidence
 
@@ -606,6 +625,58 @@ the fallback evidence:
 | runtime service failure | bound device reports an error | `console: service failed` |
 
 Every production image keeps the full M0 banner and panic path.
+
+### 8.2 M8 integration acceptance (package 20)
+
+Package 20 freezes the M8 production device stack and adds its
+integration gate:
+
+- **Boot contract**: `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod`
+  (plus `v9958-6x8.font` and `monitor.zex`) are the only production
+  ROMFS entries and are loaded in that order; a single
+  `console_bind_defaults()` runs after all four loads, followed by the
+  unchanged `process_exec("monitor.zex")` launcher.  A failed optional
+  module prints `<name>: unavailable 0x<ZOS_E*>` on the direct early
+  SIO (0x05 missing entry, 0x06 arena exhausted, 0x0A malformed
+  container, 0x0B refused init) and the boot continues; ROMFS
+  corruption keeps the fatal recovery policy.
+- **Failure/fallback matrix** (each row asserts its exact binding,
+  diagnostics and observable direction from the real linked bytes):
+
+  | Image | Injected failure | Early-SIO diagnostic | Binding |
+  | --- | --- | --- | --- |
+  | `build-m8-selftest/`, `build/` | none (all four modules) | -- | HID/V9958 |
+  | `build-m8-v9958-fontfail-selftest/` | undersized ROMFS font | `v9958: unavailable 0x0B` | HID/SIO |
+  | `build-m8-fb-nohid/` | `hid.zmod` entry absent | `hid: unavailable 0x05` | SIO/V9958 |
+  | `build-m8-fb-badioc/` | fake IOC (null command op) fails HID init | `hid: unavailable 0x0B` | SIO/V9958 |
+  | `build-m8-fb-nohid-nov9958/` | HID and V9958 entries absent | both `unavailable 0x05` | SIO/SIO |
+  | `build-m8-fb-arena/` | `v9958.zmod` replaced by an oversized allocation | `v9958: unavailable 0x06` | HID/SIO |
+
+- **Host/simulator evidence**: `make m8-selftest` builds the
+  integration image (full stack + package-20 target diagnostic + monitor
+  launcher) and replays the production bytes
+  (`tests/test_m8_acceptance.py`): boot order and binding, IOC
+  command/status/repeated-PING and the /SHARED READY/DONE bulk
+  interlock, HID queue traffic with the stuck-doorbell penalty, the
+  scripted monitor session with two Q exit/relaunch cycles,
+  malformed/null/class/capability rejections with device-table,
+  granule-allocation and lane-handshake invariants, and post-fault
+  recovery.  `make m8-fallback-selftests` builds every variant above
+  and replays `tests/test_m8_fallback.py`; `tests/test_m8.py`
+  reconciles the aligned linked-kernel end, derived arena, arena plan
+  and image manifest, and checks every M8 ROMFS manifest's
+  content/types/order.
+- **Physical gate**: flash `build-m8-selftest/zephyros-m8-selftest.bin`,
+  run `make smoke-hardware-m8` before reset, perform the human
+  HID/V9958 monitor pass, then run each `make smoke-hardware-m8-fb-*`
+  mode on its image and record what was observed on the display.  The
+  package-20 validation record
+  (`docs/validation/2026-10-03-m8-device-stack.md`) carries the exact
+  image hashes; all physical items were observed on the 2026-10-04
+  bench (serial smoke, the full monitor pass — including the `R`
+  screen and the rejected-input `ERR: ARG` lines — the four fallback
+  runs and the operator's display confirmations for the V9958-bound
+  variants), and M8 is marked complete.
 
 ## 9. Drivers and interrupts
 

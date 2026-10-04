@@ -1,7 +1,7 @@
 # ZephyrOS Architecture
 
-**Status:** M0-M6 complete and physically accepted; M7 complete and physically accepted (see `docs/validation/2026-10-03-m7-monitor.md`)
-**Scope:** Milestones M0 through M7
+**Status:** M0-M6 complete and physically accepted; M7 complete and physically accepted (see `docs/validation/2026-10-03-m7-monitor.md`); M8 complete and physically accepted (see `docs/validation/2026-10-03-m8-device-stack.md`)
+**Scope:** Milestones M0 through M8
 **Target:** Zephyr-80  
 **Language/toolchain:** SDCC + sdasz80/sdldz80, GNU Make, Python host tools
 
@@ -3728,6 +3728,21 @@ V9958 has no IOC dependency and may load earlier/later as long as all console ca
 
 A failed IOC/HID/V9958 module must not invalidate an already loaded SIO fallback.
 
+Implementation status (M8, package 20): the production order is exactly
+`sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod` from the ROMFS recovery
+store, followed by one final `console_bind_defaults()` and the unchanged
+`process_exec("monitor.zex")` launcher.  A failed optional module is
+rolled back by the loader (earlier residents are never disturbed) and
+reports `<name>: unavailable 0x<ZOS_E*>` on the direct early SIO, where
+the code distinguishes a missing entry (0x05), an exhausted arena
+(0x06), a malformed container (0x0A) and a refused init (0x0B); ROMFS
+corruption retains the fatal panic policy.  The observable failure
+variants (no HID, no HID+V9958, malformed IOC, V9958 font failure,
+arena-exhausted last module) plus the all-modules success case are built
+as real images and replayed in `tests/test_m8_fallback.py` against their
+exact bindings; the manifests and the linked arena/plan/manifest
+reconciliation are pinned by `tests/test_m8.py`.
+
 ---
 
 ## 30.9 Console binding policy
@@ -3815,6 +3830,18 @@ M8 is accepted when:
 
 Physical Zephyr-80 hardware is authoritative for V9958 wait/timing behavior, IOC/HID transport and the complete console interaction.
 
+Package-20 acceptance status: every host/simulator-checkable criterion
+above is covered by `tests/test_m8.py`, `tests/test_m8_acceptance.py`,
+`tests/test_m8_fallback.py`, `tests/test_m8_sim.py` and the per-module
+suites against the real linked bytes.  The dated record
+`docs/validation/2026-10-03-m8-device-stack.md` maps each criterion to
+its evidence and carries the integrated-image and fallback-matrix
+hashes; the physical items (integrated flash, serial smoke, the full
+human HID/V9958 monitor session including the `R` screen and the three
+rejected inputs, the fallback matrix and the per-variant display
+confirmations) were observed on the 2026-10-04 bench and are recorded
+there, so **M8 is marked complete (2026-10-04)**.
+
 ---
 
 # 32. Deferred architecture after M8
@@ -3878,7 +3905,7 @@ M7  COMPLETE (host + physical acceptance passed)
 └── default interactive environment before the shell
     │
     ▼
-M8
+M8  COMPLETE (host + physical acceptance passed)
 │
 ├── linker-derived production driver arena, minimum 16 KiB
 ├── driver ABI v2 + class-specific operations
@@ -3888,6 +3915,15 @@ M8
 ├── preferred HID/V9958 console binding
 └── SIO registered fallback + direct panic path
 ```
+
+M8 integration acceptance (package 20) passed on 2026-10-04: the
+deterministic four-module boot, the precise early-SIO failure
+diagnostics, the failure/fallback image matrix and the production-byte
+integration replay all pass host-side, and the final physical gate
+(integrated image flash, `make smoke-hardware-m8`, the complete human
+HID/V9958 monitor pass and the observable fallback matrix with its
+display confirmations) was observed and recorded in
+`docs/validation/2026-10-03-m8-device-stack.md`; M8 is complete.
 
 At the end of M8, ZephyrOS can boot from ROMFS, load the native device stack dynamically, execute native programs, use the V9958/HID console, communicate with the IOC, and retain serial recovery/fallback — all without any CP/M layer.
 

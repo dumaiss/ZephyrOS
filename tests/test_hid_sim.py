@@ -548,7 +548,7 @@ class TestM8HidNoIocImage(HidSimBase):
     def test_rollback_and_sio_fallback(self):
         z = self.boot_fallback()
         tx = bytes(z.sio_tx)
-        self.assertIn(b"hid: unavailable\r\n", tx)
+        self.assertIn(b"hid: unavailable 0x0B\r\n", tx)
         self.assertIn(b"m8 hid: hid absent after rollback\r\n", tx)
         self.assertIn(b"m8 hid selftest: OK", tx)
         self.assertNotIn(b"m8 hid selftest: FAIL", tx)
@@ -575,7 +575,7 @@ class TestM8HidBadIocImage(HidSimBase):
     def test_interface_rejection_and_rollback(self):
         z = self.boot_fallback()
         tx = bytes(z.sio_tx)
-        self.assertIn(b"hid: unavailable\r\n", tx)
+        self.assertIn(b"hid: unavailable 0x0B\r\n", tx)
         self.assertIn(b"m8 hid: malformed ioc rejected\r\n", tx)
         self.assertIn(b"m8 hid selftest: OK", tx)
         self.assertNotIn(b"m8 hid selftest: FAIL", tx)
