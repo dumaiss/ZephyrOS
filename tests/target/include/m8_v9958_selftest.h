@@ -8,15 +8,16 @@
  *
  * Normal image coverage:
  *
- *   - discovers `v9958.0` by class (ZDEV_VIDEO) and rejects any
- *     additional capability bit beyond the seven VIDEO operations; the
- *     character interface must be absent (char_ops null, no
- *     ZCAP_CHAR_OUT / ZCAP_CONSOLE_OUT in this package) and the console
- *     output must still be the SIO fallback;
+ *   - discovers `v9958.0` by class (ZDEV_VIDEO) with exactly the seven
+ *     VIDEO bits plus ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT (the ported
+ *     output terminal renderer) and an output-only zchar_ops table
+ *     (putc/write present, poll/getc null);
  *   - verifies the class interface through device_interface();
  *   - proves malformed requests are rejected before any I/O
  *     (non-null/nonzero write validation, zero-length PRESENT/RESET,
  *     unknown operation -> ZDEV_ENOTSUP, null state -> ZDEV_ENODEV);
+ *   - verifies the default console binding is the normal M8 pair: the
+ *     HID keyboard input and the v9958.0 output;
  *   - runs ZVIDEO_RESET and re-establishes the full display state;
  *   - exercises the native operations end to end: CTRL_WRITE register
  *     selects, PALETTE_WRITE for one palette entry, INDIRECT_WRITE for

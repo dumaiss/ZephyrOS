@@ -411,16 +411,51 @@ discovered the IOC class; the MCU firmware is untouched.
 `modules/manifests/v9958.json`) is the fourth production ZMOD module:
 the direct-hardware LunchCrema V9958 core ported from the pinned
 Zephyr-80 reference.  It delivers the hardware-safe initialization, the
-native VIDEO class operation surface, the ROMFS-backed font atlas and
-the low-level graphics/command primitives; the character renderer and
-`zchar_ops` follow with the console package, so this stage registers a
-VIDEO device without advertising character/console output.
+native VIDEO class operation surface, the ROMFS-backed font atlas, the
+low-level graphics/command primitives, and (package 19) the ported 85x26
+6x8 terminal renderer behind an output-only `zchar_ops` table, so the
+same hardware serves graphics clients and the normal text console.
 
 - Class and capabilities: `v9958.0`, class `ZDEV_VIDEO`, with exactly
   the seven `ZCAP_VIDEO_*` bits (control/data/block/palette/indirect/
-  present/reset).  `char_ops` is null and `ZCAP_CHAR_OUT` /
-  `ZCAP_CONSOLE_OUT` are absent, so `console_bind_defaults()` keeps the
-  SIO output fallback; no character interface can be inferred.
+  present/reset) plus `ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT` for the
+  character renderer.  `char_ops` points at `v9958_char_ops`, whose
+  `putc`/`write` entries feed one byte / the whole 16-bit length into
+  the terminal parser and whose `poll`/`getc` entries are null (the
+  device is output only); `console_bind_defaults()` therefore selects
+  it as the preferred console output, while input comes from a separate
+  device.
+- Terminal behavior (ported from the pinned reference, hardware-proven
+  layout): 85 logical columns, 26 rows, 6x8 glyph cells on a 208-line
+  text surface with a four-line margin inside the circular 256-line
+  page-zero bitmap, normal (10000h) and reverse (14000h) precolored
+  atlases, circular scrolling by advancing R#23 in cell steps, and a
+  sprite-mode-2 cursor whose SAT Y/X derive from the live cursor state.
+  Printable CP850/ASCII bytes 20h-FFh print; NUL/BEL/SO/SI and every
+  other control byte below 20h are consumed after flushing the pending
+  print run; CR homes the column, LF/VT advance the row keeping the
+  column, BS backs up one cell, TAB advances to the next 8-column stop,
+  FF and `ESC[2J` clear the screen and home, and `ESC[K`/`ESC[0K`,
+  `ESC[1K`, `ESC[2K`, `ESC[J`, `ESC[0J`, `ESC[1J`, `ESC[X` implement the
+  erase families with the current SGR background.  `ESC[7m`/`ESC[27m`/
+  `ESC[0m` drive reverse/normal video (other SGR parameters are
+  consumed), `ESC[s`/`ESC[u` and `ESC 7`/`ESC 8` save and restore
+  cursor and rendition, `ESC[?7h/l` control DECAWM (wrap-first at the
+  right margin, otherwise clamp-and-overwrite), `ESC[?25h/l` show/hide
+  the cursor, `ESC[A/B/C/D/G/d/H/f` move or place the cursor with
+  reference clamping, `ESC[L`/`ESC[M` insert/delete lines, `ESC c` and
+  the triple-ESC reset reinitialize terminal and display together, and
+  unknown or partial sequences are consumed without writing outside the
+  terminal state or the page-zero bitmap.  Print runs batch up to 64
+  glyphs and flush before control operations, present and cursor
+  updates so ordinary strings stay efficient and visible.
+- Private renderer stack: the `zchar_ops` entries are assembly wrappers
+  (`v9958_io.asm`) that switch to a private 256-byte module stack before
+  entering the C workers, because a complete renderer call chain exceeds
+  the common syscall gate stack depth that syscall-context callers run
+  on.  The workers preserve the exact sdcccall(1) prototypes and return
+  values; the gate stack itself is sized for the deepest accepted
+  syscall chain (see `docs/memory.md`).
 - Native operations (`include/zephyros/video.h`):
   `ZVIDEO_CTRL_WRITE` (1), `ZVIDEO_DATA_WRITE` (2),
   `ZVIDEO_DATA_BLOCK` (3), `ZVIDEO_PALETTE_WRITE` (4),
@@ -465,9 +500,10 @@ VIDEO device without advertising character/console output.
   unavailable` on the early console).
 - Host validation: `tests/test_v9958.py` pins the class contract, the
   paired platform constants, the font asset pipeline, the module
-  artifact, the ROMFS boot set and the source discipline (all port
-  I/O in `v9958_io.asm`; no CP/M tables, fixed BIOS addresses, Virtual
-  Drip framing or IOC/HID imports; no interrupt claim;
+  artifact (including the console-capable descriptor and the private
+  renderer-stack wrappers), the ROMFS boot set and the source discipline
+  (all port I/O in `v9958_io.asm`; no CP/M tables, fixed BIOS addresses,
+  Virtual Drip framing or IOC/HID imports; no interrupt claim;
   validate-before-I/O; the proven initialization order).
   `tests/test_v9958_sim.py` replays the real acceptance image against
   the simulator's register/VRAM-level V9958 peer: registration and
@@ -475,10 +511,22 @@ VIDEO device without advertising character/console output.
   WAIT-enabled palette phase, the exact register sequence, both atlases
   byte-for-byte, CE command-completion waits, 128-KiB R#14 addressing,
   RESET, the deterministic visible pattern, malformed no-I/O cases, a
-  4096-byte `DATA_BLOCK`, and the font-failure rollback.  The physical
-  acceptance image is `build-m8-v9958-selftest/`, driven by
-  `make smoke-hardware-m8-v9958`; the operator also confirms the
-  documented pattern visually.
+  4096-byte `DATA_BLOCK`, and the font-failure rollback.
+  `tests/test_v9958_console.py` drives the module's `zchar_ops` and
+  `ZVIDEO_RESET` with scripted byte streams and decodes the VDP command
+  trace into a physical-bitmap screen model (glyph copies, fills, row
+  copies, R#23 origin); fixed golden cases cover printable placement,
+  CR/LF/VT/BS/TAB/FF, right-margin wrap and DECAWM off, cursor
+  boundaries and CSI families, erase display/line/characters, SGR
+  reverse video and reverse-background fills, save/restore, insert/
+  delete lines, circular scrolling, cursor visibility, all reset paths,
+  print-run batching, arbitrary write chunking, and exact command-block
+  geometry.  The physical acceptance image is
+  `build-m8-v9958-selftest/`, driven by `make smoke-hardware-m8-v9958`;
+  the console image `build-m8-console-selftest/` (HID input + V9958
+  output) is driven by `make smoke-hardware-m8-console` and by
+  `tests/test_m8_sim.py`; the operator confirms the documented pattern
+  and the visible monitor session.
 
 ## 8. Console service
 
@@ -517,6 +565,33 @@ is the dynamically loaded module):
 ```text
 console: dynamic sio0.b OK
 ```
+
+### 8.1 Console channels
+
+Five distinct paths must not be confused:
+
+- native VIDEO class writes (`zvideo_ops.send`): graphics/register
+  operations to `v9958.0`, independent of any text mode.
+- V9958 character output (`ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT`, the
+  output-only `zchar_ops` table): the 85x26 terminal renderer, consumed
+  by the console service and therefore by `console_putc`/`console_write`.
+- HID character input (`ZCAP_CONSOLE_IN`): keyboard bytes fetched by the
+  console service from `hid.keyboard0`, decoded by the HID module from
+  IOC replies.
+- SIO console fallback (`ZCAP_CONSOLE_IN`/`ZCAP_CONSOLE_OUT` on
+  `sio0.b`): the both-direction fallback used when a preferred
+  direction is unavailable; this is also the M7-normal binding.
+- direct early SIO (`early_console_*`): the permanently resident,
+  binding-independent path used by the boot banner, the M8 target
+  control transcripts and `panic()`.  It never consults the console
+  service, so it works even when the bound pair is HID/V9958.
+
+The console service composes one bound input with one bound output;
+neither module knows about the other.  The acceptance image
+`build-m8-console-selftest/` binds HID input to V9958 output and runs the
+unchanged M7 `monitor.zex` through that pair; `make
+smoke-hardware-m8-console` validates the early-SIO boot transcript while
+the operator confirms the visible session.
 
 ### 6.1 Failure-path evidence
 

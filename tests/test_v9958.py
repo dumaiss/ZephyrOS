@@ -300,10 +300,13 @@ class TestModuleArtifact(unittest.TestCase):
         self.assertEqual(info["required_granules"],
                          (info["image_size"] + info["bss_size"] +
                           granule - 1) // granule)
-        # The resident image+BSS is far smaller than the 2048-byte font:
-        # the font is ROMFS DATA, not module storage.
-        self.assertLess(info["image_size"] + info["bss_size"], 2048 +
-                        512)
+        # The resident image+BSS holds the video core, the port layer,
+        # and the terminal renderer; it must stay far smaller than the
+        # 2048-byte font, which is ROMFS DATA, not module storage.  The
+        # console image's arena fit (10 granules) is the package 19
+        # budget asserted below.
+        self.assertLess(info["image_size"] + info["bss_size"], 5120)
+        self.assertEqual(info["required_granules"], 10)
         asset = fontpack.parse_font(FONT_INC)
         self.assertNotIn(asset, bytes(info["payload"]),
                          "the font must not be embedded in the module")
@@ -348,25 +351,45 @@ class TestModuleArtifact(unittest.TestCase):
         makefile = _read(MAKEFILE)
         for target in ("v9958-test:", "m8-v9958-selftest:",
                        "m8-v9958-fontfail-selftest:",
-                       "smoke-hardware-m8-v9958:"):
+                       "m8-console-selftest:",
+                       "smoke-hardware-m8-v9958:",
+                       "smoke-hardware-m8-console:"):
             self.assertIn(target, makefile)
         self.assertIn("$(MODULES)/v9958.zmod", makefile)
         self.assertIn("$(V9958_MODULE_OBJS)", makefile)
         self.assertIn("$(MODULES)/v9958-6x8.font", makefile)
         self.assertIn("ZOS_M8_V9958_SELFTEST", makefile)
         self.assertIn("ZOS_M8_V9958_FONTFAIL", makefile)
+        self.assertIn("ZOS_M8_CONSOLE_SELFTEST", makefile)
         self.assertIn("ZOS_V9958_BOOT", makefile)
         self.assertIn("BOOT_ZMODS += $(MODULES)/v9958.zmod", makefile)
+        # v9958-test also runs the terminal renderer's host model suite.
+        self.assertIn("test_v9958_console.py", makefile)
 
     def test_pre_m8_images_compile_v9958_boot_out(self):
         makefile = _read(MAKEFILE)
-        index = makefile.index("ZOS_V9958_BOOT := 0")
+        # The pre-M8 acceptance gate (M0-M7) must keep the boot load off;
+        # it is the only default-setting gate (`:= 0` then `?= 1`).
+        index = makefile.index("ZOS_V9958_BOOT := 0\nendif\n"
+                               "ZOS_V9958_BOOT ?= 1")
         gate = makefile[index - 700:index]
         for flag in ("ZOS_SELFTEST", "ZOS_M3_SELFTEST", "ZOS_M4_SELFTEST",
                      "ZOS_M5_SELFTEST", "ZOS_M6_SELFTEST",
                      "ZOS_M7_SELFTEST"):
             self.assertIn(flag, gate,
                           "%s must keep V9958 compiled out" % flag)
+        # The earlier M8 acceptance images keep their accepted console
+        # bindings: their boot set has no V9958 device.
+        for flag in ("ZOS_M8_IOC_SELFTEST", "ZOS_M8_HID_SELFTEST",
+                     "ZOS_M8_HID_NOIOC", "ZOS_M8_HID_BADIOC"):
+            block = makefile.split("ifeq ($(%s),1)" % flag)[1]
+            block = block.split("endif")[0]
+            self.assertIn("ZOS_V9958_BOOT := 0", block,
+                          "%s must keep V9958 compiled out" % flag)
+        # The console acceptance image loads the console-capable module.
+        console = makefile.split("ifeq ($(ZOS_M8_CONSOLE_SELFTEST),1)")[1]
+        console = console.split("endif")[0]
+        self.assertNotIn("ZOS_V9958_BOOT", console)
 
 
 class TestDriverSourceDiscipline(unittest.TestCase):
@@ -494,29 +517,64 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.assertIn("v9958_font_group", self.c)
         self.assertIn("v9958_atlas_row", self.c)
         # No font byte table: the driver C contains no data initializer
-        # with hundreds of bytes.
+        # with hundreds of bytes.  The bounded size covers the video
+        # core plus the ported terminal renderer (package 19).
         self.assertNotIn("0x70u, 0x88u", self.c)
-        self.assertLess(len(self.c), 20000)
+        self.assertLess(len(self.c), 40000)
 
-    def test_descriptor_is_exact_and_video_only(self):
+    def test_descriptor_is_console_capable_and_output_only(self):
         self.assertIn("static const struct zdevice_desc "
                       "v9958_video0_desc", self.module)
         self.assertIn('"v9958.0"', self.module)
         for cap in ("ZCAP_VIDEO_CTRL_WRITE", "ZCAP_VIDEO_DATA_WRITE",
                     "ZCAP_VIDEO_DATA_BLOCK", "ZCAP_VIDEO_PALETTE",
                     "ZCAP_VIDEO_INDIRECT", "ZCAP_VIDEO_PRESENT",
-                    "ZCAP_VIDEO_RESET"):
+                    "ZCAP_VIDEO_RESET", "ZCAP_CHAR_OUT",
+                    "ZCAP_CONSOLE_OUT"):
             self.assertIn(cap, self.module)
-        for absent in ("ZCAP_CHAR_OUT", "ZCAP_CONSOLE_OUT",
-                       "ZCAP_CHAR_IN", "ZCAP_CONSOLE_IN"):
+        for absent in ("ZCAP_CHAR_IN", "ZCAP_CONSOLE_IN",
+                       "ZCAP_VIDEO_IRQ"):
             self.assertNotIn(absent, self.module)
-        self.assertIn("(const struct zchar_ops *)0", self.module)
+        self.assertIn("&v9958_char_ops", self.module)
         self.assertIn("&v9958_video_ops", self.module)
         self.assertIn("&v9958_state", self.module)
+        self.assertNotIn("(const struct zchar_ops *)0", self.module)
+        # The registered table is output only: poll/getc stay null.
+        table = self.c.split("const struct zchar_ops v9958_char_ops")[1]
+        table = table.split("};\n")[0]
+        self.assertIn("v9958_char_putc", table)
+        self.assertIn("v9958_char_write", table)
+        self.assertIn("(int (*)(void *))0", table)
         # The device registers only after the full bring-up.
         init = self.module.split("int v9958_module_init")[1]
         self.assertLess(init.index("v9958_driver_init(api)"),
                         init.index("api->device_register"))
+
+    def test_renderer_runs_on_a_private_module_stack(self):
+        # The zchar_ops entries are assembly wrappers (the kernel gate
+        # stack is far deeper than one renderer call chain may use).
+        self.assertIn(".globl _v9958_char_putc", self.asm)
+        self.assertIn(".globl _v9958_char_write", self.asm)
+        self.assertIn(".globl _v9958_char_putc_worker", self.asm)
+        self.assertIn(".globl _v9958_char_write_worker", self.asm)
+        self.assertIn("_v9958_alt_stack_top", self.asm)
+        self.assertRegex(self.asm, r"ld\s+sp,#_v9958_alt_stack_top")
+        self.assertIn("_v9958_alt_saved_sp", self.asm)
+        # The workers are the C entry points; the prototypes are shared
+        # with the zchar_ops table.
+        self.assertIn("v9958_char_putc_worker", self.c)
+        self.assertIn("v9958_char_write_worker", self.c)
+        self.assertIn("int v9958_char_putc(", self.header)
+        self.assertIn("int v9958_char_write(", self.header)
+        self.assertIn("extern const struct zchar_ops v9958_char_ops",
+                      self.header)
+        # The renderer never touches kernel console/process/syscall code.
+        for body in self.sources:
+            for needle in ("console_putc", "console_getc", "process_",
+                           "syscall", "_zos_"):
+                self.assertNotIn(needle, body,
+                                 "renderer must stay self-contained: %r"
+                                 % needle)
 
 
 class TestMapcheckRules(unittest.TestCase):
@@ -595,15 +653,31 @@ class TestTargetAcceptanceContract(unittest.TestCase):
                 (tool.M8V9958_VIDEO_OK, b"m8 v9958: video0 OK"),
                 (tool.M8V9958_MALFORMED_OK, b"m8 v9958: malformed rejected"),
                 (tool.M8V9958_RESET_OK, b"m8 v9958: reset OK"),
+                (tool.M8V9958_CONSOLE_OK,
+                 b"m8 v9958: console v9958.0 OK"),
                 (tool.M8V9958_FILL_OK, b"m8 v9958: fill presented"),
                 (tool.M8V9958_PATTERN_OK, b"m8 v9958: pattern drawn"),
-                (tool.M8V9958_SELFTEST_OK, b"m8 v9958 selftest: OK")):
+                (tool.M8V9958_SELFTEST_OK, b"m8 v9958 selftest: OK"),
+                (tool.M8CONSOLE_INPUT_OK,
+                 b"m8 console: input hid.keyboard0"),
+                (tool.M8CONSOLE_OUTPUT_OK,
+                 b"m8 console: output v9958.0"),
+                (tool.M8CONSOLE_SELFTEST_OK,
+                 b"m8 console selftest: OK")):
             self.assertTrue(constant.startswith(prefix),
                             "%r does not start with %r" % (constant, prefix))
-        base = (tool.BANNER + tool.CONSOLE_DYNAMIC_OK +
+        # The console mode requires the class report and the outcome.
+        self.assertFalse(tool._m8console_result(b""))
+        self.assertTrue(tool._m8console_result(
+            tool.BANNER + tool.M8CONSOLE_INPUT_OK +
+            tool.M8CONSOLE_OUTPUT_OK + tool.M8CONSOLE_SELFTEST_OK))
+        self.assertFalse(tool._m8console_result(
+            tool.BANNER + tool.M8CONSOLE_FAIL))
+        base = (tool.BANNER +
                 b"m8 v9958: video0 OK\r\n"
                 b"m8 v9958: malformed rejected\r\n"
                 b"m8 v9958: reset OK\r\n"
+                b"m8 v9958: console v9958.0 OK\r\n"
                 b"m8 v9958: fill presented\r\n"
                 b"m8 v9958: pattern drawn\r\n"
                 b"m8 v9958 selftest: OK\r\n")
@@ -611,12 +685,14 @@ class TestTargetAcceptanceContract(unittest.TestCase):
         for wrong in (
                 base.replace(b"m8 v9958: pattern drawn\r\n", b""),
                 base.replace(b"m8 v9958 selftest: OK\r\n", b""),
+                base.replace(b"m8 v9958: console v9958.0 OK\r\n", b""),
                 base + b"m8 v9958 selftest: FAIL 0x03 detail 0x01\r\n",
-                base.replace(b"console: dynamic sio0.b OK\r\n",
+                base.replace(b"m8 v9958: reset OK\r\n",
                              b"v9958: unavailable\r\n")):
             self.assertFalse(tool._m8v9958_result(wrong),
                              "misclassified: %r" % wrong[-60:])
         self.assertIn("m8-v9958", tool.__doc__)
+        self.assertIn("m8-console", tool.__doc__)
 
 
 if __name__ == "__main__":

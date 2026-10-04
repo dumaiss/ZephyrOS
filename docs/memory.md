@@ -206,8 +206,14 @@ zos_gate_saved_latch   1 byte    full caller latch (page/mode/bank)
 zos_gate_result_hl     2 bytes   dispatcher result staging
 zos_gate_result_a      1 byte    error code staging
 zos_gate_result_c      1 byte    carry staging (0/1)
-zos_gate_stack        64 bytes   common gate stack used while crossing modes
+zos_gate_stack       256 bytes   common gate stack used while crossing modes
 ```
+
+The gate stack carries the complete syscall handler chain.  It must fit
+one module class operation that runs a full device transaction: the M8
+console read path (`console_getc` -> HID character input -> IOC command
+-> SIO transport) reaches roughly 180 bytes below the top, so the size
+is held at 256 bytes.
 
 M5 adds the ROM-access block in the same common data area:
 
@@ -231,7 +237,8 @@ rom_access_sync_end    EF08h     stub extent mirrored into pages 2-7
 ```
 
 The gate stack size is validated exactly (`zos_gate_stack_top - zos_gate_stack
-== 64`) and the whole block must sit inside `E000h-FEFFh`.
+== 256`, from the platform constant) and the whole block must sit inside
+`E000h-FEFFh`.
 
 Self-test builds only (`make syscall-selftest`) add a second small block
 (`zos_selftest_kernel_sp`, `_zos_selftest_bank`, `_zos_selftest_result`)

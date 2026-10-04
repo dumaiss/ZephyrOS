@@ -40,6 +40,10 @@
 	.globl _v9958_io_stream_data
 	.globl _v9958_io_stream_palette
 	.globl _v9958_io_stream_indirect
+	.globl _v9958_char_putc
+	.globl _v9958_char_write
+	.globl _v9958_char_putc_worker
+	.globl _v9958_char_write_worker
 
 	.area _CODE
 
@@ -190,3 +194,83 @@ v9958_indirect_loop:
 	or	c
 	jr	nz,v9958_indirect_loop
 	ret
+
+; ===========================================================================
+; Renderer private stack (module BSS, _DATA)
+; ===========================================================================
+;
+; The kernel dispatches system calls on the small common gate stack:
+; zos_gate_stack_top sits only ~70 bytes above the common syscall state,
+; and the SIO console path was designed to fit in that budget.  The
+; ported text renderer's call chain (parser -> control action -> flush ->
+; glyph HMMM -> command start) is deeper than that budget, so both
+; zchar_ops entries run the C worker on a private module stack instead:
+; the caller's SP, return address and arguments are parked in module BSS,
+; SP moves to _v9958_alt_stack_top, the worker runs there, and SP plus
+; the return path are restored exactly.  The renderer is single-depth by
+; construction (never nested, never re-entered), so one save area and one
+; stack are sufficient; the helpers are not ISR-safe.
+;
+; The entries implement the unchanged sdcccall(1) prototypes:
+;   int (*putc)(void *state, char ch)               state HL, ch stack
+;   int (*write)(void *state, const char *buf, u16) state HL, buf DE,
+;                                                   len stack, result DE
+
+	.area _DATA
+_v9958_alt_saved_sp::
+	.ds	2
+_v9958_alt_ret::
+	.ds	2
+_v9958_alt_state::
+	.ds	2
+_v9958_alt_buf::
+	.ds	2
+_v9958_alt_word::
+	.ds	2
+_v9958_alt_result::
+	.ds	2
+_v9958_alt_stack::
+	.ds	256
+_v9958_alt_stack_top::
+
+	.area _CODE
+
+_v9958_char_putc::
+	pop	bc
+	ld	(_v9958_alt_ret),bc
+	ld	(_v9958_alt_state),hl
+	pop	hl			; HL = {char, pad}: one-byte stack arg
+	ld	(_v9958_alt_word),hl
+	dec	sp			; back to the caller's stack level
+	ld	(_v9958_alt_saved_sp),sp
+	ld	sp,#_v9958_alt_stack_top
+	ld	hl,(_v9958_alt_state)
+	ld	bc,(_v9958_alt_word)
+	push	bc			; char argument (low byte)
+	call	_v9958_char_putc_worker
+	ld	(_v9958_alt_result),de
+	ld	sp,(_v9958_alt_saved_sp)
+	ld	hl,(_v9958_alt_ret)
+	ld	de,(_v9958_alt_result)
+	jp	(hl)
+
+_v9958_char_write::
+	pop	bc
+	ld	(_v9958_alt_ret),bc
+	ld	(_v9958_alt_state),hl
+	ld	(_v9958_alt_buf),de
+	ex	(sp),hl			; HL = length, (sp) = scratch
+	ld	(_v9958_alt_word),hl
+	pop	hl			; drop the consumed stack word
+	ld	(_v9958_alt_saved_sp),sp
+	ld	sp,#_v9958_alt_stack_top
+	ld	hl,(_v9958_alt_state)
+	ld	de,(_v9958_alt_buf)
+	ld	bc,(_v9958_alt_word)
+	push	bc			; 16-bit length argument
+	call	_v9958_char_write_worker
+	ld	(_v9958_alt_result),de
+	ld	sp,(_v9958_alt_saved_sp)
+	ld	hl,(_v9958_alt_ret)
+	ld	de,(_v9958_alt_result)
+	jp	(hl)

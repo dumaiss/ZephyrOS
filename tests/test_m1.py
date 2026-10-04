@@ -492,7 +492,7 @@ def make_map(overrides=None, **kw):
         "zos_gate_saved_sp": 0xE100, "zos_gate_saved_latch": 0xE102,
         "zos_gate_result_hl": 0xE103, "zos_gate_result_a": 0xE105,
         "zos_gate_result_c": 0xE106,
-        "zos_gate_stack": 0xE107, "zos_gate_stack_top": 0xE147,
+        "zos_gate_stack": 0xE107, "zos_gate_stack_top": 0xE207,
         # M6 process gates (common), copy state (common), and bank-7
         # process/ZEX code and data.
         "_zos_process_launch": 0xE300, "_zos_process_resume": 0xE310,

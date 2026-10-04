@@ -58,9 +58,12 @@
  * Initial SP = 0000h (top-exclusive at 10000h). */
 #define ZOS_STACK_INIT_SP           0x0000u
 
-/* Small common gate stack used only while crossing between mode 10 and
- * mode 11.  Lives in the common data area, below the boot stack. */
-#define ZOS_GATE_STACK_SIZE         64u
+/* Common gate stack used only while crossing between mode 10 and
+ * mode 11.  Lives in the common data area, below the boot stack.  It
+ * carries the whole syscall handler chain, including a module class op
+ * that runs a full device transaction (M8 console read: HID -> IOC -> SIO
+ * needs about 180 bytes), so it is sized well above the M1 dispatch set. */
+#define ZOS_GATE_STACK_SIZE         256u
 
 /* ROM geometry of the programmed 512 KiB image: eight 64-KiB pages.
  * Pages 0 and 1 are the boot pages copied to SRAM by the reset copier;

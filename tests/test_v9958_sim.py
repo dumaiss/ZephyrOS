@@ -74,6 +74,8 @@ VIDEO_CAPS = (ZCAP_VIDEO_CTRL_WRITE | ZCAP_VIDEO_DATA_WRITE |
               ZCAP_VIDEO_DATA_BLOCK | ZCAP_VIDEO_PALETTE |
               ZCAP_VIDEO_INDIRECT | ZCAP_VIDEO_PRESENT |
               ZCAP_VIDEO_RESET)
+ZCAP_CHAR_OUT = 0x0002
+CONSOLE_CAPS = VIDEO_CAPS | ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT
 
 ZVIDEO_CTRL_WRITE = 1
 ZVIDEO_DATA_WRITE = 2
@@ -341,14 +343,28 @@ class V9958SimBase(unittest.TestCase):
                 atlas_scanline(self.font, scanline, True),
                 "reverse atlas scanline %d mismatch" % scanline)
 
-    def check_cursor(self, peer):
+    def check_cursor(self, peer, z):
+        """Pattern stores, then the sprite cursor SAT derived from the
+        module's live terminal state (the renderer keeps it current)."""
         self.assertEqual(bytes(peer.vram[0x1F800:0x1F808]),
                          b"\xe0" * 8)
         self.assertEqual(bytes(peer.vram[0x1F000:0x1F010]),
                          b"\x0b" * 16)
-        self.assertEqual(bytes(peer.vram[0x1F200:0x1F208]),
-                         bytes((0xFF, 0x00, 0x00, 0x00,
-                                0xD8, 0x00, 0x00, 0x00)))
+        dev = self.device_by_class(z, ZDEV_VIDEO)
+        state = dev["state"]
+        col = z.rd(state + 11)
+        row = z.rd(state + 12)
+        visible = z.rd(state + 13)
+        origin = z.rd(state + 3)
+        sat = bytes(peer.vram[0x1F200:0x1F208])
+        if visible:
+            self.assertEqual(sat[0], (((row * 8) + origin) - 1) & 0xFF,
+                             "visible cursor Y")
+        else:
+            self.assertEqual(sat[0], 0xFF, "hidden cursor terminator")
+        self.assertEqual(sat[1], (col * 3) & 0xFF, "cursor X")
+        self.assertEqual(sat[2:4], b"\x00\x00")
+        self.assertEqual(sat[4:8], bytes((0xD8, 0x00, 0x00, 0x00)))
         # 128-KiB addressing: the pattern is NOT aliased into the first
         # 64 KiB (F800h was cleared to the background and stays there).
         self.assertEqual(peer.vram[0xF800], 0x44)
@@ -365,14 +381,22 @@ class TestV9958Boot(V9958SimBase):
         self.assertIsNotNone(dev, "v9958.0 is not registered")
         self.assertEqual(self.cstr(z, dev["name"]), b"v9958.0")
         self.assertEqual(dev["class"], ZDEV_VIDEO)
-        self.assertEqual(dev["caps"], VIDEO_CAPS)
-        self.assertEqual(dev["char_ops"], 0,
-                         "char_ops must stay null until the console package")
+        self.assertEqual(dev["caps"], CONSOLE_CAPS)
+        self.assertNotEqual(dev["char_ops"], 0,
+                            "the console renderer table must be published")
+        putc = z.rd16(dev["char_ops"])
+        write = z.rd16(dev["char_ops"] + 2)
+        poll = z.rd16(dev["char_ops"] + 4)
+        getc = z.rd16(dev["char_ops"] + 6)
+        self.assertNotEqual(putc, 0)
+        self.assertNotEqual(write, 0)
+        self.assertEqual((poll, getc), (0, 0),
+                         "the renderer is output only")
         self.assertNotEqual(dev["class_ops"], 0)
         self.assertNotEqual(dev["state"], 0)
 
-        # No console-output capability: the binding stays on SIO, and
-        # HID remains the preferred input.
+        # The console defaults select this console-capable output and
+        # keep HID as the preferred input (the normal M8 pair).
         hid = self.device_by_class(z, ZDEV_HID)
         sio = self.device_by_class(z, ZDEV_SERIAL)
         self.assertIsNotNone(hid)
@@ -380,11 +404,11 @@ class TestV9958Boot(V9958SimBase):
         self.assertEqual(z.rd(self.syms["_console_in_handle"]),
                          hid["handle"])
         self.assertEqual(z.rd(self.syms["_console_out_handle"]),
-                         sio["handle"])
+                         dev["handle"])
 
         self.check_bootstrap(peer)
         self.check_atlases(peer)
-        self.check_cursor(peer)
+        self.check_cursor(peer, z)
 
         # Clear screen: HMMV over the full 256-line page zero in 44h.
         engines = engine_commands(peer)
@@ -510,6 +534,7 @@ class TestV9958AcceptancePass(V9958SimBase):
         for marker in (b"m8 v9958: video0 OK\r\n",
                        b"m8 v9958: malformed rejected\r\n",
                        b"m8 v9958: reset OK\r\n",
+                       b"m8 v9958: console v9958.0 OK\r\n",
                        b"m8 v9958: fill presented\r\n",
                        b"m8 v9958: pattern drawn\r\n",
                        b"m8 v9958 selftest: OK\r\n"):
@@ -523,10 +548,20 @@ class TestV9958AcceptancePass(V9958SimBase):
         values = [value for _, value in peer.latch_writes]
         self.assertEqual(values, [0x02, 0x00, 0x02, 0x00])
         engines = engine_commands(peer)
-        self.assertEqual([cmd["fill"] for cmd in engines],
+        fills = [cmd["fill"] for cmd in engines if "fill" in cmd]
+        self.assertEqual(fills,
                          [(0, 0, 0x200, 0x100, 0x44),
                           (0, 0, 0x200, 0x100, 0x44),
                           (0x40, 0x20, 0x40, 0x20, 0xFF)])
+        # The boot console text is rendered through the module: 6x8
+        # glyph copies between the two clears.
+        glyphs = [cmd for cmd in engines if "fill" not in cmd]
+        self.assertTrue(glyphs, "no glyph copies from the boot console")
+        for cmd in glyphs:
+            block = cmd["block"]
+            self.assertEqual(cmd["code"], 0xD0)
+            self.assertEqual(block[8] | (block[9] << 8), 6)
+            self.assertEqual(block[10] | (block[11] << 8), 8)
 
         # White rectangle: 64x64 pixels at (64,32) -> bytes 32..63 of
         # scanlines 32..63.
@@ -551,7 +586,7 @@ class TestV9958AcceptancePass(V9958SimBase):
 
         # Both atlases and the cursor were re-established by RESET.
         self.check_atlases(peer)
-        self.check_cursor(peer)
+        self.check_cursor(peer, z)
         self.assertEqual(peer.protocol_errors, [])
 
 
@@ -577,6 +612,8 @@ class TestV9958FontFailure(V9958SimBase):
                          hid["handle"])
         self.assertEqual(z.rd(self.syms["_console_out_handle"]),
                          sio["handle"])
+        # No console-output capability: the SIO fallback stays bound.
+        self.assertIsNone(self.device_by_class(z, ZDEV_VIDEO))
         self.assertEqual(self.result(z, "_m8_v9958_selftest_result"), 0)
 
         # Fail-fast resource validation: no VDP port was touched at all.

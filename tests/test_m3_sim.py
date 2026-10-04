@@ -47,6 +47,31 @@ M3_OK = b"m3 selftest: OK\r\n"
 M3_RX_BYTE = 0x52  # 'R'
 
 
+def v9958_glyph_text(peer):
+    """Decode the text rendered by the V9958 module from its command
+    trace: every 6x8 HMMM glyph copy lands on its destination cell."""
+    cells = {}
+    for cmd in peer.commands:
+        block = cmd.get("block")
+        if (cmd.get("code") != 0xD0 or not block or
+                (block[8] | (block[9] << 8)) != 6 or
+                (block[10] | (block[11] << 8)) != 8):
+            continue
+        sx = block[0] | (block[1] << 8)
+        sy = block[2]
+        dx = block[4] | (block[5] << 8)
+        dy = block[6] | (block[7] << 8)
+        glyph = ((sy & 0x3F) >> 3) * 32 + sx // 6
+        if 32 <= glyph < 127:
+            cells[(dy, dx // 6)] = chr(glyph)
+    lines = []
+    for y in sorted({row for row, _ in cells}):
+        last = max(col for row, col in cells if row == y)
+        lines.append("".join(cells.get((y, col), " ")
+                             for col in range(last + 1)))
+    return "\n".join(lines)
+
+
 def run_function(z, addr, limit=STEP_LIMIT):
     """Call the function at `addr` and run until it returns."""
     z.push16(RET)
@@ -238,9 +263,17 @@ class TestM3ProductionBoot(unittest.TestCase):
         tx = bytes(z.sio_tx)
         for line in (b"ZephyrOS 0.0\r\n", b"platform: Zephyr-80\r\n",
                      b"kernel entry: OK\r\n", b"serial: OK\r\n",
-                     b"HALT\r\n", b"console: dynamic sio0.b OK\r\n"):
+                     b"HALT\r\n"):
             self.assertIn(line, tx, "boot transcript missing %r" % line)
         self.assertNotIn(b"PANIC", tx)
+        # The console-service acceptance line follows the bound console.
+        # The production stack is console-capable (the V9958 module
+        # registers ZCAP_CHAR_OUT|ZCAP_CONSOLE_OUT), and this replay
+        # supplies the V9958 peer, so the line is rendered by the V9958
+        # terminal on the output side instead of reaching the SIO port.
+        self.assertNotIn(b"console: dynamic sio0.b OK\r\n", tx)
+        self.assertIn("console: dynamic sio0.b OK",
+                      v9958_glyph_text(z.vdp_peer))
 
 
 if __name__ == "__main__":

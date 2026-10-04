@@ -1,7 +1,8 @@
 /* Internal interface of the V9958 video driver (drivers/v9958/).
  *
  * v9958.c owns the GRAPHIC 6 display state, the ported initialization
- * and command sequencing, and the font-atlas upload; v9958_io.asm owns
+ * and command sequencing, the font-atlas upload, and the output-only
+ * 85x26 text terminal renderer behind `zchar_ops`; v9958_io.asm owns
  * every port access and the timing-critical streaming loops;
  * v9958_module.c owns the zdevice descriptor and the module init entry.
  * The module reaches the kernel only through the passed `zdriver_api`
@@ -16,6 +17,12 @@
  * from the reference font, circular page-zero bitmap cleared, sprite
  * cursor initialized, then the display enabled.  The VDP interrupt is
  * never enabled in M8.
+ *
+ * The terminal is a straight port of the reference's ANSI/VT100-light
+ * CONOUT parser and drawing algorithms with the CP/M dispatch table,
+ * BIOS addresses, HID coupling and historical packet ceiling removed.
+ * It is strictly output-only: bytes arrive through zchar_ops.putc() /
+ * zchar_ops.write(), and nothing here knows about SIO, IOC or HID.
  */
 
 #ifndef ZEPHYROS_DRIVERS_V9958_DRIVER_H
@@ -39,6 +46,29 @@
 #define V9958_ATLAS_GLYPHS      32u  /* glyphs per precolored atlas row   */
 #define V9958_ATLAS_GROUPS      8u   /* 256 glyphs / 32 per group         */
 #define V9958_GLYPH_BYTES       8u   /* 6x8 font: 8 rows per glyph        */
+
+/* --- 85x26 6x8 output terminal (ported reference renderer) ------------
+ *
+ * The terminal state machine, CR/LF/BS/TAB/FF handling, ANSI/VT100-light
+ * CSI movement/erase/SGR/save-restore/DECAWM/IL/DL behavior, the
+ * circular R#23 scrolling and the sprite cursor are ported one-to-one
+ * from the pinned reference implementation.  It is output-only: bytes
+ * arrive exclusively through the generic character interface. */
+#define V9958_COLUMNS        85u  /* logical text columns                 */
+#define V9958_ROWS           26u  /* logical text rows                    */
+#define V9958_CELL_WIDTH     6u   /* pixels per character cell            */
+#define V9958_CELL_HEIGHT    8u   /* scanlines per character cell         */
+#define V9958_DISPLAY_OFFSET 4u   /* fixed lines above logical row zero   */
+#define V9958_OUT_RUN_SIZE   64u  /* print-run batching bound (bytes)     */
+#define V9958_SCROLL_BOTTOM  (V9958_ROWS - 1u)
+#define V9958_PIXEL_WIDTH    (V9958_COLUMNS * V9958_CELL_WIDTH)
+
+/* Output parser states (ported ESC/CSI state machine). */
+#define V9958_TERM_NORMAL    0u
+#define V9958_TERM_ESC       1u
+#define V9958_TERM_CSI       2u
+#define V9958_TERM_ESC_HASH  3u  /* ESC # x: consume one final byte      */
+#define V9958_TERM_CHARSET   4u  /* ESC ( ) O x: consume one final byte  */
 
 /* Atlas placement in 128-KiB VRAM: normal at 10000h, reverse at 14000h,
  * each scanline one 256-byte pitch apart (96 meaningful bytes each). */
@@ -98,6 +128,7 @@
 #define V9958_CLEAR_HEIGHT_LO 0x00u
 #define V9958_CLEAR_HEIGHT_HI 0x01u /* 256 lines                           */
 #define V9958_CLEAR_COLOR     0x44u
+#define V9958_FILL_COLOR_REVERSE 0xFFu /* white background (reverse video) */
 
 /* --- Port-call ABI with v9958_io.asm ----------------------------------
  *
@@ -130,11 +161,42 @@ void v9958_io_stream_data(struct v9958_block *block);
 void v9958_io_stream_palette(struct v9958_block *block);
 void v9958_io_stream_indirect(struct v9958_block *block);
 
+/* zchar_ops entries: assembly wrappers that run the C renderer workers
+ * on a private module stack (the kernel syscall gate stack is too small
+ * for the renderer's call chain).  Prototypes are the exact sdcccall(1)
+ * zchar_ops shapes. */
+int v9958_char_putc(void *state, char ch);
+int v9958_char_write(void *state, const char *buf, uint16_t len);
+
 /* Driver state: module BSS, relocated with the module image. */
 struct v9958_state {
 	const struct zdriver_api *api; /* resource imports for the font   */
 	uint8_t config_shadow;         /* latch shadow; D0 always preserved */
 	uint8_t scroll_origin;         /* physical scanline of row zero    */
+
+	/* --- terminal parser (ported state machine) --- */
+	uint8_t term_state;      /* V9958_TERM_*                        */
+	uint8_t esc_count;       /* triple-ESC display reset counter    */
+	uint8_t csi_private;     /* nonzero after a CSI '?' prefix      */
+	uint8_t csi_param_count; /* stored numeric parameters (max 2)   */
+	uint8_t csi_accum;       /* parameter being accumulated         */
+	uint8_t csi_param0;
+	uint8_t csi_param1;
+
+	/* --- cursor and rendition --- */
+	uint8_t text_col;        /* internal 0-based logical column     */
+	uint8_t text_row;        /* internal 0-based logical row        */
+	uint8_t cursor_visible;  /* sprite cursor shown                 */
+	uint8_t current_attr;    /* SGR attribute; bit 0 = reverse      */
+	uint8_t saved_col;       /* ESC 7 / CSI s saved state           */
+	uint8_t saved_row;
+	uint8_t saved_attr;
+	uint8_t auto_wrap;       /* DECAWM; 1 = enabled (default)       */
+
+	/* --- print-run batching (64 bytes, reference policy) --- */
+	uint8_t out_run_count;
+	uint8_t out_run_col;     /* origin cell of the pending run      */
+	uint8_t out_run_row;
 };
 
 /* Cold bring-up (full initialization incl. the font upload).  Returns
@@ -142,11 +204,16 @@ struct v9958_state {
  * module entry so a failure publishes nothing. */
 int v9958_driver_init(const struct zdriver_api *api);
 
-/* The class operation implementation (exposed for the descriptor). */
+/* The class operation implementation (exposed for the descriptor).  A
+ * ZVIDEO_RESET reinitializes the terminal parser, cursor/rendition
+ * defaults, every VDP-owned register and selector, both font atlases,
+ * the circular bitmap and the sprite cursor, then presents and leaves
+ * the display enabled. */
 int v9958_send(void *state, uint8_t operation, const void *payload,
 	       uint16_t length);
 
 extern const struct zvideo_ops v9958_video_ops;
+extern const struct zchar_ops v9958_char_ops;
 extern struct v9958_state v9958_state;
 
 #endif /* ZEPHYROS_DRIVERS_V9958_DRIVER_H */

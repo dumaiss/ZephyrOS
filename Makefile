@@ -168,10 +168,14 @@ endif
 # /SHARED service), then the unchanged monitor launcher.  It keeps the
 # derived arena so the acceptance image exercises the production geometry
 # with the target objects linked in.
+# The V9958 boot load stays compiled out: this image's accepted contract
+# is the IOC transport with the SIO console, and the console-capable
+# V9958 module (package 19) is exercised by m8-v9958 and m8-console.
 ifeq ($(ZOS_M8_IOC_SELFTEST),1)
 CFLAGS    += -DZOS_M8_IOC_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m8_ioc_test.rel
 PK_SUFFIX := -m8-ioc-selftest
+ZOS_V9958_BOOT := 0
 endif
 
 # M8 HID acceptance image: production-style boot (derived arena, SIO +
@@ -179,10 +183,14 @@ endif
 # shape, the scripted USB-keyboard typing pass with output through the
 # bound SIO console, then the forced SIO input fallback), then the
 # unchanged monitor launcher.
+# The V9958 boot load stays compiled out so the accepted HID/SIO and
+# SIO/SIO console bindings of this package's images are preserved; the
+# HID/V9958 and SIO/V9958 bindings are covered by the package 19 images.
 ifeq ($(ZOS_M8_HID_SELFTEST),1)
 CFLAGS    += -DZOS_M8_HID_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m8_hid_test.rel
 PK_SUFFIX := -m8-hid-selftest
+ZOS_V9958_BOOT := 0
 endif
 
 # M8 HID no-IOC image: the same target diagnostic with the IOC boot load
@@ -194,6 +202,7 @@ CFLAGS    += -DZOS_M8_HID_NOIOC=1
 ZOS_IOC_BOOT := 0
 TARGET_TEST_OBJS += $(BUILD)/m8_hid_test.rel
 PK_SUFFIX := -m8-hid-noioc-selftest
+ZOS_V9958_BOOT := 0
 endif
 
 # M8 HID malformed-dependency image: the ROMFS `ioc.zmod` entry carries a
@@ -207,6 +216,7 @@ CFLAGS    += -DZOS_M8_HID_BADIOC=1
 BOOT_IOC_ZMOD = $(MODULES)/fakeioc.zmod
 TARGET_TEST_OBJS += $(BUILD)/m8_hid_test.rel
 PK_SUFFIX := -m8-hid-badioc-selftest
+ZOS_V9958_BOOT := 0
 endif
 
 # M8 V9958 video acceptance image: production-style boot (derived
@@ -231,6 +241,20 @@ ifeq ($(ZOS_M8_V9958_FONTFAIL),1)
 CFLAGS    += -DZOS_M8_V9958_FONTFAIL=1
 TARGET_TEST_OBJS += $(BUILD)/m8_v9958_test.rel
 PK_SUFFIX := -m8-v9958-fontfail-selftest
+endif
+
+# M8 console acceptance image (package 19): the full production stack
+# (SIO + IOC + HID + the V9958 video core with its character renderer)
+# from ROMFS, the console target diagnostic reporting the selected
+# input/output classes over the direct early SIO, and the unchanged M7
+# `monitor.zex` running through the normal HID-input/V9958-output
+# binding.  This is the image the human keyboard/display pass uses; the
+# interactive session is replayed from these exact bytes by
+# tests/test_m8_sim.py.
+ifeq ($(ZOS_M8_CONSOLE_SELFTEST),1)
+CFLAGS    += -DZOS_M8_CONSOLE_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m8_console_test.rel
+PK_SUFFIX := -m8-console-selftest
 endif
 
 # Hardware-smoke host sync (kernel/main.c): the M8 IOC smoke image waits
@@ -337,7 +361,8 @@ ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
 	$(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST) \
 	$(ZOS_M8_IOC_SELFTEST) $(ZOS_M8_HID_SELFTEST) \
 	$(ZOS_M8_HID_NOIOC) $(ZOS_M8_HID_BADIOC) \
-	$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL)),)
+	$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL) \
+	$(ZOS_M8_CONSOLE_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
 endif
@@ -467,12 +492,13 @@ endif
 	monitor-test m7-selftest ioc-test m8-ioc-selftest hid-test \
 	m8-hid-selftest m8-hid-noioc-selftest m8-hid-badioc-selftest \
 	v9958-test m8-v9958-selftest m8-v9958-fontfail-selftest \
+	m8-console-selftest \
 	smoke-hardware \
 	smoke-hardware-selftest smoke-hardware-irq smoke-hardware-m3 \
 	smoke-hardware-m4 smoke-hardware-m4-failure smoke-hardware-m5 \
 	smoke-hardware-m5-corrupt smoke-hardware-m6 smoke-hardware-m6-failure \
 	smoke-hardware-m7 smoke-hardware-m8-ioc smoke-hardware-m8-hid \
-	smoke-hardware-m8-v9958
+	smoke-hardware-m8-v9958 smoke-hardware-m8-console
 
 all: $(IMAGE) $(MAME_IMAGE)
 
@@ -908,7 +934,8 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/m5_selftest.h \
 		tests/target/include/m6_selftest.h \
 		tests/target/include/m8_hid_selftest.h \
-		tests/target/include/m8_v9958_selftest.h | $(BUILD)
+		tests/target/include/m8_v9958_selftest.h \
+		tests/target/include/m8_console_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/syscall_test.rel: tests/target/m1/syscall_test.c \
@@ -977,6 +1004,13 @@ $(BUILD)/m8_v9958_test.rel: tests/target/m8/m8_v9958_test.c \
 		include/zephyros/video.h include/zephyros/device.h \
 		include/zephyros/kernel.h \
 		tests/target/include/m8_v9958_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/m8_console_test.rel: tests/target/m8/m8_console_test.c \
+		include/zephyros/console.h include/zephyros/device.h \
+		include/zephyros/kernel.h include/zephyros/video.h \
+		include/zephyros/hid.h \
+		tests/target/include/m8_console_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M6 native program (ZEXTEST) ---------------------------------------------
@@ -1184,7 +1218,8 @@ ZOS_TEST_LINK := $(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) \
 		$(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST) \
 		$(ZOS_M8_IOC_SELFTEST) $(ZOS_M8_HID_SELFTEST) \
 		$(ZOS_M8_HID_NOIOC) $(ZOS_M8_HID_BADIOC) \
-		$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL))
+		$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL) \
+		$(ZOS_M8_CONSOLE_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -1522,6 +1557,7 @@ v9958-test: $(MODULES)/v9958.zmod $(MODULES)/v9958-6x8.font
 	$(PYTHON) tools/zmodpack.py dump $(MODULES)/v9958.zmod
 	$(PYTHON) tools/fontpack.py verify drivers/v9958/assets/font_cp850_6x8.inc
 	$(PYTHON) -m unittest discover -s tests -p 'test_v9958.py' -v
+	$(PYTHON) -m unittest discover -s tests -p 'test_v9958_console.py' -v
 	@echo "v9958-test: OK"
 
 m8-v9958-selftest:
@@ -1547,6 +1583,25 @@ m8-v9958-fontfail-selftest:
 		$(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_v9958_sim.py' -v
 	@echo "m8-v9958 font-failure image: build-m8-v9958-fontfail-selftest/zephyros-m8-v9958-fontfail-selftest.bin"
+
+# The M8 console acceptance image (package 19) boots the full production
+# stack, reports the selected console input/output classes over the
+# direct early SIO, and runs the unchanged M7 monitor through the
+# HID-input/V9958-output binding.  The serial portion proves boot, the
+# renderer char interface and the binding; the visible monitor session
+# is replayed from these exact bytes by tests/test_m8_sim.py and typed
+# by the operator on hardware.
+m8-console-selftest:
+	$(MAKE) BUILD=build-m8-console-selftest ZOS_M8_CONSOLE_SELFTEST=1 \
+		ZOS_SMOKE_HOST_SYNC=1 \
+		build-m8-console-selftest/zephyros-m8-console-selftest.bin \
+		build-m8-console-selftest/zephyr80-m8-console-selftest.bin
+	$(PYTHON) tools/mapcheck.py \
+		build-m8-console-selftest/zephyros.map \
+		build-m8-console-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m8_sim.py' -v
+	@echo "m8-console image: build-m8-console-selftest/zephyros-m8-console-selftest.bin"
 
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching ROM
@@ -1593,3 +1648,6 @@ smoke-hardware-m8-hid:
 
 smoke-hardware-m8-v9958:
 	$(PYTHON) tools/serial_smoke.py --mode m8-v9958 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m8-console:
+	$(PYTHON) tools/serial_smoke.py --mode m8-console --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

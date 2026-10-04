@@ -7,14 +7,17 @@
  * early SIO so the transcript is independent of any bound console.
  *
  * Normal image coverage:
- *   - `v9958.0` discovered by class plus all seven VIDEO capabilities;
- *     no character interface and no console-output capability yet (the
- *     console output must still be the SIO fallback);
+ *   - `v9958.0` discovered by class plus the seven VIDEO capabilities
+ *     and the generic ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT pair (the
+ *     ported 85x26 terminal renderer), with an output-only zchar_ops
+ *     table (putc/write present, poll/getc null);
  *   - the class interface is fetched and verified through
  *     device_interface();
  *   - malformed requests are rejected with the exact error before any
  *     I/O (null/zero write payloads, PRESENT/RESET length, unknown
  *     operation, null state);
+ *   - the default console binding is the HID input plus the V9958
+ *     output (the normal M8 console pair);
  *   - ZVIDEO_RESET re-establishes the full display state;
  *   - PALETTE_WRITE programs entry 12 to magenta, INDIRECT_WRITE starts
  *     a white HMMV fill, PRESENT waits for command completion, and
@@ -24,7 +27,9 @@
  *
  * The visible result and the exact expected bytes are documented in
  * docs/validation/2026-10-03-m8-v9958.md; tests/test_v9958_sim.py
- * replays this image and checks the VRAM contents and port traces.
+ * replays this image and checks the VRAM contents and port traces; the
+ * console text renderer itself is exercised by tests/test_v9958_console.py
+ * and the m8-console acceptance image.
  *
  * Font-failure image coverage (ZOS_M8_V9958_FONTFAIL): the ROMFS font
  * entry is a 16-byte stub, so the module must fail and publish nothing.
@@ -47,6 +52,7 @@ uint8_t m8_v9958_selftest_result;
 			    ZCAP_VIDEO_DATA_BLOCK | ZCAP_VIDEO_PALETTE | \
 			    ZCAP_VIDEO_INDIRECT | ZCAP_VIDEO_PRESENT | \
 			    ZCAP_VIDEO_RESET)
+#define M8V9958_CHAR_CAPS  (ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT)
 
 /* Deterministic pattern: one white pixel pair written through
  * DATA_WRITE, then 200 magenta pixel pairs through DATA_BLOCK. */
@@ -127,7 +133,7 @@ static void m8v9958_run(void)
 	const void *class_ops = (const void *)0;
 	void *state = (void *)0;
 	const struct zvideo_ops *ops;
-	zdev_handle_t sio;
+	zdev_handle_t hid;
 	uint8_t cmd[15];
 	uint8_t bytes[2];
 	uint8_t pattern[M8V9958_BAND_BYTES];
@@ -152,16 +158,17 @@ static void m8v9958_run(void)
 		m8v9958_fail(ZOS_M8V9958_FAIL_SHAPE, 0x02u);
 		return;
 	}
-	if (dev->capabilities != M8V9958_VIDEO_CAPS) {
+	if (dev->capabilities != (M8V9958_VIDEO_CAPS | M8V9958_CHAR_CAPS)) {
 		m8v9958_fail(ZOS_M8V9958_FAIL_SHAPE, 0x03u);
 		return;
 	}
-	if (dev->char_ops != (const struct zchar_ops *)0) {
+	if (dev->char_ops == (const struct zchar_ops *)0 ||
+	    dev->char_ops->putc == 0 || dev->char_ops->write == 0 ||
+	    dev->char_ops->poll != 0 || dev->char_ops->getc != 0) {
 		m8v9958_fail(ZOS_M8V9958_FAIL_SHAPE, 0x04u);
 		return;
 	}
-	if (device_find(ZDEV_VIDEO, ZCAP_CONSOLE_OUT, 0u) !=
-	    ZDEV_HANDLE_INVALID) {
+	if (device_find(ZDEV_VIDEO, ZCAP_CONSOLE_OUT, 0u) != handle) {
 		m8v9958_fail(ZOS_M8V9958_FAIL_SHAPE, 0x05u);
 		return;
 	}
@@ -218,14 +225,16 @@ static void m8v9958_run(void)
 	}
 	early_console_puts("m8 v9958: reset OK\r\n");
 
-	/* The console output must still be the SIO fallback: this stage has
-	 * no character/console-output interface on the VIDEO device. */
-	sio = device_find(ZDEV_SERIAL, ZCAP_CONSOLE_OUT, 0u);
-	if (sio == ZDEV_HANDLE_INVALID ||
-	    console_output_handle() != sio) {
+	/* The console defaults must select the normal M8 pair: HID input and
+	 * this V9958 output (the renderer is now console-capable). */
+	hid = device_find(ZDEV_HID, ZCAP_CONSOLE_IN, 0u);
+	if (hid == ZDEV_HANDLE_INVALID ||
+	    console_input_handle() != hid ||
+	    console_output_handle() != handle) {
 		m8v9958_fail(ZOS_M8V9958_FAIL_BIND, 0x01u);
 		return;
 	}
+	early_console_puts("m8 v9958: console v9958.0 OK\r\n");
 
 	/* Palette entry 12 -> magenta: RB=77h (R=7,B=7), G=00h. */
 	bytes[0] = 0x0Cu;

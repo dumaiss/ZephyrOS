@@ -44,6 +44,9 @@
 #if ZOS_M8_V9958_SELFTEST || ZOS_M8_V9958_FONTFAIL
 #include "m8_v9958_selftest.h"
 #endif
+#if ZOS_M8_CONSOLE_SELFTEST
+#include "m8_console_selftest.h"
+#endif
 
 void zos_target_test_early(void)
 {
@@ -86,5 +89,8 @@ void zos_target_test_late(void)
 #endif
 #if ZOS_M8_V9958_SELFTEST || ZOS_M8_V9958_FONTFAIL
 	zos_run_m8_v9958_selftest();
+#endif
+#if ZOS_M8_CONSOLE_SELFTEST
+	zos_run_m8_console_selftest();
 #endif
 }

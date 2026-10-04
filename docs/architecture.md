@@ -3493,10 +3493,22 @@ WTE/VDS, R#8=08h, the full register/selector state, palette only under
 native WAIT), uploads the pinned 2048-byte CP850 6x8 font from ROMFS
 DATA in bounded chunks (never resident module storage), drives the
 sprite cursor and command engine (CE completion), and keeps `/INT`
-disabled (`IRQ_VDP_FF` unclaimed).  Because this stage deliberately has
-no character interface yet, `char_ops` is null and the console binding
-keeps the SIO output fallback; the `ZCAP_CHAR_OUT |
-ZCAP_CONSOLE_OUT` text renderer arrives with the console package.
+disabled (`IRQ_VDP_FF` unclaimed).
+
+Work package 19 completes the same module as the normal text-output
+device: the ported 85x26 6x8 terminal renderer (print runs of 64 bytes,
+CR/LF/VT/BS/TAB/FF, ESC c/D/E/M/H/7/8, CSI movement/absolute/erase/SGR/
+save-restore/DECAWM/IL/DL, the circular R#23 scroll and the sprite
+cursor) registers `ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT` and an output-only
+`zchar_ops` table (`putc`/`write` present, `poll`/`getc` null), so
+`console_bind_defaults()` selects it as the preferred output whenever it
+is registered.  `ZVIDEO_RESET`, `ESC c` and the triple-ESC reset
+reinitialize the parser, cursor, renditions and VDP state together.  The
+renderer runs on a private 256-byte module stack through assembly
+wrappers (`v9958_char_putc` / `v9958_char_write`), because a full
+renderer call chain does not fit the syscall gate stack; the common gate
+stack itself is sized (256 bytes, `ZOS_GATE_STACK_SIZE`) for the deepest
+accepted syscall chain, the console read through HID -> IOC -> SIO.
 
 ---
 
@@ -3751,6 +3763,18 @@ panic / very early boot:
 ```
 
 The same `monitor.zex` built for M7 must operate unchanged through all valid normal-console bindings because it uses the native console syscall ABI only.
+
+Implementation status (M8, package 19): all four binding states are
+reached by loading different module sets and are proven in simulation by
+`tests/test_m8_sim.py` against the console acceptance image: HID/V9958
+(the acceptance image and the physical target), HID/SIO (the HID image),
+SIO/V9958 and SIO/SIO (forced pairs over the real console service), plus
+the fallback selection when HID or V9958 is absent.  The unchanged M7
+monitor runs through HID/V9958: the console image boots it with the HID
+input lane and the V9958 output, the scripted visible session (help,
+system info, dumps, modify/readback, rejections, two Q/relaunch cycles)
+is replayed from the V9958 command trace, and the early console and the
+panic path stay on the direct SIO link regardless of the binding.
 
 ---
 

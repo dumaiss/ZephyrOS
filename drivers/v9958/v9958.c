@@ -3,10 +3,12 @@
  * This is the direct-hardware core ported from the pinned Zephyr-80
  * reference (LunchCrema V9958, commit 2c6b9650): the exact GRAPHIC 6
  * initialization discipline, the native VIDEO class operation surface,
- * the ROMFS-backed 6x8 CP850 font-atlas setup, and the low-level
- * graphics/command primitives the renderer needs.  It deliberately does
- * not yet advertise character/console output (package 19 adds the
- * renderer and `zchar_ops`).
+ * the ROMFS-backed 6x8 CP850 font-atlas setup, the low-level
+ * graphics/command primitives, and the output-only 85x26 text terminal
+ * renderer behind `zchar_ops` (ANSI/VT100-light parser, circular R#23
+ * scrolling, sprite cursor).  The port deliberately drops the
+ * reference's CP/M dispatch table, BIOS addressing, HID entry points,
+ * VIDEO_SEND payload ceiling and CP/M build layout.
  *
  * Initialization discipline (hardware-validated; never reordered):
  *
@@ -53,6 +55,17 @@ static uint8_t v9958_font_group[V9958_FONT_CHUNK];
 static uint8_t v9958_atlas_row[V9958_ATLAS_ROW_BYTES];
 static uint8_t v9958_cmd[ZOS_V9958_CMD_REGISTER_COUNT];
 static uint8_t v9958_atlas_reverse;
+
+/* Print-run buffer (module BSS, relocated with the module image): the
+ * reference batches up to 64 same-row characters and defers the cursor
+ * SAT write and the present until a control operation, a flush point or
+ * the right margin.  The base is addressed through a runtime pointer:
+ * SDCC otherwise folds variable indexing into `add a,#<sym` /
+ * `adc a,#>sym` byte-fragmented address arithmetic, which the ZMOD v1
+ * relocator cannot express.  The pointer is established by the terminal
+ * defaults (cold init and every reset). */
+static uint8_t v9958_out_run[V9958_OUT_RUN_SIZE];
+static uint8_t *v9958_run_ptr;
 
 /* Real-card G6 baseline from the verified bring-up sequence (R#0..R#11);
  * R#1 deliberately keeps the display disabled until VRAM setup ends. */
@@ -176,6 +189,49 @@ static void v9958_start_command(const uint8_t *cmd)
 	block.src = cmd;
 	block.length = ZOS_V9958_CMD_REGISTER_COUNT;
 	v9958_io_stream_indirect(&block);
+}
+
+/* Zero the shared 15-byte command-engine block. */
+static void v9958_cmd_reset(void)
+{
+	uint8_t i;
+
+	for (i = 0u; i < ZOS_V9958_CMD_REGISTER_COUNT; ++i) {
+		v9958_cmd[i] = 0x00u;
+	}
+}
+
+/* Physical page-zero scanline of logical text row `row`: one 8-line
+ * cell per row on top of the circular R#23 origin, truncated to the
+ * 256-line bitmap exactly like the reference. */
+static uint8_t v9958_row_vram_y(uint8_t row)
+{
+	return (uint8_t)((uint8_t)(row * V9958_CELL_HEIGHT) +
+			 v9958_state.scroll_origin);
+}
+
+/* Sprite cursor SAT: Y is the scanline above the cursor cell (the
+ * hidden terminator when the cursor is off), X uses the sprite
+ * coordinate space (three units per 6-pixel logical column). */
+static void v9958_cursor_write_sat(void)
+{
+	uint8_t sat[V9958_CURSOR_SAT_BYTES];
+
+	if (v9958_state.cursor_visible != 0u) {
+		sat[0] = (uint8_t)(v9958_row_vram_y(v9958_state.text_row) -
+				   1u);
+	} else {
+		sat[0] = V9958_CURSOR_TERMINATOR;
+	}
+	sat[1] = (uint8_t)(v9958_state.text_col * 3u);
+	sat[2] = 0x00u;
+	sat[3] = 0x00u;
+	sat[4] = V9958_CURSOR_TERMINATOR;
+	sat[5] = 0x00u;
+	sat[6] = 0x00u;
+	sat[7] = 0x00u;
+	v9958_write_vram(sat, V9958_CURSOR_SAT_ADDR, V9958_CURSOR_SAT_A16,
+			 V9958_CURSOR_SAT_BYTES);
 }
 
 /* Convert one font scanline byte (bits 7..2 = six pixels) into three
@@ -323,7 +379,9 @@ static int v9958_upload_font_atlas(void)
 }
 
 /* Step 5b: clear all 256 lines of the circular page-zero bitmap and
- * restore its origin. */
+ * restore its origin.  The fill uses the current SGR background so a
+ * runtime clear (ESC [ 2 J, ESC c) repaints reverse video correctly; at
+ * cold init / reset the attribute is the normal default (44h). */
 static void v9958_clear_screen(void)
 {
 	uint8_t i;
@@ -337,34 +395,24 @@ static void v9958_clear_screen(void)
 	v9958_cmd[V9958_CMD_NX_HI] = V9958_CLEAR_WIDTH_HI;
 	v9958_cmd[V9958_CMD_NY_LO] = V9958_CLEAR_HEIGHT_LO;
 	v9958_cmd[V9958_CMD_NY_HI] = V9958_CLEAR_HEIGHT_HI;
-	v9958_cmd[V9958_CMD_COLOR] = V9958_CLEAR_COLOR;
+	v9958_cmd[V9958_CMD_COLOR] =
+		(v9958_state.current_attr & 0x01u) != 0u ?
+		V9958_FILL_COLOR_REVERSE : V9958_CLEAR_COLOR;
 	v9958_cmd[V9958_CMD_CODE] = V9958_CMD_HMMV;
 	v9958_start_command(v9958_cmd);
 	v9958_io_wait_command();
 }
 
-/* Step 5c: sprite cursor -- pattern, color table and SAT.  Logical row
- * zero sits at scanline `scroll_origin`; the cursor SAT Y is one line
- * above the cell (80h+ when the origin is zero, as in the reference). */
+/* Step 5c: sprite cursor -- pattern, color table and SAT.  The SAT is
+ * derived from the terminal cursor state (col/row/visibility), so the
+ * cold bring-up and the runtime cursor updates share one writer. */
 static void v9958_cursor_init(void)
 {
-	uint8_t sat[V9958_CURSOR_SAT_BYTES];
-
-	sat[0] = (uint8_t)(v9958_state.scroll_origin - 1u);
-	sat[1] = 0x00u;
-	sat[2] = 0x00u;
-	sat[3] = 0x00u;
-	sat[4] = V9958_CURSOR_TERMINATOR;
-	sat[5] = 0x00u;
-	sat[6] = 0x00u;
-	sat[7] = 0x00u;
-
 	v9958_write_vram(v9958_cursor_pattern, V9958_CURSOR_PATTERN_ADDR,
 			 V9958_CURSOR_PATTERN_A16, 8u);
 	v9958_write_vram(v9958_cursor_colors, V9958_CURSOR_COLOR_ADDR,
 			 V9958_CURSOR_COLOR_A16, V9958_CURSOR_COLORS);
-	v9958_write_vram(sat, V9958_CURSOR_SAT_ADDR, V9958_CURSOR_SAT_A16,
-			 V9958_CURSOR_SAT_BYTES);
+	v9958_cursor_write_sat();
 }
 
 /* The complete bring-up in the proven order.  Re-establishing this on
@@ -386,6 +434,1004 @@ static int v9958_init_display(void)
 	v9958_io_reg(ZOS_V9958_R1_DISPLAY_ON, ZOS_V9958_REG_R1);
 	return ZDRIVER_OK;
 }
+
+/* ======================================================================
+ * Output-only 85x26 text terminal (ported reference renderer)
+ * ======================================================================
+ *
+ * The byte stream arrives exclusively through zchar_ops.putc/write.  The
+ * drawing algorithms are the reference ones: each glyph is one HMMM copy
+ * from the precolored atlas page selected by the current SGR attribute,
+ * erases are HMMV fills in the current background, scrolling advances the
+ * circular R#23 origin by one 8-line cell and repaints only the fixed
+ * margin and the newly exposed bottom row, and the sprite SAT tracks the
+ * logical cursor.  Print runs batch up to 64 glyphs; every control
+ * operation, cursor update and blocking point flushes them first, so
+ * ordinary strings stay efficient and are never lost behind a later
+ * operation.  Unknown or partial sequences are consumed and recovered
+ * exactly like the reference; every coordinate is clamped, and every
+ * fill is split at the end of the circular bitmap, so no parser input can
+ * write outside the terminal state or the page-zero bitmap.
+ */
+
+/* HMMV fill color for the current SGR attribute. */
+static uint8_t v9958_fill_color(void)
+{
+	return (v9958_state.current_attr & 0x01u) != 0u ?
+		V9958_FILL_COLOR_REVERSE : V9958_CLEAR_COLOR;
+}
+
+/* Defined below; used by the parser's reset paths. */
+static void v9958_term_set_defaults(void);
+
+/* One 6x8 glyph copy: source cell (ch & 1Fh, ch >> 5) in the selected
+ * precolored atlas page, destination cell (col, row) in page zero. */
+static void v9958_render_char(uint8_t ch, uint8_t col, uint8_t row)
+{
+	uint16_t sx = (uint16_t)(ch & 0x1Fu) * V9958_CELL_WIDTH;
+	uint16_t dx = (uint16_t)col * V9958_CELL_WIDTH;
+	uint8_t sy = (uint8_t)((uint8_t)(ch >> 5) * V9958_CELL_HEIGHT);
+
+	if ((v9958_state.current_attr & 0x01u) != 0u) {
+		sy = (uint8_t)(sy + 0x40u); /* reverse atlas, page one */
+	}
+	v9958_cmd_reset();
+	v9958_cmd[V9958_CMD_SX_LO] = (uint8_t)(sx & 0xFFu);
+	v9958_cmd[V9958_CMD_SX_HI] = (uint8_t)(sx >> 8);
+	v9958_cmd[V9958_CMD_SY_LO] = sy;
+	v9958_cmd[V9958_CMD_SY_HI] = 0x01u; /* atlas lives in page one */
+	v9958_cmd[V9958_CMD_DX_LO] = (uint8_t)(dx & 0xFFu);
+	v9958_cmd[V9958_CMD_DX_HI] = (uint8_t)(dx >> 8);
+	v9958_cmd[V9958_CMD_DY_LO] = v9958_row_vram_y(row);
+	v9958_cmd[V9958_CMD_NX_LO] = V9958_CELL_WIDTH;
+	v9958_cmd[V9958_CMD_NY_LO] = V9958_CELL_HEIGHT;
+	v9958_cmd[V9958_CMD_CODE] = V9958_CMD_HMMM;
+	v9958_start_command(v9958_cmd);
+}
+
+/* Rectangle erase in cells: width x height cells at (col,row), filled
+ * with the current background.  A rectangle crossing the end of the
+ * circular page-zero bitmap is split at physical line 255 (the reference
+ * split) so the command engine can never run into the atlas page. */
+static void v9958_fill_cells(uint8_t col, uint8_t row, uint8_t width,
+			     uint8_t height)
+{
+	uint16_t dx = (uint16_t)col * V9958_CELL_WIDTH;
+	uint16_t nx = (uint16_t)width * V9958_CELL_WIDTH;
+	uint8_t ny = (uint8_t)(height * V9958_CELL_HEIGHT);
+	uint8_t dy = v9958_row_vram_y(row);
+
+	v9958_cmd_reset();
+	v9958_cmd[V9958_CMD_DX_LO] = (uint8_t)(dx & 0xFFu);
+	v9958_cmd[V9958_CMD_DX_HI] = (uint8_t)(dx >> 8);
+	v9958_cmd[V9958_CMD_DY_LO] = dy;
+	v9958_cmd[V9958_CMD_NX_LO] = (uint8_t)(nx & 0xFFu);
+	v9958_cmd[V9958_CMD_NX_HI] = (uint8_t)(nx >> 8);
+	v9958_cmd[V9958_CMD_NY_LO] = ny;
+	v9958_cmd[V9958_CMD_COLOR] = v9958_fill_color();
+	v9958_cmd[V9958_CMD_CODE] = V9958_CMD_HMMV;
+
+	if ((uint8_t)(dy + ny) < dy) {
+		uint8_t wrapped = (uint8_t)(dy + ny);
+
+		v9958_cmd[V9958_CMD_NY_LO] = (uint8_t)(0u - dy);
+		v9958_start_command(v9958_cmd);
+		if (wrapped == 0u) {
+			return;
+		}
+		v9958_cmd[V9958_CMD_DY_LO] = 0x00u;
+		v9958_cmd[V9958_CMD_NY_LO] = wrapped;
+	}
+	v9958_start_command(v9958_cmd);
+}
+
+/* Copy `count` full text rows; `bottom_up` selects the reference's
+ * bottom-to-top order for overlapping insert-line moves. */
+static void v9958_copy_rows(uint8_t src_row, uint8_t dst_row,
+			    uint8_t count, uint8_t bottom_up)
+{
+	if (count == 0u) {
+		return;
+	}
+	if (bottom_up != 0u) {
+		src_row = (uint8_t)(src_row + count - 1u);
+		dst_row = (uint8_t)(dst_row + count - 1u);
+	}
+	while (count != 0u) {
+		v9958_cmd_reset();
+		v9958_cmd[V9958_CMD_SY_LO] = v9958_row_vram_y(src_row);
+		v9958_cmd[V9958_CMD_DY_LO] = v9958_row_vram_y(dst_row);
+		v9958_cmd[V9958_CMD_NX_LO] =
+			(uint8_t)(V9958_PIXEL_WIDTH & 0xFFu);
+		v9958_cmd[V9958_CMD_NX_HI] =
+			(uint8_t)(V9958_PIXEL_WIDTH >> 8);
+		v9958_cmd[V9958_CMD_NY_LO] = V9958_CELL_HEIGHT;
+		v9958_cmd[V9958_CMD_CODE] = V9958_CMD_HMMM;
+		v9958_start_command(v9958_cmd);
+		if (bottom_up != 0u) {
+			--src_row;
+			--dst_row;
+		} else {
+			++src_row;
+			++dst_row;
+		}
+		--count;
+	}
+}
+
+/* --- print run ------------------------------------------------------- */
+
+/* Render the pending run.  The run only spans one text row: appending a
+ * character at the right margin flushes first (see v9958_put_printable). */
+static void v9958_out_flush(void)
+{
+	uint8_t i;
+	uint8_t col;
+	uint8_t row;
+	const uint8_t *run = v9958_run_ptr;
+
+	if (v9958_state.out_run_count == 0u) {
+		return;
+	}
+	col = v9958_state.out_run_col;
+	row = v9958_state.out_run_row;
+	for (i = 0u; i < v9958_state.out_run_count; ++i) {
+		v9958_render_char(run[i], col, row);
+		++col;
+	}
+	v9958_state.out_run_count = 0u;
+}
+
+/* Make everything written so far visible: flush the run, write the
+ * cursor SAT and wait for the command engine (present).  This is the
+ * reference's cursor_set_position_current and the flush point used by
+ * every operation that moves the cursor or blocks. */
+static void v9958_term_sync(void)
+{
+	v9958_out_flush();
+	v9958_cursor_write_sat();
+	v9958_io_wait_command();
+}
+
+/* --- terminal cursor and text actions -------------------------------- */
+
+/* Scroll the circular bitmap by one cell: advance the R#23 origin,
+ * repaint the fixed margin before logical row zero and the newly
+ * exposed bottom row, then commit the new origin.  The reference
+ * deliberately trades one tearing field for line-rate scrolling instead
+ * of waiting for vertical retrace on every line. */
+static void v9958_scroll_up(void)
+{
+	uint8_t origin =
+		(uint8_t)(v9958_state.scroll_origin + V9958_CELL_HEIGHT);
+
+	v9958_state.scroll_origin = origin;
+
+	v9958_cmd_reset();
+	v9958_cmd[V9958_CMD_DY_LO] =
+		(uint8_t)(origin - V9958_DISPLAY_OFFSET);
+	v9958_cmd[V9958_CMD_NX_LO] = V9958_CLEAR_WIDTH_LO;
+	v9958_cmd[V9958_CMD_NX_HI] = V9958_CLEAR_WIDTH_HI;
+	v9958_cmd[V9958_CMD_NY_LO] = V9958_DISPLAY_OFFSET;
+	v9958_cmd[V9958_CMD_COLOR] = V9958_CLEAR_COLOR;
+	v9958_cmd[V9958_CMD_CODE] = V9958_CMD_HMMV;
+	v9958_start_command(v9958_cmd);
+
+	v9958_fill_cells(0u, V9958_SCROLL_BOTTOM, V9958_COLUMNS, 1u);
+	v9958_io_wait_command();
+
+	v9958_io_reg((uint8_t)(origin - V9958_DISPLAY_OFFSET),
+		     ZOS_V9958_REG_R23);
+}
+
+/* Terminal-level scroll: flush, scroll the bitmap, park the cursor at
+ * the bottom row and present (reference text_scroll_up). */
+static void v9958_text_scroll_up(void)
+{
+	v9958_out_flush();
+	v9958_scroll_up();
+	v9958_state.text_col = 0u;
+	v9958_state.text_row = V9958_SCROLL_BOTTOM;
+	v9958_term_sync();
+}
+
+/* Move the cursor one cell right, wrapping (or clamping and
+ * overwriting) at the right margin exactly per the reference. */
+static void v9958_advance_cursor(void)
+{
+	if ((uint8_t)(v9958_state.text_col + 1u) < V9958_COLUMNS) {
+		v9958_state.text_col =
+			(uint8_t)(v9958_state.text_col + 1u);
+		return;
+	}
+	if (v9958_state.auto_wrap != 0u) {
+		v9958_state.text_col = 0u;
+		if ((uint8_t)(v9958_state.text_row + 1u) < V9958_ROWS) {
+			v9958_state.text_row =
+				(uint8_t)(v9958_state.text_row + 1u);
+		} else {
+			v9958_text_scroll_up();
+		}
+	} else {
+		v9958_state.text_col = V9958_COLUMNS - 1u;
+	}
+}
+
+/* Reference text_newline: flush, column zero, next row or scroll. */
+static void v9958_newline(void)
+{
+	v9958_out_flush();
+	v9958_state.text_col = 0u;
+	if ((uint8_t)(v9958_state.text_row + 1u) < V9958_ROWS) {
+		v9958_state.text_row =
+			(uint8_t)(v9958_state.text_row + 1u);
+	} else {
+		v9958_text_scroll_up();
+	}
+}
+
+static void v9958_put_printable(uint8_t ch)
+{
+	uint8_t *run = v9958_run_ptr;
+
+	if (v9958_state.out_run_count == V9958_OUT_RUN_SIZE) {
+		v9958_term_sync();
+	}
+	if (v9958_state.out_run_count == 0u) {
+		v9958_state.out_run_col = v9958_state.text_col;
+		v9958_state.out_run_row = v9958_state.text_row;
+	}
+	run[v9958_state.out_run_count] = ch;
+	v9958_state.out_run_count =
+		(uint8_t)(v9958_state.out_run_count + 1u);
+
+	if (v9958_state.text_col == (V9958_COLUMNS - 1u)) {
+		v9958_out_flush();
+		v9958_advance_cursor();
+		v9958_term_sync();
+	} else {
+		v9958_advance_cursor();
+	}
+}
+
+static void v9958_term_cr(void)
+{
+	v9958_state.text_col = 0u;
+	v9958_term_sync();
+}
+
+static void v9958_term_lf(void)
+{
+	uint8_t col = v9958_state.text_col;
+
+	v9958_newline();
+	v9958_state.text_col = col;
+	v9958_term_sync();
+}
+
+static void v9958_term_nel(void)
+{
+	v9958_state.text_col = 0u;
+	v9958_newline();
+	v9958_term_sync();
+}
+
+/* Reverse index: one row up, no scroll-down at the top (deferred in the
+ * reference and deliberately still deferred here). */
+static void v9958_term_ri(void)
+{
+	if (v9958_state.text_row == 0u) {
+		return;
+	}
+	v9958_state.text_row = (uint8_t)(v9958_state.text_row - 1u);
+	v9958_term_sync();
+}
+
+static void v9958_term_bs(void)
+{
+	if (v9958_state.text_col == 0u) {
+		return;
+	}
+	v9958_state.text_col = (uint8_t)(v9958_state.text_col - 1u);
+	v9958_term_sync();
+}
+
+/* Advance to the next 8-column tab stop (always at least one cell). */
+static void v9958_term_tab(void)
+{
+	do {
+		v9958_advance_cursor();
+	} while ((v9958_state.text_col & 0x07u) != 0u);
+	v9958_term_sync();
+}
+
+static void v9958_term_cursor_up(void)
+{
+	if (v9958_state.text_row == 0u) {
+		return;
+	}
+	v9958_state.text_row = (uint8_t)(v9958_state.text_row - 1u);
+	v9958_term_sync();
+}
+
+static void v9958_term_cursor_down(void)
+{
+	if (v9958_state.text_row >= (V9958_ROWS - 1u)) {
+		return;
+	}
+	v9958_state.text_row = (uint8_t)(v9958_state.text_row + 1u);
+	v9958_term_sync();
+}
+
+static void v9958_term_cursor_left(void)
+{
+	if (v9958_state.text_col == 0u) {
+		return;
+	}
+	v9958_state.text_col = (uint8_t)(v9958_state.text_col - 1u);
+	v9958_term_sync();
+}
+
+static void v9958_term_cursor_right(void)
+{
+	if (v9958_state.text_col >= (V9958_COLUMNS - 1u)) {
+		return;
+	}
+	v9958_state.text_col = (uint8_t)(v9958_state.text_col + 1u);
+	v9958_term_sync();
+}
+
+/* --- erasing ---------------------------------------------------------- */
+
+static void v9958_clear_to_eol(void)
+{
+	v9958_out_flush();
+	v9958_fill_cells(v9958_state.text_col, v9958_state.text_row,
+			 (uint8_t)(V9958_COLUMNS - v9958_state.text_col), 1u);
+}
+
+static void v9958_clear_line(void)
+{
+	uint8_t col = v9958_state.text_col;
+
+	v9958_state.text_col = 0u;
+	v9958_clear_to_eol();
+	v9958_state.text_col = col;
+}
+
+static void v9958_clear_from_sol_to_cursor(void)
+{
+	v9958_out_flush();
+	v9958_fill_cells(0u, v9958_state.text_row,
+			 (uint8_t)(v9958_state.text_col + 1u), 1u);
+}
+
+/* ED 0: cursor through end of screen; the cursor is restored. */
+static void v9958_ed_to_eos(void)
+{
+	uint8_t col = v9958_state.text_col;
+	uint8_t row = v9958_state.text_row;
+	uint8_t scan = (uint8_t)(row + 1u);
+
+	v9958_clear_to_eol();
+	while (scan < V9958_ROWS) {
+		v9958_state.text_row = scan;
+		v9958_state.text_col = 0u;
+		v9958_clear_to_eol();
+		++scan;
+	}
+	v9958_state.text_col = col;
+	v9958_state.text_row = row;
+	v9958_term_sync();
+}
+
+/* ED 1: screen start through cursor; the cursor is restored. */
+static void v9958_ed_from_start(void)
+{
+	uint8_t col = v9958_state.text_col;
+	uint8_t row = v9958_state.text_row;
+	uint8_t scan;
+
+	for (scan = 0u; scan < row; ++scan) {
+		v9958_state.text_row = scan;
+		v9958_state.text_col = 0u;
+		v9958_clear_line();
+	}
+	v9958_state.text_row = row;
+	v9958_state.text_col = col;
+	v9958_clear_from_sol_to_cursor();
+	v9958_term_sync();
+}
+
+/* ED 2 / FF: clear the whole screen and home (reference compatibility
+ * behavior). */
+static void v9958_clear_screen_runtime(void)
+{
+	v9958_out_flush();
+	v9958_clear_screen();
+	v9958_state.text_col = 0u;
+	v9958_state.text_row = 0u;
+	v9958_term_sync();
+}
+
+/* --- insert/delete lines (full-screen region, reference clamp) -------- */
+
+static void v9958_insert_lines(uint8_t n)
+{
+	uint8_t row = v9958_state.text_row;
+	uint8_t shift = (uint8_t)(V9958_ROWS - row - n);
+
+	if (shift != 0u) {
+		v9958_copy_rows(row, (uint8_t)(row + n), shift, 1u);
+	}
+	v9958_fill_cells(0u, row, V9958_COLUMNS, n);
+}
+
+static void v9958_delete_lines(uint8_t n)
+{
+	uint8_t row = v9958_state.text_row;
+	uint8_t shift = (uint8_t)(V9958_ROWS - row - n);
+
+	if (shift != 0u) {
+		v9958_copy_rows((uint8_t)(row + n), row, shift, 0u);
+	}
+	v9958_fill_cells(0u, (uint8_t)(V9958_ROWS - n), V9958_COLUMNS, n);
+}
+
+/* --- ANSI/CSI operations ---------------------------------------------- */
+
+static uint8_t v9958_param0_default1(void)
+{
+	if (v9958_state.csi_param_count == 0u ||
+	    v9958_state.csi_param0 == 0u) {
+		return 1u;
+	}
+	return v9958_state.csi_param0;
+}
+
+static uint8_t v9958_param1_default1(void)
+{
+	if (v9958_state.csi_param_count < 2u ||
+	    v9958_state.csi_param1 == 0u) {
+		return 1u;
+	}
+	return v9958_state.csi_param1;
+}
+
+static void v9958_store_param(void)
+{
+	if (v9958_state.csi_param_count >= 2u) {
+		v9958_state.csi_accum = 0u; /* extra params are dropped */
+		return;
+	}
+	if (v9958_state.csi_param_count == 0u) {
+		v9958_state.csi_param0 = v9958_state.csi_accum;
+	} else {
+		v9958_state.csi_param1 = v9958_state.csi_accum;
+	}
+	v9958_state.csi_param_count =
+		(uint8_t)(v9958_state.csi_param_count + 1u);
+	v9958_state.csi_accum = 0u;
+}
+
+static void v9958_ansi_cursor_up_n(uint8_t n)
+{
+	while (n != 0u) {
+		v9958_term_cursor_up();
+		--n;
+	}
+}
+
+static void v9958_ansi_cursor_down_n(uint8_t n)
+{
+	while (n != 0u) {
+		v9958_term_cursor_down();
+		--n;
+	}
+}
+
+static void v9958_ansi_cursor_left_n(uint8_t n)
+{
+	while (n != 0u) {
+		v9958_term_cursor_left();
+		--n;
+	}
+}
+
+static void v9958_ansi_cursor_right_n(uint8_t n)
+{
+	while (n != 0u) {
+		v9958_term_cursor_right();
+		--n;
+	}
+}
+
+/* CSI G: absolute column (1-based, clamped). */
+static void v9958_ansi_cha(void)
+{
+	uint8_t col = (uint8_t)(v9958_param0_default1() - 1u);
+
+	if (col >= V9958_COLUMNS) {
+		col = V9958_COLUMNS - 1u;
+	}
+	v9958_state.text_col = col;
+	v9958_term_sync();
+}
+
+/* CSI d: absolute row (1-based, clamped). */
+static void v9958_ansi_vpa(void)
+{
+	uint8_t row = (uint8_t)(v9958_param0_default1() - 1u);
+
+	if (row >= V9958_ROWS) {
+		row = V9958_ROWS - 1u;
+	}
+	v9958_state.text_row = row;
+	v9958_term_sync();
+}
+
+/* CSI H / CSI f: cursor position (row;col, 1-based, clamped). */
+static void v9958_ansi_cup(void)
+{
+	uint8_t row = (uint8_t)(v9958_param0_default1() - 1u);
+	uint8_t col;
+
+	if (row >= V9958_ROWS) {
+		row = V9958_ROWS - 1u;
+	}
+	v9958_state.text_row = row;
+
+	col = (uint8_t)(v9958_param1_default1() - 1u);
+	if (col >= V9958_COLUMNS) {
+		col = V9958_COLUMNS - 1u;
+	}
+	v9958_state.text_col = col;
+	v9958_term_sync();
+}
+
+/* CSI J: erase in display. */
+static void v9958_ansi_ed(void)
+{
+	if (v9958_state.csi_param_count == 0u ||
+	    v9958_state.csi_param0 == 0u) {
+		v9958_ed_to_eos();
+		return;
+	}
+	if (v9958_state.csi_param0 == 1u) {
+		v9958_ed_from_start();
+		return;
+	}
+	if (v9958_state.csi_param0 == 2u) {
+		v9958_clear_screen_runtime();
+	}
+}
+
+/* CSI K: erase in line. */
+static void v9958_ansi_el(void)
+{
+	if (v9958_state.csi_param_count == 0u ||
+	    v9958_state.csi_param0 == 0u) {
+		v9958_clear_to_eol();
+		return;
+	}
+	if (v9958_state.csi_param0 == 1u) {
+		v9958_clear_from_sol_to_cursor();
+		return;
+	}
+	v9958_clear_line();
+}
+
+/* CSI X: erase n characters from the cursor (clamped to the line). */
+static void v9958_ansi_ech(void)
+{
+	uint8_t n = v9958_param0_default1();
+	uint8_t avail =
+		(uint8_t)(V9958_COLUMNS - v9958_state.text_col);
+
+	if (avail == 0u) {
+		return;
+	}
+	if (n > avail) {
+		n = avail;
+	}
+	v9958_out_flush();
+	v9958_fill_cells(v9958_state.text_col, v9958_state.text_row, n, 1u);
+}
+
+/* SGR parameter effect: 0 reset, 7 reverse on, 27 reverse off; every
+ * other parameter (bold/underline/blink/colors) is consumed without a
+ * visual effect, as in the reference. */
+static void v9958_sgr_apply(uint8_t param)
+{
+	if (param == 0u) {
+		v9958_state.current_attr = 0u;
+	} else if (param == 7u) {
+		v9958_state.current_attr = 1u;
+	} else if (param == 27u) {
+		v9958_state.current_attr = 0u;
+	}
+}
+
+static void v9958_ansi_sgr(void)
+{
+	v9958_out_flush();
+	if (v9958_state.csi_param_count == 0u) {
+		v9958_state.current_attr = 0u;
+		return;
+	}
+	v9958_sgr_apply(v9958_state.csi_param0);
+	if (v9958_state.csi_param_count >= 2u) {
+		v9958_sgr_apply(v9958_state.csi_param1);
+	}
+}
+
+static void v9958_ansi_save_cursor(void)
+{
+	v9958_state.saved_col = v9958_state.text_col;
+	v9958_state.saved_row = v9958_state.text_row;
+	v9958_state.saved_attr = v9958_state.current_attr;
+}
+
+static void v9958_ansi_restore_cursor(void)
+{
+	v9958_state.text_col = v9958_state.saved_col;
+	v9958_state.text_row = v9958_state.saved_row;
+	v9958_state.current_attr = v9958_state.saved_attr;
+	v9958_term_sync();
+}
+
+/* DEC private set (ESC [ ? n h): 7 = DECAWM on, 25 = show cursor;
+ * others are consumed. */
+static void v9958_ansi_decset(void)
+{
+	if (v9958_state.csi_param_count == 0u) {
+		return;
+	}
+	if (v9958_state.csi_param0 == 7u) {
+		v9958_state.auto_wrap = 1u;
+		return;
+	}
+	if (v9958_state.csi_param0 == 25u) {
+		v9958_out_flush();
+		v9958_state.cursor_visible = 1u;
+		v9958_cursor_write_sat();
+	}
+}
+
+/* DEC private reset (ESC [ ? n l): 7 = DECAWM off, 25 = hide cursor;
+ * others are consumed. */
+static void v9958_ansi_decrst(void)
+{
+	if (v9958_state.csi_param_count == 0u) {
+		return;
+	}
+	if (v9958_state.csi_param0 == 7u) {
+		v9958_state.auto_wrap = 0u;
+		return;
+	}
+	if (v9958_state.csi_param0 == 25u) {
+		v9958_out_flush();
+		v9958_state.cursor_visible = 0u;
+		v9958_cursor_write_sat();
+	}
+}
+
+/* CSI L / CSI M: insert/delete n lines at the cursor row (full-screen
+ * region; n clamped to the rows below the cursor). */
+static void v9958_ansi_insert_lines(void)
+{
+	uint8_t n = v9958_param0_default1();
+	uint8_t avail = (uint8_t)(V9958_ROWS - v9958_state.text_row);
+
+	if (n > avail) {
+		n = avail;
+	}
+	v9958_out_flush();
+	v9958_insert_lines(n);
+}
+
+static void v9958_ansi_delete_lines(void)
+{
+	uint8_t n = v9958_param0_default1();
+	uint8_t avail = (uint8_t)(V9958_ROWS - v9958_state.text_row);
+
+	if (n > avail) {
+		n = avail;
+	}
+	v9958_out_flush();
+	v9958_delete_lines(n);
+}
+
+/* Dispatch one CSI final byte (parameters already stored). */
+static void v9958_dispatch_csi(uint8_t command)
+{
+	if (v9958_state.csi_private != 0u) {
+		if (command == 'h') {
+			v9958_ansi_decset();
+		} else if (command == 'l') {
+			v9958_ansi_decrst();
+		}
+		return; /* unsupported DEC private: consumed */
+	}
+
+	switch (command) {
+	case 'G':
+		v9958_ansi_cha();
+		break;
+	case 'A':
+		v9958_ansi_cursor_up_n(v9958_param0_default1());
+		break;
+	case 'B':
+		v9958_ansi_cursor_down_n(v9958_param0_default1());
+		break;
+	case 'C':
+		v9958_ansi_cursor_right_n(v9958_param0_default1());
+		break;
+	case 'D':
+		v9958_ansi_cursor_left_n(v9958_param0_default1());
+		break;
+	case 'H':
+	case 'f':
+		v9958_ansi_cup();
+		break;
+	case 'd':
+		v9958_ansi_vpa();
+		break;
+	case 'J':
+		v9958_ansi_ed();
+		break;
+	case 'K':
+		v9958_ansi_el();
+		break;
+	case 'X':
+		v9958_ansi_ech();
+		break;
+	case 'm':
+		v9958_ansi_sgr();
+		break;
+	case 's':
+		v9958_ansi_save_cursor();
+		break;
+	case 'u':
+		v9958_ansi_restore_cursor();
+		break;
+	case 'L':
+		v9958_ansi_insert_lines();
+		break;
+	case 'M':
+		v9958_ansi_delete_lines();
+		break;
+	default:
+		/* 'c', 'n' (device attributes/status) and every unknown
+		 * final byte: consumed safely. */
+		break;
+	}
+}
+
+/* --- parser ----------------------------------------------------------- */
+
+static void v9958_term_csi(uint8_t byte)
+{
+	if (byte >= '0' && byte <= '9') {
+		v9958_state.csi_accum = (uint8_t)(
+			(uint8_t)(v9958_state.csi_accum * 10u) +
+			(uint8_t)(byte - '0'));
+		return;
+	}
+	if (byte == '?') {
+		if (v9958_state.csi_param_count == 0u) {
+			v9958_state.csi_private = 1u;
+		}
+		return;
+	}
+	if (byte == ';') {
+		v9958_store_param();
+		return;
+	}
+	v9958_store_param();
+	v9958_state.term_state = V9958_TERM_NORMAL;
+	v9958_state.esc_count = 0u;
+	v9958_dispatch_csi(byte);
+}
+
+static void v9958_term_esc(uint8_t byte)
+{
+	v9958_state.term_state = V9958_TERM_NORMAL;
+
+	if (byte == 0x1Bu) {
+		v9958_out_flush();
+		if (v9958_state.esc_count == 2u) {
+			/* Third ESC: full display reset (RIS). */
+			v9958_term_set_defaults();
+			(void)v9958_init_display();
+			return;
+		}
+		v9958_state.esc_count =
+			(uint8_t)(v9958_state.esc_count + 1u);
+		v9958_state.term_state = V9958_TERM_ESC;
+		return;
+	}
+	v9958_state.esc_count = 0u;
+
+	switch (byte) {
+	case '[':
+		v9958_state.term_state = V9958_TERM_CSI;
+		v9958_state.csi_param_count = 0u;
+		v9958_state.csi_accum = 0u;
+		v9958_state.csi_private = 0u;
+		v9958_state.csi_param0 = 0u;
+		v9958_state.csi_param1 = 0u;
+		break;
+	case '#':
+		v9958_state.term_state = V9958_TERM_ESC_HASH;
+		break;
+	case '(':
+	case ')':
+	case 'O':
+		v9958_state.term_state = V9958_TERM_CHARSET;
+		break;
+	case 'D':
+		v9958_term_lf(); /* IND */
+		break;
+	case 'E':
+		v9958_term_nel();
+		break;
+	case 'M':
+		v9958_term_ri(); /* RI; scroll-down at top deferred */
+		break;
+	case '7':
+		v9958_ansi_save_cursor();
+		break;
+	case '8':
+		v9958_ansi_restore_cursor();
+		break;
+	case 'c':
+		v9958_term_set_defaults();
+		(void)v9958_init_display();
+		break;
+	default:
+		/* ESC H/Z/=/ > and unknown ESC finals: consumed. */
+		break;
+	}
+}
+
+/* One byte through the ESC / CSI / charset state machine. */
+static void v9958_term_feed(uint8_t byte)
+{
+	if (v9958_state.term_state == V9958_TERM_ESC) {
+		v9958_term_esc(byte);
+		return;
+	}
+	if (v9958_state.term_state == V9958_TERM_CSI) {
+		v9958_term_csi(byte);
+		return;
+	}
+	if (v9958_state.term_state == V9958_TERM_ESC_HASH ||
+	    v9958_state.term_state == V9958_TERM_CHARSET) {
+		/* ESC # x / ESC ( ) O x: consume the one final byte. */
+		v9958_state.term_state = V9958_TERM_NORMAL;
+		v9958_state.esc_count = 0u;
+		return;
+	}
+
+	if (byte == 0x1Bu) {
+		v9958_out_flush();
+		if (v9958_state.esc_count == 2u) {
+			/* Third ESC: full display reset (RIS). */
+			v9958_term_set_defaults();
+			(void)v9958_init_display();
+			return;
+		}
+		v9958_state.esc_count =
+			(uint8_t)(v9958_state.esc_count + 1u);
+		v9958_state.term_state = V9958_TERM_ESC;
+		return;
+	}
+	v9958_state.esc_count = 0u;
+
+	if (byte == 0x08u) {
+		v9958_term_bs();
+		return;
+	}
+	if (byte == 0x09u) {
+		v9958_term_tab();
+		return;
+	}
+	if (byte == 0x0Du) {
+		v9958_term_cr();
+		return;
+	}
+	if (byte == 0x0Au || byte == 0x0Bu) {
+		v9958_term_lf(); /* LF and VT */
+		return;
+	}
+	if (byte == 0x0Cu) {
+		v9958_clear_screen_runtime(); /* FF */
+		return;
+	}
+	if (byte >= 0x20u) {
+		v9958_put_printable(byte);
+		return;
+	}
+	/* NUL/BEL/SO/SI and every other control byte: consume after
+	 * flushing the pending run (reference behavior). */
+	v9958_out_flush();
+}
+
+/* Parser/cursor/rendition defaults shared by cold init and every reset
+ * (ZVIDEO_RESET, ESC c, triple-ESC): normal video, auto-wrap on, cursor
+ * visible at the home cell, no saved state. */
+static void v9958_term_set_defaults(void)
+{
+	v9958_state.term_state = V9958_TERM_NORMAL;
+	v9958_state.esc_count = 0u;
+	v9958_state.csi_private = 0u;
+	v9958_state.csi_param_count = 0u;
+	v9958_state.csi_accum = 0u;
+	v9958_state.csi_param0 = 0u;
+	v9958_state.csi_param1 = 0u;
+	v9958_state.text_col = 0u;
+	v9958_state.text_row = 0u;
+	v9958_state.cursor_visible = 1u;
+	v9958_state.current_attr = 0u;
+	v9958_state.saved_col = 0u;
+	v9958_state.saved_row = 0u;
+	v9958_state.saved_attr = 0u;
+	v9958_state.auto_wrap = 1u;
+	v9958_state.out_run_count = 0u;
+	v9958_run_ptr = v9958_out_run;
+}
+
+/* --- generic character interface (output only) ------------------------
+ *
+ * The zchar_ops entries are assembly wrappers (v9958_io.asm) that run
+ * these C workers on a private module renderer stack: the kernel syscall
+ * gate stack is only about 70 bytes deep, which the ported renderer's
+ * call chain exceeds.  The wrappers preserve the exact sdcccall(1)
+ * prototypes and return values; the workers must stay single-depth
+ * (they are never re-entered).
+ */
+
+int v9958_char_putc_worker(void *vstate, char ch)
+{
+	if (vstate == (void *)0) {
+		return ZDEV_ENODEV;
+	}
+	/* A standalone byte has no later flush opportunity in the console
+	 * service, so putc completes with a visible update. */
+	v9958_term_feed((uint8_t)ch);
+	v9958_term_sync();
+	return ZDEV_OK;
+}
+
+int v9958_char_write_worker(void *vstate, const char *buf, uint16_t len)
+{
+	uint16_t i;
+
+	if (vstate == (void *)0) {
+		return ZDEV_ENODEV;
+	}
+	if (len == 0u) {
+		return 0;
+	}
+	if (buf == (const char *)0) {
+		return ZDEV_EINVAL;
+	}
+	/* The whole 16-bit transfer is processed; the print run batches up
+	 * to 64 glyphs internally and one final sync makes it visible. */
+	for (i = 0u; i < len; ++i) {
+		v9958_term_feed((uint8_t)buf[i]);
+	}
+	v9958_term_sync();
+	return (int)len;
+}
+
+const struct zchar_ops v9958_char_ops = {
+	v9958_char_putc, /* assembly entry: switches to the renderer stack */
+	v9958_char_write,
+	(int (*)(void *))0, /* poll: output-only device */
+	(int (*)(void *))0  /* getc: output-only device */
+};
 
 /* --- class operations --------------------------------------------------- */
 
@@ -432,12 +1478,20 @@ int v9958_send(void *vstate, uint8_t operation, const void *payload,
 		if (length != 0u) {
 			return ZDEV_EINVAL;
 		}
+		/* Flush pending terminal output first: PRESENT is a blocking
+		 * point, so nothing of the console stream may stay queued
+		 * behind it. */
+		v9958_out_flush();
 		v9958_io_wait_command();
 		return ZDEV_OK;
 	case ZVIDEO_RESET:
 		if (length != 0u) {
 			return ZDEV_EINVAL;
 		}
+		/* Full reset: parser/cursor/rendition defaults, both font
+		 * atlases reloaded from ROMFS, circular bitmap cleared,
+		 * cursor re-initialized, present, display enabled. */
+		v9958_term_set_defaults();
 		if (v9958_init_display() != ZDRIVER_OK) {
 			return ZDEV_ENODEV;
 		}
@@ -474,8 +1528,12 @@ int v9958_driver_init(const struct zdriver_api *api)
 	}
 	v9958_state.api = api;
 	/* Cold bring-up: D0 uses the reset/default interrupt route.  All
-	 * subsequent latch writes preserve this value in the shadow. */
+	 * subsequent latch writes preserve this value in the shadow.  The
+	 * terminal defaults are established before the display init so the
+	 * first clear uses the normal-video background and the cursor SAT
+	 * matches the home cell. */
 	v9958_state.config_shadow = 0x00u;
+	v9958_term_set_defaults();
 	if (v9958_init_display() != ZDRIVER_OK) {
 		return ZDRIVER_FAIL;
 	}

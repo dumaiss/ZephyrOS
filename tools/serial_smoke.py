@@ -77,10 +77,10 @@ captures output with a bounded timeout, and verifies the expected output:
                      when the image asks for it).  The boot log is
                      captured once, so start this tool first and reset
                      the board.
-    --mode m8-v9958  the M8 V9958 video image: banner, the dynamic
-                     console line, the v9958.0 VIDEO registration, the
-                     malformed-request rejection, the RESET pass, the
-                     presented fill, the drawn pattern, and
+    --mode m8-v9958  the M8 V9958 video image: banner, the v9958.0
+                     VIDEO registration, the malformed-request
+                     rejection, the RESET pass, the console-binding
+                     line, the presented fill, the drawn pattern, and
                      "m8 v9958 selftest: OK".  The tool validates the
                      serial transcript; the operator must also confirm
                      the documented pattern on the V9958 output (a
@@ -88,6 +88,15 @@ captures output with a bounded timeout, and verifies the expected output:
                      default blue background).  The image waits for the
                      host sync sequence; start this tool first and
                      reset the board.
+    --mode m8-console  the M8 console acceptance image: banner, the
+                     selected input/output class lines
+                     (HID keyboard input, V9958 output) and
+                     "m8 console selftest: OK".  The interactive
+                     session runs over the HID input and the V9958
+                     output; the operator must confirm it on the
+                     physical keyboard and display.  The image waits
+                     for the host sync sequence; start this tool first
+                     and reset the board.
 
 The device is given with --port or the ZOS_SERIAL_PORT environment
 variable (the SERIAL_PORT make variable is passed through).  A missing or
@@ -96,13 +105,13 @@ invokes this tool.
 
 On benches where the target's reset line also resets the USB bridge, the
 TTY drops off the bus when the board is reset.  The tool reopens the same
-device path and keeps capturing.  The M8 IOC/HID/V9958 smoke images
-additionally wait for the host sync sequence (M8IOC_HOST_SYNC) before
-they print anything, so those modes send that sequence once the port is
-open and repeat it until the first byte arrives.
+device path and keeps capturing.  The M8 IOC/HID/V9958/console smoke
+images additionally wait for the host sync sequence (M8IOC_HOST_SYNC)
+before they print anything, so those modes send that sequence once the
+port is open and repeat it until the first byte arrives.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure|m7|m8-ioc|m8-hid|m8-v9958]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure|m7|m8-ioc|m8-hid|m8-v9958|m8-console]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -199,11 +208,22 @@ M8HID_FALLBACK_BYTE = b"R"
 M8V9958_VIDEO_OK = b"m8 v9958: video0 OK\r\n"
 M8V9958_MALFORMED_OK = b"m8 v9958: malformed rejected\r\n"
 M8V9958_RESET_OK = b"m8 v9958: reset OK\r\n"
+M8V9958_CONSOLE_OK = b"m8 v9958: console v9958.0 OK\r\n"
 M8V9958_FILL_OK = b"m8 v9958: fill presented\r\n"
 M8V9958_PATTERN_OK = b"m8 v9958: pattern drawn\r\n"
 M8V9958_SELFTEST_OK = b"m8 v9958 selftest: OK\r\n"
 M8V9958_FAIL = b"m8 v9958 selftest: FAIL"
 M8V9958_UNAVAILABLE = b"v9958: unavailable\r\n"
+
+# --- M8 console (HID input / V9958 output) ------------------------------------
+# The console image's early-SIO transcript reports the selected console
+# classes; the interactive session itself runs over the HID input and the
+# V9958 output and can only be confirmed on the physical keyboard and
+# display (or replayed by tests/test_m8_sim.py).
+M8CONSOLE_INPUT_OK = b"m8 console: input hid.keyboard0 class 04\r\n"
+M8CONSOLE_OUTPUT_OK = b"m8 console: output v9958.0 class 02\r\n"
+M8CONSOLE_SELFTEST_OK = b"m8 console selftest: OK\r\n"
+M8CONSOLE_FAIL = b"m8 console selftest: FAIL"
 
 # Host sync the smoke image waits for before the banner (bench quirk: the
 # board's reset line also resets the USB bridge, so the board must not
@@ -403,13 +423,26 @@ class _M7Session:
 
 
 def _m8v9958_result(data):
-    """True when the full video acceptance transcript is present."""
+    """True when the full video acceptance transcript is present.
+
+    The image is console-capable (package 19): the console is bound to
+    the V9958 output, so the boot log has no SIO dynamic-console line;
+    the console binding line replaces it."""
     if M8V9958_FAIL in data or M8V9958_UNAVAILABLE in data:
         return False
-    return (BANNER in data and CONSOLE_DYNAMIC_OK in data and
+    return (BANNER in data and
             M8V9958_VIDEO_OK in data and M8V9958_MALFORMED_OK in data and
-            M8V9958_RESET_OK in data and M8V9958_FILL_OK in data and
-            M8V9958_PATTERN_OK in data and M8V9958_SELFTEST_OK in data)
+            M8V9958_RESET_OK in data and M8V9958_CONSOLE_OK in data and
+            M8V9958_FILL_OK in data and M8V9958_PATTERN_OK in data and
+            M8V9958_SELFTEST_OK in data)
+
+
+def _m8console_result(data):
+    """True when the console acceptance boot transcript is present."""
+    if M8CONSOLE_FAIL in data or b"PANIC" in data:
+        return False
+    return (BANNER in data and M8CONSOLE_INPUT_OK in data and
+            M8CONSOLE_OUTPUT_OK in data and M8CONSOLE_SELFTEST_OK in data)
 
 
 def main(argv):
@@ -422,7 +455,7 @@ def main(argv):
                                            "m4", "m4-failure", "m5",
                                            "m5-corrupt", "m6", "m6-failure",
                                            "m7", "m8-ioc", "m8-hid",
-                                           "m8-v9958"),
+                                           "m8-v9958", "m8-console"),
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
@@ -488,6 +521,16 @@ def main(argv):
               "white 64x64 rectangle near the upper left, a white-then-"
               "magenta band below it, and the default blue background "
               "(see docs/validation/2026-10-03-m8-v9958.md)")
+    if args.mode == "m8-console":
+        print("serial_smoke: mode m8-console checks the console "
+              "acceptance boot log; power-cycle the board or press "
+              "RESET now so the boot (including the console selftest) is "
+              "captured; the image waits for the host sync sequence")
+        print("serial_smoke: the interactive session runs over the HID "
+              "input and the V9958 output; confirm on the physical "
+              "keyboard/display that the monitor banner and prompt are "
+              "visible and that the documented command pass works "
+              "(see docs/validation/2026-10-03-m8-console.md)")
     deadline = time.monotonic() + args.timeout
     data = b""
     bridge_drops = 0
@@ -512,7 +555,8 @@ def main(argv):
                 print("serial_smoke: %s is back (drop %d); still capturing"
                       % (args.port, bridge_drops))
                 host_sync_at = 0.0
-            if (args.mode in ("m8-ioc", "m8-hid", "m8-v9958") and
+            if (args.mode in ("m8-ioc", "m8-hid", "m8-v9958",
+                              "m8-console") and
                     BANNER not in data and
                     time.monotonic() >= host_sync_at):
                 # The smoke image holds the banner for this sequence; keep
@@ -629,6 +673,9 @@ def main(argv):
                     if _m8v9958_result(data) or M8V9958_FAIL in data or \
                             M8V9958_UNAVAILABLE in data:
                         break
+                elif args.mode == "m8-console":
+                    if _m8console_result(data) or M8CONSOLE_FAIL in data:
+                        break
     finally:
         if link is not None:
             try:
@@ -733,11 +780,18 @@ def main(argv):
                     "byte, and 'm8 hid selftest: OK'")
     elif args.mode == "m8-v9958":
         ok = _m8v9958_result(data)
-        expected = ("the banner, the dynamic console line, the v9958.0 "
-                    "registration, the malformed-request rejection, the "
-                    "RESET pass, the presented fill, the drawn pattern, "
-                    "and 'm8 v9958 selftest: OK'; the operator must also "
-                    "confirm the documented pattern visually")
+        expected = ("the banner, the v9958.0 registration, the "
+                    "malformed-request rejection, the RESET pass, the "
+                    "console-binding line, the presented fill, the "
+                    "drawn pattern, and 'm8 v9958 selftest: OK'; the "
+                    "operator must also confirm the documented pattern "
+                    "visually")
+    elif args.mode == "m8-console":
+        ok = _m8console_result(data)
+        expected = ("the banner, the HID input class report, the V9958 "
+                    "output class report, and 'm8 console selftest: OK'; "
+                    "the operator must also confirm the visible monitor "
+                    "session on the V9958 display with the USB keyboard")
     else:
         ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
               SELFTEST_OK in data and IRQ_SELFTEST_OK in data and
@@ -950,6 +1004,32 @@ def _explain_wrong_image(mode, data):
                   "last marker above shows how far the video pass got.  "
                   "Also confirm the documented pattern visually on the "
                   "V9958 output", file=sys.stderr)
+    elif mode == "m8-console":
+        if M8CONSOLE_FAIL in data:
+            print("serial_smoke: hint: the console selftest reported a "
+                  "failure (the detail code on the FAIL line names the "
+                  "phase).  Check the V9958 output and the USB "
+                  "keyboard, and that "
+                  "build-m8-console-selftest/"
+                  "zephyros-m8-console-selftest.bin is flashed",
+                  file=sys.stderr)
+        elif M8V9958_SELFTEST_OK in data:
+            print("serial_smoke: hint: the V9958 image marker was "
+                  "observed; the video image is probably flashed "
+                  "instead of build-m8-console-selftest/"
+                  "zephyros-m8-console-selftest.bin", file=sys.stderr)
+        elif not BANNER in data:
+            print("serial_smoke: hint: no boot log was captured.  This "
+                  "image waits for the host sync sequence before the "
+                  "banner; start this tool first, then power-cycle the "
+                  "board or press RESET while it waits, and rerun",
+                  file=sys.stderr)
+        else:
+            print("serial_smoke: hint: the transcript is incomplete; "
+                  "the last marker above shows how far the boot got.  "
+                  "The interactive session runs over the HID input "
+                  "and the V9958 output and must be confirmed on the "
+                  "physical keyboard and display", file=sys.stderr)
 
 
 if __name__ == "__main__":
