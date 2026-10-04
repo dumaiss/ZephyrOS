@@ -2994,11 +2994,13 @@ The filesystem attached at `/` is the normal writable filesystem, but it does no
 
 M9 does not provide runtime `mount` or `umount` commands. Mount topology is defined by build-time JSON configuration and established during boot.
 
-Suggested file:
+The production manifest is:
 
 ```text
 config/mounts.json
 ```
+
+This manifest is the only place where mount policy (paths, providers, sources, system/required flags) exists. The build translates it into an immutable table compiled into the kernel image, and VFS executes that table at boot. Section 32.33 defines the translation and how VFS consumes the result.
 
 Schema:
 
@@ -3109,17 +3111,22 @@ missing required fields
 empty filesystem/source names
 zero system filesystems
 more than one system filesystem
-system filesystem marked as depending on a loadable provider
+system filesystem naming a provider that is not built into the kernel
+`required` present on the system entry
 relative mount paths
 paths longer than ZOS_PATH_MAX
 '.' or '..' in configured mountpoints
+non-canonical mount paths (lowercase letters, trailing '/', repeated '/')
 duplicate mountpoints
 case-only duplicate mountpoints
 duplicate '/'
 unsupported nested mountpoints in M9
+more entries than the kernel mount-table capacity
 ```
 
-Because native VFS pathname matching is case-insensitive, `/SYSTEM`, `/system`, and `/System` collide. Configured mount paths should use a canonical spelling, preferably uppercase for readability.
+The build tool is told which providers are built into the kernel image. A system entry naming any other provider would have to be loaded from a module, which the system filesystem must never require (section 32.32.2). Such a manifest is therefore rejected at build time.
+
+Because native VFS pathname matching is case-insensitive, `/SYSTEM`, `/system`, and `/System` collide. Configured mount paths must use a canonical spelling: absolute, upper-case ASCII, no trailing or repeated `/`. The tool rejects non-canonical paths; it never rewrites them. The table in ROM is therefore exactly what the reviewed manifest says.
 
 ---
 
@@ -3935,16 +3942,88 @@ recovery monitor / diagnostics remain usable
 
 ## 32.33 Build-time mount table generation
 
-The build consumes `config/mounts.json` and generates a compact target table, conceptually:
+Mount policy flows in one direction, from a reviewed manifest to an immutable kernel table to runtime mount state. Nothing flows back, and nothing in the path re-decides policy.
 
-```c
-static const struct vfs_mount_config system_mounts[] = {
-    { "/SYSTEM", "romfs",  "recovery", VFS_MOUNT_SYSTEM   },
-    { "/",       "iocfat", "ioc.0",    VFS_MOUNT_OPTIONAL }
-};
+```text
+config/mounts.json            (or a test manifest selected by the build)
+        |
+        |  host build tool: validate (32.5.1), never rewrite
+        v
+generated C mount table       (build output only, never committed)
+        |
+        |  compiled and linked into the bank-7 kernel image as const data
+        v
+immutable mount configuration (ROM-loaded, read-only to VFS)
+        |
+        |  VFS bootstrap and mount phases (32.32)
+        v
+runtime mount state           (bank-7 RAM, owned by VFS)
 ```
 
-The representation is illustrative. The invariant is centralized reviewable configuration, host validation, and no Zephyr-80-specific mount policy inside VFS source.
+### 32.33.1 Inputs
+
+The build selects exactly one manifest per image. Production images use `config/mounts.json`. Acceptance images may select a test manifest, which goes through the same tool and rules. The build also passes the tool the list of providers linked into the kernel image (M9: `romfs`). That list is what lets the tool enforce the system-filesystem rule in section 32.5.1.
+
+### 32.33.2 Generated table
+
+The tool emits a single generated C source containing a constant array, one record per manifest entry in manifest order, and an entry count. Conceptually:
+
+```c
+const struct vfs_mount_config vfs_mount_table[] = {
+    { "/SYSTEM", 7u, "romfs",  "recovery", VFS_MOUNT_SYSTEM   },
+    { "/",       1u, "iocfat", "ioc.0",    VFS_MOUNT_OPTIONAL }
+};
+const uint8_t vfs_mount_count = 2u;
+```
+
+Each record carries the canonical mount path and its length, the provider name, the opaque source string, and flags:
+
+```text
+VFS_MOUNT_SYSTEM     the unique bootstrap filesystem (system = true)
+VFS_MOUNT_REQUIRED   non-system mount whose failure is a boot failure
+VFS_MOUNT_OPTIONAL   non-system mount whose failure is tolerated
+                     (required = false or absent)
+```
+
+The record layout is a kernel-private build contract between the tool and VFS. It is neither a native application ABI nor a module ABI, and may change with the kernel. The generator output is deterministic (stable order, no timestamps or host paths), so rebuilds stay byte-identical. It lives only in the build directory.
+
+### 32.33.3 Configuration versus runtime state
+
+The generated table is `const` data in the ROM-loaded kernel image. VFS reads it and never writes it.
+
+VFS keeps a separate runtime array in bank-7 RAM, indexed in parallel with the configuration table. Each runtime entry records:
+
+```text
+state         UNMOUNTED, MOUNTED or FAILED
+provider      the registered provider selected by name
+fs_state      the provider instance returned by mount()
+generation    mount generation used for cache invalidation (32.19)
+last error    the failure code, for diagnostics
+```
+
+Separating the two keeps policy auditable in ROM and keeps all mutable state with VFS.
+
+### 32.33.4 Consumption at boot
+
+1. **Bootstrap (32.32.2).** VFS registers the built-in providers and selects the single `VFS_MOUNT_SYSTEM` record. It re-checks that exactly one exists; the build already guarantees this, and a violation is fatal. VFS looks up the record's provider by name in the provider registry and calls `mount(provider_state, source, &fs_state)`. The source string is passed through unchanged as an opaque pointer into the table. On success the entry becomes `MOUNTED`; on failure boot stops through the early console.
+2. **Module phase (32.32.3).** No mount records are consumed. Modules may register additional providers.
+3. **Mount phase (32.32.4).** VFS walks the remaining records in table order, with the same lookup and `mount()` call. A missing provider counts as a mount failure. `REQUIRED` failures are fatal; `OPTIONAL` failures mark the entry `FAILED`, print a diagnostic, and leave the rest of the namespace usable.
+4. **Ready (32.32.5).** The runtime state is now fixed for the life of the boot.
+
+### 32.33.5 Use after boot
+
+Path resolution (32.8) considers only `MOUNTED` entries. The longest matching mount path wins, compared case-insensitively on component boundaries; `/` matches everything. The remainder becomes the provider-relative path, which always begins with `/`.
+
+Root enumeration (32.7) lists the `MOUNTED` entries whose path has exactly one component, plus the entries of the filesystem mounted at `/`.
+
+A `FAILED` or never-mounted entry contributes nothing to the namespace. In particular, a failed optional `/` leaves only the root-level mountpoints, such as `/SYSTEM`, visible.
+
+### 32.33.6 Invariants
+
+- Changing mount topology means editing the manifest and rebuilding; no kernel source changes.
+- VFS source contains no Zephyr-80 paths, provider names, or source strings.
+- The ROM table is exactly what the reviewed manifest says. Invalid manifests fail the build rather than being corrected.
+- Built-in provider membership is enforced twice: by the tool at build time and by the provider lookup at bootstrap.
 
 ---
 
@@ -3985,7 +4064,7 @@ M9 preserves these rules:
 
 1. **VFS owns the global namespace.**
 2. **VFS initializes before dynamic module loading.**
-3. **Mount topology is static JSON build configuration in M9.**
+3. **Mount topology is static JSON build configuration in M9, compiled into an immutable kernel table that VFS executes at boot (section 32.33).**
 4. **Exactly one configured mount is the system filesystem.**
 5. **The system filesystem provider is statically available and has no dependency on loadable modules or dynamically registered devices.**
 6. **The system filesystem is instantiated before resident modules are loaded.**
