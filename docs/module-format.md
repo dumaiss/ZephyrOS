@@ -1,16 +1,19 @@
 # ZMOD v1 Module Format and Loader Lifecycle
 
-**Status:** current through M8, driver ABI v2.  The SIO, IOC, HID, and
-V9958 drivers ship as packed ZMOD modules and are loaded during boot
-through the generic M4 loader; since M5 the container bytes come from the
-ROMFS recovery store through the bounded read-source adapter (the
-on-disk ZMOD format is unchanged).  Since M8 the header `driver_abi`
+**Status:** current through M9, driver ABI v2 (package 25).  The SIO,
+IOC, HID, and V9958 drivers ship as packed ZMOD modules and are loaded
+during boot through the generic M4 loader; since M5 the container bytes
+come from the ROMFS recovery store and since M9 they are opened as
+`/SYSTEM/<name>.zmod` through the kernel VFS and bound with
+`vfs_file_source()` (the on-disk ZMOD format and the bounded read-source
+adapter are unchanged; see `docs/vfs.md`).  Since M8 the header `driver_abi`
 must equal `ZDRIVER_ABI_VERSION` (2) and production derives the driver
 arena from the aligned linked kernel end in a two-pass link.  The
 production kernel and every ROMFS-boot image (M5 onward) link no embedded
 boot blob at all (`tools/mapcheck.py --production` rejects embedded boot
-blob/catalog symbols).  The M4/M5 paragraphs below are retained as
-historical acceptance evidence.  The stage-07 loader was
+blob/catalog symbols).  The stage-07/stage-08 records above are retained
+as historical acceptance evidence (`docs/validation/`); the description
+below reflects the current boot path.  The stage-07 loader was
 hardware-validated on 2026-10-02 (`m4 loader selftest: OK`; see
 `docs/validation/2026-10-02-m4-loader-hardware.md`); stage 08 added the
 dynamic-console transcript, the IRQ self-test module variant, a
@@ -25,10 +28,13 @@ rollback (`console: dynamic driver failed`, `m4 failure selftest: OK`);
 all runs are recorded in `docs/validation/2026-10-02-m4-acceptance.md`.
 M5 host evidence is recorded in `docs/validation/2026-10-03-m5-romfs.md`.
 
-The M3/M4 acceptance images still link their embedded test catalog
-(`kernel/module/embedded.c` + the generated blob assembly) so the earlier
-acceptance behavior stays reproducible; production and ROMFS-boot images
-do not.
+The embedded test catalog and the M1-M7 acceptance images that used it
+were retired under the Mn-1 retention rule (work package 25a).  Every
+image now boots its module set from the recovery store through the VFS,
+and the loader mechanism coverage (validation, relocation, failed-init
+rollback, arena exhaustion) runs on that path in the subsystem acceptance
+image (`tests/target/loader/`, exercised by
+`tests/test_subsys_sim.py`).
 
 This document is the authoritative description of the ZephyrOS module
 container (`ZMOD v1`), the bank-7 driver arena, the host packer, and the
@@ -41,41 +47,39 @@ that is now implemented and pinned by `include/zephyros/module.h` and
 
 ## 1. Driver arena
 
-The arena is a linker-reserved region of bank 7.  Since M8 production
-derives its bounds from the aligned linked kernel end in a two-pass link.
-The fixed rectangle below is **historical acceptance geometry only**:
+The arena is a linker-reserved region of bank 7.  Every image derives its
+bounds from the aligned linked kernel end in a two-pass link:
 
 ```text
-A000h-BFFFh   8192 bytes   16 contiguous 512-byte granules
-              (legacy pre-M8 acceptance geometry; not current production)
+align_up(__kernel_code_end, 512)-C000h   minimum 16 KiB (32 granules)
 ```
 
-*Since M8 this fixed geometry is the **legacy acceptance** rectangle:
-pre-M8 self-test images and the shifted-placement variant keep it
-byte-stably, while production derives the arena from the aligned linked
-kernel end (minimum 16 KiB before `C000h`) in a two-pass link -- see
-`docs/memory.md` section 2.2 and `docs/architecture.md` section 30.2.
+The fixed `A000h-BFFFh` rectangle that the pre-M8 acceptance images and
+the shifted-placement variant used is retired with them (work package
+25a); there is exactly one geometry.  The derived arena of the current
+production image is `7C00h-BFFFh` (34 granules, 21 used by the boot set)
+-- see `docs/memory.md` section 2.2 and `docs/architecture.md` section
+30.2.
 The loader and the generated `arena_geometry.inc` consume the linked
-symbols in both geometries; nothing below depends on the numeric base.*
+symbols; nothing below depends on the numeric base.*
 
-* Reserved by `platform/zephyr80/memory.inc`
+* Declared by the generated `memory.inc` include
   (`ZOS_DRIVER_ARENA_BASE/END`, `ZOS_DRIVER_GRANULE_SIZE`,
   `ZOS_DRIVER_GRANULES`) and exported as the link symbols
   `__driver_arena_start` / `__driver_arena_end` by
   `kernel/module/arena.asm`.  The loader uses the symbols, never the
   numeric values; module code uses neither.
 * Loadable kernel sections (`_CODE`, `_HOME`, `_GSINIT`, `_GSFINAL`,
-  `_INITIALIZER`) must end below the arena start (`__driver_arena_start`:
-  the fixed legacy `A000h`, or the derived production base).  Production
-  places the derived base at the aligned linked-kernel end, so the two
+  `_INITIALIZER`) must end below the arena start
+  (`__driver_arena_start`, the aligned linked-kernel end), so the two
   passes must agree.  `tools/mapcheck.py` rejects any area overlapping the
   arena and `tools/pack_image.py` rejects ROM payload bytes inside it; the
   512 KiB boot image carries no arena content.
 * `_DATA`/`_INITIALIZED` keep their established `C000h-DFFFh` runtime
   region; the M2 ISR stack keeps `DF00h`.
 * Only the loader allocates granules, at boot, from its byte source:
-  the ROMFS recovery store in production/ROMFS-boot images, or the
-  embedded test catalog in the pre-M5 acceptance images.
+  the ROMFS recovery store reached as `/SYSTEM` through the VFS (since
+  M9), in production and every acceptance image.
 
 The build reports arena geometry and free granules:
 `mapcheck.py` and `pack_image.py` both print the arena summary, and
@@ -229,7 +233,9 @@ every relocation offset.
 
 ```text
 module_load(name, blob, size)        module_load_source(name, source)
-  │ memory-blob source wrapper         │ ROMFS bounded source (romfs_load_zmod)
+  │ memory-blob source wrapper         │ VFS-bound file source
+  │                                    │ (vfs_file_source over an open
+  │                                    │  /SYSTEM/<name>.zmod)
   └──────────────┬─────────────────────┘
                  ▼
   zmod_validate_source()               header, sizes, offsets, granule math,
@@ -254,9 +260,12 @@ module_load(name, blob, size)        module_load_source(name, source)
 
 * **Byte sources.**  `struct zmod_source` (`read(ctx, offset, dst, length)`,
   `ctx`, `size`) is the only way container bytes enter the loader.  The
-  historical `module_load()` wraps the memory blob; `romfs_load_zmod()`
-  wraps a ROMFS file.  Both share the same validation, copy, relocation,
-  and transaction code — there is no second loader.
+  historical `module_load()` wraps the memory blob; since M9 the boot
+  modules are opened with `vfs_open("/SYSTEM/<name>.zmod")` and wrapped by
+  `vfs_file_source()` (the ROMFS bytes underneath are read by the M5
+  reader through the M9 ROMFS provider; `romfs_load_zmod()` no longer
+  exists).  Both share the same validation, copy, relocation, and
+  transaction code — there is no second loader.
 * **Allocator.**  First-fit over a 512-byte granule bitmap sized to the
   architectural maximum (80 granules), with the live granule count
   derived from the linked arena bounds at loader init.  Allocation
@@ -281,7 +290,8 @@ module_load(name, blob, size)        module_load_source(name, source)
 * **Loader errors** (negated `ZOS_*` values, see `module.h`):
   `ZMOD_EINVAL` (bad field/argument), `ZMOD_EFORMAT` (structure,
   truncation, overlap, range), `ZMOD_ENOTSUP` (version/type/ABI/reloc),
-  `ZMOD_ENOSPC` (arena/descriptor exhaustion), `ZMOD_ENOENT` (catalog),
+  `ZMOD_ENOSPC` (arena/descriptor exhaustion), `ZMOD_ENOENT` (no such
+  source entry),
   `ZMOD_EINIT` (module init returned failure).
 
 ### 4.1 IRQ handler validation
@@ -297,20 +307,17 @@ and any other address are rejected with `IRQ_EINVAL`.  Once a module is
 RESIDENT its registered handler cannot become dangling because M4 has no
 unload.
 
-### 4.2 Embedded catalog (acceptance images only)
+### 4.2 Boot-module source
 
-`kernel/module/embedded.c` exposes a null-terminated
-`struct zmod_catalog_entry` table (`name`, `blob`, `size`) plus
-`module_catalog_load_all()`, backed by the blob assembly generated from
-the packed `.zmod` containers (`build/modules/*.zmod` →
-`m4_catalog.asm`/`.inc`).  Since M5 this file is linked **only** into the
-pre-M5 acceptance images (M1-M4 variants), which keep their original
-embedded-catalog behavior; production and M5 images boot from ROMFS and
-`tools/mapcheck.py --production` rejects `_z4_module_boot`,
-`_zmod_catalog`, and `_module_catalog_load_all`.  The table and its
-loader must be linked together or not at all (mapcheck enforces the
-pairing).  The loader never inspects catalog names beyond passing them
-through to diagnostics.  See section 6 for the per-image selection.
+Every image -- production and acceptance -- uses the one container
+source: the ROMFS recovery store reached as `/SYSTEM` through the VFS,
+opened with `vfs_open("/SYSTEM/<name>.zmod")` and wrapped by
+`vfs_file_source()`.  The embedded boot catalog (`kernel/module/embedded.c`,
+`module_catalog_load_all`, the `zmod_catalog` table and
+`struct zmod_catalog_entry`) was deleted under the Mn-1 retention rule
+(work package 25a); `tools/mapcheck.py --production` still rejects its
+symbols (`_z4_module_boot`, `_zmod_catalog`, `_module_catalog_load_all`)
+so they cannot creep back in.
 
 ## 5. Synthetic fixtures and self-test
 
@@ -321,54 +328,59 @@ through to diagnostics.  See section 6 for the per-image selection.
 | `m4.filler` | verifies its 600-byte BSS pad is zero and registers nothing; used to exhaust the arena | 48 | 602 | 2 |
 | `m8.api` | driver ABI v2 discovery/resource-import fixture: class+capability `device_find` iteration, `device_interface` success/mismatch/stale errors, and resource imports before ROMFS is published | 1129 | 6 | 3 |
 
-`make m4-loader-selftest` builds the fixture modules with the real
-toolchain, packs them, embeds them, and runs `zos_run_m4_selftest` after
-the production boot section (the boot catalog's SIO module is already
-resident, so all fixture checks are relative to that baseline):
+The fixtures are built with the real toolchain and packed under
+`build/modules/`; `make zmod-test` validates every container.  The loader
+mechanism coverage runs on the current boot path: the loader group of the
+subsystem acceptance image (`tests/target/loader/loader_test.c`, replayed
+by `tests/test_subsys_sim.py`) opens each fixture as `/SYSTEM/<name>.zmod`
+through the same `vfs_open` + `vfs_file_source` + `module_load_source`
+path the kernel boot uses, so it exercises the production loader and the
+production filesystem stack together.  The boot module is RESIDENT and the
+console is bound before the fixtures load, the baseline for every count:
 
-1. boot module presence and baseline counts,
-2. the `m8.api` fixture loads and runs its ABI v2 checks inside its own
-   relocated image (class+capability discovery, interface errors,
-   resource-import errors before ROMFS is published); later baselines
-   are re-captured after it,
-3. fixture loads (`probe` and `filler` load; `fail` rolls back),
-4. a hand-patched ABI v1 copy of the probe container is rejected with
-   `ZMOD_ENOTSUP` and leaves module/granule accounting untouched,
-5. identical bytes loaded twice initialize at different arena addresses
-   with the registered `state` pointer equal to `load_base + image_size`
-   (each instance picks its device name from its own relocated state
-   parity), plus rollback evidence, BSS zeroing, IRQ ownership, and
-   handler-address accept/reject checks,
-6. 2-granule fillers exhaust the arena; the next load fails with
-   `ZMOD_ENOSPC` and all resident modules remain intact,
-7. dynamic SIO acceptance: the bound console device must be the resident
-   boot module, its relocated char-ops/state/name pointers must lie
-   inside the allocation, CTC0/CTC1 must be unclaimed after init, and the
-   load address is reported (`m4 selftest: sio at 0x....`),
-8. M8 console binding policy: synthetic HID/VIDEO/OTHER devices prove the
-   preferred-class selection beats registration order, an input-only
-   device keeps the input bound while the output reports `ZDEV_ENODEV`
-   (one missing direction never clears the other), and the SIO fallback
-   is restored in both directions afterward, then `m4 selftest: OK`.
+1. malformed containers (bad magic, truncated header) are rejected by
+   `zmod_validate_source` with their exact error (`ZMOD_EINVAL`,
+   `ZMOD_EFORMAT`) before the arena, the descriptor table or the registry
+   is touched, and the rejection is not counted as a failed init,
+2. `m4.fail` registers a device, claims `IRQ_CTC1` and returns failure;
+   the loader rolls the registration, the claim, the granules and the
+   descriptor back exactly, and the identical load is repeatable,
+3. `m4.probe` loads from the recovery store; its registered device, ops,
+   name and state pointers all lie inside its own allocation with state
+   at `load_base + image_size`, and its init-time `IRQ_CTC0` claim is
+   owned by the module,
+4. IRQ handler addresses are validated against RESIDENT module images
+   only (a pointer inside the allocation is accepted; a stale or
+   out-of-arena address is refused with `IRQ_EINVAL`),
+5. `m4.filler` verifies its 600-byte BSS pad is zero before init,
+6. repeated fillers exhaust the derived arena with `ZMOD_ENOSPC` while
+   the earlier residents and the boot module stay intact, and the bound
+   console keeps working.
+
+`m8.api` remains a host-validated ABI v2 discovery/resource-import
+container (`tests/test_zmod.py`); it is not part of the subsystem
+group.
 
 Host coverage:
 
 * `tests/test_zmod.py` — packer/validator/container tests; the fixture
   test links the same objects with `sdldz80` at the packer's layout and
   compares every image byte (proving the mini-linker agrees with the real
-  linker).
-* `tests/test_m4_sim.py` — replays the linked kernel in the Z80 simulator:
-  full self-test, every rejection class, arena canaries, and a direct
-  two-address relocation check computed from the packed container.
-* `tests/test_m4.py` — constant contract, mapcheck negative cases, and
-  artifact/manifest checks.
+  linker), and relocation is checked at two bases
+  (`test_two_bases_shift_patched_words_by_the_delta`); bad version/ABI
+  and every relocation-rejection class are covered here.
+* `tests/test_subsys_sim.py` — replays the linked subsystem image in the
+  Z80 simulator, including the loader group above and its arena
+  exhaustion.
+* `m8-fb-arena` (`tests/test_m8_fallback.py`) — the current on-target
+  arena-exhaustion image.
 
 ## 6. SIO module build pipeline
 
 The production SIO driver is no longer linked.  `drivers/sio/sio.c`,
 `drivers/sio/sio_io.asm`, and the production-only entry
 `drivers/sio/sio_module.c` are built under `build/modules/` (shared by
-every image, so the packed bytes are identical across placement builds),
+every image, so the packed bytes are identical everywhere),
 together with the shared `modules/runtime/sdcc_indirect_calls.asm` glue,
 and packed through three manifests — the production manifest under
 `modules/manifests/`, the test-variant manifests under `tests/modules/`:
@@ -379,20 +391,19 @@ and packed through three manifests — the production manifest under
 | `sio-irq.zmod` | `tests/modules/sio-irq.json` | `sio_irq_module_init` | 586 | 8 | 2 |
 | `sio-fail.zmod` | `tests/modules/sio-fail.json` | `sio_fail_module_init` | 376 | 4 | 1 |
 
-The IRQ self-test variant (`tests/modules/sio_irq_module.c`) claims
-`IRQ_CTC0` inside its relocated init, verifies a second claim returns
-`IRQ_EBUSY`, runs a bounded EI spin until three deliveries are counted,
-checks its relocated state pointer, and releases the source before
-registering the device.  `kernel_main()` starts CTC0 with the M2 lock
-held (`irq_arch_lock`) and stops it after the load: a tick that fires
-before the module claims the source must stay pending, because the
-executive answers an unowned dispatch with `platform_irq_quiesce()` —
-which resets CTC0 and would permanently stop the timer (the 2026-10-02
-hardware failure).  The pending tick is delivered through the relocated
-handler at the module's first `EI`, when it owns the source.  The
-failure variant (`tests/modules/sio_fail_module.c`) registers its device
-and claims CTC1, then returns `ZDRIVER_FAIL` so the loader's rollback can
-be verified exactly.  The production entry contains no test branches.
+The IRQ variant (`tests/modules/sio_irq_module.c`) claims `IRQ_CTC0`
+inside its relocated init, verifies a second claim returns `IRQ_EBUSY`,
+runs a bounded EI spin until three deliveries are counted, checks its
+relocated state pointer, and releases the source before registering the
+device.  The failure variant (`tests/modules/sio_fail_module.c`)
+registers its device and claims CTC1, then returns `ZDRIVER_FAIL` so the
+loader's rollback can be verified exactly.  Both remain packed test
+containers validated by `make zmod-test`; the IRQ mechanisms that ran
+through the pre-M8 images are now covered on the current boot path by the
+IRQ group of the subsystem acceptance image (`tests/target/irq/`,
+`tests/test_subsys_sim.py`) with its test-owned CTC0 helper
+(`tests/target/support/ctc_test.c`).  The production entry contains no
+test branches.
 
 Module sources use `static const` descriptors and link the shared
 `modules/runtime/sdcc_indirect_calls.asm` source (compiled to
@@ -403,30 +414,25 @@ indirect-call libcalls, and a module may not import the kernel's private
 copy.  Every variant packs without warnings and the packer reports
 per-variant relocation counts and init offsets.
 
-Embedding: `tools/zmodpack.py emit-asm` writes a generated assembly blob
-plus header per image (`--header` also carries the `*_SIZE` constants;
-`pack --report` writes `*.report.json` with symbol offsets used by the
-host replays).  The Makefile selects the embedded boot module per
-acceptance image:
+`tools/zmodpack.py pack --report` writes `*.report.json` with the symbol
+offsets the host replays use (`emit-asm` can still emit a container as an
+assembly blob plus header, host-tested by `tests/test_zmod.py`).  No image
+links such a blob: the Makefile selects the boot module source per image:
 
 | Image | Boot module / source |
 | --- | --- |
-| `build/` (production) | `sio.zmod` from ROMFS (no embedded catalog) |
-| `build-m5-selftest/` (`make m5-selftest`) | `sio.zmod` from the test ROMFS manifest |
-| `build-m5-corrupt-selftest/` (`make m5-corrupt-selftest`) | corrupted ROMFS metadata: panic before loading |
-| `build-m3-selftest/` (`make m3-selftest`) | embedded catalog: `sio.zmod` |
-| `build-m4-loader-selftest/` (`make m4-loader-selftest`) | embedded catalog: `sio.zmod` |
-| `build-m4-selftest/` (`make m4-selftest`) | embedded catalog: `sio-irq.zmod` |
-| `build-m4-placement-selftest/` (`make m4-placement-selftest`) | embedded catalog: `sio.zmod`, arena shifted to 9E00h-BE00h |
-| `build-m4-failure/` (`make m4-failure-selftest`) | embedded catalog: `sio-fail.zmod` |
+| `build/` (production) | `sio.zmod` from ROMFS through the VFS (`/SYSTEM`) |
+| `build-m9-vfs-selftest/` (`make m9-vfs-selftest`) | ROMFS at `/SYSTEM` through VFS: `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod` + font + monitor, optional-mount failure diagnosed |
+| `build-subsys-selftest/` (`make subsystem-selftest`) | the current boot path with the SIO-only boot set, plus the loader/ROMFS/process fixtures |
+| `build-romfs-corrupt/` (`make romfs-corrupt-selftest`) | corrupted ROMFS metadata: panic before loading |
 | `build-m8-selftest/` (`make m8-selftest`) | ROMFS: `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod` + font + monitor |
 | `build-m8-fb-*/` (`make m8-fallback-selftests`) | ROMFS failure variants (missing/substituted entries), same load order |
 
 `kernel/main.c` runs `module_loader_init()` and then loads the boot
-module through the compile-time selected source: `romfs_init()` +
-`romfs_load_zmod("sio", "sio.zmod")` by default, or
-`module_catalog_load_all()` for the pre-M5 acceptance builds
-(`-DZOS_ROMFS_BOOT=0`).  Since M8 the ROMFS path continues with the
+module from the one source: `vfs_init()` (which mounts ROMFS at
+`/SYSTEM`) followed by `vfs_open("/SYSTEM/<name>.zmod")` +
+`vfs_file_source()`.  The embedded-catalog alternative was deleted under
+the Mn-1 retention rule (work package 25a).  The boot path continues with the
 deterministic `ioc.zmod`, `hid.zmod`, `v9958.zmod` sequence (each load
 gated by `ZOS_IOC_BOOT` / `ZOS_HID_BOOT` / `ZOS_V9958_BOOT`), and a
 failed optional module is rolled back by the loader and reported as

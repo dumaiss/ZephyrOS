@@ -45,7 +45,7 @@ sys.path.insert(0, HERE)
 import mapcheck  # noqa: E402
 import zmodpack  # noqa: E402
 from test_ioc import struct_member_order  # noqa: E402
-from test_m1 import evaluate, parse_c_header  # noqa: E402
+from maptools import evaluate, parse_c_header  # noqa: E402
 
 HID_H = os.path.join(ROOT, "include", "zephyros", "hid.h")
 DEVICE_H = os.path.join(ROOT, "include", "zephyros", "device.h")
@@ -191,9 +191,9 @@ class TestHidModuleArtifact(unittest.TestCase):
                                  "v9958.zmod", "v9958-6x8.font",
                                  "monitor.zex"])
         main = _read(MAIN_C)
-        sio = main.index('romfs_load_zmod("sio"')
-        ioc = main.index('romfs_load_zmod("ioc"')
-        hid = main.index('romfs_load_zmod("hid"')
+        sio = main.index('kernel_load_vfs_module("sio"')
+        ioc = main.index('kernel_load_vfs_module("ioc"')
+        hid = main.index('kernel_load_vfs_module("hid"')
         self.assertLess(sio, ioc, "IOC must load after the SIO fallback")
         self.assertLess(ioc, hid, "HID must load after the IOC transport")
         # A failed HID load reports the module and the ZOS_E* code and
@@ -227,18 +227,6 @@ class TestHidModuleArtifact(unittest.TestCase):
         self.assertEqual(linked, [],
                          "HID driver/fixture symbols must not be linked "
                          "into the kernel image: %s" % linked)
-
-    def test_pre_m8_images_compile_hid_boot_out(self):
-        # Pre-M8 acceptance images never carry the module; the Makefile
-        # must default ZOS_HID_BOOT to 0 for every one of them so their
-        # accepted bytes are preserved.
-        makefile = _read(MAKEFILE)
-        index = makefile.index("ZOS_HID_BOOT := 0")
-        gate = makefile[index - 600:index]
-        for flag in ("ZOS_SELFTEST", "ZOS_M3_SELFTEST", "ZOS_M4_SELFTEST",
-                     "ZOS_M5_SELFTEST", "ZOS_M6_SELFTEST",
-                     "ZOS_M7_SELFTEST"):
-            self.assertIn(flag, gate, "%s must keep HID compiled out" % flag)
 
 
 def _map_symbols(map_path):

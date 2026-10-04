@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, HERE)
 
 import zmodpack  # noqa: E402
-from test_m1 import evaluate, parse_c_header  # noqa: E402
+from maptools import evaluate, parse_c_header  # noqa: E402
 
 MODULE_H = os.path.join(ROOT, "include", "zephyros", "module.h")
 FIXTURE_MODULES = os.path.join(ROOT, "build", "modules")
@@ -115,6 +115,34 @@ def build_valid_container():
         container, packed = pack_in_dir(
             tmp, {"t.rel": rel},
             simple_manifest(["t.rel"], "entry", bss_areas=("_DATA",)))
+    return container, packed
+
+
+def build_reloc_fixture():
+    """Build a valid container with two nonzero base-relative relocations.
+
+    The module mini-links at base zero: _CODE starts at offset 0 and _TEXT
+    at offset 8, so the packed 16-bit words hold the module-relative
+    targets 8 (the _TEXT area base) and 10 (_helper at _TEXT + 2).  Both
+    targets are nonzero, so a load-base shift shows up in the patched
+    bytes.
+    """
+    rel = rel_text(
+        "t",
+        [("_CODE", 8), ("_TEXT", 4)],
+        [
+            (".__.ABS.", "def", 0, None),
+            ("_entry", "def", 0, 0),
+            ("_helper", "def", 2, 1),
+        ],
+        [(0, 0, bytes([0x21, 0x00, 0x00, 0x11, 0x00, 0x00, 0xC9]),
+          [(0x00, 0x05, 0x01), (0x02, 0x08, 0x02)])],
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        container, packed = pack_in_dir(
+            tmp, {"t.rel": rel},
+            simple_manifest(["t.rel"], "entry",
+                            image_areas=("_CODE", "_TEXT")))
     return container, packed
 
 
@@ -421,6 +449,115 @@ class TestContainerValidation(unittest.TestCase):
         text = zmodpack.format_report(info, "test.zmod")
         self.assertIn("ZMOD v1 driver", text)
         self.assertIn("relocations:   1", text)
+
+
+class TestTwoBaseRelocation(unittest.TestCase):
+    """The same container relocates correctly at two distinct load bases.
+
+    The host packer mini-links at base zero, so every packed ZREL_ABS16
+    patch site holds a base-relative (module-relative) address; the target
+    loader copies the image to an arena granule and applies
+    ``word += load_base`` (kernel/module/relocate.c).  This test decodes
+    the container's relocation records, proves each recorded target is a
+    base-relative address inside the image, and applies the loader's
+    arithmetic at two granule-aligned load bases in
+    ZMOD_ARCH_BASE..ZMOD_ARCH_END.  It also checks that a misaligned or
+    out-of-arena base is rejected by the loader policy mirrored here.
+    """
+
+    def setUp(self):
+        self.container, _ = build_reloc_fixture()
+        self.info = zmodpack.parse_container(self.container)
+        self.env = parse_c_header(MODULE_H)
+        self.granule = evaluate("ZMOD_GRANULE_SIZE", self.env)
+        self.arch_base = evaluate("ZMOD_ARCH_BASE", self.env)
+        self.arch_end = evaluate("ZMOD_ARCH_END", self.env)
+
+    @staticmethod
+    def _read_u16(data, offset):
+        return data[offset] | (data[offset + 1] << 8)
+
+    def relocation_targets(self):
+        """Decode each ZREL_ABS16 record's base-relative target word."""
+        payload = self.info["payload"]
+        return [self._read_u16(payload, patch)
+                for _rtype, patch in self.info["relocs"]]
+
+    def apply_relocations(self, image, base):
+        """Apply the loader's ``word += load_base`` to a payload copy."""
+        patched = bytearray(image)
+        for _rtype, patch in self.info["relocs"]:
+            value = self._read_u16(patched, patch) + base
+            if value > 0xFFFF:
+                raise ValueError("relocation overflow at %04Xh" % patch)
+            patched[patch] = value & 0xFF
+            patched[patch + 1] = (value >> 8) & 0xFF
+        return bytes(patched)
+
+    def check_load_base(self, base, allocation=None):
+        """Mirror the loader's load-base acceptance rules.
+
+        A base must be granule-aligned and keep the whole allocation inside
+        the architectural window (kernel/module/loader.c init check plus the
+        module.h bounds).
+        """
+        if allocation is None:
+            allocation = self.info["required_granules"] * self.granule
+        if base % self.granule != 0:
+            raise ValueError("load base %04Xh is not granule-aligned" % base)
+        if base < self.arch_base or base >= self.arch_end:
+            raise ValueError("load base %04Xh is outside the arena" % base)
+        if base + allocation > self.arch_end:
+            raise ValueError("load base %04Xh overruns the arena" % base)
+        return base
+
+    def test_relocations_are_base_relative_inside_the_image(self):
+        self.assertEqual(self.info["reloc_count"], 2)
+        self.assertEqual(self.relocation_targets(), [8, 10])
+        for _rtype, patch in self.info["relocs"]:
+            self.assertGreaterEqual(patch, 0)
+            self.assertLessEqual(patch + 2, self.info["image_size"])
+        for target in self.relocation_targets():
+            self.assertGreaterEqual(target, 0)
+            self.assertLess(target, self.info["image_size"])
+
+    def test_two_bases_shift_patched_words_by_the_delta(self):
+        base_a = self.arch_base                  # 2000h, even granule
+        base_b = self.arch_base + self.granule   # 2200h, 512 bytes higher
+        self.assertEqual(self.check_load_base(base_a), base_a)
+        self.assertEqual(self.check_load_base(base_b), base_b)
+        delta = base_b - base_a
+        self.assertEqual(delta, self.granule)
+
+        image = self.info["payload"]
+        patched_a = self.apply_relocations(image, base_a)
+        patched_b = self.apply_relocations(image, base_b)
+        for _rtype, patch in self.info["relocs"]:
+            relative = self._read_u16(image, patch)
+            word_a = self._read_u16(patched_a, patch)
+            word_b = self._read_u16(patched_b, patch)
+            # The patched words are the relative target plus each base, and
+            # the relative target is identical at both bases.
+            self.assertEqual(word_a, base_a + relative)
+            self.assertEqual(word_b, base_b + relative)
+            self.assertEqual(word_b - word_a, delta)
+            self.assertEqual(word_a - base_a, word_b - base_b)
+            self.assertLessEqual(word_b, 0xFFFF)
+
+    def test_invalid_load_bases_rejected(self):
+        # Not granule-aligned.
+        with self.assertRaisesRegex(ValueError, "granule-aligned"):
+            self.check_load_base(self.arch_base + 1)
+        # Aligned but below the architectural arena.
+        with self.assertRaisesRegex(ValueError, "outside the arena"):
+            self.check_load_base(self.arch_base - self.granule)
+        # Aligned but at/above the arena end.
+        with self.assertRaisesRegex(ValueError, "outside the arena"):
+            self.check_load_base(self.arch_end)
+        # Aligned and inside, but the allocation overruns the arena end.
+        with self.assertRaisesRegex(ValueError, "overruns the arena"):
+            self.check_load_base(self.arch_end - self.granule,
+                                 allocation=2 * self.granule)
 
 
 class TestFixtureArtifacts(unittest.TestCase):

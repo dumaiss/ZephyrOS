@@ -198,24 +198,6 @@ struct zmod_module {
 	uint16_t fini_offset;
 };
 
-/* Embedded catalog entry: name plus container bytes.  Embedded catalogs
- * are acceptance-image artifacts (M3/M4 images); production and M5 boot
- * from the ROMFS recovery store through the generic source adapter. */
-struct zmod_catalog_entry {
-	const char *name;
-	const uint8_t *blob;
-	uint16_t size;
-};
-
-/* Embedded boot-module catalog (kernel/module/embedded.c).  Acceptance
- * images only since M5: production boots from the ROMFS recovery store
- * and mapcheck --production rejects these symbols.  zmod_catalog carries
- * the boot modules loaded by the catalog boot path; the generic loader
- * never looks at names beyond passing them through.  The table is
- * null-terminated.  Test fixture catalogs are defined under tests/target/
- * and linked only into acceptance images. */
-extern const struct zmod_catalog_entry zmod_catalog[];
-
 /* --- kernel loader API ------------------------------------------------ */
 
 /* Validate arena geometry and reset allocator/descriptor state.  Must be
@@ -226,19 +208,19 @@ int module_loader_init(void);
  * image, zero BSS, and run the module init with driver ABI v2.  On any
  * failure the allocation, device registrations, and IRQ claims made by
  * the module are rolled back and the descriptor is freed.  Returns the
- * module index (>= 0) on success, a negative error otherwise. */
+ * module index (>= 0) on success, a negative error otherwise.  Images
+ * load through `module_load_source`; this entry exists for callers that
+ * already hold the container bytes. */
 int module_load(const char *name, const uint8_t *blob, uint16_t size);
 
-/* Generic bounded read-source load (M5): identical validation, arena
- * allocation, streaming copy, relocation, init transaction, and rollback
- * as module_load(); the container bytes are read only through `source`.
+/* Bounded read-source load: identical validation, arena allocation,
+ * streaming copy, relocation, init transaction, and rollback as
+ * module_load(); the container bytes are read only through `source`.
  * The entire container structure is validated before the arena is
- * touched.  Returns the module index (>= 0) or a negative error. */
+ * touched.  This is the only load path an image uses.  Returns the
+ * module index (>= 0) or a negative error. */
 int module_load_source(const char *name, const struct zmod_source *source);
 
-/* Load every entry of zmod_catalog[] (kernel/module/embedded.c; acceptance
- * images only).  Returns the number of failed modules (0 = all loaded). */
-uint8_t module_catalog_load_all(void);
 uint8_t module_count(void);
 uint8_t module_free_granules(void);
 uint8_t module_granule_count(void);

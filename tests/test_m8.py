@@ -14,9 +14,9 @@ contract:
   - that the module-facing ABI exposes no romfs_file_t or mutable state.
 
 The executable behavior (discovery calls, console policy, resource
-imports) is replayed from the real linked images by test_m3_sim.py,
-test_m4_sim.py, test_m6_sim.py, and the target acceptance code under
-tests/target/ and tests/modules/.
+imports) is replayed from the real linked images by the subsystem
+acceptance replay (tests/test_subsys_sim.py) and the target acceptance
+code under tests/target/ and tests/modules/.
 """
 
 import contextlib
@@ -36,11 +36,10 @@ sys.path.insert(0, HERE)
 import mapcheck  # noqa: E402
 import pack_image  # noqa: E402
 import zmodpack  # noqa: E402
-from test_m1 import (  # noqa: E402
+from maptools import (  # noqa: E402
     evaluate, make_map, parse_c_header, MEMORY_INC)
 from test_zmod import (  # noqa: E402
     build_valid_container, pack_in_dir, rel_text, simple_manifest)
-from test_m3 import parse_c_enums  # noqa: E402
 
 DEVICE_H = os.path.join(ROOT, "include", "zephyros", "device.h")
 DRIVER_H = os.path.join(ROOT, "include", "zephyros", "driver.h")
@@ -53,6 +52,31 @@ _PACK_IMAGE_GLOBALS = (
     "ROMFS_FIRST_PAGE", "ROMFS_PAGE_COUNT", "ROMFS_WINDOW_SIZE",
     "ROMFS_CAPACITY", "ROM_ACCESS_BASE", "ROM_ACCESS_SIZE",
 )
+
+
+def parse_c_enums(path, env):
+    """Parse plain C enum bodies (name[ = expr], comma separated).
+
+    Inlined from the retired tests/test_m3.py: the M8 device-class
+    contract reads the enum values device.h defines alongside its
+    #define constants.
+    """
+    result = {}
+    text = open(path).read()
+    for match in re.finditer(r"enum\s*\{([^}]*)\}", text):
+        value = 0
+        for item in match.group(1).split(","):
+            item = item.split("/*")[0].split("//")[0].strip()
+            if not item:
+                continue
+            if "=" in item:
+                name, expr = [part.strip() for part in item.split("=", 1)]
+                value = evaluate(expr, dict(env, **result))
+            else:
+                name = item
+            result[name] = value
+            value += 1
+    return result
 
 
 def struct_member_order(text, struct_name, function_pointers=False):
@@ -170,6 +194,7 @@ class TestAbiV2Contract(unittest.TestCase):
             text = re.sub(r"/\*.*?\*/", "", open(path).read(), flags=re.S)
             self.assertNotIn("romfs_file_t", text, path)
             self.assertNotIn("romfs_lookup", text, path)
+            self.assertNotIn("romfs_lookup_ci", text, path)
             self.assertNotIn("romfs_read", text, path)
         driver = open(DRIVER_H).read()
         self.assertIn("device_find", driver)

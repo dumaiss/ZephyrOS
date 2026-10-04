@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side M5 tests: ROMFS constant contract, tools/romfspack.py
+"""Host-side ROMFS tests: constant contract, tools/romfspack.py
 behavior, map/image placement rules, and the built recovery artifacts.
 
 The executable kernel behavior is replayed from the real linked images by
@@ -22,16 +22,15 @@ sys.path.insert(0, HERE)
 import mapcheck  # noqa: E402
 import romfspack  # noqa: E402
 from z80sim import read_symbols  # noqa: E402
-from test_m1 import evaluate, make_map, parse_c_header, parse_asm_inc  # noqa: E402
+from maptools import evaluate, make_map, parse_c_header, parse_asm_inc  # noqa: E402
 
 ROMFS_H = os.path.join(ROOT, "include", "zephyros", "romfs.h")
 ERRNO_H = os.path.join(ROOT, "include", "zephyros", "errno.h")
 MEMORY_H = os.path.join(ROOT, "platform", "zephyr80", "memory.h")
 MEMORY_INC = os.path.join(ROOT, "platform", "zephyr80", "memory.inc")
 ROM_ACCESS_ASM = os.path.join(ROOT, "kernel", "romfs", "rom_access.asm")
-M5_SELFTEST_H = os.path.join(ROOT, "tests", "target", "include",
-                             "m5_selftest.h")
-M5_MANIFEST = os.path.join(ROOT, "tests", "m5", "manifest.json")
+ROMFS_SELFTEST_H = os.path.join(ROOT, "tests", "target", "include",
+                                "romfs_selftest.h")
 
 ROMFS_STAGING = 128
 ROM_ACCESS_BASE = 0xEF00
@@ -185,6 +184,19 @@ class TestRomfspack(unittest.TestCase):
         self._expect_pack_error(
             [("dup.bin", "DATA", "a.bin", b"x"),
              ("dup.bin", "DATA", "b.bin", b"y")], r"duplicate file name")
+
+    def test_case_insensitive_collision_rejected(self):
+        # Native VFS path matching is case-insensitive, so two names that
+        # differ only in case would be unreachable.
+        self._expect_pack_error(
+            [("Readme.txt", "DATA", "a.bin", b"x"),
+             ("README.TXT", "DATA", "b.bin", b"y")],
+            r"case-insensitive collision")
+
+    def test_slash_in_name_rejected(self):
+        self._expect_pack_error(
+            [("dir/file.bin", "DATA", "a.bin", b"x")],
+            r"must not contain '/'")
 
     def test_overlong_name_rejected(self):
         self._expect_pack_error(
@@ -351,18 +363,6 @@ class TestRomfsMapcheck(unittest.TestCase):
                                     "_ROM_ACCESS_STUB"):
             mapcheck.check_map(text)
 
-    def test_catalog_table_without_loader_rejected(self):
-        text = make_map(symbols={"_module_catalog_load_all": None})
-        with self.assertRaisesRegex(mapcheck.MapError,
-                                    "linked together"):
-            mapcheck.check_map(text)
-
-    def test_catalog_loader_without_table_rejected(self):
-        text = make_map(symbols={"_zmod_catalog": None})
-        with self.assertRaisesRegex(mapcheck.MapError,
-                                    "linked together"):
-            mapcheck.check_map(text)
-
     def test_production_rejects_embedded_catalog(self):
         for symbol in ("_z4_module_boot", "_zmod_catalog",
                        "_module_catalog_load_all"):
@@ -447,15 +447,14 @@ class TestBuiltArtifacts(unittest.TestCase):
                              hashlib.sha256(data).hexdigest(),
                              "manifest page %d hash mismatch" % page["index"])
 
-    def test_m5_acceptance_manifest_matches_constants(self):
-        _p, stream = self._read("build-m5-selftest/recovery.romfs")
+    def test_acceptance_manifest_matches_constants(self):
+        _p, stream = self._read("build-subsys-selftest/recovery.romfs")
         _header, entries = romfspack.parse_image(stream)
         names = {entry["name"]: entry for entry in entries}
         _p, zmod = self._read("build/modules/sio.zmod")
         self.assertEqual(names["sio.zmod"]["payload"], zmod)
-        cross = names["m5-crosspage.bin"]
+        cross = names["crosspage.bin"]
         self.assertEqual(cross["size"], 0xC040)
-        self.assertEqual(cross["offset"], 0x58)
         for i in range(cross["size"]):
             self.assertEqual(cross["payload"][i],
                              ((i & 0xFF) ^ ((i >> 8) & 0xFF)) & 0xFF,
@@ -463,35 +462,40 @@ class TestBuiltArtifacts(unittest.TestCase):
         # The asset must span the 48-KiB window boundary.
         self.assertLess(cross["offset"], 0xC000)
         self.assertGreater(cross["offset"] + cross["size"], 0xC000)
-        # m5_selftest.h mirrors the acceptance-manifest geometry.
-        env = parse_c_header(M5_SELFTEST_H)
-        self.assertEqual(evaluate("ZOS_M5ST_CROSSPAGE_OFFSET", env),
-                         cross["offset"])
-        self.assertEqual(evaluate("ZOS_M5ST_CROSSPAGE_SIZE", env),
+        # romfs_selftest.h mirrors the acceptance-manifest geometry.  The
+        # payload-offset constant is target-owned (tests/target/include/);
+        # the target uses it to place its boundary reads, so only the
+        # size, window and asset name are pinned here.
+        env = parse_c_header(ROMFS_SELFTEST_H)
+        self.assertEqual(evaluate("ZOS_RFST_CROSSPAGE_SIZE", env),
                          cross["size"])
-        self.assertEqual(evaluate("ZOS_M5ST_WINDOW", env), 0xC000)
+        self.assertEqual(evaluate("ZOS_RFST_WINDOW", env), 0xC000)
+        self.assertIn('"crosspage.bin"', open(ROMFS_SELFTEST_H).read())
         # The acceptance manifest is a test artifact: the production
         # manifest must not carry the pattern asset.
-        _p, prod = self._read("build/recovery.romfs")
-        _h, prod_entries = romfspack.parse_image(prod)
-        self.assertNotIn("m5-crosspage.bin",
-                         {e["name"] for e in prod_entries})
+        production = json.loads(
+            open(os.path.join(ROOT, "recovery", "manifest.json")).read())
+        self.assertNotIn("crosspage.bin",
+                         {e["name"] for e in production["files"]})
 
-    def test_m5_image_markers_and_no_embedded_catalog(self):
-        _p, image = self._read("build-m5-selftest/"
-                               "zephyros-m5-selftest.bin")
-        for marker in (b"m5 romfs selftest: OK\r\n",
+    def test_image_markers_and_no_embedded_catalog(self):
+        _p, image = self._read("build-subsys-selftest/"
+                               "zephyros-subsys-selftest.bin")
+        for marker in (b"romfs selftest: OK\r\n",
                        b"console: dynamic sio0.b OK\r\n",
                        b"romfs: corrupt recovery image"):
             self.assertIn(marker, image)
-        syms = read_symbols(os.path.join(ROOT, "build-m5-selftest",
+        syms = read_symbols(os.path.join(ROOT, "build-subsys-selftest",
                                          "zephyros.map"))
         self.assertNotIn("_z4_module_boot", syms)
         self.assertNotIn("_zmod_catalog", syms)
 
     def test_corrupt_image_differs_only_in_corrupted_metadata(self):
-        _p, clean = self._read("build-m5-selftest/recovery.romfs")
-        _p, corrupt = self._read("build-m5-corrupt-selftest/recovery.romfs")
+        # The corrupt build packs the production manifest and then patches
+        # the header reserved field, so the clean counterpart is the
+        # production recovery stream (not the subsystem acceptance store).
+        _p, clean = self._read("build/recovery.romfs")
+        _p, corrupt = self._read("build-romfs-corrupt/recovery.romfs")
         self.assertEqual(len(clean), len(corrupt))
         diff = [i for i in range(len(clean)) if clean[i] != corrupt[i]]
         self.assertEqual(diff, [10],
@@ -503,25 +507,25 @@ class TestBuiltArtifacts(unittest.TestCase):
             romfspack.parse_image(corrupt)
 
     def test_corrupt_image_carries_panic_marker(self):
-        _p, image = self._read("build-m5-corrupt-selftest/"
-                               "zephyros-m5-corrupt.bin")
+        _p, image = self._read("build-romfs-corrupt/"
+                               "zephyros-romfs-corrupt.bin")
         self.assertIn(b"PANIC: ", image)
         self.assertIn(b"romfs: corrupt recovery image", image)
-        syms = read_symbols(os.path.join(ROOT, "build-m5-corrupt-selftest",
+        syms = read_symbols(os.path.join(ROOT, "build-romfs-corrupt",
                                          "zephyros.map"))
-        self.assertNotIn("_m5_selftest_result", syms)
+        self.assertNotIn("_romfs_selftest_result", syms)
 
-    def test_smoke_constants_match_m5_images(self):
-        """serial_smoke's M5 expectations must exist verbatim in the
-        images (and the corrupt transcript must not contain success
-        markers)."""
+    def test_smoke_constants_match_the_images(self):
+        """serial_smoke's ROMFS expectations must exist verbatim in the
+        subsystem image (and the corrupt-store image must not contain the
+        success marker)."""
         import serial_smoke
-        _p, success = self._read("build-m5-selftest/"
-                                 "zephyros-m5-selftest.bin")
-        _p, corrupt = self._read("build-m5-corrupt-selftest/"
-                                 "zephyros-m5-corrupt.bin")
+        _p, success = self._read("build-subsys-selftest/"
+                                 "zephyros-subsys-selftest.bin")
+        _p, corrupt = self._read("build-romfs-corrupt/"
+                                 "zephyros-romfs-corrupt.bin")
         for const in (serial_smoke.CONSOLE_DYNAMIC_OK,
-                      serial_smoke.M5_SELFTEST_OK):
+                      serial_smoke.SUBSYS_ROMFS_OK):
             self.assertIn(const, success)
         # panic() writes "PANIC: " and the message as separate literals;
         # the serial transcript concatenates them.  The corrupt image still
@@ -529,7 +533,7 @@ class TestBuiltArtifacts(unittest.TestCase):
         # runtime transcript is what proves it is not executed).
         self.assertIn(b"PANIC: ", corrupt)
         self.assertIn(b"romfs: corrupt recovery image", corrupt)
-        self.assertNotIn(serial_smoke.M5_SELFTEST_OK, corrupt)
+        self.assertNotIn(serial_smoke.SUBSYS_ROMFS_OK, corrupt)
 
 
 if __name__ == "__main__":

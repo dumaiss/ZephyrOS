@@ -24,11 +24,10 @@
 #include "kernel/device/registry.h"
 #include "kernel/irq/irq_private.h"
 #include "kernel/memory/banking.h"
+#include "kernel/vfs/vfs.h"
 
 /* Single integration seam for target acceptance builds; the runner and
- * milestone selection live in tests/target/support/target_test.c.  The
- * one unavoidable boot-phase hook (ZOS_M4_SIO_IRQ) is marked TEST-ONLY
- * HOOK below with its test-owned implementation path. */
+ * the acceptance-group selection live in tests/target/support/target_test.c. */
 #ifndef ZOS_TARGET_TEST_BUILD
 #define ZOS_TARGET_TEST_BUILD 0
 #endif
@@ -36,27 +35,10 @@
 #if ZOS_TARGET_TEST_BUILD
 /* TEST-ONLY HOOK: target acceptance runner; implementation and milestone
  * selection live in tests/target/support/target_test.c (acceptance images
- * only).  The early hook runs before the module catalog load; the late
- * hook runs after console binding; the hold hooks keep a test-owned timer
- * source pending across the boot-module load. */
+ * only).  The early hook runs before the boot module load; the late hook
+ * runs after console binding. */
 void zos_target_test_early(void);
 void zos_target_test_late(void);
-void zos_target_test_irq_hold_begin(void);
-void zos_target_test_irq_hold_end(void);
-#endif
-
-/* Set only by the m4-selftest acceptance build: keep CTC0 pending across
- * the boot-module load while tests/modules/sio_irq_module.c claims it. */
-#ifndef ZOS_M4_SIO_IRQ
-#define ZOS_M4_SIO_IRQ 0
-#endif
-
-/* Boot-module source selection.  Production and M5 images boot the SIO
- * ZMOD from the ROMFS recovery store (the default); the pre-M5
- * acceptance images set ZOS_ROMFS_BOOT=0 in the Makefile and keep their
- * embedded test catalogs. */
-#ifndef ZOS_ROMFS_BOOT
-#define ZOS_ROMFS_BOOT 1
 #endif
 
 /* IOC transport boot load.  Production and the M8 images carry
@@ -92,15 +74,6 @@ void zos_target_test_irq_hold_end(void);
 #define ZOS_V9958_BOOT 1
 #endif
 
-/* Temporary pre-shell launcher selection.  Production and the M7
- * acceptance image (ZOS_MONITOR_BOOT=1, the default) run `monitor.zex`
- * through the unchanged M6 exec path and re-exec it after every normal
- * exit.  Earlier acceptance images set ZOS_MONITOR_BOOT=0 so their
- * transcripts and behavior stay exactly as accepted. */
-#ifndef ZOS_MONITOR_BOOT
-#define ZOS_MONITOR_BOOT 1
-#endif
-
 /* Hardware-smoke host sync.  Diagnostic images built with
  * ZOS_SMOKE_HOST_SYNC=1 (the M8 IOC smoke image) replace the blind
  * one-second connect delay with a wait for the host's two-byte sync
@@ -114,7 +87,6 @@ void zos_target_test_irq_hold_end(void);
 #define ZOS_SMOKE_HOST_SYNC 0
 #endif
 
-#if ZOS_ROMFS_BOOT
 /* Failure-only hardware bring-up aid (never runs on a healthy image):
  * report the raw init status, the live latch value, and the first eight
  * bytes of recovery page 2 offset 0 staged by the ROM-access primitive.
@@ -158,7 +130,6 @@ static void romfs_diagnose(int result)
 	}
 	early_console_puts("\r\n");
 }
-#endif
 
 /* Failure-only early-SIO diagnostic for one optional boot module: the
  * module name plus the two-hex-digit ZOS_E* code behind the failed load
@@ -185,6 +156,49 @@ static void kernel_module_unavailable(const char *name, int result)
 }
 #endif
 
+/* Module-phase loader: open `/SYSTEM/<name>.zmod` through VFS and stream it
+ * into the unchanged M4 loader through the bounded zmod_source adapter.  The
+ * static file and path storage keeps the boot path free of gate-stack-sized
+ * automatic objects (work/M9-REFERENCE.md).  Non-static so the host replay
+ * can drive the same VFS-backed load path. */
+static struct vfs_file kernel_boot_file;
+static char kernel_boot_path[ZOS_PATH_MAX];
+
+int kernel_load_vfs_module(const char *name)
+{
+	static const char prefix[] = "/SYSTEM/";
+	static const char suffix[] = ".zmod";
+	struct zmod_source source;
+	char *out = kernel_boot_path;
+	const char *scan;
+	int result;
+
+	/* The boot module names are compile-time literals (the boot set), and
+	 * the 128-byte path buffer holds "/SYSTEM/v9958.zmod" with room to
+	 * spare; three unbounded copies keep the M9 arena budget intact. */
+	for (scan = prefix; *scan != '\0'; ++scan) {
+		*out++ = *scan;
+	}
+	for (scan = name; *scan != '\0'; ++scan) {
+		*out++ = *scan;
+	}
+	for (scan = suffix; *scan != '\0'; ++scan) {
+		*out++ = *scan;
+	}
+	*out = '\0';
+
+	result = vfs_open(kernel_boot_path, ZFS_O_READ, &kernel_boot_file);
+	if (result != 0) {
+		return result;
+	}
+	result = vfs_file_source(&kernel_boot_file, &source);
+	if (result == 0) {
+		result = module_load_source(name, &source);
+	}
+	(void)vfs_close(&kernel_boot_file);
+	return result;
+}
+
 /* Resolve and load the boot module through the selected source.  Returns
  * 0 when the module is resident, non-zero otherwise.  A corrupt recovery
  * store fails here through the early-console panic path, before any
@@ -196,27 +210,26 @@ static void kernel_module_unavailable(const char *name, int result)
  * class/capability at init), then the V9958 video+console device.  Only
  * after all four loads does kernel_main() run the single
  * console_bind_defaults() and hand off to the unchanged
- * process_exec("monitor.zex") launcher.  A failed optional module is
- * rolled back by the loader -- earlier resident modules are never
+ * process_exec("/SYSTEM/monitor.zex") launcher.  A failed optional module
+ * is rolled back by the loader -- earlier resident modules are never
  * disturbed -- and the boot continues; the diagnostic names the module
  * and the exact failure. */
 static uint8_t kernel_boot_module(void)
 {
-#if ZOS_ROMFS_BOOT
-	int result = romfs_init();
+	int result = vfs_init();
 
 	if (result != 0) {
 		romfs_diagnose(result);
 		panic("romfs: corrupt recovery image");
 	}
-	if (romfs_load_zmod("sio", "sio.zmod") < 0) {
+	if (kernel_load_vfs_module("sio") < 0) {
 		return 1;
 	}
 #if ZOS_IOC_BOOT
 	/* The IOC command+bulk transport.  A module whose init fails
 	 * (including a failed link bring-up) is rolled back by the loader
 	 * and reported here; the console still binds to SIO below. */
-	result = romfs_load_zmod("ioc", "ioc.zmod");
+	result = kernel_load_vfs_module("ioc");
 	if (result < 0) {
 		kernel_module_unavailable("ioc", result);
 	}
@@ -226,7 +239,7 @@ static uint8_t kernel_boot_module(void)
 	 * class; a missing/malformed dependency fails its init, the
 	 * loader rolls the (empty) registration set back, and the SIO
 	 * fallback plus the IOC transport remain usable. */
-	result = romfs_load_zmod("hid", "hid.zmod");
+	result = kernel_load_vfs_module("hid");
 	if (result < 0) {
 		kernel_module_unavailable("hid", result);
 	}
@@ -238,15 +251,16 @@ static uint8_t kernel_boot_module(void)
 	 * missing/undersized font or a failed VDP sequence fails the init
 	 * and the loader rolls it back without disturbing the earlier
 	 * devices. */
-	result = romfs_load_zmod("v9958", "v9958.zmod");
+	result = kernel_load_vfs_module("v9958");
 	if (result < 0) {
 		kernel_module_unavailable("v9958", result);
 	}
 #endif
+	/* Normal mount phase: production has only the system entry, so this
+	 * is a no-op; acceptance manifests exercise optional/required
+	 * mounts here (architecture section 32.32.4). */
+	(void)vfs_mount_all();
 	return 0;
-#else
-	return module_catalog_load_all();
-#endif
 }
 
 /* ~1 second no-op delay at kernel entry (Z80 @ 10 MHz, no wait states) so
@@ -305,12 +319,12 @@ static void kernel_exercise_banking(void)
 	}
 }
 
-#if ZOS_MONITOR_BOOT
 /* --- temporary pre-shell launcher (M7) --------------------------------
  *
- * Production and the M7 acceptance image run the ROMFS `monitor.zex`
- * through the unchanged M6 `process_exec()` path and re-exec it after
- * every normal exit, until the M10 shell replaces this policy.  The
+ * Production and the M7 acceptance image run the ROMFS `monitor.zex`,
+ * opened through its `/SYSTEM` VFS path, via the unchanged M6
+ * `process_exec()` path, and re-exec it after every normal exit, until
+ * the M10 shell replaces this policy.  The
  * child's exit status and the recovered process/bank counts are printed
  * after each cycle (normal console when bound, early console otherwise);
  * a launch failure is reported on the early console and takes the
@@ -415,7 +429,7 @@ static void kernel_monitor_launcher(void)
 {
 	for (;;) {
 		uint16_t status = 0;
-		int result = process_exec("monitor.zex", &status);
+		int result = process_exec("/SYSTEM/monitor.zex", &status);
 
 		if (result != ZEX_EXEC_OK) {
 			kernel_monitor_fail((uint16_t)(0u - (uint16_t)result));
@@ -423,8 +437,6 @@ static void kernel_monitor_launcher(void)
 		kernel_monitor_report(status);
 	}
 }
-#endif /* ZOS_MONITOR_BOOT */
-
 #if ZOS_SMOKE_HOST_SYNC
 /* TEST-ONLY HOOK: hold the first banner byte until the host is listening.
  * The SIO0/B receiver is live from early_console_init (boot/start.asm);
@@ -476,18 +488,15 @@ void kernel_main(void)
 	early_console_puts("platform: Zephyr-80\r\n");
 	early_console_puts("kernel entry: OK\r\n");
 	early_console_puts("serial: OK\r\n");
-	early_console_puts("HALT\r\n");
 
 #if ZOS_TARGET_TEST_BUILD
-	/* TEST-ONLY HOOK: m1/m2 acceptance phases (target_test.c). */
+	/* TEST-ONLY HOOK: subsystem acceptance phase (target_test.c). */
 	zos_target_test_early();
 #endif
 
-/* --- registry, module catalog, console service ---------------------
-	 * The early console above stays authoritative.  The device registry
-	 * is initialized first, the boot module is loaded through the M4
-	 * loader (from ROMFS in production/M5, from the embedded test catalog
-	 * in pre-M5 acceptance images), and only then is the console
+	/* The early console above stays authoritative.  The device registry
+	 * is initialized first, the boot module set is loaded through the
+	 * loader from the ROMFS recovery store, and only then is the console
 	 * service bound.  Load and binding diagnostics go to the early
 	 * console before any dynamic device is used. */
 	device_registry_init();
@@ -495,22 +504,7 @@ void kernel_main(void)
 		uint8_t module_failures;
 
 		(void)module_loader_init();
-#if ZOS_M4_SIO_IRQ
-		/* TEST-ONLY HOOK: keep a test-owned timer source pending across
-		 * the load until the acceptance module owns it; the concrete
-		 * programming lives in tests/target/support/ctc_test.c and the
-		 * module in tests/modules/sio_irq_module.c. */
-		{
-			uint8_t irq_enabled = irq_arch_lock();
-
-			zos_target_test_irq_hold_begin();
-			module_failures = kernel_boot_module();
-			zos_target_test_irq_hold_end();
-			irq_arch_unlock(irq_enabled);
-		}
-#else
 		module_failures = kernel_boot_module();
-#endif
 		if (module_failures != 0) {
 			early_console_puts("console: dynamic driver failed\r\n");
 		} else if (console_bind_defaults() != ZDEV_OK) {
@@ -528,16 +522,14 @@ void kernel_main(void)
 	}
 
 #if ZOS_TARGET_TEST_BUILD
-	/* TEST-ONLY HOOK: m3/m4 acceptance phases (target_test.c). */
+	/* TEST-ONLY HOOK: subsystem/M8/M9 acceptance phases (target_test.c). */
 	zos_target_test_late();
 #endif
 
-#if ZOS_MONITOR_BOOT
-	/* Temporary pre-shell launcher: exec the ROMFS monitor through the
-	 * unchanged M6 process path; normal exits are reported and the
-	 * monitor is re-executed (see kernel_monitor_launcher above). */
+	/* Pre-shell launcher: exec the ROMFS monitor through the process
+	 * path; normal exits are reported and the monitor is re-executed
+	 * (see kernel_monitor_launcher above). */
 	kernel_monitor_launcher();
-#endif
 
 	__asm__("di");
 	for (;;) {

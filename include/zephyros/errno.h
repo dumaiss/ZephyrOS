@@ -40,4 +40,18 @@
 #define ZOS_ECRC      0x0E /* checksum verification failed */
 #define ZOS_EBADSEQ   0x0F /* wrong or stale exchange sequence */
 
+/* M9 makes the filesystem family syscall-visible (architecture section
+ * 32.30, work/M9-REFERENCE.md).  ZOS_EMFILE reports descriptor-table and
+ * provider open-handle exhaustion so it is never confused with
+ * ZOS_ENOSPC (storage full).  ZOS_ENODEV (0x03) is reused for "a
+ * filesystem at / is required but none is mounted". */
+#define ZOS_EEXIST    0x10 /* object already exists               */
+#define ZOS_ENOTDIR   0x11 /* path component is not a directory   */
+#define ZOS_EISDIR    0x12 /* object is a directory               */
+#define ZOS_ENOTEMPTY 0x13 /* directory not empty                 */
+#define ZOS_EROFS     0x14 /* read-only filesystem                */
+#define ZOS_ESTALE    0x15 /* stale/removed object identity       */
+#define ZOS_EXDEV     0x16 /* cross-filesystem operation          */
+#define ZOS_EMFILE    0x17 /* descriptor/handle table exhausted   */
+
 #endif /* ZEPHYROS_ERRNO_H */

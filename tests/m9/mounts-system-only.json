@@ -1,0 +1,11 @@
+{
+  "format": "vfs-mounts-v1",
+  "mounts": [
+    {
+      "path": "/SYSTEM",
+      "filesystem": "romfs",
+      "source": "recovery",
+      "system": true
+    }
+  ]
+}

@@ -5,8 +5,8 @@
  * they cannot drift.  Not part of the native ABI.
  */
 
-#ifndef ZEPHYROS_TARGET_M2_SELFTEST_H
-#define ZEPHYROS_TARGET_M2_SELFTEST_H
+#ifndef ZEPHYROS_TARGET_IRQ_SELFTEST_H
+#define ZEPHYROS_TARGET_IRQ_SELFTEST_H
 
 /* Smoke-caller parameters. */
 #define ZOS_IST_CALLER_BASE   0x1000u  /* caller code address (window)     */
@@ -54,9 +54,9 @@
 #define ZOS_IST_FAIL_UNCLAIMED  0x14u
 #define ZOS_IST_FAIL_REGISTRY   0x15u
 
-#if ZOS_IRQ_SELFTEST
+#if ZOS_SUBSYS_SELFTEST
 /* M2 acceptance entry (tests/target/m2/irq_test.c). */
 void zos_run_irq_selftest(void);
 #endif
 
-#endif /* ZEPHYROS_TARGET_M2_SELFTEST_H */
+#endif /* ZEPHYROS_TARGET_IRQ_SELFTEST_H */

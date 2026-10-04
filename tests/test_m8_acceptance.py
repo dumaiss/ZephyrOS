@@ -141,8 +141,7 @@ class TestM8ProductionBoot(ProductionBase):
 
         # Early SIO banner; no optional-module diagnostic at all; no
         # acceptance-test symbol or marker in the production image.
-        for line in ("ZephyrOS 0.0", "platform: Zephyr-80", "serial: OK",
-                     "HALT"):
+        for line in ("ZephyrOS 0.0", "platform: Zephyr-80", "serial: OK"):
             self.assertIn(line, sio)
         self.assertNotIn(": unavailable 0x", sio)
         self.assertNotIn("FAIL", sio)

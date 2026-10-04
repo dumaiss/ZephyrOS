@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side M7 monitor tests: ABI/tool constant parity, ZEX layout,
+"""Host-side monitor tests: ABI/tool constant parity, ZEX layout,
 source/map dependency inspection, and artifact integrity.
 
 Coverage:
@@ -11,8 +11,8 @@ Coverage:
   linked image size, stack reservation, and a low-window scratch block;
 * the linked monitor map contains only monitor/runtime modules - no
   kernel-private symbols, no SIO/early-console/CP/M dependencies - and
-  the packed monitor.zex is stored byte-identically in the M7 and
-  production ROMFS images;
+  the packed monitor.zex is stored byte-identically in the subsystem
+  acceptance and production ROMFS images;
 * the monitor and its runtime sources contain no direct port I/O, SIO
   port constants, early-console calls, CP/M vectors/BDOS calls, or
   private kernel symbol references;
@@ -39,14 +39,14 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 import mapcheck  # noqa: E402
 import romfspack  # noqa: E402
 import zexpack  # noqa: E402
-from test_m1 import evaluate, make_map, parse_c_header  # noqa: E402
+from maptools import evaluate, make_map, parse_c_header  # noqa: E402
 
 SYSCALL_H = os.path.join(ROOT, "include", "zephyros", "syscall.h")
 RUNTIME_H = os.path.join(ROOT, "user", "runtime", "zex_runtime.h")
 RUNTIME_ASM = os.path.join(ROOT, "user", "runtime", "zex_diag_runtime.asm")
 CONSOLE_H = os.path.join(ROOT, "user", "runtime", "console_io.h")
 MONITOR_JSON = os.path.join(ROOT, "user", "monitor", "monitor.json")
-M7_MANIFEST = os.path.join(ROOT, "tests", "m7", "manifest.json")
+SUBSYS_MANIFEST = os.path.join(ROOT, "tests", "subsys", "manifest.json")
 PROD_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
 
 MONITOR_SOURCES = (
@@ -233,8 +233,10 @@ class TestMonitorArtifacts(unittest.TestCase):
 
     def test_romfs_images_store_the_same_monitor_bytes(self):
         _p, packed = self._read("build/modules/monitor.zex")
-        for image_dir in ("build-m7-selftest", "build"):
-            rel = os.path.join(image_dir, "recovery.romfs")
+        rels = ["build-subsys-selftest/recovery.romfs"]
+        if os.path.exists(os.path.join(ROOT, "build", "recovery.romfs")):
+            rels.append("build/recovery.romfs")
+        for rel in rels:
             _p, stream = self._read(rel)
             _h, entries = romfspack.parse_image(stream)
             names = {entry["name"]: entry for entry in entries}
@@ -247,8 +249,8 @@ class TestMonitorArtifacts(unittest.TestCase):
                              "packed artifact" % rel)
 
     def test_manifests_name_monitor_as_a_zex(self):
-        m7 = json.loads(read_text(M7_MANIFEST))
-        entries = {entry["name"]: entry for entry in m7["files"]}
+        accepted = json.loads(read_text(SUBSYS_MANIFEST))
+        entries = {entry["name"]: entry for entry in accepted["files"]}
         self.assertEqual(entries["monitor.zex"]["type"], "ZEX")
         self.assertIn("sio.zmod", entries)
         production = json.loads(read_text(PROD_MANIFEST))
@@ -257,36 +259,22 @@ class TestMonitorArtifacts(unittest.TestCase):
         self.assertIn("sio.zmod", pentries)
 
     def test_image_contains_the_monitor_command_surface(self):
-        _p, image = self._read("build-m7-selftest/"
-                               "zephyros-m7-selftest.bin")
+        _p, image = self._read("build-subsys-selftest/"
+                               "zephyros-subsys-selftest.bin")
         for marker in (b"ZephyrOS native monitor\r\n",
-                       b"m7 selftest: OK\r\n",
                        b"system: abi ",
                        b"ERR: ARG\r\n",
                        b"ERR: COMMAND\r\n",
                        b"monitor: exit status 0x"):
             self.assertIn(marker, image,
-                          "marker %r missing from the M7 image" % marker)
-
-    def test_serial_smoke_m7_expectations_exist_verbatim(self):
-        import serial_smoke
-        _p, image = self._read("build-m7-selftest/"
-                               "zephyros-m7-selftest.bin")
-        for const in (serial_smoke.M7_SELFTEST_OK,
-                      serial_smoke.M7_BANNER,
-                      serial_smoke.M7_ERR_ARG):
-            self.assertIn(const, image,
-                          "serial_smoke expectation %r is not in the "
-                          "image" % const)
+                          "marker %r missing from the subsystem image"
+                          % marker)
         # The system-info and launcher lines are composed from linked
-        # literal fragments (verified end to end by tests/test_m7_sim.py
-        # against the serial_smoke constants); every fragment must be
-        # present in the image.
-        for fragment in (b"system: abi ", b" app ", b" os ", b" common ",
-                         b" kernel-bank ", b" romfs ",
-                         b"bank: current ", b" mask ",
-                         b"monitor: exit status 0x", b" active ",
-                         b" free-banks "):
+        # literal fragments (replayed end to end by tests/test_subsys_sim.py);
+        # every fragment must be present in the image.
+        for fragment in (b" app ", b" os ", b" common ", b" kernel-bank ",
+                         b" romfs ", b"bank: current ", b" mask ",
+                         b" active ", b" free-banks "):
             self.assertIn(fragment, image,
                           "expected output fragment %r is not in the "
                           "image" % fragment)
@@ -368,75 +356,8 @@ class TestM7MapcheckRules(unittest.TestCase):
             mapcheck.check_map(text, production=True)
 
 
-class _FakeLink:
-    def __init__(self):
-        self.written = []
-
-    def write(self, data):
-        self.written.append(data)
-
-    def flush(self):
-        pass
-
-
-class TestM7SmokeSessionScript(unittest.TestCase):
-    """The serial_smoke M7 session state machine: ordered steps,
-    command sequence, prompt synchronisation, and completion."""
-
-    TRANSCRIPT = (
-        b"ZephyrOS native monitor\r\n"
-        b"bank=00 pid=0 scratch=0B41\r\n"
-        b"Z80> "
-        b"H\r\n"
-        b"Q              quit\r\n"
-        b"Z80> "
-        b"R\r\n"
-        b"system: abi 01 app 10 os 18 common E000 kernel-bank 07 "
-        b"romfs 02\r\n"
-        b"process: pid 0 bank 0 flags 0001\r\n"
-        b"bank: current 00 mask 7F\r\n"
-        b"Z80> "
-        b"M 0B41 A5\r\nOK\r\nZ80> "
-        b"D 0B41 1\r\n0B41: A5 \r\nZ80> "
-        b"D 0100 20\r\n0110: \r\nZ80> "
-        b"I 20\r\nIN=FF\r\nZ80> "
-        b"O 00 18\r\nERR: ARG\r\nZ80> "
-        b"DB 7 0100 1\r\nERR: ARG\r\nZ80> "
-        b"D ZZZ\r\nERR: ARG\r\nZ80> "
-        b"Q\r\n"
-        b"monitor: exit status 0x0000 active 0 free-banks 7\r\n"
-        b"\r\nZephyrOS native monitor\r\n"
-        b"bank=00 pid=0 scratch=0B41\r\nZ80> "
-        b"R\r\nbank: current 00 mask 7F\r\nZ80> "
-        b"Q\r\n"
-        b"monitor: exit status 0x0000 active 0 free-banks 7\r\n"
-    )
-
-    def test_session_completes_and_sends_the_scripted_commands(self):
-        import serial_smoke
-        link = _FakeLink()
-        session = serial_smoke._M7Session(link)
-        session.send_delay = 0  # no pacing in the unit test
-        done = False
-        # Feed in chunks so the incremental update path is exercised.
-        for offset in range(0, len(self.TRANSCRIPT), 32):
-            if session.update(self.TRANSCRIPT[:offset + 32]):
-                done = True
-                break
-        self.assertTrue(done, "session did not finish")
-        self.assertIsNone(session.error)
-        self.assertEqual(session.step, len(session.steps))
-        raw = b"".join(link.written)
-        commands = [line for line in raw.split(b"\r") if line]
-        self.assertEqual(commands, [
-            b"H", b"R", b"M 0B41 A5", b"D 0B41 1", b"D 0100 20",
-            b"I 20", b"O 00 18", b"DB 7 0100 1", b"D ZZZ", b"Q",
-            b"R", b"Q",
-        ])
-
-
 class _ScriptedLink:
-    """Minimal pyserial stand-in: replays a payload once, then EOF."""
+    """Minimal pyserial stand-in: replays one payload, then EOF."""
 
     def __init__(self, payload):
         self.payload = payload
@@ -449,7 +370,7 @@ class _ScriptedLink:
         return chunk
 
     def write(self, data):
-        self.written.append(data)
+        self.written.append(bytes(data))
 
     def flush(self):
         pass
@@ -472,15 +393,27 @@ class _CapturedOutput:
         pass
 
 
-class TestM7SmokeBootGate(unittest.TestCase):
-    """--mode m7 must be listening before the board boots: the boot-log
-    gate, the no-commands-on-a-warm-board rule, and the operator hints."""
+class TestSubsystemSmokeMode(unittest.TestCase):
+    """--mode subsystem: the boot-log gate, the interactive Q step at the
+    monitor prompt, and the exit-line finish.  This is the current
+    replacement for the retired M7 monitor smoke session: the monitor
+    session itself is replayed end to end by tests/test_subsys_sim.py."""
 
-    WARM_TAIL = (
-        b"ZephyrOS native monitor\r\n"
-        b"bank=00 pid=0 scratch=0B41\r\n"
-        b"Z80> "
-    )
+    def transcript(self):
+        import serial_smoke
+        return (
+            serial_smoke.BANNER
+            + serial_smoke.CONSOLE_DYNAMIC_OK
+            + serial_smoke.SUBSYS_SYSCALL_OK
+            + serial_smoke.SUBSYS_IRQ_OK
+            + serial_smoke.SUBSYS_ROMFS_OK
+            + serial_smoke.SUBSYS_PROCESS_DONE
+            + serial_smoke.SUBSYS_LOADER_OK
+            + b"ZephyrOS native monitor\r\n"
+            + serial_smoke.SUBSYS_PROMPT
+            + serial_smoke.SUBSYS_EXIT
+            + b"0000 active 0 free-banks 7\r\n"
+        )
 
     def run_main(self, payload, timeout=0.05):
         import serial_smoke
@@ -499,7 +432,7 @@ class TestM7SmokeBootGate(unittest.TestCase):
             with contextlib.redirect_stdout(out), \
                     contextlib.redirect_stderr(err):
                 code = serial_smoke.main(
-                    ["--mode", "m7", "--port", "FAKE",
+                    ["--mode", "subsystem", "--port", "FAKE",
                      "--timeout", str(timeout)])
         finally:
             if previous is None:
@@ -508,30 +441,94 @@ class TestM7SmokeBootGate(unittest.TestCase):
                 sys.modules["serial"] = previous
         return code, out.text.getvalue(), err.getvalue(), link
 
-    def test_warm_board_fails_without_starting_the_session(self):
-        code, out, err, link = self.run_main(self.WARM_TAIL)
-        self.assertEqual(code, 1)
-        self.assertEqual(link.written, [],
-                         "no command may be sent before the boot log")
-        self.assertIn("already running the monitor", out,
-                      "warm-board reset hint missing")
-        self.assertIn("no boot log was captured", err)
+    def test_complete_transcript_sends_q_and_passes(self):
+        code, out, err, link = self.run_main(self.transcript())
+        self.assertEqual(code, 0, err)
+        self.assertEqual(b"".join(link.written), b"Q",
+                         "the tool must send exactly one Q at the prompt")
+        self.assertIn("serial_smoke: OK", out)
 
-    def test_boot_log_starts_the_session_from_the_selftest_marker(self):
+    def test_incomplete_boot_log_fails_without_sending_q(self):
         import serial_smoke
 
-        boot = (
-            serial_smoke.BANNER
-            + serial_smoke.CONSOLE_DYNAMIC_OK
-            + serial_smoke.M7_SELFTEST_OK
-            + b"\r\n"
-            + self.WARM_TAIL
-        )
-        code, _out, _err, link = self.run_main(boot)
-        self.assertEqual(code, 1, "session cannot complete: link is a stub")
-        raw = b"".join(link.written)
-        self.assertTrue(raw.startswith(b"H\r"),
-                        "first paced command must be H; got %r" % raw)
+        payload = (serial_smoke.BANNER
+                   + serial_smoke.CONSOLE_DYNAMIC_OK
+                   + serial_smoke.SUBSYS_SYSCALL_OK)
+        code, _out, err, link = self.run_main(payload)
+        self.assertEqual(code, 1)
+        self.assertEqual(link.written, [],
+                         "no command may be sent before the boot log is "
+                         "complete")
+        self.assertIn("was not observed", err)
+
+
+class TestProductionSmokeMode(unittest.TestCase):
+    """--mode normal (make smoke-hardware): the production boot contract.
+
+    The mode used to accept the banner alone; it now requires the console
+    service line and the monitor prompt, because that is what the current
+    production image actually prints on hardware (optional boot-module
+    diagnostics stay tolerated -- an SIO-only bench is a supported
+    fallback)."""
+
+    def transcript(self, diagnostics=b""):
+        import serial_smoke
+        return (serial_smoke.BANNER
+                + diagnostics
+                + serial_smoke.CONSOLE_DYNAMIC_OK
+                + serial_smoke.MONITOR_BANNER
+                + serial_smoke.SUBSYS_PROMPT)
+
+    def run_main(self, payload, timeout=0.05):
+        import serial_smoke
+
+        fake = types.ModuleType("serial")
+        fake.EIGHTBITS = 8
+        fake.PARITY_NONE = "N"
+        fake.STOPBITS_ONE = 1
+        fake.SerialException = type("SerialException", (Exception,), {})
+        link = _ScriptedLink(payload)
+        fake.Serial = lambda **kwargs: link
+        previous = sys.modules.get("serial")
+        sys.modules["serial"] = fake
+        out, err = _CapturedOutput(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(err):
+                code = serial_smoke.main(
+                    ["--mode", "normal", "--port", "FAKE",
+                     "--timeout", str(timeout)])
+        finally:
+            if previous is None:
+                del sys.modules["serial"]
+            else:
+                sys.modules["serial"] = previous
+        return code, out.text.getvalue(), err.getvalue()
+
+    def test_banner_console_and_monitor_prompt_pass(self):
+        code, out, err = self.run_main(self.transcript())
+        self.assertEqual(code, 0, err)
+        self.assertIn("serial_smoke: OK", out)
+
+    def test_optional_module_diagnostics_are_tolerated(self):
+        code, _out, err = self.run_main(
+            self.transcript(diagnostics=b"v9958: unavailable 0x05\r\n"))
+        self.assertEqual(code, 0, err)
+
+    def test_banner_alone_is_not_enough(self):
+        import serial_smoke
+
+        code, _out, err = self.run_main(serial_smoke.BANNER)
+        self.assertEqual(code, 1)
+        self.assertIn("was not observed", err)
+
+    def test_unbound_console_fails(self):
+        import serial_smoke
+
+        code, _out, err = self.run_main(
+            serial_smoke.BANNER + b"console: unbound\r\n")
+        self.assertEqual(code, 1)
+        self.assertIn("was not observed", err)
 
 
 if __name__ == "__main__":

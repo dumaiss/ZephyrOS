@@ -5,6 +5,11 @@
 **Target:** Zephyr-80  
 **Purpose:** Define the native ZephyrOS filesystem framework before implementation. This document intentionally excludes CP/M filesystem semantics.
 
+The bootstrap slice (VFS core, generated mount table, ROMFS provider at
+`/SYSTEM`, VFS-path boot loading) is implemented by work package
+`25-m9-vfs-bootstrap-romfs`; see `docs/vfs.md` for the implementation
+record.
+
 ---
 
 ## 1. Goals
@@ -727,7 +732,7 @@ There is no requirement in M9 to redesign the ROMFS format to add subdirectories
 
 VFS initializes before dynamic module loading. The ROMFS provider is statically available, registers with VFS during bootstrap, and is instantiated as the configured system filesystem at `/SYSTEM`.
 
-Normal boot must therefore not require a separate `romfs_load_zmod()`-style path once VFS bootstrap is complete. After `/SYSTEM` is mounted, module and executable loading should consume files through generic VFS-backed source adapters.
+Normal boot therefore has no separate `romfs_load_zmod()`-style path: since package 25, `/SYSTEM` is mounted by `vfs_init()` before any module runs, and module and executable loading consume files through the generic VFS-backed source adapter (`vfs_file_source()` over an open `/SYSTEM/<name>.zmod` or `/SYSTEM/monitor.zex`).
 
 A tiny direct ROM access primitive may still exist underneath the ROMFS provider, but it is not a parallel filesystem API.
 

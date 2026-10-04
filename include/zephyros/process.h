@@ -4,7 +4,7 @@
  * application bank per process, and synchronous parent/child execution:
  *
  *     parent runs
- *         process_exec(name, &status)
+ *         process_exec(path, &status)
  *             child RUNNING, parent suspended
  *             child runs alone until SYS_EXIT (or a raw entry return)
  *         parent resumed exactly where it called process_exec
@@ -65,7 +65,7 @@ extern struct process process_table[PROCESS_TABLE_SIZE];
  * the common resume gate returns control to process_exec(). */
 extern uint16_t process_last_status;
 
-/* Execute one child synchronously from the ROMFS recovery store.
+/* Execute one child synchronously from a VFS path.
  *
  * On success the child ran to SYS_EXIT (or returned through the common
  * trap, which synthesizes ZOS_EFAULT) and *status receives the u16 exit
@@ -73,9 +73,10 @@ extern uint16_t process_last_status;
  * executed, process bookkeeping is rolled back exactly, and a negative
  * ZEX_EXEC_ERR_* code is returned.
  *
- * `romfs_name` is a NUL-terminated ROMFS name; `status` must not be
- * null.  Nesting is not supported (the launcher is single-depth). */
-int process_exec(const char *romfs_name, uint16_t *status);
+ * `path` is a NUL-terminated VFS path (absolute, or relative to `/`);
+ * the ZEX image is read through the kernel file API.  `status` must not
+ * be null.  Nesting is not supported (the launcher is single-depth). */
+int process_exec(const char *path, uint16_t *status);
 
 /* Diagnostics / acceptance queries. */
 uint8_t process_active_count(void);

@@ -32,6 +32,7 @@ LIVE_DOCS = (
     "docs/monitor.md",
     "docs/romfs-format.md",
     "docs/zex-format.md",
+    "docs/vfs.md",
 )
 
 # A cited record path; the leading character class excludes the bare

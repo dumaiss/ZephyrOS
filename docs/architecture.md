@@ -1,6 +1,6 @@
 # ZephyrOS Architecture
 
-**Status:** M0-M8 complete and physically accepted; M9 architecture defined for implementation
+**Status:** M0-M8 complete and physically accepted; M9 architecture defined for implementation (bootstrap slice implemented by work package 25, see docs/vfs.md and section 32.38.1)
 **Scope:** Milestones M0 through M9
 **Target:** Zephyr-80  
 **Language/toolchain:** SDCC + sdasz80/sdldz80, GNU Make, Python host tools
@@ -24,7 +24,7 @@ The milestones covered by this document are:
 - **M6 — Native process and ZEX execution:** establish single-tasking native process lifecycle and execute a single-bank native program from ROMFS. **Complete.**
 - **M7 — Native monitor / diagnostic foundation:** port the Zephyr monitor as the first useful native ZEX and establish the foundation for the later diagnostic suite. **Complete.**
 - **M8 — Native device stack completion:** provide the normal V9958/HID console and IOC transport through class-aware dynamically loaded drivers. **Complete.**
-- **M9 — Native VFS and filesystem framework:** establish the native namespace, filesystem-provider model, bootstrap/system filesystem, IOC-FAT provider, block-device layer, local file-data cache, and native file/directory syscall ABI.
+- **M9 — Native VFS and filesystem framework:** establish the native namespace, filesystem-provider model, bootstrap/system filesystem, IOC-FAT provider (with its own file-data cache), block-device class, and native file/directory syscall ABI.
 
 The native shell and full userland, complete diagnostic suite, and extended/far-memory services remain later native ZephyrOS milestones. Compatibility personalities begin only after those native facilities are complete.
 
@@ -2309,8 +2309,8 @@ tests/modules/sio_fail_module.c init-failure variant entry
 ```
 
 * the M3 static driver table is retired: no `boot_drivers[]`, `driver_init_static()`, or `_driver_static_*` symbol is linked, and `tools/mapcheck.py --production` rejects any acceptance symbol;
-* every M4 image embeds a boot module through the generated catalog: `sio.zmod` (production, loader image, placement image), `sio-irq.zmod` (`make m4-selftest`), or `sio-fail.zmod` (`make m4-failure-selftest`);
-* the placement image regenerates `platform/zephyr80/memory.inc` with the arena shifted to 9E00h-BE00h and embeds byte-identical module files;
+* every M4 image embeds a boot module through the generated catalog: `sio.zmod` (production, loader image, placement image), `sio-irq.zmod` (`make m4-selftest`), or `sio-fail.zmod` (`make m4-failure-selftest`).  **The M1-M7 acceptance images, the embedded boot catalog and the legacy fixed-arena geometry were retired under the Mn-1 retention rule at the start of M9 (work package 25a); the loader mechanisms this section proves are now exercised on the current boot path by the loader group of the subsystem acceptance image -- `tests/target/loader/` replayed by `tests/test_subsys_sim.py` -- with container validation and two-base relocation proven on host by `tests/test_zmod.py` and arena exhaustion by the `m8-fb-arena` image;**
+* the (retired) placement image regenerated `platform/zephyr80/memory.inc` with the arena shifted to 9E00h-BE00h and embedded byte-identical module files;
 * `kernel_main()` prints `console: dynamic sio0.b OK` through the bound module (or `console: dynamic driver failed` on load failure);
 * `tools/mapcheck.py` rejects any linked `_sio_`/`_sio0b_`/`_sio_driver` symbol, so the static driver cannot return unnoticed.
 
@@ -2339,7 +2339,7 @@ M4 is accepted when:
 - failed module initialization rolls back its arena allocation and registry changes;
 - no runtime unload capability is required.
 
-Evidence mapping: `tests/test_m4.py`/`tests/test_m4_sim.py` and `tests/test_zmod.py` prove every criterion on host (including the shifted placement and the failure rollback); `make m4-selftest`, `make m4-placement-selftest`, `make m4-failure-selftest` and the corresponding `smoke-hardware-*` captures provide the physical-hardware record (`docs/validation/2026-10-02-m4-acceptance.md`).
+Evidence mapping (as of M4): `tests/test_m4.py`/`tests/test_m4_sim.py` and `tests/test_zmod.py` proved every criterion on host (including the shifted placement and the failure rollback); `make m4-selftest`, `make m4-placement-selftest`, `make m4-failure-selftest` and the corresponding `smoke-hardware-*` captures provided the physical-hardware record (`docs/validation/2026-10-02-m4-acceptance.md`).  Those images and tests were retired under the Mn-1 retention rule (work package 25a); the criteria are now carried by `tests/test_zmod.py`, the loader group of `tests/target/loader/` replayed by `tests/test_subsys_sim.py`, and the `m8-fb-arena` image.
 
 ---
 
@@ -2475,7 +2475,7 @@ Semantics equivalent to the following are sufficient:
 
 ```c
 int romfs_init(void);
-int romfs_lookup(const char *name, romfs_file_t *out);
+int romfs_lookup_ci(const char *name, romfs_file_t *out);
 int romfs_read(const romfs_file_t *file,
                uint32_t offset,
                void *dst,
@@ -2484,7 +2484,7 @@ int romfs_read(const romfs_file_t *file,
 
 `romfs_file_t` is immutable metadata identifying one ROMFS entry.
 
-M5 does not expose this API as the future native filesystem ABI. M9 supersedes the application-facing part of this design by adapting the existing low-level ROMFS reader beneath the VFS provider interface.
+M5 does not expose this API as the future native filesystem ABI. M9 supersedes the application-facing part of this design by adapting the existing low-level ROMFS reader beneath the VFS provider interface; section 32.13 collapses the lookup to the single ASCII case-folded `romfs_lookup_ci`.
 
 ---
 
@@ -2892,7 +2892,7 @@ The architecture must support:
 - raw SD access through a generic block-device abstraction;
 - future filesystems implemented directly on the Z80, such as VFAT or a Fuzix filesystem;
 - path-, handle-, and byte-oriented native APIs;
-- a local Z80-side file-data cache to avoid repeated transport traffic;
+- provider-local caching where a backend needs it (IOC-FAT keeps a Z80-side file-data cache to avoid repeated transport traffic);
 - a clean boundary for later personalities such as CP/M.
 
 The central rules are:
@@ -2900,6 +2900,10 @@ The central rules are:
 > **VFS owns the namespace. Filesystems provide trees attached to paths in that namespace.**
 
 > **IOC is transport only. Filesystem and block semantics live above it.**
+
+> **Caching is filesystem-provider policy. VFS owns no cache.**
+
+> **Resident bytes are an architectural resource (section 32.39).**
 
 ---
 
@@ -2913,13 +2917,13 @@ native applications
 |         VFS           |
 | namespace / paths     |
 | mounts / CWD / fd     |
-| file-data cache       |
 +-----------------------+
         |
         +---------------------+----------------------+
         |                     |                      |
         v                     v                      v
    ROMFS filesystem      IOC-FAT filesystem      future FS
+                         (file-data cache)    (optional block cache)
                               |                      |
                               |                      v
                               |                block layer
@@ -2943,7 +2947,7 @@ native applications
 Ownership is deliberately separated:
 
 - **VFS** owns the global namespace and process-visible filesystem semantics.
-- **Filesystem providers** own filesystem-specific behavior.
+- **Filesystem providers** own filesystem-specific behavior, including any caching.
 - **Block devices** expose raw sector/block storage.
 - **IOC** owns only the Z80-to-MCU transport.
 
@@ -3160,7 +3164,12 @@ Native pathname comparison is ASCII case-insensitive:
 
 refer to the same namespace object. The comparison rule is simply `A-Z == a-z`; all other bytes compare exactly. ZephyrOS does not attempt Unicode case folding.
 
-VFS resolves the owning mount before calling a provider. For example:
+The rule is split between VFS and providers:
+
+- VFS normalizes the path (absolute against CWD; `.`, `..`, repeated `/` resolved) and compares only the **first component** case-insensitively against the root-level mountpoints. It does not walk or fold the remaining components.
+- Every provider is required to implement ASCII case-insensitive semantics for the provider-relative paths it receives. IOC-FAT inherits this from FAT; ROMFS uses a small ASCII-folded compare.
+
+VFS selects the owning mount before calling a provider. M9 mount selection is flat (section 32.6): if the first component matches a mounted root-level mountpoint, that mount owns the path; otherwise the filesystem attached at `/` owns it. For example:
 
 ```text
 /SYSTEM/monitor.zex
@@ -3205,14 +3214,13 @@ current working directory
 process-visible file descriptors
 directory handles
 file offsets
-file-data cache
 filesystem syscall dispatch
 user-buffer validation and copying
 process cleanup
 cross-filesystem policy
 ```
 
-VFS must not contain FAT parsing, FS2 command numbers, IOC READY/DONE handling, ROMFS on-ROM layout, SD-sector commands, or CP/M FCB logic.
+VFS must not contain FAT parsing, FS2 command numbers, IOC READY/DONE handling, ROMFS on-ROM layout, SD-sector commands, caching policy, or CP/M FCB logic. VFS uses fixed tables only (no dynamic allocation) and one shared 128-byte pathname scratch buffer.
 
 ---
 
@@ -3255,74 +3263,44 @@ The build-time mount configuration selects a provider and source and attaches an
 
 ## 32.12 Filesystem-provider interface
 
-Every filesystem implementation presents the same internal interface to VFS. Exact C layout may be finalized during implementation, but semantics are equivalent to:
+Providers are **path-based**. M9 has a flat namespace (section 32.6) and no use for a Unix-style vnode layer, so VFS does not keep node objects, node lifetimes, or per-component traversal state. Every operation receives a provider-relative path.
 
 ```c
 struct zfs_ops {
-    int (*mount)(void *provider_state,
-                 const char *source,
-                 void **fs_state);
+    int (*mount)(void *provider_state, const char *source, void **fs);
 
-    int (*unmount)(void *fs_state);
+    int (*open)(void *fs, const char *path, uint16_t flags, void **file,
+                uint32_t *size);
+    int (*close)(void *fs, void *file);
+    int (*read)(void *fs, void *file, uint32_t offset,
+                void *buf, uint16_t len);
+    int (*write)(void *fs, void *file, uint32_t offset,
+                 const void *buf, uint16_t len);
+    int (*sync)(void *fs, void *file);
 
-    int (*lookup)(void *fs_state,
-                  void *parent,
-                  const char *name,
-                  void **node);
+    int (*stat)(void *fs, const char *path, struct zfs_stat *out);
 
-    int (*stat)(void *fs_state,
-                void *node,
-                struct zfs_stat *out);
+    int (*opendir)(void *fs, const char *path, void **dir);
+    int (*readdir)(void *fs, void *dir, struct zfs_dirent *out);
+    int (*closedir)(void *fs, void *dir);
 
-    int (*open)(void *fs_state,
-                void *node,
-                uint16_t flags,
-                void **file);
-
-    int (*close)(void *fs_state,
-                 void *file);
-
-    int (*read)(void *fs_state,
-                void *file,
-                uint32_t offset,
-                void *buffer,
-                uint16_t length);
-
-    int (*write)(void *fs_state,
-                 void *file,
-                 uint32_t offset,
-                 const void *buffer,
-                 uint16_t length);
-
-    int (*sync)(void *fs_state,
-                void *file);
-
-    int (*truncate)(void *fs_state,
-                    void *file,
-                    uint32_t size);
-
-    int (*opendir)(void *fs_state,
-                   void *node,
-                   void **dir);
-
-    int (*readdir)(void *fs_state,
-                   void *dir,
-                   struct zfs_dirent *out);
-
-    int (*closedir)(void *fs_state,
-                    void *dir);
-
-    int (*mkdir)(...);
-    int (*rmdir)(...);
-    int (*unlink)(...);
-    int (*rename)(...);
-
-    int (*syncfs)(void *fs_state);
-
-    int (*statfs)(void *fs_state,
-                  struct zfs_statfs *out);
+    int (*mkdir)(void *fs, const char *path);
+    int (*rmdir)(void *fs, const char *path);
+    int (*unlink)(void *fs, const char *path);
+    int (*rename)(void *fs, const char *oldpath, const char *newpath);
 };
 ```
+
+Contract for every path argument:
+
+- absolute within the provider (begins with `/`; `/` is the provider root);
+- already normalized by VFS: no `.`, `..`, empty or repeated components, no trailing `/`;
+- NUL-terminated, at most `ZOS_PATH_MAX - 1` bytes;
+- compared by the provider with ASCII case-insensitive semantics (section 32.8).
+
+`open` flags are the native `ZFS_O_*` flags, including `ZFS_O_TRUNC`; `open` reports the current file size. A read-only provider may leave mutation pointers null; VFS returns `EROFS` for a null mutation operation. `readdir` returns 1 with an entry, 0 at the end, or a negative error.
+
+Deliberately absent in M9: `unmount` (no runtime unmounting), filesystem-wide `syncfs`, a separate `truncate` operation (`ZFS_O_TRUNC` covers M9), `statfs` (deferred to M10 with `df`), and any lookup/release/node operations. They are added when a real consumer appears. ZephyrOS is still being built and keeps no backward-compatibility obligation, so such additions may reshape the interface freely.
 
 Opaque provider handles remain private. Applications never see ROMFS entry indices, FatFs `FIL` objects, FS2 tokens, FAT clusters, or future filesystem-native inode structures.
 
@@ -3348,7 +3326,9 @@ zfs_ops
 VFS mount at /SYSTEM
 ```
 
-ROMFS remains read-only, resident in recovery ROM pages, available without SD, and authoritative for boot/recovery assets. Mutation operations return `EROFS`.
+ROMFS remains read-only, resident in recovery ROM pages, available without SD, and authoritative for boot/recovery assets. Mutation operations return `EROFS`. ROMFS has no cache: its reads already come straight from ROM.
+
+There is exactly one ROMFS lookup: the provider's ASCII-folded name match over the validated directory. The M5 name-lookup and read helpers that the provider supersedes are removed, not kept beside it. The ABI-v2 module resource imports are served through the same lookup.
 
 The current ROMFS format may remain flat; there is no M9 requirement to add on-ROM subdirectories.
 
@@ -3407,6 +3387,8 @@ ZDEV_BLOCK: sd.0
 
 The SD block driver translates generic block requests to the MCU raw-SD command/bulk protocol. It does not implement FAT.
 
+**M9 scope:** M9 renames the class and publishes `include/zephyros/block.h` (the `zblock_info` / `zblock_ops` contract and capability bits). No `ZDEV_BLOCK` driver is resident in M9, because nothing consumes one: IOC-FAT talks to `ZDEV_IOC` directly. `sd-ioc.zmod` is built when the first native filesystem (VFAT/Fuzix) needs raw blocks.
+
 ---
 
 ## 32.16 IOC remains transport only
@@ -3456,7 +3438,7 @@ SD
 
 `iocfat.zmod` discovers `ZDEV_IOC`, initializes private provider state, and calls `vfs_register_filesystem()`.
 
-IOC-FAT owns FS2 commands, file/directory tokens, generation/cookie handling, MCU/FatFs error translation, and filesystem-specific command/bulk sequencing. FS2 tokens never escape into the native application ABI.
+IOC-FAT owns FS2 commands, file/directory tokens, generation/cookie handling, MCU/FatFs error translation, filesystem-specific command/bulk sequencing, and its file-data cache (section 32.19). FS2 tokens never escape into the native application ABI.
 
 The current backend may retain FAT 8.3 limitations if required by deployed firmware. VFS itself must not inherit that limitation.
 
@@ -3486,52 +3468,36 @@ Changing the filesystem provider must not require changes to the shell, native A
 
 ---
 
-## 32.19 Z80-side file-data cache
+## 32.19 Caching is provider policy
 
-M9 requires a local Z80-side cache. MCU FatFs/internal buffering is not a substitute because it does not avoid repeated Z80-to-MCU transport transactions for recently accessed file data.
-
-The M9 cache is a **file-data cache**, not a raw block cache:
+VFS defines no cache. There is no single useful cache key or invalidation model across backends:
 
 ```text
-                         VFS
-                          |
-                    file-data cache
-                    512-byte pages
-                          |
-                 filesystem provider
-                    /           \
-               IOC-FAT       native VFAT
-                  |               |
-                 IOC          block cache
-                                  |
-                              ZDEV_BLOCK
+ROMFS              no cache (reads come straight from ROM)
+IOC-FAT            file-data cache: FS2 file + generation + aligned offset
+native VFAT/Fuzix  block cache below the filesystem, keyed by LBA
 ```
 
-The cache is keyed conceptually by mount/filesystem identity, file/object identity, and aligned file offset.
+Each provider decides whether it caches and implements the policy that fits its backend. If two providers later need the same mechanism, a shared helper is extracted then, not before.
 
-Each slot contains at least:
+### IOC-FAT file-data cache (required in M9)
+
+MCU FatFs buffering does not avoid repeated Z80-to-MCU transport transactions, so IOC-FAT keeps a local Z80-side cache in its own module state:
 
 ```text
-512-byte data block
-valid-byte count
-filesystem/object identity
-aligned file offset or file-block number
-valid flag
-replacement state
-generation/version marker
+slot:
+    owning open file (FS2 token)
+    FS2 generation at fill time
+    aligned file offset (512-byte block)
+    valid-byte count
+    data[512]
 ```
 
-Slot size is fixed at 512 bytes. Slot count is build-time configurable and reported by memory-layout tooling. Four slots consume 2 KiB; eight consume 4 KiB. The architecture does not pin the count until the real bank-7 budget is measured.
-
-M9 begins with **write-through**, not write-back:
-
-```text
-read hit   -> return locally
-read miss  -> provider read -> fill slot -> return
-
-write      -> provider write -> confirmed success
-           -> update or invalidate overlapping cached data
-```
+- Slot size is 512 bytes. The slot count is a build setting of the IOC-FAT module (default 2) and is reported in the bank-7 ledger (section 32.39).
+- Read hit returns locally; a miss reads the aligned block through FS2 and fills a slot. Reads crossing a block boundary are split.
+- Writes are **write-through**: FS2 write, then confirmed DONE, then update or invalidate overlapping slots. A failed or unconfirmed write changes no cached byte.
+- Because FS2 serves at most two open files, a confirmed write, a truncating open, `unlink`, or `rename` also invalidates every slot of the other open file. This is the whole coherence rule.
+- A generation change or `STALE` reply invalidates every slot.
 
 No write is committed merely because bytes reached the IOC bulk lane. Write-back may be added later only if measurement justifies its recovery complexity.
 
@@ -3551,7 +3517,7 @@ generic block cache
 ZDEV_BLOCK
 ```
 
-This is distinct from the M9 VFS file-data cache. Block caching must not be buried inside IOC.
+This is distinct from the IOC-FAT file-data cache. Block caching must not be buried inside IOC.
 
 ---
 
@@ -3561,7 +3527,7 @@ Each process has at least:
 
 ```text
 current working directory
-descriptor table
+ownership of zero or more entries in the global descriptor pool
 ```
 
 The initial native environment starts at `/`. A child inherits its parent's CWD. A child does not initially inherit open file or directory descriptors. On exit, all child descriptors close and child FS context is discarded without altering the parent's CWD/state.
@@ -3570,15 +3536,17 @@ The initial native environment starts at `/`. A child inherits its parent's CWD.
 
 ## 32.22 Descriptor table
 
-Files and directory iterators share one per-process descriptor table. M9 guarantees:
+Files and directory iterators share one **global** VFS descriptor pool:
 
 ```text
-8 descriptors per process
+8 descriptors total, each owner-tagged
 ```
 
-Each slot is tagged `FREE`, `FILE`, or `DIRECTORY`.
+Each entry is `FREE`, `FILE`, or `DIRECTORY` and records its owner PID, mount, provider handle, uint32 offset and access flags. ZephyrOS is single-tasking, so per-process reserved tables would mostly sit empty. A process may use any free entry; a suspended parent's open descriptors stay allocated to it while its child runs. Exhaustion returns `EMFILE`.
 
-These are VFS descriptors, not Unix `stdin/stdout/stderr`; console I/O remains its own native syscall family in M9/M10. The table may grow later without changing filesystem semantics.
+The descriptor number a process sees is a small per-process index; one process can never name another process's descriptor.
+
+These are VFS descriptors, not Unix `stdin/stdout/stderr`; console I/O remains its own native syscall family in M9/M10. The pool may grow later without changing filesystem semantics.
 
 ---
 
@@ -3674,7 +3642,7 @@ The ABI does not expose inode numbers, FAT clusters, sectors, FS2 tokens, ROMFS 
 M9 exposes native services semantically equivalent to:
 
 ```text
-FS_OPEN
+FS_OPEN      (flags include CREATE, EXCL, TRUNC)
 FS_CLOSE
 FS_READ
 FS_WRITE
@@ -3692,11 +3660,12 @@ FS_RENAME
 
 FS_CHDIR
 FS_GETCWD
-FS_STATFS
 FS_SYNC
 ```
 
 Syscall argument blocks use bounded pointer/length fields. User runtime wrappers may expose C strings.
+
+`FS_STATFS` and truncate-to-arbitrary-size are deferred to M10 (`df` and similar userland). Truncation to zero is available in M9 through `FS_OPEN` with `TRUNC`.
 
 ---
 
@@ -3708,7 +3677,7 @@ M9 requires both.
 
 `sync(fd)` flushes dirty cached/provider state associated with that file through the underlying provider/storage while keeping the descriptor open.
 
-A filesystem-wide internal `syncfs()` operation may exist for orderly kernel/provider management. M9 does not require a Unix-style global user command.
+M9 has no filesystem-wide sync operation and no Unix-style global sync command.
 
 ---
 
@@ -3728,15 +3697,14 @@ SYS_FS_READ
 VFS descriptor + offset
     |
     v
-file-data cache
+filesystem.read()
     |
-    +--> hit -> return locally
+    +--> ROMFS -> ROM access primitive
     |
-    `--> miss -> filesystem.read()
-                   |
-                   +--> IOC-FAT -> IOC bulk
-                   |
-                   `--> future FS -> block layer
+    +--> IOC-FAT -> cache hit -> return locally
+    |              `-> miss -> IOC bulk -> fill slot
+    |
+    `--> future FS -> optional block cache -> block layer
 ```
 
 A write advances the file offset only after confirmed successful completion. IOC-FAT retains the existing strict IOC DONE-confirmation semantics.
@@ -3777,9 +3745,10 @@ ENOTEMPTY
 EROFS
 ESTALE
 EXDEV
+EMFILE
 ```
 
-`ESTALE` supports generation-aware FS2 handles. `EXDEV` is required for cross-mount rename. Numeric values are pinned when the syscall ABI is implemented.
+`EMFILE` reports descriptor-pool or provider open-handle exhaustion, distinct from `ENOSPC` (storage full). `ESTALE` supports generation-aware FS2 handles. `EXDEV` is required for cross-mount rename. Numeric values are pinned when the syscall ABI is implemented.
 
 ---
 
@@ -3997,7 +3966,6 @@ VFS keeps a separate runtime array in bank-7 RAM, indexed in parallel with the c
 state         UNMOUNTED, MOUNTED or FAILED
 provider      the registered provider selected by name
 fs_state      the provider instance returned by mount()
-generation    mount generation used for cache invalidation (32.19)
 last error    the failure code, for diagnostics
 ```
 
@@ -4012,7 +3980,7 @@ Separating the two keeps policy auditable in ROM and keeps all mutable state wit
 
 ### 32.33.5 Use after boot
 
-Path resolution (32.8) considers only `MOUNTED` entries. The longest matching mount path wins, compared case-insensitively on component boundaries; `/` matches everything. The remainder becomes the provider-relative path, which always begins with `/`.
+Path resolution (32.8) considers only `MOUNTED` entries. Selection is flat: the first path component is compared case-insensitively with the mounted root-level mountpoints; a match selects that mount, otherwise the `/` mount is selected. The remainder becomes the provider-relative path, which always begins with `/`.
 
 Root enumeration (32.7) lists the `MOUNTED` entries whose path has exactly one component, plus the entries of the filesystem mounted at `/`.
 
@@ -4046,7 +4014,12 @@ M9 does not implement:
 - arbitrary nested mountpoints;
 - hot-plug policy beyond clean failure detection;
 - write-back file caching;
-- generic raw block caching unless a native filesystem actually requires it.
+- a VFS-level cache of any kind;
+- generic raw block caching unless a native filesystem actually requires it;
+- a resident `ZDEV_BLOCK` driver (`sd-ioc.zmod`) before a consumer exists;
+- `FS_STATFS` and truncate-to-arbitrary-size (M10);
+- provider `unmount`, `syncfs`, `truncate`, `statfs`, or node lookup operations;
+- dynamic allocation inside VFS.
 
 ---
 
@@ -4078,21 +4051,23 @@ M9 preserves these rules:
 14. **Filesystem providers do not know their external mountpoint.**
 15. **IOC is transport, not a filesystem or block-device API.**
 16. **`ZDEV_STORAGE` is renamed directly to `ZDEV_BLOCK`.**
-17. **Raw SD access remains available through `ZDEV_BLOCK`.**
+17. **`ZDEV_BLOCK` is defined in M9; its first resident driver arrives with the first consumer (native VFAT/Fuzix).**
 18. **IOC-FAT is a resident ZMOD filesystem provider registered with VFS.**
 19. **MCU FatFs support is one filesystem backend, not the VFS architecture.**
 20. **Future VFAT/Fuzix-style filesystems may consume `ZDEV_BLOCK` directly.**
 21. **Native I/O is path-, descriptor-, and byte-oriented.**
-22. **Each process has 8 VFS descriptors shared by files and directories.**
+22. **VFS has one global, owner-tagged pool of 8 descriptors shared by files and directories.**
 23. **M9 provides both `CLOSE` and `SYNC`.**
 24. **Timestamp value zero means unknown/unavailable.**
 25. **The native metadata ABI exposes file/dir type, readonly/hidden/system attributes, size, ctime, and mtime.**
 26. **The FAT archive bit is not exposed by native VFS.**
-27. **M9 includes a local 512-byte-slot Z80 file-data cache.**
-28. **The file-data cache is initially write-through.**
-29. **The number of file-data cache slots is build-time configurable and reported by tooling.**
+27. **Caching is filesystem-provider policy; VFS defines and owns no cache.**
+28. **IOC-FAT keeps a write-through 512-byte-slot Z80 file-data cache; ROMFS keeps none.**
+29. **The IOC-FAT cache slot count is build-time configurable and reported in the bank-7 ledger.**
 30. **CP/M semantics remain confined to a later personality layer.**
 31. **Failure of external storage must not remove `/SYSTEM` recovery access.**
+32. **Providers are path-based; VFS keeps no node objects and matches only root-level mountpoints itself.**
+33. **Bank-7 residency is budgeted (section 32.39); each package reports against the ledger.**
 
 ---
 
@@ -4106,18 +4081,13 @@ kernel/
         mount.c
         file.c
         dir.c
-        cache.c
         syscall.c
-
-    block/
-        block.c
-        cache.c          # optional/future raw-block cache
 
 fs/
     romfs/
         ...
 
-    iocfat/
+    iocfat/          # includes the IOC-FAT file-data cache
         ...
 
     fat/                 # future
@@ -4130,7 +4100,7 @@ drivers/
     ioc/
         ...
 
-    sd/
+    sd/              # future: first ZDEV_BLOCK driver, with its first consumer
         ...
 
 include/zephyros/
@@ -4154,7 +4124,7 @@ This is architectural guidance, not a requirement to create every file immediate
                                 v
                               VFS
                     owns one namespace: /
-                    paths / CWD / fd / cache
+                    paths / CWD / fd pool
                                 |
                      system=true mount
                                 |
@@ -4173,6 +4143,7 @@ This is architectural guidance, not a requirement to create every file immediate
           v                                           v
       /SYSTEM                                      /
        ROMFS                                    IOC-FAT
+      (no cache)                           (file-data cache)
           |                                           |
           |                                           v
           |                                        ZDEV_IOC
@@ -4201,6 +4172,51 @@ This is architectural guidance, not a requirement to create every file immediate
 ```
 
 The system-filesystem rule makes VFS part of the boot foundation rather than a service layered on top of module loading: the kernel mounts one dependency-free built-in filesystem first, then uses it to obtain the modules and providers required to construct the rest of the machine.
+
+### 32.38.1 Implementation notes (stage 25)
+
+The bootstrap slice above is implemented by work package
+`25-m9-vfs-bootstrap-romfs` (with corrections 01 and 02); `docs/vfs.md` is
+the implementation record.
+
+```text
+include/zephyros/fs.h    native metadata/limit ABI (stat, dirent, flags;
+                         no statfs) -- syscall blocks arrive in pkg 27
+include/zephyros/vfs.h   provider ABI: zfs_ops (the 14 path-based
+                         operations of 32.12), zfs_provider
+kernel/vfs/              mount_config.h, path.c, mount.c, file.c, dir.c,
+                         mutate.c
+fs/romfs/romfs_provider  ROMFS over the M5 reader, path-based (pkg 25)
+tools/mountgen.py        manifest -> build/generated/vfs_mounts.c
+```
+
+Implemented: normalization; flat first-component mount selection
+(section 32.8, so `/SYSTEMX` does not select `/SYSTEM`); the capacity-4
+provider registry; the four lifecycle phases; the kernel file API on
+caller-provided `vfs_file` storage plus the `zmod_source` adapter; the
+mutation entry points that turn a null provider operation into `ZOS_EROFS`;
+one ASCII case-folded ROMFS lookup (section 32.13) serving the provider,
+the ZEX launcher and the module resource imports; `/SYSTEM` mounted by
+`vfs_init()` before any module load; every boot ZMOD and
+`monitor.zex` opened by VFS path; `vfs_mount_all()` for the remaining
+configured mounts; and the generated static mount table with its
+validation rules.
+
+VFS keeps no node objects, no object identity and no cache: providers are
+path-based, so there is no per-component walk and no `object_id`.  The
+`ZOS_ROMFS_BOOT=0` embedded-catalog images link no VFS byte at all
+(correction-01): the object group is dropped and `kernel/process/exec.c`
+compiles its M6 ROMFS body instead of the VFS body.
+
+Deliberately deferred: descriptors/syscalls (package 27), provider-local
+caching (IOC-FAT, package 30), a writable provider and the `/` mount
+(packages 26/30), and cross-filesystem move semantics (package 31).
+`romfs_load_zmod()` no longer exists.
+
+Budget (section 32.39): production `_CODE` ends at `7BC5h` with a
+`7C00h-C000h` arena — 34 granules against the unchanged 32-granule floor,
+2 granules of headroom — and `_DATA` is 1294 bytes.  The per-object sizes
+and the correction-02 saving are recorded in `docs/vfs.md` section 9.
 
 ---
 
@@ -4236,15 +4252,14 @@ ROMFS:
 
 IOC-FAT:
     open/create/close
+    open with TRUNC
     read/write
     sync
     seek
-    truncate
     stat
     mkdir/rmdir
     rename
     unlink
-    statfs
 
 sizes:
     1
@@ -4256,18 +4271,18 @@ sizes:
     513
     >64 KiB
 
-cache:
+IOC-FAT cache:
     repeated-read hit
     miss/fill
     cross-slot reads
     write-through update/invalidate
-    no stale data after write
+    no stale data after a write through the other open file
     generation invalidation
 
 error paths:
     missing file
     wrong object type
-    descriptor exhaustion
+    descriptor-pool exhaustion (EMFILE)
     stale backend handle
     unavailable SD
     failed confirmed write
@@ -4279,6 +4294,9 @@ process lifecycle:
     child descriptors close on exit
     repeated exec/exit leaks no handles
 ```
+
+budget:
+    final bank-7 ledger meets section 32.39
 
 Physical hardware remains authoritative for SD media behavior, IOC bulk transfers, media/reset handling, confirmed writes and cache behavior under real transport timing.
 
@@ -4309,10 +4327,11 @@ M9  ARCHITECTURE DEFINED — IMPLEMENTATION NEXT
 ├── early system filesystem mounted at /SYSTEM
 ├── VFS-backed boot module loading
 ├── filesystem-provider registration API
-├── IOC-FAT ZMOD provider mounted at /
-├── ZDEV_BLOCK raw block-device path
-├── 512-byte local file-data cache
-└── native path/descriptor/byte-oriented syscall ABI
+├── path-based provider ABI
+├── IOC-FAT ZMOD provider mounted at /, with its own 512-byte file-data cache
+├── ZDEV_BLOCK class defined (first driver deferred to its first consumer)
+├── global descriptor pool, native path/descriptor/byte-oriented syscall ABI
+└── budgeted bank-7 residency
 ```
 
 ---

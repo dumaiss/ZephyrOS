@@ -1,4 +1,4 @@
-# ZephyrOS build (M5)
+# ZephyrOS build
 #
 # Freestanding SDCC/sdasz80/sdldz80 build.  No hosted CRT and no standard
 # library are linked; the tiny C runtime initialization ZephyrOS needs is
@@ -9,22 +9,23 @@
 # Platform build configuration (include paths and declarative constant
 # files) comes from platform/zephyr80/config.mk.
 #
-# The SIO driver is not linked into the kernel: it is packed as a ZMOD
-# module (build/modules/sio.zmod), stored in the ROMFS recovery image
+# The drivers are not linked into the kernel: each is packed as a ZMOD
+# module (build/modules/*.zmod), stored in the ROMFS recovery image
 # (build/recovery.romfs, pages 2-7 of the 512 KiB ROM), and loaded at boot
-# through the generic M4 loader and its bounded read-source adapter.
-# Pre-M5 acceptance images keep an embedded test catalog instead.
+# from /SYSTEM through the VFS and the loader's bounded read-source
+# adapter.  There is one boot path: every image derives its driver arena
+# from the aligned linked kernel end and boots from the recovery store.
 #
 #   make          build the ROM images under build/
 #   make test     run host-side image/layout tests and integrity checks
 #   make check    reproducible rebuild + full host validation stack
 #   make romfs-test           ROMFS image + host ROMFS tool tests
-#   make m3-selftest          build the M3 acceptance image
-#   make m4-selftest          build the M4 dynamic-SIO acceptance image
-#   make m4-placement-selftest  same module bytes at a shifted arena base
-#   make m4-failure-selftest  deliberately failing test module + rollback
-#   make m5-selftest          M5 ROMFS success acceptance image
-#   make m5-corrupt-selftest  M5 corrupt-recovery-image failure image
+#   make zmod-test            packed-module tooling tests
+#   make zex-test             packed-program tooling tests
+#   make subsystem-selftest   current-path mechanism acceptance image
+#   make romfs-corrupt-selftest  corrupt-recovery-store failure image
+#   make m8-*-selftest        M8 device/console acceptance images
+#   make m9-vfs-selftest      M9 VFS acceptance image
 #   make clean    remove all generated files
 
 SDCC      ?= sdcc
@@ -34,6 +35,13 @@ PYTHON    ?= python3
 
 BUILD     := build
 .DEFAULT_GOAL := all
+
+# M9 VFS mount policy (work/M9-REFERENCE.md).  ZOS_MOUNTS selects the one
+# manifest per image; acceptance images point it at tests/m9/mounts-*.json.
+# ZOS_VFS_BUILTIN names the filesystem providers statically linked into the
+# kernel (the registry/vs-generator invariant is checked by test_mountgen.py).
+ZOS_MOUNTS      ?= config/mounts.json
+ZOS_VFS_BUILTIN ?= romfs
 
 # Zephyr-80 platform build configuration (include paths and the
 # declarative constant files consumed by the build and layout tools).
@@ -52,12 +60,18 @@ ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/arena.rel $(BUILD)/rom_access.rel \
              $(BUILD)/process_launch.rel $(BUILD)/user_copy.rel \
              $(BUILD)/diag_io.rel
+# M9 VFS core, generated mount table and statically linked ROMFS provider.
+M9_VFS_OBJS := $(BUILD)/vfs_mounts.rel $(BUILD)/vfs_path.rel \
+               $(BUILD)/vfs_mount.rel $(BUILD)/vfs_file.rel \
+               $(BUILD)/vfs_dir.rel $(BUILD)/vfs_mutate.rel \
+               $(BUILD)/romfs_provider.rel
 C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
              $(BUILD)/syscall.rel $(BUILD)/diag.rel $(BUILD)/irq.rel \
              $(BUILD)/irq_sources.rel $(BUILD)/registry.rel \
              $(BUILD)/console.rel \
              $(BUILD)/module_relocate.rel $(BUILD)/module_loader.rel \
-             $(BUILD)/romfs.rel $(BUILD)/process.rel $(BUILD)/process_exec.rel
+             $(BUILD)/romfs.rel $(BUILD)/process.rel $(BUILD)/process_exec.rel \
+             $(M9_VFS_OBJS)
 END_OBJ   := $(BUILD)/irq_code_end.rel
 # OBJS is assigned after the acceptance/catalog selection below, once
 # every conditional object append has been decided.
@@ -69,107 +83,29 @@ END_OBJ   := $(BUILD)/irq_code_end.rel
 # (kernel/main.c holds only the two TEST-ONLY HOOKs).
 TARGET_TEST_OBJS :=
 PK_SUFFIX :=
-# Target-side syscall acceptance (M1); distinct artifact names so the
-# images cannot be mixed up when flashing.
-ifeq ($(ZOS_SELFTEST),1)
-CFLAGS    += -DZOS_SYSCALL_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/syscall_test.rel $(BUILD)/selftest_asm.rel
-PK_SUFFIX := -selftest
+# Subsystem acceptance image: the current production boot path (derived
+# arena, VFS plus ROMFS recovery store, SIO-only boot set) with the
+# relocated mechanism selftests linked in.  One image carries the syscall,
+# IRQ, loader, ROMFS-reader and process/ZEX acceptance surfaces, so no
+# per-milestone acceptance image and no per-milestone build exists
+# (work/00-SUPERVISOR.md retention rule).
+ifeq ($(ZOS_SUBSYS_SELFTEST),1)
+CFLAGS    += -DZOS_SUBSYS_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/syscall_test.rel $(BUILD)/syscall_selftest_asm.rel \
+                    $(BUILD)/irq_test.rel $(BUILD)/irq_selftest_asm.rel \
+                    $(BUILD)/ctc_test.rel \
+                    $(BUILD)/romfs_test.rel $(BUILD)/loader_test.rel \
+                    $(BUILD)/process_test.rel
+PK_SUFFIX := -subsys-selftest
 endif
 
-ifeq ($(ZOS_IRQ_SELFTEST),1)
-CFLAGS    += -DZOS_IRQ_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/irq_test.rel $(BUILD)/irq_selftest_asm.rel
-PK_SUFFIX := -irq-selftest
-endif
-
-ifeq ($(ZOS_M3_SELFTEST),1)
-CFLAGS    += -DZOS_M3_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m3_test.rel $(BUILD)/m3_irq_probe.rel \
-                    $(BUILD)/m3_probe_io.rel $(BUILD)/m3_fixtures.rel
-PK_SUFFIX := -m3-selftest
-endif
-
-# M4 self-test / acceptance build options.  The boot catalog always carries
-# the packed SIO module; these options select which variant is embedded and
-# which target-side acceptance code is compiled.
-ifeq ($(ZOS_M4_SELFTEST),1)
-CFLAGS    += -DZOS_M4_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m4_test.rel $(BUILD)/m4_fixture_catalog.rel \
-                    $(BUILD)/m4_fixture_blobs.rel
-PK_SUFFIX := -m4-loader-selftest
-endif
-
-# M4 acceptance image: IRQ self-test variant of the SIO module; the kernel
-# keeps CTC0 live while the test module init claims/counts/releases it.
-ifeq ($(ZOS_M4_SIO_IRQ),1)
-CFLAGS    += -DZOS_M4_SIO_IRQ=1
-PK_SUFFIX := -m4-selftest
-endif
-
-# Test-owned CTC0 helper: exactly one copy for every acceptance image that
-# arms CTC0 (M2 IRQ, M3, and the M4 IRQ boot-phase hook).  Added once even
-# when an image selects several of these flags.
-ifneq ($(filter 1,$(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) $(ZOS_M4_SIO_IRQ)),)
-TARGET_TEST_OBJS += $(BUILD)/ctc_test.rel
-endif
-
-# M4 failure image: init-failing SIO test module + rollback verification.
-ifeq ($(ZOS_M4_FAILURE_SELFTEST),1)
-CFLAGS    += -DZOS_M4_FAILURE_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m4_test.rel
-PK_SUFFIX := -m4-failure
-endif
-
-# M4 placement image: shift the linker-defined arena base by whole 512-byte
-# granules (the packed module bytes are untouched: same .zmod files).
-ifeq ($(ZOS_M4_PLACEMENT),1)
-ZOS_M4_ARENA_BASE ?= 0x9E00
-ZOS_M4_ARENA_END := $(shell printf '0x%04X' $$(( $(ZOS_M4_ARENA_BASE) + 0x2000 )))
-PK_SUFFIX := -m4-placement-selftest
-endif
-
-# M5 success image: boot the SIO module from the ROMFS recovery store and
-# run the ROMFS acceptance selftest (first/last/EOF/cross-page reads).
-ifeq ($(ZOS_M5_SELFTEST),1)
-CFLAGS    += -DZOS_M5_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m5_test.rel
-PK_SUFFIX := -m5-selftest
-endif
-
-# M5 corrupt image: same recovery store with deliberately corrupted header
-# metadata; the kernel must reject it through the early-console panic path.
-ifeq ($(ZOS_M5_CORRUPT_SELFTEST),1)
-CFLAGS    += -DZOS_M5_CORRUPT_SELFTEST=1
-PK_SUFFIX := -m5-corrupt
-endif
-
-# M6 success image: boots the SIO module from ROMFS, runs zextest from
-# ROMFS in two application banks with repeated cycles, checks exact
-# parent restoration, and verifies rejection of every malformed ZEX
-# fixture by exact result code.
-ifeq ($(ZOS_M6_SELFTEST),1)
-CFLAGS    += -DZOS_M6_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m6_test.rel
-PK_SUFFIX := -m6-selftest
-endif
-
-# M6 failure image: the ROMFS "zextest.zex" entry is a deliberately
-# truncated ZEX; the load must roll back exactly, and the valid copy
-# under "zexok.zex" must still run afterwards.
-ifeq ($(ZOS_M6_FAILURE_SELFTEST),1)
-CFLAGS    += -DZOS_M6_FAILURE_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m6_test.rel
-PK_SUFFIX := -m6-failure
-endif
-
-# M7 success image: boots the SIO module and the native monitor from
-# ROMFS, runs the kernel-side diagnostic selftest, then hands control to
-# the temporary launcher for the scripted interactive acceptance.
-ifeq ($(ZOS_M7_SELFTEST),1)
-CFLAGS    += -DZOS_M7_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m7_test.rel
-PK_SUFFIX := -m7-selftest
+# Subsystem corrupt-store image: the same current boot path, but the
+# packed ROMFS header metadata is deliberately corrupted, so the kernel
+# must reject the whole store through the early-console panic before any
+# module code runs.
+ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
+CFLAGS    += -DZOS_ROMFS_CORRUPT_SELFTEST=1
+PK_SUFFIX := -romfs-corrupt
 endif
 
 # M8 IOC acceptance image: production-style boot (derived arena, SIO +
@@ -308,6 +244,28 @@ $(error ZOS_M8_FALLBACK_SELFTEST needs ZOS_M8_FALLBACK=nohid|nohid-nov9958|badio
 endif
 endif
 
+# M9 VFS bootstrap acceptance image (package 25): production-style VFS
+# boot -- ROMFS mounted at /SYSTEM by vfs_init(), the four resident modules
+# and the monitor loaded through VFS paths, the normal mount pass consuming
+# a test manifest whose optional mount names an unregistered provider (so it
+# fails, is diagnosed, and leaves the namespace usable) -- then the M9 target
+# VFS selftest.  The ROMFS contents stay the production set.
+ifeq ($(ZOS_M9_VFS_SELFTEST),1)
+CFLAGS    += -DZOS_M9_VFS_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m9_vfs_test.rel
+PK_SUFFIX := -m9-vfs-selftest
+ZOS_MOUNTS := tests/m9/mounts-optional-fail.json
+endif
+
+# M9 required-mount failure image (package 25): the same production boot,
+# but the configured non-system mount is `required: true` and names an
+# unregistered provider, so the normal mount pass must diagnose it and
+# panic before the monitor launcher runs (architecture section 32.32.4).
+ifeq ($(ZOS_M9_REQUIRED_MOUNT),1)
+ZOS_MOUNTS := tests/m9/mounts-required-fail.json
+PK_SUFFIX := -m9-required-mount
+endif
+
 # Hardware-smoke host sync (kernel/main.c): the M8 IOC smoke image waits
 # for the host's two-byte sync sequence on SIO0/B before the banner,
 # because this bench's reset line also resets the USB bridge.  Only
@@ -317,44 +275,13 @@ ifeq ($(ZOS_SMOKE_HOST_SYNC),1)
 CFLAGS    += -DZOS_SMOKE_HOST_SYNC=1
 endif
 
-# Temporary pre-shell monitor launcher (kernel/main.c).  Production and
-# the M7 image enable it; every earlier acceptance image disables it so
-# its accepted behavior is preserved byte-for-byte where possible.
-ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
-	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST) \
-	$(ZOS_M4_PLACEMENT) $(ZOS_M5_SELFTEST) $(ZOS_M5_CORRUPT_SELFTEST) \
-	$(ZOS_M6_SELFTEST) $(ZOS_M6_FAILURE_SELFTEST)),)
-ZOS_MONITOR_BOOT := 0
-endif
-ZOS_MONITOR_BOOT ?= 1
-CFLAGS    += -DZOS_MONITOR_BOOT=$(ZOS_MONITOR_BOOT)
-
-# Boot-module source selection.  Pre-M5 acceptance images (M1-M4) keep
-# their embedded test catalogs; production and the M5 images boot the SIO
-# module from the ROMFS recovery store.
-ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
-	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST) \
-	$(ZOS_M4_PLACEMENT)),)
-ZOS_ROMFS_BOOT := 0
-endif
-ZOS_ROMFS_BOOT ?= 1
-CFLAGS    += -DZOS_ROMFS_BOOT=$(ZOS_ROMFS_BOOT)
-ifeq ($(ZOS_ROMFS_BOOT),0)
-# Embedded boot catalog (kernel/module/embedded.c + the generated blob
-# assembly): acceptance images only.  --production mapcheck rejects the
-# symbols whenever they leak into a production image.
-ASM_OBJS  += $(BUILD)/m4_catalog_blobs.rel
-C_OBJS    += $(BUILD)/module_embedded.rel
-endif
-
 # IOC command-lane boot load (kernel/main.c): production and the M8
 # images load ioc.zmod from the recovery store after the SIO fallback;
 # the pre-M8 acceptance images do not carry the module and keep their
 # accepted boot byte-for-byte by compiling the block out.
-ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
-	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST) \
-	$(ZOS_M4_PLACEMENT) $(ZOS_M5_SELFTEST) $(ZOS_M5_CORRUPT_SELFTEST) \
-	$(ZOS_M6_SELFTEST) $(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST)),)
+# The subsystem image boots the SIO fallback only, so its loader fixtures
+# have the arena to themselves.
+ifeq ($(ZOS_SUBSYS_SELFTEST),1)
 ZOS_IOC_BOOT := 0
 endif
 ZOS_IOC_BOOT ?= 1
@@ -366,10 +293,7 @@ CFLAGS    += -DZOS_IOC_BOOT=$(ZOS_IOC_BOOT)
 # malformed dependency is a load failure, never a partial registration.
 # Pre-M8 acceptance images do not carry the module and compile the block
 # out so their accepted boot stays byte-for-byte as validated.
-ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
-	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST) \
-	$(ZOS_M4_PLACEMENT) $(ZOS_M5_SELFTEST) $(ZOS_M5_CORRUPT_SELFTEST) \
-	$(ZOS_M6_SELFTEST) $(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST)),)
+ifeq ($(ZOS_SUBSYS_SELFTEST),1)
 ZOS_HID_BOOT := 0
 endif
 ZOS_HID_BOOT ?= 1
@@ -382,10 +306,7 @@ CFLAGS    += -DZOS_HID_BOOT=$(ZOS_HID_BOOT)
 # IOC transport or HID.  Pre-M8 acceptance images do not carry the
 # module and compile the block out so their accepted boot stays
 # byte-for-byte as validated.
-ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
-	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST) \
-	$(ZOS_M4_PLACEMENT) $(ZOS_M5_SELFTEST) $(ZOS_M5_CORRUPT_SELFTEST) \
-	$(ZOS_M6_SELFTEST) $(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST)),)
+ifeq ($(ZOS_SUBSYS_SELFTEST),1)
 ZOS_V9958_BOOT := 0
 endif
 ZOS_V9958_BOOT ?= 1
@@ -393,28 +314,18 @@ CFLAGS    += -DZOS_V9958_BOOT=$(ZOS_V9958_BOOT)
 
 OBJS      := $(ASM_OBJS) $(C_OBJS)
 
-# --- M8 driver-arena geometry selection --------------------------------------
-# Production (no acceptance flags) derives the arena from the aligned end
-# of the linked kernel with a two-pass link.  Every pre-M8 acceptance
-# image and the shifted-placement variant keeps the legacy fixed
-# geometry; their transcripts and checks are preserved unchanged.
-ZOS_ACCEPTANCE_BUILD := $(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) \
-	$(ZOS_M3_SELFTEST) $(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) \
-	$(ZOS_M4_FAILURE_SELFTEST) $(ZOS_M4_PLACEMENT) $(ZOS_M5_SELFTEST) \
-	$(ZOS_M5_CORRUPT_SELFTEST) $(ZOS_M6_SELFTEST) \
-	$(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST))
-ZOS_ARENA_DERIVED ?= $(if $(ZOS_ACCEPTANCE_BUILD),0,1)
+# --- driver-arena geometry ---------------------------------------------------
+# Every image derives the arena from the aligned end of the linked kernel
+# with a two-pass link.
+ZOS_ARENA_DERIVED ?= 1
 
 # Common acceptance wiring: the single guard plus the shared runner.
-ifneq ($(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) $(ZOS_M3_SELFTEST) \
-	$(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) $(ZOS_M4_FAILURE_SELFTEST) \
-	$(ZOS_M5_SELFTEST) $(ZOS_M6_SELFTEST) \
-	$(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST) \
+ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_M8_IOC_SELFTEST) $(ZOS_M8_HID_SELFTEST) \
 	$(ZOS_M8_HID_NOIOC) $(ZOS_M8_HID_BADIOC) \
 	$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL) \
 	$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
-	$(ZOS_M8_FALLBACK_SELFTEST)),)
+	$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
 endif
@@ -423,24 +334,18 @@ endif
 # symbol in the linked map; mapcheck --production enforces this.
 MAPCHECK_FLAGS := $(if $(TARGET_TEST_OBJS),,--production)
 
-# Per-image boot module selection (identical bytes across placement builds).
-ifeq ($(ZOS_M4_SIO_IRQ),1)
-BOOT_ZMOD := build/modules/sio-irq.zmod
-else ifeq ($(ZOS_M4_FAILURE_SELFTEST),1)
-BOOT_ZMOD := build/modules/sio-fail.zmod
-else
-BOOT_ZMOD := build/modules/sio.zmod
-endif
+# Driver-arena floor.  The 32-granule floor is the production budget gate
+# (work/M9-REFERENCE.md); an acceptance image links target-test code and only
+# needs an arena that holds its declared boot set, which the arena plan
+# (zmodpack plan) enforces separately.
+ZOS_ARENA_MIN_GRANULES := $(if $(TARGET_TEST_OBJS),16,32)
 
-# Declared boot set for the derived-arena plan.  Every ROMFS-boot image
-# loads the SIO fallback module and then, per its boot gates, the IOC
-# transport and the HID keyboard/text input module; the pre-M5
-# embedded-catalog images keep their single boot module.  (MODULES is
-# defined below this point, so keep this a recursive assignment.)
+# Every image boots the SIO fallback module from the recovery store and
+# then, per its boot gates, the IOC transport, the HID keyboard/text input
+# module and the V9958 video core.  (MODULES is defined below this point,
+# so keep these recursive assignments.)
+BOOT_ZMOD = $(MODULES)/sio.zmod
 BOOT_IOC_ZMOD ?= $(MODULES)/ioc.zmod
-ifeq ($(ZOS_ROMFS_BOOT),0)
-BOOT_ZMODS = $(BOOT_ZMOD)
-else
 BOOT_ZMODS = $(BOOT_ZMOD)
 ifneq ($(ZOS_IOC_BOOT),0)
 BOOT_ZMODS += $(BOOT_IOC_ZMOD)
@@ -451,38 +356,22 @@ endif
 ifneq ($(ZOS_V9958_BOOT),0)
 BOOT_ZMODS += $(MODULES)/v9958.zmod
 endif
-endif
 
 
 IMAGE := $(BUILD)/zephyros$(PK_SUFFIX).bin
 MAME_IMAGE := $(BUILD)/zephyr80$(PK_SUFFIX).bin
 
-# Memory-layout source for this build.  The placement image regenerates
-# platform/zephyr80/memory.inc with a shifted legacy driver arena and
-# includes the variant first, so every assembly unit (and mapcheck) sees
-# it.  Derived (production) builds generate a full memory.inc variant from
-# the probe map for the layout tools.
-ifeq ($(ZOS_M4_PLACEMENT),1)
-VARIANT_MEMORY := $(BUILD)/platform/zephyr80/memory.inc
-ASFLAGS   := -I$(BUILD)/platform $(ZOS_PLATFORM_ASFLAGS) -Itests/target/include
-LEGACY_MEMORY := $(VARIANT_MEMORY)
-else
-LEGACY_MEMORY := $(ZOS_PLATFORM_MEMORY_INC)
-endif
-
+# Memory-layout source for this build: a full memory.inc variant is
+# generated from the probe map, so every assembly unit (and mapcheck) sees
+# the derived driver arena.
 GEOMETRY_DIR       := $(BUILD)/geometry
 GEOMETRY_PROBE_DIR := $(BUILD)/probe
 GEOMETRY_INC       := $(GEOMETRY_DIR)/arena_geometry.inc
 
-ifeq ($(ZOS_ARENA_DERIVED),1)
 GEOMETRY_MEMORY := $(GEOMETRY_DIR)/memory.inc
 MEMORY_INC := $(GEOMETRY_MEMORY)
-else
-GEOMETRY_MEMORY :=
-MEMORY_INC := $(LEGACY_MEMORY)
-endif
 
-# --- M8 arena geometry generation --------------------------------------------
+# --- driver-arena geometry generation --------------------------------------------
 # kernel/module/arena.asm always includes the generated
 # arena_geometry.inc.  Legacy builds copy the fixed platform geometry.
 # Derived builds first link a probe image (the same object list with a
@@ -490,13 +379,13 @@ endif
 # regenerate the include and the memory.inc variant before the real link.
 # The final map is re-verified by mapcheck.py, so a stale generated value
 # cannot survive.
-ifeq ($(ZOS_ARENA_DERIVED),1)
 
 $(GEOMETRY_INC) $(GEOMETRY_MEMORY): $(BUILD)/zephyros.probe.map \
 		tools/mapcheck.py $(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
 	mkdir -p $(GEOMETRY_DIR)
 	$(PYTHON) tools/mapcheck.py geometry derive $(BUILD)/zephyros.probe.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(GEOMETRY_INC) $(GEOMETRY_MEMORY)
+		$(ZOS_PLATFORM_MEMORY_INC) $(GEOMETRY_INC) $(GEOMETRY_MEMORY) \
+		--min-granules $(ZOS_ARENA_MIN_GRANULES)
 
 $(GEOMETRY_PROBE_DIR)/arena_geometry.inc: $(ZOS_PLATFORM_MEMORY_INC) \
 		tools/mapcheck.py | $(BUILD)
@@ -529,28 +418,18 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 		$(BUILD)/zephyros.probe.lk
 	$(SDLDZ80) -f $(BUILD)/zephyros.probe.lk
 
-else
-
-$(GEOMETRY_INC): $(LEGACY_MEMORY) tools/mapcheck.py | $(BUILD)
-	mkdir -p $(GEOMETRY_DIR)
-	$(PYTHON) tools/mapcheck.py geometry legacy $(LEGACY_MEMORY) $@
-
-endif
-
-.PHONY: all test check check-fast clean syscall-selftest irq-selftest \
-	m3-selftest zmod-test m4-loader-selftest m4-selftest \
-	m4-placement-selftest m4-failure-selftest romfs-test m5-selftest \
-	m5-corrupt-selftest zex-test m6-selftest m6-failure-selftest \
-	monitor-test m7-selftest ioc-test m8-ioc-selftest hid-test \
+.PHONY: all test check check-fast clean zmod-test romfs-test zex-test \
+	subsystem-selftest romfs-corrupt-selftest \
+	monitor-test ioc-test m8-ioc-selftest hid-test \
 	m8-hid-selftest m8-hid-noioc-selftest m8-hid-badioc-selftest \
 	v9958-test m8-v9958-selftest m8-v9958-fontfail-selftest \
 	m8-console-selftest \
 	m8-selftest m8-fallback-selftests \
+	m9-vfs-selftest \
+	m9-required-mount-selftest \
 	smoke-hardware \
-	smoke-hardware-selftest smoke-hardware-irq smoke-hardware-m3 \
-	smoke-hardware-m4 smoke-hardware-m4-failure smoke-hardware-m5 \
-	smoke-hardware-m5-corrupt smoke-hardware-m6 smoke-hardware-m6-failure \
-	smoke-hardware-m7 smoke-hardware-m8-ioc smoke-hardware-m8-hid \
+	smoke-hardware-subsystem smoke-hardware-romfs-corrupt \
+	smoke-hardware-m8-ioc smoke-hardware-m8-hid \
 	smoke-hardware-m8-v9958 smoke-hardware-m8-console \
 	smoke-hardware-m8 smoke-hardware-m8-fb-nohid \
 	smoke-hardware-m8-fb-nohid-nov9958 smoke-hardware-m8-fb-badioc \
@@ -560,14 +439,6 @@ all: $(IMAGE) $(MAME_IMAGE)
 
 $(BUILD):
 	mkdir -p $@
-
-ifeq ($(ZOS_M4_PLACEMENT),1)
-$(VARIANT_MEMORY): $(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
-	mkdir -p $(dir $@)
-	sed -e 's|^ZOS_DRIVER_ARENA_BASE .*|ZOS_DRIVER_ARENA_BASE   = $(ZOS_M4_ARENA_BASE)|' \
-	    -e 's|^ZOS_DRIVER_ARENA_END .*|ZOS_DRIVER_ARENA_END    = $(ZOS_M4_ARENA_END)|' \
-	    $< > $@
-endif
 
 # --- assemble ----------------------------------------------------------------
 
@@ -623,26 +494,8 @@ $(BUILD)/user_copy.rel: kernel/memory/user_copy.asm \
 $(BUILD)/diag_io.rel: kernel/syscall/diag_io.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/m3_probe_io.rel: tests/target/m3/m3_probe_io.asm | $(BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
 $(BUILD)/irq_code_end.rel: kernel/irq/code_end.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(BUILD)/selftest_asm.rel: tests/target/m1/selftest.asm \
-		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc \
-		tests/target/include/selftest.inc | $(BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(BUILD)/irq_selftest_asm.rel: tests/target/m2/irq_selftest.asm \
-		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc \
-		tests/target/include/irq_selftest.inc | $(BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(BUILD)/irq_test.rel: tests/target/m2/irq_test.c \
-		include/zephyros/irq.h include/zephyros/kernel.h \
-		include/zephyros/platform.h tests/target/include/irq_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- compile -----------------------------------------------------------------
 # early_console.c and panic.c are compiled into the _COMMON segment so the
@@ -707,15 +560,54 @@ $(BUILD)/module_loader.rel: kernel/module/loader.c \
 		include/zephyros/device.h include/zephyros/irq.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/module_embedded.rel: kernel/module/embedded.c \
-		include/zephyros/module.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
 # --- M5 ROMFS objects (bank-7 reader + common ROM-access primitive) ----------
 
 $(BUILD)/romfs.rel: kernel/romfs/romfs.c include/zephyros/romfs.h \
 		include/zephyros/module.h include/zephyros/platform.h \
 		platform/zephyr80/memory.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+# --- M9 VFS objects (bank-7 core + ROMFS provider + generated mount table) ---
+
+$(BUILD)/vfs_path.rel: kernel/vfs/path.c kernel/vfs/vfs.h \
+		include/zephyros/fs.h include/zephyros/vfs.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/vfs_mount.rel: kernel/vfs/mount.c kernel/vfs/vfs.h \
+		kernel/vfs/mount_config.h include/zephyros/fs.h \
+		include/zephyros/vfs.h fs/romfs/romfs_provider.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/vfs_file.rel: kernel/vfs/file.c kernel/vfs/vfs.h \
+		include/zephyros/fs.h include/zephyros/vfs.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/vfs_dir.rel: kernel/vfs/dir.c kernel/vfs/vfs.h \
+		include/zephyros/fs.h include/zephyros/vfs.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/vfs_mutate.rel: kernel/vfs/mutate.c kernel/vfs/vfs.h \
+		include/zephyros/fs.h include/zephyros/vfs.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/romfs_provider.rel: fs/romfs/romfs_provider.c \
+		fs/romfs/romfs_provider.h kernel/vfs/vfs.h \
+		include/zephyros/romfs.h include/zephyros/vfs.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+# The mount table is generated in the build tree only (never committed) and
+# regenerated whenever the manifest, the generator, or the Makefile variables
+# change; its content is exactly the reviewed manifest.
+$(BUILD)/generated/vfs_mounts.c $(BUILD)/generated/vfs_mounts.json: \
+		$(ZOS_MOUNTS) tools/mountgen.py Makefile | $(BUILD)
+	mkdir -p $(BUILD)/generated
+	$(PYTHON) tools/mountgen.py $(ZOS_MOUNTS) \
+		--builtin "$(ZOS_VFS_BUILTIN)" \
+		--out $(BUILD)/generated/vfs_mounts.c \
+		--report $(BUILD)/generated/vfs_mounts.json
+
+$(BUILD)/vfs_mounts.rel: $(BUILD)/generated/vfs_mounts.c \
+		kernel/vfs/mount_config.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M6 process lifecycle objects (bank-7 code and data) --------------------
@@ -956,57 +848,20 @@ $(MODULES)/%.zmod: tests/modules/%.json $(MODULES)/%.rel \
 FIXTURE_ZMODS := $(MODULES)/m4_probe.zmod $(MODULES)/m4_fail.zmod \
 		$(MODULES)/m4_filler.zmod $(MODULES)/m8_api.zmod
 
-# --- embedded catalogs (production boot module + test fixture catalog) ---
-# The production catalog (kernel/module/embedded.c) carries only the boot
-# module in every image; the loader-fixture catalog is a test artifact
-# (tests/target/m4/m4_fixture_catalog.c) built only for acceptance images.
-
-CATALOG_ASM := $(BUILD)/m4_catalog.asm
-CATALOG_INC := $(BUILD)/m4_catalog.inc
-
-$(CATALOG_ASM): $(BOOT_ZMOD) tools/zmodpack.py | $(BUILD)
-	$(PYTHON) tools/zmodpack.py emit-asm $@ z4_module_boot=$(BOOT_ZMOD) \
-		--header $(CATALOG_INC)
-
-$(CATALOG_INC): $(CATALOG_ASM) ;
-
-$(BUILD)/m4_catalog_blobs.rel: $(CATALOG_ASM) | $(BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-# embedded.c includes the generated catalog header in every configuration.
-$(BUILD)/module_embedded.rel: $(CATALOG_INC)
-
-FIXTURE_CATALOG_ASM := $(BUILD)/m4_fixture_blobs.asm
-FIXTURE_CATALOG_INC := $(BUILD)/m4_fixture_blobs.inc
-
-$(FIXTURE_CATALOG_ASM): $(FIXTURE_ZMODS) tools/zmodpack.py | $(BUILD)
-	$(PYTHON) tools/zmodpack.py emit-asm $@ \
-		z4_fixture_probe=$(MODULES)/m4_probe.zmod \
-		z4_fixture_fail=$(MODULES)/m4_fail.zmod \
-		z4_fixture_filler=$(MODULES)/m4_filler.zmod \
-		z4_fixture_api=$(MODULES)/m8_api.zmod \
-		--header $(FIXTURE_CATALOG_INC)
-
-$(FIXTURE_CATALOG_INC): $(FIXTURE_CATALOG_ASM) ;
-
-$(BUILD)/m4_fixture_blobs.rel: $(FIXTURE_CATALOG_ASM) | $(BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
 # --- target acceptance objects (tests/target/, acceptance builds only) -------
 
 $(BUILD)/target_test.rel: tests/target/support/target_test.c \
-		include/zephyros/kernel.h tests/target/include/selftest.h \
+		include/zephyros/kernel.h tests/target/include/syscall_selftest.h \
 		tests/target/include/irq_selftest.h \
-		tests/target/include/ctc_test.h \
-		tests/target/include/m3_selftest.h \
-		tests/target/include/m4_selftest.h \
-		tests/target/include/m5_selftest.h \
-		tests/target/include/m6_selftest.h \
+		tests/target/include/loader_selftest.h \
+		tests/target/include/romfs_selftest.h \
+		tests/target/include/process_selftest.h \
 		tests/target/include/m8_hid_selftest.h \
 		tests/target/include/m8_v9958_selftest.h \
 		tests/target/include/m8_console_selftest.h \
 		tests/target/include/m8_selftest.h \
-		tests/target/include/m8_fallback_selftest.h | $(BUILD)
+		tests/target/include/m8_fallback_selftest.h \
+		tests/target/include/m9_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # Test-owned CTC0 programming helper (acceptance images only): linked in
@@ -1017,54 +872,43 @@ $(BUILD)/ctc_test.rel: tests/target/support/ctc_test.c \
 		platform/zephyr80/hardware.h platform/zephyr80/irq.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/syscall_test.rel: tests/target/m1/syscall_test.c \
-		include/zephyros/kernel.h tests/target/include/selftest.h | $(BUILD)
+$(BUILD)/syscall_test.rel: tests/target/syscall/syscall_test.c \
+		include/zephyros/kernel.h \
+		tests/target/include/syscall_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/m3_test.rel: tests/target/m3/m3_test.c \
-		include/zephyros/console.h include/zephyros/device.h \
-		include/zephyros/kernel.h include/zephyros/platform.h \
-		tests/target/include/m3_selftest.h | $(BUILD)
+$(BUILD)/syscall_selftest_asm.rel: tests/target/syscall/syscall_entry.asm \
+		tests/target/include/syscall_entry.inc | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/irq_test.rel: tests/target/irq/irq_test.c \
+		include/zephyros/irq.h include/zephyros/kernel.h \
+		include/zephyros/platform.h \
+		tests/target/include/irq_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/m3_irq_probe.rel: tests/target/m3/m3_irq_probe.c \
-		include/zephyros/irq.h include/zephyros/platform.h \
-		platform/zephyr80/memory.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
+$(BUILD)/irq_selftest_asm.rel: tests/target/irq/irq_entry.asm \
+		tests/target/include/irq_entry.inc | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/m3_fixtures.rel: tests/target/m3/m3_fixtures.c \
-		include/zephyros/device.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-$(BUILD)/m4_test.rel: tests/target/m4/m4_test.c \
-		include/zephyros/module.h include/zephyros/kernel.h \
-		include/zephyros/device.h include/zephyros/irq.h \
-		include/zephyros/console.h tests/target/include/m4_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-$(BUILD)/m4_fixture_catalog.rel: tests/target/m4/m4_fixture_catalog.c \
-		include/zephyros/module.h tests/target/include/m4_selftest.h \
-		$(FIXTURE_CATALOG_INC) | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-$(BUILD)/m5_test.rel: tests/target/m5/m5_test.c \
+$(BUILD)/romfs_test.rel: tests/target/romfs/romfs_test.c \
 		include/zephyros/romfs.h include/zephyros/module.h \
 		include/zephyros/console.h include/zephyros/kernel.h \
-		tests/target/include/m5_selftest.h $(BUILD)/m5_expect.inc | $(BUILD)
+		tests/target/include/romfs_selftest.h $(BUILD)/romfs_expect.inc | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/m6_test.rel: tests/target/m6/m6_test.c \
+$(BUILD)/loader_test.rel: tests/target/loader/loader_test.c \
+		include/zephyros/module.h include/zephyros/kernel.h \
+		include/zephyros/device.h include/zephyros/irq.h \
+		include/zephyros/console.h include/zephyros/vfs.h \
+		tests/target/include/loader_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/process_test.rel: tests/target/process/process_test.c \
 		include/zephyros/process.h include/zephyros/syscall.h \
 		include/zephyros/console.h include/zephyros/module.h \
 		include/zephyros/kernel.h \
-		tests/target/include/m6_selftest.h $(BUILD)/m6_expect.inc | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-$(BUILD)/m7_test.rel: tests/target/m7/m7_test.c \
-		include/zephyros/process.h include/zephyros/syscall.h \
-		include/zephyros/console.h include/zephyros/module.h \
-		include/zephyros/kernel.h include/zephyros/platform.h \
-		tests/target/include/m7_selftest.h | $(BUILD)
+		tests/target/include/process_selftest.h $(BUILD)/process_expect.inc | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # The IOC transport diagnostic is the one explicitly test-only rule allowed
@@ -1111,13 +955,21 @@ $(BUILD)/m8_fallback_test.rel: tests/target/m8/m8_fallback_test.c \
 		tests/target/include/m8_fallback_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
+$(BUILD)/m9_vfs_test.rel: tests/target/m9/m9_vfs_test.c \
+		include/zephyros/fs.h include/zephyros/vfs.h \
+		include/zephyros/romfs.h include/zephyros/module.h \
+		include/zephyros/console.h include/zephyros/kernel.h \
+		kernel/vfs/vfs.h kernel/vfs/mount_config.h \
+		tests/target/include/m9_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
 # --- M6 native program (ZEXTEST) ---------------------------------------------
 # One ZEX program linked as a flat image at 0100h: _CODE is the image and
 # _DATA is the zero-initialized region the loader fills at
-# 0100h+image_size.  Geometry comes from tests/m6/zextest.json; zexpack
+# 0100h+image_size.  Geometry comes from tests/subsys/zextest.json; zexpack
 # validates the linked map against it and writes the reproducible report.
 
-ZEX_TEST_JSON := tests/m6/zextest.json
+ZEX_TEST_JSON := tests/subsys/zextest.json
 ZEX_TEST_BUILD := $(BUILD)/zextest
 ZEX_TEST_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(ZEX_TEST_JSON) image_size)
 ZEX_TEST_DATA_BASE  := $(shell printf '0x%04X' $$((0x0100 + $(ZEX_TEST_IMAGE_SIZE))))
@@ -1125,18 +977,18 @@ ZEX_TEST_DATA_BASE  := $(shell printf '0x%04X' $$((0x0100 + $(ZEX_TEST_IMAGE_SIZ
 $(ZEX_TEST_BUILD):
 	mkdir -p $@
 
-$(BUILD)/m6_expect.inc: $(ZEX_TEST_JSON) tests/m6/gen_expect.py \
-		tests/m6/gen_fixtures.py tools/zexpack.py | $(BUILD)
-	$(PYTHON) tests/m6/gen_expect.py $(ZEX_TEST_JSON) $@
+$(BUILD)/process_expect.inc: $(ZEX_TEST_JSON) tests/subsys/gen_process_expect.py \
+		tests/subsys/gen_zex_fixtures.py tools/zexpack.py | $(BUILD)
+	$(PYTHON) tests/subsys/gen_process_expect.py $(ZEX_TEST_JSON) $@
 
-$(ZEX_TEST_BUILD)/zextest_entry.rel: tests/target/m6/zextest_entry.asm | $(ZEX_TEST_BUILD)
+$(ZEX_TEST_BUILD)/zextest_entry.rel: tests/target/process/zextest_entry.asm | $(ZEX_TEST_BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(ZEX_TEST_BUILD)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(ZEX_TEST_BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(ZEX_TEST_BUILD)/zextest.rel: tests/target/m6/zextest.c user/runtime/zex_runtime.h \
-		tests/target/include/m6_selftest.h $(BUILD)/m6_expect.inc | $(ZEX_TEST_BUILD)
+$(ZEX_TEST_BUILD)/zextest.rel: tests/target/process/zextest.c user/runtime/zex_runtime.h \
+		tests/target/include/process_selftest.h $(BUILD)/process_expect.inc | $(ZEX_TEST_BUILD)
 	$(SDCC) -mz80 -c --nostdinc --Werror -I user/runtime \
 		-I tests/target/include -I $(BUILD) $< -o $@
 
@@ -1245,32 +1097,27 @@ $(MODULES)/monitor.zex: $(MONITOR_JSON) $(MONITOR_BUILD)/monitor.ihx \
 	$(PYTHON) tools/zexpack.py pack $(MONITOR_JSON) $@ \
 		--objdir $(MONITOR_BUILD) --report $(MODULES)/monitor.report.json
 
-# Deterministic malformed fixtures (one per validation boundary; see
-# tests/m6/gen_fixtures.py) shared by the M6 acceptance manifests.
-$(MODULES)/zex-fixtures.stamp: tests/m6/gen_fixtures.py tools/zexpack.py | $(MODULES)
-	$(PYTHON) tests/m6/gen_fixtures.py $(MODULES)
+# Deterministic malformed containers (one per validation boundary; see
+# tests/subsys/gen_zex_fixtures.py and gen_zmod_fixtures.py) shared by the
+# subsystem acceptance manifest.
+$(MODULES)/zex-fixtures.stamp: tests/subsys/gen_zex_fixtures.py tools/zexpack.py | $(MODULES)
+	$(PYTHON) tests/subsys/gen_zex_fixtures.py $(MODULES)
+	$(PYTHON) tests/subsys/gen_zmod_fixtures.py $(MODULES)
 	touch $@
 
 # --- ROMFS recovery store (ROM pages 2-7) ------------------------------------
-# Production images pack recovery/manifest.json; the M5 acceptance images
-# use the test manifest (SIO module + deterministic cross-page pattern
-# asset) and the corrupt image patches the packed header metadata so the
-# kernel's validation is exercised on target.
-ifeq ($(ZOS_M5_CORRUPT_SELFTEST),1)
-ROMFS_MANIFEST := tests/m5/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/m5_crosspage.bin tests/m5/corrupt_romfs.py
-else ifeq ($(ZOS_M5_SELFTEST),1)
-ROMFS_MANIFEST := tests/m5/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/m5_crosspage.bin
-else ifeq ($(ZOS_M6_SELFTEST),1)
-ROMFS_MANIFEST := tests/m6/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
-else ifeq ($(ZOS_M6_FAILURE_SELFTEST),1)
-ROMFS_MANIFEST := tests/m6/manifest-failure.json
-ROMFS_EXTRA_DEPS := $(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
-else ifeq ($(ZOS_M7_SELFTEST),1)
-ROMFS_MANIFEST := tests/m7/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+# Every image packs a manifest; the subsystem acceptance image adds the
+# loader/ROMFS/ZEX fixtures, and the corrupt-store image patches the packed
+# production image so the kernel's validation is exercised on target.
+ifeq ($(ZOS_SUBSYS_SELFTEST),1)
+ROMFS_MANIFEST := tests/subsys/manifest.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/romfs_crosspage.bin \
+		$(MODULES)/m4_probe.zmod $(MODULES)/m4_fail.zmod \
+		$(MODULES)/m4_filler.zmod $(MODULES)/m8_api.zmod \
+		$(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
+else ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
+ROMFS_MANIFEST := recovery/manifest.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex tests/subsys/corrupt_romfs.py
 else ifeq ($(ZOS_M8_HID_BADIOC),1)
 ROMFS_MANIFEST := tests/m8/manifest-hid-badioc.json
 ROMFS_EXTRA_DEPS := $(MODULES)/fakeioc.zmod $(MODULES)/monitor.zex
@@ -1312,22 +1159,25 @@ $(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(MODULES)/sio.zmod \
 		$(MODULES)/ioc.zmod $(MODULES)/hid.zmod $(MODULES)/v9958.zmod \
 		$(MODULES)/v9958-6x8.font $(ROMFS_EXTRA_DEPS) \
 		tools/romfspack.py $(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
-ifeq ($(ZOS_M5_CORRUPT_SELFTEST),1)
+ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
 	$(PYTHON) tools/romfspack.py --memory-inc $(ZOS_PLATFORM_MEMORY_INC) pack \
 		$(ROMFS_MANIFEST) $(BUILD)/recovery-clean.romfs --objdir $(MODULES)
-	$(PYTHON) tests/m5/corrupt_romfs.py $(BUILD)/recovery-clean.romfs $@
+	$(PYTHON) tests/subsys/corrupt_romfs.py $(BUILD)/recovery-clean.romfs $@
 else
 	$(PYTHON) tools/romfspack.py --memory-inc $(ZOS_PLATFORM_MEMORY_INC) pack \
 		$(ROMFS_MANIFEST) $@ --objdir $(MODULES)
 endif
 
-# Deterministic cross-page pattern asset for the M5 acceptance manifest.
-$(MODULES)/m5_crosspage.bin: tests/m5/gen_asset.py | $(MODULES)
-	$(PYTHON) tests/m5/gen_asset.py $@
+# Deterministic cross-page pattern asset for the subsystem manifest.
+$(MODULES)/romfs_crosspage.bin: tests/subsys/gen_crosspage.py | $(MODULES)
+	$(PYTHON) tests/subsys/gen_crosspage.py $@
 
-# Expected-container constants for the M5 target selftest.
-$(BUILD)/m5_expect.inc: $(MODULES)/sio.zmod tests/m5/gen_expect.py | $(BUILD)
-	$(PYTHON) tests/m5/gen_expect.py $< $@ M5_SIO_ZMOD
+# Expected-container constants for the ROMFS-reader target selftest: the
+# packed size/sum plus the manifest-derived first-payload offset.
+$(BUILD)/romfs_expect.inc: tests/subsys/manifest.json $(MODULES)/sio.zmod \
+		tests/subsys/gen_romfs_expect.py | $(BUILD)
+	$(PYTHON) tests/subsys/gen_romfs_expect.py tests/subsys/manifest.json \
+		$(MODULES)/sio.zmod $@ SIO_ZMOD
 
 # --- link --------------------------------------------------------------------
 # The canonical `build/` output uses the checked-in linker/zephyr80.lk.
@@ -1335,16 +1185,13 @@ $(BUILD)/m5_expect.inc: $(MODULES)/sio.zmod tests/m5/gen_expect.py | $(BUILD)
 # objects) generates its linker file from the same object list the link
 # step depends on, so the lists cannot drift apart.
 
-ZOS_TEST_LINK := $(filter 1,$(ZOS_SELFTEST) $(ZOS_IRQ_SELFTEST) \
-		$(ZOS_M3_SELFTEST) $(ZOS_M4_SELFTEST) $(ZOS_M4_SIO_IRQ) \
-		$(ZOS_M4_FAILURE_SELFTEST) $(ZOS_M5_SELFTEST) \
-		$(ZOS_M5_CORRUPT_SELFTEST) $(ZOS_M6_SELFTEST) \
-		$(ZOS_M6_FAILURE_SELFTEST) $(ZOS_M7_SELFTEST) \
+ZOS_TEST_LINK := $(filter 1,$(ZOS_SUBSYS_SELFTEST) \
+		$(ZOS_ROMFS_CORRUPT_SELFTEST) \
 		$(ZOS_M8_IOC_SELFTEST) $(ZOS_M8_HID_SELFTEST) \
 		$(ZOS_M8_HID_NOIOC) $(ZOS_M8_HID_BADIOC) \
 		$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL) \
 		$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
-		$(ZOS_M8_FALLBACK_SELFTEST))
+		$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -1383,10 +1230,12 @@ endif
 $(IMAGE): $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map \
 		$(BUILD)/recovery.romfs $(ARENA_PLAN) \
 		tools/pack_image.py tools/mapcheck.py $(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) $(BUILD)/zephyros.map \
+	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) \
+		--min-granules $(ZOS_ARENA_MIN_GRANULES) $(BUILD)/zephyros.map \
 		$(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) tools/pack_image.py $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map \
-		$(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC)
+		$(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC) \
+		--min-granules $(ZOS_ARENA_MIN_GRANULES)
 
 $(MAME_IMAGE): $(IMAGE)
 	cp $< $@
@@ -1415,12 +1264,48 @@ check:
 	 echo "check: reproducible rebuild ($$after)"
 	@$(MAKE) check-fast
 
+# --- subsystem acceptance image ----------------------------------------------
+# One current-boot-path image carries every relocated mechanism selftest: the
+# syscall gate and the IRQ executive (early hook), then the ROMFS reader, the
+# process/ZEX lifecycle and the loader (late hook), and finally the monitor
+# launcher's scripted session.  The declared boot set is the SIO fallback
+# only, so the loader's relocation, rollback and arena-exhaustion checks own
+# the derived arena (work/25a-retire-pre-m8-acceptance/WORK.md).
+
+subsystem-selftest:
+	$(MAKE) BUILD=build-subsys-selftest ZOS_SUBSYS_SELFTEST=1 \
+		build-subsys-selftest/zephyros-subsys-selftest.bin \
+		build-subsys-selftest/zephyr80-subsys-selftest.bin
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+		build-subsys-selftest/zephyros.map \
+		build-subsys-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_subsys_sim.py' -v
+	@echo "subsystem-selftest image: build-subsys-selftest/zephyros-subsys-selftest.bin"
+
+# Corrupt-recovery-store image: the production manifest, packed and then
+# patched so the kernel's validation rejects the whole store through the
+# early-console panic before any module code runs.
+
+romfs-corrupt-selftest:
+	$(MAKE) BUILD=build-romfs-corrupt ZOS_ROMFS_CORRUPT_SELFTEST=1 \
+		build-romfs-corrupt/zephyros-romfs-corrupt.bin \
+		build-romfs-corrupt/zephyr80-romfs-corrupt.bin
+	$(PYTHON) tools/mapcheck.py \
+		build-romfs-corrupt/zephyros.map \
+		build-romfs-corrupt/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_romfs_sim.py' -v
+	@echo "romfs-corrupt image: build-romfs-corrupt/zephyros-romfs-corrupt.bin"
+
 check-fast:
 	$(PYTHON) -m unittest discover -s tests -v
-	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) $(BUILD)/zephyros.map \
+	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) \
+		--min-granules $(ZOS_ARENA_MIN_GRANULES) $(BUILD)/zephyros.map \
 		$(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) tools/pack_image.py $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map \
-		$(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC)
+		$(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC) \
+		--min-granules $(ZOS_ARENA_MIN_GRANULES)
 	sha256sum $(IMAGE) $(MAME_IMAGE)
 	cmp $(IMAGE) $(MAME_IMAGE)
 	@echo "make check: OK"
@@ -1428,39 +1313,10 @@ check-fast:
 clean:
 	rm -rf $(BUILD) build-*
 
-# --- syscall self-test image (target-side RST 30h round trip) ----------------
-
-syscall-selftest:
-	$(MAKE) BUILD=build-selftest ZOS_SELFTEST=1 \
-		build-selftest/zephyros-selftest.bin build-selftest/zephyr80-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-selftest/zephyros.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	@echo "syscall-selftest image: build-selftest/zephyros-selftest.bin"
-
-irq-selftest:
-	$(MAKE) BUILD=build-irq-selftest ZOS_SELFTEST=1 ZOS_IRQ_SELFTEST=1 \
-		build-irq-selftest/zephyros-irq-selftest.bin \
-		build-irq-selftest/zephyr80-irq-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-irq-selftest/zephyros.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	@echo "irq-selftest image: build-irq-selftest/zephyros-irq-selftest.bin"
-
-# --- M3 acceptance image (syscall + irq + device/console/IRQ driver) ---------
-
-m3-selftest:
-	$(MAKE) BUILD=build-m3-selftest ZOS_SELFTEST=1 ZOS_IRQ_SELFTEST=1 \
-		ZOS_M3_SELFTEST=1 \
-		build-m3-selftest/zephyros-m3-selftest.bin \
-		build-m3-selftest/zephyr80-m3-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-m3-selftest/zephyros.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	@echo "m3-selftest image: build-m3-selftest/zephyros-m3-selftest.bin"
-
-# --- M4 host-side ZMOD tooling tests ----------------------------------------
-# Builds the SIO module variants and the synthetic fixtures with the real
-# toolchain, packs and validates them, then runs the host ZMOD test suite
-# (fixture-dependent tests are skipped by plain `make test` when the packed
-# modules are absent).
+# --- host-side ZMOD tooling tests -------------------------------------------
+# Builds the module containers and the synthetic loader fixtures with the
+# real toolchain, validates them, then runs the host container suite
+# (fixture-dependent tests skip when the packed modules are absent).
 
 zmod-test: $(MODULES)/sio.zmod $(MODULES)/sio-irq.zmod \
 		$(MODULES)/sio-fail.zmod $(FIXTURE_ZMODS)
@@ -1471,53 +1327,6 @@ zmod-test: $(MODULES)/sio.zmod $(MODULES)/sio-irq.zmod \
 	$(PYTHON) -m unittest discover -s tests -p 'test_zmod.py' -v
 	@echo "zmod-test: OK"
 
-# --- M4 loader acceptance image (synthetic fixtures, no dynamic boot device) -
-
-m4-loader-selftest:
-	$(MAKE) BUILD=build-m4-loader-selftest ZOS_M4_SELFTEST=1 \
-		build-m4-loader-selftest/zephyros-m4-loader-selftest.bin \
-		build-m4-loader-selftest/zephyr80-m4-loader-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-m4-loader-selftest/zephyros.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m4_sim.py' -v
-	@echo "m4-loader-selftest image: build-m4-loader-selftest/zephyros-m4-loader-selftest.bin"
-
-# --- M4 dynamic-driver acceptance image (SIO module + IRQ self-test) ---------
-
-m4-selftest:
-	$(MAKE) BUILD=build-m4-selftest ZOS_M4_SELFTEST=1 ZOS_M4_SIO_IRQ=1 \
-		build-m4-selftest/zephyros-m4-selftest.bin \
-		build-m4-selftest/zephyr80-m4-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-m4-selftest/zephyros.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m4_sim.py' -v
-	@echo "m4-selftest image: build-m4-selftest/zephyros-m4-selftest.bin"
-
-# Same packed module bytes, arena base shifted 0x0200 lower (9E00h-BE00h).
-
-m4-placement-selftest:
-	$(MAKE) BUILD=build-m4-placement-selftest ZOS_M4_SELFTEST=1 \
-		ZOS_M4_PLACEMENT=1 \
-		build-m4-placement-selftest/zephyros-m4-placement-selftest.bin \
-		build-m4-placement-selftest/zephyr80-m4-placement-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-m4-placement-selftest/zephyros.map \
-		build-m4-placement-selftest/platform/zephyr80/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m4_sim.py' -v
-	@echo "m4-placement-selftest image: build-m4-placement-selftest/zephyros-m4-placement-selftest.bin"
-
-# --- M4 failure image (module init fails; rollback must be exact) ------------
-
-m4-failure-selftest:
-	$(MAKE) BUILD=build-m4-failure ZOS_M4_FAILURE_SELFTEST=1 \
-		build-m4-failure/zephyros-m4-failure.bin \
-		build-m4-failure/zephyr80-m4-failure.bin
-	$(PYTHON) tools/mapcheck.py build-m4-failure/zephyros.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m4_sim.py' -v
-	@echo "m4-failure image: build-m4-failure/zephyros-m4-failure.bin"
-
-# --- M5 ROMFS recovery-store tooling and acceptance images -------------------
 
 romfs-test: $(BUILD)/recovery.romfs
 	$(PYTHON) tools/romfspack.py --memory-inc $(ZOS_PLATFORM_MEMORY_INC) \
@@ -1527,76 +1336,17 @@ romfs-test: $(BUILD)/recovery.romfs
 	$(PYTHON) -m unittest discover -s tests -p 'test_romfs.py' -v
 	@echo "romfs-test: OK"
 
-m5-selftest:
-	$(MAKE) BUILD=build-m5-selftest ZOS_M5_SELFTEST=1 \
-		build-m5-selftest/zephyros-m5-selftest.bin \
-		build-m5-selftest/zephyr80-m5-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-m5-selftest/zephyros.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_romfs_sim.py' -v
-	@echo "m5-selftest image: build-m5-selftest/zephyros-m5-selftest.bin"
-
-m5-corrupt-selftest:
-	$(MAKE) BUILD=build-m5-corrupt-selftest ZOS_M5_CORRUPT_SELFTEST=1 \
-		build-m5-corrupt-selftest/zephyros-m5-corrupt.bin \
-		build-m5-corrupt-selftest/zephyr80-m5-corrupt.bin
-	$(PYTHON) tools/mapcheck.py build-m5-corrupt-selftest/zephyros.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	@echo "m5-corrupt image: build-m5-corrupt-selftest/zephyros-m5-corrupt.bin"
-
-# --- M6 ZEX tooling, acceptance image, and failure image ---------------------
-
 zex-test: $(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
 	$(PYTHON) tools/zexpack.py validate $(MODULES)/zextest.zex
 	$(PYTHON) tools/zexpack.py dump $(MODULES)/zextest.zex
 	$(PYTHON) -m unittest discover -s tests -p 'test_zex.py' -v
 	@echo "zex-test: OK"
 
-m6-selftest:
-	$(MAKE) BUILD=build-m6-selftest ZOS_M6_SELFTEST=1 \
-		build-m6-selftest/zephyros-m6-selftest.bin \
-		build-m6-selftest/zephyr80-m6-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-m6-selftest/zephyros.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m6_sim.py' -v
-	@echo "m6-selftest image: build-m6-selftest/zephyros-m6-selftest.bin"
-
-m6-failure-selftest:
-	$(MAKE) BUILD=build-m6-failure-selftest ZOS_M6_FAILURE_SELFTEST=1 \
-		build-m6-failure-selftest/zephyros-m6-failure.bin \
-		build-m6-failure-selftest/zephyr80-m6-failure.bin
-	$(PYTHON) tools/mapcheck.py build-m6-failure-selftest/zephyros.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m6_sim.py' -v
-	@echo "m6-failure image: build-m6-failure-selftest/zephyros-m6-failure.bin"
-
-# --- M7 native monitor tooling and acceptance image --------------------------
-# monitor-test proves the ZEX layout and the monitor/runtime source
-# contract; m7-selftest builds the bootable M7 image (kernel-side
-# diagnostic selftest plus the interactive monitor over ROMFS) and
-# replays the scripted interactive transcript in the simulator.
-
 monitor-test: $(MODULES)/monitor.zex
 	$(PYTHON) tools/zexpack.py validate $(MODULES)/monitor.zex
 	$(PYTHON) tools/zexpack.py dump $(MODULES)/monitor.zex
 	$(PYTHON) -m unittest discover -s tests -p 'test_monitor.py' -v
 	@echo "monitor-test: OK"
-
-m7-selftest:
-	$(MAKE) BUILD=build-m7-selftest ZOS_M7_SELFTEST=1 \
-		build-m7-selftest/zephyros-m7-selftest.bin \
-		build-m7-selftest/zephyr80-m7-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-m7-selftest/zephyros.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m7_sim.py' -v
-	@echo "m7-selftest image: build-m7-selftest/zephyros-m7-selftest.bin"
-
-# --- M8 IOC tooling, acceptance image, and hardware smoke --------------------
-# ioc-test proves the packed command+bulk module and the source/constant
-# contracts on the host; m8-ioc-selftest builds the production-geometry
-# acceptance image (SIO + IOC from ROMFS) and replays it in the simulator
-# against the IOC command+bulk peer; the smoke target drives the flashed
-# image over SIO0/B at 115200 8N1.
 
 ioc-test: $(MODULES)/ioc.zmod
 	$(PYTHON) tools/zmodpack.py validate $(MODULES)/ioc.zmod
@@ -1609,7 +1359,7 @@ m8-ioc-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-m8-ioc-selftest/zephyros-m8-ioc-selftest.bin \
 		build-m8-ioc-selftest/zephyr80-m8-ioc-selftest.bin
-	$(PYTHON) tools/mapcheck.py \
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
 		build-m8-ioc-selftest/zephyros.map \
 		build-m8-ioc-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1638,7 +1388,7 @@ m8-hid-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-m8-hid-selftest/zephyros-m8-hid-selftest.bin \
 		build-m8-hid-selftest/zephyr80-m8-hid-selftest.bin
-	$(PYTHON) tools/mapcheck.py \
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
 		build-m8-hid-selftest/zephyros.map \
 		build-m8-hid-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1650,7 +1400,7 @@ m8-hid-noioc-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-m8-hid-noioc-selftest/zephyros-m8-hid-noioc-selftest.bin \
 		build-m8-hid-noioc-selftest/zephyr80-m8-hid-noioc-selftest.bin
-	$(PYTHON) tools/mapcheck.py \
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
 		build-m8-hid-noioc-selftest/zephyros.map \
 		build-m8-hid-noioc-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1662,7 +1412,7 @@ m8-hid-badioc-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-m8-hid-badioc-selftest/zephyros-m8-hid-badioc-selftest.bin \
 		build-m8-hid-badioc-selftest/zephyr80-m8-hid-badioc-selftest.bin
-	$(PYTHON) tools/mapcheck.py \
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
 		build-m8-hid-badioc-selftest/zephyros.map \
 		build-m8-hid-badioc-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1690,7 +1440,7 @@ m8-v9958-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-m8-v9958-selftest/zephyros-m8-v9958-selftest.bin \
 		build-m8-v9958-selftest/zephyr80-m8-v9958-selftest.bin
-	$(PYTHON) tools/mapcheck.py \
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
 		build-m8-v9958-selftest/zephyros.map \
 		build-m8-v9958-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1702,7 +1452,7 @@ m8-v9958-fontfail-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-m8-v9958-fontfail-selftest/zephyros-m8-v9958-fontfail-selftest.bin \
 		build-m8-v9958-fontfail-selftest/zephyr80-m8-v9958-fontfail-selftest.bin
-	$(PYTHON) tools/mapcheck.py \
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
 		build-m8-v9958-fontfail-selftest/zephyros.map \
 		build-m8-v9958-fontfail-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1721,7 +1471,7 @@ m8-console-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-m8-console-selftest/zephyros-m8-console-selftest.bin \
 		build-m8-console-selftest/zephyr80-m8-console-selftest.bin
-	$(PYTHON) tools/mapcheck.py \
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
 		build-m8-console-selftest/zephyros.map \
 		build-m8-console-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1746,12 +1496,42 @@ m8-selftest: all
 	$(MAKE) BUILD=build-m8-selftest ZOS_M8_SELFTEST=1 ZOS_SMOKE_HOST_SYNC=1 \
 		build-m8-selftest/zephyros-m8-selftest.bin \
 		build-m8-selftest/zephyr80-m8-selftest.bin
-	$(PYTHON) tools/mapcheck.py \
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
 		build-m8-selftest/zephyros.map \
 		build-m8-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_m8_acceptance.py' -v
 	@echo "m8 integration image: build-m8-selftest/zephyros-m8-selftest.bin"
+
+# --- M9 VFS bootstrap acceptance image ---------------------------------------
+# Production-style VFS boot: ROMFS at /SYSTEM, the four resident modules and
+# the monitor loaded through VFS, the optional-mount failure diagnosed, then
+# the target VFS selftest replayed in the simulator.
+
+m9-vfs-selftest: all
+	$(MAKE) BUILD=build-m9-vfs-selftest ZOS_M9_VFS_SELFTEST=1 \
+		build-m9-vfs-selftest/zephyros-m9-vfs-selftest.bin \
+		build-m9-vfs-selftest/zephyr80-m9-vfs-selftest.bin
+	$(PYTHON) tools/mapcheck.py --min-granules 16 build-m9-vfs-selftest/zephyros.map \
+		build-m9-vfs-selftest/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m9_vfs_sim.py' -v
+	@echo "m9 vfs image: build-m9-vfs-selftest/zephyros-m9-vfs-selftest.bin"
+
+# M9 required-mount failure image: the normal mount pass meets a required
+# non-system mount whose provider is absent; boot must diagnose it and panic
+# (tests/test_m9_vfs_sim.py TestM9RequiredMount).
+
+m9-required-mount-selftest: all
+	$(MAKE) BUILD=build-m9-required-mount-selftest ZOS_M9_REQUIRED_MOUNT=1 \
+		build-m9-required-mount-selftest/zephyros-m9-required-mount.bin \
+		build-m9-required-mount-selftest/zephyr80-m9-required-mount.bin
+	$(PYTHON) tools/mapcheck.py --production \
+		--min-granules $(ZOS_ARENA_MIN_GRANULES) \
+		build-m9-required-mount-selftest/zephyros.map \
+		build-m9-required-mount-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m9_vfs_sim.py' -v
+	@echo "m9 required-mount image: build-m9-required-mount-selftest/zephyros-m9-required-mount.bin"
 
 m8-fallback-selftests: all
 	$(MAKE) BUILD=build-m8-fb-nohid ZOS_M8_FALLBACK_SELFTEST=1 \
@@ -1782,13 +1562,13 @@ m8-fallback-selftests: all
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-m8-hid-badioc-selftest/zephyros-m8-hid-badioc-selftest.bin \
 		build-m8-hid-badioc-selftest/zephyr80-m8-hid-badioc-selftest.bin
-	$(PYTHON) tools/mapcheck.py build-m8-fb-nohid/zephyros.map \
+	$(PYTHON) tools/mapcheck.py --min-granules 16 build-m8-fb-nohid/zephyros.map \
 		build-m8-fb-nohid/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/mapcheck.py build-m8-fb-nohid-nov9958/zephyros.map \
+	$(PYTHON) tools/mapcheck.py --min-granules 16 build-m8-fb-nohid-nov9958/zephyros.map \
 		build-m8-fb-nohid-nov9958/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/mapcheck.py build-m8-fb-badioc/zephyros.map \
+	$(PYTHON) tools/mapcheck.py --min-granules 16 build-m8-fb-badioc/zephyros.map \
 		build-m8-fb-badioc/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/mapcheck.py build-m8-fb-arena/zephyros.map \
+	$(PYTHON) tools/mapcheck.py --min-granules 16 build-m8-fb-arena/zephyros.map \
 		build-m8-fb-arena/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_m8_fallback.py' -v
 	@echo "m8 fallback matrix images:"
@@ -1806,35 +1586,11 @@ m8-fallback-selftests: all
 smoke-hardware:
 	$(PYTHON) tools/serial_smoke.py --mode normal --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
-smoke-hardware-selftest:
-	$(PYTHON) tools/serial_smoke.py --mode selftest --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+smoke-hardware-subsystem:
+	$(PYTHON) tools/serial_smoke.py --mode subsystem --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
-smoke-hardware-irq:
-	$(PYTHON) tools/serial_smoke.py --mode irq --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-m3:
-	$(PYTHON) tools/serial_smoke.py --mode m3 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-m4:
-	$(PYTHON) tools/serial_smoke.py --mode m4 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-m4-failure:
-	$(PYTHON) tools/serial_smoke.py --mode m4-failure --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-m5:
-	$(PYTHON) tools/serial_smoke.py --mode m5 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-m5-corrupt:
-	$(PYTHON) tools/serial_smoke.py --mode m5-corrupt --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-m6:
-	$(PYTHON) tools/serial_smoke.py --mode m6 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-m6-failure:
-	$(PYTHON) tools/serial_smoke.py --mode m6-failure --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-m7:
-	$(PYTHON) tools/serial_smoke.py --mode m7 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+smoke-hardware-romfs-corrupt:
+	$(PYTHON) tools/serial_smoke.py --mode romfs-corrupt --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-m8-ioc:
 	$(PYTHON) tools/serial_smoke.py --mode m8-ioc --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

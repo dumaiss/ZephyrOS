@@ -1938,6 +1938,47 @@ class Z80:
             raise SystemExit("sim: unsupported %02X %02X" % (op, op2))
 
 
+class Ctc0Injector:
+    """Host stand-in for the Z80-CTC0 counter (test helper).
+
+    The simulator models no timer, so acceptance replays that include the
+    interrupt-executive group inject the deliveries themselves: while the
+    position-independent smoke caller (mode 10, copied into the caller
+    window) or the mode-11 helper opens an interrupt window with the
+    simulator-only arming cell at FFh, one IM2 interrupt at vector 00h is
+    injected.  Call `watch(cpu)` once per instruction; the cell is the
+    kernel's `_irq_active_source`, which the test assembly arms.
+    """
+
+    def __init__(self, syms, caller_base=0x1000, vector=0x00):
+        self.blob_start = syms["zos_irq_test_blob_start"]
+        self.blob_end = syms["zos_irq_test_blob_end"]
+        self.helper_start = syms["_zos_irq_test_mode11"]
+        self.helper_end = syms["zos_irq_test_mode11_end"]
+        self.source_cell = syms["_irq_active_source"]
+        self.caller_base = caller_base
+        self.vector = vector
+        self.armed = False
+        self.pending = 0
+
+    def __call__(self, cpu):
+        op = cpu.rd(cpu.pc)
+        in_blob = (self.caller_base <= cpu.pc
+                   < self.caller_base + (self.blob_end - self.blob_start))
+        in_helper = self.helper_start <= cpu.pc < self.helper_end
+        if (in_blob or in_helper) and op == 0xFB:  # EI
+            self.pending = 2
+        if self.armed and cpu.iff1 and not cpu.int_pending:
+            if cpu.rd(self.source_cell) == 0xFF:
+                cpu.assert_int(self.vector)
+        if self.pending > 0:
+            self.pending -= 1
+            if self.pending == 0:
+                self.armed = True
+        elif (in_blob or in_helper) and op == 0xF3 and not cpu.halted:
+            self.armed = False
+
+
 def read_symbols(map_path):
     import re
     syms = {}

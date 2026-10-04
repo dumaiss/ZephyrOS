@@ -1,0 +1,135 @@
+{
+  "format": "romfs-v1",
+  "files": [
+    {
+      "name": "crosspage.bin",
+      "type": "DATA",
+      "path": "romfs_crosspage.bin"
+    },
+    {
+      "name": "sio.zmod",
+      "type": "ZMOD",
+      "path": "sio.zmod"
+    },
+    {
+      "name": "monitor.zex",
+      "type": "ZEX",
+      "path": "monitor.zex"
+    },
+    {
+      "name": "m4probe.zmod",
+      "type": "ZMOD",
+      "path": "m4_probe.zmod"
+    },
+    {
+      "name": "m4fail.zmod",
+      "type": "ZMOD",
+      "path": "m4_fail.zmod"
+    },
+    {
+      "name": "m4filler.zmod",
+      "type": "ZMOD",
+      "path": "m4_filler.zmod"
+    },
+    {
+      "name": "badmagic.zmod",
+      "type": "ZMOD",
+      "path": "badmagic.zmod"
+    },
+    {
+      "name": "truncated.zmod",
+      "type": "ZMOD",
+      "path": "truncated.zmod"
+    },
+    {
+      "name": "zextest.zex",
+      "type": "ZEX",
+      "path": "zextest.zex"
+    },
+    {
+      "name": "zex-return.zex",
+      "type": "ZEX",
+      "path": "zex-return.zex"
+    },
+    {
+      "name": "zex-bad-magic.zex",
+      "type": "ZEX",
+      "path": "zex-bad-magic.zex"
+    },
+    {
+      "name": "zex-bad-format.zex",
+      "type": "ZEX",
+      "path": "zex-bad-format.zex"
+    },
+    {
+      "name": "zex-bad-abi.zex",
+      "type": "ZEX",
+      "path": "zex-bad-abi.zex"
+    },
+    {
+      "name": "zex-bad-flags.zex",
+      "type": "ZEX",
+      "path": "zex-bad-flags.zex"
+    },
+    {
+      "name": "zex-bad-reserved0.zex",
+      "type": "ZEX",
+      "path": "zex-bad-reserved0.zex"
+    },
+    {
+      "name": "zex-bad-header-size.zex",
+      "type": "ZEX",
+      "path": "zex-bad-header-size.zex"
+    },
+    {
+      "name": "zex-bad-reserved1.zex",
+      "type": "ZEX",
+      "path": "zex-bad-reserved1.zex"
+    },
+    {
+      "name": "zex-zero-image.zex",
+      "type": "ZEX",
+      "path": "zex-zero-image.zex"
+    },
+    {
+      "name": "zex-truncated.zex",
+      "type": "ZEX",
+      "path": "zex-truncated.zex"
+    },
+    {
+      "name": "zex-padded.zex",
+      "type": "ZEX",
+      "path": "zex-padded.zex"
+    },
+    {
+      "name": "zex-bad-entry.zex",
+      "type": "ZEX",
+      "path": "zex-bad-entry.zex"
+    },
+    {
+      "name": "zex-small-stack.zex",
+      "type": "ZEX",
+      "path": "zex-small-stack.zex"
+    },
+    {
+      "name": "zex-image-end.zex",
+      "type": "ZEX",
+      "path": "zex-image-end.zex"
+    },
+    {
+      "name": "zex-bss-end.zex",
+      "type": "ZEX",
+      "path": "zex-bss-end.zex"
+    },
+    {
+      "name": "zex-stack-collision.zex",
+      "type": "ZEX",
+      "path": "zex-stack-collision.zex"
+    },
+    {
+      "name": "zex-wrong-type.dat",
+      "type": "DATA",
+      "path": "zex-wrong-type.dat"
+    }
+  ]
+}

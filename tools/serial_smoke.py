@@ -4,48 +4,23 @@
 Opens the SIO0/B serial link (115200 8N1, raw) on the given device,
 captures output with a bounded timeout, and verifies the expected output:
 
-    --mode normal    the exact M0 banner, then the halt loop
-    --mode selftest  the banner plus "syscall selftest: OK"
-    --mode irq       the banner plus "irq selftest: OK"
-    --mode m3        the M3 image: banner, "console: dynamic sio0.b OK"
-                     through the normal console service (SIO loaded from
-                     the embedded module catalog), all embedded
-                     self-tests, and the interactive console RX check
-                     (the tool sends 'R' when the kernel announces
-                     "ready for RX")
-    --mode m4        the M4 dynamic-driver acceptance image: banner, the
-                     dynamic console line, "m4 loader selftest: OK",
-                     "m4 selftest: sio at 0x....", and the final
-                     "m4 selftest: OK"
-    --mode m4-failure  the M4 failure image: banner, "console: dynamic
-                     driver failed" (init rolled back, no device) and
-                     "m4 failure selftest: OK"
-    --mode m5        the M5 ROMFS success image: banner, the dynamic
-                     console line (SIO loaded from the ROMFS recovery
-                     store), and "m5 romfs selftest: OK"
-    --mode m5-corrupt  the M5 corrupt-metadata image: banner and the
-                     precise early-console panic marker; no dynamic
-                     console line (the module is never executed)
-    --mode m6        the M6 success image: banner, the dynamic console
-                     line, two zextest runs (bank 0 and bank 1), the
-                     repeated-cycle/two-bank/raw-return/malformed
-                     milestones, and "m6 selftest: OK"
-    --mode m6-failure  the M6 failure image: banner, the rejected
-                     truncated ZEX rolling back cleanly, the valid copy
-                     still running, and "m6 failure selftest: OK"
-    --mode m7        the M7 native-monitor image: the kernel-side
-                     "m7 selftest: OK", then a scripted interactive
-                     monitor session (help, system info, dumps of the
-                     monitor bank and a selected bank, scratch-byte
-                     modify/readback, harmless port input, rejected
-                     latch-port output, invalid bank 7, bad syntax) and
-                     two Q exit/relaunch cycles with identical launcher
-                     count lines.  The boot log is printed once, before
-                     any monitor command can run: this mode must be
-                     listening before the board boots.  Start it, then
-                     power-cycle the board or press RESET while it
-                     waits; an already-running board fails with an
-                     explicit hint instead of a partial transcript.
+    --mode normal    the production boot contract: the exact banner, the
+                     dynamic console line, the monitor banner and its
+                     prompt (optional-module diagnostics tolerated)
+    --mode subsystem  the subsystem acceptance image: the banner, the
+                     dynamic console line, the five mechanism groups
+                     (`syscall selftest: OK`, `irq selftest: OK`,
+                     `romfs selftest: OK`, `process selftest: OK`,
+                     `loader selftest: OK`) and no FAIL/PANIC marker,
+                     then the interactive monitor step: when `Z80> `
+                     appears the tool sends `Q` over the link and the
+                     mode finishes on `monitor: exit status 0x`.  The
+                     boot log is printed once, so start this tool first
+                     and reset the board.
+    --mode romfs-corrupt  the corrupt-store image: the banner and the
+                     early-console panic marker `PANIC: romfs: corrupt
+                     recovery image` with no module execution.  Passes
+                     only when that panic is present.
     --mode m8-ioc  the M8 IOC image: banner, the dynamic console line,
                      the host contract level line (08h), the controller
                      firmware level returned by PING (4Ah for the pinned
@@ -144,7 +119,7 @@ before they print anything, so those modes send that sequence once the
 port is open and repeat it until the first byte arrives.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|selftest|irq|m3|m4|m4-failure|m5|m5-corrupt|m6|m6-failure|m7|m8-ioc|m8-hid|m8-v9958|m8-console|m8|m8-fb-nohid|m8-fb-nohid-nov9958|m8-fb-badioc|m8-fb-arena]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|m8-ioc|m8-hid|m8-v9958|m8-console|m8|m8-fb-nohid|m8-fb-nohid-nov9958|m8-fb-badioc|m8-fb-arena]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -161,44 +136,51 @@ BANNER = (
     b"platform: Zephyr-80\r\n"
     b"kernel entry: OK\r\n"
     b"serial: OK\r\n"
-    b"HALT\r\n"
 )
-SELFTEST_OK = b"syscall selftest: OK\r\n"
-IRQ_SELFTEST_OK = b"irq selftest: OK\r\n"
 CONSOLE_DYNAMIC_OK = b"console: dynamic sio0.b OK\r\n"
-CONSOLE_DYNAMIC_FAIL = b"console: dynamic driver failed\r\n"
-M3_RX_PROMPT = b"m3 selftest: ready for RX\r\n"
-M3_SELFTEST_OK = b"m3 selftest: OK\r\n"
-M3_RX_BYTE = b"R"
-M4_SELFTEST_OK = b"m4 loader selftest: OK\r\n"
-M4_SIO_PREFIX = b"m4 selftest: sio at "
-M4_ACCEPT_OK = b"m4 selftest: OK\r\n"
-M4_FAILURE_OK = b"m4 failure selftest: OK\r\n"
-M5_SELFTEST_OK = b"m5 romfs selftest: OK\r\n"
-M5_CORRUPT_PANIC = b"PANIC: romfs: corrupt recovery image\r\n"
-M6_ZEXTEST_BANK0 = b"zextest: bank=0 "
-M6_ZEXTEST_BANK1 = b"zextest: bank=1 "
-M6_ZEXTEST_OK = b"zextest: OK\r\n"
-M6_STATUS_PASS = b"m6 selftest: zextest status 0xA500\r\n"
-M6_STATUS_PASS_BANK1 = b"m6 selftest: zextest status 0xA501\r\n"
-M6_REPEAT_OK = b"m6 selftest: repeated cycles OK\r\n"
-M6_TWO_BANK_OK = b"m6 selftest: two-bank OK\r\n"
-M6_RAW_RETURN_OK = b"m6 selftest: raw return EFAULT\r\n"
-M6_REJECTED_OK = b"m6 selftest: malformed rejected\r\n"
-M6_SELFTEST_OK = b"m6 selftest: OK\r\n"
-M6_FAILURE_OK = b"m6 failure selftest: OK\r\n"
 
-# --- M7 native monitor ------------------------------------------------------
-M7_SELFTEST_OK = b"m7 selftest: OK\r\n"
-M7_PROMPT = b"Z80> "
-M7_BANNER = b"ZephyrOS native monitor\r\n"
-M7_SYSINFO = (b"system: abi 01 app 10 os 18 common E000 kernel-bank 07 "
-              b"romfs 02\r\n")
-M7_BANK_INFO = b"bank: current 00 mask 7F\r\n"
-M7_OK = b"OK\r\n"
-M7_ERR_ARG = b"ERR: ARG\r\n"
-M7_EXIT = b"monitor: exit status 0x0000 active 0 free-banks 7\r\n"
-M7_SCRATCH_RE = re.compile(rb"scratch=([0-9A-F]{4})")
+# --- subsystem acceptance image ---------------------------------------------
+# The subsystem image exercises every retained mechanism group on the
+# current VFS/ROMFS boot path in one pass.  The transcript constants are
+# the group markers the target code prints; the process markers are
+# emitted by tests/target/process/ (process_test.c and the zextest ZEX
+# program it runs).  SUBSYS_STATUS_* and SUBSYS_ZEXTEST_BANK* name the
+# composed transcript lines (the target prints the prefix and the hex
+# digits through separate writes, so only the prefix is a linked literal).
+SUBSYS_SYSCALL_OK = b"syscall selftest: OK\r\n"
+SUBSYS_IRQ_OK = b"irq selftest: OK\r\n"
+SUBSYS_ROMFS_OK = b"romfs selftest: OK\r\n"
+SUBSYS_PROCESS_OK = b"process selftest: OK\r\n"
+SUBSYS_LOADER_OK = b"loader selftest: OK\r\n"
+SUBSYS_STATUS_PREFIX = b"process selftest: zextest status 0x"
+SUBSYS_ZEXTEST_BANK0 = b"zextest: bank=0"
+SUBSYS_ZEXTEST_BANK1 = b"zextest: bank=1"
+SUBSYS_ZEXTEST_OK = b"zextest: OK\r\n"
+SUBSYS_STATUS_PASS = b"process selftest: zextest status 0xA500\r\n"
+SUBSYS_STATUS_PASS_BANK1 = b"process selftest: zextest status 0xA501\r\n"
+SUBSYS_REPEAT_OK = b"process selftest: repeated cycles OK\r\n"
+SUBSYS_TWO_BANK_OK = b"process selftest: two-bank OK\r\n"
+SUBSYS_RAW_RETURN_OK = b"process selftest: raw return EFAULT\r\n"
+SUBSYS_REJECTED_OK = b"process selftest: malformed rejected\r\n"
+SUBSYS_CORRUPT_ROLLBACK_OK = \
+    b"process selftest: corrupt entry rolled back\r\n"
+SUBSYS_PROCESS_DONE = b"process selftest: OK\r\n"
+SUBSYS_FAIL = b"selftest: FAIL"
+SUBSYS_PROMPT = b"Z80> "
+MONITOR_BANNER = b"ZephyrOS native monitor"
+
+# Production boot contract: the console service must bind and the monitor
+# must reach its prompt.  Optional boot-module diagnostics ("<name>:
+# unavailable 0x..") are tolerated -- a bench without the IOC/HID/V9958
+# hardware legitimately falls back to SIO -- but a failed console bind or
+# an unbound console is a failure.
+PRODUCTION_CONSOLE_FAIL = (b"console: unbound\r\n",
+                           b"console: dynamic driver failed\r\n",
+                           b"console: service failed\r\n")
+SUBSYS_EXIT = b"monitor: exit status 0x"
+
+# --- corrupt-store image -----------------------------------------------------
+ROMFS_CORRUPT_PANIC = b"PANIC: romfs: corrupt recovery image\r\n"
 
 # --- M8 IOC command + bulk transport ----------------------------------------
 M8IOC_TRANSPORT_LEVEL = b"m8 ioc: transport level 08\r\n"
@@ -326,6 +308,20 @@ M8FB_MODES = {
 }
 
 
+def _production_result(data):
+    """True when the production boot reached the monitor prompt.
+
+    The banner, the console-service line, the monitor banner and the
+    prompt must all be present; optional boot-module diagnostics are
+    allowed (an SIO-only bench is a supported fallback), while a panic,
+    an unbound console or a failed console bind is never acceptable."""
+    if b"PANIC" in data or any(marker in data
+                              for marker in PRODUCTION_CONSOLE_FAIL):
+        return False
+    return all(needle in data for needle in
+               (BANNER, CONSOLE_DYNAMIC_OK, MONITOR_BANNER, SUBSYS_PROMPT))
+
+
 def _m8_result(data):
     """True when the integration image's serial portion completed: the
     binding report, the PING level, the rejected-call invariants, no
@@ -444,130 +440,31 @@ def _m8hid_result(data):
         return "fail"
     return "ok"
 
-# Per-byte pacing for scripted monitor commands.  The console RX path is
-# a polled SIO register (no burst buffering), so a command sent as one
-# fast burst can overrun while the monitor is echoing/printing; sending
-# at typed-input speed keeps the script reliable on hardware.
-M7_SEND_DELAY = 0.002
+
+def _subsys_result(data):
+    """True when the subsystem image's serial sections completed: the
+    banner, the dynamic console line and the five mechanism-group
+    markers, with no FAIL/PANIC marker anywhere in the transcript."""
+    if SUBSYS_FAIL in data or b"PANIC" in data:
+        return False
+    for needle in (BANNER, CONSOLE_DYNAMIC_OK, SUBSYS_SYSCALL_OK,
+                   SUBSYS_IRQ_OK, SUBSYS_ROMFS_OK, SUBSYS_PROCESS_DONE,
+                   SUBSYS_LOADER_OK):
+        if needle not in data:
+            return False
+    return True
 
 
-def _expect_bytes(needle):
-    def check(tail):
-        index = tail.find(needle)
-        return None if index < 0 else index + len(needle)
-    return check
+def _subsys_complete(data):
+    """The serial portion plus the interactive monitor step: the mode
+    sends `Q` at the prompt and waits for the monitor exit line."""
+    return _subsys_result(data) and SUBSYS_EXIT in data
 
 
-def _expect_regex(pattern):
-    compiled = re.compile(pattern)
-
-    def check(tail):
-        match = compiled.search(tail)
-        return None if match is None else match.end()
-    return check
-
-
-class _M7Session:
-    """Scripted interactive acceptance for the M7 monitor image.
-
-    Steps run strictly in order; each command is sent only after the
-    previous response has fully completed (its trailing prompt was
-    observed), and command bytes are paced like typed input.  Both rules
-    are required on hardware: the polled console RX register has no
-    burst buffering, so input sent during output, or faster than the
-    monitor's echo loop, is lost.  Each step then waits for its marker
-    in the newly received bytes after the previous step, so repeated
-    text (the prompt, OK, ERR: ARG) cannot satisfy a later step early.
-    The operator scratch address is taken from the monitor banner and
-    used for the modify/readback step.
-    """
-
-    send_delay = M7_SEND_DELAY
-
-    def __init__(self, link):
-        self.link = link
-        self.pos = 0
-        self.step = 0
-        self.scratch = None
-        self.error = None
-        h = _expect_bytes
-        r = _expect_regex
-
-        def send_m():
-            return b"M %04X A5" % self.scratch
-
-        def send_d():
-            return b"D %04X 1" % self.scratch
-
-        def readback(tail):
-            needle = ("%04X: A5 " % self.scratch).encode("ascii")
-            index = tail.find(needle)
-            return None if index < 0 else index + len(needle)
-
-        self.steps = [
-            (None, h(M7_PROMPT), None),
-            (b"H", h(b"Q              quit\r\n"), None),
-            (None, h(M7_PROMPT), None),
-            (b"R", h(M7_SYSINFO), self._grab_scratch),
-            (None, h(M7_PROMPT), None),
-            (send_m, h(M7_OK), None),
-            (None, h(M7_PROMPT), None),
-            (send_d, readback, None),
-            (None, h(M7_PROMPT), None),
-            (b"D 0100 20", h(b"0110: "), None),
-            (None, h(M7_PROMPT), None),
-            (b"I 20", r(rb"IN=[0-9A-F]{2}\r\n"), None),
-            (None, h(M7_PROMPT), None),
-            (b"O 00 18", h(M7_ERR_ARG), None),
-            (None, h(M7_PROMPT), None),
-            (b"DB 7 0100 1", h(M7_ERR_ARG), None),
-            (None, h(M7_PROMPT), None),
-            (b"D ZZZ", h(M7_ERR_ARG), None),
-            (None, h(M7_PROMPT), None),
-            (b"Q", h(M7_EXIT), None),
-            (None, h(M7_PROMPT), None),
-            (b"R", h(M7_BANK_INFO), None),
-            (None, h(M7_PROMPT), None),
-            (b"Q", h(M7_EXIT), None),
-        ]
-        self.sent = False
-
-    def _grab_scratch(self, data):
-        match = M7_SCRATCH_RE.search(data)
-        if match is None:
-            self.error = "monitor banner did not print scratch=XXXX"
-            return
-        self.scratch = int(match.group(1), 16)
-
-    def _send(self, line):
-        """Send one command line paced byte-by-byte (typed-input speed)."""
-        data = line + b"\r"
-        for index, byte in enumerate(data):
-            self.link.write(bytes((byte,)))
-            self.link.flush()
-            if self.send_delay and index + 1 < len(data):
-                time.sleep(self.send_delay)
-
-    def update(self, data):
-        """Feed accumulated data; returns True when the script is done."""
-        while self.step < len(self.steps):
-            send, check, after = self.steps[self.step]
-            if send is not None and not self.sent:
-                line = send() if callable(send) else send
-                self._send(line)
-                self.sent = True
-            tail = data[self.pos:]
-            end = check(tail)
-            if end is None:
-                return False
-            self.pos += end
-            self.step += 1
-            self.sent = False
-            if after is not None:
-                after(data)
-                if self.error is not None:
-                    return True
-        return True
+def _romfs_corrupt_result(data):
+    """True only for the corrupt-store image: the early-console panic
+    marker is present before any module runs."""
+    return BANNER in data and ROMFS_CORRUPT_PANIC in data
 
 
 def _m8v9958_result(data):
@@ -599,11 +496,10 @@ def main(argv):
     parser.add_argument(
         "--baud", type=int, default=int(os.environ.get("ZOS_SERIAL_BAUD", "115200"))
     )
-    parser.add_argument("--mode", choices=("normal", "selftest", "irq", "m3",
-                                           "m4", "m4-failure", "m5",
-                                           "m5-corrupt", "m6", "m6-failure",
-                                           "m7", "m8-ioc", "m8-hid",
-                                           "m8-v9958", "m8-console", "m8",
+    parser.add_argument("--mode", choices=("normal", "subsystem",
+                                           "romfs-corrupt", "m8-ioc",
+                                           "m8-hid", "m8-v9958",
+                                           "m8-console", "m8",
                                            "m8-fb-nohid",
                                            "m8-fb-nohid-nov9958",
                                            "m8-fb-badioc", "m8-fb-arena"),
@@ -645,9 +541,16 @@ def main(argv):
 
     print("serial_smoke: listening on %s at %d 8N1 (mode=%s, timeout=%gs)"
           % (args.port, args.baud, args.mode, args.timeout))
-    if args.mode == "m7":
-        print("serial_smoke: mode m7 checks the boot log; power-cycle the "
-              "board or press RESET now so the boot is captured")
+    if args.mode == "subsystem":
+        print("serial_smoke: mode subsystem checks the boot log and the "
+              "interactive monitor step; power-cycle the board or press "
+              "RESET now so the boot is captured; the tool sends Q once "
+              "the Z80> prompt appears and finishes on the monitor exit "
+              "line")
+    if args.mode == "romfs-corrupt":
+        print("serial_smoke: mode romfs-corrupt checks the boot log for "
+              "the corrupt-store panic; power-cycle the board or press "
+              "RESET now so the boot is captured")
     if args.mode == "m8-ioc":
         print("serial_smoke: mode m8-ioc checks the boot log; "
               "power-cycle the board or press RESET now so the boot "
@@ -716,9 +619,6 @@ def main(argv):
     bridge_drops = 0
     host_sync_at = 0.0
     rx_byte_sent = False
-    m7_session = None
-    m7_session_base = 0
-    m7_warm_hinted = False
     try:
         while time.monotonic() < deadline:
             if link is None:
@@ -767,72 +667,28 @@ def main(argv):
                 continue
             if chunk:
                 data += chunk
-                if args.mode == "m7":
-                    if m7_session is None:
-                        if (BANNER in data and CONSOLE_DYNAMIC_OK in data
-                                and M7_SELFTEST_OK in data):
-                            # Boot log captured; run the session strictly
-                            # from the bytes after the selftest marker so
-                            # a stale warm prompt (if any) cannot satisfy
-                            # the first step early.
-                            m7_session_base = (data.find(M7_SELFTEST_OK)
-                                               + len(M7_SELFTEST_OK))
-                            m7_session = _M7Session(link)
-                        elif M7_PROMPT in data and not m7_warm_hinted:
-                            m7_warm_hinted = True
-                            print("serial_smoke: the board is already "
-                                  "running the monitor; press RESET (or "
-                                  "power-cycle) now to capture the boot "
-                                  "log")
-                    if m7_session is not None and \
-                            m7_session.update(data[m7_session_base:]):
+                if args.mode == "normal":
+                    if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
+                            MONITOR_BANNER in data and SUBSYS_PROMPT in data):
                         break
-                elif args.mode == "normal" and BANNER in data:
-                    break
-                elif args.mode == "selftest" and BANNER in data and SELFTEST_OK in data:
-                    break
-                elif args.mode == "irq" and BANNER in data and IRQ_SELFTEST_OK in data:
-                    break
-                elif args.mode == "m3":
-                    if M3_RX_PROMPT in data and not rx_byte_sent:
-                        link.write(M3_RX_BYTE)
+                    if b"PANIC" in data or any(
+                            marker in data
+                            for marker in PRODUCTION_CONSOLE_FAIL):
+                        break
+                elif args.mode == "subsystem":
+                    # The monitor step is interactive: send Q once the
+                    # prompt appears, then finish on the exit line (the
+                    # launcher relaunches the monitor after a normal exit,
+                    # so wait only for the first exit line).
+                    if SUBSYS_PROMPT in data and not rx_byte_sent:
+                        link.write(b"Q")
                         link.flush()
                         rx_byte_sent = True
-                        print("serial_smoke: sent RX byte %r" % M3_RX_BYTE)
-                    if (CONSOLE_DYNAMIC_OK in data and
-                            M3_SELFTEST_OK in data):
+                        print("serial_smoke: sent Q at the monitor prompt")
+                    if _subsys_complete(data):
                         break
-                elif args.mode == "m4":
-                    if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-                            M4_SELFTEST_OK in data and
-                            M4_SIO_PREFIX in data and
-                            M4_ACCEPT_OK in data):
-                        break
-                elif args.mode == "m4-failure":
-                    if (BANNER in data and CONSOLE_DYNAMIC_FAIL in data and
-                            M4_FAILURE_OK in data):
-                        break
-                elif args.mode == "m5":
-                    if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-                            M5_SELFTEST_OK in data):
-                        break
-                elif args.mode == "m5-corrupt":
-                    if BANNER in data and M5_CORRUPT_PANIC in data:
-                        break
-                elif args.mode == "m6":
-                    if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-                            M6_STATUS_PASS in data and
-                            M6_STATUS_PASS_BANK1 in data and
-                            M6_TWO_BANK_OK in data and
-                            M6_REPEAT_OK in data and
-                            M6_RAW_RETURN_OK in data and
-                            M6_REJECTED_OK in data and
-                            M6_SELFTEST_OK in data):
-                        break
-                elif args.mode == "m6-failure":
-                    if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-                            M6_ZEXTEST_OK in data and
-                            M6_FAILURE_OK in data):
+                elif args.mode == "romfs-corrupt":
+                    if _romfs_corrupt_result(data):
                         break
                 elif args.mode == "m8-ioc":
                     if (_m8ioc_complete(data) or _m8ioc_pending(data)):
@@ -886,72 +742,22 @@ def main(argv):
     sys.stdout.buffer.write(data + (b"" if data.endswith(b"\n") else b"\n"))
 
     if args.mode == "normal":
-        ok = BANNER in data
-        expected = "the exact M0 banner"
-    elif args.mode == "selftest":
-        ok = BANNER in data and SELFTEST_OK in data
-        expected = "the banner plus 'syscall selftest: OK'"
-    elif args.mode == "irq":
-        ok = BANNER in data and IRQ_SELFTEST_OK in data
-        expected = "the banner plus 'irq selftest: OK'"
-    elif args.mode == "m4":
-        ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-              M4_SELFTEST_OK in data and M4_SIO_PREFIX in data and
-              M4_ACCEPT_OK in data)
-        expected = ("the banner, the dynamic console line, the loader "
-                    "self-test, the dynamic SIO acceptance line, and "
-                    "'m4 selftest: OK'")
-    elif args.mode == "m4-failure":
-        ok = (BANNER in data and CONSOLE_DYNAMIC_FAIL in data and
-              M4_FAILURE_OK in data and CONSOLE_DYNAMIC_OK not in data)
-        expected = ("the banner, 'console: dynamic driver failed' (no "
-                    "dynamic console line), and 'm4 failure selftest: OK'")
-    elif args.mode == "m5":
-        ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-              M5_SELFTEST_OK in data and b"FAIL" not in data and
-              b"PANIC" not in data)
-        expected = ("the banner, the dynamic console line (SIO loaded "
-                    "from ROMFS), and 'm5 romfs selftest: OK'")
-    elif args.mode == "m5-corrupt":
-        ok = (BANNER in data and M5_CORRUPT_PANIC in data and
-              CONSOLE_DYNAMIC_OK not in data and
-              CONSOLE_DYNAMIC_FAIL not in data and
-              M5_SELFTEST_OK not in data)
+        ok = _production_result(data)
+        expected = ("the exact banner, 'console: dynamic sio0.b OK', the "
+                    "monitor banner and the 'Z80> ' prompt, with no PANIC "
+                    "and no failed console bind")
+    elif args.mode == "subsystem":
+        ok = _subsys_complete(data)
+        expected = ("the banner, the dynamic console line, the five "
+                    "mechanism groups (syscall/irq/romfs/process/loader "
+                    "selftest: OK) with no FAIL/PANIC marker, and one "
+                    "interactive monitor step ending on 'monitor: exit "
+                    "status 0x'")
+    elif args.mode == "romfs-corrupt":
+        ok = _romfs_corrupt_result(data)
         expected = ("the banner and the early-console marker "
-                    "'PANIC: romfs: corrupt recovery image' with no module "
-                    "execution")
-    elif args.mode == "m6":
-        ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-              M6_ZEXTEST_BANK0 in data and M6_ZEXTEST_BANK1 in data and
-              M6_ZEXTEST_OK in data and M6_STATUS_PASS in data and
-              M6_STATUS_PASS_BANK1 in data and M6_REPEAT_OK in data and
-              M6_TWO_BANK_OK in data and M6_RAW_RETURN_OK in data and
-              M6_REJECTED_OK in data and M6_SELFTEST_OK in data and
-              b"FAIL" not in data and b"PANIC" not in data)
-        expected = ("the banner, the dynamic console line, zextest in "
-                    "bank 0 and bank 1, the repeated-cycle/two-bank/"
-                    "raw-return/malformed milestones, and "
-                    "'m6 selftest: OK'")
-    elif args.mode == "m6-failure":
-        ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-              M6_ZEXTEST_OK in data and M6_FAILURE_OK in data and
-              M6_SELFTEST_OK not in data and b"FAIL" not in data and
-              b"PANIC" not in data)
-        expected = ("the banner, the dynamic console line, the valid "
-                    "copy running after the truncated ZEX rolled back, "
-                    "and 'm6 failure selftest: OK'")
-    elif args.mode == "m7":
-        ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-              M7_SELFTEST_OK in data and M7_BANNER in data and
-              m7_session is not None and m7_session.step == len(m7_session.steps)
-              and m7_session.error is None and
-              data.count(M7_EXIT) == 2 and
-              b"m7 selftest: FAIL" not in data and
-              b"FAIL" not in data and b"PANIC" not in data)
-        expected = ("the kernel-side 'm7 selftest: OK', the monitor "
-                    "banner and prompt, the scripted help/system-info/"
-                    "dump/modify/readback/port/rejection commands, and "
-                    "two identical Q exit/relaunch count lines")
+                    "'PANIC: romfs: corrupt recovery image' with no "
+                    "module execution")
     elif args.mode == "m8-ioc":
         verdict = _m8ioc_result(data)
         ok = verdict == "ok"
@@ -1008,12 +814,6 @@ def main(argv):
                     "and 'm8 fallback selftest: OK'"
                     % (spec["input"][0].decode(),
                        spec["output"][0].decode()))
-    else:
-        ok = (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-              SELFTEST_OK in data and IRQ_SELFTEST_OK in data and
-              M3_SELFTEST_OK in data)
-        expected = ("the banner, the dynamic console line, syscall/irq/m3 "
-                    "self-tests, and the console RX round trip")
 
     if not ok:
         _explain_wrong_image(args.mode, data)
@@ -1031,110 +831,41 @@ def main(argv):
 def _explain_wrong_image(mode, data):
     """Turn an image/mode mismatch into an actionable hint.
 
-    The M5 success and corrupt images are flashed separately; a run with
-    the wrong --mode otherwise fails with an unexplained timeout on the
-    wrong transcript.
+    The subsystem and corrupt-store images are flashed separately; a run
+    with the wrong --mode otherwise fails with an unexplained timeout on
+    the wrong transcript.
     """
-    if mode == "m5":
-        if M5_CORRUPT_PANIC in data:
-            if b"header 5A 52 46 53" in data:
-                print("serial_smoke: hint: the corrupt-recovery-image marker "
-                      "was observed; the m5-corrupt image is probably flashed "
-                      "(use --mode m5-corrupt)", file=sys.stderr)
-            else:
-                print("serial_smoke: hint: ROMFS init failed and the staged "
-                      "header does not show 'ZRFS'; the diagnostic line above "
-                      "carries the raw code, live latch, and staged bytes - "
-                      "keep it for the record", file=sys.stderr)
-        elif CONSOLE_DYNAMIC_OK in data and M5_SELFTEST_OK not in data:
-            print("serial_smoke: hint: the dynamic console bound but no M5 "
-                  "selftest marker appeared; the production image "
-                  "(build/zephyros.bin) may be flashed instead of "
-                  "build-m5-selftest/zephyros-m5-selftest.bin",
+    if mode == "subsystem":
+        if ROMFS_CORRUPT_PANIC in data:
+            print("serial_smoke: hint: the corrupt-store panic was "
+                  "observed; the romfs-corrupt image is probably flashed "
+                  "(use --mode romfs-corrupt)", file=sys.stderr)
+        elif not BANNER in data:
+            print("serial_smoke: hint: no boot log was captured.  The "
+                  "boot lines (banner and group markers) print once at "
+                  "boot; start this tool first, then power-cycle the "
+                  "board or press RESET while it waits, and rerun",
                   file=sys.stderr)
-    elif mode == "m5-corrupt":
-        if M5_SELFTEST_OK in data:
-            print("serial_smoke: hint: the ROMFS success marker was observed; "
-                  "the M5 success image is probably flashed "
-                  "(use --mode m5)", file=sys.stderr)
-        elif CONSOLE_DYNAMIC_OK in data and M5_CORRUPT_PANIC not in data:
-            print("serial_smoke: hint: the dynamic console bound instead of "
-                  "the panic marker; the production or an older image may be "
-                  "flashed instead of "
-                  "build-m5-corrupt-selftest/zephyros-m5-corrupt.bin",
-                  file=sys.stderr)
-    elif mode == "m6":
-        if M5_CORRUPT_PANIC in data:
-            print("serial_smoke: hint: ROMFS init failed with the exact "
-                  "m5-corrupt acceptance transcript; the m5-corrupt image "
-                  "from the M5 pass is probably still flashed (it rejects "
-                  "at the header reserved field, code 0x0A, while the "
-                  "staged header still reads ZRFS).  Flash "
-                  "build-m6-selftest/zephyros-m6-selftest.bin and rerun "
-                  "--mode m6", file=sys.stderr)
-        elif M6_FAILURE_OK in data:
-            print("serial_smoke: hint: the M6 failure marker was observed; "
-                  "the m6-failure image is probably flashed "
-                  "(use --mode m6-failure)", file=sys.stderr)
-        elif M5_SELFTEST_OK in data:
-            print("serial_smoke: hint: the M5 success marker was observed; "
-                  "an M5 image may be flashed instead of "
-                  "build-m6-selftest/zephyros-m6-selftest.bin",
-                  file=sys.stderr)
-    elif mode == "m6-failure":
-        if M5_CORRUPT_PANIC in data:
-            print("serial_smoke: hint: ROMFS init failed with the exact "
-                  "m5-corrupt acceptance transcript; the m5-corrupt image "
-                  "from the M5 pass is probably still flashed.  Flash "
-                  "build-m6-failure-selftest/zephyros-m6-failure.bin and "
-                  "rerun --mode m6-failure", file=sys.stderr)
-        elif M6_SELFTEST_OK in data:
-            print("serial_smoke: hint: the M6 success marker was observed; "
-                  "the M6 success image is probably flashed "
-                  "(use --mode m6)", file=sys.stderr)
-        elif M5_SELFTEST_OK in data:
-            print("serial_smoke: hint: the M5 success marker was observed; "
-                  "an M5 image may be flashed instead of "
-                  "build-m6-failure-selftest/zephyros-m6-failure.bin",
-                  file=sys.stderr)
-    elif mode == "m7":
-        if M6_SELFTEST_OK in data:
-            print("serial_smoke: hint: the M6 success marker was observed; "
-                  "flash build-m7-selftest/zephyros-m7-selftest.bin and "
-                  "rerun --mode m7", file=sys.stderr)
-        elif M5_CORRUPT_PANIC in data:
-            print("serial_smoke: hint: ROMFS init failed with the exact "
-                  "m5-corrupt acceptance transcript; the m5-corrupt image "
-                  "from the M5 pass is probably still flashed.  Flash "
-                  "build-m7-selftest/zephyros-m7-selftest.bin and rerun "
-                  "--mode m7", file=sys.stderr)
-        elif not (BANNER in data and CONSOLE_DYNAMIC_OK in data
-                  and M7_SELFTEST_OK in data):
-            if BANNER in data:
-                print("serial_smoke: hint: the captured boot log is "
-                      "incomplete (missing the dynamic console line "
-                      "and/or 'm7 selftest: OK'); the capture may have "
-                      "started mid-boot or the wrong image is flashed.  "
-                      "Start this tool first, then power-cycle the board "
-                      "or press RESET while it waits; if it persists, "
-                      "flash build-m7-selftest/zephyros-m7-selftest.bin "
-                      "and rerun --mode m7", file=sys.stderr)
-            else:
-                print("serial_smoke: hint: no boot log was captured.  The "
-                      "boot lines (M0 banner, dynamic console line, "
-                      "'m7 selftest: OK') print once at boot; if the "
-                      "board was already running, the FT230X only kept "
-                      "the last few dozen bytes.  Start this tool first, "
-                      "then power-cycle the board or press RESET while "
-                      "it waits, and rerun", file=sys.stderr)
-        elif M7_BANNER in data and data.count(M7_EXIT) < 2:
-            print("serial_smoke: hint: the monitor started but the "
-                  "scripted session did not complete; the captured "
-                  "transcript above shows how far it got.  The script "
-                  "waits for the prompt before each paced command, so a "
-                  "truncated command echo means the console link is "
-                  "dropping bytes (check cabling/flow control)",
-                  file=sys.stderr)
+        elif not SUBSYS_LOADER_OK in data:
+            print("serial_smoke: hint: the captured boot log is "
+                  "incomplete (one or more mechanism groups did not "
+                  "report OK); the capture may have started mid-boot or "
+                  "the wrong image is flashed", file=sys.stderr)
+        else:
+            print("serial_smoke: hint: the groups completed but the "
+                  "interactive monitor step did not finish; the "
+                  "transcript above shows how far it got (the tool sends "
+                  "Q at the Z80> prompt)", file=sys.stderr)
+    elif mode == "romfs-corrupt":
+        if SUBSYS_LOADER_OK in data or SUBSYS_ROMFS_OK in data:
+            print("serial_smoke: hint: the ROMFS success markers were "
+                  "observed; the subsystem image is probably flashed "
+                  "(use --mode subsystem)", file=sys.stderr)
+        elif not BANNER in data:
+            print("serial_smoke: hint: no boot log was captured; the "
+                  "panic marker prints once at boot.  Start this tool "
+                  "first, then power-cycle the board or press RESET "
+                  "while it waits, and rerun", file=sys.stderr)
     elif mode == "m8-ioc":
         if M8IOC_UNAVAILABLE in data or M8IOC_FAIL in data:
             print("serial_smoke: hint: the IOC selftest did not complete "
@@ -1145,10 +876,10 @@ def _explain_wrong_image(mode, data):
                   "build-m8-ioc-selftest/"
                   "zephyros-m8-ioc-selftest.bin is flashed",
                   file=sys.stderr)
-        elif M7_SELFTEST_OK in data:
-            print("serial_smoke: hint: the M7 marker was observed; the M7 "
-                  "image is probably flashed instead of "
-                  "build-m8-ioc-selftest/"
+        elif SUBSYS_LOADER_OK in data:
+            print("serial_smoke: hint: the subsystem image markers were "
+                  "observed; the subsystem image is probably flashed "
+                  "instead of build-m8-ioc-selftest/"
                   "zephyros-m8-ioc-selftest.bin", file=sys.stderr)
         elif not BANNER in data:
             print("serial_smoke: hint: no boot log was captured.  This "

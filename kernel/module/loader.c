@@ -23,9 +23,9 @@
  * RESIDENT until reboot; M4 exposes no unload operation.
  *
  * Every container byte flows through a bounded read source: the
- * historical module_load() wraps a memory blob, romfs_load_zmod() wraps
- * a recovery-store file, and both share module_load_source() and the
- * validation/relocation code in relocate.c.
+ * historical module_load() wraps a memory blob, the VFS file adapter
+ * (vfs_file_source) wraps a `/SYSTEM` file, and both share
+ * module_load_source() and the validation/relocation code in relocate.c.
  */
 
 #include "zephyros/module.h"

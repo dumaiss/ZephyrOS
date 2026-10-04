@@ -19,7 +19,9 @@
  * mapped into the bank-7 address space.
  *
  * The API is deliberately small and is not the future native filesystem
- * ABI (M9 defines that separately).
+ * ABI (M9 defines that separately).  M9 keeps exactly one lookup
+ * (`romfs_lookup_ci`, ASCII case-folded) and one bounded read; the VFS
+ * ROMFS provider in fs/romfs/ is the only caller that enumerates.
  */
 
 #ifndef ZEPHYROS_ROMFS_H
@@ -61,9 +63,12 @@ typedef struct romfs_file {
  * whole; a partially valid image is never published). */
 int romfs_init(void);
 
-/* Resolve a case-sensitive native name.  Returns 0 on success, or
- * -ZOS_ENOENT / negative errors. */
-int romfs_lookup(const char *name, romfs_file_t *out);
+/* The one ROMFS lookup: resolve a native name with ASCII case-folded
+ * comparison (architecture sections 32.8 and 32.13).  It serves the VFS
+ * ROMFS provider, the ZEX launcher and the module resource imports; there
+ * is no case-sensitive variant beside it.  Returns 0 on success, or
+ * -ZOS_ENOENT / a negative error. */
+int romfs_lookup_ci(const char *name, romfs_file_t *out);
 
 /* Bounded read from `offset` (file-relative) into `dst`.  Returns the
  * number of bytes copied (0 at EOF when offset == size and length == 0),
@@ -72,10 +77,13 @@ int romfs_lookup(const char *name, romfs_file_t *out);
 int romfs_read(const romfs_file_t *file, uint32_t offset, void *dst,
 	       uint16_t length);
 
-/* Load a ZMOD container stored under `romfs_name` through the shared M4
- * loader (kernel/module/loader.c).  `name` is the diagnostic module name.
- * Returns the loader result (module index >= 0) or a negative error. */
-int romfs_load_zmod(const char *name, const char *romfs_name);
+/* --- provider support ---------------------------------------------------
+ * Indexed access to the validated directory.  It exists for the VFS ROMFS
+ * provider's `readdir`, which is the only consumer that needs to enumerate;
+ * ROMFS-boot builds only.  Returns 0, or -ZOS_ENOENT past the end of the
+ * directory (which the provider reports as end-of-stream). */
+int romfs_entry_at(uint16_t index, romfs_file_t *out, char *name,
+		   uint16_t name_size);
 
 /* --- module-facing resource imports (driver ABI v2) --------------------
  * The only filesystem-like services a loaded module receives.  Both

@@ -23,7 +23,6 @@
  */
 
 #include "zephyros/romfs.h"
-#include "zephyros/module.h"
 
 extern uint8_t rom_access_staging[];
 
@@ -136,17 +135,31 @@ static uint8_t romfs_name_valid(const uint8_t *name)
 	return 1;
 }
 
+/* The one and only ROMFS name comparison: ASCII case-folded (architecture
+ * sections 32.8 and 32.13).  There is no case-sensitive lookup beside it;
+ * VFS, the provider and the module resource imports all arrive here. */
 static uint8_t romfs_name_match(const uint8_t *stored, const char *wanted)
 {
 	uint8_t i;
 
 	for (i = 0; i < ROMFS_NAME_SIZE; ++i) {
 		uint8_t c = stored[i];
+		uint8_t w;
 
 		if (c == 0) {
 			return (uint8_t)(wanted[i] == 0);
 		}
-		if (wanted[i] == 0 || (uint8_t)wanted[i] != c) {
+		w = (uint8_t)wanted[i];
+		if (w == 0) {
+			return 0;
+		}
+		if (c >= 'a' && c <= 'z') {
+			c = (uint8_t)(c - 32);
+		}
+		if (w >= 'a' && w <= 'z') {
+			w = (uint8_t)(w - 32);
+		}
+		if (w != c) {
 			return 0;
 		}
 	}
@@ -260,7 +273,7 @@ int romfs_init(void)
 	return 0;
 }
 
-int romfs_lookup(const char *name, romfs_file_t *out)
+int romfs_lookup_ci(const char *name, romfs_file_t *out)
 {
 	uint16_t i;
 
@@ -287,6 +300,42 @@ int romfs_lookup(const char *name, romfs_file_t *out)
 	return -ZOS_ENOENT;
 }
 
+/* Directory enumeration, needed only by the VFS ROMFS provider.  Copy entry
+ * `index` metadata and its NUL-terminated name (ASCII, at most
+ * ROMFS_NAME_SIZE bytes).  Returns 0 or -ZOS_ENOENT past the end of the
+ * validated directory; the provider turns that into end-of-stream. */
+int romfs_entry_at(uint16_t index, romfs_file_t *out, char *name,
+		   uint16_t name_size)
+{
+	uint32_t at;
+	int result;
+
+	if (romfs_ready == 0 || out == (romfs_file_t *)0 ||
+	    index >= romfs_file_count) {
+		return -ZOS_ENOENT;
+	}
+	at = ROMFS_HEADER_SIZE + ((uint32_t)index << 5) +
+	     ((uint32_t)index << 2);
+	result = romfs_copy_logical(at, rom_access_staging, ROMFS_ENTRY_SIZE);
+	if (result != 0) {
+		return result;
+	}
+	out->offset = romfs_le32(rom_access_staging + 24);
+	out->size = romfs_le32(rom_access_staging + 28);
+	out->flags = romfs_le16(rom_access_staging + 32);
+	if (name != (char *)0 && name_size > 0) {
+		uint16_t i = 0;
+
+		while (i + 1 < name_size &&
+		       rom_access_staging[i] != 0 &&
+		       i < ROMFS_NAME_SIZE) {
+			name[i] = (char)rom_access_staging[i];
+			++i;
+		}
+		name[i] = '\0';
+	}
+	return 0;
+}
 int romfs_read(const romfs_file_t *file, uint32_t offset, void *dst,
 	       uint16_t length)
 {
@@ -315,16 +364,6 @@ int romfs_read(const romfs_file_t *file, uint32_t offset, void *dst,
 	return (int)length;
 }
 
-/* --- module-loader source adapter ------------------------------------- */
-
-static int romfs_source_read(const void *ctx, uint16_t offset, uint8_t *dst,
-			     uint16_t length)
-{
-	const romfs_file_t *file = (const romfs_file_t *)ctx;
-
-	return romfs_read(file, (uint32_t)offset, dst, length);
-}
-
 /* --- module-facing resource imports (driver ABI v2) --------------------
  * Narrow, kernel-owned wrappers: resolve by name, require exactly
  * ROMFS_FLAG_DATA, bound every access, and never expose romfs_file_t or
@@ -338,7 +377,7 @@ static int romfs_resource_lookup(const char *name, romfs_file_t *file)
 	if (name == (const char *)0) {
 		return -ZOS_EINVAL;
 	}
-	result = romfs_lookup(name, file);
+	result = romfs_lookup_ci(name, file);
 	if (result != 0) {
 		return result;
 	}
@@ -390,32 +429,4 @@ int romfs_resource_read(const char *name, uint16_t offset, void *dst,
 		return 0;
 	}
 	return romfs_read(&file, (uint32_t)offset, dst, length);
-}
-
-int romfs_load_zmod(const char *name, const char *romfs_name)
-{
-	static romfs_file_t file;
-	struct zmod_source source;
-	int result;
-
-	if (romfs_ready == 0) {
-		return -ZOS_EINVAL;
-	}
-	if (name == (const char *)0 || romfs_name == (const char *)0) {
-		return -ZOS_EINVAL;
-	}
-	result = romfs_lookup(romfs_name, &file);
-	if (result != 0) {
-		return result;
-	}
-	if (file.flags != ROMFS_FLAG_ZMOD) {
-		return -ZOS_EINVAL;
-	}
-	if (file.size < ZMOD_HEADER_SIZE || file.size > 0xFFFFu) {
-		return ZMOD_EFORMAT;
-	}
-	source.read = romfs_source_read;
-	source.ctx = &file;
-	source.size = (uint16_t)file.size;
-	return module_load_source(name, &source);
 }

@@ -23,7 +23,13 @@ READY/DONE lifecycle, without any firmware change.  M8 (work package
 17) adds the HID keyboard/text class: a third production ZMOD module
 loaded after IOC that fetches translated USB-keyboard bytes only when
 the semantic doorbell is asserted and registers the input-only
-`hid.keyboard0`.  The M3 test-only static drivers remain retired.
+`hid.keyboard0`.  The M3 test-only static drivers remain retired.  The
+M1-M7 acceptance images -- including the M3 and M4 images and the
+pre-M5 embedded-catalog boot mode -- were retired under the Mn-1
+retention rule (work package 25a); the registry, IRQ, loader and console
+mechanisms they proved now run on the current boot path in the subsystem
+acceptance image (`tests/target/{syscall,irq,romfs,process,loader}/`,
+`tests/test_subsys_sim.py`).
 
 ## 1. Concepts
 
@@ -171,28 +177,26 @@ banner (early console)
 [TEST-ONLY HOOK: zos_target_test_early() in acceptance builds]
 device_registry_init()
 module_loader_init()
-[TEST-ONLY HOOK: zos_target_test_irq_hold_begin() in the M4 IRQ
- acceptance image only -- the concrete CTC0 programming is test-owned
- (tests/target/support/ctc_test.c)]
 boot module source (kernel_boot_module()):
-    pre-M5 images -> module_catalog_load_all()
-                     (embedded SIO module registers sio0.b)
-    ROMFS images  -> romfs_init()
-                     romfs_load_zmod("sio", "sio.zmod")
-                     romfs_load_zmod("ioc", "ioc.zmod")    ; M8
-                     romfs_load_zmod("hid", "hid.zmod")    ; M8
-                     romfs_load_zmod("v9958", "v9958.zmod") ; M8
-                     (failure: "<name>: unavailable 0x<ZOS_E*>"
-                      on the early console -- the exact code names a
-                      missing entry 0x05, a malformed container 0x0A,
-                      an exhausted arena 0x06 or a refused init 0x0B;
-                      the SIO fallback and every earlier resident
-                      module are untouched)
-[TEST-ONLY HOOK: zos_target_test_irq_hold_end()]
+    vfs_init()
+      (register built-in providers, mount /SYSTEM from the "recovery"
+       source; a failure prints the M5 romfs_diagnose() lines and
+       panics with "romfs: corrupt recovery image")
+    vfs_open("/SYSTEM/sio.zmod")   -> module_load_source()
+    vfs_open("/SYSTEM/ioc.zmod")   ; M8, gated by ZOS_IOC_BOOT
+    vfs_open("/SYSTEM/hid.zmod")   ; M8, gated by ZOS_HID_BOOT
+    vfs_open("/SYSTEM/v9958.zmod") ; M8, gated by ZOS_V9958_BOOT
+    vfs_mount_all()  ; no-op in production
+      (failure: "<name>: unavailable 0x<ZOS_E*>"
+       on the early console -- the exact code names a
+       missing entry 0x05, a malformed container 0x0A,
+       an exhausted arena 0x06 or a refused init 0x0B;
+       the SIO fallback and every earlier resident
+       module are untouched)
 console_bind_defaults()       ; one final call, after all four loads
 dynamic console line via console service
 [TEST-ONLY HOOK: zos_target_test_late() in acceptance builds]
-monitor launcher (unchanged process_exec("monitor.zex"))
+monitor launcher (unchanged process_exec("/SYSTEM/monitor.zex"))
 halt loop
 ```
 
@@ -205,13 +209,14 @@ hooks above are the entire production-side integration surface.
 production manifest `modules/manifests/sio.json` and the shared
 module-runtime glue `modules/runtime/sdcc_indirect_calls.asm`):
 
-- The driver code is built, packed, and embedded as a ZMOD module; no SIO
-  symbol is linked into the kernel image (enforced by `mapcheck.py`).
+- The driver code is built, packed, and loaded from the recovery store as
+  a ZMOD module; no SIO symbol is linked into the kernel image (enforced
+  by `mapcheck.py`).
   Module sources must avoid byte-fragmented relocations, so the device
   descriptor is a `static const` and the module provides its own
   `___sdcc_call_iy/hl` glue (`docs/module-format.md` section 6).
-  `sio_module.c` is production-only; the IRQ self-test and init-failure
-  entries live under `tests/modules/` (`sio_irq_module.c`,
+  `sio_module.c` is production-only; the IRQ and init-failure container
+  fixtures live under `tests/modules/` (`sio_irq_module.c`,
   `sio_fail_module.c`) with their own manifests.
 - Ports: data `22h`, control `23h`; 115200 8N1, polled, interrupts stay
   disabled (`WR1 = 00h`).
@@ -653,12 +658,21 @@ the human monitor pass (section 8.2).
 ### 6.1 Failure-path evidence
 
 The retired M3 fallback flags (`ZOS_M3_NO_STATIC_DRIVERS`,
-`ZOS_M3_NO_CONSOLE_BIND`) no longer exist.  The M4 acceptance matrix is
-the fallback evidence:
+`ZOS_M3_NO_CONSOLE_BIND`) no longer exist, and the M4 failure image that
+proved failed-init rollback on target was retired under the Mn-1
+retention rule (work package 25a).  The rollback mechanism is now covered
+by the loader group of the subsystem acceptance image
+(`tests/target/loader/loader_test.c`, `tests/test_subsys_sim.py`), which
+loads the failed-init fixture `tests/modules/m4_fail.c` from `/SYSTEM`
+and checks exact device/IRQ/granule/descriptor rollback; the
+`sio_fail`/`sio-irq` ZMOD fixtures remain packed containers for
+`make zmod-test`.  The runtime fallback evidence is the M8
+failure/fallback matrix in section 8.2:
 
 | Scenario | Behavior | Early-console diagnostic |
 | --- | --- | --- |
-| runtime failure | module load/init reports failures (`make m4-failure-selftest`, `tests/modules/sio_fail_module.c`) | `console: dynamic driver failed` |
+| runtime failure | an optional module's load/init failure is rolled back and diagnosed (`build-m8-fb-*`) | `<name>: unavailable 0x<ZOS_E*>` |
+| runtime failure | required SIO load/init reports failure | `console: dynamic driver failed` |
 | runtime failure | binding finds no suitable device | `console: unbound` |
 | runtime service failure | bound device reports an error | `console: service failed` |
 
@@ -671,9 +685,10 @@ integration gate:
 
 - **Boot contract**: `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod`
   (plus `v9958-6x8.font` and `monitor.zex`) are the only production
-  ROMFS entries and are loaded in that order; a single
+  ROMFS entries and are loaded in that order through their
+  `/SYSTEM/<name>.zmod` VFS paths (M9); a single
   `console_bind_defaults()` runs after all four loads, followed by the
-  unchanged `process_exec("monitor.zex")` launcher.  A failed optional
+  unchanged `process_exec("/SYSTEM/monitor.zex")` launcher.  A failed optional
   module prints `<name>: unavailable 0x<ZOS_E*>` on the direct early
   SIO (0x05 missing entry, 0x06 arena exhausted, 0x0A malformed
   container, 0x0B refused init) and the boot continues; ROMFS
@@ -721,28 +736,26 @@ integration gate:
 A loaded module may claim an M2 logical source through
 `zdriver_api.irq_claim` and receives a bank-7 handler; the executive maps
 bank 7 before dispatch and owns the final `RETI`.  The production SIO
-module stays polling-only.  Two test paths prove the IRQ integration:
+module stays polling-only.  Two current paths prove the IRQ integration
+on the subsystem acceptance image (`tests/test_subsys_sim.py`):
 
-- the M3 target test (`tests/target/m3/m3_irq_probe.c`) claims
-  `IRQ_CTC0` directly, a bounded EI spin receives repeated deliveries,
-  the handler records mode-11 mapping and bank-7 ISR stack placement,
-  then the source is released and CTC0 quiesced;
-- the SIO IRQ self-test module variant
-  (`tests/modules/sio_irq_module.c`, `tests/modules/sio-irq.json`,
-  `make m4-selftest`) claims `IRQ_CTC0` from its *relocated* init while
-  the kernel keeps CTC0 running with the M2 lock held (pre-claim ticks
-  stay pending — an unowned dispatch would quiesce the timer), counts
-  three deliveries inside a bounded EI spin, verifies its relocated
-  state pointer, and releases the source before registering the device.
+- the IRQ group (`tests/target/irq/irq_test.c`) drives the executive
+  directly: registry semantics (invalid source/handler, duplicate claim,
+  release, double release), mode-10 delivery from application banks 0
+  and 6, mode-11 delivery on the kernel stack with mode-mapping and
+  bank-7 ISR-stack evidence, and the unclaimed-source quiesce path;
+- the loader group's relocation fixture (`tests/target/loader/`,
+  `tests/modules/m4_probe.c`) claims `IRQ_CTC0` from its *relocated* init
+  and proves the claim is owned by the module.  The SIO IRQ variant
+  (`tests/modules/sio_irq_module.c`, `tests/modules/sio-irq.json`)
+  remains a packed container fixture for `make zmod-test`.
 
-The CTC0 programming these acceptance paths need is test-owned
+The CTC0 programming these paths need is test-owned
 (`tests/target/include/ctc_test.h`, `tests/target/support/ctc_test.c`)
-and is linked only into the M2/M3/M4 acceptance images.  The production
+and is linked only into the subsystem acceptance image.  The production
 CTC owner (`drivers/ctc/ctc.c`) keeps only `platform_irq_quiesce()`;
 `platform_ctc0_test_start()`, `platform_ctc0_stop()`, and the obsolete
-`platform_irq_vector()` are not declared or linked in production, and
-the kernel's M4 boot phase reaches the test timer only through the
-generic `zos_target_test_irq_hold_begin()`/`_end()` seam hooks.
+`platform_irq_vector()` are not declared or linked in production.
 
 ## 10. Placement and validation
 
@@ -750,12 +763,12 @@ All driver/service code, descriptors, ops tables, and state live in
 bank 7 (linked `_CODE`/`_DATA` for the remaining kernel objects; the
 loaded module inside the M8 driver arena).  None of it may enter
 permanent common memory.  Production derives the arena start from the
-aligned linked-kernel end (at least 16 KiB before `C000h`); pre-M8
-acceptance images keep the fixed `A000h-BFFFh` 16-granule geometry (see
-`docs/memory.md` section 2.2 and `docs/module-format.md` section 1).
+aligned linked-kernel end (at least 16 KiB before `C000h`); the fixed
+`A000h-BFFFh` 16-granule geometry of the pre-M8 acceptance images is
+retired with them (work package 25a), so there is exactly one geometry
+(see `docs/memory.md` section 2.2 and `docs/module-format.md` section 1).
 `tools/mapcheck.py` enforces this with an explicit symbol list and a
-prefix sweep over `_device_`, `_console_`, and `_m3_` symbols (the M3
-acceptance symbols remain bank-7-resident in test images).  A
+prefix sweep over `_device_`, `_console_`, and `_m3_` symbols.  A
 rejection sweep fails the build on any linked `_sio_`, `_sio0b_`,
 `_sio_driver`, `_ioc_`, `_hid_`, or `_v9958_` symbol (the SIO, IOC, HID
 and V9958 drivers may exist only as modules), and
@@ -770,52 +783,48 @@ Host validation layers:
   relation, linked bytes in the arena), the boot-set arena plan and its
   overflow rejection, ABI v1 rejection, and the architectural granule
   bound.
-- `tests/test_m3.py`, `tests/test_m4.py` – constant contracts, mapcheck
-  rules (including the static-SIO rejection and arena ownership),
-  catalog embedding identity, placement-base shift, fallback image
-  artifacts, and linker-file/object consistency.
-- `tests/test_m3_sim.py` – replays the real linked M3 code in the Z80
-  simulator: boot C-runtime init, registry/driver/module-load/console
-  sequence, the full target self-test (registry semantics, rollback,
-  exhaustion, ABI rejection, console TX/RX through the SIO ports, IRQ
-  probe through the M2 executive with injected CTC0 vectors), and a
-  production `kernel_main` boot replay ending at
-  `console: dynamic sio0.b OK`.
-- `tests/test_m4_sim.py` – replays the loader and the dynamic-driver
-  acceptance images (module catalog load with injected CTC0 deliveries,
-  M8 ABI v2 fixture, ABI v1 rejection, console binding policy, failure-
-  image rollback, shifted placement) in the same simulator.
-- `tests/test_m6_sim.py` – replays the M6 acceptance image, including
-  the driver-API ROMFS resource-import checks (DATA-only, bounded,
-  byte-identical to the internal reader).
+- `tests/test_zmod.py`, `tests/test_source_layout.py` – the ZMOD
+  container/relocation contract (including a two-base relocation check
+  and bad version/ABI rejection), the module-facing include closure, and
+  the milestone-retention window (only M8/M9 acceptance machinery may
+  exist).
+- `tests/test_subsys_sim.py` – replays the subsystem acceptance image in
+  the Z80 simulator: the syscall and IRQ groups at the early hook, the
+  ROMFS-reader, process/ZEX and loader groups at the late hook (with
+  injected CTC0 vectors and loader arena exhaustion), and the scripted
+  monitor session.
+- `tests/test_romfs_sim.py` – the ROMFS reader/access replay and the
+  corrupt-store image (`TestCorruptImageReplay`: panics with
+  `PANIC: romfs: corrupt recovery image` before any module runs).
 - `tests/test_hid.py` / `tests/test_hid_sim.py` – the HID class/driver
   contract and the real SIO+IOC+HID image replay (section 6).
 - `tests/test_v9958.py` / `tests/test_v9958_sim.py` – the V9958 VIDEO
   class/driver contract, the font asset pipeline, and the real
   SIO+IOC+HID+V9958 image replay against the V9958 peer (section 7).
-- `make m3-selftest` / `make m4-selftest` / `make m4-placement-selftest`
-  / `make m4-failure-selftest` – the physical acceptance images.
-- `make smoke-hardware-m3 SERIAL_PORT=...` – driving the acceptance image:
-  captures the transcript and sends the `R` byte when the kernel announces
-  `m3 selftest: ready for RX`.
-- `make smoke-hardware-m4 SERIAL_PORT=...` /
-  `make smoke-hardware-m4-failure SERIAL_PORT=...` – capture the dynamic
-  console line plus `m4 selftest: OK` (or the failure transcript plus
-  `m4 failure selftest: OK`).
+- `make subsystem-selftest` / `make romfs-corrupt-selftest` – the
+  migrated mechanism acceptance image and the corrupt-store image.
+- `make smoke-hardware-subsystem SERIAL_PORT=...` – driving the subsystem
+  image: the five group `... selftest: OK` lines and the interactive
+  monitor step (the tool sends `Q` and expects `monitor: exit status 0x`).
+- `make smoke-hardware-romfs-corrupt SERIAL_PORT=...` – capture + verify
+  the corrupt-image panic marker.
 
 SIO0/B timings, CTC0 delivery, console RX, and the IOC command-lane
 and bulk-lane transports remain physical-hardware authorities; the
 simulations cover control flow and register-level behavior.  HID input
 arrives from the deployed MCU translation; physical USB-keyboard
-acceptance is typed by the operator into the smoke run.
+acceptance is typed by the operator into the smoke run.  The migrated
+subsystem and corrupt-store images, and the changed production image
+(the banner and hooks changed), are hardware-`PENDING` (work package
+25a).
 
 ## 11. Out of scope
 
 No heap, no module unload or hot-plug, no filesystem API for modules
 (beyond the two bounded DATA resource imports), no process API here, and
 no user-visible device syscall.  M4 stages 07-08 (this document plus
-`docs/module-format.md`) delivered the loader and the embedded
-relocatable SIO driver; M8 work package 14 delivered driver ABI v2, the
+`docs/module-format.md`) delivered the loader and the relocatable SIO
+driver module; M8 work package 14 delivered driver ABI v2, the
 read-only discovery calls, the per-class capability ranges, the
 preferred-direction console policy, and the derived production arena;
 M8 work packages 15-16 delivered the IOC command+bulk class and its

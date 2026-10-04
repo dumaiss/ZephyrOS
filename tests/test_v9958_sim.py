@@ -92,9 +92,13 @@ ZDEV_ENOTSUP = -7
 
 HOST_SYNC = b"\xaa\x55"
 
-# Host-owned scratch in the bank-7 window (free arena above the boot
-# set): payloads handed to the module's send().
-SCRATCH = 0xA000
+# Host-owned scratch for the payloads handed to the module's send().
+# It lives in the spare tail of the bank-7 runtime area, between the
+# kernel's DATA/BSS (which ends at C4BDh) and the IRQ ISR stack
+# (DF00h-DFFFh).  The derived driver arena at 8800h-C000h belongs to
+# the module loader and no longer holds 4 KiB of free space above the
+# 21-granule boot set now that the M9 VFS core is linked in.
+SCRATCH = 0xC500
 
 # The proven GRAPHIC 6 bootstrap, in order (value, register).
 G6_TABLE = [

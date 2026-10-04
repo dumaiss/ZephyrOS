@@ -1,4 +1,4 @@
-# ZephyrOS Memory Model (M8, implemented)
+# ZephyrOS Memory Model (M8/M9, implemented)
 
 This is the implemented, linker-enforced memory ownership table for the
 mode `10`/`11` Zephyr-80 architecture.  The contract is in
@@ -26,7 +26,7 @@ E000h +-------------------------------+
 | `0000h-00FFh` | caller window | ZephyrOS-owned native page zero: reset copier (`0000h-0026h`) and the three-byte `RST 30h` vector (`JP zos_syscall_entry`) at `0030h-0032h`; the rest is reserved |
 | `0100h-1FFFh` | caller window | unused (FF-filled in the image); at M1, native syscall argument blocks must lie here |
 | `2000h-arena start` | bank 7 in mode 11 | loadable kernel image (code, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`); ends at the linked `__kernel_code_end` |
-| `arena start-C000h` | bank 7 in mode 11 | M8 production driver arena: aligned linked-kernel end (`__driver_arena_start`) to `C000h`, at least 32 x 512-byte granules (16 KiB); pre-M8 acceptance/variant images keep the legacy `A000h-BFFFh` 16-granule fixed arena. Never part of the ROM payload and never linked by content |
+| `arena start-C000h` | bank 7 in mode 11 | driver arena (M8, derived since package 25 from the aligned linked-kernel end `__driver_arena_start` to `C000h`, at least 32 x 512-byte granules (16 KiB) in production; test-hook images check 16 as the minimum and rely on the boot-set plan; pre-M8 acceptance/variant images keep the legacy `A000h-BFFFh` 16-granule fixed arena). Never part of the ROM payload and never linked by content |
 | `C000h-DEFFh` | bank 7 in mode 11 | zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded |
 | `DF00h-DFFFh` | bank 7 in mode 11 | 256-byte M2 ISR stack; initial `SP=E000h` |
 | `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`), including the M5 ROM-access staging buffer; `EEFEh-EF07h` is the fixed ROM-access transition block (trampoline + mirrored stub) |
@@ -109,7 +109,7 @@ this both by explicit symbol list and by a prefix sweep over
 `_device_`, `_console_`, `_sio0b_`, `_sio_`, `_driver_`,
 `_boot_drivers`, and `_m3_` symbols.  See `docs/devices.md`.
 
-## 2.2 Driver arena (M8 production geometry)
+## 2.2 Driver arena (M8/M9 production geometry)
 
 Production derives the arena from the linked kernel in a deterministic
 two-pass build: a probe link measures the exclusive end of every loadable
@@ -123,6 +123,22 @@ remain.  `kernel/module/arena.asm` exports `__kernel_code_end`,
 `C000h-DFFFh` stays outside the allocator, and the loader computes its
 granule count from the linked bounds (bounded by the architectural
 maximum `(C000h-2000h)/512 = 80`).
+
+Since M9 the linked kernel ends at `7EE6h`, so production's derived arena
+is `8000h-C000h` -- exactly the 32-granule (16 KiB) gate, with 11 free
+granules above the 21-granule production boot set.  The M9 VFS core
+(`kernel/vfs/`, `fs/romfs/`) is what moved the arena up from the M8
+`5D54h` kernel end; the gate itself is unchanged.
+
+Acceptance and variant images that carry a target test hook relax only
+the *minimum* check: `ZOS_ARENA_MIN_GRANULES := 16` when
+`TARGET_TEST_OBJS` is non-empty (`tools/mapcheck.py --min-granules`).
+Those images measure 26-31 granules.  Their safety net is unchanged and
+independent of the floor: `tools/zmodpack.py plan` must fit the whole
+boot set into the derived arena and `tools/pack_image.py` reconciles the
+image manifest against that plan, so an image whose modules do not fit
+still fails the build.  Production always keeps the 32-granule gate.
+See `docs/vfs.md` section 10 for the per-image measurements.
 
 Pre-M8 acceptance images and the shifted-placement variant keep the
 legacy fixed `A000h-BFFFh` 16-granule geometry: the committed
@@ -149,11 +165,20 @@ are placed inside the arena by the loader.
 
 ## 2.3 ROMFS placement
 
-The ROMFS reader (`_romfs_init`, `_romfs_lookup`, `_romfs_read`,
-`_romfs_load_zmod`) and the module-facing resource imports
+The ROMFS reader (`_romfs_init`, `_romfs_lookup_ci`, `_romfs_read`,
+`_romfs_entry_at`) and the module-facing resource imports
 (`_romfs_resource_size`, `_romfs_resource_read`) are bank-7 code;
 mapcheck requires the `_romfs_` prefix sweep to stay below the ISR
-stack.  The ROM-access primitive
+stack.  The M9 kernel VFS and its statically linked ROMFS provider
+(`_vfs_*` plus `_romfs_provider`) are bank-7 code and data too: the
+generated `const` mount table is ROM-loaded bank-7 data
+(`_vfs_mount_table`), `vfs_mount_state[]` is bank-7 runtime data
+(`_DATA`, `C000h-DEFFh`), and nothing in the VFS is common-resident --
+the boot, module-loader and (later) syscall paths all reach it from
+bank 7.  VFS path, component and directory scratch is static bank-7
+`_DATA` (`kernel/vfs/*.c`, `fs/romfs/romfs_provider.c`); no VFS
+function declares an automatic object larger than 32 bytes, so no path
+ever needs the 256-byte common gate stack.  The ROM-access primitive
 (`_rom_access_copy`) is common code, and its staging buffer and saved
 latch/IFF/request state are common data: they must all sit in
 `E000h-FEFFh` and the staging size must equal `ZOS_ROMFS_STAGING_SIZE`
@@ -163,10 +188,10 @@ at `ZOS_ROM_ACCESS_BASE - 2` (`EEFEh`), `rom_access_sync` at
 `ZOS_ROM_ACCESS_SIZE` (8) bytes later; the `_ROM_ACCESS_STUB` area must
 match that extent and nothing else may overlap it.  The busy flag is
 initialized by a `.db 0` byte because `.ds` reservations are `FFh` in
-the ROM image.  The embedded boot catalog (M3/M4 acceptance images only)
-is checked as a pair: `_zmod_catalog` and `_module_catalog_load_all` must
-be linked together or not at all, and `--production` rejects them
-outright.
+the ROM image.  The embedded boot catalog is retired (work package 25a):
+every image boots its modules from the recovery store through the VFS, and
+`--production` still rejects the catalog symbols outright so a
+re-appearance cannot hide in a production map.
 
 ## 3. Common-resident routines
 
@@ -300,26 +325,27 @@ in `2000h-DFFFh` would disappear when the mode changes.
   `_irq_kernel_code_end` at the linked `_CODE` end, page-zero and
   stack-reservation bounds, and the M3 bank-7 device-layer placement
   rules (`make check`).
-- `tests/test_m1.py` — C/assembly constant parity (hardware, syscall
-  self-test, and IRQ self-test header pairs), latch formulas, bank-identity
-  preservation across `10h`/`18h`, bank-7 rejection, mapcheck unit cases
-  (including negative IRQ fixtures), banner regression, and FF-guard
-  identity on real artifacts.
-- `tests/test_irq_sim.py` — Z80 replay of the real linked IRQ entry/return
-  bytes (IM2 acceptance, alternate registers, `I`/IFF2, `RETI`) for both
-  modes and the FF guard path, plus the full `irq-selftest` driver round
-  trip with injected CTC0 deliveries.
-- `tests/test_m3.py` — M3 constant contract, mapcheck bank-7 M3 rules,
-  fallback-image artifacts, and static linker-file/object consistency.
-- `tests/test_m3_sim.py` — Z80 replay of the real M3 code: registry
-  semantics, checkpoint/rollback, exhaustion, ABI rejection, console
-  TX/RX through the SIO port model, the CTC0 probe through the M2
-  executive, and a production `kernel_main` boot replay.
-- `tests/test_romfs.py` / `tests/test_romfs_sim.py` — M5 ROMFS tooling,
+- `tests/maptools.py` — the shared map/constant helpers used by the
+  layout and validation suites.  `tests/test_source_layout.py` — constant
+  parity (hardware, syscall-gate and IRQ-executive header pairs), the
+  single test seam, the owner layout, and the Mn-1 retention window.
+- `tests/test_subsys_sim.py` — boot of the subsystem acceptance image on
+  the current path: the syscall gate and interrupt-executive groups (with
+  injected CTC0 deliveries), the ROMFS reader, the process/ZEX lifecycle
+  and the loader groups, every target status word, and the monitor
+  session with its relaunch.
+- `tests/test_romfs.py` / `tests/test_romfs_sim.py` — ROMFS tooling,
   constant/placement contracts, corrupted-metadata rejection, the
   ROM-access transition replay (stackless mode-00 window pinned to the
   mirrored stub, exact latch/IFF restoration, bounds and reentry
-  rejection), and the source-backed module load.
+  rejection), and the source-backed module load (`build-subsys-selftest`).
+- `tests/test_m9_vfs.py` / `tests/test_m9_vfs_sim.py` — M9 VFS ABI sizes
+  and header boundary, mount-table generation and validation, and a
+  replay of the real linked VFS bootstrap (`/SYSTEM` mounted before any
+  module loads, modules and the monitor opened by path, arena figures).
+  `tools/mapcheck.py` additionally enforces the `_vfs_`/`_romfs_provider`
+  bank-7 placement list and the derived-arena minimum, and
+  `tools/pack_image.py` reconciles arena use against the boot-set plan.
 - Runtime: boot asserts mode `11` over bank 0 (assembly latch read-back and
   a C re-check in `kernel_main()`), then exercises the bank primitives; any
   failure prints a fault through the early console and halts.

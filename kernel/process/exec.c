@@ -1,25 +1,30 @@
-/* ZephyrOS M6 ZEX validation and ROMFS-backed process loading.
+/* ZephyrOS M6 ZEX validation and process loading.
  *
- * process_exec() is the synchronous single-tasking launcher: it looks a
- * ZEX up in the ROMFS recovery store, validates the complete geometry
- * before any bank content changes, allocates the lowest free process
- * slot and application bank, constructs the child's bank deterministically
- * (zero 0000h-DFFFh, page zero with exactly the RST 30h vector at 0030h,
- * image at 0100h, zero BSS), and enters the child through the common
- * launch gate.  When the child exits, the common resume gate restores
- * the launcher exactly and control returns here.
+ * process_exec() is the synchronous single-tasking launcher: it opens a
+ * ZEX, validates the complete geometry before any bank content changes,
+ * allocates the lowest free process slot and application bank, constructs
+ * the child's bank deterministically (zero 0000h-DFFFh, page zero with
+ * exactly the RST 30h vector at 0030h, image at 0100h, zero BSS), and
+ * enters the child through the common launch gate.  When the child exits,
+ * the common resume gate restores the launcher exactly and control returns
+ * here.
  *
  * Every failure path rolls the slot back to FREE and releases the bank;
  * a partially written bank is never observable as a process because the
  * table entry is published as RUNNING only at launch time.
  *
  * All copying goes through the common-resident gates
- * (kernel/memory/user_copy.asm) and the bounded ROMFS staging buffer;
- * bank 7 is rejected by both allocators and the copy gates.
+ * (kernel/memory/user_copy.asm) and the bounded staging path; bank 7 is
+ * rejected by both allocators and the copy gates.
+ *
+ * The ZEX *source* is read through the kernel VFS file API, exactly as
+ * kernel_boot_module() loads the boot modules: the launcher resolves the
+ * path and streams the container, so the loader never learns where the
+ * bytes live.
  */
 
 #include "zephyros/process.h"
-#include "zephyros/romfs.h"
+#include "kernel/vfs/vfs.h"
 
 /* Common-resident copy gate and the deterministic page-zero vector. */
 extern const uint8_t zos_process_page_zero_vector[];
@@ -129,13 +134,16 @@ int zex_validate_header(const struct zex_header *header, uint32_t file_size,
 
 /* --- loading ---------------------------------------------------------- */
 
-static int exec_read_header(const romfs_file_t *file,
+/* VFS-backed source: the path is resolved and read through the kernel
+ * file API, so the loader no longer knows where the bytes live. */
+
+static int exec_read_header(struct vfs_file *file,
 			    struct zex_header *header)
 {
 	if (file->size < ZEX_HEADER_SIZE) {
 		return ZEX_EXEC_ERR_FILESIZE;
 	}
-	if (romfs_read(file, 0, header, ZEX_HEADER_SIZE) !=
+	if (vfs_read(file, 0, header, ZEX_HEADER_SIZE) !=
 	    (int)ZEX_HEADER_SIZE) {
 		return ZEX_EXEC_ERR_READ;
 	}
@@ -143,7 +151,7 @@ static int exec_read_header(const romfs_file_t *file,
 }
 
 /* Stream the image (header payload) into the child bank at 0100h. */
-static int exec_load_image(const romfs_file_t *file,
+static int exec_load_image(struct vfs_file *file,
 			   const struct zex_geometry *geo, uint8_t bank)
 {
 	uint16_t offset = 0;
@@ -154,9 +162,9 @@ static int exec_load_image(const romfs_file_t *file,
 		if (chunk > ZEX_LOAD_CHUNK) {
 			chunk = ZEX_LOAD_CHUNK;
 		}
-		if (romfs_read(file,
-			       (uint32_t)(ZEX_HEADER_SIZE + offset),
-			       zos_user_copy_staging, chunk) != (int)chunk) {
+		if (vfs_read(file,
+			     (uint32_t)(ZEX_HEADER_SIZE + offset),
+			     zos_user_copy_staging, chunk) != (int)chunk) {
 			return ZEX_EXEC_ERR_READ;
 		}
 		if (exec_bank_write(bank,
@@ -169,9 +177,9 @@ static int exec_load_image(const romfs_file_t *file,
 	return ZEX_EXEC_OK;
 }
 
-int process_exec(const char *romfs_name, uint16_t *status)
+int process_exec(const char *path, uint16_t *status)
 {
-	romfs_file_t file;
+	struct vfs_file file;
 	struct zex_header header;
 	struct zex_geometry geo;
 	uint8_t pid;
@@ -179,27 +187,33 @@ int process_exec(const char *romfs_name, uint16_t *status)
 	int error;
 	int result;
 
-	if (romfs_name == (const char *)0 || status == (uint16_t *)0) {
+	if (path == (const char *)0 || status == (uint16_t *)0) {
 		return ZEX_EXEC_ERR_ARG;
 	}
 	if (process_running_pid != PROCESS_NO_PROCESS) {
 		return ZEX_EXEC_ERR_NOSPACE; /* single-depth launcher */
 	}
 
-	result = romfs_lookup(romfs_name, &file);
+	/* VFS_O_EXEC preserves the M6 media-type gate: a file that is not an
+	 * executable is refused with the same code the ROMFS flag check
+	 * produced. */
+	result = vfs_open(path, (uint16_t)(ZFS_O_READ | VFS_O_EXEC), &file);
 	if (result != 0) {
+		if (result == -ZOS_EINVAL || result == -ZOS_EISDIR ||
+		    result == -ZOS_ENOTDIR) {
+			return ZEX_EXEC_ERR_TYPE;
+		}
 		return ZEX_EXEC_ERR_ROMFS;
-	}
-	if (file.flags != ROMFS_FLAG_ZEX) {
-		return ZEX_EXEC_ERR_TYPE;
 	}
 
 	error = exec_read_header(&file, &header);
 	if (error != ZEX_EXEC_OK) {
+		(void)vfs_close(&file);
 		return error;
 	}
 	result = zex_validate_header(&header, file.size, &geo);
 	if (result != ZEX_EXEC_OK) {
+		(void)vfs_close(&file);
 		return result;
 	}
 
@@ -207,12 +221,14 @@ int process_exec(const char *romfs_name, uint16_t *status)
 	 * failure from here releases it through the same rollback label. */
 	result = process_slot_alloc();
 	if (result < 0) {
+		(void)vfs_close(&file);
 		return ZEX_EXEC_ERR_NOSPACE;
 	}
 	pid = (uint8_t)result;
 	result = process_alloc_bank();
 	if (result < 0) {
 		process_slot_release(pid);
+		(void)vfs_close(&file);
 		return ZEX_EXEC_ERR_NOSPACE;
 	}
 	bank = (uint8_t)result;
@@ -241,8 +257,13 @@ int process_exec(const char *romfs_name, uint16_t *status)
 	}
 	if (error != ZEX_EXEC_OK) {
 		process_slot_release(pid);
+		(void)vfs_close(&file);
 		return error;
 	}
+
+	/* The whole image is in the child bank; release the source before
+	 * entering the child. */
+	(void)vfs_close(&file);
 
 	/* Run the child; this returns after SYS_EXIT (or the common return
 	 * trap) tore the child down and restored the launcher context. */

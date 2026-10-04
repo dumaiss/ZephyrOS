@@ -9,15 +9,19 @@ Enforces docs/architecture.md section 3.1 and the current layout:
   with no executable content or instruction-emitting macros;
 - production module metadata and shared module runtime support have
   explicit non-driver owners (modules/manifests, modules/runtime);
-- the M6 process lifecycle (kernel/process), the common transition gates
+- the process lifecycle (kernel/process), the common transition gates
   (kernel/memory), and the user runtime (user/runtime) have explicit
-  owners, with the ZEX program sources under tests/target/m6 and the
-  ZEX tooling/fixtures under tools/ and tests/m6;
+  owners, with the ZEX program sources under tests/target/process and the
+  ZEX tooling/fixtures under tests/subsys;
 - all milestone acceptance code lives under tests/target/ (or
   tests/modules/ for test ZMODs), behind the single ZOS_TARGET_TEST_BUILD
   seam; production sources contain no self-test implementations;
 - the retired M3 static-driver mechanism, driver-private SDCC glue, and
   test-only SIO build variants cannot return;
+- the Mn-1 retention window holds: only the M8/M9 acceptance
+  configurations exist (work/00-SUPERVISOR.md), no pre-M8 acceptance
+  target, image directory or boot-mode flag can come back, and the
+  mechanism coverage that replaced them is present;
 - live build/source documentation contains no references to the removed
   implementation paths (dated acceptance records under docs/validation/
   and the work/ contracts are intentionally excluded);
@@ -31,11 +35,15 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+
+from maptools import evaluate, parse_asm_inc, parse_c_header  # noqa: E402
 
 PLATFORM_DIR = os.path.join(ROOT, "platform", "zephyr80")
 
@@ -74,6 +82,27 @@ OWNER_FILES = (
     "kernel/process/exec.c",
     "kernel/process/launch.asm",
     "kernel/memory/user_copy.asm",
+    "kernel/vfs/vfs.h",
+    "kernel/vfs/mount_config.h",
+    "kernel/vfs/path.c",
+    "kernel/vfs/mount.c",
+    "kernel/vfs/file.c",
+    "kernel/vfs/dir.c",
+    "kernel/vfs/mutate.c",
+    "fs/romfs/romfs_provider.c",
+    "fs/romfs/romfs_provider.h",
+    "include/zephyros/fs.h",
+    "include/zephyros/vfs.h",
+    "config/mounts.json",
+    "tools/mountgen.py",
+    "tools/romfspack.py",
+    "tests/m9/mounts-optional-fail.json",
+    "tests/m9/mounts-required-fail.json",
+    "tests/m9/mounts-system-only.json",
+    "tests/target/m9/m9_vfs_test.c",
+    "tests/target/include/m9_selftest.h",
+    "tests/test_m9_vfs.py",
+    "tests/test_m9_vfs_sim.py",
     "include/zephyros/romfs.h",
     "include/zephyros/process.h",
     "include/zephyros/zex.h",
@@ -96,24 +125,19 @@ OWNER_FILES = (
     "user/monitor/monitor.json",
     "tools/zexpack.py",
     "recovery/manifest.json",
-    "tests/m5/manifest.json",
-    "tests/m5/gen_asset.py",
-    "tests/m5/gen_expect.py",
-    "tests/m5/corrupt_romfs.py",
-    "tests/m6/manifest.json",
-    "tests/m6/manifest-failure.json",
-    "tests/m6/zextest.json",
-    "tests/m6/gen_fixtures.py",
-    "tests/m6/gen_expect.py",
-    "tests/m7/manifest.json",
-    "tests/target/m5/m5_test.c",
-    "tests/target/m6/zextest.c",
-    "tests/target/m6/zextest_entry.asm",
-    "tests/target/m6/m6_test.c",
-    "tests/target/m7/m7_test.c",
-    "tests/target/include/m5_selftest.h",
-    "tests/target/include/m6_selftest.h",
-    "tests/target/include/m7_selftest.h",
+    "tests/subsys/manifest.json",
+    "tests/subsys/gen_crosspage.py",
+    "tests/subsys/gen_romfs_expect.py",
+    "tests/subsys/corrupt_romfs.py",
+    "tests/subsys/gen_zex_fixtures.py",
+    "tests/subsys/gen_zmod_fixtures.py",
+    "tests/subsys/gen_process_expect.py",
+    "tests/subsys/zextest.json",
+    "tests/target/romfs/romfs_test.c",
+    "tests/target/loader/loader_test.c",
+    "tests/target/process/process_test.c",
+    "tests/target/process/zextest.c",
+    "tests/target/process/zextest_entry.asm",
     "drivers/ctc/ctc.c",
     "drivers/sio/sio.c",
     "drivers/sio/sio.h",
@@ -153,20 +177,16 @@ OWNER_FILES = (
     "tests/modules/sio_fail_module.c",
     "tests/modules/m8_api.c",
     "tests/modules/m8_api.json",
-    "tests/target/m1/selftest.asm",
-    "tests/target/m1/syscall_test.c",
-    "tests/target/m2/irq_selftest.asm",
-    "tests/target/m2/irq_test.c",
-    "tests/target/m3/m3_test.c",
-    "tests/target/m3/m3_irq_probe.c",
-    "tests/target/m3/m3_probe_io.asm",
-    "tests/target/m3/m3_fixtures.c",
-    "tests/target/m4/m4_test.c",
-    "tests/target/m4/m4_fixture_catalog.c",
-    "tests/target/include/selftest.h",
-    "tests/target/include/irq_selftest.inc",
-    "tests/target/include/m3_selftest.h",
-    "tests/target/include/m4_selftest.h",
+    "tests/target/syscall/syscall_entry.asm",
+    "tests/target/syscall/syscall_test.c",
+    "tests/target/irq/irq_entry.asm",
+    "tests/target/irq/irq_test.c",
+    "tests/target/include/syscall_selftest.h",
+    "tests/target/include/syscall_entry.inc",
+    "tests/target/include/irq_entry.inc",
+    "tests/target/include/romfs_selftest.h",
+    "tests/target/include/loader_selftest.h",
+    "tests/target/include/process_selftest.h",
     "tests/target/include/ctc_test.h",
     "tests/target/support/target_test.c",
     "tests/target/support/ctc_test.c",
@@ -195,15 +215,11 @@ REMOVED_PATHS = (
     "kernel/device/driver.c",
     "kernel/irq/irq_selftest.c",
     "kernel/irq/selftest.c",
-    "kernel/device/m3_selftest.c",
-    "kernel/module/m4_selftest.c",
     "drivers/test/irq_probe.c",
     "drivers/test/fixtures.c",
     "drivers/test/irq_probe_io.asm",
     "include/zephyros/selftest.h",
     "include/zephyros/irq_selftest.h",
-    "include/zephyros/m3_selftest.h",
-    "include/zephyros/m4_selftest.h",
     "tests/target/zephyr80/selftest.asm",
     "tests/target/zephyr80/irq_selftest.asm",
 )
@@ -216,14 +232,16 @@ REQUIRED_DIRS = (
     "boot",
     "kernel/memory", "kernel/syscall", "kernel/irq", "kernel/runtime",
     "kernel/module", "kernel/romfs", "kernel/process",
+    "kernel/vfs", "fs/romfs", "config",
     "drivers/sio", "drivers/ctc", "drivers/ioc", "drivers/hid",
     "drivers/v9958", "modules/manifests", "modules/runtime",
     "user/runtime", "user/monitor",
     "recovery",
-    "tests/m5", "tests/m6", "tests/m7", "tests/m8", "tests/modules",
-    "tests/target/m1", "tests/target/m2", "tests/target/m3",
-    "tests/target/m4", "tests/target/m5", "tests/target/m6",
-    "tests/target/m7", "tests/target/m8",
+    "tests/subsys", "tests/m8", "tests/m9",
+    "tests/modules",
+    "tests/target/syscall", "tests/target/irq", "tests/target/loader",
+    "tests/target/romfs", "tests/target/process", "tests/target/support",
+    "tests/target/m8", "tests/target/m9",
     "tests/target/include",
     "tests/target/support",
 )
@@ -247,22 +265,15 @@ TEST_ONLY_SIO_MACROS = (
 # files may reference ZOS_M4_SIO_IRQ solely through the labeled boot-phase
 # TEST-ONLY HOOK in kernel/main.c and the shared ZOS_TARGET_TEST_BUILD seam.
 PRODUCTION_SELFTEST_MACROS = (
-    "ZOS_SYSCALL_SELFTEST",
-    "ZOS_IRQ_SELFTEST",
-    "ZOS_M3_SELFTEST",
-    "ZOS_M4_SELFTEST",
-    "ZOS_M4_FAILURE_SELFTEST",
-    "ZOS_M5_SELFTEST",
-    "ZOS_M5_CORRUPT_SELFTEST",
-    "ZOS_M6_SELFTEST",
-    "ZOS_M6_FAILURE_SELFTEST",
-    "ZOS_M7_SELFTEST",
+    "ZOS_SUBSYS_SELFTEST",
+    "ZOS_ROMFS_CORRUPT_SELFTEST",
     "ZOS_M8_IOC_SELFTEST",
     "ZOS_M8_HID_SELFTEST",
     "ZOS_M8_HID_NOIOC",
     "ZOS_M8_HID_BADIOC",
     "ZOS_M8_V9958_SELFTEST",
     "ZOS_M8_V9958_FONTFAIL",
+    "ZOS_M9_VFS_SELFTEST",
 )
 
 # Generated-output names that must be ignored and cleaned.  build-modules is
@@ -287,6 +298,8 @@ BUILD_VARIANTS = (
     "build-m8-hid-badioc-selftest",
     "build-m8-v9958-selftest",
     "build-m8-v9958-fontfail-selftest",
+    "build-m9-vfs-selftest",
+    "build-m9-required-mount-selftest",
     "build-modules",
 )
 
@@ -430,6 +443,8 @@ MODULE_FACING_HEADERS = (
     "include/zephyros/ioc.h",
     "include/zephyros/hid.h",
     "include/zephyros/video.h",
+    "include/zephyros/fs.h",
+    "include/zephyros/vfs.h",
     "platform/zephyr80/hardware.h",
 )
 
@@ -451,6 +466,16 @@ KERNEL_ONLY_IDENTIFIERS = (
     "platform_ctc0_test_start", "platform_ctc0_stop",
     "platform_memctl_read", "platform_memctl_write",
     "platform_bank_get", "platform_bank_set",
+    "vfs_init", "vfs_mount_all", "vfs_phase", "vfs_register_filesystem",
+    "vfs_find_provider", "vfs_path_normalize",
+    "vfs_name_equal", "vfs_mount_resolve", "vfs_resolve_path",
+    "vfs_is_mountpoint", "vfs_mount_is_root", "vfs_mount_is_root_level",
+    "vfs_open", "vfs_read", "vfs_write", "vfs_sync", "vfs_close",
+    "vfs_stat", "vfs_mkdir", "vfs_rmdir", "vfs_unlink", "vfs_rename",
+    "vfs_opendir", "vfs_readdir", "vfs_closedir",
+    "vfs_file_source", "vfs_mount_state", "vfs_mount_table",
+    "vfs_mount_count", "vfs_mount_runtime", "vfs_mount_config",
+    "VFS_O_EXEC", "VFS_MOUNT_SYSTEM",
 )
 
 # The include paths a representative module is compiled with: only the
@@ -619,7 +644,7 @@ class TestProductionTestSeparation(unittest.TestCase):
         self.assertIn("ZOS_TARGET_TEST_BUILD", main)
         self.assertIn("tests/target/support/target_test.c", main)
         self.assertIn("TEST-ONLY HOOK", main)
-        self.assertIn("tests/modules/sio_irq_module.c", main)
+        self.assertNotIn("zos_target_test_irq_hold", main)
 
     def test_production_sources_have_no_ctc_acceptance_helpers(self):
         # The CTC0 programming is test-owned; no production source may
@@ -864,6 +889,188 @@ class TestNoStaleRemovedPaths(unittest.TestCase):
         for removed in REMOVED_PATHS:
             self.assertFalse(os.path.exists(os.path.join(ROOT, removed)),
                              "removed path still exists: %s" % removed)
+
+
+# The milestone acceptance window (work/00-SUPERVISOR.md, "Milestone
+# retention and compatibility"): only the current milestone and its
+# predecessor keep acceptance machinery.  This list moves forward at the
+# start of each milestone -- bump the lower bound when a milestone closes
+# and add the new milestone on the right.
+ALLOWED_MILESTONES = (8, 9)
+
+# Acceptance configurations retired by the Mn-1 rule (M1-M7).  Each name
+# belonged to exactly one milestone; none may come back, because their
+# mechanism coverage now lives on the current boot path (the subsystem
+# image and the M8/M9 acceptance images).
+RETIRED_ACCEPTANCE_TARGETS = (
+    "syscall-selftest", "irq-selftest", "m3-selftest",
+    "m4-loader-selftest", "m4-selftest", "m4-placement-selftest",
+    "m4-failure-selftest", "m5-selftest", "m5-corrupt-selftest",
+    "m6-selftest", "m6-failure-selftest", "m7-selftest",
+    "smoke-hardware-selftest", "smoke-hardware-irq", "smoke-hardware-m3",
+    "smoke-hardware-m4", "smoke-hardware-m4-failure", "smoke-hardware-m5",
+    "smoke-hardware-m5-corrupt", "smoke-hardware-m6",
+    "smoke-hardware-m6-failure", "smoke-hardware-m7",
+)
+
+# Retired boot modes and boot-phase hooks.  Production keeps exactly one
+# boot path (VFS/ROMFS boot with the derived arena) and one test seam.
+RETIRED_BOOT_MODES = (
+    "ZOS_ROMFS_BOOT", "ZOS_MONITOR_BOOT", "ZOS_M4_SIO_IRQ",
+    "ZOS_M4_ARENA_BASE", "ZOS_M4_ARENA_END", "ZOS_M4_PLACEMENT",
+)
+
+# Live files that may not name any of the retired names above.
+RETENTION_SCAN_ROOTS = ("boot", "drivers", "fs", "include", "kernel",
+                        "modules", "platform", "tools", "user")
+
+
+class TestMilestoneRetentionWindow(unittest.TestCase):
+    """The Mn-1 retention rule, enforced mechanically."""
+
+    def test_only_the_allowed_milestones_have_target_directories(self):
+        target_dir = os.path.join(ROOT, "tests", "target")
+        for name in sorted(os.listdir(target_dir)):
+            match = re.match(r"^m(\d+)$", name)
+            if not match:
+                continue
+            milestone = int(match.group(1))
+            self.assertIn(
+                milestone, ALLOWED_MILESTONES,
+                "tests/target/%s/ exists outside the retention window %r; "
+                "pre-Mn-1 acceptance code is retired, its mechanism "
+                "coverage belongs under tests/target/<subsystem>/"
+                % (name, ALLOWED_MILESTONES))
+
+    def test_only_the_allowed_milestones_have_make_targets(self):
+        text = _read(os.path.join(ROOT, "Makefile"))
+        for line in text.splitlines():
+            match = re.match(r"^(m(\d+)-[A-Za-z0-9_.-]*):", line)
+            if not match:
+                continue
+            milestone = int(match.group(2))
+            self.assertIn(
+                milestone, ALLOWED_MILESTONES,
+                "Makefile target %s is outside the retention window %r"
+                % (match.group(1), ALLOWED_MILESTONES))
+
+    def test_retired_acceptance_targets_are_gone(self):
+        text = _read(os.path.join(ROOT, "Makefile"))
+        for name in RETIRED_ACCEPTANCE_TARGETS:
+            self.assertNotIn(
+                "\n%s:" % name, text,
+                "retired acceptance target %s reappeared in the Makefile"
+                % name)
+
+    def test_retired_boot_modes_do_not_reappear(self):
+        for root_name in RETENTION_SCAN_ROOTS:
+            for path in _walk(root_name, (".c", ".h", ".asm", ".inc",
+                                          ".py")):
+                body = _code_only(path)
+                for token in RETIRED_BOOT_MODES:
+                    self.assertNotIn(
+                        token, body,
+                        "%s names the retired boot mode %r; production has "
+                        "one boot path"
+                        % (os.path.relpath(path, ROOT), token))
+        text = _read(os.path.join(ROOT, "Makefile"))
+        for token in RETIRED_BOOT_MODES:
+            self.assertNotIn(token, text,
+                             "Makefile names the retired boot mode %r"
+                             % token)
+
+    def test_retired_smoke_modes_are_gone(self):
+        text = _read(os.path.join(ROOT, "tools", "serial_smoke.py"))
+        for mode in ("selftest", "irq", "m3", "m4", "m4-failure", "m5",
+                     "m5-corrupt", "m6", "m6-failure", "m7"):
+            self.assertNotIn(
+                '"%s"' % mode, text,
+                "retired serial_smoke mode %r reappeared" % mode)
+        # The two current acceptance modes stay available.
+        self.assertIn('"subsystem"', text)
+        self.assertIn('"romfs-corrupt"', text)
+
+    def test_retired_milestone_data_directories_are_gone(self):
+        for name in ("m5", "m6", "m7"):
+            self.assertFalse(
+                os.path.isdir(os.path.join(ROOT, "tests", name)),
+                "tests/%s/ still holds retired milestone data" % name)
+
+    def test_embedded_catalog_boot_path_is_gone(self):
+        self.assertFalse(
+            os.path.exists(os.path.join(ROOT, "kernel", "module",
+                                        "embedded.c")),
+            "the embedded-catalog boot path is retired")
+        for token in ("module_catalog_load_all", "zmod_catalog",
+                      "zmod_catalog_entry"):
+            for root_name in ("kernel", "include", "boot"):
+                for path in _walk(root_name, SOURCE_SUFFIXES):
+                    self.assertNotIn(
+                        token, _code_only(path),
+                        "%s still names the retired embedded catalog (%s)"
+                        % (os.path.relpath(path, ROOT), token))
+
+
+# C/assembly constant pairs that must stay value-identical: the platform
+# declarations, the interrupt-executive vectors, and the two acceptance
+# constant pairs the subsystem image's assembly and C share.
+CONSTANT_PARITY_PAIRS = (
+    ("platform/zephyr80/hardware.h", "platform/zephyr80/hardware.inc"),
+    ("platform/zephyr80/memory.h", "platform/zephyr80/memory.inc"),
+    ("platform/zephyr80/irq.h", "platform/zephyr80/irq.inc"),
+    ("tests/target/include/syscall_selftest.h",
+     "tests/target/include/syscall_entry.inc"),
+    ("tests/target/include/irq_selftest.h",
+     "tests/target/include/irq_entry.inc"),
+)
+
+
+class TestConstantParity(unittest.TestCase):
+    """C and assembly must agree on every shared constant.
+
+    These are the parity loops the retired `tests/test_m1.py` owned; they
+    are a mechanism (a constant that drifts between `hardware.h` and
+    `hardware.inc` is a silent memory-map bug), so they moved here with
+    the rest of the source-layout checks."""
+
+    def test_shared_constants_have_identical_values(self):
+        for c_rel, asm_rel in CONSTANT_PARITY_PAIRS:
+            with self.subTest(pair="%s <-> %s" % (c_rel, asm_rel)):
+                c = parse_c_header(os.path.join(ROOT, c_rel))
+                asm = parse_asm_inc(os.path.join(ROOT, asm_rel))
+                self.assertTrue(c, "%s parsed no constants" % c_rel)
+                self.assertTrue(asm, "%s parsed no constants" % asm_rel)
+                shared = sorted(set(c) & set(asm))
+                self.assertTrue(
+                    shared, "%s and %s share no constant" % (c_rel, asm_rel))
+                for name in shared:
+                    cv = evaluate(c[name], c)
+                    av = evaluate(asm[name], asm)
+                    self.assertEqual(
+                        cv, av,
+                        "%s: C %s = %d, assembly %s = %d"
+                        % (name, c[name], cv, asm[name], av))
+
+    def test_acceptance_constant_pairs_are_complete(self):
+        # The acceptance .inc files exist for their assembly listing only,
+        # so every C constant must be present in the assembly view too.
+        for c_rel, asm_rel in CONSTANT_PARITY_PAIRS[-2:]:
+            c = parse_c_header(os.path.join(ROOT, c_rel))
+            asm = parse_asm_inc(os.path.join(ROOT, asm_rel))
+            for name in sorted(c):
+                self.assertIn(name, asm, "%s missing %s" % (asm_rel, name))
+
+    def test_errno_codes_match_the_assembly_view(self):
+        errno_c = parse_c_header(
+            os.path.join(ROOT, "include", "zephyros", "errno.h"))
+        pairs = (("tests/target/include/syscall_entry.inc", "ZOS_ENOSYS"),
+                 ("tests/target/include/irq_entry.inc", "ZOS_IST_ENOSYS"))
+        for asm_rel, name in pairs:
+            asm = parse_asm_inc(os.path.join(ROOT, asm_rel))
+            self.assertIn(name, asm, "%s missing %s" % (asm_rel, name))
+            self.assertEqual(evaluate(errno_c["ZOS_ENOSYS"], errno_c),
+                             evaluate(asm[name], asm),
+                             "%s differs from errno.h" % name)
 
 
 class TestBuildOutputHygiene(unittest.TestCase):

@@ -40,7 +40,7 @@ sys.path.insert(0, HERE)
 import mapcheck  # noqa: E402
 import zmodpack  # noqa: E402
 from z80sim import ioc_crc16  # noqa: E402
-from test_m1 import (  # noqa: E402
+from maptools import (  # noqa: E402
     HARDWARE_H, HARDWARE_INC, evaluate, parse_asm_inc, parse_c_header)
 
 IOC_H = os.path.join(ROOT, "include", "zephyros", "ioc.h")
@@ -386,8 +386,8 @@ class TestIocModuleArtifact(unittest.TestCase):
         names = [entry["name"] for entry in manifest["files"]]
         self.assertIn("ioc.zmod", names)
         main = _read(MAIN_C)
-        sio = main.index('romfs_load_zmod("sio"')
-        ioc = main.index('romfs_load_zmod("ioc"')
+        sio = main.index('kernel_load_vfs_module("sio"')
+        ioc = main.index('kernel_load_vfs_module("ioc"')
         self.assertLess(sio, ioc, "IOC must load after the SIO fallback")
         # A failed IOC load must not take the SIO binding path with it;
         # the diagnostic names the module and the ZOS_E* code.
@@ -709,7 +709,7 @@ class TestTargetTestWiring(unittest.TestCase):
         import serial_smoke
 
         base = (b"ZephyrOS 0.0\r\nplatform: Zephyr-80\r\n"
-                b"kernel entry: OK\r\nserial: OK\r\nHALT\r\n"
+                b"kernel entry: OK\r\nserial: OK\r\n"
                 b"console: dynamic sio0.b OK\r\n"
                 b"m8 ioc: transport level 08\r\n"
                 b"m8 ioc: controller level 4A\r\n"

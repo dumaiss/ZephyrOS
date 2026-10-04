@@ -1,0 +1,17 @@
+{
+  "format": "vfs-mounts-v1",
+  "mounts": [
+    {
+      "path": "/SYSTEM",
+      "filesystem": "romfs",
+      "source": "recovery",
+      "system": true
+    },
+    {
+      "path": "/DATA",
+      "filesystem": "absentfs",
+      "source": "absent.0",
+      "required": false
+    }
+  ]
+}

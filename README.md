@@ -21,7 +21,7 @@ current M8 boot).
   assertion.  Accepted on physical hardware 2026-10-02 (banner unchanged).
 - **M1 — Native syscall scaffold**: `RST 30h` vector in native page zero,
   common-memory entry/exit gate, bank-7 dispatcher returning `ZOS_ENOSYS`
-  (`docs/abi.md`), target-side smoke self-test (`make syscall-selftest`).
+  (`docs/abi.md`), target-side smoke self-test.
   Accepted on physical hardware 2026-10-02 (`syscall selftest: OK`).
 - **M2 — Interrupt executive**: kernel-owned IM2 (`I=FDh`), fixed-source
   one-owner registry, mode-safe full-context IRQ entry/return with
@@ -35,32 +35,31 @@ current M8 boot).
   service, and a test-only bank-7 IRQ probe claiming CTC0 through the M2
   executive (`docs/devices.md`).  Accepted on physical hardware
   2026-10-02 (`console: sio0.b OK`, `m3 selftest: OK`, console RX round
-  trip; see `docs/validation/2026-10-02-m3-acceptance.md`).  M4 builds of
-  the same image print `console: dynamic sio0.b OK` because the driver is
-  then loaded from the module catalog.
-- **M4 — Module loader (stage 07)**: linker-reserved `A000h-BFFFh`
-  bank-7 driver arena (16 x 512-byte granules), packed ZMOD v1 driver
+  trip; see `docs/validation/2026-10-02-m3-acceptance.md`).  Later images
+  print `console: dynamic sio0.b OK` because the driver is then loaded
+  from the recovery store.
+- **M4 — Module loader (stage 07)**: linker-reserved bank-7 driver arena
+  (`A000h-BFFFh`, 16 x 512-byte granules in the M4-era images; M8
+  supersedes it with a linker-derived arena), packed ZMOD v1 driver
   containers, host `tools/zmodpack.py` (pack/validate/dump), a
   transactional first-fit kernel loader with relocation, BSS, device/IRQ
   claim rollback, and `module_code_allowed` handler validation, plus
-  synthetic fixture modules proven by `make zmod-test` and
-  `make m4-loader-selftest`.  Hardware-validated on the physical
-  Zephyr-80 2026-10-02 (`m4 loader selftest: OK`; see
+  synthetic fixture modules proven by `make zmod-test`.  Hardware-validated
+  on the physical Zephyr-80 2026-10-02 (`m4 loader selftest: OK`; see
   `docs/validation/2026-10-02-m4-loader-hardware.md`).
 - **M4 — Dynamic driver acceptance (stage 08)**: the SIO driver is no
   longer linked into the kernel.  It is packed as a ZMOD module
-  (`build/modules/sio.zmod`, plus IRQ self-test and init-failure
-  variants), embedded in every image's boot catalog, loaded through the
-  generic loader at boot, and bound by the console service
-  (`console: dynamic sio0.b OK`).  A placement image at a shifted arena
-  base (9E00h-BE00h) embeds the identical module bytes, and a failure
-  image proves exact rollback.  Hardware-validated on the physical
+  (`build/modules/sio.zmod`, plus IRQ and init-failure container
+  variants), loaded through the generic loader at boot, and bound by the
+  console service (`console: dynamic sio0.b OK`).  A placement image at a
+  shifted arena base (9E00h-BE00h) used the identical module bytes, and a
+  failure image proves exact rollback.  Hardware-validated on the physical
   Zephyr-80 2026-10-02 after fixing a CTC0 start/claim race
   (`console: dynamic sio0.b OK`, `m4 selftest: sio at 0xA000`; placement
-  run `sio at 0x9E00`; failure run `m4 failure selftest: OK`).
-  Proven by `make m4-selftest`, `make m4-placement-selftest`, and
-  `make m4-failure-selftest`; see `docs/module-format.md` and
-  `docs/validation/2026-10-02-m4-acceptance.md`.
+  run `sio at 0x9E00`; failure run `m4 failure selftest: OK`).  Those M4
+  images and targets were retired under the Mn-1 retention rule (see the
+  retention note below); see `docs/module-format.md` and
+  `docs/validation/2026-10-02-m4-acceptance.md` (historical record).
 - **Stage 10 — production/test layout cleanup**: driver directories now
   contain device implementation only (`drivers/sio/sio_module.c` is the
   production module entry), ZMOD manifests/runtime support live under
@@ -89,6 +88,12 @@ current M8 boot).
   the interactive monitor (`docs/monitor.md`).  Host-validated and
   physically accepted 2026-10-03
   (`docs/validation/2026-10-03-m7-monitor.md`).
+- **Milestone retention (start of M9)**: the M1-M7 acceptance images,
+  build targets, smoke modes and production hooks were retired under the
+  Mn-1 retention rule (work package 25a); their still-relevant mechanism
+  coverage (syscall gate, IRQ executive, ROMFS reader, process/ZEX and
+  loader) moved to the subsystem acceptance image
+  (`make subsystem-selftest`, `tests/test_subsys_sim.py`).
 - **M8 — Native device stack**: driver ABI v2 with a linker-derived
   production driver arena, the IOC command+bulk transport, the HID
   keyboard/text class over IOC, the V9958 video core with the ported
@@ -104,6 +109,19 @@ current M8 boot).
   (serial smoke, the full human HID/V9958 monitor pass and the
   fallback-image matrix with its display confirmations) passed
   2026-10-04.**
+- **M9 — Filesystem foundation (bootstrap slice)**: the kernel VFS core
+  (path normalization, longest-match mount resolution, provider registry,
+  four-phase lifecycle, kernel file/directory API, `zmod_source`
+  adapter), the generated static mount table (`config/mounts.json` +
+  `tools/mountgen.py`), and ROMFS as a statically linked filesystem
+  provider mounted at `/SYSTEM` before any module loads.  The boot ZMODs
+  and `monitor.zex` now load by VFS path.  After the Mn-1 retirement
+  (work package 25a) the production image ends at `7BE1h` with a
+  `7C00h-BFFFh` derived arena (34 granules; the boot set uses 21) and
+  `_DATA` is 1294 bytes.  Implemented by work package 25; see
+  `docs/vfs.md`.
+  **Status: host-validated and simulator-accepted; physical acceptance
+  `PENDING`** (`docs/validation/2026-10-04-m9-vfs-bootstrap.md`).
 
 ## Prerequisites
 
@@ -120,48 +138,27 @@ linked.
 make               # build build/zephyros.bin and build/zephyr80.bin
 make test          # host image/layout/ABI tests + artifact integrity checks
 make check         # reproducible-rebuild proof + full validation stack
-make syscall-selftest
-                   # target-side RST 30h round-trip image (build-selftest/)
-make irq-selftest
-                   # target-side M2 IRQ executive image (build-irq-selftest/)
-make m3-selftest
-                   # M3 acceptance image: banner + console service line +
-                   # syscall/IRQ/M3 acceptance tests (build-m3-selftest/)
+make subsystem-selftest
+                   # subsystem acceptance: the current boot path with an
+                   # SIO-only boot set + loader/ROMFS/process fixtures,
+                   # replaying the migrated syscall/IRQ/ROMFS/process/
+                   # loader mechanism groups and the monitor session
+                   # (build-subsys-selftest/)
+make romfs-corrupt-selftest
+                   # corrupt-recovery-store image: the kernel rejects the
+                   # store and panics before any module runs
+                   # (build-romfs-corrupt/)
 make zmod-test
                    # build/pack/validate the SIO module variants and the
                    # synthetic ZMOD fixtures; host packer tests
                    # (build/modules/)
-make m4-loader-selftest
-                   # M4 loader acceptance image + simulator replay
-                   # (build-m4-loader-selftest/)
-make m4-selftest
-                   # M4 dynamic-driver acceptance: embedded SIO module
-                   # (IRQ self-test variant) + simulator replay
-                   # (build-m4-selftest/)
-make m4-placement-selftest
-                   # identical module bytes at a shifted arena base
-                   # (build-m4-placement-selftest/)
-make m4-failure-selftest
-                   # init-failure module + rollback verification
-                   # (build-m4-failure/)
-make m5-selftest
-                   # M5 ROMFS success image + simulator replay
-                   # (build-m5-selftest/)
-make m5-corrupt-selftest
-                   # M5 corrupt-recovery-image panic image
-                   # (build-m5-corrupt-selftest/)
-make m6-selftest
-                   # M6 ZEX acceptance: two-bank/repeated-cycle/raw-return/
-                   # malformed-matrix runs + simulator replay
-                   # (build-m6-selftest/)
-make m6-failure-selftest
-                   # truncated ZEX rollback + valid-copy image
-                   # (build-m6-failure-selftest/)
+make romfs-test
+                   # validate/dump the ROMFS recovery store; host format
+                   # and reader tests
+make zex-test
+                   # pack/validate zextest.zex + the ZEX malformed matrix
 make monitor-test
                    # pack/validate monitor.zex + ABI/layout/dependency tests
-make m7-selftest
-                   # M7 image: kernel diagnostic selftest + scripted
-                   # interactive monitor replay (build-m7-selftest/)
 make ioc-test
                    # pack/validate ioc.zmod + host transport contract suite
 make hid-test
@@ -169,6 +166,15 @@ make hid-test
 make v9958-test
                    # pack/validate v9958.zmod + font pipeline + renderer
                    # model suites
+make m8-ioc-selftest
+                   # M8 IOC acceptance image + host replay
+                   # (build-m8-ioc-selftest/)
+make m8-hid-selftest
+                   # M8 HID acceptance image + host replay
+make m8-v9958-selftest
+                   # M8 V9958 acceptance image + host replay
+make m8-console-selftest
+                   # M8 HID/V9958 console acceptance image + host replay
 make m8-selftest
                    # M8 integration acceptance: full four-module image +
                    # package-20 target diagnostic + monitor launcher, and
@@ -176,41 +182,39 @@ make m8-selftest
                    # binding, IOC command/bulk, HID queue, scripted
                    # monitor session, post-fault recovery)
                    # (build-m8-selftest/)
+make m9-vfs-selftest
+                   # M9 VFS bootstrap acceptance: /SYSTEM mounted by VFS,
+                   # modules + monitor loaded by path, target VFS selftest
+                   # (build-m9-vfs-selftest/)
+make m9-required-mount-selftest
+                   # M9 mount-policy acceptance image + host replay
 make m8-fallback-selftests
                    # builds every failure/fallback variant image (no HID,
                    # no HID+V9958, malformed IOC, arena exhaustion, font
                    # failure, HID rollback) and replays each against its
                    # exact binding and early-SIO diagnostics
 make smoke-hardware SERIAL_PORT=/dev/ttyUSB0
-                   # capture + verify the banner from physical hardware
-make smoke-hardware-selftest SERIAL_PORT=/dev/ttyUSB0
-                   # capture + verify 'syscall selftest: OK'
-make smoke-hardware-irq SERIAL_PORT=/dev/ttyUSB0
-                   # capture + verify 'irq selftest: OK'
-make smoke-hardware-m3 SERIAL_PORT=/dev/ttyUSB0
-                   # capture the M3 transcript; sends 'R' for the console
-                   # RX round trip when the kernel announces readiness
-make smoke-hardware-m4 SERIAL_PORT=/dev/ttyUSB0
-                   # capture the M4 acceptance transcript: banner +
-                   # 'console: dynamic sio0.b OK' + 'm4 loader selftest:
-                   # OK' + 'm4 selftest: sio at 0x...' + 'm4 selftest: OK'
-make smoke-hardware-m4-failure SERIAL_PORT=/dev/ttyUSB0
-                   # capture the M4 failure transcript: banner +
-                   # 'console: dynamic driver failed' +
-                   # 'm4 failure selftest: OK'
-make smoke-hardware-m5 SERIAL_PORT=/dev/ttyUSB0
-                   # capture + verify the M5 ROMFS success transcript
-make smoke-hardware-m5-corrupt SERIAL_PORT=/dev/ttyUSB0
-                   # capture + verify the M5 corrupt-image panic marker
-make smoke-hardware-m6 SERIAL_PORT=/dev/ttyUSB0
-                   # capture + verify the M6 ZEX acceptance transcript
-make smoke-hardware-m6-failure SERIAL_PORT=/dev/ttyUSB0
-                   # capture + verify the M6 rollback transcript
-make smoke-hardware-m7 SERIAL_PORT=/dev/ttyUSB0
-                   # script + verify the M7 monitor session (help, R,
-                   # dumps, modify/readback, I/O, rejections, two Q
-                   # cycles); start it first, then power-cycle/RESET the
-                   # board so the boot log is captured
+                   # capture + verify the production boot contract from
+                   # physical hardware: the exact banner, the
+                   # 'console: dynamic sio0.b OK' service line and the
+                   # monitor banner + 'Z80> ' prompt (optional boot-module
+                   # diagnostics are tolerated; a panic or an unbound
+                   # console fails)
+make smoke-hardware-subsystem SERIAL_PORT=/dev/ttyUSB0
+                   # capture the subsystem image: the five group
+                   # '... selftest: OK' lines and the interactive monitor
+                   # session (sends 'Q', expects 'monitor: exit status 0x')
+make smoke-hardware-romfs-corrupt SERIAL_PORT=/dev/ttyUSB0
+                   # capture + verify 'PANIC: romfs: corrupt recovery image'
+make smoke-hardware-m8-ioc SERIAL_PORT=/dev/ttyUSB0
+                   # capture the M8 IOC image: contract level, PING, bulk
+                   # READY/DONE sections and the frozen no-file status
+make smoke-hardware-m8-hid SERIAL_PORT=/dev/ttyUSB0
+                   # capture the M8 HID image's queue/doorbell transcript
+make smoke-hardware-m8-v9958 SERIAL_PORT=/dev/ttyUSB0
+                   # capture the M8 V9958 image's video transcript
+make smoke-hardware-m8-console SERIAL_PORT=/dev/ttyUSB0
+                   # capture the M8 console acceptance image's serial portion
 make smoke-hardware-m8 SERIAL_PORT=/dev/ttyUSB0
                    # capture + verify the integration image's serial
                    # portion (binding report, PING level, rejected-call
@@ -232,16 +236,17 @@ hashes, fill counts, and entry addresses).  `make check` additionally
 proves that a clean rebuild reproduces the identical binary.
 
 Physical-hardware validation uses `tools/serial_smoke.py` (115200 8N1,
-bounded timeout).  The M7 and M8 modes must be listening before the
+bounded timeout).  The subsystem and M8 modes must be listening before the
 board boots: start the tool, then power-cycle or press RESET (the
 boot-log lines are printed once; the M8 images additionally wait for
-the tool's host-sync sequence before the banner).  The `m8` and
-`m8-fb-*` modes assert the exact binding and diagnostics of the
-integration and fallback images, scripting the serial input where the
-bound input is SIO; V9958-bound output is confirmed on the display by
+the tool's host-sync sequence before the banner).  The `subsystem`,
+`romfs-corrupt`, `m8` and `m8-fb-*` modes assert the exact acceptance
+transcript, binding and diagnostics, scripting the serial input where
+the bound input is SIO; V9958-bound output is confirmed on the display by
 the operator.  Dated acceptance records live under `docs/validation/`
 (M1, M2, the M3 record, the M4 loader/acceptance records, M5-M7, and
-the package-20 M8 device-stack record).
+the package-20 M8 device-stack record; those retirements are recorded by
+work package 25a).
 
 Artifacts (all under `build/`):
 
@@ -252,9 +257,8 @@ page0.bin ... page7.bin   the eight 64 KiB ROM pages
 zephyros.bin   512 KiB boot image (pages 0-7, FF-filled)
 zephyr80.bin   identical copy for MAME
 recovery.romfs logical ROMFS recovery stream (pages 2-7 payload)
-modules/       packed ZMOD modules (+ dump/report JSON); the production
-               boot set is sourced from ROMFS, while pre-M5 acceptance
-               images embed a catalog blob
+modules/       packed ZMOD modules (+ dump/report JSON); every boot set
+               is sourced from the ROMFS recovery store
 ```
 
 The image is exactly 524288 bytes: eight 64 KiB pages -- ROM page 0 and
@@ -269,14 +273,14 @@ documented in `docs/memory.md`.
 ## Run in the emulator
 
 See `docs/boot.md` for the MAME invocation and the physical-ROM test
-checklist.  Expected output (M4 adds the dynamic console-service line):
+checklist.  Expected output (the current boot then adds the dynamic
+console-service line):
 
 ```text
 ZephyrOS 0.0
 platform: Zephyr-80
 kernel entry: OK
 serial: OK
-HALT
 console: dynamic sio0.b OK
 ```
 
@@ -294,11 +298,14 @@ ZephyrOS/
 ├── Makefile
 ├── docs/                  architecture.md, boot.md, memory.md, abi.md,
 │                          devices.md, module-format.md,
-│                          romfs-format.md, zex-format.md, monitor.md
+│                          romfs-format.md, zex-format.md, monitor.md,
+│                          vfs.md
+├── config/mounts.json     production VFS mount policy (only /SYSTEM)
 ├── include/zephyros/      types.h, platform.h, kernel.h, syscall.h,
 │                          errno.h, irq.h, device.h, driver.h,
 │                          console.h, module.h, romfs.h, process.h,
-│                          zex.h, ioc.h, hid.h, video.h
+│                          zex.h, ioc.h, hid.h, video.h, fs.h, vfs.h
+├── fs/romfs/              M9 ROMFS VFS provider (romfs_provider.c)
 ├── boot/start.asm         common boot entry + C runtime initialization
 ├── boot/shadow_copy.asm   reset/ROM-to-SRAM copier
 ├── kernel/                main.c, panic.c, early_console.c, syscall.c,
@@ -307,8 +314,10 @@ ZephyrOS/
 │                          diag_io.asm), runtime/ (sdcc_helpers.asm),
 │                          device/ (registry.c, console.c),
 │                          irq/, module/ (arena.asm, loader.c,
-│                          relocate.c, embedded.c),
+│                          relocate.c),
 │                          romfs/ (romfs.c, rom_access.asm),
+│                          vfs/ (mount_config.h, path.c, mount.c, file.c,
+│                          dir.c),
 │                          process/ (process.c, exec.c, launch.asm)
 ├── drivers/               sio/ (sio.c, sio_io.asm, sio_module.c),
 │                          ioc/, hid/, v9958/ (M8 device modules),
@@ -324,13 +333,13 @@ ZephyrOS/
 ├── recovery/manifest.json production ROMFS contents (sio.zmod, ioc.zmod,
 │                          hid.zmod, v9958.zmod, v9958-6x8.font,
 │                          monitor.zex)
-├── tools/                 pack_image.py, mapcheck.py, zmodpack.py,
-│                          romfspack.py, zexpack.py, fontpack.py,
-│                          serial_smoke.py
+├── tools/                 pack_image.py, mapcheck.py, mountgen.py,
+│                          zmodpack.py, romfspack.py, zexpack.py,
+│                          fontpack.py, serial_smoke.py
 ├── tests/                 host-side image/layout/ABI tests + Z80 replays;
-│                          m5/..m8 (manifests, fixtures, generators);
-│                          modules/ (test ZMOD sources + manifests);
-│                          target/ (m1..m8 acceptance code, headers,
-│                          shared runner)
+│                          m8/, m9/, subsys/ (manifests, fixtures,
+│                          generators); modules/ (test ZMOD sources +
+│                          manifests); target/ (subsystem and M8/M9
+│                          acceptance code, headers, shared runner)
 └── work/                  milestone worker contracts
 ```

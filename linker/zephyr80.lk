@@ -27,6 +27,13 @@ build/console.rel
 build/module_relocate.rel
 build/module_loader.rel
 build/romfs.rel
+build/vfs_mounts.rel
+build/vfs_path.rel
+build/vfs_mount.rel
+build/vfs_file.rel
+build/vfs_dir.rel
+build/vfs_mutate.rel
+build/romfs_provider.rel
 build/process.rel
 build/process_exec.rel
 build/arena.rel

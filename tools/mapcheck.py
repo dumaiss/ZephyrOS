@@ -6,10 +6,9 @@ ownership contract (see docs/memory.md):
 
     page zero     0000h-00FFh   reset copier only, below 0030h
     bank 7 kernel 2000h-arena   _CODE/_HOME/_INITIALIZER/_GSINIT/_GSFINAL
-    driver arena  derived start-C000h
-                                production: align_up(__kernel_code_end),
-                                >= 16 KiB; legacy/variant images keep
-                                A000h-BFFFh (no linked content either way)
+    driver arena  align_up(__kernel_code_end)-C000h, >= 16 KiB
+                                (the one derived geometry; there is no
+                                fixed/legacy variant)
     bank 7 runtime C000h-DFFFh  _DATA/_INITIALIZED (never ROM-loaded)
     common         E000h-FEFFh  _COMMON/_COMMON_DATA, gates, console, panic
     common stack   FF00h-FFFFh  reserved; nothing may be linked there
@@ -37,7 +36,6 @@ Usage:
                 [platform/zephyr80/memory.inc
                  [platform/zephyr80/irq.inc]]
 
-    mapcheck.py geometry legacy <memory.inc> <out_arena_geometry.inc>
     mapcheck.py geometry probe <memory.inc> <out_arena_geometry.inc>
     mapcheck.py geometry derive <probe.map> <memory.inc>
                 <out_arena_geometry.inc> [<out_memory_variant.inc>]
@@ -48,10 +46,13 @@ CTC0 acceptance helpers, the obsolete IRQ vector lookup, fixture catalogs,
 and test SIO module entries) so acceptance code cannot leak into
 production images.
 
-The `geometry` commands implement the M8 two-pass driver-arena build.  The
-`legacy` mode emits the fixed pre-M8 acceptance/variant geometry and the
+Every image boots its modules from the recovery store through the VFS, so
+the kernel VFS core, the generated mount table, the ROMFS provider and
+the M9-only ROMFS accessors are required in every map.
+
+The `geometry` commands implement the two-pass driver-arena build.  The
 `probe` mode emits the bootstrap include used by the probe link (derived
-symbols at the legacy base).  The `derive` mode measures the exclusive end
+symbols at the placeholder base).  The `derive` mode measures the exclusive end
 of every loadable bank-7 area in the probe-link map, aligns it up to the
 512-byte granule, enforces the 16-KiB minimum, and writes both the small
 include consumed by kernel/module/arena.asm and (when requested) a full
@@ -72,11 +73,20 @@ RESET_TOP = 0x0030
 BANK7_BASE = 0x2000
 BANK7_LOAD_END = 0xC000
 BANK7_RUNTIME_END = 0xE000
+# Defaults used until a memory include overrides them.  The arena values
+# are only the placeholder bounds of the probe link: every real image
+# declares the derived geometry in its generated memory.inc variant.
+PROBE_ARENA_BASE = 0xA000
+PROBE_ARENA_END = 0xC000
+PROBE_GRANULE_SIZE = 0x0200
+# Derived-only checks run when the memory include passed on the command
+# line declares the derived geometry; a map checked without one (synthetic
+# validation maps) keeps them off.
 DRIVER_ARENA_DERIVED = 0
-DRIVER_ARENA_BASE = 0xA000
-DRIVER_ARENA_END = 0xC000
-DRIVER_GRANULE_SIZE = 0x0200
-DRIVER_GRANULES = 16
+DRIVER_ARENA_BASE = PROBE_ARENA_BASE
+DRIVER_ARENA_END = PROBE_ARENA_END
+DRIVER_GRANULE_SIZE = PROBE_GRANULE_SIZE
+DRIVER_GRANULES = ((PROBE_ARENA_END - PROBE_ARENA_BASE) // PROBE_GRANULE_SIZE)
 DRIVER_ARENA_MIN_SIZE = 0x4000
 DRIVER_ARENA_MIN_GRANULES = 32
 COMMON_BASE = 0xE000
@@ -136,11 +146,17 @@ def apply_layout(values):
     IRQ_ISR_STACK_TOP = values["ZOS_IRQ_ISR_STACK_TOP"]
     IRQ_ISR_STACK_SIZE = values["ZOS_IRQ_ISR_STACK_SIZE"]
     GATE_STACK_SIZE = values["ZOS_GATE_STACK_SIZE"]
-    DRIVER_ARENA_DERIVED = values.get("ZOS_DRIVER_ARENA_DERIVED", 0)
-    DRIVER_ARENA_BASE = values["ZOS_DRIVER_ARENA_BASE"]
-    DRIVER_ARENA_END = values["ZOS_DRIVER_ARENA_END"]
+    # A memory include declares the geometry mechanism it was generated
+    # for: the derived variant says so explicitly, and a plain platform
+    # include (synthetic/validation maps) leaves the derived-only checks
+    # off.
+    DRIVER_ARENA_DERIVED = 1 if values.get("ZOS_DRIVER_ARENA_DERIVED") else 0
+    DRIVER_ARENA_BASE = values.get("ZOS_DRIVER_ARENA_BASE", PROBE_ARENA_BASE)
+    DRIVER_ARENA_END = values.get("ZOS_DRIVER_ARENA_END", PROBE_ARENA_END)
     DRIVER_GRANULE_SIZE = values["ZOS_DRIVER_GRANULE_SIZE"]
-    DRIVER_GRANULES = values["ZOS_DRIVER_GRANULES"]
+    DRIVER_GRANULES = values.get(
+        "ZOS_DRIVER_GRANULES",
+        (DRIVER_ARENA_END - DRIVER_ARENA_BASE) // DRIVER_GRANULE_SIZE)
     DRIVER_ARENA_MIN_SIZE = values.get("ZOS_DRIVER_ARENA_MIN_SIZE", 0x4000)
     DRIVER_ARENA_MIN_GRANULES = values.get("ZOS_DRIVER_ARENA_MIN_GRANULES", 32)
     ROMFS_STAGING_SIZE = values["ZOS_ROMFS_STAGING_SIZE"]
@@ -187,7 +203,14 @@ def loadable_end(areas, symbols):
     return end
 
 
-def derive_geometry(map_text, values):
+# Optional floor override for acceptance images (see geometry_main): the
+# 32-granule floor is the production budget gate; an acceptance image links
+# target-test code and only needs an arena that holds its declared boot set
+# (enforced separately by the arena plan).
+ARENA_MIN_GRANULES = None
+
+
+def derive_geometry(map_text, values, min_granules=None):
     """Compute the production arena from a probe-link map.
 
     Returns a dict with kernel_code_end (unaligned exclusive end of the
@@ -197,6 +220,9 @@ def derive_geometry(map_text, values):
     areas, symbols = parse_map(map_text)
     granule = values["ZOS_DRIVER_GRANULE_SIZE"]
     arena_end = values["ZOS_DRIVER_ARENA_END"]
+    if min_granules is None:
+        min_granules = values["ZOS_DRIVER_ARENA_MIN_GRANULES"]
+    min_size = min_granules * granule
     end = loadable_end(areas, symbols)
     if end > arena_end:
         raise MapError(
@@ -204,13 +230,11 @@ def derive_geometry(map_text, values):
             "%04Xh" % (end, arena_end))
     start = align_up(end, granule)
     size = arena_end - start
-    if size < values["ZOS_DRIVER_ARENA_MIN_SIZE"]:
+    if size < min_size:
         raise MapError(
             "derived driver arena %04Xh-%04Xh is %d bytes; the minimum is "
             "%d bytes (%d granules, linked kernel ends at %04Xh)"
-            % (start, arena_end - 1, size,
-               values["ZOS_DRIVER_ARENA_MIN_SIZE"],
-               values["ZOS_DRIVER_ARENA_MIN_GRANULES"], end))
+            % (start, arena_end - 1, size, min_size, min_granules, end))
     if size % granule != 0:
         raise MapError("derived driver arena is not granule aligned")
     return {
@@ -271,7 +295,7 @@ def apply_irq_layout(values):
 
 
 # Owned areas and their allowed placement range.  Loadable bank-7 sections
-# must end below the M4 driver arena (A000h); the arena itself is reserved
+# must end below the derived driver arena; the arena itself is reserved
 # for load-time modules and never carries linked content.  
 OWNED_AREAS = {
     "_CODE": (BANK7_BASE, DRIVER_ARENA_BASE),
@@ -439,16 +463,59 @@ M4_BANK7_PREFIXES = ("_module_", "_zmod_", "_z4_", "_m4_",
 # M5 ROMFS reader routines: bank-7 code only.  The embedded catalog loader
 # (_module_catalog_load_all, kernel/module/embedded.c) is an acceptance
 # artifact and is checked through the table/loader pairing below.
+# `_romfs_lookup_ci` is M9's single ASCII-folded lookup (architecture
+# section 32.13): the removed case-sensitive `_romfs_lookup` has no
+# replacement beside it, so every image links this one name.
 ROMFS_BANK7_ROUTINES = (
     "_romfs_init",
-    "_romfs_lookup",
+    "_romfs_lookup_ci",
     "_romfs_read",
-    "_romfs_load_zmod",
     "_romfs_resource_size",
     "_romfs_resource_read",
 )
 
 ROMFS_BANK7_PREFIXES = ("_romfs_",)
+
+# The directory accessor the ROMFS VFS provider's `readdir` needs
+# (kernel/romfs/romfs.c).  Every image links it.
+ROMFS_M9_ROUTINES = (
+    "_romfs_entry_at",
+)
+
+# M9 VFS core and the statically linked ROMFS provider: bank-7 code and
+# data only, below the ISR stack.  The generated `const` mount table lands
+# in the bank-7 loadable image like other ROM-loaded const data.
+VFS_BANK7_ROUTINES = (
+    "_vfs_init",
+    "_vfs_mount_all",
+    "_vfs_phase",
+    "_vfs_register_filesystem",
+    "_vfs_find_provider",
+    "_vfs_path_normalize",
+    "_vfs_name_equal",
+    "_vfs_mount_resolve",
+    "_vfs_resolve_path",
+    "_vfs_is_mountpoint",
+    "_vfs_mount_is_root",
+    "_vfs_mount_is_root_level",
+    "_vfs_open",
+    "_vfs_read",
+    "_vfs_write",
+    "_vfs_sync",
+    "_vfs_close",
+    "_vfs_stat",
+    "_vfs_mkdir",
+    "_vfs_rmdir",
+    "_vfs_unlink",
+    "_vfs_rename",
+    "_vfs_opendir",
+    "_vfs_readdir",
+    "_vfs_closedir",
+    "_vfs_file_source",
+    "_romfs_provider",
+)
+
+VFS_BANK7_PREFIXES = ("_vfs_",)
 
 # M6 process/ZEX code and state: bank 7 only, below the ISR stack (the
 # common-resident gates are listed in COMMON_ROUTINES instead).
@@ -520,10 +587,6 @@ ROMFS_COMMON_STATE = (
     "rom_access_length",
     "rom_access_busy",
 )
-
-# Embedded catalog table and loader (acceptance images only).  Either both
-# are linked or neither is; --production requires neither.
-CATALOG_SYMBOLS = ("_zmod_catalog", "_module_catalog_load_all")
 
 # Transition-critical state block (common RAM).
 COMMON_STATE = (
@@ -788,21 +851,6 @@ def check_symbols(areas, symbols, production=False):
                     % (name, addr)
                 )
 
-    # Embedded catalog pairing: the table and its loader are acceptance
-    # artifacts that must be linked together or not at all.
-    catalog_present = [name for name in CATALOG_SYMBOLS
-                       if symbols.get(name, 0) != 0]
-    if len(catalog_present) == 1:
-        raise MapError(
-            "embedded catalog symbols must be linked together (found %s)"
-            % ", ".join(catalog_present))
-    for name in catalog_present:
-        addr = symbols[name]
-        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
-            raise MapError(
-                "embedded catalog symbol %s at %04Xh is not bank-7 "
-                "resident" % (name, addr))
-
     # M5 ROMFS: the allocation-free reader is bank-7 code; the ROM-access
     # primitive, its staging buffer, and the saved transition state are
     # permanent common memory.
@@ -852,6 +900,32 @@ def check_symbols(areas, symbols, production=False):
         raise MapError(
             "ROM-access transition block %04Xh-%04Xh leaves common memory"
             % (ROM_ACCESS_BASE - 2, ROM_ACCESS_BASE + ROM_ACCESS_SIZE - 1))
+
+    # M9: the VFS core and the statically linked ROMFS provider are bank-7
+    # residents below the ISR stack; the generated mount table is const
+    # ROM data in the bank-7 loadable image.
+    for name in VFS_BANK7_ROUTINES:
+        if name not in symbols:
+            raise MapError("map has no VFS symbol %s" % name)
+        addr = symbols[name]
+        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            raise MapError(
+                "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
+                % (name, addr))
+    for name in ROMFS_M9_ROUTINES:
+        if name not in symbols:
+            raise MapError("map has no ROMFS symbol %s" % name)
+        addr = symbols[name]
+        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            raise MapError(
+                "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
+                % (name, addr))
+    for name, addr in symbols.items():
+        if addr != 0 and name.startswith(VFS_BANK7_PREFIXES):
+            if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+                raise MapError(
+                    "VFS symbol %s at %04Xh is not bank-7 resident"
+                    % (name, addr))
 
     # M6: process/ZEX code and the process table stay bank-7 resident.
     for name in M6_BANK7_ROUTINES:
@@ -935,14 +1009,17 @@ def check_symbols(areas, symbols, production=False):
             "linked loadable bank-7 areas end at %04Xh, inside the driver "
             "arena at %04Xh" % (static_end, arena_start))
     if DRIVER_ARENA_DERIVED:
-        if (arena_end - arena_start) < DRIVER_ARENA_MIN_SIZE:
+        min_granules = (ARENA_MIN_GRANULES if ARENA_MIN_GRANULES is not None
+                        else DRIVER_ARENA_MIN_GRANULES)
+        min_size = min_granules * DRIVER_GRANULE_SIZE
+        if (arena_end - arena_start) < min_size:
             raise MapError(
                 "derived driver arena is %d bytes, below the %d-byte "
-                "minimum" % (arena_end - arena_start, DRIVER_ARENA_MIN_SIZE))
-        if DRIVER_GRANULES < DRIVER_ARENA_MIN_GRANULES:
+                "minimum" % (arena_end - arena_start, min_size))
+        if DRIVER_GRANULES < min_granules:
             raise MapError(
                 "derived driver arena has %d granules, below the %d-granule "
-                "minimum" % (DRIVER_GRANULES, DRIVER_ARENA_MIN_GRANULES))
+                "minimum" % (DRIVER_GRANULES, min_granules))
         kernel_code_end = symbols.get("__kernel_code_end")
         if kernel_code_end is None:
             raise MapError("derived build has no __kernel_code_end symbol")
@@ -1038,40 +1115,27 @@ def check_map(text, production=False):
 
 def geometry_main(argv):
     if not argv:
-        print("usage: mapcheck.py geometry legacy|derive ...", file=sys.stderr)
+        print("usage: mapcheck.py geometry probe|derive ...", file=sys.stderr)
         return 2
     mode = argv[0]
     try:
-        if mode == "legacy":
-            if len(argv) != 3:
-                raise MapError("usage: mapcheck.py geometry legacy "
-                               "<memory.inc> <out.inc>")
-            values = parse_inc(argv[1])
-            geometry = {
-                "kernel_code_end": values["ZOS_DRIVER_ARENA_BASE"],
-                "arena_start": values["ZOS_DRIVER_ARENA_BASE"],
-                "arena_end": values["ZOS_DRIVER_ARENA_END"],
-                "granules": values["ZOS_DRIVER_GRANULES"],
-            }
-            with open(argv[2], "w") as handle:
-                handle.write(format_geometry_inc(geometry, derived=False))
-            print("mapcheck: legacy arena geometry %04Xh-%04Xh (%d granules) "
-                  "-> %s" % (geometry["arena_start"], geometry["arena_end"],
-                             geometry["granules"], argv[2]))
-            return 0
         if mode == "probe":
             # Bootstrap geometry for the probe link: derived-mode symbols
-            # at the legacy base so the probe image links; the measured
+            # at the platform base so the probe image links; the measured
             # area ends (not these placeholders) drive the real values.
             if len(argv) != 3:
                 raise MapError("usage: mapcheck.py geometry probe "
                                "<memory.inc> <out.inc>")
-            values = parse_inc(argv[1])
+            parse_inc(argv[1])
+            # Placeholder bounds for the probe link only: the probe image
+            # just has to link somewhere legal, because the real derived
+            # values come from measuring its areas.
             geometry = {
-                "kernel_code_end": values["ZOS_DRIVER_ARENA_BASE"],
-                "arena_start": values["ZOS_DRIVER_ARENA_BASE"],
-                "arena_end": values["ZOS_DRIVER_ARENA_END"],
-                "granules": values["ZOS_DRIVER_GRANULES"],
+                "kernel_code_end": PROBE_ARENA_BASE,
+                "arena_start": PROBE_ARENA_BASE,
+                "arena_end": PROBE_ARENA_END,
+                "granules": ((PROBE_ARENA_END - PROBE_ARENA_BASE)
+                             // PROBE_GRANULE_SIZE),
             }
             with open(argv[2], "w") as handle:
                 handle.write(format_geometry_inc(geometry, derived=True))
@@ -1080,19 +1144,26 @@ def geometry_main(argv):
                               argv[2]))
             return 0
         if mode == "derive":
-            if len(argv) not in (4, 5):
+            min_granules = None
+            args = list(argv[1:])
+            if "--min-granules" in args:
+                at = args.index("--min-granules")
+                min_granules = int(args[at + 1], 0)
+                del args[at:at + 2]
+            if len(args) not in (3, 4):
                 raise MapError("usage: mapcheck.py geometry derive <probe.map> "
-                               "<memory.inc> <out.inc> [<memory-variant.inc>]")
-            probe_path, memory_path, out_path = argv[1], argv[2], argv[3]
+                               "<memory.inc> <out.inc> [<memory-variant.inc>] "
+                               "[--min-granules N]")
+            probe_path, memory_path, out_path = args[0], args[1], args[2]
             values = parse_inc(memory_path)
             with open(probe_path) as handle:
-                geometry = derive_geometry(handle.read(), values)
+                geometry = derive_geometry(handle.read(), values, min_granules)
             with open(out_path, "w") as handle:
                 handle.write(format_geometry_inc(geometry, derived=True))
-            if len(argv) == 5:
+            if len(args) == 4:
                 with open(memory_path) as handle:
                     variant = format_memory_variant(handle.read(), geometry)
-                with open(argv[4], "w") as handle:
+                with open(args[3], "w") as handle:
                     handle.write(variant)
             print("mapcheck: derived arena %04Xh-%04Xh, %d granules "
                   "(%d bytes), kernel end %04Xh -> %s"
@@ -1108,10 +1179,15 @@ def geometry_main(argv):
 
 
 def main(argv):
+    global ARENA_MIN_GRANULES
     if len(argv) >= 2 and argv[1] == "geometry":
         return geometry_main(argv[2:])
     production = "--production" in argv
     argv = [arg for arg in argv if arg != "--production"]
+    if "--min-granules" in argv:
+        at = argv.index("--min-granules")
+        ARENA_MIN_GRANULES = int(argv[at + 1], 0)
+        del argv[at:at + 2]
     if len(argv) not in (2, 3, 4):
         print(__doc__)
         return 2
@@ -1132,7 +1208,7 @@ def main(argv):
           "%d bytes, %d granules, %s (free %d at boot)"
           % (static_end, DRIVER_ARENA_BASE, DRIVER_ARENA_END - 1,
              DRIVER_ARENA_END - DRIVER_ARENA_BASE, DRIVER_GRANULES,
-             "derived" if DRIVER_ARENA_DERIVED else "legacy reserved",
+             "derived",
              DRIVER_GRANULES))
     return 0
 

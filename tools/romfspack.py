@@ -169,6 +169,8 @@ def _validate_name(name, where):
     if any(byte < 0x20 or byte > 0x7E for byte in encoded):
         raise RomfsError("%s: file name %r contains a non-printable byte"
                          % (where, name))
+    if b"/" in encoded:
+        raise RomfsError("%s: file name %r must not contain '/'" % (where, name))
     if len(encoded) > NAME_SIZE - 1:
         raise RomfsError("%s: file name %r is longer than %d characters"
                          % (where, name, NAME_SIZE - 1))
@@ -244,9 +246,13 @@ def pack(manifest_path, out_path, objdir=None, geom=None):
             raise RomfsError("%s: entry must be an object" % where)
         name = entry.get("name")
         name_bytes = _validate_name(name, where)
-        if name_bytes in names:
-            raise RomfsError("%s: duplicate file name %r" % (where, name))
-        names.add(name_bytes)
+        # Native VFS path comparison is ASCII case-insensitive, so two
+        # entries whose names differ only in case would be unreachable.
+        folded = name_bytes.upper()
+        if folded in names:
+            raise RomfsError("%s: duplicate file name %r (case-insensitive "
+                             "collision)" % (where, name))
+        names.add(folded)
         media_type = entry.get("type")
         if media_type not in TYPE_FLAGS:
             raise RomfsError("%s: unsupported type %r (ZMOD/ZEX/DATA)"
@@ -334,9 +340,13 @@ def parse_image(data, geom=None):
         name = raw_name[:nul].decode("ascii", "replace")
         if any(byte < 0x20 or byte > 0x7E for byte in raw_name[:nul]):
             raise RomfsError("entry %d: name contains a non-printable byte" % index)
-        if name in names:
-            raise RomfsError("entry %d: duplicate name %r" % (index, name))
-        names.add(name)
+        if b"/" in raw_name[:nul]:
+            raise RomfsError("entry %d: name %r must not contain '/'" % (index, name))
+        folded = name.upper()
+        if folded in names:
+            raise RomfsError("entry %d: duplicate name %r (case-insensitive "
+                             "collision)" % (index, name))
+        names.add(folded)
         flags = parse_u16(data, at + 32)
         if flags not in FLAG_NAMES:
             raise RomfsError("entry %d: unsupported flags %d" % (index, flags))

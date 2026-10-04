@@ -18,7 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from test_m1 import make_map  # noqa: E402  (shared synthetic map builder)
+from maptools import make_map  # noqa: E402  (shared synthetic map builder)
 
 MAPCHECK = os.path.join(ROOT, "tools", "mapcheck.py")
 PACK_IMAGE = os.path.join(ROOT, "tools", "pack_image.py")

@@ -3,13 +3,23 @@
 **Status:** implemented by work package `11-m5-rom-recovery-filesystem`
 (2026-10-03).  Host-validated and physically accepted: both Zephyr-80
 smoke transcripts (success and corrupt) are recorded in
-`docs/validation/2026-10-03-m5-romfs.md`.
+`docs/validation/2026-10-03-m5-romfs.md`.  Wrapped by work package
+`25-m9-vfs-bootstrap-romfs` (2026-10-04, corrections 01-02): ROMFS is now
+a statically linked, path-based VFS provider mounted at `/SYSTEM`
+(`docs/vfs.md`), it has exactly one lookup and that lookup folds case
+(the case-sensitive `romfs_lookup` and the second folded variant were
+merged), and `romfs_load_zmod()` is gone.  The on-ROM format, the
+ROM-access primitive and the module-facing resource imports are
+unchanged.
 
 ROMFS is the tiny read-only recovery store that boots the SIO driver (and
 later native recovery programs) out of the programmed ROM image.  It is
 not the general ZephyrOS filesystem: there is no heap, no allocator, no
-write support, no directories, and no generic VFS API.  The M4 module
-loader is unchanged; only the byte source became a bounded read source.
+write support and no directories, and it is not a general-purpose
+filesystem API -- since M9 it is the bootstrap *provider* behind the
+kernel VFS, which owns path resolution, mount policy and the native
+file/directory API.  The M4 module loader is unchanged; only the byte
+source became a bounded read source, then a VFS-bound one.
 
 ## 1. Physical placement
 
@@ -136,11 +146,13 @@ logical range, physical ROM page/range, type, size, and SHA-256 per file:
 ```
 
 `pack`/`validate` reject, deterministically: duplicate, empty, overlong,
-non-printable or unterminated names; unsupported flags; missing inputs;
-nonzero reserved fields; table/payload overlap and overlapping payloads;
-32-bit wrap; truncated or padded images; capacity excess; mismatched
-`directory_size`; and any logical mapping into a page's `C000h-FFFFh`
-half (structurally impossible within capacity, re-checked defensively).
+non-printable or unterminated names; names containing `/`; names that
+collide case-insensitively (M9 resolves ROMFS names case-insensitively);
+unsupported flags; missing inputs; nonzero reserved fields;
+table/payload overlap and overlapping payloads; 32-bit wrap; truncated
+or padded images; capacity excess; mismatched `directory_size`; and any
+logical mapping into a page's `C000h-FFFFh` half (structurally
+impossible within capacity, re-checked defensively).
 
 `tools/pack_image.py` consumes `build/recovery.romfs` (produced from the
 selected manifest), places it across pages 2-7, fills every unused byte
@@ -154,10 +166,11 @@ capacity, and emits per-page hashes plus the ROMFS placement in
 
 ```c
 int romfs_init(void);
-int romfs_lookup(const char *name, romfs_file_t *out);
+int romfs_lookup_ci(const char *name, romfs_file_t *out);
 int romfs_read(const romfs_file_t *file, uint32_t offset, void *dst,
                uint16_t length);
-int romfs_load_zmod(const char *name, const char *romfs_name);
+int romfs_entry_at(uint16_t index, romfs_file_t *out, char *name,
+                   uint16_t name_size);   /* ROMFS-boot builds only */
 ```
 
 * `romfs_init()` reads the header and the complete directory through the
@@ -165,16 +178,27 @@ int romfs_load_zmod(const char *name, const char *romfs_name);
   filesystem.  A malformed image is rejected as a whole: no lookup or
   read can ever be driven by unvalidated metadata, and a corrupt image
   never drives a latch value or an executable address.
-* `romfs_lookup()` scans entries in order and compares names exactly
-  (case-sensitive); it returns `-ZOS_ENOENT` for absent names.
+* `romfs_lookup_ci()` is **the** ROMFS lookup: it scans entries in order
+  and compares names with ASCII case folding (architecture section 32.13).
+  There is no case-sensitive variant beside it; VFS, the ZEX launcher and
+  the module resource imports all arrive here.  It returns `-ZOS_ENOENT`
+  for absent names and `-ZOS_EINVAL` for an over-long component.
 * `romfs_read()` is strictly bounded: `offset <= size` and
   `length <= size - offset` are enforced in 32-bit arithmetic before
   anything is narrowed.  `offset == size` with `length == 0` is a clean
   EOF read (returns 0); any request that would read past EOF is rejected
   with `-ZOS_EINVAL`.  Reads may cross 48-KiB window boundaries; they are
   split internally at window edges and at the 128-byte staging size.
-* `romfs_load_zmod()` looks up a `ZMOD` entry and hands it to the shared
-  M4 loader through the bounded source adapter (section 6).
+* `romfs_entry_at()` returns the entry at a validated index with its
+  name, so the VFS provider can enumerate the directory without
+  duplicating layout knowledge.  It is compiled only into ROMFS-boot
+  builds; `tools/mapcheck.py` rejects it in an embedded-catalog image.
+
+M9 removed `romfs_load_zmod()` and the case-sensitive `romfs_lookup`;
+the file is no longer handed to the loader by the ROMFS reader.
+`kernel/romfs/` is now a metadata/byte reader only, and the filesystem
+path goes through the M9 VFS and the `fs/romfs` provider
+(`docs/vfs.md`).
 
 `kernel/romfs/romfs.c` avoids 32-bit division (window index by repeated
 subtraction) and 32-bit multiplication (`count x 36` by shifts), so the
@@ -259,21 +283,24 @@ struct zmod_source {
   allocates granules, streams the image copy and relocation records
   through the source in bounded chunks, applies `ZREL_ABS16` relocations,
   and keeps the M4 transactional rollback intact;
-* `kernel/romfs/romfs.c` provides the ROMFS source (`romfs_load_zmod`);
-  the container bytes come from `romfs_read()` and are never assumed to
-  be contiguous in memory;
+* the source of a boot module is a VFS open file: `kernel/main.c` opens
+  `/SYSTEM/<name>.zmod` through the kernel file API and binds the file
+  with `vfs_file_source()` (`docs/vfs.md`).  The container bytes come
+  from `romfs_read()` underneath the ROMFS provider and are never
+  assumed to be contiguous in memory;
 * the ZMOD on-disk format, `build/modules/sio.zmod`, and all M4 loader
   semantics are unchanged; the source path is the same loader, not a
-  second one.
+  second one.  `romfs_load_zmod()` no longer exists.
 
-Production/M5 boot sequence:
+Production/M9 boot sequence:
 
 ```text
 device_registry_init()
 module_loader_init()
-romfs_init()                 fail -> panic("romfs: corrupt recovery image")
-romfs_load_zmod("sio","sio.zmod")   fail -> "console: dynamic driver failed"
-console_bind_defaults()      ok   -> "console: dynamic sio0.b OK"
+vfs_init()                   fail -> romfs_diagnose() +
+                                    panic("romfs: corrupt recovery image")
+vfs_open("/SYSTEM/sio.zmod") fail -> "console: dynamic driver failed"
+module_load_source()         ok   -> "console: dynamic sio0.b OK"
 ```
 
 A corrupt recovery image therefore fails through the early console
@@ -292,6 +319,8 @@ catalog table/loader must be linked together or not at all.
 | valid kernel reader, EOF/bound semantics, corrupt-metadata rejection | `tests/test_romfs_sim.py` (mutated header/table replays) |
 | exact latch/IFF restoration, stackless mode-00 window pinned to the mirrored stub, reentry and bounds rejection | `tests/test_romfs_sim.py` (ROM-access primitive replays + `RomWindowWatcher`) |
 | source-backed loading, reject-before-allocate, byte-identity with `sio.zmod` | `tests/test_romfs_sim.py`, `tests/test_romfs.py`, `tests/test_m4_sim.py` |
+| ROMFS as the `/SYSTEM` bootstrap provider (path-based `zfs_ops`): one case-folded lookup, `/` the only directory, read-only semantics, `ZOS_ENOTDIR`/`ZOS_ENOENT` for deeper paths, `ZOS_EROFS` from the null mutation pointers | `tests/test_m9_vfs_sim.py`, `tests/target/m9/m9_vfs_test.c` |
+| the single case-folded lookup resolves every spelling | `tests/test_romfs_sim.py` (case variants of `sio.zmod`) |
 | production has no embedded boot blob/catalog | `tools/mapcheck.py --production`, `tests/test_m4.py` |
 | corrupt image panics before module execution | `tests/test_romfs_sim.py`, image marker tests |
 | physical success and corrupt transcripts | `docs/validation/2026-10-03-m5-romfs.md` (**pending hardware**) |

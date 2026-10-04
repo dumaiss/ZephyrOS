@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""Host-side M6 ZEX tooling tests.
+"""Host-side ZEX tooling tests for the subsystem acceptance image.
 
 Coverage:
 
 * constant parity: tools/zexpack.py result codes and format constants are
   value-identical with include/zephyros/zex.h;
 * one malformed fixture per validation boundary rejects with the exact
-  boundary code, and the fixture set matches the ROMFS acceptance
-  manifest (names, media types, control files);
+  boundary code, and the fixture set matches the subsystem ROMFS
+  acceptance manifest (names, media types, control files);
 * packing a synthetic linked image honors the manifest, rejects content
   outside the declared image, entry/BSS/scratch/geometry drift, and
   produces byte- and report-identical output on repeat runs;
 * the real zextest artifacts: the packed .zex validates, its report
-  matches the bytes, the acceptance ROMFS stores identical payloads, and
-  the failure image swaps in the truncated ZEX exactly;
-* mapcheck's M6 placement rules (common gates/state, bank-7 process
-  code, staging/stack sizes).
+  matches the bytes, the subsystem acceptance ROMFS stores identical
+  payloads (including the truncated corrupt-entry fixture beside the
+  valid copy), and the generated layout header matches the manifest;
+* mapcheck's process/ZEX placement rules (common gates/state, bank-7
+  process code, staging/stack sizes).
 
 Skipped when the packed modules / images have not been built.
 """
@@ -32,18 +33,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
-sys.path.insert(0, os.path.join(ROOT, "tests", "m6"))
+sys.path.insert(0, os.path.join(ROOT, "tests", "subsys"))
 
 import zexpack  # noqa: E402
-import gen_fixtures  # noqa: E402
+import gen_zex_fixtures as gen_fixtures  # noqa: E402
 import mapcheck  # noqa: E402
 import romfspack  # noqa: E402
-from test_m1 import evaluate, make_map, parse_c_header  # noqa: E402
+from maptools import evaluate, make_map, parse_c_header  # noqa: E402
 
 ZEX_H = os.path.join(ROOT, "include", "zephyros", "zex.h")
-ZEXTEST_JSON = os.path.join(ROOT, "tests", "m6", "zextest.json")
-M6_MANIFEST = os.path.join(ROOT, "tests", "m6", "manifest.json")
-M6_FAILURE_MANIFEST = os.path.join(ROOT, "tests", "m6", "manifest-failure.json")
+ZEXTEST_JSON = os.path.join(ROOT, "tests", "subsys", "zextest.json")
+SUBSYS_MANIFEST = os.path.join(ROOT, "tests", "subsys", "manifest.json")
 ZEXPACK = os.path.join(ROOT, "tools", "zexpack.py")
 
 
@@ -100,11 +100,11 @@ class TestFixtureBoundaries(unittest.TestCase):
                          [f["data"] for f in second])
 
     def test_fixture_set_matches_acceptance_manifest(self):
-        manifest = json.loads(open(M6_MANIFEST).read())
+        manifest = json.loads(open(SUBSYS_MANIFEST).read())
         entries = {entry["name"]: entry for entry in manifest["files"]}
         for fixture in gen_fixtures.build_fixtures():
             self.assertIn(fixture["name"], entries,
-                          "%s missing from tests/m6/manifest.json"
+                          "%s missing from tests/subsys/manifest.json"
                           % fixture["name"])
         # Media types: the malformed/return ZEX files are ZEX, the
         # wrong-type control is packed as DATA.
@@ -112,13 +112,12 @@ class TestFixtureBoundaries(unittest.TestCase):
         for name in ("zextest.zex", "zex-return.zex", "zex-bad-magic.zex"):
             self.assertEqual(entries[name]["type"], "ZEX")
         self.assertIn("sio.zmod", entries)
-        # The failure manifest swaps zextest.zex for the truncated
-        # fixture and keeps a valid copy under zexok.zex.
-        failure = json.loads(open(M6_FAILURE_MANIFEST).read())
-        fentries = {entry["name"]: entry for entry in failure["files"]}
-        self.assertEqual(fentries["zextest.zex"]["path"],
-                         "zex-truncated.zex")
-        self.assertEqual(fentries["zexok.zex"]["path"], "zextest.zex")
+        # The corrupt-entry rollback is no longer a separate failure
+        # image: the subsystem manifest carries the truncated fixture
+        # next to the valid zextest.zex, so the process selftest rolls
+        # the bad load back and still runs the valid copy in one boot.
+        self.assertEqual(entries["zex-truncated.zex"]["type"], "ZEX")
+        self.assertIn("zextest.zex", entries)
 
 
 class TestSmokeMismatchHints(unittest.TestCase):
@@ -134,27 +133,26 @@ class TestSmokeMismatchHints(unittest.TestCase):
             serial_smoke._explain_wrong_image(mode, transcript)
         return err.getvalue()
 
-    def test_m5_corrupt_image_still_flashed(self):
+    def test_corrupt_image_flashed_to_the_subsystem_mode(self):
         import serial_smoke
-        # The exact diagnostic line captured on hardware for the
-        # m5-corrupt acceptance image (docs/validation/
-        # 2026-10-03-m5-romfs.md): the header reserved field rejection.
-        transcript = (
-            serial_smoke.BANNER +
-            b"romfs: init failed, code 0x0A, latch 0x18, "
-            b"header 5A 52 46 53 01 24 02 00\r\n" +
-            serial_smoke.M5_CORRUPT_PANIC)
-        for mode, image in (
-                ("m6", "build-m6-selftest/zephyros-m6-selftest.bin"),
-                ("m6-failure",
-                 "build-m6-failure-selftest/zephyros-m6-failure.bin")):
-            hint = self._hint(mode, transcript)
-            self.assertIn("m5-corrupt", hint,
-                          "%s: corrupt-image transcript not recognized: %r"
-                          % (mode, hint))
-            self.assertIn(image, hint,
-                          "%s: hint does not name the image to flash"
-                          % mode)
+        # The corrupt-store image panics before any module runs; a run
+        # with --mode subsystem must name the image to flash instead of
+        # timing out silently.
+        transcript = serial_smoke.BANNER + serial_smoke.ROMFS_CORRUPT_PANIC
+        hint = self._hint("subsystem", transcript)
+        self.assertIn("romfs-corrupt", hint,
+                      "corrupt-image transcript not recognized: %r" % hint)
+
+    def test_subsystem_image_flashed_to_the_corrupt_mode(self):
+        import serial_smoke
+        # The subsystem image boots the module groups; a run with
+        # --mode romfs-corrupt must point back at the subsystem image.
+        transcript = (serial_smoke.BANNER +
+                      serial_smoke.CONSOLE_DYNAMIC_OK +
+                      serial_smoke.SUBSYS_ROMFS_OK)
+        hint = self._hint("romfs-corrupt", transcript)
+        self.assertIn("subsystem", hint,
+                      "subsystem transcript not recognized: %r" % hint)
 
 
 class TestSyntheticPacking(unittest.TestCase):
@@ -345,8 +343,8 @@ class TestZexpackCLI(unittest.TestCase):
         self.assertEqual(int(result.stdout.strip()), manifest["image_size"])
 
 
-class TestM6MapcheckRules(unittest.TestCase):
-    def test_synthetic_map_with_m6_symbols_passes(self):
+class TestProcessMapcheckRules(unittest.TestCase):
+    def test_synthetic_map_with_process_symbols_passes(self):
         mapcheck.check_map(make_map())
 
     def test_process_launch_must_be_common(self):
@@ -379,14 +377,14 @@ class TestM6MapcheckRules(unittest.TestCase):
         with self.assertRaisesRegex(mapcheck.MapError, "copy stack"):
             mapcheck.check_map(text)
 
-    def test_missing_m6_symbol_rejected(self):
+    def test_missing_process_symbol_rejected(self):
         text = make_map(symbols={"_zos_bank_copy": None})
         with self.assertRaisesRegex(mapcheck.MapError,
                                     "map has no symbol _zos_bank_copy"):
             mapcheck.check_map(text)
 
 
-class TestM6Artifacts(unittest.TestCase):
+class TestSubsystemArtifacts(unittest.TestCase):
     def _read(self, rel):
         path = os.path.join(ROOT, rel)
         if not os.path.exists(path):
@@ -409,7 +407,7 @@ class TestM6Artifacts(unittest.TestCase):
                          hashlib.sha256(data).hexdigest())
 
     def test_acceptance_romfs_carries_the_same_zextest_bytes(self):
-        _p, stream = self._read("build-m6-selftest/recovery.romfs")
+        _p, stream = self._read("build-subsys-selftest/recovery.romfs")
         _h, entries = romfspack.parse_image(stream)
         names = {entry["name"]: entry for entry in entries}
         _p, data = self._read("build/modules/zextest.zex")
@@ -424,62 +422,87 @@ class TestM6Artifacts(unittest.TestCase):
             self.assertEqual(names[fixture["name"]]["payload"],
                              open(path, "rb").read())
 
-    def test_failure_romfs_swaps_in_the_truncated_zex(self):
-        _p, stream = self._read("build-m6-failure-selftest/recovery.romfs")
+    def test_recovery_store_carries_the_corrupt_entry_fixture(self):
+        # The retired m6-failure image swapped in a truncated ZEX as the
+        # only zextest.zex.  The subsystem image instead packs the
+        # truncated fixture beside the valid copy, so one boot proves
+        # the corrupt-entry rollback and the valid re-run.
+        _p, stream = self._read("build-subsys-selftest/recovery.romfs")
         _h, entries = romfspack.parse_image(stream)
         names = {entry["name"]: entry for entry in entries}
         _p, valid = self._read("build/modules/zextest.zex")
         truncated = open(os.path.join(ROOT, "build", "modules",
                                       "zex-truncated.zex"), "rb").read()
-        self.assertEqual(names["zextest.zex"]["payload"], truncated)
-        self.assertEqual(names["zexok.zex"]["payload"], valid)
+        self.assertEqual(names["zextest.zex"]["payload"], valid)
+        self.assertEqual(names["zex-truncated.zex"]["payload"], truncated)
 
     def test_images_contain_the_acceptance_markers(self):
-        _p, success = self._read("build-m6-selftest/"
-                                 "zephyros-m6-selftest.bin")
-        _p, failure = self._read("build-m6-failure-selftest/"
-                                 "zephyros-m6-failure.bin")
-        for marker in (b"m6 selftest: OK\r\n", b"zextest: OK\r\n",
-                       b"m6 selftest: two-bank OK\r\n"):
-            self.assertIn(marker, success)
-        for marker in (b"m6 failure selftest: OK\r\n",):
-            self.assertIn(marker, failure)
-        self.assertNotIn(b"m6 failure selftest: OK", success)
-        self.assertNotIn(b"m6 selftest: OK", failure)
+        _p, image = self._read("build-subsys-selftest/"
+                               "zephyros-subsys-selftest.bin")
+        for marker in (b"syscall selftest: OK\r\n",
+                       b"irq selftest: OK\r\n",
+                       b"romfs selftest: OK\r\n",
+                       b"process selftest: OK\r\n",
+                       b"loader selftest: OK\r\n",
+                       b"zextest: OK\r\n",
+                       b"process selftest: two-bank OK\r\n"):
+            self.assertIn(marker, image)
+        # The corrupt-entry rollback is now in the same image (the
+        # current equivalent of the retired m6-failure image's marker).
+        self.assertIn(b"process selftest: corrupt entry rolled back\r\n",
+                      image)
 
     def test_serial_smoke_expectations_exist_verbatim(self):
         import serial_smoke
-        _p, success = self._read("build-m6-selftest/"
-                                 "zephyros-m6-selftest.bin")
-        for const in (b"m6 selftest: zextest status 0x",
-                      serial_smoke.M6_REPEAT_OK,
-                      serial_smoke.M6_TWO_BANK_OK,
-                      serial_smoke.M6_RAW_RETURN_OK,
-                      serial_smoke.M6_REJECTED_OK,
-                      serial_smoke.M6_SELFTEST_OK,
-                      serial_smoke.M6_ZEXTEST_OK):
-            self.assertIn(const, success,
+        _p, image = self._read("build-subsys-selftest/"
+                               "zephyros-subsys-selftest.bin")
+        for const in (serial_smoke.SUBSYS_SYSCALL_OK,
+                      serial_smoke.SUBSYS_IRQ_OK,
+                      serial_smoke.SUBSYS_ROMFS_OK,
+                      serial_smoke.SUBSYS_LOADER_OK,
+                      serial_smoke.SUBSYS_PROCESS_DONE,
+                      serial_smoke.SUBSYS_ZEXTEST_OK,
+                      serial_smoke.SUBSYS_REPEAT_OK,
+                      serial_smoke.SUBSYS_TWO_BANK_OK,
+                      serial_smoke.SUBSYS_RAW_RETURN_OK,
+                      serial_smoke.SUBSYS_REJECTED_OK,
+                      serial_smoke.SUBSYS_CORRUPT_ROLLBACK_OK,
+                      serial_smoke.SUBSYS_STATUS_PREFIX):
+            self.assertIn(const, image,
                           "serial_smoke expectation %r is not in the "
-                          "success image" % const)
-        _p, failure = self._read("build-m6-failure-selftest/"
-                                 "zephyros-m6-failure.bin")
-        self.assertIn(serial_smoke.M6_FAILURE_OK, failure)
-        self.assertNotIn(serial_smoke.M6_SELFTEST_OK, failure)
+                          "subsystem image" % const)
+        # The composed status/bank transcript lines are not linked
+        # literals (the target prints the prefix and the digits through
+        # separate writes); only their embedded prefix is in the image.
+        self.assertIn(b"zextest: bank=", image)
+        for const in (serial_smoke.SUBSYS_STATUS_PASS,
+                      serial_smoke.SUBSYS_STATUS_PASS_BANK1):
+            self.assertTrue(const.startswith(
+                serial_smoke.SUBSYS_STATUS_PREFIX))
+        for const in (serial_smoke.SUBSYS_ZEXTEST_BANK0,
+                      serial_smoke.SUBSYS_ZEXTEST_BANK1):
+            self.assertTrue(const.startswith(b"zextest: bank="))
 
     def test_generated_layout_matches_the_manifest(self):
-        _p, generated = self._read("build-m6-selftest/m6_expect.inc")
+        _p, generated = self._read("build-subsys-selftest/"
+                                   "process_expect.inc")
         manifest = json.loads(open(ZEXTEST_JSON).read())
-        env = parse_c_header(os.path.join(ROOT, "build-m6-selftest",
-                                          "m6_expect.inc"))
-        self.assertEqual(evaluate(env["M6_ZEX_IMAGE_SIZE"], env),
+        env = parse_c_header(os.path.join(ROOT, "build-subsys-selftest",
+                                          "process_expect.inc"))
+        self.assertEqual(evaluate(env["PROCESS_ZEX_IMAGE_SIZE"], env),
                          manifest["image_size"])
-        self.assertEqual(evaluate(env["M6_ZEX_BSS_SIZE"], env),
+        self.assertEqual(evaluate(env["PROCESS_ZEX_BSS_SIZE"], env),
                          manifest["bss_size"])
-        self.assertEqual(evaluate(env["M6_ZEX_STACK_SIZE"], env),
+        self.assertEqual(evaluate(env["PROCESS_ZEX_STACK_SIZE"], env),
                          manifest["stack_size"])
-        self.assertEqual(evaluate(env["M6_ZEX_STACK_BASE"], env),
+        self.assertEqual(evaluate(env["PROCESS_ZEX_STACK_BASE"], env),
                          0xE000 - manifest["stack_size"])
-        self.assertIn(b"m6_fixtures", generated)
+        expected_fixtures = len(
+            [f for f in gen_fixtures.build_fixtures()
+             if f["kernel_code"] is not None])
+        self.assertEqual(evaluate(env["PROCESS_FIXTURE_COUNT"], env),
+                         expected_fixtures)
+        self.assertIn(b"process_fixtures", generated)
 
 
 if __name__ == "__main__":

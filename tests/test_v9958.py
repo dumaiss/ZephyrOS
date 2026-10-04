@@ -48,7 +48,7 @@ import mapcheck  # noqa: E402
 import zmodpack  # noqa: E402
 import fontpack  # noqa: E402
 from test_ioc import struct_member_order  # noqa: E402
-from test_m1 import (  # noqa: E402
+from maptools import (  # noqa: E402
     HARDWARE_H, HARDWARE_INC, evaluate, parse_asm_inc, parse_c_header)
 
 VIDEO_H = os.path.join(ROOT, "include", "zephyros", "video.h")
@@ -324,10 +324,10 @@ class TestModuleArtifact(unittest.TestCase):
         self.assertEqual(types["v9958.zmod"], "ZMOD")
         self.assertEqual(types["v9958-6x8.font"], "DATA")
         main = _read(MAIN_C)
-        sio = main.index('romfs_load_zmod("sio"')
-        ioc = main.index('romfs_load_zmod("ioc"')
-        hid = main.index('romfs_load_zmod("hid"')
-        v9958 = main.index('romfs_load_zmod("v9958"')
+        sio = main.index('kernel_load_vfs_module("sio"')
+        ioc = main.index('kernel_load_vfs_module("ioc"')
+        hid = main.index('kernel_load_vfs_module("hid"')
+        v9958 = main.index('kernel_load_vfs_module("v9958"')
         self.assertLess(sio, ioc)
         self.assertLess(ioc, hid)
         self.assertLess(hid, v9958,
@@ -367,31 +367,6 @@ class TestModuleArtifact(unittest.TestCase):
         self.assertIn("BOOT_ZMODS += $(MODULES)/v9958.zmod", makefile)
         # v9958-test also runs the terminal renderer's host model suite.
         self.assertIn("test_v9958_console.py", makefile)
-
-    def test_pre_m8_images_compile_v9958_boot_out(self):
-        makefile = _read(MAKEFILE)
-        # The pre-M8 acceptance gate (M0-M7) must keep the boot load off;
-        # it is the only default-setting gate (`:= 0` then `?= 1`).
-        index = makefile.index("ZOS_V9958_BOOT := 0\nendif\n"
-                               "ZOS_V9958_BOOT ?= 1")
-        gate = makefile[index - 700:index]
-        for flag in ("ZOS_SELFTEST", "ZOS_M3_SELFTEST", "ZOS_M4_SELFTEST",
-                     "ZOS_M5_SELFTEST", "ZOS_M6_SELFTEST",
-                     "ZOS_M7_SELFTEST"):
-            self.assertIn(flag, gate,
-                          "%s must keep V9958 compiled out" % flag)
-        # The earlier M8 acceptance images keep their accepted console
-        # bindings: their boot set has no V9958 device.
-        for flag in ("ZOS_M8_IOC_SELFTEST", "ZOS_M8_HID_SELFTEST",
-                     "ZOS_M8_HID_NOIOC", "ZOS_M8_HID_BADIOC"):
-            block = makefile.split("ifeq ($(%s),1)" % flag)[1]
-            block = block.split("endif")[0]
-            self.assertIn("ZOS_V9958_BOOT := 0", block,
-                          "%s must keep V9958 compiled out" % flag)
-        # The console acceptance image loads the console-capable module.
-        console = makefile.split("ifeq ($(ZOS_M8_CONSOLE_SELFTEST),1)")[1]
-        console = console.split("endif")[0]
-        self.assertNotIn("ZOS_V9958_BOOT", console)
 
 
 class TestDriverSourceDiscipline(unittest.TestCase):

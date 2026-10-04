@@ -686,6 +686,12 @@ def pack(ihx_text, map_text, build_dir, suffix="", romfs=None):
 
 
 def main(argv):
+    global ARENA_MIN_SIZE, ARENA_MIN_GRANULES
+    min_granules = None
+    if "--min-granules" in argv:
+        at = argv.index("--min-granules")
+        min_granules = int(argv[at + 1], 0)
+        del argv[at:at + 2]
     if len(argv) not in (4, 5, 6):
         print(__doc__)
         return 2
@@ -695,6 +701,9 @@ def main(argv):
         apply_memory_inc(argv[5])
     else:
         apply_memory_inc("platform/zephyr80/memory.inc")
+    if min_granules is not None:
+        ARENA_MIN_GRANULES = min_granules
+        ARENA_MIN_SIZE = min_granules * GRANULE_SIZE
     ihx_text = Path(ihx_path).read_text()
     map_text = Path(map_path).read_text()
     try:
