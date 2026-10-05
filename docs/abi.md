@@ -370,22 +370,32 @@ and replays the whole boot and both programs in the Z80 simulator
 ## 11. M9 native process exec (SYS_EXEC)
 
 ```text
-05h  SYS_EXEC   args {path:u16, length:u16}   -> child exit status in HL
+05h  SYS_EXEC   args {path:u16, length:u16, args:u16, args_length:u16}
+                -> child exit status in HL
 ```
 
-`SYS_EXEC` (package 28) runs a child program to completion and returns
-the child's u16 exit status.  It is a thin composition of the existing
-process machinery - the same slot, bank, ZEX loader, page-zero, VFS-hook
-and exit path the kernel launcher uses - plus a bounded continuation
-stack for the shared syscall gate.  There is no second process manager
-and no asynchronous spawn: the call is synchronous, there is no
-`wait`, and no descriptor, environment or argument block is passed.
+`SYS_EXEC` (package 28, extended by package 28b) runs a child program to
+completion and returns the child's u16 exit status.  It is a thin
+composition of the existing process machinery - the same slot, bank, ZEX
+loader, page-zero, VFS-hook and exit path the kernel launcher uses - plus
+a bounded continuation stack for the shared syscall gate.  There is no
+second process manager and no asynchronous spawn: the call is
+synchronous, there is no `wait`, and no descriptor or environment is
+passed.  A raw command tail is transported for the child.
 
 Rules:
 
 - `path` follows the `FS_*` rules verbatim: 1..127 non-NUL bytes in the
   caller window `0100h-1FFFh`, copied in through the same shared pathname
   scratch and resolved against the calling process' CWD.
+- `args` addresses `args_length` raw bytes in the caller buffer window
+  `0100h-DFFFh` (no wrap).  The kernel copies them byte-exact into the
+  child's startup block and never splits, quotes or interprets them;
+  user space owns parsing (`user/runtime/zex_args.h`).  `args_length` 0
+  means no arguments and `args` is ignored; a length above 125 or a
+  pointer outside the window is `ZOS_EINVAL`, checked in the preflight
+  before anything is allocated.  An argument block outside `0100h-1FFFh`,
+  like a path one, is also `ZOS_EINVAL`.
 - The child inherits the parent's CWD and nothing else: the descriptor
   pool is not inherited (a child's fd numbers belong to the child), and
   the parent's open files keep their own offsets and data.  The child's
@@ -401,10 +411,31 @@ Rules:
   single 256-byte common gate stack and restores before the parent's
   `SYS_EXEC` returns.
 - Past the suspension point nothing can fail: every allocating or
-  fallible step (path copy-in, slot/bank allocation, CWD start, ZEX
-  load/validate, page zero) happens in `process_prepare()` before the
-  child is entered, with the executable source closed before it returns.
-  `process_launch()` only performs the transition.
+  fallible step (path copy-in, tail copy, slot/bank allocation, CWD start,
+  ZEX load/validate, page zero, startup block) happens in
+  `process_prepare()` before the child is entered, with the executable
+  source closed before it returns.  `process_launch()` only performs the
+  transition.
+
+## 11.1 Startup block v1 and HL
+
+The launch gate enters every native program with `HL = 0080h`, pointing
+at its own page zero's startup block v1 (architecture section 26.3):
+
+```text
+0080h  u8   version = 1
+0081h  u8   tail_length  0..125
+0082h  u8   tail[126]    tail_length raw bytes, then one NUL
+```
+
+Every program - including the kernel-launched one - gets a valid block;
+a program with no arguments sees version 1 and `tail_length` 0.  The
+kernel never parses the tail.  The block lives below the `0100h` syscall
+buffer window, so a program must copy the tail into its own data before
+passing it to a syscall (the runtime `zos_args()` accessor returns the
+block, and `zos_split()` parses a copy).  Programs that ignore `HL` are
+unaffected.  The per-program entry glue that preserves `HL` is
+`user/runtime/zex_args.h` (`zos_args_init`).
 
 Error mapping (carry set, `A` = `ZOS_E*`, nothing allocated):
 
@@ -413,6 +444,7 @@ Error mapping (carry set, `A` = `ZOS_E*`, nothing allocated):
 | missing file | `ZOS_ENOENT` |
 | directory | `ZOS_EISDIR` |
 | malformed or oversize ZEX | `ZOS_EINVAL` |
+| bad argument block, tail over 125 bytes, or tail pointer outside the window | `ZOS_EINVAL` |
 | no free slot or bank | `ZOS_ENOSPC` |
 | depth limit or frame too large | `ZOS_EBUSY` |
 | provider read error | passed through unchanged |
@@ -420,10 +452,12 @@ Error mapping (carry set, `A` = `ZOS_E*`, nothing allocated):
 On success carry is clear and `HL` holds the child's exit status; the
 result is not a file descriptor and there is no result block.
 
-Native programs use `user/runtime/zex_exec_runtime.h` (`zos_exec`), which
-takes a NUL-terminated string, rejects a string over 127 bytes or an
-empty/null one locally with `-ZOS_EINVAL`, and returns the child's status
-or the negated native error code.
+Native programs use `user/runtime/zex_exec_runtime.h`
+(`zos_exec(const char *path, const char *args)`), which takes the
+NUL-terminated path and raw tail, rejects a path over 127 bytes or a tail
+over 125 bytes (or an empty/null path) locally with `-ZOS_EINVAL`, and
+returns the child's status or the negated native error code.  A NULL or
+empty `args` means no arguments.
 
 Implementation notes:
 

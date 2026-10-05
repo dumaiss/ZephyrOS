@@ -207,7 +207,7 @@ int process_exec(const char *path, uint16_t *status)
 	if (path == (const char *)0 || status == (uint16_t *)0) {
 		return ZEX_EXEC_ERR_ARG;
 	}
-	result = process_prepare(path, PROCESS_KERNEL_PARENT, &child);
+	result = process_prepare(path, PROCESS_KERNEL_PARENT, 0, 0, &child);
 	if (result != 0) {
 		if (result == -ZOS_ENOENT) {
 			return ZEX_EXEC_ERR_ROMFS;

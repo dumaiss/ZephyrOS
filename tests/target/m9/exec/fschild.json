@@ -5,8 +5,8 @@
   "map": "fschild.map",
   "entry": "ch_entry",
   "entry_offset": 0,
-  "image_size": 1024,
-  "bss_size": 256,
+  "image_size": 2036,
+  "bss_size": 320,
   "stack_size": 256,
   "scratch": {
     "symbol": "zos_fs_scratch",

@@ -291,18 +291,21 @@ static void syscall_getinfo(uint16_t block)
 }
 
 /* SYS_EXEC 05h.  Thin composition of the one process machinery: the
- * depth and frame-size checks run before anything is allocated, then
- * process_prepare() does every fallible step with its own rollback and
- * process_launch() enters the child.  Past the launch nothing can fail. */
+ * depth, frame-size and argument checks run before anything is allocated,
+ * then process_prepare() does every fallible step with its own rollback
+ * and process_launch() enters the child.  Past the launch nothing can
+ * fail. */
 static void syscall_exec(uint8_t bank, uint16_t block)
 {
 	struct process_child child;
 	uint8_t pid = process_current_pid();
 	uint16_t len;
+	uint16_t args;
+	uint16_t args_length;
 	int result;
 
-	(void)bank; /* the path is copied through the common staging gate */
-	if (!block_ok(block, 4)) {
+	(void)bank; /* the path and tail are copied through the common gate */
+	if (!block_ok(block, 8)) {
 		syscall_error(ZOS_EINVAL);
 		return;
 	}
@@ -322,11 +325,24 @@ static void syscall_exec(uint8_t bank, uint16_t block)
 		syscall_error(ZOS_EBUSY);
 		return;
 	}
+	/* The argument tail is validated before any allocation: a length
+	 * over the startup-block maximum, or a buffer outside the caller
+	 * window, is EINVAL with nothing allocated.  A zero length means no
+	 * arguments and the pointer is ignored. */
+	args = read_le16((const uint8_t *)(block + 4));
+	args_length = read_le16((const uint8_t *)(block + 6));
+	if (args_length > ZOS_STARTUP_TAIL_MAX ||
+	    (args_length != 0 &&
+	     !zos_syscall_buffer_ok(args, args_length))) {
+		syscall_error(ZOS_EINVAL);
+		return;
+	}
 	result = zos_fs_copy_path(read_le16((const uint8_t *)block),
 				  read_le16((const uint8_t *)(block + 2)),
 				  zos_process_path_scratch);
 	if (result == 0) {
-		result = process_prepare(zos_process_path_scratch, pid, &child);
+		result = process_prepare(zos_process_path_scratch, pid, args,
+					 args_length, &child);
 	}
 	if (result != 0) {
 		/* Malformed containers (ZEX_EXEC_ERR_* <= -0x20) are EINVAL;

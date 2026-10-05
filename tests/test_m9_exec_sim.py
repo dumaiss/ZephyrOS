@@ -322,6 +322,35 @@ class TestM9ExecAcceptance(M9ExecSimBase):
         self.assertNotIn("fstest: FAIL", sio)
         # The child ran from its inherited CWD and reported it.
         self.assertIn("fschild: cwd /D1\r\n", sio)
+        # Startup block v1 and the user-space splitter, byte-exact: the
+        # kernel transports the tail verbatim and fschild echoes the decoded
+        # argv.  The kernel launcher's empty tail, one word, several words
+        # with a quoted space, and a trailing separator.
+        for expected in (
+                "fschild: startup v1 tail 0\r\n"
+                "fschild: argv 0\r\n",
+                "fschild: startup v1 tail 3\r\n"
+                "fschild: argv 1\r\n"
+                "fschild: arg 0=one\r\n",
+                "fschild: startup v1 tail 20\r\n"
+                "fschild: argv 4\r\n"
+                "fschild: arg 0=two\r\n"
+                "fschild: arg 1=words\r\n"
+                "fschild: arg 2=a b\r\n"
+                "fschild: arg 3=tail\r\n",
+                "fschild: startup v1 tail 12\r\n"
+                "fschild: argv 4\r\n"
+                "fschild: arg 0=a\r\n"
+                "fschild: arg 1=b\r\n"
+                "fschild: arg 2=c d\r\n"
+                "fschild: arg 3=e\r\n",
+                "fschild: startup v1 tail 125\r\n"
+                "fschild: argv 1\r\n"
+                "fschild: arg 0=%s\r\n"
+                % "".join(chr(ord("a") + i % 26) for i in range(125)),
+        ):
+            self.assertIn(expected, sio,
+                          "the argument echo does not carry %r" % expected)
 
     def test_depth_probe_reaches_the_limit(self):
         z, probe, _steps, _min_sp = self.boot()

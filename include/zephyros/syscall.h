@@ -88,26 +88,51 @@ struct zos_console_args {
 
 /* SYS_CONSOLE_POLL takes no block; HL returns 0 (no input) or 1. */
 
-/* SYS_EXEC 05h {path:u16, length:u16} - run a child synchronously
- * (package 28, docs/abi.md section 11).  `path` addresses 1..127
- * non-NUL caller-window bytes resolved against the caller's CWD; the
- * rules are identical to the FS_* family.  On success the child ran to
- * exit and HL holds its u16 exit status (carry clear), including a
- * synthesized ZOS_EFAULT from a raw entry return.  On failure carry is
- * set with a ZOS_E* code in A and nothing was allocated:
+/* SYS_EXEC 05h {path:u16, length:u16, args:u16, args_length:u16} - run a
+ * child synchronously (packages 28/28b, docs/abi.md section 11).  `path`
+ * addresses 1..127 non-NUL caller-window bytes resolved against the
+ * caller's CWD; the rules are identical to the FS_* family.  `args`
+ * addresses `args_length` raw bytes in the caller buffer window
+ * `0100h-DFFFh`; the kernel copies them verbatim into the child's startup
+ * block and never splits or quotes them.  `args_length` 0 means no
+ * arguments and `args` is ignored; a length above `ZOS_STARTUP_TAIL_MAX`
+ * (125) or a buffer outside the window is ZOS_EINVAL in the preflight,
+ * before anything is allocated.  On success the child ran to exit and HL
+ * holds its u16 exit status (carry clear), including a synthesized
+ * ZOS_EFAULT from a raw entry return.  On failure carry is set with a
+ * ZOS_E* code in A and nothing was allocated:
  *
  *   missing file            ZOS_ENOENT
  *   directory               ZOS_EISDIR
  *   malformed/oversize ZEX  ZOS_EINVAL
+ *   bad argument block      ZOS_EINVAL
  *   no free slot or bank    ZOS_ENOSPC
  *   nesting/frame limit     ZOS_EBUSY
  *   provider read error     passed through unchanged
  *
- * Descriptors are not inherited and there is no argument passing. */
+ * Descriptors are not inherited. */
 struct zos_exec_args {
 	uint16_t path;
 	uint16_t length;
+	uint16_t args;        /* raw tail bytes, or 0 when args_length is 0 */
+	uint16_t args_length; /* 0..ZOS_STARTUP_TAIL_MAX                     */
 };
+
+/* Native process startup block v1 (package 28b).  Every native process -
+ * including the kernel launcher's - receives one in its own page zero,
+ * inside the caller-visible low window that stays mapped in both mode 10
+ * and mode 11:
+ *
+ *   0080h  u8  version = ZOS_STARTUP_VERSION
+ *   0081h  u8  tail_length  0..ZOS_STARTUP_TAIL_MAX
+ *   0082h  ... tail bytes, then one NUL (always NUL-terminated)
+ *
+ * The kernel transports the tail byte-exact; user space owns parsing
+ * (user/runtime).  The launch gate enters the program with
+ * HL = ZOS_STARTUP_BASE.  A program that ignores HL needs no glue. */
+#define ZOS_STARTUP_BASE     0x0080u /* startup block address            */
+#define ZOS_STARTUP_VERSION  1u      /* block version byte               */
+#define ZOS_STARTUP_TAIL_MAX 125u    /* largest accepted args_length     */
 
 /* SYS_GETINFO writes a six-byte v1 record at the argument block and
  * returns 6 in HL.  Record flags: bit 0 is set when the parent is the
@@ -205,12 +230,18 @@ _Static_assert(sizeof(struct zos_exit_args) == 2,
 	       "exit argument block must be 2 packed bytes");
 _Static_assert(sizeof(struct zos_console_args) == 4,
 	       "console argument block must be 4 packed bytes");
-_Static_assert(sizeof(struct zos_exec_args) == 4,
-	       "exec argument block must be 4 packed bytes");
+_Static_assert(sizeof(struct zos_exec_args) == 8,
+	       "exec argument block must be 8 packed bytes");
 _Static_assert(__builtin_offsetof(struct zos_exec_args, path) == 0,
 	       "exec path must be the first argument-block word");
 _Static_assert(__builtin_offsetof(struct zos_exec_args, length) == 2,
 	       "exec length must follow the path word");
+_Static_assert(__builtin_offsetof(struct zos_exec_args, args) == 4,
+	       "exec args pointer must follow the path length");
+_Static_assert(__builtin_offsetof(struct zos_exec_args, args_length) == 6,
+	       "exec args length must be the last argument-block word");
+_Static_assert(ZOS_STARTUP_BASE + 2u + ZOS_STARTUP_TAIL_MAX + 1u == 0x0100u,
+	       "the startup block must exactly fill 0080h-00FFh");
 _Static_assert(sizeof(struct zos_info_record) == ZOS_GETINFO_SIZE,
 	       "getinfo record must be 6 packed bytes");
 _Static_assert(__builtin_offsetof(struct zos_info_record, flags) == 4,

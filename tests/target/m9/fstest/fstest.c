@@ -10,10 +10,12 @@
  */
 
 #include "zephyros/fs.h"
+#include "zephyros/syscall.h"
 
 #include "zex_runtime.h"
 #include "zex_fs_runtime.h"
 #include "zex_exec_runtime.h"
+#include "zex_args.h"
 
 /* Native error values (mirror include/zephyros/errno.h). */
 #define FT_EINVAL    0x02
@@ -33,6 +35,8 @@ static char ft_ref[520];
 static struct zfs_stat ft_stat;
 static struct zfs_dirent ft_dirent;
 static struct zfs_open_args ft_block;
+static struct zos_exec_args ft_exec_block;
+static char ft_tail[130];
 
 static unsigned int ft_total;
 static unsigned int ft_pass;
@@ -645,7 +649,7 @@ static int ft_exec(void)
 
 	/* Child: inherits /D1, chdirs to /R2, writes there and exits with
 	 * 0x5A5A leaving the descriptor open. */
-	r = zos_exec("/SYSTEM/fschild.zex");
+	r = zos_exec("/SYSTEM/fschild.zex", (const char *)0);
 	if (r != 0x5A5A) {
 		return 6;
 	}
@@ -677,27 +681,106 @@ static int ft_exec(void)
 	}
 
 	/* A raw entry return is reported as ZOS_EFAULT. */
-	if (zos_exec("/SYSTEM/fsraw.zex") != (int)FT_EFAULT) {
+	if (zos_exec("/SYSTEM/fsraw.zex", (const char *)0) !=
+	    (int)FT_EFAULT) {
 		return 12;
 	}
 
 	/* Every failure mode returns with the parent unaffected. */
-	if (!ft_iserr(zos_exec("/SYSTEM/absent.zex"), FT_ENOENT)) {
+	if (!ft_iserr(zos_exec("/SYSTEM/absent.zex", (const char *)0),
+			      FT_ENOENT)) {
 		return 13;
 	}
-	if (!ft_iserr(zos_exec("/SYSTEM"), FT_EISDIR)) {
+	if (!ft_iserr(zos_exec("/SYSTEM", (const char *)0), FT_EISDIR)) {
 		return 14;
 	}
-	if (!ft_iserr(zos_exec("/SYSTEM/sio.zmod"), FT_EINVAL)) {
+	if (!ft_iserr(zos_exec("/SYSTEM/sio.zmod", (const char *)0),
+			      FT_EINVAL)) {
 		return 15;
 	}
 	if (zos_getcwd(ft_cwd, (unsigned int)sizeof(ft_cwd)) != 3) {
 		return 16;
 	}
 
+	/* Startup block v1: the kernel launcher hands this program version 1
+	 * and an empty tail (it is started by the target hook). */
+	{
+		struct zex_startup *sb = zos_args();
+
+		if (sb == (struct zex_startup *)0 ||
+		    sb->version != (unsigned char)ZEX_STARTUP_VERSION ||
+		    sb->length != 0u || sb->tail[0] != '\0') {
+			return 19;
+		}
+	}
+
+	/* Byte-exact argument transport and user-space splitting: fschild
+	 * echoes the decoded block and argv, and the simulator asserts the
+	 * exact echoed words (one word; several words with a quoted space;
+	 * a trailing separator). */
+	if (zos_exec("/SYSTEM/fschild.zex", "one") != 0x5A5A) {
+		return 20;
+	}
+	if (zos_exec("/SYSTEM/fschild.zex", "two words \"a b\" tail") !=
+	    0x5A5A) {
+		return 21;
+	}
+	if (zos_exec("/SYSTEM/fschild.zex", "a b \"c d\" e ") != 0x5A5A) {
+		return 22;
+	}
+
+	/* The kernel validates the tail in the preflight, before anything is
+	 * allocated: a length over 125 and a pointer outside the 0100h-DFFFh
+	 * window are both EINVAL. */
+	ft_exec_block.path = (unsigned int)"/SYSTEM/fschild.zex";
+	ft_exec_block.length = 19u;
+	ft_exec_block.args = (unsigned int)ft_tail; /* in-window, ignored */
+	ft_exec_block.args_length = (unsigned int)ZEX_STARTUP_TAIL_MAX + 1u;
+	{
+		struct zos_fs_call_req req;
+
+		req.number = (unsigned char)ZOS_SYSCALL_EXEC;
+		req.block = &ft_exec_block;
+		if (!ft_iserr(zos_fs_call(&req), FT_EINVAL)) {
+			return 23;
+		}
+		ft_exec_block.args = 0x0000u; /* below the buffer window */
+		ft_exec_block.args_length = 4u;
+		if (!ft_iserr(zos_fs_call(&req), FT_EINVAL)) {
+			return 24;
+		}
+	}
+
+	/* Exactly 125 bytes is the largest tail the kernel transports and
+	 * the runtime accepts. */
+	{
+		unsigned int j;
+		char c = 'a';
+
+		for (j = 0; j < 125u; ++j) {
+			ft_tail[j] = c;
+			if (++c > 'z') {
+				c = 'a';
+			}
+		}
+		ft_tail[125] = '\0';
+		if (zos_exec("/SYSTEM/fschild.zex", ft_tail) != 0x5A5A) {
+			return 25;
+		}
+		/* 126 bytes is refused locally with nothing allocated. */
+		ft_tail[125] = 'a';
+		ft_tail[126] = '\0';
+		if (!ft_iserr(zos_exec("/SYSTEM/fschild.zex", ft_tail),
+			      FT_EINVAL)) {
+			return 26;
+		}
+		ft_tail[125] = '\0';
+	}
+
 	/* 32 exec/exit cycles must return every resource to baseline. */
 	for (i = 0; i < 32u; ++i) {
-		if (zos_exec("/SYSTEM/fsraw.zex") != (int)FT_EFAULT) {
+		if (zos_exec("/SYSTEM/fsraw.zex", (const char *)0) !=
+		    (int)FT_EFAULT) {
 			return 17;
 		}
 	}

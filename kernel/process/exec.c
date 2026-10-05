@@ -24,6 +24,8 @@
  */
 
 #include "zephyros/process.h"
+#include "zephyros/syscall.h"
+#include "zephyros/romfs.h"
 #include "kernel/vfs/vfs.h"
 
 /* Common-resident copy gate and the deterministic page-zero vector. */
@@ -54,6 +56,44 @@ static uint8_t exec_bank_zero(uint8_t bank, uint16_t addr, uint16_t length)
 	req.addr = addr;
 	req.buffer = (uint8_t *)0;
 	req.length = length;
+	return zos_bank_copy(&req);
+}
+
+/* Build startup block v1 in the common ROMFS staging view and write it
+ * into the child's page zero at 0080h.
+ *
+ * The tail is read from the parent's bank only here, after the executable
+ * source is closed, and it is never kept.  The one existing 128-byte
+ * common staging view (the ROMFS access buffer, exactly the startup-block
+ * size and free once the source is closed) is the gate buffer; the VFS
+ * workspace's staging view is bank-7 data and bank 7 is not mapped while
+ * the gate runs in mode 10.  Nothing new is allocated and nothing is
+ * written beyond the child's page zero.  The parent's bank cannot change
+ * during process_prepare().  Returns 0 or 1 (the caller maps it to a read
+ * error). */
+static uint8_t exec_startup_block(uint8_t child_bank, uint8_t parent_bank,
+				  uint16_t args, uint16_t args_length)
+{
+	struct zos_bank_copy_req req;
+
+	rom_access_staging[0] = ZOS_STARTUP_VERSION;
+	rom_access_staging[1] = (uint8_t)args_length;
+	if (args_length != 0) {
+		req.bank = parent_bank;
+		req.op = ZOS_BANK_OP_READ;
+		req.addr = args;
+		req.buffer = rom_access_staging + 2;
+		req.length = args_length;
+		if (zos_bank_copy(&req) != 0) {
+			return 1;
+		}
+	}
+	rom_access_staging[2u + args_length] = 0; /* always NUL-terminated */
+	req.bank = child_bank;
+	req.op = ZOS_BANK_OP_WRITE;
+	req.addr = ZOS_STARTUP_BASE;
+	req.buffer = rom_access_staging;
+	req.length = (uint16_t)(2u + args_length + 1u);
 	return zos_bank_copy(&req);
 }
 
@@ -194,8 +234,8 @@ static int exec_load_image(struct vfs_file *file,
  * allocation failures (a provider read error is passed through unchanged);
  * a ZEX_EXEC_ERR_* code reports a malformed container.  Nothing is
  * published as RUNNING. */
-int process_prepare(const char *path, uint8_t parent_pid,
-		    struct process_child *child)
+int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
+		    uint16_t args_length, struct process_child *child)
 {
 	struct vfs_file file;
 	struct zex_header header;
@@ -285,6 +325,19 @@ int process_prepare(const char *path, uint8_t parent_pid,
 	/* The whole image is in the child bank; release the source before
 	 * returning so no loader or provider state survives the child. */
 	(void)vfs_close(&file);
+
+	/* Startup block v1: the kernel transports the parent's raw tail
+	 * byte-exact into the child's page zero (0080h).  It is built from
+	 * the parent bank here, after the source is closed, and never
+	 * stored anywhere.  process_prepare() runs in the caller's own
+	 * context, so the running process is the parent and its bank is
+	 * current; the kernel launcher passes an empty tail and never reads
+	 * it.  The parent's bank cannot change during process_prepare(). */
+	if (exec_startup_block(bank, process_current_bank(), args,
+			       args_length) != 0) {
+		process_slot_release(pid);
+		return ZEX_EXEC_ERR_READ;
+	}
 
 	child->pid = pid;
 	child->bank = bank;

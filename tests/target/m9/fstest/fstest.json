@@ -5,7 +5,7 @@
   "map": "fstest.map",
   "entry": "ft_entry",
   "entry_offset": 0,
-  "image_size": 5760,
+  "image_size": 6097,
   "bss_size": 1536,
   "stack_size": 320,
   "scratch": {

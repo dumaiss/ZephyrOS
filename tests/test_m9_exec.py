@@ -19,7 +19,9 @@ Covers:
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -35,6 +37,15 @@ EXEC_C = ROOT / "kernel" / "process" / "exec.c"
 SYSCALL_C = ROOT / "kernel" / "syscall.c"
 RUNTIME_H = ROOT / "user" / "runtime" / "zex_exec_runtime.h"
 RUNTIME_C = ROOT / "user" / "runtime" / "zos_fs.c"
+ARGS_H = ROOT / "user" / "runtime" / "zex_args.h"
+ARGS_ASM = ROOT / "user" / "runtime" / "zex_args.asm"
+ARGS_C = ROOT / "user" / "runtime" / "zos_args.c"
+MAIN_C = ROOT / "kernel" / "main.c"
+CONFIG_MK = ROOT / "config" / "system.mk"
+BOOTPROGRAM = ROOT / "tools" / "bootprogram.py"
+ZEX_DOC = ROOT / "docs" / "zex-format.md"
+FSTEST_C = ROOT / "tests" / "target" / "m9" / "fstest" / "fstest.c"
+FSCHILD_C = ROOT / "tests" / "target" / "m9" / "exec" / "fschild.c"
 ABI_DOC = ROOT / "docs" / "abi.md"
 MAKEFILE = ROOT / "Makefile"
 MAPCHECK = ROOT / "tools" / "mapcheck.py"
@@ -95,17 +106,26 @@ class TestExecAbi(unittest.TestCase):
 
     def test_argument_block_is_packed_and_pinned(self):
         text = _read(SYSCALL_H)
-        self.assertIn("sizeof(struct zos_exec_args) == 4", text)
-        self.assertIn("__builtin_offsetof(struct zos_exec_args, path) == 0",
-                      text)
-        self.assertIn("__builtin_offsetof(struct zos_exec_args, length) == 2",
-                      text)
-        # The runtime reuses the FS path block: the two records are the
-        # same four packed bytes (path@0, length@2), so one scratch union
-        # arm serves both families.
+        self.assertIn("sizeof(struct zos_exec_args) == 8", text)
+        for field, offset in (("path", 0), ("length", 2), ("args", 4),
+                              ("args_length", 6)):
+            self.assertIn(
+                "__builtin_offsetof(struct zos_exec_args, %s) == %d"
+                % (field, offset), text,
+                "zos_exec_args.%s offset is not pinned" % field)
+        # The startup block's geometry is pinned against the page-zero
+        # window: 0080h + version + length + tail + NUL == 0100h.
+        self.assertIn("ZOS_STARTUP_BASE     0x0080u", text)
+        self.assertIn("ZOS_STARTUP_VERSION  1u", text)
+        self.assertIn("ZOS_STARTUP_TAIL_MAX 125u", text)
+        self.assertIn(
+            "ZOS_STARTUP_BASE + 2u + ZOS_STARTUP_TAIL_MAX + 1u == 0x0100u",
+            text)
+        # The runtime marshals the block through its own union arm (the
+        # SYS_EXEC block is 8 bytes, unlike the 4-byte FS path block).
         impl = _read(RUNTIME_C)
-        self.assertIn("zos_fs_scratch.path.path", impl)
-        self.assertIn("zfs_path_args", impl)
+        self.assertIn("struct zos_exec_args    exec;", impl)
+        self.assertIn("zos_fs_scratch.exec.args_length", impl)
 
     def test_dispatcher_routes_exec(self):
         self.assertIn("case ZOS_SYSCALL_EXEC:", _read(SYSCALL_C))
@@ -113,14 +133,21 @@ class TestExecAbi(unittest.TestCase):
 
     def test_user_runtime_wrapper(self):
         header = _read(RUNTIME_H)
-        self.assertIn("int zos_exec(const char *path);", header)
+        self.assertIn("int zos_exec(const char *path, const char *args);",
+                      header)
+        self.assertRegex(header, r"#define ZEX_TAIL_MAX 125")
         self.assertIn("zex_fs_runtime.h", header)
         impl = _read(RUNTIME_C)
-        self.assertIn("int zos_exec(const char *path)", impl)
+        self.assertIn("int zos_exec(const char *path, const char *args)",
+                      impl)
         # The runtime mirrors the pinned number and calls it through the
         # shared FS gate stub.
         self.assertRegex(impl, r"#define ZOS_EXEC\s+0x05u")
         self.assertIn("zfs_call(ZOS_EXEC", impl)
+        # A null/empty tail is legal; an over-long tail is refused locally
+        # before the syscall, like the path length.
+        self.assertIn("zfs_tail_len", impl)
+        self.assertIn("an == 0xFFFFu", impl)
 
     def test_error_mapping_is_documented(self):
         text = _read(ABI_DOC)
@@ -341,12 +368,67 @@ class TestPrepareThenLaunch(unittest.TestCase):
         body = body.split("\n}\n", 1)[0]
         depth = body.index("ZOS_EXEC_MAX_DEPTH")
         frame = body.index("zos_process_continuation_size()")
+        args = body.index("ZOS_STARTUP_TAIL_MAX")
+        window = body.index("zos_syscall_buffer_ok(args, args_length)")
         prepare = body.index("process_prepare(")
         self.assertLess(depth, prepare,
                         "the depth check runs after allocation")
         self.assertLess(frame, prepare,
                         "the frame check runs after allocation")
+        self.assertLess(args, prepare,
+                        "the argument-length check runs after allocation")
+        self.assertLess(window, prepare,
+                        "the argument-window check runs after allocation")
         self.assertIn("ZOS_EXEC_FRAME_SAVE - ZOS_EXEC_FRAME_SLACK", body)
+        # The block grew to 8 bytes and carries args/args_length.
+        self.assertIn("block_ok(block, 8)", body)
+        self.assertIn("block + 4", body)
+        self.assertIn("block + 6", body)
+
+
+class TestStartupBlock(unittest.TestCase):
+    def test_launch_gate_enters_with_the_block_pointer(self):
+        text = _read(LAUNCH_ASM)
+        self.assertIn("ld\thl,#0x0080", text)
+        self.assertNotIn("ld\thl,#0x0000", text,
+                         "the launch gate still enters with a null HL")
+
+    def test_prepare_builds_the_block_after_closing_the_source(self):
+        text = _read(EXEC_C)
+        body = text.split("int process_prepare(", 1)[1]
+        self.assertLess(
+            body.index("vfs_close(&file)"),
+            body.index("exec_startup_block("),
+            "the startup block is built before the source is closed")
+        # The tail is read from the parent bank through the checked gate
+        # into the existing 128-byte common staging view (free once the
+        # source is closed) and written to the child page zero.
+        for needle in ("ZOS_STARTUP_VERSION", "ZOS_STARTUP_BASE",
+                       "rom_access_staging", "zos_bank_copy",
+                       "ZOS_BANK_OP_READ", "ZOS_BANK_OP_WRITE"):
+            self.assertIn(needle, text, "exec.c lacks %s" % needle)
+        # It never stores the tail: no new static buffer or data symbol.
+        self.assertNotIn("zos_startup_scratch", text)
+        self.assertNotRegex(text, r"^\s*(static\s+)?(char|uint8_t)\s+\w+\[",
+                            "exec.c declares a new array")
+
+    def test_prepare_takes_the_argument_tail(self):
+        header = _read(PROCESS_H)
+        self.assertIn("int process_prepare(const char *path, uint8_t parent_pid, "
+                      "uint16_t args,", header)
+        self.assertIn("uint16_t args_length, struct process_child *child);",
+                      header)
+        # The kernel launcher passes an empty tail.
+        self.assertIn("process_prepare(path, PROCESS_KERNEL_PARENT, 0, 0,",
+                      _read(PROCESS_C))
+
+    def test_launch_and_prepare_keep_zero_new_data(self):
+        # The startup block is transported through existing common/bank-7
+        # buffers; the only new object the runtime adds is the optional
+        # 2-byte user-side accessor, never kernel data.
+        text = _read(EXEC_C)
+        self.assertNotRegex(text, r"^\s*(static\s+)?(char|uint8_t)\s+\w+\[",
+                            "exec.c declares a new array")
 
 
 class TestMapParity(unittest.TestCase):
@@ -413,6 +495,125 @@ class TestProductionImage(unittest.TestCase):
                      "zos_proc_frames", "zos_proc_gate_sp"):
             self.assertIn(name, text,
                           "the production map lacks %s" % name)
+
+
+class TestBootProgram(unittest.TestCase):
+    """The ZOS_BOOT_PROGRAM build setting (package 28b) is validated by
+    tools/bootprogram.py against the selected recovery manifest."""
+
+    def _run(self, program, manifest):
+        return subprocess.run(
+            [sys.executable, str(BOOTPROGRAM), "check", program, str(manifest)],
+            capture_output=True, text=True)
+
+    def test_production_setting_is_valid(self):
+        result = self._run("/SYSTEM/monitor.zex", ROOT / "recovery" /
+                           "manifest.json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_acceptance_setting_is_valid(self):
+        result = self._run("/SYSTEM/fstest.zex", ROOT / "tests" / "m9" /
+                           "manifest-exec.json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_a_non_system_path(self):
+        for program in ("monitor.zex", "/DATA/monitor.zex",
+                        "/SYSTEM", "/SYSTEM/sub/monitor.zex"):
+            result = self._run(program, ROOT / "recovery" / "manifest.json")
+            self.assertNotEqual(result.returncode, 0,
+                                "%r was accepted" % program)
+            self.assertIn("boot program:", result.stderr)
+
+    def test_rejects_an_over_long_path(self):
+        program = "/SYSTEM/" + "a" * 121 + ".zex"  # 129 bytes
+        result = self._run(program, ROOT / "recovery" / "manifest.json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("over the 127-byte limit", result.stderr)
+
+    def test_rejects_a_name_absent_from_the_manifest(self):
+        result = self._run("/SYSTEM/absent.zex", ROOT / "recovery" /
+                           "manifest.json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not in the selected recovery manifest", result.stderr)
+
+    def test_rejects_a_non_zex_manifest_entry(self):
+        # sio.zmod is present but is not a ZEX.
+        result = self._run("/SYSTEM/sio.zmod", ROOT / "recovery" /
+                           "manifest.json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a ZEX", result.stderr)
+
+    def test_build_wires_the_setting(self):
+        config = _read(CONFIG_MK)
+        self.assertIn("ZOS_BOOT_PROGRAM ?= /SYSTEM/monitor.zex", config)
+        makefile = _read(MAKEFILE)
+        self.assertIn("include config/system.mk", makefile)
+        self.assertIn("tools/bootprogram.py check", makefile)
+        self.assertIn("boot_program.stamp", makefile)
+        self.assertRegex(makefile,
+                         r"-DZOS_BOOT_PROGRAM='\"\$\(ZOS_BOOT_PROGRAM\)\"'")
+        # The kernel takes exactly one path from that constant.
+        main = _read(MAIN_C)
+        self.assertIn("static const char kernel_boot_program[] = "
+                      "ZOS_BOOT_PROGRAM;", main)
+        self.assertNotIn('"/SYSTEM/monitor.zex"', main,
+                         "kernel/main.c still hard-codes the boot path")
+
+    def test_launcher_is_renamed_and_reports_the_configured_path(self):
+        main = _read(MAIN_C)
+        self.assertIn("static void kernel_boot_launcher(void)", main)
+        self.assertNotIn("kernel_monitor_launcher", main)
+        self.assertIn("process_exec(kernel_boot_program, &status)", main)
+        # The launch-failure diagnostic names the configured program.
+        self.assertIn('early_console_puts(": launch failed 0x")', main)
+
+
+class TestArgsRuntime(unittest.TestCase):
+    """The user-space startup glue and splitter (runtime policy)."""
+
+    def test_entry_glue_preserves_hl_and_saves_the_block(self):
+        text = _read(ARGS_ASM)
+        self.assertIn("_zos_args_init::", text)
+        self.assertIn("ld\t(_zos_startup_block),hl", text)
+        self.assertIn("_zos_args::", text)
+        # SDCC returns a 16-bit pointer in DE.
+        self.assertIn("ex\tde,hl", text)
+
+    def test_accessor_and_splitter_surface(self):
+        header = _read(ARGS_H)
+        for needle in ("#define ZEX_STARTUP_BASE     0x0080",
+                       "#define ZEX_STARTUP_VERSION  1",
+                       "#define ZEX_STARTUP_TAIL_MAX 125",
+                       "struct zex_startup {", "void zos_args_init(void);",
+                       "struct zex_startup *zos_args(void);",
+                       "int zos_split(char *tail, char **argv, int max);"):
+            self.assertIn(needle, header, "zex_args.h lacks %r" % needle)
+        impl = _read(ARGS_C)
+        self.assertIn("int zos_split(char *tail, char **argv, int max)", impl)
+
+    def test_splitter_rules_are_documented(self):
+        doc = _read(ZEX_DOC)
+        self.assertIn("Startup block", doc)
+        self.assertRegex(doc, r"double quote")
+        self.assertRegex(doc, r"whitespace")
+        self.assertIn("0080h", doc)
+
+    def test_acceptance_programs_use_the_glue(self):
+        self.assertIn("zos_args_init", _read(
+            ROOT / "tests" / "target" / "m9" / "exec" / "fschild_entry.asm"))
+        self.assertIn("zos_args_init", _read(
+            ROOT / "tests" / "target" / "m9" / "fstest" / "fstest_entry.asm"))
+        # fstest checks the kernel-launched block and drives the cases.
+        fstest = _read(FSTEST_C)
+        for needle in ("zos_args()", "ZEX_STARTUP_VERSION",
+                       '"two words \\"a b\\" tail"',
+                       "ZEX_STARTUP_TAIL_MAX + 1u", "0x0000u"):
+            self.assertIn(needle, fstest, "fstest.c lacks %r" % needle)
+        # fschild copies the page-zero tail into program data before it
+        # hands it to a syscall (the block is below the 0100h window).
+        fschild = _read(FSCHILD_C)
+        self.assertIn("ch_tail", fschild)
+        self.assertIn("zos_split(ch_tail", fschild)
 
 
 class TestBuildWiring(unittest.TestCase):

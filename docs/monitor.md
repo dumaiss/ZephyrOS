@@ -23,19 +23,21 @@ reset
   -> ROMFS + dynamic SIO module
   -> normal console bound ("console: dynamic sio0.b OK")
   -> optional milestone acceptance hook (acceptance images)
-  -> temporary pre-shell launcher (ZOS_MONITOR_BOOT, production + M7)
-       -> process_exec("monitor.zex", &status)
+  -> native boot launcher (ZOS_BOOT_PROGRAM, production default
+     /SYSTEM/monitor.zex)
+       -> process_exec(kernel_boot_program, &status)
        -> monitor runs interactively in its application bank
        -> Q -> SYS_EXIT -> launcher resumes
        -> launcher prints
           "monitor: exit status 0xssss active A free-banks F"
-       -> re-exec the monitor (until the M10 shell replaces the policy)
+       -> re-exec the boot program
 ```
 
-A launch failure (for example a missing or rejected `monitor.zex`) is
-reported on the early console as `monitor: launch failed 0xNN` and takes
-the controlled halt path.  The acceptance images built before M7 set
-`ZOS_MONITOR_BOOT=0`; production and `make m7-selftest` enable it.
+A launch failure (for example a missing or rejected boot program) is
+reported on the early console as `<configured path>: launch failed 0xNN`
+and takes the controlled halt path.  The boot program is the
+`ZOS_BOOT_PROGRAM` build setting (`config/system.mk`); the default is
+`/SYSTEM/monitor.zex`, and M10 points it at the shell.
 
 Because every cycle is an ordinary exec/exit, the launcher's repeated
 exit line is a live proof that no process slot or bank leaked: after a

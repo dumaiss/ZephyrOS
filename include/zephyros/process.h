@@ -142,20 +142,25 @@ struct process_child {
 int process_exec(const char *path, uint16_t *status);
 
 /* Prepare a child: every allocating and fallible step (path resolution,
- * slot, bank, the VFS-backed ZEX load and validation, page zero), with
- * the executable source closed before returning.  `parent_pid` is the
- * caller's pid or PROCESS_KERNEL_PARENT.  Returns 0 and fills `child`, or
- * a negative code: a native -ZOS_E* value for path/read/allocation
- * failures (ZOS_ENOENT, ZOS_EISDIR, ZOS_ENOSPC, a provider error passed
- * through unchanged), or a ZEX_EXEC_ERR_* validation code for a malformed
- * container.  Nothing is published as RUNNING and every failure rolls the
- * slot back to FREE.
+ * slot, bank, the VFS-backed ZEX load and validation, page zero, the
+ * startup block), with the executable source closed before returning.
+ * `parent_pid` is the caller's pid or PROCESS_KERNEL_PARENT.  `args` and
+ * `args_length` are the caller's raw command tail in `parent_pid`'s
+ * application bank (`args_length` 0..ZOS_STARTUP_TAIL_MAX; `args` is
+ * ignored when the length is 0); the kernel copies it verbatim into the
+ * child's startup block at 0080h and NUL-terminates it.  The `args`
+ * window is validated by the SYS_EXEC preflight, not here.  Returns 0 and
+ * fills `child`, or a negative code: a native -ZOS_E* value for
+ * path/read/allocation failures (ZOS_ENOENT, ZOS_EISDIR, ZOS_ENOSPC, a
+ * provider error passed through unchanged), or a ZEX_EXEC_ERR_* validation
+ * code for a malformed container.  Nothing is published as RUNNING and
+ * every failure rolls the slot back to FREE.
  *
  * process_prepare() runs on the caller's stack (the 256-byte gate stack
  * for SYS_EXEC), so it declares no automatic object larger than 32 bytes;
  * it must return completely before process_launch() runs. */
-int process_prepare(const char *path, uint8_t parent_pid,
-		    struct process_child *child);
+int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
+		    uint16_t args_length, struct process_child *child);
 
 /* Enter a prepared child through the common launch gate.  Infallible:
  * depth and frame size were preflighted and process_prepare() succeeded.

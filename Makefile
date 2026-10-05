@@ -56,6 +56,12 @@ BUILD     := build
 ZOS_MOUNTS      ?= config/mounts.json
 ZOS_VFS_BUILTIN ?= romfs
 
+# System build configuration (work/28b-m9-shell-readiness/WORK.md):
+# ZOS_BOOT_PROGRAM selects the program the kernel launcher starts.  The
+# value is validated against the image's recovery manifest below, before
+# kernel/main.c is compiled.
+include config/system.mk
+
 # Zephyr-80 platform build configuration (include paths and the
 # declarative constant files consumed by the build and layout tools).
 include platform/zephyr80/config.mk
@@ -1260,6 +1266,13 @@ $(FSTEST_BUILD)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(FSTEST_BUILD)
 $(FSTEST_BUILD)/zex_fs_runtime.rel: user/runtime/zex_fs_runtime.asm | $(FSTEST_BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
+$(FSTEST_BUILD)/zex_args.rel: user/runtime/zex_args.asm | $(FSTEST_BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(FSTEST_BUILD)/zos_args.rel: user/runtime/zos_args.c user/runtime/zex_args.h \
+		| $(FSTEST_BUILD)
+	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
+
 $(FSTEST_BUILD)/zos_fs.rel: user/runtime/zos_fs.c user/runtime/zex_fs_runtime.h \
 		user/runtime/zex_exec_runtime.h user/runtime/zex_runtime.h \
 		include/zephyros/fs.h include/zephyros/syscall.h | $(FSTEST_BUILD)
@@ -1267,12 +1280,14 @@ $(FSTEST_BUILD)/zos_fs.rel: user/runtime/zos_fs.c user/runtime/zex_fs_runtime.h 
 
 $(FSTEST_BUILD)/fstest.rel: tests/target/m9/fstest/fstest.c \
 		user/runtime/zex_fs_runtime.h user/runtime/zex_exec_runtime.h \
-		user/runtime/zex_runtime.h include/zephyros/fs.h | $(FSTEST_BUILD)
+		user/runtime/zex_args.h user/runtime/zex_runtime.h \
+		include/zephyros/fs.h include/zephyros/syscall.h | $(FSTEST_BUILD)
 	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
 
 $(FSTEST_BUILD)/fstest.lk: $(FSTEST_BUILD)/fstest_entry.rel \
 		$(FSTEST_BUILD)/zex_runtime.rel \
 		$(FSTEST_BUILD)/zex_fs_runtime.rel $(FSTEST_BUILD)/zos_fs.rel \
+		$(FSTEST_BUILD)/zex_args.rel \
 		$(FSTEST_BUILD)/fstest.rel $(FSTEST_JSON) | $(FSTEST_BUILD)
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
@@ -1282,6 +1297,7 @@ $(FSTEST_BUILD)/fstest.lk: $(FSTEST_BUILD)/fstest_entry.rel \
 	                $(FSTEST_BUILD)/zex_runtime.rel \
 	                $(FSTEST_BUILD)/zex_fs_runtime.rel \
 	                $(FSTEST_BUILD)/zos_fs.rel \
+	                $(FSTEST_BUILD)/zex_args.rel \
 	                $(FSTEST_BUILD)/fstest.rel; \
 	  printf '%s\n' '-e'; \
 	} > $@
@@ -1353,6 +1369,13 @@ $(M9EXEC)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(M9EXEC)
 $(M9EXEC)/zex_fs_runtime.rel: user/runtime/zex_fs_runtime.asm | $(M9EXEC)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
+$(M9EXEC)/zex_args.rel: user/runtime/zex_args.asm | $(M9EXEC)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(M9EXEC)/zos_args.rel: user/runtime/zos_args.c user/runtime/zex_args.h \
+		| $(M9EXEC)
+	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
+
 $(M9EXEC)/zos_fs.rel: user/runtime/zos_fs.c user/runtime/zex_fs_runtime.h \
 		user/runtime/zex_exec_runtime.h user/runtime/zex_runtime.h \
 		include/zephyros/fs.h include/zephyros/syscall.h | $(M9EXEC)
@@ -1369,16 +1392,19 @@ $(M9EXEC)/fschild_entry.rel: $(M9EXEC_DIR)/fschild_entry.asm | $(M9EXEC)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(M9EXEC)/fschild.rel: $(M9EXEC_DIR)/fschild.c user/runtime/zex_fs_runtime.h \
-		user/runtime/zex_runtime.h include/zephyros/fs.h | $(M9EXEC)
+		user/runtime/zex_args.h user/runtime/zex_runtime.h \
+		include/zephyros/fs.h | $(M9EXEC)
 	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
 
 $(M9EXEC)/fschild.lk: $(M9EXEC)/fschild_entry.rel $(M9EXEC_RUNTIME) \
+		$(M9EXEC)/zex_args.rel $(M9EXEC)/zos_args.rel \
 		$(M9EXEC)/fschild.rel $(M9E_FCHILD_JSON) | $(M9EXEC)
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
 	  printf '%s\n' '-i $(M9EXEC)/fschild.ihx'; \
 	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(M9E_FCHILD_DATA_BASE)'; \
 	  printf '%s\n' $(M9EXEC)/fschild_entry.rel $(M9EXEC_RUNTIME) \
+	                $(M9EXEC)/zex_args.rel $(M9EXEC)/zos_args.rel \
 	                $(M9EXEC)/fschild.rel; \
 	  printf '%s\n' '-e'; \
 	} > $@
@@ -1534,6 +1560,26 @@ else
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 endif
+
+# --- boot-program setting (package 28b) --------------------------------------
+# Validate ZOS_BOOT_PROGRAM against the manifest this image packs, then
+# compile it into kernel/main.c as a constant string.  The stamp makes the
+# check a prerequisite of main.rel, so parallel builds cannot link a
+# kernel whose boot path was never validated; the manifest dependency
+# re-validates for every image.
+BOOT_PROGRAM_STAMP := $(BUILD)/generated/boot_program.stamp
+
+$(BOOT_PROGRAM_STAMP): config/system.mk $(ROMFS_MANIFEST) \
+		tools/bootprogram.py | $(BUILD)
+	mkdir -p $(BUILD)/generated
+	$(PYTHON) tools/bootprogram.py check "$(ZOS_BOOT_PROGRAM)" \
+		$(ROMFS_MANIFEST)
+	touch $@
+
+# Single quotes protect the C string quotes from the shell.
+CFLAGS    += -DZOS_BOOT_PROGRAM='"$(ZOS_BOOT_PROGRAM)"'
+
+$(BUILD)/main.rel: $(BOOT_PROGRAM_STAMP)
 
 $(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(MODULES)/sio.zmod \
 		$(MODULES)/ioc.zmod $(MODULES)/hid.zmod $(MODULES)/v9958.zmod \

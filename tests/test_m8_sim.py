@@ -60,12 +60,14 @@ ZCAP_HID_TEXT = 0x00010000
 ZVIDEO_PRESENT = 0x03
 ZDEV_EINVAL = -2
 
-# The unchanged M7 monitor (work/M8-REFERENCE.md hash; the packed
-# container is 20-byte header + linked image, as recorded by the M8
-# ioc-command/ioc-bulk acceptance records).
+# The M7 monitor, re-linked in package 28b: the entry stub now accepts the
+# startup-block pointer in HL (HL = 0080h) instead of asserting HL = 0000h,
+# so the packed container bytes changed; the size is still 20-byte header +
+# linked image.  ZephyrOS carries no backward-compatibility obligation for
+# milestone artifacts (work/M9-REFERENCE.md), so this is the current oracle.
 MONITOR_SIZE = 3546
-MONITOR_SHA256 = ("67574d57bdc2326ef3ecbbae9fdefcb313f0c63523b846c710e459af"
-                  "cda643ed")
+MONITOR_SHA256 = ("dc752e26efa61b5ffb146584809c61d4060c8b15e76c7f2b952ae41a2"
+                  "05b5e17")
 
 # Shared markers: the visible session and the early-SIO transcript.
 PROMPT = "Z80> "

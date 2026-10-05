@@ -22,7 +22,7 @@
 
 void dp_main(void)
 {
-	int result = zos_exec(DP_SELF);
+	int result = zos_exec(DP_SELF, (const char *)0);
 
 	if (result == -(int)DP_EBUSY) {
 		zex_exit(1u); /* deepest level: the refusal is the proof */

@@ -2622,9 +2622,29 @@ At minimum it contains the native syscall gateway already reserved by M1:
 
 Other bytes are initialized by ZephyrOS rather than inherited from a previous program.
 
+```text
+0080h   startup block v1 (all 128 bytes at 0080h-00FFh)
+        0080h  u8  version = 1
+        0081h  u8  tail_length  0..125
+        0082h  ... tail bytes, then one NUL
+```
+
+Every native process receives this block, including the kernel-launched
+one; the launcher passes an empty tail.  The launch gate enters the
+program with `HL = 0080h`.  The kernel transports a `SYS_EXEC` caller's
+raw command tail into `tail` byte-exact and never parses it; user space
+owns splitting (`user/runtime/zex_args.h`, docs/zex-format.md section
+5.1).  The block is inside the caller-visible low window, so it is
+readable in both mode `10` and mode `11`; it sits below the `0100h`
+syscall buffer window, so a program copies the tail into its own data
+before a syscall.  A program that ignores `HL` is unaffected.
+
 This is a native page zero. It does not contain CP/M `CALL 0005h`, FCBs, command tail, or other compatibility structures.
 
-A small process-startup block may be placed in the caller-visible low 8 KiB so it remains accessible in both mode `10` and mode `11`. Its versioned structure can later carry command-line/environment information; M6 may launch with zero arguments.
+The versioned block is the single startup interface: a later version can
+carry more than a command tail (environment, handles) without changing
+the launch contract, because the program reads its shape from
+`version`.
 
 ---
 
@@ -2708,6 +2728,10 @@ SYS_GETINFO
 ```
 
 M9 extends the same native syscall mechanism with filesystem services.
+Package 28 adds `SYS_EXEC` (a synchronous child through the same process
+machinery); package 28b extends its block with a raw command tail that
+reaches the child's startup block and enters every program with
+`HL = 0080h`.
 
 ---
 
@@ -3717,7 +3741,10 @@ FS_SYNC
 
 Syscall argument blocks use bounded pointer/length fields. User runtime wrappers may expose C strings.
 
-`FS_STATFS` and truncate-to-arbitrary-size are deferred to M10 (`df` and similar userland). Truncation to zero is available in M9 through `FS_OPEN` with `TRUNC`.
+`FS_STATFS` and truncate-to-arbitrary-size are deferred until a consumer
+requires them - explicitly **not** scheduled for M10, whose shell and core
+commands do not need them (`df` is deferred with them). Truncation to zero
+is available in M9 through `FS_OPEN` with `TRUNC`.
 
 ---
 
@@ -4069,7 +4096,8 @@ M9 does not implement:
 - a VFS-level cache of any kind;
 - generic raw block caching unless a native filesystem actually requires it;
 - a resident `ZDEV_BLOCK` driver (`sd-ioc.zmod`) before a consumer exists;
-- `FS_STATFS` and truncate-to-arbitrary-size (M10);
+- `FS_STATFS` and truncate-to-arbitrary-size (deferred until a consumer
+  requires them, not M10);
 - provider `unmount`, `syncfs`, `truncate`, `statfs`, or node lookup operations;
 - dynamic allocation inside VFS.
 
@@ -4362,6 +4390,26 @@ Failure mapping is pinned in `docs/abi.md` section 11 (`ENOENT`,
 because user-visible error semantics matter more here than in the kernel
 launcher's internal `ZEX_EXEC_ERR_*` space.
 
+Startup block (package 28b):
+
+- Every native process receives a versioned startup block v1 in its own
+  page zero at `0080h` (`version`, `tail_length`, raw `tail`, NUL), and the
+  launch gate enters it with `HL = 0080h` (section 26.3).
+- `SYS_EXEC`'s block gains `{args, args_length}`: the kernel copies the
+  caller's raw tail byte-exact and never parses it; user space owns
+  splitting (`user/runtime/zex_args.h`, docs/zex-format.md section 5.1).
+  A tail over 125 bytes or outside `0100h-DFFFh` is `ZOS_EINVAL` in the
+  preflight, and the copy is made at the end of `process_prepare()` once
+  the executable source is closed and the VFS workspace is free, through
+  the existing checked bank-copy gate into the VFS staging view.  No tail
+  is ever stored: there is no persistent kernel argument buffer, in bank 7
+  or common memory.
+- The boot program is a build setting, `ZOS_BOOT_PROGRAM`
+  (`config/system.mk`), validated against the recovery manifest and
+  compiled into the kernel as a constant string.  Switching to the M10
+  shell is that one line plus the ZEX in the manifest, with no kernel
+  edit.
+
 Acceptance: `make m9-exec-selftest` (extended `fstest.zex` exec case plus
 the recursive `fsdeep.zex` depth probe) replayed by
 `tests/test_m9_exec_sim.py`, which measures the copied frame against
@@ -4497,22 +4545,42 @@ M9  ARCHITECTURE DEFINED — IMPLEMENTATION NEXT
 The intended native sequence after M9 is:
 
 ```text
-M10 Native shell and core userland
-    - launch ZEX programs
-    - cd/pwd/ls/cp/mv/rm/mkdir/cat and related core commands
+M10 Native shell and core userland - user space only
+    - ZShell and core commands built on the M9 syscalls
+    - SYS_EXEC with arguments (startup block v1)
+    - the ZOS_BOOT_PROGRAM setting selects the shell
+    - no signals and no IPC: accepted for this single-process system.
+      Programs poll the console themselves, and a running child cannot be
+      interrupted by its parent (SYS_EXEC is synchronous by contract)
 
 M11 Native diagnostic suite
     - port/consolidate useful existing Zephyr/ZSDOS diagnostics
     - memory, banking, IRQ/CTC, SIO, V9958, HID, IOC, storage, sound, system
 
 M12 Extended memory / far-code / far-data services
-    - auxiliary native allocations
-    - ZEX segment/relocation metadata
-    - far-call and far-data mechanisms
+    - mainly new syscalls plus a user-program API
+    - auxiliary bank allocation,
+    - checked bank-to-bank copy,
+    - a far-call gate,
+    - overlays loaded by the user runtime
+    - no ZEX format or loader changes
 
 ---------------- native ZephyrOS complete ----------------
+```
+
+M10 is a user-space milestone: every kernel facility it needs (filesystem
+syscalls, CWD, synchronous `SYS_EXEC` with arguments, and the
+`ZOS_BOOT_PROGRAM` boot setting) exists at the end of M9 (packages 28 and
+28b).  M10 therefore makes no kernel change.  Signals and IPC are
+deliberately out of scope: ZephyrOS is single-process at a time, so a
+shell cannot interrupt a running child, and programs read the console
+themselves.
+
+M12's far code/data work is mainly new syscalls and a user-program API
+(auxiliary bank allocation, a checked bank-to-bank copy, a far-call gate,
+and overlays loaded by the user runtime) rather than a loader feature, so
+it needs no ZEX format or loader change.
 
 Later compatibility/personality work follows the native system. Its detailed architecture remains deferred until M9-M12 are complete.
-```
 
 M12 is part of native ZephyrOS, not a compatibility extension. The milestone names after M9 define intended sequencing; detailed later architecture should be added as each milestone is approached rather than constraining implementation prematurely.

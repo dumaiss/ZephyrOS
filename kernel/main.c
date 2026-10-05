@@ -216,8 +216,9 @@ int kernel_load_vfs_module(const char *name)
  * command+bulk transport, then HID (which discovers IOC by
  * class/capability at init), then the V9958 video+console device.  Only
  * after all four loads does kernel_main() run the single
- * console_bind_defaults() and hand off to the unchanged
- * process_exec("/SYSTEM/monitor.zex") launcher.  A failed optional module
+ * console_bind_defaults() and hand off to the boot launcher
+ * (kernel_boot_launcher(), which runs `ZOS_BOOT_PROGRAM` through
+ * process_exec()).  A failed optional module
  * is rolled back by the loader -- earlier resident modules are never
  * disturbed -- and the boot continues; the diagnostic names the module
  * and the exact failure. */
@@ -330,18 +331,24 @@ static void kernel_exercise_banking(void)
 	}
 }
 
-/* --- temporary pre-shell launcher (M7) --------------------------------
+/* --- native boot launcher (M9 shell readiness, package 28b) ------------
  *
- * Production and the M7 acceptance image run the ROMFS `monitor.zex`,
- * opened through its `/SYSTEM` VFS path, via the unchanged M6
- * `process_exec()` path, and re-exec it after every normal exit, until
- * the M10 shell replaces this policy.  The
- * child's exit status and the recovered process/bank counts are printed
- * after each cycle (normal console when bound, early console otherwise);
- * a launch failure is reported on the early console and takes the
- * controlled halt path. */
+ * The launcher starts the configured boot program - the ROMFS
+ * `monitor.zex` by default - through its `/SYSTEM` VFS path via the
+ * unchanged `process_exec()` path, and re-execs it after every normal
+ * exit.  `ZOS_BOOT_PROGRAM` (config/system.mk) selects the program: M10's
+ * shell is one build setting plus its ZEX in the recovery manifest, with
+ * no kernel edit.
+ *
+ * The child's exit status and the recovered process/bank counts are
+ * printed after each cycle (normal console when bound, early console
+ * otherwise); a launch failure names the configured path on the early
+ * console and takes the controlled halt path. */
 
-static char *kernel_monitor_put_hex16(char *out, uint16_t value)
+/* Configured boot program; the build validates it (tools/bootprogram.py). */
+static const char kernel_boot_program[] = ZOS_BOOT_PROGRAM;
+
+static char *kernel_boot_put_hex16(char *out, uint16_t value)
 {
 	static const char digits[] = "0123456789ABCDEF";
 	uint8_t shift;
@@ -352,7 +359,7 @@ static char *kernel_monitor_put_hex16(char *out, uint16_t value)
 	return out;
 }
 
-static char *kernel_monitor_put_dec(char *out, uint8_t value)
+static char *kernel_boot_put_dec(char *out, uint8_t value)
 {
 	uint8_t hundreds = 0;
 	uint8_t tens = 0;
@@ -375,7 +382,7 @@ static char *kernel_monitor_put_dec(char *out, uint8_t value)
 	return out;
 }
 
-static void kernel_monitor_emit(const char *line, uint16_t length)
+static void kernel_boot_emit(const char *line, uint16_t length)
 {
 	if (console_output_handle() != 0) {
 		(void)console_write(line, length);
@@ -384,9 +391,9 @@ static void kernel_monitor_emit(const char *line, uint16_t length)
 	early_console_puts(line); /* line is always NUL-terminated */
 }
 
-/* Report one normal monitor exit with the recovered counts.  A repeated
- * identical line proves the exec/exit cycle leaked no process state. */
-static void kernel_monitor_report(uint16_t status)
+/* Report one normal exit with the recovered counts.  A repeated identical
+ * line proves the exec/exit cycle leaked no process state. */
+static void kernel_boot_report(uint16_t status)
 {
 	char line[64];
 	static const char prefix[] = "monitor: exit status 0x";
@@ -398,54 +405,50 @@ static void kernel_monitor_report(uint16_t status)
 	for (scan = prefix; *scan != '\0'; ++scan) {
 		*out++ = *scan;
 	}
-	out = kernel_monitor_put_hex16(out, status);
+	out = kernel_boot_put_hex16(out, status);
 	for (scan = active; *scan != '\0'; ++scan) {
 		*out++ = *scan;
 	}
-	out = kernel_monitor_put_dec(out, process_active_count());
+	out = kernel_boot_put_dec(out, process_active_count());
 	for (scan = free_banks; *scan != '\0'; ++scan) {
 		*out++ = *scan;
 	}
-	out = kernel_monitor_put_dec(out, process_free_banks());
+	out = kernel_boot_put_dec(out, process_free_banks());
 	*out++ = '\r';
 	*out++ = '\n';
 	*out = '\0';
-	kernel_monitor_emit(line, (uint16_t)(out - line));
+	kernel_boot_emit(line, (uint16_t)(out - line));
 }
 
-/* Launch failure: early console and the controlled halt loop.  Never
- * returns. */
-static void kernel_monitor_fail(uint16_t code)
+/* Launch failure: name the configured program on the early console and
+ * take the controlled halt loop.  Never returns.  The path is printed in
+ * pieces so the diagnostic needs no buffer as long as the setting. */
+static void kernel_boot_fail(uint16_t code)
 {
-	char line[40];
-	static const char prefix[] = "monitor: launch failed 0x";
-	char *out = line;
-	const char *scan;
+	char text[5];
+	char *out = kernel_boot_put_hex16(text, code);
 
-	for (scan = prefix; *scan != '\0'; ++scan) {
-		*out++ = *scan;
-	}
-	out = kernel_monitor_put_hex16(out, code);
-	*out++ = '\r';
-	*out++ = '\n';
 	*out = '\0';
-	early_console_puts(line);
+	early_console_puts(kernel_boot_program);
+	early_console_puts(": launch failed 0x");
+	early_console_puts(text);
+	early_console_puts("\r\n");
 	__asm__("di");
 	for (;;) {
 		__asm__("halt");
 	}
 }
 
-static void kernel_monitor_launcher(void)
+static void kernel_boot_launcher(void)
 {
 	for (;;) {
 		uint16_t status = 0;
-		int result = process_exec("/SYSTEM/monitor.zex", &status);
+		int result = process_exec(kernel_boot_program, &status);
 
 		if (result != ZEX_EXEC_OK) {
-			kernel_monitor_fail((uint16_t)(0u - (uint16_t)result));
+			kernel_boot_fail((uint16_t)(0u - (uint16_t)result));
 		}
-		kernel_monitor_report(status);
+		kernel_boot_report(status);
 	}
 }
 #if ZOS_SMOKE_HOST_SYNC
@@ -537,10 +540,10 @@ void kernel_main(void)
 	zos_target_test_late();
 #endif
 
-	/* Pre-shell launcher: exec the ROMFS monitor through the process
-	 * path; normal exits are reported and the monitor is re-executed
-	 * (see kernel_monitor_launcher above). */
-	kernel_monitor_launcher();
+	/* Native boot launcher: exec the configured program through the
+	 * process path; normal exits are reported and the program is
+	 * re-executed (see kernel_boot_launcher above). */
+	kernel_boot_launcher();
 
 	__asm__("di");
 	for (;;) {

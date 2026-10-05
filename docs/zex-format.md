@@ -122,14 +122,67 @@ steps: `process_prepare()` loads, then `process_launch()` enters.
 5. copy the image in 64-byte chunks from ROMFS through the common
    `zos_user_copy_staging` block into the bank at `0100h`;
 6. zero the BSS region `[0100h + image_size, + bss_size)`;
-7. close the executable source and return the prepared child.
+7. close the executable source, then build startup block v1 (below) and
+   write it into the child's page zero at `0080h`;
+8. return the prepared child.
 
 `process_launch()` then marks the descriptor RUNNING and enters the common
 process-launch gate, which saves the launcher's continuation, switches to
 mode `10 | bank`, installs `SP = E000h - stack_size`, and transfers to the
-entry with `HL = 0`.  It performs no check that can fail: every fallible
-step (including the SYS_EXEC depth and frame-size preflight) happened
-before the suspension point.
+entry with `HL = 0080h` (the startup block pointer).  It performs no check
+that can fail: every fallible step (including the SYS_EXEC depth,
+frame-size and argument preflight) happened before the suspension point.
+
+### 5.1 Startup block v1
+
+Every native process, including the kernel launcher's, receives a valid
+startup block in its own page zero:
+
+```text
+0080h  u8   version = 1
+0081h  u8   tail_length  0..125
+0082h  u8   tail[126]    tail_length raw bytes, then one NUL
+```
+
+`SYS_EXEC` copies the caller's raw tail (`args`, `args_length`) here
+byte-exact; the kernel launcher passes an empty tail.  The block lives in
+the caller-visible low window so it is readable in modes `10` and `11`,
+but it is *below* the `0100h` syscall buffer window, so a program must
+copy the tail into its own data before handing it to a syscall.
+
+`user/runtime/zex_args.{h,asm,c}` is the optional user-space runtime for
+it: a program's entry glue calls `zos_args_init()` before anything else
+clobbers `HL` (it saves the pointer and preserves `HL`); `zos_args()`
+returns the block, or NULL when the glue did not run; `zos_split()`
+parses a *writable* copy of the tail into `argv` words.  Programs that
+ignore `HL` link none of it.
+
+#### Tail splitting (runtime policy)
+
+`zos_split(char *tail, char **argv, int max)` splits the NUL-terminated
+tail in place and returns the total word count, storing at most `max`
+pointers.  The rules are runtime policy, not an ABI, and may change
+without any kernel work:
+
+- words are separated by whitespace: one or more spaces (`0x20`) or
+  tabs (`0x09`); leading and trailing separators are ignored;
+- a double quote (`"`) toggles a quoted section.  Separators inside a
+  quoted section are literal; the quote characters themselves are
+  removed;
+- adjacent quoted and unquoted runs join into one word (so `ab"c d"e`
+  is the single word `abc de`);
+- an empty quoted word (`""`) is an empty argument;
+- an unterminated quote runs to the end of the tail;
+- a NUL byte ends the tail; there is no escape character and no other
+  metacharacter;
+- `argv[0]` is the first argument: the kernel does not pass a program
+  name, so there is no `argv[0]` convention for it.
+
+The transport is proven end to end by the M9 exec acceptance: `fstest`
+runs `fschild` with no arguments, one word, several words with a quoted
+space, and a trailing separator, and the simulator replay asserts the
+exact echoed `argv`; the kernel preflight refuses a 126-byte tail and a
+tail pointer outside the window with `ZOS_EINVAL` before allocating.
 
 A raw `RET` from the entry point lands in a common trap and exits the
 process with `ZOS_EFAULT`; programs leave through `SYS_EXIT` only.
@@ -166,11 +219,14 @@ Negative returns are `-errno`.  The wrappers keep their 8-byte argument
 scratch (`_zos_runtime_scratch`) inside the linked image, which is why
 the scratch symbol must satisfy the window rule above.
 
-`user/runtime/zex_fs_runtime.h` adds the M9 filesystem wrappers, and
-`user/runtime/zex_exec_runtime.h` adds `zos_exec(const char *path)` on top
-of them: the same low-window argument block and gate stub, the same
-127-byte local length check, returning the child's exit status or the
-negated native error code (`docs/abi.md` section 11).
+`user/runtime/zex_fs_runtime.h` adds the M9 filesystem wrappers,
+`user/runtime/zex_exec_runtime.h` adds
+`zos_exec(const char *path, const char *args)` on top of them: the same
+low-window argument block and gate stub, the same 127-byte local path
+check plus a 125-byte tail check, returning the child's exit status or
+the negated native error code (`docs/abi.md` section 11).  A NULL or
+empty `args` is "no arguments"; the raw tail reaches the child byte-exact
+through the startup block (`zos_args`/`zos_split` above).
 
 ## 7. Tooling
 

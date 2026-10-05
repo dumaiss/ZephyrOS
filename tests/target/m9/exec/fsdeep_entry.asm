@@ -1,5 +1,9 @@
 ; -----------------------------------------------------------------------------
 ; fsdeep entry stub (M9 exec depth-probe program, test artifact).
+;
+; The launch gate enters here in mode 10 with HL = 0080h, the startup block
+; v1.  The depth probe ignores its arguments (it is launched with none), so
+; the stub ignores HL too.
 ; -----------------------------------------------------------------------------
 
 	.module fsdeep_entry
@@ -11,9 +15,6 @@
 	.area _CODE
 
 dp_entry::
-	ld	a,h
-	or	l
-	jr	nz,dp_entry_bad
 	call	_dp_main
 	ld	hl,#0x02FE
 	call	_zex_exit
@@ -21,11 +22,3 @@ dp_entry::
 001$:
 	halt
 	jr	001$
-
-dp_entry_bad:
-	ld	hl,#0x02FF
-	call	_zex_exit
-	di
-002$:
-	halt
-	jr	002$

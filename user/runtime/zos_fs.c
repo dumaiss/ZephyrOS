@@ -12,6 +12,7 @@
 
 #include "zex_runtime.h"
 #include "zex_fs_runtime.h"
+#include "zex_exec_runtime.h"
 
 #define ZOS_FS_OPEN     0x10u
 #define ZOS_FS_CLOSE    0x11u
@@ -44,6 +45,7 @@ union zos_fs_block {
 	struct zfs_getcwd_args  getcwd;
 	struct zfs_rename_args  rename;
 	struct zfs_fd_args      fd;
+	struct zos_exec_args    exec;
 };
 
 extern union zos_fs_block zos_fs_scratch;
@@ -220,16 +222,38 @@ int zos_sync(unsigned int fd)
 	return zfs_fd_call(ZOS_FS_SYNC, fd);
 }
 
-/* Run `path` synchronously (SYS_EXEC 05h).  Returns the child's u16 exit
- * status on success, or -errno.  Path rules match the FS_* family. */
-int zos_exec(const char *path)
+/* Raw argument-tail length for the startup block: 0 for null/empty, the
+ * byte count, or 0xFFFF when it exceeds ZEX_TAIL_MAX. */
+static unsigned int zfs_tail_len(const char *args)
+{
+	unsigned int n = 0;
+
+	if (args == (const char *)0 || args[0] == '\0') {
+		return 0u;
+	}
+	while (args[n] != '\0') {
+		if (n >= (unsigned int)ZEX_TAIL_MAX) {
+			return 0xFFFFu;
+		}
+		++n;
+	}
+	return n;
+}
+
+/* Run `path` synchronously (SYS_EXEC 05h) with the raw tail `args`.
+ * Returns the child's u16 exit status on success, or -errno.  Path and
+ * tail length rules match the kernel preflight. */
+int zos_exec(const char *path, const char *args)
 {
 	unsigned int n = zfs_len(path);
+	unsigned int an = zfs_tail_len(args);
 
-	if (n == 0xFFFFu) {
+	if (n == 0xFFFFu || an == 0xFFFFu) {
 		return -ZOS_FS_EINVAL;
 	}
-	zos_fs_scratch.path.path = (unsigned int)path;
-	zos_fs_scratch.path.length = n;
-	return zfs_call(ZOS_EXEC, &zos_fs_scratch.path);
+	zos_fs_scratch.exec.path = (unsigned int)path;
+	zos_fs_scratch.exec.length = n;
+	zos_fs_scratch.exec.args = (unsigned int)args;
+	zos_fs_scratch.exec.args_length = an;
+	return zfs_call(ZOS_EXEC, &zos_fs_scratch.exec);
 }
