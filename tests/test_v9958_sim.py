@@ -39,6 +39,7 @@ Coverage (all executing the real linked bytes):
 Skipped when the matching image has not been built.
 """
 
+import json
 import os
 import sys
 import unittest
@@ -93,12 +94,10 @@ ZDEV_ENOTSUP = -7
 HOST_SYNC = b"\xaa\x55"
 
 # Host-owned scratch for the payloads handed to the module's send().
-# It lives in the spare tail of the bank-7 runtime area, between the
-# kernel's DATA/BSS (which ends at C4BDh) and the IRQ ISR stack
-# (DF00h-DFFFh).  The derived driver arena at 8800h-C000h belongs to
-# the module loader and no longer holds 4 KiB of free space above the
-# 21-granule boot set now that the M9 VFS core is linked in.
-SCRATCH = 0xC500
+# The bank-7 window is fully derived, so the buffer is picked per image in
+# setUp as the first free arena granule above the packed boot set -- never a
+# fixed address that the derived data base or a loaded module could reclaim.
+SCRATCH_SIZE = 0x200
 
 # The proven GRAPHIC 6 bootstrap, in order (value, register).
 G6_TABLE = [
@@ -152,6 +151,20 @@ class V9958SimBase(unittest.TestCase):
         font_path = os.path.join(ROOT, "drivers", "v9958", "assets",
                                  "font_cp850_6x8.inc")
         self.font = fontpack.parse_font(font_path)
+        self.scratch = self._derive_scratch()
+
+    def _derive_scratch(self):
+        """First free arena granule above the packed boot set."""
+        plan_path = os.path.join(ROOT, self.IMAGE_DIR, "arena.plan.json")
+        self.assertTrue(os.path.exists(plan_path),
+                        "arena.plan.json missing; build the image first")
+        with open(plan_path) as fh:
+            arena = json.load(fh)["arena"]
+        scratch = arena["start"] + arena["used_granules"] * arena["granule_size"]
+        self.assertLessEqual(scratch + SCRATCH_SIZE, arena["end"],
+                             "scratch %04X is not in the free arena space"
+                             % scratch)
+        return scratch
 
     # -- machine setup --------------------------------------------------
     def make_cpu(self, peer=None):
@@ -237,8 +250,8 @@ class V9958SimBase(unittest.TestCase):
 
     # -- module calls ----------------------------------------------------
     def put_scratch(self, z, data):
-        z.bank7[SCRATCH:SCRATCH + len(data)] = data
-        return SCRATCH
+        z.bank7[self.scratch:self.scratch + len(data)] = data
+        return self.scratch
 
     def v9958_send(self, z, target, state, op, payload, length):
         """Call the module's zvideo_ops.send with the SDCC 4.5 layout:

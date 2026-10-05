@@ -50,10 +50,10 @@ Usage:
     zmodpack.py plan --geometry <memory.inc> [--report FILE]
                      <container.zmod> [...]
 
-The `plan` command reports every module's image/BSS/granules and the
-boot-set totals against the arena declared by a memory.inc (legacy or
-generated derived variant), and fails when the declared boot set cannot
-coexist in the arena.
+The `plan` command reports every module's image/BSS/granules, the
+boot-set totals against the derived arena declared by the generated
+geometry memory include, and the single bank-7 budget ledger line.  It
+fails when the declared boot set cannot coexist in the arena.
 """
 
 import hashlib
@@ -70,8 +70,8 @@ FLAG_NONE = 0
 ZREL_ABS16 = 1
 NO_ENTRY = 0xFFFF
 GRANULE_SIZE = 512
-# Architectural maximum: (ZMOD_ARCH_END - ZMOD_ARCH_BASE) / GRANULE_SIZE.
-MAX_GRANULES = 80
+# Architectural maximum: (DF00h - ZMOD_ARCH_BASE) / GRANULE_SIZE = 95.
+MAX_GRANULES = 95
 DRIVER_ABI_VERSION = 2
 A_BYTES = 4
 
@@ -921,6 +921,52 @@ def parse_geometry_inc(path):
     return values
 
 
+def build_bank7_ledger(values, used_granules, source):
+    """Bank-7 budget ledger from the generated geometry memory include.
+
+    Every derived value is required: a missing key raises a clear error
+    naming the key and the include it was expected in, never a silent skip.
+    The field set matches tools/pack_image.py so the arena.plan.json ledger
+    and the image manifest ledger are identical."""
+    for name in ("ZOS_KERNEL_CODE_END", "ZOS_DRIVER_ARENA_BASE",
+                 "ZOS_DRIVER_ARENA_END", "ZOS_DRIVER_GRANULES",
+                 "ZOS_DATA_BASE", "ZOS_DATA_SIZE",
+                 "ZOS_BANK7_RUNTIME_END"):
+        if name not in values:
+            raise ZmodError(
+                "%s is missing from %s; the derived build must generate it"
+                % (name, source))
+    code_end = values["ZOS_KERNEL_CODE_END"]
+    data_base = values["ZOS_DATA_BASE"]
+    data_size = values["ZOS_DATA_SIZE"]
+    runtime_end = values["ZOS_BANK7_RUNTIME_END"]
+    return {
+        "code_bytes": code_end - values.get("ZOS_BANK7_BASE", 0x2000),
+        "code_end": code_end,
+        "arena_start": values["ZOS_DRIVER_ARENA_BASE"],
+        "arena_end": values["ZOS_DRIVER_ARENA_END"],
+        "arena_granules": values["ZOS_DRIVER_GRANULES"],
+        "arena_used_granules": used_granules,
+        "arena_free_granules": values["ZOS_DRIVER_GRANULES"] - used_granules,
+        "data_bytes": data_size,
+        "data_base": data_base,
+        "isr_bytes": values.get("ZOS_IRQ_ISR_STACK_SIZE", 0x100),
+        "slack_bytes": runtime_end - (data_base + data_size),
+    }
+
+
+def format_bank7_ledger(ledger):
+    """One-line report of the bank-7 budget (section 32.39)."""
+    return ("bank7: code %d bytes end %04Xh | arena %d granules "
+            "(%d boot, %d free) | data %d bytes at %04Xh | isr %d | "
+            "slack %d bytes"
+            % (ledger["code_bytes"], ledger["code_end"],
+               ledger["arena_granules"], ledger["arena_used_granules"],
+               ledger["arena_free_granules"], ledger["data_bytes"],
+               ledger["data_base"], ledger["isr_bytes"],
+               ledger["slack_bytes"]))
+
+
 def cmd_plan(args):
     geometry_path = None
     report_path = None
@@ -977,15 +1023,15 @@ def cmd_plan(args):
             "size": size,
             "granule_size": granule,
             "granules": declared,
-            "derived": bool(values.get("ZOS_DRIVER_ARENA_DERIVED", 0)),
             "used_granules": used,
             "free_granules": declared - used,
         },
         "modules": entries,
     }
-    print("zmodpack: arena %04Xh-%04Xh: %d granules (%s)"
-          % (start, end - 1, declared,
-             "derived" if plan["arena"]["derived"] else "legacy"))
+    ledger = build_bank7_ledger(values, used, geometry_path)
+    plan["bank7"] = ledger
+    print("zmodpack: arena %04Xh-%04Xh: %d granules (derived)"
+          % (start, end - 1, declared))
     for entry in entries:
         print("zmodpack:   %-12s image %5d + bss %5d = %5d bytes, "
               "%d granules" % (entry["name"], entry["image_size"],
@@ -993,6 +1039,8 @@ def cmd_plan(args):
                                entry["granules"]))
     print("zmodpack: boot set uses %d of %d granules; %d free"
           % (used, declared, declared - used))
+    if ledger is not None:
+        print(format_bank7_ledger(ledger))
     if report_path:
         with open(report_path, "w") as handle:
             json.dump(plan, handle, indent=2, sort_keys=True)

@@ -12,12 +12,11 @@ Region contract (see docs/architecture.md, docs/boot.md):
     0000h-002Fh   reset copier (page zero, both boot pages, byte-identical)
     0030h-00FFh   page-zero reservation (must stay empty)
     0100h-1FFFh   page-1 caller-window gap (must stay empty)
-    2000h-9FFFh   bank-7 loadable kernel (up to the driver arena start)
-    arena         M8 production: aligned linked-kernel end .. C000h;
-                  pre-M8 acceptance/variant images: A000h-BFFFh
+    2000h-arena   bank-7 loadable kernel (up to the derived arena start)
+    arena         derived: aligned linked-kernel end .. derived data base
                   (load-time only; no ROM payload)
-    C000h-DFFFh   bank-7 zero-initialized runtime area (must stay empty in
-                  the ROM image; it is never loaded from ROM)
+    data base-DFFFh  bank-7 runtime data (must stay empty in the ROM image;
+                  never loaded from ROM); DF00h-DFFFh is the ISR stack
     E000h-FEFFh   permanent common code/data (physical bank 0)
     FF00h-FFFFh   common boot/runtime stack (must stay empty in the image)
 
@@ -35,13 +34,15 @@ symbols whose addresses fall outside their expected region.
 
 Usage:
     pack_image.py <zephyros.ihx> <zephyros.map> <build_dir> [suffix]
-                  [platform/zephyr80/memory.inc]
+                  [build/geometry/memory.inc]
 
-The optional memory.inc overrides the driver-arena and ROMFS declarations
-(the M4 placement build shifts the arena base; the ROM contract is
-otherwise unchanged).  When <build_dir> is given, <build_dir>/recovery.romfs
-must exist and is placed into pages 2-7; when it is None (host unit tests)
-an all-FF recovery store is emitted unless `romfs` is passed explicitly.
+The optional memory.inc is the generated bank-7 geometry include; it must
+declare the derived arena start/end, granule count and data base (a missing
+key is a hard error, never a fall back to a retired default).  With no
+include the synthetic host defaults are used.  When <build_dir> is given,
+<build_dir>/recovery.romfs must exist and is placed into pages 2-7; when it
+is None (host unit tests) an all-FF recovery store is emitted unless `romfs`
+is passed explicitly.
 """
 
 import json
@@ -72,14 +73,22 @@ RESET_BASE = 0x0000
 RESET_TOP = 0x0030          # M1 installs RST 30h at 0030h
 PAGE_ZERO_END = 0x0100
 BANK7_BASE = 0x2000
-BANK7_LOAD_END = 0xC000     # C000h-DFFFh is runtime, never ROM-loaded
-ARENA_BASE = 0xA000         # legacy default; overridden from memory.inc
+# Architectural ceiling on the loadable kernel end; the production arena
+# ends at the derived data base below DF00h, so this is never a boundary.
+BANK7_LOAD_END = 0xC000
+BANK7_RUNTIME_END = 0xDF00  # runtime data must stay below the ISR stack
+IRQ_ISR_STACK_SIZE = 0x0100
+# Host-synthetic geometry defaults.  A real build always passes its
+# generated build/geometry/memory.inc, which must carry every derived
+# value; these literals only seed the synthetic path where no include is
+# supplied (host unit tests and hand-held validation maps).
+ARENA_BASE = 0xA000
 ARENA_END = 0xC000
-ARENA_DERIVED = 0
+DATA_BASE = ARENA_END
 ARENA_MIN_SIZE = 0x4000
 ARENA_MIN_GRANULES = 32
 GRANULE_SIZE = 0x0200
-GRANULE_COUNT = 16
+GRANULE_COUNT = ((ARENA_END - ARENA_BASE) // GRANULE_SIZE)
 COMMON_BASE = 0xE000
 COMMON_CODE_END = 0xFD00
 IRQ_VECTOR_BASE = 0xFD00
@@ -96,8 +105,8 @@ def make_regions():
         (PAGE_ZERO_END, BANK7_BASE, "page-1 caller-window gap", False),
         (BANK7_BASE, ARENA_BASE, "bank-7 loadable kernel", True),
         (ARENA_BASE, ARENA_END, "bank-7 driver arena (load-time only)", False),
-        (BANK7_LOAD_END, COMMON_BASE,
-         "bank-7 runtime area (never ROM-loaded)", False),
+        (ARENA_END, COMMON_BASE,
+         "bank-7 runtime data (never ROM-loaded)", False),
         (COMMON_BASE, COMMON_CODE_END, "permanent common code/data", True),
         (IRQ_VECTOR_BASE, IRQ_VECTOR_END, "IM2 vector page plus guard", True),
         (IRQ_STATE_BASE, STACK_BASE, "IRQ transition state/stacks", False),
@@ -108,10 +117,22 @@ def make_regions():
 REGIONS = make_regions()
 
 
+def require_value(values, name, path):
+    """Fetch a required declaration, naming the key and its include.
+
+    The derived build must generate every bank-7 geometry value; a missing
+    key is a hard error, never a silent fall back to a retired default."""
+    if name not in values:
+        raise LayoutError(
+            "%s is missing from %s; the derived build must generate it"
+            % (name, path))
+
+
 def apply_memory_inc(path):
-    """Override the arena/ROMFS declarations from platform memory.inc."""
-    global ARENA_BASE, ARENA_END, GRANULE_SIZE, GRANULE_COUNT, REGIONS
-    global ARENA_DERIVED, ARENA_MIN_SIZE, ARENA_MIN_GRANULES
+    """Override the arena/ROMFS declarations from a generated memory.inc."""
+    global ARENA_BASE, ARENA_END, DATA_BASE, GRANULE_SIZE, GRANULE_COUNT
+    global REGIONS, ARENA_MIN_SIZE, ARENA_MIN_GRANULES
+    global BANK7_RUNTIME_END, IRQ_ISR_STACK_SIZE
     global ROMFS_FIRST_PAGE, ROMFS_PAGE_COUNT, ROMFS_WINDOW_SIZE
     global ROMFS_CAPACITY, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
     values = {}
@@ -120,13 +141,22 @@ def apply_memory_inc(path):
         match = re.match(r"([A-Za-z_]\w*)\s+=\s+(0[xX][0-9a-fA-F]+|\d+)$", line)
         if match:
             values[match.group(1)] = int(match.group(2), 0)
-    ARENA_DERIVED = values.get("ZOS_DRIVER_ARENA_DERIVED", 0)
+    # The bank-7 geometry (arena start/end, data base, granule count) is
+    # derived per image and carried by the generated memory include.  It is
+    # required: a missing key must fail loudly rather than validate against
+    # the retired C000h boundary.
+    for name in ("ZOS_DRIVER_ARENA_BASE", "ZOS_DRIVER_ARENA_END",
+                 "ZOS_DRIVER_GRANULES", "ZOS_DATA_BASE"):
+        require_value(values, name, path)
     ARENA_BASE = values["ZOS_DRIVER_ARENA_BASE"]
     ARENA_END = values["ZOS_DRIVER_ARENA_END"]
+    DATA_BASE = values["ZOS_DATA_BASE"]
     ARENA_MIN_SIZE = values.get("ZOS_DRIVER_ARENA_MIN_SIZE", 0x4000)
     ARENA_MIN_GRANULES = values.get("ZOS_DRIVER_ARENA_MIN_GRANULES", 32)
     GRANULE_SIZE = values["ZOS_DRIVER_GRANULE_SIZE"]
     GRANULE_COUNT = values["ZOS_DRIVER_GRANULES"]
+    BANK7_RUNTIME_END = values["ZOS_BANK7_RUNTIME_END"]
+    IRQ_ISR_STACK_SIZE = values["ZOS_IRQ_ISR_STACK_SIZE"]
     ROMFS_FIRST_PAGE = values["ZOS_ROMFS_FIRST_PAGE"]
     ROMFS_PAGE_COUNT = values["ZOS_ROMFS_PAGE_COUNT"]
     ROMFS_WINDOW_SIZE = values["ZOS_ROMFS_WINDOW_SIZE"]
@@ -414,10 +444,13 @@ def build_image(pages):
 
 
 def parse_map_symbols(text):
-    """Extract {name: address} from an sdldz80 wide map file."""
+    """Extract {name: address} from an sdldz80 wide map file.
+
+    The trailing module column is optional: linker-synthesized symbols
+    (`s__DATA`, `l__DATA`, ...) carry no defining module."""
     symbols = {}
     for line in text.splitlines():
-        match = re.match(r"\s*([0-9A-Fa-f]{8})\s+(\S+)\s+\S+", line)
+        match = re.match(r"\s*([0-9A-Fa-f]{8})\s+(\S+)", line)
         if match:
             symbols[match.group(2)] = int(match.group(1), 16)
     return symbols
@@ -438,20 +471,20 @@ def check_symbol_regions(symbols):
         if name not in symbols:
             raise LayoutError("map has no symbol %s" % name)
         addr = symbols[name]
-        if not (BANK7_BASE <= addr < BANK7_LOAD_END):
+        if not (BANK7_BASE <= addr < ARENA_BASE):
             raise LayoutError(
                 "%s at %04Xh is outside the bank-7 loadable region "
-                "2000h-BFFFh" % (name, addr)
+                "2000h-%04Xh" % (name, addr, ARENA_BASE - 1)
             )
     reset = symbols.get("_reset")
     if reset != RESET_BASE:
         raise LayoutError("_reset is at %04Xh, expected 0000h"
                           % (reset if reset is not None else -1))
 
-    # M4/M8 exported arena bounds: the ROM image never contains arena
-    # bytes, but the linked symbols must describe the reserved region
-    # exactly.  Derived (production) builds additionally pin the start to
-    # the aligned linked-kernel end and enforce the 16-KiB minimum.
+    # Derived arena bounds: the ROM image never contains arena bytes, but
+    # the linked symbols must describe the reserved region exactly.  Real
+    # builds additionally pin the start to the aligned linked-kernel end,
+    # the end to the derived data base, and enforce the floor.
     arena_start = symbols.get("__driver_arena_start")
     arena_end = symbols.get("__driver_arena_end")
     if arena_start != ARENA_BASE or arena_end != ARENA_END:
@@ -461,10 +494,8 @@ def check_symbol_regions(symbols):
         )
     if (arena_end - arena_start) != GRANULE_COUNT * GRANULE_SIZE:
         raise LayoutError("driver arena geometry does not match granules")
-    if ARENA_DERIVED:
-        kernel_end = symbols.get("__kernel_code_end")
-        if kernel_end is None:
-            raise LayoutError("derived build has no __kernel_code_end")
+    kernel_end = symbols.get("__kernel_code_end")
+    if kernel_end is not None:
         expected = (kernel_end + GRANULE_SIZE - 1) & ~(GRANULE_SIZE - 1)
         if arena_start != expected:
             raise LayoutError(
@@ -476,6 +507,57 @@ def check_symbol_regions(symbols):
         if GRANULE_COUNT < ARENA_MIN_GRANULES:
             raise LayoutError("derived driver arena below the %d-granule "
                               "minimum" % ARENA_MIN_GRANULES)
+        data_base = symbols.get("s__DATA")
+        if data_base != DATA_BASE:
+            raise LayoutError(
+                "s__DATA is %04Xh, expected derived data base %04Xh"
+                % (data_base if data_base is not None else -1, DATA_BASE))
+        data_size = (symbols.get("l__DATA", 0)
+                     + symbols.get("l__INITIALIZED", 0))
+        if DATA_BASE + data_size > BANK7_RUNTIME_END:
+            raise LayoutError(
+                "runtime data ends at %04Xh, overlapping the bank-7 ISR "
+                "stack reservation at %04Xh"
+                % (DATA_BASE + data_size, BANK7_RUNTIME_END))
+
+
+def bank7_ledger(symbols, plan=None):
+    """Build the single bank-7 budget ledger from a linked map.
+
+    Returns None for synthetic host maps without the derived symbols.  Every
+    later package reports its bytes against this one ledger, so the fields
+    are the stable external contract (see docs/memory.md)."""
+    kernel_end = symbols.get("__kernel_code_end")
+    data_base = symbols.get("s__DATA")
+    if kernel_end is None or data_base is None:
+        return None
+    data_size = symbols.get("l__DATA", 0) + symbols.get("l__INITIALIZED", 0)
+    used = sum(entry["granules"] for entry in plan["modules"]) if plan else 0
+    return {
+        "code_bytes": kernel_end - BANK7_BASE,
+        "code_end": kernel_end,
+        "arena_start": ARENA_BASE,
+        "arena_end": ARENA_END,
+        "arena_granules": GRANULE_COUNT,
+        "arena_used_granules": used,
+        "arena_free_granules": GRANULE_COUNT - used,
+        "data_bytes": data_size,
+        "data_base": data_base,
+        "isr_bytes": IRQ_ISR_STACK_SIZE,
+        "slack_bytes": BANK7_RUNTIME_END - (data_base + data_size),
+    }
+
+
+def format_bank7_ledger(ledger):
+    """One-line report of the bank-7 budget (section 32.39)."""
+    return ("bank7: code %d bytes end %04Xh | arena %d granules "
+            "(%d boot, %d free) | data %d bytes at %04Xh | isr %d | "
+            "slack %d bytes"
+            % (ledger["code_bytes"], ledger["code_end"],
+               ledger["arena_granules"], ledger["arena_used_granules"],
+               ledger["arena_free_granules"], ledger["data_bytes"],
+               ledger["data_base"], ledger["isr_bytes"],
+               ledger["slack_bytes"]))
 
 
 def romfs_placement(size):
@@ -501,7 +583,7 @@ def romfs_placement(size):
 def load_arena_plan(build_dir):
     """Load the boot-set arena plan emitted by tools/zmodpack.py plan.
 
-    Returns None when no plan was generated (legacy host tests).  The
+    Returns None when no plan was generated (host tests).  The
     plan must agree with the declared arena geometry; a boot set that
     cannot coexist is a build error here as well as in the planner.
     """
@@ -544,12 +626,14 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
             "irq_isr_stack", "irq_isr_stack_top",
             "__kernel_code_end",
             "__driver_arena_start", "__driver_arena_end",
+            "s__DATA", "l__DATA", "s__INITIALIZED", "l__INITIALIZED",
             "rom_access_trampoline", "rom_access_sync",
             "rom_access_sync_end",
         )
     }
     stub = rom_access_stub_bytes(mem)
     used = sum(entry["granules"] for entry in plan["modules"]) if plan else 0
+    ledger = bank7_ledger(symbols, plan)
     manifest = {
         "tool": "pack_image.py",
         "layout": {
@@ -557,9 +641,11 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
             "page_zero_end": PAGE_ZERO_END,
             "bank7_base": BANK7_BASE,
             "bank7_load_end": BANK7_LOAD_END,
+            "bank7_runtime_end": BANK7_RUNTIME_END,
+            "isr_stack_size": IRQ_ISR_STACK_SIZE,
             "driver_arena_base": ARENA_BASE,
             "driver_arena_end": ARENA_END,
-            "driver_arena_derived": bool(ARENA_DERIVED),
+            "data_base": DATA_BASE,
             "driver_arena_min_size": ARENA_MIN_SIZE,
             "driver_arena_min_granules": ARENA_MIN_GRANULES,
             "common_base": COMMON_BASE,
@@ -573,6 +659,7 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
             "rom_access_base": ROM_ACCESS_BASE,
             "rom_access_size": ROM_ACCESS_SIZE,
         },
+        "bank7": ledger,
         "arena": {
             "start": ARENA_BASE,
             "end": ARENA_END,
@@ -639,7 +726,7 @@ def verify_no_banked_latch_writes(mem):
     and linked in ROM page 0.
     """
     for addr in sorted(mem):
-        if BANK7_BASE <= addr < BANK7_LOAD_END and mem[addr] == 0xD3:
+        if BANK7_BASE <= addr < ARENA_BASE and mem[addr] == 0xD3:
             if mem.get(addr + 1) == 0x00:
                 raise LayoutError(
                     "latch write OUT (00h),A encoding at %04Xh in the "
@@ -699,8 +786,6 @@ def main(argv):
     suffix = argv[4] if len(argv) >= 5 else ""
     if len(argv) == 6:
         apply_memory_inc(argv[5])
-    else:
-        apply_memory_inc("platform/zephyr80/memory.inc")
     if min_granules is not None:
         ARENA_MIN_GRANULES = min_granules
         ARENA_MIN_SIZE = min_granules * GRANULE_SIZE
@@ -714,14 +799,10 @@ def main(argv):
     symbols = parse_map_symbols(map_text)
     digest = hashlib.sha256(image).hexdigest()
     print("pack_image.py: %d bytes, sha256 %s" % (len(image), digest))
-    kernel_end = symbols.get("__kernel_code_end")
-    print("pack_image.py: static kernel end %s; driver arena %04Xh-%04Xh: "
-          "%d bytes, %d granules, %s"
-          % (("%04Xh" % kernel_end) if kernel_end is not None else "n/a",
-             ARENA_BASE, ARENA_END - 1, ARENA_END - ARENA_BASE,
-             GRANULE_COUNT,
-             "derived" if ARENA_DERIVED else "legacy reserved"))
     plan = load_arena_plan(build_dir)
+    ledger = bank7_ledger(symbols, plan)
+    if ledger is not None:
+        print(format_bank7_ledger(ledger))
     if plan is not None:
         print("pack_image.py: boot set uses %d granules (%s), %d free"
               % (plan["arena"]["used_granules"],

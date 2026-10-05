@@ -37,7 +37,7 @@ import mapcheck  # noqa: E402
 import pack_image  # noqa: E402
 import zmodpack  # noqa: E402
 from maptools import (  # noqa: E402
-    evaluate, make_map, parse_c_header, MEMORY_INC)
+    evaluate, layout_context, make_map, parse_c_header, IRQ_INC, MEMORY_INC)
 from test_zmod import (  # noqa: E402
     build_valid_container, pack_in_dir, rel_text, simple_manifest)
 
@@ -47,8 +47,9 @@ MODULE_H = os.path.join(ROOT, "include", "zephyros", "module.h")
 CONSOLE_H = os.path.join(ROOT, "include", "zephyros", "console.h")
 
 _PACK_IMAGE_GLOBALS = (
-    "ARENA_BASE", "ARENA_END", "ARENA_DERIVED", "ARENA_MIN_SIZE",
+    "ARENA_BASE", "ARENA_END", "DATA_BASE", "ARENA_MIN_SIZE",
     "ARENA_MIN_GRANULES", "GRANULE_SIZE", "GRANULE_COUNT", "REGIONS",
+    "BANK7_RUNTIME_END", "IRQ_ISR_STACK_SIZE",
     "ROMFS_FIRST_PAGE", "ROMFS_PAGE_COUNT", "ROMFS_WINDOW_SIZE",
     "ROMFS_CAPACITY", "ROM_ACCESS_BASE", "ROM_ACCESS_SIZE",
 )
@@ -95,16 +96,19 @@ def struct_member_order(text, struct_name, function_pointers=False):
 
 
 @contextlib.contextmanager
-def derived_arena_context(start, granules):
-    """Apply a synthetic derived arena for one mapcheck call."""
+def derived_arena_context(start, granules, data_base=0xC000):
+    """Apply a synthetic derived geometry for one mapcheck call.
+
+    Synthetic maps keep runtime data at C000h, so the arena end (which is
+    the derived data base) is C000h unless a caller says otherwise."""
     saved = {name: getattr(mapcheck, name) for name in
-             ("DRIVER_ARENA_DERIVED", "DRIVER_ARENA_BASE", "DRIVER_ARENA_END",
+             ("DRIVER_ARENA_BASE", "DRIVER_ARENA_END", "DATA_BASE",
               "DRIVER_GRANULE_SIZE", "DRIVER_GRANULES", "DRIVER_ARENA_MIN_SIZE",
               "DRIVER_ARENA_MIN_GRANULES", "OWNED_AREAS")}
     try:
-        mapcheck.DRIVER_ARENA_DERIVED = 1
         mapcheck.DRIVER_ARENA_BASE = start
-        mapcheck.DRIVER_ARENA_END = 0xC000
+        mapcheck.DRIVER_ARENA_END = data_base
+        mapcheck.DATA_BASE = data_base
         mapcheck.DRIVER_GRANULE_SIZE = 0x200
         mapcheck.DRIVER_GRANULES = granules
         mapcheck.DRIVER_ARENA_MIN_SIZE = 0x4000
@@ -112,6 +116,8 @@ def derived_arena_context(start, granules):
         owned = dict(mapcheck.OWNED_AREAS)
         for name in mapcheck.LOADABLE_AREAS:
             owned[name] = (mapcheck.BANK7_BASE, start)
+        for name in ("_DATA", "_INITIALIZED"):
+            owned[name] = (data_base, mapcheck.BANK7_RUNTIME_END)
         mapcheck.OWNED_AREAS = owned
         yield
     finally:
@@ -211,7 +217,7 @@ class TestDerivedGeometry(unittest.TestCase):
     def setUp(self):
         self.values = mapcheck.parse_inc(MEMORY_INC)
 
-    def probe_map(self, end):
+    def probe_map(self, end, data_size=0):
         return make_map(
             areas={"_CODE": (0x2000, end - 0x2000)},
             symbols={
@@ -220,6 +226,9 @@ class TestDerivedGeometry(unittest.TestCase):
                 "s__INITIALIZER": end, "l__INITIALIZER": 0,
                 "s__GSINIT": end, "l__GSINIT": 0,
                 "s__GSFINAL": end, "l__GSFINAL": 0,
+                "s__DATA": 0xC000, "l__DATA": data_size,
+                "s__INITIALIZED": 0xC000 + data_size,
+                "l__INITIALIZED": 0,
             })
 
     def test_derives_aligned_start_and_end(self):
@@ -227,8 +236,19 @@ class TestDerivedGeometry(unittest.TestCase):
                                             self.values)
         self.assertEqual(geometry["kernel_code_end"], 0x5CA2)
         self.assertEqual(geometry["arena_start"], 0x5E00)
-        self.assertEqual(geometry["arena_end"], 0xC000)
-        self.assertEqual(geometry["granules"], (0xC000 - 0x5E00) // 512)
+        # With no runtime data, the data base is the granule-aligned
+        # DF00h floor: align_down(DF00h, 512) = DE00h.
+        self.assertEqual(geometry["data_base"], 0xDE00)
+        self.assertEqual(geometry["arena_end"], geometry["data_base"])
+        self.assertEqual(geometry["granules"], (0xDE00 - 0x5E00) // 512)
+
+    def test_data_base_derives_from_runtime_data_size(self):
+        # 1294 bytes of runtime data: align_down(DF00h - 1294, 512) = D800h.
+        geometry = mapcheck.derive_geometry(
+            self.probe_map(0x5CA2, data_size=1294), self.values)
+        self.assertEqual(geometry["data_size"], 1294)
+        self.assertEqual(geometry["data_base"], 0xD800)
+        self.assertEqual(geometry["arena_end"], 0xD800)
 
     def test_aligned_end_needs_no_padding(self):
         geometry = mapcheck.derive_geometry(self.probe_map(0x5E00),
@@ -236,30 +256,36 @@ class TestDerivedGeometry(unittest.TestCase):
         self.assertEqual(geometry["arena_start"], 0x5E00)
 
     def test_below_minimum_arena_is_rejected(self):
+        # Data base DE00h and kernel end DC01h leave less than the floor.
         with self.assertRaisesRegex(mapcheck.MapError, "minimum"):
-            mapcheck.derive_geometry(self.probe_map(0x8001), self.values)
+            mapcheck.derive_geometry(self.probe_map(0xDC01), self.values)
 
-    def test_kernel_end_past_arena_end_is_rejected(self):
-        with self.assertRaisesRegex(mapcheck.MapError, "past the arena end"):
-            mapcheck.derive_geometry(self.probe_map(0xC201), self.values)
+    def test_kernel_end_past_data_base_is_rejected(self):
+        with self.assertRaisesRegex(mapcheck.MapError, "past the derived"):
+            mapcheck.derive_geometry(self.probe_map(0xDE01), self.values)
 
-    def test_geometry_inc_marks_probe_and_derived_modes(self):
+    def test_geometry_inc_carries_derived_values(self):
         geometry = mapcheck.derive_geometry(self.probe_map(0x5CA2),
                                             self.values)
-        derived = mapcheck.format_geometry_inc(geometry, derived=True)
-        self.assertIn("ZOS_ARENA_DERIVED = 1", derived)
+        derived = mapcheck.format_geometry_inc(geometry)
+        self.assertIn("ZOS_ARENA_PROBE = 0", derived)
         self.assertIn("ZOS_DRIVER_ARENA_BASE = 0x5E00", derived)
-        legacy = mapcheck.format_geometry_inc(geometry, derived=False)
-        self.assertIn("ZOS_ARENA_DERIVED = 0", legacy)
+        self.assertIn("ZOS_DRIVER_ARENA_END = 0xDE00", derived)
+        self.assertIn("ZOS_DATA_BASE = 0xDE00", derived)
+        probe = mapcheck.format_probe_geometry_inc()
+        self.assertIn("ZOS_ARENA_PROBE = 1", probe)
+        self.assertNotIn("ZOS_DRIVER_ARENA_BASE", probe)
 
-    def test_memory_variant_replaces_arena_declarations(self):
-        geometry = mapcheck.derive_geometry(self.probe_map(0x5CA2),
-                                            self.values)
+    def test_memory_variant_replaces_geometry_declarations(self):
+        geometry = mapcheck.derive_geometry(
+            self.probe_map(0x5CA2, data_size=1294), self.values)
         variant = mapcheck.format_memory_variant(open(MEMORY_INC).read(),
                                                  geometry)
-        self.assertIn("ZOS_DRIVER_ARENA_DERIVED = 1", variant)
+        self.assertNotIn("ZOS_DRIVER_ARENA_DERIVED", variant)
         self.assertIn("ZOS_DRIVER_ARENA_BASE = 0x5E00", variant)
-        self.assertIn("ZOS_DRIVER_ARENA_END = 0xC000", variant)
+        self.assertIn("ZOS_DRIVER_ARENA_END = 0xD800", variant)
+        self.assertIn("ZOS_DATA_BASE = 0xD800", variant)
+        self.assertIn("ZOS_DATA_SIZE = 1294", variant)
         self.assertIn("ZOS_DRIVER_GRANULES = "
                       "%d" % geometry["granules"], variant)
         with tempfile.TemporaryDirectory() as tmp:
@@ -267,8 +293,9 @@ class TestDerivedGeometry(unittest.TestCase):
             with open(path, "w") as handle:
                 handle.write(variant)
             parsed = mapcheck.parse_inc(path)
-        self.assertEqual(parsed["ZOS_DRIVER_ARENA_DERIVED"], 1)
         self.assertEqual(parsed["ZOS_DRIVER_ARENA_BASE"], 0x5E00)
+        self.assertEqual(parsed["ZOS_DRIVER_ARENA_END"], 0xD800)
+        self.assertEqual(parsed["ZOS_DATA_BASE"], 0xD800)
         self.assertEqual(parsed["ZOS_DRIVER_GRANULES"],
                          geometry["granules"])
 
@@ -311,10 +338,47 @@ class TestDerivedGeometry(unittest.TestCase):
             with self.assertRaisesRegex(mapcheck.MapError, "driver arena"):
                 mapcheck.check_map(text)
 
+    def _geometry_without(self, key, tmp):
+        """Real memory include with one derived declaration removed."""
+        geometry = {"kernel_code_end": 0x226F, "arena_start": 0x2400,
+                    "arena_end": 0x2E00, "granules": 5,
+                    "data_base": 0x2E00, "data_size": 0}
+        variant = mapcheck.format_memory_variant(open(MEMORY_INC).read(),
+                                                 geometry)
+        kept = [line for line in variant.splitlines()
+                if not line.startswith(key)]
+        path = os.path.join(tmp, "geometry.inc")
+        with open(path, "w") as handle:
+            handle.write("\n".join(kept) + "\n")
+        return path
+
+    def test_missing_arena_end_in_geometry_fails_loudly(self):
+        # A geometry include without ZOS_DRIVER_ARENA_END must be rejected
+        # by name, never validated against the retired C000h boundary.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._geometry_without("ZOS_DRIVER_ARENA_END", tmp)
+            with self.assertRaisesRegex(mapcheck.MapError,
+                                        "ZOS_DRIVER_ARENA_END"):
+                with layout_context(path, IRQ_INC):
+                    pass
+
+    def test_pack_image_requires_arena_end_in_geometry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._geometry_without("ZOS_DRIVER_ARENA_END", tmp)
+            saved = {name: getattr(pack_image, name)
+                     for name in _PACK_IMAGE_GLOBALS}
+            try:
+                with self.assertRaisesRegex(pack_image.LayoutError,
+                                            "ZOS_DRIVER_ARENA_END"):
+                    pack_image.apply_memory_inc(path)
+            finally:
+                for name, value in saved.items():
+                    setattr(pack_image, name, value)
+
     def test_pack_image_rejects_bytes_in_derived_arena(self):
         geometry = {"kernel_code_end": 0x226F, "arena_start": 0x2400,
-                    "arena_end": 0xC000,
-                    "granules": (0xC000 - 0x2400) // 512}
+                    "arena_end": 0x2E00, "granules": 5,
+                    "data_base": 0x2E00, "data_size": 0}
         variant = mapcheck.format_memory_variant(open(MEMORY_INC).read(),
                                                  geometry)
         with tempfile.TemporaryDirectory() as tmp:
@@ -326,6 +390,7 @@ class TestDerivedGeometry(unittest.TestCase):
             try:
                 pack_image.apply_memory_inc(path)
                 self.assertEqual(pack_image.ARENA_BASE, 0x2400)
+                self.assertEqual(pack_image.DATA_BASE, 0x2E00)
                 with self.assertRaisesRegex(pack_image.LayoutError,
                                             "driver arena"):
                     pack_image.validate_layout({0x2400: 0x00})
@@ -349,16 +414,24 @@ class TestBootSetPlan(unittest.TestCase):
             handle.write(container)
         return path
 
-    def write_geometry(self, tmp, granules, derived=0):
+    def write_geometry(self, tmp, granules):
         path = os.path.join(tmp, "geometry.inc")
         start = 0xC000 - granules * 512
+        code_end = 0x2000 + 0x40
+        data_size = 16
         with open(path, "w") as handle:
-            handle.write("ZOS_DRIVER_ARENA_DERIVED = %d\n"
+            handle.write("ZOS_BANK7_BASE = 0x2000\n"
+                         "ZOS_BANK7_RUNTIME_END = 0xDF00\n"
+                         "ZOS_IRQ_ISR_STACK_SIZE = 0x0100\n"
+                         "ZOS_ARENA_PROBE = 0\n"
+                         "ZOS_KERNEL_CODE_END = 0x%04X\n"
                          "ZOS_DRIVER_ARENA_BASE = 0x%04X\n"
                          "ZOS_DRIVER_ARENA_END = 0xC000\n"
                          "ZOS_DRIVER_GRANULE_SIZE = 0x0200\n"
                          "ZOS_DRIVER_GRANULES = %d\n"
-                         % (derived, start, granules))
+                         "ZOS_DATA_BASE = 0xC000\n"
+                         "ZOS_DATA_SIZE = %d\n"
+                         % (code_end, start, granules, data_size))
         return path
 
     def test_plan_reports_modules_and_totals(self):
@@ -379,6 +452,35 @@ class TestBootSetPlan(unittest.TestCase):
             self.assertEqual(plan["modules"][0]["granules"], 2)
             self.assertEqual(plan["modules"][0]["image_size"], 1024)
             self.assertIn("boot set uses 2 of 32 granules", out.getvalue())
+            ledger = plan["bank7"]
+            self.assertEqual(ledger["code_bytes"], 0x40)
+            self.assertEqual(ledger["code_end"], 0x2040)
+            self.assertEqual(ledger["arena_granules"], 32)
+            self.assertEqual(ledger["arena_used_granules"], 2)
+            self.assertEqual(ledger["data_bytes"], 16)
+            self.assertEqual(ledger["data_base"], 0xC000)
+            self.assertEqual(ledger["isr_bytes"], 256)
+            self.assertEqual(ledger["slack_bytes"], 0xDF00 - (0xC000 + 16))
+            self.assertIn(
+                "bank7: code 64 bytes end 2040h | arena 32 granules "
+                "(2 boot, 30 free) | data 16 bytes at C000h | isr 256 | "
+                "slack 7920 bytes",
+                out.getvalue())
+
+    def test_plan_requires_the_geometry_ledger_inputs(self):
+        # The ledger must never invent a missing derived declaration.
+        with tempfile.TemporaryDirectory() as tmp:
+            module = self.write_module(tmp, "boot", 512)
+            geometry = self.write_geometry(tmp, 32)
+            text = open(geometry).read()
+            kept = [line for line in text.splitlines()
+                    if not line.startswith("ZOS_KERNEL_CODE_END")]
+            with open(geometry, "w") as handle:
+                handle.write("\n".join(kept) + "\n")
+            with self.assertRaisesRegex(zmodpack.ZmodError,
+                                        "ZOS_KERNEL_CODE_END"):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    zmodpack.cmd_plan(["--geometry", geometry, module])
 
     def test_plan_rejects_module_sum_overflow(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -395,8 +497,7 @@ class TestBootSetPlan(unittest.TestCase):
             # Base/end span 32 granules but the declaration says 16.
             geometry = os.path.join(tmp, "geometry.inc")
             with open(geometry, "w") as handle:
-                handle.write("ZOS_DRIVER_ARENA_DERIVED = 1\n"
-                             "ZOS_DRIVER_ARENA_BASE = 0x8000\n"
+                handle.write("ZOS_DRIVER_ARENA_BASE = 0x8000\n"
                              "ZOS_DRIVER_ARENA_END = 0xC000\n"
                              "ZOS_DRIVER_GRANULE_SIZE = 0x0200\n"
                              "ZOS_DRIVER_GRANULES = 16\n")
@@ -418,13 +519,17 @@ class TestBootSetPlan(unittest.TestCase):
                                     "unsupported driver ABI 1"):
             zmodpack.parse_container(bytes(data), "abi1.zmod")
 
-    def test_memory_inc_declares_legacy_defaults_and_minimums(self):
+    def test_memory_inc_declares_only_the_build_contract(self):
         values = mapcheck.parse_inc(MEMORY_INC)
-        self.assertEqual(values["ZOS_DRIVER_ARENA_DERIVED"], 0)
         self.assertEqual(values["ZOS_DRIVER_ARENA_MIN_SIZE"], 0x4000)
         self.assertEqual(values["ZOS_DRIVER_ARENA_MIN_GRANULES"], 32)
-        self.assertEqual(values["ZOS_DRIVER_ARENA_END"], 0xC000)
         self.assertEqual(values["ZOS_DRIVER_GRANULE_SIZE"], 512)
+        # The arena base/end/granules and the data base exist only in the
+        # generated geometry variant; the probe link places no arena.
+        for name in ("ZOS_DRIVER_ARENA_DERIVED", "ZOS_DRIVER_ARENA_BASE",
+                     "ZOS_DRIVER_ARENA_END", "ZOS_DRIVER_GRANULES",
+                     "ZOS_DATA_BASE"):
+            self.assertNotIn(name, values, name)
 
     def test_generated_production_geometry_matches_manifest(self):
         geometry_inc = os.path.join(ROOT, "build", "geometry",
@@ -435,24 +540,60 @@ class TestBootSetPlan(unittest.TestCase):
                 and os.path.exists(manifest_path)):
             self.skipTest("derived production build missing; run make")
         values = mapcheck.parse_inc(geometry_inc)
-        self.assertEqual(values["ZOS_ARENA_DERIVED"], 1)
+        self.assertEqual(values["ZOS_ARENA_PROBE"], 0)
         manifest = _read_json(manifest_path)
         arena = manifest["arena"]
         self.assertEqual(values["ZOS_KERNEL_CODE_END"],
                          manifest["entries"]["__kernel_code_end"])
         self.assertEqual(values["ZOS_DRIVER_ARENA_BASE"], arena["start"])
         self.assertEqual(values["ZOS_DRIVER_ARENA_END"], arena["end"])
+        self.assertEqual(values["ZOS_DATA_BASE"], arena["end"])
         self.assertGreaterEqual(arena["granules"], 32)
-        # Package 20: the arena is the aligned-up linked kernel end, ends
-        # exactly at the C000h runtime boundary and keeps the 16-KiB
-        # minimum as a build invariant.
+        # The arena is the aligned-up linked kernel end and ends exactly at
+        # the derived runtime data base, keeping the 16-KiB minimum.
         kernel_end = manifest["entries"]["__kernel_code_end"]
         self.assertEqual(arena["start"], (kernel_end + 0x1FF) & ~0x1FF,
                          "arena start is not align_up(kernel end, 512)")
-        self.assertEqual(arena["end"], 0xC000)
+        self.assertEqual(arena["end"], manifest["layout"]["data_base"])
+        self.assertEqual(arena["end"], manifest["entries"]["s__DATA"])
         self.assertGreaterEqual(arena["size"], 0x4000)
         self.assertEqual(arena["granules"], arena["size"] // 512)
         self.assertEqual(arena["granule_size"], 512)
+
+    def test_bank7_ledger_matches_map_and_manifest(self):
+        map_path = os.path.join(ROOT, "build", "zephyros.map")
+        manifest_path = os.path.join(ROOT, "build",
+                                     "zephyros.manifest.json")
+        plan_path = os.path.join(ROOT, "build", "arena.plan.json")
+        if not (os.path.exists(map_path) and os.path.exists(manifest_path)
+                and os.path.exists(plan_path)):
+            self.skipTest("derived production build missing; run make")
+        symbols = pack_image.parse_map_symbols(open(map_path).read())
+        manifest = _read_json(manifest_path)
+        plan = _read_json(plan_path)
+        ledger = manifest["bank7"]
+        self.assertEqual(ledger, plan["bank7"])
+        self.assertEqual(ledger["code_bytes"],
+                         symbols["__kernel_code_end"] - 0x2000)
+        self.assertEqual(ledger["code_end"], symbols["__kernel_code_end"])
+        self.assertEqual(ledger["arena_start"],
+                         symbols["__driver_arena_start"])
+        self.assertEqual(ledger["arena_end"], symbols["__driver_arena_end"])
+        self.assertEqual(ledger["data_base"], symbols["s__DATA"])
+        self.assertEqual(ledger["data_bytes"],
+                         symbols["l__DATA"] + symbols["l__INITIALIZED"])
+        self.assertEqual(ledger["isr_bytes"], 256)
+        self.assertEqual(
+            ledger["slack_bytes"],
+            0xDF00 - (symbols["s__DATA"] + symbols["l__DATA"]
+                      + symbols["l__INITIALIZED"]))
+        self.assertEqual(pack_image.format_bank7_ledger(ledger),
+                         zmodpack.format_bank7_ledger(plan["bank7"]))
+        self.assertRegex(
+            pack_image.format_bank7_ledger(ledger),
+            r"^bank7: code \d+ bytes end [0-9A-F]{4}h \| arena \d+ granules "
+            r"\(\d+ boot, \d+ free\) \| data \d+ bytes at [0-9A-F]{4}h \| "
+            r"isr 256 \| slack \d+ bytes$")
 
     def test_production_plan_reconciles_with_packed_modules(self):
         plan_path = os.path.join(ROOT, "build", "arena.plan.json")
@@ -483,9 +624,10 @@ class TestBootSetPlan(unittest.TestCase):
                          arena["granules"] - used)
         self.assertGreaterEqual(arena["free_granules"], 0)
         # The packed image report carries the same boot-set plan, and the
-        # arena never reaches into the C000h-DFFFh runtime workspace.
+        # arena never reaches into the runtime data at the derived base.
         self.assertEqual(manifest["arena"]["modules"], plan["modules"])
-        self.assertEqual(manifest["arena"]["end"], 0xC000)
+        self.assertEqual(manifest["arena"]["end"], plan["arena"]["end"])
+        self.assertEqual(manifest["arena"]["end"], manifest["layout"]["data_base"])
         self.assertEqual(manifest["arena"]["granule_size"], 512)
 
 

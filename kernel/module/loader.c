@@ -1,12 +1,12 @@
 /* ZephyrOS deterministic first-fit module loader (driver ABI v2).
  *
  * The driver arena lies between the linked `__driver_arena_start` and
- * `__driver_arena_end` symbols.  Production derives the start from the
- * aligned end of the linked kernel (`__kernel_code_end`); pre-M8
- * acceptance/variant images keep their fixed platform geometry.  The
- * loader computes the granule count from the linked bounds at init and
- * bounds it by the architectural maximum (2000h-C000h), so no compiled
- * arena count can drift from the link.
+ * `__driver_arena_end` symbols.  Both are derived: the start is the
+ * aligned end of the linked kernel (`__kernel_code_end`) and the end is
+ * the derived runtime-data base.  The loader computes the granule count
+ * from the linked bounds at init and bounds it by the architectural
+ * maximum (2000h-DFFFh ceiling), so no compiled arena count can drift
+ * from the link.
  *
  * Allocation is a first-fit scan over a granule bitmap; the requested
  * size is image_size + bss_size rounded up to whole granules and
@@ -77,9 +77,10 @@ int module_loader_init(void)
 	if ((start & (ZMOD_GRANULE_SIZE - 1u)) != 0) {
 		return ZMOD_EFORMAT;
 	}
-	/* The arena may never leave the architectural bank-7 loadable
-	 * window 2000h-C000h nor exceed its maximum granule count. */
-	if (start < ZOS_BANK7_BASE || end > ZOS_BANK7_LOAD_END) {
+	/* The arena may never leave the bank-7 window 2000h-DFFFh (below
+	 * the ISR stack and runtime data) nor exceed its maximum granule
+	 * count. */
+	if (start < ZOS_BANK7_BASE || end > ZOS_BANK7_RUNTIME_END) {
 		return ZMOD_EFORMAT;
 	}
 	bytes = (uint16_t)(end - start);

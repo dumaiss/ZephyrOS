@@ -16,6 +16,7 @@ host sides of the same contract -- the 14-operation provider ABI and the
 result byte and the FAIL marker here prove the linked behavior.
 """
 
+import json
 import os
 import re
 import sys
@@ -43,10 +44,10 @@ REQUIRED_IMAGE_NAME = "zephyros-m9-required-mount.bin"
 OPTIONAL_FAIL_LINE = "vfs: /DATA unavailable 0x03"
 FAIL_LINE = "m9 vfs selftest: FAIL "
 
-# Host-owned scratch for direct kernel-API calls: the bank-7 runtime tail
-# between the image's `_DATA`/BSS end and the DF00h ISR stack.  Verified
-# against the linked map in setUp so it can never silently overlap.
-SCRATCH = 0xD000
+# Host-owned scratch for direct kernel-API calls.  The bank-7 window is
+# fully derived, so a fixed address cannot be safe; setUp derives the first
+# free arena granule above the packed boot set from arena.plan.json.
+SCRATCH_SIZE = 0x200
 
 ZOS_EINVAL = 1
 ZOS_ENODEV = 3
@@ -75,25 +76,27 @@ class M9VfsSimBase(unittest.TestCase):
                           % self.romfs_path)
         with open(self.romfs_path, "rb") as handle:
             _header, self.entries = romfspack.parse_image(handle.read())
-        self._check_scratch_range()
+        self.scratch = self._derive_scratch()
 
-    def _check_scratch_range(self):
-        """The scratch buffer must be above the linked runtime data and
-        below the ISR stack, so a direct call cannot corrupt image state."""
-        areas = {}
-        with open(os.path.join(ROOT, self.IMAGE_DIR, "zephyros.map")) as fh:
-            for line in fh:
-                m = re.match(r"\s*(_DATA|_INITIALIZED)\s+([0-9A-F]{8})\s+"
-                             r"([0-9A-F]{8}) =", line)
-                if m:
-                    areas[m.group(1)] = (int(m.group(2), 16) +
-                                         int(m.group(3), 16))
-        end = max(areas.values())
-        self.assertLessEqual(end, SCRATCH,
-                             "scratch %04X overlaps linked runtime data "
-                             "(ends %04X)" % (SCRATCH, end))
-        self.assertLess(SCRATCH + 0x200, ISR_STACK_BASE,
-                        "scratch %04X reaches the ISR stack" % SCRATCH)
+    def _derive_scratch(self):
+        """Pick the first free arena granule above the packed boot set.
+
+        The scratch buffer must not overlap the linked kernel, a loaded
+        module or the runtime data, so it is derived from the image's
+        arena plan rather than a fixed address."""
+        plan_path = os.path.join(ROOT, self.IMAGE_DIR, "arena.plan.json")
+        self.assertTrue(os.path.exists(plan_path),
+                        "arena.plan.json missing; build the image first")
+        with open(plan_path) as fh:
+            arena = json.load(fh)["arena"]
+        scratch = arena["start"] + arena["used_granules"] * arena["granule_size"]
+        self.assertGreaterEqual(scratch, arena["start"])
+        self.assertLessEqual(scratch + SCRATCH_SIZE, arena["end"],
+                             "scratch %04X is not in the free arena space"
+                             % scratch)
+        self.assertLessEqual(scratch + SCRATCH_SIZE, ISR_STACK_BASE,
+                             "scratch %04X reaches the ISR stack" % scratch)
+        return scratch
 
     def call2(self, z, symbol, hl, de, limit=STEP_LIMIT):
         """Call `int f(const char *a, const char *b)`; result in DE."""
@@ -109,8 +112,8 @@ class M9VfsSimBase(unittest.TestCase):
 
     def vfs_stat(self, z, path):
         """vfs_stat(path) -> (result, struct zfs_stat bytes)."""
-        path_at = SCRATCH
-        stat_at = SCRATCH + 0x100
+        path_at = self.scratch
+        stat_at = self.scratch + 0x100
         raw = path.encode("ascii") + b"\x00"
         z.bank7[path_at:path_at + len(raw)] = raw
         z.bank7[stat_at:stat_at + 16] = b"\x00" * 16

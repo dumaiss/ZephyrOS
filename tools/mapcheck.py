@@ -6,12 +6,18 @@ ownership contract (see docs/memory.md):
 
     page zero     0000h-00FFh   reset copier only, below 0030h
     bank 7 kernel 2000h-arena   _CODE/_HOME/_INITIALIZER/_GSINIT/_GSFINAL
-    driver arena  align_up(__kernel_code_end)-C000h, >= 16 KiB
-                                (the one derived geometry; there is no
-                                fixed/legacy variant)
-    bank 7 runtime C000h-DFFFh  _DATA/_INITIALIZED (never ROM-loaded)
+    driver arena  align_up(__kernel_code_end)-data base, >= 16 KiB
+                                (the one derived geometry; the probe link
+                                places no arena)
+    bank 7 runtime data base-DFFFh  _DATA/_INITIALIZED (never ROM-loaded)
+    bank-7 ISR stack DF00h-DFFFh    fixed 256-byte handler stack
     common         E000h-FEFFh  _COMMON/_COMMON_DATA, gates, console, panic
     common stack   FF00h-FFFFh  reserved; nothing may be linked there
+
+The bank-7 runtime data base is derived, not fixed: the probe link
+measures the runtime-data size (`l__DATA + l__INITIALIZED`), the data
+base is `align_down(DF00h - data_size, 512)`, and the arena runs from
+`align_up(__kernel_code_end, 512)` up to that data base.
 
 M3 adds placement checks for the device registry, console service, static
 driver descriptors/ops, and driver-private state: all of it must live in
@@ -50,15 +56,18 @@ Every image boots its modules from the recovery store through the VFS, so
 the kernel VFS core, the generated mount table, the ROMFS provider and
 the M9-only ROMFS accessors are required in every map.
 
-The `geometry` commands implement the two-pass driver-arena build.  The
-`probe` mode emits the bootstrap include used by the probe link (derived
-symbols at the placeholder base).  The `derive` mode measures the exclusive end
-of every loadable bank-7 area in the probe-link map, aligns it up to the
-512-byte granule, enforces the 16-KiB minimum, and writes both the small
+The `geometry` commands implement the two-pass bank-7 build.  The
+`probe` mode emits the bootstrap include used by the probe link, which
+places **no** arena (the old fixed placeholder could constrain kernel
+growth).  The `derive` mode measures the exclusive end of every loadable
+bank-7 area in the probe-link map and the runtime-data size
+(`l__DATA + l__INITIALIZED`), derives the data base as
+`align_down(DF00h - data_size, 512)`, aligns the kernel end up to the
+512-byte granule, enforces the minimum arena, and writes both the small
 include consumed by kernel/module/arena.asm and (when requested) a full
 memory.inc variant for the layout tools.  The derived values are
-re-verified against the final map by the normal checks (__kernel_code_end
-and the alignment relation).
+re-verified against the final map by the normal checks (__kernel_code_end,
+the alignment relation, the data base, and the arena floor).
 """
 
 import re
@@ -71,22 +80,21 @@ import sys
 PAGE_ZERO_END = 0x0100
 RESET_TOP = 0x0030
 BANK7_BASE = 0x2000
+# Architectural maximum load end.  It is a ceiling, not a boundary: the
+# production arena ends at the derived data base (below DF00h), so the
+# loadable kernel only ever has to stay below the arena start.
 BANK7_LOAD_END = 0xC000
 BANK7_RUNTIME_END = 0xE000
-# Defaults used until a memory include overrides them.  The arena values
-# are only the placeholder bounds of the probe link: every real image
-# declares the derived geometry in its generated memory.inc variant.
-PROBE_ARENA_BASE = 0xA000
-PROBE_ARENA_END = 0xC000
-PROBE_GRANULE_SIZE = 0x0200
-# Derived-only checks run when the memory include passed on the command
-# line declares the derived geometry; a map checked without one (synthetic
-# validation maps) keeps them off.
-DRIVER_ARENA_DERIVED = 0
-DRIVER_ARENA_BASE = PROBE_ARENA_BASE
-DRIVER_ARENA_END = PROBE_ARENA_END
-DRIVER_GRANULE_SIZE = PROBE_GRANULE_SIZE
-DRIVER_GRANULES = ((PROBE_ARENA_END - PROBE_ARENA_BASE) // PROBE_GRANULE_SIZE)
+# Host-synthetic geometry defaults.  A real image always applies its
+# generated build/geometry/memory.inc, which must carry every derived
+# value; these literals only seed checks that run without any include
+# (e.g. a synthetic host map on the command line with no layout).
+DRIVER_ARENA_BASE = 0xA000
+DRIVER_ARENA_END = 0xC000
+DRIVER_GRANULE_SIZE = 0x0200
+DRIVER_GRANULES = ((DRIVER_ARENA_END - DRIVER_ARENA_BASE)
+                   // DRIVER_GRANULE_SIZE)
+DATA_BASE = DRIVER_ARENA_END
 DRIVER_ARENA_MIN_SIZE = 0x4000
 DRIVER_ARENA_MIN_GRANULES = 32
 COMMON_BASE = 0xE000
@@ -124,14 +132,25 @@ def parse_memory_inc(path):
     return parse_inc(path)
 
 
-def apply_layout(values):
-    """Apply memory-region declarations from memory.inc."""
+def require_key(values, name, source):
+    """Fetch a required declaration, naming the key and its include.
+
+    The derived build must generate every bank-7 geometry value; a missing
+    key is a hard error, never a silent fall back to a retired default."""
+    if name not in values:
+        raise MapError(
+            "%s is missing from %s; the derived build must generate it"
+            % (name, source if source else "the memory include"))
+
+
+def apply_layout(values, source=None):
+    """Apply memory-region declarations from a generated memory include."""
     global PAGE_ZERO_END, RESET_TOP, BANK7_BASE, BANK7_LOAD_END
     global BANK7_RUNTIME_END, COMMON_BASE, COMMON_CODE_END, STACK_BASE
     global IRQ_ISR_STACK_BASE, IRQ_ISR_STACK_TOP, IRQ_ISR_STACK_SIZE
     global GATE_STACK_SIZE, OWNED_AREAS
     global DRIVER_ARENA_BASE, DRIVER_ARENA_END, DRIVER_GRANULE_SIZE
-    global DRIVER_GRANULES, DRIVER_ARENA_DERIVED
+    global DRIVER_GRANULES, DATA_BASE
     global DRIVER_ARENA_MIN_SIZE, DRIVER_ARENA_MIN_GRANULES
     global ROMFS_STAGING_SIZE, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
     PAGE_ZERO_END = values["ZOS_PAGE_ZERO_END"]
@@ -146,17 +165,21 @@ def apply_layout(values):
     IRQ_ISR_STACK_TOP = values["ZOS_IRQ_ISR_STACK_TOP"]
     IRQ_ISR_STACK_SIZE = values["ZOS_IRQ_ISR_STACK_SIZE"]
     GATE_STACK_SIZE = values["ZOS_GATE_STACK_SIZE"]
-    # A memory include declares the geometry mechanism it was generated
-    # for: the derived variant says so explicitly, and a plain platform
-    # include (synthetic/validation maps) leaves the derived-only checks
-    # off.
-    DRIVER_ARENA_DERIVED = 1 if values.get("ZOS_DRIVER_ARENA_DERIVED") else 0
-    DRIVER_ARENA_BASE = values.get("ZOS_DRIVER_ARENA_BASE", PROBE_ARENA_BASE)
-    DRIVER_ARENA_END = values.get("ZOS_DRIVER_ARENA_END", PROBE_ARENA_END)
+    # The bank-7 geometry (arena start/end, data base, granule count) is
+    # derived per image and carried by the generated memory include.  It is
+    # required: a missing key must fail loudly rather than validate against
+    # the retired C000h boundary.
+    require_key(values, "ZOS_DRIVER_ARENA_BASE", source)
+    require_key(values, "ZOS_DRIVER_ARENA_END", source)
+    require_key(values, "ZOS_DRIVER_GRANULES", source)
+    require_key(values, "ZOS_DATA_BASE", source)
+    DRIVER_ARENA_BASE = values["ZOS_DRIVER_ARENA_BASE"]
+    DRIVER_ARENA_END = values["ZOS_DRIVER_ARENA_END"]
     DRIVER_GRANULE_SIZE = values["ZOS_DRIVER_GRANULE_SIZE"]
-    DRIVER_GRANULES = values.get(
-        "ZOS_DRIVER_GRANULES",
-        (DRIVER_ARENA_END - DRIVER_ARENA_BASE) // DRIVER_GRANULE_SIZE)
+    DRIVER_GRANULES = values["ZOS_DRIVER_GRANULES"]
+    # The runtime data starts at the derived data base, which is also the
+    # exclusive end of the arena.
+    DATA_BASE = values["ZOS_DATA_BASE"]
     DRIVER_ARENA_MIN_SIZE = values.get("ZOS_DRIVER_ARENA_MIN_SIZE", 0x4000)
     DRIVER_ARENA_MIN_GRANULES = values.get("ZOS_DRIVER_ARENA_MIN_GRANULES", 32)
     ROMFS_STAGING_SIZE = values["ZOS_ROMFS_STAGING_SIZE"]
@@ -168,8 +191,8 @@ def apply_layout(values):
         "_INITIALIZER": (BANK7_BASE, DRIVER_ARENA_BASE),
         "_GSINIT": (BANK7_BASE, DRIVER_ARENA_BASE),
         "_GSFINAL": (BANK7_BASE, DRIVER_ARENA_BASE),
-        "_DATA": (BANK7_LOAD_END, BANK7_RUNTIME_END),
-        "_INITIALIZED": (BANK7_LOAD_END, BANK7_RUNTIME_END),
+        "_DATA": (DATA_BASE, BANK7_RUNTIME_END),
+        "_INITIALIZED": (DATA_BASE, BANK7_RUNTIME_END),
         "_COMMON": (COMMON_BASE, COMMON_CODE_END),
         "_COMMON_DATA": (COMMON_BASE, COMMON_CODE_END),
     }
@@ -203,6 +226,25 @@ def loadable_end(areas, symbols):
     return end
 
 
+RUNTIME_DATA_AREAS = ("_DATA", "_INITIALIZED")
+
+
+def runtime_data_size(areas, symbols):
+    """Total zero-initialized runtime data (`_DATA` + `_INITIALIZED`)."""
+    total = 0
+    for name in RUNTIME_DATA_AREAS:
+        base = name.lstrip("_")
+        if "l__" + base in symbols:
+            total += symbols["l__" + base]
+        elif name in areas:
+            total += areas[name][1]
+    return total
+
+
+def align_down(value, alignment):
+    return value & ~(alignment - 1)
+
+
 # Optional floor override for acceptance images (see geometry_main): the
 # 32-granule floor is the production budget gate; an acceptance image links
 # target-test code and only needs an arena that holds its declared boot set
@@ -211,23 +253,30 @@ ARENA_MIN_GRANULES = None
 
 
 def derive_geometry(map_text, values, min_granules=None):
-    """Compute the production arena from a probe-link map.
+    """Compute the derived bank-7 geometry from a probe-link map.
 
     Returns a dict with kernel_code_end (unaligned exclusive end of the
-    loadable areas), arena_start (granule aligned), arena_end (C000h) and
-    granules.  Raises MapError when the derived arena would fall below
-    the minimum size or leave the architectural window."""
+    loadable areas), arena_start (granule aligned), arena_end (the derived
+    data base) and granules.  Raises MapError when the arena would fall
+    below the minimum size or the kernel would grow into the data base."""
     areas, symbols = parse_map(map_text)
     granule = values["ZOS_DRIVER_GRANULE_SIZE"]
-    arena_end = values["ZOS_DRIVER_ARENA_END"]
+    runtime_end = values["ZOS_BANK7_RUNTIME_END"]
     if min_granules is None:
         min_granules = values["ZOS_DRIVER_ARENA_MIN_GRANULES"]
     min_size = min_granules * granule
     end = loadable_end(areas, symbols)
+    data_size = runtime_data_size(areas, symbols)
+    if data_size > runtime_end - BANK7_BASE:
+        raise MapError(
+            "runtime data size %d bytes does not fit the bank-7 window "
+            "2000h-%04Xh" % (data_size, runtime_end - 1))
+    data_base = align_down(runtime_end - data_size, granule)
+    arena_end = data_base
     if end > arena_end:
         raise MapError(
-            "linked kernel loadable areas end at %04Xh, past the arena end "
-            "%04Xh" % (end, arena_end))
+            "linked kernel loadable areas end at %04Xh, past the derived "
+            "data base (arena end) %04Xh" % (end, arena_end))
     start = align_up(end, granule)
     size = arena_end - start
     if size < min_size:
@@ -242,28 +291,46 @@ def derive_geometry(map_text, values, min_granules=None):
         "arena_start": start,
         "arena_end": arena_end,
         "granules": size // granule,
+        "data_base": data_base,
+        "data_size": data_size,
     }
 
 
-def format_geometry_inc(geometry, derived):
+def format_probe_geometry_inc():
+    """Bootstrap include for the probe link: no arena is placed.
+
+    The probe image only has to link; the derive step measures its loadable
+    area ends.  Placing nothing means kernel growth can never collide with
+    a placeholder arena."""
+    return ("; Generated by tools/mapcheck.py geometry -- do not edit.\n"
+            "; Probe-link geometry: the probe image places no arena; the\n"
+            "; derive step measures the loadable areas in its map.\n"
+            "ZOS_ARENA_PROBE = 1\n")
+
+
+def format_geometry_inc(geometry):
     lines = [
         "; Generated by tools/mapcheck.py geometry -- do not edit.",
         "; Driver-arena geometry for kernel/module/arena.asm.",
-        "ZOS_ARENA_DERIVED = %d" % (1 if derived else 0),
+        "ZOS_ARENA_PROBE = 0",
         "ZOS_KERNEL_CODE_END = 0x%04X" % geometry["kernel_code_end"],
         "ZOS_DRIVER_ARENA_BASE = 0x%04X" % geometry["arena_start"],
         "ZOS_DRIVER_ARENA_END = 0x%04X" % geometry["arena_end"],
+        "ZOS_DATA_BASE = 0x%04X" % geometry["data_base"],
     ]
     return "\n".join(lines) + "\n"
 
 
 def format_memory_variant(memory_inc_text, geometry):
-    """Full memory.inc copy with the derived arena declarations."""
+    """Full memory.inc copy with the derived geometry declarations."""
     replacements = {
-        "ZOS_DRIVER_ARENA_DERIVED": "1",
+        "ZOS_ARENA_PROBE": "0",
+        "ZOS_KERNEL_CODE_END": "0x%04X" % geometry["kernel_code_end"],
         "ZOS_DRIVER_ARENA_BASE": "0x%04X" % geometry["arena_start"],
         "ZOS_DRIVER_ARENA_END": "0x%04X" % geometry["arena_end"],
         "ZOS_DRIVER_GRANULES": str(geometry["granules"]),
+        "ZOS_DATA_BASE": "0x%04X" % geometry["data_base"],
+        "ZOS_DATA_SIZE": str(geometry["data_size"]),
     }
     seen = set()
     lines = []
@@ -296,15 +363,16 @@ def apply_irq_layout(values):
 
 # Owned areas and their allowed placement range.  Loadable bank-7 sections
 # must end below the derived driver arena; the arena itself is reserved
-# for load-time modules and never carries linked content.  
+# for load-time modules and never carries linked content.  Runtime data
+# starts at the derived data base (the arena's exclusive end).
 OWNED_AREAS = {
     "_CODE": (BANK7_BASE, DRIVER_ARENA_BASE),
     "_HOME": (BANK7_BASE, DRIVER_ARENA_BASE),
     "_INITIALIZER": (BANK7_BASE, DRIVER_ARENA_BASE),
     "_GSINIT": (BANK7_BASE, DRIVER_ARENA_BASE),
     "_GSFINAL": (BANK7_BASE, DRIVER_ARENA_BASE),
-    "_DATA": (BANK7_LOAD_END, BANK7_RUNTIME_END),
-    "_INITIALIZED": (BANK7_LOAD_END, BANK7_RUNTIME_END),
+    "_DATA": (DATA_BASE, BANK7_RUNTIME_END),
+    "_INITIALIZED": (DATA_BASE, BANK7_RUNTIME_END),
     "_COMMON": (COMMON_BASE, COMMON_CODE_END),
     "_COMMON_DATA": (COMMON_BASE, COMMON_CODE_END),
 }
@@ -401,7 +469,6 @@ PRODUCTION_FORBIDDEN = (
     "_z4_fixture",
     "_z4_module_boot",
     "_zmod_catalog",
-    "_module_catalog_load_all",
     "_target_test",
     "_zos_run_",
     "_zos_target_test_",
@@ -460,9 +527,10 @@ M4_BANK7_ROUTINES = (
 M4_BANK7_PREFIXES = ("_module_", "_zmod_", "_z4_", "_m4_",
                     "_irq_registry_")
 
-# M5 ROMFS reader routines: bank-7 code only.  The embedded catalog loader
-# (_module_catalog_load_all, kernel/module/embedded.c) is an acceptance
-# artifact and is checked through the table/loader pairing below.
+# M5 ROMFS reader routines: bank-7 code only.  The embedded boot catalog
+# (kernel/module/embedded.c) is fully retired and its return is prevented
+# by the source-layout retention test; `_z4_module_boot`/`_zmod_catalog`
+# remain rejected above as extra defence.
 # `_romfs_lookup_ci` is M9's single ASCII-folded lookup (architecture
 # section 32.13): the removed case-sensitive `_romfs_lookup` has no
 # replacement beside it, so every image links this one name.
@@ -660,7 +728,7 @@ def check_areas(areas, symbols):
                 "reservation FF00h-FFFFh" % (name, addr, size)
             )
 
-    # M4: nothing linked may occupy the driver arena A000h-BFFFh (only
+    # M4/M8: nothing linked may occupy the derived driver arena (only
     # zero-length marker/declaration areas may sit on its boundaries).
     for name, (addr, size) in sorted(areas.items()):
         if size == 0:
@@ -1008,7 +1076,13 @@ def check_symbols(areas, symbols, production=False):
         raise MapError(
             "linked loadable bank-7 areas end at %04Xh, inside the driver "
             "arena at %04Xh" % (static_end, arena_start))
-    if DRIVER_ARENA_DERIVED:
+    # Derived geometry: the exported arena bounds must match the layout
+    # build's declarations exactly, the start must be the aligned end of
+    # the linked loadable areas, the end must be the derived data base,
+    # and the production floor must hold.  Synthetic host maps carry no
+    # __kernel_code_end and skip the derived-only relation checks.
+    kernel_code_end = symbols.get("__kernel_code_end")
+    if kernel_code_end is not None:
         min_granules = (ARENA_MIN_GRANULES if ARENA_MIN_GRANULES is not None
                         else DRIVER_ARENA_MIN_GRANULES)
         min_size = min_granules * DRIVER_GRANULE_SIZE
@@ -1020,9 +1094,6 @@ def check_symbols(areas, symbols, production=False):
             raise MapError(
                 "derived driver arena has %d granules, below the %d-granule "
                 "minimum" % (DRIVER_GRANULES, min_granules))
-        kernel_code_end = symbols.get("__kernel_code_end")
-        if kernel_code_end is None:
-            raise MapError("derived build has no __kernel_code_end symbol")
         if kernel_code_end != static_end:
             raise MapError(
                 "__kernel_code_end is %04Xh, linked loadable areas end at "
@@ -1033,6 +1104,21 @@ def check_symbols(areas, symbols, production=False):
                 "__driver_arena_start is %04Xh, expected align_up(%04Xh, "
                 "%04Xh) = %04Xh" % (arena_start, kernel_code_end,
                                     DRIVER_GRANULE_SIZE, expected_start))
+
+    # The runtime data base is derived and must saturate the bank-7 window
+    # below the ISR stack: runtime data starts at the arena's exclusive end
+    # and must stay below DF00h.
+    if symbols.get("s__DATA") != DATA_BASE:
+        raise MapError("s__DATA is %04Xh, expected derived data base %04Xh"
+                       % (symbols.get("s__DATA", -1), DATA_BASE))
+    data_end = symbols["s__DATA"] + symbols.get("l__DATA", 0)
+    initialized_end = (symbols["s__INITIALIZED"]
+                       + symbols.get("l__INITIALIZED", 0))
+    for label, end in (("_DATA", data_end),
+                       ("_INITIALIZED", initialized_end)):
+        if end > IRQ_ISR_STACK_BASE:
+            raise MapError("%s ends at %04Xh, overlapping the bank-7 ISR "
+                           "stack reservation at DF00h" % (label, end))
 
     # Transition state block: common RAM, gate stack of the exact size.
     for name in COMMON_STATE:
@@ -1082,7 +1168,7 @@ def check_symbols(areas, symbols, production=False):
     if "_kernel_main" not in symbols:
         raise MapError("map has no symbol _kernel_main")
     km = symbols["_kernel_main"]
-    if not (BANK7_BASE <= km < BANK7_LOAD_END):
+    if not (BANK7_BASE <= km < DRIVER_ARENA_BASE):
         raise MapError("_kernel_main at %04Xh is outside the bank-7 loadable region" % km)
 
     # Reset copier must stay below the RST 30h reservation, and the
@@ -1120,28 +1206,17 @@ def geometry_main(argv):
     mode = argv[0]
     try:
         if mode == "probe":
-            # Bootstrap geometry for the probe link: derived-mode symbols
-            # at the platform base so the probe image links; the measured
-            # area ends (not these placeholders) drive the real values.
+            # Bootstrap geometry for the probe link: place no arena at all.
+            # The probe image just has to link so the derive step can
+            # measure its loadable area ends; a fixed placeholder here
+            # could otherwise collide with kernel growth.
             if len(argv) != 3:
                 raise MapError("usage: mapcheck.py geometry probe "
                                "<memory.inc> <out.inc>")
             parse_inc(argv[1])
-            # Placeholder bounds for the probe link only: the probe image
-            # just has to link somewhere legal, because the real derived
-            # values come from measuring its areas.
-            geometry = {
-                "kernel_code_end": PROBE_ARENA_BASE,
-                "arena_start": PROBE_ARENA_BASE,
-                "arena_end": PROBE_ARENA_END,
-                "granules": ((PROBE_ARENA_END - PROBE_ARENA_BASE)
-                             // PROBE_GRANULE_SIZE),
-            }
             with open(argv[2], "w") as handle:
-                handle.write(format_geometry_inc(geometry, derived=True))
-            print("mapcheck: probe arena geometry %04Xh-%04Xh (placeholder) "
-                  "-> %s" % (geometry["arena_start"], geometry["arena_end"],
-                              argv[2]))
+                handle.write(format_probe_geometry_inc())
+            print("mapcheck: probe geometry (no arena placed) -> %s" % argv[2])
             return 0
         if mode == "derive":
             min_granules = None
@@ -1159,18 +1234,20 @@ def geometry_main(argv):
             with open(probe_path) as handle:
                 geometry = derive_geometry(handle.read(), values, min_granules)
             with open(out_path, "w") as handle:
-                handle.write(format_geometry_inc(geometry, derived=True))
+                handle.write(format_geometry_inc(geometry))
             if len(args) == 4:
                 with open(memory_path) as handle:
                     variant = format_memory_variant(handle.read(), geometry)
                 with open(args[3], "w") as handle:
                     handle.write(variant)
             print("mapcheck: derived arena %04Xh-%04Xh, %d granules "
-                  "(%d bytes), kernel end %04Xh -> %s"
+                  "(%d bytes), kernel end %04Xh, data %d bytes at %04Xh "
+                  "-> %s"
                   % (geometry["arena_start"], geometry["arena_end"],
                      geometry["granules"],
                      geometry["arena_end"] - geometry["arena_start"],
-                     geometry["kernel_code_end"], out_path))
+                     geometry["kernel_code_end"], geometry["data_size"],
+                     geometry["data_base"], out_path))
             return 0
         raise MapError("unknown geometry mode %r" % mode)
     except MapError as exc:
@@ -1192,7 +1269,7 @@ def main(argv):
         print(__doc__)
         return 2
     if len(argv) >= 3:
-        apply_layout(parse_inc(argv[2]))
+        apply_layout(parse_inc(argv[2]), argv[2])
     if len(argv) == 4:
         apply_irq_layout(parse_inc(argv[3]))
     try:
@@ -1205,11 +1282,10 @@ def main(argv):
           % (len(areas), len(symbols),
              " [production]" if production else ""))
     print("mapcheck: static kernel end %04Xh; driver arena %04Xh-%04Xh: "
-          "%d bytes, %d granules, %s (free %d at boot)"
+          "%d bytes, %d granules, derived; data base %04Xh"
           % (static_end, DRIVER_ARENA_BASE, DRIVER_ARENA_END - 1,
              DRIVER_ARENA_END - DRIVER_ARENA_BASE, DRIVER_GRANULES,
-             "derived",
-             DRIVER_GRANULES))
+             DATA_BASE))
     return 0
 
 

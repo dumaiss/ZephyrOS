@@ -123,15 +123,15 @@ _Static_assert(__builtin_offsetof(struct zmod_reloc, patch_offset) == 0x02,
 /* Granule geometry.  Allocation granularity is fixed at 512 bytes; the
  * runtime granule count is derived from the linked driver-arena symbols
  * (`__driver_arena_start`/`__driver_arena_end`) and may never exceed the
- * architectural maximum `(C000h-2000h)/512 = 80` granules, which bounds
- * every loader table.  There is deliberately no compiled arena count:
- * production derives the start from the aligned end of the linked
- * kernel, while pre-M8 acceptance/variant images keep their fixed
- * platform geometry (both are validated against these bounds). */
+ * architectural maximum `(DF00h-2000h)/512 = 95` granules (the bank-7
+ * window below the ISR stack), which bounds every loader table.  There is
+ * deliberately no compiled arena count: the arena is derived from the
+ * aligned end of the linked kernel and the derived runtime-data base (both
+ * are validated against these bounds). */
 #define ZMOD_GRANULE_SIZE 512u
 #define ZMOD_ARCH_BASE     0x2000u
-#define ZMOD_ARCH_END      0xC000u
-#define ZMOD_MAX_GRANULES  80u
+#define ZMOD_ARCH_END      0xDF00u
+#define ZMOD_MAX_GRANULES  95u
 #define ZMOD_MAX_MODULES   16u
 #define ZMOD_MAX_TOTAL_SIZE 0xFFFFu
 

@@ -10,6 +10,13 @@
 ZOS_PLATFORM     := zephyr80
 ZOS_PLATFORM_DIR := platform/zephyr80
 
+# Bank-7 residency budget (work package 25b).  Kernel and resident-module
+# C code is compiled for size: the kernel executive, the ROMFS/VFS core and
+# every boot ZMOD share the single 2000h-DEFFh bank, so the size preference
+# and a raised register-allocation budget buy back bytes.  User programs and
+# ZEX images are not bank-7 resident and keep their own flags.
+ZOS_SDCC_OPT := --opt-code-size --max-allocs-per-node 50000
+
 # SDCC / sdasz80 include search paths.  $(BUILD) is provided by the
 # including Makefile (the generated catalog headers live there).
 ZOS_PLATFORM_CFLAGS  = -I include -I platform -I $(BUILD)

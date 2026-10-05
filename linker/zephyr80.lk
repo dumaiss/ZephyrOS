@@ -3,7 +3,7 @@
 -w
 -i build/zephyros.ihx
 -b _CODE = 0x2000
--b _DATA = 0xC000
+-b _DATA = @DATA_BASE@
 -b _COMMON = 0xE000
 build/reset.rel
 build/start.rel

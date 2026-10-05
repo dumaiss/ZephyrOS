@@ -41,10 +41,10 @@
  * console package. */
 
 #define V9958_ATLAS_SCANLINES   64u  /* 8 atlas rows x 8 glyph lines      */
-#define V9958_ATLAS_ROW_BYTES   96u  /* 32 glyphs x 6 pixels / 2 per byte */
 #define V9958_ATLAS_PITCH       256u /* one G6 scanline (512 px, 4bpp)    */
-#define V9958_ATLAS_GLYPHS      32u  /* glyphs per precolored atlas row   */
-#define V9958_ATLAS_GROUPS      8u   /* 256 glyphs / 32 per group         */
+#define V9958_ATLAS_GLYPHS      8u   /* glyphs per staged atlas segment   */
+#define V9958_ATLAS_SEG_BYTES   24u  /* 8 glyphs x 6 pixels / 2 per byte  */
+#define V9958_ATLAS_CHUNKS      32u  /* 256 glyphs / 8 per fetched chunk  */
 #define V9958_GLYPH_BYTES       8u   /* 6x8 font: 8 rows per glyph        */
 
 /* --- 85x26 6x8 output terminal (ported reference renderer) ------------
@@ -71,7 +71,9 @@
 #define V9958_TERM_CHARSET   4u  /* ESC ( ) O x: consume one final byte  */
 
 /* Atlas placement in 128-KiB VRAM: normal at 10000h, reverse at 14000h,
- * each scanline one 256-byte pitch apart (96 meaningful bytes each). */
+ * each scanline one 256-byte pitch apart.  A scanline carries 32 glyphs
+ * of 3 precolored bytes (96 meaningful bytes), written as four 24-byte
+ * segments staged from one 8-glyph font chunk at a time. */
 #define V9958_ATLAS_NORMAL_A16  1u
 #define V9958_ATLAS_NORMAL_ADDR 0x0000u
 #define V9958_ATLAS_REVERSE_A16 1u
@@ -80,7 +82,7 @@
 /* Font resource carried as ROMFS DATA (never resident module storage). */
 #define V9958_FONT_NAME   "v9958-6x8.font"
 #define V9958_FONT_SIZE   2048u
-#define V9958_FONT_CHUNK  256u  /* one 32-glyph group per bounded read */
+#define V9958_FONT_CHUNK  64u   /* one 8-glyph chunk per bounded read */
 
 /* --- Sprite-mode-2 cursor allocations (SAT + pattern + color) --------- */
 

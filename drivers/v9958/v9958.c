@@ -48,12 +48,12 @@
 
 struct v9958_state v9958_state;
 
-/* Bounded scratch (module BSS, reused for every read/atlas row):
- * one 32-glyph font group and one expanded 96-byte atlas scanline.
+/* Bounded scratch (module BSS, reused for every read/atlas segment):
+ * one 8-glyph font chunk and one expanded 24-byte atlas segment.
  * The reverse flag mirrors the reference driver: the second pass swaps
  * foreground/background in the pair table. */
 static uint8_t v9958_font_group[V9958_FONT_CHUNK];
-static uint8_t v9958_atlas_row[V9958_ATLAS_ROW_BYTES];
+static uint8_t v9958_atlas_row[V9958_ATLAS_SEG_BYTES];
 static uint8_t v9958_cmd[ZOS_V9958_CMD_REGISTER_COUNT];
 static uint8_t v9958_atlas_reverse;
 
@@ -308,18 +308,22 @@ static void v9958_init_palette(void)
 	}
 }
 
-/* Convert one 32-glyph group of the resident font into eight 96-byte
- * atlas scanlines and stream them to VRAM. */
-static int v9958_upload_atlas_group(uint8_t group, uint8_t reverse)
+/* Convert one 8-glyph chunk of the resident font into eight 24-byte
+ * atlas segments and stream them to VRAM.  Four chunks form one
+ * 32-glyph atlas row; the bytes written are identical to the previous
+ * 32-glyph staging, only split into four smaller segments per scanline. */
+static int v9958_upload_atlas_chunk(uint8_t chunk, uint8_t reverse)
 {
 	uint8_t scanline;
-	uint8_t i;
+	uint8_t glyph;
+	uint8_t row = (uint8_t)(chunk >> 2);      /* chunks per atlas row    */
+	uint8_t segment = (uint8_t)(chunk & 3u);  /* segment within the row  */
 	uint16_t addr;
 	int rc;
 
 	rc = v9958_state.api->resource_read(
 		V9958_FONT_NAME,
-		(uint16_t)((uint16_t)group * V9958_FONT_CHUNK),
+		(uint16_t)((uint16_t)chunk * V9958_FONT_CHUNK),
 		v9958_font_group, V9958_FONT_CHUNK);
 	if (rc != (int)V9958_FONT_CHUNK) {
 		return ZDRIVER_FAIL;
@@ -331,48 +335,55 @@ static int v9958_upload_atlas_group(uint8_t group, uint8_t reverse)
 		v9958_atlas_reverse = 0u;
 	}
 	for (scanline = 0u; scanline < V9958_GLYPH_BYTES; ++scanline) {
-		uint8_t s = (uint8_t)((uint8_t)(group << 3) | scanline);
+		uint8_t s = (uint8_t)((uint8_t)(row << 3) | scanline);
 		uint8_t *dst = &v9958_atlas_row[0];
 
-		for (i = 0u; i < V9958_ATLAS_GLYPHS; ++i) {
-			v9958_expand_row(
-				v9958_font_group[(uint16_t)((uint16_t)i *
-							    V9958_GLYPH_BYTES) +
-						 scanline],
-				dst);
+		for (glyph = 0u; glyph < V9958_ATLAS_GLYPHS; ++glyph) {
+			/* Address the chunk through a 16-bit base: an 8-bit
+			 * `symbol + offset` makes the size optimizer emit
+			 * byte-fragmented address relocations ZMOD v1
+			 * cannot express. */
+			uint8_t bits = *(const uint8_t *)(uint16_t)
+				((uint16_t)v9958_font_group +
+				 (uint16_t)((uint16_t)glyph *
+					    V9958_GLYPH_BYTES) + scanline);
+
+			v9958_expand_row(bits, dst);
 			dst += 3u;
 		}
-		addr = (uint16_t)((uint16_t)s * V9958_ATLAS_PITCH);
+		addr = (uint16_t)((uint16_t)s * V9958_ATLAS_PITCH +
+				  (uint16_t)((uint16_t)segment *
+					     V9958_ATLAS_SEG_BYTES));
 		if (reverse != 0u) {
 			addr = (uint16_t)(addr + V9958_ATLAS_REVERSE_ADDR);
 			v9958_write_vram(v9958_atlas_row, addr,
 					 V9958_ATLAS_REVERSE_A16,
-					 V9958_ATLAS_ROW_BYTES);
+					 V9958_ATLAS_SEG_BYTES);
 		} else {
 			addr = (uint16_t)(addr + V9958_ATLAS_NORMAL_ADDR);
 			v9958_write_vram(v9958_atlas_row, addr,
 					 V9958_ATLAS_NORMAL_A16,
-					 V9958_ATLAS_ROW_BYTES);
+					 V9958_ATLAS_SEG_BYTES);
 		}
 	}
 	return ZDRIVER_OK;
 }
 
 /* Step 5a: the exact 2048-byte font is streamed through the resource
- * imports in bounded 256-byte chunks.  The size is validated up front
- * (before any port I/O) so a missing or wrong-sized resource cannot
- * leave the VDP half-initialized. */
+ * imports in bounded 64-byte chunks (one 8-glyph chunk per read).  The
+ * size is validated up front (before any port I/O) so a missing or
+ * wrong-sized resource cannot leave the VDP half-initialized. */
 static int v9958_upload_font_atlas(void)
 {
-	uint8_t group;
+	uint8_t chunk;
 
-	for (group = 0u; group < V9958_ATLAS_GROUPS; ++group) {
-		if (v9958_upload_atlas_group(group, 0u) != ZDRIVER_OK) {
+	for (chunk = 0u; chunk < V9958_ATLAS_CHUNKS; ++chunk) {
+		if (v9958_upload_atlas_chunk(chunk, 0u) != ZDRIVER_OK) {
 			return ZDRIVER_FAIL;
 		}
 	}
-	for (group = 0u; group < V9958_ATLAS_GROUPS; ++group) {
-		if (v9958_upload_atlas_group(group, 1u) != ZDRIVER_OK) {
+	for (chunk = 0u; chunk < V9958_ATLAS_CHUNKS; ++chunk) {
+		if (v9958_upload_atlas_chunk(chunk, 1u) != ZDRIVER_OK) {
 			return ZDRIVER_FAIL;
 		}
 	}

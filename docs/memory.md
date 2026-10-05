@@ -26,8 +26,8 @@ E000h +-------------------------------+
 | `0000h-00FFh` | caller window | ZephyrOS-owned native page zero: reset copier (`0000h-0026h`) and the three-byte `RST 30h` vector (`JP zos_syscall_entry`) at `0030h-0032h`; the rest is reserved |
 | `0100h-1FFFh` | caller window | unused (FF-filled in the image); at M1, native syscall argument blocks must lie here |
 | `2000h-arena start` | bank 7 in mode 11 | loadable kernel image (code, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`); ends at the linked `__kernel_code_end` |
-| `arena start-C000h` | bank 7 in mode 11 | driver arena (M8, derived since package 25 from the aligned linked-kernel end `__driver_arena_start` to `C000h`, at least 32 x 512-byte granules (16 KiB) in production; test-hook images check 16 as the minimum and rely on the boot-set plan; pre-M8 acceptance/variant images keep the legacy `A000h-BFFFh` 16-granule fixed arena). Never part of the ROM payload and never linked by content |
-| `C000h-DEFFh` | bank 7 in mode 11 | zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded |
+| `arena start-data base` | bank 7 in mode 11 | driver arena, derived since package 25b from the aligned linked-kernel end `__driver_arena_start` to the derived data base, at least 32 x 512-byte granules (16 KiB) in production; test-hook images check 16 as the minimum and rely on the boot-set plan. Never part of the ROM payload and never linked by content |
+| `data base-DFFFh` | bank 7 in mode 11 | zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded; the base is derived per image |
 | `DF00h-DFFFh` | bank 7 in mode 11 | 256-byte M2 ISR stack; initial `SP=E000h` |
 | `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`), including the M5 ROM-access staging buffer; `EEFEh-EF07h` is the fixed ROM-access transition block (trampoline + mirrored stub) |
 | `FD00h-FDFFh` | physical bank 0 | 256-byte-aligned IM2 vector page (`I=FDh`) |
@@ -58,20 +58,27 @@ declared in `platform/zephyr80/memory.h/.inc`, mirrored into the image by
 
 ## 2. Linker area ownership
 
-The linker script (`linker/zephyr80.lk`) assigns:
+The linker control file (`linker/zephyr80.lk` template; the build
+substitutes the derived data base into `build/zephyr80.lk`) assigns:
 
 ```text
-_CODE   = 2000h    bank-7 loadable code
-_DATA   = C000h    bank-7 zero-initialized runtime area
-_COMMON = E000h    permanent common code/data
+_CODE   = 2000h            bank-7 loadable code
+_DATA   = <derived base>   bank-7 zero-initialized runtime area
+_COMMON = E000h            permanent common code/data
 ```
+
+The `_DATA` base is derived, not fixed: the two-pass build computes
+`data_base = align_down(DF00h - (l__DATA + l__INITIALIZED), 512)` and
+passes it as the `_DATA` base, so runtime data sits directly below the
+`DF00h` ISR stack and the arena fills everything between the aligned
+kernel end and that base.
 
 Unbased areas follow their preceding based area in first-appearance order,
 fixed by the declarations at the top of `boot/start.asm`:
 
 ```text
 _CODE (2000h) -> _HOME -> _INITIALIZER -> _GSINIT -> _GSFINAL   loadable
-_DATA (C000h) -> _INITIALIZED                                   runtime
+_DATA (derived base) -> _INITIALIZED                            runtime
 _COMMON (E000h) -> _COMMON_DATA                                 common
 ```
 
@@ -88,8 +95,8 @@ Every owned region exports `s__<area>`/`l__<area>` start/size symbols
 | `_HOME` | `2000h-arena start` | static helpers |
 | `_INITIALIZER` | `2000h-arena start` | ROM image of initialized data |
 | `_GSINIT`/`_GSFINAL` | `2000h-arena start` | static initializers + terminator |
-| `_DATA` | `C000h-DEFFh` | zeroed globals/statics, registry table, driver state |
-| `_INITIALIZED` | `C000h-DEFFh` | RAM image of initialized data (ops/descriptor tables) |
+| `_DATA` | `derived base-DFFFh` | zeroed globals/statics, registry table, driver state |
+| `_INITIALIZED` | `derived base-DFFFh` | RAM image of initialized data (ops/descriptor tables) |
 | `_COMMON` | `E000h-FCFFh` | boot entry, gates, IRQ stubs, console, panic |
 | `_COMMON_DATA` | `E000h-FCFFh` | transition-critical state |
 | `_IRQ_ISR_STACK` | `DF00h-DFFFh` | bank-7 handler stack |
@@ -109,59 +116,96 @@ this both by explicit symbol list and by a prefix sweep over
 `_device_`, `_console_`, `_sio0b_`, `_sio_`, `_driver_`,
 `_boot_drivers`, and `_m3_` symbols.  See `docs/devices.md`.
 
-## 2.2 Driver arena (M8/M9 production geometry)
+## 2.2 Bank-7 geometry: derived arena and data base (M9, package 25b)
 
-Production derives the arena from the linked kernel in a deterministic
-two-pass build: a probe link measures the exclusive end of every loadable
-bank-7 area (`_CODE`, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`),
-`tools/mapcheck.py geometry derive` aligns that `__kernel_code_end` value
-up to the 512-byte granule and writes `__driver_arena_start`; the end is
-exactly `C000h` and the build fails when fewer than 32 granules (16 KiB)
-remain.  `kernel/module/arena.asm` exports `__kernel_code_end`,
-`__driver_arena_start`, and `__driver_arena_end` from the generated
-`build/arena_geometry.inc`; no linked content may occupy the arena,
-`C000h-DFFFh` stays outside the allocator, and the loader computes its
-granule count from the linked bounds (bounded by the architectural
-maximum `(C000h-2000h)/512 = 80`).
+There is one bank-7 geometry.  A deterministic two-pass build derives it:
 
-Since M9 the linked kernel ends at `7EE6h`, so production's derived arena
-is `8000h-C000h` -- exactly the 32-granule (16 KiB) gate, with 11 free
-granules above the 21-granule production boot set.  The M9 VFS core
-(`kernel/vfs/`, `fs/romfs/`) is what moved the arena up from the M8
-`5D54h` kernel end; the gate itself is unchanged.
+1. **Probe link.**  The same object list links with a bootstrap
+   `arena.asm` object that places no arena at all (`ZOS_ARENA_PROBE = 1`);
+   nothing can constrain kernel growth.
+2. **Derive.**  `tools/mapcheck.py geometry derive` measures the exclusive
+   end of every loadable bank-7 area (`_CODE`, `_HOME`, `_INITIALIZER`,
+   `_GSINIT`, `_GSFINAL`) and the runtime-data size (`l__DATA +
+   l__INITIALIZED`) in the probe map, then writes:
 
-Acceptance and variant images that carry a target test hook relax only
-the *minimum* check: `ZOS_ARENA_MIN_GRANULES := 16` when
-`TARGET_TEST_OBJS` is non-empty (`tools/mapcheck.py --min-granules`).
-Those images measure 26-31 granules.  Their safety net is unchanged and
-independent of the floor: `tools/zmodpack.py plan` must fit the whole
-boot set into the derived arena and `tools/pack_image.py` reconciles the
-image manifest against that plan, so an image whose modules do not fit
-still fails the build.  Production always keeps the 32-granule gate.
-See `docs/vfs.md` section 10 for the per-image measurements.
+   ```text
+   __kernel_code_end     = max end of the loadable areas
+   __driver_arena_start  = align_up(__kernel_code_end, 512)
+   data_base             = align_down(DF00h - data_size, 512)
+   __driver_arena_end    = data_base
+   ```
 
-Pre-M8 acceptance images and the shifted-placement variant keep the
-legacy fixed `A000h-BFFFh` 16-granule geometry: the committed
-`platform/zephyr80/memory.inc` declares it (`ZOS_DRIVER_ARENA_DERIVED =
-0`, `ZOS_DRIVER_ARENA_BASE/END/GRANULES`, plus the derived-build minimum
-constants), a generated include carries the same values into `arena.asm`,
-and every pre-M8 transcript and check is preserved.
+`kernel/module/arena.asm` consumes the generated
+`build/geometry/arena_geometry.inc`; `build/geometry/memory.inc` carries
+the same values plus the granule count and data size for the layout tools.
+No linked content may occupy the arena, the runtime data (`_DATA`,
+`_INITIALIZED`) sits directly at `data_base` below the `DF00h` ISR stack,
+and the loader computes its granule count from the linked bounds (bounded
+by the architectural maximum `(DF00h-2000h)/512 = 95`).
 
-`tools/mapcheck.py` rejects any linked area overlapping the arena and
-validates the exported bounds; in derived builds it additionally pins
-`__driver_arena_start == align_up(__kernel_code_end, 512)`, the 16-KiB
-minimum, and the presence of `__kernel_code_end`.  `tools/pack_image.py`
-treats the region as non-ROM-loadable and reconciles the boot-set plan
-(per-module image+BSS/granules, used/free totals; see
-`docs/module-format.md`).  Package 20 pins the whole reconciliation in
-`tests/test_m8.py`: the image manifest's arena block must equal the
-plan, every per-module size/granule count must match the packed
-container the plan names, the four production modules must fit with a
-non-negative remainder, and the arena must end exactly at the `C000h`
-runtime boundary.  The loader/relocator routines are bank-7 code
-enforced by an explicit list and a prefix sweep over `_module_`,
-`_zmod_`, `_z4_`, `_m4_`, and `_irq_registry_` symbols.  Loaded modules
-are placed inside the arena by the loader.
+The build fails when fewer than 32 granules (16 KiB) remain in production.
+Acceptance and variant images that carry a target test hook relax only the
+*minimum* check: `ZOS_ARENA_MIN_GRANULES := 16` when `TARGET_TEST_OBJS` is
+non-empty (`tools/mapcheck.py --min-granules`).  Their safety net is
+unchanged and independent of the floor: `tools/zmodpack.py plan` must fit
+the whole boot set into the derived arena and `tools/pack_image.py`
+reconciles the image manifest against that plan, so an image whose modules
+do not fit still fails the build.  Production always keeps the 32-granule
+gate.  See `docs/vfs.md` section 10 for the per-image measurements.
+
+`tools/mapcheck.py` rejects any linked area overlapping the arena, pins
+`__driver_arena_start == align_up(__kernel_code_end, 512)`, enforces the
+minimum, and checks that `_DATA` starts at the derived base and that
+runtime data stays below `DF00h`.  `tools/pack_image.py` treats the region
+as non-ROM-loadable and reconciles the boot-set plan (per-module
+image+BSS/granules, used/free totals; see `docs/module-format.md`).
+`tests/test_m8.py` pins the whole reconciliation: the image manifest's
+arena block must equal the plan, every per-module size/granule count must
+match the packed container the plan names, the four production modules
+must fit with a non-negative remainder, and the arena must end exactly at
+the derived data base.  The loader/relocator routines are bank-7 code
+enforced by an explicit list and a prefix sweep over `_module_`, `_zmod_`,
+`_z4_`, `_m4_`, and `_irq_registry_` symbols.  Loaded modules are placed
+inside the arena by the loader.
+
+### 2.2.1 The bank-7 budget ledger
+
+`tools/pack_image.py` and `tools/zmodpack.py plan` print the same single
+ledger line and emit it as matching JSON (`manifest["bank7"]` and
+`arena.plan.json["bank7"]`); `tests/test_m8.py` checks the line against
+the linked map:
+
+```text
+bank7: code <bytes> end <addr> | arena <n> granules (<used> boot, <free> free) | data <bytes> at <addr> | isr 256 | slack <bytes>
+```
+
+Package 25b numbers (size-optimized kernel and modules, derived base):
+
+```text
+package-25b baseline (fixed C000h data base):
+bank7: code 23521 bytes end 7BE1h | arena 34 granules (21 boot, 13 free) | data 1294 bytes at C000h | isr 256 | slack 6642 bytes
+
+package 25b result:
+bank7: code 21689 bytes end 74B9h | arena 49 granules (20 boot, 29 free) | data 1309 bytes at D800h | isr 256 | slack 483 bytes
+```
+
+Per-measure effect:
+
+* size-optimized compile (`--opt-code-size --max-allocs-per-node 50000`)
+  alone: kernel code `7BE1h -> 74B9h` (1832 bytes smaller), ROMFS recovery
+  store `17890 -> 17548` bytes (the boot-set modules `ioc -231`, `hid -9`,
+  `v9958 -89`, `sio +11`); with the fixed data base the arena would be
+  `7600h-C000h`, 37 granules.
+* correction-01 (`drivers/v9958/`: 8-glyph font chunks, 24-byte atlas
+  segments): the V9958 module trades 30 image bytes for 264 staging BSS
+  bytes (`4008/724 -> 4038/460`, `4732 -> 4498` total), so it drops from
+  10 to 9 granules and the boot set from 21 to 20; the recovery store
+  becomes `17578` bytes and the ledger's used/free split becomes
+  `20 boot, 29 free`.  VRAM atlas contents are unchanged.
+* derived data base: runtime data moves from `C000h` to `D800h`, so the
+  arena end becomes `D800h` and the arena grows to 49 granules
+  (+12 granules), leaving the runtime data `1309` bytes just below the
+  `DF00h` ISR stack.
 
 ## 2.3 ROMFS placement
 
@@ -173,7 +217,7 @@ stack.  The M9 kernel VFS and its statically linked ROMFS provider
 (`_vfs_*` plus `_romfs_provider`) are bank-7 code and data too: the
 generated `const` mount table is ROM-loaded bank-7 data
 (`_vfs_mount_table`), `vfs_mount_state[]` is bank-7 runtime data
-(`_DATA`, `C000h-DEFFh`), and nothing in the VFS is common-resident --
+(`_DATA`, derived base-DFFFh), and nothing in the VFS is common-resident --
 the boot, module-loader and (later) syscall paths all reach it from
 bank 7.  VFS path, component and directory scratch is static bank-7
 `_DATA` (`kernel/vfs/*.c`, `fs/romfs/romfs_provider.c`); no VFS

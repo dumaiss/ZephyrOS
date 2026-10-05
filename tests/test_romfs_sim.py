@@ -23,6 +23,7 @@ Coverage (all executing the real linked bytes):
 Skipped when the images / packed modules have not been built.
 """
 
+import json
 import os
 import sys
 import unittest
@@ -38,7 +39,7 @@ import zmodpack  # noqa: E402
 
 RET = 0x1234
 STEP_LIMIT = 60000000
-SCRATCH = 0xD800          # bank-7 scratch below the ISR stack
+SCRATCH_SIZE = 0x200      # host scratch is derived per image in setUp
 STACK = 0xFFFE            # common boot stack
 
 ROMFS_PAGE_WINDOW = 0xC000
@@ -121,6 +122,24 @@ class RomfsSimBase(unittest.TestCase):
         self.romfs_entries = {entry["name"]: entry for entry in entries}
         self.sio_entry = self.romfs_entries["sio.zmod"]
         self.cross_entry = self.romfs_entries["crosspage.bin"]
+        self.scratch = self._derive_scratch()
+
+    def _derive_scratch(self):
+        """First free arena granule above the packed boot set.
+
+        The bank-7 window is fully derived, so the host scratch cannot use
+        a fixed address; it must sit in the free arena space below the
+        derived runtime data base."""
+        plan_path = os.path.join(ROOT, self.IMAGE_SUBDIR, "arena.plan.json")
+        self.assertTrue(os.path.exists(plan_path),
+                        "arena.plan.json missing; build the image first")
+        with open(plan_path) as fh:
+            arena = json.load(fh)["arena"]
+        scratch = arena["start"] + arena["used_granules"] * arena["granule_size"]
+        self.assertLessEqual(scratch + SCRATCH_SIZE, arena["end"],
+                             "scratch %04X is not in the free arena space"
+                             % scratch)
+        return scratch
 
     def make_cpu(self, latch=0x18):
         pages = {n: self.image[n * 0x10000:(n + 1) * 0x10000]
@@ -187,7 +206,7 @@ class RomfsSimBase(unittest.TestCase):
     def lookup(self, z, name, out_addr):
         # M9 has exactly one ROMFS lookup and it is ASCII case-folded
         # (architecture section 32.13).
-        name_at = SCRATCH + 0x100
+        name_at = self.scratch + 0x100
         z.bank7[name_at:name_at + len(name) + 1] = name + b"\x00"
         return call2(z, self.syms["_romfs_lookup_ci"], name_at, out_addr)
 
@@ -203,7 +222,7 @@ class RomfsSimBase(unittest.TestCase):
     def load_zmod(self, z, name, romfs_name):
         # M9 loads through VFS: kernel_load_vfs_module() resolves
         # "/SYSTEM/<name>.zmod"; romfs_name is retained for call sites.
-        name_at = SCRATCH + 0x100
+        name_at = self.scratch + 0x100
         z.bank7[name_at:name_at + len(name) + 1] = name + b"\x00"
         z.push16(RET)
         z.hl = name_at
@@ -217,7 +236,7 @@ class RomfsSimBase(unittest.TestCase):
 
     def call_rom_access(self, z, page, offset, length, req_addr=None,
                         on_step=None):
-        req_addr = req_addr or SCRATCH
+        req_addr = req_addr or self.scratch
         z.bank7[req_addr] = page
         z.bank7[req_addr + 1] = offset & 0xFF
         z.bank7[req_addr + 2] = (offset >> 8) & 0xFF
@@ -550,14 +569,14 @@ class TestRomfsReaderRejections(RomfsSimBase):
         self.assertNotEqual(self.init_romfs(z), 0,
                             "romfs_init accepted corrupted metadata")
         # Not published: lookups must fail with EINVAL (never ENOENT).
-        out = SCRATCH + 0x40
+        out = self.scratch + 0x40
         self.assertEqual(self.lookup(z, b"sio.zmod", out), (-ZOS_EINVAL) & 0xFFFF)
 
     def test_valid_image_initializes(self):
         z = self.boot_romfs()
         self.assertEqual(self.init_romfs(z), 0)
         # Known entry: name/size/flags from the packed container.
-        out = SCRATCH + 0x40
+        out = self.scratch + 0x40
         self.assertEqual(self.lookup(z, b"sio.zmod", out), 0)
         self.assertEqual(z.bank7[out + 4] | (z.bank7[out + 5] << 8)
                          | (z.bank7[out + 6] << 16)

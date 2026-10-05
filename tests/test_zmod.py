@@ -167,9 +167,10 @@ class TestModuleConstants(unittest.TestCase):
         self.assertEqual(evaluate("ZMOD_GRANULE_SIZE", self.env),
                          layout["ZOS_DRIVER_GRANULE_SIZE"])
         # The loader/codec bound is the architectural maximum from
-        # 2000h-C000h, not a compiled arena size.
+        # 2000h-DF00h (the bank-7 window below the ISR stack), not a
+        # compiled arena size.
         self.assertEqual(evaluate("ZMOD_ARCH_BASE", self.env), 0x2000)
-        self.assertEqual(evaluate("ZMOD_ARCH_END", self.env), 0xC000)
+        self.assertEqual(evaluate("ZMOD_ARCH_END", self.env), 0xDF00)
         self.assertEqual(
             evaluate("ZMOD_MAX_GRANULES", self.env),
             (evaluate("ZMOD_ARCH_END", self.env) -
@@ -551,12 +552,15 @@ class TestTwoBaseRelocation(unittest.TestCase):
         # Aligned but below the architectural arena.
         with self.assertRaisesRegex(ValueError, "outside the arena"):
             self.check_load_base(self.arch_base - self.granule)
-        # Aligned but at/above the arena end.
+        # Aligned but at/above the arena end (the architectural window end
+        # need not itself be granule-aligned).
+        aligned_end = ((self.arch_end + self.granule - 1)
+                       // self.granule * self.granule)
         with self.assertRaisesRegex(ValueError, "outside the arena"):
-            self.check_load_base(self.arch_end)
+            self.check_load_base(aligned_end)
         # Aligned and inside, but the allocation overruns the arena end.
         with self.assertRaisesRegex(ValueError, "overruns the arena"):
-            self.check_load_base(self.arch_end - self.granule,
+            self.check_load_base(aligned_end - self.granule,
                                  allocation=2 * self.granule)
 
 

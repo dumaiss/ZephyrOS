@@ -51,7 +51,8 @@ ASFLAGS   := $(ZOS_PLATFORM_ASFLAGS) -Itests/target/include
 # Kernel and acceptance sources include their private interfaces by
 # explicit owning path (kernel/...); the module build (MOD_CFLAGS) does
 # not get this path, so a ZMOD cannot reach a kernel-private header.
-CFLAGS    := -mz80 -c --nostdinc --Werror $(ZOS_PLATFORM_CFLAGS) -I .
+CFLAGS    := -mz80 -c --nostdinc --Werror $(ZOS_SDCC_OPT) \
+             $(ZOS_PLATFORM_CFLAGS) -I .
 
 ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/page_zero.rel $(BUILD)/syscall_entry.rel \
@@ -315,9 +316,9 @@ CFLAGS    += -DZOS_V9958_BOOT=$(ZOS_V9958_BOOT)
 OBJS      := $(ASM_OBJS) $(C_OBJS)
 
 # --- driver-arena geometry ---------------------------------------------------
-# Every image derives the arena from the aligned end of the linked kernel
-# with a two-pass link.
-ZOS_ARENA_DERIVED ?= 1
+# Every image derives the arena and the runtime data base from the aligned
+# linked-kernel end with a two-pass link.  There is one geometry; the probe
+# link places no arena.
 
 # Common acceptance wiring: the single guard plus the shared runner.
 ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
@@ -373,12 +374,11 @@ MEMORY_INC := $(GEOMETRY_MEMORY)
 
 # --- driver-arena geometry generation --------------------------------------------
 # kernel/module/arena.asm always includes the generated
-# arena_geometry.inc.  Legacy builds copy the fixed platform geometry.
-# Derived builds first link a probe image (the same object list with a
-# bootstrap arena object), measure the loadable areas in its map, then
-# regenerate the include and the memory.inc variant before the real link.
-# The final map is re-verified by mapcheck.py, so a stale generated value
-# cannot survive.
+# arena_geometry.inc.  The build first links a probe image (the same object
+# list with a bootstrap arena object that places no arena), measures the
+# loadable areas and the runtime-data size in its map, then regenerates the
+# include and the memory.inc variant before the real link.  The final map is
+# re-verified by mapcheck.py, so a stale generated value cannot survive.
 
 $(GEOMETRY_INC) $(GEOMETRY_MEMORY): $(BUILD)/zephyros.probe.map \
 		tools/mapcheck.py $(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
@@ -427,6 +427,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	m8-selftest m8-fallback-selftests \
 	m9-vfs-selftest \
 	m9-required-mount-selftest \
+	hardware-images \
 	smoke-hardware \
 	smoke-hardware-subsystem smoke-hardware-romfs-corrupt \
 	smoke-hardware-m8-ioc smoke-hardware-m8-hid \
@@ -633,22 +634,19 @@ MODULES   := build/modules
 # Every module sees the shared include/ and platform/ surfaces plus its own
 # driver directory context; no sibling driver's private path is offered here.
 # A driver's local headers resolve through same-directory quote includes.
-MOD_CFLAGS := -mz80 -c --nostdinc --Werror -I include -I platform -I drivers/sio
+MOD_CFLAGS := -mz80 -c --nostdinc --Werror $(ZOS_SDCC_OPT) \
+              -I include -I platform -I drivers/sio
 
 $(MODULES):
 	mkdir -p $@
 
-# Declared boot-set arena plan (derived builds only): per-module
-# image+BSS/granules and the used/free totals; the build fails here when
-# the declared boot set cannot coexist in the linked arena.
-ifeq ($(ZOS_ARENA_DERIVED),1)
+# Declared boot-set arena plan: per-module image+BSS/granules and the
+# used/free totals; the build fails here when the declared boot set cannot
+# coexist in the derived arena.  The plan also carries the bank-7 ledger.
 ARENA_PLAN := $(BUILD)/arena.plan.json
 $(ARENA_PLAN): $(BOOT_ZMODS) tools/zmodpack.py $(MEMORY_INC) | $(BUILD)
 	$(PYTHON) tools/zmodpack.py plan --geometry $(MEMORY_INC) \
 		--report $@ $(BOOT_ZMODS)
-else
-ARENA_PLAN :=
-endif
 
 # --- SIO module objects (production source + test-variant entries) ---
 
@@ -1201,22 +1199,33 @@ GENERATED_LK := 1
 endif
 
 ifeq ($(GENERATED_LK),1)
-$(BUILD)/zephyr80.lk: $(OBJS) $(TARGET_TEST_OBJS) $(END_OBJ) | $(BUILD)
+$(BUILD)/zephyr80.lk: $(OBJS) $(TARGET_TEST_OBJS) $(END_OBJ) \
+		$(GEOMETRY_MEMORY) | $(BUILD)
+	@data_base=$$(sed -n 's/^ZOS_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
+	test -n "$$data_base" || { echo "no derived data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
 	  printf '%s\n' '-i $(BUILD)/zephyros.ihx'; \
-	  printf '%s\n' '-b _CODE = 0x2000' '-b _DATA = 0xC000' \
+	  printf '%s\n' '-b _CODE = 0x2000' "-b _DATA = $$data_base" \
 	                '-b _COMMON = 0xE000'; \
 	  printf '%s\n' $(OBJS) $(TARGET_TEST_OBJS) $(END_OBJ); \
 	  printf '%s\n' '-e'; \
 	} > $@
 
 $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(OBJS) $(TARGET_TEST_OBJS) \
-		$(END_OBJ) $(BUILD)/zephyr80.lk | $(BUILD)
+		$(END_OBJ) $(BUILD)/zephyr80.lk $(GEOMETRY_MEMORY) | $(BUILD)
 	$(SDLDZ80) -f $(BUILD)/zephyr80.lk
 else
-$(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(OBJS) $(END_OBJ) linker/zephyr80.lk | $(BUILD)
-	$(SDLDZ80) -f linker/zephyr80.lk
+# Canonical build: the checked-in linker template supplies the production
+# object list; the derived data base is substituted into build/zephyr80.lk.
+$(BUILD)/zephyr80.lk: linker/zephyr80.lk $(GEOMETRY_MEMORY) | $(BUILD)
+	@data_base=$$(sed -n 's/^ZOS_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
+	test -n "$$data_base" || { echo "no derived data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
+	sed "s/@DATA_BASE@/$$data_base/" linker/zephyr80.lk > $@
+
+$(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(BUILD)/zephyr80.lk \
+		$(OBJS) $(END_OBJ) | $(BUILD)
+	$(SDLDZ80) -f $(BUILD)/zephyr80.lk
 endif
 
 # --- pack and validate -------------------------------------------------------
@@ -1580,28 +1589,72 @@ m8-fallback-selftests: all
 	@echo "  build-m8-selftest/zephyros-m8-selftest.bin + build/zephyros.bin (all-modules row)"
 
 # --- physical-hardware serial smoke checks ----------------------------------
-# Requires the board connected at 115200 8N1 on SIO0/B and the matching ROM
+# Requires the board connected at 115200 8N1 on SIO0/B and the matching image
 # programmed.  Pass SERIAL_PORT=/dev/ttyUSB0 (or export ZOS_SERIAL_PORT).
+#
+# Each smoke mode checks ONE specific image, and the production image and the
+# acceptance images have different serial transcripts.  Build the image for
+# the mode, flash it, then run the mode:
+#
+#   mode                          image to flash                              build with
+#   smoke-hardware                build/zephyros.bin                          make
+#   smoke-hardware-subsystem      build-subsys-selftest/zephyros-subsys-selftest.bin
+#                                                                             make subsystem-selftest
+#   smoke-hardware-romfs-corrupt  build-romfs-corrupt/zephyros-romfs-corrupt.bin
+#                                                                             make romfs-corrupt-selftest
+#   smoke-hardware-m8-ioc         build-m8-ioc-selftest/zephyros-m8-ioc-selftest.bin
+#                                                                             make m8-ioc-selftest
+#   smoke-hardware-m8-hid         build-m8-hid-selftest/zephyros-m8-hid-selftest.bin
+#                                                                             make m8-hid-selftest
+#   smoke-hardware-m8-v9958       build-m8-v9958-selftest/zephyros-m8-v9958-selftest.bin
+#                                                                             make m8-v9958-selftest
+#   smoke-hardware-m8-console     build-m8-console-selftest/zephyros-m8-console-selftest.bin
+#                                                                             make m8-console-selftest
+#   smoke-hardware-m8             build-m8-selftest/zephyros-m8-selftest.bin  make m8-selftest
+#   smoke-hardware-m8-fb-*        build-m8-fb-*/zephyros-m8-fb-*.bin          make m8-fallback-selftests
+#
+# `make hardware-images` builds every image the smoke modes need.  The M8
+# images wait for the tool's host-sync sequence, so start the smoke tool and
+# press RESET (the tool re-sends the sequence while the banner is pending).
+# Each target below prints the exact image and sha256 to flash and fails with
+# the build command when that image is missing.
+
+# $(1) = image path, $(2) = target that builds it.
+define smoke_preflight
+if [ ! -f "$(1)" ]; then echo "smoke: $(1) is missing - build it first: make $(2)"; exit 1; fi; printf 'smoke: image to flash: %s\n       sha256: %s\n' "$(1)" "$$(sha256sum '$(1)' | cut -d' ' -f1)"
+endef
+
+hardware-images: all subsystem-selftest romfs-corrupt-selftest \
+		m8-selftest m8-ioc-selftest m8-hid-selftest \
+		m8-v9958-selftest m8-console-selftest m8-fallback-selftests
+	@echo "hardware-images: every smoke image is built under build*/"
 
 smoke-hardware:
+	@$(call smoke_preflight,build/zephyros.bin,all)
 	$(PYTHON) tools/serial_smoke.py --mode normal --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-subsystem:
+	@$(call smoke_preflight,build-subsys-selftest/zephyros-subsys-selftest.bin,subsystem-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode subsystem --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-romfs-corrupt:
+	@$(call smoke_preflight,build-romfs-corrupt/zephyros-romfs-corrupt.bin,romfs-corrupt-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode romfs-corrupt --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-m8-ioc:
+	@$(call smoke_preflight,build-m8-ioc-selftest/zephyros-m8-ioc-selftest.bin,m8-ioc-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode m8-ioc --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-m8-hid:
+	@$(call smoke_preflight,build-m8-hid-selftest/zephyros-m8-hid-selftest.bin,m8-hid-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode m8-hid --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-m8-v9958:
+	@$(call smoke_preflight,build-m8-v9958-selftest/zephyros-m8-v9958-selftest.bin,m8-v9958-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode m8-v9958 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-m8-console:
+	@$(call smoke_preflight,build-m8-console-selftest/zephyros-m8-console-selftest.bin,m8-console-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode m8-console --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 # Package-20 modes: the full integration image (serial portion: early
@@ -1612,16 +1665,21 @@ smoke-hardware-m8-console:
 # smoke modes.
 
 smoke-hardware-m8:
+	@$(call smoke_preflight,build-m8-selftest/zephyros-m8-selftest.bin,m8-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode m8 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-m8-fb-nohid:
+	@$(call smoke_preflight,build-m8-fb-nohid/zephyros-m8-fb-nohid.bin,m8-fallback-selftests)
 	$(PYTHON) tools/serial_smoke.py --mode m8-fb-nohid --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-m8-fb-nohid-nov9958:
+	@$(call smoke_preflight,build-m8-fb-nohid-nov9958/zephyros-m8-fb-nohid-nov9958.bin,m8-fallback-selftests)
 	$(PYTHON) tools/serial_smoke.py --mode m8-fb-nohid-nov9958 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-m8-fb-badioc:
+	@$(call smoke_preflight,build-m8-fb-badioc/zephyros-m8-fb-badioc.bin,m8-fallback-selftests)
 	$(PYTHON) tools/serial_smoke.py --mode m8-fb-badioc --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-m8-fb-arena:
+	@$(call smoke_preflight,build-m8-fb-arena/zephyros-m8-fb-arena.bin,m8-fallback-selftests)
 	$(PYTHON) tools/serial_smoke.py --mode m8-fb-arena --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

@@ -297,6 +297,12 @@ bank7: code 23490 end 7BC5h | arena 34 granules (21 boot, 13 free)
        | data 1294 at C000h | isr 256 | slack 14362
 ```
 
+These are the package-25 numbers.  Package 25b then added the
+size-optimized compile and the derived data base and moved the runtime
+data above `C000h`, so this snapshot no longer describes the current
+image; `docs/memory.md` section 2.2.1 records the current package-25b
+ledger.
+
 The arena floor is the unchanged 32-granule production gate; correction-02
 raised production from exactly 32 granules to 34 by removing the
 superseded machinery.
@@ -354,7 +360,11 @@ and `_DATA` 1210 -> 1294 (+84: the provider's 26-byte handle pool, the
 flat-selection helpers and the mutation entry points that the superseded
 design either already had in another form or did not have at all.
 
-### 9.3 Arena geometries
+### 9.3 Arena geometries (package-25 snapshot)
+
+The geometries below predate package 25b's size-optimized compile and
+derived data base; the current production row is recorded in
+`docs/memory.md` section 2.2.1.
 
 | Image | Kernel end | Arena | Granules |
 | --- | --- | --- | --- |

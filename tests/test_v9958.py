@@ -302,11 +302,12 @@ class TestModuleArtifact(unittest.TestCase):
                           granule - 1) // granule)
         # The resident image+BSS holds the video core, the port layer,
         # and the terminal renderer; it must stay far smaller than the
-        # 2048-byte font, which is ROMFS DATA, not module storage.  The
-        # console image's arena fit (10 granules) is the package 19
-        # budget asserted below.
+        # 2048-byte font, which is ROMFS DATA, not module storage.
+        # Package 25b correction-01: the 8-glyph staging trim (one
+        # 64-byte font chunk and one 24-byte atlas segment) brings the
+        # module to 9 granules, down from the package-19 10.
         self.assertLess(info["image_size"] + info["bss_size"], 5120)
-        self.assertEqual(info["required_granules"], 10)
+        self.assertEqual(info["required_granules"], 9)
         asset = fontpack.parse_font(FONT_INC)
         self.assertNotIn(asset, bytes(info["payload"]),
                          "the font must not be embedded in the module")
@@ -489,7 +490,9 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.assertIn("return ZDEV_ENODEV;", self.send)
 
     def test_font_is_streamed_not_resident(self):
-        # Bounded 256-byte resource reads, group-wise atlas conversion.
+        # Bounded 64-byte resource reads, chunk-wise atlas conversion
+        # (package 25b correction-01: one 8-glyph chunk and one 24-byte
+        # segment staged at a time).
         self.assertIn("V9958_FONT_CHUNK", self.c)
         self.assertIn("v9958_font_group", self.c)
         self.assertIn("v9958_atlas_row", self.c)

@@ -761,12 +761,14 @@ CTC owner (`drivers/ctc/ctc.c`) keeps only `platform_irq_quiesce()`;
 
 All driver/service code, descriptors, ops tables, and state live in
 bank 7 (linked `_CODE`/`_DATA` for the remaining kernel objects; the
-loaded module inside the M8 driver arena).  None of it may enter
+loaded module inside the derived driver arena).  None of it may enter
 permanent common memory.  Production derives the arena start from the
-aligned linked-kernel end (at least 16 KiB before `C000h`); the fixed
-`A000h-BFFFh` 16-granule geometry of the pre-M8 acceptance images is
-retired with them (work package 25a), so there is exactly one geometry
-(see `docs/memory.md` section 2.2 and `docs/module-format.md` section 1).
+aligned linked-kernel end and the arena end from the runtime-data size
+(`data_base = align_down(DF00h - data_size, 512)`), with at least 16 KiB
+remaining; the fixed `A000h-BFFFh` geometry of the pre-M8 acceptance
+images is retired (work packages 25a/25b), so there is exactly one
+geometry (see `docs/memory.md` section 2.2 and `docs/module-format.md`
+section 1).
 `tools/mapcheck.py` enforces this with an explicit symbol list and a
 prefix sweep over `_device_`, `_console_`, and `_m3_` symbols.  A
 rejection sweep fails the build on any linked `_sio_`, `_sio0b_`,

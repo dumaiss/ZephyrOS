@@ -5,12 +5,15 @@
 ; areas that do not have an explicit base address:
 ;
 ;     _CODE (2000h) -> _HOME -> _INITIALIZER -> _GSINIT -> _GSFINAL
-;     _DATA (C000h) -> _INITIALIZED
+;     _DATA (derived base) -> _INITIALIZED
 ;     _COMMON (E000h)
 ;
 ; All of _HOME/_INITIALIZER/_GSINIT/_GSFINAL therefore land inside the
-; loadable bank-7 region (2000h-BFFFh), and _INITIALIZED lands in the
-; zero-initialized runtime region (C000h-DFFFh).
+; loadable bank-7 region (2000h-BFFFh), and _DATA/_INITIALIZED land in the
+; zero-initialized runtime region below DF00h.  The _DATA base is derived
+; per image (align_down(DF00h - data_size, 512)) and substituted by the
+; build; the startup code below uses the linked s__/l__ symbols, never a
+; fixed address.
 ;
 ; _boot_common_entry runs in mode 10 over bank 0, entirely from the
 ; permanent common region.  It establishes the common boot stack, enters

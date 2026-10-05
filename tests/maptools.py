@@ -34,7 +34,7 @@ _LAYOUT_GLOBALS = (
     "IRQ_ISR_STACK_BASE", "IRQ_ISR_STACK_TOP", "IRQ_ISR_STACK_SIZE",
     "GATE_STACK_SIZE", "OWNED_AREAS", "DRIVER_ARENA_BASE",
     "DRIVER_ARENA_END", "DRIVER_GRANULE_SIZE", "DRIVER_GRANULES",
-    "DRIVER_ARENA_DERIVED", "DRIVER_ARENA_MIN_SIZE",
+    "DATA_BASE", "DRIVER_ARENA_MIN_SIZE",
     "DRIVER_ARENA_MIN_GRANULES", "ROMFS_STAGING_SIZE", "ROM_ACCESS_BASE",
     "ROM_ACCESS_SIZE", "IRQ_VECTOR_BASE", "IRQ_VECTOR_SIZE",
     "IRQ_STATE_BASE", "IRQ_STACK_BASE", "IRQ_STACK_TOP", "IRQ_STACK_SIZE",
@@ -46,7 +46,7 @@ def layout_context(layout_inc, irq_inc):
     """Apply a layout for one check and restore the module defaults."""
     saved = {name: getattr(mapcheck, name) for name in _LAYOUT_GLOBALS}
     try:
-        mapcheck.apply_layout(mapcheck.parse_inc(layout_inc))
+        mapcheck.apply_layout(mapcheck.parse_inc(layout_inc), layout_inc)
         mapcheck.apply_irq_layout(mapcheck.parse_inc(irq_inc))
         yield
     finally:
@@ -89,9 +89,7 @@ REQUIRED_MEMORY_CONSTANTS = (
     "ZOS_BANK7_BASE", "ZOS_BANK7_LOAD_END", "ZOS_BANK7_RUNTIME_END",
     "ZOS_IRQ_ISR_STACK_BASE", "ZOS_IRQ_ISR_STACK_TOP",
     "ZOS_IRQ_ISR_STACK_SIZE",
-    "ZOS_DRIVER_ARENA_BASE", "ZOS_DRIVER_ARENA_END",
-    "ZOS_DRIVER_GRANULE_SIZE", "ZOS_DRIVER_GRANULES",
-    "ZOS_DRIVER_ARENA_DERIVED",
+    "ZOS_DRIVER_GRANULE_SIZE",
     "ZOS_DRIVER_ARENA_MIN_SIZE", "ZOS_DRIVER_ARENA_MIN_GRANULES",
     "ZOS_COMMON_BASE", "ZOS_COMMON_CODE_END", "ZOS_COMMON_STACK_BASE",
     "ZOS_STACK_INIT_SP", "ZOS_GATE_STACK_SIZE",

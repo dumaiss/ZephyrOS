@@ -41,8 +41,9 @@ ROM page 0:
 ROM page 1:
     0000h-002Fh   byte-identical copy of the reset copier (mirrored)
     0030h-1FFFh   FFh (caller-window gap; bank 7 is invisible there)
-    2000h-BFFFh   bank-7 loadable kernel image (must end below C000h)
-    C000h-DFFFh   FFh (bank-7 zero-initialized runtime area, never loaded)
+    2000h-data base  bank-7 loadable kernel image (ends at the derived
+                     arena start; the derived area below is not ROM-loaded)
+    data base-DFFFh  FFh (bank-7 runtime data plus ISR stack; never loaded)
     E000h-FFFFh   FFh (not visible in mode 11)
 
 ROM pages 2-7 (recovery):
@@ -159,10 +160,12 @@ E000h +-------------------------------+
 - `2000h-DFFFh`: physical SRAM bank 7 (kernel body).
 - `E000h-FFFFh`: physical SRAM bank 0 (permanent common region).
 
-The linker script fixes `_CODE` at `2000h`, `_DATA` (zero-initialized
-runtime area) at `C000h`, and the common segment at `E000h`.  The loadable
-bank-7 image (code, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`) must fit
-below `C000h`; `C000h-DFFFh` is never loaded from ROM.
+The linker control file fixes `_CODE` at `2000h`, the derived `_DATA`
+base (`align_down(DF00h - runtime_data_size, 512)`) for the
+zero-initialized runtime area, and the common segment at `E000h`.  The
+loadable bank-7 image (code, `_HOME`, `_INITIALIZER`, `_GSINIT`,
+`_GSFINAL`) must fit below the derived data base; from there to `DFFFh` is
+never loaded from ROM.
 
 ## 4. SDCC C runtime initialization
 
@@ -261,14 +264,24 @@ otherwise).
 bounded timeout and verifies the expected output:
 
 ```sh
-make smoke-hardware SERIAL_PORT=/dev/ttyUSB0                 # production boot:
-                                                             # banner, console
-                                                             # line, monitor
-make smoke-hardware-subsystem SERIAL_PORT=/dev/ttyUSB0       # subsystem acceptance;
-                                                             # drives the monitor
-make smoke-hardware-romfs-corrupt SERIAL_PORT=/dev/ttyUSB0   # corrupt store panic
-make smoke-hardware-m8 SERIAL_PORT=/dev/ttyUSB0              # M8 integration image
+make smoke-hardware SERIAL_PORT=/dev/ttyUSB0                 # flash build/zephyros.bin;
+                                                             # on an SIO-fallback
+                                                             # bench only: banner,
+                                                             # console line, monitor
+make smoke-hardware-subsystem SERIAL_PORT=/dev/ttyUSB0       # flash build-subsys-selftest/
+                                                             # zephyros-subsys-selftest.bin
+make smoke-hardware-romfs-corrupt SERIAL_PORT=/dev/ttyUSB0   # flash build-romfs-corrupt/
+                                                             # zephyros-romfs-corrupt.bin
+make smoke-hardware-m8 SERIAL_PORT=/dev/ttyUSB0              # flash build-m8-selftest/
+                                                             # zephyros-m8-selftest.bin
+make smoke-hardware-m8-ioc SERIAL_PORT=/dev/ttyUSB0          # flash build-m8-ioc-selftest/
+                                                             # zephyros-m8-ioc-selftest.bin
 ```
+
+Each smoke mode checks one specific image; build it, flash it, then run the
+mode (the smoke target prints the exact image and sha256, and `make
+hardware-images` builds them all).  The M8 images wait for the tool's
+host-sync sequence, so start the tool first and then press RESET.
 
 Every acceptance image retired under the Mn-1 retention rule (M1-M7)
 is gone; their mechanism coverage now runs inside the subsystem

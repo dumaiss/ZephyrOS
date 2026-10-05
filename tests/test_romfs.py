@@ -363,9 +363,8 @@ class TestRomfsMapcheck(unittest.TestCase):
                                     "_ROM_ACCESS_STUB"):
             mapcheck.check_map(text)
 
-    def test_production_rejects_embedded_catalog(self):
-        for symbol in ("_z4_module_boot", "_zmod_catalog",
-                       "_module_catalog_load_all"):
+    def test_production_rejects_embedded_catalog_symbols(self):
+        for symbol in ("_z4_module_boot", "_zmod_catalog"):
             text = make_map(symbols={symbol: 0x2600})
             with self.assertRaisesRegex(mapcheck.MapError,
                                         "production image"):

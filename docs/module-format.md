@@ -48,25 +48,26 @@ that is now implemented and pinned by `include/zephyros/module.h` and
 ## 1. Driver arena
 
 The arena is a linker-reserved region of bank 7.  Every image derives its
-bounds from the aligned linked kernel end in a two-pass link:
+bounds from the aligned linked kernel end and the derived runtime-data
+base in a two-pass link:
 
 ```text
-align_up(__kernel_code_end, 512)-C000h   minimum 16 KiB (32 granules)
+arena = [align_up(__kernel_code_end, 512), data_base)   minimum 16 KiB
+data_base = align_down(DF00h - (l__DATA + l__INITIALIZED), 512)
 ```
 
-The fixed `A000h-BFFFh` rectangle that the pre-M8 acceptance images and
-the shifted-placement variant used is retired with them (work package
-25a); there is exactly one geometry.  The derived arena of the current
-production image is `7C00h-BFFFh` (34 granules, 21 used by the boot set)
--- see `docs/memory.md` section 2.2 and `docs/architecture.md` section
-30.2.
+There is exactly one geometry; the probe link places no arena and the
+fixed `A000h-BFFFh` rectangle is retired (work packages 25a/25b).  The
+derived arena of the current production image is `7600h-D7FFh` (49
+granules, 20 used by the boot set) -- see `docs/memory.md` section 2.2
+and `docs/architecture.md` section 30.2.
 The loader and the generated `arena_geometry.inc` consume the linked
 symbols; nothing below depends on the numeric base.*
 
 * Declared by the generated `memory.inc` include
-  (`ZOS_DRIVER_ARENA_BASE/END`, `ZOS_DRIVER_GRANULE_SIZE`,
-  `ZOS_DRIVER_GRANULES`) and exported as the link symbols
-  `__driver_arena_start` / `__driver_arena_end` by
+  (`ZOS_DRIVER_ARENA_BASE/END`, `ZOS_DATA_BASE/SIZE`,
+  `ZOS_DRIVER_GRANULE_SIZE`, `ZOS_DRIVER_GRANULES`) and exported as the
+  link symbols `__driver_arena_start` / `__driver_arena_end` by
   `kernel/module/arena.asm`.  The loader uses the symbols, never the
   numeric values; module code uses neither.
 * Loadable kernel sections (`_CODE`, `_HOME`, `_GSINIT`, `_GSFINAL`,
@@ -75,17 +76,18 @@ symbols; nothing below depends on the numeric base.*
   passes must agree.  `tools/mapcheck.py` rejects any area overlapping the
   arena and `tools/pack_image.py` rejects ROM payload bytes inside it; the
   512 KiB boot image carries no arena content.
-* `_DATA`/`_INITIALIZED` keep their established `C000h-DFFFh` runtime
-  region; the M2 ISR stack keeps `DF00h`.
+* `_DATA`/`_INITIALIZED` start at the derived data base and must stay
+  below the M2 ISR stack at `DF00h`.
 * Only the loader allocates granules, at boot, from its byte source:
   the ROMFS recovery store reached as `/SYSTEM` through the VFS (since
   M9), in production and every acceptance image.
 
-The build reports arena geometry and free granules:
-`mapcheck.py` and `pack_image.py` both print the arena summary, and
+The build reports arena geometry, free granules and the single bank-7
+budget ledger: `mapcheck.py` and `pack_image.py` both print the summary,
 `zephyros.manifest.json` carries an `arena` object
 (`start`, `end`, `size`, `granule_size`, `granules`, `free_granules`,
-`modules`).
+`modules`) plus a `bank7` ledger object, and `arena.plan.json` carries the
+same ledger.
 
 ## 2. Container layout
 

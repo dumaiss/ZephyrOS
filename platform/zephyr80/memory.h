@@ -20,8 +20,9 @@
 #define ZOS_PAGE_ZERO_END           0x0100u
 
 /* Bank-7 OS body, visible in mode 11.  The loadable (ROM-initialized) part
- * ends at the linked __kernel_code_end; C000h-DFFFh is zero-initialized
- * runtime area that is never loaded from ROM. */
+ * ends at the linked __kernel_code_end; the runtime area begins at the
+ * derived data base and is never loaded from ROM.  ZOS_BANK7_LOAD_END is
+ * the architectural ceiling on the loadable end, not a fixed boundary. */
 #define ZOS_BANK7_BASE              0x2000u
 #define ZOS_BANK7_LOAD_END          0xC000u
 #define ZOS_BANK7_RUNTIME_END       0xDF00u
@@ -30,12 +31,12 @@
 #define ZOS_IRQ_ISR_STACK_SIZE      0x0100u
 
 /* Driver arena.  The single mechanism derives the start from the aligned
- * end of the linked kernel and exports __kernel_code_end /
- * __driver_arena_start / __driver_arena_end through kernel/module/arena.asm
- * and the generated build/arena_geometry.inc; there is no fixed-geometry
- * variant any more.  Only the build-time contract lives here: the
- * granule size, and the production minimum that mapcheck enforces.
- * C000h-DFFFh is never part of the allocator. */
+ * end of the linked kernel and the end from the runtime-data size, exporting
+ * __kernel_code_end / __driver_arena_start / __driver_arena_end through
+ * kernel/module/arena.asm and the generated build/geometry/arena_geometry.inc;
+ * the probe link places no arena.  Only the build-time contract lives here:
+ * the granule size, and the production minimum that mapcheck enforces.  The
+ * runtime data base is never part of the allocator. */
 #define ZOS_DRIVER_GRANULE_SIZE     0x0200u
 #define ZOS_DRIVER_ARENA_MIN_SIZE   0x4000u
 #define ZOS_DRIVER_ARENA_MIN_GRANULES 32u

@@ -175,8 +175,7 @@ ZephyrOS/
 │   ├── module/
 │   │   ├── loader.c
 │   │   ├── relocate.c
-│   │   ├── arena.asm
-│   │   └── embedded.c
+│   │   └── arena.asm
 │   │
 │   ├── romfs/
 │   │   ├── romfs.c
@@ -870,6 +869,26 @@ E000h-FFFFh  physical SRAM bank 0
 ```
 
 Mode `11` therefore exposes the kernel while preserving the low 8 KiB of the caller's address space.
+
+### Bank-7 layout inside mode 11
+
+The 48 KiB `2000h-DFFFh` window is not fixed internally.  The build
+derives the boundary between the loadable kernel, the driver arena and
+the runtime data (package 25b):
+
+```text
+2000h                     kernel code, then __kernel_code_end
+__driver_arena_start      loaded ZMOD modules (derived, >= 32 granules)
+data_base = arena end     _DATA / _INITIALIZED (derived base)
+DF00h                     fixed 256-byte ISR stack
+E000h                     end of bank 7 in mode 11
+```
+
+`data_base = align_down(DF00h - (l__DATA + l__INITIALIZED), 512)` and the
+arena runs from the aligned linked-kernel end up to that base, so kernel
+and module growth consumes arena space rather than a fixed `C000h`
+reservation.  `pack_image.py` and the arena plan report the single
+bank-7 budget ledger (section 32.39).
 
 The bank selector continues to identify the suspended/running application bank while mode `11` is active; switching to OS mode must not destroy that identity.
 
@@ -2286,10 +2305,8 @@ kernel/module/arena.asm         __driver_arena_start/__driver_arena_end
 kernel/module/relocate.c        container validation, copy, BSS,
                                 ZREL_ABS16 application
 kernel/module/loader.c          first-fit granule allocator, descriptors,
-                                transactional module_load, catalog load,
-                                module_code_allowed (IRQ validation hook)
-kernel/module/embedded.c        production boot-module catalog
-                                (tests/target/m4/ holds the fixture catalog)
+                                transactional module_load, module_code_allowed
+                                (IRQ validation hook)
 tests/target/m4/m4_test.c       loader/dynamic-driver acceptance test
 tools/zmodpack.py               pack/validate/dump/emit-asm
 ```
@@ -2799,7 +2816,24 @@ modules/manifests/ioc.json
 
 ## 30.2 Production driver-area sizing
 
-M8 removes `A000h` as a production boundary and derives the resident module arena from the aligned linked-kernel end to `C000h`, with a minimum production arena of 16 KiB and 512-byte allocation granularity. `C000h-DFFFh` remains bank-7 runtime/system workspace for state, stacks, filesystem/cache/deblocking buffers and transport scratch.
+M9 (package 25b) removes every fixed boundary from the bank-7 layout.
+There is one geometry, derived by a two-pass build: a probe link places no
+arena, the build measures the exclusive end of the linked loadable kernel
+and the runtime-data size (`l__DATA + l__INITIALIZED`), and derives
+
+```text
+arena      = [align_up(__kernel_code_end, 512), data_base)
+data_base  = align_down(DF00h - data_size, 512)
+arena_end  = data_base
+```
+
+with a minimum production arena of 16 KiB (32 granules) and 512-byte
+allocation granularity.  The bank-7 layout is therefore kernel code, then
+the derived arena, then the derived runtime data, then the fixed 256-byte
+ISR stack at `DF00h-DFFFh`.  `ZOS_BANK7_LOAD_END` (`C000h`) is only the
+architectural ceiling on the loadable kernel end, not a boundary.
+`pack_image.py` and the arena plan print the single bank-7 budget ledger
+section 32.39 requires.
 
 ---
 
@@ -4213,10 +4247,17 @@ caching (IOC-FAT, package 30), a writable provider and the `/` mount
 (packages 26/30), and cross-filesystem move semantics (package 31).
 `romfs_load_zmod()` no longer exists.
 
-Budget (section 32.39): production `_CODE` ends at `7BC5h` with a
-`7C00h-C000h` arena — 34 granules against the unchanged 32-granule floor,
-2 granules of headroom — and `_DATA` is 1294 bytes.  The per-object sizes
-and the correction-02 saving are recorded in `docs/vfs.md` section 9.
+Budget (section 32.39): package 25 measured production `_CODE` ending at
+`7BC5h` with a `7C00h-C000h` arena — 34 granules against the unchanged
+32-granule floor — and `_DATA` of 1294 bytes.  Package 25b then added the
+size-optimized compile and the derived data base: the current ledger is
+`code 21689 bytes end 74B9h | arena 49 granules | data 1309 bytes at
+D800h | isr 256 | slack 483`, recorded in `docs/memory.md` section 2.2.1.
+Correction-01 trimmed the V9958 font staging (`4008/724 -> 4038/460`
+image/BSS), so that module needs 9 granules and the boot set uses 20 of
+the 49 (`sio x1, ioc x8, hid x2, v9958 x9`), leaving 29 free.
+The per-object package-25 sizes and the correction-02 saving are in
+`docs/vfs.md` section 9.
 
 ---
 

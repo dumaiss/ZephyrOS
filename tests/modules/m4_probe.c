@@ -67,7 +67,14 @@ static void m4_probe_irq(void *context)
 
 int m4_probe_init(const struct zdriver_api *api)
 {
-	uint16_t self = (uint16_t)&m4_probe_state;
+	/* Read the relocated state pointer out of the (word-relocated)
+	 * descriptor rather than materializing `&m4_probe_state` in the
+	 * instruction stream: the size optimizer otherwise narrows the
+	 * address to a single byte, which is a byte-fragmented relocation
+	 * the ZMOD format deliberately does not carry.  A volatile read
+	 * keeps the full 16-bit value in the descriptor's `.dw` word. */
+	uint16_t self =
+		*(const volatile uint16_t *)&m4_probe_desc_a.state;
 
 	/* BSS must have been zeroed by the loader before init runs. */
 	if (m4_probe_state.magic != 0) {
