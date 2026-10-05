@@ -57,6 +57,12 @@ extern int kernel_load_vfs_module(const char *name);
  * provider through the same VFS-backed loader the boot set uses. */
 extern int kernel_load_vfs_module(const char *name);
 #endif
+#if ZOS_M9_EXEC_SELFTEST
+#include "m9_exec_selftest.h"
+/* Defined in kernel/main.c: the exec image loads the test-only ramfs
+ * provider through the same VFS-backed loader the boot set uses. */
+extern int kernel_load_vfs_module(const char *name);
+#endif
 
 /* Boot-time acceptance modules, called between the production boot set and
  * the normal mount pass.  Only an image that needs extra resident providers
@@ -70,6 +76,9 @@ void zos_boot_test_modules(void)
 	(void)kernel_load_vfs_module("m9fail");
 #endif
 #if ZOS_M9_FS_SELFTEST
+	(void)kernel_load_vfs_module("ramfs");
+#endif
+#if ZOS_M9_EXEC_SELFTEST
 	(void)kernel_load_vfs_module("ramfs");
 #endif
 }
@@ -118,5 +127,8 @@ void zos_target_test_late(void)
 #endif
 #if ZOS_M9_FS_SELFTEST
 	zos_run_m9_fs_selftest();
+#endif
+#if ZOS_M9_EXEC_SELFTEST
+	zos_run_m9_exec_selftest();
 #endif
 }

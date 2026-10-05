@@ -4,20 +4,28 @@
  * application bank per process, and synchronous parent/child execution:
  *
  *     parent runs
- *         process_exec(path, &status)
- *             child RUNNING, parent suspended
+ *         process_exec(path, &status)      (or SYS_EXEC 05h)
+ *             child RUNNING, parent SUSPENDED
  *             child runs alone until SYS_EXIT (or a raw entry return)
- *         parent resumed exactly where it called process_exec
+ *         parent resumed exactly where it called exec
+ *
+ * Package 28 extends the same machinery to a bounded chain of ordinary
+ * processes (ZOS_EXEC_MAX_DEPTH deep): a child run by SYS_EXEC is an
+ * ordinary process, and on exit its suspended parent is marked RUNNING
+ * and resumed with the child's status as the SYS_EXEC result.  There is
+ * one loader path (process_prepare), one launch/resume gate
+ * (process_launch/zos_process_resume) and one exit path.
  *
  * Process descriptors live in bank 7.  Application banks are 0-6; bank 7
  * is kernel-only and is rejected by every allocation path.  At most one
  * process is RUNNING at a time.
  *
- * process_exec() must be called from kernel context: mode 11 active,
- * interrupts in the caller's own state (the launch gate masks them during
- * the transition and restores them exactly on resume), and SP on a
- * common-memory stack (the boot stack or the syscall gate stack).  This
- * interface is kernel-private; it is not part of the native syscall ABI.
+ * process_prepare()/process_launch() must be called from kernel context:
+ * mode 11 active, interrupts in the caller's own state (the launch gate
+ * masks them during the transition and restores them exactly on resume),
+ * and SP on a common-memory stack (the boot stack or the syscall gate
+ * stack).  This interface is kernel-private; it is not part of the native
+ * syscall ABI.
  */
 
 #ifndef ZEPHYROS_PROCESS_H
@@ -31,6 +39,50 @@
 #define PROCESS_BANK_COUNT 7u
 #define PROCESS_MAX_BANK   6u
 #define PROCESS_KERNEL_BANK 7u
+
+/* Nesting geometry (package 28).  ZOS_EXEC_MAX_DEPTH user processes may
+ * form one synchronous exec chain; the kernel launcher sits at depth 0:
+ *
+ *   kernel launcher (boot stack)
+ *     +- shell       depth 1: kernel continuation, no saved gate frame
+ *        +- IDE      depth 2: frame save #0 holds the shell's SYS_EXEC
+ *           +- compiler  depth 3: frame save #1 holds the IDE's
+ *              +- linker  depth 4: frame save #2 holds the compiler's
+ *                 linker calls SYS_EXEC -> ZOS_EBUSY (before allocation)
+ *
+ * So there are exactly ZOS_EXEC_MAX_DEPTH - 1 frame-save areas: the
+ * outermost process is launched by the kernel from the boot stack and
+ * needs no copy.  The continuation arrays carry one saved launcher
+ * context (SP, latch, IFF) per depth. */
+#define ZOS_EXEC_MAX_DEPTH 4u
+
+/* Gate-frame save size.  Measured in the simulator from the acceptance
+ * image: the launch gate's captured continuation SP is exactly
+ * zos_gate_stack_top - 32 at every depth in the chain (the gate's saved
+ * registers, the SYS_EXEC frame and the process_launch() frame), so
+ * 32 + 25% = 40 rounds up to 16-byte units as ZOS_EXEC_FRAME_SAVE = 48.
+ * The save areas live in permanent common memory beside the gate stack
+ * they copy, so their size is not part of the bank-7 arena budget; the
+ * package-28 validation record carries the measured depth. */
+#define ZOS_EXEC_FRAME_SAVE 48u
+
+/* Headroom between the frame the preflight measures and the frame the
+ * launch gate actually copies.  The preflight runs in the SYS_EXEC
+ * handler frame (measured 21 bytes); the copy starts in the deeper
+ * process_launch() frame (measured 32 bytes), because the compiler keeps
+ * live values in registers across the launch call.  A conservative bound
+ * keeps an oversize frame from reaching the copy: the preflight rejects
+ * the handler frame above ZOS_EXEC_FRAME_SAVE - ZOS_EXEC_FRAME_SLACK.
+ * The simulator test asserts the copied length itself stays inside
+ * ZOS_EXEC_FRAME_SAVE at every depth. */
+#define ZOS_EXEC_FRAME_SLACK 16u
+
+#if defined(__SDCC)
+_Static_assert(ZOS_EXEC_FRAME_SAVE % 16u == 0u,
+	       "the exec frame save must be a 16-byte multiple");
+_Static_assert(ZOS_EXEC_FRAME_SAVE > ZOS_EXEC_FRAME_SLACK,
+	       "the exec frame preflight limit must stay positive");
+#endif
 
 /* Parent identity markers. */
 #define PROCESS_KERNEL_PARENT 0xFFu /* no user parent descriptor     */
@@ -65,18 +117,52 @@ extern struct process process_table[PROCESS_TABLE_SIZE];
  * the common resume gate returns control to process_exec(). */
 extern uint16_t process_last_status;
 
+/* A prepared (loaded, not yet running) child.  process_prepare() fills
+ * it; process_launch() enters it. */
+struct process_child {
+	uint8_t  pid;   /* slot index 0-6                     */
+	uint8_t  bank;  /* application bank 0-6               */
+	uint16_t entry; /* child logical entry address        */
+};
+
 /* Execute one child synchronously from a VFS path.
  *
- * On success the child ran to SYS_EXIT (or returned through the common
- * trap, which synthesizes ZOS_EFAULT) and *status receives the u16 exit
- * status; the return value is ZEX_EXEC_OK.  On failure nothing is
- * executed, process bookkeeping is rolled back exactly, and a negative
- * ZEX_EXEC_ERR_* code is returned.
+ * This is the kernel launcher's convenience wrapper over
+ * process_prepare() + process_launch(); it is the depth-0 caller (the
+ * parent is PROCESS_KERNEL_PARENT).  On success the child ran to SYS_EXIT
+ * (or returned through the common trap, which synthesizes ZOS_EFAULT) and
+ * *status receives the u16 exit status; the return value is ZEX_EXEC_OK.
+ * On failure nothing is executed, process bookkeeping is rolled back
+ * exactly, and a negative ZEX_EXEC_ERR_* code is returned.
  *
  * `path` is a NUL-terminated VFS path (absolute, or relative to `/`);
  * the ZEX image is read through the kernel file API.  `status` must not
- * be null.  Nesting is not supported (the launcher is single-depth). */
+ * be null.  SYS_EXEC uses process_prepare()/process_launch() directly so
+ * its failures are native ZOS_E* codes (docs/abi.md). */
 int process_exec(const char *path, uint16_t *status);
+
+/* Prepare a child: every allocating and fallible step (path resolution,
+ * slot, bank, the VFS-backed ZEX load and validation, page zero), with
+ * the executable source closed before returning.  `parent_pid` is the
+ * caller's pid or PROCESS_KERNEL_PARENT.  Returns 0 and fills `child`, or
+ * a negative code: a native -ZOS_E* value for path/read/allocation
+ * failures (ZOS_ENOENT, ZOS_EISDIR, ZOS_ENOSPC, a provider error passed
+ * through unchanged), or a ZEX_EXEC_ERR_* validation code for a malformed
+ * container.  Nothing is published as RUNNING and every failure rolls the
+ * slot back to FREE.
+ *
+ * process_prepare() runs on the caller's stack (the 256-byte gate stack
+ * for SYS_EXEC), so it declares no automatic object larger than 32 bytes;
+ * it must return completely before process_launch() runs. */
+int process_prepare(const char *path, uint8_t parent_pid,
+		    struct process_child *child);
+
+/* Enter a prepared child through the common launch gate.  Infallible:
+ * depth and frame size were preflighted and process_prepare() succeeded.
+ * The launching process (when any) is marked SUSPENDED and the current
+ * continuation is saved; returns after the child exited and the launcher
+ * context was restored.  `child` lives on the caller's stack. */
+void process_launch(const struct process_child *child);
 
 /* Diagnostics / acceptance queries. */
 uint8_t process_active_count(void);
@@ -87,14 +173,64 @@ uint8_t process_current_bank(void);
 /* Loader-facing helpers (kernel/process/exec.c drives these):
  *   process_slot_alloc()    reserve the lowest FREE slot (SUSPENDED)
  *   process_slot_release()  exact rollback of a failed load
- *   process_alloc_bank()    lowest bank 0-6 not reserved / in use
- *   process_launch_child()  mark RUNNING and enter through the gate;
- *                           returns after the child exits and the
- *                           launcher context was restored. */
+ *   process_alloc_bank()    lowest bank 0-6 not reserved / in use */
 int process_slot_alloc(void);
 void process_slot_release(uint8_t pid);
 int process_alloc_bank(void);
-void process_launch_child(uint8_t pid, uint8_t bank, uint16_t entry);
+
+/* --- exec continuation state (kernel/process/launch.asm, common RAM) ---
+ *
+ * One saved launcher context per nesting depth; index 0 is the kernel
+ * launcher on the boot stack (no gate frame).  The common-resident launch
+ * gate fills these; the C side only selects the index. */
+struct process_continuation {
+	uint16_t saved_sp;    /* launcher SP at the launch call site   */
+	uint8_t  saved_latch; /* launcher memory latch                 */
+	uint8_t  saved_iff;   /* launcher IFF2 (0 = masked)            */
+};
+
+extern struct process_continuation
+	zos_process_continuations[ZOS_EXEC_MAX_DEPTH];
+extern uint8_t
+	zos_process_frames[ZOS_EXEC_MAX_DEPTH - 1][ZOS_EXEC_FRAME_SAVE];
+
+/* Stable common-memory copy of a SYS_EXEC caller path (ZOS_PATH_MAX
+ * bytes; the C symbol is filled by kernel/syscall.c and read by
+ * process_prepare). */
+extern char zos_process_path_scratch[];
+
+/* Gate-stack bytes in use by this call's frame (zos_gate_stack_top - SP
+ * as seen by the caller).  Tiny common helper, used by the SYS_EXEC
+ * preflight; measures 0 when the caller is not on the gate stack. */
+uint16_t zos_process_continuation_size(void);
+
+/* Common-resident launch/resume primitives (kernel/process/launch.asm).
+ * The request structs are read before any mapping change and their layout
+ * is pinned by _Static_assert. */
+struct zos_process_launch_req {
+	uint8_t bank;                          /* child bank 0-6       */
+	uint16_t entry;                        /* child entry          */
+	uint8_t index;                         /* continuation depth   */
+};
+void zos_process_launch(const struct zos_process_launch_req *req);
+
+struct zos_process_resume_req {
+	uint16_t status;                       /* child exit status    */
+	uint8_t index;                         /* continuation depth   */
+};
+void zos_process_resume(const struct zos_process_resume_req *req);
+
+#if defined(__SDCC)
+_Static_assert(sizeof(struct process_child) == 4,
+	       "process_child must be 4 packed bytes");
+_Static_assert(sizeof(struct process_continuation) == 4,
+	       "process_continuation must be 4 packed bytes");
+_Static_assert(sizeof(struct zos_process_launch_req) == 4,
+	       "launch request must be 4 packed bytes");
+_Static_assert(sizeof(struct zos_process_resume_req) == 3,
+	       "resume request must be 3 packed bytes");
+#endif
+
 
 /* PID of the RUNNING process (PROCESS_NO_PROCESS when none). */
 extern uint8_t process_running_pid;

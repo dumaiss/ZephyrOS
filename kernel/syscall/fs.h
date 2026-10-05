@@ -21,4 +21,9 @@
  * bank, `block` the raw argument-block pointer from the register ABI. */
 void zos_fs_dispatch(uint8_t number, uint8_t bank, uint16_t block);
 
+/* Copy one caller-window path into `out` (NUL-terminated, at most 127
+ * bytes) with the shared validation rules.  Returns 0 or -ZOS_EINVAL.
+ * Reused by SYS_EXEC so its path rules are identical to the FS_* family. */
+int zos_fs_copy_path(uint16_t addr, uint16_t length, char *out);
+
 #endif /* ZEPHYROS_KERNEL_SYSCALL_FS_H */

@@ -107,7 +107,11 @@ pack a program that the kernel would later refuse.
 
 ## 5. Load sequence
 
-`process_exec("name.zex")` performs:
+`process_exec("name.zex")` (the kernel launcher) and `SYS_EXEC`
+(`docs/abi.md` section 11, an ordinary process) both run the same two
+steps: `process_prepare()` loads, then `process_launch()` enters.
+
+`process_prepare()` performs:
 
 1. allocate a process slot (fails with `ZEX_EXEC_ERR_NOSPACE` if none is
    free) and the lowest free application bank `0-6`;
@@ -118,18 +122,32 @@ pack a program that the kernel would later refuse.
 5. copy the image in 64-byte chunks from ROMFS through the common
    `zos_user_copy_staging` block into the bank at `0100h`;
 6. zero the BSS region `[0100h + image_size, + bss_size)`;
-7. mark the descriptor RUNNING and enter the common process-launch gate,
-   which switches to mode `10 | bank`, installs
-   `SP = E000h - stack_size`, and transfers to the entry with `HL = 0`.
+7. close the executable source and return the prepared child.
+
+`process_launch()` then marks the descriptor RUNNING and enters the common
+process-launch gate, which saves the launcher's continuation, switches to
+mode `10 | bank`, installs `SP = E000h - stack_size`, and transfers to the
+entry with `HL = 0`.  It performs no check that can fail: every fallible
+step (including the SYS_EXEC depth and frame-size preflight) happened
+before the suspension point.
 
 A raw `RET` from the entry point lands in a common trap and exits the
 process with `ZOS_EFAULT`; programs leave through `SYS_EXIT` only.
 
-Failure at any step releases the slot and the bank reservation before
-returning the result code, so a rejected program leaves the process
-table, the bank allocator, the caller bank, and the parent context
-bit-identical to their pre-call state (verified by the M6 failure image
-and the simulator tests).
+Failure inside `process_prepare()` releases the slot, the bank
+reservation, the child's CWD slot and any descriptor it opened, and closes
+the source before returning the result code, so a rejected program leaves
+the process table, the bank allocator, the caller bank, and the parent
+context bit-identical to their pre-call state (verified by the M6 failure
+image, the M9 exec failure modes and the simulator tests).
+
+A child started by `SYS_EXEC` is a full ordinary process: a fresh
+application bank, its own page zero, its own VFS process state (it
+*inherits* the parent's CWD and *not* the parent's descriptors), and its
+exit status handed back as the `SYS_EXEC` result.  Up to
+`ZOS_EXEC_MAX_DEPTH` (4) user processes may be suspended in one chain; the
+suspension cost is the gate-stack frame described in `docs/memory.md` and
+`docs/abi.md`.
 
 ## 6. Runtime
 
@@ -147,6 +165,12 @@ int  zex_getinfo(struct zex_info *info); /* SYS_GETINFO */
 Negative returns are `-errno`.  The wrappers keep their 8-byte argument
 scratch (`_zos_runtime_scratch`) inside the linked image, which is why
 the scratch symbol must satisfy the window rule above.
+
+`user/runtime/zex_fs_runtime.h` adds the M9 filesystem wrappers, and
+`user/runtime/zex_exec_runtime.h` adds `zos_exec(const char *path)` on top
+of them: the same low-window argument block and gate stub, the same
+127-byte local length check, returning the child's exit status or the
+negated native error code (`docs/abi.md` section 11).
 
 ## 7. Tooling
 

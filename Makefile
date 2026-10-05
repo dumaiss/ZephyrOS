@@ -28,12 +28,23 @@
 #   make m9-vfs-selftest      M9 VFS acceptance image
 #   make m9-provider-selftest M9 writable-provider acceptance image
 #   make m9-fs-selftest       M9 filesystem syscall acceptance image
+#   make m9-exec-selftest     M9 SYS_EXEC nesting acceptance image
 #   make clean    remove all generated files
+#
+# Builds are parallel by default (ZOS_JOBS defaults to nproc); use
+# `make ZOS_JOBS=1` for the serial build, which produces identical bytes.
 
 SDCC      ?= sdcc
 SDASZ80   ?= sdasz80
 SDLDZ80   ?= sdldz80
 PYTHON    ?= python3
+
+# Parallel by default.  The dependency graph is complete (the package-28
+# zex-fixtures stamp declares its loader-fixture prerequisite), so a
+# parallel build is race-free; `make ZOS_JOBS=1` reproduces the serial
+# build byte for byte.  MAKEFLAGS is exported to recursive image targets.
+ZOS_JOBS  ?= $(shell nproc 2>/dev/null || echo 1)
+MAKEFLAGS += -j$(ZOS_JOBS)
 
 BUILD     := build
 .DEFAULT_GOAL := all
@@ -304,6 +315,20 @@ ZOS_HID_BOOT := 0
 ZOS_V9958_BOOT := 0
 endif
 
+# M9 SYS_EXEC acceptance image (package 28): the SIO-only boot set plus the
+# test-only ramfs provider at `/` and `/R2`, and the extended native
+# programs fstest.zex, fschild.zex, fsraw.zex and fsdeep.zex.  The target
+# hook runs the user-side exec cases and the depth probe.
+ifeq ($(ZOS_M9_EXEC_SELFTEST),1)
+CFLAGS    += -DZOS_M9_EXEC_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m9_exec_test.rel
+PK_SUFFIX := -m9-exec-selftest
+ZOS_MOUNTS := tests/m9/mounts-ramfs.json
+ZOS_IOC_BOOT := 0
+ZOS_HID_BOOT := 0
+ZOS_V9958_BOOT := 0
+endif
+
 # Hardware-smoke host sync (kernel/main.c): the M8 IOC smoke image waits
 # for the host's two-byte sync sequence on SIO0/B before the banner,
 # because this bench's reset line also resets the USB bridge.  Only
@@ -364,7 +389,8 @@ ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL) \
 	$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
 	$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
-	$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST)),)
+	$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST) \
+	$(ZOS_M9_EXEC_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1 \
 		-Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
@@ -468,6 +494,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	m9-required-mount-selftest \
 	m9-provider-selftest \
 	m9-fs-selftest \
+	m9-exec-selftest \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-subsystem smoke-hardware-romfs-corrupt \
@@ -476,7 +503,8 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	smoke-hardware-m8 smoke-hardware-m8-fb-nohid \
 	smoke-hardware-m8-fb-nohid-nov9958 smoke-hardware-m8-fb-badioc \
 	smoke-hardware-m8-fb-arena \
-	smoke-hardware-m9-fs
+	smoke-hardware-m9-fs \
+	smoke-hardware-m9-exec
 
 all: $(IMAGE) $(MAME_IMAGE)
 
@@ -941,7 +969,9 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/m8_selftest.h \
 		tests/target/include/m8_fallback_selftest.h \
 		tests/target/include/m9_selftest.h \
-		tests/target/include/m9_provider_selftest.h | $(BUILD)
+		tests/target/include/m9_provider_selftest.h \
+		tests/target/include/m9_fs_selftest.h \
+		tests/target/include/m9_exec_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # Test-owned CTC0 programming helper (acceptance images only): linked in
@@ -1056,6 +1086,13 @@ $(BUILD)/m9_fs_test.rel: tests/target/m9/m9_fs_test.c \
 		include/zephyros/kernel.h include/zephyros/fs.h \
 		kernel/vfs/vfs.h \
 		tests/target/include/m9_fs_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/m9_exec_test.rel: tests/target/m9/m9_exec_test.c \
+		include/zephyros/process.h include/zephyros/console.h \
+		include/zephyros/kernel.h include/zephyros/fs.h \
+		kernel/vfs/vfs.h \
+		tests/target/include/m9_exec_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M6 native program (ZEXTEST) ---------------------------------------------
@@ -1224,13 +1261,13 @@ $(FSTEST_BUILD)/zex_fs_runtime.rel: user/runtime/zex_fs_runtime.asm | $(FSTEST_B
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(FSTEST_BUILD)/zos_fs.rel: user/runtime/zos_fs.c user/runtime/zex_fs_runtime.h \
-		user/runtime/zex_runtime.h include/zephyros/fs.h \
-		include/zephyros/syscall.h | $(FSTEST_BUILD)
+		user/runtime/zex_exec_runtime.h user/runtime/zex_runtime.h \
+		include/zephyros/fs.h include/zephyros/syscall.h | $(FSTEST_BUILD)
 	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
 
 $(FSTEST_BUILD)/fstest.rel: tests/target/m9/fstest/fstest.c \
-		user/runtime/zex_fs_runtime.h user/runtime/zex_runtime.h \
-		include/zephyros/fs.h | $(FSTEST_BUILD)
+		user/runtime/zex_fs_runtime.h user/runtime/zex_exec_runtime.h \
+		user/runtime/zex_runtime.h include/zephyros/fs.h | $(FSTEST_BUILD)
 	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
 
 $(FSTEST_BUILD)/fstest.lk: $(FSTEST_BUILD)/fstest_entry.rel \
@@ -1300,10 +1337,127 @@ $(MODULES)/fstest_l.zex: $(FSTEST_L_JSON) $(FSTEST_L_BUILD)/fstest_l.ihx \
 	$(PYTHON) tools/zexpack.py pack $(FSTEST_L_JSON) $@ \
 		--objdir $(FSTEST_L_BUILD) --report $(MODULES)/fstest_l.report.json
 
+# --- M9 SYS_EXEC child programs (package 28, FCHILD/FSDEEP/FSRAW.ZEX) ----------
+# Ordinary ZEX programs linked from the shared user runtime plus
+# tests/target/m9/exec; the runtime objects are shared across the three
+# programs.  They are packed into the M9 acceptance /SYSTEM only.
+M9EXEC_DIR := tests/target/m9/exec
+M9EXEC := $(BUILD)/m9exec
+
+$(M9EXEC):
+	mkdir -p $@
+
+$(M9EXEC)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(M9EXEC)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(M9EXEC)/zex_fs_runtime.rel: user/runtime/zex_fs_runtime.asm | $(M9EXEC)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(M9EXEC)/zos_fs.rel: user/runtime/zos_fs.c user/runtime/zex_fs_runtime.h \
+		user/runtime/zex_exec_runtime.h user/runtime/zex_runtime.h \
+		include/zephyros/fs.h include/zephyros/syscall.h | $(M9EXEC)
+	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
+
+M9EXEC_RUNTIME := $(M9EXEC)/zex_runtime.rel $(M9EXEC)/zex_fs_runtime.rel \
+		$(M9EXEC)/zos_fs.rel
+
+M9E_FCHILD_JSON := $(M9EXEC_DIR)/fschild.json
+M9E_FCHILD_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(M9E_FCHILD_JSON) image_size)
+M9E_FCHILD_DATA_BASE := $(shell printf '0x%04X' $$((0x0100 + $(M9E_FCHILD_IMAGE_SIZE))))
+
+$(M9EXEC)/fschild_entry.rel: $(M9EXEC_DIR)/fschild_entry.asm | $(M9EXEC)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(M9EXEC)/fschild.rel: $(M9EXEC_DIR)/fschild.c user/runtime/zex_fs_runtime.h \
+		user/runtime/zex_runtime.h include/zephyros/fs.h | $(M9EXEC)
+	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
+
+$(M9EXEC)/fschild.lk: $(M9EXEC)/fschild_entry.rel $(M9EXEC_RUNTIME) \
+		$(M9EXEC)/fschild.rel $(M9E_FCHILD_JSON) | $(M9EXEC)
+	{ \
+	  printf '%s\n' '-n' '-m' '-w'; \
+	  printf '%s\n' '-i $(M9EXEC)/fschild.ihx'; \
+	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(M9E_FCHILD_DATA_BASE)'; \
+	  printf '%s\n' $(M9EXEC)/fschild_entry.rel $(M9EXEC_RUNTIME) \
+	                $(M9EXEC)/fschild.rel; \
+	  printf '%s\n' '-e'; \
+	} > $@
+
+$(M9EXEC)/fschild.ihx $(M9EXEC)/fschild.map: $(M9EXEC)/fschild.lk
+	$(SDLDZ80) -f $(M9EXEC)/fschild.lk
+
+$(MODULES)/fschild.zex: $(M9E_FCHILD_JSON) $(M9EXEC)/fschild.ihx \
+		$(M9EXEC)/fschild.map tools/zexpack.py | $(MODULES)
+	$(PYTHON) tools/zexpack.py pack $(M9E_FCHILD_JSON) $@ \
+		--objdir $(M9EXEC) --report $(MODULES)/fschild.report.json
+
+M9E_FSDEEP_JSON := $(M9EXEC_DIR)/fsdeep.json
+M9E_FSDEEP_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(M9E_FSDEEP_JSON) image_size)
+M9E_FSDEEP_DATA_BASE := $(shell printf '0x%04X' $$((0x0100 + $(M9E_FSDEEP_IMAGE_SIZE))))
+
+$(M9EXEC)/fsdeep_entry.rel: $(M9EXEC_DIR)/fsdeep_entry.asm | $(M9EXEC)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(M9EXEC)/fsdeep.rel: $(M9EXEC_DIR)/fsdeep.c user/runtime/zex_exec_runtime.h \
+		user/runtime/zex_fs_runtime.h user/runtime/zex_runtime.h | $(M9EXEC)
+	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
+
+$(M9EXEC)/fsdeep.lk: $(M9EXEC)/fsdeep_entry.rel $(M9EXEC_RUNTIME) \
+		$(M9EXEC)/fsdeep.rel $(M9E_FSDEEP_JSON) | $(M9EXEC)
+	{ \
+	  printf '%s\n' '-n' '-m' '-w'; \
+	  printf '%s\n' '-i $(M9EXEC)/fsdeep.ihx'; \
+	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(M9E_FSDEEP_DATA_BASE)'; \
+	  printf '%s\n' $(M9EXEC)/fsdeep_entry.rel $(M9EXEC_RUNTIME) \
+	                $(M9EXEC)/fsdeep.rel; \
+	  printf '%s\n' '-e'; \
+	} > $@
+
+$(M9EXEC)/fsdeep.ihx $(M9EXEC)/fsdeep.map: $(M9EXEC)/fsdeep.lk
+	$(SDLDZ80) -f $(M9EXEC)/fsdeep.lk
+
+$(MODULES)/fsdeep.zex: $(M9E_FSDEEP_JSON) $(M9EXEC)/fsdeep.ihx \
+		$(M9EXEC)/fsdeep.map tools/zexpack.py | $(MODULES)
+	$(PYTHON) tools/zexpack.py pack $(M9E_FSDEEP_JSON) $@ \
+		--objdir $(M9EXEC) --report $(MODULES)/fsdeep.report.json
+
+M9E_FSRAW_JSON := $(M9EXEC_DIR)/fsraw.json
+M9E_FSRAW_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(M9E_FSRAW_JSON) image_size)
+M9E_FSRAW_DATA_BASE := $(shell printf '0x%04X' $$((0x0100 + $(M9E_FSRAW_IMAGE_SIZE))))
+
+$(M9EXEC)/fsraw_entry.rel: $(M9EXEC_DIR)/fsraw_entry.asm | $(M9EXEC)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(M9EXEC)/fsraw.rel: $(M9EXEC_DIR)/fsraw.c | $(M9EXEC)
+	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
+
+$(M9EXEC)/fsraw.lk: $(M9EXEC)/fsraw_entry.rel $(M9EXEC)/fsraw.rel \
+		$(M9E_FSRAW_JSON) | $(M9EXEC)
+	{ \
+	  printf '%s\n' '-n' '-m' '-w'; \
+	  printf '%s\n' '-i $(M9EXEC)/fsraw.ihx'; \
+	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(M9E_FSRAW_DATA_BASE)'; \
+	  printf '%s\n' $(M9EXEC)/fsraw_entry.rel $(M9EXEC)/fsraw.rel; \
+	  printf '%s\n' '-e'; \
+	} > $@
+
+$(M9EXEC)/fsraw.ihx $(M9EXEC)/fsraw.map: $(M9EXEC)/fsraw.lk
+	$(SDLDZ80) -f $(M9EXEC)/fsraw.lk
+
+$(MODULES)/fsraw.zex: $(M9E_FSRAW_JSON) $(M9EXEC)/fsraw.ihx \
+		$(M9EXEC)/fsraw.map tools/zexpack.py | $(MODULES)
+	$(PYTHON) tools/zexpack.py pack $(M9E_FSRAW_JSON) $@ \
+		--objdir $(M9EXEC) --report $(MODULES)/fsraw.report.json
+
 # Deterministic malformed containers (one per validation boundary; see
 # tests/subsys/gen_zex_fixtures.py and gen_zmod_fixtures.py) shared by the
-# subsystem acceptance manifest.
-$(MODULES)/zex-fixtures.stamp: tests/subsys/gen_zex_fixtures.py tools/zexpack.py | $(MODULES)
+# subsystem acceptance manifest.  gen_zmod_fixtures.py derives its damaged
+# ZMODs from the reviewed loader fixture `m4_probe.zmod`, so that fixture
+# is a real prerequisite: `make clean && make zex-test` must be able to
+# build the stamp on its own.
+$(MODULES)/zex-fixtures.stamp: tests/subsys/gen_zex_fixtures.py \
+		tests/subsys/gen_zmod_fixtures.py $(MODULES)/m4_probe.zmod \
+		tools/zexpack.py | $(MODULES)
 	$(PYTHON) tests/subsys/gen_zex_fixtures.py $(MODULES)
 	$(PYTHON) tests/subsys/gen_zmod_fixtures.py $(MODULES)
 	touch $@
@@ -1366,7 +1520,16 @@ else ifeq ($(ZOS_M9_FS_SELFTEST),1)
 # `/R2`, the monitor and the two native filesystem acceptance programs.
 ROMFS_MANIFEST := tests/m9/manifest-fs.json
 ROMFS_EXTRA_DEPS := $(MODULES)/ramfs.zmod $(MODULES)/monitor.zex \
-		$(MODULES)/fstest.zex $(MODULES)/fstest_l.zex
+		$(MODULES)/fstest.zex $(MODULES)/fstest_l.zex \
+		$(MODULES)/fschild.zex $(MODULES)/fsraw.zex
+else ifeq ($(ZOS_M9_EXEC_SELFTEST),1)
+# SIO-only boot: the SIO fallback, the RAM provider at `/` and `/R2`, the
+# monitor and the native exec acceptance programs (the depth probe is only
+# used by this image).
+ROMFS_MANIFEST := tests/m9/manifest-exec.json
+ROMFS_EXTRA_DEPS := $(MODULES)/ramfs.zmod $(MODULES)/monitor.zex \
+		$(MODULES)/fstest.zex $(MODULES)/fschild.zex \
+		$(MODULES)/fsraw.zex $(MODULES)/fsdeep.zex
 else
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
@@ -1409,7 +1572,8 @@ ZOS_TEST_LINK := $(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 		$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL) \
 		$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
 		$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
-		$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST))
+		$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST) \
+		$(ZOS_M9_EXEC_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -1795,6 +1959,22 @@ m9-fs-selftest: all
 	$(PYTHON) -m unittest discover -s tests -p 'test_m9_fs.py' -v
 	@echo "m9 fs image: build-m9-fs-selftest/zephyros-m9-fs-selftest.bin"
 
+# M9 SYS_EXEC acceptance image: SIO-only boot, the test RAM filesystem at
+# `/` and `/R2`, and the native fstest/fschild/fsraw/fsdeep programs.  The
+# target hook runs the user-side exec cases and the depth probe; the
+# simulator replay pins the transcript and the resource baseline.
+
+m9-exec-selftest: all
+	$(MAKE) BUILD=build-m9-exec-selftest ZOS_M9_EXEC_SELFTEST=1 \
+		build-m9-exec-selftest/zephyros-m9-exec-selftest.bin \
+		build-m9-exec-selftest/zephyr80-m9-exec-selftest.bin
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+		build-m9-exec-selftest/zephyros.map \
+		build-m9-exec-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m9_exec_sim.py' -v
+	@echo "m9 exec image: build-m9-exec-selftest/zephyros-m9-exec-selftest.bin"
+
 m8-fallback-selftests: all
 	$(MAKE) BUILD=build-m8-fb-nohid ZOS_M8_FALLBACK_SELFTEST=1 \
 		ZOS_M8_FALLBACK=nohid ZOS_SMOKE_HOST_SYNC=1 \
@@ -1880,7 +2060,7 @@ endef
 hardware-images: all subsystem-selftest romfs-corrupt-selftest \
 		m8-selftest m8-ioc-selftest m8-hid-selftest \
 		m8-v9958-selftest m8-console-selftest m8-fallback-selftests \
-		m9-fs-selftest
+		m9-fs-selftest m9-exec-selftest
 	@echo "hardware-images: every smoke image is built under build*/"
 
 smoke-hardware:
@@ -1941,3 +2121,7 @@ smoke-hardware-m8-fb-arena:
 smoke-hardware-m9-fs:
 	@$(call smoke_preflight,build-m9-fs-selftest/zephyros-m9-fs-selftest.bin,m9-fs-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode m9-fs --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m9-exec:
+	@$(call smoke_preflight,build-m9-exec-selftest/zephyros-m9-exec-selftest.bin,m9-exec-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode m9-exec --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

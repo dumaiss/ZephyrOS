@@ -30,6 +30,9 @@
 #define ZOS_FS_GETCWD   0x1Eu
 #define ZOS_FS_SYNC     0x1Fu
 
+/* SYS_EXEC 05h shares the shared gate stub and scratch block. */
+#define ZOS_EXEC        0x05u
+
 /* One overlay for every argument block; the largest is the rename block. */
 union zos_fs_block {
 	struct zfs_path_args    path;
@@ -215,4 +218,18 @@ int zos_getcwd(char *buffer, unsigned int length)
 int zos_sync(unsigned int fd)
 {
 	return zfs_fd_call(ZOS_FS_SYNC, fd);
+}
+
+/* Run `path` synchronously (SYS_EXEC 05h).  Returns the child's u16 exit
+ * status on success, or -errno.  Path rules match the FS_* family. */
+int zos_exec(const char *path)
+{
+	unsigned int n = zfs_len(path);
+
+	if (n == 0xFFFFu) {
+		return -ZOS_FS_EINVAL;
+	}
+	zos_fs_scratch.path.path = (unsigned int)path;
+	zos_fs_scratch.path.length = n;
+	return zfs_call(ZOS_EXEC, &zos_fs_scratch.path);
 }

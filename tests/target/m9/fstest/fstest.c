@@ -13,6 +13,7 @@
 
 #include "zex_runtime.h"
 #include "zex_fs_runtime.h"
+#include "zex_exec_runtime.h"
 
 /* Native error values (mirror include/zephyros/errno.h). */
 #define FT_EINVAL    0x02
@@ -605,6 +606,110 @@ static int ft_window(void)
 	return 0;
 }
 
+/* --- SYS_EXEC (package 28) ------------------------------------------- */
+
+#define FT_EBUSY   0x04
+#define FT_EFAULT  0x0C
+
+static char ft_cwd[128];
+
+/* Exercised from the user side: fstest runs at depth 1, so every zos_exec
+ * here creates a depth-2 child through the ordinary SYS_EXEC path. */
+static int ft_exec(void)
+{
+	unsigned int i;
+	struct zfs_stat st;
+	int fd;
+	int r;
+
+	/* A fresh working directory for the parent. */
+	r = zos_mkdir("/D1");
+	if (r != 0 && !ft_iserr(r, FT_EEXIST)) {
+		return 1;
+	}
+	if (zos_chdir("/D1") != 0) {
+		return 2;
+	}
+
+	/* The parent's own descriptor, positioned mid-file. */
+	fd = zos_open("/P.TXT", ZFS_O_WRITE | ZFS_O_CREATE | ZFS_O_TRUNC);
+	if (fd < 0) {
+		return 3;
+	}
+	if (zos_write((unsigned int)fd, "parent-offset", 13u) != 13) {
+		return 4;
+	}
+	if (zos_seek((unsigned int)fd, 6, ZFS_SEEK_SET) < 0) {
+		return 5;
+	}
+
+	/* Child: inherits /D1, chdirs to /R2, writes there and exits with
+	 * 0x5A5A leaving the descriptor open. */
+	r = zos_exec("/SYSTEM/fschild.zex");
+	if (r != 0x5A5A) {
+		return 6;
+	}
+
+	/* The child's chdir did not disturb the parent. */
+	r = zos_getcwd(ft_cwd, (unsigned int)sizeof(ft_cwd));
+	if (r != 3 || ft_cwd[0] != '/' || ft_cwd[1] != 'D' ||
+	    ft_cwd[2] != '1' || ft_cwd[3] != '\0') {
+		return 7;
+	}
+	/* The child's file landed in its CWD, never in the parent's. */
+	if (zos_stat("/R2/CHILD.TXT", &st) != 0) {
+		return 8;
+	}
+	if (zos_stat("/D1/CHILD.TXT", &st) == 0) {
+		return 9;
+	}
+
+	/* The parent's descriptor kept its offset and data. */
+	{
+		char b[7];
+
+		if (zos_read((unsigned int)fd, b, 7u) != 7) {
+			return 10;
+		}
+		if (!ft_range_equal(b, "-offset", 7u)) {
+			return 11;
+		}
+	}
+
+	/* A raw entry return is reported as ZOS_EFAULT. */
+	if (zos_exec("/SYSTEM/fsraw.zex") != (int)FT_EFAULT) {
+		return 12;
+	}
+
+	/* Every failure mode returns with the parent unaffected. */
+	if (!ft_iserr(zos_exec("/SYSTEM/absent.zex"), FT_ENOENT)) {
+		return 13;
+	}
+	if (!ft_iserr(zos_exec("/SYSTEM"), FT_EISDIR)) {
+		return 14;
+	}
+	if (!ft_iserr(zos_exec("/SYSTEM/sio.zmod"), FT_EINVAL)) {
+		return 15;
+	}
+	if (zos_getcwd(ft_cwd, (unsigned int)sizeof(ft_cwd)) != 3) {
+		return 16;
+	}
+
+	/* 32 exec/exit cycles must return every resource to baseline. */
+	for (i = 0; i < 32u; ++i) {
+		if (zos_exec("/SYSTEM/fsraw.zex") != (int)FT_EFAULT) {
+			return 17;
+		}
+	}
+
+	(void)zos_close((unsigned int)fd);
+	(void)zos_unlink("/R2/CHILD.TXT");
+	if (zos_chdir("/") != 0) {
+		return 18;
+	}
+	return 0;
+}
+
 /* --- main ------------------------------------------------------------- */
 
 void ft_main(void)
@@ -618,6 +723,7 @@ void ft_main(void)
 	ft_report("writefail", ft_writefail());
 	ft_report("exdev", ft_exdev());
 	ft_report("window", ft_window());
+	ft_report("exec", ft_exec());
 
 	if (ft_pass == ft_total) {
 		ft_puts("fstest: PASS ");

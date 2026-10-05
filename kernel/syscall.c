@@ -29,6 +29,8 @@
 #include "zephyros/process.h"
 #include "zephyros/console.h"
 
+#include "kernel/vfs/vfs.h"
+
 #include "syscall/diag.h"
 #include "syscall/fs.h"
 
@@ -288,6 +290,57 @@ static void syscall_getinfo(uint16_t block)
 	syscall_success(ZOS_GETINFO_SIZE);
 }
 
+/* SYS_EXEC 05h.  Thin composition of the one process machinery: the
+ * depth and frame-size checks run before anything is allocated, then
+ * process_prepare() does every fallible step with its own rollback and
+ * process_launch() enters the child.  Past the launch nothing can fail. */
+static void syscall_exec(uint8_t bank, uint16_t block)
+{
+	struct process_child child;
+	uint8_t pid = process_current_pid();
+	uint16_t len;
+	int result;
+
+	(void)bank; /* the path is copied through the common staging gate */
+	if (!block_ok(block, 4)) {
+		syscall_error(ZOS_EINVAL);
+		return;
+	}
+	if (pid >= PROCESS_TABLE_SIZE || vfs_phase() != VFS_PHASE_READY) {
+		syscall_error(ZOS_EBUSY);
+		return;
+	}
+	/* Depth and frame-size refusals allocate nothing.  The preflight
+	 * measures this handler's frame; the copy the launch gate takes is
+	 * deeper by ZOS_EXEC_FRAME_SLACK at most (see process.h). */
+	if (process_active_count() >= ZOS_EXEC_MAX_DEPTH) {
+		syscall_error(ZOS_EBUSY);
+		return;
+	}
+	len = zos_process_continuation_size();
+	if (len > ZOS_EXEC_FRAME_SAVE - ZOS_EXEC_FRAME_SLACK) {
+		syscall_error(ZOS_EBUSY);
+		return;
+	}
+	result = zos_fs_copy_path(read_le16((const uint8_t *)block),
+				  read_le16((const uint8_t *)(block + 2)),
+				  zos_process_path_scratch);
+	if (result == 0) {
+		result = process_prepare(zos_process_path_scratch, pid, &child);
+	}
+	if (result != 0) {
+		/* Malformed containers (ZEX_EXEC_ERR_* <= -0x20) are EINVAL;
+		 * every other code is a native -ZOS_E* passed through. */
+		syscall_error(result <= -0x20
+				      ? ZOS_EINVAL
+				      : (uint8_t)(uint16_t)(0u -
+						(uint16_t)result));
+		return;
+	}
+	process_launch(&child);
+	syscall_success(process_last_status);
+}
+
 void kernel_syscall_dispatch(void)
 {
 	uint8_t bank = process_current_bank();
@@ -317,6 +370,9 @@ void kernel_syscall_dispatch(void)
 		break;
 	case ZOS_SYSCALL_GETINFO:
 		syscall_getinfo(zos_syscall_args);
+		break;
+	case ZOS_SYSCALL_EXEC:
+		syscall_exec(bank, zos_syscall_args);
 		break;
 	case ZOS_SYSCALL_DIAG_MEM_READ:
 		zos_diag_mem_read(zos_syscall_args);

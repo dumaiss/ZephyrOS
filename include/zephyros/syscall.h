@@ -33,6 +33,7 @@
 #define ZOS_SYSCALL_CONSOLE_READ  0x02u
 #define ZOS_SYSCALL_CONSOLE_POLL  0x03u
 #define ZOS_SYSCALL_GETINFO       0x04u
+#define ZOS_SYSCALL_EXEC          0x05u /* package 28 */
 #define ZOS_SYSCALL_DIAG_MEM_READ  0x28u /* 40 */
 #define ZOS_SYSCALL_DIAG_MEM_WRITE 0x29u /* 41 */
 #define ZOS_SYSCALL_DIAG_IO_IN     0x2Au /* 42 */
@@ -86,6 +87,27 @@ struct zos_console_args {
 };
 
 /* SYS_CONSOLE_POLL takes no block; HL returns 0 (no input) or 1. */
+
+/* SYS_EXEC 05h {path:u16, length:u16} - run a child synchronously
+ * (package 28, docs/abi.md section 11).  `path` addresses 1..127
+ * non-NUL caller-window bytes resolved against the caller's CWD; the
+ * rules are identical to the FS_* family.  On success the child ran to
+ * exit and HL holds its u16 exit status (carry clear), including a
+ * synthesized ZOS_EFAULT from a raw entry return.  On failure carry is
+ * set with a ZOS_E* code in A and nothing was allocated:
+ *
+ *   missing file            ZOS_ENOENT
+ *   directory               ZOS_EISDIR
+ *   malformed/oversize ZEX  ZOS_EINVAL
+ *   no free slot or bank    ZOS_ENOSPC
+ *   nesting/frame limit     ZOS_EBUSY
+ *   provider read error     passed through unchanged
+ *
+ * Descriptors are not inherited and there is no argument passing. */
+struct zos_exec_args {
+	uint16_t path;
+	uint16_t length;
+};
 
 /* SYS_GETINFO writes a six-byte v1 record at the argument block and
  * returns 6 in HL.  Record flags: bit 0 is set when the parent is the
@@ -183,6 +205,12 @@ _Static_assert(sizeof(struct zos_exit_args) == 2,
 	       "exit argument block must be 2 packed bytes");
 _Static_assert(sizeof(struct zos_console_args) == 4,
 	       "console argument block must be 4 packed bytes");
+_Static_assert(sizeof(struct zos_exec_args) == 4,
+	       "exec argument block must be 4 packed bytes");
+_Static_assert(__builtin_offsetof(struct zos_exec_args, path) == 0,
+	       "exec path must be the first argument-block word");
+_Static_assert(__builtin_offsetof(struct zos_exec_args, length) == 2,
+	       "exec length must follow the path word");
 _Static_assert(sizeof(struct zos_info_record) == ZOS_GETINFO_SIZE,
 	       "getinfo record must be 6 packed bytes");
 _Static_assert(__builtin_offsetof(struct zos_info_record, flags) == 4,

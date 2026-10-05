@@ -1,0 +1,11 @@
+{
+  "format": "zex-v1",
+  "name": "fsraw.zex",
+  "input": "fsraw.ihx",
+  "map": "fsraw.map",
+  "entry": "rw_entry",
+  "entry_offset": 0,
+  "image_size": 16,
+  "bss_size": 16,
+  "stack_size": 32
+}

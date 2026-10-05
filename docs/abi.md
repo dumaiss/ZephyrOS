@@ -366,3 +366,85 @@ and replays the whole boot and both programs in the Z80 simulator
 (`tests/test_syscall_sim.py`).  The physical gate is
 `make smoke-hardware-m9-fs SERIAL_PORT=/dev/ttyUSB0`, which expects
 `fstest: PASS`, `fstest: launcher OK` and `m9 fs selftest: OK`.
+
+## 11. M9 native process exec (SYS_EXEC)
+
+```text
+05h  SYS_EXEC   args {path:u16, length:u16}   -> child exit status in HL
+```
+
+`SYS_EXEC` (package 28) runs a child program to completion and returns
+the child's u16 exit status.  It is a thin composition of the existing
+process machinery - the same slot, bank, ZEX loader, page-zero, VFS-hook
+and exit path the kernel launcher uses - plus a bounded continuation
+stack for the shared syscall gate.  There is no second process manager
+and no asynchronous spawn: the call is synchronous, there is no
+`wait`, and no descriptor, environment or argument block is passed.
+
+Rules:
+
+- `path` follows the `FS_*` rules verbatim: 1..127 non-NUL bytes in the
+  caller window `0100h-1FFFh`, copied in through the same shared pathname
+  scratch and resolved against the calling process' CWD.
+- The child inherits the parent's CWD and nothing else: the descriptor
+  pool is not inherited (a child's fd numbers belong to the child), and
+  the parent's open files keep their own offsets and data.  The child's
+  `chdir` never affects the parent.
+- The child is an ordinary process in a fresh application bank: it is
+  never bank 7, it gets its own page zero, and a raw `RET` from its entry
+  is a fault reported as an exit status of `ZOS_EFAULT`, exactly like a
+  program launched by the kernel.
+- Nesting is bounded by `ZOS_EXEC_MAX_DEPTH` (4) user processes in one
+  synchronous chain; the kernel launcher is not one of them.  A
+  suspension needs at most `ZOS_EXEC_FRAME_SAVE` gate-stack bytes
+  (`include/zephyros/process.h`), which the launch gate copies out of the
+  single 256-byte common gate stack and restores before the parent's
+  `SYS_EXEC` returns.
+- Past the suspension point nothing can fail: every allocating or
+  fallible step (path copy-in, slot/bank allocation, CWD start, ZEX
+  load/validate, page zero) happens in `process_prepare()` before the
+  child is entered, with the executable source closed before it returns.
+  `process_launch()` only performs the transition.
+
+Error mapping (carry set, `A` = `ZOS_E*`, nothing allocated):
+
+| Condition | Error |
+| --- | --- |
+| missing file | `ZOS_ENOENT` |
+| directory | `ZOS_EISDIR` |
+| malformed or oversize ZEX | `ZOS_EINVAL` |
+| no free slot or bank | `ZOS_ENOSPC` |
+| depth limit or frame too large | `ZOS_EBUSY` |
+| provider read error | passed through unchanged |
+
+On success carry is clear and `HL` holds the child's exit status; the
+result is not a file descriptor and there is no result block.
+
+Native programs use `user/runtime/zex_exec_runtime.h` (`zos_exec`), which
+takes a NUL-terminated string, rejects a string over 127 bytes or an
+empty/null one locally with `-ZOS_EINVAL`, and returns the child's status
+or the negated native error code.
+
+Implementation notes:
+
+- The syscall gate's transition state (`zos_gate_saved_sp/latch/iff`) is
+  single-depth in common RAM, so every syscall of the running process
+  overwrites it.  The launch gate therefore shadows the launcher's copy
+  per depth and the resume puts it back, which is what lets a *resumed*
+  parent return through the gate with its own stack pointer, bank and
+  interrupt state rather than the child's.
+- One continuation record (`saved_sp`, `saved_latch`, `saved_iff`) exists
+  per depth, plus `ZOS_EXEC_MAX_DEPTH - 1` gate-frame save areas: the
+  outermost process is launched by the kernel from the boot stack and
+  needs no copy.  All of it is common-resident (`kernel/process/launch.asm`),
+  so a child running in mode 10 cannot reach it.
+
+Validation: `make m9-exec-selftest` builds the SIO-only image that runs
+the extended `fstest.zex` `exec` case and the recursive `fsdeep.zex` depth
+probe (which must stop at exactly `ZOS_EXEC_MAX_DEPTH` with `ZOS_EBUSY`);
+`tests/test_m9_exec_sim.py` replays it and checks the restored gate frame
+byte-for-byte at every depth, and `tests/test_m9_exec.py` pins the ABI,
+the geometry and the production image.  The physical gate is
+`make smoke-hardware-m9-exec SERIAL_PORT=/dev/ttyUSB0`, which observed
+`fstest: exec OK`, `fstest: PASS 10/10` and `m9 exec selftest: OK` on the
+bench (2026-10-05; `docs/validation/2026-10-05-m9-nested-exec.md`).

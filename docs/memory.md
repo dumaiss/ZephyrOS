@@ -29,7 +29,7 @@ E000h +-------------------------------+
 | `arena start-data base` | bank 7 in mode 11 | driver arena, derived since package 25b from the aligned linked-kernel end `__driver_arena_start` to the derived data base, at least 32 x 512-byte granules (16 KiB) in production; test-hook images check 16 as the minimum and rely on the boot-set plan. Never part of the ROM payload and never linked by content |
 | `data base-DFFFh` | bank 7 in mode 11 | zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded; the base is derived per image |
 | `DF00h-DFFFh` | bank 7 in mode 11 | 256-byte M2 ISR stack; initial `SP=E000h` |
-| `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`), including the M5 ROM-access staging buffer; `EEFEh-EF07h` is the fixed ROM-access transition block (trampoline + mirrored stub) |
+| `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`), including the M5 ROM-access staging buffer and the package-28 exec continuation state; `EEFEh-EF07h` is the fixed ROM-access transition block (trampoline + mirrored stub) |
 | `FD00h-FDFFh` | physical bank 0 | 256-byte-aligned IM2 vector page (`I=FDh`) |
 | `FE00h` | physical bank 0 | vector-`FFh` guard byte |
 | `FE01h-FE7Fh` | physical bank 0 | common IRQ transition state |
@@ -284,6 +284,10 @@ _platform_bank_get/set selected-bank primitives
 _early_console_*       early serial console
 _panic                 fatal path
 _rom_access_copy       M5 ROMFS access primitive (mode-00 window)
+_zos_process_launch    process entry gate (depth-indexed continuation)
+_zos_process_resume    parent resume gate (never returns to its caller)
+_zos_process_continuation_size  gate-stack bytes in use (SYS_EXEC preflight)
+zos_process_return_trap  raw entry RET -> ZOS_EFAULT teardown
 ```
 
 The bank-7 syscall boundary (`zos_syscall_dispatch`) and the C dispatcher
@@ -295,7 +299,8 @@ strings) so diagnostics survive mode/bank transitions.
 
 ## 4. Transition-critical state (`_COMMON_DATA`)
 
-Single-depth by design (interrupts and nesting are out of scope at M1):
+Single-depth by design (interrupts and nesting were out of scope at M1; a
+package-28 exec shadows the process side per depth, below):
 
 ```text
 zos_gate_saved_sp      2 bytes   caller SP (RST-pushed PC just below it)
@@ -311,6 +316,33 @@ one module class operation that runs a full device transaction: the M8
 console read path (`console_getc` -> HID character input -> IOC command
 -> SIO transport) reaches roughly 180 bytes below the top, so the size
 is held at 256 bytes.
+
+Package 28 makes the *process* side of that state depth-indexed, because
+a nested `SYS_EXEC` runs its child on the same single gate stack:
+
+```text
+zos_proc_cont          8 bytes   launcher SP per depth (2 bytes x 4)
+zos_proc_ix            8 bytes   launcher IX (SDCC frame pointer) per depth
+zos_proc_latch         4 bytes   launcher latch per depth
+zos_proc_iff           4 bytes   launcher IFF2 per depth
+zos_proc_gate_sp       8 bytes   shadowed gate caller SP per depth
+zos_proc_gate_latch    4 bytes   shadowed gate caller latch per depth
+zos_proc_gate_iff      4 bytes   shadowed gate caller IFF per depth
+zos_proc_frames      144 bytes   3 x 48-byte saved gate frames
+_zos_process_path_scratch 128 bytes  stable copy of a SYS_EXEC path
+```
+
+`zos_gate_saved_sp/latch/iff` stay single-depth (they are what the gate
+saves and restores for one syscall); the `zos_proc_gate_*` copies are the
+per-depth shadow that lets a resumed parent return through the gate with
+*its* stack pointer, bank and interrupt state instead of its child's.
+`ZOS_EXEC_FRAME_SAVE` is 48 bytes: the measured copied frame is 32 bytes
+at every depth in the acceptance image (recorded beside the constant in
+`include/zephyros/process.h`), and the preflight rejects a shallower
+handler frame above `ZOS_EXEC_FRAME_SAVE - ZOS_EXEC_FRAME_SLACK` before
+anything is allocated.  All of it is common-resident, so a child running
+in mode 10 cannot reach it and the bank-7 arena pays nothing for the
+mechanism.
 
 M5 adds the ROM-access block in the same common data area:
 

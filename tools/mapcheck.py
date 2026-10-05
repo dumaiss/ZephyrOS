@@ -594,12 +594,13 @@ VFS_BANK7_PREFIXES = ("_vfs_",)
 # common-resident gates are listed in COMMON_ROUTINES instead).
 M6_BANK7_ROUTINES = (
     "_process_exec",
+    "_process_prepare",
+    "_process_launch",
     "_process_exit",
     "_process_abort",
     "_process_alloc_bank",
     "_process_slot_alloc",
     "_process_slot_release",
-    "_process_launch_child",
     "_zex_validate_header",
 )
 
@@ -637,15 +638,31 @@ M6_COMMON_STATE = (
     "zos_copy_saved_iff",
     "zos_copy_stack",
     "zos_copy_stack_top",
-    "zos_proc_saved_sp",
-    "zos_proc_saved_latch",
-    "zos_proc_saved_iff",
+    "zos_proc_cont",
+    "zos_proc_ix",
+    "zos_proc_latch",
+    "zos_proc_iff",
+    "zos_proc_index",
+    "zos_proc_status",
     "zos_proc_bank",
     "zos_proc_entry",
+    "zos_proc_gate_sp",
+    "zos_proc_gate_latch",
+    "zos_proc_gate_iff",
+    "zos_proc_frames",
+    "zos_proc_frames_end",
+    "_zos_process_path_scratch",
 )
 
 USER_COPY_STAGING_SIZE = 64
 USER_COPY_STACK_SIZE = 16
+
+# Package 28 continuation state: ZOS_EXEC_MAX_DEPTH levels, with
+# ZOS_EXEC_MAX_DEPTH - 1 gate-frame save areas of ZOS_EXEC_FRAME_SAVE
+# bytes (include/zephyros/process.h; pinned here so a mismatch fails the
+# production map rather than silently truncating a saved frame).
+ZOS_EXEC_MAX_DEPTH = 4
+ZOS_EXEC_FRAME_SAVE = 48
 
 # M5 ROM-access transition state: permanent common memory only.  The
 # staging buffer and saved latch/IFF/request state are what the
@@ -1053,6 +1070,17 @@ def check_symbols(areas, symbols, production=False):
     if stack_delta != USER_COPY_STACK_SIZE:
         raise MapError("user copy stack is %d bytes, expected %d"
                        % (stack_delta, USER_COPY_STACK_SIZE))
+
+    # Package 28: the continuation stack must be sized for the pinned
+    # depth and frame save, not truncated by a stale assembly .ds.
+    frames_delta = (symbols["zos_proc_frames_end"]
+                    - symbols["zos_proc_frames"])
+    expected_frames = ZOS_EXEC_FRAME_SAVE * (ZOS_EXEC_MAX_DEPTH - 1)
+    if frames_delta != expected_frames:
+        raise MapError("exec frame saves are %d bytes, expected %d "
+                       "(%d x %d)" % (frames_delta, expected_frames,
+                                      ZOS_EXEC_MAX_DEPTH - 1,
+                                      ZOS_EXEC_FRAME_SAVE))
 
     # M4/M8: exported arena bounds must match the layout build's declared
     # geometry and granule arithmetic exactly.  In derived (production)

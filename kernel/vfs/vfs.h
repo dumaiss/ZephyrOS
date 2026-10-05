@@ -23,6 +23,7 @@
 #include "zephyros/fs.h"
 #include "zephyros/vfs.h"
 #include "zephyros/module.h"
+#include "zephyros/process.h"
 #include "kernel/vfs/mount_config.h"
 
 /* --- lifecycle -------------------------------------------------------- */
@@ -352,8 +353,8 @@ int vfs_closedir(struct vfs_dir *dir);
 
 /* Up to ZOS_EXEC_MAX_DEPTH active process chain levels hold a canonical
  * 128-byte CWD each; a process inherits its parent's CWD and releases it
- * on exit.  The kernel launcher's CWD is the constant `/`. */
-#define ZOS_EXEC_MAX_DEPTH 4u
+ * on exit.  The kernel launcher's CWD is the constant `/`.
+ * (ZOS_EXEC_MAX_DEPTH is owned by include/zephyros/process.h.) */
 
 struct vfs_descriptor {
 	uint8_t owner;   /* pid 0-6, or VFS_FD_NONE when FREE */

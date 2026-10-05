@@ -465,11 +465,12 @@ class TestSubsystemSmokeMode(unittest.TestCase):
 class TestProductionSmokeMode(unittest.TestCase):
     """--mode normal (make smoke-hardware): the production boot contract.
 
-    The mode used to accept the banner alone; it now requires the console
-    service line and the monitor prompt, because that is what the current
-    production image actually prints on hardware (optional boot-module
-    diagnostics stay tolerated -- an SIO-only bench is a supported
-    fallback)."""
+    The production console binds to the V9958, so the serial link only ever
+    carries the early banner.  The contract is therefore what serial can
+    observe: the four banner lines in order, then a quiet window with no
+    PANIC, no failed console bind and no '<module>: unavailable' line.  A
+    bench whose console falls back to SIO still gets the stronger check
+    (console line + monitor banner + prompt)."""
 
     def transcript(self, diagnostics=b""):
         import serial_smoke
@@ -479,7 +480,7 @@ class TestProductionSmokeMode(unittest.TestCase):
                 + serial_smoke.MONITOR_BANNER
                 + serial_smoke.SUBSYS_PROMPT)
 
-    def run_main(self, payload, timeout=0.05):
+    def run_main(self, payload, timeout=0.05, quiet=0):
         import serial_smoke
 
         fake = types.ModuleType("serial")
@@ -497,7 +498,7 @@ class TestProductionSmokeMode(unittest.TestCase):
                     contextlib.redirect_stderr(err):
                 code = serial_smoke.main(
                     ["--mode", "normal", "--port", "FAKE",
-                     "--timeout", str(timeout)])
+                     "--timeout", str(timeout), "--quiet", str(quiet)])
         finally:
             if previous is None:
                 del sys.modules["serial"]
@@ -505,20 +506,67 @@ class TestProductionSmokeMode(unittest.TestCase):
                 sys.modules["serial"] = previous
         return code, out.text.getvalue(), err.getvalue()
 
-    def test_banner_console_and_monitor_prompt_pass(self):
+    def test_sio_fallback_transcript_passes_the_strong_check(self):
         code, out, err = self.run_main(self.transcript())
         self.assertEqual(code, 0, err)
         self.assertIn("serial_smoke: OK", out)
 
-    def test_optional_module_diagnostics_are_tolerated(self):
-        code, _out, err = self.run_main(
-            self.transcript(diagnostics=b"v9958: unavailable 0x05\r\n"))
+    def test_sio_fallback_transcript_prints_no_display_hint(self):
+        code, _out, err = self.run_main(self.transcript())
         self.assertEqual(code, 0, err)
+        self.assertNotIn("V9958", err)
 
-    def test_banner_alone_is_not_enough(self):
+    def test_banner_alone_passes_with_an_operator_step(self):
+        """The V9958-bound production boot is a PASS on serial alone."""
         import serial_smoke
 
-        code, _out, err = self.run_main(serial_smoke.BANNER)
+        code, out, err = self.run_main(serial_smoke.BANNER)
+        self.assertEqual(code, 0, err)
+        self.assertIn("banner-only PASS", out)
+        self.assertIn("operator step", out)
+        self.assertIn("V9958", out)
+        self.assertIn("Z80>", out)
+
+    def test_optional_module_diagnostics_fail(self):
+        """'<module>: unavailable' is a boot failure, never tolerated."""
+        code, _out, err = self.run_main(
+            self.transcript(diagnostics=b"v9958: unavailable 0x05\r\n"))
+        self.assertEqual(code, 1)
+        self.assertIn("was not observed", err)
+
+    def test_panic_after_the_banner_fails(self):
+        import serial_smoke
+
+        code, _out, err = self.run_main(
+            serial_smoke.BANNER + b"PANIC: kernel: boot aborted\r\n")
+        self.assertEqual(code, 1)
+        self.assertIn("was not observed", err)
+
+    def test_unavailable_module_after_the_banner_fails(self):
+        import serial_smoke
+
+        code, _out, err = self.run_main(
+            serial_smoke.BANNER + b"ramfs: unavailable 0x07\r\n")
+        self.assertEqual(code, 1)
+        self.assertIn("was not observed", err)
+
+    def test_missing_banner_line_fails(self):
+        import serial_smoke
+
+        # Drop the last banner line: three of four is not a boot.
+        partial = serial_smoke.BANNER.rsplit(b"\r\n", 2)[0]
+        code, _out, err = self.run_main(partial)
+        self.assertEqual(code, 1)
+        self.assertIn("was not observed", err)
+
+    def test_out_of_order_banner_fails(self):
+        import serial_smoke
+
+        lines = serial_smoke.BANNER.split(b"\r\n")
+        swapped = b"".join(line + b"\r\n" for line in
+                           [lines[1], lines[0]] + lines[2:])
+        self.assertNotEqual(swapped, serial_smoke.BANNER)
+        code, _out, err = self.run_main(swapped)
         self.assertEqual(code, 1)
         self.assertIn("was not observed", err)
 
@@ -530,22 +578,13 @@ class TestProductionSmokeMode(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("was not observed", err)
 
-    def test_v9958_bound_banner_only_explains_the_display_gate(self):
-        """A healthy V9958-bound boot captures only the early banner on
-        serial; the failure message must point the operator at the
-        display rather than leaving a bare FAIL."""
+    def test_failed_console_bind_fails(self):
         import serial_smoke
 
-        code, _out, err = self.run_main(serial_smoke.BANNER)
+        code, _out, err = self.run_main(
+            serial_smoke.BANNER + b"console: dynamic driver failed\r\n")
         self.assertEqual(code, 1)
         self.assertIn("was not observed", err)
-        self.assertIn("V9958", err)
-        self.assertIn("display", err)
-
-    def test_bound_console_prints_no_display_hint(self):
-        code, _out, err = self.run_main(self.transcript())
-        self.assertEqual(code, 0, err)
-        self.assertNotIn("V9958", err)
 
 
 if __name__ == "__main__":

@@ -12,8 +12,12 @@ pinned `FS_*` syscall family (`10h-1Fh`), the user runtime wrappers and
 the `fstest.zex` acceptance program.  Host-validated, simulator-accepted
 and physically accepted 2026-10-05 (`make smoke-hardware-m9-fs` observed
 `fstest: PASS 9/9`, `fstest: launcher OK`, `m9 fs selftest: OK` on
-hardware; see `docs/validation/2026-10-05-m9-fs-syscalls.md`).  Bank-7
-residency is reported against the architecture section 32.39 ledger.
+hardware; see `docs/validation/2026-10-05-m9-fs-syscalls.md`).  Package
+`28-m9-nested-exec` adds the `exec` case to `fstest.zex`; its acceptance
+image was re-run on the bench the same day, where the extended suite printed
+`fstest: PASS 10/10` and the target hook printed `m9 exec selftest: OK`
+(`docs/validation/2026-10-05-m9-nested-exec.md`).  Bank-7 residency is reported against the architecture
+section 32.39 ledger.
 
 This document records the implementation of the M9 bootstrap slice:
 the kernel VFS core, the generated static mount table, and the ROMFS
@@ -589,8 +593,11 @@ CWD were released.  `tests/test_syscall_sim.py` replays the linked image,
 checks the transcript and the released pool, and asserts the worst-case
 kernel gate-stack depth stays inside 256 bytes.  The physical gate is
 `make smoke-hardware-m9-fs SERIAL_PORT=/dev/ttyUSB0`, which observed
-`fstest: PASS 9/9`, `fstest: launcher OK` and `m9 fs selftest: OK` on
-hardware (2026-10-05; `docs/validation/2026-10-05-m9-fs-syscalls.md`).
+`fstest: PASS 9/9`, `fstest: launcher OK` and `m9 fs selftest: OK`
+on hardware (2026-10-05; `docs/validation/2026-10-05-m9-fs-syscalls.md`).
+Package 28 extends the suite with the `exec` case, so the current image
+prints `fstest: PASS 10/10`; that was confirmed on hardware the same day
+(`docs/validation/2026-10-05-m9-nested-exec.md`).
 
 **Budget (section 32.39).** The production ledger moved from package 26
 (`code 23526 end 7BE6h`, `arena 46 granules`, `data 1501`) to package 27
@@ -612,3 +619,13 @@ release the workspace view at a single `out:` exit instead of through a
 bracketing wrapper call.  The corrected production image boots on hardware
 to the V9958 monitor prompt with the same `scratch=0F19` figure as before
 the correction (2026-10-05; `docs/validation/2026-10-05-m9-fs-syscalls.md`).
+
+Package 28 (`SYS_EXEC`) then takes the production ledger to
+`code 28159 end 8DFFh | arena 36 granules (20 boot, 16 free) | data 2113 at
+D600h | isr 256 | slack 191`: `+400` `_CODE`, `+0` bank-7 `_DATA`, arena
+unchanged, because the whole continuation mechanism (per-depth records,
+three 48-byte frame saves, the gate-state shadows and the `SYS_EXEC` path
+scratch) is common-resident, where a mode-10 child cannot reach it
+(`docs/validation/2026-10-05-m9-nested-exec.md`).  The `fstest` suite runs
+one more case (`exec`, `PASS 10/10`, confirmed on hardware) and the nested
+`exec` acceptance is replayed by `tests/test_m9_exec_sim.py`.

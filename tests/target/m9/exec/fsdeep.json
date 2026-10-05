@@ -1,0 +1,15 @@
+{
+  "format": "zex-v1",
+  "name": "fsdeep.zex",
+  "input": "fsdeep.ihx",
+  "map": "fsdeep.map",
+  "entry": "dp_entry",
+  "entry_offset": 0,
+  "image_size": 896,
+  "bss_size": 128,
+  "stack_size": 128,
+  "scratch": {
+    "symbol": "zos_fs_scratch",
+    "size": 16
+  }
+}

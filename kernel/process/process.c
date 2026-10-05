@@ -7,11 +7,12 @@
  * The table is process metadata only: the child's memory lives in its
  * application bank and its saved launcher context lives in common state
  * (kernel/process/launch.asm).  A failed load never leaves a slot or a
- * bank reserved; process_exec() in exec.c performs the loading and rolls
- * back through process_slot_release() below.
+ * bank reserved; process_prepare() in exec.c performs the loading and
+ * rolls back through process_slot_release() below.
  *
- * Single-tasking contract: at most one process is RUNNING, and the
- * launch/resume gates are single-depth (no nested exec).
+ * Single-tasking contract: at most one process is RUNNING, and one
+ * synchronous exec chain of at most ZOS_EXEC_MAX_DEPTH processes may be
+ * suspended at once (package 28).
  */
 
 #include "zephyros/process.h"
@@ -19,8 +20,8 @@
 #include "kernel/vfs/vfs.h"
 
 /* Common-resident gates (kernel/process/launch.asm). */
-void zos_process_launch(uint8_t bank, uint16_t entry);
-void zos_process_resume(void);
+void zos_process_launch(const struct zos_process_launch_req *req);
+void zos_process_resume(const struct zos_process_resume_req *req);
 
 struct process process_table[PROCESS_TABLE_SIZE];
 uint16_t process_last_status;
@@ -142,33 +143,104 @@ uint8_t process_current_bank(void)
 	return process_table[process_running_pid].bank;
 }
 
-/* Mark the loaded child RUNNING and enter it.  Returns only after the
- * child exited and the launcher was resumed exactly. */
-void process_launch_child(uint8_t pid, uint8_t bank, uint16_t entry)
+/* Mark the loaded child RUNNING, suspend the launcher, and enter it
+ * through the common gate.  Returns only after the child exited and the
+ * launcher context was restored exactly. */
+void process_launch(const struct process_child *child)
 {
-	process_table[pid].state = PROCESS_RUNNING;
-	process_running_pid = pid;
-	zos_process_launch(bank, entry);
+	struct zos_process_launch_req req;
+	uint8_t index = (uint8_t)(process_active_count() - 1u);
+
+	/* The launching process (when any) is suspended at this depth; the
+	 * continuation index is its depth.  The kernel launcher runs at
+	 * depth 0 on the boot stack and needs no gate frame. */
+	if (process_running_pid < PROCESS_TABLE_SIZE) {
+		process_table[process_running_pid].state = PROCESS_SUSPENDED;
+	}
+	process_table[child->pid].state = PROCESS_RUNNING;
+	process_running_pid = child->pid;
+
+	req.bank = child->bank;
+	req.entry = child->entry;
+	req.index = index;
+	/* Suspension point.  Everything the launcher can still need is either
+	 * its own stack frame on the common gate stack (which the gate saves
+	 * per depth) or common state: the child's SYS_EXEC path went through
+	 * the common path scratch, process_prepare() returned its loader and
+	 * provider state to the callers, the executable source is closed and
+	 * no borrowed VFS workspace view outlives the call.  The child is
+	 * free to reuse all of it; restoring the saved frame restores only
+	 * the launcher's own continuation. */
+	zos_process_launch(&req);
+}
+
+/* Kernel-launcher convenience wrapper: prepare a depth-0 child, then run
+ * it.  The child/parent linkage, the loader path and the exit path are
+ * shared with SYS_EXEC; only the returned error space differs (the M6
+ * ZEX_EXEC_ERR_* codes are preserved for the boot launcher and its
+ * acceptance tests). */
+int process_exec(const char *path, uint16_t *status)
+{
+	struct process_child child;
+	int result;
+
+	if (path == (const char *)0 || status == (uint16_t *)0) {
+		return ZEX_EXEC_ERR_ARG;
+	}
+	result = process_prepare(path, PROCESS_KERNEL_PARENT, &child);
+	if (result != 0) {
+		if (result == -ZOS_ENOENT) {
+			return ZEX_EXEC_ERR_ROMFS;
+		}
+		if (result == -ZOS_EISDIR || result == -ZOS_ENOTDIR ||
+		    result == -ZOS_EINVAL) {
+			return ZEX_EXEC_ERR_TYPE;
+		}
+		if (result == -ZOS_ENOSPC || result == -ZOS_EBUSY) {
+			return ZEX_EXEC_ERR_NOSPACE;
+		}
+		if (result <= -0x20) {
+			return result; /* granular ZEX_EXEC_ERR_* */
+		}
+		return ZEX_EXEC_ERR_READ; /* provider read error */
+	}
+	process_launch(&child);
+	*status = process_last_status;
+	return ZEX_EXEC_OK;
 }
 
 /* Teardown: release the running child's resources, then resume the
- * suspended parent through the common gate.  Never returns to its
- * caller (the caller runs on a stack that is abandoned with the child). */
+ * suspended parent through the common gate.  Never returns to its caller
+ * (the caller runs on a stack that is abandoned with the child).  The
+ * child's status becomes the resumed SYS_EXEC's result; a kernel-parent
+ * child resumes the boot launcher instead. */
 void process_exit(uint16_t status)
 {
+	struct zos_process_resume_req req;
 	uint8_t pid = process_running_pid;
+	uint8_t parent;
 
 	process_last_status = status;
 	if (pid >= PROCESS_TABLE_SIZE) {
 		panic("process exit without a running process");
 	}
 	process_table[pid].exit_status = status;
+	parent = process_table[pid].parent;
 	process_table[pid].state = PROCESS_FREE;
 	process_running_pid = PROCESS_NO_PROCESS;
 	/* Close every descriptor the pid owned (with close semantics) and
 	 * release its CWD slot before the parent resumes. */
 	vfs_process_exit(pid);
-	zos_process_resume();
+
+	/* After the child is released the active count is the parent's
+	 * depth, which is also the continuation index saved at its launch. */
+	req.status = status;
+	req.index = process_active_count();
+	if (parent < PROCESS_TABLE_SIZE) {
+		process_table[parent].state = PROCESS_RUNNING;
+		process_running_pid = parent;
+	}
+	zos_process_resume(&req);
 	for (;;) {
 		/* zos_process_resume never returns. */
 	}

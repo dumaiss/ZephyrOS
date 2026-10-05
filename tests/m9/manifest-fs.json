@@ -25,6 +25,16 @@
       "name": "fstest_l.zex",
       "type": "ZEX",
       "path": "fstest_l.zex"
+    },
+    {
+      "name": "fschild.zex",
+      "type": "ZEX",
+      "path": "fschild.zex"
+    },
+    {
+      "name": "fsraw.zex",
+      "type": "ZEX",
+      "path": "fsraw.zex"
     }
   ]
 }

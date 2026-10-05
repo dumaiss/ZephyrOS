@@ -182,6 +182,10 @@ MONITOR_BANNER = b"ZephyrOS native monitor"
 PRODUCTION_CONSOLE_FAIL = (b"console: unbound\r\n",
                            b"console: dynamic driver failed\r\n",
                            b"console: service failed\r\n")
+# A failed optional boot module prints "<name>: unavailable 0x<code>"; the
+# production boot set must be complete, so this is a failure in the
+# banner-only contract too.
+MODULE_UNAVAILABLE = b": unavailable 0x"
 SUBSYS_EXIT = b"monitor: exit status 0x"
 
 # --- corrupt-store image -----------------------------------------------------
@@ -313,18 +317,35 @@ M8FB_MODES = {
 }
 
 
-def _production_result(data):
-    """True when the production boot reached the monitor prompt.
+def _production_failure(data):
+    """True when the production boot reported a fatal condition."""
+    return (b"PANIC" in data
+            or any(marker in data for marker in PRODUCTION_CONSOLE_FAIL)
+            or MODULE_UNAVAILABLE in data)
 
-    The banner, the console-service line, the monitor banner and the
-    prompt must all be present; optional boot-module diagnostics are
-    allowed (an SIO-only bench is a supported fallback), while a panic,
-    an unbound console or a failed console bind is never acceptable."""
-    if b"PANIC" in data or any(marker in data
-                              for marker in PRODUCTION_CONSOLE_FAIL):
-        return False
+
+def _production_strong(data):
+    """True when the SIO-fallback bench printed the console/monitor lines.
+
+    This is the stronger contract: a bench whose console falls back to SIO
+    prints the console-service line, the monitor banner and the prompt."""
     return all(needle in data for needle in
                (BANNER, CONSOLE_DYNAMIC_OK, MONITOR_BANNER, SUBSYS_PROMPT))
+
+
+def _production_result(data, quiet_elapsed):
+    """The production boot contract.
+
+    On real hardware the production console binds to the V9958, so serial
+    carries only the 65-byte early banner.  PASS when the four banner lines
+    arrive in order and no failure marker follows within the quiet window.
+    If the console/monitor lines do reach serial (an SIO-fallback bench),
+    the stronger check applies."""
+    if _production_failure(data):
+        return False
+    if _production_strong(data):
+        return True
+    return BANNER in data and quiet_elapsed
 
 
 def _m8_result(data):
@@ -505,6 +526,20 @@ def _m9fs_result(data):
             M9FS_LAUNCHER_OK in data and M9FS_SELFTEST_OK in data)
 
 
+M9EXEC_SELFTEST_OK = b"m9 exec selftest: OK\r\n"
+M9EXEC_SELFTEST_FAIL = b"m9 exec selftest: FAIL"
+
+
+def _m9exec_result(data):
+    """True when the M9 SYS_EXEC acceptance reported success: the native
+    fstest suite (including its exec cases) passed and the target hook
+    reported OK, with no FAIL/PANIC marker."""
+    if M9FS_FAIL in data or M9EXEC_SELFTEST_FAIL in data or b"PANIC" in data:
+        return False
+    return (BANNER in data and M9FS_PASS in data and
+            M9EXEC_SELFTEST_OK in data)
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="ZephyrOS serial smoke check")
     parser.add_argument("--port", default=os.environ.get("ZOS_SERIAL_PORT", ""))
@@ -518,11 +553,16 @@ def main(argv):
                                            "m8-fb-nohid",
                                            "m8-fb-nohid-nov9958",
                                            "m8-fb-badioc", "m8-fb-arena",
-                                           "m9-fs"),
+                                           "m9-fs", "m9-exec"),
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
     )
+    parser.add_argument(
+        "--quiet", type=float,
+        default=float(os.environ.get("ZOS_SERIAL_QUIET", "5")),
+        help="normal mode: quiet window after the banner before a "
+             "banner-only PASS (default 5s)")
     args = parser.parse_args(argv)
 
     if not args.port:
@@ -639,6 +679,7 @@ def main(argv):
     bridge_drops = 0
     host_sync_at = 0.0
     rx_byte_sent = False
+    normal_banner_at = 0.0
     try:
         while time.monotonic() < deadline:
             if link is None:
@@ -687,15 +728,7 @@ def main(argv):
                 continue
             if chunk:
                 data += chunk
-                if args.mode == "normal":
-                    if (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-                            MONITOR_BANNER in data and SUBSYS_PROMPT in data):
-                        break
-                    if b"PANIC" in data or any(
-                            marker in data
-                            for marker in PRODUCTION_CONSOLE_FAIL):
-                        break
-                elif args.mode == "subsystem":
+                if args.mode == "subsystem":
                     # The monitor step is interactive: send Q once the
                     # prompt appears, then finish on the exit line (the
                     # launcher relaunches the monitor after a normal exit,
@@ -741,6 +774,10 @@ def main(argv):
                     if _m9fs_result(data) or M9FS_FAIL in data or \
                             M9FS_SELFTEST_FAIL in data:
                         break
+                elif args.mode == "m9-exec":
+                    if _m9exec_result(data) or M9FS_FAIL in data or \
+                            M9EXEC_SELFTEST_FAIL in data:
+                        break
                 elif args.mode in M8FB_MODES:
                     if M8FB_SEND_INPUT in data and not rx_byte_sent:
                         try:
@@ -753,6 +790,19 @@ def main(argv):
                               % M8FB_INPUT_BYTE)
                     if _m8fb_result(args.mode, data) or M8FB_FAIL in data:
                         break
+            if args.mode == "normal":
+                # Banner-only contract: the V9958-bound production console
+                # sends only the early banner on serial.  PASS once the
+                # banner is complete and the quiet window elapsed with no
+                # failure marker; an SIO-fallback bench passes early on the
+                # stronger console/monitor evidence.
+                if BANNER in data and normal_banner_at == 0.0:
+                    normal_banner_at = time.monotonic()
+                if _production_failure(data) or _production_strong(data):
+                    break
+                if normal_banner_at != 0.0 and (
+                        time.monotonic() - normal_banner_at >= args.quiet):
+                    break
     finally:
         if link is not None:
             try:
@@ -766,10 +816,21 @@ def main(argv):
     sys.stdout.buffer.write(data + (b"" if data.endswith(b"\n") else b"\n"))
 
     if args.mode == "normal":
-        ok = _production_result(data)
-        expected = ("the exact banner, 'console: dynamic sio0.b OK', the "
-                    "monitor banner and the 'Z80> ' prompt, with no PANIC "
-                    "and no failed console bind")
+        quiet_elapsed = (normal_banner_at != 0.0 and
+                         time.monotonic() - normal_banner_at >= args.quiet) \
+            or _production_strong(data) or _production_failure(data)
+        ok = _production_result(data, quiet_elapsed)
+        expected = ("the four banner lines in order and a quiet %gs window "
+                    "with no PANIC, no failed console bind and no "
+                    "'<module>: unavailable' line; or, on an SIO-fallback "
+                    "bench, 'console: dynamic sio0.b OK', the monitor "
+                    "banner and the 'Z80> ' prompt" % args.quiet)
+        if ok and not _production_strong(data):
+            print("serial_smoke: banner-only PASS - the production console "
+                  "is bound to the V9958, so serial carries only the banner")
+            print("serial_smoke: operator step: confirm on the V9958 the "
+                  "monitor banner, the status line and the 'Z80>' prompt, "
+                  "then type a key")
     elif args.mode == "subsystem":
         ok = _subsys_complete(data)
         expected = ("the banner, the dynamic console line, the five "

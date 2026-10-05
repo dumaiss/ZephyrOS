@@ -28,6 +28,7 @@ RUNTIME_ASM = ROOT / "user" / "runtime" / "zex_fs_runtime.asm"
 RUNTIME_H = ROOT / "user" / "runtime" / "zex_fs_runtime.h"
 RUNTIME_C = ROOT / "user" / "runtime" / "zos_fs.c"
 VFS_H = ROOT / "kernel" / "vfs" / "vfs.h"
+PROCESS_H = ROOT / "include" / "zephyros" / "process.h"
 VFS_PROCESS = ROOT / "kernel" / "vfs" / "process.c"
 MAKEFILE = ROOT / "Makefile"
 MANIFEST_FS = ROOT / "tests" / "m9" / "manifest-fs.json"
@@ -165,9 +166,14 @@ class TestDescriptorPoolShape(unittest.TestCase):
                        "#define VFS_DESC_FREE      0u",
                        "#define VFS_DESC_FILE      1u",
                        "#define VFS_DESC_DIRECTORY 2u",
-                       "#define ZOS_EXEC_MAX_DEPTH 4u",
                        "sizeof(struct vfs_descriptor) == 17"):
             self.assertIn(needle, text)
+        # The nesting depth the CWD pool is sized from is owned by
+        # include/zephyros/process.h (package 28) and only reached through
+        # the VFS header's include; the VFS header says so.
+        self.assertIn("#define ZOS_EXEC_MAX_DEPTH 4u", _read(PROCESS_H))
+        self.assertNotIn("#define ZOS_EXEC_MAX_DEPTH", text)
+        self.assertIn("ZOS_EXEC_MAX_DEPTH is owned by", text)
 
     def test_process_exit_closes_and_is_idempotent(self):
         text = _read(VFS_PROCESS)

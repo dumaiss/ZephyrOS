@@ -2704,6 +2704,13 @@ M9 extends the same native syscall mechanism with filesystem services.
 
 `SYS_EXIT` records status, releases the child bank/resources and restores the suspended parent/kernel launcher. This remains the native lifecycle used by later shell and personalities.
 
+M6 restored exactly one suspended launcher: the kernel launcher on the boot
+stack. Package 28 keeps that same lifecycle but generalizes "the suspended
+parent" to an ordinary process suspended in its own `SYS_EXEC`, up to
+`ZOS_EXEC_MAX_DEPTH` (4) user processes deep (section 32.40). The process
+table's `parent` field is the only nesting state; there is no second
+process manager, no separate exec table and no new loader.
+
 ---
 
 ## 26.10 M6 non-goals
@@ -4295,6 +4302,60 @@ Rules:
 
 ---
 
+## 32.40 Native process exec (package 28)
+
+`SYS_EXEC 05h` (`docs/abi.md` section 11) turns the M6 launcher into a
+general parent/child mechanism: any ordinary process may run a child
+synchronously and receives its exit status, and a child may do the same.
+Everything is the existing machinery - one process table, one bank
+allocator, one ZEX loader, one page-zero path, one VFS process hook, one
+exit path - plus a bounded continuation stack for the shared gate stack.
+
+Geometry:
+
+```text
+depth 0 (kernel launcher, boot stack)      no saved gate frame
+depth 1 (first user process)               kernel continuation
+depth 2..ZOS_EXEC_MAX_DEPTH                frame save #depth-2
+the next exec at the limit                 ZOS_EBUSY, nothing allocated
+```
+
+Suspension and resume:
+
+- `process_prepare()` does every fallible thing (path copy-in, slot, bank,
+  CWD start, load/validate, page zero, close) and returns; only then does
+  `process_launch()` enter the common gate. Nothing past the suspension
+  point can fail, so no rollback of suspended processes exists.
+- The gate saves the launcher's SP/IX/latch/IFF per depth and copies the
+  gate frame `[saved_sp, zos_gate_stack_top)` into that depth's save area
+  (48 bytes, measured 32 + margin). The child's own syscalls reuse the
+  same 256-byte common gate stack, clobbering the suspended frame; the
+  resume copies it back and restores SP, IX, latch and IFF before the
+  parent's `SYS_EXEC` returns.
+- From the start of the resume's `LDIR` until SP is restored there is no
+  `CALL`, `PUSH`, `POP` or interrupt enable: the frame being restored is
+  the one the code is running on.
+- The syscall gate's own transition state is single-depth, so the gate
+  shadows the launcher's copy per depth as well; without it a resumed
+  parent would return through the gate into its child's bank.
+- The whole mechanism is common-resident, so the bank-7 arena pays no
+  bytes for it and a mode-10 child cannot reach it.
+
+Failure mapping is pinned in `docs/abi.md` section 11 (`ENOENT`,
+`EISDIR`, `EINVAL`, `ENOSPC`, `EBUSY`, provider errors passed through),
+because user-visible error semantics matter more here than in the kernel
+launcher's internal `ZEX_EXEC_ERR_*` space.
+
+Acceptance: `make m9-exec-selftest` (extended `fstest.zex` exec case plus
+the recursive `fsdeep.zex` depth probe) replayed by
+`tests/test_m9_exec_sim.py`, which measures the copied frame against
+`ZOS_EXEC_FRAME_SAVE`, compares the restored frame byte-for-byte with the
+suspended one at every depth, and checks the parent returns over its own
+bank; `tests/test_m9_exec.py` pins the ABI, the geometry, the launch
+primitive's structure and the production map.
+
+---
+
 # 33. M9 acceptance criteria
 
 M9 acceptance uses an ordinary native program such as:
@@ -4368,6 +4429,10 @@ process lifecycle:
     child CWD changes do not alter parent
     child descriptors close on exit
     repeated exec/exit leaks no handles
+    nested exec chain reaches exactly ZOS_EXEC_MAX_DEPTH levels
+    the level past the limit is refused with EBUSY and leaks nothing
+    exit-status round trip, including a raw-return ZOS_EFAULT
+    the suspended gate frame is restored byte-for-byte at every depth
 ```
 
 budget:

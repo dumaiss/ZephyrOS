@@ -31,7 +31,7 @@ STEP_LIMIT = 40000000
 IMAGE_SUBDIR = "build-m9-fs-selftest"
 IMAGE_NAME = "zephyros-m9-fs-selftest.bin"
 
-FSTEST_PASS = "fstest: PASS 9/9\r\n"
+FSTEST_PASS = "fstest: PASS 10/10\r\n"
 FSTEST_LAUNCHER_OK = "fstest: launcher OK\r\n"
 SELFTEST_OK = "m9 fs selftest: OK\r\n"
 GATE_STACK_SIZE = 256
@@ -119,7 +119,7 @@ class TestM9FsAcceptance(M9FsSimBase):
         self.boot(z)
         sio = z.sio_tx.decode("ascii", "replace")
         for case in ("namespace", "romfs", "ramfs", "errors", "pool",
-                     "stale", "writefail", "exdev", "window"):
+                     "stale", "writefail", "exdev", "window", "exec"):
             self.assertNotIn("fstest: %s FAIL" % case, sio)
         self.assertNotIn("fstest: FAIL", sio)
 

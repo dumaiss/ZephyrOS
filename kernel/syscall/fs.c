@@ -71,8 +71,9 @@ static uint16_t fs_le16(uint16_t block, uint8_t offset)
 
 /* Copy `length` caller-window bytes into `out`, NUL-terminated.  A length
  * of 0, an over-long path, a window violation or an embedded NUL is
- * ZOS_EINVAL (work/M9-REFERENCE.md). */
-static int fs_copy_path(uint16_t addr, uint16_t length, char *out)
+ * ZOS_EINVAL (work/M9-REFERENCE.md).  Shared with SYS_EXEC (kernel/syscall.c)
+ * through syscall/fs.h. */
+int zos_fs_copy_path(uint16_t addr, uint16_t length, char *out)
 {
 	uint16_t i;
 
@@ -157,7 +158,7 @@ static void fs_open(uint16_t block)
 		return;
 	}
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
+	result = zos_fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
 	if (result == 0) {
 		result = vfs_fd_open(process_current_pid(), VFS_DESC_FILE,
 				     VFS_WS_IN_A,
@@ -180,7 +181,7 @@ static void fs_opendir(uint16_t block)
 		return;
 	}
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
+	result = zos_fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
 	if (result == 0) {
 		result = vfs_fd_opendir(process_current_pid(), VFS_WS_IN_A);
 	}
@@ -362,7 +363,7 @@ static void fs_stat(uint8_t bank, uint16_t block)
 		return;
 	}
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
+	result = zos_fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
 	if (result == 0) {
 		result = vfs_stat(VFS_WS_IN_A, &st);
 	}
@@ -480,7 +481,7 @@ static void fs_chdir(uint16_t block)
 		return;
 	}
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
+	result = zos_fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
 	if (result == 0) {
 		result = vfs_chdir(VFS_WS_IN_A);
 	}
@@ -497,7 +498,7 @@ static void fs_mutate(uint16_t block, uint8_t op)
 		return;
 	}
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
+	result = zos_fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
 	if (result == 0) {
 		if (op == 0) {
 			result = vfs_mkdir(VFS_WS_IN_A);
@@ -520,9 +521,9 @@ static void fs_rename(uint16_t block)
 		return;
 	}
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
+	result = zos_fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
 	if (result == 0) {
-		result = fs_copy_path(fs_le16(block, 4), fs_le16(block, 6),
+		result = zos_fs_copy_path(fs_le16(block, 4), fs_le16(block, 6),
 				      VFS_WS_IN_B);
 	}
 	if (result == 0) {
