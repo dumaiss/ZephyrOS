@@ -183,6 +183,13 @@ BANK7_SYMBOLS = ("_kernel_main", "zos_syscall_dispatch", "_irq_dispatch")
 
 RST30_VECTOR = 0x0030
 
+# Budget ledger formats (tools/zmodpack.py prints the identical pair; a host
+# test pins the two against each other and against the linked map).
+BANK7_LEDGER_LINE = ("bank7: code %d bytes end %04Xh | arena %d granules "
+                     "(%d boot, %d free) | data %d bytes at %04Xh | "
+                     "isr %d | slack %d bytes")
+COMMON_LEDGER_LINE = ("common: used %d of %d bytes (code %d, data %d)")
+
 
 class LayoutError(Exception):
     """The linked image violates the ZephyrOS memory-layout contract."""
@@ -521,19 +528,51 @@ def check_symbol_regions(symbols):
                 % (DATA_BASE + data_size, BANK7_RUNTIME_END))
 
 
+def common_usage(symbols):
+    """(code, data, used, capacity) bytes of packed permanent common memory.
+
+    The two `l__` area sizes are the linked `_COMMON` and `_COMMON_DATA`
+    run; the fixed absolute reservations above it are declared separately
+    (docs/memory.md section 4).  Returns None when the map does not carry
+    them (synthetic host maps)."""
+    base = symbols.get("s__COMMON")
+    code = symbols.get("l__COMMON")
+    data = symbols.get("l__COMMON_DATA")
+    if base is None or code is None or data is None:
+        return None
+    capacity = COMMON_CODE_END - COMMON_BASE
+    if code + data > capacity:
+        raise LayoutError(
+            "packed common memory is %d bytes, over the %d-byte window "
+            "%04Xh-%04Xh" % (code + data, capacity, COMMON_BASE,
+                             COMMON_CODE_END - 1))
+    return code, data, code + data, capacity
+
+
 def bank7_ledger(symbols, plan=None):
     """Build the single bank-7 budget ledger from a linked map.
 
     Returns None for synthetic host maps without the derived symbols.  Every
     later package reports its bytes against this one ledger, so the fields
-    are the stable external contract (see docs/memory.md)."""
+    are the stable external contract (see docs/memory.md).  Common-memory
+    usage rides along in the same dict: bank 7 is not the only scarce
+    region, and growth there must be as visible as bank-7 growth."""
     kernel_end = symbols.get("__kernel_code_end")
     data_base = symbols.get("s__DATA")
     if kernel_end is None or data_base is None:
         return None
     data_size = symbols.get("l__DATA", 0) + symbols.get("l__INITIALIZED", 0)
     used = sum(entry["granules"] for entry in plan["modules"]) if plan else 0
-    return {
+    common = common_usage(symbols)
+    common_fields = {}
+    if common is not None:
+        common_fields = {
+            "common_code_bytes": common[0],
+            "common_data_bytes": common[1],
+            "common_used_bytes": common[2],
+            "common_capacity_bytes": common[3],
+        }
+    return dict(common_fields, **{
         "code_bytes": kernel_end - BANK7_BASE,
         "code_end": kernel_end,
         "arena_start": ARENA_BASE,
@@ -545,19 +584,21 @@ def bank7_ledger(symbols, plan=None):
         "data_base": data_base,
         "isr_bytes": IRQ_ISR_STACK_SIZE,
         "slack_bytes": BANK7_RUNTIME_END - (data_base + data_size),
-    }
+    })
 
 
 def format_bank7_ledger(ledger):
-    """One-line report of the bank-7 budget (section 32.39)."""
-    return ("bank7: code %d bytes end %04Xh | arena %d granules "
-            "(%d boot, %d free) | data %d bytes at %04Xh | isr %d | "
-            "slack %d bytes"
-            % (ledger["code_bytes"], ledger["code_end"],
-               ledger["arena_granules"], ledger["arena_used_granules"],
-               ledger["arena_free_granules"], ledger["data_bytes"],
-               ledger["data_base"], ledger["isr_bytes"],
-               ledger["slack_bytes"]))
+    """The budget report (section 32.39): the bank-7 line, then the
+    common-memory line for the permanently mapped window."""
+    return (BANK7_LEDGER_LINE % (
+        ledger["code_bytes"], ledger["code_end"], ledger["arena_granules"],
+        ledger["arena_used_granules"], ledger["arena_free_granules"],
+        ledger["data_bytes"], ledger["data_base"], ledger["isr_bytes"],
+        ledger["slack_bytes"])
+        + "\n"
+        + COMMON_LEDGER_LINE % (
+            ledger["common_used_bytes"], ledger["common_capacity_bytes"],
+            ledger["common_code_bytes"], ledger["common_data_bytes"]))
 
 
 def romfs_placement(size):

@@ -625,7 +625,8 @@ Package 28 (`SYS_EXEC`) then takes the production ledger to
 D600h | isr 256 | slack 191`: `+400` `_CODE`, `+0` bank-7 `_DATA`, arena
 unchanged, because the whole continuation mechanism (per-depth records,
 three 48-byte frame saves, the gate-state shadows and the `SYS_EXEC` path
-scratch) is common-resident, where a mode-10 child cannot reach it
+scratch) is common-resident because the resume gate restores it across the
+mode change, while the `SYS_EXEC` path buffer is bank-7 `_DATA`
 (`docs/validation/2026-10-05-m9-nested-exec.md`).  The `fstest` suite runs
 one more case (`exec`, `PASS 10/10`, confirmed on hardware) and the nested
 `exec` acceptance is replayed by `tests/test_m9_exec_sim.py`.

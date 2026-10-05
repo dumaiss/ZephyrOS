@@ -170,14 +170,27 @@ inside the arena by the loader.
 
 ### 2.2.1 The bank-7 budget ledger
 
-`tools/pack_image.py` and `tools/zmodpack.py plan` print the same single
-ledger line and emit it as matching JSON (`manifest["bank7"]` and
-`arena.plan.json["bank7"]`); `tests/test_m8.py` checks the line against
-the linked map:
+`tools/pack_image.py` and `tools/zmodpack.py plan` print the same two
+ledger lines and emit them as matching JSON (`manifest["bank7"]` and
+`arena.plan.json["bank7"]`, sharing one format definition); a host test
+(`tests/test_m8.py`) checks every figure against the linked map:
 
 ```text
 bank7: code <bytes> end <addr> | arena <n> granules (<used> boot, <free> free) | data <bytes> at <addr> | isr 256 | slack <bytes>
+common: used <bytes> of <capacity> bytes (code <n>, data <n>)
 ```
+
+The second line covers the permanently mapped common window, which the
+`bank7:` line cannot see.  `used` is the packed `_COMMON` +
+`_COMMON_DATA` run and `capacity` is `ZOS_COMMON_CODE_END -
+ZOS_COMMON_BASE` (7424 bytes); `code`/`data` are the two area sizes.  The
+fixed absolute reservations in the window (IM2 vector page, IRQ transition
+state and stacks) are declared separately in `platform/zephyr80/irq.inc`
+and are not part of the packed run, so growth of the packed run is what
+must be watched: it may not reach the lowest reservation.  Common memory
+is the scarcest region and growth there is reported the same way bank-7
+growth is - package 28 added 167 bytes of continuation state and
+correction-01 moved 128 bytes of path buffer back out to bank 7.
 
 Package 25b numbers (size-optimized kernel and modules, derived base):
 
@@ -329,8 +342,11 @@ zos_proc_gate_sp       8 bytes   shadowed gate caller SP per depth
 zos_proc_gate_latch    4 bytes   shadowed gate caller latch per depth
 zos_proc_gate_iff      4 bytes   shadowed gate caller IFF per depth
 zos_proc_frames      144 bytes   3 x 48-byte saved gate frames
-_zos_process_path_scratch 128 bytes  stable copy of a SYS_EXEC path
 ```
+
+The `SYS_EXEC` path buffer is *not* here: it is ordinary bank-7 `_DATA`
+(`_zos_process_path_scratch` in `kernel/process/process.c`, ZOS_PATH_MAX
+bytes), because nothing touches it across a mode change.
 
 `zos_gate_saved_sp/latch/iff` stay single-depth (they are what the gate
 saves and restores for one syscall); the `zos_proc_gate_*` copies are the
@@ -340,9 +356,17 @@ per-depth shadow that lets a resumed parent return through the gate with
 at every depth in the acceptance image (recorded beside the constant in
 `include/zephyros/process.h`), and the preflight rejects a shallower
 handler frame above `ZOS_EXEC_FRAME_SAVE - ZOS_EXEC_FRAME_SLACK` before
-anything is allocated.  All of it is common-resident, so a child running
-in mode 10 cannot reach it and the bank-7 arena pays nothing for the
-mechanism.
+anything is allocated.
+
+Everything above is common-resident because the resume gate *restores* it
+while it is changing the mapping: it runs in mode 11 over the child's
+bank with the child's stack still live, and it needs the launcher's saved
+SP, latch, IFF, IX and gate frame before it can switch back - none of
+which could be reached from bank 7 if the last `LDIR` and the latch `OUT`
+had already moved off it.  Common memory is not protected memory: mode 10
+maps it exactly as mode 11 does, and every application can read and write
+it.  Placement here is a reachability and budget decision, never a
+protection one.
 
 M5 adds the ROM-access block in the same common data area:
 

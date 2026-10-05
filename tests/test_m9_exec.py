@@ -40,6 +40,8 @@ MAKEFILE = ROOT / "Makefile"
 MAPCHECK = ROOT / "tools" / "mapcheck.py"
 MAPTOOLS = ROOT / "tests" / "maptools.py"
 SERIAL_SMOKE = ROOT / "tools" / "serial_smoke.py"
+PACK_IMAGE = ROOT / "tools" / "pack_image.py"
+ZMODPACK = ROOT / "tools" / "zmodpack.py"
 MANIFEST_EXEC = ROOT / "tests" / "m9" / "manifest-exec.json"
 TARGET_TEST = ROOT / "tests" / "target" / "support" / "target_test.c"
 
@@ -191,6 +193,77 @@ class TestNestingGeometry(unittest.TestCase):
                              "%d, not ZOS_EXEC_FRAME_SAVE (%d)"
                              % (doublings, factor, expected))
 
+    def test_path_buffer_is_bank7_data_not_common(self):
+        """The SYS_EXEC path buffer is only touched in mode 11, so it has
+        no business in the permanently mapped common window; the
+        transition-critical state does belong there (the resume gate
+        restores it across the mapping change)."""
+        launch = _read(LAUNCH_ASM)
+        self.assertNotIn("_zos_process_path_scratch::", launch,
+                         "the path buffer is still defined in the common "
+                         "assembly data section")
+        self.assertNotIn(".globl _zos_process_path_scratch", launch,
+                         "launch.asm still exports the path buffer")
+        process = _read(PROCESS_C)
+        self.assertRegex(
+            process, r"char zos_process_path_scratch\[ZOS_PATH_MAX\];")
+        self.assertRegex(
+            process,
+            r"_Static_assert\(sizeof\(zos_process_path_scratch\) == "
+            r"ZOS_PATH_MAX")
+        for name in ("zos_proc_cont", "zos_proc_gate_sp",
+                     "zos_proc_frames", "zos_proc_frames_end"):
+            self.assertIn(name, launch,
+                          "the resume gate needs %s in common memory" % name)
+
+    def test_no_document_claims_common_memory_is_unreachable(self):
+        """Common memory is mapped in mode 10 like any other region;
+        placement there is a reachability/budget argument, never a
+        protection one."""
+        for rel in ("docs/abi.md", "docs/memory.md", "docs/vfs.md",
+                    "docs/architecture.md",
+                    "docs/validation/2026-10-05-m9-nested-exec.md",
+                    "docs/validation/2026-10-05-m9-nested-exec-"
+                    "correction-01.md",
+                    "kernel/process/launch.asm"):
+            text = _read(ROOT / rel)
+            for claim in ("mode-10 child cannot reach",
+                          "cannot reach it", "cannot reach them",
+                          "child cannot reach"):
+                self.assertNotIn(
+                    claim, text,
+                    "%s still claims common memory is out of reach" % rel)
+
+    def test_ledger_reports_common_memory(self):
+        map_path = ROOT / "build" / "zephyros.map"
+        if not map_path.exists():
+            self.skipTest("build/zephyros.map missing; run make first")
+        text = _read(map_path)
+        # The path buffer must be inside the bank-7 runtime data window,
+        # not in the common window.
+        match = re.search(r"^\s*([0-9A-Fa-f]{8})\s+_zos_process_path_scratch",
+                          text, re.M)
+        self.assertIsNotNone(match, "no path-buffer symbol in the map")
+        addr = int(match.group(1), 16)
+        data_base = re.search(r"^\s*([0-9A-Fa-f]{8})\s+s__DATA\b", text,
+                              re.M)
+        self.assertIsNotNone(data_base)
+        self.assertGreaterEqual(addr, int(data_base.group(1), 16))
+        self.assertLess(addr, 0xDF00)
+
+        plan = json.loads(_read(ROOT / "build" / "arena.plan.json"))
+        bank7 = plan["bank7"]
+        for field in ("common_code_bytes", "common_data_bytes",
+                      "common_used_bytes", "common_capacity_bytes"):
+            self.assertIn(field, bank7,
+                          "arena.plan.json does not report %s" % field)
+        self.assertEqual(bank7["common_used_bytes"],
+                         bank7["common_code_bytes"]
+                         + bank7["common_data_bytes"])
+        self.assertEqual(bank7["common_capacity_bytes"], 0xFD00 - 0xE000)
+        self.assertLess(bank7["common_used_bytes"],
+                        bank7["common_capacity_bytes"])
+
     def test_asm_arrays_use_the_pinned_constants(self):
         text = _read(LAUNCH_ASM)
         # 2-byte slots: 2 * ZOS_EXEC_MAX_DEPTH, byte slots: 1 per depth.
@@ -284,10 +357,17 @@ class TestMapParity(unittest.TestCase):
         for name in ("zos_proc_cont", "zos_proc_ix", "zos_proc_latch",
                      "zos_proc_iff", "zos_proc_gate_sp",
                      "zos_proc_gate_latch", "zos_proc_gate_iff",
-                     "zos_proc_frames", "zos_proc_frames_end",
-                     "_zos_process_path_scratch"):
+                     "zos_proc_frames", "zos_proc_frames_end"):
             self.assertIn('"%s"' % name, text,
                           "mapcheck does not pin %s" % name)
+        # The path buffer is pinned as bank-7 runtime data instead: it
+        # must not be listed as common state.
+        common_list = text.split("M6_COMMON_STATE = (", 1)[1].split(")", 1)[0]
+        self.assertNotIn("_zos_process_path_scratch", common_list,
+                         "mapcheck still claims the path buffer is common")
+        self.assertIn('symbols.get("_zos_process_path_scratch")', text)
+        self.assertIn("is not in the bank-7", text)
+        self.assertIn("runtime data region", text)
 
     def test_mapcheck_constants_match_the_header(self):
         header = _read(PROCESS_H)
@@ -373,6 +453,15 @@ class TestBuildWiring(unittest.TestCase):
         text = _read(TARGET_TEST)
         self.assertIn("ZOS_M9_EXEC_SELFTEST", text)
         self.assertIn("zos_run_m9_exec_selftest", text)
+
+    def test_ledger_format_is_shared_by_both_tools(self):
+        pack = _read(PACK_IMAGE)
+        zmod = _read(ZMODPACK)
+        self.assertIn("BANK7_LEDGER_LINE", pack)
+        self.assertIn("COMMON_LEDGER_LINE", pack)
+        self.assertIn("pack_image.COMMON_LEDGER_LINE", zmod)
+        self.assertIn("common: used %d of %d bytes (code %d, data %d)",
+                      pack)
 
     def test_serial_smoke_banner_contract(self):
         text = _read(SERIAL_SMOKE)

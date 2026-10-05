@@ -436,8 +436,12 @@ Implementation notes:
 - One continuation record (`saved_sp`, `saved_latch`, `saved_iff`) exists
   per depth, plus `ZOS_EXEC_MAX_DEPTH - 1` gate-frame save areas: the
   outermost process is launched by the kernel from the boot stack and
-  needs no copy.  All of it is common-resident (`kernel/process/launch.asm`),
-  so a child running in mode 10 cannot reach it.
+  needs no copy.  All of it is common-resident
+  (`kernel/process/launch.asm`) because the resume gate reads it *while*
+  it changes the mapping and switches stacks; the `SYS_EXEC` path buffer
+  is bank-7 `_DATA` instead, since it is only ever touched in mode 11.
+  Common memory is not an isolated region - mode 10 maps it just as
+  mode 11 does - so nothing is placed there for safety.
 
 Validation: `make m9-exec-selftest` builds the SIO-only image that runs
 the extended `fstest.zex` `exec` case and the recursive `fsdeep.zex` depth

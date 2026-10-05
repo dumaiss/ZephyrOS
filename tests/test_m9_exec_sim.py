@@ -134,6 +134,11 @@ class M9ExecSimBase(unittest.TestCase):
             else:
                 probe.tick()
             z.step()
+            # The sample is taken at the *start* of every instruction, so
+            # no push can hide: this is the true gate-stack high-water
+            # mark, not a sampled estimate.  That is why the acceptance
+            # builds carry no gate-stack canary pattern - there is nothing
+            # left for one to observe.
             if gate_top - GATE_STACK_SIZE <= z.sp <= gate_top:
                 if z.sp < min_sp:
                     min_sp = z.sp

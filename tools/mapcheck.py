@@ -226,6 +226,29 @@ def loadable_end(areas, symbols):
     return end
 
 
+# Packed permanent common content in physical bank 0 (E000h-FCFFh).  The
+# fixed absolute reservations above it (IM2 vector page, IRQ transition
+# state, ROM-access stub) are declared separately and are not part of this
+# run, so these two areas are the whole "used" figure the common ledger
+# reports.
+COMMON_AREAS = ("_COMMON", "_COMMON_DATA")
+
+
+def area_sizes(areas, symbols, names):
+    """Sizes of the named areas, read from the linker-synthesized `l__`
+    symbols when present and from the area table otherwise."""
+    sizes = {}
+    for name in names:
+        base = name.lstrip("_")
+        if "l__" + base in symbols:
+            sizes[name] = symbols["l__" + base]
+        elif name in areas:
+            sizes[name] = areas[name][1]
+        else:
+            sizes[name] = 0
+    return sizes
+
+
 RUNTIME_DATA_AREAS = ("_DATA", "_INITIALIZED")
 
 
@@ -286,8 +309,11 @@ def derive_geometry(map_text, values, min_granules=None):
             % (start, arena_end - 1, size, min_size, min_granules, end))
     if size % granule != 0:
         raise MapError("derived driver arena is not granule aligned")
+    common = area_sizes(areas, symbols, COMMON_AREAS)
     return {
         "kernel_code_end": end,
+        "common_code_size": common["_COMMON"],
+        "common_data_size": common["_COMMON_DATA"],
         "arena_start": start,
         "arena_end": arena_end,
         "granules": size // granule,
@@ -331,6 +357,8 @@ def format_memory_variant(memory_inc_text, geometry):
         "ZOS_DRIVER_GRANULES": str(geometry["granules"]),
         "ZOS_DATA_BASE": "0x%04X" % geometry["data_base"],
         "ZOS_DATA_SIZE": str(geometry["data_size"]),
+        "ZOS_COMMON_CODE_SIZE": str(geometry["common_code_size"]),
+        "ZOS_COMMON_DATA_SIZE": str(geometry["common_data_size"]),
     }
     seen = set()
     lines = []
@@ -651,7 +679,6 @@ M6_COMMON_STATE = (
     "zos_proc_gate_iff",
     "zos_proc_frames",
     "zos_proc_frames_end",
-    "_zos_process_path_scratch",
 )
 
 USER_COPY_STAGING_SIZE = 64
@@ -1070,6 +1097,20 @@ def check_symbols(areas, symbols, production=False):
     if stack_delta != USER_COPY_STACK_SIZE:
         raise MapError("user copy stack is %d bytes, expected %d"
                        % (stack_delta, USER_COPY_STACK_SIZE))
+
+    # Package 28: the SYS_EXEC path buffer is ordinary bank-7 runtime
+    # data.  It is written by the handler and read by process_prepare(),
+    # both in mode 11, so it has no reason to occupy the permanently
+    # mapped common window (which is reserved for state that must stay
+    # reachable across a mapping change).
+    scratch = symbols.get("_zos_process_path_scratch")
+    if scratch is None:
+        raise MapError("map has no SYS_EXEC path buffer")
+    if not (DATA_BASE <= scratch < IRQ_ISR_STACK_BASE):
+        raise MapError(
+            "_zos_process_path_scratch at %04Xh is not in the bank-7 "
+            "runtime data region %04Xh-%04Xh"
+            % (scratch, DATA_BASE, IRQ_ISR_STACK_BASE - 1))
 
     # Package 28: the continuation stack must be sized for the pinned
     # depth and frame save, not truncated by a stale assembly .ds.

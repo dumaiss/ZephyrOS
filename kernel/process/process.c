@@ -19,6 +19,26 @@
 #include "zephyros/kernel.h"
 #include "kernel/vfs/vfs.h"
 
+/* Suspended-SYS_EXEC path buffer (bank-7 runtime data).
+ *
+ * SYS_EXEC copies the caller's path here and process_prepare() reads it
+ * after the copy-in call has returned; that is the whole lifetime, and
+ * both ends run in mode 11 with bank 7 mapped.  It must not be one of the
+ * VFS workspace slots because the loader is using those while it reads
+ * this path.
+ *
+ * It is bank-7 `_DATA`, not common memory: common memory is permanent
+ * code and state that has to stay reachable while the mapping changes
+ * (docs/architecture.md section 7), and nothing here is touched across a
+ * mode change.  Common memory is also visibly mapped in mode 10, so
+ * placing anything there is a budget decision, never a protection one. */
+char zos_process_path_scratch[ZOS_PATH_MAX];
+
+#if defined(__SDCC)
+_Static_assert(sizeof(zos_process_path_scratch) == ZOS_PATH_MAX,
+	       "the SYS_EXEC path buffer must hold a full path");
+#endif
+
 /* Common-resident gates (kernel/process/launch.asm). */
 void zos_process_launch(const struct zos_process_launch_req *req);
 void zos_process_resume(const struct zos_process_resume_req *req);

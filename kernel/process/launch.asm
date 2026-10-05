@@ -5,6 +5,15 @@
 ; 11; entering the child and coming back both change the memory mapping, so
 ; every instruction here is permanent common memory.
 ;
+; The state in _COMMON_DATA below is permanent common memory for the same
+; reason: the resume gate copies the saved gate frame back and restores
+; SP/latch/IFF *while* it is switching the mapping, so it must reach that
+; state from whatever mapping is live at each step.  Common memory is not
+; isolated from mode 10 (there is no protection; an application bank sees
+; it), so this is reachability, not safety: state that is only touched in
+; mode 11 belongs in bank 7 (`_zos_process_path_scratch` is in
+; kernel/process/process.c for exactly that reason).
+;
 ; Package 28 generalizes the M6 single-depth launcher into a bounded
 ; continuation stack indexed by nesting depth (ZOS_EXEC_MAX_DEPTH levels):
 ;
@@ -56,7 +65,6 @@
 	.globl zos_proc_gate_iff
 	.globl zos_process_return_trap
 	.globl _zos_process_page_zero_vector
-	.globl _zos_process_path_scratch
 	.globl zos_proc_cont
 	.globl zos_proc_ix
 	.globl zos_proc_latch
@@ -474,7 +482,9 @@ _zos_process_page_zero_vector::
 	.dw	zos_syscall_entry
 
 ; Continuation state (common RAM, kernel-lifetime).  The C side selects a
-; depth and reads/writes only through these arrays.
+; depth and reads/writes only through these arrays.  All of it is read by
+; the resume gate inside the stackless window, between the frame LDIR and
+; the latch restore, while the mapping is still the child's.
 zos_proc_cont::
 	.ds	8			; saved SP per depth (2 * ZOS_EXEC_MAX_DEPTH)
 zos_proc_ix::
@@ -507,11 +517,6 @@ zos_proc_bank::
 	.ds	1
 zos_proc_entry::
 	.ds	2
-; Stable copy of the SYS_EXEC caller path (ZOS_PATH_MAX bytes).  It lives
-; in common memory so it stays valid across the VFS workspace views that
-; process_prepare() uses while loading (C name zos_process_path_scratch).
-_zos_process_path_scratch::
-	.ds	128
 ; ZOS_EXEC_MAX_DEPTH - 1 gate-frame save areas of ZOS_EXEC_FRAME_SAVE
 ; bytes each (index i + 1 uses area i).  zos_proc_frames_end pins the
 ; exact size for mapcheck; ZOS_EXEC_FRAME_SAVE is owned by

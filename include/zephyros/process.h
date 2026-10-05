@@ -194,9 +194,10 @@ extern struct process_continuation
 extern uint8_t
 	zos_process_frames[ZOS_EXEC_MAX_DEPTH - 1][ZOS_EXEC_FRAME_SAVE];
 
-/* Stable common-memory copy of a SYS_EXEC caller path (ZOS_PATH_MAX
- * bytes; the C symbol is filled by kernel/syscall.c and read by
- * process_prepare). */
+/* Bank-7 runtime-data copy of a SYS_EXEC caller path (ZOS_PATH_MAX
+ * bytes; kernel/syscall.c fills it, process_prepare() reads it).  It is
+ * `_DATA`, not common memory: it is only ever touched in mode 11, so it
+ * has no business in the permanently mapped window. */
 extern char zos_process_path_scratch[];
 
 /* Gate-stack bytes in use by this call's frame (zos_gate_stack_top - SP

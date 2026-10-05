@@ -62,6 +62,10 @@ import os
 import re
 import sys
 
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pack_image  # shared budget-ledger format (one definition)
+
 HEADER_SIZE = 28
 RELOC_SIZE = 4
 FORMAT_VERSION = 1
@@ -931,7 +935,9 @@ def build_bank7_ledger(values, used_granules, source):
     for name in ("ZOS_KERNEL_CODE_END", "ZOS_DRIVER_ARENA_BASE",
                  "ZOS_DRIVER_ARENA_END", "ZOS_DRIVER_GRANULES",
                  "ZOS_DATA_BASE", "ZOS_DATA_SIZE",
-                 "ZOS_BANK7_RUNTIME_END"):
+                 "ZOS_BANK7_RUNTIME_END", "ZOS_COMMON_BASE",
+                 "ZOS_COMMON_CODE_END", "ZOS_COMMON_CODE_SIZE",
+                 "ZOS_COMMON_DATA_SIZE"):
         if name not in values:
             raise ZmodError(
                 "%s is missing from %s; the derived build must generate it"
@@ -940,7 +946,18 @@ def build_bank7_ledger(values, used_granules, source):
     data_base = values["ZOS_DATA_BASE"]
     data_size = values["ZOS_DATA_SIZE"]
     runtime_end = values["ZOS_BANK7_RUNTIME_END"]
+    common_code = values["ZOS_COMMON_CODE_SIZE"]
+    common_data = values["ZOS_COMMON_DATA_SIZE"]
+    common_capacity = values["ZOS_COMMON_CODE_END"] - values["ZOS_COMMON_BASE"]
+    if common_code + common_data > common_capacity:
+        raise ZmodError(
+            "packed common memory is %d bytes, over the %d-byte window"
+            % (common_code + common_data, common_capacity))
     return {
+        "common_code_bytes": common_code,
+        "common_data_bytes": common_data,
+        "common_used_bytes": common_code + common_data,
+        "common_capacity_bytes": common_capacity,
         "code_bytes": code_end - values.get("ZOS_BANK7_BASE", 0x2000),
         "code_end": code_end,
         "arena_start": values["ZOS_DRIVER_ARENA_BASE"],
@@ -956,15 +973,18 @@ def build_bank7_ledger(values, used_granules, source):
 
 
 def format_bank7_ledger(ledger):
-    """One-line report of the bank-7 budget (section 32.39)."""
-    return ("bank7: code %d bytes end %04Xh | arena %d granules "
-            "(%d boot, %d free) | data %d bytes at %04Xh | isr %d | "
-            "slack %d bytes"
-            % (ledger["code_bytes"], ledger["code_end"],
-               ledger["arena_granules"], ledger["arena_used_granules"],
-               ledger["arena_free_granules"], ledger["data_bytes"],
-               ledger["data_base"], ledger["isr_bytes"],
-               ledger["slack_bytes"]))
+    """The budget report (section 32.39): the bank-7 line, then the
+    common-memory line for the permanently mapped window.  Byte-identical
+    to tools/pack_image.py (pinned by a host test)."""
+    return (pack_image.BANK7_LEDGER_LINE % (
+        ledger["code_bytes"], ledger["code_end"], ledger["arena_granules"],
+        ledger["arena_used_granules"], ledger["arena_free_granules"],
+        ledger["data_bytes"], ledger["data_base"], ledger["isr_bytes"],
+        ledger["slack_bytes"])
+        + "\n"
+        + pack_image.COMMON_LEDGER_LINE % (
+            ledger["common_used_bytes"], ledger["common_capacity_bytes"],
+            ledger["common_code_bytes"], ledger["common_data_bytes"]))
 
 
 def cmd_plan(args):

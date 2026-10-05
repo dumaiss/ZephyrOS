@@ -232,6 +232,12 @@ class TestVfsWorkspace(unittest.TestCase):
     DATA_BASELINE = 3047
     DATA_DROP_MIN = 900
 
+    # Package 28 deliberately moved the 128-byte SYS_EXEC path buffer from
+    # common memory into bank-7 `_DATA` (work/28-m9-nested-exec/
+    # correction-01), so the ceiling carries exactly that allowance: the
+    # correction's 900-byte win must still hold for everything else.
+    EXEC_PATH_BUFFER = 128
+
     # A second pathname-sized scratch buffer would show up as its own global;
     # the normalize helpers are functions and must not match these patterns.
     PATHNAME_SHAPED = (r"path[0-9]", r"staging", r"canonical",
@@ -319,11 +325,15 @@ class TestVfsWorkspace(unittest.TestCase):
             text, re.M)
         self.assertIsNotNone(match, "no _DATA area in the production map")
         size = int(match.group(1))
+        ceiling = (self.DATA_BASELINE - self.DATA_DROP_MIN
+                   + self.EXEC_PATH_BUFFER)
         self.assertLessEqual(
-            size, self.DATA_BASELINE - self.DATA_DROP_MIN,
+            size, ceiling,
             "production _DATA is %d bytes; the workspace consolidation must "
-            "drop it by at least %d from %d"
-            % (size, self.DATA_DROP_MIN, self.DATA_BASELINE))
+            "still drop it by at least %d from %d (allowing the %d-byte "
+            "SYS_EXEC path buffer package 28 moved in from common memory)"
+            % (size, self.DATA_DROP_MIN, self.DATA_BASELINE,
+               self.EXEC_PATH_BUFFER))
 
 
 if __name__ == "__main__":

@@ -344,7 +344,8 @@ class TestDerivedGeometry(unittest.TestCase):
         """Real memory include with one derived declaration removed."""
         geometry = {"kernel_code_end": 0x226F, "arena_start": 0x2400,
                     "arena_end": 0x2E00, "granules": 5,
-                    "data_base": 0x2E00, "data_size": 0}
+                    "data_base": 0x2E00, "data_size": 0,
+                    "common_code_size": 0x100, "common_data_size": 0x43}
         variant = mapcheck.format_memory_variant(open(MEMORY_INC).read(),
                                                  geometry)
         kept = [line for line in variant.splitlines()
@@ -380,7 +381,8 @@ class TestDerivedGeometry(unittest.TestCase):
     def test_pack_image_rejects_bytes_in_derived_arena(self):
         geometry = {"kernel_code_end": 0x226F, "arena_start": 0x2400,
                     "arena_end": 0x2E00, "granules": 5,
-                    "data_base": 0x2E00, "data_size": 0}
+                    "data_base": 0x2E00, "data_size": 0,
+                    "common_code_size": 0x100, "common_data_size": 0x43}
         variant = mapcheck.format_memory_variant(open(MEMORY_INC).read(),
                                                  geometry)
         with tempfile.TemporaryDirectory() as tmp:
@@ -433,6 +435,10 @@ class TestBootSetPlan(unittest.TestCase):
                          "ZOS_DRIVER_GRANULES = %d\n"
                          "ZOS_DATA_BASE = 0xC000\n"
                          "ZOS_DATA_SIZE = %d\n"
+                         "ZOS_COMMON_BASE = 0xE000\n"
+                         "ZOS_COMMON_CODE_END = 0xFD00\n"
+                         "ZOS_COMMON_CODE_SIZE = 0x100\n"
+                         "ZOS_COMMON_DATA_SIZE = 0x43\n"
                          % (code_end, start, granules, data_size))
         return path
 
@@ -463,10 +469,18 @@ class TestBootSetPlan(unittest.TestCase):
             self.assertEqual(ledger["data_base"], 0xC000)
             self.assertEqual(ledger["isr_bytes"], 256)
             self.assertEqual(ledger["slack_bytes"], 0xDF00 - (0xC000 + 16))
+            self.assertEqual(ledger["common_code_bytes"], 0x100)
+            self.assertEqual(ledger["common_data_bytes"], 0x43)
+            self.assertEqual(ledger["common_used_bytes"], 0x143)
+            self.assertEqual(ledger["common_capacity_bytes"],
+                             0xFD00 - 0xE000)
             self.assertIn(
                 "bank7: code 64 bytes end 2040h | arena 32 granules "
                 "(2 boot, 30 free) | data 16 bytes at C000h | isr 256 | "
                 "slack 7920 bytes",
+                out.getvalue())
+            self.assertIn(
+                "common: used 323 of 7424 bytes (code 256, data 67)",
                 out.getvalue())
 
     def test_plan_requires_the_geometry_ledger_inputs(self):
@@ -589,13 +603,31 @@ class TestBootSetPlan(unittest.TestCase):
             ledger["slack_bytes"],
             0xDF00 - (symbols["s__DATA"] + symbols["l__DATA"]
                       + symbols["l__INITIALIZED"]))
+
+        # Common memory is reported in the same ledger: the packed
+        # `_COMMON` + `_COMMON_DATA` run against the permanently mapped
+        # window capacity.  Both halves must come from the map.
+        self.assertEqual(ledger["common_code_bytes"], symbols["l__COMMON"])
+        self.assertEqual(ledger["common_data_bytes"],
+                         symbols["l__COMMON_DATA"])
+        self.assertEqual(ledger["common_used_bytes"],
+                         symbols["l__COMMON"] + symbols["l__COMMON_DATA"])
+        self.assertEqual(ledger["common_capacity_bytes"], 0xFD00 - 0xE000)
+        self.assertEqual(
+            ledger["common_used_bytes"],
+            symbols["s__COMMON_DATA"] + symbols["l__COMMON_DATA"]
+            - symbols["s__COMMON"],
+            "the two common areas must be one contiguous run")
+
         self.assertEqual(pack_image.format_bank7_ledger(ledger),
                          zmodpack.format_bank7_ledger(plan["bank7"]))
+        text = pack_image.format_bank7_ledger(ledger)
         self.assertRegex(
-            pack_image.format_bank7_ledger(ledger),
+            text,
             r"^bank7: code \d+ bytes end [0-9A-F]{4}h \| arena \d+ granules "
             r"\(\d+ boot, \d+ free\) \| data \d+ bytes at [0-9A-F]{4}h \| "
-            r"isr 256 \| slack \d+ bytes$")
+            r"isr 256 \| slack \d+ bytes\n"
+            r"common: used \d+ of \d+ bytes \(code \d+, data \d+\)$")
 
     def test_production_plan_reconciles_with_packed_modules(self):
         plan_path = os.path.join(ROOT, "build", "arena.plan.json")

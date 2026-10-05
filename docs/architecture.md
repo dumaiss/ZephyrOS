@@ -918,6 +918,17 @@ The bulk of the OS should reside in bank 7 and become visible only in mode `11`.
 
 This avoids consuming a large permanent common-memory area while still allowing the kernel to enter and leave an application's context safely.
 
+Two clarifications, both learned by having to fix them:
+
+- "Permanent" is about *reachability across a mapping change*, not about
+  isolation.  Mode 10 maps this region as readily as mode 11 does; there
+  is no protection anywhere in the machine, and an application can read
+  and write it.  Anything whose whole lifetime is mode 11 (for example the
+  `SYS_EXEC` path buffer, package 28 correction-01) belongs in bank 7.
+- Because it is the scarcest region, its use is measured.  The budget
+  ledger carries a `common: used <n> of <n> bytes (code <n>, data <n>)`
+  line beside the `bank7:` line (docs/memory.md section 2.2.1).
+
 M1 should preserve this mapping rather than introduce a new generic kernel memory model.
 
 ---
@@ -4338,8 +4349,13 @@ Suspension and resume:
 - The syscall gate's own transition state is single-depth, so the gate
   shadows the launcher's copy per depth as well; without it a resumed
   parent would return through the gate into its child's bank.
-- The whole mechanism is common-resident, so the bank-7 arena pays no
-  bytes for it and a mode-10 child cannot reach it.
+- The continuation state is common-resident because the resume gate
+  reads it while it changes the mapping and switches stacks.  The
+  `SYS_EXEC` path buffer is bank-7 `_DATA` (it is only touched in mode
+  11), and common-memory usage is reported on its own `common:` ledger
+  line beside the `bank7:` line, because common memory is the scarcest
+  region in the machine.  Nothing is placed there for isolation: mode 10
+  maps common memory exactly as mode 11 does.
 
 Failure mapping is pinned in `docs/abi.md` section 11 (`ENOENT`,
 `EISDIR`, `EINVAL`, `ENOSPC`, `EBUSY`, provider errors passed through),

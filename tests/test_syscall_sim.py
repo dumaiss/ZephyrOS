@@ -87,6 +87,9 @@ class M9FsSimBase(unittest.TestCase):
             if z.pc == delay:
                 z.pc = z.pop16()
             z.step()
+            # Sampled at the start of every instruction, so this is the
+            # exact gate-stack high-water mark (a canary pattern would
+            # only re-observe the same value).
             if gate_base <= z.sp <= gate_top and z.sp < min_sp:
                 min_sp = z.sp
             if (SELFTEST_OK.encode() in z.sio_tx or

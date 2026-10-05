@@ -347,7 +347,7 @@ def make_map(overrides=None, **kw):
         "zos_proc_latch": 0xE3E0,
         "zos_proc_iff": 0xE3E4, "zos_proc_index": 0xE3E8,
         "zos_proc_status": 0xE3E9, "zos_proc_bank": 0xE3EB,
-        "zos_proc_entry": 0xE3EC, "_zos_process_path_scratch": 0xE3EE,
+        "zos_proc_entry": 0xE3EC,
         "zos_proc_gate_sp": 0xE470, "zos_proc_gate_latch": 0xE478,
         "zos_proc_gate_iff": 0xE47C,
         "zos_proc_frames": 0xE48E, "zos_proc_frames_end": 0xE51E,
@@ -359,6 +359,9 @@ def make_map(overrides=None, **kw):
         "_zex_validate_header": 0x2D40,
         "_process_table": 0xC400, "_process_running_pid": 0xC500,
         "_process_last_status": 0xC501,
+        # Bank-7 runtime data: the SYS_EXEC path buffer is not
+        # transition-critical, so it lives with the rest of `_DATA`.
+        "_zos_process_path_scratch": 0xC600,
         # M7 diagnostic services and shared dispatcher helpers (bank-7
         # kernel code; no new common state).
         "_zos_diag_mem_read": 0x2E00, "_zos_diag_mem_write": 0x2E40,
