@@ -95,6 +95,13 @@ layout; the linker script and the packer must both agree with it:
   syscall argument window `0100h-1FFFh`, so it remains accessible in
   mode `10` and in mode `11`.
 
+A program may link additional runtime objects whose own low-window scratch
+blocks must also stay inside the argument window.  The manifest `scratch`
+field names one checked symbol per program; `fstest.zex` names the
+filesystem runtime's `zos_fs_scratch`, which is placed before the program
+data (the runtime objects are linked first) so the whole program, its
+statics and both scratch blocks stay below `2000h`.
+
 `tools/zexpack.py` rejects any violation, so `make m6-selftest` cannot
 pack a program that the kernel would later refuse.
 

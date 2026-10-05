@@ -97,12 +97,19 @@ _Static_assert(__builtin_offsetof(struct vfs_mount_runtime, last_error) == 6,
  * over-long path/component, or a buffer that cannot hold the result. */
 int vfs_path_normalize(const char *path, char *out, uint16_t out_size);
 
+/* Same, but a relative `path` resolves against the canonical `base`
+ * directory (which must itself be an absolute canonical path).  Package 27
+ * passes the caller's CWD; `vfs_path_normalize` is exactly
+ * `vfs_path_normalize_at("/", ...)`.  `base` and `out` must not alias. */
+int vfs_path_normalize_at(const char *base, const char *path, char *out,
+			  uint16_t out_size);
+
 /* ASCII case-insensitive name comparison (A-Z == a-z, all else exact). */
 uint8_t vfs_name_equal(const char *a, const char *b);
 
-/* Normalize `path` against the base `/` (package 27 adds CWD) and select
- * the owning mount with the flat first-component rule (architecture section
- * 32.8): the first component is compared case-insensitively with the mounted
+/* Normalize `path` against the calling process' CWD (package 27; the
+ * kernel launcher's CWD is `/`) and select the owning mount with the flat
+ * first-component rule (architecture section 32.8): the first component is compared case-insensitively with the mounted
  * root-level mountpoints; otherwise the filesystem attached at `/` owns the
  * path.  Returns one of the VFS_RESOLVED_* codes with *index and *rel set
  * (*rel is the provider-relative path, always beginning with '/'), or a
@@ -139,8 +146,8 @@ uint8_t vfs_mount_is_root(uint16_t index);
 #define VFS_O_EXEC 0x8000u
 
 /* Caller-provided open-file storage; never an automatic object on the gate
- * stack.  VFS keeps no descriptor table in this package (package 27 adds
- * the process-visible pool). */
+ * stack.  The process-visible descriptor pool is built on this file
+ * storage by kernel/vfs/process.c (package 27). */
 struct vfs_file {
 	struct vfs_mount_runtime *mount;
 	void *handle;
@@ -219,7 +226,88 @@ int vfs_readdir(struct vfs_dir *dir, struct zfs_dirent *out);
 
 int vfs_closedir(struct vfs_dir *dir);
 
-/* --- loader adapters -------------------------------------------------- */
+/* --- global descriptor pool and per-process FS state (package 27) -----
+ *
+ * One global `_DATA` pool of VFS_FD_MAX entries; a file and a directory
+ * iterator share it (architecture section 32.22).  Each entry is owner
+ * tagged: the fd a process names is the pool index, and every operation
+ * verifies the owner.  A suspended parent keeps its descriptors while a
+ * child runs (single-tasking), so the pool is never per-process.  A full
+ * pool reports ZOS_EMFILE; a range/type/owner mismatch reports
+ * ZOS_EINVAL.  Provider handles never leave the kernel. */
+#define VFS_FD_MAX 8u
+#define VFS_FD_NONE 0xFFu
+
+#define VFS_DESC_FREE      0u
+#define VFS_DESC_FILE      1u
+#define VFS_DESC_DIRECTORY 2u
+
+/* Up to ZOS_EXEC_MAX_DEPTH active process chain levels hold a canonical
+ * 128-byte CWD each; a process inherits its parent's CWD and releases it
+ * on exit.  The kernel launcher's CWD is the constant `/`. */
+#define ZOS_EXEC_MAX_DEPTH 4u
+
+struct vfs_descriptor {
+	uint8_t owner;   /* pid 0-6, or VFS_FD_NONE when FREE */
+	uint8_t type;    /* VFS_DESC_*                      */
+	union {
+		struct vfs_file file; /* FILE: mount/handle/size/offset/flags */
+		struct vfs_dir dir;   /* DIRECTORY: mount/handle/cursor       */
+	} u;
+};
+
+extern struct vfs_descriptor vfs_descriptors[VFS_FD_MAX];
+
+#if defined(__SDCC)
+_Static_assert(sizeof(struct vfs_descriptor) == 17,
+	       "vfs_descriptor must be 17 packed bytes");
+_Static_assert(__builtin_offsetof(struct vfs_descriptor, type) == 1,
+	       "vfs_descriptor type offset");
+_Static_assert(__builtin_offsetof(struct vfs_descriptor, u) == 2,
+	       "vfs_descriptor union offset");
+#endif
+
+/* Discard every descriptor and CWD slot; called once at VFS bootstrap so
+ * the pools never depend on the C runtime having zeroed `_DATA`. */
+void vfs_fs_state_init(void);
+
+/* Allocate the lowest free descriptor of `type` owned by `pid`, returning
+ * its index (0..VFS_FD_MAX-1) or -ZOS_EMFILE.  `path`/`flags` are passed
+ * to the kernel file/dir API; on failure nothing is allocated. */
+int vfs_fd_open(uint8_t pid, uint8_t type, const char *path, uint16_t flags);
+int vfs_fd_opendir(uint8_t pid, const char *path);
+
+/* Return the descriptor `fd` only when it is allocated, has exactly `type`
+ * and is owned by `pid`; otherwise null (ZOS_EINVAL at the syscall layer).
+ * The caller must not retain the pointer across an exit. */
+struct vfs_descriptor *vfs_fd_check(uint8_t fd, uint8_t type, uint8_t pid);
+
+/* Close the provider handle/dir iterator and free the entry.  Idempotent
+ * for an already-free index. */
+int vfs_fd_close(uint8_t fd);
+int vfs_fd_closedir(uint8_t fd);
+
+/* Number of allocated descriptors (acceptance/leak queries). */
+uint8_t vfs_fd_active_count(void);
+
+/* CWD lifecycle.  vfs_process_start() gives the child the parent's CWD
+ * (or the constant `/` when `parent_pid` is PROCESS_KERNEL_PARENT / an
+ * unknown/missing parent) and fails with -ZOS_ENOSPC when no slot is
+ * free.  vfs_process_exit() closes every descriptor owned by `pid` with
+ * `close` semantics, frees its CWD, and is idempotent; it runs on every
+ * exit path.  `vfs_cwd_for()` never returns null (`/` when unowned). */
+int vfs_process_start(uint8_t pid, uint8_t parent_pid);
+void vfs_process_exit(uint8_t pid);
+const char *vfs_cwd_for(uint8_t pid);
+
+/* Canonical `chdir` (path resolved against the caller's CWD, the target
+ * must be an existing directory) and `getcwd` (writes the NUL-terminated
+ * canonical CWD, returns its length in bytes excluding the NUL, or
+ * -ZOS_EINVAL when the buffer is too small). */
+int vfs_chdir(const char *path);
+int vfs_getcwd(char *buffer, uint16_t length);
+
+/* Loader adapters -------------------------------------------------- */
 
 /* Bound `source` to the open `file` so module_load_source()/ZEX validation
  * read it through the kernel file API without knowing where it lives. */

@@ -1,0 +1,30 @@
+{
+  "format": "romfs-v1",
+  "files": [
+    {
+      "name": "sio.zmod",
+      "type": "ZMOD",
+      "path": "sio.zmod"
+    },
+    {
+      "name": "ramfs.zmod",
+      "type": "ZMOD",
+      "path": "ramfs.zmod"
+    },
+    {
+      "name": "monitor.zex",
+      "type": "ZEX",
+      "path": "monitor.zex"
+    },
+    {
+      "name": "fstest.zex",
+      "type": "ZEX",
+      "path": "fstest.zex"
+    },
+    {
+      "name": "fstest_l.zex",
+      "type": "ZEX",
+      "path": "fstest_l.zex"
+    }
+  ]
+}

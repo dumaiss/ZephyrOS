@@ -26,6 +26,8 @@
 #   make romfs-corrupt-selftest  corrupt-recovery-store failure image
 #   make m8-*-selftest        M8 device/console acceptance images
 #   make m9-vfs-selftest      M9 VFS acceptance image
+#   make m9-provider-selftest M9 writable-provider acceptance image
+#   make m9-fs-selftest       M9 filesystem syscall acceptance image
 #   make clean    remove all generated files
 
 SDCC      ?= sdcc
@@ -65,9 +67,11 @@ ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
 M9_VFS_OBJS := $(BUILD)/vfs_mounts.rel $(BUILD)/vfs_path.rel \
                $(BUILD)/vfs_mount.rel $(BUILD)/vfs_file.rel \
                $(BUILD)/vfs_dir.rel $(BUILD)/vfs_mutate.rel \
+               $(BUILD)/vfs_process.rel \
                $(BUILD)/romfs_provider.rel
 C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
-             $(BUILD)/syscall.rel $(BUILD)/diag.rel $(BUILD)/irq.rel \
+             $(BUILD)/syscall.rel $(BUILD)/diag.rel $(BUILD)/fs.rel \
+             $(BUILD)/irq.rel \
              $(BUILD)/irq_sources.rel $(BUILD)/registry.rel \
              $(BUILD)/console.rel \
              $(BUILD)/module_relocate.rel $(BUILD)/module_loader.rel \
@@ -284,6 +288,22 @@ ZOS_HID_BOOT := 0
 ZOS_V9958_BOOT := 0
 endif
 
+# M9 filesystem syscall acceptance image (package 27): the SIO-only boot
+# set plus the test-only ramfs provider mounted at `/` (required) and `/R2`
+# (optional); the native `fstest.zex` runs the public FS_* family, then the
+# launcher-cleanup program is exec'd a second time to prove the descriptor
+# pool and CWD were released.  The production boot set (IOC/HID/V9958) is
+# compiled out so the derived arena holds the RAM provider.
+ifeq ($(ZOS_M9_FS_SELFTEST),1)
+CFLAGS    += -DZOS_M9_FS_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m9_fs_test.rel
+PK_SUFFIX := -m9-fs-selftest
+ZOS_MOUNTS := tests/m9/mounts-ramfs.json
+ZOS_IOC_BOOT := 0
+ZOS_HID_BOOT := 0
+ZOS_V9958_BOOT := 0
+endif
+
 # Hardware-smoke host sync (kernel/main.c): the M8 IOC smoke image waits
 # for the host's two-byte sync sequence on SIO0/B before the banner,
 # because this bench's reset line also resets the USB bridge.  Only
@@ -344,7 +364,7 @@ ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL) \
 	$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
 	$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
-	$(ZOS_M9_PROVIDER_SELFTEST)),)
+	$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
 endif
@@ -446,6 +466,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	m9-vfs-selftest \
 	m9-required-mount-selftest \
 	m9-provider-selftest \
+	m9-fs-selftest \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-subsystem smoke-hardware-romfs-corrupt \
@@ -453,7 +474,8 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	smoke-hardware-m8-v9958 smoke-hardware-m8-console \
 	smoke-hardware-m8 smoke-hardware-m8-fb-nohid \
 	smoke-hardware-m8-fb-nohid-nov9958 smoke-hardware-m8-fb-badioc \
-	smoke-hardware-m8-fb-arena
+	smoke-hardware-m8-fb-arena \
+	smoke-hardware-m9-fs
 
 all: $(IMAGE) $(MAME_IMAGE)
 
@@ -607,7 +629,19 @@ $(BUILD)/vfs_dir.rel: kernel/vfs/dir.c kernel/vfs/vfs.h \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_mutate.rel: kernel/vfs/mutate.c kernel/vfs/vfs.h \
-		include/zephyros/fs.h include/zephyros/vfs.h | $(BUILD)
+		include/zephyros/fs.h include/zephyros/vfs.h \
+		include/zephyros/process.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/vfs_process.rel: kernel/vfs/process.c kernel/vfs/vfs.h \
+		include/zephyros/fs.h include/zephyros/vfs.h \
+		include/zephyros/process.h include/zephyros/errno.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/fs.rel: kernel/syscall/fs.c kernel/syscall/fs.h \
+		kernel/syscall/diag.h kernel/vfs/vfs.h \
+		include/zephyros/syscall.h include/zephyros/fs.h \
+		include/zephyros/process.h include/zephyros/errno.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/romfs_provider.rel: fs/romfs/romfs_provider.c \
@@ -1011,6 +1045,13 @@ $(BUILD)/m9_provider_test.rel: tests/target/m9/m9_provider_test.c \
 		tests/target/include/m9_provider_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
+$(BUILD)/m9_fs_test.rel: tests/target/m9/m9_fs_test.c \
+		include/zephyros/process.h include/zephyros/console.h \
+		include/zephyros/kernel.h include/zephyros/fs.h \
+		kernel/vfs/vfs.h \
+		tests/target/include/m9_fs_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
 # --- M6 native program (ZEXTEST) ---------------------------------------------
 # One ZEX program linked as a flat image at 0100h: _CODE is the image and
 # _DATA is the zero-initialized region the loader fills at
@@ -1145,6 +1186,114 @@ $(MODULES)/monitor.zex: $(MONITOR_JSON) $(MONITOR_BUILD)/monitor.ihx \
 	$(PYTHON) tools/zexpack.py pack $(MONITOR_JSON) $@ \
 		--objdir $(MONITOR_BUILD) --report $(MODULES)/monitor.report.json
 
+# --- M9 native filesystem acceptance programs (FSTEST.ZEX) --------------------
+# fstest.zex (the FS_* acceptance suite) and fstest_l.zex (the second-exec
+# launcher-cleanup check) are ordinary ZEX programs linked from the shared
+# user runtime plus tests/target/m9/fstest.  The runtime objects are linked
+# first so their manifest-checked low-window scratch stays at the _DATA base.
+
+FSTEST_JSON := tests/target/m9/fstest/fstest.json
+FSTEST_BUILD := $(BUILD)/fstest
+FSTEST_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(FSTEST_JSON) image_size)
+FSTEST_DATA_BASE  := $(shell printf '0x%04X' $$((0x0100 + $(FSTEST_IMAGE_SIZE))))
+
+FSTEST_L_JSON := tests/target/m9/fstest/fstest_l.json
+FSTEST_L_BUILD := $(BUILD)/fstest_l
+FSTEST_L_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(FSTEST_L_JSON) image_size)
+FSTEST_L_DATA_BASE  := $(shell printf '0x%04X' $$((0x0100 + $(FSTEST_L_IMAGE_SIZE))))
+
+FSTEST_USER_CFLAGS := -mz80 -c --nostdinc --Werror \
+	-I include -I . -I user/runtime -I tests/target/include
+
+$(FSTEST_BUILD) $(FSTEST_L_BUILD):
+	mkdir -p $@
+
+$(FSTEST_BUILD)/fstest_entry.rel: tests/target/m9/fstest/fstest_entry.asm | $(FSTEST_BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(FSTEST_BUILD)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(FSTEST_BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(FSTEST_BUILD)/zex_fs_runtime.rel: user/runtime/zex_fs_runtime.asm | $(FSTEST_BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(FSTEST_BUILD)/zos_fs.rel: user/runtime/zos_fs.c user/runtime/zex_fs_runtime.h \
+		user/runtime/zex_runtime.h include/zephyros/fs.h \
+		include/zephyros/syscall.h | $(FSTEST_BUILD)
+	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
+
+$(FSTEST_BUILD)/fstest.rel: tests/target/m9/fstest/fstest.c \
+		user/runtime/zex_fs_runtime.h user/runtime/zex_runtime.h \
+		include/zephyros/fs.h | $(FSTEST_BUILD)
+	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
+
+$(FSTEST_BUILD)/fstest.lk: $(FSTEST_BUILD)/fstest_entry.rel \
+		$(FSTEST_BUILD)/zex_runtime.rel \
+		$(FSTEST_BUILD)/zex_fs_runtime.rel $(FSTEST_BUILD)/zos_fs.rel \
+		$(FSTEST_BUILD)/fstest.rel $(FSTEST_JSON) | $(FSTEST_BUILD)
+	{ \
+	  printf '%s\n' '-n' '-m' '-w'; \
+	  printf '%s\n' '-i $(FSTEST_BUILD)/fstest.ihx'; \
+	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(FSTEST_DATA_BASE)'; \
+	  printf '%s\n' $(FSTEST_BUILD)/fstest_entry.rel \
+	                $(FSTEST_BUILD)/zex_runtime.rel \
+	                $(FSTEST_BUILD)/zex_fs_runtime.rel \
+	                $(FSTEST_BUILD)/zos_fs.rel \
+	                $(FSTEST_BUILD)/fstest.rel; \
+	  printf '%s\n' '-e'; \
+	} > $@
+
+$(FSTEST_BUILD)/fstest.ihx $(FSTEST_BUILD)/fstest.map: $(FSTEST_BUILD)/fstest.lk
+	$(SDLDZ80) -f $(FSTEST_BUILD)/fstest.lk
+
+$(MODULES)/fstest.zex: $(FSTEST_JSON) $(FSTEST_BUILD)/fstest.ihx \
+		$(FSTEST_BUILD)/fstest.map tools/zexpack.py | $(MODULES)
+	$(PYTHON) tools/zexpack.py pack $(FSTEST_JSON) $@ \
+		--objdir $(FSTEST_BUILD) --report $(MODULES)/fstest.report.json
+
+$(FSTEST_L_BUILD)/fstest_l_entry.rel: tests/target/m9/fstest/fstest_l_entry.asm | $(FSTEST_L_BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(FSTEST_L_BUILD)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(FSTEST_L_BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(FSTEST_L_BUILD)/zex_fs_runtime.rel: user/runtime/zex_fs_runtime.asm | $(FSTEST_L_BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(FSTEST_L_BUILD)/zos_fs.rel: user/runtime/zos_fs.c user/runtime/zex_fs_runtime.h \
+		user/runtime/zex_runtime.h include/zephyros/fs.h \
+		include/zephyros/syscall.h | $(FSTEST_L_BUILD)
+	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
+
+$(FSTEST_L_BUILD)/fstest_l.rel: tests/target/m9/fstest/fstest_l.c \
+		user/runtime/zex_fs_runtime.h user/runtime/zex_runtime.h \
+		include/zephyros/fs.h | $(FSTEST_L_BUILD)
+	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
+
+$(FSTEST_L_BUILD)/fstest_l.lk: $(FSTEST_L_BUILD)/fstest_l_entry.rel \
+		$(FSTEST_L_BUILD)/zex_runtime.rel \
+		$(FSTEST_L_BUILD)/zex_fs_runtime.rel $(FSTEST_L_BUILD)/zos_fs.rel \
+		$(FSTEST_L_BUILD)/fstest_l.rel $(FSTEST_L_JSON) | $(FSTEST_L_BUILD)
+	{ \
+	  printf '%s\n' '-n' '-m' '-w'; \
+	  printf '%s\n' '-i $(FSTEST_L_BUILD)/fstest_l.ihx'; \
+	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(FSTEST_L_DATA_BASE)'; \
+	  printf '%s\n' $(FSTEST_L_BUILD)/fstest_l_entry.rel \
+	                $(FSTEST_L_BUILD)/zex_runtime.rel \
+	                $(FSTEST_L_BUILD)/zex_fs_runtime.rel \
+	                $(FSTEST_L_BUILD)/zos_fs.rel \
+	                $(FSTEST_L_BUILD)/fstest_l.rel; \
+	  printf '%s\n' '-e'; \
+	} > $@
+
+$(FSTEST_L_BUILD)/fstest_l.ihx $(FSTEST_L_BUILD)/fstest_l.map: $(FSTEST_L_BUILD)/fstest_l.lk
+	$(SDLDZ80) -f $(FSTEST_L_BUILD)/fstest_l.lk
+
+$(MODULES)/fstest_l.zex: $(FSTEST_L_JSON) $(FSTEST_L_BUILD)/fstest_l.ihx \
+		$(FSTEST_L_BUILD)/fstest_l.map tools/zexpack.py | $(MODULES)
+	$(PYTHON) tools/zexpack.py pack $(FSTEST_L_JSON) $@ \
+		--objdir $(FSTEST_L_BUILD) --report $(MODULES)/fstest_l.report.json
+
 # Deterministic malformed containers (one per validation boundary; see
 # tests/subsys/gen_zex_fixtures.py and gen_zmod_fixtures.py) shared by the
 # subsystem acceptance manifest.
@@ -1206,6 +1355,12 @@ ROMFS_MANIFEST := tests/m9/manifest-provider.json
 ROMFS_EXTRA_DEPS := $(MODULES)/ramfs.zmod $(MODULES)/m9_probe.zmod \
 		$(MODULES)/m9_dup.zmod $(MODULES)/m9_fail.zmod \
 		$(MODULES)/monitor.zex
+else ifeq ($(ZOS_M9_FS_SELFTEST),1)
+# SIO-only boot: the SIO fallback, the RAM provider mounted at `/` and
+# `/R2`, the monitor and the two native filesystem acceptance programs.
+ROMFS_MANIFEST := tests/m9/manifest-fs.json
+ROMFS_EXTRA_DEPS := $(MODULES)/ramfs.zmod $(MODULES)/monitor.zex \
+		$(MODULES)/fstest.zex $(MODULES)/fstest_l.zex
 else
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
@@ -1248,7 +1403,7 @@ ZOS_TEST_LINK := $(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 		$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL) \
 		$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
 		$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
-		$(ZOS_M9_PROVIDER_SELFTEST))
+		$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -1617,6 +1772,23 @@ m9-provider-selftest: all
 	$(PYTHON) -m unittest discover -s tests -p 'test_m9_provider_sim.py' -v
 	@echo "m9 provider image: build-m9-provider-selftest/zephyros-m9-provider-selftest.bin"
 
+# M9 filesystem syscall acceptance image: SIO-only boot, the test RAM
+# filesystem at `/` and `/R2`, and the two native acceptance programs.  The
+# target hook launches fstest.zex, checks the pool is clean, then exec's the
+# launcher-cleanup program; the simulator replay pins the transcript.
+
+m9-fs-selftest: all
+	$(MAKE) BUILD=build-m9-fs-selftest ZOS_M9_FS_SELFTEST=1 \
+		build-m9-fs-selftest/zephyros-m9-fs-selftest.bin \
+		build-m9-fs-selftest/zephyr80-m9-fs-selftest.bin
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+		build-m9-fs-selftest/zephyros.map \
+		build-m9-fs-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_syscall_sim.py' -v
+	$(PYTHON) -m unittest discover -s tests -p 'test_m9_fs.py' -v
+	@echo "m9 fs image: build-m9-fs-selftest/zephyros-m9-fs-selftest.bin"
+
 m8-fallback-selftests: all
 	$(MAKE) BUILD=build-m8-fb-nohid ZOS_M8_FALLBACK_SELFTEST=1 \
 		ZOS_M8_FALLBACK=nohid ZOS_SMOKE_HOST_SYNC=1 \
@@ -1701,7 +1873,8 @@ endef
 
 hardware-images: all subsystem-selftest romfs-corrupt-selftest \
 		m8-selftest m8-ioc-selftest m8-hid-selftest \
-		m8-v9958-selftest m8-console-selftest m8-fallback-selftests
+		m8-v9958-selftest m8-console-selftest m8-fallback-selftests \
+		m9-fs-selftest
 	@echo "hardware-images: every smoke image is built under build*/"
 
 smoke-hardware:
@@ -1758,3 +1931,7 @@ smoke-hardware-m8-fb-badioc:
 smoke-hardware-m8-fb-arena:
 	@$(call smoke_preflight,build-m8-fb-arena/zephyros-m8-fb-arena.bin,m8-fallback-selftests)
 	$(PYTHON) tools/serial_smoke.py --mode m8-fb-arena --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m9-fs:
+	@$(call smoke_preflight,build-m9-fs-selftest/zephyros-m9-fs-selftest.bin,m9-fs-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode m9-fs --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

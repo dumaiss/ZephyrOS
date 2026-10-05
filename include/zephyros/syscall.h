@@ -40,6 +40,27 @@
 #define ZOS_SYSCALL_DIAG_BANK_INFO 0x2Cu /* 44 */
 #define ZOS_SYSCALL_DIAG_SYSTEM_INFO 0x2Du /* 45 */
 
+/* M9 native filesystem family (package 27, architecture section 32.26).
+ * Numbers are pinned by work/M9-REFERENCE.md.  Argument blocks are
+ * declared in include/zephyros/fs.h; before the VFS READY phase every
+ * call fails with ZOS_EBUSY. */
+#define ZOS_SYSCALL_FS_OPEN     0x10u /* 16 */
+#define ZOS_SYSCALL_FS_CLOSE    0x11u /* 17 */
+#define ZOS_SYSCALL_FS_READ     0x12u /* 18 */
+#define ZOS_SYSCALL_FS_WRITE    0x13u /* 19 */
+#define ZOS_SYSCALL_FS_SEEK     0x14u /* 20 */
+#define ZOS_SYSCALL_FS_STAT     0x15u /* 21 */
+#define ZOS_SYSCALL_FS_OPENDIR  0x16u /* 22 */
+#define ZOS_SYSCALL_FS_READDIR  0x17u /* 23 */
+#define ZOS_SYSCALL_FS_CLOSEDIR 0x18u /* 24 */
+#define ZOS_SYSCALL_FS_MKDIR    0x19u /* 25 */
+#define ZOS_SYSCALL_FS_RMDIR    0x1Au /* 26 */
+#define ZOS_SYSCALL_FS_UNLINK   0x1Bu /* 27 */
+#define ZOS_SYSCALL_FS_RENAME   0x1Cu /* 28 */
+#define ZOS_SYSCALL_FS_CHDIR    0x1Du /* 29 */
+#define ZOS_SYSCALL_FS_GETCWD   0x1Eu /* 30 */
+#define ZOS_SYSCALL_FS_SYNC     0x1Fu /* 31 */
+
 /* Address windows enforced before any caller byte is touched. */
 #define ZOS_SYSCALL_WINDOW_BASE 0x0100u /* argument blocks begin here */
 #define ZOS_SYSCALL_WINDOW_END  0x2000u /* exclusive; blocks are read in mode 11 */

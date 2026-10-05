@@ -5,9 +5,14 @@
 ROMFS provider; package `26-m9-provider-abi-cache` (2026-10-04) completed
 the kernel file/directory API (32-bit seek, root merge, mountpoint
 errors), added driver ABI v3 `fs_register` with the loader registration
-transaction, and proved it with the test-only writable `ramfs` provider.
-Host-validated and simulator-accepted; physical acceptance is `PENDING`
-(see `docs/validation/2026-10-04-m9-vfs-bootstrap.md`).  Bank-7
+transaction, and proved it with the test-only writable `ramfs` provider;
+package `27-m9-fs-syscalls` (2026-10-05) exposed the VFS to native
+programs: the global owner-tagged descriptor pool, per-process CWD, the
+pinned `FS_*` syscall family (`10h-1Fh`), the user runtime wrappers and
+the `fstest.zex` acceptance program.  Host-validated, simulator-accepted
+and physically accepted 2026-10-05 (`make smoke-hardware-m9-fs` observed
+`fstest: PASS 9/9`, `fstest: launcher OK`, `m9 fs selftest: OK` on
+hardware; see `docs/validation/2026-10-05-m9-fs-syscalls.md`).  Bank-7
 residency is reported against the architecture section 32.39 ledger.
 
 This document records the implementation of the M9 bootstrap slice:
@@ -34,12 +39,14 @@ Deliberately **not** implemented here (later packages):
 
 | Deferred | Package |
 | --- | --- |
-| syscalls, per-process descriptors, `SYS_FS_*` | 27 |
 | data cache and generation keys (provider-local: IOC-FAT) | 30 |
-| current working directory (`chdir`/`getcwd`) | 27 |
 | writable providers, IOC-FAT at `/`, block class, ZDEV ABI v3 | 26, 29, 30 |
 | `/` filesystem merge into root enumeration | 26 |
 | cross-filesystem move/rename semantics | 31 |
+
+Package 27 implemented the previously deferred rows "syscalls,
+per-process descriptors, `SYS_FS_*`" and "current working directory
+(`chdir`/`getcwd`)"; see section 12 below.
 
 VFS is kernel mechanism: no executable code exists under `platform/` or
 `config/`, and `fs/romfs` includes no driver header.
@@ -107,7 +114,8 @@ namespace preserves what the user typed).  `ZOS_PATH_MAX` and
 `ZFS_NAME_MAX` include the terminating NUL, so the longest usable path is
 127 bytes and the longest component is 63; both over-length forms and a
 too-small output buffer return `ZOS_EINVAL`.  Paths resolve against the
-`/` base until package 27 adds the per-process CWD.
+`/` base for the kernel launcher; package 27 resolves a relative path
+against the calling process' CWD instead.
 
 `vfs_name_equal()` compares ASCII case-insensitively (`A-Z` == `a-z`,
 every other byte exact).  ZephyrOS performs no Unicode folding.
@@ -183,8 +191,8 @@ those maps (`docs/validation/2026-10-04-m9-vfs-bootstrap.md` section 9).
 
 `vfs_open()`/`vfs_read()`/`vfs_write()`/`vfs_seek()`/`vfs_sync()`/
 `vfs_close()`/`vfs_stat()` operate on caller-provided `struct vfs_file`
-storage: there is no descriptor table yet (package 27 adds the
-process-visible pool).  Every one of them resolves the path, selects the
+storage; package 27 adds the process-visible pool (`vfs_fd_open`, section
+12) on top of them.  Every one of them resolves the path, selects the
 mount and calls the provider with the provider-relative path.  Reads are
 clamped to EOF by VFS, so a provider only ever sees an in-range request.
 
@@ -468,7 +476,7 @@ compared case-insensitively (`ZOS_EEXIST`) and a full registry
 The test-only module `tests/modules/ramfs.c` (packed as `ramfs.zmod`,
 driver ABI v3) registers the `ramfs` provider.  It is path-based and
 hierarchical, matches ASCII case-insensitively, and is bounded by 16
-nodes and 4096 bytes of file data per instance over two instances.  Its
+nodes and 2048 bytes of file data per instance over two instances.  Its
 documented reserved control names are:
 
 ```text
@@ -507,3 +515,67 @@ timeout whenever the console-capable module is resident (architecture
 30.9 binding policy); that mode is only applicable to an SIO-fallback
 bench.  The M8 serial smoke modes were re-run on the ABI v3 module bytes
 and pass.
+
+## 12. Native filesystem syscalls (package 27)
+
+Package 27 makes the VFS reachable from native programs through the pinned
+`FS_*` family (`10h-1Fh`; the register ABI and every block are documented
+in `docs/abi.md` section 10 and declared in `include/zephyros/fs.h`).
+Nothing in provider semantics changed; the new layers are:
+
+```text
+kernel/vfs/process.c   global owner-tagged descriptor pool + per-process CWD
+kernel/syscall/fs.c    the FS_* service bodies (argument + window validation)
+user/runtime/zex_fs_runtime.asm + zos_fs.c   native gate stub + C wrappers
+tests/target/m9/fstest/  fstest.zex (suite) and fstest_l.zex (second-exec)
+```
+
+**Descriptor pool.** One global `_DATA` array of 8 `struct
+vfs_descriptor` entries; a file and a directory iterator share it.  Each
+entry holds the owner pid, `FREE`/`FILE`/`DIRECTORY`, and the mount,
+provider handle, size, offset and access flags of the object.  The fd an
+application names is the pool index; `vfs_fd_check()` verifies range, type
+and owner, and any mismatch is `ZOS_EINVAL`.  Allocation takes the lowest
+free entry and a full pool is `ZOS_EMFILE`.  Provider handles never leave
+the kernel.  Descriptors are not `stdin`/`stdout`, are not inherited, and
+have no dup.
+
+**CWD.** A static pool of `ZOS_EXEC_MAX_DEPTH` (4) canonical 128-byte
+slots, allocated by `vfs_process_start(pid, parent_pid)` (which gives the
+child the parent's CWD, or `/` under the launcher) and released by
+`vfs_process_exit(pid)`, which is idempotent and also closes every
+descriptor owned by the pid with `close` semantics.  Exit runs on every
+path: `SYS_EXIT`, the raw-return `ZOS_EFAULT` trap, and the failed-launch
+rollback (through `process_slot_release`).  Relative paths resolve against
+`vfs_cwd_for(pid)`, so `chdir` crosses mounts transparently.
+
+**Services.** Argument blocks live in the caller window `0100h-1FFFh`;
+paths are copied into a shared static scratch and normalized against the
+CWD; `buffer`/`out` pointers are validated against `0100h-DFFFh` and move
+only through the checked bank-copy gates.  File data is chunked through
+the single 512-byte bank-7 staging buffer, bridging to the caller bank
+through the 64-byte common gate.  Every service validates its complete
+block before any state change, and every `FS_*` call is refused with
+`ZOS_EBUSY` before the VFS READY phase.
+
+**Acceptance.** `make m9-fs-selftest` builds the SIO-only image with ROMFS
+at `/SYSTEM` and the test-only `ramfs` at `/` and `/R2`, and runs two
+native programs: `fstest.zex` (namespace, ROMFS read/stat/enumeration/
+EROFS, ramfs mutation/TRUNC/sizes, error paths, pool exhaustion, stale
+handles, a failed confirmed write, `EXDEV` and argument-window faults) and
+`fstest_l.zex`, exec'd a second time, which proves the 8-entry pool and the
+CWD were released.  `tests/test_syscall_sim.py` replays the linked image,
+checks the transcript and the released pool, and asserts the worst-case
+kernel gate-stack depth stays inside 256 bytes.  The physical gate is
+`make smoke-hardware-m9-fs SERIAL_PORT=/dev/ttyUSB0`, which observed
+`fstest: PASS 9/9`, `fstest: launcher OK` and `m9 fs selftest: OK` on
+hardware (2026-10-05; `docs/validation/2026-10-05-m9-fs-syscalls.md`).
+
+**Budget (section 32.39).** The production ledger moved from package 26
+(`code 23526 end 7BE6h`, `arena 46 granules`, `data 1294`) to package 27
+(`code 27636 end 8BF4h`, `arena 35 granules (20 boot, 15 free)`,
+`data 3049 at D200h`, `isr 256`, `slack 279`): `+3987` `_CODE` and
+`+1755` `_DATA` (the 512-byte staging buffer, the 4x128-byte CWD pool, the
+descriptor pool and the syscall path scratch).  The production arena still
+clears the 32-granule floor and holds the boot set; the slack target is
+re-checked by the supervisor after package 28.

@@ -6,7 +6,7 @@
  * driver ABI v3 `fs_register` callback, exercising module provider
  * registration and the loader's rollback transaction.
  *
- * Bounded storage: 16 nodes and 4096 bytes of file data per instance, two
+ * Bounded storage: 16 nodes and 2048 bytes of file data per instance, two
  * instances total.  Node paths are provider-relative and matched with the
  * ASCII case-insensitive rule the provider ABI requires (architecture
  * section 32.8).
@@ -30,7 +30,7 @@
 #define RAMFS_INSTANCES 2u
 #define RAMFS_NODES 16u
 #define RAMFS_HANDLES 4u
-#define RAMFS_DATA_SIZE 4096u
+#define RAMFS_DATA_SIZE 2048u
 /* The acceptance paths are short; a longer provider path is EINVAL. */
 #define RAMFS_PATH_MAX 24u
 

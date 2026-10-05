@@ -1,8 +1,8 @@
 /* ZephyrOS M9 VFS kernel file API and the loader's byte source.
  *
  * Open/read/write/sync/close/stat operate on caller-provided `struct
- * vfs_file` storage: this package keeps no descriptor pool (package 27 adds
- * the process-visible one).  A path is normalized, its owning mount is
+ * vfs_file` storage; the process-visible descriptor pool (package 27) is a
+ * thin owner-tagged wrapper over them (kernel/vfs/process.c).  A path is normalized, its owning mount is
  * selected by the first component and the provider receives the
  * provider-relative path, so VFS never walks components and keeps no node
  * object.

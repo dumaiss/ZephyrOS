@@ -19,6 +19,7 @@ build/panic.rel
 build/main.rel
 build/syscall.rel
 build/diag.rel
+build/fs.rel
 build/diag_io.rel
 build/irq.rel
 build/irq_sources.rel
@@ -33,6 +34,7 @@ build/vfs_mount.rel
 build/vfs_file.rel
 build/vfs_dir.rel
 build/vfs_mutate.rel
+build/vfs_process.rel
 build/romfs_provider.rel
 build/process.rel
 build/process_exec.rel

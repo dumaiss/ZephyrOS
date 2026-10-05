@@ -530,6 +530,23 @@ class TestProductionSmokeMode(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("was not observed", err)
 
+    def test_v9958_bound_banner_only_explains_the_display_gate(self):
+        """A healthy V9958-bound boot captures only the early banner on
+        serial; the failure message must point the operator at the
+        display rather than leaving a bare FAIL."""
+        import serial_smoke
+
+        code, _out, err = self.run_main(serial_smoke.BANNER)
+        self.assertEqual(code, 1)
+        self.assertIn("was not observed", err)
+        self.assertIn("V9958", err)
+        self.assertIn("display", err)
+
+    def test_bound_console_prints_no_display_hint(self):
+        code, _out, err = self.run_main(self.transcript())
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("V9958", err)
+
 
 if __name__ == "__main__":
     unittest.main()

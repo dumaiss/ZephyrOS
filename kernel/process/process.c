@@ -16,6 +16,7 @@
 
 #include "zephyros/process.h"
 #include "zephyros/kernel.h"
+#include "kernel/vfs/vfs.h"
 
 /* Common-resident gates (kernel/process/launch.asm). */
 void zos_process_launch(uint8_t bank, uint16_t entry);
@@ -102,6 +103,9 @@ void process_slot_release(uint8_t pid)
 	if (pid >= PROCESS_TABLE_SIZE) {
 		return;
 	}
+	/* Failed-load rollback also discards the child's filesystem state
+	 * (descriptors and CWD) if it was already allocated.  Idempotent. */
+	vfs_process_exit(pid);
 	process_table[pid].state = PROCESS_FREE;
 	process_table[pid].bank = PROCESS_NO_PROCESS;
 	process_table[pid].exit_status = 0;
@@ -161,6 +165,9 @@ void process_exit(uint16_t status)
 	process_table[pid].exit_status = status;
 	process_table[pid].state = PROCESS_FREE;
 	process_running_pid = PROCESS_NO_PROCESS;
+	/* Close every descriptor the pid owned (with close semantics) and
+	 * release its CWD slot before the parent resumes. */
+	vfs_process_exit(pid);
 	zos_process_resume();
 	for (;;) {
 		/* zos_process_resume never returns. */

@@ -25,6 +25,18 @@ uint8_t zos_syscall_block_ok(uint16_t addr, uint16_t len);
 void zos_syscall_success(uint16_t result);
 void zos_syscall_error(uint8_t err);
 
+/* Copy-gate helpers shared with the M9 filesystem services
+ * (kernel/syscall/fs.c).  They move one bounded chunk between the caller
+ * bank and the common-resident staging buffer; the fs service owns the
+ * chunking.  `zos_syscall_buffer_ok` checks the 0100h-DFFFh user-buffer
+ * window.  ZOS_SYSCALL_STAGE_SIZE mirrors kernel/memory/user_copy.asm. */
+#define ZOS_SYSCALL_STAGE_SIZE 64u
+uint8_t zos_syscall_bank_read(uint8_t bank, uint16_t user_src,
+			      uint16_t length);
+uint8_t zos_syscall_bank_write(uint8_t bank, uint16_t user_dst,
+			       uint16_t length);
+uint8_t zos_syscall_buffer_ok(uint16_t addr, uint16_t len);
+
 /* Service bodies; each takes the raw argument-block pointer from the
  * register ABI (already range-checked only by the window rule inside). */
 void zos_diag_mem_read(uint16_t block);

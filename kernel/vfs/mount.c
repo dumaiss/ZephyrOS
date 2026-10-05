@@ -21,6 +21,7 @@
 
 #include "kernel/vfs/vfs.h"
 #include "zephyros/kernel.h"
+#include "zephyros/process.h"
 #include "fs/romfs/romfs_provider.h"
 
 /* Built-in provider registration table: the providers statically linked
@@ -315,7 +316,10 @@ int vfs_resolve_path(const char *path, uint16_t *index, const char **rel)
 {
 	int result;
 
-	result = vfs_path_normalize(path, vfs_norm, ZOS_PATH_MAX);
+	/* A relative path resolves against the caller's CWD; the kernel
+	 * launcher (no RUNNING process) has the constant `/`. */
+	result = vfs_path_normalize_at(vfs_cwd_for(process_running_pid), path,
+				       vfs_norm, ZOS_PATH_MAX);
 	if (result != 0) {
 		return result;
 	}
@@ -387,6 +391,7 @@ int vfs_init(void)
 	vfs_provider_next_generation = 0;
 	vfs_provider_current_owner = (const void *)0;
 	vfs_mount_state_reset();
+	vfs_fs_state_init();
 
 	if (vfs_mount_count > VFS_MAX_MOUNTS) {
 		panic("vfs: mount table overflow");

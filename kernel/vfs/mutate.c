@@ -12,6 +12,7 @@
  */
 
 #include "kernel/vfs/vfs.h"
+#include "zephyros/process.h"
 
 static char vfs_rename_target[ZOS_PATH_MAX];
 
@@ -100,8 +101,11 @@ int vfs_rename(const char *oldpath, const char *newpath)
 		return result;
 	}
 	/* The source path lives in the shared scratch buffer, so the target
-	 * goes through the operation-private second one. */
-	result = vfs_path_normalize(newpath, vfs_rename_target, ZOS_PATH_MAX);
+	 * goes through the operation-private second one.  Both resolve
+	 * against the caller's CWD. */
+	result = vfs_path_normalize_at(vfs_cwd_for(process_running_pid),
+				       newpath, vfs_rename_target,
+				       ZOS_PATH_MAX);
 	if (result != 0) {
 		return result;
 	}

@@ -289,3 +289,80 @@ latch/SP/IFF restoration; `make monitor-test` checks the monitor ZEX
 layout and its source/map freedom from kernel/serial dependencies.  The
 physical gate is `make smoke-hardware-m7 SERIAL_PORT=/dev/ttyUSB0` (see
 `docs/monitor.md`).
+
+## 10. M9 native filesystem services
+
+M9 (package 27) exposes the VFS to native programs behind the unchanged
+gate.  The family is `10h-1Fh`; argument blocks are declared in
+`include/zephyros/fs.h` and are packed on the Z80 (every field is pinned
+by `_Static_assert` and by host tests).
+
+```text
+10h  SYS_FS_OPEN      {path:u16, length:u16, flags:u8}        -> fd in HL
+11h  SYS_FS_CLOSE     {fd:u8}
+12h  SYS_FS_READ      {fd:u8, buffer:u16, length:u16}         -> count in HL
+13h  SYS_FS_WRITE     {fd:u8, buffer:u16, length:u16}         -> count in HL
+14h  SYS_FS_SEEK      {fd:u8, whence:u8, offset:i32}          -> position written back
+15h  SYS_FS_STAT      {path:u16, length:u16, out:u16}         -> struct zfs_stat out
+16h  SYS_FS_OPENDIR   {path:u16, length:u16}                  -> fd in HL
+17h  SYS_FS_READDIR   {fd:u8, out:u16}                        -> 1 entry / 0 end
+18h  SYS_FS_CLOSEDIR  {fd:u8}
+19h  SYS_FS_MKDIR     {path:u16, length:u16}
+1Ah  SYS_FS_RMDIR     {path:u16, length:u16}
+1Bh  SYS_FS_UNLINK    {path:u16, length:u16}
+1Ch  SYS_FS_RENAME    {from:u16, from_length:u16, to:u16, to_length:u16}
+1Dh  SYS_FS_CHDIR     {path:u16, length:u16}
+1Eh  SYS_FS_GETCWD    {buffer:u16, length:u16}                -> length in HL
+1Fh  SYS_FS_SYNC      {fd:u8}
+```
+
+Rules:
+
+- Path fields address 1..127 non-NUL bytes in the caller window
+  `0100h-1FFFh`; they are copied into a shared static pathname scratch and
+  resolved against the calling process' CWD.  A zero length, an over-long
+  path, an embedded NUL or a window violation is `ZOS_EINVAL`.
+- `buffer`/`out` fields address the user-buffer window `0100h-DFFFh` and
+  move only through the checked bank-copy gates.  File data is transferred
+  in bounded chunks through the single 512-byte bank-7 staging buffer.
+- The descriptor an application names is the global 8-entry VFS pool index
+  (`kernel/vfs/`, owner-tagged).  Every fd-taking call verifies range, type
+  (`FILE` vs `DIRECTORY`) and owner; a mismatch is `ZOS_EINVAL`, a full pool
+  is `ZOS_EMFILE`.  Provider handles are never exposed.  Descriptors are not
+  `stdin`/`stdout`, are not inherited across `exec`, and there is no dup.
+- CWD is a VFS concept; `CHDIR` stores the canonical path and crosses mounts
+  transparently, and `GETCWD` writes the NUL-terminated canonical path and
+  returns its length excluding the NUL.  A too-small buffer is `ZOS_EINVAL`.
+- `READ`/`WRITE` return the confirmed byte count in `HL`; a failure after at
+  least one confirmed chunk returns the confirmed count, otherwise the
+  error.  `SEEK` writes the resulting 32-bit position back into the
+  `offset` field of the block and returns `0` in `HL`.
+- `READDIR` returns `HL = 1` with a `zfs_dirent` at `out`, or `HL = 0` at
+  end of stream.
+- M9 has no `SYS_FS_STATFS` and no truncate-to-arbitrary-size; truncation to
+  zero is `SYS_FS_OPEN` with `ZFS_O_TRUNC`.
+- Before the VFS READY phase every `FS_*` call returns `ZOS_EBUSY`; every
+  service validates its complete block before any state change.
+
+Errors use the shared values in `include/zephyros/errno.h`; M9 adds
+`ZOS_EEXIST (10h)`, `ZOS_ENOTDIR (11h)`, `ZOS_EISDIR (12h)`,
+`ZOS_ENOTEMPTY (13h)`, `ZOS_EROFS (14h)`, `ZOS_ESTALE (15h)`,
+`ZOS_EXDEV (16h)` and `ZOS_EMFILE (17h)`.  `ZOS_EMFILE` reports
+descriptor-pool or provider open-handle exhaustion, distinct from
+`ZOS_ENOSPC` (storage full).
+
+Native programs use the wrappers in `user/runtime/zex_fs_runtime.h`
+(`zos_open`, `zos_close`, `zos_read`, `zos_write`, `zos_seek`, `zos_stat`,
+`zos_opendir`, `zos_readdir`, `zos_closedir`, `zos_mkdir`, `zos_rmdir`,
+`zos_unlink`, `zos_rename`, `zos_chdir`, `zos_getcwd`, `zos_sync`).  They
+take NUL-terminated strings, reject a string over 127 bytes (or an
+empty/null one) locally with `-ZOS_EINVAL`, and return the negated native
+error code on failure.
+
+Validation: `make m9-fs-selftest` builds the SIO-only acceptance image
+(ROMFS at `/SYSTEM`, the test-only `ramfs` at `/` and `/R2`), runs the
+native `fstest.zex` suite and the `fstest_l.zex` second-exec cleanup check,
+and replays the whole boot and both programs in the Z80 simulator
+(`tests/test_syscall_sim.py`).  The physical gate is
+`make smoke-hardware-m9-fs SERIAL_PORT=/dev/ttyUSB0`, which expects
+`fstest: PASS`, `fstest: launcher OK` and `m9 fs selftest: OK`.

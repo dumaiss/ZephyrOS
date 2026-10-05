@@ -30,6 +30,7 @@
 #include "zephyros/console.h"
 
 #include "syscall/diag.h"
+#include "syscall/fs.h"
 
 /* Dispatcher input/output state (written by the asm boundary, read by C). */
 uint8_t zos_syscall_number;
@@ -41,13 +42,13 @@ uint16_t zos_syscall_result_hl;
 /* Common-resident copy gate and its staging block. */
 extern uint8_t zos_user_copy_staging[];
 
-#define USER_STAGE_SIZE 64u /* must match kernel/memory/user_copy.asm */
+#define USER_STAGE_SIZE ZOS_SYSCALL_STAGE_SIZE
 
 /* One transfer chunk against the caller bank, through the common gate.
  * The staging buffer is common-resident, so it survives the mapping
  * switch and stays valid while mode 10 is active. */
-static uint8_t syscall_bank_read(uint8_t bank, uint16_t user_src,
-				 uint16_t length)
+uint8_t zos_syscall_bank_read(uint8_t bank, uint16_t user_src,
+			      uint16_t length)
 {
 	struct zos_bank_copy_req req;
 
@@ -59,8 +60,8 @@ static uint8_t syscall_bank_read(uint8_t bank, uint16_t user_src,
 	return zos_bank_copy(&req);
 }
 
-static uint8_t syscall_bank_write(uint8_t bank, uint16_t user_dst,
-				  uint16_t length)
+uint8_t zos_syscall_bank_write(uint8_t bank, uint16_t user_dst,
+			       uint16_t length)
 {
 	struct zos_bank_copy_req req;
 
@@ -109,7 +110,7 @@ uint8_t zos_syscall_block_ok(uint16_t addr, uint16_t len)
 #define block_ok	zos_syscall_block_ok
 
 /* Read/write buffer: 0100h-DFFFh, no length wrap. */
-static uint8_t buffer_ok(uint16_t addr, uint16_t len)
+uint8_t zos_syscall_buffer_ok(uint16_t addr, uint16_t len)
 {
 	if (addr < ZOS_USER_BUFFER_BASE || addr >= ZOS_USER_BUFFER_END) {
 		return 0;
@@ -149,7 +150,7 @@ static void syscall_console_write(uint8_t bank, uint16_t block)
 	}
 	args.buffer = read_le16((const uint8_t *)block);
 	args.length = read_le16((const uint8_t *)(block + 2));
-	if (!buffer_ok(args.buffer, args.length)) {
+	if (!zos_syscall_buffer_ok(args.buffer, args.length)) {
 		syscall_error(ZOS_EINVAL);
 		return;
 	}
@@ -160,7 +161,7 @@ static void syscall_console_write(uint8_t bank, uint16_t block)
 		if (chunk > USER_STAGE_SIZE) {
 			chunk = USER_STAGE_SIZE;
 		}
-		if (syscall_bank_read(bank,
+		if (zos_syscall_bank_read(bank,
 				      (uint16_t)(args.buffer + done),
 				      chunk) != 0) {
 			syscall_error(ZOS_EINVAL);
@@ -192,7 +193,7 @@ static void syscall_console_read(uint8_t bank, uint16_t block)
 	}
 	args.buffer = read_le16((const uint8_t *)block);
 	args.length = read_le16((const uint8_t *)(block + 2));
-	if (!buffer_ok(args.buffer, args.length)) {
+	if (!zos_syscall_buffer_ok(args.buffer, args.length)) {
 		syscall_error(ZOS_EINVAL);
 		return;
 	}
@@ -227,7 +228,7 @@ static void syscall_console_read(uint8_t bank, uint16_t block)
 		zos_user_copy_staging[count] = (uint8_t)ch;
 		++count;
 		if (count == USER_STAGE_SIZE) {
-			if (syscall_bank_write(
+			if (zos_syscall_bank_write(
 				    bank, (uint16_t)(args.buffer + done),
 				    count) != 0) {
 				syscall_error(ZOS_EINVAL);
@@ -238,7 +239,7 @@ static void syscall_console_read(uint8_t bank, uint16_t block)
 		}
 	}
 	if (count != 0) {
-		if (syscall_bank_write(bank, (uint16_t)(args.buffer + done),
+		if (zos_syscall_bank_write(bank, (uint16_t)(args.buffer + done),
 				      count) != 0) {
 			syscall_error(ZOS_EINVAL);
 			return;
@@ -293,6 +294,13 @@ void kernel_syscall_dispatch(void)
 
 	/* M1 default: unknown numbers stay deterministic. */
 	syscall_error(ZOS_ENOSYS);
+
+	/* M9 native filesystem family (10h-1Fh). */
+	if (zos_syscall_number >= ZOS_SYSCALL_FS_OPEN &&
+	    zos_syscall_number <= ZOS_SYSCALL_FS_SYNC) {
+		zos_fs_dispatch(zos_syscall_number, bank, zos_syscall_args);
+		return;
+	}
 
 	switch (zos_syscall_number) {
 	case ZOS_SYSCALL_EXIT:

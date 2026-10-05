@@ -228,6 +228,16 @@ int process_exec(const char *path, uint16_t *status)
 		return ZEX_EXEC_ERR_NOSPACE;
 	}
 	pid = (uint8_t)result;
+	/* Allocate the child's CWD slot before any bank content changes; a
+	 * full CWD pool fails the launch cleanly and rolls the slot back
+	 * through process_slot_release().  The parent is the kernel
+	 * launcher, whose CWD is the constant `/`. */
+	result = vfs_process_start(pid, PROCESS_KERNEL_PARENT);
+	if (result != 0) {
+		process_slot_release(pid);
+		(void)vfs_close(&file);
+		return ZEX_EXEC_ERR_NOSPACE;
+	}
 	result = process_alloc_bank();
 	if (result < 0) {
 		process_slot_release(pid);

@@ -167,6 +167,11 @@ SUBSYS_CORRUPT_ROLLBACK_OK = \
 SUBSYS_PROCESS_DONE = b"process selftest: OK\r\n"
 SUBSYS_FAIL = b"selftest: FAIL"
 SUBSYS_PROMPT = b"Z80> "
+M9FS_PASS = b"fstest: PASS "
+M9FS_FAIL = b"fstest: FAIL "
+M9FS_LAUNCHER_OK = b"fstest: launcher OK\r\n"
+M9FS_SELFTEST_OK = b"m9 fs selftest: OK\r\n"
+M9FS_SELFTEST_FAIL = b"m9 fs selftest: FAIL"
 MONITOR_BANNER = b"ZephyrOS native monitor"
 
 # Production boot contract: the console service must bind and the monitor
@@ -490,6 +495,16 @@ def _m8console_result(data):
             M8CONSOLE_OUTPUT_OK in data and M8CONSOLE_SELFTEST_OK in data)
 
 
+def _m9fs_result(data):
+    """True when the M9 filesystem acceptance programs reported success:
+    the per-case suite passed, the launcher cleanup check passed, and the
+    target hook reported OK, with no FAIL/PANIC marker."""
+    if M9FS_FAIL in data or M9FS_SELFTEST_FAIL in data or b"PANIC" in data:
+        return False
+    return (BANNER in data and M9FS_PASS in data and
+            M9FS_LAUNCHER_OK in data and M9FS_SELFTEST_OK in data)
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="ZephyrOS serial smoke check")
     parser.add_argument("--port", default=os.environ.get("ZOS_SERIAL_PORT", ""))
@@ -502,7 +517,8 @@ def main(argv):
                                            "m8-console", "m8",
                                            "m8-fb-nohid",
                                            "m8-fb-nohid-nov9958",
-                                           "m8-fb-badioc", "m8-fb-arena"),
+                                           "m8-fb-badioc", "m8-fb-arena",
+                                           "m9-fs"),
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
@@ -541,6 +557,10 @@ def main(argv):
 
     print("serial_smoke: listening on %s at %d 8N1 (mode=%s, timeout=%gs)"
           % (args.port, args.baud, args.mode, args.timeout))
+    if args.mode == "m9-fs":
+        print("serial_smoke: mode m9-fs checks the filesystem acceptance "
+              "boot log; power-cycle the board or press RESET now so the "
+              "boot and the two native programs are captured")
     if args.mode == "subsystem":
         print("serial_smoke: mode subsystem checks the boot log and the "
               "interactive monitor step; power-cycle the board or press "
@@ -717,6 +737,10 @@ def main(argv):
                 elif args.mode == "m8":
                     if _m8_result(data) or M8_FAIL in data:
                         break
+                elif args.mode == "m9-fs":
+                    if _m9fs_result(data) or M9FS_FAIL in data or \
+                            M9FS_SELFTEST_FAIL in data:
+                        break
                 elif args.mode in M8FB_MODES:
                     if M8FB_SEND_INPUT in data and not rx_byte_sent:
                         try:
@@ -804,6 +828,12 @@ def main(argv):
                     "module diagnostic; the operator must also confirm "
                     "the visible monitor session on the V9958 display "
                     "with the USB keyboard")
+    elif args.mode == "m9-fs":
+        ok = _m9fs_result(data)
+        expected = ("the banner, 'fstest: PASS n/n' from the native suite, "
+                    "'fstest: launcher OK' from the second-exec cleanup "
+                    "check, and 'm9 fs selftest: OK' with no FAIL/PANIC "
+                    "marker")
     elif args.mode in M8FB_MODES:
         ok = _m8fb_result(args.mode, data)
         spec = M8FB_MODES[args.mode]
@@ -866,6 +896,29 @@ def _explain_wrong_image(mode, data):
                   "panic marker prints once at boot.  Start this tool "
                   "first, then power-cycle the board or press RESET "
                   "while it waits, and rerun", file=sys.stderr)
+    elif mode == "normal":
+        if b"PANIC" in data or any(marker in data
+                                   for marker in PRODUCTION_CONSOLE_FAIL):
+            print("serial_smoke: hint: the production boot reported a "
+                  "panic or a console failure (see the marker in the "
+                  "transcript above)", file=sys.stderr)
+        elif BANNER in data and CONSOLE_DYNAMIC_OK not in data:
+            print("serial_smoke: hint: only the early serial banner was "
+                  "captured.  The production image binds its console to "
+                  "the V9958 output (architecture section 30.9), so "
+                  "'console: dynamic sio0.b OK', the monitor banner and "
+                  "the 'Z80> ' prompt are rendered on the V9958 display "
+                  "and never reach the SIO port; --mode normal can only "
+                  "gate an SIO-fallback bench.  Confirm the monitor "
+                  "prompt and HID input on the V9958 display; that is "
+                  "the accepted production gate until the mode is split "
+                  "(see docs/validation/"
+                  "2026-10-05-m9-provider-abi-hardware.md section 5)",
+                  file=sys.stderr)
+        elif not BANNER in data:
+            print("serial_smoke: hint: no boot log was captured.  Start "
+                  "this tool first, then power-cycle the board or press "
+                  "RESET while it waits, and rerun", file=sys.stderr)
     elif mode == "m8-ioc":
         if M8IOC_UNAVAILABLE in data or M8IOC_FAIL in data:
             print("serial_smoke: hint: the IOC selftest did not complete "

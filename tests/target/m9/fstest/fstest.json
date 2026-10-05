@@ -1,0 +1,15 @@
+{
+  "format": "zex-v1",
+  "name": "fstest.zex",
+  "input": "fstest.ihx",
+  "map": "fstest.map",
+  "entry": "ft_entry",
+  "entry_offset": 0,
+  "image_size": 5120,
+  "bss_size": 1280,
+  "stack_size": 320,
+  "scratch": {
+    "symbol": "zos_fs_scratch",
+    "size": 16
+  }
+}
