@@ -26,11 +26,10 @@
 #ifndef ZEPHYROS_USER_MONITOR_H
 #define ZEPHYROS_USER_MONITOR_H
 
-#include "zex_runtime.h"
-#include "console_io.h"
+#include "zos.h"
 
 /* Command-line capacity: at most 80 characters plus the terminating NUL. */
-#define MON_LINE_MAX (ZRT_LINE_MAX + 1)
+#define MON_LINE_MAX (ZOS_LINE_MAX + 1)
 
 /* Monitor exit statuses; Q uses 0 and the launcher reports the rest. */
 #define MON_EXIT_QUIT    0x0000

@@ -44,7 +44,10 @@ from maptools import (  # noqa: E402
     HARDWARE_H, HARDWARE_INC, evaluate, parse_asm_inc, parse_c_header)
 
 IOC_H = os.path.join(ROOT, "include", "zephyros", "ioc.h")
-ERRNO_H = os.path.join(ROOT, "include", "zephyros", "errno.h")
+# The public ABI errno values (abi/) plus the IOC/boot-internal ones the
+# kernel header keeps (include/zephyros/errno.h re-exports the public set).
+ERRNO_H = os.path.join(ROOT, "abi", "zos", "errno.h")
+INTERNAL_ERRNO_H = os.path.join(ROOT, "include", "zephyros", "errno.h")
 PROTO_H = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.h")
 IOC_PROTOCOL_H = os.path.join(ROOT, "include", "zephyros", "ioc_protocol.h")
 DRIVER_H = os.path.join(ROOT, "drivers", "ioc", "ioc_driver.h")
@@ -282,6 +285,7 @@ class TestIocClassContract(unittest.TestCase):
         env.update(parse_c_header(os.path.join(ROOT, "include", "zephyros",
                                                "device.h")))
         env.update(parse_c_header(ERRNO_H))
+        env.update(parse_c_header(INTERNAL_ERRNO_H))
         codes = {
             name: evaluate(name, env) for name in (
                 "ZIOC_EINVAL", "ZIOC_EBUSY", "ZIOC_ETIMEDOUT",
@@ -343,6 +347,7 @@ class TestIocErrorCodes(unittest.TestCase):
 
     def test_errno_transport_codes(self):
         env = parse_c_header(ERRNO_H)
+        env.update(parse_c_header(INTERNAL_ERRNO_H))
         self.assertEqual(evaluate("ZOS_EPROTO", env), 0x0D)
         self.assertEqual(evaluate("ZOS_ECRC", env), 0x0E)
         self.assertEqual(evaluate("ZOS_EBADSEQ", env), 0x0F)

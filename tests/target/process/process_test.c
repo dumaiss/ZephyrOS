@@ -19,7 +19,7 @@
  */
 
 #include "zephyros/process.h"
-#include "zephyros/syscall.h"
+#include "zos/syscall.h"
 #include "zephyros/console.h"
 #include "zephyros/module.h"
 #include "zephyros/kernel.h"

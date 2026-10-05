@@ -14,21 +14,19 @@
  * that the fifth exec was refused.
  */
 
-#include "zex_runtime.h"
-#include "zex_exec_runtime.h"
-
-#define DP_EBUSY 0x04
 #define DP_SELF  "/SYSTEM/fsdeep.zex"
 
-void dp_main(void)
+#include "zos.h"
+int main(void)
 {
 	int result = zos_exec(DP_SELF, (const char *)0);
 
-	if (result == -(int)DP_EBUSY) {
+	if (result == -(int)ZOS_EBUSY) {
 		zex_exit(1u); /* deepest level: the refusal is the proof */
 	}
 	if (result < 0) {
 		zex_exit(0x00FFu); /* unexpected failure */
 	}
 	zex_exit((unsigned int)(result + 1));
+	return 0; /* unreachable */
 }

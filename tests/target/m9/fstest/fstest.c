@@ -2,34 +2,14 @@
  *
  * Packed as fstest.zex and run from /SYSTEM of the M9 FS acceptance image
  * (ROMFS at /SYSTEM, writable ramfs at / and /R2).  It uses only the public
- * native wrappers (user/runtime/zex_fs_runtime.h), never a kernel symbol.
+ * native wrappers (user/sdk/include/zos/fs.h), never a kernel symbol.
  *
  * Output contract: `fstest: <case> OK` or `fstest: <case> FAIL <code>` per
  * case, then `fstest: PASS n/n` (or `fstest: FAIL x/y`) and exit.  Each
  * case returns 0 on success or a small step code identifying the failure.
  */
 
-#include "zephyros/fs.h"
-#include "zephyros/syscall.h"
-
-#include "zex_runtime.h"
-#include "zex_fs_runtime.h"
-#include "zex_exec_runtime.h"
-#include "zex_args.h"
-
-/* Native error values (mirror include/zephyros/errno.h). */
-#define FT_EINVAL    0x02
-#define FT_ENOENT    0x05
-#define FT_EIO       0x0A
-#define FT_EEXIST    0x10
-#define FT_ENOTDIR   0x11
-#define FT_EISDIR    0x12
-#define FT_ENOTEMPTY 0x13
-#define FT_EROFS     0x14
-#define FT_ESTALE    0x15
-#define FT_EXDEV     0x16
-#define FT_EMFILE    0x17
-
+#include "zos.h"
 static char ft_buf[520];
 static char ft_ref[520];
 static struct zfs_stat ft_stat;
@@ -261,23 +241,23 @@ static int ft_romfs(void)
 		return 7;
 	}
 
-	if (!ft_iserr(zos_open("/SYSTEM", ZFS_O_READ), FT_EISDIR)) {
+	if (!ft_iserr(zos_open("/SYSTEM", ZFS_O_READ), ZOS_EISDIR)) {
 		return 8;
 	}
-	if (!ft_iserr(zos_opendir("/SYSTEM/fstest.zex"), FT_ENOTDIR)) {
+	if (!ft_iserr(zos_opendir("/SYSTEM/fstest.zex"), ZOS_ENOTDIR)) {
 		return 9;
 	}
-	if (!ft_iserr(zos_open("/SYSTEM/NOPE.BIN", ZFS_O_READ), FT_ENOENT)) {
+	if (!ft_iserr(zos_open("/SYSTEM/NOPE.BIN", ZFS_O_READ), ZOS_ENOENT)) {
 		return 10;
 	}
-	if (!ft_iserr(zos_mkdir("/SYSTEM/D"), FT_EROFS)) {
+	if (!ft_iserr(zos_mkdir("/SYSTEM/D"), ZOS_EROFS)) {
 		return 11;
 	}
 	if (!ft_iserr(zos_open("/SYSTEM/fstest.zex", ZFS_O_WRITE),
-		      FT_EROFS)) {
+		      ZOS_EROFS)) {
 		return 12;
 	}
-	if (!ft_iserr(zos_unlink("/SYSTEM/fstest.zex"), FT_EROFS)) {
+	if (!ft_iserr(zos_unlink("/SYSTEM/fstest.zex"), ZOS_EROFS)) {
 		return 13;
 	}
 	if (!ft_iserr(zos_rmdir("/SYSTEM"), 0x04 /* EBUSY */)) {
@@ -331,7 +311,7 @@ static int ft_ramfs(void)
 	if (zos_rename("/D1/F1.TXT", "/D1/F2.TXT") != 0) {
 		return 8;
 	}
-	if (zos_stat("/D1/F1.TXT", &ft_stat) != -FT_ENOENT ||
+	if (zos_stat("/D1/F1.TXT", &ft_stat) != -ZOS_ENOENT ||
 	    zos_stat("/D1/F2.TXT", &ft_stat) != 0) {
 		return 9;
 	}
@@ -350,7 +330,7 @@ static int ft_ramfs(void)
 		return 13;
 	}
 	(void)zos_close((unsigned int)fd);
-	if (!ft_iserr(zos_rmdir("/D2"), FT_ENOTEMPTY)) {
+	if (!ft_iserr(zos_rmdir("/D2"), ZOS_ENOTEMPTY)) {
 		return 14;
 	}
 	if (zos_unlink("/D2/X") != 0 || zos_rmdir("/D2") != 0) {
@@ -400,16 +380,16 @@ static int ft_errors(void)
 {
 	int fd;
 
-	if (!ft_iserr(zos_stat("/NOPE.BIN", &ft_stat), FT_ENOENT)) {
+	if (!ft_iserr(zos_stat("/NOPE.BIN", &ft_stat), ZOS_ENOENT)) {
 		return 1;
 	}
-	if (!ft_iserr(zos_open("/NOPE.BIN", ZFS_O_READ), FT_ENOENT)) {
+	if (!ft_iserr(zos_open("/NOPE.BIN", ZFS_O_READ), ZOS_ENOENT)) {
 		return 2;
 	}
-	if (!ft_iserr(zos_open("/", ZFS_O_READ), FT_EISDIR)) {
+	if (!ft_iserr(zos_open("/", ZFS_O_READ), ZOS_EISDIR)) {
 		return 3;
 	}
-	if (!ft_iserr(zos_opendir("/SYSTEM/fstest.zex"), FT_ENOTDIR)) {
+	if (!ft_iserr(zos_opendir("/SYSTEM/fstest.zex"), ZOS_ENOTDIR)) {
 		return 4;
 	}
 	fd = zos_open("/E.TXT", (unsigned char)(ZFS_O_WRITE | ZFS_O_CREATE));
@@ -420,13 +400,13 @@ static int ft_errors(void)
 	if (!ft_iserr(zos_open("/E.TXT", (unsigned char)(ZFS_O_WRITE |
 							ZFS_O_CREATE |
 							ZFS_O_EXCL)),
-		      FT_EEXIST)) {
+		      ZOS_EEXIST)) {
 		return 6;
 	}
-	if (!ft_iserr(zos_open("/NOPE.BIN", 0x80u), FT_EINVAL)) {
+	if (!ft_iserr(zos_open("/NOPE.BIN", 0x80u), ZOS_EINVAL)) {
 		return 7;
 	}
-	if (!ft_iserr(zos_read(9u, ft_buf, 1), FT_EINVAL)) {
+	if (!ft_iserr(zos_read(9u, ft_buf, 1), ZOS_EINVAL)) {
 		return 8; /* out-of-range descriptor */
 	}
 	(void)zos_unlink("/E.TXT");
@@ -475,7 +455,7 @@ static int ft_pool(void)
 	}
 	(void)zos_unlink("/P.BIN");
 	(void)zos_unlink("/R2/Q.BIN");
-	if (!ft_iserr(ninth, FT_EMFILE)) {
+	if (!ft_iserr(ninth, ZOS_EMFILE)) {
 		return 9;
 	}
 	return 0;
@@ -503,7 +483,7 @@ static int ft_stale(void)
 		return 3;
 	}
 	(void)zos_close((unsigned int)control);
-	if (!ft_iserr(zos_read((unsigned int)fd, ft_buf, 2), FT_ESTALE)) {
+	if (!ft_iserr(zos_read((unsigned int)fd, ft_buf, 2), ZOS_ESTALE)) {
 		return 4;
 	}
 	(void)zos_close((unsigned int)fd);
@@ -529,7 +509,7 @@ static int ft_writefail(void)
 		return 2;
 	}
 	(void)zos_close((unsigned int)control);
-	if (!ft_iserr(zos_write((unsigned int)fd, "BBBB", 4), FT_EIO)) {
+	if (!ft_iserr(zos_write((unsigned int)fd, "BBBB", 4), ZOS_EIO)) {
 		return 3;
 	}
 	if (zos_seek((unsigned int)fd, 0L, ZFS_SEEK_CUR) != 4L) {
@@ -554,10 +534,10 @@ static int ft_exdev(void)
 		return 1;
 	}
 	(void)zos_close((unsigned int)fd);
-	if (!ft_iserr(zos_rename("/X.TXT", "/SYSTEM/X.TXT"), FT_EXDEV)) {
+	if (!ft_iserr(zos_rename("/X.TXT", "/SYSTEM/X.TXT"), ZOS_EXDEV)) {
 		return 2;
 	}
-	if (!ft_iserr(zos_rename("/X.TXT", "/R2/X.TXT"), FT_EXDEV)) {
+	if (!ft_iserr(zos_rename("/X.TXT", "/R2/X.TXT"), ZOS_EXDEV)) {
 		return 3;
 	}
 	if (zos_rename("/X.TXT", "/Y.TXT") != 0) {
@@ -578,16 +558,16 @@ static int ft_window(void)
 		return 1;
 	}
 	if (!ft_iserr(zos_read((unsigned int)fd, (void *)0x00F0, 1),
-		      FT_EINVAL)) {
+		      ZOS_EINVAL)) {
 		return 2;
 	}
 	if (!ft_iserr(zos_read((unsigned int)fd, (void *)0xDFFF, 2),
-		      FT_EINVAL)) {
+		      ZOS_EINVAL)) {
 		return 3;
 	}
 	if (!ft_iserr(zos_stat("/SYSTEM/fstest.zex",
 			       (struct zfs_stat *)0x00F0),
-		      FT_EINVAL)) {
+		      ZOS_EINVAL)) {
 		return 4;
 	}
 	/* Craft a block whose path pointer leaves the caller window; the
@@ -597,13 +577,13 @@ static int ft_window(void)
 	ft_block.flags = ZFS_O_READ;
 	req.number = 0x10u; /* FS_OPEN */
 	req.block = &ft_block;
-	if (!ft_iserr(zos_fs_call(&req), FT_EINVAL)) {
+	if (!ft_iserr(zos_fs_call(&req), ZOS_EINVAL)) {
 		return 5;
 	}
 	ft_block.path = 0x0100u;
 	ft_block.length = 0u; /* zero-length path */
 	req.block = &ft_block;
-	if (!ft_iserr(zos_fs_call(&req), FT_EINVAL)) {
+	if (!ft_iserr(zos_fs_call(&req), ZOS_EINVAL)) {
 		return 6;
 	}
 	(void)zos_close((unsigned int)fd);
@@ -611,9 +591,6 @@ static int ft_window(void)
 }
 
 /* --- SYS_EXEC (package 28) ------------------------------------------- */
-
-#define FT_EBUSY   0x04
-#define FT_EFAULT  0x0C
 
 static char ft_cwd[128];
 
@@ -628,7 +605,7 @@ static int ft_exec(void)
 
 	/* A fresh working directory for the parent. */
 	r = zos_mkdir("/D1");
-	if (r != 0 && !ft_iserr(r, FT_EEXIST)) {
+	if (r != 0 && !ft_iserr(r, ZOS_EEXIST)) {
 		return 1;
 	}
 	if (zos_chdir("/D1") != 0) {
@@ -682,20 +659,20 @@ static int ft_exec(void)
 
 	/* A raw entry return is reported as ZOS_EFAULT. */
 	if (zos_exec("/SYSTEM/fsraw.zex", (const char *)0) !=
-	    (int)FT_EFAULT) {
+	    (int)ZOS_EFAULT) {
 		return 12;
 	}
 
 	/* Every failure mode returns with the parent unaffected. */
 	if (!ft_iserr(zos_exec("/SYSTEM/absent.zex", (const char *)0),
-			      FT_ENOENT)) {
+			      ZOS_ENOENT)) {
 		return 13;
 	}
-	if (!ft_iserr(zos_exec("/SYSTEM", (const char *)0), FT_EISDIR)) {
+	if (!ft_iserr(zos_exec("/SYSTEM", (const char *)0), ZOS_EISDIR)) {
 		return 14;
 	}
 	if (!ft_iserr(zos_exec("/SYSTEM/sio.zmod", (const char *)0),
-			      FT_EINVAL)) {
+			      ZOS_EINVAL)) {
 		return 15;
 	}
 	if (zos_getcwd(ft_cwd, (unsigned int)sizeof(ft_cwd)) != 3) {
@@ -705,10 +682,10 @@ static int ft_exec(void)
 	/* Startup block v1: the kernel launcher hands this program version 1
 	 * and an empty tail (it is started by the target hook). */
 	{
-		struct zex_startup *sb = zos_args();
+		struct zos_startup *sb = zos_args();
 
-		if (sb == (struct zex_startup *)0 ||
-		    sb->version != (unsigned char)ZEX_STARTUP_VERSION ||
+		if (sb == (struct zos_startup *)0 ||
+		    sb->version != (unsigned char)ZOS_STARTUP_VERSION ||
 		    sb->length != 0u || sb->tail[0] != '\0') {
 			return 19;
 		}
@@ -735,18 +712,18 @@ static int ft_exec(void)
 	ft_exec_block.path = (unsigned int)"/SYSTEM/fschild.zex";
 	ft_exec_block.length = 19u;
 	ft_exec_block.args = (unsigned int)ft_tail; /* in-window, ignored */
-	ft_exec_block.args_length = (unsigned int)ZEX_STARTUP_TAIL_MAX + 1u;
+	ft_exec_block.args_length = (unsigned int)ZOS_STARTUP_TAIL_MAX + 1u;
 	{
 		struct zos_fs_call_req req;
 
 		req.number = (unsigned char)ZOS_SYSCALL_EXEC;
 		req.block = &ft_exec_block;
-		if (!ft_iserr(zos_fs_call(&req), FT_EINVAL)) {
+		if (!ft_iserr(zos_fs_call(&req), ZOS_EINVAL)) {
 			return 23;
 		}
 		ft_exec_block.args = 0x0000u; /* below the buffer window */
 		ft_exec_block.args_length = 4u;
-		if (!ft_iserr(zos_fs_call(&req), FT_EINVAL)) {
+		if (!ft_iserr(zos_fs_call(&req), ZOS_EINVAL)) {
 			return 24;
 		}
 	}
@@ -771,7 +748,7 @@ static int ft_exec(void)
 		ft_tail[125] = 'a';
 		ft_tail[126] = '\0';
 		if (!ft_iserr(zos_exec("/SYSTEM/fschild.zex", ft_tail),
-			      FT_EINVAL)) {
+			      ZOS_EINVAL)) {
 			return 26;
 		}
 		ft_tail[125] = '\0';
@@ -780,7 +757,7 @@ static int ft_exec(void)
 	/* 32 exec/exit cycles must return every resource to baseline. */
 	for (i = 0; i < 32u; ++i) {
 		if (zos_exec("/SYSTEM/fsraw.zex", (const char *)0) !=
-		    (int)FT_EFAULT) {
+		    (int)ZOS_EFAULT) {
 			return 17;
 		}
 	}
@@ -795,7 +772,7 @@ static int ft_exec(void)
 
 /* --- main ------------------------------------------------------------- */
 
-void ft_main(void)
+int main(void)
 {
 	ft_report("namespace", ft_namespace());
 	ft_report("romfs", ft_romfs());
@@ -818,4 +795,5 @@ void ft_main(void)
 	ft_dec(ft_total);
 	ft_puts("\r\n");
 	zex_exit((unsigned int)((ft_pass == ft_total) ? 0u : 1u));
+	return 0; /* unreachable */
 }

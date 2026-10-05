@@ -16,8 +16,8 @@
 #ifndef ZEPHYROS_VFS_H
 #define ZEPHYROS_VFS_H
 
-#include "zephyros/types.h"
-#include "zephyros/fs.h"
+#include "zos/types.h"
+#include "zos/fs.h"
 
 /* Filesystem operation table (architecture section 32.12).  Providers are
  * **path-based**: every operation receives a provider-relative path instead

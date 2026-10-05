@@ -60,14 +60,15 @@ ZCAP_HID_TEXT = 0x00010000
 ZVIDEO_PRESENT = 0x03
 ZDEV_EINVAL = -2
 
-# The M7 monitor, re-linked in package 28b: the entry stub now accepts the
-# startup-block pointer in HL (HL = 0080h) instead of asserting HL = 0000h,
-# so the packed container bytes changed; the size is still 20-byte header +
-# linked image.  ZephyrOS carries no backward-compatibility obligation for
-# milestone artifacts (work/M9-REFERENCE.md), so this is the current oracle.
-MONITOR_SIZE = 3546
-MONITOR_SHA256 = ("dc752e26efa61b5ffb146584809c61d4060c8b15e76c7f2b952ae41a2"
-                  "05b5e17")
+# The monitor, rebuilt in package 28c on the user SDK: it is now an
+# ordinary SDK program (crt0 + libzos, no entry assembly and no
+# hand-written manifest), so the packed container bytes changed; the size
+# is still 20-byte header + linked image.  ZephyrOS carries no
+# backward-compatibility obligation for milestone artifacts
+# (work/M9-REFERENCE.md), so this is the current oracle.
+MONITOR_SIZE = 4024
+MONITOR_SHA256 = ("7c59b604620b3ad69ebda5a83343a5c98cb2ad23ea9e05da763bf322f613"
+                  "3f14")
 
 # Shared markers: the visible session and the early-SIO transcript.
 PROMPT = "Z80> "
@@ -206,6 +207,21 @@ class ConsoleSimBase(unittest.TestCase):
         raise AssertionError(
             "%r occurred %d times, wanted %d (PC=%04X)"
             % (marker, "".join(z.glyphs).count(marker), count, z.pc))
+
+    def run_to_pattern(self, z, pattern, limit=STEP_LIMIT, since=0):
+        """Step until `pattern` matches the fresh trace (for output whose
+        end is not a fixed marker, e.g. a rendered hex value)."""
+        for i in range(limit):
+            self.skip_delay(z)
+            z.step()
+            if i % 0x1FFF == 0:
+                self.pump(z)
+                if re.search(pattern, "".join(z.glyphs[since:])):
+                    return
+        self.pump(z)
+        raise AssertionError(
+            "did not match %r (PC=%04X, tail=%r)"
+            % (pattern, z.pc, "".join(z.glyphs)[-160:]))
 
     def send_line(self, z, line, expect, limit=STEP_LIMIT):
         """Type one monitor line through the HID input lane and wait
@@ -426,7 +442,11 @@ class TestConsoleBootAndSession(ConsoleSimBase):
         self.send_line(z, "DB 1 0100", "ERR: ARG")
 
         # Harmless port input, latch-aliased ports rejected unexecuted.
-        self.send_line(z, "I 20", "IN=")
+        # `IN=` is only the start of the line, so wait for the two rendered
+        # value digits themselves rather than for the prefix.
+        start = len(z.glyphs)
+        z.hid.hid_queue.extend(b"I 20\r")
+        self.run_to_pattern(z, r"IN=[0-9A-F]{2}", since=start)
         self.assertRegex(self.trace(z), r"IN=[0-9A-F]{2}\r?\n?|IN=[0-9A-F]{2}")
         self.send_line(z, "O 00 18", "ERR: ARG")
         self.send_line(z, "O 0F 00", "ERR: ARG")
@@ -463,7 +483,7 @@ class TestConsoleBootAndSession(ConsoleSimBase):
     def test_romfs_monitor_payload_matches_packed_artifact(self):
         payload = self.entries["monitor.zex"]["payload"]
         # The packed ZEX container: 20-byte header + linked image.
-        self.assertEqual(len(payload), 3546)
+        self.assertEqual(len(payload), MONITOR_SIZE)
         self.assertEqual(payload[:4], b"ZEX1")
         self.assertEqual(hashlib.sha256(payload).hexdigest(), MONITOR_SHA256)
         packed_path = os.path.join(ROOT, "build", "modules", "monitor.zex")

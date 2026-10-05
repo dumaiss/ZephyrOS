@@ -189,12 +189,12 @@ Per-syscall behavior:
   | `3` | 1 | `bank` (application bank `0-6`) |
   | `4` | 2 | `flags`: bit 0 `PROCESS_INFO_FLAG_KERNEL_PARENT` |
 
-Errors use the shared errno values in `include/zephyros/errno.h`
+Errors use the shared errno values in `abi/zos/errno.h`
 (`ZOS_EINVAL`, `ZOS_EFAULT`, `ZOS_ENOSPC`, `ZOS_EBUSY`, ...) as negated
 words in `HL`; a bad pointer range is `ZOS_EFAULT`, a bad argument block
 or length is `ZOS_EINVAL`.
 
-Native programs use `user/runtime/zex_runtime.h` (`zex_exit`,
+Native programs use `user/sdk/include/zos/console.h` (`zex_exit`,
 `zex_write`, `zex_read`, `zex_poll`, `zex_getinfo`), which wraps these
 numbers with the private SDCC convention; programs never call `RST 30h`
 directly unless they re-implement that convention.
@@ -276,9 +276,9 @@ in `HL`:
 | `7` | 1 | `romfs_first_page` | 2 |
 
 The packed numbers and block layouts are declared in
-`include/zephyros/syscall.h` (kernel side) and mirrored by
-`user/runtime/zex_runtime.h` (`zex_diag_*` wrappers in
-`user/runtime/zex_diag_runtime.asm`); host tests pin the two headers
+`abi/zos/diag.h` (the single public source) and mirrored by the SDK's
+`user/sdk/include/zos/diag.h` (`zex_diag_*` gate wrappers in
+`user/sdk/src/diaggate.asm`); host tests pin the two headers
 and the assembly wrapper constants together.
 
 Validation: `make m7-selftest` boots the monitor image, runs the
@@ -294,7 +294,7 @@ physical gate is `make smoke-hardware-m7 SERIAL_PORT=/dev/ttyUSB0` (see
 
 M9 (package 27) exposes the VFS to native programs behind the unchanged
 gate.  The family is `10h-1Fh`; argument blocks are declared in
-`include/zephyros/fs.h` and are packed on the Z80 (every field is pinned
+`abi/zos/fs.h` and are packed on the Z80 (every field is pinned
 by `_Static_assert` and by host tests).
 
 ```text
@@ -344,14 +344,14 @@ Rules:
 - Before the VFS READY phase every `FS_*` call returns `ZOS_EBUSY`; every
   service validates its complete block before any state change.
 
-Errors use the shared values in `include/zephyros/errno.h`; M9 adds
+Errors use the shared values in `abi/zos/errno.h`; M9 adds
 `ZOS_EEXIST (10h)`, `ZOS_ENOTDIR (11h)`, `ZOS_EISDIR (12h)`,
 `ZOS_ENOTEMPTY (13h)`, `ZOS_EROFS (14h)`, `ZOS_ESTALE (15h)`,
 `ZOS_EXDEV (16h)` and `ZOS_EMFILE (17h)`.  `ZOS_EMFILE` reports
 descriptor-pool or provider open-handle exhaustion, distinct from
 `ZOS_ENOSPC` (storage full).
 
-Native programs use the wrappers in `user/runtime/zex_fs_runtime.h`
+Native programs use the wrappers in `user/sdk/include/zos/fs.h`
 (`zos_open`, `zos_close`, `zos_read`, `zos_write`, `zos_seek`, `zos_stat`,
 `zos_opendir`, `zos_readdir`, `zos_closedir`, `zos_mkdir`, `zos_rmdir`,
 `zos_unlink`, `zos_rename`, `zos_chdir`, `zos_getcwd`, `zos_sync`).  They
@@ -391,7 +391,7 @@ Rules:
 - `args` addresses `args_length` raw bytes in the caller buffer window
   `0100h-DFFFh` (no wrap).  The kernel copies them byte-exact into the
   child's startup block and never splits, quotes or interprets them;
-  user space owns parsing (`user/runtime/zex_args.h`).  `args_length` 0
+  user space owns parsing (`user/sdk/include/zos/process.h`).  `args_length` 0
   means no arguments and `args` is ignored; a length above 125 or a
   pointer outside the window is `ZOS_EINVAL`, checked in the preflight
   before anything is allocated.  An argument block outside `0100h-1FFFh`,
@@ -434,8 +434,9 @@ kernel never parses the tail.  The block lives below the `0100h` syscall
 buffer window, so a program must copy the tail into its own data before
 passing it to a syscall (the runtime `zos_args()` accessor returns the
 block, and `zos_split()` parses a copy).  Programs that ignore `HL` are
-unaffected.  The per-program entry glue that preserves `HL` is
-`user/runtime/zex_args.h` (`zos_args_init`).
+unaffected.  The entry glue that preserves `HL` is the SDK's crt0
+(`user/sdk/src/crt0.asm`, entry symbol `zos_entry`): it stores the block
+for `zos_args()` and never modifies it, so the kernel's copy stays valid.
 
 Error mapping (carry set, `A` = `ZOS_E*`, nothing allocated):
 
@@ -452,7 +453,7 @@ Error mapping (carry set, `A` = `ZOS_E*`, nothing allocated):
 On success carry is clear and `HL` holds the child's exit status; the
 result is not a file descriptor and there is no result block.
 
-Native programs use `user/runtime/zex_exec_runtime.h`
+Native programs use `user/sdk/include/zos/process.h`
 (`zos_exec(const char *path, const char *args)`), which takes the
 NUL-terminated path and raw tail, rejects a path over 127 bytes or a tail
 over 125 bytes (or an empty/null path) locally with `-ZOS_EINVAL`, and

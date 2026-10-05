@@ -148,7 +148,7 @@ def build_reloc_fixture():
 
 class TestModuleConstants(unittest.TestCase):
     def setUp(self):
-        self.env = parse_c_header(os.path.join(ROOT, "include", "zephyros",
+        self.env = parse_c_header(os.path.join(ROOT, "abi", "zos",
                                                "errno.h"))
         self.env.update(parse_c_header(MODULE_H))
 

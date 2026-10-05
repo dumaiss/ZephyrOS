@@ -27,7 +27,7 @@
 #ifndef ZEPHYROS_DEVICE_H
 #define ZEPHYROS_DEVICE_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
 #include "zephyros/errno.h"
 
 typedef uint8_t zdev_handle_t;

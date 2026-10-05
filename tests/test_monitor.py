@@ -5,8 +5,8 @@ source/map dependency inspection, and artifact integrity.
 Coverage:
 
 * diagnostic syscall numbers and packed-block constants are value-identical
-  across include/zephyros/syscall.h, user/runtime/zex_runtime.h, and the
-  assembly wrappers in user/runtime/zex_diag_runtime.asm;
+  across abi/zos/diag.h and the SDK assembly wrappers in
+  user/sdk/src/diaggate.asm;
 * the monitor manifest/rights: ordinary ZEX v1, entry at 0100h, exact
   linked image size, stack reservation, and a low-window scratch block;
 * the linked monitor map contains only monitor/runtime modules - no
@@ -41,11 +41,11 @@ import romfspack  # noqa: E402
 import zexpack  # noqa: E402
 from maptools import evaluate, make_map, parse_c_header  # noqa: E402
 
-SYSCALL_H = os.path.join(ROOT, "include", "zephyros", "syscall.h")
-RUNTIME_H = os.path.join(ROOT, "user", "runtime", "zex_runtime.h")
-RUNTIME_ASM = os.path.join(ROOT, "user", "runtime", "zex_diag_runtime.asm")
-CONSOLE_H = os.path.join(ROOT, "user", "runtime", "console_io.h")
-MONITOR_JSON = os.path.join(ROOT, "user", "monitor", "monitor.json")
+DIAG_H = os.path.join(ROOT, "abi", "zos", "diag.h")
+RUNTIME_ASM = os.path.join(ROOT, "user", "sdk", "src", "diaggate.asm")
+CONSOLE_H = os.path.join(ROOT, "user", "sdk", "include", "zos", "console.h")
+MONITOR_JSON = os.path.join(ROOT, "build", "user", "monitor", "monitor.json")
+MONITOR_MAP = os.path.join(ROOT, "build", "user", "monitor", "monitor.map")
 SUBSYS_MANIFEST = os.path.join(ROOT, "tests", "subsys", "manifest.json")
 PROD_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
 
@@ -54,19 +54,22 @@ MONITOR_SOURCES = (
     os.path.join(ROOT, "user", "monitor", "monitor.h"),
     os.path.join(ROOT, "user", "monitor", "monitor_mem.c"),
     os.path.join(ROOT, "user", "monitor", "monitor_io.c"),
-    os.path.join(ROOT, "user", "monitor", "monitor_entry.asm"),
+    os.path.join(ROOT, "user", "monitor", "hexfmt.c"),
+    os.path.join(ROOT, "user", "monitor", "hexdump.c"),
+    os.path.join(ROOT, "user", "monitor", "status.c"),
 )
 
 # The complete module set of the linked monitor (proves nothing from the
 # kernel was dragged into the ZEX link).
 MONITOR_MODULES = {
-    "monitor_entry", "monitor", "monitor_mem", "monitor_io",
-    "console_io", "hexfmt", "hexdump", "status",
-    "zex_runtime", "zex_diag_runtime",
+    "zos_crt0", "zos_runtime", "zos_console", "zos_diaggate",
+    "args", "console_io",
+    "monitor", "monitor_mem", "monitor_io",
+    "hexfmt", "hexdump", "status",
 }
 
 # Private kernel symbols that must never appear in a user ZEX.  The
-# runtime's own `_zos_runtime_scratch` is a user-side object (M6), so the
+# runtime's own `zos_scratch` is a user-side object (M6), so the
 # sweep names the kernel families instead of the bare `_zos_` prefix.
 KERNEL_PREFIXES = (
     "_zos_syscall", "_zos_diag", "_zos_bank", "_zos_user", "_zos_process",
@@ -91,65 +94,45 @@ def parse_asm_constants(text):
 
 class TestDiagConstantParity(unittest.TestCase):
     def setUp(self):
-        self.syscall = parse_c_header(SYSCALL_H)
-        self.runtime = parse_c_header(RUNTIME_H)
+        self.diag = parse_c_header(DIAG_H)
         self.asm = parse_asm_constants(read_text(RUNTIME_ASM))
 
-    def _sys(self, name):
-        return evaluate(self.syscall[name], self.syscall)
-
-    def _rt(self, name):
-        return evaluate(self.runtime[name], self.runtime)
+    def _diag(self, name):
+        return evaluate(self.diag[name], self.diag)
 
     def test_syscall_numbers_match_the_assembly_wrappers(self):
         expected = {
-            "SYS_DIAG_MEM_READ": self._sys("ZOS_SYSCALL_DIAG_MEM_READ"),
-            "SYS_DIAG_MEM_WRITE": self._sys("ZOS_SYSCALL_DIAG_MEM_WRITE"),
-            "SYS_DIAG_IO_IN": self._sys("ZOS_SYSCALL_DIAG_IO_IN"),
-            "SYS_DIAG_IO_OUT": self._sys("ZOS_SYSCALL_DIAG_IO_OUT"),
-            "SYS_DIAG_BANK_INFO": self._sys("ZOS_SYSCALL_DIAG_BANK_INFO"),
-            "SYS_DIAG_SYSTEM_INFO": self._sys("ZOS_SYSCALL_DIAG_SYSTEM_INFO"),
-        }
-        self.assertEqual(expected, {
             "SYS_DIAG_MEM_READ": 0x28,
             "SYS_DIAG_MEM_WRITE": 0x29,
             "SYS_DIAG_IO_IN": 0x2A,
             "SYS_DIAG_IO_OUT": 0x2B,
             "SYS_DIAG_BANK_INFO": 0x2C,
             "SYS_DIAG_SYSTEM_INFO": 0x2D,
-        })
+        }
         for name, value in expected.items():
+            self.assertEqual(
+                self._diag(name.replace("SYS_", "ZOS_SYSCALL_")),
+                value, "%s is mispinned" % name)
             self.assertEqual(self.asm.get(name), value,
-                             "%s differs between syscall.h and the "
-                             "assembly wrapper" % name)
+                             "%s differs from the SDK assembly wrapper"
+                             % name)
 
-    def test_range_and_mask_constants_match(self):
-        pairs = (
-            ("ZOS_DIAG_MEM_BANK_MAX", "ZEX_DIAG_MEM_BANK_MAX"),
-            ("ZOS_DIAG_MEM_READ_MIN", "ZEX_DIAG_MEM_READ_MIN"),
-            ("ZOS_DIAG_MEM_READ_MAX", "ZEX_DIAG_MEM_READ_MAX"),
-            ("ZOS_DIAG_MEM_WRITE_MIN", "ZEX_DIAG_MEM_WRITE_MIN"),
-            ("ZOS_DIAG_MEM_WRITE_MAX", "ZEX_DIAG_MEM_WRITE_MAX"),
-            ("ZOS_DIAG_IO_PORT_MIN", "ZEX_DIAG_IO_PORT_MIN"),
-            ("ZOS_DIAG_IO_PORT_MAX", "ZEX_DIAG_IO_PORT_MAX"),
-            ("ZOS_DIAG_BANK_MASK", "ZEX_DIAG_BANK_MASK"),
-            ("ZOS_DIAG_SYSTEM_INFO_SIZE", "ZEX_DIAG_SYSTEM_INFO_SIZE"),
-            ("ZOS_DIAG_SYSTEM_INFO_ABI", "ZEX_DIAG_SYSTEM_INFO_ABI"),
-        )
-        for kernel_name, user_name in pairs:
-            self.assertEqual(self._sys(kernel_name), self._rt(user_name),
-                             "%s/%s differ" % (kernel_name, user_name))
-        self.assertEqual(self._sys("ZOS_DIAG_MEM_BANK_MAX"), 6)
-        self.assertEqual(self._sys("ZOS_DIAG_MEM_READ_MIN"), 0x0000)
-        self.assertEqual(self._sys("ZOS_DIAG_MEM_READ_MAX"), 0xDFFF)
-        self.assertEqual(self._sys("ZOS_DIAG_MEM_WRITE_MIN"), 0x0100)
-        self.assertEqual(self._sys("ZOS_DIAG_MEM_WRITE_MAX"), 0xDFFF)
-        self.assertEqual(self._sys("ZOS_DIAG_IO_PORT_MIN"), 0x10)
-        self.assertEqual(self._sys("ZOS_DIAG_BANK_MASK"), 0x7F)
-        self.assertEqual(self._sys("ZOS_DIAG_SYSTEM_INFO_SIZE"), 8)
+    def test_range_and_mask_constants(self):
+        for name, value in (("ZOS_DIAG_MEM_BANK_MAX", 6),
+                            ("ZOS_DIAG_MEM_READ_MIN", 0x0000),
+                            ("ZOS_DIAG_MEM_READ_MAX", 0xDFFF),
+                            ("ZOS_DIAG_MEM_WRITE_MIN", 0x0100),
+                            ("ZOS_DIAG_MEM_WRITE_MAX", 0xDFFF),
+                            ("ZOS_DIAG_IO_PORT_MIN", 0x10),
+                            ("ZOS_DIAG_IO_PORT_MAX", 0xFF),
+                            ("ZOS_DIAG_BANK_MASK", 0x7F),
+                            ("ZOS_DIAG_SYSTEM_INFO_SIZE", 8),
+                            ("ZOS_DIAG_SYSTEM_INFO_ABI", 1)):
+            self.assertEqual(self._diag(name), value,
+                             "%s is mispinned" % name)
 
     def test_packed_block_asserts_present(self):
-        text = re.sub(r"\s+", " ", read_text(SYSCALL_H))
+        text = re.sub(r"\s+", " ", read_text(DIAG_H))
         for statement in (
                 "sizeof(struct zos_diag_mem_read_args) == 4",
                 "sizeof(struct zos_diag_mem_write_args) == 4",
@@ -168,7 +151,7 @@ class TestDiagConstantParity(unittest.TestCase):
 
     def test_line_limit_is_80_characters(self):
         console = parse_c_header(CONSOLE_H)
-        self.assertEqual(evaluate(console["ZRT_LINE_MAX"], console), 80)
+        self.assertEqual(evaluate(console["ZOS_LINE_MAX"], console), 80)
         monitor_h = parse_c_header(
             os.path.join(ROOT, "user", "monitor", "monitor.h"))
         env = dict(console)
@@ -185,16 +168,21 @@ class TestMonitorArtifacts(unittest.TestCase):
             return path, fh.read()
 
     def test_manifest_declares_ordinary_zex_with_low_scratch(self):
+        if not os.path.exists(MONITOR_JSON):
+            self.skipTest("the monitor manifest has not been built")
         manifest = zexpack.load_manifest(MONITOR_JSON)
-        self.assertEqual(manifest["entry"], "mon_entry")
+        self.assertEqual(manifest["entry"], "zos_entry")
         self.assertEqual(manifest["entry_offset"], 0)
-        self.assertEqual(manifest["scratch"]["symbol"], "zex_diag_scratch")
-        self.assertEqual(manifest["scratch"]["size"], 12)
+        self.assertEqual(manifest["scratch"]["symbol"], "zos_scratch")
+        self.assertEqual(manifest["scratch"]["size"], 16)
 
     def test_packed_monitor_matches_the_manifest_and_report(self):
         _p, data = self._read("build/modules/monitor.zex")
-        _p, report_text = self._read("build/modules/monitor.report.json")
+        _p, report_text = self._read(
+            "build/user/monitor/monitor.report.json")
         report = json.loads(report_text)
+        if not os.path.exists(MONITOR_JSON):
+            self.skipTest("the monitor manifest has not been built")
         manifest = zexpack.load_manifest(MONITOR_JSON)
         fields, geo = zexpack.validate_image(data)
         self.assertEqual(fields["image_size"], manifest["image_size"])
@@ -204,10 +192,10 @@ class TestMonitorArtifacts(unittest.TestCase):
         self.assertEqual(report["sha256"],
                          hashlib.sha256(data).hexdigest())
         self.assertEqual(report["scratch"], manifest["scratch"])
-        self.assertEqual(report["entry"]["symbol"], "mon_entry")
+        self.assertEqual(report["entry"]["symbol"], "zos_entry")
 
     def test_linked_map_contains_only_monitor_and_runtime_modules(self):
-        _p, raw = self._read("build/monitor/monitor.map")
+        _p, raw = self._read("build/user/monitor/monitor.map")
         text = raw.decode("utf-8", "replace")
         modules = set()
         symbols = {}
@@ -225,8 +213,8 @@ class TestMonitorArtifacts(unittest.TestCase):
                     name.startswith(prefix),
                     "linked monitor map references private symbol %s"
                     % name)
-        # The runtime's own scratch symbols stay inside the caller window.
-        for name in ("zos_runtime_scratch", "zex_diag_scratch"):
+        # The SDK's shared scratch symbol stays inside the caller window.
+        for name in ("zos_scratch",):
             address = symbols[name]
             self.assertGreaterEqual(address, 0x0100)
             self.assertLess(address, 0x2000)
@@ -315,18 +303,18 @@ class TestMonitorSourceDependencies(unittest.TestCase):
                     % (os.path.relpath(path, ROOT), label,
                        pattern.pattern))
 
-    def test_monitor_asm_has_no_port_instructions(self):
-        text = read_text(
-            os.path.join(ROOT, "user", "monitor", "monitor_entry.asm"))
-        body = "\n".join(line.split(";")[0] for line in text.splitlines())
-        self.assertNotRegex(body, r"\b(in|out)\s")
+    def test_monitor_has_no_assembly(self):
+        # The SDK owns crt0 and the gate stubs; the monitor is C only.
+        for name in ("monitor_entry.asm",):
+            self.assertFalse(
+                os.path.exists(os.path.join(ROOT, "user", "monitor", name)),
+                "the monitor still carries entry assembly")
 
-    def test_runtime_diag_wrapper_uses_only_the_syscall_gate(self):
+    def test_sdk_diag_gate_uses_only_the_syscall_gate(self):
         text = read_text(RUNTIME_ASM)
         body = re.sub(r";[^\n]*", "", text)
         self.assertNotRegex(body, r"\b(in|out)\s")
-        self.assertNotIn("0x22", body)
-        self.assertNotIn("0x23", body)
+        self.assertIn("rst\t0x30", body)
 
 
 class TestM7MapcheckRules(unittest.TestCase):

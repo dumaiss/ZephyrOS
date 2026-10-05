@@ -19,8 +19,8 @@
 #ifndef ZEPHYROS_KERNEL_VFS_H
 #define ZEPHYROS_KERNEL_VFS_H
 
-#include "zephyros/types.h"
-#include "zephyros/fs.h"
+#include "zos/types.h"
+#include "zos/fs.h"
 #include "zephyros/vfs.h"
 #include "zephyros/module.h"
 #include "zephyros/process.h"

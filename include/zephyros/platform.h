@@ -10,7 +10,7 @@
 #ifndef ZEPHYROS_PLATFORM_H
 #define ZEPHYROS_PLATFORM_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
 #include "zephyr80/hardware.h"
 #include "zephyr80/memory.h"
 #include "zephyr80/irq.h"

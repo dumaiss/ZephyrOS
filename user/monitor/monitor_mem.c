@@ -9,7 +9,7 @@
  */
 
 #include "monitor.h"
-#include "console_io.h"
+#include "zos.h"
 #include "hexfmt.h"
 #include "hexdump.h"
 #include "status.h"
@@ -36,7 +36,7 @@ static void mon_dump(unsigned char bank, unsigned int addr,
 		unsigned int i;
 
 		for (i = 0; i < count; ++i) {
-			struct zex_diag_mem_read req;
+			struct zos_diag_mem_read_args req;
 			int value;
 
 			req.bank = bank;
@@ -50,8 +50,8 @@ static void mon_dump(unsigned char bank, unsigned int addr,
 			row[i] = (unsigned char)value;
 		}
 		zrt_hexdump_row(text, addr, row, count);
-		zrt_puts(text);
-		zrt_puts("\r\n");
+		zos_puts(text);
+		zos_puts("\r\n");
 		addr = (unsigned int)(addr + count);
 		len -= count;
 	}
@@ -74,7 +74,7 @@ void mon_cmd_mem(char *cursor, unsigned char with_bank,
 		return;
 	}
 	if (modify) {
-		struct zex_diag_mem_write req;
+		struct zos_diag_mem_write_args req;
 		int result;
 
 		if (!zrt_parse_hex8(&cursor, &value) ||
@@ -82,8 +82,8 @@ void mon_cmd_mem(char *cursor, unsigned char with_bank,
 			zrt_status_err_arg();
 			return;
 		}
-		if (addr < ZEX_DIAG_MEM_WRITE_MIN ||
-		    addr > ZEX_DIAG_MEM_WRITE_MAX) {
+		if (addr < ZOS_DIAG_MEM_WRITE_MIN ||
+		    addr > ZOS_DIAG_MEM_WRITE_MAX) {
 			zrt_status_err_arg();
 			return;
 		}

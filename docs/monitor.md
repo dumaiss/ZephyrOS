@@ -107,24 +107,26 @@ Deliberately deferred, not emulated: Intel HEX load/export (`L`/`X`),
 `G`, `APP`, and CP/M register-snapshot semantics.  `R` reports native
 system/bank/process identity instead.
 
-## Reusable program support (`user/runtime/`)
+## Program support (the user SDK)
 
-The monitor is built from the shared user-side components, so later
-diagnostic programs do not duplicate parsing and formatting code:
+Since package 28c the monitor is an ordinary SDK program: it is built by
+one `zex_program` line (`user/sdk/zex.mk`) from the public ABI in
+`abi/zos/` and the shared user-space library, so it writes no entry
+assembly and no hand-written manifest.  Later diagnostic programs reuse
+the same layers (`docs/sdk.md` is canonical):
 
-- `zex_runtime.asm` / `.h` - M6 syscall wrappers (`zex_exit`,
-  `zex_write`, `zex_read`, `zex_poll`, `zex_getinfo`);
-- `zex_diag_runtime.asm` - M7 diagnostic wrappers (`zex_diag_mem_read`,
-  `_write`, `_io_in`, `_io_out`, `_bank_info`, `_system_info`) with their
-  own low-window scratch;
-- `console_io.c` / `.h` - byte/string output, blocking `zrt_getc()`,
-  bounded line editing with backspace/CR handling;
-- `hexfmt.c` / `.h` - hex byte/word parsing (1-4 digits, case-insensitive)
-  and formatting;
-- `hexdump.c` / `.h` - 16-byte row formatting with the familiar address,
-  hex, and ASCII columns;
-- `status.c` / `.h` - `OK`, `ERR: ARG`, `ERR: COMMAND`, and error-code
-  output shared by diagnostic programs.
+- libzos (`user/sdk/`) - crt0 (startup block, `argv`, `SYS_EXIT`), the
+  console wrappers (`zex_write`, `zex_read`, `zex_poll`, `zex_getinfo`,
+  `zex_exit`) and the M7 diagnostic wrappers (`zex_diag_mem_read`,
+  `_write`, `_io_in`, `_io_out`, `_bank_info`, `_system_info`) in
+  `user/sdk/include/zos/{console,diag}.h` with their gate stubs in
+  `user/sdk/src/{console,diaggate}.asm`; one shared low-window scratch;
+- zlibc (`user/sdk/src/zlibc/`) - `strlen`/`strcmp`/`mem*`/`strl*` and the
+  integer/`printf` formatters, one archive member each;
+- `user/monitor/` - the monitor's own helpers: `hexfmt.c` / `.h` (hex
+  byte/word parsing and formatting), `hexdump.c` / `.h` (16-byte row
+  formatting with address, hex and ASCII columns) and `status.c` / `.h`
+  (`OK`, `ERR: ARG`, `ERR: COMMAND` and error-code output).
 
 These components link into the ZEX (`user/monitor/`), never into the
 kernel.

@@ -22,8 +22,8 @@
  * object larger than 32 bytes.
  */
 
-#include "zephyros/syscall.h"
-#include "zephyros/fs.h"
+#include "zos/syscall.h"
+#include "zos/fs.h"
 #include "zephyros/process.h"
 
 #include "kernel/vfs/vfs.h"

@@ -21,7 +21,7 @@
 #ifndef ZEPHYROS_MODULE_H
 #define ZEPHYROS_MODULE_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
 #include "zephyros/errno.h"
 
 /* --- ZMOD v1 container ------------------------------------------------ */

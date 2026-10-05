@@ -78,8 +78,9 @@ valid.
 
 ## 4. Link layout contract
 
-`tests/m6/zextest.json` is the program-side source of truth for the
-layout; the linker script and the packer must both agree with it:
+Every ZEX is linked by the SDK's generic rule (`user/sdk/zex.mk`, section
+8 of `docs/sdk.md`), which derives the manifest from the link map; the
+linker script and the packer must both agree with the resulting map:
 
 - `_CODE` is linked at `0100h`; the linked bytes must be entirely inside
   `[0100h, 0100h + image_size)`;
@@ -91,19 +92,20 @@ layout; the linker script and the packer must both agree with it:
   starts zeroed;
 - the declared entry symbol must resolve to exactly
   `0100h + entry_offset`;
-- the runtime scratch symbol (`zos_runtime_scratch`) must lie inside the
+- the runtime scratch symbol (`zos_scratch`) must lie inside the
   syscall argument window `0100h-1FFFh`, so it remains accessible in
   mode `10` and in mode `11`.
 
-A program may link additional runtime objects whose own low-window scratch
-blocks must also stay inside the argument window.  The manifest `scratch`
-field names one checked symbol per program; `fstest.zex` names the
-filesystem runtime's `zos_fs_scratch`, which is placed before the program
-data (the runtime objects are linked first) so the whole program, its
-statics and both scratch blocks stay below `2000h`.
+The SDK links crt0 and the shared runtime object first (`crt0.rel
+runtime.rel <program>`, then `libzos`), so the scratch block always sits
+at the start of `_DATA`, ahead of the program's own statics: the whole
+program, its statics and the scratch stay below `2000h` even when the
+program's BSS is large (`fstest.zex` is the worst case).  The manifest
+`scratch` field names that one symbol per program; a program linked
+without crt0 (the raw-return test child) declares no scratch at all.
 
-`tools/zexpack.py` rejects any violation, so `make m6-selftest` cannot
-pack a program that the kernel would later refuse.
+`tools/zexpack.py` rejects any violation, so the generic rule cannot pack
+a program that the kernel would later refuse.
 
 ## 5. Load sequence
 
@@ -150,12 +152,15 @@ the caller-visible low window so it is readable in modes `10` and `11`,
 but it is *below* the `0100h` syscall buffer window, so a program must
 copy the tail into its own data before handing it to a syscall.
 
-`user/runtime/zex_args.{h,asm,c}` is the optional user-space runtime for
-it: a program's entry glue calls `zos_args_init()` before anything else
-clobbers `HL` (it saves the pointer and preserves `HL`); `zos_args()`
-returns the block, or NULL when the glue did not run; `zos_split()`
-parses a *writable* copy of the tail into `argv` words.  Programs that
-ignore `HL` link none of it.
+`user/sdk/` is the first-party user-space runtime for it: crt0
+(`user/sdk/src/crt0.asm`, entry symbol `zos_entry`) receives the block in
+`HL`, stores the pointer for `zos_args()` before anything clobbers `HL`,
+runs `zos_split()` over the raw tail, calls `int main(int argc, char
+**argv)` and exits through `SYS_EXIT` with the returned status.  A
+program writes no entry assembly; `zos_args()` returns the kernel's
+page-zero block, and crt0 copies the tail into the SDK's own buffer
+before `zos_split()` parses it *in place* there, so `argv` stays valid
+after the first syscall resets page zero.
 
 #### Tail splitting (runtime policy)
 
@@ -204,8 +209,9 @@ suspension cost is the gate-stack frame described in `docs/memory.md` and
 
 ## 6. Runtime
 
-`user/runtime/zex_runtime.{h,asm}` is the first-party C runtime for ZEX
-programs (SDCC `sdcccall(1)` wrappers around `RST 30h`):
+`user/sdk/` (libzos: `zos/console.h` with the gate stubs in
+`user/sdk/src/console.asm`) is the first-party C runtime for ZEX programs
+(SDCC `sdcccall(1)` wrappers around `RST 30h`):
 
 ```c
 void zex_exit(unsigned int status);      /* SYS_EXIT, does not return */
@@ -215,12 +221,15 @@ int  zex_poll(void);                     /* SYS_CONSOLE_POLL */
 int  zex_getinfo(struct zex_info *info); /* SYS_GETINFO */
 ```
 
-Negative returns are `-errno`.  The wrappers keep their 8-byte argument
-scratch (`_zos_runtime_scratch`) inside the linked image, which is why
-the scratch symbol must satisfy the window rule above.
+Negative returns are `-errno`.  The wrappers share one argument scratch
+(`zos_scratch`, in `user/sdk/src/runtime.asm`) inside the linked image,
+which is why the scratch symbol must satisfy the window rule above; the
+SDK links the runtime object first so the scratch always lands at the
+start of BSS, ahead of a program's own data.
 
-`user/runtime/zex_fs_runtime.h` adds the M9 filesystem wrappers,
-`user/runtime/zex_exec_runtime.h` adds
+`user/sdk/include/zos/fs.h` adds the M9 filesystem wrappers
+(`zos_open`, `zos_read`, ...; gate stub `user/sdk/src/fsgate.asm`) and
+`user/sdk/include/zos/process.h` adds
 `zos_exec(const char *path, const char *args)` on top of them: the same
 low-window argument block and gate stub, the same 127-byte local path
 check plus a 125-byte tail check, returning the child's exit status or
@@ -231,14 +240,19 @@ through the startup block (`zos_args`/`zos_split` above).
 ## 7. Tooling
 
 ```sh
-python3 tools/zexpack.py get      tests/m6/zextest.json image_size
-python3 tools/zexpack.py pack     tests/m6/zextest.json out.zex \
-        --objdir build/zextest --report out.report.json
+python3 tools/zexmanifest.py build/user/zextest/zextest.map \
+        build/user/zextest/zextest.json --name zextest.zex \
+        --entry zos_entry --stack 256 --scratch zos_scratch:16
+python3 tools/zexpack.py get      build/user/zextest/zextest.json image_size
+python3 tools/zexpack.py pack     build/user/zextest/zextest.json out.zex \
+        --objdir build/user/zextest --report out.report.json
 python3 tools/zexpack.py validate out.zex
 python3 tools/zexpack.py dump     out.zex
 ```
 
-The packer output (image bytes, report JSON) is byte-deterministic; the
+`tools/zexmanifest.py` derives `image_size`, `bss_size` and
+`entry_offset` from the link map, so no size is ever hand-entered; the
+packer output (image bytes, report JSON) is byte-deterministic; the
 report carries the header fields, image/BSS/stack geometry, entry symbol
 resolution, and sha256 digests.  `make zex-test` packs, validates, dumps,
 and runs the host parity suite that pins `zexpack.py` constants and

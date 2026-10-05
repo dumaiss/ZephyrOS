@@ -9,7 +9,7 @@ Covers:
   - the M9 VFS object group links only into ROMFS-boot images, so the
     pre-M5 embedded-catalog images stay free of VFS bytes
     (correction-01);
-  - include/zephyros/fs.h pins the M9 ABI values and structure sizes;
+  - abi/zos/fs.h pins the M9 ABI values and structure sizes;
   - include/zephyros/vfs.h declares exactly the 14 path-based operations
     of architecture section 32.12 (correction-02).
 """
@@ -32,7 +32,7 @@ CONFIG = ROOT / "config" / "mounts.json"
 M9_DIR = ROOT / "tests" / "m9"
 MAKEFILE = ROOT / "Makefile"
 MOUNT_C = ROOT / "kernel" / "vfs" / "mount.c"
-FS_H = ROOT / "include" / "zephyros" / "fs.h"
+FS_H = ROOT / "abi" / "zos" / "fs.h"
 VFS_H = ROOT / "include" / "zephyros" / "vfs.h"
 
 SYSTEM = {"path": "/SYSTEM", "filesystem": "romfs", "source": "recovery",

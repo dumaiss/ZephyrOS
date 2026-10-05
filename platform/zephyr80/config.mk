@@ -18,9 +18,12 @@ ZOS_PLATFORM_DIR := platform/zephyr80
 ZOS_SDCC_OPT := --opt-code-size --max-allocs-per-node 50000
 
 # SDCC / sdasz80 include search paths.  $(BUILD) is provided by the
-# including Makefile (the generated catalog headers live there).
-ZOS_PLATFORM_CFLAGS  = -I include -I platform -I $(BUILD)
-ZOS_PLATFORM_ASFLAGS = -Iplatform
+# including Makefile (the generated catalog headers live there).  abi/
+# holds the public native ABI headers (abi/zos/...) shared by the kernel,
+# modules and native user programs; kernel and module code includes them
+# as "zos/..." (work/28c-m9-user-sdk/WORK.md).
+ZOS_PLATFORM_CFLAGS  = -I abi -I include -I platform -I $(BUILD)
+ZOS_PLATFORM_ASFLAGS = -Iabi -Iplatform
 
 # Declarative constant files (C / assembly pairs, parity-tested).
 ZOS_PLATFORM_MEMORY_INC := $(ZOS_PLATFORM_DIR)/memory.inc

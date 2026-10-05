@@ -207,20 +207,26 @@ ZephyrOS/
 │       ├── sio.zmod
 │       └── monitor.zex
 │
+├── abi/
+│   └── zos/
+│       ├── types.h, errno.h, syscall.h
+│       └── fs.h, process.h, diag.h
+│
 ├── user/
-│   ├── runtime/
-│   │   ├── zex_runtime.asm/.h
-│   │   ├── zex_diag_runtime.asm
-│   │   ├── console_io.c/.h
-│   │   ├── hexfmt.c/.h
-│   │   ├── hexdump.c/.h
-│   │   └── status.c/.h
+│   ├── sdk/
+│   │   ├── include/ (zos.h, zos/, zlibc/)
+│   │   ├── src/ (crt0.asm, runtime.asm, gates, args/fs/exec, zlibc/)
+│   │   ├── zex.mk
+│   │   └── template/hello.c
+│   ├── helloworld/
+│   │   ├── hello.c
+│   │   ├── Makefile
+│   │   └── manifest.json
 │   └── monitor/
-│       ├── monitor.json
-│       ├── monitor_entry.asm
 │       ├── monitor.c/.h
 │       ├── monitor_mem.c
-│       └── monitor_io.c
+│       ├── monitor_io.c
+│       └── hexfmt/hexdump/status
 │
 ├── tests/
 │   ├── modules/
@@ -334,11 +340,40 @@ Owns active device behavior:
 
 For example, SIO ports `22h/23h` are declared by the platform description; the code that writes WR3/WR4/WR5 or polls RR0 belongs to the SIO driver, except for the deliberately separate early-console implementation in `kernel/`.
 
+### `abi/zos/`
+
+Owns the public native ABI: the one copy of every header a native program
+or module may compile against (`types.h`, `errno.h`, `syscall.h`, `fs.h`,
+`process.h`, `diag.h`).
+
+Headers under `include/zephyros/` that used to carry those declarations
+now include the `abi/zos/` header and add only kernel-internal detail, so
+there is exactly one definition of every packed block, constant and
+equate.  The kernel build, the module build and the user build all get
+`-I abi`; nothing else is shared.
+
 ### `user/`
 
-Owns native ZephyrOS programs. User programs consume the native syscall/service ABI and do not reach into private kernel symbols or driver internals.
+Owns native ZephyrOS programs: the monitor (`user/monitor/`), the demos
+(`user/helloworld/`) and, from M10, the shell (`user/ZShell/`).  User
+programs consume the public ABI through the SDK and never reach into
+private kernel symbols or driver internals.
 
-The M7 monitor is the first substantial program in this tree.
+### `user/sdk/`
+
+Owns the user SDK: the only supported way to build a native program.
+
+- `user/sdk/include/` - `zos.h` (the umbrella a program includes) and
+  the `zos/` and `zlibc/` headers;
+- `user/sdk/src/` - crt0, libzos (console/diag/FS/exec gate stubs and
+  wrappers) and `zlibc/`;
+- `user/sdk/zex.mk` - the generic `zex_program` rule: one line per
+  program, manifest generated from the link map, `zexpack` validation;
+- `user/sdk/template/` - the copyable minimal program.
+
+A program or sub-project (`user/helloworld/`, `user/ZShell/`) is built
+only from this directory plus `abi/`; it never includes a kernel header
+and never writes entry assembly (`docs/sdk.md`).
 
 ### `linker/`
 
@@ -2633,7 +2668,7 @@ Every native process receives this block, including the kernel-launched
 one; the launcher passes an empty tail.  The launch gate enters the
 program with `HL = 0080h`.  The kernel transports a `SYS_EXEC` caller's
 raw command tail into `tail` byte-exact and never parses it; user space
-owns splitting (`user/runtime/zex_args.h`, docs/zex-format.md section
+owns splitting (`user/sdk/include/zos/process.h`, docs/zex-format.md section
 5.1).  The block is inside the caller-visible low window, so it is
 readable in both mode `10` and mode `11`; it sits below the `0100h`
 syscall buffer window, so a program copies the tail into its own data
@@ -2794,7 +2829,7 @@ M7 added diagnostic syscalls for memory, I/O-port, bank and system inspection/ma
 
 ## 28.5 Diagnostic-suite foundation
 
-Reusable line editing, hex parsing/formatting, hexdump/status output and diagnostic runtime wrappers live under `user/runtime/` for reuse by M11.
+Reusable line editing, the diagnostic runtime wrappers and the string/format helpers live in the user SDK (`user/sdk/`) for reuse by M11; the monitor's own hex parsing/formatting, hexdump and status output live in `user/monitor/` (docs/sdk.md).
 
 ---
 
@@ -4260,8 +4295,9 @@ The bootstrap slice above is implemented by work package
 the implementation record.
 
 ```text
-include/zephyros/fs.h    native metadata/limit ABI (stat, dirent, flags;
-                         no statfs) -- syscall blocks arrive in pkg 27
+abi/zos/fs.h             native metadata/limit ABI (stat, dirent, flags;
+                         no statfs) -- syscall blocks arrive in pkg 27;
+                         include/zephyros/fs.h re-exports it
 include/zephyros/vfs.h   provider ABI: zfs_ops (the 14 path-based
                          operations of 32.12), zfs_provider
 kernel/vfs/              mount_config.h, path.c, mount.c, file.c, dir.c,
@@ -4397,7 +4433,7 @@ Startup block (package 28b):
   launch gate enters it with `HL = 0080h` (section 26.3).
 - `SYS_EXEC`'s block gains `{args, args_length}`: the kernel copies the
   caller's raw tail byte-exact and never parses it; user space owns
-  splitting (`user/runtime/zex_args.h`, docs/zex-format.md section 5.1).
+  splitting (`user/sdk/include/zos/process.h`, docs/zex-format.md section 5.1).
   A tail over 125 bytes or outside `0100h-DFFFh` is `ZOS_EINVAL` in the
   preflight, and the copy is made at the end of `process_prepare()` once
   the executable source is closed and the VFS workspace is free, through

@@ -335,6 +335,15 @@ ZOS_HID_BOOT := 0
 ZOS_V9958_BOOT := 0
 endif
 
+# SDK helloworld demo image (work/28c-m9-user-sdk): the production boot path
+# in its own build directory, booting the SDK hello demo.  There is no
+# kernel define and no target test object -- the image differs from
+# production only in the boot-program constant and in the recovery
+# manifest, which is the point of the demo.
+ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
+PK_SUFFIX := -helloworld
+endif
+
 # Hardware-smoke host sync (kernel/main.c): the M8 IOC smoke image waits
 # for the host's two-byte sync sequence on SIO0/B before the banner,
 # because this bench's reset line also resets the USB bridge.  Only
@@ -581,12 +590,12 @@ $(BUILD)/irq_code_end.rel: kernel/irq/code_end.asm | $(BUILD)
 
 $(BUILD)/early_console.rel: kernel/early_console.c \
 		include/zephyros/kernel.h include/zephyros/platform.h \
-		include/zephyros/types.h platform/zephyr80/hardware.h | $(BUILD)
+		abi/zos/types.h platform/zephyr80/hardware.h | $(BUILD)
 	$(SDCC) $(CFLAGS) --codeseg COMMON $< -o $@
 
 $(BUILD)/panic.rel: kernel/panic.c \
 		include/zephyros/kernel.h include/zephyros/platform.h \
-		include/zephyros/types.h platform/zephyr80/hardware.h | $(BUILD)
+		abi/zos/types.h platform/zephyr80/hardware.h | $(BUILD)
 	$(SDCC) $(CFLAGS) --codeseg COMMON $< -o $@
 
 $(BUILD)/main.rel: kernel/main.c include/zephyros/kernel.h \
@@ -595,7 +604,7 @@ $(BUILD)/main.rel: kernel/main.c include/zephyros/kernel.h \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/irq.rel: kernel/irq/irq.c include/zephyros/irq.h \
-		include/zephyros/types.h | $(BUILD)
+		abi/zos/types.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/irq_sources.rel: drivers/ctc/ctc.c \
@@ -604,13 +613,13 @@ $(BUILD)/irq_sources.rel: drivers/ctc/ctc.c \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/syscall.rel: kernel/syscall.c kernel/syscall/diag.h \
-		include/zephyros/syscall.h include/zephyros/errno.h \
+		abi/zos/syscall.h include/zephyros/errno.h \
 		include/zephyros/kernel.h include/zephyros/process.h \
 		include/zephyros/console.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/diag.rel: kernel/syscall/diag.c kernel/syscall/diag.h \
-		include/zephyros/syscall.h include/zephyros/process.h \
+		abi/zos/syscall.h include/zephyros/process.h \
 		include/zephyros/platform.h include/zephyros/errno.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
@@ -618,7 +627,7 @@ $(BUILD)/diag.rel: kernel/syscall/diag.c kernel/syscall/diag.h \
 
 $(BUILD)/registry.rel: kernel/device/registry.c include/zephyros/device.h \
 		include/zephyros/irq.h include/zephyros/errno.h \
-		include/zephyros/types.h | $(BUILD)
+		abi/zos/types.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/console.rel: kernel/device/console.c include/zephyros/console.h \
@@ -647,40 +656,40 @@ $(BUILD)/romfs.rel: kernel/romfs/romfs.c include/zephyros/romfs.h \
 # --- M9 VFS objects (bank-7 core + ROMFS provider + generated mount table) ---
 
 $(BUILD)/vfs_path.rel: kernel/vfs/path.c kernel/vfs/vfs.h \
-		include/zephyros/fs.h include/zephyros/vfs.h | $(BUILD)
+		abi/zos/fs.h include/zephyros/vfs.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_mount.rel: kernel/vfs/mount.c kernel/vfs/vfs.h \
-		kernel/vfs/mount_config.h include/zephyros/fs.h \
+		kernel/vfs/mount_config.h abi/zos/fs.h \
 		include/zephyros/vfs.h fs/romfs/romfs_provider.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_file.rel: kernel/vfs/file.c kernel/vfs/vfs.h \
-		include/zephyros/fs.h include/zephyros/vfs.h | $(BUILD)
+		abi/zos/fs.h include/zephyros/vfs.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_dir.rel: kernel/vfs/dir.c kernel/vfs/vfs.h \
-		include/zephyros/fs.h include/zephyros/vfs.h | $(BUILD)
+		abi/zos/fs.h include/zephyros/vfs.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_mutate.rel: kernel/vfs/mutate.c kernel/vfs/vfs.h \
-		include/zephyros/fs.h include/zephyros/vfs.h \
+		abi/zos/fs.h include/zephyros/vfs.h \
 		include/zephyros/process.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_process.rel: kernel/vfs/process.c kernel/vfs/vfs.h \
-		include/zephyros/fs.h include/zephyros/vfs.h \
+		abi/zos/fs.h include/zephyros/vfs.h \
 		include/zephyros/process.h include/zephyros/errno.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_workspace.rel: kernel/vfs/workspace.c kernel/vfs/vfs.h \
-		include/zephyros/fs.h include/zephyros/vfs.h \
+		abi/zos/fs.h include/zephyros/vfs.h \
 		include/zephyros/kernel.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/fs.rel: kernel/syscall/fs.c kernel/syscall/fs.h \
 		kernel/syscall/diag.h kernel/vfs/vfs.h \
-		include/zephyros/syscall.h include/zephyros/fs.h \
+		abi/zos/syscall.h abi/zos/fs.h \
 		include/zephyros/process.h include/zephyros/errno.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
@@ -728,7 +737,7 @@ MODULES   := build/modules
 # driver directory context; no sibling driver's private path is offered here.
 # A driver's local headers resolve through same-directory quote includes.
 MOD_CFLAGS := -mz80 -c --nostdinc --Werror $(ZOS_SDCC_OPT) \
-              -I include -I platform -I drivers/sio
+              -I abi -I include -I platform -I drivers/sio
 
 $(MODULES):
 	mkdir -p $@
@@ -936,7 +945,7 @@ $(MODULES)/m8regfill.rel: tests/modules/m8_regfill.c \
 
 $(MODULES)/ramfs.rel: tests/modules/ramfs.c \
 		include/zephyros/driver.h include/zephyros/vfs.h \
-		include/zephyros/fs.h include/zephyros/errno.h | $(MODULES)
+		abi/zos/fs.h include/zephyros/errno.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) $< -o $@
 
 $(MODULES)/m9_probe.rel: tests/modules/m9_probe.c \
@@ -1020,8 +1029,18 @@ $(BUILD)/loader_test.rel: tests/target/loader/loader_test.c \
 		tests/target/include/loader_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
+# The process acceptance layout header is generated from the SDK-produced
+# zextest manifest (work/28c-m9-user-sdk); there is no hand-written
+# manifest.  zextest.c no longer includes it (the program uses the rule's
+# STACK), so this generation cannot cycle through the program build.
+$(BUILD)/process_expect.inc: $(BUILD)/user/zextest/zextest.json \
+		tests/subsys/gen_process_expect.py \
+		tests/subsys/gen_zex_fixtures.py tools/zexpack.py | $(BUILD)
+	$(PYTHON) tests/subsys/gen_process_expect.py \
+		$(BUILD)/user/zextest/zextest.json $@
+
 $(BUILD)/process_test.rel: tests/target/process/process_test.c \
-		include/zephyros/process.h include/zephyros/syscall.h \
+		include/zephyros/process.h abi/zos/syscall.h \
 		include/zephyros/console.h include/zephyros/module.h \
 		include/zephyros/kernel.h \
 		tests/target/include/process_selftest.h $(BUILD)/process_expect.inc | $(BUILD)
@@ -1072,7 +1091,7 @@ $(BUILD)/m8_fallback_test.rel: tests/target/m8/m8_fallback_test.c \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/m9_vfs_test.rel: tests/target/m9/m9_vfs_test.c \
-		include/zephyros/fs.h include/zephyros/vfs.h \
+		abi/zos/fs.h include/zephyros/vfs.h \
 		include/zephyros/romfs.h include/zephyros/module.h \
 		include/zephyros/console.h include/zephyros/kernel.h \
 		kernel/vfs/vfs.h kernel/vfs/mount_config.h \
@@ -1080,7 +1099,7 @@ $(BUILD)/m9_vfs_test.rel: tests/target/m9/m9_vfs_test.c \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/m9_provider_test.rel: tests/target/m9/m9_provider_test.c \
-		include/zephyros/fs.h include/zephyros/vfs.h \
+		abi/zos/fs.h include/zephyros/vfs.h \
 		include/zephyros/module.h include/zephyros/console.h \
 		include/zephyros/kernel.h \
 		kernel/vfs/vfs.h kernel/vfs/mount_config.h \
@@ -1089,391 +1108,50 @@ $(BUILD)/m9_provider_test.rel: tests/target/m9/m9_provider_test.c \
 
 $(BUILD)/m9_fs_test.rel: tests/target/m9/m9_fs_test.c \
 		include/zephyros/process.h include/zephyros/console.h \
-		include/zephyros/kernel.h include/zephyros/fs.h \
+		include/zephyros/kernel.h abi/zos/fs.h \
 		kernel/vfs/vfs.h \
 		tests/target/include/m9_fs_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/m9_exec_test.rel: tests/target/m9/m9_exec_test.c \
 		include/zephyros/process.h include/zephyros/console.h \
-		include/zephyros/kernel.h include/zephyros/fs.h \
+		include/zephyros/kernel.h abi/zos/fs.h \
 		kernel/vfs/vfs.h \
 		tests/target/include/m9_exec_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-# --- M6 native program (ZEXTEST) ---------------------------------------------
-# One ZEX program linked as a flat image at 0100h: _CODE is the image and
-# _DATA is the zero-initialized region the loader fills at
-# 0100h+image_size.  Geometry comes from tests/subsys/zextest.json; zexpack
-# validates the linked map against it and writes the reproducible report.
-
-ZEX_TEST_JSON := tests/subsys/zextest.json
-ZEX_TEST_BUILD := $(BUILD)/zextest
-ZEX_TEST_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(ZEX_TEST_JSON) image_size)
-ZEX_TEST_DATA_BASE  := $(shell printf '0x%04X' $$((0x0100 + $(ZEX_TEST_IMAGE_SIZE))))
-
-$(ZEX_TEST_BUILD):
-	mkdir -p $@
-
-$(BUILD)/process_expect.inc: $(ZEX_TEST_JSON) tests/subsys/gen_process_expect.py \
-		tests/subsys/gen_zex_fixtures.py tools/zexpack.py | $(BUILD)
-	$(PYTHON) tests/subsys/gen_process_expect.py $(ZEX_TEST_JSON) $@
-
-$(ZEX_TEST_BUILD)/zextest_entry.rel: tests/target/process/zextest_entry.asm | $(ZEX_TEST_BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(ZEX_TEST_BUILD)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(ZEX_TEST_BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(ZEX_TEST_BUILD)/zextest.rel: tests/target/process/zextest.c user/runtime/zex_runtime.h \
-		tests/target/include/process_selftest.h $(BUILD)/process_expect.inc | $(ZEX_TEST_BUILD)
-	$(SDCC) -mz80 -c --nostdinc --Werror -I user/runtime \
-		-I tests/target/include -I $(BUILD) $< -o $@
-
-$(ZEX_TEST_BUILD)/zextest.lk: $(ZEX_TEST_BUILD)/zextest_entry.rel \
-		$(ZEX_TEST_BUILD)/zextest.rel $(ZEX_TEST_BUILD)/zex_runtime.rel | $(ZEX_TEST_BUILD)
-	{ \
-	  printf '%s\n' '-n' '-m' '-w'; \
-	  printf '%s\n' '-i $(ZEX_TEST_BUILD)/zextest.ihx'; \
-	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(ZEX_TEST_DATA_BASE)'; \
-	  printf '%s\n' $(ZEX_TEST_BUILD)/zextest_entry.rel \
-	                $(ZEX_TEST_BUILD)/zextest.rel \
-	                $(ZEX_TEST_BUILD)/zex_runtime.rel; \
-	  printf '%s\n' '-e'; \
-	} > $@
-
-$(ZEX_TEST_BUILD)/zextest.ihx $(ZEX_TEST_BUILD)/zextest.map: $(ZEX_TEST_BUILD)/zextest.lk
-	$(SDLDZ80) -f $(ZEX_TEST_BUILD)/zextest.lk
-
-$(MODULES)/zextest.zex: $(ZEX_TEST_JSON) $(ZEX_TEST_BUILD)/zextest.ihx \
-		$(ZEX_TEST_BUILD)/zextest.map tools/zexpack.py | $(MODULES)
-	$(PYTHON) tools/zexpack.py pack $(ZEX_TEST_JSON) $@ \
-		--objdir $(ZEX_TEST_BUILD) --report $(MODULES)/zextest.report.json
-
-# --- M7 native monitor (MONITOR.ZEX) -----------------------------------------
-# The monitor is an ordinary M6 ZEX linked as a flat 0100h image from the
-# shared user/runtime components plus user/monitor; geometry comes from
-# user/monitor/monitor.json and zexpack validates the linked map against
-# it.  It links no kernel object and contains no device knowledge.
-
-MONITOR_JSON := user/monitor/monitor.json
-MONITOR_BUILD := $(BUILD)/monitor
-MONITOR_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(MONITOR_JSON) image_size)
-MONITOR_DATA_BASE  := $(shell printf '0x%04X' $$((0x0100 + $(MONITOR_IMAGE_SIZE))))
-
-MONITOR_USER_CFLAGS := -mz80 -c --nostdinc --Werror \
-	-I user/runtime -I user/monitor
-
-MONITOR_OBJECTS := $(MONITOR_BUILD)/monitor_entry.rel \
-		$(MONITOR_BUILD)/monitor.rel $(MONITOR_BUILD)/monitor_mem.rel \
-		$(MONITOR_BUILD)/monitor_io.rel \
-		$(MONITOR_BUILD)/console_io.rel $(MONITOR_BUILD)/hexfmt.rel \
-		$(MONITOR_BUILD)/hexdump.rel $(MONITOR_BUILD)/status.rel \
-		$(MONITOR_BUILD)/zex_runtime.rel \
-		$(MONITOR_BUILD)/zex_diag_runtime.rel
-
-$(MONITOR_BUILD):
-	mkdir -p $@
-
-$(MONITOR_BUILD)/monitor_entry.rel: user/monitor/monitor_entry.asm | $(MONITOR_BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(MONITOR_BUILD)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(MONITOR_BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(MONITOR_BUILD)/zex_diag_runtime.rel: user/runtime/zex_diag_runtime.asm | $(MONITOR_BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(MONITOR_BUILD)/monitor.rel: user/monitor/monitor.c user/monitor/monitor.h \
-		user/runtime/zex_runtime.h user/runtime/console_io.h \
-		user/runtime/hexfmt.h user/runtime/status.h | $(MONITOR_BUILD)
-	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
-
-$(MONITOR_BUILD)/monitor_mem.rel: user/monitor/monitor_mem.c \
-		user/monitor/monitor.h user/runtime/zex_runtime.h \
-		user/runtime/console_io.h user/runtime/hexfmt.h \
-		user/runtime/hexdump.h user/runtime/status.h | $(MONITOR_BUILD)
-	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
-
-$(MONITOR_BUILD)/monitor_io.rel: user/monitor/monitor_io.c \
-		user/monitor/monitor.h user/runtime/zex_runtime.h \
-		user/runtime/console_io.h user/runtime/hexfmt.h \
-		user/runtime/status.h | $(MONITOR_BUILD)
-	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
-
-$(MONITOR_BUILD)/console_io.rel: user/runtime/console_io.c \
-		user/runtime/console_io.h user/runtime/zex_runtime.h \
-		| $(MONITOR_BUILD)
-	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
-
-$(MONITOR_BUILD)/hexfmt.rel: user/runtime/hexfmt.c user/runtime/hexfmt.h \
-		| $(MONITOR_BUILD)
-	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
-
-$(MONITOR_BUILD)/hexdump.rel: user/runtime/hexdump.c user/runtime/hexdump.h \
-		user/runtime/hexfmt.h | $(MONITOR_BUILD)
-	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
-
-$(MONITOR_BUILD)/status.rel: user/runtime/status.c user/runtime/status.h \
-		user/runtime/console_io.h user/runtime/hexfmt.h | $(MONITOR_BUILD)
-	$(SDCC) $(MONITOR_USER_CFLAGS) $< -o $@
-
-$(MONITOR_BUILD)/monitor.lk: $(MONITOR_OBJECTS) $(MONITOR_JSON) | $(MONITOR_BUILD)
-	{ \
-	  printf '%s\n' '-n' '-m' '-w'; \
-	  printf '%s\n' '-i $(MONITOR_BUILD)/monitor.ihx'; \
-	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(MONITOR_DATA_BASE)'; \
-	  printf '%s\n' $(MONITOR_OBJECTS); \
-	  printf '%s\n' '-e'; \
-	} > $@
-
-$(MONITOR_BUILD)/monitor.ihx $(MONITOR_BUILD)/monitor.map: $(MONITOR_BUILD)/monitor.lk
-	$(SDLDZ80) -f $(MONITOR_BUILD)/monitor.lk
-
-$(MODULES)/monitor.zex: $(MONITOR_JSON) $(MONITOR_BUILD)/monitor.ihx \
-		$(MONITOR_BUILD)/monitor.map tools/zexpack.py | $(MODULES)
-	$(PYTHON) tools/zexpack.py pack $(MONITOR_JSON) $@ \
-		--objdir $(MONITOR_BUILD) --report $(MODULES)/monitor.report.json
-
-# --- M9 native filesystem acceptance programs (FSTEST.ZEX) --------------------
-# fstest.zex (the FS_* acceptance suite) and fstest_l.zex (the second-exec
-# launcher-cleanup check) are ordinary ZEX programs linked from the shared
-# user runtime plus tests/target/m9/fstest.  The runtime objects are linked
-# first so their manifest-checked low-window scratch stays at the _DATA base.
-
-FSTEST_JSON := tests/target/m9/fstest/fstest.json
-FSTEST_BUILD := $(BUILD)/fstest
-FSTEST_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(FSTEST_JSON) image_size)
-FSTEST_DATA_BASE  := $(shell printf '0x%04X' $$((0x0100 + $(FSTEST_IMAGE_SIZE))))
-
-FSTEST_L_JSON := tests/target/m9/fstest/fstest_l.json
-FSTEST_L_BUILD := $(BUILD)/fstest_l
-FSTEST_L_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(FSTEST_L_JSON) image_size)
-FSTEST_L_DATA_BASE  := $(shell printf '0x%04X' $$((0x0100 + $(FSTEST_L_IMAGE_SIZE))))
-
-FSTEST_USER_CFLAGS := -mz80 -c --nostdinc --Werror \
-	-I include -I . -I user/runtime -I tests/target/include
-
-$(FSTEST_BUILD) $(FSTEST_L_BUILD):
-	mkdir -p $@
-
-$(FSTEST_BUILD)/fstest_entry.rel: tests/target/m9/fstest/fstest_entry.asm | $(FSTEST_BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(FSTEST_BUILD)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(FSTEST_BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(FSTEST_BUILD)/zex_fs_runtime.rel: user/runtime/zex_fs_runtime.asm | $(FSTEST_BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(FSTEST_BUILD)/zex_args.rel: user/runtime/zex_args.asm | $(FSTEST_BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(FSTEST_BUILD)/zos_args.rel: user/runtime/zos_args.c user/runtime/zex_args.h \
-		| $(FSTEST_BUILD)
-	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
-
-$(FSTEST_BUILD)/zos_fs.rel: user/runtime/zos_fs.c user/runtime/zex_fs_runtime.h \
-		user/runtime/zex_exec_runtime.h user/runtime/zex_runtime.h \
-		include/zephyros/fs.h include/zephyros/syscall.h | $(FSTEST_BUILD)
-	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
-
-$(FSTEST_BUILD)/fstest.rel: tests/target/m9/fstest/fstest.c \
-		user/runtime/zex_fs_runtime.h user/runtime/zex_exec_runtime.h \
-		user/runtime/zex_args.h user/runtime/zex_runtime.h \
-		include/zephyros/fs.h include/zephyros/syscall.h | $(FSTEST_BUILD)
-	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
-
-$(FSTEST_BUILD)/fstest.lk: $(FSTEST_BUILD)/fstest_entry.rel \
-		$(FSTEST_BUILD)/zex_runtime.rel \
-		$(FSTEST_BUILD)/zex_fs_runtime.rel $(FSTEST_BUILD)/zos_fs.rel \
-		$(FSTEST_BUILD)/zex_args.rel \
-		$(FSTEST_BUILD)/fstest.rel $(FSTEST_JSON) | $(FSTEST_BUILD)
-	{ \
-	  printf '%s\n' '-n' '-m' '-w'; \
-	  printf '%s\n' '-i $(FSTEST_BUILD)/fstest.ihx'; \
-	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(FSTEST_DATA_BASE)'; \
-	  printf '%s\n' $(FSTEST_BUILD)/fstest_entry.rel \
-	                $(FSTEST_BUILD)/zex_runtime.rel \
-	                $(FSTEST_BUILD)/zex_fs_runtime.rel \
-	                $(FSTEST_BUILD)/zos_fs.rel \
-	                $(FSTEST_BUILD)/zex_args.rel \
-	                $(FSTEST_BUILD)/fstest.rel; \
-	  printf '%s\n' '-e'; \
-	} > $@
-
-$(FSTEST_BUILD)/fstest.ihx $(FSTEST_BUILD)/fstest.map: $(FSTEST_BUILD)/fstest.lk
-	$(SDLDZ80) -f $(FSTEST_BUILD)/fstest.lk
-
-$(MODULES)/fstest.zex: $(FSTEST_JSON) $(FSTEST_BUILD)/fstest.ihx \
-		$(FSTEST_BUILD)/fstest.map tools/zexpack.py | $(MODULES)
-	$(PYTHON) tools/zexpack.py pack $(FSTEST_JSON) $@ \
-		--objdir $(FSTEST_BUILD) --report $(MODULES)/fstest.report.json
-
-$(FSTEST_L_BUILD)/fstest_l_entry.rel: tests/target/m9/fstest/fstest_l_entry.asm | $(FSTEST_L_BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(FSTEST_L_BUILD)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(FSTEST_L_BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(FSTEST_L_BUILD)/zex_fs_runtime.rel: user/runtime/zex_fs_runtime.asm | $(FSTEST_L_BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(FSTEST_L_BUILD)/zos_fs.rel: user/runtime/zos_fs.c user/runtime/zex_fs_runtime.h \
-		user/runtime/zex_runtime.h include/zephyros/fs.h \
-		include/zephyros/syscall.h | $(FSTEST_L_BUILD)
-	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
-
-$(FSTEST_L_BUILD)/fstest_l.rel: tests/target/m9/fstest/fstest_l.c \
-		user/runtime/zex_fs_runtime.h user/runtime/zex_runtime.h \
-		include/zephyros/fs.h | $(FSTEST_L_BUILD)
-	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
-
-$(FSTEST_L_BUILD)/fstest_l.lk: $(FSTEST_L_BUILD)/fstest_l_entry.rel \
-		$(FSTEST_L_BUILD)/zex_runtime.rel \
-		$(FSTEST_L_BUILD)/zex_fs_runtime.rel $(FSTEST_L_BUILD)/zos_fs.rel \
-		$(FSTEST_L_BUILD)/fstest_l.rel $(FSTEST_L_JSON) | $(FSTEST_L_BUILD)
-	{ \
-	  printf '%s\n' '-n' '-m' '-w'; \
-	  printf '%s\n' '-i $(FSTEST_L_BUILD)/fstest_l.ihx'; \
-	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(FSTEST_L_DATA_BASE)'; \
-	  printf '%s\n' $(FSTEST_L_BUILD)/fstest_l_entry.rel \
-	                $(FSTEST_L_BUILD)/zex_runtime.rel \
-	                $(FSTEST_L_BUILD)/zex_fs_runtime.rel \
-	                $(FSTEST_L_BUILD)/zos_fs.rel \
-	                $(FSTEST_L_BUILD)/fstest_l.rel; \
-	  printf '%s\n' '-e'; \
-	} > $@
-
-$(FSTEST_L_BUILD)/fstest_l.ihx $(FSTEST_L_BUILD)/fstest_l.map: $(FSTEST_L_BUILD)/fstest_l.lk
-	$(SDLDZ80) -f $(FSTEST_L_BUILD)/fstest_l.lk
-
-$(MODULES)/fstest_l.zex: $(FSTEST_L_JSON) $(FSTEST_L_BUILD)/fstest_l.ihx \
-		$(FSTEST_L_BUILD)/fstest_l.map tools/zexpack.py | $(MODULES)
-	$(PYTHON) tools/zexpack.py pack $(FSTEST_L_JSON) $@ \
-		--objdir $(FSTEST_L_BUILD) --report $(MODULES)/fstest_l.report.json
-
-# --- M9 SYS_EXEC child programs (package 28, FCHILD/FSDEEP/FSRAW.ZEX) ----------
-# Ordinary ZEX programs linked from the shared user runtime plus
-# tests/target/m9/exec; the runtime objects are shared across the three
-# programs.  They are packed into the M9 acceptance /SYSTEM only.
-M9EXEC_DIR := tests/target/m9/exec
-M9EXEC := $(BUILD)/m9exec
-
-$(M9EXEC):
-	mkdir -p $@
-
-$(M9EXEC)/zex_runtime.rel: user/runtime/zex_runtime.asm | $(M9EXEC)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(M9EXEC)/zex_fs_runtime.rel: user/runtime/zex_fs_runtime.asm | $(M9EXEC)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(M9EXEC)/zex_args.rel: user/runtime/zex_args.asm | $(M9EXEC)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(M9EXEC)/zos_args.rel: user/runtime/zos_args.c user/runtime/zex_args.h \
-		| $(M9EXEC)
-	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
-
-$(M9EXEC)/zos_fs.rel: user/runtime/zos_fs.c user/runtime/zex_fs_runtime.h \
-		user/runtime/zex_exec_runtime.h user/runtime/zex_runtime.h \
-		include/zephyros/fs.h include/zephyros/syscall.h | $(M9EXEC)
-	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
-
-M9EXEC_RUNTIME := $(M9EXEC)/zex_runtime.rel $(M9EXEC)/zex_fs_runtime.rel \
-		$(M9EXEC)/zos_fs.rel
-
-M9E_FCHILD_JSON := $(M9EXEC_DIR)/fschild.json
-M9E_FCHILD_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(M9E_FCHILD_JSON) image_size)
-M9E_FCHILD_DATA_BASE := $(shell printf '0x%04X' $$((0x0100 + $(M9E_FCHILD_IMAGE_SIZE))))
-
-$(M9EXEC)/fschild_entry.rel: $(M9EXEC_DIR)/fschild_entry.asm | $(M9EXEC)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(M9EXEC)/fschild.rel: $(M9EXEC_DIR)/fschild.c user/runtime/zex_fs_runtime.h \
-		user/runtime/zex_args.h user/runtime/zex_runtime.h \
-		include/zephyros/fs.h | $(M9EXEC)
-	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
-
-$(M9EXEC)/fschild.lk: $(M9EXEC)/fschild_entry.rel $(M9EXEC_RUNTIME) \
-		$(M9EXEC)/zex_args.rel $(M9EXEC)/zos_args.rel \
-		$(M9EXEC)/fschild.rel $(M9E_FCHILD_JSON) | $(M9EXEC)
-	{ \
-	  printf '%s\n' '-n' '-m' '-w'; \
-	  printf '%s\n' '-i $(M9EXEC)/fschild.ihx'; \
-	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(M9E_FCHILD_DATA_BASE)'; \
-	  printf '%s\n' $(M9EXEC)/fschild_entry.rel $(M9EXEC_RUNTIME) \
-	                $(M9EXEC)/zex_args.rel $(M9EXEC)/zos_args.rel \
-	                $(M9EXEC)/fschild.rel; \
-	  printf '%s\n' '-e'; \
-	} > $@
-
-$(M9EXEC)/fschild.ihx $(M9EXEC)/fschild.map: $(M9EXEC)/fschild.lk
-	$(SDLDZ80) -f $(M9EXEC)/fschild.lk
-
-$(MODULES)/fschild.zex: $(M9E_FCHILD_JSON) $(M9EXEC)/fschild.ihx \
-		$(M9EXEC)/fschild.map tools/zexpack.py | $(MODULES)
-	$(PYTHON) tools/zexpack.py pack $(M9E_FCHILD_JSON) $@ \
-		--objdir $(M9EXEC) --report $(MODULES)/fschild.report.json
-
-M9E_FSDEEP_JSON := $(M9EXEC_DIR)/fsdeep.json
-M9E_FSDEEP_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(M9E_FSDEEP_JSON) image_size)
-M9E_FSDEEP_DATA_BASE := $(shell printf '0x%04X' $$((0x0100 + $(M9E_FSDEEP_IMAGE_SIZE))))
-
-$(M9EXEC)/fsdeep_entry.rel: $(M9EXEC_DIR)/fsdeep_entry.asm | $(M9EXEC)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(M9EXEC)/fsdeep.rel: $(M9EXEC_DIR)/fsdeep.c user/runtime/zex_exec_runtime.h \
-		user/runtime/zex_fs_runtime.h user/runtime/zex_runtime.h | $(M9EXEC)
-	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
-
-$(M9EXEC)/fsdeep.lk: $(M9EXEC)/fsdeep_entry.rel $(M9EXEC_RUNTIME) \
-		$(M9EXEC)/fsdeep.rel $(M9E_FSDEEP_JSON) | $(M9EXEC)
-	{ \
-	  printf '%s\n' '-n' '-m' '-w'; \
-	  printf '%s\n' '-i $(M9EXEC)/fsdeep.ihx'; \
-	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(M9E_FSDEEP_DATA_BASE)'; \
-	  printf '%s\n' $(M9EXEC)/fsdeep_entry.rel $(M9EXEC_RUNTIME) \
-	                $(M9EXEC)/fsdeep.rel; \
-	  printf '%s\n' '-e'; \
-	} > $@
-
-$(M9EXEC)/fsdeep.ihx $(M9EXEC)/fsdeep.map: $(M9EXEC)/fsdeep.lk
-	$(SDLDZ80) -f $(M9EXEC)/fsdeep.lk
-
-$(MODULES)/fsdeep.zex: $(M9E_FSDEEP_JSON) $(M9EXEC)/fsdeep.ihx \
-		$(M9EXEC)/fsdeep.map tools/zexpack.py | $(MODULES)
-	$(PYTHON) tools/zexpack.py pack $(M9E_FSDEEP_JSON) $@ \
-		--objdir $(M9EXEC) --report $(MODULES)/fsdeep.report.json
-
-M9E_FSRAW_JSON := $(M9EXEC_DIR)/fsraw.json
-M9E_FSRAW_IMAGE_SIZE := $(shell $(PYTHON) tools/zexpack.py get $(M9E_FSRAW_JSON) image_size)
-M9E_FSRAW_DATA_BASE := $(shell printf '0x%04X' $$((0x0100 + $(M9E_FSRAW_IMAGE_SIZE))))
-
-$(M9EXEC)/fsraw_entry.rel: $(M9EXEC_DIR)/fsraw_entry.asm | $(M9EXEC)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(M9EXEC)/fsraw.rel: $(M9EXEC_DIR)/fsraw.c | $(M9EXEC)
-	$(SDCC) $(FSTEST_USER_CFLAGS) $< -o $@
-
-$(M9EXEC)/fsraw.lk: $(M9EXEC)/fsraw_entry.rel $(M9EXEC)/fsraw.rel \
-		$(M9E_FSRAW_JSON) | $(M9EXEC)
-	{ \
-	  printf '%s\n' '-n' '-m' '-w'; \
-	  printf '%s\n' '-i $(M9EXEC)/fsraw.ihx'; \
-	  printf '%s\n' '-b _CODE = 0x0100' '-b _DATA = $(M9E_FSRAW_DATA_BASE)'; \
-	  printf '%s\n' $(M9EXEC)/fsraw_entry.rel $(M9EXEC)/fsraw.rel; \
-	  printf '%s\n' '-e'; \
-	} > $@
-
-$(M9EXEC)/fsraw.ihx $(M9EXEC)/fsraw.map: $(M9EXEC)/fsraw.lk
-	$(SDLDZ80) -f $(M9EXEC)/fsraw.lk
-
-$(MODULES)/fsraw.zex: $(M9E_FSRAW_JSON) $(M9EXEC)/fsraw.ihx \
-		$(M9EXEC)/fsraw.map tools/zexpack.py | $(MODULES)
-	$(PYTHON) tools/zexpack.py pack $(M9E_FSRAW_JSON) $@ \
-		--objdir $(M9EXEC) --report $(MODULES)/fsraw.report.json
+# --- native user programs (SDK, work/28c-m9-user-sdk) ------------------------
+# Every ZEX is built by one zex_program line from user/sdk/zex.mk.  The
+# sources compile with exactly -I abi -I user/sdk/include plus their own
+# directory (extended only by explicit test-owned INCLUDES), crt0 and libzos
+# are linked, the manifest is generated from the link map, and zexpack packs
+# and validates build/user/<name>.zex.  STAGE=1 additionally copies the
+# result to build/modules, which the recovery manifests consume.
+
+include user/sdk/zex.mk
+
+# The helloworld sub-project declares its own demos (one zex_program line
+# per program) next to their sources.
+include user/helloworld/Makefile
+
+$(eval $(call zex_program,monitor,user/monitor,\
+	monitor.c monitor_mem.c monitor_io.c hexfmt.c hexdump.c status.c,\
+	STACK=512,STAGE=1))
+
+$(eval $(call zex_program,zextest,tests/target/process,\
+	zextest.c zextest_sp.asm,STACK=256,STAGE=1,\
+	INCLUDES=tests/target/include))
+
+$(eval $(call zex_program,fstest,tests/target/m9/fstest,fstest.c,\
+	STACK=320,STAGE=1))
+$(eval $(call zex_program,fstest_l,tests/target/m9/fstest,fstest_l.c,\
+	STACK=256,STAGE=1))
+$(eval $(call zex_program,fschild,tests/target/m9/exec,fschild.c,\
+	STACK=256,STAGE=1))
+$(eval $(call zex_program,fsdeep,tests/target/m9/exec,fsdeep.c,\
+	STACK=128,STAGE=1))
+$(eval $(call zex_program,fsraw,tests/target/m9/exec,fsraw.c fsraw_entry.asm,\
+	NO_CRT0=1,ENTRY=rw_entry,STACK=32,SCRATCH=,STAGE=1))
 
 # Deterministic malformed containers (one per validation boundary; see
 # tests/subsys/gen_zex_fixtures.py and gen_zmod_fixtures.py) shared by the
@@ -1556,6 +1234,13 @@ ROMFS_MANIFEST := tests/m9/manifest-exec.json
 ROMFS_EXTRA_DEPS := $(MODULES)/ramfs.zmod $(MODULES)/monitor.zex \
 		$(MODULES)/fstest.zex $(MODULES)/fschild.zex \
 		$(MODULES)/fsraw.zex $(MODULES)/fsdeep.zex
+else ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
+# SDK demo image (work/28c-m9-user-sdk): the production boot set and store
+# plus the hello demo, which the launcher starts instead of the monitor
+# (ZOS_BOOT_PROGRAM=/SYSTEM/hello.zex).  Booting a user program needs no
+# kernel change, which is exactly what this image demonstrates.
+ROMFS_MANIFEST := user/helloworld/manifest.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/hello.zex
 else
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
@@ -1737,7 +1422,12 @@ romfs-corrupt-selftest:
 	$(PYTHON) -m unittest discover -s tests -p 'test_romfs_sim.py' -v
 	@echo "romfs-corrupt image: build-romfs-corrupt/zephyros-romfs-corrupt.bin"
 
-check-fast:
+# The SDK's own tests (tests/test_sdk.py) and the generated-manifest
+# checks need the packed demo and the argument test program, so the
+# standard check always builds them.  Neither is part of a production
+# image: the demo lives in user/helloworld/ and zextest is an acceptance
+# program.
+check-fast: $(ZEX_USER_ROOT)/hello.zex $(MODULES)/zextest.zex
 	$(PYTHON) -m unittest discover -s tests -v
 	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) \
 		--min-granules $(ZOS_ARENA_MIN_GRANULES) $(BUILD)/zephyros.map \
@@ -2020,6 +1710,21 @@ m9-exec-selftest: all
 		$(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_m9_exec_sim.py' -v
 	@echo "m9 exec image: build-m9-exec-selftest/zephyros-m9-exec-selftest.bin"
+
+# SDK helloworld demo image (work/28c-m9-user-sdk): the production boot path
+# in its own build directory (build-helloworld) with the SDK hello demo
+# added to the recovery manifest, booted as /SYSTEM/hello.zex.  This is the
+# end-to-end proof that a user program needs no kernel change: the only
+# inputs that differ from production are the ZOS_BOOT_PROGRAM setting and
+# the manifest.  The simulator replay checks the transcript.
+
+helloworld-image: all
+	$(MAKE) BUILD=build-helloworld ZOS_HELLOWORLD_IMAGE=1 \
+		ZOS_BOOT_PROGRAM=/SYSTEM/hello.zex \
+		build-helloworld/zephyros-helloworld.bin \
+		build-helloworld/zephyr80-helloworld.bin
+	$(PYTHON) -m unittest discover -s tests -p 'test_sdk.py' -v
+	@echo "helloworld image: build-helloworld/zephyros-helloworld.bin"
 
 m8-fallback-selftests: all
 	$(MAKE) BUILD=build-m8-fb-nohid ZOS_M8_FALLBACK_SELFTEST=1 \

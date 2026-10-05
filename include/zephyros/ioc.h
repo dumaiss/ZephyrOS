@@ -52,7 +52,7 @@
 #ifndef ZEPHYROS_IOC_H
 #define ZEPHYROS_IOC_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
 #include "zephyros/errno.h"
 #include "zephyros/device.h"
 

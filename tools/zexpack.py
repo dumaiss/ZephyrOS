@@ -42,7 +42,7 @@ Manifest (zex-v1):
       "image_size": 1792,
       "bss_size": 512,
       "stack_size": 256,
-      "scratch": {"symbol": "zos_runtime_scratch", "size": 8}
+      "scratch": {"symbol": "zos_scratch", "size": 16}
     }
 
 `input`/`map` resolve against --objdir (default: the manifest

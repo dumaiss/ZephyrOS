@@ -7,7 +7,7 @@
 #ifndef ZEPHYROS_IRQ_H
 #define ZEPHYROS_IRQ_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
 
 typedef uint8_t irq_source_t;
 typedef void (*irq_handler_t)(void *context);

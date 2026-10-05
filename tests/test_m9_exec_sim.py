@@ -52,7 +52,10 @@ APP_MODE = 0x10
 OS_MODE = 0x18
 BANK_MASK = 0x07
 
-HEADER = os.path.join(ROOT, "include", "zephyros", "process.h")
+# The public process ABI (exec geometry) and the kernel-side frame
+# geometry it is checked against.
+HEADER = os.path.join(ROOT, "abi", "zos", "process.h")
+KERNEL_HEADER = os.path.join(ROOT, "include", "zephyros", "process.h")
 VFS_HEADER = os.path.join(ROOT, "kernel", "vfs", "vfs.h")
 
 
@@ -61,7 +64,7 @@ def _read(path):
 
 
 def _pinned():
-    text = _read(HEADER)
+    text = _read(HEADER) + _read(KERNEL_HEADER)
     values = {}
     for name in ("ZOS_EXEC_MAX_DEPTH", "ZOS_EXEC_FRAME_SAVE"):
         match = re.search(r"#define\s+%s\s+(\d+)u" % name, text)

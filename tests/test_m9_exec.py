@@ -28,18 +28,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
-SYSCALL_H = ROOT / "include" / "zephyros" / "syscall.h"
+SYSCALL_H = ROOT / "abi" / "zos" / "syscall.h"
 PROCESS_H = ROOT / "include" / "zephyros" / "process.h"
+PROCESS_ABI_H = ROOT / "abi" / "zos" / "process.h"
 VFS_H = ROOT / "kernel" / "vfs" / "vfs.h"
 LAUNCH_ASM = ROOT / "kernel" / "process" / "launch.asm"
 PROCESS_C = ROOT / "kernel" / "process" / "process.c"
 EXEC_C = ROOT / "kernel" / "process" / "exec.c"
 SYSCALL_C = ROOT / "kernel" / "syscall.c"
-RUNTIME_H = ROOT / "user" / "runtime" / "zex_exec_runtime.h"
-RUNTIME_C = ROOT / "user" / "runtime" / "zos_fs.c"
-ARGS_H = ROOT / "user" / "runtime" / "zex_args.h"
-ARGS_ASM = ROOT / "user" / "runtime" / "zex_args.asm"
-ARGS_C = ROOT / "user" / "runtime" / "zos_args.c"
+SDK_PROCESS_H = ROOT / "user" / "sdk" / "include" / "zos" / "process.h"
+SDK_EXEC_C = ROOT / "user" / "sdk" / "src" / "exec.c"
+SDK_INTERNAL_H = ROOT / "user" / "sdk" / "src" / "zos_internal.h"
+SDK_ARGS_C = ROOT / "user" / "sdk" / "src" / "args.c"
+SDK_CRT0_ASM = ROOT / "user" / "sdk" / "src" / "crt0.asm"
 MAIN_C = ROOT / "kernel" / "main.c"
 CONFIG_MK = ROOT / "config" / "system.mk"
 BOOTPROGRAM = ROOT / "tools" / "bootprogram.py"
@@ -115,38 +116,37 @@ class TestExecAbi(unittest.TestCase):
                 "zos_exec_args.%s offset is not pinned" % field)
         # The startup block's geometry is pinned against the page-zero
         # window: 0080h + version + length + tail + NUL == 0100h.
-        self.assertIn("ZOS_STARTUP_BASE     0x0080u", text)
-        self.assertIn("ZOS_STARTUP_VERSION  1u", text)
-        self.assertIn("ZOS_STARTUP_TAIL_MAX 125u", text)
+        abi = _read(PROCESS_ABI_H)
+        self.assertIn("ZOS_STARTUP_BASE     0x0080u", abi)
+        self.assertIn("ZOS_STARTUP_VERSION  1u", abi)
+        self.assertIn("ZOS_STARTUP_TAIL_MAX 125u", abi)
         self.assertIn(
             "ZOS_STARTUP_BASE + 2u + ZOS_STARTUP_TAIL_MAX + 1u == 0x0100u",
-            text)
-        # The runtime marshals the block through its own union arm (the
-        # SYS_EXEC block is 8 bytes, unlike the 4-byte FS path block).
-        impl = _read(RUNTIME_C)
-        self.assertIn("struct zos_exec_args    exec;", impl)
-        self.assertIn("zos_fs_scratch.exec.args_length", impl)
+            abi)
+        # The SDK marshals the block through its shared scratch union arm
+        # (the SYS_EXEC block is 8 bytes, unlike the 4-byte FS path block).
+        self.assertIn("struct zos_exec_args    exec;",
+                      _read(SDK_INTERNAL_H))
+        self.assertIn("zos_scratch.exec.args_length", _read(SDK_EXEC_C))
 
     def test_dispatcher_routes_exec(self):
         self.assertIn("case ZOS_SYSCALL_EXEC:", _read(SYSCALL_C))
         self.assertIn("syscall_exec", _read(SYSCALL_C))
 
-    def test_user_runtime_wrapper(self):
-        header = _read(RUNTIME_H)
+    def test_user_sdk_wrapper(self):
+        header = _read(SDK_PROCESS_H)
         self.assertIn("int zos_exec(const char *path, const char *args);",
                       header)
-        self.assertRegex(header, r"#define ZEX_TAIL_MAX 125")
-        self.assertIn("zex_fs_runtime.h", header)
-        impl = _read(RUNTIME_C)
+        impl = _read(SDK_EXEC_C)
         self.assertIn("int zos_exec(const char *path, const char *args)",
                       impl)
-        # The runtime mirrors the pinned number and calls it through the
-        # shared FS gate stub.
-        self.assertRegex(impl, r"#define ZOS_EXEC\s+0x05u")
-        self.assertIn("zfs_call(ZOS_EXEC", impl)
+        # The SDK uses the ABI number directly and calls it through the
+        # shared FS gate stub; there is no mirror.
+        self.assertIn("ZOS_SYSCALL_EXEC", impl)
+        self.assertIn("zos_fs_call", impl)
         # A null/empty tail is legal; an over-long tail is refused locally
         # before the syscall, like the path length.
-        self.assertIn("zfs_tail_len", impl)
+        self.assertIn("zexec_tail_len", impl)
         self.assertIn("an == 0xFFFFu", impl)
 
     def test_error_mapping_is_documented(self):
@@ -163,7 +163,7 @@ class TestNestingGeometry(unittest.TestCase):
         self.header = _read(PROCESS_H)
 
     def test_depth_is_pinned_and_explained(self):
-        self.assertEqual(_constant(self.header, "ZOS_EXEC_MAX_DEPTH"), 4)
+        self.assertEqual(_constant(_read(PROCESS_ABI_H), "ZOS_EXEC_MAX_DEPTH"), 4)
         for line in ("depth 1: kernel continuation, no saved gate frame",
                      "depth 2: frame save #0 holds the shell's SYS_EXEC",
                      "depth 4: frame save #2 holds the compiler's"):
@@ -453,10 +453,13 @@ class TestMapParity(unittest.TestCase):
 
     def test_mapcheck_constants_match_the_header(self):
         header = _read(PROCESS_H)
+        abi = _read(PROCESS_ABI_H)
         text = _read(MAPCHECK)
-        for name in ("ZOS_EXEC_MAX_DEPTH", "ZOS_EXEC_FRAME_SAVE"):
-            self.assertEqual(_constant(text, name), _constant(header, name),
-                             "mapcheck %s disagrees with process.h" % name)
+        for name, source in (("ZOS_EXEC_MAX_DEPTH", abi),
+                             ("ZOS_EXEC_FRAME_SAVE", header)):
+            self.assertEqual(_constant(text, name), _constant(source, name),
+                             "mapcheck %s disagrees with the process headers"
+                             % name)
 
     def test_synthetic_map_carries_the_frame_delta(self):
         text = _read(MAPTOOLS)
@@ -467,7 +470,7 @@ class TestMapParity(unittest.TestCase):
         self.assertIsNotNone(end)
         delta = int(end.group(1), 0) - int(frames.group(1), 0)
         expected = (_constant(_read(PROCESS_H), "ZOS_EXEC_FRAME_SAVE") *
-                    (_constant(_read(PROCESS_H), "ZOS_EXEC_MAX_DEPTH") - 1))
+                    (_constant(_read(PROCESS_ABI_H), "ZOS_EXEC_MAX_DEPTH") - 1))
         self.assertEqual(delta, expected,
                          "the synthetic map's frame area is %d bytes, "
                          "expected %d" % (delta, expected))
@@ -569,26 +572,28 @@ class TestBootProgram(unittest.TestCase):
 
 
 class TestArgsRuntime(unittest.TestCase):
-    """The user-space startup glue and splitter (runtime policy)."""
+    """The SDK startup glue and splitter (runtime policy)."""
 
-    def test_entry_glue_preserves_hl_and_saves_the_block(self):
-        text = _read(ARGS_ASM)
-        self.assertIn("_zos_args_init::", text)
-        self.assertIn("ld\t(_zos_startup_block),hl", text)
-        self.assertIn("_zos_args::", text)
-        # SDCC returns a 16-bit pointer in DE.
-        self.assertIn("ex\tde,hl", text)
+    def test_crt0_saves_the_block_and_calls_main(self):
+        text = _read(SDK_CRT0_ASM)
+        self.assertIn("_zos_startup_block", text)
+        self.assertIn("call\t_zos_split", text)
+        self.assertIn("call\t_main", text)
+        self.assertIn("call\t_zex_exit", text)
 
     def test_accessor_and_splitter_surface(self):
-        header = _read(ARGS_H)
-        for needle in ("#define ZEX_STARTUP_BASE     0x0080",
-                       "#define ZEX_STARTUP_VERSION  1",
-                       "#define ZEX_STARTUP_TAIL_MAX 125",
-                       "struct zex_startup {", "void zos_args_init(void);",
-                       "struct zex_startup *zos_args(void);",
+        header = _read(SDK_PROCESS_H)
+        for needle in ("#define ZOS_ARGV_MAX 16",
+                       "struct zos_startup *zos_args(void);",
                        "int zos_split(char *tail, char **argv, int max);"):
-            self.assertIn(needle, header, "zex_args.h lacks %r" % needle)
-        impl = _read(ARGS_C)
+            self.assertIn(needle, header, "zos/process.h lacks %r" % needle)
+        abi = _read(PROCESS_ABI_H)
+        for needle in ("ZOS_STARTUP_BASE     0x0080u",
+                       "ZOS_STARTUP_VERSION  1u",
+                       "ZOS_STARTUP_TAIL_MAX 125u",
+                       "struct zos_startup {"):
+            self.assertIn(needle, abi, "abi/zos/process.h lacks %r" % needle)
+        impl = _read(SDK_ARGS_C)
         self.assertIn("int zos_split(char *tail, char **argv, int max)", impl)
 
     def test_splitter_rules_are_documented(self):
@@ -598,22 +603,21 @@ class TestArgsRuntime(unittest.TestCase):
         self.assertRegex(doc, r"whitespace")
         self.assertIn("0080h", doc)
 
-    def test_acceptance_programs_use_the_glue(self):
-        self.assertIn("zos_args_init", _read(
-            ROOT / "tests" / "target" / "m9" / "exec" / "fschild_entry.asm"))
-        self.assertIn("zos_args_init", _read(
-            ROOT / "tests" / "target" / "m9" / "fstest" / "fstest_entry.asm"))
+    def test_acceptance_programs_use_the_sdk(self):
+        makefile = _read(MAKEFILE)
+        for needle in ("zex_program,fstest,tests/target/m9/fstest,fstest.c",
+                       "zex_program,fschild,tests/target/m9/exec,fschild.c"):
+            self.assertIn(needle, makefile, "the Makefile lacks %r" % needle)
         # fstest checks the kernel-launched block and drives the cases.
         fstest = _read(FSTEST_C)
-        for needle in ("zos_args()", "ZEX_STARTUP_VERSION",
+        for needle in ("zos_args()", "ZOS_STARTUP_VERSION",
                        '"two words \\"a b\\" tail"',
-                       "ZEX_STARTUP_TAIL_MAX + 1u", "0x0000u"):
+                       "ZOS_STARTUP_TAIL_MAX + 1u", "0x0000u"):
             self.assertIn(needle, fstest, "fstest.c lacks %r" % needle)
-        # fschild copies the page-zero tail into program data before it
-        # hands it to a syscall (the block is below the 0100h window).
+        # fschild takes its argv from crt0's main(), not a private splitter.
         fschild = _read(FSCHILD_C)
-        self.assertIn("ch_tail", fschild)
-        self.assertIn("zos_split(ch_tail", fschild)
+        self.assertIn("int main(int argc, char **argv)", fschild)
+        self.assertIn("argv[i]", fschild)
 
 
 class TestBuildWiring(unittest.TestCase):
@@ -625,17 +629,17 @@ class TestBuildWiring(unittest.TestCase):
         self.assertIn("build-m9-exec-selftest/zephyros-m9-exec-selftest.bin",
                       text)
 
-    def test_makefile_builds_and_packs_the_children(self):
+    def test_makefile_builds_the_children_through_the_sdk(self):
         text = _read(MAKEFILE)
-        self.assertIn("M9EXEC_DIR := tests/target/m9/exec", text)
-        for name in ("fschild", "fsdeep", "fsraw"):
-            self.assertIn("$(MODULES)/%s.zex:" % name, text,
-                          "the Makefile does not build %s.zex" % name)
-            self.assertIn("$(M9EXEC_DIR)/%s.c" % name, text)
-            self.assertIn("$(M9EXEC_DIR)/%s.json" % name, text)
-            self.assertIn("$(M9EXEC_DIR)/%s_entry.asm" % name, text)
+        self.assertIn("include user/sdk/zex.mk", text)
+        for needle in (
+                "zex_program,fschild,tests/target/m9/exec,fschild.c",
+                "zex_program,fsdeep,tests/target/m9/exec,fsdeep.c",
+                "zex_program,fsraw,tests/target/m9/exec,"
+                "fsraw.c fsraw_entry.asm",
+                "NO_CRT0=1,ENTRY=rw_entry"):
+            self.assertIn(needle, text, "the Makefile lacks %r" % needle)
         self.assertIn("tests/m9/manifest-exec.json", text)
-        self.assertIn("user/runtime/zex_exec_runtime.h", text)
 
     def test_acceptance_manifest_carries_the_programs(self):
         data = json.loads(_read(MANIFEST_EXEC))

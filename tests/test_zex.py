@@ -42,7 +42,10 @@ import romfspack  # noqa: E402
 from maptools import evaluate, make_map, parse_c_header  # noqa: E402
 
 ZEX_H = os.path.join(ROOT, "include", "zephyros", "zex.h")
-ZEXTEST_JSON = os.path.join(ROOT, "tests", "subsys", "zextest.json")
+ZEXTEST_JSON = os.path.join(ROOT, "build", "user", "zextest",
+                             "zextest.json")
+SUBSYS_ZEXTEST_JSON = os.path.join(ROOT, "build-subsys-selftest", "user",
+                                    "zextest", "zextest.json")
 SUBSYS_MANIFEST = os.path.join(ROOT, "tests", "subsys", "manifest.json")
 ZEXPACK = os.path.join(ROOT, "tools", "zexpack.py")
 
@@ -337,6 +340,8 @@ class TestZexpackCLI(unittest.TestCase):
                 self.assertIn("entry", dump.stdout)
 
     def test_get_reads_layout_fields(self):
+        if not os.path.exists(ZEXTEST_JSON):
+            self.skipTest("the generated zextest manifest has not been built")
         result = self._run("get", ZEXTEST_JSON, "image_size")
         self.assertEqual(result.returncode, 0, result.stderr)
         manifest = json.loads(open(ZEXTEST_JSON).read())
@@ -394,7 +399,8 @@ class TestSubsystemArtifacts(unittest.TestCase):
 
     def test_packed_zextest_matches_report_and_manifest(self):
         _p, data = self._read("build/modules/zextest.zex")
-        _p, report_text = self._read("build/modules/zextest.report.json")
+        _p, report_text = self._read(
+            "build/user/zextest/zextest.report.json")
         report = json.loads(report_text)
         fields, geo = zexpack.validate_image(data)
         manifest = json.loads(open(ZEXTEST_JSON).read())
@@ -486,7 +492,7 @@ class TestSubsystemArtifacts(unittest.TestCase):
     def test_generated_layout_matches_the_manifest(self):
         _p, generated = self._read("build-subsys-selftest/"
                                    "process_expect.inc")
-        manifest = json.loads(open(ZEXTEST_JSON).read())
+        manifest = json.loads(open(SUBSYS_ZEXTEST_JSON).read())
         env = parse_c_header(os.path.join(ROOT, "build-subsys-selftest",
                                           "process_expect.inc"))
         self.assertEqual(evaluate(env["PROCESS_ZEX_IMAGE_SIZE"], env),

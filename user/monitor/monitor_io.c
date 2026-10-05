@@ -7,13 +7,13 @@
  */
 
 #include "monitor.h"
-#include "console_io.h"
+#include "zos.h"
 #include "hexfmt.h"
 #include "status.h"
 
 void mon_cmd_io_in(char *cursor)
 {
-	struct zex_diag_io req;
+	struct zos_diag_io_in_args req;
 	unsigned int port;
 	int value;
 
@@ -21,25 +21,24 @@ void mon_cmd_io_in(char *cursor)
 		zrt_status_err_arg();
 		return;
 	}
-	if (port < ZEX_DIAG_IO_PORT_MIN) {
+	if (port < ZOS_DIAG_IO_PORT_MIN) {
 		zrt_status_err_arg(); /* latch alias: refused, not executed */
 		return;
 	}
 	req.port = (unsigned char)port;
-	req.value = 0;
 	value = zex_diag_io_in(&req);
 	if (value < 0) {
 		zrt_status_err_code(value);
 		return;
 	}
-	zrt_puts("IN=");
+	zos_puts("IN=");
 	mon_put_hex8((unsigned int)value);
-	zrt_puts("\r\n");
+	zos_puts("\r\n");
 }
 
 void mon_cmd_io_out(char *cursor)
 {
-	struct zex_diag_io req;
+	struct zos_diag_io_out_args req;
 	unsigned int port;
 	unsigned int value;
 	int result;
@@ -50,7 +49,7 @@ void mon_cmd_io_out(char *cursor)
 		zrt_status_err_arg();
 		return;
 	}
-	if (port < ZEX_DIAG_IO_PORT_MIN) {
+	if (port < ZOS_DIAG_IO_PORT_MIN) {
 		zrt_status_err_arg(); /* latch alias: refused, not executed */
 		return;
 	}

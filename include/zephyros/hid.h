@@ -41,7 +41,7 @@
 #ifndef ZEPHYROS_HID_H
 #define ZEPHYROS_HID_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
 #include "zephyros/errno.h"
 #include "zephyros/device.h"
 

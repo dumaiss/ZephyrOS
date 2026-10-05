@@ -61,7 +61,7 @@ Three headers, with a deliberate visibility split:
 
 | Header | Audience | Content |
 | --- | --- | --- |
-| `include/zephyros/fs.h` | native applications, syscalls, providers | `ZOS_PATH_MAX` (128), `ZFS_NAME_MAX` (64), `ZFS_TYPE_*`, `ZFS_ATTR_*`, `ZFS_TIME_UNKNOWN`, `struct zfs_stat` (16 bytes), `struct zfs_dirent` (80 bytes), `ZFS_O_*`, `ZFS_SEEK_*`.  There is no `zfs_statfs` in M9. |
+| `abi/zos/fs.h` | native applications, syscalls, providers (`include/zephyros/fs.h` re-exports it) | `ZOS_PATH_MAX` (128), `ZFS_NAME_MAX` (64), `ZFS_TYPE_*`, `ZFS_ATTR_*`, `ZFS_TIME_UNKNOWN`, `struct zfs_stat` (16 bytes), `struct zfs_dirent` (80 bytes), `ZFS_O_*`, `ZFS_SEEK_*`.  There is no `zfs_statfs` in M9. |
 | `include/zephyros/vfs.h` | module-facing provider ABI | `struct zfs_ops` (the 14 path-based operations of architecture 32.12, in order), `struct zfs_provider` |
 | `kernel/vfs/vfs.h` | kernel only | lifecycle, registry, mount runtime state, path helpers, kernel file/dir API, the mutation entry points, `zmod_source` adapter, `VFS_O_EXEC` |
 
@@ -524,13 +524,13 @@ and pass.
 
 Package 27 makes the VFS reachable from native programs through the pinned
 `FS_*` family (`10h-1Fh`; the register ABI and every block are documented
-in `docs/abi.md` section 10 and declared in `include/zephyros/fs.h`).
+in `docs/abi.md` section 10 and declared in `abi/zos/fs.h`).
 Nothing in provider semantics changed; the new layers are:
 
 ```text
 kernel/vfs/process.c   global owner-tagged descriptor pool + per-process CWD
 kernel/syscall/fs.c    the FS_* service bodies (argument + window validation)
-user/runtime/zex_fs_runtime.asm + zos_fs.c   native gate stub + C wrappers
+user/sdk/src/fsgate.asm + fs.c       native gate stub + C wrappers
 tests/target/m9/fstest/  fstest.zex (suite) and fstest_l.zex (second-exec)
 ```
 

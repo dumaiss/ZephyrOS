@@ -10,8 +10,9 @@ Enforces docs/architecture.md section 3.1 and the current layout:
 - production module metadata and shared module runtime support have
   explicit non-driver owners (modules/manifests, modules/runtime);
 - the process lifecycle (kernel/process), the common transition gates
-  (kernel/memory), and the user runtime (user/runtime) have explicit
-  owners, with the ZEX program sources under tests/target/process and the
+  (kernel/memory), the public native ABI (abi/zos) and the user SDK
+  (user/sdk) have explicit owners, with the ZEX program sources under
+  tests/target/process, the demos under user/helloworld, and the
   ZEX tooling/fixtures under tests/subsys;
 - all milestone acceptance code lives under tests/target/ (or
   tests/modules/ for test ZMODs), behind the single ZOS_TARGET_TEST_BUILD
@@ -95,7 +96,6 @@ OWNER_FILES = (
     "kernel/syscall/fs.h",
     "fs/romfs/romfs_provider.c",
     "fs/romfs/romfs_provider.h",
-    "include/zephyros/fs.h",
     "include/zephyros/vfs.h",
     "config/mounts.json",
     "tools/mountgen.py",
@@ -112,11 +112,7 @@ OWNER_FILES = (
     "tests/target/m9/m9_fs_test.c",
     "tests/target/m9/m9_exec_test.c",
     "tests/target/m9/fstest/fstest.c",
-    "tests/target/m9/fstest/fstest_entry.asm",
     "tests/target/m9/fstest/fstest_l.c",
-    "tests/target/m9/fstest/fstest_l_entry.asm",
-    "tests/target/m9/fstest/fstest.json",
-    "tests/target/m9/fstest/fstest_l.json",
     "tests/target/include/m9_selftest.h",
     "tests/target/include/m9_provider_selftest.h",
     "tests/target/include/m9_fs_selftest.h",
@@ -127,14 +123,9 @@ OWNER_FILES = (
     "tests/test_m9_exec.py",
     "tests/test_m9_exec_sim.py",
     "tests/target/m9/exec/fschild.c",
-    "tests/target/m9/exec/fschild_entry.asm",
-    "tests/target/m9/exec/fschild.json",
     "tests/target/m9/exec/fsdeep.c",
-    "tests/target/m9/exec/fsdeep_entry.asm",
-    "tests/target/m9/exec/fsdeep.json",
     "tests/target/m9/exec/fsraw.c",
     "tests/target/m9/exec/fsraw_entry.asm",
-    "tests/target/m9/exec/fsraw.json",
     "tests/test_syscall_sim.py",
     "tests/modules/ramfs.c",
     "tests/modules/ramfs.json",
@@ -150,27 +141,65 @@ OWNER_FILES = (
     "include/zephyros/romfs.h",
     "include/zephyros/process.h",
     "include/zephyros/zex.h",
-    "user/runtime/zex_runtime.asm",
-    "user/runtime/zex_runtime.h",
-    "user/runtime/zex_diag_runtime.asm",
-    "user/runtime/zex_exec_runtime.h",
-    "user/runtime/zex_fs_runtime.asm",
-    "user/runtime/zex_fs_runtime.h",
-    "user/runtime/zos_fs.c",
-    "user/runtime/console_io.c",
-    "user/runtime/console_io.h",
-    "user/runtime/hexfmt.c",
-    "user/runtime/hexfmt.h",
-    "user/runtime/hexdump.c",
-    "user/runtime/hexdump.h",
-    "user/runtime/status.c",
-    "user/runtime/status.h",
+    "abi/zos/types.h",
+    "abi/zos/errno.h",
+    "abi/zos/syscall.h",
+    "abi/zos/fs.h",
+    "abi/zos/process.h",
+    "abi/zos/diag.h",
+    "user/sdk/zex.mk",
+    "user/sdk/include/zos.h",
+    "user/sdk/include/zos/console.h",
+    "user/sdk/include/zos/fs.h",
+    "user/sdk/include/zos/process.h",
+    "user/sdk/include/zos/diag.h",
+    "user/sdk/include/zlibc/string.h",
+    "user/sdk/include/zlibc/fmt.h",
+    "user/sdk/include/zlibc/stdarg.h",
+    "user/sdk/src/crt0.asm",
+    "user/sdk/src/runtime.asm",
+    "user/sdk/src/console.asm",
+    "user/sdk/src/fsgate.asm",
+    "user/sdk/src/diaggate.asm",
+    "user/sdk/src/args.c",
+    "user/sdk/src/fs.c",
+    "user/sdk/src/exec.c",
+    "user/sdk/src/console_io.c",
+    "user/sdk/src/zos_internal.h",
+    "user/sdk/src/zlibc/strlen.c",
+    "user/sdk/src/zlibc/strcmp.c",
+    "user/sdk/src/zlibc/strncmp.c",
+    "user/sdk/src/zlibc/strchr.c",
+    "user/sdk/src/zlibc/strrchr.c",
+    "user/sdk/src/zlibc/memcpy.c",
+    "user/sdk/src/zlibc/memmove.c",
+    "user/sdk/src/zlibc/memset.c",
+    "user/sdk/src/zlibc/memcmp.c",
+    "user/sdk/src/zlibc/strlcpy.c",
+    "user/sdk/src/zlibc/strlcat.c",
+    "user/sdk/src/zlibc/utoa.c",
+    "user/sdk/src/zlibc/ultoa.c",
+    "user/sdk/src/zlibc/itoa.c",
+    "user/sdk/src/zlibc/ltoa.c",
+    "user/sdk/src/zlibc/printf.c",
+    "user/sdk/src/zlibc/sdcc_arith.c",
+    "user/sdk/src/zlibc/sdcc_arith_signed.c",
+    "user/sdk/src/zlibc/sdcc_arith_entries.asm",
+    "user/sdk/src/zlibc/sdcc_arith_signed_entries.asm",
+    "user/sdk/template/hello.c",
+    "user/helloworld/hello.c",
+    "user/helloworld/Makefile",
+    "user/helloworld/README.md",
     "user/monitor/monitor.c",
     "user/monitor/monitor.h",
     "user/monitor/monitor_mem.c",
     "user/monitor/monitor_io.c",
-    "user/monitor/monitor_entry.asm",
-    "user/monitor/monitor.json",
+    "user/monitor/hexfmt.c",
+    "user/monitor/hexfmt.h",
+    "user/monitor/hexdump.c",
+    "user/monitor/hexdump.h",
+    "user/monitor/status.c",
+    "user/monitor/status.h",
     "tools/zexpack.py",
     "recovery/manifest.json",
     "tests/subsys/manifest.json",
@@ -180,12 +209,13 @@ OWNER_FILES = (
     "tests/subsys/gen_zex_fixtures.py",
     "tests/subsys/gen_zmod_fixtures.py",
     "tests/subsys/gen_process_expect.py",
-    "tests/subsys/zextest.json",
+    "tests/target/process/zextest_sp.asm",
+    "tests/test_sdk.py",
+    "tools/zexmanifest.py",
     "tests/target/romfs/romfs_test.c",
     "tests/target/loader/loader_test.c",
     "tests/target/process/process_test.c",
     "tests/target/process/zextest.c",
-    "tests/target/process/zextest_entry.asm",
     "drivers/ctc/ctc.c",
     "drivers/sio/sio.c",
     "drivers/sio/sio.h",
@@ -270,6 +300,20 @@ REMOVED_PATHS = (
     "include/zephyros/irq_selftest.h",
     "tests/target/zephyr80/selftest.asm",
     "tests/target/zephyr80/irq_selftest.asm",
+    "user/runtime",
+    "user/monitor/monitor_entry.asm",
+    "user/monitor/monitor.json",
+    "tests/subsys/zextest.json",
+    "tests/target/process/zextest_entry.asm",
+    "tests/target/m9/fstest/fstest.json",
+    "tests/target/m9/fstest/fstest_l.json",
+    "tests/target/m9/fstest/fstest_entry.asm",
+    "tests/target/m9/fstest/fstest_l_entry.asm",
+    "tests/target/m9/exec/fschild.json",
+    "tests/target/m9/exec/fschild_entry.asm",
+    "tests/target/m9/exec/fsdeep.json",
+    "tests/target/m9/exec/fsdeep_entry.asm",
+    "tests/target/m9/exec/fsraw.json",
 )
 
 # Directories that must exist after the production/test separation.  Every
@@ -283,7 +327,9 @@ REQUIRED_DIRS = (
     "kernel/vfs", "fs/romfs", "config",
     "drivers/sio", "drivers/ctc", "drivers/ioc", "drivers/hid",
     "drivers/v9958", "modules/manifests", "modules/runtime",
-    "user/runtime", "user/monitor",
+    "abi", "abi/zos",
+    "user/sdk", "user/sdk/include", "user/sdk/src",
+    "user/helloworld", "user/monitor",
     "recovery",
     "tests/subsys", "tests/m8", "tests/m9",
     "tests/modules",
@@ -495,7 +541,7 @@ MODULE_FACING_HEADERS = (
     "include/zephyros/ioc.h",
     "include/zephyros/hid.h",
     "include/zephyros/video.h",
-    "include/zephyros/fs.h",
+    "abi/zos/fs.h",
     "include/zephyros/vfs.h",
     "platform/zephyr80/hardware.h",
 )
@@ -534,8 +580,9 @@ KERNEL_ONLY_IDENTIFIERS = (
 
 # The include paths a representative module is compiled with: only the
 # shared include/ and platform/ surfaces plus its own driver directory.
-MODULE_PROBE_FLAGS = ("-mz80", "-c", "--nostdinc", "--Werror", "-I", "include",
-                      "-I", "platform", "-I", "drivers/sio")
+MODULE_PROBE_FLAGS = ("-mz80", "-c", "--nostdinc", "--Werror",
+                      "-I", "abi", "-I", "include", "-I", "platform",
+                      "-I", "drivers/sio")
 
 _MODULE_PROBE_SOURCE = """\
 #include "zephyros/driver.h"
@@ -717,7 +764,7 @@ class TestProductionTestSeparation(unittest.TestCase):
 
     def test_production_headers_declare_no_test_runners(self):
         for name in ("irq.h", "module.h", "driver.h", "device.h",
-                     "console.h", "platform.h", "kernel.h", "syscall.h"):
+                     "console.h", "platform.h", "kernel.h"):
             body = _code_only(os.path.join(ROOT, "include", "zephyros", name))
             self.assertNotIn("zos_run_", body,
                              "%s declares a target-test runner" % name)
@@ -1116,7 +1163,7 @@ class TestConstantParity(unittest.TestCase):
 
     def test_errno_codes_match_the_assembly_view(self):
         errno_c = parse_c_header(
-            os.path.join(ROOT, "include", "zephyros", "errno.h"))
+            os.path.join(ROOT, "abi", "zos", "errno.h"))
         pairs = (("tests/target/include/syscall_entry.inc", "ZOS_ENOSYS"),
                  ("tests/target/include/irq_entry.inc", "ZOS_IST_ENOSYS"))
         for asm_rel, name in pairs:
@@ -1125,6 +1172,79 @@ class TestConstantParity(unittest.TestCase):
             self.assertEqual(evaluate(errno_c["ZOS_ENOSYS"], errno_c),
                              evaluate(asm[name], asm),
                              "%s differs from errno.h" % name)
+
+
+class TestUserSdkBoundary(unittest.TestCase):
+    """User-space sources and ZEX programs reach only the public ABI
+    (abi/zos) and the SDK (user/sdk); they never see include/zephyros/,
+    kernel/ or platform/ (work package 28c)."""
+
+    ZEX_FILES = (
+        "tests/target/process/zextest.c",
+        "tests/target/process/zextest_sp.asm",
+        "tests/target/m9/fstest/fstest.c",
+        "tests/target/m9/fstest/fstest_l.c",
+        "tests/target/m9/exec/fschild.c",
+        "tests/target/m9/exec/fsdeep.c",
+        "tests/target/m9/exec/fsraw.c",
+        "tests/target/m9/exec/fsraw_entry.asm",
+    )
+    FORBIDDEN = (
+        re.compile(r'#\s*include\s+"zephyros/'),
+        re.compile(r'#\s*include\s+"kernel/'),
+        re.compile(r'#\s*include\s+"platform/'),
+        re.compile(r'#\s*include\s+"include/'),
+        re.compile(r'#\s*include\s+"device\.h"'),
+        re.compile(r'#\s*include\s+"driver\.h"'),
+        re.compile(r'#\s*include\s+"vfs\.h"'),
+    )
+
+    def _user_files(self):
+        for path in _walk("user", SOURCE_SUFFIXES):
+            yield path, os.path.relpath(path, ROOT).replace(os.sep, "/")
+        for rel in self.ZEX_FILES:
+            yield os.path.join(ROOT, rel), rel
+
+    def test_user_sources_stay_on_the_public_boundary(self):
+        violations = []
+        for path, rel in self._user_files():
+            body = _strip_comments(path, _read(path))
+            for pattern in self.FORBIDDEN:
+                match = pattern.search(body)
+                if match:
+                    violations.append("%s: %s"
+                                      % (rel, match.group(0).strip()))
+        self.assertEqual(
+            violations, [],
+            "user sources reach a kernel/platform header:\n%s"
+            % "\n".join(violations))
+
+    def test_user_build_rule_offers_only_abi_and_sdk(self):
+        zex_mk = _read(os.path.join(ROOT, "user", "sdk", "zex.mk"))
+        self.assertIn("-I abi -I $(ZOS_SDK_INCLUDE)", zex_mk)
+        for token in ("-I include", "-Iinclude", "-I platform",
+                      "-Iplatform", "-I kernel", "-Ikernel",
+                      "drivers/"):
+            self.assertNotIn(
+                token, zex_mk,
+                "the SDK build rule offers a non-public path: %r" % token)
+        # The zex_program declarations name no include/ or platform/ rule.
+        makefile = _read(os.path.join(ROOT, "Makefile"))
+        for line in makefile.splitlines():
+            if "zex_program" in line:
+                for token in ("include/", "platform/"):
+                    self.assertNotIn(
+                        token, line,
+                        "a zex_program line names %r" % token)
+
+    def test_sdk_headers_do_not_include_kernel_paths(self):
+        for path in _walk("user/sdk/include", (".h",)):
+            body = _strip_comments(path, _read(path))
+            for pattern in self.FORBIDDEN:
+                self.assertIsNone(
+                    pattern.search(body),
+                    "%s reaches a kernel/platform header"
+                    % os.path.relpath(path, ROOT))
 
 
 class TestBuildOutputHygiene(unittest.TestCase):

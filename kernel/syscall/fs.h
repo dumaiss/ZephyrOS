@@ -15,7 +15,7 @@
 #ifndef ZEPHYROS_KERNEL_SYSCALL_FS_H
 #define ZEPHYROS_KERNEL_SYSCALL_FS_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
 
 /* Dispatch one FS_* number (10h-1Fh).  `bank` is the caller's application
  * bank, `block` the raw argument-block pointer from the register ABI. */

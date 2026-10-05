@@ -17,7 +17,7 @@
 #ifndef ZEPHYROS_KERNEL_SYSCALL_DIAG_H
 #define ZEPHYROS_KERNEL_SYSCALL_DIAG_H
 
-#include "zephyros/syscall.h"
+#include "zos/diag.h"
 
 /* Dispatcher helpers shared with kernel/syscall.c: the argument-window
  * rule and the result publication state (written by the asm gate). */

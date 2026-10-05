@@ -25,7 +25,7 @@
  */
 
 #include "zephyros/kernel.h"
-#include "zephyros/syscall.h"
+#include "zos/syscall.h"
 #include "zephyros/process.h"
 #include "zephyros/console.h"
 

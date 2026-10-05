@@ -18,21 +18,11 @@
  * the parent's status round trip.
  */
 
-#include "zephyros/fs.h"
-
-#include "zex_runtime.h"
-#include "zex_fs_runtime.h"
-#include "zex_args.h"
-
-#define CH_EINVAL 0x02
 #define CH_ARGC_MAX 8
 
+#include "zos.h"
+
 static char ch_cwd[130];
-static char *ch_argv[CH_ARGC_MAX];
-/* Working copy of the page-zero tail: the startup block lives below the
- * syscall buffer window (0100h), so anything handed to a syscall or a
- * runtime wrapper must be copied into program data first. */
-static char ch_tail[ZEX_STARTUP_TAIL_MAX + 1];
 
 static void ch_puts(const char *s)
 {
@@ -79,27 +69,21 @@ static void ch_fail(unsigned char step)
 	zex_exit((unsigned int)(0x0100u | step));
 }
 
-/* Echo the decoded startup block and argv for the transcript. */
-static void ch_echo_args(void)
+/* Echo the decoded startup block and argv for the transcript.  crt0 has
+ * already run the splitter over the page-zero tail, so argv holds the
+ * words and argc their count; zos_args() still reaches the raw block for
+ * the version/length/NUL checks. */
+static void ch_echo_args(int argc, char **argv)
 {
-	struct zex_startup *sb = zos_args();
-	int argc;
+	struct zos_startup *sb = zos_args();
 	int i;
 
-	if (sb == (struct zex_startup *)0 ||
-	    sb->version != ZEX_STARTUP_VERSION ||
-	    sb->length > (unsigned char)ZEX_STARTUP_TAIL_MAX ||
+	if (sb == (struct zos_startup *)0 ||
+	    sb->version != ZOS_STARTUP_VERSION ||
+	    sb->length > (unsigned char)ZOS_STARTUP_TAIL_MAX ||
 	    sb->tail[sb->length] != '\0') {
 		ch_fail(0x10u);
 	}
-	/* Copy out of page zero before parsing or printing: the startup
-	 * block is readable, but it lies below the 0100h syscall buffer
-	 * window, so a syscall argument must live in program data. */
-	for (i = 0; i <= (int)sb->length; ++i) {
-		ch_tail[i] = sb->tail[i];
-	}
-	argc = zos_split(ch_tail, ch_argv, CH_ARGC_MAX);
-
 	ch_puts("fschild: startup v");
 	ch_dec((unsigned int)sb->version);
 	ch_puts(" tail ");
@@ -112,17 +96,17 @@ static void ch_echo_args(void)
 		ch_puts("fschild: arg ");
 		ch_dec((unsigned int)i);
 		ch_puts("=");
-		ch_puts(ch_argv[i]);
+		ch_puts(argv[i]);
 		ch_puts("\r\n");
 	}
 }
 
-void ch_main(void)
+int main(int argc, char **argv)
 {
 	int r;
 	int fd;
 
-	ch_echo_args();
+	ch_echo_args(argc, argv);
 
 	r = zos_getcwd(ch_cwd, (unsigned int)sizeof(ch_cwd));
 	if (r < 0) {
@@ -133,7 +117,7 @@ void ch_main(void)
 	ch_puts("\r\n");
 
 	/* Descriptors are not inherited: fd 0 belongs to no one. */
-	if (zos_close(0u) != -(int)CH_EINVAL) {
+	if (zos_close(0u) != -(int)ZOS_EINVAL) {
 		ch_fail(0x02u);
 	}
 
@@ -155,7 +139,7 @@ void ch_main(void)
 	/* SYS_GETINFO reports the true parent: this child was started by an
 	 * ordinary process, so the kernel-parent flag is clear. */
 	{
-		struct zex_info info;
+		struct zos_info_record info;
 
 		if (zex_getinfo(&info) < 0 ||
 		    info.flags != 0 ||
@@ -167,4 +151,5 @@ void ch_main(void)
 	/* Deliberately no close: the kernel must release the descriptor and
 	 * the provider handle at exit. */
 	zex_exit(0x5A5Au);
+	return 0; /* unreachable */
 }

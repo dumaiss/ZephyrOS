@@ -43,7 +43,7 @@
 #ifndef ZEPHYROS_DRIVER_H
 #define ZEPHYROS_DRIVER_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
 #include "zephyros/device.h"
 #include "zephyros/irq.h"
 #include "zephyros/vfs.h"

@@ -24,7 +24,7 @@
 
 #include "zephyros/driver.h"
 #include "zephyros/errno.h"
-#include "zephyros/fs.h"
+#include "zos/fs.h"
 #include "zephyros/vfs.h"
 
 #define RAMFS_INSTANCES 2u

@@ -16,7 +16,7 @@
 #ifndef ZEPHYROS_KERNEL_VFS_MOUNT_CONFIG_H
 #define ZEPHYROS_KERNEL_VFS_MOUNT_CONFIG_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
 
 /* Kernel mount-table capacity.  The generator rejects a manifest with more
  * entries; VFS re-checks that the system entry count is exactly one. */

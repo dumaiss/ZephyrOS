@@ -5,7 +5,7 @@ Covers:
     kernel dispatcher, the user runtime C wrapper and the runtime asm stub;
   - the eight M9 errno values;
   - the packed argument-block sizes/offsets declared in
-    include/zephyros/fs.h and mirrored by the runtime union;
+    abi/zos/fs.h and mirrored by the runtime union;
   - the user-runtime wrapper surface and its local path-length guard;
   - the build wiring (m9-fs-selftest image, ROMFS acceptance manifest, the
     fstest program group, the serial smoke mode).
@@ -20,15 +20,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
-SYSCALL_H = ROOT / "include" / "zephyros" / "syscall.h"
-ERRNO_H = ROOT / "include" / "zephyros" / "errno.h"
-FS_H = ROOT / "include" / "zephyros" / "fs.h"
+SYSCALL_H = ROOT / "abi" / "zos" / "syscall.h"
+ERRNO_H = ROOT / "abi" / "zos" / "errno.h"
+FS_H = ROOT / "abi" / "zos" / "fs.h"
 KERNEL_FS = ROOT / "kernel" / "syscall" / "fs.c"
-RUNTIME_ASM = ROOT / "user" / "runtime" / "zex_fs_runtime.asm"
-RUNTIME_H = ROOT / "user" / "runtime" / "zex_fs_runtime.h"
-RUNTIME_C = ROOT / "user" / "runtime" / "zos_fs.c"
+RUNTIME_H = ROOT / "user" / "sdk" / "include" / "zos" / "fs.h"
+RUNTIME_C = ROOT / "user" / "sdk" / "src" / "fs.c"
+RUNTIME_INTERNAL = ROOT / "user" / "sdk" / "src" / "zos_internal.h"
+GATE_ASM = ROOT / "user" / "sdk" / "src" / "fsgate.asm"
 VFS_H = ROOT / "kernel" / "vfs" / "vfs.h"
-PROCESS_H = ROOT / "include" / "zephyros" / "process.h"
+PROCESS_H = ROOT / "abi" / "zos" / "process.h"
 VFS_PROCESS = ROOT / "kernel" / "vfs" / "process.c"
 MAKEFILE = ROOT / "Makefile"
 MANIFEST_FS = ROOT / "tests" / "m9" / "manifest-fs.json"
@@ -97,20 +98,17 @@ class TestFsSyscallNumbers(unittest.TestCase):
             self.assertIn("case %s:" % name, text,
                           "kernel fs.c does not dispatch %s" % name)
 
-    def test_runtime_asm_mirrors_the_numbers(self):
-        text = _read(RUNTIME_ASM)
-        for value in FS_NUMBERS.values():
-            self.assertRegex(text, r"\b%X\b" % value,
-                             "runtime asm does not document number %X"
-                             % value)
+    def test_sdk_gate_is_a_single_stub(self):
+        text = _read(GATE_ASM)
+        self.assertIn("_zos_fs_call::", text)
+        self.assertIn("rst	0x30", text)
 
-    def test_runtime_c_mirrors_the_numbers(self):
+    def test_sdk_wrappers_use_the_abi_numbers(self):
+        # The SDK has no mirror: fs.c uses the ABI symbols directly.
         text = _read(RUNTIME_C)
-        for name, value in FS_NUMBERS.items():
-            short = name.replace("ZOS_SYSCALL_FS_", "ZOS_FS_")
-            self.assertRegex(
-                text, r"#define %s\s+0x%02Xu" % (short, value),
-                "runtime C does not mirror %s" % short)
+        for name in FS_NUMBERS:
+            self.assertIn(name, text,
+                          "SDK fs.c does not use %s" % name)
 
 
 class TestM9Errnos(unittest.TestCase):
@@ -133,11 +131,11 @@ class TestFsArgumentBlocks(unittest.TestCase):
                     % (name, field, offset), text,
                     "%s.%s offset is not pinned" % (name, field))
 
-    def test_runtime_union_covers_every_block(self):
-        text = _read(RUNTIME_C)
+    def test_sdk_union_covers_every_block(self):
+        text = _read(RUNTIME_INTERNAL)
         for name in ARG_BLOCKS:
             self.assertIn("struct %s" % name, text,
-                          "runtime union has no %s arm" % name)
+                          "the SDK union has no %s arm" % name)
 
 
 class TestUserRuntime(unittest.TestCase):
@@ -151,12 +149,9 @@ class TestUserRuntime(unittest.TestCase):
                              "%s is not declared" % name)
 
     def test_local_path_guard(self):
-        text = _read(RUNTIME_H)
-        self.assertIn("#define ZEX_PATH_MAX  127", text)
-        self.assertIn("#define ZOS_FS_EINVAL 0x02", text)
         impl = _read(RUNTIME_C)
-        self.assertIn("ZEX_PATH_MAX", impl)
-        self.assertIn("return -ZOS_FS_EINVAL;", impl)
+        self.assertIn("ZOS_PATH_MAX - 1u", impl)
+        self.assertIn("return -ZOS_EINVAL;", impl)
 
 
 class TestDescriptorPoolShape(unittest.TestCase):
@@ -192,10 +187,9 @@ class TestBuildWiring(unittest.TestCase):
 
     def test_makefile_builds_and_packs_the_programs(self):
         text = _read(MAKEFILE)
-        for needle in ("$(MODULES)/fstest.zex:", "$(MODULES)/fstest_l.zex:",
-                       "tests/target/m9/fstest/fstest.c",
-                       "tests/target/m9/fstest/fstest.json",
-                       "user/runtime/zos_fs.c"):
+        for needle in ("include user/sdk/zex.mk",
+                       "zex_program,fstest,tests/target/m9/fstest,fstest.c",
+                       "zex_program,fstest_l,tests/target/m9/fstest,fstest_l.c"):
             self.assertIn(needle, text, "Makefile lacks %s" % needle)
 
     def test_acceptance_manifest_carries_the_programs(self):

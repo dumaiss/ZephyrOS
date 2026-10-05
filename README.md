@@ -83,8 +83,9 @@ current M8 boot).
   exec/exit with exact parent restoration.  Accepted on physical
   hardware 2026-10-03 (`docs/validation/2026-10-03-m6-zex.md`).
 - **M7 — Native monitor and diagnostic foundation**: `monitor.zex` as an
-  ordinary ZEX in ROMFS, the `SYS_DIAG_*` recovery boundary, reusable
-  `user/runtime/` program support, the temporary pre-shell launcher, and
+  ordinary ZEX in ROMFS, the `SYS_DIAG_*` recovery boundary, the shared
+  user-space program support that became the SDK (`user/sdk/`,
+  `docs/sdk.md`), the temporary pre-shell launcher, and
   the interactive monitor (`docs/monitor.md`).  Host-validated and
   physically accepted 2026-10-03
   (`docs/validation/2026-10-03-m7-monitor.md`).
@@ -325,7 +326,7 @@ ZephyrOS/
 ├── docs/                  architecture.md, boot.md, memory.md, abi.md,
 │                          devices.md, module-format.md,
 │                          romfs-format.md, zex-format.md, monitor.md,
-│                          vfs.md
+│                          sdk.md, vfs.md
 ├── config/mounts.json     production VFS mount policy (only /SYSTEM)
 ├── include/zephyros/      types.h, platform.h, kernel.h, syscall.h,
 │                          errno.h, irq.h, device.h, driver.h,
@@ -354,9 +355,13 @@ ZephyrOS/
 │                          memory.h/.inc, irq.h/.inc, config.mk
 ├── linker/zephyr80.lk     sdldz80 control template (derived _DATA base
 │                          substituted into build/zephyr80.lk)
-├── user/                  runtime/ (M6 syscall + M7 diagnostic wrappers,
-│                          console/hex/dump/status components),
-│                          monitor/ (native monitor.zex sources)
+├── abi/zos/               the public native ABI (types, errno, syscall,
+│                          fs, process, diag) -- one copy, all builds
+├── user/                  sdk/ (crt0, libzos, zlibc, zex.mk -- the only
+│                          way a native program is built),
+│                          monitor/ (native monitor.zex sources + its
+│                          hex/dump/status helpers),
+│                          helloworld/ (bootable SDK demo)
 ├── recovery/manifest.json production ROMFS contents (sio.zmod, ioc.zmod,
 │                          hid.zmod, v9958.zmod, v9958-6x8.font,
 │                          monitor.zex)

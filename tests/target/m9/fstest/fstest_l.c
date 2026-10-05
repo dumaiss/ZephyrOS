@@ -9,13 +9,7 @@
  * Prints `fstest: launcher OK` (or FAIL).
  */
 
-#include "zephyros/fs.h"
-
-#include "zex_runtime.h"
-#include "zex_fs_runtime.h"
-
-#define FTL_EMFILE 0x17
-
+#include "zos.h"
 static void ftl_puts(const char *s)
 {
 	unsigned int n = 0;
@@ -26,7 +20,7 @@ static void ftl_puts(const char *s)
 	(void)zex_write(s, n);
 }
 
-void ftl_main(void)
+int main(void)
 {
 	char cwd[8];
 	int fds[8];
@@ -57,7 +51,7 @@ void ftl_main(void)
 		}
 	}
 	ninth = zos_open("/SYSTEM/fstest.zex", ZFS_O_READ);
-	if (ok && (ninth + (int)FTL_EMFILE) != 0) {
+	if (ok && (ninth + (int)ZOS_EMFILE) != 0) {
 		ok = 0;
 	}
 	for (i = 0; i < 8u; ++i) {
@@ -69,4 +63,5 @@ void ftl_main(void)
 	(void)zos_unlink("/R2/Q.BIN");
 	ftl_puts(ok ? "fstest: launcher OK\r\n" : "fstest: launcher FAIL\r\n");
 	zex_exit((unsigned int)(ok ? 0u : 1u));
+	return 0; /* unreachable */
 }

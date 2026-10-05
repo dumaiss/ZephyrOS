@@ -33,7 +33,7 @@
 #ifndef ZEPHYROS_ZEX_H
 #define ZEPHYROS_ZEX_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
 #include "zephyros/errno.h"
 
 /* --- format constants ------------------------------------------------- */

@@ -31,7 +31,8 @@
 #ifndef ZEPHYROS_PROCESS_H
 #define ZEPHYROS_PROCESS_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
+#include "zos/process.h"
 #include "zephyros/zex.h"
 
 /* Table geometry: one slot per application bank. */
@@ -53,8 +54,8 @@
  * So there are exactly ZOS_EXEC_MAX_DEPTH - 1 frame-save areas: the
  * outermost process is launched by the kernel from the boot stack and
  * needs no copy.  The continuation arrays carry one saved launcher
- * context (SP, latch, IFF) per depth. */
-#define ZOS_EXEC_MAX_DEPTH 4u
+ * context (SP, latch, IFF) per depth.  The value itself is owned by the
+ * public ABI header abi/zos/process.h. */
 
 /* Gate-frame save size.  Measured in the simulator from the acceptance
  * image: the launch gate's captured continuation SP is exactly
@@ -89,9 +90,9 @@ _Static_assert(ZOS_EXEC_FRAME_SAVE > ZOS_EXEC_FRAME_SLACK,
 #define PROCESS_NO_PROCESS    0xFFu /* no RUNNING process            */
 
 /* Descriptor / getinfo flags.  The kernel-parent bit is shared by the
- * descriptor and the native getinfo record (see syscall.h), so the two
- * must stay value-identical; kernel/syscall.c asserts the pairing. */
-#define PROCESS_FLAG_KERNEL_PARENT 0x0001u
+ * descriptor and the native getinfo record (see zos/process.h), so the
+ * two must stay value-identical; kernel/syscall.c asserts the pairing. */
+#define PROCESS_FLAG_KERNEL_PARENT ZOS_PROCESS_FLAG_KERNEL_PARENT
 
 /* Slot states.  A slot is SUSPENDED while a load is being built and
  * RUNNING while its child executes; exit returns it to FREE. */

@@ -1,7 +1,7 @@
 /* ZephyrOS process acceptance program: zextest.
  *
- * Built as tests/subsys/zextest.zex (tests/target/process/zextest_entry.asm
- * + this file + user/runtime/zex_runtime.asm), stored in the subsystem
+ * Built as tests/subsys/zextest.zex (user/sdk/src/crt0.asm
+ * + this file + user/sdk/src/console.asm), stored in the subsystem
  * recovery image, and executed by the kernel as the child of the process
  * acceptance test.  It verifies, on target and in the host replay:
  *
@@ -20,10 +20,12 @@
  * kernel symbols or SDCC's calling conventions across the ABI.
  */
 
-#include "zex_runtime.h"
-
+#include "zos.h"
 #include "process_selftest.h"
-#include "process_expect.inc"
+
+/* Stack window: must match the zextest zex_program STACK=256 option. */
+#define ZT_STACK_TOP  0xE000u
+#define ZT_STACK_SIZE 256u
 
 /* Assembly helpers (tests/target/m6/zextest_entry.asm). */
 extern unsigned int zt_get_sp(void);
@@ -63,9 +65,9 @@ static void zt_write_str(const char *text, unsigned int len)
 	}
 }
 
-void zt_main(void)
+int main(void)
 {
-	struct zex_info info;
+	struct zos_info_record info;
 	unsigned char i;
 	unsigned int sp;
 
@@ -85,18 +87,18 @@ void zt_main(void)
 	/* 3. Stack bounds: SP must be strictly inside the reserved window
 	 *    (top exclusive; room for the common return trap and frames). */
 	sp = zt_get_sp();
-	if (sp >= PROCESS_ZEX_STACK_TOP ||
-	    sp < (unsigned int)(PROCESS_ZEX_STACK_BASE + 4u)) {
+	if (sp >= ZT_STACK_TOP ||
+	    sp < (unsigned int)(ZT_STACK_TOP - ZT_STACK_SIZE + 4u)) {
 		zt_fail(ZOS_PCST_ZT_FAIL_STACK);
 	}
 
 	/* 4. GETINFO record. */
-	if (zex_getinfo(&info) != ZEX_INFO_SIZE) {
+	if (zex_getinfo(&info) != ZOS_GETINFO_SIZE) {
 		zt_fail(ZOS_PCST_ZT_FAIL_GETINFO);
 	}
-	if (info.size != ZEX_INFO_SIZE || info.abi != ZEX_INFO_ABI ||
+	if (info.size != ZOS_GETINFO_SIZE || info.abi != ZOS_GETINFO_ABI ||
 	    info.bank > 6u || info.pid > 6u ||
-	    (info.flags & ZEX_INFO_FLAG_KERNEL_PARENT) == 0u) {
+	    (info.flags & ZOS_PROCESS_FLAG_KERNEL_PARENT) == 0u) {
 		zt_fail(ZOS_PCST_ZT_FAIL_GETINFO);
 	}
 
@@ -112,4 +114,5 @@ void zt_main(void)
 
 	/* 6. Known exit status carrying the bank that executed this image. */
 	zex_exit(ZOS_PCST_ZEXTEST_PASS | info.bank);
+	return 0; /* unreachable */
 }

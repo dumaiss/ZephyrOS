@@ -25,7 +25,7 @@
  * precise FAIL marker with the result code otherwise.
  */
 
-#include "zephyros/fs.h"
+#include "zos/fs.h"
 #include "zephyros/vfs.h"
 #include "zephyros/romfs.h"
 #include "zephyros/module.h"

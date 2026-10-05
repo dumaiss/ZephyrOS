@@ -24,7 +24,7 @@
  */
 
 #include "zephyros/process.h"
-#include "zephyros/syscall.h"
+#include "zos/syscall.h"
 #include "zephyros/romfs.h"
 #include "kernel/vfs/vfs.h"
 

@@ -8,7 +8,7 @@
  */
 
 #include "monitor.h"
-#include "console_io.h"
+#include "zos.h"
 #include "hexfmt.h"
 #include "status.h"
 
@@ -46,7 +46,7 @@ void mon_put_hex8(unsigned int value)
 	char digits[3];
 
 	zrt_fmt_hex8(digits, value);
-	zrt_puts(digits);
+	zos_puts(digits);
 }
 
 void mon_put_hex16(unsigned int value)
@@ -54,7 +54,7 @@ void mon_put_hex16(unsigned int value)
 	char digits[5];
 
 	zrt_fmt_hex16(digits, value);
-	zrt_puts(digits);
+	zos_puts(digits);
 }
 
 unsigned char mon_scan_bank(char **cursor, unsigned char *bank)
@@ -94,11 +94,11 @@ static void mon_put_u8_dec(unsigned int value)
 	digits[2] = (char)('0' + (unsigned char)value);
 	digits[3] = '\0';
 	if (digits[0] != '0') {
-		zrt_puts(digits);
+		zos_puts(digits);
 	} else if (digits[1] != '0') {
-		zrt_puts(digits + 1);
+		zos_puts(digits + 1);
 	} else {
-		zrt_puts(digits + 2);
+		zos_puts(digits + 2);
 	}
 }
 
@@ -108,71 +108,71 @@ void mon_cmd_help(char *cursor)
 		zrt_status_err_arg();
 		return;
 	}
-	zrt_puts(mon_help);
+	zos_puts(mon_help);
 }
 
 void mon_cmd_info(char *cursor)
 {
-	struct zex_system_info sysinfo;
-	struct zex_info info;
+	struct zos_diag_system_info sysinfo;
+	struct zos_info_record info;
 
 	if (!zrt_line_end(&cursor)) {
 		zrt_status_err_arg();
 		return;
 	}
-	if (zex_diag_system_info(&sysinfo) != ZEX_DIAG_SYSTEM_INFO_SIZE) {
-		zrt_status_err_code(-ZEX_EINVAL);
+	if (zex_diag_system_info(&sysinfo) != ZOS_DIAG_SYSTEM_INFO_SIZE) {
+		zrt_status_err_code(-ZOS_EINVAL);
 		return;
 	}
-	zrt_puts("system: abi ");
+	zos_puts("system: abi ");
 	mon_put_hex8(sysinfo.abi);
-	zrt_puts(" app ");
+	zos_puts(" app ");
 	mon_put_hex8(sysinfo.app_mode);
-	zrt_puts(" os ");
+	zos_puts(" os ");
 	mon_put_hex8(sysinfo.os_mode);
-	zrt_puts(" common ");
+	zos_puts(" common ");
 	mon_put_hex16(sysinfo.common_base);
-	zrt_puts(" kernel-bank ");
+	zos_puts(" kernel-bank ");
 	mon_put_hex8(sysinfo.kernel_bank);
-	zrt_puts(" romfs ");
+	zos_puts(" romfs ");
 	mon_put_hex8(sysinfo.romfs_first_page);
-	zrt_puts(mon_line_end);
+	zos_puts(mon_line_end);
 
-	if (zex_getinfo(&info) != ZEX_INFO_SIZE) {
-		zrt_status_err_code(-ZEX_EINVAL);
+	if (zex_getinfo(&info) != ZOS_GETINFO_SIZE) {
+		zrt_status_err_code(-ZOS_EINVAL);
 		return;
 	}
-	zrt_puts("process: pid ");
+	zos_puts("process: pid ");
 	mon_put_u8_dec(info.pid);
-	zrt_puts(" bank ");
+	zos_puts(" bank ");
 	mon_put_u8_dec(info.bank);
-	zrt_puts(" flags ");
+	zos_puts(" flags ");
 	mon_put_hex16(info.flags);
-	zrt_puts(mon_line_end);
+	zos_puts(mon_line_end);
 
-	zrt_puts("bank: current ");
+	zos_puts("bank: current ");
 	mon_put_hex8(mon_bank);
-	zrt_puts(" mask ");
+	zos_puts(" mask ");
 	mon_put_hex8(mon_mask);
-	zrt_puts(mon_line_end);
+	zos_puts(mon_line_end);
 }
 
 /* Print the banner once: identity, then the operator scratch address
  * the M/D scratch tests use. */
 static void mon_print_banner(void)
 {
-	struct zex_info info;
+	struct zos_info_record info;
 
-	zrt_puts(mon_banner);
-	zrt_puts(mon_bank_label);
+	zos_puts(mon_banner);
+	zos_puts(mon_bank_label);
 	mon_put_hex8(mon_bank);
-	if (zex_getinfo(&info) == ZEX_INFO_SIZE) {
-		zrt_puts(mon_pid_label);
+	if (zex_getinfo(&info) == ZOS_GETINFO_SIZE) {
+		zos_puts(mon_pid_label);
 		mon_put_u8_dec(info.pid);
 	}
-	zrt_puts(mon_scratch_label);
+	zos_puts(mon_scratch_label);
 	mon_put_hex16((unsigned int)&mon_scratch);
-	zrt_puts(mon_line_end);
+	zos_puts(mon_line_end);
 }
 
 static void mon_dispatch(char *cursor)
@@ -229,12 +229,12 @@ static void mon_dispatch(char *cursor)
 	}
 }
 
-void mon_main(void)
+int main(void)
 {
-	struct zex_bank_info bank_info;
+	struct zos_bank_info bank_info;
 
 	if (zex_diag_bank_info(&bank_info) != 2) {
-		zrt_puts(mon_fail_diag);
+		zos_puts(mon_fail_diag);
 		zex_exit(MON_EXIT_DIAG);
 	}
 	mon_bank = bank_info.bank;
@@ -244,8 +244,8 @@ void mon_main(void)
 	for (;;) {
 		int length;
 
-		zrt_puts(mon_prompt);
-		length = zrt_read_line(mon_line, sizeof(mon_line));
+		zos_puts(mon_prompt);
+		length = zos_read_line(mon_line, sizeof(mon_line));
 		if (length < 0) {
 			zex_exit(MON_EXIT_CONSOLE);
 		}

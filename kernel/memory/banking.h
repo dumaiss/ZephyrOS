@@ -23,7 +23,7 @@
 #ifndef ZEPHYROS_KERNEL_MEMORY_BANKING_H
 #define ZEPHYROS_KERNEL_MEMORY_BANKING_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
 
 /* Raw latch value (all fields). */
 uint8_t platform_memctl_read(void);

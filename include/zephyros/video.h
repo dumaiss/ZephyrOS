@@ -54,7 +54,7 @@
 #ifndef ZEPHYROS_VIDEO_H
 #define ZEPHYROS_VIDEO_H
 
-#include "zephyros/types.h"
+#include "zos/types.h"
 #include "zephyros/errno.h"
 #include "zephyros/device.h"
 

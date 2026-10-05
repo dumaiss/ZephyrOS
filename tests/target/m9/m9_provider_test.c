@@ -17,7 +17,7 @@
  * depend on which console the boot bound.
  */
 
-#include "zephyros/fs.h"
+#include "zos/fs.h"
 #include "zephyros/vfs.h"
 #include "zephyros/module.h"
 #include "zephyros/console.h"

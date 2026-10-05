@@ -2,7 +2,7 @@
 """Generate the process target-test layout header (test artifact).
 
 Reads the single source of truth for the zextest program layout
-(tests/subsys/zextest.json) plus the fixture table
+(the generated zextest manifest) plus the fixture table
 (tests/subsys/gen_zex_fixtures.py)
 and writes the C include used by zextest.c and process_test.c:
 

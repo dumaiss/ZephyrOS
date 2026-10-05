@@ -25,7 +25,7 @@ from z80sim import read_symbols  # noqa: E402
 from maptools import evaluate, make_map, parse_c_header, parse_asm_inc  # noqa: E402
 
 ROMFS_H = os.path.join(ROOT, "include", "zephyros", "romfs.h")
-ERRNO_H = os.path.join(ROOT, "include", "zephyros", "errno.h")
+ERRNO_H = os.path.join(ROOT, "abi", "zos", "errno.h")
 MEMORY_H = os.path.join(ROOT, "platform", "zephyr80", "memory.h")
 MEMORY_INC = os.path.join(ROOT, "platform", "zephyr80", "memory.inc")
 ROM_ACCESS_ASM = os.path.join(ROOT, "kernel", "romfs", "rom_access.asm")
@@ -89,7 +89,7 @@ class TestRomfsConstants(unittest.TestCase):
 
     def test_rom_access_error_codes_match_errno(self):
         """The assembly primitive returns positive ZOS_* codes; the local
-        equates must match include/zephyros/errno.h."""
+        equates must match abi/zos/errno.h."""
         text = open(ROM_ACCESS_ASM).read()
         for name, errno_name in (("RAX_EINVAL", "ZOS_EINVAL"),
                                  ("RAX_EBUSY", "ZOS_EBUSY")):
