@@ -94,7 +94,7 @@ current M8 boot).
   coverage (syscall gate, IRQ executive, ROMFS reader, process/ZEX and
   loader) moved to the subsystem acceptance image
   (`make subsystem-selftest`, `tests/test_subsys_sim.py`).
-- **M8 — Native device stack**: driver ABI v2 with a linker-derived
+- **M8 — Native device stack**: driver ABI (v3) with a linker-derived
   production driver arena, the IOC command+bulk transport, the HID
   keyboard/text class over IOC, the V9958 video core with the ported
   85x26 terminal renderer, the preferred HID/V9958 console binding with

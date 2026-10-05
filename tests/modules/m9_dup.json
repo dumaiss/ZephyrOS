@@ -1,0 +1,11 @@
+{
+  "name": "m9.dup",
+  "type": "driver",
+  "abi": 3,
+  "flags": 0,
+  "objects": ["m9_dup.rel", "sdcc_indirect_calls.rel"],
+  "image_areas": ["_CODE"],
+  "bss_areas": [],
+  "init": "m9_dup_init",
+  "fini": null
+}

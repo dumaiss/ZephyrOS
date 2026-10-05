@@ -48,6 +48,18 @@ int vfs_register_filesystem(const struct zfs_provider *provider);
 /* Case-insensitive registry lookup; null when absent. */
 const struct zfs_provider *vfs_find_provider(const char *name);
 
+/* Provider-registration transaction, used by the module loader around each
+ * module init exactly like the device and IRQ checkpoints.  A checkpoint
+ * records the registration serial; rollback removes exactly the providers
+ * registered after it (wrap-safe) and returns how many were removed.
+ * Built-in providers registered at bootstrap predate every checkpoint and
+ * are never touched. */
+typedef uint16_t vfs_provider_checkpoint_t;
+vfs_provider_checkpoint_t vfs_provider_checkpoint(void);
+int vfs_provider_rollback(vfs_provider_checkpoint_t checkpoint);
+void vfs_provider_set_owner(const void *owner);
+const void *vfs_provider_owner(void);
+
 /* --- runtime mount state (parallel to the const config table) --------- */
 
 #define VFS_MOUNT_UNMOUNTED 0u
@@ -133,27 +145,41 @@ struct vfs_file {
 	struct vfs_mount_runtime *mount;
 	void *handle;
 	uint32_t size;
+	uint32_t offset; /* current byte position, advanced by read/write */
 	uint16_t flags;
 	uint8_t in_use;
 };
 
 /* Open `path` (absolute or relative to `/`).  `flags` is a ZFS_O_* set
- * optionally ORed with VFS_O_EXEC.  On success fills `file`; on failure
- * returns a negative ZOS_E* value and leaves `file` unused. */
+ * optionally ORed with VFS_O_EXEC.  Unknown bits, TRUNC/CREATE/EXCL without
+ * WRITE, and EXCL without CREATE are rejected with ZOS_EINVAL.  On success
+ * fills `file` with the position at 0; on failure returns a negative ZOS_E*
+ * value and leaves `file` unused. */
 int vfs_open(const char *path, uint16_t flags, struct vfs_file *file);
 
-/* Read `length` bytes at `offset` into `buffer`.  Returns the number of
- * bytes read (a short read at EOF, 0 at/after EOF) or a negative error.
- * `buffer` must be common/gate-resident as required by the provider. */
-int vfs_read(struct vfs_file *file, uint32_t offset, void *buffer,
-	     uint16_t length);
+/* Read `length` bytes at the file position into `buffer` and advance the
+ * position by the number of bytes read.  Returns the number of bytes read (a
+ * short read at EOF, 0 at/after EOF) or a negative error; EOF is a
+ * successful zero-byte read.  `buffer` must be common/gate-resident as
+ * required by the provider. */
+int vfs_read(struct vfs_file *file, void *buffer, uint16_t length);
 
-/* Write through a writable provider; ZOS_EROFS when the provider leaves the
- * operation null (every M9 package-25/26 provider is read-only). */
-int vfs_write(struct vfs_file *file, uint32_t offset, const void *buffer,
-	      uint16_t length);
+/* Write through a writable provider at the file position; ZOS_EROFS when the
+ * provider leaves the operation null (every M9 package-25/26 provider is
+ * read-only).  The position advances, and the cached size grows, only after
+ * the provider reports success. */
+int vfs_write(struct vfs_file *file, const void *buffer, uint16_t length);
+
+/* Reposition the file.  `offset` is a signed 32-bit byte count and `whence`
+ * is ZFS_SEEK_SET/CUR/END.  Stores the resulting 32-bit position in
+ * *position when `position` is non-null.  A result below zero is rejected
+ * with ZOS_EINVAL; seeking past the current end is allowed. */
+int vfs_seek(struct vfs_file *file, int32_t offset, uint8_t whence,
+	     uint32_t *position);
 
 int vfs_sync(struct vfs_file *file);
+/* Flushes through the provider's sync (when present) and then releases the
+ * provider handle. */
 int vfs_close(struct vfs_file *file);
 
 /* Path-based stat.  `stat("/")` and `stat()` of a mounted mountpoint are
@@ -174,17 +200,21 @@ int vfs_rename(const char *oldpath, const char *newpath);
 #define VFS_DIR_KIND_PROVIDER 2u /* provider directory                   */
 
 struct vfs_dir {
-	struct vfs_mount_runtime *mount;
+	struct vfs_mount_runtime *mount; /* provider dir; `/` for root merge */
 	void *handle;
 	uint16_t index;   /* VFS_DIR_KIND_ROOT mount-table cursor */
 	uint8_t kind;
+	uint8_t merge;    /* root cursor: 0 mountpoints, 1 provider entries */
 	uint8_t in_use;
 };
 
 int vfs_opendir(const char *path, struct vfs_dir *dir);
 
 /* Write the next entry and return 1, or return 0 at end of stream, or a
- * negative error. */
+ * negative error.  For `/`, the merged stream first yields each mounted
+ * root-level mountpoint, then the `/` provider's entries with shadowed
+ * mountpoint names (case-insensitive) skipped; it still works when `/` has
+ * no mounted filesystem. */
 int vfs_readdir(struct vfs_dir *dir, struct zfs_dirent *out);
 
 int vfs_closedir(struct vfs_dir *dir);

@@ -1,13 +1,13 @@
 # ZMOD v1 Module Format and Loader Lifecycle
 
-**Status:** current through M9, driver ABI v2 (package 25).  The SIO,
+**Status:** current through M9, driver ABI v3 (package 26).  The SIO,
 IOC, HID, and V9958 drivers ship as packed ZMOD modules and are loaded
 during boot through the generic M4 loader; since M5 the container bytes
 come from the ROMFS recovery store and since M9 they are opened as
 `/SYSTEM/<name>.zmod` through the kernel VFS and bound with
 `vfs_file_source()` (the on-disk ZMOD format and the bounded read-source
 adapter are unchanged; see `docs/vfs.md`).  Since M8 the header `driver_abi`
-must equal `ZDRIVER_ABI_VERSION` (2) and production derives the driver
+must equal `ZDRIVER_ABI_VERSION` (3) and production derives the driver
 arena from the aligned linked kernel end in a two-pass link.  The
 production kernel and every ROMFS-boot image (M5 onward) link no embedded
 boot blob at all (`tools/mapcheck.py --production` rejects embedded boot
@@ -112,7 +112,7 @@ directly after the table.
 | `00h` | 4 | `magic[4]` | `"ZMOD"` |
 | `04h` | 1 | `format_version` | `1` |
 | `05h` | 1 | `module_type` | `1` = `DRIVER` (only supported type) |
-| `06h` | 1 | `driver_abi` | must equal `ZDRIVER_ABI_VERSION` (2) |
+| `06h` | 1 | `driver_abi` | must equal `ZDRIVER_ABI_VERSION` (3) |
 | `07h` | 1 | `flags` | `0` (reserved) |
 | `08h` | 2 | `image_size` | payload bytes loaded at `load_base` |
 | `0Ah` | 2 | `bss_size` | zero-initialized bytes after the image |
@@ -154,11 +154,11 @@ express it, `ZREL_ABS16` is the only relocation type M4 supports.
 * A module may reach the kernel only through the `const struct
   zdriver_api *` passed to its init entry.  Direct references to kernel
   symbols are unresolved externals and are rejected at pack time.
-* Kernel imports are limited to the driver ABI v2 services:
+* Kernel imports are limited to the driver ABI v3 services:
   `device_register`, `irq_claim`, `irq_release`, `device_find`,
-  `device_interface`, `resource_size`, `resource_read`.  The callback
-  order in `struct zdriver_api` is part of the ABI (pinned by
-  compile-time assertions and host tests).
+  `device_interface`, `resource_size`, `resource_read`, `fs_register`.
+  The callback order in `struct zdriver_api` is part of the ABI (pinned
+  by compile-time assertions and host tests).
 * `device_find(class_id, required_caps, after)` selects by class plus
   required capabilities (`ZDEV_CLASS_ANY` = any class; zero
   `required_caps` is invalid); `device_interface(handle, class, &ops,
@@ -168,6 +168,14 @@ express it, `ZREL_ABS16` is the only relocation type M4 supports.
   length)` resolve only ROMFS entries carrying `ROMFS_FLAG_DATA` and
   bound every read to the resource; `romfs_file_t` and the mutable
   filesystem state stay kernel-private.
+* `fs_register(provider)` registers a path-based `struct zfs_provider`
+  with the kernel VFS (architecture section 32.11, `zephyros/vfs.h`).  It
+  succeeds only during the module-loading phase and joins the loader's
+  registration transaction: a provider registered by a module whose init
+  then fails is removed together with that module's devices and IRQ
+  claims.  It rejects a null/malformed provider, a duplicate name
+  (compared case-insensitively) and a full registry (capacity 4) with a
+  negative `ZOS_E*` value (duplicate `ZOS_EEXIST`, full `ZOS_ENOSPC`).
 * SDCC emits byte-fragmented address stores (relocation modes `09h`/`89h`)
   for stack-built structures whose pointer fields are written with
   `ld (ix+d), #<sym` / `# >sym`.  These cannot be relocated by a 16-bit
@@ -191,7 +199,7 @@ express it, `ZREL_ABS16` is the only relocation type M4 supports.
 {
   "name": "m4.probe",
   "type": "driver",
-  "abi": 2,
+  "abi": 3,
   "flags": 0,
   "objects": ["m4_probe.rel", "sdcc_indirect_calls.rel"],
   "image_areas": ["_CODE"],
@@ -213,7 +221,7 @@ For each output the packer reports:
 
 ```text
 build/modules/m4_probe.zmod
-  format:        ZMOD v1 driver, ABI 2
+  format:        ZMOD v1 driver, ABI 3
   image:         182 bytes
   bss:           2 bytes
   relocations:   16 (ZREL_ABS16)
@@ -253,7 +261,7 @@ module_load(name, blob, size)        module_load_source(name, source)
   ├─ stream image copy, zero BSS,      image and relocations are read in
   │  apply relocations                 bounded chunks (128 bytes);
   │                                    ZREL_ABS16: word += load_base
-  ├─ init(load_base + init_offset)     driver ABI v2, under device and IRQ
+  ├─ init(load_base + init_offset)     driver ABI v3, under device, IRQ and
   │                                    registry checkpoints
   │     ├─ success → RESIDENT          never freed; no unload operation
   │     └─ failure → fini (optional)   device/IRQ rollback, allocation
@@ -328,7 +336,7 @@ so they cannot creep back in.
 | `m4.probe` | picks device `m4.probe.a`/`m4.probe.b` from bit 9 of its relocated state pointer; the even-granule instance additionally claims `IRQ_CTC0` with an in-image handler | 182 | 2 | 1 |
 | `m4.fail` | registers `m4.fail` and claims `IRQ_CTC1`, then returns failure so rollback is observable | 130 | 2 | 1 |
 | `m4.filler` | verifies its 600-byte BSS pad is zero and registers nothing; used to exhaust the arena | 48 | 602 | 2 |
-| `m8.api` | driver ABI v2 discovery/resource-import fixture: class+capability `device_find` iteration, `device_interface` success/mismatch/stale errors, and resource imports before ROMFS is published | 1129 | 6 | 3 |
+| `m8.api` | driver ABI v3 discovery/resource-import fixture: class+capability `device_find` iteration, `device_interface` success/mismatch/stale errors, and resource imports before ROMFS is published | 1129 | 6 | 3 |
 
 The fixtures are built with the real toolchain and packed under
 `build/modules/`; `make zmod-test` validates every container.  The loader
@@ -359,7 +367,7 @@ console is bound before the fixtures load, the baseline for every count:
    the earlier residents and the boot module stay intact, and the bound
    console keeps working.
 
-`m8.api` remains a host-validated ABI v2 discovery/resource-import
+`m8.api` remains a host-validated ABI v3 discovery/resource-import
 container (`tests/test_zmod.py`); it is not part of the subsystem
 group.
 

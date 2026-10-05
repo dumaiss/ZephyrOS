@@ -1,10 +1,14 @@
 # ZephyrOS VFS Bootstrap and the ROMFS Provider
 
-**Status:** implemented by work package `25-m9-vfs-bootstrap-romfs`
-(2026-10-04), including corrections 01 and 02.  Host-validated and
-simulator-accepted; physical acceptance is `PENDING` (see
-`docs/validation/2026-10-04-m9-vfs-bootstrap.md`).  Bank-7 residency is
-reported against the architecture section 32.39 ledger.
+**Status:** package `25-m9-vfs-bootstrap-romfs` (2026-10-04, corrections
+01 and 02) implemented the VFS core, the generated mount table and the
+ROMFS provider; package `26-m9-provider-abi-cache` (2026-10-04) completed
+the kernel file/directory API (32-bit seek, root merge, mountpoint
+errors), added driver ABI v3 `fs_register` with the loader registration
+transaction, and proved it with the test-only writable `ramfs` provider.
+Host-validated and simulator-accepted; physical acceptance is `PENDING`
+(see `docs/validation/2026-10-04-m9-vfs-bootstrap.md`).  Bank-7
+residency is reported against the architecture section 32.39 ledger.
 
 This document records the implementation of the M9 bootstrap slice:
 the kernel VFS core, the generated static mount table, and the ROMFS
@@ -177,12 +181,26 @@ those maps (`docs/validation/2026-10-04-m9-vfs-bootstrap.md` section 9).
 
 ## 6. Kernel file and directory API
 
-`vfs_open()`/`vfs_read()`/`vfs_write()`/`vfs_sync()`/`vfs_close()`/
-`vfs_stat()` operate on caller-provided `struct vfs_file` storage: there is
-no descriptor table yet (package 27 adds the process-visible pool).  Every
-one of them resolves the path, selects the mount and calls the provider
-with the provider-relative path.  Reads are clamped to EOF by VFS, so a
-provider only ever sees an in-range request.
+`vfs_open()`/`vfs_read()`/`vfs_write()`/`vfs_seek()`/`vfs_sync()`/
+`vfs_close()`/`vfs_stat()` operate on caller-provided `struct vfs_file`
+storage: there is no descriptor table yet (package 27 adds the
+process-visible pool).  Every one of them resolves the path, selects the
+mount and calls the provider with the provider-relative path.  Reads are
+clamped to EOF by VFS, so a provider only ever sees an in-range request.
+
+`vfs_open()` rejects unknown flag bits, `TRUNC`/`CREATE`/`EXCL` without
+`WRITE`, and `EXCL` without `CREATE` with `ZOS_EINVAL`; opening a
+directory is `ZOS_EISDIR`, `opendir` on a file is `ZOS_ENOTDIR`, and a
+create of an existing name with `CREATE|EXCL` is `ZOS_EEXIST`.  The
+position is 0 on open.
+
+`vfs_read()`/`vfs_write()` act at the stored position.  A write advances
+the position and grows the cached size only after the provider reports
+success (architecture section 32.28); a failed confirmed write leaves both
+unchanged.  `vfs_seek()` takes a signed 32-bit `offset` with
+`ZFS_SEEK_SET`/`CUR`/`END`, rejects a negative result with `ZOS_EINVAL`
+and permits seeking past EOF.  `vfs_close()` flushes through the
+provider's `sync` (when present) and then releases the handle.
 
 `stat("/")` and `stat(path)` for a mounted mountpoint are answered by VFS
 itself as directories, without consulting a provider.  There is no
@@ -194,19 +212,24 @@ media (ROMFS) refuses a non-`ZEX` entry opened with it.  That preserves
 the M6 `ZEX_EXEC_ERR_TYPE` rejection now that the native type set is
 only `FILE`/`DIR`.
 
-`readdir("/")` is a VFS operation: it yields every mounted root-level
-mountpoint (exactly one component) as a `DIR` entry.  With no filesystem
-at `/` — the production M9 namespace — the root lists only the
-mountpoints.  Merging a `/` filesystem's own entries with mountpoint
-shadowing (architecture section 32.7) arrives with that filesystem
-(package 30).
+`readdir("/")` is a VFS operation: it first yields every mounted
+root-level mountpoint (exactly one component) as a `DIR` entry, then the
+entries of the filesystem attached at `/`, skipping any whose name equals
+a mountpoint (case-insensitive) so the mountpoint shadows it
+(architecture section 32.7).  With no filesystem at `/` — the production
+M9 namespace — the root lists only the mountpoints and still enumerates
+successfully.  The merge cursor is a small VFS-owned field of the
+`struct vfs_dir` handle; VFS keeps no extra table.
 
 Mutation entry points (`vfs_mkdir`, `vfs_rmdir`, `vfs_unlink`,
 `vfs_rename`) live in `kernel/vfs/mutate.c` and are the kernel half of the
-`SYS_FS_*` family that package 27 wires up.  Their purpose in this package
-is to give the read-only rule one home: a provider that leaves a mutation
-pointer null gets `ZOS_EROFS` from VFS, and a cross-mount rename is refused
-with `ZOS_EXDEV` rather than turned into a copy.
+`SYS_FS_*` family that package 27 wires up.  A provider that leaves a
+mutation pointer null gets `ZOS_EROFS` from VFS, and a cross-mount rename
+is refused with `ZOS_EXDEV` rather than turned into a copy.  Mutating a
+mounted mountpoint (or the VFS root) is answered by VFS before any
+provider is consulted: `ZOS_EBUSY` for `rmdir`/`unlink`/`rename`,
+`ZOS_EEXIST` for `mkdir`; `rename` is the only operation that needs two
+pathnames and owns the second 128-byte scratch buffer.
 
 `vfs_file_source()` bounds a `zmod_source` to an open file so the M4
 loader and ZEX validation read through the kernel file API without
@@ -299,9 +322,12 @@ bank7: code 23490 end 7BC5h | arena 34 granules (21 boot, 13 free)
 
 These are the package-25 numbers.  Package 25b then added the
 size-optimized compile and the derived data base and moved the runtime
-data above `C000h`, so this snapshot no longer describes the current
-image; `docs/memory.md` section 2.2.1 records the current package-25b
-ledger.
+data above `C000h`; package 26 added driver ABI v3, the provider
+registration transaction, the completed kernel file API (seek, root
+merge, mountpoint errors) for `+1837` `_CODE` and `+192` `_DATA` bytes.
+`docs/memory.md` section 2.2.1 records the current ledger
+(`code 23526 end 7BE6h | arena 46 granules (20 boot, 26 free) | data 1501
+at D800h | slack 291`) with the per-object package-26 deltas.
 
 The arena floor is the unchanged 32-granule production gate; correction-02
 raised production from exactly 32 granules to 34 by removing the
@@ -419,9 +445,65 @@ images.)
 | EROFS from the null mutation operations (write flags at open, `vfs_mkdir`/`rmdir`/`unlink`/`rename`, and the provider's null pointers) | target selftest EROFS/MUTATE cases; `kernel/vfs/{file,mutate}.c` |
 | one ROMFS lookup, ASCII case-folded, serving the provider and the resource imports | `tests/test_romfs_sim.py` (case-folded spellings), `tools/mapcheck.py` `ROMFS_BANK7_ROUTINES` |
 | optional-mount failure line `vfs: /DATA unavailable 0x03` and tolerant boot | `tests/test_m9_vfs_sim.py` (`tests/m9/mounts-optional-fail.json`, `m9-vfs-selftest`) |
-| required non-system mount failure: diagnostic + `PANIC: vfs: mount failed` before the monitor, system entry still `MOUNTED`, failed entry records `-ZOS_ENODEV` | `tests/test_m9_vfs_sim.py` (`tests/m9/mounts-required-fail.json`, `make m9-required-mount-selftest`) |
+| required non-system mount failure: `vfs: required mount /DATA failed 0x03` + `PANIC:` of the same line before the monitor, system entry still `MOUNTED`, failed entry records `-ZOS_ENODEV` | `tests/test_m9_vfs_sim.py` (`tests/m9/mounts-required-fail.json`, `make m9-required-mount-selftest`) |
 | ZEX/ZMOD loading through VFS, M8 transcripts unchanged | `tests/test_m3_sim.py` (production boot replay), `tests/test_m8*.py`, `tests/test_romfs*.py` |
 | ROMFS name validation | `tests/test_romfs.py` (slash and case-collision negatives) |
 | production arena gate, `ZOS_ARENA_MIN_GRANULES` | `tools/mapcheck.py`, `tools/pack_image.py`, `make check` |
 | embedded-catalog images link no VFS byte | `tools/mapcheck.py` (`vfs_image` classification + `VFS_FORBIDDEN_PREFIXES`), `tests/test_romfs.py` (`TestRomfsMapcheck.test_embedded_catalog_image_rejects_vfs_symbols`), `tests/test_m4.py` (per-image symbol sweep), `tests/test_m9_vfs.py` |
 | physical boot | `docs/validation/2026-10-04-m9-vfs-bootstrap.md` (**PENDING**) |
+
+## 11. Writable-provider acceptance (package 26)
+
+Driver ABI v3 adds `fs_register(provider)` to the `zdriver_api` block
+(`include/zephyros/driver.h`), so a loadable module can register a
+path-based `struct zfs_provider`.  The loader wraps it: `fs_register`
+succeeds only during the module-loading phase, and the VFS provider
+registry takes a checkpoint before every module init and rolls back the
+providers registered after it when the init fails, exactly like the
+device and IRQ checkpoints.  The registry has capacity 4; registration
+rejects a null/malformed provider (`ZOS_EINVAL`), a duplicate name
+compared case-insensitively (`ZOS_EEXIST`) and a full registry
+(`ZOS_ENOSPC`).
+
+The test-only module `tests/modules/ramfs.c` (packed as `ramfs.zmod`,
+driver ABI v3) registers the `ramfs` provider.  It is path-based and
+hierarchical, matches ASCII case-insensitively, and is bounded by 16
+nodes and 4096 bytes of file data per instance over two instances.  Its
+documented reserved control names are:
+
+```text
+/FAILWRITE   the next write fails with ZOS_EIO and commits nothing
+/STALE       creating it invalidates every open handle (ZOS_ESTALE)
+/STATS       virtual read-only file exposing the call counters and the
+             open-handle count
+source "refuse"  makes the instance's mount() fail with ZOS_EIO
+```
+
+The acceptance image (`make m9-provider-selftest`) boots SIO-only so the
+derived arena holds the bounded RAM provider and the registration
+fixtures `m9.probe`, `m9.dup` (duplicate rejection) and `m9.fail`
+(rollback).  `tests/m9/mounts-ramfs.json` mounts ramfs at `/` (required)
+and `/R2` (optional); `mounts-ramfs-optional-fail.json` and
+`mounts-ramfs-required-fail.json` are the failure variants.  The
+mount-table generator accepts `/` alongside a root-level mountpoint
+because the M9 model treats them as siblings, not as nested mounts.
+
+Evidence: `tests/test_m9_provider_sim.py` (boot transcript, result byte,
+mount state), `tests/target/m9/m9_provider_test.c` (registration/
+rollback, mount state, mutations and errors, root merge and shadowing,
+the section-33 size set, 32-bit seek past 64 KiB, stale handles, a failed
+confirmed write, EXDEV, counters) and `tests/test_m9_vfs.py` (generator
+acceptance of the ramfs manifests).
+
+### Physical acceptance
+
+The production image (`build/zephyros.bin`, sha256
+`03f776a9...95cec`) boots to the monitor with HID and V9958 bound; the
+run, transcript and photograph are recorded in
+`docs/validation/2026-10-05-m9-provider-abi-hardware.md`.  Note that
+`tools/serial_smoke.py --mode normal` requires the console acceptance
+line and monitor prompt on the serial transcript, so it reports a
+timeout whenever the console-capable module is resident (architecture
+30.9 binding policy); that mode is only applicable to an SIO-fallback
+bench.  The M8 serial smoke modes were re-run on the ABI v3 module bytes
+and pass.

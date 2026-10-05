@@ -1,0 +1,23 @@
+{
+  "format": "vfs-mounts-v1",
+  "mounts": [
+    {
+      "path": "/SYSTEM",
+      "filesystem": "romfs",
+      "source": "recovery",
+      "system": true
+    },
+    {
+      "path": "/",
+      "filesystem": "ramfs",
+      "source": "ramfs.0",
+      "required": true
+    },
+    {
+      "path": "/R2",
+      "filesystem": "ramfs",
+      "source": "ramfs.1",
+      "required": false
+    }
+  ]
+}

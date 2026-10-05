@@ -40,6 +40,15 @@ int vfs_open(const char *path, uint16_t flags, struct vfs_file *file)
 				 ZFS_O_EXCL | ZFS_O_TRUNC | VFS_O_EXEC)) != 0) {
 		return -ZOS_EINVAL;
 	}
+	/* TRUNC/CREATE/EXCL are write operations, and EXCL only means
+	 * anything together with CREATE. */
+	if ((flags & (uint16_t)(ZFS_O_TRUNC | ZFS_O_CREATE | ZFS_O_EXCL)) != 0 &&
+	    (flags & ZFS_O_WRITE) == 0) {
+		return -ZOS_EINVAL;
+	}
+	if ((flags & ZFS_O_EXCL) != 0 && (flags & ZFS_O_CREATE) == 0) {
+		return -ZOS_EINVAL;
+	}
 	result = vfs_resolve_path(path, &index, &rel);
 	if (result == VFS_RESOLVED_ROOT || result == VFS_RESOLVED_MOUNTPOINT) {
 		return -ZOS_EISDIR; /* a directory is not a file to open */
@@ -56,13 +65,17 @@ int vfs_open(const char *path, uint16_t flags, struct vfs_file *file)
 	file->mount = &vfs_mount_state[index];
 	file->handle = handle;
 	file->size = size;
+	file->offset = 0;
 	file->flags = flags;
 	file->in_use = 1;
 	return 0;
 }
 
-int vfs_read(struct vfs_file *file, uint32_t offset, void *buffer,
-	     uint16_t length)
+/* Positioned provider read shared by vfs_read() and the loader adapter.
+ * `file` is validated here; the adapter passes an explicit offset because
+ * the module/ZEX loaders read fixed container fields. */
+static int vfs_file_read_at(struct vfs_file *file, uint32_t offset,
+			    void *buffer, uint16_t length)
 {
 	const struct zfs_ops *ops;
 
@@ -87,11 +100,26 @@ int vfs_read(struct vfs_file *file, uint32_t offset, void *buffer,
 			 length);
 }
 
-/* A mutation pointer a read-only provider leaves null is ZOS_EROFS. */
-int vfs_write(struct vfs_file *file, uint32_t offset, const void *buffer,
-	      uint16_t length)
+int vfs_read(struct vfs_file *file, void *buffer, uint16_t length)
+{
+	int result = vfs_file_read_at(
+		file, (file != (struct vfs_file *)0) ? file->offset : 0u,
+		buffer, length);
+
+	if (result > 0) {
+		file->offset += (uint32_t)result;
+	}
+	return result;
+}
+
+/* A mutation pointer a read-only provider leaves null is ZOS_EROFS.  The
+ * position and the cached size advance only after the provider succeeds
+ * (architecture section 32.28). */
+int vfs_write(struct vfs_file *file, const void *buffer, uint16_t length)
 {
 	const struct zfs_ops *ops;
+	uint32_t end;
+	int result;
 
 	if (file == (struct vfs_file *)0 || file->in_use == 0 ||
 	    file->mount == (struct vfs_mount_runtime *)0) {
@@ -104,8 +132,47 @@ int vfs_write(struct vfs_file *file, uint32_t offset, const void *buffer,
 	if (ops->write == (void *)0) {
 		return -ZOS_EROFS;
 	}
-	return ops->write(file->mount->fs_state, file->handle, offset, buffer,
-			  length);
+	result = ops->write(file->mount->fs_state, file->handle, file->offset,
+			    buffer, length);
+	if (result != 0) {
+		return result;
+	}
+	end = file->offset + (uint32_t)length;
+	file->offset = end;
+	if (end > file->size) {
+		file->size = end;
+	}
+	return 0;
+}
+
+int vfs_seek(struct vfs_file *file, int32_t offset, uint8_t whence,
+	     uint32_t *position)
+{
+	int32_t base;
+	int32_t result;
+
+	if (file == (struct vfs_file *)0 || file->in_use == 0 ||
+	    file->mount == (struct vfs_mount_runtime *)0) {
+		return -ZOS_EINVAL;
+	}
+	if (whence == ZFS_SEEK_SET) {
+		base = 0;
+	} else if (whence == ZFS_SEEK_CUR) {
+		base = (int32_t)file->offset;
+	} else if (whence == ZFS_SEEK_END) {
+		base = (int32_t)file->size;
+	} else {
+		return -ZOS_EINVAL;
+	}
+	result = base + offset;
+	if (result < 0) {
+		return -ZOS_EINVAL;
+	}
+	file->offset = (uint32_t)result;
+	if (position != (uint32_t *)0) {
+		*position = file->offset;
+	}
+	return 0;
 }
 
 int vfs_sync(struct vfs_file *file)
@@ -125,17 +192,24 @@ int vfs_sync(struct vfs_file *file)
 
 int vfs_close(struct vfs_file *file)
 {
+	const struct zfs_ops *ops;
 	int result;
 
 	if (file == (struct vfs_file *)0 || file->in_use == 0 ||
 	    file->mount == (struct vfs_mount_runtime *)0) {
 		return -ZOS_EINVAL;
 	}
-	result = file->mount->provider->ops->close(
-		file->mount->fs_state, file->handle);
+	ops = file->mount->provider->ops;
+	/* Flush before releasing the handle (architecture section 32.27);
+	 * a provider without sync (read-only) has nothing to flush. */
+	if (ops->sync != (void *)0) {
+		(void)ops->sync(file->mount->fs_state, file->handle);
+	}
+	result = ops->close(file->mount->fs_state, file->handle);
 	file->mount = (struct vfs_mount_runtime *)0;
 	file->handle = (void *)0;
 	file->size = 0;
+	file->offset = 0;
 	file->flags = 0;
 	file->in_use = 0;
 	return result;
@@ -173,8 +247,8 @@ int vfs_stat(const char *path, struct zfs_stat *out)
 static int vfs_source_read(const void *ctx, uint16_t offset, uint8_t *dst,
 			   uint16_t length)
 {
-	return vfs_read((struct vfs_file *)ctx, (uint32_t)offset, dst,
-			length);
+	return vfs_file_read_at((struct vfs_file *)ctx, (uint32_t)offset, dst,
+				length);
 }
 
 int vfs_file_source(struct vfs_file *file, struct zmod_source *source)

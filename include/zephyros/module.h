@@ -1,4 +1,4 @@
-/* ZephyrOS module loader contract (ZMOD v1 containers, driver ABI v2).
+/* ZephyrOS module loader contract (ZMOD v1 containers, driver ABI v3).
  *
  * This header defines:
  *   - the ZMOD v1 on-disk container (packed little-endian, 28-byte header),
@@ -8,7 +8,7 @@
  *     from stage 08 on, by catalog loading at boot.
  *
  * ZMOD is a generic relocatable container; only module type DRIVER and
- * driver ABI v2 are supported from M8 on (ABI v1 containers are
+ * driver ABI v3 are supported from M9 on (older ABI containers are
  * rejected).  All addresses stored inside the loaded image are offsets
  * relative to the module allocation base; the loader patches ZREL_ABS16
  * records with the chosen load address.
@@ -205,7 +205,7 @@ struct zmod_module {
 int module_loader_init(void);
 
 /* Validate `blob` and, if valid, allocate granules, copy/relocate the
- * image, zero BSS, and run the module init with driver ABI v2.  On any
+ * image, zero BSS, and run the module init with driver ABI v3.  On any
  * failure the allocation, device registrations, and IRQ claims made by
  * the module are rolled back and the descriptor is freed.  Returns the
  * module index (>= 0) on success, a negative error otherwise.  Images

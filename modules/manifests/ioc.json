@@ -1,7 +1,7 @@
 {
   "name": "ioc",
   "type": "driver",
-  "abi": 2,
+  "abi": 3,
   "flags": 0,
   "objects": ["ioc.rel", "ioc_io.rel", "ioc_module.rel", "sdcc_indirect_calls.rel"],
   "image_areas": ["_CODE"],

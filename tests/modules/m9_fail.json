@@ -1,0 +1,11 @@
+{
+  "name": "m9.fail",
+  "type": "driver",
+  "abi": 3,
+  "flags": 0,
+  "objects": ["m9_fail.rel", "sdcc_indirect_calls.rel"],
+  "image_areas": ["_CODE"],
+  "bss_areas": [],
+  "init": "m9_fail_init",
+  "fini": null
+}

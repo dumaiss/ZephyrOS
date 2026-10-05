@@ -280,7 +280,7 @@ class TestModuleArtifact(unittest.TestCase):
         manifest = _load_json(MANIFEST)
         self.assertEqual(manifest["name"], "v9958")
         self.assertEqual(manifest["type"], "driver")
-        self.assertEqual(manifest["abi"], 2)
+        self.assertEqual(manifest["abi"], 3)
         self.assertEqual(manifest["init"], "v9958_module_init")
         self.assertEqual(manifest["image_areas"], ["_CODE"])
         self.assertEqual(manifest["bss_areas"], ["_DATA"])

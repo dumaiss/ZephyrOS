@@ -1,0 +1,35 @@
+{
+  "format": "romfs-v1",
+  "files": [
+    {
+      "name": "sio.zmod",
+      "type": "ZMOD",
+      "path": "sio.zmod"
+    },
+    {
+      "name": "ramfs.zmod",
+      "type": "ZMOD",
+      "path": "ramfs.zmod"
+    },
+    {
+      "name": "m9probe.zmod",
+      "type": "ZMOD",
+      "path": "m9_probe.zmod"
+    },
+    {
+      "name": "m9dup.zmod",
+      "type": "ZMOD",
+      "path": "m9_dup.zmod"
+    },
+    {
+      "name": "m9fail.zmod",
+      "type": "ZMOD",
+      "path": "m9_fail.zmod"
+    },
+    {
+      "name": "monitor.zex",
+      "type": "ZEX",
+      "path": "monitor.zex"
+    }
+  ]
+}

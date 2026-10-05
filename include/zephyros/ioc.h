@@ -1,4 +1,4 @@
-/* ZephyrOS IOC class contract (M8, driver ABI v2).
+/* ZephyrOS IOC class contract (M8, driver ABI v3).
  *
  * The IOC class owns the Z80-to-MCU two-lane transport: the command/reply
  * lane (SIO1/B) and the bulk lane (SIO1/A).  Class values, capability

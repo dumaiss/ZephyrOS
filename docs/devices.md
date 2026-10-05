@@ -1,4 +1,4 @@
-# ZephyrOS Device, Driver, and Console Model (through M8 ABI v2)
+# ZephyrOS Device, Driver, and Console Model (through M9 ABI v3)
 
 This document describes the implemented device layer: the fixed device
 registry, the driver ABI (v2 since M8), the SIO0/B driver (a dynamically
@@ -780,7 +780,7 @@ SIO module entries) in the production image.
 
 Host validation layers:
 
-- `tests/test_m8.py` – driver ABI v2 structure/order and capability-range
+- `tests/test_m8.py` – driver ABI version/structure/order and capability-range
   contract, derived-arena geometry (alignment, 16-KiB minimum, unaligned
   relation, linked bytes in the arena), the boot-set arena plan and its
   overflow rejection, ABI v1 rejection, and the architectural granule
@@ -826,7 +826,8 @@ No heap, no module unload or hot-plug, no filesystem API for modules
 (beyond the two bounded DATA resource imports), no process API here, and
 no user-visible device syscall.  M4 stages 07-08 (this document plus
 `docs/module-format.md`) delivered the loader and the relocatable SIO
-driver module; M8 work package 14 delivered driver ABI v2, the
+driver module; M8 work package 14 delivered driver ABI v2 (raised to
+v3 by M9 package 26), the
 read-only discovery calls, the per-class capability ranges, the
 preferred-direction console policy, and the derived production arena;
 M8 work packages 15-16 delivered the IOC command+bulk class and its

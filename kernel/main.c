@@ -39,6 +39,9 @@
  * runs after console binding. */
 void zos_target_test_early(void);
 void zos_target_test_late(void);
+/* Boot-time acceptance modules: loaded after the production boot set and
+ * before the normal mount pass.  Implementation lives in the test tree. */
+void zos_boot_test_modules(void);
 #endif
 
 /* IOC transport boot load.  Production and the M8 images carry
@@ -255,6 +258,10 @@ static uint8_t kernel_boot_module(void)
 	if (result < 0) {
 		kernel_module_unavailable("v9958", result);
 	}
+#endif
+#if ZOS_TARGET_TEST_BUILD
+	/* TEST-ONLY HOOK: acceptance-only boot modules (tests/target). */
+	zos_boot_test_modules();
 #endif
 	/* Normal mount phase: production has only the system entry, so this
 	 * is a no-op; acceptance manifests exercise optional/required

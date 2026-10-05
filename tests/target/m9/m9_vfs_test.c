@@ -123,7 +123,9 @@ static uint8_t m9_check_entry(const char *name, const romfs_file_t *ref)
 		if ((uint32_t)chunk > (ref->size - off)) {
 			chunk = (uint16_t)(ref->size - off);
 		}
-		if (vfs_read(&file, off, m9_buf, chunk) != (int)chunk ||
+		if (vfs_seek(&file, (int32_t)off, ZFS_SEEK_SET,
+			     (uint32_t *)0) != 0 ||
+		    vfs_read(&file, m9_buf, chunk) != (int)chunk ||
 		    romfs_read(ref, off, m9_ref, chunk) != (int)chunk) {
 			(void)vfs_close(&file);
 			return ZOS_M9ST_FAIL_ENTRY;
@@ -353,9 +355,17 @@ void zos_run_m9_vfs_selftest(void)
 		m9_fail(ZOS_M9ST_FAIL_EROFS);
 		return;
 	}
+	/* TRUNC without WRITE is a flag error, rejected by VFS before the
+	 * provider is consulted (architecture section 32.28). */
 	if (vfs_open(m9_path, (uint16_t)(ZFS_O_READ | ZFS_O_TRUNC),
-		     &m9_file) != -ZOS_EROFS) {
-		m9_fail(ZOS_M9ST_FAIL_EROFS);
+		     &m9_file) != -ZOS_EINVAL) {
+		m9_fail(ZOS_M9ST_FAIL_FLAGS);
+		return;
+	}
+	/* Unknown flag bits are rejected too. */
+	if (vfs_open(m9_path, (uint16_t)(ZFS_O_READ | 0x20u),
+		     &m9_file) != -ZOS_EINVAL) {
+		m9_fail(ZOS_M9ST_FAIL_FLAGS);
 		return;
 	}
 	if (vfs_mkdir(m9_path) != -ZOS_EROFS ||

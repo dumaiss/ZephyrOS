@@ -25,6 +25,7 @@
 #define ZOS_M9ST_FAIL_FLAT       0x0Fu /* flat mount selection (/SYSTEMX)  */
 #define ZOS_M9ST_FAIL_DEEPER     0x10u /* deeper path: ENOTDIR vs ENOENT   */
 #define ZOS_M9ST_FAIL_MUTATE     0x11u /* null mutation operation not EROFS*/
+#define ZOS_M9ST_FAIL_FLAGS      0x12u /* open flag validation not EINVAL  */
 
 #if ZOS_M9_VFS_SELFTEST
 void zos_run_m9_vfs_selftest(void);

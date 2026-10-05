@@ -1,9 +1,9 @@
-/* ZephyrOS M8 device registry contract (driver ABI v2).
+/* ZephyrOS M8 device registry contract (driver ABI v3).
  *
  * This header and driver.h define the internal kernel/driver ABI:
  * driver, device, class, and capability concepts are ZephyrOS-internal
  * and are not a user syscall ABI.  Structure layout is pinned to the
- * driver ABI version; M8 is ABI v2.
+ * driver ABI version; M9 is ABI v3.
  *
  * Model (see docs/devices.md):
  *   driver      implementation code for a hardware family
@@ -15,7 +15,7 @@
  * Handle 0 is the invalid handle.  Clients select devices by class and
  * capability queries, never by driver or instance name.
  *
- * ABI v2 separates the optional generic character interface
+ * The current ABI separates the optional generic character interface
  * (`struct zchar_ops`) from a class-specific interface (`class_ops`,
  * type determined by `class_id`); a device may expose either or both.
  * Capabilities are authoritative: unsupported class operations fail
@@ -136,7 +136,7 @@ struct zdevice {
 
 #if defined(__SDCC)
 /* The registry copies these structures field by field; pin the packed
- * ABI v2 layout so a compiler/flag drift cannot silently break it. */
+ * ABI layout so a compiler/flag drift cannot silently break it. */
 _Static_assert(sizeof(struct zchar_ops) == 8, "zchar_ops must be 8 bytes");
 _Static_assert(__builtin_offsetof(struct zchar_ops, poll) == 4,
 	       "zchar_ops poll offset");

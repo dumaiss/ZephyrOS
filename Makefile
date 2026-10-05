@@ -267,6 +267,23 @@ ZOS_MOUNTS := tests/m9/mounts-required-fail.json
 PK_SUFFIX := -m9-required-mount
 endif
 
+# M9 writable-provider acceptance image (package 26): the test-only ramfs
+# ZMOD registers through driver ABI v3 and the normal mount pass attaches it
+# at `/` (required) and `/R2` (optional).  The boot set is SIO-only: the
+# console falls back to SIO and the freed arena granules hold the bounded
+# RAM provider and the registration fixture modules.  The target selftest
+# covers registration rollback, every mutation semantic, the root merge and
+# the size/seek cases.
+ifeq ($(ZOS_M9_PROVIDER_SELFTEST),1)
+CFLAGS    += -DZOS_M9_PROVIDER_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m9_provider_test.rel
+PK_SUFFIX := -m9-provider-selftest
+ZOS_MOUNTS := tests/m9/mounts-ramfs.json
+ZOS_IOC_BOOT := 0
+ZOS_HID_BOOT := 0
+ZOS_V9958_BOOT := 0
+endif
+
 # Hardware-smoke host sync (kernel/main.c): the M8 IOC smoke image waits
 # for the host's two-byte sync sequence on SIO0/B before the banner,
 # because this bench's reset line also resets the USB bridge.  Only
@@ -326,7 +343,8 @@ ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_M8_HID_NOIOC) $(ZOS_M8_HID_BADIOC) \
 	$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL) \
 	$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
-	$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST)),)
+	$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
+	$(ZOS_M9_PROVIDER_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
 endif
@@ -427,6 +445,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	m8-selftest m8-fallback-selftests \
 	m9-vfs-selftest \
 	m9-required-mount-selftest \
+	m9-provider-selftest \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-subsystem smoke-hardware-romfs-corrupt \
@@ -839,6 +858,28 @@ $(MODULES)/m8regfill.rel: tests/modules/m8_regfill.c \
 		include/zephyros/driver.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) $< -o $@
 
+# --- M9 writable-provider fixtures (test only) ---
+
+$(MODULES)/ramfs.rel: tests/modules/ramfs.c \
+		include/zephyros/driver.h include/zephyros/vfs.h \
+		include/zephyros/fs.h include/zephyros/errno.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/m9_probe.rel: tests/modules/m9_probe.c \
+		include/zephyros/driver.h include/zephyros/vfs.h \
+		include/zephyros/errno.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/m9_dup.rel: tests/modules/m9_dup.c \
+		include/zephyros/driver.h include/zephyros/vfs.h \
+		include/zephyros/errno.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/m9_fail.rel: tests/modules/m9_fail.c \
+		include/zephyros/driver.h include/zephyros/vfs.h \
+		include/zephyros/errno.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
 $(MODULES)/%.zmod: tests/modules/%.json $(MODULES)/%.rel \
 		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES)
@@ -859,7 +900,8 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/m8_console_selftest.h \
 		tests/target/include/m8_selftest.h \
 		tests/target/include/m8_fallback_selftest.h \
-		tests/target/include/m9_selftest.h | $(BUILD)
+		tests/target/include/m9_selftest.h \
+		tests/target/include/m9_provider_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # Test-owned CTC0 programming helper (acceptance images only): linked in
@@ -959,6 +1001,14 @@ $(BUILD)/m9_vfs_test.rel: tests/target/m9/m9_vfs_test.c \
 		include/zephyros/console.h include/zephyros/kernel.h \
 		kernel/vfs/vfs.h kernel/vfs/mount_config.h \
 		tests/target/include/m9_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/m9_provider_test.rel: tests/target/m9/m9_provider_test.c \
+		include/zephyros/fs.h include/zephyros/vfs.h \
+		include/zephyros/module.h include/zephyros/console.h \
+		include/zephyros/kernel.h \
+		kernel/vfs/vfs.h kernel/vfs/mount_config.h \
+		tests/target/include/m9_provider_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M6 native program (ZEXTEST) ---------------------------------------------
@@ -1148,6 +1198,14 @@ else ifeq ($(ZOS_M8_FALLBACK),arena)
 # failure, which the plan cannot express.
 ROMFS_MANIFEST := tests/m8/manifest-fallback-arena.json
 ROMFS_EXTRA_DEPS := $(MODULES)/m8regfill.zmod $(MODULES)/monitor.zex
+else ifeq ($(ZOS_M9_PROVIDER_SELFTEST),1)
+# SIO-only boot: the SIO fallback module, the writable RAM provider, the
+# registration fixtures and the monitor.  No IOC/HID/V9958 entries, so the
+# derived arena holds the bounded RAM provider.
+ROMFS_MANIFEST := tests/m9/manifest-provider.json
+ROMFS_EXTRA_DEPS := $(MODULES)/ramfs.zmod $(MODULES)/m9_probe.zmod \
+		$(MODULES)/m9_dup.zmod $(MODULES)/m9_fail.zmod \
+		$(MODULES)/monitor.zex
 else
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
@@ -1189,7 +1247,8 @@ ZOS_TEST_LINK := $(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 		$(ZOS_M8_HID_NOIOC) $(ZOS_M8_HID_BADIOC) \
 		$(ZOS_M8_V9958_SELFTEST) $(ZOS_M8_V9958_FONTFAIL) \
 		$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
-		$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST))
+		$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
+		$(ZOS_M9_PROVIDER_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -1541,6 +1600,22 @@ m9-required-mount-selftest: all
 		$(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_m9_vfs_sim.py' -v
 	@echo "m9 required-mount image: build-m9-required-mount-selftest/zephyros-m9-required-mount.bin"
+
+# M9 writable-provider acceptance image: SIO-only boot, the test RAM
+# filesystem mounted at `/` (required) and `/R2` (optional), the
+# registration fixtures loaded by the target boot hook, and the provider
+# selftest (registration rollback, mutations, root merge, sizes, seek).
+
+m9-provider-selftest: all
+	$(MAKE) BUILD=build-m9-provider-selftest ZOS_M9_PROVIDER_SELFTEST=1 \
+		build-m9-provider-selftest/zephyros-m9-provider-selftest.bin \
+		build-m9-provider-selftest/zephyr80-m9-provider-selftest.bin
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+		build-m9-provider-selftest/zephyros.map \
+		build-m9-provider-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m9_provider_sim.py' -v
+	@echo "m9 provider image: build-m9-provider-selftest/zephyros-m9-provider-selftest.bin"
 
 m8-fallback-selftests: all
 	$(MAKE) BUILD=build-m8-fb-nohid ZOS_M8_FALLBACK_SELFTEST=1 \

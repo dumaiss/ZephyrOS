@@ -1,4 +1,4 @@
-/* ZephyrOS fixed-size device registry (driver ABI v2).
+/* ZephyrOS fixed-size device registry (driver ABI v3).
  *
  * The registry owns handles and the integrity metadata it needs; drivers
  * own their char/class ops tables and private instance state.  There is

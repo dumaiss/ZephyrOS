@@ -1,7 +1,7 @@
 /* ZephyrOS driver module contract (internal kernel/module ABI).
  *
  * A ZMOD driver module implements an init entry that the loader calls
- * with the single `zdriver_api` block.  The ABI v2 API exposes:
+ * with the single `zdriver_api` block.  The ABI v3 API exposes:
  *
  *   device_register   publish one device instance
  *   irq_claim         claim one M2 logical IRQ source (bank-7 handler)
@@ -10,10 +10,19 @@
  *   device_interface  read-only class interface lookup
  *   resource_size     ROMFS DATA resource size lookup by name
  *   resource_read     bounded ROMFS DATA resource read by name
+ *   fs_register       register a path-based filesystem provider
  *
  * The two discovery calls expose no registry mutation.  The resource
- * imports expose neither `romfs_file_t` nor mutable kernel state and are
- * deliberately the only filesystem-like service a module receives.
+ * imports expose neither `romfs_file_t` nor mutable kernel state.
+ *
+ * `fs_register` succeeds only during the module-loading phase
+ * (architecture section 32.32.3) and joins the loader's registration
+ * transaction: a provider registered by a module whose init then fails is
+ * rolled back with that module's devices and IRQ claims.  It rejects a
+ * null/malformed provider, a duplicate name (case-insensitive) and a full
+ * registry with a negative `ZOS_E*` value.  A module never sees the kernel
+ * provider registry itself; `struct zfs_provider` is the module-facing
+ * declaration in `zephyros/vfs.h`.
  *
  * Drivers never modify I, the IM2 vector page, the memory mode, IRQ
  * stacks, or execute RETI; the M2 executive owns all of that.
@@ -37,9 +46,10 @@
 #include "zephyros/types.h"
 #include "zephyros/device.h"
 #include "zephyros/irq.h"
+#include "zephyros/vfs.h"
 
 /* Driver ABI version accepted by this kernel build. */
-#define ZDRIVER_ABI_VERSION 2u
+#define ZDRIVER_ABI_VERSION 3u
 
 /* Driver init convention: 0 = success, negative = failure. */
 #define ZDRIVER_OK   0
@@ -59,13 +69,14 @@ struct zdriver_api {
 	int (*resource_size)(const char *name, uint16_t *out_size);
 	int (*resource_read)(const char *name, uint16_t offset, void *dst,
 			     uint16_t length);
+	int (*fs_register)(const struct zfs_provider *provider);
 };
 
 #if defined(__SDCC)
-/* Pin the ABI v2 callback order: the loader's static API table and every
+/* Pin the ABI v3 callback order: the loader's static API table and every
  * module call site must agree on these offsets. */
-_Static_assert(sizeof(struct zdriver_api) == 14,
-	       "zdriver_api must be 14 packed bytes");
+_Static_assert(sizeof(struct zdriver_api) == 16,
+	       "zdriver_api must be 16 packed bytes");
 _Static_assert(__builtin_offsetof(struct zdriver_api, irq_claim) == 2,
 	       "zdriver_api irq_claim offset");
 _Static_assert(__builtin_offsetof(struct zdriver_api, irq_release) == 4,
@@ -78,6 +89,8 @@ _Static_assert(__builtin_offsetof(struct zdriver_api, resource_size) == 10,
 	       "zdriver_api resource_size offset");
 _Static_assert(__builtin_offsetof(struct zdriver_api, resource_read) == 12,
 	       "zdriver_api resource_read offset");
+_Static_assert(__builtin_offsetof(struct zdriver_api, fs_register) == 14,
+	       "zdriver_api fs_register offset");
 #endif /* __SDCC */
 
 #endif /* ZEPHYROS_DRIVER_H */

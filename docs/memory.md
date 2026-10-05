@@ -187,7 +187,30 @@ bank7: code 23521 bytes end 7BE1h | arena 34 granules (21 boot, 13 free) | data 
 
 package 25b result:
 bank7: code 21689 bytes end 74B9h | arena 49 granules (20 boot, 29 free) | data 1309 bytes at D800h | isr 256 | slack 483 bytes
+
+package 26 result (driver ABI v3, provider registry transaction, kernel
+file API seek/root merge and the mountpoint error rules):
+bank7: code 23526 bytes end 7BE6h | arena 46 granules (20 boot, 26 free) | data 1501 bytes at D800h | isr 256 | slack 291 bytes
 ```
+
+Package 26 effect (measured per object against the package-25b build):
+
+| object | `_CODE` | `_DATA` | delta | note |
+| --- | ---: | ---: | ---: | --- |
+| `vfs_file.rel` | 1536 -> 2321 | 0 | +785 | file position, `vfs_seek`, write-commit ordering, close-sync |
+| `vfs_dir.rel` | 1042 -> 1568 | 0 | +526 | root merge, mountpoint shadowing, `/`-dir handle |
+| `vfs_mount.rel` | 1752 -> 2164 | 169 -> 357 | +412/+188 | provider registry transaction, required-mount diagnostic buffer |
+| `module_loader.rel` | 1419 -> 1484 | 373 | +65 | `fs_register` wrapper plus the provider checkpoint/rollback |
+| `process_exec.rel` | 1549 -> 1598 | 0 | +49 | `vfs_seek` + positioned reads |
+| `main.rel` | 1649 | 139 -> 143 | 0/+4 | TEST-ONLY boot-module hook (production compiles it out) |
+| `vfs_mutate.rel` | unchanged | unchanged | 0 | mountpoint/root error constants only |
+
+Kernel C lines added (all changed kernel `.c` files): 304 lines, +1837
+`_CODE` bytes and +192 `_DATA` bytes, about 6.7 bytes per line; the
+largest single addition is `vfs_seek` at 174 bytes.  The arena shrinks
+`49 -> 46` granules and slack `483 -> 291` bytes, so the split of the
+remaining end-of-M9 slack is tight on the section 32.39 ledger; the
+32-granule production floor and the boot-set arena plan still hold.
 
 Per-measure effect:
 

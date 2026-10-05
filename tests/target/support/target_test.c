@@ -45,6 +45,25 @@
 #if ZOS_M9_VFS_SELFTEST
 #include "m9_selftest.h"
 #endif
+#if ZOS_M9_PROVIDER_SELFTEST
+#include "m9_provider_selftest.h"
+/* Defined in kernel/main.c: the provider image loads its test modules
+ * through the same VFS-backed loader the production boot set uses. */
+extern int kernel_load_vfs_module(const char *name);
+#endif
+
+/* Boot-time acceptance modules, called between the production boot set and
+ * the normal mount pass.  Only an image that needs extra resident providers
+ * defines anything here; every other acceptance image is a no-op. */
+void zos_boot_test_modules(void)
+{
+#if ZOS_M9_PROVIDER_SELFTEST
+	(void)kernel_load_vfs_module("ramfs");
+	(void)kernel_load_vfs_module("m9probe");
+	(void)kernel_load_vfs_module("m9dup");
+	(void)kernel_load_vfs_module("m9fail");
+#endif
+}
 
 void zos_target_test_early(void)
 {
@@ -84,5 +103,8 @@ void zos_target_test_late(void)
 #endif
 #if ZOS_M9_VFS_SELFTEST
 	zos_run_m9_vfs_selftest();
+#endif
+#if ZOS_M9_PROVIDER_SELFTEST
+	zos_run_m9_provider_selftest();
 #endif
 }

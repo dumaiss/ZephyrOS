@@ -52,8 +52,8 @@ SCRATCH_SIZE = 0x200
 ZOS_EINVAL = 1
 ZOS_ENODEV = 3
 ZOS_ENOENT = 5
-REQUIRED_FAIL_LINE = OPTIONAL_FAIL_LINE
-REQUIRED_PANIC = "PANIC: vfs: mount failed"
+REQUIRED_FAIL_LINE = "vfs: required mount /DATA failed 0x03"
+REQUIRED_PANIC = "PANIC: " + REQUIRED_FAIL_LINE
 SELFTEST_OK = "m9 vfs selftest: OK"
 
 
@@ -215,6 +215,7 @@ class TestM9VfsAcceptance(M9VfsSimBase):
             0x0F: "flat mount selection (/SYSTEMX)",
             0x10: "deeper-path ENOTDIR/ENOENT rule",
             0x11: "null mutation operations",
+            0x12: "open flag validation",
         }
         z = self.make_cpu()
         self.boot_to_selftest(z)
@@ -306,6 +307,9 @@ class TestM9RequiredMount(M9VfsSimBase):
         self.assertNotIn("romfs: corrupt recovery image", sio)
         self.assertIn(REQUIRED_FAIL_LINE + "\r\n", sio)
         self.assertIn(REQUIRED_PANIC + "\r\n", sio)
+        # A required failure takes the fatal path, not the tolerant
+        # `unavailable` diagnostic.
+        self.assertNotIn(OPTIONAL_FAIL_LINE + "\r\n", sio)
         # The fatal mount pass stops the boot before the monitor.
         self.assertNotIn("console: dynamic driver failed", sio)
         self.assertNotIn("monitor", sio)

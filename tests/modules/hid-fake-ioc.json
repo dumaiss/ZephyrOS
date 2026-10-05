@@ -1,7 +1,7 @@
 {
   "name": "fakeioc",
   "type": "driver",
-  "abi": 2,
+  "abi": 3,
   "flags": 0,
   "objects": ["hid_fake_ioc.rel", "sdcc_indirect_calls.rel"],
   "image_areas": ["_CODE"],

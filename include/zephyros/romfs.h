@@ -85,7 +85,7 @@ int romfs_read(const romfs_file_t *file, uint32_t offset, void *dst,
 int romfs_entry_at(uint16_t index, romfs_file_t *out, char *name,
 		   uint16_t name_size);
 
-/* --- module-facing resource imports (driver ABI v2) --------------------
+/* --- module-facing resource imports (driver ABI v3) --------------------
  * The only filesystem-like services a loaded module receives.  Both
  * accept a name and operate on entries carrying exactly ROMFS_FLAG_DATA;
  * ZMOD/ZEX entries are rejected with -ZOS_EINVAL.  `romfs_file_t` and the

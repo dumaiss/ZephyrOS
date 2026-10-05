@@ -92,6 +92,26 @@ class TestMountgenAccepts(unittest.TestCase):
         self.assertIn("VFS_MOUNT_SYSTEM", text)
         self.assertIn("const uint8_t vfs_mount_count = 1u;", text)
 
+    def test_root_and_root_level_mounts_coexist(self):
+        # `/` and a root-level mountpoint such as `/R2` are siblings in the
+        # visible root, not nested, so the flat M9 model accepts them
+        # together (architecture sections 32.6-32.7).
+        man = manifest([
+            dict(SYSTEM),
+            {"path": "/", "filesystem": "ramfs", "source": "ramfs.0",
+             "required": True},
+            {"path": "/R2", "filesystem": "ramfs", "source": "ramfs.1",
+             "required": False},
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "m.json")
+            Path(path).write_text(json.dumps(man))
+            entries = mountgen.validate(path, ["romfs"])
+        self.assertEqual([e["path"] for e in entries],
+                         ["/SYSTEM", "/", "/R2"])
+        self.assertEqual(entries[1]["flags"], mountgen.FLAG_REQUIRED)
+        self.assertEqual(entries[2]["flags"], mountgen.FLAG_OPTIONAL)
+
     def test_optional_and_required_flags(self):
         man = manifest([
             dict(SYSTEM),

@@ -32,7 +32,7 @@ Manifest (JSON), paths resolved against --objdir (default: manifest dir):
     {
       "name": "m4.probe",
       "type": "driver",              # only "driver"
-      "abi": 2,                      # driver ABI v2
+      "abi": 3,                      # driver ABI v3
       "flags": 0,
       "objects": ["m4_probe.rel", "m4_sdcc_glue.rel"],
       "image_areas": ["_CODE"],      # concatenated in this order
@@ -72,7 +72,7 @@ NO_ENTRY = 0xFFFF
 GRANULE_SIZE = 512
 # Architectural maximum: (DF00h - ZMOD_ARCH_BASE) / GRANULE_SIZE = 95.
 MAX_GRANULES = 95
-DRIVER_ABI_VERSION = 2
+DRIVER_ABI_VERSION = 3
 A_BYTES = 4
 
 R_WORD = 0x00

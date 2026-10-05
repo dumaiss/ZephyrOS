@@ -16,18 +16,20 @@
 static char vfs_rename_target[ZOS_PATH_MAX];
 
 /* Resolve a mutation target.  Returns the provider path in *rel (never
- * null), or a negative error.  Mutating the VFS root itself is refused
- * before any provider is consulted. */
+ * null), or a negative error.  Mutating the VFS root or a mounted
+ * mountpoint is refused before any provider is consulted: `root_error` is
+ * ZOS_EBUSY for rmdir/unlink/rename and ZOS_EEXIST for mkdir (architecture
+ * section 32.12), since a mountpoint has no mutable provider object. */
 static int vfs_mutation_path(const char *path, uint16_t *index,
 			     const char **rel, int root_error)
 {
 	int result = vfs_resolve_path(path, index, rel);
 
-	if (result == VFS_RESOLVED_ROOT) {
+	if (result == VFS_RESOLVED_ROOT ||
+	    result == VFS_RESOLVED_MOUNTPOINT) {
 		return root_error;
 	}
-	if (result != VFS_RESOLVED_PROVIDER &&
-	    result != VFS_RESOLVED_MOUNTPOINT) {
+	if (result != VFS_RESOLVED_PROVIDER) {
 		return result;
 	}
 	return 0;
@@ -72,7 +74,7 @@ int vfs_unlink(const char *path)
 	const struct zfs_ops *ops;
 	const char *rel;
 	uint16_t index;
-	int result = vfs_mutation_path(path, &index, &rel, -ZOS_EISDIR);
+	int result = vfs_mutation_path(path, &index, &rel, -ZOS_EBUSY);
 
 	if (result != 0) {
 		return result;

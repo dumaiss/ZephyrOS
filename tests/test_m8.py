@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Host-side M8 tests for work package 14-m8-driver-abi-arena.
 
-Covers the declarative ABI v2 surface and the derived-arena build
+Covers the declarative driver-ABI surface and the derived-arena build
 contract:
 
-  - driver ABI v2 version, structure member order, and callback order,
+  - driver ABI version, structure member order, and callback order,
   - capability high-bit ranges (VIDEO/HID/IOC) and class values,
   - the two-pass arena geometry: alignment, minimum size, and the
     negative cases (unaligned relation, bytes in the derived arena,
@@ -125,21 +125,22 @@ def derived_arena_context(start, granules, data_base=0xC000):
             setattr(mapcheck, name, value)
 
 
-class TestAbiV2Contract(unittest.TestCase):
+class TestAbiContract(unittest.TestCase):
     def setUp(self):
         self.driver_env = parse_c_header(DRIVER_H)
         self.driver_env.update(parse_c_header(DEVICE_H))
         self.device_env = parse_c_header(DEVICE_H)
 
-    def test_abi_version_is_two(self):
-        self.assertEqual(evaluate("ZDRIVER_ABI_VERSION", self.driver_env), 2)
+    def test_abi_version_is_three(self):
+        self.assertEqual(evaluate("ZDRIVER_ABI_VERSION", self.driver_env), 3)
 
     def test_zdriver_api_callback_order(self):
         text = open(DRIVER_H).read()
         self.assertEqual(
             struct_member_order(text, "zdriver_api", function_pointers=True),
             ["device_register", "irq_claim", "irq_release", "device_find",
-             "device_interface", "resource_size", "resource_read"])
+             "device_interface", "resource_size", "resource_read",
+             "fs_register"])
 
     def test_zchar_ops_member_order(self):
         text = open(DEVICE_H).read()
@@ -164,7 +165,8 @@ class TestAbiV2Contract(unittest.TestCase):
         for offset in ("char_ops) == 7", "class_ops) == 9", "state) == 11"):
             self.assertIn(offset, device)
         for offset in ("device_find) == 6", "device_interface) == 8",
-                       "resource_size) == 10", "resource_read) == 12"):
+                       "resource_size) == 10", "resource_read) == 12",
+                       "fs_register) == 14"):
             self.assertIn(offset, driver)
 
     def test_capability_high_bits_are_pinned(self):

@@ -143,8 +143,9 @@ static int exec_read_header(struct vfs_file *file,
 	if (file->size < ZEX_HEADER_SIZE) {
 		return ZEX_EXEC_ERR_FILESIZE;
 	}
-	if (vfs_read(file, 0, header, ZEX_HEADER_SIZE) !=
-	    (int)ZEX_HEADER_SIZE) {
+	if (vfs_seek(file, 0, ZFS_SEEK_SET, (uint32_t *)0) != 0 ||
+	    vfs_read(file, header, ZEX_HEADER_SIZE) !=
+		    (int)ZEX_HEADER_SIZE) {
 		return ZEX_EXEC_ERR_READ;
 	}
 	return ZEX_EXEC_OK;
@@ -162,9 +163,11 @@ static int exec_load_image(struct vfs_file *file,
 		if (chunk > ZEX_LOAD_CHUNK) {
 			chunk = ZEX_LOAD_CHUNK;
 		}
-		if (vfs_read(file,
-			     (uint32_t)(ZEX_HEADER_SIZE + offset),
-			     zos_user_copy_staging, chunk) != (int)chunk) {
+		if (vfs_seek(file,
+			     (int32_t)ZEX_HEADER_SIZE + (int32_t)offset,
+			     ZFS_SEEK_SET, (uint32_t *)0) != 0 ||
+		    vfs_read(file, zos_user_copy_staging, chunk) !=
+			    (int)chunk) {
 			return ZEX_EXEC_ERR_READ;
 		}
 		if (exec_bank_write(bank,

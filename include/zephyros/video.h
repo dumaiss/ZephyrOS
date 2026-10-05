@@ -1,4 +1,4 @@
-/* ZephyrOS VIDEO class contract (M8, driver ABI v2).
+/* ZephyrOS VIDEO class contract (M8, driver ABI v3).
  *
  * The VIDEO class is the native graphics/video abstraction.  It carries
  * forward the useful semantic shape of the historical ZSDOS VIDEO_SEND

@@ -1,4 +1,4 @@
-/* ZephyrOS HID class contract (M8, driver ABI v2).
+/* ZephyrOS HID class contract (M8, driver ABI v3).
  *
  * The HID class is the native human-input abstraction.  It sits above
  * the IOC transport and never owns SIO1 framing or hardware status

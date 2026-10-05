@@ -34,8 +34,16 @@ static const struct zfs_provider *const vfs_builtin_providers[] = {
 
 struct vfs_mount_runtime vfs_mount_state[VFS_MAX_MOUNTS];
 
-static const struct zfs_provider *vfs_providers[VFS_PROVIDER_MAX];
+struct vfs_provider_entry {
+	const struct zfs_provider *provider;
+	const void *owner;      /* module that registered it, built-in: null */
+	uint16_t generation;    /* registration serial for rollback */
+};
+
+static struct vfs_provider_entry vfs_providers[VFS_PROVIDER_MAX];
 static uint8_t vfs_providers_count;
+static uint16_t vfs_provider_next_generation;
+static const void *vfs_provider_current_owner;
 static uint8_t vfs_current_phase = VFS_PHASE_BOOTSTRAP;
 
 /* --- provider registry ------------------------------------------------ */
@@ -55,14 +63,19 @@ int vfs_register_filesystem(const struct zfs_provider *provider)
 		return -ZOS_EBUSY;
 	}
 	for (i = 0; i < vfs_providers_count; ++i) {
-		if (vfs_name_equal(vfs_providers[i]->name, provider->name)) {
-			return -ZOS_EBUSY;
+		if (vfs_name_equal(vfs_providers[i].provider->name,
+				   provider->name)) {
+			return -ZOS_EEXIST;
 		}
 	}
 	if (vfs_providers_count >= VFS_PROVIDER_MAX) {
 		return -ZOS_ENOSPC;
 	}
-	vfs_providers[vfs_providers_count++] = provider;
+	vfs_providers[vfs_providers_count].provider = provider;
+	vfs_providers[vfs_providers_count].owner = vfs_provider_current_owner;
+	vfs_providers[vfs_providers_count].generation =
+		vfs_provider_next_generation++;
+	++vfs_providers_count;
 	return 0;
 }
 
@@ -74,11 +87,53 @@ const struct zfs_provider *vfs_find_provider(const char *name)
 		return (const struct zfs_provider *)0;
 	}
 	for (i = 0; i < vfs_providers_count; ++i) {
-		if (vfs_name_equal(vfs_providers[i]->name, name)) {
-			return vfs_providers[i];
+		if (vfs_name_equal(vfs_providers[i].provider->name, name)) {
+			return vfs_providers[i].provider;
 		}
 	}
 	return (const struct zfs_provider *)0;
+}
+
+vfs_provider_checkpoint_t vfs_provider_checkpoint(void)
+{
+	return vfs_provider_next_generation;
+}
+
+int vfs_provider_rollback(vfs_provider_checkpoint_t checkpoint)
+{
+	uint8_t i = 0;
+	int removed = 0;
+
+	while (i < vfs_providers_count) {
+		/* Wrap-safe "generation >= checkpoint" comparison; the
+		 * registry is tiny, so compacting in place is fine. */
+		if ((uint16_t)(vfs_providers[i].generation - checkpoint) >=
+		    0x8000u) {
+			++i;
+			continue;
+		}
+		{
+			uint8_t k = i;
+
+			while ((uint8_t)(k + 1u) < vfs_providers_count) {
+				vfs_providers[k] = vfs_providers[k + 1u];
+				++k;
+			}
+		}
+		--vfs_providers_count;
+		++removed;
+	}
+	return removed;
+}
+
+void vfs_provider_set_owner(const void *owner)
+{
+	vfs_provider_current_owner = owner;
+}
+
+const void *vfs_provider_owner(void)
+{
+	return vfs_provider_current_owner;
 }
 
 uint8_t vfs_phase(void)
@@ -99,6 +154,36 @@ static void vfs_diag_unavailable(const char *path, int result)
 	early_console_putc(hex[(code >> 4) & 0x0Fu]);
 	early_console_putc(hex[code & 0x0Fu]);
 	early_console_puts("\r\n");
+}
+
+/* Required-mount failure diagnostic.  panic() prints a single string, so
+ * the exact pinned line is built once into bank-7 scratch and then handed
+ * to panic(), which prints it as `PANIC: vfs: required mount <path> failed
+ * 0xNN`. */
+static char vfs_required_diag[ZOS_PATH_MAX + 40u];
+
+static void vfs_diag_required(const char *path, int result)
+{
+	static const char prefix[] = "vfs: required mount ";
+	static const char middle[] = " failed 0x";
+	static const char hex[] = "0123456789ABCDEF";
+	char *out = vfs_required_diag;
+	const char *scan;
+	unsigned code = (unsigned)(-result) & 0xFFu;
+
+	for (scan = prefix; *scan != '\0'; ++scan) {
+		*out++ = *scan;
+	}
+	for (scan = path; *scan != '\0'; ++scan) {
+		*out++ = *scan;
+	}
+	for (scan = middle; *scan != '\0'; ++scan) {
+		*out++ = *scan;
+	}
+	*out++ = hex[(code >> 4) & 0x0Fu];
+	*out++ = hex[code & 0x0Fu];
+	*out = '\0';
+	panic(vfs_required_diag);
 }
 
 /* The single shared bank-7 pathname scratch buffer (architecture section
@@ -299,6 +384,8 @@ int vfs_init(void)
 
 	vfs_current_phase = VFS_PHASE_BOOTSTRAP;
 	vfs_providers_count = 0;
+	vfs_provider_next_generation = 0;
+	vfs_provider_current_owner = (const void *)0;
 	vfs_mount_state_reset();
 
 	if (vfs_mount_count > VFS_MAX_MOUNTS) {
@@ -350,13 +437,14 @@ int vfs_mount_all(void)
 		if (result == 0) {
 			continue;
 		}
-		/* Required failures are fatal too; package 26 refines the
-		 * required-mount wording.  The optional diagnostic is the
-		 * pinned `vfs: <path> unavailable 0xNN` line. */
-		vfs_diag_unavailable(cfg->path, result);
+		/* A required mount failure is fatal and prints the pinned
+		 * `vfs: required mount <path> failed 0xNN` line; an optional
+		 * failure prints `vfs: <path> unavailable 0xNN` and leaves
+		 * the rest of the namespace usable. */
 		if ((cfg->flags & VFS_MOUNT_REQUIRED) != 0) {
-			panic("vfs: mount failed");
+			vfs_diag_required(cfg->path, result);
 		}
+		vfs_diag_unavailable(cfg->path, result);
 	}
 	vfs_current_phase = VFS_PHASE_READY;
 	return 0;

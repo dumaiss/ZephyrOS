@@ -78,7 +78,7 @@ def simple_manifest(objects, init, image_areas=("_CODE",),
     return {
         "name": name,
         "type": "driver",
-        "abi": 2,
+        "abi": 3,
         "flags": 0,
         "objects": list(objects),
         "image_areas": list(image_areas),

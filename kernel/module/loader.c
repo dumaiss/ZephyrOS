@@ -1,4 +1,4 @@
-/* ZephyrOS deterministic first-fit module loader (driver ABI v2).
+/* ZephyrOS deterministic first-fit module loader (driver ABI v3).
  *
  * The driver arena lies between the linked `__driver_arena_start` and
  * `__driver_arena_end` symbols.  Both are derived: the start is the
@@ -15,7 +15,7 @@
  *
  * Loading is transactional: header validation happens before the arena is
  * touched; after allocation the image is copied, BSS zeroed, relocations
- * applied, and the relocated init entry is called with driver ABI v2
+ * applied, and the relocated init entry is called with driver ABI v3
  * under device/IRQ registry checkpoints owned by the loading module.  A
  * failed load invokes the optional fini (cleanup only), rolls back that
  * module's registrations and IRQ claims, zeroes and frees its granules,
@@ -37,12 +37,25 @@
 
 #include "kernel/device/registry.h"
 #include "kernel/irq/irq_private.h"
+#include "kernel/vfs/vfs.h"
 
 /* Linker-exported arena bounds (never hard-coded in module code). */
 extern uint8_t __driver_arena_start[];
 extern uint8_t __driver_arena_end[];
 
-/* The only kernel services offered to a loaded module (driver ABI v2).
+/* Provider registration offered to a module (driver ABI v3).  It succeeds
+ * only during the module-loading phase; the loader owns the registration
+ * transaction, so a provider registered by a module whose init then fails
+ * is rolled back with that module's devices and IRQ claims. */
+static int module_fs_register(const struct zfs_provider *provider)
+{
+	if (vfs_phase() != VFS_PHASE_MODULES) {
+		return -ZOS_EBUSY;
+	}
+	return vfs_register_filesystem(provider);
+}
+
+/* The only kernel services offered to a loaded module (driver ABI v3).
  * Callback order is part of the ABI: it is pinned by compile-time
  * assertions in driver.h and by host tests. */
 static const struct zdriver_api module_driver_api = {
@@ -52,7 +65,8 @@ static const struct zdriver_api module_driver_api = {
 	device_find,
 	device_interface,
 	romfs_resource_size,
-	romfs_resource_read
+	romfs_resource_read,
+	module_fs_register
 };
 
 static uint8_t granule_used[ZMOD_MAX_GRANULES];
@@ -238,6 +252,7 @@ int module_load_source(const char *name, const struct zmod_source *source)
 	struct zmod_module *m;
 	zdev_checkpoint_t device_checkpoint;
 	irq_checkpoint_t irq_checkpoint;
+	vfs_provider_checkpoint_t provider_checkpoint;
 	int slot;
 	int first;
 	int result;
@@ -291,8 +306,10 @@ int module_load_source(const char *name, const struct zmod_source *source)
 
 	device_registry_set_owner(m);
 	irq_registry_set_owner(m);
+	vfs_provider_set_owner(m);
 	device_checkpoint = device_registry_checkpoint();
 	irq_checkpoint = irq_registry_checkpoint();
+	provider_checkpoint = vfs_provider_checkpoint();
 
 	result = ((int (*)(const struct zdriver_api *))
 		  (uint16_t)(m->load_base + container.init_offset))
@@ -300,6 +317,7 @@ int module_load_source(const char *name, const struct zmod_source *source)
 
 	device_registry_set_owner((const void *)0);
 	irq_registry_set_owner((const void *)0);
+	vfs_provider_set_owner((const void *)0);
 	module_active = (struct zmod_module *)0;
 
 	if (result != ZDRIVER_OK) {
@@ -313,6 +331,7 @@ int module_load_source(const char *name, const struct zmod_source *source)
 		}
 		(void)device_registry_rollback(device_checkpoint);
 		(void)irq_registry_rollback(irq_checkpoint);
+		(void)vfs_provider_rollback(provider_checkpoint);
 		module_release(m);
 		++module_failed_loads;
 		return ZMOD_EINIT;

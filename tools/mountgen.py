@@ -55,8 +55,14 @@ def _components(path):
 
 
 def _nested(a, b):
-    """True when mountpoint `a` is a proper component-prefix of `b`."""
+    """True when mountpoint `a` is a proper component-prefix of `b`.
+
+    The root `/` is not a containing mountpoint in the M9 flat model: `/`
+    and a root-level mountpoint such as `/R2` are siblings in the visible
+    root (section 32.6), so `/` never nests anything."""
     ca, cb = _components(a), _components(b)
+    if not ca:
+        return False
     return len(ca) < len(cb) and cb[:len(ca)] == ca
 
 
