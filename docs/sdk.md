@@ -129,11 +129,11 @@ block (`docs/zex-format.md` section 5.1):
    treated as an empty command line rather than reading past the block;
 3. it copies the tail into the SDK's own 127-byte buffer and calls
    `zos_split(tail, argv, ZOS_ARGV_MAX)` over that copy, which splits **in
-   place** (the quotes, spaces and NULs are rewritten in program BSS).
-   Page zero is only valid until the first syscall, so a program that
-   printed its arguments straight out of the startup block would see the
-   kernel's page-zero materialization instead; copying first is what makes
-   `argv` survive the syscalls `main()` makes;
+   place** (the quotes, spaces and NULs are rewritten in program BSS);
+   the startup block is an entry-time delivery, not durable storage (it
+   lies below the `0100h` syscall buffer window), so `argv` must point
+   into program data for the words to survive the syscalls `main()`
+   makes;
 4. it calls `int main(int argc, char **argv)` with `argc` clamped to
    `ZOS_ARGV_MAX` (16) even when more words were counted;
 5. on return it calls `zex_exit` (`SYS_EXIT`) with the low 16 bits of the

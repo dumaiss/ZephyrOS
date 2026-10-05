@@ -158,9 +158,10 @@ copy the tail into its own data before handing it to a syscall.
 runs `zos_split()` over the raw tail, calls `int main(int argc, char
 **argv)` and exits through `SYS_EXIT` with the returned status.  A
 program writes no entry assembly; `zos_args()` returns the kernel's
-page-zero block, and crt0 copies the tail into the SDK's own buffer
-before `zos_split()` parses it *in place* there, so `argv` stays valid
-after the first syscall resets page zero.
+page-zero block for programs that inspect it at entry, and crt0 copies
+the tail into the SDK's own buffer before `zos_split()` parses it *in
+place* there, so `argv` points into program data rather than at a
+delivery the syscall path is free to reuse.
 
 #### Tail splitting (runtime policy)
 
