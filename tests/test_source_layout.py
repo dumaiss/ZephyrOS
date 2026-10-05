@@ -32,6 +32,7 @@ Enforces docs/architecture.md section 3.1 and the current layout:
 Run with: make test
 """
 
+import json
 import os
 import re
 import shutil
@@ -96,6 +97,7 @@ OWNER_FILES = (
     "kernel/syscall/fs.h",
     "fs/romfs/romfs_provider.c",
     "fs/romfs/romfs_provider.h",
+    "include/zephyros/block.h",
     "include/zephyros/vfs.h",
     "config/mounts.json",
     "tools/mountgen.py",
@@ -136,6 +138,7 @@ OWNER_FILES = (
     "tests/modules/m9_fail.c",
     "tests/modules/m9_fail.json",
     "tests/test_m9_vfs.py",
+    "tests/test_block.py",
     "tests/test_m9_vfs_sim.py",
     "tests/test_m9_provider_sim.py",
     "include/zephyros/romfs.h",
@@ -541,6 +544,7 @@ MODULE_FACING_HEADERS = (
     "include/zephyros/ioc.h",
     "include/zephyros/hid.h",
     "include/zephyros/video.h",
+    "include/zephyros/block.h",
     "abi/zos/fs.h",
     "include/zephyros/vfs.h",
     "platform/zephyr80/hardware.h",
@@ -591,6 +595,7 @@ _MODULE_PROBE_SOURCE = """\
 #include "zephyros/ioc.h"
 #include "zephyros/hid.h"
 #include "zephyros/video.h"
+#include "zephyros/block.h"
 #include "zephyr80/hardware.h"
 
 static const struct zdevice_desc probe_desc = {
@@ -861,7 +866,8 @@ class TestModuleFacingHeaderBoundary(unittest.TestCase):
         text = "".join(_read(os.path.join(ROOT, rel)) for rel in headers)
         for needle in ("struct zdriver_api", "struct zdevice_desc",
                        "struct zchar_ops", "irq_source_t", "irq_handler_t",
-                       "ZCAP_IOC_COMMAND", "ZDEV_HID"):
+                       "ZCAP_IOC_COMMAND", "ZDEV_HID", "ZDEV_BLOCK",
+                       "struct zblock_ops", "ZCAP_BLOCK_READ"):
             self.assertIn(needle, text)
 
     @unittest.skipUnless(shutil.which("sdcc"), "sdcc not available")
@@ -896,6 +902,64 @@ class TestModuleFacingHeaderBoundary(unittest.TestCase):
                 result.returncode, 0,
                 "a kernel-only symbol resolved from the module-facing "
                 "headers:\n%s" % result.stdout)
+
+
+class TestNoResidentBlockDriver(unittest.TestCase):
+    """M9 defines the `ZDEV_BLOCK` class but keeps no resident block driver
+    (architecture 32.15/32.39: a feature with no consumer is not made
+    resident, for example `sd-ioc.zmod`).  This keeps the deferred-driver
+    decision mechanical instead of a convention."""
+
+    # A production ROMFS/module entry that names a block driver.
+    BLOCK_NAME_RE = re.compile(r"(?i)block|(^|[-_])sd([-_.]|$)")
+
+    def test_no_kernel_block_directory(self):
+        self.assertFalse(
+            os.path.isdir(os.path.join(ROOT, "kernel", "block")),
+            "a kernel block/ directory must not exist in M9")
+
+    def test_no_sd_driver_directory(self):
+        self.assertFalse(
+            os.path.isdir(os.path.join(ROOT, "drivers", "sd")),
+            "drivers/sd/ must not exist until the first block consumer")
+
+    def test_no_driver_registers_a_block_device(self):
+        offenders = []
+        for path in _walk("drivers", SOURCE_SUFFIXES):
+            if "ZDEV_BLOCK" in _code_only(path):
+                offenders.append(os.path.relpath(path, ROOT))
+        self.assertEqual(
+            offenders, [],
+            "a driver registers the ZDEV_BLOCK class in M9: %s"
+            % ", ".join(offenders))
+
+    def test_no_production_block_module_manifest(self):
+        manifests = os.path.join(ROOT, "modules", "manifests")
+        offenders = [name for name in sorted(os.listdir(manifests))
+                     if self.BLOCK_NAME_RE.search(name)]
+        self.assertEqual(
+            offenders, [],
+            "a production module manifest names a block driver: %s"
+            % ", ".join(offenders))
+
+    def test_production_romfs_packs_no_block_driver(self):
+        manifest = json.loads(
+            _read(os.path.join(ROOT, "recovery", "manifest.json")))
+        offenders = [entry["name"] for entry in manifest["files"]
+                     if self.BLOCK_NAME_RE.search(entry["name"])]
+        self.assertEqual(
+            offenders, [],
+            "the production ROMFS packs a block driver: %s"
+            % ", ".join(offenders))
+
+    def test_makefile_builds_no_block_driver(self):
+        text = _read(os.path.join(ROOT, "Makefile"))
+        for needle in ("sd-ioc.zmod", "/sd.zmod", "BOOT_SD_ZMOD",
+                       "ZOS_BLOCK"):
+            self.assertNotIn(
+                needle, text,
+                "the Makefile still builds or boots a block driver: %s"
+                % needle)
 
 
 class TestPlatformBoundary(unittest.TestCase):

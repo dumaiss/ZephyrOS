@@ -2929,6 +2929,8 @@ ZDEV_OTHER
 
 The numeric slot formerly called `ZDEV_STORAGE` is preserved but the architectural name is now `ZDEV_BLOCK`.
 
+M9 publishes the block class contract in `include/zephyros/block.h` (`zblock_info`, `zblock_ops`) with the `ZCAP_BLOCK_READ | ZCAP_BLOCK_WRITE | ZCAP_BLOCK_FLUSH | ZCAP_BLOCK_REMOVABLE` bits in capability range 20-23 (section 32.15). No `ZDEV_BLOCK` driver is resident: the first block driver arrives with its first consumer.
+
 ---
 
 ## 30.4 VIDEO class and V9958

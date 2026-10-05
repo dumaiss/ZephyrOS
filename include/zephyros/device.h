@@ -22,6 +22,9 @@
  * predictably instead of being inferred from the device name.  M8 also
  * refines the two M3 placeholder class names while keeping their
  * numeric slots: ZDEV_INPUT -> ZDEV_HID, ZDEV_TRANSPORT -> ZDEV_IOC.
+ * M9 renames the never-driven STORAGE slot to ZDEV_BLOCK (same numeric
+ * value 3) and publishes its class contract in
+ * `include/zephyros/block.h`; no block driver is resident in M9.
  */
 
 #ifndef ZEPHYROS_DEVICE_H
@@ -40,7 +43,7 @@ typedef uint32_t zdev_caps_t;
 enum {
 	ZDEV_SERIAL = 1,
 	ZDEV_VIDEO,
-	ZDEV_STORAGE,
+	ZDEV_BLOCK,
 	ZDEV_HID,
 	ZDEV_IOC,
 	ZDEV_OTHER
@@ -70,6 +73,15 @@ enum {
 #define ZCAP_HID_TEXT       0x00010000u
 #define ZCAP_HID_KEY_EVENTS 0x00020000u
 #define ZCAP_HID_GAMEPAD    0x00040000u
+
+/* BLOCK class capabilities: bits 20-23.  The generic block-device
+ * contract (`include/zephyros/block.h`) defines the operations each bit
+ * gates.  M9 publishes the class but ships no resident driver, so no
+ * device advertises these bits yet (architecture 32.15). */
+#define ZCAP_BLOCK_READ      0x00100000u
+#define ZCAP_BLOCK_WRITE     0x00200000u
+#define ZCAP_BLOCK_FLUSH     0x00400000u
+#define ZCAP_BLOCK_REMOVABLE 0x00800000u
 
 /* IOC class capabilities: bits 24-27. */
 #define ZCAP_IOC_COMMAND    0x01000000u

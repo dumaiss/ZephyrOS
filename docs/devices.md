@@ -53,9 +53,22 @@ A device may expose generic character operations (`char_ops`), a
 class-specific interface (`class_ops`, type determined by `class_id`),
 or both.  Capabilities are authoritative: unsupported class operations
 fail predictably rather than being inferred from the device name.  Class
-values are stable: SERIAL=1, VIDEO=2, STORAGE=3, HID=4 (formerly INPUT),
-IOC=5 (formerly TRANSPORT), OTHER=6; capability ranges are documented per
-class (generic 0-3, VIDEO 8-14, HID 16-18, IOC 24-27).
+values are stable: SERIAL=1, VIDEO=2, BLOCK=3 (formerly STORAGE), HID=4
+(formerly INPUT), IOC=5 (formerly TRANSPORT), OTHER=6; capability ranges
+are documented per class (generic 0-3, VIDEO 8-14, HID 16-18, BLOCK
+20-23, IOC 24-27).
+
+`ZDEV_BLOCK` is the generic raw block-device class.  M9 renames the
+never-driven `ZDEV_STORAGE` numeric slot to `ZDEV_BLOCK` (the value 3 is
+preserved, with no alias) and publishes its class contract in
+`include/zephyros/block.h`: the `zblock_info` geometry, the `zblock_ops`
+operations, and the `ZCAP_BLOCK_READ | ZCAP_BLOCK_WRITE |
+ZCAP_BLOCK_FLUSH | ZCAP_BLOCK_REMOVABLE` capability bits in the
+previously unused range 20-23.  M9 ships no resident `ZDEV_BLOCK` driver,
+because nothing consumes one: IOC-FAT talks to `ZDEV_IOC` directly.  The
+first block driver arrives with its first consumer, the first native
+filesystem (`sd-ioc.zmod`, a `ZDEV_BLOCK` driver that consumes
+`ZDEV_IOC`).
 
 A capability may be provided by different devices (a V9958 provides
 VIDEO + CONSOLE_OUT; an HID device provides HID + CONSOLE_IN), so console
@@ -824,12 +837,14 @@ subsystem and corrupt-store images, and the changed production image
 
 No heap, no module unload or hot-plug, no filesystem API for modules
 (beyond the two bounded DATA resource imports), no process API here, and
-no user-visible device syscall.  M4 stages 07-08 (this document plus
-`docs/module-format.md`) delivered the loader and the relocatable SIO
-driver module; M8 work package 14 delivered driver ABI v2 (raised to
-v3 by M9 package 26), the
-read-only discovery calls, the per-class capability ranges, the
-preferred-direction console policy, and the derived production arena;
+no user-visible device syscall.  M9 defines the `ZDEV_BLOCK` class
+contract without a resident driver: the first block driver arrives with
+its first consumer (architecture 32.15/32.39).  M4 stages 07-08 (this
+document plus `docs/module-format.md`) delivered the loader and the
+relocatable SIO driver module; M8 work package 14 delivered driver ABI
+v2 (raised to v3 by M9 package 26), the read-only discovery calls, the
+per-class capability ranges, the preferred-direction console policy, and
+the derived production arena;
 M8 work packages 15-16 delivered the IOC command+bulk class and its
 deterministic boot load after SIO; M8 work package 17 delivered the HID
 keyboard/text class, its boot load after IOC, and the input-only
