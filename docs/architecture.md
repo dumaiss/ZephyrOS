@@ -3527,7 +3527,7 @@ slot:
     data[512]
 ```
 
-- Slot size is 512 bytes. The slot count is a build setting of the IOC-FAT module (default 2) and is reported in the bank-7 ledger (section 32.39).
+- Slot size is 512 bytes. The slot count is a build setting of the IOC-FAT module, default 1 under the bank-7 budget, raised only when the ledger shows room. It is reported in the bank-7 ledger (section 32.39).
 - Read hit returns locally; a miss reads the aligned block through FS2 and fills a slot. Reads crossing a block boundary are split.
 - Writes are **write-through**: FS2 write, then confirmed DONE, then update or invalidate overlapping slots. A failed or unconfirmed write changes no cached byte.
 - Because FS2 serves at most two open files, a confirmed write, a truncating open, `unlink`, or `rename` also invalidates every slot of the other open file. This is the whole coherence rule.
@@ -4258,6 +4258,40 @@ image/BSS), so that module needs 9 granules and the boot set uses 20 of
 the 49 (`sio x1, ioc x8, hid x2, v9958 x9`), leaving 29 free.
 The per-object package-25 sizes and the correction-02 saving are in
 `docs/vfs.md` section 9.
+
+---
+
+## 32.39 Bank-7 residency budget
+
+Bank 7 holds everything resident in OS mode except common memory. The kernel executive, the resident driver/provider modules and the runtime data share one window:
+
+```text
+2000h ............ kernel executive (_CODE, linked)
+align 512 ........ resident ZMOD arena (derived)
+derived .......... runtime data (_DATA/_INITIALIZED, derived down from DF00h)
+DF00h-DFFFh ...... ISR stack
+```
+
+After the first M9 slice (package 25), the kernel executive was 24.3 KiB and the original M9 design projected about 48 KiB of resident code at SDCC density, beyond the window. M9 therefore treats resident bytes as an architectural resource. Because the arena start follows the kernel end and the arena end follows the data base, kernel code, module code and runtime data are interchangeable within the window. The budget is therefore one total, not separate per-kind limits:
+
+```text
+2000h-DEFFh  47.75 KiB  kernel + resident ZMODs + runtime data + ISR stack
+-------------------------------------------------------------------------
+production arena floor   >= 32 granules, holding the production boot set
+slack                    >= 2 KiB at the end of M9
+```
+
+Rules:
+
+- Kernel and modules are compiled for size. User programs keep their own flags.
+- The runtime-data base is derived from the linked data size, so unused data space goes to the arena (no fixed `C000h` boundary).
+- Every package reports a one-line `bank7:` ledger before and after, and the bytes its own code and data add.
+- Reserved data is sized from measurement, not round numbers. For example, exec frame saves follow the measured worst-case gate-stack depth.
+- Provider caches are sized by budget. The IOC-FAT cache defaults to one 512-byte slot unless the ledger shows room for more (section 32.19).
+- A mechanism that M9 replaces is deleted, not kept as a compatibility path. ZephyrOS is still under construction: no interface, binary format, image or transcript carries a backward-compatibility obligation. Completed milestones prove mechanisms; they do not freeze them.
+- A feature with no consumer is not made resident (for example `sd-ioc.zmod`, `FS_STATFS`).
+- Supervisor checkpoints compare the measured ledger with the remaining projection: after package 26 (passed 2026-10-05: 26 free granules, 291 bytes of slack, projected end-of-M9 slack 1.4-3.2 KiB before the measures above), and after package 28, before IOC-FAT is built.
+- If the projection falls below the slack target, the choice between descoping and a second kernel bank goes back to the project owner. It is never made by raising a limit or lowering the arena floor.
 
 ---
 
