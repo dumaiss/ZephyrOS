@@ -241,8 +241,6 @@ void vfs_process_exit(uint8_t pid)
 
 /* --- chdir / getcwd --------------------------------------------------- */
 
-static char vfs_cwd_canonical[ZOS_PATH_MAX];
-
 int vfs_chdir(const char *path)
 {
 	const char *base = vfs_cwd_for(process_running_pid);
@@ -250,12 +248,16 @@ int vfs_chdir(const char *path)
 	uint8_t i;
 	int result;
 
-	result = vfs_path_normalize_at(base, path, vfs_cwd_canonical,
+	/* Normalize into the workspace path slot, verify the directory with the
+	 * non-normalizing stat (so the slot is never read and written at once),
+	 * and only then store the canonical path in the caller's CWD slot, so a
+	 * failed chdir never disturbs the CWD. */
+	result = vfs_path_normalize_at(base, path, VFS_WS_NORM_A,
 				       ZOS_PATH_MAX);
 	if (result != 0) {
 		return result;
 	}
-	result = vfs_stat(vfs_cwd_canonical, &st);
+	result = vfs_stat_norm(VFS_WS_NORM_A, &st);
 	if (result != 0) {
 		return result;
 	}
@@ -264,7 +266,7 @@ int vfs_chdir(const char *path)
 	}
 	for (i = 0; i < ZOS_EXEC_MAX_DEPTH; ++i) {
 		if (vfs_cwd_owner[i] == process_running_pid) {
-			vfs_path_copy(vfs_cwd_path[i], vfs_cwd_canonical);
+			vfs_path_copy(vfs_cwd_path[i], VFS_WS_NORM_A);
 			return 0;
 		}
 	}

@@ -88,6 +88,85 @@ _Static_assert(__builtin_offsetof(struct vfs_mount_runtime, last_error) == 6,
 	       "vfs_mount_runtime last_error offset");
 #endif
 
+/* --- bank-7 VFS workspace (package 27, correction-01) -----------------
+ *
+ * One 512-byte static workspace, owned by kernel/vfs/ and kernel-private
+ * (never visible to modules or applications).  It replaces the six
+ * separate pathname buffers and the staging buffer package 27 first
+ * carried; work/M9-REFERENCE.md allows one shared pathname scratch plus a
+ * second only for rename.  It has two mutually exclusive views:
+ *
+ *   staging view   all 512 bytes; READ/WRITE chunk data and the
+ *                  stat/readdir/getcwd result assembled for the gate.
+ *   path view      four 128-byte slots, in this order:
+ *                    slot 0  copy-in A     caller path (NUL-terminated)
+ *                    slot 1  normalized A  canonical path (CWD-relative)
+ *                    slot 2  copy-in B     rename target only
+ *                    slot 3  normalized B  rename target only
+ *
+ * Which operation uses which view:
+ *   OPEN OPENDIR STAT MKDIR RMDIR UNLINK CHDIR   path view (0 -> 1)
+ *   RENAME                                       path view (0->1, 2->3)
+ *   GETCWD                                       path view (slot 1), then
+ *                                                the staging view
+ *   READ WRITE READDIR                           staging view
+ *   CLOSE CLOSEDIR SYNC SEEK                     neither
+ * Boot-time kernel callers (the loader and exec, through the kernel file
+ * API) use the path view only; no syscall is active during boot.
+ *
+ * Execution is single-tasking, the gate is not re-entrant and no ISR
+ * touches VFS, so the two views are never live at once. */
+#define VFS_WORKSPACE_SIZE 512u
+#define VFS_PATH_SLOT_SIZE 128u
+#define VFS_PATH_SLOTS     4u
+
+extern uint8_t vfs_workspace[VFS_WORKSPACE_SIZE];
+
+#define VFS_WS_STAGING ((uint8_t *)vfs_workspace)
+#define VFS_WS_SLOT(n) ((char *)&vfs_workspace[(n) * VFS_PATH_SLOT_SIZE])
+#define VFS_WS_IN_A    VFS_WS_SLOT(0u)
+#define VFS_WS_NORM_A  VFS_WS_SLOT(1u)
+#define VFS_WS_IN_B    VFS_WS_SLOT(2u)
+#define VFS_WS_NORM_B  VFS_WS_SLOT(3u)
+
+#if defined(__SDCC)
+_Static_assert(VFS_PATH_SLOTS * VFS_PATH_SLOT_SIZE == VFS_WORKSPACE_SIZE,
+	       "the VFS workspace views must exactly tile the buffer");
+#endif
+
+/* View guard: the debug/acceptance builds (ZOS_VFS_WS_GUARD=1) fault on a
+ * path-view / staging-view overlap; production compiles it out.  The check
+ * is inlined (no helper call), so the guard adds no stack frame to the
+ * syscall path and the measured gate-stack depth is unaffected. */
+#ifndef ZOS_VFS_WS_GUARD
+#define ZOS_VFS_WS_GUARD 0
+#endif
+
+#define VFS_WS_VIEW_PATH 1u
+#define VFS_WS_VIEW_DATA 2u
+
+#if ZOS_VFS_WS_GUARD
+extern uint8_t vfs_ws_view; /* 0 free, else the active view */
+void vfs_ws_fault(void);    /* never returns */
+
+#define vfs_ws_enter(view) \
+	do { \
+		if (vfs_ws_view != 0u && vfs_ws_view != (view)) { \
+			vfs_ws_fault(); \
+		} \
+		vfs_ws_view = (view); \
+	} while (0)
+#define vfs_ws_leave(view) \
+	do { \
+		if (vfs_ws_view == (view)) { \
+			vfs_ws_view = 0u; \
+		} \
+	} while (0)
+#else
+#define vfs_ws_enter(view) ((void)(view))
+#define vfs_ws_leave(view) ((void)(view))
+#endif
+
 /* --- path helpers (used by VFS and the acceptance tests) -------------- */
 
 /* Normalize `path` (absolute against the base `/`) into an absolute
@@ -135,6 +214,31 @@ uint8_t vfs_is_mountpoint(const char *norm);
  * stricter test for the `/` mount itself. */
 uint8_t vfs_mount_is_root_level(uint16_t index);
 uint8_t vfs_mount_is_root(uint16_t index);
+
+/* Select the owning mount for an already-normalized absolute path, writing
+ * the discriminant to the caller's `result` local (VFS_RESOLVED_* or a
+ * negative ZOS_E* value) and setting *index / *rel.  This is the inner half
+ * of vfs_resolve_path; `stat` and `chdir` use it on a path they normalized
+ * into the workspace themselves, so the shared normalized slot is never read
+ * and written at once.
+ *
+ * A macro, not a function: it must add no stack frame, so the FS_* syscall
+ * path depth is identical to the pre-correction code (the workspace
+ * consolidation must not deepen the gate stack). */
+#define VFS_RESOLVE_NORM(norm, index, rel, result) \
+	do { \
+		if ((norm)[1] == '\0') { \
+			(result) = VFS_RESOLVED_ROOT; \
+		} else if (((result) = vfs_mount_resolve((norm), (index), \
+							 (rel))) == 0) { \
+			if (vfs_is_mountpoint(norm)) { \
+				*(rel) = "/"; \
+				(result) = VFS_RESOLVED_MOUNTPOINT; \
+			} else { \
+				(result) = VFS_RESOLVED_PROVIDER; \
+			} \
+		} \
+	} while (0)
 
 /* --- kernel file API (path-based providers) --------------------------- */
 
@@ -192,6 +296,10 @@ int vfs_close(struct vfs_file *file);
 /* Path-based stat.  `stat("/")` and `stat()` of a mounted mountpoint are
  * answered by VFS itself as directories. */
 int vfs_stat(const char *path, struct zfs_stat *out);
+
+/* Stat for an already normalized absolute path (no normalization, so it is
+ * safe to call with a buffer the caller normalized into the workspace). */
+int vfs_stat_norm(const char *norm, struct zfs_stat *out);
 
 /* --- path-based mutation entry points (syscall hooks, package 27) ----- */
 

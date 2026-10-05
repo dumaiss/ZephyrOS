@@ -236,7 +236,7 @@ class TestVfsObjectGroup(unittest.TestCase):
             "$(BUILD)/vfs_mounts.rel", "$(BUILD)/vfs_path.rel",
             "$(BUILD)/vfs_mount.rel", "$(BUILD)/vfs_file.rel",
             "$(BUILD)/vfs_dir.rel", "$(BUILD)/vfs_mutate.rel",
-            "$(BUILD)/vfs_process.rel",
+            "$(BUILD)/vfs_process.rel", "$(BUILD)/vfs_workspace.rel",
             "$(BUILD)/romfs_provider.rel"])
         # Join makefile continuations so a multi-line assignment counts
         # once; every group member is listed by the group only.

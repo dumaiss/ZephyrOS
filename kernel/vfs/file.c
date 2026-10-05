@@ -13,6 +13,7 @@
  */
 
 #include "kernel/vfs/vfs.h"
+#include "zephyros/process.h"
 
 static void vfs_fill_stat(struct zfs_stat *out, uint8_t type, uint32_t size)
 {
@@ -215,23 +216,19 @@ int vfs_close(struct vfs_file *file)
 	return result;
 }
 
-int vfs_stat(const char *path, struct zfs_stat *out)
+int vfs_stat_norm(const char *norm, struct zfs_stat *out)
 {
 	const struct zfs_ops *ops;
-	const char *rel;
-	uint16_t index;
+	const char *rel = (const char *)0;
+	uint16_t index = 0;
 	int result;
 
-	if (out == (struct zfs_stat *)0) {
+	if (norm == (const char *)0 || out == (struct zfs_stat *)0) {
 		return -ZOS_EINVAL;
 	}
-	result = vfs_resolve_path(path, &index, &rel);
-	if (result == VFS_RESOLVED_ROOT) {
-		vfs_fill_stat(out, ZFS_TYPE_DIR, 0); /* `/` is owned by VFS */
-		return 0;
-	}
-	if (result == VFS_RESOLVED_MOUNTPOINT) {
-		/* VFS owns mountpoint metadata: it is a directory. */
+	VFS_RESOLVE_NORM(norm, &index, &rel, result);
+	if (result == VFS_RESOLVED_ROOT || result == VFS_RESOLVED_MOUNTPOINT) {
+		/* `/` and the mountpoints are VFS-owned directories. */
 		vfs_fill_stat(out, ZFS_TYPE_DIR, 0);
 		return 0;
 	}
@@ -240,6 +237,17 @@ int vfs_stat(const char *path, struct zfs_stat *out)
 	}
 	ops = vfs_mount_state[index].provider->ops;
 	return ops->stat(vfs_mount_state[index].fs_state, rel, out);
+}
+
+int vfs_stat(const char *path, struct zfs_stat *out)
+{
+	int result = vfs_path_normalize_at(vfs_cwd_for(process_running_pid),
+					   path, VFS_WS_NORM_A, ZOS_PATH_MAX);
+
+	if (result != 0) {
+		return result;
+	}
+	return vfs_stat_norm(VFS_WS_NORM_A, out);
 }
 
 /* --- loader source adapter -------------------------------------------- */

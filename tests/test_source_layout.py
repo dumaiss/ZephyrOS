@@ -90,6 +90,7 @@ OWNER_FILES = (
     "kernel/vfs/dir.c",
     "kernel/vfs/mutate.c",
     "kernel/vfs/process.c",
+    "kernel/vfs/workspace.c",
     "kernel/syscall/fs.c",
     "kernel/syscall/fs.h",
     "fs/romfs/romfs_provider.c",
@@ -511,6 +512,7 @@ KERNEL_ONLY_IDENTIFIERS = (
     "vfs_opendir", "vfs_readdir", "vfs_closedir",
     "vfs_file_source", "vfs_mount_state", "vfs_mount_table",
     "vfs_mount_count", "vfs_mount_runtime", "vfs_mount_config",
+    "vfs_workspace", "vfs_ws_enter", "vfs_ws_leave", "vfs_stat_norm",
     "VFS_O_EXEC", "VFS_MOUNT_SYSTEM",
 )
 

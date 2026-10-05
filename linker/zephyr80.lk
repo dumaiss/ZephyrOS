@@ -35,6 +35,7 @@ build/vfs_file.rel
 build/vfs_dir.rel
 build/vfs_mutate.rel
 build/vfs_process.rel
+build/vfs_workspace.rel
 build/romfs_provider.rel
 build/process.rel
 build/process_exec.rel

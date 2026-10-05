@@ -67,7 +67,7 @@ ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
 M9_VFS_OBJS := $(BUILD)/vfs_mounts.rel $(BUILD)/vfs_path.rel \
                $(BUILD)/vfs_mount.rel $(BUILD)/vfs_file.rel \
                $(BUILD)/vfs_dir.rel $(BUILD)/vfs_mutate.rel \
-               $(BUILD)/vfs_process.rel \
+               $(BUILD)/vfs_process.rel $(BUILD)/vfs_workspace.rel \
                $(BUILD)/romfs_provider.rel
 C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
              $(BUILD)/syscall.rel $(BUILD)/diag.rel $(BUILD)/fs.rel \
@@ -365,7 +365,8 @@ ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
 	$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
 	$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST)),)
-CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -Itests/target/include
+CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1 \
+		-Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
 endif
 
@@ -636,6 +637,11 @@ $(BUILD)/vfs_mutate.rel: kernel/vfs/mutate.c kernel/vfs/vfs.h \
 $(BUILD)/vfs_process.rel: kernel/vfs/process.c kernel/vfs/vfs.h \
 		include/zephyros/fs.h include/zephyros/vfs.h \
 		include/zephyros/process.h include/zephyros/errno.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/vfs_workspace.rel: kernel/vfs/workspace.c kernel/vfs/vfs.h \
+		include/zephyros/fs.h include/zephyros/vfs.h \
+		include/zephyros/kernel.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/fs.rel: kernel/syscall/fs.c kernel/syscall/fs.h \

@@ -550,13 +550,34 @@ rollback (through `process_slot_release`).  Relative paths resolve against
 `vfs_cwd_for(pid)`, so `chdir` crosses mounts transparently.
 
 **Services.** Argument blocks live in the caller window `0100h-1FFFh`;
-paths are copied into a shared static scratch and normalized against the
+paths are copied into the shared VFS workspace and normalized against the
 CWD; `buffer`/`out` pointers are validated against `0100h-DFFFh` and move
-only through the checked bank-copy gates.  File data is chunked through
-the single 512-byte bank-7 staging buffer, bridging to the caller bank
-through the 64-byte common gate.  Every service validates its complete
-block before any state change, and every `FS_*` call is refused with
-`ZOS_EBUSY` before the VFS READY phase.
+only through the checked bank-copy gates.  File data is chunked through the
+workspace staging view, bridging to the caller bank through the 64-byte
+common gate.  Every service validates its complete block before any state
+change, and every `FS_*` call is refused with `ZOS_EBUSY` before the VFS
+READY phase.
+
+**Workspace (correction-01).** All pathname and transfer scratch is one
+512-byte bank-7 workspace, `vfs_workspace`, owned by `kernel/vfs/` and
+declared kernel-only in `kernel/vfs/vfs.h`.  It has two mutually exclusive
+views: the staging view (all 512 bytes) and four 128-byte path slots
+(copy-in A, normalized A, copy-in B, normalized B; the B pair is used only
+by `rename`).  `OPEN`, `OPENDIR`, `STAT`, `MKDIR`, `RMDIR`, `UNLINK`,
+`CHDIR` use the path view; `RENAME` uses both path pairs; `READ`, `WRITE`,
+`READDIR` use the staging view; `GETCWD` uses the path view and then the
+staging view.  Boot-time kernel callers (the loader and exec, through the
+kernel file API) use the path view only.  Single-tasking execution, the
+non-re-entrant gate and the absence of VFS use in an ISR mean the two views
+are never live at once; `kernel/vfs/workspace.c` asserts that invariant at
+run time when `ZOS_VFS_WS_GUARD=1` (the acceptance/simulator builds) and
+compiles it out of production.  Every claim site brackets its use of the
+workspace with `vfs_ws_enter()`/`vfs_ws_leave()`, including the module-phase
+boot loader in `kernel/main.c`, so a guarded image panics
+(`vfs: workspace view overlap`) if a live path pointer is ever overwritten
+by staging data.  A host test pins the guard wiring: it is off in
+production, on for the `m9-fs-selftest` image whose replay asserts "no
+PANIC", and every claim is balanced.
 
 **Acceptance.** `make m9-fs-selftest` builds the SIO-only image with ROMFS
 at `/SYSTEM` and the test-only `ramfs` at `/` and `/R2`, and runs two
@@ -572,10 +593,22 @@ kernel gate-stack depth stays inside 256 bytes.  The physical gate is
 hardware (2026-10-05; `docs/validation/2026-10-05-m9-fs-syscalls.md`).
 
 **Budget (section 32.39).** The production ledger moved from package 26
-(`code 23526 end 7BE6h`, `arena 46 granules`, `data 1294`) to package 27
+(`code 23526 end 7BE6h`, `arena 46 granules`, `data 1501`) to package 27
 (`code 27636 end 8BF4h`, `arena 35 granules (20 boot, 15 free)`,
-`data 3049 at D200h`, `isr 256`, `slack 279`): `+3987` `_CODE` and
-`+1755` `_DATA` (the 512-byte staging buffer, the 4x128-byte CWD pool, the
-descriptor pool and the syscall path scratch).  The production arena still
-clears the 32-granule floor and holds the boot set; the slack target is
-re-checked by the supervisor after package 28.
+`data 3049 at D200h`, `isr 256`, `slack 279`): `+4110` `_CODE` and
+`+1548` `_DATA` (the 512-byte staging buffer, the 4x128-byte CWD pool, the
+descriptor pool and the syscall path scratch).  The production arena clears
+the 32-granule floor and holds the 20-granule production boot set; the slack
+target is re-checked by the supervisor after package 28.
+
+Correction-01 then consolidated the six pathname buffers and the staging
+buffer into the single workspace, taking the production ledger to
+`code 27759 end 8C6Fh | arena 36 granules (20 boot, 16 free) | data 2113 at
+D600h | isr 256 | slack 191`: `_DATA` drops by 936 bytes (`+56` `_CODE` for
+the non-normalizing resolve/stat split and the piecewise panic line) and the
+arena gains a granule.  The worst-case kernel gate-stack depth improved from
+151 to 147 of 256 bytes, because the `READ`/`WRITE` and `READDIR` handlers
+release the workspace view at a single `out:` exit instead of through a
+bracketing wrapper call.  The corrected production image boots on hardware
+to the V9958 monitor prompt with the same `scratch=0F19` figure as before
+the correction (2026-10-05; `docs/validation/2026-10-05-m9-fs-syscalls.md`).

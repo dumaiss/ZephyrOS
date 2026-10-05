@@ -212,5 +212,113 @@ class TestBuildWiring(unittest.TestCase):
         self.assertIn("zos_run_m9_fs_selftest", text)
 
 
+class TestVfsWorkspace(unittest.TestCase):
+    """One bank-7 VFS workspace replaces the six pathname buffers and the
+    staging buffer (work/27-m9-fs-syscalls/correction-01), so production
+    `_DATA` drops by at least 900 bytes."""
+
+    DELETED = ("fs_staging", "fs_path1", "fs_path2", "vfs_cwd_canonical",
+               "vfs_norm", "vfs_rename_target", "kernel_boot_path",
+               "vfs_required_diag")
+
+    # The package-27 production `_DATA` size the correction must beat by
+    # 900 bytes (map `_DATA` area, 2026-10-05).
+    DATA_BASELINE = 3047
+    DATA_DROP_MIN = 900
+
+    # A second pathname-sized scratch buffer would show up as its own global;
+    # the normalize helpers are functions and must not match these patterns.
+    PATHNAME_SHAPED = (r"path[0-9]", r"staging", r"canonical",
+                       r"required_diag", r"rename_target", r"boot_path")
+
+    def test_guarded_views_are_wired_into_debug_and_acceptance_builds(self):
+        header = _read(VFS_H)
+        self.assertIn("#define ZOS_VFS_WS_GUARD 0", header,
+                      "the guard must default off so production pays nothing")
+        self.assertRegex(
+            header, r"if \(vfs_ws_view != 0u && vfs_ws_view != \(view\)\)",
+            "the guard macro must detect an overlapping view claim")
+        self.assertIn("vfs_ws_fault()", header)
+
+        workspace = _read(ROOT / "kernel" / "vfs" / "workspace.c")
+        self.assertIn("#if ZOS_VFS_WS_GUARD", workspace)
+        self.assertIn("vfs_ws_fault", workspace)
+
+        # The m9-fs-selftest image is the one whose simulator replay asserts
+        # "no PANIC", so the guard has to be on for it.
+        makefile = _read(ROOT / "Makefile")
+        match = re.search(
+            r"ifneq \(\$\(filter 1,([\s\S]*?)\),\)\nCFLAGS\s*\+="
+            r" -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1", makefile)
+        self.assertIsNotNone(
+            match, "no acceptance block enables -DZOS_VFS_WS_GUARD=1")
+        self.assertIn("$(ZOS_M9_FS_SELFTEST)", match.group(1))
+
+    def test_view_claims_are_balanced(self):
+        for rel in ("kernel/syscall/fs.c", "kernel/main.c"):
+            text = _read(ROOT / rel)
+            self.assertEqual(text.count("vfs_ws_enter("),
+                             text.count("vfs_ws_leave("),
+                             "%s claims a view without releasing it" % rel)
+            self.assertIn("vfs_ws_enter(", text)
+
+    def test_boot_loader_claims_the_path_view(self):
+        text = _read(ROOT / "kernel" / "main.c")
+        self.assertIn("vfs_ws_enter(VFS_WS_VIEW_PATH)", text)
+        self.assertIn("vfs_ws_leave(VFS_WS_VIEW_PATH)", text)
+
+    def test_header_declares_one_workspace_with_two_views(self):
+        text = _read(VFS_H)
+        self.assertIn("#define VFS_WORKSPACE_SIZE 512u", text)
+        self.assertIn("#define VFS_PATH_SLOT_SIZE 128u", text)
+        self.assertIn("#define VFS_PATH_SLOTS     4u", text)
+        self.assertIn("extern uint8_t vfs_workspace[VFS_WORKSPACE_SIZE];",
+                      text)
+        for view in ("VFS_WS_STAGING", "VFS_WS_IN_A", "VFS_WS_NORM_A",
+                     "VFS_WS_IN_B", "VFS_WS_NORM_B"):
+            self.assertIn(view, text, "the workspace lacks %s" % view)
+        self.assertIn("vfs_ws_enter", text)
+        self.assertIn("vfs_ws_leave", text)
+
+    def test_deleted_buffers_are_gone_from_the_kernel(self):
+        for rel in ("kernel/syscall/fs.c", "kernel/vfs/mount.c",
+                    "kernel/vfs/mutate.c", "kernel/vfs/process.c",
+                    "kernel/vfs/file.c", "kernel/main.c"):
+            text = _read(ROOT / rel)
+            for name in self.DELETED:
+                self.assertNotRegex(
+                    text, r"\b%s\b" % name,
+                    "%s still names the deleted buffer %s" % (rel, name))
+
+    def test_production_map_has_the_single_workspace_symbol(self):
+        map_path = ROOT / "build" / "zephyros.map"
+        if not map_path.exists():
+            self.skipTest("build/zephyros.map missing; run make first")
+        text = _read(map_path)
+        self.assertEqual(len(re.findall(r"\b_vfs_workspace\b", text)), 1,
+                         "the production map must carry exactly one "
+                         "vfs_workspace symbol")
+        for pattern in self.PATHNAME_SHAPED:
+            for name in re.findall(r"^_([A-Za-z0-9_]*%s[A-Za-z0-9_]*)"
+                                   % pattern, text, re.M):
+                self.fail("the production map still carries the pathname "
+                          "buffer _%s" % name)
+        # The deleted buffers were file-local statics, so they never appeared
+        # in the global map; assert no global symbol re-introduces one.
+        for name in self.DELETED:
+            self.assertNotRegex(text, r"\b_%s\b" % name,
+                                "the production map carries _%s" % name)
+        match = re.search(
+            r"^_DATA\s+[0-9A-Fa-f]{8}\s+[0-9A-Fa-f]{8}\s+=\s+(\d+)\.",
+            text, re.M)
+        self.assertIsNotNone(match, "no _DATA area in the production map")
+        size = int(match.group(1))
+        self.assertLessEqual(
+            size, self.DATA_BASELINE - self.DATA_DROP_MIN,
+            "production _DATA is %d bytes; the workspace consolidation must "
+            "drop it by at least %d from %d"
+            % (size, self.DATA_DROP_MIN, self.DATA_BASELINE))
+
+
 if __name__ == "__main__":
     unittest.main()

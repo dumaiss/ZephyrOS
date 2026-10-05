@@ -157,39 +157,31 @@ static void vfs_diag_unavailable(const char *path, int result)
 	early_console_puts("\r\n");
 }
 
-/* Required-mount failure diagnostic.  panic() prints a single string, so
- * the exact pinned line is built once into bank-7 scratch and then handed
- * to panic(), which prints it as `PANIC: vfs: required mount <path> failed
- * 0xNN`. */
-static char vfs_required_diag[ZOS_PATH_MAX + 40u];
-
+/* Required-mount failure diagnostic.  The pinned
+ * `PANIC: vfs: required mount <path> failed 0xNN` line is written piecewise
+ * to the early console, byte-identical to what panic() would print for the
+ * same text (panic writes "PANIC: " + message + CRLF and then halts), so no
+ * bank-7 formatting buffer is needed. */
 static void vfs_diag_required(const char *path, int result)
 {
-	static const char prefix[] = "vfs: required mount ";
-	static const char middle[] = " failed 0x";
 	static const char hex[] = "0123456789ABCDEF";
-	char *out = vfs_required_diag;
-	const char *scan;
 	unsigned code = (unsigned)(-result) & 0xFFu;
 
-	for (scan = prefix; *scan != '\0'; ++scan) {
-		*out++ = *scan;
+	early_console_puts("PANIC: vfs: required mount ");
+	early_console_puts(path);
+	early_console_puts(" failed 0x");
+	early_console_putc(hex[(code >> 4) & 0x0Fu]);
+	early_console_putc(hex[code & 0x0Fu]);
+	early_console_puts("\r\n");
+	__asm__("di");
+	for (;;) {
+		__asm__("halt");
 	}
-	for (scan = path; *scan != '\0'; ++scan) {
-		*out++ = *scan;
-	}
-	for (scan = middle; *scan != '\0'; ++scan) {
-		*out++ = *scan;
-	}
-	*out++ = hex[(code >> 4) & 0x0Fu];
-	*out++ = hex[code & 0x0Fu];
-	*out = '\0';
-	panic(vfs_required_diag);
 }
 
-/* The single shared bank-7 pathname scratch buffer (architecture section
- * 32.10).  `rename` is the only operation that needs a second one. */
-static char vfs_norm[ZOS_PATH_MAX];
+/* Pathname scratch is the shared bank-7 VFS workspace (kernel/vfs/vfs.h):
+ * `vfs_resolve_path` normalizes into its path slot 1, and `rename` owns the
+ * second normalized slot (slot 3). */
 
 /* --- mount table helpers ---------------------------------------------- */
 
@@ -311,30 +303,26 @@ uint8_t vfs_is_mountpoint(const char *norm)
 /* Normalize `path` and select its owning mount, then report the provider
  * path in *rel.  Returns VFS_RESOLVED_PROVIDER, VFS_RESOLVED_ROOT (the path
  * is `/`), VFS_RESOLVED_MOUNTPOINT (the path is one of the mounted
- * root-level mountpoints, so *rel is `/`), or a negative ZOS_E* value. */
+ * root-level mountpoints, so *rel is `/`), or a negative ZOS_E* value.
+ * The normalized path lives in the shared workspace path slot (slot 1), so
+ * `path` must not be that slot. */
 int vfs_resolve_path(const char *path, uint16_t *index, const char **rel)
 {
 	int result;
 
+	if (path == (const char *)0 || index == (uint16_t *)0 ||
+	    rel == (const char **)0) {
+		return -ZOS_EINVAL;
+	}
 	/* A relative path resolves against the caller's CWD; the kernel
 	 * launcher (no RUNNING process) has the constant `/`. */
 	result = vfs_path_normalize_at(vfs_cwd_for(process_running_pid), path,
-				       vfs_norm, ZOS_PATH_MAX);
+				       VFS_WS_NORM_A, ZOS_PATH_MAX);
 	if (result != 0) {
 		return result;
 	}
-	if (vfs_norm[1] == '\0') {
-		return VFS_RESOLVED_ROOT;
-	}
-	result = vfs_mount_resolve(vfs_norm, index, rel);
-	if (result != 0) {
-		return result;
-	}
-	if (vfs_is_mountpoint(vfs_norm)) {
-		*rel = "/";
-		return VFS_RESOLVED_MOUNTPOINT;
-	}
-	return VFS_RESOLVED_PROVIDER;
+	VFS_RESOLVE_NORM(VFS_WS_NORM_A, index, rel, result);
+	return result;
 }
 
 /* --- lifecycle -------------------------------------------------------- */

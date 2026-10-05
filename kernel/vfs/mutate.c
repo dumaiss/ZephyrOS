@@ -14,8 +14,6 @@
 #include "kernel/vfs/vfs.h"
 #include "zephyros/process.h"
 
-static char vfs_rename_target[ZOS_PATH_MAX];
-
 /* Resolve a mutation target.  Returns the provider path in *rel (never
  * null), or a negative error.  Mutating the VFS root or a mounted
  * mountpoint is refused before any provider is consulted: `root_error` is
@@ -100,16 +98,16 @@ int vfs_rename(const char *oldpath, const char *newpath)
 	if (result != 0) {
 		return result;
 	}
-	/* The source path lives in the shared scratch buffer, so the target
-	 * goes through the operation-private second one.  Both resolve
+	/* The source path lives in the shared workspace path slot A, so the
+	 * target goes through the rename-private slot B.  Both resolve
 	 * against the caller's CWD. */
 	result = vfs_path_normalize_at(vfs_cwd_for(process_running_pid),
-				       newpath, vfs_rename_target,
+				       newpath, VFS_WS_NORM_B,
 				       ZOS_PATH_MAX);
 	if (result != 0) {
 		return result;
 	}
-	result = vfs_mount_resolve(vfs_rename_target, &new_index, &new_rel);
+	result = vfs_mount_resolve(VFS_WS_NORM_B, &new_index, &new_rel);
 	if (result != 0) {
 		return result;
 	}

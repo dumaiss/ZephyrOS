@@ -161,24 +161,28 @@ static void kernel_module_unavailable(const char *name, int result)
 
 /* Module-phase loader: open `/SYSTEM/<name>.zmod` through VFS and stream it
  * into the unchanged M4 loader through the bounded zmod_source adapter.  The
- * static file and path storage keeps the boot path free of gate-stack-sized
+ * path lives in the shared bank-7 VFS workspace path slot and the file
+ * handle in static storage, so the boot path is free of gate-stack-sized
  * automatic objects (work/M9-REFERENCE.md).  Non-static so the host replay
  * can drive the same VFS-backed load path. */
 static struct vfs_file kernel_boot_file;
-static char kernel_boot_path[ZOS_PATH_MAX];
 
 int kernel_load_vfs_module(const char *name)
 {
 	static const char prefix[] = "/SYSTEM/";
 	static const char suffix[] = ".zmod";
 	struct zmod_source source;
-	char *out = kernel_boot_path;
+	/* The boot set is a handful of compile-time names, so the path is
+	 * assembled in the shared bank-7 VFS workspace path slot instead of a
+	 * dedicated buffer; no syscall is active during the module phase. */
+	char *out = VFS_WS_IN_A;
 	const char *scan;
 	int result;
 
-	/* The boot module names are compile-time literals (the boot set), and
-	 * the 128-byte path buffer holds "/SYSTEM/v9958.zmod" with room to
-	 * spare; three unbounded copies keep the M9 arena budget intact. */
+	/* The module phase runs before any process exists, so the path view
+	 * is provably free; claiming it here keeps the guard's invariant
+	 * ("the two views are never live together") true for boot too. */
+	vfs_ws_enter(VFS_WS_VIEW_PATH);
 	for (scan = prefix; *scan != '\0'; ++scan) {
 		*out++ = *scan;
 	}
@@ -190,15 +194,15 @@ int kernel_load_vfs_module(const char *name)
 	}
 	*out = '\0';
 
-	result = vfs_open(kernel_boot_path, ZFS_O_READ, &kernel_boot_file);
-	if (result != 0) {
-		return result;
-	}
-	result = vfs_file_source(&kernel_boot_file, &source);
+	result = vfs_open(VFS_WS_IN_A, ZFS_O_READ, &kernel_boot_file);
 	if (result == 0) {
-		result = module_load_source(name, &source);
+		result = vfs_file_source(&kernel_boot_file, &source);
+		if (result == 0) {
+			result = module_load_source(name, &source);
+		}
+		(void)vfs_close(&kernel_boot_file);
 	}
-	(void)vfs_close(&kernel_boot_file);
+	vfs_ws_leave(VFS_WS_VIEW_PATH);
 	return result;
 }
 

@@ -5,12 +5,16 @@
  *   - refuses before VFS READY with ZOS_EBUSY;
  *   - validates its complete argument block, the caller-window path and
  *     the user-buffer window before any state change;
- *   - copies paths into the shared static pathname scratch and resolves
- *     them against the caller's CWD (inside the VFS);
- *   - moves file data through the single 512-byte bank-7 staging buffer,
- *     bridging to/from the caller bank through the checked 64-byte common
- *     copy gate;
+ *   - copies paths into the shared bank-7 VFS workspace path view and
+ *     resolves them against the caller's CWD (inside the VFS);
+ *   - moves file data through the workspace staging view, bridging to and
+ *     from the caller bank through the checked 64-byte common copy gate;
  *   - verifies descriptor range/type/owner for every fd-taking call.
+ *
+ * The workspace's two views are never used together (kernel/vfs/vfs.h); the
+ * path-using services claim the path view, the data services the staging
+ * view, and STAT/GETCWD switch between them (the guard in
+ * kernel/vfs/workspace.c asserts the invariant in debug/acceptance builds).
  *
  * A read/write that fails after at least one confirmed chunk returns the
  * confirmed byte count (a short successful transfer); a failure with no
@@ -27,15 +31,12 @@
 #include "diag.h"
 #include "fs.h"
 
-/* The single 512-byte bank-7 transfer staging buffer (architecture section
- * 32.29 / work/M9-REFERENCE.md).  It is also the scratch a stat/readdir
- * result is built in before it is gated out to the caller. */
-static uint8_t fs_staging[512];
-
-/* Shared static pathname scratch: `rename` is the only operation that
- * needs two paths at once, so it owns the second buffer. */
-static char fs_path1[ZOS_PATH_MAX];
-static char fs_path2[ZOS_PATH_MAX];
+/* All pathname and transfer scratch is the shared bank-7 VFS workspace
+ * (kernel/vfs/vfs.h): the path view supplies the copy-in slots this file
+ * copies caller paths into (slot 0 for every operation, slot 2 for the
+ * rename target), and the staging view carries READ/WRITE chunks and the
+ * stat/readdir/getcwd result assembled for the gate.  The two views are
+ * never live at once. */
 
 /* --- helpers ---------------------------------------------------------- */
 
@@ -93,7 +94,7 @@ static int fs_copy_path(uint16_t addr, uint16_t length, char *out)
 	return 0;
 }
 
-/* Fill fs_staging[off..off+len) from `bank`:user `uaddr` through the
+/* Fill VFS_WS_STAGING[off..off+len) from `bank`:user `uaddr` through the
  * 64-byte common gate.  Returns 0 or -ZOS_EFAULT. */
 static int fs_stage_in(uint8_t bank, uint16_t uaddr, uint16_t len,
 		       uint16_t off)
@@ -112,7 +113,7 @@ static int fs_stage_in(uint8_t bank, uint16_t uaddr, uint16_t len,
 			return -ZOS_EFAULT;
 		}
 		for (i = 0; i < chunk; ++i) {
-			fs_staging[off + done + i] = zos_user_copy_staging[i];
+			VFS_WS_STAGING[off + done + i] = zos_user_copy_staging[i];
 		}
 		done = (uint16_t)(done + chunk);
 	}
@@ -134,7 +135,7 @@ static int fs_stage_out(uint8_t bank, uint16_t uaddr, uint16_t len,
 		}
 		for (i = 0; i < chunk; ++i) {
 			zos_user_copy_staging[i] =
-				fs_staging[off + done + i];
+				VFS_WS_STAGING[off + done + i];
 		}
 		if (zos_syscall_bank_write(bank, (uint16_t)(uaddr + done),
 					   chunk) != 0) {
@@ -155,13 +156,14 @@ static void fs_open(uint16_t block)
 		zos_syscall_error(ZOS_EINVAL);
 		return;
 	}
-	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), fs_path1);
-	if (result != 0) {
-		fs_publish(result);
-		return;
+	vfs_ws_enter(VFS_WS_VIEW_PATH);
+	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
+	if (result == 0) {
+		result = vfs_fd_open(process_current_pid(), VFS_DESC_FILE,
+				     VFS_WS_IN_A,
+				     (uint16_t)((const uint8_t *)block)[4]);
 	}
-	result = vfs_fd_open(process_current_pid(), VFS_DESC_FILE, fs_path1,
-			     (uint16_t)((const uint8_t *)block)[4]);
+	vfs_ws_leave(VFS_WS_VIEW_PATH);
 	if (result < 0) {
 		fs_publish(result);
 		return;
@@ -177,12 +179,12 @@ static void fs_opendir(uint16_t block)
 		zos_syscall_error(ZOS_EINVAL);
 		return;
 	}
-	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), fs_path1);
-	if (result != 0) {
-		fs_publish(result);
-		return;
+	vfs_ws_enter(VFS_WS_VIEW_PATH);
+	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
+	if (result == 0) {
+		result = vfs_fd_opendir(process_current_pid(), VFS_WS_IN_A);
 	}
-	result = vfs_fd_opendir(process_current_pid(), fs_path1);
+	vfs_ws_leave(VFS_WS_VIEW_PATH);
 	if (result < 0) {
 		fs_publish(result);
 		return;
@@ -224,7 +226,10 @@ static void fs_closedir_svc(uint16_t block)
 	fs_publish(vfs_fd_closedir(fd));
 }
 
-/* READ/WRITE share the io block shape; `write` selects the direction. */
+/* READ/WRITE share the io block shape; `write` selects the direction.  The
+ * io loop runs with the workspace staging view claimed, released at the
+ * single `out:` exit so the body needs no wrapper frame (the read path is
+ * the deepest FS_* stack user). */
 static void fs_io(uint8_t bank, uint16_t block, uint8_t write)
 {
 	struct vfs_descriptor *desc;
@@ -249,22 +254,23 @@ static void fs_io(uint8_t bank, uint16_t block, uint8_t write)
 		zos_syscall_error(ZOS_EINVAL);
 		return;
 	}
+	vfs_ws_enter(VFS_WS_VIEW_DATA);
 	while (confirmed < length) {
 		uint16_t chunk = (uint16_t)(length - confirmed);
 		int result;
 
-		if (chunk > (uint16_t)sizeof(fs_staging)) {
-			chunk = (uint16_t)sizeof(fs_staging);
+		if (chunk > (uint16_t)VFS_WORKSPACE_SIZE) {
+			chunk = (uint16_t)VFS_WORKSPACE_SIZE;
 		}
 		if (write != 0) {
 			result = fs_stage_in(bank, (uint16_t)(buffer + confirmed),
 					     chunk, 0);
 			if (result == 0) {
-				result = vfs_write(&desc->u.file, fs_staging,
+				result = vfs_write(&desc->u.file, VFS_WS_STAGING,
 						   chunk);
 			}
 		} else {
-			result = vfs_read(&desc->u.file, fs_staging, chunk);
+			result = vfs_read(&desc->u.file, VFS_WS_STAGING, chunk);
 			if (result > 0) {
 				uint16_t moved = (uint16_t)result;
 
@@ -280,7 +286,7 @@ static void fs_io(uint8_t bank, uint16_t block, uint8_t write)
 						zos_syscall_error(
 							fs_errno_of(result));
 					}
-					return;
+					goto out;
 				}
 				confirmed = (uint16_t)(confirmed + moved);
 				continue;
@@ -292,7 +298,7 @@ static void fs_io(uint8_t bank, uint16_t block, uint8_t write)
 			} else {
 				zos_syscall_error(fs_errno_of(result));
 			}
-			return;
+			goto out;
 		}
 		if (write == 0) {
 			break; /* clean EOF (result == 0) */
@@ -300,6 +306,8 @@ static void fs_io(uint8_t bank, uint16_t block, uint8_t write)
 		confirmed = (uint16_t)(confirmed + chunk);
 	}
 	zos_syscall_success(confirmed);
+out:
+	vfs_ws_leave(VFS_WS_VIEW_DATA);
 }
 
 static void fs_seek(uint16_t block)
@@ -353,21 +361,23 @@ static void fs_stat(uint8_t bank, uint16_t block)
 		zos_syscall_error(ZOS_EINVAL);
 		return;
 	}
-	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), fs_path1);
+	vfs_ws_enter(VFS_WS_VIEW_PATH);
+	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
+	if (result == 0) {
+		result = vfs_stat(VFS_WS_IN_A, &st);
+	}
+	vfs_ws_leave(VFS_WS_VIEW_PATH);
 	if (result != 0) {
 		fs_publish(result);
 		return;
 	}
-	result = vfs_stat(fs_path1, &st);
-	if (result != 0) {
-		fs_publish(result);
-		return;
-	}
+	vfs_ws_enter(VFS_WS_VIEW_DATA);
 	src = (const uint8_t *)&st;
 	for (i = 0; i < (uint16_t)sizeof(st); ++i) {
-		fs_staging[i] = src[i];
+		VFS_WS_STAGING[i] = src[i];
 	}
 	result = fs_stage_out(bank, out, (uint16_t)sizeof(st), 0);
+	vfs_ws_leave(VFS_WS_VIEW_DATA);
 	if (result != 0) {
 		fs_publish(result);
 		return;
@@ -378,7 +388,7 @@ static void fs_stat(uint8_t bank, uint16_t block)
 static void fs_readdir(uint8_t bank, uint16_t block)
 {
 	struct vfs_descriptor *desc;
-	struct zfs_dirent *dirent = (struct zfs_dirent *)fs_staging;
+	struct zfs_dirent *dirent = (struct zfs_dirent *)VFS_WS_STAGING;
 	uint8_t fd;
 	uint16_t out;
 	int result;
@@ -398,22 +408,22 @@ static void fs_readdir(uint8_t bank, uint16_t block)
 		zos_syscall_error(ZOS_EINVAL);
 		return;
 	}
+	vfs_ws_enter(VFS_WS_VIEW_DATA);
 	result = vfs_readdir(&desc->u.dir, dirent);
 	if (result < 0) {
 		fs_publish(result);
-		return;
-	}
-	if (result == 0) {
+	} else if (result == 0) {
 		zos_syscall_success(0); /* end of directory */
-		return;
+	} else {
+		result = fs_stage_out(bank, out,
+				      (uint16_t)sizeof(struct zfs_dirent), 0);
+		if (result != 0) {
+			fs_publish(result);
+		} else {
+			zos_syscall_success(1);
+		}
 	}
-	result = fs_stage_out(bank, out, (uint16_t)sizeof(struct zfs_dirent),
-			      0);
-	if (result != 0) {
-		fs_publish(result);
-		return;
-	}
-	zos_syscall_success(1);
+	vfs_ws_leave(VFS_WS_VIEW_DATA);
 }
 
 static void fs_getcwd(uint8_t bank, uint16_t block)
@@ -429,7 +439,9 @@ static void fs_getcwd(uint8_t bank, uint16_t block)
 	}
 	buffer = fs_le16(block, 0);
 	length = fs_le16(block, 2);
-	result = vfs_getcwd(fs_path1, length);
+	vfs_ws_enter(VFS_WS_VIEW_PATH);
+	result = vfs_getcwd(VFS_WS_NORM_A, length);
+	vfs_ws_leave(VFS_WS_VIEW_PATH);
 	if (result < 0) {
 		fs_publish(result);
 		return;
@@ -439,16 +451,19 @@ static void fs_getcwd(uint8_t bank, uint16_t block)
 		zos_syscall_error(ZOS_EINVAL);
 		return;
 	}
-	/* Stage the NUL-terminated CWD (vfs_getcwd wrote it into fs_path1)
-	 * before gating it out to the caller. */
+	/* Stage the NUL-terminated CWD (vfs_getcwd wrote it into the path
+	 * slot) before gating it out to the caller.  The forward copy starts
+	 * below the source, so the overlap with the staging view is safe. */
+	vfs_ws_enter(VFS_WS_VIEW_DATA);
 	{
 		uint16_t i;
 
 		for (i = 0; i <= n; ++i) {
-			fs_staging[i] = (uint8_t)fs_path1[i];
+			VFS_WS_STAGING[i] = (uint8_t)VFS_WS_NORM_A[i];
 		}
 	}
 	result = fs_stage_out(bank, buffer, (uint16_t)(n + 1), 0);
+	vfs_ws_leave(VFS_WS_VIEW_DATA);
 	if (result != 0) {
 		fs_publish(result);
 		return;
@@ -464,12 +479,13 @@ static void fs_chdir(uint16_t block)
 		zos_syscall_error(ZOS_EINVAL);
 		return;
 	}
-	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), fs_path1);
-	if (result != 0) {
-		fs_publish(result);
-		return;
+	vfs_ws_enter(VFS_WS_VIEW_PATH);
+	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
+	if (result == 0) {
+		result = vfs_chdir(VFS_WS_IN_A);
 	}
-	fs_publish(vfs_chdir(fs_path1));
+	vfs_ws_leave(VFS_WS_VIEW_PATH);
+	fs_publish(result);
 }
 
 static void fs_mutate(uint16_t block, uint8_t op)
@@ -480,18 +496,18 @@ static void fs_mutate(uint16_t block, uint8_t op)
 		zos_syscall_error(ZOS_EINVAL);
 		return;
 	}
-	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), fs_path1);
-	if (result != 0) {
-		fs_publish(result);
-		return;
+	vfs_ws_enter(VFS_WS_VIEW_PATH);
+	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
+	if (result == 0) {
+		if (op == 0) {
+			result = vfs_mkdir(VFS_WS_IN_A);
+		} else if (op == 1) {
+			result = vfs_rmdir(VFS_WS_IN_A);
+		} else {
+			result = vfs_unlink(VFS_WS_IN_A);
+		}
 	}
-	if (op == 0) {
-		result = vfs_mkdir(fs_path1);
-	} else if (op == 1) {
-		result = vfs_rmdir(fs_path1);
-	} else {
-		result = vfs_unlink(fs_path1);
-	}
+	vfs_ws_leave(VFS_WS_VIEW_PATH);
 	fs_publish(result);
 }
 
@@ -503,17 +519,17 @@ static void fs_rename(uint16_t block)
 		zos_syscall_error(ZOS_EINVAL);
 		return;
 	}
-	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), fs_path1);
-	if (result != 0) {
-		fs_publish(result);
-		return;
+	vfs_ws_enter(VFS_WS_VIEW_PATH);
+	result = fs_copy_path(fs_le16(block, 0), fs_le16(block, 2), VFS_WS_IN_A);
+	if (result == 0) {
+		result = fs_copy_path(fs_le16(block, 4), fs_le16(block, 6),
+				      VFS_WS_IN_B);
 	}
-	result = fs_copy_path(fs_le16(block, 4), fs_le16(block, 6), fs_path2);
-	if (result != 0) {
-		fs_publish(result);
-		return;
+	if (result == 0) {
+		result = vfs_rename(VFS_WS_IN_A, VFS_WS_IN_B);
 	}
-	fs_publish(vfs_rename(fs_path1, fs_path2));
+	vfs_ws_leave(VFS_WS_VIEW_PATH);
+	fs_publish(result);
 }
 
 static void fs_sync(uint16_t block)

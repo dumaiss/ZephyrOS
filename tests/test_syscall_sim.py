@@ -141,6 +141,22 @@ class TestM9FsAcceptance(M9FsSimBase):
             self.assertEqual(z.bank7[base + fd * stride + 1], 0,
                              "descriptor %d not FREE" % fd)
 
+    def test_workspace_views_are_released_and_never_overlap(self):
+        # The acceptance image is built with ZOS_VFS_WS_GUARD=1, which makes
+        # every workspace claim write the active view to `vfs_ws_view` and
+        # panic ("vfs: workspace view overlap") when a second view is claimed
+        # while one is still live.  `boot()` returns on a PANIC, so a clean
+        # run with the view counter back at 0 proves both that no claim
+        # leaked and that no two views were ever live together.
+        self.assertIn("_vfs_ws_view", self.syms,
+                      "the guarded image carries no vfs_ws_view counter")
+        z = self.make_cpu()
+        min_sp, _steps = self.boot(z)
+        self.assertNotIn("PANIC", z.sio_tx.decode("ascii", "replace"))
+        self.assertEqual(
+            z.bank7[self.syms["_vfs_ws_view"]], 0,
+            "a VFS workspace view was still claimed at the acceptance mark")
+
     def test_gate_stack_stays_within_budget(self):
         z = self.make_cpu()
         min_sp, _steps = self.boot(z)
