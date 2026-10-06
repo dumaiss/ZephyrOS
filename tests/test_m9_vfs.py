@@ -52,9 +52,14 @@ def minimal(**overrides):
 class TestMountgenAccepts(unittest.TestCase):
     def test_production_manifest(self):
         entries = mountgen.validate(CONFIG, ["romfs"])
-        self.assertEqual([e["path"] for e in entries], ["/SYSTEM"])
+        self.assertEqual([e["path"] for e in entries], ["/SYSTEM", "/"])
         self.assertEqual(entries[0]["flags"], mountgen.FLAG_SYSTEM)
         self.assertEqual(entries[0]["path_len"], 7)
+        # Package 30: the optional writable root is served by iocfat.
+        self.assertEqual(entries[1]["filesystem"], "iocfat")
+        self.assertEqual(entries[1]["source"], "ioc.0")
+        self.assertEqual(entries[1]["flags"], mountgen.FLAG_OPTIONAL)
+        self.assertEqual(entries[1]["path_len"], 1)
 
     def test_every_tests_m9_manifest(self):
         manifests = sorted(M9_DIR.glob("mounts-*.json"))
@@ -76,7 +81,7 @@ class TestMountgenAccepts(unittest.TestCase):
             self.assertEqual(Path(out1).read_bytes(), Path(out2).read_bytes())
             self.assertEqual(Path(rep1).read_bytes(), Path(rep2).read_bytes())
             report = json.loads(Path(rep1).read_text())
-            self.assertEqual(report["count"], 1)
+            self.assertEqual(report["count"], 2)
             self.assertEqual(report["mounts"][0]["path"], "/SYSTEM")
             self.assertEqual(report["mounts"][0]["flags"], "VFS_MOUNT_SYSTEM")
             self.assertEqual(report["builtin"], ["romfs"])
@@ -90,7 +95,9 @@ class TestMountgenAccepts(unittest.TestCase):
         self.assertIn('"romfs",', text)
         self.assertIn('"recovery",', text)
         self.assertIn("VFS_MOUNT_SYSTEM", text)
-        self.assertIn("const uint8_t vfs_mount_count = 1u;", text)
+        self.assertIn('{ "/",', text)
+        self.assertIn('"iocfat",', text)
+        self.assertIn("const uint8_t vfs_mount_count = 2u;", text)
 
     def test_root_and_root_level_mounts_coexist(self):
         # `/` and a root-level mountpoint such as `/R2` are siblings in the

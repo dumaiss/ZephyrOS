@@ -544,14 +544,16 @@ class TestM8ProductionRomfsIdentity(ProductionBase):
     def test_payloads_match_packed_artifacts_and_pinned_hashes(self):
         entries = self.entries
         self.assertEqual(sorted(entries),
-                         ["hid.zmod", "ioc.zmod", "monitor.zex", "sio.zmod",
-                          "v9958-6x8.font", "v9958.zmod"])
+                         ["hid.zmod", "ioc.zmod", "iocfat.zmod",
+                          "monitor.zex", "sio.zmod", "v9958-6x8.font",
+                          "v9958.zmod"])
         checks = (
             ("monitor.zex", romfspack.FLAG_ZEX, "monitor.zex"),
             ("sio.zmod", romfspack.FLAG_ZMOD, "sio.zmod"),
             ("ioc.zmod", romfspack.FLAG_ZMOD, "ioc.zmod"),
             ("hid.zmod", romfspack.FLAG_ZMOD, "hid.zmod"),
             ("v9958.zmod", romfspack.FLAG_ZMOD, "v9958.zmod"),
+            ("iocfat.zmod", romfspack.FLAG_ZMOD, "iocfat.zmod"),
             ("v9958-6x8.font", romfspack.FLAG_DATA, "v9958-6x8.font"),
         )
         for name, flag, artifact in checks:

@@ -3413,7 +3413,7 @@ Contract for every path argument:
 
 `open` flags are the native `ZFS_O_*` flags, including `ZFS_O_TRUNC`; `open` reports the current file size. A read-only provider may leave mutation pointers null; VFS returns `EROFS` for a null mutation operation. `readdir` returns 1 with an entry, 0 at the end, or a negative error.
 
-Deliberately absent in M9: `unmount` (no runtime unmounting), filesystem-wide `syncfs`, a separate `truncate` operation (`ZFS_O_TRUNC` covers M9), `statfs` (deferred to M10 with `df`), and any lookup/release/node operations. They are added when a real consumer appears. ZephyrOS is still being built and keeps no backward-compatibility obligation, so such additions may reshape the interface freely.
+Deliberately absent in M9: `unmount` (no runtime unmounting), filesystem-wide `syncfs`, a separate `truncate` operation (`ZFS_O_TRUNC` covers M9), `statfs` (deferred until a consumer requires it, as sections 32.26 and 32.34 record), and any lookup/release/node operations. They are added when a real consumer appears. ZephyrOS is still being built and keeps no backward-compatibility obligation, so such additions may reshape the interface freely.
 
 Opaque provider handles remain private. Applications never see ROMFS entry indices, FatFs `FIL` objects, FS2 tokens, FAT clusters, or future filesystem-native inode structures.
 
@@ -4362,8 +4362,16 @@ After the first M9 slice (package 25), the kernel executive was 24.3 KiB and the
 2000h-DEFFh  47.75 KiB  kernel + resident ZMODs + runtime data + ISR stack
 -------------------------------------------------------------------------
 production arena floor   >= 32 granules, holding the production boot set
-slack                    >= 2 KiB at the end of M9
+slack                    >= 1 KiB at the end of M9
 ```
+
+The end-of-M9 slack target was lowered from 2 KiB to 1 KiB by the project
+owner on 2026-10-05. The reason is measured, not projected: the finished
+IOC-FAT provider needed 15 granules (7441 bytes) as first written, which
+exactly consumed the production arena (35 granules, 0 free, 63 bytes of
+data slack). The correction trimmed it to 13 granules (6643 bytes) and kept
+the required one-slot write-through cache, leaving 2 free granules plus 63
+bytes of data slack: 1087 bytes, above the 1 KiB target but below 2 KiB.
 
 Rules:
 
@@ -4375,6 +4383,7 @@ Rules:
 - A mechanism that M9 replaces is deleted, not kept as a compatibility path. ZephyrOS is still under construction: no interface, binary format, image or transcript carries a backward-compatibility obligation. Completed milestones prove mechanisms; they do not freeze them.
 - A feature with no consumer is not made resident (for example `sd-ioc.zmod`, `FS_STATFS`).
 - Supervisor checkpoints compare the measured ledger with the remaining projection: after package 26 (passed 2026-10-05: 26 free granules, 291 bytes of slack, projected end-of-M9 slack 1.4-3.2 KiB before the measures above), and after package 28, before IOC-FAT is built.
+- Package 30 (passed 2026-10-05) is the last bank-7 consumer: `bank7: code 28476 bytes end 8F3Ch | arena 35 granules (33 boot, 2 free) | data 2241 bytes at D600h | isr 256 | slack 63 bytes`, i.e. 2 free granules and 1087 bytes of total slack against the 1 KiB target. `iocfat.zmod` is 6006 image + 637 BSS = 6643 bytes, 13 granules, 13 bytes under the 6656-byte ceiling.
 - If the projection falls below the slack target, the choice between descoping and a second kernel bank goes back to the project owner. It is never made by raising a limit or lowering the arena floor.
 
 ---

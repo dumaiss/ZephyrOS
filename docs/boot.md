@@ -276,6 +276,13 @@ make smoke-hardware-m8 SERIAL_PORT=/dev/ttyUSB0              # flash build-m8-se
                                                              # zephyros-m8-selftest.bin
 make smoke-hardware-m8-ioc SERIAL_PORT=/dev/ttyUSB0          # flash build-m8-ioc-selftest/
                                                              # zephyros-m8-ioc-selftest.bin
+make smoke-hardware-m9-fs SERIAL_PORT=/dev/ttyUSB0           # flash build-m9-fs-selftest/
+                                                             # zephyros-m9-fs-selftest.bin
+make smoke-hardware-m9-exec SERIAL_PORT=/dev/ttyUSB0         # flash build-m9-exec-selftest/
+                                                             # zephyros-m9-exec-selftest.bin
+make smoke-hardware-m9-iocfat SERIAL_PORT=/dev/ttyUSB0       # flash build-m9-iocfat-selftest/
+                                                             # zephyros-m9-iocfat-selftest.bin
+                                                             # (with a writable FAT card)
 ```
 
 Each smoke mode checks one specific image; build it, flash it, then run the

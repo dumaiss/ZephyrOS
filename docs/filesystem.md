@@ -924,6 +924,36 @@ It must not expose FS2 tokens to applications.
 
 The current backend may retain FAT 8.3 component limits if that is what the deployed MCU firmware supports. Native VFS path semantics must not be designed around that limitation.
 
+### 17.1 Implemented provider (M9, package 30)
+
+`iocfat.zmod` is resident in production, loaded last from the recovery store
+and mounted at the optional `/` from `ioc.0` (architecture sections 32.17,
+32.19 and 32.39).  Its implemented rules:
+
+```text
+names      one component is packed to an 11-byte upper-case 8.3 FCB name:
+           base <= 8 bytes, extension <= 3, one dot, no empty base, and the
+           character set FatFs rejects (control bytes, space, " * + , : ; <
+           = > ? [ \ ] | ~) is refused with EINVAL before any FS2 command
+paths      VFS hands over a normalized absolute path; the resolver sends
+           ROOT plus one PUSH per component, at most 16
+handles    two file handles and one directory handle, exactly what the FS2
+           command set serves; exhaustion is ZOS_EMFILE
+cache      one 512-byte block slot (architecture section 32.19): a repeated
+           read is served locally, a cross-block read fetches only the block
+           that is not resident, and a confirmed write, an `unlink`, a
+           `rename`, a `STALE` reply, a generation change or a close drops
+           the slot
+writes     write-through: the bytes are cached only after FS2 reports DONE
+errors     FS2 status is mapped once (ENOENT/EEXIST/EINVAL/EROFS/ENOSPC/
+           ENOTDIR/EISDIR/EMFILE/ESTALE/ENODEV/EIO); a write-protected card
+           is refused from the CAPS-derived state
+```
+
+`rename` is same-directory only, so a cross-directory rename is `EXDEV`
+rather than a copy.  Absent media surfaces as `ZOS_ENODEV` at mount time,
+which leaves `/SYSTEM` and the console usable.
+
 ---
 
 ## 18. Future native filesystems

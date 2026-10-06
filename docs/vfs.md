@@ -99,8 +99,9 @@ kernel/vfs/dir.c             directory API, root enumeration
 kernel/vfs/mutate.c          mutation entry points (the EROFS rule's home)
 fs/romfs/romfs_provider.c    ROMFS provider over the unchanged M5 reader
 fs/romfs/romfs_provider.h    provider declaration used by the build table
+fs/iocfat/iocfat.c           resident IOC-FAT provider (package 30)
 tools/mountgen.py            manifest -> generated C mount table
-config/mounts.json           production policy (only `/SYSTEM`)
+config/mounts.json           production policy (`/SYSTEM` plus optional `/`)
 tests/m9/mounts-*.json       acceptance policies
 ```
 
@@ -305,10 +306,15 @@ committed.
 
 ```c
 const struct vfs_mount_config vfs_mount_table[] = {
-    { "/SYSTEM", 7u, "romfs", "recovery", VFS_MOUNT_SYSTEM },
+    { "/SYSTEM", 7u, "romfs", "recovery", VFS_MOUNT_SYSTEM   },
+    { "/",       1u, "iocfat", "ioc.0",   VFS_MOUNT_OPTIONAL },
 };
-const uint8_t vfs_mount_count = 1u;
+const uint8_t vfs_mount_count = 2u;
 ```
+
+The production `/` is optional: an absent or unreadable SD card makes only
+that mount fail, `vfs: / unavailable 0xNN` is reported, and `/SYSTEM` plus
+the console keep working (architecture sections 32.34 and 32.39).
 
 The table links into the ROM-loaded bank-7 kernel image as `const`
 data; VFS keeps the parallel `_DATA` array `vfs_mount_state[4]` (state,

@@ -318,8 +318,8 @@ class TestModuleArtifact(unittest.TestCase):
         manifest = _load_json(RECOVERY_MANIFEST)
         names = [entry["name"] for entry in manifest["files"]]
         self.assertEqual(names, ["sio.zmod", "ioc.zmod", "hid.zmod",
-                                 "v9958.zmod", "v9958-6x8.font",
-                                 "monitor.zex"])
+                                 "v9958.zmod", "iocfat.zmod",
+                                 "v9958-6x8.font", "monitor.zex"])
         types = {entry["name"]: entry["type"]
                  for entry in manifest["files"]}
         self.assertEqual(types["v9958.zmod"], "ZMOD")

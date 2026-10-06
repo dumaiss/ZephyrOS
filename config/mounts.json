@@ -6,6 +6,12 @@
       "filesystem": "romfs",
       "source": "recovery",
       "system": true
+    },
+    {
+      "path": "/",
+      "filesystem": "iocfat",
+      "source": "ioc.0",
+      "required": false
     }
   ]
 }

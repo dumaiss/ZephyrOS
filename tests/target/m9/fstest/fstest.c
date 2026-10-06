@@ -116,8 +116,9 @@ static int ft_range_equal(const char *a, const char *b, unsigned int len)
 /* --- cases ------------------------------------------------------------ */
 
 /* Filesystem namespace: root, mountpoints, case folding, relative paths,
- * `.`/`..` and CWD crossing between the two mounts. */
-static int ft_namespace(void)
+ * `.`/`..` and CWD crossing between mounts.  `iocfat` images carry no `/R2`
+ * (their `/` is the card), so that mount's steps are conditional. */
+static int ft_namespace(int iocfat)
 {
 	char cwd[8];
 	int fd;
@@ -129,8 +130,8 @@ static int ft_namespace(void)
 	    ft_stat.type != ZFS_TYPE_DIR) {
 		return 2;
 	}
-	if (zos_stat("/R2", &ft_stat) != 0 ||
-	    ft_stat.type != ZFS_TYPE_DIR) {
+	if (iocfat == 0 && (zos_stat("/R2", &ft_stat) != 0 ||
+			    ft_stat.type != ZFS_TYPE_DIR)) {
 		return 3;
 	}
 	if (zos_stat("/system/FSTEST.ZEX", &ft_stat) != 0 ||
@@ -171,11 +172,13 @@ static int ft_namespace(void)
 	if (zos_getcwd(cwd, sizeof(cwd)) != 7) {
 		return 13;
 	}
-	if (zos_chdir("/SYSTEM") != 0 || zos_chdir("/R2") != 0) {
-		return 14;
-	}
-	if (zos_getcwd(cwd, sizeof(cwd)) != 3) {
-		return 15;
+	if (iocfat == 0) {
+		if (zos_chdir("/SYSTEM") != 0 || zos_chdir("/R2") != 0) {
+			return 14;
+		}
+		if (zos_getcwd(cwd, sizeof(cwd)) != 3) {
+			return 15;
+		}
 	}
 	if (zos_chdir("/") != 0 || zos_getcwd(cwd, sizeof(cwd)) != 1) {
 		return 16;
@@ -590,6 +593,130 @@ static int ft_window(void)
 	return 0;
 }
 
+/* --- IOC-FAT (package 30) ---------------------------------------------- */
+
+/* `/` is selected by the mount configuration, not by the build: the ramfs
+ * image serves the virtual `/STATS` file, the IOC-FAT image answers ENOENT
+ * for it.  The same fstest.zex therefore covers a RAM root and a real card. */
+static int ft_is_iocfat(void)
+{
+	int fd = zos_open("/STATS", ZFS_O_READ);
+
+	if (fd >= 0) {
+		(void)zos_close((unsigned int)fd);
+		return 0;
+	}
+	return 1;
+}
+
+/* A cache boundary.  The simulator counts FS2 commands between consecutive
+ * markers, so the count in between is an exact expectation; on hardware the
+ * lines are inert diagnostics.  The kernel-side half of this image drives
+ * the full rule set through the VFS, so this section stays small enough for
+ * the 8 KiB caller window. */
+static void ft_mark(const char *s)
+{
+	ft_puts("fstest: MARK ");
+	ft_puts(s);
+	ft_puts("\r\n");
+}
+
+/* Compare a read slice against the 512-periodic pattern built by
+ * ft_pattern(ft_ref, 512, 0x5A), so a stale or wrong block cannot pass. */
+static int ft_slice_ok(const char *buf, unsigned int offset, unsigned int len)
+{
+	unsigned int i;
+
+	for (i = 0; i < len; ++i) {
+		if (buf[i] != ft_ref[(offset + i) & 511u]) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+/* IOC-FAT through the public FS_* family: create, read across a block
+ * boundary, the write-through cache and readdir, all under `/ZOSTEST`. */
+static int ft_iocfat(void)
+{
+	int fd;
+	int fd2;
+	int r;
+
+	r = zos_mkdir("/ZOSTEST");
+	if (r != 0 && !ft_iserr(r, ZOS_EEXIST)) {
+		return 1;
+	}
+	/* One rejected name, so the syscall path is covered too: an
+	 * over-long base fails with EINVAL before any FS2 traffic. */
+	if (!ft_iserr(zos_open("/A23456789.T", ZFS_O_READ), ZOS_EINVAL)) {
+		return 2;
+	}
+	ft_pattern(ft_ref, 512u, 0x5Au);
+	fd = zos_open("/ZOSTEST/A.TXT", (unsigned char)(ZFS_O_WRITE |
+							ZFS_O_CREATE |
+							ZFS_O_TRUNC));
+	if (fd < 0 || zos_write((unsigned int)fd, ft_ref, 512) != 512 ||
+	    zos_write((unsigned int)fd, ft_ref, 512) != 512) {
+		return 3;
+	}
+	(void)zos_close((unsigned int)fd);
+
+	ft_mark("ioc0");
+	fd = zos_open("/ZOSTEST/A.TXT", ZFS_O_READ);
+	if (fd < 0) {
+		return 4;
+	}
+	if (zos_read((unsigned int)fd, ft_buf, 16) != 16 ||
+	    !ft_slice_ok(ft_buf, 0u, 16u)) {
+		return 5;
+	}
+	ft_mark("io1");			/* +1 FS2_READ: block 0 */
+	(void)zos_seek((unsigned int)fd, 0L, ZFS_SEEK_SET);
+	if (zos_read((unsigned int)fd, ft_buf, 16) != 16 ||
+	    !ft_slice_ok(ft_buf, 0u, 16u)) {
+		return 6;
+	}
+	ft_mark("io2");			/* +0: the slot is reused */
+	(void)zos_seek((unsigned int)fd, 500L, ZFS_SEEK_SET);
+	if (zos_read((unsigned int)fd, ft_buf, 64) != 64 ||
+	    !ft_slice_ok(ft_buf, 500u, 64u)) {
+		return 7;
+	}
+	ft_mark("io3");			/* +1: block 1 joins block 0 */
+	(void)zos_close((unsigned int)fd);
+
+	/* A confirmed write through the ordinary path drops the slot; the
+	 * bytes written are the ones already there, so the file is intact. */
+	fd2 = zos_open("/ZOSTEST/A.TXT", ZFS_O_WRITE);
+	if (fd2 < 0 || zos_write((unsigned int)fd2, ft_ref, 4) != 4) {
+		return 8;
+	}
+	(void)zos_seek((unsigned int)fd2, 0L, ZFS_SEEK_SET);
+	if (zos_read((unsigned int)fd2, ft_buf, 16) != 16 ||
+	    !ft_slice_ok(ft_buf, 0u, 16u)) {
+		return 9;
+	}
+	ft_mark("io4");			/* +1: refilled after the write */
+	(void)zos_close((unsigned int)fd2);
+
+	/* Directory enumeration through the syscall path. */
+	fd = zos_opendir("/ZOSTEST");
+	if (fd < 0 || zos_readdir((unsigned int)fd, &ft_dirent) != 1 ||
+	    ft_dirent.name_length != 6u || ft_dirent.size != 1024u ||
+	    !ft_range_equal(ft_dirent.name, "A.TXT", 5)) {
+		return 10;
+	}
+	(void)zos_closedir((unsigned int)fd);
+	ft_mark("io9");
+
+	if (zos_unlink("/ZOSTEST/A.TXT") != 0 ||
+	    zos_rmdir("/ZOSTEST") != 0) {
+		return 11;
+	}
+	return 0;
+}
+
 /* --- SYS_EXEC (package 28) ------------------------------------------- */
 
 static char ft_cwd[128];
@@ -774,16 +901,24 @@ static int ft_exec(void)
 
 int main(void)
 {
-	ft_report("namespace", ft_namespace());
+	int iocfat = ft_is_iocfat();
+
+	ft_report("namespace", ft_namespace(iocfat));
 	ft_report("romfs", ft_romfs());
-	ft_report("ramfs", ft_ramfs());
-	ft_report("errors", ft_errors());
-	ft_report("pool", ft_pool());
-	ft_report("stale", ft_stale());
-	ft_report("writefail", ft_writefail());
-	ft_report("exdev", ft_exdev());
+	if (iocfat != 0) {
+		ft_report("iocfat", ft_iocfat());
+	} else {
+		ft_report("ramfs", ft_ramfs());
+		ft_report("errors", ft_errors());
+		ft_report("pool", ft_pool());
+		ft_report("stale", ft_stale());
+		ft_report("writefail", ft_writefail());
+		ft_report("exdev", ft_exdev());
+	}
 	ft_report("window", ft_window());
-	ft_report("exec", ft_exec());
+	if (iocfat == 0) {
+		ft_report("exec", ft_exec());
+	}
 
 	if (ft_pass == ft_total) {
 		ft_puts("fstest: PASS ");

@@ -78,6 +78,45 @@ class IocCommandPeer:
     ST_FS_ERROR = 0x38
     ST_UNKNOWN_CMD = 0x02   # IOC_STATUS_UNKNOWN_CMD (unknown-class reply)
 
+    # --- FS2 filesystem service (M9, package 30) ----------------------
+    CMD_FS2_CAPS = 0x30
+    CMD_FS2_GENERATION = 0x31
+    CMD_FS2_ROOT = 0x33
+    CMD_FS2_PUSH = 0x34
+    CMD_FS2_OPEN_RO = 0x35
+    CMD_FS2_READ = 0x36
+    CMD_FS2_CLOSE = 0x37
+    CMD_FS2_OPENDIR = 0x38
+    CMD_FS2_READDIR = 0x39
+    CMD_FS2_CLOSEDIR = 0x3A
+    CMD_FS2_STAT = 0x3B
+    CMD_FS2_OPEN_RW = 0x3D
+    CMD_FS2_WRITE = 0x3E
+    CMD_FS2_SYNC = 0x3F
+    CMD_FS2_TRUNCATE = 0x40
+    CMD_FS2_UNLINK = 0x41
+    CMD_FS2_RENAME = 0x42
+    CMD_FS2_MKDIR = 0x43
+    CMD_FS2_RMDIR = 0x44
+    RSP_FS2_READ = 0xB6
+    RSP_FS2_WRITE = 0xBE
+    ST_FS2_OK = 0x00
+    ST_FS2_NOT_FOUND = 0x40
+    ST_FS2_END = 0x41
+    ST_FS2_EXISTS = 0x42
+    ST_FS2_BAD_NAME = 0x43
+    ST_FS2_READ_ONLY = 0x44
+    ST_FS2_NO_SPACE = 0x45
+    ST_FS2_NOT_DIR = 0x46
+    ST_FS2_IS_DIR = 0x47
+    ST_FS2_NO_HANDLE = 0x48
+    ST_FS2_STALE = 0x49
+    ST_FS2_RANGE = 0x4A
+    ST_FS2_NO_MEDIA = 0x4B
+    ST_FS2_UNKNOWN_WRITE = 0x4D
+    ST_FS2_IO = 0x4E
+    FS2_ATTR_DIR = 0x10
+
     def __init__(self, leading=(0xFF,), reply_delay=8, ready_delay=0,
                  never_ready=False, stall=False, fault=None,
                  link_faults=None, doorbell=False, level=0x4A,
@@ -88,7 +127,11 @@ class IocCommandPeer:
                  stall_bytes=None, fs_open_fault=None,
                  fs_delete_reopen_fault=None,
                  arbitrary_ready=None, custom_replies=None,
-                 hid_bytes=b"", hid_faults=None):
+                 hid_bytes=b"", hid_faults=None,
+                 fs2_media=True, fs2_read_only=False, fs2_files=None,
+                 fs2_caps_fault=None, fs2_read_fault=None,
+                 fs2_write_fault=None, fs2_generation=None,
+                 fs2_stale_path=None):
         self.ptr = 0
         self.wr = {}
         self.rx = collections.deque()
@@ -166,6 +209,35 @@ class IocCommandPeer:
         self.fs_delete_reopen_fault = fs_delete_reopen_fault
         self.arbitrary_ready = arbitrary_ready
         self.custom_replies = dict(custom_replies or {})
+        # --- FS2 filesystem service model (M9, package 30) ------------
+        # A small root-relative FAT-like namespace served with the real
+        # FS2 command/reply and READY/DONE bulk semantics.  `fs2_counts`
+        # records every FS2 command class so tests can prove the
+        # provider's cache rules from the wire traffic.
+        self.fs2_media = fs2_media
+        self.fs2_read_only = fs2_read_only
+        self.fs2_caps_fault = fs2_caps_fault
+        self.fs2_read_fault = fs2_read_fault
+        self.fs2_write_fault = fs2_write_fault
+        self.fs2_generation = 1 if fs2_generation is None else fs2_generation
+        # A path (tuple or '/'-string) whose reads/writes report STALE, to
+        # exercise the provider's staleness mapping without a real media
+        # change.
+        self.fs2_stale_path = ((tuple(p.upper() for p in fs2_stale_path
+                                      .split("/") if p))
+                               if isinstance(fs2_stale_path, str)
+                               else fs2_stale_path)
+        self.fs2_counts = collections.Counter()
+        self.fs2_resolver = []
+        self.fs2_dirs = {()}
+        self.fs2_files = {}
+        # Two file slots and one directory slot (CAPS v1).
+        self.fs2_slots = [None, None]   # [path, writable, cookie]
+        self.fs2_cookies = [1, 1]
+        self.fs2_dir = None             # [path, cookie] or None
+        self.fs2_dir_cookie = 1
+        for name, content in (fs2_files or {}).items():
+            self.fs2_add(name, content)
         # --- HID input queue model -----------------------------------
         # The deployed firmware translates USB boot-keyboard reports into
         # terminal bytes, holds them in its own queue and asserts /CTSB
@@ -325,6 +397,8 @@ class IocCommandPeer:
             return self._ready_reply(rtype, seq, entry[0], entry[1], status)
         if rtype == self.CMD_HID_INPUT:
             return self._build_hid_reply(seq, data)
+        if self.CMD_FS2_CAPS <= rtype <= self.CMD_FS2_RMDIR:
+            return self._build_fs2_reply(rtype, seq, data)
         if rtype in (self.CMD_FS_OPEN, self.CMD_FS_READ, self.CMD_FS_WRITE,
                      self.CMD_FS_CLOSE, self.CMD_FS_DELETE,
                      self.CMD_XFER_STATUS):
@@ -573,6 +647,402 @@ class IocCommandPeer:
         out[1] = status
         return self._wrap(self.RSP_XFER_STATUS, seq, self.ST_OK, out)
 
+    # -- FS2 filesystem service (M9, package 30) -----------------------
+
+    def fs2_add(self, path, content=b"", directory=False):
+        """Install a file or directory.  `path` is a '/'-separated name
+        without a leading slash; missing parents are created."""
+        parts = tuple(p.upper() for p in path.split("/") if p)
+        if not parts:
+            return
+        for i in range(1, len(parts)):
+            self.fs2_dirs.add(parts[:i])
+        if directory:
+            self.fs2_dirs.add(parts)
+        else:
+            self.fs2_files[parts] = bytearray(content)
+
+    def fs2_bump_generation(self):
+        """Simulate a media change: advance the generation and drop every
+        context (the firmware's fs2_media_invalidated)."""
+        self.fs2_generation = (self.fs2_generation % 0xFFFFFFFF) + 1
+        self.fs2_slots = [None, None]
+        self.fs2_dir = None
+        self.fs2_resolver = []
+
+    @staticmethod
+    def _fs2_pack(name):
+        if "." in name:
+            base, ext = name.split(".", 1)
+        else:
+            base, ext = name, ""
+        return (base.upper().ljust(8)[:8] +
+                ext.upper().ljust(3)[:3]).encode("ascii")
+
+    @staticmethod
+    def _fs2_unpack(packed):
+        base = packed[:8].decode("ascii", "replace").rstrip(" ")
+        ext = packed[8:11].decode("ascii", "replace").rstrip(" ")
+        return base + (("." + ext) if ext else "")
+
+    def _fs2_reply(self, rtype, seq, status, payload=b""):
+        return self._wrap((rtype | 0x80) & 0xFF, seq, status, bytes(payload))
+
+    @staticmethod
+    def _fs2_token(slot, cookie):
+        return (slot + 1) | (cookie << 8)
+
+    def _fs2_file_for(self, token):
+        raw = token & 0xFF
+        if raw == 0 or raw > len(self.fs2_slots):
+            return None, self.ST_FS2_NO_HANDLE
+        entry = self.fs2_slots[raw - 1]
+        if entry is None or entry[2] != (token >> 8):
+            return None, self.ST_FS2_NO_HANDLE
+        return entry, self.ST_FS2_OK
+
+    def _fs2_lookup(self, leaf):
+        return tuple(self.fs2_resolver) + (leaf,)
+
+    def _fs2_children(self, path):
+        """Directory entries as (name, is_dir, size), sorted."""
+        out = []
+        for d in self.fs2_dirs:
+            if len(d) == len(path) + 1 and d[:len(path)] == path:
+                out.append((d[-1], True, 0))
+        for f, content in self.fs2_files.items():
+            if len(f) == len(path) + 1 and f[:len(path)] == path:
+                out.append((f[-1], False, len(content)))
+        return sorted(out)
+
+    def _fs2_close_all(self):
+        self.fs2_slots = [None, None]
+
+    def _build_fs2_reply(self, rtype, seq, data):
+        self.fs2_counts[rtype] += 1
+        if rtype == self.CMD_FS2_CAPS:
+            return self._fs2_caps(seq)
+        if rtype == self.CMD_FS2_GENERATION:
+            return self._fs2_reply(rtype, seq, self.ST_FS2_OK,
+                                   self.fs2_generation.to_bytes(4, "little"))
+        if not self.fs2_media:
+            return self._fs2_reply(rtype, seq, self.ST_FS2_NO_MEDIA)
+        if rtype == self.CMD_FS2_ROOT:
+            self.fs2_resolver = []
+            return self._fs2_reply(rtype, seq, self.ST_FS2_OK)
+        if rtype == self.CMD_FS2_PUSH:
+            if len(self.fs2_resolver) >= 16:
+                return self._fs2_reply(rtype, seq, self.ST_FS2_RANGE)
+            leaf = self._fs2_unpack(bytes(data[:11]))
+            if self._fs2_lookup(leaf) not in self.fs2_dirs:
+                return self._fs2_reply(rtype, seq, self.ST_FS2_NOT_FOUND)
+            self.fs2_resolver.append(leaf)
+            return self._fs2_reply(rtype, seq, self.ST_FS2_OK)
+        if rtype == self.CMD_FS2_OPEN_RO:
+            return self._fs2_open(seq, data, False)
+        if rtype == self.CMD_FS2_OPEN_RW:
+            return self._fs2_open(seq, data, True)
+        if rtype == self.CMD_FS2_READ:
+            return self._fs2_read(seq, data)
+        if rtype == self.CMD_FS2_WRITE:
+            return self._fs2_write(seq, data)
+        if rtype == self.CMD_FS2_CLOSE:
+            return self._fs2_close(seq, data)
+        if rtype == self.CMD_FS2_SYNC:
+            return self._fs2_sync(seq, data)
+        if rtype == self.CMD_FS2_TRUNCATE:
+            return self._fs2_truncate(seq, data)
+        if rtype == self.CMD_FS2_STAT:
+            return self._fs2_stat(seq, data)
+        if rtype == self.CMD_FS2_OPENDIR:
+            return self._fs2_opendir(seq)
+        if rtype == self.CMD_FS2_READDIR:
+            return self._fs2_readdir(seq, data)
+        if rtype == self.CMD_FS2_CLOSEDIR:
+            return self._fs2_closedir(seq, data)
+        if rtype == self.CMD_FS2_MKDIR:
+            return self._fs2_mkdir(seq, data)
+        if rtype == self.CMD_FS2_UNLINK:
+            return self._fs2_unlink(seq, data)
+        if rtype == self.CMD_FS2_RMDIR:
+            return self._fs2_rmdir(seq, data)
+        if rtype == self.CMD_FS2_RENAME:
+            return self._fs2_rename(seq, data)
+        return self._fs2_reply(rtype, seq, self.ST_FS2_IO)
+
+    def _fs2_caps(self, seq):
+        if self.fs2_caps_fault == "unknown":
+            return self._wrap(0xFE, seq, self.ST_UNKNOWN_CMD)
+        if self.fs2_caps_fault == "status":
+            return self._fs2_reply(self.CMD_FS2_CAPS, seq, self.ST_FS2_IO)
+        flags = 0x003E  # explicit offset, resolver, generation, stat, space
+        if self.fs2_read_only:
+            flags |= 0x0001
+        else:
+            flags |= 0x0FC0  # write/trunc/unlink/rename/mkdir/rmdir
+        out = bytearray(14)
+        out[0] = 2 if self.fs2_caps_fault == "version" else 1
+        out[1] = 1
+        out[2:4] = flags.to_bytes(2, "little")
+        out[4:8] = self.fs2_generation.to_bytes(4, "little")
+        out[8:10] = (128 if self.fs2_caps_fault == "chunk"
+                     else 512).to_bytes(2, "little")
+        out[10] = 2   # file slots
+        out[11] = 1   # directory slots
+        out[12] = 16  # resolver components
+        out[13] = 2   # token bytes
+        return self._fs2_reply(self.CMD_FS2_CAPS, seq, self.ST_FS2_OK, out)
+
+    def _fs2_open(self, seq, data, writable):
+        rtype = self.CMD_FS2_OPEN_RW if writable else self.CMD_FS2_OPEN_RO
+        if writable and self.fs2_read_only:
+            return self._fs2_reply(rtype, seq, self.ST_FS2_READ_ONLY)
+        if writable:
+            mode = data[0]
+            leaf = self._fs2_unpack(bytes(data[1:12]))
+        else:
+            mode = 0
+            leaf = self._fs2_unpack(bytes(data[:11]))
+        path = self._fs2_lookup(leaf)
+        if path in self.fs2_dirs:
+            return self._fs2_reply(rtype, seq, self.ST_FS2_IS_DIR)
+        exists = path in self.fs2_files
+        if writable:
+            if mode == 2:       # CREATE_ALWAYS
+                self.fs2_files[path] = bytearray()
+            elif mode == 1:     # CREATE_NEW
+                if exists:
+                    return self._fs2_reply(rtype, seq, self.ST_FS2_EXISTS)
+                self.fs2_files[path] = bytearray()
+            elif not exists:    # UPDATE
+                return self._fs2_reply(rtype, seq, self.ST_FS2_NOT_FOUND)
+        elif not exists:
+            return self._fs2_reply(rtype, seq, self.ST_FS2_NOT_FOUND)
+        slot = None
+        for i in range(len(self.fs2_slots)):
+            if self.fs2_slots[i] is None:
+                slot = i
+                break
+        if slot is None:
+            return self._fs2_reply(rtype, seq, self.ST_FS2_NO_HANDLE)
+        self.fs2_cookies[slot] = (self.fs2_cookies[slot] % 255) + 1
+        self.fs2_slots[slot] = [path, writable, self.fs2_cookies[slot]]
+        out = bytearray(7)
+        out[0:2] = self._fs2_token(slot, self.fs2_cookies[slot]).to_bytes(
+            2, "little")
+        out[2:6] = len(self.fs2_files[path]).to_bytes(4, "little")
+        return self._fs2_reply(rtype, seq, self.ST_FS2_OK, out)
+
+    def _fs2_read(self, seq, data):
+        if self.fs2_read_fault == "stale":
+            return self._fs2_reply(self.CMD_FS2_READ, seq, self.ST_FS2_STALE)
+        if self.fs2_read_fault == "io":
+            return self._fs2_reply(self.CMD_FS2_READ, seq, self.ST_FS2_IO)
+        token = int.from_bytes(bytes(data[0:2]), "little")
+        offset = int.from_bytes(bytes(data[2:6]), "little")
+        length = int.from_bytes(bytes(data[6:8]), "little")
+        entry, status = self._fs2_file_for(token)
+        if entry is None:
+            return self._fs2_reply(self.CMD_FS2_READ, seq, status)
+        if self.fs2_stale_path is not None and entry[0] == self.fs2_stale_path:
+            return self._fs2_reply(self.CMD_FS2_READ, seq, self.ST_FS2_STALE)
+        if length == 0 or length > 512:
+            return self._fs2_reply(self.CMD_FS2_READ, seq, self.ST_FS2_RANGE)
+        out = bytearray(8)
+        if self.fs2_read_fault == "ready_len":
+            # READY reports more than the chunk: the provider must reject.
+            out[0] = 1
+            out[1] = self.DIR_MCU_TO_Z80
+            out[2:4] = (length + 1).to_bytes(2, "little")
+            out[4:8] = offset.to_bytes(4, "little")
+            return self._fs2_reply(self.CMD_FS2_READ, seq, self.ST_FS2_OK, out)
+        content = self.fs2_files.get(entry[0], bytearray())
+        got = max(0, min(length, len(content) - offset))
+        if got:
+            ident = self._next_xfer_id()
+            out[0] = ident
+            out[1] = self.DIR_MCU_TO_Z80
+            out[2:4] = got.to_bytes(2, "little")
+            out[4:8] = offset.to_bytes(4, "little")
+            self.armed_send = (ident, self.RSP_FS2_READ, seq,
+                               bytes(content[offset:offset + got]))
+        return self._fs2_reply(self.CMD_FS2_READ, seq, self.ST_FS2_OK, out)
+
+    def _fs2_write(self, seq, data):
+        if self.fs2_write_fault == "unknown":
+            return self._fs2_reply(self.CMD_FS2_WRITE, seq,
+                                   self.ST_FS2_UNKNOWN_WRITE)
+        if self.fs2_write_fault == "stale":
+            return self._fs2_reply(self.CMD_FS2_WRITE, seq, self.ST_FS2_STALE)
+        token = int.from_bytes(bytes(data[0:2]), "little")
+        offset = int.from_bytes(bytes(data[2:6]), "little")
+        length = int.from_bytes(bytes(data[6:8]), "little")
+        entry, status = self._fs2_file_for(token)
+        if entry is None:
+            return self._fs2_reply(self.CMD_FS2_WRITE, seq, status)
+        if not entry[1]:
+            return self._fs2_reply(self.CMD_FS2_WRITE, seq,
+                                   self.ST_FS2_READ_ONLY)
+        if length == 0 or length > 512:
+            return self._fs2_reply(self.CMD_FS2_WRITE, seq, self.ST_FS2_RANGE)
+        ident = self._next_xfer_id()
+        self.armed_recv = (ident, self.CMD_FS2_WRITE, seq, entry[0], offset,
+                           length)
+        self.a_tx_window = bytearray()
+        self.tx_underrun = False
+        ready = (bytes([ident, self.DIR_Z80_TO_MCU,
+                        length & 0xFF, (length >> 8) & 0xFF]) +
+                 offset.to_bytes(4, "little"))
+        if self.fs2_write_fault == "done_fail":
+            self.done_fault = "status"
+        return self._fs2_reply(self.CMD_FS2_WRITE, seq, self.ST_FS2_OK, ready)
+
+    def _fs2_close(self, seq, data):
+        token = int.from_bytes(bytes(data[0:2]), "little")
+        entry, status = self._fs2_file_for(token)
+        if entry is None:
+            return self._fs2_reply(self.CMD_FS2_CLOSE, seq, status)
+        self.fs2_slots[(token & 0xFF) - 1] = None
+        return self._fs2_reply(self.CMD_FS2_CLOSE, seq, self.ST_FS2_OK)
+
+    def _fs2_sync(self, seq, data):
+        token = int.from_bytes(bytes(data[0:2]), "little")
+        entry, status = self._fs2_file_for(token)
+        if entry is None:
+            return self._fs2_reply(self.CMD_FS2_SYNC, seq, status)
+        return self._fs2_reply(self.CMD_FS2_SYNC, seq, self.ST_FS2_OK)
+
+    def _fs2_truncate(self, seq, data):
+        token = int.from_bytes(bytes(data[0:2]), "little")
+        size = int.from_bytes(bytes(data[2:6]), "little")
+        entry, status = self._fs2_file_for(token)
+        if entry is None:
+            return self._fs2_reply(self.CMD_FS2_TRUNCATE, seq, status)
+        if not entry[1]:
+            return self._fs2_reply(self.CMD_FS2_TRUNCATE, seq,
+                                   self.ST_FS2_READ_ONLY)
+        content = self.fs2_files[entry[0]]
+        if size < len(content):
+            del content[size:]
+        return self._fs2_reply(self.CMD_FS2_TRUNCATE, seq, self.ST_FS2_OK)
+
+    def _fs2_stat(self, seq, data):
+        path = self._fs2_lookup(self._fs2_unpack(bytes(data[:11])))
+        if path in self.fs2_dirs:
+            out = bytearray(5)
+            out[4] = self.FS2_ATTR_DIR
+            return self._fs2_reply(self.CMD_FS2_STAT, seq, self.ST_FS2_OK, out)
+        if path in self.fs2_files:
+            out = bytearray(5)
+            out[0:4] = len(self.fs2_files[path]).to_bytes(4, "little")
+            return self._fs2_reply(self.CMD_FS2_STAT, seq, self.ST_FS2_OK, out)
+        return self._fs2_reply(self.CMD_FS2_STAT, seq, self.ST_FS2_NOT_FOUND)
+
+    def _fs2_opendir(self, seq):
+        if self.fs2_dir is not None:
+            return self._fs2_reply(self.CMD_FS2_OPENDIR, seq,
+                                   self.ST_FS2_NO_HANDLE)
+        path = tuple(self.fs2_resolver)
+        if path not in self.fs2_dirs:
+            return self._fs2_reply(self.CMD_FS2_OPENDIR, seq,
+                                   self.ST_FS2_NOT_FOUND)
+        self.fs2_dir_cookie = (self.fs2_dir_cookie % 255) + 1
+        self.fs2_dir = [path, self.fs2_dir_cookie, 0]
+        return self._fs2_reply(
+            self.CMD_FS2_OPENDIR, seq, self.ST_FS2_OK,
+            self._fs2_token(0, self.fs2_dir_cookie).to_bytes(2, "little"))
+
+    def _fs2_readdir(self, seq, data):
+        token = int.from_bytes(bytes(data[0:2]), "little")
+        if (self.fs2_dir is None or (token & 0xFF) != 1 or
+                (token >> 8) != self.fs2_dir[1]):
+            return self._fs2_reply(self.CMD_FS2_READDIR, seq,
+                                   self.ST_FS2_NO_HANDLE)
+        entries = self._fs2_children(self.fs2_dir[0])
+        cursor = self.fs2_dir[2]
+        if cursor >= len(entries):
+            return self._fs2_reply(self.CMD_FS2_READDIR, seq, self.ST_FS2_END)
+        name, is_dir, size = entries[cursor]
+        self.fs2_dir[2] = cursor + 1
+        out = bytearray(16)
+        out[0:11] = self._fs2_pack(name)
+        out[11] = self.FS2_ATTR_DIR if is_dir else 0
+        out[12:16] = size.to_bytes(4, "little")
+        return self._fs2_reply(self.CMD_FS2_READDIR, seq, self.ST_FS2_OK, out)
+
+    def _fs2_closedir(self, seq, data):
+        token = int.from_bytes(bytes(data[0:2]), "little")
+        if self.fs2_dir is None or (token >> 8) != self.fs2_dir[1]:
+            return self._fs2_reply(self.CMD_FS2_CLOSEDIR, seq,
+                                   self.ST_FS2_NO_HANDLE)
+        self.fs2_dir = None
+        return self._fs2_reply(self.CMD_FS2_CLOSEDIR, seq, self.ST_FS2_OK)
+
+    def _fs2_mkdir(self, seq, data):
+        if self.fs2_read_only:
+            return self._fs2_reply(self.CMD_FS2_MKDIR, seq,
+                                   self.ST_FS2_READ_ONLY)
+        path = self._fs2_lookup(self._fs2_unpack(bytes(data[:11])))
+        if path in self.fs2_dirs or path in self.fs2_files:
+            return self._fs2_reply(self.CMD_FS2_MKDIR, seq, self.ST_FS2_EXISTS)
+        if tuple(self.fs2_resolver) not in self.fs2_dirs:
+            return self._fs2_reply(self.CMD_FS2_MKDIR, seq,
+                                   self.ST_FS2_NOT_FOUND)
+        self.fs2_dirs.add(path)
+        return self._fs2_reply(self.CMD_FS2_MKDIR, seq, self.ST_FS2_OK)
+
+    def _fs2_unlink(self, seq, data):
+        if self.fs2_read_only:
+            return self._fs2_reply(self.CMD_FS2_UNLINK, seq,
+                                   self.ST_FS2_READ_ONLY)
+        path = self._fs2_lookup(self._fs2_unpack(bytes(data[:11])))
+        if path in self.fs2_dirs:
+            return self._fs2_reply(self.CMD_FS2_UNLINK, seq,
+                                   self.ST_FS2_IS_DIR)
+        if path not in self.fs2_files:
+            return self._fs2_reply(self.CMD_FS2_UNLINK, seq,
+                                   self.ST_FS2_NOT_FOUND)
+        del self.fs2_files[path]
+        self._fs2_close_all()
+        return self._fs2_reply(self.CMD_FS2_UNLINK, seq, self.ST_FS2_OK)
+
+    def _fs2_rmdir(self, seq, data):
+        if self.fs2_read_only:
+            return self._fs2_reply(self.CMD_FS2_RMDIR, seq,
+                                   self.ST_FS2_READ_ONLY)
+        path = self._fs2_lookup(self._fs2_unpack(bytes(data[:11])))
+        if path not in self.fs2_dirs:
+            return self._fs2_reply(self.CMD_FS2_RMDIR, seq,
+                                   self.ST_FS2_NOT_FOUND)
+        if (any(len(d) > len(path) and d[:len(path)] == path
+                for d in self.fs2_dirs) or
+                any(len(f) > len(path) and f[:len(path)] == path
+                    for f in self.fs2_files)):
+            return self._fs2_reply(self.CMD_FS2_RMDIR, seq,
+                                   self.ST_FS2_READ_ONLY)
+        self.fs2_dirs.discard(path)
+        return self._fs2_reply(self.CMD_FS2_RMDIR, seq, self.ST_FS2_OK)
+
+    def _fs2_rename(self, seq, data):
+        if self.fs2_read_only:
+            return self._fs2_reply(self.CMD_FS2_RENAME, seq,
+                                   self.ST_FS2_READ_ONLY)
+        src = self._fs2_lookup(self._fs2_unpack(bytes(data[0:11])))
+        dst = self._fs2_lookup(self._fs2_unpack(bytes(data[11:22])))
+        if src not in self.fs2_files and src not in self.fs2_dirs:
+            return self._fs2_reply(self.CMD_FS2_RENAME, seq,
+                                   self.ST_FS2_NOT_FOUND)
+        if dst in self.fs2_files or dst in self.fs2_dirs:
+            return self._fs2_reply(self.CMD_FS2_RENAME, seq,
+                                   self.ST_FS2_EXISTS)
+        if src in self.fs2_files:
+            self.fs2_files[dst] = self.fs2_files.pop(src)
+        else:
+            self.fs2_dirs.discard(src)
+            self.fs2_dirs.add(dst)
+        self._fs2_close_all()
+        return self._fs2_reply(self.CMD_FS2_RENAME, seq, self.ST_FS2_OK)
+
     # -- SIO1/A bulk-lane port behaviour -------------------------------
     def bulk_data_read(self):
         self._a_tick()
@@ -758,7 +1228,10 @@ class IocCommandPeer:
         self.last_xfer_id = ident
         self.last_status = status
         if status == self.ST_OK and parsed is not None and name is not None:
-            content = self.fs_files.setdefault(name, bytearray())
+            if rtype == self.CMD_FS2_WRITE:
+                content = self.fs2_files.setdefault(name, bytearray())
+            else:
+                content = self.fs_files.setdefault(name, bytearray())
             need = offset + length
             if len(content) < need:
                 content.extend(b"\x00" * (need - len(content)))

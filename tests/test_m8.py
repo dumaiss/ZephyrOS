@@ -639,8 +639,8 @@ class TestBootSetPlan(unittest.TestCase):
         plan = _read_json(plan_path)
         manifest = _read_json(manifest_path)
         self.assertEqual([entry["name"] for entry in plan["modules"]],
-                         ["sio", "ioc", "hid", "v9958"],
-                         "the four production modules must all fit")
+                         ["sio", "ioc", "hid", "v9958", "iocfat"],
+                         "the production boot modules must all fit")
         used = 0
         for entry in plan["modules"]:
             with open(entry["path"], "rb") as handle:
@@ -681,11 +681,16 @@ M8_REQUIRED_TYPES = {
     "ioc.zmod": "ZMOD",
     "hid.zmod": "ZMOD",
     "v9958.zmod": "ZMOD",
+    "iocfat.zmod": "ZMOD",
     "v9958-6x8.font": "DATA",
     "monitor.zex": "ZEX",
 }
 M8_FULL_SET = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
                "v9958-6x8.font", "monitor.zex"]
+# Package 30: the production store also carries the resident IOC-FAT
+# provider, loaded last (before the monitor).
+M8_PRODUCTION_SET = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
+                     "iocfat.zmod", "v9958-6x8.font", "monitor.zex"]
 
 
 class TestM8Manifests(unittest.TestCase):
@@ -711,7 +716,8 @@ class TestM8Manifests(unittest.TestCase):
 
     def test_production_and_failure_manifests(self):
         cases = (
-            (os.path.join(ROOT, "recovery", "manifest.json"), M8_FULL_SET),
+            (os.path.join(ROOT, "recovery", "manifest.json"),
+             M8_PRODUCTION_SET),
             (os.path.join(M8_MANIFEST_DIR, "manifest-hid-badioc.json"),
              M8_FULL_SET),
             (os.path.join(M8_MANIFEST_DIR, "manifest-v9958-fontfail.json"),

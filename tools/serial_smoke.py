@@ -119,7 +119,7 @@ before they print anything, so those modes send that sequence once the
 port is open and repeat it until the first byte arrives.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|m8-ioc|m8-hid|m8-v9958|m8-console|m8|m8-fb-nohid|m8-fb-nohid-nov9958|m8-fb-badioc|m8-fb-arena]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|m8-ioc|m8-hid|m8-v9958|m8-console|m8|m8-fb-nohid|m8-fb-nohid-nov9958|m8-fb-badioc|m8-fb-arena|m9-fs|m9-exec|m9-iocfat]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -186,6 +186,15 @@ PRODUCTION_CONSOLE_FAIL = (b"console: unbound\r\n",
 # production boot set must be complete, so this is a failure in the
 # banner-only contract too.
 MODULE_UNAVAILABLE = b": unavailable 0x"
+
+# The optional production root: the mount pass reports it on the *early*
+# console (SIO), so the serial capture always shows which of the two states
+# the boot reached - `/` mounted silently, or this diagnostic.
+VFS_UNAVAILABLE = b"vfs: / unavailable 0x"
+
+# The card was absent (or the FAT unreadable) but the acceptance image takes
+# that as a documented outcome rather than a failure.
+M9IOCFAT_ABSENT = b"m9 iocfat selftest: OK (card absent)"
 SUBSYS_EXIT = b"monitor: exit status 0x"
 
 # --- corrupt-store image -----------------------------------------------------
@@ -529,6 +538,17 @@ def _m9fs_result(data):
 M9EXEC_SELFTEST_OK = b"m9 exec selftest: OK\r\n"
 M9EXEC_SELFTEST_FAIL = b"m9 exec selftest: FAIL"
 
+# Package 30: the IOC-FAT image runs the same native suite (its IOC-FAT
+# section replaces the ramfs cases) plus the target hook's provider cases.
+# The image compiles HID and V9958 out, so its console is SIO/SIO: the
+# monitor banner and prompt arrive on the same link, which is what proves
+# the ordinary launcher still ran after the acceptance phase.
+M9IOCFAT_PASS = b"fstest: PASS "
+M9IOCFAT_MOUNTED = b"m9 iocfat: fstest iocfat section passed\r\n"
+M9IOCFAT_SELFTEST_OK = b"m9 iocfat selftest: OK\r\n"
+M9IOCFAT_SELFTEST_FAIL = b"m9 iocfat selftest: FAIL"
+M9IOCFAT_MONITOR = b"Z80> "
+
 
 def _m9exec_result(data):
     """True when the M9 SYS_EXEC acceptance reported success: the native
@@ -538,6 +558,20 @@ def _m9exec_result(data):
         return False
     return (BANNER in data and M9FS_PASS in data and
             M9EXEC_SELFTEST_OK in data)
+
+
+def _m9iocfat_result(data):
+    """True when the M9 IOC-FAT acceptance image reported success on a
+    writable card: `/` is served by iocfat, the native suite's IOC-FAT
+    section passed, the target hook reported OK, and the unchanged launcher
+    then started the monitor on the same SIO console - with no FAIL/PANIC
+    marker and no `/` diagnostic."""
+    if (M9FS_FAIL in data or M9IOCFAT_SELFTEST_FAIL in data or
+            b"PANIC" in data):
+        return False
+    return (BANNER in data and M9IOCFAT_PASS in data and
+            M9IOCFAT_MOUNTED in data and M9IOCFAT_SELFTEST_OK in data and
+            M9IOCFAT_MONITOR in data and b"vfs: / unavailable" not in data)
 
 
 def main(argv):
@@ -553,7 +587,8 @@ def main(argv):
                                            "m8-fb-nohid",
                                            "m8-fb-nohid-nov9958",
                                            "m8-fb-badioc", "m8-fb-arena",
-                                           "m9-fs", "m9-exec"),
+                                           "m9-fs", "m9-exec",
+                                           "m9-iocfat"),
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
@@ -778,6 +813,12 @@ def main(argv):
                     if _m9exec_result(data) or M9FS_FAIL in data or \
                             M9EXEC_SELFTEST_FAIL in data:
                         break
+                elif args.mode == "m9-iocfat":
+                    # Keep reading past the selftest line: the monitor
+                    # prompt is part of the contract for this image.
+                    if _m9iocfat_result(data) or M9FS_FAIL in data or \
+                            M9IOCFAT_SELFTEST_FAIL in data:
+                        break
                 elif args.mode in M8FB_MODES:
                     if M8FB_SEND_INPUT in data and not rx_byte_sent:
                         try:
@@ -889,6 +930,15 @@ def main(argv):
                     "module diagnostic; the operator must also confirm "
                     "the visible monitor session on the V9958 display "
                     "with the USB keyboard")
+    elif args.mode == "m9-iocfat":
+        ok = _m9iocfat_result(data)
+        expected = ("the banner, 'fstest: PASS n/n' from the native suite's "
+                    "IOC-FAT section (namespace, romfs, iocfat, window), the "
+                    "cache phase markers, the target hook's 'fstest iocfat "
+                    "section passed', 'm9 iocfat selftest: OK', and then the "
+                    "monitor prompt 'Z80> ' on the same SIO console — with a "
+                    "writable FAT card and no `vfs: / unavailable` "
+                    "diagnostic")
     elif args.mode == "m9-fs":
         ok = _m9fs_result(data)
         expected = ("the banner, 'fstest: PASS n/n' from the native suite, "
@@ -906,6 +956,7 @@ def main(argv):
                     % (spec["input"][0].decode(),
                        spec["output"][0].decode()))
 
+    _root_observation(args.mode, data)
     if not ok:
         _explain_wrong_image(args.mode, data)
         print("serial_smoke: FAIL - %s was not observed (timeout %gs)"
@@ -917,6 +968,31 @@ def main(argv):
               "this capture; the transcript above was reassembled across "
               "the reconnect(s)" % bridge_drops)
     return 0
+
+
+def _root_observation(mode, data):
+    """Report which state the optional `/` mount reached.
+
+    Both production and the IOC-FAT acceptance image answer this on the
+    early console, so it is always in the serial capture; without it the
+    two card states are indistinguishable from the transcript alone.
+    """
+    if mode not in ("normal", "m9-iocfat"):
+        return
+    if VFS_UNAVAILABLE in data:
+        index = data.index(VFS_UNAVAILABLE) + len(VFS_UNAVAILABLE)
+        code = data[index:index + 2].decode("ascii", "replace")
+        print("serial_smoke: note: the optional fs2 root `/` is NOT mounted "
+              "(`vfs: / unavailable 0x%s`); the card is absent, "
+              "write-protected, unreadable, or the MCU did not answer the "
+              "FS2 root probe" % code)
+    elif M9IOCFAT_ABSENT in data:
+        print("serial_smoke: note: the optional fs2 root `/` is NOT mounted "
+              "(this image reports the absent card as an expected outcome)")
+    elif BANNER in data:
+        print("serial_smoke: note: the optional fs2 root `/` mounted "
+              "without a diagnostic, so the MCU answered the FS2 root probe "
+              "with media present")
 
 
 def _explain_wrong_image(mode, data):
@@ -976,6 +1052,24 @@ def _explain_wrong_image(mode, data):
                   "(see docs/validation/"
                   "2026-10-05-m9-provider-abi-hardware.md section 5)",
                   file=sys.stderr)
+        elif not BANNER in data:
+            print("serial_smoke: hint: no boot log was captured.  Start "
+                  "this tool first, then power-cycle the board or press "
+                  "RESET while it waits, and rerun", file=sys.stderr)
+    elif mode == "m9-iocfat":
+        if M9IOCFAT_SELFTEST_FAIL in data:
+            print("serial_smoke: hint: the provider selftest failed while "
+                  "`/` was mounted.  If the card is not inserted, the MCU "
+                  "still answered the FS2 root probe (a phantom volume), so "
+                  "the first real read or write is where it failed - record "
+                  "the FAIL code from the transcript above and the card "
+                  "state in docs/validation/"
+                  "2026-10-05-m9-iocfat-provider.md section 7",
+                  file=sys.stderr)
+        elif VFS_UNAVAILABLE in data:
+            print("serial_smoke: hint: `/` is not mounted, so this image "
+                  "took its absent-card path; row 3 needs a writable FAT "
+                  "card inserted", file=sys.stderr)
         elif not BANNER in data:
             print("serial_smoke: hint: no boot log was captured.  Start "
                   "this tool first, then power-cycle the board or press "

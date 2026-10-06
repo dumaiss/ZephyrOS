@@ -29,6 +29,7 @@
 #   make m9-provider-selftest M9 writable-provider acceptance image
 #   make m9-fs-selftest       M9 filesystem syscall acceptance image
 #   make m9-exec-selftest     M9 SYS_EXEC nesting acceptance image
+#   make m9-iocfat-selftest   M9 IOC-FAT provider acceptance image
 #   make clean    remove all generated files
 #
 # Builds are parallel by default (ZOS_JOBS defaults to nproc); use
@@ -144,6 +145,7 @@ CFLAGS    += -DZOS_M8_IOC_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m8_ioc_test.rel
 PK_SUFFIX := -m8-ioc-selftest
 ZOS_V9958_BOOT := 0
+ZOS_IOCFAT_BOOT := 0
 endif
 
 # M8 HID acceptance image: production-style boot (derived arena, SIO +
@@ -159,6 +161,7 @@ CFLAGS    += -DZOS_M8_HID_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m8_hid_test.rel
 PK_SUFFIX := -m8-hid-selftest
 ZOS_V9958_BOOT := 0
+ZOS_IOCFAT_BOOT := 0
 endif
 
 # M8 HID no-IOC image: the same target diagnostic with the IOC boot load
@@ -171,6 +174,7 @@ ZOS_IOC_BOOT := 0
 TARGET_TEST_OBJS += $(BUILD)/m8_hid_test.rel
 PK_SUFFIX := -m8-hid-noioc-selftest
 ZOS_V9958_BOOT := 0
+ZOS_IOCFAT_BOOT := 0
 endif
 
 # M8 HID malformed-dependency image: the ROMFS `ioc.zmod` entry carries a
@@ -185,6 +189,7 @@ BOOT_IOC_ZMOD = $(MODULES)/fakeioc.zmod
 TARGET_TEST_OBJS += $(BUILD)/m8_hid_test.rel
 PK_SUFFIX := -m8-hid-badioc-selftest
 ZOS_V9958_BOOT := 0
+ZOS_IOCFAT_BOOT := 0
 endif
 
 # M8 V9958 video acceptance image: production-style boot (derived
@@ -198,6 +203,7 @@ ifeq ($(ZOS_M8_V9958_SELFTEST),1)
 CFLAGS    += -DZOS_M8_V9958_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m8_v9958_test.rel
 PK_SUFFIX := -m8-v9958-selftest
+ZOS_IOCFAT_BOOT := 0
 endif
 
 # M8 V9958 font-failure image: the ROMFS `v9958-6x8.font` entry carries
@@ -209,6 +215,7 @@ ifeq ($(ZOS_M8_V9958_FONTFAIL),1)
 CFLAGS    += -DZOS_M8_V9958_FONTFAIL=1
 TARGET_TEST_OBJS += $(BUILD)/m8_v9958_test.rel
 PK_SUFFIX := -m8-v9958-fontfail-selftest
+ZOS_IOCFAT_BOOT := 0
 endif
 
 # M8 console acceptance image (package 19): the full production stack
@@ -223,6 +230,7 @@ ifeq ($(ZOS_M8_CONSOLE_SELFTEST),1)
 CFLAGS    += -DZOS_M8_CONSOLE_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m8_console_test.rel
 PK_SUFFIX := -m8-console-selftest
+ZOS_IOCFAT_BOOT := 0
 endif
 
 # M8 integration acceptance image (package 20): the full production
@@ -239,6 +247,7 @@ ifeq ($(ZOS_M8_SELFTEST),1)
 CFLAGS    += -DZOS_M8_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m8_test.rel
 PK_SUFFIX := -m8-selftest
+ZOS_IOCFAT_BOOT := 0
 endif
 
 # M8 fallback-matrix images (package 20): the same four-module boot
@@ -253,6 +262,7 @@ endif
 ifeq ($(ZOS_M8_FALLBACK_SELFTEST),1)
 CFLAGS    += -DZOS_M8_FALLBACK_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m8_fallback_test.rel
+ZOS_IOCFAT_BOOT := 0
 ifeq ($(ZOS_M8_FALLBACK),nohid)
 PK_SUFFIX := -m8-fb-nohid
 else ifeq ($(ZOS_M8_FALLBACK),nohid-nov9958)
@@ -303,6 +313,7 @@ ZOS_MOUNTS := tests/m9/mounts-ramfs.json
 ZOS_IOC_BOOT := 0
 ZOS_HID_BOOT := 0
 ZOS_V9958_BOOT := 0
+ZOS_IOCFAT_BOOT := 0
 endif
 
 # M9 filesystem syscall acceptance image (package 27): the SIO-only boot
@@ -319,6 +330,7 @@ ZOS_MOUNTS := tests/m9/mounts-ramfs.json
 ZOS_IOC_BOOT := 0
 ZOS_HID_BOOT := 0
 ZOS_V9958_BOOT := 0
+ZOS_IOCFAT_BOOT := 0
 endif
 
 # M9 SYS_EXEC acceptance image (package 28): the SIO-only boot set plus the
@@ -331,6 +343,23 @@ TARGET_TEST_OBJS += $(BUILD)/m9_exec_test.rel
 PK_SUFFIX := -m9-exec-selftest
 ZOS_MOUNTS := tests/m9/mounts-ramfs.json
 ZOS_IOC_BOOT := 0
+ZOS_HID_BOOT := 0
+ZOS_V9958_BOOT := 0
+ZOS_IOCFAT_BOOT := 0
+endif
+
+# M9 IOC-FAT acceptance image (package 30).  The production boot set (SIO,
+# IOC, HID, V9958) plus `iocfat.zmod` loaded last, with the production
+# `config/mounts.json` attaching `/` to `iocfat` as an optional mount.  The
+# target hook drives the provider through the ordinary VFS while the
+# simulator's FS2 peer serves the MCU side; the same image runs on hardware
+# against a real SD card.  HID and V9958 are dropped so the derived arena
+# holds the acceptance object alongside the provider and the console still
+# binds the SIO fallback.
+ifeq ($(ZOS_M9_IOCFAT_SELFTEST),1)
+CFLAGS    += -DZOS_M9_IOCFAT_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m9_iocfat_test.rel
+PK_SUFFIX := -m9-iocfat-selftest
 ZOS_HID_BOOT := 0
 ZOS_V9958_BOOT := 0
 endif
@@ -390,6 +419,19 @@ endif
 ZOS_V9958_BOOT ?= 1
 CFLAGS    += -DZOS_V9958_BOOT=$(ZOS_V9958_BOOT)
 
+# IOC-FAT root filesystem provider (package 30).  Production loads
+# iocfat.zmod last, after the console devices; the module discovers the IOC
+# class and registers the `iocfat` provider, then the normal mount pass
+# attaches it at the optional `/`.  Every image whose ROMFS carries no
+# iocfat.zmod entry compiles the load out (the per-image blocks above set
+# ZOS_IOCFAT_BOOT := 0), so its boot transcript and arena plan are the
+# accepted ones.
+ifeq ($(ZOS_SUBSYS_SELFTEST),1)
+ZOS_IOCFAT_BOOT := 0
+endif
+ZOS_IOCFAT_BOOT ?= 1
+CFLAGS    += -DZOS_IOCFAT_BOOT=$(ZOS_IOCFAT_BOOT)
+
 OBJS      := $(ASM_OBJS) $(C_OBJS)
 
 # --- driver-arena geometry ---------------------------------------------------
@@ -405,7 +447,7 @@ ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
 	$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
 	$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST) \
-	$(ZOS_M9_EXEC_SELFTEST)),)
+	$(ZOS_M9_EXEC_SELFTEST) $(ZOS_M9_IOCFAT_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1 \
 		-Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
@@ -436,6 +478,10 @@ BOOT_ZMODS += $(MODULES)/hid.zmod
 endif
 ifneq ($(ZOS_V9958_BOOT),0)
 BOOT_ZMODS += $(MODULES)/v9958.zmod
+endif
+BOOT_IOCFAT_ZMOD ?= $(MODULES)/iocfat.zmod
+ifneq ($(ZOS_IOCFAT_BOOT),0)
+BOOT_ZMODS += $(BOOT_IOCFAT_ZMOD)
 endif
 
 
@@ -510,6 +556,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	m9-provider-selftest \
 	m9-fs-selftest \
 	m9-exec-selftest \
+	m9-iocfat-selftest \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-subsystem smoke-hardware-romfs-corrupt \
@@ -519,7 +566,8 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	smoke-hardware-m8-fb-nohid-nov9958 smoke-hardware-m8-fb-badioc \
 	smoke-hardware-m8-fb-arena \
 	smoke-hardware-m9-fs \
-	smoke-hardware-m9-exec
+	smoke-hardware-m9-exec \
+	smoke-hardware-m9-iocfat
 
 all: $(IMAGE) $(MAME_IMAGE)
 
@@ -963,6 +1011,19 @@ $(MODULES)/m9_fail.rel: tests/modules/m9_fail.c \
 		include/zephyros/errno.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) $< -o $@
 
+# --- M9 IOC-FAT provider (package 30) ---
+# The resident path-based FS2 provider, loaded last by production (see the
+# ZOS_IOCFAT_BOOT gate) and mounted at the optional `/`.
+$(MODULES)/iocfat.rel: fs/iocfat/iocfat.c \
+		include/zephyros/driver.h include/zephyros/vfs.h \
+		include/zephyros/ioc.h abi/zos/fs.h include/zephyros/errno.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) $< -o $@
+
+$(MODULES)/iocfat.zmod: modules/manifests/iocfat.json $(MODULES)/iocfat.rel \
+		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
+	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
+		--report $(MODULES)/iocfat.report.json
+
 $(MODULES)/%.zmod: tests/modules/%.json $(MODULES)/%.rel \
 		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES)
@@ -986,7 +1047,8 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/m9_selftest.h \
 		tests/target/include/m9_provider_selftest.h \
 		tests/target/include/m9_fs_selftest.h \
-		tests/target/include/m9_exec_selftest.h | $(BUILD)
+		tests/target/include/m9_exec_selftest.h \
+		tests/target/include/m9_iocfat_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # Test-owned CTC0 programming helper (acceptance images only): linked in
@@ -1120,6 +1182,13 @@ $(BUILD)/m9_exec_test.rel: tests/target/m9/m9_exec_test.c \
 		tests/target/include/m9_exec_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
+$(BUILD)/m9_iocfat_test.rel: tests/target/m9/m9_iocfat_test.c \
+		include/zephyros/console.h include/zephyros/device.h \
+		include/zephyros/kernel.h abi/zos/fs.h \
+		kernel/vfs/vfs.h \
+		tests/target/include/m9_iocfat_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
 # --- native user programs (SDK, work/28c-m9-user-sdk) ------------------------
 # Every ZEX is built by one zex_program line from user/sdk/zex.mk.  The
 # sources compile with exactly -I abi -I user/sdk/include plus their own
@@ -1234,6 +1303,14 @@ ROMFS_MANIFEST := tests/m9/manifest-exec.json
 ROMFS_EXTRA_DEPS := $(MODULES)/ramfs.zmod $(MODULES)/monitor.zex \
 		$(MODULES)/fstest.zex $(MODULES)/fschild.zex \
 		$(MODULES)/fsraw.zex $(MODULES)/fsdeep.zex
+else ifeq ($(ZOS_M9_IOCFAT_SELFTEST),1)
+# Production boot set minus HID/V9958: the SIO fallback, the IOC transport,
+# the resident FS2 filesystem provider and the console, plus the native
+# filesystem acceptance program the target hook exec's.  The image's `/` is
+# the card, so nothing else may be assumed present.
+ROMFS_MANIFEST := tests/m9/manifest-iocfat.json
+ROMFS_EXTRA_DEPS := $(MODULES)/iocfat.zmod $(MODULES)/monitor.zex \
+		$(MODULES)/fstest.zex
 else ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
 # SDK demo image (work/28c-m9-user-sdk): the production boot set and store
 # plus the hello demo, which the launcher starts instead of the monitor
@@ -1268,6 +1345,7 @@ $(BUILD)/main.rel: $(BOOT_PROGRAM_STAMP)
 
 $(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(MODULES)/sio.zmod \
 		$(MODULES)/ioc.zmod $(MODULES)/hid.zmod $(MODULES)/v9958.zmod \
+		$(if $(filter 0,$(ZOS_IOCFAT_BOOT)),,$(BOOT_IOCFAT_ZMOD)) \
 		$(MODULES)/v9958-6x8.font $(ROMFS_EXTRA_DEPS) \
 		tools/romfspack.py $(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
 ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
@@ -1304,7 +1382,7 @@ ZOS_TEST_LINK := $(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 		$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
 		$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
 		$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST) \
-		$(ZOS_M9_EXEC_SELFTEST))
+		$(ZOS_M9_EXEC_SELFTEST) $(ZOS_M9_IOCFAT_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -1711,6 +1789,23 @@ m9-exec-selftest: all
 	$(PYTHON) -m unittest discover -s tests -p 'test_m9_exec_sim.py' -v
 	@echo "m9 exec image: build-m9-exec-selftest/zephyros-m9-exec-selftest.bin"
 
+# M9 IOC-FAT acceptance image (package 30): the production boot set plus
+# `iocfat.zmod` and the production mount manifest (which attaches `/` to
+# `iocfat` as optional), with the target-side provider selftest.  The
+# simulator replay serves FS2 from a host peer, proves the cache rules with
+# FS2 command counts, and measures the gate-stack depth through the
+# provider.
+m9-iocfat-selftest: all
+	$(MAKE) BUILD=build-m9-iocfat-selftest ZOS_M9_IOCFAT_SELFTEST=1 \
+		build-m9-iocfat-selftest/zephyros-m9-iocfat-selftest.bin \
+		build-m9-iocfat-selftest/zephyr80-m9-iocfat-selftest.bin
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+		build-m9-iocfat-selftest/zephyros.map \
+		build-m9-iocfat-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_iocfat_sim.py' -v
+	@echo "m9 iocfat image: build-m9-iocfat-selftest/zephyros-m9-iocfat-selftest.bin"
+
 # SDK helloworld demo image (work/28c-m9-user-sdk): the production boot path
 # in its own build directory (build-helloworld) with the SDK hello demo
 # added to the recovery manifest, booted as /SYSTEM/hello.zex.  This is the
@@ -1811,7 +1906,7 @@ endef
 hardware-images: all subsystem-selftest romfs-corrupt-selftest \
 		m8-selftest m8-ioc-selftest m8-hid-selftest \
 		m8-v9958-selftest m8-console-selftest m8-fallback-selftests \
-		m9-fs-selftest m9-exec-selftest
+		m9-fs-selftest m9-exec-selftest m9-iocfat-selftest
 	@echo "hardware-images: every smoke image is built under build*/"
 
 smoke-hardware:
@@ -1876,3 +1971,7 @@ smoke-hardware-m9-fs:
 smoke-hardware-m9-exec:
 	@$(call smoke_preflight,build-m9-exec-selftest/zephyros-m9-exec-selftest.bin,m9-exec-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode m9-exec --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m9-iocfat:
+	@$(call smoke_preflight,build-m9-iocfat-selftest/zephyros-m9-iocfat-selftest.bin,m9-iocfat-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode m9-iocfat --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

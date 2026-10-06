@@ -77,6 +77,18 @@ void zos_boot_test_modules(void);
 #define ZOS_V9958_BOOT 1
 #endif
 
+/* IOC-FAT root filesystem boot load (package 30).  Production carries
+ * `iocfat.zmod` in the recovery store and loads it last, after the console
+ * devices.  The module discovers the IOC class, registers the `iocfat`
+ * provider and a failed init (missing IOC, a CAPS failure or an unknown
+ * command) is rolled back by the loader and reported; the SIO fallback and
+ * every earlier device remain usable.  The optional `/` mount is
+ * instantiated by the normal mount pass.  Acceptance images that replace the
+ * boot set compile this block out. */
+#ifndef ZOS_IOCFAT_BOOT
+#define ZOS_IOCFAT_BOOT 1
+#endif
+
 /* Hardware-smoke host sync.  Diagnostic images built with
  * ZOS_SMOKE_HOST_SYNC=1 (the M8 IOC smoke image) replace the blind
  * one-second connect delay with a wait for the host's two-byte sync
@@ -145,7 +157,7 @@ static void romfs_diagnose(int result)
  *
  * Compiled only when an optional load exists, so pre-M8 acceptance
  * images (which compile every optional block out) keep their bytes. */
-#if ZOS_IOC_BOOT || ZOS_HID_BOOT || ZOS_V9958_BOOT
+#if ZOS_IOC_BOOT || ZOS_HID_BOOT || ZOS_V9958_BOOT || ZOS_IOCFAT_BOOT
 static void kernel_module_unavailable(const char *name, int result)
 {
 	static const char hex[] = "0123456789ABCDEF";
@@ -262,6 +274,18 @@ static uint8_t kernel_boot_module(void)
 	result = kernel_load_vfs_module("v9958");
 	if (result < 0) {
 		kernel_module_unavailable("v9958", result);
+	}
+#endif
+#if ZOS_IOCFAT_BOOT
+	/* The IOC-FAT root filesystem provider, loaded last.  It discovers
+	 * the IOC class at init and registers the `iocfat` provider; a
+	 * missing IOC, a CAPS failure or an unknown command fails the init
+	 * and the loader rolls it back.  The optional `/` mount is
+	 * instantiated by the normal mount pass below, so an absent or
+	 * broken card leaves `/SYSTEM` and the console fully usable. */
+	result = kernel_load_vfs_module("iocfat");
+	if (result < 0) {
+		kernel_module_unavailable("iocfat", result);
 	}
 #endif
 #if ZOS_TARGET_TEST_BUILD
