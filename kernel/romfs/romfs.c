@@ -24,6 +24,8 @@
 
 #include "zephyros/romfs.h"
 
+#include "kernel/lib/name.h"
+
 extern uint8_t rom_access_staging[];
 
 /* Published filesystem state (bank-7 runtime data). */
@@ -133,37 +135,6 @@ static uint8_t romfs_name_valid(const uint8_t *name)
 		}
 	}
 	return 1;
-}
-
-/* The one and only ROMFS name comparison: ASCII case-folded (architecture
- * sections 32.8 and 32.13).  There is no case-sensitive lookup beside it;
- * VFS, the provider and the module resource imports all arrive here. */
-static uint8_t romfs_name_match(const uint8_t *stored, const char *wanted)
-{
-	uint8_t i;
-
-	for (i = 0; i < ROMFS_NAME_SIZE; ++i) {
-		uint8_t c = stored[i];
-		uint8_t w;
-
-		if (c == 0) {
-			return (uint8_t)(wanted[i] == 0);
-		}
-		w = (uint8_t)wanted[i];
-		if (w == 0) {
-			return 0;
-		}
-		if (c >= 'a' && c <= 'z') {
-			c = (uint8_t)(c - 32);
-		}
-		if (w >= 'a' && w <= 'z') {
-			w = (uint8_t)(w - 32);
-		}
-		if (w != c) {
-			return 0;
-		}
-	}
-	return 0; /* unterminated stored name (init rejects it) */
 }
 
 /* Validate one directory entry staged in rom_access_staging. */
@@ -290,7 +261,12 @@ int romfs_lookup_ci(const char *name, romfs_file_t *out)
 		if (result != 0) {
 			return result;
 		}
-		if (romfs_name_match(rom_access_staging, name)) {
+		/* The one and only ROMFS name comparison: ASCII case-folded
+		 * and bounded to the 24-byte entry name field (architecture
+		 * sections 32.8 and 32.13).  VFS, the provider and the module
+		 * resource imports all arrive here. */
+		if (zos_ascii_equal((const char *)rom_access_staging, name,
+				   ROMFS_NAME_SIZE, 1u)) {
 			out->offset = romfs_le32(rom_access_staging + 24);
 			out->size = romfs_le32(rom_access_staging + 28);
 			out->flags = romfs_le16(rom_access_staging + 32);

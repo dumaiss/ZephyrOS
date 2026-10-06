@@ -1,0 +1,35 @@
+{
+  "format": "romfs-v1",
+  "files": [
+    {
+      "name": "sio.zmod",
+      "type": "ZMOD",
+      "path": "sio.zmod"
+    },
+    {
+      "name": "ioc.zmod",
+      "type": "ZMOD",
+      "path": "ioc.zmod"
+    },
+    {
+      "name": "hid.zmod",
+      "type": "ZMOD",
+      "path": "hid.zmod"
+    },
+    {
+      "name": "v9958.zmod",
+      "type": "ZMOD",
+      "path": "v9958.zmod"
+    },
+    {
+      "name": "v9958-6x8.font",
+      "type": "DATA",
+      "path": "v9958-6x8.font"
+    },
+    {
+      "name": "monitor.zex",
+      "type": "ZEX",
+      "path": "monitor.zex"
+    }
+  ]
+}

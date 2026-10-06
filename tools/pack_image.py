@@ -91,6 +91,12 @@ GRANULE_SIZE = 0x0200
 GRANULE_COUNT = ((ARENA_END - ARENA_BASE) // GRANULE_SIZE)
 COMMON_BASE = 0xE000
 COMMON_CODE_END = 0xFD00
+# Architectural ceiling on the packed `_COMMON` + `_COMMON_DATA` run and
+# the M10 far-call reservation held back from it (work package 30c, from
+# the 30b audit).  The generated memory include overrides both; these
+# literals only seed the synthetic host path.
+COMMON_CEILING = 0x0C00
+COMMON_M10_RESERVATION = 0x0200
 IRQ_VECTOR_BASE = 0xFD00
 IRQ_VECTOR_END = 0xFE01
 IRQ_STATE_BASE = 0xFE01
@@ -135,6 +141,7 @@ def apply_memory_inc(path):
     global BANK7_RUNTIME_END, IRQ_ISR_STACK_SIZE
     global ROMFS_FIRST_PAGE, ROMFS_PAGE_COUNT, ROMFS_WINDOW_SIZE
     global ROMFS_CAPACITY, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
+    global COMMON_CEILING, COMMON_M10_RESERVATION
     values = {}
     for line in open(path):
         line = line.split(";")[0].strip()
@@ -163,6 +170,10 @@ def apply_memory_inc(path):
     ROMFS_CAPACITY = values["ZOS_ROMFS_CAPACITY"]
     ROM_ACCESS_BASE = values["ZOS_ROM_ACCESS_BASE"]
     ROM_ACCESS_SIZE = values["ZOS_ROM_ACCESS_SIZE"]
+    require_value(values, "ZOS_COMMON_CEILING", path)
+    require_value(values, "ZOS_COMMON_M10_RESERVATION", path)
+    COMMON_CEILING = values["ZOS_COMMON_CEILING"]
+    COMMON_M10_RESERVATION = values["ZOS_COMMON_M10_RESERVATION"]
     REGIONS = make_regions()
 
 # Common-resident entry points (must be callable through the permanently
@@ -188,7 +199,8 @@ RST30_VECTOR = 0x0030
 BANK7_LEDGER_LINE = ("bank7: code %d bytes end %04Xh | arena %d granules "
                      "(%d boot, %d free) | data %d bytes at %04Xh | "
                      "isr %d | slack %d bytes")
-COMMON_LEDGER_LINE = ("common: used %d of %d bytes (code %d, data %d)")
+COMMON_LEDGER_LINE = ("common: used %d of %d bytes (code %d, data %d) | "
+                      "ceiling %d, m10 %d, limit %d")
 
 
 class LayoutError(Exception):
@@ -546,6 +558,12 @@ def common_usage(symbols):
             "packed common memory is %d bytes, over the %d-byte window "
             "%04Xh-%04Xh" % (code + data, capacity, COMMON_BASE,
                              COMMON_CODE_END - 1))
+    limit = COMMON_CEILING - COMMON_M10_RESERVATION
+    if code + data > limit:
+        raise LayoutError(
+            "packed common memory is %d bytes, over the %d-byte M9 limit "
+            "(ceiling %d minus the %d-byte M10 reservation)"
+            % (code + data, limit, COMMON_CEILING, COMMON_M10_RESERVATION))
     return code, data, code + data, capacity
 
 
@@ -571,6 +589,9 @@ def bank7_ledger(symbols, plan=None):
             "common_data_bytes": common[1],
             "common_used_bytes": common[2],
             "common_capacity_bytes": common[3],
+            "common_ceiling_bytes": COMMON_CEILING,
+            "common_m10_reservation_bytes": COMMON_M10_RESERVATION,
+            "common_limit_bytes": COMMON_CEILING - COMMON_M10_RESERVATION,
         }
     return dict(common_fields, **{
         "code_bytes": kernel_end - BANK7_BASE,
@@ -598,7 +619,97 @@ def format_bank7_ledger(ledger):
         + "\n"
         + COMMON_LEDGER_LINE % (
             ledger["common_used_bytes"], ledger["common_capacity_bytes"],
-            ledger["common_code_bytes"], ledger["common_data_bytes"]))
+            ledger["common_code_bytes"], ledger["common_data_bytes"],
+            ledger["common_ceiling_bytes"],
+            ledger["common_m10_reservation_bytes"],
+            ledger["common_limit_bytes"]))
+
+
+def align_up(value, alignment=GRANULE_SIZE):
+    """Round `value` up to the next `alignment` boundary."""
+    return (value + alignment - 1) & ~(alignment - 1)
+
+
+def align_down(value, alignment=GRANULE_SIZE):
+    """Round `value` down to the previous `alignment` boundary."""
+    return value & ~(alignment - 1)
+
+
+def granule_thresholds(total_size, granule=GRANULE_SIZE):
+    """Granule rounding distances for one module/user image.
+
+    `above_lower_bytes` is the saving that reaches the next lower granule
+    threshold, so removing it frees one granule.  `before_higher_bytes` is
+    the room left before the next higher threshold costs one granule.  A
+    saving smaller than `above_lower_bytes` frees no granule at all."""
+    if total_size <= 0:
+        return {"granules": 0, "above_lower_bytes": 0,
+                "before_higher_bytes": granule}
+    granules = (total_size + granule - 1) // granule
+    return {
+        "granules": granules,
+        "above_lower_bytes": total_size - (granules - 1) * granule,
+        "before_higher_bytes": granules * granule - total_size,
+    }
+
+
+def kernel_granule_thresholds(code_end, data_base, data_size, runtime_end,
+                              granule=GRANULE_SIZE):
+    """Kernel-side granule thresholds (section 32.39 ledger companion).
+
+    Two boundaries move as the kernel changes: the arena start follows the
+    aligned linked code end, and the arena end is the derived data base
+    `align_down(runtime_end - data_size, granule)`.  For each, the returned
+    pair gives the bytes that free one granule (a downward move) and the
+    bytes left before the next higher granule is spent (an upward move).
+
+    `data_above_lower_bytes`/`data_before_higher_bytes` are expressed as
+    runtime-data size changes: shrinking the data size by the former moves
+    the data base up one granule; growing it by the latter moves it down
+    one granule.  With the derived-base invariant the values are exact; a
+    synthetic geometry that does not satisfy it clamps at zero."""
+    top = runtime_end - data_base
+    return {
+        "code_end": code_end,
+        "code_above_lower_bytes": code_end - align_down(code_end, granule),
+        "code_before_higher_bytes": align_up(code_end, granule) - code_end,
+        "data_base": data_base,
+        "data_size": data_size,
+        "data_above_lower_bytes": max(0, data_size - (top - granule)),
+        "data_before_higher_bytes": max(0, top - data_size),
+    }
+
+
+def format_granule_thresholds(modules, kernel):
+    """Readable granule-threshold table for `zmodpack plan` and the packer.
+
+    `modules` is the boot-set entry list (with `above_lower_bytes`/
+    `before_higher_bytes`); `kernel` is a `kernel_granule_thresholds()`
+    dict.  Byte-identical between tools/zmodpack.py and tools/pack_image.py
+    (pinned by a host test)."""
+    lines = ["granule thresholds: bytes above the lower threshold free one "
+             "granule; bytes before the higher threshold spend one"]
+    header = "  %-10s %7s %6s %7s %8s %12s %13s"
+    lines.append(header % ("module", "image", "bss", "total", "granules",
+                           "free-granule", "cost-granule"))
+    for entry in modules:
+        lines.append("  %-10s %7d %6d %7d %8d %12d %13d"
+                     % (entry["name"], entry["image_size"],
+                        entry["bss_size"], entry["total_size"],
+                        entry["granules"], entry["above_lower_bytes"],
+                        entry["before_higher_bytes"]))
+    lines.append("  %-10s %7s %6s %7s %8s %12s %13s"
+                 % ("kernel", "-", "-", "-", "-", "-", "-"))
+    lines.append("  code end %04Xh: %d bytes free a granule, %d before one "
+                 "is spent"
+                 % (kernel["code_end"], kernel["code_above_lower_bytes"],
+                    kernel["code_before_higher_bytes"]))
+    lines.append("  data size %d at %04Xh: %d bytes free a granule, %d "
+                 "before one is spent"
+                 % (kernel["data_size"], kernel["data_base"],
+                    kernel["data_above_lower_bytes"],
+                    kernel["data_before_higher_bytes"]))
+    return "\n".join(lines)
 
 
 def romfs_placement(size):
@@ -675,6 +786,13 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
     stub = rom_access_stub_bytes(mem)
     used = sum(entry["granules"] for entry in plan["modules"]) if plan else 0
     ledger = bank7_ledger(symbols, plan)
+    kernel = None
+    if symbols.get("__kernel_code_end") is not None \
+            and symbols.get("s__DATA") is not None:
+        kernel = kernel_granule_thresholds(
+            symbols["__kernel_code_end"], symbols["s__DATA"],
+            symbols.get("l__DATA", 0) + symbols.get("l__INITIALIZED", 0),
+            BANK7_RUNTIME_END)
     manifest = {
         "tool": "pack_image.py",
         "layout": {
@@ -701,6 +819,7 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
             "rom_access_size": ROM_ACCESS_SIZE,
         },
         "bank7": ledger,
+        "kernel": kernel,
         "arena": {
             "start": ARENA_BASE,
             "end": ARENA_END,
@@ -844,6 +963,15 @@ def main(argv):
     ledger = bank7_ledger(symbols, plan)
     if ledger is not None:
         print(format_bank7_ledger(ledger))
+    kernel = None
+    if symbols.get("__kernel_code_end") is not None \
+            and symbols.get("s__DATA") is not None:
+        kernel = kernel_granule_thresholds(
+            symbols["__kernel_code_end"], symbols["s__DATA"],
+            symbols.get("l__DATA", 0) + symbols.get("l__INITIALIZED", 0),
+            BANK7_RUNTIME_END)
+    if kernel is not None and plan is not None:
+        print(format_granule_thresholds(plan["modules"], kernel))
     if plan is not None:
         print("pack_image.py: boot set uses %d granules (%s), %d free"
               % (plan["arena"]["used_granules"],

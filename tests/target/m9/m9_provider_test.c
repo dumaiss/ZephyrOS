@@ -24,6 +24,7 @@
 #include "zephyros/kernel.h"
 
 #include "kernel/vfs/vfs.h"
+#include "kernel/lib/name.h"
 
 #include "m9_provider_selftest.h"
 
@@ -88,7 +89,7 @@ static int m9p_mount_index(const char *path)
 
 	for (i = 0; i < vfs_mount_count; ++i) {
 		if (vfs_mount_state[i].state == VFS_MOUNT_MOUNTED &&
-		    vfs_name_equal(vfs_mount_table[i].path, path)) {
+		    zos_ascii_equal(vfs_mount_table[i].path, path, 0u, 1u)) {
 			return (int)i;
 		}
 	}
@@ -347,16 +348,16 @@ static void m9p_test_root_merge(void)
 			m9p_fail(ZOS_M9PST_FAIL_ROOTS);
 			return;
 		}
-		if (vfs_name_equal(m9p_dirent.name, "R2")) {
+		if (zos_ascii_equal(m9p_dirent.name, "R2", 0u, 1u)) {
 			++r2_count;
 			if (m9p_dirent.type != ZFS_TYPE_DIR) {
 				(void)vfs_closedir(&dir);
 				m9p_fail(ZOS_M9PST_FAIL_ROOTS);
 				return;
 			}
-		} else if (vfs_name_equal(m9p_dirent.name, "SYSTEM")) {
+		} else if (zos_ascii_equal(m9p_dirent.name, "SYSTEM", 0u, 1u)) {
 			system_seen = 1;
-		} else if (vfs_name_equal(m9p_dirent.name, "HELLO.TXT")) {
+		} else if (zos_ascii_equal(m9p_dirent.name, "HELLO.TXT", 0u, 1u)) {
 			hello_seen = 1;
 		}
 	}

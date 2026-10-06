@@ -283,6 +283,10 @@ make smoke-hardware-m9-exec SERIAL_PORT=/dev/ttyUSB0         # flash build-m9-ex
 make smoke-hardware-m9-iocfat SERIAL_PORT=/dev/ttyUSB0       # flash build-m9-iocfat-selftest/
                                                              # zephyros-m9-iocfat-selftest.bin
                                                              # (with a writable FAT card)
+make smoke-hardware-m9 SERIAL_PORT=/dev/ttyUSB0              # flash build-m9-selftest/
+                                                             # zephyros-m9-selftest.bin
+                                                             # (with a writable FAT card);
+                                                             # the whole M9 acceptance
 ```
 
 Each smoke mode checks one specific image; build it, flash it, then run the
@@ -293,6 +297,13 @@ host-sync sequence, so start the tool first and then press RESET.
 Every acceptance image retired under the Mn-1 retention rule (M1-M7)
 is gone; their mechanism coverage now runs inside the subsystem
 acceptance image (`make subsystem-selftest`) and the M8/M9 images.
+
+M9's integration acceptance image is `make m9-selftest`: the production
+boot path with `/` served by the resident IOC-FAT provider from the card,
+running the whole native acceptance (`fstest.zex`, its deep-matrix child
+`fsfat.zex`, the `fsdeep.zex` depth probe and the two fault windows) and then
+the ordinary monitor launcher.  Its matrix and transcripts are in
+[`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md).
 
 The device can also be passed via the `ZOS_SERIAL_PORT` / `ZOS_SERIAL_BAUD`
 environment variables.  A missing device or incomplete output fails

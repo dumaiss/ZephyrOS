@@ -340,6 +340,34 @@ class TestDerivedGeometry(unittest.TestCase):
             with self.assertRaisesRegex(mapcheck.MapError, "driver arena"):
                 mapcheck.check_map(text)
 
+    def test_mapcheck_common_ceiling_matches_the_platform_description(self):
+        values = mapcheck.parse_inc(MEMORY_INC)
+        self.assertEqual(mapcheck.COMMON_CEILING, values["ZOS_COMMON_CEILING"])
+        self.assertEqual(mapcheck.COMMON_M10_RESERVATION,
+                         values["ZOS_COMMON_M10_RESERVATION"])
+        self.assertEqual(mapcheck.COMMON_CEILING, 3072)
+        self.assertEqual(mapcheck.COMMON_M10_RESERVATION, 512)
+
+    def test_mapcheck_rejects_common_over_the_m9_limit(self):
+        # Packed common (0x600 + 0x500 = 2816) exceeds the 2560-byte M9
+        # limit (ceiling 3072 minus the 512-byte M10 reservation).
+        text = make_map(
+            areas={"_COMMON": (0xE000, 0x600),
+                   "_COMMON_DATA": (0xE600, 0x500)},
+            symbols={"s__COMMON": 0xE000, "l__COMMON": 0x600,
+                     "s__COMMON_DATA": 0xE600, "l__COMMON_DATA": 0x500})
+        with self.assertRaisesRegex(mapcheck.MapError, "M10 reservation"):
+            mapcheck.check_map(text)
+
+    def test_mapcheck_accepts_common_at_the_m9_limit(self):
+        # Exactly the limit (0x600 + 0x400 = 2560) passes.
+        text = make_map(
+            areas={"_COMMON": (0xE000, 0x600),
+                   "_COMMON_DATA": (0xE600, 0x400)},
+            symbols={"s__COMMON": 0xE000, "l__COMMON": 0x600,
+                     "s__COMMON_DATA": 0xE600, "l__COMMON_DATA": 0x400})
+        mapcheck.check_map(text)
+
     def _geometry_without(self, key, tmp):
         """Real memory include with one derived declaration removed."""
         geometry = {"kernel_code_end": 0x226F, "arena_start": 0x2400,
@@ -437,6 +465,8 @@ class TestBootSetPlan(unittest.TestCase):
                          "ZOS_DATA_SIZE = %d\n"
                          "ZOS_COMMON_BASE = 0xE000\n"
                          "ZOS_COMMON_CODE_END = 0xFD00\n"
+                         "ZOS_COMMON_CEILING = 0x0C00\n"
+                         "ZOS_COMMON_M10_RESERVATION = 0x0200\n"
                          "ZOS_COMMON_CODE_SIZE = 0x100\n"
                          "ZOS_COMMON_DATA_SIZE = 0x43\n"
                          % (code_end, start, granules, data_size))
@@ -480,7 +510,8 @@ class TestBootSetPlan(unittest.TestCase):
                 "slack 7920 bytes",
                 out.getvalue())
             self.assertIn(
-                "common: used 323 of 7424 bytes (code 256, data 67)",
+                "common: used 323 of 7424 bytes (code 256, data 67) | "
+                "ceiling 3072, m10 512, limit 2560",
                 out.getvalue())
 
     def test_plan_requires_the_geometry_ledger_inputs(self):
@@ -627,7 +658,8 @@ class TestBootSetPlan(unittest.TestCase):
             r"^bank7: code \d+ bytes end [0-9A-F]{4}h \| arena \d+ granules "
             r"\(\d+ boot, \d+ free\) \| data \d+ bytes at [0-9A-F]{4}h \| "
             r"isr 256 \| slack \d+ bytes\n"
-            r"common: used \d+ of \d+ bytes \(code \d+, data \d+\)$")
+            r"common: used \d+ of \d+ bytes \(code \d+, data \d+\) \| "
+            r"ceiling \d+, m10 \d+, limit \d+$")
 
     def test_production_plan_reconciles_with_packed_modules(self):
         plan_path = os.path.join(ROOT, "build", "arena.plan.json")

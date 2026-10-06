@@ -89,6 +89,14 @@ budget ledger: `mapcheck.py` and `pack_image.py` both print the summary,
 `modules`) plus a `bank7` ledger object, and `arena.plan.json` carries the
 same ledger.
 
+`zmodpack.py plan` and `pack_image.py` additionally print a granule-
+threshold table and carry the same figures in JSON: each boot-set module
+entry gains `above_lower_bytes` (the saving that frees one granule) and
+`before_higher_bytes` (the room left before one is spent), and a `kernel`
+object gives the same two distances for the arena start (linked code end)
+and the derived data base (runtime-data size).  See `docs/memory.md`
+section 2.2.1.
+
 ## 2. Container layout
 
 A ZMOD v1 container is a packed little-endian byte stream:
@@ -242,10 +250,10 @@ every relocation offset.
 ## 4. Loader lifecycle (kernel/module/loader.c, kernel/module/relocate.c)
 
 ```text
-module_load(name, blob, size)        module_load_source(name, source)
-  │ memory-blob source wrapper         │ VFS-bound file source
-  │                                    │ (vfs_file_source over an open
-  │                                    │  /SYSTEM/<name>.zmod)
+module_load_source(name, source)
+  │ VFS-bound file source
+  │ (vfs_file_source over an open
+  │  /SYSTEM/<name>.zmod)
   └──────────────┬─────────────────────┘
                  ▼
   zmod_validate_source()               header, sizes, offsets, granule math,
@@ -270,12 +278,16 @@ module_load(name, blob, size)        module_load_source(name, source)
 
 * **Byte sources.**  `struct zmod_source` (`read(ctx, offset, dst, length)`,
   `ctx`, `size`) is the only way container bytes enter the loader.  The
-  historical `module_load()` wraps the memory blob; since M9 the boot
-  modules are opened with `vfs_open("/SYSTEM/<name>.zmod")` and wrapped by
+  since M9 the boot modules are opened with
+  `vfs_open("/SYSTEM/<name>.zmod")` and wrapped by
   `vfs_file_source()` (the ROMFS bytes underneath are read by the M5
   reader through the M9 ROMFS provider; `romfs_load_zmod()` no longer
   exists).  Both share the same validation, copy, relocation, and
-  transaction code — there is no second loader.
+  transaction code — there is no second loader.  The M9 boot set is
+  `sio`, `ioc`, `hid`, `v9958` and `iocfat` (the last a filesystem
+  provider that registers through the same ABI v3 entry and is attached at
+  `/` by the normal mount pass; see
+  [`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md)).
 * **Allocator.**  First-fit over a 512-byte granule bitmap sized to the
   architectural maximum (80 granules), with the live granule count
   derived from the linked arena bounds at loader init.  Allocation

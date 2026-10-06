@@ -961,8 +961,15 @@ Two clarifications, both learned by having to fix them:
   and write it.  Anything whose whole lifetime is mode 11 (for example the
   `SYS_EXEC` path buffer, package 28 correction-01) belongs in bank 7.
 - Because it is the scarcest region, its use is measured.  The budget
-  ledger carries a `common: used <n> of <n> bytes (code <n>, data <n>)`
-  line beside the `bank7:` line (docs/memory.md section 2.2.1).
+  ledger carries a `common: used <n> of <n> bytes (code <n>, data <n>) |
+  ceiling <n>, m10 <n>, limit <n>` line beside the `bank7:` line
+  (docs/memory.md section 2.2.1).  The architectural ceiling on the packed
+  `_COMMON` + `_COMMON_DATA` run is `ZOS_COMMON_CEILING` (3072 bytes), with
+  `ZOS_COMMON_M10_RESERVATION` (512 bytes) held back for M10's far-call
+  gate and per-process far state (target architecture 2.13-2.15); M9
+  enforces `used <= ceiling - reservation` (2560 bytes).  `mapcheck.py`
+  fails the build when common use exceeds it.  Neither value may be raised
+  to make a package fit.
 
 M1 should preserve this mapping rather than introduce a new generic kernel memory model.
 
@@ -2351,8 +2358,8 @@ kernel/module/arena.asm         __driver_arena_start/__driver_arena_end
 kernel/module/relocate.c        container validation, copy, BSS,
                                 ZREL_ABS16 application
 kernel/module/loader.c          first-fit granule allocator, descriptors,
-                                transactional module_load, module_code_allowed
-                                (IRQ validation hook)
+                                transactional module_load_source,
+                                module_code_allowed (IRQ validation hook)
 tests/target/m4/m4_test.c       loader/dynamic-driver acceptance test
 tools/zmodpack.py               pack/validate/dump/emit-asm
 ```
@@ -4326,9 +4333,11 @@ path-based, so there is no per-component walk and no `object_id`.  The
 (correction-01): the object group is dropped and `kernel/process/exec.c`
 compiles its M6 ROMFS body instead of the VFS body.
 
-Deliberately deferred: descriptors/syscalls (package 27), provider-local
-caching (IOC-FAT, package 30), a writable provider and the `/` mount
-(packages 26/30), and cross-filesystem move semantics (package 31).
+Deliberately deferred at stage 25 (all since implemented): descriptors and
+syscalls (package 27), provider-local caching (IOC-FAT, package 30), a
+writable provider and the `/` mount (packages 26/30).  Cross-filesystem move
+semantics are implemented by the VFS rename path (architecture 32.31): a
+rename across mounts returns `ZOS_EXDEV` and VFS never copies.
 `romfs_load_zmod()` no longer exists.
 
 Budget (section 32.39): package 25 measured production `_CODE` ending at
@@ -4344,6 +4353,41 @@ The per-object package-25 sizes and the correction-02 saving are in
 `docs/vfs.md` section 9.
 
 ---
+
+### 32.38.2 Implementation record (M9 close)
+
+The sections above are the architectural contract; these are the documents
+that record what was actually built, and the acceptance that proves it:
+
+```text
+docs/vfs.md            VFS core, provider ABI, descriptor/CWD model,
+                       syscalls, ROMFS and IOC-FAT providers
+docs/abi.md            native syscall ABI: FS_* family, SYS_EXEC and the
+                       startup block v1 argument contract, error values
+docs/devices.md        device/class model, driver ABI v3, ZDEV_BLOCK and the
+                       resident IOC-FAT provider
+docs/module-format.md  ZMOD v1 and the loader lifecycle at ABI v3
+docs/memory.md         bank-7 geometry, the M9 runtime-data inventory, the
+                       common-memory budget and the final ledger
+docs/boot.md           the boot path and the VFS lifecycle
+docs/sdk.md            the native user SDK and its ZEX programs
+docs/validation/2026-10-05-m9-filesystem.md
+                       the M9 acceptance matrix, transcripts and hashes
+```
+
+The milestone's own acceptance image is `make m9-selftest`: the production
+boot path with `/` served by IOC-FAT from the card, running the native
+`fstest.zex` (which exec's the deep-matrix program `fsfat.zex`), the
+`fsdeep.zex` depth probe and the two fault windows, then the unchanged
+monitor launcher.  The per-package images (`m9-vfs`, `m9-provider`,
+`m9-fs`, `m9-exec`, `m9-iocfat`) remain as their packages' evidence and as
+subsystem regression coverage.
+
+Deliberately deferred beyond M9: `FS_STATFS` and arbitrary-size truncate
+(no M9 consumer), runtime unmount, the first `ZDEV_BLOCK` driver (it
+arrives with the first native VFAT/Fuzix consumer), and every
+compatibility/personality layer.  Nothing in M9 is kept as a
+backward-compatibility path.
 
 ## 32.39 Bank-7 residency budget
 
@@ -4384,6 +4428,14 @@ Rules:
 - A feature with no consumer is not made resident (for example `sd-ioc.zmod`, `FS_STATFS`).
 - Supervisor checkpoints compare the measured ledger with the remaining projection: after package 26 (passed 2026-10-05: 26 free granules, 291 bytes of slack, projected end-of-M9 slack 1.4-3.2 KiB before the measures above), and after package 28, before IOC-FAT is built.
 - Package 30 (passed 2026-10-05) is the last bank-7 consumer: `bank7: code 28476 bytes end 8F3Ch | arena 35 granules (33 boot, 2 free) | data 2241 bytes at D600h | isr 256 | slack 63 bytes`, i.e. 2 free granules and 1087 bytes of total slack against the 1 KiB target. `iocfat.zmod` is 6006 image + 637 BSS = 6643 bytes, 13 granules, 13 bytes under the 6656-byte ceiling.
+- Package 30c (passed 2026-10-05) then removed dead kernel code and shared one ASCII name helper, moving the arena start one granule down.  Package 31 changes no kernel or module byte; it is the acceptance and documentation package.  The **final end-of-M9 ledger** is:
+
+```text
+bank7: code 27990 bytes end 8D56h | arena 36 granules (33 boot, 3 free) | data 2241 bytes at D600h | isr 256 | slack 63 bytes
+common: used 2104 of 7424 bytes (code 1410, data 694) | ceiling 3072, m10 512, limit 2560
+```
+
+  i.e. 3 free granules plus 63 bytes of runtime-data slack = **1599 bytes** of total slack, above the 1 KiB target, with the 32-granule arena floor and the common ceiling both held.  Boot set: `sio x1, ioc x8, hid x2, v9958 x9, iocfat x13` = 33 granules.
 - If the projection falls below the slack target, the choice between descoping and a second kernel bank goes back to the project owner. It is never made by raising a limit or lowering the arena floor.
 
 ---
@@ -4555,6 +4607,19 @@ Physical hardware remains authoritative for SD media behavior, IOC bulk transfer
 
 # 34. Milestone summary
 
+M9 closed on 2026-10-06 (project-owner acceptance). Package 31 completed the
+implementation, the host/simulator acceptance and the documentation. The
+physical rows were accepted as follows, as recorded in
+[`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md)
+section 8:
+- production with and without a FAT card, and the monitor launching from
+  `/SYSTEM`, **passed on byte-identical production bytes** (ROM `f4da0496…`,
+  physically run in package 30c);
+- the `m9-selftest` integration image and the M8 fallback rows were
+  **accepted by the project owner without a fresh bench run**. No code
+  changed after the last physical validation, the same IOC-FAT paths passed
+  physically in package 30, and the fallback rows' simulator replays pass.
+
 ```text
 M0  COMPLETE
 M1  COMPLETE
@@ -4572,7 +4637,7 @@ M8  COMPLETE (host + physical acceptance passed)
 └── serial recovery/fallback
     │
     ▼
-M9  ARCHITECTURE DEFINED — IMPLEMENTATION NEXT
+M9  COMPLETE (host + simulator; physical by byte identity + owner acceptance)
 │
 ├── VFS owns one namespace rooted at /
 ├── early system filesystem mounted at /SYSTEM
@@ -4583,51 +4648,1734 @@ M9  ARCHITECTURE DEFINED — IMPLEMENTATION NEXT
 ├── ZDEV_BLOCK class defined (first driver deferred to its first consumer)
 ├── global descriptor pool, native path/descriptor/byte-oriented syscall ABI
 └── budgeted bank-7 residency
+    │
+    ▼
+M10 extended memory / far code+data + ZEX v2        (see section 36)
+M11 complete native diagnostic suite                (see section 38)
+M12 native shell and core built-in userland         (see section 40)
+    │
+    ▼
+---------------- native ZephyrOS complete ----------------
+    │
+    ▼
+compatibility/personality architecture              (deferred)
+```
+
+The end-of-M9 bank-7 ledger and the require-before-M10 residency finding are
+in sections 32.39 and 35.
+
+---
+
+# 35. Native completion sequence after M9
+
+The native sequence after M9 is:
+
+```text
+M10  Extended memory / far code / far data
+     + ZEX v2
+
+M11  Complete native diagnostic suite
+
+M12  Native shell and core built-in userland
+
+---------------- native ZephyrOS complete ----------------
+
+Later compatibility/personality architecture
+```
+
+The ordering is deliberate:
+
+1. M10 completes native kernel/executable mechanisms.
+2. M11 validates and exercises the completed native mechanisms and hardware.
+3. M12 builds the normal interactive environment entirely on those completed mechanisms.
+4. Compatibility personalities begin only after native ZephyrOS is complete.
+
+M9 already supplies the process-startup and argument-tail contract required by the later shell. Package 28b establishes startup block v1 and synchronous `SYS_EXEC` argument transport; M10 does not redesign that contract.
+
+M9 acceptance and the section-32.39 residency budget remain binding. M10 does not weaken the production arena floor or redefine M9 acceptance to make later work fit.
+
+M9 facts the target relies on, all unchanged by M10-M12:
+
+```text
+startup block v1 at 0080h, and the raw-tail argument contract of SYS_EXEC
+  (package 28/28b; user-space splitting only, kernel never parses)
+ZOS_BOOT_PROGRAM (config/system.mk) as the single boot-program selector
+the native user SDK (user/sdk, docs/sdk.md): a program includes only "zos.h"
+  and links crt0 plus libzos; it never includes a kernel header
+the bank-7 residency budget of section 32.39, including the 32-granule
+  production arena floor and the common-memory ceiling pinned by package 30c
+  (ZOS_COMMON_CEILING 3072 bytes, of which 512 is held for M10's far-call
+  gate and state, so M9 enforces used <= 2560)
+```
+
+**Residency decision required before M10.** The measured end-of-M9 ledger is
+`bank7: code 27990 bytes end 8D56h | arena 36 granules (33 boot, 3 free) |
+data 2241 bytes at D600h | isr 256 | slack 63 bytes` (section 32.39),
+i.e. 3 free granules plus 63 bytes of runtime-data slack = **1599 bytes**
+of mixed kernel room. The 30b audit's low M10 estimate (`SYS_XMEM_*`,
+unified bank ownership, the ZEX v2 loader, the far-entry table,
+`SYS_FAR_CALL` and `SYS_ZEX_SEGMENT_INFO`) is about **1530 bytes of code
+plus 136 bytes of data**, i.e. 1666 bytes - more than the ledger holds. The
+reclaim package 30c implemented gained one granule (F7) but not the
+exec-path-buffer share (F4), so the favourable `1727`-byte case did not
+materialise. Per audit section 7 and section 36.18, a **kernel-residency
+architecture decision (for example a second kernel bank, or relocating a
+resident mechanism) is required before M10 implementation**; the 32-granule
+arena floor and the common-memory ceiling are not to be weakened to make M10
+fit.
+
+# 36. Milestone M10 — Extended memory, far code/data, and native execution completion
+
+## 36.1 Objective
+
+M10 completes the native ZephyrOS memory and executable mechanisms required by applications before the diagnostic suite and native shell are built.
+
+Its responsibilities are:
+
+```text
+extended/far memory
+    process-owned auxiliary memory objects
+    allocations smaller than a physical 64-KiB bank
+    bounded copy access to far data
+
+extended native executables
+    ZEX v2
+    auxiliary segments
+    relocatable far code/data
+    executable-entry metadata
+
+far execution
+    synchronous far calls
+    safe bank transition and return
+    ordinary native syscalls while far code runs
+```
+
+Process startup, argument-tail transfer, nested `SYS_EXEC`, CWD inheritance, descriptor cleanup and parent restoration are already established before M10 and are preserved.
+
+After M10, later native milestones must not require another fundamental memory, executable-format, or process-lifecycle mechanism merely to implement diagnostics or the shell.
+
+The central rules are:
+
+> **Physical banks are a Zephyr-80 implementation detail. Native applications consume memory objects, segments, and handles.**
+
+> **The primary application bank remains the ordinary execution environment. Far memory extends it; it does not replace it.**
+
+> **Executable auxiliary memory is created only by the validated ZEX loader. Runtime far-memory allocation is data-only.**
+
+---
+
+## 36.2 Existing primary-bank model remains
+
+Every native process continues to own one primary application bank.
+
+Normal execution remains:
+
+```text
+0000h-00FFh   native page zero
+0100h-....    primary ZEX image/data
+....          free primary memory
+....-DFFFh    primary stack
+E000h-FFFFh   permanent common memory
+```
+
+Mode `10` remains the normal application view and mode `11` remains the kernel view.
+
+A ZEX that needs no auxiliary segments still behaves like the existing single-bank native program from the application's perspective.
+
+M10 does not turn ordinary native programs into bank-aware programs.
+
+---
+
+## 36.3 Auxiliary-bank geometry
+
+Application banks remain physical SRAM banks `0-6`. Bank 7 remains kernel-owned unless a separately approved later kernel-residency architecture explicitly changes that ownership model.
+
+A bank used as an application auxiliary bank has a different software ownership layout from a primary process bank:
+
+```text
+0000h-00FFh   ZephyrOS-owned page zero
+0100h-1FFFh   auxiliary execution/control window
+2000h-3FFFh   allocation slot 0
+4000h-5FFFh   allocation slot 1
+6000h-7FFFh   allocation slot 2
+8000h-9FFFh   allocation slot 3
+A000h-BFFFh   allocation slot 4
+C000h-DFFFh   allocation slot 5
+E000h-FFFFh   permanent common memory
+```
+
+Thus one auxiliary bank provides:
+
+```text
+6 x 8 KiB = 48 KiB
+```
+
+of allocatable far storage.
+
+The low 8 KiB is deliberately not allocatable. It preserves the same architectural property used by ordinary syscalls: when mode `11` is entered, `0000h-1FFFh` remains visible from the currently selected bank.
+
+This area holds the auxiliary page zero, runtime scratch, far-call frame and auxiliary execution stack.
+
+The exact subdivision inside `0100h-1FFFh` is single-sourced in the platform memory description and validated by the linker/build tools.
+
+---
+
+## 36.4 Allocation granularity is not part of the native ABI
+
+The Zephyr-80 allocator uses 8-KiB slots because they fit the machine's physical memory geometry.
+
+Applications do not request:
+
+```text
+bank 5, slot 2
+```
+
+They request:
+
+```text
+memory object of N bytes
+```
+
+and receive an opaque handle.
+
+The kernel rounds the request to the platform allocation granularity.
+
+For example:
+
+```text
+native request          Zephyr-80 implementation
+------------------------------------------------
+allocate 6000 bytes  -> one 8-KiB slot
+allocate 12000 bytes -> two contiguous 8-KiB slots
+```
+
+A single Zephyr-80 far object must fit in one auxiliary bank and therefore cannot exceed 48 KiB.
+
+A program requiring more storage allocates multiple objects.
+
+This restriction is platform-specific and must not be encoded into the portable meaning of the native memory API.
+
+---
+
+## 36.5 Unified ownership of application banks
+
+The kernel owns one allocator for application banks.
+
+A physical application-capable bank may be:
+
+```text
+FREE
+PRIMARY(process)
+AUXILIARY
+```
+
+A primary process bank owns the complete bank and cannot contain auxiliary allocations.
+
+An auxiliary bank may contain multiple 8-KiB allocations.
+
+Allocation policy should preserve whole banks for future `SYS_EXEC` operations. On Zephyr-80 the intended policy is:
+
+```text
+primary process allocation: low free bank first
+auxiliary allocation:       high bank first, pack existing auxiliary banks first
+```
+
+This minimizes fragmentation without making placement observable through the native API.
+
+A bank containing even one live auxiliary allocation is not eligible to become a primary process bank.
+
+Consequently `SYS_EXEC` may return `ZOS_ENOSPC` even when free auxiliary slots exist if no completely free primary bank remains.
+
+That is a valid resource-exhaustion condition.
+
+---
+
+## 36.6 Process ownership and lifetime
+
+Every auxiliary allocation has exactly one owning process.
+
+Ownership applies equally to:
+
+```text
+runtime far-data objects
+ZEX auxiliary segments
+far-code segments
+loader-created BSS
+```
+
+When a process exits, ZephyrOS releases all auxiliary resources owned by that process.
+
+A suspended parent retains its auxiliary resources while a child runs.
+
+A child does not inherit the parent's auxiliary allocations.
+
+The child receives only:
+
+```text
+its primary bank
+its own ZEX auxiliary segments
+its own later runtime allocations
+its inherited CWD and normal process-startup state
+```
+
+Failed load, failed relocation, failed far-segment allocation, malformed ZEX metadata or failed launch must roll back every allocation made for the attempted child.
+
+No partial process may become visible.
+
+---
+
+## 36.7 Native extended-memory syscall family
+
+M10 should use the currently available native syscall space for a compact extended-memory family. Exact numbers are pinned when the ABI is implemented.
+
+The semantic operations are:
+
+```text
+SYS_XMEM_ALLOC
+SYS_XMEM_FREE
+SYS_XMEM_READ
+SYS_XMEM_WRITE
+SYS_XMEM_INFO
+SYS_ZEX_SEGMENT_INFO
+SYS_FAR_CALL
+```
+
+### `SYS_XMEM_ALLOC`
+
+Semantics:
+
+```text
+request:
+    size
+    flags
+
+result:
+    opaque handle
+```
+
+Runtime allocations are:
+
+```text
+process-owned
+zero-initialized
+read/write
+non-executable
+```
+
+An allocation of zero bytes is invalid.
+
+### `SYS_XMEM_FREE`
+
+Releases a runtime allocation owned by the calling process.
+
+Loader-created ZEX segments cannot be freed individually.
+
+Invalid, stale or foreign handles are rejected.
+
+### `SYS_XMEM_READ` / `SYS_XMEM_WRITE`
+
+Transfer between:
+
+```text
+the calling execution bank
+        and
+the named far-memory object
+```
+
+using:
+
+```text
+handle
+object offset
+caller buffer
+length
+```
+
+All range arithmetic is checked before any copy occurs.
+
+The caller never maps the object's physical bank directly through this API.
+
+### `SYS_XMEM_INFO`
+
+Returns a versioned logical description:
+
+```text
+requested size
+allocated size
+flags
+object type
+```
+
+Normal applications are not told the physical bank or slot.
+
+Physical placement belongs only to diagnostics.
+
+### `SYS_ZEX_SEGMENT_INFO`
+
+Returns the logical state of one loader-created auxiliary segment identified by its ZEX segment ID.
+
+It exposes semantic information such as:
+
+```text
+segment size
+segment flags
+loaded/present state
+```
+
+but not a writable physical mapping.
+
+### `SYS_FAR_CALL`
+
+Invokes a declared far-code entry point synchronously.
+
+Section 2.13 defines the execution contract.
+
+---
+
+## 36.8 ZEX v2 replaces ZEX v1
+
+M10 replaces ZEX v1 with ZEX v2.
+
+There is no production compatibility path for ZEX v1.
+
+ZephyrOS is still under construction, and executable formats from earlier milestones carry no backward-compatibility obligation. All first-party native programs, tools and tests are converted to ZEX v2 as part of M10.
+
+The ZEX-v1 parser, packer path and format-specific compatibility code are removed once the ZEX-v2 toolchain and loader are accepted.
+
+A ZEX v2 executable contains:
+
+```text
+header
+
+primary image descriptor
+auxiliary segment table
+far-entry table
+relocation tables
+
+primary image payload
+auxiliary segment payloads
+```
+
+A program with no auxiliary segments is simply the minimal form of ZEX v2.
+
+Its primary image continues to load at logical `0100h`.
+
+---
+
+## 36.9 ZEX v2 segment model
+
+The primary segment preserves the current normal process model.
+
+Auxiliary segments are independently described.
+
+Each auxiliary segment contains semantically:
+
+```text
+segment id
+flags
+image size
+BSS size
+required allocation size
+payload location
+relocation-table location/count
+```
+
+Useful flags include at least:
+
+```text
+EXEC
+WRITE
+```
+
+The flags describe intended use; the Z80 has no hardware protection enforcing them.
+
+An auxiliary segment may contain:
+
+```text
+code
+constant data
+initialized writable data
+BSS
+```
+
+that must be directly mutually addressable while that segment is selected.
+
+Code and its private static data should therefore normally be packaged into one segment rather than creating cross-bank near references.
+
+An auxiliary segment must fit entirely inside the allocatable `2000h-DFFFh` portion of one auxiliary bank.
+
+---
+
+## 36.10 ZEX v2 uses 32-bit file geometry
+
+The complete ZEX file may exceed 64 KiB once auxiliary segments exist.
+
+Therefore:
+
+```text
+file offsets
+payload offsets
+table offsets
+total file size
+```
+
+must be validated using 32-bit arithmetic.
+
+The ZEX loader consumes the M9 VFS directly through its 32-bit file-position interface.
+
+It must not inherit a 16-bit source-size limitation from the ZMOD loader.
+
+Individual Zephyr-80 segment sizes remain bounded by the target address-space rules even though the container itself may be larger than 64 KiB.
+
+---
+
+## 36.11 Auxiliary-segment relocation
+
+Auxiliary segments are built as relocatable segment images.
+
+M10 initially requires only the relocation form actually needed by generated Z80 code.
+
+The expected first form is equivalent to:
+
+```text
+ABS16:
+    word_at(segment_base + patch_offset) += segment_base
+```
+
+The host packer and target loader both validate:
+
+```text
+relocation type
+patch bounds
+16-bit overflow
+target segment
+entry-point bounds
+payload/table overlap
+```
+
+A normal 16-bit relocation may refer only within its own auxiliary segment.
+
+A direct near pointer from one auxiliary segment to another is invalid because the two segments are not guaranteed to be simultaneously mapped.
+
+Cross-segment relationships use:
+
+```text
+far-entry IDs
+far-memory handles
+explicit far-memory operations
+```
+
+rather than hidden 16-bit pointers.
+
+The packer rejects unsupported or ambiguous linker relocations rather than guessing.
+
+---
+
+## 36.12 Far-entry table
+
+Executable auxiliary segments export explicit far-call entry points.
+
+A far entry is identified by a stable ZEX-local entry ID and resolves to:
+
+```text
+segment id
+offset within segment
+```
+
+Applications never pass an arbitrary physical address to `SYS_FAR_CALL`.
+
+The loader validates every declared entry point before publishing the process.
+
+This preserves the distinction used elsewhere in ZephyrOS:
+
+```text
+container metadata describes intent
+kernel validates placement
+application consumes a logical identifier
 ```
 
 ---
 
-# 35. Later milestone roadmap
+## 36.13 Far-call execution contract
 
-The intended native sequence after M9 is:
+`SYS_FAR_CALL` is synchronous.
+
+Conceptually:
 
 ```text
-M10 Native shell and core userland - user space only
-    - ZShell and core commands built on the M9 syscalls
-    - SYS_EXEC with arguments (startup block v1)
-    - the ZOS_BOOT_PROGRAM setting selects the shell
-    - no signals and no IPC: accepted for this single-process system.
-      Programs poll the console themselves, and a running child cannot be
-      interrupted by its parent (SYS_EXEC is synchronous by contract)
-
-M11 Native diagnostic suite
-    - port/consolidate useful existing Zephyr/ZSDOS diagnostics
-    - memory, banking, IRQ/CTC, SIO, V9958, HID, IOC, storage, sound, system
-
-M12 Extended memory / far-code / far-data services
-    - mainly new syscalls plus a user-program API
-    - auxiliary bank allocation,
-    - checked bank-to-bank copy,
-    - a far-call gate,
-    - overlays loaded by the user runtime
-    - no ZEX format or loader changes
-
----------------- native ZephyrOS complete ----------------
+primary process
+    |
+    | SYS_FAR_CALL(entry, frame)
+    v
+kernel validates entry and ownership
+    |
+    | copy bounded call frame
+    v
+auxiliary low-window call frame
+    |
+    | select target auxiliary bank
+    | mode 10
+    | auxiliary SP in 0100h-1FFFh
+    v
+far entry in 2000h-DFFFh
+    |
+    | RET to common return trap
+    v
+restore previous execution bank/SP
+    |
+    | copy returned call frame back
+    v
+SYS_FAR_CALL returns
 ```
 
-M10 is a user-space milestone: every kernel facility it needs (filesystem
-syscalls, CWD, synchronous `SYS_EXEC` with arguments, and the
-`ZOS_BOOT_PROGRAM` boot setting) exists at the end of M9 (packages 28 and
-28b).  M10 therefore makes no kernel change.  Signals and IPC are
-deliberately out of scope: ZephyrOS is single-process at a time, so a
-shell cannot interrupt a running child, and programs read the console
-themselves.
+The stable far-entry ABI is not the SDCC C calling convention.
 
-M12's far code/data work is mainly new syscalls and a user-program API
-(auxiliary bank allocation, a checked bank-to-bank copy, a far-call gate,
-and overlays loaded by the user runtime) rather than a loader feature, so
-it needs no ZEX format or loader change.
+The kernel-level contract passes a bounded in/out call frame to the far entry. First-party C tooling may generate near-call wrappers that marshal an ordinary C function's parameters into that frame and adapt the result back to SDCC conventions.
 
-Later compatibility/personality work follows the native system. Its detailed architecture remains deferred until M9-M12 are complete.
+Those wrappers are compiler/toolchain implementation, not ZephyrOS ABI.
 
-M12 is part of native ZephyrOS, not a compatibility extension. The milestone names after M9 define intended sequencing; detailed later architecture should be added as each milestone is approached rather than constraining implementation prematurely.
+The call-frame maximum is a build-time architectural constant and must be measured against the auxiliary low-window and stack requirements rather than chosen as an unbounded convenience.
+
+---
+
+## 36.14 Far code uses an auxiliary low window
+
+Before executing far code, ZephyrOS prepares the selected auxiliary bank's low window with at least:
+
+```text
+native page zero
+RST 30h syscall vector
+far-runtime scratch
+far-call frame
+far execution stack
+```
+
+The far function executes in mode `10`.
+
+Therefore it may issue an ordinary:
+
+```text
+RST 30h
+```
+
+and the existing mode-11 transition preserves that auxiliary bank's `0000h-1FFFh` exactly as it preserves the primary process bank's low window.
+
+The syscall gate must distinguish:
+
+```text
+process identity
+```
+
+from:
+
+```text
+currently selected execution bank
+```
+
+after M10.
+
+The owning process remains the same while a far function executes.
+
+User-buffer copies for a syscall use the saved current execution bank, not blindly the process's primary bank.
+
+This is an explicit M10 audit requirement for every existing native syscall family.
+
+---
+
+## 36.15 Restrictions while a far call is active
+
+M10 supports one cross-bank far call at a time per process.
+
+Near calls inside the selected auxiliary segment are unrestricted.
+
+Recursive cross-bank `SYS_FAR_CALL` is rejected with `ZOS_EBUSY`.
+
+`SYS_EXEC` from far execution is also rejected. Process creation originates from the primary execution context.
+
+`SYS_EXIT` remains valid and terminates the complete process regardless of whether it is invoked from primary or far execution. Cleanup releases:
+
+```text
+primary bank
+all auxiliary segments
+all runtime xmem objects
+VFS descriptors
+other process-owned resources
+```
+
+and restores the suspended parent normally.
+
+Later milestones may add recursive far calls only if a real consumer requires them.
+
+---
+
+## 36.16 Existing process-startup contract
+
+M10 preserves the process-startup and argument-tail contract already implemented before this milestone.
+
+`SYS_EXEC` already transports the caller's bounded raw tail into the child's startup block v1 at `0080h`; the kernel does not parse shell syntax.
+
+M10 does not introduce:
+
+```text
+a second argv/tail representation
+far-specific startup semantics
+a new shell-oriented process startup structure
+```
+
+Far execution remains part of the same process and therefore does not create a new process-startup environment.
+
+The first-party user runtime remains responsible for interpreting the startup block for C programs.
+
+The process-startup ABI is only changed during M10 if the far-memory implementation exposes a concrete architectural incompatibility. Such a change is treated as a correction to the still-unfrozen native ABI, not as a new M10 feature.
+
+---
+
+## 36.17 M10 portability boundary
+
+The following are Zephyr-80 implementation details:
+
+```text
+physical bank numbers
+8-KiB slots
+mode 10 / mode 11
+RST 30h
+auxiliary low-window geometry
+```
+
+The following are native ZephyrOS concepts:
+
+```text
+process
+primary address space
+auxiliary memory object
+segment
+far entry
+opaque memory handle
+logical size
+```
+
+No public extended-memory ABI should require a future ZephyrOS port to emulate an 8-KiB Z80 bank slot.
+
+---
+
+## 36.18 Memory-budget discipline
+
+M10 inherits the M9 rule that resident bytes are an architectural resource.
+
+Every package reports the existing bank-7 ledger and common-memory ledger.
+
+Neither the production arena floor nor the common-memory ceiling may be weakened to make M10 fit.
+
+If the optimized end-of-M9 image does not leave enough residency for the M10 kernel mechanisms, kernel residency is expanded through a separately reviewed architecture change before the far-memory implementation proceeds. M10 must not hide such a change inside ordinary feature work.
+
+---
+
+## 36.19 M10 non-goals
+
+M10 does not add:
+
+```text
+preemptive scheduling
+multitasking
+shared writable memory between processes
+runtime-generated executable memory
+dynamic libraries
+arbitrary cross-segment near pointers
+recursive cross-bank far calls
+virtual memory
+swap
+memory protection
+```
+
+The Z80 remains a cooperative, single-running-process machine.
+
+---
+
+# 37. M10 acceptance criteria
+
+M10 acceptance includes an ordinary ZEX v2 program exercising both the unchanged primary-program case and auxiliary facilities.
+
+At minimum:
+
+```text
+ordinary ZEX v2:
+    zero auxiliary segments
+    normal exec/exit
+    nested parent/child exec
+    existing startup-tail transport remains intact
+
+xmem allocation:
+    1 byte
+    8191 bytes
+    8192 bytes
+    8193 bytes
+    multiple objects in one auxiliary bank
+    48-KiB maximum object
+    oversized rejection
+    exhaustion
+    fragmentation
+    stale/foreign handle rejection
+    zero-filled allocation
+    automatic cleanup on exit
+
+xmem transfers:
+    first/last byte
+    slot boundary
+    complete object
+    out-of-range read/write rejection
+    caller-buffer bounds
+    exact current-bank restoration
+
+ZEX auxiliary segments:
+    one segment
+    multiple segments
+    image + BSS
+    valid ABS16 relocations
+    malformed relocation
+    relocation overflow
+    invalid entry
+    segment allocation rollback
+    container larger than 64 KiB
+
+far calls:
+    primary -> far -> primary
+    in/out call frame
+    far private BSS
+    normal near calls inside far segment
+    ordinary syscall from far code
+    filesystem syscall from far code
+    exact primary SP/bank/IFF restoration
+    recursive far call -> EBUSY
+    SYS_EXEC from far context rejected
+    SYS_EXIT from far context cleans the whole process
+
+lifetime:
+    suspended parent retains far allocations
+    child receives no parent far handles
+    repeated exec/exit leaks no slots
+    repeated far calls leak no state
+
+budget:
+    production residency constraints remain satisfied
+    common linked content remains below its architectural ceiling
+    bank7 and common ledgers are emitted
+```
+
+Physical hardware is authoritative for bank switching, interrupt interaction and far-call return behavior.
+
+---
+
+# 38. Milestone M11 — Native diagnostic suite
+
+## 38.1 Objective
+
+M11 builds the complete native ZephyrOS diagnostic environment on top of the now-complete kernel mechanisms.
+
+M11 is primarily userland.
+
+It does not move diagnostic implementations into the kernel merely because they inspect hardware.
+
+The existing M7 monitor remains the minimal recovery tool; M11 adds a broader diagnostic suite beside it.
+
+---
+
+## 38.2 Diagnostic layering
+
+The diagnostic suite follows this order of preference:
+
+```text
+1. ordinary native service
+2. public device/filesystem behavior
+3. M7 diagnostic syscall
+4. narrowly added diagnostic introspection service
+```
+
+A diagnostic must not link private kernel or driver symbols.
+
+Direct memory and I/O operations continue to cross the explicit M7 diagnostic boundary.
+
+The suite does not acquire arbitrary bank-7 read/write access.
+
+---
+
+## 38.3 Diagnostic program organization
+
+The primary diagnostic program is:
+
+```text
+/SYSTEM/diag.zex
+```
+
+`diag.zex` is an ordinary ZEX v2 executable.
+
+It may use M10 auxiliary code segments to keep the primary image small and to make the diagnostic suite the first substantial production consumer of far-code support.
+
+Conceptually:
+
+```text
+primary segment:
+    command/menu
+    common formatting
+    result aggregation
+
+far segments:
+    memory/banking
+    IRQ/CTC
+    serial
+    video
+    HID
+    IOC
+    storage
+    sound
+```
+
+The exact segmentation is a build decision, not a user ABI.
+
+---
+
+## 38.4 Diagnostic command families
+
+The complete suite covers at least:
+
+```text
+diag system
+diag memory
+diag irq
+diag serial
+diag video
+diag hid
+diag ioc
+diag storage
+diag sound
+diag all
+```
+
+### `system`
+
+Reports and validates:
+
+```text
+kernel/native ABI identity
+process identity
+memory geometry
+free primary banks
+auxiliary-memory state
+loaded modules
+registered devices
+mounted filesystems
+console bindings
+```
+
+### `memory`
+
+Tests:
+
+```text
+xmem allocation/free
+pattern write/readback
+slot-boundary transfers
+bank restoration
+allocator exhaustion/cleanup
+```
+
+Destructive arbitrary-bank testing is not the default.
+
+### `irq`
+
+Inspects or tests:
+
+```text
+IRQ executive state
+source ownership
+CTC delivery
+unexpected-source accounting
+interrupt enable/restore behavior
+```
+
+### `serial`
+
+Exercises the registered serial device where practical without replacing the permanent panic/early-console path.
+
+### `video`
+
+Provides:
+
+```text
+console test
+character/font test
+VRAM/data-path test where exposed safely
+visual test patterns
+```
+
+### `hid`
+
+Provides an interactive keyboard/input test and reports translated events through the normal HID/console path.
+
+### `ioc`
+
+Exercises:
+
+```text
+link status
+command/reply transactions
+bulk read/write path
+error/recovery counters where exposed
+```
+
+without bypassing the active IOC driver and corrupting its transport state.
+
+### `storage`
+
+Exercises the native filesystem and, where appropriate, block layer:
+
+```text
+sequential read/write
+seek
+metadata
+cache behavior
+throughput
+confirmed write
+media/reset behavior
+```
+
+A destructive raw-media test requires an explicit destructive mode and never runs under `diag all`.
+
+### `sound`
+
+Exercises the installed sound hardware/driver when present.
+
+Where no native sound service exists yet, a board-level diagnostic may use the explicit diagnostic-I/O boundary rather than turning sound testing into a new kernel subsystem.
+
+---
+
+## 38.5 Read-only diagnostic introspection
+
+M11 may add a read-only diagnostic enumeration service after the existing M7 diagnostic family when concrete tests need information that normal APIs cannot expose safely.
+
+Conceptually:
+
+```text
+SYS_DIAG_ENUM
+
+kind
+index
+output record
+output size
+```
+
+with versioned record kinds such as:
+
+```text
+memory
+irq source
+device
+module
+mount
+```
+
+The service copies stable descriptive values.
+
+It does not expose:
+
+```text
+kernel pointers
+driver state pointers
+mutable registry objects
+bank-7 addresses usable as capabilities
+```
+
+End-of-list is distinct from failure.
+
+No generic "call arbitrary driver operation" diagnostic syscall is introduced.
+
+If a diagnostic cannot be expressed safely through normal services, existing diagnostic primitives or this read-only introspection model, that requirement returns to architecture review.
+
+---
+
+## 38.6 Non-destructive by default
+
+Every M11 diagnostic is non-destructive by default.
+
+Potentially destructive operations require an explicit operator choice identifying the resource to modify.
+
+`diag all` must be safe to run on a normal booted system.
+
+Device absence is:
+
+```text
+SKIP
+```
+
+not failure.
+
+Unsupported optional functionality is also `SKIP`.
+
+A real test failure is `FAIL`.
+
+---
+
+## 38.7 Stable result model
+
+Every diagnostic command produces a final status:
+
+```text
+PASS
+FAIL
+SKIP
+```
+
+and returns a process exit status consistent with that result.
+
+`diag all` aggregates the individual tests and exits successfully only when no required test failed.
+
+Human-readable detail may precede the summary, but automated acceptance must be able to identify the final result without screen scraping arbitrary prose.
+
+---
+
+## 38.8 Monitor relationship
+
+`monitor.zex` remains small, independent and recovery-oriented.
+
+M11 does not absorb the full diagnostic suite into the monitor.
+
+The monitor remains usable if:
+
+```text
+diag.zex is missing
+an auxiliary allocation fails
+a diagnostic far segment is malformed
+external storage is absent
+```
+
+Before M12 supplies the normal shell, acceptance images may launch `diag.zex` directly.
+
+A minimal monitor command that executes a named native program through the ordinary `SYS_EXEC` path may be added for operator convenience, but it creates no new privileged execution path.
+
+---
+
+## 38.9 M11 non-goals
+
+M11 does not add:
+
+```text
+a second driver stack
+private diagnostic driver entry points
+kernel-resident test suites
+automatic destructive media testing
+a shell
+CP/M diagnostics
+personality-specific diagnostics
+```
+
+It diagnoses native ZephyrOS and the physical Zephyr-80 platform.
+
+---
+
+# 39. M11 acceptance criteria
+
+Acceptance includes:
+
+```text
+system:
+    coherent version/process/memory report
+    device enumeration
+    module enumeration
+    mount enumeration
+
+memory:
+    xmem pattern test
+    allocation exhaustion and recovery
+    no resource leakage
+
+irq/ctc:
+    known interrupt delivery
+    counters/state
+    exact return state
+
+serial:
+    registered path
+    bounded failure behavior
+
+video:
+    console output
+    operator-visible test pattern
+
+hid:
+    interactive key/input validation
+
+ioc:
+    command exchange
+    bulk path
+    recovery/error handling
+
+storage:
+    filesystem read/write/seek
+    cache path
+    throughput reporting
+    safe failure with no media
+
+sound:
+    positive hardware test when installed
+    SKIP when absent
+
+aggregate:
+    diag all never performs destructive testing
+    PASS/FAIL/SKIP aggregation
+    meaningful exit status
+
+architecture:
+    no private kernel/driver links in diag.zex
+    diagnostic ABI exposes no kernel pointers
+    monitor still works independently
+    ZEX far segments used successfully where configured
+
+budget:
+    production residency ledgers pass
+```
+
+Hardware-observable device tests require physical acceptance.
+
+---
+
+# 40. Milestone M12 — Native shell and core userland
+
+## 40.1 Objective
+
+M12 provides the normal interactive native ZephyrOS environment.
+
+At the beginning of M12 the kernel, memory system, process model, filesystem, device stack, diagnostics and executable model are already complete.
+
+M12 is therefore a userland milestone.
+
+The shell must not require a new kernel mechanism merely to become usable.
+
+If a fundamental kernel facility is found missing, the omission is treated as an earlier architecture defect rather than hidden inside shell-specific kernel code.
+
+---
+
+## 40.2 Shell is an ordinary process
+
+The native shell is:
+
+```text
+/SYSTEM/shell.zex
+```
+
+and is an ordinary ZEX v2 application.
+
+It has no private kernel imports.
+
+It uses only:
+
+```text
+native console ABI
+native filesystem ABI
+SYS_EXEC / process ABI
+existing startup-tail contract
+```
+
+The shell becomes the normal parent process for launched native programs.
+
+The existing lifecycle remains:
+
+```text
+shell running
+    |
+    | SYS_EXEC
+    v
+shell suspended
+    |
+    v
+child running
+    |
+    | SYS_EXIT
+    v
+shell resumed with child status
+```
+
+No scheduler is required.
+
+---
+
+## 40.3 Boot policy
+
+After normal boot:
+
+```text
+IRQ/device/VFS initialization
+    ->
+console binding
+    ->
+launch /SYSTEM/shell.zex
+```
+
+`/SYSTEM/shell.zex` is part of the recovery filesystem so the native environment remains available without writable SD media.
+
+If the shell cannot be loaded or launched, ZephyrOS falls back to:
+
+```text
+/SYSTEM/monitor.zex
+```
+
+through the established recovery path.
+
+A normal shell exit may be relaunched by the kernel supervisor.
+
+An abnormal shell failure is reported and may enter the monitor rather than endlessly relaunching a failing shell.
+
+The exact exit-status policy is pinned during implementation and tested.
+
+**Reconciliation with the M9 launcher (stated M12 change).** M9's
+`ZOS_BOOT_PROGRAM` (`config/system.mk`, compiled into the kernel as a
+constant string) already selects the single program the boot launcher starts
+and, on a normal exit, re-executes; switching native ZephyrOS to the shell is
+that one setting plus a `shell.zex` entry in the selected recovery manifest.
+What is **new in M12, not M9**, is the failure policy above: the M9 launcher
+reports and re-executes its configured program, whereas M12 adds the
+`/SYSTEM/monitor.zex` fallback for a shell that cannot be loaded or launched
+and stops an abnormally failing shell from being relaunched indefinitely.
+That fallback is implemented and tested in M12; M9 leaves the launcher
+unchanged.
+
+---
+
+## 40.4 Command parsing belongs entirely to userland
+
+The shell receives the existing raw startup tail and owns command-line parsing.
+
+The kernel never parses shell syntax.
+
+M12 supports at least:
+
+```text
+whitespace-separated words
+single-quoted strings
+double-quoted strings
+backslash escaping
+```
+
+For an external command, the shell serializes the resulting arguments into the existing bounded `SYS_EXEC` raw-tail contract used by startup block v1.
+
+M12 does not require:
+
+```text
+pipes
+I/O redirection
+background jobs
+job control
+shell scripting
+variable expansion
+command substitution
+filename glob expansion
+```
+
+Those can be added later without changing the kernel process model.
+
+---
+
+## 40.5 Shell built-ins
+
+The native shell deliberately contains the core userland commands as built-ins.
+
+At minimum:
+
+```text
+cd
+pwd
+ls
+cp
+mv
+rm
+mkdir
+rmdir
+cat
+stat
+echo
+path
+help
+exit
+```
+
+These commands are part of the shell executable rather than separate ZEX programs.
+
+This has several advantages on Zephyr-80:
+
+```text
+no repeated exec/exit overhead for simple filesystem operations
+no duplicated runtime/startup code across tiny utilities
+smaller recovery-store footprint
+shared parsing and formatting code
+shared filesystem buffers
+simpler recovery environment
+```
+
+Commands such as `cd`, `pwd`, `path` and `exit` necessarily operate on shell-owned state and therefore must be built-ins.
+
+For architectural simplicity and compactness, M12 applies the same model to the remaining core commands.
+
+This packaging choice is deliberate but does not make the commands kernel services. They remain ordinary userland logic inside `shell.zex`.
+
+---
+
+## 40.6 External command lookup
+
+Commands not recognized as shell built-ins are treated as executable program names.
+
+An argument containing `/` is treated as an explicit path.
+
+A bare command name is resolved entirely by shell policy through a bounded shell-local command path.
+
+A suitable initial default is:
+
+```text
+.
+/BIN
+/SYSTEM
+```
+
+Missing path components are skipped.
+
+The shell may try the exact name and then the conventional `.zex` suffix.
+
+The kernel has no `PATH` concept and performs no command search.
+
+Changing the shell command path changes only shell state.
+
+---
+
+## 40.7 Core native userland
+
+The core native userland is the shell itself.
+
+The following facilities are built into `shell.zex`:
+
+```text
+filesystem navigation
+    cd
+    pwd
+
+directory/file inspection
+    ls
+    stat
+    cat
+
+filesystem mutation
+    cp
+    mv
+    rm
+    mkdir
+    rmdir
+
+general shell utilities
+    echo
+    path
+    help
+    exit
+```
+
+Larger or specialized applications remain ordinary external ZEX programs.
+
+Examples include:
+
+```text
+diag.zex
+monitor.zex
+editors
+compilers
+language runtimes
+games
+future personality launchers
+```
+
+Thus the distinction is:
+
+```text
+small universal operating commands     -> shell built-ins
+substantial applications/tools          -> external ZEX programs
+```
+
+The exact internal organization of built-ins may use separate source modules, but they link into one `shell.zex`.
+
+---
+
+## 40.8 Userland filesystem policy
+
+Shell built-ins consume only the M9 filesystem ABI.
+
+### `cp`
+
+Uses ordinary:
+
+```text
+open
+read
+write
+close/sync
+```
+
+with a bounded shell-owned buffer.
+
+### `mv`
+
+First attempts native `rename`.
+
+If the VFS reports:
+
+```text
+ZOS_EXDEV
+```
+
+for a cross-filesystem move, the shell may implement:
+
+```text
+copy
+sync/close
+unlink source
+```
+
+with appropriate failure handling.
+
+The kernel does not acquire a hidden cross-filesystem rename implementation for the benefit of the shell.
+
+### `ls`
+
+Uses:
+
+```text
+opendir
+readdir
+closedir
+stat where required
+```
+
+and understands native mountpoints exactly as exposed by VFS.
+
+---
+
+## 40.9 Recovery operation without writable storage
+
+With the normal writable root unavailable, the user must still receive a useful system:
+
+```text
+/
+`-- SYSTEM/
+    |-- shell.zex
+    |-- monitor.zex
+    |-- diag.zex
+    `-- essential recovery assets
+```
+
+The shell starts normally.
+
+Read-only commands continue to work.
+
+Mutation attempts against `/SYSTEM` report the normal `ZOS_EROFS` behavior.
+
+The shell does not treat absence of the writable root as a fatal condition.
+
+---
+
+## 40.10 Exit-status handling
+
+`SYS_EXEC` returns the child's native exit status to the shell.
+
+The shell stores the most recent status and reports nonzero failures in a consistent form.
+
+Built-ins and external native programs return meaningful native status values rather than always succeeding after printing an error.
+
+No POSIX-specific status encoding is implied.
+
+---
+
+## 40.11 Shell memory rules
+
+The shell is not special with respect to memory.
+
+It may use:
+
+```text
+primary memory
+ordinary xmem
+far code
+```
+
+through exactly the M10 interfaces available to every other native ZEX.
+
+Because the shell contains the complete core userland command set, M10 far-code support may be used to partition built-in command families into auxiliary executable segments if the primary image would otherwise become unnecessarily large.
+
+That is an implementation choice, not part of shell command semantics.
+
+---
+
+## 40.12 M12 non-goals
+
+M12 does not require:
+
+```text
+multitasking
+preemption
+pipes
+redirection
+background jobs
+shell scripts
+environment variables
+dynamic linking
+networking
+CP/M execution
+other compatibility personalities
+```
+
+Those are later facilities or personality work.
+
+---
+
+# 41. M12 acceptance criteria
+
+Acceptance covers at least:
+
+```text
+boot:
+    shell launched from /SYSTEM
+    HID/V9958 normal console
+    SIO fallback
+    shell available with no writable root
+    monitor fallback when shell is missing/rejected
+
+parser:
+    empty line
+    multiple arguments
+    single quotes
+    double quotes
+    escaped characters
+    tail-limit rejection/recovery
+
+built-ins:
+    cd
+    pwd
+    ls
+    cp
+    mv
+    rm
+    mkdir
+    rmdir
+    cat
+    stat
+    echo
+    path
+    help
+    exit
+
+execution:
+    bare-name command search
+    explicit absolute path
+    explicit relative path
+    .zex suffix handling
+    child exit 0
+    child nonzero exit
+    malformed executable
+    repeated child execution leaks no process/bank/xmem/fd state
+
+CWD:
+    cd absolute
+    cd relative
+    ..
+    child inherits shell CWD
+    child chdir does not alter shell CWD
+
+filesystem policy:
+    mv same filesystem
+    mv cross-filesystem through copy/sync/unlink
+    writes to /SYSTEM fail cleanly with EROFS
+
+native tools:
+    launch monitor
+    launch diag
+    return cleanly to shell
+
+recovery:
+    /SYSTEM visible with SD absent
+    read-only built-ins work
+    mutation failure is clean and non-fatal
+
+budget:
+    final production residency ledgers pass
+    recovery ROMFS fits
+```
+
+Physical acceptance includes a complete interactive session on the HID/V9958 console and the SIO fallback console.
+
+---
+
+# 42. Native ZephyrOS completion boundary
+
+Completion of M12 marks the first complete native ZephyrOS environment.
+
+At that point the system has:
+
+```text
+boot/recovery
+memory ownership
+interrupt executive
+dynamic drivers
+native device model
+native console
+process lifecycle
+native executable format
+hierarchical VFS
+writable filesystem
+extended/far memory
+far code/data
+complete diagnostics
+native shell
+core built-in userland
+```
+
+Only after this boundary does detailed compatibility/personality architecture begin.
+
+Personality implementations consume native ZephyrOS mechanisms rather than forcing compatibility concepts into the native kernel.
+
+Initial Zephyr-80 personality candidates include:
+
+```text
+CP/M
+Coleco
+GameOS
+```
+
+Future ZephyrOS ports may define personalities appropriate to their processor/platform family.
+
+The native kernel itself remains free of:
+
+```text
+CP/M FCB semantics
+Coleco BIOS semantics
+foreign filesystem namespaces
+foreign process ABIs
+```
+
+except at explicit personality boundaries.
+
+---
+
+## 42.1 Native ABI baseline
+
+During M0-M12 ZephyrOS deliberately carries no backward-compatibility obligation between development milestones.
+
+Completion of M12 ends that phase.
+
+The accepted:
+
+```text
+native syscall ABI
+ZEX v2 format
+driver/module ABI
+filesystem ABI
+process-startup ABI
+extended-memory ABI
+```
+
+form the first stable native ZephyrOS compatibility baseline.
+
+Subsequent incompatible changes require an explicit ABI or format version change rather than silently changing an established contract.
+
+---

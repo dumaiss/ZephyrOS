@@ -354,8 +354,8 @@ class TestSdkBoundary(unittest.TestCase):
     def test_every_program_is_declared_once_by_the_generic_rule(self):
         programs = _declared_programs()
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
-                         ["fschild", "fsdeep", "fsraw", "fstest", "fstest_l",
-                          "hello", "monitor", "zextest"])
+                         ["fschild", "fsdeep", "fsfat", "fsraw", "fstest",
+                          "fstest_l", "hello", "monitor", "zextest"])
         for name, directory, _sources, _options in programs:
             count = sum(_read(path).count("zex_program,%s," % name)
                         for path in ("Makefile",

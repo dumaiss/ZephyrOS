@@ -1,14 +1,22 @@
 # ZephyrOS M9 Filesystem Architecture Proposal
 
-**Status:** Draft for review  
+**Status:** historical.  This was the M9 *proposal*; it is superseded by
+`docs/architecture.md` section 32, which is the normative record of what M9
+built (the VFS, the path-based provider ABI, ROMFS at `/SYSTEM`, IOC-FAT at
+`/`, the descriptor/CWD model, the `FS_*` syscall family and the bank-7
+budget).  The implementation record is `docs/vfs.md`.  Nothing here is
+normative: where this document and architecture section 32 differ, section 32
+wins.  It is kept only as the design history of the M9 decisions.
+
 **Scope:** M9 native filesystem architecture  
 **Target:** Zephyr-80  
 **Purpose:** Define the native ZephyrOS filesystem framework before implementation. This document intentionally excludes CP/M filesystem semantics.
 
 The bootstrap slice (VFS core, generated mount table, ROMFS provider at
 `/SYSTEM`, VFS-path boot loading) is implemented by work package
-`25-m9-vfs-bootstrap-romfs`; see `docs/vfs.md` for the implementation
-record.
+`25-m9-vfs-bootstrap-romfs`; the writable provider and provider caching by
+packages 26 and 30; the syscall family by package 27.  See `docs/vfs.md`.
+
 
 ---
 

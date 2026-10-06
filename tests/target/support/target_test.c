@@ -66,6 +66,9 @@ extern int kernel_load_vfs_module(const char *name);
 #if ZOS_M9_IOCFAT_SELFTEST
 #include "m9_iocfat_selftest.h"
 #endif
+#if ZOS_M9_SELFTEST
+#include "m9_integration_selftest.h"
+#endif
 
 /* Boot-time acceptance modules, called between the production boot set and
  * the normal mount pass.  Only an image that needs extra resident providers
@@ -136,5 +139,8 @@ void zos_target_test_late(void)
 #endif
 #if ZOS_M9_IOCFAT_SELFTEST
 	zos_run_m9_iocfat_selftest();
+#endif
+#if ZOS_M9_SELFTEST
+	zos_run_m9_selftest();
 #endif
 }

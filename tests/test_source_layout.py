@@ -109,6 +109,7 @@ OWNER_FILES = (
     "tests/m9/mounts-ramfs-optional-fail.json",
     "tests/m9/mounts-ramfs-required-fail.json",
     "tests/m9/manifest-provider.json",
+    "tests/m9/manifest-vfs.json",
     "tests/target/m9/m9_vfs_test.c",
     "tests/target/m9/m9_provider_test.c",
     "tests/target/m9/m9_fs_test.c",
@@ -128,6 +129,12 @@ OWNER_FILES = (
     "tests/target/m9/exec/fsdeep.c",
     "tests/target/m9/exec/fsraw.c",
     "tests/target/m9/exec/fsraw_entry.asm",
+    "tests/target/m9/m9_selftest.c",
+    "tests/target/m9/fstest/fsfat.c",
+    "tests/target/include/m9_integration_selftest.h",
+    "tests/m9/manifest-selftest.json",
+    "tests/test_m9_selftest.py",
+    "tests/test_m9_selftest_sim.py",
     "tests/test_syscall_sim.py",
     "tests/modules/ramfs.c",
     "tests/modules/ramfs.json",
@@ -1238,6 +1245,69 @@ class TestConstantParity(unittest.TestCase):
                              "%s differs from errno.h" % name)
 
 
+class TestKernelNameComparison(unittest.TestCase):
+    """One shared kernel ASCII name comparison (work package 30c, F3).
+
+    The VFS, ROMFS and device registry used to carry three independent
+    comparisons.  This pins the consolidation: a single implementation in
+    `kernel/lib/name.c`, every caller using it with its own semantics
+    (VFS/ROMFS fold, the registry does not; ROMFS passes its bounded field
+    width), and no legacy copy left behind."""
+
+    LEGACY = ("vfs_name_equal", "romfs_name_match", "device_name_equal")
+
+    def _kernel_sources(self):
+        for path in _walk("kernel", SOURCE_SUFFIXES):
+            yield path
+
+    def test_single_implementation(self):
+        helper = _code_only(os.path.join(ROOT, "kernel", "lib", "name.c"))
+        self.assertRegex(
+            helper,
+            r"\buint8_t\s+zos_ascii_equal\s*\(\s*const\s+char\s*\*",
+            "kernel/lib/name.c must define the one shared comparison")
+        for legacy in self.LEGACY:
+            self.assertNotIn(legacy, helper)
+
+    def test_no_legacy_comparison_remains(self):
+        stale = []
+        for path in self._kernel_sources():
+            body = _code_only(path)
+            for legacy in self.LEGACY:
+                if re.search(r"\b%s\b" % legacy, body):
+                    stale.append("%s: %s"
+                                 % (os.path.relpath(path, ROOT), legacy))
+        self.assertEqual(stale, [],
+                         "legacy name comparisons still present:\n%s"
+                         % "\n".join(stale))
+
+    def test_callers_keep_their_exact_semantics(self):
+        # (file, expected selector text) - the two trailing arguments are
+        # the field bound and the case-fold selector.
+        expected = {
+            "kernel/vfs/dir.c": "0u, 1u",
+            "kernel/vfs/mount.c": "0u, 1u",
+            "kernel/romfs/romfs.c": "ROMFS_NAME_SIZE, 1u",
+            "kernel/device/registry.c": "0u, 0u",
+        }
+        for rel, selector in expected.items():
+            body = _code_only(os.path.join(ROOT, rel))
+            calls = re.findall(r"zos_ascii_equal\(.{0,120}", body, re.S)
+            self.assertTrue(calls, "%s does not call the shared helper" % rel)
+            for call in calls:
+                flat = " ".join(call.split())
+                self.assertIn(selector, flat,
+                              "%s must pass `%s` (got %r)"
+                              % (rel, selector, flat))
+
+    def test_helper_is_linked_into_every_image(self):
+        linker = _read(os.path.join(ROOT, "linker", "zephyr80.lk"))
+        self.assertIn("build/name.rel", linker)
+        makefile = _read(os.path.join(ROOT, "Makefile"))
+        self.assertIn("$(BUILD)/name.rel", makefile)
+        self.assertIn("kernel/lib/name.c", makefile)
+
+
 class TestUserSdkBoundary(unittest.TestCase):
     """User-space sources and ZEX programs reach only the public ABI
     (abi/zos) and the SDK (user/sdk); they never see include/zephyros/,
@@ -1248,6 +1318,7 @@ class TestUserSdkBoundary(unittest.TestCase):
         "tests/target/process/zextest_sp.asm",
         "tests/target/m9/fstest/fstest.c",
         "tests/target/m9/fstest/fstest_l.c",
+        "tests/target/m9/fstest/fsfat.c",
         "tests/target/m9/exec/fschild.c",
         "tests/target/m9/exec/fsdeep.c",
         "tests/target/m9/exec/fsraw.c",

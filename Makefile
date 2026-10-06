@@ -94,6 +94,7 @@ C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
              $(BUILD)/console.rel \
              $(BUILD)/module_relocate.rel $(BUILD)/module_loader.rel \
              $(BUILD)/romfs.rel $(BUILD)/process.rel $(BUILD)/process_exec.rel \
+             $(BUILD)/name.rel \
              $(M9_VFS_OBJS)
 END_OBJ   := $(BUILD)/irq_code_end.rel
 # OBJS is assigned after the acceptance/catalog selection below, once
@@ -281,12 +282,16 @@ endif
 # and the monitor loaded through VFS paths, the normal mount pass consuming
 # a test manifest whose optional mount names an unregistered provider (so it
 # fails, is diagnosed, and leaves the namespace usable) -- then the M9 target
-# VFS selftest.  The ROMFS contents stay the production set.
+# VFS selftest.  The ROMFS carries the four-module set without iocfat.zmod
+# (tests/m9/manifest-vfs.json): package 30 added iocfat to the production
+# store, but this image's target test already fills the derived arena, so
+# the IOC-FAT provider is compiled out here (package 30c correction).
 ifeq ($(ZOS_M9_VFS_SELFTEST),1)
 CFLAGS    += -DZOS_M9_VFS_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m9_vfs_test.rel
 PK_SUFFIX := -m9-vfs-selftest
 ZOS_MOUNTS := tests/m9/mounts-optional-fail.json
+ZOS_IOCFAT_BOOT := 0
 endif
 
 # M9 required-mount failure image (package 25): the same production boot,
@@ -360,6 +365,22 @@ ifeq ($(ZOS_M9_IOCFAT_SELFTEST),1)
 CFLAGS    += -DZOS_M9_IOCFAT_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m9_iocfat_test.rel
 PK_SUFFIX := -m9-iocfat-selftest
+ZOS_HID_BOOT := 0
+ZOS_V9958_BOOT := 0
+endif
+
+# M9 integration acceptance image (package 31).  The production boot set
+# minus HID/V9958 (so the whole acceptance transcript arrives on SIO, as for
+# every other M9 acceptance image), the resident IOC-FAT provider, and every
+# native acceptance program.  The target hook exec's fstest.zex -- which
+# exec's the deep-matrix program fsfat.zex -- then the fsdeep.zex depth
+# probe, and checks the process, bank and descriptor pools are back to
+# baseline.  With a card, `/` is the real FAT volume, so this is the image
+# that proves M9 end to end.
+ifeq ($(ZOS_M9_SELFTEST),1)
+CFLAGS    += -DZOS_M9_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/m9_selftest.rel
+PK_SUFFIX := -m9-selftest
 ZOS_HID_BOOT := 0
 ZOS_V9958_BOOT := 0
 endif
@@ -447,7 +468,8 @@ ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_M8_CONSOLE_SELFTEST) $(ZOS_M8_SELFTEST) \
 	$(ZOS_M8_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
 	$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST) \
-	$(ZOS_M9_EXEC_SELFTEST) $(ZOS_M9_IOCFAT_SELFTEST)),)
+	$(ZOS_M9_EXEC_SELFTEST) $(ZOS_M9_IOCFAT_SELFTEST) \
+	$(ZOS_M9_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1 \
 		-Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
@@ -557,6 +579,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	m9-fs-selftest \
 	m9-exec-selftest \
 	m9-iocfat-selftest \
+	m9-selftest \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-subsystem smoke-hardware-romfs-corrupt \
@@ -567,7 +590,8 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	smoke-hardware-m8-fb-arena \
 	smoke-hardware-m9-fs \
 	smoke-hardware-m9-exec \
-	smoke-hardware-m9-iocfat
+	smoke-hardware-m9-iocfat \
+	smoke-hardware-m9
 
 all: $(IMAGE) $(MAME_IMAGE)
 
@@ -674,6 +698,7 @@ $(BUILD)/diag.rel: kernel/syscall/diag.c kernel/syscall/diag.h \
 # --- M3 device/driver/service objects (bank-7 code and data) -----------------
 
 $(BUILD)/registry.rel: kernel/device/registry.c include/zephyros/device.h \
+		kernel/device/registry.h kernel/lib/name.h \
 		include/zephyros/irq.h include/zephyros/errno.h \
 		abi/zos/types.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
@@ -696,9 +721,14 @@ $(BUILD)/module_loader.rel: kernel/module/loader.c \
 
 # --- M5 ROMFS objects (bank-7 reader + common ROM-access primitive) ----------
 
+# Shared kernel ASCII name comparison (package 30c, F3): one helper for VFS,
+# ROMFS and the device registry.
+$(BUILD)/name.rel: kernel/lib/name.c kernel/lib/name.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
 $(BUILD)/romfs.rel: kernel/romfs/romfs.c include/zephyros/romfs.h \
 		include/zephyros/module.h include/zephyros/platform.h \
-		platform/zephyr80/memory.h | $(BUILD)
+		kernel/lib/name.h platform/zephyr80/memory.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M9 VFS objects (bank-7 core + ROMFS provider + generated mount table) ---
@@ -708,7 +738,7 @@ $(BUILD)/vfs_path.rel: kernel/vfs/path.c kernel/vfs/vfs.h \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_mount.rel: kernel/vfs/mount.c kernel/vfs/vfs.h \
-		kernel/vfs/mount_config.h abi/zos/fs.h \
+		kernel/vfs/mount_config.h kernel/lib/name.h abi/zos/fs.h \
 		include/zephyros/vfs.h fs/romfs/romfs_provider.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
@@ -716,7 +746,7 @@ $(BUILD)/vfs_file.rel: kernel/vfs/file.c kernel/vfs/vfs.h \
 		abi/zos/fs.h include/zephyros/vfs.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/vfs_dir.rel: kernel/vfs/dir.c kernel/vfs/vfs.h \
+$(BUILD)/vfs_dir.rel: kernel/vfs/dir.c kernel/vfs/vfs.h kernel/lib/name.h \
 		abi/zos/fs.h include/zephyros/vfs.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
@@ -794,7 +824,8 @@ $(MODULES):
 # used/free totals; the build fails here when the declared boot set cannot
 # coexist in the derived arena.  The plan also carries the bank-7 ledger.
 ARENA_PLAN := $(BUILD)/arena.plan.json
-$(ARENA_PLAN): $(BOOT_ZMODS) tools/zmodpack.py $(MEMORY_INC) | $(BUILD)
+$(ARENA_PLAN): $(BOOT_ZMODS) tools/zmodpack.py tools/pack_image.py \
+		$(MEMORY_INC) | $(BUILD)
 	$(PYTHON) tools/zmodpack.py plan --geometry $(MEMORY_INC) \
 		--report $@ $(BOOT_ZMODS)
 
@@ -1189,6 +1220,13 @@ $(BUILD)/m9_iocfat_test.rel: tests/target/m9/m9_iocfat_test.c \
 		tests/target/include/m9_iocfat_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
+$(BUILD)/m9_selftest.rel: tests/target/m9/m9_selftest.c \
+		include/zephyros/console.h include/zephyros/kernel.h \
+		include/zephyros/process.h abi/zos/fs.h \
+		kernel/lib/name.h kernel/vfs/vfs.h \
+		tests/target/include/m9_integration_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
 # --- native user programs (SDK, work/28c-m9-user-sdk) ------------------------
 # Every ZEX is built by one zex_program line from user/sdk/zex.mk.  The
 # sources compile with exactly -I abi -I user/sdk/include plus their own
@@ -1213,6 +1251,8 @@ $(eval $(call zex_program,zextest,tests/target/process,\
 
 $(eval $(call zex_program,fstest,tests/target/m9/fstest,fstest.c,\
 	STACK=320,STAGE=1))
+$(eval $(call zex_program,fsfat,tests/target/m9/fstest,fsfat.c,\
+	STACK=256,STAGE=1))
 $(eval $(call zex_program,fstest_l,tests/target/m9/fstest,fstest_l.c,\
 	STACK=256,STAGE=1))
 $(eval $(call zex_program,fschild,tests/target/m9/exec,fschild.c,\
@@ -1280,6 +1320,13 @@ else ifeq ($(ZOS_M8_FALLBACK),arena)
 # failure, which the plan cannot express.
 ROMFS_MANIFEST := tests/m8/manifest-fallback-arena.json
 ROMFS_EXTRA_DEPS := $(MODULES)/m8regfill.zmod $(MODULES)/monitor.zex
+else ifeq ($(ZOS_M9_VFS_SELFTEST),1)
+# Production-style VFS boot without IOC-FAT: the four resident modules, the
+# V9958 font and the monitor.  The VFS target test already fills the
+# derived arena, so the IOC-FAT provider is compiled out and its ROMFS
+# entry is omitted (package 30c correction).
+ROMFS_MANIFEST := tests/m9/manifest-vfs.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 else ifeq ($(ZOS_M9_PROVIDER_SELFTEST),1)
 # SIO-only boot: the SIO fallback module, the writable RAM provider, the
 # registration fixtures and the monitor.  No IOC/HID/V9958 entries, so the
@@ -1303,6 +1350,14 @@ ROMFS_MANIFEST := tests/m9/manifest-exec.json
 ROMFS_EXTRA_DEPS := $(MODULES)/ramfs.zmod $(MODULES)/monitor.zex \
 		$(MODULES)/fstest.zex $(MODULES)/fschild.zex \
 		$(MODULES)/fsraw.zex $(MODULES)/fsdeep.zex
+else ifeq ($(ZOS_M9_SELFTEST),1)
+# Integration image: the IOC transport, the resident FS2 provider and the
+# whole native acceptance set, all loaded from the recovery store.  `/` is
+# the card, so nothing else may be assumed present.
+ROMFS_MANIFEST := tests/m9/manifest-selftest.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex \
+		$(MODULES)/fstest.zex $(MODULES)/fsfat.zex \
+		$(MODULES)/fsdeep.zex
 else ifeq ($(ZOS_M9_IOCFAT_SELFTEST),1)
 # Production boot set minus HID/V9958: the SIO fallback, the IOC transport,
 # the resident FS2 filesystem provider and the console, plus the native
@@ -1806,6 +1861,22 @@ m9-iocfat-selftest: all
 	$(PYTHON) -m unittest discover -s tests -p 'test_iocfat_sim.py' -v
 	@echo "m9 iocfat image: build-m9-iocfat-selftest/zephyros-m9-iocfat-selftest.bin"
 
+# M9 integration acceptance image (package 31): the production boot path with
+# `/` served by the resident IOC-FAT provider, and the whole native
+# acceptance set.  The target hook exec's fstest.zex (which exec's the
+# deep-matrix program fsfat.zex), the fsdeep.zex depth probe and the two
+# fault probes, so the image is the milestone's end-to-end proof on a card.
+m9-selftest: all
+	$(MAKE) BUILD=build-m9-selftest ZOS_M9_SELFTEST=1 \
+		build-m9-selftest/zephyros-m9-selftest.bin \
+		build-m9-selftest/zephyr80-m9-selftest.bin
+	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+		build-m9-selftest/zephyros.map \
+		build-m9-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m9_selftest_sim.py' -v
+	@echo "m9 integration image: build-m9-selftest/zephyros-m9-selftest.bin"
+
 # SDK helloworld demo image (work/28c-m9-user-sdk): the production boot path
 # in its own build directory (build-helloworld) with the SDK hello demo
 # added to the recovery manifest, booted as /SYSTEM/hello.zex.  This is the
@@ -1891,6 +1962,7 @@ m8-fallback-selftests: all
 #                                                                             make m8-console-selftest
 #   smoke-hardware-m8             build-m8-selftest/zephyros-m8-selftest.bin  make m8-selftest
 #   smoke-hardware-m8-fb-*        build-m8-fb-*/zephyros-m8-fb-*.bin          make m8-fallback-selftests
+#   smoke-hardware-m9             build-m9-selftest/zephyros-m9-selftest.bin  make m9-selftest
 #
 # `make hardware-images` builds every image the smoke modes need.  The M8
 # images wait for the tool's host-sync sequence, so start the smoke tool and
@@ -1906,7 +1978,7 @@ endef
 hardware-images: all subsystem-selftest romfs-corrupt-selftest \
 		m8-selftest m8-ioc-selftest m8-hid-selftest \
 		m8-v9958-selftest m8-console-selftest m8-fallback-selftests \
-		m9-fs-selftest m9-exec-selftest m9-iocfat-selftest
+		m9-fs-selftest m9-exec-selftest m9-iocfat-selftest m9-selftest
 	@echo "hardware-images: every smoke image is built under build*/"
 
 smoke-hardware:
@@ -1975,3 +2047,7 @@ smoke-hardware-m9-exec:
 smoke-hardware-m9-iocfat:
 	@$(call smoke_preflight,build-m9-iocfat-selftest/zephyros-m9-iocfat-selftest.bin,m9-iocfat-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode m9-iocfat --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-m9:
+	@$(call smoke_preflight,build-m9-selftest/zephyros-m9-selftest.bin,m9-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode m9 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

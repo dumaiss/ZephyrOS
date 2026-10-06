@@ -5,7 +5,12 @@ callers and the kernel.  C names, argument layouts, and SDCC calling
 conventions are private implementation details and must never appear in
 this interface.  Section 1-6 describe the M1/M2 gate contract; section 7
 adds the M2 interrupt-delivery contract, and section 8 adds the M6
-native syscall set.
+native syscall set; section 10 is the M9 native filesystem family
+(`SYS_FS_*`, `10h-1Fh`) together with the M9 error values it introduces,
+and section 11 is the M9 `SYS_EXEC` with the startup block v1 argument
+contract.  M9's end-to-end acceptance (the `m9-selftest` image and the
+full matrix) is recorded in
+[`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md).
 
 ## 1. Entry
 

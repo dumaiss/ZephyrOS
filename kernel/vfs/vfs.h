@@ -59,7 +59,6 @@ typedef uint16_t vfs_provider_checkpoint_t;
 vfs_provider_checkpoint_t vfs_provider_checkpoint(void);
 int vfs_provider_rollback(vfs_provider_checkpoint_t checkpoint);
 void vfs_provider_set_owner(const void *owner);
-const void *vfs_provider_owner(void);
 
 /* --- runtime mount state (parallel to the const config table) --------- */
 
@@ -170,22 +169,15 @@ void vfs_ws_fault(void);    /* never returns */
 
 /* --- path helpers (used by VFS and the acceptance tests) -------------- */
 
-/* Normalize `path` (absolute against the base `/`) into an absolute
- * canonical path in `out`: repeated and trailing slashes collapsed, `.`
- * removed, `..` applied with traversal above `/` clamped to `/`.
- * Preserves case.  Returns 0, or -ZOS_EINVAL for a null argument, an
- * over-long path/component, or a buffer that cannot hold the result. */
-int vfs_path_normalize(const char *path, char *out, uint16_t out_size);
-
-/* Same, but a relative `path` resolves against the canonical `base`
- * directory (which must itself be an absolute canonical path).  Package 27
- * passes the caller's CWD; `vfs_path_normalize` is exactly
- * `vfs_path_normalize_at("/", ...)`.  `base` and `out` must not alias. */
+/* Normalize `path` into an absolute canonical path in `out`, resolving a
+ * relative `path` against the canonical `base` directory (which must
+ * itself be an absolute canonical path): repeated and trailing slashes
+ * collapsed, `.` removed, `..` applied with traversal above `/` clamped
+ * to `/`.  Preserves case.  Package 27 passes the caller's CWD.  Returns
+ * 0, or -ZOS_EINVAL for a null argument, an over-long path/component, or
+ * a buffer that cannot hold the result.  `base` and `out` must not alias. */
 int vfs_path_normalize_at(const char *base, const char *path, char *out,
 			  uint16_t out_size);
-
-/* ASCII case-insensitive name comparison (A-Z == a-z, all else exact). */
-uint8_t vfs_name_equal(const char *a, const char *b);
 
 /* Normalize `path` against the calling process' CWD (package 27; the
  * kernel launcher's CWD is `/`) and select the owning mount with the flat

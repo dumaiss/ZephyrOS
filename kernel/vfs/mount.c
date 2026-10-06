@@ -20,6 +20,7 @@
  */
 
 #include "kernel/vfs/vfs.h"
+#include "kernel/lib/name.h"
 #include "zephyros/kernel.h"
 #include "zephyros/process.h"
 #include "fs/romfs/romfs_provider.h"
@@ -64,8 +65,8 @@ int vfs_register_filesystem(const struct zfs_provider *provider)
 		return -ZOS_EBUSY;
 	}
 	for (i = 0; i < vfs_providers_count; ++i) {
-		if (vfs_name_equal(vfs_providers[i].provider->name,
-				   provider->name)) {
+		if (zos_ascii_equal(vfs_providers[i].provider->name,
+				    provider->name, 0u, 1u)) {
 			return -ZOS_EEXIST;
 		}
 	}
@@ -88,7 +89,8 @@ const struct zfs_provider *vfs_find_provider(const char *name)
 		return (const struct zfs_provider *)0;
 	}
 	for (i = 0; i < vfs_providers_count; ++i) {
-		if (vfs_name_equal(vfs_providers[i].provider->name, name)) {
+		if (zos_ascii_equal(vfs_providers[i].provider->name, name,
+				    0u, 1u)) {
 			return vfs_providers[i].provider;
 		}
 	}
@@ -130,11 +132,6 @@ int vfs_provider_rollback(vfs_provider_checkpoint_t checkpoint)
 void vfs_provider_set_owner(const void *owner)
 {
 	vfs_provider_current_owner = owner;
-}
-
-const void *vfs_provider_owner(void)
-{
-	return vfs_provider_current_owner;
 }
 
 uint8_t vfs_phase(void)
@@ -293,7 +290,7 @@ uint8_t vfs_is_mountpoint(const char *norm)
 		    !vfs_mount_is_root_level(i)) {
 			continue;
 		}
-		if (vfs_name_equal(vfs_mount_table[i].path, norm)) {
+		if (zos_ascii_equal(vfs_mount_table[i].path, norm, 0u, 1u)) {
 			return 1;
 		}
 	}

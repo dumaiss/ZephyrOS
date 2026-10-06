@@ -39,6 +39,7 @@ build/vfs_workspace.rel
 build/romfs_provider.rel
 build/process.rel
 build/process_exec.rel
+build/name.rel
 build/arena.rel
 build/rom_access.rel
 build/process_launch.rel

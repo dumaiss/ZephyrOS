@@ -14,9 +14,10 @@
  */
 
 #include "kernel/vfs/vfs.h"
+#include "kernel/lib/name.h"
 
 /* True when `name` (from the `/` filesystem) is shadowed by a mounted
- * root-level mountpoint; comparison is ASCII case-insensitive. */
+ * root-level mountpoint; the comparison is ASCII case-insensitive. */
 static uint8_t vfs_root_name_is_mountpoint(const char *name)
 {
 	uint16_t i;
@@ -26,7 +27,7 @@ static uint8_t vfs_root_name_is_mountpoint(const char *name)
 		    !vfs_mount_is_root_level(i) || vfs_mount_is_root(i)) {
 			continue;
 		}
-		if (vfs_name_equal(name, &vfs_mount_table[i].path[1])) {
+		if (zos_ascii_equal(name, &vfs_mount_table[i].path[1], 0u, 1u)) {
 			return 1;
 		}
 	}

@@ -937,7 +937,8 @@ def build_bank7_ledger(values, used_granules, source):
                  "ZOS_DATA_BASE", "ZOS_DATA_SIZE",
                  "ZOS_BANK7_RUNTIME_END", "ZOS_COMMON_BASE",
                  "ZOS_COMMON_CODE_END", "ZOS_COMMON_CODE_SIZE",
-                 "ZOS_COMMON_DATA_SIZE"):
+                 "ZOS_COMMON_DATA_SIZE", "ZOS_COMMON_CEILING",
+                 "ZOS_COMMON_M10_RESERVATION"):
         if name not in values:
             raise ZmodError(
                 "%s is missing from %s; the derived build must generate it"
@@ -949,15 +950,27 @@ def build_bank7_ledger(values, used_granules, source):
     common_code = values["ZOS_COMMON_CODE_SIZE"]
     common_data = values["ZOS_COMMON_DATA_SIZE"]
     common_capacity = values["ZOS_COMMON_CODE_END"] - values["ZOS_COMMON_BASE"]
+    common_ceiling = values["ZOS_COMMON_CEILING"]
+    common_reservation = values["ZOS_COMMON_M10_RESERVATION"]
+    common_limit = common_ceiling - common_reservation
     if common_code + common_data > common_capacity:
         raise ZmodError(
             "packed common memory is %d bytes, over the %d-byte window"
             % (common_code + common_data, common_capacity))
+    if common_code + common_data > common_limit:
+        raise ZmodError(
+            "packed common memory is %d bytes, over the %d-byte M9 limit "
+            "(ceiling %d minus the %d-byte M10 reservation)"
+            % (common_code + common_data, common_limit, common_ceiling,
+               common_reservation))
     return {
         "common_code_bytes": common_code,
         "common_data_bytes": common_data,
         "common_used_bytes": common_code + common_data,
         "common_capacity_bytes": common_capacity,
+        "common_ceiling_bytes": common_ceiling,
+        "common_m10_reservation_bytes": common_reservation,
+        "common_limit_bytes": common_limit,
         "code_bytes": code_end - values.get("ZOS_BANK7_BASE", 0x2000),
         "code_end": code_end,
         "arena_start": values["ZOS_DRIVER_ARENA_BASE"],
@@ -984,7 +997,10 @@ def format_bank7_ledger(ledger):
         + "\n"
         + pack_image.COMMON_LEDGER_LINE % (
             ledger["common_used_bytes"], ledger["common_capacity_bytes"],
-            ledger["common_code_bytes"], ledger["common_data_bytes"]))
+            ledger["common_code_bytes"], ledger["common_data_bytes"],
+            ledger["common_ceiling_bytes"],
+            ledger["common_m10_reservation_bytes"],
+            ledger["common_limit_bytes"]))
 
 
 def cmd_plan(args):
@@ -1022,13 +1038,17 @@ def cmd_plan(args):
         info = parse_container(data, path)
         name = os.path.splitext(os.path.basename(path))[0]
         used += info["required_granules"]
+        total = info["image_size"] + info["bss_size"]
+        thresholds = pack_image.granule_thresholds(total, granule)
         entries.append({
             "name": name,
             "path": path,
             "image_size": info["image_size"],
             "bss_size": info["bss_size"],
-            "total_size": info["image_size"] + info["bss_size"],
+            "total_size": total,
             "granules": info["required_granules"],
+            "above_lower_bytes": thresholds["above_lower_bytes"],
+            "before_higher_bytes": thresholds["before_higher_bytes"],
         })
 
     if used > declared:
@@ -1050,6 +1070,10 @@ def cmd_plan(args):
     }
     ledger = build_bank7_ledger(values, used, geometry_path)
     plan["bank7"] = ledger
+    kernel = pack_image.kernel_granule_thresholds(
+        values["ZOS_KERNEL_CODE_END"], values["ZOS_DATA_BASE"],
+        values["ZOS_DATA_SIZE"], values["ZOS_BANK7_RUNTIME_END"], granule)
+    plan["kernel"] = kernel
     print("zmodpack: arena %04Xh-%04Xh: %d granules (derived)"
           % (start, end - 1, declared))
     for entry in entries:
@@ -1061,6 +1085,7 @@ def cmd_plan(args):
           % (used, declared, declared - used))
     if ledger is not None:
         print(format_bank7_ledger(ledger))
+    print(pack_image.format_granule_thresholds(entries, kernel))
     if report_path:
         with open(report_path, "w") as handle:
             json.dump(plan, handle, indent=2, sort_keys=True)

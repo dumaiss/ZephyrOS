@@ -179,43 +179,6 @@ static int zmod_container_read(const struct zmod_container *c,
 	return zmod_source_read_checked(c->source, offset, dst, length);
 }
 
-int zmod_validate_container(const uint8_t *blob, uint16_t size,
-			    struct zmod_container *out)
-{
-	const struct zmod_header *h;
-	int result;
-	uint16_t i;
-
-	if (blob == (const uint8_t *)0 || out == (struct zmod_container *)0) {
-		return ZMOD_EINVAL;
-	}
-	if (size < ZMOD_HEADER_SIZE) {
-		return ZMOD_EFORMAT;
-	}
-
-	h = (const struct zmod_header *)blob;
-	result = zmod_validate_header(h, size, out);
-	if (result != ZMOD_OK) {
-		return result;
-	}
-	out->blob = blob;
-	out->source = (const struct zmod_source *)0;
-
-	/* Every relocation record must be well-formed and patch in range. */
-	for (i = 0; i < h->reloc_count; ++i) {
-		const uint8_t *rec = blob + h->reloc_offset +
-				     (uint16_t)(i << 2);
-
-		result = zmod_check_reloc(rec[0], rec[1],
-					  zmod_read_u16(rec + 2),
-					  h->image_size);
-		if (result != ZMOD_OK) {
-			return result;
-		}
-	}
-	return ZMOD_OK;
-}
-
 int zmod_validate_source(const struct zmod_source *source,
 			 struct zmod_container *out)
 {

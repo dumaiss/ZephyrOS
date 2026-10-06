@@ -40,9 +40,14 @@ ZOS_DRIVER_ARENA_MIN_GRANULES = 32
 ; Permanent common code/data in physical SRAM bank 0.  ZOS_COMMON_CODE_END
 ; is the exclusive end of ordinary common content; the IM2 vector page and
 ; IRQ transition state reservations (FD00h-FEFFh) are declared in irq.inc.
+; ZOS_COMMON_CEILING bounds the packed _COMMON + _COMMON_DATA run, with
+; ZOS_COMMON_M10_RESERVATION held back for M10's far-call gate/state, so
+; M9 enforces used <= ceiling - reservation (work package 30c).
 ZOS_COMMON_BASE         = 0xE000
 ZOS_COMMON_CODE_END     = 0xFD00
 ZOS_COMMON_STACK_BASE   = 0xFF00
+ZOS_COMMON_CEILING          = 0x0C00
+ZOS_COMMON_M10_RESERVATION  = 0x0200
 
 ; Common boot/runtime stack: FF00h-FFFFh, grown down from FFFFh.
 ; Initial SP = 0000h (top-exclusive at 10000h).

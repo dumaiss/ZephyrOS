@@ -177,7 +177,7 @@ ledger lines and emit them as matching JSON (`manifest["bank7"]` and
 
 ```text
 bank7: code <bytes> end <addr> | arena <n> granules (<used> boot, <free> free) | data <bytes> at <addr> | isr 256 | slack <bytes>
-common: used <bytes> of <capacity> bytes (code <n>, data <n>)
+common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>, m10 <n>, limit <n>
 ```
 
 The second line covers the permanently mapped common window, which the
@@ -191,6 +191,29 @@ must be watched: it may not reach the lowest reservation.  Common memory
 is the scarcest region and growth there is reported the same way bank-7
 growth is - package 28 added 167 bytes of continuation state and
 correction-01 moved 128 bytes of path buffer back out to bank 7.
+
+The trailing fields are the pinned common-memory budget (work package
+30c, from the 30b audit): `ceiling` is `ZOS_COMMON_CEILING` (3072) and
+`m10` is `ZOS_COMMON_M10_RESERVATION` (512), held back for M10's far-call
+gate and per-process far state; `limit` is `ceiling - m10` (2560) and
+`used` may not exceed it.  `mapcheck.py` and the packer both fail the
+build over the limit, and neither value may be raised to make a package
+fit (target architecture section 2.18).
+
+Both tools also print a granule-threshold table right after the ledger
+lines, and carry the same figures in the JSON.  For every boot-set module
+the plan entry gains `above_lower_bytes` (the saving that reaches the lower
+granule threshold, so removing it frees one granule) and
+`before_higher_bytes` (the room left before the next higher threshold
+spends one).  A `kernel` object gives the same two distances for the arena
+start (the linked code end, `__kernel_code_end`) and for the derived data
+base (the runtime-data size): `code_above_lower_bytes`/
+`code_before_higher_bytes` and `data_above_lower_bytes`/
+`data_before_higher_bytes`.  The data pair is expressed as runtime-data size
+changes - shrinking by the first moves the data base up one granule, growing
+by the second moves it down one.  A saving smaller than `above_lower_bytes`
+frees no granule; `tests/test_pack_image.py` checks the arithmetic against
+the linked map and the packed containers.
 
 Package 25b numbers (size-optimized kernel and modules, derived base):
 
@@ -243,8 +266,49 @@ Per-measure effect:
   (+12 granules), leaving the runtime data `1309` bytes just below the
   `DF00h` ISR stack.
 
-## 2.3 ROMFS placement
+## 2.3 M9 runtime data (packages 27-31)
 
+The M9 VFS, the exec machinery and the resident IOC-FAT provider keep their
+state in static storage; nothing in M9 allocates.  The bank-7 runtime-data
+block (`_DATA`/`_INITIALIZED`, whose base is derived from its own size per
+section 2.2) holds:
+
+| item | bytes | owner |
+| --- | ---: | --- |
+| global descriptor pool, 8 entries x 17 (`owner`, `type`, file/dir union) | 136 | `kernel/vfs/process.c` |
+| CWD pool: 4 chain levels x (1 owner byte + 128-byte canonical path) | 516 | `kernel/vfs/process.c` |
+| VFS workspace: two 256-byte path views and the 512-byte transfer staging view, exactly tiling one buffer | 512 | `kernel/vfs/workspace.c` |
+| VFS path scratch, kernel file table and the SYS_EXEC path buffer | (see the map) | `kernel/vfs/*.c`, `kernel/main.c` |
+
+The exec continuation state is **common**, not bank-7 data, because it is
+touched only while the gate runs in mode 11: `zos_proc_frames` is
+`ZOS_EXEC_MAX_DEPTH - 1 = 3` save areas of `ZOS_EXEC_FRAME_SAVE` (48)
+bytes, i.e. 144 bytes, plus the single-depth gate shadow bytes
+(`include/zephyros/process.h`, `docs/abi.md` section 11).
+
+The IOC-FAT provider is a resident ZMOD, so its state is that module's own
+BSS, not kernel data: a 637-byte BSS of which the one 512-byte file-data
+cache slot is the largest member (`fs/iocfat/iocfat.c`,
+`IOCFAT_CACHE_SLOTS`).
+
+Final ledger (end of M9, packages 30c and 31; production image):
+
+```text
+bank7: code 27990 bytes end 8D56h | arena 36 granules (33 boot, 3 free) | data 2241 bytes at D600h | isr 256 | slack 63 bytes
+common: used 2104 of 7424 bytes (code 1410, data 694) | ceiling 3072, m10 512, limit 2560
+
+boot set: sio x1, ioc x8, hid x2, v9958 x9, iocfat x13 = 33 granules
+total slack: 3 x 512 + 63 = 1599 bytes (32.39 target: >= 1 KiB)
+```
+
+No M9 package after 30 changes a kernel or module byte except the 30c
+reclaim, which moved the arena start one granule down (`9000h -> 8E00h`)
+with the data base and the data slack unchanged.  The `m9-selftest`
+integration image compiles HID/V9958 out and adds the acceptance object, so
+its own ledger (`code 29855 bytes end 949Fh | arena 30 granules (22 boot, 8
+free) | data 3306 bytes at D200h | slack 22`) is not a production figure.
+
+## 2.4 ROMFS placement
 The ROMFS reader (`_romfs_init`, `_romfs_lookup_ci`, `_romfs_read`,
 `_romfs_entry_at`) and the module-facing resource imports
 (`_romfs_resource_size`, `_romfs_resource_read`) are bank-7 code;

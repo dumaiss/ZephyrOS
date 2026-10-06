@@ -11,7 +11,8 @@
  *   - stat("/") and stat("/SYSTEM") answered by VFS as directories;
  *   - lookup, stat and read of every validated ROMFS entry through VFS,
  *     byte-compared against the reader the provider sits on;
- *   - case-insensitive resolution and '.'/'..'/'//' normalization;
+ *   - case-insensitive resolution and '.'/'..'/'//' normalization; prefix
+ *     and over-length names must not match (work package 30c, F3);
  *   - ENOENT, ENOTDIR (a deeper path under a file) and the deeper-path
  *     ENOENT case (a deeper path under an unknown first component);
  *   - EROFS from the read-only provider: write flags at open, the null
@@ -32,6 +33,7 @@
 #include "zephyros/console.h"
 #include "zephyros/kernel.h"
 #include "kernel/vfs/vfs.h"
+#include "kernel/lib/name.h"
 
 #include "m9_selftest.h"
 
@@ -285,6 +287,37 @@ void zos_run_m9_vfs_selftest(void)
 		return;
 	}
 
+	/* Name edges around the shared ASCII comparison (work package 30c,
+	 * F3): a prefix of a stored name and a stored name plus one byte
+	 * must both miss.  The bounded ROMFS name field must never match a
+	 * wanted name that runs past it. */
+	{
+		uint16_t n = m9_strlen(first_name);
+
+		if (n >= 2u) {
+			m9_make_path(m9_path, "/SYSTEM/", first_name);
+			/* drop the last character of the name */
+			m9_path[m9_strlen(m9_path) - 1u] = '\0';
+			if (vfs_stat(m9_path, &st) != -ZOS_ENOENT) {
+				m9_fail(ZOS_M9ST_FAIL_NAMEEDGE);
+				return;
+			}
+		}
+		/* Stored name plus one byte: build the path, then extend it in
+		 * place (m9_append writes from the buffer start). */
+		m9_make_path(m9_path2, "/SYSTEM/", first_name);
+		{
+			uint16_t len = m9_strlen(m9_path2);
+
+			m9_path2[len] = 'x';
+			m9_path2[len + 1u] = '\0';
+		}
+		if (vfs_stat(m9_path2, &st) != -ZOS_ENOENT) {
+			m9_fail(ZOS_M9ST_FAIL_NAMEEDGE);
+			return;
+		}
+	}
+
 	/* Normalization: repeated '/', '.', '..' and a relative path. */
 	m9_make_path(m9_path, "/SYSTEM//./", first_name);
 	if (vfs_stat(m9_path, &st) != 0) {
@@ -409,7 +442,7 @@ void zos_run_m9_vfs_selftest(void)
 			++n;
 		}
 		if (result != 1 || m9_dirent.type != ZFS_TYPE_DIR ||
-		    !vfs_name_equal(m9_dirent.name, "SYSTEM")) {
+		    !zos_ascii_equal(m9_dirent.name, "SYSTEM", 0u, 1u)) {
 			(void)vfs_closedir(&dir);
 			m9_fail(ZOS_M9ST_FAIL_READDIR);
 			return;
@@ -438,7 +471,7 @@ void zos_run_m9_vfs_selftest(void)
 			if (romfs_entry_at(i, &entry, name, ROMFS_NAME_SIZE) != 0 ||
 			    m9_dirent.type != ZFS_TYPE_FILE ||
 			    m9_dirent.size != entry.size ||
-			    !vfs_name_equal(m9_dirent.name, name)) {
+			    !zos_ascii_equal(m9_dirent.name, name, 0u, 1u)) {
 				(void)vfs_closedir(&dir);
 				m9_fail(ZOS_M9ST_FAIL_READDIR);
 				return;

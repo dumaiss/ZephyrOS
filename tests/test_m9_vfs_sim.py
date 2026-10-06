@@ -216,6 +216,7 @@ class TestM9VfsAcceptance(M9VfsSimBase):
             0x10: "deeper-path ENOTDIR/ENOENT rule",
             0x11: "null mutation operations",
             0x12: "open flag validation",
+            0x13: "name edges (prefix/over-length)",
         }
         z = self.make_cpu()
         self.boot_to_selftest(z)

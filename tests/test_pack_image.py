@@ -6,6 +6,7 @@ the real build artifacts under build/ when present (created by `make`).
 Run with: make test
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -362,6 +363,130 @@ class TestRealArtifacts(unittest.TestCase):
             self.assertEqual(
                 image[page * 0x10000 + 0xEF00:page * 0x10000 + 0xEF08],
                 stub, "recovery page %d stub mirror differs" % page)
+
+
+class TestGranuleThresholds(unittest.TestCase):
+    """Section 32.39 companion: the bytes that free or spend one granule."""
+
+    def test_module_threshold_arithmetic(self):
+        # Exact multiples sit at the top of their band: removing half a
+        # band frees a granule, and no room remains before the next one.
+        self.assertEqual(
+            pack_image.granule_thresholds(1024),
+            {"granules": 2, "above_lower_bytes": 512,
+             "before_higher_bytes": 0})
+        # One byte over a threshold: the saving needed is that one byte.
+        self.assertEqual(pack_image.granule_thresholds(513),
+                         {"granules": 2, "above_lower_bytes": 1,
+                          "before_higher_bytes": 511})
+        # One byte under a threshold: 511 bytes of room before it is spent.
+        self.assertEqual(pack_image.granule_thresholds(511),
+                         {"granules": 1, "above_lower_bytes": 511,
+                          "before_higher_bytes": 1})
+
+    def test_saving_below_the_threshold_frees_nothing(self):
+        # A 979-byte module uses two granules; removing 466 bytes still
+        # needs two, and removing one more crosses to one.
+        self.assertEqual(pack_image.granule_thresholds(979 - 466)["granules"],
+                         2)
+        self.assertEqual(pack_image.granule_thresholds(979 - 467)["granules"],
+                         1)
+
+    def test_kernel_threshold_arithmetic(self):
+        # Production package-30 geometry: code ends at 8F3Ch, the derived
+        # data base is D600h for 2241 bytes of runtime data under DF00h.
+        thresholds = pack_image.kernel_granule_thresholds(
+            0x8F3C, 0xD600, 2241, 0xDF00)
+        self.assertEqual(thresholds["code_above_lower_bytes"], 0x8F3C - 0x8E00)
+        self.assertEqual(thresholds["code_before_higher_bytes"], 0x9000 - 0x8F3C)
+        self.assertEqual(thresholds["data_above_lower_bytes"], 449)
+        self.assertEqual(thresholds["data_before_higher_bytes"], 63)
+
+    def test_kernel_thresholds_match_the_linked_map(self):
+        map_path = os.path.join(ROOT, "build", "zephyros.map")
+        manifest_path = os.path.join(ROOT, "build",
+                                     "zephyros.manifest.json")
+        plan_path = os.path.join(ROOT, "build", "arena.plan.json")
+        if not all(os.path.exists(p) for p in
+                   (map_path, manifest_path, plan_path)):
+            self.skipTest("derived production build missing; run make")
+
+        symbols = pack_image.parse_map_symbols(open(map_path).read())
+        expected = pack_image.kernel_granule_thresholds(
+            symbols["__kernel_code_end"], symbols["s__DATA"],
+            symbols["l__DATA"] + symbols["l__INITIALIZED"], 0xDF00)
+        manifest = json.load(open(manifest_path))
+        plan = json.load(open(plan_path))
+        self.assertEqual(manifest["kernel"], expected)
+        self.assertEqual(plan["kernel"], expected)
+        # The arena start follows align_up(code end): the two directions
+        # describe exactly the distance to that boundary.
+        self.assertEqual(
+            symbols["__driver_arena_start"],
+            symbols["__kernel_code_end"]
+            + expected["code_before_higher_bytes"])
+
+    def test_module_thresholds_match_the_packed_containers(self):
+        plan_path = os.path.join(ROOT, "build", "arena.plan.json")
+        if not os.path.exists(plan_path):
+            self.skipTest("derived production build missing; run make")
+        plan = json.load(open(plan_path))
+        for entry in plan["modules"]:
+            expected = pack_image.granule_thresholds(entry["total_size"])
+            self.assertEqual(entry["granules"], expected["granules"],
+                             entry["name"])
+            self.assertEqual(entry["above_lower_bytes"],
+                             expected["above_lower_bytes"], entry["name"])
+            self.assertEqual(entry["before_higher_bytes"],
+                             expected["before_higher_bytes"], entry["name"])
+            self.assertEqual(entry["total_size"],
+                             entry["image_size"] + entry["bss_size"],
+                             entry["name"])
+        text = pack_image.format_granule_thresholds(plan["modules"],
+                                                    plan["kernel"])
+        self.assertIn("iocfat", text)
+        self.assertIn("code end %04Xh" % plan["kernel"]["code_end"], text)
+        self.assertIn("data size %d at %04Xh"
+                      % (plan["kernel"]["data_size"],
+                         plan["kernel"]["data_base"]), text)
+
+
+class TestCommonCeiling(unittest.TestCase):
+    """The pinned common-memory ceiling and its M10 reservation."""
+
+    def test_pinned_values(self):
+        self.assertEqual(pack_image.COMMON_CEILING, 3072)
+        self.assertEqual(pack_image.COMMON_M10_RESERVATION, 512)
+        self.assertEqual(pack_image.COMMON_CEILING
+                         - pack_image.COMMON_M10_RESERVATION, 2560)
+
+    def test_common_usage_rejects_over_the_m9_limit(self):
+        # 0x600 + 0x500 = 2816 bytes of packed common.
+        symbols = {"s__COMMON": 0xE000, "l__COMMON": 0x600,
+                   "s__COMMON_DATA": 0xE600, "l__COMMON_DATA": 0x500}
+        with self.assertRaisesRegex(pack_image.LayoutError,
+                                    "M10 reservation"):
+            pack_image.common_usage(symbols)
+
+    def test_common_usage_accepts_at_the_m9_limit(self):
+        symbols = {"s__COMMON": 0xE000, "l__COMMON": 0x600,
+                   "s__COMMON_DATA": 0xE600, "l__COMMON_DATA": 0x400}
+        self.assertEqual(pack_image.common_usage(symbols)[2], 2560)
+
+    def test_production_ledger_carries_the_ceiling(self):
+        manifest_path = os.path.join(ROOT, "build",
+                                     "zephyros.manifest.json")
+        plan_path = os.path.join(ROOT, "build", "arena.plan.json")
+        if not (os.path.exists(manifest_path) and os.path.exists(plan_path)):
+            self.skipTest("derived production build missing; run make")
+        ledger = json.load(open(manifest_path))["bank7"]
+        self.assertEqual(ledger["common_ceiling_bytes"], 3072)
+        self.assertEqual(ledger["common_m10_reservation_bytes"], 512)
+        self.assertEqual(ledger["common_limit_bytes"], 2560)
+        self.assertLessEqual(ledger["common_used_bytes"],
+                             ledger["common_limit_bytes"])
+        text = pack_image.format_bank7_ledger(ledger)
+        self.assertIn("ceiling 3072, m10 512, limit 2560", text)
 
 
 if __name__ == "__main__":

@@ -112,15 +112,6 @@ static const uint8_t v9958_pair_reverse[4] = {
 
 /* --- low-level helpers -------------------------------------------------- */
 
-static void v9958_write_ctrl_byte(uint8_t value)
-{
-	struct v9958_block block;
-
-	block.src = &value;
-	block.length = 1u;
-	v9958_io_stream_ctrl(&block);
-}
-
 static void v9958_write_palette_byte(uint8_t value)
 {
 	struct v9958_block block;

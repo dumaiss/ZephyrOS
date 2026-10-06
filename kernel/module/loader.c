@@ -22,9 +22,8 @@
  * and leaves earlier modules untouched.  Successful modules stay
  * RESIDENT until reboot; M4 exposes no unload operation.
  *
- * Every container byte flows through a bounded read source: the
- * historical module_load() wraps a memory blob, the VFS file adapter
- * (vfs_file_source) wraps a `/SYSTEM` file, and both share
+ * Every container byte flows through a bounded read source: the VFS file
+ * adapter (vfs_file_source) wraps a `/SYSTEM` file and shares
  * module_load_source() and the validation/relocation code in relocate.c.
  */
 
@@ -214,36 +213,6 @@ static void module_release(struct zmod_module *m)
 	m->bss_size = 0;
 	m->init_offset = 0;
 	m->fini_offset = ZMOD_NO_ENTRY;
-}
-
-/* Memory-blob byte source: the historical M4 behavior, expressed through
- * the same bounded source adapter as ROMFS. */
-static int module_memory_read(const void *ctx, uint16_t offset,
-			      uint8_t *dst, uint16_t length)
-{
-	const uint8_t *blob = (const uint8_t *)ctx;
-	uint16_t i;
-
-	if (blob == (const uint8_t *)0) {
-		return ZMOD_EINVAL;
-	}
-	for (i = 0; i < length; ++i) {
-		dst[i] = blob[offset + i];
-	}
-	return (int)length;
-}
-
-int module_load(const char *name, const uint8_t *blob, uint16_t size)
-{
-	struct zmod_source source;
-
-	if (blob == (const uint8_t *)0) {
-		return ZMOD_EINVAL;
-	}
-	source.read = module_memory_read;
-	source.ctx = blob;
-	source.size = size;
-	return module_load_source(name, &source);
 }
 
 int module_load_source(const char *name, const struct zmod_source *source)

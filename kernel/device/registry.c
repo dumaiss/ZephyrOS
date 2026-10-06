@@ -20,6 +20,7 @@
 
 #include "kernel/device/registry.h"
 #include "kernel/irq/irq_private.h"
+#include "kernel/lib/name.h"
 
 struct zdevice device_table[ZDEV_MAX_DEVICES];
 
@@ -27,15 +28,6 @@ static uint8_t device_used[ZDEV_MAX_DEVICES];
 static uint16_t device_generation[ZDEV_MAX_DEVICES];
 static uint16_t device_next_generation;
 static const void *device_current_owner;
-
-static uint8_t device_name_equal(const char *a, const char *b)
-{
-	while (*a != 0 && *a == *b) {
-		++a;
-		++b;
-	}
-	return (uint8_t)(*a == *b);
-}
 
 /* True when every bit of `required` is present in `have`.  Split into
  * 16-bit halves so the freestanding build needs no 32-bit bitwise
@@ -95,10 +87,12 @@ int device_register(const struct zdevice_desc *desc, zdev_handle_t *out_handle)
 
 	enabled = irq_arch_lock();
 
-	/* Duplicate instance names are rejected before any slot is used. */
+	/* Duplicate instance names are rejected before any slot is used.
+	 * Device names compare exactly; the shared helper's `fold` selector
+	 * keeps that (VFS and ROMFS fold, this registry does not). */
 	for (i = 0; i < ZDEV_MAX_DEVICES; ++i) {
 		if (device_used[i] &&
-		    device_name_equal(device_table[i].name, desc->name)) {
+		    zos_ascii_equal(device_table[i].name, desc->name, 0u, 0u)) {
 			result = ZDEV_EBUSY;
 			goto out;
 		}
@@ -240,9 +234,4 @@ int device_registry_rollback(zdev_checkpoint_t checkpoint)
 void device_registry_set_owner(const void *owner)
 {
 	device_current_owner = owner;
-}
-
-const void *device_registry_owner(void)
-{
-	return device_current_owner;
 }

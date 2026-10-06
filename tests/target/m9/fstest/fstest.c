@@ -550,6 +550,29 @@ static int ft_exdev(void)
 	return 0;
 }
 
+/* The deep matrix runs from fsfat.zex, which only the M9 acceptance image
+ * packs.  One ZEX image cannot hold the whole section-33 list: the syscall
+ * argument window is 0100h-1FFFh and the SDK links its 16-byte argument
+ * scratch at the image end, capping a program at about 7.7 KiB of code --
+ * fstest.zex is already at that cap.  fsfat.zex prints its own per-case
+ * lines, so the whole M9 acceptance is still one contiguous transcript.
+ * Returns -1 when the program is not packed in this image. */
+static int ft_fat(void)
+{
+	int fd = zos_open("/SYSTEM/fsfat.zex", ZFS_O_READ);
+	int r;
+
+	if (fd < 0) {
+		return -1;
+	}
+	(void)zos_close((unsigned int)fd);
+	r = zos_exec("/SYSTEM/fsfat.zex", (const char *)0);
+	if (r < 0) {
+		return 1;
+	}
+	return 0;
+}
+
 /* Argument-window faults are rejected before any state change. */
 static int ft_window(void)
 {
@@ -916,6 +939,13 @@ int main(void)
 		ft_report("exdev", ft_exdev());
 	}
 	ft_report("window", ft_window());
+	{
+		int fat = ft_fat();
+
+		if (fat >= 0) {
+			ft_report("fat", fat);
+		}
+	}
 	if (iocfat == 0) {
 		ft_report("exec", ft_exec());
 	}

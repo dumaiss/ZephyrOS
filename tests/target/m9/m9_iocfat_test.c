@@ -28,6 +28,7 @@
 #include "zephyros/process.h"
 
 #include "kernel/vfs/vfs.h"
+#include "kernel/lib/name.h"
 
 #include "m9_iocfat_selftest.h"
 
@@ -177,7 +178,7 @@ static int m9i_case_mount(void)
 	int index = -1;
 
 	for (i = 0; i < vfs_mount_count; ++i) {
-		if (vfs_name_equal(vfs_mount_table[i].path, "/")) {
+		if (zos_ascii_equal(vfs_mount_table[i].path, "/", 0u, 1u)) {
 			index = (int)i;
 		}
 	}
@@ -196,7 +197,8 @@ static int m9i_case_mount(void)
 	}
 	if (vfs_mount_state[index].provider == (const struct zfs_provider *)0 ||
 	    vfs_mount_state[index].fs_state == (void *)0 ||
-	    !vfs_name_equal(vfs_mount_state[index].provider->name, "iocfat")) {
+	    !zos_ascii_equal(vfs_mount_state[index].provider->name, "iocfat",
+			     0u, 1u)) {
 		m9i_fail(ZOS_M9IOFAT_FAIL_MOUNT);
 		return -1;
 	}
@@ -259,8 +261,8 @@ static int m9i_case_names(void)
 			if (m9i_dirent.name_length == 13u &&
 			    m9i_dirent.size == 8u &&
 			    m9i_dirent.name[0] == 'A' &&
-			    vfs_name_equal(m9i_dirent.name,
-					   "ABCDEFGH.TXT")) {
+			    zos_ascii_equal(m9i_dirent.name,
+					   "ABCDEFGH.TXT", 0u, 1u)) {
 				found = 1u;
 			}
 		}

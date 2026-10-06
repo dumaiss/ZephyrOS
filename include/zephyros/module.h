@@ -204,20 +204,13 @@ struct zmod_module {
  * called once before loading; returns ZMOD_OK or a negative error. */
 int module_loader_init(void);
 
-/* Validate `blob` and, if valid, allocate granules, copy/relocate the
- * image, zero BSS, and run the module init with driver ABI v3.  On any
- * failure the allocation, device registrations, and IRQ claims made by
- * the module are rolled back and the descriptor is freed.  Returns the
- * module index (>= 0) on success, a negative error otherwise.  Images
- * load through `module_load_source`; this entry exists for callers that
- * already hold the container bytes. */
-int module_load(const char *name, const uint8_t *blob, uint16_t size);
-
-/* Bounded read-source load: identical validation, arena allocation,
- * streaming copy, relocation, init transaction, and rollback as
- * module_load(); the container bytes are read only through `source`.
- * The entire container structure is validated before the arena is
- * touched.  This is the only load path an image uses.  Returns the
+/* Bounded read-source load: validate the container, allocate granules,
+ * stream/copy and relocate the image, zero BSS, and run the module init
+ * with driver ABI v3.  On any failure the allocation, device
+ * registrations, and IRQ claims made by the module are rolled back and
+ * the descriptor is freed.  The entire container structure is validated
+ * before the arena is touched; the container bytes are read only through
+ * `source`.  This is the only load path an image uses.  Returns the
  * module index (>= 0) or a negative error. */
 int module_load_source(const char *name, const struct zmod_source *source);
 
@@ -234,8 +227,6 @@ uint8_t module_code_allowed(uint16_t address);
 
 /* Internal relocation/validation interface (kernel/module/relocate.c),
  * shared with the target self-test through this header. */
-int zmod_validate_container(const uint8_t *blob, uint16_t size,
-			    struct zmod_container *out);
 int zmod_validate_source(const struct zmod_source *source,
 			 struct zmod_container *out);
 int zmod_copy_image(uint8_t *load_base, const struct zmod_container *c);

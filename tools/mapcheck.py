@@ -99,6 +99,12 @@ DRIVER_ARENA_MIN_SIZE = 0x4000
 DRIVER_ARENA_MIN_GRANULES = 32
 COMMON_BASE = 0xE000
 COMMON_CODE_END = 0xFD00
+# Architectural ceiling on the packed `_COMMON` + `_COMMON_DATA` run and
+# the M10 far-call reservation held back from it (platform/zephyr80/
+# memory.inc; work package 30c).  M9 enforces
+# `used <= COMMON_CEILING - COMMON_M10_RESERVATION`.
+COMMON_CEILING = 0x0C00
+COMMON_M10_RESERVATION = 0x0200
 IRQ_VECTOR_BASE = 0xFD00
 IRQ_VECTOR_SIZE = 0x0101
 IRQ_STATE_BASE = 0xFE01
@@ -153,6 +159,7 @@ def apply_layout(values, source=None):
     global DRIVER_GRANULES, DATA_BASE
     global DRIVER_ARENA_MIN_SIZE, DRIVER_ARENA_MIN_GRANULES
     global ROMFS_STAGING_SIZE, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
+    global COMMON_CEILING, COMMON_M10_RESERVATION
     PAGE_ZERO_END = values["ZOS_PAGE_ZERO_END"]
     RESET_TOP = values["ZOS_RESET_TOP"]
     BANK7_BASE = values["ZOS_BANK7_BASE"]
@@ -161,6 +168,12 @@ def apply_layout(values, source=None):
     STACK_BASE = values["ZOS_COMMON_STACK_BASE"]
     BANK7_RUNTIME_END = values["ZOS_BANK7_RUNTIME_END"]
     COMMON_CODE_END = values["ZOS_COMMON_CODE_END"]
+    # The common ceiling and the M10 reservation are build-time
+    # architecture constants; the generated include always carries them.
+    require_key(values, "ZOS_COMMON_CEILING", source)
+    require_key(values, "ZOS_COMMON_M10_RESERVATION", source)
+    COMMON_CEILING = values["ZOS_COMMON_CEILING"]
+    COMMON_M10_RESERVATION = values["ZOS_COMMON_M10_RESERVATION"]
     IRQ_ISR_STACK_BASE = values["ZOS_IRQ_ISR_STACK_BASE"]
     IRQ_ISR_STACK_TOP = values["ZOS_IRQ_ISR_STACK_TOP"]
     IRQ_ISR_STACK_SIZE = values["ZOS_IRQ_ISR_STACK_SIZE"]
@@ -534,14 +547,12 @@ STATIC_V9958_PREFIXES = ("_v9958_",)
 # sweep also covers the test-only fixture symbols in selftest images.
 M4_BANK7_ROUTINES = (
     "_module_loader_init",
-    "_module_load",
     "_module_load_source",
     "_module_count",
     "_module_free_granules",
     "_module_failed_count",
     "_module_get",
     "_module_code_allowed",
-    "_zmod_validate_container",
     "_zmod_validate_source",
     "_zmod_copy_image",
     "_zmod_zero_bss",
@@ -590,9 +601,6 @@ VFS_BANK7_ROUTINES = (
     "_vfs_provider_checkpoint",
     "_vfs_provider_rollback",
     "_vfs_provider_set_owner",
-    "_vfs_provider_owner",
-    "_vfs_path_normalize",
-    "_vfs_name_equal",
     "_vfs_mount_resolve",
     "_vfs_resolve_path",
     "_vfs_is_mountpoint",
@@ -859,6 +867,19 @@ def check_areas(areas, symbols):
             addr, size = areas[name]
             if addr + size > IRQ_VECTOR_BASE:
                 raise MapError("%s overlaps the IM2 reservation at FD00h" % name)
+
+    # The packed common window has an architectural ceiling with an M10
+    # reservation held back (work package 30c; target architecture 2.18).
+    # Growth that would eat the M10 far-call budget fails the build here.
+    common_used = sum(areas[name][1] for name in ("_COMMON", "_COMMON_DATA")
+                      if name in areas)
+    common_limit = COMMON_CEILING - COMMON_M10_RESERVATION
+    if common_used > common_limit:
+        raise MapError(
+            "packed common memory is %d bytes, over the %d-byte M9 limit "
+            "(ceiling %d minus the %d-byte M10 reservation)"
+            % (common_used, common_limit, COMMON_CEILING,
+               COMMON_M10_RESERVATION))
 
 
 def check_symbols(areas, symbols, production=False):

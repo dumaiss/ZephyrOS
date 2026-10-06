@@ -110,19 +110,25 @@ current M8 boot).
   (serial smoke, the full human HID/V9958 monitor pass and the
   fallback-image matrix with its display confirmations) passed
   2026-10-04.**
-- **M9 — Filesystem foundation (bootstrap slice)**: the kernel VFS core
-  (path normalization, longest-match mount resolution, provider registry,
-  four-phase lifecycle, kernel file/directory API, `zmod_source`
+- **M9 — Native VFS and filesystem framework**: the kernel VFS core (path
+  normalization, flat first-component mount selection, path-based provider
+  registry, four-phase lifecycle, kernel file/directory API, `zmod_source`
   adapter), the generated static mount table (`config/mounts.json` +
-  `tools/mountgen.py`), and ROMFS as a statically linked filesystem
-  provider mounted at `/SYSTEM` before any module loads.  The boot ZMODs
-  and `monitor.zex` now load by VFS path.  After the Mn-1 retirement
-  (work package 25a) the production image ends at `7BE1h` with a
-  `7C00h-BFFFh` derived arena (34 granules; the boot set uses 21) and
-  `_DATA` is 1294 bytes.  Implemented by work package 25; see
-  `docs/vfs.md`.
-  **Status: host-validated and simulator-accepted; physical acceptance
-  `PENDING`** (`docs/validation/2026-10-04-m9-vfs-bootstrap.md`).
+  `tools/mountgen.py`), ROMFS as a statically linked filesystem provider
+  mounted at `/SYSTEM`, the global owner-tagged descriptor pool and
+  per-process CWD, the pinned native `FS_*` syscall family (`10h-1Fh`), the
+  user SDK and its `fstest.zex` acceptance program, driver ABI v3
+  `fs_register`, the deferred `ZDEV_BLOCK` class, `SYS_EXEC` nesting with
+  the startup block v1 argument contract, and the resident IOC-FAT provider
+  (`iocfat.zmod`) mounted at `/` from `ioc.0` with its one-slot
+  write-through 512-byte file-data cache.  The milestone's end-to-end
+  acceptance is `make m9-selftest` on a card; the full matrix, the
+  tree/image hashes and the final bank-7 ledger are in
+  `docs/validation/2026-10-05-m9-filesystem.md`, and the implementation
+  record is `docs/vfs.md`.
+  **Status: see the M9 acceptance matrix in
+  `docs/validation/2026-10-05-m9-filesystem.md`** (the milestone closes only
+  when every required row has passed).
 
 ## Prerequisites
 
@@ -194,6 +200,23 @@ make m8-fallback-selftests
                    # no HID+V9958, malformed IOC, arena exhaustion, font
                    # failure, HID rollback) and replays each against its
                    # exact binding and early-SIO diagnostics
+make m9-provider-selftest
+                   # M9 provider ABI acceptance: the test-only writable
+                   # RAM provider registered through ABI v3
+make m9-fs-selftest
+                   # M9 filesystem syscall acceptance: the native
+                   # fstest.zex over the public FS_* family
+make m9-exec-selftest
+                   # M9 SYS_EXEC acceptance: nesting, argument transport and
+                   # the depth probe
+make m9-iocfat-selftest
+                   # M9 IOC-FAT provider acceptance: the resident FS2
+                   # provider against the simulator's FatFs peer
+make m9-selftest
+                   # M9 integration acceptance: the production boot path with
+                   # `/` on the card, running fstest.zex (and its deep-matrix
+                   # child fsfat.zex), the fsdeep.zex depth probe and the two
+                   # fault windows (build-m9-selftest/)
 # Hardware smoke checks: each mode verifies ONE specific image, and the
 # production image and the acceptance images have different serial
 # transcripts.  Build the image (`make hardware-images` builds them all),
@@ -207,6 +230,10 @@ make smoke-hardware SERIAL_PORT=/dev/ttyUSB0
                    # monitor banner + 'Z80> ' prompt (optional boot-module
                    # diagnostics are tolerated; a panic or an unbound
                    # console fails)
+make smoke-hardware-m9 SERIAL_PORT=/dev/ttyUSB0
+                   # flash build-m9-selftest/zephyros-m9-selftest.bin
+                   # (make m9-selftest): the whole M9 integration
+                   # acceptance on a writable FAT card
 make smoke-hardware-subsystem SERIAL_PORT=/dev/ttyUSB0
                    # flash build-subsys-selftest/zephyros-subsys-selftest.bin
                    # (make subsystem-selftest): the five group

@@ -70,6 +70,15 @@ first block driver arrives with its first consumer, the first native
 filesystem (`sd-ioc.zmod`, a `ZDEV_BLOCK` driver that consumes
 `ZDEV_IOC`).
 
+M9's resident filesystem provider is `iocfat.zmod`: loaded last through the
+same VFS-backed loader (driver ABI v3 `fs_register`), it talks to the
+`ZDEV_IOC` class interface only (`FS2` commands `30h-44h`, responses
+`B0h-C4h`) and registers the `iocfat` provider, which the normal mount pass
+attaches at `/` from `ioc.0`.  It owns a one-slot write-through 512-byte
+file-data cache; `drivers/ioc/` was not changed by M9.  The acceptance image
+is `make m9-selftest` (see
+[`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md)).
+
 A capability may be provided by different devices (a V9958 provides
 VIDEO + CONSOLE_OUT; an HID device provides HID + CONSOLE_IN), so console
 input and output bind independently.

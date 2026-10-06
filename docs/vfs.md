@@ -19,6 +19,21 @@ image was re-run on the bench the same day, where the extended suite printed
 (`docs/validation/2026-10-05-m9-nested-exec.md`).  Bank-7 residency is reported against the architecture
 section 32.39 ledger.
 
+**M9 close (work package 31, 2026-10-05).** Package 30 added the resident
+IOC-FAT provider (`fs/iocfat/`) mounted at `/` from `ioc.0`, with its
+one-slot write-through 512-byte file-data cache and the FS2 status mapping
+of `work/M9-REFERENCE.md`; package 30c then reclaimed a bank-7 granule
+(dead-code removal, one shared ASCII name helper, the common-memory ceiling
+pin).  The milestone's end-to-end acceptance is the `m9-selftest` image
+(`make m9-selftest`): the production boot path with `/` on the card,
+running `fstest.zex` (which exec's the deep-matrix program `fsfat.zex`),
+the `fsdeep.zex` depth probe and the two fault windows, then the ordinary
+monitor launcher.  The final ledger and the acceptance matrix are in
+`docs/validation/2026-10-05-m9-filesystem.md`; the section 32.39 targets are
+met (`bank7: code 27990 bytes end 8D56h | arena 36 granules (33 boot, 3
+free) | data 2241 bytes at D600h | isr 256 | slack 63 bytes`, i.e. 1599
+bytes of total slack against the 1 KiB floor).
+
 This document records the implementation of the M9 bootstrap slice:
 the kernel VFS core, the generated static mount table, and the ROMFS
 filesystem provider mounted at `/SYSTEM` before any module loads.
@@ -46,7 +61,7 @@ Deliberately **not** implemented here (later packages):
 | data cache and generation keys (provider-local: IOC-FAT) | 30 |
 | writable providers, IOC-FAT at `/`, block class, ZDEV ABI v3 | 26, 29, 30 |
 | `/` filesystem merge into root enumeration | 26 |
-| cross-filesystem move/rename semantics | 31 |
+| cross-filesystem move/rename semantics | implemented by 27 (rename across mounts is `ZOS_EXDEV`; VFS never copies) |
 
 Package 27 implemented the previously deferred rows "syscalls,
 per-process descriptors, `SYS_FS_*`" and "current working directory
@@ -111,8 +126,8 @@ manifest and VFS re-checks the capacity at run time.
 
 ## 4. Path rules and mount selection
 
-`vfs_path_normalize()` accepts absolute and relative paths and writes an
-absolute canonical path: repeated and trailing slashes are collapsed,
+`vfs_path_normalize_at()` resolves a path against a canonical base and
+writes an absolute canonical path: repeated and trailing slashes are collapsed,
 `.` is dropped, `..` pops the last component and traversal above `/` is
 clamped to `/`.  Case is preserved (the provider folds names; the native
 namespace preserves what the user typed).  `ZOS_PATH_MAX` and
@@ -122,8 +137,10 @@ too-small output buffer return `ZOS_EINVAL`.  Paths resolve against the
 `/` base for the kernel launcher; package 27 resolves a relative path
 against the calling process' CWD instead.
 
-`vfs_name_equal()` compares ASCII case-insensitively (`A-Z` == `a-z`,
-every other byte exact).  ZephyrOS performs no Unicode folding.
+Name comparison is one shared kernel helper (`zos_ascii_equal()`,
+`kernel/lib/name.c`), used here and by ROMFS and the device registry.
+VFS passes the ASCII case-folding form (`A-Z` == `a-z`, every other byte
+exact); ZephyrOS performs no Unicode folding.
 
 Selection is **flat** (architecture section 32.8) and uses only `MOUNTED`
 entries.  The first path component is compared case-insensitively with

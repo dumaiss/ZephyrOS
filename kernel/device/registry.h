@@ -29,7 +29,6 @@ typedef uint16_t zdev_checkpoint_t;
 zdev_checkpoint_t device_registry_checkpoint(void);
 int device_registry_rollback(zdev_checkpoint_t checkpoint);
 void device_registry_set_owner(const void *owner);
-const void *device_registry_owner(void);
 
 /* Registry storage: bank-7 kernel data.  The symbol is intentionally
  * global so tools/mapcheck.py can prove bank-7 placement. */

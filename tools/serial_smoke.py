@@ -119,7 +119,7 @@ before they print anything, so those modes send that sequence once the
 port is open and repeat it until the first byte arrives.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|m8-ioc|m8-hid|m8-v9958|m8-console|m8|m8-fb-nohid|m8-fb-nohid-nov9958|m8-fb-badioc|m8-fb-arena|m9-fs|m9-exec|m9-iocfat]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|m8-ioc|m8-hid|m8-v9958|m8-console|m8|m8-fb-nohid|m8-fb-nohid-nov9958|m8-fb-badioc|m8-fb-arena|m9-fs|m9-exec|m9-iocfat|m9]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -549,6 +549,18 @@ M9IOCFAT_SELFTEST_OK = b"m9 iocfat selftest: OK\r\n"
 M9IOCFAT_SELFTEST_FAIL = b"m9 iocfat selftest: FAIL"
 M9IOCFAT_MONITOR = b"Z80> "
 
+# Package 31: the M9 integration image.  Production boot path with `/` on
+# the card, and the whole native acceptance: fstest.zex (which exec's the
+# deep-matrix program fsfat.zex and prints one transcript), the fsdeep.zex
+# depth probe and the target hook's stale/write-fault windows.
+M9INTEG_FSTEST_PASS = b"fstest: PASS "
+M9INTEG_FSFAT_PASS = b"fsfat: PASS "
+M9INTEG_SELFTEST_OK = b"m9 selftest: OK\r\n"
+M9INTEG_SELFTEST_FAIL = b"m9 selftest: FAIL"
+M9INTEG_ABSENT = b"m9 selftest: OK (card absent)"
+M9INTEG_EROFS = b"m9 selftest: OK (read-only card)"
+M9INTEG_MONITOR = b"Z80> "
+
 
 def _m9exec_result(data):
     """True when the M9 SYS_EXEC acceptance reported success: the native
@@ -574,6 +586,20 @@ def _m9iocfat_result(data):
             M9IOCFAT_MONITOR in data and b"vfs: / unavailable" not in data)
 
 
+def _m9integ_result(data):
+    """True when the M9 integration image reported success on a writable
+    card: the whole native acceptance (fstest.zex and its deep-matrix child
+    fsfat.zex) passed, the target hook reported OK, and the unchanged
+    launcher then started the monitor on the same SIO console - with no
+    FAIL/PANIC marker and no `/` diagnostic."""
+    if (M9FS_FAIL in data or M9INTEG_SELFTEST_FAIL in data or
+            b"PANIC" in data):
+        return False
+    return (BANNER in data and M9INTEG_FSTEST_PASS in data and
+            M9INTEG_FSFAT_PASS in data and M9INTEG_SELFTEST_OK in data and
+            M9INTEG_MONITOR in data and b"vfs: / unavailable" not in data)
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="ZephyrOS serial smoke check")
     parser.add_argument("--port", default=os.environ.get("ZOS_SERIAL_PORT", ""))
@@ -588,7 +614,7 @@ def main(argv):
                                            "m8-fb-nohid-nov9958",
                                            "m8-fb-badioc", "m8-fb-arena",
                                            "m9-fs", "m9-exec",
-                                           "m9-iocfat"),
+                                           "m9-iocfat", "m9"),
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
@@ -930,6 +956,15 @@ def main(argv):
                     "module diagnostic; the operator must also confirm "
                     "the visible monitor session on the V9958 display "
                     "with the USB keyboard")
+    elif args.mode == "m9":
+        ok = _m9integ_result(data)
+        expected = ("the banner, 'fstest: PASS n/n' from the native suite, "
+                    "'fsfat: PASS n/n' from the deep-matrix program it exec's "
+                    "(namespace, basic, sizes, large, cache, pool, exdev, "
+                    "errors), the target hook's fault windows and "
+                    "'m9 selftest: OK', and then the monitor prompt "
+                    "'Z80> ' on the same SIO console — with a writable FAT "
+                    "card and no `vfs: / unavailable` diagnostic")
     elif args.mode == "m9-iocfat":
         ok = _m9iocfat_result(data)
         expected = ("the banner, 'fstest: PASS n/n' from the native suite's "
@@ -977,7 +1012,7 @@ def _root_observation(mode, data):
     early console, so it is always in the serial capture; without it the
     two card states are indistinguishable from the transcript alone.
     """
-    if mode not in ("normal", "m9-iocfat"):
+    if mode not in ("normal", "m9-iocfat", "m9"):
         return
     if VFS_UNAVAILABLE in data:
         index = data.index(VFS_UNAVAILABLE) + len(VFS_UNAVAILABLE)
@@ -986,7 +1021,7 @@ def _root_observation(mode, data):
               "(`vfs: / unavailable 0x%s`); the card is absent, "
               "write-protected, unreadable, or the MCU did not answer the "
               "FS2 root probe" % code)
-    elif M9IOCFAT_ABSENT in data:
+    elif M9IOCFAT_ABSENT in data or M9INTEG_ABSENT in data:
         print("serial_smoke: note: the optional fs2 root `/` is NOT mounted "
               "(this image reports the absent card as an expected outcome)")
     elif BANNER in data:
@@ -1052,6 +1087,21 @@ def _explain_wrong_image(mode, data):
                   "(see docs/validation/"
                   "2026-10-05-m9-provider-abi-hardware.md section 5)",
                   file=sys.stderr)
+        elif not BANNER in data:
+            print("serial_smoke: hint: no boot log was captured.  Start "
+                  "this tool first, then power-cycle the board or press "
+                  "RESET while it waits, and rerun", file=sys.stderr)
+    elif mode == "m9":
+        if M9INTEG_SELFTEST_FAIL in data:
+            print("serial_smoke: hint: the integration acceptance failed "
+                  "while `/` was mounted; record the FAIL code, the first "
+                  "failing case line above, and the card state in "
+                  "docs/validation/2026-10-05-m9-filesystem.md",
+                  file=sys.stderr)
+        elif VFS_UNAVAILABLE in data or M9INTEG_ABSENT in data:
+            print("serial_smoke: hint: `/` is not mounted, so this image "
+                  "took its absent-card path; the integration row needs a "
+                  "writable FAT card inserted", file=sys.stderr)
         elif not BANNER in data:
             print("serial_smoke: hint: no boot log was captured.  Start "
                   "this tool first, then power-cycle the board or press "

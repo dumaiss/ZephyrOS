@@ -43,10 +43,19 @@
 
 /* Permanent common code/data in physical SRAM bank 0.  ZOS_COMMON_CODE_END
  * is the exclusive end of ordinary common content; the IM2 vector page and
- * IRQ transition state reservations (FD00h-FEFFh) are declared in irq.h. */
+ * IRQ transition state reservations (FD00h-FEFFh) are declared in irq.h.
+ *
+ * ZOS_COMMON_CEILING is the architectural ceiling on the packed
+ * `_COMMON` + `_COMMON_DATA` run (work package 30c, from the 30b audit):
+ * common memory is the scarcest region.  ZOS_COMMON_M10_RESERVATION is held
+ * back for M10's far-call gate/state (target architecture 2.13-2.15), so
+ * M9 enforces `used <= ceiling - reservation`.  Neither may be raised to
+ * make a package fit. */
 #define ZOS_COMMON_BASE             0xE000u
 #define ZOS_COMMON_CODE_END         0xFD00u
 #define ZOS_COMMON_STACK_BASE       0xFF00u
+#define ZOS_COMMON_CEILING          0x0C00u
+#define ZOS_COMMON_M10_RESERVATION  0x0200u
 
 /* Common boot/runtime stack: FF00h-FFFFh, grown down from FFFFh.
  * Initial SP = 0000h (top-exclusive at 10000h). */

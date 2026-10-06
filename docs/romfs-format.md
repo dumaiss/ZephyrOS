@@ -91,10 +91,13 @@ payloads                       (manifest order, no alignment gaps)
 | `20h` | 2 | `flags` |
 | `22h` | 2 | `reserved` (`0`) |
 
-Names are native, case-sensitive ZephyrOS names (not CP/M 8.3).  A name
+Names are stored exactly as written (native ZephyrOS names, not CP/M 8.3).  A name
 must be 1..23 bytes of printable ASCII (`20h-7Eh`) followed by at least
 one NUL byte; all padding bytes are zero.  Duplicate names are rejected
-by the host tool.
+by the host tool.  A host tool must reject two names that differ only in
+ASCII case: one ROMFS lookup serves the whole kernel and it matches
+case-insensitively (architecture section 32.13), so such a pair would be
+ambiguous.
 
 Flags/media types: `ZMOD = 1`, `ZEX = 2`, `DATA = 3`.  Any other value is
 rejected by both the tool and the kernel.
@@ -276,9 +279,8 @@ struct zmod_source {
 };
 ```
 
-* `module_load(name, blob, size)` keeps its M4 behavior by wrapping the
-  memory blob in a source;
-* `module_load_source(name, source)` validates the entire container
+* `module_load_source(name, source)` is the only load path: it validates
+  the entire container
   structure (header, sizes, relocations) **before** the arena is touched,
   allocates granules, streams the image copy and relocation records
   through the source in bounded chunks, applies `ZREL_ABS16` relocations,
