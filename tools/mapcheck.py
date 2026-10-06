@@ -518,6 +518,7 @@ PRODUCTION_FORBIDDEN = (
     "_platform_irq_vector",
     "_m7_",
     "_m8",
+    "_ace_",
     "_sio_module_irq",
     "_sio_irq_module",
     "_sio_fail_module",
@@ -530,8 +531,8 @@ STATIC_SIO_PREFIXES = ("_sio_", "_sio0b_", "_sio_driver")
 
 # M8: the IOC driver is a dynamically loaded module too.  Any linked
 # `_ioc_` symbol means a static copy crept back into the kernel image
-# (the target-test runner symbols use the `_m8` prefix and are handled
-# by the production/catalog rules).
+# (the acceptance result globals use the `_ace_` prefix and are handled
+# by the production rule).
 STATIC_IOC_PREFIXES = ("_ioc_",)
 
 # M8: the HID driver is module-only as well; any linked `_hid_` symbol

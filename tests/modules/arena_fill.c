@@ -1,4 +1,4 @@
-/* ZephyrOS M8 arena-exhaustion fixture (test artifact).
+/* ZephyrOS arena-exhaustion fixture (test artifact).
  *
  * Registers no devices and claims no IRQs.  Its BSS-only image is larger
  * than the free production driver arena that remains after the SIO, IOC
@@ -18,9 +18,9 @@
  * than the whole derived production arena declares, so the allocation
  * can never succeed even if the earlier residents shrink in a future
  * geometry. */
-uint8_t m8_regfill_pad[0x4800];
+uint8_t arena_fill_pad[0x4800];
 
-int m8_regfill_init(const struct zdriver_api *api)
+int arena_fill_init(const struct zdriver_api *api)
 {
 	(void)api;
 	return ZDRIVER_OK;

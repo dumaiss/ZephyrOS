@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side M8 IOC command+bulk contract tests (work packages 15-16).
+"""Host-side IOC command+bulk contract tests.
 
 Covers the declarative and structural surface that can be checked
 without executing target code:
@@ -13,7 +13,7 @@ without executing target code:
   - the internal transport-class error codes added to errno.h;
   - the packed ioc.zmod container, manifest, ROMFS entry and boot order
     (SIO first, then IOC, with a failed IOC not invalidating SIO);
-  - mapcheck rejects linked IOC driver symbols (module-only) and the M8
+  - mapcheck rejects linked IOC driver symbols (module-only) and the
     acceptance symbols in production images;
   - the driver sources keep the load-bearing ordering on both lanes:
     one command-lane reset and one bulk-lane reset (init only),
@@ -220,7 +220,7 @@ class TestIocPlatformConstants(unittest.TestCase):
         first = evaluate("ZOS_SMOKE_HOST_SYNC_FIRST", self.c)
         second = evaluate("ZOS_SMOKE_HOST_SYNC_SECOND", self.c)
         self.assertNotEqual(first, second)
-        self.assertEqual(serial_smoke.M8IOC_HOST_SYNC,
+        self.assertEqual(serial_smoke.IOC_HOST_SYNC,
                          bytes((first, second)))
         main = _read(MAIN_C)
         self.assertIn("#if ZOS_SMOKE_HOST_SYNC", main)
@@ -401,12 +401,12 @@ class TestIocModuleArtifact(unittest.TestCase):
 
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
-        for target in ("ioc-test:", "m8-ioc-selftest:",
-                       "smoke-hardware-m8-ioc:"):
+        for target in ("ioc-test:", "ioc-selftest:",
+                       "smoke-hardware-ioc:"):
             self.assertIn(target, makefile)
         self.assertIn("$(MODULES)/ioc.zmod", makefile)
         self.assertIn("$(IOC_MODULE_OBJS)", makefile)
-        self.assertIn("ZOS_M8_IOC_SELFTEST", makefile)
+        self.assertIn("ZOS_IOC_SELFTEST", makefile)
         # The boot-set plan must carry the IOC boot module (and, since
         # package 17, the HID module loaded after it; since package 18,
         # the V9958 video core loaded last).
@@ -415,14 +415,14 @@ class TestIocModuleArtifact(unittest.TestCase):
         self.assertIn("BOOT_ZMODS += $(MODULES)/hid.zmod", makefile)
         self.assertIn("BOOT_ZMODS += $(MODULES)/v9958.zmod", makefile)
 
-    def test_production_map_has_no_linked_ioc_or_m8_symbols(self):
+    def test_production_map_has_no_linked_ioc_symbols(self):
         if not os.path.exists(MAP):
             self.skipTest("build/zephyros.map missing; build first")
         syms = zmodpack_symbols(MAP)
         linked = [name for name in syms
-                  if name.startswith("_ioc_") or name.startswith("_m8")]
+                  if name.startswith("_ioc_")]
         self.assertEqual(linked, [],
-                         "IOC/M8 driver symbols must not be linked into "
+                         "IOC driver symbols must not be linked into "
                          "the kernel image: %s" % linked)
 
 
@@ -443,10 +443,10 @@ class TestMapcheckRules(unittest.TestCase):
         with self.assertRaises(mapcheck.MapError):
             mapcheck.check_symbols({}, {"_ioc_ops": 0x2000})
 
-    def test_production_rejects_m8_acceptance_symbols(self):
+    def test_production_rejects_acceptance_symbols(self):
         self.assertIn("_m8", mapcheck.PRODUCTION_FORBIDDEN)
         with self.assertRaises(mapcheck.MapError):
-            mapcheck.check_symbols({}, {"_m8_ioc_selftest_result": 0x2000},
+            mapcheck.check_symbols({}, {"_ace_ioc_selftest_result": 0x2000},
                                    production=True)
 
 
@@ -605,28 +605,28 @@ class TestTargetTestWiring(unittest.TestCase):
     def test_target_test_runner_and_header(self):
         runner = _read(os.path.join(ROOT, "tests", "target", "support",
                                     "target_test.c"))
-        self.assertIn("#if ZOS_M8_IOC_SELFTEST", runner)
-        self.assertIn("zos_run_m8_ioc_selftest();", runner)
+        self.assertIn("#if ZOS_IOC_SELFTEST", runner)
+        self.assertIn("zos_run_ioc_selftest();", runner)
         header = os.path.join(ROOT, "tests", "target", "include",
-                              "m8_ioc_selftest.h")
+                              "ioc_selftest.h")
         self.assertTrue(os.path.isfile(header))
-        self.assertIn("ZOS_M8IOC_PENDING", _read(header))
-        test = _read(os.path.join(ROOT, "tests", "target", "m8",
-                                  "m8_ioc_test.c"))
+        self.assertIn("ZOS_IOCSELFTEST_PENDING", _read(header))
+        test = _read(os.path.join(ROOT, "tests", "target", "ioc",
+                                  "ioc_test.c"))
         # Direct early-SIO reporting and the pinned level identification.
         self.assertIn("early_console_puts", test)
         self.assertIn("IOC_FW_LEVEL_PINNED", test)
-        self.assertIn("m8 ioc: transport level", test)
+        self.assertIn("ioc: transport level", test)
         # The stale historical banner must not be reproduced.
-        self.assertNotIn("23", test.split("m8 ioc: transport level")[1]
+        self.assertNotIn("23", test.split("ioc: transport level")[1]
                          .split("\\r\\n")[0])
         # The acceptance uses only the frozen /SHARED commands and the
         # dedicated separator-free basename; nothing diagnostic or raw.
-        for needle in ("M8IOC_CMD_FS_OPEN", "M8IOC_CMD_FS_WRITE",
-                       "M8IOC_CMD_FS_READ", "M8IOC_CMD_FS_CLOSE",
-                       "M8IOC_CMD_FS_DELETE"):
+        for needle in ("IOC_CMD_FS_OPEN", "IOC_CMD_FS_WRITE",
+                       "IOC_CMD_FS_READ", "IOC_CMD_FS_CLOSE",
+                       "IOC_CMD_FS_DELETE"):
             self.assertIn(needle, test)
-        self.assertIn("'M', '8', 'I', 'O', 'C', 'T', 'S', 'T', 'B', 'I', 'N'",
+        self.assertIn("'I', 'O', 'C', 'B', 'U', 'L', 'K', 'T', 'B', 'I', 'N'",
                       test)
         # The corrected outcome split: PENDING only for the verified
         # unknown-command reply, a real filesystem/media status as a
@@ -634,16 +634,16 @@ class TestTargetTestWiring(unittest.TestCase):
         # OK marker.
         self.assertIn("IOC_RSP_UNKNOWN_CMD", test)
         self.assertIn("IOC_STATUS_UNKNOWN_CMD", test)
-        self.assertIn("ZOS_M8IOC_PENDING", test)
-        self.assertIn("m8 ioc: bulk write PENDING 0x", test)
-        self.assertIn("m8 ioc selftest: PENDING 0x", test)
-        self.assertIn("m8 ioc: cleanup OK 0x", test)
+        self.assertIn("ZOS_IOCSELFTEST_PENDING", test)
+        self.assertIn("ioc: bulk write PENDING 0x", test)
+        self.assertIn("ioc selftest: PENDING 0x", test)
+        self.assertIn("ioc: cleanup OK 0x", test)
         # The cleanup proof needs the frozen no-file status exactly, with
         # the empty failure shape (correction 02).
-        self.assertIn("#define M8IOC_STATUS_FS_NO_FILE 0x34u", test)
-        self.assertIn("reply.status != M8IOC_STATUS_FS_NO_FILE", test)
+        self.assertIn("#define IOC_STATUS_FS_NO_FILE 0x34u", test)
+        self.assertIn("reply.status != IOC_STATUS_FS_NO_FILE", test)
         self.assertIn("reply.length != 0u", test)
-        self.assertIn("m8ioc_fail(ZOS_M8IOC_FAIL_BULK_OPEN, reply.status)",
+        self.assertIn("ioc_fail(ZOS_IOCSELFTEST_FAIL_BULK_OPEN, reply.status)",
                       test)
         self.assertNotIn("CMD_BULK_TEST", test)
         self.assertNotIn("CMD_SD_READ_BULK", test)
@@ -651,64 +651,64 @@ class TestTargetTestWiring(unittest.TestCase):
 
     def test_smoke_mode_matches_target_output(self):
         import serial_smoke
-        test = _read(os.path.join(ROOT, "tests", "target", "m8",
-                                  "m8_ioc_test.c"))
-        for needle in ("m8 ioc: transport level ",
-                       "m8 ioc: controller level ",
-                       "m8 ioc: ping x4 OK\\r\\n",
-                       "m8 ioc: bulk write 1/128/512 OK\\r\\n",
-                       "m8 ioc: bulk write PENDING 0x",
-                       "m8 ioc: bulk read 1/128/512 OK\\r\\n",
-                       "m8 ioc: done x3 OK\\r\\n",
-                       "m8 ioc: hid status ",
-                       "m8 ioc: cleanup OK 0x",
-                       "m8 ioc selftest: OK\\r\\n",
-                       "m8 ioc selftest: PENDING 0x",
-                       "m8 ioc selftest: FAIL 0x"):
+        test = _read(os.path.join(ROOT, "tests", "target", "ioc",
+                                  "ioc_test.c"))
+        for needle in ("ioc: transport level ",
+                       "ioc: controller level ",
+                       "ioc: ping x4 OK\\r\\n",
+                       "ioc: bulk write 1/128/512 OK\\r\\n",
+                       "ioc: bulk write PENDING 0x",
+                       "ioc: bulk read 1/128/512 OK\\r\\n",
+                       "ioc: done x3 OK\\r\\n",
+                       "ioc: hid status ",
+                       "ioc: cleanup OK 0x",
+                       "ioc selftest: OK\\r\\n",
+                       "ioc selftest: PENDING 0x",
+                       "ioc selftest: FAIL 0x"):
             self.assertIn(needle, test,
                           "target output changed without the smoke tool: %r"
                           % needle)
         for constant, prefix in (
-                (serial_smoke.M8IOC_TRANSPORT_LEVEL,
-                 b"m8 ioc: transport level "),
-                (serial_smoke.M8IOC_CONTROLLER_LEVEL,
-                 b"m8 ioc: controller level "),
-                (serial_smoke.M8IOC_PING_OK, b"m8 ioc: ping x4 OK"),
-                (serial_smoke.M8IOC_BULK_WRITE_OK,
-                 b"m8 ioc: bulk write 1/128/512 OK"),
-                (serial_smoke.M8IOC_BULK_READ_OK,
-                 b"m8 ioc: bulk read 1/128/512 OK"),
-                (serial_smoke.M8IOC_DONE_OK, b"m8 ioc: done x3 OK"),
-                (serial_smoke.M8IOC_SELFTEST_OK, b"m8 ioc selftest: OK")):
+                (serial_smoke.IOC_TRANSPORT_LEVEL,
+                 b"ioc: transport level "),
+                (serial_smoke.IOC_CONTROLLER_LEVEL,
+                 b"ioc: controller level "),
+                (serial_smoke.IOC_PING_OK, b"ioc: ping x4 OK"),
+                (serial_smoke.IOC_BULK_WRITE_OK,
+                 b"ioc: bulk write 1/128/512 OK"),
+                (serial_smoke.IOC_BULK_READ_OK,
+                 b"ioc: bulk read 1/128/512 OK"),
+                (serial_smoke.IOC_DONE_OK, b"ioc: done x3 OK"),
+                (serial_smoke.IOC_SELFTEST_OK, b"ioc selftest: OK")):
             self.assertTrue(constant.startswith(prefix),
                             "%r does not start with %r" % (constant, prefix))
         self.assertIsNotNone(
-            serial_smoke.M8IOC_HID_STATUS_RE.search(b"m8 ioc: hid status 0A\r\n"))
+            serial_smoke.IOC_HID_STATUS_RE.search(b"ioc: hid status 0A\r\n"))
         self.assertIsNotNone(
-            serial_smoke.M8IOC_BULK_WRITE_PENDING_RE.search(
-                b"m8 ioc: bulk write PENDING 0xFE\r\n"))
+            serial_smoke.IOC_BULK_WRITE_PENDING_RE.search(
+                b"ioc: bulk write PENDING 0xFE\r\n"))
         # Both PENDING markers and the cleanup marker are exact values:
         # 0xFE is the verified unknown-command class, 0x34 the frozen
         # no-file status.  Nothing else may be classified PENDING or PASS.
-        for wrong in (b"m8 ioc: bulk write PENDING 0x38\r\n",
-                      b"m8 ioc: bulk write PENDING 0xFF\r\n"):
+        for wrong in (b"ioc: bulk write PENDING 0x38\r\n",
+                      b"ioc: bulk write PENDING 0xFF\r\n"):
             self.assertIsNone(
-                serial_smoke.M8IOC_BULK_WRITE_PENDING_RE.search(wrong))
+                serial_smoke.IOC_BULK_WRITE_PENDING_RE.search(wrong))
         self.assertIsNotNone(
-            serial_smoke.M8IOC_SELFTEST_PENDING_RE.search(
-                b"m8 ioc selftest: PENDING 0xFE\r\n"))
+            serial_smoke.IOC_SELFTEST_PENDING_RE.search(
+                b"ioc selftest: PENDING 0xFE\r\n"))
         self.assertIsNone(
-            serial_smoke.M8IOC_SELFTEST_PENDING_RE.search(
-                b"m8 ioc selftest: PENDING 0x38\r\n"))
+            serial_smoke.IOC_SELFTEST_PENDING_RE.search(
+                b"ioc selftest: PENDING 0x38\r\n"))
         self.assertIsNotNone(
-            serial_smoke.M8IOC_CLEANUP_RE.search(
-                b"m8 ioc: cleanup OK 0x34\r\n"))
-        for wrong in (b"m8 ioc: cleanup OK 0x33\r\n",
-                      b"m8 ioc: cleanup OK 0x38\r\n"):
-            self.assertIsNone(serial_smoke.M8IOC_CLEANUP_RE.search(wrong))
-        self.assertIn(b"m8-ioc", serial_smoke.__doc__.encode())
+            serial_smoke.IOC_CLEANUP_RE.search(
+                b"ioc: cleanup OK 0x34\r\n"))
+        for wrong in (b"ioc: cleanup OK 0x33\r\n",
+                      b"ioc: cleanup OK 0x38\r\n"):
+            self.assertIsNone(serial_smoke.IOC_CLEANUP_RE.search(wrong))
+        self.assertIn(b"--mode ioc", serial_smoke.__doc__.encode())
 
-    def test_smoke_m8ioc_outcome_is_exclusive(self):
+    def test_smoke_ioc_outcome_is_exclusive(self):
         # PASS, PENDING and FAIL are mutually exclusive: PENDING is its
         # own result and is never accepted as a pass.
         import serial_smoke
@@ -716,57 +716,57 @@ class TestTargetTestWiring(unittest.TestCase):
         base = (b"ZephyrOS 0.0\r\nplatform: Zephyr-80\r\n"
                 b"kernel entry: OK\r\nserial: OK\r\n"
                 b"console: dynamic sio0.b OK\r\n"
-                b"m8 ioc: transport level 08\r\n"
-                b"m8 ioc: controller level 4A\r\n"
-                b"m8 ioc: ping x4 OK\r\n")
+                b"ioc: transport level 08\r\n"
+                b"ioc: controller level 4A\r\n"
+                b"ioc: ping x4 OK\r\n")
         ok = base + (
-            b"m8 ioc: bulk write 1/128/512 OK\r\nm8 ioc: done x3 OK\r\n"
-            b"m8 ioc: bulk read 1/128/512 OK\r\n"
-            b"m8 ioc: cleanup OK 0x34\r\nm8 ioc: hid status 00\r\n"
-            b"m8 ioc selftest: OK\r\n")
+            b"ioc: bulk write 1/128/512 OK\r\nioc: done x3 OK\r\n"
+            b"ioc: bulk read 1/128/512 OK\r\n"
+            b"ioc: cleanup OK 0x34\r\nioc: hid status 00\r\n"
+            b"ioc selftest: OK\r\n")
         pending = base + (
-            b"m8 ioc: bulk write PENDING 0xFE\r\n"
-            b"m8 ioc selftest: PENDING 0xFE\r\n")
-        failed = base + b"m8 ioc selftest: FAIL 0x07 detail 0x38\r\n"
-        self.assertEqual(serial_smoke._m8ioc_result(ok), "ok")
-        self.assertEqual(serial_smoke._m8ioc_result(pending), "pending")
-        self.assertEqual(serial_smoke._m8ioc_result(failed), "fail")
+            b"ioc: bulk write PENDING 0xFE\r\n"
+            b"ioc selftest: PENDING 0xFE\r\n")
+        failed = base + b"ioc selftest: FAIL 0x07 detail 0x38\r\n"
+        self.assertEqual(serial_smoke._ioc_result(ok), "ok")
+        self.assertEqual(serial_smoke._ioc_result(pending), "pending")
+        self.assertEqual(serial_smoke._ioc_result(failed), "fail")
         # A transcript mixing PENDING with the OK path is a failure.
         self.assertEqual(
-            serial_smoke._m8ioc_result(pending + b"m8 ioc selftest: OK\r\n"),
+            serial_smoke._ioc_result(pending + b"ioc selftest: OK\r\n"),
             "fail")
         # The PENDING line alone, without the explicit final marker, is
         # not a PENDING result.
         self.assertEqual(
-            serial_smoke._m8ioc_result(
-                base + b"m8 ioc: bulk write PENDING 0xFE\r\n"),
+            serial_smoke._ioc_result(
+                base + b"ioc: bulk write PENDING 0xFE\r\n"),
             "fail")
         # A cleanup-less OK transcript is incomplete evidence.
         self.assertEqual(
-            serial_smoke._m8ioc_result(
-                ok.replace(b"m8 ioc: cleanup OK 0x34\r\n", b"")),
+            serial_smoke._ioc_result(
+                ok.replace(b"ioc: cleanup OK 0x34\r\n", b"")),
             "fail")
         # Only exact marker values count: any other code, in either
         # PENDING marker or in the cleanup marker, is a failure.
         self.assertEqual(
-            serial_smoke._m8ioc_result(
+            serial_smoke._ioc_result(
                 pending.replace(b"PENDING 0xFE", b"PENDING 0x38")),
             "fail")
         self.assertEqual(
-            serial_smoke._m8ioc_result(
-                base + b"m8 ioc: bulk write PENDING 0xFE\r\n"
-                       b"m8 ioc selftest: PENDING 0x38\r\n"),
+            serial_smoke._ioc_result(
+                base + b"ioc: bulk write PENDING 0xFE\r\n"
+                       b"ioc selftest: PENDING 0x38\r\n"),
             "fail")
         self.assertEqual(
-            serial_smoke._m8ioc_result(
-                base + b"m8 ioc: bulk write PENDING 0x38\r\n"
-                       b"m8 ioc selftest: PENDING 0xFE\r\n"),
+            serial_smoke._ioc_result(
+                base + b"ioc: bulk write PENDING 0x38\r\n"
+                       b"ioc selftest: PENDING 0xFE\r\n"),
             "fail")
-        for wrong_cleanup in (b"m8 ioc: cleanup OK 0x33\r\n",
-                              b"m8 ioc: cleanup OK 0x38\r\n"):
+        for wrong_cleanup in (b"ioc: cleanup OK 0x33\r\n",
+                              b"ioc: cleanup OK 0x38\r\n"):
             self.assertEqual(
-                serial_smoke._m8ioc_result(
-                    ok.replace(b"m8 ioc: cleanup OK 0x34\r\n",
+                serial_smoke._ioc_result(
+                    ok.replace(b"ioc: cleanup OK 0x34\r\n",
                                wrong_cleanup)),
                 "fail")
 

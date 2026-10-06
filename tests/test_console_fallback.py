@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M8 fallback-matrix tests (work package 20): replay every observable
+"""Console fallback-matrix tests (work package 20): replay every observable
 boot/failure variant in the Z80 simulator.
 
 Rows (all executing real linked bytes, every image from its own build
@@ -26,7 +26,7 @@ behind), the precise diagnostic codes, and the early-SIO independence
 of the control transcript (a V9958-bound marker must NOT leak to the
 serial link; it must appear in the decoded V9958 trace instead).
 
-Skipped when the images have not been built (`make m8-fallback-selftests`).
+Skipped when the images have not been built (`make console-fallback-selftests`).
 """
 
 import os
@@ -39,7 +39,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 from z80sim import Z80, IocCommandPeer, V9958Peer, read_symbols  # noqa: E402
-from test_m8_sim import ConsoleSimBase, PROMPT, BANNER  # noqa: E402
+from test_console_sim import ConsoleSimBase, PROMPT, BANNER  # noqa: E402
 
 ZDEV_SERIAL = 1
 ZDEV_VIDEO = 2
@@ -48,18 +48,18 @@ ZDEV_HID = 4
 STEP_LIMIT = 80000000
 INPUT_BYTE = 0x52
 
-CONSOLE_MARKER = b"m8 fallback: console output\r\n"
-SELFTEST_OK = b"m8 fallback selftest: OK\r\n"
-SELFTEST_FAIL = b"m8 fallback selftest: FAIL"
-SEND_INPUT = b"m8 fallback: send input\r\n"
-INPUT_OK = b"m8 fallback: input OK 0x52\r\n"
+CONSOLE_MARKER = b"console fallback: console output\r\n"
+SELFTEST_OK = b"console fallback selftest: OK\r\n"
+SELFTEST_FAIL = b"console fallback selftest: FAIL"
+SEND_INPUT = b"console fallback: send input\r\n"
+INPUT_OK = b"console fallback: input OK 0x52\r\n"
 
 # All-modules row: the integration acceptance image.
-ALL_IMAGE_DIR = "build-m8-selftest"
-ALL_IMAGE_NAME = "zephyros-m8-selftest.bin"
-ALL_OK = b"m8 selftest: OK\r\n"
-ALL_INPUT = b"m8 selftest: input hid.keyboard0 class 04\r\n"
-ALL_OUTPUT = b"m8 selftest: output v9958.0 class 02\r\n"
+ALL_IMAGE_DIR = "build-console-integration-selftest"
+ALL_IMAGE_NAME = "zephyros-console-integration-selftest.bin"
+ALL_OK = b"console integration: OK\r\n"
+ALL_INPUT = b"console integration: input hid.keyboard0 class 04\r\n"
+ALL_OUTPUT = b"console integration: output v9958.0 class 02\r\n"
 
 # Failure rows: expected instance + class per direction, the registered
 # instance names in load order, the exact early-SIO diagnostics and the
@@ -67,8 +67,8 @@ ALL_OUTPUT = b"m8 selftest: output v9958.0 class 02\r\n"
 FAILURE_ROWS = (
     {
         "name": "nohid",
-        "dir": "build-m8-fb-nohid",
-        "image": "zephyros-m8-fb-nohid.bin",
+        "dir": "build-console-fb-nohid",
+        "image": "zephyros-console-fb-nohid.bin",
         "input": (b"sio0.b", ZDEV_SERIAL),
         "output": (b"v9958.0", ZDEV_VIDEO),
         "devices": [b"sio0.b", b"ioc.0", b"v9958.0"],
@@ -78,8 +78,8 @@ FAILURE_ROWS = (
     },
     {
         "name": "nohid-nov9958",
-        "dir": "build-m8-fb-nohid-nov9958",
-        "image": "zephyros-m8-fb-nohid-nov9958.bin",
+        "dir": "build-console-fb-nohid-nov9958",
+        "image": "zephyros-console-fb-nohid-nov9958.bin",
         "input": (b"sio0.b", ZDEV_SERIAL),
         "output": (b"sio0.b", ZDEV_SERIAL),
         "devices": [b"sio0.b", b"ioc.0"],
@@ -90,8 +90,8 @@ FAILURE_ROWS = (
     },
     {
         "name": "badioc",
-        "dir": "build-m8-fb-badioc",
-        "image": "zephyros-m8-fb-badioc.bin",
+        "dir": "build-console-fb-badioc",
+        "image": "zephyros-console-fb-badioc.bin",
         "input": (b"sio0.b", ZDEV_SERIAL),
         "output": (b"v9958.0", ZDEV_VIDEO),
         "devices": [b"sio0.b", b"fake.ioc", b"v9958.0"],
@@ -101,8 +101,8 @@ FAILURE_ROWS = (
     },
     {
         "name": "arena",
-        "dir": "build-m8-fb-arena",
-        "image": "zephyros-m8-fb-arena.bin",
+        "dir": "build-console-fb-arena",
+        "image": "zephyros-console-fb-arena.bin",
         "input": (b"hid.keyboard0", ZDEV_HID),
         "output": (b"sio0.b", ZDEV_SERIAL),
         "devices": [b"sio0.b", b"ioc.0", b"hid.keyboard0"],
@@ -154,14 +154,14 @@ def registered(sim, z):
     return [sim.bank7_cstr(z, dev["name"]) for dev in sim.devices(z)]
 
 
-class TestM8FallbackMatrix(unittest.TestCase):
+class TestFallbackMatrix(unittest.TestCase):
     def test_all_modules_image_binds_hid_v9958(self):
         sim = load_sim(ALL_IMAGE_DIR, ALL_IMAGE_NAME)
         if sim is None:
-            self.skipTest("build-m8-selftest missing; build the image first")
+            self.skipTest("build-console-integration-selftest missing; build the image first")
         z, tx = boot_image(sim, ALL_OK)
         self.assertEqual(
-            z.bank7[sim.syms["_m8_selftest_result"]], 0x00)
+            z.bank7[sim.syms["_ace_integration_result"]], 0x00)
         self.assertIn(ALL_INPUT, tx)
         self.assertIn(ALL_OUTPUT, tx)
         self.assertNotIn(b": unavailable 0x", tx)
@@ -193,7 +193,7 @@ class TestM8FallbackMatrix(unittest.TestCase):
                            send_input=row["scripted_input"])
         self.assertNotIn(SELFTEST_FAIL, tx)
         self.assertEqual(
-            z.bank7[sim.syms["_m8_fallback_selftest_result"]], 0x00)
+            z.bank7[sim.syms["_ace_fallback_result"]], 0x00)
 
         # Exact early-SIO diagnostics, exactly once each.
         for needle in row["diagnostics"]:
@@ -227,7 +227,7 @@ class TestM8FallbackMatrix(unittest.TestCase):
         if row["scripted_input"]:
             self.assertIn(INPUT_OK, tx, "%s: scripted input lost"
                           % row["name"])
-            self.assertNotIn(b"m8 fallback: input none", tx)
+            self.assertNotIn(b"console fallback: input none", tx)
         if row["serial_marker"]:
             self.assertIn(CONSOLE_MARKER, tx,
                           "%s: serial marker missing" % row["name"])
@@ -235,7 +235,7 @@ class TestM8FallbackMatrix(unittest.TestCase):
             self.assertNotIn(CONSOLE_MARKER, tx,
                              "%s: V9958-bound marker leaked to serial"
                              % row["name"])
-            self.assertIn("m8 fallback: console output",
+            self.assertIn("console fallback: console output",
                           "".join(z.glyphs),
                           "%s: marker not visible in the V9958 trace"
                           % row["name"])

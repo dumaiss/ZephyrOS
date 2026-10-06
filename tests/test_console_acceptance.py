@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M8 integration acceptance tests (work package 20): replay the real
+"""Console integration acceptance tests (work package 20): replay the real
 production bytes and the integration acceptance image in the Z80
 simulator.
 
@@ -27,7 +27,7 @@ runs.  Coverage, all against those linked bytes:
   table entry, leak no arena granule and leave no IOC/VDP handshake
   active; the monitor then still starts and exits (post-fault
   recovery);
-* the integration acceptance image (`build-m8-selftest`) target
+* the integration acceptance image (`build-console-integration-selftest`) target
   transcript and its hand-off to the monitor launcher;
 * ROMFS payload identity: the packed monitor/module/font artifacts are
   stored byte-for-byte with the correct media types, and the monitor
@@ -49,13 +49,13 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 from z80sim import Z80, IocCommandPeer, V9958Peer, read_symbols  # noqa: E402
 import romfspack  # noqa: E402
-from test_m8_sim import (  # noqa: E402
+from test_console_sim import (  # noqa: E402
     ConsoleSimBase, MONITOR_SIZE, MONITOR_SHA256, PROMPT, BANNER,
     SYSINFO, PROCESS, BANK_INFO, MONITOR_EXIT, ZDEV_HID, ZDEV_VIDEO,
     ZDEV_SERIAL, ZVIDEO_PRESENT, ZDEV_EINVAL)
 from test_ioc_sim import (  # noqa: E402
     IocSimBase, CMD_PING, RSP_PING, FS_MODE_READ, FS_MODE_WRITE,
-    M8IOC_NAME, ST_FS_NO_FILE, ZIOC_OK, ZIOC_EINVAL, ZIOC_EBUSY,
+    IOC_NAME, ST_FS_NO_FILE, ZIOC_OK, ZIOC_EINVAL, ZIOC_EBUSY,
     ZIOC_EBADCRC, bulk_pattern, REQ, RSP)
 
 RET = 0x1234
@@ -74,15 +74,15 @@ IOC_PING_LINK_SYNCED = 0x40
 IOC_FW_LEVEL_PINNED = 0x4A
 
 # Integration acceptance image.
-M8SELFTEST_DIR = "build-m8-selftest"
-M8SELFTEST_IMAGE = "zephyros-m8-selftest.bin"
+CONSOLE_INTEGRATION_DIR = "build-console-integration-selftest"
+CONSOLE_INTEGRATION_IMAGE = "zephyros-console-integration-selftest.bin"
 SELFTEST_MARKERS = (
-    b"m8 selftest: input hid.keyboard0 class 04\r\n",
-    b"m8 selftest: output v9958.0 class 02\r\n",
-    b"m8 selftest: devices 04\r\n",
-    b"m8 selftest: ioc level 4A\r\n",
-    b"m8 selftest: rejected calls OK\r\n",
-    b"m8 selftest: OK\r\n",
+    b"console integration: input hid.keyboard0 class 04\r\n",
+    b"console integration: output v9958.0 class 02\r\n",
+    b"console integration: devices 04\r\n",
+    b"console integration: ioc level 4A\r\n",
+    b"console integration: rejected calls OK\r\n",
+    b"console integration: OK\r\n",
 )
 
 FONT_SHA256 = ("6db207e0466a05af42894d378261f876da51bb391240e1beda4f1d5f12ec442f")
@@ -132,7 +132,7 @@ class ProductionBase(ConsoleSimBase):
         return self.call_uint8(z, self.syms["_module_granule_count"])
 
 
-class TestM8ProductionBoot(ProductionBase):
+class TestProductionBoot(ProductionBase):
     def test_boot_order_binding_and_silent_diagnostics(self):
         z = self.make_cpu()
         self.boot_to_prompt(z)
@@ -145,9 +145,9 @@ class TestM8ProductionBoot(ProductionBase):
             self.assertIn(line, sio)
         self.assertNotIn(": unavailable 0x", sio)
         self.assertNotIn("FAIL", sio)
-        self.assertNotIn("m8 selftest", sio)
-        self.assertNotIn("_m8_selftest_result", self.syms)
-        self.assertNotIn("_m8_fallback_selftest_result", self.syms)
+        self.assertNotIn("console integration", sio)
+        self.assertNotIn("_ace_integration_result", self.syms)
+        self.assertNotIn("_ace_fallback_result", self.syms)
 
         # Load order is the frozen sio -> ioc -> hid -> v9958 sequence,
         # visible in the issued handles and the instance names.
@@ -221,7 +221,7 @@ class TestM8ProductionBoot(ProductionBase):
                       full)
 
 
-class TestM8ProductionIoc(IocSimBase):
+class TestProductionIoc(IocSimBase):
     """Command/status/bulk sequencing and fault recovery through the
     registered class operations on the production bytes."""
 
@@ -307,7 +307,7 @@ class TestM8ProductionIoc(IocSimBase):
             self.read_section(z, ops, state, handle, offset, length)
         self.fs_close(z, ops, state, handle, total)
         self.fs_delete(z, ops, state)
-        result, reply = self.fs_open(z, ops, state, M8IOC_NAME,
+        result, reply = self.fs_open(z, ops, state, IOC_NAME,
                                      FS_MODE_READ)
         self.assertEqual(result, ZIOC_OK)
         self.assertEqual(reply[1], ST_FS_NO_FILE,
@@ -337,7 +337,7 @@ class TestM8ProductionIoc(IocSimBase):
         self.assertEqual(peer.hunt_writes, 1)
 
 
-class TestM8ProductionHid(ProductionBase):
+class TestProductionHid(ProductionBase):
     """HID queue traffic through the console service."""
 
     def test_fetch_on_doorbell_fifo_and_malformed_atomicity(self):
@@ -397,7 +397,7 @@ class TestM8ProductionHid(ProductionBase):
         self.assertEqual(self.console_getc(z), 0x55)
 
 
-class TestM8ProductionInvariants(ProductionBase):
+class TestProductionInvariants(ProductionBase):
     """Malformed/null/class/capability calls prove harmless, then the
     monitor still starts and exits (post-fault recovery)."""
 
@@ -467,13 +467,13 @@ class TestM8ProductionInvariants(ProductionBase):
         # input through the HID lane), no handshake left active.
         self.assertEqual(self.devices(z), before)
         self.assertEqual(self.granules(z), granules)
-        marker = b"m8 integration: still alive\r\n"
+        marker = b"console integration: still alive\r\n"
         addr = self.put_string(z, marker)
         self.assertEqual(
             self.call(z, self.syms["_console_write"], hl=addr,
                       de=len(marker)), len(marker))
         self.pump(z)
-        self.assertIn("m8 integration: still alive", "".join(z.glyphs))
+        self.assertIn("console integration: still alive", "".join(z.glyphs))
         peer.hid_queue.append(0x37)
         self.assertEqual(self.console_getc(z), 0x37)
         self.assertEqual(peer.rts_asserts, peer.rts_releases)
@@ -493,11 +493,11 @@ class TestM8ProductionInvariants(ProductionBase):
                       "".join(z.glyphs))
 
 
-class TestM8IntegrationImage(ProductionBase):
+class TestIntegrationImage(ProductionBase):
     """The integration acceptance image target transcript and hand-off."""
 
-    IMAGE_SUBDIR = M8SELFTEST_DIR
-    IMAGE_NAME = M8SELFTEST_IMAGE
+    IMAGE_SUBDIR = CONSOLE_INTEGRATION_DIR
+    IMAGE_NAME = CONSOLE_INTEGRATION_IMAGE
 
     def start_kernel(self, z):
         # The acceptance image waits for the host sync sequence before
@@ -513,17 +513,17 @@ class TestM8IntegrationImage(ProductionBase):
         for _ in range(STEP_LIMIT):
             self.skip_delay(z)
             z.step()
-            if b"m8 selftest: OK\r\n" in z.sio_tx:
+            if b"console integration: OK\r\n" in z.sio_tx:
                 break
         else:
-            raise AssertionError("m8 selftest did not complete")
+            raise AssertionError("console integration selftest did not complete")
         self.pump(z)
         sio = bytes(z.sio_tx)
         for marker in SELFTEST_MARKERS:
             self.assertIn(marker, sio, marker)
         self.assertNotIn(b": unavailable 0x", sio)
         self.assertNotIn(b"FAIL", sio)
-        self.assertEqual(z.bank7[self.syms["_m8_selftest_result"]], 0x00)
+        self.assertEqual(z.bank7[self.syms["_ace_integration_result"]], 0x00)
         # Binding is HID/V9958, exactly as reported.
         devices = self.devices(z)
         hid = [d for d in devices if d["class"] == ZDEV_HID][0]
@@ -540,7 +540,7 @@ class TestM8IntegrationImage(ProductionBase):
                       "".join(z.glyphs))
 
 
-class TestM8ProductionRomfsIdentity(ProductionBase):
+class TestProductionRomfsIdentity(ProductionBase):
     def test_payloads_match_packed_artifacts_and_pinned_hashes(self):
         entries = self.entries
         self.assertEqual(sorted(entries),

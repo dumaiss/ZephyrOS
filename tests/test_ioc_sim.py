@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side M8 IOC command+bulk functional tests: replay the real M8
+"""Host-side IOC command+bulk functional tests: replay the real
 acceptance image (SIO + IOC loaded from ROMFS, production-derived arena)
 in the Z80 simulator against the IOC command+bulk peer.
 
@@ -8,7 +8,7 @@ Coverage (all executing the real linked bytes):
 * production-style boot: SIO fallback loads, the IOC module programs
   SIO1/B and SIO1/A once, the bounded LINK_SYNC bring-up succeeds only on
   a CRC-verified matching reply, `ioc.0` registers with all four
-  capabilities, and the M8 target diagnostic runs the complete
+  capabilities, and the target diagnostic runs the complete
   READY/DONE bulk acceptance over the /SHARED service (write
   1/128/512-byte sections with matching DONE records, read them back,
   verify, delete) and reports the pinned controller level (4Ah) and host
@@ -34,7 +34,7 @@ Coverage (all executing the real linked bytes):
   failure, host underrun), whole-link recovery before normal traffic,
   exact memory canaries, lane state, RTS and exact entry IFF restoration.
 
-Skipped when the M8 image has not been built.
+Skipped when the IOC image has not been built.
 """
 
 import os
@@ -83,15 +83,15 @@ BULK_BUF = 0x1000
 BULK_CANARY_LO = 0x0E00
 BULK_CANARY_HI = 0x1200
 
-OK_LINE = b"m8 ioc selftest: OK"
-FAIL_LINE = b"m8 ioc selftest: FAIL"
+OK_LINE = b"ioc selftest: OK"
+FAIL_LINE = b"ioc selftest: FAIL"
 PROMPT = b"Z80> "
 
-M8IOC_NAME = "M8IOCTSTBIN"
+IOC_NAME = "IOCBULKTBIN"
 
 # Host sync the smoke image waits for before the banner (kernel/main.c
 # kernel_host_sync_wait; tools/serial_smoke.py sends the same sequence).
-M8IOC_HOST_SYNC = b"\xaa\x55"
+IOC_HOST_SYNC = b"\xaa\x55"
 CMD_FS_OPEN = 0x22
 RSP_FS_OPEN = 0xA2
 CMD_FS_READ = 0x23
@@ -110,7 +110,7 @@ FS_MODE_WRITE = 1
 # Frozen bulk-arming request classes and the direction the pinned firmware
 # arms for each (drivers/ioc/ioc_proto.h; confirmed against the pinned
 # handlers.c / fs_share.c / fs2.c READY constructions).
-M8IOC_READY_CLASSES = {
+IOC_READY_CLASSES = {
     0x04: 0, 0x05: 0, 0x08: 0, 0x0F: 0, 0x23: 0, 0x36: 0,
     0x07: 1, 0x09: 1, 0x24: 1, 0x3E: 1,
 }
@@ -125,9 +125,9 @@ ST_FS_NO_FILE = 0x34
 ST_FS_RANGE = 0x37
 ST_FS_ERROR = 0x38
 ST_VOL_UNMOUNTED = 0x30
-ZOS_M8IOC_FAIL_BULK_OPEN = 0x07
-ZOS_M8IOC_FAIL_BULK_DELETE = 0x0D
-ZOS_M8IOC_PENDING = 0x0E
+ZOS_IOCSELFTEST_FAIL_BULK_OPEN = 0x07
+ZOS_IOCSELFTEST_FAIL_BULK_DELETE = 0x0D
+ZOS_IOCSELFTEST_PENDING = 0x0E
 
 
 def bulk_pat(index):
@@ -149,8 +149,8 @@ def expected_frame(rtype, seq, status, data=b""):
 
 
 class IocSimBase(unittest.TestCase):
-    IMAGE_DIR = "build-m8-ioc-selftest"
-    IMAGE_NAME = "zephyros-m8-ioc-selftest.bin"
+    IMAGE_DIR = "build-ioc-selftest"
+    IMAGE_NAME = "zephyros-ioc-selftest.bin"
 
     def setUp(self):
         self.bin_path = os.path.join(ROOT, self.IMAGE_DIR, self.IMAGE_NAME)
@@ -169,7 +169,7 @@ class IocSimBase(unittest.TestCase):
         z.latch = 0x18
         z.sp = STACK
         z.ioc_peer = peer if peer is not None else IocCommandPeer()
-        # The M8 IOC image boots the full production stack, including
+        # The IOC image boots the full production stack, including
         # the V9958 video core; the peer absorbs its A0h-A4h bring-up.
         z.vdp_peer = V9958Peer()
         return z
@@ -189,9 +189,9 @@ class IocSimBase(unittest.TestCase):
             raise AssertionError("C runtime init did not return")
         z.push16(RET)
         # The smoke image holds the banner for the host sync sequence; a
-        # real host sends it once its port is open (mode m8-ioc in
+        # real host sends it once its port is open (mode ioc in
         # tools/serial_smoke.py).
-        z.sio_rx.extend(M8IOC_HOST_SYNC)
+        z.sio_rx.extend(IOC_HOST_SYNC)
         z.pc = self.syms["_kernel_main"]
         for _ in range(limit):
             z.step()
@@ -276,7 +276,7 @@ class IocSimBase(unittest.TestCase):
         return self.call(z, fn, state, buf, third=length)
 
     # -- /SHARED acceptance helpers -------------------------------------
-    def fs_open(self, z, ops, state, name=M8IOC_NAME, mode=FS_MODE_WRITE):
+    def fs_open(self, z, ops, state, name=IOC_NAME, mode=FS_MODE_WRITE):
         data = bytes([mode]) + name.encode("ascii")
         return self.command_data(z, ops, state, CMD_FS_OPEN, data)
 
@@ -284,7 +284,7 @@ class IocSimBase(unittest.TestCase):
         data = bytes([handle]) + size.to_bytes(4, "little")
         return self.command_data(z, ops, state, CMD_FS_CLOSE, data)
 
-    def fs_delete(self, z, ops, state, name=M8IOC_NAME):
+    def fs_delete(self, z, ops, state, name=IOC_NAME):
         return self.command_data(z, ops, state, CMD_FS_DELETE,
                                  name.encode("ascii"))
 
@@ -326,14 +326,14 @@ class IocSimBase(unittest.TestCase):
         self.assertEqual(bytes(window[BULK_BUF:BULK_BUF + length]),
                          bulk_pattern(length))
 
-    def open_write(self, z, ops, state, name=M8IOC_NAME):
+    def open_write(self, z, ops, state, name=IOC_NAME):
         result, reply = self.fs_open(z, ops, state, name, FS_MODE_WRITE)
         self.assertEqual(result, ZIOC_OK)
         self.assertEqual(reply[0], RSP_FS_OPEN)
         self.assertEqual(reply[1], 0)
         return reply[3]
 
-    def open_read(self, z, ops, state, name=M8IOC_NAME):
+    def open_read(self, z, ops, state, name=IOC_NAME):
         result, reply = self.fs_open(z, ops, state, name, FS_MODE_READ)
         self.assertEqual(result, ZIOC_OK)
         self.assertEqual(reply[0], RSP_FS_OPEN)
@@ -341,7 +341,7 @@ class IocSimBase(unittest.TestCase):
         return reply[3]
 
 
-class TestM8IocBoot(IocSimBase):
+class TestIocBoot(IocSimBase):
     def test_host_sync_gate_holds_banner_until_sequence(self):
         # The smoke image prints nothing until the host sync sequence
         # completes (the bench's reset also resets the USB bridge, so the
@@ -376,7 +376,7 @@ class TestM8IocBoot(IocSimBase):
                          "broken host sync released the banner")
 
         # The complete sequence releases it and is fully consumed.
-        z.sio_rx.extend(M8IOC_HOST_SYNC)
+        z.sio_rx.extend(IOC_HOST_SYNC)
         for _ in range(STEP_LIMIT):
             z.step()
             if OK_LINE in bytes(z.sio_tx):
@@ -398,19 +398,19 @@ class TestM8IocBoot(IocSimBase):
         # acceptance, semantic status, success.  Nothing from the stale
         # historical banner.
         self.assertIn(b"console: dynamic sio0.b OK\r\n", tx)
-        self.assertIn(b"m8 ioc: transport level 08\r\n", tx)
-        self.assertIn(b"m8 ioc: controller level 4A\r\n", tx)
-        self.assertIn(b"m8 ioc: ping x4 OK\r\n", tx)
-        self.assertIn(b"m8 ioc: bulk write 1/128/512 OK\r\n", tx)
-        self.assertIn(b"m8 ioc: done x3 OK\r\n", tx)
-        self.assertIn(b"m8 ioc: bulk read 1/128/512 OK\r\n", tx)
-        self.assertIn(b"m8 ioc: cleanup OK 0x34\r\n", tx)
-        self.assertIn(b"m8 ioc: hid status 00\r\n", tx)
+        self.assertIn(b"ioc: transport level 08\r\n", tx)
+        self.assertIn(b"ioc: controller level 4A\r\n", tx)
+        self.assertIn(b"ioc: ping x4 OK\r\n", tx)
+        self.assertIn(b"ioc: bulk write 1/128/512 OK\r\n", tx)
+        self.assertIn(b"ioc: done x3 OK\r\n", tx)
+        self.assertIn(b"ioc: bulk read 1/128/512 OK\r\n", tx)
+        self.assertIn(b"ioc: cleanup OK 0x34\r\n", tx)
+        self.assertIn(b"ioc: hid status 00\r\n", tx)
         self.assertIn(OK_LINE, tx)
         self.assertNotIn(b"FAIL", tx)
         self.assertNotIn(b"PANIC", tx)
         self.assertNotIn(b"ioc: unavailable", tx)
-        self.assertEqual(z.bank7[self.syms["_m8_ioc_selftest_result"]], 0)
+        self.assertEqual(z.bank7[self.syms["_ace_ioc_selftest_result"]], 0)
 
         # Registration: all four IOC capabilities in this stage.
         device = self.ioc_device(z)
@@ -494,7 +494,7 @@ class TestM8IocBoot(IocSimBase):
             self.assertEqual(send[7:7 + (1, 128, 512)[offset]],
                              bulk_pattern((1, 128, 512)[offset]))
             self.assertEqual(send[-2:], b"\x00\x00")
-        self.assertNotIn(M8IOC_NAME, peer.fs_files)
+        self.assertNotIn(IOC_NAME, peer.fs_files)
         self.assertGreater(peer.last_xfer_id, 0)
 
     def test_fs_open_unknown_command_reports_pending(self):
@@ -504,16 +504,16 @@ class TestM8IocBoot(IocSimBase):
         # marker and never a failure.
         peer = IocCommandPeer(fs_open_fault="unknown")
         z = self.make_cpu(peer)
-        tx = self.boot(z, stop=b"m8 ioc selftest: PENDING 0xFE\r\n")
-        self.assertIn(b"m8 ioc: bulk write PENDING 0xFE\r\n", tx)
-        self.assertIn(b"m8 ioc selftest: PENDING 0xFE\r\n", tx)
+        tx = self.boot(z, stop=b"ioc selftest: PENDING 0xFE\r\n")
+        self.assertIn(b"ioc: bulk write PENDING 0xFE\r\n", tx)
+        self.assertIn(b"ioc selftest: PENDING 0xFE\r\n", tx)
         self.assertNotIn(OK_LINE, tx)
         self.assertNotIn(b"FAIL", tx)
-        self.assertNotIn(b"m8 ioc: cleanup", tx)
-        self.assertNotIn(b"m8 ioc: hid status", tx)
+        self.assertNotIn(b"ioc: cleanup", tx)
+        self.assertNotIn(b"ioc: hid status", tx)
         self.assertEqual(
-            z.bank7[self.syms["_m8_ioc_selftest_result"]],
-            ZOS_M8IOC_PENDING)
+            z.bank7[self.syms["_ace_ioc_selftest_result"]],
+            ZOS_IOCSELFTEST_PENDING)
         # Nothing was created, nothing was read, and no bulk phase was
         # left admitted or touched.
         self.assertEqual(peer.fs_files, {})
@@ -524,13 +524,13 @@ class TestM8IocBoot(IocSimBase):
         # about the writable service: it must fail, not report PENDING.
         peer = IocCommandPeer(fs_open_fault="unknown_status")
         z = self.make_cpu(peer)
-        tx = self.boot(z, stop=b"m8 ioc selftest: FAIL 0x07 detail 0x38\r\n")
-        self.assertIn(b"m8 ioc selftest: FAIL 0x07 detail 0x38\r\n", tx)
+        tx = self.boot(z, stop=b"ioc selftest: FAIL 0x07 detail 0x38\r\n")
+        self.assertIn(b"ioc selftest: FAIL 0x07 detail 0x38\r\n", tx)
         self.assertNotIn(b"PENDING", tx)
         self.assertNotIn(OK_LINE, tx)
         self.assertEqual(
-            z.bank7[self.syms["_m8_ioc_selftest_result"]],
-            ZOS_M8IOC_FAIL_BULK_OPEN)
+            z.bank7[self.syms["_ace_ioc_selftest_result"]],
+            ZOS_IOCSELFTEST_FAIL_BULK_OPEN)
 
     def test_fs_open_media_failure_is_a_failure(self):
         # A real volume/media status on the expected response class is a
@@ -538,19 +538,19 @@ class TestM8IocBoot(IocSimBase):
         # unsupported feature).
         peer = IocCommandPeer(fs_open_fault=ST_VOL_UNMOUNTED)
         z = self.make_cpu(peer)
-        tx = self.boot(z, stop=b"m8 ioc selftest: FAIL 0x07 detail 0x30\r\n")
-        self.assertIn(b"m8 ioc selftest: FAIL 0x07 detail 0x30\r\n", tx)
+        tx = self.boot(z, stop=b"ioc selftest: FAIL 0x07 detail 0x30\r\n")
+        self.assertIn(b"ioc selftest: FAIL 0x07 detail 0x30\r\n", tx)
         self.assertNotIn(b"PENDING", tx)
         self.assertNotIn(OK_LINE, tx)
         self.assertEqual(
-            z.bank7[self.syms["_m8_ioc_selftest_result"]],
-            ZOS_M8IOC_FAIL_BULK_OPEN)
+            z.bank7[self.syms["_ace_ioc_selftest_result"]],
+            ZOS_IOCSELFTEST_FAIL_BULK_OPEN)
 
     def test_fs_open_wrong_class_is_a_failure(self):
         peer = IocCommandPeer(fs_open_fault=("class", RSP_FS_DELETE))
         z = self.make_cpu(peer)
-        tx = self.boot(z, stop=b"m8 ioc selftest: FAIL 0x07 detail 0x01\r\n")
-        self.assertIn(b"m8 ioc selftest: FAIL 0x07 detail 0x01\r\n", tx)
+        tx = self.boot(z, stop=b"ioc selftest: FAIL 0x07 detail 0x01\r\n")
+        self.assertIn(b"ioc selftest: FAIL 0x07 detail 0x01\r\n", tx)
         self.assertNotIn(b"PENDING", tx)
         self.assertNotIn(OK_LINE, tx)
 
@@ -564,15 +564,15 @@ class TestM8IocBoot(IocSimBase):
             peer = IocCommandPeer(fs_delete_reopen_fault=fault)
             z = self.make_cpu(peer)
             tx = self.boot(
-                z, stop=b"m8 ioc selftest: FAIL 0x0D detail 0x17\r\n")
-            self.assertIn(b"m8 ioc selftest: FAIL 0x0D detail 0x17\r\n",
+                z, stop=b"ioc selftest: FAIL 0x0D detail 0x17\r\n")
+            self.assertIn(b"ioc selftest: FAIL 0x0D detail 0x17\r\n",
                           tx, "fault %r was not rejected" % (fault,))
-            self.assertNotIn(b"m8 ioc: cleanup", tx)
+            self.assertNotIn(b"ioc: cleanup", tx)
             self.assertNotIn(OK_LINE, tx)
             self.assertNotIn(b"PENDING", tx)
             self.assertEqual(
-                z.bank7[self.syms["_m8_ioc_selftest_result"]],
-                ZOS_M8IOC_FAIL_BULK_DELETE)
+                z.bank7[self.syms["_ace_ioc_selftest_result"]],
+                ZOS_IOCSELFTEST_FAIL_BULK_DELETE)
 
     def test_transient_link_faults_retry_and_rearm_hunt(self):
         # First LINK_SYNC reply is CRC-faulted, second carries a wrong
@@ -608,10 +608,10 @@ class TestM8IocBoot(IocSimBase):
         self.assertIn(b"console: dynamic sio0.b OK", tx)
         self.assertIn(PROMPT, tx)
         self.assertNotIn(b"PANIC", tx)
-        self.assertEqual(z.bank7[self.syms["_m8_ioc_selftest_result"]], 1)
+        self.assertEqual(z.bank7[self.syms["_ace_ioc_selftest_result"]], 1)
 
 
-class TestM8IocCommands(IocSimBase):
+class TestIocCommands(IocSimBase):
     def boot_ready(self, peer=None):
         peer = peer if peer is not None else IocCommandPeer()
         z = self.make_cpu(peer)
@@ -764,7 +764,7 @@ class TestM8IocCommands(IocSimBase):
         self.assertEqual(peer.channel_resets, 1)
 
 
-class TestM8IocReadyAdmission(IocSimBase):
+class TestIocReadyAdmission(IocSimBase):
     """READY admission is gated by the frozen bulk-arming request class:
     no other successful reply, whatever its eight-byte shape, may change
     the bulk phase."""
@@ -828,8 +828,8 @@ class TestM8IocReadyAdmission(IocSimBase):
     def test_every_bulk_arming_class_admits_the_bound_phase(self):
         peer = IocCommandPeer()
         z, ops, state = self._boot(peer)
-        for rtype in sorted(M8IOC_READY_CLASSES):
-            direction = M8IOC_READY_CLASSES[rtype]
+        for rtype in sorted(IOC_READY_CLASSES):
+            direction = IOC_READY_CLASSES[rtype]
             peer.arbitrary_ready = {rtype: (direction, 64)}
             result, reply = self.command_data(z, ops, state, rtype,
                                               b"\x00\x40")
@@ -887,7 +887,7 @@ class TestM8IocReadyAdmission(IocSimBase):
         self._assert_idle_after(peer, z, ops, state)
 
 
-class TestM8IocBulk(IocSimBase):
+class TestIocBulk(IocSimBase):
     """Direct-ops bulk tests against the registered device after the full
     production-style boot (which already ran the golden-path /SHARED
     acceptance: write 1/128/512 with DONE, read back, delete)."""

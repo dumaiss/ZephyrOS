@@ -19,8 +19,8 @@ Enforces docs/architecture.md section 3.1 and the current layout:
   seam; production sources contain no self-test implementations;
 - the retired M3 static-driver mechanism, driver-private SDCC glue, and
   test-only SIO build variants cannot return;
-- the Mn-1 retention window holds: only the M8/M9 acceptance
-  configurations exist (work/00-SUPERVISOR.md), no pre-M8 acceptance
+- the Mn-1 retention window holds: only the M9/M10 acceptance
+  configurations exist (work/00-SUPERVISOR.md), no pre-M9 acceptance
   target, image directory or boot-mode flag can come back, and the
   mechanism coverage that replaced them is present;
 - live build/source documentation contains no references to the removed
@@ -251,20 +251,34 @@ OWNER_FILES = (
     "drivers/v9958/assets/font_cp850_6x8.inc",
     "include/zephyros/video.h",
     "modules/manifests/v9958.json",
-    "tests/m8/manifest-v9958-fontfail.json",
-    "tests/m8/v9958-font-stub.bin",
-    "tests/target/m8/m8_v9958_test.c",
-    "tests/target/include/m8_v9958_selftest.h",
-    "tests/target/m8/m8_ioc_test.c",
-    "tests/target/include/m8_ioc_selftest.h",
+    "tests/video/manifest-fontfail.json",
+    "tests/video/v9958-font-stub.bin",
+    "tests/target/video/v9958_test.c",
+    "tests/target/include/video_selftest.h",
+    "tests/target/ioc/ioc_test.c",
+    "tests/target/include/ioc_selftest.h",
+    "tests/target/hid/hid_test.c",
+    "tests/target/include/hid_selftest.h",
+    "tests/target/console/console_test.c",
+    "tests/target/console/fallback_test.c",
+    "tests/target/console/integration_test.c",
+    "tests/target/include/console_selftest.h",
+    "tests/target/include/console_fallback_selftest.h",
+    "tests/target/include/console_integration_selftest.h",
+    "tests/hid/manifest-badioc.json",
+    "tests/console/manifest-fallback-nohid.json",
+    "tests/console/manifest-fallback-nohid-nov9958.json",
+    "tests/console/manifest-fallback-arena.json",
     "modules/manifests/sio.json",
     "modules/runtime/sdcc_indirect_calls.asm",
     "tests/modules/sio-irq.json",
     "tests/modules/sio-fail.json",
     "tests/modules/sio_irq_module.c",
     "tests/modules/sio_fail_module.c",
-    "tests/modules/m8_api.c",
-    "tests/modules/m8_api.json",
+    "tests/modules/abi_probe.c",
+    "tests/modules/abi_probe.json",
+    "tests/modules/arena_fill.c",
+    "tests/modules/arena_fill.json",
     "tests/target/syscall/syscall_entry.asm",
     "tests/target/syscall/syscall_test.c",
     "tests/target/irq/irq_entry.asm",
@@ -341,11 +355,13 @@ REQUIRED_DIRS = (
     "user/sdk", "user/sdk/include", "user/sdk/src",
     "user/helloworld", "user/monitor",
     "recovery",
-    "tests/subsys", "tests/m8", "tests/m9",
+    "tests/subsys", "tests/hid", "tests/video", "tests/console",
+    "tests/m9",
     "tests/modules",
     "tests/target/syscall", "tests/target/irq", "tests/target/loader",
     "tests/target/romfs", "tests/target/process", "tests/target/support",
-    "tests/target/m8", "tests/target/m9",
+    "tests/target/ioc", "tests/target/hid", "tests/target/video",
+    "tests/target/console", "tests/target/m9",
     "tests/target/m9/fstest",
     "tests/target/m9/exec",
     "tests/target/include",
@@ -373,12 +389,16 @@ TEST_ONLY_SIO_MACROS = (
 PRODUCTION_SELFTEST_MACROS = (
     "ZOS_SUBSYS_SELFTEST",
     "ZOS_ROMFS_CORRUPT_SELFTEST",
-    "ZOS_M8_IOC_SELFTEST",
-    "ZOS_M8_HID_SELFTEST",
-    "ZOS_M8_HID_NOIOC",
-    "ZOS_M8_HID_BADIOC",
-    "ZOS_M8_V9958_SELFTEST",
-    "ZOS_M8_V9958_FONTFAIL",
+    "ZOS_IOC_SELFTEST",
+    "ZOS_HID_SELFTEST",
+    "ZOS_HID_NOIOC",
+    "ZOS_HID_BADIOC",
+    "ZOS_VIDEO_SELFTEST",
+    "ZOS_VIDEO_FONTFAIL",
+    "ZOS_CONSOLE_SELFTEST",
+    "ZOS_CONSOLE_INTEGRATION_SELFTEST",
+    "ZOS_CONSOLE_FALLBACK_SELFTEST",
+    "ZOS_CONSOLE_FALLBACK",
     "ZOS_M9_VFS_SELFTEST",
     "ZOS_M9_PROVIDER_SELFTEST",
 )
@@ -399,12 +419,18 @@ BUILD_VARIANTS = (
     "build-m6-selftest",
     "build-m6-failure-selftest",
     "build-m7-selftest",
-    "build-m8-ioc-selftest",
-    "build-m8-hid-selftest",
-    "build-m8-hid-noioc-selftest",
-    "build-m8-hid-badioc-selftest",
-    "build-m8-v9958-selftest",
-    "build-m8-v9958-fontfail-selftest",
+    "build-ioc-selftest",
+    "build-hid-selftest",
+    "build-hid-noioc-selftest",
+    "build-hid-badioc-selftest",
+    "build-video-selftest",
+    "build-video-fontfail-selftest",
+    "build-console-selftest",
+    "build-console-integration-selftest",
+    "build-console-fb-nohid",
+    "build-console-fb-nohid-nov9958",
+    "build-console-fb-badioc",
+    "build-console-fb-arena",
     "build-m9-vfs-selftest",
     "build-m9-required-mount-selftest",
     "build-m9-provider-selftest",
@@ -1068,21 +1094,29 @@ class TestNoStaleRemovedPaths(unittest.TestCase):
 # predecessor keep acceptance machinery.  This list moves forward at the
 # start of each milestone -- bump the lower bound when a milestone closes
 # and add the new milestone on the right.
-ALLOWED_MILESTONES = (8, 9)
+ALLOWED_MILESTONES = (9, 10)
 
-# Acceptance configurations retired by the Mn-1 rule (M1-M7).  Each name
+# Acceptance configurations retired by the Mn-1 rule (M1-M8).  Each name
 # belonged to exactly one milestone; none may come back, because their
 # mechanism coverage now lives on the current boot path (the subsystem
-# image and the M8/M9 acceptance images).
+# images and the M9 acceptance images).
 RETIRED_ACCEPTANCE_TARGETS = (
     "syscall-selftest", "irq-selftest", "m3-selftest",
     "m4-loader-selftest", "m4-selftest", "m4-placement-selftest",
     "m4-failure-selftest", "m5-selftest", "m5-corrupt-selftest",
     "m6-selftest", "m6-failure-selftest", "m7-selftest",
+    "m8-ioc-selftest", "m8-hid-selftest", "m8-hid-noioc-selftest",
+    "m8-hid-badioc-selftest", "m8-v9958-selftest",
+    "m8-v9958-fontfail-selftest", "m8-console-selftest", "m8-selftest",
+    "m8-fallback-selftests",
     "smoke-hardware-selftest", "smoke-hardware-irq", "smoke-hardware-m3",
     "smoke-hardware-m4", "smoke-hardware-m4-failure", "smoke-hardware-m5",
     "smoke-hardware-m5-corrupt", "smoke-hardware-m6",
     "smoke-hardware-m6-failure", "smoke-hardware-m7",
+    "smoke-hardware-m8", "smoke-hardware-m8-ioc", "smoke-hardware-m8-hid",
+    "smoke-hardware-m8-v9958", "smoke-hardware-m8-console",
+    "smoke-hardware-m8-fb-nohid", "smoke-hardware-m8-fb-nohid-nov9958",
+    "smoke-hardware-m8-fb-badioc", "smoke-hardware-m8-fb-arena",
 )
 
 # Retired boot modes and boot-phase hooks.  Production keeps exactly one
@@ -1154,7 +1188,10 @@ class TestMilestoneRetentionWindow(unittest.TestCase):
     def test_retired_smoke_modes_are_gone(self):
         text = _read(os.path.join(ROOT, "tools", "serial_smoke.py"))
         for mode in ("selftest", "irq", "m3", "m4", "m4-failure", "m5",
-                     "m5-corrupt", "m6", "m6-failure", "m7"):
+                     "m5-corrupt", "m6", "m6-failure", "m7", "m8-ioc",
+                     "m8-hid", "m8-v9958", "m8-console", "m8",
+                     "m8-fb-nohid", "m8-fb-nohid-nov9958", "m8-fb-badioc",
+                     "m8-fb-arena"):
             self.assertNotIn(
                 '"%s"' % mode, text,
                 "retired serial_smoke mode %r reappeared" % mode)
@@ -1163,7 +1200,7 @@ class TestMilestoneRetentionWindow(unittest.TestCase):
         self.assertIn('"romfs-corrupt"', text)
 
     def test_retired_milestone_data_directories_are_gone(self):
-        for name in ("m5", "m6", "m7"):
+        for name in ("m5", "m6", "m7", "m8"):
             self.assertFalse(
                 os.path.isdir(os.path.join(ROOT, "tests", name)),
                 "tests/%s/ still holds retired milestone data" % name)

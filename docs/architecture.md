@@ -2379,7 +2379,7 @@ tests/modules/sio_fail_module.c init-failure variant entry
 ```
 
 * the M3 static driver table is retired: no `boot_drivers[]`, `driver_init_static()`, or `_driver_static_*` symbol is linked, and `tools/mapcheck.py --production` rejects any acceptance symbol;
-* every M4 image embeds a boot module through the generated catalog: `sio.zmod` (production, loader image, placement image), `sio-irq.zmod` (`make m4-selftest`), or `sio-fail.zmod` (`make m4-failure-selftest`).  **The M1-M7 acceptance images, the embedded boot catalog and the legacy fixed-arena geometry were retired under the Mn-1 retention rule at the start of M9 (work package 25a); the loader mechanisms this section proves are now exercised on the current boot path by the loader group of the subsystem acceptance image -- `tests/target/loader/` replayed by `tests/test_subsys_sim.py` -- with container validation and two-base relocation proven on host by `tests/test_zmod.py` and arena exhaustion by the `m8-fb-arena` image;**
+* every M4 image embeds a boot module through the generated catalog: `sio.zmod` (production, loader image, placement image), `sio-irq.zmod` (`make m4-selftest`), or `sio-fail.zmod` (`make m4-failure-selftest`).  **The M1-M7 acceptance images, the embedded boot catalog and the legacy fixed-arena geometry were retired under the Mn-1 retention rule at the start of M9 (work package 25a); the loader mechanisms this section proves are now exercised on the current boot path by the loader group of the subsystem acceptance image -- `tests/target/loader/` replayed by `tests/test_subsys_sim.py` -- with container validation and two-base relocation proven on host by `tests/test_zmod.py` and arena exhaustion by the `console-fb-arena` image;**
 * the (retired) placement image regenerated `platform/zephyr80/memory.inc` with the arena shifted to 9E00h-BE00h and embedded byte-identical module files;
 * `kernel_main()` prints `console: dynamic sio0.b OK` through the bound module (or `console: dynamic driver failed` on load failure);
 * `tools/mapcheck.py` rejects any linked `_sio_`/`_sio0b_`/`_sio_driver` symbol, so the static driver cannot return unnoticed.
@@ -2409,7 +2409,7 @@ M4 is accepted when:
 - failed module initialization rolls back its arena allocation and registry changes;
 - no runtime unload capability is required.
 
-Evidence mapping (as of M4): `tests/test_m4.py`/`tests/test_m4_sim.py` and `tests/test_zmod.py` proved every criterion on host (including the shifted placement and the failure rollback); `make m4-selftest`, `make m4-placement-selftest`, `make m4-failure-selftest` and the corresponding `smoke-hardware-*` captures provided the physical-hardware record (`docs/validation/2026-10-02-m4-acceptance.md`).  Those images and tests were retired under the Mn-1 retention rule (work package 25a); the criteria are now carried by `tests/test_zmod.py`, the loader group of `tests/target/loader/` replayed by `tests/test_subsys_sim.py`, and the `m8-fb-arena` image.
+Evidence mapping (as of M4): `tests/test_m4.py`/`tests/test_m4_sim.py` and `tests/test_zmod.py` proved every criterion on host (including the shifted placement and the failure rollback); `make m4-selftest`, `make m4-placement-selftest`, `make m4-failure-selftest` and the corresponding `smoke-hardware-*` captures provided the physical-hardware record (`docs/validation/2026-10-02-m4-acceptance.md`).  Those images and tests were retired under the Mn-1 retention rule (work package 25a); the criteria are now carried by `tests/test_zmod.py`, the loader group of `tests/target/loader/` replayed by `tests/test_subsys_sim.py`, and the `console-fb-arena` image.
 
 ---
 
@@ -2992,6 +2992,26 @@ M8 did not implement the native filesystem, shell, complete diagnostic suite, mo
 # 31. M8 acceptance criteria
 
 M8 is complete and physically accepted. `docs/validation/2026-10-03-m8-device-stack.md` records the integrated image, full test suite, fallback matrix and physical HID/V9958 console validation completed on 2026-10-04.
+
+The M8 acceptance images (`m8-ioc-selftest`, `m8-hid-selftest`,
+`m8-v9958-selftest`, `m8-console-selftest`, `m8-selftest` and the
+`m8-fallback-selftests` matrix) were retired at the start of M10 under the
+Mn-1 retention rule (work package 32). Their mechanism coverage now runs,
+on the current production boot path, in the subsystem-owned tests:
+`tests/target/ioc/ioc_test.c` with `tests/test_ioc_sim.py` (IOC command and
+bulk lanes, `make ioc-selftest`), `tests/target/hid/hid_test.c` with
+`tests/test_hid_sim.py` (HID text input and the missing/malformed IOC
+rollback rows, `make hid-selftest`, `make hid-noioc-selftest`,
+`make hid-badioc-selftest`), `tests/target/video/v9958_test.c` with
+`tests/test_v9958_sim.py` (V9958 init, renderer and the font-failure
+rollback, `make video-selftest`, `make video-fontfail-selftest`),
+`tests/target/console/console_test.c` with `tests/test_console_sim.py`
+(console binding), and `tests/target/console/integration_test.c` and
+`tests/target/console/fallback_test.c` with `tests/test_console_acceptance.py`
+and `tests/test_console_fallback.py` (integration and the no-HID,
+no-HID/V9958, bad-IOC and arena-exhaustion fallbacks,
+`make console-selftest`, `make console-integration-selftest`,
+`make console-fallback-selftests`).
 
 ---
 
@@ -4615,7 +4635,7 @@ section 8:
 - production with and without a FAT card, and the monitor launching from
   `/SYSTEM`, **passed on byte-identical production bytes** (ROM `f4da0496…`,
   physically run in package 30c);
-- the `m9-selftest` integration image and the M8 fallback rows were
+- the `m9-selftest` integration image and the console fallback rows were
   **accepted by the project owner without a fresh bench run**. No code
   changed after the last physical validation, the same IOC-FAT paths passed
   physically in package 30, and the fallback rows' simulator replays pass.

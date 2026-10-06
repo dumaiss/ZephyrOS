@@ -571,7 +571,7 @@ class TestFixtureArtifacts(unittest.TestCase):
         if not os.path.isdir(FIXTURE_MODULES):
             self.skipTest("build/modules/ missing; run `make zmod-test`")
         self.containers = {}
-        for name in ("m4_probe", "m4_fail", "m4_filler", "m8_api"):
+        for name in ("m4_probe", "m4_fail", "m4_filler", "abi_probe"):
             path = os.path.join(FIXTURE_MODULES, name + ".zmod")
             if not os.path.exists(path):
                 self.skipTest("%s missing; run `make zmod-test`" % path)
@@ -581,7 +581,7 @@ class TestFixtureArtifacts(unittest.TestCase):
     def test_expected_sizes(self):
         probe = self.containers["m4_probe"]
         filler = self.containers["m4_filler"]
-        api = self.containers["m8_api"]
+        api = self.containers["abi_probe"]
         self.assertEqual(probe["bss_size"], 2)
         self.assertEqual(probe["required_granules"], 1)
         self.assertGreater(probe["reloc_count"], 0)
@@ -602,7 +602,7 @@ class TestFixtureArtifacts(unittest.TestCase):
                            stderr=subprocess.DEVNULL)
         except OSError:
             self.skipTest("sdldz80 not available")
-        for name in ("m4_probe", "m4_fail", "m4_filler", "m8_api"):
+        for name in ("m4_probe", "m4_fail", "m4_filler", "abi_probe"):
             manifest_path = os.path.join(FIXTURE_MANIFESTS, name + ".json")
             manifest = zmodpack.load_manifest(manifest_path, FIXTURE_MODULES)
             layout = zmodpack.build_layout(manifest)

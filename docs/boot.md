@@ -272,10 +272,10 @@ make smoke-hardware-subsystem SERIAL_PORT=/dev/ttyUSB0       # flash build-subsy
                                                              # zephyros-subsys-selftest.bin
 make smoke-hardware-romfs-corrupt SERIAL_PORT=/dev/ttyUSB0   # flash build-romfs-corrupt/
                                                              # zephyros-romfs-corrupt.bin
-make smoke-hardware-m8 SERIAL_PORT=/dev/ttyUSB0              # flash build-m8-selftest/
-                                                             # zephyros-m8-selftest.bin
-make smoke-hardware-m8-ioc SERIAL_PORT=/dev/ttyUSB0          # flash build-m8-ioc-selftest/
-                                                             # zephyros-m8-ioc-selftest.bin
+make smoke-hardware-console-integration SERIAL_PORT=/dev/ttyUSB0              # flash build-console-integration-selftest/
+                                                             # zephyros-console-integration-selftest.bin
+make smoke-hardware-ioc SERIAL_PORT=/dev/ttyUSB0          # flash build-ioc-selftest/
+                                                             # zephyros-ioc-selftest.bin
 make smoke-hardware-m9-fs SERIAL_PORT=/dev/ttyUSB0           # flash build-m9-fs-selftest/
                                                              # zephyros-m9-fs-selftest.bin
 make smoke-hardware-m9-exec SERIAL_PORT=/dev/ttyUSB0         # flash build-m9-exec-selftest/
@@ -291,12 +291,15 @@ make smoke-hardware-m9 SERIAL_PORT=/dev/ttyUSB0              # flash build-m9-se
 
 Each smoke mode checks one specific image; build it, flash it, then run the
 mode (the smoke target prints the exact image and sha256, and `make
-hardware-images` builds them all).  The M8 images wait for the tool's
-host-sync sequence, so start the tool first and then press RESET.
+hardware-images` builds them all).  The console/subsystem images wait for
+the tool's host-sync sequence, so start the tool first and then press RESET.
 
-Every acceptance image retired under the Mn-1 retention rule (M1-M7)
+Every acceptance image retired under the Mn-1 retention rule (M1-M8)
 is gone; their mechanism coverage now runs inside the subsystem
-acceptance image (`make subsystem-selftest`) and the M8/M9 images.
+acceptance image (`make subsystem-selftest`), the device subsystem
+images (`make ioc-selftest`, `make hid-selftest`, `make video-selftest`,
+`make console-selftest`, `make console-integration-selftest`,
+`make console-fallback-selftests`) and the M9 acceptance images.
 
 M9's integration acceptance image is `make m9-selftest`: the production
 boot path with `/` served by the resident IOC-FAT provider from the card,

@@ -11,7 +11,7 @@
  *   late   after console binding (ROMFS reader, process/ZEX, loader)
  *
  * Each acceptance image selects exactly one group: the subsystem image
- * (relocated pre-M8 mechanism selftests), the M8 device/console images,
+ * (relocated subsystem mechanism selftests), the device/console subsystem images,
  * or the M9 VFS images.
  */
 
@@ -24,23 +24,23 @@
 #include "process_selftest.h"
 #include "loader_selftest.h"
 #endif
-#if ZOS_M8_IOC_SELFTEST
-#include "m8_ioc_selftest.h"
+#if ZOS_IOC_SELFTEST
+#include "ioc_selftest.h"
 #endif
-#if ZOS_M8_HID_SELFTEST || ZOS_M8_HID_NOIOC || ZOS_M8_HID_BADIOC
-#include "m8_hid_selftest.h"
+#if ZOS_HID_SELFTEST || ZOS_HID_NOIOC || ZOS_HID_BADIOC
+#include "hid_selftest.h"
 #endif
-#if ZOS_M8_V9958_SELFTEST || ZOS_M8_V9958_FONTFAIL
-#include "m8_v9958_selftest.h"
+#if ZOS_VIDEO_SELFTEST || ZOS_VIDEO_FONTFAIL
+#include "video_selftest.h"
 #endif
-#if ZOS_M8_CONSOLE_SELFTEST
-#include "m8_console_selftest.h"
+#if ZOS_CONSOLE_SELFTEST
+#include "console_selftest.h"
 #endif
-#if ZOS_M8_SELFTEST
-#include "m8_selftest.h"
+#if ZOS_CONSOLE_INTEGRATION_SELFTEST
+#include "console_integration_selftest.h"
 #endif
-#if ZOS_M8_FALLBACK_SELFTEST
-#include "m8_fallback_selftest.h"
+#if ZOS_CONSOLE_FALLBACK_SELFTEST
+#include "console_fallback_selftest.h"
 #endif
 #if ZOS_M9_VFS_SELFTEST
 #include "m9_selftest.h"
@@ -107,23 +107,23 @@ void zos_target_test_late(void)
 	zos_run_process_selftest();
 	zos_run_loader_selftest();
 #endif
-#if ZOS_M8_IOC_SELFTEST
-	zos_run_m8_ioc_selftest();
+#if ZOS_IOC_SELFTEST
+	zos_run_ioc_selftest();
 #endif
-#if ZOS_M8_HID_SELFTEST || ZOS_M8_HID_NOIOC || ZOS_M8_HID_BADIOC
-	zos_run_m8_hid_selftest();
+#if ZOS_HID_SELFTEST || ZOS_HID_NOIOC || ZOS_HID_BADIOC
+	zos_run_hid_selftest();
 #endif
-#if ZOS_M8_V9958_SELFTEST || ZOS_M8_V9958_FONTFAIL
-	zos_run_m8_v9958_selftest();
+#if ZOS_VIDEO_SELFTEST || ZOS_VIDEO_FONTFAIL
+	zos_run_video_selftest();
 #endif
-#if ZOS_M8_CONSOLE_SELFTEST
-	zos_run_m8_console_selftest();
+#if ZOS_CONSOLE_SELFTEST
+	zos_run_console_selftest();
 #endif
-#if ZOS_M8_SELFTEST
-	zos_run_m8_selftest();
+#if ZOS_CONSOLE_INTEGRATION_SELFTEST
+	zos_run_console_integration_selftest();
 #endif
-#if ZOS_M8_FALLBACK_SELFTEST
-	zos_run_m8_fallback_selftest();
+#if ZOS_CONSOLE_FALLBACK_SELFTEST
+	zos_run_console_fallback_selftest();
 #endif
 #if ZOS_M9_VFS_SELFTEST
 	zos_run_m9_vfs_selftest();

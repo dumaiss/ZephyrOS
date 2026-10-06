@@ -1,11 +1,11 @@
 {
-  "name": "m8.api",
+  "name": "abi.probe",
   "type": "driver",
   "abi": 3,
   "flags": 0,
-  "objects": ["m8_api.rel", "sdcc_indirect_calls.rel"],
+  "objects": ["abi_probe.rel", "sdcc_indirect_calls.rel"],
   "image_areas": ["_CODE"],
   "bss_areas": ["_DATA"],
-  "init": "m8_api_init",
+  "init": "abi_probe_init",
   "fini": null
 }

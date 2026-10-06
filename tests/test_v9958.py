@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side M8 V9958 video class and driver contract tests (work
+"""Host-side V9958 video class and driver contract tests (work
 package 18).
 
 Covers the declarative and structural surface that can be checked
@@ -24,10 +24,10 @@ without executing target code:
     IOC/HID import or symbol, no VDP interrupt claim, the proven init
     order, validate-before-I/O, and the reset path;
   - the ROMFS boot set (sio, ioc, hid, v9958.zmod, v9958-6x8.font,
-    monitor.zex) and the ZOS_V9958_BOOT gate (pre-M8 images compile it
+    monitor.zex) and the ZOS_V9958_BOOT gate (earlier images compile it
     out);
   - mapcheck rejects linked V9958 driver symbols (module-only);
-  - the smoke tool's m8-v9958 markers and result classification.
+  - the smoke tool's video markers and result classification.
 
 Executable behavior is replayed from the real linked images by
 tests/test_v9958_sim.py.
@@ -61,13 +61,13 @@ FONT_INC = os.path.join(ROOT, "drivers", "v9958", "assets",
                         "font_cp850_6x8.inc")
 MANIFEST = os.path.join(ROOT, "modules", "manifests", "v9958.json")
 RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
-FONTFAIL_MANIFEST = os.path.join(ROOT, "tests", "m8",
-                                 "manifest-v9958-fontfail.json")
-FONT_STUB = os.path.join(ROOT, "tests", "m8", "v9958-font-stub.bin")
-TARGET_TEST_C = os.path.join(ROOT, "tests", "target", "m8",
-                             "m8_v9958_test.c")
+FONTFAIL_MANIFEST = os.path.join(ROOT, "tests", "video",
+                                 "manifest-fontfail.json")
+FONT_STUB = os.path.join(ROOT, "tests", "video", "v9958-font-stub.bin")
+TARGET_TEST_C = os.path.join(ROOT, "tests", "target", "video",
+                             "v9958_test.c")
 TARGET_HEADER = os.path.join(ROOT, "tests", "target", "include",
-                             "m8_v9958_selftest.h")
+                             "video_selftest.h")
 TARGET_RUNNER = os.path.join(ROOT, "tests", "target", "support",
                              "target_test.c")
 MAIN_C = os.path.join(ROOT, "kernel", "main.c")
@@ -352,18 +352,18 @@ class TestModuleArtifact(unittest.TestCase):
 
     def test_makefile_targets_and_gates(self):
         makefile = _read(MAKEFILE)
-        for target in ("v9958-test:", "m8-v9958-selftest:",
-                       "m8-v9958-fontfail-selftest:",
-                       "m8-console-selftest:",
-                       "smoke-hardware-m8-v9958:",
-                       "smoke-hardware-m8-console:"):
+        for target in ("v9958-test:", "video-selftest:",
+                       "video-fontfail-selftest:",
+                       "console-selftest:",
+                       "smoke-hardware-video:",
+                       "smoke-hardware-console:"):
             self.assertIn(target, makefile)
         self.assertIn("$(MODULES)/v9958.zmod", makefile)
         self.assertIn("$(V9958_MODULE_OBJS)", makefile)
         self.assertIn("$(MODULES)/v9958-6x8.font", makefile)
-        self.assertIn("ZOS_M8_V9958_SELFTEST", makefile)
-        self.assertIn("ZOS_M8_V9958_FONTFAIL", makefile)
-        self.assertIn("ZOS_M8_CONSOLE_SELFTEST", makefile)
+        self.assertIn("ZOS_VIDEO_SELFTEST", makefile)
+        self.assertIn("ZOS_VIDEO_FONTFAIL", makefile)
+        self.assertIn("ZOS_CONSOLE_SELFTEST", makefile)
         self.assertIn("ZOS_V9958_BOOT", makefile)
         self.assertIn("BOOT_ZMODS += $(MODULES)/v9958.zmod", makefile)
         # v9958-test also runs the terminal renderer's host model suite.
@@ -586,19 +586,19 @@ class TestTargetAcceptanceContract(unittest.TestCase):
         self.header = _read(TARGET_HEADER)
 
     def test_result_codes_and_entry(self):
-        for name in ("ZOS_M8V9958_OK", "ZOS_M8V9958_FAIL_BOOT",
-                     "ZOS_M8V9958_FAIL_SHAPE",
-                     "ZOS_M8V9958_FAIL_MALFORMED", "ZOS_M8V9958_FAIL_OPS",
-                     "ZOS_M8V9958_FAIL_BIND", "ZOS_M8V9958_FAIL_PRESENT",
-                     "ZOS_M8V9958_FAIL_DEVICES"):
+        for name in ("ZOS_VIDEOSELFTEST_OK", "ZOS_VIDEOSELFTEST_FAIL_BOOT",
+                     "ZOS_VIDEOSELFTEST_FAIL_SHAPE",
+                     "ZOS_VIDEOSELFTEST_FAIL_MALFORMED", "ZOS_VIDEOSELFTEST_FAIL_OPS",
+                     "ZOS_VIDEOSELFTEST_FAIL_BIND", "ZOS_VIDEOSELFTEST_FAIL_PRESENT",
+                     "ZOS_VIDEOSELFTEST_FAIL_DEVICES"):
             self.assertIn(name, self.header)
-        self.assertIn("void zos_run_m8_v9958_selftest(void);", self.header)
-        self.assertIn("extern uint8_t m8_v9958_selftest_result;",
+        self.assertIn("void zos_run_video_selftest(void);", self.header)
+        self.assertIn("extern uint8_t ace_video_selftest_result;",
                       self.header)
         runner = _read(TARGET_RUNNER)
-        self.assertIn("#if ZOS_M8_V9958_SELFTEST || ZOS_M8_V9958_FONTFAIL",
+        self.assertIn("#if ZOS_VIDEO_SELFTEST || ZOS_VIDEO_FONTFAIL",
                       runner)
-        self.assertIn("zos_run_m8_v9958_selftest();", runner)
+        self.assertIn("zos_run_video_selftest();", runner)
 
     def test_target_exercises_the_seven_operations_and_pattern(self):
         for needle in ("ZVIDEO_CTRL_WRITE", "ZVIDEO_DATA_WRITE",
@@ -606,10 +606,10 @@ class TestTargetAcceptanceContract(unittest.TestCase):
                        "ZVIDEO_INDIRECT_WRITE", "ZVIDEO_PRESENT",
                        "ZVIDEO_RESET"):
             self.assertIn(needle, self.test)
-        for needle in ("m8 v9958: video0 OK", "m8 v9958: malformed rejected",
-                       "m8 v9958: reset OK", "m8 v9958: fill presented",
-                       "m8 v9958: pattern drawn", "m8 v9958 selftest: OK",
-                       "m8 v9958 selftest: FAIL 0x"):
+        for needle in ("video: video0 OK", "video: malformed rejected",
+                       "video: reset OK", "video: fill presented",
+                       "video: pattern drawn", "video selftest: OK",
+                       "video selftest: FAIL 0x"):
             self.assertIn(needle, self.test)
         # Malformed coverage: zero-length PRESENT/RESET, null/zero
         # writes, unknown operation, null state.
@@ -617,12 +617,12 @@ class TestTargetAcceptanceContract(unittest.TestCase):
                        "ZDEV_EINVAL"):
             self.assertIn(needle, self.test)
         # The 200-byte DATA_BLOCK is far above the historical ceiling.
-        self.assertIn("M8V9958_BAND_BYTES", self.test)
+        self.assertIn("VIDEO_BAND_BYTES", self.test)
         self.assertIn("200u", self.test)
         # Font-failure image coverage.
-        for needle in ("ZOS_M8_V9958_FONTFAIL",
-                       "m8 v9958: absent after font failure",
-                       "m8 v9958 fontfail selftest: OK"):
+        for needle in ("ZOS_VIDEO_FONTFAIL",
+                       "video: absent after font failure",
+                       "video fontfail selftest: OK"):
             self.assertIn(needle, self.test)
 
     def test_smoke_tool_contract(self):
@@ -630,49 +630,49 @@ class TestTargetAcceptanceContract(unittest.TestCase):
 
         tool = serial_smoke
         for constant, prefix in (
-                (tool.M8V9958_VIDEO_OK, b"m8 v9958: video0 OK"),
-                (tool.M8V9958_MALFORMED_OK, b"m8 v9958: malformed rejected"),
-                (tool.M8V9958_RESET_OK, b"m8 v9958: reset OK"),
-                (tool.M8V9958_CONSOLE_OK,
-                 b"m8 v9958: console v9958.0 OK"),
-                (tool.M8V9958_FILL_OK, b"m8 v9958: fill presented"),
-                (tool.M8V9958_PATTERN_OK, b"m8 v9958: pattern drawn"),
-                (tool.M8V9958_SELFTEST_OK, b"m8 v9958 selftest: OK"),
-                (tool.M8CONSOLE_INPUT_OK,
-                 b"m8 console: input hid.keyboard0"),
-                (tool.M8CONSOLE_OUTPUT_OK,
-                 b"m8 console: output v9958.0"),
-                (tool.M8CONSOLE_SELFTEST_OK,
-                 b"m8 console selftest: OK")):
+                (tool.VIDEO_VIDEO_OK, b"video: video0 OK"),
+                (tool.VIDEO_MALFORMED_OK, b"video: malformed rejected"),
+                (tool.VIDEO_RESET_OK, b"video: reset OK"),
+                (tool.VIDEO_CONSOLE_OK,
+                 b"video: console v9958.0 OK"),
+                (tool.VIDEO_FILL_OK, b"video: fill presented"),
+                (tool.VIDEO_PATTERN_OK, b"video: pattern drawn"),
+                (tool.VIDEO_SELFTEST_OK, b"video selftest: OK"),
+                (tool.CONSOLE_INPUT_OK,
+                 b"console: input hid.keyboard0"),
+                (tool.CONSOLE_OUTPUT_OK,
+                 b"console: output v9958.0"),
+                (tool.CONSOLE_SELFTEST_OK,
+                 b"console selftest: OK")):
             self.assertTrue(constant.startswith(prefix),
                             "%r does not start with %r" % (constant, prefix))
         # The console mode requires the class report and the outcome.
-        self.assertFalse(tool._m8console_result(b""))
-        self.assertTrue(tool._m8console_result(
-            tool.BANNER + tool.M8CONSOLE_INPUT_OK +
-            tool.M8CONSOLE_OUTPUT_OK + tool.M8CONSOLE_SELFTEST_OK))
-        self.assertFalse(tool._m8console_result(
-            tool.BANNER + tool.M8CONSOLE_FAIL))
+        self.assertFalse(tool._console_result(b""))
+        self.assertTrue(tool._console_result(
+            tool.BANNER + tool.CONSOLE_INPUT_OK +
+            tool.CONSOLE_OUTPUT_OK + tool.CONSOLE_SELFTEST_OK))
+        self.assertFalse(tool._console_result(
+            tool.BANNER + tool.CONSOLE_FAIL))
         base = (tool.BANNER +
-                b"m8 v9958: video0 OK\r\n"
-                b"m8 v9958: malformed rejected\r\n"
-                b"m8 v9958: reset OK\r\n"
-                b"m8 v9958: console v9958.0 OK\r\n"
-                b"m8 v9958: fill presented\r\n"
-                b"m8 v9958: pattern drawn\r\n"
-                b"m8 v9958 selftest: OK\r\n")
-        self.assertTrue(tool._m8v9958_result(base))
+                b"video: video0 OK\r\n"
+                b"video: malformed rejected\r\n"
+                b"video: reset OK\r\n"
+                b"video: console v9958.0 OK\r\n"
+                b"video: fill presented\r\n"
+                b"video: pattern drawn\r\n"
+                b"video selftest: OK\r\n")
+        self.assertTrue(tool._video_result(base))
         for wrong in (
-                base.replace(b"m8 v9958: pattern drawn\r\n", b""),
-                base.replace(b"m8 v9958 selftest: OK\r\n", b""),
-                base.replace(b"m8 v9958: console v9958.0 OK\r\n", b""),
-                base + b"m8 v9958 selftest: FAIL 0x03 detail 0x01\r\n",
-                base.replace(b"m8 v9958: reset OK\r\n",
+                base.replace(b"video: pattern drawn\r\n", b""),
+                base.replace(b"video selftest: OK\r\n", b""),
+                base.replace(b"video: console v9958.0 OK\r\n", b""),
+                base + b"video selftest: FAIL 0x03 detail 0x01\r\n",
+                base.replace(b"video: reset OK\r\n",
                              b"v9958: unavailable 0x0B\r\n")):
-            self.assertFalse(tool._m8v9958_result(wrong),
+            self.assertFalse(tool._video_result(wrong),
                              "misclassified: %r" % wrong[-60:])
-        self.assertIn("m8-v9958", tool.__doc__)
-        self.assertIn("m8-console", tool.__doc__)
+        self.assertIn("--mode video", tool.__doc__)
+        self.assertIn("--mode console", tool.__doc__)
 
 
 if __name__ == "__main__":

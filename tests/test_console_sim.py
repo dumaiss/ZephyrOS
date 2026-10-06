@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M8 console acceptance tests: replay the console image in the Z80
+"""Console acceptance tests: replay the console image in the Z80
 simulator.
 
 Coverage (all executing the real linked bytes):
@@ -73,10 +73,10 @@ MONITOR_SHA256 = ("7c59b604620b3ad69ebda5a83343a5c98cb2ad23ea9e05da763bf322f613"
 # Shared markers: the visible session and the early-SIO transcript.
 PROMPT = "Z80> "
 BANNER = "ZephyrOS native monitor"
-SELFTEST_OK = "m8 console selftest: OK"
-INPUT_CLASS = "m8 console: input hid.keyboard0 class 04"
-OUTPUT_CLASS = "m8 console: output v9958.0 class 02"
-RENDERER_VISIBLE = "m8 console: renderer visible"
+SELFTEST_OK = "console selftest: OK"
+INPUT_CLASS = "console: input hid.keyboard0 class 04"
+OUTPUT_CLASS = "console: output v9958.0 class 02"
+RENDERER_VISIBLE = "console: renderer visible"
 SYSINFO = "system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02"
 PROCESS = "process: pid 0 bank 0 flags 0001"
 BANK_INFO = "bank: current 00 mask 7F"
@@ -90,8 +90,8 @@ SCRATCH = 0x1F00
 class ConsoleSimBase(unittest.TestCase):
     """Shared boot, stepping, and V9958 trace-decoding helpers."""
 
-    IMAGE_SUBDIR = "build-m8-console-selftest"
-    IMAGE_NAME = "zephyros-m8-console-selftest.bin"
+    IMAGE_SUBDIR = "build-console-selftest"
+    IMAGE_NAME = "zephyros-console-selftest.bin"
 
     def setUp(self):
         self.bin_path = os.path.join(ROOT, self.IMAGE_SUBDIR, self.IMAGE_NAME)
@@ -248,7 +248,7 @@ class ConsoleSimBase(unittest.TestCase):
         for _ in range(limit):
             self.skip_delay(z)
             z.step()
-            if b"m8 console selftest: OK" in z.sio_tx:
+            if b"console selftest: OK" in z.sio_tx:
                 return
             if _ % 0x1FFF == 0:
                 self.pump(z)
@@ -352,7 +352,7 @@ class TestConsoleBootAndSession(ConsoleSimBase):
         self.assertIn(SELFTEST_OK + "\r\n", sio)
         self.assertNotIn("FAIL", sio)
         self.assertNotIn("PANIC", sio)
-        self.assertEqual(z.bank7[self.syms["_m8_console_selftest_result"]],
+        self.assertEqual(z.bank7[self.syms["_ace_console_selftest_result"]],
                          0x00)
 
         # Registry: exactly the four accepted modules, in load order.
@@ -376,9 +376,9 @@ class TestConsoleBootAndSession(ConsoleSimBase):
         # renderer output is visible only in the V9958 trace, the early
         # control lines only on the serial link.
         self.assertIn(RENDERER_VISIBLE, trace)
-        self.assertIn("m8 console: reverse SGR normal", trace)
+        self.assertIn("console: reverse SGR normal", trace)
         self.assertNotIn(RENDERER_VISIBLE, sio)
-        self.assertNotIn("m8 console selftest", trace)
+        self.assertNotIn("console selftest", trace)
 
         # Monitor banner/prompt and the scratch address from the banner.
         self.assertIn(BANNER, trace)
@@ -632,8 +632,8 @@ class TestBindingMatrix(ConsoleSimBase):
         # selftest control lines reached the serial link while the
         # console was bound to HID/V9958, and the renderer text did not.
         sio = bytes(z.sio_tx)
-        self.assertIn(b"m8 console: output v9958.0 class 02", sio)
-        self.assertNotIn(b"m8 console: renderer visible", sio)
+        self.assertIn(b"console: output v9958.0 class 02", sio)
+        self.assertNotIn(b"console: renderer visible", sio)
 
         # The fatal path is common-resident and early-console based: it
         # must print to the serial link even with the console bound to

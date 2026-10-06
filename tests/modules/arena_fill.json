@@ -1,11 +1,11 @@
 {
-  "name": "m8_regfill",
+  "name": "arena_fill",
   "type": "driver",
   "abi": 3,
   "flags": 0,
-  "objects": ["m8regfill.rel", "sdcc_indirect_calls.rel"],
+  "objects": ["arena_fill.rel", "sdcc_indirect_calls.rel"],
   "image_areas": ["_CODE"],
   "bss_areas": ["_DATA"],
-  "init": "m8_regfill_init",
+  "init": "arena_fill_init",
   "fini": null
 }

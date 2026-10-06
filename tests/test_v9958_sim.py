@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side M8 V9958 video functional tests: replay the real M8 V9958
+"""Host-side V9958 video functional tests: replay the real V9958
 acceptance image (SIO + IOC + HID + the V9958 video core loaded from
 ROMFS, production-derived arena) in the Z80 simulator against the
 V9958 peer's register/VRAM model.
@@ -137,8 +137,8 @@ def engine_commands(peer):
 
 
 class V9958SimBase(unittest.TestCase):
-    IMAGE_DIR = "build-m8-v9958-selftest"
-    IMAGE_NAME = "zephyros-m8-v9958-selftest.bin"
+    IMAGE_DIR = "build-video-selftest"
+    IMAGE_NAME = "zephyros-video-selftest.bin"
 
     def setUp(self):
         self.bin_path = os.path.join(ROOT, self.IMAGE_DIR, self.IMAGE_NAME)
@@ -390,7 +390,7 @@ class V9958SimBase(unittest.TestCase):
 class TestV9958Boot(V9958SimBase):
     def test_registration_bootstrap_and_assets(self):
         peer = V9958Peer()
-        z = self.boot_to(peer, b"m8 v9958: video0 OK\r\n")
+        z = self.boot_to(peer, b"video: video0 OK\r\n")
         tx = bytes(z.sio_tx)
         self.assertNotIn(b"v9958: unavailable", tx)
 
@@ -413,7 +413,7 @@ class TestV9958Boot(V9958SimBase):
         self.assertNotEqual(dev["state"], 0)
 
         # The console defaults select this console-capable output and
-        # keep HID as the preferred input (the normal M8 pair).
+        # keep HID as the preferred input (the normal HID/V9958 pair).
         hid = self.device_by_class(z, ZDEV_HID)
         sio = self.device_by_class(z, ZDEV_SERIAL)
         self.assertIsNotNone(hid)
@@ -436,7 +436,7 @@ class TestV9958Boot(V9958SimBase):
 
     def test_malformed_requests_perform_no_io(self):
         peer = V9958Peer()
-        z = self.boot_to(peer, b"m8 v9958: video0 OK\r\n")
+        z = self.boot_to(peer, b"video: video0 OK\r\n")
         dev, target, state = self.ops_for(z)
         payload = self.put_scratch(z, b"\xcc" * 64)
 
@@ -473,7 +473,7 @@ class TestV9958Boot(V9958SimBase):
 
     def test_direct_operations_long_block_and_128k(self):
         peer = V9958Peer()
-        z = self.boot_to(peer, b"m8 v9958: video0 OK\r\n")
+        z = self.boot_to(peer, b"video: video0 OK\r\n")
         dev, target, state = self.ops_for(z)
 
         # CTRL_WRITE streams register selects; DATA_BLOCK carries 4096
@@ -546,17 +546,17 @@ class TestV9958Boot(V9958SimBase):
 class TestV9958AcceptancePass(V9958SimBase):
     def test_reset_and_visual_pattern(self):
         peer = V9958Peer()
-        z = self.boot_to(peer, b"m8 v9958 selftest: OK\r\n")
+        z = self.boot_to(peer, b"video selftest: OK\r\n")
         tx = bytes(z.sio_tx)
-        for marker in (b"m8 v9958: video0 OK\r\n",
-                       b"m8 v9958: malformed rejected\r\n",
-                       b"m8 v9958: reset OK\r\n",
-                       b"m8 v9958: console v9958.0 OK\r\n",
-                       b"m8 v9958: fill presented\r\n",
-                       b"m8 v9958: pattern drawn\r\n",
-                       b"m8 v9958 selftest: OK\r\n"):
+        for marker in (b"video: video0 OK\r\n",
+                       b"video: malformed rejected\r\n",
+                       b"video: reset OK\r\n",
+                       b"video: console v9958.0 OK\r\n",
+                       b"video: fill presented\r\n",
+                       b"video: pattern drawn\r\n",
+                       b"video selftest: OK\r\n"):
             self.assertIn(marker, tx)
-        self.assertEqual(self.result(z, "_m8_v9958_selftest_result"), 0,
+        self.assertEqual(self.result(z, "_ace_video_selftest_result"), 0,
                          "target recorded a failure: %s"
                          % tx[-160:])
         self.assertNotIn(b"FAIL", tx)
@@ -608,16 +608,16 @@ class TestV9958AcceptancePass(V9958SimBase):
 
 
 class TestV9958FontFailure(V9958SimBase):
-    IMAGE_DIR = "build-m8-v9958-fontfail-selftest"
-    IMAGE_NAME = "zephyros-m8-v9958-fontfail-selftest.bin"
+    IMAGE_DIR = "build-video-fontfail-selftest"
+    IMAGE_NAME = "zephyros-video-fontfail-selftest.bin"
 
     def test_absent_device_and_isolation(self):
         peer = V9958Peer()
-        z = self.boot_to(peer, b"m8 v9958 fontfail selftest: OK\r\n")
+        z = self.boot_to(peer, b"video fontfail selftest: OK\r\n")
         tx = bytes(z.sio_tx)
         self.assertIn(b"v9958: unavailable 0x0B\r\n", tx)
-        self.assertIn(b"m8 v9958: absent after font failure\r\n", tx)
-        self.assertNotIn(b"m8 v9958: video0 OK", tx)
+        self.assertIn(b"video: absent after font failure\r\n", tx)
+        self.assertNotIn(b"video: video0 OK", tx)
 
         self.assertIsNone(self.device_by_class(z, ZDEV_VIDEO),
                           "v9958.0 registered despite the font failure")
@@ -631,7 +631,7 @@ class TestV9958FontFailure(V9958SimBase):
                          sio["handle"])
         # No console-output capability: the SIO fallback stays bound.
         self.assertIsNone(self.device_by_class(z, ZDEV_VIDEO))
-        self.assertEqual(self.result(z, "_m8_v9958_selftest_result"), 0)
+        self.assertEqual(self.result(z, "_ace_video_selftest_result"), 0)
 
         # Fail-fast resource validation: no VDP port was touched at all.
         self.assertEqual(peer.latch_writes, [])

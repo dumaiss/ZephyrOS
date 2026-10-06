@@ -1,6 +1,6 @@
-/* ZephyrOS M8 console acceptance selftest contract (test artifact).
+/* ZephyrOS console acceptance selftest contract (test artifact).
  *
- * The kernel-side acceptance test calls zos_run_m8_console_selftest()
+ * The kernel-side acceptance test calls zos_run_console_selftest()
  * from the late boot hook after the production-style boot (SIO + IOC +
  * HID + the V9958 video core with its output terminal renderer loaded
  * from ROMFS) and after the console service has bound the default
@@ -28,20 +28,20 @@
  *     full ZVIDEO_RESET followed by more visible output.
  */
 
-#ifndef ZEPHYROS_TARGET_M8_CONSOLE_SELFTEST_H
-#define ZEPHYROS_TARGET_M8_CONSOLE_SELFTEST_H
+#ifndef ZEPHYROS_TARGET_CONSOLE_SELFTEST_H
+#define ZEPHYROS_TARGET_CONSOLE_SELFTEST_H
 
-/* Result codes recorded in m8_console_selftest_result (0 = success). */
-#define ZOS_M8CONSOLE_OK             0x00u
-#define ZOS_M8CONSOLE_FAIL_BOOT      0x01u /* devices not discovered      */
-#define ZOS_M8CONSOLE_FAIL_SHAPE     0x02u /* caps/interface shape wrong  */
-#define ZOS_M8CONSOLE_FAIL_BIND      0x03u /* default binding wrong       */
-#define ZOS_M8CONSOLE_FAIL_OPS       0x04u /* console/render op wrong     */
-#define ZOS_M8CONSOLE_FAIL_DEVICES   0x05u /* registry disturbed          */
+/* Result codes recorded in ace_console_selftest_result (0 = success). */
+#define ZOS_CONSOLESELFTEST_OK             0x00u
+#define ZOS_CONSOLESELFTEST_FAIL_BOOT      0x01u /* devices not discovered      */
+#define ZOS_CONSOLESELFTEST_FAIL_SHAPE     0x02u /* caps/interface shape wrong  */
+#define ZOS_CONSOLESELFTEST_FAIL_BIND      0x03u /* default binding wrong       */
+#define ZOS_CONSOLESELFTEST_FAIL_OPS       0x04u /* console/render op wrong     */
+#define ZOS_CONSOLESELFTEST_FAIL_DEVICES   0x05u /* registry disturbed          */
 
 /* Recorded outcome for the host replay / smoke transcript. */
-extern uint8_t m8_console_selftest_result;
+extern uint8_t ace_console_selftest_result;
 
-void zos_run_m8_console_selftest(void);
+void zos_run_console_selftest(void);
 
-#endif /* ZEPHYROS_TARGET_M8_CONSOLE_SELFTEST_H */
+#endif /* ZEPHYROS_TARGET_CONSOLE_SELFTEST_H */

@@ -381,26 +381,26 @@ produced a CRC-verified matching reply.
   reported by the arena plan.  A failed IOC load/bring-up prints
   `ioc: unavailable 0x<ZOS_E*>` and the console still binds to SIO.
   Package 20 adds the observable failure variants: the fallback images
-  (`build-m8-fb-nohid`, `-nohid-nov9958`, `-badioc`, `-arena`, plus
+  (`build-console-fb-nohid`, `-nohid-nov9958`, `-badioc`, `-arena`, plus
   the font-failure and HID rollback images) boot the same four-module
   sequence with one manifest/interface failure and are replayed
-  against their exact bindings by `tests/test_m8_fallback.py` (see
-  section 8.2).  Pre-M8
+  against their exact bindings by `tests/test_console_fallback.py` (see
+  section 8.2).  Earlier
   acceptance images compile the IOC and HID loads out (`ZOS_IOC_BOOT=0`
   / `ZOS_HID_BOOT=0`) and stay byte-identical to their accepted builds.
 - Host validation: `tests/test_ioc.py` pins the platform constants of
   both lanes (including the explicitly paired bulk CRC bypass),
   class contract, module artifact, boot order, and mapcheck rules;
-  `tests/test_ioc_sim.py` replays the real M8 acceptance image against
+  `tests/test_ioc_sim.py` replays the real IOC acceptance image against
   the simulator's IOC command+bulk peer (exact wire bytes on both
   lanes, READY/DONE interlocks, one-time Hunt per lane, fault injection
   on both directions, bounded failure, whole-link recovery, canaries,
   IFF restoration, rollback, and semantic status).  The physical
-  acceptance image is `build-m8-ioc-selftest/` and is driven by
-  `make smoke-hardware-m8-ioc`; board timing remains a physical
+  acceptance image is `build-ioc-selftest/` and is driven by
+  `make smoke-hardware-ioc`; board timing remains a physical
   hardware authority.  The target diagnostic runs the full /SHARED
   READY/DONE acceptance (write 1/128/512, matching DONE records, read
-  back and verify, delete the dedicated `M8IOCTST.BIN`, prove the delete
+  back and verify, delete the dedicated `IOCBULKT.BIN`, prove the delete
   by a reopen answered exactly with the frozen no-file status (34h) and
   the empty failure shape); only a verified unknown-command reply for the
   writable open may report the bulk-write criterion PENDING - both
@@ -462,7 +462,7 @@ discovered the IOC class; the MCU firmware is untouched.
   `hid.zmod`, and `monitor.zex` in the ROMFS recovery store and load
   SIO, then IOC, then HID; a failed HID load prints
   `hid: unavailable 0x<ZOS_E*>` and the console still binds SIO (the
-  `build-m8-fb-badioc` malformed-IOC and `build-m8-fb-nohid`
+  `build-console-fb-badioc` malformed-IOC and `build-console-fb-nohid`
   missing-entry variants prove both failure classes -- section 8.2).
   With HID registered, `console_bind_defaults()` selects HID input and
   the preferred V9958 output, or the SIO output fallback when the
@@ -478,9 +478,9 @@ discovered the IOC class; the MCU firmware is untouched.
   malformed-reply atomicity, transport-error throttling, the 64-call
   stuck penalty, the eight-byte READY collision, the no-IOC rollback,
   and the malformed-IOC interface rejection).  The physical acceptance
-  image is `build-m8-hid-selftest/`, driven by
-  `make smoke-hardware-m8-hid`: the USB-keyboard pass is typed by the
-  operator, the tool validates the echoed `m8 hid: rx XX` transcript,
+  image is `build-hid-selftest/`, driven by
+  `make smoke-hardware-hid`: the USB-keyboard pass is typed by the
+  operator, the tool validates the echoed `hid: rx XX` transcript,
   and then sends the forced SIO-fallback byte.
 
 ## 7. V9958 video core (M8)
@@ -561,7 +561,7 @@ same hardware serves graphics clients and the normal text console.
   `ZVIDEO_RESET` re-establishes every owned register and VRAM asset and
   preserves D0.  Status register 2 stays selected while the driver owns
   the VDP and command starts wait for CE completion.  `/INT` stays
-  disabled: `IRQ_VDP_FF` is never claimed in M8.
+  disabled: `IRQ_VDP_FF` is never claimed.
 - Font: the reviewable asset `assets/font_cp850_6x8.inc` (the pinned
   2048-byte CP850 6x8 font; SHA-256 `6db207e0...`) is emitted
   deterministically by `tools/fontpack.py` as ROMFS DATA
@@ -577,7 +577,7 @@ same hardware serves graphics clients and the normal text console.
   init, the loader rolls the (empty) registration set back, and the SIO
   fallback, IOC transport and HID remain untouched (`v9958:
   unavailable 0x<ZOS_E*>` on the early console; the font-failure image
-  and the `build-m8-fb-arena` allocation-exhaustion image cover both
+  and the `build-console-fb-arena` allocation-exhaustion image cover both
   paths -- section 8.2).
 - Host validation: `tests/test_v9958.py` pins the class contract, the
   paired platform constants, the font asset pipeline, the module
@@ -603,10 +603,10 @@ same hardware serves graphics clients and the normal text console.
   delete lines, circular scrolling, cursor visibility, all reset paths,
   print-run batching, arbitrary write chunking, and exact command-block
   geometry.  The physical acceptance image is
-  `build-m8-v9958-selftest/`, driven by `make smoke-hardware-m8-v9958`;
-  the console image `build-m8-console-selftest/` (HID input + V9958
-  output) is driven by `make smoke-hardware-m8-console` and by
-  `tests/test_m8_sim.py`; the operator confirms the documented pattern
+  `build-video-selftest/`, driven by `make smoke-hardware-video`;
+  the console image `build-console-selftest/` (HID input + V9958
+  output) is driven by `make smoke-hardware-console` and by
+  `tests/test_console_sim.py`; the operator confirms the documented pattern
   and the visible monitor session.
 
 ## 8. Console service
@@ -663,18 +663,18 @@ Five distinct paths must not be confused:
   `sio0.b`): the both-direction fallback used when a preferred
   direction is unavailable; this is also the M7-normal binding.
 - direct early SIO (`early_console_*`): the permanently resident,
-  binding-independent path used by the boot banner, the M8 target
+  binding-independent path used by the boot banner, the target
   control transcripts and `panic()`.  It never consults the console
   service, so it works even when the bound pair is HID/V9958.
 
 The console service composes one bound input with one bound output;
 neither module knows about the other.  The acceptance image
-`build-m8-console-selftest/` binds HID input to V9958 output and runs the
+`build-console-selftest/` binds HID input to V9958 output and runs the
 unchanged M7 `monitor.zex` through that pair; `make
-smoke-hardware-m8-console` validates the early-SIO boot transcript while
+smoke-hardware-console` validates the early-SIO boot transcript while
 the operator confirms the visible session.  The package-20 integration
-image `build-m8-selftest/` binds the same pair, runs the package-20
-target diagnostic, and is driven by `make smoke-hardware-m8` followed by
+image `build-console-integration-selftest/` binds the same pair, runs the package-20
+target diagnostic, and is driven by `make smoke-hardware-console-integration` followed by
 the human monitor pass (section 8.2).
 
 ### 6.1 Failure-path evidence
@@ -693,16 +693,16 @@ failure/fallback matrix in section 8.2:
 
 | Scenario | Behavior | Early-console diagnostic |
 | --- | --- | --- |
-| runtime failure | an optional module's load/init failure is rolled back and diagnosed (`build-m8-fb-*`) | `<name>: unavailable 0x<ZOS_E*>` |
+| runtime failure | an optional module's load/init failure is rolled back and diagnosed (`build-console-fb-*`) | `<name>: unavailable 0x<ZOS_E*>` |
 | runtime failure | required SIO load/init reports failure | `console: dynamic driver failed` |
 | runtime failure | binding finds no suitable device | `console: unbound` |
 | runtime service failure | bound device reports an error | `console: service failed` |
 
 Every production image keeps the full M0 banner and panic path.
 
-### 8.2 M8 integration acceptance (package 20)
+### 8.2 Console integration acceptance (package 20)
 
-Package 20 freezes the M8 production device stack and adds its
+Package 20 freezes the production device stack and adds its
 integration gate:
 
 - **Boot contract**: `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod`
@@ -720,30 +720,30 @@ integration gate:
 
   | Image | Injected failure | Early-SIO diagnostic | Binding |
   | --- | --- | --- | --- |
-  | `build-m8-selftest/`, `build/` | none (all four modules) | -- | HID/V9958 |
-  | `build-m8-v9958-fontfail-selftest/` | undersized ROMFS font | `v9958: unavailable 0x0B` | HID/SIO |
-  | `build-m8-fb-nohid/` | `hid.zmod` entry absent | `hid: unavailable 0x05` | SIO/V9958 |
-  | `build-m8-fb-badioc/` | fake IOC (null command op) fails HID init | `hid: unavailable 0x0B` | SIO/V9958 |
-  | `build-m8-fb-nohid-nov9958/` | HID and V9958 entries absent | both `unavailable 0x05` | SIO/SIO |
-  | `build-m8-fb-arena/` | `v9958.zmod` replaced by an oversized allocation | `v9958: unavailable 0x06` | HID/SIO |
+  | `build-console-integration-selftest/`, `build/` | none (all four modules) | -- | HID/V9958 |
+  | `build-video-fontfail-selftest/` | undersized ROMFS font | `v9958: unavailable 0x0B` | HID/SIO |
+  | `build-console-fb-nohid/` | `hid.zmod` entry absent | `hid: unavailable 0x05` | SIO/V9958 |
+  | `build-console-fb-badioc/` | fake IOC (null command op) fails HID init | `hid: unavailable 0x0B` | SIO/V9958 |
+  | `build-console-fb-nohid-nov9958/` | HID and V9958 entries absent | both `unavailable 0x05` | SIO/SIO |
+  | `build-console-fb-arena/` | `v9958.zmod` replaced by an oversized allocation | `v9958: unavailable 0x06` | HID/SIO |
 
-- **Host/simulator evidence**: `make m8-selftest` builds the
+- **Host/simulator evidence**: `make console-integration-selftest` builds the
   integration image (full stack + package-20 target diagnostic + monitor
   launcher) and replays the production bytes
-  (`tests/test_m8_acceptance.py`): boot order and binding, IOC
+  (`tests/test_console_acceptance.py`): boot order and binding, IOC
   command/status/repeated-PING and the /SHARED READY/DONE bulk
   interlock, HID queue traffic with the stuck-doorbell penalty, the
   scripted monitor session with two Q exit/relaunch cycles,
   malformed/null/class/capability rejections with device-table,
   granule-allocation and lane-handshake invariants, and post-fault
-  recovery.  `make m8-fallback-selftests` builds every variant above
-  and replays `tests/test_m8_fallback.py`; `tests/test_m8.py`
+  recovery.  `make console-fallback-selftests` builds every variant above
+  and replays `tests/test_console_fallback.py`; `tests/test_driver_abi.py`
   reconciles the aligned linked-kernel end, derived arena, arena plan
-  and image manifest, and checks every M8 ROMFS manifest's
+  and image manifest, and checks every subsystem ROMFS manifest's
   content/types/order.
-- **Physical gate**: flash `build-m8-selftest/zephyros-m8-selftest.bin`,
-  run `make smoke-hardware-m8` before reset, perform the human
-  HID/V9958 monitor pass, then run each `make smoke-hardware-m8-fb-*`
+- **Physical gate**: flash `build-console-integration-selftest/zephyros-console-integration-selftest.bin`,
+  run `make smoke-hardware-console-integration` before reset, perform the human
+  HID/V9958 monitor pass, then run each `make smoke-hardware-console-integration-fb-*`
   mode on its image and record what was observed on the display.  The
   package-20 validation record
   (`docs/validation/2026-10-03-m8-device-stack.md`) carries the exact
@@ -787,7 +787,7 @@ loaded module inside the derived driver arena).  None of it may enter
 permanent common memory.  Production derives the arena start from the
 aligned linked-kernel end and the arena end from the runtime-data size
 (`data_base = align_down(DF00h - data_size, 512)`), with at least 16 KiB
-remaining; the fixed `A000h-BFFFh` geometry of the pre-M8 acceptance
+remaining; the fixed `A000h-BFFFh` geometry of the earlier acceptance
 images is retired (work packages 25a/25b), so there is exactly one
 geometry (see `docs/memory.md` section 2.2 and `docs/module-format.md`
 section 1).
@@ -802,7 +802,7 @@ SIO module entries) in the production image.
 
 Host validation layers:
 
-- `tests/test_m8.py` – driver ABI version/structure/order and capability-range
+- `tests/test_driver_abi.py` – driver ABI version/structure/order and capability-range
   contract, derived-arena geometry (alignment, 16-KiB minimum, unaligned
   relation, linked bytes in the arena), the boot-set arena plan and its
   overflow rejection, ABI v1 rejection, and the architectural granule
@@ -810,7 +810,7 @@ Host validation layers:
 - `tests/test_zmod.py`, `tests/test_source_layout.py` – the ZMOD
   container/relocation contract (including a two-base relocation check
   and bad version/ABI rejection), the module-facing include closure, and
-  the milestone-retention window (only M8/M9 acceptance machinery may
+  the milestone-retention window (only M9/M10 acceptance machinery may
   exist).
 - `tests/test_subsys_sim.py` – replays the subsystem acceptance image in
   the Z80 simulator: the syscall and IRQ groups at the early hook, the

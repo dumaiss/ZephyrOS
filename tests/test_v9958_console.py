@@ -122,8 +122,8 @@ class Screen:
 class RendererBase(unittest.TestCase):
     """Boot to kernel context, drive the renderer, decode commands."""
 
-    IMAGE_SUBDIR = "build-m8-console-selftest"
-    IMAGE_NAME = "zephyros-m8-console-selftest.bin"
+    IMAGE_SUBDIR = "build-console-selftest"
+    IMAGE_NAME = "zephyros-console-selftest.bin"
 
     def setUp(self):
         self.bin_path = os.path.join(ROOT, self.IMAGE_SUBDIR, self.IMAGE_NAME)
@@ -169,7 +169,7 @@ class RendererBase(unittest.TestCase):
         for i in range(STEP_LIMIT):
             self.skip_delay(z)
             z.step()
-            if b"m8 console selftest: OK" in z.sio_tx:
+            if b"console selftest: OK" in z.sio_tx:
                 break
         else:
             raise AssertionError("console selftest never completed")

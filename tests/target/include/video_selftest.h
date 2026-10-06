@@ -1,6 +1,6 @@
-/* ZephyrOS M8 V9958 video acceptance selftest contract (test artifact).
+/* ZephyrOS V9958 video acceptance selftest contract (test artifact).
  *
- * The kernel-side acceptance test calls zos_run_m8_v9958_selftest()
+ * The kernel-side acceptance test calls zos_run_video_selftest()
  * from the late boot hook after the production-style boot (SIO + IOC +
  * HID + the V9958 video core loaded from ROMFS).  Control and outcome
  * lines go through the direct early SIO, independent of every bound
@@ -16,7 +16,7 @@
  *   - proves malformed requests are rejected before any I/O
  *     (non-null/nonzero write validation, zero-length PRESENT/RESET,
  *     unknown operation -> ZDEV_ENOTSUP, null state -> ZDEV_ENODEV);
- *   - verifies the default console binding is the normal M8 pair: the
+ *   - verifies the default console binding is the normal HID/V9958 pair: the
  *     HID keyboard input and the v9958.0 output;
  *   - runs ZVIDEO_RESET and re-establishes the full display state;
  *   - exercises the native operations end to end: CTRL_WRITE register
@@ -30,7 +30,7 @@
  * tests/test_v9958_sim.py replays the image against the V9958 peer and
  * checks the exact VRAM bytes.
  *
- * Font-failure image coverage (ZOS_M8_V9958_FONTFAIL): the ROMFS
+ * Font-failure image coverage (ZOS_VIDEO_FONTFAIL): the ROMFS
  * `v9958-6x8.font` entry is an undersized stub, so the module init must
  * fail its resource check and publish no device.  The image proves
  * `v9958.0` is absent, HID and SIO are still registered, and the
@@ -38,23 +38,23 @@
  * are skipped.
  */
 
-#ifndef ZEPHYROS_TARGET_M8_V9958_SELFTEST_H
-#define ZEPHYROS_TARGET_M8_V9958_SELFTEST_H
+#ifndef ZEPHYROS_TARGET_VIDEO_SELFTEST_H
+#define ZEPHYROS_TARGET_VIDEO_SELFTEST_H
 
-/* Result codes recorded in m8_v9958_selftest_result (0 = success). */
-#define ZOS_M8V9958_OK              0x00u
-#define ZOS_M8V9958_FAIL_BOOT       0x01u /* no v9958.0 / not found       */
-#define ZOS_M8V9958_FAIL_SHAPE      0x02u /* caps/interface shape wrong   */
-#define ZOS_M8V9958_FAIL_MALFORMED  0x03u /* malformed request not rejected */
-#define ZOS_M8V9958_FAIL_OPS        0x04u /* an operation returned nonzero  */
-#define ZOS_M8V9958_FAIL_BIND       0x05u /* console binding wrong         */
-#define ZOS_M8V9958_FAIL_PRESENT    0x11u /* device present despite the
+/* Result codes recorded in ace_video_selftest_result (0 = success). */
+#define ZOS_VIDEOSELFTEST_OK              0x00u
+#define ZOS_VIDEOSELFTEST_FAIL_BOOT       0x01u /* no v9958.0 / not found       */
+#define ZOS_VIDEOSELFTEST_FAIL_SHAPE      0x02u /* caps/interface shape wrong   */
+#define ZOS_VIDEOSELFTEST_FAIL_MALFORMED  0x03u /* malformed request not rejected */
+#define ZOS_VIDEOSELFTEST_FAIL_OPS        0x04u /* an operation returned nonzero  */
+#define ZOS_VIDEOSELFTEST_FAIL_BIND       0x05u /* console binding wrong         */
+#define ZOS_VIDEOSELFTEST_FAIL_PRESENT    0x11u /* device present despite the
 					     * failed font resource         */
-#define ZOS_M8V9958_FAIL_DEVICES    0x12u /* earlier devices disturbed    */
+#define ZOS_VIDEOSELFTEST_FAIL_DEVICES    0x12u /* earlier devices disturbed    */
 
 /* Recorded outcome for the host replay / smoke transcript. */
-extern uint8_t m8_v9958_selftest_result;
+extern uint8_t ace_video_selftest_result;
 
-void zos_run_m8_v9958_selftest(void);
+void zos_run_video_selftest(void);
 
-#endif /* ZEPHYROS_TARGET_M8_V9958_SELFTEST_H */
+#endif /* ZEPHYROS_TARGET_VIDEO_SELFTEST_H */

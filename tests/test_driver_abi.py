@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side M8 tests for work package 14-m8-driver-abi-arena.
+"""Host-side driver-ABI and derived-arena contract tests.
 
 Covers the declarative driver-ABI surface and the derived-arena build
 contract:
@@ -58,7 +58,7 @@ _PACK_IMAGE_GLOBALS = (
 def parse_c_enums(path, env):
     """Parse plain C enum bodies (name[ = expr], comma separated).
 
-    Inlined from the retired tests/test_m3.py: the M8 device-class
+    Inlined from the retired tests/test_m3.py: the device-class
     contract reads the enum values device.h defines alongside its
     #define constants.
     """
@@ -697,7 +697,22 @@ class TestBootSetPlan(unittest.TestCase):
         self.assertEqual(manifest["arena"]["granule_size"], 512)
 
 
-M8_MANIFEST_DIR = os.path.join(ROOT, "tests", "m8")
+# Subsystem-owned fixture manifests (retired from the M8 acceptance set by
+# work package 32): the HID dependency-failure manifest, the video
+# resource-failure manifest and the console fallback matrix.
+INTEGRATION_FIXTURE_MANIFESTS = {
+    "manifest-hid-badioc.json":
+        os.path.join(ROOT, "tests", "hid", "manifest-badioc.json"),
+    "manifest-v9958-fontfail.json":
+        os.path.join(ROOT, "tests", "video", "manifest-fontfail.json"),
+    "manifest-fallback-arena.json":
+        os.path.join(ROOT, "tests", "console", "manifest-fallback-arena.json"),
+    "manifest-fallback-nohid.json":
+        os.path.join(ROOT, "tests", "console", "manifest-fallback-nohid.json"),
+    "manifest-fallback-nohid-nov9958.json":
+        os.path.join(ROOT, "tests", "console",
+                     "manifest-fallback-nohid-nov9958.json"),
+}
 
 
 def _read_json(path):
@@ -705,10 +720,10 @@ def _read_json(path):
         return json.load(handle)
 
 
-# Package 20: every M8 manifest carries the required media types; the
+# Every subsystem fixture manifest carries the required media types; the
 # failure variants substitute fixture bytes only for named slots or drop
 # only the module(s) whose absence is the point of the variant.
-M8_REQUIRED_TYPES = {
+INTEGRATION_REQUIRED_TYPES = {
     "sio.zmod": "ZMOD",
     "ioc.zmod": "ZMOD",
     "hid.zmod": "ZMOD",
@@ -717,22 +732,22 @@ M8_REQUIRED_TYPES = {
     "v9958-6x8.font": "DATA",
     "monitor.zex": "ZEX",
 }
-M8_FULL_SET = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
+INTEGRATION_FULL_SET = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
                "v9958-6x8.font", "monitor.zex"]
 # Package 30: the production store also carries the resident IOC-FAT
 # provider, loaded last (before the monitor).
-M8_PRODUCTION_SET = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
+INTEGRATION_PRODUCTION_SET = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
                      "iocfat.zmod", "v9958-6x8.font", "monitor.zex"]
 
 
-class TestM8Manifests(unittest.TestCase):
+class TestManifests(unittest.TestCase):
     def check(self, path, names):
         manifest = _read_json(path)
         self.assertEqual(manifest["format"], "romfs-v1")
         self.assertEqual([entry["name"] for entry in manifest["files"]],
                          names)
         for entry in manifest["files"]:
-            self.assertEqual(entry["type"], M8_REQUIRED_TYPES[entry["name"]],
+            self.assertEqual(entry["type"], INTEGRATION_REQUIRED_TYPES[entry["name"]],
                              entry["name"])
         index = {entry["name"]: i
                  for i, entry in enumerate(manifest["files"])}
@@ -749,18 +764,17 @@ class TestM8Manifests(unittest.TestCase):
     def test_production_and_failure_manifests(self):
         cases = (
             (os.path.join(ROOT, "recovery", "manifest.json"),
-             M8_PRODUCTION_SET),
-            (os.path.join(M8_MANIFEST_DIR, "manifest-hid-badioc.json"),
-             M8_FULL_SET),
-            (os.path.join(M8_MANIFEST_DIR, "manifest-v9958-fontfail.json"),
-             M8_FULL_SET),
-            (os.path.join(M8_MANIFEST_DIR,
-                          "manifest-fallback-arena.json"), M8_FULL_SET),
-            (os.path.join(M8_MANIFEST_DIR, "manifest-fallback-nohid.json"),
+             INTEGRATION_PRODUCTION_SET),
+            (INTEGRATION_FIXTURE_MANIFESTS["manifest-hid-badioc.json"],
+             INTEGRATION_FULL_SET),
+            (INTEGRATION_FIXTURE_MANIFESTS["manifest-v9958-fontfail.json"],
+             INTEGRATION_FULL_SET),
+            (INTEGRATION_FIXTURE_MANIFESTS["manifest-fallback-arena.json"],
+             INTEGRATION_FULL_SET),
+            (INTEGRATION_FIXTURE_MANIFESTS["manifest-fallback-nohid.json"],
              ["sio.zmod", "ioc.zmod", "v9958.zmod", "v9958-6x8.font",
               "monitor.zex"]),
-            (os.path.join(M8_MANIFEST_DIR,
-                          "manifest-fallback-nohid-nov9958.json"),
+            (INTEGRATION_FIXTURE_MANIFESTS["manifest-fallback-nohid-nov9958.json"],
              ["sio.zmod", "ioc.zmod", "monitor.zex"]),
         )
         for path, names in cases:
@@ -781,12 +795,12 @@ class TestM8Manifests(unittest.TestCase):
             "manifest-v9958-fontfail.json": {
                 "v9958-6x8.font": "v9958-font-stub.bin"},
             "manifest-fallback-arena.json": {
-                "v9958.zmod": "m8regfill.zmod"},
+                "v9958.zmod": "arena_fill.zmod"},
             "manifest-fallback-nohid.json": {},
             "manifest-fallback-nohid-nov9958.json": {},
         }
         for name, mapping in substitutions.items():
-            manifest = _read_json(os.path.join(M8_MANIFEST_DIR, name))
+            manifest = _read_json(INTEGRATION_FIXTURE_MANIFESTS[name])
             paths = {entry["name"]: entry["path"]
                      for entry in manifest["files"]}
             for slot, path in mapping.items():
@@ -799,60 +813,62 @@ class TestM8Manifests(unittest.TestCase):
     def test_makefile_acceptance_targets_and_flags(self):
         with open(os.path.join(ROOT, "Makefile")) as handle:
             makefile = handle.read()
-        for target in ("m8-selftest:", "m8-fallback-selftests:",
-                       "smoke-hardware-m8:", "smoke-hardware-m8-fb-nohid:",
-                       "smoke-hardware-m8-fb-nohid-nov9958:",
-                       "smoke-hardware-m8-fb-badioc:",
-                       "smoke-hardware-m8-fb-arena:"):
+        for target in ("console-integration-selftest:",
+                       "console-fallback-selftests:",
+                       "smoke-hardware-console-integration:",
+                       "smoke-hardware-console-fb-nohid:",
+                       "smoke-hardware-console-fb-nohid-nov9958:",
+                       "smoke-hardware-console-fb-badioc:",
+                       "smoke-hardware-console-fb-arena:"):
             self.assertIn(target, makefile)
-        for flag in ("ZOS_M8_SELFTEST", "ZOS_M8_FALLBACK_SELFTEST",
-                     "ZOS_M8_FALLBACK"):
+        for flag in ("ZOS_CONSOLE_INTEGRATION_SELFTEST", "ZOS_CONSOLE_FALLBACK_SELFTEST",
+                     "ZOS_CONSOLE_FALLBACK"):
             self.assertIn(flag, makefile)
 
     def test_target_runner_wires_package20_tests(self):
         with open(os.path.join(ROOT, "tests", "target", "support",
                                "target_test.c")) as handle:
             runner = handle.read()
-        self.assertIn('#include "m8_selftest.h"', runner)
-        self.assertIn('#include "m8_fallback_selftest.h"', runner)
-        self.assertIn("zos_run_m8_selftest()", runner)
-        self.assertIn("zos_run_m8_fallback_selftest()", runner)
+        self.assertIn('#include "console_integration_selftest.h"', runner)
+        self.assertIn('#include "console_fallback_selftest.h"', runner)
+        self.assertIn("zos_run_console_integration_selftest()", runner)
+        self.assertIn("zos_run_console_fallback_selftest()", runner)
 
     def test_serial_smoke_modes_classify_the_matrix(self):
         import serial_smoke as tool
         self.assertEqual(
-            sorted(tool.M8FB_MODES),
-            ["m8-fb-arena", "m8-fb-badioc", "m8-fb-nohid",
-             "m8-fb-nohid-nov9958"])
-        for mode in tool.M8FB_MODES:
+            sorted(tool.FALLBACK_MODES),
+            ["console-fb-arena", "console-fb-badioc", "console-fb-nohid",
+             "console-fb-nohid-nov9958"])
+        for mode in tool.FALLBACK_MODES:
             self.assertIn(mode, tool.__doc__)
         base = (tool.BANNER +
                 b"hid: unavailable 0x05\r\n" +
-                b"m8 fallback: input sio0.b class 01\r\n" +
-                b"m8 fallback: output v9958.0 class 02\r\n" +
-                b"m8 fallback: devices 3\r\n" +
-                b"m8 fallback: send input\r\n" +
-                b"m8 fallback: input OK 0x52\r\n" +
-                b"m8 fallback: console write OK\r\n" +
-                b"m8 fallback selftest: OK\r\n")
-        self.assertTrue(tool._m8fb_result("m8-fb-nohid", base))
-        self.assertFalse(tool._m8fb_result(
-            "m8-fb-nohid", base + tool.M8FB_CONSOLE_MARKER))
-        self.assertFalse(tool._m8fb_result(
-            "m8-fb-nohid", base.replace(b"v9958.0", b"sio0.b")))
-        self.assertFalse(tool._m8fb_result(
-            "m8-fb-nohid", base.replace(b"input OK 0x52", b"input none")))
+                b"console fallback: input sio0.b class 01\r\n" +
+                b"console fallback: output v9958.0 class 02\r\n" +
+                b"console fallback: devices 3\r\n" +
+                b"console fallback: send input\r\n" +
+                b"console fallback: input OK 0x52\r\n" +
+                b"console fallback: console write OK\r\n" +
+                b"console fallback selftest: OK\r\n")
+        self.assertTrue(tool._fallback_result("console-fb-nohid", base))
+        self.assertFalse(tool._fallback_result(
+            "console-fb-nohid", base + tool.FALLBACK_CONSOLE_MARKER))
+        self.assertFalse(tool._fallback_result(
+            "console-fb-nohid", base.replace(b"v9958.0", b"sio0.b")))
+        self.assertFalse(tool._fallback_result(
+            "console-fb-nohid", base.replace(b"input OK 0x52", b"input none")))
         integration = (tool.BANNER +
-                       b"m8 selftest: input hid.keyboard0 class 04\r\n" +
-                       b"m8 selftest: output v9958.0 class 02\r\n" +
-                       b"m8 selftest: devices 04\r\n" +
-                       b"m8 selftest: ioc level 4A\r\n" +
-                       b"m8 selftest: rejected calls OK\r\n" +
-                       b"m8 selftest: OK\r\n")
-        self.assertTrue(tool._m8_result(integration))
-        self.assertFalse(tool._m8_result(
+                       b"console integration: input hid.keyboard0 class 04\r\n" +
+                       b"console integration: output v9958.0 class 02\r\n" +
+                       b"console integration: devices 04\r\n" +
+                       b"console integration: ioc level 4A\r\n" +
+                       b"console integration: rejected calls OK\r\n" +
+                       b"console integration: OK\r\n")
+        self.assertTrue(tool._integration_result(integration))
+        self.assertFalse(tool._integration_result(
             integration + b"hid: unavailable 0x05\r\n"))
-        self.assertIn("m8", tool.__doc__)
+        self.assertIn("console-fb-nohid", tool.__doc__)
 
 
 if __name__ == "__main__":

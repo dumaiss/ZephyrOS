@@ -19,7 +19,7 @@
     {
       "name": "v9958.zmod",
       "type": "ZMOD",
-      "path": "m8regfill.zmod"
+      "path": "arena_fill.zmod"
     },
     {
       "name": "v9958-6x8.font",

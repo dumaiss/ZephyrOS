@@ -24,7 +24,7 @@ Coverage (all executing the real linked bytes, on the current boot path):
 * the monitor launcher then execs the recovery-store monitor through the
   same process path; the scripted session ends with
   `monitor: exit status 0x` and the launcher re-execs the monitor (a
-  second banner and prompt), exactly as the M8 acceptance records.
+  second banner and prompt), exactly as the subsystem acceptance records.
 
 Skipped when the subsystem image has not been built.
 """

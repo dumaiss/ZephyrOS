@@ -5,7 +5,7 @@ milestones establish a clean boot path, a stable kernel execution
 environment, and the architectural boundaries later subsystems will build
 on.  See `docs/architecture.md` for the contract and `docs/boot.md` for the
 reset/boot path (it separates the historical M0 banner transcript from the
-current M8 boot).
+current boot).
 
 ## Status
 
@@ -173,29 +173,29 @@ make hid-test
 make v9958-test
                    # pack/validate v9958.zmod + font pipeline + renderer
                    # model suites
-make m8-ioc-selftest
-                   # M8 IOC acceptance image + host replay
-                   # (build-m8-ioc-selftest/)
-make m8-hid-selftest
-                   # M8 HID acceptance image + host replay
-make m8-v9958-selftest
-                   # M8 V9958 acceptance image + host replay
-make m8-console-selftest
-                   # M8 HID/V9958 console acceptance image + host replay
-make m8-selftest
-                   # M8 integration acceptance: full four-module image +
+make ioc-selftest
+                   # IOC transport acceptance image + host replay
+                   # (build-ioc-selftest/)
+make hid-selftest
+                   # HID input acceptance image + host replay
+make video-selftest
+                   # V9958 video acceptance image + host replay
+make console-selftest
+                   # console binding acceptance image + host replay
+make console-integration-selftest
+                   # console integration acceptance: full four-module image +
                    # package-20 target diagnostic + monitor launcher, and
                    # the production-byte simulator replay (boot order,
                    # binding, IOC command/bulk, HID queue, scripted
                    # monitor session, post-fault recovery)
-                   # (build-m8-selftest/)
+                   # (build-console-integration-selftest/)
 make m9-vfs-selftest
                    # M9 VFS bootstrap acceptance: /SYSTEM mounted by VFS,
                    # modules + monitor loaded by path, target VFS selftest
                    # (build-m9-vfs-selftest/)
 make m9-required-mount-selftest
                    # M9 mount-policy acceptance image + host replay
-make m8-fallback-selftests
+make console-fallback-selftests
                    # builds every failure/fallback variant image (no HID,
                    # no HID+V9958, malformed IOC, arena exhaustion, font
                    # failure, HID rollback) and replays each against its
@@ -243,29 +243,30 @@ make smoke-hardware-romfs-corrupt SERIAL_PORT=/dev/ttyUSB0
                    # flash build-romfs-corrupt/zephyros-romfs-corrupt.bin
                    # (make romfs-corrupt-selftest):
                    # 'PANIC: romfs: corrupt recovery image'
-make smoke-hardware-m8-ioc SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-m8-ioc-selftest/zephyros-m8-ioc-selftest.bin
-                   # (make m8-ioc-selftest): contract level, PING, bulk
+make smoke-hardware-ioc SERIAL_PORT=/dev/ttyUSB0
+                   # flash build-ioc-selftest/zephyros-ioc-selftest.bin
+                   # (make ioc-selftest): contract level, PING, bulk
                    # READY/DONE sections and the frozen no-file status
-make smoke-hardware-m8-hid SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-m8-hid-selftest/zephyros-m8-hid-selftest.bin
-                   # (make m8-hid-selftest): the queue/doorbell transcript
-make smoke-hardware-m8-v9958 SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-m8-v9958-selftest/zephyros-m8-v9958-selftest.bin
-                   # (make m8-v9958-selftest): the video transcript
-make smoke-hardware-m8-console SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-m8-console-selftest/zephyros-m8-console-selftest.bin
-                   # (make m8-console-selftest): the serial portion
-make smoke-hardware-m8 SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-m8-selftest/zephyros-m8-selftest.bin
-                   # (make m8-selftest): the integration image's serial
+make smoke-hardware-hid SERIAL_PORT=/dev/ttyUSB0
+                   # flash build-hid-selftest/zephyros-hid-selftest.bin
+                   # (make hid-selftest): the queue/doorbell transcript
+make smoke-hardware-video SERIAL_PORT=/dev/ttyUSB0
+                   # flash build-video-selftest/zephyros-video-selftest.bin
+                   # (make video-selftest): the video transcript
+make smoke-hardware-console SERIAL_PORT=/dev/ttyUSB0
+                   # flash build-console-selftest/zephyros-console-selftest.bin
+                   # (make console-selftest): the serial portion
+make smoke-hardware-console-integration SERIAL_PORT=/dev/ttyUSB0
+                   # flash build-console-integration-selftest/zephyros-console-integration-selftest.bin
+                   # (make console-integration-selftest): the integration image's serial
                    # portion (binding report, PING level, rejected-call
-                   # invariants, 'm8 selftest: OK'); then perform the
+                   # invariants, 'console integration: OK'); then perform the
                    # human HID/V9958 monitor pass on the display
-make smoke-hardware-m8-fb-nohid SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-m8-fb-nohid/zephyros-m8-fb-nohid.bin
-                   # (make m8-fallback-selftests); fallback variants (also
-                   # -fb-nohid-nov9958, -fb-badioc, -fb-arena) each verify
+make smoke-hardware-console-fb-nohid SERIAL_PORT=/dev/ttyUSB0
+                   # flash build-console-fb-nohid/zephyros-console-fb-nohid.bin
+                   # (make console-fallback-selftests); fallback variants (also
+                   # -console-fb-nohid-nov9958, -console-fb-badioc,
+                   # -console-fb-arena) each verify
                    # their exact binding, early-SIO diagnostic and scripted
                    # serial input where the input is SIO; V9958-bound output
                    # is confirmed on the display by the operator
@@ -284,10 +285,11 @@ Physical-hardware validation uses `tools/serial_smoke.py` (115200 8N1,
 bounded timeout).  Build the image a mode checks (the entry above names it;
 `make hardware-images` builds them all) and flash it before starting the
 mode -- the smoke target itself prints the image path and sha256.  The
-subsystem and M8 modes must be listening before the board boots: start the
+subsystem and console modes must be listening before the board boots: start the
 tool, then power-cycle or press RESET (the boot-log lines are printed once;
-the M8 images additionally wait for the tool's host-sync sequence before the
-banner).  The `subsystem`, `romfs-corrupt`, `m8` and `m8-fb-*` modes assert
+the console/subsystem images additionally wait for the tool's host-sync sequence before the
+banner).  The `subsystem`, `romfs-corrupt`, `console-integration` and
+`console-fb-*` modes assert
 the exact acceptance transcript, binding and diagnostics, scripting the
 serial input where the bound input is SIO; V9958-bound output is confirmed
 on the display by the operator.  Note: `smoke-hardware` (mode `normal`)
@@ -295,11 +297,11 @@ reads the console-service line and the monitor prompt from the serial link,
 which only happens on an SIO-fallback bench (HID/V9958 absent).  On a full
 bench the console binds HID input / V9958 output, so those appear on the
 display and only the banner is on the serial link -- use
-`smoke-hardware-m8` plus the human display check there.  Dated acceptance
+`smoke-hardware-console-integration` plus the human display check there.  Dated acceptance
 records live under
 `docs/validation/`
 (M1, M2, the M3 record, the M4 loader/acceptance records, M5-M7, and
-the package-20 M8 device-stack record; those retirements are recorded by
+the package-20 device-stack record; those retirements are recorded by
 work package 25a).
 
 Artifacts (all under `build/`):
@@ -338,11 +340,11 @@ serial: OK
 console: dynamic sio0.b OK
 ```
 
-On the M8 production stack the console-service line is written through
+On the production stack the console-service line is written through
 the *bound* console (HID input / V9958 output), so it appears on the
 V9958 display rather than the serial link; the serial transcript keeps
 the early-SIO banner and any `<name>: unavailable 0x<ZOS_E*>`
-diagnostics.  `make smoke-hardware-m8` verifies the serial portion of
+diagnostics.  `make smoke-hardware-console-integration` verifies the serial portion of
 the integration image.
 
 ## Layout
@@ -374,7 +376,7 @@ ZephyrOS/
 │                          dir.c),
 │                          process/ (process.c, exec.c, launch.asm)
 ├── drivers/               sio/ (sio.c, sio_io.asm, sio_module.c),
-│                          ioc/, hid/, v9958/ (M8 device modules),
+│                          ioc/, hid/, v9958/ (device modules),
 │                          ctc/ (ctc.c)
 ├── modules/               manifests/ (production ZMOD metadata),
 │                          runtime/ (shared module-local SDCC glue)
@@ -396,9 +398,10 @@ ZephyrOS/
 │                          zmodpack.py, romfspack.py, zexpack.py,
 │                          fontpack.py, serial_smoke.py
 ├── tests/                 host-side image/layout/ABI tests + Z80 replays;
-│                          m8/, m9/, subsys/ (manifests, fixtures,
-│                          generators); modules/ (test ZMOD sources +
-│                          manifests); target/ (subsystem and M8/M9
-│                          acceptance code, headers, shared runner)
+│                          hid/, video/, console/, m9/, subsys/
+│                          (manifests, fixtures, generators); modules/
+│                          (test ZMOD sources + manifests); target/
+│                          (subsystem acceptance code, headers, shared
+│                          runner)
 └── work/                  milestone worker contracts
 ```

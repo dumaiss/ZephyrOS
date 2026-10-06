@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side M8 HID class and driver contract tests (work package 17).
+"""Host-side HID class and driver contract tests.
 
 Covers the declarative and structural surface that can be checked
 without executing target code:
@@ -25,7 +25,7 @@ without executing target code:
   - the fake-IOC fixture and the no-IOC/malformed images that prove
     dependency failure, interface verification and rollback;
   - mapcheck rejects linked HID driver symbols (module-only);
-  - the smoke tool's m8-hid markers and result classification.
+  - the smoke tool's hid markers and result classification.
 
 Executable behavior is replayed from the real linked images by
 tests/test_hid_sim.py.
@@ -56,11 +56,11 @@ DRIVER_C = os.path.join(ROOT, "drivers", "hid", "hid.c")
 MODULE_C = os.path.join(ROOT, "drivers", "hid", "hid_module.c")
 MANIFEST = os.path.join(ROOT, "modules", "manifests", "hid.json")
 RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
-BADIOC_MANIFEST = os.path.join(ROOT, "tests", "m8",
-                               "manifest-hid-badioc.json")
+BADIOC_MANIFEST = os.path.join(ROOT, "tests", "hid",
+                               "manifest-badioc.json")
 FAKE_IOC_C = os.path.join(ROOT, "tests", "modules", "hid_fake_ioc.c")
-TARGET_TEST_C = os.path.join(ROOT, "tests", "target", "m8",
-                             "m8_hid_test.c")
+TARGET_TEST_C = os.path.join(ROOT, "tests", "target", "hid",
+                             "hid_test.c")
 TARGET_RUNNER = os.path.join(ROOT, "tests", "target", "support",
                              "target_test.c")
 MAIN_C = os.path.join(ROOT, "kernel", "main.c")
@@ -203,16 +203,16 @@ class TestHidModuleArtifact(unittest.TestCase):
 
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
-        for target in ("hid-test:", "m8-hid-selftest:",
-                       "m8-hid-noioc-selftest:",
-                       "m8-hid-badioc-selftest:",
-                       "smoke-hardware-m8-hid:"):
+        for target in ("hid-test:", "hid-selftest:",
+                       "hid-noioc-selftest:",
+                       "hid-badioc-selftest:",
+                       "smoke-hardware-hid:"):
             self.assertIn(target, makefile)
         self.assertIn("$(MODULES)/hid.zmod", makefile)
         self.assertIn("$(HID_MODULE_OBJS)", makefile)
-        self.assertIn("ZOS_M8_HID_SELFTEST", makefile)
-        self.assertIn("ZOS_M8_HID_NOIOC", makefile)
-        self.assertIn("ZOS_M8_HID_BADIOC", makefile)
+        self.assertIn("ZOS_HID_SELFTEST", makefile)
+        self.assertIn("ZOS_HID_NOIOC", makefile)
+        self.assertIn("ZOS_HID_BADIOC", makefile)
         self.assertIn("ZOS_HID_BOOT", makefile)
         # The declared boot-set plan must carry SIO, IOC and HID.
         self.assertIn("BOOT_ZMODS", makefile)
@@ -247,9 +247,9 @@ class TestMapcheckRules(unittest.TestCase):
         with self.assertRaises(mapcheck.MapError):
             mapcheck.check_symbols({}, {"_hid_module_init": 0x3000})
 
-    def test_production_rejects_m8_hid_acceptance_symbols(self):
+    def test_production_rejects_hid_acceptance_symbols(self):
         with self.assertRaises(mapcheck.MapError):
-            mapcheck.check_symbols({}, {"_m8_hid_selftest_result": 0x2000},
+            mapcheck.check_symbols({}, {"_ace_hid_selftest_result": 0x2000},
                                    production=True)
 
 
@@ -400,23 +400,23 @@ class TestHidDependencyFailureArtifacts(unittest.TestCase):
 
     def test_target_test_covers_rollback_and_fallback(self):
         test = _read(TARGET_TEST_C)
-        for needle in ("ZOS_M8_HID_NOIOC", "ZOS_M8_HID_BADIOC",
+        for needle in ("ZOS_HID_NOIOC", "ZOS_HID_BADIOC",
                        "ZDEV_HANDLE_INVALID",
-                       "m8 hid: hid absent after rollback",
-                       "m8 hid: malformed ioc rejected",
-                       "m8 hid: sio fallback, send R",
-                       "m8 hid: sio fallback OK",
-                       "m8 hid selftest: OK"):
+                       "hid: hid absent after rollback",
+                       "hid: malformed ioc rejected",
+                       "hid: sio fallback, send R",
+                       "hid: sio fallback OK",
+                       "hid selftest: OK"):
             self.assertIn(needle, test)
         # The capability dispatch helper proves ENOTSUP for absent
         # capabilities without calling through a null method.
-        self.assertIn("m8hid_gamepad", test)
+        self.assertIn("hid_gamepad", test)
         self.assertIn("ZDEV_ENOTSUP", test)
         self.assertIn("ZCAP_HID_GAMEPAD", test)
         runner = _read(TARGET_RUNNER)
-        self.assertIn("#if ZOS_M8_HID_SELFTEST || ZOS_M8_HID_NOIOC || "
-                      "ZOS_M8_HID_BADIOC", runner)
-        self.assertIn("zos_run_m8_hid_selftest();", runner)
+        self.assertIn("#if ZOS_HID_SELFTEST || ZOS_HID_NOIOC || "
+                      "ZOS_HID_BADIOC", runner)
+        self.assertIn("zos_run_hid_selftest();", runner)
 
 
 class TestHidSmokeToolContract(unittest.TestCase):
@@ -427,30 +427,30 @@ class TestHidSmokeToolContract(unittest.TestCase):
         self.test = _read(TARGET_TEST_C)
 
     def test_markers_match_target_output(self):
-        for needle in ("m8 hid: keyboard0 OK\\r\\n",
-                       "m8 hid: ready for input\\r\\n",
-                       "m8 hid: rx ",
-                       "m8 hid: typed pass OK\\r\\n",
-                       "m8 hid: sio fallback, send R\\r\\n",
-                       "m8 hid: sio fallback OK\\r\\n",
-                       "m8 hid selftest: OK\\r\\n",
-                       "m8 hid selftest: FAIL 0x"):
+        for needle in ("hid: keyboard0 OK\\r\\n",
+                       "hid: ready for input\\r\\n",
+                       "hid: rx ",
+                       "hid: typed pass OK\\r\\n",
+                       "hid: sio fallback, send R\\r\\n",
+                       "hid: sio fallback OK\\r\\n",
+                       "hid selftest: OK\\r\\n",
+                       "hid selftest: FAIL 0x"):
             self.assertIn(needle, self.test,
                           "target output changed without the smoke tool: %r"
                           % needle)
         for constant, prefix in (
-                (self.tool.M8HID_READY, b"m8 hid: ready for input"),
-                (self.tool.M8HID_TYPED_OK, b"m8 hid: typed pass OK"),
-                (self.tool.M8HID_SIO_PROMPT,
-                 b"m8 hid: sio fallback, send R"),
-                (self.tool.M8HID_FALLBACK_OK, b"m8 hid: sio fallback OK"),
-                (self.tool.M8HID_SELFTEST_OK, b"m8 hid selftest: OK")):
+                (self.tool.HID_READY, b"hid: ready for input"),
+                (self.tool.HID_TYPED_OK, b"hid: typed pass OK"),
+                (self.tool.HID_SIO_PROMPT,
+                 b"hid: sio fallback, send R"),
+                (self.tool.HID_FALLBACK_OK, b"hid: sio fallback OK"),
+                (self.tool.HID_SELFTEST_OK, b"hid selftest: OK")):
             self.assertTrue(constant.startswith(prefix),
                             "%r does not start with %r" % (constant, prefix))
 
     def test_typed_bytes_match_the_mcu_translation(self):
         # a, B, 3, Enter, Backspace, Ctrl-X, Arrow-Up (ESC [ A).
-        self.assertEqual(self.tool.M8HID_TYPED_BYTES,
+        self.assertEqual(self.tool.HID_TYPED_BYTES,
                          (0x61, 0x42, 0x33, 0x0D, 0x08, 0x18,
                           0x1B, 0x5B, 0x41))
         for fragment in ("0x61u", "0x42u", "0x33u", "0x0Du", "0x08u",
@@ -458,34 +458,34 @@ class TestHidSmokeToolContract(unittest.TestCase):
             self.assertIn(fragment, self.test)
 
     def test_result_classification(self):
-        rx = b"".join(b"m8 hid: rx %02X\r\n" % b
-                      for b in self.tool.M8HID_TYPED_BYTES)
+        rx = b"".join(b"hid: rx %02X\r\n" % b
+                      for b in self.tool.HID_TYPED_BYTES)
         base = (self.tool.BANNER + self.tool.CONSOLE_DYNAMIC_OK +
-                b"m8 hid: keyboard0 OK\r\n"
-                b"m8 hid: ready for input\r\n" + rx +
-                b"m8 hid: typed pass OK\r\n"
-                b"m8 hid: sio fallback, send R\r\n"
-                b"m8 hid: sio fallback OK\r\n"
-                b"m8 hid selftest: OK\r\n")
-        self.assertEqual(self.tool._m8hid_result(base), "ok")
+                b"hid: keyboard0 OK\r\n"
+                b"hid: ready for input\r\n" + rx +
+                b"hid: typed pass OK\r\n"
+                b"hid: sio fallback, send R\r\n"
+                b"hid: sio fallback OK\r\n"
+                b"hid selftest: OK\r\n")
+        self.assertEqual(self.tool._hid_result(base), "ok")
         # Short/missing evidence is a failure.
         for wrong in (
-                base.replace(b"m8 hid: typed pass OK\r\n", b""),
-                base.replace(b"m8 hid: sio fallback OK\r\n", b""),
-                base.replace(b"m8 hid selftest: OK\r\n", b""),
-                base.replace(b"m8 hid: rx 42\r\n", b""),
-                base.replace(b"m8 hid: rx 42\r\nm8 hid: rx 33\r\n",
-                             b"m8 hid: rx 33\r\nm8 hid: rx 42\r\n"),
-                base + b"m8 hid selftest: FAIL 0x05 detail 0x00\r\n",
-                base.replace(b"m8 hid: keyboard0 OK\r\n",
+                base.replace(b"hid: typed pass OK\r\n", b""),
+                base.replace(b"hid: sio fallback OK\r\n", b""),
+                base.replace(b"hid selftest: OK\r\n", b""),
+                base.replace(b"hid: rx 42\r\n", b""),
+                base.replace(b"hid: rx 42\r\nhid: rx 33\r\n",
+                             b"hid: rx 33\r\nhid: rx 42\r\n"),
+                base + b"hid selftest: FAIL 0x05 detail 0x00\r\n",
+                base.replace(b"hid: keyboard0 OK\r\n",
                              b"hid: unavailable 0x0B\r\n")):
-            self.assertEqual(self.tool._m8hid_result(wrong), "fail",
+            self.assertEqual(self.tool._hid_result(wrong), "fail",
                              "misclassified: %r" % wrong[-80:])
 
-    def test_docstring_and_modes_mention_m8_hid(self):
-        self.assertIn("m8-hid", self.tool.__doc__)
+    def test_docstring_and_modes_mention_hid(self):
+        self.assertIn("hid", self.tool.__doc__)
         source = _read(os.path.join(ROOT, "tools", "serial_smoke.py"))
-        self.assertIn('"m8-hid"', source)
+        self.assertIn('"hid"', source)
 
 
 if __name__ == "__main__":

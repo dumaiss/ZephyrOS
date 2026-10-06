@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side M8 HID functional tests: replay the real M8 HID acceptance
+"""Host-side HID functional tests: replay the real HID acceptance
 image (SIO + IOC + HID loaded from ROMFS, production-derived arena) in
 the Z80 simulator against the IOC peer's MCU model.
 
@@ -13,7 +13,7 @@ Coverage (all executing the real linked bytes):
 * console binding: input resolves to the HID handle, output to the
   SIO fallback, and the scripted USB-keyboard pass (a B 3 Enter
   Backspace Ctrl-X Arrow-Up, the MCU translation) is fetched through
-  the real CMD_HID_INPUT exchange, echoed as `m8 hid: rx XX` lines and
+  the real CMD_HID_INPUT exchange, echoed as `hid: rx XX` lines and
   closed by the forced SIO fallback byte;
 * fetch-on-doorbell only: an idle console emits no IOC command traffic,
   and a fetch happens only while ZIOC_STATUS_HID_PENDING is asserted;
@@ -75,8 +75,8 @@ RSP_PING = 0x81
 
 # The scripted USB-keyboard pass (the pinned MCU's translation):
 # a, B, 3, Enter, Backspace, Ctrl-X, Arrow-Up (ESC [ A).
-M8HID_TYPED = bytes((0x61, 0x42, 0x33, 0x0D, 0x08, 0x18, 0x1B, 0x5B, 0x41))
-M8HID_HOST_SYNC = b"\xaa\x55"
+HID_TYPED = bytes((0x61, 0x42, 0x33, 0x0D, 0x08, 0x18, 0x1B, 0x5B, 0x41))
+HID_HOST_SYNC = b"\xaa\x55"
 
 # Host-owned scratch in the currently selected RAM bank: read_text
 # destination and native IOC request/reply frames.
@@ -86,8 +86,8 @@ RSP = 0x1E60
 
 
 class HidSimBase(unittest.TestCase):
-    IMAGE_DIR = "build-m8-hid-selftest"
-    IMAGE_NAME = "zephyros-m8-hid-selftest.bin"
+    IMAGE_DIR = "build-hid-selftest"
+    IMAGE_NAME = "zephyros-hid-selftest.bin"
 
     def setUp(self):
         self.bin_path = os.path.join(ROOT, self.IMAGE_DIR, self.IMAGE_NAME)
@@ -107,7 +107,7 @@ class HidSimBase(unittest.TestCase):
         z.latch = 0x18
         z.sp = STACK
         z.ioc_peer = peer if peer is not None else IocCommandPeer()
-        # The M8 HID image boots the full production stack, including
+        # The HID image boots the full production stack, including
         # the V9958 video core; the peer absorbs its A0h-A4h bring-up.
         z.vdp_peer = V9958Peer()
         return z
@@ -128,7 +128,7 @@ class HidSimBase(unittest.TestCase):
     def start_kernel(self, z):
         self.crt0(z)
         z.push16(RET)
-        z.sio_rx.extend(M8HID_HOST_SYNC)
+        z.sio_rx.extend(HID_HOST_SYNC)
         z.pc = self.syms["_kernel_main"]
 
     def step_to(self, z, marker, on_tx=None, limit=STEP_LIMIT):
@@ -146,10 +146,10 @@ class HidSimBase(unittest.TestCase):
         """Boot to the HID input prompt (target then spins waiting)."""
         z = self.make_cpu(peer)
         self.start_kernel(z)
-        self.step_to(z, b"m8 hid: ready for input")
+        self.step_to(z, b"hid: ready for input")
         return z
 
-    def boot_fallback(self, marker=b"m8 hid selftest: OK"):
+    def boot_fallback(self, marker=b"hid selftest: OK"):
         """Boot an image whose only input phase is the SIO fallback.
 
         One extra host-sync pair is left in the receiver (the smoke tool
@@ -162,7 +162,7 @@ class HidSimBase(unittest.TestCase):
         done = {"r": False}
 
         def on_tx(tx):
-            if not done["r"] and b"m8 hid: sio fallback, send R" in tx:
+            if not done["r"] and b"hid: sio fallback, send R" in tx:
                 z.sio_rx.append(ord("R"))
                 done["r"] = True
 
@@ -251,7 +251,7 @@ class HidSimBase(unittest.TestCase):
                          third=RSP)
 
 
-class TestM8HidBoot(HidSimBase):
+class TestHidBoot(HidSimBase):
     def test_registration_binding_and_transcript(self):
         peer = IocCommandPeer()
         # Stop at the input prompt: the target has verified its binding
@@ -271,7 +271,7 @@ class TestM8HidBoot(HidSimBase):
         # Class interface shape: read_text present, read_gamepad null.
         self.assertNotEqual(z.rd16(hid["class_ops"]), 0)
         self.assertEqual(z.rd16(hid["class_ops"] + 2), 0,
-                         "read_gamepad must stay null in M8")
+                         "read_gamepad must stay null for the text-only device")
         # Input-only character table.
         self.assertEqual(z.rd16(hid["char_ops"]), 0, "putc must be null")
         self.assertEqual(z.rd16(hid["char_ops"] + 2), 0, "write must be null")
@@ -290,23 +290,23 @@ class TestM8HidBoot(HidSimBase):
         # byte.  A stale host-sync pair is left in the receiver (as the
         # smoke tool's repeated banner nudge does on hardware); the
         # fallback phase must discard it before the invited byte.
-        peer.hid_queue.extend(M8HID_TYPED)
+        peer.hid_queue.extend(HID_TYPED)
         z.sio_rx.extend(b"\xaa\x55")
         done = {"r": False}
 
         def on_tx(tx):
-            if not done["r"] and b"m8 hid: sio fallback, send R" in tx:
+            if not done["r"] and b"hid: sio fallback, send R" in tx:
                 z.sio_rx.append(ord("R"))
                 done["r"] = True
 
-        tx = bytes(self.step_to(z, b"m8 hid selftest: OK", on_tx=on_tx))
-        expected = b"".join(b"m8 hid: rx %02X\r\n" % byte
-                            for byte in M8HID_TYPED)
+        tx = bytes(self.step_to(z, b"hid selftest: OK", on_tx=on_tx))
+        expected = b"".join(b"hid: rx %02X\r\n" % byte
+                            for byte in HID_TYPED)
         self.assertIn(expected, tx)
-        self.assertIn(b"m8 hid: typed pass OK\r\n", tx)
-        self.assertIn(b"m8 hid: sio fallback OK\r\n", tx)
-        self.assertIn(b"m8 hid selftest: OK", tx)
-        self.assertNotIn(b"m8 hid selftest: FAIL", tx)
+        self.assertIn(b"hid: typed pass OK\r\n", tx)
+        self.assertIn(b"hid: sio fallback OK\r\n", tx)
+        self.assertIn(b"hid selftest: OK", tx)
+        self.assertNotIn(b"hid selftest: FAIL", tx)
         self.assertFalse(z.sio_rx, "the fallback byte was not consumed")
 
         # One fetch carried all nine bytes; the peer dequeued them.
@@ -337,19 +337,19 @@ class TestM8HidBoot(HidSimBase):
         self.assertEqual(len(peer.requests), baseline,
                          "idle console polling emitted command traffic")
         # Complete the run afterwards to prove the link still works.
-        peer.hid_queue.extend(M8HID_TYPED)
+        peer.hid_queue.extend(HID_TYPED)
         done = {"r": False}
 
         def on_tx(tx):
-            if not done["r"] and b"m8 hid: sio fallback, send R" in tx:
+            if not done["r"] and b"hid: sio fallback, send R" in tx:
                 z.sio_rx.append(ord("R"))
                 done["r"] = True
 
-        tx = self.step_to(z, b"m8 hid selftest: OK", on_tx=on_tx)
-        self.assertIn(b"m8 hid: typed pass OK\r\n", tx)
+        tx = self.step_to(z, b"hid selftest: OK", on_tx=on_tx)
+        self.assertIn(b"hid: typed pass OK\r\n", tx)
 
 
-class TestM8HidFetchBehavior(HidSimBase):
+class TestHidFetchBehavior(HidSimBase):
     def test_fetch_on_doorbell_only_and_exact_sizing(self):
         peer = IocCommandPeer()
         z = self.boot_ready(peer)
@@ -442,15 +442,15 @@ class TestM8HidFetchBehavior(HidSimBase):
         # that byte as evidence.
         peer = IocCommandPeer()
         z = self.boot_ready(peer)
-        peer.hid_queue.extend(M8HID_TYPED)
+        peer.hid_queue.extend(HID_TYPED)
         z.sio_rx.append(ord("X"))
         tx = bytes(self.step_to(
-            z, b"m8 hid selftest: FAIL 0x07 detail 0x58"))
-        self.assertIn(b"m8 hid: typed pass OK\r\n", tx)
-        self.assertIn(b"m8 hid selftest: FAIL 0x07 detail 0x58", tx)
+            z, b"hid selftest: FAIL 0x07 detail 0x58"))
+        self.assertIn(b"hid: typed pass OK\r\n", tx)
+        self.assertIn(b"hid selftest: FAIL 0x07 detail 0x58", tx)
 
 
-class TestM8HidFailurePolicy(HidSimBase):
+class TestHidFailurePolicy(HidSimBase):
     def _clear_penalty(self, z, peer, hid):
         peer.hid_queue.clear()
         self.assertEqual(self.hid_poll(z, hid), 0)
@@ -541,17 +541,17 @@ class TestM8HidFailurePolicy(HidSimBase):
             self.assertEqual(self.hid_getc(z, hid), expected)
 
 
-class TestM8HidNoIocImage(HidSimBase):
-    IMAGE_DIR = "build-m8-hid-noioc-selftest"
-    IMAGE_NAME = "zephyros-m8-hid-noioc-selftest.bin"
+class TestHidNoIocImage(HidSimBase):
+    IMAGE_DIR = "build-hid-noioc-selftest"
+    IMAGE_NAME = "zephyros-hid-noioc-selftest.bin"
 
     def test_rollback_and_sio_fallback(self):
         z = self.boot_fallback()
         tx = bytes(z.sio_tx)
         self.assertIn(b"hid: unavailable 0x0B\r\n", tx)
-        self.assertIn(b"m8 hid: hid absent after rollback\r\n", tx)
-        self.assertIn(b"m8 hid selftest: OK", tx)
-        self.assertNotIn(b"m8 hid selftest: FAIL", tx)
+        self.assertIn(b"hid: hid absent after rollback\r\n", tx)
+        self.assertIn(b"hid selftest: OK", tx)
+        self.assertNotIn(b"hid selftest: FAIL", tx)
 
         self.assertIsNone(self.device_by_class(z, ZDEV_HID),
                           "HID registered without an IOC dependency")
@@ -568,17 +568,17 @@ class TestM8HidNoIocImage(HidSimBase):
         self.assertFalse(z.sio_rx, "the fallback byte was not consumed")
 
 
-class TestM8HidBadIocImage(HidSimBase):
-    IMAGE_DIR = "build-m8-hid-badioc-selftest"
-    IMAGE_NAME = "zephyros-m8-hid-badioc-selftest.bin"
+class TestHidBadIocImage(HidSimBase):
+    IMAGE_DIR = "build-hid-badioc-selftest"
+    IMAGE_NAME = "zephyros-hid-badioc-selftest.bin"
 
     def test_interface_rejection_and_rollback(self):
         z = self.boot_fallback()
         tx = bytes(z.sio_tx)
         self.assertIn(b"hid: unavailable 0x0B\r\n", tx)
-        self.assertIn(b"m8 hid: malformed ioc rejected\r\n", tx)
-        self.assertIn(b"m8 hid selftest: OK", tx)
-        self.assertNotIn(b"m8 hid selftest: FAIL", tx)
+        self.assertIn(b"hid: malformed ioc rejected\r\n", tx)
+        self.assertIn(b"hid selftest: OK", tx)
+        self.assertNotIn(b"hid selftest: FAIL", tx)
 
         # The malformed dependency was found (discovery worked) and is
         # still registered after HID's rollback.

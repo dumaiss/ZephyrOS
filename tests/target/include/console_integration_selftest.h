@@ -1,6 +1,6 @@
-/* ZephyrOS M8 integration acceptance selftest contract (test artifact).
+/* ZephyrOS integration acceptance selftest contract (test artifact).
  *
- * The kernel-side integration test calls zos_run_m8_selftest() from the
+ * The kernel-side integration test calls zos_run_console_integration_selftest() from the
  * late boot hook after the production-style boot: SIO + IOC + HID + the
  * V9958 video/console device are all loaded from the recovery store and
  * the single console_bind_defaults() has selected the preferred
@@ -30,22 +30,22 @@
  *     console output is the V9958).
  */
 
-#ifndef ZEPHYROS_TARGET_M8_SELFTEST_H
-#define ZEPHYROS_TARGET_M8_SELFTEST_H
+#ifndef ZEPHYROS_TARGET_CONSOLE_INTEGRATION_SELFTEST_H
+#define ZEPHYROS_TARGET_CONSOLE_INTEGRATION_SELFTEST_H
 
-/* Result codes recorded in m8_selftest_result (0 = success). */
-#define ZOS_M8_OK               0x00u
-#define ZOS_M8_FAIL_BOOT        0x01u /* a resident module is missing     */
-#define ZOS_M8_FAIL_SHAPE       0x02u /* class/capability shape wrong     */
-#define ZOS_M8_FAIL_BIND        0x03u /* default binding wrong            */
-#define ZOS_M8_FAIL_IOC         0x04u /* IOC command/status path wrong    */
-#define ZOS_M8_FAIL_MALFORMED   0x05u /* a rejected call returned wrong   */
-#define ZOS_M8_FAIL_CONSOLE     0x06u /* console service wrong            */
-#define ZOS_M8_FAIL_INVARIANTS  0x07u /* registry/granules/table changed  */
+/* Result codes recorded in ace_integration_result (0 = success). */
+#define ZOS_CONSOLE_INTEGRATION_OK               0x00u
+#define ZOS_CONSOLE_INTEGRATION_FAIL_BOOT        0x01u /* a resident module is missing     */
+#define ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE       0x02u /* class/capability shape wrong     */
+#define ZOS_CONSOLE_INTEGRATION_FAIL_BIND        0x03u /* default binding wrong            */
+#define ZOS_CONSOLE_INTEGRATION_FAIL_IOC         0x04u /* IOC command/status path wrong    */
+#define ZOS_CONSOLE_INTEGRATION_FAIL_MALFORMED   0x05u /* a rejected call returned wrong   */
+#define ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE     0x06u /* console service wrong            */
+#define ZOS_CONSOLE_INTEGRATION_FAIL_INVARIANTS  0x07u /* registry/granules/table changed  */
 
 /* Recorded outcome for the host replay / smoke transcript. */
-extern uint8_t m8_selftest_result;
+extern uint8_t ace_integration_result;
 
-void zos_run_m8_selftest(void);
+void zos_run_console_integration_selftest(void);
 
-#endif /* ZEPHYROS_TARGET_M8_SELFTEST_H */
+#endif /* ZEPHYROS_TARGET_CONSOLE_INTEGRATION_SELFTEST_H */
