@@ -33,6 +33,7 @@
 #   make m9-fs-selftest       M9 filesystem syscall acceptance image
 #   make m9-exec-selftest     M9 SYS_EXEC nesting acceptance image
 #   make m9-iocfat-selftest   M9 IOC-FAT provider acceptance image
+#   make m10-spike-selftest   M10 design-spike ZEX v2 loader image
 #   make clean    remove all generated files
 #
 # Builds are parallel by default (ZOS_JOBS defaults to nproc); use
@@ -388,6 +389,23 @@ ZOS_HID_BOOT := 0
 ZOS_V9958_BOOT := 0
 endif
 
+# M10 design-spike image (package 33b).  The production boot path in its
+# own build directory with the resident ZEX v2 loader compiled in
+# (ZOS_M10_SPIKE) and no ZEX v1 loader: the image boots a two-auxiliary-
+# segment ZEX v2 program and the simulator replay checks what the loader
+# placed.  The boot set is SIO-only so the derived arena is small and the
+# loader's bank-7 tables are the only growth the ledger sees.
+ifeq ($(ZOS_M10_SPIKE),1)
+CFLAGS    += -DZOS_M10_SPIKE=1
+C_OBJS    += $(BUILD)/bankmap.rel $(BUILD)/xmem.rel $(BUILD)/far.rel
+ASM_OBJS  += $(BUILD)/far_entry.rel
+PK_SUFFIX := -m10-spike-selftest
+ZOS_IOC_BOOT := 0
+ZOS_HID_BOOT := 0
+ZOS_V9958_BOOT := 0
+ZOS_IOCFAT_BOOT := 0
+endif
+
 # SDK helloworld demo image (work/28c-m9-user-sdk): the production boot path
 # in its own build directory, booting the SDK hello demo.  There is no
 # kernel define and no target test object -- the image differs from
@@ -480,13 +498,18 @@ endif
 
 # Production images (no acceptance objects) must reject every acceptance
 # symbol in the linked map; mapcheck --production enforces this.
-MAPCHECK_FLAGS := $(if $(TARGET_TEST_OBJS),,--production)
+MAPCHECK_FLAGS := $(if $(TARGET_TEST_OBJS),,--production) \
+		$(if $(ZOS_M10_SPIKE),--zex-v2,)
 
 # Driver-arena floor.  The 32-granule floor is the production budget gate
 # (work/M9-REFERENCE.md); an acceptance image links target-test code and only
 # needs an arena that holds its declared boot set, which the arena plan
-# (zmodpack plan) enforces separately.
-ZOS_ARENA_MIN_GRANULES := $(if $(TARGET_TEST_OBJS),16,32)
+# (zmodpack plan) enforces separately.  The M10 design-spike image is a
+# measurement image: its derived arena falls below the production floor
+# (that shortfall is the spike's verdict), so it also uses the
+# acceptance-image floor and the exact gap is reported in the record.
+ZOS_ARENA_MIN_GRANULES := $(if $(TARGET_TEST_OBJS),16, \
+	$(if $(ZOS_M10_SPIKE),16,32))
 
 # Every image boots the SIO fallback module from the recovery store and
 # then, per its boot gates, the IOC transport, the HID keyboard/text input
@@ -583,6 +606,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	m9-exec-selftest \
 	m9-iocfat-selftest \
 	m9-selftest \
+	m10-spike-selftest \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-subsystem smoke-hardware-romfs-corrupt \
@@ -798,13 +822,37 @@ $(BUILD)/vfs_mounts.rel: $(BUILD)/generated/vfs_mounts.c \
 
 $(BUILD)/process.rel: kernel/process/process.c \
 		include/zephyros/process.h include/zephyros/zex.h \
-		include/zephyros/kernel.h include/zephyros/errno.h | $(BUILD)
+		include/zephyros/kernel.h include/zephyros/errno.h \
+		kernel/process/bankmap.h kernel/process/zex2prog.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/process_exec.rel: kernel/process/exec.c \
 		include/zephyros/process.h include/zephyros/zex.h \
-		include/zephyros/romfs.h | $(BUILD)
+		include/zephyros/romfs.h include/zephyros/zex2.h \
+		kernel/process/bankmap.h kernel/process/zex2prog.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
+
+# M10 design-spike auxiliary bank map (package 33b); linked only when
+# ZOS_M10_SPIKE adds it to C_OBJS.
+$(BUILD)/bankmap.rel: kernel/process/bankmap.c \
+		kernel/process/bankmap.h include/zephyros/process.h \
+		include/zephyros/zex2.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+# M10 extended-memory and far-call services (packages 33c/33d).
+$(BUILD)/xmem.rel: kernel/syscall/xmem.c kernel/syscall/xmem.h \
+		abi/zos/xmem.h include/zephyros/process.h \
+		kernel/process/bankmap.h kernel/process/zex2prog.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/far.rel: kernel/syscall/far.c kernel/syscall/xmem.h \
+		abi/zos/xmem.h include/zephyros/process.h \
+		kernel/process/bankmap.h kernel/process/zex2prog.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/far_entry.rel: kernel/process/far.asm \
+		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 # --- ZMOD modules (host-built, packed, embedded per-image catalogs) ----------
 # The SIO driver module and the synthetic M4 fixtures are built once under
@@ -1265,6 +1313,64 @@ $(eval $(call zex_program,fsdeep,tests/target/m9/exec,fsdeep.c,\
 $(eval $(call zex_program,fsraw,tests/target/m9/exec,fsraw.c fsraw_entry.asm,\
 	NO_CRT0=1,ENTRY=rw_entry,STACK=32,SCRATCH=,STAGE=1))
 
+# --- M10 spike ZEX v2 program (package 33b) ---------------------------------
+# The generic zex_program rule packs ZEX v1; the spike program is ZEX v2
+# with two relocatable auxiliary segments.  The primary image links exactly
+# as an SDK program (crt0 + runtime + libzos), then tools/zexmanifest.py
+# wraps the derived geometry into a zex-v2 manifest and tools/zexpack.py
+# links and packs the segments.  See tests/target/m10/segments.json.
+SPIKE_DIR     := tests/target/m10
+SPIKE_BUILD   := $(ZEX_USER_ROOT)/spike
+SPIKE_SEGMENTS := tests/m10/segments.json
+SPIKE_LINKOBJS := $(ZEX_CRT0) $(ZEX_RUNTIME) $(SPIKE_BUILD)/spike.rel
+SPIKE_JSON    := $(SPIKE_BUILD)/spike.json
+SPIKE_ZEX     := $(SPIKE_BUILD)/spike.zex
+
+$(SPIKE_BUILD):
+	mkdir -p $@
+
+$(SPIKE_BUILD)/spike.rel: $(SPIKE_DIR)/spike.c | $(SPIKE_BUILD)
+	$(SDCC) $(ZEX_CFLAGS) -c $< -o $@
+
+$(SPIKE_BUILD)/spike_seg1.rel: $(SPIKE_DIR)/spike_seg1.c | $(SPIKE_BUILD)
+	$(SDCC) $(ZEX_CFLAGS) -c $< -o $@
+
+$(SPIKE_BUILD)/spike_seg2.rel: $(SPIKE_DIR)/spike_seg2.c | $(SPIKE_BUILD)
+	$(SDCC) $(ZEX_CFLAGS) -c $< -o $@
+
+$(SPIKE_BUILD)/segcall.rel: $(SPIKE_DIR)/segcall.asm | $(SPIKE_BUILD)
+	$(SDASZ80) $(ZEX_ASFLAGS) -o $@ $<
+
+$(SPIKE_BUILD)/spike.lk: $(SPIKE_LINKOBJS) $(ZEX_LIBZOS) \
+		$(ZOS_SDK_ROOT)/zex.mk | $(SPIKE_BUILD)
+	{ \
+	  printf '%s\n' '-n' '-m' '-w'; \
+	  printf '%s\n' '-i $(SPIKE_BUILD)/spike.ihx'; \
+	  printf '%s\n' '-b _CODE = 0x0100'; \
+	  printf '%s\n' $(SPIKE_LINKOBJS); \
+	  printf '%s\n' '-l $(ZEX_LIBZOS)'; \
+	  printf '%s\n' '-e'; \
+	} > $@
+
+$(SPIKE_BUILD)/spike.link: $(SPIKE_BUILD)/spike.lk
+	$(SDLDZ80) -f $<
+	touch $@
+
+$(SPIKE_JSON): $(SPIKE_BUILD)/spike.link tools/zexmanifest.py
+	$(PYTHON) tools/zexmanifest.py $(SPIKE_BUILD)/spike.map $@ \
+	    --name spike.zex --entry zos_entry --stack 256 \
+	    --scratch zos_scratch:16 --v2 --segments $(SPIKE_SEGMENTS)
+
+$(SPIKE_ZEX): $(SPIKE_JSON) $(SPIKE_BUILD)/spike_seg1.rel \
+		$(SPIKE_BUILD)/spike_seg2.rel $(SPIKE_BUILD)/segcall.rel \
+		$(SPIKE_SEGMENTS) tools/zexpack.py
+	$(PYTHON) tools/zexpack.py pack $(SPIKE_JSON) $@ --objdir $(SPIKE_BUILD)
+	$(PYTHON) tools/zexpack.py validate $@
+
+$(MODULES)/spike.zex: $(SPIKE_ZEX) | $(MODULES)
+	cp $< $@
+
+
 # Deterministic malformed containers (one per validation boundary; see
 # tests/subsys/gen_zex_fixtures.py and gen_zmod_fixtures.py) shared by the
 # subsystem acceptance manifest.  gen_zmod_fixtures.py derives its damaged
@@ -1376,6 +1482,12 @@ else ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
 # kernel change, which is exactly what this image demonstrates.
 ROMFS_MANIFEST := user/helloworld/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/hello.zex
+else ifeq ($(ZOS_M10_SPIKE),1)
+# M10 design-spike image: the SIO fallback plus the two-auxiliary-segment
+# ZEX v2 program the resident v2 loader boots (ZOS_BOOT_PROGRAM=
+# /SYSTEM/spike.zex).
+ROMFS_MANIFEST := tests/m10/manifest-spike.json
+ROMFS_EXTRA_DEPS := $(MODULES)/spike.zex
 else
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
@@ -1879,6 +1991,23 @@ m9-selftest: all
 		$(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_m9_selftest_sim.py' -v
 	@echo "m9 integration image: build-m9-selftest/zephyros-m9-selftest.bin"
+
+# M10 design-spike image (package 33b): the resident ZEX v2 loader in its
+# own build directory, booting a two-auxiliary-segment ZEX v2 program.  The
+# simulator replay checks what the loader placed in the auxiliary bank
+# (segment images with relocations applied, zeroed BSS) and that the bank
+# map and program state return to baseline after exit.
+m10-spike-selftest: all
+	$(MAKE) BUILD=build-m10-spike-selftest ZOS_M10_SPIKE=1 \
+		ZOS_BOOT_PROGRAM=/SYSTEM/spike.zex \
+		build-m10-spike-selftest/zephyros-m10-spike-selftest.bin \
+		build-m10-spike-selftest/zephyr80-m10-spike-selftest.bin
+	$(PYTHON) tools/mapcheck.py --min-granules 16 --zex-v2 \
+		build-m10-spike-selftest/zephyros.map \
+		build-m10-spike-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_m10_spike_sim.py' -v
+	@echo "m10 spike image: build-m10-spike-selftest/zephyros-m10-spike-selftest.bin"
 
 # SDK helloworld demo image (work/28c-m9-user-sdk): the production boot path
 # in its own build directory (build-helloworld) with the SDK hello demo

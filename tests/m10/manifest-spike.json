@@ -1,0 +1,15 @@
+{
+  "format": "romfs-v1",
+  "files": [
+    {
+      "name": "sio.zmod",
+      "type": "ZMOD",
+      "path": "sio.zmod"
+    },
+    {
+      "name": "spike.zex",
+      "type": "ZEX",
+      "path": "spike.zex"
+    }
+  ]
+}

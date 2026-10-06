@@ -13,6 +13,7 @@
 #include "zos/fs.h"
 #include "zos/process.h"
 #include "zos/diag.h"
+#include "zos/xmem.h"
 #include "zlibc/string.h"
 #include "zlibc/fmt.h"
 

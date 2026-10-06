@@ -883,7 +883,7 @@ def check_areas(areas, symbols):
                COMMON_M10_RESERVATION))
 
 
-def check_symbols(areas, symbols, production=False):
+def check_symbols(areas, symbols, production=False, zex_v2=False):
     page_zero_areas = [n for n in areas if n.startswith("_PAGE_ZERO")]
 
     if production:
@@ -1067,7 +1067,11 @@ def check_symbols(areas, symbols, production=False):
                     % (name, addr))
 
     # M6: process/ZEX code and the process table stay bank-7 resident.
+    # The ZEX v2 design-spike build compiles out the v1 validator, so its
+    # symbol is optional there (--zex-v2); everything else is unchanged.
     for name in M6_BANK7_ROUTINES:
+        if zex_v2 and name == "_zex_validate_header":
+            continue
         if name not in symbols:
             raise MapError("map has no M6 symbol %s" % name)
         addr = symbols[name]
@@ -1288,10 +1292,10 @@ def check_symbols(areas, symbols, production=False):
         raise MapError("RST 30h vector is %d bytes, expected exactly 3" % vector_size)
 
 
-def check_map(text, production=False):
+def check_map(text, production=False, zex_v2=False):
     areas, symbols = parse_map(text)
     check_areas(areas, symbols)
-    check_symbols(areas, symbols, production)
+    check_symbols(areas, symbols, production, zex_v2)
     return areas, symbols
 
 
@@ -1357,6 +1361,8 @@ def main(argv):
         return geometry_main(argv[2:])
     production = "--production" in argv
     argv = [arg for arg in argv if arg != "--production"]
+    zex_v2 = "--zex-v2" in argv
+    argv = [arg for arg in argv if arg != "--zex-v2"]
     if "--min-granules" in argv:
         at = argv.index("--min-granules")
         ARENA_MIN_GRANULES = int(argv[at + 1], 0)
@@ -1369,7 +1375,8 @@ def main(argv):
     if len(argv) == 4:
         apply_irq_layout(parse_inc(argv[3]))
     try:
-        areas, symbols = check_map(open(argv[1]).read(), production)
+        areas, symbols = check_map(open(argv[1]).read(), production,
+                                   zex_v2=zex_v2)
     except MapError as exc:
         print("mapcheck: %s" % exc, file=sys.stderr)
         return 1

@@ -184,6 +184,12 @@ int process_slot_alloc(void);
 void process_slot_release(uint8_t pid);
 int process_alloc_bank(void);
 
+#if defined(ZOS_M10_SPIKE)
+/* 1 when the bank is reserved or owned by a process table entry, so the
+ * unified bank map must not give it to an auxiliary allocation. */
+uint8_t process_bank_primary_used(uint8_t bank);
+#endif
+
 /* --- exec continuation state (kernel/process/launch.asm, common RAM) ---
  *
  * One saved launcher context per nesting depth; index 0 is the kernel

@@ -34,6 +34,10 @@
 #include "syscall/diag.h"
 #include "syscall/fs.h"
 
+#if defined(ZOS_M10_SPIKE)
+#include "syscall/xmem.h"
+#endif
+
 /* Dispatcher input/output state (written by the asm boundary, read by C). */
 uint8_t zos_syscall_number;
 uint16_t zos_syscall_args;
@@ -309,6 +313,13 @@ static void syscall_exec(uint8_t bank, uint16_t block)
 		syscall_error(ZOS_EINVAL);
 		return;
 	}
+#if defined(ZOS_M10_SPIKE)
+	/* SYS_EXEC originates from primary execution (architecture 36.15). */
+	if (zos_far_is_active()) {
+		syscall_error(ZOS_EBUSY);
+		return;
+	}
+#endif
 	if (pid >= PROCESS_TABLE_SIZE || vfs_phase() != VFS_PHASE_READY) {
 		syscall_error(ZOS_EBUSY);
 		return;
@@ -359,7 +370,16 @@ static void syscall_exec(uint8_t bank, uint16_t block)
 
 void kernel_syscall_dispatch(void)
 {
+#if defined(ZOS_M10_SPIKE)
+	/* M10 execution-bank audit: user buffers belong to the bank the
+	 * caller was executing in (far code runs in an auxiliary bank), so
+	 * ask the gate for the saved execution bank instead of using the
+	 * process's primary bank.  Identical for a primary caller. */
+	extern uint8_t zos_exec_bank(void);
+	uint8_t bank = zos_exec_bank();
+#else
 	uint8_t bank = process_current_bank();
+#endif
 
 	/* M1 default: unknown numbers stay deterministic. */
 	syscall_error(ZOS_ENOSYS);
@@ -370,6 +390,15 @@ void kernel_syscall_dispatch(void)
 		zos_fs_dispatch(zos_syscall_number, bank, zos_syscall_args);
 		return;
 	}
+
+#if defined(ZOS_M10_SPIKE)
+	/* M10 extended-memory and far-call family (20h-26h). */
+	if (zos_syscall_number >= ZOS_SYSCALL_XMEM_ALLOC &&
+	    zos_syscall_number <= ZOS_SYSCALL_FAR_CALL) {
+		zos_xmem_dispatch(zos_syscall_number, bank, zos_syscall_args);
+		return;
+	}
+#endif
 
 	switch (zos_syscall_number) {
 	case ZOS_SYSCALL_EXIT:

@@ -16,8 +16,13 @@ accepts.
 Usage:
     zexmanifest.py MAP OUT --name NAME [--entry SYM] [--stack N]
                    [--scratch SYM:SIZE] [--input FILE]
+    zexmanifest.py MAP OUT --name NAME --v2 --segments SEGMENTS.json
 
 Reads the map, writes the manifest.  Exit 1 on a geometry error.
+
+With --v2 the manifest is a ZEX v2 container manifest: the derived
+primary geometry is wrapped as the `primary` object and `--segments`
+names a JSON list of auxiliary segments (see tools/zexpack.py).
 """
 
 import argparse
@@ -102,11 +107,30 @@ def main(argv):
     parser.add_argument("--stack", type=int, default=256)
     parser.add_argument("--scratch", default=None)
     parser.add_argument("--input", default=None)
+    parser.add_argument("--v2", action="store_true",
+                        help="emit a zex-v2 manifest with this program as "
+                             "the primary image")
+    parser.add_argument("--segments", default=None,
+                        help="JSON list of auxiliary segments (with --v2)")
     args = parser.parse_args(argv)
     try:
         manifest = build_manifest(args.map, args.name, args.entry,
                                   args.stack, args.scratch, args.input)
-    except (ManifestError, OSError) as exc:
+        if args.v2:
+            if not args.segments:
+                raise ManifestError("--v2 requires --segments")
+            segments = json.loads(Path(args.segments).read_text())
+            if not isinstance(segments, list):
+                raise ManifestError("--segments must be a JSON list")
+            primary = {key: value for key, value in manifest.items()
+                       if key not in ("format", "name")}
+            manifest = {
+                "format": "zex-v2",
+                "name": manifest["name"],
+                "primary": primary,
+                "segments": segments,
+            }
+    except (ManifestError, OSError, ValueError) as exc:
         print("zexmanifest: %s" % exc, file=sys.stderr)
         return 1
     Path(args.output).write_text(json.dumps(manifest, indent=2) + "\n")
