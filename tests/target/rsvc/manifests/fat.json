@@ -1,0 +1,11 @@
+{
+  "name": "fat",
+  "type": "driver",
+  "abi": 3,
+  "flags": 0,
+  "objects": ["fat.rel", "sdcc_indirect_calls.rel"],
+  "image_areas": ["_CODE"],
+  "bss_areas": ["_DATA"],
+  "init": "rsvc_fat_init",
+  "fini": null
+}

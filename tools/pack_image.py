@@ -97,6 +97,8 @@ COMMON_CODE_END = 0xFD00
 # literals only seed the synthetic host path.
 COMMON_CEILING = 0x0C00
 COMMON_M10_RESERVATION = 0x0200
+WINDOW_BASE = None
+WINDOW_DATA_BASE = None
 IRQ_VECTOR_BASE = 0xFD00
 IRQ_VECTOR_END = 0xFE01
 IRQ_STATE_BASE = 0xFE01
@@ -105,7 +107,7 @@ MEM_TOP = 0x10000
 
 # (start, end, description, expected)
 def make_regions():
-    return [
+    regions = [
         (RESET_BASE, RESET_TOP, "page-zero reset copier", True),
         (RESET_TOP, PAGE_ZERO_END, "page-zero reservation", False),
         (PAGE_ZERO_END, BANK7_BASE, "page-1 caller-window gap", False),
@@ -118,6 +120,24 @@ def make_regions():
         (IRQ_STATE_BASE, STACK_BASE, "IRQ transition state/stacks", False),
         (STACK_BASE, MEM_TOP, "common boot/runtime stack", False),
     ]
+    if WINDOW_BASE is not None:
+        # Revision-13 window split: the fixed region ends at the window, and
+        # the window carries the cold code (loadable) and cold runtime data
+        # (never ROM-loaded).
+        regions = [
+            (start, end, desc, expected)
+            for (start, end, desc, expected) in regions
+            if not (end > ARENA_BASE and start < WINDOW_BASE)
+        ]
+        regions.extend([
+            (ARENA_BASE, WINDOW_BASE, "bank-7 fixed runtime data "
+             "(never ROM-loaded)", False),
+            (WINDOW_BASE, WINDOW_DATA_BASE, "bank-7 window (cold) code", True),
+            (WINDOW_DATA_BASE, COMMON_BASE,
+             "bank-7 window (cold) runtime data (never ROM-loaded)", False),
+        ])
+        regions.sort(key=lambda region: region[0])
+    return regions
 
 
 REGIONS = make_regions()
@@ -139,6 +159,7 @@ def apply_memory_inc(path):
     global ARENA_BASE, ARENA_END, DATA_BASE, GRANULE_SIZE, GRANULE_COUNT
     global REGIONS, ARENA_MIN_SIZE, ARENA_MIN_GRANULES
     global BANK7_RUNTIME_END, IRQ_ISR_STACK_SIZE
+    global WINDOW_BASE, WINDOW_DATA_BASE
     global ROMFS_FIRST_PAGE, ROMFS_PAGE_COUNT, ROMFS_WINDOW_SIZE
     global ROMFS_CAPACITY, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
     global COMMON_CEILING, COMMON_M10_RESERVATION
@@ -164,6 +185,14 @@ def apply_memory_inc(path):
     GRANULE_COUNT = values["ZOS_DRIVER_GRANULES"]
     BANK7_RUNTIME_END = values["ZOS_BANK7_RUNTIME_END"]
     IRQ_ISR_STACK_SIZE = values["ZOS_IRQ_ISR_STACK_SIZE"]
+    # Revision-13 window split: the generated include carries
+    # ZOS_WINDOW_DATA_BASE only for the window build.
+    if "ZOS_WINDOW_DATA_BASE" in values:
+        WINDOW_BASE = values["ZOS_REV13_WINDOW_BASE"]
+        WINDOW_DATA_BASE = values["ZOS_WINDOW_DATA_BASE"]
+    else:
+        WINDOW_BASE = None
+        WINDOW_DATA_BASE = None
     ROMFS_FIRST_PAGE = values["ZOS_ROMFS_FIRST_PAGE"]
     ROMFS_PAGE_COUNT = values["ZOS_ROMFS_PAGE_COUNT"]
     ROMFS_WINDOW_SIZE = values["ZOS_ROMFS_WINDOW_SIZE"]
@@ -341,6 +370,12 @@ def build_pages(mem, romfs=None):
     for addr in range(BANK7_BASE, ARENA_BASE):
         pages[1][addr] = mem.get(addr, FILL)
 
+    # Revision-13 window split: page 1 also carries the window (cold) code.
+    # The window's runtime data above the derived base is never ROM-loaded.
+    if WINDOW_BASE is not None:
+        for addr in range(WINDOW_BASE, WINDOW_DATA_BASE):
+            pages[1][addr] = mem.get(addr, FILL)
+
     # Copier mirroring: instruction fetch continues across the ROM-page
     # latch change, so page 1 must carry identical copier bytes.
     if pages[0][:RESET_TOP] != pages[1][:RESET_TOP]:
@@ -490,6 +525,17 @@ def check_symbol_regions(symbols):
         if name not in symbols:
             raise LayoutError("map has no symbol %s" % name)
         addr = symbols[name]
+        if WINDOW_BASE is not None and name == "_kernel_main":
+            # The revision-13 window split's kernel body is cold: it lives in
+            # the window, while the gates that must stay visible stay
+            # fixed.  The window's own code bounds are checked by mapcheck.
+            if not (WINDOW_BASE <= addr < WINDOW_DATA_BASE):
+                raise LayoutError(
+                    "%s at %04Xh is outside the window code region "
+                    "%04Xh-%04Xh" % (name, addr, WINDOW_BASE,
+                                     WINDOW_DATA_BASE - 1)
+                )
+            continue
         if not (BANK7_BASE <= addr < ARENA_BASE):
             raise LayoutError(
                 "%s at %04Xh is outside the bank-7 loadable region "
@@ -884,9 +930,19 @@ def verify_no_banked_latch_writes(mem):
     not contain it, because code at 2000h-DFFFh changes underneath the CPU
     when the mode/bank changes.  All latch-write paths are common-resident
     and linked in ROM page 0.
+
+    Revision-13 window split exception: the fixed region
+    2000h-6000h is mapped unchanged by every mode-11 page, so a
+    *window select* written there survives its own page change (the spike's
+    domain primitives do exactly that, and the simulator replay measures
+    the mode bits around every such write).  The exception is limited to
+    the fixed region: the fixed runtime data and the whole window must
+    still contain no latch write.
     """
+    lower = BANK7_BASE if WINDOW_BASE is None else ARENA_BASE
+    upper = ARENA_BASE if WINDOW_BASE is None else COMMON_BASE
     for addr in sorted(mem):
-        if BANK7_BASE <= addr < ARENA_BASE and mem[addr] == 0xD3:
+        if lower <= addr < upper and mem[addr] == 0xD3:
             if mem.get(addr + 1) == 0x00:
                 raise LayoutError(
                     "latch write OUT (00h),A encoding at %04Xh in the "

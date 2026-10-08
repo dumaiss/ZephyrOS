@@ -10,7 +10,6 @@
 
 #include "zos/fs.h"
 #include "zos/syscall.h"
-#include "zos/xmem.h"
 
 union zos_fs_block {
 	struct zfs_path_args    path;
@@ -23,12 +22,6 @@ union zos_fs_block {
 	struct zfs_rename_args  rename;
 	struct zfs_fd_args      fd;
 	struct zos_exec_args    exec;
-	struct zos_xmem_alloc_args   alloc;
-	struct zos_xmem_free_args    free_args;
-	struct zos_xmem_io_args      xmem_io;
-	struct zos_xmem_info_args    info;
-	struct zos_zex_seg_info_args seginfo;
-	struct zos_far_call_args     far;
 };
 
 extern union zos_fs_block zos_scratch;

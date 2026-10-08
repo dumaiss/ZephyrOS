@@ -34,8 +34,15 @@
 #include "syscall/diag.h"
 #include "syscall/fs.h"
 
-#if defined(ZOS_M10_SPIKE)
-#include "syscall/xmem.h"
+#if defined(ZOS_RSVC_SPIKE)
+/* Resident-service spike (work package 35): the evaluation-only syscalls
+ * 40h-47h are implemented by the spike nucleus object
+ * (tests/target/rsvc/rsvc_core.c).  The numbers mirror
+ * tests/target/include/rsvc_test.h -- never the native ABI -- and the
+ * production kernel compiles them out. */
+#define ZOS_RSVC_SYSCALL_FIRST 0x40u
+#define ZOS_RSVC_SYSCALL_LAST  0x47u
+extern void zos_rsvc_dispatch(uint8_t number, uint8_t bank, uint16_t block);
 #endif
 
 /* Dispatcher input/output state (written by the asm boundary, read by C). */
@@ -313,13 +320,6 @@ static void syscall_exec(uint8_t bank, uint16_t block)
 		syscall_error(ZOS_EINVAL);
 		return;
 	}
-#if defined(ZOS_M10_SPIKE)
-	/* SYS_EXEC originates from primary execution (architecture 36.15). */
-	if (zos_far_is_active()) {
-		syscall_error(ZOS_EBUSY);
-		return;
-	}
-#endif
 	if (pid >= PROCESS_TABLE_SIZE || vfs_phase() != VFS_PHASE_READY) {
 		syscall_error(ZOS_EBUSY);
 		return;
@@ -370,15 +370,14 @@ static void syscall_exec(uint8_t bank, uint16_t block)
 
 void kernel_syscall_dispatch(void)
 {
-#if defined(ZOS_M10_SPIKE)
-	/* M10 execution-bank audit: user buffers belong to the bank the
-	 * caller was executing in (far code runs in an auxiliary bank), so
-	 * ask the gate for the saved execution bank instead of using the
-	 * process's primary bank.  Identical for a primary caller. */
-	extern uint8_t zos_exec_bank(void);
-	uint8_t bank = zos_exec_bank();
-#else
 	uint8_t bank = process_current_bank();
+
+#if defined(ZOS_RSVC_SPIKE)
+	if (zos_syscall_number >= ZOS_RSVC_SYSCALL_FIRST &&
+	    zos_syscall_number <= ZOS_RSVC_SYSCALL_LAST) {
+		zos_rsvc_dispatch(zos_syscall_number, bank, zos_syscall_args);
+		return;
+	}
 #endif
 
 	/* M1 default: unknown numbers stay deterministic. */
@@ -390,15 +389,6 @@ void kernel_syscall_dispatch(void)
 		zos_fs_dispatch(zos_syscall_number, bank, zos_syscall_args);
 		return;
 	}
-
-#if defined(ZOS_M10_SPIKE)
-	/* M10 extended-memory and far-call family (20h-26h). */
-	if (zos_syscall_number >= ZOS_SYSCALL_XMEM_ALLOC &&
-	    zos_syscall_number <= ZOS_SYSCALL_FAR_CALL) {
-		zos_xmem_dispatch(zos_syscall_number, bank, zos_syscall_args);
-		return;
-	}
-#endif
 
 	switch (zos_syscall_number) {
 	case ZOS_SYSCALL_EXIT:

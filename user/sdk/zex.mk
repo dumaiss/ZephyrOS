@@ -33,13 +33,13 @@ ZOS_SDK_SRC     := $(ZOS_SDK_ROOT)/src
 ZEX_CFLAGS  := -mz80 -c --nostdinc --Werror -I abi -I $(ZOS_SDK_INCLUDE)
 ZEX_ASFLAGS := -Iabi
 
-ZOS_SDK_C_SRC := args.c fs.c exec.c console_io.c xmem.c \
+ZOS_SDK_C_SRC := args.c fs.c exec.c console_io.c \
     zlibc/strlen.c zlibc/strcmp.c zlibc/strncmp.c zlibc/strchr.c \
     zlibc/strrchr.c zlibc/memcpy.c zlibc/memmove.c zlibc/memset.c \
     zlibc/memcmp.c zlibc/strlcpy.c zlibc/strlcat.c \
     zlibc/utoa.c zlibc/ultoa.c zlibc/itoa.c zlibc/ltoa.c \
     zlibc/printf.c zlibc/sdcc_arith.c zlibc/sdcc_arith_signed.c
-ZOS_SDK_ASM_SRC := console.asm fsgate.asm diaggate.asm xmemgate.asm \
+ZOS_SDK_ASM_SRC := console.asm fsgate.asm diaggate.asm \
     zlibc/sdcc_arith_entries.asm zlibc/sdcc_arith_signed_entries.asm
 
 ZOS_SDK_C_OBJS   := $(addprefix $(ZEX_SDK_BUILD)/,$(patsubst %.c,%.rel,$(ZOS_SDK_C_SRC)))

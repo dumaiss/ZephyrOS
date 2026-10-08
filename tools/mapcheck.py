@@ -114,6 +114,18 @@ IRQ_STACK_SIZE = 0x0080
 IRQ_ISR_STACK_BASE = 0xDF00
 IRQ_ISR_STACK_TOP = 0xE000
 IRQ_ISR_STACK_SIZE = 0x0100
+# Architectural end of the bank-7 space.  Production puts the ISR stack at
+# the top of the bank, so BANK7_TOP == IRQ_ISR_STACK_BASE there.  The
+# revision-13 window split moves the ISR stack into the fixed region and
+# splits bank 7 into a fixed region (2000h-6000h) and the mode-11 window
+# (6000h-DFFFh); symbol-residency checks then still ask for "somewhere in
+# bank 7", while the runtime-data bound follows the relocated stack.
+BANK7_TOP = 0xDF00
+# The revision-13 mode-11 window split (architecture section 36.2).
+REV13_WINDOW_SPLIT = 0x6000
+# Window-split layout (None = production/plain build).
+WINDOW_BASE = None
+WINDOW_DATA_BASE = None
 STACK_BASE = 0xFF00
 MEM_TOP = 0x10000
 GATE_STACK_SIZE = 256
@@ -149,10 +161,16 @@ def require_key(values, name, source):
             % (name, source if source else "the memory include"))
 
 
-def apply_layout(values, source=None):
-    """Apply memory-region declarations from a generated memory include."""
+def apply_layout(values, source=None, window_split=False):
+    """Apply memory-region declarations from a generated memory include.
+
+    `window_split` selects the revision-13 window layout: the window areas
+    `_WINDOW` (cold code) and `_WINDOW_DATA` (cold runtime data) join the
+    owned-area contract, placed at the 6000h split and the derived window
+    data base the generated include carries."""
     global PAGE_ZERO_END, RESET_TOP, BANK7_BASE, BANK7_LOAD_END
-    global BANK7_RUNTIME_END, COMMON_BASE, COMMON_CODE_END, STACK_BASE
+    global BANK7_RUNTIME_END, BANK7_TOP, COMMON_BASE, COMMON_CODE_END
+    global STACK_BASE, WINDOW_BASE, WINDOW_DATA_BASE
     global IRQ_ISR_STACK_BASE, IRQ_ISR_STACK_TOP, IRQ_ISR_STACK_SIZE
     global GATE_STACK_SIZE, OWNED_AREAS
     global DRIVER_ARENA_BASE, DRIVER_ARENA_END, DRIVER_GRANULE_SIZE
@@ -167,6 +185,7 @@ def apply_layout(values, source=None):
     COMMON_BASE = values["ZOS_COMMON_BASE"]
     STACK_BASE = values["ZOS_COMMON_STACK_BASE"]
     BANK7_RUNTIME_END = values["ZOS_BANK7_RUNTIME_END"]
+    BANK7_TOP = BANK7_RUNTIME_END
     COMMON_CODE_END = values["ZOS_COMMON_CODE_END"]
     # The common ceiling and the M10 reservation are build-time
     # architecture constants; the generated include always carries them.
@@ -209,6 +228,21 @@ def apply_layout(values, source=None):
         "_COMMON": (COMMON_BASE, COMMON_CODE_END),
         "_COMMON_DATA": (COMMON_BASE, COMMON_CODE_END),
     }
+    WINDOW_BASE = None
+    WINDOW_DATA_BASE = None
+    if window_split:
+        require_key(values, "ZOS_WINDOW_DATA_BASE", source)
+        WINDOW_BASE = REV13_WINDOW_SPLIT
+        WINDOW_DATA_BASE = values["ZOS_WINDOW_DATA_BASE"]
+        if not (BANK7_BASE < WINDOW_BASE < BANK7_RUNTIME_END):
+            raise MapError("window base %04Xh is outside the bank-7 space"
+                           % WINDOW_BASE)
+        if not (WINDOW_BASE <= WINDOW_DATA_BASE <= BANK7_RUNTIME_END):
+            raise MapError("window data base %04Xh is outside %04Xh-%04Xh"
+                           % (WINDOW_DATA_BASE, WINDOW_BASE,
+                              BANK7_RUNTIME_END))
+        OWNED_AREAS["_WINDOW"] = (WINDOW_BASE, WINDOW_DATA_BASE)
+        OWNED_AREAS["_WINDOW_DATA"] = (WINDOW_DATA_BASE, BANK7_RUNTIME_END)
 
 
 # Loadable bank-7 sections whose exclusive maximum end defines
@@ -220,10 +254,10 @@ def align_up(value, alignment):
     return (value + alignment - 1) & ~(alignment - 1)
 
 
-def loadable_end(areas, symbols):
+def loadable_end(areas, symbols, names=None):
     """Exclusive maximum end of every loadable bank-7 area."""
     end = None
-    for name in LOADABLE_AREAS:
+    for name in (names or LOADABLE_AREAS):
         base = name.lstrip("_")
         if "s__" + base in symbols:
             candidate = symbols["s__" + base] + symbols.get("l__" + base, 0)
@@ -288,16 +322,24 @@ def align_down(value, alignment):
 ARENA_MIN_GRANULES = None
 
 
-def derive_geometry(map_text, values, min_granules=None):
+def derive_geometry(map_text, values, min_granules=None,
+                    window_split=False):
     """Compute the derived bank-7 geometry from a probe-link map.
 
     Returns a dict with kernel_code_end (unaligned exclusive end of the
     loadable areas), arena_start (granule aligned), arena_end (the derived
     data base) and granules.  Raises MapError when the arena would fall
-    below the minimum size or the kernel would grow into the data base."""
+    below the minimum size or the kernel would grow into the data base.
+
+    With `window_split` the same derivation runs for the fixed region: the
+    fixed code/data stay below the relocated ISR stack (the generated
+    include carries its base) and the window data base is derived from the
+    `_WINDOW_DATA` size at the top of the bank-7 space."""
     areas, symbols = parse_map(map_text)
     granule = values["ZOS_DRIVER_GRANULE_SIZE"]
     runtime_end = values["ZOS_BANK7_RUNTIME_END"]
+    if window_split:
+        runtime_end = values["ZOS_IRQ_ISR_STACK_BASE"]
     if min_granules is None:
         min_granules = values["ZOS_DRIVER_ARENA_MIN_GRANULES"]
     min_size = min_granules * granule
@@ -323,7 +365,7 @@ def derive_geometry(map_text, values, min_granules=None):
     if size % granule != 0:
         raise MapError("derived driver arena is not granule aligned")
     common = area_sizes(areas, symbols, COMMON_AREAS)
-    return {
+    geometry = {
         "kernel_code_end": end,
         "common_code_size": common["_COMMON"],
         "common_data_size": common["_COMMON_DATA"],
@@ -333,6 +375,29 @@ def derive_geometry(map_text, values, min_granules=None):
         "data_base": data_base,
         "data_size": data_size,
     }
+    if window_split:
+        window_code_end = loadable_end(areas, symbols, ("_WINDOW",))
+        window_data_size = (symbols.get("l__WINDOW_DATA")
+                            or area_sizes(areas, symbols,
+                                          ("_WINDOW_DATA",))["_WINDOW_DATA"])
+        top = values["ZOS_BANK7_RUNTIME_END"]
+        if window_data_size > top - REV13_WINDOW_SPLIT:
+            raise MapError(
+                "window runtime data %d bytes does not fit "
+                "%04Xh-%04Xh" % (window_data_size, REV13_WINDOW_SPLIT,
+                                 top - 1))
+        window_data_base = align_down(top - window_data_size, granule)
+        if window_code_end > window_data_base:
+            raise MapError(
+                "linked window code ends at %04Xh, past the derived window "
+                "data base %04Xh" % (window_code_end, window_data_base))
+        geometry.update({
+            "window_split": REV13_WINDOW_SPLIT,
+            "window_code_end": window_code_end,
+            "window_data_base": window_data_base,
+            "window_data_size": window_data_size,
+        })
+    return geometry
 
 
 def format_probe_geometry_inc():
@@ -360,6 +425,18 @@ def format_geometry_inc(geometry):
     return "\n".join(lines) + "\n"
 
 
+def window_declarations(geometry):
+    """The static part of the revision-13 window layout: the ISR stack moves
+    from the top of bank 7 to the top of the fixed region (a window would
+    hide it otherwise) and the window base becomes a named constant."""
+    base = geometry["window_split"]
+    return {
+        "ZOS_IRQ_ISR_STACK_BASE": "0x%04X" % (base - 0x100),
+        "ZOS_IRQ_ISR_STACK_TOP": "0x%04X" % base,
+        "ZOS_REV13_WINDOW_BASE": "0x%04X" % base,
+    }
+
+
 def format_memory_variant(memory_inc_text, geometry):
     """Full memory.inc copy with the derived geometry declarations."""
     replacements = {
@@ -373,6 +450,12 @@ def format_memory_variant(memory_inc_text, geometry):
         "ZOS_COMMON_CODE_SIZE": str(geometry["common_code_size"]),
         "ZOS_COMMON_DATA_SIZE": str(geometry["common_data_size"]),
     }
+    if "window_split" in geometry:
+        replacements.update(window_declarations(geometry) | {
+            "ZOS_WINDOW_CODE_END": "0x%04X" % geometry["window_code_end"],
+            "ZOS_WINDOW_DATA_BASE": "0x%04X" % geometry["window_data_base"],
+            "ZOS_WINDOW_DATA_SIZE": str(geometry["window_data_size"]),
+        })
     seen = set()
     lines = []
     for line in memory_inc_text.splitlines():
@@ -883,7 +966,96 @@ def check_areas(areas, symbols):
                COMMON_M10_RESERVATION))
 
 
-def check_symbols(areas, symbols, production=False, zex_v2=False):
+# Symbols that must stay reachable while the window shows another bank:
+# the interrupt and syscall gates, the dispatch path, the copy primitives
+# and their staging, the driver arena (module code and data an interrupt
+# can dispatch into).  A symbol is acceptable in the fixed region
+# (2000h-5FFFh) or in the permanently mapped common window (E000h+),
+# never inside the window.
+REV13_FIXED_SYMBOLS = (
+    "irq_common_entry",
+    "irq_isr_stack",
+    "irq_saved_latch",
+    "irq_saved_sp",
+    "irq_ctc0_stub",
+    "_irq_arch_lock",
+    "_irq_arch_unlock",
+    "zos_syscall_entry",
+    "zos_syscall_dispatch",
+    "_kernel_syscall_dispatch",
+    "_irq_dispatch",
+    "_irq_active_source",
+    "_boot_common_entry",
+    "_zos_bank_copy",
+    "_zos_user_copy_staging",
+    "_platform_memctl_read",
+    "_platform_memctl_write",
+    "___driver_arena_start",
+    "__driver_arena_start",
+    "___driver_arena_end",
+    "__driver_arena_end",
+)
+
+# Cold (window-resident) objects the evaluation link must place inside the
+# window: their absence is not an error (an object can be reclassified),
+# but a symbol that exists and sits in the fixed region is one.
+REV13_COLD_SYMBOLS = (
+    "_kernel_main",
+    "_module_loader_load",
+    "_romfs_read",
+)
+
+# The 6000h split moves the syscall-side objects into the window half: the
+# syscall gate clears the page field before dispatching, so the dispatcher
+# only runs with P = 0 and the two-bank classification
+# (tests/m10/two-bank-classification.json) places it in the cold tier.
+# The check stays a residency assertion: at the 6000h split the dispatcher
+# must be inside the window, not merely allowed to be.
+REV13_6000_COLD_SYMBOLS = ("_kernel_syscall_dispatch",)
+
+
+def rev13_symbol_sets():
+    """(fixed, cold) symbol expectations for the window split."""
+    fixed = REV13_FIXED_SYMBOLS
+    cold = REV13_COLD_SYMBOLS
+    if WINDOW_BASE == REV13_WINDOW_SPLIT:
+        fixed = tuple(name for name in fixed
+                      if name not in REV13_6000_COLD_SYMBOLS)
+        cold = cold + REV13_6000_COLD_SYMBOLS
+    return fixed, cold
+
+
+def check_rev13_window(symbols):
+    """Revision-13 window split: fixed symbols outside the window, and the
+    relocated ISR stack inside the fixed region."""
+    if WINDOW_BASE is None:
+        return
+    fixed_symbols, cold_symbols = rev13_symbol_sets()
+    for name in fixed_symbols:
+        if name not in symbols:
+            continue
+        addr = symbols[name]
+        if WINDOW_BASE <= addr < BANK7_TOP:
+            raise MapError(
+                "%s at %04Xh must stay visible while the window is open: it "
+                "is inside the window region %04Xh-%04Xh"
+                % (name, addr, WINDOW_BASE, BANK7_TOP - 1))
+    if not (BANK7_BASE <= IRQ_ISR_STACK_BASE < WINDOW_BASE):
+        raise MapError(
+            "the ISR stack at %04Xh is not in the fixed region "
+            "2000h-%04Xh" % (IRQ_ISR_STACK_BASE, WINDOW_BASE - 1))
+    for name in cold_symbols:
+        if name not in symbols:
+            continue
+        addr = symbols[name]
+        if not (WINDOW_BASE <= addr < BANK7_TOP):
+            raise MapError(
+                "%s at %04Xh is classified cold but does not sit in the "
+                "window region %04Xh-%04Xh"
+                % (name, addr, WINDOW_BASE, BANK7_TOP - 1))
+
+
+def check_symbols(areas, symbols, production=False):
     page_zero_areas = [n for n in areas if n.startswith("_PAGE_ZERO")]
 
     if production:
@@ -925,14 +1097,14 @@ def check_symbols(areas, symbols, production=False, zex_v2=False):
         if name not in symbols:
             raise MapError("map has no M3 symbol %s" % name)
         addr = symbols[name]
-        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+        if not (BANK7_BASE <= addr < BANK7_TOP):
             raise MapError(
                 "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
                 % (name, addr)
             )
     for name, addr in symbols.items():
         if addr != 0 and name.startswith(M3_BANK7_PREFIXES):
-            if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            if not (BANK7_BASE <= addr < BANK7_TOP):
                 raise MapError(
                     "driver/service symbol %s at %04Xh is not bank-7 "
                     "resident" % (name, addr)
@@ -977,14 +1149,14 @@ def check_symbols(areas, symbols, production=False, zex_v2=False):
         if name not in symbols:
             raise MapError("map has no M4 symbol %s" % name)
         addr = symbols[name]
-        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+        if not (BANK7_BASE <= addr < BANK7_TOP):
             raise MapError(
                 "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
                 % (name, addr)
             )
     for name, addr in symbols.items():
         if addr != 0 and name.startswith(M4_BANK7_PREFIXES):
-            if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            if not (BANK7_BASE <= addr < BANK7_TOP):
                 raise MapError(
                     "module symbol %s at %04Xh is not bank-7 resident"
                     % (name, addr)
@@ -997,13 +1169,13 @@ def check_symbols(areas, symbols, production=False, zex_v2=False):
         if name not in symbols:
             raise MapError("map has no ROMFS symbol %s" % name)
         addr = symbols[name]
-        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+        if not (BANK7_BASE <= addr < BANK7_TOP):
             raise MapError(
                 "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
                 % (name, addr))
     for name, addr in symbols.items():
         if addr != 0 and name.startswith(ROMFS_BANK7_PREFIXES):
-            if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            if not (BANK7_BASE <= addr < BANK7_TOP):
                 raise MapError(
                     "ROMFS symbol %s at %04Xh is not bank-7 resident"
                     % (name, addr))
@@ -1047,7 +1219,7 @@ def check_symbols(areas, symbols, production=False, zex_v2=False):
         if name not in symbols:
             raise MapError("map has no VFS symbol %s" % name)
         addr = symbols[name]
-        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+        if not (BANK7_BASE <= addr < BANK7_TOP):
             raise MapError(
                 "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
                 % (name, addr))
@@ -1055,33 +1227,29 @@ def check_symbols(areas, symbols, production=False, zex_v2=False):
         if name not in symbols:
             raise MapError("map has no ROMFS symbol %s" % name)
         addr = symbols[name]
-        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+        if not (BANK7_BASE <= addr < BANK7_TOP):
             raise MapError(
                 "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
                 % (name, addr))
     for name, addr in symbols.items():
         if addr != 0 and name.startswith(VFS_BANK7_PREFIXES):
-            if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            if not (BANK7_BASE <= addr < BANK7_TOP):
                 raise MapError(
                     "VFS symbol %s at %04Xh is not bank-7 resident"
                     % (name, addr))
 
     # M6: process/ZEX code and the process table stay bank-7 resident.
-    # The ZEX v2 design-spike build compiles out the v1 validator, so its
-    # symbol is optional there (--zex-v2); everything else is unchanged.
     for name in M6_BANK7_ROUTINES:
-        if zex_v2 and name == "_zex_validate_header":
-            continue
         if name not in symbols:
             raise MapError("map has no M6 symbol %s" % name)
         addr = symbols[name]
-        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+        if not (BANK7_BASE <= addr < BANK7_TOP):
             raise MapError(
                 "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
                 % (name, addr))
     for name, addr in symbols.items():
         if addr != 0 and name.startswith(M6_BANK7_PREFIXES):
-            if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            if not (BANK7_BASE <= addr < BANK7_TOP):
                 raise MapError(
                     "process symbol %s at %04Xh is not bank-7 resident"
                     % (name, addr))
@@ -1092,13 +1260,13 @@ def check_symbols(areas, symbols, production=False, zex_v2=False):
         if name not in symbols:
             raise MapError("map has no M7 symbol %s" % name)
         addr = symbols[name]
-        if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+        if not (BANK7_BASE <= addr < BANK7_TOP):
             raise MapError(
                 "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
                 % (name, addr))
     for name, addr in symbols.items():
         if addr != 0 and name.startswith(M7_BANK7_PREFIXES):
-            if not (BANK7_BASE <= addr < IRQ_ISR_STACK_BASE):
+            if not (BANK7_BASE <= addr < BANK7_TOP):
                 raise MapError(
                     "diagnostic symbol %s at %04Xh is not bank-7 "
                     "resident" % (name, addr))
@@ -1132,11 +1300,12 @@ def check_symbols(areas, symbols, production=False, zex_v2=False):
     scratch = symbols.get("_zos_process_path_scratch")
     if scratch is None:
         raise MapError("map has no SYS_EXEC path buffer")
-    if not (DATA_BASE <= scratch < IRQ_ISR_STACK_BASE):
+    scratch_low = DATA_BASE if WINDOW_BASE is None else WINDOW_DATA_BASE
+    if not (scratch_low <= scratch < BANK7_TOP):
         raise MapError(
             "_zos_process_path_scratch at %04Xh is not in the bank-7 "
             "runtime data region %04Xh-%04Xh"
-            % (scratch, DATA_BASE, IRQ_ISR_STACK_BASE - 1))
+            % (scratch, scratch_low, BANK7_TOP - 1))
 
     # Package 28: the continuation stack must be sized for the pinned
     # depth and frame save, not truncated by a stale assembly .ds.
@@ -1264,11 +1433,15 @@ def check_symbols(areas, symbols, production=False, zex_v2=False):
         raise MapError("_irq_kernel_code_end is %04Xh, linked _CODE ends at %04Xh"
                        % (code_end if code_end is not None else -1, expected_end))
 
-    # Kernel body must be in bank 7.
+    # Kernel body must be in bank 7.  With the revision-13 window the
+    # kernel main body is window-resident (cold), so the bound is the
+    # bank-7 space itself; check_rev13_window() proves it is not in the
+    # fixed region.
     if "_kernel_main" not in symbols:
         raise MapError("map has no symbol _kernel_main")
     km = symbols["_kernel_main"]
-    if not (BANK7_BASE <= km < DRIVER_ARENA_BASE):
+    bank7_bound = BANK7_TOP if WINDOW_BASE is not None else DRIVER_ARENA_BASE
+    if not (BANK7_BASE <= km < bank7_bound):
         raise MapError("_kernel_main at %04Xh is outside the bank-7 loadable region" % km)
 
     # Reset copier must stay below the RST 30h reservation, and the
@@ -1292,10 +1465,11 @@ def check_symbols(areas, symbols, production=False, zex_v2=False):
         raise MapError("RST 30h vector is %d bytes, expected exactly 3" % vector_size)
 
 
-def check_map(text, production=False, zex_v2=False):
+def check_map(text, production=False):
     areas, symbols = parse_map(text)
     check_areas(areas, symbols)
-    check_symbols(areas, symbols, production, zex_v2)
+    check_symbols(areas, symbols, production)
+    check_rev13_window(symbols)
     return areas, symbols
 
 
@@ -1310,13 +1484,51 @@ def geometry_main(argv):
             # The probe image just has to link so the derive step can
             # measure its loadable area ends; a fixed placeholder here
             # could otherwise collide with kernel growth.
-            if len(argv) != 3:
+            if len(argv) not in (3, 5):
                 raise MapError("usage: mapcheck.py geometry probe "
                                "<memory.inc> <out.inc>")
             parse_inc(argv[1])
             with open(argv[2], "w") as handle:
                 handle.write(format_probe_geometry_inc())
             print("mapcheck: probe geometry (no arena placed) -> %s" % argv[2])
+            return 0
+        if mode == "static-variant":
+            # Assembler-visible window variant: generated before any
+            # assembly, so it carries only the static window declarations
+            # (no per-image geometry).
+            window_split = False
+            args = list(argv[1:])
+            if "--rev13-window" in args:
+                window_split = True
+                args.remove("--rev13-window")
+            if not window_split or len(args) != 2:
+                raise MapError("usage: mapcheck.py geometry static-variant "
+                               "--rev13-window <memory.inc> <out.inc>")
+            with open(args[0]) as handle:
+                text = handle.read()
+            lines = []
+            seen = set()
+            replacements = window_declarations(
+                {"window_split": REV13_WINDOW_SPLIT})
+            for line in text.splitlines():
+                code = line.split(";")[0]
+                match = re.match(r"([A-Za-z_]\w*)\s*=", code)
+                if match and match.group(1) in replacements:
+                    name = match.group(1)
+                    lines.append("%s = %s" % (name, replacements[name]))
+                    seen.add(name)
+                else:
+                    lines.append(line)
+            for name, value in replacements.items():
+                if name not in seen:
+                    lines.append("%s = %s" % (name, value))
+            variant = "\n".join(lines) + "\n"
+            with open(args[1], "w") as handle:
+                handle.write(variant)
+            print("mapcheck: rev13 static window variant (base %04Xh, ISR "
+                  "stack %04Xh-%04Xh) -> %s"
+                  % (REV13_WINDOW_SPLIT, REV13_WINDOW_SPLIT - 0x100,
+                     REV13_WINDOW_SPLIT - 1, args[1]))
             return 0
         if mode == "derive":
             min_granules = None
@@ -1325,14 +1537,19 @@ def geometry_main(argv):
                 at = args.index("--min-granules")
                 min_granules = int(args[at + 1], 0)
                 del args[at:at + 2]
+            window_split = False
+            if "--rev13-window" in args:
+                window_split = True
+                args.remove("--rev13-window")
             if len(args) not in (3, 4):
                 raise MapError("usage: mapcheck.py geometry derive <probe.map> "
                                "<memory.inc> <out.inc> [<memory-variant.inc>] "
-                               "[--min-granules N]")
+                               "[--min-granules N] [--rev13-window]")
             probe_path, memory_path, out_path = args[0], args[1], args[2]
             values = parse_inc(memory_path)
             with open(probe_path) as handle:
-                geometry = derive_geometry(handle.read(), values, min_granules)
+                geometry = derive_geometry(handle.read(), values,
+                                           min_granules, window_split)
             with open(out_path, "w") as handle:
                 handle.write(format_geometry_inc(geometry))
             if len(args) == 4:
@@ -1348,6 +1565,16 @@ def geometry_main(argv):
                      geometry["arena_end"] - geometry["arena_start"],
                      geometry["kernel_code_end"], geometry["data_size"],
                      geometry["data_base"], out_path))
+            if "window_split" in geometry:
+                print("mapcheck: rev13 window %04Xh-%04Xh end %04Xh, window "
+                      "data %d bytes at %04Xh, ISR stack %04Xh-%04Xh"
+                      % (geometry["window_split"],
+                         geometry["window_data_base"] - 1,
+                         geometry["window_code_end"],
+                         geometry["window_data_size"],
+                         geometry["window_data_base"],
+                         geometry["window_split"] - 0x100,
+                         geometry["window_split"] - 1))
             return 0
         raise MapError("unknown geometry mode %r" % mode)
     except MapError as exc:
@@ -1361,22 +1588,21 @@ def main(argv):
         return geometry_main(argv[2:])
     production = "--production" in argv
     argv = [arg for arg in argv if arg != "--production"]
-    zex_v2 = "--zex-v2" in argv
-    argv = [arg for arg in argv if arg != "--zex-v2"]
     if "--min-granules" in argv:
         at = argv.index("--min-granules")
         ARENA_MIN_GRANULES = int(argv[at + 1], 0)
         del argv[at:at + 2]
+    window_split = "--rev13-window" in argv
+    argv = [arg for arg in argv if arg != "--rev13-window"]
     if len(argv) not in (2, 3, 4):
         print(__doc__)
         return 2
     if len(argv) >= 3:
-        apply_layout(parse_inc(argv[2]), argv[2])
+        apply_layout(parse_inc(argv[2]), argv[2], window_split)
     if len(argv) == 4:
         apply_irq_layout(parse_inc(argv[3]))
     try:
-        areas, symbols = check_map(open(argv[1]).read(), production,
-                                   zex_v2=zex_v2)
+        areas, symbols = check_map(open(argv[1]).read(), production)
     except MapError as exc:
         print("mapcheck: %s" % exc, file=sys.stderr)
         return 1
@@ -1389,6 +1615,13 @@ def main(argv):
           % (static_end, DRIVER_ARENA_BASE, DRIVER_ARENA_END - 1,
              DRIVER_ARENA_END - DRIVER_ARENA_BASE, DRIVER_GRANULES,
              DATA_BASE))
+    if WINDOW_BASE is not None:
+        window_end = loadable_end(areas, symbols, ("_WINDOW",))
+        print("mapcheck: rev13 fixed region 2000h-%04Xh end %04Xh | window "
+              "%04Xh-%04Xh end %04Xh | ISR stack %04Xh-%04Xh"
+              % (WINDOW_BASE - 1, static_end, WINDOW_BASE,
+                 WINDOW_DATA_BASE - 1, window_end, IRQ_ISR_STACK_BASE,
+                 WINDOW_BASE - 1))
     return 0
 
 

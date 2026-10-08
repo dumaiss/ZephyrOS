@@ -33,7 +33,8 @@
 #   make m9-fs-selftest       M9 filesystem syscall acceptance image
 #   make m9-exec-selftest     M9 SYS_EXEC nesting acceptance image
 #   make m9-iocfat-selftest   M9 IOC-FAT provider acceptance image
-#   make m10-spike-selftest   M10 design-spike ZEX v2 loader image
+#   make rsvc-spike-selftest  resident-service spike image (revision 13)
+#   make rev13-pld            revision-13 decoder: vectors, fit, WinCUPL
 #   make clean    remove all generated files
 #
 # Builds are parallel by default (ZOS_JOBS defaults to nproc); use
@@ -103,6 +104,18 @@ C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
 END_OBJ   := $(BUILD)/irq_code_end.rel
 # OBJS is assigned after the acceptance/catalog selection below, once
 # every conditional object append has been decided.
+
+# --- resident-service spike selection ----------------------------------
+# ZOS_RSVC_SPIKE=1 (work package 35) is the resident-service evaluation:
+# decoder revision 13 at the 6000h split (the 32 KiB mode-11 window with
+# the 16 KiB fixed core at 2000h-5FFFh), plus the IPC substrate and the
+# bank-6 resident services.  It is the only window build; production and
+# every other acceptance image run with the flag unset.
+ZOS_RSVC_SPIKE      ?= 0
+ZOS_WINDOW_SPLIT    := $(if $(filter 1,$(ZOS_RSVC_SPIKE)),1,0)
+# The revision-13 mode-11 window is 6000h-DFFFh (architecture section
+# 36.2); the fixed core is 2000h-5FFFh.
+ZOS_REV13_WINDOW_BASE := 0x6000
 
 # --- target acceptance build selection ---------------------------------
 # Acceptance images link the shared runner (tests/target/support/) plus
@@ -389,20 +402,23 @@ ZOS_HID_BOOT := 0
 ZOS_V9958_BOOT := 0
 endif
 
-# M10 design-spike image (package 33b).  The production boot path in its
-# own build directory with the resident ZEX v2 loader compiled in
-# (ZOS_M10_SPIKE) and no ZEX v1 loader: the image boots a two-auxiliary-
-# segment ZEX v2 program and the simulator replay checks what the loader
-# placed.  The boot set is SIO-only so the derived arena is small and the
-# loader's bank-7 tables are the only growth the ledger sees.
-ifeq ($(ZOS_M10_SPIKE),1)
-CFLAGS    += -DZOS_M10_SPIKE=1
-C_OBJS    += $(BUILD)/bankmap.rel $(BUILD)/xmem.rel $(BUILD)/far.rel
-ASM_OBJS  += $(BUILD)/far_entry.rel
-PK_SUFFIX := -m10-spike-selftest
-ZOS_IOC_BOOT := 0
-ZOS_HID_BOOT := 0
-ZOS_V9958_BOOT := 0
+# Resident-service spike image (work package 35): the window split, the
+# nucleus IPC substrate, the six bank-6 resident service containers and
+# the client program.  Transport A on decoder revision 13, the 6000h
+# split (architecture section 36.2).
+ifeq ($(ZOS_RSVC_SPIKE),1)
+CFLAGS    += -DZOS_RSVC_SPIKE=1 -Itests/target/include
+ASFLAGS   += -I$(BUILD)
+PK_SUFFIX := -rsvc-spike
+RSVC_DIR  := tests/target/rsvc
+C_OBJS    += $(BUILD)/rsvc_core.rel $(BUILD)/ctc_test.rel
+ASM_OBJS  += $(BUILD)/rsvc_asm.rel $(BUILD)/rsvc_blobs.rel
+# SIO-only boot set, like the other evaluation images: the recovery store
+# carries sio.zmod plus the client program, and the two test-owned CTC0
+# helpers are the only IRQ producers.
+ZOS_IOC_BOOT    := 0
+ZOS_HID_BOOT    := 0
+ZOS_V9958_BOOT  := 0
 ZOS_IOCFAT_BOOT := 0
 endif
 
@@ -476,10 +492,40 @@ CFLAGS    += -DZOS_IOCFAT_BOOT=$(ZOS_IOCFAT_BOOT)
 
 OBJS      := $(ASM_OBJS) $(C_OBJS)
 
-# --- driver-arena geometry ---------------------------------------------------
+# Revision-13 window split: objects that only ever run with page 0
+# selected compile into the window areas (_WINDOW / _WINDOW_DATA at
+# 6000h-DFFFh).  The classification and its reasons live in
+# tests/m10/two-bank-classification.json and the package-35/36 validation
+# records; the fixed set keeps the default areas.  Not set for any other
+# build, so production object bytes are unchanged.
+#
+# The syscall-side objects are in the cold set: the syscall gate clears
+# the page field before dispatching, so the dispatcher, its diagnostic
+# bodies and the diagnostic port primitives only ever run with P = 0.
+# The fixed region is 16 KiB, so without the move nothing links.
+ifeq ($(ZOS_WINDOW_SPLIT),1)
+REV13_COLD_OBJS := $(BUILD)/main.rel $(BUILD)/fs.rel $(BUILD)/romfs.rel \
+	$(BUILD)/process.rel $(BUILD)/process_exec.rel $(M9_VFS_OBJS) \
+	$(BUILD)/syscall.rel $(BUILD)/diag.rel $(BUILD)/diag_io.rel
+$(REV13_COLD_OBJS): CFLAGS += --codeseg WINDOW --dataseg WINDOW_DATA
+endif
+
+# Driver-arena geometry ---------------------------------------------------
 # Every image derives the arena and the runtime data base from the aligned
 # linked-kernel end with a two-pass link.  There is one geometry; the probe
 # link places no arena.
+
+# Revision-13 memory decoder.  The programmed PLD and its WinCUPL
+# simulation vectors live in the platform tree; the read-only Zephyr-80
+# reference tree supplies revision 12 for the P = 0 equivalence
+# cross-check when it is present.  ZOS_REV13_HDL is hardware description,
+# never executable Z80 code.
+ZOS_REV13_HDL    := platform/zephyr80/hdl
+ZOS_REV13_PLD    := $(ZOS_REV13_HDL)/MEM_DECODER_rev13.pld
+ZOS_REV13_SI     := $(ZOS_REV13_HDL)/MEM_DECODER_rev13.si
+ZOS_ZEPHYR80_REF ?= $(HOME)/Documents/Zephyr-80
+ZOS_REV12_PLD    ?= $(ZOS_ZEPHYR80_REF)/Code/HDL/WinCUPL/src/MEM_DECODER.pld
+REV13_PLD_BUILD  ?= build-rev13-pld/hdl
 
 # Common acceptance wiring: the single guard plus the shared runner.
 ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
@@ -497,19 +543,23 @@ TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
 endif
 
 # Production images (no acceptance objects) must reject every acceptance
-# symbol in the linked map; mapcheck --production enforces this.
-MAPCHECK_FLAGS := $(if $(TARGET_TEST_OBJS),,--production) \
-		$(if $(ZOS_M10_SPIKE),--zex-v2,)
+# symbol in the linked map; mapcheck --production enforces this.  The
+# window-split spike image links evaluation objects by construction, so it
+# is not a production image either.
+REV13_WINDOW_FLAG := $(if $(filter 1,$(ZOS_WINDOW_SPLIT)),--rev13-window,)
+MAPCHECK_FLAGS := $(if $(TARGET_TEST_OBJS),,\
+		$(if $(filter 1,$(ZOS_WINDOW_SPLIT)),,--production)) $(REV13_WINDOW_FLAG)
 
 # Driver-arena floor.  The 32-granule floor is the production budget gate
 # (work/M9-REFERENCE.md); an acceptance image links target-test code and only
 # needs an arena that holds its declared boot set, which the arena plan
-# (zmodpack plan) enforces separately.  The M10 design-spike image is a
-# measurement image: its derived arena falls below the production floor
-# (that shortfall is the spike's verdict), so it also uses the
-# acceptance-image floor and the exact gap is reported in the record.
-ZOS_ARENA_MIN_GRANULES := $(if $(TARGET_TEST_OBJS),16, \
-	$(if $(ZOS_M10_SPIKE),16,32))
+# (zmodpack plan) enforces separately.  The resident-service spike image
+# grows the fixed core by the IPC substrate and the resident service
+# containers by design, so its floor is the declared boot set (sio.zmod, 1
+# granule) plus margin; the floor is the measurement image's own gate,
+# reported in the record.
+ZOS_ARENA_MIN_GRANULES := $(if $(filter 1,$(ZOS_RSVC_SPIKE)),4, \
+	$(if $(TARGET_TEST_OBJS),16,32))
 
 # Every image boots the SIO fallback module from the recovery store and
 # then, per its boot gates, the IOC transport, the HID keyboard/text input
@@ -543,6 +593,27 @@ GEOMETRY_DIR       := $(BUILD)/geometry
 GEOMETRY_PROBE_DIR := $(BUILD)/probe
 GEOMETRY_INC       := $(GEOMETRY_DIR)/arena_geometry.inc
 
+# Revision-13 window split: the assembler needs the *static* window
+# variant of memory.inc (the relocated ISR stack and the window constant)
+# before the probe link, so it is generated first and searched ahead of
+# the platform include path.  The derived variant below carries the same
+# declarations plus the per-image geometry and is what the link tools
+# read.  Outside the spike build both variables are the platform file,
+# exactly as before.
+REV13_STATIC_MEMORY := $(BUILD)/rev13-memory/zephyr80/memory.inc
+ASM_MEMORY_INC := $(if $(filter 1,$(ZOS_WINDOW_SPLIT)),$(REV13_STATIC_MEMORY),$(ZOS_PLATFORM_MEMORY_INC))
+
+$(REV13_STATIC_MEMORY): $(ZOS_PLATFORM_MEMORY_INC) tools/mapcheck.py | $(BUILD)
+	mkdir -p $(dir $@)
+	$(PYTHON) tools/mapcheck.py geometry static-variant \
+		--rev13-window \
+		$(ZOS_PLATFORM_MEMORY_INC) $@
+
+ifneq ($(filter 1,$(ZOS_WINDOW_SPLIT)),)
+ASFLAGS    := -I$(BUILD)/rev13-memory $(ASFLAGS)
+REV13_STATIC_DEPS := $(REV13_STATIC_MEMORY)
+endif
+
 GEOMETRY_MEMORY := $(GEOMETRY_DIR)/memory.inc
 MEMORY_INC := $(GEOMETRY_MEMORY)
 
@@ -555,11 +626,12 @@ MEMORY_INC := $(GEOMETRY_MEMORY)
 # re-verified by mapcheck.py, so a stale generated value cannot survive.
 
 $(GEOMETRY_INC) $(GEOMETRY_MEMORY): $(BUILD)/zephyros.probe.map \
-		tools/mapcheck.py $(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
+		tools/mapcheck.py $(ASM_MEMORY_INC) | $(BUILD)
 	mkdir -p $(GEOMETRY_DIR)
 	$(PYTHON) tools/mapcheck.py geometry derive $(BUILD)/zephyros.probe.map \
-		$(ZOS_PLATFORM_MEMORY_INC) $(GEOMETRY_INC) $(GEOMETRY_MEMORY) \
-		--min-granules $(ZOS_ARENA_MIN_GRANULES)
+		$(ASM_MEMORY_INC) $(GEOMETRY_INC) $(GEOMETRY_MEMORY) \
+		--min-granules $(ZOS_ARENA_MIN_GRANULES) \
+		$(REV13_WINDOW_FLAG)
 
 $(GEOMETRY_PROBE_DIR)/arena_geometry.inc: $(ZOS_PLATFORM_MEMORY_INC) \
 		tools/mapcheck.py | $(BUILD)
@@ -582,8 +654,14 @@ $(BUILD)/zephyros.probe.lk: $(PROBE_OBJS) | $(BUILD)
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
 	  printf '%s\n' '-i $(BUILD)/zephyros.probe.ihx'; \
-	  printf '%s\n' '-b _CODE = 0x2000' '-b _DATA = 0xC000' \
-	                '-b _COMMON = 0xE000'; \
+	  if [ -n "$(REV13_WINDOW_FLAG)" ]; then \
+	    printf '%s\n' '-b _CODE = 0x2010' '-b _DATA = 0x6000' \
+	                  '-b _WINDOW = $(ZOS_REV13_WINDOW_BASE)' \
+	                  '-b _WINDOW_DATA = 0xD800' '-b _COMMON = 0xE000'; \
+	  else \
+	    printf '%s\n' '-b _CODE = 0x2000' '-b _DATA = 0xC000' \
+	                  '-b _COMMON = 0xE000'; \
+	  fi; \
 	  printf '%s\n' $(PROBE_OBJS); \
 	  printf '%s\n' '-e'; \
 	} > $@
@@ -606,7 +684,8 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	m9-exec-selftest \
 	m9-iocfat-selftest \
 	m9-selftest \
-	m10-spike-selftest \
+	rev13-pld \
+	rsvc-spike-selftest \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-subsystem smoke-hardware-romfs-corrupt \
@@ -628,26 +707,26 @@ $(BUILD):
 # --- assemble ----------------------------------------------------------------
 
 $(BUILD)/reset.rel: boot/shadow_copy.asm \
-		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/start.rel: boot/start.asm \
-		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/banking.rel: kernel/memory/banking.asm \
-		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/page_zero.rel: kernel/syscall/page_zero.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/syscall_entry.rel: kernel/syscall/entry.asm \
-		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/irq_entry.rel: kernel/irq/entry.asm platform/zephyr80/hardware.inc \
-		platform/zephyr80/memory.inc platform/zephyr80/irq.inc | $(BUILD)
+		$(ASM_MEMORY_INC) platform/zephyr80/irq.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/irq_vectors.rel: kernel/irq/vectors.asm \
@@ -665,15 +744,15 @@ $(BUILD)/arena.rel: kernel/module/arena.asm $(GEOMETRY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -I$(dir $(GEOMETRY_INC)) -o $@ $<
 
 $(BUILD)/rom_access.rel: kernel/romfs/rom_access.asm \
-		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/process_launch.rel: kernel/process/launch.asm \
-		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/user_copy.rel: kernel/memory/user_copy.asm \
-		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/diag_io.rel: kernel/syscall/diag_io.asm | $(BUILD)
@@ -822,37 +901,13 @@ $(BUILD)/vfs_mounts.rel: $(BUILD)/generated/vfs_mounts.c \
 
 $(BUILD)/process.rel: kernel/process/process.c \
 		include/zephyros/process.h include/zephyros/zex.h \
-		include/zephyros/kernel.h include/zephyros/errno.h \
-		kernel/process/bankmap.h kernel/process/zex2prog.h | $(BUILD)
+		include/zephyros/kernel.h include/zephyros/errno.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/process_exec.rel: kernel/process/exec.c \
 		include/zephyros/process.h include/zephyros/zex.h \
-		include/zephyros/romfs.h include/zephyros/zex2.h \
-		kernel/process/bankmap.h kernel/process/zex2prog.h | $(BUILD)
+		include/zephyros/romfs.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
-
-# M10 design-spike auxiliary bank map (package 33b); linked only when
-# ZOS_M10_SPIKE adds it to C_OBJS.
-$(BUILD)/bankmap.rel: kernel/process/bankmap.c \
-		kernel/process/bankmap.h include/zephyros/process.h \
-		include/zephyros/zex2.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-# M10 extended-memory and far-call services (packages 33c/33d).
-$(BUILD)/xmem.rel: kernel/syscall/xmem.c kernel/syscall/xmem.h \
-		abi/zos/xmem.h include/zephyros/process.h \
-		kernel/process/bankmap.h kernel/process/zex2prog.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-$(BUILD)/far.rel: kernel/syscall/far.c kernel/syscall/xmem.h \
-		abi/zos/xmem.h include/zephyros/process.h \
-		kernel/process/bankmap.h kernel/process/zex2prog.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-$(BUILD)/far_entry.rel: kernel/process/far.asm \
-		platform/zephyr80/hardware.inc platform/zephyr80/memory.inc | $(BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 # --- ZMOD modules (host-built, packed, embedded per-image catalogs) ----------
 # The SIO driver module and the synthetic M4 fixtures are built once under
@@ -1141,6 +1196,28 @@ $(BUILD)/ctc_test.rel: tests/target/support/ctc_test.c \
 		platform/zephyr80/hardware.h platform/zephyr80/irq.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
+# Resident-service spike objects (work package 35): the fixed-region
+# primitives, the nucleus IPC substrate, a kernel-context copy of the
+# SDCC indirect-call helpers (the substrate calls through the API table)
+# and the six service containers emitted as one assembly blob.
+# The service-stack size is pinned in rsvc_config.h (C) and needed by
+# rsvc_asm.asm (assembler); the build derives the assembler copy so the two
+# can never disagree.
+$(BUILD)/rsvc_stack_size.inc: $(RSVC_DIR)/rsvc_config.h | $(BUILD)
+	@printf 'ZOS_RSVC_SERVICE_STACK_SIZE = %s\n' \
+		`sed -n 's/.*define ZOS_RSVC_SERVICE_STACK_SIZE[[:space:]]*\([0-9]*\)u.*/\1/p' $<` > $@
+
+$(BUILD)/rsvc_asm.rel: $(RSVC_DIR)/rsvc_asm.asm \
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) \
+		$(BUILD)/rsvc_stack_size.inc | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/rsvc_core.rel: $(RSVC_DIR)/rsvc_core.c $(RSVC_DIR)/rsvc_config.h \
+		tests/target/include/rsvc_test.h \
+		include/zephyros/module.h include/zephyros/irq.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+
 $(BUILD)/syscall_test.rel: tests/target/syscall/syscall_test.c \
 		include/zephyros/kernel.h \
 		tests/target/include/syscall_selftest.h | $(BUILD)
@@ -1313,63 +1390,12 @@ $(eval $(call zex_program,fsdeep,tests/target/m9/exec,fsdeep.c,\
 $(eval $(call zex_program,fsraw,tests/target/m9/exec,fsraw.c fsraw_entry.asm,\
 	NO_CRT0=1,ENTRY=rw_entry,STACK=32,SCRATCH=,STAGE=1))
 
-# --- M10 spike ZEX v2 program (package 33b) ---------------------------------
-# The generic zex_program rule packs ZEX v1; the spike program is ZEX v2
-# with two relocatable auxiliary segments.  The primary image links exactly
-# as an SDK program (crt0 + runtime + libzos), then tools/zexmanifest.py
-# wraps the derived geometry into a zex-v2 manifest and tools/zexpack.py
-# links and packs the segments.  See tests/target/m10/segments.json.
-SPIKE_DIR     := tests/target/m10
-SPIKE_BUILD   := $(ZEX_USER_ROOT)/spike
-SPIKE_SEGMENTS := tests/m10/segments.json
-SPIKE_LINKOBJS := $(ZEX_CRT0) $(ZEX_RUNTIME) $(SPIKE_BUILD)/spike.rel
-SPIKE_JSON    := $(SPIKE_BUILD)/spike.json
-SPIKE_ZEX     := $(SPIKE_BUILD)/spike.zex
-
-$(SPIKE_BUILD):
-	mkdir -p $@
-
-$(SPIKE_BUILD)/spike.rel: $(SPIKE_DIR)/spike.c | $(SPIKE_BUILD)
-	$(SDCC) $(ZEX_CFLAGS) -c $< -o $@
-
-$(SPIKE_BUILD)/spike_seg1.rel: $(SPIKE_DIR)/spike_seg1.c | $(SPIKE_BUILD)
-	$(SDCC) $(ZEX_CFLAGS) -c $< -o $@
-
-$(SPIKE_BUILD)/spike_seg2.rel: $(SPIKE_DIR)/spike_seg2.c | $(SPIKE_BUILD)
-	$(SDCC) $(ZEX_CFLAGS) -c $< -o $@
-
-$(SPIKE_BUILD)/segcall.rel: $(SPIKE_DIR)/segcall.asm | $(SPIKE_BUILD)
-	$(SDASZ80) $(ZEX_ASFLAGS) -o $@ $<
-
-$(SPIKE_BUILD)/spike.lk: $(SPIKE_LINKOBJS) $(ZEX_LIBZOS) \
-		$(ZOS_SDK_ROOT)/zex.mk | $(SPIKE_BUILD)
-	{ \
-	  printf '%s\n' '-n' '-m' '-w'; \
-	  printf '%s\n' '-i $(SPIKE_BUILD)/spike.ihx'; \
-	  printf '%s\n' '-b _CODE = 0x0100'; \
-	  printf '%s\n' $(SPIKE_LINKOBJS); \
-	  printf '%s\n' '-l $(ZEX_LIBZOS)'; \
-	  printf '%s\n' '-e'; \
-	} > $@
-
-$(SPIKE_BUILD)/spike.link: $(SPIKE_BUILD)/spike.lk
-	$(SDLDZ80) -f $<
-	touch $@
-
-$(SPIKE_JSON): $(SPIKE_BUILD)/spike.link tools/zexmanifest.py
-	$(PYTHON) tools/zexmanifest.py $(SPIKE_BUILD)/spike.map $@ \
-	    --name spike.zex --entry zos_entry --stack 256 \
-	    --scratch zos_scratch:16 --v2 --segments $(SPIKE_SEGMENTS)
-
-$(SPIKE_ZEX): $(SPIKE_JSON) $(SPIKE_BUILD)/spike_seg1.rel \
-		$(SPIKE_BUILD)/spike_seg2.rel $(SPIKE_BUILD)/segcall.rel \
-		$(SPIKE_SEGMENTS) tools/zexpack.py
-	$(PYTHON) tools/zexpack.py pack $(SPIKE_JSON) $@ --objdir $(SPIKE_BUILD)
-	$(PYTHON) tools/zexpack.py validate $@
-
-$(MODULES)/spike.zex: $(SPIKE_ZEX) | $(MODULES)
-	cp $< $@
-
+# Resident-service spike client (work package 35): an ordinary SDK
+# program; it reaches the evaluation-only syscalls through its own raw
+# stub (rsvcgate.asm), not through libzos.
+$(eval $(call zex_program,rsvc,tests/target/rsvc,\
+	rsvc.c rsvcgate.asm,STACK=256,STAGE=1,\
+	INCLUDES=tests/target/include))
 
 # Deterministic malformed containers (one per validation boundary; see
 # tests/subsys/gen_zex_fixtures.py and gen_zmod_fixtures.py) shared by the
@@ -1482,15 +1508,59 @@ else ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
 # kernel change, which is exactly what this image demonstrates.
 ROMFS_MANIFEST := user/helloworld/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/hello.zex
-else ifeq ($(ZOS_M10_SPIKE),1)
-# M10 design-spike image: the SIO fallback plus the two-auxiliary-segment
-# ZEX v2 program the resident v2 loader boots (ZOS_BOOT_PROGRAM=
-# /SYSTEM/spike.zex).
-ROMFS_MANIFEST := tests/m10/manifest-spike.json
-ROMFS_EXTRA_DEPS := $(MODULES)/spike.zex
+else ifeq ($(ZOS_RSVC_SPIKE),1)
+# Resident-service spike image (work package 35): the SIO fallback plus the
+# ZEX v1 client program the production launcher boots
+# (ZOS_BOOT_PROGRAM=/SYSTEM/rsvc.zex).  The six synthetic services are not
+# on the recovery store: they are linked into the kernel image as ZMOD
+# containers and relocated into bank 6 by the evaluation loader.
+ROMFS_MANIFEST := tests/m10/manifest-rsvc.json
+ROMFS_EXTRA_DEPS := $(MODULES)/rsvc.zex
 else
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+endif
+
+# --- resident-service spike containers (work package 35) --------------------
+# Six synthetic services packed as ordinary ZMOD containers (the existing
+# packer and relocation model), emitted as one assembly blob the evaluation
+# nucleus relocates into bank 6.  Eval-only; nothing here is built for any
+# other configuration.
+RSVC_MODDIR := $(BUILD)/rsvc-modules
+
+ifeq ($(ZOS_RSVC_SPIKE),1)
+$(RSVC_MODDIR):
+	mkdir -p $@
+
+$(RSVC_MODDIR)/%.rel: $(RSVC_DIR)/%.c \
+		tests/target/include/rsvc_test.h | $(RSVC_MODDIR)
+	$(SDCC) $(MOD_CFLAGS) -Itests/target/include $< -o $@
+
+$(RSVC_MODDIR)/sdcc_indirect_calls.rel: \
+		modules/runtime/sdcc_indirect_calls.asm | $(RSVC_MODDIR)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(RSVC_MODDIR)/%.zmod: $(RSVC_DIR)/manifests/%.json \
+		$(RSVC_MODDIR)/%.rel $(RSVC_MODDIR)/sdcc_indirect_calls.rel \
+		tools/zmodpack.py
+	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(RSVC_MODDIR) \
+		--report $(RSVC_MODDIR)/$*.report.json
+
+RSVC_ZMODS := $(RSVC_MODDIR)/echo.zmod $(RSVC_MODDIR)/con.zmod \
+	$(RSVC_MODDIR)/ioc.zmod $(RSVC_MODDIR)/fat.zmod \
+	$(RSVC_MODDIR)/vfs.zmod $(RSVC_MODDIR)/irqx.zmod
+
+$(BUILD)/rsvc_blobs.asm: $(RSVC_ZMODS) tools/zmodpack.py | $(BUILD)
+	$(PYTHON) tools/zmodpack.py emit-asm $@ \
+		rsvc_echo_zmod=$(RSVC_MODDIR)/echo.zmod \
+		rsvc_con_zmod=$(RSVC_MODDIR)/con.zmod \
+		rsvc_ioc_zmod=$(RSVC_MODDIR)/ioc.zmod \
+		rsvc_fat_zmod=$(RSVC_MODDIR)/fat.zmod \
+		rsvc_vfs_zmod=$(RSVC_MODDIR)/vfs.zmod \
+		rsvc_irqx_zmod=$(RSVC_MODDIR)/irqx.zmod
+
+$(BUILD)/rsvc_blobs.rel: $(BUILD)/rsvc_blobs.asm | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
 endif
 
 # --- boot-program setting (package 28b) --------------------------------------
@@ -1566,11 +1636,20 @@ $(BUILD)/zephyr80.lk: $(OBJS) $(TARGET_TEST_OBJS) $(END_OBJ) \
 		$(GEOMETRY_MEMORY) | $(BUILD)
 	@data_base=$$(sed -n 's/^ZOS_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
 	test -n "$$data_base" || { echo "no derived data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
+	window_data_base=$$(sed -n 's/^ZOS_WINDOW_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
 	  printf '%s\n' '-i $(BUILD)/zephyros.ihx'; \
-	  printf '%s\n' '-b _CODE = 0x2000' "-b _DATA = $$data_base" \
-	                '-b _COMMON = 0xE000'; \
+	  if [ -n "$(REV13_WINDOW_FLAG)" ]; then \
+	    test -n "$$window_data_base" || { echo "no derived window data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
+	    printf '%s\n' '-b _CODE = 0x2010' "-b _DATA = $$data_base" \
+	                  '-b _WINDOW = $(ZOS_REV13_WINDOW_BASE)' \
+	                  "-b _WINDOW_DATA = $$window_data_base" \
+	                  '-b _COMMON = 0xE000'; \
+	  else \
+	    printf '%s\n' '-b _CODE = 0x2000' "-b _DATA = $$data_base" \
+	                  '-b _COMMON = 0xE000'; \
+	  fi; \
 	  printf '%s\n' $(OBJS) $(TARGET_TEST_OBJS) $(END_OBJ); \
 	  printf '%s\n' '-e'; \
 	} > $@
@@ -1992,22 +2071,53 @@ m9-selftest: all
 	$(PYTHON) -m unittest discover -s tests -p 'test_m9_selftest_sim.py' -v
 	@echo "m9 integration image: build-m9-selftest/zephyros-m9-selftest.bin"
 
-# M10 design-spike image (package 33b): the resident ZEX v2 loader in its
-# own build directory, booting a two-auxiliary-segment ZEX v2 program.  The
-# simulator replay checks what the loader placed in the auxiliary bank
-# (segment images with relocations applied, zeroed BSS) and that the bank
-# map and program state return to baseline after exit.
-m10-spike-selftest: all
-	$(MAKE) BUILD=build-m10-spike-selftest ZOS_M10_SPIKE=1 \
-		ZOS_BOOT_PROGRAM=/SYSTEM/spike.zex \
-		build-m10-spike-selftest/zephyros-m10-spike-selftest.bin \
-		build-m10-spike-selftest/zephyr80-m10-spike-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 --zex-v2 \
-		build-m10-spike-selftest/zephyros.map \
-		build-m10-spike-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m10_spike_sim.py' -v
-	@echo "m10 spike image: build-m10-spike-selftest/zephyros-m10-spike-selftest.bin"
+# Resident-service spike (work package 35): transport A on decoder
+# revision 13, the 6000h split.  The image boots the client program, which
+# runs the C1-C9 phases and checks its own results; the simulator replay
+# measures the spans, and the two-bank layout report measures the
+# classification against this build.
+rsvc-spike-selftest: all
+	$(MAKE) BUILD=build-rsvc-spike-6000 ZOS_RSVC_SPIKE=1 \
+		ZOS_BOOT_PROGRAM=/SYSTEM/rsvc.zex \
+		build-rsvc-spike-6000/zephyros-rsvc-spike.bin \
+		build-rsvc-spike-6000/zephyr80-rsvc-spike.bin
+	$(PYTHON) tools/rev13_layout.py build-rsvc-spike-6000/zephyros.map \
+		--objdir build-rsvc-spike-6000 \
+		--classification tests/m10/two-bank-classification.json \
+		--two-bank \
+		--out build-rsvc-spike-6000/two-bank-layout.json
+	$(PYTHON) -m unittest discover -s tests -p 'test_rsvc_spike_sim.py' -v
+	@echo "rsvc spike image: build-rsvc-spike-6000/zephyros-rsvc-spike.bin"
+
+# Revision-13 memory decoder: the PLD and its simulation vectors live in
+# the platform tree (hardware description, not Z80 code).  This one target
+# checks the committed vectors against the generator, proves the equations
+# are the exact minimum cover (tools/pld_terms.py), compiles and simulates
+# the design when WinCUPL is available, and cross-checks the read-only
+# revision-12 reference against the generated P = 0 equivalence vectors.
+# Without a toolchain the target reports the skip and succeeds (the
+# committed vectors are still checked against the generator).
+rev13-pld:
+	$(PYTHON) tools/rev13_vectors.py --check
+	@mkdir -p $(REV13_PLD_BUILD)
+	$(PYTHON) tools/pld_terms.py --json $(REV13_PLD_BUILD)/terms.json
+	$(PYTHON) tools/pld_terms.py --check-pld $(ZOS_REV13_PLD)
+	$(PYTHON) tools/pld_terms.py --equations revision-13 --inverted \
+	    > $(REV13_PLD_BUILD)/equations.txt
+	@if [ -x tools/wincupl_build.sh ]; then \
+	  tools/wincupl_build.sh $(ZOS_REV13_PLD) \
+	      $(REV13_PLD_BUILD) $(ZOS_REV12_PLD) || status=$$?; \
+	  case "$${status:-0}" in \
+	    0) echo "rev13 PLD: compiled and simulated";; \
+	    3) echo "rev13 PLD: WinCUPL unavailable, or the revision-12" \
+	       "reference was skipped (see the message above); committed" \
+	       "vectors still checked against the generator";; \
+	    *) exit $${status};; \
+	  esac; \
+	else \
+	  echo "rev13 PLD: tools/wincupl_build.sh missing"; exit 1; \
+	fi
+	@echo "rev13 decoder: $(ZOS_REV13_PLD)"
 
 # SDK helloworld demo image (work/28c-m9-user-sdk): the production boot path
 # in its own build directory (build-helloworld) with the SDK hello demo

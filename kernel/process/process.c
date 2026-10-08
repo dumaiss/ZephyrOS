@@ -19,12 +19,6 @@
 #include "zephyros/kernel.h"
 #include "kernel/vfs/vfs.h"
 
-#if defined(ZOS_M10_SPIKE)
-#include "kernel/process/bankmap.h"
-#include "kernel/process/zex2prog.h"
-#include "kernel/syscall/xmem.h"
-#endif
-
 /* Suspended-SYS_EXEC path buffer (bank-7 runtime data).
  *
  * SYS_EXEC copies the caller's path here and process_prepare() reads it
@@ -80,13 +74,6 @@ int process_alloc_bank(void)
 		if (process_bank_in_use(bank)) {
 			continue;
 		}
-#if defined(ZOS_M10_SPIKE)
-		/* A bank carrying an auxiliary allocation is not free for a
-		 * primary process (architecture section 36.5). */
-		if (!bankmap_bank_free(bank)) {
-			continue;
-		}
-#endif
 		return (int)bank;
 	}
 	return -ZOS_ENOSPC;
@@ -110,19 +97,6 @@ void process_bank_release(uint8_t bank)
 	}
 	process_bank_reserved &= (uint8_t)~(uint8_t)(1u << bank);
 }
-
-#if defined(ZOS_M10_SPIKE)
-uint8_t process_bank_primary_used(uint8_t bank)
-{
-	if (bank >= PROCESS_BANK_COUNT) {
-		return 1;
-	}
-	if ((process_bank_reserved & (uint8_t)(1u << bank)) != 0) {
-		return 1;
-	}
-	return (uint8_t)(process_bank_in_use(bank) ? 1 : 0);
-}
-#endif
 
 /* Reserve a table slot for a load in progress (state SUSPENDED).  The
  * bank field is invalidated so bank_in_use() cannot mistake this
@@ -150,15 +124,6 @@ void process_slot_release(uint8_t pid)
 	if (pid >= PROCESS_TABLE_SIZE) {
 		return;
 	}
-#if defined(ZOS_M10_SPIKE)
-	/* Rollback also drops the attempted process's auxiliary slots,
-	 * runtime xmem objects and its ZEX v2 program state (idempotent). */
-	zos_xmem_release_pid(pid);
-	bankmap_aux_release(pid);
-	if (zos_zex2_owner == (uint8_t)(pid + 1u)) {
-		zex2_prog_reset();
-	}
-#endif
 	/* Failed-load rollback also discards the child's filesystem state
 	 * (descriptors and CWD) if it was already allocated.  Idempotent. */
 	vfs_process_exit(pid);
@@ -286,17 +251,6 @@ void process_exit(uint16_t status)
 	/* Close every descriptor the pid owned (with close semantics) and
 	 * release its CWD slot before the parent resumes. */
 	vfs_process_exit(pid);
-#if defined(ZOS_M10_SPIKE)
-	/* Release the process's auxiliary slots, runtime objects and ZEX v2
-	 * program state so a repeated exec/exit cycle leaks nothing
-	 * (architecture 36.6). */
-	zos_xmem_release_pid(pid);
-	bankmap_aux_release(pid);
-	if (zos_zex2_owner == (uint8_t)(pid + 1u)) {
-		zex2_prog_reset();
-	}
-#endif
-
 	/* After the child is released the active count is the parent's
 	 * depth, which is also the continuation index saved at its launch. */
 	req.status = status;

@@ -343,6 +343,11 @@ class TestHelloZex(unittest.TestCase):
                         checked_in.append(
                             os.path.join(dirpath, filename)
                             .replace(ROOT + os.sep, "").replace(os.sep, "/"))
+        # tests/target/rsvc/manifests/*.json are work-package-35 ZMOD
+        # driver pack inputs (evaluation only), not ZEX manifests.
+        checked_in = [path for path in checked_in
+                      if not path.startswith(
+                          "tests/target/rsvc/manifests/")]
         self.assertEqual(checked_in, ["user/helloworld/manifest.json"])
         manifest = json.loads(_read("user/helloworld/manifest.json"))
         self.assertEqual(manifest["format"], "romfs-v1")
@@ -353,9 +358,11 @@ class TestSdkBoundary(unittest.TestCase):
 
     def test_every_program_is_declared_once_by_the_generic_rule(self):
         programs = _declared_programs()
+        # `rsvc` is the resident-service-spike client: declared by the same
+        # generic rule, but only the ZOS_RSVC_SPIKE configuration builds it.
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["fschild", "fsdeep", "fsfat", "fsraw", "fstest",
-                          "fstest_l", "hello", "monitor", "zextest"])
+                          "fstest_l", "hello", "monitor", "rsvc", "zextest"])
         for name, directory, _sources, _options in programs:
             count = sum(_read(path).count("zex_program,%s," % name)
                         for path in ("Makefile",

@@ -30,7 +30,6 @@
 #include "zos/types.h"
 #include "zos/errno.h"
 #include "zos/process.h"
-#include "zos/xmem.h"
 
 /* Native syscall numbers (stable from M6; filesystem set from M9). */
 #define ZOS_SYSCALL_EXIT          0x00u
@@ -60,17 +59,6 @@
 #define ZOS_SYSCALL_FS_CHDIR    0x1Du /* 29 */
 #define ZOS_SYSCALL_FS_GETCWD   0x1Eu /* 30 */
 #define ZOS_SYSCALL_FS_SYNC     0x1Fu /* 31 */
-
-/* M10 native extended-memory and far-call family (package 33).  Numbers
- * are pinned here; the argument blocks are declared in abi/zos/xmem.h.
- * The dispatcher compiles them in only under ZOS_M10_SPIKE. */
-#define ZOS_SYSCALL_XMEM_ALLOC       0x20u /* 32 */
-#define ZOS_SYSCALL_XMEM_FREE        0x21u /* 33 */
-#define ZOS_SYSCALL_XMEM_READ        0x22u /* 34 */
-#define ZOS_SYSCALL_XMEM_WRITE       0x23u /* 35 */
-#define ZOS_SYSCALL_XMEM_INFO        0x24u /* 36 */
-#define ZOS_SYSCALL_ZEX_SEGMENT_INFO 0x25u /* 37 */
-#define ZOS_SYSCALL_FAR_CALL         0x26u /* 38 */
 
 /* Address windows enforced before any caller byte is touched. */
 #define ZOS_SYSCALL_WINDOW_BASE 0x0100u /* argument blocks begin here */

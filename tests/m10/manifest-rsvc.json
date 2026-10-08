@@ -7,9 +7,9 @@
       "path": "sio.zmod"
     },
     {
-      "name": "spike.zex",
+      "name": "rsvc.zex",
       "type": "ZEX",
-      "path": "spike.zex"
+      "path": "rsvc.zex"
     }
   ]
 }

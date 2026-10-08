@@ -38,9 +38,56 @@ E000h +-------------------------------+
 
 Mode `10` maps the selected application bank at `0000h-DFFFh`; mode `11`
 keeps the caller bank at `0000h-1FFFh` and maps bank 7 at `2000h-DFFFh`.
-Bank 7 is reserved to ZephyrOS and is never an application bank.
+Bank 7 is reserved to ZephyrOS and is never an application bank.  With the
+page field at 0 (every production and acceptance image today), this is
+exactly what decoder revision 13 does as well; section 1.1 records the
+revision-13 mappings for a non-zero page field.
 
-### 1.1 ROM side: the 512 KiB programmed image
+### 1.1 Decoder revision 13 (programmed 2026-10-07)
+
+The banking latch at port `00h` carries a page field in D5-D7 outside ROM
+mode:
+
+```text
+D0-D2  bank field Q
+D3-D4  mode
+D5-D7  page field P (the ROM page in mode 00)
+```
+
+The board modification for revision 13 routes D5-D7 to three spare
+decoder inputs (GAL pins 18/19/20, inputs only: the latch drives them and
+the GAL never drives them).  Pin 21 (`!CART_CS`, no equation) is
+unchanged.  **Revision 13 is programmed on the board** (2026-10-07); CP/M
+and the production ZephyrOS ROM both boot on it unchanged.  The design is
+`platform/zephyr80/hdl/MEM_DECODER_rev13.pld` with its WinCUPL simulation
+vectors in `MEM_DECODER_rev13.si` (`make rev13-pld`); the simulator
+models it as the default, `tests/test_decoder_rev13.py` replays every
+committed vector through that model and proves the P = 0 equivalence
+with revision 12.
+
+Revision-13 mappings per mode:
+
+| mode | `0000h-1FFFh` | `2000h-5FFFh` | `6000h-7FFFh` | `8000h-BFFFh` | `C000h-DFFFh` | `E000h-FFFFh` |
+|---|---|---|---|---|---|---|
+| 00 ROM | reads ROM page P; writes SRAM bank Q | ← | ← | ← | ← | ← |
+| 01 flat | bank Q | bank Q | bank Q | bank Q | bank Q | bank Q |
+| 10 application, P = 0 | bank Q | bank Q | bank Q | bank Q | bank Q | bank 0 (common) |
+| 10 application, P ≠ 0 | bank Q | bank Q | bank Q | **bank 7 − P (far aperture)** | bank Q | bank 0 (common) |
+| 11 OS | bank Q (caller window) | bank 7 (fixed nucleus) | **bank 7 − P (window)** | **bank 7 − P** | **bank 7 − P** | bank 0 (common) |
+
+- **P = 0 is revision 12 in every mode.**  CP/M and any image that never
+  sets the page field run unchanged; the production image sets no page
+  bits outside mode 00, so it is byte-identical under revision 13 and the
+  simulator's revision-13 default.
+- The mode-11 window is `6000h-DFFFh` and shows bank 7 at P = 0, bank 6 at
+  P = 1; the rest of the mode-11 view (`2000h-5FFFh`) is the permanently
+  visible fixed nucleus.  The mode-10 far aperture `8000h-BFFFh` opens
+  only when P ≠ 0.
+
+The target use of the page field -- the bank-6 service window, map tokens
+and the far aperture -- is architecture section 36.2.
+
+### 1.2 ROM side: the 512 KiB programmed image
 
 The programmed ROM is eight 64-KiB pages.  Pages 0/1 are the boot pages
 (see `docs/boot.md`); pages 2-7 hold the read-only ROMFS recovery store.

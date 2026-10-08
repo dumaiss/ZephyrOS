@@ -808,7 +808,8 @@ MODE_APPLICATION  = 10h
 MODE_OS           = 18h
 ```
 
-For runtime application bank `N`, where `N = 0..6`:
+For runtime application bank `N`, where `N = 0..6` (from M10, `0..5`:
+bank 6 becomes the resident service bank, section 36.3):
 
 ```text
 application mapping = MODE_APPLICATION | N
@@ -907,6 +908,10 @@ Mode `11` therefore exposes the kernel while preserving the low 8 KiB of the cal
 
 ### Bank-7 layout inside mode 11
 
+(Through M9. From M10, mode 11 splits bank 7 into a 16 KiB fixed core and
+a 32 KiB cold half behind the `6000h` window, and there is no driver arena;
+see sections 36.2 and 36.5.)
+
 The 48 KiB `2000h-DFFFh` window is not fixed internally.  The build
 derives the boundary between the loadable kernel, the driver arena and
 the runtime data (package 25b):
@@ -965,8 +970,8 @@ Two clarifications, both learned by having to fix them:
   ceiling <n>, m10 <n>, limit <n>` line beside the `bank7:` line
   (docs/memory.md section 2.2.1).  The architectural ceiling on the packed
   `_COMMON` + `_COMMON_DATA` run is `ZOS_COMMON_CEILING` (3072 bytes), with
-  `ZOS_COMMON_M10_RESERVATION` (512 bytes) held back for M10's far-call
-  gate and per-process far state (target architecture 2.13-2.15); M9
+  `ZOS_COMMON_M10_RESERVATION` (512 bytes) held back for M10 (released
+  to M10's transitions and IPC, section 36.20); M9
   enforces `used <= ceiling - reservation` (2560 bytes).  `mapcheck.py`
   fails the build when common use exceeds it.  Neither value may be raised
   to make a package fit.
@@ -4411,6 +4416,9 @@ backward-compatibility path.
 
 ## 32.39 Bank-7 residency budget
 
+(M9 budget. M10 replaces it with the two-bank ledgers of section 36.20;
+the arena floor below does not apply from M10.)
+
 Bank 7 holds everything resident in OS mode except common memory. The kernel executive, the resident driver/provider modules and the runtime data share one window:
 
 ```text
@@ -4670,7 +4678,8 @@ M9  COMPLETE (host + simulator; physical by byte identity + owner acceptance)
 └── budgeted bank-7 residency
     │
     ▼
-M10 extended memory / far code+data + ZEX v2        (see section 36)
+M10 resident-service nucleus (two-bank OS)
+    + extended memory / far code+data + ZEX v2      (see section 36)
 M11 complete native diagnostic suite                (see section 38)
 M12 native shell and core built-in userland         (see section 40)
     │
@@ -4681,8 +4690,9 @@ M12 native shell and core built-in userland         (see section 40)
 compatibility/personality architecture              (deferred)
 ```
 
-The end-of-M9 bank-7 ledger and the require-before-M10 residency finding are
-in sections 32.39 and 35.
+The end-of-M9 bank-7 ledger is in section 32.39. The residency decision
+taken for M10 (a nucleus in bank 7 and resident services in bank 6) is
+recorded in section 35.
 
 ---
 
@@ -4691,7 +4701,8 @@ in sections 32.39 and 35.
 The native sequence after M9 is:
 
 ```text
-M10  Extended memory / far code / far data
+M10  Resident-service nucleus (two-bank OS)
+     + extended memory / far code / far data
      + ZEX v2
 
 M11  Complete native diagnostic suite
@@ -4705,14 +4716,12 @@ Later compatibility/personality architecture
 
 The ordering is deliberate:
 
-1. M10 completes native kernel/executable mechanisms.
+1. M10 completes the native kernel structure and executable mechanisms.
 2. M11 validates and exercises the completed native mechanisms and hardware.
 3. M12 builds the normal interactive environment entirely on those completed mechanisms.
 4. Compatibility personalities begin only after native ZephyrOS is complete.
 
 M9 already supplies the process-startup and argument-tail contract required by the later shell. Package 28b establishes startup block v1 and synchronous `SYS_EXEC` argument transport; M10 does not redesign that contract.
-
-M9 acceptance and the section-32.39 residency budget remain binding. M10 does not weaken the production arena floor or redefine M9 acceptance to make later work fit.
 
 M9 facts the target relies on, all unchanged by M10-M12:
 
@@ -4722,766 +4731,805 @@ startup block v1 at 0080h, and the raw-tail argument contract of SYS_EXEC
 ZOS_BOOT_PROGRAM (config/system.mk) as the single boot-program selector
 the native user SDK (user/sdk, docs/sdk.md): a program includes only "zos.h"
   and links crt0 plus libzos; it never includes a kernel header
-the bank-7 residency budget of section 32.39, including the 32-granule
-  production arena floor and the common-memory ceiling pinned by package 30c
-  (ZOS_COMMON_CEILING 3072 bytes, of which 512 is held for M10's far-call
-  gate and state, so M9 enforces used <= 2560)
+the common-memory ceiling ZOS_COMMON_CEILING (3072 bytes)
 ```
 
-**Residency decision required before M10.** The measured end-of-M9 ledger is
-`bank7: code 27990 bytes end 8D56h | arena 36 granules (33 boot, 3 free) |
-data 2241 bytes at D600h | isr 256 | slack 63 bytes` (section 32.39),
-i.e. 3 free granules plus 63 bytes of runtime-data slack = **1599 bytes**
-of mixed kernel room. The 30b audit's low M10 estimate (`SYS_XMEM_*`,
-unified bank ownership, the ZEX v2 loader, the far-entry table,
-`SYS_FAR_CALL` and `SYS_ZEX_SEGMENT_INFO`) is about **1530 bytes of code
-plus 136 bytes of data**, i.e. 1666 bytes - more than the ledger holds. The
-reclaim package 30c implemented gained one granule (F7) but not the
-exec-path-buffer share (F4), so the favourable `1727`-byte case did not
-materialise. Per audit section 7 and section 36.18, a **kernel-residency
-architecture decision (for example a second kernel bank, or relocating a
-resident mechanism) is required before M10 implementation**; the 32-granule
-arena floor and the common-memory ceiling are not to be weakened to make M10
-fit.
+**Residency decision (taken 2026-10-07).** The end-of-M9 bank-7 ledger
+(section 32.39) left 1,599 bytes of mixed room, and M10 does not fit in it
+(design spike, package 33). M10 therefore restructures the operating system
+into a **nucleus in bank 7 and resident services in bank 6**, on decoder
+revision 13 (section 36). Packages 34-36 measured this design and it was
+chosen over the alternatives they evaluated. The M9 bank-7 budget of section
+32.39, including the 32-granule arena floor, governs M9 only; M10 replaces
+it with the ledgers of section 36.20.
 
-# 36. Milestone M10 — Extended memory, far code/data, and native execution completion
+# 36. Milestone M10 — Resident-service nucleus, extended memory, far code/data and ZEX v2
 
 ## 36.1 Objective
 
-M10 completes the native ZephyrOS memory and executable mechanisms required by applications before the diagnostic suite and native shell are built.
+M10 completes the native kernel structure and the memory and executable
+mechanisms applications need before the diagnostic suite and the native
+shell are built.
 
 Its responsibilities are:
 
 ```text
+two-bank operating system
+    bank 7: the nucleus (machine authority, IPC, processes, memory, IRQs)
+    bank 6: resident services (drivers, VFS, providers, console)
+    endpoint-based synchronous IPC between applications, services and nucleus
+
 extended/far memory
     process-owned auxiliary memory objects
-    allocations smaller than a physical 64-KiB bank
     bounded copy access to far data
+    direct access to mappable far data through the mode-10 aperture
 
 extended native executables
     ZEX v2
-    auxiliary segments
-    relocatable far code/data
-    executable-entry metadata
-
-far execution
-    synchronous far calls
-    safe bank transition and return
-    ordinary native syscalls while far code runs
+    far-code segments executed in place through the aperture
 ```
 
-Process startup, argument-tail transfer, nested `SYS_EXEC`, CWD inheritance, descriptor cleanup and parent restoration are already established before M10 and are preserved.
+Process startup, argument-tail transfer, nested `SYS_EXEC`, CWD inheritance,
+descriptor cleanup and parent restoration are already established before
+M10 and are preserved.
 
-After M10, later native milestones must not require another fundamental memory, executable-format, or process-lifecycle mechanism merely to implement diagnostics or the shell.
+After M10, later native milestones must not require another fundamental
+memory, executable-format, residency or process-lifecycle mechanism merely
+to implement diagnostics or the shell.
 
 The central rules are:
 
-> **Physical banks are a Zephyr-80 implementation detail. Native applications consume memory objects, segments, and handles.**
+> **The operating system occupies at most two banks (7 and 6) plus common memory.**
 
-> **The primary application bank remains the ordinary execution environment. Far memory extends it; it does not replace it.**
+> **Physical banks are a Zephyr-80 implementation detail. Applications and services consume endpoints, memory objects, segments and handles.**
 
-> **Executable auxiliary memory is created only by the validated ZEX loader. Runtime far-memory allocation is data-only.**
+> **The primary application bank remains the ordinary execution environment. A program that uses no far facilities keeps its full 56 KiB and pays nothing.**
+
+This section is the single M10 target. The options evaluated on the way
+(the 8 KiB slot overlay, the `8000h` window split, the `SYS_FAR_CALL`
+gate with an auxiliary low window, a third OS bank) are rejected and are not
+part of it.
 
 ---
 
-## 36.2 Existing primary-bank model remains
+## 36.2 Hardware basis: decoder revision 13
 
-Every native process continues to own one primary application bank.
+The banking latch at port `00h` gains a meaning for D5-D7 outside ROM mode.
+D5-D7 (field **P**, the page) are wired to GAL pins 18/19/20 as inputs
+(board modification made for revision 13).
 
-Normal execution remains:
+```text
+D0-D2  bank field Q
+D3-D4  mode
+D5-D7  page field P (the ROM page in mode 00)
+```
+
+Mappings under revision 13:
+
+| mode | `0000h-1FFFh` | `2000h-5FFFh` | `6000h-7FFFh` | `8000h-BFFFh` | `C000h-DFFFh` | `E000h-FFFFh` |
+|---|---|---|---|---|---|---|
+| 00 ROM | reads ROM page P; writes SRAM bank Q | ← | ← | ← | ← | ← |
+| 01 flat | bank Q | bank Q | bank Q | bank Q | bank Q | bank Q |
+| 10 application, P = 0 | bank Q | bank Q | bank Q | bank Q | bank Q | bank 0 (common) |
+| 10 application, P ≠ 0 | bank Q | bank Q | bank Q | **bank 7 − P (far aperture)** | bank Q | bank 0 (common) |
+| 11 OS | bank Q (caller window) | bank 7 (fixed nucleus) | **bank 7 − P (window)** | **bank 7 − P** | **bank 7 − P** | bank 0 (common) |
+
+Rules:
+
+- **P = 0 is revision 12 in every mode.** CP/M and any image that never sets
+  P run unchanged.
+- Mode 11's **window** `6000h-DFFFh` shows bank 7 when P = 0 and bank 6
+  when P = 1. Other P values are not used by the operating system.
+- Mode 10's **far aperture** `8000h-BFFFh` opens only when P ≠ 0
+  (section 36.17).
+- Mode 01 is reserved for later personalities (Coleco, CP/M flat 64 KiB).
+  It has no common region; ZephyrOS must not assume common memory is
+  mapped while a personality runs.
+
+The decoder only selects which bank answers an 8 KiB region, always at the
+same offset. There is no address translation. The design is
+`platform/zephyr80/hdl/MEM_DECODER_rev13.pld` with its vectors in
+`MEM_DECODER_rev13.si` (`make rev13-pld`). Its `RAM_A16`-`RAM_A18`
+equations are written in inverted polarity, 9/9/9 product terms against the
+22V10's 10/12/14 budgets. No further decoder capacity is assumed.
+
+Revision 13 is programmed on the board (2026-10-07); CP/M and the
+production ZephyrOS image boot on it unchanged. The simulator's default decoder becomes revision 13 in
+stage 1 (section 36.24).
+
+---
+
+## 36.3 Two-bank residency
+
+```text
+bank 7      nucleus
+bank 6      resident service domain
+banks 0-5   applications and extended memory
+bank 0      also supplies common memory at E000h-FFFFh (as before)
+```
+
+Bank 6 leaves the application pool. Bank 7 remains reserved to ZephyrOS.
+
+Owner rule: the operating system uses **at most two banks plus common**. A
+third OS bank is not a fallback. It would take a whole bank from
+applications, and with the window only part of a service bank is hot. When
+the system does not fit, it is slimmed, or code moves to a lower tier
+(sections 36.5 and 36.6). A bank is never added.
+
+---
+
+## 36.4 Nucleus versus services
+
+Placement test:
+
+> Does the operation require global authority over machine state?
+
+If it does, it belongs to the nucleus. Otherwise it is a service operation.
+
+The nucleus owns:
+
+- process identity, creation, image replacement, exit and execution context;
+- physical bank and extended-memory ownership;
+- execution-domain transitions and cross-bank copy primitives;
+- endpoint registration, lookup and IPC dispatch;
+- IRQ ownership, dispatch and the final `RETI`;
+- loading and validating ZEX images and resident service images;
+- the bootstrap ROMFS reader (section 36.12);
+- early bootstrap, the early console, failure handling and panic.
+
+Resident services provide:
+
+- the VFS / global object namespace and its providers (ROMFS provider,
+  IOC-FAT);
+- IOC transport and block access;
+- HID, V9958 video, SIO serial and other device facilities;
+- the console, composed from HID, video and serial endpoints.
+
+Retired by M10:
+
+```text
+the filesystem syscall front end (FS_*)      replaced by the VFS service protocol
+the device registry                          replaced by the endpoint table
+the zdriver_api kernel import table          replaced by the service bootstrap interface
+the bank-7 driver arena                      drivers are services in bank 6
+```
+
+---
+
+## 36.5 Nucleus layout: fixed core and cold half
+
+In mode 11 the nucleus sees two regions of bank 7:
+
+```text
+2000h-5FFFh   fixed core (16 KiB)    always visible, whatever the window shows
+6000h-DFFFh   cold half (32 KiB)     visible only while the window shows bank 7 (P = 0)
+```
+
+**Fixed rule:** code that **executes**, and data that is **touched**, while
+the window shows another bank lives in the fixed core. That is:
+
+- the IPC dispatcher, the endpoint table and the descriptor table;
+- the copy primitives and transition code;
+- nucleus primitives callable by services, including the bootstrap ROMFS
+  reader;
+- the IRQ executive;
+- the upcall shims (below);
+- the ISR stack (256 bytes) and the service stack (512 bytes);
+- the data all of these use.
+
+**Cold rule:** everything else lives in the cold half: the syscall
+dispatcher and syscall bodies, process management and the ZEX loader,
+extended-memory allocation and the bank map, boot-only setup, diagnostics
+and panic formatting. The syscall gate clears P before dispatching, so
+syscall code always runs with the window showing bank 7.
+
+**Upcalls from cold code.** Nucleus code that calls a service (the loader
+streaming an executable object, the process-exit notification) does so
+through a small fixed **upcall shim**. The shim saves the latch, opens the
+service window, makes the call and restores the latch. The cold caller is
+not executing while the window shows bank 6, so it does not have to be
+fixed.
+
+**Buffer rule:** memory that a service reaches through a buffer descriptor
+must never be in bank 7's cold half.
+
+---
+
+## 36.6 Service bank layout
+
+```text
+6000h-DFFFh of bank 6   hot tier (32 KiB)      service code, data and BSS used at run time
+0000h-5FFFh of bank 6   boot/bulk tier (24 KiB) boot-only service code and bulk service data
+E000h-FFFFh of bank 6   not used                hidden by common in modes 10 and 11
+```
+
+- The **hot tier** is reached through the window (P = 1). It holds
+  everything a service runs after boot, including paths reachable at run
+  time from user requests (for example the V9958 display reset behind
+  ESC `c`/RIS/`ZVIDEO_RESET`).
+- The **boot/bulk tier** holds service code that runs only during bring-up
+  (initialization, probing, font and atlas upload, mount). The nucleus
+  executes it at boot through the mode-10 gate with Q = 6. The tier also
+  holds bulk data that services read through nucleus copies (for example the
+  V9958 font). Nothing in this tier is executed after boot.
+- While a service runs in mode 11, `0000h-1FFFh` shows the **caller's**
+  bank. Services never address it directly; they use descriptors (section
+  36.8).
+
+Measured projection (package 36): hot drivers 14,166 bytes, VFS service
+11,495 bytes, console 606 bytes, giving **26,267 of 32,768** bytes in the
+hot tier. Boot-only drivers (1,957 bytes) plus the font (2,048 bytes) use
+the boot/bulk tier.
+
+---
+
+## 36.7 Endpoints, handles and IPC
+
+Services export **endpoints**. The nucleus keeps an endpoint table in fixed
+data with, for each endpoint:
+
+```text
+owner service, class, instance, version
+dispatch target
+flags: re-entrant
+state: busy (on the current call stack)
+```
+
+The table is reportable through diagnostic introspection (M11).
+
+Operations:
+
+```text
+register(class, instance, version, dispatch, flags)   services, at boot only
+lookup(class, instance) -> handle + version            anyone
+call(handle, op, frame) -> status                      anyone
+```
+
+- **Synchronous call/reply** is the only IPC model. There are no queues and
+  no asynchronous messages.
+- **Frame:** a fixed **32-byte** request/reply frame. The caller's frame is
+  copied in at entry and copied back on reply. Large payloads move through
+  descriptors, never through the frame.
+- **Handles** are opaque. They are not bank numbers and not pointers.
+  Clients never see a dispatch address.
+- **Services are permanent.** They are loaded at boot and never unloaded,
+  and handles stay valid for the whole boot. There is no revocation and no
+  restart.
+- **Same-domain calls:** a service calling another service may be
+  dispatched locally without a bank switch. This is an optimization that is
+  invisible in the ABI and keeps the same validation.
+- The SDK caches lookups. Discovery stays a fixed (class, instance) query.
+
+Measured cost (package 35): a null call is about 9,860 T-states, and one
+window crossing is 242 T-states. Hot paths are batched by protocol design
+(buffer writes, read-N, 512-byte file chunks).
+
+---
+
+## 36.8 Buffer descriptors and data movement
+
+There are no raw cross-domain pointers.
+
+- At call entry the nucleus captures each caller buffer as a
+  **descriptor**: execution latch (bank Q and page P), address, length and
+  direction. Services receive a small descriptor id, valid for the duration
+  of the call.
+- Services move data only through nucleus primitives
+  `copy_in(id, offset, buffer, length)` and
+  `copy_out(id, offset, buffer, length)`. Bounds are checked on every use.
+- **Direct copies.** A descriptor id may be passed down a call chain, and
+  the service that holds the data copies it straight to the caller. Data is
+  not staged through intermediate services. Measured: a 512-byte read
+  through a three-service chain costs 165.6 T-states per byte, against
+  587.8 for the M9 `FS_READ`.
+- **Buffer identity:** a caller address in `8000h-BFFFh` while the caller's
+  saved P ≠ 0 (mode 10) names the far bank shown by the aperture, not the
+  primary bank.
+- Copy paths:
+  - window `LDIR` for offsets `6000h-DFFFh` of any bank (about 21
+    T-states per byte);
+  - the caller window `0000h-1FFFh`;
+  - the mode-10 gate for other offsets.
+
+---
+
+## 36.9 Nesting, re-entrancy and stacks
+
+- **Nesting limit: 4** calls deep (application → VFS → IOC-FAT → IOC, and
+  the loader's upcall chain). Deeper calls are refused.
+- **Re-entrancy:** the nucleus refuses, with `ZOS_EBUSY`, a call into an
+  endpoint that is already on the call stack, unless that endpoint declares
+  itself re-entrant. Each service states how it protects its state.
+- **Stacks:**
+  - **service stack:** 512 bytes in the fixed core, shared by the
+    service-call chain (measured high-water 278 bytes);
+  - **ISR stack:** 256 bytes in the fixed core;
+  - **gate stack:** 256 bytes in common; the worst case is measured for
+    every syscall path and stays at or below 240.
+
+---
+
+## 36.10 IRQs owned by services
+
+The nucleus keeps the interrupt mode and IM2 vectoring, the IRQ registry,
+the ISR stack and the final `RETI`. A service may claim an IRQ and supply a
+handler:
+
+```text
+hardware IRQ
+    v
+nucleus IRQ executive    saves the latch, selects the owner's window, ISR stack
+    v
+service handler          restricted nucleus API only: no IPC
+    v
+nucleus                  restores the interrupted latch exactly, RETI
+```
+
+IRQ delivery must not disturb a latch saved by the call it interrupts. The
+IRQ path saves and restores the latch in its own slot. Measured: about 924
+T-states to deliver an interrupt to a service handler.
+
+---
+
+## 36.11 Resident service images
+
+Services are **ZMOD images extended with service metadata**. No separate
+ZSVC format is introduced, and the ZMOD relocator and validation are
+reused.
+
+A service image declares:
+
+- its hot segment (linked for and relocated into the hot tier);
+- its boot segment (relocated into the boot/bulk tier);
+- its bulk data;
+- the endpoints it exports;
+- the endpoints it depends on.
+
+The host packer pre-computes and validates the layout. The resident loader
+only places, patches and registers.
+
+A service sees the **service bootstrap interface**, not a kernel import
+table:
+
+- register endpoints;
+- look up and call endpoints;
+- the descriptor copy primitives;
+- IRQ claim and release;
+- the few other nucleus primitives a service legitimately needs, each
+  named in that interface.
+
+---
+
+## 36.12 Boot
+
+```text
+reset
+  v
+nucleus initialization (fixed core and cold half)
+  v
+bootstrap ROMFS reader            nucleus primitive; flat, constant names only
+  v
+load service images from the boot manifest into bank 6
+  v
+run each service's boot segment   mode-10 gate, Q = 6
+  +--> IOC transport, HID, video, serial
+  +--> ROMFS provider, IOC-FAT provider
+  +--> VFS namespace service (mounts)
+  +--> console service (composes HID + video / serial)
+  v
+resolve the boot program through VFS and execute it as an object
+```
+
+The bootstrap reader is not a second VFS and must not grow into one. After
+boot, the ROMFS provider service calls the same reader as a nucleus
+primitive, so there is a single ROMFS reader in the system. The early
+console and the panic path stay in the nucleus and are usable before the
+console service exists.
+
+---
+
+## 36.13 VFS as a service, and object-based execution
+
+VFS is the global object namespace. It owns:
+
+- path resolution;
+- roots and current directories;
+- mounts;
+- object handles and descriptors;
+- directory enumeration;
+- dispatch from a named object to its provider.
+
+**Per-process namespace context** (descriptors, root, current directory)
+belongs to the VFS service, keyed by process id.
+
+Providers (ROMFS, IOC-FAT, devices) sit beneath VFS in the service domain.
+
+> **VFS translates names into object handles. The nucleus operates on opaque handles and never parses pathnames.**
+
+Execution:
+
+```text
+SDK exec("/bin/editor.zex", tail)
+    |  resolve through VFS
+    v
+executable object handle
+    |  SYS_EXEC(object, tail)
+    v
+nucleus loader    streams the object through a VFS upcall; validates; builds
+                  the process image and page zero; transfers control
+```
+
+When a process exits, the nucleus notifies VFS through an upcall, and VFS
+releases that process's descriptors and context. The startup block v1 and
+the raw-tail contract are unchanged.
+
+---
+
+## 36.14 Syscall ABI after M10
+
+Syscalls become the **nucleus mechanism ABI**:
+
+```text
+IPC          lookup, call
+process      exec (object handle + tail), exit
+xmem         alloc, free, read, write, info, map
+segments     segment info, segment map
+diagnostics  the M7 diagnostic family (reshaped for the endpoint table)
+```
+
+Feature syscalls (the `FS_*` family, console read/write) are removed. The
+SDK's file and console functions become client stubs for the VFS and
+console service protocols. The native ABI is not frozen before M12, so no
+compatibility path is kept.
+
+ABI layers:
+
+1. **nucleus ABI:** the syscalls above;
+2. **IPC envelope:** handle, operation, 32-byte frame, status, descriptors;
+3. **versioned service protocols:** VFS, console, IOC, HID, video and so
+   on;
+4. **SDK:** C interfaces that hide discovery, frames and transport.
+
+---
+
+## 36.15 Application banks and process ownership
+
+Every native process owns one **primary bank** and runs in mode 10 with
+P = 0:
 
 ```text
 0000h-00FFh   native page zero
 0100h-....    primary ZEX image/data
-....          free primary memory
-....-DFFFh    primary stack
+....-DFFFh    primary stack (grows down from E000h)
 E000h-FFFFh   permanent common memory
 ```
 
-Mode `10` remains the normal application view and mode `11` remains the kernel view.
+A program that uses no far facilities behaves exactly as before and has the
+whole `0000h-DFFFh`.
 
-A ZEX that needs no auxiliary segments still behaves like the existing single-bank native program from the application's perspective.
-
-M10 does not turn ordinary native programs into bank-aware programs.
-
----
-
-## 36.3 Auxiliary-bank geometry
-
-Application banks remain physical SRAM banks `0-6`. Bank 7 remains kernel-owned unless a separately approved later kernel-residency architecture explicitly changes that ownership model.
-
-A bank used as an application auxiliary bank has a different software ownership layout from a primary process bank:
-
-```text
-0000h-00FFh   ZephyrOS-owned page zero
-0100h-1FFFh   auxiliary execution/control window
-2000h-3FFFh   allocation slot 0
-4000h-5FFFh   allocation slot 1
-6000h-7FFFh   allocation slot 2
-8000h-9FFFh   allocation slot 3
-A000h-BFFFh   allocation slot 4
-C000h-DFFFh   allocation slot 5
-E000h-FFFFh   permanent common memory
-```
-
-Thus one auxiliary bank provides:
-
-```text
-6 x 8 KiB = 48 KiB
-```
-
-of allocatable far storage.
-
-The low 8 KiB is deliberately not allocatable. It preserves the same architectural property used by ordinary syscalls: when mode `11` is entered, `0000h-1FFFh` remains visible from the currently selected bank.
-
-This area holds the auxiliary page zero, runtime scratch, far-call frame and auxiliary execution stack.
-
-The exact subdivision inside `0100h-1FFFh` is single-sourced in the platform memory description and validated by the linker/build tools.
-
----
-
-## 36.4 Allocation granularity is not part of the native ABI
-
-The Zephyr-80 allocator uses 8-KiB slots because they fit the machine's physical memory geometry.
-
-Applications do not request:
-
-```text
-bank 5, slot 2
-```
-
-They request:
-
-```text
-memory object of N bytes
-```
-
-and receive an opaque handle.
-
-The kernel rounds the request to the platform allocation granularity.
-
-For example:
-
-```text
-native request          Zephyr-80 implementation
-------------------------------------------------
-allocate 6000 bytes  -> one 8-KiB slot
-allocate 12000 bytes -> two contiguous 8-KiB slots
-```
-
-A single Zephyr-80 far object must fit in one auxiliary bank and therefore cannot exceed 48 KiB.
-
-A program requiring more storage allocates multiple objects.
-
-This restriction is platform-specific and must not be encoded into the portable meaning of the native memory API.
-
----
-
-## 36.5 Unified ownership of application banks
-
-The kernel owns one allocator for application banks.
-
-A physical application-capable bank may be:
+The nucleus owns one allocator for application banks 0-5. Each bank is in
+one of three states:
 
 ```text
 FREE
-PRIMARY(process)
-AUXILIARY
+PRIMARY(process)    the whole bank belongs to one process; no auxiliary allocations
+AUXILIARY           8 KiB slots, each owned by one process
 ```
 
-A primary process bank owns the complete bank and cannot contain auxiliary allocations.
+Allocation policy:
 
-An auxiliary bank may contain multiple 8-KiB allocations.
+- primary banks are taken lowest free bank first;
+- auxiliary slots are taken highest bank first, packing existing auxiliary
+  banks before opening a new one.
 
-Allocation policy should preserve whole banks for future `SYS_EXEC` operations. On Zephyr-80 the intended policy is:
+A bank with any live auxiliary slot cannot become a primary bank. `SYS_EXEC`
+may therefore fail with `ZOS_ENOSPC` while auxiliary slots are still free.
 
-```text
-primary process allocation: low free bank first
-auxiliary allocation:       high bank first, pack existing auxiliary banks first
-```
+**Ownership and lifetime:**
 
-This minimizes fragmentation without making placement observable through the native API.
-
-A bank containing even one live auxiliary allocation is not eligible to become a primary process bank.
-
-Consequently `SYS_EXEC` may return `ZOS_ENOSPC` even when free auxiliary slots exist if no completely free primary bank remains.
-
-That is a valid resource-exhaustion condition.
+- every auxiliary allocation (runtime object, ZEX segment) has exactly one
+  owning process;
+- exit releases all of a process's resources;
+- a suspended parent keeps its resources while a child runs;
+- a child inherits none of the parent's auxiliary resources;
+- a failed load, relocation, allocation or launch rolls back everything
+  allocated for the attempted child, and no partial process becomes
+  visible.
 
 ---
 
-## 36.6 Process ownership and lifetime
+## 36.16 Extended-memory objects
 
-Every auxiliary allocation has exactly one owning process.
-
-Ownership applies equally to:
-
-```text
-runtime far-data objects
-ZEX auxiliary segments
-far-code segments
-loader-created BSS
-```
-
-When a process exits, ZephyrOS releases all auxiliary resources owned by that process.
-
-A suspended parent retains its auxiliary resources while a child runs.
-
-A child does not inherit the parent's auxiliary allocations.
-
-The child receives only:
+An auxiliary bank is divided into seven 8 KiB slots covering `0000h-DFFFh`.
+There is no reserved low window.
 
 ```text
-its primary bank
-its own ZEX auxiliary segments
-its own later runtime allocations
-its inherited CWD and normal process-startup state
+slots 0-2   0000h-5FFFh   data; copied through the mode-10 gate
+slot  3     6000h-7FFFh   data; window-speed copies
+slots 4-5   8000h-BFFFh   the aperture slice: mappable objects and far-code segments
+slot  6     C000h-DFFFh   data; window-speed copies
 ```
 
-Failed load, failed relocation, failed far-segment allocation, malformed ZEX metadata or failed launch must roll back every allocation made for the attempted child.
+- `SYS_XMEM_ALLOC(size, flags)` returns an opaque handle. Objects are
+  process-owned, read/write and non-executable. A zero-byte allocation is
+  invalid.
+  - The size is rounded up to whole slots.
+  - An object is contiguous inside one bank.
+  - Placement is never visible through the API.
+- **Contents are undefined.** Nothing pre-zeroes an object; a program
+  that needs zeroes writes them (section 36.19).
+- The `MAPPABLE` flag places the object in the aperture slice (at most
+  16 KiB). Only mappable objects can be opened with `SYS_XMEM_MAP`.
+- Non-mappable objects prefer the window-speed slots, then slots 0-2.
+- `SYS_XMEM_READ` / `SYS_XMEM_WRITE` copy between the caller's buffer and
+  an object (handle, object offset, buffer, length). All range arithmetic
+  is checked before any copy.
+- `SYS_XMEM_INFO` returns requested size, allocated size, flags and type,
+  never a bank or slot.
+- `SYS_XMEM_FREE` releases a runtime object. Loader-created segments are
+  released only at exit. Invalid, stale or foreign handles are rejected.
 
-No partial process may become visible.
+The bank map fills the non-aperture slots of a far bank with data objects
+and other processes' slots, so the part of a bank the aperture cannot reach
+is not wasted.
 
 ---
 
-## 36.7 Native extended-memory syscall family
+## 36.17 Far code and far data: the mode-10 aperture
 
-M10 should use the currently available native syscall space for a compact extended-memory family. Exact numbers are pinned when the ABI is implemented.
+In mode 10 with P ≠ 0, `8000h-BFFFh` shows bank 7 − P. Everything else in
+the program's view (page zero, low memory, stack, primary code outside the
+aperture, common) stays mapped.
 
-The semantic operations are:
+- **Map tokens.** `SYS_XMEM_MAP(handle)` and `SYS_SEG_MAP(segment)` return
+  an opaque map token: the latch value that opens the aperture onto that
+  object or segment. The SDK opens the aperture by writing the token to the
+  latch and closes it by restoring the previous token (P = 0 for the
+  primary view). A far call is an `OUT` followed by a plain `CALL`:
+  measured in microseconds, with no syscall.
+- **Tokens:** the nucleus issues tokens only for the calling process's own
+  objects and segments, and only for application banks 0-5 (P = 2-7). It
+  never issues a token for bank 6 or bank 7.
+- **Linker rule for far-using programs:**
+  - code, stack and data used while the aperture is open live outside
+    `8000h-BFFFh` of the primary image;
+  - far segments are linked at `8000h` and are at most 16 KiB;
+  - far code may call primary code outside the aperture directly, and
+    pointers into primary memory outside the aperture are valid in far
+    code;
+  - a pointer into another far segment is not.
+- **Syscalls from far code** are ordinary `RST 30h` calls through the
+  primary bank's page zero. The gate saves the whole latch, including P,
+  and restores it exactly on return. There is no auxiliary page zero, no
+  low window and no far-call gate.
+- **Buffer identity** follows section 36.8: a buffer in `8000h-BFFFh` with
+  P ≠ 0 lives in the far bank.
+- **Process transitions:**
+  - exec starts the child with P = 0;
+  - the parent's latch, including P, is restored when the child exits;
+  - exit releases everything regardless of the P in effect.
 
-```text
-SYS_XMEM_ALLOC
-SYS_XMEM_FREE
-SYS_XMEM_READ
-SYS_XMEM_WRITE
-SYS_XMEM_INFO
-SYS_ZEX_SEGMENT_INFO
-SYS_FAR_CALL
-```
-
-### `SYS_XMEM_ALLOC`
-
-Semantics:
-
-```text
-request:
-    size
-    flags
-
-result:
-    opaque handle
-```
-
-Runtime allocations are:
-
-```text
-process-owned
-zero-initialized
-read/write
-non-executable
-```
-
-An allocation of zero bytes is invalid.
-
-### `SYS_XMEM_FREE`
-
-Releases a runtime allocation owned by the calling process.
-
-Loader-created ZEX segments cannot be freed individually.
-
-Invalid, stale or foreign handles are rejected.
-
-### `SYS_XMEM_READ` / `SYS_XMEM_WRITE`
-
-Transfer between:
-
-```text
-the calling execution bank
-        and
-the named far-memory object
-```
-
-using:
-
-```text
-handle
-object offset
-caller buffer
-length
-```
-
-All range arithmetic is checked before any copy occurs.
-
-The caller never maps the object's physical bank directly through this API.
-
-### `SYS_XMEM_INFO`
-
-Returns a versioned logical description:
-
-```text
-requested size
-allocated size
-flags
-object type
-```
-
-Normal applications are not told the physical bank or slot.
-
-Physical placement belongs only to diagnostics.
-
-### `SYS_ZEX_SEGMENT_INFO`
-
-Returns the logical state of one loader-created auxiliary segment identified by its ZEX segment ID.
-
-It exposes semantic information such as:
-
-```text
-segment size
-segment flags
-loaded/present state
-```
-
-but not a writable physical mapping.
-
-### `SYS_FAR_CALL`
-
-Invokes a declared far-code entry point synchronously.
-
-Section 2.13 defines the execution contract.
+A program that never asks for a token never has P ≠ 0.
 
 ---
 
-## 36.8 ZEX v2 replaces ZEX v1
+## 36.18 ZEX v2
 
-M10 replaces ZEX v1 with ZEX v2.
+M10 replaces ZEX v1 with ZEX v2. There is no compatibility path. All
+first-party programs, tools and tests convert, and the v1 parser, packer
+path and format code are removed once v2 is accepted.
 
-There is no production compatibility path for ZEX v1.
-
-ZephyrOS is still under construction, and executable formats from earlier milestones carry no backward-compatibility obligation. All first-party native programs, tools and tests are converted to ZEX v2 as part of M10.
-
-The ZEX-v1 parser, packer path and format-specific compatibility code are removed once the ZEX-v2 toolchain and loader are accepted.
-
-A ZEX v2 executable contains:
+A ZEX v2 file contains:
 
 ```text
-header
-
-primary image descriptor
-auxiliary segment table
-far-entry table
-relocation tables
-
-primary image payload
-auxiliary segment payloads
+header           every count and size the loader needs for one up-front feasibility check
+primary image    loads at 0100h (unchanged)
+segment table    per segment: id, kind (FAR_CODE or DATA), image size, BSS size, payload offset
+payloads
 ```
 
-A program with no auxiliary segments is simply the minimal form of ZEX v2.
-
-Its primary image continues to load at logical `0100h`.
+- **Far-code segments** are linked at `8000h`, at most 16 KiB, and loaded
+  into the aperture slice of an auxiliary bank. They are linked at their
+  run address, so they need **no relocation**.
+- **Data segments** become extended-memory objects owned by the process and
+  are reached by handle.
+- Entry points are resolved by the linker. A far call is a plain `CALL`
+  after mapping (section 36.17), so the container carries no far-entry
+  table.
+- **32-bit file geometry:** file, payload and table offsets and the total
+  size are validated with 32-bit arithmetic. The container may exceed
+  64 KiB.
+- **The host computes everything it can.** `tools/zexpack.py` validates
+  geometry, overlap and bounds and pre-encodes the container, so the loader
+  only reads descriptors, checks bounds that protect the kernel, copies
+  payloads and zeroes BSS.
+- `SYS_SEG_INFO(segment)` returns a segment's size, kind and load state.
 
 ---
 
-## 36.9 ZEX v2 segment model
+## 36.19 Memory initialization
 
-The primary segment preserves the current normal process model.
+ZephyrOS zeroes **only what the language or the ABI requires**:
 
-Auxiliary segments are independently described.
+- the BSS of the primary image and of each segment, at load;
+- the startup block and page zero, at exec.
 
-Each auxiliary segment contains semantically:
-
-```text
-segment id
-flags
-image size
-BSS size
-required allocation size
-payload location
-relocation-table location/count
-```
-
-Useful flags include at least:
-
-```text
-EXEC
-WRITE
-```
-
-The flags describe intended use; the Z80 has no hardware protection enforcing them.
-
-An auxiliary segment may contain:
-
-```text
-code
-constant data
-initialized writable data
-BSS
-```
-
-that must be directly mutually addressable while that segment is selected.
-
-Code and its private static data should therefore normally be packaged into one segment rather than creating cross-bank near references.
-
-An auxiliary segment must fit entirely inside the allocatable `2000h-DFFFh` portion of one auxiliary bank.
+Nothing else is pre-zeroed: not extended-memory objects, not whole banks,
+not windows. There is no
+whole-bank clear at exec and no per-call clear of any window. ZephyrOS is a
+single-user system that runs one process at a time, so clearing memory for
+isolation buys nothing. Clearing a whole bank costs about 120 ms per exec.
 
 ---
 
-## 36.10 ZEX v2 uses 32-bit file geometry
+## 36.20 Residency budget and ledgers
 
-The complete ZEX file may exceed 64 KiB once auxiliary segments exist.
+Resident bytes remain an architectural resource. Every M10 package reports
+these ledgers and the bytes it adds, attributed per object:
 
-Therefore:
+| ledger | region | capacity | headroom target at M10 close |
+|---|---|---:|---:|
+| `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR stack, service stack) | 16,384 | ≥ 2,048 |
+| `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | ≥ 4,096 |
+| `service hot:` | bank 6 `6000h-DFFFh` | 32,768 | ≥ 4,096 |
+| `service boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
+| `common:` | `E000h-FFFFh` packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | — |
+| gate stack | common | 256 | worst case ≤ 240 |
 
-```text
-file offsets
-payload offsets
-table offsets
-total file size
-```
-
-must be validated using 32-bit arithmetic.
-
-The ZEX loader consumes the M9 VFS directly through its 32-bit file-position interface.
-
-It must not inherit a 16-bit source-size limitation from the ZMOD loader.
-
-Individual Zephyr-80 segment sizes remain bounded by the target address-space rules even though the container itself may be larger than 64 KiB.
-
----
-
-## 36.11 Auxiliary-segment relocation
-
-Auxiliary segments are built as relocatable segment images.
-
-M10 initially requires only the relocation form actually needed by generated Z80 code.
-
-The expected first form is equivalent to:
-
-```text
-ABS16:
-    word_at(segment_base + patch_offset) += segment_base
-```
-
-The host packer and target loader both validate:
-
-```text
-relocation type
-patch bounds
-16-bit overflow
-target segment
-entry-point bounds
-payload/table overlap
-```
-
-A normal 16-bit relocation may refer only within its own auxiliary segment.
-
-A direct near pointer from one auxiliary segment to another is invalid because the two segments are not guaranteed to be simultaneously mapped.
-
-Cross-segment relationships use:
-
-```text
-far-entry IDs
-far-memory handles
-explicit far-memory operations
-```
-
-rather than hidden 16-bit pointers.
-
-The packer rejects unsupported or ambiguous linker relocations rather than guessing.
+- `ZOS_COMMON_CEILING` stays at 3072 bytes and may not be raised. The
+  512-byte M10 reservation of section 7.2 is released to M10's transitions
+  and IPC; no far-call gate is built.
+- When a ledger does not fit, the remedy is slimming or moving code to a
+  lower tier (fixed → cold through an upcall shim, hot → boot/bulk). It is
+  never a third bank (section 36.3).
 
 ---
 
-## 36.12 Far-entry table
+## 36.21 M10 portability boundary
 
-Executable auxiliary segments export explicit far-call entry points.
-
-A far entry is identified by a stable ZEX-local entry ID and resolves to:
+Zephyr-80 implementation details:
 
 ```text
-segment id
-offset within segment
+physical bank numbers, the page field P, map-token values
+8 KiB slots, the aperture address and size
+mode 10 / mode 11, the 6000h window, RST 30h
+the fixed/cold and hot/boot tier split
 ```
 
-Applications never pass an arbitrary physical address to `SYS_FAR_CALL`.
-
-The loader validates every declared entry point before publishing the process.
-
-This preserves the distinction used elsewhere in ZephyrOS:
+Native ZephyrOS concepts:
 
 ```text
-container metadata describes intent
-kernel validates placement
-application consumes a logical identifier
-```
-
----
-
-## 36.13 Far-call execution contract
-
-`SYS_FAR_CALL` is synchronous.
-
-Conceptually:
-
-```text
-primary process
-    |
-    | SYS_FAR_CALL(entry, frame)
-    v
-kernel validates entry and ownership
-    |
-    | copy bounded call frame
-    v
-auxiliary low-window call frame
-    |
-    | select target auxiliary bank
-    | mode 10
-    | auxiliary SP in 0100h-1FFFh
-    v
-far entry in 2000h-DFFFh
-    |
-    | RET to common return trap
-    v
-restore previous execution bank/SP
-    |
-    | copy returned call frame back
-    v
-SYS_FAR_CALL returns
-```
-
-The stable far-entry ABI is not the SDCC C calling convention.
-
-The kernel-level contract passes a bounded in/out call frame to the far entry. First-party C tooling may generate near-call wrappers that marshal an ordinary C function's parameters into that frame and adapt the result back to SDCC conventions.
-
-Those wrappers are compiler/toolchain implementation, not ZephyrOS ABI.
-
-The call-frame maximum is a build-time architectural constant and must be measured against the auxiliary low-window and stack requirements rather than chosen as an unbounded convenience.
-
----
-
-## 36.14 Far code uses an auxiliary low window
-
-Before executing far code, ZephyrOS prepares the selected auxiliary bank's low window with at least:
-
-```text
-native page zero
-RST 30h syscall vector
-far-runtime scratch
-far-call frame
-far execution stack
-```
-
-The far function executes in mode `10`.
-
-Therefore it may issue an ordinary:
-
-```text
-RST 30h
-```
-
-and the existing mode-11 transition preserves that auxiliary bank's `0000h-1FFFh` exactly as it preserves the primary process bank's low window.
-
-The syscall gate must distinguish:
-
-```text
-process identity
-```
-
-from:
-
-```text
-currently selected execution bank
-```
-
-after M10.
-
-The owning process remains the same while a far function executes.
-
-User-buffer copies for a syscall use the saved current execution bank, not blindly the process's primary bank.
-
-This is an explicit M10 audit requirement for every existing native syscall family.
-
----
-
-## 36.15 Restrictions while a far call is active
-
-M10 supports one cross-bank far call at a time per process.
-
-Near calls inside the selected auxiliary segment are unrestricted.
-
-Recursive cross-bank `SYS_FAR_CALL` is rejected with `ZOS_EBUSY`.
-
-`SYS_EXEC` from far execution is also rejected. Process creation originates from the primary execution context.
-
-`SYS_EXIT` remains valid and terminates the complete process regardless of whether it is invoked from primary or far execution. Cleanup releases:
-
-```text
-primary bank
-all auxiliary segments
-all runtime xmem objects
-VFS descriptors
-other process-owned resources
-```
-
-and restores the suspended parent normally.
-
-Later milestones may add recursive far calls only if a real consumer requires them.
-
----
-
-## 36.16 Existing process-startup contract
-
-M10 preserves the process-startup and argument-tail contract already implemented before this milestone.
-
-`SYS_EXEC` already transports the caller's bounded raw tail into the child's startup block v1 at `0080h`; the kernel does not parse shell syntax.
-
-M10 does not introduce:
-
-```text
-a second argv/tail representation
-far-specific startup semantics
-a new shell-oriented process startup structure
-```
-
-Far execution remains part of the same process and therefore does not create a new process-startup environment.
-
-The first-party user runtime remains responsible for interpreting the startup block for C programs.
-
-The process-startup ABI is only changed during M10 if the far-memory implementation exposes a concrete architectural incompatibility. Such a change is treated as a correction to the still-unfrozen native ABI, not as a new M10 feature.
-
----
-
-## 36.17 M10 portability boundary
-
-The following are Zephyr-80 implementation details:
-
-```text
-physical bank numbers
-8-KiB slots
-mode 10 / mode 11
-RST 30h
-auxiliary low-window geometry
-```
-
-The following are native ZephyrOS concepts:
-
-```text
-process
-primary address space
-auxiliary memory object
-segment
-far entry
-opaque memory handle
+process, primary address space
+endpoint, handle, service protocol, descriptor
+extended-memory object, segment, map/unmap
 logical size
 ```
 
-No public extended-memory ABI should require a future ZephyrOS port to emulate an 8-KiB Z80 bank slot.
+No public ABI requires a future port to emulate a Z80 bank, slot or
+aperture.
 
 ---
 
-## 36.18 Memory-budget discipline
+## 36.22 Protection model
 
-M10 inherits the M9 rule that resident bytes are an architectural resource.
+Zephyr-80 has no MMU. The nucleus/service split gives modularity, ownership
+rules, controlled transitions and ABI discipline, not memory protection:
 
-Every package reports the existing bank-7 ledger and common-memory ledger.
+- a defect in resident code can still corrupt any memory;
+- handles prevent accidental address coupling, but they are not
+  hardware-enforced capabilities;
+- an application can write the latch.
 
-Neither the production arena floor nor the common-memory ceiling may be weakened to make M10 fit.
-
-If the optimized end-of-M9 image does not leave enough residency for the M10 kernel mechanisms, kernel residency is expanded through a separately reviewed architecture change before the far-memory implementation proceeds. M10 must not hide such a change inside ordinary feature work.
+Validation, bounds checks and copied metadata are kept anyway: they catch
+defects and keep the boundaries replaceable.
 
 ---
 
-## 36.19 M10 non-goals
+## 36.23 M10 non-goals
 
 M10 does not add:
 
 ```text
-preemptive scheduling
-multitasking
+preemptive scheduling or multitasking
+asynchronous or queued IPC, revocation, service restart or unloading
+generic marshaling layers
 shared writable memory between processes
-runtime-generated executable memory
-dynamic libraries
-arbitrary cross-segment near pointers
-recursive cross-bank far calls
-virtual memory
-swap
-memory protection
+runtime-generated executable memory, dynamic libraries
+virtual memory, swap, memory protection
+a third operating-system bank
 ```
 
 The Z80 remains a cooperative, single-running-process machine.
 
 ---
 
+## 36.24 Implementation order
+
+1. **Baseline:** revision 13 is programmed (done); switch the simulator
+   default to it; remove the machinery of the rejected options.
+2. **Nucleus split:** link the nucleus as fixed core plus cold half with
+   upcall shims; the syscall gate clears P; the ledgers of section 36.20.
+3. **IPC substrate:** endpoint table, call/lookup/register, frames,
+   descriptors, copy primitives, the nesting and re-entrancy rules, IRQ
+   delivery to services.
+4. **Services:** service-image metadata and loader; the boot manifest; the
+   drivers and the console as services; registry, `zdriver_api` and the
+   bank-7 arena retired.
+5. **VFS as a service:** namespace and providers in bank 6; the bootstrap
+   reader shared; the `FS_*` front end retired; SDK stubs; object-based
+   exec and the exit upcall.
+6. **Extended memory and ZEX v2:** bank map, xmem objects, map tokens and
+   the aperture, ZEX v2 and the packer, v1 removed.
+7. **Acceptance** (section 37).
+
+---
+
 # 37. M10 acceptance criteria
 
-M10 acceptance includes an ordinary ZEX v2 program exercising both the unchanged primary-program case and auxiliary facilities.
-
-At minimum:
-
 ```text
-ordinary ZEX v2:
-    zero auxiliary segments
-    normal exec/exit
-    nested parent/child exec
-    existing startup-tail transport remains intact
+hardware:
+    revision 13 programmed; CP/M boots; the production image boots
+    P = 0 equivalence with revision 12 (vectors) and on hardware
 
-xmem allocation:
-    1 byte
-    8191 bytes
-    8192 bytes
-    8193 bytes
-    multiple objects in one auxiliary bank
-    48-KiB maximum object
-    oversized rejection
-    exhaustion
-    fragmentation
-    stale/foreign handle rejection
-    zero-filled allocation
+residency:
+    nucleus fixed / nucleus cold / service hot / service boot-bulk / common
+    ledgers emitted and within section 36.20, headroom targets met
+    gate-stack worst case <= 240; service-stack high-water reported
+
+IPC:
+    lookup, call, null call; 32-byte frame both ways
+    descriptors: copy in/out, bounds rejection, forged id rejection
+    no service can name a caller address
+    chained read (application -> VFS -> IOC-FAT -> IOC) with direct copies
+    nesting limit enforced; re-entrant call -> EBUSY unless declared
+    same-domain fast path gives identical results
+    service-owned IRQ fires during a service call; interrupted latch restored exactly
+
+services and boot:
+    all drivers, providers, VFS and console run as bank-6 services
+    boot from the manifest with the bootstrap reader; one ROMFS reader
+    console fallback and panic before the console service exists
+    registry, zdriver_api, FS_* front end and bank-7 arena absent
+
+VFS and exec:
+    file and directory operations through SDK stubs
+    exec by object handle; nucleus holds no pathname code
+    exit notification releases descriptors and context
+    nested exec, startup-tail transport and CWD inheritance unchanged
+
+ordinary ZEX v2:
+    zero segments; normal exec/exit; nested parent/child exec
+    full 0000h-DFFFh available; P = 0 throughout
+
+xmem:
+    1 / 8191 / 8192 / 8193 bytes; multiple objects per bank
+    largest object; oversized rejection; exhaustion; fragmentation
+    stale/foreign handle rejection; no pre-zeroing
+    first/last byte, slot boundary, whole object; range rejection
     automatic cleanup on exit
 
-xmem transfers:
-    first/last byte
-    slot boundary
-    complete object
-    out-of-range read/write rejection
-    caller-buffer bounds
-    exact current-bank restoration
+far code and data:
+    map a far-code segment; primary -> far -> primary by plain CALL
+    far code calls primary code; ordinary and filesystem syscalls from far code
+    buffer in the aperture used as a syscall buffer (buffer identity)
+    mappable xmem object read/written directly through the aperture
+    no token for banks 6/7 or for another process's objects
+    exec from far context starts the child with P = 0; parent latch restored
+    exit from far context releases everything
 
-ZEX auxiliary segments:
-    one segment
-    multiple segments
-    image + BSS
-    valid ABS16 relocations
-    malformed relocation
-    relocation overflow
-    invalid entry
+ZEX v2:
+    one and several far-code segments; data segments; image + BSS
+    container larger than 64 KiB; malformed header/table rejection
     segment allocation rollback
-    container larger than 64 KiB
-
-far calls:
-    primary -> far -> primary
-    in/out call frame
-    far private BSS
-    normal near calls inside far segment
-    ordinary syscall from far code
-    filesystem syscall from far code
-    exact primary SP/bank/IFF restoration
-    recursive far call -> EBUSY
-    SYS_EXEC from far context rejected
-    SYS_EXIT from far context cleans the whole process
 
 lifetime:
-    suspended parent retains far allocations
-    child receives no parent far handles
-    repeated exec/exit leaks no slots
-    repeated far calls leak no state
-
-budget:
-    production residency constraints remain satisfied
-    common linked content remains below its architectural ceiling
-    bank7 and common ledgers are emitted
+    suspended parent retains its objects and segments
+    child receives none of the parent's
+    repeated exec/exit and map/unmap leak nothing
 ```
 
-Physical hardware is authoritative for bank switching, interrupt interaction and far-call return behavior.
+Physical hardware is authoritative for bank switching, the aperture,
+interrupt interaction and service IRQ delivery.
 
 ---
 
