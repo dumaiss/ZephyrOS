@@ -242,6 +242,16 @@
       "object": "ipc_syscall",
       "tier": "cold",
       "reason": "M10 stage 3 IPC syscall bodies (SYS_IPC_LOOKUP / SYS_IPC_CALL, kernel/syscall/ipc.c): reached only through the P-normalizing syscall gate, so they run with the window showing bank 7.  Only the ipc-selftest image links them until package 41."
+    },
+    {
+      "object": "service_loader",
+      "tier": "cold",
+      "reason": "M10 stage 4 resident-service loader (kernel/service/service_loader.c, architecture 36.11/36.12): reads the boot manifest through the fixed ROMFS reader, validates and places every service image through the common application-bank copy gate, and runs the boot segments and hot inits.  It runs with P = 0 only (the syscall gate normalizes before any syscall, and the boot path is mode 11), so the body is cold code; the acceptance image links it now, production adopts it in package 41."
+    },
+    {
+      "object": "service_boot",
+      "tier": "fixed-required",
+      "reason": "M10 stage 4 service boot gate (kernel/service/service_boot.asm): switches mode 10 over bank 6 (Q = 6) and calls a boot segment.  Its code and continuation execute with bank 7 unmapped, so the gate is common-resident; its request/transition state is fixed-core data because the upcall shim reads the loader's request block with bank 7 mapped.  Same stage as the loader: test images only until package 41."
     }
   ],
   "cold_half": [
@@ -264,7 +274,9 @@
     "ipc",
     "ipc_asm",
     "ipc_common",
-    "ipc_syscall"
+    "ipc_syscall",
+    "service_boot",
+    "service_loader"
   ],
-  "test_link_note": "Objects the production linker script (linker/zephyr80.lk) does not list yet: only the ipc-selftest acceptance image links them (work package 39, M10 stage 3). They are classified above exactly as production will link them in package 41, and tools/mapcheck.py enforces that placement whenever their object files are present, so the acceptance image is held to the production rule. Production remains byte-identical because its link does not change."
+  "test_link_note": "Objects the production linker script (linker/zephyr80.lk) does not list yet: only the ipc-selftest acceptance image links them (work packages 39-40, M10 stages 3-4). They are classified above exactly as production will link them in package 41, and tools/mapcheck.py enforces that placement whenever their object files are present, so the acceptance image is held to the production rule. Production remains byte-identical because its link does not change."
 }

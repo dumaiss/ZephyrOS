@@ -1,18 +1,46 @@
 {
   "name": "irqx",
-  "type": "driver",
-  "abi": 3,
+  "type": "service",
+  "abi": 1,
   "flags": 0,
   "objects": [
     "irqx.rel",
+    "irqx_boot.rel",
     "sdcc_indirect_calls.rel"
   ],
-  "image_areas": [
-    "_CODE"
-  ],
-  "bss_areas": [
-    "_SERVICE_IO"
-  ],
   "init": "ipc_irqx_init",
-  "fini": null
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ]
+    },
+    {
+      "role": "boot",
+      "image_areas": [
+        "_BOOT"
+      ],
+      "bss_areas": [
+        "_BOOT_DATA"
+      ],
+      "entry": "ipc_irqx_boot"
+    },
+    {
+      "role": "io",
+      "bss_areas": [
+        "_SERVICE_IO"
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 6,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "irqx_dispatch",
+      "flags": 0
+    }
+  ],
+  "depends": []
 }

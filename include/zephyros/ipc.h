@@ -6,14 +6,48 @@
  * use is a function in that table (architecture 36.11).  There is no
  * kernel import table: a service relocates against its own image only.
  *
+ * The table is versioned: `version` always carries
+ * ZOS_IPC_SERVICE_API_VERSION; a service init may refuse a table that
+ * does not (the format's service ABI version, include/zephyros/service.h,
+ * tracks the same contract).
+ *
+ * Every entry, and why it is in the interface (36.11 asks for the list):
+ *
+ *   version         the table's version marker.
+ *   register_ep     the one registration path: the resident loader
+ *                   registers the endpoints the image's metadata declares
+ *                   through it before any service code runs, and a
+ *                   service that must add an endpoint the host cannot
+ *                   name uses the same call.  Handles stay opaque and the
+ *                   dispatch entry is validated against the window.
+ *   lookup          dependency discovery by (class, instance) - never a
+ *                   raw address or bank number; the SDK caches lookups,
+ *                   the discovery query stays fixed.
+ *   call            synchronous call/reply into a peer with the
+ *                   nucleus-owned 32-byte frame; the only IPC model
+ *                   (36.7).
+ *   copy_in         caller descriptor -> service buffer, bounds checked
+ *   copy_out        service buffer -> caller descriptor, bounds checked
+ *                   on every use (36.8); a service never names a caller
+ *                   address itself.
+ *   move            same-domain copy between two service-domain addresses
+ *                   (the staging step of chained providers), validated
+ *                   against the service window.
+ *   console_putc    the nucleus-owned early console, polled SIO0/B, which
+ *   console_poll    is usable before the console service exists and stays
+ *   console_getc    for service diagnostics and panic-time output (36.12).
+ *   irq_claim       hand the nucleus one hardware source and an in-image
+ *   irq_release     handler; the nucleus keeps the IM2 vectoring, the ISR
+ *                   stack and the final RETI (36.10).
+ *
+ * There is no entry for paths, mounts, devices or file objects: those are
+ * protocol payloads between services.
+ *
  * Endpoint lifecycle:
- *   - a service registers each endpoint once, from its init entry, with
- *     register_ep(class, instance, dispatch, flags, version);
- *   - register_ep returns a handle (1..N) or -ZOS_ENOSPC when the table
- *     is full;
+ *   - register_ep(class, instance, dispatch, flags, version) returns a
+ *     handle (1..N) or -ZOS_ENOSPC when the table is full;
  *   - lookup(class, instance) returns a peer's handle (or 0 when no
- *     endpoint matches), so a service discovers its dependencies by
- *     class/instance, never by address or bank;
+ *     endpoint matches);
  *   - call(handle, op, frame) dispatches synchronously into the peer and
  *     returns its status.  The frame is the nucleus-owned 32-byte copy;
  *     a service only ever reads and writes its own copy.
@@ -49,7 +83,14 @@
 #include "zos/ipc.h"
 #include "zos/types.h"
 
+/* The bootstrap interface's version (architecture 36.11).  A service init
+ * may refuse a table that does not carry it; the format's service ABI
+ * version (include/zephyros/service.h) tracks the same contract. */
+#define ZOS_IPC_SERVICE_API_VERSION 1u
+
 struct ipc_service_api {
+	uint8_t version; /* ZOS_IPC_SERVICE_API_VERSION */
+
 	/* Endpoint table (services, at boot only). */
 	int8_t (*register_ep)(uint8_t class, uint8_t instance,
 			      uint16_t entry, uint8_t flags,

@@ -7,9 +7,10 @@
  *   - the kernel loader/allocator API used by the M4 self-test and,
  *     from stage 08 on, by catalog loading at boot.
  *
- * ZMOD is a generic relocatable container; only module type DRIVER and
- * driver ABI v3 are supported from M9 on (older ABI containers are
- * rejected).  All addresses stored inside the loaded image are offsets
+ * ZMOD is a generic relocatable container; module types DRIVER (driver
+ * ABI v3) and, from M10 on, SERVICE (service ABI v1, see
+ * include/zephyros/service.h) are supported (older ABI containers are
+ * rejected).  All addresses stored inside a loaded image are offsets
  * relative to the module allocation base; the loader patches ZREL_ABS16
  * records with the chosen load address.
  *
@@ -38,7 +39,10 @@
 #define ZMOD_HEADER_SIZE 28u
 #define ZMOD_RELOC_SIZE  4u
 
-/* Relocation types. */
+/* Relocation types.  A record is { type, target, patch offset word }: the
+ * second byte is reserved (0) in driver containers, where one base covers
+ * the whole image, and names the target segment in service containers
+ * (include/zephyros/service.h), which relocate each segment separately. */
 #define ZREL_ABS16 1u
 
 #define ZMOD_NO_ENTRY 0xFFFFu

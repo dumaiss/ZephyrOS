@@ -91,7 +91,9 @@ static int16_t vfs_exec(struct zos_ipc_frame *frame)
 	return (int16_t)IPC_STREAM_BYTES;
 }
 
-static int16_t vfs_dispatch(struct zos_ipc_frame *frame)
+/* The endpoint dispatch entry the manifest names: a module-global
+ * symbol so the packer can resolve its hot-image offset. */
+int16_t vfs_dispatch(struct zos_ipc_frame *frame)
 {
 	switch (frame->op) {
 	case IPC_OP_VFS_READ:
@@ -118,10 +120,11 @@ void ipc_vfs_init(const struct ipc_service_api *table)
 {
 	api = table;
 	vfs_block_address = (uint16_t)vfs_block;
-	/* VFS declares itself re-entrant: a name-resolution path may
-	 * re-enter the namespace service while it is active. */
-	self_handle = (uint8_t)table->register_ep(IPC_CLASS_VFS, 0u,
-						  (uint16_t)vfs_dispatch,
-						  ZOS_IPC_EP_REENTRANT, 1u);
+	/* The declared endpoints are registered by the resident loader; the
+	 * init resolves its own handle and its peer by class/instance.  VFS
+	 * declares itself re-entrant in the image metadata: a
+	 * name-resolution path may re-enter the namespace service while it
+	 * is active. */
+	self_handle = (uint8_t)table->lookup(IPC_CLASS_VFS, 0u);
 	fat_handle = (uint8_t)table->lookup(IPC_CLASS_FAT, 0u);
 }

@@ -400,7 +400,7 @@ class TestSubsystemSmokeMode(unittest.TestCase):
             + b"ZephyrOS native monitor\r\n"
             + serial_smoke.SUBSYS_PROMPT
             + serial_smoke.SUBSYS_EXIT
-            + b"0000 active 0 free-banks 7\r\n"
+            + b"0000 active 0 free-banks 6\r\n"
         )
 
     def run_main(self, payload, timeout=0.05):

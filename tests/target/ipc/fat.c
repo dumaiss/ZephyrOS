@@ -44,7 +44,9 @@ static int16_t fat_read(struct zos_ipc_frame *frame)
 	return result;
 }
 
-static int16_t fat_dispatch(struct zos_ipc_frame *frame)
+/* The endpoint dispatch entry the manifest names: a module-global
+ * symbol so the packer can resolve its hot-image offset. */
+int16_t fat_dispatch(struct zos_ipc_frame *frame)
 {
 	if (frame->op != IPC_OP_FAT_READ) {
 		return -ZOS_EINVAL;
@@ -56,9 +58,9 @@ void ipc_fat_init(const struct ipc_service_api *table)
 {
 	api = table;
 	fat_block_address = (uint16_t)fat_block;
-	(void)table->register_ep(IPC_CLASS_FAT, 0u, (uint16_t)fat_dispatch,
-				 0u, 1u);
 	/* Dependency discovery: the provider finds its transport by
-	 * class/instance, never by a raw address or bank number. */
+	 * class/instance, never by a raw address or bank number.  The
+	 * declared dependency was checked and the endpoint registered by
+	 * the resident loader before this init ran. */
 	ioc_handle = (uint8_t)table->lookup(IPC_CLASS_IOC, 0u);
 }

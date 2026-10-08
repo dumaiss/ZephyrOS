@@ -48,10 +48,25 @@ SERVICE_MANIFESTS = os.path.join(CLIENT_DIR, "manifests")
 
 IMAGE_SUBDIR = os.path.join(ROOT, "build-ipc-selftest")
 PROD_SUBDIR = os.path.join(ROOT, "build")
+# The service images, their reports and the boot manifest are packed into
+# the shared module directory (the recovery manifest names them there).
+MODULE_DIR = os.path.join(ROOT, "build", "modules", "ipc-modules")
 
 SYSCALL_WINDOW_BASE = 0x0100
 SYSCALL_WINDOW_END = 0x2000
 SPLIT = 0x6000
+
+# The manifest also pins every declarable fact the packer can check: the
+# load order and the images that may name each dependency.
+LOADS_BEFORE = {
+    "ioc": [],
+    "fat": ["ioc"],
+    "vfs": ["ioc", "fat"],
+    "echo": ["ioc", "fat", "vfs"],
+    "con": ["ioc", "fat", "vfs", "echo"],
+    "irqx": ["ioc", "fat", "vfs", "echo", "con"],
+}
+IPC_ENDPOINT_VERSION = 1
 
 
 def read(path):
@@ -98,25 +113,34 @@ class TestIpcBuildWiring(unittest.TestCase):
         self.assertIn("--dataseg SERVICE_IO", text)
 
     def test_loader_enforces_the_service_io_range(self):
-        text = read(os.path.join(CLIENT_DIR, "ipc_loader.c"))
-        # The loader refuses a container whose data area leaves bank 6's
-        # 8000h-BFFFh (correction 01's service I/O buffer rule).
-        self.assertIn("IPC_SERVICE_IO_END", text)
-        self.assertIn("container.image_size + container.bss_size >",
-                      text)
-        self.assertIn("Service I/O buffer rule", text)
+        text = read(os.path.join(ROOT, "kernel", "service",
+                                "service_loader.c"))
+        # The nucleus loader refuses an image whose io segment leaves bank
+        # 6's 8000h-BFFFh (correction 01's service I/O buffer rule).
+        self.assertIn("SERVICE_IO_BASE", text)
+        self.assertIn("SERVICE_IO_END", text)
+        self.assertIn("io_cursor < SERVICE_IO_BASE", text)
+        self.assertIn("io range full", text)
 
     def test_makefile_builds_the_substrate_and_the_loader(self):
         text = read(MAKEFILE)
         for token in ("kernel/ipc/ipc.c", "kernel/ipc/ipc_asm.asm",
-                      "kernel/syscall/ipc.c", "tests/target/ipc/ipc_loader.c",
-                      "ipc_blobs"):
+                      "kernel/syscall/ipc.c", "kernel/service/service_loader.c",
+                      "kernel/service/service_boot.asm"):
             self.assertIn(token, text, token)
-        # The image links the substrate into the fixed core and its cold
-        # body into the cold half (residency --cold-extra for the moves
-        # objects the SIO-only boot set leaves room for).
+        # The image links the substrate into the fixed core, the loader and
+        # its cold body into the cold half, and packs the six service
+        # images with the boot manifest (residency --cold-extra names the
+        # moves objects that still fit beside the loader).
         self.assertIn("IPC_COLD_EXTRA_CSV", text)
         self.assertIn("--cold-extra $(IPC_COLD_EXTRA_CSV)", text)
+        self.assertIn("$(IPC_MODDIR)/services.man", text)
+        self.assertIn("zmodpack.py services", text)
+        self.assertIn("IPC_SERVICE_NAMES := ioc fat vfs echo con irqx", text)
+        self.assertIn("$(IPC_MODDIR)/ipc-%.zmod:", text)
+        for token in ("--codeseg BOOT --dataseg BOOT_DATA",
+                      "--dataseg HOT", "--dataseg SERVICE_IO"):
+            self.assertIn(token, text, token)
 
     def test_client_program_is_an_ordinary_sdk_program(self):
         text = read(MAKEFILE)
@@ -188,16 +212,21 @@ class TestIpcResidency(unittest.TestCase):
         # mode 10 and page 1 in force, where bank 7 is not mapped at all.
         self.assertEqual(tiers["ipc_common"], "fixed-required")
         self.assertEqual(tiers["ipc_syscall"], "cold")
+        self.assertEqual(tiers["service_loader"], "cold")
+        self.assertEqual(tiers["service_boot"], "fixed-required")
         self.assertEqual(sorted(test_link),
-                         ["ipc", "ipc_asm", "ipc_common", "ipc_syscall"])
-        # Production's cold set is untouched: the substrate is not in it.
+                         ["ipc", "ipc_asm", "ipc_common", "ipc_syscall",
+                          "service_boot", "service_loader"])
+        # Production's cold set is untouched: the substrate and the loader
+        # are not in it (the loader arrives in package 41).
         for name in test_link:
             self.assertNotIn(name, cold_half)
 
     def test_production_linker_script_does_not_list_the_substrate(self):
         text = read(LINKER)
         for name in ("ipc.rel", "ipc_asm.rel", "ipc_common.rel",
-                     "ipc_syscall.rel"):
+                     "ipc_syscall.rel", "service_loader.rel",
+                     "service_boot.rel"):
             self.assertNotIn(name, text, name)
 
     def test_production_image_carries_no_substrate_symbol(self):
@@ -226,14 +255,50 @@ class TestIpcImageLayout(unittest.TestCase):
             self.assertGreaterEqual(address, 0x2000, name)
             self.assertLess(address, SPLIT, name)
         self.assertGreaterEqual(self.syms["_zos_ipc_dispatch"], SPLIT)
-        self.assertGreaterEqual(self.syms["_zos_ipc_services_load"], SPLIT)
+        # The service loader is cold code too, and the boot gate it calls
+        # is common-resident (bank 7 is unmapped while a boot segment runs).
+        self.assertGreaterEqual(self.syms["_service_load_all"], SPLIT)
+        self.assertLess(self.syms["_service_load_all"], 0xDFFF)
+        self.assertGreaterEqual(self.syms["_zos_service_run_boot"], 0xE000)
+        self.assertLess(self.syms["_zos_service_run_boot"], 0xFD00)
         self.assertEqual(self.syms["zos_service_stack"], 0x5D00)
         self.assertEqual(self.syms["zos_service_stack_top"], 0x5F00)
 
-    def test_six_service_containers_are_linked(self):
+    def test_six_service_containers_are_packed_and_manifested(self):
+        # The services are no longer linked into the kernel: they are
+        # containers in the recovery store, named by the boot manifest the
+        # loader reads.  The image carries no blob symbol.
         for name in ("echo", "con", "ioc", "fat", "vfs", "irqx"):
-            self.assertIn("_ipc_%s_zmod" % name, self.syms, name)
-            self.assertIn("_ipc_%s_zmod_size" % name, self.syms, name)
+            self.assertNotIn("_ipc_%s_zmod" % name, self.syms, name)
+
+        order = ["ipc-ioc.zmod", "ipc-fat.zmod", "ipc-vfs.zmod",
+                 "ipc-echo.zmod", "ipc-con.zmod", "ipc-irqx.zmod"]
+        with open(os.path.join(MODULE_DIR, "services.man"), "rb") as handle:
+            data = handle.read()
+        self.assertEqual(len(data), 24 * len(order))
+        names = [data[i * 24:(i + 1) * 24].split(b"\0")[0].decode()
+                 for i in range(len(order))]
+        self.assertEqual(names, order)
+
+        # Every named container is a service image whose io segment fits
+        # bank 6's 8000h-BFFFh and whose hot segment fits the hot tier.
+        with open(os.path.join(MODULE_DIR, "services.plan.json"),
+                  encoding="utf-8") as handle:
+            report = json.load(handle)
+        self.assertEqual(report["order"], order)
+        for entry in report["services"]:
+            self.assertGreaterEqual(entry["hot_base"], 0x6000, entry)
+            self.assertLess(entry["hot_base"], 0xE000, entry)
+            if entry["io_base"] is not None:
+                self.assertGreaterEqual(entry["io_base"], 0x8000, entry)
+                self.assertLess(entry["io_base"], 0xC000, entry)
+            self.assertGreaterEqual(entry["boot_base"], 0, entry)
+            self.assertLess(entry["boot_base"], 0x6000, entry)
+        nucleus = report["nucleus"]
+        self.assertLessEqual(nucleus["service_hot_bytes"],
+                             nucleus["service_hot_capacity_bytes"])
+        self.assertLessEqual(nucleus["service_boot_bytes"],
+                             nucleus["service_boot_capacity_bytes"])
 
 
 class TestIpcClientWindow(unittest.TestCase):
@@ -322,28 +387,38 @@ class TestIpcCorrection01Layout(unittest.TestCase):
         self.assertIn("jp\t_ipc_copy_entry", entry)
 
     def test_every_container_data_area_is_a_service_io_area(self):
-        placed = 0x8000
         for name in ("echo", "con", "ioc", "fat", "vfs", "irqx"):
             manifest = json.loads(read(os.path.join(SERVICE_MANIFESTS,
                                                     name + ".json")))
-            self.assertEqual(manifest["bss_areas"], ["_SERVICE_IO"], name)
-            self.assertEqual(manifest["image_areas"], ["_CODE"], name)
-            report_path = os.path.join(IMAGE_SUBDIR, "ipc-modules",
+            roles = [segment["role"] for segment in manifest["segments"]]
+            self.assertIn("hot", roles, name)
+            self.assertIn("io", roles, name)
+            self.assertIn("boot", roles, name)
+            payload = [(segment.get("image_areas") or []) +
+                       (segment.get("bss_areas") or [])
+                       for segment in manifest["segments"]]
+            hot = manifest["segments"][roles.index("hot")]
+            self.assertEqual(hot["image_areas"], ["_CODE"], name)
+            self.assertEqual(
+                manifest["segments"][roles.index("io")]["bss_areas"],
+                ["_SERVICE_IO"], name)
+            for areas in payload:
+                self.assertTrue(areas, name)
+
+            # The packer reserves each io block inside 8000h-BFFFh and the
+            # loader places the hot segment in 6000h-DFFFh; the plan is the
+            # address table the replay pins the loader's own report to.
+            report_path = os.path.join(MODULE_DIR,
                                        name + ".report.json")
             if not os.path.exists(report_path):
                 continue
             with open(report_path, encoding="utf-8") as handle:
                 report = json.load(handle)
-            # The loader places each container at the aligned cursor and
-            # zeroes its data area right behind the image, so the whole
-            # container has to stay inside bank 6's 8000h-BFFFh: that is
-            # where the service I/O buffer rule wants its buffers.
-            placed = (placed + 15) & ~15
-            placed += report["image_size"] + report["bss_size"]
-            self.assertLessEqual(placed, 0xC000, name)
-        if placed > 0x8000:
-            print("ipc: six containers end at %04Xh, %d bytes inside the "
-                  "service I/O range" % (placed, 0xC000 - placed))
+            io = [segment for segment in report["segments"]
+                  if segment["role"] == "io"]
+            self.assertEqual(len(io), 1, name)
+            self.assertLessEqual(io[0]["image_size"] +
+                                 io[0]["bss_size"], 0x4000, name)
 
     def test_aperture_primitive_is_common_resident(self):
         found = symbols(self.kernel_map)
@@ -385,7 +460,18 @@ class TestIpcCorrection01Layout(unittest.TestCase):
         self.assertIn("IPC_IRQX_TC_APERTURE", service)
         self.assertIn("IRQX_COPY_BYTES", header)
         self.assertIn("IPC_FRAME_SLOW_IO", header)
-        self.assertIn("IPC_CON_SLOW_ADDRESS 0x7000u", header)
+        self.assertIn("IPC_CON_SLOW_BYTES", header)
+        # The con service's deliberate slow buffer lives in its own hot
+        # segment (con_slow.c, a _HOT area), so it is never inside bank 6's
+        # 8000h-BFFFh and the copy takes path C.
+        slow = read(os.path.join(CLIENT_DIR, "con_slow.c"))
+        self.assertIn("ipc_con_slow_buffer", slow)
+        self.assertIn("--dataseg HOT", read(MAKEFILE))
+        manifest = json.loads(read(os.path.join(SERVICE_MANIFESTS,
+                                                "con.json")))
+        hot = [segment for segment in manifest["segments"]
+               if segment["role"] == "hot"][0]
+        self.assertIn("_HOT", hot["bss_areas"])
 
 
 class TestIpcSdkSurface(unittest.TestCase):
@@ -407,14 +493,31 @@ class TestIpcSdkSurface(unittest.TestCase):
         self.assertIn("_zex_runtime_error", gate)
         self.assertIn("ipcgate.asm", read(ZEX_MK))
 
-    def test_container_manifests_use_the_fixture_init_entries(self):
+    def test_container_manifests_are_service_manifests(self):
         for name in ("echo", "con", "ioc", "fat", "vfs", "irqx"):
             path = os.path.join(SERVICE_MANIFESTS, "%s.json" % name)
             self.assertTrue(os.path.exists(path), path)
             manifest = json.loads(read(path))
-            entries = manifest.get("symbols") or manifest.get("relocs") or []
-            text = read(path)
-            self.assertIn("ipc_%s_init" % name, text, name)
+            self.assertEqual(manifest["type"], "service", name)
+            self.assertEqual(manifest["abi"], 1, name)
+            self.assertIn("ipc_%s_init" % name,
+                          manifest["init"], name)
+            for endpoint in manifest["endpoints"]:
+                self.assertIn("dispatch", endpoint, name)
+                self.assertEqual(endpoint["version"],
+                                 IPC_ENDPOINT_VERSION, name)
+            # The manifest order is the load order, so a dependency must
+            # name an endpoint an earlier image exports: the loader refuses
+            # the image otherwise.
+            exports = set()
+            for earlier in LOADS_BEFORE[name]:
+                other = json.loads(read(os.path.join(SERVICE_MANIFESTS,
+                                                     earlier + ".json")))
+                exports.update((endpoint["class"], endpoint["instance"])
+                               for endpoint in other["endpoints"])
+            for dependency in manifest.get("depends") or []:
+                self.assertIn((dependency["class"], dependency["instance"]),
+                              exports, name)
 
     def test_recovery_manifest_carries_the_client_program(self):
         manifest = json.loads(read(MANIFEST))

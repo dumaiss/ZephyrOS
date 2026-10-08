@@ -73,7 +73,7 @@ extern int kernel_load_vfs_module(const char *name);
 #include "nucleus_selftest.h"
 #endif
 #if ZOS_IPC_SELFTEST
-#include "ipc_selftest.h"
+#include "zephyros/service.h"
 #include "zos/ipc.h"
 #include "kernel/syscall/ipc.h"
 #endif
@@ -155,9 +155,14 @@ void zos_target_test_late(void)
 	zos_run_m9_selftest();
 #endif
 #if ZOS_IPC_SELFTEST
-	/* The six synthetic resident services must be in bank 6 before the
-	 * boot launcher starts the client program (/SYSTEM/ipc.zex). */
-	(void)zos_ipc_services_load();
+	/* The six synthetic resident services are real service images in
+	 * the recovery store; the nucleus service loader reads the boot
+	 * manifest and brings them up in bank 6 before the boot launcher
+	 * starts the client program (/SYSTEM/ipccopy.zex).  A load failure
+	 * is a boot error: the loader reported it on the early console. */
+	if (service_load_all(ZOS_SERVICE_MANIFEST_NAME) != 0) {
+		panic("service loader failed");
+	}
 #endif
 }
 

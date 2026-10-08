@@ -1,15 +1,19 @@
 /* ZephyrOS IPC acceptance test contract (test artifact).
  *
  * Shared by the six synthetic bank-6 services (tests/target/ipc), the
- * acceptance loader (ipc_loader.c) and the client program (ipc.c).  It is
- * the package-39 conformance protocol, never the native ABI: the frame
- * layout, syscall numbers and descriptor conventions come from
- * abi/zos/ipc.h and include/zephyros/ipc.h, and every constant here
- * belongs to the synthetic service set.
+ * service images' boot manifests (tests/target/ipc/manifests) and the
+ * client program (ipc.c).  It is the package-39 conformance protocol,
+ * never the native ABI: the frame layout, syscall numbers and descriptor
+ * conventions come from abi/zos/ipc.h and include/zephyros/ipc.h, and
+ * every constant here belongs to the synthetic service set.
  *
  * The synthetic set is the spike's (work package 35): `echo` (the null
  * call), `con` (console-like), the `vfs -> fat -> ioc` chain (512-byte
  * chained reads, direct and staged) and `irqx` (the IRQ-owning service).
+ * Since package 40 each one is a real service image: a hot segment
+ * (_CODE), a boot segment (_BOOT/_BOOT_DATA) and its SERVICE_IO data
+ * (_SERVICE_IO), packed by tools/zmodpack.py, listed in the boot manifest
+ * and loaded by the nucleus service loader.
  */
 
 #ifndef ZEPHYROS_TARGET_IPC_TEST_H
@@ -26,6 +30,9 @@
 #define IPC_CLASS_FAT  4u
 #define IPC_CLASS_IOC  5u
 #define IPC_CLASS_IRQX 6u
+
+/* Every synthetic endpoint exports version 1, instance 0. */
+#define IPC_ENDPOINT_VERSION 1u
 
 /* --- protocol operations ------------------------------------------------ */
 
@@ -82,20 +89,24 @@
 
 /* --- placement ---------------------------------------------------------- */
 
-/* The synthetic services are placed in the mode-11 window (bank 6),
- * 16-byte aligned, by the acceptance loader. */
-#define IPC_SERVICE_BASE 0x8000u
-#define IPC_SERVICE_ALIGN 16u
-
-/* Service I/O buffer rule (correction 01 to architecture 36.8): every
- * buffer a service hands to copy_in/copy_out - I/O buffers, caches,
- * staging - lives in bank 6's IPC_SERVICE_BASE..IPC_SERVICE_IO_END, which
- * is where the loader places each container's data area and the one range
- * both the mode-11 window and the mode-10 aperture show at the same
- * address.  `con`'s slow target below is the deliberate exception the
- * slow-path case needs. */
+/* Service images are placed by the real loader (kernel/service/
+ * service_loader.c) from the boot manifest: the hot segment in bank 6's
+ * hot tier (6000h-DFFFh), the io segment in 8000h-BFFFh (the SERVICE_IO
+ * rule of 36.8), the boot segment in 0000h-5FFFh.  The loader reports each
+ * placement on the early console; the replay pins the reported addresses
+ * against the plan the packer prints. */
+#define IPC_SERVICE_IO_BASE 0x8000u
 #define IPC_SERVICE_IO_END 0xC000u
-#define IPC_CON_SLOW_ADDRESS 0x7000u /* outside the I/O range: path C    */
+
+/* The `con` service's deliberate out-of-range copy target: a buffer in its
+ * own hot segment, which is outside 8000h-BFFFh, so the copy takes path C
+ * and is counted as slow (correction 01 to architecture 36.8). */
+#define IPC_CON_SLOW_BYTES 256u
+
+/* The boot-segment run marker every synthetic service records in its own
+ * boot-segment BSS: the replay reads it back to prove exactly one
+ * execution. */
+#define IPC_BOOT_MAGIC 0xA7u
 
 /* The IRQ source the `irqx` service owns (enum irq_source_t: IRQ_CTC0). */
 #define IPC_IRQ_CTC0 0u

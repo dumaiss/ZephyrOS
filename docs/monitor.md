@@ -41,7 +41,9 @@ and takes the controlled halt path.  The boot program is the
 
 Because every cycle is an ordinary exec/exit, the launcher's repeated
 exit line is a live proof that no process slot or bank leaked: after a
-normal `Q` the line reads `active 0 free-banks 7`.
+normal `Q` the line reads `active 0 free-banks 6` (bank 6 left the
+application pool in M10; the process allocator hands out banks 0-5,
+`PROCESS_BANK_COUNT` in `include/zephyros/process.h`).
 
 ## Command surface
 
@@ -94,7 +96,7 @@ ERR: ARG
 Z80> DB 7 0100 1
 ERR: ARG
 Z80> Q
-monitor: exit status 0x0000 active 0 free-banks 7
+monitor: exit status 0x0000 active 0 free-banks 6
 ```
 
 The banner's `scratch=XXXX` is the address (printed as four hex digits;

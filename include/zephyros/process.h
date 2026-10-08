@@ -35,9 +35,13 @@
 #include "zos/process.h"
 #include "zephyros/zex.h"
 
-/* Table geometry: one slot per application bank. */
+/* Table geometry: one slot per application bank.  Bank 6 is the resident
+ * service domain from M10 on (architecture 36.6), so the allocator hands
+ * out banks 0-5 only; PROCESS_MAX_BANK stays 6 because the bank is still
+ * addressable - the diagnostic family reaches it - it is just never a
+ * process bank. */
 #define PROCESS_TABLE_SIZE 7u
-#define PROCESS_BANK_COUNT 7u
+#define PROCESS_BANK_COUNT 6u
 #define PROCESS_MAX_BANK   6u
 #define PROCESS_KERNEL_BANK 7u
 

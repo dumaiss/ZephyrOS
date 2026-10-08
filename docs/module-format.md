@@ -124,8 +124,8 @@ directly after the table.
 | ---: | ---: | --- | --- |
 | `00h` | 4 | `magic[4]` | `"ZMOD"` |
 | `04h` | 1 | `format_version` | `1` |
-| `05h` | 1 | `module_type` | `1` = `DRIVER` (only supported type) |
-| `06h` | 1 | `driver_abi` | must equal `ZDRIVER_ABI_VERSION` (3) |
+| `05h` | 1 | `module_type` | `1` = `DRIVER`, `2` = `SERVICE` (M10) |
+| `06h` | 1 | `driver_abi` | `ZDRIVER_ABI_VERSION` (3) for drivers, `ZMOD_SERVICE_ABI_VERSION` (1) for services |
 | `07h` | 1 | `flags` | `0` (reserved) |
 | `08h` | 2 | `image_size` | payload bytes loaded at `load_base` |
 | `0Ah` | 2 | `bss_size` | zero-initialized bytes after the image |
@@ -144,7 +144,7 @@ compile-time assertions pin `sizeof` and every field offset.
 ### 2.2 Relocation records
 
 ```text
-type:u8 (1 = ZREL_ABS16)   reserved:u8 (=0)   patch_offset:u16
+type:u8 (1 = ZREL_ABS16)   target:u8   patch_offset:u16
 ```
 
 `patch_offset` is relative to the loaded image and must satisfy
@@ -157,6 +157,19 @@ word_at(load_base + patch_offset) += load_base
 The addition is checked against 16-bit overflow before it is stored; no
 record may touch a byte outside the image.  Although the container could
 express it, `ZREL_ABS16` is the only relocation type M4 supports.
+
+The second byte is reserved and must be `0` in driver containers, where a
+single base covers the whole image.  In a service container it names the
+*target segment* (section 7.2), because the loader relocates each segment
+against its own base:
+
+```text
+word_at(segment_base[owner] + patch_offset) += segment_base[target]
+```
+
+A service record may only reach tiers the mode-11 window shows (hot code
+may not point into boot or bulk segments) and bulk segments carry no
+records; the packer enforces both.
 
 ## 3. Module image conventions
 
@@ -479,3 +492,138 @@ container bytes live — all of it comes from the bounded source.
 `mapcheck.py --production` additionally rejects every acceptance symbol
 (retired static-driver remnants, test runners/results, fixture catalogs,
 embedded boot blob/catalog symbols, test SIO module entries).
+
+## 7. Resident service images (module_type 2)
+
+M10 makes bank 6 the **resident service domain**: services are permanent
+ZMOD containers (`ZMOD_TYPE_SERVICE`, generic header unchanged) that the
+cold nucleus loader places in the bank's two code tiers at boot.  The
+format lives in `include/zephyros/service.h`; `tools/zmodpack.py`
+validates and pre-encodes it on the host (`pack`, `services`) and
+`kernel/service/service_loader.c` performs the placement.
+
+### 7.1 Container layout
+
+```text
+offset 0                 28-byte header (module_type = 2)
+offset 28                service section: 16-byte header, segment table,
+                         endpoint table, dependency table
+offset reloc_offset      4 * reloc_count records (section 2.2)
+offset payload_offset    segment images, concatenated in table order
+total_size = payload_offset + image_size (all segment images)
+```
+
+Header fields keep their meaning with service values:
+
+| Field | Service meaning |
+| --- | --- |
+| `image_size` | total payload bytes (all segment images) |
+| `bss_size` | total BSS bytes (all segment BSS areas) |
+| `required_granules` | `0`: per-tier allocation comes from the segment table |
+| `init_offset` | hot-segment image offset run once at load, or `FFFFh` |
+| `fini_offset` | `FFFFh`: services are permanent (no unload, no restart) |
+
+The 16-byte section header carries the section size, the three table
+offsets (relative to the section start) and the three entry counts
+(segment ≤ 4, endpoint ≤ 8, dependency ≤ 8); all reserved bytes are `0`.
+Each table entry is byte-packed:
+
+```text
+segment      role:u8  flags:u8(=0)  image_size:u16  bss_size:u16
+             entry_offset:u16  payload_offset:u16
+             reloc_start:u16  reloc_count:u16
+endpoint     class:u8 instance:u8 version:u8 flags:u8
+             dispatch_offset:u16  reserved:u16(=0)
+dependency   class:u8 instance:u8
+```
+
+### 7.2 Segments and destination tiers
+
+Exactly one segment per role; `hot` is required and `init_offset` and
+every endpoint dispatch offset are relative to its image.
+
+| Role | Destination | Visibility |
+| --- | --- | --- |
+| `hot` | bank 6 `6000h-DFFFh` | mode-11 window (P = 1) with P = 0 |
+| `io` | bank 6 `8000h-BFFFh` | window and far aperture; the SERVICE_IO buffers `copy_in`/`copy_out` name |
+| `boot` | bank 6 `0000h-5FFFh` | once, at load, through the mode-10 gate with Q = 6; never executed again |
+| `bulk` | bank 6 `0000h-5FFFh` | reached only by nucleus copies |
+
+`entry_offset` is only meaningful for `boot` (the entry the gate calls);
+segment relocation records are the `ZREL_ABS16` records at
+`reloc_start .. reloc_start + reloc_count` and are applied per segment as
+section 2.2 describes.
+
+### 7.3 Allocation and ledgers
+
+The loader allocates the same way `tools/zmodpack.py services` does, so a
+set that packs always places:
+
+1. every image's `io` segment, in load order, packed contiguously from
+   `C000h` down - the whole block `[io_low, C000h)` is known before any
+   code is placed; a block leaving `8000h-BFFFh` fails the load;
+2. the `hot` segments largest-first, each taking the lowest free run of
+   the hot tier that does not cross the reserved io block (below it when
+   it fits, otherwise just above `C000h`);
+3. `boot` segments bumping up from `0000h` and `bulk` data down from
+   `6000h`, in load order.
+
+The nucleus holds the allocation map (both cursors are monotone; services
+are never freed) and reports the two architecture-36.20 ledgers on the
+early console: `service hot:` (hot plus io bytes of 32768) and
+`service boot/bulk:` (boot plus bulk bytes of 24576).  Each placed image
+is reported as `service <name>: hot <addr> [io <addr>] [boot <addr>]
+[bulk <addr>]`, the same line `tools/zmodpack.py services` prints, and the
+run ends with `service loader: <n> images in bank 6`.
+
+### 7.4 Endpoints and dependencies
+
+An endpoint entry declares `(class, instance, version, dispatch_offset,
+flags)`; `flags` bit 0 is the re-entrancy declaration
+(`ZOS_IPC_EP_REENTRANT`).  Dependency entries declare `(class,
+instance)`: the loader refuses an image whose dependency is not registered
+yet, which the manifest order guarantees for a valid set, and reports
+`service loader: <name>: missing dependency <class>.<instance>` on the
+early console.  The packer validates the same closure statically, so a
+missing dependency fails the host build too.
+
+### 7.5 Boot manifest
+
+`services.man` (`ZOS_SERVICE_MANIFEST_NAME`) is a flat ROMFS `DATA` file
+of 24-byte records - exactly the ROMFS name field, NUL-terminated and
+zero-padded - naming the packed containers in load order.  The loader
+reads it with the bootstrap ROMFS reader (`kernel/romfs`, fixed-core since
+package 38) and requires the file size to be a multiple of the record
+size.  At most `ZMOD_SERVICE_MAX_IMAGES` (8) images are placed.
+
+### 7.6 Service bootstrap interface
+
+`struct ipc_service_api` (`include/zephyros/ipc.h`) is the versioned set
+of nucleus entry points a resident service may call, passed in `HL` to the
+hot init entry.  It is not a kernel import table: every entry is listed
+and justified in the header (`version`, `register_ep`, `lookup`, `call`,
+`copy_in`, `copy_out`, `move`, `console_putc`, `console_poll`,
+`console_getc`, `irq_claim`, `irq_release`).  Boot segments run with bank 7
+unmapped and therefore cannot call it; they may touch bank 6, the common
+region and I/O ports only.
+
+### 7.7 Packer commands and report
+
+```sh
+python3 tools/zmodpack.py pack tests/target/ipc/manifests/echo.json \
+    build/modules/ipc-modules/ipc-echo.zmod \
+    --objdir build/modules/ipc-modules --report echo.report.json
+python3 tools/zmodpack.py services build/modules/ipc-modules/services.man \
+    build/modules/ipc-modules/ipc-*.zmod --report services.plan.json
+python3 tools/zmodpack.py dump <container.zmod>
+```
+
+A service manifest names its objects, its `init` entry, its `segments`
+(role, `image_areas`, `bss_areas`, optional `entry`), its `endpoints`
+(`class`, `instance`, `version`, `dispatch` symbol, flags) and its
+`depends` records; the packer resolves the dispatch and entry symbols and
+refuses anything that does not fit.  The per-image report carries each segment's
+role, size, payload offset and relocation count, every symbol's
+segment-relative offset with the segment it belongs to (`symbols`,
+`symbol_segments`), and the relocation targets; the set report carries the
+load order, the plan's bases per image and the two tier ledgers.

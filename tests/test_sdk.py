@@ -606,7 +606,7 @@ class TestHelloWorldImage(unittest.TestCase):
     """Boot the helloworld image: a user program needs no kernel change."""
 
     GREETING = "Hello, ZephyrOS!"
-    REPORT = "monitor: exit status 0x0000 active 0 free-banks 7"
+    REPORT = "monitor: exit status 0x0000 active 0 free-banks 6"
     CONSOLE_BOUND = "console: dynamic sio0.b OK"
 
     @classmethod

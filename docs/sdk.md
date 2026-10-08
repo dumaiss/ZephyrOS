@@ -150,7 +150,7 @@ program, forever.**  `kernel_boot_launcher()` (`kernel/main.c`) is a
 `for (;;)` around `process_exec(boot program)` plus one report line:
 
 ```text
-monitor: exit status 0x0000 active 0 free-banks 7
+monitor: exit status 0x0000 active 0 free-banks 6
 ```
 
 (the label is the 28b constant, not the program's name).  The loop is
@@ -163,7 +163,7 @@ program-agnostic.  Consequences:
   at full console speed, until the board is reset;
 - nothing leaks across those cycles: the report's `active` and
   `free-banks` fields are the post-teardown counters, so a long repeating
-  transcript with a constant `active 0 free-banks 7` is itself the
+  transcript with a constant `active 0 free-banks 6` is itself the
   end-to-end evidence that every exit returned the process slot, the
   application bank, the descriptor pool and the CWD to baseline;
 - the machine never reaches the kernel's idle loop, so there is no prompt
@@ -439,7 +439,7 @@ transcript on hardware **is** the repeating pair
 
 ```text
 Hello, ZephyrOS!
-monitor: exit status 0x0000 active 0 free-banks 7
+monitor: exit status 0x0000 active 0 free-banks 6
 ```
 
 The repetition is the evidence, not a fault: it is `hello.zex` being

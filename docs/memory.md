@@ -54,7 +54,12 @@ E000h +-------------------------------+
 
 Mode `10` maps the selected application bank at `0000h-DFFFh`; mode `11`
 keeps the caller bank at `0000h-1FFFh` and maps bank 7 at `2000h-DFFFh`.
-Bank 7 is reserved to ZephyrOS and is never an application bank.  With the
+Bank 7 is reserved to ZephyrOS and is never an application bank, and from
+M10 on bank 6 is the **resident service domain** (architecture 36.6): the
+process bank allocator hands out banks 0-5 only
+(`PROCESS_BANK_COUNT`).  Bank 6 stays addressable - the mode-11 window
+shows it at P = 1 and the diagnostic family reaches it - it is simply
+never a process bank.  With the
 page field at 0, this is exactly what decoder revision 13 does as well;
 section 1.1 records the revision-13 mappings for a non-zero page field, and
 sections 2.2/2.2.1 the two-region geometry those mappings allow.
@@ -643,7 +648,9 @@ void    platform_bank_set(uint8_t bank);     /* keep D7..D3; reject bank 7 */
 ```
 
 `platform_bank_set()` preserves ROM-page and mode bits and rejects bank 7
-(application banks are `0-6`).  Mode transitions are assembly gates with
+(application banks are `0-6`; `PROCESS_BANK_COUNT` hands the process
+allocator banks 0-5, since bank 6 is the resident service domain from M10
+on).  Mode transitions are assembly gates with
 explicit common-memory continuations, not C functions: a C return address
 in `2000h-DFFFh` would disappear when the mode changes.
 

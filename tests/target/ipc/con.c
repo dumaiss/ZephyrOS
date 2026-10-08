@@ -1,5 +1,5 @@
-/* ZephyrOS IPC acceptance: the `con` console-like synthetic service
- * (test artifact).
+/* ZephyrOS IPC acceptance: the `con` console-like synthetic service (test
+ * artifact).
  *
  * WRITE(offset, length) copies a slice of the caller descriptor into the
  * service's own bank-6 buffer through the nucleus copy primitive and
@@ -9,12 +9,13 @@
  * deliberately tries to copy through a descriptor id supplied by the
  * caller, which is how the suite proves forged-id refusal.
  *
- * The ordinary buffer sits in this container's data area, which the
- * loader places inside bank 6's 8000h-BFFFh, so it follows the service
- * I/O buffer rule (correction 01 to architecture 36.8).  The
- * IPC_FRAME_SLOW_IO variant targets IPC_CON_SLOW_ADDRESS instead - the
+ * The ordinary buffer sits in this image's io segment, which the loader
+ * places inside bank 6's 8000h-BFFFh, so it follows the service I/O buffer
+ * rule (correction 01 to architecture 36.8).  The IPC_FRAME_SLOW_IO
+ * variant targets the buffer of this image's hot segment instead - the
  * deliberate violation that proves a service buffer outside that range
- * still copies, through the chunked path, and is counted as slow.
+ * still copies, through the chunked path, and is counted as slow.  The
+ * hot-segment buffer lives in con_slow.c, compiled into the _HOT area.
  */
 
 #include "zephyros/errno.h"
@@ -23,6 +24,8 @@
 #include "ipc_test.h"
 
 #define CON_BUFFER_BYTES 256u
+
+extern uint8_t ipc_con_slow_buffer[IPC_CON_SLOW_BYTES];
 
 static const struct ipc_service_api *api;
 static uint8_t con_buffer[CON_BUFFER_BYTES];
@@ -61,7 +64,9 @@ static int16_t con_write(struct zos_ipc_frame *frame)
 	return (int16_t)length;
 }
 
-static int16_t con_dispatch(struct zos_ipc_frame *frame)
+/* The endpoint dispatch entry the manifest names: a module-global
+ * symbol so the packer can resolve its hot-image offset. */
+int16_t con_dispatch(struct zos_ipc_frame *frame)
 {
 	switch (frame->op) {
 	case IPC_OP_CON_WRITE:
@@ -86,7 +91,5 @@ static int16_t con_dispatch(struct zos_ipc_frame *frame)
 void ipc_con_init(const struct ipc_service_api *table)
 {
 	api = table;
-	con_slow_address = (uint16_t)IPC_CON_SLOW_ADDRESS;
-	(void)table->register_ep(IPC_CLASS_CON, 0u, (uint16_t)con_dispatch,
-				 0u, 1u);
+	con_slow_address = (uint16_t)ipc_con_slow_buffer;
 }

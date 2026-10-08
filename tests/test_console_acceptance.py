@@ -217,7 +217,7 @@ class TestProductionBoot(ProductionBase):
         full = "".join(z.glyphs)
         self.assertEqual(full.count(MONITOR_EXIT), 2)
         self.assertEqual(full.count(BANNER), 2)
-        self.assertIn("monitor: exit status 0x0000 active 0 free-banks 7",
+        self.assertIn("monitor: exit status 0x0000 active 0 free-banks 6",
                       full)
 
 
@@ -488,8 +488,8 @@ class TestProductionInvariants(ProductionBase):
         z.pc = resume_pc
         self.run_to(z, PROMPT)
         self.send_line(z, "Q", MONITOR_EXIT)
-        self.run_to(z, "free-banks 7")
-        self.assertIn("monitor: exit status 0x0000 active 0 free-banks 7",
+        self.run_to(z, "free-banks 6")
+        self.assertIn("monitor: exit status 0x0000 active 0 free-banks 6",
                       "".join(z.glyphs))
 
 
@@ -535,8 +535,8 @@ class TestIntegrationImage(ProductionBase):
         # The unchanged monitor follows on the same binding.
         self.run_to(z, PROMPT)
         self.send_line(z, "Q", MONITOR_EXIT)
-        self.run_to(z, "free-banks 7")
-        self.assertIn("monitor: exit status 0x0000 active 0 free-banks 7",
+        self.run_to(z, "free-banks 6")
+        self.assertIn("monitor: exit status 0x0000 active 0 free-banks 6",
                       "".join(z.glyphs))
 
 

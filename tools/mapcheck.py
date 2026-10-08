@@ -770,6 +770,15 @@ COMMON_ONLY_SYMBOLS = (
     "_ipc_ap_saved_sp",
     "_ipc_ap_stack",
     "_ipc_ap_stack_top",
+    # M10 stage 4: the service boot gate calls a bank-6 boot segment with
+    # mode 10 selected over bank 6, where bank 7 is unmapped; its code,
+    # transition state and the loader's upcall request block must live in
+    # common memory.
+    "_zos_service_run_boot",
+    "zos_service_boot_entry",
+    "zos_service_boot_saved_latch",
+    "zos_service_boot_saved_iff",
+    "_zos_service_upcall_block",
 )
 
 # Bank-7 internal routines (visible only while mode 11 is active).

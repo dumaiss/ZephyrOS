@@ -417,34 +417,34 @@ ZOS_V9958_BOOT  := 0
 ZOS_IOCFAT_BOOT := 0
 endif
 
-# IPC substrate acceptance image (work package 39, M10 stage 3).  The
-# production boot path with the fixed-core IPC substrate linked in, the
-# six synthetic bank-6 services placed by the acceptance loader
-# (tests/target/ipc) and the SDK client program booting as
-# /SYSTEM/ipc.zex.  The substrate is fixed-required (config/residency.json);
-# the stage-4/5 `moves` objects compile cold here because the SIO-only
-# boot set leaves the cold half nearly empty, which is the placement
-# freedom architecture 36.20 gives those objects.
+# IPC substrate acceptance image (work package 39, M10 stage 3; service
+# images from package 40).  The production boot path with the fixed-core
+# IPC substrate and the resident service loader linked in, the six
+# synthetic services packed as real service images in the recovery store
+# and loaded from the boot manifest, and the SDK client program booting as
+# /SYSTEM/ipc.zex.  The substrate and the boot gate are fixed-required
+# (config/residency.json), the loader is cold code, and the stage-4/5
+# `moves` objects fill what the loader leaves: the cold half is nearly
+# full, so vfs_path and vfs_workspace overflow into the fixed core's
+# leftover space, which is the moves tier's documented fallback
+# (see config/residency.json).
 IPC_DIR   := tests/target/ipc
-# The stage-4/5 `moves` objects compile cold in this image (see above).
-# Defined unconditionally so the ipc-selftest target below can repeat the
-# list for the ledger run, where the image's own build directory is the
-# only thing under test.
-IPC_COLD_EXTRA := romfs_provider vfs_dir vfs_file vfs_mount vfs_path \
-	vfs_process vfs_workspace
-IPC_COLD_EXTRA_CSV := romfs_provider,vfs_dir,vfs_file,vfs_mount,vfs_path,vfs_process,vfs_workspace
+# The stage-4/5 `moves` objects that still fit beside the loader compile
+# cold in this image (see above).  Defined unconditionally so the
+# ipc-selftest target below can repeat the list for the ledger run, where
+# the image's own build directory is the only thing under test.
+IPC_COLD_EXTRA := romfs_provider vfs_dir vfs_file vfs_mount \
+	vfs_process
+IPC_COLD_EXTRA_CSV := romfs_provider,vfs_dir,vfs_file,vfs_mount,vfs_process
 
 ifeq ($(ZOS_IPC_SELFTEST),1)
 CFLAGS    += -DZOS_IPC_SELFTEST=1 -Itests/target/include
 ASFLAGS   += -I$(BUILD)
 PK_SUFFIX := -ipc-selftest
 IPC_FIXED_OBJS := $(BUILD)/ipc.rel $(BUILD)/ipc_asm.rel \
-	$(BUILD)/ipc_common.rel
-IPC_BLOB_OBJ  := $(BUILD)/ipc_blobs.rel
-IPC_SERVICE_OBJS := $(IPC_FIXED_OBJS) $(IPC_BLOB_OBJ)
-IPC_COLD_OBJS := $(BUILD)/ipc_syscall.rel
-TARGET_TEST_OBJS += $(BUILD)/ipc_loader.rel $(IPC_COLD_OBJS) \
-	$(IPC_SERVICE_OBJS)
+	$(BUILD)/ipc_common.rel $(BUILD)/service_boot.rel
+IPC_COLD_OBJS := $(BUILD)/ipc_syscall.rel $(BUILD)/service_loader.rel
+TARGET_TEST_OBJS += $(IPC_FIXED_OBJS) $(IPC_COLD_OBJS)
 ZOS_IOC_BOOT    := 0
 ZOS_HID_BOOT    := 0
 ZOS_V9958_BOOT  := 0
@@ -548,7 +548,7 @@ COLD_STEMS := $(shell $(PYTHON) tools/mapcheck.py residency \
 endif
 COLD_OBJS  := $(addprefix $(BUILD)/,$(addsuffix .rel,$(COLD_STEMS)))
 ifneq ($(TARGET_TEST_OBJS),)
-COLD_OBJS  += $(filter-out $(IPC_SERVICE_OBJS),$(TARGET_TEST_OBJS))
+COLD_OBJS  += $(filter-out $(IPC_FIXED_OBJS),$(TARGET_TEST_OBJS))
 endif
 $(COLD_OBJS): CFLAGS += --codeseg WINDOW --dataseg WINDOW_DATA
 
@@ -1191,7 +1191,8 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/m9_fs_selftest.h \
 		tests/target/include/m9_exec_selftest.h \
 		tests/target/include/m9_iocfat_selftest.h \
-		tests/target/include/ipc_selftest.h abi/zos/ipc.h \
+		abi/zos/ipc.h \
+		include/zephyros/service.h \
 		kernel/syscall/ipc.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
@@ -1203,11 +1204,12 @@ $(BUILD)/ctc_test.rel: tests/target/support/ctc_test.c \
 		platform/zephyr80/hardware.h platform/zephyr80/irq.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-# IPC substrate objects (work package 39, M10 stage 3): the fixed-core
-# substrate and its primitives (config/residency.json `fixed-required`),
-# the cold syscall bodies, and the acceptance loader.  The six synthetic
-# service containers are ordinary ZMOD packs emitted as one assembly blob
-# (data, like every fixture blob) that the loader relocates into bank 6.
+# IPC substrate and service loader (work packages 39-40, M10 stages 3-4):
+# the fixed-core substrate and its primitives (config/residency.json
+# `fixed-required`), the cold syscall bodies, the cold resident-service
+# loader and the common boot gate.  The six synthetic services are real
+# service images packed into the recovery store and loaded from the boot
+# manifest, not fixture blobs.
 $(BUILD)/ipc.rel: kernel/ipc/ipc.c kernel/ipc/ipc.h \
 		include/zephyros/ipc.h abi/zos/ipc.h \
 		include/zephyros/irq.h include/zephyros/platform.h \
@@ -1228,11 +1230,17 @@ $(BUILD)/ipc_syscall.rel: kernel/syscall/ipc.c kernel/syscall/ipc.h \
 		kernel/ipc/ipc.h abi/zos/ipc.h kernel/syscall/diag.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/ipc_loader.rel: $(IPC_DIR)/ipc_loader.c \
-		tests/target/include/ipc_test.h include/zephyros/ipc.h \
-		include/zephyros/module.h include/zephyros/errno.h \
-		kernel/ipc/ipc.h kernel/memory/upcall.h | $(BUILD)
+$(BUILD)/service_loader.rel: kernel/service/service_loader.c \
+		include/zephyros/service.h include/zephyros/ipc.h \
+		include/zephyros/module.h include/zephyros/romfs.h \
+		include/zephyros/errno.h include/zephyros/kernel.h \
+		include/zephyros/process.h kernel/ipc/ipc.h \
+		kernel/memory/upcall.h kernel/syscall/diag.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/service_boot.rel: kernel/service/service_boot.asm \
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/syscall_test.rel: tests/target/syscall/syscall_test.c \
 		include/zephyros/kernel.h \
@@ -1545,67 +1553,84 @@ else ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
 ROMFS_MANIFEST := user/helloworld/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/hello.zex
 else ifeq ($(ZOS_IPC_SELFTEST),1)
-# IPC acceptance image (work package 39): the SIO fallback plus the two SDK
-# programs the launcher boots and the probe starts
+# IPC acceptance image (work packages 39-40): the SIO fallback plus the two
+# SDK programs the launcher boots and the probe starts
 # (ZOS_BOOT_PROGRAM=/SYSTEM/ipccopy.zex).  The probe
 # (tests/target/ipc/ipccopy.c) measures the caller-buffer copy paths and
 # SYS_EXECs the conformance client (/SYSTEM/ipc.zex), which is where the
-# promoted suite lives.  The six synthetic services are not on the
-# recovery store: they are linked into the kernel image as ZMOD containers
-# and placed in bank 6 by the acceptance loader
-# (tests/target/ipc/ipc_loader.c).
+# promoted suite lives.  The six synthetic services are real service
+# images in the recovery store, listed by the boot manifest
+# (services.man) and placed in bank 6 by the nucleus service loader.
 ROMFS_MANIFEST := tests/ipc/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/ipc.zex $(MODULES)/ipccopy.zex
+# Recursive: the service-image variables are defined below this chain.
+ROMFS_EXTRA_DEPS = $(MODULES)/ipc.zex $(MODULES)/ipccopy.zex \
+	$(IPC_ZMODS) $(IPC_MODDIR)/services.man
 else
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 endif
 
-# --- resident-service IPC containers (work package 39) ----------------------
-# Six synthetic services packed as ordinary ZMOD containers (the existing
-# packer and relocation model; the service-image metadata format arrives
-# in package 40), emitted as one assembly blob the acceptance loader
-# places in bank 6.  Acceptance-only; nothing here is built for any other
-# configuration.
-IPC_MODDIR := $(BUILD)/ipc-modules
+# --- resident service images (work packages 39-40) ---------------------------
+# Six synthetic services packed as real service images (ZMOD module_type 2
+# with the service section) into the recovery store, listed by the boot
+# manifest `services.man` and loaded by the nucleus service loader
+# (kernel/service/service_loader.c).  Acceptance-only; nothing here is
+# built for any other configuration.
+#
+# The images live under the shared build/modules/ so the recovery store's
+# manifest can name them with one --objdir, like every other boot entry.
+IPC_MODDIR := $(MODULES)/ipc-modules
+IPC_SERVICE_NAMES := ioc fat vfs echo con irqx
+IPC_HOT_OBJS := $(addprefix $(IPC_MODDIR)/,$(addsuffix .rel,$(IPC_SERVICE_NAMES)))
+IPC_BOOT_OBJS := $(addprefix $(IPC_MODDIR)/,$(addsuffix _boot.rel,$(IPC_SERVICE_NAMES)))
+IPC_ZMODS := $(addprefix $(IPC_MODDIR)/ipc-,$(addsuffix .zmod,$(IPC_SERVICE_NAMES)))
 
 ifeq ($(ZOS_IPC_SELFTEST),1)
 $(IPC_MODDIR):
 	mkdir -p $@
 
-# --dataseg SERVICE_IO names the container's data area after the rule it
-# has to satisfy: the loader places it after the image, inside bank 6's
-# 8000h-BFFFh, and rejects a container that outgrows that range
-# (correction 01 to architecture 36.8).
-$(IPC_MODDIR)/%.rel: $(IPC_DIR)/%.c \
+# Hot-segment objects: dispatch entries and the init entry.  --dataseg
+# SERVICE_IO names the data area after the rule it has to satisfy: the
+# loader places it inside bank 6's 8000h-BFFFh (correction 01 to
+# architecture 36.8), where both the window and the aperture show it.
+$(IPC_HOT_OBJS): $(IPC_MODDIR)/%.rel: $(IPC_DIR)/%.c \
 		tests/target/include/ipc_test.h | $(IPC_MODDIR)
 	$(SDCC) $(MOD_CFLAGS) --dataseg SERVICE_IO -Itests/target/include $< -o $@
+
+# Boot-segment objects: boot-only code (_BOOT) and its BSS (_BOOT_DATA),
+# run once through the mode-10 gate with Q = 6.
+$(IPC_BOOT_OBJS): $(IPC_MODDIR)/%_boot.rel: $(IPC_DIR)/%_boot.c \
+		tests/target/include/ipc_test.h | $(IPC_MODDIR)
+	$(SDCC) $(MOD_CFLAGS) --codeseg BOOT --dataseg BOOT_DATA \
+		-Itests/target/include $< -o $@
+
+# `con`'s hot-segment slow buffer (area _HOT): the deliberate service-side
+# buffer outside 8000h-BFFFh the path-C copy case needs.
+$(IPC_MODDIR)/con_slow.rel: $(IPC_DIR)/con_slow.c \
+		tests/target/include/ipc_test.h | $(IPC_MODDIR)
+	$(SDCC) $(MOD_CFLAGS) --dataseg HOT -Itests/target/include $< -o $@
 
 $(IPC_MODDIR)/sdcc_indirect_calls.rel: \
 		modules/runtime/sdcc_indirect_calls.asm | $(IPC_MODDIR)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(IPC_MODDIR)/%.zmod: $(IPC_DIR)/manifests/%.json \
-		$(IPC_MODDIR)/%.rel $(IPC_MODDIR)/sdcc_indirect_calls.rel \
-		tools/zmodpack.py
+# One service image per manifest; the report carries the symbol offsets
+# the replay reads the boot-segment markers and placements through.
+$(IPC_ZMODS): $(IPC_MODDIR)/ipc-%.zmod: $(IPC_DIR)/manifests/%.json \
+		$(IPC_MODDIR)/%.rel $(IPC_MODDIR)/%_boot.rel \
+		$(IPC_MODDIR)/sdcc_indirect_calls.rel tools/zmodpack.py \
+		| $(IPC_MODDIR)
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(IPC_MODDIR) \
 		--report $(IPC_MODDIR)/$*.report.json
 
-IPC_ZMODS := $(IPC_MODDIR)/echo.zmod $(IPC_MODDIR)/con.zmod \
-	$(IPC_MODDIR)/ioc.zmod $(IPC_MODDIR)/fat.zmod \
-	$(IPC_MODDIR)/vfs.zmod $(IPC_MODDIR)/irqx.zmod
+$(IPC_MODDIR)/ipc-con.zmod: $(IPC_MODDIR)/con_slow.rel
 
-$(BUILD)/ipc_blobs.asm: $(IPC_ZMODS) tools/zmodpack.py | $(BUILD)
-	$(PYTHON) tools/zmodpack.py emit-asm $@ \
-		ipc_echo_zmod=$(IPC_MODDIR)/echo.zmod \
-		ipc_con_zmod=$(IPC_MODDIR)/con.zmod \
-		ipc_ioc_zmod=$(IPC_MODDIR)/ioc.zmod \
-		ipc_fat_zmod=$(IPC_MODDIR)/fat.zmod \
-		ipc_vfs_zmod=$(IPC_MODDIR)/vfs.zmod \
-		ipc_irqx_zmod=$(IPC_MODDIR)/irqx.zmod
-
-$(BUILD)/ipc_blobs.rel: $(BUILD)/ipc_blobs.asm | $(BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
+# The boot manifest: the flat ROMFS names in dependency (load) order,
+# validated as a set - unique endpoints, resolvable dependencies and a
+# tier allocation that fits - and reported with the two service ledgers.
+$(IPC_MODDIR)/services.man: $(IPC_ZMODS) tools/zmodpack.py | $(IPC_MODDIR)
+	$(PYTHON) tools/zmodpack.py services $@ $(IPC_ZMODS) \
+		--report $(IPC_MODDIR)/services.plan.json
 endif
 
 # --- boot-program setting (package 28b) --------------------------------------

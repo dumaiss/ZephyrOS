@@ -399,7 +399,15 @@ class TestContainerValidation(unittest.TestCase):
         self.expect_error(self.tamper(4, 2), "unsupported format version")
 
     def test_bad_type(self):
-        self.expect_error(self.tamper(5, 2), "unsupported module type")
+        # Types 1 (driver) and 2 (service) are the format's module types;
+        # anything else is refused.
+        self.expect_error(self.tamper(5, 3), "unsupported module type")
+
+    def test_service_type_dispatches_to_the_service_parser(self):
+        # A driver container whose type byte says "service" is parsed as a
+        # service image and refused by the service rules, never accepted
+        # as a driver.
+        self.expect_error(self.tamper(5, 2), "service")
 
     def test_bad_abi(self):
         self.expect_error(self.tamper(6, 9), "unsupported driver ABI")

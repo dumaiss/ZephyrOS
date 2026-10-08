@@ -34,6 +34,7 @@ instrument that produced the spike's figures.
 Skipped when the image has not been built.
 """
 
+import json
 import os
 import re
 import sys
@@ -60,7 +61,7 @@ FAIL = b"ipc: FAIL\r\n"
 APERTURE_PASS = b"ipccopy: PASS\r\n"
 APERTURE_FAIL = b"ipccopy: FAIL\r\n"
 PANIC = b"PANIC"
-LOADER_OK = b"ipc loader: 6 services in bank 6\r\n"
+LOADER_OK = b"service loader: 6 images in bank 6\r\n"
 
 MEMCTL_PORT = 0x00
 MODE_MASK = 0x18
@@ -80,12 +81,19 @@ CTC0_APERTURE_TIME_CONSTANT = 0x08
 
 PAGE_ONE = 0x20
 
-# The resident service domain: bank 6 in the mode-11 window, and the
-# loader's placement base (tests/target/include/ipc_test.h).
+# The resident service domain: bank 6 in the mode-11 window, with the hot
+# tier (6000h-DFFFh) and the SERVICE_IO blocks (8000h-BFFFh) inside it
+# (architecture 36.6, correction 01 to 36.8).
 DOMAIN_BASE = 0x6000
 DOMAIN_END = 0xE000
-SERVICE_BASE = 0x8000
-SERVICE_END = 0xE000
+SERVICE_BASE = DOMAIN_BASE
+SERVICE_END = DOMAIN_END
+
+# The packed service images, their per-image reports and the plan the
+# loader's own report is pinned to (Makefile: IPC_MODDIR).
+MODULE_DIR = os.path.join(ROOT, "build", "modules", "ipc-modules")
+SERVICE_ORDER = ["ioc", "fat", "vfs", "echo", "con", "irqx"]
+IPC_BOOT_MAGIC = 0xA7
 
 SERVICE_PAGE_BITS = 0x20
 
@@ -1597,6 +1605,98 @@ class TestIpcCorrection01(IpcSimBase):
             self.assertGreater(count, 0, "%s never moved" % key)
         print("ipc %s: probe-path counters %s"
               % (self.image_ident, totals))
+
+
+class TestIpcServiceImages(IpcSimBase):
+    """The resident service images (work package 40).
+
+    The loader's own report is pinned against the packer's plan: the same
+    tier policy, the same bases, the two architecture-36.20 ledgers and the
+    boot tier's one-shot evidence, read back out of bank 6.
+    """
+
+    def plan(self):
+        if getattr(self, "_plan", None) is None:
+            path = os.path.join(MODULE_DIR, "services.plan.json")
+            if not os.path.exists(path):
+                self.skipTest("the service images have not been packed")
+            with open(path, encoding="utf-8") as handle:
+                self._plan = json.load(handle)
+        return self._plan
+
+    def report(self, name):
+        with open(os.path.join(MODULE_DIR, name + ".report.json"),
+                  encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def symbol_address(self, name, symbol):
+        """The bank-6 address of a service image symbol: the packer's
+        segment-relative offset in the segment the report names."""
+        entry = [item for item in self.plan()["services"]
+                 if item["name"] == "ipc-%s.zmod" % name][0]
+        report = self.report(name)
+        role = report["symbol_segments"][symbol]
+        base = {"hot": entry["hot_base"], "boot": entry["boot_base"],
+                "io": entry["io_base"] or 0,
+                "bulk": entry["bulk_base"] or 0}[role]
+        return base + report["symbols"][symbol]
+
+    def test_loader_reports_the_packer_plan(self):
+        """Every image's placement line and both ledgers match the plan."""
+        tx = self.transcript()
+        plan = self.plan()
+        for entry in plan["services"]:
+            line = "service %s: hot %04Xh" % (entry["name"],
+                                              entry["hot_base"])
+            if entry["io_base"] is not None:
+                line += " io %04Xh" % entry["io_base"]
+            if entry["boot_base"] is not None:
+                line += " boot %04Xh" % entry["boot_base"]
+            if entry["bulk_base"] is not None:
+                line += " bulk %04Xh" % entry["bulk_base"]
+            self.assertIn(line.encode() + b"\r\n", tx, line)
+        nucleus = plan["nucleus"]
+        self.assertIn(("service hot: %d bytes of %d\r\n"
+                       % (nucleus["service_hot_bytes"],
+                          nucleus["service_hot_capacity_bytes"])).encode(),
+                      tx)
+        self.assertIn(("service boot/bulk: %d bytes of %d\r\n"
+                       % (nucleus["service_boot_bytes"],
+                          nucleus["service_boot_capacity_bytes"])).encode(),
+                      tx)
+        print("ipc %s: six service images placed from the manifest, "
+              "service hot %d/%d, service boot/bulk %d/%d"
+              % (self.image_ident, nucleus["service_hot_bytes"],
+                 nucleus["service_hot_capacity_bytes"],
+                 nucleus["service_boot_bytes"],
+                 nucleus["service_boot_capacity_bytes"]))
+
+    def test_every_boot_segment_ran_exactly_once(self):
+        """Each boot segment recorded one run in its own bank-6 BSS."""
+        z = self.boot()[0]
+        for name in SERVICE_ORDER:
+            runs = self.symbol_address(name, "_ipc_%s_boot_runs" % name)
+            magic = self.symbol_address(name, "_ipc_%s_boot_magic" % name)
+            self.assertEqual(z.banks[6][runs], 1,
+                             "%s boot segment ran %d times"
+                             % (name, z.banks[6][runs]))
+            self.assertEqual(z.banks[6][magic], IPC_BOOT_MAGIC, name)
+        print("ipc %s: six boot segments, each a single execution"
+              % self.image_ident)
+
+    def test_con_slow_buffer_is_outside_the_service_io_range(self):
+        """`con`'s slow buffer sits in the hot tier, not in 8000h-BFFFh."""
+        plan = self.plan()
+        entry = [item for item in plan["services"]
+                 if item["name"] == "ipc-con.zmod"][0]
+        address = entry["hot_base"] + \
+            self.report("con")["symbols"]["_ipc_con_slow_buffer"]
+        self.assertFalse(0x8000 <= address < 0xC000,
+                         "the slow buffer is at %04Xh" % address)
+        self.assertTrue(0x6000 <= address < 0xE000,
+                        "the slow buffer is at %04Xh" % address)
+        print("ipc %s: con slow buffer at %04Xh (hot tier)"
+              % (self.image_ident, address))
 
 
 class TestIpcPlacement(IpcSimBase):

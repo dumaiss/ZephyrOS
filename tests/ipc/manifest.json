@@ -15,6 +15,41 @@
       "name": "ipc.zex",
       "type": "ZEX",
       "path": "ipc.zex"
+    },
+    {
+      "name": "services.man",
+      "type": "DATA",
+      "path": "ipc-modules/services.man"
+    },
+    {
+      "name": "ipc-ioc.zmod",
+      "type": "ZMOD",
+      "path": "ipc-modules/ipc-ioc.zmod"
+    },
+    {
+      "name": "ipc-fat.zmod",
+      "type": "ZMOD",
+      "path": "ipc-modules/ipc-fat.zmod"
+    },
+    {
+      "name": "ipc-vfs.zmod",
+      "type": "ZMOD",
+      "path": "ipc-modules/ipc-vfs.zmod"
+    },
+    {
+      "name": "ipc-echo.zmod",
+      "type": "ZMOD",
+      "path": "ipc-modules/ipc-echo.zmod"
+    },
+    {
+      "name": "ipc-con.zmod",
+      "type": "ZMOD",
+      "path": "ipc-modules/ipc-con.zmod"
+    },
+    {
+      "name": "ipc-irqx.zmod",
+      "type": "ZMOD",
+      "path": "ipc-modules/ipc-irqx.zmod"
     }
   ]
 }

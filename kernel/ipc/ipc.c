@@ -28,9 +28,10 @@
  *     stack and the final RETI; the service handler runs in the owner's
  *     window on the nucleus ISR stack with the restricted API (no IPC).
  *
- * The loader that places service images is not here: it is acceptance
- * code (tests/target/ipc) and reaches bank 6 through the upcall shim and
- * the copy primitives, so no loader stays in the fixed core.
+ * The loader that places service images is not here: it is the cold
+ * nucleus loader (kernel/service/service_loader.c), which reaches bank 6
+ * through the upcall shim and the copy primitives, so no loader stays in
+ * the fixed core.
  *
  * Single-tasking: the call depth, the descriptor table and the frame
  * array are nucleus state, serialised by the syscall gate and the
@@ -678,6 +679,7 @@ static int8_t api_irq_release(uint8_t source)
 }
 
 static const struct ipc_service_api ipc_api = {
+	ZOS_IPC_SERVICE_API_VERSION,
 	api_register_ep,
 	api_lookup,
 	api_call,
@@ -692,8 +694,8 @@ static const struct ipc_service_api ipc_api = {
 };
 
 /* The table a service init entry receives in HL.  The resident loader
- * (acceptance code) reads it here before it hands the pointer to the
- * upcall shim, so the pointer crosses no bank by itself. */
+ * (kernel/service/service_loader.c) reads it here before it hands the
+ * pointer to the upcall shim, so the pointer crosses no bank by itself. */
 const struct ipc_service_api *ipc_service_api(void)
 {
 	return &ipc_api;

@@ -66,7 +66,9 @@ static int16_t ioc_read(struct zos_ipc_frame *frame)
 	return (int16_t)length;
 }
 
-static int16_t ioc_dispatch(struct zos_ipc_frame *frame)
+/* The endpoint dispatch entry the manifest names: a module-global
+ * symbol so the packer can resolve its hot-image offset. */
+int16_t ioc_dispatch(struct zos_ipc_frame *frame)
 {
 	if (frame->op != IPC_OP_IOC_READ) {
 		return -ZOS_EINVAL;
@@ -78,6 +80,4 @@ void ipc_ioc_init(const struct ipc_service_api *table)
 {
 	api = table;
 	ioc_block_address = (uint16_t)ioc_block;
-	(void)table->register_ep(IPC_CLASS_IOC, 0u, (uint16_t)ioc_dispatch,
-				 0u, 1u);
 }

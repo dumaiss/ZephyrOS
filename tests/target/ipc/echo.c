@@ -5,6 +5,12 @@
  * refusal (ECHO_SELF calls its own endpoint from inside its own dispatch)
  * and to expose the descriptor id the nucleus handed the call
  * (ECHO_DESC).
+ *
+ * The image's hot segment carries the dispatch entry and this init entry;
+ * the boot segment (echo_boot.c) records its single bring-up run.  The
+ * resident loader has already registered the declared endpoint when the
+ * init runs, so the init resolves its own handle by class/instance, the
+ * same discovery a peer uses.
  */
 
 #include "zephyros/errno.h"
@@ -15,7 +21,9 @@
 static const struct ipc_service_api *api;
 static uint8_t self_handle;
 
-static int16_t echo_dispatch(struct zos_ipc_frame *frame)
+/* The endpoint dispatch entry the manifest names: a module-global
+ * symbol so the packer can resolve its hot-image offset. */
+int16_t echo_dispatch(struct zos_ipc_frame *frame)
 {
 	switch (frame->op) {
 	case IPC_OP_ECHO_EXCHANGE:
@@ -40,7 +48,5 @@ static int16_t echo_dispatch(struct zos_ipc_frame *frame)
 void ipc_echo_init(const struct ipc_service_api *table)
 {
 	api = table;
-	self_handle = (uint8_t)table->register_ep(IPC_CLASS_ECHO, 0u,
-						  (uint16_t)echo_dispatch,
-						  0u, 1u);
+	self_handle = (uint8_t)table->lookup(IPC_CLASS_ECHO, 0u);
 }

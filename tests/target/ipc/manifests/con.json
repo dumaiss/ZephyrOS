@@ -1,18 +1,50 @@
 {
   "name": "con",
-  "type": "driver",
-  "abi": 3,
+  "type": "service",
+  "abi": 1,
   "flags": 0,
   "objects": [
     "con.rel",
+    "con_slow.rel",
+    "con_boot.rel",
     "sdcc_indirect_calls.rel"
   ],
-  "image_areas": [
-    "_CODE"
-  ],
-  "bss_areas": [
-    "_SERVICE_IO"
-  ],
   "init": "ipc_con_init",
-  "fini": null
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ],
+      "bss_areas": [
+        "_HOT"
+      ]
+    },
+    {
+      "role": "boot",
+      "image_areas": [
+        "_BOOT"
+      ],
+      "bss_areas": [
+        "_BOOT_DATA"
+      ],
+      "entry": "ipc_con_boot"
+    },
+    {
+      "role": "io",
+      "bss_areas": [
+        "_SERVICE_IO"
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 2,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "con_dispatch",
+      "flags": 0
+    }
+  ],
+  "depends": []
 }

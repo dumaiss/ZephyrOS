@@ -148,7 +148,9 @@ static int16_t irqx_copies(struct zos_ipc_frame *frame)
 	return 0;
 }
 
-static int16_t irqx_dispatch(struct zos_ipc_frame *frame)
+/* The endpoint dispatch entry the manifest names: a module-global
+ * symbol so the packer can resolve its hot-image offset. */
+int16_t irqx_dispatch(struct zos_ipc_frame *frame)
 {
 	switch (frame->op) {
 	case IPC_OP_IRQX_COPY:
@@ -168,7 +170,9 @@ void ipc_irqx_init(const struct ipc_service_api *table)
 {
 	api = table;
 	irqx_buffer_address = (uint16_t)irqx_buffer;
-	(void)table->register_ep(IPC_CLASS_IRQX, 0u, (uint16_t)irqx_dispatch,
-				 0u, 1u);
+	/* The endpoint is registered by the resident loader from the image
+	 * metadata; the IRQ claim is the service's own bring-up step, run
+	 * here in the mode-11 window where the fixed core (and so the
+	 * bootstrap interface) is visible. */
 	(void)table->irq_claim(IPC_IRQ_CTC0, (uint16_t)irqx_handler, 0u);
 }
