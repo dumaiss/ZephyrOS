@@ -497,3 +497,133 @@ the geometry and the production image.  The physical gate is
 `make smoke-hardware-m9-exec SERIAL_PORT=/dev/ttyUSB0`, which observed
 `fstest: exec OK`, `fstest: PASS 10/10` and `m9 exec selftest: OK` on the
 bench (2026-10-05; `docs/validation/2026-10-05-m9-nested-exec.md`).
+
+## 12. M10 native IPC (SYS_IPC_LOOKUP, SYS_IPC_CALL)
+
+```text
+06h  SYS_IPC_LOOKUP  args {class:u8, instance:u8, version:u8, reserved:u8}
+                     -> HL = handle (1..N) with version filled,
+                        HL = 0 when no endpoint is registered
+07h  SYS_IPC_CALL    args {handle:u8, op:u8, flags:u8, frame_length:u8,
+                           buffer:u16, length:u16, direction:u8,
+                           reserved:u8, frame:32, status:i16}
+                     -> HL = the IPC status (the same value as `status`)
+```
+
+The resident-service substrate (architecture sections 36.7-36.12) is the
+nucleus mechanism behind these two numbers: services export *endpoints*
+identified by a (class, instance) pair, a client holds an opaque handle
+returned by the lookup, and a call is one bounded 32-byte frame copied in
+at entry and back on reply.  The numbers, the frame layout, the argument
+blocks and the descriptor conventions are pinned in `abi/zos/ipc.h`, which
+static-asserts every offset.
+
+Both blocks live in the caller *window*, `0100h-1FFFh`: the P-normalizing
+gate leaves only that part of the caller's bank visible while the nucleus
+runs, so a block anywhere else (including the caller's own data above
+`2000h`) is refused with carry set and `A = ZOS_EINVAL` before the IPC
+layer is entered.  A program marshals through a low-window scratch; libzos
+exports `zos_scratch` plus its own `zos_ipc_lookup_block`,
+`zos_ipc_call_block` and `zos_ipc_raw_req` (docs/sdk.md).
+
+Result conventions:
+
+- `SYS_IPC_LOOKUP` returns the handle in `HL` with carry clear; `HL = 0`
+  means "not registered" and `args->version` is filled on success.
+  A block outside the window is a carried `ZOS_EINVAL`.
+- `SYS_IPC_CALL` returns the IPC *status* in `HL` with carry clear.  The
+  status is the service's own result (0 or positive), or a negated
+  `ZOS_E*` for an IPC-layer refusal: unknown or stale handle
+  (`ZOS_EINVAL`), forged or released descriptor id (`ZOS_EINVAL`),
+  `offset + length` past the captured descriptor (`ZOS_EINVAL`),
+  re-entrant call into a non-re-entrant endpoint (`ZOS_EBUSY`), nesting
+  deeper than `ZOS_IPC_MAX_NESTING` (`ZOS_ENOSPC`).  The reply frame, the
+  captured descriptor id in `frame.desc` and `status` are written back
+  into the block, so a caller that only reads `status` sees the refusal
+  too.  A carried `ZOS_EINVAL` means the request never reached the IPC
+  layer: block outside the window, `frame_length` 0 or above 32, or a
+  non-zero `reserved` byte.
+- The IPC status is a *protocol* result, not a syscall result: a service
+  returning a negative value is a normal reply, exactly like a diagnostic
+  or filesystem service error, and carry stays clear.
+
+Descriptor convention (one optional caller buffer per call, named by
+`buffer`/`length`/`direction`):
+
+- `direction` is `ZOS_IPC_DESC_IN` (caller supplies, 0) or
+  `ZOS_IPC_DESC_OUT` (caller receives, 1).  A zero `length` means "no
+  buffer" and `frame.desc` is `ZOS_IPC_DESC_NONE` (`FFh`).
+- The nucleus captures the buffer at entry from the gate's saved caller
+  latch (bank and page), bounds-checks it against
+  `ZOS_USER_BUFFER_BASE`/`ZOS_USER_BUFFER_END` (the caller's own bank,
+  `0100h-DFFFh`), the common window (`E000h-FFFFh`, which every mapping
+  shows at the same address) and `ZOS_IPC_DESC_MAX` (4096), and hands the
+  service a small id.  The caller's *raw address is never visible to a
+  service*: services reach the buffer only through the restricted copy
+  calls (`copy_in`/`copy_out`/`move`), and every use re-checks
+  `offset + length` against the captured length.
+- A descriptor id is valid only for calls deeper than its capture level,
+  so a caller's ids stay live down the call chain while a service can
+  never name its own level, another level's id, or a forged one.
+- With a non-zero saved page, a buffer wholly inside the mode-10 aperture
+  (`8000h-BFFFh`) names the far bank `7 - P` (architecture 36.17); a
+  buffer that would cross the aperture boundary is refused at capture.
+
+Copy paths (correction 01 to architecture 36.8).  The nucleus picks the
+mapping per request; every accepted descriptor is copied correctly on all
+three paths, and only the first two are fast:
+
+| Path | Condition | Mechanism |
+|------|-----------|-----------|
+| A | caller buffer in `0000h-1FFFh` or in the common window | one `LDIR` in mode 11 |
+| B | caller buffer in the caller's bank, clear of `8000h-BFFFh`, service buffer in bank 6's `8000h-BFFFh` | one `LDIR` in mode 10 over the caller's bank with page 1: the aperture shows bank 6 at the service's own address. Exact latch restore, interruptible (a delivery inside the window pushes onto a common reservation, and the IRQ gate restores the interrupted mode-10 latch) |
+| C | everything else, including a service buffer outside `8000h-BFFFh` | chunked through the common application-bank copy gate; counted as slow |
+
+Path B's page 1 is nucleus-internal: an application never receives a
+latch for bank 6, and the primitive's request block, saved latch/SP and
+interrupt-push reservation are all common-resident, because mode 10 does
+not map bank 7.  A service that is the source or target of
+`copy_in`/`copy_out` should therefore place its I/O buffer, cache or
+staging block in bank 6's `8000h-BFFFh`; one that does not still works,
+on path C, and the nucleus counts it (the three path counters are read
+out of the image by the acceptance replay).
+
+Nesting and re-entrancy: `ZOS_IPC_MAX_NESTING` is 4 (the outermost call
+plus three nested levels).  An endpoint registered with
+`ZOS_IPC_EP_REENTRANT` may be re-entered; every other endpoint refuses a
+call that arrives while it is active with `ZOS_EBUSY`.  A service executes
+on the fixed service stack (`ZOS_SERVICE_STACK_BASE`, 512 bytes) with the
+service page mapped, so its code, its data and its stack are all fixed or
+bank 6; the nucleus keeps its own stack, the common gate stack and the
+IRQ vectoring.  An IRQ delivered while a call is in progress runs the
+service handler through the restricted API (`ipc_irq_active`; no register,
+lookup, call or copy) on the ISR stack and restores the interrupted latch
+exactly, so the call's frame and mapping survive.
+
+Native programs use the wrappers in `user/sdk/include/zos/ipc.h`:
+`zos_ipc_lookup(class, instance)`, `zos_ipc_lookup_version(...)`,
+`zos_ipc_call(handle, struct zos_ipc_request *)` and the raw
+`zos_ipc_raw_call(struct zos_ipc_call_req *)` the tests drive directly.
+The lookup wrapper caches up to `ZOS_IPC_CACHE_ENTRIES` (8) (class,
+instance, handle) triples, so a repeated discovery costs no syscall; the
+cache is an optimisation only, never a correctness dependency (the kernel
+owns the endpoint table and handles are permanent).
+
+Validation: `make ipc-selftest` builds the production boot path with the
+substrate linked into the fixed core, the six synthetic bank-6 services
+placed by the cold loader and the SDK *probe* program booting as
+`/SYSTEM/ipccopy.zex`.  The probe names five caller-buffer addresses
+(`0100h`, `3000h`, `7000h`, `C000h`, `9000h`) in the chained 512-byte read
+and a single `copy_out`, runs the service-side slow case and a path-B copy
+with the timer armed, then starts the conformance client
+(`/SYSTEM/ipc.zex`) and folds its 55-check verdict into its own line
+(`ipccopy: PASS`).  `tests/test_ipc_selftest_sim.py` replays the boot and
+measures the evidence (per-case T-states and T/byte, the path each case
+took from the resolver's counters, the aperture latch installs and their
+exact restores, the CTC0 delivery taken inside a mode-10 window, the
+domain latch intervals, the reserved-stack high-water marks, the window
+LDIRs and the lookup census); `tests/test_ipc_selftest.py` pins the ABI
+numbers, the residency classification, the client- and probe-window
+layouts and the service I/O area rule.  The production image links none of
+it until package 41, so it stays byte-identical
+(`config/residency.json` classifies the three objects as `test_link`).

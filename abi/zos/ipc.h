@@ -1,0 +1,168 @@
+/* ZephyrOS native IPC syscall interface (public native ABI, M10 stage 3).
+ *
+ * The IPC substrate is the nucleus mechanism behind architecture sections
+ * 36.7-36.9: services export endpoints, clients hold opaque handles, and a
+ * call is one bounded 32-byte frame copied in at entry and back on reply.
+ * Large payloads move through nucleus-issued buffer descriptors, never
+ * through caller addresses: the ABI has no raw cross-domain pointer.
+ *
+ * Argument-block placement: both blocks live in the caller *window*,
+ * 0100h-1FFFh (ZOS_USER_BUFFER_BASE .. ZOS_SYSCALL_WINDOW_END).  The
+ * P-normalizing gate (kernel/syscall/entry.asm) leaves only that part of
+ * the caller's bank visible while the nucleus runs, so a block anywhere
+ * else is refused with carry set and A = ZOS_EINVAL before the IPC layer
+ * is entered.  A caller therefore marshals through a low-window scratch:
+ * libzos exports `zos_scratch` (shared, 16 bytes, pinned by the program
+ * manifest) and its own `zos_ipc_lookup_block` / `zos_ipc_call_block` /
+ * `zos_ipc_raw_req` for the two IPC numbers (docs/sdk.md).
+ *
+ * Native syscalls (docs/abi.md section 12):
+ *
+ *   RST 30h, A = ZOS_SYSCALL_IPC_LOOKUP, HL = &struct zos_ipc_lookup_args
+ *       carry clear: HL = handle (1..N), args->version filled; HL = 0
+ *       means no endpoint is registered for that (class, instance).
+ *       carry set:  A = ZOS_EINVAL, the block is not in the caller window.
+ *
+ *   RST 30h, A = ZOS_SYSCALL_IPC_CALL, HL = &struct zos_ipc_call_args
+ *       carry clear: the call was dispatched (or refused by the IPC
+ *       layer); HL = the IPC status: 0 or positive from the service,
+ *       negative -ZOS_E* for a refusal (unknown handle or descriptor,
+ *       forged descriptor id, copy bounds, nesting depth, re-entrancy).
+ *       The reply frame and the status are written back into the block.
+ *       carry set:  A = ZOS_EINVAL, the request never reached the IPC
+ *       layer (block outside the caller window, bad frame length, bad
+ *       reserved byte).
+ *
+ * Descriptor convention: one optional caller buffer per call, named by
+ * `buffer`/`length`/`direction` in the call block.  The nucleus captures
+ * it at entry from the caller's saved execution latch (bank and page) as
+ * a small id, hands the id to the service in the frame's `desc` field,
+ * and refuses (ZOS_EINVAL) any address outside the caller buffer window
+ * 0100h-DFFFh (the caller's own bank) plus the common window
+ * E000h-FFFFh, which every mapping shows at the same address, or any
+ * length above ZOS_IPC_DESC_MAX.  Services reach the buffer only through
+ * the nucleus copies, with bounds checked on every use:
+ *
+ *   copy_in (id, offset, service_buffer, length)   caller -> service
+ *   copy_out(id, offset, service_buffer, length)   service -> caller
+ *
+ * `offset + length` may never exceed the captured descriptor length.
+ * A caller address in 8000h-BFFFh with a nonzero saved page names the
+ * far bank shown by the mode-10 aperture (architecture 36.17); the copy
+ * resolvers use the resolved bank, not the primary one.
+ *
+ * Copy paths (correction 01 to architecture 36.8).  Which mapping moves
+ * the bytes is picked per request, and all three paths are correct for
+ * every accepted descriptor; only the first two are fast:
+ *
+ *   A  the caller buffer is in 0000h-1FFFh (the caller window mode 11
+ *      shows) or in the common window: one LDIR in the service mapping.
+ *   B  the caller buffer is in the caller's bank clear of 8000h-BFFFh
+ *      and the service buffer lies in bank 6's 8000h-BFFFh: one LDIR
+ *      with mode 10 selected over the caller's bank and page 1, so the
+ *      aperture shows bank 6 at the address the service named.  The
+ *      primitive restores the latch exactly and is interruptible; page 1
+ *      is nucleus-internal and never appears in a caller's latch.
+ *   C  everything else, including a service buffer outside
+ *      8000h-BFFFh: chunked through the nucleus's application-bank copy
+ *      gate, and counted as slow.
+ *
+ * A service buffer that is the source or target of copy_in/copy_out
+ * therefore belongs in bank 6's 8000h-BFFFh: that is the one bank-6
+ * range the mode-11 window and the mode-10 aperture both show at the
+ * same address.  A service that places one elsewhere still works, on
+ * path C.
+ *
+ * The frame is fixed at 32 bytes and is the only request/reply envelope:
+ * 8-byte header plus 24 payload bytes.  Operation numbers, flags and
+ * payload encodings belong to the versioned service protocols, never to
+ * this header.
+ */
+
+#ifndef ZOS_IPC_H
+#define ZOS_IPC_H
+
+#include "zos/types.h"
+
+/* Native syscall numbers (M10 stage 3, pinned). */
+#define ZOS_SYSCALL_IPC_LOOKUP 0x06u
+#define ZOS_SYSCALL_IPC_CALL   0x07u
+
+/* The request/reply frame: fixed size, copied at every crossing. */
+#define ZOS_IPC_FRAME_SIZE   32u
+#define ZOS_IPC_PAYLOAD_SIZE 24u
+
+/* Nesting limit: calls deep (application -> VFS -> IOC-FAT -> IOC and the
+ * loader's upcall chain).  A deeper call is refused with ZOS_ENOSPC. */
+#define ZOS_IPC_MAX_NESTING 4u
+
+/* Descriptor ids are small integers assigned by the nucleus; the frame
+ * carries ZOS_IPC_DESC_NONE when the call named no buffer. */
+#define ZOS_IPC_DESC_NONE 0xFFu
+
+/* Largest caller buffer the nucleus captures (one bounded cluster). */
+#define ZOS_IPC_DESC_MAX 4096u
+
+/* Buffer descriptor directions. */
+#define ZOS_IPC_DESC_IN  0u /* caller writes, service reads (copy_in)  */
+#define ZOS_IPC_DESC_OUT 1u /* service writes, caller reads (copy_out) */
+
+/* Endpoint registration flags (service bootstrap interface). */
+#define ZOS_IPC_EP_REENTRANT 0x01u /* a call into an active endpoint runs */
+
+struct zos_ipc_frame {
+	uint8_t op;                        /* protocol operation number  */
+	uint8_t flags;                     /* protocol flags             */
+	uint8_t desc;                      /* nucleus descriptor id      */
+	uint8_t arg0;                      /* protocol word 0            */
+	uint16_t arg1;                     /* protocol word 1            */
+	uint8_t payload[ZOS_IPC_PAYLOAD_SIZE]; /* inline payload words   */
+	int16_t status;                    /* call status, filled by the nucleus */
+};
+
+/* 06h LOOKUP {class, instance, version}: `version` is filled from the
+ * registered endpoint; the handle is returned in HL. */
+struct zos_ipc_lookup_args {
+	uint8_t class;
+	uint8_t instance;
+	uint8_t version;
+	uint8_t reserved;
+};
+
+/* 07h CALL {handle, op, flags, frame_length, buffer, length, direction,
+ * reserved, frame, status}.  `frame_length` is the protocol frame size
+ * (1..32); `buffer`/`length`/`direction` name the one optional caller
+ * buffer (length 0 means no descriptor and `buffer` is ignored), and
+ * `reserved` must be zero.  The service's reply frame and status land
+ * back in the block. */
+struct zos_ipc_call_args {
+	uint8_t handle;
+	uint8_t op;
+	uint8_t flags;
+	uint8_t frame_length;
+	uint16_t buffer;
+	uint16_t length;
+	uint8_t direction;
+	uint8_t reserved;
+	struct zos_ipc_frame frame;
+	int16_t status;
+};
+
+#if defined(__SDCC)
+_Static_assert(sizeof(struct zos_ipc_frame) == ZOS_IPC_FRAME_SIZE,
+	       "the IPC frame is fixed at 32 bytes");
+_Static_assert(__builtin_offsetof(struct zos_ipc_frame, payload) == 6,
+	       "IPC frame payload must follow the header words");
+_Static_assert(__builtin_offsetof(struct zos_ipc_frame, status) == 30,
+	       "IPC frame status must be the last field");
+_Static_assert(sizeof(struct zos_ipc_lookup_args) == 4,
+	       "IPC lookup argument block must be 4 packed bytes");
+_Static_assert(sizeof(struct zos_ipc_call_args) == 44,
+	       "IPC call argument block must be 44 packed bytes");
+_Static_assert(__builtin_offsetof(struct zos_ipc_call_args, frame) == 10,
+	       "IPC call frame offset");
+_Static_assert(__builtin_offsetof(struct zos_ipc_call_args, status) == 42,
+	       "IPC call status offset");
+#endif
+
+#endif /* ZOS_IPC_H */

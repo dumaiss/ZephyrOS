@@ -222,6 +222,26 @@
       "tier": "moves",
       "stage": 5,
       "reason": "VFS core: per-process workspace data moves to the VFS service in bank 6"
+    },
+    {
+      "object": "ipc",
+      "tier": "fixed-required",
+      "reason": "M10 stage 3 IPC substrate (architecture 36.5, 36.7-36.10): the endpoint table, register/lookup/call, the frame array, the descriptor table and the copy resolvers execute, and are touched, while the window shows bank 6, so they must link inside 2000h-5FFFh.  Linked by the ipc-selftest acceptance image now (test_link); production adopts it in package 41, when the arena drivers leave bank 7."
+    },
+    {
+      "object": "ipc_asm",
+      "tier": "fixed-required",
+      "reason": "M10 stage 3 fixed-core IPC primitives (kernel/ipc/ipc_asm.asm): the latch save/select/restore, the window LDIR and the service-stack switch, plus the ABS declaration of the 512-byte service stack at ZOS_SERVICE_STACK_BASE.  Same stage as `ipc`: test images only until package 41."
+    },
+    {
+      "object": "ipc_common",
+      "tier": "fixed-required",
+      "reason": "M10 stage 3 common-resident aperture copy (kernel/ipc/ipc_common.asm, work package 39 correction 01): the path-B primitive runs with mode 10 and page 1 in force, where bank 7 is not mapped, so its code, its request block, its saved latch/SP and its interrupt-push stack must all be common.  It is the only code the fixed-core reservoir of ZOS_COMMON_M10_RESERVATION was held back for.  Same stage as `ipc`: test images only until package 41."
+    },
+    {
+      "object": "ipc_syscall",
+      "tier": "cold",
+      "reason": "M10 stage 3 IPC syscall bodies (SYS_IPC_LOOKUP / SYS_IPC_CALL, kernel/syscall/ipc.c): reached only through the P-normalizing syscall gate, so they run with the window showing bank 7.  Only the ipc-selftest image links them until package 41."
     }
   ],
   "cold_half": [
@@ -239,5 +259,12 @@
     "vfs_mounts",
     "vfs_mutate"
   ],
-  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): every cold object, plus the console and the two smallest service-destined VFS objects, which is what the driver arena (the declared boot set, 33 granules) leaves in the cold half.  The remaining service-destined objects overflow into the fixed core's leftover space; the fixed ledger reports them as overflow.  `arena` is absent on purpose: it carries only absolute bound labels (no linked bytes) and depends on the generated geometry include, which the cold codegen flag cannot be allowed to reach (target-specific variables are inherited by prerequisites).  Acceptance images additionally compile their target-test objects cold, so test code consumes the arena's slack, never the fixed core."
+  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): every cold object, plus the console and the two smallest service-destined VFS objects, which is what the driver arena (the declared boot set, 33 granules) leaves in the cold half.  The remaining service-destined objects overflow into the fixed core's leftover space; the fixed ledger reports them as overflow.  `arena` is absent on purpose: it carries only absolute bound labels (no linked bytes) and depends on the generated geometry include, which the cold codegen flag cannot be allowed to reach (target-specific variables are inherited by prerequisites).  Acceptance images additionally compile their target-test objects cold, so test code consumes the arena's slack, never the fixed core.",
+  "test_link": [
+    "ipc",
+    "ipc_asm",
+    "ipc_common",
+    "ipc_syscall"
+  ],
+  "test_link_note": "Objects the production linker script (linker/zephyr80.lk) does not list yet: only the ipc-selftest acceptance image links them (work package 39, M10 stage 3). They are classified above exactly as production will link them in package 41, and tools/mapcheck.py enforces that placement whenever their object files are present, so the acceptance image is held to the production rule. Production remains byte-identical because its link does not change."
 }

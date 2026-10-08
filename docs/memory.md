@@ -40,12 +40,12 @@ E000h +-------------------------------+
 | `0100h-1FFFh` | caller window | unused (FF-filled in the image); at M1, native syscall argument blocks must lie here |
 | `2000h-fixed code end` | bank 7 in mode 11 | **fixed core**: loadable nucleus code (`_CODE`, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`) that must stay reachable whatever the window shows; ends at the derived fixed code end (`ZOS_FIXED_CODE_END`) |
 | `fixed code end-5D00h` | bank 7 in mode 11 | fixed-core zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded; the base is derived per image (`align_down(ZOS_SERVICE_STACK_BASE - data size, 512)`) so the area ends directly below the stacks |
-| `5D00h-5EFFh` | bank 7 in mode 11 | 512-byte **service stack** (architecture 36.9); reserved now, used by the IPC substrate from stage 3. Grows down from `ZOS_SERVICE_STACK_TOP` |
+| `5D00h-5EFFh` | bank 7 in mode 11 | 512-byte **service stack** (architecture 36.9); the IPC substrate switches to it for every service call (stage 3).  It is a fixed assembly reservation, exported as the ABS symbol `zos_service_stack`/`_top` (`kernel/ipc/ipc_asm.asm`), so no ordinary allocation can enter it.  The acceptance replay measures its high-water mark: 256 of 512 bytes in the package-39 correction-01 image.  Grows down from `ZOS_SERVICE_STACK_TOP` |
 | `5F00h-5FFFh` | bank 7 in mode 11 | 256-byte **ISR stack** (`_IRQ_ISR_STACK`); the IRQ gate switches to it in `irq_common_entry` |
 | `6000h-cold code end` | bank 7 while the window shows bank 7 (P = 0) | **cold half**: nucleus code that only ever runs with the window on bank 7 (syscall dispatcher and bodies, boot/idle, process management, loader, device registry, FS front end); ends at the derived `ZOS_KERNEL_CODE_END` |
 | `cold code end-cold data base` | bank 7 while P = 0 | driver arena, derived from the aligned cold code end `__driver_arena_start` to the derived cold data base; its granule count is whatever the cold half leaves (there is no floor - the declared boot set must fit, and `tools/zmodpack.py plan` / `tools/pack_image.py` enforce that). Never part of the ROM payload and never linked by content |
 | `cold data base-E000h` | bank 7 while P = 0 | cold-half zero-initialized runtime area (`_WINDOW_DATA`), never ROM-loaded; the base is derived per image (`align_down(ZOS_BANK7_RUNTIME_END - data size, 512)`) |
-| `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`), including the M5 ROM-access staging buffer and the package-28 exec continuation state; `EEFEh-EF07h` is the fixed ROM-access transition block (trampoline + mirrored stub) |
+| `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`), including the M5 ROM-access staging buffer, the package-28 exec continuation state and the package-39 correction-01 aperture copy primitive (`ipc_common.asm`: the mode-10 stub, its request block, its saved latch/SP and its 4-byte interrupt-push reservation); `EEFEh-EF07h` is the fixed ROM-access transition block (trampoline + mirrored stub) |
 | `FD00h-FDFFh` | physical bank 0 | 256-byte-aligned IM2 vector page (`I=FDh`) |
 | `FE00h` | physical bank 0 | vector-`FFh` guard byte |
 | `FE01h-FE7Fh` | physical bank 0 | common IRQ transition state |
@@ -322,7 +322,14 @@ The `common:` figures are the pinned common-memory budget (work package
 30c, from the 30b audit): `ceiling` is `ZOS_COMMON_CEILING` (3072) and
 `m10` is `ZOS_COMMON_M10_RESERVATION` (512), held back for M10's far-call
 gate and per-process far state; `limit` is `ceiling - m10` (2560) and
-`used` may not exceed it.  `mapcheck.py` and the packer both fail the
+`used` may not exceed it.  The first M10 tenant of that reservation is the
+correction-01 aperture copy primitive: 44 bytes of common code and 14
+bytes of common data (the request block, the saved latch and SP, and the
+4-byte reservation an interrupt taken inside its mode-10 window pushes
+onto).  It is common and not fixed-core because mode 10 does not map bank
+7: the stub's instructions, every byte it reads or pushes, and the
+interrupt entry that may run inside its window all have to be permanently
+mapped.  `mapcheck.py` and the packer both fail the
 build over the limit, and neither value may be raised to make a package
 fit (target architecture section 2.18).  Common memory is the scarcest
 region: package 28 added 167 bytes of continuation state and correction-01
@@ -660,6 +667,22 @@ in `2000h-DFFFh` would disappear when the mode changes.
   layout and validation suites.  `tests/test_source_layout.py` — constant
   parity (hardware, syscall-gate and IRQ-executive header pairs), the
   single test seam, the owner layout, and the Mn-1 retention window.
+- `tools/mapcheck.py`'s residency model also carries the `test_link` list
+  (work package 39): objects the production linker script does not list
+  yet, whose placement is nevertheless enforced exactly as production will
+  compile them in package 41.  A test-linked `cold` object is expected in
+  the cold areas; a test-linked `fixed-required` object is held below
+  `ZOS_REV13_WINDOW_BASE` like any other.  `cold_half` may not name a
+  `fixed-required` object, because the list drives the image's cold
+  codegen flags.
+- `tests/test_ipc_selftest.py` / `tests/test_ipc_selftest_sim.py` — the
+  IPC substrate acceptance image: the pinned ABI, the residency
+  classification and the client's caller-window layout on the host, and a
+  replay that measures per-call T-states, the domain latch intervals (every
+  one closed on the latch it found, with the caller's latch restored at the
+  gate), the two CTC0 deliveries into the service domain, the reserved
+  stack high-water marks (service `5E08h`, ISR `5FF4h`, gate `E5FAh`), the
+  window LDIRs and the lookup census.
 - `tests/test_subsys_sim.py` — boot of the subsystem acceptance image on
   the current path: the syscall gate and interrupt-executive groups (with
   injected CTC0 deliveries), the ROMFS reader, the process/ZEX lifecycle

@@ -293,6 +293,54 @@ boundary: `zex_diag_mem_read`, `zex_diag_mem_write`, `zex_diag_io_in`,
 `zex_diag_io_out`, `zex_diag_bank_info`, `zex_diag_system_info`, with
 their packed request blocks declared in `abi/zos/diag.h`.
 
+`zos/ipc.h` (gate stub: `ipcgate.asm`, wrappers in `ipc.c`) is the M10
+resident-service client:
+
+```c
+#define ZOS_IPC_CACHE_ENTRIES 8
+struct zos_ipc_request {
+	struct zos_ipc_frame frame;      /* 32 bytes, abi/zos/ipc.h    */
+	void *buffer;                    /* captured descriptor buffer */
+	unsigned int length;
+	unsigned char direction;         /* ZOS_IPC_DESC_IN / _OUT     */
+};
+int  zos_ipc_lookup(unsigned char class, unsigned char instance);
+int  zos_ipc_lookup_version(unsigned char class, unsigned char instance,
+			    unsigned char *version);
+int  zos_ipc_call(unsigned char handle, struct zos_ipc_request *req);
+struct zos_ipc_call_req {            /* the raw pair, tests only     */
+	unsigned char number; void *block; unsigned char error;
+};
+int  zos_ipc_raw_call(struct zos_ipc_call_req *req);
+```
+
+`zos_ipc_call` marshals the request into the exported block
+`zos_ipc_call_block` and returns the IPC *status*: the service's own
+result, or a negated `ZOS_E*` for an IPC-layer refusal (unknown handle,
+forged descriptor, out-of-bounds copy, re-entrancy, nesting).  A
+*structural* refusal (block outside the window, bad frame length or
+reserved byte) is carried in `error` and mapped to `-errno`, so a service
+error is never confused with a malformed request.  `zos_ipc_lookup`
+answers from a small (class, instance, handle) cache before it calls
+`zos_ipc_lookup_version`, which always goes to the nucleus.
+
+A call's optional buffer lives in the caller buffer window: the caller's
+own bank `0100h-DFFFh`, or the common window `E000h-FFFFh`, which every
+mapping shows at the same address.  The nucleus copies it on whichever of
+the three paths (A, B, C; `docs/abi.md` section 12) the buffer's location
+selects, so a client never has to think about where its data is - only a
+*service* has a placement rule (its own I/O buffers belong in bank 6's
+`8000h-BFFFh`; `docs/abi.md` section 12).
+
+Like every other wrapper, the IPC pair marshals through an argument block
+inside the caller window: `zos_ipc_lookup_block` (4 bytes),
+`zos_ipc_call_block` (44) and `zos_ipc_raw_req` (4) are exported so a
+program's own acceptance check can prove their placement.  They are
+ordinary statics of the program that links `ipc.c`, so the window rule is
+a property of the program's whole image+BSS: with today's SDK and a
+512-byte payload buffer the client's data ends at `1FBEh`, 66 bytes below
+`2000h`.  `docs/abi.md` section 12 states the ABI rule.
+
 ## 7. Memory layout
 
 ```text
@@ -303,8 +351,9 @@ their packed request blocks declared in `abi/zos/diag.h`.
                       own statics
                       stack: 256 bytes below the stack top E000h (the
                       ZEX header's stack_size; the kernel reserves it)
-0100h-1FFFh           syscall argument window: the shared scratch must
-                      live entirely inside it
+0100h-1FFFh           syscall argument window: the shared scratch and
+                      every libzos marshalling block (the FS block, the
+                      IPC lookup/call blocks) must live entirely inside it
 ```
 
 The rule links `crt0.rel` and `runtime.rel` **explicitly, first**, before
@@ -316,8 +365,13 @@ scratch inside the window.  Omitting `-b _DATA` lets the linker place
 it.
 
 A program linked with `NO_CRT0=1` gets none of this: it owns its entry
-(`ENTRY=`), declares `SCRATCH=` and is used only for the raw-return
-acceptance child.
+(`ENTRY=`), declares `SCRATCH=` and is used for the raw-return acceptance child
+and for the IPC caller-buffer probe.  The probe additionally lifts
+its own code above the low window with `CODEBASE=` (the rule's
+default is `0x0100`), which leaves `0100h-02FFh` as a plain
+512-byte buffer: it is the only way a ZEX can name the caller
+window itself as a copy destination, and the only program in the
+tree that links that way.
 
 ## 8. Which member pulls in what
 

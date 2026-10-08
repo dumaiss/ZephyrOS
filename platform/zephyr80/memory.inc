@@ -45,6 +45,14 @@ ZOS_SERVICE_STACK_BASE  = 0x5D00
 ZOS_SERVICE_STACK_TOP   = 0x5F00
 ZOS_SERVICE_STACK_SIZE  = 0x0200
 
+; Aperture-copy stack reservation (work package 39, correction 01).  The
+; path-B copy primitive runs its LDIR with the service stack unmapped -
+; mode 10 over the caller's bank does not show bank 7 - so it moves SP
+; into common memory for the length of the window.  An interrupt taken in
+; the window pushes its return address, and the CTC stub its AF, below
+; this top; nothing else may use the reservation.
+ZOS_IPC_APERTURE_STACK_SIZE = 4
+
 ; Driver arena.  There is one geometry: the two-pass build derives the
 ; arena start from the granule-aligned end of the linked window code and
 ; the arena end from the window-data size, exporting __kernel_code_end /

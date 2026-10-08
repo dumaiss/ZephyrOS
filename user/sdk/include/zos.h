@@ -11,6 +11,7 @@
 
 #include "zos/console.h"
 #include "zos/fs.h"
+#include "zos/ipc.h"
 #include "zos/process.h"
 #include "zos/diag.h"
 #include "zlibc/string.h"

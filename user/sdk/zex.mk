@@ -40,23 +40,27 @@ ZEX_CFLAGS  := -mz80 -c --nostdinc --Werror -I abi -I $(ZOS_SDK_INCLUDE)
 ZEX_HEADERS := $(wildcard abi/zos/*.h) $(wildcard $(ZOS_SDK_INCLUDE)/*.h)
 ZEX_ASFLAGS := -Iabi
 
-ZOS_SDK_C_SRC := args.c fs.c exec.c console_io.c \
+ZOS_SDK_C_SRC := args.c fs.c ipc.c exec.c console_io.c \
     zlibc/strlen.c zlibc/strcmp.c zlibc/strncmp.c zlibc/strchr.c \
     zlibc/strrchr.c zlibc/memcpy.c zlibc/memmove.c zlibc/memset.c \
     zlibc/memcmp.c zlibc/strlcpy.c zlibc/strlcat.c \
     zlibc/utoa.c zlibc/ultoa.c zlibc/itoa.c zlibc/ltoa.c \
     zlibc/printf.c zlibc/sdcc_arith.c zlibc/sdcc_arith_signed.c
-ZOS_SDK_ASM_SRC := console.asm fsgate.asm diaggate.asm \
+ZOS_SDK_ASM_SRC := console.asm fsgate.asm ipcgate.asm diaggate.asm \
     zlibc/sdcc_arith_entries.asm zlibc/sdcc_arith_signed_entries.asm
 
 ZOS_SDK_C_OBJS   := $(addprefix $(ZEX_SDK_BUILD)/,$(patsubst %.c,%.rel,$(ZOS_SDK_C_SRC)))
 ZOS_SDK_ASM_OBJS := $(addprefix $(ZEX_SDK_BUILD)/,$(patsubst %.asm,%.rel,$(ZOS_SDK_ASM_SRC)))
 
-$(ZEX_SDK_BUILD)/%.rel: $(ZOS_SDK_SRC)/%.c
+# The installed headers are prerequisites: a change to an ABI or SDK
+# header (a struct layout, an inline constant such as the lookup cache
+# depth) must rebuild the archive members, or every program would keep
+# linking the previous layout.
+$(ZEX_SDK_BUILD)/%.rel: $(ZOS_SDK_SRC)/%.c $(ZEX_HEADERS)
 	@mkdir -p $(dir $@)
 	$(SDCC) $(ZEX_CFLAGS) -c $< -o $@
 
-$(ZEX_SDK_BUILD)/%.rel: $(ZOS_SDK_SRC)/%.asm
+$(ZEX_SDK_BUILD)/%.rel: $(ZOS_SDK_SRC)/%.asm $(ZEX_HEADERS)
 	@mkdir -p $(dir $@)
 	$(SDASZ80) $(ZEX_ASFLAGS) -o $@ $<
 
@@ -94,6 +98,11 @@ $(1)_STACK  := $$(if $$(filter STACK=%,$$($(1)_OPTS)),$$(patsubst STACK=%,%,$$(f
 $(1)_SCRATCH:= $$(if $$(filter SCRATCH=%,$$($(1)_OPTS)),$$(patsubst SCRATCH=%,%,$$(filter SCRATCH=%,$$($(1)_OPTS))),zos_scratch:16)
 $(1)_SCRATCHARG := $$(if $$($(1)_SCRATCH), --scratch $$($(1)_SCRATCH),)
 $(1)_ENTRY  := $$(if $$(filter ENTRY=%,$$($(1)_OPTS)),$$(patsubst ENTRY=%,%,$$(filter ENTRY=%,$$($(1)_OPTS))),zos_entry)
+# Link base of the program's _CODE area.  The ZEX loader always loads the
+# image at its fixed base; a program that leaves the low part of its window
+# as a plain data buffer for the caller-address tests links its code above
+# it instead (work package 39 correction 01).
+$(1)_CODEBASE := $$(if $$(filter CODEBASE=%,$$($(1)_OPTS)),$$(patsubst CODEBASE=%,%,$$(filter CODEBASE=%,$$($(1)_OPTS))),0x0100)
 $(1)_NOCRT0 := $$(if $$(filter NO_CRT0=1,$$($(1)_OPTS)),1,)
 $(1)_STAGE  := $$(if $$(filter STAGE=1,$$($(1)_OPTS)),1,)
 $(1)_INC    := $$(if $$(filter INCLUDES=%,$$($(1)_OPTS)),$$(patsubst INCLUDES=%,%,$$(filter INCLUDES=%,$$($(1)_OPTS))),)
@@ -115,7 +124,7 @@ $$($(1)_OBJDIR)/$(1).lk: $$($(1)_LINKOBJS) $$(ZEX_LIBZOS) $(ZOS_SDK_ROOT)/zex.mk
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
 	  printf '%s\n' '-i $$($(1)_OBJDIR)/$(1).ihx'; \
-	  printf '%s\n' '-b _CODE = 0x0100'; \
+	  printf '%s\n' '-b _CODE = $$($(1)_CODEBASE)'; \
 	  printf '%s\n' $$($(1)_LINKOBJS); \
 	  printf '%s\n' '-l $$(ZEX_LIBZOS)'; \
 	  printf '%s\n' '-e'; \

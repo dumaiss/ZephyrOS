@@ -1,0 +1,46 @@
+/* ZephyrOS IPC acceptance: the `echo` synthetic service (test artifact).
+ *
+ * The null call: the cheapest possible protocol on the IPC substrate, used
+ * to measure the raw crossing and dispatch cost, to prove re-entrancy
+ * refusal (ECHO_SELF calls its own endpoint from inside its own dispatch)
+ * and to expose the descriptor id the nucleus handed the call
+ * (ECHO_DESC).
+ */
+
+#include "zephyros/errno.h"
+#include "zephyros/ipc.h"
+
+#include "ipc_test.h"
+
+static const struct ipc_service_api *api;
+static uint8_t self_handle;
+
+static int16_t echo_dispatch(struct zos_ipc_frame *frame)
+{
+	switch (frame->op) {
+	case IPC_OP_ECHO_EXCHANGE:
+		frame->payload[1] = frame->payload[0];
+		return (int16_t)((uint16_t)frame->payload[0] + 1u);
+	case IPC_OP_ECHO_NULL:
+		return (int16_t)ZOS_IPC_FRAME_SIZE;
+	case IPC_OP_ECHO_SELF: {
+		struct zos_ipc_frame inner = *frame;
+
+		/* The endpoint is active: the nucleus must refuse this with
+		 * -ZOS_EBUSY because echo declares no re-entrancy. */
+		return api->call(self_handle, IPC_OP_ECHO_NULL, &inner);
+	}
+	case IPC_OP_ECHO_DESC:
+		return (int16_t)frame->desc;
+	default:
+		return -ZOS_EINVAL;
+	}
+}
+
+void ipc_echo_init(const struct ipc_service_api *table)
+{
+	api = table;
+	self_handle = (uint8_t)table->register_ep(IPC_CLASS_ECHO, 0u,
+						  (uint16_t)echo_dispatch,
+						  0u, 1u);
+}

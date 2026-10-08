@@ -72,6 +72,11 @@ extern int kernel_load_vfs_module(const char *name);
 #if ZOS_NUCLEUS_SELFTEST
 #include "nucleus_selftest.h"
 #endif
+#if ZOS_IPC_SELFTEST
+#include "ipc_selftest.h"
+#include "zos/ipc.h"
+#include "kernel/syscall/ipc.h"
+#endif
 
 /* Boot-time acceptance modules, called between the production boot set and
  * the normal mount pass.  Only an image that needs extra resident providers
@@ -149,4 +154,28 @@ void zos_target_test_late(void)
 #if ZOS_M9_SELFTEST
 	zos_run_m9_selftest();
 #endif
+#if ZOS_IPC_SELFTEST
+	/* The six synthetic resident services must be in bank 6 before the
+	 * boot launcher starts the client program (/SYSTEM/ipc.zex). */
+	(void)zos_ipc_services_load();
+#endif
+}
+
+/* TEST-ONLY HOOK: routes acceptance-only syscall numbers to their bodies.
+ * Production links neither these bodies nor this hook; package 41 moves
+ * the two native IPC numbers into the dispatcher switch proper
+ * (work package 39 requirement 6).  Returns non-zero when handled. */
+uint8_t zos_target_test_syscall(uint8_t number, uint8_t bank, uint16_t block)
+{
+#if ZOS_IPC_SELFTEST
+	if (number == ZOS_SYSCALL_IPC_LOOKUP || number == ZOS_SYSCALL_IPC_CALL) {
+		zos_ipc_dispatch(number, bank, block);
+		return 1u;
+	}
+#else
+	(void)number;
+	(void)bank;
+	(void)block;
+#endif
+	return 0u;
 }

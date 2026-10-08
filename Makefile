@@ -33,7 +33,7 @@
 #   make m9-fs-selftest       M9 filesystem syscall acceptance image
 #   make m9-exec-selftest     M9 SYS_EXEC nesting acceptance image
 #   make m9-iocfat-selftest   M9 IOC-FAT provider acceptance image
-#   make rsvc-spike-selftest  resident-service spike image (revision 13)
+#   make ipc-selftest        resident-service IPC acceptance image
 #   make clean    remove all generated files
 #
 # Builds are parallel by default (ZOS_JOBS defaults to nproc); use
@@ -104,13 +104,12 @@ END_OBJ   := $(BUILD)/irq_code_end.rel
 # OBJS is assigned after the acceptance/catalog selection below, once
 # every conditional object append has been decided.
 
-# --- resident-service spike selection ----------------------------------
-# ZOS_RSVC_SPIKE=1 (work package 35) is the resident-service evaluation:
-# decoder revision 13 at the 6000h split (the 32 KiB mode-11 window with
-# the 16 KiB fixed core at 2000h-5FFFh), plus the IPC substrate and the
-# bank-6 resident services.  It is the only window build; production and
-# every other acceptance image run with the flag unset.
-ZOS_RSVC_SPIKE      ?= 0
+# --- resident-service IPC selection -------------------------------------
+# The M10 resident-service nucleus is the only memory model: revision 13
+# at the 6000h split (the 32 KiB mode-11 window with the 16 KiB fixed core
+# at 2000h-5FFFh).  ZOS_IPC_SELFTEST builds the IPC acceptance image that
+# links the fixed-core substrate of work package 39.
+ZOS_IPC_SELFTEST    ?= 0
 # The revision-13 mode-11 window is 6000h-DFFFh (architecture section
 # 36.2); the fixed core is 2000h-5FFFh.  Every image links that way.
 ZOS_REV13_WINDOW_BASE := 0x6000
@@ -418,28 +417,34 @@ ZOS_V9958_BOOT  := 0
 ZOS_IOCFAT_BOOT := 0
 endif
 
-# Resident-service spike image (work package 35): the window split, the
-# nucleus IPC substrate, the six bank-6 resident service containers and
-# the client program.  Transport A on decoder revision 13, the 6000h
-# split (architecture section 36.2).
-ifeq ($(ZOS_RSVC_SPIKE),1)
-CFLAGS    += -DZOS_RSVC_SPIKE=1 -Itests/target/include
+# IPC substrate acceptance image (work package 39, M10 stage 3).  The
+# production boot path with the fixed-core IPC substrate linked in, the
+# six synthetic bank-6 services placed by the acceptance loader
+# (tests/target/ipc) and the SDK client program booting as
+# /SYSTEM/ipc.zex.  The substrate is fixed-required (config/residency.json);
+# the stage-4/5 `moves` objects compile cold here because the SIO-only
+# boot set leaves the cold half nearly empty, which is the placement
+# freedom architecture 36.20 gives those objects.
+IPC_DIR   := tests/target/ipc
+# The stage-4/5 `moves` objects compile cold in this image (see above).
+# Defined unconditionally so the ipc-selftest target below can repeat the
+# list for the ledger run, where the image's own build directory is the
+# only thing under test.
+IPC_COLD_EXTRA := romfs_provider vfs_dir vfs_file vfs_mount vfs_path \
+	vfs_process vfs_workspace
+IPC_COLD_EXTRA_CSV := romfs_provider,vfs_dir,vfs_file,vfs_mount,vfs_path,vfs_process,vfs_workspace
+
+ifeq ($(ZOS_IPC_SELFTEST),1)
+CFLAGS    += -DZOS_IPC_SELFTEST=1 -Itests/target/include
 ASFLAGS   += -I$(BUILD)
-PK_SUFFIX := -rsvc-spike
-RSVC_DIR  := tests/target/rsvc
-C_OBJS    += $(BUILD)/rsvc_core.rel $(BUILD)/ctc_test.rel
-ASM_OBJS  += $(BUILD)/rsvc_asm.rel $(BUILD)/rsvc_blobs.rel
-# The spike keeps its own evaluation placement (package 36's measurement
-# layout): the IPC substrate and the service containers must fit the
-# 16 KiB fixed core, so more of the nucleus compiles cold than in the
-# production classification.  It is not a residency-checked image.
-SPIKE_COLD_OBJS := $(BUILD)/main.rel $(BUILD)/fs.rel $(BUILD)/romfs.rel \
-	$(BUILD)/process.rel $(BUILD)/process_exec.rel $(M9_VFS_OBJS) \
-	$(BUILD)/syscall.rel $(BUILD)/diag.rel $(BUILD)/diag_io.rel
-$(SPIKE_COLD_OBJS): CFLAGS += --codeseg WINDOW --dataseg WINDOW_DATA
-# SIO-only boot set, like the other evaluation images: the recovery store
-# carries sio.zmod plus the client program, and the two test-owned CTC0
-# helpers are the only IRQ producers.
+PK_SUFFIX := -ipc-selftest
+IPC_FIXED_OBJS := $(BUILD)/ipc.rel $(BUILD)/ipc_asm.rel \
+	$(BUILD)/ipc_common.rel
+IPC_BLOB_OBJ  := $(BUILD)/ipc_blobs.rel
+IPC_SERVICE_OBJS := $(IPC_FIXED_OBJS) $(IPC_BLOB_OBJ)
+IPC_COLD_OBJS := $(BUILD)/ipc_syscall.rel
+TARGET_TEST_OBJS += $(BUILD)/ipc_loader.rel $(IPC_COLD_OBJS) \
+	$(IPC_SERVICE_OBJS)
 ZOS_IOC_BOOT    := 0
 ZOS_HID_BOOT    := 0
 ZOS_V9958_BOOT  := 0
@@ -526,24 +531,26 @@ OBJS      := $(ASM_OBJS) $(C_OBJS)
 # is missing or when a fixed-required object links at or above 6000h.
 #
 # Acceptance images compile their target-test objects cold too, so test
-# code consumes the driver arena's slack, never the fixed core.
-#
-# The resident-service spike is the exception: its package-36 evaluation
-# layout (SPIKE_COLD_OBJS above) is its own measurement, it loads the
-# service containers through the window while it is open, and package 39
-# retires it.  It therefore keeps that placement instead of the
-# production classification.
-SPIKE_PLACEMENT := $(filter 1,$(ZOS_RSVC_SPIKE))
+# code consumes the driver arena's slack, never the fixed core.  An image
+# whose boot set leaves the cold half nearly empty may also place its
+# stage-4/5 `moves` objects there instead of overflowing them into the
+# fixed core (the placement freedom of architecture 36.20); it passes
+# that extra cold set to mapcheck with --cold-extra and to the codegen
+# through COLD_EXTRA, so both stay in step.
 RESIDENCY  := config/residency.json
+COLD_EXTRA_CSV := $(if $(filter 1,$(ZOS_IPC_SELFTEST)),$(IPC_COLD_EXTRA_CSV),)
+ifeq ($(COLD_EXTRA_CSV),)
 COLD_STEMS := $(shell $(PYTHON) tools/mapcheck.py residency \
 		--cold-stems $(RESIDENCY))
+else
+COLD_STEMS := $(shell $(PYTHON) tools/mapcheck.py residency \
+		--cold-stems $(RESIDENCY) --cold-extra $(COLD_EXTRA_CSV))
+endif
 COLD_OBJS  := $(addprefix $(BUILD)/,$(addsuffix .rel,$(COLD_STEMS)))
 ifneq ($(TARGET_TEST_OBJS),)
-COLD_OBJS  += $(TARGET_TEST_OBJS)
+COLD_OBJS  += $(filter-out $(IPC_SERVICE_OBJS),$(TARGET_TEST_OBJS))
 endif
-ifeq ($(SPIKE_PLACEMENT),)
 $(COLD_OBJS): CFLAGS += --codeseg WINDOW --dataseg WINDOW_DATA
-endif
 
 # Driver-arena geometry ---------------------------------------------------
 # Every image derives the arena and the runtime data base from the aligned
@@ -560,24 +567,25 @@ ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_CONSOLE_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
 	$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST) \
 	$(ZOS_M9_EXEC_SELFTEST) $(ZOS_M9_IOCFAT_SELFTEST) \
-	$(ZOS_M9_SELFTEST) $(ZOS_NUCLEUS_SELFTEST)),)
+	$(ZOS_M9_SELFTEST) $(ZOS_NUCLEUS_SELFTEST) \
+	$(ZOS_IPC_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1 \
 		-Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
 endif
 
 # Production images (no acceptance objects) must reject every acceptance
-# symbol in the linked map; mapcheck --production enforces this.  The
-# resident-service spike is not a production image either: it links
-# evaluation objects by construction, so it keeps its own placement until
-# package 39 promotes the substrate and retires the spike.
-MAPCHECK_FLAGS := $(if $(filter 1,$(ZOS_RSVC_SPIKE)),,\
-		$(if $(TARGET_TEST_OBJS),,--production))
+# symbol in the linked map; mapcheck --production enforces this.
+MAPCHECK_FLAGS := $(if $(TARGET_TEST_OBJS),,--production)
 
-# The residency check runs on every image that uses the production
-# placement (the spike keeps its own evaluation layout until package 39
-# promotes the substrate and retires the spike).
-RESIDENCY_FLAGS := $(if $(filter 1,$(ZOS_RSVC_SPIKE)),,--residency $(RESIDENCY))
+# The residency check runs on every image: an acceptance image that links
+# its own cold set (the ipc image) passes it through --cold-extra, so the
+# placement rule stays enforced for test images too.
+RESIDENCY_FLAGS := --residency $(RESIDENCY) \
+	$(if $(COLD_EXTRA_CSV),--cold-extra $(COLD_EXTRA_CSV),)
+# The geometry derive only understands --residency (the cold set does not
+# change the derived bases: it changes which objects link cold).
+RESIDENCY_DERIVE_FLAGS := --residency $(RESIDENCY)
 
 # Every image boots the SIO fallback module from the recovery store and
 # then, per its boot gates, the IOC transport, the HID keyboard/text input
@@ -629,7 +637,7 @@ $(GEOMETRY_INC) $(GEOMETRY_MEMORY): $(BUILD)/zephyros.probe.map \
 	mkdir -p $(GEOMETRY_DIR)
 	$(PYTHON) tools/mapcheck.py geometry derive $(BUILD)/zephyros.probe.map \
 		$(ASM_MEMORY_INC) $(GEOMETRY_INC) $(GEOMETRY_MEMORY) \
-		$(RESIDENCY_FLAGS)
+		$(RESIDENCY_DERIVE_FLAGS)
 
 $(GEOMETRY_PROBE_DIR)/arena_geometry.inc: $(ZOS_PLATFORM_MEMORY_INC) \
 		tools/mapcheck.py | $(BUILD)
@@ -677,7 +685,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	m9-exec-selftest \
 	m9-iocfat-selftest \
 	m9-selftest \
-	rsvc-spike-selftest \
+	ipc-selftest \
 	nucleus-selftest \
 	hardware-images \
 	smoke-hardware \
@@ -1182,7 +1190,9 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/m9_provider_selftest.h \
 		tests/target/include/m9_fs_selftest.h \
 		tests/target/include/m9_exec_selftest.h \
-		tests/target/include/m9_iocfat_selftest.h | $(BUILD)
+		tests/target/include/m9_iocfat_selftest.h \
+		tests/target/include/ipc_selftest.h abi/zos/ipc.h \
+		kernel/syscall/ipc.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # Test-owned CTC0 programming helper (acceptance images only): linked in
@@ -1193,27 +1203,36 @@ $(BUILD)/ctc_test.rel: tests/target/support/ctc_test.c \
 		platform/zephyr80/hardware.h platform/zephyr80/irq.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-# Resident-service spike objects (work package 35): the fixed-region
-# primitives, the nucleus IPC substrate, a kernel-context copy of the
-# SDCC indirect-call helpers (the substrate calls through the API table)
-# and the six service containers emitted as one assembly blob.
-# The service-stack size is pinned in rsvc_config.h (C) and needed by
-# rsvc_asm.asm (assembler); the build derives the assembler copy so the two
-# can never disagree.
-$(BUILD)/rsvc_stack_size.inc: $(RSVC_DIR)/rsvc_config.h | $(BUILD)
-	@printf 'ZOS_RSVC_SERVICE_STACK_SIZE = %s\n' \
-		`sed -n 's/.*define ZOS_RSVC_SERVICE_STACK_SIZE[[:space:]]*\([0-9]*\)u.*/\1/p' $<` > $@
-
-$(BUILD)/rsvc_asm.rel: $(RSVC_DIR)/rsvc_asm.asm \
-		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) \
-		$(BUILD)/rsvc_stack_size.inc | $(BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(BUILD)/rsvc_core.rel: $(RSVC_DIR)/rsvc_core.c $(RSVC_DIR)/rsvc_config.h \
-		tests/target/include/rsvc_test.h \
-		include/zephyros/module.h include/zephyros/irq.h | $(BUILD)
+# IPC substrate objects (work package 39, M10 stage 3): the fixed-core
+# substrate and its primitives (config/residency.json `fixed-required`),
+# the cold syscall bodies, and the acceptance loader.  The six synthetic
+# service containers are ordinary ZMOD packs emitted as one assembly blob
+# (data, like every fixture blob) that the loader relocates into bank 6.
+$(BUILD)/ipc.rel: kernel/ipc/ipc.c kernel/ipc/ipc.h \
+		include/zephyros/ipc.h abi/zos/ipc.h \
+		include/zephyros/irq.h include/zephyros/platform.h \
+		include/zephyros/kernel.h include/zephyros/process.h \
+		kernel/irq/irq_private.h kernel/memory/upcall.h \
+		kernel/syscall/diag.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
+$(BUILD)/ipc_asm.rel: kernel/ipc/ipc_asm.asm \
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/ipc_common.rel: kernel/ipc/ipc_common.asm \
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/ipc_syscall.rel: kernel/syscall/ipc.c kernel/syscall/ipc.h \
+		kernel/ipc/ipc.h abi/zos/ipc.h kernel/syscall/diag.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/ipc_loader.rel: $(IPC_DIR)/ipc_loader.c \
+		tests/target/include/ipc_test.h include/zephyros/ipc.h \
+		include/zephyros/module.h include/zephyros/errno.h \
+		kernel/ipc/ipc.h kernel/memory/upcall.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/syscall_test.rel: tests/target/syscall/syscall_test.c \
 		include/zephyros/kernel.h \
@@ -1397,11 +1416,21 @@ $(eval $(call zex_program,fsdeep,tests/target/m9/exec,fsdeep.c,\
 $(eval $(call zex_program,fsraw,tests/target/m9/exec,fsraw.c fsraw_entry.asm,\
 	NO_CRT0=1,ENTRY=rw_entry,STACK=32,SCRATCH=,STAGE=1))
 
-# Resident-service spike client (work package 35): an ordinary SDK
-# program; it reaches the evaluation-only syscalls through its own raw
-# stub (rsvcgate.asm), not through libzos.
-$(eval $(call zex_program,rsvc,tests/target/rsvc,\
-	rsvc.c rsvcgate.asm,STACK=256,STAGE=1,\
+# IPC acceptance client (work package 39): an ordinary SDK program.  It
+# consumes the native SYS_IPC_LOOKUP / SYS_IPC_CALL wrappers from libzos
+# and the test protocol header; it owns no syscall stub of its own.
+$(eval $(call zex_program,ipc,tests/target/ipc,\
+	ipc.c,STACK=256,STAGE=1,\
+	INCLUDES=tests/target/include))
+
+# IPC caller-buffer probe (work package 39, correction 01): the boot
+# program of the IPC acceptance image.  NO_CRT0 with a custom entry and
+# CODEBASE=0x0300 pushes its own code above 0100h-02FFh, which is left as
+# a plain 512-byte buffer: the only way a ZEX image can name the caller
+# window itself as a copy destination.
+$(eval $(call zex_program,ipccopy,tests/target/ipc,\
+	ipccopy.c ipccopy_entry.asm,NO_CRT0=1,ENTRY=ipc_copy_entry,\
+	CODEBASE=0x0300,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include))
 
 # Deterministic malformed containers (one per validation boundary; see
@@ -1515,58 +1544,67 @@ else ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
 # kernel change, which is exactly what this image demonstrates.
 ROMFS_MANIFEST := user/helloworld/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/hello.zex
-else ifeq ($(ZOS_RSVC_SPIKE),1)
-# Resident-service spike image (work package 35): the SIO fallback plus the
-# ZEX v1 client program the production launcher boots
-# (ZOS_BOOT_PROGRAM=/SYSTEM/rsvc.zex).  The six synthetic services are not
-# on the recovery store: they are linked into the kernel image as ZMOD
-# containers and relocated into bank 6 by the evaluation loader.
-ROMFS_MANIFEST := tests/m10/manifest-rsvc.json
-ROMFS_EXTRA_DEPS := $(MODULES)/rsvc.zex
+else ifeq ($(ZOS_IPC_SELFTEST),1)
+# IPC acceptance image (work package 39): the SIO fallback plus the two SDK
+# programs the launcher boots and the probe starts
+# (ZOS_BOOT_PROGRAM=/SYSTEM/ipccopy.zex).  The probe
+# (tests/target/ipc/ipccopy.c) measures the caller-buffer copy paths and
+# SYS_EXECs the conformance client (/SYSTEM/ipc.zex), which is where the
+# promoted suite lives.  The six synthetic services are not on the
+# recovery store: they are linked into the kernel image as ZMOD containers
+# and placed in bank 6 by the acceptance loader
+# (tests/target/ipc/ipc_loader.c).
+ROMFS_MANIFEST := tests/ipc/manifest.json
+ROMFS_EXTRA_DEPS := $(MODULES)/ipc.zex $(MODULES)/ipccopy.zex
 else
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 endif
 
-# --- resident-service spike containers (work package 35) --------------------
+# --- resident-service IPC containers (work package 39) ----------------------
 # Six synthetic services packed as ordinary ZMOD containers (the existing
-# packer and relocation model), emitted as one assembly blob the evaluation
-# nucleus relocates into bank 6.  Eval-only; nothing here is built for any
-# other configuration.
-RSVC_MODDIR := $(BUILD)/rsvc-modules
+# packer and relocation model; the service-image metadata format arrives
+# in package 40), emitted as one assembly blob the acceptance loader
+# places in bank 6.  Acceptance-only; nothing here is built for any other
+# configuration.
+IPC_MODDIR := $(BUILD)/ipc-modules
 
-ifeq ($(ZOS_RSVC_SPIKE),1)
-$(RSVC_MODDIR):
+ifeq ($(ZOS_IPC_SELFTEST),1)
+$(IPC_MODDIR):
 	mkdir -p $@
 
-$(RSVC_MODDIR)/%.rel: $(RSVC_DIR)/%.c \
-		tests/target/include/rsvc_test.h | $(RSVC_MODDIR)
-	$(SDCC) $(MOD_CFLAGS) -Itests/target/include $< -o $@
+# --dataseg SERVICE_IO names the container's data area after the rule it
+# has to satisfy: the loader places it after the image, inside bank 6's
+# 8000h-BFFFh, and rejects a container that outgrows that range
+# (correction 01 to architecture 36.8).
+$(IPC_MODDIR)/%.rel: $(IPC_DIR)/%.c \
+		tests/target/include/ipc_test.h | $(IPC_MODDIR)
+	$(SDCC) $(MOD_CFLAGS) --dataseg SERVICE_IO -Itests/target/include $< -o $@
 
-$(RSVC_MODDIR)/sdcc_indirect_calls.rel: \
-		modules/runtime/sdcc_indirect_calls.asm | $(RSVC_MODDIR)
+$(IPC_MODDIR)/sdcc_indirect_calls.rel: \
+		modules/runtime/sdcc_indirect_calls.asm | $(IPC_MODDIR)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(RSVC_MODDIR)/%.zmod: $(RSVC_DIR)/manifests/%.json \
-		$(RSVC_MODDIR)/%.rel $(RSVC_MODDIR)/sdcc_indirect_calls.rel \
+$(IPC_MODDIR)/%.zmod: $(IPC_DIR)/manifests/%.json \
+		$(IPC_MODDIR)/%.rel $(IPC_MODDIR)/sdcc_indirect_calls.rel \
 		tools/zmodpack.py
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(RSVC_MODDIR) \
-		--report $(RSVC_MODDIR)/$*.report.json
+	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(IPC_MODDIR) \
+		--report $(IPC_MODDIR)/$*.report.json
 
-RSVC_ZMODS := $(RSVC_MODDIR)/echo.zmod $(RSVC_MODDIR)/con.zmod \
-	$(RSVC_MODDIR)/ioc.zmod $(RSVC_MODDIR)/fat.zmod \
-	$(RSVC_MODDIR)/vfs.zmod $(RSVC_MODDIR)/irqx.zmod
+IPC_ZMODS := $(IPC_MODDIR)/echo.zmod $(IPC_MODDIR)/con.zmod \
+	$(IPC_MODDIR)/ioc.zmod $(IPC_MODDIR)/fat.zmod \
+	$(IPC_MODDIR)/vfs.zmod $(IPC_MODDIR)/irqx.zmod
 
-$(BUILD)/rsvc_blobs.asm: $(RSVC_ZMODS) tools/zmodpack.py | $(BUILD)
+$(BUILD)/ipc_blobs.asm: $(IPC_ZMODS) tools/zmodpack.py | $(BUILD)
 	$(PYTHON) tools/zmodpack.py emit-asm $@ \
-		rsvc_echo_zmod=$(RSVC_MODDIR)/echo.zmod \
-		rsvc_con_zmod=$(RSVC_MODDIR)/con.zmod \
-		rsvc_ioc_zmod=$(RSVC_MODDIR)/ioc.zmod \
-		rsvc_fat_zmod=$(RSVC_MODDIR)/fat.zmod \
-		rsvc_vfs_zmod=$(RSVC_MODDIR)/vfs.zmod \
-		rsvc_irqx_zmod=$(RSVC_MODDIR)/irqx.zmod
+		ipc_echo_zmod=$(IPC_MODDIR)/echo.zmod \
+		ipc_con_zmod=$(IPC_MODDIR)/con.zmod \
+		ipc_ioc_zmod=$(IPC_MODDIR)/ioc.zmod \
+		ipc_fat_zmod=$(IPC_MODDIR)/fat.zmod \
+		ipc_vfs_zmod=$(IPC_MODDIR)/vfs.zmod \
+		ipc_irqx_zmod=$(IPC_MODDIR)/irqx.zmod
 
-$(BUILD)/rsvc_blobs.rel: $(BUILD)/rsvc_blobs.asm | $(BUILD)
+$(BUILD)/ipc_blobs.rel: $(BUILD)/ipc_blobs.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 endif
 
@@ -2077,23 +2115,25 @@ m9-selftest: all
 	$(PYTHON) -m unittest discover -s tests -p 'test_m9_selftest_sim.py' -v
 	@echo "m9 integration image: build-m9-selftest/zephyros-m9-selftest.bin"
 
-# Resident-service spike (work package 35): transport A on decoder
-# revision 13, the 6000h split.  The image boots the client program, which
-# runs the C1-C9 phases and checks its own results; the simulator replay
-# measures the spans, and the two-bank layout report measures the
-# classification against this build.
-rsvc-spike-selftest: all
-	$(MAKE) BUILD=build-rsvc-spike-6000 ZOS_RSVC_SPIKE=1 \
-		ZOS_BOOT_PROGRAM=/SYSTEM/rsvc.zex \
-		build-rsvc-spike-6000/zephyros-rsvc-spike.bin \
-		build-rsvc-spike-6000/zephyr80-rsvc-spike.bin
-	$(PYTHON) tools/rev13_layout.py build-rsvc-spike-6000/zephyros.map \
-		--objdir build-rsvc-spike-6000 \
-		--classification tests/m10/two-bank-classification.json \
-		--two-bank \
-		--out build-rsvc-spike-6000/two-bank-layout.json
-	$(PYTHON) -m unittest discover -s tests -p 'test_rsvc_spike_sim.py' -v
-	@echo "rsvc spike image: build-rsvc-spike-6000/zephyros-rsvc-spike.bin"
+# IPC substrate acceptance image (work package 39, M10 stage 3): the
+# production boot path with the fixed-core substrate, the six synthetic
+# bank-6 services placed by the acceptance loader, and the SDK client
+# program booting as /SYSTEM/ipc.zex.  The client runs the promoted
+# conformance suite and checks its own results; the simulator replay
+# measures the spans, the stack high-water marks, the latch intervals and
+# the IRQ delivery.
+ipc-selftest: all
+	$(MAKE) BUILD=build-ipc-selftest ZOS_IPC_SELFTEST=1 \
+		ZOS_BOOT_PROGRAM=/SYSTEM/ipccopy.zex \
+		build-ipc-selftest/zephyros-ipc-selftest.bin \
+		build-ipc-selftest/zephyr80-ipc-selftest.bin
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
+		$(if $(IPC_COLD_EXTRA_CSV),--cold-extra $(IPC_COLD_EXTRA_CSV),) \
+		build-ipc-selftest/zephyros.map \
+		build-ipc-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_ipc_selftest*.py' -v
+	@echo "ipc image: build-ipc-selftest/zephyros-ipc-selftest.bin"
 
 # Nucleus-layout acceptance image (work package 38): the revision-13 gates
 # with P != 0 on entry (syscall, IRQ), the cold-half handler placement and

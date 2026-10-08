@@ -4944,6 +4944,8 @@ must never be in bank 7's cold half.
 E000h-FFFFh of bank 6   not used                hidden by common in modes 10 and 11
 ```
 
+- Within the hot tier, `8000h-BFFFh` is reserved first for service I/O
+  buffers (36.8, path B); code and other data fill the rest of the tier.
 - The **hot tier** is reached through the window (P = 1). It holds
   everything a service runs after boot, including paths reachable at run
   time from user requests (for example the V9958 display reset behind
@@ -5001,7 +5003,8 @@ call(handle, op, frame) -> status                      anyone
   invisible in the ABI and keeps the same validation.
 - The SDK caches lookups. Discovery stays a fixed (class, instance) query.
 
-Measured cost (package 35): a null call is about 9,860 T-states, and one
+Measured cost: a null call is about 15,500 T-states through the
+production-shaped path (package 39; the frame copies dominate), and one
 window crossing is 242 T-states. Hot paths are batched by protocol design
 (buffer writes, read-N, 512-byte file chunks).
 
@@ -5020,17 +5023,32 @@ There are no raw cross-domain pointers.
   `copy_out(id, offset, buffer, length)`. Bounds are checked on every use.
 - **Direct copies.** A descriptor id may be passed down a call chain, and
   the service that holds the data copies it straight to the caller. Data is
-  not staged through intermediate services. Measured: a 512-byte read
-  through a three-service chain costs 165.6 T-states per byte, against
-  587.8 for the M9 `FS_READ`.
+  not staged through intermediate services. "Direct" means no service
+  staging; the nucleus copy primitive may still use a bounce or gate path
+  underneath (below).
 - **Buffer identity:** a caller address in `8000h-BFFFh` while the caller's
   saved P ≠ 0 (mode 10) names the far bank shown by the aperture, not the
   primary bank.
-- Copy paths:
-  - window `LDIR` for offsets `6000h-DFFFh` of any bank (about 21
-    T-states per byte);
-  - the caller window `0000h-1FFFh`;
-  - the mode-10 gate for other offsets.
+- **Copy paths.** There is one window, so one `LDIR` cannot bridge bank 6
+  and another windowed bank. The primitive picks a path per request:
+
+  | path | when | how |
+  |---|---|---|
+  | **A** | caller buffer in the caller window `0000h-1FFFh` or in common | mode 11, one `LDIR` |
+  | **B** | service buffer in bank 6 `8000h-BFFFh`, and caller buffer in the caller's bank outside `8000h-BFFFh` | a common-resident stub switches to mode 10 with Q = the caller's bank and P = 1 (the aperture shows bank 6), runs one `LDIR` and restores the latch |
+  | **C** | everything else: a caller buffer in `8000h-BFFFh` (including far-bank buffers), or a service buffer outside `8000h-BFFFh` | chunked through the common `zos_bank_copy` gate; correct, but slow |
+
+  The P = 1 that path B uses is internal to the nucleus; applications
+  never get a bank-6 token. An interrupt taken inside path B restores the
+  latch exactly.
+
+  Measured (package 39), 512-byte read through a three-service chain:
+  path A 180 T/B, path B 181 T/B, path C 237 T/B, against 588 T/B for the
+  M9 `FS_READ`. The path-B stub costs 58 bytes of common memory.
+- **Service I/O rule.** Service buffers that are the source or target of
+  `copy_in`/`copy_out` (I/O buffers, caches, staging) live in bank 6's
+  `8000h-BFFFh`, the `SERVICE_IO` data area. The loader refuses an image
+  whose `SERVICE_IO` data falls outside that range.
 
 ---
 
@@ -5379,7 +5397,8 @@ these ledgers and the bytes it adds, attributed per object:
 
 - `ZOS_COMMON_CEILING` stays at 3072 bytes and may not be raised. The
   512-byte M10 reservation of section 7.2 is released to M10's transitions
-  and IPC; no far-call gate is built.
+  and IPC; no far-call gate is built. Its first tenant is the path-B copy
+  stub (58 bytes, package 39).
 - When a ledger does not fit, the remedy is slimming or moving code to a
   lower tier (fixed → cold through an upcall shim, hot → boot/bulk). It is
   never a third bank (section 36.3).

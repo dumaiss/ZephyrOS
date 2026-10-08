@@ -1,0 +1,18 @@
+{
+  "name": "con",
+  "type": "driver",
+  "abi": 3,
+  "flags": 0,
+  "objects": [
+    "con.rel",
+    "sdcc_indirect_calls.rel"
+  ],
+  "image_areas": [
+    "_CODE"
+  ],
+  "bss_areas": [
+    "_SERVICE_IO"
+  ],
+  "init": "ipc_con_init",
+  "fini": null
+}

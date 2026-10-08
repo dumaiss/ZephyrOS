@@ -502,26 +502,34 @@ class TestResidency(unittest.TestCase):
             handle.write("\n".join("build/%s.rel" % name
                                    for name in names) + "\n")
 
-    def write_residency(self, objects, cold_half=()):
+    def write_residency(self, objects, cold_half=(), test_link=()):
         data = {"format": "zos-residency/1", "objects": objects,
-                "cold_half": list(cold_half)}
+                "cold_half": list(cold_half), "test_link": list(test_link)}
         with open(self.residency, "w") as handle:
             json.dump(data, handle)
 
     def check(self):
-        tiers, cold_half = mapcheck.load_residency(self.residency)
-        mapcheck.check_residency(self.objdir, tiers, cold_half, self.linker)
+        tiers, cold_half, test_link = mapcheck.load_residency(self.residency)
+        mapcheck.check_residency(self.objdir, tiers, cold_half, self.linker,
+                                 test_link)
 
     def test_production_classification_covers_the_linker_list(self):
-        tiers, cold_half = mapcheck.load_residency(RESIDENCY)
+        tiers, cold_half, test_link = mapcheck.load_residency(RESIDENCY)
         self.assertEqual(sorted(cold_half), sorted(set(cold_half)),
                          "cold_half must not repeat an object")
         production = mapcheck.linker_object_list(
             os.path.join(ROOT, "linker", "zephyr80.lk"))
-        self.assertEqual(sorted(production), sorted(tiers),
-                         "every production object needs exactly one tier")
+        # `test_link` objects (the M10 substrate in work package 39) are
+        # classified exactly as production will link them in package 41,
+        # but the current production link does not list them yet.
+        self.assertEqual(sorted(list(production) + list(test_link)),
+                         sorted(tiers),
+                         "every linked or test-linked object needs exactly "
+                         "one tier")
         self.assertEqual(tiers["upcall"], "fixed-required")
         for name in cold_half:
+            self.assertIn(name, tiers)
+        for name in test_link:
             self.assertIn(name, tiers)
 
     def test_production_build_matches_the_classification(self):
@@ -530,9 +538,10 @@ class TestResidency(unittest.TestCase):
         objdir = os.path.join(ROOT, "build")
         if not os.path.isdir(objdir):
             self.skipTest("build/ missing; run make first")
-        tiers, cold_half = mapcheck.load_residency(RESIDENCY)
+        tiers, cold_half, test_link = mapcheck.load_residency(RESIDENCY)
         mapcheck.check_residency(objdir, tiers, cold_half,
-                                 os.path.join(ROOT, "linker", "zephyr80.lk"))
+                                 os.path.join(ROOT, "linker", "zephyr80.lk"),
+                                 test_link)
 
     def test_missing_classification_entry_fails(self):
         self.add_object("alpha")
@@ -564,6 +573,33 @@ class TestResidency(unittest.TestCase):
         with self.assertRaisesRegex(mapcheck.MapError,
                                     "not place it there"):
             self.check()
+
+    def test_test_link_cold_object_may_compile_cold(self):
+        # A test-linked object is linked only by acceptance images, so its
+        # placement is not named by production's cold_half list: the tier
+        # decides, exactly as it will once production links it.
+        self.add_object("alpha", cold=0x40)
+        self.write_linker()
+        self.write_residency([{"object": "alpha", "tier": "cold"}],
+                             test_link=("alpha",))
+        self.check()
+
+    def test_test_link_fixed_object_in_the_cold_half_fails(self):
+        self.add_object("alpha", cold=0x40)
+        self.write_linker()
+        self.write_residency([{"object": "alpha", "tier": "fixed-required"}],
+                             test_link=("alpha",))
+        with self.assertRaisesRegex(mapcheck.MapError, "fixed-required"):
+            self.check()
+
+    def test_cold_half_may_not_name_a_fixed_required_object(self):
+        # cold_half is production's compile-cold set: naming a
+        # fixed-required object there would compile it into the window.
+        self.write_residency([{"object": "alpha", "tier": "fixed-required"}],
+                             cold_half=("alpha",))
+        with self.assertRaisesRegex(mapcheck.MapError,
+                                    "cold_half names fixed-required"):
+            mapcheck.load_residency(self.residency)
 
     def test_moves_entry_needs_a_stage(self):
         self.write_residency([{"object": "alpha", "tier": "moves"}])

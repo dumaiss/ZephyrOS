@@ -187,9 +187,11 @@ REL_AREA_LINE = re.compile(r"^A (\S+) size ([0-9A-F]+) flags (\d+) addr ")
 
 
 def load_residency(path):
-    """(format, tier-per-object, cold-half placement set) of a residency
+    """(tiers, cold-half placement set, test-link set) of a residency
     file.  Every object carries exactly one tier; the `cold_half` list
-    names the objects the build compiles into the cold areas."""
+    names the objects the build compiles into the cold areas; `test_link`
+    names objects that only acceptance images link (they must still be
+    classified, but the production linker script does not list them)."""
     with open(path) as handle:
         data = json.load(handle)
     if data.get("format") != "zos-residency/1":
@@ -210,7 +212,15 @@ def load_residency(path):
         if name not in tiers:
             raise MapError("%s: cold_half names unclassified %s"
                            % (path, name))
-    return tiers, cold_half
+        if tiers[name] == "fixed-required":
+            raise MapError("%s: cold_half names fixed-required %s"
+                           % (path, name))
+    test_link = tuple(data.get("test_link", ()))
+    for name in test_link:
+        if name not in tiers:
+            raise MapError("%s: test_link names unclassified %s"
+                           % (path, name))
+    return tiers, cold_half, test_link
 
 
 def linker_object_list(linker_path):
@@ -259,34 +269,53 @@ def fixed_core_bytes(objdir, tiers):
     return required, overflow
 
 
-def check_residency(objdir, tiers, cold_half, linker_path):
+def check_residency(objdir, tiers, cold_half, linker_path, test_link=(),
+                    cold_extra=()):
     """Residency enforcement (architecture 36.5, package 38).
 
     Fails when the classification does not cover the production object
-    list exactly, when a fixed-required object is compiled into the cold
+    list exactly (objects only acceptance images link are exempt through
+    `test_link`), when a fixed-required object is compiled into the cold
     areas (a fixed-required symbol at or above 6000h), or when a
-    classified object's linked areas disagree with its cold-half
-    placement."""
+    classified object's linked areas disagree with its placement.
+
+    `cold_extra` names objects that this image compiles into the cold
+    areas on top of the residency file's `cold_half`: an image whose boot
+    set leaves the cold half nearly empty may place a `moves` object
+    there instead of overflowing it into the fixed core (the placement
+    freedom of architecture 36.20).
+
+    `test_link` objects are linked only by acceptance images, so their
+    placement is not named by `cold_half` (production's cold set): a
+    test-linked `cold` object is expected in the cold areas by its tier,
+    exactly as production will compile it in package 41."""
     production = linker_object_list(linker_path)
     missing = [name for name in production if name not in tiers]
     if missing:
         raise MapError(
             "object(s) missing from the residency classification %s: %s"
             % (linker_path, ", ".join(sorted(missing))))
-    stale = [name for name in tiers if name not in production]
+    allowed_extras = set(test_link) | set(cold_extra)
+    stale = [name for name in tiers
+             if name not in production and name not in allowed_extras]
     if stale:
         raise MapError(
             "the residency classification names object(s) not linked by %s: "
             "%s" % (linker_path, ", ".join(sorted(stale))))
+    cold_set = set(cold_half) | set(cold_extra)
+    cold_set.update(name for name in test_link
+                    if tiers.get(name) == "cold")
     sizes = rel_area_sizes(objdir)
     for name, tier in sorted(tiers.items()):
         areas = sizes.get(name)
         if areas is None:
+            if name in test_link:
+                continue
             raise MapError("no object file for classified %s in %s"
                            % (name, objdir))
         cold_bytes = sum(areas.get(area, 0) for area in COLD_AREAS)
         fixed_bytes = sum(areas.get(area, 0) for area in FIXED_AREAS)
-        in_cold = name in cold_half
+        in_cold = name in cold_set
         if tier == "fixed-required" and cold_bytes:
             raise MapError(
                 "fixed-required object %s links %d bytes into the cold "
@@ -726,6 +755,23 @@ COMMON_ROUTINES = (
     "_zos_bank_copy",
 )
 
+# Common-resident only if the image links them.  Same reason as above, but
+# the object is acceptance-only until package 41, so its absence is not an
+# error: an image that does link it must place it in common memory, never
+# in the fixed core or the cold half.
+COMMON_ONLY_SYMBOLS = (
+    # M10 stage 3 correction 01: the path-B aperture copy runs with mode
+    # 10 and page 1 in force, where bank 7 is not mapped at all, so the
+    # stub, its request block and its interrupt-push reservation must all
+    # live in common memory.
+    "_ipc_ap_copy",
+    "_ipc_ap_req",
+    "_ipc_ap_saved_latch",
+    "_ipc_ap_saved_sp",
+    "_ipc_ap_stack",
+    "_ipc_ap_stack_top",
+)
+
 # Bank-7 internal routines (visible only while mode 11 is active).
 BANK7_ROUTINES = ("zos_syscall_dispatch", "_irq_dispatch")
 
@@ -1130,10 +1176,11 @@ def check_areas(areas, symbols):
                            % (name, base))
 
     # The fixed core's stack reservation 5D00h-6000h (service stack, then
-    # ISR stack) is reserved by declaration: only the IRQ entry's ABS
-    # `_IRQ_ISR_STACK` area may occupy it.
+    # ISR stack) is reserved by declaration: only the ABS areas that
+    # declare the two stacks may occupy it.
     for name, (addr, size) in sorted(areas.items()):
-        if size == 0 or name.startswith("_IRQ_ISR_STACK"):
+        if size == 0 or name.startswith(("_IRQ_ISR_STACK",
+                                         "_IPC_SERVICE_STACK")):
             continue
         if addr < WINDOW_BASE and addr + size > SERVICE_STACK_BASE:
             raise MapError(
@@ -1195,6 +1242,24 @@ REV13_FIXED_SYMBOLS = (
     "_platform_memctl_read",
     "_platform_memctl_write",
     "_zos_upcall",
+    # M10 stage 3: the IPC substrate executes while the window shows the
+    # resident service domain, so its dispatcher, its frame and descriptor
+    # tables and its fixed transition primitives stay in the fixed core.
+    "_ipc_lookup",
+    "_ipc_syscall_call",
+    "_ipc_domain_enter",
+    "_ipc_domain_set",
+    "_ipc_domain_exit",
+    "_ipc_copy_run",
+    "_ipc_invoke",
+    "_ipc_invoke_here",
+    # Correction 01: the aperture primitive, its common request block, and
+    # the three path counters the acceptance replay reads out of the image.
+    "_ipc_ap_copy",
+    "_ipc_ap_req",
+    "_ipc_copy_window",
+    "_ipc_copy_aperture",
+    "_ipc_copy_slow",
 )
 
 # Cold (cold-half-resident) objects: their absence is not an error (an
@@ -1206,6 +1271,7 @@ REV13_COLD_SYMBOLS = (
     "_kernel_main",
     "_kernel_syscall_dispatch",
     "_module_loader_load",
+    "_zos_ipc_dispatch",
 )
 
 
@@ -1279,6 +1345,17 @@ def check_symbols(areas, symbols, production=False):
             raise MapError(
                 "%s at %04Xh is not in the common region E000h-FEFFh" % (name, addr)
             )
+
+    # Common-only routines must live in common memory when they are
+    # linked at all (the production image has no IPC substrate yet).
+    for name in COMMON_ONLY_SYMBOLS:
+        if name not in symbols:
+            continue
+        addr = symbols[name]
+        if not (COMMON_BASE <= addr < COMMON_CODE_END):
+            raise MapError(
+                "%s at %04Xh is not in the common region E000h-FEFFh"
+                % (name, addr))
 
     # Bank-7 routines must stay inside the fixed core.
     for name in BANK7_ROUTINES:
@@ -1724,7 +1801,7 @@ def geometry_main(argv):
             values = parse_inc(memory_path)
             fixed_required = fixed_overflow = None
             if residency_path is not None:
-                tiers, _cold_half = load_residency(residency_path)
+                tiers, _cold_half, _test_link = load_residency(residency_path)
                 fixed_required, fixed_overflow = fixed_core_bytes(
                     os.path.dirname(os.path.abspath(probe_path)), tiers)
             with open(probe_path) as handle:
@@ -1772,29 +1849,38 @@ def main(argv):
     if len(argv) >= 2 and argv[1] == "geometry":
         return geometry_main(argv[2:])
     if len(argv) >= 2 and argv[1] == "residency":
-        if len(argv) != 4 or argv[2] != "--cold-stems":
-            print("usage: mapcheck.py residency --cold-stems <file>",
-                  file=sys.stderr)
+        args = argv[2:]
+        cold_extra = []
+        if "--cold-extra" in args:
+            at = args.index("--cold-extra")
+            cold_extra = [name for name in args[at + 1].split(",") if name]
+            del args[at:at + 2]
+        if len(args) != 2 or args[0] != "--cold-stems":
+            print("usage: mapcheck.py residency --cold-stems <file> "
+                  "[--cold-extra a,b,c]", file=sys.stderr)
             return 2
         try:
-            tiers, cold_half = load_residency(argv[3])
+            _tiers, cold_half, _test_link = load_residency(args[1])
         except MapError as exc:
             print("mapcheck: %s" % exc, file=sys.stderr)
             return 1
-        print("\n".join(cold_half))
+        print("\n".join(list(cold_half) + cold_extra))
         return 0
     production = "--production" in argv
     argv = [arg for arg in argv if arg != "--production"]
     residency_path = boot_plan_path = None
-    for flag in ("--residency", "--boot-plan"):
+    cold_extra = ()
+    for flag in ("--residency", "--boot-plan", "--cold-extra"):
         if flag in argv:
             at = argv.index(flag)
             value = argv[at + 1]
             del argv[at:at + 2]
             if flag == "--residency":
                 residency_path = value
-            else:
+            elif flag == "--boot-plan":
                 boot_plan_path = value
+            else:
+                cold_extra = tuple(name for name in value.split(",") if name)
     if len(argv) not in (2, 3, 4):
         print(__doc__)
         return 2
@@ -1806,11 +1892,12 @@ def main(argv):
     try:
         areas, symbols = check_map(open(map_path).read(), production)
         if residency_path is not None:
-            tiers, cold_half = load_residency(residency_path)
+            tiers, cold_half, test_link = load_residency(residency_path)
             root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             check_residency(os.path.dirname(os.path.abspath(map_path)),
                             tiers, cold_half,
-                            os.path.join(root, "linker", "zephyr80.lk"))
+                            os.path.join(root, "linker", "zephyr80.lk"),
+                            test_link, cold_extra)
         if boot_plan_path is not None:
             used, free, total = boot_plan_usage(boot_plan_path)
             if used > DRIVER_GRANULES:

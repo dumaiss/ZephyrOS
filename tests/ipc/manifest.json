@@ -7,9 +7,14 @@
       "path": "sio.zmod"
     },
     {
-      "name": "rsvc.zex",
+      "name": "ipccopy.zex",
       "type": "ZEX",
-      "path": "rsvc.zex"
+      "path": "ipccopy.zex"
+    },
+    {
+      "name": "ipc.zex",
+      "type": "ZEX",
+      "path": "ipc.zex"
     }
   ]
 }

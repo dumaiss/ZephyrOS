@@ -34,15 +34,18 @@
 #include "syscall/diag.h"
 #include "syscall/fs.h"
 
-#if defined(ZOS_RSVC_SPIKE)
-/* Resident-service spike (work package 35): the evaluation-only syscalls
- * 40h-47h are implemented by the spike nucleus object
- * (tests/target/rsvc/rsvc_core.c).  The numbers mirror
- * tests/target/include/rsvc_test.h -- never the native ABI -- and the
- * production kernel compiles them out. */
-#define ZOS_RSVC_SYSCALL_FIRST 0x40u
-#define ZOS_RSVC_SYSCALL_LAST  0x47u
-extern void zos_rsvc_dispatch(uint8_t number, uint8_t bank, uint16_t block);
+#ifndef ZOS_TARGET_TEST_BUILD
+#define ZOS_TARGET_TEST_BUILD 0
+#endif
+
+#if ZOS_TARGET_TEST_BUILD
+/* TEST-ONLY HOOK: acceptance-only syscall numbers (the IPC pair of work
+ * package 39 until package 41 links the substrate into production); the
+ * implementation and the per-image selection live in
+ * tests/target/support/target_test.c.  Returns non-zero when the number
+ * was handled. */
+uint8_t zos_target_test_syscall(uint8_t number, uint8_t bank,
+				uint16_t block);
 #endif
 
 /* Dispatcher input/output state (written by the asm boundary, read by C). */
@@ -372,16 +375,16 @@ void kernel_syscall_dispatch(void)
 {
 	uint8_t bank = process_current_bank();
 
-#if defined(ZOS_RSVC_SPIKE)
-	if (zos_syscall_number >= ZOS_RSVC_SYSCALL_FIRST &&
-	    zos_syscall_number <= ZOS_RSVC_SYSCALL_LAST) {
-		zos_rsvc_dispatch(zos_syscall_number, bank, zos_syscall_args);
+	/* M1 default: unknown numbers stay deterministic. */
+	syscall_error(ZOS_ENOSYS);
+
+#if ZOS_TARGET_TEST_BUILD
+	/* TEST-ONLY HOOK: acceptance-only syscall numbers (tests/target). */
+	if (zos_target_test_syscall(zos_syscall_number, bank,
+				    zos_syscall_args)) {
 		return;
 	}
 #endif
-
-	/* M1 default: unknown numbers stay deterministic. */
-	syscall_error(ZOS_ENOSYS);
 
 	/* M9 native filesystem family (10h-1Fh). */
 	if (zos_syscall_number >= ZOS_SYSCALL_FS_OPEN &&

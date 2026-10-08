@@ -343,11 +343,12 @@ class TestHelloZex(unittest.TestCase):
                         checked_in.append(
                             os.path.join(dirpath, filename)
                             .replace(ROOT + os.sep, "").replace(os.sep, "/"))
-        # tests/target/rsvc/manifests/*.json are work-package-35 ZMOD
-        # driver pack inputs (evaluation only), not ZEX manifests.
+        # tests/target/ipc/manifests/*.json are the work-package-39 ZMOD
+        # container pack inputs (acceptance images only), not ZEX
+        # manifests.
         checked_in = [path for path in checked_in
                       if not path.startswith(
-                          "tests/target/rsvc/manifests/")]
+                          "tests/target/ipc/manifests/")]
         self.assertEqual(checked_in, ["user/helloworld/manifest.json"])
         manifest = json.loads(_read("user/helloworld/manifest.json"))
         self.assertEqual(manifest["format"], "romfs-v1")
@@ -358,11 +359,13 @@ class TestSdkBoundary(unittest.TestCase):
 
     def test_every_program_is_declared_once_by_the_generic_rule(self):
         programs = _declared_programs()
-        # `rsvc` is the resident-service-spike client: declared by the same
-        # generic rule, but only the ZOS_RSVC_SPIKE configuration builds it.
+        # `ipc` and `ipccopy` are the resident-service acceptance client
+        # and its caller-buffer probe: declared by the same generic rule,
+        # but only the ZOS_IPC_SELFTEST configuration builds them.
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["fschild", "fsdeep", "fsfat", "fsraw", "fstest",
-                          "fstest_l", "hello", "monitor", "rsvc", "zextest"])
+                          "fstest_l", "hello", "ipc", "ipccopy", "monitor",
+                          "zextest"])
         for name, directory, _sources, _options in programs:
             count = sum(_read(path).count("zex_program,%s," % name)
                         for path in ("Makefile",
@@ -415,10 +418,18 @@ class TestSdkBoundary(unittest.TestCase):
         # ASM sources see the ABI only (the SDK's asm uses no C header).
         self.assertIn("ZEX_ASFLAGS := -Iabi", rule)
 
-    def test_raw_return_child_is_the_only_no_crt0_program(self):
+    def test_no_crt0_programs_are_the_documented_pair(self):
         no_crt0 = [name for name, _d, _s, options in _declared_programs()
                    if _program_options(options, "NO_CRT0")]
-        self.assertEqual(no_crt0, ["fsraw"])
+        # `fsraw` is the raw-return acceptance child; `ipccopy` is the
+        # caller-buffer probe, which links without the C startup so that
+        # CODEBASE= can lift its code above the 0100h-02FFh buffer it
+        # names as a caller buffer (work package 39 correction 01).
+        self.assertEqual(sorted(no_crt0), ["fsraw", "ipccopy"])
+        for name, _d, _s, options in _declared_programs():
+            if _program_options(options, "NO_CRT0"):
+                self.assertTrue(_program_options(options, "ENTRY"),
+                                "%s owns an entry" % name)
 
     def test_the_moved_headers_have_one_owner(self):
         for name in ("types.h", "errno.h", "syscall.h", "fs.h", "process.h",

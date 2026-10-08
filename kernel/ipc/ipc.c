@@ -1,0 +1,731 @@
+/* ZephyrOS fixed-core IPC substrate (kernel/ipc, architecture 36.5-36.10).
+ *
+ * Promoted from the package-35 resident-service spike (work package 39).
+ * Everything here is compiled into the fixed core and executes, or is
+ * touched, while the mode-11 window shows bank 6 (the resident service
+ * domain):
+ *
+ *   - the endpoint table: owner domain, class/instance, version, dispatch
+ *     entry, the re-entrancy flag and the busy mark left on the call
+ *     stack;
+ *   - register_ep / lookup / call with the fixed 32-byte request/reply
+ *     frame, copied in at entry and back on reply;
+ *   - nucleus-issued buffer descriptors captured at call entry from the
+ *     syscall gate's saved execution latch, and the copy resolvers with
+ *     bounds checked on every use.  The resolver picks one of three
+ *     paths per request (correction 01 to architecture 36.8):
+ *     A - caller window or common: one LDIR in mode 11, as promoted;
+ *     B - the service buffer is in bank 6's 8000h-BFFFh and the caller
+ *         buffer is in the caller's own bank outside that range: one
+ *         LDIR in mode 10 with P = 1 over the caller's bank, run from
+ *         common memory (kernel/ipc/ipc_common.asm), aperture up;
+ *     C - everything else, including a service buffer outside
+ *         8000h-BFFFh: chunked through the common-resident zos_bank_copy
+ *         gate, counted as slow;
+ *   - the nesting limit, re-entrancy refusal and the same-domain fast
+ *     path;
+ *   - the IRQ trampoline: the nucleus keeps the IM2 vectoring, the ISR
+ *     stack and the final RETI; the service handler runs in the owner's
+ *     window on the nucleus ISR stack with the restricted API (no IPC).
+ *
+ * The loader that places service images is not here: it is acceptance
+ * code (tests/target/ipc) and reaches bank 6 through the upcall shim and
+ * the copy primitives, so no loader stays in the fixed core.
+ *
+ * Single-tasking: the call depth, the descriptor table and the frame
+ * array are nucleus state, serialised by the syscall gate and the
+ * non-reentrant IRQ entry.
+ */
+
+#include "zos/ipc.h"
+#include "zos/syscall.h"
+#include "zephyros/errno.h"
+#include "zephyros/irq.h"
+#include "zephyros/kernel.h"
+#include "zephyros/platform.h"
+#include "zephyros/process.h"
+
+#include "kernel/ipc/ipc.h"
+
+#include "kernel/irq/irq_private.h"
+#include "kernel/memory/upcall.h"
+#include "kernel/syscall/diag.h"
+
+/* Fixed-region primitives (kernel/ipc/ipc_asm.asm). */
+extern uint8_t ipc_latch(void);
+extern uint8_t ipc_gate_latch(void);
+extern void ipc_domain_enter(uint8_t page_bits);
+extern void ipc_domain_set(uint8_t page_bits);
+extern void ipc_domain_exit(void);
+extern uint16_t ipc_copy_req[3];
+extern uint16_t ipc_copy_run(void);
+/* Path-B primitive and its common request block (ipc_common.asm). */
+extern uint16_t ipc_ap_copy(void);
+extern uint8_t ipc_ap_req[7];
+extern int16_t ipc_invoke(uint16_t entry, struct zos_ipc_frame *frame);
+extern int16_t ipc_invoke_here(uint16_t entry, struct zos_ipc_frame *frame);
+
+/* The common-resident application-bank copy gate and its staging buffer
+ * (kernel/memory/user_copy.asm; declared with the syscall helpers). */
+uint8_t zos_bank_copy(const struct zos_bank_copy_req *req);
+extern uint8_t zos_user_copy_staging[];
+
+/* Revision-13 page values (architecture 36.2): page 1 shows bank 6, the
+ * resident service domain; page 0 is the nucleus's own cold half.  The
+ * upcall header owns these constants and ipc_asm.asm reads the same
+ * platform constants. */
+#define IPC_SERVICE_PAGE_BITS \
+	(uint8_t)(ZOS_UPCALL_PAGE_SERVICE << ZOS_ROM_PAGE_SHIFT)
+#define IPC_NUCLEUS_PAGE_BITS 0u
+#define IPC_SERVICE_BANK (ZOS_BANK_MASK - ZOS_UPCALL_PAGE_SERVICE)
+
+/* The mode-10 far aperture (architecture 36.17): with a nonzero page the
+ * caller's 8000h-BFFFh names bank 7 - P, not the primary bank. */
+#define IPC_APERTURE_BASE 0x8000u
+#define IPC_APERTURE_END  0xC000u
+
+/* Path B installs mode 10 with the caller's bank and page 1 (architecture
+ * 36.2: page 1 shows bank 6).  Applications never receive a token for
+ * that page; the aperture is nucleus-internal. */
+#define IPC_APERTURE_PAGE_BITS IPC_SERVICE_PAGE_BITS
+
+/* Service I/O buffers (correction 01 to architecture 36.8): the sources
+ * and targets a service names in copy_in/copy_out - I/O buffers, caches,
+ * staging - live in bank 6's 8000h-BFFFh, the one bank-6 range the
+ * mode-11 window and the mode-10 aperture both show at the same address.
+ * A service address outside it is still copied, through the chunked
+ * path, and counted as slow. */
+#define IPC_SERVICE_IO_BASE IPC_APERTURE_BASE
+#define IPC_SERVICE_IO_END  IPC_APERTURE_END
+
+/* Frames and descriptors are bounded tables in fixed data. */
+#define IPC_ENDPOINT_MAX 8u
+#define IPC_DESC_MAX 4u
+
+struct ipc_endpoint {
+	uint16_t dispatch; /* service dispatch entry in the owner's domain */
+	uint8_t class;
+	uint8_t instance;
+	uint8_t flags;
+	uint8_t version;
+	uint8_t registered;
+	uint8_t busy;
+};
+
+static struct ipc_endpoint endpoints[IPC_ENDPOINT_MAX];
+static uint8_t endpoint_count;
+
+struct ipc_desc {
+	uint8_t active;
+	uint8_t dir;    /* ZOS_IPC_DESC_IN / _OUT */
+	uint8_t depth;  /* call level the descriptor belongs to */
+	uint8_t latch;  /* caller execution latch (bank and page) */
+	uint16_t addr;
+	uint16_t length;
+};
+
+static struct ipc_desc descs[IPC_DESC_MAX];
+
+/* The nucleus-owned frame copies, one per call level.  frames[0] is the
+ * caller's frame; a call at depth d works on frames[d]. */
+static struct zos_ipc_frame frames[ZOS_IPC_MAX_NESTING + 1u];
+
+static uint8_t call_depth;
+
+/* Copy-path counters (correction 01): one per resolver outcome, so the
+ * acceptance replay can attribute every transfer to a path from the
+ * outside.  Free-running 16-bit fixed data. */
+uint16_t ipc_copy_window;
+uint16_t ipc_copy_aperture;
+uint16_t ipc_copy_slow;
+
+/* IRQ ownership state (one service handler per source in M10). */
+static uint16_t irq_handler_entry;
+static uint16_t irq_handler_context;
+static uint8_t irq_handler_page;
+static uint8_t ipc_irq_active;
+
+/* --- copy path helpers -------------------------------------------------- */
+
+static uint8_t in_service_window(uint16_t addr, uint16_t length)
+{
+	return (uint8_t)(length != 0u && addr >= ZOS_REV13_WINDOW_BASE &&
+			 (uint16_t)(addr + length) <= ZOS_BANK7_RUNTIME_END);
+}
+
+static uint8_t in_caller_window(uint16_t addr, uint16_t length)
+{
+	return (uint8_t)(length != 0u && addr >= ZOS_USER_BUFFER_BASE &&
+			 addr < 0x2000u &&
+			 (uint16_t)(addr + length) <= 0x2000u);
+}
+
+/* The permanent common window (E000h-FFFFh, physical bank 0): mapped at
+ * the same address in every mode, so a caller buffer there is visible to
+ * a path-A LDIR exactly like the caller window is. */
+static uint8_t in_common(uint16_t addr, uint16_t length)
+{
+	return (uint8_t)(length != 0u && addr >= ZOS_USER_BUFFER_END &&
+			 (uint32_t)addr + length <= 0x10000u);
+}
+
+/* The service's own I/O range: bank 6's 8000h-BFFFh. */
+static uint8_t in_service_io(uint16_t addr, uint16_t length)
+{
+	return (uint8_t)(length != 0u && addr >= IPC_SERVICE_IO_BASE &&
+			 (uint16_t)(addr + length) <= IPC_SERVICE_IO_END);
+}
+
+/* A caller range that overlaps the aperture block cannot be shown while
+ * the aperture is up: with P = 1 those addresses name bank 6, whatever
+ * bank the caller's own decode puts there. */
+static uint8_t crosses_aperture(uint16_t addr, uint16_t length)
+{
+	uint16_t end = (uint16_t)(addr + length);
+
+	return (uint8_t)(length != 0u && addr < IPC_APERTURE_END &&
+			 end > IPC_APERTURE_BASE);
+}
+
+/* The bank a descriptor's address resolves to.  The caller window and
+ * everything outside the aperture stays in the caller's bank; inside the
+ * mode-10 aperture with a nonzero page the far bank 7 - P is named
+ * (architecture 36.8/36.17).  Descriptor capture refuses a buffer that
+ * would cross the aperture boundary, so the whole descriptor resolves to
+ * one bank.
+ *
+ * Package-43 hook: this is the only place a nonzero-page aperture
+ * address becomes a bank.  Token-based resolution lands here - an
+ * aperture descriptor keeps its owner's bank, which forces the chunked
+ * path C because that bank is not the caller's primary bank - and the
+ * capture keeps the full latch (Q, mode, P) for it. */
+static uint8_t desc_bank(const struct ipc_desc *desc)
+{
+	uint8_t page = (uint8_t)((desc->latch & ZOS_ROM_PAGE_MASK) >>
+				 ZOS_ROM_PAGE_SHIFT);
+
+	if (page != 0u && desc->addr >= IPC_APERTURE_BASE &&
+	    desc->addr < IPC_APERTURE_END) {
+		return (uint8_t)(ZOS_BANK_MASK - page);
+	}
+	return (uint8_t)(desc->latch & ZOS_BANK_MASK);
+}
+
+static uint8_t bank_transfer(uint8_t bank, uint8_t op, uint16_t addr,
+			     uint16_t length)
+{
+	struct zos_bank_copy_req req;
+
+	req.bank = bank;
+	req.op = op;
+	req.addr = addr;
+	req.buffer = zos_user_copy_staging;
+	req.length = length;
+	return zos_bank_copy(&req);
+}
+
+/* Chunked transfer through the common staging buffer, used by path C -
+ * a caller buffer behind the aperture, an aperture-resolved far bank, or
+ * a service buffer outside 8000h-BFFFh.  The caller's bank is read and
+ * written through zos_bank_copy; the service side goes through the
+ * window LDIR when it lies inside the mode-11 bank-6 range and through
+ * zos_bank_copy(bank 6) otherwise. */
+static int16_t copy_staged(uint8_t bank, uint16_t caller_addr,
+			   uint16_t service_addr, uint16_t length,
+			   uint8_t dir)
+{
+	uint16_t done = 0u;
+
+	while (done < length) {
+		uint16_t chunk = (uint16_t)(length - done);
+		uint16_t caller = (uint16_t)(caller_addr + done);
+		uint16_t service = (uint16_t)(service_addr + done);
+
+		if (chunk > ZOS_SYSCALL_STAGE_SIZE) {
+			chunk = ZOS_SYSCALL_STAGE_SIZE;
+		}
+		if (dir == ZOS_IPC_DESC_IN) {
+			if (bank_transfer(bank, ZOS_BANK_OP_READ, caller,
+					  chunk) != 0u) {
+				return -ZOS_EINVAL;
+			}
+			if (in_service_window(service, chunk)) {
+				ipc_copy_req[0] = (uint16_t)zos_user_copy_staging;
+				ipc_copy_req[1] = service;
+				ipc_copy_req[2] = chunk;
+				(void)ipc_copy_run();
+			} else if (bank_transfer(IPC_SERVICE_BANK,
+						 ZOS_BANK_OP_WRITE, service,
+						 chunk) != 0u) {
+				return -ZOS_EINVAL;
+			}
+		} else {
+			if (in_service_window(service, chunk)) {
+				ipc_copy_req[0] = service;
+				ipc_copy_req[1] = (uint16_t)zos_user_copy_staging;
+				ipc_copy_req[2] = chunk;
+				(void)ipc_copy_run();
+			} else if (bank_transfer(IPC_SERVICE_BANK,
+						 ZOS_BANK_OP_READ, service,
+						 chunk) != 0u) {
+				return -ZOS_EINVAL;
+			}
+			if (bank_transfer(bank, ZOS_BANK_OP_WRITE, caller,
+					  chunk) != 0u) {
+				return -ZOS_EINVAL;
+			}
+		}
+		done = (uint16_t)(done + chunk);
+	}
+	return (int16_t)length;
+}
+
+/* One checked descriptor copy: the offset and length against the captured
+ * descriptor, the direction against the capture, and the service address
+ * against the service window (or the owner's bank through the copy gate).
+ *
+ * Correction 01 to architecture 36.8: the promoted single LDIR was only
+ * valid for a caller buffer in the mode-11 caller window.  The resolver
+ * now selects one of three paths per request (see the module header). */
+static int16_t copy_move(const struct ipc_desc *desc, uint16_t service_addr,
+			 uint16_t offset, uint16_t length, uint8_t dir)
+{
+	uint16_t caller_addr;
+	uint8_t caller_bank;
+
+	if (length == 0u || offset > desc->length ||
+	    length > (uint16_t)(desc->length - offset)) {
+		return -ZOS_EINVAL;
+	}
+	caller_addr = (uint16_t)(desc->addr + offset);
+	caller_bank = desc_bank(desc);
+	if (in_service_io(service_addr, length)) {
+		if (in_caller_window(caller_addr, length) ||
+		    in_common(caller_addr, length)) {
+			/* Path A: both sides visible in the service
+			 * mapping, which is mode 11 (one LDIR). */
+			if (dir == ZOS_IPC_DESC_IN) {
+				ipc_copy_req[0] = caller_addr;
+				ipc_copy_req[1] = service_addr;
+			} else {
+				ipc_copy_req[0] = service_addr;
+				ipc_copy_req[1] = caller_addr;
+			}
+			ipc_copy_req[2] = length;
+			++ipc_copy_window;
+			return (int16_t)ipc_copy_run();
+		}
+		if (caller_bank == (uint8_t)(desc->latch & ZOS_BANK_MASK) &&
+		    caller_addr >= ZOS_USER_BUFFER_BASE &&
+		    (uint16_t)(caller_addr + length) <= ZOS_USER_BUFFER_END &&
+		    !crosses_aperture(caller_addr, length)) {
+			/* Path B: the caller buffer is in the primary
+			 * bank and clear of the aperture block, so mode 10
+			 * over that bank with P = 1 shows the caller
+			 * everywhere but 8000h-BFFFh, where it shows the
+			 * service's bank 6 - one LDIR, exactly restored. */
+			ipc_ap_req[0] = (uint8_t)(ZOS_MODE_APPLICATION |
+						  IPC_APERTURE_PAGE_BITS |
+						  caller_bank);
+			if (dir == ZOS_IPC_DESC_IN) {
+				ipc_ap_req[1] = (uint8_t)caller_addr;
+				ipc_ap_req[2] = (uint8_t)(caller_addr >> 8);
+				ipc_ap_req[3] = (uint8_t)service_addr;
+				ipc_ap_req[4] = (uint8_t)(service_addr >> 8);
+			} else {
+				ipc_ap_req[1] = (uint8_t)service_addr;
+				ipc_ap_req[2] = (uint8_t)(service_addr >> 8);
+				ipc_ap_req[3] = (uint8_t)caller_addr;
+				ipc_ap_req[4] = (uint8_t)(caller_addr >> 8);
+			}
+			ipc_ap_req[5] = (uint8_t)length;
+			ipc_ap_req[6] = (uint8_t)(length >> 8);
+			++ipc_copy_aperture;
+			return (int16_t)ipc_ap_copy();
+		}
+	}
+	/* Path C: a caller buffer behind the aperture or outside the
+	 * primary bank, an aperture-resolved far bank (P != 0 at capture,
+	 * the package-43 resolution hook), or a service buffer outside
+	 * 8000h-BFFFh.  Chunked through the common-resident bank copy
+	 * gate; counted as slow. */
+	++ipc_copy_slow;
+	return copy_staged(caller_bank, caller_addr, service_addr, length,
+			   dir);
+}
+
+/* --- descriptor capture and lookup -------------------------------------- */
+
+static void desc_release_all(void)
+{
+	uint8_t index;
+
+	for (index = 0u; index < IPC_DESC_MAX; ++index) {
+		descs[index].active = 0u;
+	}
+}
+
+/* Capture one caller buffer from the saved execution latch.  The buffer
+ * window is 0100h-DFFFh (ZOS_USER_BUFFER_BASE/END), the caller's own
+ * bank, plus the common window E000h-FFFFh, which every mapping shows at
+ * the same address (correction 01 to architecture 36.8); bank 7 can
+ * never be a caller bank through the gate.  With a nonzero page, a
+ * buffer may lie wholly inside the mode-10 aperture (the far bank) or
+ * wholly outside it, never across its boundary. */
+static int8_t desc_capture(uint8_t latch, uint16_t addr, uint16_t length,
+			   uint8_t dir)
+{
+	uint8_t index;
+	uint8_t page = (uint8_t)((latch & ZOS_ROM_PAGE_MASK) >>
+				 ZOS_ROM_PAGE_SHIFT);
+	uint16_t end;
+
+	if (length == 0u || length > ZOS_IPC_DESC_MAX || dir > 1u) {
+		return (int8_t)-1;
+	}
+	if ((latch & ZOS_BANK_MASK) >= ZOS_BANK_MASK) {
+		return (int8_t)-1;
+	}
+	if (addr < ZOS_USER_BUFFER_BASE ||
+	    (uint32_t)addr + length > 0x10000u) {
+		return (int8_t)-1;
+	}
+	if (page != 0u) {
+		end = (uint16_t)(addr + length);
+		if (addr < IPC_APERTURE_END && end > IPC_APERTURE_BASE &&
+		    !(addr >= IPC_APERTURE_BASE && end <= IPC_APERTURE_END)) {
+			return (int8_t)-1;
+		}
+	}
+	for (index = 0u; index < IPC_DESC_MAX; ++index) {
+		if (!descs[index].active) {
+			descs[index].active = 1u;
+			descs[index].dir = dir;
+			descs[index].depth = call_depth;
+			descs[index].latch = latch;
+			descs[index].addr = addr;
+			descs[index].length = length;
+			return (int8_t)index;
+		}
+	}
+	return (int8_t)-1;
+}
+
+/* A descriptor id is valid only for calls deeper than its capture level:
+ * the caller's ids stay live down the chain, and no service can name a
+ * descriptor of its own level or a forged id. */
+static struct ipc_desc *desc_lookup(uint8_t id)
+{
+	if (id >= IPC_DESC_MAX) {
+		return (struct ipc_desc *)0;
+	}
+	if (!descs[id].active || descs[id].depth >= call_depth) {
+		return (struct ipc_desc *)0;
+	}
+	return &descs[id];
+}
+
+/* --- endpoint registration, lookup and dispatch -------------------------- */
+
+int8_t ipc_lookup(uint8_t class, uint8_t instance, uint8_t *version)
+{
+	uint8_t index;
+
+	for (index = 0u; index < endpoint_count; ++index) {
+		if (endpoints[index].registered &&
+		    endpoints[index].class == class &&
+		    endpoints[index].instance == instance) {
+			if (version != (uint8_t *)0) {
+				*version = endpoints[index].version;
+			}
+			return (int8_t)(index + 1u);
+		}
+	}
+	return 0;
+}
+
+static struct ipc_endpoint *endpoint_for(uint8_t handle)
+{
+	if (handle == 0u || handle > endpoint_count) {
+		return (struct ipc_endpoint *)0;
+	}
+	if (!endpoints[handle - 1u].registered) {
+		return (struct ipc_endpoint *)0;
+	}
+	return &endpoints[handle - 1u];
+}
+
+static int8_t api_register_ep(uint8_t class, uint8_t instance,
+			      uint16_t entry, uint8_t flags, uint8_t version)
+{
+	struct ipc_endpoint *ep;
+
+	if (ipc_irq_active) {
+		return (int8_t)(-ZOS_EBUSY);
+	}
+	if (endpoint_count >= IPC_ENDPOINT_MAX) {
+		return (int8_t)(-ZOS_ENOSPC);
+	}
+	if (entry < ZOS_REV13_WINDOW_BASE ||
+	    entry >= ZOS_BANK7_RUNTIME_END) {
+		return (int8_t)(-ZOS_EINVAL);
+	}
+	ep = &endpoints[endpoint_count];
+	ep->dispatch = entry;
+	ep->class = class;
+	ep->instance = instance;
+	ep->flags = flags;
+	ep->version = version;
+	ep->registered = 1u;
+	ep->busy = 0u;
+	++endpoint_count;
+	return (int8_t)endpoint_count;
+}
+
+/* Invoke one service dispatch entry: open the owner's domain when
+ * crossing into it, switch to the fixed service stack at the outermost
+ * call, and run the bounded frame through the fixed primitive.  A nested
+ * call whose target is already in the current domain takes the same-domain
+ * fast path and does not touch the mapping. */
+static int16_t invoke_endpoint(const struct ipc_endpoint *ep,
+			       struct zos_ipc_frame *frame, uint8_t nested)
+{
+	uint8_t page = IPC_SERVICE_PAGE_BITS;
+	int16_t result;
+
+	if (!nested) {
+		ipc_domain_enter(page);
+		result = ipc_invoke(ep->dispatch, frame);
+		ipc_domain_exit();
+		return result;
+	}
+	if ((ipc_latch() & ZOS_ROM_PAGE_MASK) == page) {
+		return ipc_invoke_here(ep->dispatch, frame);
+	}
+	/* Cross-domain nested call: the nucleus re-selects the target domain
+	 * around the call, but not through the save/restore primitive - the
+	 * outermost call owns that single-depth state. */
+	{
+		uint8_t saved = (uint8_t)(ipc_latch() & ZOS_ROM_PAGE_MASK);
+
+		ipc_domain_set(page);
+		result = ipc_invoke_here(ep->dispatch, frame);
+		ipc_domain_set(saved);
+	}
+	return result;
+}
+
+static int16_t ipc_call_endpoint(uint8_t handle, struct zos_ipc_frame *frame)
+{
+	struct ipc_endpoint *ep = endpoint_for(handle);
+	struct zos_ipc_frame *target;
+	uint8_t nested = call_depth;
+	int16_t result;
+
+	if (ep == (struct ipc_endpoint *)0) {
+		return -ZOS_EINVAL;
+	}
+	if (ep->busy && (ep->flags & ZOS_IPC_EP_REENTRANT) == 0u) {
+		return -ZOS_EBUSY;
+	}
+	if (call_depth >= ZOS_IPC_MAX_NESTING) {
+		return -ZOS_ENOSPC;
+	}
+	target = &frames[call_depth + 1u];
+	*target = *frame;
+	ep->busy = 1u;
+	++call_depth;
+	result = invoke_endpoint(ep, target, nested);
+	--call_depth;
+	ep->busy = 0u;
+	*frame = *target;
+	frame->status = result;
+	return result;
+}
+
+/* --- the service bootstrap interface ------------------------------------ */
+
+static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t service_addr,
+			uint16_t length, uint8_t dir)
+{
+	struct ipc_desc *desc;
+
+	if (ipc_irq_active) {
+		return -ZOS_EBUSY;
+	}
+	desc = desc_lookup(id);
+	if (desc == (struct ipc_desc *)0 || desc->dir != dir) {
+		return -ZOS_EINVAL;
+	}
+	return copy_move(desc, service_addr, offset, length, dir);
+}
+
+static int8_t api_lookup(uint8_t class, uint8_t instance)
+{
+	if (ipc_irq_active) {
+		return (int8_t)(-ZOS_EBUSY);
+	}
+	return ipc_lookup(class, instance, (uint8_t *)0);
+}
+
+static int16_t api_call(uint8_t handle, uint8_t op,
+			struct zos_ipc_frame *frame)
+{
+	if (ipc_irq_active) {
+		return -ZOS_EBUSY;
+	}
+	frame->op = op;
+	return ipc_call_endpoint(handle, frame);
+}
+
+static int16_t api_copy_in(uint8_t desc, uint16_t offset, uint16_t dst,
+			   uint16_t length)
+{
+	return api_copy(desc, offset, dst, length, ZOS_IPC_DESC_IN);
+}
+
+static int16_t api_copy_out(uint8_t desc, uint16_t offset, uint16_t src,
+			    uint16_t length)
+{
+	return api_copy(desc, offset, src, length, ZOS_IPC_DESC_OUT);
+}
+
+static int16_t api_move(uint16_t src, uint16_t dst, uint16_t length)
+{
+	if (ipc_irq_active) {
+		return -ZOS_EBUSY;
+	}
+	if (!in_service_window(src, length) || !in_service_window(dst, length)) {
+		return -ZOS_EINVAL;
+	}
+	ipc_copy_req[0] = src;
+	ipc_copy_req[1] = dst;
+	ipc_copy_req[2] = length;
+	return (int16_t)ipc_copy_run();
+}
+
+static __sfr __at ZOS_SIO0B_CTRL ipc_sio_ctrl;
+static __sfr __at ZOS_SIO0B_DATA ipc_sio_data;
+
+static void api_console_putc(uint8_t byte)
+{
+	/* The early console path stays nucleus-owned and common-resident. */
+	early_console_putc((char)byte);
+}
+
+static int8_t api_console_poll(void)
+{
+	return (int8_t)((ipc_sio_ctrl & ZOS_SIO_RR0_RX_AVAILABLE) != 0u
+			? 1 : 0);
+}
+
+static int8_t api_console_getc(void)
+{
+	return (int8_t)ipc_sio_data;
+}
+
+/* --- IRQ ownership: nucleus vectoring, service handler ------------------- */
+
+/* Fixed trampoline: entered from the IRQ executive on the ISR stack with
+ * the interrupted latch saved in the IRQ gate's own slot.  It opens the
+ * owner's window, runs the service handler there (restricted API: no IPC),
+ * and re-selects the nucleus page; the executive restores the interrupted
+ * latch exactly and executes the final RETI.  The call's own saved latch
+ * (ipc_domain_enter/exit) is never touched, so an IRQ during a service
+ * call cannot corrupt the call's epilogue. */
+static void ipc_irq_trampoline(void *context)
+{
+	(void)context;
+	if (irq_handler_entry == 0u) {
+		return;
+	}
+	ipc_irq_active = 1u;
+	ipc_domain_set(irq_handler_page);
+	((void (*)(void *))irq_handler_entry)((void *)irq_handler_context);
+	ipc_domain_set(IPC_NUCLEUS_PAGE_BITS);
+	ipc_irq_active = 0u;
+}
+
+static int8_t api_irq_claim(uint8_t source, uint16_t handler,
+			    uint16_t context)
+{
+	if (handler < ZOS_REV13_WINDOW_BASE ||
+	    handler >= ZOS_BANK7_RUNTIME_END) {
+		return (int8_t)(-ZOS_EINVAL);
+	}
+	if (irq_handler_entry != 0u) {
+		return (int8_t)(-ZOS_EBUSY);
+	}
+	irq_handler_entry = handler;
+	irq_handler_context = context;
+	irq_handler_page = IPC_SERVICE_PAGE_BITS;
+	if (irq_claim((irq_source_t)source, ipc_irq_trampoline,
+		      (void *)0) != IRQ_OK) {
+		irq_handler_entry = 0u;
+		return (int8_t)(-ZOS_EBUSY);
+	}
+	return 0;
+}
+
+static int8_t api_irq_release(uint8_t source)
+{
+	if (irq_release((irq_source_t)source) != IRQ_OK) {
+		return (int8_t)(-ZOS_ENOENT);
+	}
+	irq_handler_entry = 0u;
+	irq_handler_context = 0u;
+	return 0;
+}
+
+static const struct ipc_service_api ipc_api = {
+	api_register_ep,
+	api_lookup,
+	api_call,
+	api_copy_in,
+	api_copy_out,
+	api_move,
+	api_console_putc,
+	api_console_poll,
+	api_console_getc,
+	api_irq_claim,
+	api_irq_release,
+};
+
+/* The table a service init entry receives in HL.  The resident loader
+ * (acceptance code) reads it here before it hands the pointer to the
+ * upcall shim, so the pointer crosses no bank by itself. */
+const struct ipc_service_api *ipc_service_api(void)
+{
+	return &ipc_api;
+}
+
+/* --- syscall entry ------------------------------------------------------- */
+
+int16_t ipc_syscall_call(struct zos_ipc_call_args *args)
+{
+	int8_t id = (int8_t)-1;
+	int16_t result;
+
+	desc_release_all();
+	if (args->length != 0u) {
+		/* The gate latch is read once, before any nested call can
+		 * overwrite it: it is the caller's bank and page. */
+		id = desc_capture(ipc_gate_latch(), args->buffer,
+				  args->length, args->direction);
+		if (id < 0) {
+			/* A refused descriptor is an IPC status like any
+			 * other: publish it in the request as well, so a
+			 * caller that reads only `status` sees the
+			 * refusal (docs/abi.md section 12). */
+			args->status = -ZOS_EINVAL;
+			return -ZOS_EINVAL;
+		}
+	}
+	frames[0] = args->frame;
+	frames[0].desc = (id >= 0) ? (uint8_t)id : ZOS_IPC_DESC_NONE;
+	result = ipc_call_endpoint(args->handle, &frames[0]);
+	args->frame = frames[0];
+	args->status = result;
+	desc_release_all();
+	return result;
+}
