@@ -122,12 +122,15 @@ _Static_assert(__builtin_offsetof(struct zmod_reloc, patch_offset) == 0x02,
 
 /* Granule geometry.  Allocation granularity is fixed at 512 bytes; the
  * runtime granule count is derived from the linked driver-arena symbols
- * (`__driver_arena_start`/`__driver_arena_end`) and may never exceed the
- * architectural maximum `(DF00h-2000h)/512 = 95` granules (the bank-7
- * window below the ISR stack), which bounds every loader table.  There is
- * deliberately no compiled arena count: the arena is derived from the
- * aligned end of the linked kernel and the derived runtime-data base (both
- * are validated against these bounds). */
+ * (`__driver_arena_start`/`__driver_arena_end`) and bounds every loader
+ * table.  `ZMOD_MAX_GRANULES` stays the format's conservative upper bound
+ * (`(ZMOD_ARCH_END-ZMOD_ARCH_BASE)/512`) even though the package-38 layout
+ * caps the arena at the cold half's 64 granules: the module format is
+ * unchanged, and the real bound is the linked arena (`tools/mapcheck.py`
+ * derives it and `zmodpack plan` must fit the boot set inside it).  There
+ * is deliberately no compiled arena count: the arena is derived from the
+ * aligned end of the linked cold code and the derived cold runtime-data
+ * base (both are validated against these bounds). */
 #define ZMOD_GRANULE_SIZE 512u
 #define ZMOD_ARCH_BASE     0x2000u
 #define ZMOD_ARCH_END      0xDF00u

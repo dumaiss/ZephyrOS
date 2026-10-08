@@ -86,7 +86,8 @@ common memory, still mode 10
     ├── save the full caller latch
     ├── switch SP to the common gate stack
     ├── push BC, DE, IX, IY
-    ├── write 18h|N to port 00h        (only the mode bits change)
+    ├── write (N & 07h) | 18h to port 00h   (bank and mode bits only, so
+    │                                       the revision-13 page field is 0)
     ▼
 mode 11, bank 7 visible at 2000h-DFFFh
     └── zos_syscall_dispatch (bank-7 boundary -> internal C dispatcher)
@@ -129,10 +130,14 @@ boundary once the foreground enables maskable interrupts:
   `AF' BC' DE' HL'`, `SP`, the selected bank and mode (exact port-`00h`
   latch restored), and `PC` (via `RETI`).  The `I` register stays `FDh`.
 - Entry from mode `10` crosses to `18h|saved_bank`; entry from mode `11`
-  retains the mapping.  The executive runs handlers on the bank-7 ISR
-  stack (`DF00h-DFFFh`) in mode `11`, with maskable interrupts disabled
-  for the entire delivery; there is no nesting.  The executive owns the
-  final `RETI`.
+  keeps the interrupted bank and mode.  Either way the gate normalizes the
+  revision-13 page field: it dispatches with `P = 0` (the full bank-7
+  decode) and restores the saved latch exactly on exit, so an interrupted
+  window call (architecture 36.10) keeps its page selection.  The
+  executive runs handlers on the bank-7 ISR stack (`5F00h-5FFFh`, in the
+  fixed core) in mode `11`, with maskable interrupts disabled for the
+  entire delivery; there is no nesting.  The executive owns the final
+  `RETI`.
 - Handlers are bank-7 code registered per logical source
   (`irq_claim`/`irq_release`); unexpected or unclaimed interrupts take a
   compact counter/source record and, for CTC0, a safe quiesce.

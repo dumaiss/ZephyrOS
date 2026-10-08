@@ -1,11 +1,13 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS M7 diagnostic port helpers (bank-7 code).
+; ZephyrOS M7 diagnostic port helpers (cold-half code).
 ;
 ; The diagnostic I/O services in kernel/syscall/diag.c validate the port
 ; (10h-FFh; 00h-0Fh alias the memory latch and are rejected before this
 ; code runs) and then call these two leaf helpers.  They touch no bank,
 ; mode, stack, or interrupt state: the exact active latch is trivially
-; unchanged.
+; unchanged.  The diagnostic syscall bodies that reach them run with
+; P = 0 (the syscall gate clears the page field), so the helpers live in
+; the cold half with the rest of the syscall side (config/residency.json).
 ;
 ;   struct zos_diag_hw_port { uint8_t port; uint8_t value; };
 ;   uint8_t zos_diag_hw_in(const struct zos_diag_hw_port *port);
@@ -20,7 +22,7 @@
 	.globl _zos_diag_hw_in
 	.globl _zos_diag_hw_out
 
-	.area _CODE
+	.area _WINDOW
 
 ; uint8_t zos_diag_hw_in(const struct zos_diag_hw_port *port);
 _zos_diag_hw_in::

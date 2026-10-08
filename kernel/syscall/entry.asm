@@ -100,7 +100,9 @@ zos_syscall_entry::
 	cp	#ZOS_BANK_MASK		; bank 7 is not an application bank
 	jp	z,__zos_mode_fault
 
-	; Enter OS mode over the caller bank: only the mode bits change.
+	; Enter OS mode over the caller bank: bank and mode only, so the
+	; revision-13 page field is cleared and the whole bank-7 decode is
+	; visible (architecture 36.5: the syscall gate is P-normalizing).
 	ld	a,(zos_gate_saved_latch)
 	and	#ZOS_BANK_MASK
 	or	#ZOS_MODE_OS

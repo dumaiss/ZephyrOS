@@ -12,30 +12,50 @@
 ZOS_RESET_TOP           = 0x0030
 ZOS_PAGE_ZERO_END       = 0x0100
 
-; Bank-7 OS body, visible in mode 11.  The loadable (ROM-initialized) part
-; ends at the linked __kernel_code_end; the zero-initialized runtime area
-; begins at the derived data base (align_down(DF00h - runtime_data_size,
-; 512)) and is never loaded from ROM.  ZOS_BANK7_LOAD_END is the
-; architectural ceiling on the loadable end, not a fixed boundary.
+; Bank-7 OS body, visible in mode 11 under decoder revision 13.  Mode 11
+; splits bank 7 into a 16 KiB fixed core and a 32 KiB cold half behind
+; the 6000h window (architecture 36.2, 36.5):
+;
+;   2000h-5FFFh  fixed core: code that executes, and data that is
+;                touched, while the window shows another bank, plus the
+;                ISR stack and the service stack.
+;   6000h-DFFFh  cold half, visible while the window shows bank 7
+;                (P = 0): syscall-side and boot code, the driver arena
+;                and the objects that move to bank 6 in stages 4-5.
+;
+; The fixed core's loadable (ROM-initialized) part ends at the linked
+; end of the fixed code areas; its zero-initialized runtime data begins
+; at the derived data base
+; (align_down(ZOS_SERVICE_STACK_BASE - fixed_data_size, 512)) and is
+; never loaded from ROM.  In the cold half the driver arena sits between
+; the granule-aligned end of the window code and the derived window data
+; base (align_down(ZOS_BANK7_RUNTIME_END - window_data_size, 512)).
 ZOS_BANK7_BASE          = 0x2000
-ZOS_BANK7_LOAD_END      = 0xC000
-ZOS_BANK7_RUNTIME_END   = 0xDF00
-ZOS_IRQ_ISR_STACK_BASE  = 0xDF00
-ZOS_IRQ_ISR_STACK_TOP   = 0xE000
+ZOS_REV13_WINDOW_BASE   = 0x6000
+ZOS_BANK7_RUNTIME_END   = 0xE000
+ZOS_IRQ_ISR_STACK_BASE  = 0x5F00
+ZOS_IRQ_ISR_STACK_TOP   = 0x6000
 ZOS_IRQ_ISR_STACK_SIZE  = 0x0100
 
+; Service stack: 512 bytes in the fixed core, reserved now and used by
+; the IPC substrate from stage 3 (architecture 36.9, 36.20).  It grows
+; down from ZOS_SERVICE_STACK_TOP, below the relocated ISR stack, so the
+; fixed core's runtime data never reaches either stack.
+ZOS_SERVICE_STACK_BASE  = 0x5D00
+ZOS_SERVICE_STACK_TOP   = 0x5F00
+ZOS_SERVICE_STACK_SIZE  = 0x0200
+
 ; Driver arena.  There is one geometry: the two-pass build derives the
-; arena start from the aligned end of the linked kernel and the arena end
-; from the runtime-data size, exporting __kernel_code_end /
+; arena start from the granule-aligned end of the linked window code and
+; the arena end from the window-data size, exporting __kernel_code_end /
 ; __driver_arena_start / __driver_arena_end through kernel/module/arena.asm
 ; and the generated build/geometry/arena_geometry.inc (its memory.inc
-; variant additionally carries the data base and granule count).  The
-; probe link places no arena.  Only the build-time contract lives here:
-; the granule size and the production minimum that mapcheck enforces.
-; The runtime data base is never part of the allocator.
+; variant additionally carries both data bases, the granule count and the
+; fixed-core ledger fields).  The probe link places no arena.  There is
+; no granule floor: the arena only has to hold the declared boot set,
+; which tools/zmodpack.py's plan and tools/pack_image.py enforce.  The
+; window data base is never part of the allocator.
 ZOS_DRIVER_GRANULE_SIZE = 0x0200
-ZOS_DRIVER_ARENA_MIN_SIZE     = 0x4000
-ZOS_DRIVER_ARENA_MIN_GRANULES = 32
 
 ; Permanent common code/data in physical SRAM bank 0.  ZOS_COMMON_CODE_END
 ; is the exclusive end of ordinary common content; the IM2 vector page and

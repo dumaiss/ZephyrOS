@@ -58,16 +58,6 @@ PLATFORM_FILES = {
     "config.mk",
 }
 
-# Platform-owned hardware description: the programmed memory-decoder
-# revision 13 and its WinCUPL simulation vectors.  This is a CUPL
-# description and a vector table, not executable Z80 code, and the exact
-# file set is pinned so a stray source file cannot hide in the directory.
-PLATFORM_HDL_DIR = "hdl"
-PLATFORM_HDL_FILES = {
-    "MEM_DECODER_rev13.pld",
-    "MEM_DECODER_rev13.si",
-}
-
 # Implementation files that must exist under their owning directories.
 OWNER_FILES = (
     "boot/start.asm",
@@ -300,6 +290,10 @@ OWNER_FILES = (
     "tests/target/include/loader_selftest.h",
     "tests/target/include/process_selftest.h",
     "tests/target/include/ctc_test.h",
+    "tests/target/nucleus/nucleus_entry.asm",
+    "tests/target/nucleus/nucleus_test.c",
+    "tests/target/include/nucleus_selftest.h",
+    "tests/target/include/nucleus_entry.inc",
     "tests/target/support/target_test.c",
     "tests/target/support/ctc_test.c",
 )
@@ -1008,36 +1002,20 @@ class TestNoResidentBlockDriver(unittest.TestCase):
 class TestPlatformBoundary(unittest.TestCase):
     def test_platform_contains_only_constant_configuration_files(self):
         actual = set(os.listdir(PLATFORM_DIR))
-        allowed = PLATFORM_FILES | {PLATFORM_HDL_DIR}
+        allowed = PLATFORM_FILES
         self.assertEqual(actual, allowed,
                          "platform/zephyr80/ must contain constants and "
                          "configuration only (unexpected: %s, missing: %s)"
                          % (sorted(actual - allowed),
                             sorted(allowed - actual)))
 
-    def test_hdl_contains_only_the_decoder_description(self):
-        hdl = os.path.join(PLATFORM_DIR, PLATFORM_HDL_DIR)
-        self.assertTrue(os.path.isdir(hdl))
-        self.assertEqual(set(os.listdir(hdl)), PLATFORM_HDL_FILES,
-                         "platform/zephyr80/hdl/ is the pinned "
-                         "hardware-description set")
-
     def test_no_target_code_suffixes(self):
         for name in sorted(os.listdir(PLATFORM_DIR)):
-            if name == PLATFORM_HDL_DIR:
-                continue
             self.assertIn(os.path.splitext(name)[1], (".h", ".inc", ".mk"),
                           "platform file %s has a target-code suffix" % name)
-        for name in sorted(PLATFORM_HDL_FILES):
-            self.assertIn(os.path.splitext(name)[1], (".pld", ".si"),
-                          "hardware description %s is not a PLD/vector file"
-                          % name)
 
     def test_no_executable_content(self):
-        for directory, names in (
-                (PLATFORM_DIR, sorted(os.listdir(PLATFORM_DIR))),
-                (os.path.join(PLATFORM_DIR, PLATFORM_HDL_DIR),
-                 sorted(PLATFORM_HDL_FILES))):
+        for directory, names in ((PLATFORM_DIR, sorted(os.listdir(PLATFORM_DIR))),):
             for name in names:
                 path = os.path.join(directory, name)
                 if os.path.isdir(path):
@@ -1250,18 +1228,26 @@ class TestMilestoneRetentionWindow(unittest.TestCase):
                         % (os.path.relpath(path, ROOT), token))
 
 
-# C/assembly constant pairs that must stay value-identical: the platform
-# declarations, the interrupt-executive vectors, and the two acceptance
-# constant pairs the subsystem image's assembly and C share.
-CONSTANT_PARITY_PAIRS = (
-    ("platform/zephyr80/hardware.h", "platform/zephyr80/hardware.inc"),
-    ("platform/zephyr80/memory.h", "platform/zephyr80/memory.inc"),
-    ("platform/zephyr80/irq.h", "platform/zephyr80/irq.inc"),
+# Acceptance constant pairs: the C header is the source of truth and the
+# .inc is the assembly listing of the same acceptance image, so a drift
+# between them is a silent test bug.
+ACCEPTANCE_CONSTANT_PAIRS = (
     ("tests/target/include/syscall_selftest.h",
      "tests/target/include/syscall_entry.inc"),
     ("tests/target/include/irq_selftest.h",
      "tests/target/include/irq_entry.inc"),
+    ("tests/target/include/nucleus_selftest.h",
+     "tests/target/include/nucleus_entry.inc"),
 )
+
+# C/assembly constant pairs that must stay value-identical: the platform
+# declarations, the interrupt-executive vectors, and the acceptance pairs
+# above.
+CONSTANT_PARITY_PAIRS = (
+    ("platform/zephyr80/hardware.h", "platform/zephyr80/hardware.inc"),
+    ("platform/zephyr80/memory.h", "platform/zephyr80/memory.inc"),
+    ("platform/zephyr80/irq.h", "platform/zephyr80/irq.inc"),
+) + ACCEPTANCE_CONSTANT_PAIRS
 
 
 class TestConstantParity(unittest.TestCase):
@@ -1293,7 +1279,7 @@ class TestConstantParity(unittest.TestCase):
     def test_acceptance_constant_pairs_are_complete(self):
         # The acceptance .inc files exist for their assembly listing only,
         # so every C constant must be present in the assembly view too.
-        for c_rel, asm_rel in CONSTANT_PARITY_PAIRS[-2:]:
+        for c_rel, asm_rel in ACCEPTANCE_CONSTANT_PAIRS:
             c = parse_c_header(os.path.join(ROOT, c_rel))
             asm = parse_asm_inc(os.path.join(ROOT, asm_rel))
             for name in sorted(c):

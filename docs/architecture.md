@@ -4827,9 +4827,10 @@ Rules:
   mapped while a personality runs.
 
 The decoder only selects which bank answers an 8 KiB region, always at the
-same offset. There is no address translation. The design is
-`platform/zephyr80/hdl/MEM_DECODER_rev13.pld` with its vectors in
-`MEM_DECODER_rev13.si` (`make rev13-pld`). Its `RAM_A16`-`RAM_A18`
+same offset. There is no address translation. The PLD design and its
+vectors live in the Zephyr-80 hardware project, not in the OS tree. The OS
+keeps only the simulator model (`tests/z80sim.py`) and its equivalence tests.
+The `RAM_A16`-`RAM_A18`
 equations are written in inverted polarity, 9/9/9 product terms against the
 22V10's 10/12/14 budgets. No further decoder capacity is assumed.
 

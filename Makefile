@@ -34,7 +34,6 @@
 #   make m9-exec-selftest     M9 SYS_EXEC nesting acceptance image
 #   make m9-iocfat-selftest   M9 IOC-FAT provider acceptance image
 #   make rsvc-spike-selftest  resident-service spike image (revision 13)
-#   make rev13-pld            revision-13 decoder: vectors, fit, WinCUPL
 #   make clean    remove all generated files
 #
 # Builds are parallel by default (ZOS_JOBS defaults to nproc); use
@@ -85,7 +84,7 @@ ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/platform_irq.rel $(BUILD)/sdcc_helpers.rel \
              $(BUILD)/arena.rel $(BUILD)/rom_access.rel \
              $(BUILD)/process_launch.rel $(BUILD)/user_copy.rel \
-             $(BUILD)/diag_io.rel
+             $(BUILD)/upcall.rel $(BUILD)/diag_io.rel
 # M9 VFS core, generated mount table and statically linked ROMFS provider.
 M9_VFS_OBJS := $(BUILD)/vfs_mounts.rel $(BUILD)/vfs_path.rel \
                $(BUILD)/vfs_mount.rel $(BUILD)/vfs_file.rel \
@@ -112,9 +111,8 @@ END_OBJ   := $(BUILD)/irq_code_end.rel
 # bank-6 resident services.  It is the only window build; production and
 # every other acceptance image run with the flag unset.
 ZOS_RSVC_SPIKE      ?= 0
-ZOS_WINDOW_SPLIT    := $(if $(filter 1,$(ZOS_RSVC_SPIKE)),1,0)
 # The revision-13 mode-11 window is 6000h-DFFFh (architecture section
-# 36.2); the fixed core is 2000h-5FFFh.
+# 36.2); the fixed core is 2000h-5FFFh.  Every image links that way.
 ZOS_REV13_WINDOW_BASE := 0x6000
 
 # --- target acceptance build selection ---------------------------------
@@ -402,6 +400,24 @@ ZOS_HID_BOOT := 0
 ZOS_V9958_BOOT := 0
 endif
 
+# Nucleus-layout acceptance image (work package 38): the production boot
+# path with the revision-13 gate and upcall-shim acceptance surface linked
+# in.  The smoke caller runs in application bank 0 with the service page
+# selected, and a cold-half caller exercises the fixed upcall shim against
+# a stub installed in bank 6.  SIO-only boot set, like the subsystem image:
+# the test objects own the derived arena.
+ifeq ($(ZOS_NUCLEUS_SELFTEST),1)
+CFLAGS    += -DZOS_NUCLEUS_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/nucleus_test.rel \
+                    $(BUILD)/nucleus_selftest_asm.rel \
+                    $(BUILD)/ctc_test.rel
+PK_SUFFIX := -nucleus-selftest
+ZOS_IOC_BOOT    := 0
+ZOS_HID_BOOT    := 0
+ZOS_V9958_BOOT  := 0
+ZOS_IOCFAT_BOOT := 0
+endif
+
 # Resident-service spike image (work package 35): the window split, the
 # nucleus IPC substrate, the six bank-6 resident service containers and
 # the client program.  Transport A on decoder revision 13, the 6000h
@@ -413,6 +429,14 @@ PK_SUFFIX := -rsvc-spike
 RSVC_DIR  := tests/target/rsvc
 C_OBJS    += $(BUILD)/rsvc_core.rel $(BUILD)/ctc_test.rel
 ASM_OBJS  += $(BUILD)/rsvc_asm.rel $(BUILD)/rsvc_blobs.rel
+# The spike keeps its own evaluation placement (package 36's measurement
+# layout): the IPC substrate and the service containers must fit the
+# 16 KiB fixed core, so more of the nucleus compiles cold than in the
+# production classification.  It is not a residency-checked image.
+SPIKE_COLD_OBJS := $(BUILD)/main.rel $(BUILD)/fs.rel $(BUILD)/romfs.rel \
+	$(BUILD)/process.rel $(BUILD)/process_exec.rel $(M9_VFS_OBJS) \
+	$(BUILD)/syscall.rel $(BUILD)/diag.rel $(BUILD)/diag_io.rel
+$(SPIKE_COLD_OBJS): CFLAGS += --codeseg WINDOW --dataseg WINDOW_DATA
 # SIO-only boot set, like the other evaluation images: the recovery store
 # carries sio.zmod plus the client program, and the two test-owned CTC0
 # helpers are the only IRQ producers.
@@ -492,22 +516,33 @@ CFLAGS    += -DZOS_IOCFAT_BOOT=$(ZOS_IOCFAT_BOOT)
 
 OBJS      := $(ASM_OBJS) $(C_OBJS)
 
-# Revision-13 window split: objects that only ever run with page 0
-# selected compile into the window areas (_WINDOW / _WINDOW_DATA at
-# 6000h-DFFFh).  The classification and its reasons live in
-# tests/m10/two-bank-classification.json and the package-35/36 validation
-# records; the fixed set keeps the default areas.  Not set for any other
-# build, so production object bytes are unchanged.
+# Nucleus residency (architecture 36.5, work package 38).  Every
+# production image is a revision-13 two-region build: the fixed areas
+# (_CODE and friends, _DATA/_INITIALIZED) must link inside 2000h-5FFFh,
+# and the objects in config/residency.json's `cold_half` list compile into
+# the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh) that the window
+# shows with P = 0.  The classification, its tiers and the reasons live in
+# config/residency.json; tools/mapcheck.py fails the build when an object
+# is missing or when a fixed-required object links at or above 6000h.
 #
-# The syscall-side objects are in the cold set: the syscall gate clears
-# the page field before dispatching, so the dispatcher, its diagnostic
-# bodies and the diagnostic port primitives only ever run with P = 0.
-# The fixed region is 16 KiB, so without the move nothing links.
-ifeq ($(ZOS_WINDOW_SPLIT),1)
-REV13_COLD_OBJS := $(BUILD)/main.rel $(BUILD)/fs.rel $(BUILD)/romfs.rel \
-	$(BUILD)/process.rel $(BUILD)/process_exec.rel $(M9_VFS_OBJS) \
-	$(BUILD)/syscall.rel $(BUILD)/diag.rel $(BUILD)/diag_io.rel
-$(REV13_COLD_OBJS): CFLAGS += --codeseg WINDOW --dataseg WINDOW_DATA
+# Acceptance images compile their target-test objects cold too, so test
+# code consumes the driver arena's slack, never the fixed core.
+#
+# The resident-service spike is the exception: its package-36 evaluation
+# layout (SPIKE_COLD_OBJS above) is its own measurement, it loads the
+# service containers through the window while it is open, and package 39
+# retires it.  It therefore keeps that placement instead of the
+# production classification.
+SPIKE_PLACEMENT := $(filter 1,$(ZOS_RSVC_SPIKE))
+RESIDENCY  := config/residency.json
+COLD_STEMS := $(shell $(PYTHON) tools/mapcheck.py residency \
+		--cold-stems $(RESIDENCY))
+COLD_OBJS  := $(addprefix $(BUILD)/,$(addsuffix .rel,$(COLD_STEMS)))
+ifneq ($(TARGET_TEST_OBJS),)
+COLD_OBJS  += $(TARGET_TEST_OBJS)
+endif
+ifeq ($(SPIKE_PLACEMENT),)
+$(COLD_OBJS): CFLAGS += --codeseg WINDOW --dataseg WINDOW_DATA
 endif
 
 # Driver-arena geometry ---------------------------------------------------
@@ -515,17 +550,6 @@ endif
 # linked-kernel end with a two-pass link.  There is one geometry; the probe
 # link places no arena.
 
-# Revision-13 memory decoder.  The programmed PLD and its WinCUPL
-# simulation vectors live in the platform tree; the read-only Zephyr-80
-# reference tree supplies revision 12 for the P = 0 equivalence
-# cross-check when it is present.  ZOS_REV13_HDL is hardware description,
-# never executable Z80 code.
-ZOS_REV13_HDL    := platform/zephyr80/hdl
-ZOS_REV13_PLD    := $(ZOS_REV13_HDL)/MEM_DECODER_rev13.pld
-ZOS_REV13_SI     := $(ZOS_REV13_HDL)/MEM_DECODER_rev13.si
-ZOS_ZEPHYR80_REF ?= $(HOME)/Documents/Zephyr-80
-ZOS_REV12_PLD    ?= $(ZOS_ZEPHYR80_REF)/Code/HDL/WinCUPL/src/MEM_DECODER.pld
-REV13_PLD_BUILD  ?= build-rev13-pld/hdl
 
 # Common acceptance wiring: the single guard plus the shared runner.
 ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
@@ -536,7 +560,7 @@ ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_CONSOLE_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
 	$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST) \
 	$(ZOS_M9_EXEC_SELFTEST) $(ZOS_M9_IOCFAT_SELFTEST) \
-	$(ZOS_M9_SELFTEST)),)
+	$(ZOS_M9_SELFTEST) $(ZOS_NUCLEUS_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1 \
 		-Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
@@ -544,22 +568,16 @@ endif
 
 # Production images (no acceptance objects) must reject every acceptance
 # symbol in the linked map; mapcheck --production enforces this.  The
-# window-split spike image links evaluation objects by construction, so it
-# is not a production image either.
-REV13_WINDOW_FLAG := $(if $(filter 1,$(ZOS_WINDOW_SPLIT)),--rev13-window,)
-MAPCHECK_FLAGS := $(if $(TARGET_TEST_OBJS),,\
-		$(if $(filter 1,$(ZOS_WINDOW_SPLIT)),,--production)) $(REV13_WINDOW_FLAG)
+# resident-service spike is not a production image either: it links
+# evaluation objects by construction, so it keeps its own placement until
+# package 39 promotes the substrate and retires the spike.
+MAPCHECK_FLAGS := $(if $(filter 1,$(ZOS_RSVC_SPIKE)),,\
+		$(if $(TARGET_TEST_OBJS),,--production))
 
-# Driver-arena floor.  The 32-granule floor is the production budget gate
-# (work/M9-REFERENCE.md); an acceptance image links target-test code and only
-# needs an arena that holds its declared boot set, which the arena plan
-# (zmodpack plan) enforces separately.  The resident-service spike image
-# grows the fixed core by the IPC substrate and the resident service
-# containers by design, so its floor is the declared boot set (sio.zmod, 1
-# granule) plus margin; the floor is the measurement image's own gate,
-# reported in the record.
-ZOS_ARENA_MIN_GRANULES := $(if $(filter 1,$(ZOS_RSVC_SPIKE)),4, \
-	$(if $(TARGET_TEST_OBJS),16,32))
+# The residency check runs on every image that uses the production
+# placement (the spike keeps its own evaluation layout until package 39
+# promotes the substrate and retires the spike).
+RESIDENCY_FLAGS := $(if $(filter 1,$(ZOS_RSVC_SPIKE)),,--residency $(RESIDENCY))
 
 # Every image boots the SIO fallback module from the recovery store and
 # then, per its boot gates, the IOC transport, the HID keyboard/text input
@@ -586,33 +604,14 @@ endif
 IMAGE := $(BUILD)/zephyros$(PK_SUFFIX).bin
 MAME_IMAGE := $(BUILD)/zephyr80$(PK_SUFFIX).bin
 
-# Memory-layout source for this build: a full memory.inc variant is
-# generated from the probe map, so every assembly unit (and mapcheck) sees
-# the derived driver arena.
+# Memory-layout source for this build: the platform memory.inc is the one
+# declarative source (the two-region split and the stack reservations are
+# production constants now), and the derived variant below adds the
+# per-image geometry that every assembly unit and layout tool reads.
 GEOMETRY_DIR       := $(BUILD)/geometry
 GEOMETRY_PROBE_DIR := $(BUILD)/probe
 GEOMETRY_INC       := $(GEOMETRY_DIR)/arena_geometry.inc
-
-# Revision-13 window split: the assembler needs the *static* window
-# variant of memory.inc (the relocated ISR stack and the window constant)
-# before the probe link, so it is generated first and searched ahead of
-# the platform include path.  The derived variant below carries the same
-# declarations plus the per-image geometry and is what the link tools
-# read.  Outside the spike build both variables are the platform file,
-# exactly as before.
-REV13_STATIC_MEMORY := $(BUILD)/rev13-memory/zephyr80/memory.inc
-ASM_MEMORY_INC := $(if $(filter 1,$(ZOS_WINDOW_SPLIT)),$(REV13_STATIC_MEMORY),$(ZOS_PLATFORM_MEMORY_INC))
-
-$(REV13_STATIC_MEMORY): $(ZOS_PLATFORM_MEMORY_INC) tools/mapcheck.py | $(BUILD)
-	mkdir -p $(dir $@)
-	$(PYTHON) tools/mapcheck.py geometry static-variant \
-		--rev13-window \
-		$(ZOS_PLATFORM_MEMORY_INC) $@
-
-ifneq ($(filter 1,$(ZOS_WINDOW_SPLIT)),)
-ASFLAGS    := -I$(BUILD)/rev13-memory $(ASFLAGS)
-REV13_STATIC_DEPS := $(REV13_STATIC_MEMORY)
-endif
+ASM_MEMORY_INC     := $(ZOS_PLATFORM_MEMORY_INC)
 
 GEOMETRY_MEMORY := $(GEOMETRY_DIR)/memory.inc
 MEMORY_INC := $(GEOMETRY_MEMORY)
@@ -626,12 +625,11 @@ MEMORY_INC := $(GEOMETRY_MEMORY)
 # re-verified by mapcheck.py, so a stale generated value cannot survive.
 
 $(GEOMETRY_INC) $(GEOMETRY_MEMORY): $(BUILD)/zephyros.probe.map \
-		tools/mapcheck.py $(ASM_MEMORY_INC) | $(BUILD)
+		tools/mapcheck.py $(ASM_MEMORY_INC) $(RESIDENCY) | $(BUILD)
 	mkdir -p $(GEOMETRY_DIR)
 	$(PYTHON) tools/mapcheck.py geometry derive $(BUILD)/zephyros.probe.map \
 		$(ASM_MEMORY_INC) $(GEOMETRY_INC) $(GEOMETRY_MEMORY) \
-		--min-granules $(ZOS_ARENA_MIN_GRANULES) \
-		$(REV13_WINDOW_FLAG)
+		$(RESIDENCY_FLAGS)
 
 $(GEOMETRY_PROBE_DIR)/arena_geometry.inc: $(ZOS_PLATFORM_MEMORY_INC) \
 		tools/mapcheck.py | $(BUILD)
@@ -654,14 +652,9 @@ $(BUILD)/zephyros.probe.lk: $(PROBE_OBJS) | $(BUILD)
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
 	  printf '%s\n' '-i $(BUILD)/zephyros.probe.ihx'; \
-	  if [ -n "$(REV13_WINDOW_FLAG)" ]; then \
-	    printf '%s\n' '-b _CODE = 0x2010' '-b _DATA = 0x6000' \
-	                  '-b _WINDOW = $(ZOS_REV13_WINDOW_BASE)' \
-	                  '-b _WINDOW_DATA = 0xD800' '-b _COMMON = 0xE000'; \
-	  else \
-	    printf '%s\n' '-b _CODE = 0x2000' '-b _DATA = 0xC000' \
-	                  '-b _COMMON = 0xE000'; \
-	  fi; \
+	  printf '%s\n' '-b _CODE = 0x2000' '-b _DATA = 0x5A00' \
+	                '-b _WINDOW = $(ZOS_REV13_WINDOW_BASE)' \
+	                '-b _WINDOW_DATA = 0xD800' '-b _COMMON = 0xE000'; \
 	  printf '%s\n' $(PROBE_OBJS); \
 	  printf '%s\n' '-e'; \
 	} > $@
@@ -684,8 +677,8 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	m9-exec-selftest \
 	m9-iocfat-selftest \
 	m9-selftest \
-	rev13-pld \
 	rsvc-spike-selftest \
+	nucleus-selftest \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-subsystem smoke-hardware-romfs-corrupt \
@@ -752,6 +745,10 @@ $(BUILD)/process_launch.rel: kernel/process/launch.asm \
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/user_copy.rel: kernel/memory/user_copy.asm \
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/upcall.rel: kernel/memory/upcall.asm \
 		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
@@ -1237,6 +1234,16 @@ $(BUILD)/irq_selftest_asm.rel: tests/target/irq/irq_entry.asm \
 		tests/target/include/irq_entry.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
+$(BUILD)/nucleus_test.rel: tests/target/nucleus/nucleus_test.c \
+		include/zephyros/irq.h include/zephyros/kernel.h \
+		include/zephyros/platform.h abi/zos/diag.h \
+		kernel/memory/upcall.h tests/target/include/nucleus_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/nucleus_selftest_asm.rel: tests/target/nucleus/nucleus_entry.asm \
+		tests/target/include/nucleus_entry.inc | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
 $(BUILD)/romfs_test.rel: tests/target/romfs/romfs_test.c \
 		include/zephyros/romfs.h include/zephyros/module.h \
 		include/zephyros/console.h include/zephyros/kernel.h \
@@ -1615,6 +1622,7 @@ $(BUILD)/romfs_expect.inc: tests/subsys/manifest.json $(MODULES)/sio.zmod \
 # step depends on, so the lists cannot drift apart.
 
 ZOS_TEST_LINK := $(filter 1,$(ZOS_SUBSYS_SELFTEST) \
+		$(ZOS_NUCLEUS_SELFTEST) \
 		$(ZOS_ROMFS_CORRUPT_SELFTEST) \
 		$(ZOS_IOC_SELFTEST) $(ZOS_HID_SELFTEST) \
 		$(ZOS_HID_NOIOC) $(ZOS_HID_BADIOC) \
@@ -1637,19 +1645,14 @@ $(BUILD)/zephyr80.lk: $(OBJS) $(TARGET_TEST_OBJS) $(END_OBJ) \
 	@data_base=$$(sed -n 's/^ZOS_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
 	test -n "$$data_base" || { echo "no derived data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
 	window_data_base=$$(sed -n 's/^ZOS_WINDOW_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
+	test -n "$$window_data_base" || { echo "no derived window data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
 	  printf '%s\n' '-i $(BUILD)/zephyros.ihx'; \
-	  if [ -n "$(REV13_WINDOW_FLAG)" ]; then \
-	    test -n "$$window_data_base" || { echo "no derived window data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
-	    printf '%s\n' '-b _CODE = 0x2010' "-b _DATA = $$data_base" \
-	                  '-b _WINDOW = $(ZOS_REV13_WINDOW_BASE)' \
-	                  "-b _WINDOW_DATA = $$window_data_base" \
-	                  '-b _COMMON = 0xE000'; \
-	  else \
-	    printf '%s\n' '-b _CODE = 0x2000' "-b _DATA = $$data_base" \
-	                  '-b _COMMON = 0xE000'; \
-	  fi; \
+	  printf '%s\n' '-b _CODE = 0x2000' "-b _DATA = $$data_base" \
+	                '-b _WINDOW = $(ZOS_REV13_WINDOW_BASE)' \
+	                "-b _WINDOW_DATA = $$window_data_base" \
+	                '-b _COMMON = 0xE000'; \
 	  printf '%s\n' $(OBJS) $(TARGET_TEST_OBJS) $(END_OBJ); \
 	  printf '%s\n' '-e'; \
 	} > $@
@@ -1659,11 +1662,16 @@ $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(OBJS) $(TARGET_TEST_OBJS) \
 	$(SDLDZ80) -f $(BUILD)/zephyr80.lk
 else
 # Canonical build: the checked-in linker template supplies the production
-# object list; the derived data base is substituted into build/zephyr80.lk.
+# object list; the two derived data bases are substituted into
+# build/zephyr80.lk.
 $(BUILD)/zephyr80.lk: linker/zephyr80.lk $(GEOMETRY_MEMORY) | $(BUILD)
 	@data_base=$$(sed -n 's/^ZOS_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
 	test -n "$$data_base" || { echo "no derived data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
-	sed "s/@DATA_BASE@/$$data_base/" linker/zephyr80.lk > $@
+	window_data_base=$$(sed -n 's/^ZOS_WINDOW_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
+	test -n "$$window_data_base" || { echo "no derived window data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
+	sed -e "s/@DATA_BASE@/$$data_base/" \
+	    -e "s/@WINDOW_DATA_BASE@/$$window_data_base/" \
+	    linker/zephyr80.lk > $@
 
 $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(BUILD)/zephyr80.lk \
 		$(OBJS) $(END_OBJ) | $(BUILD)
@@ -1681,12 +1689,11 @@ endif
 $(IMAGE): $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map \
 		$(BUILD)/recovery.romfs $(ARENA_PLAN) \
 		tools/pack_image.py tools/mapcheck.py $(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) \
-		--min-granules $(ZOS_ARENA_MIN_GRANULES) $(BUILD)/zephyros.map \
+	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) $(RESIDENCY_FLAGS) \
+		--boot-plan $(ARENA_PLAN) $(BUILD)/zephyros.map \
 		$(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/pack_image.py $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map \
-		$(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC) \
-		--min-granules $(ZOS_ARENA_MIN_GRANULES)
+	$(PYTHON) tools/pack_image.py $(MAPCHECK_FLAGS) $(BUILD)/zephyros.ihx \
+		$(BUILD)/zephyros.map $(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC)
 
 $(MAME_IMAGE): $(IMAGE)
 	cp $< $@
@@ -1727,7 +1734,7 @@ subsystem-selftest:
 	$(MAKE) BUILD=build-subsys-selftest ZOS_SUBSYS_SELFTEST=1 \
 		build-subsys-selftest/zephyros-subsys-selftest.bin \
 		build-subsys-selftest/zephyr80-subsys-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-subsys-selftest/zephyros.map \
 		build-subsys-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1756,12 +1763,11 @@ romfs-corrupt-selftest:
 # program.
 check-fast: $(ZEX_USER_ROOT)/hello.zex $(MODULES)/zextest.zex
 	$(PYTHON) -m unittest discover -s tests -v
-	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) \
-		--min-granules $(ZOS_ARENA_MIN_GRANULES) $(BUILD)/zephyros.map \
+	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) $(RESIDENCY_FLAGS) \
+		--boot-plan $(ARENA_PLAN) $(BUILD)/zephyros.map \
 		$(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/pack_image.py $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map \
-		$(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC) \
-		--min-granules $(ZOS_ARENA_MIN_GRANULES)
+	$(PYTHON) tools/pack_image.py $(MAPCHECK_FLAGS) $(BUILD)/zephyros.ihx \
+		$(BUILD)/zephyros.map $(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC)
 	sha256sum $(IMAGE) $(MAME_IMAGE)
 	cmp $(IMAGE) $(MAME_IMAGE)
 	@echo "make check: OK"
@@ -1815,7 +1821,7 @@ ioc-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-ioc-selftest/zephyros-ioc-selftest.bin \
 		build-ioc-selftest/zephyr80-ioc-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-ioc-selftest/zephyros.map \
 		build-ioc-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1844,7 +1850,7 @@ hid-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-hid-selftest/zephyros-hid-selftest.bin \
 		build-hid-selftest/zephyr80-hid-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-hid-selftest/zephyros.map \
 		build-hid-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1856,7 +1862,7 @@ hid-noioc-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-hid-noioc-selftest/zephyros-hid-noioc-selftest.bin \
 		build-hid-noioc-selftest/zephyr80-hid-noioc-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-hid-noioc-selftest/zephyros.map \
 		build-hid-noioc-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1868,7 +1874,7 @@ hid-badioc-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-hid-badioc-selftest/zephyros-hid-badioc-selftest.bin \
 		build-hid-badioc-selftest/zephyr80-hid-badioc-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-hid-badioc-selftest/zephyros.map \
 		build-hid-badioc-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1896,7 +1902,7 @@ video-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-video-selftest/zephyros-video-selftest.bin \
 		build-video-selftest/zephyr80-video-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-video-selftest/zephyros.map \
 		build-video-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1908,7 +1914,7 @@ video-fontfail-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-video-fontfail-selftest/zephyros-video-fontfail-selftest.bin \
 		build-video-fontfail-selftest/zephyr80-video-fontfail-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-video-fontfail-selftest/zephyros.map \
 		build-video-fontfail-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1927,7 +1933,7 @@ console-selftest:
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-console-selftest/zephyros-console-selftest.bin \
 		build-console-selftest/zephyr80-console-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-console-selftest/zephyros.map \
 		build-console-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1952,7 +1958,7 @@ console-integration-selftest: all
 	$(MAKE) BUILD=build-console-integration-selftest ZOS_CONSOLE_INTEGRATION_SELFTEST=1 ZOS_SMOKE_HOST_SYNC=1 \
 		build-console-integration-selftest/zephyros-console-integration-selftest.bin \
 		build-console-integration-selftest/zephyr80-console-integration-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-console-integration-selftest/zephyros.map \
 		build-console-integration-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1968,7 +1974,7 @@ m9-vfs-selftest: all
 	$(MAKE) BUILD=build-m9-vfs-selftest ZOS_M9_VFS_SELFTEST=1 \
 		build-m9-vfs-selftest/zephyros-m9-vfs-selftest.bin \
 		build-m9-vfs-selftest/zephyr80-m9-vfs-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 build-m9-vfs-selftest/zephyros.map \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) build-m9-vfs-selftest/zephyros.map \
 		build-m9-vfs-selftest/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_m9_vfs_sim.py' -v
 	@echo "m9 vfs image: build-m9-vfs-selftest/zephyros-m9-vfs-selftest.bin"
@@ -1981,8 +1987,8 @@ m9-required-mount-selftest: all
 	$(MAKE) BUILD=build-m9-required-mount-selftest ZOS_M9_REQUIRED_MOUNT=1 \
 		build-m9-required-mount-selftest/zephyros-m9-required-mount.bin \
 		build-m9-required-mount-selftest/zephyr80-m9-required-mount.bin
-	$(PYTHON) tools/mapcheck.py --production \
-		--min-granules $(ZOS_ARENA_MIN_GRANULES) \
+	$(PYTHON) tools/mapcheck.py --production --residency $(RESIDENCY) \
+		--boot-plan build-m9-required-mount-selftest/arena.plan.json \
 		build-m9-required-mount-selftest/zephyros.map \
 		build-m9-required-mount-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -1998,7 +2004,7 @@ m9-provider-selftest: all
 	$(MAKE) BUILD=build-m9-provider-selftest ZOS_M9_PROVIDER_SELFTEST=1 \
 		build-m9-provider-selftest/zephyros-m9-provider-selftest.bin \
 		build-m9-provider-selftest/zephyr80-m9-provider-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-m9-provider-selftest/zephyros.map \
 		build-m9-provider-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -2014,7 +2020,7 @@ m9-fs-selftest: all
 	$(MAKE) BUILD=build-m9-fs-selftest ZOS_M9_FS_SELFTEST=1 \
 		build-m9-fs-selftest/zephyros-m9-fs-selftest.bin \
 		build-m9-fs-selftest/zephyr80-m9-fs-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-m9-fs-selftest/zephyros.map \
 		build-m9-fs-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -2031,7 +2037,7 @@ m9-exec-selftest: all
 	$(MAKE) BUILD=build-m9-exec-selftest ZOS_M9_EXEC_SELFTEST=1 \
 		build-m9-exec-selftest/zephyros-m9-exec-selftest.bin \
 		build-m9-exec-selftest/zephyr80-m9-exec-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-m9-exec-selftest/zephyros.map \
 		build-m9-exec-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -2048,7 +2054,7 @@ m9-iocfat-selftest: all
 	$(MAKE) BUILD=build-m9-iocfat-selftest ZOS_M9_IOCFAT_SELFTEST=1 \
 		build-m9-iocfat-selftest/zephyros-m9-iocfat-selftest.bin \
 		build-m9-iocfat-selftest/zephyr80-m9-iocfat-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-m9-iocfat-selftest/zephyros.map \
 		build-m9-iocfat-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -2064,7 +2070,7 @@ m9-selftest: all
 	$(MAKE) BUILD=build-m9-selftest ZOS_M9_SELFTEST=1 \
 		build-m9-selftest/zephyros-m9-selftest.bin \
 		build-m9-selftest/zephyr80-m9-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-m9-selftest/zephyros.map \
 		build-m9-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
@@ -2089,35 +2095,20 @@ rsvc-spike-selftest: all
 	$(PYTHON) -m unittest discover -s tests -p 'test_rsvc_spike_sim.py' -v
 	@echo "rsvc spike image: build-rsvc-spike-6000/zephyros-rsvc-spike.bin"
 
-# Revision-13 memory decoder: the PLD and its simulation vectors live in
-# the platform tree (hardware description, not Z80 code).  This one target
-# checks the committed vectors against the generator, proves the equations
-# are the exact minimum cover (tools/pld_terms.py), compiles and simulates
-# the design when WinCUPL is available, and cross-checks the read-only
-# revision-12 reference against the generated P = 0 equivalence vectors.
-# Without a toolchain the target reports the skip and succeeds (the
-# committed vectors are still checked against the generator).
-rev13-pld:
-	$(PYTHON) tools/rev13_vectors.py --check
-	@mkdir -p $(REV13_PLD_BUILD)
-	$(PYTHON) tools/pld_terms.py --json $(REV13_PLD_BUILD)/terms.json
-	$(PYTHON) tools/pld_terms.py --check-pld $(ZOS_REV13_PLD)
-	$(PYTHON) tools/pld_terms.py --equations revision-13 --inverted \
-	    > $(REV13_PLD_BUILD)/equations.txt
-	@if [ -x tools/wincupl_build.sh ]; then \
-	  tools/wincupl_build.sh $(ZOS_REV13_PLD) \
-	      $(REV13_PLD_BUILD) $(ZOS_REV12_PLD) || status=$$?; \
-	  case "$${status:-0}" in \
-	    0) echo "rev13 PLD: compiled and simulated";; \
-	    3) echo "rev13 PLD: WinCUPL unavailable, or the revision-12" \
-	       "reference was skipped (see the message above); committed" \
-	       "vectors still checked against the generator";; \
-	    *) exit $${status};; \
-	  esac; \
-	else \
-	  echo "rev13 PLD: tools/wincupl_build.sh missing"; exit 1; \
-	fi
-	@echo "rev13 decoder: $(ZOS_REV13_PLD)"
+# Nucleus-layout acceptance image (work package 38): the revision-13 gates
+# with P != 0 on entry (syscall, IRQ), the cold-half handler placement and
+# the fixed upcall shim against a stub in bank 6.  SIO-only boot set, so
+# the derived arena belongs to the test objects.
+nucleus-selftest: all
+	$(MAKE) BUILD=build-nucleus-selftest ZOS_NUCLEUS_SELFTEST=1 \
+		build-nucleus-selftest/zephyros-nucleus-selftest.bin \
+		build-nucleus-selftest/zephyr80-nucleus-selftest.bin
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
+		build-nucleus-selftest/zephyros.map \
+		build-nucleus-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_nucleus_sim.py' -v
+	@echo "nucleus image: build-nucleus-selftest/zephyros-nucleus-selftest.bin"
 
 # SDK helloworld demo image (work/28c-m9-user-sdk): the production boot path
 # in its own build directory (build-helloworld) with the SDK hello demo
@@ -2163,13 +2154,13 @@ console-fallback-selftests: all
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-hid-badioc-selftest/zephyros-hid-badioc-selftest.bin \
 		build-hid-badioc-selftest/zephyr80-hid-badioc-selftest.bin
-	$(PYTHON) tools/mapcheck.py --min-granules 16 build-console-fb-nohid/zephyros.map \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) build-console-fb-nohid/zephyros.map \
 		build-console-fb-nohid/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/mapcheck.py --min-granules 16 build-console-fb-nohid-nov9958/zephyros.map \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) build-console-fb-nohid-nov9958/zephyros.map \
 		build-console-fb-nohid-nov9958/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/mapcheck.py --min-granules 16 build-console-fb-badioc/zephyros.map \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) build-console-fb-badioc/zephyros.map \
 		build-console-fb-badioc/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/mapcheck.py --min-granules 16 build-console-fb-arena/zephyros.map \
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) build-console-fb-arena/zephyros.map \
 		build-console-fb-arena/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_console_fallback.py' -v
 	@echo "console fallback matrix images:"

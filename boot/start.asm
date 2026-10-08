@@ -6,14 +6,20 @@
 ;
 ;     _CODE (2000h) -> _HOME -> _INITIALIZER -> _GSINIT -> _GSFINAL
 ;     _DATA (derived base) -> _INITIALIZED
+;     _WINDOW (6000h) -> _WINDOW_DATA (derived base)
 ;     _COMMON (E000h)
 ;
 ; All of _HOME/_INITIALIZER/_GSINIT/_GSFINAL therefore land inside the
-; loadable bank-7 region (2000h-BFFFh), and _DATA/_INITIALIZED land in the
-; zero-initialized runtime region below DF00h.  The _DATA base is derived
-; per image (align_down(DF00h - data_size, 512)) and substituted by the
-; build; the startup code below uses the linked s__/l__ symbols, never a
-; fixed address.
+; fixed core (2000h-5FFFh), and _DATA/_INITIALIZED land in the
+; zero-initialized fixed runtime region below the stacks.  The _DATA base is
+; derived per image (align_down(ZOS_SERVICE_STACK_BASE - data_size, 512)) and
+; substituted by the build; the startup code below uses the linked s__/l__
+; symbols, never a fixed address.  _WINDOW/_WINDOW_DATA are the cold half
+; (6000h-DFFFh): _WINDOW holds the cold code, _WINDOW_DATA its uninitialized
+; data and its base is derived (align_down(ZOS_BANK7_RUNTIME_END - size,
+; 512)).  The cold code runs only through the window services, so it is
+; neither copied nor executed at boot; _WINDOW_DATA must be zeroed by the
+; startup path below just like _DATA.
 ;
 ; _boot_common_entry runs in mode 10 over bank 0, entirely from the
 ; permanent common region.  It establishes the common boot stack, enters
@@ -24,9 +30,11 @@
 ; C runtime contract implemented here (see docs/boot.md):
 ;   1. the _DATA area (uninitialized globals and function-local statics) is
 ;      zeroed from s__DATA/l__DATA;
-;   2. the _INITIALIZER ROM image is copied to _INITIALIZED
+;   2. the _WINDOW_DATA area (uninitialized cold-half globals) is zeroed
+;      from s__WINDOW_DATA/l__WINDOW_DATA;
+;   3. the _INITIALIZER ROM image is copied to _INITIALIZED
 ;      (s__INITIALIZER/s__INITIALIZED/l__INITIALIZER);
-;   3. compiler-emitted _GSINIT code (static initializers) is executed.
+;   4. compiler-emitted _GSINIT code (static initializers) is executed.
 ; No hosted CRT or standard library is linked.
 ; -----------------------------------------------------------------------------
 
@@ -42,6 +50,8 @@
 	.area _GSFINAL
 	.area _DATA
 	.area _INITIALIZED
+	.area _WINDOW
+	.area _WINDOW_DATA
 	.area _COMMON
 	.area _COMMON_DATA
 
@@ -53,6 +63,7 @@
 	.globl __zos_mode_fault
 	; Linker-synthesized SDCC runtime area symbols.
 	.globl s__DATA, l__DATA
+	.globl s__WINDOW_DATA, l__WINDOW_DATA
 	.globl s__INITIALIZER, l__INITIALIZER
 	.globl s__INITIALIZED
 
@@ -110,22 +121,14 @@ _boot_str_kernel_main_returned:
 ; ---------------------------------------------------------------------------
 __zos_crt0_init::
 	; 1. Zero the _DATA area.
-	ld	bc,#l__DATA
-	ld	a,b
-	or	a,c
-	jr	z,100$
 	ld	hl,#s__DATA
-	ld	(hl),#0x00
-	dec	bc
-	ld	a,b
-	or	a,c
-	jr	z,100$
-	ld	e,l
-	ld	d,h
-	inc	de
-	ldir
-100$:
-	; 2. Copy the _INITIALIZER ROM image into _INITIALIZED.
+	ld	bc,#l__DATA
+	call	__zos_zero_area
+	; 2. Zero the _WINDOW_DATA area (cold-half uninitialized data).
+	ld	hl,#s__WINDOW_DATA
+	ld	bc,#l__WINDOW_DATA
+	call	__zos_zero_area
+	; 3. Copy the _INITIALIZER ROM image into _INITIALIZED.
 	ld	bc,#l__INITIALIZER
 	ld	a,b
 	or	a,c
@@ -134,8 +137,28 @@ __zos_crt0_init::
 	ld	hl,#s__INITIALIZER
 	ldir
 101$:
-	; 3. Run compiler-emitted static initializers (_GSINIT area).
+	; 4. Run compiler-emitted static initializers (_GSINIT area).
 	call	__zos_gsinit
+	ret
+
+; ---------------------------------------------------------------------------
+; __zos_zero_area - zero a runtime data area.  HL = area start, BC = length.
+; Clobbers AF/BC/DE/HL.  Called with bank 7 visible, so the fixed _DATA area
+; and the cold _WINDOW_DATA area are both addressable.
+; ---------------------------------------------------------------------------
+__zos_zero_area:
+	ld	a,b
+	or	a,c
+	ret	z
+	dec	bc
+	ld	(hl),#0x00
+	ld	a,b
+	or	a,c
+	ret	z
+	ld	e,l
+	ld	d,h
+	inc	de
+	ldir
 	ret
 
 	.area _GSINIT

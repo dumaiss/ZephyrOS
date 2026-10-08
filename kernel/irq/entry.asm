@@ -1,4 +1,5 @@
-; M2 common IM2 source stubs and non-nested mode-crossing gate.
+; M2 common IM2 source stubs and non-nested mode-crossing, P-normalizing
+; gate (revision 13).
 	.module irq_entry
 	.include "zephyr80/hardware.inc"
 	.include "zephyr80/memory.inc"
@@ -68,14 +69,17 @@ irq_common_entry::
 
 	in	a,(ZOS_MEMCTL_PORT)
 	ld	(irq_saved_latch),a
-	and	#ZOS_MODE_MASK
-	cp	#ZOS_MODE_APPLICATION
-	jr	nz,100$
-	ld	a,(irq_saved_latch)
-	and	#ZOS_BANK_MASK
+	; Revision 13: the IRQ gate normalizes the page field.  The whole
+	; latch (Q, mode, P) is saved in the gate's own slot above; dispatch
+	; then runs with P = 0, the interrupted bank and OS mode, so
+	; nucleus-owned handlers -- including drivers still linked into the
+	; arena in the cold half -- see the fixed core and the whole bank-7
+	; decode.  The exit path below restores the saved latch exactly, so
+	; an interrupted window call (36.10) finds its page selection
+	; untouched.
+	and	#(ZOS_MODE_MASK | ZOS_BANK_MASK)
 	or	#ZOS_MODE_OS
 	out	(ZOS_MEMCTL_PORT),a
-100$:
 	ld	(irq_common_sp),sp
 	ld	sp,#irq_isr_stack_top
 	call	_irq_dispatch

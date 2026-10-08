@@ -178,15 +178,26 @@ class TestClientAndFixedCore(unittest.TestCase):
         with open(map_path) as handle:
             text = handle.read()
         values = {}
-        for name in ("irq_isr_stack", "irq_isr_stack_top",
-                     "__kernel_code_end"):
+        for name in ("irq_isr_stack", "irq_isr_stack_top"):
             match = re.search(r"^\s*([0-9A-Fa-f]{8})\s+%s\s" % name, text,
                               re.M)
             self.assertIsNotNone(match, name)
             values[name] = int(match.group(1), 16)
         self.assertEqual(values["irq_isr_stack"], 0x5F00)
         self.assertEqual(values["irq_isr_stack_top"], 0x6000)
-        self.assertLessEqual(values["__kernel_code_end"], 0x5F00)
+        # Package 38: `__kernel_code_end` is the cold code end (the derived
+        # arena start), so the fixed code end comes from the build's
+        # generated geometry and must stay below the relocated stack.
+        geometry = {}
+        with open(os.path.join(self.build, "geometry",
+                              "memory.inc")) as handle:
+            for line in handle:
+                match = re.match(
+                    r"^ZOS_([A-Z0-9_]+)\s*=\s*0x([0-9A-Fa-f]+)", line)
+                if match:
+                    geometry[match.group(1)] = int(match.group(2), 16)
+        self.assertEqual(geometry["REV13_WINDOW_BASE"], SPLIT)
+        self.assertLessEqual(geometry["FIXED_CODE_END"], 0x5F00)
 
     def test_syscall_side_objects_are_window_resident(self):
         """The two-bank classification puts the syscall dispatcher in the

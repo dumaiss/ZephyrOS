@@ -784,6 +784,18 @@ class RsvcSpikeSim(unittest.TestCase):
     def transcript(self):
         return self.boot()[1].tx
 
+    def geometry(self):
+        """The build's generated memory geometry (ZOS_* constants)."""
+        values = {}
+        with open(os.path.join(ROOT, self.SUBDIR, "geometry",
+                               "memory.inc")) as handle:
+            for line in handle:
+                match = re.match(r"^ZOS_([A-Z0-9_]+)\s*=\s*0x([0-9A-Fa-f]+)",
+                                 line)
+                if match:
+                    values[match.group(1)] = int(match.group(2), 16)
+        return values
+
     # --- shared checks ----------------------------------------------------
     def test_program_passes(self):
         tx = self.transcript()
@@ -970,13 +982,22 @@ class RsvcSpikeSim(unittest.TestCase):
         self.assertEqual(self.syms["irq_isr_stack_top"], 0x6000)
         for name in ("zos_syscall_entry", "zos_gate_stack_top"):
             self.assertGreaterEqual(self.syms[name], 0xE000, name)
-        # And the linked fixed core really ends below the split.
-        kernel_end = self.syms["__kernel_code_end"]
-        self.assertLessEqual(kernel_end, 0x6000)
+        # And the linked fixed core really ends below the split.  Since
+        # package 38 `__kernel_code_end` is the *cold* code end (the
+        # derived arena start), so the fixed end comes from the build's
+        # generated geometry, and the cold half must start at the split.
+        geometry = self.geometry()
+        self.assertEqual(geometry["REV13_WINDOW_BASE"], 0x6000)
+        self.assertLessEqual(geometry["FIXED_CODE_END"], 0x6000)
+        self.assertEqual(self.syms["s__WINDOW"], 0x6000)
+        self.assertEqual(geometry["KERNEL_CODE_END"],
+                         self.syms["__kernel_code_end"])
         print("rsvc %s: linked fixed code end %04Xh, ISR stack %04Xh-"
-              "%04Xh" % (self.image_ident, kernel_end,
-                         self.syms["irq_isr_stack"],
-                         self.syms["irq_isr_stack_top"]))
+              "%04Xh, cold code end %04Xh"
+              % (self.image_ident, geometry["FIXED_CODE_END"],
+                 self.syms["irq_isr_stack"],
+                 self.syms["irq_isr_stack_top"],
+                 geometry["KERNEL_CODE_END"]))
 
 
 if __name__ == "__main__":

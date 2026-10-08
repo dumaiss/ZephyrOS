@@ -47,19 +47,22 @@ that is now implemented and pinned by `include/zephyros/module.h` and
 
 ## 1. Driver arena
 
-The arena is a linker-reserved region of bank 7.  Every image derives its
-bounds from the aligned linked kernel end and the derived runtime-data
-base in a two-pass link:
+The arena is a linker-reserved region of the bank-7 **cold half**.  Every
+image derives its bounds from the aligned end of the linked cold code and
+the derived cold runtime-data base in a two-pass link:
 
 ```text
-arena = [align_up(__kernel_code_end, 512), data_base)   minimum 16 KiB
-data_base = align_down(DF00h - (l__DATA + l__INITIALIZED), 512)
+arena           = [align_up(__kernel_code_end, 512), window_data_base)
+__kernel_code_end  = end of _WINDOW (the linked cold code)
+window_data_base   = align_down(E000h - l__WINDOW_DATA, 512)
 ```
 
 There is exactly one geometry; the probe link places no arena and the
-fixed `A000h-BFFFh` rectangle is retired (work packages 25a/25b).  The
-derived arena of the current production image is `7600h-D7FFh` (49
-granules, 20 used by the boot set) -- see `docs/memory.md` section 2.2
+fixed `A000h-BFFFh` rectangle is retired (work packages 25a/25b).  There
+is no granule floor: the arena only has to hold the image's declared boot
+set, which `zmodpack.py plan` and `pack_image.py` check (package 38).  The
+derived arena of the current production image is `9A00h-DBFFh` (33
+granules, 33 used by the boot set) -- see `docs/memory.md` section 2.2
 and `docs/architecture.md` section 30.2.
 The loader and the generated `arena_geometry.inc` consume the linked
 symbols; nothing below depends on the numeric base.*
@@ -70,14 +73,15 @@ symbols; nothing below depends on the numeric base.*
   link symbols `__driver_arena_start` / `__driver_arena_end` by
   `kernel/module/arena.asm`.  The loader uses the symbols, never the
   numeric values; module code uses neither.
-* Loadable kernel sections (`_CODE`, `_HOME`, `_GSINIT`, `_GSFINAL`,
-  `_INITIALIZER`) must end below the arena start
-  (`__driver_arena_start`, the aligned linked-kernel end), so the two
-  passes must agree.  `tools/mapcheck.py` rejects any area overlapping the
-  arena and `tools/pack_image.py` rejects ROM payload bytes inside it; the
+* The cold loadable area (`_WINDOW`) must end below the arena start
+  (`__driver_arena_start`, the aligned cold code end), so the two passes
+  must agree.  `tools/mapcheck.py` rejects any area overlapping the arena
+  and `tools/pack_image.py` rejects ROM payload bytes inside it; the
   512 KiB boot image carries no arena content.
-* `_DATA`/`_INITIALIZED` start at the derived data base and must stay
-  below the M2 ISR stack at `DF00h`.
+* The fixed runtime data (`_DATA`/`_INITIALIZED`) starts at its derived
+  base and must stay below the 512-byte service stack at `5D00h`; the cold
+  runtime data (`_WINDOW_DATA`) starts at the derived cold base and must
+  stay below `E000h`.
 * Only the loader allocates granules, at boot, from its byte source:
   the ROMFS recovery store reached as `/SYSTEM` through the VFS (since
   M9), in production and every acceptance image.
@@ -86,7 +90,8 @@ The build reports arena geometry, free granules and the single bank-7
 budget ledger: `mapcheck.py` and `pack_image.py` both print the summary,
 `zephyros.manifest.json` carries an `arena` object
 (`start`, `end`, `size`, `granule_size`, `granules`, `free_granules`,
-`modules`) plus a `bank7` ledger object, and `arena.plan.json` carries the
+`modules`) plus a `nucleus` ledger object (the five M10 lines of
+`docs/architecture.md` section 36.20), and `arena.plan.json` carries the
 same ledger.
 
 `zmodpack.py plan` and `pack_image.py` additionally print a granule-

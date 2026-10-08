@@ -29,8 +29,6 @@
 	.globl _rsvc_gate_stack_top, _rsvc_isr_stack, _rsvc_isr_stack_size
 	; Kernel-owned symbols this file only reads.
 	.globl zos_gate_stack_top, irq_isr_stack
-	; Cold-area bounds the evaluation layout introduces.
-	.globl s__WINDOW_DATA, l__WINDOW_DATA
 
 	; -------------------------------------------------------------------
 	; uint8_t rsvc_latch(void);          read the banking latch (A)
@@ -225,28 +223,3 @@ _rsvc_service_stack::
 	.ds	ZOS_RSVC_SERVICE_STACK_SIZE
 _rsvc_service_stack_top::
 	.ds	0
-
-	; -------------------------------------------------------------------
-	; The evaluation layout puts every cold object in _WINDOW_DATA
-	; (D800h-DFFFh), an area the stock C runtime init does not zero
-	; because production has no such area.  This hook is concatenated
-	; into _GSINIT, which runs after the stock _DATA zeroing and before
-	; kernel_main.  It must therefore stay in the fixed region and use
-	; no cold data itself.
-	; -------------------------------------------------------------------
-	.area _GSINIT
-	ld	hl,#s__WINDOW_DATA
-	ld	bc,#l__WINDOW_DATA
-	ld	a,b
-	or	c
-	jr	z,101$
-	ld	(hl),#0x00
-	dec	bc
-	ld	a,b
-	or	c
-	jr	z,101$
-	ld	e,l
-	ld	d,h
-	inc	de
-	ldir
-101$:

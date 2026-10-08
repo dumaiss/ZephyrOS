@@ -31,6 +31,13 @@ ZOS_SDK_SRC     := $(ZOS_SDK_ROOT)/src
 # Exactly the public ABI and the SDK include root; a program never sees
 # include/, platform/ or kernel/ (docs/sdk.md, tests/test_source_layout.py).
 ZEX_CFLAGS  := -mz80 -c --nostdinc --Werror -I abi -I $(ZOS_SDK_INCLUDE)
+
+# Header prerequisites (work package 38; work package 37 finding 2).  SDCC
+# emits no dependency files through this rule, and the SDK's include
+# surface is exactly the public ABI plus the SDK include root, so every
+# program object depends on that whole set (and on its own directory's
+# headers): a stale program object can then never mask a real failure.
+ZEX_HEADERS := $(wildcard abi/zos/*.h) $(wildcard $(ZOS_SDK_INCLUDE)/*.h)
 ZEX_ASFLAGS := -Iabi
 
 ZOS_SDK_C_SRC := args.c fs.c exec.c console_io.c \
@@ -81,6 +88,7 @@ $(1)_OBJDIR := $$(ZEX_USER_ROOT)/$(1)
 $(1)_COBJS  := $$(addprefix $$($(1)_OBJDIR)/,$$(patsubst %.c,%.rel,$$(notdir $$($(1)_CSRC))))
 $(1)_AOBJS  := $$(addprefix $$($(1)_OBJDIR)/,$$(patsubst %.asm,%.rel,$$(notdir $$($(1)_ASMSRC))))
 $(1)_OBJS   := $$($(1)_COBJS) $$($(1)_AOBJS)
+$(1)_HEADERS:= $$(ZEX_HEADERS) $$(wildcard $(2)/*.h)
 $(1)_OPTS   := $(4) $(5) $(6) $(7) $(8) $(9)
 $(1)_STACK  := $$(if $$(filter STACK=%,$$($(1)_OPTS)),$$(patsubst STACK=%,%,$$(filter STACK=%,$$($(1)_OPTS))),256)
 $(1)_SCRATCH:= $$(if $$(filter SCRATCH=%,$$($(1)_OPTS)),$$(patsubst SCRATCH=%,%,$$(filter SCRATCH=%,$$($(1)_OPTS))),zos_scratch:16)
@@ -96,7 +104,8 @@ $(1)_ZEX    := $$(ZEX_USER_ROOT)/$(1).zex
 $$($(1)_OBJDIR):
 	mkdir -p $$@
 
-$$($(1)_COBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.c | $$($(1)_OBJDIR)
+$$($(1)_COBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.c $$($(1)_HEADERS) \
+		| $$($(1)_OBJDIR)
 	$(SDCC) $(ZEX_CFLAGS) $$($(1)_INCFLAGS) -I $(2) -c $$< -o $$@
 
 $$($(1)_AOBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.asm | $$($(1)_OBJDIR)

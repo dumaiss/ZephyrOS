@@ -150,29 +150,41 @@ FFFFh +-------------------------------+
 FF00h +- - - - - - - - - - - - - - - +  common boot/runtime stack (SP grows down)
       | bank 0 common code/data      |
 E000h +-------------------------------+
-      | bank 7 OS body      48 KiB    |  mode 11
+      | bank 7 cold half    32 KiB    |  mode 11, window on bank 7 (P = 0)
+6000h +-------------------------------+
+      | bank 7 fixed core   16 KiB    |  mode 11, always visible
 2000h +-------------------------------+
       | bank 0 (caller)      8 KiB    |
 0000h +-------------------------------+
 ```
 
 - `0000h-1FFFh`: physical SRAM bank 0 (caller window).
-- `2000h-DFFFh`: physical SRAM bank 7 (kernel body).
+- `2000h-5FFFh`: physical SRAM bank 7, the fixed core (code that runs
+  while the window shows another bank, its data, the service stack and the
+  ISR stack).
+- `6000h-DFFFh`: physical SRAM bank 7, the cold half (visible while the
+  window shows bank 7), including the driver arena and the cold runtime
+  data.
 - `E000h-FFFFh`: physical SRAM bank 0 (permanent common region).
 
-The linker control file fixes `_CODE` at `2000h`, the derived `_DATA`
-base (`align_down(DF00h - runtime_data_size, 512)`) for the
-zero-initialized runtime area, and the common segment at `E000h`.  The
-loadable bank-7 image (code, `_HOME`, `_INITIALIZER`, `_GSINIT`,
-`_GSFINAL`) must fit below the derived data base; from there to `DFFFh` is
-never loaded from ROM.
+The linker control file fixes `_CODE` at `2000h` and `_WINDOW` at
+`6000h`, and derives the two zero-initialized runtime areas: `_DATA` at
+`align_down(ZOS_SERVICE_STACK_BASE - runtime_data_size, 512)` and
+`_WINDOW_DATA` at `align_down(E000h - window_data_size, 512)`; the common
+segment stays at `E000h`.  The loadable bank-7 image (fixed code,
+`_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`, then the cold `_WINDOW`
+code) must fit around the driver arena; from the derived bases to the
+stacks, and the arena between the cold code end and the cold data base,
+are never loaded from ROM.
 
 ## 4. SDCC C runtime initialization
 
 Implemented contract (not the "fail if non-empty" alternative):
 
-1. the `_DATA` area (uninitialized globals, function-local statics) is
-   zeroed using the linker-synthesized `s__DATA`/`l__DATA` symbols;
+1. both zero-initialized runtime areas are zeroed using the
+   linker-synthesized symbols: `_DATA` (`s__DATA`/`l__DATA`) for the fixed
+   core and `_WINDOW_DATA` (`s__WINDOW_DATA`/`l__WINDOW_DATA`) for the
+   cold half (uninitialized globals and function-local statics);
 2. the `_INITIALIZER` ROM image is copied to `_INITIALIZED`
    (`s__INITIALIZER`/`s__INITIALIZED`/`l__INITIALIZER`);
 3. compiler-emitted `_GSINIT` code (static initializers) is executed via

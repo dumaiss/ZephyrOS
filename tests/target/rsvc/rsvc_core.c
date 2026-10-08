@@ -474,6 +474,7 @@ static uint8_t rsvc_irq_page_bits;
 static void rsvc_irq_trampoline(void *context)
 {
 	uint8_t before = rsvc_latch();
+	uint8_t after;
 
 	(void)context;
 	/* The IRQ entry owns the interrupted latch (irq_saved_latch) and
@@ -483,9 +484,19 @@ static void rsvc_irq_trampoline(void *context)
 	 * overwrite the latch that call must restore.  Select the page
 	 * only and leave the mapping to the executive. */
 	rsvc_domain_set(rsvc_irq_page_bits);
+	after = rsvc_latch();
 	evidence_u16_inc(&rsvc_evidence.irq_count);
+	/* Work package 38: the IRQ gate is P-normalizing, so a nucleus-owned
+	 * handler is entered with the page field cleared whatever the
+	 * interrupted code had selected (architecture 36.10: the executive
+	 * saves the interrupted latch, dispatches with the full bank-7
+	 * decode and restores exactly on the way out).  "In domain"
+	 * therefore means both halves of that contract: the entry latch
+	 * carried no page bits, and the handler's own page selection took
+	 * effect for the service code it then runs. */
 	rsvc_evidence.irq_in_domain =
-		(uint8_t)((before & 0xE0u) == rsvc_irq_page_bits ? 1u : 0u);
+		(uint8_t)(((before & 0xE0u) == 0u &&
+			   (after & 0xE0u) == rsvc_irq_page_bits) ? 1u : 0u);
 	rsvc_evidence.irq_baseline = rsvc_irq_baseline;
 	if (!rsvc_irq_baseline && rsvc_service_irq_handler != 0u) {
 		((void (*)(void *))rsvc_service_irq_handler)(

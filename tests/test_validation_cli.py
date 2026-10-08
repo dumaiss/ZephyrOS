@@ -156,12 +156,15 @@ class TestMapcheckRejections(ValidatorCLIBase):
     def test_bank7_section_leaves_region(self):
         self.check(make_map(areas={"_CODE": (0xBF00, 0x200)},
                             symbols={"s__CODE": 0xBF00, "l__CODE": 0x200}),
-                   r"overlaps the driver arena|leaves 2000h-9FFFh")
+                   r"outside 2000h-5FFFh")
 
     def test_bank7_section_in_forbidden_arena(self):
+        # The arena sits in the cold half between the cold code and the
+        # cold runtime data; a section that reaches into it is rejected as
+        # outside the fixed core.
         self.check(make_map(areas={"_CODE": (0xA100, 0x100)},
                             symbols={"s__CODE": 0xA100, "l__CODE": 0x100}),
-                   r"overlaps the driver arena")
+                   r"overlaps the driver arena|outside 2000h-5FFFh")
 
     def test_common_section_leaves_region(self):
         self.check(make_map(symbols={"s__COMMON": 0xDF00}),
@@ -177,7 +180,7 @@ class TestMapcheckRejections(ValidatorCLIBase):
 
     def test_dispatcher_not_in_bank7(self):
         self.check(make_map(symbols={"zos_syscall_dispatch": 0xE100}),
-                   r"outside the bank-7 loadable region")
+                   r"outside the fixed core 2000h-5FFFh")
 
     def test_gate_stack_size_inconsistent(self):
         self.check(make_map(symbols={"zos_gate_stack_top": 0xE14F}),
@@ -205,7 +208,8 @@ class TestPackerRejections(ValidatorCLIBase):
         self.write_ihx(ihx_text)
         self.write_map(map_text)
         return self.assert_fails_with(
-            PACK_IMAGE, (self.ihx_path, self.map_path, self.tmp), pattern)
+            PACK_IMAGE, ("--production", self.ihx_path, self.map_path,
+                         self.tmp), pattern)
 
     def test_out_of_region_byte(self):
         self.check(insert_before_eof(valid_ihx(), ihx_record(0x0100, [0x00])),
@@ -229,6 +233,28 @@ class TestPackerRejections(ValidatorCLIBase):
         bad = valid_ihx().replace(ihx_record(0x2000, [0xC3, 0x30, 0x20]),
                                   ihx_record(0x2000, [0xD3, 0x00, 0xC9]))
         self.check(bad, make_map(), r"latch write OUT \(00h\),A")
+
+    def test_fixed_core_latch_write_needs_the_production_placement(self):
+        # The fixed-core rule is the production placement's invariant: the
+        # evaluation images keep their own placement and pass no flag
+        # (work package 38).  The cold-half rule always holds.
+        bad = valid_ihx().replace(ihx_record(0x2000, [0xC3, 0x30, 0x20]),
+                                  ihx_record(0x2000, [0xD3, 0x00, 0xC9]))
+        self.write_ihx(bad)
+        self.write_map(make_map())
+        result = self.run_tool(PACK_IMAGE, self.ihx_path, self.map_path,
+                               self.tmp)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_latch_write_in_the_cold_half(self):
+        bad = insert_before_eof(
+            valid_ihx(), ihx_record(0x8100, [0xD3, 0x00, 0xC9]))
+        self.write_ihx(bad)
+        self.write_map(make_map())
+        result = self.run_tool(PACK_IMAGE, self.ihx_path, self.map_path,
+                               self.tmp)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stderr, r"cold half")
 
     def test_vector_symbol_missing(self):
         self.check(valid_ihx(), make_map(symbols={"_zos_rst30_vector": None}),

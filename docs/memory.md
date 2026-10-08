@@ -1,9 +1,18 @@
-# ZephyrOS Memory Model (M8/M9, implemented)
+# ZephyrOS Memory Model (M9/M10, implemented)
 
 This is the implemented, linker-enforced memory ownership table for the
 mode `10`/`11` Zephyr-80 architecture.  The contract is in
 `docs/architecture.md`; this file records what the build actually places
 where, and how it is validated.
+
+Since work package 38 the production nucleus is linked as **two regions**
+under decoder revision 13 (architecture 36.5): a 16-KiB **fixed core**
+(`2000h-5FFFh`) that every page selection shows unchanged, and a 32-KiB
+**cold half** (`6000h-DFFFh`) that is mapped only while the window shows
+bank 7 (`P = 0`).  `config/residency.json` is the classification that
+decides which object belongs where; `tools/mapcheck.py` fails the build
+when an object is missing from it or when a fixed-required object links at
+or above `6000h`.
 
 ## 1. Kernel-visible regions
 
@@ -14,8 +23,12 @@ FF00h +-------------------------------+
       | bank 0 common code/data        |
       |   _COMMON / _COMMON_DATA       |
 E000h +-------------------------------+
-      | bank 7 OS body       48 KiB    |  mode 11 view
-      |   _CODE .. _DATA               |
+      | bank 7 cold half     32 KiB    |  mode 11 view, mapped only when
+      |   _WINDOW/_WINDOW_DATA         |  the window shows bank 7 (P = 0)
+6000h +-------------------------------+
+      | bank 7 fixed core    16 KiB    |  mode 11 view, always mapped:
+      |   _CODE .. _DATA, stacks       |  fixed code, runtime data, the
+      |                                |  service stack and the ISR stack
 2000h +-------------------------------+
       | bank 0 (caller)       8 KiB    |
 0000h +-------------------------------+
@@ -25,10 +38,13 @@ E000h +-------------------------------+
 | --- | --- | --- |
 | `0000h-00FFh` | caller window | ZephyrOS-owned native page zero: reset copier (`0000h-0026h`) and the three-byte `RST 30h` vector (`JP zos_syscall_entry`) at `0030h-0032h`; the rest is reserved |
 | `0100h-1FFFh` | caller window | unused (FF-filled in the image); at M1, native syscall argument blocks must lie here |
-| `2000h-arena start` | bank 7 in mode 11 | loadable kernel image (code, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`); ends at the linked `__kernel_code_end` |
-| `arena start-data base` | bank 7 in mode 11 | driver arena, derived since package 25b from the aligned linked-kernel end `__driver_arena_start` to the derived data base, at least 32 x 512-byte granules (16 KiB) in production; test-hook images check 16 as the minimum and rely on the boot-set plan. Never part of the ROM payload and never linked by content |
-| `data base-DFFFh` | bank 7 in mode 11 | zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded; the base is derived per image |
-| `DF00h-DFFFh` | bank 7 in mode 11 | 256-byte M2 ISR stack; initial `SP=E000h` |
+| `2000h-fixed code end` | bank 7 in mode 11 | **fixed core**: loadable nucleus code (`_CODE`, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`) that must stay reachable whatever the window shows; ends at the derived fixed code end (`ZOS_FIXED_CODE_END`) |
+| `fixed code end-5D00h` | bank 7 in mode 11 | fixed-core zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded; the base is derived per image (`align_down(ZOS_SERVICE_STACK_BASE - data size, 512)`) so the area ends directly below the stacks |
+| `5D00h-5EFFh` | bank 7 in mode 11 | 512-byte **service stack** (architecture 36.9); reserved now, used by the IPC substrate from stage 3. Grows down from `ZOS_SERVICE_STACK_TOP` |
+| `5F00h-5FFFh` | bank 7 in mode 11 | 256-byte **ISR stack** (`_IRQ_ISR_STACK`); the IRQ gate switches to it in `irq_common_entry` |
+| `6000h-cold code end` | bank 7 while the window shows bank 7 (P = 0) | **cold half**: nucleus code that only ever runs with the window on bank 7 (syscall dispatcher and bodies, boot/idle, process management, loader, device registry, FS front end); ends at the derived `ZOS_KERNEL_CODE_END` |
+| `cold code end-cold data base` | bank 7 while P = 0 | driver arena, derived from the aligned cold code end `__driver_arena_start` to the derived cold data base; its granule count is whatever the cold half leaves (there is no floor - the declared boot set must fit, and `tools/zmodpack.py plan` / `tools/pack_image.py` enforce that). Never part of the ROM payload and never linked by content |
+| `cold data base-E000h` | bank 7 while P = 0 | cold-half zero-initialized runtime area (`_WINDOW_DATA`), never ROM-loaded; the base is derived per image (`align_down(ZOS_BANK7_RUNTIME_END - data size, 512)`) |
 | `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`), including the M5 ROM-access staging buffer and the package-28 exec continuation state; `EEFEh-EF07h` is the fixed ROM-access transition block (trampoline + mirrored stub) |
 | `FD00h-FDFFh` | physical bank 0 | 256-byte-aligned IM2 vector page (`I=FDh`) |
 | `FE00h` | physical bank 0 | vector-`FFh` guard byte |
@@ -39,9 +55,9 @@ E000h +-------------------------------+
 Mode `10` maps the selected application bank at `0000h-DFFFh`; mode `11`
 keeps the caller bank at `0000h-1FFFh` and maps bank 7 at `2000h-DFFFh`.
 Bank 7 is reserved to ZephyrOS and is never an application bank.  With the
-page field at 0 (every production and acceptance image today), this is
-exactly what decoder revision 13 does as well; section 1.1 records the
-revision-13 mappings for a non-zero page field.
+page field at 0, this is exactly what decoder revision 13 does as well;
+section 1.1 records the revision-13 mappings for a non-zero page field, and
+sections 2.2/2.2.1 the two-region geometry those mappings allow.
 
 ### 1.1 Decoder revision 13 (programmed 2026-10-07)
 
@@ -58,12 +74,12 @@ The board modification for revision 13 routes D5-D7 to three spare
 decoder inputs (GAL pins 18/19/20, inputs only: the latch drives them and
 the GAL never drives them).  Pin 21 (`!CART_CS`, no equation) is
 unchanged.  **Revision 13 is programmed on the board** (2026-10-07); CP/M
-and the production ZephyrOS ROM both boot on it unchanged.  The design is
-`platform/zephyr80/hdl/MEM_DECODER_rev13.pld` with its WinCUPL simulation
-vectors in `MEM_DECODER_rev13.si` (`make rev13-pld`); the simulator
-models it as the default, `tests/test_decoder_rev13.py` replays every
-committed vector through that model and proves the P = 0 equivalence
-with revision 12.
+and the production ZephyrOS ROM both boot on it unchanged.  The decoder
+PLD and its WinCUPL simulation vectors live in the hardware project, not
+in the OS tree; the OS keeps only the decoder model, which the simulator
+uses as its default, and `tests/test_decoder_rev13.py` pins that model's
+behaviour (the P = 0 equivalence with revision 12 across every mode,
+region and bank, the mode-10 aperture rule and the mode-11 window).
 
 Revision-13 mappings per mode:
 
@@ -109,44 +125,52 @@ The linker control file (`linker/zephyr80.lk` template; the build
 substitutes the derived data base into `build/zephyr80.lk`) assigns:
 
 ```text
-_CODE   = 2000h            bank-7 loadable code
-_DATA   = <derived base>   bank-7 zero-initialized runtime area
-_COMMON = E000h            permanent common code/data
+_CODE        = 2000h            fixed-core loadable code
+_DATA        = <derived base>   fixed-core zero-initialized runtime area
+_WINDOW      = 6000h            cold-half loadable code
+_WINDOW_DATA = <derived base>   cold-half zero-initialized runtime area
+_COMMON      = E000h            permanent common code/data
 ```
 
-The `_DATA` base is derived, not fixed: the two-pass build computes
-`data_base = align_down(DF00h - (l__DATA + l__INITIALIZED), 512)` and
-passes it as the `_DATA` base, so runtime data sits directly below the
-`DF00h` ISR stack and the arena fills everything between the aligned
-kernel end and that base.
+Both data bases are derived, not fixed: the two-pass build computes
+`data_base = align_down(ZOS_SERVICE_STACK_BASE - (l__DATA + l__INITIALIZED),
+512)` and `window_data_base = align_down(ZOS_BANK7_RUNTIME_END -
+l__WINDOW_DATA, 512)`, so runtime data sits directly below the fixed-core
+stacks and directly below the cold half's end; the driver arena fills
+everything between the aligned cold code end and the cold data base.
 
 Unbased areas follow their preceding based area in first-appearance order,
 fixed by the declarations at the top of `boot/start.asm`:
 
 ```text
-_CODE (2000h) -> _HOME -> _INITIALIZER -> _GSINIT -> _GSFINAL   loadable
-_DATA (derived base) -> _INITIALIZED                            runtime
+_CODE (2000h) -> _HOME -> _INITIALIZER -> _GSINIT -> _GSFINAL   fixed loadable
+_DATA (derived base) -> _INITIALIZED                            fixed runtime
+_WINDOW (6000h) -> _WINDOW_DATA (derived base)                  cold
 _COMMON (E000h) -> _COMMON_DATA                                 common
 ```
 
 Every owned region exports `s__<area>`/`l__<area>` start/size symbols
 (linker-synthesized); the startup initializer/BSS operations consume
-`s__INITIALIZER`/`l__INITIALIZER`, `s__INITIALIZED`, and
-`s__DATA`/`l__DATA`.
+`s__INITIALIZER`/`l__INITIALIZER`, `s__INITIALIZED`, `s__DATA`/`l__DATA`,
+and `s__WINDOW_DATA`/`l__WINDOW_DATA` (`boot/start.asm`'s
+`__zos_crt0_init` zeroes both runtime areas: `_DATA` for the fixed core and
+`_WINDOW_DATA` for the cold half).
 
 | Area | Region | Holds |
 | --- | --- | --- |
 | `_RESET` | `0000h-0026h` | stackless reset copier (`.org 0`, ABS) |
 | `_PAGE_ZERO` | `0030h-0032h` | `RST 30h` vector: `JP zos_syscall_entry` (ABS) |
-| `_CODE` | `2000h-arena start` | kernel C code, driver/service code, string literals |
-| `_HOME` | `2000h-arena start` | static helpers |
-| `_INITIALIZER` | `2000h-arena start` | ROM image of initialized data |
-| `_GSINIT`/`_GSFINAL` | `2000h-arena start` | static initializers + terminator |
-| `_DATA` | `derived base-DFFFh` | zeroed globals/statics, registry table, driver state |
-| `_INITIALIZED` | `derived base-DFFFh` | RAM image of initialized data (ops/descriptor tables) |
-| `_COMMON` | `E000h-FCFFh` | boot entry, gates, IRQ stubs, console, panic |
+| `_CODE` | `2000h-fixed code end` | fixed-core kernel C code, string literals, the copy gates' dispatch boundary, the IRQ executive and the upcall shim |
+| `_HOME` | `2000h-fixed code end` | fixed-core static helpers |
+| `_INITIALIZER` | `2000h-fixed code end` | ROM image of initialized data |
+| `_GSINIT`/`_GSFINAL` | `2000h-fixed code end` | static initializers + terminator |
+| `_DATA` | `derived base-5D00h` | fixed-core zeroed globals/statics (IRQ registry, shim state) |
+| `_INITIALIZED` | `derived base-5D00h` | RAM image of initialized data (fixed-core ops/descriptor tables) |
+| `_WINDOW` | `6000h-cold code end` | cold-half kernel code: syscall dispatcher and bodies, boot/idle, process/ZEX, loader, device registry, FS front end (`--codeseg WINDOW`) |
+| `_WINDOW_DATA` | `cold data base-E000h` | cold-half zeroed globals (`--dataseg WINDOW_DATA`) |
+| `_COMMON` | `E000h-FCFFh` | boot entry, gates, IRQ stubs, console, panic, copy primitives |
 | `_COMMON_DATA` | `E000h-FCFFh` | transition-critical state |
-| `_IRQ_ISR_STACK` | `DF00h-DFFFh` | bank-7 handler stack |
+| `_IRQ_ISR_STACK` | `5F00h-5FFFh` | fixed-core bank-7 handler stack |
 | `_IRQ_VECTOR` | `FD00h-FE00h` | IM2 page plus guard |
 | `_IRQ_COMMON_STATE` | `FE01h-FEFFh` | IRQ state plus transition stack |
 | (reserved) | `FF00h-FFFFh` | common boot/runtime stack; nothing may link here |
@@ -154,8 +178,9 @@ Every owned region exports `s__<area>`/`l__<area>` start/size symbols
 ## 2.1 M3 device-layer placement
 
 The M3 device registry, console service, static driver descriptors, ops
-tables, and driver-private state are all bank-7 residents: code in
-`_CODE`, state in `_DATA`/`_INITIALIZED`, below the `DF00h` ISR stack.
+tables, and driver-private state are all bank-7 residents: code in `_CODE`
+or `_WINDOW`, state in `_DATA`/`_INITIALIZED` or `_WINDOW_DATA`, and never
+above the fixed-core stacks.
 Nothing from the device layer enters `_COMMON`/`_COMMON_DATA`; only the
 M2 source stubs, the common IRQ crossing machinery, and the early
 console/panic path are common-resident.  `tools/mapcheck.py` enforces
@@ -163,106 +188,172 @@ this both by explicit symbol list and by a prefix sweep over
 `_device_`, `_console_`, `_sio0b_`, `_sio_`, `_driver_`,
 `_boot_drivers`, and `_m3_` symbols.  See `docs/devices.md`.
 
-## 2.2 Bank-7 geometry: derived arena and data base (M9, package 25b)
+Cold-half code that has to call a service (the stage 3 loader streaming an
+executable object, the process-exit notification) goes through the fixed
+**upcall shim** (`kernel/memory/upcall.asm`, architecture 36.5): a request
+block (`page`, `entry`, `args`, `result`) is validated (page 0-1, entry at
+or above `ZOS_REV13_WINDOW_BASE`), the latch is saved, the requested page
+selected, the entry called and the latch restored exactly.  The shim links
+in the fixed core (`_CODE`/`_DATA`) and nothing in production calls it yet;
+for production images `tools/pack_image.py --production` allows the only
+banked latch writes inside the fixed core within the shim's own
+`_zos_upcall`..`zos_upcall_end` extent (the self-test caller blob, which
+runs in an application bank, is the one further allowance), and
+`tests/test_nucleus_sim.py` exercises the shim against a fixed-core test
+routine.
 
-There is one bank-7 geometry.  A deterministic two-pass build derives it:
+## 2.2 Bank-7 geometry: two regions, one derived arena (M10, package 38)
+
+There is one bank-7 geometry, and it is the same two-pass mechanism as
+package 25b, extended to both regions:
 
 1. **Probe link.**  The same object list links with a bootstrap
    `arena.asm` object that places no arena at all (`ZOS_ARENA_PROBE = 1`);
    nothing can constrain kernel growth.
-2. **Derive.**  `tools/mapcheck.py geometry derive` measures the exclusive
-   end of every loadable bank-7 area (`_CODE`, `_HOME`, `_INITIALIZER`,
-   `_GSINIT`, `_GSFINAL`) and the runtime-data size (`l__DATA +
-   l__INITIALIZED`) in the probe map, then writes:
+2. **Derive.**  `tools/mapcheck.py geometry derive` measures, in the probe
+   map:
+
+   - the exclusive end of the fixed loadable areas (`_CODE`, `_HOME`,
+     `_INITIALIZER`, `_GSINIT`, `_GSFINAL`) and the fixed runtime-data
+     size (`l__DATA + l__INITIALIZED`);
+   - the exclusive end of the cold loadable area (`_WINDOW`) and the cold
+     runtime-data size (`l__WINDOW_DATA`);
+
+   and writes both regions:
 
    ```text
-   __kernel_code_end     = max end of the loadable areas
-   __driver_arena_start  = align_up(__kernel_code_end, 512)
-   data_base             = align_down(DF00h - data_size, 512)
-   __driver_arena_end    = data_base
+   fixed_code_end       = max end of the fixed loadable areas
+   data_base            = align_down(ZOS_SERVICE_STACK_BASE - data_size, 512)
+   __kernel_code_end    = end of _WINDOW (the cold code end)
+   window_data_base     = align_down(ZOS_BANK7_RUNTIME_END - cold_data_size, 512)
+   __driver_arena_start = align_up(__kernel_code_end, 512)
+   __driver_arena_end   = window_data_base
    ```
+
+   It also computes the fixed-core ledger figures (required/overflow
+   bytes from `config/residency.json` plus the per-object `.rel` sizes,
+   the two stack reservations, and the room) and the granule count.
 
 `kernel/module/arena.asm` consumes the generated
 `build/geometry/arena_geometry.inc`; `build/geometry/memory.inc` carries
-the same values plus the granule count and data size for the layout tools.
-No linked content may occupy the arena, the runtime data (`_DATA`,
-`_INITIALIZED`) sits directly at `data_base` below the `DF00h` ISR stack,
-and the loader computes its granule count from the linked bounds (bounded
-by the architectural maximum `(DF00h-2000h)/512 = 95`).
+the same values plus both data bases, the granule count, the ledger fields
+and the stack reservations for every assembly unit and layout tool.  No
+linked content may occupy the arena, and the loader computes its granule
+count from the linked bounds (bounded by the architectural maximum
+`(E000h-6000h)/512 = 64`).
 
-The build fails when fewer than 32 granules (16 KiB) remain in production.
-Acceptance and variant images that carry a target test hook relax only the
-*minimum* check: `ZOS_ARENA_MIN_GRANULES := 16` when `TARGET_TEST_OBJS` is
-non-empty (`tools/mapcheck.py --min-granules`).  Their safety net is
-unchanged and independent of the floor: `tools/zmodpack.py plan` must fit
-the whole boot set into the derived arena and `tools/pack_image.py`
-reconciles the image manifest against that plan, so an image whose modules
-do not fit still fails the build.  Production always keeps the 32-granule
-gate.  See `docs/vfs.md` section 10 for the per-image measurements.
+**Placement rule (architecture 36.5).**  `config/residency.json`
+classifies every production object as `fixed-required`, `cold` or `moves`
+(with the stage that moves it to bank 6).  Fixed-required objects link in
+`2000h-5FFFh`; `tools/mapcheck.py` fails the build when one of them
+compiles into `_WINDOW`/`_WINDOW_DATA`, when an object is missing from the
+classification, or when an object's areas disagree with its cold-half
+placement.  The production cold half holds the cold objects plus the
+objects that do not fit beside the driver arena; those are reported as the
+fixed ledger's `overflow`, never as an error.
+
+**No granule floor.**  The M9 32-granule floor is retired: the arena only
+has to hold the image's declared boot set.  `tools/zmodpack.py plan` fails
+when the boot modules cannot coexist in the derived arena, and
+`tools/pack_image.py` reconciles the image manifest against that plan
+(`arena.plan.json`), so an image whose modules do not fit still fails the
+build.  The `make` targets of the acceptance images pass
+`--residency config/residency.json --boot-plan build*/arena.plan.json` to
+`mapcheck.py`, which checks the derived geometry against the linked map.
 
 `tools/mapcheck.py` rejects any linked area overlapping the arena, pins
-`__driver_arena_start == align_up(__kernel_code_end, 512)`, enforces the
-minimum, and checks that `_DATA` starts at the derived base and that
-runtime data stays below `DF00h`.  `tools/pack_image.py` treats the region
-as non-ROM-loadable and reconciles the boot-set plan (per-module
-image+BSS/granules, used/free totals; see `docs/module-format.md`).
-`tests/test_m8.py` pins the whole reconciliation: the image manifest's
-arena block must equal the plan, every per-module size/granule count must
-match the packed container the plan names, the four production modules
-must fit with a non-negative remainder, and the arena must end exactly at
-the derived data base.  The loader/relocator routines are bank-7 code
-enforced by an explicit list and a prefix sweep over `_module_`, `_zmod_`,
-`_z4_`, `_m4_`, and `_irq_registry_` symbols.  Loaded modules are placed
-inside the arena by the loader.
+`__driver_arena_start == align_up(__kernel_code_end, 512)` and
+`__kernel_code_end ==` the linked cold code end, checks that `_DATA` and
+`_WINDOW_DATA` start at their derived bases, that fixed runtime data stops
+below the service stack and that the fixed core holds its two stacks.
+`tools/pack_image.py` treats the arena as non-ROM-loadable and reconciles
+the boot-set plan (per-module image+BSS/granules, used/free totals; see
+`docs/module-format.md`).  `tests/test_pack_image.py` and
+`tests/test_driver_abi.py` pin the whole reconciliation: the image
+manifest's arena block must equal the plan, every per-module size/granule
+count must match the packed container the plan names, the production boot
+set must fit with a non-negative remainder, and the arena must end exactly
+at the derived cold data base.  The loader/relocator routines are bank-7
+code enforced by an explicit list and a prefix sweep over `_module_`,
+`_zmod_`, `_z4_`, `_m4_`, and `_irq_registry_` symbols.  Loaded modules are
+placed inside the arena by the loader.
 
-### 2.2.1 The bank-7 budget ledger
+### 2.2.1 The nucleus budget ledgers
 
-`tools/pack_image.py` and `tools/zmodpack.py plan` print the same two
-ledger lines and emit them as matching JSON (`manifest["bank7"]` and
-`arena.plan.json["bank7"]`, sharing one format definition); a host test
-(`tests/test_m8.py`) checks every figure against the linked map:
+`tools/pack_image.py` and `tools/zmodpack.py plan` print the same five
+ledger lines (architecture 36.20) and emit them as matching JSON
+(`manifest["nucleus"]` and `arena.plan.json["nucleus"]`, sharing one
+format definition); host tests check every figure against the linked map:
 
 ```text
-bank7: code <bytes> end <addr> | arena <n> granules (<used> boot, <free> free) | data <bytes> at <addr> | isr 256 | slack <bytes>
+nucleus fixed: required <bytes> | overflow <bytes> | stacks <bytes> | room <bytes>
+nucleus cold: code <bytes> end <addr> | arena <n> granules (<used> boot, <free> free) | data <bytes> at <addr> | room <bytes>
+service hot: <bytes> of <capacity>
+service boot/bulk: <bytes> of <capacity>
 common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>, m10 <n>, limit <n>
 ```
 
-The second line covers the permanently mapped common window, which the
-`bank7:` line cannot see.  `used` is the packed `_COMMON` +
-`_COMMON_DATA` run and `capacity` is `ZOS_COMMON_CODE_END -
-ZOS_COMMON_BASE` (7424 bytes); `code`/`data` are the two area sizes.  The
-fixed absolute reservations in the window (IM2 vector page, IRQ transition
-state and stacks) are declared separately in `platform/zephyr80/irq.inc`
-and are not part of the packed run, so growth of the packed run is what
-must be watched: it may not reach the lowest reservation.  Common memory
-is the scarcest region and growth there is reported the same way bank-7
-growth is - package 28 added 167 bytes of continuation state and
-correction-01 moved 128 bytes of path buffer back out to bank 7.
+- **`nucleus fixed:`** the fixed core's 16 KiB.  `required` is the linked
+  fixed-area content of the `fixed-required` objects, `overflow` is
+  everything else that links there (the objects that do not fit in the cold
+  half), `stacks` is the two reservations (512-byte service stack plus
+  256-byte ISR stack = 768) and `room` is what is left:
+  `16384 - required - overflow - stacks`.
+- **`nucleus cold:`** the cold half's 32 KiB.  `code`/`end` are the linked
+  cold code, the arena shows its granules (boot-set used and free), `data`
+  is `_WINDOW_DATA` and `room` is what is left outside the arena
+  (`32768 - code - data - arena bytes`).
+- **`service hot:`/`service boot/bulk:`** the bank-6 tiers of architecture
+  36.6.  Nothing is placed there before stage 4, so both report zero
+  against their capacities (32 KiB and 24 KiB); the lines exist now so the
+  ledgers cannot silently lose the budget.
+- **`common:`** the permanently mapped common window, which the nucleus
+  lines cannot see.  `used` is the packed `_COMMON` + `_COMMON_DATA` run
+  and `capacity` is `ZOS_COMMON_CODE_END - ZOS_COMMON_BASE` (7424 bytes);
+  `code`/`data` are the two area sizes.
 
-The trailing fields are the pinned common-memory budget (work package
+The fixed absolute reservations in the window (IM2 vector page, IRQ
+transition state and stacks) are declared separately in
+`platform/zephyr80/irq.inc` and are not part of the packed run, so growth of
+the packed run is what must be watched: it may not reach the lowest
+reservation.
+
+The `common:` figures are the pinned common-memory budget (work package
 30c, from the 30b audit): `ceiling` is `ZOS_COMMON_CEILING` (3072) and
 `m10` is `ZOS_COMMON_M10_RESERVATION` (512), held back for M10's far-call
 gate and per-process far state; `limit` is `ceiling - m10` (2560) and
 `used` may not exceed it.  `mapcheck.py` and the packer both fail the
 build over the limit, and neither value may be raised to make a package
-fit (target architecture section 2.18).
+fit (target architecture section 2.18).  Common memory is the scarcest
+region: package 28 added 167 bytes of continuation state and correction-01
+moved 128 bytes of path buffer back out to bank 7.
 
-Both tools also print a granule-threshold table right after the ledger
-lines, and carry the same figures in the JSON.  For every boot-set module
+### 2.2.2 M9-era measurements (packages 25b-31)
+
+The figures in this subsection were measured under the M9 single-region
+layout and are kept as the historical ledger; package 38 re-derived the
+same content as the nucleus lines above (the production image's fixed core,
+cold half and arena are recorded in the package-38 validation record).
+
+Both tools print a granule-threshold table right after the ledger lines,
+and carry the same figures in the JSON.  For every boot-set module
 the plan entry gains `above_lower_bytes` (the saving that reaches the lower
 granule threshold, so removing it frees one granule) and
 `before_higher_bytes` (the room left before the next higher threshold
-spends one).  A `kernel` object gives the same two distances for the arena
-start (the linked code end, `__kernel_code_end`) and for the derived data
-base (the runtime-data size): `code_above_lower_bytes`/
-`code_before_higher_bytes` and `data_above_lower_bytes`/
-`data_before_higher_bytes`.  The data pair is expressed as runtime-data size
-changes - shrinking by the first moves the data base up one granule, growing
-by the second moves it down one.  A saving smaller than `above_lower_bytes`
+spends one).  A `kernel` object gives the same two distances for the
+arena start (the cold code end, `__kernel_code_end`) and for the derived
+cold data base (the cold runtime-data size against `E000h`):
+`code_above_lower_bytes`/`code_before_higher_bytes` and
+`data_above_lower_bytes`/`data_before_higher_bytes`.  The data pair is
+expressed as runtime-data size changes - shrinking by the first moves the
+data base up one granule, growing by the second moves it down one.  A saving smaller than `above_lower_bytes`
 frees no granule; `tests/test_pack_image.py` checks the arithmetic against
 the linked map and the packed containers.
 
-Package 25b numbers (size-optimized kernel and modules, derived base):
+Package 25b numbers (size-optimized kernel and modules, derived base; the
+figures below predate package 38 and are quoted in the M9 `bank7:` ledger
+wording - the region they describe is the single M9 bank-7 region that
+package 38 split into the fixed core and the cold half):
 
 ```text
 package-25b baseline (fixed C000h data base):
@@ -293,7 +384,8 @@ Kernel C lines added (all changed kernel `.c` files): 304 lines, +1837
 largest single addition is `vfs_seek` at 174 bytes.  The arena shrinks
 `49 -> 46` granules and slack `483 -> 291` bytes, so the split of the
 remaining end-of-M9 slack is tight on the section 32.39 ledger; the
-32-granule production floor and the boot-set arena plan still hold.
+boot-set arena plan still held (package 38 retired the 32-granule floor,
+not the plan check).
 
 Per-measure effect:
 
@@ -338,7 +430,9 @@ BSS, not kernel data: a 637-byte BSS of which the one 512-byte file-data
 cache slot is the largest member (`fs/iocfat/iocfat.c`,
 `IOCFAT_CACHE_SLOTS`).
 
-Final ledger (end of M9, packages 30c and 31; production image):
+Final ledger (end of M9, packages 30c and 31; production image, M9 wording -
+package 38 re-derived this content into the five nucleus lines of section
+2.2.1 without changing any byte):
 
 ```text
 bank7: code 27990 bytes end 8D56h | arena 36 granules (33 boot, 3 free) | data 2241 bytes at D600h | isr 256 | slack 63 bytes
@@ -521,14 +615,14 @@ _IRQ_VECTOR       FD00h-FE00h   IM2 page plus the FFh-vector guard byte;
 _IRQ_COMMON_STATE FE01h-FE7Fh   irq_saved_latch, irq_saved_sp,
                                 irq_common_sp, irq_active_source, and the
                                 128-byte common transition stack FE80h-FEFFh
-_IRQ_ISR_STACK    DF00h-DFFFh   bank-7 handler stack; initial SP=E000h
+_IRQ_ISR_STACK    5F00h-5FFFh   fixed-core handler stack; initial SP=6000h
 ```
 
 The IM2 page is initialized at runtime by `irq_arch_init()` (every vector
 targets `irq_ff_unexpected`, vector `00h` targets `irq_ctc0_stub`); the
 linked image carries the guard identity for build-time verification.
-`_DATA`/`_INITIALIZED` must end below `DF00h` and
-`_COMMON`/`_COMMON_DATA` below `FD00h`.
+`_DATA`/`_INITIALIZED` must end below `ZOS_SERVICE_STACK_BASE` (5D00h)
+and `_COMMON`/`_COMMON_DATA` below `FD00h`.
 
 ## 5. Banking primitives
 
@@ -553,11 +647,14 @@ in `2000h-DFFFh` would disappear when the mode changes.
   stub pattern/trampoline, stub mirror identity in pages 2-7, entry-point
   regions, and the `word_at(FDFFh) == irq_ff_unexpected` guard identity.
 - `tools/mapcheck.py` — map-level checks: area ownership per this table,
-  common-resident gate/console/panic/IRQ placement, gate-stack and both
-  IRQ-stack sizes, ROM-access staging size plus trampoline/sync placement
-  and stub-area extent, the IM2 page/guard/state addresses,
-  `_irq_kernel_code_end` at the linked `_CODE` end, page-zero and
-  stack-reservation bounds, and the M3 bank-7 device-layer placement
+  both derived bases and the derived geometry, the residency classification
+  (`--residency config/residency.json`: every production object classified,
+  every `fixed-required` object below `ZOS_REV13_WINDOW_BASE`, the boot set
+  fitting the derived arena), common-resident gate/console/panic/IRQ
+  placement, gate-stack and both stack sizes, ROM-access staging size plus
+  trampoline/sync placement and stub-area extent, the IM2 page/guard/state
+  addresses, `_irq_kernel_code_end` at the linked cold code end, page-zero
+  and stack-reservation bounds, and the M3 bank-7 device-layer placement
   rules (`make check`).
 - `tests/maptools.py` — the shared map/constant helpers used by the
   layout and validation suites.  `tests/test_source_layout.py` — constant
@@ -578,8 +675,9 @@ in `2000h-DFFFh` would disappear when the mode changes.
   replay of the real linked VFS bootstrap (`/SYSTEM` mounted before any
   module loads, modules and the monitor opened by path, arena figures).
   `tools/mapcheck.py` additionally enforces the `_vfs_`/`_romfs_provider`
-  bank-7 placement list and the derived-arena minimum, and
-  `tools/pack_image.py` reconciles arena use against the boot-set plan.
+  bank-7 placement list and the derived geometry, and
+  `tools/pack_image.py` reconciles arena use against the boot-set plan
+  (there is no granule floor; fitting the boot set is the check).
 - Runtime: boot asserts mode `11` over bank 0 (assembly latch read-back and
   a C re-check in `kernel_main()`), then exercises the bank primitives; any
   failure prints a fault through the early console and halts.
@@ -591,7 +689,8 @@ Every memory boundary and latch bit is defined once for C
 (`hardware.inc`, `memory.inc`, `irq.inc`), with explicit parity checks in
 `tests/test_m1.py` so the representations cannot silently drift.  Hardware
 ports and register constants stay in `hardware.h/.inc`; general region
-geometry (including the bank-7 ISR stack) stays in `memory.h/.inc`; IM2
+geometry (including the fixed-core ISR and service stacks) stays in
+`memory.h/.inc`; IM2
 vector-page and IRQ transition wiring stays in `irq.h/.inc`.  The Zephyr-80
 build include paths and the declarative file names live in
 `platform/zephyr80/config.mk`; `tests/test_source_layout.py` enforces that

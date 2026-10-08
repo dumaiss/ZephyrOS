@@ -215,6 +215,11 @@
       "reason": "the syscall transition gate is common-resident by contract (always visible); its small bank-7 boundary (zos_syscall_dispatch) runs with P = 0"
     },
     {
+      "object": "upcall",
+      "tier": "fixed",
+      "reason": "package-38 upcall shim (kernel/memory/upcall.asm): the fixed primitive a cold-half caller uses to reach a service, so it must be visible whatever the window shows; it is the one audited fixed-core latch writer (it selects and restores the requested window page itself)"
+    },
+    {
       "object": "user_copy",
       "tier": "fixed",
       "reason": "common-resident copy gate (mode-10 crossings from common memory)"

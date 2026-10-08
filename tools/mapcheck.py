@@ -70,6 +70,8 @@ re-verified against the final map by the normal checks (__kernel_code_end,
 the alignment relation, the data base, and the arena floor).
 """
 
+import json
+import os
 import re
 import sys
 
@@ -80,23 +82,42 @@ import sys
 PAGE_ZERO_END = 0x0100
 RESET_TOP = 0x0030
 BANK7_BASE = 0x2000
-# Architectural maximum load end.  It is a ceiling, not a boundary: the
-# production arena ends at the derived data base (below DF00h), so the
-# loadable kernel only ever has to stay below the arena start.
-BANK7_LOAD_END = 0xC000
+# Revision-13 mode-11 bank-7 split (architecture 36.2, 36.5): the fixed
+# core is 2000h-5FFFh, the cold half (the window) is 6000h-DFFFh.  The
+# ISR stack and the service stack are reserved at the top of the fixed
+# core, so the fixed core's runtime data stops below 5D00h.
 BANK7_RUNTIME_END = 0xE000
+REV13_WINDOW_SPLIT = 0x6000
+SERVICE_STACK_BASE = 0x5D00
+SERVICE_STACK_TOP = 0x5F00
+SERVICE_STACK_SIZE = 0x0200
+IRQ_ISR_STACK_BASE = 0x5F00
+IRQ_ISR_STACK_TOP = 0x6000
+IRQ_ISR_STACK_SIZE = 0x0100
+# Cold-half geometry: the window code starts at 0x6000, the driver arena
+# runs from its granule-aligned end to the derived window data base, and
+# the window data runs to BANK7_RUNTIME_END.
+WINDOW_BASE = REV13_WINDOW_SPLIT
+WINDOW_DATA_BASE = 0xD800
 # Host-synthetic geometry defaults.  A real image always applies its
 # generated build/geometry/memory.inc, which must carry every derived
 # value; these literals only seed checks that run without any include
 # (e.g. a synthetic host map on the command line with no layout).
-DRIVER_ARENA_BASE = 0xA000
-DRIVER_ARENA_END = 0xC000
+DRIVER_ARENA_BASE = 0x6200
+DRIVER_ARENA_END = 0x6A00
 DRIVER_GRANULE_SIZE = 0x0200
 DRIVER_GRANULES = ((DRIVER_ARENA_END - DRIVER_ARENA_BASE)
                    // DRIVER_GRANULE_SIZE)
-DATA_BASE = DRIVER_ARENA_END
-DRIVER_ARENA_MIN_SIZE = 0x4000
-DRIVER_ARENA_MIN_GRANULES = 32
+DATA_BASE = 0x5A00
+# Fixed-core ledger fields (the derived include carries them; the
+# synthetic defaults describe an empty overflow).
+FIXED_CODE_END = 0x5200
+FIXED_REQUIRED_BYTES = FIXED_CODE_END - BANK7_BASE
+FIXED_OVERFLOW_BYTES = 0
+FIXED_STACKS_BYTES = IRQ_ISR_STACK_SIZE + SERVICE_STACK_SIZE
+FIXED_ROOM_BYTES = (REV13_WINDOW_SPLIT - BANK7_BASE
+                    - FIXED_REQUIRED_BYTES - FIXED_OVERFLOW_BYTES
+                    - FIXED_STACKS_BYTES)
 COMMON_BASE = 0xE000
 COMMON_CODE_END = 0xFD00
 # Architectural ceiling on the packed `_COMMON` + `_COMMON_DATA` run and
@@ -111,21 +132,8 @@ IRQ_STATE_BASE = 0xFE01
 IRQ_STACK_BASE = 0xFE80
 IRQ_STACK_TOP = 0xFF00
 IRQ_STACK_SIZE = 0x0080
-IRQ_ISR_STACK_BASE = 0xDF00
-IRQ_ISR_STACK_TOP = 0xE000
-IRQ_ISR_STACK_SIZE = 0x0100
-# Architectural end of the bank-7 space.  Production puts the ISR stack at
-# the top of the bank, so BANK7_TOP == IRQ_ISR_STACK_BASE there.  The
-# revision-13 window split moves the ISR stack into the fixed region and
-# splits bank 7 into a fixed region (2000h-6000h) and the mode-11 window
-# (6000h-DFFFh); symbol-residency checks then still ask for "somewhere in
-# bank 7", while the runtime-data bound follows the relocated stack.
-BANK7_TOP = 0xDF00
-# The revision-13 mode-11 window split (architecture section 36.2).
-REV13_WINDOW_SPLIT = 0x6000
-# Window-split layout (None = production/plain build).
-WINDOW_BASE = None
-WINDOW_DATA_BASE = None
+# The whole bank-7 space below common memory.
+BANK7_TOP = BANK7_RUNTIME_END
 STACK_BASE = 0xFF00
 MEM_TOP = 0x10000
 GATE_STACK_SIZE = 256
@@ -161,32 +169,188 @@ def require_key(values, name, source):
             % (name, source if source else "the memory include"))
 
 
-def apply_layout(values, source=None, window_split=False):
+# Nucleus residency classification (config/residency.json).  One entry per
+# kernel object; mapcheck fails the build when a fixed-required object is
+# compiled into the cold areas, and the derive step uses the tiers to
+# split the fixed-core ledger into `required` and `overflow`.
+RESIDENCY_TIERS = ("fixed-required", "cold", "moves")
+
+# Fixed-core areas: the bytes of a fixed-required object that must link
+# inside 2000h-5FFFh.
+FIXED_AREAS = ("_CODE", "_HOME", "_INITIALIZER", "_GSINIT", "_GSFINAL",
+               "_DATA", "_INITIALIZED")
+
+# Cold-half areas: a fixed-required object must contribute no bytes here.
+COLD_AREAS = ("_WINDOW", "_WINDOW_DATA")
+
+REL_AREA_LINE = re.compile(r"^A (\S+) size ([0-9A-F]+) flags (\d+) addr ")
+
+
+def load_residency(path):
+    """(format, tier-per-object, cold-half placement set) of a residency
+    file.  Every object carries exactly one tier; the `cold_half` list
+    names the objects the build compiles into the cold areas."""
+    with open(path) as handle:
+        data = json.load(handle)
+    if data.get("format") != "zos-residency/1":
+        raise MapError("%s is not a zos-residency/1 file" % path)
+    tiers = {}
+    for entry in data.get("objects", []):
+        name = entry.get("object")
+        tier = entry.get("tier")
+        if not name or tier not in RESIDENCY_TIERS:
+            raise MapError("%s: bad residency entry %r" % (path, entry))
+        if name in tiers:
+            raise MapError("%s: %s is classified twice" % (path, name))
+        if tier == "moves" and not isinstance(entry.get("stage"), int):
+            raise MapError("%s: %s moves without a stage" % (path, name))
+        tiers[name] = tier
+    cold_half = tuple(data.get("cold_half", ()))
+    for name in cold_half:
+        if name not in tiers:
+            raise MapError("%s: cold_half names unclassified %s"
+                           % (path, name))
+    return tiers, cold_half
+
+
+def linker_object_list(linker_path):
+    """The production object stems of a linker script (its build/*.rel
+    lines, in link order)."""
+    names = []
+    for line in open(linker_path):
+        line = line.strip()
+        if line.startswith("build/") and line.endswith(".rel"):
+            names.append(os.path.basename(line)[:-4])
+    return names
+
+
+def rel_area_sizes(objdir):
+    """Per-object area byte counts from a build directory's .rel files."""
+    sizes = {}
+    for name in sorted(os.listdir(objdir)):
+        if not name.endswith(".rel"):
+            continue
+        areas = {}
+        with open(os.path.join(objdir, name), errors="replace") as handle:
+            for line in handle:
+                match = REL_AREA_LINE.match(line)
+                if match:
+                    areas[match.group(1)] = int(match.group(2), 16)
+        sizes[name[:-4]] = areas
+    return sizes
+
+
+def fixed_core_bytes(objdir, tiers):
+    """(required, overflow) fixed-core bytes from the build's object files.
+
+    `required` is the fixed-area content of fixed-required objects;
+    `overflow` is everything else that links into the fixed areas
+    (unclassified acceptance objects count as overflow)."""
+    required = 0
+    overflow = 0
+    for name, areas in rel_area_sizes(objdir).items():
+        total = sum(areas.get(area, 0) for area in FIXED_AREAS)
+        if total == 0:
+            continue
+        if tiers.get(name) == "fixed-required":
+            required += total
+        else:
+            overflow += total
+    return required, overflow
+
+
+def check_residency(objdir, tiers, cold_half, linker_path):
+    """Residency enforcement (architecture 36.5, package 38).
+
+    Fails when the classification does not cover the production object
+    list exactly, when a fixed-required object is compiled into the cold
+    areas (a fixed-required symbol at or above 6000h), or when a
+    classified object's linked areas disagree with its cold-half
+    placement."""
+    production = linker_object_list(linker_path)
+    missing = [name for name in production if name not in tiers]
+    if missing:
+        raise MapError(
+            "object(s) missing from the residency classification %s: %s"
+            % (linker_path, ", ".join(sorted(missing))))
+    stale = [name for name in tiers if name not in production]
+    if stale:
+        raise MapError(
+            "the residency classification names object(s) not linked by %s: "
+            "%s" % (linker_path, ", ".join(sorted(stale))))
+    sizes = rel_area_sizes(objdir)
+    for name, tier in sorted(tiers.items()):
+        areas = sizes.get(name)
+        if areas is None:
+            raise MapError("no object file for classified %s in %s"
+                           % (name, objdir))
+        cold_bytes = sum(areas.get(area, 0) for area in COLD_AREAS)
+        fixed_bytes = sum(areas.get(area, 0) for area in FIXED_AREAS)
+        in_cold = name in cold_half
+        if tier == "fixed-required" and cold_bytes:
+            raise MapError(
+                "fixed-required object %s links %d bytes into the cold "
+                "half (at or above %04Xh)" % (name, cold_bytes,
+                                              REV13_WINDOW_SPLIT))
+        if in_cold and cold_bytes == 0 and fixed_bytes:
+            raise MapError(
+                "object %s is declared cold-half but compiles into the "
+                "fixed areas" % name)
+        if not in_cold and cold_bytes:
+            raise MapError(
+                "object %s compiles into the cold half but the "
+                "classification does not place it there" % name)
+
+
+def apply_layout(values, source=None):
     """Apply memory-region declarations from a generated memory include.
 
-    `window_split` selects the revision-13 window layout: the window areas
-    `_WINDOW` (cold code) and `_WINDOW_DATA` (cold runtime data) join the
-    owned-area contract, placed at the 6000h split and the derived window
-    data base the generated include carries."""
-    global PAGE_ZERO_END, RESET_TOP, BANK7_BASE, BANK7_LOAD_END
+    Every production image is a revision-13 two-region build (architecture
+    36.5): the fixed areas (`_CODE`/`_HOME`/`_INITIALIZER`/`_GSINIT`/
+    `_GSFINAL`, `_DATA`/`_INITIALIZED`) must link inside 2000h-5FFFh, and
+    the cold areas (`_WINDOW`, `_WINDOW_DATA`) inside 6000h-DFFFh.  The
+    generated include carries both data bases, the cold-half arena, the
+    fixed-core ledger fields and the stack reservations."""
+    global PAGE_ZERO_END, RESET_TOP, BANK7_BASE
     global BANK7_RUNTIME_END, BANK7_TOP, COMMON_BASE, COMMON_CODE_END
     global STACK_BASE, WINDOW_BASE, WINDOW_DATA_BASE
+    global SERVICE_STACK_BASE, SERVICE_STACK_TOP, SERVICE_STACK_SIZE
     global IRQ_ISR_STACK_BASE, IRQ_ISR_STACK_TOP, IRQ_ISR_STACK_SIZE
     global GATE_STACK_SIZE, OWNED_AREAS
     global DRIVER_ARENA_BASE, DRIVER_ARENA_END, DRIVER_GRANULE_SIZE
     global DRIVER_GRANULES, DATA_BASE
-    global DRIVER_ARENA_MIN_SIZE, DRIVER_ARENA_MIN_GRANULES
+    global FIXED_CODE_END, FIXED_REQUIRED_BYTES, FIXED_OVERFLOW_BYTES
+    global FIXED_STACKS_BYTES, FIXED_ROOM_BYTES
     global ROMFS_STAGING_SIZE, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
     global COMMON_CEILING, COMMON_M10_RESERVATION
     PAGE_ZERO_END = values["ZOS_PAGE_ZERO_END"]
     RESET_TOP = values["ZOS_RESET_TOP"]
     BANK7_BASE = values["ZOS_BANK7_BASE"]
-    BANK7_LOAD_END = values["ZOS_BANK7_LOAD_END"]
     COMMON_BASE = values["ZOS_COMMON_BASE"]
     STACK_BASE = values["ZOS_COMMON_STACK_BASE"]
     BANK7_RUNTIME_END = values["ZOS_BANK7_RUNTIME_END"]
     BANK7_TOP = BANK7_RUNTIME_END
     COMMON_CODE_END = values["ZOS_COMMON_CODE_END"]
+    # The revision-13 split, the two stack reservations and the two-data-base
+    # geometry are build-time architecture constants; the generated include
+    # always carries them.
+    require_key(values, "ZOS_REV13_WINDOW_BASE", source)
+    require_key(values, "ZOS_SERVICE_STACK_BASE", source)
+    require_key(values, "ZOS_SERVICE_STACK_TOP", source)
+    require_key(values, "ZOS_SERVICE_STACK_SIZE", source)
+    WINDOW_BASE = values["ZOS_REV13_WINDOW_BASE"]
+    SERVICE_STACK_BASE = values["ZOS_SERVICE_STACK_BASE"]
+    SERVICE_STACK_TOP = values["ZOS_SERVICE_STACK_TOP"]
+    SERVICE_STACK_SIZE = values["ZOS_SERVICE_STACK_SIZE"]
+    if WINDOW_BASE != REV13_WINDOW_SPLIT:
+        raise MapError("the mode-11 window base is %04Xh, expected %04Xh"
+                       % (WINDOW_BASE, REV13_WINDOW_SPLIT))
+    if not (BANK7_BASE < SERVICE_STACK_BASE <= SERVICE_STACK_TOP
+            <= WINDOW_BASE <= BANK7_RUNTIME_END):
+        raise MapError("the fixed-core stacks %04Xh-%04Xh do not sit below "
+                       "the window base %04Xh"
+                       % (SERVICE_STACK_BASE, SERVICE_STACK_TOP,
+                          WINDOW_BASE))
     # The common ceiling and the M10 reservation are build-time
     # architecture constants; the generated include always carries them.
     require_key(values, "ZOS_COMMON_CEILING", source)
@@ -197,57 +361,73 @@ def apply_layout(values, source=None, window_split=False):
     IRQ_ISR_STACK_TOP = values["ZOS_IRQ_ISR_STACK_TOP"]
     IRQ_ISR_STACK_SIZE = values["ZOS_IRQ_ISR_STACK_SIZE"]
     GATE_STACK_SIZE = values["ZOS_GATE_STACK_SIZE"]
-    # The bank-7 geometry (arena start/end, data base, granule count) is
-    # derived per image and carried by the generated memory include.  It is
-    # required: a missing key must fail loudly rather than validate against
-    # the retired C000h boundary.
+    # The bank-7 geometry (fixed data base, cold-half arena start/end and
+    # granule count, window data base) is derived per image and carried by
+    # the generated memory include.  It is required: a missing key must
+    # fail loudly rather than validate against a retired boundary.
+    require_key(values, "ZOS_WINDOW_DATA_BASE", source)
     require_key(values, "ZOS_DRIVER_ARENA_BASE", source)
     require_key(values, "ZOS_DRIVER_ARENA_END", source)
     require_key(values, "ZOS_DRIVER_GRANULES", source)
     require_key(values, "ZOS_DATA_BASE", source)
+    WINDOW_DATA_BASE = values["ZOS_WINDOW_DATA_BASE"]
     DRIVER_ARENA_BASE = values["ZOS_DRIVER_ARENA_BASE"]
     DRIVER_ARENA_END = values["ZOS_DRIVER_ARENA_END"]
     DRIVER_GRANULE_SIZE = values["ZOS_DRIVER_GRANULE_SIZE"]
     DRIVER_GRANULES = values["ZOS_DRIVER_GRANULES"]
-    # The runtime data starts at the derived data base, which is also the
-    # exclusive end of the arena.
+    if not (WINDOW_BASE <= WINDOW_DATA_BASE <= BANK7_RUNTIME_END):
+        raise MapError("window data base %04Xh is outside %04Xh-%04Xh"
+                       % (WINDOW_DATA_BASE, WINDOW_BASE,
+                          BANK7_RUNTIME_END))
+    if not (WINDOW_BASE <= DRIVER_ARENA_BASE <= DRIVER_ARENA_END
+            <= WINDOW_DATA_BASE):
+        raise MapError("the driver arena %04Xh-%04Xh is outside the cold "
+                       "half %04Xh-%04Xh"
+                       % (DRIVER_ARENA_BASE, DRIVER_ARENA_END,
+                          WINDOW_BASE, WINDOW_DATA_BASE))
+    # The fixed-core ledger fields travel with the geometry so both ledger
+    # printers (tools/pack_image.py, tools/zmodpack.py) show one truth.
+    for name in ("ZOS_FIXED_CODE_END", "ZOS_FIXED_REQUIRED_BYTES",
+                 "ZOS_FIXED_OVERFLOW_BYTES", "ZOS_FIXED_STACKS_BYTES",
+                 "ZOS_FIXED_ROOM_BYTES"):
+        require_key(values, name, source)
+    # Fixed-core ledger fields (the derived include carries them; a
+    # synthetic map carries no per-object attribution and reports an
+    # empty overflow).
+    FIXED_CODE_END = values["ZOS_FIXED_CODE_END"]
+    FIXED_REQUIRED_BYTES = values["ZOS_FIXED_REQUIRED_BYTES"]
+    FIXED_OVERFLOW_BYTES = values["ZOS_FIXED_OVERFLOW_BYTES"]
+    FIXED_STACKS_BYTES = values["ZOS_FIXED_STACKS_BYTES"]
+    FIXED_ROOM_BYTES = values["ZOS_FIXED_ROOM_BYTES"]
+    # The fixed core's data starts at the derived base; the cold half's
+    # data starts at the derived window data base.
     DATA_BASE = values["ZOS_DATA_BASE"]
-    DRIVER_ARENA_MIN_SIZE = values.get("ZOS_DRIVER_ARENA_MIN_SIZE", 0x4000)
-    DRIVER_ARENA_MIN_GRANULES = values.get("ZOS_DRIVER_ARENA_MIN_GRANULES", 32)
+    if not (BANK7_BASE < DATA_BASE <= SERVICE_STACK_BASE):
+        raise MapError("fixed data base %04Xh is outside the fixed core"
+                       % DATA_BASE)
     ROMFS_STAGING_SIZE = values["ZOS_ROMFS_STAGING_SIZE"]
     ROM_ACCESS_BASE = values["ZOS_ROM_ACCESS_BASE"]
     ROM_ACCESS_SIZE = values["ZOS_ROM_ACCESS_SIZE"]
     OWNED_AREAS = {
-        "_CODE": (BANK7_BASE, DRIVER_ARENA_BASE),
-        "_HOME": (BANK7_BASE, DRIVER_ARENA_BASE),
-        "_INITIALIZER": (BANK7_BASE, DRIVER_ARENA_BASE),
-        "_GSINIT": (BANK7_BASE, DRIVER_ARENA_BASE),
-        "_GSFINAL": (BANK7_BASE, DRIVER_ARENA_BASE),
-        "_DATA": (DATA_BASE, BANK7_RUNTIME_END),
-        "_INITIALIZED": (DATA_BASE, BANK7_RUNTIME_END),
+        "_CODE": (BANK7_BASE, WINDOW_BASE),
+        "_HOME": (BANK7_BASE, WINDOW_BASE),
+        "_INITIALIZER": (BANK7_BASE, WINDOW_BASE),
+        "_GSINIT": (BANK7_BASE, WINDOW_BASE),
+        "_GSFINAL": (BANK7_BASE, WINDOW_BASE),
+        "_DATA": (DATA_BASE, SERVICE_STACK_BASE),
+        "_INITIALIZED": (DATA_BASE, SERVICE_STACK_BASE),
+        "_WINDOW": (WINDOW_BASE, WINDOW_DATA_BASE),
+        "_WINDOW_DATA": (WINDOW_DATA_BASE, BANK7_RUNTIME_END),
         "_COMMON": (COMMON_BASE, COMMON_CODE_END),
         "_COMMON_DATA": (COMMON_BASE, COMMON_CODE_END),
     }
-    WINDOW_BASE = None
-    WINDOW_DATA_BASE = None
-    if window_split:
-        require_key(values, "ZOS_WINDOW_DATA_BASE", source)
-        WINDOW_BASE = REV13_WINDOW_SPLIT
-        WINDOW_DATA_BASE = values["ZOS_WINDOW_DATA_BASE"]
-        if not (BANK7_BASE < WINDOW_BASE < BANK7_RUNTIME_END):
-            raise MapError("window base %04Xh is outside the bank-7 space"
-                           % WINDOW_BASE)
-        if not (WINDOW_BASE <= WINDOW_DATA_BASE <= BANK7_RUNTIME_END):
-            raise MapError("window data base %04Xh is outside %04Xh-%04Xh"
-                           % (WINDOW_DATA_BASE, WINDOW_BASE,
-                              BANK7_RUNTIME_END))
-        OWNED_AREAS["_WINDOW"] = (WINDOW_BASE, WINDOW_DATA_BASE)
-        OWNED_AREAS["_WINDOW_DATA"] = (WINDOW_DATA_BASE, BANK7_RUNTIME_END)
 
 
-# Loadable bank-7 sections whose exclusive maximum end defines
-# __kernel_code_end in derived builds.
-LOADABLE_AREAS = ("_CODE", "_HOME", "_INITIALIZER", "_GSINIT", "_GSFINAL")
+# Fixed-core loadable sections whose exclusive maximum end defines the
+# fixed code end in derived builds.  The cold half's loadable section is
+# `_WINDOW`, measured separately.
+FIXED_LOADABLE_AREAS = ("_CODE", "_HOME", "_INITIALIZER", "_GSINIT",
+                        "_GSFINAL")
 
 
 def align_up(value, alignment):
@@ -257,7 +437,7 @@ def align_up(value, alignment):
 def loadable_end(areas, symbols, names=None):
     """Exclusive maximum end of every loadable bank-7 area."""
     end = None
-    for name in (names or LOADABLE_AREAS):
+    for name in (names or FIXED_LOADABLE_AREAS):
         base = name.lstrip("_")
         if "s__" + base in symbols:
             candidate = symbols["s__" + base] + symbols.get("l__" + base, 0)
@@ -315,88 +495,105 @@ def align_down(value, alignment):
     return value & ~(alignment - 1)
 
 
-# Optional floor override for acceptance images (see geometry_main): the
-# 32-granule floor is the production budget gate; an acceptance image links
-# target-test code and only needs an arena that holds its declared boot set
-# (enforced separately by the arena plan).
+# Optional floor override for acceptance images (see geometry_main).
 ARENA_MIN_GRANULES = None
 
 
 def derive_geometry(map_text, values, min_granules=None,
-                    window_split=False):
-    """Compute the derived bank-7 geometry from a probe-link map.
+                    fixed_required_bytes=None, fixed_overflow_bytes=None):
+    """Compute the derived two-region bank-7 geometry from a probe map.
 
-    Returns a dict with kernel_code_end (unaligned exclusive end of the
-    loadable areas), arena_start (granule aligned), arena_end (the derived
-    data base) and granules.  Raises MapError when the arena would fall
-    below the minimum size or the kernel would grow into the data base.
+    Fixed core (2000h-5FFFh): `fixed_code_end` is the exclusive end of the
+    fixed loadable areas (`_CODE`/`_HOME`/`_INITIALIZER`/`_GSINIT`/
+    `_GSFINAL`); the fixed runtime data base is
+    `align_down(service_stack_base - data_size, 512)`.
 
-    With `window_split` the same derivation runs for the fixed region: the
-    fixed code/data stay below the relocated ISR stack (the generated
-    include carries its base) and the window data base is derived from the
-    `_WINDOW_DATA` size at the top of the bank-7 space."""
+    Cold half (6000h-DFFFh): `window_code_end` is the exclusive end of
+    `_WINDOW`; the window data base is
+    `align_down(BANK7_RUNTIME_END - window_data_size, 512)`; the driver
+    arena runs from `align_up(window_code_end, 512)` to that data base.
+    Raises MapError when either region's content does not fit.
+
+    There is no granule floor: the arena only has to hold the image's
+    declared boot set, which tools/zmodpack.py's plan and
+    tools/pack_image.py enforce against `arena.plan.json`."""
     areas, symbols = parse_map(map_text)
     granule = values["ZOS_DRIVER_GRANULE_SIZE"]
-    runtime_end = values["ZOS_BANK7_RUNTIME_END"]
-    if window_split:
-        runtime_end = values["ZOS_IRQ_ISR_STACK_BASE"]
-    if min_granules is None:
-        min_granules = values["ZOS_DRIVER_ARENA_MIN_GRANULES"]
-    min_size = min_granules * granule
-    end = loadable_end(areas, symbols)
+    fixed_top = values["ZOS_SERVICE_STACK_BASE"]
     data_size = runtime_data_size(areas, symbols)
-    if data_size > runtime_end - BANK7_BASE:
+    fixed_code_end = loadable_end(areas, symbols, FIXED_LOADABLE_AREAS)
+    if data_size > fixed_top - BANK7_BASE:
         raise MapError(
-            "runtime data size %d bytes does not fit the bank-7 window "
-            "2000h-%04Xh" % (data_size, runtime_end - 1))
-    data_base = align_down(runtime_end - data_size, granule)
-    arena_end = data_base
-    if end > arena_end:
+            "fixed runtime data size %d bytes does not fit the fixed core "
+            "2000h-%04Xh" % (data_size, fixed_top - 1))
+    data_base = align_down(fixed_top - data_size, granule)
+    if fixed_code_end > data_base:
         raise MapError(
-            "linked kernel loadable areas end at %04Xh, past the derived "
-            "data base (arena end) %04Xh" % (end, arena_end))
-    start = align_up(end, granule)
-    size = arena_end - start
+            "linked fixed code ends at %04Xh, past the derived fixed data "
+            "base %04Xh (overflow the fixed core cannot hold)"
+            % (fixed_code_end, data_base))
+    if min_granules is not None:
+        # Acceptance-image guard kept for callers that pass an explicit
+        # floor; the production build has none.
+        min_size = min_granules * granule
+    else:
+        min_size = 0
+    window_code_end = loadable_end(areas, symbols, ("_WINDOW",))
+    window_data_size = area_sizes(areas, symbols,
+                                  ("_WINDOW_DATA",))["_WINDOW_DATA"]
+    top = values["ZOS_BANK7_RUNTIME_END"]
+    if window_data_size > top - REV13_WINDOW_SPLIT:
+        raise MapError(
+            "cold runtime data %d bytes does not fit %04Xh-%04Xh"
+            % (window_data_size, REV13_WINDOW_SPLIT, top - 1))
+    window_data_base = align_down(top - window_data_size, granule)
+    if window_code_end > window_data_base:
+        raise MapError(
+            "linked cold code ends at %04Xh, past the derived cold data "
+            "base %04Xh" % (window_code_end, window_data_base))
+    start = align_up(window_code_end, granule)
+    size = window_data_base - start
     if size < min_size:
         raise MapError(
             "derived driver arena %04Xh-%04Xh is %d bytes; the minimum is "
-            "%d bytes (%d granules, linked kernel ends at %04Xh)"
-            % (start, arena_end - 1, size, min_size, min_granules, end))
-    if size % granule != 0:
+            "%d bytes (%d granules, linked cold code ends at %04Xh)"
+            % (start, window_data_base - 1, size, min_size, min_granules,
+               window_code_end))
+    if size < 0 or size % granule != 0:
         raise MapError("derived driver arena is not granule aligned")
     common = area_sizes(areas, symbols, COMMON_AREAS)
+    stacks = values["ZOS_SERVICE_STACK_SIZE"] + values["ZOS_IRQ_ISR_STACK_SIZE"]
+    if fixed_required_bytes is None:
+        fixed_required_bytes = fixed_code_end - BANK7_BASE
+    if fixed_overflow_bytes is None:
+        fixed_overflow_bytes = 0
+    room = (REV13_WINDOW_SPLIT - BANK7_BASE
+            - fixed_required_bytes - fixed_overflow_bytes - stacks)
+    if room < 0:
+        raise MapError(
+            "the fixed core overflows: %d required + %d overflow + %d "
+            "stacks bytes do not fit %d bytes"
+            % (fixed_required_bytes, fixed_overflow_bytes, stacks,
+               REV13_WINDOW_SPLIT - BANK7_BASE))
     geometry = {
-        "kernel_code_end": end,
+        "kernel_code_end": window_code_end,
+        "fixed_code_end": fixed_code_end,
         "common_code_size": common["_COMMON"],
         "common_data_size": common["_COMMON_DATA"],
         "arena_start": start,
-        "arena_end": arena_end,
+        "arena_end": window_data_base,
         "granules": size // granule,
         "data_base": data_base,
         "data_size": data_size,
+        "window_split": REV13_WINDOW_SPLIT,
+        "window_code_end": window_code_end,
+        "window_data_base": window_data_base,
+        "window_data_size": window_data_size,
+        "fixed_required_bytes": fixed_required_bytes,
+        "fixed_overflow_bytes": fixed_overflow_bytes,
+        "fixed_stacks_bytes": stacks,
+        "fixed_room_bytes": room,
     }
-    if window_split:
-        window_code_end = loadable_end(areas, symbols, ("_WINDOW",))
-        window_data_size = (symbols.get("l__WINDOW_DATA")
-                            or area_sizes(areas, symbols,
-                                          ("_WINDOW_DATA",))["_WINDOW_DATA"])
-        top = values["ZOS_BANK7_RUNTIME_END"]
-        if window_data_size > top - REV13_WINDOW_SPLIT:
-            raise MapError(
-                "window runtime data %d bytes does not fit "
-                "%04Xh-%04Xh" % (window_data_size, REV13_WINDOW_SPLIT,
-                                 top - 1))
-        window_data_base = align_down(top - window_data_size, granule)
-        if window_code_end > window_data_base:
-            raise MapError(
-                "linked window code ends at %04Xh, past the derived window "
-                "data base %04Xh" % (window_code_end, window_data_base))
-        geometry.update({
-            "window_split": REV13_WINDOW_SPLIT,
-            "window_code_end": window_code_end,
-            "window_data_base": window_data_base,
-            "window_data_size": window_data_size,
-        })
     return geometry
 
 
@@ -415,7 +612,7 @@ def format_probe_geometry_inc():
 def format_geometry_inc(geometry):
     lines = [
         "; Generated by tools/mapcheck.py geometry -- do not edit.",
-        "; Driver-arena geometry for kernel/module/arena.asm.",
+        "; Bank-7 geometry for kernel/module/arena.asm.",
         "ZOS_ARENA_PROBE = 0",
         "ZOS_KERNEL_CODE_END = 0x%04X" % geometry["kernel_code_end"],
         "ZOS_DRIVER_ARENA_BASE = 0x%04X" % geometry["arena_start"],
@@ -425,37 +622,28 @@ def format_geometry_inc(geometry):
     return "\n".join(lines) + "\n"
 
 
-def window_declarations(geometry):
-    """The static part of the revision-13 window layout: the ISR stack moves
-    from the top of bank 7 to the top of the fixed region (a window would
-    hide it otherwise) and the window base becomes a named constant."""
-    base = geometry["window_split"]
-    return {
-        "ZOS_IRQ_ISR_STACK_BASE": "0x%04X" % (base - 0x100),
-        "ZOS_IRQ_ISR_STACK_TOP": "0x%04X" % base,
-        "ZOS_REV13_WINDOW_BASE": "0x%04X" % base,
-    }
-
-
 def format_memory_variant(memory_inc_text, geometry):
     """Full memory.inc copy with the derived geometry declarations."""
     replacements = {
         "ZOS_ARENA_PROBE": "0",
         "ZOS_KERNEL_CODE_END": "0x%04X" % geometry["kernel_code_end"],
+        "ZOS_FIXED_CODE_END": "0x%04X" % geometry["fixed_code_end"],
         "ZOS_DRIVER_ARENA_BASE": "0x%04X" % geometry["arena_start"],
         "ZOS_DRIVER_ARENA_END": "0x%04X" % geometry["arena_end"],
         "ZOS_DRIVER_GRANULES": str(geometry["granules"]),
         "ZOS_DATA_BASE": "0x%04X" % geometry["data_base"],
         "ZOS_DATA_SIZE": str(geometry["data_size"]),
+        "ZOS_FIXED_REQUIRED_BYTES": str(geometry["fixed_required_bytes"]),
+        "ZOS_FIXED_OVERFLOW_BYTES": str(geometry["fixed_overflow_bytes"]),
+        "ZOS_FIXED_STACKS_BYTES": str(geometry["fixed_stacks_bytes"]),
+        "ZOS_FIXED_ROOM_BYTES": str(geometry["fixed_room_bytes"]),
         "ZOS_COMMON_CODE_SIZE": str(geometry["common_code_size"]),
         "ZOS_COMMON_DATA_SIZE": str(geometry["common_data_size"]),
+        "ZOS_REV13_WINDOW_BASE": "0x%04X" % geometry["window_split"],
+        "ZOS_WINDOW_CODE_END": "0x%04X" % geometry["window_code_end"],
+        "ZOS_WINDOW_DATA_BASE": "0x%04X" % geometry["window_data_base"],
+        "ZOS_WINDOW_DATA_SIZE": str(geometry["window_data_size"]),
     }
-    if "window_split" in geometry:
-        replacements.update(window_declarations(geometry) | {
-            "ZOS_WINDOW_CODE_END": "0x%04X" % geometry["window_code_end"],
-            "ZOS_WINDOW_DATA_BASE": "0x%04X" % geometry["window_data_base"],
-            "ZOS_WINDOW_DATA_SIZE": str(geometry["window_data_size"]),
-        })
     seen = set()
     lines = []
     for line in memory_inc_text.splitlines():
@@ -485,18 +673,20 @@ def apply_irq_layout(values):
     IRQ_STACK_SIZE = values.get("ZOS_IRQ_STACK_SIZE", IRQ_STACK_SIZE)
 
 
-# Owned areas and their allowed placement range.  Loadable bank-7 sections
-# must end below the derived driver arena; the arena itself is reserved
-# for load-time modules and never carries linked content.  Runtime data
-# starts at the derived data base (the arena's exclusive end).
+# Owned areas and their allowed placement range.  Fixed-core sections must
+# end below the window; the cold areas live in the cold half, with the
+# driver arena reserved for load-time modules between the cold code and
+# the cold runtime data.
 OWNED_AREAS = {
-    "_CODE": (BANK7_BASE, DRIVER_ARENA_BASE),
-    "_HOME": (BANK7_BASE, DRIVER_ARENA_BASE),
-    "_INITIALIZER": (BANK7_BASE, DRIVER_ARENA_BASE),
-    "_GSINIT": (BANK7_BASE, DRIVER_ARENA_BASE),
-    "_GSFINAL": (BANK7_BASE, DRIVER_ARENA_BASE),
-    "_DATA": (DATA_BASE, BANK7_RUNTIME_END),
-    "_INITIALIZED": (DATA_BASE, BANK7_RUNTIME_END),
+    "_CODE": (BANK7_BASE, WINDOW_BASE),
+    "_HOME": (BANK7_BASE, WINDOW_BASE),
+    "_INITIALIZER": (BANK7_BASE, WINDOW_BASE),
+    "_GSINIT": (BANK7_BASE, WINDOW_BASE),
+    "_GSFINAL": (BANK7_BASE, WINDOW_BASE),
+    "_DATA": (DATA_BASE, SERVICE_STACK_BASE),
+    "_INITIALIZED": (DATA_BASE, SERVICE_STACK_BASE),
+    "_WINDOW": (WINDOW_BASE, WINDOW_DATA_BASE),
+    "_WINDOW_DATA": (WINDOW_DATA_BASE, BANK7_RUNTIME_END),
     "_COMMON": (COMMON_BASE, COMMON_CODE_END),
     "_COMMON_DATA": (COMMON_BASE, COMMON_CODE_END),
 }
@@ -939,13 +1129,28 @@ def check_areas(areas, symbols):
             raise MapError("%s is missing from the area table but l__%s != 0"
                            % (name, base))
 
-    # Ordinary bank-7 data stops below the dedicated ISR stack, and
+    # The fixed core's stack reservation 5D00h-6000h (service stack, then
+    # ISR stack) is reserved by declaration: only the IRQ entry's ABS
+    # `_IRQ_ISR_STACK` area may occupy it.
+    for name, (addr, size) in sorted(areas.items()):
+        if size == 0 or name.startswith("_IRQ_ISR_STACK"):
+            continue
+        if addr < WINDOW_BASE and addr + size > SERVICE_STACK_BASE:
+            raise MapError(
+                "%s at %04Xh (size %d) overlaps the fixed-core stack "
+                "reservation %04Xh-%04Xh"
+                % (name, addr, size, SERVICE_STACK_BASE, WINDOW_BASE - 1)
+            )
+
+    # Ordinary bank-7 data stops below the fixed-core stacks, and
     # ordinary common allocation stops below the IM2 page.
     for name in ("_DATA", "_INITIALIZED"):
         if name in areas:
             addr, size = areas[name]
-            if addr + size > IRQ_ISR_STACK_BASE:
-                raise MapError("%s overlaps the bank-7 ISR stack at DF00h" % name)
+            if addr + size > SERVICE_STACK_BASE:
+                raise MapError(
+                    "%s overlaps the fixed-core service stack at %04Xh"
+                    % (name, SERVICE_STACK_BASE))
     for name in ("_COMMON", "_COMMON_DATA"):
         if name in areas:
             addr, size = areas[name]
@@ -967,11 +1172,11 @@ def check_areas(areas, symbols):
 
 
 # Symbols that must stay reachable while the window shows another bank:
-# the interrupt and syscall gates, the dispatch path, the copy primitives
-# and their staging, the driver arena (module code and data an interrupt
-# can dispatch into).  A symbol is acceptable in the fixed region
-# (2000h-5FFFh) or in the permanently mapped common window (E000h+),
-# never inside the window.
+# the gates, the dispatch bodies and data, the copy primitives and their
+# staging, the upcall shim, and the driver arena bounds (module code and
+# data an interrupt can dispatch into).  A symbol is acceptable in the
+# fixed region (2000h-5FFFh) or in the permanently mapped common window
+# (E000h+), never inside the cold half.
 REV13_FIXED_SYMBOLS = (
     "irq_common_entry",
     "irq_isr_stack",
@@ -982,7 +1187,6 @@ REV13_FIXED_SYMBOLS = (
     "_irq_arch_unlock",
     "zos_syscall_entry",
     "zos_syscall_dispatch",
-    "_kernel_syscall_dispatch",
     "_irq_dispatch",
     "_irq_active_source",
     "_boot_common_entry",
@@ -990,44 +1194,29 @@ REV13_FIXED_SYMBOLS = (
     "_zos_user_copy_staging",
     "_platform_memctl_read",
     "_platform_memctl_write",
-    "___driver_arena_start",
-    "__driver_arena_start",
-    "___driver_arena_end",
-    "__driver_arena_end",
+    "_zos_upcall",
 )
 
-# Cold (window-resident) objects the evaluation link must place inside the
-# window: their absence is not an error (an object can be reclassified),
-# but a symbol that exists and sits in the fixed region is one.
+# Cold (cold-half-resident) objects: their absence is not an error (an
+# object can be reclassified), but a symbol that exists and sits in the
+# fixed region is one.  The syscall gate clears the page field before
+# dispatching, so the dispatcher, the boot/idle path and the loader body
+# only ever run with P = 0 and live in the cold half.
 REV13_COLD_SYMBOLS = (
     "_kernel_main",
+    "_kernel_syscall_dispatch",
     "_module_loader_load",
-    "_romfs_read",
 )
-
-# The 6000h split moves the syscall-side objects into the window half: the
-# syscall gate clears the page field before dispatching, so the dispatcher
-# only runs with P = 0 and the two-bank classification
-# (tests/m10/two-bank-classification.json) places it in the cold tier.
-# The check stays a residency assertion: at the 6000h split the dispatcher
-# must be inside the window, not merely allowed to be.
-REV13_6000_COLD_SYMBOLS = ("_kernel_syscall_dispatch",)
 
 
 def rev13_symbol_sets():
-    """(fixed, cold) symbol expectations for the window split."""
-    fixed = REV13_FIXED_SYMBOLS
-    cold = REV13_COLD_SYMBOLS
-    if WINDOW_BASE == REV13_WINDOW_SPLIT:
-        fixed = tuple(name for name in fixed
-                      if name not in REV13_6000_COLD_SYMBOLS)
-        cold = cold + REV13_6000_COLD_SYMBOLS
-    return fixed, cold
+    """(fixed, cold) symbol expectations for the two-region split."""
+    return REV13_FIXED_SYMBOLS, REV13_COLD_SYMBOLS
 
 
 def check_rev13_window(symbols):
-    """Revision-13 window split: fixed symbols outside the window, and the
-    relocated ISR stack inside the fixed region."""
+    """Two-region split: fixed symbols outside the cold half, cold symbols
+    inside it, and both stacks inside the fixed core."""
     if WINDOW_BASE is None:
         return
     fixed_symbols, cold_symbols = rev13_symbol_sets()
@@ -1037,9 +1226,21 @@ def check_rev13_window(symbols):
         addr = symbols[name]
         if WINDOW_BASE <= addr < BANK7_TOP:
             raise MapError(
-                "%s at %04Xh must stay visible while the window is open: it "
-                "is inside the window region %04Xh-%04Xh"
+                "%s at %04Xh must stay visible while the window shows "
+                "another bank: it is inside the cold half %04Xh-%04Xh"
                 % (name, addr, WINDOW_BASE, BANK7_TOP - 1))
+    for name, base in (("irq_isr_stack", IRQ_ISR_STACK_BASE),
+                       ("irq_isr_stack_top", IRQ_ISR_STACK_TOP),
+                       ("zos_service_stack", SERVICE_STACK_BASE),
+                       ("zos_service_stack_top", SERVICE_STACK_TOP)):
+        if name not in symbols:
+            continue
+        # The top labels are exclusive (a stack top is the first byte above
+        # the reservation), so they may sit on the fixed core's end.
+        if not (BANK7_BASE <= symbols[name] <= WINDOW_BASE):
+            raise MapError(
+                "the fixed-core stack symbol %s at %04Xh is not in "
+                "2000h-%04Xh" % (name, symbols[name], WINDOW_BASE))
     if not (BANK7_BASE <= IRQ_ISR_STACK_BASE < WINDOW_BASE):
         raise MapError(
             "the ISR stack at %04Xh is not in the fixed region "
@@ -1051,7 +1252,7 @@ def check_rev13_window(symbols):
         if not (WINDOW_BASE <= addr < BANK7_TOP):
             raise MapError(
                 "%s at %04Xh is classified cold but does not sit in the "
-                "window region %04Xh-%04Xh"
+                "cold half %04Xh-%04Xh"
                 % (name, addr, WINDOW_BASE, BANK7_TOP - 1))
 
 
@@ -1079,15 +1280,15 @@ def check_symbols(areas, symbols, production=False):
                 "%s at %04Xh is not in the common region E000h-FEFFh" % (name, addr)
             )
 
-    # Bank-7 routines must stay inside the loadable kernel region.
+    # Bank-7 routines must stay inside the fixed core.
     for name in BANK7_ROUTINES:
         if name not in symbols:
             raise MapError("map has no symbol %s" % name)
         addr = symbols[name]
-        if not (BANK7_BASE <= addr < BANK7_LOAD_END):
+        if not (BANK7_BASE <= addr < WINDOW_BASE):
             raise MapError(
-                "%s at %04Xh is outside the bank-7 loadable region "
-                "2000h-BFFFh" % (name, addr)
+                "%s at %04Xh is outside the fixed core 2000h-%04Xh"
+                % (name, addr, WINDOW_BASE - 1)
             )
 
     # M3: registry, console service, static drivers, ops tables, and
@@ -1340,54 +1541,63 @@ def check_symbols(areas, symbols, production=False):
             % (arena_end - arena_start, DRIVER_GRANULES, DRIVER_GRANULE_SIZE)
         )
 
-    static_end = loadable_end(areas, symbols)
-    if static_end > arena_start:
+    fixed_end = loadable_end(areas, symbols, FIXED_LOADABLE_AREAS)
+    cold_end = loadable_end(areas, symbols, ("_WINDOW",))
+    if fixed_end > DATA_BASE:
         raise MapError(
-            "linked loadable bank-7 areas end at %04Xh, inside the driver "
-            "arena at %04Xh" % (static_end, arena_start))
+            "linked fixed code ends at %04Xh, inside the fixed runtime data "
+            "region at %04Xh" % (fixed_end, DATA_BASE))
+    if cold_end > arena_start:
+        raise MapError(
+            "linked cold code ends at %04Xh, inside the driver arena at "
+            "%04Xh" % (cold_end, arena_start))
     # Derived geometry: the exported arena bounds must match the layout
     # build's declarations exactly, the start must be the aligned end of
-    # the linked loadable areas, the end must be the derived data base,
-    # and the production floor must hold.  Synthetic host maps carry no
-    # __kernel_code_end and skip the derived-only relation checks.
+    # the linked cold code, and the end must be the derived cold data
+    # base.  Synthetic host maps carry no __kernel_code_end and skip the
+    # derived-only relation checks.
     kernel_code_end = symbols.get("__kernel_code_end")
     if kernel_code_end is not None:
-        min_granules = (ARENA_MIN_GRANULES if ARENA_MIN_GRANULES is not None
-                        else DRIVER_ARENA_MIN_GRANULES)
-        min_size = min_granules * DRIVER_GRANULE_SIZE
-        if (arena_end - arena_start) < min_size:
+        if kernel_code_end != cold_end:
             raise MapError(
-                "derived driver arena is %d bytes, below the %d-byte "
-                "minimum" % (arena_end - arena_start, min_size))
-        if DRIVER_GRANULES < min_granules:
-            raise MapError(
-                "derived driver arena has %d granules, below the %d-granule "
-                "minimum" % (DRIVER_GRANULES, min_granules))
-        if kernel_code_end != static_end:
-            raise MapError(
-                "__kernel_code_end is %04Xh, linked loadable areas end at "
-                "%04Xh" % (kernel_code_end, static_end))
+                "__kernel_code_end is %04Xh, linked cold code ends at "
+                "%04Xh" % (kernel_code_end, cold_end))
         expected_start = align_up(kernel_code_end, DRIVER_GRANULE_SIZE)
         if arena_start != expected_start:
             raise MapError(
                 "__driver_arena_start is %04Xh, expected align_up(%04Xh, "
                 "%04Xh) = %04Xh" % (arena_start, kernel_code_end,
                                     DRIVER_GRANULE_SIZE, expected_start))
+        # The fixed-core ledger fields travel in the generated include;
+        # the linked extents must reproduce them.
+        if symbols.get("s__CODE") != BANK7_BASE:
+            raise MapError("s__CODE is %04Xh, expected the fixed core base "
+                           "%04Xh" % (symbols.get("s__CODE", -1), BANK7_BASE))
+        if FIXED_CODE_END != fixed_end:
+            raise MapError(
+                "the derived fixed code end %04Xh does not match the linked "
+                "fixed areas end %04Xh" % (FIXED_CODE_END, fixed_end))
 
-    # The runtime data base is derived and must saturate the bank-7 window
-    # below the ISR stack: runtime data starts at the arena's exclusive end
-    # and must stay below DF00h.
+    # The fixed runtime data base is derived: it must sit below the stacks
+    # and the fixed data must stay below them too (checked through the
+    # owned-area contract); the cold data base saturates the cold half.
     if symbols.get("s__DATA") != DATA_BASE:
         raise MapError("s__DATA is %04Xh, expected derived data base %04Xh"
                        % (symbols.get("s__DATA", -1), DATA_BASE))
+    if symbols.get("s__WINDOW_DATA") != WINDOW_DATA_BASE:
+        raise MapError("s__WINDOW_DATA is %04Xh, expected derived cold data "
+                       "base %04Xh"
+                       % (symbols.get("s__WINDOW_DATA", -1),
+                          WINDOW_DATA_BASE))
     data_end = symbols["s__DATA"] + symbols.get("l__DATA", 0)
     initialized_end = (symbols["s__INITIALIZED"]
                        + symbols.get("l__INITIALIZED", 0))
     for label, end in (("_DATA", data_end),
                        ("_INITIALIZED", initialized_end)):
-        if end > IRQ_ISR_STACK_BASE:
-            raise MapError("%s ends at %04Xh, overlapping the bank-7 ISR "
-                           "stack reservation at DF00h" % (label, end))
+        if end > SERVICE_STACK_BASE:
+            raise MapError("%s ends at %04Xh, overlapping the fixed-core "
+                           "service stack reservation at %04Xh"
+                           % (label, end, SERVICE_STACK_BASE))
 
     # Transition state block: common RAM, gate stack of the exact size.
     for name in COMMON_STATE:
@@ -1440,9 +1650,9 @@ def check_symbols(areas, symbols, production=False):
     if "_kernel_main" not in symbols:
         raise MapError("map has no symbol _kernel_main")
     km = symbols["_kernel_main"]
-    bank7_bound = BANK7_TOP if WINDOW_BASE is not None else DRIVER_ARENA_BASE
-    if not (BANK7_BASE <= km < bank7_bound):
-        raise MapError("_kernel_main at %04Xh is outside the bank-7 loadable region" % km)
+    if not (BANK7_BASE <= km < BANK7_TOP):
+        raise MapError("_kernel_main at %04Xh is outside the bank-7 space"
+                       % km)
 
     # Reset copier must stay below the RST 30h reservation, and the
     # RST 30h vector must be exactly the three-byte JP stub at 0030h.
@@ -1482,8 +1692,8 @@ def geometry_main(argv):
         if mode == "probe":
             # Bootstrap geometry for the probe link: place no arena at all.
             # The probe image just has to link so the derive step can
-            # measure its loadable area ends; a fixed placeholder here
-            # could otherwise collide with kernel growth.
+            # measure its area ends; a fixed placeholder here could
+            # otherwise collide with kernel growth.
             if len(argv) not in (3, 5):
                 raise MapError("usage: mapcheck.py geometry probe "
                                "<memory.inc> <out.inc>")
@@ -1492,64 +1702,35 @@ def geometry_main(argv):
                 handle.write(format_probe_geometry_inc())
             print("mapcheck: probe geometry (no arena placed) -> %s" % argv[2])
             return 0
-        if mode == "static-variant":
-            # Assembler-visible window variant: generated before any
-            # assembly, so it carries only the static window declarations
-            # (no per-image geometry).
-            window_split = False
-            args = list(argv[1:])
-            if "--rev13-window" in args:
-                window_split = True
-                args.remove("--rev13-window")
-            if not window_split or len(args) != 2:
-                raise MapError("usage: mapcheck.py geometry static-variant "
-                               "--rev13-window <memory.inc> <out.inc>")
-            with open(args[0]) as handle:
-                text = handle.read()
-            lines = []
-            seen = set()
-            replacements = window_declarations(
-                {"window_split": REV13_WINDOW_SPLIT})
-            for line in text.splitlines():
-                code = line.split(";")[0]
-                match = re.match(r"([A-Za-z_]\w*)\s*=", code)
-                if match and match.group(1) in replacements:
-                    name = match.group(1)
-                    lines.append("%s = %s" % (name, replacements[name]))
-                    seen.add(name)
-                else:
-                    lines.append(line)
-            for name, value in replacements.items():
-                if name not in seen:
-                    lines.append("%s = %s" % (name, value))
-            variant = "\n".join(lines) + "\n"
-            with open(args[1], "w") as handle:
-                handle.write(variant)
-            print("mapcheck: rev13 static window variant (base %04Xh, ISR "
-                  "stack %04Xh-%04Xh) -> %s"
-                  % (REV13_WINDOW_SPLIT, REV13_WINDOW_SPLIT - 0x100,
-                     REV13_WINDOW_SPLIT - 1, args[1]))
-            return 0
         if mode == "derive":
             min_granules = None
+            residency_path = None
             args = list(argv[1:])
-            if "--min-granules" in args:
-                at = args.index("--min-granules")
-                min_granules = int(args[at + 1], 0)
-                del args[at:at + 2]
-            window_split = False
-            if "--rev13-window" in args:
-                window_split = True
-                args.remove("--rev13-window")
+            for flag in ("--min-granules", "--residency"):
+                if flag in args:
+                    at = args.index(flag)
+                    value = args[at + 1]
+                    del args[at:at + 2]
+                    if flag == "--min-granules":
+                        min_granules = int(value, 0)
+                    else:
+                        residency_path = value
             if len(args) not in (3, 4):
-                raise MapError("usage: mapcheck.py geometry derive <probe.map> "
-                               "<memory.inc> <out.inc> [<memory-variant.inc>] "
-                               "[--min-granules N] [--rev13-window]")
+                raise MapError(
+                    "usage: mapcheck.py geometry derive <probe.map> "
+                    "<memory.inc> <out.inc> [<memory-variant.inc>] "
+                    "[--residency FILE] [--min-granules N]")
             probe_path, memory_path, out_path = args[0], args[1], args[2]
             values = parse_inc(memory_path)
+            fixed_required = fixed_overflow = None
+            if residency_path is not None:
+                tiers, _cold_half = load_residency(residency_path)
+                fixed_required, fixed_overflow = fixed_core_bytes(
+                    os.path.dirname(os.path.abspath(probe_path)), tiers)
             with open(probe_path) as handle:
                 geometry = derive_geometry(handle.read(), values,
-                                           min_granules, window_split)
+                                           min_granules,
+                                           fixed_required, fixed_overflow)
             with open(out_path, "w") as handle:
                 handle.write(format_geometry_inc(geometry))
             if len(args) == 4:
@@ -1557,24 +1738,20 @@ def geometry_main(argv):
                     variant = format_memory_variant(handle.read(), geometry)
                 with open(args[3], "w") as handle:
                     handle.write(variant)
-            print("mapcheck: derived arena %04Xh-%04Xh, %d granules "
-                  "(%d bytes), kernel end %04Xh, data %d bytes at %04Xh "
+            print("mapcheck: derived fixed core: code end %04Xh, %d "
+                  "required + %d overflow + %d stacks bytes, room %d"
+                  % (geometry["fixed_code_end"],
+                     geometry["fixed_required_bytes"],
+                     geometry["fixed_overflow_bytes"],
+                     geometry["fixed_stacks_bytes"],
+                     geometry["fixed_room_bytes"]))
+            print("mapcheck: derived cold half: code end %04Xh, arena "
+                  "%04Xh-%04Xh (%d granules), data %d bytes at %04Xh "
                   "-> %s"
-                  % (geometry["arena_start"], geometry["arena_end"],
-                     geometry["granules"],
-                     geometry["arena_end"] - geometry["arena_start"],
-                     geometry["kernel_code_end"], geometry["data_size"],
-                     geometry["data_base"], out_path))
-            if "window_split" in geometry:
-                print("mapcheck: rev13 window %04Xh-%04Xh end %04Xh, window "
-                      "data %d bytes at %04Xh, ISR stack %04Xh-%04Xh"
-                      % (geometry["window_split"],
-                         geometry["window_data_base"] - 1,
-                         geometry["window_code_end"],
-                         geometry["window_data_size"],
-                         geometry["window_data_base"],
-                         geometry["window_split"] - 0x100,
-                         geometry["window_split"] - 1))
+                  % (geometry["window_code_end"],
+                     geometry["arena_start"], geometry["arena_end"],
+                     geometry["granules"], geometry["window_data_size"],
+                     geometry["window_data_base"], out_path))
             return 0
         raise MapError("unknown geometry mode %r" % mode)
     except MapError as exc:
@@ -1582,46 +1759,83 @@ def geometry_main(argv):
         return 1
 
 
+def boot_plan_usage(path):
+    """(used granules, free granules, arena granules) from an arena plan."""
+    with open(path) as handle:
+        plan = json.load(handle)
+    arena = plan["arena"]
+    return (arena["used_granules"], arena["free_granules"],
+            arena["granules"])
+
+
 def main(argv):
-    global ARENA_MIN_GRANULES
     if len(argv) >= 2 and argv[1] == "geometry":
         return geometry_main(argv[2:])
+    if len(argv) >= 2 and argv[1] == "residency":
+        if len(argv) != 4 or argv[2] != "--cold-stems":
+            print("usage: mapcheck.py residency --cold-stems <file>",
+                  file=sys.stderr)
+            return 2
+        try:
+            tiers, cold_half = load_residency(argv[3])
+        except MapError as exc:
+            print("mapcheck: %s" % exc, file=sys.stderr)
+            return 1
+        print("\n".join(cold_half))
+        return 0
     production = "--production" in argv
     argv = [arg for arg in argv if arg != "--production"]
-    if "--min-granules" in argv:
-        at = argv.index("--min-granules")
-        ARENA_MIN_GRANULES = int(argv[at + 1], 0)
-        del argv[at:at + 2]
-    window_split = "--rev13-window" in argv
-    argv = [arg for arg in argv if arg != "--rev13-window"]
+    residency_path = boot_plan_path = None
+    for flag in ("--residency", "--boot-plan"):
+        if flag in argv:
+            at = argv.index(flag)
+            value = argv[at + 1]
+            del argv[at:at + 2]
+            if flag == "--residency":
+                residency_path = value
+            else:
+                boot_plan_path = value
     if len(argv) not in (2, 3, 4):
         print(__doc__)
         return 2
     if len(argv) >= 3:
-        apply_layout(parse_inc(argv[2]), argv[2], window_split)
+        apply_layout(parse_inc(argv[2]), argv[2])
     if len(argv) == 4:
         apply_irq_layout(parse_inc(argv[3]))
+    map_path = argv[1]
     try:
-        areas, symbols = check_map(open(argv[1]).read(), production)
+        areas, symbols = check_map(open(map_path).read(), production)
+        if residency_path is not None:
+            tiers, cold_half = load_residency(residency_path)
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            check_residency(os.path.dirname(os.path.abspath(map_path)),
+                            tiers, cold_half,
+                            os.path.join(root, "linker", "zephyr80.lk"))
+        if boot_plan_path is not None:
+            used, free, total = boot_plan_usage(boot_plan_path)
+            if used > DRIVER_GRANULES:
+                raise MapError(
+                    "the declared boot set needs %d granules; the derived "
+                    "arena holds %d" % (used, DRIVER_GRANULES))
     except MapError as exc:
         print("mapcheck: %s" % exc, file=sys.stderr)
         return 1
-    static_end = loadable_end(areas, symbols)
     print("mapcheck: OK (%d areas, %d symbols)%s"
           % (len(areas), len(symbols),
              " [production]" if production else ""))
-    print("mapcheck: static kernel end %04Xh; driver arena %04Xh-%04Xh: "
-          "%d bytes, %d granules, derived; data base %04Xh"
-          % (static_end, DRIVER_ARENA_BASE, DRIVER_ARENA_END - 1,
-             DRIVER_ARENA_END - DRIVER_ARENA_BASE, DRIVER_GRANULES,
-             DATA_BASE))
-    if WINDOW_BASE is not None:
-        window_end = loadable_end(areas, symbols, ("_WINDOW",))
-        print("mapcheck: rev13 fixed region 2000h-%04Xh end %04Xh | window "
-              "%04Xh-%04Xh end %04Xh | ISR stack %04Xh-%04Xh"
-              % (WINDOW_BASE - 1, static_end, WINDOW_BASE,
-                 WINDOW_DATA_BASE - 1, window_end, IRQ_ISR_STACK_BASE,
-                 WINDOW_BASE - 1))
+    print("mapcheck: fixed core 2000h-%04Xh end %04Xh (%d required + %d "
+          "overflow + %d stacks, %d room) | cold half %04Xh-%04Xh end "
+          "%04Xh | arena %04Xh-%04Xh (%d granules) | data %04Xh/%04Xh"
+          % (WINDOW_BASE - 1, FIXED_CODE_END, FIXED_REQUIRED_BYTES,
+             FIXED_OVERFLOW_BYTES, FIXED_STACKS_BYTES, FIXED_ROOM_BYTES,
+             WINDOW_BASE, BANK7_TOP - 1,
+             symbols.get("__kernel_code_end",
+                         loadable_end(areas, symbols, ("_WINDOW",))),
+             DRIVER_ARENA_BASE, DRIVER_ARENA_END - 1, DRIVER_GRANULES,
+             DATA_BASE, WINDOW_DATA_BASE))
+    if boot_plan_path is not None:
+        print("mapcheck: boot set uses %d of %d granules, %d free (%s)"
+              % (used, total, free, boot_plan_path))
     return 0
 
 

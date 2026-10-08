@@ -1,0 +1,243 @@
+{
+  "format": "zos-residency/1",
+  "split": "0x6000",
+  "note": "Nucleus residency under the resident-service model (architecture 36.2, 36.5, 36.24 step 2). One entry per kernel object linked into the production image (the objects of linker/zephyr80.lk); tools/mapcheck.py fails the build when an object is missing or when a fixed-required object is compiled into the cold areas. Tiers: fixed-required = code that executes, or data that is touched, while the window shows another bank (36.5) - it must link inside 2000h-5FFFh; cold = everything else that belongs to bank 7 (syscall side, boot, loader, extended memory); moves = objects that leave bank 7 for bank 6 in the named stage. Placement in this package: cold objects fill the cold half (6000h-DFFFh); the moves objects that do not fit beside the driver arena overflow into the fixed core's leftover space and are reported as the fixed ledger's overflow. No image sets P outside mode 00 in this package, so every image behaves as at M9.",
+  "tiers": {
+    "fixed-required": "Must be visible in the 2000h-5FFFh fixed core: the gates and transition code, the copy primitives, the IRQ executive, the ROMFS bootstrap reader, the processes' raw entry, common-resident boot/panic code and the stacks. mapcheck rejects a fixed-required object whose bytes link at or above 6000h.",
+    "cold": "Belongs to bank 7's cold half (6000h-DFFFh), reached only while the window shows bank 7 (P = 0): the syscall dispatcher and bodies, boot and idle, process management, the loader, the device registry and the FS front end.",
+    "moves": "Leaves bank 7 for bank 6 in the named stage. Until it leaves it is placed where the cold half's remaining space allows and otherwise overflows into the fixed core's leftover space (reported, not a failure)."
+  },
+  "objects": [
+    {
+      "object": "arena",
+      "tier": "cold",
+      "reason": "zero-byte ABS bound labels describing the driver arena, which lives in the cold half; the object emits no linked bytes and is declared ABS-only, so the build compiles it nowhere (it stays out of cold_half so the residency-driven codegen flags cannot propagate down its dependency on the generated geometry include)"
+    },
+    {
+      "object": "banking",
+      "tier": "fixed-required",
+      "reason": "common-resident latch and mode gates: the only mapping-changing code, always visible"
+    },
+    {
+      "object": "console",
+      "tier": "moves",
+      "stage": 4,
+      "reason": "console composition moves to bank 6 as a service over the HID, video and SIO endpoints; while it is still in bank 7 it runs with P = 0, so it fills the cold half"
+    },
+    {
+      "object": "diag",
+      "tier": "cold",
+      "reason": "diagnostic syscall bodies, reached only through the syscall dispatcher, which the gate runs with P = 0"
+    },
+    {
+      "object": "diag_io",
+      "tier": "cold",
+      "reason": "diagnostic port primitives reached only from the diagnostic syscall bodies (P = 0)"
+    },
+    {
+      "object": "early_console",
+      "tier": "fixed-required",
+      "reason": "common-resident early console and panic path: must survive any mapping"
+    },
+    {
+      "object": "fs",
+      "tier": "cold",
+      "reason": "native FS_* syscall front end, called only from the dispatcher (P = 0); retired in stage 5, when the VFS service and IPC dispatch replace it"
+    },
+    {
+      "object": "irq",
+      "tier": "fixed-required",
+      "reason": "IRQ registry and dispatch: the executive runs while the window shows the owner's bank (service-owned IRQs), so its code and data stay visible"
+    },
+    {
+      "object": "irq_code_end",
+      "tier": "fixed-required",
+      "reason": "linked end of the fixed _CODE area and the SDCC IY trampoline used by the IRQ path"
+    },
+    {
+      "object": "irq_entry",
+      "tier": "fixed-required",
+      "reason": "common-resident IRQ stubs and gate; it carries the relocated ISR stack (5F00h-6000h) in its own ABS area"
+    },
+    {
+      "object": "irq_sources",
+      "tier": "fixed-required",
+      "reason": "CTC quiesce source driver, called by the dispatcher while the owner's window is open"
+    },
+    {
+      "object": "irq_vectors",
+      "tier": "fixed-required",
+      "reason": "IM2 vector page in common memory: fetched with whatever mapping is active"
+    },
+    {
+      "object": "main",
+      "tier": "cold",
+      "reason": "kernel boot and idle path: every service-facing call returns with the caller's latch restored, so it only ever runs with P = 0"
+    },
+    {
+      "object": "module_loader",
+      "tier": "cold",
+      "reason": "ZEX/ZMOD loader; its service reads (the executable stream) go through a fixed upcall shim, so the loader body is cold"
+    },
+    {
+      "object": "module_relocate",
+      "tier": "cold",
+      "reason": "relocator called by the loader inside the same cold path"
+    },
+    {
+      "object": "name",
+      "tier": "fixed-required",
+      "reason": "string helpers called by the fixed ROMFS bootstrap reader while the window may show another bank"
+    },
+    {
+      "object": "page_zero",
+      "tier": "fixed-required",
+      "reason": "page-zero RST 30h material: must be present in every mode"
+    },
+    {
+      "object": "panic",
+      "tier": "fixed-required",
+      "reason": "common-resident panic path: must survive any mapping"
+    },
+    {
+      "object": "platform_irq",
+      "tier": "fixed-required",
+      "reason": "IRQ platform bring-up (IM2 vector page, interrupt mode): common-resident"
+    },
+    {
+      "object": "process",
+      "tier": "cold",
+      "reason": "process lifecycle; the exit notification is a nucleus -> VFS upcall through a fixed shim, so the body is cold"
+    },
+    {
+      "object": "process_exec",
+      "tier": "cold",
+      "reason": "exec/exit and the continuation stack; the executable-stream read is a nucleus -> VFS upcall through a fixed shim"
+    },
+    {
+      "object": "process_launch",
+      "tier": "fixed-required",
+      "reason": "common-resident raw application entry jump: no window-visible state"
+    },
+    {
+      "object": "registry",
+      "tier": "cold",
+      "reason": "device registry (boot registration and syscall-side lookups, P = 0); retired in stage 4, replaced by the endpoint table"
+    },
+    {
+      "object": "reset",
+      "tier": "fixed-required",
+      "reason": "ROM-resident page-zero reset copier: runs before any mapping exists"
+    },
+    {
+      "object": "rom_access",
+      "tier": "fixed-required",
+      "reason": "common-resident ROM-read stub mirrored into every ROM page (mode 00)"
+    },
+    {
+      "object": "romfs",
+      "tier": "fixed-required",
+      "reason": "the one ROMFS reader, kept in the nucleus as the bootstrap-reader primitive a bank-6 provider calls through the fixed core"
+    },
+    {
+      "object": "romfs_provider",
+      "tier": "moves",
+      "stage": 5,
+      "reason": "ROMFS provider callbacks move to the VFS service in bank 6; they then call the fixed bootstrap reader"
+    },
+    {
+      "object": "sdcc_helpers",
+      "tier": "fixed-required",
+      "reason": "SDCC runtime helpers called from fixed code and from IRQ handlers"
+    },
+    {
+      "object": "start",
+      "tier": "fixed-required",
+      "reason": "common-resident boot entry and C runtime init: runs before the window exists"
+    },
+    {
+      "object": "syscall",
+      "tier": "cold",
+      "reason": "syscall dispatcher and its bodies: the syscall gate clears the page field before dispatching, so this object only ever runs with P = 0"
+    },
+    {
+      "object": "syscall_entry",
+      "tier": "fixed-required",
+      "reason": "the syscall transition gate is common-resident by contract (always visible); it saves the caller's whole latch, dispatches with P = 0 and restores exactly"
+    },
+    {
+      "object": "user_copy",
+      "tier": "fixed-required",
+      "reason": "common-resident application-bank copy gate (mode-10 crossings from common memory)"
+    },
+    {
+      "object": "upcall",
+      "tier": "fixed-required",
+      "reason": "revision-13 upcall shim: cold code that calls a resident service saves the latch, selects the window page, calls and restores; its code, its continuation and its request state must stay visible while the window shows another bank (36.5)"
+    },
+    {
+      "object": "vfs_dir",
+      "tier": "moves",
+      "stage": 5,
+      "reason": "VFS core: directory iteration moves to the VFS service in bank 6"
+    },
+    {
+      "object": "vfs_file",
+      "tier": "moves",
+      "stage": 5,
+      "reason": "VFS core: file objects move to the VFS service in bank 6"
+    },
+    {
+      "object": "vfs_mount",
+      "tier": "moves",
+      "stage": 5,
+      "reason": "VFS core: mount registry moves to the VFS service in bank 6"
+    },
+    {
+      "object": "vfs_mounts",
+      "tier": "moves",
+      "stage": 5,
+      "reason": "VFS core: generated mount table moves to the VFS service in bank 6"
+    },
+    {
+      "object": "vfs_mutate",
+      "tier": "moves",
+      "stage": 5,
+      "reason": "VFS core: writable-provider mutations move to the VFS service in bank 6"
+    },
+    {
+      "object": "vfs_path",
+      "tier": "moves",
+      "stage": 5,
+      "reason": "VFS core: path walking moves to the VFS service in bank 6"
+    },
+    {
+      "object": "vfs_process",
+      "tier": "moves",
+      "stage": 5,
+      "reason": "VFS core: per-process handles and workspace move to the VFS service in bank 6"
+    },
+    {
+      "object": "vfs_workspace",
+      "tier": "moves",
+      "stage": 5,
+      "reason": "VFS core: per-process workspace data moves to the VFS service in bank 6"
+    }
+  ],
+  "cold_half": [
+    "console",
+    "diag",
+    "diag_io",
+    "fs",
+    "main",
+    "module_loader",
+    "module_relocate",
+    "process",
+    "process_exec",
+    "registry",
+    "syscall",
+    "vfs_mounts",
+    "vfs_mutate"
+  ],
+  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): every cold object, plus the console and the two smallest service-destined VFS objects, which is what the driver arena (the declared boot set, 33 granules) leaves in the cold half.  The remaining service-destined objects overflow into the fixed core's leftover space; the fixed ledger reports them as overflow.  `arena` is absent on purpose: it carries only absolute bound labels (no linked bytes) and depends on the generated geometry include, which the cold codegen flag cannot be allowed to reach (target-specific variables are inherited by prerequisites).  Acceptance images additionally compile their target-test objects cold, so test code consumes the arena's slack, never the fixed core."
+}

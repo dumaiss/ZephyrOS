@@ -29,13 +29,17 @@ import mapcheck  # noqa: E402
 # restore them around tests that need a specific generated memory.inc so
 # synthetic-map tests keep the committed defaults.
 _LAYOUT_GLOBALS = (
-    "PAGE_ZERO_END", "RESET_TOP", "BANK7_BASE", "BANK7_LOAD_END",
-    "BANK7_RUNTIME_END", "COMMON_BASE", "COMMON_CODE_END", "STACK_BASE",
+    "PAGE_ZERO_END", "RESET_TOP", "BANK7_BASE", "BANK7_RUNTIME_END",
+    "BANK7_TOP", "COMMON_BASE", "COMMON_CODE_END", "STACK_BASE",
+    "WINDOW_BASE", "WINDOW_DATA_BASE",
+    "SERVICE_STACK_BASE", "SERVICE_STACK_TOP", "SERVICE_STACK_SIZE",
     "IRQ_ISR_STACK_BASE", "IRQ_ISR_STACK_TOP", "IRQ_ISR_STACK_SIZE",
     "GATE_STACK_SIZE", "OWNED_AREAS", "DRIVER_ARENA_BASE",
     "DRIVER_ARENA_END", "DRIVER_GRANULE_SIZE", "DRIVER_GRANULES",
-    "DATA_BASE", "DRIVER_ARENA_MIN_SIZE",
-    "DRIVER_ARENA_MIN_GRANULES", "ROMFS_STAGING_SIZE", "ROM_ACCESS_BASE",
+    "DATA_BASE", "FIXED_CODE_END", "FIXED_REQUIRED_BYTES",
+    "FIXED_OVERFLOW_BYTES", "FIXED_STACKS_BYTES", "FIXED_ROOM_BYTES",
+    "COMMON_CEILING", "COMMON_M10_RESERVATION",
+    "ROMFS_STAGING_SIZE", "ROM_ACCESS_BASE",
     "ROM_ACCESS_SIZE", "IRQ_VECTOR_BASE", "IRQ_VECTOR_SIZE",
     "IRQ_STATE_BASE", "IRQ_STACK_BASE", "IRQ_STACK_TOP", "IRQ_STACK_SIZE",
 )
@@ -86,12 +90,14 @@ REQUIRED_HARDWARE_CONSTANTS = (
 
 REQUIRED_MEMORY_CONSTANTS = (
     "ZOS_RESET_TOP", "ZOS_PAGE_ZERO_END",
-    "ZOS_BANK7_BASE", "ZOS_BANK7_LOAD_END", "ZOS_BANK7_RUNTIME_END",
+    "ZOS_BANK7_BASE", "ZOS_REV13_WINDOW_BASE", "ZOS_BANK7_RUNTIME_END",
     "ZOS_IRQ_ISR_STACK_BASE", "ZOS_IRQ_ISR_STACK_TOP",
     "ZOS_IRQ_ISR_STACK_SIZE",
+    "ZOS_SERVICE_STACK_BASE", "ZOS_SERVICE_STACK_TOP",
+    "ZOS_SERVICE_STACK_SIZE",
     "ZOS_DRIVER_GRANULE_SIZE",
-    "ZOS_DRIVER_ARENA_MIN_SIZE", "ZOS_DRIVER_ARENA_MIN_GRANULES",
     "ZOS_COMMON_BASE", "ZOS_COMMON_CODE_END", "ZOS_COMMON_STACK_BASE",
+    "ZOS_COMMON_CEILING", "ZOS_COMMON_M10_RESERVATION",
     "ZOS_STACK_INIT_SP", "ZOS_GATE_STACK_SIZE",
     "ZOS_ROM_PAGE_SIZE", "ZOS_ROM_PAGE_COUNT", "ZOS_BOOT_IMAGE_SIZE",
     "ZOS_ROM_IMAGE_SIZE",
@@ -252,6 +258,15 @@ def make_map(overrides=None, **kw):
         "_CODE": (0x2000, 0x6E),
         "_GSINIT": (0x206E, 0x00),
         "_GSFINAL": (0x206E, 0x01),
+        # Fixed runtime data and the cold half.  The synthetic geometry
+        # mirrors tools/mapcheck.py's host defaults: the fixed data base
+        # is 5A00h, the cold code ends at the arena start 6200h, and the
+        # cold data base saturates the half at D800h.
+        "_DATA": (0x5A00, 0x00),
+        "_INITIALIZED": (0x5A00, 0x00),
+        "_WINDOW": (0x6000, 0x200),
+        "_WINDOW_DATA": (0xD800, 0x00),
+        "_IRQ_ISR_STACK": (0x0000, 0x0100),
         "_COMMON": (0xE000, 0x100),
         "_COMMON_DATA": (0xE100, 0x43),
         "_ROM_ACCESS_STUB0": (0x0000, 0x0A),
@@ -262,14 +277,18 @@ def make_map(overrides=None, **kw):
         "s__INITIALIZER": 0x206E, "l__INITIALIZER": 0,
         "s__GSINIT": 0x206E, "l__GSINIT": 0,
         "s__GSFINAL": 0x206E, "l__GSFINAL": 1,
-        "s__DATA": 0xC000, "l__DATA": 0,
-        "s__INITIALIZED": 0xC000, "l__INITIALIZED": 0,
+        "s__DATA": 0x5A00, "l__DATA": 0,
+        "s__INITIALIZED": 0x5A00, "l__INITIALIZED": 0,
+        "s__WINDOW": 0x6000, "l__WINDOW": 0x200,
+        "s__WINDOW_DATA": 0xD800, "l__WINDOW_DATA": 0,
         "s__COMMON": 0xE000, "l__COMMON": 0x100,
         "s__COMMON_DATA": 0xE100, "l__COMMON_DATA": 0x43,
         "s__RESET": 0x0000, "l__RESET": 0x26,
         "_reset": 0x0000, "_reset_end": 0x0026,
         "_zos_rst30_vector": 0x0030, "_zos_rst30_end": 0x0033,
-        "_kernel_main": 0x2000,
+        # Cold half: the boot/idle path runs only with P = 0.
+        "_kernel_main": 0x6000,
+        "_kernel_syscall_dispatch": 0x6020,
         "zos_syscall_dispatch": 0x2100,
         "_boot_common_entry": 0xE000, "__zos_crt0_init": 0xE02F,
         "__zos_mode_fault": 0xE080, "zos_enter_os_mode": 0xE090,
@@ -283,6 +302,8 @@ def make_map(overrides=None, **kw):
         "irq_common_entry": 0xE140, "_irq_arch_lock": 0xE190,
         "_irq_arch_unlock": 0xE198, "_irq_arch_init": 0xE1A0,
         "_irq_dispatch": 0x2200, "_irq_kernel_code_end": 0x206E,
+        "_zos_upcall": 0x2400,
+        "zos_service_stack": 0x5D00, "zos_service_stack_top": 0x5F00,
         "_device_registry_init": 0x2300, "_device_register": 0x2320,
         "_device_get": 0x2340, "_device_find": 0x2360,
         "_device_interface": 0x2370,
@@ -292,8 +313,8 @@ def make_map(overrides=None, **kw):
         "_console_bind": 0x2400, "_console_bind_defaults": 0x2430,
         "_console_putc": 0x2460, "_console_write": 0x2480,
         "_console_poll": 0x24A0, "_console_getc": 0x24B0,
-        "_device_table": 0xC200, "_console_in_handle": 0xC300,
-        "_console_out_handle": 0xC301, "_boot_drivers": 0xC340,
+        "_device_table": 0xD820, "_console_in_handle": 0xD8A0,
+        "_console_out_handle": 0xD8A1, "_boot_drivers": 0xD8C0,
         "_module_loader_init": 0x2700,
         "_module_load_source": 0x2740,
         "_module_count": 0x27A0,
@@ -321,12 +342,12 @@ def make_map(overrides=None, **kw):
         "_irq_registry_checkpoint": 0x2920,
         "_irq_registry_rollback": 0x2940,
         "_irq_registry_set_owner": 0x2960,
-        "__driver_arena_start": 0xA000, "__driver_arena_end": 0xC000,
+        "__driver_arena_start": 0x6200, "__driver_arena_end": 0x6A00,
         "irq_vector_page": 0xFD00, "irq_vector_guard": 0xFE00,
         "irq_saved_latch": 0xFE01, "irq_saved_sp": 0xFE02,
         "irq_common_sp": 0xFE04, "_irq_active_source": 0xFE06,
         "irq_transition_stack": 0xFE80, "irq_transition_stack_top": 0xFF00,
-        "irq_isr_stack": 0xDF00, "irq_isr_stack_top": 0xE000,
+        "irq_isr_stack": 0x5F00, "irq_isr_stack_top": 0x6000,
         "zos_gate_saved_sp": 0xE100, "zos_gate_saved_latch": 0xE102,
         "zos_gate_result_hl": 0xE103, "zos_gate_result_a": 0xE105,
         "zos_gate_result_c": 0xE106,
@@ -357,11 +378,11 @@ def make_map(overrides=None, **kw):
         "_process_abort": 0x2CA0, "_process_alloc_bank": 0x2CC0,
         "_process_slot_alloc": 0x2CE0, "_process_slot_release": 0x2D00,
         "_zex_validate_header": 0x2D40,
-        "_process_table": 0xC400, "_process_running_pid": 0xC500,
-        "_process_last_status": 0xC501,
+        "_process_table": 0xD900, "_process_running_pid": 0xDD00,
+        "_process_last_status": 0xDD01,
         # Bank-7 runtime data: the SYS_EXEC path buffer is not
         # transition-critical, so it lives with the rest of `_DATA`.
-        "_zos_process_path_scratch": 0xC600,
+        "_zos_process_path_scratch": 0xDD02,
         # M7 diagnostic services and shared dispatcher helpers (bank-7
         # kernel code; no new common state).
         "_zos_diag_mem_read": 0x2E00, "_zos_diag_mem_write": 0x2E40,
@@ -388,8 +409,8 @@ def make_map(overrides=None, **kw):
         "_vfs_rename": 0x3238,
         "_vfs_opendir": 0x3240, "_vfs_readdir": 0x3260,
         "_vfs_closedir": 0x3280, "_vfs_file_source": 0x32A0,
-        "_romfs_provider": 0xC520, "_vfs_mount_table": 0xC540,
-        "_vfs_mount_count": 0xC560, "_vfs_mount_state": 0xC570,
+        "_romfs_provider": 0xDA00, "_vfs_mount_table": 0xDA20,
+        "_vfs_mount_count": 0xDA40, "_vfs_mount_state": 0xDA50,
     }
     if kw.get("areas") is not None:
         areas = dict(areas)

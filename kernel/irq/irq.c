@@ -1,11 +1,15 @@
-/* M2 fixed-source, one-owner IRQ registry and bank-7 dispatcher. */
+/* M2 fixed-source, one-owner IRQ registry and revision-13 dispatcher. */
 #include "zephyros/irq.h"
 #include "zephyros/module.h"
+#include "zephyros/platform.h"
 
 #include "irq_private.h"
 
 extern volatile uint8_t irq_active_source;
 extern uint8_t irq_kernel_code_end;
+/* Exclusive end of the linked cold-half code (kernel/module/arena.asm and
+ * the derived build/geometry/arena_geometry.inc). */
+extern uint8_t __kernel_code_end[];
 
 static irq_handler_t handlers[IRQ_SOURCE_COUNT];
 static void *contexts[IRQ_SOURCE_COUNT];
@@ -17,19 +21,27 @@ static uint16_t unexpected;
 static uint16_t unclaimed;
 static irq_source_t last_source;
 
-/* A handler address is valid when it lies inside linked bank-7 kernel
- * code or inside a committed (RESIDENT) module image.  The module
- * currently running its init may claim handlers that point into its own
- * LOADING allocation; failed/freed and out-of-arena addresses are
+/* A handler address is valid when it lies inside linked nucleus code or
+ * inside a committed (RESIDENT) module image.  Nucleus code is the fixed
+ * core (2000h up to the linked fixed code end) plus the cold-half code
+ * area (6000h up to the linked cold code end, below the driver arena);
+ * the IRQ gate dispatches with P = 0, so both are addressable.  The
+ * module currently running its init may claim handlers that point into
+ * its own LOADING allocation; failed/freed and out-of-arena addresses are
  * rejected. */
 static uint8_t handler_is_valid(irq_handler_t handler)
 {
 	uint16_t address = (uint16_t)handler;
-	uint16_t code_end = (uint16_t)&irq_kernel_code_end;
 
-	if (handler != (irq_handler_t)0 &&
-	    address >= 0x2000u && address < code_end) {
-		return 1;
+	if (handler != (irq_handler_t)0) {
+		if (address >= ZOS_BANK7_BASE &&
+		    address < (uint16_t)&irq_kernel_code_end) {
+			return 1;
+		}
+		if (address >= ZOS_REV13_WINDOW_BASE &&
+		    address < (uint16_t)__kernel_code_end) {
+			return 1;
+		}
 	}
 	return module_code_allowed(address);
 }

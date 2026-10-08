@@ -74,7 +74,9 @@ FLAG_NONE = 0
 ZREL_ABS16 = 1
 NO_ENTRY = 0xFFFF
 GRANULE_SIZE = 512
-# Architectural maximum: (DF00h - ZMOD_ARCH_BASE) / GRANULE_SIZE = 95.
+# Format maximum: (ZMOD_ARCH_END - ZMOD_ARCH_BASE) / GRANULE_SIZE = 95.  The
+# package-38 layout caps the real arena at the cold half's 64 granules; the
+# live bound is the linked arena, checked against the boot-set plan.
 MAX_GRANULES = 95
 DRIVER_ABI_VERSION = 3
 A_BYTES = 4
@@ -925,28 +927,30 @@ def parse_geometry_inc(path):
     return values
 
 
-def build_bank7_ledger(values, used_granules, source):
-    """Bank-7 budget ledger from the generated geometry memory include.
+def build_nucleus_ledger(values, used_granules, source):
+    """The five budget ledgers from the generated geometry memory include.
 
     Every derived value is required: a missing key raises a clear error
     naming the key and the include it was expected in, never a silent skip.
-    The field set matches tools/pack_image.py so the arena.plan.json ledger
-    and the image manifest ledger are identical."""
-    for name in ("ZOS_KERNEL_CODE_END", "ZOS_DRIVER_ARENA_BASE",
-                 "ZOS_DRIVER_ARENA_END", "ZOS_DRIVER_GRANULES",
-                 "ZOS_DATA_BASE", "ZOS_DATA_SIZE",
-                 "ZOS_BANK7_RUNTIME_END", "ZOS_COMMON_BASE",
-                 "ZOS_COMMON_CODE_END", "ZOS_COMMON_CODE_SIZE",
-                 "ZOS_COMMON_DATA_SIZE", "ZOS_COMMON_CEILING",
-                 "ZOS_COMMON_M10_RESERVATION"):
+    The field set matches tools/pack_image.py's nucleus_ledger() so the
+    arena.plan.json ledger and the image manifest ledger are identical."""
+    required_keys = (
+        "ZOS_KERNEL_CODE_END", "ZOS_FIXED_CODE_END",
+        "ZOS_FIXED_REQUIRED_BYTES", "ZOS_FIXED_OVERFLOW_BYTES",
+        "ZOS_FIXED_STACKS_BYTES", "ZOS_FIXED_ROOM_BYTES",
+        "ZOS_DRIVER_ARENA_BASE", "ZOS_DRIVER_ARENA_END",
+        "ZOS_DRIVER_GRANULES", "ZOS_DATA_BASE", "ZOS_DATA_SIZE",
+        "ZOS_REV13_WINDOW_BASE", "ZOS_WINDOW_DATA_BASE",
+        "ZOS_WINDOW_DATA_SIZE", "ZOS_BANK7_RUNTIME_END", "ZOS_COMMON_BASE",
+        "ZOS_COMMON_CODE_END", "ZOS_COMMON_CODE_SIZE",
+        "ZOS_COMMON_DATA_SIZE", "ZOS_COMMON_CEILING",
+        "ZOS_COMMON_M10_RESERVATION",
+    )
+    for name in required_keys:
         if name not in values:
             raise ZmodError(
                 "%s is missing from %s; the derived build must generate it"
                 % (name, source))
-    code_end = values["ZOS_KERNEL_CODE_END"]
-    data_base = values["ZOS_DATA_BASE"]
-    data_size = values["ZOS_DATA_SIZE"]
-    runtime_end = values["ZOS_BANK7_RUNTIME_END"]
     common_code = values["ZOS_COMMON_CODE_SIZE"]
     common_data = values["ZOS_COMMON_DATA_SIZE"]
     common_capacity = values["ZOS_COMMON_CODE_END"] - values["ZOS_COMMON_BASE"]
@@ -963,7 +967,37 @@ def build_bank7_ledger(values, used_granules, source):
             "(ceiling %d minus the %d-byte M10 reservation)"
             % (common_code + common_data, common_limit, common_ceiling,
                common_reservation))
+    window_base = values["ZOS_REV13_WINDOW_BASE"]
+    window_data_base = values["ZOS_WINDOW_DATA_BASE"]
+    cold_code = values["ZOS_KERNEL_CODE_END"] - window_base
+    cold_data = values["ZOS_WINDOW_DATA_SIZE"]
+    cold_capacity = values["ZOS_BANK7_RUNTIME_END"] - window_base
+    arena_bytes = (values["ZOS_DRIVER_ARENA_END"]
+                   - values["ZOS_DRIVER_ARENA_BASE"])
     return {
+        "fixed_code_end": values["ZOS_FIXED_CODE_END"],
+        "fixed_required_bytes": values["ZOS_FIXED_REQUIRED_BYTES"],
+        "fixed_overflow_bytes": values["ZOS_FIXED_OVERFLOW_BYTES"],
+        "fixed_stacks_bytes": values["ZOS_FIXED_STACKS_BYTES"],
+        "fixed_room_bytes": values["ZOS_FIXED_ROOM_BYTES"],
+        "fixed_data_base": values["ZOS_DATA_BASE"],
+        "fixed_data_bytes": values["ZOS_DATA_SIZE"],
+        "cold_code_bytes": cold_code,
+        "cold_code_end": values["ZOS_KERNEL_CODE_END"],
+        "cold_arena_base": values["ZOS_DRIVER_ARENA_BASE"],
+        "cold_arena_end": values["ZOS_DRIVER_ARENA_END"],
+        "cold_arena_granules": values["ZOS_DRIVER_GRANULES"],
+        "cold_arena_used_granules": used_granules,
+        "cold_arena_free_granules": (values["ZOS_DRIVER_GRANULES"]
+                                     - used_granules),
+        "cold_data_bytes": cold_data,
+        "cold_data_base": window_data_base,
+        "cold_room_bytes": cold_capacity - cold_code - cold_data
+                           - arena_bytes,
+        "service_hot_bytes": 0,
+        "service_hot_capacity_bytes": pack_image.SERVICE_HOT_CAPACITY,
+        "service_boot_bytes": 0,
+        "service_boot_capacity_bytes": pack_image.SERVICE_BOOT_CAPACITY,
         "common_code_bytes": common_code,
         "common_data_bytes": common_data,
         "common_used_bytes": common_code + common_data,
@@ -971,36 +1005,35 @@ def build_bank7_ledger(values, used_granules, source):
         "common_ceiling_bytes": common_ceiling,
         "common_m10_reservation_bytes": common_reservation,
         "common_limit_bytes": common_limit,
-        "code_bytes": code_end - values.get("ZOS_BANK7_BASE", 0x2000),
-        "code_end": code_end,
-        "arena_start": values["ZOS_DRIVER_ARENA_BASE"],
-        "arena_end": values["ZOS_DRIVER_ARENA_END"],
-        "arena_granules": values["ZOS_DRIVER_GRANULES"],
-        "arena_used_granules": used_granules,
-        "arena_free_granules": values["ZOS_DRIVER_GRANULES"] - used_granules,
-        "data_bytes": data_size,
-        "data_base": data_base,
-        "isr_bytes": values.get("ZOS_IRQ_ISR_STACK_SIZE", 0x100),
-        "slack_bytes": runtime_end - (data_base + data_size),
     }
 
 
-def format_bank7_ledger(ledger):
-    """The budget report (section 32.39): the bank-7 line, then the
-    common-memory line for the permanently mapped window.  Byte-identical
-    to tools/pack_image.py (pinned by a host test)."""
-    return (pack_image.BANK7_LEDGER_LINE % (
-        ledger["code_bytes"], ledger["code_end"], ledger["arena_granules"],
-        ledger["arena_used_granules"], ledger["arena_free_granules"],
-        ledger["data_bytes"], ledger["data_base"], ledger["isr_bytes"],
-        ledger["slack_bytes"])
-        + "\n"
-        + pack_image.COMMON_LEDGER_LINE % (
+def format_nucleus_ledger(ledger):
+    """The five budget lines (architecture 36.20): the nucleus fixed and
+    cold halves, the two bank-6 service tiers and the common window.
+    Byte-identical to tools/pack_image.py (pinned by a host test)."""
+    return "\n".join((
+        pack_image.NUCLEUS_FIXED_LEDGER_LINE % (
+            ledger["fixed_required_bytes"], ledger["fixed_overflow_bytes"],
+            ledger["fixed_stacks_bytes"], ledger["fixed_room_bytes"]),
+        pack_image.NUCLEUS_COLD_LEDGER_LINE % (
+            ledger["cold_code_bytes"], ledger["cold_code_end"],
+            ledger["cold_arena_granules"], ledger["cold_arena_used_granules"],
+            ledger["cold_arena_free_granules"], ledger["cold_data_bytes"],
+            ledger["cold_data_base"], ledger["cold_room_bytes"]),
+        pack_image.SERVICE_HOT_LEDGER_LINE % (
+            ledger["service_hot_bytes"],
+            ledger["service_hot_capacity_bytes"]),
+        pack_image.SERVICE_BOOT_LEDGER_LINE % (
+            ledger["service_boot_bytes"],
+            ledger["service_boot_capacity_bytes"]),
+        pack_image.COMMON_LEDGER_LINE % (
             ledger["common_used_bytes"], ledger["common_capacity_bytes"],
             ledger["common_code_bytes"], ledger["common_data_bytes"],
             ledger["common_ceiling_bytes"],
             ledger["common_m10_reservation_bytes"],
-            ledger["common_limit_bytes"]))
+            ledger["common_limit_bytes"]),
+    ))
 
 
 def cmd_plan(args):
@@ -1068,11 +1101,12 @@ def cmd_plan(args):
         },
         "modules": entries,
     }
-    ledger = build_bank7_ledger(values, used, geometry_path)
-    plan["bank7"] = ledger
+    ledger = build_nucleus_ledger(values, used, geometry_path)
+    plan["nucleus"] = ledger
     kernel = pack_image.kernel_granule_thresholds(
-        values["ZOS_KERNEL_CODE_END"], values["ZOS_DATA_BASE"],
-        values["ZOS_DATA_SIZE"], values["ZOS_BANK7_RUNTIME_END"], granule)
+        values["ZOS_KERNEL_CODE_END"], values["ZOS_WINDOW_DATA_BASE"],
+        values["ZOS_WINDOW_DATA_SIZE"], values["ZOS_BANK7_RUNTIME_END"],
+        granule)
     plan["kernel"] = kernel
     print("zmodpack: arena %04Xh-%04Xh: %d granules (derived)"
           % (start, end - 1, declared))
@@ -1084,7 +1118,7 @@ def cmd_plan(args):
     print("zmodpack: boot set uses %d of %d granules; %d free"
           % (used, declared, declared - used))
     if ledger is not None:
-        print(format_bank7_ledger(ledger))
+        print(format_nucleus_ledger(ledger))
     print(pack_image.format_granule_thresholds(entries, kernel))
     if report_path:
         with open(report_path, "w") as handle:

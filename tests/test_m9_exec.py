@@ -267,29 +267,33 @@ class TestNestingGeometry(unittest.TestCase):
             self.skipTest("build/zephyros.map missing; run make first")
         text = _read(map_path)
         # The path buffer must be inside the bank-7 runtime data window,
-        # not in the common window.
+        # not in the common window.  The process/ZEX path is cold-half
+        # code under revision 13, so its buffer sits in _WINDOW_DATA,
+        # below the bank-7 runtime end.
         match = re.search(r"^\s*([0-9A-Fa-f]{8})\s+_zos_process_path_scratch",
                           text, re.M)
         self.assertIsNotNone(match, "no path-buffer symbol in the map")
         addr = int(match.group(1), 16)
-        data_base = re.search(r"^\s*([0-9A-Fa-f]{8})\s+s__DATA\b", text,
-                              re.M)
+        data_base = re.search(r"^\s*([0-9A-Fa-f]{8})\s+s__WINDOW_DATA\b",
+                              text, re.M)
         self.assertIsNotNone(data_base)
         self.assertGreaterEqual(addr, int(data_base.group(1), 16))
-        self.assertLess(addr, 0xDF00)
+        self.assertLess(addr, 0xE000)
 
         plan = json.loads(_read(ROOT / "build" / "arena.plan.json"))
-        bank7 = plan["bank7"]
+        nucleus = plan["nucleus"]
         for field in ("common_code_bytes", "common_data_bytes",
-                      "common_used_bytes", "common_capacity_bytes"):
-            self.assertIn(field, bank7,
+                      "common_used_bytes", "common_capacity_bytes",
+                      "fixed_required_bytes", "fixed_room_bytes",
+                      "cold_code_bytes", "cold_data_bytes"):
+            self.assertIn(field, nucleus,
                           "arena.plan.json does not report %s" % field)
-        self.assertEqual(bank7["common_used_bytes"],
-                         bank7["common_code_bytes"]
-                         + bank7["common_data_bytes"])
-        self.assertEqual(bank7["common_capacity_bytes"], 0xFD00 - 0xE000)
-        self.assertLess(bank7["common_used_bytes"],
-                        bank7["common_capacity_bytes"])
+        self.assertEqual(nucleus["common_used_bytes"],
+                         nucleus["common_code_bytes"]
+                         + nucleus["common_data_bytes"])
+        self.assertEqual(nucleus["common_capacity_bytes"], 0xFD00 - 0xE000)
+        self.assertLess(nucleus["common_used_bytes"],
+                        nucleus["common_capacity_bytes"])
 
     def test_asm_arrays_use_the_pinned_constants(self):
         text = _read(LAUNCH_ASM)
@@ -662,7 +666,8 @@ class TestBuildWiring(unittest.TestCase):
     def test_ledger_format_is_shared_by_both_tools(self):
         pack = _read(PACK_IMAGE)
         zmod = _read(ZMODPACK)
-        self.assertIn("BANK7_LEDGER_LINE", pack)
+        self.assertIn("NUCLEUS_FIXED_LEDGER_LINE", pack)
+        self.assertIn("NUCLEUS_COLD_LEDGER_LINE", pack)
         self.assertIn("COMMON_LEDGER_LINE", pack)
         self.assertIn("pack_image.COMMON_LEDGER_LINE", zmod)
         self.assertIn("common: used %d of %d bytes (code %d, data %d)",

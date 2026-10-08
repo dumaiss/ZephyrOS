@@ -4,6 +4,8 @@
 -i build/zephyros.ihx
 -b _CODE = 0x2000
 -b _DATA = @DATA_BASE@
+-b _WINDOW = 0x6000
+-b _WINDOW_DATA = @WINDOW_DATA_BASE@
 -b _COMMON = 0xE000
 build/reset.rel
 build/start.rel
@@ -44,5 +46,6 @@ build/arena.rel
 build/rom_access.rel
 build/process_launch.rel
 build/user_copy.rel
+build/upcall.rel
 build/irq_code_end.rel
 -e

@@ -360,13 +360,16 @@ size-optimized compile and the derived data base and moved the runtime
 data above `C000h`; package 26 added driver ABI v3, the provider
 registration transaction, the completed kernel file API (seek, root
 merge, mountpoint errors) for `+1837` `_CODE` and `+192` `_DATA` bytes.
-`docs/memory.md` section 2.2.1 records the current ledger
+`docs/memory.md` section 2.2.2 records that ledger
 (`code 23526 end 7BE6h | arena 46 granules (20 boot, 26 free) | data 1501
 at D800h | slack 291`) with the per-object package-26 deltas.
 
-The arena floor is the unchanged 32-granule production gate; correction-02
+The M9 32-granule production floor applied at that time (correction-02
 raised production from exactly 32 granules to 34 by removing the
-superseded machinery.
+superseded machinery).  Package 38 retired the floor: the arena now lives
+in the bank-7 cold half and only has to hold the declared boot set, which
+`tools/zmodpack.py plan` and `tools/pack_image.py` check - see
+`docs/memory.md` sections 2.2 and 2.2.1.
 
 ### 9.1 Per-object bank-7 sizes
 

@@ -19,27 +19,35 @@
 #define ZOS_RESET_TOP               0x0030u
 #define ZOS_PAGE_ZERO_END           0x0100u
 
-/* Bank-7 OS body, visible in mode 11.  The loadable (ROM-initialized) part
- * ends at the linked __kernel_code_end; the runtime area begins at the
- * derived data base and is never loaded from ROM.  ZOS_BANK7_LOAD_END is
- * the architectural ceiling on the loadable end, not a fixed boundary. */
+/* Bank-7 OS body, visible in mode 11 under decoder revision 13.  Mode 11
+ * splits bank 7 into a 16 KiB fixed core and a 32 KiB cold half behind the
+ * 6000h window; see memory.inc for the region diagram.  The fixed core's
+ * loadable part ends at the linked end of the fixed code areas; its runtime
+ * data begins at the derived data base, below the reserved stacks, and is
+ * never loaded from ROM. */
 #define ZOS_BANK7_BASE              0x2000u
-#define ZOS_BANK7_LOAD_END          0xC000u
-#define ZOS_BANK7_RUNTIME_END       0xDF00u
-#define ZOS_IRQ_ISR_STACK_BASE      0xDF00u
-#define ZOS_IRQ_ISR_STACK_TOP       0xE000u
+#define ZOS_REV13_WINDOW_BASE       0x6000u
+#define ZOS_BANK7_RUNTIME_END       0xE000u
+#define ZOS_IRQ_ISR_STACK_BASE      0x5F00u
+#define ZOS_IRQ_ISR_STACK_TOP       0x6000u
 #define ZOS_IRQ_ISR_STACK_SIZE      0x0100u
 
-/* Driver arena.  The single mechanism derives the start from the aligned
- * end of the linked kernel and the end from the runtime-data size, exporting
- * __kernel_code_end / __driver_arena_start / __driver_arena_end through
- * kernel/module/arena.asm and the generated build/geometry/arena_geometry.inc;
- * the probe link places no arena.  Only the build-time contract lives here:
- * the granule size, and the production minimum that mapcheck enforces.  The
- * runtime data base is never part of the allocator. */
+/* Service stack: 512 bytes in the fixed core, reserved now and used by the
+ * IPC substrate from stage 3 (architecture 36.9, 36.20).  It grows down
+ * from ZOS_SERVICE_STACK_TOP, below the relocated ISR stack. */
+#define ZOS_SERVICE_STACK_BASE      0x5D00u
+#define ZOS_SERVICE_STACK_TOP       0x5F00u
+#define ZOS_SERVICE_STACK_SIZE      0x0200u
+
+/* Driver arena.  The single mechanism derives the start from the
+ * granule-aligned end of the linked window code and the end from the
+ * window-data size, exporting __kernel_code_end / __driver_arena_start /
+ * __driver_arena_end through kernel/module/arena.asm and the generated
+ * build/geometry/arena_geometry.inc; the probe link places no arena.
+ * There is no granule floor: the arena only has to hold the declared boot
+ * set, which tools/zmodpack.py's plan and tools/pack_image.py enforce.  The
+ * window data base is never part of the allocator. */
 #define ZOS_DRIVER_GRANULE_SIZE     0x0200u
-#define ZOS_DRIVER_ARENA_MIN_SIZE   0x4000u
-#define ZOS_DRIVER_ARENA_MIN_GRANULES 32u
 
 /* Permanent common code/data in physical SRAM bank 0.  ZOS_COMMON_CODE_END
  * is the exclusive end of ordinary common content; the IM2 vector page and

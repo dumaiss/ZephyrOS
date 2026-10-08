@@ -69,6 +69,9 @@ extern int kernel_load_vfs_module(const char *name);
 #if ZOS_M9_SELFTEST
 #include "m9_integration_selftest.h"
 #endif
+#if ZOS_NUCLEUS_SELFTEST
+#include "nucleus_selftest.h"
+#endif
 
 /* Boot-time acceptance modules, called between the production boot set and
  * the normal mount pass.  Only an image that needs extra resident providers
@@ -94,6 +97,9 @@ void zos_target_test_early(void)
 #if ZOS_SUBSYS_SELFTEST
 	zos_run_syscall_selftest();
 	zos_run_irq_selftest();
+#endif
+#if ZOS_NUCLEUS_SELFTEST
+	zos_run_nucleus_selftest();
 #endif
 }
 

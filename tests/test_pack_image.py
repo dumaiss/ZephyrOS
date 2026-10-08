@@ -40,7 +40,9 @@ class MinimalImageCase:
     def __init__(self, rst30_target=0xE0F0):
         self.rst30_target = rst30_target
         reset = [0xF3] + [0x00] * 5 + [0xC3, 0x00, 0xE0]  # di; ...; jp 0xE000
-        kernel = [0xC3, 0x30, 0x20]  # jp 0x2030
+        # The kernel body is cold-half code under revision 13; the fixed
+        # core carries the gates.
+        kernel = [0xC3, 0x30, 0x60]  # jp 0x6030
         common = [0xC9]  # ret
         irq_target = 0xE130
         stub = [0xC3, rst30_target & 0xFF, (rst30_target >> 8) & 0xFF]
@@ -53,7 +55,8 @@ class MinimalImageCase:
             [
                 (0x0000, reset),
                 (0x0030, stub),
-                (0x2000, kernel),
+                (0x2000, [0xC9]),   # fixed-core padding byte
+                (0x6000, kernel),
                 (0xE000, common),
                 (0xEEFE, trampoline),
                 (0xEF00, rom_stub),
@@ -78,11 +81,11 @@ class MinimalImageCase:
                 "     0000E1A0  _irq_arch_init                  platform_irq",
                 "     0000FD00  irq_vector_page                 irq_vectors",
                 "     0000FE00  irq_vector_guard                irq_vectors",
-                "     00002000  _kernel_main                     main",
+                "     00006000  _kernel_main                     main",
                 "     00002100  zos_syscall_dispatch             syscall_entry",
                 "     00002200  _irq_dispatch                    irq",
-                "     0000A000  __driver_arena_start             arena",
-                "     0000C000  __driver_arena_end               arena",
+                "     00006200  __driver_arena_start             arena",
+                "     00006A00  __driver_arena_end               arena",
                 "     0000EEFE  rom_access_trampoline            rom_access",
                 "     0000EF00  rom_access_sync                  rom_access",
                 "     0000EF08  rom_access_sync_end              rom_access",
@@ -153,7 +156,7 @@ class TestSyntheticPacking(unittest.TestCase):
     def test_map_symbols_parsed(self):
         symbols = pack_image.parse_map_symbols(self.case.map_text)
         self.assertEqual(symbols["_reset"], 0x0000)
-        self.assertEqual(symbols["_kernel_main"], 0x2000)
+        self.assertEqual(symbols["_kernel_main"], 0x6000)
         pack_image.check_symbol_regions(symbols)  # must not raise
 
     def test_rst30_stub_verified(self):
@@ -188,7 +191,7 @@ class TestSyntheticPacking(unittest.TestCase):
 
     def test_symbol_out_of_region_rejected(self):
         bad_map = self.case.map_text.replace(
-            "     00002000  _kernel_main", "     0000E000  _kernel_main"
+            "     00006000  _kernel_main", "     0000E000  _kernel_main"
         )
         with self.assertRaises(pack_image.LayoutError):
             pack_image.check_symbol_regions(pack_image.parse_map_symbols(bad_map))
@@ -393,14 +396,17 @@ class TestGranuleThresholds(unittest.TestCase):
                          1)
 
     def test_kernel_threshold_arithmetic(self):
-        # Production package-30 geometry: code ends at 8F3Ch, the derived
-        # data base is D600h for 2241 bytes of runtime data under DF00h.
+        # Two-region geometry: the cold code ends at 8F3Ch and the derived
+        # cold data base is D600h for 2241 bytes of runtime data, with the
+        # cold half running to E000h.
         thresholds = pack_image.kernel_granule_thresholds(
-            0x8F3C, 0xD600, 2241, 0xDF00)
+            0x8F3C, 0xD600, 2241, 0xE000)
         self.assertEqual(thresholds["code_above_lower_bytes"], 0x8F3C - 0x8E00)
         self.assertEqual(thresholds["code_before_higher_bytes"], 0x9000 - 0x8F3C)
-        self.assertEqual(thresholds["data_above_lower_bytes"], 449)
-        self.assertEqual(thresholds["data_before_higher_bytes"], 63)
+        # Granule-aligned data base: 2241 bytes is 193 above the band floor
+        # (2048) and 319 below the 2560-byte half.
+        self.assertEqual(thresholds["data_above_lower_bytes"], 193)
+        self.assertEqual(thresholds["data_before_higher_bytes"], 319)
 
     def test_kernel_thresholds_match_the_linked_map(self):
         map_path = os.path.join(ROOT, "build", "zephyros.map")
@@ -413,8 +419,8 @@ class TestGranuleThresholds(unittest.TestCase):
 
         symbols = pack_image.parse_map_symbols(open(map_path).read())
         expected = pack_image.kernel_granule_thresholds(
-            symbols["__kernel_code_end"], symbols["s__DATA"],
-            symbols["l__DATA"] + symbols["l__INITIALIZED"], 0xDF00)
+            symbols["__kernel_code_end"], symbols["s__WINDOW_DATA"],
+            symbols["l__WINDOW_DATA"], pack_image.BANK7_RUNTIME_END)
         manifest = json.load(open(manifest_path))
         plan = json.load(open(plan_path))
         self.assertEqual(manifest["kernel"], expected)
@@ -479,13 +485,13 @@ class TestCommonCeiling(unittest.TestCase):
         plan_path = os.path.join(ROOT, "build", "arena.plan.json")
         if not (os.path.exists(manifest_path) and os.path.exists(plan_path)):
             self.skipTest("derived production build missing; run make")
-        ledger = json.load(open(manifest_path))["bank7"]
+        ledger = json.load(open(manifest_path))["nucleus"]
         self.assertEqual(ledger["common_ceiling_bytes"], 3072)
         self.assertEqual(ledger["common_m10_reservation_bytes"], 512)
         self.assertEqual(ledger["common_limit_bytes"], 2560)
         self.assertLessEqual(ledger["common_used_bytes"],
                              ledger["common_limit_bytes"])
-        text = pack_image.format_bank7_ledger(ledger)
+        text = pack_image.format_nucleus_ledger(ledger)
         self.assertIn("ceiling 3072, m10 512, limit 2560", text)
 
 
