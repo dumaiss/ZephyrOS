@@ -4787,6 +4787,8 @@ The central rules are:
 
 > **The primary application bank remains the ordinary execution environment. A program that uses no far facilities keeps its full 56 KiB and pays nothing.**
 
+> **If the host can precompute it, precompute it. The machine is trusted and single-tasking: build no machinery for isolation or concurrency it does not have.** Bank-6 services are trusted resident extensions, not isolated servers. Endpoints and IPC exist for modularity and for crossing banks, not for protection.
+
 This section is the single M10 target. The options evaluated on the way
 (the 8 KiB slot overlay, the `8000h` window split, the `SYS_FAR_CALL`
 gate with an auxiliary low window, a third OS bank) are rejected and are not
@@ -4882,7 +4884,9 @@ Resident services are the pluggable parts: specific devices and specific
 filesystems. Each publishes objects into the VFS namespace.
 
 - IOC transport and block access;
-- HID, V9958 video, SIO serial and other device facilities;
+- HID, V9958 video, SIO serial and other device facilities. The CTC
+  becomes a timer service when a consumer needs one; until then the nucleus
+  keeps only its boot-time interrupt-source quiescing;
 - the console, composed from HID, video and serial endpoints;
 - pluggable filesystems, first IOC-FAT, mounted into the namespace.
 
@@ -4988,10 +4992,10 @@ namespace (36.13):
 open(path) -> handle         the VFS resolves the name to (endpoint, object)
 call(handle, op, frame)      synchronous message on that object
 close(handle)
-lookup(class, instance) -> name     optional, if the budget allows: returns the
-                                    namespace name of a well-known object
-                                    (for example "/dev/console"), to be opened
 ```
+
+There is no `lookup(class, instance)`: namespace names cover discovery.
+Add it only when a real consumer needs it.
 
 - **Synchronous call/reply** is the only IPC model. There are no queues and
   no asynchronous messages.
@@ -5005,8 +5009,13 @@ lookup(class, instance) -> name     optional, if the budget allows: returns the
   numbers, pointers or endpoint numbers.
 - **Services are permanent.** They are loaded at boot and never unloaded.
   There is no revocation and no restart.
-- **Same-domain calls:** a service calling another service may be
-  dispatched locally without a bank switch, invisibly to the ABI.
+- **Service-to-service calls are near-direct.** Both services are trusted
+  and mapped at the same time, so the call is a dispatch through the
+  endpoint table. The frame is passed by reference, not copied, and the
+  bank is not switched. It is invisible to the ABI.
+- **Protocols are coarse-grained.** A call costs about 15,500 T-states, so
+  there are no per-byte or per-character operations: writes are buffered,
+  reads are read-N, files move in 512-byte chunks.
 
 Measured cost: a null call is about 15,500 T-states through the
 production-shaped path (package 39; the frame copies dominate), and one
@@ -5022,7 +5031,8 @@ There are no raw cross-domain pointers.
 - At call entry the nucleus captures each caller buffer as a
   **descriptor**: execution latch (bank Q and page P), address, length and
   direction. Services receive a small descriptor id, valid for the duration
-  of the call.
+  of the call. **At most two descriptors per call**, fixed in the frame
+  layout. There is no generic marshalling.
 - Services move data only through nucleus primitives
   `copy_in(id, offset, buffer, length)` and
   `copy_out(id, offset, buffer, length)`. Bounds are checked on every use.
@@ -5168,9 +5178,27 @@ lives in bank 7's cold half.
 The VFS owns:
 - path resolution, mounts, and per-process roots and current directories;
 - the **namespace**: filesystem mounts (`/` = IOC-FAT, `/SYSTEM` =
-  ROMFS) and the objects services publish (`/dev/<name>`);
-- **per-process handle tables**: a handle names an (endpoint, object)
-  pair;
+  ROMFS) and the objects services publish (`/dev/<name>`). **Names
+  describe the role, not the product**, and a role that can have several
+  instances is a directory:
+
+  ```text
+  /dev/console          composed console (keyboard or serial in, video or serial out);
+                        what the standard handles open
+  /dev/input/keyboard   (later: /dev/input/mouse, /dev/input/controller)
+  /dev/video
+  /dev/serial/0         (later: /dev/serial/1)
+  /dev/ioc              the IOC (I/O coprocessor with bulk and command lanes) is a
+                        defining feature of the platform family, so this is a role name
+  /dev/timer            when the CTC becomes a service
+  ```
+
+  Never `/dev/sio`, `/dev/v9958`, `/dev/hid` or `/dev/ctc`;
+- **one small global handle table**, each entry tagged with its owning
+  process. A handle names an (endpoint, object) pair. It is the M9 global
+  descriptor pool extended, not a second table. One table suits a
+  single-tasking machine with nested processes: a suspended parent's
+  entries simply stay in it;
 - `open` and `close`, and the namespace operations that are its own
   (`chdir`, `getcwd`, mount points).
 
@@ -5186,15 +5214,25 @@ call(handle, WRITE, ...)
 
 Directory operations (`readdir`, `stat`, `mkdir`, `unlink`, `rename`)
 are messages to the provider, either on a directory handle or carrying the
-path remainder below the mount point. The built-in ROMFS provider answers
-the same messages in-process.
+path remainder below the mount point.
+
+**Every provider is an endpoint, and there is one call path.** The
+built-in ROMFS provider is a nucleus endpoint: a handle on a ROMFS file
+dispatches to it in-process, through the same handle-call path as a
+bank-6 provider. There is no separate provider ops-table interface, no
+provider registration, and no module-loading boot phase in the VFS.
 
 **Standard handles.** Every process starts with console input and output
 handles already open, inherited from its parent.
 
 **Execution.** `SYS_EXEC(path, tail)`: the VFS resolves the path, and the
-cold loader reads the executable through its provider. Exit releases the
-process's handles. The startup block v1 and the raw-tail contract are
+cold loader reads the executable through its provider.
+
+**Exit closes every handle the process owns**, sending each provider its
+normal `close`, so services release their state naturally. Then the
+process's xmem objects, segments and bank are freed. There is no process-exit
+broadcast; add one only if some state cannot be modelled by handle
+ownership. The startup block v1 and the raw-tail contract are
 unchanged.
 
 ---
@@ -5205,7 +5243,7 @@ Syscalls are the **nucleus ABI**, and they are few:
 
 ```text
 objects      open(path), call(handle, op, frame), close(handle)
-             lookup(class, instance) -> name (optional; see 36.7)
+             
              chdir, getcwd
 process      exec(path, tail), exit
 xmem         alloc, free, read, write, info, map
@@ -5294,7 +5332,13 @@ slot  6     C000h-DFFFh   data; window-speed copies
 - **Contents are undefined.** Nothing pre-zeroes an object; a program
   that needs zeroes writes them (section 36.19).
 - The `MAPPABLE` flag places the object in the aperture slice (at most
-  16 KiB). Only mappable objects can be opened with `SYS_XMEM_MAP`.
+  16 KiB). Only mappable objects can be opened with `SYS_XMEM_MAP`, which
+  returns **the map token and the object's address in the aperture**: an
+  8 KiB object in slot 5 appears at `A000h`, not `8000h`.
+- **Far-code rule:** every far-code segment is linked at `8000h`, so an
+  auxiliary bank holds **at most one** far-code segment. The aperture slot
+  that segment leaves free (when it is 8 KiB or less) may hold mappable
+  data.
 - Non-mappable objects prefer the window-speed slots, then slots 0-2.
 - `SYS_XMEM_READ` / `SYS_XMEM_WRITE` copy between the caller's buffer and
   an object (handle, object offset, buffer, length). All range arithmetic
@@ -5316,9 +5360,10 @@ In mode 10 with P ≠ 0, `8000h-BFFFh` shows bank 7 − P. Everything else in
 the program's view (page zero, low memory, stack, primary code outside the
 aperture, common) stays mapped.
 
-- **Map tokens.** `SYS_XMEM_MAP(handle)` and `SYS_SEG_MAP(segment)` return
-  an opaque map token: the latch value that opens the aperture onto that
-  object or segment. The SDK opens the aperture by writing the token to the
+- **Map tokens.** `SYS_XMEM_MAP(handle)` returns an opaque map token (the
+  latch value that opens the aperture onto that object) plus the object's
+  address in the aperture. `SYS_SEG_MAP(segment)` returns a token; a
+  far-code segment is always at `8000h`. The SDK opens the aperture by writing the token to the
   latch and closes it by restoring the previous token (P = 0 for the
   primary view). A far call is an `OUT` followed by a plain `CALL`:
   measured in microseconds, with no syscall.
@@ -5364,7 +5409,8 @@ payloads
 ```
 
 - **Far-code segments** are linked at `8000h`, at most 16 KiB, and loaded
-  into the aperture slice of an auxiliary bank. They are linked at their
+  into the aperture slice of an auxiliary bank, one far-code segment per
+  bank. They are linked at their
   run address, so they need **no relocation**.
 - **Data segments** become extended-memory objects owned by the process and
   are reached by handle.
@@ -5448,8 +5494,10 @@ aperture.
 
 ## 36.22 Protection model
 
-Zephyr-80 has no MMU. The nucleus/service split gives modularity, ownership
-rules, controlled transitions and ABI discipline, not memory protection:
+Zephyr-80 has no MMU, and ZephyrOS is trusted and single-tasking. Bank-6
+services are trusted resident extensions. The nucleus/service split gives
+modularity, ownership rules, controlled bank crossing and ABI discipline,
+not protection:
 
 - a defect in resident code can still corrupt any memory;
 - validation is done once, in the nucleus, at the boundary; services do
@@ -5492,16 +5540,24 @@ The Z80 remains a cooperative, single-running-process machine.
    delivery to services.
 4. **Services:** service-image metadata and loader; the boot manifest; the
    drivers and the console as services (done, packages 40-41).
-5. **Simplification:** services linked at their final addresses on the
-   host, so the loader becomes a copier; host-assigned endpoint numbers;
-   validation in the nucleus only.
-6. **Namespace and handles:** the VFS publishes service objects; open,
-   call and close on handles; standard console handles; `FS_*` retired;
-   IOC-FAT a mounted service; the arena, `zdriver_api` and the registry
-   retired.
-7. **Extended memory and ZEX v2:** bank map, xmem objects, map tokens and
-   the aperture, ZEX v2 and the packer, v1 removed.
-8. **Acceptance** (section 37).
+5. **Simplification (41b):** services linked at their final addresses on
+   the host, so the loader becomes a copier; host-assigned endpoint numbers;
+   validation in the nucleus only; near-direct service-to-service calls.
+6. **Namespace and handles (42a):** `/dev` objects; open, call and close
+   on the extended descriptor pool; standard console handles; lookup
+   removed.
+7. **Files on handles (42b):** the filesystem protocol; IOC-FAT as a
+   mounted service; ROMFS as a nucleus endpoint; `FS_*` retired.
+8. **Pruning (42c, 42d):** the arena, module loader and relocator,
+   `zdriver_api`, the registry and the device class model, the provider
+   interface, dead ops headers, runtime version fields and the transitional
+   residency tiers are removed (42c); the test, tool and build scaffolding
+   is consolidated (42d).
+9. **Extended memory (43):** bank map, xmem objects, map tokens and the
+   aperture.
+10. **ZEX v2 (44a, 44b):** v2 replaces v1 (44a); far code through the
+    aperture (44b).
+11. **Acceptance (45)** (section 37).
 
 ---
 
@@ -5670,8 +5726,8 @@ process identity
 memory geometry
 free primary banks
 auxiliary-memory state
-loaded modules
-registered devices
+loaded services and endpoints
+the /dev namespace
 mounted filesystems
 console bindings
 ```
@@ -5704,7 +5760,7 @@ interrupt enable/restore behavior
 
 ### `serial`
 
-Exercises the registered serial device where practical without replacing the permanent panic/early-console path.
+Exercises the serial service (`/dev/serial/0`) where practical without replacing the permanent panic/early-console path.
 
 ### `video`
 
@@ -5790,7 +5846,7 @@ It does not expose:
 ```text
 kernel pointers
 driver state pointers
-mutable registry objects
+mutable endpoint or namespace tables
 bank-7 addresses usable as capabilities
 ```
 
@@ -5903,7 +5959,7 @@ irq/ctc:
     exact return state
 
 serial:
-    registered path
+    /dev/serial/0 service path
     bounded failure behavior
 
 video:
