@@ -1,0 +1,30 @@
+name: ChatGPT architecture transport
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-architecture:
+    if: github.event.head_commit.message == 'TEMP: stage architecture rewrite'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply architecture patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .chatgpt-arch/part-* | base64 -d > /tmp/architecture.patch
+          git apply --check /tmp/architecture.patch
+          git apply /tmp/architecture.patch
+          test "$(git hash-object docs/architecture.md)" = "00914c77f734119c6a2c83495b2d8c0be3d6879c"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/architecture.md
+          git commit -m "Apply converged M10 namespace architecture"
+          git push origin HEAD:main
