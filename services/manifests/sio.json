@@ -1,0 +1,42 @@
+{
+  "name": "sio",
+  "type": "service",
+  "abi": 2,
+  "flags": 0,
+  "objects": [
+    "sio.rel",
+    "sio_io.rel",
+    "sio_service.rel",
+    "sio_boot.rel",
+    "sdcc_indirect_calls.rel"
+  ],
+  "init": "sio_service_init",
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ],
+      "bss_areas": [
+        "_SERVICE_IO"
+      ]
+    },
+    {
+      "role": "boot",
+      "image_areas": [
+        "_BOOT"
+      ],
+      "entry": "sio_boot_entry"
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 1,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "sio_service_dispatch",
+      "flags": 0
+    }
+  ],
+  "depends": []
+}

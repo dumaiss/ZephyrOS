@@ -38,7 +38,7 @@ import pack_image  # noqa: E402
 import zexpack  # noqa: E402
 import zexmanifest  # noqa: E402
 from z80sim import (IocCommandPeer, V9958Peer, Z80,  # noqa: E402
-                    read_symbols)
+                    read_symbols, skip_serial_connect_delay)
 
 RET = 0x1234
 STACK = 0xFFFE
@@ -72,9 +72,11 @@ KERNEL_INCLUDE_ROOTS = ("include", "kernel", "platform", "drivers", "fs",
 
 
 # What `hello` links: crt0, the shared runtime, the program, the console
-# and argv members, and the printf/string helpers it actually calls.
+# protocol client with its IPC gate, the argv members, and the
+# printf/string helpers it actually calls.
 HELLO_LIBRARY_MODULES = {
-    "zos_crt0", "zos_runtime", "hello", "args", "zos_console", "printf",
+    "zos_crt0", "zos_runtime", "hello", "args", "console_service", "ipc",
+    "zos_gate", "zos_ipcgate", "printf",
     "strlen", "utoa", "ultoa", "itoa", "ltoa", "sdcc_arith",
     "zos_sdcc_arith_entries",
 }
@@ -676,8 +678,7 @@ class TestHelloWorldImage(unittest.TestCase):
         z.pc = cls.symbols["_kernel_main"]
         delay = cls.symbols["_kernel_serial_connect_delay"]
         for step in range(STEP_LIMIT):
-            if z.pc == delay:
-                z.pc = z.pop16()
+            skip_serial_connect_delay(z, delay)
             z.step()
             if step % 0x1FFF == 0:
                 cls.pump(z)

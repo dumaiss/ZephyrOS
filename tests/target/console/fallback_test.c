@@ -1,183 +1,108 @@
-/* ZephyrOS console fallback-matrix selftest (test artifact).
+/* ZephyrOS console fallback acceptance (work package 41).
  *
- * Shared by the package-20 failure-variant images.  Every variant boots
- * the production load sequence (sio.zmod, ioc.zmod, hid.zmod,
- * v9958.zmod from ROMFS, one final console_bind_defaults()) with one
- * deliberate failure injected through its ROMFS manifest, and this
- * target reports exactly what the surviving stack provides:
+ * The package-20 fallback matrix, re-pointed at the resident services:
+ * each image boots a *subset* of the service set (the store's manifest is
+ * the contract now, exactly as production's is) and this diagnostic
+ * reports the composition the console service derived from it, then
+ * proves both directions on the lanes that survived:
  *
- *   - the bound console input and output instances and classes;
- *   - the number of registered devices;
- *   - when the bound input is the serial fallback, one byte invited on
- *     the link, read back through the console service and echoed;
- *   - a marker written through the bound console output (serial-visible
- *     only when that output is the SIO device; on V9958-bound output it
- *     is confirmed on the display by the operator and decoded from the
- *     V9958 trace by the host replay);
- *   - the invariant that the bound devices stayed registered.
+ *   ZOS_CONSOLE_FALLBACK=nohid           sio ioc v9958 console
+ *       input  = the serial service (no HID endpoint), output = video;
+ *   ZOS_CONSOLE_FALLBACK=nohid-nov9958   sio ioc console
+ *       both directions = the serial service (the serial-only row).
  *
- * The expected binding per variant is asserted by
- * tests/test_console_fallback.py and tools/serial_smoke.py -- never here, so
- * the image cannot claim a direction it did not observe.
+ * A *bank-7* client of the services (tests/target/include/service_client.h):
+ * descriptor-less calls only, and the typed byte the replay queues on the
+ * surviving input lane is read back through the console protocol.
  */
 
-#include "zephyros/console.h"
-#include "zephyros/device.h"
+#include "zos/protocol.h"
+
+#include "zephyros/errno.h"
 #include "zephyros/kernel.h"
 
-#include "kernel/device/registry.h"
 #include "console_fallback_selftest.h"
+#include "service_client.h"
 
-#if ZOS_CONSOLE_FALLBACK_SELFTEST
+#define FALLBACK_TAG "console fallback: "
+#define FALLBACK_READ_MAX 4u
+#define FALLBACK_POLL_BUDGET 4096u
 
 uint8_t ace_fallback_result;
 
-static const char fallback_digits[] = "0123456789ABCDEF";
-
-/* Bounded busy wait unit for the invited-byte phase (~16 ms at 10 MHz).
- * The host sends the byte as soon as the invitation appears, so the
- * wait normally consumes it on the first poll. */
-static void fallback_pace(void)
-{
-	uint16_t i;
-
-	for (i = 0u; i < 0x1FFFu; ++i) {
-	}
-}
-
-static void fallback_fail(uint8_t code)
-{
-	static const char prefix[] = "console fallback selftest: FAIL 0x";
-
-	ace_fallback_result = code;
-	early_console_puts(prefix);
-	early_console_putc(fallback_digits[(code >> 4) & 0x0Fu]);
-	early_console_putc(fallback_digits[code & 0x0Fu]);
-	early_console_puts("\r\n");
-}
-
-static void fallback_put_hex8(uint8_t value)
-{
-	early_console_putc(fallback_digits[(value >> 4) & 0x0Fu]);
-	early_console_putc(fallback_digits[value & 0x0Fu]);
-}
-
-static void fallback_put_dec(uint8_t value)
-{
-	uint8_t tens = 0u;
-
-	/* Subtraction loop: the freestanding build links no division
-	 * helper, matching the kernel's own decimal emitter. */
-	while (value >= 10u) {
-		value = (uint8_t)(value - 10u);
-		++tens;
-	}
-	if (tens != 0u) {
-		early_console_putc((char)('0' + tens));
-	}
-	early_console_putc((char)('0' + value));
-}
-
-static void fallback_put_name(const char *name)
-{
-	uint8_t i;
-
-	for (i = 0u; i < 20u && name[i] != '\0'; ++i) {
-		early_console_putc(name[i]);
-	}
-}
-
-static uint8_t fallback_device_count(void)
-{
-	uint8_t count = 0u;
-	zdev_handle_t handle;
-
-	for (handle = 1u; handle <= ZDEV_MAX_DEVICES; ++handle) {
-		if (device_get(handle) != (const struct zdevice *)0) {
-			++count;
-		}
-	}
-	return count;
-}
+static uint8_t fallback_console;
+static uint8_t fallback_failed;
 
 void zos_run_console_fallback_selftest(void)
 {
-	zdev_handle_t in = console_input_handle();
-	zdev_handle_t out = console_output_handle();
-	const struct zdevice *dev_in = device_get(in);
-	const struct zdevice *dev_out = device_get(out);
-	static const char marker[] = "console fallback: console output\r\n";
-	uint8_t outer;
-	int result;
+	uint8_t video = 0u;
+	uint8_t hid = 0u;
+	uint8_t typed[FALLBACK_READ_MAX];
+	uint8_t count = 0u;
+	uint16_t attempts = 0u;
+	uint8_t index;
 
-	ace_fallback_result = ZOS_CONSOLEFB_FAIL_BOOT;
+	ace_fallback_result = 0u;
+	fallback_failed = 0u;
 
-	if (in == ZDEV_HANDLE_INVALID || out == ZDEV_HANDLE_INVALID ||
-	    dev_in == (const struct zdevice *)0 ||
-	    dev_out == (const struct zdevice *)0) {
-		fallback_fail(ZOS_CONSOLEFB_FAIL_BOOT);
+	if (service_cli_endpoint(ZOS_CLASS_CONSOLE, &fallback_console) == 0u) {
+		ace_fallback_result = 1u;
+		service_cli_puts(FALLBACK_TAG "FAIL console\r\n");
 		return;
 	}
 
-	early_console_puts("console fallback: input ");
-	fallback_put_name(dev_in->name);
-	early_console_puts(" class ");
-	fallback_put_hex8(dev_in->class_id);
-	early_console_puts("\r\n");
-	early_console_puts("console fallback: output ");
-	fallback_put_name(dev_out->name);
-	early_console_puts(" class ");
-	fallback_put_hex8(dev_out->class_id);
-	early_console_puts("\r\n");
-	early_console_puts("console fallback: devices ");
-	fallback_put_dec(fallback_device_count());
-	early_console_puts("\r\n");
+	/* The composition rows: input is HID only when its engine answers
+	 * ready, output is video only when the video endpoint is there. */
+	if (service_cli_endpoint(ZOS_CLASS_HID, &hid) != 0u &&
+	    service_cli_getc(hid, ZHID_OP_READY) == 1) {
+		service_cli_puts(FALLBACK_TAG "input hid\r\n");
+	} else {
+		service_cli_puts(FALLBACK_TAG "input serial\r\n");
+	}
+	if (service_cli_endpoint(ZOS_CLASS_VIDEO, &video) != 0u) {
+		service_cli_puts(FALLBACK_TAG "output video\r\n");
+	} else {
+		service_cli_puts(FALLBACK_TAG "output serial\r\n");
+	}
 
-	/* When the bound input is the serial fallback, invite exactly one
-	 * byte, read it through the console service (the same path the
-	 * monitor uses), and echo it on the early SIO.  A byte that never
-	 * arrives is reported as such, never as a pass. */
-	if (dev_in->class_id == ZDEV_SERIAL) {
-		early_console_puts("console fallback: send input\r\n");
-		result = ZDEV_EAGAIN;
-		for (outer = 0u; outer < 128u; ++outer) {
-			result = console_getc();
-			if (result >= 0) {
-				break;
-			}
-			fallback_pace();
-		}
-		if (result >= 0) {
-			early_console_puts("console fallback: input OK 0x");
-			fallback_put_hex8((uint8_t)result);
-			early_console_puts("\r\n");
-		} else {
-			early_console_puts("console fallback: input none\r\n");
+	/* One visible marker through the console output (no transcript
+	 * line: the marker's lane is the output direction's proof, and the
+	 * replay looks for these characters on exactly one lane). */
+	for (index = 0u; index < 4u; ++index) {
+		static const char marker[] = "F41\r\n";
+
+		if (service_cli_putc(fallback_console, ZCONSOLE_OP_PUTC,
+				     (uint8_t)marker[index]) < 0) {
+			ace_fallback_result = 2u;
+			service_cli_puts(FALLBACK_TAG "FAIL write\r\n");
+			return;
 		}
 	}
 
-	/* One marker through the bound console output.  If the output is
-	 * the SIO device it appears in this serial transcript; if it is
-	 * the V9958 the operator confirms it on the display and the host
-	 * replay decodes it from the V9958 trace. */
-	result = console_write(marker, (uint16_t)(sizeof(marker) - 1u));
-	if (result != (int)(sizeof(marker) - 1u)) {
-		fallback_fail(ZOS_CONSOLEFB_FAIL_CONSOLE);
+	/* The typed line, queued by the replay on the surviving input lane. */
+	while (attempts < FALLBACK_POLL_BUDGET && count < FALLBACK_READ_MAX) {
+		int16_t byte = service_cli_getc(fallback_console,
+						ZCONSOLE_OP_GETC);
+
+		if (byte < 0) {
+			++attempts;
+			continue;
+		}
+		typed[count] = (uint8_t)byte;
+		++count;
+		if ((uint8_t)byte == (uint8_t)'\r') {
+			break;
+		}
+	}
+	if (count == 0u) {
+		ace_fallback_result = 3u;
+		service_cli_puts(FALLBACK_TAG "FAIL read\r\n");
 		return;
 	}
-	early_console_puts("console fallback: console write OK\r\n");
-
-	/* The bound devices must have stayed registered through the
-	 * rejected/missing-module load path. */
-	if (device_get(in) != dev_in || device_get(out) != dev_out ||
-	    dev_in->class_id != device_get(in)->class_id ||
-	    dev_out->class_id != device_get(out)->class_id) {
-		fallback_fail(ZOS_CONSOLEFB_FAIL_BOOT);
-		return;
+	service_cli_puts(FALLBACK_TAG "echo ");
+	for (index = 0u; index < count; ++index) {
+		service_cli_hex8(typed[index]);
 	}
-
-	ace_fallback_result = ZOS_CONSOLEFB_OK;
-	early_console_puts("console fallback selftest: OK\r\n");
+	service_cli_puts("\r\n");
+	service_cli_puts(FALLBACK_TAG "OK\r\n");
 }
-
-#endif /* ZOS_CONSOLE_FALLBACK_SELFTEST */

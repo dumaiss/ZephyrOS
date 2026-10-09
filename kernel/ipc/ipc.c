@@ -111,10 +111,22 @@ struct ipc_endpoint {
 	uint8_t version;
 	uint8_t registered;
 	uint8_t busy;
+	uint16_t bulk_base; /* the owner's bulk extent in bank 6 (36.6) */
+	uint16_t bulk_size;
 };
 
 static struct ipc_endpoint endpoints[IPC_ENDPOINT_MAX];
 static uint8_t endpoint_count;
+
+/* The bulk extent of the image whose endpoints are being registered; the
+ * loader sets it before its endpoint pass (ipc_service_bulk_set). */
+static uint16_t pending_bulk_base;
+static uint16_t pending_bulk_size;
+
+/* The endpoint being dispatched at each call level: api_bulk_read resolves
+ * the calling service from the innermost entry (services register one
+ * bulk extent each). */
+static const struct ipc_endpoint *call_owner[ZOS_IPC_MAX_NESTING];
 
 struct ipc_desc {
 	uint8_t active;
@@ -479,8 +491,19 @@ static int8_t api_register_ep(uint8_t class, uint8_t instance,
 	ep->version = version;
 	ep->registered = 1u;
 	ep->busy = 0u;
+	ep->bulk_base = pending_bulk_base;
+	ep->bulk_size = pending_bulk_size;
 	++endpoint_count;
 	return (int8_t)endpoint_count;
+}
+
+/* The loader registers each image's bulk extent just before that image's
+ * endpoints (architecture 36.6: bulk data lives in the boot/bulk tier and
+ * is read through a nucleus copy). */
+void ipc_service_bulk_set(uint16_t base, uint16_t size)
+{
+	pending_bulk_base = base;
+	pending_bulk_size = size;
 }
 
 /* Invoke one service dispatch entry: open the owner's domain when
@@ -535,11 +558,31 @@ static int16_t ipc_call_endpoint(uint8_t handle, struct zos_ipc_frame *frame)
 	target = &frames[call_depth + 1u];
 	*target = *frame;
 	ep->busy = 1u;
+	call_owner[call_depth] = ep;
 	++call_depth;
 	result = invoke_endpoint(ep, target, nested);
 	--call_depth;
 	ep->busy = 0u;
 	*frame = *target;
+	frame->status = result;
+	return result;
+}
+
+/* --- nucleus-side calls -------------------------------------------------- */
+
+/* The cold half's way into a service: the same endpoint dispatch a syscall
+ * takes, entered without a gate latch, so the frame carries no descriptor
+ * (a bank-7 caller has no caller buffer to name).  The dispatch itself
+ * selects the service window, which is what makes this reachable from
+ * bank 7. */
+int16_t ipc_nucleus_call(uint8_t handle, struct zos_ipc_frame *frame)
+{
+	int16_t result;
+
+	if (frame == (struct zos_ipc_frame *)0) {
+		return -ZOS_EINVAL;
+	}
+	result = ipc_call_endpoint(handle, frame);
 	frame->status = result;
 	return result;
 }
@@ -603,6 +646,46 @@ static int16_t api_move(uint16_t src, uint16_t dst, uint16_t length)
 	ipc_copy_req[1] = dst;
 	ipc_copy_req[2] = length;
 	return (int16_t)ipc_copy_run();
+}
+
+/* Architecture 36.6: a service's bulk data lives in bank 6's boot/bulk
+ * tier (0000h-5FFFh), which the mode-11 window never shows; it is reached
+ * only through a nucleus copy.  `base`/`size` were registered with the
+ * calling service's endpoints by the loader, so the copy is bound to the
+ * service that owns the current dispatch.  The transfer installs the
+ * mode-10 mapping over bank 6 (P = 0, so 0000h-DFFFh all show bank 6) and
+ * runs one LDIR from the bulk extent into the caller's own window buffer,
+ * through the same common-resident primitive path B uses. */
+static int16_t api_bulk_read(uint16_t offset, uint16_t dst, uint16_t length)
+{
+	const struct ipc_endpoint *owner;
+	uint16_t src;
+
+	if (ipc_irq_active) {
+		return -ZOS_EBUSY;
+	}
+	if (call_depth == 0u) {
+		return -ZOS_EINVAL;
+	}
+	owner = call_owner[call_depth - 1u];
+	if (owner->bulk_size == 0u || length == 0u ||
+	    offset > owner->bulk_size ||
+	    length > (uint16_t)(owner->bulk_size - offset) ||
+	    !in_service_window(dst, length)) {
+		return -ZOS_EINVAL;
+	}
+	src = (uint16_t)(owner->bulk_base + offset);
+	if ((uint32_t)src + length > ZOS_REV13_WINDOW_BASE) {
+		return -ZOS_EINVAL;
+	}
+	ipc_ap_req[0] = (uint8_t)(ZOS_MODE_APPLICATION | IPC_SERVICE_BANK);
+	ipc_ap_req[1] = (uint8_t)src;
+	ipc_ap_req[2] = (uint8_t)(src >> 8);
+	ipc_ap_req[3] = (uint8_t)dst;
+	ipc_ap_req[4] = (uint8_t)(dst >> 8);
+	ipc_ap_req[5] = (uint8_t)length;
+	ipc_ap_req[6] = (uint8_t)(length >> 8);
+	return (int16_t)ipc_ap_copy();
 }
 
 static __sfr __at ZOS_SIO0B_CTRL ipc_sio_ctrl;
@@ -686,6 +769,7 @@ static const struct ipc_service_api ipc_api = {
 	api_copy_in,
 	api_copy_out,
 	api_move,
+	api_bulk_read,
 	api_console_putc,
 	api_console_poll,
 	api_console_getc,

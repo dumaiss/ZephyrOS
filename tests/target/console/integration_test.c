@@ -1,433 +1,312 @@
-/* ZephyrOS integration acceptance selftest (test artifact).
+/* ZephyrOS console integration acceptance (work package 41).
  *
- * Runs from the late boot hook after the full production-style boot:
- * SIO + IOC + HID + the V9958 video/console device are all loaded from
- * the recovery store and the single console_bind_defaults() has just
- * selected the preferred HID-input / V9958-output pair.  The unchanged
- * M7 `monitor.zex` launcher runs after this test, so the interactive
- * session executes through the same binding.
+ * The package-20 integration diagnostic, re-pointed at the resident
+ * services.  The kernel calls zos_run_console_integration_selftest()
+ * from the late boot hook, after the resident service loader has placed
+ * and started the store's services and after the nucleus console probe
+ * bound the console endpoint; the unchanged M7 monitor launcher runs
+ * afterwards on the same image, so the human HID/V9958 session is this
+ * test's visible continuation.
  *
- * Control and outcome lines go through the direct early SIO: the
- * transcript exists while the normal console output is the V9958, which
- * is itself the early-SIO-independence proof.  The complete bulk
- * READY/DONE lifecycle and the scripted HID/V9958 monitor session are
- * replayed from these exact bytes by tests/test_console_acceptance.py and
- * performed by the operator on hardware; this target covers the safe,
- * deterministic integration checks: class/capability discovery of all
- * four residents, the default binding, repeated PING exchanges, and a
- * battery of malformed/null/class/capability calls whose exact codes
- * and harmlessness (registry, module allocation, console directions)
- * are verified.
+ * This is a *bank-7 client* of the services (see
+ * tests/target/include/service_client.h): it holds no descriptor, so it
+ * drives the descriptor-less forms - console PUTC/GETC/POLL and the IOC
+ * command exchange whose reply it stages out of the service window
+ * through the common copy gate.
+ *
+ * The transcript goes through the direct early SIO, so it is the
+ * pass/fail record independent of the console service it exercises; the
+ * replay cross-checks the visible side (the marker characters appear in
+ * the V9958 trace and never on the serial lane, and the typed bytes the
+ * diagnostic reads back are the ones the emulated MCU queued for HID).
+ *
+ * Coverage:
+ *
+ *   - every class the production store carries answers an endpoint
+ *     lookup at ZOS_PROTOCOL_VERSION;
+ *   - the console endpoint speaks the console protocol, and the
+ *     composition the console service derives (video output, HID input
+ *     when ZHID_OP_READY answers) is what this image's store implies;
+ *   - a written marker reaches the visible console, and a typed line
+ *     queued for HID arrives through the console input;
+ *   - the IOC transport answers a PING through its own endpoint with the
+ *     pinned controller level (the cross-service row);
+ *   - malformed and unknown operations are refused, and the console
+ *     still works afterwards.
  */
 
-#include "zephyros/console.h"
-#include "zephyros/device.h"
-#include "zephyros/hid.h"
+#include "zos/protocol.h"
+
+#include "zephyros/errno.h"
 #include "zephyros/ioc.h"
 #include "zephyros/kernel.h"
-#include "zephyros/module.h"
-#include "zephyros/video.h"
 
-#include "zephyros/ioc_protocol.h"
-
-#include "kernel/device/registry.h"
 #include "console_integration_selftest.h"
+#include "service_client.h"
 
-#if ZOS_CONSOLE_INTEGRATION_SELFTEST
+#define INTEGRATION_TAG "console integration: "
+/* Bytes the replay queues for HID: the typed line this diagnostic reads
+ * back through the console (CR terminates it). */
+#define INTEGRATION_TYPED "K41"
+#define INTEGRATION_TYPED_END '\r'
+#define INTEGRATION_READ_MAX 8u
+#define INTEGRATION_POLL_BUDGET 512u
+/* PING request DATA (the pinned firmware accepts up to 24 bytes). */
+#define INTEGRATION_PING_DATA_LEN 4u
+#define INTEGRATION_PING_LEVEL_INDEX 16u
+#define INTEGRATION_PING_RESPONSE 0x81u
+#define INTEGRATION_LEVEL_PINNED 0x4Au
 
 uint8_t ace_integration_result;
 
-static const char integration_digits[] = "0123456789ABCDEF";
+static uint8_t integration_console;
+static uint8_t integration_ioc;
+static uint8_t integration_failed;
 
-/* Bulk probe buffer for rejected-sequence calls (never transferred). */
-static uint8_t integration_bulk_probe[4];
-
-/* Fields a well-behaved rejected call may never mutate. */
-struct integration_snapshot {
-	zdev_handle_t handle;
-	uint8_t class_id;
-	zdev_caps_t capabilities;
-	const char *name;
-	const void *char_ops;
-	const void *class_ops;
-	void *state;
-};
-
-static void integration_fail(uint8_t code, uint8_t detail)
+static void integration_puts(const char *text)
 {
-	static const char prefix[] = "console integration: FAIL 0x";
-	static const char detail_prefix[] = " detail 0x";
-
-	ace_integration_result = code;
-	early_console_puts(prefix);
-	early_console_putc(integration_digits[(code >> 4) & 0x0Fu]);
-	early_console_putc(integration_digits[code & 0x0Fu]);
-	early_console_puts(detail_prefix);
-	early_console_putc(integration_digits[(detail >> 4) & 0x0Fu]);
-	early_console_putc(integration_digits[detail & 0x0Fu]);
-	early_console_puts("\r\n");
+	service_cli_puts(INTEGRATION_TAG);
+	service_cli_puts(text);
+	service_cli_puts("\r\n");
 }
 
-static void integration_put_hex8(uint8_t value)
+static void integration_fail(uint8_t code, const char *phase)
 {
-	early_console_putc(integration_digits[(value >> 4) & 0x0Fu]);
-	early_console_putc(integration_digits[value & 0x0Fu]);
+	if (integration_failed == 0u) {
+		integration_failed = 1u;
+		ace_integration_result = code;
+		service_cli_puts(INTEGRATION_TAG "FAIL ");
+		service_cli_puts(phase);
+		service_cli_puts("\r\n");
+	}
 }
 
-/* Bounded instance-name compare over the registry-owned string. */
-static uint8_t integration_name_is(const char *name, const char *want)
+/* One class lookup row: `<name>=01` when the endpoint is registered at
+ * the running protocol version, `<name>=00` when it is not. */
+static void integration_probe(uint8_t class_id, const char *name)
 {
-	while (*want != '\0') {
-		if (*name != *want) {
-			return 0u;
+	uint8_t handle = 0u;
+	uint8_t present = service_cli_endpoint(class_id, &handle);
+
+	service_cli_puts(" ");
+	service_cli_puts(name);
+	service_cli_puts(present != 0u ? "=01" : "=00");
+	if (present == 0u) {
+		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_BOOT, "services");
+	}
+}
+
+/* One console output marker: the replay looks for these characters in the
+ * V9958 trace, never on the serial lane. */
+static int integration_write(const char *text)
+{
+	while (*text != '\0') {
+		if (service_cli_putc(integration_console, ZCONSOLE_OP_PUTC,
+				     (uint8_t)*text) < 0) {
+			return 0;
 		}
-		++name;
-		++want;
+		++text;
 	}
-	return (*name == '\0') ? 1u : 0u;
+	return 1;
 }
 
-static void integration_put_name(const char *name)
+/* The typed line, one byte per call through the console input: the
+ * console asks HID because its engine answered ready, which is the
+ * composition row this reads back. */
+static uint8_t integration_read(uint8_t *out)
 {
-	uint8_t i;
-
-	for (i = 0u; i < 20u && name[i] != '\0'; ++i) {
-		early_console_putc(name[i]);
-	}
-}
-
-static uint8_t integration_device_count(void)
-{
+	uint16_t attempts = 0u;
 	uint8_t count = 0u;
-	zdev_handle_t handle;
 
-	for (handle = 1u; handle <= ZDEV_MAX_DEVICES; ++handle) {
-		if (device_get(handle) != (const struct zdevice *)0) {
-			++count;
+	while (attempts < INTEGRATION_POLL_BUDGET &&
+	       count < INTEGRATION_READ_MAX) {
+		int16_t byte = service_cli_getc(integration_console,
+						ZCONSOLE_OP_GETC);
+
+		if (byte < 0) {
+			++attempts;
+			continue;
 		}
+		if ((uint8_t)byte == (uint8_t)INTEGRATION_TYPED_END) {
+			break;
+		}
+		out[count] = (uint8_t)byte;
+		++count;
 	}
 	return count;
 }
 
-static void integration_snapshot_take(struct integration_snapshot *snap, zdev_handle_t handle)
+/* The cross-service row: an IOC PING through the IOC endpoint, with the
+ * 29-byte reply staged out of the service window.  Returns 1 when the
+ * reply is the pinned one and fills in the controller level. */
+static uint8_t integration_ping(uint8_t *level)
 {
-	const struct zdevice *dev = device_get(handle);
+	struct zos_ipc_frame frame;
+	uint8_t reply[ZIOC_FRAME_SIZE];
+	uint16_t address;
+	uint8_t index;
 
-	snap->handle = handle;
-	if (dev == (const struct zdevice *)0) {
-		snap->class_id = 0u;
-		snap->capabilities = 0u;
-		snap->name = (const char *)0;
-		snap->char_ops = (const void *)0;
-		snap->class_ops = (const void *)0;
-		snap->state = (void *)0;
-		return;
+	service_cli_frame(&frame, ZIOC_OP_COMMAND, 0x01u,
+			  INTEGRATION_PING_DATA_LEN);
+	for (index = 0u; index < INTEGRATION_PING_DATA_LEN; ++index) {
+		frame.payload[index] = (uint8_t)(0x40u + index);
 	}
-	snap->class_id = dev->class_id;
-	snap->capabilities = dev->capabilities;
-	snap->name = dev->name;
-	snap->char_ops = (const void *)dev->char_ops;
-	snap->class_ops = dev->class_ops;
-	snap->state = dev->state;
+	if (service_cli_call(integration_ioc, &frame) != 0) {
+		return 0u;
+	}
+	if (frame.arg0 != INTEGRATION_PING_RESPONSE ||
+	    frame.payload[2] != 0u) {
+		return 0u;
+	}
+	address = (uint16_t)((uint16_t)frame.payload[0] |
+			     ((uint16_t)frame.payload[1] << 8));
+	if (service_cli_stage_read(address, ZIOC_FRAME_SIZE, reply) == 0) {
+		return 0u;
+	}
+	if (reply[0] != INTEGRATION_PING_RESPONSE || reply[1] != 0u) {
+		return 0u;
+	}
+	/* The PING reply echoes the request DATA and pins the controller
+	 * level plus the link-synced flag the firmware reports. */
+	for (index = 0u; index < INTEGRATION_PING_DATA_LEN; ++index) {
+		if (reply[3u + index] != (uint8_t)(0x40u + index)) {
+			return 0u;
+		}
+	}
+	*level = reply[3u + INTEGRATION_PING_LEVEL_INDEX];
+	return (uint8_t)(reply[3u + INTEGRATION_PING_LEVEL_INDEX + 1u] ==
+			 0x40u);
 }
 
-static uint8_t integration_snapshot_equal(const struct integration_snapshot *a,
-				 const struct integration_snapshot *b)
+/* Unknown operations on the resident classes are refused, and a handle
+ * the nucleus never issued is refused before any service runs. */
+static uint8_t integration_rejects(void)
 {
-	return (uint8_t)(a->handle == b->handle &&
-			 a->class_id == b->class_id &&
-			 a->capabilities == b->capabilities &&
-			 a->name == b->name &&
-			 a->char_ops == b->char_ops &&
-			 a->class_ops == b->class_ops &&
-			 a->state == b->state);
+	struct zos_ipc_frame frame;
+	uint8_t video = 0u;
+	uint8_t hid = 0u;
+
+	service_cli_frame(&frame, 0x7Fu, 0u, 0u);
+	if (service_cli_call(integration_console, &frame) != -ZOS_EINVAL) {
+		return 0u;
+	}
+	service_cli_frame(&frame, 0x7Fu, 0u, 0u);
+	if (service_cli_call(integration_ioc, &frame) != -ZOS_EINVAL) {
+		return 0u;
+	}
+	if (service_cli_endpoint(ZOS_CLASS_VIDEO, &video) != 0u) {
+		service_cli_frame(&frame, 0x7Fu, 0u, 0u);
+		if (service_cli_call(video, &frame) != -ZOS_EINVAL) {
+			return 0u;
+		}
+	}
+	if (service_cli_endpoint(ZOS_CLASS_HID, &hid) != 0u) {
+		service_cli_frame(&frame, 0x7Fu, 0u, 0u);
+		if (service_cli_call(hid, &frame) != -ZOS_EINVAL) {
+			return 0u;
+		}
+	}
+	service_cli_frame(&frame, ZCONSOLE_OP_PUTC, (uint8_t)'x', 0u);
+	if (service_cli_call((uint8_t)0xFEu, &frame) >= 0) {
+		return 0u;
+	}
+	return 1u;
 }
 
 void zos_run_console_integration_selftest(void)
 {
-	zdev_handle_t sio;
-	zdev_handle_t ioc;
-	zdev_handle_t hid;
-	zdev_handle_t video;
-	const struct zdevice *dev;
-	const void *class_ops = (const void *)0;
-	void *state = (void *)0;
-	const struct zioc_ops *ioc_ops;
-	const struct zhid_ops *hid_ops;
-	const struct zvideo_ops *video_ops;
-	struct zioc_frame request;
-	struct zioc_frame reply;
-	struct integration_snapshot before[4];
-	struct integration_snapshot after[4];
-	static const char visible[] = "console integration: visible console marker\r\n";
-	uint8_t level;
-	uint8_t pass;
-	uint8_t i;
-	uint8_t granules_before;
-	uint16_t bits;
-	int result;
-
-	ace_integration_result = ZOS_CONSOLE_INTEGRATION_FAIL_BOOT;
-
-	/* Discovery is by class plus capabilities only; the exact instance
-	 * names are checked after discovery because this image pins the
-	 * full resident set. */
-	sio = device_find(ZDEV_SERIAL, ZCAP_CONSOLE_IN | ZCAP_CONSOLE_OUT,
-			  0u);
-	ioc = device_find(ZDEV_IOC, ZCAP_IOC_COMMAND | ZCAP_IOC_BULK_READ |
-					ZCAP_IOC_BULK_WRITE | ZCAP_IOC_STATUS,
-			  0u);
-	hid = device_find(ZDEV_HID, ZCAP_HID_TEXT | ZCAP_CONSOLE_IN, 0u);
-	video = device_find(ZDEV_VIDEO, ZCAP_VIDEO_RESET |
-					      ZCAP_VIDEO_PRESENT |
-					      ZCAP_CHAR_OUT |
-					      ZCAP_CONSOLE_OUT,
-			    0u);
-	if (sio == ZDEV_HANDLE_INVALID || ioc == ZDEV_HANDLE_INVALID ||
-	    hid == ZDEV_HANDLE_INVALID || video == ZDEV_HANDLE_INVALID) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_BOOT, 0x01u);
-		return;
-	}
-
-	/* The handles are issued in load order: the boot sequence sio ->
-	 * ioc -> hid -> v9958 is therefore observable in the registry. */
-	if (!(sio < ioc && ioc < hid && hid < video)) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_BOOT, 0x02u);
-		return;
-	}
-
-	dev = device_get(sio);
-	if (dev == (const struct zdevice *)0 ||
-	    integration_name_is(dev->name, "sio0.b") == 0u ||
-	    dev->class_id != ZDEV_SERIAL) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE, 0x01u);
-		return;
-	}
-	dev = device_get(ioc);
-	if (dev == (const struct zdevice *)0 ||
-	    integration_name_is(dev->name, "ioc.0") == 0u ||
-	    dev->class_id != ZDEV_IOC) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE, 0x02u);
-		return;
-	}
-	dev = device_get(hid);
-	if (dev == (const struct zdevice *)0 ||
-	    integration_name_is(dev->name, "hid.keyboard0") == 0u ||
-	    dev->class_id != ZDEV_HID) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE, 0x03u);
-		return;
-	}
-	dev = device_get(video);
-	if (dev == (const struct zdevice *)0 ||
-	    integration_name_is(dev->name, "v9958.0") == 0u ||
-	    dev->class_id != ZDEV_VIDEO) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE, 0x04u);
-		return;
-	}
-	if (integration_device_count() != 4u) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE, 0x05u);
-		return;
-	}
-
-	/* The one final console_bind_defaults() must have selected the
-	 * preferred pair: HID input, V9958 output. */
-	if (console_input_handle() != hid ||
-	    console_output_handle() != video) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_BIND, 0x01u);
-		return;
-	}
-
-	/* Early-SIO report lines (the transcript is produced while the
-	 * normal console output is the V9958). */
-	dev = device_get(hid);
-	early_console_puts("console integration: input ");
-	integration_put_name(dev->name);
-	early_console_puts(" class ");
-	integration_put_hex8(dev->class_id);
-	early_console_puts("\r\n");
-	dev = device_get(video);
-	early_console_puts("console integration: output ");
-	integration_put_name(dev->name);
-	early_console_puts(" class ");
-	integration_put_hex8(dev->class_id);
-	early_console_puts("\r\n");
-	early_console_puts("console integration: devices 04\r\n");
-
-	/* --- IOC class: interface, PING x2 with echo, semantic status --- */
-	if (device_interface(ioc, ZDEV_IOC, &class_ops, &state) != ZDEV_OK ||
-	    class_ops == (const void *)0 || state == (void *)0) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_IOC, 0x01u);
-		return;
-	}
-	ioc_ops = (const struct zioc_ops *)class_ops;
-	if (ioc_ops->command == 0 || ioc_ops->bulk_read == 0 ||
-	    ioc_ops->bulk_write == 0 || ioc_ops->status == 0) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_IOC, 0x02u);
-		return;
-	}
-	level = 0u;
-	for (pass = 0u; pass < 2u; ++pass) {
-		request.type = IOC_CMD_PING;
-		request.status = 0u;
-		request.length = IOC_PING_ECHO_BYTES;
-		for (i = 0u; i < IOC_PING_ECHO_BYTES; ++i) {
-			request.data[i] = (uint8_t)(0xA0u + i);
-		}
-		result = ioc_ops->command(state, &request, &reply);
-		if (result != ZIOC_OK || reply.status != 0u ||
-		    reply.type != IOC_RSP_PING ||
-		    reply.length != IOC_PING_DATA_LEN) {
-			integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_IOC,
-				(uint8_t)(0x10u + pass));
-			return;
-		}
-		for (i = 0u; i < IOC_PING_ECHO_BYTES; ++i) {
-			if (reply.data[i] != (uint8_t)(0xA0u + i)) {
-				integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_IOC,
-					(uint8_t)(0x20u + pass));
-				return;
-			}
-		}
-		if ((reply.data[IOC_PING_DATA_POWER] &
-		     IOC_PING_LINK_SYNCED) == 0u) {
-			integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_IOC,
-				(uint8_t)(0x30u + pass));
-			return;
-		}
-		if (pass == 0u) {
-			level = reply.data[IOC_PING_DATA_LEVEL];
-		} else if (reply.data[IOC_PING_DATA_LEVEL] != level) {
-			integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_IOC, 0x31u);
-			return;
-		}
-	}
-	early_console_puts("console integration: ioc level ");
-	integration_put_hex8(level);
-	early_console_puts("\r\n");
-	bits = ioc_ops->status(state);
-	if ((bits & (uint16_t)~ZIOC_STATUS_HID_PENDING) != 0u) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_IOC, 0x32u);
-		return;
-	}
-
-	/* --- HID class shape: text present, gamepad reserved/null ------- */
-	if (device_interface(hid, ZDEV_HID, &class_ops, &state) != ZDEV_OK ||
-	    class_ops == (const void *)0 || state == (void *)0) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE, 0x10u);
-		return;
-	}
-	hid_ops = (const struct zhid_ops *)class_ops;
-	if (hid_ops->read_text == 0 || hid_ops->read_gamepad != 0) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE, 0x11u);
-		return;
-	}
-	dev = device_get(hid);
-	if ((dev->capabilities & ZCAP_HID_GAMEPAD) != 0u) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE, 0x12u);
-		return;
-	}
-
-	/* --- VIDEO class shape and safe operation rejections ------------ */
-	if (device_interface(video, ZDEV_VIDEO, &class_ops, &state) !=
-	    ZDEV_OK ||
-	    class_ops == (const void *)0 || state == (void *)0) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE, 0x20u);
-		return;
-	}
-	video_ops = (const struct zvideo_ops *)class_ops;
-	if (video_ops->send == 0) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE, 0x21u);
-		return;
-	}
-
-	/* Snapshot everything a rejected call must leave alone. */
-	integration_snapshot_take(&before[0], sio);
-	integration_snapshot_take(&before[1], ioc);
-	integration_snapshot_take(&before[2], hid);
-	integration_snapshot_take(&before[3], video);
-	granules_before = module_granule_count();
-
-	/* --- malformed/null/class/capability calls, exact codes --------- */
-	if (device_find(ZDEV_HID, 0u, 0u) != ZDEV_HANDLE_INVALID ||
-	    device_find(0x0Fu, ZCAP_CHAR_IN, 0u) != ZDEV_HANDLE_INVALID ||
-	    device_find(ZDEV_SERIAL, ZCAP_CONSOLE_IN,
-			(zdev_handle_t)(ZDEV_MAX_DEVICES + 1u)) !=
-		    ZDEV_HANDLE_INVALID) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_MALFORMED, 0x01u);
-		return;
-	}
-	if (device_interface(ioc, ZDEV_HID, &class_ops, &state) !=
-	    ZDEV_ENOTSUP ||
-	    device_interface(ZDEV_HANDLE_INVALID, ZDEV_HID, &class_ops,
-			     &state) != ZDEV_EINVAL ||
-	    device_interface(hid, ZDEV_HID, (const void **)0, (void **)0) !=
-		    ZDEV_EINVAL) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_MALFORMED, 0x02u);
-		return;
-	}
-	if (video_ops->send(state, 0x40u, (const void *)0, 0u) !=
-	    ZDEV_ENOTSUP ||
-	    video_ops->send((void *)0, ZVIDEO_PRESENT, (const void *)0, 0u) !=
-		    ZDEV_ENODEV ||
-	    video_ops->send(state, ZVIDEO_PRESENT, (const void *)0, 5u) !=
-		    ZDEV_EINVAL) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_MALFORMED, 0x03u);
-		return;
-	}
-	/* Bulk calls before any READY admission are refused without any
-	 * lane I/O; an oversized command DATA length is refused before
-	 * the request is built. */
-	if (ioc_ops->bulk_read(state, integration_bulk_probe, 4u) != ZIOC_EBUSY ||
-	    ioc_ops->bulk_write(state, integration_bulk_probe, 4u) != ZIOC_EBUSY) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_MALFORMED, 0x04u);
-		return;
-	}
-	request.type = IOC_CMD_PING;
-	request.status = 0u;
-	request.length = (uint8_t)(ZIOC_MAX_DATA + 1u);
-	result = ioc_ops->command(state, &request, &reply);
-	if (result != ZIOC_EINVAL) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_MALFORMED, 0x05u);
-		return;
-	}
-	/* A console_bind that cannot work must be rejected and must not
-	 * disturb the current binding. */
-	if (console_bind(ioc, video) != ZDEV_EINVAL ||
-	    console_bind(hid, ioc) != ZDEV_EINVAL ||
-	    console_input_handle() != hid ||
-	    console_output_handle() != video) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_MALFORMED, 0x06u);
-		return;
-	}
-
-	/* --- invariants: device table, allocation, console service ----- */
-	integration_snapshot_take(&after[0], sio);
-	integration_snapshot_take(&after[1], ioc);
-	integration_snapshot_take(&after[2], hid);
-	integration_snapshot_take(&after[3], video);
-	if (integration_device_count() != 4u ||
-	    module_granule_count() != granules_before ||
-	    integration_snapshot_equal(&before[0], &after[0]) == 0u ||
-	    integration_snapshot_equal(&before[1], &after[1]) == 0u ||
-	    integration_snapshot_equal(&before[2], &after[2]) == 0u ||
-	    integration_snapshot_equal(&before[3], &after[3]) == 0u) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_INVARIANTS, 0x01u);
-		return;
-	}
-	result = console_write(visible, (uint16_t)(sizeof(visible) - 1u));
-	if (result != (int)(sizeof(visible) - 1u)) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE, 0x01u);
-		return;
-	}
-	result = console_poll();
-	if (result < 0 || result > 1) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE, 0x02u);
-		return;
-	}
-	early_console_puts("console integration: rejected calls OK\r\n");
+	uint8_t video = 0u;
+	uint8_t hid = 0u;
+	uint8_t typed[INTEGRATION_READ_MAX];
+	uint8_t typed_count;
+	uint8_t level = 0u;
+	uint8_t index;
 
 	ace_integration_result = ZOS_CONSOLE_INTEGRATION_OK;
-	early_console_puts("console integration: OK\r\n");
-}
+	integration_failed = 0u;
 
-#endif /* ZOS_CONSOLE_INTEGRATION_SELFTEST */
+	service_cli_puts(INTEGRATION_TAG "services");
+	integration_probe(ZOS_CLASS_SERIAL, "sio");
+	integration_probe(ZOS_CLASS_IOC, "ioc");
+	integration_probe(ZOS_CLASS_HID, "hid");
+	integration_probe(ZOS_CLASS_VIDEO, "video");
+	integration_probe(ZOS_CLASS_CONSOLE, "console");
+	service_cli_puts("\r\n");
+	if (service_cli_endpoint(ZOS_CLASS_CONSOLE, &integration_console) ==
+	    0u || integration_failed != 0u) {
+		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE, "console");
+		return;
+	}
+
+	/* The composition rows: the console prefers the video output and
+	 * the HID input (when its engine answers ready), which is what this
+	 * store carries.  The replay proves the choice from the visible
+	 * side; these lines record what the diagnostic observed. */
+	integration_puts("console v01");
+	if (service_cli_endpoint(ZOS_CLASS_VIDEO, &video) != 0u) {
+		integration_puts("output video");
+	} else {
+		integration_puts("output serial");
+	}
+	if (service_cli_endpoint(ZOS_CLASS_HID, &hid) != 0u &&
+	    service_cli_getc(hid, ZHID_OP_READY) == 1) {
+		integration_puts("input hid");
+	} else {
+		integration_puts("input serial");
+	}
+
+	/* The visible marker: characters written through the console. */
+	if (integration_write("C41\r\n") == 0) {
+		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE, "write");
+		return;
+	}
+	/* The typed line, queued for HID by the replay. */
+	typed_count = integration_read(typed);
+	if (typed_count != (uint8_t)(sizeof(INTEGRATION_TYPED) - 1u)) {
+		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE, "read");
+		return;
+	}
+	service_cli_puts(INTEGRATION_TAG "echo ");
+	for (index = 0u; index < typed_count; ++index) {
+		if (typed[index] != (uint8_t)INTEGRATION_TYPED[index]) {
+			integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE,
+					 "typed");
+			return;
+		}
+		service_cli_putc(integration_console, ZCONSOLE_OP_PUTC,
+				 typed[index]);
+	}
+	service_cli_puts("\r\n");
+	/* Drained: the poll row the console protocol exposes. */
+	if (service_cli_poll(integration_console, ZCONSOLE_OP_POLL) != 0) {
+		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE, "poll");
+		return;
+	}
+
+	if (service_cli_endpoint(ZOS_CLASS_IOC, &integration_ioc) != 0u) {
+		uint8_t synced = integration_ping(&level);
+
+		service_cli_puts(INTEGRATION_TAG "ioc level ");
+		service_cli_hex8(level);
+		service_cli_puts("\r\n");
+		if (synced == 0u || level != INTEGRATION_LEVEL_PINNED) {
+			integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_IOC, "ioc");
+			return;
+		}
+	}
+
+	if (integration_rejects() == 0u) {
+		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_MALFORMED,
+				 "rejects");
+		return;
+	}
+	integration_puts("rejected calls OK");
+
+	/* The console still works after the rejected calls. */
+	if (integration_write("integration done\r\n") == 0) {
+		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE,
+				 "recovery");
+		return;
+	}
+	integration_puts("OK");
+}

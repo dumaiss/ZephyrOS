@@ -56,10 +56,15 @@ DEVICE_H = os.path.join(ROOT, "include", "zephyros", "device.h")
 DRIVER_H = os.path.join(ROOT, "drivers", "v9958", "v9958_driver.h")
 DRIVER_C = os.path.join(ROOT, "drivers", "v9958", "v9958.c")
 DRIVER_ASM = os.path.join(ROOT, "drivers", "v9958", "v9958_io.asm")
-MODULE_C = os.path.join(ROOT, "drivers", "v9958", "v9958_module.c")
+# Package 41: the video core is a bank-6 service image with three tiers -
+# hot (the core, the renderer and the port layer, including the display
+# reset), boot (the one-shot bring-up entry) and bulk (the font).
+SERVICE_C = os.path.join(ROOT, "drivers", "v9958", "v9958_service.c")
+BOOT_C = os.path.join(ROOT, "drivers", "v9958", "v9958_boot.c")
+FONT_ASM = os.path.join(ROOT, "drivers", "v9958", "v9958_font.asm")
 FONT_INC = os.path.join(ROOT, "drivers", "v9958", "assets",
                         "font_cp850_6x8.inc")
-MANIFEST = os.path.join(ROOT, "modules", "manifests", "v9958.json")
+MANIFEST = os.path.join(ROOT, "services", "manifests", "v9958.json")
 RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
 FONTFAIL_MANIFEST = os.path.join(ROOT, "tests", "video",
                                  "manifest-fontfail.json")
@@ -275,80 +280,84 @@ class TestFontAsset(unittest.TestCase):
                          PINNED_FONT_SHA256)
 
 
-class TestModuleArtifact(unittest.TestCase):
+class TestServiceArtifact(unittest.TestCase):
     def test_manifest_shape(self):
         manifest = _load_json(MANIFEST)
         self.assertEqual(manifest["name"], "v9958")
-        self.assertEqual(manifest["type"], "driver")
-        self.assertEqual(manifest["abi"], 3)
-        self.assertEqual(manifest["init"], "v9958_module_init")
-        self.assertEqual(manifest["image_areas"], ["_CODE"])
-        self.assertEqual(manifest["bss_areas"], ["_DATA"])
+        self.assertEqual(manifest["type"], "service")
+        self.assertEqual(manifest["abi"], 2)
+        self.assertEqual(manifest["init"], "v9958_service_init")
+        self.assertEqual([segment["role"] for segment in manifest["segments"]],
+                         ["hot", "boot", "bulk"])
+        hot, boot, bulk = manifest["segments"]
+        self.assertEqual(hot["image_areas"], ["_CODE"])
+        self.assertEqual(hot["bss_areas"], ["_SERVICE_IO"])
+        self.assertEqual(boot["image_areas"], ["_BOOT"])
+        self.assertEqual(boot["bss_areas"], ["_BOOT_DATA"])
+        self.assertEqual(boot["entry"], "v9958_boot_entry")
+        self.assertEqual(bulk["image_areas"], ["_BULK"])
         self.assertEqual(manifest["objects"],
-                         ["v9958.rel", "v9958_io.rel", "v9958_module.rel",
+                         ["v9958.rel", "v9958_io.rel", "v9958_service.rel",
+                          "v9958_font.rel", "v9958_boot.rel",
                           "sdcc_indirect_calls.rel"])
+        self.assertEqual(manifest["endpoints"],
+                         [{"class": 2, "instance": 0, "version": 1,
+                           "dispatch": "v9958_service_dispatch", "flags": 0}])
 
-    def test_packed_container_and_no_resident_font(self):
+    def test_packed_container_and_the_bulk_font(self):
         if not os.path.exists(ZMOD):
             self.skipTest("build/modules/v9958.zmod missing; build first")
         data = _read(ZMOD, "rb")
         info = zmodpack.parse_container(data, "v9958.zmod")
+        self.assertEqual(info["module_type"], "service")
+        self.assertEqual(info["service_abi"], 2)
         self.assertGreater(info["image_size"], 0)
         self.assertGreater(info["bss_size"], 0)
         self.assertNotEqual(info["init_offset"], 0xFFFF)
-        granule = 512
-        self.assertEqual(info["required_granules"],
-                         (info["image_size"] + info["bss_size"] +
-                          granule - 1) // granule)
-        # The resident image+BSS holds the video core, the port layer,
-        # and the terminal renderer; it must stay far smaller than the
-        # 2048-byte font, which is ROMFS DATA, not module storage.
-        # Package 25b correction-01: the 8-glyph staging trim (one
-        # 64-byte font chunk and one 24-byte atlas segment) brings the
-        # module to 9 granules, down from the package-19 10.
-        self.assertLess(info["image_size"] + info["bss_size"], 5120)
-        self.assertEqual(info["required_granules"], 9)
+        hot, boot, bulk = info["segments"]
+        # The hot tier holds the core, the port layer and the renderer
+        # (the display reset shares the bring-up chain, 36.12); it must
+        # stay inside the service I/O window.
+        self.assertLess(hot["image_size"] + hot["bss_size"], 0x4000)
+        # The font is the bulk segment, byte for byte the pinned asset
+        # (the same source tools/fontpack.py packs for the ROMFS copy).
+        self.assertEqual(bulk["image_size"], 2048)
+        self.assertEqual(bulk["reloc_count"], 0)
         asset = fontpack.parse_font(FONT_INC)
-        self.assertNotIn(asset, bytes(info["payload"]),
-                         "the font must not be embedded in the module")
-        for rtype, _patch in info["relocs"]:
-            self.assertEqual(rtype, 1)
+        at = bulk["payload_offset"]
+        self.assertEqual(info["payload"][at:at + 2048],
+                         bytes(asset),
+                         "the bulk segment must carry the pinned font")
+        # The boot tier is a bounded bring-up entry, not a second copy of
+        # the driver: every path reachable after boot is hot.
+        self.assertLess(boot["image_size"] + boot["bss_size"], 0x200)
+        self.assertNotEqual(boot["entry_offset"], 0xFFFF)
+        for target, _patch in info["relocs"]:
+            self.assertLess(target, len(info["segments"]))
 
     def test_romfs_entry_and_boot_order(self):
         manifest = _load_json(RECOVERY_MANIFEST)
         names = [entry["name"] for entry in manifest["files"]]
         self.assertEqual(names, ["sio.zmod", "ioc.zmod", "hid.zmod",
-                                 "v9958.zmod", "iocfat.zmod",
-                                 "v9958-6x8.font", "monitor.zex"])
+                                 "v9958.zmod", "console.zmod",
+                                 "services.man", "iocfat.zmod",
+                                 "monitor.zex"])
         types = {entry["name"]: entry["type"]
                  for entry in manifest["files"]}
         self.assertEqual(types["v9958.zmod"], "ZMOD")
-        self.assertEqual(types["v9958-6x8.font"], "DATA")
+        # The font is the video image's bulk segment now; the recovery
+        # store carries no separate copy of it.
+        self.assertNotIn("v9958-6x8.font", names)
         main = _read(MAIN_C)
-        sio = main.index('kernel_load_vfs_module("sio"')
-        ioc = main.index('kernel_load_vfs_module("ioc"')
-        hid = main.index('kernel_load_vfs_module("hid"')
-        v9958 = main.index('kernel_load_vfs_module("v9958"')
-        self.assertLess(sio, ioc)
-        self.assertLess(ioc, hid)
-        self.assertLess(hid, v9958,
-                        "V9958 must load after HID (all console candidates "
-                        "registered before binding)")
-        # A failed V9958 load reports the module and the ZOS_E* code and
-        # must not disturb the earlier devices.
-        self.assertIn('kernel_module_unavailable("v9958", result)', main)
-        self.assertIn("#if ZOS_V9958_BOOT", main)
-
-    def test_fontfail_manifest_maps_font_to_stub(self):
-        manifest = _load_json(FONTFAIL_MANIFEST)
-        entries = {entry["name"]: entry["path"]
-                   for entry in manifest["files"]}
-        self.assertEqual(entries["v9958-6x8.font"],
-                         "v9958-font-stub.bin")
-        self.assertEqual(entries["v9958.zmod"], "v9958.zmod")
-        self.assertEqual(entries["hid.zmod"], "hid.zmod")
-        self.assertIn("sio.zmod", entries)
-        self.assertEqual(os.path.getsize(FONT_STUB), 16)
+        self.assertIn("service_load_all(ZOS_SERVICE_MANIFEST_NAME)", main)
+        # The image's own boot tier runs the bring-up (registration is the
+        # loader's), and the reset path re-reads the font through the
+        # nucleus bulk copy because the window cannot show the bulk tier.
+        loader = _read(os.path.join(ROOT, "kernel", "service",
+                                    "service_loader.c"))
+        self.assertIn("ipc_service_bulk_set", loader)
+        self.assertIn("bulk_read", os.path.join(
+            _read(os.path.join(ROOT, "drivers", "v9958", "v9958_service.c"))))
 
     def test_makefile_targets_and_gates(self):
         makefile = _read(MAKEFILE)
@@ -358,14 +367,14 @@ class TestModuleArtifact(unittest.TestCase):
                        "smoke-hardware-video:",
                        "smoke-hardware-console:"):
             self.assertIn(target, makefile)
-        self.assertIn("$(MODULES)/v9958.zmod", makefile)
-        self.assertIn("$(V9958_MODULE_OBJS)", makefile)
+        self.assertIn("services/manifests/%.json", makefile)
+        self.assertIn("v9958_service.rel", makefile)
+        self.assertIn("v9958_font.rel", makefile)
         self.assertIn("$(MODULES)/v9958-6x8.font", makefile)
         self.assertIn("ZOS_VIDEO_SELFTEST", makefile)
         self.assertIn("ZOS_VIDEO_FONTFAIL", makefile)
         self.assertIn("ZOS_CONSOLE_SELFTEST", makefile)
-        self.assertIn("ZOS_V9958_BOOT", makefile)
-        self.assertIn("BOOT_ZMODS += $(MODULES)/v9958.zmod", makefile)
+        self.assertIn("ZOS_SERVICES := sio v9958 console", makefile)
         # v9958-test also runs the terminal renderer's host model suite.
         self.assertIn("test_v9958_console.py", makefile)
 
@@ -374,9 +383,10 @@ class TestDriverSourceDiscipline(unittest.TestCase):
     def setUp(self):
         self.c = _code_only(DRIVER_C)
         self.header = _code_only(DRIVER_H)
-        self.module = _code_only(MODULE_C)
+        self.service = _code_only(SERVICE_C)
+        self.boot = _code_only(BOOT_C)
         self.asm = _code_only(DRIVER_ASM)
-        self.sources = (self.c, self.header, self.module)
+        self.sources = (self.c, self.header, self.service, self.boot)
         self.init = self.c.split("static int v9958_init_display")[1].split(
             "/* --- class operations")[0]
         self.send = self.c.split("int v9958_send")[1].split(
@@ -408,15 +418,14 @@ class TestDriverSourceDiscipline(unittest.TestCase):
                                  % needle)
 
     def test_no_ioc_or_hid_import_and_no_kernel_symbols(self):
-        for body in self.sources + (self.asm,):
-            for needle in ("zephyros/ioc.h", "zephyros/hid.h",
-                           "ioc_proto.h", "_ioc_", "_hid_", "_romfs_",
-                           "_kernel_", "_device_", "_console_"):
+        for body in self.sources:
+            for needle in ("_ioc_", "_hid_", "_sio_", "_kernel_main",
+                           "register_ep", "console_", "device_register"):
                 self.assertNotIn(needle, body,
-                                 "V9958 must not reference %r" % needle)
-        # The only services come from the passed zdriver_api.
-        self.assertIn("v9958_state.api->resource_read", self.c)
-        self.assertIn("api->resource_size", self.c)
+                                 "v9958 must not reference %r" % needle)
+        # The service's own API table is the only kernel surface it uses.
+        self.assertIn("ipc_service_api", self.service)
+        self.assertIn("bulk_read", self.service)
 
     def test_no_vdp_interrupt_claim(self):
         for body in self.sources + (self.asm,):
@@ -503,59 +512,43 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.assertLess(len(self.c), 40000)
 
     def test_descriptor_is_console_capable_and_output_only(self):
-        self.assertIn("static const struct zdevice_desc "
-                      "v9958_video0_desc", self.module)
-        self.assertIn('"v9958.0"', self.module)
-        for cap in ("ZCAP_VIDEO_CTRL_WRITE", "ZCAP_VIDEO_DATA_WRITE",
-                    "ZCAP_VIDEO_DATA_BLOCK", "ZCAP_VIDEO_PALETTE",
-                    "ZCAP_VIDEO_INDIRECT", "ZCAP_VIDEO_PRESENT",
-                    "ZCAP_VIDEO_RESET", "ZCAP_CHAR_OUT",
-                    "ZCAP_CONSOLE_OUT"):
-            self.assertIn(cap, self.module)
-        for absent in ("ZCAP_CHAR_IN", "ZCAP_CONSOLE_IN",
-                       "ZCAP_VIDEO_IRQ"):
-            self.assertNotIn(absent, self.module)
-        self.assertIn("&v9958_char_ops", self.module)
-        self.assertIn("&v9958_video_ops", self.module)
-        self.assertIn("&v9958_state", self.module)
-        self.assertNotIn("(const struct zchar_ops *)0", self.module)
-        # The registered table is output only: poll/getc stay null.
-        table = self.c.split("const struct zchar_ops v9958_char_ops")[1]
-        table = table.split("};\n")[0]
-        self.assertIn("v9958_char_putc", table)
-        self.assertIn("v9958_char_write", table)
-        self.assertIn("(int (*)(void *))0", table)
-        # The device registers only after the full bring-up.
-        init = self.module.split("int v9958_module_init")[1]
-        self.assertLess(init.index("v9958_driver_init(api)"),
-                        init.index("api->device_register"))
+        # The device descriptor became a service endpoint: the VIDEO class
+        # is what the console and the SDK look up, and the image is
+        # output-only by construction (the protocol has no input path).
+        self.assertIn("zos/protocol.h", self.service)
+        protocol = _read(os.path.join(ROOT, "abi", "zos", "protocol.h"))
+        self.assertIn("ZOS_CLASS_VIDEO", protocol)
+        for op in ("ZVIDEO_OP_SEND", "ZVIDEO_OP_WRITE", "ZVIDEO_OP_PUTC"):
+            self.assertIn(op, self.service, op)
+        # ZVIDEO_OP_SEND carries any native VIDEO operation, so the five
+        # streaming forms take a descriptor and the two control forms do
+        # not; the driver core keeps the native operation names.
+        for op in ("ZVIDEO_CTRL_WRITE", "ZVIDEO_DATA_WRITE",
+                   "ZVIDEO_DATA_BLOCK", "ZVIDEO_PALETTE",
+                   "ZVIDEO_INDIRECT", "ZVIDEO_PRESENT", "ZVIDEO_RESET"):
+            self.assertIn(op, self.c, op)
+        # The single-byte and character-buffer paths the console uses end
+        # at the ported renderer, which is strictly output-only.
+        renderer = self.c.split("int v9958_char_putc_worker")[1]
+        self.assertIn("v9958_char_write_worker", renderer)
+        self.assertNotIn("v9958_char_getc", self.c)
 
-    def test_renderer_runs_on_a_private_module_stack(self):
-        # The zchar_ops entries are assembly wrappers (the kernel gate
-        # stack is far deeper than one renderer call chain may use).
-        self.assertIn(".globl _v9958_char_putc", self.asm)
-        self.assertIn(".globl _v9958_char_write", self.asm)
-        self.assertIn(".globl _v9958_char_putc_worker", self.asm)
-        self.assertIn(".globl _v9958_char_write_worker", self.asm)
+    def test_renderer_runs_on_a_private_module_stack(self):        # The renderer entries are assembly wrappers (the kernel gate
+        # stack is far deeper than one renderer call chain may use); the
+        # service window is where they run, so the private stack is the
+        # image's own BSS.
+        for name in ("_v9958_char_putc", "_v9958_char_write",
+                     "_v9958_char_putc_worker", "_v9958_char_write_worker"):
+            self.assertIn(".globl %s" % name, self.asm, name)
         self.assertIn("_v9958_alt_stack_top", self.asm)
         self.assertRegex(self.asm, r"ld\s+sp,#_v9958_alt_stack_top")
         self.assertIn("_v9958_alt_saved_sp", self.asm)
-        # The workers are the C entry points; the prototypes are shared
-        # with the zchar_ops table.
         self.assertIn("v9958_char_putc_worker", self.c)
         self.assertIn("v9958_char_write_worker", self.c)
         self.assertIn("int v9958_char_putc(", self.header)
         self.assertIn("int v9958_char_write(", self.header)
-        self.assertIn("extern const struct zchar_ops v9958_char_ops",
-                      self.header)
-        # The renderer never touches kernel console/process/syscall code.
-        for body in self.sources:
-            for needle in ("console_putc", "console_getc", "process_",
-                           "syscall", "_zos_"):
-                self.assertNotIn(needle, body,
-                                 "renderer must stay self-contained: %r"
-                                 % needle)
-
+        # The service dispatch is the only caller from outside the image.
+        self.assertIn("v9958_char_putc", self.service)
 
 class TestMapcheckRules(unittest.TestCase):
     def test_v9958_symbols_are_module_only(self):

@@ -1008,7 +1008,7 @@ ioc_bulk_irq_restore:
 ; transfer, so these are not re-entrant by design (the C busy guard and the
 ; admission state serialize every operation).
 ; ---------------------------------------------------------------------------
-	.area _DATA
+	.area _SERVICE_IO
 _ioc_bulk_block:	.ds 2
 _ioc_bulk_buf:		.ds 2
 _ioc_bulk_len:		.ds 2

@@ -150,20 +150,27 @@ boundary once the foreground enables maskable interrupts:
 
 M6 implements the first real services behind the unchanged gate.  The
 entry/return contract of sections 1-3 applies verbatim; only the set of
-syscall numbers and their argument blocks is added.
+syscall numbers and their argument blocks is added.  Package 41 retired
+the three console numbers (see below); `SYS_EXIT` and `SYS_GETINFO`
+remain as they shipped.
 
 ```text
 00h  SYS_EXIT            args {status:u16}
-01h  SYS_CONSOLE_WRITE   args {buffer:u16, length:u16}
-02h  SYS_CONSOLE_READ    args {buffer:u16, length:u16}
-03h  SYS_CONSOLE_POLL    no args
+01h  reserved  (was SYS_CONSOLE_WRITE)
+02h  reserved  (was SYS_CONSOLE_READ)
+03h  reserved  (was SYS_CONSOLE_POLL)
 04h  SYS_GETINFO         result block written at the argument pointer
 ```
 
 All argument blocks must lie inside the caller window `0100h-1FFFh`
-(checked before any caller byte is read); console/data buffers may span
+(checked before any caller byte is read); data buffers may span
 `0100h-DFFFh`.  Unimplemented numbers return `ZOS_ENOSYS (01h)` with
 carry set.
+
+Work package 41 removed the three console syscalls: a program's console
+I/O is a client of the console service now (section 13 below), and the
+numbers stay reserved - a stale caller gets `ZOS_ENOSYS` instead of
+writing somewhere unexpected.
 
 Per-syscall behavior:
 
@@ -175,19 +182,6 @@ Per-syscall behavior:
   program entry behaves the same way - the common return trap turns it
   into an exit with `ZOS_EFAULT`, so a process can never unwind into
   the kernel or a previous process.
-- `SYS_CONSOLE_WRITE` copies from the caller bank through the common
-  staging block in bounded chunks and writes through the normal console
-  service (the registered dynamic SIO driver; the early console is
-  reserved for panic/fatal paths).  `HL` returns the number of bytes
-  written; a partial count or a negative errno is possible.
-- `SYS_CONSOLE_READ` is non-blocking with an availability gate: it
-  returns `0` immediately when no byte is pending; after the first byte
-  arrives it returns as soon as no further byte is immediately
-  available, up to `length`.  Received bytes are staged through the
-  common buffer and copied back into the caller bank.  `HL` returns the
-  byte count or a negative errno.
-- `SYS_CONSOLE_POLL` returns `0` (no input) or `1` in `HL`; a negative
-  value reports the poll errno through carry.
 - `SYS_GETINFO` writes a six-byte versioned record at the argument
   pointer and returns `6` in `HL`:
 
@@ -205,14 +199,9 @@ words in `HL`; a bad pointer range is `ZOS_EFAULT`, a bad argument block
 or length is `ZOS_EINVAL`.
 
 Native programs use `user/sdk/include/zos/console.h` (`zex_exit`,
-`zex_write`, `zex_read`, `zex_poll`, `zex_getinfo`), which wraps these
-numbers with the private SDCC convention; programs never call `RST 30h`
-directly unless they re-implement that convention.
-
-Implementation note: `SYS_CONSOLE_READ` is the non-blocking drain
-described above; an empty drain reports `HL = 0`.  The M6 wording
-"blocks for the first byte" predates the shipped drain behavior; the
-runtime's blocking `zrt_getc()` polls this call until a byte arrives.
+`zex_getinfo` and the console functions), which wraps these numbers and
+the console service protocol with the private SDCC convention; programs
+never call `RST 30h` directly unless they re-implement that convention.
 
 Validation: `make m6-selftest` runs `zextest.zex` from ROMFS in two
 application banks and checks the exact exit statuses; the simulator
@@ -609,6 +598,14 @@ instance, handle) triples, so a repeated discovery costs no syscall; the
 cache is an optimisation only, never a correctness dependency (the kernel
 owns the endpoint table and handles are permanent).
 
+Package 41 moved the substrate from `test_link` into production: the
+fixed core links it (2,562 bytes of code and data), the cold half links
+the syscall bodies and the resident service loader, and every production
+image boots its service set from the store's `services.man`.  The
+`ZOS_TARGET_TEST_BUILD` routing seam in `kernel/syscall.c` is gone - the
+IPC pair is dispatched like the filesystem family, in
+`kernel/syscall/ipc.c`.
+
 Validation: `make ipc-selftest` builds the production boot path with the
 substrate linked into the fixed core, the six synthetic bank-6 services
 placed by the cold loader and the SDK *probe* program booting as
@@ -625,5 +622,24 @@ domain latch intervals, the reserved-stack high-water marks, the window
 LDIRs and the lookup census); `tests/test_ipc_selftest.py` pins the ABI
 numbers, the residency classification, the client- and probe-window
 layouts and the service I/O area rule.  The production image links none of
-it until package 41, so it stays byte-identical
-(`config/residency.json` classifies the three objects as `test_link`).
+it before package 41, so it stayed byte-identical until then
+(`config/residency.json` classified the objects as `test_link`).
+
+## 13. M10 console client (no syscall)
+
+A program's console I/O is not a syscall any more: `user/sdk/src/console_service.c`
+resolves the console service endpoint (`ZOS_CLASS_CONSOLE`, instance 0,
+via `SYS_IPC_LOOKUP`) and speaks the protocol in `abi/zos/protocol.h`:
+
+| SDK function | console service operation | descriptor |
+| --- | --- | --- |
+| `zex_write(buf, len)` | `ZCONSOLE_OP_WRITE` | IN: the caller's buffer |
+| `zex_read(buf, len)` | `ZCONSOLE_OP_READ` (non-blocking drain) | OUT: the caller's buffer |
+| `zex_poll()` | `ZCONSOLE_OP_POLL` | none |
+| `zex_putc(ch)` (used by `zos_putc`) | `ZCONSOLE_OP_PUTC` | none |
+
+The handle is looked up once and cached; a program whose store lists no
+console service sees `-ZOS_ENOENT` from every one of them.  `zos_puts`,
+`zos_console_write`, `zos_getc` and `zos_read_line` are unchanged on top
+of these four.  The early console and the panic path remain nucleus-only
+and syscall-free: a boot with no service at all still reports.

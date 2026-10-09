@@ -784,10 +784,12 @@ COMMON_ONLY_SYMBOLS = (
 # Bank-7 internal routines (visible only while mode 11 is active).
 BANK7_ROUTINES = ("zos_syscall_dispatch", "_irq_dispatch")
 
-# M3 device/service routines: bank 7 only.  The SIO driver is not
-# statically linked (M4 loads it as a ZMOD module) and the static driver
-# table was retired; what remains here is the registry, the console
-# service, and their state.
+# M3 device registry routines: bank 7 only.  The SIO driver is not
+# statically linked (it is a bank-6 service image now) and the static
+# driver table was retired; what remains here is the registry the module
+# loader still answers class queries from, and its state.  The console
+# device is gone with the console syscalls (package 41): the console is a
+# bank-6 service, so no `_console_*` symbol belongs in the nucleus map.
 M3_BANK7_ROUTINES = (
     "_device_registry_init",
     "_device_register",
@@ -796,20 +798,12 @@ M3_BANK7_ROUTINES = (
     "_device_interface",
     "_device_registry_checkpoint",
     "_device_registry_rollback",
-    "_console_bind",
-    "_console_bind_defaults",
-    "_console_putc",
-    "_console_write",
-    "_console_poll",
-    "_console_getc",
 )
 
-# M3 registry/console objects and private state: bank-7 data or code,
-# never common memory.
+# M3 registry objects and private state: bank-7 data or code, never common
+# memory.
 M3_BANK7_OBJECTS = (
     "_device_table",
-    "_console_in_handle",
-    "_console_out_handle",
 )
 
 # Any symbol with one of these prefixes is M3 device/service code or state
@@ -860,8 +854,11 @@ STATIC_SIO_PREFIXES = ("_sio_", "_sio0b_", "_sio_driver")
 # M8: the IOC driver is a dynamically loaded module too.  Any linked
 # `_ioc_` symbol means a static copy crept back into the kernel image
 # (the acceptance result globals use the `_ace_` prefix and are handled
-# by the production rule).
+# by the production rule).  The one exception is the IOC class shim
+# (kernel/module/ioc_shim.c, package 41): it publishes the resident IOC
+# service to a bank-7 module and is nucleus code by design.
 STATIC_IOC_PREFIXES = ("_ioc_",)
+IOC_SHIM_PREFIXES = ("_ioc_shim_",)
 
 # M8: the HID driver is module-only as well; any linked `_hid_` symbol
 # means a static copy crept back into the kernel image.
@@ -1397,39 +1394,22 @@ def check_symbols(areas, symbols, production=False):
                     "resident" % (name, addr)
                 )
 
-    # M4: the SIO driver is a dynamically loaded module; no static copy
-    # may appear in the kernel map.
+    # Package 41: the four drivers are bank-6 service images; the nucleus
+    # holds exactly one class shim for the IOC class a bank-7 module still
+    # asks for (kernel/module/ioc_shim.c), and no driver symbol at all.
     for name, addr in symbols.items():
-        if addr != 0 and name.startswith(STATIC_SIO_PREFIXES):
-            raise MapError(
-                "static SIO symbol %s at %04Xh must not be linked; the SIO "
-                "driver is loaded from a ZMOD module" % (name, addr)
-            )
-
-    # M8: the IOC driver is module-only as well.
-    for name, addr in symbols.items():
-        if addr != 0 and name.startswith(STATIC_IOC_PREFIXES):
-            raise MapError(
-                "static IOC symbol %s at %04Xh must not be linked; the "
-                "IOC driver is loaded from a ZMOD module" % (name, addr)
-            )
-
-    # M8: the HID driver is module-only as well.
-    for name, addr in symbols.items():
-        if addr != 0 and name.startswith(STATIC_HID_PREFIXES):
-            raise MapError(
-                "static HID symbol %s at %04Xh must not be linked; the "
-                "HID driver is loaded from a ZMOD module" % (name, addr)
-            )
-
-    # M8: the V9958 video driver is module-only as well.
-    for name, addr in symbols.items():
-        if addr != 0 and name.startswith(STATIC_V9958_PREFIXES):
-            raise MapError(
-                "static V9958 symbol %s at %04Xh must not be linked; the "
-                "V9958 driver is loaded from a ZMOD module" % (name, addr)
-            )
-
+        if addr == 0 or name.startswith(IOC_SHIM_PREFIXES):
+            continue
+        for prefixes, what in (
+                (STATIC_SIO_PREFIXES, "SIO"),
+                (STATIC_IOC_PREFIXES, "IOC"),
+                (STATIC_HID_PREFIXES, "HID"),
+                (STATIC_V9958_PREFIXES, "V9958")):
+            if name.startswith(prefixes):
+                raise MapError(
+                    "static %s symbol %s at %04Xh must not be linked; the "
+                    "driver is a bank-6 service image"
+                    % (what, name, addr))
     # M4: loader/relocator code and catalog/fixture data must stay in the
     # bank-7 window below the ISR stack.
     for name in M4_BANK7_ROUTINES:

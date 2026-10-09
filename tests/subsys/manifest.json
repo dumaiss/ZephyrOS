@@ -2,14 +2,24 @@
   "format": "romfs-v1",
   "files": [
     {
-      "name": "crosspage.bin",
-      "type": "DATA",
-      "path": "romfs_crosspage.bin"
-    },
-    {
       "name": "sio.zmod",
       "type": "ZMOD",
       "path": "sio.zmod"
+    },
+    {
+      "name": "console.zmod",
+      "type": "ZMOD",
+      "path": "console.zmod"
+    },
+    {
+      "name": "services.man",
+      "type": "DATA",
+      "path": "services.man"
+    },
+    {
+      "name": "crosspage.bin",
+      "type": "DATA",
+      "path": "romfs_crosspage.bin"
     },
     {
       "name": "monitor.zex",

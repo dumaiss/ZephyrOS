@@ -17,14 +17,9 @@
       "path": "hid.zmod"
     },
     {
-      "name": "v9958.zmod",
-      "type": "ZMOD",
-      "path": "v9958.zmod"
-    },
-    {
-      "name": "v9958-6x8.font",
+      "name": "services.man",
       "type": "DATA",
-      "path": "v9958-font-stub.bin"
+      "path": "services.man"
     },
     {
       "name": "monitor.zex",

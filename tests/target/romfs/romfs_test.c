@@ -20,7 +20,7 @@
 
 #include "zephyros/romfs.h"
 #include "zephyros/module.h"
-#include "zephyros/console.h"
+#include "service_client.h"
 #include "zephyros/kernel.h"
 
 #include "romfs_selftest.h"
@@ -43,8 +43,8 @@ static void romfs_put_hex8(uint8_t value)
 {
 	static const char digits[] = "0123456789ABCDEF";
 
-	console_write(digits + ((value >> 4) & 0x0Fu), 1);
-	console_write(digits + (value & 0x0Fu), 1);
+	service_cli_write(digits + ((value >> 4) & 0x0Fu), 1);
+	service_cli_write(digits + (value & 0x0Fu), 1);
 }
 
 static void romfs_fail(uint8_t code)
@@ -52,9 +52,9 @@ static void romfs_fail(uint8_t code)
 	static const char prefix[] = "romfs selftest: FAIL 0x";
 
 	romfs_selftest_result = code;
-	console_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
+	service_cli_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
 	romfs_put_hex8(code);
-	console_write("\r\n", 2);
+	service_cli_write("\r\n", 2);
 }
 
 /* Read `length` bytes at file-relative `start` and compare them against
@@ -89,7 +89,7 @@ void zos_run_romfs_selftest(void)
 	 * console; everything below is relative to that baseline. */
 	if (module_count() == 0 ||
 	    module_get(0) == (const struct zmod_module *)0 ||
-	    console_output_handle() == 0) {
+	    service_cli_console_handle() == 0) {
 		romfs_fail(ZOS_RFST_FAIL_BOOT);
 		return;
 	}
@@ -168,7 +168,7 @@ void zos_run_romfs_selftest(void)
 	{
 		static const char ok[] = "romfs selftest: OK\r\n";
 
-		if (console_write(ok, (uint16_t)(sizeof(ok) - 1u)) !=
+		if (service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u)) !=
 		    (int)(sizeof(ok) - 1u)) {
 			romfs_selftest_result = ZOS_RFST_FAIL_CONSOLE;
 		}

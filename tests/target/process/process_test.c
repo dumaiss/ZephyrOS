@@ -20,7 +20,7 @@
 
 #include "zephyros/process.h"
 #include "zos/syscall.h"
-#include "zephyros/console.h"
+#include "service_client.h"
 #include "zephyros/module.h"
 #include "zephyros/kernel.h"
 #include "zephyros/romfs.h"
@@ -66,8 +66,8 @@ static void process_put_hex8(uint8_t value)
 {
 	static const char digits[] = "0123456789ABCDEF";
 
-	console_write(digits + ((value >> 4) & 0x0Fu), 1);
-	console_write(digits + (value & 0x0Fu), 1);
+	service_cli_write(digits + ((value >> 4) & 0x0Fu), 1);
+	service_cli_write(digits + (value & 0x0Fu), 1);
 }
 
 static void process_put_hex16(uint16_t value)
@@ -81,11 +81,11 @@ static void process_fail(uint8_t code, uint16_t detail)
 	static const char prefix[] = "process selftest: FAIL 0x";
 
 	process_selftest_result = code;
-	console_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
+	service_cli_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
 	process_put_hex8(code);
-	console_write(" detail 0x", 10);
+	service_cli_write(" detail 0x", 10);
 	process_put_hex16(detail);
-	console_write("\r\n", 2);
+	service_cli_write("\r\n", 2);
 }
 
 /* The table must return to all-FREE after every lifecycle test. */
@@ -100,9 +100,9 @@ static void process_status_line(uint16_t status)
 {
 	static const char prefix[] = "process selftest: zextest status 0x";
 
-	console_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
+	service_cli_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
 	process_put_hex16(status);
-	console_write("\r\n", 2);
+	service_cli_write("\r\n", 2);
 }
 
 /* Run one known program and require an exact exit status plus a clean
@@ -143,7 +143,7 @@ void zos_run_process_selftest(void)
 	 * normal console; the process table starts empty. */
 	if (module_count() == 0 ||
 	    module_get(0) == (const struct zmod_module *)0 ||
-	    console_output_handle() == 0 || !process_idle_ok()) {
+	    service_cli_console_handle() == 0 || !process_idle_ok()) {
 		process_fail(ZOS_PCST_FAIL_BOOT, 0);
 		return;
 	}
@@ -159,9 +159,9 @@ void zos_run_process_selftest(void)
 	{
 		static const char prefix[] = "process selftest: zextest status 0x";
 
-		console_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
+		service_cli_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
 		process_put_hex16((uint16_t)ZOS_PCST_ZEXTEST_PASS);
-		console_write("\r\n", 2);
+		service_cli_write("\r\n", 2);
 	}
 
 	/* 2. Repeated exec/exit cycles: no slot or bank leaks. */
@@ -176,7 +176,7 @@ void zos_run_process_selftest(void)
 	{
 		static const char ok[] = "process selftest: repeated cycles OK\r\n";
 
-		console_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 	}
 
 	/* 3. Two-bank run: reserve the allocator's lowest bank, then the
@@ -196,14 +196,14 @@ void zos_run_process_selftest(void)
 	{
 		static const char second[] = "process selftest: zextest status 0x";
 
-		console_write(second, (uint16_t)(sizeof(second) - 1u));
+		service_cli_write(second, (uint16_t)(sizeof(second) - 1u));
 		process_put_hex16((uint16_t)(ZOS_PCST_ZEXTEST_PASS | 1u));
-		console_write("\r\n", 2);
+		service_cli_write("\r\n", 2);
 	}
 	{
 		static const char ok[] = "process selftest: two-bank OK\r\n";
 
-		console_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 	}
 
 	/* 4. Raw entry return: the common trap exits with ZOS_EFAULT. */
@@ -218,7 +218,7 @@ void zos_run_process_selftest(void)
 	{
 		static const char ok[] = "process selftest: raw return EFAULT\r\n";
 
-		console_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 	}
 
 	/* 5. Every malformed fixture is rejected with its exact code and
@@ -237,7 +237,7 @@ void zos_run_process_selftest(void)
 	{
 		static const char ok[] = "process selftest: malformed rejected\r\n";
 
-		console_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 	}
 
 	/* 5b. A corrupted entry in the recovery store is rejected by geometry
@@ -262,7 +262,7 @@ void zos_run_process_selftest(void)
 	{
 		static const char ok[] = "process selftest: corrupt entry rolled back\r\n";
 
-		console_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 	}
 
 	/* 6. Allocator exhaustion and argument validation. */
@@ -373,7 +373,7 @@ void zos_run_process_selftest(void)
 	{
 		static const char ok[] = "process selftest: OK\r\n";
 
-		if (console_write(ok, (uint16_t)(sizeof(ok) - 1u)) !=
+		if (service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u)) !=
 		    (int)(sizeof(ok) - 1u)) {
 			process_selftest_result = ZOS_PCST_FAIL_CONSOLE;
 		}

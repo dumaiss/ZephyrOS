@@ -1,21 +1,21 @@
 /* ZephyrOS SIO0/B driver implementation (drivers/sio/).
  *
  * Wraps the same physical channel as the early console (data 22h,
- * control 23h, 115200 8N1) but as a registered device with bounded
- * polling operations.  It is polling-only: no interrupts are used and
- * the SIO interrupt mode stays disabled (WR1 = 00h), which also keeps it
- * independent of the M2 executive.
+ * control 23h, 115200 8N1) as a resident-service operation set with
+ * bounded polling operations.  It is polling-only: no interrupts are
+ * used and the SIO interrupt mode stays disabled (WR1 = 00h), which also
+ * keeps it independent of the M2 executive.
  *
  * The early console and panic paths keep their direct common-resident
  * access to the hardware and do not depend on this driver.
  *
- * This source is compiled into the SIO ZMOD modules; the driver-private
- * state below lives in module BSS and is relocated with the module image.
- * The module entries (drivers/sio/sio_module.c and the test variants
- * under tests/modules/) own the descriptor and init entry.
+ * This source is compiled into the `sio` service image (hot segment); the
+ * driver-private state below lives in the service's SERVICE_IO data and
+ * is relocated with the image.  The service entry points live in
+ * sio_service.c (hot) and sio_boot.c (boot).
  */
 
-#include "zephyros/device.h"
+#include "zephyros/errno.h"
 
 #include "zephyr80/hardware.h"
 
@@ -25,11 +25,6 @@ extern uint8_t sio0b_status(void);
 extern void sio0b_write_ctrl(uint8_t value);
 extern uint8_t sio0b_read_data(void);
 extern void sio0b_write_data(uint8_t value);
-
-struct sio0b_state {
-	uint16_t tx_timeouts;
-	uint16_t rx_reads;
-};
 
 struct sio0b_state sio0b_state;
 
@@ -45,24 +40,6 @@ static uint8_t sio0b_wait_tx_ready(void)
 		--timeout;
 	}
 	return 0;
-}
-
-void sio0b_hw_init(void)
-{
-	/* Same documented sequence as the early console; idempotent. */
-	sio0b_write_ctrl(ZOS_SIO_WR0_CHANNEL_RESET);
-
-	sio0b_write_ctrl(ZOS_SIO_WR_SELECT_WR4);
-	sio0b_write_ctrl(ZOS_SIO_WR4_X16_1STOP_NOPARITY);
-
-	sio0b_write_ctrl(ZOS_SIO_WR_SELECT_WR3);
-	sio0b_write_ctrl(ZOS_SIO_WR3_RX8_NO_AUTO_ENABLES);
-
-	sio0b_write_ctrl(ZOS_SIO_WR_SELECT_WR5);
-	sio0b_write_ctrl(ZOS_SIO_WR5_TX8_DTR_RTS_ASSERT);
-
-	sio0b_write_ctrl(ZOS_SIO_WR_SELECT_WR1);
-	sio0b_write_ctrl(ZOS_SIO_WR1_INT_DISABLED);
 }
 
 int sio0b_putc(void *state, char ch)
@@ -103,10 +80,3 @@ int sio0b_getc(void *state)
 	++sio0b_state.rx_reads;
 	return (int)sio0b_read_data();
 }
-
-const struct zchar_ops sio0b_ops = {
-	sio0b_putc,
-	sio0b_write,
-	sio0b_poll,
-	sio0b_getc
-};

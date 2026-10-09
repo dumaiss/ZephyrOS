@@ -2555,6 +2555,30 @@ class Ctc0Injector:
             self.armed = False
 
 
+# The nucleus mapping (mode 11, page field zero) the serial connect delay
+# is written for; see skip_serial_connect_delay().
+SERIAL_CONNECT_DELAY_LATCH = 0x18
+
+
+def skip_serial_connect_delay(cpu, delay_address):
+    """Skip the kernel's ~1 s serial connect spin; True when it fired.
+
+    `_kernel_serial_connect_delay` is a pure CPU spin (no I/O), and every
+    replay returns from it instead of burning the wall-clock delay.  The
+    address is only that spin while the nucleus is mapped: latch 18h is
+    mode 11 with the page field at zero, which puts bank 7 in the
+    6000h-DFFFh window.  With bank 6 in the window - the mode-10 service
+    boot gate and the mode-11 service calls - the same PC is
+    mid-instruction of a resident-service image, so the skip must not
+    fire there; popping the stack in the middle of service code corrupts
+    the loader.
+    """
+    if cpu.latch == SERIAL_CONNECT_DELAY_LATCH and cpu.pc == delay_address:
+        cpu.pc = cpu.pop16()
+        return True
+    return False
+
+
 def read_symbols(map_path):
     import re
     syms = {}

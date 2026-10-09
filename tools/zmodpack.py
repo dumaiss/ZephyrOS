@@ -67,7 +67,7 @@ Service manifest (JSON):
     {
       "name": "ioc",
       "type": "service",
-      "abi": 1,                      # service ABI v1
+      "abi": 2,                      # service ABI v2
       "flags": 0,
       "objects": ["ioc.rel", "ioc_boot.rel", "sdcc_indirect_calls.rel"],
       "init": "ipc_ioc_init",        # hot-segment init, called with the
@@ -93,7 +93,7 @@ Usage:
     zmodpack.py emit-asm <out.asm> SYMBOL=container.zmod [...]
     zmodpack.py services <out.man> <container.zmod> [...] [--report FILE]
     zmodpack.py plan --geometry <memory.inc> [--report FILE]
-                     <container.zmod> [...]
+                     [<container.zmod> ...]
 
 The `services` command validates a whole set in load order (unique
 endpoints, resolvable dependencies, a tier allocation that fits) and
@@ -134,7 +134,7 @@ A_BYTES = 4
 # Service images (M10 stage 4, architecture 36.6/36.11): the same header
 # and ZREL records plus the service section.  The constants mirror
 # include/zephyros/service.h and are pinned by host tests.
-SERVICE_ABI_VERSION = 1
+SERVICE_ABI_VERSION = 2
 SERVICE_SECTION_OFFSET = HEADER_SIZE
 SERVICE_HEADER_SIZE = 16
 SERVICE_SEGMENT_SIZE = 14
@@ -426,6 +426,27 @@ def read_manifest_objects(manifest, path, objdir):
     return objects
 
 
+def read_manifest_asset(segment, path, objdir):
+    """Load one segment's raw image asset (a bulk-data payload).
+
+    The asset is a binary file (the pinned V9958 font, work package 41):
+    the segment's image bytes are exactly the file, there are no
+    relocations, and the loader places it verbatim.  Paths resolve like
+    object names (objdir first, manifest directory otherwise)."""
+    resolve_dir = objdir if objdir is not None else os.path.dirname(path)
+    name = str(segment["asset"])
+    asset_path = name if os.path.isabs(name) else os.path.join(resolve_dir,
+                                                               name)
+    try:
+        with open(asset_path, "rb") as handle:
+            data = handle.read()
+    except OSError as exc:
+        raise ZmodError("cannot read asset %s: %s" % (asset_path, exc))
+    if not data:
+        raise ZmodError("asset %s is empty" % asset_path)
+    return data
+
+
 def load_driver_manifest(manifest, path, objdir):
     if "image_areas" not in manifest or "init" not in manifest:
         raise ZmodError("manifest %s: missing 'image_areas' or 'init'"
@@ -497,6 +518,11 @@ def load_service_manifest(manifest, path, objdir):
         if overlap:
             raise ZmodError("%s: area(s) both image and bss: %s"
                             % (where, ", ".join(sorted(overlap))))
+        if "asset" in segment and (image_areas or bss_areas):
+            raise ZmodError("%s: an asset segment takes no areas" % where)
+        if "asset" not in segment and not image_areas and not bss_areas:
+            raise ZmodError("%s: segment lists no areas and no asset"
+                            % where)
         for name in image_areas + bss_areas:
             if name in listed:
                 raise ZmodError("%s: area %s is claimed twice"
@@ -546,6 +572,11 @@ def load_service_manifest(manifest, path, objdir):
         "object_names": [str(name) for name in manifest["objects"]],
         "segments": segments,
         "segment_entries": entries,
+        "segment_assets": [
+            read_manifest_asset(segment, path, objdir)
+            if "asset" in segment else None
+            for segment in segments
+        ],
         "endpoints": endpoints,
         "depends": depends,
         "init": manifest.get("init"),
@@ -756,15 +787,20 @@ def build_service_layout(manifest):
     area_base = {}
     payload_offset = 0
     for index, segment in enumerate(segments):
+        asset = manifest["segment_assets"][index]
         offset = 0
         for name in segment.get("image_areas", []):
             area_base[name] = offset
             offset += area_size[name]
         image_size = offset
+        if asset is not None:
+            image_size = len(asset)
         for name in segment.get("bss_areas", []):
             area_base[name] = offset
             offset += area_size[name]
         bss_size = offset - image_size
+        if asset is not None:
+            bss_size = 0
         if image_size == 0 and bss_size == 0:
             raise ZmodError("%s: segment %d is empty"
                             % (manifest["path"], index))
@@ -774,6 +810,7 @@ def build_service_layout(manifest):
             "bss_size": bss_size,
             "payload_offset": payload_offset,
             "entry_name": manifest["segment_entries"][index],
+            "asset": asset,
         })
         payload_offset += image_size
 
@@ -911,6 +948,14 @@ def pack_service_manifest(manifest):
                 image[start + index + 1] = (value >> 8) & 0xFF
                 reloc_sites[start + index] = True
                 records[segment].append((target_segment, patch))
+
+    # Segment assets (bulk data, work package 41): the file's bytes are
+    # the segment image, copied verbatim, with no relocation records.
+    for index, segment in enumerate(layout["segments"]):
+        if segment["asset"] is None:
+            continue
+        start = segment["payload_offset"]
+        image[start:start + len(segment["asset"])] = segment["asset"]
 
     packed = Packed(manifest["name"])
     packed.kind = "service"
@@ -2163,9 +2208,12 @@ def cmd_plan(args):
             report_path = rest.pop(0)
         else:
             modules.append(item)
-    if geometry_path is None or not modules:
+    if geometry_path is None:
         raise ZmodError("usage: zmodpack.py plan --geometry <memory.inc> "
-                        "[--report FILE] <container.zmod> [...]")
+                        "[--report FILE] [<container.zmod> ...]")
+    # An empty boot set is legal: an image whose drivers are all resident
+    # services keeps no arena module and the plan reports the whole arena
+    # free (work package 41).
 
     values = parse_geometry_inc(geometry_path)
     start = values["ZOS_DRIVER_ARENA_BASE"]

@@ -59,7 +59,7 @@
 #define ZMOD_TYPE_SERVICE 2u
 
 /* Service ABI carried in the header's abi byte (header offset 06h). */
-#define ZMOD_SERVICE_ABI_VERSION 1u
+#define ZMOD_SERVICE_ABI_VERSION 2u
 
 /* The service section always starts directly after the container header. */
 #define ZMOD_SERVICE_SECTION_OFFSET ZMOD_HEADER_SIZE

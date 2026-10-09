@@ -16,12 +16,14 @@
 
 #include "zephyros/kernel.h"
 #include "zephyros/irq.h"
-#include "zephyros/console.h"
 #include "zephyros/module.h"
 #include "zephyros/romfs.h"
 #include "zephyros/process.h"
+#include "zephyros/service.h"
 
-#include "kernel/device/registry.h"
+#include "zos/protocol.h"
+
+#include "kernel/ipc/ipc.h"
 #include "kernel/irq/irq_private.h"
 #include "kernel/memory/banking.h"
 #include "kernel/vfs/vfs.h"
@@ -152,12 +154,14 @@ static void romfs_diagnose(int result)
  * (0x05), a malformed container (0x0A), an allocation that no longer
  * fits (0x06) and a refused init (0x0B) therefore all distinguish on
  * the serial link without any code from the failed module being
- * executed.  Optional modules never take the SIO fallback or an already
- * resident module down with them.
+ * executed.  The resident services are not optional - the manifest is
+ * the image's boot contract - so a manifest that cannot be placed is
+ * reported the same way and the boot continues to the mount pass, where
+ * the failure shows up as the console and `/` being unusable.
  *
  * Compiled only when an optional load exists, so pre-M8 acceptance
  * images (which compile every optional block out) keep their bytes. */
-#if ZOS_IOC_BOOT || ZOS_HID_BOOT || ZOS_V9958_BOOT || ZOS_IOCFAT_BOOT
+#if ZOS_IOCFAT_BOOT
 static void kernel_module_unavailable(const char *name, int result)
 {
 	static const char hex[] = "0123456789ABCDEF";
@@ -170,6 +174,17 @@ static void kernel_module_unavailable(const char *name, int result)
 	early_console_puts("\r\n");
 }
 #endif
+
+static void kernel_service_manifest_failed(int result)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	unsigned code = (unsigned)(-result) & 0xFFu;
+
+	early_console_puts("services: unavailable 0x");
+	early_console_putc(hex[(code >> 4) & 0x0Fu]);
+	early_console_putc(hex[code & 0x0Fu]);
+	early_console_puts("\r\n");
+}
 
 /* Module-phase loader: open `/SYSTEM/<name>.zmod` through VFS and stream it
  * into the unchanged M4 loader through the bounded zmod_source adapter.  The
@@ -218,22 +233,20 @@ int kernel_load_vfs_module(const char *name)
 	return result;
 }
 
-/* Resolve and load the boot module through the selected source.  Returns
- * 0 when the module is resident, non-zero otherwise.  A corrupt recovery
+/* Resolve the boot path through the selected source.  A corrupt recovery
  * store fails here through the early-console panic path, before any
- * module code is ever executed.
+ * image code is ever executed.
  *
  * Production boot order is explicit and deterministic (no general
- * dependency resolver): the required SIO fallback first, then the IOC
- * command+bulk transport, then HID (which discovers IOC by
- * class/capability at init), then the V9958 video+console device.  Only
- * after all four loads does kernel_main() run the single
- * console_bind_defaults() and hand off to the boot launcher
- * (kernel_boot_launcher(), which runs `ZOS_BOOT_PROGRAM` through
- * process_exec()).  A failed optional module
- * is rolled back by the loader -- earlier resident modules are never
- * disturbed -- and the boot continues; the diagnostic names the module
- * and the exact failure. */
+ * dependency resolver).  The nucleus mounts the recovery store, reads the
+ * boot manifest and hands it to the resident service loader, which places
+ * every service the manifest lists into bank 6 and runs their boot tiers
+ * and inits in dependency order (architecture 36.4).  The store's manifest
+ * is what the image boots: production lists the five driver services, and
+ * an image that needs the serial-only fallback lists a subset.  The arena
+ * modules the store still carries (the IOC-FAT provider) load through the
+ * unchanged module loader after the services, and the mount pass runs last.
+ */
 static uint8_t kernel_boot_module(void)
 {
 	int result = vfs_init();
@@ -242,46 +255,17 @@ static uint8_t kernel_boot_module(void)
 		romfs_diagnose(result);
 		panic("romfs: corrupt recovery image");
 	}
-	if (kernel_load_vfs_module("sio") < 0) {
-		return 1;
+	result = service_load_all(ZOS_SERVICE_MANIFEST_NAME);
+	if (result != 0) {
+		kernel_service_manifest_failed(result);
 	}
-#if ZOS_IOC_BOOT
-	/* The IOC command+bulk transport.  A module whose init fails
-	 * (including a failed link bring-up) is rolled back by the loader
-	 * and reported here; the console still binds to SIO below. */
-	result = kernel_load_vfs_module("ioc");
-	if (result < 0) {
-		kernel_module_unavailable("ioc", result);
-	}
-#endif
-#if ZOS_HID_BOOT
-	/* The HID keyboard/text input module.  HID depends on the IOC
-	 * class; a missing/malformed dependency fails its init, the
-	 * loader rolls the (empty) registration set back, and the SIO
-	 * fallback plus the IOC transport remain usable. */
-	result = kernel_load_vfs_module("hid");
-	if (result < 0) {
-		kernel_module_unavailable("hid", result);
-	}
-#endif
-#if ZOS_V9958_BOOT
-	/* The V9958 video core and text console.  It has no IOC
-	 * dependency and registers the VIDEO class device only after its
-	 * full bring-up and the ROMFS font upload succeeded; a
-	 * missing/undersized font or a failed VDP sequence fails the init
-	 * and the loader rolls it back without disturbing the earlier
-	 * devices. */
-	result = kernel_load_vfs_module("v9958");
-	if (result < 0) {
-		kernel_module_unavailable("v9958", result);
-	}
-#endif
 #if ZOS_IOCFAT_BOOT
-	/* The IOC-FAT root filesystem provider, loaded last.  It discovers
-	 * the IOC class at init and registers the `iocfat` provider; a
-	 * missing IOC, a CAPS failure or an unknown command fails the init
-	 * and the loader rolls it back.  The optional `/` mount is
-	 * instantiated by the normal mount pass below, so an absent or
+	/* The IOC-FAT root filesystem provider, an arena module.  It
+	 * discovers the IOC class through the nucleus's class shim (the
+	 * service owns the transport) and registers the `iocfat` provider;
+	 * a missing IOC endpoint, a CAPS failure or an unknown command
+	 * fails its init and the loader rolls it back.  The optional `/`
+	 * mount is instantiated by the mount pass below, so an absent or
 	 * broken card leaves `/SYSTEM` and the console fully usable. */
 	result = kernel_load_vfs_module("iocfat");
 	if (result < 0) {
@@ -406,11 +390,79 @@ static char *kernel_boot_put_dec(char *out, uint8_t value)
 	return out;
 }
 
+/* The console service endpoint, looked up once (0 while the store
+ * provided none). */
+static uint8_t kernel_console_endpoint;
+
+static uint8_t kernel_console_handle(void)
+{
+	if (kernel_console_endpoint == 0u) {
+		uint8_t version = 0u;
+		int8_t handle = ipc_lookup(ZOS_CLASS_CONSOLE,
+					   ZOS_CLASS_INSTANCE, &version);
+
+		if (handle > 0 && version == ZOS_PROTOCOL_VERSION) {
+			kernel_console_endpoint = (uint8_t)handle;
+		}
+	}
+	return kernel_console_endpoint;
+}
+
+/* One console byte from the nucleus: the console protocol's PUTC form, the
+ * one operation a caller without a descriptor can drive (36.7). */
+static int kernel_console_putc(uint8_t handle, uint8_t ch)
+{
+	struct zos_ipc_frame frame;
+
+	frame.op = ZCONSOLE_OP_PUTC;
+	frame.flags = 0u;
+	frame.desc = ZOS_IPC_DESC_NONE;
+	frame.arg0 = ch;
+	frame.arg1 = 0u;
+	return ipc_nucleus_call(handle, &frame);
+}
+
+/* A boot line through the console service: 0 when every byte was accepted,
+ * the negated error otherwise (the caller then stays on the early
+ * console). */
+static int kernel_console_write(const char *line, uint16_t length)
+{
+	uint8_t handle = kernel_console_handle();
+
+	if (handle == 0u) {
+		return -ZOS_ENODEV;
+	}
+	while (length != 0u) {
+		int result = kernel_console_putc(handle, (uint8_t)*line);
+
+		if (result < 0) {
+			return result;
+		}
+		++line;
+		--length;
+	}
+	return 0;
+}
+
+/* The boot path's own output: the console service composes the same
+ * input/output pair the M8 console device did, and the early console is
+ * what remains when the store provided no console service (the fallback
+ * rule the panic path also depends on). */
 static void kernel_boot_emit(const char *line, uint16_t length)
 {
-	if (console_output_handle() != 0) {
-		(void)console_write(line, length);
-		return;
+	uint8_t handle = kernel_console_handle();
+	uint16_t index;
+
+	if (handle != 0u) {
+		for (index = 0u; index < length; ++index) {
+			if (kernel_console_putc(handle,
+						(uint8_t)line[index]) < 0) {
+				break;
+			}
+		}
+		if (index == length) {
+			return;
+		}
 	}
 	early_console_puts(line); /* line is always NUL-terminated */
 }
@@ -532,29 +584,29 @@ void kernel_main(void)
 	zos_target_test_early();
 #endif
 
-	/* The early console above stays authoritative.  The device registry
-	 * is initialized first, the boot module set is loaded through the
-	 * loader from the ROMFS recovery store, and only then is the console
-	 * service bound.  Load and binding diagnostics go to the early
-	 * console before any dynamic device is used. */
-	device_registry_init();
+	/* The early console above stays authoritative: it, and the panic
+	 * path, work with no service at all.  The module loader is then
+	 * initialized, the resident service set and the arena modules load
+	 * from the recovery store, and the console service - if the store
+	 * booted one - becomes what the boot path prints through.  Load
+	 * diagnostics go to the early console before any service output. */
 	{
 		uint8_t module_failures;
 
 		(void)module_loader_init();
 		module_failures = kernel_boot_module();
 		if (module_failures != 0) {
-			early_console_puts("console: dynamic driver failed\r\n");
-		} else if (console_bind_defaults() != ZDEV_OK) {
+			early_console_puts("console: service failed\r\n");
+		} else if (kernel_console_handle() == 0u) {
 			early_console_puts("console: unbound\r\n");
 		} else {
-			static const char m4_console_ok[] =
-				"console: dynamic sio0.b OK\r\n";
+			static const char console_ok[] =
+				"console: service OK\r\n";
 
-			if (console_write(m4_console_ok,
-					  (uint16_t)(sizeof(m4_console_ok) - 1u)) !=
-				    (int)(sizeof(m4_console_ok) - 1u)) {
-				early_console_puts("console: service failed\r\n");
+			if (kernel_console_write(console_ok,
+						 (uint16_t)(sizeof(console_ok) -
+							    1u)) != 0) {
+				early_console_puts("console: unavailable\r\n");
 			}
 		}
 	}

@@ -29,7 +29,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import Z80, IocCommandPeer, V9958Peer, read_symbols  # noqa: E402
+from z80sim import (Z80, IocCommandPeer, V9958Peer, read_symbols,
+                    skip_serial_connect_delay)  # noqa: E402
 
 RET = 0x1234
 STEP_LIMIT = 80000000
@@ -148,8 +149,8 @@ class RendererBase(unittest.TestCase):
         return z
 
     def skip_delay(self, z):
-        if z.pc == self.syms["_kernel_serial_connect_delay"]:
-            z.pc = z.pop16()
+        skip_serial_connect_delay(
+            z, self.syms["_kernel_serial_connect_delay"])
 
     def boot(self):
         """crt0 + kernel_main up to the console selftest line (still in

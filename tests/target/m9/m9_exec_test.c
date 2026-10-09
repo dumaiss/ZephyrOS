@@ -13,7 +13,6 @@
 
 #include "zephyros/kernel.h"
 #include "zephyros/process.h"
-#include "zephyros/console.h"
 
 #include "kernel/vfs/vfs.h"
 

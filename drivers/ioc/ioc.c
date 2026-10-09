@@ -173,40 +173,6 @@ static void ioc_build_request(struct ioc_state *state,
 	packet[8u + request->length] = (uint8_t)(crc & 0xFFu);
 }
 
-void ioc_hw_init(void)
-{
-	/* The command lane's one and only channel reset: after this,
-	 * ordinary transactions never touch synchronisation state. */
-	ioc_io_ctrl_write(ZOS_IOC_WR0_RESET_CHANNEL);
-
-	/* WR1: no interrupts, no WAIT/DMA. */
-	ioc_io_ctrl_write(ZOS_SIO_WR_SELECT_WR1);
-	ioc_io_ctrl_write(ZOS_IOC_WR1_INT_WAIT_OFF);
-
-	/* WR4: External Sync, x1 clock. */
-	ioc_io_ctrl_write(ZOS_SIO_WR_SELECT_WR4);
-	ioc_io_ctrl_write(ZOS_IOC_WR4_EXTSYNC_X1);
-
-	/* WR7: FFh underrun fill (never the A5 packet marker). */
-	ioc_io_ctrl_write(ZOS_IOC_WR_SELECT_WR7);
-	ioc_io_ctrl_write(ZOS_IOC_WR7_UNDERRUN_FILL);
-
-	/* WR3: receiver disabled; no character boundary exists yet. */
-	ioc_io_ctrl_write(ZOS_SIO_WR_SELECT_WR3);
-	ioc_io_ctrl_write(ZOS_IOC_WR3_RX_OFF);
-
-	/* WR5: 8-bit TX enabled, RTS inactive. */
-	ioc_io_ctrl_write(ZOS_SIO_WR_SELECT_WR5);
-	ioc_io_ctrl_write(ZOS_IOC_WR5_TX_RTS_OFF);
-
-	/* The bulk lane is programmed once here too, in module-owned
-	 * assembly: channel reset, External Sync x1, AAh fill, receiver
-	 * left enabled without Hunt, transmitter idle.  The first
-	 * verified bulk read enters Hunt exactly once; after that the
-	 * boundary is never disturbed. */
-	ioc_io_bulk_init();
-}
-
 /* Is `type` a request class the pinned firmware can use to arm the bulk
  * lane?  READY has no independent tag on the wire, and immutable
  * successful non-bulk replies are also eight bytes long (an HID fetch

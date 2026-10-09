@@ -1,32 +1,26 @@
 #!/usr/bin/env python3
-"""Console fallback-matrix tests (work package 20): replay every observable
-boot/failure variant in the Z80 simulator.
+"""Console fallback matrix (work package 41): replay the two service-set
+subsets the store can express.
 
-Rows (all executing real linked bytes, every image from its own build
-directory):
+In the resident-service model the console service *derives* its
+composition at boot from the endpoints the store provided, so a fallback
+row is a store manifest that lists fewer services - the M8 per-image boot
+gates are gone.  Two variants are accepted:
 
-* all modules (the integration acceptance image): SIO + IOC + HID +
-  V9958 resident, console HID/V9958, no optional-module diagnostic,
-  target selftest OK and the unchanged monitor launcher starts;
-* no HID in the recovery store (`hid: unavailable 0x05`): SIO input +
-  V9958 output; the scripted serial byte is read back through the
-  console input path and the console marker is display-only;
-* no HID and no V9958 (`hid: unavailable 0x05`, `v9958: unavailable
-  0x05`): SIO/SIO; the invited serial byte and the console marker both
-  appear in the transcript;
-* malformed IOC interface (null command operation rolls HID back,
-  `hid: unavailable 0x0B`): SIO/V9958;
-* arena exhaustion (the v9958.zmod entry cannot be allocated,
-  `v9958: unavailable 0x06`): HID/SIO, console marker serial-visible.
+* `nohid`          `sio ioc v9958 console`: no HID endpoint, so the input
+  direction falls back to the serial service while the output stays on
+  the video service.  The diagnostic's marker must appear on the V9958
+  trace and never on the serial link, and the typed byte the replay sends
+  on the serial lane must come back through the console.
+* `nohid-nov9958`  `sio ioc console`: neither HID nor video, so both
+  directions are the serial service (the serial-only row).  The marker
+  appears on the serial link and the typed byte is read back from it.
 
-Each failure row asserts the exact bound input/output instance and
-class from the live registry, the registered-device set (proving no
-already-resident module was lost and no failed module was left
-behind), the precise diagnostic codes, and the early-SIO independence
-of the control transcript (a V9958-bound marker must NOT leak to the
-serial link; it must appear in the decoded V9958 trace instead).
+Each image also boots its target diagnostic from the late hook, and the
+replay pins the early-SIO transcript, the composition rows, the lane each
+direction used and the packed store the image carried.
 
-Skipped when the images have not been built (`make console-fallback-selftests`).
+Skipped when the images have not been built.
 """
 
 import os
@@ -38,212 +32,115 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import Z80, IocCommandPeer, V9958Peer, read_symbols  # noqa: E402
-from test_console_sim import ConsoleSimBase, PROMPT, BANNER  # noqa: E402
+from test_console_sim import ConsoleSimBase  # noqa: E402
 
-ZDEV_SERIAL = 1
-ZDEV_VIDEO = 2
-ZDEV_HID = 4
+RET = 0x1234
+STEP_LIMIT = 12000000
 
-STEP_LIMIT = 80000000
-INPUT_BYTE = 0x52
+MARKER = b"F41"
+TYPED = b"K7\r"
 
-CONSOLE_MARKER = b"console fallback: console output\r\n"
-SELFTEST_OK = b"console fallback selftest: OK\r\n"
-SELFTEST_FAIL = b"console fallback selftest: FAIL"
-SEND_INPUT = b"console fallback: send input\r\n"
-INPUT_OK = b"console fallback: input OK 0x52\r\n"
-
-# All-modules row: the integration acceptance image.
-ALL_IMAGE_DIR = "build-console-integration-selftest"
-ALL_IMAGE_NAME = "zephyros-console-integration-selftest.bin"
-ALL_OK = b"console integration: OK\r\n"
-ALL_INPUT = b"console integration: input hid.keyboard0 class 04\r\n"
-ALL_OUTPUT = b"console integration: output v9958.0 class 02\r\n"
-
-# Failure rows: expected instance + class per direction, the registered
-# instance names in load order, the exact early-SIO diagnostics and the
-# observable direction contract.  Mirrors tools/serial_smoke.py.
-FAILURE_ROWS = (
-    {
-        "name": "nohid",
-        "dir": "build-console-fb-nohid",
-        "image": "zephyros-console-fb-nohid.bin",
-        "input": (b"sio0.b", ZDEV_SERIAL),
-        "output": (b"v9958.0", ZDEV_VIDEO),
-        "devices": [b"sio0.b", b"ioc.0", b"v9958.0"],
-        "diagnostics": (b"hid: unavailable 0x05\r\n",),
-        "scripted_input": True,
-        "serial_marker": False,
-    },
-    {
-        "name": "nohid-nov9958",
-        "dir": "build-console-fb-nohid-nov9958",
-        "image": "zephyros-console-fb-nohid-nov9958.bin",
-        "input": (b"sio0.b", ZDEV_SERIAL),
-        "output": (b"sio0.b", ZDEV_SERIAL),
-        "devices": [b"sio0.b", b"ioc.0"],
-        "diagnostics": (b"hid: unavailable 0x05\r\n",
-                        b"v9958: unavailable 0x05\r\n"),
-        "scripted_input": True,
-        "serial_marker": True,
-    },
-    {
-        "name": "badioc",
-        "dir": "build-console-fb-badioc",
-        "image": "zephyros-console-fb-badioc.bin",
-        "input": (b"sio0.b", ZDEV_SERIAL),
-        "output": (b"v9958.0", ZDEV_VIDEO),
-        "devices": [b"sio0.b", b"fake.ioc", b"v9958.0"],
-        "diagnostics": (b"hid: unavailable 0x0B\r\n",),
-        "scripted_input": True,
-        "serial_marker": False,
-    },
-    {
-        "name": "arena",
-        "dir": "build-console-fb-arena",
-        "image": "zephyros-console-fb-arena.bin",
-        "input": (b"hid.keyboard0", ZDEV_HID),
-        "output": (b"sio0.b", ZDEV_SERIAL),
-        "devices": [b"sio0.b", b"ioc.0", b"hid.keyboard0"],
-        "diagnostics": (b"v9958: unavailable 0x06\r\n",),
-        "scripted_input": False,
-        "serial_marker": True,
-    },
-)
+FALLBACK_OK = b"console fallback: OK\r\n"
 
 
-def load_sim(directory, image_name):
-    """A ConsoleSimBase instance bound to one image, or None when the
-    image has not been built."""
-    path = os.path.join(ROOT, directory, image_name)
-    if not os.path.exists(path):
-        return None
-    sim = ConsoleSimBase()
-    sim.IMAGE_SUBDIR = directory
-    sim.IMAGE_NAME = image_name
-    sim.setUp()
-    return sim
+class FallbackBase(ConsoleSimBase):
+    """Boot one subset image and read the diagnostic's lanes."""
 
+    SERVICES = ()
+    EXPECT_INPUT = None
+    EXPECT_OUTPUT = None
+    MARKER_ON_SERIAL = False
 
-def boot_image(sim, marker, send_input=False, limit=STEP_LIMIT):
-    """Boot and step until `marker` appears in the serial transcript,
-    sending the invited byte when the image asks and the row scripts it.
-    Returns (cpu, transcript)."""
-    z = sim.make_cpu()
-    sim.start_kernel(z)
-    sent = False
-    for i in range(limit):
-        sim.skip_delay(z)
-        z.step()
-        if i % 0x1FFF == 0:
-            tx = bytes(z.sio_tx)
-            if send_input and not sent and SEND_INPUT in tx:
-                z.sio_rx.append(INPUT_BYTE)
-                sent = True
-            if marker in tx:
-                sim.pump(z)
-                return z, bytes(z.sio_tx)
-    sim.pump(z)
-    raise AssertionError(
-        "did not reach %r (PC=%04X, tail=%r)"
-        % (marker, z.pc, bytes(z.sio_tx)[-200:]))
+    def setUp(self):
+        # The shared harness is not a variant: only the concrete classes
+        # below carry a subset store and an expectation pair, and unittest
+        # collects every TestCase subclass.
+        if type(self) is FallbackBase:
+            self.skipTest("abstract fallback harness")
+        super().setUp()
 
+    def start(self):
+        z = self.make_cpu()
+        self.start_kernel(z)
+        return z
 
-def registered(sim, z):
-    return [sim.bank7_cstr(z, dev["name"]) for dev in sim.devices(z)]
-
-
-class TestFallbackMatrix(unittest.TestCase):
-    def test_all_modules_image_binds_hid_v9958(self):
-        sim = load_sim(ALL_IMAGE_DIR, ALL_IMAGE_NAME)
-        if sim is None:
-            self.skipTest("build-console-integration-selftest missing; build the image first")
-        z, tx = boot_image(sim, ALL_OK)
-        self.assertEqual(
-            z.bank7[sim.syms["_ace_integration_result"]], 0x00)
-        self.assertIn(ALL_INPUT, tx)
-        self.assertIn(ALL_OUTPUT, tx)
-        self.assertNotIn(b": unavailable 0x", tx)
-        self.assertNotIn(b"FAIL", tx)
-        devices = sim.devices(z)
-        self.assertEqual(registered(sim, z),
-                         [b"sio0.b", b"ioc.0", b"hid.keyboard0",
-                          b"v9958.0"])
-        hid = [d for d in devices if d["class"] == ZDEV_HID][0]
-        vdp = [d for d in devices if d["class"] == ZDEV_VIDEO][0]
-        self.assertEqual(z.bank7[sim.syms["_console_in_handle"]],
-                         hid["handle"])
-        self.assertEqual(z.bank7[sim.syms["_console_out_handle"]],
-                         vdp["handle"])
-        # The unchanged monitor launcher follows the target test.
-        sim.run_to(z, PROMPT)
-        self.assertIn(BANNER, "".join(z.glyphs))
-
-    def test_failure_variants(self):
-        for row in FAILURE_ROWS:
-            with self.subTest(row=row["name"]):
-                self.run_row(row)
-
-    def run_row(self, row):
-        sim = load_sim(row["dir"], row["image"])
-        if sim is None:
-            self.skipTest("%s missing; build the image first" % row["dir"])
-        z, tx = boot_image(sim, SELFTEST_OK,
-                           send_input=row["scripted_input"])
-        self.assertNotIn(SELFTEST_FAIL, tx)
-        self.assertEqual(
-            z.bank7[sim.syms["_ace_fallback_result"]], 0x00)
-
-        # Exact early-SIO diagnostics, exactly once each.
-        for needle in row["diagnostics"]:
-            self.assertEqual(tx.count(needle), 1,
-                             "%s: diagnostic %r not exactly once"
-                             % (row["name"], needle))
-
-        # The registered set proves rollback/absence kept earlier
-        # residents and left no failed module behind.
-        self.assertEqual(registered(sim, z), row["devices"],
-                         "%s: registry differs" % row["name"])
-
-        # Exact bound pair, from the live device table.
-        devices = sim.devices(z)
-        in_name, in_class = row["input"]
-        out_name, out_class = row["output"]
-        dev_in = [d for d in devices if d["class"] == in_class and
-                  sim.bank7_cstr(z, d["name"]) == in_name]
-        dev_out = [d for d in devices if d["class"] == out_class and
-                   sim.bank7_cstr(z, d["name"]) == out_name]
-        self.assertTrue(dev_in and dev_out,
-                        "%s: expected devices not registered" % row["name"])
-        self.assertEqual(z.bank7[sim.syms["_console_in_handle"]],
-                         dev_in[0]["handle"])
-        self.assertEqual(z.bank7[sim.syms["_console_out_handle"]],
-                         dev_out[0]["handle"])
-
-        # Direction contract: a serial-bound input must have been read
-        # back through the console service; the marker must be visible
-        # on exactly the claimed output channel.
-        if row["scripted_input"]:
-            self.assertIn(INPUT_OK, tx, "%s: scripted input lost"
-                          % row["name"])
-            self.assertNotIn(b"console fallback: input none", tx)
-        if row["serial_marker"]:
-            self.assertIn(CONSOLE_MARKER, tx,
-                          "%s: serial marker missing" % row["name"])
+    def run_to_fallback_end(self, z, limit=STEP_LIMIT):
+        # The typed line travels on the serial lane, and the kernel's boot
+        # host-sync wait consumes whatever the receiver already holds, so
+        # it is queued once the diagnostic has reported its composition.
+        queued = False
+        for step in range(limit):
+            self.skip_delay(z)
+            z.step()
+            if not queued and b"console fallback: output " in z.sio_tx:
+                z.sio_rx.extend(TYPED)
+                queued = True
+            if b"console fallback: FAIL" in z.sio_tx:
+                break
+            if FALLBACK_OK in z.sio_tx:
+                break
+            if step % 0x1FFF == 0:
+                self.pump(z)
         else:
-            self.assertNotIn(CONSOLE_MARKER, tx,
-                             "%s: V9958-bound marker leaked to serial"
-                             % row["name"])
-            self.assertIn("console fallback: console output",
-                          "".join(z.glyphs),
-                          "%s: marker not visible in the V9958 trace"
-                          % row["name"])
+            raise AssertionError("the fallback diagnostic never finished "
+                                 "(PC=%04X)" % z.pc)
+        # Let the monitor launcher take over, then decode the V9958 side.
+        for step in range(2000000):
+            self.skip_delay(z)
+            z.step()
+            if step % 0x1FFF == 0:
+                self.pump(z)
+                if "Z80> " in "".join(z.glyphs):
+                    break
+        self.pump(z)
 
-        # Early-SIO independence: the control transcript above exists
-        # while the bound output may be the V9958 (display-only rows),
-        # and the banner always comes from the direct early path.
-        self.assertIn(b"ZephyrOS 0.0", tx)
+    def test_service_store_and_composition_lanes(self):
+        z = self.start()
+        self.run_to_fallback_end(z)
+        sio = bytes(z.sio_tx).decode("ascii", "replace")
+        trace = "".join(z.glyphs)
+
+        # The loader started exactly the store's set, in manifest order.
+        for name in self.SERVICES:
+            self.assertIn("service %s.zmod: hot " % name, sio)
+        self.assertIn("service loader: %d images in bank 6\r\n"
+                      % len(self.SERVICES), sio)
+
+        # The composition rows the console derived, and the typed round
+        # trip: the input direction really is the serial lane.
+        self.assertIn("console fallback: input %s\r\n" % self.EXPECT_INPUT,
+                      sio)
+        self.assertIn("console fallback: output %s\r\n" % self.EXPECT_OUTPUT,
+                      sio)
+        self.assertIn("console fallback: echo 4B37", sio)  # "K7"
+        self.assertIn(FALLBACK_OK.decode(), sio)
+        self.assertNotIn("FAIL", sio)
+
+        # The marker's lane is the output direction's proof.
+        marker_serial = MARKER.decode() in sio
+        marker_video = MARKER.decode() in trace
+        self.assertEqual(marker_serial, self.MARKER_ON_SERIAL)
+        self.assertEqual(marker_video, not self.MARKER_ON_SERIAL)
+        self.assertIn("console: service OK", trace if not
+                      self.MARKER_ON_SERIAL else sio)
+
+
+class TestNoHidVariant(FallbackBase):
+    IMAGE_SUBDIR = "build-console-fb-nohid"
+    IMAGE_NAME = "zephyros-console-fb-nohid.bin"
+    SERVICES = ("sio", "ioc", "v9958", "console")
+    EXPECT_INPUT = "serial"
+    EXPECT_OUTPUT = "video"
+    MARKER_ON_SERIAL = False
+
+
+class TestSerialOnlyVariant(FallbackBase):
+    IMAGE_SUBDIR = "build-console-fb-nohid-nov9958"
+    IMAGE_NAME = "zephyros-console-fb-nohid-nov9958.bin"
+    SERVICES = ("sio", "ioc", "console")
+    EXPECT_INPUT = "serial"
+    EXPECT_OUTPUT = "serial"
+    MARKER_ON_SERIAL = True
 
 
 if __name__ == "__main__":

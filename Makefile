@@ -84,7 +84,9 @@ ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/platform_irq.rel $(BUILD)/sdcc_helpers.rel \
              $(BUILD)/arena.rel $(BUILD)/rom_access.rel \
              $(BUILD)/process_launch.rel $(BUILD)/user_copy.rel \
-             $(BUILD)/upcall.rel $(BUILD)/diag_io.rel
+             $(BUILD)/upcall.rel $(BUILD)/diag_io.rel \
+             $(BUILD)/ipc_asm.rel $(BUILD)/ipc_common.rel \
+             $(BUILD)/service_boot.rel
 # M9 VFS core, generated mount table and statically linked ROMFS provider.
 M9_VFS_OBJS := $(BUILD)/vfs_mounts.rel $(BUILD)/vfs_path.rel \
                $(BUILD)/vfs_mount.rel $(BUILD)/vfs_file.rel \
@@ -95,11 +97,21 @@ C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
              $(BUILD)/syscall.rel $(BUILD)/diag.rel $(BUILD)/fs.rel \
              $(BUILD)/irq.rel \
              $(BUILD)/irq_sources.rel $(BUILD)/registry.rel \
-             $(BUILD)/console.rel \
              $(BUILD)/module_relocate.rel $(BUILD)/module_loader.rel \
+             $(BUILD)/ioc_shim.rel \
              $(BUILD)/romfs.rel $(BUILD)/process.rel $(BUILD)/process_exec.rel \
              $(BUILD)/name.rel \
              $(M9_VFS_OBJS)
+# Resident-service IPC substrate (package 39) and the service loader
+# (package 40): production links both from package 41 on.  The substrate
+# is fixed-required - the endpoint table, the call machinery, the
+# descriptor table and the boot gate execute while the window shows bank 6
+# - and the loader's callable half (the syscall bodies and the load pass)
+# is a cold-half object.  Both lists are pinned by
+# config/residency.json and the checked-in linker file.
+IPC_SUBSTRATE_OBJS := $(BUILD)/ipc.rel $(BUILD)/ipc_asm.rel \
+             $(BUILD)/ipc_common.rel $(BUILD)/service_boot.rel
+IPC_COLD_OBJS := $(BUILD)/ipc_syscall.rel $(BUILD)/service_loader.rel
 END_OBJ   := $(BUILD)/irq_code_end.rel
 # OBJS is assigned after the acceptance/catalog selection below, once
 # every conditional object append has been decided.
@@ -135,6 +147,8 @@ TARGET_TEST_OBJS += $(BUILD)/syscall_test.rel $(BUILD)/syscall_selftest_asm.rel 
                     $(BUILD)/romfs_test.rel $(BUILD)/loader_test.rel \
                     $(BUILD)/process_test.rel
 PK_SUFFIX := -subsys-selftest
+ZOS_SERVICES := sio console
+ZOS_ARENA_MODULES :=
 endif
 
 # Subsystem corrupt-store image: the same current boot path, but the
@@ -144,6 +158,8 @@ endif
 ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
 CFLAGS    += -DZOS_ROMFS_CORRUPT_SELFTEST=1
 PK_SUFFIX := -romfs-corrupt
+ZOS_SERVICES := sio console
+ZOS_ARENA_MODULES :=
 endif
 
 # IOC acceptance image: production-style boot (derived arena, SIO +
@@ -159,8 +175,8 @@ ifeq ($(ZOS_IOC_SELFTEST),1)
 CFLAGS    += -DZOS_IOC_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/ioc_test.rel
 PK_SUFFIX := -ioc-selftest
-ZOS_V9958_BOOT := 0
-ZOS_IOCFAT_BOOT := 0
+ZOS_SERVICES := sio ioc console
+ZOS_ARENA_MODULES :=
 endif
 
 # HID acceptance image: production-style boot (derived arena, SIO +
@@ -175,36 +191,8 @@ ifeq ($(ZOS_HID_SELFTEST),1)
 CFLAGS    += -DZOS_HID_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/hid_test.rel
 PK_SUFFIX := -hid-selftest
-ZOS_V9958_BOOT := 0
-ZOS_IOCFAT_BOOT := 0
-endif
-
-# HID no-IOC image: the same target diagnostic with the IOC boot load
-# disabled.  HID must fail dependency acquisition and be rolled back by
-# the loader; the console must still bind the SIO fallback in both
-# directions and pass the typed serial byte through the console service.
-ifeq ($(ZOS_HID_NOIOC),1)
-CFLAGS    += -DZOS_HID_NOIOC=1
-ZOS_IOC_BOOT := 0
-TARGET_TEST_OBJS += $(BUILD)/hid_test.rel
-PK_SUFFIX := -hid-noioc-selftest
-ZOS_V9958_BOOT := 0
-ZOS_IOCFAT_BOOT := 0
-endif
-
-# HID malformed-dependency image: the ROMFS `ioc.zmod` entry carries a
-# test fixture (tests/modules/hid_fake_ioc.c) that registers an IOC-class
-# device whose command operation is null.  HID must verify the interface,
-# reject it without calling the null pointer, and roll back while the
-# fixture device and the SIO fallback stay untouched.  The declared
-# boot-set plan counts the fixture bytes actually loaded as "ioc".
-ifeq ($(ZOS_HID_BADIOC),1)
-CFLAGS    += -DZOS_HID_BADIOC=1
-BOOT_IOC_ZMOD = $(MODULES)/fakeioc.zmod
-TARGET_TEST_OBJS += $(BUILD)/hid_test.rel
-PK_SUFFIX := -hid-badioc-selftest
-ZOS_V9958_BOOT := 0
-ZOS_IOCFAT_BOOT := 0
+ZOS_SERVICES := sio ioc hid console
+ZOS_ARENA_MODULES :=
 endif
 
 # video acceptance image: production-style boot (derived
@@ -218,19 +206,8 @@ ifeq ($(ZOS_VIDEO_SELFTEST),1)
 CFLAGS    += -DZOS_VIDEO_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/video_test.rel
 PK_SUFFIX := -video-selftest
-ZOS_IOCFAT_BOOT := 0
-endif
-
-# video font-failure image: the ROMFS `v9958-6x8.font` entry carries
-# a deliberately undersized stub.  The module must fail its resource
-# check, publish no device, and leave the SIO fallback, IOC transport
-# and HID keyboard untouched.  The target diagnostic proves the absence
-# and that the earlier devices still work.
-ifeq ($(ZOS_VIDEO_FONTFAIL),1)
-CFLAGS    += -DZOS_VIDEO_FONTFAIL=1
-TARGET_TEST_OBJS += $(BUILD)/video_test.rel
-PK_SUFFIX := -video-fontfail-selftest
-ZOS_IOCFAT_BOOT := 0
+ZOS_SERVICES := sio v9958 console
+ZOS_ARENA_MODULES :=
 endif
 
 # console acceptance image (package 19): the full production stack
@@ -245,7 +222,8 @@ ifeq ($(ZOS_CONSOLE_SELFTEST),1)
 CFLAGS    += -DZOS_CONSOLE_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/console_test.rel
 PK_SUFFIX := -console-selftest
-ZOS_IOCFAT_BOOT := 0
+ZOS_SERVICES := sio ioc hid v9958 console
+ZOS_ARENA_MODULES :=
 endif
 
 # console integration acceptance image (package 20): the full production
@@ -262,32 +240,30 @@ ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)
 CFLAGS    += -DZOS_CONSOLE_INTEGRATION_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/console_integration_test.rel
 PK_SUFFIX := -console-integration-selftest
-ZOS_IOCFAT_BOOT := 0
+ZOS_SERVICES := sio ioc hid v9958 console
+ZOS_ARENA_MODULES :=
 endif
 
 # console fallback-matrix images (package 20): the same four-module boot
 # contract with one deliberate failure injected through the variant's
-# ROMFS manifest (`ZOS_CONSOLE_FALLBACK` = nohid, nohid-nov9958, badioc or
-# arena).  The kernel boot gates stay at their production values, so
-# every variant exercises the real sequential load path, the precise
-# early-SIO diagnostic and the console fallback policy.  The shared
-# target diagnostic reports the surviving binding; the expected binding
-# and direction per variant are asserted by tests/test_console_fallback.py
-# and the matching serial_smoke modes.
+# ROMFS manifest (`ZOS_CONSOLE_FALLBACK` = nohid or nohid-nov9958).  The
+# boot path is the production one - the loader starts exactly the store's
+# service set - so each variant exercises the real load path, the
+# per-service evidence rows and the console's own composition policy.
+# The shared target diagnostic reports the surviving directions and the
+# replay pins the lane each one took (tests/test_console_fallback.py).
 ifeq ($(ZOS_CONSOLE_FALLBACK_SELFTEST),1)
 CFLAGS    += -DZOS_CONSOLE_FALLBACK_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/console_fallback_test.rel
-ZOS_IOCFAT_BOOT := 0
+ZOS_ARENA_MODULES :=
 ifeq ($(ZOS_CONSOLE_FALLBACK),nohid)
 PK_SUFFIX := -console-fb-nohid
+ZOS_SERVICES := sio ioc v9958 console
 else ifeq ($(ZOS_CONSOLE_FALLBACK),nohid-nov9958)
 PK_SUFFIX := -console-fb-nohid-nov9958
-else ifeq ($(ZOS_CONSOLE_FALLBACK),badioc)
-PK_SUFFIX := -console-fb-badioc
-else ifeq ($(ZOS_CONSOLE_FALLBACK),arena)
-PK_SUFFIX := -console-fb-arena
+ZOS_SERVICES := sio ioc console
 else
-$(error ZOS_CONSOLE_FALLBACK_SELFTEST needs ZOS_CONSOLE_FALLBACK=nohid|nohid-nov9958|badioc|arena)
+$(error ZOS_CONSOLE_FALLBACK_SELFTEST needs ZOS_CONSOLE_FALLBACK=nohid|nohid-nov9958)
 endif
 endif
 
@@ -305,7 +281,8 @@ CFLAGS    += -DZOS_M9_VFS_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m9_vfs_test.rel
 PK_SUFFIX := -m9-vfs-selftest
 ZOS_MOUNTS := tests/m9/mounts-optional-fail.json
-ZOS_IOCFAT_BOOT := 0
+ZOS_SERVICES := sio ioc hid v9958 console
+ZOS_ARENA_MODULES :=
 endif
 
 # M9 required-mount failure image (package 25): the same production boot,
@@ -329,10 +306,8 @@ CFLAGS    += -DZOS_M9_PROVIDER_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m9_provider_test.rel
 PK_SUFFIX := -m9-provider-selftest
 ZOS_MOUNTS := tests/m9/mounts-ramfs.json
-ZOS_IOC_BOOT := 0
-ZOS_HID_BOOT := 0
-ZOS_V9958_BOOT := 0
-ZOS_IOCFAT_BOOT := 0
+ZOS_SERVICES := sio console
+ZOS_ARENA_MODULES :=
 endif
 
 # M9 filesystem syscall acceptance image (package 27): the SIO-only boot
@@ -346,10 +321,8 @@ CFLAGS    += -DZOS_M9_FS_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m9_fs_test.rel
 PK_SUFFIX := -m9-fs-selftest
 ZOS_MOUNTS := tests/m9/mounts-ramfs.json
-ZOS_IOC_BOOT := 0
-ZOS_HID_BOOT := 0
-ZOS_V9958_BOOT := 0
-ZOS_IOCFAT_BOOT := 0
+ZOS_SERVICES := sio console
+ZOS_ARENA_MODULES :=
 endif
 
 # M9 SYS_EXEC acceptance image (package 28): the SIO-only boot set plus the
@@ -361,10 +334,8 @@ CFLAGS    += -DZOS_M9_EXEC_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m9_exec_test.rel
 PK_SUFFIX := -m9-exec-selftest
 ZOS_MOUNTS := tests/m9/mounts-ramfs.json
-ZOS_IOC_BOOT := 0
-ZOS_HID_BOOT := 0
-ZOS_V9958_BOOT := 0
-ZOS_IOCFAT_BOOT := 0
+ZOS_SERVICES := sio console
+ZOS_ARENA_MODULES :=
 endif
 
 # M9 IOC-FAT acceptance image (package 30).  The production boot set (SIO,
@@ -379,8 +350,7 @@ ifeq ($(ZOS_M9_IOCFAT_SELFTEST),1)
 CFLAGS    += -DZOS_M9_IOCFAT_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m9_iocfat_test.rel
 PK_SUFFIX := -m9-iocfat-selftest
-ZOS_HID_BOOT := 0
-ZOS_V9958_BOOT := 0
+ZOS_SERVICES := sio ioc console
 endif
 
 # M9 integration acceptance image (package 31).  The production boot set
@@ -395,8 +365,7 @@ ifeq ($(ZOS_M9_SELFTEST),1)
 CFLAGS    += -DZOS_M9_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/m9_selftest.rel
 PK_SUFFIX := -m9-selftest
-ZOS_HID_BOOT := 0
-ZOS_V9958_BOOT := 0
+ZOS_SERVICES := sio ioc console
 endif
 
 # Nucleus-layout acceptance image (work package 38): the production boot
@@ -411,10 +380,8 @@ TARGET_TEST_OBJS += $(BUILD)/nucleus_test.rel \
                     $(BUILD)/nucleus_selftest_asm.rel \
                     $(BUILD)/ctc_test.rel
 PK_SUFFIX := -nucleus-selftest
-ZOS_IOC_BOOT    := 0
-ZOS_HID_BOOT    := 0
-ZOS_V9958_BOOT  := 0
-ZOS_IOCFAT_BOOT := 0
+ZOS_SERVICES := sio console
+ZOS_ARENA_MODULES :=
 endif
 
 # IPC substrate acceptance image (work package 39, M10 stage 3; service
@@ -441,14 +408,15 @@ ifeq ($(ZOS_IPC_SELFTEST),1)
 CFLAGS    += -DZOS_IPC_SELFTEST=1 -Itests/target/include
 ASFLAGS   += -I$(BUILD)
 PK_SUFFIX := -ipc-selftest
-IPC_FIXED_OBJS := $(BUILD)/ipc.rel $(BUILD)/ipc_asm.rel \
-	$(BUILD)/ipc_common.rel $(BUILD)/service_boot.rel
-IPC_COLD_OBJS := $(BUILD)/ipc_syscall.rel $(BUILD)/service_loader.rel
-TARGET_TEST_OBJS += $(IPC_FIXED_OBJS) $(IPC_COLD_OBJS)
-ZOS_IOC_BOOT    := 0
-ZOS_HID_BOOT    := 0
-ZOS_V9958_BOOT  := 0
-ZOS_IOCFAT_BOOT := 0
+# The substrate and the loader are production-linked objects now (OBJS
+# carries them), so this image adds nothing to the fixed/cold kernel sets:
+# listing them again duplicated every symbol in the probe link.
+IPC_FIXED_OBJS := $(IPC_SUBSTRATE_OBJS)
+# This image places the stage-4/5 `moves` objects in the cold half (they
+# fit beside the loader there); the same list goes to mapcheck below.
+COLD_EXTRA_CSV := $(IPC_COLD_EXTRA_CSV)
+ZOS_SERVICES := sio console
+ZOS_ARENA_MODULES :=
 endif
 
 # SDK helloworld demo image (work/28c-m9-user-sdk): the production boot path
@@ -469,57 +437,26 @@ ifeq ($(ZOS_SMOKE_HOST_SYNC),1)
 CFLAGS    += -DZOS_SMOKE_HOST_SYNC=1
 endif
 
-# IOC command-lane boot load (kernel/main.c): production and the
-# subsystem images load ioc.zmod from the recovery store after the SIO fallback;
-# the earlier acceptance images do not carry the module and keep their
-# accepted boot byte-for-byte by compiling the block out.
-# The subsystem image boots the SIO fallback only, so its loader fixtures
-# have the arena to themselves.
-ifeq ($(ZOS_SUBSYS_SELFTEST),1)
-ZOS_IOC_BOOT := 0
-endif
-ZOS_IOC_BOOT ?= 1
-CFLAGS    += -DZOS_IOC_BOOT=$(ZOS_IOC_BOOT)
+# The resident service set the nucleus boots (kernel/main.c).  Production
+# loads the five services from the recovery store's `services.man` in the
+# order the manifest lists; an acceptance image that needs the serial-only
+# fallback lists a subset (see the per-image blocks below), which is the
+# M8 `ZOS_*_BOOT` gate's replacement.  The arena plan lists the modules the
+# loader still places in the derived arena (IOC-FAT in production).
+ZOS_SERVICES ?= sio ioc hid v9958 console
+ZOS_ARENA_MODULES ?= iocfat
 
-# HID keyboard/text boot load (kernel/main.c): production and the
-# subsystem images load hid.zmod from the recovery store after the IOC transport;
-# the module discovers IOC by class/capability and a missing or
-# malformed dependency is a load failure, never a partial registration.
-# Earlier acceptance images do not carry the module and compile the block
-# out so their accepted boot stays byte-for-byte as validated.
-ifeq ($(ZOS_SUBSYS_SELFTEST),1)
-ZOS_HID_BOOT := 0
+# The IOC-FAT arena provider's boot gate follows the arena set: an image
+# whose declared boot set does not carry iocfat does not attempt the load
+# (the M8 per-image boot gates' M10 replacement - the store says what the
+# image boots, and the image's own code follows it).
+ifneq ($(filter iocfat,$(ZOS_ARENA_MODULES)),)
+CFLAGS    += -DZOS_IOCFAT_BOOT=1
+else
+CFLAGS    += -DZOS_IOCFAT_BOOT=0
 endif
-ZOS_HID_BOOT ?= 1
-CFLAGS    += -DZOS_HID_BOOT=$(ZOS_HID_BOOT)
 
-# V9958 video boot load (kernel/main.c): production and the subsystem images
-# load v9958.zmod from the recovery store after HID.  The module has no
-# IOC dependency; a missing font resource or a failed VDP bring-up is
-# rolled back by the loader and must not disturb the SIO fallback, the
-# IOC transport or HID.  Earlier acceptance images do not carry the
-# module and compile the block out so their accepted boot stays
-# byte-for-byte as validated.
-ifeq ($(ZOS_SUBSYS_SELFTEST),1)
-ZOS_V9958_BOOT := 0
-endif
-ZOS_V9958_BOOT ?= 1
-CFLAGS    += -DZOS_V9958_BOOT=$(ZOS_V9958_BOOT)
-
-# IOC-FAT root filesystem provider (package 30).  Production loads
-# iocfat.zmod last, after the console devices; the module discovers the IOC
-# class and registers the `iocfat` provider, then the normal mount pass
-# attaches it at the optional `/`.  Every image whose ROMFS carries no
-# iocfat.zmod entry compiles the load out (the per-image blocks above set
-# ZOS_IOCFAT_BOOT := 0), so its boot transcript and arena plan are the
-# accepted ones.
-ifeq ($(ZOS_SUBSYS_SELFTEST),1)
-ZOS_IOCFAT_BOOT := 0
-endif
-ZOS_IOCFAT_BOOT ?= 1
-CFLAGS    += -DZOS_IOCFAT_BOOT=$(ZOS_IOCFAT_BOOT)
-
-OBJS      := $(ASM_OBJS) $(C_OBJS)
+OBJS      := $(ASM_OBJS) $(C_OBJS) $(BUILD)/ipc.rel $(IPC_COLD_OBJS)
 
 # Nucleus residency (architecture 36.5, work package 38).  Every
 # production image is a revision-13 two-region build: the fixed areas
@@ -538,7 +475,15 @@ OBJS      := $(ASM_OBJS) $(C_OBJS)
 # that extra cold set to mapcheck with --cold-extra and to the codegen
 # through COLD_EXTRA, so both stay in step.
 RESIDENCY  := config/residency.json
-COLD_EXTRA_CSV := $(if $(filter 1,$(ZOS_IPC_SELFTEST)),$(IPC_COLD_EXTRA_CSV),)
+# Package 41: residency.json now names the two `moves` objects production
+# compiles cold (vfs_dir, romfs_provider - they fit beside the new cold
+# bodies: the resident service loader, the syscall IPC dispatcher and the
+# IOC class shim).  The rest keep the moves tier's documented fallback and
+# overflow into the fixed core's leftover space, which the substrate now
+# shares; both ledgers report the split.  An image that wants a different
+# split passes it here (the IPC acceptance image does).
+COLD_EXTRA ?=
+COLD_EXTRA_CSV ?= $(COLD_EXTRA)
 ifeq ($(COLD_EXTRA_CSV),)
 COLD_STEMS := $(shell $(PYTHON) tools/mapcheck.py residency \
 		--cold-stems $(RESIDENCY))
@@ -546,12 +491,6 @@ else
 COLD_STEMS := $(shell $(PYTHON) tools/mapcheck.py residency \
 		--cold-stems $(RESIDENCY) --cold-extra $(COLD_EXTRA_CSV))
 endif
-COLD_OBJS  := $(addprefix $(BUILD)/,$(addsuffix .rel,$(COLD_STEMS)))
-ifneq ($(TARGET_TEST_OBJS),)
-COLD_OBJS  += $(filter-out $(IPC_FIXED_OBJS),$(TARGET_TEST_OBJS))
-endif
-$(COLD_OBJS): CFLAGS += --codeseg WINDOW --dataseg WINDOW_DATA
-
 # Driver-arena geometry ---------------------------------------------------
 # Every image derives the arena and the runtime data base from the aligned
 # linked-kernel end with a two-pass link.  There is one geometry; the probe
@@ -561,8 +500,7 @@ $(COLD_OBJS): CFLAGS += --codeseg WINDOW --dataseg WINDOW_DATA
 # Common acceptance wiring: the single guard plus the shared runner.
 ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_IOC_SELFTEST) $(ZOS_HID_SELFTEST) \
-	$(ZOS_HID_NOIOC) $(ZOS_HID_BADIOC) \
-	$(ZOS_VIDEO_SELFTEST) $(ZOS_VIDEO_FONTFAIL) \
+	$(ZOS_VIDEO_SELFTEST) \
 	$(ZOS_CONSOLE_SELFTEST) $(ZOS_CONSOLE_INTEGRATION_SELFTEST) \
 	$(ZOS_CONSOLE_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
 	$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST) \
@@ -571,8 +509,20 @@ ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_IPC_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1 \
 		-Itests/target/include
-TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(TARGET_TEST_OBJS)
+TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(BUILD)/service_client.rel \
+		$(TARGET_TEST_OBJS)
 endif
+
+# The cold placement follows the target-test list: the acceptance objects
+# (and the shared service client every M10 driver diagnostic links) are
+# compiled into the window areas at 6000h-DFFFh, exactly like the
+# production cold half, so test code consumes the arena's slack and never
+# the fixed core's leftover.  This block sits after the list it filters.
+COLD_OBJS  := $(addprefix $(BUILD)/,$(addsuffix .rel,$(COLD_STEMS)))
+ifneq ($(TARGET_TEST_OBJS),)
+COLD_OBJS  += $(filter-out $(IPC_FIXED_OBJS),$(TARGET_TEST_OBJS))
+endif
+$(COLD_OBJS): CFLAGS += --codeseg WINDOW --dataseg WINDOW_DATA
 
 # Production images (no acceptance objects) must reject every acceptance
 # symbol in the linked map; mapcheck --production enforces this.
@@ -587,26 +537,14 @@ RESIDENCY_FLAGS := --residency $(RESIDENCY) \
 # change the derived bases: it changes which objects link cold).
 RESIDENCY_DERIVE_FLAGS := --residency $(RESIDENCY)
 
-# Every image boots the SIO fallback module from the recovery store and
-# then, per its boot gates, the IOC transport, the HID keyboard/text input
-# module and the V9958 video core.  (MODULES is defined below this point,
-# so keep these recursive assignments.)
-BOOT_ZMOD = $(MODULES)/sio.zmod
-BOOT_IOC_ZMOD ?= $(MODULES)/ioc.zmod
-BOOT_ZMODS = $(BOOT_ZMOD)
-ifneq ($(ZOS_IOC_BOOT),0)
-BOOT_ZMODS += $(BOOT_IOC_ZMOD)
-endif
-ifneq ($(ZOS_HID_BOOT),0)
-BOOT_ZMODS += $(MODULES)/hid.zmod
-endif
-ifneq ($(ZOS_V9958_BOOT),0)
-BOOT_ZMODS += $(MODULES)/v9958.zmod
-endif
-BOOT_IOCFAT_ZMOD ?= $(MODULES)/iocfat.zmod
-ifneq ($(ZOS_IOCFAT_BOOT),0)
-BOOT_ZMODS += $(BOOT_IOCFAT_ZMOD)
-endif
+# The arena plan's boot set: the modules the loader still places in the
+# derived driver arena.  The services are not part of it - they own bank
+# 6's resident tiers and are placed by the service loader from
+# `services.man` - so production's arena set is the IOC-FAT provider
+# alone, and every other image declares its own fixture modules.
+# (MODULES is defined below this point, so keep these recursive
+# assignments.)
+BOOT_ZMODS = $(addprefix $(MODULES)/,$(addsuffix .zmod,$(ZOS_ARENA_MODULES)))
 
 
 IMAGE := $(BUILD)/zephyros$(PK_SUFFIX).bin
@@ -674,8 +612,8 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 .PHONY: all test check check-fast clean zmod-test romfs-test zex-test \
 	subsystem-selftest romfs-corrupt-selftest \
 	monitor-test ioc-test ioc-selftest hid-test \
-	hid-selftest hid-noioc-selftest hid-badioc-selftest \
-	v9958-test video-selftest video-fontfail-selftest \
+	hid-selftest \
+	v9958-test video-selftest \
 	console-selftest \
 	console-integration-selftest console-fallback-selftests \
 	m9-vfs-selftest \
@@ -693,7 +631,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	smoke-hardware-ioc smoke-hardware-hid \
 	smoke-hardware-video smoke-hardware-console \
 	smoke-hardware-console-integration smoke-hardware-console-fb-nohid \
-	smoke-hardware-console-fb-nohid-nov9958 smoke-hardware-console-fb-badioc \
+	smoke-hardware-console-fb-nohid-nov9958 \
 	smoke-hardware-console-fb-arena \
 	smoke-hardware-m9-fs \
 	smoke-hardware-m9-exec \
@@ -782,7 +720,7 @@ $(BUILD)/panic.rel: kernel/panic.c \
 	$(SDCC) $(CFLAGS) --codeseg COMMON $< -o $@
 
 $(BUILD)/main.rel: kernel/main.c include/zephyros/kernel.h \
-		include/zephyros/irq.h include/zephyros/console.h \
+		include/zephyros/irq.h \
 		include/zephyros/module.h include/zephyros/process.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
@@ -798,7 +736,7 @@ $(BUILD)/irq_sources.rel: drivers/ctc/ctc.c \
 $(BUILD)/syscall.rel: kernel/syscall.c kernel/syscall/diag.h \
 		abi/zos/syscall.h include/zephyros/errno.h \
 		include/zephyros/kernel.h include/zephyros/process.h \
-		include/zephyros/console.h | $(BUILD)
+		| $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/diag.rel: kernel/syscall/diag.c kernel/syscall/diag.h \
@@ -814,10 +752,6 @@ $(BUILD)/registry.rel: kernel/device/registry.c include/zephyros/device.h \
 		abi/zos/types.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/console.rel: kernel/device/console.c include/zephyros/console.h \
-		include/zephyros/device.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
 # --- M4 module loader objects (bank-7 code and data) -------------------------
 
 $(BUILD)/module_relocate.rel: kernel/module/relocate.c \
@@ -828,6 +762,12 @@ $(BUILD)/module_relocate.rel: kernel/module/relocate.c \
 $(BUILD)/module_loader.rel: kernel/module/loader.c \
 		include/zephyros/module.h include/zephyros/driver.h \
 		include/zephyros/device.h include/zephyros/irq.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/ioc_shim.rel: kernel/module/ioc_shim.c kernel/module/ioc_shim.h \
+		include/zephyros/ioc.h include/zephyros/device.h \
+		include/zephyros/ipc.h include/zephyros/process.h \
+		abi/zos/protocol.h kernel/ipc/ipc.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M5 ROMFS objects (bank-7 reader + common ROM-access primitive) ----------
@@ -915,13 +855,15 @@ $(BUILD)/process_exec.rel: kernel/process/exec.c \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- ZMOD modules (host-built, packed, embedded per-image catalogs) ----------
-# The SIO driver module and the synthetic M4 fixtures are built once under
-# build/modules/ -- shared by every image, so each variant's packed bytes
-# are identical across placement builds.  Each image embeds the boot module
-# plus (in self-test builds) the fixtures through a generated assembly blob
-# emitted by tools/zmodpack.py.
+# Every image packs its own module directory ($(BUILD)/modules): the packed
+# bytes are deterministic, so the same bytes reappear in any placement
+# build, and an image that boots a *different* resident-service set or
+# carries its own fixtures cannot disturb another image's store.  The
+# canonical build keeps the historical build/modules/ path the host tests
+# read.  Each image embeds the boot module plus (in self-test builds) the
+# fixtures through a generated assembly blob emitted by tools/zmodpack.py.
 
-MODULES   := build/modules
+MODULES   := $(BUILD)/modules
 # Every module sees the shared include/ and platform/ surfaces plus its own
 # driver directory context; no sibling driver's private path is offered here.
 # A driver's local headers resolve through same-directory quote includes.
@@ -940,151 +882,132 @@ $(ARENA_PLAN): $(BOOT_ZMODS) tools/zmodpack.py tools/pack_image.py \
 	$(PYTHON) tools/zmodpack.py plan --geometry $(MEMORY_INC) \
 		--report $@ $(BOOT_ZMODS)
 
-# --- SIO module objects (production source + test-variant entries) ---
+# --- bank-6 resident services (work package 41) ------------------------------
+# The SIO, IOC, HID, V9958 and console driver stacks are bank-6 services:
+# each is packed as a service image (ZMOD module_type 2) into the recovery
+# store, listed by the boot manifest `services.man` (ZOS_SERVICES, in load
+# order) and placed in bank 6 by the nucleus loader
+# (kernel/service/service_loader.c).  Per 36.6 the hot tier is _CODE with
+# its BSS in _SERVICE_IO (the one bank-6 range both the mode-11 window and
+# the mode-10 aperture show, so descriptors and `move` name it), the boot
+# tier is _BOOT/_BOOT_DATA, and the V9958 font is a bulk segment the
+# run-time display reset re-reads through the nucleus bulk copy.
+#
+# The driver cores (sio.c, ioc.c, hid.c, v9958.c) are the same sources the
+# M8 modules used; the *_service.c halves own the protocol dispatch and
+# init, the *_boot.c halves the boot tier.  Every image is a separate
+# object set, so each packed byte is identical across placement builds.
+SVC_CFLAGS := -mz80 -c --nostdinc --Werror $(ZOS_SDCC_OPT) \
+              -I abi -I include -I platform -I $(BUILD) -I .
+SVC_HOT    := $(SVC_CFLAGS) --codeseg CODE --dataseg SERVICE_IO
+SVC_BOOT   := $(SVC_CFLAGS) --codeseg BOOT --dataseg BOOT_DATA
+
+# The declared production boot set, in load order: IOC before HID (HID's
+# image declares the dependency), and the console last, because its init
+# probes the services it composes.
+ZOS_SERVICES ?= sio ioc hid v9958 console
+SVC_NAMES := sio ioc hid v9958 console
+SVC_ZMODS := $(addprefix $(MODULES)/,$(addsuffix .zmod,$(SVC_NAMES)))
 
 $(MODULES)/sio.rel: drivers/sio/sio.c drivers/sio/sio.h \
-		include/zephyros/device.h include/zephyros/platform.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
+		include/zephyros/ipc.h include/zephyros/platform.h | $(MODULES)
+	$(SDCC) $(SVC_HOT) $< -o $@
 
 $(MODULES)/sio_io.rel: drivers/sio/sio_io.asm \
 		platform/zephyr80/hardware.inc | $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(MODULES)/sio_module.rel: drivers/sio/sio_module.c drivers/sio/sio.h \
-		include/zephyros/driver.h include/zephyros/device.h \
-		include/zephyros/irq.h include/zephyros/errno.h \
-		include/zephyros/platform.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
+$(MODULES)/sio_service.rel: drivers/sio/sio_service.c drivers/sio/sio.h \
+		include/zephyros/ipc.h $(SVC_PROTOCOL_H) | $(MODULES)
+	$(SDCC) $(SVC_HOT) $< -o $@
 
-$(MODULES)/sio_irq_module.rel: tests/modules/sio_irq_module.c \
-		drivers/sio/sio.h include/zephyros/driver.h \
-		include/zephyros/device.h include/zephyros/irq.h \
-		include/zephyros/errno.h include/zephyros/platform.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-$(MODULES)/sio_fail_module.rel: tests/modules/sio_fail_module.c \
-		drivers/sio/sio.h include/zephyros/driver.h \
-		include/zephyros/device.h include/zephyros/irq.h \
-		include/zephyros/errno.h include/zephyros/platform.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-$(MODULES)/sdcc_indirect_calls.rel: modules/runtime/sdcc_indirect_calls.asm \
-		| $(MODULES)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-SIO_MODULE_OBJS := $(MODULES)/sio.rel $(MODULES)/sio_io.rel \
-		$(MODULES)/sio_module.rel $(MODULES)/sdcc_indirect_calls.rel
-
-$(MODULES)/sio.zmod: modules/manifests/sio.json $(SIO_MODULE_OBJS) \
-		tools/zmodpack.py
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
-		--report $(MODULES)/sio.report.json
-
-$(MODULES)/sio-irq.zmod: tests/modules/sio-irq.json $(MODULES)/sio.rel \
-		$(MODULES)/sio_io.rel $(MODULES)/sio_irq_module.rel \
-		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
-		--report $(MODULES)/sio-irq.report.json
-
-$(MODULES)/sio-fail.zmod: tests/modules/sio-fail.json $(MODULES)/sio.rel \
-		$(MODULES)/sio_io.rel $(MODULES)/sio_fail_module.rel \
-		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
-		--report $(MODULES)/sio-fail.report.json
-
-# --- IOC module objects (production source) ---
+$(MODULES)/sio_boot.rel: drivers/sio/sio_boot.c drivers/sio/sio.h \
+		include/zephyros/ipc.h $(SVC_PROTOCOL_H) | $(MODULES)
+	$(SDCC) $(SVC_BOOT) $< -o $@
 
 $(MODULES)/ioc.rel: drivers/ioc/ioc.c drivers/ioc/ioc_driver.h \
 		drivers/ioc/ioc_proto.h include/zephyros/ioc.h \
 		include/zephyros/ioc_protocol.h \
 		include/zephyros/device.h include/zephyros/platform.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
+	$(SDCC) $(SVC_HOT) $< -o $@
 
 $(MODULES)/ioc_io.rel: drivers/ioc/ioc_io.asm \
 		platform/zephyr80/hardware.inc | $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(MODULES)/ioc_module.rel: drivers/ioc/ioc_module.c drivers/ioc/ioc_driver.h \
-		include/zephyros/driver.h include/zephyros/device.h \
-		include/zephyros/ioc.h include/zephyros/platform.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
+$(MODULES)/ioc_service.rel: drivers/ioc/ioc_service.c \
+		drivers/ioc/ioc_driver.h drivers/ioc/ioc_proto.h \
+		include/zephyros/ioc.h include/zephyros/ioc_protocol.h \
+		include/zephyros/ipc.h $(SVC_PROTOCOL_H) | $(MODULES)
+	$(SDCC) $(SVC_HOT) $< -o $@
 
-IOC_MODULE_OBJS := $(MODULES)/ioc.rel $(MODULES)/ioc_io.rel \
-		$(MODULES)/ioc_module.rel $(MODULES)/sdcc_indirect_calls.rel
-
-$(MODULES)/ioc.zmod: modules/manifests/ioc.json $(IOC_MODULE_OBJS) \
-		tools/zmodpack.py
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
-		--report $(MODULES)/ioc.report.json
-
-# --- HID module objects (production source) ---
-# The driver talks to the IOC class only through the discovered interface
-# (no imported IOC-module symbol); the compile-time CMD/RSP_HID_INPUT
-# vocabulary it needs is the client-visible service contract shared with
-# the protocol-aware target diagnostics (include/zephyros/ioc_protocol.h).
-# It never includes the IOC driver's private header.
+$(MODULES)/ioc_boot.rel: drivers/ioc/ioc_boot.c drivers/ioc/ioc_driver.h \
+		include/zephyros/ipc.h $(SVC_PROTOCOL_H) | $(MODULES)
+	$(SDCC) $(SVC_BOOT) $< -o $@
 
 $(MODULES)/hid.rel: drivers/hid/hid.c drivers/hid/hid_driver.h \
 		include/zephyros/ioc_protocol.h include/zephyros/hid.h \
 		include/zephyros/ioc.h include/zephyros/device.h \
+		include/zephyros/ipc.h $(SVC_PROTOCOL_H) \
 		include/zephyros/platform.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-$(MODULES)/hid_module.rel: drivers/hid/hid_module.c drivers/hid/hid_driver.h \
-		include/zephyros/driver.h include/zephyros/device.h \
-		include/zephyros/hid.h include/zephyros/platform.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-HID_MODULE_OBJS := $(MODULES)/hid.rel $(MODULES)/hid_module.rel \
-		$(MODULES)/sdcc_indirect_calls.rel
-
-$(MODULES)/hid.zmod: modules/manifests/hid.json $(HID_MODULE_OBJS) \
-		tools/zmodpack.py
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
-		--report $(MODULES)/hid.report.json
-
-# Malformed-IOC dependency fixture for the badioc acceptance image
-# (test artifact; loaded in place of ioc.zmod by a test ROMFS manifest).
-
-$(MODULES)/hid_fake_ioc.rel: tests/modules/hid_fake_ioc.c \
-		include/zephyros/device.h include/zephyros/driver.h \
-		include/zephyros/ioc.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-$(MODULES)/fakeioc.zmod: tests/modules/hid-fake-ioc.json \
-		$(MODULES)/hid_fake_ioc.rel $(MODULES)/sdcc_indirect_calls.rel \
-		tools/zmodpack.py
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
-		--report $(MODULES)/fakeioc.report.json
-
-# --- V9958 module objects (production source) ---
-# The driver talks to the directly attached V9958 through its own port
-# primitives only; the ROMFS font arrives through the ABI-v2 resource
-# imports at init.  No kernel symbol and no other module's symbol is
-# referenced.
+	$(SDCC) $(SVC_HOT) $< -o $@
 
 $(MODULES)/v9958.rel: drivers/v9958/v9958.c drivers/v9958/v9958_driver.h \
 		include/zephyros/video.h include/zephyros/device.h \
-		include/zephyros/driver.h include/zephyros/platform.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
+		include/zephyros/ipc.h $(SVC_PROTOCOL_H) \
+		include/zephyros/platform.h | $(MODULES)
+	$(SDCC) $(SVC_HOT) $< -o $@
 
 $(MODULES)/v9958_io.rel: drivers/v9958/v9958_io.asm \
 		platform/zephyr80/hardware.inc | $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(MODULES)/v9958_module.rel: drivers/v9958/v9958_module.c \
-		drivers/v9958/v9958_driver.h include/zephyros/driver.h \
-		include/zephyros/device.h include/zephyros/video.h \
-		include/zephyros/platform.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
+$(MODULES)/v9958_service.rel: drivers/v9958/v9958_service.c \
+		drivers/v9958/v9958_driver.h include/zephyros/video.h \
+		include/zephyros/ipc.h $(SVC_PROTOCOL_H) | $(MODULES)
+	$(SDCC) $(SVC_HOT) $< -o $@
 
-V9958_MODULE_OBJS := $(MODULES)/v9958.rel $(MODULES)/v9958_io.rel \
-		$(MODULES)/v9958_module.rel $(MODULES)/sdcc_indirect_calls.rel
+$(MODULES)/v9958_boot.rel: drivers/v9958/v9958_boot.c \
+		drivers/v9958/v9958_driver.h include/zephyros/ipc.h \
+		$(SVC_PROTOCOL_H) | $(MODULES)
+	$(SDCC) $(SVC_BOOT) $< -o $@
 
-$(MODULES)/v9958.zmod: modules/manifests/v9958.json $(V9958_MODULE_OBJS) \
-		tools/zmodpack.py
+# The font bulk segment: the pinned CP850 6x8 bitmap, assembled straight
+# from the reviewable .inc asset (the same source tools/fontpack.py packs
+# for the M8-era ROMFS entry).
+$(MODULES)/v9958_font.rel: drivers/v9958/v9958_font.asm \
+		drivers/v9958/assets/font_cp850_6x8.inc | $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -Idrivers/v9958/assets -o $@ $<
+
+$(MODULES)/console_service.rel: services/console/console_service.c \
+		include/zephyros/ipc.h \
+		$(SVC_PROTOCOL_H) include/zephyros/errno.h | $(MODULES)
+	$(SDCC) $(SVC_HOT) $< -o $@
+
+$(MODULES)/sdcc_indirect_calls.rel: modules/runtime/sdcc_indirect_calls.asm \
+		| $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+SVC_OBJS := $(MODULES)/sdcc_indirect_calls.rel \
+	$(MODULES)/sio.rel $(MODULES)/sio_io.rel $(MODULES)/sio_service.rel \
+	$(MODULES)/sio_boot.rel \
+	$(MODULES)/ioc.rel $(MODULES)/ioc_io.rel $(MODULES)/ioc_service.rel \
+	$(MODULES)/ioc_boot.rel \
+	$(MODULES)/hid.rel \
+	$(MODULES)/v9958.rel $(MODULES)/v9958_io.rel \
+	$(MODULES)/v9958_service.rel $(MODULES)/v9958_font.rel \
+	$(MODULES)/v9958_boot.rel \
+	$(MODULES)/console_service.rel
+
+# One image per service manifest; the report carries the symbol offsets the
+# replays read the boot markers and the placements through.
+$(SVC_ZMODS): $(MODULES)/%.zmod: services/manifests/%.json $(SVC_OBJS) \
+		tools/zmodpack.py | $(MODULES)
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
-		--report $(MODULES)/v9958.report.json
+		--report $(MODULES)/$*.report.json
+
+# The service set an image boots, resolved to its packed images.
+SVC_SET_ZMODS = $(foreach svc,$(ZOS_SERVICES),$(MODULES)/$(svc).zmod)
 
 # ROMFS font asset (DATA): the reviewable .inc source is the pinned
 # reference font; fontpack.py verifies the exact 2048 bytes and the
@@ -1092,11 +1015,6 @@ $(MODULES)/v9958.zmod: modules/manifests/v9958.json $(V9958_MODULE_OBJS) \
 $(MODULES)/v9958-6x8.font: drivers/v9958/assets/font_cp850_6x8.inc \
 		tools/fontpack.py | $(MODULES)
 	$(PYTHON) tools/fontpack.py $< $@
-
-# Undersized font stub for the font-failure acceptance image (test
-# artifact; loaded in place of v9958-6x8.font by a test ROMFS manifest).
-$(MODULES)/v9958-font-stub.bin: tests/video/v9958-font-stub.bin | $(MODULES)
-	cp $< $@
 
 # --- synthetic M4 fixtures ---
 
@@ -1127,10 +1045,6 @@ $(MODULES)/abi_probe.zmod: tests/modules/abi_probe.json $(MODULES)/abi_probe.rel
 # image with a 36-granule BSS pad, large enough that its allocation can
 # never succeed in the derived production arena.  Loaded as `v9958.zmod`
 # by tests/console/manifest-fallback-arena.json; the init is never reached.
-$(MODULES)/arena_fill.rel: tests/modules/arena_fill.c \
-		include/zephyros/driver.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
 # --- M9 writable-provider fixtures (test only) ---
 
 $(MODULES)/ramfs.rel: tests/modules/ramfs.c \
@@ -1194,6 +1108,15 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		abi/zos/ipc.h \
 		include/zephyros/service.h \
 		kernel/syscall/ipc.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+# The resident-service acceptance client every M10 driver diagnostic links
+# (package 41): endpoint lookup, descriptor-less calls and the copy gate.
+$(BUILD)/service_client.rel: tests/target/support/service_client.c \
+		tests/target/include/service_client.h \
+		include/zephyros/kernel.h include/zephyros/process.h \
+		abi/zos/protocol.h include/zephyros/ipc.h \
+		kernel/ipc/ipc.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # Test-owned CTC0 programming helper (acceptance images only): linked in
@@ -1273,14 +1196,14 @@ $(BUILD)/nucleus_selftest_asm.rel: tests/target/nucleus/nucleus_entry.asm \
 
 $(BUILD)/romfs_test.rel: tests/target/romfs/romfs_test.c \
 		include/zephyros/romfs.h include/zephyros/module.h \
-		include/zephyros/console.h include/zephyros/kernel.h \
+		include/zephyros/kernel.h \
 		tests/target/include/romfs_selftest.h $(BUILD)/romfs_expect.inc | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/loader_test.rel: tests/target/loader/loader_test.c \
 		include/zephyros/module.h include/zephyros/kernel.h \
 		include/zephyros/device.h include/zephyros/irq.h \
-		include/zephyros/console.h include/zephyros/vfs.h \
+		include/zephyros/vfs.h \
 		tests/target/include/loader_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
@@ -1296,7 +1219,7 @@ $(BUILD)/process_expect.inc: $(BUILD)/user/zextest/zextest.json \
 
 $(BUILD)/process_test.rel: tests/target/process/process_test.c \
 		include/zephyros/process.h abi/zos/syscall.h \
-		include/zephyros/console.h include/zephyros/module.h \
+		include/zephyros/module.h \
 		include/zephyros/kernel.h \
 		tests/target/include/process_selftest.h $(BUILD)/process_expect.inc | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
@@ -1313,7 +1236,7 @@ $(BUILD)/ioc_test.rel: tests/target/ioc/ioc_test.c \
 	$(SDCC) $(CFLAGS) -Idrivers/ioc $< -o $@
 
 $(BUILD)/hid_test.rel: tests/target/hid/hid_test.c \
-		include/zephyros/console.h include/zephyros/device.h \
+		include/zephyros/device.h \
 		include/zephyros/hid.h include/zephyros/kernel.h \
 		tests/target/include/hid_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
@@ -1325,65 +1248,63 @@ $(BUILD)/video_test.rel: tests/target/video/v9958_test.c \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/console_test.rel: tests/target/console/console_test.c \
-		include/zephyros/console.h include/zephyros/device.h \
-		include/zephyros/kernel.h include/zephyros/video.h \
-		include/zephyros/hid.h \
+		include/zephyros/kernel.h abi/zos/protocol.h \
+		tests/target/include/service_client.h \
 		tests/target/include/console_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/console_integration_test.rel: tests/target/console/integration_test.c \
-		include/zephyros/console.h include/zephyros/device.h \
-		include/zephyros/hid.h include/zephyros/ioc.h \
-		include/zephyros/kernel.h include/zephyros/module.h \
-		include/zephyros/video.h include/zephyros/ioc_protocol.h \
+		include/zephyros/kernel.h include/zephyros/ioc.h \
+		abi/zos/protocol.h \
+		tests/target/include/service_client.h \
 		tests/target/include/console_integration_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/console_fallback_test.rel: tests/target/console/fallback_test.c \
-		include/zephyros/console.h include/zephyros/device.h \
-		include/zephyros/kernel.h \
+		include/zephyros/kernel.h abi/zos/protocol.h \
+		tests/target/include/service_client.h \
 		tests/target/include/console_fallback_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/m9_vfs_test.rel: tests/target/m9/m9_vfs_test.c \
 		abi/zos/fs.h include/zephyros/vfs.h \
 		include/zephyros/romfs.h include/zephyros/module.h \
-		include/zephyros/console.h include/zephyros/kernel.h \
+		include/zephyros/kernel.h \
 		kernel/vfs/vfs.h kernel/vfs/mount_config.h \
 		tests/target/include/m9_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/m9_provider_test.rel: tests/target/m9/m9_provider_test.c \
 		abi/zos/fs.h include/zephyros/vfs.h \
-		include/zephyros/module.h include/zephyros/console.h \
+		include/zephyros/module.h \
 		include/zephyros/kernel.h \
 		kernel/vfs/vfs.h kernel/vfs/mount_config.h \
 		tests/target/include/m9_provider_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/m9_fs_test.rel: tests/target/m9/m9_fs_test.c \
-		include/zephyros/process.h include/zephyros/console.h \
+		include/zephyros/process.h \
 		include/zephyros/kernel.h abi/zos/fs.h \
 		kernel/vfs/vfs.h \
 		tests/target/include/m9_fs_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/m9_exec_test.rel: tests/target/m9/m9_exec_test.c \
-		include/zephyros/process.h include/zephyros/console.h \
+		include/zephyros/process.h \
 		include/zephyros/kernel.h abi/zos/fs.h \
 		kernel/vfs/vfs.h \
 		tests/target/include/m9_exec_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/m9_iocfat_test.rel: tests/target/m9/m9_iocfat_test.c \
-		include/zephyros/console.h include/zephyros/device.h \
+		include/zephyros/device.h \
 		include/zephyros/kernel.h abi/zos/fs.h \
 		kernel/vfs/vfs.h \
 		tests/target/include/m9_iocfat_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/m9_selftest.rel: tests/target/m9/m9_selftest.c \
-		include/zephyros/console.h include/zephyros/kernel.h \
+		include/zephyros/kernel.h \
 		include/zephyros/process.h abi/zos/fs.h \
 		kernel/lib/name.h kernel/vfs/vfs.h \
 		tests/target/include/m9_integration_selftest.h | $(BUILD)
@@ -1458,7 +1379,33 @@ $(MODULES)/zex-fixtures.stamp: tests/subsys/gen_zex_fixtures.py \
 # Every image packs a manifest; the subsystem acceptance image adds the
 # loader/ROMFS/ZEX fixtures, and the corrupt-store image patches the packed
 # production image so the kernel's validation is exercised on target.
-ifeq ($(ZOS_SUBSYS_SELFTEST),1)
+ifeq ($(ZOS_IOC_SELFTEST),1)
+# IOC acceptance store: the SIO fallback and the IOC transport services the
+# image boots, plus the monitor launcher that follows the diagnostic.
+ROMFS_MANIFEST := tests/ioc/manifest.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+else ifeq ($(ZOS_HID_SELFTEST),1)
+# HID acceptance store: SIO, the IOC transport the HID engine depends on,
+# HID itself and the monitor.
+ROMFS_MANIFEST := tests/hid/manifest.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+else ifeq ($(ZOS_VIDEO_SELFTEST),1)
+# Video acceptance store: SIO, the V9958 video service (its font travels in
+# the image's bulk segment) and the console that composes them.
+ROMFS_MANIFEST := tests/video/manifest.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+else ifeq ($(ZOS_CONSOLE_SELFTEST),1)
+# Console acceptance store: the full production service set (the IOC-FAT
+# arena module is compiled out of this image, so its entry is absent) plus
+# the monitor launcher.
+ROMFS_MANIFEST := tests/console/manifest-integration.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+else ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)
+# Console integration acceptance store: the same full service set plus the
+# monitor launcher.
+ROMFS_MANIFEST := tests/console/manifest-integration.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+else ifeq ($(ZOS_SUBSYS_SELFTEST),1)
 ROMFS_MANIFEST := tests/subsys/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/romfs_crosspage.bin \
 		$(MODULES)/m4_probe.zmod $(MODULES)/m4_fail.zmod \
@@ -1467,12 +1414,6 @@ ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/romfs_crosspage.bin \
 else ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex tests/subsys/corrupt_romfs.py
-else ifeq ($(ZOS_HID_BADIOC),1)
-ROMFS_MANIFEST := tests/hid/manifest-badioc.json
-ROMFS_EXTRA_DEPS := $(MODULES)/fakeioc.zmod $(MODULES)/monitor.zex
-else ifeq ($(ZOS_VIDEO_FONTFAIL),1)
-ROMFS_MANIFEST := tests/video/manifest-fontfail.json
-ROMFS_EXTRA_DEPS := $(MODULES)/v9958-font-stub.bin $(MODULES)/monitor.zex
 else ifeq ($(ZOS_CONSOLE_FALLBACK),nohid)
 # Failure variant: the required set minus hid.zmod, so the kernel's HID
 # load takes the missing-ROMFS-entry path (-ZOS_ENOENT) and the console
@@ -1484,21 +1425,6 @@ else ifeq ($(ZOS_CONSOLE_FALLBACK),nohid-nov9958)
 # the IOC transport survive, and the console binds SIO/SIO.
 ROMFS_MANIFEST := tests/console/manifest-fallback-nohid-nov9958.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
-else ifeq ($(ZOS_CONSOLE_FALLBACK),badioc)
-# Failure variant: a malformed IOC interface (fixture device with a null
-# command operation) makes HID init fail and roll back while the real
-# V9958 still loads; the console binds SIO/V9958.
-ROMFS_MANIFEST := tests/hid/manifest-badioc.json
-ROMFS_EXTRA_DEPS := $(MODULES)/fakeioc.zmod $(MODULES)/monitor.zex
-else ifeq ($(ZOS_CONSOLE_FALLBACK),arena)
-# Failure variant: the v9958.zmod entry carries an oversized BSS filler,
-# so the last boot module fails allocation (ZMOD_ENOSPC) after SIO, IOC
-# and HID are resident; the console binds HID/SIO.  The declared boot
-# set (BOOT_ZMODS) keeps the real v9958 bytes for the build-time arena
-# plan; this image intentionally exercises the runtime allocation
-# failure, which the plan cannot express.
-ROMFS_MANIFEST := tests/console/manifest-fallback-arena.json
-ROMFS_EXTRA_DEPS := $(MODULES)/arena_fill.zmod $(MODULES)/monitor.zex
 else ifeq ($(ZOS_M9_VFS_SELFTEST),1)
 # Production-style VFS boot without IOC-FAT: the four resident modules, the
 # V9958 font and the monitor.  The VFS target test already fills the
@@ -1564,7 +1490,7 @@ else ifeq ($(ZOS_IPC_SELFTEST),1)
 ROMFS_MANIFEST := tests/ipc/manifest.json
 # Recursive: the service-image variables are defined below this chain.
 ROMFS_EXTRA_DEPS = $(MODULES)/ipc.zex $(MODULES)/ipccopy.zex \
-	$(IPC_ZMODS) $(IPC_MODDIR)/services.man
+	$(IPC_ZMODS) $(MODULES)/services.man
 else
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
@@ -1625,13 +1551,19 @@ $(IPC_ZMODS): $(IPC_MODDIR)/ipc-%.zmod: $(IPC_DIR)/manifests/%.json \
 
 $(IPC_MODDIR)/ipc-con.zmod: $(IPC_MODDIR)/con_slow.rel
 
+endif
+
 # The boot manifest: the flat ROMFS names in dependency (load) order,
 # validated as a set - unique endpoints, resolvable dependencies and a
 # tier allocation that fits - and reported with the two service ledgers.
-$(IPC_MODDIR)/services.man: $(IPC_ZMODS) tools/zmodpack.py | $(IPC_MODDIR)
-	$(PYTHON) tools/zmodpack.py services $@ $(IPC_ZMODS) \
-		--report $(IPC_MODDIR)/services.plan.json
-endif
+# An image boots what its manifest lists: the production store lists the
+# five driver services, the IPC image lists the SIO and console services
+# its SDK programs print through ahead of the synthetic set.
+SVC_MAN_INPUTS = $(SVC_SET_ZMODS) \
+	$(if $(filter 1,$(ZOS_IPC_SELFTEST)),$(IPC_ZMODS))
+$(MODULES)/services.man: $(SVC_MAN_INPUTS) tools/zmodpack.py | $(MODULES)
+	$(PYTHON) tools/zmodpack.py services $@ $(SVC_MAN_INPUTS) \
+		--report $(MODULES)/services.plan.json
 
 # --- boot-program setting (package 28b) --------------------------------------
 # Validate ZOS_BOOT_PROGRAM against the manifest this image packs, then
@@ -1653,10 +1585,8 @@ CFLAGS    += -DZOS_BOOT_PROGRAM='"$(ZOS_BOOT_PROGRAM)"'
 
 $(BUILD)/main.rel: $(BOOT_PROGRAM_STAMP)
 
-$(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(MODULES)/sio.zmod \
-		$(MODULES)/ioc.zmod $(MODULES)/hid.zmod $(MODULES)/v9958.zmod \
-		$(if $(filter 0,$(ZOS_IOCFAT_BOOT)),,$(BOOT_IOCFAT_ZMOD)) \
-		$(MODULES)/v9958-6x8.font $(ROMFS_EXTRA_DEPS) \
+$(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(SVC_SET_ZMODS) \
+		$(MODULES)/services.man $(BOOT_ZMODS) $(ROMFS_EXTRA_DEPS) \
 		tools/romfspack.py $(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
 ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
 	$(PYTHON) tools/romfspack.py --memory-inc $(ZOS_PLATFORM_MEMORY_INC) pack \
@@ -1688,8 +1618,7 @@ ZOS_TEST_LINK := $(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 		$(ZOS_NUCLEUS_SELFTEST) \
 		$(ZOS_ROMFS_CORRUPT_SELFTEST) \
 		$(ZOS_IOC_SELFTEST) $(ZOS_HID_SELFTEST) \
-		$(ZOS_HID_NOIOC) $(ZOS_HID_BADIOC) \
-		$(ZOS_VIDEO_SELFTEST) $(ZOS_VIDEO_FONTFAIL) \
+		$(ZOS_VIDEO_SELFTEST) \
 		$(ZOS_CONSOLE_SELFTEST) $(ZOS_CONSOLE_INTEGRATION_SELFTEST) \
 		$(ZOS_CONSOLE_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
 		$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST) \
@@ -1895,12 +1824,6 @@ ioc-selftest:
 # hid-test proves the packed HID module and the class/source contracts on
 # the host; hid-selftest builds the production-geometry acceptance
 # image (SIO + IOC + HID from ROMFS) and replays it in the simulator;
-# hid-noioc-selftest builds and replays the dependency-absence image
-# (IOC boot load disabled: HID is rolled back and SIO remains the console
-# fallback); hid-badioc-selftest builds and replays the
-# malformed-interface image (fake IOC with a null command operation).
-# The smoke target drives the flashed HID image over SIO0/B and scripts
-# the SIO fallback byte; the USB-keyboard pass is typed by the operator.
 
 hid-test: $(MODULES)/hid.zmod
 	$(PYTHON) tools/zmodpack.py validate $(MODULES)/hid.zmod
@@ -1920,37 +1843,11 @@ hid-selftest:
 	$(PYTHON) -m unittest discover -s tests -p 'test_hid_sim.py' -v
 	@echo "hid image: build-hid-selftest/zephyros-hid-selftest.bin"
 
-hid-noioc-selftest:
-	$(MAKE) BUILD=build-hid-noioc-selftest ZOS_HID_NOIOC=1 \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-hid-noioc-selftest/zephyros-hid-noioc-selftest.bin \
-		build-hid-noioc-selftest/zephyr80-hid-noioc-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-hid-noioc-selftest/zephyros.map \
-		build-hid-noioc-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_hid_sim.py' -v
-	@echo "hid no-IOC image: build-hid-noioc-selftest/zephyros-hid-noioc-selftest.bin"
-
-hid-badioc-selftest:
-	$(MAKE) BUILD=build-hid-badioc-selftest ZOS_HID_BADIOC=1 \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-hid-badioc-selftest/zephyros-hid-badioc-selftest.bin \
-		build-hid-badioc-selftest/zephyr80-hid-badioc-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-hid-badioc-selftest/zephyros.map \
-		build-hid-badioc-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_hid_sim.py' -v
-	@echo "hid bad-IOC image: build-hid-badioc-selftest/zephyros-hid-badioc-selftest.bin"
-
 # --- video tooling, acceptance images, and hardware smoke -----------
 # v9958-test proves the packed module, the font asset pipeline and the
 # class/platform/source contracts on the host; video-selftest builds
 # the production-geometry acceptance image (SIO + IOC + HID + V9958
 # from ROMFS) and replays it in the simulator against the V9958 peer;
-# video-fontfail-selftest builds and replays the resource-failure
-# image (the ROMFS font entry is an undersized stub).
 
 v9958-test: $(MODULES)/v9958.zmod $(MODULES)/v9958-6x8.font
 	$(PYTHON) tools/zmodpack.py validate $(MODULES)/v9958.zmod
@@ -1971,18 +1868,6 @@ video-selftest:
 		$(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_v9958_sim.py' -v
 	@echo "video image: build-video-selftest/zephyros-video-selftest.bin"
-
-video-fontfail-selftest:
-	$(MAKE) BUILD=build-video-fontfail-selftest ZOS_VIDEO_FONTFAIL=1 \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-video-fontfail-selftest/zephyros-video-fontfail-selftest.bin \
-		build-video-fontfail-selftest/zephyr80-video-fontfail-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-video-fontfail-selftest/zephyros.map \
-		build-video-fontfail-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_v9958_sim.py' -v
-	@echo "video font-failure image: build-video-fontfail-selftest/zephyros-video-fontfail-selftest.bin"
 
 # The console acceptance image (package 19) boots the full production
 # stack, reports the selected console input/output classes over the
@@ -2027,6 +1912,24 @@ console-integration-selftest: all
 		$(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_console_acceptance.py' -v
 	@echo "console integration image: build-console-integration-selftest/zephyros-console-integration-selftest.bin"
+
+# console fallback matrix (package 20): the two service-set subsets the
+# store expresses (nohid, nohid-nov9958) with the target composition
+# diagnostic and the monitor launcher, replayed by
+# tests/test_console_fallback.py and by the matching serial_smoke modes.
+
+console-fallback-selftests:
+	$(MAKE) BUILD=build-console-fb-nohid ZOS_CONSOLE_FALLBACK_SELFTEST=1 \
+		ZOS_CONSOLE_FALLBACK=nohid ZOS_SMOKE_HOST_SYNC=1 \
+		build-console-fb-nohid/zephyros-console-fb-nohid.bin
+	$(MAKE) BUILD=build-console-fb-nohid-nov9958 \
+		ZOS_CONSOLE_FALLBACK_SELFTEST=1 \
+		ZOS_CONSOLE_FALLBACK=nohid-nov9958 ZOS_SMOKE_HOST_SYNC=1 \
+		build-console-fb-nohid-nov9958/zephyros-console-fb-nohid-nov9958.bin
+	$(PYTHON) -m unittest discover -s tests -p 'test_console_fallback.py' -v
+	@echo "console fallback images:"
+	@echo "  build-console-fb-nohid/zephyros-console-fb-nohid.bin"
+	@echo "  build-console-fb-nohid-nov9958/zephyros-console-fb-nohid-nov9958.bin"
 
 # --- M9 VFS bootstrap acceptance image ---------------------------------------
 # Production-style VFS boot: ROMFS at /SYSTEM, the four resident modules and
@@ -2190,52 +2093,6 @@ helloworld-image: all
 	$(PYTHON) -m unittest discover -s tests -p 'test_sdk.py' -v
 	@echo "helloworld image: build-helloworld/zephyros-helloworld.bin"
 
-console-fallback-selftests: all
-	$(MAKE) BUILD=build-console-fb-nohid ZOS_CONSOLE_FALLBACK_SELFTEST=1 \
-		ZOS_CONSOLE_FALLBACK=nohid ZOS_SMOKE_HOST_SYNC=1 \
-		build-console-fb-nohid/zephyros-console-fb-nohid.bin \
-		build-console-fb-nohid/zephyr80-console-fb-nohid.bin
-	$(MAKE) BUILD=build-console-fb-nohid-nov9958 ZOS_CONSOLE_FALLBACK_SELFTEST=1 \
-		ZOS_CONSOLE_FALLBACK=nohid-nov9958 ZOS_SMOKE_HOST_SYNC=1 \
-		build-console-fb-nohid-nov9958/zephyros-console-fb-nohid-nov9958.bin \
-		build-console-fb-nohid-nov9958/zephyr80-console-fb-nohid-nov9958.bin
-	$(MAKE) BUILD=build-console-fb-badioc ZOS_CONSOLE_FALLBACK_SELFTEST=1 \
-		ZOS_CONSOLE_FALLBACK=badioc ZOS_SMOKE_HOST_SYNC=1 \
-		build-console-fb-badioc/zephyros-console-fb-badioc.bin \
-		build-console-fb-badioc/zephyr80-console-fb-badioc.bin
-	$(MAKE) BUILD=build-console-fb-arena ZOS_CONSOLE_FALLBACK_SELFTEST=1 \
-		ZOS_CONSOLE_FALLBACK=arena ZOS_SMOKE_HOST_SYNC=1 \
-		build-console-fb-arena/zephyros-console-fb-arena.bin \
-		build-console-fb-arena/zephyr80-console-fb-arena.bin
-	$(MAKE) BUILD=build-video-fontfail-selftest ZOS_VIDEO_FONTFAIL=1 \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-video-fontfail-selftest/zephyros-video-fontfail-selftest.bin \
-		build-video-fontfail-selftest/zephyr80-video-fontfail-selftest.bin
-	$(MAKE) BUILD=build-hid-noioc-selftest ZOS_HID_NOIOC=1 \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-hid-noioc-selftest/zephyros-hid-noioc-selftest.bin \
-		build-hid-noioc-selftest/zephyr80-hid-noioc-selftest.bin
-	$(MAKE) BUILD=build-hid-badioc-selftest ZOS_HID_BADIOC=1 \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-hid-badioc-selftest/zephyros-hid-badioc-selftest.bin \
-		build-hid-badioc-selftest/zephyr80-hid-badioc-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) build-console-fb-nohid/zephyros.map \
-		build-console-fb-nohid/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) build-console-fb-nohid-nov9958/zephyros.map \
-		build-console-fb-nohid-nov9958/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) build-console-fb-badioc/zephyros.map \
-		build-console-fb-badioc/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) build-console-fb-arena/zephyros.map \
-		build-console-fb-arena/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_console_fallback.py' -v
-	@echo "console fallback matrix images:"
-	@echo "  build-console-fb-nohid/zephyros-console-fb-nohid.bin"
-	@echo "  build-console-fb-nohid-nov9958/zephyros-console-fb-nohid-nov9958.bin"
-	@echo "  build-console-fb-badioc/zephyros-console-fb-badioc.bin"
-	@echo "  build-console-fb-arena/zephyros-console-fb-arena.bin"
-	@echo "  build-video-fontfail-selftest/zephyros-video-fontfail-selftest.bin"
-	@echo "  build-console-integration-selftest/zephyros-console-integration-selftest.bin + build/zephyros.bin (all-modules row)"
-
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching image
 # programmed.  Pass SERIAL_PORT=/dev/ttyUSB0 (or export ZOS_SERIAL_PORT).
@@ -2325,10 +2182,6 @@ smoke-hardware-console-fb-nohid:
 smoke-hardware-console-fb-nohid-nov9958:
 	@$(call smoke_preflight,build-console-fb-nohid-nov9958/zephyros-console-fb-nohid-nov9958.bin,console-fallback-selftests)
 	$(PYTHON) tools/serial_smoke.py --mode console-fb-nohid-nov9958 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-console-fb-badioc:
-	@$(call smoke_preflight,build-console-fb-badioc/zephyros-console-fb-badioc.bin,console-fallback-selftests)
-	$(PYTHON) tools/serial_smoke.py --mode console-fb-badioc --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-console-fb-arena:
 	@$(call smoke_preflight,build-console-fb-arena/zephyros-console-fb-arena.bin,console-fallback-selftests)

@@ -122,21 +122,34 @@ static int zmod_validate_header(const struct zmod_header *h, uint16_t size,
 	return ZMOD_OK;
 }
 
-/* Shared relocation-record validation. */
-static int zmod_check_reloc(uint8_t type, uint8_t reserved,
-			    uint16_t patch_offset, uint16_t image_size)
+/* Shared ZREL_ABS16 decoding (work package 41): the record type and the
+ * patch range within the image.  The record's second byte is the caller's
+ * rule - the driver container keeps it zero, a service segment's names the
+ * target segment, and the resident service loader validates it against its
+ * own segment count - so it is not a parameter here. */
+int zmod_reloc_decode(uint8_t type, uint16_t raw_patch, uint16_t image_size,
+		      uint16_t *patch_out)
 {
 	if (type != ZREL_ABS16) {
 		return ZMOD_ENOTSUP;
 	}
-	if (reserved != 0) {
-		return ZMOD_EINVAL;
-	}
-	if (patch_offset >= image_size ||
-	    (uint16_t)(image_size - patch_offset) < 2u) {
+	if (image_size < 2u || raw_patch > (uint16_t)(image_size - 2u)) {
 		return ZMOD_EFORMAT;
 	}
+	*patch_out = raw_patch;
 	return ZMOD_OK;
+}
+
+/* Shared 16-bit patch addition: `value += base`, with the wrap check both
+ * relocators apply.  `*overflow` is set when the sum would wrap 16 bits. */
+uint16_t zmod_reloc_add(uint16_t value, uint16_t base, uint8_t *overflow)
+{
+	if (value > (uint16_t)(0xFFFFu - base)) {
+		*overflow = 1u;
+		return value;
+	}
+	*overflow = 0u;
+	return (uint16_t)(value + base);
 }
 
 /* Bounded read through the container's byte source; every offset/length is
@@ -189,6 +202,7 @@ int zmod_validate_source(const struct zmod_source *source,
 	uint16_t reloc_offset;
 	uint16_t reloc_count;
 	uint16_t image_size;
+	uint16_t patch;
 	int result;
 	uint16_t i;
 
@@ -223,10 +237,13 @@ int zmod_validate_source(const struct zmod_source *source,
 		if (result != ZMOD_OK) {
 			return ZMOD_EFORMAT;
 		}
-		result = zmod_check_reloc(rec[0], rec[1],
-					  zmod_read_u16(rec + 2), image_size);
+		result = zmod_reloc_decode(rec[0], zmod_read_u16(rec + 2),
+					   image_size, &patch);
 		if (result != ZMOD_OK) {
 			return result;
+		}
+		if (rec[1] != 0) {
+			return ZMOD_EINVAL; /* driver records reserve byte 1 */
 		}
 	}
 	return ZMOD_OK;
@@ -278,6 +295,7 @@ int zmod_apply_relocations(uint8_t *load_base, const struct zmod_container *c)
 		uint8_t rec[ZMOD_RELOC_SIZE];
 		uint16_t offset;
 		uint16_t value;
+		uint8_t overflow;
 		int result = zmod_container_read(
 			c, (uint16_t)(c->reloc_offset + (uint16_t)(i << 2)),
 			rec, ZMOD_RELOC_SIZE);
@@ -285,18 +303,19 @@ int zmod_apply_relocations(uint8_t *load_base, const struct zmod_container *c)
 		if (result != ZMOD_OK) {
 			return ZMOD_EFORMAT; /* re-validated defensively */
 		}
-		result = zmod_check_reloc(rec[0], rec[1],
-					  zmod_read_u16(rec + 2),
-					  c->image_size);
+		result = zmod_reloc_decode(rec[0], zmod_read_u16(rec + 2),
+					   c->image_size, &offset);
 		if (result != ZMOD_OK) {
 			return result;
 		}
-		offset = zmod_read_u16(rec + 2);
+		if (rec[1] != 0) {
+			return ZMOD_EINVAL; /* driver records reserve byte 1 */
+		}
 		value = zmod_read_u16(load_base + offset);
-		if (value > (uint16_t)(0xFFFFu - base)) {
+		value = zmod_reloc_add(value, base, &overflow);
+		if (overflow != 0u) {
 			return ZMOD_EFORMAT; /* relocation overflow */
 		}
-		value = (uint16_t)(value + base);
 		load_base[offset] = (uint8_t)value;
 		load_base[offset + 1] = (uint8_t)(value >> 8);
 	}

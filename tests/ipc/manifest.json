@@ -7,6 +7,11 @@
       "path": "sio.zmod"
     },
     {
+      "name": "console.zmod",
+      "type": "ZMOD",
+      "path": "console.zmod"
+    },
+    {
       "name": "ipccopy.zex",
       "type": "ZEX",
       "path": "ipccopy.zex"
@@ -19,7 +24,7 @@
     {
       "name": "services.man",
       "type": "DATA",
-      "path": "ipc-modules/services.man"
+      "path": "services.man"
     },
     {
       "name": "ipc-ioc.zmod",

@@ -38,7 +38,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import Ctc0Injector, Z80, read_symbols  # noqa: E402
+from z80sim import (Ctc0Injector, Z80, read_symbols,
+                    skip_serial_connect_delay)  # noqa: E402
 import romfspack  # noqa: E402
 
 RET = 0x1234
@@ -105,8 +106,8 @@ class SubsystemSimBase(unittest.TestCase):
         return z
 
     def skip_delay(self, z):
-        if z.pc == self.syms["_kernel_serial_connect_delay"]:
-            z.pc = z.pop16()
+        skip_serial_connect_delay(
+            z, self.syms["_kernel_serial_connect_delay"])
 
     def result_byte(self, z, symbol):
         """Read one target status byte from the window it lives in: the

@@ -1,19 +1,23 @@
 /* Internal interface of the HID driver implementation (drivers/hid/).
  *
- * hid.c owns the local ring, the fetch-on-doorbell engine, and the
- * stuck-doorbell penalty; hid_module.c owns the zdevice descriptor and
- * the module init entry.  The module discovers the IOC class through
- * the passed `zdriver_api` only -- no imported IOC-module symbol and no
- * registry lookup by name.  Not a kernel ABI.
+ * hid.c owns the local ring, the fetch-on-doorbell engine, the
+ * stuck-doorbell penalty and the resident-service protocol dispatch
+ * (abi/zos/protocol.h).  The engine discovers the IOC service through the
+ * bootstrap interface only -- never an imported symbol and never a
+ * registry lookup by name -- and declares that dependency in its image
+ * metadata.  The whole driver is hot (no boot segment): its bring-up is
+ * dependency discovery, which needs the bootstrap interface.
+ * Not a kernel ABI.
  */
 
 #ifndef ZEPHYROS_DRIVERS_HID_DRIVER_H
 #define ZEPHYROS_DRIVERS_HID_DRIVER_H
 
 #include "zephyros/device.h"
-#include "zephyros/driver.h"
 #include "zephyros/hid.h"
+#include "zephyros/ipc.h"
 #include "zephyros/ioc.h"
+#include "zos/types.h"
 
 /* Local translated-input ring: power-of-two size so the wraparound is a
  * mask, matching the proven MCU-side queue discipline. */
@@ -23,29 +27,31 @@
  * that produced no data (the proven stuck-doorbell guard). */
 #define ZHID_STUCK_PENALTY 64u
 
+/* Bounded READ_TEXT staging: the service I/O block the drained bytes are
+ * copied out from (SERVICE_IO, the one fast copy range). */
+#define ZHID_READ_BATCH 24u
+
 struct zhid_state {
-	const struct zioc_ops *ioc; /* discovered IOC class operations */
-	void *ioc_ctx;              /* opaque IOC instance state        */
-	uint8_t head;               /* ring produce index               */
-	uint8_t tail;               /* ring consume index               */
-	uint8_t count;              /* bytes currently buffered         */
-	uint8_t penalty;            /* stuck-doorbell countdown         */
+	uint8_t ioc_handle; /* the IOC endpoint, 0 = absent/unready  */
+	uint8_t head;       /* ring produce index                    */
+	uint8_t tail;       /* ring consume index                    */
+	uint8_t count;      /* bytes currently buffered              */
+	uint8_t penalty;    /* stuck-doorbell countdown              */
 	uint8_t ring[ZHID_RING_SIZE];
+	uint8_t read_buffer[ZHID_READ_BATCH];
+	uint16_t read_buffer_address;
 };
 
-/* Discovery + state setup; used by the module init entry.  Verifies the
- * IOC dependency through device_find()/device_interface() only and
- * returns ZDRIVER_OK or ZDRIVER_FAIL.  Nothing is published here. */
-int hid_driver_init(const struct zdriver_api *api);
-
-/* The class/character operation implementations (exposed for the
- * descriptor table). */
+/* The class operation implementations (exposed for the dispatch). */
 int hid_read_text(void *state, uint8_t *dst, uint16_t max_len);
 int hid_poll(void *state);
 int hid_getc(void *state);
 
-extern const struct zhid_ops hid_ops;
-extern const struct zchar_ops hid_char_ops;
+/* Hot segment: the endpoint dispatch and the init entry the loader calls
+ * with the service bootstrap table. */
+int16_t hid_service_dispatch(struct zos_ipc_frame *frame);
+void hid_service_init(const struct ipc_service_api *api);
+
 extern struct zhid_state hid_state;
 
 #endif /* ZEPHYROS_DRIVERS_HID_DRIVER_H */

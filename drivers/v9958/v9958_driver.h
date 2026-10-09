@@ -29,7 +29,7 @@
 #define ZEPHYROS_DRIVERS_V9958_DRIVER_H
 
 #include "zephyros/device.h"
-#include "zephyros/driver.h"
+#include "zephyros/ipc.h"
 #include "zephyros/video.h"
 
 /* --- GRAPHIC 6 layout (hardware-proven 85x26 console baseline) ---------
@@ -172,7 +172,6 @@ int v9958_char_write(void *state, const char *buf, uint16_t len);
 
 /* Driver state: module BSS, relocated with the module image. */
 struct v9958_state {
-	const struct zdriver_api *api; /* resource imports for the font   */
 	uint8_t config_shadow;         /* latch shadow; D0 always preserved */
 	uint8_t scroll_origin;         /* physical scanline of row zero    */
 
@@ -201,10 +200,29 @@ struct v9958_state {
 	uint8_t out_run_row;
 };
 
-/* Cold bring-up (full initialization incl. the font upload).  Returns
- * ZDRIVER_OK or ZDRIVER_FAIL; registering the device stays with the
- * module entry so a failure publishes nothing. */
-int v9958_driver_init(const struct zdriver_api *api);
+/* Internal result convention of the bring-up chain (the value pair the
+ * retired module ABI used). */
+#define V9958_OK   0
+#define V9958_FAIL (-1)
+
+/* The shared display bring-up (full initialization incl. the font
+ * upload), used by the boot segment's initial pass and by the run-time
+ * ZVIDEO_RESET.  Returns ZDRIVER_OK or ZDRIVER_FAIL. */
+int v9958_display_bringup(void);
+
+/* The boot-tier direct font source: the boot entry leaves the font's
+ * bank-6 address here for the initial upload; the service init clears it
+ * so every later read goes through the nucleus bulk copy. */
+void v9958_set_font_base(uint16_t base);
+void v9958_set_api(const struct ipc_service_api *api);
+
+/* Boot segment: the initial bring-up, run once through the mode-10 gate. */
+void v9958_boot_entry(void);
+
+/* Hot segment: the endpoint dispatch and the init entry the loader calls
+ * with the service bootstrap table. */
+int16_t v9958_service_dispatch(struct zos_ipc_frame *frame);
+void v9958_service_init(const struct ipc_service_api *api);
 
 /* The class operation implementation (exposed for the descriptor).  A
  * ZVIDEO_RESET reinitializes the terminal parser, cursor/rendition
@@ -214,8 +232,7 @@ int v9958_driver_init(const struct zdriver_api *api);
 int v9958_send(void *state, uint8_t operation, const void *payload,
 	       uint16_t length);
 
-extern const struct zvideo_ops v9958_video_ops;
-extern const struct zchar_ops v9958_char_ops;
 extern struct v9958_state v9958_state;
+extern volatile uint8_t v9958_boot_runs;
 
 #endif /* ZEPHYROS_DRIVERS_V9958_DRIVER_H */

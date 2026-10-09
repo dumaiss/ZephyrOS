@@ -1,332 +1,172 @@
-/* ZephyrOS V9958 video acceptance selftest (test artifact).
+/* ZephyrOS V9958 video service acceptance selftest (test artifact,
+ * work package 41).
  *
- * Runs from the late boot hook after the production-style boot: the SIO
- * fallback, the IOC transport, the HID keyboard and the V9958 video core
- * (with its ROMFS font) are loaded from the recovery store and the
- * console is bound.  All control and outcome lines go through the direct
- * early SIO so the transcript is independent of any bound console.
+ * The kernel calls zos_run_video_selftest() from the late boot hook,
+ * after the resident service loader has placed and started this image's
+ * service set (`sio v9958 console`, the loader's `service ...` evidence
+ * lines precede this transcript) and after the nucleus console probe
+ * wrote `console: service OK` through the console service - the console
+ * composes the V9958 output with the serial input fallback this store
+ * implies, so that line is visible in the V9958 command trace.
  *
- * Normal image coverage:
- *   - `v9958.0` discovered by class plus the seven VIDEO capabilities
- *     and the generic ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT pair (the
- *     ported 85x26 terminal renderer), with an output-only zchar_ops
- *     table (putc/write present, poll/getc null);
- *   - the class interface is fetched and verified through
- *     device_interface();
- *   - malformed requests are rejected with the exact error before any
- *     I/O (null/zero write payloads, PRESENT/RESET length, unknown
- *     operation, null state);
- *   - the default console binding is the HID input plus the V9958
- *     output (the normal HID/V9958 console pair);
- *   - ZVIDEO_RESET re-establishes the full display state;
- *   - PALETTE_WRITE programs entry 12 to magenta, INDIRECT_WRITE starts
- *     a white HMMV fill, PRESENT waits for command completion, and
- *     CTRL_WRITE + DATA_WRITE + DATA_BLOCK stream a deterministic
- *     pattern (200-byte block, far above the historical ceiling) into
- *     VRAM.
+ * This diagnostic is a *bank-7 client* of the video service (see
+ * tests/target/include/service_client.h): it holds no descriptor and
+ * cannot use `move`, so it drives the descriptor-less protocol forms
+ * only, and every control/outcome line goes through the direct early SIO
+ * so the transcript is independent of the console service it exercises.
  *
- * The visible result and the exact expected bytes are documented in
- * docs/validation/2026-10-03-m8-v9958.md; tests/test_v9958_sim.py
- * replays this image and checks the VRAM contents and port traces; the
- * console text renderer itself is exercised by tests/test_v9958_console.py
- * and the console acceptance image.
+ * Coverage (abi/zos/protocol.h section ZOS_CLASS_VIDEO):
  *
- * Font-failure image coverage (ZOS_VIDEO_FONTFAIL): the ROMFS font
- * entry is a 16-byte stub, so the module must fail and publish nothing.
- * The test proves `v9958.0` is absent while HID and the SIO fallback
- * remain registered and bound.
+ *   - endpoint discovery: the VIDEO endpoint answers at
+ *     ZOS_PROTOCOL_VERSION (class 02, version 01), and the serial and
+ *     console endpoints are present (the console is this service's
+ *     composed client; the serial service is the early-console and
+ *     console-input fallback);
+ *   - ZVIDEO_PRESENT (argument-free) answers 0: the registered state is
+ *     live and the command engine drained;
+ *   - ZVIDEO_RESET (argument-free) answers 0 and re-runs the complete
+ *     display bring-up: the replay observes the re-programmed GRAPHIC 6
+ *     register sequence and the font atlas upload fed by this image's
+ *     bulk segment;
+ *   - ZVIDEO_OP_PUTC renders the marker `V41` through the terminal
+ *     renderer after the reset (which clears the text plane); the
+ *     replay decodes the glyph copies from the V9958 command trace;
+ *   - malformed calls are refused with -ZOS_EINVAL and cause no VDP
+ *     access: an unknown protocol op, a streaming native op without a
+ *     caller buffer (a bank-7 client can never hold the descriptor the
+ *     five streaming operations require), and a handle the nucleus
+ *     never issued;
+ *   - the transcript's last line is the pinned `video selftest: OK`
+ *     (or `video selftest: FAIL <phase>`), which tests/test_v9958_sim.py
+ *     pins along with the peer-observable facts above.
  */
 
-#include "zephyros/console.h"
-#include "zephyros/device.h"
-#include "zephyros/kernel.h"
+#include "zos/protocol.h"
+
+#include "zephyros/errno.h"
 #include "zephyros/video.h"
 
-#include "kernel/device/registry.h"
+#include "service_client.h"
 #include "video_selftest.h"
 
 #if ZOS_VIDEO_SELFTEST || ZOS_VIDEO_FONTFAIL
 
 uint8_t ace_video_selftest_result;
 
-#define VIDEO_VIDEO_CAPS (ZCAP_VIDEO_CTRL_WRITE | ZCAP_VIDEO_DATA_WRITE | \
-			    ZCAP_VIDEO_DATA_BLOCK | ZCAP_VIDEO_PALETTE | \
-			    ZCAP_VIDEO_INDIRECT | ZCAP_VIDEO_PRESENT | \
-			    ZCAP_VIDEO_RESET)
-#define VIDEO_CHAR_CAPS  (ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT)
+#define VIDEO_TAG "video: "
+/* The terminal marker the replay decodes from the V9958 glyph trace. */
+#define VIDEO_MARKER "V41"
 
-/* Deterministic pattern: one white pixel pair written through
- * DATA_WRITE, then 200 magenta pixel pairs through DATA_BLOCK. */
-#define VIDEO_BAND_SCANLINE 96u     /* VRAM byte offset 6000h */
-#define VIDEO_BAND_R14      0x01u   /* A15:A14 of 6000h        */
-#define VIDEO_BAND_ADDR_HI  0x60u   /* A13:A8 (20h) | VRAM 40h */
-#define VIDEO_BAND_BYTES    200u
-#define VIDEO_BAND_FIRST    0xFFu   /* white,white             */
-#define VIDEO_BAND_FILL     0xCCu   /* palette 12 twice        */
+static const char video_marker[] = VIDEO_MARKER "\r\n";
+static uint8_t video_handle;
 
-static const char video_digits[] = "0123456789ABCDEF";
-
-static void video_put_hex8(uint8_t value)
+static void video_puts(const char *text)
 {
-	early_console_putc(video_digits[(value >> 4) & 0x0Fu]);
-	early_console_putc(video_digits[value & 0x0Fu]);
+	service_cli_puts(VIDEO_TAG);
+	service_cli_puts(text);
+	service_cli_puts("\r\n");
 }
 
-static void video_fail(uint8_t code, uint8_t detail)
+/* One failure line, and the diagnostic's last line by construction. */
+static void video_fail(uint8_t code, const char *phase)
 {
-	static const char prefix[] = "video selftest: FAIL 0x";
-	static const char detail_prefix[] = " detail 0x";
-
 	ace_video_selftest_result = code;
-	early_console_puts(prefix);
-	video_put_hex8(code);
-	early_console_puts(detail_prefix);
-	video_put_hex8(detail);
-	early_console_puts("\r\n");
+	service_cli_puts("video selftest: FAIL ");
+	service_cli_puts(phase);
+	service_cli_puts("\r\n");
 }
 
-static uint8_t video_name_is(const char *name, const char *want)
+/* Endpoint discovery row: the video class and the running protocol
+ * version, then the two peer endpoints this store implies. */
+static uint8_t video_probe_endpoints(void)
 {
-	while (*want != '\0') {
-		if (*name != *want) {
-			return 0u;
-		}
-		++name;
-		++want;
-	}
-	return (*name == '\0') ? 1u : 0u;
+	uint8_t handle = 0u;
+	uint8_t serial;
+	uint8_t console;
+
+	service_cli_puts(VIDEO_TAG "endpoint class ");
+	service_cli_hex8(ZOS_CLASS_VIDEO);
+	service_cli_puts(" version ");
+	service_cli_hex8(ZOS_PROTOCOL_VERSION);
+	service_cli_puts("\r\n");
+
+	serial = service_cli_endpoint(ZOS_CLASS_SERIAL, &handle);
+	console = service_cli_endpoint(ZOS_CLASS_CONSOLE, &handle);
+	service_cli_puts(VIDEO_TAG "peers serial=");
+	service_cli_puts(serial != 0u ? "01" : "00");
+	service_cli_puts(" console=");
+	service_cli_puts(console != 0u ? "01" : "00");
+	service_cli_puts("\r\n");
+	return (uint8_t)(serial != 0u && console != 0u);
 }
-
-#if ZOS_VIDEO_FONTFAIL
-/* Resource-failure image: the module must have failed its font check
- * and been rolled back; the earlier devices and the console binding
- * must be untouched. */
-static void video_fontfail_run(void)
-{
-	if (device_find(ZDEV_VIDEO, ZCAP_VIDEO_RESET, 0u) !=
-	    ZDEV_HANDLE_INVALID) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_PRESENT, 0x01u);
-		return;
-	}
-	if (device_find(ZDEV_HID, ZCAP_HID_TEXT, 0u) ==
-	    ZDEV_HANDLE_INVALID) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_DEVICES, 0x01u);
-		return;
-	}
-	if (device_find(ZDEV_SERIAL, ZCAP_CONSOLE_OUT, 0u) ==
-	    ZDEV_HANDLE_INVALID) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_DEVICES, 0x02u);
-		return;
-	}
-	if (console_output_handle() == ZDEV_HANDLE_INVALID) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_DEVICES, 0x03u);
-		return;
-	}
-	early_console_puts("video: absent after font failure\r\n");
-	ace_video_selftest_result = ZOS_VIDEOSELFTEST_OK;
-	early_console_puts("video fontfail selftest: OK\r\n");
-}
-#else
-static void video_run(void)
-{
-	zdev_handle_t handle;
-	const struct zdevice *dev;
-	const void *class_ops = (const void *)0;
-	void *state = (void *)0;
-	const struct zvideo_ops *ops;
-	zdev_handle_t hid;
-	uint8_t cmd[15];
-	uint8_t bytes[2];
-	uint8_t pattern[VIDEO_BAND_BYTES];
-	uint8_t i;
-	int rc;
-
-	handle = device_find(ZDEV_VIDEO, VIDEO_VIDEO_CAPS, 0u);
-	if (handle == ZDEV_HANDLE_INVALID) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_BOOT, 0x01u);
-		return;
-	}
-	dev = device_get(handle);
-	if (dev == (const struct zdevice *)0) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_BOOT, 0x02u);
-		return;
-	}
-	if (dev->class_id != ZDEV_VIDEO) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_SHAPE, 0x01u);
-		return;
-	}
-	if (video_name_is(dev->name, "v9958.0") == 0u) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_SHAPE, 0x02u);
-		return;
-	}
-	if (dev->capabilities != (VIDEO_VIDEO_CAPS | VIDEO_CHAR_CAPS)) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_SHAPE, 0x03u);
-		return;
-	}
-	if (dev->char_ops == (const struct zchar_ops *)0 ||
-	    dev->char_ops->putc == 0 || dev->char_ops->write == 0 ||
-	    dev->char_ops->poll != 0 || dev->char_ops->getc != 0) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_SHAPE, 0x04u);
-		return;
-	}
-	if (device_find(ZDEV_VIDEO, ZCAP_CONSOLE_OUT, 0u) != handle) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_SHAPE, 0x05u);
-		return;
-	}
-	if (device_interface(handle, ZDEV_VIDEO, &class_ops, &state) !=
-	    ZDEV_OK) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_SHAPE, 0x06u);
-		return;
-	}
-	ops = (const struct zvideo_ops *)class_ops;
-	if (ops == (const struct zvideo_ops *)0 || ops->send == 0 ||
-	    state == (void *)0) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_SHAPE, 0x07u);
-		return;
-	}
-	early_console_puts("video: video0 OK\r\n");
-
-	/* Malformed requests: exact errors, no I/O performed. */
-	rc = ops->send(state, ZVIDEO_PRESENT, (const void *)0, 5u);
-	if (rc != ZDEV_EINVAL) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_MALFORMED, 0x01u);
-		return;
-	}
-	rc = ops->send(state, ZVIDEO_RESET, (const void *)0, 1u);
-	if (rc != ZDEV_EINVAL) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_MALFORMED, 0x02u);
-		return;
-	}
-	rc = ops->send(state, ZVIDEO_DATA_BLOCK, (const void *)0, 64u);
-	if (rc != ZDEV_EINVAL) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_MALFORMED, 0x03u);
-		return;
-	}
-	rc = ops->send(state, ZVIDEO_DATA_BLOCK, pattern, 0u);
-	if (rc != ZDEV_EINVAL) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_MALFORMED, 0x04u);
-		return;
-	}
-	rc = ops->send(state, 0x40u, (const void *)0, 0u);
-	if (rc != ZDEV_ENOTSUP) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_MALFORMED, 0x05u);
-		return;
-	}
-	rc = ops->send((void *)0, ZVIDEO_PRESENT, (const void *)0, 0u);
-	if (rc != ZDEV_ENODEV) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_MALFORMED, 0x06u);
-		return;
-	}
-	early_console_puts("video: malformed rejected\r\n");
-
-	/* Reset re-establishes every owned register and VRAM asset. */
-	if (ops->send(state, ZVIDEO_RESET, (const void *)0, 0u) != ZDEV_OK) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_OPS, 0x01u);
-		return;
-	}
-	early_console_puts("video: reset OK\r\n");
-
-	/* The console defaults must select the normal HID/V9958 pair: HID input and
-	 * this V9958 output (the renderer is now console-capable). */
-	hid = device_find(ZDEV_HID, ZCAP_CONSOLE_IN, 0u);
-	if (hid == ZDEV_HANDLE_INVALID ||
-	    console_input_handle() != hid ||
-	    console_output_handle() != handle) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_BIND, 0x01u);
-		return;
-	}
-	early_console_puts("video: console v9958.0 OK\r\n");
-
-	/* Palette entry 12 -> magenta: RB=77h (R=7,B=7), G=00h. */
-	bytes[0] = 0x0Cu;
-	bytes[1] = 0x90u; /* R#16 | register select */
-	if (ops->send(state, ZVIDEO_CTRL_WRITE, bytes, 2u) != ZDEV_OK) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_OPS, 0x02u);
-		return;
-	}
-	bytes[0] = 0x77u;
-	bytes[1] = 0x00u;
-	if (ops->send(state, ZVIDEO_PALETTE_WRITE, bytes, 2u) != ZDEV_OK) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_OPS, 0x03u);
-		return;
-	}
-
-	/* White 64x64 fill at (64,32): R#17 = 32 then the 15-byte HMMV
-	 * block through the indirect port; PRESENT waits for completion. */
-	bytes[0] = 32u;
-	bytes[1] = 0x91u; /* R#17 | register select */
-	if (ops->send(state, ZVIDEO_CTRL_WRITE, bytes, 2u) != ZDEV_OK) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_OPS, 0x04u);
-		return;
-	}
-	for (i = 0u; i < 15u; ++i) {
-		cmd[i] = 0x00u;
-	}
-	cmd[4] = 0x40u;  /* DX low = 64  */
-	cmd[6] = 0x20u;  /* DY low = 32  */
-	cmd[8] = 0x40u;  /* NX low = 64  */
-	cmd[10] = 0x20u; /* NY low = 32  */
-	cmd[12] = 0xFFu; /* color white  */
-	cmd[14] = 0xC0u; /* HMMV         */
-	if (ops->send(state, ZVIDEO_INDIRECT_WRITE, cmd, 15u) != ZDEV_OK) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_OPS, 0x05u);
-		return;
-	}
-	if (ops->send(state, ZVIDEO_PRESENT, (const void *)0, 0u) !=
-	    ZDEV_OK) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_OPS, 0x06u);
-		return;
-	}
-	early_console_puts("video: fill presented\r\n");
-
-	/* Visible band at scanline 96 (VRAM 6000h): one white byte through
-	 * DATA_WRITE, then a 200-byte magenta block through DATA_BLOCK. */
-	bytes[0] = VIDEO_BAND_R14;
-	bytes[1] = 0x8Eu; /* R#14 | register select */
-	if (ops->send(state, ZVIDEO_CTRL_WRITE, bytes, 2u) != ZDEV_OK) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_OPS, 0x07u);
-		return;
-	}
-	bytes[0] = 0x00u;
-	bytes[1] = VIDEO_BAND_ADDR_HI;
-	if (ops->send(state, ZVIDEO_CTRL_WRITE, bytes, 2u) != ZDEV_OK) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_OPS, 0x08u);
-		return;
-	}
-	bytes[0] = VIDEO_BAND_FIRST;
-	if (ops->send(state, ZVIDEO_DATA_WRITE, bytes, 1u) != ZDEV_OK) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_OPS, 0x09u);
-		return;
-	}
-	for (i = 0u; i < VIDEO_BAND_BYTES; ++i) {
-		pattern[i] = VIDEO_BAND_FILL;
-	}
-	if (ops->send(state, ZVIDEO_DATA_BLOCK, pattern,
-		      VIDEO_BAND_BYTES) != ZDEV_OK) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_OPS, 0x0Au);
-		return;
-	}
-	if (ops->send(state, ZVIDEO_PRESENT, (const void *)0, 0u) !=
-	    ZDEV_OK) {
-		video_fail(ZOS_VIDEOSELFTEST_FAIL_OPS, 0x0Bu);
-		return;
-	}
-	(void)VIDEO_BAND_SCANLINE;
-	early_console_puts("video: pattern drawn\r\n");
-
-	ace_video_selftest_result = ZOS_VIDEOSELFTEST_OK;
-	early_console_puts("video selftest: OK\r\n");
-}
-#endif /* ZOS_VIDEO_FONTFAIL */
 
 void zos_run_video_selftest(void)
 {
-	ace_video_selftest_result = ZOS_VIDEOSELFTEST_FAIL_BOOT;
-#if ZOS_VIDEO_FONTFAIL
-	video_fontfail_run();
-#else
-	video_run();
-#endif
+	struct zos_ipc_frame frame;
+	uint8_t index;
+
+	ace_video_selftest_result = ZOS_VIDEOSELFTEST_FAIL_ENDPOINT;
+
+	if (service_cli_endpoint(ZOS_CLASS_VIDEO, &video_handle) == 0u ||
+	    video_probe_endpoints() == 0u) {
+		video_fail(ZOS_VIDEOSELFTEST_FAIL_ENDPOINT, "endpoint");
+		return;
+	}
+
+	/* Presence: PRESENT flushes the pending terminal output and waits
+	 * for the command engine; a live service answers 0. */
+	service_cli_frame(&frame, ZVIDEO_OP_SEND, ZVIDEO_PRESENT, 0u);
+	if (service_cli_call(video_handle, &frame) != 0) {
+		video_fail(ZOS_VIDEOSELFTEST_FAIL_PRESENT, "present");
+		return;
+	}
+	video_puts("present OK");
+
+	/* The display reset: re-runs the whole bring-up, including the font
+	 * and atlas upload, which reads the image's bulk segment through
+	 * the nucleus bulk copy at run time. */
+	service_cli_frame(&frame, ZVIDEO_OP_SEND, ZVIDEO_RESET, 0u);
+	if (service_cli_call(video_handle, &frame) != 0) {
+		video_fail(ZOS_VIDEOSELFTEST_FAIL_RESET, "reset");
+		return;
+	}
+	video_puts("reset OK");
+
+	/* The terminal marker, drawn after the reset cleared the plane: the
+	 * glyph copies are the replay's visible side of this diagnostic. */
+	for (index = 0u; video_marker[index] != '\0'; ++index) {
+		if (service_cli_putc(video_handle, ZVIDEO_OP_PUTC,
+				     (uint8_t)video_marker[index]) != 0) {
+			video_fail(ZOS_VIDEOSELFTEST_FAIL_PUTC, "putc");
+			return;
+		}
+	}
+	video_puts("marker " VIDEO_MARKER);
+
+	/* Malformed calls: refused exactly, and no VDP access happens in
+	 * this phase (the replay proves that from the frozen peer trace). */
+	service_cli_frame(&frame, 0x40u, 0u, 0u);
+	if (service_cli_call(video_handle, &frame) != -ZOS_EINVAL) {
+		video_fail(ZOS_VIDEOSELFTEST_FAIL_MALFORMED, "unknown-op");
+		return;
+	}
+	/* A streaming native op names a caller descriptor; a bank-7 client
+	 * holds none, so the service refuses it before any port I/O. */
+	service_cli_frame(&frame, ZVIDEO_OP_SEND, ZVIDEO_CTRL_WRITE, 2u);
+	if (service_cli_call(video_handle, &frame) != -ZOS_EINVAL) {
+		video_fail(ZOS_VIDEOSELFTEST_FAIL_MALFORMED, "no-descriptor");
+		return;
+	}
+	/* A handle the nucleus never issued is refused by the substrate. */
+	service_cli_frame(&frame, ZVIDEO_OP_PUTC, (uint8_t)'x', 0u);
+	if (service_cli_call(0xFEu, &frame) != -ZOS_EINVAL) {
+		video_fail(ZOS_VIDEOSELFTEST_FAIL_MALFORMED, "handle");
+		return;
+	}
+	video_puts("malformed rejected");
+
+	ace_video_selftest_result = ZOS_VIDEOSELFTEST_OK;
+	service_cli_puts("video selftest: OK\r\n");
 }
 
 #endif /* ZOS_VIDEO_SELFTEST || ZOS_VIDEO_FONTFAIL */

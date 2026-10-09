@@ -33,7 +33,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import Ctc0Injector, Z80, read_symbols  # noqa: E402
+from z80sim import (Ctc0Injector, Z80, read_symbols,
+                    skip_serial_connect_delay)  # noqa: E402
 import romfspack  # noqa: E402
 import zmodpack  # noqa: E402
 
@@ -170,8 +171,7 @@ class RomfsSimBase(unittest.TestCase):
             z.step()
             if on_step is not None:
                 on_step(z)
-            if z.pc == delay:
-                z.pc = z.pop16()
+            skip_serial_connect_delay(z, delay)
             if stop_at is not None:
                 # The image keeps running into the monitor after the
                 # group reports; HALT is part of the interrupt-executive
@@ -428,8 +428,7 @@ class TestCorruptImageReplay(unittest.TestCase):
         delay = syms["_kernel_serial_connect_delay"]
         for _ in range(STEP_LIMIT):
             z.step()
-            if z.pc == delay:
-                z.pc = z.pop16()
+            skip_serial_connect_delay(z, delay)
             if z.halted:
                 break
         else:

@@ -30,7 +30,7 @@
 #include "zephyros/vfs.h"
 #include "zephyros/romfs.h"
 #include "zephyros/module.h"
-#include "zephyros/console.h"
+#include "service_client.h"
 #include "zephyros/kernel.h"
 #include "kernel/vfs/vfs.h"
 #include "kernel/lib/name.h"
@@ -178,7 +178,7 @@ void zos_run_m9_vfs_selftest(void)
 	/* Boot baseline: VFS reached READY, a module is resident, the console
 	 * is bound and the recovery store published at least one entry. */
 	if (vfs_phase() != VFS_PHASE_READY || module_count() == 0 ||
-	    console_output_handle() == 0 ||
+	    service_cli_console_handle() == 0 ||
 	    romfs_entry_at(0, &ref, first_name, ROMFS_NAME_SIZE) != 0) {
 		m9_fail(ZOS_M9ST_FAIL_BOOT);
 		return;

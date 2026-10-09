@@ -1,12 +1,20 @@
-# ZephyrOS Device, Driver, and Console Model (through M9 ABI v3)
+# ZephyrOS Device, Driver, and Console Model (through M10 services)
 
-This document describes the implemented device layer: the fixed device
-registry, the driver ABI (v2 since M8), the SIO0/B driver (a dynamically
-loaded module since M4), the IOC command+bulk transport driver and the
-HID keyboard/text driver (dynamically loaded modules since M8), and the
-console service.  The architectural contract is `docs/architecture.md`
-sections 20-22 and 30.2-30.3; this file records what the build actually
-places where and how it is validated.
+This document describes the implemented device layer.  M10 (work package
+41) replaced the M4-M9 model - drivers as bank-7 ZMOD modules registered
+in a device registry, with a console device and console syscalls on top -
+with **resident services**: the SIO0/B serial, IOC command+bulk
+transport, HID keyboard/text and V9958 video driver stacks each run in
+bank 6 as a service image, the console is a fifth service that composes
+them, and the SDK and the nucleus reach all of it through the versioned
+protocols in `abi/zos/protocol.h` (section 12 below).  The device
+registry survives only for the module loader's acceptance fixtures, the
+console device and the `SYS_CONSOLE_*` syscalls are gone, and the driver
+ABI (`docs/module-format.md`) now serves the one remaining arena module,
+the IOC-FAT provider.  The architectural contract is
+`docs/architecture.md` sections 20-22, 30.2-30.3 and 36.4-36.14; this
+file records what the build actually places where and how it is
+validated.
 
 M3 introduced the model with every driver statically linked.  M4 replaced
 the *source of driver code*: the SIO driver is packed as a relocatable
@@ -863,3 +871,149 @@ ROMFS-backed font atlases and the command/VRAM primitives, loaded after
 HID (character output and the terminal remain with the console
 package).  The M3 numeric registry model still holds; its placeholder
 class names were refined in place.
+
+## 12. Resident service protocols (M10, package 41)
+
+The five service images the production store carries are the SIO serial
+transport, the IOC transport, HID input, the V9958 video core and the
+console.  Each is a ZMOD service image (`docs/module-format.md`, ABI 2)
+placed in bank 6 by the resident service loader (`service_load_all`,
+manifest `services.man`), each registers exactly one endpoint
+`(class, instance) = (ZOS_CLASS_*, 0)` at `ZOS_PROTOCOL_VERSION` 1, and
+each is entered only through `struct ipc_service_api` - a service never
+calls another service's symbols.  `abi/zos/protocol.h` is the whole
+contract; this section records the operation numbers, frames and
+descriptor conventions the images implement.
+
+Common shape.  Every operation is one `call(handle, op, frame)`:
+`frame->arg0`/`arg1` are the operation's two words, `frame->payload` is
+8 inline bytes, `frame->desc` is the nucleus-issued descriptor id (or
+`ZOS_IPC_DESC_NONE`), and `frame->status` carries the result -0 or a
+negative `ZOS_E*`/class error.  A descriptor-bearing operation also
+passes `arg0` = offset into the caller's buffer and `arg1` = length, so
+one call moves one bounded run.  Operations that return a single word
+(the status queries and the byte-sized forms) publish it as the call's
+return value.
+
+Shared-memory staging.  A service that has bytes to hand on names its own
+service-window buffer in the reply payload; the peer or the nucleus
+finishes the transfer.  Two client classes exist, and both are stated by
+the protocol:
+
+- a *service* client (HID, the console, the V9958 character path) is
+  dispatched by the nucleus, so it may hold descriptors and may use
+  `move` for same-domain staging.  This is the resident-domain
+  convention;
+- a *bank-7* client (the IOC class shim the module loader publishes to
+  the IOC-FAT provider, `kernel/module/ioc_shim.c`, and the nucleus's own
+  boot probe) can hold neither descriptor nor `move`, so it stages bytes
+  through the common copy gate in `ZOS_SYSCALL_STAGE_SIZE` chunks against
+  the service-window address the reply names.
+
+### 12.1 SIO serial (class `ZOS_CLASS_SERIAL`, 1)
+
+SIO0/B - the same channel as the early console - as a resident service.
+Polling only: the SIO interrupt mode stays disabled, so the serial
+service owns no IRQ and the early console keeps working before, and
+without, any service.
+
+| op | number | frame | result |
+|----|--------|-------|--------|
+| `ZSIO_OP_PUTC`  | 0 | `arg0` = byte | 0 or `-ZDEV_ETIMEDOUT` |
+| `ZSIO_OP_WRITE` | 1 | desc IN, `arg0` offset, `arg1` length | bytes written |
+| `ZSIO_OP_POLL`  | 2 | - | 1 when a byte is pending, else 0 |
+| `ZSIO_OP_GETC`  | 3 | - | byte 0..255 or `-ZOS_EAGAIN` |
+| `ZSIO_OP_READ`  | 4 | desc OUT, `arg0` offset, `arg1` length | bytes drained |
+
+### 12.2 V9958 video (class `ZOS_CLASS_VIDEO`, 2)
+
+The seven native VIDEO operations of `include/zephyros/video.h` plus the
+character path the console composes.  The display reset
+(`ZVIDEO_RESET`) is a hot-segment path: it re-runs the full bring-up,
+including the font and atlas upload, reading the font from the image's
+own bulk segment through `bulk_read` (the boot/bulk tier is not mapped in
+the mode-11 service window).
+
+| op | number | frame | result |
+|----|--------|-------|--------|
+| `ZVIDEO_OP_SEND`  | 0 | `arg0` = native VIDEO op; desc IN with `arg0` offset / `arg1` length for the five streaming ops | 0 or negative |
+| `ZVIDEO_OP_WRITE` | 1 | desc IN, `arg0` offset, `arg1` length: bytes for the terminal parser | bytes consumed |
+| `ZVIDEO_OP_PUTC`  | 2 | `arg0` = byte | 0 |
+
+### 12.3 HID input (class `ZOS_CLASS_HID`, 4)
+
+The M8 engine unchanged: fetch-on-doorbell with a 16-byte local ring, the
+stuck-doorbell penalty, and strict reply validation before a byte is
+committed.  The service declares its IOC dependency in its image
+metadata, so a missing IOC image is a loader boot error; `ZHID_OP_READY`
+is the run-time probe the console composes its input from (the role the
+device registry's registration presence played before M10).
+
+| op | number | frame | result |
+|----|--------|-------|--------|
+| `ZHID_OP_READ_TEXT` | 0 | desc OUT, `arg0` offset, `arg1` maximum | bytes transferred (0 when empty) |
+| `ZHID_OP_POLL`      | 1 | - | 1 when a byte is buffered/just delivered |
+| `ZHID_OP_GETC`      | 2 | - | byte or `-ZOS_EAGAIN` |
+| `ZHID_OP_READY`     | 3 | - | 1 when the IOC dependency is up |
+
+### 12.4 IOC transport (class `ZOS_CLASS_IOC`, 5)
+
+The command/reply lane and the bulk lanes of the Z80-to-MCU transport.
+The service owns wire framing, CRC, sequence, lane setup and the
+READY/DONE bulk admission (`drivers/ioc/`); a client sees native
+`struct zioc_frame` records (TYPE, STATUS, LENGTH, DATA[26]).
+
+| op | number | frame | result |
+|----|--------|-------|--------|
+| `ZIOC_OP_COMMAND`    | 0 | `arg0` request type, `arg1` request DATA length (0..24), `payload[0..arg1-1]` request DATA | 0; reply `arg0` type, `arg1` DATA length, `payload[0..1]` staged reply-frame address, `payload[2]` reply STATUS, `payload[3..4]` bulk buffer address |
+| `ZIOC_OP_REPLY`      | 1 | desc OUT, `arg0` offset, `arg1` length | bytes copied from the stored reply frame |
+| `ZIOC_OP_BULK_READ`  | 2 | `arg1` length (1..512), optional desc OUT with `arg0` offset | length; without a descriptor `payload[0..1]` names the service buffer |
+| `ZIOC_OP_BULK_WRITE` | 3 | `arg1` length (1..512), optional desc IN with `arg0` offset | length |
+| `ZIOC_OP_STATUS`     | 4 | - | semantic status word (`ZIOC_STATUS_*`) |
+| `ZIOC_OP_READY`      | 5 | - | 1 when the link is up and no recovery is pending |
+
+The 29-byte native request frame does not fit the 24-byte inline payload,
+and no deployed request class exceeds 24 DATA bytes, so the exchange
+control travels in the frame words and `payload[3..4]` reports where the
+bulk buffer is: a descriptor-less (bank-7) client writes the bytes it
+wants written to that address through the copy gate and then issues
+`ZIOC_OP_BULK_WRITE` without a descriptor.  `kernel/module/ioc_shim.c`
+does exactly that for the IOC-FAT provider and disappears with it in
+package 42.
+
+### 12.5 Console (class `ZOS_CLASS_CONSOLE`, 6)
+
+The console composes the services the store booted - HID input when
+`ZHID_OP_READY` answers 1, otherwise the serial service; V9958 output when
+the video endpoint is registered, otherwise the serial service - exactly
+as `console_bind_defaults()` did for the M8 device set.  It is the
+endpoint the SDK console functions and the monitor use; the early console
+and the panic path do not depend on it.
+
+| op | number | frame | result |
+|----|--------|-------|--------|
+| `ZCONSOLE_OP_WRITE` | 0 | desc IN, `arg0` offset, `arg1` length | bytes written |
+| `ZCONSOLE_OP_READ`  | 1 | desc OUT, `arg0` offset, `arg1` length | bytes drained (non-blocking) |
+| `ZCONSOLE_OP_GETC`  | 2 | - | byte or `-ZOS_EAGAIN` |
+| `ZCONSOLE_OP_POLL`  | 3 | - | 1 when input is pending |
+| `ZCONSOLE_OP_PUTC`  | 4 | `arg0` = byte | 1 or negative |
+
+`ZCONSOLE_OP_PUTC` is the descriptor-less form: `zos_putc()` uses it (one
+call, no copy), and the nucleus uses it for the boot transcript it prints
+through the console service.  A store that lists no console service makes
+the SDK console functions fail with `-ZOS_ENOENT` and leaves the boot
+transcript on the early console.
+
+### 12.6 Placement, IRQs and ledgers
+
+The five images own bank 6's two resident tiers (architecture 36.6,
+36.20): the hot segments (`_CODE` + `_SERVICE_IO`, the one bank-6 range
+the mode-11 window and the mode-10 aperture both show) total 13,318 bytes
+of the 32,768-byte hot tier, and the boot segments plus the V9958 font
+bulk segment total 2,170 bytes of the 24,576-byte boot/bulk tier.  No
+service image owns an IRQ in this package: SIO0/B is polled, the IOC and
+HID paths are polled through the same lane, and the V9958 is
+register-driven.  The arena holds the IOC-FAT provider alone (13
+granules), and the ledger lines the build prints are
+`zmodpack: service hot: ...` / `service boot/bulk: ...` with one row per
+image (see `docs/memory.md`).

@@ -57,6 +57,14 @@
 #include "kernel/memory/upcall.h"
 #include "kernel/syscall/diag.h"
 
+/* The plan and ledger lines are acceptance evidence the replay pins
+ * against the packer's report; production links only the error lines
+ * (work package 41).  ZOS_TARGET_TEST_BUILD is the single production-side
+ * guard (kernel/syscall.c carries the same preamble). */
+#ifndef ZOS_TARGET_TEST_BUILD
+#define ZOS_TARGET_TEST_BUILD 0
+#endif
+
 /* Bank 6 is the resident service domain (revision 13: bank = ZOS_BANK_MASK
  * - window page; the same derivation kernel/ipc/ipc.c uses). */
 #define SERVICE_BANK (uint8_t)(ZOS_BANK_MASK - 1u)
@@ -146,6 +154,7 @@ static void service_puts(const char *text)
 	early_console_puts(text);
 }
 
+#if ZOS_TARGET_TEST_BUILD
 static void service_put_hex16(uint16_t value)
 {
 	uint8_t shift;
@@ -157,6 +166,7 @@ static void service_put_hex16(uint16_t value)
 	}
 	early_console_putc('h');
 }
+#endif /* ZOS_TARGET_TEST_BUILD */
 
 /* Decimal without the SDCC division runtime (work/30b audit: the kernel
  * links no arithmetic helpers): repeated subtraction of the powers of
@@ -470,8 +480,11 @@ static int service_place(const struct zmod_source *source, uint16_t offset,
  * is `own_base + patch`, the same rule and overflow check
  * zmod_apply_relocations() uses (`word += target segment base`), with each
  * record's patch offset relative to the segment that owns it and its
- * second byte naming the segment the patched value points into.  A record
- * whose type, target or patch is outside the segment aborts before
+ * second byte naming the segment the patched value points into.  The
+ * record validation and the patch arithmetic are the shared
+ * kernel/module/relocate.c logic (work package 41); only the byte-1
+ * target rule and the gate-based patch I/O are service-specific.  A
+ * record whose target or patch is outside the segment aborts before
  * anything is written back. */
 static int service_relocate(const struct zmod_source *source,
 			    const struct service_segment_info *segment,
@@ -485,30 +498,31 @@ static int service_relocate(const struct zmod_source *source,
 			(uint16_t)((uint16_t)(segment->reloc_start + index) << 2));
 		uint16_t patch;
 		uint16_t value;
-		uint16_t base;
+		uint8_t overflow;
+		int result;
 
 		if (service_read(source, at, record, ZMOD_RELOC_SIZE) !=
-		    ZMOD_OK ||
-		    record[0] != ZREL_ABS16 ||
-		    record[1] >= service_layout.segment_count) {
+		    ZMOD_OK) {
 			return ZMOD_EFORMAT;
 		}
-		patch = service_le16(record + 2);
-		if (segment->image_size < 2u ||
-		    patch > (uint16_t)(segment->image_size - 2u) ||
-		    (uint32_t)own_base + patch + 2u > 0x10000u) {
+		result = zmod_reloc_decode(record[0],
+					   service_le16(record + 2),
+					   segment->image_size, &patch);
+		if (result != ZMOD_OK || record[1] >= service_layout.segment_count) {
 			return ZMOD_EFORMAT;
 		}
-		base = bases[record[1]];
+		if ((uint32_t)own_base + patch + 2u > 0x10000u) {
+			return ZMOD_EFORMAT;
+		}
 		if (service_bank_op(ZOS_BANK_OP_READ,
 				    (uint16_t)(own_base + patch), 2u) != 0u) {
 			return ZMOD_EFORMAT;
 		}
 		value = service_le16(zos_user_copy_staging);
-		if (value > (uint16_t)(0xFFFFu - base)) {
+		value = zmod_reloc_add(value, bases[record[1]], &overflow);
+		if (overflow != 0u) {
 			return ZMOD_EFORMAT; /* relocation overflow */
 		}
-		value = (uint16_t)(value + base);
 		zos_user_copy_staging[0] = (uint8_t)value;
 		zos_user_copy_staging[1] = (uint8_t)(value >> 8);
 		if (service_bank_op(ZOS_BANK_OP_WRITE,
@@ -660,7 +674,9 @@ static int service_open(const romfs_file_t *manifest, uint16_t index,
 	return ZMOD_OK;
 }
 
-/* One image's assigned base for `role`, if it has that segment. */
+/* One image's assigned base for `role`, if it has that segment (evidence
+ * only: the plan line). */
+#if ZOS_TARGET_TEST_BUILD
 static uint8_t service_role_base(uint8_t role,
 				 const struct service_image *image,
 				 uint16_t *base)
@@ -682,10 +698,12 @@ static uint8_t service_role_base(uint8_t role,
 	}
 	return 0u;
 }
+#endif /* ZOS_TARGET_TEST_BUILD */
 
 /* The plan line the acceptance transcript pins: the roles in the order
  * tools/zmodpack.py's `services` command prints them, absent roles left
- * out. */
+ * out.  Evidence only: production does not link it. */
+#if ZOS_TARGET_TEST_BUILD
 static void service_report(const struct service_image *image)
 {
 	static const uint8_t roles[3] = {
@@ -708,6 +726,7 @@ static void service_report(const struct service_image *image)
 	}
 	service_puts("\r\n");
 }
+#endif /* ZOS_TARGET_TEST_BUILD */
 
 int service_load_all(const char *manifest_name)
 {
@@ -941,6 +960,29 @@ int service_load_all(const char *manifest_name)
 				return result;
 			}
 		}
+		/* The image's bulk extent travels with its endpoints: the
+		 * run-time bulk copy (36.6) is bound to the service that
+		 * owns the endpoint being dispatched, and this is the one
+		 * place the loader knows both. */
+		{
+			uint16_t bulk_base = 0u;
+			uint16_t bulk_size = 0u;
+
+			for (segment_index = 0u;
+			     segment_index < service_layout.segment_count;
+			     ++segment_index) {
+				const struct service_segment_info *segment =
+					&service_layout.segment[segment_index];
+
+				if (segment->role == ZMOD_SEGMENT_BULK) {
+					bulk_base = image->bulk_base;
+					bulk_size = (uint16_t)(
+						segment->image_size +
+						segment->bss_size);
+				}
+			}
+			ipc_service_bulk_set(bulk_base, bulk_size);
+		}
 		result = service_register_endpoints(&service_layout,
 						    image->hot_base, api);
 		if (result == ZMOD_OK) {
@@ -954,10 +996,15 @@ int service_load_all(const char *manifest_name)
 		if (result != ZMOD_OK) {
 			return result;
 		}
+#if ZOS_TARGET_TEST_BUILD
 		service_report(image);
+#endif
 	}
 
 	service_loader_ran = 1u;
+#if ZOS_TARGET_TEST_BUILD
+	/* Evidence only: the ledger tail the replay pins against the
+	 * packer's report. */
 	service_puts("service loader: ");
 	service_put_dec16((uint16_t)entries);
 	service_puts(" images in bank 6\r\n");
@@ -967,6 +1014,7 @@ int service_load_all(const char *manifest_name)
 	service_puts("service boot/bulk: ");
 	service_put_dec16(service_boot_ledger);
 	service_puts(" bytes of 24576\r\n");
+#endif
 	return ZMOD_OK;
 }
 

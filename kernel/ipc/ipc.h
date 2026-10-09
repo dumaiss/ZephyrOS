@@ -38,4 +38,19 @@ int16_t ipc_syscall_call(struct zos_ipc_call_args *args);
  * pointer to the upcall shim. */
 const struct ipc_service_api *ipc_service_api(void);
 
+/* Register the bulk extent of the image whose endpoints the loader is
+ * about to register (architecture 36.6): the next register_ep call copies
+ * the pair into the endpoint record, so bulk_read can validate the
+ * calling service's own extent.  The loader calls this once per image
+ * (0, 0 for an image with no bulk segment) before its endpoint pass. */
+void ipc_service_bulk_set(uint16_t base, uint16_t size);
+
+/* Synchronous call into a service from nucleus code (bank 7, no process
+ * and no syscall gate): the IOC-FAT provider's class shim and the boot
+ * console probe.  No descriptor is issued - only the syscall gate's latch
+ * names a caller buffer - so a caller that has to move bytes uses the
+ * staged form plus the common copy gate (architecture 36.8).  `frame` is
+ * the caller's own 32-byte copy; the reply lands back in it. */
+int16_t ipc_nucleus_call(uint8_t handle, struct zos_ipc_frame *frame);
+
 #endif /* ZEPHYROS_KERNEL_IPC_IPC_H */

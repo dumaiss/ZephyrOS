@@ -20,7 +20,6 @@
 #include "zos/fs.h"
 #include "zephyros/vfs.h"
 #include "zephyros/module.h"
-#include "zephyros/console.h"
 #include "zephyros/kernel.h"
 
 #include "kernel/vfs/vfs.h"

@@ -25,7 +25,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import Z80, IocCommandPeer, V9958Peer, read_symbols  # noqa: E402
+from z80sim import (Z80, IocCommandPeer, V9958Peer, read_symbols,
+                    skip_serial_connect_delay)  # noqa: E402
 
 RET = 0x1234
 STACK = 0xFFFE
@@ -127,8 +128,7 @@ class M9IocFatSimBase(unittest.TestCase):
         z.pc = self.syms["_kernel_main"]
         delay = self.syms["_kernel_serial_connect_delay"]
         for step in range(limit):
-            if z.pc == delay:
-                z.pc = z.pop16()
+            skip_serial_connect_delay(z, delay)
             z.step()
             if z.sp < min_sp and gate_base <= z.sp <= gate_top:
                 if tracking:

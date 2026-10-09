@@ -1,0 +1,32 @@
+{
+  "name": "console",
+  "type": "service",
+  "abi": 2,
+  "flags": 0,
+  "objects": [
+    "console_service.rel",
+    "sdcc_indirect_calls.rel"
+  ],
+  "init": "console_service_init",
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ],
+      "bss_areas": [
+        "_SERVICE_IO"
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 6,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "console_service_dispatch",
+      "flags": 0
+    }
+  ],
+  "depends": []
+}

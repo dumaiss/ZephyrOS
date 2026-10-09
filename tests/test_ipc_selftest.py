@@ -51,6 +51,9 @@ PROD_SUBDIR = os.path.join(ROOT, "build")
 # The service images, their reports and the boot manifest are packed into
 # the shared module directory (the recovery manifest names them there).
 MODULE_DIR = os.path.join(ROOT, "build", "modules", "ipc-modules")
+# Package 41: the boot manifest and its plan are the shared ones beside
+# the service images, because the same rule builds every image's manifest.
+SERVICE_DIR = os.path.join(ROOT, "build", "modules")
 
 SYSCALL_WINDOW_BASE = 0x0100
 SYSCALL_WINDOW_END = 0x2000
@@ -134,7 +137,7 @@ class TestIpcBuildWiring(unittest.TestCase):
         # moves objects that still fit beside the loader).
         self.assertIn("IPC_COLD_EXTRA_CSV", text)
         self.assertIn("--cold-extra $(IPC_COLD_EXTRA_CSV)", text)
-        self.assertIn("$(IPC_MODDIR)/services.man", text)
+        self.assertIn("$(MODULES)/services.man", text)
         self.assertIn("zmodpack.py services", text)
         self.assertIn("IPC_SERVICE_NAMES := ioc fat vfs echo con irqx", text)
         self.assertIn("$(IPC_MODDIR)/ipc-%.zmod:", text)
@@ -147,15 +150,16 @@ class TestIpcBuildWiring(unittest.TestCase):
         self.assertIn("zex_program,ipc,tests/target/ipc", text)
         self.assertIn("tests/ipc/manifest.json", text)
 
-    def test_acceptance_hook_is_behind_the_documented_guard(self):
+    def test_dispatch_is_routed_in_the_dispatcher_proper(self):
+        # Package 41 removed the ZOS_TARGET_TEST_BUILD routing seam: the
+        # IPC pair dispatches from the production switch like the
+        # filesystem family, and no acceptance hook remains.
         text = read(os.path.join(ROOT, "kernel", "syscall.c"))
-        self.assertIn("#if ZOS_TARGET_TEST_BUILD", text)
-        self.assertIn("zos_target_test_syscall", text)
-        # The hook is the only production-side reference: the dispatcher
-        # itself lists no IPC number, so production returns ENOSYS for the
-        # pair until package 41 links the substrate.
-        self.assertNotIn("ZOS_SYSCALL_IPC_LOOKUP", text)
-        self.assertNotIn("zos_ipc_dispatch", text)
+        self.assertIn("ZOS_SYSCALL_IPC_LOOKUP", text)
+        self.assertIn("ZOS_SYSCALL_IPC_CALL", text)
+        self.assertIn("zos_ipc_dispatch", text)
+        self.assertNotIn("zos_target_test_syscall", text)
+        self.assertNotIn("ZOS_TARGET_TEST_BUILD", text)
 
 
 class TestIpcAbi(unittest.TestCase):
@@ -214,31 +218,35 @@ class TestIpcResidency(unittest.TestCase):
         self.assertEqual(tiers["ipc_syscall"], "cold")
         self.assertEqual(tiers["service_loader"], "cold")
         self.assertEqual(tiers["service_boot"], "fixed-required")
-        self.assertEqual(sorted(test_link),
-                         ["ipc", "ipc_asm", "ipc_common", "ipc_syscall",
-                          "service_boot", "service_loader"])
-        # Production's cold set is untouched: the substrate and the loader
-        # are not in it (the loader arrives in package 41).
-        for name in test_link:
-            self.assertNotIn(name, cold_half)
+        # Package 41 linked them into production, so the test-link list is
+        # empty and the cold half carries the two bodies.
+        self.assertEqual(list(test_link), [])
+        for name in ("ipc_syscall", "service_loader"):
+            self.assertIn(name, cold_half)
+        self.assertEqual(tiers["ioc_shim"], "cold")
 
-    def test_production_linker_script_does_not_list_the_substrate(self):
+    def test_production_linker_script_lists_the_substrate(self):
+        # Package 41: the production image links the substrate, the
+        # syscall bodies and the resident service loader.
         text = read(LINKER)
         for name in ("ipc.rel", "ipc_asm.rel", "ipc_common.rel",
                      "ipc_syscall.rel", "service_loader.rel",
-                     "service_boot.rel"):
-            self.assertNotIn(name, text, name)
+                     "service_boot.rel", "ioc_shim.rel"):
+            self.assertIn(name, text, name)
 
-    def test_production_image_carries_no_substrate_symbol(self):
+    def test_production_image_carries_the_substrate(self):
         map_path = os.path.join(PROD_SUBDIR, "zephyros.map")
         if not os.path.exists(map_path):
             self.skipTest("build/zephyros.map missing; run make all")
         found = symbols(map_path)
         for name in ("_ipc_lookup", "_ipc_syscall_call", "_ipc_copy_run",
-                     "ipc_asm_begin", "ipc_asm_end", "_zos_ipc_dispatch",
-                     "zos_service_stack", "_ipc_ap_copy", "_ipc_ap_req",
-                     "_ipc_copy_window", "ipc_common_begin"):
-            self.assertNotIn(name, found, name)
+                     "_ipc_gate_latch", "_service_load_all",
+                     "_ipc_nucleus_call", "zos_service_stack"):
+            self.assertIn(name, found, name)
+        # The substrate's fixed core is where the call machinery runs, and
+        # the loader's bodies are cold-half code.
+        self.assertLess(found["_ipc_lookup"], 0x6000)
+        self.assertGreaterEqual(found["_service_load_all"], 0x6000)
 
 
 class TestIpcImageLayout(unittest.TestCase):
@@ -265,15 +273,21 @@ class TestIpcImageLayout(unittest.TestCase):
         self.assertEqual(self.syms["zos_service_stack_top"], 0x5F00)
 
     def test_six_service_containers_are_packed_and_manifested(self):
+        if not os.path.exists(os.path.join(MODULE_DIR, "ipc-echo.zmod")):
+            self.skipTest("the IPC image's service images are not packed; "
+                          "run make ipc-selftest")
         # The services are no longer linked into the kernel: they are
         # containers in the recovery store, named by the boot manifest the
         # loader reads.  The image carries no blob symbol.
         for name in ("echo", "con", "ioc", "fat", "vfs", "irqx"):
             self.assertNotIn("_ipc_%s_zmod" % name, self.syms, name)
 
-        order = ["ipc-ioc.zmod", "ipc-fat.zmod", "ipc-vfs.zmod",
+        # Package 41: the image also boots the SIO and console services
+        # its SDK programs print through, ahead of the synthetic set.
+        order = ["sio.zmod", "console.zmod",
+                 "ipc-ioc.zmod", "ipc-fat.zmod", "ipc-vfs.zmod",
                  "ipc-echo.zmod", "ipc-con.zmod", "ipc-irqx.zmod"]
-        with open(os.path.join(MODULE_DIR, "services.man"), "rb") as handle:
+        with open(os.path.join(SERVICE_DIR, "services.man"), "rb") as handle:
             data = handle.read()
         self.assertEqual(len(data), 24 * len(order))
         names = [data[i * 24:(i + 1) * 24].split(b"\0")[0].decode()
@@ -282,7 +296,7 @@ class TestIpcImageLayout(unittest.TestCase):
 
         # Every named container is a service image whose io segment fits
         # bank 6's 8000h-BFFFh and whose hot segment fits the hot tier.
-        with open(os.path.join(MODULE_DIR, "services.plan.json"),
+        with open(os.path.join(SERVICE_DIR, "services.plan.json"),
                   encoding="utf-8") as handle:
             report = json.load(handle)
         self.assertEqual(report["order"], order)
@@ -499,7 +513,7 @@ class TestIpcSdkSurface(unittest.TestCase):
             self.assertTrue(os.path.exists(path), path)
             manifest = json.loads(read(path))
             self.assertEqual(manifest["type"], "service", name)
-            self.assertEqual(manifest["abi"], 1, name)
+            self.assertEqual(manifest["abi"], 2, name)
             self.assertIn("ipc_%s_init" % name,
                           manifest["init"], name)
             for endpoint in manifest["endpoints"]:

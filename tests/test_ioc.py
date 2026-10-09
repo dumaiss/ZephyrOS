@@ -53,8 +53,12 @@ IOC_PROTOCOL_H = os.path.join(ROOT, "include", "zephyros", "ioc_protocol.h")
 DRIVER_H = os.path.join(ROOT, "drivers", "ioc", "ioc_driver.h")
 DRIVER_C = os.path.join(ROOT, "drivers", "ioc", "ioc.c")
 DRIVER_ASM = os.path.join(ROOT, "drivers", "ioc", "ioc_io.asm")
-MODULE_C = os.path.join(ROOT, "drivers", "ioc", "ioc_module.c")
-MANIFEST = os.path.join(ROOT, "modules", "manifests", "ioc.json")
+# Package 41: the driver is a bank-6 service image.  The service half owns
+# the protocol dispatch and the init entry, the boot half the lane
+# programming, and the image description lives under services/manifests.
+SERVICE_C = os.path.join(ROOT, "drivers", "ioc", "ioc_service.c")
+BOOT_C = os.path.join(ROOT, "drivers", "ioc", "ioc_boot.c")
+MANIFEST = os.path.join(ROOT, "services", "manifests", "ioc.json")
 RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
 MAIN_C = os.path.join(ROOT, "kernel", "main.c")
 MAKEFILE = os.path.join(ROOT, "Makefile")
@@ -359,68 +363,70 @@ class TestIocErrorCodes(unittest.TestCase):
                          len(earlier) + 3)
 
 
-class TestIocModuleArtifact(unittest.TestCase):
+class TestIocServiceArtifact(unittest.TestCase):
     def test_manifest_shape(self):
         manifest = _load_json(MANIFEST)
         self.assertEqual(manifest["name"], "ioc")
-        self.assertEqual(manifest["type"], "driver")
-        self.assertEqual(manifest["abi"], 3)
-        self.assertEqual(manifest["init"], "ioc_module_init")
-        self.assertEqual(manifest["image_areas"], ["_CODE"])
-        self.assertEqual(manifest["bss_areas"], ["_DATA"])
+        self.assertEqual(manifest["type"], "service")
+        self.assertEqual(manifest["abi"], 2)
+        self.assertEqual(manifest["init"], "ioc_service_init")
+        roles = [segment["role"] for segment in manifest["segments"]]
+        self.assertEqual(roles, ["hot", "boot"])
+        hot, boot = manifest["segments"]
+        self.assertEqual(hot["image_areas"], ["_CODE"])
+        self.assertEqual(hot["bss_areas"], ["_SERVICE_IO"])
+        self.assertEqual(boot["image_areas"], ["_BOOT"])
+        self.assertEqual(boot["entry"], "ioc_boot_entry")
         self.assertEqual(manifest["objects"],
-                         ["ioc.rel", "ioc_io.rel", "ioc_module.rel",
-                          "sdcc_indirect_calls.rel"])
-
-    def test_packed_container(self):
-        if not os.path.exists(ZMOD):
-            self.skipTest("build/modules/ioc.zmod missing; build it first")
-        data = _read(ZMOD, "rb")
-        info = zmodpack.parse_container(data, "ioc.zmod")
-        self.assertGreater(info["image_size"], 0)
-        self.assertGreater(info["bss_size"], 0)
-        self.assertNotEqual(info["init_offset"], 0xFFFF)
-        # A driver module must stay well inside the architectural bound.
-        self.assertLessEqual(info["required_granules"], 16)
-        # The table is entirely ZREL_ABS16 (no byte-fragmented relocs).
-        for rtype, _patch in info["relocs"]:
-            self.assertEqual(rtype, 1)
+                         ["ioc.rel", "ioc_io.rel", "ioc_service.rel",
+                          "ioc_boot.rel", "sdcc_indirect_calls.rel"])
+        self.assertEqual(manifest["endpoints"],
+                         [{"class": 5, "instance": 0, "version": 1,
+                           "dispatch": "ioc_service_dispatch", "flags": 0}])
+        self.assertEqual(manifest["depends"], [])
 
     def test_romfs_entry_and_boot_order(self):
         manifest = _load_json(RECOVERY_MANIFEST)
         names = [entry["name"] for entry in manifest["files"]]
         self.assertIn("ioc.zmod", names)
+        self.assertIn("services.man", names)
+        # The boot manifest orders the services: HID declares the IOC
+        # dependency, so IOC must be listed (and therefore placed) first.
+        order = _read(os.path.join(ROOT, "tools", "zmodpack.py"))
+        self.assertIn("def cmd_services", order)
         main = _read(MAIN_C)
-        sio = main.index('kernel_load_vfs_module("sio"')
-        ioc = main.index('kernel_load_vfs_module("ioc"')
-        self.assertLess(sio, ioc, "IOC must load after the SIO fallback")
-        # A failed IOC load must not take the SIO binding path with it;
-        # the diagnostic names the module and the ZOS_E* code.
-        self.assertIn('kernel_module_unavailable("ioc", result)', main)
-        self.assertIn("#if ZOS_IOC_BOOT", main)
+        self.assertIn("service_load_all(ZOS_SERVICE_MANIFEST_NAME)", main)
+        # The nucleus answers the IOC class a bank-7 module asks for from
+        # the service; the loader wires that shim into the module API.
+        self.assertIn("ioc_shim_find", _read(os.path.join(
+            ROOT, "kernel", "module", "loader.c")))
 
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
         for target in ("ioc-test:", "ioc-selftest:",
                        "smoke-hardware-ioc:"):
             self.assertIn(target, makefile)
-        self.assertIn("$(MODULES)/ioc.zmod", makefile)
-        self.assertIn("$(IOC_MODULE_OBJS)", makefile)
+        self.assertIn("services/manifests/%.json", makefile)
+        self.assertIn("$(SVC_ZMODS): $(MODULES)/%.zmod", makefile)
+        self.assertIn("ioc_service.rel", makefile)
         self.assertIn("ZOS_IOC_SELFTEST", makefile)
-        # The boot-set plan must carry the IOC boot module (and, since
-        # package 17, the HID module loaded after it; since package 18,
-        # the V9958 video core loaded last).
-        self.assertIn("BOOT_ZMODS", makefile)
-        self.assertIn("BOOT_ZMODS += $(BOOT_IOC_ZMOD)", makefile)
-        self.assertIn("BOOT_ZMODS += $(MODULES)/hid.zmod", makefile)
-        self.assertIn("BOOT_ZMODS += $(MODULES)/v9958.zmod", makefile)
+        # The declared service set is the manifest's business now: the
+        # arena plan lists only the modules the loader still places there.
+        self.assertIn("ZOS_SERVICES ?= sio ioc hid v9958 console", makefile)
+        self.assertIn("ZOS_ARENA_MODULES", makefile)
+        self.assertIn("BOOT_ZMODS = $(addprefix $(MODULES)/,$(addsuffix .zmod,$(ZOS_ARENA_MODULES)))",
+                      makefile)
 
     def test_production_map_has_no_linked_ioc_symbols(self):
         if not os.path.exists(MAP):
             self.skipTest("build/zephyros.map missing; build first")
         syms = zmodpack_symbols(MAP)
+        # The one `_ioc_`-prefixed family the nucleus owns is the class
+        # shim that publishes the service to a bank-7 module; the driver
+        # itself is a bank-6 image.
         linked = [name for name in syms
-                  if name.startswith("_ioc_")]
+                  if name.startswith("_ioc_") and
+                  not name.startswith("_ioc_shim_")]
         self.assertEqual(linked, [],
                          "IOC driver symbols must not be linked into "
                          "the kernel image: %s" % linked)
@@ -454,7 +460,8 @@ class TestIocSourceDiscipline(unittest.TestCase):
     def setUp(self):
         self.c = _read(DRIVER_C)
         self.asm = _read(DRIVER_ASM)
-        self.module = _read(MODULE_C)
+        self.service = _read(SERVICE_C)
+        self.boot = _read(BOOT_C)
         # Lane regions so a check cannot be satisfied by the other lane's
         # routine appearing earlier in the file.
         self.bulk_init = self.asm.split("_ioc_io_bulk_init::")[1].split(
@@ -467,10 +474,12 @@ class TestIocSourceDiscipline(unittest.TestCase):
             "_ioc_io_rx::")[0]
 
     def test_one_channel_reset_per_lane_in_init_only(self):
-        # Command lane: exactly one reset, in C's ioc_hw_init.
-        self.assertEqual(self.c.count("ZOS_IOC_WR0_RESET_CHANNEL"), 1)
-        hw_init = self.c.split("void ioc_hw_init")[1].split(
-            "int ioc_command")[0]
+        # Command lane: exactly one reset, in the boot tier's ioc_hw_init
+        # (package 41 moved it there: the boot segment is where the
+        # one-shot lane programming runs, through the mode-10 gate).
+        self.assertEqual(self.boot.count("ZOS_IOC_WR0_RESET_CHANNEL"), 1)
+        hw_init = self.boot.split("void ioc_hw_init")[1].split(
+            "void ioc_boot_entry")[0]
         self.assertIn("ZOS_IOC_WR0_RESET_CHANNEL", hw_init)
         # Bulk lane: exactly one reset, in the module-owned init routine.
         self.assertEqual(self.asm.count("ZOS_IOC_WR0_RESET_CHANNEL"), 1)
@@ -553,19 +562,28 @@ class TestIocSourceDiscipline(unittest.TestCase):
         self.assertIn("ZOS_IOC_WR5_BULK_IDLE", helper)
 
     def test_no_sio0_or_kernel_symbol_use(self):
-        for body in (self.c, self.asm, self.module):
+        for body in (self.c, self.asm, self.service, self.boot):
             self.assertNotIn("ZOS_SIO0", body)
             self.assertNotIn("SIO0B", body)
             self.assertNotIn("ZOS_CTC0", body)
-        # Every SIO1/A access lives in the module-owned assembly.
+        # Every SIO1/A access lives in the driver's own assembly.
         self.assertIn("ZOS_SIO1A_CTRL", self.asm)
         self.assertNotIn("ZOS_SIO1A", self.c)
-        # The module only registers through the passed API.
-        self.assertIn("api->device_register", self.module)
-        # All four IOC capabilities are registered.
-        for cap in ("ZCAP_IOC_COMMAND", "ZCAP_IOC_BULK_READ",
-                    "ZCAP_IOC_BULK_WRITE", "ZCAP_IOC_STATUS"):
-            self.assertIn(cap, self.module)
+        # The service registers one endpoint through the passed API and
+        # the image declares the class, the version and the ops it serves.
+        self.assertIn("ZOS_CLASS_IOC", self.service)
+        self.assertIn("ZOS_PROTOCOL_VERSION", self.service)
+        # The endpoint itself is declared by the image metadata and
+        # registered by the resident loader, not by driver code.
+        self.assertIn("api->register_ep",
+                      open(os.path.join(ROOT, "kernel", "service",
+                                        "service_loader.c")).read())
+        self.assertIn("ZOS_CLASS_IOC", self.service)
+        self.assertIn("ZOS_PROTOCOL_VERSION", self.service)
+        for op in ("ZIOC_OP_COMMAND", "ZIOC_OP_BULK_READ",
+                   "ZIOC_OP_BULK_WRITE", "ZIOC_OP_STATUS",
+                   "ZIOC_OP_READY"):
+            self.assertIn(op, self.service)
 
     def test_status_exposes_only_semantic_bits(self):
         body = self.c.split("uint16_t ioc_status")[1].split(

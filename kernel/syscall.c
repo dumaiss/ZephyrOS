@@ -4,10 +4,12 @@
  * by the assembly boundary zos_syscall_dispatch (kernel/syscall/entry.asm);
  * SDCC calling conventions never cross the syscall boundary.
  *
- * M6 services: SYS_EXIT, SYS_CONSOLE_WRITE, SYS_CONSOLE_READ,
- * SYS_CONSOLE_POLL, SYS_GETINFO.  Console services use the bound normal
- * console (never the early console), and every caller byte is validated
- * against the documented windows before it is touched:
+ * M6 services: SYS_EXIT and SYS_GETINFO.  The console bytes a program
+ * writes and reads are no longer syscalls: the SDK's console functions
+ * are clients of the console service (abi/zos/protocol.h, class
+ * ZOS_CLASS_CONSOLE) through the IPC pair below, so the nucleus keeps no
+ * console binding at all.  Every caller byte is still validated against
+ * the documented windows before it is touched:
  *
  *   - argument blocks must lie in 0100h-1FFFh (read while mode 11 is
  *     active, where only the caller window is visible);
@@ -17,7 +19,9 @@
  *
  * M7 adds the diagnostic set (SYS_DIAG_*) implemented in
  * kernel/syscall/diag.c; this file owns the dispatch switch and the
- * shared result/window helpers it uses.
+ * shared result/window helpers it uses.  The M9 filesystem family and the
+ * M10 IPC pair dispatch to their own cold bodies (syscall/fs.h,
+ * syscall/ipc.h) from the same switch.
  *
  * Failure returns A = ZOS_E* with carry set and HL = 0; success returns
  * carry clear with HL = primary result.  Process bookkeeping is never
@@ -26,27 +30,14 @@
 
 #include "zephyros/kernel.h"
 #include "zos/syscall.h"
+#include "zos/ipc.h"
 #include "zephyros/process.h"
-#include "zephyros/console.h"
 
 #include "kernel/vfs/vfs.h"
 
 #include "syscall/diag.h"
 #include "syscall/fs.h"
-
-#ifndef ZOS_TARGET_TEST_BUILD
-#define ZOS_TARGET_TEST_BUILD 0
-#endif
-
-#if ZOS_TARGET_TEST_BUILD
-/* TEST-ONLY HOOK: acceptance-only syscall numbers (the IPC pair of work
- * package 39 until package 41 links the substrate into production); the
- * implementation and the per-image selection live in
- * tests/target/support/target_test.c.  Returns non-zero when the number
- * was handled. */
-uint8_t zos_target_test_syscall(uint8_t number, uint8_t bank,
-				uint16_t block);
-#endif
+#include "syscall/ipc.h"
 
 /* Dispatcher input/output state (written by the asm boundary, read by C). */
 uint8_t zos_syscall_number;
@@ -134,14 +125,6 @@ uint8_t zos_syscall_buffer_ok(uint16_t addr, uint16_t len)
 	return len <= (uint16_t)(ZOS_USER_BUFFER_END - addr);
 }
 
-/* Negative device results are -ZOS_E* values; map them back losslessly. */
-static uint8_t console_errno(int result)
-{
-	uint16_t code = (uint16_t)(0u - (uint16_t)result);
-
-	return code <= 0xFFu ? (uint8_t)code : ZOS_EIO;
-}
-
 static void syscall_exit(uint16_t block)
 {
 	uint16_t status;
@@ -153,127 +136,6 @@ static void syscall_exit(uint16_t block)
 	}
 	status = read_le16((const uint8_t *)block);
 	process_exit(status);
-}
-
-static void syscall_console_write(uint8_t bank, uint16_t block)
-{
-	struct zos_console_args args;
-	uint16_t done = 0;
-
-	if (!block_ok(block, 4)) {
-		syscall_error(ZOS_EINVAL);
-		return;
-	}
-	args.buffer = read_le16((const uint8_t *)block);
-	args.length = read_le16((const uint8_t *)(block + 2));
-	if (!zos_syscall_buffer_ok(args.buffer, args.length)) {
-		syscall_error(ZOS_EINVAL);
-		return;
-	}
-	while (done < args.length) {
-		uint16_t chunk = (uint16_t)(args.length - done);
-		int written;
-
-		if (chunk > USER_STAGE_SIZE) {
-			chunk = USER_STAGE_SIZE;
-		}
-		if (zos_syscall_bank_read(bank,
-				      (uint16_t)(args.buffer + done),
-				      chunk) != 0) {
-			syscall_error(ZOS_EINVAL);
-			return;
-		}
-		written = console_write((const char *)zos_user_copy_staging,
-					chunk);
-		if (written <= 0) {
-			if (done == 0 && written < 0) {
-				syscall_error(console_errno(written));
-				return;
-			}
-			break; /* partial transfer: report what was written */
-		}
-		done = (uint16_t)(done + (uint16_t)written);
-	}
-	syscall_success(done);
-}
-
-static void syscall_console_read(uint8_t bank, uint16_t block)
-{
-	struct zos_console_args args;
-	uint16_t done = 0;
-	uint8_t count = 0;
-
-	if (!block_ok(block, 4)) {
-		syscall_error(ZOS_EINVAL);
-		return;
-	}
-	args.buffer = read_le16((const uint8_t *)block);
-	args.length = read_le16((const uint8_t *)(block + 2));
-	if (!zos_syscall_buffer_ok(args.buffer, args.length)) {
-		syscall_error(ZOS_EINVAL);
-		return;
-	}
-
-	/* Non-blocking drain: return 0 when no byte is available.  After
-	 * the first byte, stop as soon as console_poll() reports empty.
-	 * The normal console driver reports ZDEV_EAGAIN for an empty
-	 * poll; that is the documented "nothing pending" result, not an
-	 * error (docs/abi.md SYS_CONSOLE_READ). */
-	while ((uint16_t)(done + count) < args.length) {
-		int available;
-		int ch;
-
-		if (done != 0 || count != 0) {
-			available = console_poll();
-			if (available <= 0) {
-				break;
-			}
-		}
-		ch = console_getc();
-		if (ch < 0) {
-			if (done == 0 && count == 0 && ch == ZDEV_EAGAIN) {
-				syscall_success(0);
-				return;
-			}
-			if (done == 0 && count == 0) {
-				syscall_error(console_errno(ch));
-				return;
-			}
-			break;
-		}
-		zos_user_copy_staging[count] = (uint8_t)ch;
-		++count;
-		if (count == USER_STAGE_SIZE) {
-			if (zos_syscall_bank_write(
-				    bank, (uint16_t)(args.buffer + done),
-				    count) != 0) {
-				syscall_error(ZOS_EINVAL);
-				return;
-			}
-			done = (uint16_t)(done + count);
-			count = 0;
-		}
-	}
-	if (count != 0) {
-		if (zos_syscall_bank_write(bank, (uint16_t)(args.buffer + done),
-				      count) != 0) {
-			syscall_error(ZOS_EINVAL);
-			return;
-		}
-		done = (uint16_t)(done + count);
-	}
-	syscall_success(done);
-}
-
-static void syscall_console_poll(void)
-{
-	int ready = console_poll();
-
-	if (ready < 0) {
-		syscall_error(console_errno(ready));
-		return;
-	}
-	syscall_success(ready > 0 ? 1u : 0u);
 }
 
 static void syscall_getinfo(uint16_t block)
@@ -378,14 +240,6 @@ void kernel_syscall_dispatch(void)
 	/* M1 default: unknown numbers stay deterministic. */
 	syscall_error(ZOS_ENOSYS);
 
-#if ZOS_TARGET_TEST_BUILD
-	/* TEST-ONLY HOOK: acceptance-only syscall numbers (tests/target). */
-	if (zos_target_test_syscall(zos_syscall_number, bank,
-				    zos_syscall_args)) {
-		return;
-	}
-#endif
-
 	/* M9 native filesystem family (10h-1Fh). */
 	if (zos_syscall_number >= ZOS_SYSCALL_FS_OPEN &&
 	    zos_syscall_number <= ZOS_SYSCALL_FS_SYNC) {
@@ -393,18 +247,16 @@ void kernel_syscall_dispatch(void)
 		return;
 	}
 
+	/* Resident-service IPC family (06h/07h, package 39). */
+	if (zos_syscall_number == ZOS_SYSCALL_IPC_LOOKUP ||
+	    zos_syscall_number == ZOS_SYSCALL_IPC_CALL) {
+		zos_ipc_dispatch(zos_syscall_number, bank, zos_syscall_args);
+		return;
+	}
+
 	switch (zos_syscall_number) {
 	case ZOS_SYSCALL_EXIT:
 		syscall_exit(zos_syscall_args);
-		break;
-	case ZOS_SYSCALL_CONSOLE_WRITE:
-		syscall_console_write(bank, zos_syscall_args);
-		break;
-	case ZOS_SYSCALL_CONSOLE_READ:
-		syscall_console_read(bank, zos_syscall_args);
-		break;
-	case ZOS_SYSCALL_CONSOLE_POLL:
-		syscall_console_poll();
 		break;
 	case ZOS_SYSCALL_GETINFO:
 		syscall_getinfo(zos_syscall_args);

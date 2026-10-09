@@ -26,9 +26,9 @@ build/diag_io.rel
 build/irq.rel
 build/irq_sources.rel
 build/registry.rel
-build/console.rel
 build/module_relocate.rel
 build/module_loader.rel
+build/ioc_shim.rel
 build/romfs.rel
 build/vfs_mounts.rel
 build/vfs_path.rel
@@ -42,6 +42,12 @@ build/romfs_provider.rel
 build/process.rel
 build/process_exec.rel
 build/name.rel
+build/ipc_asm.rel
+build/ipc_common.rel
+build/service_boot.rel
+build/ipc.rel
+build/ipc_syscall.rel
+build/service_loader.rel
 build/arena.rel
 build/rom_access.rel
 build/process_launch.rel

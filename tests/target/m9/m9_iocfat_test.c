@@ -23,7 +23,6 @@
  */
 
 #include "zos/fs.h"
-#include "zephyros/console.h"
 #include "zephyros/kernel.h"
 #include "zephyros/process.h"
 

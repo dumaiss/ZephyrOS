@@ -216,7 +216,7 @@ v9958_indirect_loop:
 ;   int (*write)(void *state, const char *buf, u16) state HL, buf DE,
 ;                                                   len stack, result DE
 
-	.area _DATA
+	.area _SERVICE_IO
 _v9958_alt_saved_sp::
 	.ds	2
 _v9958_alt_ret::

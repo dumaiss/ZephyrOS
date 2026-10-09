@@ -1,48 +1,55 @@
-/* ZephyrOS IOC acceptance selftest (test artifact).
+/* ZephyrOS IOC resident-service acceptance diagnostic (work package 41).
  *
- * Runs from the late boot hook after the production-style boot: the SIO
- * fallback and the IOC command+bulk transport are loaded from the ROMFS
- * recovery store, the console is bound, and `ioc.0` is registered only
- * because its CMD_LINK_SYNC bring-up produced a CRC-verified reply.
+ * Runs from the late boot hook, after the service loader brought the
+ * image's service set (sio, ioc, console) up in bank 6 and after the
+ * nucleus console probe: the IOC service's init has run the bounded
+ * LINK_SYNC bring-up and its endpoint (class ZOS_CLASS_IOC, instance 0,
+ * protocol version ZOS_PROTOCOL_VERSION) answers.
  *
- * The test reports through the direct early SIO (independent of the
- * registry and the console service) and exercises the registered ioc.0
- * device:
+ * The diagnostic is a *bank-7 client* of that service, exactly like
+ * kernel/module/ioc_shim.c: it holds no buffer descriptor and cannot use
+ * `move`, so it drives the IOC protocol (abi/zos/protocol.h) through the
+ * descriptor-less operations and the staged buffers the replies name, with
+ * the shared acceptance client (tests/target/support/service_client.c) for
+ * the calls, the copy-gate moves and the early-SIO transcript.  It sees
+ * native `struct zioc_frame` records; framing, CRC, sequence and lane setup
+ * never surface.
  *
- *   - repeated PING exchanges with an echo pattern, the controller
- *     level, and the semantic HID status;
- *   - the complete READY/DONE bulk lifecycle over the production
- *     /SHARED service: create or truncate the dedicated file
- *     IOCBULKT.BIN, write deterministic 1/128/512-byte sections (each
- *     confirmed by its matching CMD_XFER_STATUS DONE record), close,
- *     reopen for read, read all three sections back through the bulk
- *     lane, verify the patterns, and delete the file.  No diagnostic
- *     commands, raw LBAs, or user files are touched.
+ * Phases: endpoint discovery (class 05, version 01); ZIOC_OP_READY = 1; one
+ * ZIOC_OP_COMMAND (CMD_PING) whose 29-byte staged reply frame is read back
+ * and checked for type, echo pattern, controller level 4Ah and the
+ * link-synced snapshot; ZIOC_OP_STATUS with no bit outside
+ * ZIOC_STATUS_HID_PENDING; the staged bulk lane over the frozen /SHARED
+ * file service (FS_WRITE arms a Z80->MCU phase, the pattern is placed at
+ * the published bulk address and committed descriptor-less with
+ * ZIOC_OP_BULK_WRITE, the DONE record confirms it, FS_READ arms the reverse
+ * direction, ZIOC_OP_BULK_READ completes it, the staged bytes are read back
+ * and compared, then the fixture file is closed and deleted); and malformed
+ * calls refused with -ZOS_EINVAL (unknown operation, oversize request DATA,
+ * descriptor-less REPLY, handle 0 and a bogus handle).
  *
  * If the deployed firmware answers the writable /SHARED open with the
- * unknown-command class (RSP_UNKNOWN_COMMAND plus the unknown-command
- * status) the bulk-write criterion is reported PENDING: the run ends
- * with the explicit "selftest: PENDING" marker and never the OK marker,
- * and never a destructive substitute.  A real filesystem/media failure
- * status is a failure, not PENDING.  The historical transport
- * banner (firmware level 23 / host level 07h) must not be copied: the
- * pinned deployment answers 74 (4Ah) and this host implements contract
- * level 08h.
+ * unknown-command class it has no writable service: the bulk criterion is
+ * PENDING - never the OK marker, never acceptance evidence.  The last line
+ * is "ioc selftest: OK" or "ioc selftest: FAIL <phase>", with the matching
+ * ZOS_IOCSELFTEST_* code in ace_ioc_selftest_result.
  */
 
-#include "zephyros/device.h"
+#include "zephyros/errno.h"
 #include "zephyros/ioc.h"
-#include "zephyros/kernel.h"
+#include "zos/protocol.h"
 
 #include "ioc_proto.h"
 #include "ioc_selftest.h"
+#include "service_client.h"
 
 #if ZOS_IOC_SELFTEST
 
-/* Frozen /SHARED file-service layouts, mirrored from the pinned MCU
- * ioc_frame.h for this fixture only (transport acceptance, not a
- * ZephyrOS filesystem API).  The controller confines every name to
- * /SHARED/ and every chunk to 512 bytes. */
+/* Frozen /SHARED file-service classes (mirrored from the pinned MCU
+ * ioc_frame.h for this fixture only, as the M8 diagnostic did) and the
+ * dedicated acceptance file the controller builds from the packed 8.3
+ * basename.  FS_WRITE/FS_READ are also two of the request classes the
+ * transport admits a bulk phase for. */
 #define IOC_CMD_FS_OPEN   0x22u
 #define IOC_RSP_FS_OPEN   0xA2u
 #define IOC_CMD_FS_READ   0x23u
@@ -53,471 +60,365 @@
 #define IOC_RSP_FS_CLOSE  0xA5u
 #define IOC_CMD_FS_DELETE 0x27u
 #define IOC_RSP_FS_DELETE 0xA7u
-/* Frozen controller status proving the file is absent after the cleanup
- * delete (mirrors IOC_STATUS_FS_NO_FILE in the pinned ioc_frame.h).
- * Only this status, with the empty failure shape, proves deletion: a
- * media/mount/filesystem error proves nothing. */
-#define IOC_STATUS_FS_NO_FILE 0x34u
-#define IOC_FS_MODE_READ  0x00u
 #define IOC_FS_MODE_WRITE 0x01u
 #define IOC_NAME_LEN      11u
+#define IOC_BULK_BYTES    256u /* the one staged bulk section */
 
 uint8_t ace_ioc_selftest_result;
 
-static const char ioc_digits[] = "0123456789ABCDEF";
-
-#define IOC_PINGS 4u
-#define IOC_STATUS_SAMPLES 8u
-
-/* Dedicated acceptance file: separator-free basename, packed 8.3, and
- * never a user file.  The controller builds /SHARED/IOCBULKT.BIN from it. */
 static const uint8_t ioc_name[IOC_NAME_LEN] = {
 	'I', 'O', 'C', 'B', 'U', 'L', 'K', 'T', 'B', 'I', 'N'
 };
+static uint8_t ioc_pattern[IOC_BULK_BYTES];
+static struct zioc_frame ioc_reply;
+static struct zos_ipc_frame ioc_frame;
+static uint8_t ioc_file;
+static uint8_t ioc_xfer_id;
 
-/* One shared 512-byte section buffer: written from, read back into. */
-static uint8_t ioc_buf[512];
-
-/* Deterministic section pattern, identical on every run. */
-static uint8_t ioc_pat(uint16_t index)
+static void ioc_fail(const char *phase, uint8_t code)
 {
-	return (uint8_t)((uint16_t)(index * 31u) ^ 0x5Au);
+	ace_ioc_selftest_result = code;
+	service_cli_puts("ioc selftest: FAIL ");
+	service_cli_puts(phase);
+	service_cli_puts("\r\n");
 }
 
-static void ioc_fill(uint16_t length)
+/* Transcript line "<label><hex>\r\n"; hex only, because the nucleus links
+ * no SDCC division helpers (service_client.h). */
+static void ioc_show8(const char *label, uint8_t value)
 {
-	uint16_t i;
+	service_cli_puts(label);
+	service_cli_hex8(value);
+	service_cli_puts("\r\n");
+}
 
-	for (i = 0u; i < length; ++i) {
-		ioc_buf[i] = ioc_pat(i);
+static void ioc_show16(const char *label, uint16_t value)
+{
+	service_cli_puts(label);
+	service_cli_hex16(value);
+	service_cli_puts("\r\n");
+}
+
+/* The deterministic byte the PING echo and the bulk section carry. */
+static uint8_t ioc_pattern_byte(uint16_t index)
+{
+	return (uint8_t)(index ^ 0x5Au);
+}
+
+static void ioc_fill_pattern(void)
+{
+	uint16_t index;
+
+	for (index = 0u; index < IOC_BULK_BYTES; ++index) {
+		ioc_pattern[index] = ioc_pattern_byte(index);
 	}
 }
 
-static uint8_t ioc_check(uint16_t length)
+static uint8_t ioc_pattern_ok(void)
 {
-	uint16_t i;
+	uint16_t index;
 
-	for (i = 0u; i < length; ++i) {
-		if (ioc_buf[i] != ioc_pat(i)) {
+	for (index = 0u; index < IOC_BULK_BYTES; ++index) {
+		if (ioc_pattern[index] != ioc_pattern_byte(index)) {
 			return 0u;
 		}
 	}
 	return 1u;
 }
 
-static void ioc_put_hex8(uint8_t value)
+/* Frame one descriptor-less ZIOC_OP_COMMAND (the payload is zeroed; the
+ * caller fills the request DATA) and clear the staged reply. */
+static void ioc_prepare(uint8_t type, uint8_t length)
 {
-	early_console_putc(ioc_digits[(value >> 4) & 0x0Fu]);
-	early_console_putc(ioc_digits[value & 0x0Fu]);
+	service_cli_frame(&ioc_frame, ZIOC_OP_COMMAND, type, length);
+	ioc_reply.type = 0u;
+	ioc_reply.status = 0u;
+	ioc_reply.length = 0u;
 }
 
-static void ioc_fail(uint8_t code, uint8_t detail)
+/* Issue the framed command, then stage-read the 29-byte native reply frame
+ * the reply words describe (payload[0..1], the staging handshake). */
+static int16_t ioc_exchange(uint8_t handle)
 {
-	static const char prefix[] = "ioc selftest: FAIL 0x";
-	static const char detail_prefix[] = " detail 0x";
+	uint16_t address;
 
-	ace_ioc_selftest_result = code;
-	early_console_puts(prefix);
-	ioc_put_hex8(code);
-	early_console_puts(detail_prefix);
-	ioc_put_hex8(detail);
-	early_console_puts("\r\n");
+	if (service_cli_call(handle, &ioc_frame) != 0) {
+		return -1;
+	}
+	address = (uint16_t)((uint16_t)ioc_frame.payload[0] |
+			     ((uint16_t)ioc_frame.payload[1] << 8));
+	if (address == 0u ||
+	    service_cli_stage_read(address, ZIOC_FRAME_SIZE,
+				   (uint8_t *)&ioc_reply) == 0) {
+		return -1;
+	}
+	return 0;
 }
 
-/* One /SHARED write chunk: FS_WRITE -> READY -> bulk_write -> DONE.
- * Returns a ZOS_IOCSELFTEST_* code. */
-static uint8_t ioc_write_chunk(const struct zioc_ops *ops, void *state,
-				 uint8_t handle, uint32_t offset,
-				 uint16_t length)
+/* The READY record of a bulk-arming reply: nonzero transfer id, the
+ * direction the request armed, and the exact admitted length. */
+static uint8_t ioc_ready_ok(uint8_t type, uint8_t direction, uint16_t length)
 {
-	struct zioc_frame request;
-	struct zioc_frame reply;
-	int result;
-
-	request.type = IOC_CMD_FS_WRITE;
-	request.status = 0u;
-	request.length = 7u;
-	request.data[0] = handle;
-	request.data[1] = (uint8_t)offset;
-	request.data[2] = (uint8_t)(offset >> 8);
-	request.data[3] = (uint8_t)(offset >> 16);
-	request.data[4] = (uint8_t)(offset >> 24);
-	request.data[5] = (uint8_t)length;
-	request.data[6] = (uint8_t)(length >> 8);
-
-	result = ops->command(state, &request, &reply);
-	if (result != ZIOC_OK || reply.type != IOC_RSP_FS_WRITE ||
-	    reply.status != 0u) {
-		return ZOS_IOCSELFTEST_FAIL_BULK_WRITE;
-	}
-
-	result = ops->bulk_write(state, ioc_buf, length);
-	if (result != ZIOC_OK) {
-		return ZOS_IOCSELFTEST_FAIL_BULK_WRITE;
-	}
-
-	/* The write is complete only when the matching DONE record reports
-	 * the same transfer id and success; the driver enforces the
-	 * identity match, this confirms the controller status. */
-	request.type = IOC_CMD_XFER_STATUS;
-	request.status = 0u;
-	request.length = 0u;
-	result = ops->command(state, &request, &reply);
-	if (result != ZIOC_OK || reply.type != IOC_RSP_XFER_STATUS ||
-	    reply.length < IOC_DONE_MIN_DATA ||
-	    reply.data[IOC_OFF_DONE_STATUS] != 0u) {
-		return ZOS_IOCSELFTEST_FAIL_BULK_DONE;
-	}
-	return ZOS_IOCSELFTEST_OK;
+	ioc_xfer_id = ioc_reply.data[IOC_OFF_READY_XFER_ID];
+	return (uint8_t)(ioc_reply.type == type && ioc_reply.status == 0u &&
+			 ioc_xfer_id != 0u &&
+			 ioc_reply.data[IOC_OFF_READY_DIRECTION] == direction &&
+			 (uint16_t)((uint16_t)ioc_reply.data[IOC_OFF_READY_LEN_LO] |
+				    ((uint16_t)ioc_reply.data[IOC_OFF_READY_LEN_HI]
+				     << 8)) == length);
 }
 
-/* One /SHARED read chunk: FS_READ -> READY -> bulk_read -> verify.
- * Returns a ZOS_IOCSELFTEST_* code. */
-static uint8_t ioc_read_chunk(const struct zioc_ops *ops, void *state,
-				uint8_t handle, uint32_t offset,
-				uint16_t length)
+/* One CMD_PING: the staged reply frame carries the echoed pattern, the
+ * controller level and the link-synced power snapshot. */
+static uint8_t ioc_ping(uint8_t handle)
 {
-	struct zioc_frame request;
-	struct zioc_frame reply;
-	uint16_t ready_len;
-	int result;
+	uint8_t index;
+	uint8_t echoed = 0u;
 
-	request.type = IOC_CMD_FS_READ;
-	request.status = 0u;
-	request.length = 7u;
-	request.data[0] = handle;
-	request.data[1] = (uint8_t)offset;
-	request.data[2] = (uint8_t)(offset >> 8);
-	request.data[3] = (uint8_t)(offset >> 16);
-	request.data[4] = (uint8_t)(offset >> 24);
-	request.data[5] = (uint8_t)length;
-	request.data[6] = (uint8_t)(length >> 8);
+	ioc_prepare(IOC_CMD_PING, (uint8_t)IOC_PING_ECHO_BYTES);
+	for (index = 0u; index < (uint8_t)IOC_PING_ECHO_BYTES; ++index) {
+		ioc_frame.payload[index] = ioc_pattern[index];
+	}
+	if (ioc_exchange(handle) != 0 || ioc_reply.type != IOC_RSP_PING ||
+	    ioc_reply.status != 0u ||
+	    ioc_reply.length != (uint8_t)IOC_PING_DATA_LEN ||
+	    ioc_frame.arg0 != IOC_RSP_PING ||
+	    ioc_frame.arg1 != (uint16_t)IOC_PING_DATA_LEN ||
+	    ioc_frame.payload[2] != 0u) {
+		return 0u;
+	}
+	for (index = 0u; index < (uint8_t)IOC_PING_ECHO_BYTES; ++index) {
+		if (ioc_reply.data[(uint8_t)(IOC_PING_DATA_ECHO + index)] ==
+		    ioc_pattern[index]) {
+			++echoed;
+		}
+	}
+	if (echoed != (uint8_t)IOC_PING_ECHO_BYTES ||
+	    ioc_reply.data[IOC_PING_DATA_LEVEL] != (uint8_t)IOC_FW_LEVEL_PINNED ||
+	    (ioc_reply.data[IOC_PING_DATA_POWER] & IOC_PING_LINK_SYNCED) == 0u) {
+		return 0u;
+	}
+	service_cli_puts("ioc: reply ");
+	service_cli_hex8(ioc_reply.type);
+	service_cli_puts(" status ");
+	service_cli_hex8(ioc_reply.status);
+	service_cli_puts(" length ");
+	service_cli_hex8(ioc_reply.length);
+	service_cli_puts("\r\n");
+	service_cli_puts("ioc: echo ");
+	service_cli_hex8(echoed);
+	service_cli_puts(" level ");
+	service_cli_hex8(ioc_reply.data[IOC_PING_DATA_LEVEL]);
+	service_cli_puts(" power ");
+	service_cli_hex8(ioc_reply.data[IOC_PING_DATA_POWER]);
+	service_cli_puts("\r\n");
+	return 1u;
+}
 
-	result = ops->command(state, &request, &reply);
-	if (result != ZIOC_OK || reply.type != IOC_RSP_FS_READ ||
-	    reply.status != 0u) {
-		return ZOS_IOCSELFTEST_FAIL_BULK_READ;
+/* The 7-byte FS transfer DATA (handle, offset 0, length) in the payload. */
+static void ioc_fs_transfer(uint8_t file)
+{
+	ioc_frame.payload[0] = file;
+	ioc_frame.payload[5] = (uint8_t)IOC_BULK_BYTES;
+	ioc_frame.payload[6] = (uint8_t)(IOC_BULK_BYTES >> 8);
+}
+
+/* The staged bulk write: place the pattern at the bulk address the READY
+ * reply published, commit it with the descriptor-less ZIOC_OP_BULK_WRITE,
+ * and read the matching DONE record back. */
+static uint8_t ioc_bulk_write(uint8_t handle)
+{
+	uint16_t address;
+
+	ioc_prepare(IOC_CMD_FS_WRITE, 7u);
+	ioc_fs_transfer(ioc_file);
+	if (ioc_exchange(handle) != 0 ||
+	    !ioc_ready_ok(IOC_RSP_FS_WRITE, IOC_BULK_DIR_Z80_TO_MCU,
+			  IOC_BULK_BYTES)) {
+		return 0u;
 	}
-	ready_len = (uint16_t)reply.data[IOC_OFF_READY_LEN_LO] |
-		    ((uint16_t)reply.data[IOC_OFF_READY_LEN_HI] << 8);
-	if (ready_len != length) {
-		return ZOS_IOCSELFTEST_FAIL_BULK_READ;
+	address = (uint16_t)((uint16_t)ioc_frame.payload[3] |
+			     ((uint16_t)ioc_frame.payload[4] << 8));
+	if (address == 0u ||
+	    service_cli_stage_write(address, IOC_BULK_BYTES, ioc_pattern) == 0) {
+		return 0u;
 	}
-	result = ops->bulk_read(state, ioc_buf, length);
-	if (result != ZIOC_OK) {
-		return ZOS_IOCSELFTEST_FAIL_BULK_READ;
+	service_cli_frame(&ioc_frame, ZIOC_OP_BULK_WRITE, 0u, IOC_BULK_BYTES);
+	if (service_cli_call(handle, &ioc_frame) != (int16_t)IOC_BULK_BYTES) {
+		return 0u;
 	}
-	if (!ioc_check(length)) {
-		return ZOS_IOCSELFTEST_FAIL_BULK_DATA;
+	ioc_prepare(IOC_CMD_XFER_STATUS, 0u);
+	return (uint8_t)(ioc_exchange(handle) == 0 &&
+			 ioc_reply.type == IOC_RSP_XFER_STATUS &&
+			 ioc_reply.status == 0u &&
+			 ioc_reply.length >= (uint8_t)IOC_DONE_MIN_DATA &&
+			 ioc_reply.data[IOC_OFF_DONE_XFER_ID] == ioc_xfer_id &&
+			 ioc_reply.data[IOC_OFF_DONE_STATUS] == IOC_STATUS_OK);
+}
+
+/* The staged bulk read: complete the admitted MCU->Z80 phase into the
+ * service buffer, then read that buffer back through the copy gate. */
+static uint8_t ioc_bulk_read(uint8_t handle)
+{
+	uint16_t address;
+
+	ioc_prepare(IOC_CMD_FS_READ, 7u);
+	ioc_fs_transfer(ioc_file);
+	if (ioc_exchange(handle) != 0 ||
+	    !ioc_ready_ok(IOC_RSP_FS_READ, IOC_BULK_DIR_MCU_TO_Z80,
+			  IOC_BULK_BYTES)) {
+		return 0u;
 	}
-	return ZOS_IOCSELFTEST_OK;
+	service_cli_frame(&ioc_frame, ZIOC_OP_BULK_READ, 0u, IOC_BULK_BYTES);
+	if (service_cli_call(handle, &ioc_frame) != (int16_t)IOC_BULK_BYTES) {
+		return 0u;
+	}
+	address = (uint16_t)((uint16_t)ioc_frame.payload[0] |
+			     ((uint16_t)ioc_frame.payload[1] << 8));
+	if (address == 0u ||
+	    service_cli_stage_read(address, IOC_BULK_BYTES, ioc_pattern) == 0) {
+		return 0u;
+	}
+	return ioc_pattern_ok();
+}
+
+/* Close the fixture file at its exact final size, then delete it: the
+ * acceptance leaves nothing behind. */
+static uint8_t ioc_cleanup(uint8_t handle)
+{
+	uint8_t index;
+
+	ioc_prepare(IOC_CMD_FS_CLOSE, 5u); /* handle, size 0x00000100 */
+	ioc_frame.payload[0] = ioc_file;
+	ioc_frame.payload[2] = (uint8_t)(IOC_BULK_BYTES >> 8);
+	if (ioc_exchange(handle) != 0 || ioc_reply.type != IOC_RSP_FS_CLOSE ||
+	    ioc_reply.status != 0u) {
+		return 0u;
+	}
+	ioc_prepare(IOC_CMD_FS_DELETE, (uint8_t)IOC_NAME_LEN);
+	for (index = 0u; index < (uint8_t)IOC_NAME_LEN; ++index) {
+		ioc_frame.payload[index] = ioc_name[index];
+	}
+	return (uint8_t)(ioc_exchange(handle) == 0 &&
+			 ioc_reply.type == IOC_RSP_FS_DELETE &&
+			 ioc_reply.status == 0u);
 }
 
 void zos_run_ioc_selftest(void)
 {
-	const struct zioc_ops *ops;
-	const void *class_ops;
-	void *state;
-	zdev_handle_t handle;
-	struct zioc_frame request;
-	struct zioc_frame reply;
-	uint8_t level = 0u;
-	uint8_t pass;
-	uint8_t i;
-	uint8_t fs_handle;
-	int result;
-	uint16_t bits;
+	/* The malformed command calls: an unknown operation, a request DATA
+	 * length above the inline maximum, and the descriptor-less REPLY form
+	 * (a bank-7 client reads the staged frame instead). */
+	static const uint8_t bad_op[3] = {
+		0x7Fu, ZIOC_OP_COMMAND, ZIOC_OP_REPLY
+	};
+	uint8_t handle = 0u;
+	uint8_t refused = 0u;
+	uint8_t index;
+	int16_t result;
+	uint16_t word;
 
-	ace_ioc_selftest_result = ZOS_IOCSELFTEST_FAIL_BOOT;
+	ace_ioc_selftest_result = ZOS_IOCSELFTEST_FAIL_ENDPOINT;
+	ioc_fill_pattern();
 
-	/* The implemented host contract is the pinned deployed host level:
-	 * this is an identifier the diagnostic prints and the smoke tool
-	 * checks - not a firmware request. */
-	early_console_puts("ioc: transport level ");
-	ioc_put_hex8(ZIOC_TRANSPORT_LEVEL);
-	early_console_puts("\r\n");
-
-	/* Discovery is by class plus capabilities; names are diagnostic
-	 * only.  The bulk package adds read and write: all four IOC
-	 * capabilities must be present and every bulk pointer non-null. */
-	handle = device_find(ZDEV_IOC,
-			     ZCAP_IOC_COMMAND | ZCAP_IOC_BULK_READ |
-				     ZCAP_IOC_BULK_WRITE | ZCAP_IOC_STATUS,
-			     0u);
-	if (handle == ZDEV_HANDLE_INVALID) {
-		ioc_fail(ZOS_IOCSELFTEST_FAIL_BOOT, 0x01u);
+	if (service_cli_endpoint(ZOS_CLASS_IOC, &handle) == 0u) {
+		ioc_fail("endpoint", ZOS_IOCSELFTEST_FAIL_ENDPOINT);
 		return;
 	}
-	if (device_interface(handle, ZDEV_IOC, &class_ops, &state) !=
-	    ZDEV_OK) {
-		ioc_fail(ZOS_IOCSELFTEST_FAIL_BOOT, 0x02u);
+	service_cli_puts("ioc: endpoint class ");
+	service_cli_hex8(ZOS_CLASS_IOC);
+	ioc_show8(" version ", ZOS_PROTOCOL_VERSION);
+
+	result = service_cli_getc(handle, ZIOC_OP_READY);
+	if (result != 1) {
+		ioc_fail("ready", ZOS_IOCSELFTEST_FAIL_READY);
 		return;
 	}
-	ops = (const struct zioc_ops *)class_ops;
-	if (ops == (const struct zioc_ops *)0 || ops->command == 0 ||
-	    ops->status == 0 || ops->bulk_read == 0 ||
-	    ops->bulk_write == 0) {
-		ioc_fail(ZOS_IOCSELFTEST_FAIL_BOOT, 0x03u);
+	ioc_show8("ioc: ready ", (uint8_t)result);
+
+	if (!ioc_ping(handle)) {
+		ioc_fail("command", ZOS_IOCSELFTEST_FAIL_COMMAND);
 		return;
 	}
 
-	/* Repeated PING: identical echo pattern every time, and the
-	 * persistent link must survive without re-initialisation. */
-	for (pass = 0; pass < IOC_PINGS; ++pass) {
-		request.type = IOC_CMD_PING;
-		request.status = 0u;
-		request.length = IOC_PING_ECHO_BYTES;
-		for (i = 0; i < IOC_PING_ECHO_BYTES; ++i) {
-			request.data[i] = (uint8_t)(i ^ 0x5Au);
-		}
-
-		result = ops->command(state, &request, &reply);
-		if (result != ZIOC_OK) {
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_PING, (uint8_t)(0x10u + pass));
-			return;
-		}
-		if (reply.type != IOC_RSP_PING ||
-		    reply.length != IOC_PING_DATA_LEN) {
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_PING,
-				   (uint8_t)(0x20u + pass));
-			return;
-		}
-		if (reply.status != 0u) {
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_PING,
-				   (uint8_t)(0x30u + pass));
-			return;
-		}
-		for (i = 0; i < IOC_PING_ECHO_BYTES; ++i) {
-			if (reply.data[i] != request.data[i]) {
-				ioc_fail(ZOS_IOCSELFTEST_FAIL_ECHO, i);
-				return;
-			}
-		}
-
-		/* Controller firmware level: printed once, then validated
-		 * on every reply. */
-		if (pass == 0u) {
-			level = reply.data[IOC_PING_DATA_LEVEL];
-			early_console_puts("ioc: controller level ");
-			ioc_put_hex8(level);
-			early_console_puts("\r\n");
-		}
-		if (reply.data[IOC_PING_DATA_LEVEL] != level) {
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_REPEAT, pass);
-			return;
-		}
-
-		/* The MCU must already report the command lane established:
-		 * this PING is itself a CRC-verified exchange after the
-		 * LINK_SYNC bring-up. */
-		if ((reply.data[IOC_PING_DATA_POWER] &
-		     IOC_PING_LINK_SYNCED) == 0u) {
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_PING,
-				   (uint8_t)(0x40u + pass));
-			return;
-		}
-	}
-
-	if (level != IOC_FW_LEVEL_PINNED) {
-		ioc_fail(ZOS_IOCSELFTEST_FAIL_LEVEL, level);
+	/* Semantic status only: the word may carry nothing but the HID
+	 * doorbell bit, which varies with what the peer has queued. */
+	result = service_cli_getc(handle, ZIOC_OP_STATUS);
+	word = (uint16_t)result;
+	if (result < 0 || (word & (uint16_t)~ZIOC_STATUS_HID_PENDING) != 0u) {
+		ioc_fail("status", ZOS_IOCSELFTEST_FAIL_STATUS);
 		return;
 	}
-	early_console_puts("ioc: ping x4 OK\r\n");
+	ioc_show16("ioc: status ", word);
 
-	/* Bulk acceptance over the production /SHARED service: create or
-	 * truncate the dedicated IOCBULKT.BIN, write the deterministic
-	 * 1/128/512-byte sections (each confirmed by its matching DONE
-	 * record), close, reopen for read, read all three back through the
-	 * bulk lane, verify the patterns, and delete the file.  Never a raw
-	 * LBA, a diagnostic command, or a user file. */
-	request.type = IOC_CMD_FS_OPEN;
-	request.status = 0u;
-	request.length = 1u + IOC_NAME_LEN;
-	request.data[0] = IOC_FS_MODE_WRITE;
-	for (i = 0u; i < IOC_NAME_LEN; ++i) {
-		request.data[1u + i] = ioc_name[i];
+	/* Create the dedicated fixture file. */
+	ioc_prepare(IOC_CMD_FS_OPEN, (uint8_t)(1u + IOC_NAME_LEN));
+	ioc_frame.payload[0] = IOC_FS_MODE_WRITE;
+	for (index = 0u; index < (uint8_t)IOC_NAME_LEN; ++index) {
+		ioc_frame.payload[1u + index] = ioc_name[index];
 	}
-	result = ops->command(state, &request, &reply);
-	if (result == ZIOC_OK && reply.type == IOC_RSP_UNKNOWN_CMD) {
-		if (reply.status != IOC_STATUS_UNKNOWN_CMD) {
-			/* A nonstandard unknown-class reply proves nothing
-			 * about the writable service. */
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_BULK_OPEN, reply.status);
+	if (ioc_exchange(handle) != 0 || ioc_reply.type != IOC_RSP_FS_OPEN ||
+	    ioc_reply.status != 0u || ioc_reply.length < 1u ||
+	    ioc_reply.data[0] == 0u) {
+		if (ioc_reply.type == IOC_RSP_UNKNOWN_CMD &&
+		    ioc_reply.status == IOC_STATUS_UNKNOWN_CMD) {
+			/* The deployed firmware serves no writable /SHARED
+			 * file: PENDING, never the OK marker.  Nothing was
+			 * created, so nothing has to be undone. */
+			ioc_show8("ioc: bulk write PENDING 0x", ioc_reply.type);
+			ace_ioc_selftest_result = ZOS_IOCSELFTEST_PENDING;
+			ioc_show8("ioc selftest: PENDING 0x", ioc_reply.type);
 			return;
 		}
-		/* The deployed firmware answers the writable /SHARED open
-		 * with the unknown-command class: it has no writable
-		 * service.  The bulk-write criterion is PENDING - an honest
-		 * operator-visible result, never acceptance evidence - and
-		 * the run ends without the OK marker.  Nothing was created,
-		 * so nothing has to be undone. */
-		early_console_puts("ioc: bulk write PENDING 0x");
-		ioc_put_hex8(reply.type);
-		early_console_puts("\r\n");
-		ace_ioc_selftest_result = ZOS_IOCSELFTEST_PENDING;
-		early_console_puts("ioc selftest: PENDING 0x");
-		ioc_put_hex8(reply.type);
-		early_console_puts("\r\n");
+		ioc_fail("bulk", ZOS_IOCSELFTEST_FAIL_BULK);
 		return;
 	}
-	if (result != ZIOC_OK || reply.type != IOC_RSP_FS_OPEN) {
-		ioc_fail(ZOS_IOCSELFTEST_FAIL_BULK_OPEN, 0x01u);
+	ioc_file = ioc_reply.data[0];
+
+	if (!ioc_bulk_write(handle)) {
+		ioc_fail("bulk", ZOS_IOCSELFTEST_FAIL_BULK);
 		return;
 	}
-	if (reply.status != 0u) {
-		/* A real filesystem/media failure, not an unsupported
-		 * feature: the frozen wire status does not prove the service
-		 * is absent.  Report it as a failure. */
-		ioc_fail(ZOS_IOCSELFTEST_FAIL_BULK_OPEN, reply.status);
+	service_cli_puts("ioc: bulk write ");
+	service_cli_hex16(IOC_BULK_BYTES);
+	service_cli_puts(" OK\r\n");
+	if (!ioc_bulk_read(handle)) {
+		ioc_fail("bulk", ZOS_IOCSELFTEST_FAIL_BULK);
 		return;
 	}
-	{
-		fs_handle = reply.data[0];
-		if (fs_handle == 0u) {
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_BULK_OPEN, 0x02u);
-			return;
-		}
-
-		ioc_fill(1u);
-		result = ioc_write_chunk(ops, state, fs_handle, 0u, 1u);
-		if (result != ZIOC_OK) {
-			ioc_fail((uint8_t)result, 0x11u);
-			return;
-		}
-		ioc_fill(128u);
-		result = ioc_write_chunk(ops, state, fs_handle, 1u, 128u);
-		if (result != ZIOC_OK) {
-			ioc_fail((uint8_t)result, 0x12u);
-			return;
-		}
-		ioc_fill(512u);
-		result = ioc_write_chunk(ops, state, fs_handle, 129u, 512u);
-		if (result != ZIOC_OK) {
-			ioc_fail((uint8_t)result, 0x13u);
-			return;
-		}
-
-		/* Exact final size: 1 + 128 + 512 bytes. */
-		request.type = IOC_CMD_FS_CLOSE;
-		request.status = 0u;
-		request.length = 5u;
-		request.data[0] = fs_handle;
-		request.data[1] = 0x81u;
-		request.data[2] = 0x02u;
-		request.data[3] = 0x00u;
-		request.data[4] = 0x00u;
-		result = ops->command(state, &request, &reply);
-		if (result != ZIOC_OK || reply.type != IOC_RSP_FS_CLOSE ||
-		    reply.status != 0u) {
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_BULK_CLOSE, 0x14u);
-			return;
-		}
-		early_console_puts("ioc: bulk write 1/128/512 OK\r\n");
-		early_console_puts("ioc: done x3 OK\r\n");
-
-		/* Reopen for read and verify all three sections. */
-		request.type = IOC_CMD_FS_OPEN;
-		request.status = 0u;
-		request.length = 1u + IOC_NAME_LEN;
-		request.data[0] = IOC_FS_MODE_READ;
-		for (i = 0u; i < IOC_NAME_LEN; ++i) {
-			request.data[1u + i] = ioc_name[i];
-		}
-		result = ops->command(state, &request, &reply);
-		if (result != ZIOC_OK || reply.type != IOC_RSP_FS_OPEN ||
-		    reply.status != 0u || reply.data[0] == 0u) {
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_BULK_OPEN, 0x03u);
-			return;
-		}
-		fs_handle = reply.data[0];
-
-		result = ioc_read_chunk(ops, state, fs_handle, 0u, 1u);
-		if (result != ZIOC_OK) {
-			ioc_fail((uint8_t)result, 0x21u);
-			return;
-		}
-		result = ioc_read_chunk(ops, state, fs_handle, 1u, 128u);
-		if (result != ZIOC_OK) {
-			ioc_fail((uint8_t)result, 0x22u);
-			return;
-		}
-		result = ioc_read_chunk(ops, state, fs_handle, 129u, 512u);
-		if (result != ZIOC_OK) {
-			ioc_fail((uint8_t)result, 0x23u);
-			return;
-		}
-
-		request.type = IOC_CMD_FS_CLOSE;
-		request.status = 0u;
-		request.length = 5u;
-		request.data[0] = fs_handle;
-		request.data[1] = 0x81u;
-		request.data[2] = 0x02u;
-		request.data[3] = 0x00u;
-		request.data[4] = 0x00u;
-		result = ops->command(state, &request, &reply);
-		if (result != ZIOC_OK || reply.type != IOC_RSP_FS_CLOSE ||
-		    reply.status != 0u) {
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_BULK_CLOSE, 0x15u);
-			return;
-		}
-
-		request.type = IOC_CMD_FS_DELETE;
-		request.status = 0u;
-		request.length = IOC_NAME_LEN;
-		for (i = 0u; i < IOC_NAME_LEN; ++i) {
-			request.data[i] = ioc_name[i];
-		}
-		result = ops->command(state, &request, &reply);
-		if (result != ZIOC_OK || reply.type != IOC_RSP_FS_DELETE ||
-		    reply.status != 0u) {
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_BULK_DELETE, 0x16u);
-			return;
-		}
-		early_console_puts("ioc: bulk read 1/128/512 OK\r\n");
-
-		/* Cleanup proof: the dedicated file must no longer open.
-		 * An open that still succeeds would mean the delete failed
-		 * or targeted the wrong name. */
-		request.type = IOC_CMD_FS_OPEN;
-		request.status = 0u;
-		request.length = 1u + IOC_NAME_LEN;
-		request.data[0] = IOC_FS_MODE_READ;
-		for (i = 0u; i < IOC_NAME_LEN; ++i) {
-			request.data[1u + i] = ioc_name[i];
-		}
-		result = ops->command(state, &request, &reply);
-		/* Only the frozen no-file failure with its empty payload shape
-		 * proves the file is gone: a media/mount/filesystem error, or a
-		 * failure reply that still carries data, is NOT cleanup
-		 * evidence. */
-		if (result != ZIOC_OK || reply.type != IOC_RSP_FS_OPEN ||
-		    reply.status != IOC_STATUS_FS_NO_FILE ||
-		    reply.length != 0u) {
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_BULK_DELETE, 0x17u);
-			return;
-		}
-		early_console_puts("ioc: cleanup OK 0x");
-		ioc_put_hex8(reply.status);
-		early_console_puts("\r\n");
+	service_cli_puts("ioc: bulk read ");
+	service_cli_hex16(IOC_BULK_BYTES);
+	service_cli_puts(" OK\r\n");
+	if (!ioc_cleanup(handle)) {
+		ioc_fail("bulk", ZOS_IOCSELFTEST_FAIL_BULK);
+		return;
 	}
+	service_cli_puts("ioc: cleanup OK\r\n");
 
-	/* Semantic status only: the returned mask may carry nothing but
-	 * ZIOC_STATUS_HID_PENDING (and the doorbell varies with whatever
-	 * the controller has queued, so both values are legal). */
-	for (i = 0; i < IOC_STATUS_SAMPLES; ++i) {
-		bits = ops->status(state);
-		if ((bits & (uint16_t)~ZIOC_STATUS_HID_PENDING) != 0u) {
-			ioc_fail(ZOS_IOCSELFTEST_FAIL_STATUS, (uint8_t)bits);
-			return;
-		}
+	/* Malformed calls are refused with -ZOS_EINVAL before any wire
+	 * traffic, including the invalid handles. */
+	for (index = 0u; index < 3u; ++index) {
+		service_cli_frame(&ioc_frame, bad_op[index], 0u,
+				  (uint16_t)((index == 1u) ? 25u :
+					     (index == 2u) ? 29u : 0u));
+		refused = (uint8_t)(refused +
+				    (service_cli_call(handle, &ioc_frame) ==
+				     -ZOS_EINVAL));
 	}
-	early_console_puts("ioc: hid status ");
-	ioc_put_hex8((uint8_t)(bits & 0xFFu));
-	early_console_puts("\r\n");
+	service_cli_frame(&ioc_frame, ZIOC_OP_STATUS, 0u, 0u);
+	refused = (uint8_t)(refused +
+			    (service_cli_call(0u, &ioc_frame) == -ZOS_EINVAL));
+	refused = (uint8_t)(refused +
+			    (service_cli_call((uint8_t)0x7Fu, &ioc_frame) ==
+			     -ZOS_EINVAL));
+	if (refused != 5u) {
+		ioc_fail("refused", ZOS_IOCSELFTEST_FAIL_REFUSED);
+		return;
+	}
+	ioc_show8("ioc: malformed refused ", refused);
 
 	ace_ioc_selftest_result = ZOS_IOCSELFTEST_OK;
-	early_console_puts("ioc selftest: OK\r\n");
+	service_cli_puts("ioc selftest: OK\r\n");
 }
 
 #endif /* ZOS_IOC_SELFTEST */

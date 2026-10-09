@@ -2,14 +2,17 @@
  *
  * ioc.c owns the command state, framing, CRC, and validation;
  * ioc_io.asm owns all SIO1/B port I/O and the timing-critical streaming
- * loops; ioc_module.c owns the zdevice descriptor and the module init
- * entry.  Not a kernel ABI.
+ * loops; ioc_boot.c owns the boot segment's one-time lane programming and
+ * ioc_service.c the resident-service protocol dispatch.  Not a kernel
+ * ABI.
  */
 
 #ifndef ZEPHYROS_DRIVERS_IOC_DRIVER_H
 #define ZEPHYROS_DRIVERS_IOC_DRIVER_H
 
 #include "zephyros/ioc.h"
+#include "zephyros/ipc.h"
+#include "zos/types.h"
 
 /* One-time SIO1/B (command) and SIO1/A (bulk) programming: channel reset,
  * WR1 interrupts/WAIT off, External Sync x1, FFh/AAh fill, RX disabled
@@ -32,7 +35,15 @@ int ioc_bulk_read(void *state, void *dst, uint16_t length);
 int ioc_bulk_write(void *state, const void *src, uint16_t length);
 uint16_t ioc_status(void *state);
 
-extern const struct zioc_ops ioc_ops;
+/* Boot segment: one-time lane programming, run through the mode-10 gate. */
+void ioc_boot_entry(void);
+
+/* Hot segment: the endpoint dispatch and the init entry the loader calls
+ * with the service bootstrap table (which runs the one LINK_SYNC
+ * bring-up and records the readiness bit). */
+int16_t ioc_service_dispatch(struct zos_ipc_frame *frame);
+void ioc_service_init(const struct ipc_service_api *api);
+
 extern struct ioc_state ioc_state;
 
 #endif /* ZEPHYROS_DRIVERS_IOC_DRIVER_H */

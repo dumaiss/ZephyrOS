@@ -180,12 +180,18 @@ class TestIocFatIntegration(IocFatStaticBase):
         text = read(MAIN_C)
         self.assertIn("ZOS_IOCFAT_BOOT", text)
         self.assertIn("iocfat", text)
-        # The gate keeps pre-M9 images byte-identical.
+        # The gate keeps images whose store carries no provider quiet.
         self.assertRegex(text, r"#if ZOS_IOCFAT_BOOT")
+        # The services load from the boot manifest first; the provider is
+        # the last arena module loaded, and the mount pass runs after it.
         order = re.findall(r'kernel_load_vfs_module\("([a-z0-9]+)"\)', text)
         self.assertIn("iocfat", order)
         self.assertEqual(order[-1], "iocfat",
                          "iocfat must be the last boot module: %r" % order)
+        self.assertLess(text.index("service_load_all(ZOS_SERVICE_MANIFEST_NAME)"),
+                        text.index('kernel_load_vfs_module("iocfat")'),
+                        "the resident services must be placed before the "
+                        "arena module that asks them for the transport")
         # A healthy card prints nothing new, so the load must tolerate a
         # failure instead of stopping the boot chain.
         tail = text.split('kernel_load_vfs_module("iocfat")', 1)[1]
@@ -194,8 +200,9 @@ class TestIocFatIntegration(IocFatStaticBase):
     def test_makefile_wiring(self):
         text = read(MAKEFILE)
         self.assertIn("ZOS_IOCFAT_BOOT", text)
-        self.assertIn("BOOT_IOCFAT_ZMOD", text)
+        self.assertIn("ZOS_ARENA_MODULES", text)
         self.assertIn("modules/manifests/iocfat.json", text)
+        self.assertIn("$(BOOT_ZMODS)", text)
         self.assertIn("m9-iocfat-selftest", text)
         self.assertIn("tests/m9/manifest-iocfat.json", text)
         self.assertIn("test_iocfat_sim.py", text)
@@ -207,7 +214,8 @@ class TestIocFatIntegration(IocFatStaticBase):
     def test_acceptance_image_manifest(self):
         entries = [f["name"] for f in
                    json.loads(read(IMAGE_MANIFEST))["files"]]
-        self.assertEqual(entries, ["sio.zmod", "ioc.zmod", "iocfat.zmod",
+        self.assertEqual(entries, ["sio.zmod", "ioc.zmod", "console.zmod",
+                                   "services.man", "iocfat.zmod",
                                    "monitor.zex", "fstest.zex"])
 
     def test_the_acceptance_seam_is_not_extended(self):

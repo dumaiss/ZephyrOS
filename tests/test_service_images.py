@@ -84,7 +84,7 @@ def pack_service(tmp, name, objects, manifest):
     manifest = dict(manifest)
     manifest.setdefault("name", name)
     manifest.setdefault("type", "service")
-    manifest.setdefault("abi", 1)
+    manifest.setdefault("abi", 2)
     manifest.setdefault("flags", 0)
     manifest["objects"] = list(objects)
     path = os.path.join(tmp, name + ".json")
@@ -133,7 +133,7 @@ class TestServiceFormat(unittest.TestCase):
         })
         info = zmodpack.parse_container(container)
         self.assertEqual(info["module_type"], "service")
-        self.assertEqual(info["service_abi"], 1)
+        self.assertEqual(info["service_abi"], 2)
         self.assertEqual([segment["role"] for segment in info["segments"]],
                          ["hot", "boot", "io"])
         hot, boot, io = info["segments"]
@@ -343,6 +343,48 @@ class TestServiceRelocations(unittest.TestCase):
                 ],
             })
         self.assertIn("bulk", str(caught.exception))
+
+    def test_a_bulk_segment_can_carry_a_binary_asset(self):
+        """A segment may take its image from a binary asset (work package
+        41: the V9958 font is bulk data): the file's bytes are the segment
+        image, copied verbatim, with no relocations."""
+        payload = bytes((i * 7 + 3) & 0xFF for i in range(2048))
+        with open(os.path.join(self.tmp.name, "font.bin"), "wb") as handle:
+            handle.write(payload)
+        container = pack_service(self.tmp.name, "asset", {
+            "h.rel": ([("_CODE", 2)], [("_svc_init", 0, 0)],
+                      [(0, 0, [0xC9, 0x00], [])]),
+        }, {
+            "init": "_svc_init",
+            "segments": [
+                {"role": "hot", "image_areas": ["_CODE"]},
+                {"role": "bulk", "asset": "font.bin"},
+            ],
+        })
+        info = zmodpack.parse_container(container)
+        bulk = [s for s in info["segments"] if s["role"] == "bulk"][0]
+        self.assertEqual(bulk["image_size"], 2048)
+        self.assertEqual(bulk["bss_size"], 0)
+        self.assertEqual(bulk["reloc_count"], 0)
+        start = info["payload_offset"] + bulk["payload_offset"]
+        self.assertEqual(container[start:start + 2048], payload)
+
+    def test_an_asset_segment_takes_no_areas(self):
+        with open(os.path.join(self.tmp.name, "font.bin"), "wb") as handle:
+            handle.write(b"\x01\x02")
+        with self.assertRaises(zmodpack.ZmodError) as caught:
+            pack_service(self.tmp.name, "assetbad", {
+                "h.rel": ([("_CODE", 2)], [("_svc_init", 0, 0)],
+                          [(0, 0, [0xC9, 0x00], [])]),
+            }, {
+                "init": "_svc_init",
+                "segments": [
+                    {"role": "hot", "image_areas": ["_CODE"]},
+                    {"role": "bulk", "image_areas": ["_BULK"],
+                     "asset": "font.bin"},
+                ],
+            })
+        self.assertIn("asset", str(caught.exception))
 
 
 class TestServiceSet(unittest.TestCase):

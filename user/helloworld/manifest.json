@@ -22,9 +22,14 @@
       "path": "v9958.zmod"
     },
     {
-      "name": "v9958-6x8.font",
+      "name": "console.zmod",
+      "type": "ZMOD",
+      "path": "console.zmod"
+    },
+    {
+      "name": "services.man",
       "type": "DATA",
-      "path": "v9958-6x8.font"
+      "path": "services.man"
     },
     {
       "name": "monitor.zex",

@@ -5,8 +5,8 @@
 ; This file is the reviewable source asset only: tools/fontpack.py
 ; parses the .db bytes, verifies the exact 2048-byte payload and the
 ; SHA-256 below, and emits build/modules/v9958-6x8.font as ROMFS DATA.
-; The font is never linked into the resident ZMOD image or BSS; the
-; driver streams it from ROMFS through the ABI-v2 resource imports.
+; The font is the V9958 service image's bulk segment from package 41;
+; tools/fontpack.py still emits this exact payload for the ROMFS copy the
 ;
 ; Layout:
 ;   256 glyphs indexed directly by CP850 byte value

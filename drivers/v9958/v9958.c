@@ -1,14 +1,25 @@
 /* ZephyrOS V9958 video driver implementation (drivers/v9958/).
  *
- * This is the direct-hardware core ported from the pinned Zephyr-80
- * reference (LunchCrema V9958, commit 2c6b9650): the exact GRAPHIC 6
- * initialization discipline, the native VIDEO class operation surface,
- * the ROMFS-backed 6x8 CP850 font-atlas setup, the low-level
- * graphics/command primitives, and the output-only 85x26 text terminal
- * renderer behind `zchar_ops` (ANSI/VT100-light parser, circular R#23
- * scrolling, sprite cursor).  The port deliberately drops the
- * reference's CP/M dispatch table, BIOS addressing, HID entry points,
- * VIDEO_SEND payload ceiling and CP/M build layout.
+ * The M8 `v9958` driver as a bank-6 service image.  This is the
+ * direct-hardware core ported from the pinned Zephyr-80 reference
+ * (LunchCrema V9958, commit 2c6b9650): the exact GRAPHIC 6
+ * initialization discipline, the native VIDEO operation surface, the
+ * 6x8 CP850 font-atlas setup, the low-level graphics/command primitives,
+ * and the output-only 85x26 text terminal renderer (ANSI/VT100-light
+ * parser, circular R#23 scrolling, sprite cursor).  The port deliberately
+ * drops the reference's CP/M dispatch table, BIOS addressing, HID entry
+ * points, VIDEO_SEND payload ceiling and CP/M build layout.
+ *
+ * Service layout (work package 41, architecture 36.6):
+ *   hot  this file and v9958_service.c: the terminal renderer, the
+ *        native operations, and the whole display bring-up chain - the
+ *        ZVIDEO_RESET path is reachable after boot and re-runs the same
+ *        chain, so none of it is boot-only;
+ *   boot v9958_boot.c: the boot-once marker and the direct font source
+ *        of the initial upload (the boot-tier mapping shows the bulk
+ *        data, the service window does not);
+ *   bulk the 2048-byte font itself, reached at run time through the
+ *        nucleus bulk copy (api->bulk_read).
  *
  * Initialization discipline (hardware-validated; never reordered):
  *
@@ -24,29 +35,65 @@
  *      clear G6, initialize the sprite cursor, present, and finally
  *      enable the display.
  *
- * The font is 2048 bytes of ROMFS DATA read during init through the
- * ABI-v2 resource imports in bounded 256-byte chunks: it is never
- * embedded in the module image or BSS, and there is no build-time
- * dependency on the adjacent reference repository.
+ * The font is the image's bulk segment (2048 bytes, packed from the
+ * pinned asset): the initial upload reads it directly in the boot
+ * tier's mode-10 mapping, and the run-time display reset re-reads it in
+ * bounded 64-byte chunks through the nucleus bulk copy, because the
+ * mode-11 service window cannot show the boot/bulk tier.
  *
- * VDP interrupts stay disabled for all of M8: nothing here selects an
- * interrupt enable, so the M2 IRQ_VDP_FF path is not claimed.
+ * VDP interrupts stay disabled: nothing here selects an interrupt
+ * enable, so the M2 IRQ_VDP_FF path is not claimed.
  *
- * This source is compiled into the v9958 ZMOD module; the buffers and
- * state below live in module BSS (`_DATA`) and are relocated with the
- * module image.  The module reaches the kernel only through the passed
- * `zdriver_api`.
+ * The buffers and state below live in the service's SERVICE_IO data and
+ * are relocated with the image.
  */
 
-#include "zephyros/device.h"
-#include "zephyros/driver.h"
+#include "zephyros/errno.h"
+#include "zephyros/ipc.h"
 #include "zephyros/video.h"
 
 #include "zephyr80/hardware.h"
 
+#include "zos/protocol.h"
+
 #include "v9958_driver.h"
 
 struct v9958_state v9958_state;
+
+/* The service bootstrap table (set by the init entry) and the boot-tier
+ * font source: the boot entry leaves the font's bank-6 address here for
+ * the initial upload; the init clears it so every later (run-time) read
+ * goes through the nucleus bulk copy. */
+static const struct ipc_service_api *v9958_api;
+static uint16_t v9958_font_base;
+
+/* Copy `length` font bytes at `offset` into `dst`. */
+static int v9958_font_read(uint16_t offset, uint8_t *dst, uint16_t length)
+{
+	if (v9958_font_base != 0u) {
+		/* Boot tier only: mode 10 maps the whole resident bank, so
+		 * the bulk bytes are directly addressable. */
+		const uint8_t *src = (const uint8_t *)
+			(uint16_t)(v9958_font_base + offset);
+		uint16_t index;
+
+		for (index = 0u; index < length; ++index) {
+			dst[index] = src[index];
+		}
+		return (int)length;
+	}
+	return (int)v9958_api->bulk_read(offset, (uint16_t)dst, length);
+}
+
+void v9958_set_font_base(uint16_t base)
+{
+	v9958_font_base = base;
+}
+
+void v9958_set_api(const struct ipc_service_api *api)
+{
+	v9958_api = api;
+}
 
 /* Bounded scratch (module BSS, reused for every read/atlas segment):
  * one 8-glyph font chunk and one expanded 24-byte atlas segment.
@@ -312,12 +359,10 @@ static int v9958_upload_atlas_chunk(uint8_t chunk, uint8_t reverse)
 	uint16_t addr;
 	int rc;
 
-	rc = v9958_state.api->resource_read(
-		V9958_FONT_NAME,
-		(uint16_t)((uint16_t)chunk * V9958_FONT_CHUNK),
-		v9958_font_group, V9958_FONT_CHUNK);
+	rc = v9958_font_read((uint16_t)((uint16_t)chunk * V9958_FONT_CHUNK),
+			     v9958_font_group, V9958_FONT_CHUNK);
 	if (rc != (int)V9958_FONT_CHUNK) {
-		return ZDRIVER_FAIL;
+		return V9958_FAIL;
 	}
 
 	if (reverse != 0u) {
@@ -357,7 +402,7 @@ static int v9958_upload_atlas_chunk(uint8_t chunk, uint8_t reverse)
 					 V9958_ATLAS_SEG_BYTES);
 		}
 	}
-	return ZDRIVER_OK;
+	return V9958_OK;
 }
 
 /* Step 5a: the exact 2048-byte font is streamed through the resource
@@ -369,16 +414,16 @@ static int v9958_upload_font_atlas(void)
 	uint8_t chunk;
 
 	for (chunk = 0u; chunk < V9958_ATLAS_CHUNKS; ++chunk) {
-		if (v9958_upload_atlas_chunk(chunk, 0u) != ZDRIVER_OK) {
-			return ZDRIVER_FAIL;
+		if (v9958_upload_atlas_chunk(chunk, 0u) != V9958_OK) {
+			return V9958_FAIL;
 		}
 	}
 	for (chunk = 0u; chunk < V9958_ATLAS_CHUNKS; ++chunk) {
-		if (v9958_upload_atlas_chunk(chunk, 1u) != ZDRIVER_OK) {
-			return ZDRIVER_FAIL;
+		if (v9958_upload_atlas_chunk(chunk, 1u) != V9958_OK) {
+			return V9958_FAIL;
 		}
 	}
-	return ZDRIVER_OK;
+	return V9958_OK;
 }
 
 /* Step 5b: clear all 256 lines of the circular page-zero bitmap and
@@ -428,14 +473,14 @@ static int v9958_init_display(void)
 	v9958_init_g6();
 	v9958_enable_hardware_wait();
 	v9958_init_palette();
-	if (v9958_upload_font_atlas() != ZDRIVER_OK) {
-		return ZDRIVER_FAIL;
+	if (v9958_upload_font_atlas() != V9958_OK) {
+		return V9958_FAIL;
 	}
 	v9958_clear_screen();
 	v9958_cursor_init();
 	v9958_io_wait_command(); /* present */
 	v9958_io_reg(ZOS_V9958_R1_DISPLAY_ON, ZOS_V9958_REG_R1);
-	return ZDRIVER_OK;
+	return V9958_OK;
 }
 
 /* ======================================================================
@@ -1429,13 +1474,6 @@ int v9958_char_write_worker(void *vstate, const char *buf, uint16_t len)
 	return (int)len;
 }
 
-const struct zchar_ops v9958_char_ops = {
-	v9958_char_putc, /* assembly entry: switches to the renderer stack */
-	v9958_char_write,
-	(int (*)(void *))0, /* poll: output-only device */
-	(int (*)(void *))0  /* getc: output-only device */
-};
-
 /* --- class operations --------------------------------------------------- */
 
 int v9958_send(void *vstate, uint8_t operation, const void *payload,
@@ -1495,7 +1533,7 @@ int v9958_send(void *vstate, uint8_t operation, const void *payload,
 		 * atlases reloaded from ROMFS, circular bitmap cleared,
 		 * cursor re-initialized, present, display enabled. */
 		v9958_term_set_defaults();
-		if (v9958_init_display() != ZDRIVER_OK) {
+		if (v9958_init_display() != V9958_OK) {
 			return ZDEV_ENODEV;
 		}
 		return ZDEV_OK;
@@ -1504,41 +1542,15 @@ int v9958_send(void *vstate, uint8_t operation, const void *payload,
 	}
 }
 
-const struct zvideo_ops v9958_video_ops = {
-	v9958_send
-};
-
-int v9958_driver_init(const struct zdriver_api *api)
+/* The cold display bring-up, shared by the boot segment's initial upload
+ * and the run-time ZVIDEO_RESET: D0 uses the reset/default interrupt
+ * route and every latch write preserves it in the shadow; the terminal
+ * defaults are established before the display init so the first clear
+ * uses the normal-video background and the cursor SAT matches the home
+ * cell.  Returns V9958_OK or V9958_FAIL. */
+int v9958_display_bringup(void)
 {
-	uint16_t size = 0u;
-
-	if (api == (const struct zdriver_api *)0) {
-		return ZDRIVER_FAIL;
-	}
-	if (api->resource_size ==
-		    (int (*)(const char *, uint16_t *))0 ||
-	    api->resource_read ==
-		    (int (*)(const char *, uint16_t, void *,
-			     uint16_t))0) {
-		return ZDRIVER_FAIL;
-	}
-	/* Validate the font resource before any port I/O: a missing or
-	 * wrong-sized ROMFS DATA entry must not leave the VDP
-	 * half-initialized. */
-	if (api->resource_size(V9958_FONT_NAME, &size) != 0 ||
-	    size != V9958_FONT_SIZE) {
-		return ZDRIVER_FAIL;
-	}
-	v9958_state.api = api;
-	/* Cold bring-up: D0 uses the reset/default interrupt route.  All
-	 * subsequent latch writes preserve this value in the shadow.  The
-	 * terminal defaults are established before the display init so the
-	 * first clear uses the normal-video background and the cursor SAT
-	 * matches the home cell. */
 	v9958_state.config_shadow = 0x00u;
 	v9958_term_set_defaults();
-	if (v9958_init_display() != ZDRIVER_OK) {
-		return ZDRIVER_FAIL;
-	}
-	return ZDRIVER_OK;
+	return v9958_init_display();
 }

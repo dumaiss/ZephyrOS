@@ -36,12 +36,13 @@ user/sdk/
   include/zlibc/          string.h fmt.h stdarg.h
   src/crt0.asm            C startup: startup block, argv, main, SYS_EXIT
   src/runtime.asm         shared argument scratch + error mapper
-  src/console.asm         console/diagnostic gate stubs
+  src/gate.asm            exit/getinfo gate stubs
   src/fsgate.asm          filesystem gate stub
   src/diaggate.asm        diagnostic gate stubs
   src/args.c              zos_args(), zos_split()
   src/fs.c                zos_open/zos_read/... wrappers
   src/exec.c              zos_exec()
+  src/console_service.c   console-service client (write/read/poll/putc)
   src/console_io.c        zos_putc/zos_puts/zos_getc/zos_read_line
   src/zlibc/              one archive member per function
   src/zos_internal.h      SDK-private glue (not for programs)
@@ -227,13 +228,15 @@ wrapper takes arguments in the documented native convention, keeps its
 argument block in the shared low-window scratch, and returns the syscall
 result or the negated `errno` (`-ZOS_EINVAL`, `-ZOS_EFAULT`, ...).
 
-`zos/console.h` (gate stubs: `console.asm`):
+`zos/console.h` (console client: `console_service.c`; exit/getinfo gate stubs:
+`gate.asm`):
 
 ```c
 void zex_exit(unsigned int status);          /* SYS_EXIT, does not return */
-int  zex_write(const char *buf, unsigned int len);
-int  zex_read(char *buf, unsigned int len);  /* SYS_CONSOLE_READ (drain)   */
-int  zex_poll(void);
+int  zex_write(const char *buf, unsigned int len);  /* console service WRITE */
+int  zex_read(char *buf, unsigned int len);         /* READ, non-blocking    */
+int  zex_poll(void);                                /* POLL                  */
+int  zex_putc(int ch);                              /* PUTC, no descriptor   */
 int  zex_getinfo(struct zos_info_record *record);   /* SYS_GETINFO */
 int  zos_putc(char ch);
 int  zos_console_write(const char *buf, unsigned int len);
@@ -241,6 +244,13 @@ int  zos_puts(const char *text);
 int  zos_getc(void);                          /* blocking */
 int  zos_read_line(char *buffer, unsigned int capacity);
 ```
+
+Package 41 removed the `SYS_CONSOLE_*` syscalls: the four `zex_*` console
+entries are clients of the resident console service
+(`abi/zos/protocol.h`, class `ZOS_CLASS_CONSOLE`), resolved once through
+`SYS_IPC_LOOKUP` and cached; a program whose store lists no console
+service sees `-ZOS_ENOENT`.  `zos_putc` uses the descriptor-less PUTC
+operation, the rest one descriptor-bearing call each.
 
 `zos_read_line` is bounded line editing with backspace and CR handling
 (`ZOS_LINE_MAX` is 80); it is the monitor's input loop and any program's
@@ -381,8 +391,9 @@ still undefined.  The observed pulls (from the link maps) are:
 | Program calls | Members linked | Notes |
 | --- | --- | --- |
 | anything | `zos_crt0`, `zos_runtime`, `args` | crt0 and the runtime object are unconditional; `args` supplies `zos_split` (crt0 calls it) |
-| `zex_write`, `zex_read`, `zex_poll`, `zex_getinfo`, `zex_exit` | `zos_console` | console gate stubs, one object |
-| `zos_putc`, `zos_puts`, `zos_getc`, `zos_read_line` | `console_io` | built on the console stubs |
+| `zex_write`, `zex_read`, `zex_poll`, `zex_putc` | `console_service` | console-service client (package 41) |
+| `zex_getinfo`, `zex_exit` | `zos_gate` | exit/getinfo gate stubs, one object |
+| `zos_putc`, `zos_puts`, `zos_getc`, `zos_read_line` | `console_io` | built on the console client |
 | `zos_open`, `zos_read`, ... | `fs` + `fsgate` | the C wrappers and the gate stub |
 | `zos_exec` | `exec` + `fsgate` | shares the FS argument block and gate |
 | `zex_diag_*` | `zos_diaggate` | the diagnostic gate stubs |
@@ -391,7 +402,7 @@ still undefined.  The observed pulls (from the link maps) are:
 | `strcmp`, `memset`, ... | that one member | one function per member |
 
 `hello.zex` links 13 members (crt0, runtime, the program, `args`,
-`zos_console`, `printf`, `strlen` and the four formatters plus the
+`console_service`, `printf`, `strlen` and the four formatters plus the
 arithmetic stubs) and no filesystem or diagnostic member at all;
 `tests/test_sdk.py` asserts exactly that.
 

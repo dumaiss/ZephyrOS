@@ -33,6 +33,7 @@
 	.globl zos_gate_saved_latch
 	.globl zos_service_stack, zos_service_stack_top
 	.globl ipc_asm_begin, ipc_asm_end
+	.globl ipc_domain_switch_end
 
 	.area _CODE
 
@@ -99,6 +100,14 @@ _ipc_domain_exit::
 	ld	a,(_ipc_saved_latch)
 	out	(ZOS_MEMCTL_PORT),a
 	ret
+
+; The three page selects above are the fixed core's only mapping changes:
+; each one writes mode 11 with new window page bits, which leaves the fixed
+; core (2000h-5FFFh) itself mapped - the instruction after the OUT is
+; fetched from the same place.  The extent is exported so the layout check
+; can allow exactly these writes (the mode-10 aperture change lives in the
+; common-resident ipc_common.asm).
+ipc_domain_switch_end::
 
 ; ---------------------------------------------------------------------------
 ; uint16_t ipc_copy_run(void);        run the LDIR described by

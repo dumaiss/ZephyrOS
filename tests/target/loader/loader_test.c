@@ -32,7 +32,7 @@
 #include "zephyros/kernel.h"
 #include "zephyros/device.h"
 #include "zephyros/irq.h"
-#include "zephyros/console.h"
+#include "service_client.h"
 #include "zephyros/vfs.h"
 
 #include "kernel/device/registry.h"
@@ -271,7 +271,7 @@ void zos_run_loader_selftest(void)
 	boot_count = module_count();
 	boot_free = module_free_granules();
 	boot_failed = module_failed_count();
-	if (boot_count == 0 || console_output_handle() == 0 ||
+	if (boot_count == 0 || service_cli_console_handle() == 0 ||
 	    loader_find_module(ZOS_LDST_BOOT_NAME) == 0) {
 		loader_fail(ZOS_LDST_FAIL_BOOT);
 		return;
@@ -433,7 +433,7 @@ void zos_run_loader_selftest(void)
 	{
 		static const char ok[] = "loader selftest: OK\r\n";
 
-		if (console_write(ok, (uint16_t)(sizeof(ok) - 1u)) !=
+		if (service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u)) !=
 		    (int)(sizeof(ok) - 1u)) {
 			loader_fail(ZOS_LDST_FAIL_CONSOLE);
 		}

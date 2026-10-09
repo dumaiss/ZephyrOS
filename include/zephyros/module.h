@@ -242,4 +242,12 @@ int zmod_apply_relocations(uint8_t *load_base,
 			   const struct zmod_container *c);
 void zmod_zero_allocation(uint8_t *load_base, uint16_t bytes);
 
+/* Shared ZREL_ABS16 record logic (kernel/module/relocate.c, work package
+ * 41): the driver relocator and the resident service loader share the
+ * record validation and the patch arithmetic, so only their byte-1 target
+ * rule and their patch I/O differ. */
+int zmod_reloc_decode(uint8_t type, uint16_t raw_patch, uint16_t image_size,
+		      uint16_t *patch_out);
+uint16_t zmod_reloc_add(uint16_t value, uint16_t base, uint8_t *overflow);
+
 #endif /* ZEPHYROS_MODULE_H */

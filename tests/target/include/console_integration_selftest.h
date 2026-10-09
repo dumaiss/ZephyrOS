@@ -1,33 +1,23 @@
-/* ZephyrOS integration acceptance selftest contract (test artifact).
+/* ZephyrOS console integration acceptance contract (test artifact).
  *
- * The kernel-side integration test calls zos_run_console_integration_selftest() from the
- * late boot hook after the production-style boot: SIO + IOC + HID + the
- * V9958 video/console device are all loaded from the recovery store and
- * the single console_bind_defaults() has selected the preferred
- * HID-input / V9958-output pair.  The unchanged M7 monitor launcher
- * runs after this test, so the same image carries the interactive
- * session through the binding.
+ * The kernel-side integration diagnostic runs from the late boot hook
+ * with zos_run_console_integration_selftest(): by then the resident
+ * service loader has placed and started every service the store's
+ * manifest lists and the nucleus console probe has bound the console
+ * endpoint, so the diagnostic is a bank-7 client of the console, IOC,
+ * HID, video and serial services (tests/target/include/service_client.h).
  *
- * Control and outcome lines go through the direct early SIO, so the
- * serial transcript is the pass/fail record independent of every bound
- * console; the visible monitor session is the human gate.
+ * Control and outcome lines go through the direct early SIO, so the serial
+ * transcript is the pass/fail record independent of the console service it
+ * exercises; the visible monitor session that follows on the same image is
+ * the human gate, and the simulator replay cross-checks the visible side.
  *
- * Coverage:
- *
- *   - all four resident modules are discoverable by class/capability
- *     and the default binding is exactly the HID input plus V9958
- *     output handles;
- *   - the IOC class exposes its four operations; repeated PING
- *     exchanges (this image's command/status slice; the complete bulk
- *     READY/DONE lifecycle on hardware lives in the dedicated IOC
- *     acceptance image) return validated replies;
- *   - malformed/null/class/capability calls fail with exact codes and
- *     are proven harmless: the device table, the module allocation
- *     count and both console directions are unchanged afterwards, and
- *     the visible console output marker still arrives;
- *   - the early/panic SIO path stays independent of the binding (the
- *     transcript itself is the proof: it is produced while the normal
- *     console output is the V9958).
+ * Coverage: endpoint lookup for all five classes at
+ * ZOS_PROTOCOL_VERSION; the console composition rows this store implies
+ * (video output, HID input); a written marker plus a typed line read
+ * back through the console; a PING through the IOC endpoint with its
+ * staged reply; refusal of unknown operations and forged handles; and
+ * the console still working afterwards.
  */
 
 #ifndef ZEPHYROS_TARGET_CONSOLE_INTEGRATION_SELFTEST_H
@@ -35,13 +25,13 @@
 
 /* Result codes recorded in ace_integration_result (0 = success). */
 #define ZOS_CONSOLE_INTEGRATION_OK               0x00u
-#define ZOS_CONSOLE_INTEGRATION_FAIL_BOOT        0x01u /* a resident module is missing     */
-#define ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE       0x02u /* class/capability shape wrong     */
-#define ZOS_CONSOLE_INTEGRATION_FAIL_BIND        0x03u /* default binding wrong            */
-#define ZOS_CONSOLE_INTEGRATION_FAIL_IOC         0x04u /* IOC command/status path wrong    */
+#define ZOS_CONSOLE_INTEGRATION_FAIL_BOOT        0x01u /* a service endpoint is missing    */
+#define ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE       0x02u /* console endpoint/protocol wrong  */
+#define ZOS_CONSOLE_INTEGRATION_FAIL_BIND        0x03u /* reserved: binding rows           */
+#define ZOS_CONSOLE_INTEGRATION_FAIL_IOC         0x04u /* IOC command/reply path wrong     */
 #define ZOS_CONSOLE_INTEGRATION_FAIL_MALFORMED   0x05u /* a rejected call returned wrong   */
 #define ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE     0x06u /* console service wrong            */
-#define ZOS_CONSOLE_INTEGRATION_FAIL_INVARIANTS  0x07u /* registry/granules/table changed  */
+#define ZOS_CONSOLE_INTEGRATION_FAIL_INVARIANTS  0x07u /* reserved: post-fault invariants  */
 
 /* Recorded outcome for the host replay / smoke transcript. */
 extern uint8_t ace_integration_result;

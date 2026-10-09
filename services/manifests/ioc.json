@@ -1,0 +1,42 @@
+{
+  "name": "ioc",
+  "type": "service",
+  "abi": 2,
+  "flags": 0,
+  "objects": [
+    "ioc.rel",
+    "ioc_io.rel",
+    "ioc_service.rel",
+    "ioc_boot.rel",
+    "sdcc_indirect_calls.rel"
+  ],
+  "init": "ioc_service_init",
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ],
+      "bss_areas": [
+        "_SERVICE_IO"
+      ]
+    },
+    {
+      "role": "boot",
+      "image_areas": [
+        "_BOOT"
+      ],
+      "entry": "ioc_boot_entry"
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 5,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "ioc_service_dispatch",
+      "flags": 0
+    }
+  ],
+  "depends": []
+}

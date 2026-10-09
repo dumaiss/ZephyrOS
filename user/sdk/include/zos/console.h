@@ -1,13 +1,15 @@
-/* ZephyrOS SDK: console, process-identity and exit wrappers.
- *
- * C-facing wrappers over the stable register ABI (docs/abi.md).  The
- * wrappers own the SDK's shared low-window scratch block, convert a
- * carry-set syscall error to the negated native errno, and never expose
- * SDCC calling conventions.  Return convention: a non-negative result,
- * or the negated native error code.
+/* ZephyrOS SDK: console entry points as console-service clients.
  *
  * The line helpers (zos_getc/zos_read_line/...) are the reusable console
- * front end the monitor and, later, ZShell share.
+ * front end the monitor and ZShell share, and they sit on the four
+ * service operations below.  Package 41 removed the SYS_CONSOLE_* syscalls:
+ * the console is the resident console service (abi/zos/protocol.h, class
+ * ZOS_CLASS_CONSOLE), so every function here resolves that endpoint and
+ * speaks its protocol.  A program with no console service (an acceptance
+ * image whose store lists none) sees -ZOS_ENOENT.
+ *
+ * Return convention: a non-negative result, or the negated native error
+ * code.
  */
 
 #ifndef ZOS_SDK_CONSOLE_H
@@ -23,13 +25,15 @@
 /* Terminate the process with `status`; does not return. */
 void zex_exit(unsigned int status);
 
-/* Console services through the bound normal console device.
- * zex_write()/zex_read() transfer up to `len` bytes and return the
- * count.  zex_read() is a non-blocking drain: it returns 0 when no byte
- * is pending; zex_poll() returns 0/1.  Errors are negative. */
+/* Console I/O through the console service.  zex_write()/zex_read()
+ * transfer up to `len` bytes (one descriptor-bearing call) and return the
+ * count.  zex_read() is a non-blocking drain: it returns 0 when no byte is
+ * pending; zex_poll() returns 0/1.  zex_putc() writes one byte without a
+ * descriptor.  Errors are negative. */
 int zex_write(const char *buf, unsigned int len);
 int zex_read(char *buf, unsigned int len);
 int zex_poll(void);
+int zex_putc(int ch);
 
 /* Fill `record` with the six-byte v1 information record; returns 6 or a
  * negative error. */

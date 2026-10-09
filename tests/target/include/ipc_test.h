@@ -23,13 +23,16 @@
 #include "zos/types.h"
 
 /* --- endpoint classes --------------------------------------------------- */
+/* Test-only class range: 1-6 are the production service classes
+ * (abi/zos/protocol.h), and the IPC image boots the real SIO and console
+ * services beside this synthetic set. */
 
-#define IPC_CLASS_ECHO 1u
-#define IPC_CLASS_CON  2u
-#define IPC_CLASS_VFS  3u
-#define IPC_CLASS_FAT  4u
-#define IPC_CLASS_IOC  5u
-#define IPC_CLASS_IRQX 6u
+#define IPC_CLASS_ECHO 16u
+#define IPC_CLASS_CON  17u
+#define IPC_CLASS_VFS  18u
+#define IPC_CLASS_FAT  19u
+#define IPC_CLASS_IOC  20u
+#define IPC_CLASS_IRQX 21u
 
 /* Every synthetic endpoint exports version 1, instance 0. */
 #define IPC_ENDPOINT_VERSION 1u

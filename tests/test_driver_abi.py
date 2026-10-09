@@ -45,7 +45,6 @@ RESIDENCY = os.path.join(ROOT, "config", "residency.json")
 DEVICE_H = os.path.join(ROOT, "include", "zephyros", "device.h")
 DRIVER_H = os.path.join(ROOT, "include", "zephyros", "driver.h")
 MODULE_H = os.path.join(ROOT, "include", "zephyros", "module.h")
-CONSOLE_H = os.path.join(ROOT, "include", "zephyros", "console.h")
 
 _PACK_IMAGE_GLOBALS = (
     "ARENA_BASE", "ARENA_END", "DATA_BASE", "WINDOW_BASE",
@@ -220,7 +219,7 @@ class TestAbiContract(unittest.TestCase):
         self.assertEqual(evaluate("ZDEV_IOC", env), 5)
 
     def test_module_api_exposes_no_romfs_types_or_registry_mutation(self):
-        for path in (DRIVER_H, DEVICE_H, CONSOLE_H):
+        for path in (DRIVER_H, DEVICE_H):
             text = re.sub(r"/\*.*?\*/", "", open(path).read(), flags=re.S)
             self.assertNotIn("romfs_file_t", text, path)
             self.assertNotIn("romfs_lookup", text, path)
@@ -796,10 +795,6 @@ class TestBootSetPlan(unittest.TestCase):
 
 
 INTEGRATION_FIXTURE_MANIFESTS = {
-    "manifest-hid-badioc.json":
-        os.path.join(ROOT, "tests", "hid", "manifest-badioc.json"),
-    "manifest-v9958-fontfail.json":
-        os.path.join(ROOT, "tests", "video", "manifest-fontfail.json"),
     "manifest-fallback-arena.json":
         os.path.join(ROOT, "tests", "console", "manifest-fallback-arena.json"),
     "manifest-fallback-nohid.json":
@@ -823,16 +818,20 @@ INTEGRATION_REQUIRED_TYPES = {
     "ioc.zmod": "ZMOD",
     "hid.zmod": "ZMOD",
     "v9958.zmod": "ZMOD",
+    "console.zmod": "ZMOD",
     "iocfat.zmod": "ZMOD",
-    "v9958-6x8.font": "DATA",
+    "services.man": "DATA",
     "monitor.zex": "ZEX",
 }
-INTEGRATION_FULL_SET = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
-               "v9958-6x8.font", "monitor.zex"]
+# Package 41: the five driver services are the store's boot set (SIO,
+# IOC, HID, V9958, console) and the boot manifest lists them in load order.
+INTEGRATION_SERVICE_SET = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
+                           "console.zmod", "services.man"]
+INTEGRATION_FULL_SET = INTEGRATION_SERVICE_SET + ["monitor.zex"]
 # Package 30: the production store also carries the resident IOC-FAT
 # provider, loaded last (before the monitor).
-INTEGRATION_PRODUCTION_SET = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
-                     "iocfat.zmod", "v9958-6x8.font", "monitor.zex"]
+INTEGRATION_PRODUCTION_SET = INTEGRATION_SERVICE_SET + ["iocfat.zmod",
+                                                        "monitor.zex"]
 
 
 class TestManifests(unittest.TestCase):
@@ -860,17 +859,17 @@ class TestManifests(unittest.TestCase):
         cases = (
             (os.path.join(ROOT, "recovery", "manifest.json"),
              INTEGRATION_PRODUCTION_SET),
-            (INTEGRATION_FIXTURE_MANIFESTS["manifest-hid-badioc.json"],
-             INTEGRATION_FULL_SET),
-            (INTEGRATION_FIXTURE_MANIFESTS["manifest-v9958-fontfail.json"],
-             INTEGRATION_FULL_SET),
+            # Each fallback variant is a service-set subset now: the console
+            # composes whatever the store booted.
             (INTEGRATION_FIXTURE_MANIFESTS["manifest-fallback-arena.json"],
-             INTEGRATION_FULL_SET),
+             ["sio.zmod", "ioc.zmod", "hid.zmod", "console.zmod",
+              "services.man", "v9958.zmod", "monitor.zex"]),
             (INTEGRATION_FIXTURE_MANIFESTS["manifest-fallback-nohid.json"],
-             ["sio.zmod", "ioc.zmod", "v9958.zmod", "v9958-6x8.font",
-              "monitor.zex"]),
+             ["sio.zmod", "ioc.zmod", "v9958.zmod", "console.zmod",
+              "services.man", "monitor.zex"]),
             (INTEGRATION_FIXTURE_MANIFESTS["manifest-fallback-nohid-nov9958.json"],
-             ["sio.zmod", "ioc.zmod", "monitor.zex"]),
+             ["sio.zmod", "ioc.zmod", "console.zmod", "services.man",
+              "monitor.zex"]),
         )
         for path, names in cases:
             with self.subTest(manifest=os.path.basename(path)):
@@ -885,10 +884,12 @@ class TestManifests(unittest.TestCase):
                              "fixture bytes")
 
     def test_failure_manifests_substitute_only_named_slots(self):
+        # Package 41: the font is the video image's bulk segment and the
+        # IOC link is the IOC service's business, so the two M8 variants
+        # that injected fixture bytes for them are gone.  What remains is
+        # the arena variant, whose `v9958.zmod` slot carries the
+        # exhaustion fixture (the load fails before any service byte runs).
         substitutions = {
-            "manifest-hid-badioc.json": {"ioc.zmod": "fakeioc.zmod"},
-            "manifest-v9958-fontfail.json": {
-                "v9958-6x8.font": "v9958-font-stub.bin"},
             "manifest-fallback-arena.json": {
                 "v9958.zmod": "arena_fill.zmod"},
             "manifest-fallback-nohid.json": {},

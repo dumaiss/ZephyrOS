@@ -62,8 +62,8 @@ MONITOR_SOURCES = (
 # The complete module set of the linked monitor (proves nothing from the
 # kernel was dragged into the ZEX link).
 MONITOR_MODULES = {
-    "zos_crt0", "zos_runtime", "zos_console", "zos_diaggate",
-    "args", "console_io",
+    "zos_crt0", "zos_runtime", "zos_gate", "zos_diaggate",
+    "zos_ipcgate", "args", "console_io", "console_service", "ipc",
     "monitor", "monitor_mem", "monitor_io",
     "hexfmt", "hexdump", "status",
 }

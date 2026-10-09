@@ -1,337 +1,283 @@
-/* ZephyrOS HID acceptance selftest (test artifact).
+/* ZephyrOS HID acceptance diagnostic, resident-service edition (work
+ * package 41).
  *
- * Runs from the late boot hook after the production-style boot: the SIO
- * fallback, the IOC transport and the HID keyboard module are loaded
- * from the ROMFS recovery store and the console is bound.  The HID
- * module registers only when it discovered the IOC class by
- * class/capability/interface.
+ * The kernel calls zos_run_hid_selftest() from the late boot hook, after
+ * the service loader placed and started the image's `sio ioc hid` set
+ * (and the console service, when the image's store carries it, composed
+ * its input from the HID endpoint) and after the nucleus console probe.
+ * The diagnostic is itself a bank-7 client of the resident services (see
+ * tests/target/include/service_client.h): it holds no descriptor, so it
+ * drives the HID protocol through the descriptor-less byte forms -
+ * ZHID_OP_READY, ZHID_OP_POLL and ZHID_OP_GETC - exactly the calls the
+ * console service forwards when a program reads its input.
  *
- * Control and outcome lines go through the direct early SIO.  The
- * typing and fallback phases deliberately use the bound console service
- * (console_write/console_getc), so the transcript proves the accepted
- * binding: HID input while output remains visible on SIO0/B.
+ * The transcript goes through the direct early SIO, so it is the
+ * pass/fail record independent of the console service it exercises; the
+ * simulator replay pins it and cross-checks the peer side (the emulated
+ * MCU's terminal queue, the fetch-on-doorbell requests and the drain).
  *
- * The scripted USB-keyboard pass is fixed (the MCU translation of the
- * pinned deployment): 'a', 'B', '3', Enter, Backspace, Ctrl-X and one
- * Arrow-Up (ESC [ A), nine bytes total.  Every received byte is echoed
- * as an `hid: rx XX` line through the console output; the run then
- * forces the input back to the SIO fallback (omitting HID), discards
- * any stale host-sync residue left in the receiver by the smoke tool's
- * repeated banner nudge, and requires one host-sent serial byte through
- * the same service.
+ * Coverage:
  *
- * The no-IOC image (ZOS_HID_NOIOC) proves the discovery half of the
- * dependency contract: HID must be absent (the loader rolled its failed
- * dependency acquisition back) and the SIO fallback must carry the whole
- * console.  The malformed-IOC image (ZOS_HID_BADIOC) proves the
- * interface-verification half: the fixture registers an IOC-class
- * device with a null command operation, HID must reject it without
- * calling through the null pointer, and both the fixture and the SIO
- * fallback must remain usable.
+ *   - endpoint discovery: the HID class answers a lookup at
+ *     ZOS_PROTOCOL_VERSION v01, the IOC dependency endpoint is present,
+ *     and the engine reports ZHID_OP_READY = 1;
+ *   - the scripted typed pass the replay queues in the MCU's terminal
+ *     queue ('a', 'B', '3', Enter, Backspace, Ctrl-X, Arrow-Up): POLL
+ *     reports pending, repeated GETC returns the queued bytes exactly in
+ *     FIFO order, and the drained service answers -ZOS_EAGAIN;
+ *   - when the image's store carries the console service, its input
+ *     direction is the HID engine: the replay-queued pair read back
+ *     through ZCONSOLE_OP_GETC is the composition row the console's boot
+ *     probe selected.  An image without the console endpoint reports
+ *     "hid: console absent" and leaves the composition row to the
+ *     console integration diagnostics;
+ *   - malformed-reply atomicity: one injected short CMD_HID_INPUT reply
+ *     delivers nothing from it; the clean pair queued behind it arrives
+ *     afterwards in FIFO order (after the engine's bounded stuck-doorbell
+ *     penalty), which is what the replay asserts byte-for-byte;
+ *   - an unknown HID operation answers -ZOS_EINVAL, and a handle the
+ *     nucleus never issued (0 or out of range) is refused before any
+ *     service runs.
+ *
+ * Final line: "hid selftest: OK", or "hid selftest: FAIL <phase>" with
+ * the offending byte on the preceding "hid: detail XX" line.
  */
 
-#include "zephyros/console.h"
-#include "zephyros/device.h"
-#include "zephyros/hid.h"
-#include "zephyros/kernel.h"
+#include "zos/errno.h"
+#include "zos/protocol.h"
 
-#include "kernel/device/registry.h"
 #include "hid_selftest.h"
+#include "service_client.h"
 
 #if ZOS_HID_SELFTEST || ZOS_HID_NOIOC || ZOS_HID_BADIOC
 
+/* Failure codes recorded in ace_hid_selftest_result (0 = success). */
+#define HID_FAIL_BOOT    0x01u /* endpoint discovery failed          */
+#define HID_FAIL_READY   0x02u /* ZHID_OP_READY did not answer 1     */
+#define HID_FAIL_TYPED   0x03u /* typed FIFO pass failed             */
+#define HID_FAIL_CONSOLE 0x04u /* console input is not the HID engine*/
+#define HID_FAIL_FAULT   0x05u /* malformed reply disturbed the pass */
+#define HID_FAIL_REJECTS 0x06u /* malformed call was not refused     */
+
 uint8_t ace_hid_selftest_result;
 
-/* The MCU's translation of the scripted key pass: printable keys plus
- * Enter, Backspace, Ctrl-X and one VT100 Arrow-Up sequence.  These are
- * translated terminal bytes, not raw USB reports. */
-static const uint8_t hid_expected[] = {
+static void hid_fail(const char *phase, uint8_t code, uint8_t detail)
+{
+	ace_hid_selftest_result = code;
+	service_cli_puts("hid: detail ");
+	service_cli_hex8(detail);
+	service_cli_puts("\r\nhid selftest: FAIL ");
+	service_cli_puts(phase);
+	service_cli_puts("\r\n");
+}
+
+#if ZOS_HID_SELFTEST
+
+#define HID_TYPED_LEN   9u
+#define HID_PAIR_LEN    2u
+/* The fault pass spans the engine's 64-call stuck-doorbell penalty:
+ * 256 calls cover the penalty and the flush with margin. */
+#define HID_FAULT_SPINS 256u
+#define HID_CONSOLE_SPINS 256u
+
+static uint8_t hid_endpoint;
+static uint8_t ioc_endpoint;
+static uint8_t console_endpoint;
+
+/* The scripted key pass the replay queues for the MCU: printable keys,
+ * Enter, Backspace, Ctrl-X and one VT100 Arrow-Up (ESC [ A).  The MCU's
+ * terminal translation, not raw USB reports. */
+static const uint8_t hid_typed[HID_TYPED_LEN] = {
 	0x61u, 0x42u, 0x33u, 0x0Du, 0x08u, 0x18u,
 	0x1Bu, 0x5Bu, 0x41u
 };
-#define HID_EXPECTED_LEN 9u
 
-/* Bounded wait per expected byte: long enough for a human to type the
- * next key after the prompt, short enough that a missing byte cannot
- * hang the acceptance image forever (the smoke tool's timeout is the
- * outer bound). */
-#define HID_WAIT_SPINS 0x00600000u
+/* The pair the replay queues when the console phase starts, and the pair
+ * it queues behind the injected malformed reply. */
+static const uint8_t hid_console[HID_PAIR_LEN] = { 0x4Fu, 0x4Bu };
+static const uint8_t hid_fault[HID_PAIR_LEN] = { 0x71u, 0x72u };
 
-static const char hid_digits[] = "0123456789ABCDEF";
-
-static void hid_put_hex8(uint8_t value)
+/* One `<tag> <hex>` transcript line. */
+static void hid_rx(const char *tag, uint8_t byte)
 {
-	early_console_putc(hid_digits[(value >> 4) & 0x0Fu]);
-	early_console_putc(hid_digits[value & 0x0Fu]);
+	service_cli_puts("hid: ");
+	service_cli_puts(tag);
+	service_cli_hex8(byte);
+	service_cli_puts("\r\n");
 }
 
-static void hid_fail(uint8_t code, uint8_t detail)
+/* One byte through `op`, bounded: 1 when it is exactly `expected`, 0
+ * otherwise (including any error other than -ZOS_EAGAIN). */
+static uint8_t hid_wait_byte(uint8_t handle, uint8_t op, uint8_t expected,
+			     uint16_t spins)
 {
-	static const char prefix[] = "hid selftest: FAIL 0x";
-	static const char detail_prefix[] = " detail 0x";
+	while (spins != 0u) {
+		int16_t byte = service_cli_getc(handle, op);
 
-	ace_hid_selftest_result = code;
-	early_console_puts(prefix);
-	hid_put_hex8(code);
-	early_console_puts(detail_prefix);
-	hid_put_hex8(detail);
-	early_console_puts("\r\n");
-}
-
-/* Progress/echo through the bound console service: this is what proves
- * HID input plus visible SIO output (and, later, the forced SIO input)
- * rather than the independent early-console path. */
-static void hid_console_puts(const char *text)
-{
-	uint16_t len = 0u;
-
-	while (text[len] != '\0') {
-		++len;
-	}
-	(void)console_write(text, len);
-}
-
-static void hid_console_rx(uint8_t value)
-{
-	char line[20];
-	static const char prefix[] = "hid: rx ";
-	char *out = line;
-	const char *scan;
-
-	for (scan = prefix; *scan != '\0'; ++scan) {
-		*out++ = *scan;
-	}
-	*out++ = hid_digits[(value >> 4) & 0x0Fu];
-	*out++ = hid_digits[value & 0x0Fu];
-	*out++ = '\r';
-	*out++ = '\n';
-	(void)console_write(line, (uint16_t)(out - line));
-}
-
-/* One nonblocking console byte or a bounded-timeout error. */
-static int hid_wait_byte(void)
-{
-	uint32_t spin = HID_WAIT_SPINS;
-
-	while (spin != 0u) {
-		int ch = console_getc();
-
-		if (ch >= 0) {
-			return ch;
+		if (byte >= 0) {
+			return (uint8_t)((uint8_t)byte == expected);
 		}
-		if (ch != ZDEV_EAGAIN) {
-			return ch;
-		}
-		--spin;
-	}
-	return ZDEV_ETIMEDOUT;
-}
-
-/* Capability dispatch for the reserved gamepad shape.  The operation
- * must be reported as ZDEV_ENOTSUP from the capability bit (and the
- * null method), never inferred from the device name. */
-static int hid_gamepad(const struct zdevice *dev, uint8_t index,
-			 struct zhid_gamepad_state *out)
-{
-	const struct zhid_ops *ops;
-
-	if ((dev->capabilities & ZCAP_HID_GAMEPAD) == 0u) {
-		return ZDEV_ENOTSUP;
-	}
-	ops = (const struct zhid_ops *)dev->class_ops;
-	if (ops == (const struct zhid_ops *)0 || ops->read_gamepad == 0) {
-		return ZDEV_ENOTSUP;
-	}
-	return ops->read_gamepad(dev->state, index, out);
-}
-
-/* Forced SIO fallback: bind the SIO input explicitly (omitting HID),
- * require one host-sent byte through the same console service, and
- * report each step.  Returns 1 on success. */
-static uint8_t hid_sio_phase(void)
-{
-	zdev_handle_t sio;
-	int ch;
-	uint8_t flush;
-
-	sio = device_find(ZDEV_SERIAL, ZCAP_CONSOLE_IN | ZCAP_CONSOLE_OUT,
-			  0u);
-	if (sio == ZDEV_HANDLE_INVALID) {
-		hid_fail(ZOS_HIDSELFTEST_FAIL_FALLBACK_BIND, 0x01u);
-		return 0u;
-	}
-	if (console_bind(sio, console_output_handle()) != ZDEV_OK ||
-	    console_input_handle() != sio) {
-		hid_fail(ZOS_HIDSELFTEST_FAIL_FALLBACK_BIND, 0x02u);
-		return 0u;
-	}
-
-	/* The smoke tool repeats the host sync sequence (AAh 55h) until
-	 * the banner is visible, so a pair sent while the boot log was
-	 * being captured can still sit in the receiver.  Discard that
-	 * documented pre-boot residue before inviting the fallback byte:
-	 * the assertion must test the invited byte, not a stale sync
-	 * byte.  Any other byte before the invitation is still a
-	 * failure. */
-	for (flush = 0u; flush < 8u; ++flush) {
-		ch = console_getc();
-		if (ch < 0) {
-			break;
-		}
-		if ((uint8_t)ch != 0xAAu && (uint8_t)ch != 0x55u) {
-			hid_fail(ZOS_HIDSELFTEST_FAIL_FALLBACK, (uint8_t)ch);
+		if (byte != -ZOS_EAGAIN) {
 			return 0u;
 		}
+		--spins;
 	}
-
-	hid_console_puts("hid: sio fallback, send R\r\n");
-	ch = hid_wait_byte();
-	if (ch != (int)'R') {
-		hid_fail(ZOS_HIDSELFTEST_FAIL_FALLBACK,
-			   ch < 0 ? 0x01u : (uint8_t)ch);
-		return 0u;
-	}
-	hid_console_puts("hid: sio fallback OK\r\n");
-	return 1u;
+	return 0u;
 }
 
 void zos_run_hid_selftest(void)
 {
-	ace_hid_selftest_result = ZOS_HIDSELFTEST_FAIL_BOOT;
+	struct zos_ipc_frame frame;
+	uint8_t index;
 
-#if ZOS_HID_NOIOC
-	/* Dependency-failure image: HID must not exist.  Its init failed
-	 * on the missing IOC class and the loader rolled the (empty)
-	 * registration set back. */
-	if (device_find(ZDEV_HID, ZCAP_HID_TEXT, 0u) !=
-	    ZDEV_HANDLE_INVALID) {
-		hid_fail(ZOS_HIDSELFTEST_FAIL_DEPENDENCY, 0x01u);
+	ace_hid_selftest_result = HID_FAIL_BOOT;
+
+	/* Endpoint discovery: a lookup succeeds only when the endpoint is
+	 * registered at ZOS_PROTOCOL_VERSION, which is what v01 records. */
+	if (service_cli_endpoint(ZOS_CLASS_HID, &hid_endpoint) == 0u) {
+		hid_fail("boot", HID_FAIL_BOOT, 0x01u);
 		return;
 	}
-	early_console_puts("hid: hid absent after rollback\r\n");
-	if (!hid_sio_phase()) {
+	service_cli_puts("hid: class 04 v01 handle ");
+	service_cli_hex8(hid_endpoint);
+	service_cli_puts("\r\n");
+	if (service_cli_endpoint(ZOS_CLASS_IOC, &ioc_endpoint) == 0u) {
+		hid_fail("boot", HID_FAIL_BOOT, 0x02u);
 		return;
 	}
-	ace_hid_selftest_result = ZOS_HIDSELFTEST_OK;
-	early_console_puts("hid selftest: OK\r\n");
-#elif ZOS_HID_BADIOC
-	/* Malformed-dependency image: the fixture's IOC-class device (with
-	 * a null command operation) must have been found and rejected by
-	 * HID's interface verification; HID must be rolled back, and the
-	 * fixture plus the SIO fallback must be untouched. */
-	if (device_find(ZDEV_HID, ZCAP_HID_TEXT, 0u) !=
-	    ZDEV_HANDLE_INVALID) {
-		hid_fail(ZOS_HIDSELFTEST_FAIL_DEPENDENCY, 0x02u);
+	service_cli_puts("hid: ioc class 05 v01 handle ");
+	service_cli_hex8(ioc_endpoint);
+	service_cli_puts("\r\n");
+
+	/* The engine's dependency probe: the row the console composition
+	 * selected its input from at boot. */
+	if (service_cli_getc(hid_endpoint, ZHID_OP_READY) != 1) {
+		hid_fail("ready", HID_FAIL_READY, 0x01u);
 		return;
 	}
-	if (device_find(ZDEV_IOC, ZCAP_IOC_COMMAND | ZCAP_IOC_STATUS, 0u) ==
-	    ZDEV_HANDLE_INVALID) {
-		hid_fail(ZOS_HIDSELFTEST_FAIL_DEPENDENCY, 0x03u);
+	service_cli_puts("hid: ready 1\r\n");
+
+	/* Typed pass: the replay queued the scripted pass in the MCU's
+	 * terminal queue before boot; the doorbell fetch delivers it to the
+	 * service ring, and the byte forms drain it in FIFO order. */
+	ace_hid_selftest_result = HID_FAIL_TYPED;
+	if (service_cli_poll(hid_endpoint, ZHID_OP_POLL) != 1) {
+		hid_fail("typed", HID_FAIL_TYPED, 0x01u);
 		return;
 	}
-	early_console_puts("hid: malformed ioc rejected\r\n");
-	if (!hid_sio_phase()) {
+	service_cli_puts("hid: poll 1\r\n");
+	for (index = 0u; index < HID_TYPED_LEN; ++index) {
+		int16_t byte = service_cli_getc(hid_endpoint, ZHID_OP_GETC);
+
+		if (byte < 0 || (uint8_t)byte != hid_typed[index]) {
+			hid_fail("typed", HID_FAIL_TYPED, (uint8_t)byte);
+			return;
+		}
+		hid_rx("rx ", (uint8_t)byte);
+	}
+	if (service_cli_getc(hid_endpoint, ZHID_OP_GETC) != -ZOS_EAGAIN ||
+	    service_cli_poll(hid_endpoint, ZHID_OP_POLL) != 0) {
+		hid_fail("typed", HID_FAIL_TYPED, 0x02u);
 		return;
 	}
-	ace_hid_selftest_result = ZOS_HIDSELFTEST_OK;
-	early_console_puts("hid selftest: OK\r\n");
-#else
-	{
-		zdev_handle_t handle;
-		const struct zdevice *dev;
-		const void *class_ops = (const void *)0;
-		void *state = (void *)0;
-		const struct zhid_ops *ops;
-		struct zhid_gamepad_state pad;
-		uint8_t i;
+	service_cli_puts("hid: typed 09\r\n");
 
-		/* Exact class/capability discovery: the keyboard must be
-		 * found by its class and the complete required set, and the
-		 * reserved capabilities must be absent, not inferred. */
-		handle = device_find(ZDEV_HID, ZCAP_HID_TEXT |
-						     ZCAP_CHAR_IN |
-						     ZCAP_CONSOLE_IN, 0u);
-		if (handle == ZDEV_HANDLE_INVALID) {
-			hid_fail(ZOS_HIDSELFTEST_FAIL_BOOT, 0x01u);
-			return;
-		}
-		dev = device_get(handle);
-		if (dev == (const struct zdevice *)0) {
-			hid_fail(ZOS_HIDSELFTEST_FAIL_BOOT, 0x02u);
-			return;
-		}
-		if (dev->capabilities != (ZCAP_HID_TEXT | ZCAP_CHAR_IN |
-					  ZCAP_CONSOLE_IN)) {
-			hid_fail(ZOS_HIDSELFTEST_FAIL_SHAPE, 0x01u);
-			return;
-		}
-		if (device_find(ZDEV_HID, ZCAP_HID_GAMEPAD, 0u) !=
-			    ZDEV_HANDLE_INVALID ||
-		    device_find(ZDEV_HID, ZCAP_HID_KEY_EVENTS, 0u) !=
-			    ZDEV_HANDLE_INVALID ||
-		    device_find(ZDEV_HID, ZCAP_CONSOLE_OUT, 0u) !=
-			    ZDEV_HANDLE_INVALID ||
-		    device_find(ZDEV_HID, ZCAP_CHAR_OUT, 0u) !=
-			    ZDEV_HANDLE_INVALID) {
-			hid_fail(ZOS_HIDSELFTEST_FAIL_SHAPE, 0x02u);
-			return;
-		}
-		if (dev->char_ops == (const struct zchar_ops *)0 ||
-		    dev->char_ops->poll == 0 || dev->char_ops->getc == 0 ||
-		    dev->char_ops->putc != 0 || dev->char_ops->write != 0) {
-			hid_fail(ZOS_HIDSELFTEST_FAIL_SHAPE, 0x03u);
-			return;
-		}
-		if (device_interface(handle, ZDEV_HID, &class_ops, &state) !=
-		    ZDEV_OK) {
-			hid_fail(ZOS_HIDSELFTEST_FAIL_SHAPE, 0x04u);
-			return;
-		}
-		ops = (const struct zhid_ops *)class_ops;
-		if (ops == (const struct zhid_ops *)0 ||
-		    ops->read_text == 0 || ops->read_gamepad != 0) {
-			hid_fail(ZOS_HIDSELFTEST_FAIL_SHAPE, 0x05u);
-			return;
-		}
-
-		/* Absent capability dispatch: ZDEV_ENOTSUP, not a call
-		 * through the null method and not a name inference. */
-		if (hid_gamepad(dev, 0u, &pad) != ZDEV_ENOTSUP) {
-			hid_fail(ZOS_HIDSELFTEST_FAIL_UNSUPPORTED, 0x01u);
-			return;
-		}
-
-		/* Binding policy: HID input preferred, output on the SIO
-		 * fallback at this stage. */
-		if (console_input_handle() != handle ||
-		    console_output_handle() == ZDEV_HANDLE_INVALID) {
-			hid_fail(ZOS_HIDSELFTEST_FAIL_BIND, 0x01u);
-			return;
-		}
-		early_console_puts("hid: keyboard0 OK\r\n");
-
-		/* Scripted USB-keyboard pass through the console service. */
-		hid_console_puts("hid: ready for input\r\n");
-		for (i = 0u; i < HID_EXPECTED_LEN; ++i) {
-			int ch = hid_wait_byte();
-
-			if (ch < 0 || (uint8_t)ch != hid_expected[i]) {
-				hid_fail(ZOS_HIDSELFTEST_FAIL_TYPED,
-					   ch < 0 ? 0x01u : (uint8_t)ch);
+	/* Console pass: when the image's store carries the console service,
+	 * it composed HID as its input; the replay queues the pair this
+	 * reads back through the console endpoint.  An image whose store
+	 * omits the console service has no endpoint to exercise here (the
+	 * console integration diagnostics carry the composition row), so the
+	 * phase reports the absence and the rest of the diagnostic stands. */
+	ace_hid_selftest_result = HID_FAIL_CONSOLE;
+	if (service_cli_endpoint(ZOS_CLASS_CONSOLE, &console_endpoint) != 0u) {
+		service_cli_puts("hid: console input\r\n");
+		for (index = 0u; index < HID_PAIR_LEN; ++index) {
+			if (hid_wait_byte(console_endpoint, ZCONSOLE_OP_GETC,
+					  hid_console[index],
+					  HID_CONSOLE_SPINS) == 0u) {
+				hid_fail("console", HID_FAIL_CONSOLE,
+					 hid_console[index]);
 				return;
 			}
-			hid_console_rx((uint8_t)ch);
+			hid_rx("con rx ", hid_console[index]);
 		}
-		hid_console_puts("hid: typed pass OK\r\n");
+		service_cli_puts("hid: console OK\r\n");
+	} else {
+		service_cli_puts("hid: console absent\r\n");
+	}
 
-		/* Forced SIO input fallback: HID omitted. */
-		if (!hid_sio_phase()) {
+	/* Fault pass: the replay queues the clean pair behind one short
+	 * CMD_HID_INPUT reply.  The service must deliver nothing from the
+	 * malformed reply; after the bounded penalty the unchanged pair
+	 * arrives in FIFO order, which is the byte-for-byte atomicity the
+	 * replay pins. */
+	ace_hid_selftest_result = HID_FAIL_FAULT;
+	service_cli_puts("hid: fault pass\r\n");
+	for (index = 0u; index < HID_PAIR_LEN; ++index) {
+		if (hid_wait_byte(hid_endpoint, ZHID_OP_GETC,
+				  hid_fault[index], HID_FAULT_SPINS) == 0u) {
+			hid_fail("fault", HID_FAIL_FAULT, hid_fault[index]);
 			return;
 		}
-		ace_hid_selftest_result = ZOS_HIDSELFTEST_OK;
-		early_console_puts("hid selftest: OK\r\n");
+		hid_rx("rx ", hid_fault[index]);
 	}
-#endif /* ZOS_HID_NOIOC */
+	if (service_cli_getc(hid_endpoint, ZHID_OP_GETC) != -ZOS_EAGAIN) {
+		hid_fail("fault", HID_FAIL_FAULT, 0x01u);
+		return;
+	}
+	service_cli_puts("hid: fault OK\r\n");
+
+	/* Malformed calls: the unknown operation is refused by the service,
+	 * the unissued handles by the nucleus before any dispatch. */
+	ace_hid_selftest_result = HID_FAIL_REJECTS;
+	service_cli_frame(&frame, 0x7Fu, 0u, 0u);
+	if (service_cli_call(hid_endpoint, &frame) != -ZOS_EINVAL) {
+		hid_fail("rejects", HID_FAIL_REJECTS, 0x01u);
+		return;
+	}
+	service_cli_frame(&frame, ZHID_OP_GETC, 0u, 0u);
+	if (service_cli_call(0u, &frame) != -ZOS_EINVAL) {
+		hid_fail("rejects", HID_FAIL_REJECTS, 0x02u);
+		return;
+	}
+	if (service_cli_call((uint8_t)(hid_endpoint + 0x80u), &frame) !=
+	    -ZOS_EINVAL) {
+		hid_fail("rejects", HID_FAIL_REJECTS, 0x03u);
+		return;
+	}
+	service_cli_puts("hid: rejected calls OK\r\n");
+
+	ace_hid_selftest_result = 0x00u;
+	service_cli_puts("hid selftest: OK\r\n");
 }
+
+#else /* ZOS_HID_NOIOC || ZOS_HID_BADIOC */
+
+/* Retired dependency-failure images: with no IOC service in the set the
+ * loader never brings the HID image up (its declared dependency cannot
+ * be satisfied), so the remaining service facts are the absent HID
+ * endpoint and the serial service the console falls back to. */
+void zos_run_hid_selftest(void)
+{
+	uint8_t handle = 0u;
+
+	ace_hid_selftest_result = HID_FAIL_BOOT;
+	if (service_cli_endpoint(ZOS_CLASS_SERIAL, &handle) == 0u) {
+		hid_fail("boot", HID_FAIL_BOOT, 0x01u);
+		return;
+	}
+	service_cli_puts("hid: serial class 01 v01 handle ");
+	service_cli_hex8(handle);
+	service_cli_puts("\r\n");
+	if (service_cli_endpoint(ZOS_CLASS_HID, &handle) != 0u) {
+		hid_fail("dependency", 0x11u, handle);
+		return;
+	}
+	service_cli_puts("hid: hid absent (ioc dependency)\r\n");
+	ace_hid_selftest_result = 0x00u;
+	service_cli_puts("hid selftest: OK\r\n");
+}
+
+#endif /* ZOS_HID_SELFTEST */
 
 #endif /* ZOS_HID_SELFTEST || ZOS_HID_NOIOC || ZOS_HID_BADIOC */

@@ -1,7 +1,8 @@
 /* ZephyrOS libzos: console byte/string I/O and bounded line editing.
  *
- * All ordinary I/O goes through the SYS_CONSOLE_* wrappers; nothing here
- * knows which device currently backs the console.  See zos/console.h.
+ * All ordinary I/O goes through the console-service wrappers
+ * (console_service.c); nothing here knows which service a byte came from
+ * or went to - the console service composes that.  See zos/console.h.
  */
 
 #include "zos.h"
@@ -17,7 +18,7 @@ static const char zos_line_end[] = "\r\n";
 
 int zos_putc(char ch)
 {
-	return zex_write(&ch, 1);
+	return zex_putc((int)(unsigned char)ch);
 }
 
 int zos_console_write(const char *buf, unsigned int len)

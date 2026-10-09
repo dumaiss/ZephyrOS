@@ -1,7 +1,7 @@
 {
   "name": "con",
   "type": "service",
-  "abi": 1,
+  "abi": 2,
   "flags": 0,
   "objects": [
     "con.rel",
@@ -39,7 +39,7 @@
   ],
   "endpoints": [
     {
-      "class": 2,
+      "class": 17,
       "instance": 0,
       "version": 1,
       "dispatch": "con_dispatch",

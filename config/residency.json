@@ -19,12 +19,6 @@
       "reason": "common-resident latch and mode gates: the only mapping-changing code, always visible"
     },
     {
-      "object": "console",
-      "tier": "moves",
-      "stage": 4,
-      "reason": "console composition moves to bank 6 as a service over the HID, video and SIO endpoints; while it is still in bank 7 it runs with P = 0, so it fills the cold half"
-    },
-    {
       "object": "diag",
       "tier": "cold",
       "reason": "diagnostic syscall bodies, reached only through the syscall dispatcher, which the gate runs with P = 0"
@@ -141,9 +135,9 @@
     },
     {
       "object": "romfs_provider",
-      "tier": "moves",
+      "tier": "cold",
       "stage": 5,
-      "reason": "ROMFS provider callbacks move to the VFS service in bank 6; they then call the fixed bootstrap reader"
+      "reason": "VFS core: the ROMFS provider callbacks; package 41 compiles it into the cold half beside the service loader (the drivers left the arena), so the placement is production's own, not the moves tier's fallback"
     },
     {
       "object": "sdcc_helpers",
@@ -177,9 +171,9 @@
     },
     {
       "object": "vfs_dir",
-      "tier": "moves",
+      "tier": "cold",
       "stage": 5,
-      "reason": "VFS core: directory iteration moves to the VFS service in bank 6"
+      "reason": "VFS core: directory iteration; package 41 compiles it into the cold half beside the service loader (the drivers left the arena), so the placement is production's own, not the moves tier's fallback"
     },
     {
       "object": "vfs_file",
@@ -252,10 +246,14 @@
       "object": "service_boot",
       "tier": "fixed-required",
       "reason": "M10 stage 4 service boot gate (kernel/service/service_boot.asm): switches mode 10 over bank 6 (Q = 6) and calls a boot segment.  Its code and continuation execute with bank 7 unmapped, so the gate is common-resident; its request/transition state is fixed-core data because the upcall shim reads the loader's request block with bank 7 mapped.  Same stage as the loader: test images only until package 41."
+    },
+    {
+      "object": "ioc_shim",
+      "tier": "cold",
+      "reason": "IOC class publication for a bank-7 module (kernel/module/ioc_shim.c): it runs in the loader's own phase and is reached from a module's class query, so it lives beside the loader in the cold half and disappears with the IOC-FAT module in package 42"
     }
   ],
   "cold_half": [
-    "console",
     "diag",
     "diag_io",
     "fs",
@@ -267,16 +265,14 @@
     "registry",
     "syscall",
     "vfs_mounts",
-    "vfs_mutate"
-  ],
-  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): every cold object, plus the console and the two smallest service-destined VFS objects, which is what the driver arena (the declared boot set, 33 granules) leaves in the cold half.  The remaining service-destined objects overflow into the fixed core's leftover space; the fixed ledger reports them as overflow.  `arena` is absent on purpose: it carries only absolute bound labels (no linked bytes) and depends on the generated geometry include, which the cold codegen flag cannot be allowed to reach (target-specific variables are inherited by prerequisites).  Acceptance images additionally compile their target-test objects cold, so test code consumes the arena's slack, never the fixed core.",
-  "test_link": [
-    "ipc",
-    "ipc_asm",
-    "ipc_common",
+    "vfs_mutate",
     "ipc_syscall",
-    "service_boot",
-    "service_loader"
+    "service_loader",
+    "ioc_shim",
+    "romfs_provider",
+    "vfs_dir"
   ],
-  "test_link_note": "Objects the production linker script (linker/zephyr80.lk) does not list yet: only the ipc-selftest acceptance image links them (work packages 39-40, M10 stages 3-4). They are classified above exactly as production will link them in package 41, and tools/mapcheck.py enforces that placement whenever their object files are present, so the acceptance image is held to the production rule. Production remains byte-identical because its link does not change."
+  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): every cold object, the two IPC cold bodies (the syscall IPC dispatcher and the resident service loader), the IOC class shim the loader publishes to bank-7 modules, and the service-destined VFS objects that fit beside them.  Package 41 moved the drivers out of the arena, so the freed cold space holds what used to overflow into the fixed core, which then holds the substrate; tools/mapcheck.py fails the build when the linked cold code or data overruns the derived bases.  The fixed ledger reports what still overflows.",
+  "test_link": [],
+  "test_link_note": "Empty from package 41 on: production links the IPC substrate (kernel/ipc), the syscall IPC bodies and the resident service loader, so every classified object is a production object again.  The tier classification is the whole rule; the acceptance images add their own test-linked objects, which mapcheck.py reports as fixed-core overflow unless the image places them in the cold half with --cold-extra."
 }

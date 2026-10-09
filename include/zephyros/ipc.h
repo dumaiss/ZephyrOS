@@ -33,6 +33,17 @@
  *   move            same-domain copy between two service-domain addresses
  *                   (the staging step of chained providers), validated
  *                   against the service window.
+ *   bulk_read       the calling service's own bulk data -> a buffer in its
+ *                   own window, bounds checked against the registered
+ *                   bulk extent.  Architecture 36.6 keeps bulk data
+ *                   (the V9958 font) in bank 6's boot/bulk tier
+ *                   (0000h-5FFFh), which the mode-11 service window never
+ *                   shows; a run-time path that needs it - the V9958
+ *                   display reset re-uploads the font atlases - reads it
+ *                   through this nucleus copy.  The loader registers the
+ *                   extent with each image it places, and only the
+ *                   service that owns the endpoint being dispatched may
+ *                   read it.
  *   console_putc    the nucleus-owned early console, polled SIO0/B, which
  *   console_poll    is usable before the console service exists and stays
  *   console_getc    for service diagnostics and panic-time output (36.12).
@@ -85,8 +96,12 @@
 
 /* The bootstrap interface's version (architecture 36.11).  A service init
  * may refuse a table that does not carry it; the format's service ABI
- * version (include/zephyros/service.h) tracks the same contract. */
-#define ZOS_IPC_SERVICE_API_VERSION 1u
+ * version (include/zephyros/service.h) tracks the same contract.
+ *
+ * Version 2 (work package 41) adds `bulk_read`, the one entry package 40's
+ * version 1 could not express: the V9958 display reset re-uploads the
+ * font, which 36.6 places in the boot/bulk tier. */
+#define ZOS_IPC_SERVICE_API_VERSION 2u
 
 struct ipc_service_api {
 	uint8_t version; /* ZOS_IPC_SERVICE_API_VERSION */
@@ -107,6 +122,13 @@ struct ipc_service_api {
 	int16_t (*copy_out)(uint8_t desc, uint16_t offset, uint16_t src,
 			    uint16_t length);
 	int16_t (*move)(uint16_t src, uint16_t dst, uint16_t length);
+
+	/* The calling service's own bulk data (registered by the loader):
+	 * copies `length` bytes at `offset` into `dst`, a buffer in this
+	 * service's window, and returns the length.  Refused (-ZOS_EINVAL)
+	 * when the extent, the offset/length pair or the destination is out
+	 * of bounds, -ZOS_EBUSY while an interrupt is delivered. */
+	int16_t (*bulk_read)(uint16_t offset, uint16_t dst, uint16_t length);
 
 	/* Nucleus-owned early console (used before the console service
 	 * exists and for service diagnostics). */

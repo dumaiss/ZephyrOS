@@ -168,7 +168,8 @@ OWNER_FILES = (
     "user/sdk/include/zlibc/stdarg.h",
     "user/sdk/src/crt0.asm",
     "user/sdk/src/runtime.asm",
-    "user/sdk/src/console.asm",
+    "user/sdk/src/console_service.c",
+    "user/sdk/src/gate.asm",
     "user/sdk/src/fsgate.asm",
     "user/sdk/src/diaggate.asm",
     "user/sdk/src/args.c",
@@ -229,28 +230,23 @@ OWNER_FILES = (
     "drivers/ctc/ctc.c",
     "drivers/sio/sio.c",
     "drivers/sio/sio.h",
+    "drivers/sio/sio_service.c",
+    "drivers/sio/sio_boot.c",
     "drivers/sio/sio_io.asm",
-    "drivers/sio/sio_module.c",
     "drivers/ioc/ioc.c",
     "drivers/ioc/ioc_driver.h",
     "drivers/ioc/ioc_io.asm",
-    "drivers/ioc/ioc_module.c",
     "drivers/ioc/ioc_proto.h",
     "include/zephyros/ioc.h",
     "include/zephyros/ioc_protocol.h",
-    "modules/manifests/ioc.json",
     "drivers/hid/hid.c",
     "drivers/hid/hid_driver.h",
-    "drivers/hid/hid_module.c",
     "include/zephyros/hid.h",
-    "modules/manifests/hid.json",
     "drivers/v9958/v9958.c",
     "drivers/v9958/v9958_driver.h",
     "drivers/v9958/v9958_io.asm",
-    "drivers/v9958/v9958_module.c",
     "drivers/v9958/assets/font_cp850_6x8.inc",
     "include/zephyros/video.h",
-    "modules/manifests/v9958.json",
     "tests/video/manifest-fontfail.json",
     "tests/video/v9958-font-stub.bin",
     "tests/target/video/v9958_test.c",
@@ -269,12 +265,7 @@ OWNER_FILES = (
     "tests/console/manifest-fallback-nohid.json",
     "tests/console/manifest-fallback-nohid-nov9958.json",
     "tests/console/manifest-fallback-arena.json",
-    "modules/manifests/sio.json",
     "modules/runtime/sdcc_indirect_calls.asm",
-    "tests/modules/sio-irq.json",
-    "tests/modules/sio-fail.json",
-    "tests/modules/sio_irq_module.c",
-    "tests/modules/sio_fail_module.c",
     "tests/modules/abi_probe.c",
     "tests/modules/abi_probe.json",
     "tests/modules/arena_fill.c",
@@ -710,18 +701,25 @@ class TestProductionTestSeparation(unittest.TestCase):
     non-production owners, behind the single test-build seam."""
 
     def test_driver_directories_contain_device_implementation_only(self):
+        # Package 41: each driver directory holds the device implementation
+        # (`*_service.c` protocol/init half and, where the driver has one,
+        # the `*_boot.c` boot tier) plus its private headers and assembly.
+        # The M8/M9 `*_module.c` registration adapters were retired with
+        # the module form of the four drivers.
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "sio"))),
-                         ["sio.c", "sio.h", "sio_io.asm", "sio_module.c"])
+                         ["sio.c", "sio.h", "sio_boot.c", "sio_io.asm",
+                          "sio_service.c"])
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "ctc"))),
                          ["ctc.c"])
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "ioc"))),
-                         ["ioc.c", "ioc_driver.h", "ioc_io.asm",
-                          "ioc_module.c", "ioc_proto.h"])
+                         ["ioc.c", "ioc_boot.c", "ioc_driver.h", "ioc_io.asm",
+                          "ioc_proto.h", "ioc_service.c"])
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "hid"))),
-                         ["hid.c", "hid_driver.h", "hid_module.c"])
+                         ["hid.c", "hid_driver.h"])
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "v9958"))),
-                         ["assets", "v9958.c", "v9958_driver.h",
-                          "v9958_io.asm", "v9958_module.c"])
+                         ["assets", "v9958.c", "v9958_boot.c",
+                          "v9958_driver.h", "v9958_font.asm", "v9958_io.asm",
+                          "v9958_service.c"])
 
     def test_no_json_manifests_under_drivers(self):
         for path in _walk("drivers"):
@@ -806,7 +804,7 @@ class TestProductionTestSeparation(unittest.TestCase):
 
     def test_production_headers_declare_no_test_runners(self):
         for name in ("irq.h", "module.h", "driver.h", "device.h",
-                     "console.h", "platform.h", "kernel.h"):
+                     "platform.h", "kernel.h"):
             body = _code_only(os.path.join(ROOT, "include", "zephyros", name))
             self.assertNotIn("zos_run_", body,
                              "%s declares a target-test runner" % name)

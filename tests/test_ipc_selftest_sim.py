@@ -45,7 +45,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import Z80, read_symbols  # noqa: E402
+from z80sim import Z80, read_symbols, skip_serial_connect_delay  # noqa: E402
 
 RET = 0x1234
 STACK = 0xFFFE
@@ -1062,8 +1062,7 @@ class IpcSimBase(unittest.TestCase):
         delay = self.syms["_kernel_serial_connect_delay"]
         tx_len = len(z.sio_tx)
         for _ in range(STEP_LIMIT):
-            if z.pc == delay:
-                z.pc = z.pop16()
+            skip_serial_connect_delay(z, delay)
             tracer.watch(z)
             z.step()
             if len(z.sio_tx) != tx_len:

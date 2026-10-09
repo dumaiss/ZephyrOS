@@ -35,6 +35,7 @@
 #include "zephyros/romfs.h"
 
 #include "kernel/device/registry.h"
+#include "kernel/module/ioc_shim.h"
 #include "kernel/irq/irq_private.h"
 #include "kernel/vfs/vfs.h"
 
@@ -54,6 +55,38 @@ static int module_fs_register(const struct zfs_provider *provider)
 	return vfs_register_filesystem(provider);
 }
 
+/* The IOC class a module asks for is published from the resident IOC
+ * service (work package 41, kernel/module/ioc_shim.c): the transport is a
+ * bank-6 service now, and a cold-half module cannot hold an IPC
+ * descriptor.  Every other class still comes from the device registry,
+ * which production no longer populates - the loader fixtures are its only
+ * remaining users (package 42 removes both). */
+static zdev_handle_t module_device_find(uint8_t class_id,
+					zdev_caps_t required_caps,
+					zdev_handle_t after)
+{
+	if (class_id == ZDEV_IOC) {
+		return ioc_shim_find(required_caps, after);
+	}
+	return device_find(class_id, required_caps, after);
+}
+
+static int module_device_interface(zdev_handle_t handle,
+				   uint8_t expected_class,
+				   const void **class_ops, void **state)
+{
+	if (expected_class == ZDEV_IOC) {
+		if (handle == ZDEV_HANDLE_INVALID ||
+		    class_ops == (const void **)0 || state == (void **)0) {
+			return ZDEV_EINVAL;
+		}
+		*class_ops = (const void *)ioc_shim_ops();
+		*state = (void *)ioc_shim_state();
+		return ZDEV_OK;
+	}
+	return device_interface(handle, expected_class, class_ops, state);
+}
+
 /* The only kernel services offered to a loaded module (driver ABI v3).
  * Callback order is part of the ABI: it is pinned by compile-time
  * assertions in driver.h and by host tests. */
@@ -61,8 +94,8 @@ static const struct zdriver_api module_driver_api = {
 	device_register,
 	irq_claim,
 	irq_release,
-	device_find,
-	device_interface,
+	module_device_find,
+	module_device_interface,
 	romfs_resource_size,
 	romfs_resource_read,
 	module_fs_register

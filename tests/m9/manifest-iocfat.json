@@ -12,6 +12,16 @@
       "path": "ioc.zmod"
     },
     {
+      "name": "console.zmod",
+      "type": "ZMOD",
+      "path": "console.zmod"
+    },
+    {
+      "name": "services.man",
+      "type": "DATA",
+      "path": "services.man"
+    },
+    {
       "name": "iocfat.zmod",
       "type": "ZMOD",
       "path": "iocfat.zmod"

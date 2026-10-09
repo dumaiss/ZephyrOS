@@ -999,11 +999,13 @@ def verify_no_banked_latch_writes(mem, symbols=None, production=True):
     bank 7 (P = 0), so a latch write there would change the bytes the CPU
     is fetching; every write in it is rejected.
 
-    Two fixed-core extents are data rather than executed code at their
-    linked address: the upcall shim (which selects the page it opens) and
-    the nucleus self-test's caller blob, which the harness copies into an
-    application bank and runs there, so its caller-side selection happens
-    in the caller window.  Both are allowed; nothing else is.
+    Three fixed-core extents may select a window page: the upcall shim
+    (which selects the page it opens), the IPC substrate's domain
+    enter/set/exit page selects (kernel/ipc/ipc_asm.asm writes mode 11 with
+    new page bits, which leaves the fixed core itself mapped, exactly as
+    the shim does), and the nucleus self-test's caller blob, which the
+    harness copies into an application bank and runs there, so its
+    caller-side selection happens in the caller window.  Nothing else may.
     """
     symbols = symbols or {}
 
@@ -1015,6 +1017,7 @@ def verify_no_banked_latch_writes(mem, symbols=None, production=True):
         return None
 
     shim = extent("_zos_upcall", "zos_upcall_end")
+    domain = extent("_ipc_domain_enter", "ipc_domain_switch_end")
     blob = extent("zos_nucleus_blob_start", "zos_nucleus_blob_end")
     for addr in sorted(mem):
         if mem[addr] != 0xD3 or mem.get(addr + 1) != 0x00:
@@ -1030,16 +1033,18 @@ def verify_no_banked_latch_writes(mem, symbols=None, production=True):
             if not production:
                 continue
             if any(r is not None and r[0] <= addr < r[1]
-                   for r in (shim, blob)):
+                   for r in (shim, domain, blob)):
                 continue
             raise LayoutError(
                 "latch write OUT (00h),A encoding at %04Xh in the fixed "
-                "core; only the upcall shim (%s-%s) and the self-test "
-                "caller blob (%s-%s) may carry one, every other mapping "
-                "change is common-resident"
+                "core; only the upcall shim (%s-%s), the IPC page selects "
+                "(%s-%s) and the self-test caller blob (%s-%s) may carry "
+                "one, every other mapping change is common-resident"
                 % (addr,
                    "%04Xh" % shim[0] if shim else "absent",
                    "%04Xh" % shim[1] if shim else "absent",
+                   "%04Xh" % domain[0] if domain else "absent",
+                   "%04Xh" % domain[1] if domain else "absent",
                    "%04Xh" % blob[0] if blob else "absent",
                    "%04Xh" % blob[1] if blob else "absent")
             )

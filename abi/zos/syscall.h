@@ -33,9 +33,11 @@
 
 /* Native syscall numbers (stable from M6; filesystem set from M9). */
 #define ZOS_SYSCALL_EXIT          0x00u
-#define ZOS_SYSCALL_CONSOLE_WRITE 0x01u
-#define ZOS_SYSCALL_CONSOLE_READ  0x02u
-#define ZOS_SYSCALL_CONSOLE_POLL  0x03u
+/* 01h-03h were SYS_CONSOLE_WRITE / SYS_CONSOLE_READ / SYS_CONSOLE_POLL.
+ * Package 41 removed them: a program's console I/O goes to the console
+ * service through the IPC pair below (user/sdk/src/console*.{c,asm}), so
+ * the numbers stay reserved rather than reused - a stale caller fails
+ * with ZOS_ENOSYS instead of writing somewhere unexpected. */
 #define ZOS_SYSCALL_GETINFO       0x04u
 #define ZOS_SYSCALL_EXEC          0x05u /* package 28 */
 
@@ -73,19 +75,6 @@ struct zos_exit_args {
 	uint16_t status;
 };
 
-/* SYS_CONSOLE_WRITE / SYS_CONSOLE_READ  {buffer:u16, length:u16}.
- * `buffer` is a logical address in the caller's bank; the kernel stages
- * the transfer through a bounded common buffer.  The transfer count is
- * returned in HL (success).  READ is a non-blocking drain: with no byte
- * pending it returns 0, and after the first byte it returns as soon as
- * no further byte is immediately available. */
-struct zos_console_args {
-	uint16_t buffer;
-	uint16_t length;
-};
-
-/* SYS_CONSOLE_POLL takes no block; HL returns 0 (no input) or 1. */
-
 /* SYS_EXEC 05h {path:u16, length:u16, args:u16, args_length:u16} - run a
  * child synchronously (packages 28/28b, docs/abi.md section 11).  `path`
  * addresses 1..127 non-NUL caller-window bytes resolved against the
@@ -119,8 +108,6 @@ struct zos_exec_args {
 #if defined(__SDCC)
 _Static_assert(sizeof(struct zos_exit_args) == 2,
 	       "exit argument block must be 2 packed bytes");
-_Static_assert(sizeof(struct zos_console_args) == 4,
-	       "console argument block must be 4 packed bytes");
 _Static_assert(sizeof(struct zos_exec_args) == 8,
 	       "exec argument block must be 8 packed bytes");
 _Static_assert(__builtin_offsetof(struct zos_exec_args, path) == 0,
