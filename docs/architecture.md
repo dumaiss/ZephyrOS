@@ -1,7 +1,7 @@
 # ZephyrOS Architecture
 
-**Status:** M0-M8 complete and physically accepted; M9 architecture defined for implementation (bootstrap slice implemented by work package 25, see docs/vfs.md and section 32.38.1)
-**Scope:** Milestones M0 through M9
+**Status:** M0-M9 complete; M10 architecture defined and under implementation; M11-M12 defined for native completion
+**Scope:** Milestones M0 through M12
 **Target:** Zephyr-80  
 **Language/toolchain:** SDCC + sdasz80/sdldz80, GNU Make, Python host tools
 
@@ -809,7 +809,7 @@ MODE_OS           = 18h
 ```
 
 For runtime application bank `N`, where `N = 0..6` (from M10, `0..5`:
-bank 6 becomes the resident service bank, section 36.3):
+bank 6 becomes the resident driver bank, section 36.3):
 
 ```text
 application mapping = MODE_APPLICATION | N
@@ -4678,7 +4678,7 @@ M9  COMPLETE (host + simulator; physical by byte identity + owner acceptance)
 └── budgeted bank-7 residency
     │
     ▼
-M10 resident-service nucleus (two-bank OS)
+M10 resident-driver nucleus (two-bank OS)
     + extended memory / far code+data + ZEX v2      (see section 36)
 M11 complete native diagnostic suite                (see section 38)
 M12 native shell and core built-in userland         (see section 40)
@@ -4691,7 +4691,7 @@ compatibility/personality architecture              (deferred)
 ```
 
 The end-of-M9 bank-7 ledger is in section 32.39. The residency decision
-taken for M10 (a nucleus in bank 7 and resident services in bank 6) is
+taken for M10 (a nucleus in bank 7 and resident drivers in bank 6) is
 recorded in section 35.
 
 ---
@@ -4701,7 +4701,7 @@ recorded in section 35.
 The native sequence after M9 is:
 
 ```text
-M10  Resident-service nucleus (two-bank OS)
+M10  Resident-driver nucleus (two-bank OS)
      + extended memory / far code / far data
      + ZEX v2
 
@@ -4737,13 +4737,13 @@ the common-memory ceiling ZOS_COMMON_CEILING (3072 bytes)
 **Residency decision (taken 2026-10-07).** The end-of-M9 bank-7 ledger
 (section 32.39) left 1,599 bytes of mixed room, and M10 does not fit in it
 (design spike, package 33). M10 therefore restructures the operating system
-into a **nucleus in bank 7 and resident services in bank 6**, on decoder
+into a **nucleus in bank 7 and resident drivers in bank 6**, on decoder
 revision 13 (section 36). Packages 34-36 measured this design and it was
 chosen over the alternatives they evaluated. The M9 bank-7 budget of section
 32.39, including the 32-granule arena floor, governs M9 only; M10 replaces
 it with the ledgers of section 36.20.
 
-# 36. Milestone M10 — Resident-service nucleus, extended memory, far code/data and ZEX v2
+# 36. Milestone M10 — Resident-driver nucleus, extended memory, far code/data and ZEX v2
 
 ## 36.1 Objective
 
@@ -4755,11 +4755,15 @@ Its responsibilities are:
 
 ```text
 two-bank operating system
-        bank 7: the nucleus (machine authority, VFS namespace, IPC, processes,
-            memory, IRQs, the built-in ROMFS provider)
-    bank 6: resident services (drivers, the console, pluggable filesystems)
-    programs open objects by name in the VFS and operate on them by
-    synchronous IPC on the returned handle
+    bank 7: nucleus
+        machine authority, processes, memory, IRQs, IPC
+        VFS root namespace
+        three static namespace providers: FS, DEVICE and ROMFS
+    bank 6: resident driver domain
+        drivers implement typed protocols
+        drivers may represent hardware, policy, composition or filesystems
+    programs bind names in the namespace, receive typed handles, call the
+    handle's protocol and unbind the instance when finished
 
 extended/far memory
     process-owned auxiliary memory objects
@@ -4772,27 +4776,32 @@ extended native executables
 ```
 
 Process startup, argument-tail transfer, nested `SYS_EXEC`, CWD inheritance,
-descriptor cleanup and parent restoration are already established before
-M10 and are preserved.
+handle cleanup and parent restoration are already established before M10
+and are preserved.
 
 After M10, later native milestones must not require another fundamental
-memory, executable-format, residency or process-lifecycle mechanism merely
-to implement diagnostics or the shell.
+memory, executable-format, residency, namespace or process-lifecycle
+mechanism merely to implement diagnostics or the shell.
 
 The central rules are:
 
 > **The operating system occupies at most two banks (7 and 6) plus common memory.**
 
-> **Physical banks are a Zephyr-80 implementation detail. Applications and services consume endpoints, memory objects, segments and handles.**
+> **Physical banks are a Zephyr-80 implementation detail. Applications consume names, typed handles, memory objects and segments; resident drivers consume pre-resolved endpoint/object references.**
+
+> **The VFS is a namespace router, not a filesystem facade. It owns `/`; the FS, DEVICE and ROMFS namespace providers own the meaning of names below their root entries.**
+
+> **A driver is any resident implementation of one or more protocol types. A driver need not correspond directly to hardware.**
 
 > **The primary application bank remains the ordinary execution environment. A program that uses no far facilities keeps its full 56 KiB and pays nothing.**
 
-> **If the host can precompute it, precompute it. The machine is trusted and single-tasking: build no machinery for isolation or concurrency it does not have.** Bank-6 services are trusted resident extensions, not isolated servers. Endpoints and IPC exist for modularity and for crossing banks, not for protection.
+> **If the host can precompute it, precompute it. The machine is trusted and single-tasking: build no machinery for isolation, discovery or concurrency it does not have.** Bank-6 drivers are trusted resident extensions, not isolated servers. Endpoints and IPC exist for modularity and for crossing banks, not for protection.
 
 This section is the single M10 target. The options evaluated on the way
 (the 8 KiB slot overlay, the `8000h` window split, the `SYS_FAR_CALL`
-gate with an auxiliary low window, a third OS bank) are rejected and are not
-part of it.
+gate with an auxiliary low window, a third OS bank, runtime device
+registration and a Unix-style universal file/directory object model) are
+rejected and are not part of it.
 
 ---
 
@@ -4848,7 +4857,7 @@ stage 1 (section 36.24).
 
 ```text
 bank 7      nucleus
-bank 6      resident service domain
+bank 6      resident driver domain
 banks 0-5   applications and extended memory
 bank 0      also supplies common memory at E000h-FFFFh (as before)
 ```
@@ -4857,13 +4866,13 @@ Bank 6 leaves the application pool. Bank 7 remains reserved to ZephyrOS.
 
 Owner rule: the operating system uses **at most two banks plus common**. A
 third OS bank is not a fallback. It would take a whole bank from
-applications, and with the window only part of a service bank is hot. When
+applications, and with the window only part of a driver bank is hot. When
 the system does not fit, it is slimmed, or code moves to a lower tier
 (sections 36.5 and 36.6). A bank is never added.
 
 ---
 
-## 36.4 Nucleus versus services
+## 36.4 Nucleus versus drivers
 
 The nucleus is the core of the operating system. It owns everything that
 is global, permanent and not pluggable:
@@ -4871,33 +4880,41 @@ is global, permanent and not pluggable:
 - process identity, creation, image replacement, exit and execution context;
 - physical bank and extended-memory ownership;
 - execution-domain transitions and cross-bank copy primitives;
-- **the VFS: the single global namespace** (section 36.13), with its
-  per-process handle tables;
+- **the VFS root namespace** and the three static namespace providers
+  defined in section 36.13;
+- the global owner-tagged typed-handle table;
 - the endpoint table and IPC dispatch;
 - IRQ ownership, dispatch and the final `RETI`;
-- loading and validating ZEX images and resident service images;
-- the ROMFS reader and the **built-in ROMFS provider** (the system
-  filesystem, needed at boot);
+- loading and validating ZEX images and resident driver images;
+- the ROMFS reader used by the static ROMFS namespace provider;
 - early bootstrap, the early console, failure handling and panic.
 
-Resident services are the pluggable parts: specific devices and specific
-filesystems. Each publishes objects into the VFS namespace.
+A **driver** is a resident implementation of one or more protocol types.
+The word does not imply a one-to-one relationship with physical hardware.
+A driver may be:
 
-- IOC transport and block access;
-- HID, V9958 video, SIO serial and other device facilities. The CTC
-  becomes a timer service when a consumer needs one; until then the nucleus
-  keeps only its boot-time interrupt-source quiescing;
-- the console, composed from HID, video and serial endpoints;
-- pluggable filesystems, first IOC-FAT, mounted into the namespace.
+- a hardware-facing implementation such as IOC, HID, V9958 video or SIO;
+- a filesystem implementation such as IOC-FAT;
+- a composed implementation such as a `CONSOLE` driver built from
+  `VIDEO` + `INPUT`, from `SERIAL`, or from another implementation such as
+  VDrip;
+- any later resident implementation of a typed protocol.
+
+One driver may implement several protocol types and may publish several
+objects. Drivers may consume other driver protocols. Their dependencies are
+resolved by the host to endpoint/object references; resident code does not
+perform VFS lookup or class discovery to find another resident driver.
 
 Retired by M10:
 
 ```text
-the filesystem syscall front end (FS_*)      replaced by open/call/close on VFS handles
-per-feature syscalls (console read/write)    replaced by messages on handles
-the device registry                          replaced by the VFS namespace and the endpoint table
-the zdriver_api kernel import table          replaced by the service bootstrap interface
-the bank-7 driver arena                      drivers and filesystems are services in bank 6
+the filesystem syscall front end (FS_*)      replaced by typed object protocols
+the console syscall family                   replaced by the CONSOLE protocol
+the device/class/capability registry          replaced by /dev host publications + endpoint table
+the filesystem-provider registry/mount model replaced by the three static root namespace providers
+the zdriver_api kernel import table           replaced by the driver bootstrap interface
+the bank-7 driver arena                       resident drivers live at host-linked addresses in bank 6
+runtime device-name registration/probing      the selected image defines the machine
 ```
 
 ---
@@ -4916,11 +4933,11 @@ the window shows another bank lives in the fixed core. That is:
 
 - the IPC dispatcher, the endpoint table and the descriptor table;
 - the copy primitives and transition code;
-- nucleus primitives callable by services, including the bootstrap ROMFS
+- nucleus primitives callable by drivers, including the bootstrap ROMFS
   reader;
 - the IRQ executive;
 - the upcall shims (below);
-- the ISR stack (256 bytes) and the service stack (512 bytes);
+- the ISR stack (256 bytes) and the driver stack (512 bytes);
 - the data all of these use.
 
 **Cold rule:** everything else lives in the cold half: the syscall
@@ -4929,98 +4946,115 @@ extended-memory allocation and the bank map, boot-only setup, diagnostics
 and panic formatting. The syscall gate clears P before dispatching, so
 syscall code always runs with the window showing bank 7.
 
-**Upcalls from cold code.** Nucleus code that calls a service (the loader
-streaming an executable object, the process-exit notification) does so
-through a small fixed **upcall shim**. The shim saves the latch, opens the
-service window, makes the call and restores the latch. The cold caller is
-not executing while the window shows bank 6, so it does not have to be
-fixed.
+**Upcalls from cold code.** Nucleus code that calls a bank-6 driver (for
+example the loader streaming an executable FILE object) does so through a
+small fixed **upcall shim**. The shim saves the latch, opens the driver
+window, makes the call and restores the latch. The cold caller is not
+executing while the window shows bank 6, so it does not have to be fixed.
 
-**Buffer rule:** memory that a service reaches through a buffer descriptor
+**Buffer rule:** memory that a driver reaches through a buffer descriptor
 must never be in bank 7's cold half.
 
 ---
 
-## 36.6 Service bank layout
+## 36.6 Driver bank layout
 
 ```text
-6000h-DFFFh of bank 6   hot tier (32 KiB)      service code, data and BSS used at run time
-0000h-5FFFh of bank 6   boot/bulk tier (24 KiB) boot-only service code and bulk service data
-E000h-FFFFh of bank 6   not used                hidden by common in modes 10 and 11
+6000h-DFFFh of bank 6   hot tier (32 KiB)       driver code, data and BSS used at run time
+0000h-5FFFh of bank 6   boot/bulk tier (24 KiB) boot-only driver code and bulk driver data
+E000h-FFFFh of bank 6   not used                 hidden by common in modes 10 and 11
 ```
 
-- Within the hot tier, `8000h-BFFFh` is reserved first for service I/O
+- Within the hot tier, `8000h-BFFFh` is reserved first for driver I/O
   buffers (36.8, path B); code and other data fill the rest of the tier.
 - The **hot tier** is reached through the window (P = 1). It holds
-  everything a service runs after boot, including paths reachable at run
+  everything a driver runs after boot, including paths reachable at run
   time from user requests (for example the V9958 display reset behind
   ESC `c`/RIS/`ZVIDEO_RESET`).
-- The **boot/bulk tier** holds service code that runs only during bring-up
-  (initialization, probing, font and atlas upload, mount). The nucleus
+- The **boot/bulk tier** holds driver code that runs only during bring-up
+  (initialization, font and atlas upload, filesystem setup). The nucleus
   executes it at boot through the mode-10 gate with Q = 6. The tier also
-  holds bulk data that services read through nucleus copies (for example the
+  holds bulk data that drivers read through nucleus copies (for example the
   V9958 font). Nothing in this tier is executed after boot.
-- While a service runs in mode 11, `0000h-1FFFh` shows the **caller's**
-  bank. Services never address it directly; they use descriptors (section
+- While a driver runs in mode 11, `0000h-1FFFh` shows the **caller's**
+  bank. Drivers never address it directly; they use descriptors (section
   36.8).
 
-Measured (package 41): SIO, IOC, HID, V9958 and the console use 13,216
-of 32,768 bytes of the hot tier, and 2,170 bytes of the boot/bulk tier
-(the font included). IOC-FAT (about 6.6 KB plus its service wrapper) is
-the remaining planned tenant. The VFS stays in the nucleus.
+Measured (package 41): SIO, IOC, HID, V9958 and the console driver use
+13,216 of 32,768 bytes of the hot tier, and 2,170 bytes of the boot/bulk
+tier (the font included). IOC-FAT (about 6.6 KB plus its resident wrapper)
+is the remaining planned bank-6 tenant. VFS plus the FS, DEVICE and ROMFS
+namespace providers stay in the nucleus.
 
 ---
 
-## 36.7 Endpoints, handles and IPC
+## 36.7 Endpoints, typed handles and IPC
 
-Services export **endpoints**. Each endpoint has an **endpoint number
-assigned on the host** when the services are packed. The nucleus keeps
-them in an endpoint table in fixed data, internal to the nucleus:
+Resident drivers export **endpoints**. Each endpoint has an endpoint number
+assigned on the host when the image is assembled. The nucleus keeps a
+prebuilt endpoint table in fixed data:
 
 ```text
-endpoint number, owner service, dispatch target
+endpoint number, owner driver, dispatch target
 flags: re-entrant
 state: busy (on the current call stack)
 ```
 
-The table is reportable through diagnostic introspection (M11).
+The table is reportable through diagnostic introspection (M11). Endpoint
+numbers are not application ABI.
 
-**Programs never see endpoint numbers.** They name objects in the VFS
-namespace (36.13):
+The public object lifecycle is deliberately small:
 
 ```text
-open(path) -> handle         the VFS resolves the name to (endpoint, object)
-call(handle, op, frame)      synchronous message on that object
-close(handle)
+bind(path, flags) -> handle, type   resolve a namespace name and bind an instance
+call(handle, op, frame)             synchronous protocol operation on that instance
+unbind(handle)                      release the bound instance
 ```
 
-There is no `lookup(class, instance)`: namespace names cover discovery.
-Add it only when a real consumer needs it.
+A useful OOP analogy is: the namespace name identifies a **class/factory**;
+the returned handle identifies an **instance**. `bind` may simply acquire a
+permanent object (`/dev/video`) or may instantiate provider state (opening a
+file). `unbind` releases whatever instance state that bind created.
 
+- **Type:** every bound handle carries one **8-bit protocol type**. There is
+  no separate class/capability bitmap. `FILE`, `VIDEO`, `CONSOLE`, `INPUT`,
+  `SERIAL`, `IOC`, `SOUND`, `TIMER` and later protocols are simply type
+  numbers.
+- **No expected type:** `bind` returns the type it actually resolved. The
+  nucleus does not take an expected-type argument. A caller or typed SDK
+  wrapper checks the returned type when it cares.
+- **Flags:** `bind` carries one 16-bit flags field. VFS treats it as opaque;
+  the selected namespace provider/protocol defines the meaningful bits.
+  `FILE` uses it for read/write/create/truncate style open flags; most
+  device binds initially use zero.
+- **No generic handle-info operation:** protocol-specific information
+  belongs to that protocol (`video_info`, `sound_info`, file metadata, and
+  so on).
 - **Synchronous call/reply** is the only IPC model. There are no queues and
   no asynchronous messages.
-- **Frame:** one standard **32-byte** request/reply frame for every
-  object. What the fields mean is decided by each service's protocol. The
-  SDK supplies a client API per protocol that fills in and decodes the
-  frame (for example a sound API that builds the sound driver's
-  messages). The frame is copied in at entry and back on reply. Large
+- **Frame:** one standard **32-byte** request/reply frame for every call.
+  What the fields mean is decided by the handle's protocol. The SDK supplies
+  a client API per protocol that fills in and decodes the frame. Large
   payloads move through descriptors, never through the frame.
-- **Handles** are per-process, opaque and small. They are not bank
-  numbers, pointers or endpoint numbers.
-- **Services are permanent.** They are loaded at boot and never unloaded.
-  There is no revocation and no restart.
-- **Service-to-service calls are near-direct.** Both services are trusted
-  and mapped at the same time, so the call is a dispatch through the
-  endpoint table. The frame is passed by reference, not copied, and the
-  bank is not switched. It is invisible to the ABI.
-- **Protocols are coarse-grained.** A call costs about 15,500 T-states, so
-  there are no per-byte or per-character operations: writes are buffered,
-  reads are read-N, files move in 512-byte chunks.
+- **Handles** are process-owned, opaque and small. They are not bank
+  numbers, pointers or endpoint numbers. The handle table records the
+  owner, 8-bit type, endpoint and provider-private object identity.
+- **Drivers are permanent.** They are selected at build time, copied at boot
+  and never unloaded. There is no revocation, hot replacement or restart.
+- **Driver-to-driver calls are host-wired and near-direct.** Driver metadata
+  declares symbolic protocol dependencies. The host resolves them to typed
+  endpoint/object references. Both drivers are trusted and mapped at the
+  same time, so a resident call dispatches through the endpoint table with
+  the frame passed by reference and no bank switch. Drivers do not bind
+  `/dev` names at run time to discover each other.
+- **Protocols are coarse-grained.** A full application call costs about
+  15,500 T-states, so there are no per-byte or per-character operations:
+  writes are buffered, reads are read-N, files move in useful blocks.
 
-Measured cost: a null call is about 15,500 T-states through the
+Measured cost: a null application call is about 15,500 T-states through the
 production-shaped path (package 39; the frame copies dominate), and one
-window crossing is 242 T-states. Hot paths are batched by protocol design
-(buffer writes, read-N, 512-byte file chunks).
+window crossing is 242 T-states. Resident driver-to-driver forwarding avoids
+the application boundary and frame copy.
 
 ---
 
@@ -5030,18 +5064,18 @@ There are no raw cross-domain pointers.
 
 - At call entry the nucleus captures each caller buffer as a
   **descriptor**: execution latch (bank Q and page P), address, length and
-  direction. Services receive a small descriptor id, valid for the duration
+  direction. Drivers receive a small descriptor id, valid for the duration
   of the call. **At most two descriptors per call**, fixed in the frame
   layout. There is no generic marshalling.
-- Services move data only through nucleus primitives
+- Drivers move data only through nucleus primitives
   `copy_in(id, offset, buffer, length)` and
   `copy_out(id, offset, buffer, length)`. Bounds are checked on every use.
 - **Validation lives in the nucleus only:** handle, endpoint, descriptor
-  and frame-bounds checks at the boundary. Services trust what the nucleus
+  and frame-bounds checks at the boundary. Drivers trust what the nucleus
   hands them and do not re-validate (36.22).
 - **Direct copies.** A descriptor id may be passed down a call chain, and
-  the service that holds the data copies it straight to the caller. Data is
-  not staged through intermediate services. "Direct" means no service
+  the driver that holds the data copies it straight to the caller. Data is
+  not staged through intermediate drivers. "Direct" means no driver
   staging; the nucleus copy primitive may still use a bounce or gate path
   underneath (below).
 - **Buffer identity:** a caller address in `8000h-BFFFh` while the caller's
@@ -5053,17 +5087,17 @@ There are no raw cross-domain pointers.
   | path | when | how |
   |---|---|---|
   | **A** | caller buffer in the caller window `0000h-1FFFh` or in common | mode 11, one `LDIR` |
-  | **B** | service buffer in bank 6 `8000h-BFFFh`, and caller buffer in the caller's bank outside `8000h-BFFFh` | a common-resident stub switches to mode 10 with Q = the caller's bank and P = 1 (the aperture shows bank 6), runs one `LDIR` and restores the latch |
-  | **C** | everything else: a caller buffer in `8000h-BFFFh` (including far-bank buffers), or a service buffer outside `8000h-BFFFh` | chunked through the common `zos_bank_copy` gate; correct, but slow |
+  | **B** | driver buffer in bank 6 `8000h-BFFFh`, and caller buffer in the caller's bank outside `8000h-BFFFh` | a common-resident stub switches to mode 10 with Q = the caller's bank and P = 1 (the aperture shows bank 6), runs one `LDIR` and restores the latch |
+  | **C** | everything else: a caller buffer in `8000h-BFFFh` (including far-bank buffers), or a driver buffer outside `8000h-BFFFh` | chunked through the common `zos_bank_copy` gate; correct, but slow |
 
   The P = 1 that path B uses is internal to the nucleus; applications
   never get a bank-6 token. An interrupt taken inside path B restores the
   latch exactly.
 
-  Measured (package 39), 512-byte read through a three-service chain:
+  Measured (package 39), 512-byte read through a chained FILE -> IOC-FAT -> IOC path:
   path A 180 T/B, path B 181 T/B, path C 237 T/B, against 588 T/B for the
   M9 `FS_READ`. The path-B stub costs 58 bytes of common memory.
-- **Service I/O rule.** Service buffers that are the source or target of
+- **Driver I/O rule.** Driver buffers that are the source or target of
   `copy_in`/`copy_out` (I/O buffers, caches, staging) live in bank 6's
   `8000h-BFFFh`, the `SERVICE_IO` data area. The loader refuses an image
   whose `SERVICE_IO` data falls outside that range.
@@ -5073,23 +5107,24 @@ There are no raw cross-domain pointers.
 ## 36.9 Nesting, re-entrancy and stacks
 
 - **Nesting limit: 4** calls deep (application → IOC-FAT → IOC, a
-  composed service such as the console, and the loader's read chain). Deeper calls are refused.
+  composed driver such as the console, and the loader's read chain). Deeper
+  calls are refused.
 - **Re-entrancy:** the nucleus refuses, with `ZOS_EBUSY`, a call into an
   endpoint that is already on the call stack, unless that endpoint declares
-  itself re-entrant. Each service states how it protects its state.
+  itself re-entrant. Each driver states how it protects its state.
 - **Stacks:**
-  - **service stack:** 512 bytes in the fixed core, shared by the
-    service-call chain (measured high-water 278 bytes);
+  - **driver stack:** 512 bytes in the fixed core, shared by the resident
+    driver-call chain (measured high-water 278 bytes);
   - **ISR stack:** 256 bytes in the fixed core;
   - **gate stack:** 256 bytes in common; the worst case is measured for
     every syscall path and stays at or below 240.
 
 ---
 
-## 36.10 IRQs owned by services
+## 36.10 IRQs owned by drivers
 
 The nucleus keeps the interrupt mode and IM2 vectoring, the IRQ registry,
-the ISR stack and the final `RETI`. A service may claim an IRQ and supply a
+the ISR stack and the final `RETI`. A driver may claim an IRQ and supply a
 handler:
 
 ```text
@@ -5097,48 +5132,83 @@ hardware IRQ
     v
 nucleus IRQ executive    saves the latch, selects the owner's window, ISR stack
     v
-service handler          restricted nucleus API only: no IPC
+driver handler           restricted nucleus API only: no IPC
     v
 nucleus                  restores the interrupted latch exactly, RETI
 ```
 
 IRQ delivery must not disturb a latch saved by the call it interrupts. The
 IRQ path saves and restores the latch in its own slot. Measured: about 924
-T-states to deliver an interrupt to a service handler.
+T-states to deliver an interrupt to a resident driver handler.
 
 ---
 
-## 36.11 Resident service images
+## 36.11 Resident driver images and host assembly
 
-Services are **ZMOD images extended with service metadata**. No separate
-ZSVC format is introduced.
+Resident drivers are **ZMOD images extended with driver metadata**. No
+separate resident-image format is introduced.
 
-**The host computes everything.** The host packer links every service at
-its **final bank-6 addresses**. It assigns the endpoint numbers, checks
-dependencies and duplicate endpoints, and emits the manifest together with
-a prebuilt endpoint table and namespace entries. Service images carry no
-relocation records. The resident loader only:
+**The host computes everything.** The host packer links every selected
+driver at its **final bank-6 addresses**. It assigns endpoint numbers,
+checks duplicate endpoint and namespace publications, resolves symbolic
+inter-driver dependencies to typed endpoint/object references, and emits:
+
+```text
+the bank-6 image layout
+the endpoint table
+the /dev publication table
+the resolved dependency references
+the boot manifest
+```
+
+Resident driver images carry no relocation records. The target loader only:
 
 - copies each image's segments to their fixed addresses;
-- installs the endpoint table and namespace entries;
+- installs the host-built endpoint/publication/dependency tables;
 - runs each boot segment once;
 - runs each hot init once.
 
-It checks only the bounds that protect the nucleus.
+It checks only bounds that protect the nucleus and the fixed driver-bank
+layout.
 
-A service image declares:
+A driver image declares:
+
 - its hot segment, linked for the hot tier;
 - its `SERVICE_IO` data, linked in `8000h-BFFFh`;
 - its boot segment and bulk data, linked for the boot/bulk tier;
-- the objects it publishes (namespace names) and the endpoints behind them.
+- the protocol type(s) and endpoint(s) it implements;
+- any `/dev` objects it publishes: namespace name, 8-bit type, endpoint and
+  object/factory identity;
+- symbolic dependencies on other resident protocol objects.
 
-A service sees the **service bootstrap interface**, not a kernel import
-table:
-- the descriptor copy primitives;
-- calls to other endpoints;
+There is **no runtime device-name registration, class lookup or hardware
+probing framework**. The selected host image defines the machine. A required
+driver that cannot initialize is a boot/configuration failure; it does not
+cause the namespace to be dynamically rebuilt around a different driver.
+Separate builds may select different implementations of the same protocol
+and namespace name.
+
+For example, `/dev/console` is not special. A build may select:
+
+```text
+console-v9958-hid driver  implements CONSOLE; host-wired to VIDEO + INPUT
+console-serial driver     implements CONSOLE; host-wired to SERIAL
+console-vdrip driver      implements CONSOLE; host-wired to the VDrip dependencies
+```
+
+Whichever implementation is selected publishes the ordinary object
+`/dev/console -> CONSOLE`. User programs cannot tell which implementation
+is behind the protocol unless that protocol deliberately exposes such
+information.
+
+A resident driver sees the **driver bootstrap interface**, not a general
+kernel import table:
+
+- descriptor copy primitives;
+- near-direct calls to its host-resolved dependencies/endpoints;
 - IRQ claim and release;
-- the few other nucleus primitives a service legitimately needs, each
-  named in that interface.
+- the few other nucleus primitives a resident driver legitimately needs,
+  each named in that interface.
 
 ---
 
@@ -5149,91 +5219,193 @@ reset
   v
 nucleus initialization (fixed core and cold half)
   v
-VFS namespace with the built-in ROMFS provider mounted at /SYSTEM
+VFS root + three static nucleus namespace providers
+  |-- /SYSTEM -> ROMFS provider (immediately usable)
+  |-- /FS     -> FS provider
+  `-- /dev    -> DEVICE provider
   v
-copy service images from the boot manifest into bank 6
-install the host-built endpoint table and namespace entries
+copy the host-selected resident driver images into bank 6
+install the host-built endpoint table, /dev publication table and
+pre-resolved inter-driver dependency references
   v
-run each service's boot segment     mode-10 gate, Q = 6
-  +--> IOC transport, HID, video, serial    published under /dev
-  +--> console service                      /dev/console (composes HID + video / serial)
-  +--> IOC-FAT                              mounted at /
+run each driver's boot segment              mode-10 gate, Q = 6
+  +--> IOC, HID, video, serial, sound ...    protocol implementations
+  +--> selected console driver                publishes /dev/console
+  +--> IOC-FAT driver                         filesystem implementation behind /FS
   v
-resolve the boot program in the VFS and execute it
+resolve the configured boot program through the namespace and execute it
 ```
 
-There is a single ROMFS reader in the system, used by the built-in ROMFS
-provider. The early console and the panic path stay in the nucleus and are
-usable before the console service exists.
+There is a single ROMFS reader in the system, used by the static ROMFS
+namespace provider for `/SYSTEM`. The early console and panic path stay in
+the nucleus and are usable before any `CONSOLE` driver exists.
+
+There is no runtime mount pass, device registration pass, class discovery
+or hardware-probing pass in M10. Root routing, driver selection, device
+publications and resident dependencies are all host configuration.
 
 ---
 
-## 36.13 The VFS: the global namespace
+## 36.13 VFS root and the three static namespace providers
 
 The VFS is a **core nucleus component**, like IPC and the memory manager.
-It is the single global namespace: the place where programs find files,
-devices and services. It is not a service, it is not replaceable, and it
-lives in bank 7's cold half.
-
-The VFS owns:
-- path resolution, mounts, and per-process roots and current directories;
-- the **namespace**: filesystem mounts (`/` = IOC-FAT, `/SYSTEM` =
-  ROMFS) and the objects services publish (`/dev/<name>`). **Names
-  describe the role, not the product**, and a role that can have several
-  instances is a directory:
-
-  ```text
-  /dev/console          composed console (keyboard or serial in, video or serial out);
-                        what the standard handles open
-  /dev/input/keyboard   (later: /dev/input/mouse, /dev/input/controller)
-  /dev/video
-  /dev/serial/0         (later: /dev/serial/1)
-  /dev/ioc              the IOC (I/O coprocessor with bulk and command lanes) is a
-                        defining feature of the platform family, so this is a role name
-  /dev/timer            when the CTC becomes a service
-  ```
-
-  Never `/dev/sio`, `/dev/v9958`, `/dev/hid` or `/dev/ctc`;
-- **one small global handle table**, each entry tagged with its owning
-  process. A handle names an (endpoint, object) pair. It is the M9 global
-  descriptor pool extended, not a second table. One table suits a
-  single-tasking machine with nested processes: a suspended parent's
-  entries simply stay in it;
-- `open` and `close`, and the namespace operations that are its own
-  (`chdir`, `getcwd`, mount points).
-
-Operations on an object are **IPC messages to the object's provider**,
-sent on the handle. The VFS is not in the data path:
+It owns the global root `/` and routes names to exactly three static nucleus
+namespace providers:
 
 ```text
-open("/data/log.txt")  -> VFS resolves the mount  -> handle (IOC-FAT endpoint, file object)
-call(handle, READ, frame, descriptor) -> IOC-FAT copies straight to the caller (36.8)
-open("/dev/console")   -> handle (console endpoint)
-call(handle, WRITE, ...)
+/
+|-- FS        -> FS namespace provider
+|-- SYSTEM    -> ROMFS namespace provider
+`-- dev       -> DEVICE namespace provider
 ```
 
-Directory operations (`readdir`, `stat`, `mkdir`, `unlink`, `rename`)
-are messages to the provider, either on a directory handle or carrying the
-path remainder below the mount point.
+Root matching is ASCII case-insensitive; the spellings above are the
+canonical display names. VFS resolves and normalizes the global path and
+selects the provider from the first component. The selected provider owns
+everything below that point. VFS does **not** interpret that provider's
+internal hierarchy.
 
-**Every provider is an endpoint, and there is one call path.** The
-built-in ROMFS provider is a nucleus endpoint: a handle on a ROMFS file
-dispatches to it in-process, through the same handle-call path as a
-bank-6 provider. There is no separate provider ops-table interface, no
-provider registration, and no module-loading boot phase in the VFS.
+There is no M10 runtime mount table, provider registration, root-filesystem
+merge or shadowing rule. The older M9 mount/provider machinery is retired
+rather than carried beside the new model.
 
-**Standard handles.** Every process starts with console input and output
-handles already open, inherited from its parent.
+### FS namespace provider — `/FS`
 
-**Execution.** `SYS_EXEC(path, tail)`: the VFS resolves the path, and the
-cold loader reads the executable through its provider.
+The static FS provider is nucleus routing code. It owns the `/FS` root and
+forwards the remainder to the filesystem driver selected by the host build,
+initially IOC-FAT:
 
-**Exit closes every handle the process owns**, sending each provider its
-normal `close`, so services release their state naturally. Then the
-process's xmem objects, segments and bank are freed. There is no process-exit
-broadcast; add one only if some state cannot be modelled by handle
-ownership. The startup block v1 and the raw-tail contract are
-unchanged.
+```text
+bind("/FS/GAMES/ZAXXON.ROM", READ)
+    VFS -> FS provider -> IOC-FAT driver
+    -> FILE instance
+```
+
+The FS provider contains no FAT/FS2 semantics. The selected filesystem
+driver owns pathname meaning, file creation, mutation, enumeration and
+backend state below `/FS`.
+
+### ROMFS namespace provider — `/SYSTEM`
+
+The static ROMFS provider is nucleus code over the one built-in ROMFS
+reader. It owns `/SYSTEM`, needs no bank-6 driver and produces ordinary
+`FILE` instances for ROM-resident objects. It is the recovery namespace and
+is available before resident drivers are initialized.
+
+### DEVICE namespace provider — `/dev`
+
+The static DEVICE provider resolves against a **host-built publication
+table**. Entries are declared by selected resident drivers; no driver
+registers a string at run time.
+
+Typical host publications are:
+
+```text
+/dev/console          CONSOLE
+/dev/input/keyboard   INPUT
+/dev/video            VIDEO
+/dev/serial/0         SERIAL
+/dev/ioc              IOC
+/dev/sound            SOUND        when that driver is selected
+/dev/timer            TIMER        when that driver is selected
+```
+
+Names describe roles, not implementation products: never `/dev/v9958`,
+`/dev/hid` or `/dev/sio` merely because those are the selected drivers.
+Several names may resolve to objects implemented by one driver, and one
+driver may implement several types.
+
+### Provider-owned hierarchy; no universal DIRECTORY protocol
+
+A slash below a root provider is syntax owned by that provider. `/FS/GAMES`
+may mean a filesystem directory; `/dev/input` may simply be a grouping in a
+static device table; ROMFS may remain flat internally. ZephyrOS therefore
+defines **no universal `DIRECTORY` object protocol** and creates no generic
+directory handles.
+
+Generic namespace enumeration is nevertheless required for tools such as
+`ls`. It is a VFS operation routed to the owning namespace provider and is
+batched/coarse-grained:
+
+```text
+ns_enum(path, cookie, output-buffer) -> entries, next-cookie
+```
+
+An enumeration entry contains at least a name, a `container` flag saying
+that further path components may be traversed below it, and (when the entry
+is bindable) its 8-bit protocol type. `container` is namespace metadata,
+not an object type or protocol.
+
+CWD remains a VFS/global-path concept. `chdir(path)` asks the selected
+namespace provider whether the path is a valid traversable location and,
+on success, stores the canonical global path. It does not bind a directory
+object.
+
+### Bind, instance and lifetime
+
+The VFS keeps **one small global handle table**, each entry tagged with its
+owning process. Conceptually an entry contains:
+
+```text
+owner PID
+8-bit type
+endpoint
+provider-private object / instance identity
+bind flags / small lifecycle state where required
+```
+
+A namespace name identifies a class/factory; `bind` creates or acquires an
+instance and returns the handle plus its type. The caller does not pass an
+expected type. `unbind` releases the instance.
+
+For files, the familiar words remain in `fs.h` rather than in the nucleus
+ABI:
+
+```text
+fs_open(path, flags) -> bind(path, flags), verify FILE, return file handle
+fs_close(file)       -> unbind(file)
+```
+
+Other FILE operations (`read`, `write`, `seek`, `sync`, metadata) are FILE
+protocol calls on that handle. Filesystem operations that act on names
+rather than an open file (`mkdir`, `rmdir`, `unlink`, `rename`) belong to
+the filesystem namespace protocol exposed through `fs.h`; they do not
+create `DIRECTORY` handles.
+
+Operations on a bound object are IPC messages to the handle's endpoint.
+VFS is not in the data path:
+
+```text
+bind("/FS/data/log.txt", READ) -> FILE handle backed by IOC-FAT
+call(file, FILE_READ, frame, descriptor) -> IOC-FAT copies to the caller
+
+bind("/SYSTEM/diag.zex", READ) -> FILE handle backed by ROMFS
+
+bind("/dev/video", 0) -> VIDEO handle
+call(video, VIDEO_INFO, frame)
+
+bind("/dev/console", 0) -> CONSOLE handle
+call(console, CONSOLE_WRITE, frame, descriptor)
+```
+
+The built-in ROMFS endpoint dispatches in-process through the same
+handle-call path as a bank-6 endpoint.
+
+**Standard handles.** Every process starts with console input/output handles
+already bound to `/dev/console` and inherited from its parent according to
+the process-startup contract.
+
+**Execution.** `SYS_EXEC(path, tail)` resolves the path through VFS. The cold
+loader binds it as an object, requires a `FILE` result, streams the image
+through the FILE protocol and unbinds it before launch.
+
+**Exit unbinds every handle the process owns.** That gives each owning driver
+the normal release operation so FILE state is closed/flushed as specified,
+console/device instances are released, and leaked application bindings do
+not permanently exhaust the small table. Then the process's xmem objects,
+segments and bank are freed. There is no process-exit broadcast; add one
+only if some state genuinely cannot be represented by bound-instance
+ownership.
 
 ---
 
@@ -5242,26 +5414,39 @@ unchanged.
 Syscalls are the **nucleus ABI**, and they are few:
 
 ```text
-objects      open(path), call(handle, op, frame), close(handle)
-             
+objects      bind(path, u16 flags) -> handle + u8 type
+             call(handle, op, 32-byte frame, descriptors)
+             unbind(handle)
+
+namespace    enum(path, cookie, output)
              chdir, getcwd
+
 process      exec(path, tail), exit
 xmem         alloc, free, read, write, info, map
 segments     segment info, segment map
-diagnostics  the M7 diagnostic family (reshaped for the namespace and endpoint table)
+diagnostics  the M7 diagnostic family (reshaped for endpoints, drivers and namespace tables)
 ```
 
-The `FS_*` family and the console syscalls are removed. The SDK's file,
-console and device functions are thin client APIs that fill in the
-standard frame for each service protocol (36.7). The native ABI is not
-frozen before M12, so no compatibility path is kept.
+There is no nucleus `open`, `close`, generic `handle_info`, device lookup or
+class/capability query. `open`/`close` are FILE-language in `fs.h`, built on
+`bind`/`unbind`. VIDEO information belongs to `video.h`, CONSOLE operations
+to `console.h`, SOUND information to `sound.h`, and so on.
+
+The M9 `FS_*` family and the per-feature console syscalls are removed. The
+SDK supplies thin typed client APIs that bind names where appropriate,
+verify returned types when the API cares, and fill/decode the standard
+protocol frames. The native ABI is not frozen before M12, so no
+compatibility path is kept.
 
 ABI layers:
-1. **nucleus ABI:** the syscalls above;
-2. **IPC envelope:** handle, operation, 32-byte frame, status, descriptors;
-3. **service protocols:** console, IOC, HID, video, filesystem and so on.
-   Each defines what the frame fields mean;
-4. **SDK:** C client APIs per protocol that fill in and decode the frame.
+
+1. **nucleus ABI:** bind/call/unbind, namespace, process and memory mechanisms;
+2. **IPC envelope:** handle, operation, 32-byte frame, status, at most two descriptors;
+3. **8-bit protocol types:** FILE, filesystem namespace, CONSOLE, VIDEO,
+   INPUT, SERIAL, IOC, SOUND, TIMER and later types; each defines its own
+   operation numbers and frame meanings;
+4. **SDK:** `fs.h`, `video.h`, `console.h`, `sound.h`, and other typed client
+   APIs that hide the generic envelope.
 
 ---
 
@@ -5450,10 +5635,10 @@ these ledgers and the bytes it adds, attributed per object:
 
 | ledger | region | capacity | headroom target at M10 close |
 |---|---|---:|---:|
-| `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR stack, service stack) | 16,384 | ≥ 2,048 |
+| `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR stack, driver stack) | 16,384 | ≥ 2,048 |
 | `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | ≥ 4,096 |
-| `service hot:` | bank 6 `6000h-DFFFh` | 32,768 | ≥ 4,096 |
-| `service boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
+| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | ≥ 4,096 |
+| `driver boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
 | `common:` | `E000h-FFFFh` packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | — |
 | gate stack | common | 256 | worst case ≤ 240 |
 
@@ -5462,7 +5647,7 @@ these ledgers and the bytes it adds, attributed per object:
   and IPC; no far-call gate is built. Its first tenant is the path-B copy
   stub (58 bytes, package 39).
 - When a ledger does not fit, the remedy is slimming or moving code to a
-  lower tier (fixed → cold through an upcall shim, hot → boot/bulk). It is
+  lower tier (fixed → cold through an upcall shim, driver hot → boot/bulk). It is
   never a third bank (section 36.3).
 
 ---
@@ -5482,7 +5667,7 @@ Native ZephyrOS concepts:
 
 ```text
 process, primary address space
-endpoint, handle, service protocol, descriptor
+endpoint, typed handle, protocol, descriptor, namespace provider
 extended-memory object, segment, map/unmap
 logical size
 ```
@@ -5495,12 +5680,12 @@ aperture.
 ## 36.22 Protection model
 
 Zephyr-80 has no MMU, and ZephyrOS is trusted and single-tasking. Bank-6
-services are trusted resident extensions. The nucleus/service split gives
+drivers are trusted resident extensions. The nucleus/driver split gives
 modularity, ownership rules, controlled bank crossing and ABI discipline,
 not protection:
 
 - a defect in resident code can still corrupt any memory;
-- validation is done once, in the nucleus, at the boundary; services do
+- validation is done once, in the nucleus, at the boundary; drivers do
   not repeat it, because there is no protection model for it to serve;
 - handles prevent accidental address coupling, but they are not
   hardware-enforced capabilities;
@@ -5517,7 +5702,7 @@ M10 does not add:
 
 ```text
 preemptive scheduling or multitasking
-asynchronous or queued IPC, revocation, service restart or unloading
+asynchronous or queued IPC, revocation, driver restart or unloading
 generic marshaling layers
 shared writable memory between processes
 runtime-generated executable memory, dynamic libraries
@@ -5534,30 +5719,29 @@ The Z80 remains a cooperative, single-running-process machine.
 1. **Baseline:** revision 13 is programmed (done); switch the simulator
    default to it; remove the machinery of the rejected options.
 2. **Nucleus split:** link the nucleus as fixed core plus cold half with
-   upcall shims; the syscall gate clears P; the ledgers of section 36.20.
-3. **IPC substrate:** endpoint table, call/lookup/register, frames,
-   descriptors, copy primitives, the nesting and re-entrancy rules, IRQ
-   delivery to services.
-4. **Services:** service-image metadata and loader; the boot manifest; the
-   drivers and the console as services (done, packages 40-41).
-5. **Simplification (41b):** services linked at their final addresses on
-   the host, so the loader becomes a copier; host-assigned endpoint numbers;
-   validation in the nucleus only; near-direct service-to-service calls.
-6. **Namespace and handles (42a):** `/dev` objects; open, call and close
-   on the extended descriptor pool; standard console handles; lookup
-   removed.
-7. **Files on handles (42b):** the filesystem protocol; IOC-FAT as a
-   mounted service; ROMFS as a nucleus endpoint; `FS_*` retired.
-8. **Pruning (42c, 42d):** the arena, module loader and relocator,
-   `zdriver_api`, the registry and the device class model, the provider
-   interface, dead ops headers, runtime version fields and the transitional
-   residency tiers are removed (42c); the test, tool and build scaffolding
-   is consolidated (42d).
-9. **Extended memory (43):** bank map, xmem objects, map tokens and the
-   aperture.
-10. **ZEX v2 (44a, 44b):** v2 replaces v1 (44a); far code through the
-    aperture (44b).
-11. **Acceptance (45)** (section 37).
+   upcall shims; the syscall gate clears P; establish the ledgers of 36.20.
+3. **IPC substrate:** host-built endpoint table, synchronous call/reply,
+   32-byte frames, two fixed descriptors, copy primitives, nesting,
+   re-entrancy and IRQ delivery to bank-6 drivers.
+4. **Resident drivers:** driver-image metadata and loader; move IOC, HID,
+   V9958, SIO and console implementations into the bank-6 driver domain.
+5. **Host assembly:** link resident drivers at final addresses; resolve
+   endpoint numbers and inter-driver protocol dependencies on the host;
+   near-direct driver-to-driver calls; no target relocation or discovery.
+6. **Namespace and typed handles:** VFS owns `/`; add the static FS, DEVICE
+   and ROMFS namespace providers; host-build `/dev` publications; implement
+   `bind`, `call`, `unbind`, 8-bit types, global owner-tagged handles,
+   namespace enumeration and standard console handles.
+7. **Files on typed handles:** FS provider routes `/FS` to IOC-FAT; ROMFS
+   serves `/SYSTEM`; FILE `open/close/read/write/...` live in `fs.h` over
+   bind/call/unbind; remove generic DIRECTORY handles and retire `FS_*`.
+8. **Pruning:** delete the arena/module relocator path, `zdriver_api`, the
+   device/class/capability registry, filesystem-provider registration,
+   runtime mount machinery, old console binding policy and transitional
+   headers/tests. No compatibility copy survives construction.
+9. **Extended memory:** bank map, xmem objects, map tokens and aperture.
+10. **ZEX v2:** v2 replaces v1; far code executes through the aperture.
+11. **Acceptance:** section 37.
 
 ---
 
@@ -5569,30 +5753,58 @@ hardware:
     P = 0 equivalence with revision 12 (vectors) and on hardware
 
 residency:
-    nucleus fixed / nucleus cold / service hot / service boot-bulk / common
+    nucleus fixed / nucleus cold / driver hot / driver boot-bulk / common
     ledgers emitted and within section 36.20, headroom targets met
-    gate-stack worst case <= 240; service-stack high-water reported
+    gate-stack worst case <= 240; driver-stack high-water reported
 
-IPC:
-    lookup, call, null call; 32-byte frame both ways
+IPC / typed object lifecycle:
+    bind -> handle + 8-bit type; no expected-type argument
+    call; 32-byte frame both ways; unbind releases the instance
+    no generic handle_info and no class/capability lookup
     descriptors: copy in/out, bounds rejection, forged id rejection
-    no service can name a caller address
-    chained read (application -> VFS -> IOC-FAT -> IOC) with direct copies
+    no driver can name a caller address
+    chained FILE read: application -> IOC-FAT -> IOC with direct copy
     nesting limit enforced; re-entrant call -> EBUSY unless declared
-    same-domain fast path gives identical results
-    service-owned IRQ fires during a service call; interrupted latch restored exactly
+    driver-to-driver near-direct path gives identical protocol results
+    driver-owned IRQ fires during a driver call; interrupted latch restored exactly
 
-services and boot:
-    drivers, console and IOC-FAT run as bank-6 services, linked at their final addresses on the host
-    boot copies the manifest images; host-built endpoint table; one ROMFS reader
-    console fallback and panic before the console service exists
-    registry, zdriver_api, FS_* front end and bank-7 arena absent
+host assembly / drivers:
+    resident drivers linked at final bank-6 addresses on the host
+    endpoint numbers and driver dependencies resolved by the host
+    no runtime relocation, device registration, class discovery or hardware probing
+    one driver may implement several protocol types and publish several objects
+    required-driver initialization failure is explicit boot/configuration failure
 
-namespace and handles:
-    open/call/close on files, directories and /dev objects
-    standard console handles at process start, inherited
-    file and directory operations through the SDK client APIs
-    exec(path) resolved by the VFS; exit releases handles
+namespace:
+    VFS owns exactly the global root routing
+    /FS -> static FS provider
+    /SYSTEM -> static ROMFS provider and works before bank-6 drivers
+    /dev -> static DEVICE provider over the host-built publication table
+    provider owns every hierarchy component below its root
+    root and provider enumeration work without a DIRECTORY protocol/handle
+    CWD traversal works through provider validation
+    no M9 runtime mount/provider registry or root merge remains
+
+device publication and composition:
+    /dev/video resolves to VIDEO without exposing V9958 by name
+    /dev/console resolves to CONSOLE and is otherwise ordinary
+    selected console driver uses host-resolved dependencies
+    V9958+HID console configuration works
+    serial console configuration works with a different CONSOLE driver
+    alternate implementations can publish the same protocol/name in another build
+
+files:
+    fs_open(path, flags) is bind + FILE-type check
+    fs_close is unbind
+    /FS file operations use the selected filesystem driver
+    /SYSTEM produces ordinary read-only FILE handles through ROMFS
+    namespace/path operations (enumeration, mkdir, unlink, rename) require no DIRECTORY handle
+    old FS_* syscall front end absent
+
+process lifetime:
+    standard /dev/console handles present at process start and inherited
+    exec(path) resolves through VFS, requires FILE, streams it and unbinds it
+    exit force-unbinds leaked handles before releasing xmem/segments/bank
     nested exec, startup-tail transport and CWD inheritance unchanged
 
 ordinary ZEX v2:
@@ -5608,7 +5820,7 @@ xmem:
 
 far code and data:
     map a far-code segment; primary -> far -> primary by plain CALL
-    far code calls primary code; ordinary and filesystem syscalls from far code
+    far code calls primary code; ordinary and FILE syscalls from far code
     buffer in the aperture used as a syscall buffer (buffer identity)
     mappable xmem object read/written directly through the aperture
     no token for banks 6/7 or for another process's objects
@@ -5627,7 +5839,7 @@ lifetime:
 ```
 
 Physical hardware is authoritative for bank switching, the aperture,
-interrupt interaction and service IRQ delivery.
+interrupt interaction and resident-driver IRQ delivery.
 
 ---
 
@@ -5650,10 +5862,10 @@ The existing M7 monitor remains the minimal recovery tool; M11 adds a broader di
 The diagnostic suite follows this order of preference:
 
 ```text
-1. ordinary native service
-2. public device/filesystem behavior
+1. ordinary typed protocol through a bound object
+2. public namespace / FILE behavior
 3. M7 diagnostic syscall
-4. narrowly added diagnostic introspection service
+4. narrowly added read-only diagnostic introspection
 ```
 
 A diagnostic must not link private kernel or driver symbols.
@@ -5726,10 +5938,10 @@ process identity
 memory geometry
 free primary banks
 auxiliary-memory state
-loaded services and endpoints
-the /dev namespace
-mounted filesystems
-console bindings
+loaded resident drivers and endpoints
+root namespace providers and /dev publications
+selected filesystem driver behind /FS
+selected CONSOLE driver and its host-wired dependencies
 ```
 
 ### `memory`
@@ -5760,7 +5972,7 @@ interrupt enable/restore behavior
 
 ### `serial`
 
-Exercises the serial service (`/dev/serial/0`) where practical without replacing the permanent panic/early-console path.
+Exercises the SERIAL object (`/dev/serial/0`) where practical without replacing the permanent panic/early-console path.
 
 ### `video`
 
@@ -5775,7 +5987,7 @@ visual test patterns
 
 ### `hid`
 
-Provides an interactive keyboard/input test and reports translated events through the normal HID/console path.
+Provides an interactive keyboard/input test and reports translated events through the normal INPUT/CONSOLE protocols.
 
 ### `ioc`
 
@@ -5810,13 +6022,13 @@ A destructive raw-media test requires an explicit destructive mode and never run
 
 Exercises the installed sound hardware/driver when present.
 
-Where no native sound service exists yet, a board-level diagnostic may use the explicit diagnostic-I/O boundary rather than turning sound testing into a new kernel subsystem.
+Where no native SOUND driver exists yet, a board-level diagnostic may use the explicit diagnostic-I/O boundary rather than turning sound testing into a new kernel subsystem.
 
 ---
 
 ## 38.5 Read-only diagnostic introspection
 
-M11 may add a read-only diagnostic enumeration service after the existing M7 diagnostic family when concrete tests need information that normal APIs cannot expose safely.
+M11 may add narrow read-only diagnostic introspection after the existing M7 diagnostic family when concrete tests need information that normal APIs cannot expose safely.
 
 Conceptually:
 
@@ -5834,12 +6046,13 @@ with versioned record kinds such as:
 ```text
 memory
 irq source
-device
-module
-mount
+driver
+endpoint
+namespace provider
+namespace publication
 ```
 
-The service copies stable descriptive values.
+The introspection path copies stable descriptive values.
 
 It does not expose:
 
@@ -5854,7 +6067,7 @@ End-of-list is distinct from failure.
 
 No generic "call arbitrary driver operation" diagnostic syscall is introduced.
 
-If a diagnostic cannot be expressed safely through normal services, existing diagnostic primitives or this read-only introspection model, that requirement returns to architecture review.
+If a diagnostic cannot be expressed safely through normal typed protocols, existing diagnostic primitives or this read-only introspection model, that requirement returns to architecture review.
 
 ---
 
@@ -5944,9 +6157,9 @@ Acceptance includes:
 ```text
 system:
     coherent version/process/memory report
-    device enumeration
-    module enumeration
-    mount enumeration
+    resident-driver / endpoint enumeration
+    root namespace-provider enumeration
+    /dev publication enumeration
 
 memory:
     xmem pattern test
@@ -5959,7 +6172,7 @@ irq/ctc:
     exact return state
 
 serial:
-    /dev/serial/0 service path
+    /dev/serial/0 SERIAL protocol path
     bounded failure behavior
 
 video:
@@ -6034,8 +6247,9 @@ It has no private kernel imports.
 It uses only:
 
 ```text
-native console ABI
-native filesystem ABI
+CONSOLE through console.h and the inherited /dev/console handle
+FILE / filesystem namespace operations through fs.h
+VFS bind/call/unbind and namespace enumeration through the SDK
 SYS_EXEC / process ABI
 existing startup-tail contract
 ```
@@ -6068,9 +6282,11 @@ No scheduler is required.
 After normal boot:
 
 ```text
-IRQ/device/VFS initialization
+nucleus + root namespace providers
     ->
-console binding
+resident drivers and host-selected /dev publications
+    ->
+standard handles bound to /dev/console
     ->
 launch /SYSTEM/shell.zex
 ```
@@ -6183,7 +6399,40 @@ This packaging choice is deliberate but does not make the commands kernel servic
 
 ---
 
-## 40.6 External command lookup
+## 40.6 Shell path presentation
+
+The kernel/VFS namespace is explicit:
+
+```text
+/FS/...       normal writable filesystem namespace
+/SYSTEM/...   recovery ROMFS namespace
+/dev/...      device namespace
+```
+
+For interactive UX the shell presents `/FS` as the ordinary filesystem
+root. This is **userland syntax only**; VFS itself never aliases paths.
+
+Rules:
+
+```text
+internal CWD /FS/GAMES        displayed by the shell as /GAMES
+user /GAMES/ZAXXON.ROM        translated by the shell to /FS/GAMES/ZAXXON.ROM
+user /dev/video               kept as /dev/video
+user /SYSTEM/diag.zex         kept as /SYSTEM/diag.zex
+user /FS/dev                  explicitly names the filesystem entry /dev below /FS
+```
+
+`/FS`, `/SYSTEM` and `/dev` are the reserved global-root spellings. Any
+other absolute path entered at the shell is filesystem shorthand and gains
+the `/FS` prefix. Relative paths are resolved against the shell's actual
+VFS CWD.
+
+This presentation rule lets normal filesystem use look conventional without
+making the filesystem own the global root namespace.
+
+---
+
+## 40.7 External command lookup
 
 Commands not recognized as shell built-ins are treated as executable program names.
 
@@ -6191,11 +6440,11 @@ An argument containing `/` is treated as an explicit path.
 
 A bare command name is resolved entirely by shell policy through a bounded shell-local command path.
 
-A suitable initial default is:
+A suitable initial internal default is:
 
 ```text
 .
-/BIN
+/FS/BIN
 /SYSTEM
 ```
 
@@ -6209,7 +6458,7 @@ Changing the shell command path changes only shell state.
 
 ---
 
-## 40.7 Core native userland
+## 40.8 Core native userland
 
 The core native userland is the shell itself.
 
@@ -6264,84 +6513,86 @@ The exact internal organization of built-ins may use separate source modules, bu
 
 ---
 
-## 40.8 Userland filesystem policy
+## 40.9 Userland filesystem policy
 
-Shell built-ins consume only the M9 filesystem ABI.
+Shell built-ins use the M10 typed namespace/object SDK. They do not use the
+retired M9 `FS_*` syscall family.
 
 ### `cp`
 
-Uses ordinary:
+Uses `fs.h` FILE operations with a bounded shell-owned buffer:
 
 ```text
-open
-read
-write
-close/sync
+fs_open      -> bind(path, flags), require FILE
+fs_read      -> FILE protocol call
+fs_write     -> FILE protocol call
+fs_sync      -> FILE protocol call
+fs_close     -> unbind
 ```
 
-with a bounded shell-owned buffer.
+The same API works for `/FS/...` and read-only `/SYSTEM/...` FILE objects.
 
 ### `mv`
 
-First attempts native `rename`.
-
-If the VFS reports:
-
-```text
-ZOS_EXDEV
-```
-
-for a cross-filesystem move, the shell may implement:
+Within one writable filesystem namespace the shell first attempts the
+filesystem protocol's native `rename`. If the source and destination belong
+to different namespace providers, or the filesystem reports `ZOS_EXDEV`,
+the shell may implement:
 
 ```text
 copy
 sync/close
-unlink source
+unlink source through the source filesystem namespace protocol
 ```
 
-with appropriate failure handling.
+with appropriate failure handling. A read-only provider such as `/SYSTEM`
+may of course reject the unlink.
 
-The kernel does not acquire a hidden cross-filesystem rename implementation for the benefit of the shell.
+The nucleus does not acquire a hidden cross-provider move implementation for
+the benefit of the shell.
 
 ### `ls`
 
-Uses:
+Uses generic **namespace enumeration** on the displayed path. There is no
+`opendir`/`readdir`/`closedir` DIRECTORY-handle lifecycle in M10. The owning
+namespace provider decides what hierarchy means and returns batched entries
+with name/container/type metadata.
 
-```text
-opendir
-readdir
-closedir
-stat where required
-```
+### `mkdir`, `rmdir`, `rm`, `stat`
 
-and understands native mountpoints exactly as exposed by VFS.
+Filesystem-specific name mutations and metadata use `fs.h` against the
+owning filesystem namespace provider. They are not generic VFS operations
+and do not require a universal DIRECTORY protocol.
 
 ---
 
-## 40.9 Recovery operation without writable storage
+## 40.10 Recovery operation without writable storage
 
-With the normal writable root unavailable, the user must still receive a useful system:
+With the normal writable filesystem unavailable, the global namespace still
+exists:
 
 ```text
 /
-`-- SYSTEM/
-    |-- shell.zex
-    |-- monitor.zex
-    |-- diag.zex
-    `-- essential recovery assets
+|-- FS/          provider present; backing filesystem may report unavailable media
+|-- SYSTEM/
+|   |-- shell.zex
+|   |-- monitor.zex
+|   |-- diag.zex
+|   `-- essential recovery assets
+`-- dev/
+    `-- objects published by the selected resident drivers
 ```
 
-The shell starts normally.
+The shell starts normally from `/SYSTEM/shell.zex` and may still present
+`/FS` as `/` for interactive filesystem syntax. Read-only commands against
+`/SYSTEM` continue to work. Mutation attempts there report the normal
+read-only error.
 
-Read-only commands continue to work.
-
-Mutation attempts against `/SYSTEM` report the normal `ZOS_EROFS` behavior.
-
-The shell does not treat absence of the writable root as a fatal condition.
+Absence of writable storage is not fatal to the native recovery environment.
 
 ---
 
-## 40.10 Exit-status handling
+## 40.11 Exit-status handling
 
 `SYS_EXEC` returns the child's native exit status to the shell.
 
@@ -6353,7 +6604,7 @@ No POSIX-specific status encoding is implied.
 
 ---
 
-## 40.11 Shell memory rules
+## 40.12 Shell memory rules
 
 The shell is not special with respect to memory.
 
@@ -6373,7 +6624,7 @@ That is an implementation choice, not part of shell command semantics.
 
 ---
 
-## 40.12 M12 non-goals
+## 40.13 M12 non-goals
 
 M12 does not require:
 
@@ -6402,9 +6653,9 @@ Acceptance covers at least:
 ```text
 boot:
     shell launched from /SYSTEM
-    HID/V9958 normal console
-    SIO fallback
-    shell available with no writable root
+    build with V9958+HID CONSOLE driver
+    build with SERIAL-based CONSOLE driver
+    shell available with /FS backing storage unavailable
     monitor fallback when shell is missing/rejected
 
 parser:
@@ -6416,9 +6667,8 @@ parser:
     tail-limit rejection/recovery
 
 built-ins:
-    cd
-    pwd
-    ls
+    cd / pwd with /FS display alias and explicit /SYSTEM,/dev paths
+    ls across VFS root, /FS, /SYSTEM and /dev
     cp
     mv
     rm
@@ -6439,7 +6689,7 @@ execution:
     child exit 0
     child nonzero exit
     malformed executable
-    repeated child execution leaks no process/bank/xmem/fd state
+    repeated child execution leaks no process/bank/xmem/handle state
 
 CWD:
     cd absolute
@@ -6449,8 +6699,8 @@ CWD:
     child chdir does not alter shell CWD
 
 filesystem policy:
-    mv same filesystem
-    mv cross-filesystem through copy/sync/unlink
+    mv within /FS through native rename
+    mv across namespace providers through copy/sync/unlink where legal
     writes to /SYSTEM fail cleanly with EROFS
 
 native tools:
@@ -6468,7 +6718,7 @@ budget:
     recovery ROMFS fits
 ```
 
-Physical acceptance includes a complete interactive session on the HID/V9958 console and the SIO fallback console.
+Physical acceptance includes a complete interactive session with the V9958+HID CONSOLE-driver build and with the SERIAL-based CONSOLE-driver build.
 
 ---
 
@@ -6482,13 +6732,13 @@ At that point the system has:
 boot/recovery
 memory ownership
 interrupt executive
-dynamic drivers
-native device model
-native console
+host-assembled resident drivers and typed protocol endpoints
+VFS root with static FS / ROMFS / DEVICE namespace providers
+typed bind/call/unbind object model
+native CONSOLE / VIDEO / INPUT / SERIAL / IOC / optional SOUND protocols
 process lifecycle
-native executable format
-hierarchical VFS
-writable filesystem
+ZEX v2 native executable format
+/FS writable filesystem namespace and /SYSTEM recovery namespace
 extended/far memory
 far code/data
 complete diagnostics
@@ -6533,9 +6783,11 @@ The accepted:
 
 ```text
 native syscall ABI
+VFS namespace + bind/call/unbind ABI
+8-bit protocol-type assignments and protocol frame ABIs
 ZEX v2 format
-driver/module ABI
-filesystem ABI
+resident-driver image/bootstrap contract
+FILE/filesystem-namespace ABI
 process-startup ABI
 extended-memory ABI
 ```
