@@ -2,14 +2,14 @@ name: ChatGPT architecture transport
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
-  apply-architecture:
-    if: github.event.head_commit.message == 'TEMP: stage architecture rewrite'
+  apply:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
