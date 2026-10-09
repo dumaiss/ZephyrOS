@@ -251,6 +251,21 @@
       "object": "ioc_shim",
       "tier": "cold",
       "reason": "IOC class publication for a bank-7 module (kernel/module/ioc_shim.c): it runs in the loader's own phase and is reached from a module's class query, so it lives beside the loader in the cold half and disappears with the IOC-FAT module in package 42"
+    },
+    {
+      "object": "vfs_ns",
+      "tier": "cold",
+      "reason": "M10 stage 6 VFS root router and static namespace providers (kernel/vfs/ns.c, architecture 36.13): the router, the DEVICE provider over the host-built publication table and the in-process ROMFS FILE endpoint are reached only through the syscall dispatcher, which the gate runs with P = 0, so they belong beside `fs` in the cold half.  Linked by the namespace-selftest acceptance image now (test_link, in the cold set through the image's --cold-extra, the placement production will use); production adopts it in package 42b, when the M9 FS front end, the M9 VFS machinery and the IOC-FAT arena leave bank 7."
+    },
+    {
+      "object": "vfs_ns_file",
+      "tier": "cold",
+      "reason": "M10 stage 6 ROMFS FILE provider (kernel/vfs/ns_file.c, architecture 36.13): the bind/read/seek/metadata operations of a `/SYSTEM` FILE handle, served in-process through the same handle-call path as a bank-6 endpoint.  Cold half for the same reason as vfs_ns; test-linked by the namespace-selftest acceptance image until package 42b."
+    },
+    {
+      "object": "object",
+      "tier": "cold",
+      "reason": "M10 stage 6 object and namespace syscall bodies (kernel/syscall/object.c, architecture 36.7/36.14): bind, call-on-a-handle, unbind and ns_enum, reached only through the syscall dispatcher (P = 0), beside the M9 `fs` front end they replace in 42b.  Test-linked by the namespace-selftest acceptance image until then."
     }
   ],
   "cold_half": [
@@ -273,6 +288,10 @@
     "vfs_dir"
   ],
   "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): every cold object, the two IPC cold bodies (the syscall IPC dispatcher and the resident service loader), the IOC class shim the loader publishes to bank-7 modules, and the service-destined VFS objects that fit beside them.  Package 41 moved the drivers out of the arena, so the freed cold space holds what used to overflow into the fixed core, which then holds the substrate; tools/mapcheck.py fails the build when the linked cold code or data overruns the derived bases.  The fixed ledger reports what still overflows.",
-  "test_link": [],
-  "test_link_note": "Empty from package 41 on: production links the IPC substrate (kernel/ipc), the syscall IPC bodies and the resident service loader, so every classified object is a production object again.  The tier classification is the whole rule; the acceptance images add their own test-linked objects, which mapcheck.py reports as fixed-core overflow unless the image places them in the cold half with --cold-extra."
+  "test_link": [
+    "vfs_ns",
+    "vfs_ns_file",
+    "object"
+  ],
+  "test_link_note": "Package 42a (correction 01): the namespace and typed-handle family is classified in the tier production will link it in, but only the namespace-selftest acceptance image links it until package 42b switches production over (the M9 FS front end, the M9 VFS machinery and the IOC-FAT arena have to leave bank 7 first).  Production itself is untouched and reproduces its own image hash.  The acceptance images add their own test-linked objects, which mapcheck.py reports as fixed-core overflow unless the image places them in the cold half with --cold-extra."
 }

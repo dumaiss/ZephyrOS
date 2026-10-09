@@ -8,7 +8,11 @@ adds the M2 interrupt-delivery contract, and section 8 adds the M6
 native syscall set; section 10 is the M9 native filesystem family
 (`SYS_FS_*`, `10h-1Fh`) together with the M9 error values it introduces,
 and section 11 is the M9 `SYS_EXEC` with the startup block v1 argument
-contract.  M9's end-to-end acceptance (the `m9-selftest` image and the
+contract; section 12 is the M10 resident-service IPC pair, and section
+12.1 the M10 object and namespace family that replaces it - the
+`namespace-selftest` acceptance image builds that family now (work
+package 42a) and production switches over in 42b.
+M9's end-to-end acceptance (the `m9-selftest` image and the
 full matrix) is recorded in
 [`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md).
 
@@ -625,7 +629,93 @@ layouts and the service I/O area rule.  The production image links none of
 it before package 41, so it stayed byte-identical until then
 (`config/residency.json` classified the objects as `test_link`).
 
+## 12.1 M10 objects and the namespace (package 42a)
+
+The stage-3 lookup disappears with the milestone's typed-namespace model
+(architecture 36.13/36.14): a program names what it wants, `bind` returns
+a *typed handle*, and endpoint numbers stay private to the nucleus.  The
+family is pinned in `abi/zos/object.h` (every offset static-asserted):
+
+```text
+06h  SYS_BIND     args {path:u16, length:u16, flags:u16,
+                         type:u8 out, reserved:u8 out}
+                  -> HL = handle (>= 3) with the 8-bit protocol type
+                     written to `type`; negative -ZOS_E* on refusal
+07h  SYS_CALL     args {handle:u8, op:u8, flags:u8, frame_length:u8,
+                         buffer:u16, length:u16, direction:u8,
+                         reserved:u8, frame:32, status:i16}
+                  -> HL = the protocol status (the same value as `status`)
+08h  SYS_UNBIND   args {handle:u8}
+                  -> HL = 0, or -ZOS_EINVAL for a handle the caller
+                     does not own, a standard handle or an unbound number
+09h  SYS_NS_ENUM  args {path:u16, length:u16, cookie:u16 in/out, out:u16,
+                         out_size:u16, count:u16 out}
+                  -> HL = entries written; `cookie` is the next start index
+```
+
+`07h` is the stage-3 call block, unchanged: the frame, the descriptor
+conventions, the copy paths and the nesting rules of section 12 above
+apply to a handle exactly as they did to a looked-up endpoint.  What
+changes is only what a handle *is*: one global, owner-tagged table (the
+extended M9 descriptor pool, `VFS_FD_MAX` entries), where each entry
+records the owner PID, the 8-bit protocol type, the endpoint (a bank-6
+service endpoint or a nucleus one) and the provider's own object identity.
+`bind` never returns `ZOS_HANDLE_STDOUT` (1) or `ZOS_HANDLE_STDIN` (2);
+those two are the *standard handles*, bound at process start to the
+`/dev/console` publication when the build has one, and re-created for a
+child by `SYS_EXEC`, which inherits no bound handle.  Process exit unbinds
+every handle the process owns.
+
+Paths are resolved by the root router: `bind`/`ns_enum` normalize the
+caller's path (`vfs_path_normalize_at`, relative to the process CWD) and
+route the first component, case-insensitively, to one of the three static
+nucleus providers - `/FS` (the filesystem driver; `bind` below it returns
+`-ZOS_ENODEV` until package 42b), `/SYSTEM` (ROMFS, usable before any
+driver) and `/dev` (the host-built publication table).  A provider owns
+everything below its root and the VFS does not interpret it.  `/` is a
+directory of those three roots, not a provider: a root-level name has no
+owner and is refused with `-ZOS_ENOENT`.  There is no mount table, no
+provider registration and no root merge.
+
+`ns_enum` returns `ZOS_NS_ENTRY_SIZE` (28) bytes per entry - `type`,
+`flags`, `name_length`, `reserved` and a NUL-terminated, zero-padded
+24-byte `name` - starting at the index in `cookie`; the cookie is written
+back so a caller pages with one entry at a time, and the container flag
+`ZOS_NS_ENTRY_CONTAINER` marks a name that is a grouping level, not a
+bindable object (`/dev/input`, `/dev/serial`).
+
+A ROMFS bind returns the type `ZOS_TYPE_FILE` and an in-process FILE
+handle served by a nucleus endpoint through the same call path as a bank-6
+endpoint, with the one ROMFS reader (`ZFILE_OP_READ`, `ZFILE_OP_SEEK`,
+`ZFILE_OP_META`; `ZFILE_OP_WRITE` is `-ZOS_EROFS`).  `/dev` names come from
+the publications the packer resolves into each service container and the
+loader installs (docs/devices.md, docs/module-format.md).
+
+**Build selection.**  `abi/zos/object.h` defaults `ZOS_NS_HANDLES` to 0:
+production keeps `SYS_IPC_LOOKUP`/`SYS_IPC_CALL` on 06h/07h, links none of
+the namespace objects, and is byte-for-byte the stage-3 image.  The macro
+is 1 in the `namespace-selftest` acceptance image (`make ns-selftest`,
+work package 42a correction 01), where `kernel/syscall.c` routes 06h-09h
+to the object dispatcher, the SDK is built with the bind/unbind/ns_enum
+wrappers and the standard handles, and the M9 `FS_*` front end still
+serves `/SYSTEM` for the legacy path.  Package 42b turns the default over
+and deletes the M9 machinery in the same step, when the arena, the `fs`
+front end and the M9 VFS objects leave bank 7 (the measurement is in
+[`docs/validation/2026-10-09-m10-namespace-handles.md`](./validation/2026-10-09-m10-namespace-handles.md)).
+
+Validation: the `namespace-selftest` image boots SIO, the console service
+and a synthetic publisher whose manifest declares `/dev/input/keyboard`
+and `/dev/video`, then an ordinary SDK client (`/SYSTEM/ns.zex`) that
+binds `/dev` objects and their grouping names, calls the publisher through
+the handle, reads and seeks `/SYSTEM/services.man`, exhausts and releases
+the handle table, pages the three namespaces and `SYS_EXEC`s a child that
+proves the inherited standard handles.  `tests/test_ns_selftest.py` pins
+the ABI, the container publication tables and the residency
+classification; `tests/test_ns_selftest_sim.py` replays the boot and
+compares the transcript with the packed store.
+
 ## 13. M10 console client (no syscall)
+
 
 A program's console I/O is not a syscall any more: `user/sdk/src/console_service.c`
 resolves the console service endpoint (`ZOS_CLASS_CONSOLE`, instance 0,
@@ -643,3 +733,11 @@ console service sees `-ZOS_ENOENT` from every one of them.  `zos_puts`,
 `zos_console_write`, `zos_getc` and `zos_read_line` are unchanged on top
 of these four.  The early console and the panic path remain nucleus-only
 and syscall-free: a boot with no service at all still reports.
+
+In the build that defines `ZOS_NS_HANDLES` (the `namespace-selftest`
+image, section 12.1) the four functions speak through the *standard
+handles* instead: the nucleus binds `/dev/console` to handle 1 (stdout) and
+handle 2 (stdin) at process start, an exec'd child receives its own pair,
+and the console client needs no lookup at all - the build selection is
+`user/sdk/src/console_service.c`, whose lookup half is guarded the same
+way the kernel's is.  Production keeps the lookup path until package 42b.

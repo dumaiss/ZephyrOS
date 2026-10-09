@@ -365,11 +365,13 @@ class TestSdkBoundary(unittest.TestCase):
         programs = _declared_programs()
         # `ipc` and `ipccopy` are the resident-service acceptance client
         # and its caller-buffer probe: declared by the same generic rule,
-        # but only the ZOS_IPC_SELFTEST configuration builds them.
+        # but only the ZOS_IPC_SELFTEST configuration builds them.  `ns`
+        # and `nschild` are the namespace acceptance client and the child
+        # it execs, built by ZOS_NS_SELFTEST.
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["fschild", "fsdeep", "fsfat", "fsraw", "fstest",
                           "fstest_l", "hello", "ipc", "ipccopy", "monitor",
-                          "zextest"])
+                          "ns", "nschild", "zextest"])
         for name, directory, _sources, _options in programs:
             count = sum(_read(path).count("zex_program,%s," % name)
                         for path in ("Makefile",

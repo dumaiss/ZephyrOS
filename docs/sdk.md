@@ -103,8 +103,8 @@ manifest from the link map, packs and validates
 | `SCRATCH=SYM:SIZE` | `zos_scratch:16` | scratch symbol the packer must find in `0100h-1FFFh`; `SCRATCH=` declares none |
 | `ENTRY=SYM` | `zos_entry` | entry symbol (crt0's entry) |
 | `NO_CRT0=1` | off | link no crt0; `ENTRY` names the program's own entry (the fixed SDK low-data/runtime object remains) |
-| `LOWBASE=ADDR` | `0x0100` | base of the SDK's fixed 68-byte gate-visible data area |
-| `CODEBASE=ADDR` | `0x0144` | base of executable code, immediately after the ordinary low-data area |
+| `LOWBASE=ADDR` | `0x0100` | base of the SDK's fixed gate-visible data area (68 bytes; 89 in the `ZOS_NS_HANDLES` variant) |
+| `CODEBASE=ADDR` | `0x0144` | base of executable code, immediately after the ordinary low-data area (`0x0159` in the `ZOS_NS_HANDLES` variant) |
 | `STAGE=1` | off | copy the packed program into `$(MODULES)` so a recovery manifest can name it |
 | `INCLUDES=a:b` | empty | extra include roots (colon separated), for test-owned headers only |
 
@@ -352,10 +352,36 @@ owns them beside `zos_scratch` in one fixed 68-byte `_ZOS_SDK_DATA` area;
 ordinary program BSS may grow beyond `2000h` without moving a gate-visible
 block.  `docs/abi.md` section 12 states the ABI rule.
 
+When the build defines `ZOS_NS_HANDLES` (the `namespace-selftest`
+acceptance image, `docs/abi.md` section 12.1) the same header adds the
+typed-namespace client, which replaces the lookup pair in package 42b:
+
+```c
+int zos_ipc_bind(const char *path, unsigned int flags,
+		 unsigned char *type);           /* bind, type out      */
+int zos_ipc_unbind(unsigned char handle);        /* release early       */
+int zos_ns_enum(const char *path, unsigned int *cookie,
+		struct zos_ns_entry *out, unsigned int max_entries);
+```
+
+`zos_ipc_call` is unchanged: the handle it names is now the *object
+handle* `bind` returned rather than a looked-up endpoint, and endpoint
+numbers never reach a program.  The two standard handles
+(`ZOS_HANDLE_STDOUT` 1, `ZOS_HANDLE_STDIN` 2) exist before the first
+`bind`, so the console client of that build writes through handle 1 with
+no lookup at all (`console_service.c` is guarded the same way), and a
+child started with `zos_exec` receives its own pair and none of the
+parent's bound handles.  The bind/unbind/ns_enum argument blocks live in
+`nsgate.asm` (8 + 1 + 12 bytes), which the archive carries as its own
+member and no other build links, so that variant's fixed low area is 89
+bytes and its default code base moves to `0x0159` (`zex.mk`
+`ZEX_SDK_LOW_SIZE`, `ZEX_DEFAULT_CODEBASE`).
+
 ## 7. Memory layout
 
 ```text
-0100h-0143h           fixed SDK low data (`_ZOS_SDK_DATA`, 68 bytes)
+0100h-0143h           fixed SDK low data (`_ZOS_SDK_DATA`, 68 bytes;
+                      89 bytes and shifted code in the ZOS_NS_HANDLES variant)
 0144h                 crt0 (zos_entry) - the ordinary entry offset is 44h
 0100h + image_size    end of the linked image (s__DATA), start of BSS
                       crt0's tail pointer, its 127-byte tail copy and its
@@ -396,6 +422,8 @@ still undefined.  The observed pulls (from the link maps) are:
 | `zex_getinfo`, `zex_exit` | `zos_gate` | exit/getinfo gate stubs, one object |
 | `zos_putc`, `zos_puts`, `zos_getc`, `zos_read_line` | `console_io` | built on the console client |
 | `zos_open`, `zos_read`, ... | `fs` + `fsgate` | the C wrappers and the gate stub |
+| `zos_ipc_lookup`, `zos_ipc_call` | `ipc` + `ipcgate` | the resident-service client and its gate stub |
+| `zos_ipc_bind`, `zos_ipc_unbind`, `zos_ns_enum` | `ipc` + `ipcgate` + `nsgate` | the `ZOS_NS_HANDLES` variant: the three object/namespace blocks (`nsgate` is a member only that variant links; the runtime's stage-3 blocks stay in `runtime`) |
 | `zos_exec` | `exec` + `fsgate` | shares the FS argument block and gate |
 | `zex_diag_*` | `zos_diaggate` | the diagnostic gate stubs |
 | `zos_printf` | `printf`, `strlen`, and the `*oa` formatters it needs (`utoa`, `ultoa`, `itoa`, `ltoa`) | `printf` is the largest member; a program that only needs a greeting can use `zos_puts` and link none of it |

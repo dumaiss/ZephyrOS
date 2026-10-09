@@ -20,6 +20,9 @@
  */
 
 #include "kernel/vfs/vfs.h"
+#if ZOS_NS_HANDLES
+#include "kernel/vfs/ns.h"
+#endif
 #include "zephyros/process.h"
 
 struct vfs_descriptor vfs_descriptors[VFS_FD_MAX];
@@ -47,6 +50,12 @@ void vfs_fs_state_init(void)
 	for (i = 0; i < VFS_FD_MAX; ++i) {
 		vfs_descriptors[i].owner = VFS_FD_NONE;
 		vfs_descriptors[i].type = VFS_DESC_FREE;
+#if ZOS_NS_HANDLES
+		vfs_descriptors[i].number = 0;
+		vfs_descriptors[i].endpoint = 0;
+		vfs_descriptors[i].object = 0;
+		vfs_descriptors[i].flags = 0;
+#endif
 		vfs_descriptors[i].u.file.mount = (struct vfs_mount_runtime *)0;
 		vfs_descriptors[i].u.file.handle = (void *)0;
 		vfs_descriptors[i].u.file.size = 0;
@@ -81,6 +90,10 @@ int vfs_fd_open(uint8_t pid, uint8_t type, const char *path, uint16_t flags)
 	}
 	vfs_descriptors[fd].owner = pid;
 	vfs_descriptors[fd].type = type;
+#if ZOS_NS_HANDLES
+	/* An M9 descriptor, not a bound handle. */
+	vfs_descriptors[fd].endpoint = 0u;
+#endif
 	return (int)fd;
 }
 
@@ -103,6 +116,10 @@ int vfs_fd_opendir(uint8_t pid, const char *path)
 	}
 	vfs_descriptors[fd].owner = pid;
 	vfs_descriptors[fd].type = VFS_DESC_DIRECTORY;
+#if ZOS_NS_HANDLES
+	/* An M9 descriptor, not a bound handle. */
+	vfs_descriptors[fd].endpoint = 0u;
+#endif
 	return (int)fd;
 }
 
@@ -114,12 +131,103 @@ struct vfs_descriptor *vfs_fd_check(uint8_t fd, uint8_t type, uint8_t pid)
 		return (struct vfs_descriptor *)0;
 	}
 	desc = &vfs_descriptors[fd];
+#if ZOS_NS_HANDLES
+	/* A bound object handle (nonzero endpoint) is never an M9
+	 * descriptor, whatever its protocol-type number: the two families
+	 * share one pool but stay disjoint. */
+	if (desc->owner == VFS_FD_NONE || desc->endpoint != 0u ||
+	    desc->type != type || desc->owner != pid) {
+		return (struct vfs_descriptor *)0;
+	}
+#else
 	if (desc->owner == VFS_FD_NONE || desc->type != type ||
 	    desc->owner != pid) {
 		return (struct vfs_descriptor *)0;
 	}
+#endif
 	return desc;
 }
+
+#if ZOS_NS_HANDLES
+/* --- the object handle table (package 42a) ---------------------------- */
+
+static void vfs_handle_clear(struct vfs_descriptor *desc)
+{
+	desc->owner = VFS_FD_NONE;
+	desc->type = VFS_DESC_FREE;
+	desc->number = 0;
+	desc->endpoint = 0;
+	desc->object = 0;
+	desc->flags = 0;
+}
+
+struct vfs_descriptor *vfs_handle_alloc(uint8_t pid, uint8_t first)
+{
+	struct vfs_descriptor *desc;
+	uint8_t slot;
+	uint8_t number;
+	uint8_t i;
+
+	for (slot = 0; slot < VFS_FD_MAX; ++slot) {
+		if (vfs_descriptors[slot].owner == VFS_FD_NONE) {
+			break;
+		}
+	}
+	if (slot >= VFS_FD_MAX) {
+		return (struct vfs_descriptor *)0;
+	}
+	/* The lowest handle number this process does not already name. */
+	for (number = first; number != 0u; ++number) {
+		uint8_t taken = 0u;
+
+		for (i = 0; i < VFS_FD_MAX; ++i) {
+			if (vfs_descriptors[i].owner == pid &&
+			    vfs_descriptors[i].endpoint != 0u &&
+			    vfs_descriptors[i].number == number) {
+				taken = 1u;
+				break;
+			}
+		}
+		if (!taken) {
+			break;
+		}
+	}
+	if (number == 0u) {
+		return (struct vfs_descriptor *)0;
+	}
+	desc = &vfs_descriptors[slot];
+	vfs_handle_clear(desc);
+	desc->owner = pid;
+	desc->number = number;
+	return desc;
+}
+
+struct vfs_descriptor *vfs_handle_find(uint8_t pid, uint8_t number)
+{
+	uint8_t i;
+
+	if (number == 0u || pid == VFS_FD_NONE) {
+		return (struct vfs_descriptor *)0;
+	}
+	for (i = 0; i < VFS_FD_MAX; ++i) {
+		struct vfs_descriptor *desc = &vfs_descriptors[i];
+
+		if (desc->owner == pid && desc->endpoint != 0u &&
+		    desc->number == number) {
+			return desc;
+		}
+	}
+	return (struct vfs_descriptor *)0;
+}
+
+void vfs_handle_release(struct vfs_descriptor *desc)
+{
+	if (desc != (struct vfs_descriptor *)0 &&
+	    desc->owner != VFS_FD_NONE) {
+		vfs_handle_clear(desc);
+	}
+}
+#endif
 
 int vfs_fd_close(uint8_t fd)
 {
@@ -133,6 +241,14 @@ int vfs_fd_close(uint8_t fd)
 	if (desc->owner == VFS_FD_NONE) {
 		return -ZOS_EINVAL;
 	}
+#if ZOS_NS_HANDLES
+	if (desc->endpoint != 0u) {
+		/* A bound object handle: release the instance (exit unbinds
+		 * every handle the process owns, architecture 36.13). */
+		vfs_handle_release(desc);
+		return 0;
+	}
+#endif
 	if (desc->type == VFS_DESC_FILE) {
 		result = vfs_close(&desc->u.file);
 	} else if (desc->type == VFS_DESC_DIRECTORY) {
@@ -148,6 +264,9 @@ int vfs_fd_close(uint8_t fd)
 int vfs_fd_closedir(uint8_t fd)
 {
 	if (fd >= VFS_FD_MAX ||
+#if ZOS_NS_HANDLES
+	    vfs_descriptors[fd].endpoint != 0u ||
+#endif
 	    vfs_descriptors[fd].type != VFS_DESC_DIRECTORY) {
 		return -ZOS_EINVAL;
 	}
@@ -218,6 +337,13 @@ int vfs_process_start(uint8_t pid, uint8_t parent_pid)
 		return slot;
 	}
 	vfs_path_copy(vfs_cwd_path[slot], vfs_cwd_for(parent_pid));
+#if ZOS_NS_HANDLES
+	/* Every process starts with its own console input/output handles
+	 * (architecture 36.13, package 42a): they are new entries for the
+	 * child, not the parent's, and absent when the build publishes no
+	 * `/dev/console` - not a start failure. */
+	(void)vfs_ns_standard_handles(pid);
+#endif
 	return 0;
 }
 

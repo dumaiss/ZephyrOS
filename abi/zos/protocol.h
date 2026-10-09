@@ -15,6 +15,11 @@
  *   IOC       class 5, instance 0: the command/reply lane, the bulk
  *                                  lanes and the semantic status word
  *
+ * Package 42a adds the FILE protocol (type ZOS_TYPE_FILE) that the
+ * namespace providers bind: the ROMFS provider serves reads, seeks and
+ * metadata for `/SYSTEM` files, and package 42b routes `/FS` files to
+ * IOC-FAT through the same operation numbers.
+ *
  * Every service carries protocol version ZOS_PROTOCOL_VERSION (the
  * endpoint's registered version, returned by SYS_IPC_LOOKUP).  Classes
  * keep the numeric slots the M8 device contracts pinned (ZDEV_SERIAL,
@@ -248,5 +253,31 @@
 /* The largest request DATA one ZIOC_OP_COMMAND carries inline (the
  * frame's 24-byte payload). */
 #define ZIOC_PROTOCOL_REQUEST_MAX 24u
+
+/* --- FILE protocol (type ZOS_TYPE_FILE) ---------------------------------
+ *
+ * The filesystem object protocol (architecture 36.14, the file language):
+ * `bind(path, flags)` yields a FILE handle and the operations below act on
+ * the bound instance.  Package 42a serves `/SYSTEM` files from the static
+ * ROMFS provider; package 42b serves `/FS` files through IOC-FAT with the
+ * same operation numbers.
+ *
+ *   ZFILE_OP_READ (0)  desc OUT: arg0 = offset inside the caller buffer,
+ *                      arg1 = length.  Returns the bytes transferred
+ *                      (0 at end of file).
+ *   ZFILE_OP_WRITE (1) desc IN: arg0 = offset, arg1 = length.  Returns
+ *                      the bytes written; a read-only provider answers
+ *                      ZOS_EROFS.
+ *   ZFILE_OP_SEEK (2)  arg0 = ZFS_SEEK_SET/CUR/END and payload[0..3] = a
+ *                      little-endian signed 32-bit offset; the reply
+ *                      carries the new position as payload[0..3] and the
+ *                      status is 0.
+ *   ZFILE_OP_META (3)  no descriptor; the reply payload holds a packed
+ *                      `struct zfs_stat` (16 bytes, abi/zos/fs.h).
+ */
+#define ZFILE_OP_READ  0u
+#define ZFILE_OP_WRITE 1u
+#define ZFILE_OP_SEEK  2u
+#define ZFILE_OP_META  3u
 
 #endif /* ZOS_PROTOCOL_H */

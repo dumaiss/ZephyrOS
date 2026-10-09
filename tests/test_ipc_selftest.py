@@ -220,9 +220,11 @@ class TestIpcResidency(unittest.TestCase):
         self.assertEqual(tiers["ipc_syscall"], "cold")
         self.assertEqual(tiers["service_loader"], "cold")
         self.assertEqual(tiers["service_boot"], "fixed-required")
-        # Package 41 linked them into production, so the test-link list is
-        # empty and the cold half carries the two bodies.
-        self.assertEqual(list(test_link), [])
+        # Package 41 linked them into production, so the substrate itself
+        # is not test-linked; package 42a's namespace objects are (they
+        # stay out of production until 42b).
+        self.assertEqual(sorted(test_link),
+                         ["object", "vfs_ns", "vfs_ns_file"])
         for name in ("ipc_syscall", "service_loader"):
             self.assertIn(name, cold_half)
         self.assertEqual(tiers["ioc_shim"], "cold")

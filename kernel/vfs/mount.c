@@ -20,6 +20,9 @@
  */
 
 #include "kernel/vfs/vfs.h"
+#if ZOS_NS_HANDLES
+#include "kernel/vfs/ns.h"
+#endif
 #include "kernel/lib/name.h"
 #include "zephyros/kernel.h"
 #include "zephyros/process.h"
@@ -377,6 +380,16 @@ int vfs_init(void)
 	vfs_provider_current_owner = (const void *)0;
 	vfs_mount_state_reset();
 	vfs_fs_state_init();
+#if ZOS_NS_HANDLES
+	/* The namespace provider tables start empty (the loader installs the
+	 * host-built publications later) and the in-process FILE endpoint
+	 * joins the nucleus endpoint table. */
+	vfs_ns_reset();
+	result = vfs_ns_init();
+	if (result != 0) {
+		return result;
+	}
+#endif
 
 	if (vfs_mount_count > VFS_MAX_MOUNTS) {
 		panic("vfs: mount table overflow");

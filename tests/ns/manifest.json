@@ -1,0 +1,35 @@
+{
+  "format": "romfs-v1",
+  "files": [
+    {
+      "name": "sio.zmod",
+      "type": "ZMOD",
+      "path": "sio.zmod"
+    },
+    {
+      "name": "console.zmod",
+      "type": "ZMOD",
+      "path": "console.zmod"
+    },
+    {
+      "name": "nsdev.zmod",
+      "type": "ZMOD",
+      "path": "nsdev.zmod"
+    },
+    {
+      "name": "services.man",
+      "type": "DATA",
+      "path": "services.man"
+    },
+    {
+      "name": "ns.zex",
+      "type": "ZEX",
+      "path": "ns.zex"
+    },
+    {
+      "name": "nschild.zex",
+      "type": "ZEX",
+      "path": "nschild.zex"
+    }
+  ]
+}

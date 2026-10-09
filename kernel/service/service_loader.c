@@ -44,6 +44,9 @@
 #include "kernel/ipc/ipc.h"
 #include "kernel/memory/upcall.h"
 #include "kernel/syscall/diag.h"
+#if ZOS_NS_HANDLES
+#include "kernel/vfs/ns.h"
+#endif
 
 /* The plan and ledger lines are acceptance evidence the replay pins
  * against the packer's report; production links only the error lines
@@ -120,6 +123,10 @@ struct service_layout {
 	uint8_t endpoint_count;
 	uint8_t dependency_count;
 	uint8_t hot_index;
+#if ZOS_NS_HANDLES
+	uint16_t publication_offset;
+	uint8_t publication_count;
+#endif
 	struct service_segment_info segment[ZMOD_SERVICE_MAX_SEGMENTS];
 	struct service_endpoint_info endpoint[ZMOD_SERVICE_MAX_ENDPOINTS];
 };
@@ -270,7 +277,15 @@ static int service_read_layout(const struct zmod_source *source,
 		return ZMOD_EINVAL;
 	}
 	if (header[4] != ZMOD_FORMAT_VERSION ||
-	    header[6] != ZMOD_SERVICE_ABI_VERSION) {
+#if ZOS_NS_HANDLES
+	    /* ABI 4 carries the publication table (package 42a); this build
+	     * installs it into the DEVICE provider's table below. */
+	    (header[6] != ZMOD_SERVICE_ABI_VERSION &&
+	     header[6] != ZMOD_SERVICE_ABI_PUBLICATIONS)
+#else
+	    header[6] != ZMOD_SERVICE_ABI_VERSION
+#endif
+	    ) {
 		return ZMOD_ENOTSUP;
 	}
 	if (header[5] != ZMOD_TYPE_SERVICE ||
@@ -300,13 +315,26 @@ static int service_read_layout(const struct zmod_source *source,
 	layout->segment_count = section[0x08];
 	layout->endpoint_count = section[0x09];
 	layout->dependency_count = section[0x0A];
+#if ZOS_NS_HANDLES
+	layout->publication_count = (header[6] ==
+				     ZMOD_SERVICE_ABI_PUBLICATIONS)
+		? section[0x0B] : 0u;
+#endif
 	layout->segment_offset = service_le16(section + 0x02);
 	layout->endpoint_offset = service_le16(section + 0x04);
 	layout->dependency_offset = service_le16(section + 0x06);
+#if ZOS_NS_HANDLES
+	layout->publication_offset = (layout->publication_count != 0u)
+		? service_le16(section + 0x0C) : 0u;
+#endif
 	if (layout->segment_count == 0u ||
 	    layout->segment_count > ZMOD_SERVICE_MAX_SEGMENTS ||
 	    layout->endpoint_count > ZMOD_SERVICE_MAX_ENDPOINTS ||
-	    layout->dependency_count > ZMOD_SERVICE_MAX_DEPENDENCIES) {
+	    layout->dependency_count > ZMOD_SERVICE_MAX_DEPENDENCIES
+#if ZOS_NS_HANDLES
+	    || layout->publication_count > ZMOD_SERVICE_MAX_PUBLICATIONS
+#endif
+	    ) {
 		return ZMOD_EFORMAT;
 	}
 	/* Every table sits inside the container, below the payload. */
@@ -323,6 +351,14 @@ static int service_read_layout(const struct zmod_source *source,
 	    layout->payload_offset) {
 		return ZMOD_EFORMAT;
 	}
+#if ZOS_NS_HANDLES
+	if (service_table_end(layout->publication_offset,
+			      ZMOD_SERVICE_PUBLICATION_SIZE,
+			      layout->publication_count) >
+	    layout->payload_offset) {
+		return ZMOD_EFORMAT;
+	}
+#endif
 
 	layout->hot_index = 0xFFu;
 	for (index = 0u; index < layout->segment_count; ++index) {
@@ -515,6 +551,61 @@ static int service_install_endpoints(const struct service_layout *layout,
 	}
 	return ZMOD_OK;
 }
+
+#if ZOS_NS_HANDLES
+/* Install the image's host-built publications into the DEVICE provider's
+ * table (architecture 36.13, work package 42a).  The packer resolved the
+ * serving endpoint number; the loader checks the record against the table
+ * that is actually installed - the name shape, the protocol type and that
+ * the endpoint is one this build has - and the provider refuses anything
+ * that would overflow or collide. */
+static int service_install_publications(const struct zmod_source *source,
+					const struct service_layout *layout)
+{
+	uint8_t index;
+
+	for (index = 0u; index < layout->publication_count; ++index) {
+		uint8_t record[ZMOD_SERVICE_PUBLICATION_SIZE];
+		uint8_t length;
+		uint8_t number;
+
+		if (service_read(source,
+				 (uint16_t)(ZMOD_SERVICE_SECTION_OFFSET +
+					    layout->publication_offset +
+					    ZMOD_SERVICE_PUBLICATION_SIZE *
+					    index),
+				 record, ZMOD_SERVICE_PUBLICATION_SIZE) !=
+		    ZMOD_OK) {
+			return ZMOD_EFORMAT;
+		}
+		length = 0u;
+		while (length < (uint8_t)sizeof(((struct
+						  zmod_service_publication *)
+						 0)->name) &&
+		       record[length] != '\0') {
+			++length;
+		}
+		if (length == 0u ||
+		    length >= (uint8_t)sizeof(((struct
+						zmod_service_publication *)
+					       0)->name) ||
+		    record[0] != '/' || record[0x10] == 0u) {
+			return ZMOD_EFORMAT;
+		}
+		number = record[0x11];
+		if (number == 0u) {
+			return ZMOD_EFORMAT;
+		}
+		if (vfs_ns_install_publication((const char *)record,
+					       record[0x10], number,
+					       record[0x12]) < 0) {
+			return ZMOD_EFORMAT;
+		}
+	}
+	return ZMOD_OK;
+}
+
+#endif
 
 /* Install the image's resolved dependency numbers into the fixed-core
  * array the boot bundle names.  The host resolved each number against an
@@ -772,6 +863,14 @@ int service_load_all(const char *manifest_name)
 		if (result != ZMOD_OK) {
 			return result;
 		}
+#if ZOS_NS_HANDLES
+		result = service_install_publications(&source,
+						      &service_layout);
+		if (result != ZMOD_OK) {
+			service_fail(service_name, "publication refused");
+			return result;
+		}
+#endif
 		result = service_read_dependencies(&source, &service_layout,
 						   number_high);
 		if (result != ZMOD_OK) {

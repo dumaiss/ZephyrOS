@@ -122,6 +122,9 @@ END_OBJ   := $(BUILD)/irq_code_end.rel
 # at 2000h-5FFFh).  ZOS_IPC_SELFTEST builds the IPC acceptance image that
 # links the fixed-core substrate of work package 39.
 ZOS_IPC_SELFTEST    ?= 0
+# The namespace acceptance image (work package 42a, correction 01) links
+# the object/namespace family the production switch-over adopts in 42b.
+ZOS_NS_SELFTEST     ?= 0
 # The revision-13 mode-11 window is 6000h-DFFFh (architecture section
 # 36.2); the fixed core is 2000h-5FFFh.  Every image links that way.
 ZOS_REV13_WINDOW_BASE := 0x6000
@@ -422,6 +425,45 @@ ZOS_SERVICES := sio console
 ZOS_ARENA_MODULES :=
 endif
 
+# Namespace and handle acceptance image (work package 42a, correction 01).
+# Production bank 7 cannot hold the object/namespace family while the M9
+# `FS_*` front end, the M9 VFS machinery and the IOC-FAT arena are linked
+# (the switch-over and those deletions are 42b), so this image builds the
+# family on top of a small boot set with no arena modules: the placement
+# config/residency.json names is the placement production will use, and the
+# image's ledgers are the projection of production's after 42b.
+#   * SIO and the console service: the DEVICE provider's real publications
+#     and the standard handles need a live `/dev/console`;
+#   * no arena modules: the derived arena belongs to the family, and the
+#     M9 file path is not exercised here (42b replaces it);
+#   * the client program is an ordinary SDK program that checks its own
+#     results and prints them (`tests/target/ns`).
+NS_DIR   := tests/target/ns
+ifeq ($(ZOS_NS_SELFTEST),1)
+CFLAGS    += -DZOS_NS_HANDLES=1 -Itests/target/include
+PK_SUFFIX := -ns-selftest
+# sio and console are the real services whose publications the DEVICE
+# table carries (`/dev/serial/0`, `/dev/console`); `nsdev` is the test
+# double that adds a third type and a second grouping container
+# (tests/target/ns/nsdev.c).
+ZOS_SERVICES := sio console nsdev
+SVC_MANIFEST_DIR := tests/ns/manifests
+ZOS_ARENA_MODULES :=
+ZOS_BOOT_PROGRAM := /SYSTEM/ns.zex
+# The object family links where production will link it (config/
+# residency.json: vfs_ns, vfs_ns_file and object are `cold`), which this
+# image reaches by naming them in its extra cold set; the shared runner and
+# the guard the other acceptance images use come with it.
+ZOS_VFS_WS_GUARD := 1
+NS_OBJS := $(BUILD)/vfs_ns.rel $(BUILD)/vfs_ns_file.rel $(BUILD)/object.rel
+# The family itself compiles cold (its production tier), and so do the
+# `moves` objects that still hold the handle pool and the path/CWD
+# machinery it calls: this image's cold half has the room, and it is the
+# moves tier's documented fallback (architecture 36.20).
+COLD_EXTRA := vfs_ns vfs_ns_file object vfs_file
+COLD_EXTRA_CSV := vfs_ns,vfs_ns_file,object,vfs_file
+endif
+
 # SDK helloworld demo image (work/28c-m9-user-sdk): the production boot path
 # in its own build directory, booting the SDK hello demo.  There is no
 # kernel define and no target test object -- the image differs from
@@ -459,7 +501,8 @@ else
 CFLAGS    += -DZOS_IOCFAT_BOOT=0
 endif
 
-OBJS      := $(ASM_OBJS) $(C_OBJS) $(BUILD)/ipc.rel $(IPC_COLD_OBJS)
+OBJS      := $(ASM_OBJS) $(C_OBJS) $(BUILD)/ipc.rel $(IPC_COLD_OBJS) \
+             $(NS_OBJS)
 
 # Nucleus residency (architecture 36.5, work package 38).  Every
 # production image is a revision-13 two-region build: the fixed areas
@@ -820,6 +863,25 @@ $(BUILD)/vfs_workspace.rel: kernel/vfs/workspace.c kernel/vfs/vfs.h \
 		include/zephyros/kernel.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
+# --- namespace and typed-handle family (work package 42a) -------------------
+
+$(BUILD)/vfs_ns.rel: kernel/vfs/ns.c kernel/vfs/ns.h kernel/vfs/vfs.h \
+		abi/zos/object.h include/zephyros/ipc.h include/zephyros/romfs.h \
+		include/zephyros/errno.h kernel/ipc/ipc.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/vfs_ns_file.rel: kernel/vfs/ns_file.c kernel/vfs/ns.h \
+		kernel/vfs/vfs.h abi/zos/object.h abi/zos/protocol.h \
+		include/zephyros/ipc.h include/zephyros/romfs.h \
+		include/zephyros/errno.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/object.rel: kernel/syscall/object.c kernel/syscall/object.h \
+		kernel/syscall/fs.h kernel/syscall/diag.h kernel/vfs/ns.h \
+		abi/zos/object.h abi/zos/ipc.h abi/zos/syscall.h \
+		include/zephyros/errno.h include/zephyros/process.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
 $(BUILD)/fs.rel: kernel/syscall/fs.c kernel/syscall/fs.h \
 		kernel/syscall/diag.h kernel/vfs/vfs.h \
 		abi/zos/syscall.h abi/zos/fs.h \
@@ -1018,7 +1080,9 @@ SVC_OBJS := $(MODULES)/sdcc_indirect_calls.rel \
 # are all host-computed, so one pack reads every member's objects.  Both
 # pack rules below wait for the whole set, or a parallel build could link
 # an image against a half-built one.
-SVC_SET_OBJS = $(SVC_OBJS) $(if $(filter 1,$(ZOS_IPC_SELFTEST)),\
+SVC_SET_OBJS = $(SVC_OBJS) $(if $(filter 1,$(ZOS_NS_SELFTEST)),\
+	$(MODULES)/nsdev.rel $(MODULES)/nsdev_boot.rel) \
+	$(if $(filter 1,$(ZOS_IPC_SELFTEST)),\
 	$(IPC_HOT_OBJS) $(IPC_BOOT_OBJS) \
 	$(IPC_MODDIR)/con_slow.rel $(IPC_MODDIR)/sdcc_indirect_calls.rel)
 
@@ -1028,9 +1092,15 @@ SVC_SET_OBJS = $(SVC_OBJS) $(if $(filter 1,$(ZOS_IPC_SELFTEST)),\
 # loaded with (--set, in load order): the tier plan, the endpoint numbers
 # and the inter-driver dependencies are all host-computed, so every image
 # of one build must see the same set.
-SVC_PACK_SET = $(addprefix services/manifests/,$(addsuffix .json,$(ZOS_SERVICES))) \
+# The manifests an image packs its boot set from.  Production uses the
+# service tree's own manifests; the namespace acceptance image packs the
+# same services from its own directory, whose manifests carry their
+# publications (work package 42a), so the production manifests and
+# containers stay byte for byte what they were.
+SVC_MANIFEST_DIR ?= services/manifests
+SVC_PACK_SET = $(addprefix $(SVC_MANIFEST_DIR)/,$(addsuffix .json,$(ZOS_SERVICES))) \
 	$(if $(filter 1,$(ZOS_IPC_SELFTEST)),$(addprefix $(IPC_DIR)/manifests/,$(addsuffix .json,$(IPC_SERVICE_NAMES))))
-SVC_PACK_IMAGES = $(addprefix $(MODULES):,$(addprefix services/manifests/,$(addsuffix .json,$(ZOS_SERVICES)))) \
+SVC_PACK_IMAGES = $(addprefix $(MODULES):,$(addprefix $(SVC_MANIFEST_DIR)/,$(addsuffix .json,$(ZOS_SERVICES)))) \
 	$(if $(filter 1,$(ZOS_IPC_SELFTEST)),$(addprefix $(IPC_MODDIR):,$(addprefix $(IPC_DIR)/manifests/,$(addsuffix .json,$(IPC_SERVICE_NAMES)))))
 
 $(SVC_ZMODS): $(MODULES)/%.zmod: services/manifests/%.json $(SVC_SET_OBJS) \
@@ -1038,6 +1108,18 @@ $(SVC_ZMODS): $(MODULES)/%.zmod: services/manifests/%.json $(SVC_SET_OBJS) \
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
 		--set $(SVC_PACK_IMAGES) \
 		--report $(MODULES)/$*.report.json
+
+# The namespace acceptance image packs the same services from its own
+# manifests, which carry their publications (work package 42a).  It gets
+# its own rule rather than a variable in the production one, so the
+# production manifests and containers stay byte for byte what they were.
+ifeq ($(ZOS_NS_SELFTEST),1)
+$(SVC_ZMODS): $(MODULES)/%.zmod: tests/ns/manifests/%.json $(SVC_SET_OBJS) \
+		$(SVC_PACK_SET) tools/zmodpack.py | $(MODULES)
+	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
+		--set $(SVC_PACK_IMAGES) \
+		--report $(MODULES)/$*.report.json
+endif
 
 # The service set an image boots, resolved to its packed images.
 SVC_SET_ZMODS = $(foreach svc,$(ZOS_SERVICES),$(MODULES)/$(svc).zmod)
@@ -1401,6 +1483,19 @@ $(eval $(call zex_program,ipccopy,tests/target/ipc,\
 	LOWBASE=0x0300,CODEBASE=0x0344,STAGE=1,\
 	INCLUDES=tests/target/include))
 
+# Namespace acceptance programs (work package 42a): the client the image
+# boots (ZOS_BOOT_PROGRAM=/SYSTEM/ns.zex) and the child it SYS_EXECs.  Both
+# are ordinary SDK programs; the image's SDK variant carries the object
+# wrappers and moves the default code base above the enlarged gate blocks
+# (user/sdk/zex.mk ZEX_SDK_LOW_SIZE).
+$(eval $(call zex_program,ns,tests/ns,\
+	ns.c,STACK=256,STAGE=1,\
+	INCLUDES=tests/target/include))
+
+$(eval $(call zex_program,nschild,tests/ns,\
+	nschild.c,STACK=192,STAGE=1,\
+	INCLUDES=tests/target/include))
+
 # Deterministic malformed containers (one per validation boundary; see
 # tests/subsys/gen_zex_fixtures.py and gen_zmod_fixtures.py) shared by the
 # subsystem acceptance manifest.  gen_zmod_fixtures.py derives its damaged
@@ -1530,6 +1625,16 @@ ROMFS_MANIFEST := tests/ipc/manifest.json
 # Recursive: the service-image variables are defined below this chain.
 ROMFS_EXTRA_DEPS = $(MODULES)/ipc.zex $(MODULES)/ipccopy.zex \
 	$(IPC_ZMODS) $(MODULES)/services.man
+else ifeq ($(ZOS_NS_SELFTEST),1)
+# Namespace acceptance store (work package 42a): the SIO and console
+# services whose publications the DEVICE table carries, the synthetic
+# publisher that adds a second grouping container and a third protocol
+# type, and the two SDK programs - the checks run in /SYSTEM/ns.zex, which
+# SYS_EXECs /SYSTEM/nschild.zex for the inheritance rule.
+ROMFS_MANIFEST := tests/ns/manifest.json
+# Recursive: the module variables are defined below this chain.
+ROMFS_EXTRA_DEPS = $(MODULES)/ns.zex $(MODULES)/nschild.zex \
+	$(MODULES)/nsdev.zmod $(MODULES)/services.man
 else
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
@@ -1586,6 +1691,31 @@ $(IPC_ZMODS): $(IPC_MODDIR)/ipc-%.zmod: $(IPC_DIR)/manifests/%.json \
 
 endif
 
+ifeq ($(ZOS_NS_SELFTEST),1)
+# Namespace acceptance synthetic publisher (work package 42a): one real
+# service image in the recovery store, packed from the image's own
+# manifest (tests/ns/manifests/nsdev.json) so its /dev publications travel
+# in the container the loader reads.  The objects build exactly like
+# production service objects: hot code with its SERVICE_IO data, and a
+# boot segment that records its single run.
+$(MODULES)/nsdev.rel: tests/target/ns/nsdev.c \
+		tests/target/include/ns_test.h include/zephyros/ipc.h | $(MODULES)
+	$(SDCC) $(SVC_HOT) -Itests/target/include $< -o $@
+
+$(MODULES)/nsdev_boot.rel: tests/target/ns/nsdev_boot.c \
+		tests/target/include/ns_test.h | $(MODULES)
+	$(SDCC) $(SVC_BOOT) -Itests/target/include $< -o $@
+
+# The container: one pack against the image's whole load-order set, from
+# the image's own manifest, so the /dev publications are host-resolved
+# beside the endpoint numbers.
+$(MODULES)/nsdev.zmod: $(SVC_MANIFEST_DIR)/nsdev.json $(SVC_SET_OBJS) \
+		$(SVC_PACK_SET) tools/zmodpack.py | $(MODULES)
+	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
+		--set $(SVC_PACK_IMAGES) \
+		--report $(MODULES)/nsdev.report.json
+
+endif
 # The boot manifest: the flat ROMFS names in dependency (load) order,
 # validated as a set - unique endpoints, resolvable dependencies and a
 # tier allocation that fits - and reported with the two service ledgers.
@@ -2095,6 +2225,25 @@ ipc-selftest: all
 		$(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_ipc_selftest*.py' -v
 	@echo "ipc image: build-ipc-selftest/zephyros-ipc-selftest.bin"
+
+# Namespace and handle acceptance image (work package 42a, correction 01):
+# the production boot path with the DEVICE/ROMFS providers, the typed
+# handle table, bind/call/unbind/ns_enum and the standard handles linked
+# on top of a small boot set, and the SDK client program booting as
+# /SYSTEM/ns.zex.  The client checks the namespace outcomes itself and
+# prints them; the simulator replay compares the transcript.  Production
+# is not touched by this image: it reproduces its own image hash.
+ns-selftest: all
+	$(MAKE) BUILD=build-ns-selftest ZOS_NS_SELFTEST=1 \
+		build-ns-selftest/zephyros-ns-selftest.bin \
+		build-ns-selftest/zephyr80-ns-selftest.bin
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
+		--cold-extra vfs_ns,vfs_ns_file,object,vfs_file \
+		build-ns-selftest/zephyros.map \
+		build-ns-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_ns_selftest*.py' -v
+	@echo "namespace image: build-ns-selftest/zephyros-ns-selftest.bin"
 
 # Nucleus-layout acceptance image (work package 38): the revision-13 gates
 # with P != 0 on entry (syscall, IRQ), the cold-half handler placement and

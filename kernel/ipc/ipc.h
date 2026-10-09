@@ -16,6 +16,7 @@
 #define ZEPHYROS_KERNEL_IPC_IPC_H
 
 #include "zos/ipc.h"
+#include "zos/object.h"
 #include "zos/types.h"
 
 #include "zephyros/ipc.h"
@@ -63,6 +64,44 @@ const struct ipc_service_boot *ipc_service_boot(void);
  * carry clear); a structural problem in the block is reported to the
  * caller before this is reached. */
 int16_t ipc_syscall_call(struct zos_ipc_call_args *args);
+
+#if ZOS_NS_HANDLES
+/* --- in-process (nucleus) endpoints (package 42a, acceptance image) ----
+ *
+ * Architecture 36.13: a namespace provider the nucleus serves itself -
+ * the ROMFS FILE provider - exports an endpoint like any other; its
+ * dispatch entry is a bank-7 function address and the call runs in place.
+ * The flag bit is nucleus-internal and never comes from a host record. */
+#define IPC_EP_NUCLEUS 0x80u
+
+/* The reserved nucleus endpoint range: above every host-assigned driver
+ * number (the loader numbers the driver records from 1, bounded by
+ * IPC_ENDPOINT_MAX). */
+#define IPC_EP_NUCLEUS_BASE 0x80u
+
+int8_t ipc_install_nucleus_endpoint(uint8_t number, uint8_t flags,
+				    int16_t (*dispatch)(uint8_t handle,
+							uint8_t object,
+							struct zos_ipc_frame *frame));
+
+/* Dispatch one call to a bound instance: `endpoint` is the endpoint the
+ * handle resolved to, `object` the provider identity from the publication
+ * and `handle` the caller's handle number (an in-process provider reads
+ * its instance from it). */
+int16_t ipc_call_object(uint8_t endpoint, uint8_t object, uint8_t handle,
+			struct zos_ipc_frame *frame);
+
+/* Descriptor copy for a nucleus endpoint: `length` bytes staged in the
+ * common staging block (zos_user_copy_staging) land in the caller buffer
+ * of descriptor `desc` at `offset`, through the same checked copy resolver
+ * a bank-6 service uses. */
+int16_t ipc_nucleus_copy_out(uint8_t desc, uint16_t offset, uint16_t length);
+
+/* SYS_CALL body for the object family: the syscall body resolved the bound
+ * handle to its endpoint and publication object first (kernel/vfs/ns.c). */
+int16_t ipc_syscall_call_object(struct zos_ipc_call_args *args,
+				uint8_t endpoint, uint8_t object);
+#endif
 
 /* Synchronous call into a service from nucleus code (bank 7, no process
  * and no syscall gate): the IOC-FAT provider's class shim and the boot

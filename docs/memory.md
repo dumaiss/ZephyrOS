@@ -676,13 +676,18 @@ in `2000h-DFFFh` would disappear when the mode changes.
   parity (hardware, syscall-gate and IRQ-executive header pairs), the
   single test seam, the owner layout, and the Mn-1 retention window.
 - `tools/mapcheck.py`'s residency model also carries the `test_link` list
-  (work package 39): objects the production linker script does not list
-  yet, whose placement is nevertheless enforced exactly as production will
-  compile them in package 41.  A test-linked `cold` object is expected in
-  the cold areas; a test-linked `fixed-required` object is held below
-  `ZOS_REV13_WINDOW_BASE` like any other.  `cold_half` may not name a
-  `fixed-required` object, because the list drives the image's cold
-  codegen flags.
+  (work package 39, reused by 42a): objects the production linker script
+  does not list yet, whose placement is nevertheless enforced exactly as
+  production will compile them in the stage that adopts them.  A
+  test-linked `cold` object is expected in the cold areas; a test-linked
+  `fixed-required` object is held below `ZOS_REV13_WINDOW_BASE` like any
+  other.  `cold_half` may not name a `fixed-required` object, because the
+  list drives the image's cold codegen flags.  Package 41 linked the IPC
+  substrate, so since then the list names the namespace objects
+  (`vfs_ns`, `vfs_ns_file`, `object`; work package 42a), which the
+  `namespace-selftest` image reaches through its own `--cold-extra` and
+  production adopts in 42b - the production ledgers of this package are
+  therefore unchanged.
 - `tests/test_ipc_selftest.py` / `tests/test_ipc_selftest_sim.py` — the
   IPC substrate acceptance image: the pinned ABI, the residency
   classification and the client's caller-window layout on the host, and a
@@ -691,6 +696,13 @@ in `2000h-DFFFh` would disappear when the mode changes.
   gate), the two CTC0 deliveries into the service domain, the reserved
   stack high-water marks (service `5E08h`, ISR `5FF4h`, gate `E5FAh`), the
   window LDIRs and the lookup census.
+- `tests/test_ns_selftest.py` / `tests/test_ns_selftest_sim.py` — the
+  namespace acceptance image (work package 42a): the pinned ABI, the
+  packed publication tables, the residency classification and the
+  service-manifest wiring on the host, and a replay that compares the
+  client's transcript (standard handles, `/dev` binds and calls, a
+  `/SYSTEM` FILE read/seek/metadata, table exhaustion, paged `ns_enum`,
+  an exec'd child) with the packed store.
 - `tests/test_subsys_sim.py` — boot of the subsystem acceptance image on
   the current path: the syscall gate and interrupt-executive groups (with
   injected CTC0 deliveries), the ROMFS reader, the process/ZEX lifecycle

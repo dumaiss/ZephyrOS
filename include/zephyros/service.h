@@ -62,8 +62,15 @@
 /* ZMOD module type for a resident service container. */
 #define ZMOD_TYPE_SERVICE 2u
 
-/* Service ABI carried in the header's abi byte (header offset 06h). */
+/* Service ABI carried in the header's abi byte (header offset 06h).
+ *
+ * ABI 4 (work package 42a) adds the publication table: the namespace names
+ * the image's endpoints publish (architecture 36.13), which the loader
+ * installs into the DEVICE provider's table.  A container without
+ * publications keeps ABI 3, byte for byte, so the production store is
+ * unchanged until package 42b turns the manifests over. */
 #define ZMOD_SERVICE_ABI_VERSION 3u
+#define ZMOD_SERVICE_ABI_PUBLICATIONS 4u
 
 /* The service section always starts directly after the container header. */
 #define ZMOD_SERVICE_SECTION_OFFSET ZMOD_HEADER_SIZE
@@ -140,17 +147,37 @@ struct zmod_service_dependency {
 	uint16_t number;           /* resolved endpoint number; 0 = absent */
 };
 
+/* One publication, 20 bytes (ABI 4).  `name` is the provider-relative
+ * namespace name below the DEVICE provider's `/dev` root (`"/console"`),
+ * NUL-terminated and zero-padded; `type` is the 8-bit protocol type
+ * (abi/zos/object.h ZOS_TYPE_*); `number` is the serving endpoint's
+ * host-assigned number; `object` is the provider's own object identity,
+ * which a nucleus provider receives with every call to the publication.
+ * A host build never publishes a grouping name: the kernel derives the
+ * container rows (`/input`, `/serial`) from the names themselves. */
+struct zmod_service_publication {
+	char     name[16];         /* "/console", NUL-terminated */
+	uint8_t  type;             /* ZOS_TYPE_*                */
+	uint8_t  number;           /* serving endpoint number   */
+	uint8_t  object;           /* provider object identity  */
+	uint8_t  flags;            /* 0                         */
+};
+
 /* Pinned on-disk sizes; the assertions below keep the structures and
  * these numbers in step, and the packer uses the same values. */
 #define ZMOD_SERVICE_HEADER_SIZE     16u
 #define ZMOD_SERVICE_SEGMENT_SIZE    14u
 #define ZMOD_SERVICE_ENDPOINT_SIZE   8u
 #define ZMOD_SERVICE_DEPENDENCY_SIZE 4u
+#define ZMOD_SERVICE_PUBLICATION_SIZE 20u
 
 /* Format maxima (the loader's tables and the packer agree). */
 #define ZMOD_SERVICE_MAX_SEGMENTS     4u
 #define ZMOD_SERVICE_MAX_ENDPOINTS    8u
 #define ZMOD_SERVICE_MAX_DEPENDENCIES 8u
+/* Publications per image; the nucleus publication table is smaller (the
+ * loader refuses a set that overflows it, VFS_NS_PUB_MAX). */
+#define ZMOD_SERVICE_MAX_PUBLICATIONS 12u
 
 /* Boot manifest bound: the loader's per-image table. */
 #define ZMOD_SERVICE_MAX_IMAGES       8u
@@ -170,6 +197,12 @@ struct zmod_service_dependency {
  *   total_size         exact container length
  *   reserved           0
  */
+
+/* ABI 4 reuses the section header's reserved bytes: `reserved` (offset
+ * 0Bh) is the publication count and `reserved2` (offset 0Ch) the
+ * publication table's offset, relative to the section start; `reserved3`
+ * (offset 0Eh) stays 0.  An ABI-3 container leaves all three zero, so the
+ * same header structure serves both. */
 
 #if defined(__SDCC)
 _Static_assert(sizeof(struct zmod_service_header) ==
@@ -193,6 +226,9 @@ _Static_assert(__builtin_offsetof(struct zmod_service_header,
 _Static_assert(__builtin_offsetof(struct zmod_service_header,
 				  dependency_count) == 0x0A,
 	       "service section header dependency_count offset");
+_Static_assert(sizeof(struct zmod_service_publication) ==
+	       ZMOD_SERVICE_PUBLICATION_SIZE,
+	       "service publication must be 20 bytes");
 _Static_assert(sizeof(struct zmod_service_segment) ==
 	       ZMOD_SERVICE_SEGMENT_SIZE,
 	       "service segment must be 14 bytes");

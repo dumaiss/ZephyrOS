@@ -1,0 +1,63 @@
+{
+  "name": "nsdev",
+  "type": "service",
+  "abi": 3,
+  "flags": 0,
+  "objects": [
+    "nsdev.rel",
+    "nsdev_boot.rel",
+    "sdcc_indirect_calls.rel"
+  ],
+  "init": "nsdev_init",
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ],
+      "bss_areas": [
+        "_SERVICE_IO"
+      ]
+    },
+    {
+      "role": "boot",
+      "image_areas": [
+        "_BOOT"
+      ],
+      "entry": "nsdev_boot",
+      "bss_areas": [
+        "_BOOT_DATA"
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 30,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "nsdev_dispatch",
+      "flags": 0
+    }
+  ],
+  "publishes": [
+    {
+      "path": "/dev/input/keyboard",
+      "type": "INPUT",
+      "endpoint": {
+        "class": 30,
+        "instance": 0
+      },
+      "object": 1
+    },
+    {
+      "path": "/dev/video",
+      "type": "VIDEO",
+      "endpoint": {
+        "class": 30,
+        "instance": 0
+      },
+      "object": 2
+    }
+  ],
+  "depends": []
+}

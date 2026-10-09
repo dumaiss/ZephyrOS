@@ -659,3 +659,48 @@ belongs to (`symbols`, `symbol_segments`), the endpoint numbers and
 absolute dispatch entries, and the resolved dependency numbers; the set
 report carries the load order, the bases per image and the two tier
 ledgers.
+
+### 7.8 Publications (service ABI 4, package 42a)
+
+A service manifest may declare the namespace names its image *publishes*
+(architecture 36.13): one row per name under the `/dev` root, with the
+8-bit protocol type, the serving endpoint as a (class, instance) pair, and
+the provider's own object identity.
+
+```json
+"publishes": [
+  { "path": "/dev/input/keyboard", "type": "INPUT",
+    "endpoint": { "class": 30, "instance": 0 }, "object": 1 }
+]
+```
+
+The packer resolves the endpoint against the load order (the serving image
+is this one or an earlier one), strips the `/dev` root, and refuses a row
+that names the root, a name longer than the 15 provider-relative bytes the
+record holds, a name with a non-printable byte, a duplicate name across
+the set (compared case-insensitively), an unknown type name, a type
+outside 1..255, an object above 255, more than
+`ZMOD_SERVICE_MAX_PUBLICATIONS` (12) rows in one manifest, or a set whose
+publications plus the derived grouping rows exceed the nucleus table
+(also 12).  Grouping names (`/dev/input`, `/dev/serial`) are never
+declared: the packer counts them, and the DEVICE provider synthesizes them
+from the names it installs.
+
+A container **without** publications keeps service ABI 3 byte for byte, so
+the production store is unchanged until package 42b turns the manifests
+over.  A container **with** publications carries ABI 4: the service
+section's reserved bytes are reused - the byte at offset `0Bh` is the
+publication count, the little-endian word at `0Ch` the table offset
+relative to the section start, and `0Eh` stays 0 - and the table follows
+the segment, endpoint and dependency tables:
+
+```text
+publication  name[16] type:u8 number:u8 object:u8 flags:u8(=0)
+```
+
+`name` is the provider-relative name, NUL-terminated and zero-padded;
+`number` is the host-assigned endpoint number that serves it; `object` is
+the value the provider receives with every call to that publication.  The
+record is 20 bytes and the header static-asserts the layout
+(`include/zephyros/service.h`); `python3 tools/zmodpack.py dump` prints
+the rows beside the endpoints.

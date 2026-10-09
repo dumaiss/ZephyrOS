@@ -21,10 +21,15 @@
 
 #include "zos/types.h"
 #include "zos/fs.h"
+#include "zos/object.h"
 #include "zephyros/vfs.h"
 #include "zephyros/module.h"
 #include "zephyros/process.h"
 #include "kernel/vfs/mount_config.h"
+
+#if ZOS_NS_HANDLES
+#include "zephyros/romfs.h"
+#endif
 
 /* --- lifecycle -------------------------------------------------------- */
 
@@ -335,7 +340,19 @@ int vfs_closedir(struct vfs_dir *dir);
  * verifies the owner.  A suspended parent keeps its descriptors while a
  * child runs (single-tasking), so the pool is never per-process.  A full
  * pool reports ZOS_EMFILE; a range/type/owner mismatch reports
- * ZOS_EINVAL.  Provider handles never leave the kernel. */
+ * ZOS_EINVAL.  Provider handles never leave the kernel.
+ *
+ * Package 42a extends the same pool into the architecture-36.13 global
+ * owner-tagged handle table instead of adding a second one (correction
+ * 01: the acceptance image links this variant, production switches in
+ * 42b): a bound handle records the owner, the 8-bit protocol type, the
+ * endpoint, the provider object identity, the bind flags and the
+ * per-process handle number.  The M9 `FS_*` descriptors share the pool
+ * until 42b, naming their entry by pool index; the object family names an
+ * entry by its `number` for the owning pid, and the two standard handles
+ * sit at the fixed numbers 1 and 2 of every process.  A bound entry
+ * carries a nonzero endpoint; an `FS_*` descriptor carries endpoint 0 and
+ * its payload in the union's file/dir arm. */
 #define VFS_FD_MAX 8u
 #define VFS_FD_NONE 0xFFu
 
@@ -348,24 +365,62 @@ int vfs_closedir(struct vfs_dir *dir);
  * on exit.  The kernel launcher's CWD is the constant `/`.
  * (ZOS_EXEC_MAX_DEPTH is owned by include/zephyros/process.h.) */
 
+#if ZOS_NS_HANDLES
+#undef VFS_FD_MAX
+/* Eight M9 descriptors beside four concurrent bound objects; the pool is
+ * the one global owner-tagged table (architecture 36.13). */
+#define VFS_FD_MAX 12u
+#endif
+
+/* A bound FILE instance: the immutable ROMFS metadata plus the current
+ * position and the bind flags, kept inline in the handle entry (an
+ * in-process provider's object/instance identity is the entry itself). */
+#if ZOS_NS_HANDLES
+struct vfs_ns_file {
+	romfs_file_t romfs; /* source metadata (romfs_file_t: 10 bytes) */
+	uint32_t offset;    /* current byte position                    */
+	uint8_t flags;      /* ZFS_O_* subset of the bind flags         */
+};
+#endif
+
 struct vfs_descriptor {
 	uint8_t owner;   /* pid 0-6, or VFS_FD_NONE when FREE */
 	uint8_t type;    /* VFS_DESC_*                      */
+#if ZOS_NS_HANDLES
+	uint8_t number;   /* per-process handle number; 0 when not bound */
+	uint8_t endpoint; /* bound handles: IPC endpoint; 0 = M9 fd      */
+	uint8_t object;   /* bound handles: publication object identity  */
+	uint8_t flags;    /* bound handles: low byte of the bind flags   */
+#endif
 	union {
 		struct vfs_file file; /* FILE: mount/handle/size/offset/flags */
 		struct vfs_dir dir;   /* DIRECTORY: mount/handle/cursor       */
+#if ZOS_NS_HANDLES
+		struct vfs_ns_file ns; /* bound FILE instance (42a)          */
+#endif
 	} u;
 };
 
 extern struct vfs_descriptor vfs_descriptors[VFS_FD_MAX];
 
 #if defined(__SDCC)
+#if !ZOS_NS_HANDLES
 _Static_assert(sizeof(struct vfs_descriptor) == 17,
 	       "vfs_descriptor must be 17 packed bytes");
 _Static_assert(__builtin_offsetof(struct vfs_descriptor, type) == 1,
 	       "vfs_descriptor type offset");
 _Static_assert(__builtin_offsetof(struct vfs_descriptor, u) == 2,
 	       "vfs_descriptor union offset");
+#else
+_Static_assert(sizeof(struct vfs_ns_file) == 15,
+	       "vfs_ns_file must be 15 packed bytes");
+_Static_assert(sizeof(struct vfs_descriptor) == 21,
+	       "the extended vfs_descriptor must be 21 packed bytes");
+_Static_assert(__builtin_offsetof(struct vfs_descriptor, endpoint) == 3,
+	       "vfs_descriptor endpoint offset");
+_Static_assert(__builtin_offsetof(struct vfs_descriptor, u) == 6,
+	       "extended vfs_descriptor union offset");
+#endif
 #endif
 
 /* Discard every descriptor and CWD slot; called once at VFS bootstrap so
@@ -390,6 +445,29 @@ int vfs_fd_closedir(uint8_t fd);
 
 /* Number of allocated descriptors (acceptance/leak queries). */
 uint8_t vfs_fd_active_count(void);
+
+#if ZOS_NS_HANDLES
+/* --- the object handle table (package 42a, acceptance image) ----------
+ *
+ * The same pool, named by the per-process handle number.  A bound entry
+ * always carries a nonzero endpoint; there is no second table
+ * (architecture 36.13). */
+
+/* Allocate the lowest free entry for `pid`, give it the lowest free handle
+ * number >= `first`, and return the entry (owner/type/number set) or null
+ * when the pool is full.  Type, endpoint, object, flags and the union
+ * payload are the caller's to fill. */
+struct vfs_descriptor *vfs_handle_alloc(uint8_t pid, uint8_t first);
+
+/* The bound entry the process `pid` names with handle `number`, or null
+ * for a free/stale/foreign handle.  An M9 `FS_*` descriptor is not a
+ * bound handle (endpoint 0) and is never returned. */
+struct vfs_descriptor *vfs_handle_find(uint8_t pid, uint8_t number);
+
+/* Return a bound entry to the pool.  No provider call: a bound ROMFS FILE
+ * instance is the entry itself and a device instance is permanent. */
+void vfs_handle_release(struct vfs_descriptor *desc);
+#endif
 
 /* CWD lifecycle.  vfs_process_start() gives the child the parent's CWD
  * (or the constant `/` when `parent_pid` is PROCESS_KERNEL_PARENT / an

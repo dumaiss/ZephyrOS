@@ -1025,3 +1025,54 @@ the IOC-FAT provider alone (13 granules), and the ledger lines the build
 prints are
 `zmodpack: driver hot: ...` / `driver boot/bulk: ...` with one row per
 image (see `docs/memory.md`).
+
+### 12.7 The `/dev` publication table (package 42a)
+
+Programs never name an endpoint.  A driver's *publication* is a namespace
+name under `/dev` plus the 8-bit protocol type of the instance that serves
+it, and the whole mapping is built on the host (architecture 36.13,
+decision 13):
+
+1. A service manifest may carry `publishes` rows - the name *below* the
+   `/dev` root (`"/serial/0"`), the protocol type, the serving endpoint as
+   a (class, instance) pair, and the provider's own object identity.  The
+   packer resolves the endpoint against the build's load order, strips the
+   `/dev` root and nothing else, and refuses a row that names the root
+   itself, a name that does not fit the 16-byte record, a duplicate name,
+   an unknown class, or more rows than the nucleus table holds (12).
+   Grouping rows are derived, never published: the packer counts them
+   when it checks the table size (`/input` for `/input/keyboard`), and the
+   provider synthesizes them from the names it installs.
+2. The resolved rows become the container's publication table: ABI 4
+   (`docs/module-format.md` section 7.8), 20 bytes per row, ordered after
+   the segment, endpoint and dependency tables in the service section.
+3. The loader validates each row (name shape, protocol type in range,
+   endpoint number non-zero) and installs it in the DEVICE provider's
+   table.  The provider synthesizes the grouping rows from the names it
+   received - `/dev/serial/0` implies the container `/dev/serial` - so the
+   table on the target always matches the packed store.
+
+From a program the model is two calls (`docs/abi.md` section 12.1):
+
+```c
+unsigned char type;
+int handle = zos_ipc_bind("/dev/serial/0", 0, &type);   /* type = SERIAL */
+zos_ipc_call(handle, op, &req);                          /* one frame     */
+zos_ipc_unbind(handle);
+```
+
+`bind` returns the handle *and* the type the publication declares: a
+client that cares checks it, and there is no expected-type argument and no
+`handle_info`.  A grouping name (`/dev/input`) enumerates but refuses to
+bind with `-ZOS_EISDIR`.  Names are resolved case-insensitively, and the
+lookup is a table scan in the provider - the host has already done every
+decision that could be taken at build time.
+
+The production build's five manifests still carry service ABI 3 (no
+publications) and keep the stage-3 lookup path: the DEVICE provider, the
+table and the client API are linked by the `namespace-selftest` acceptance
+image (`make ns-selftest`), where the SIO and console manifests declare
+`/dev/serial/0` and `/dev/console` and a synthetic publisher adds
+`/dev/input/keyboard` and `/dev/video`.  Package 42b turns the production
+manifests over and deletes the lookup path
+(`docs/validation/2026-10-09-m10-namespace-handles.md`).

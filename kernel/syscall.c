@@ -38,6 +38,9 @@
 #include "syscall/diag.h"
 #include "syscall/fs.h"
 #include "syscall/ipc.h"
+#if ZOS_NS_HANDLES
+#include "syscall/object.h"
+#endif
 
 /* Dispatcher input/output state (written by the asm boundary, read by C). */
 uint8_t zos_syscall_number;
@@ -247,12 +250,26 @@ void kernel_syscall_dispatch(void)
 		return;
 	}
 
+#if ZOS_NS_HANDLES
+	/* Namespace and object-handle family (06h-09h, work package 42a;
+	 * the acceptance image builds it, production switches over in 42b).
+	 * The stage-3 lookup number 06h is the object `bind` number here, so
+	 * the lookup pair is not reachable: `zos_ipc_dispatch` is linked but
+	 * no number routes to it. */
+	if (zos_syscall_number >= ZOS_SYSCALL_BIND &&
+	    zos_syscall_number <= ZOS_SYSCALL_NS_ENUM) {
+		zos_object_dispatch(zos_syscall_number, bank,
+				    zos_syscall_args);
+		return;
+	}
+#else
 	/* Resident-service IPC family (06h/07h, package 39). */
 	if (zos_syscall_number == ZOS_SYSCALL_IPC_LOOKUP ||
 	    zos_syscall_number == ZOS_SYSCALL_IPC_CALL) {
 		zos_ipc_dispatch(zos_syscall_number, bank, zos_syscall_args);
 		return;
 	}
+#endif
 
 	switch (zos_syscall_number) {
 	case ZOS_SYSCALL_EXIT:

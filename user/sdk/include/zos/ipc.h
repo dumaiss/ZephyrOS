@@ -28,6 +28,7 @@
 
 #include "zos/types.h"
 #include "zos/ipc.h"
+#include "zos/object.h"
 
 /* The lookup cache: (class, instance) entries, newest replaces oldest. */
 /* Lookup cache depth: the nucleus endpoint table holds at most eight
@@ -49,13 +50,21 @@ struct zos_ipc_call_req {
 int zos_ipc_raw_call(struct zos_ipc_call_req *req);
 
 /* Discovery.  Returns the endpoint handle (>0) or the negated error
- * (ZOS_ENOENT when no endpoint matches).  Results are cached. */
+ * (ZOS_ENOENT when no endpoint matches).  Results are cached.
+ *
+ * The lookup pair is the stage-3 half of this header: the build that
+ * defines ZOS_NS_HANDLES (the namespace acceptance image, work package
+ * 42a) has no lookup at all, so `ipc.c` compiles both wrappers and the
+ * cache out and the programs of that image name object handles from
+ * `zos_ipc_bind` instead. */
+#if !ZOS_NS_HANDLES
 int zos_ipc_lookup(unsigned char class, unsigned char instance);
 
 /* Discovery with the registered version, uncached (the cache holds
  * handles only, so a version query is always one syscall). */
 int zos_ipc_lookup_version(unsigned char class, unsigned char instance,
 			   unsigned char *version);
+#endif /* !ZOS_NS_HANDLES */
 
 /* One call request: the protocol frame plus the optional descriptor.  A
  * zero `length` means no descriptor and `buffer` is ignored; `direction`
@@ -73,5 +82,39 @@ struct zos_ipc_request {
  * refusal (-ZOS_EINVAL bad handle/descriptor, -ZOS_EBUSY re-entrant,
  * -ZOS_ENOSPC too deep). */
 int zos_ipc_call(unsigned char handle, struct zos_ipc_request *req);
+
+#if ZOS_NS_HANDLES
+/* --- object and namespace wrappers (work package 42a) ------------------
+ *
+ * In the namespace model (architecture 36.13, 36.14) the handle
+ * `zos_ipc_call` names is a *process-owned object handle* produced by
+ * `zos_ipc_bind`, never an endpoint number: endpoint numbers stay
+ * nucleus-internal, and one handle names one bound instance of one
+ * provider.  The two standard console handles (ZOS_HANDLE_STDOUT,
+ * ZOS_HANDLE_STDIN) are bound at process start, so a program that only
+ * talks to the console never calls `zos_ipc_bind`.
+ */
+
+/* Resolve `path` and bind an instance.  Returns the handle (>= 1) with
+ * `*type` set to the 8-bit protocol type the kernel resolved, or the
+ * negated error (ZOS_ENOENT unknown name, ZOS_ENODEV a provider this build
+ * does not serve, ZOS_EISDIR a grouping entry, ZOS_EMFILE an exhausted
+ * handle table, ZOS_EINVAL a malformed path).  There is no expected-type
+ * argument: a client that cares checks `*type`. */
+int zos_ipc_bind(const char *path, unsigned int flags, unsigned char *type);
+
+/* Release the instance `handle` names.  Returns 0 or -ZOS_EINVAL; the
+ * kernel unbinds every handle a process still owns at exit, so this is
+ * only about releasing early. */
+int zos_ipc_unbind(unsigned char handle);
+
+/* Namespace enumeration: write up to `max_entries` `struct zos_ns_entry`
+ * records from `cookie` into `out` and return the number written (0 at the
+ * end of the stream) with `*cookie` advanced, or the negated error.  A
+ * caller pages by passing the returned cookie back until the count is 0. */
+int zos_ns_enum(const char *path, unsigned int *cookie,
+		struct zos_ns_entry *out, unsigned int max_entries);
+
+#endif /* ZOS_NS_HANDLES */
 
 #endif /* ZOS_SDK_IPC_H */

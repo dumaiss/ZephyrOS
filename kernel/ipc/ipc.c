@@ -470,11 +470,25 @@ int8_t ipc_lookup(uint8_t class, uint8_t instance, uint8_t *version)
  * the record. */
 static struct ipc_endpoint *endpoint_for(uint8_t handle)
 {
+#if ZOS_NS_HANDLES
+	/* The object family also names the reserved nucleus numbers
+	 * (package 42a), which live above the host range and break the
+	 * index rule, so the table is scanned by the stored number. */
+	uint8_t index;
+
+	for (index = 0u; index < endpoint_count; ++index) {
+		if (endpoints[index].number == handle) {
+			return &endpoints[index];
+		}
+	}
+	return (struct ipc_endpoint *)0;
+#else
 	if (handle == 0u || handle > endpoint_count ||
 	    endpoints[handle - 1u].number != handle) {
 		return (struct ipc_endpoint *)0;
 	}
 	return &endpoints[handle - 1u];
+#endif
 }
 
 /* Install one host-built endpoint record (architecture 36.11).  Only the
@@ -488,10 +502,21 @@ int8_t ipc_install_endpoint(const struct ipc_endpoint_record *record)
 	 * checks here protect the nucleus table (capacity, number order)
 	 * and the call machinery (a dispatch entry inside the driver
 	 * window). */
+#if ZOS_NS_HANDLES
+	/* The object family's table holds the in-process FILE provider too
+	 * (installed at VFS bootstrap, above the host range), so a record
+	 * is placed by its stored number and the invariant is uniqueness,
+	 * not "slot == number - 1". */
+	if (endpoint_count >= IPC_ENDPOINT_MAX ||
+	    endpoint_for(record->number) != (struct ipc_endpoint *)0) {
+		return (int8_t)(-ZOS_ENOSPC);
+	}
+#else
 	if (endpoint_count >= IPC_ENDPOINT_MAX ||
 	    record->number != (uint8_t)(endpoint_count + 1u)) {
 		return (int8_t)(-ZOS_ENOSPC);
 	}
+#endif
 	if (record->entry < ZOS_REV13_WINDOW_BASE ||
 	    record->entry >= ZOS_BANK7_RUNTIME_END) {
 		return (int8_t)(-ZOS_EINVAL);
@@ -510,6 +535,17 @@ int8_t ipc_install_endpoint(const struct ipc_endpoint_record *record)
 	return 0;
 }
 
+#if ZOS_NS_HANDLES
+/* The bound instance the dispatch that is running was entered for (see the
+ * in-process endpoint block below). */
+static uint8_t nucleus_call_handle;
+static uint8_t nucleus_call_object;
+
+static int16_t ipc_call_endpoint(uint8_t number, struct zos_ipc_frame *frame);
+static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t service_addr,
+			uint16_t length, uint8_t dir);
+#endif
+
 /* Invoke one driver dispatch entry: open the owner's domain when crossing
  * into it, switch to the fixed driver stack at the outermost call, and run
  * the frame through the fixed primitive.  A nested call whose target is
@@ -521,6 +557,27 @@ static int16_t invoke_endpoint(const struct ipc_endpoint *ep,
 	uint8_t page = IPC_SERVICE_PAGE_BITS;
 	int16_t result;
 
+#if ZOS_NS_HANDLES
+	/* An in-process endpoint (package 42a): the dispatch entry is a
+	 * bank-7 function address and the call runs in place, because the
+	 * caller context already shows bank 7 - the syscall gate cleared
+	 * the page field before dispatching.  A caller that does not is
+	 * refused: switching the window here would touch the caller's
+	 * own mapping. */
+	if ((ep->flags & IPC_EP_NUCLEUS) != 0u) {
+		int16_t (*dispatch)(uint8_t, uint8_t,
+				    struct zos_ipc_frame *);
+
+		if ((ipc_latch() & ZOS_ROM_PAGE_MASK) !=
+		    IPC_NUCLEUS_PAGE_BITS) {
+			return -ZOS_ENODEV;
+		}
+		dispatch = (int16_t (*)(uint8_t, uint8_t,
+					struct zos_ipc_frame *))ep->dispatch;
+		return dispatch(nucleus_call_handle, nucleus_call_object,
+				frame);
+	}
+#endif
 	if (!nested) {
 		ipc_domain_enter(page);
 		result = ipc_invoke(ep->dispatch, frame);
@@ -574,6 +631,68 @@ static int16_t ipc_call_endpoint(uint8_t handle, struct zos_ipc_frame *frame)
 	frame->status = result;
 	return result;
 }
+
+#if ZOS_NS_HANDLES
+/* --- in-process (nucleus) endpoints (package 42a) ----------------------- */
+
+/* ipc_call_object() writes the nucleus identity statics immediately before
+ * the dispatch and invoke_endpoint()'s nucleus branch reads them; every
+ * other entry (a driver calling a dependency, nucleus code calling a
+ * class) leaves them zero, because neither has a handle table entry. */
+
+/* Install one in-process endpoint.  The nucleus calls this at
+ * initialization with a number from the reserved range above the
+ * host-assigned driver numbers. */
+int8_t ipc_install_nucleus_endpoint(uint8_t number, uint8_t flags,
+				    int16_t (*dispatch)(uint8_t handle,
+							uint8_t object,
+							struct zos_ipc_frame *frame))
+{
+	struct ipc_endpoint *ep;
+
+	if (endpoint_count >= IPC_ENDPOINT_MAX || number == 0u ||
+	    number < IPC_EP_NUCLEUS_BASE || dispatch == (void *)0 ||
+	    endpoint_for(number) != (struct ipc_endpoint *)0 ||
+	    (flags & (uint8_t)~ZOS_IPC_EP_REENTRANT) != 0u) {
+		return (int8_t)(-ZOS_EINVAL);
+	}
+	ep = &endpoints[endpoint_count];
+	ep->dispatch = (uint16_t)dispatch;
+	ep->class = 0u;
+	ep->instance = 0u;
+	ep->flags = (uint8_t)(flags | IPC_EP_NUCLEUS);
+	ep->version = 0u;
+	ep->number = number;
+	ep->busy = 0u;
+	ep->bulk_base = 0u;
+	ep->bulk_size = 0u;
+	++endpoint_count;
+	return 0;
+}
+
+/* Dispatch one call to a bound instance (the object family's SYS_CALL). */
+int16_t ipc_call_object(uint8_t endpoint, uint8_t object, uint8_t handle,
+			struct zos_ipc_frame *frame)
+{
+	int16_t result;
+
+	nucleus_call_handle = handle;
+	nucleus_call_object = object;
+	result = ipc_call_endpoint(endpoint, frame);
+	nucleus_call_handle = 0u;
+	nucleus_call_object = 0u;
+	return result;
+}
+
+/* Descriptor copy for a nucleus endpoint: the staged bytes in the common
+ * staging block land in the caller buffer through the same checked copy
+ * resolver a bank-6 service uses. */
+int16_t ipc_nucleus_copy_out(uint8_t desc, uint16_t offset, uint16_t length)
+{
+	return api_copy(desc, offset, (uint16_t)zos_user_copy_staging, length,
+			ZOS_IPC_DESC_OUT);
+}
+#endif
 
 /* --- nucleus-side calls -------------------------------------------------- */
 
@@ -795,6 +914,42 @@ const struct ipc_service_boot *ipc_service_boot(void)
 
 /* --- syscall entry ------------------------------------------------------- */
 
+#if ZOS_NS_HANDLES
+/* Object family (package 42a): the syscall body resolved the bound handle
+ * to the endpoint and the provider object first, so the block's `handle`
+ * rides along only for an in-process provider that reads its instance from
+ * it.  The stage-3 entry below keeps production's meaning of the field -
+ * the endpoint number itself - because production keeps that pair until
+ * package 42b switches over. */
+int16_t ipc_syscall_call_object(struct zos_ipc_call_args *args,
+				uint8_t endpoint, uint8_t object)
+{
+	int8_t id = (int8_t)-1;
+	int16_t result;
+
+	desc_release_all();
+	if (args->length != 0u) {
+		id = desc_capture(ipc_gate_latch(), args->buffer,
+				  args->length, args->direction);
+		if (id < 0) {
+			args->status = -ZOS_EINVAL;
+			return -ZOS_EINVAL;
+		}
+	}
+	call_frame = args->frame;
+	call_frame.desc = (id >= 0) ? (uint8_t)id : ZOS_IPC_DESC_NONE;
+	result = ipc_call_object(endpoint, object, args->handle, &call_frame);
+	args->frame = call_frame;
+	args->status = result;
+	desc_release_all();
+	return result;
+}
+
+int16_t ipc_syscall_call(struct zos_ipc_call_args *args)
+{
+	return ipc_syscall_call_object(args, args->handle, 0u);
+}
+#else
 int16_t ipc_syscall_call(struct zos_ipc_call_args *args)
 {
 	int8_t id = (int8_t)-1;
@@ -823,3 +978,4 @@ int16_t ipc_syscall_call(struct zos_ipc_call_args *args)
 	desc_release_all();
 	return result;
 }
+#endif

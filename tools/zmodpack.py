@@ -138,11 +138,26 @@ A_BYTES = 4
 # carries no relocation records.  The constants mirror
 # include/zephyros/service.h and are pinned by host tests.
 SERVICE_ABI_VERSION = 3
+# ABI 4 (work package 42a) adds the publication table; a container whose
+# manifest declares no publications stays ABI 3, byte for byte.
+SERVICE_ABI_PUBLICATIONS = 4
 SERVICE_SECTION_OFFSET = HEADER_SIZE
 SERVICE_HEADER_SIZE = 16
 SERVICE_SEGMENT_SIZE = 14
 SERVICE_ENDPOINT_SIZE = 8
 SERVICE_DEPENDENCY_SIZE = 4
+SERVICE_PUBLICATION_SIZE = 20
+SERVICE_PUBLICATION_NAME = 16
+SERVICE_MAX_PUBLICATIONS = 12
+# The DEVICE provider's root (architecture 36.13): a manifest declares the
+# full namespace path and the container carries the provider-relative
+# remainder, which is what the provider resolves.
+SERVICE_DEVICE_ROOT = "/dev"
+# The 8-bit protocol types a publication may name (abi/zos/object.h).
+SERVICE_TYPES = {
+    "SERIAL": 1, "VIDEO": 2, "BLOCK": 3, "INPUT": 4, "IOC": 5,
+    "CONSOLE": 6, "FILE": 7, "FS": 8, "SOUND": 9, "TIMER": 10,
+}
 SERVICE_ROLE_CODES = {"hot": 1, "boot": 2, "io": 3, "bulk": 4}
 SERVICE_ROLE_NAMES = {value: key for key, value in SERVICE_ROLE_CODES.items()}
 SERVICE_MAX_SEGMENTS = 4
@@ -565,6 +580,58 @@ def load_service_manifest(manifest, path, objdir):
         if flags & ~SERVICE_EP_REENTRANT:
             raise ZmodError("%s: unknown flags %02Xh" % (where, flags))
 
+    publishes = list(manifest.get("publishes", []))
+    if len(publishes) > SERVICE_MAX_PUBLICATIONS:
+        raise ZmodError("manifest %s: more than %d publications"
+                        % (path, SERVICE_MAX_PUBLICATIONS))
+    for index, publish in enumerate(publishes):
+        where = "%s: publication %d" % (path, index)
+        full = publish.get("path")
+        if not isinstance(full, str) or not full.startswith(
+                SERVICE_DEVICE_ROOT + "/"):
+            raise ZmodError("%s: path must be a string below %s/"
+                            % (where, SERVICE_DEVICE_ROOT))
+        name = full[len(SERVICE_DEVICE_ROOT):]
+        if len(name) + 1 > SERVICE_PUBLICATION_NAME:
+            raise ZmodError("%s: %s is longer than %d provider-relative "
+                            "bytes" % (where, full,
+                                       SERVICE_PUBLICATION_NAME - 1))
+        if name.endswith("/") or "//" in name:
+            raise ZmodError("%s: %s is not a clean name" % (where, full))
+        for char in name:
+            if not (0x21 <= ord(char) <= 0x7E):
+                raise ZmodError("%s: %s carries a non-printable byte"
+                                % (where, full))
+        publish["name"] = name
+        publish_type = publish.get("type")
+        if isinstance(publish_type, str):
+            if publish_type not in SERVICE_TYPES:
+                raise ZmodError("%s: unknown type %r"
+                                % (where, publish_type))
+            publish["type_code"] = SERVICE_TYPES[publish_type]
+        else:
+            value = int(publish_type if publish_type is not None else 0)
+            if value < 1 or value > 0xFF:
+                raise ZmodError("%s: type %r out of range"
+                                % (where, publish_type))
+            publish["type_code"] = value
+        endpoint = publish.get("endpoint")
+        if not isinstance(endpoint, dict) or "class" not in endpoint or \
+                "instance" not in endpoint:
+            raise ZmodError("%s: endpoint must name a class and an instance"
+                            % where)
+        for field in ("class", "instance"):
+            value = int(endpoint[field])
+            if value < 0 or value > 0xFF:
+                raise ZmodError("%s: endpoint %s out of range"
+                                % (where, field))
+        publish["class"] = int(endpoint["class"])
+        publish["instance"] = int(endpoint["instance"])
+        object_id = int(publish.get("object", 0))
+        if object_id < 0 or object_id > 0xFF:
+            raise ZmodError("%s: object out of range" % where)
+        publish["object"] = object_id
+
     depends = list(manifest.get("depends", []))
     if len(depends) > SERVICE_MAX_DEPENDENCIES:
         raise ZmodError("manifest %s: more than %d dependencies"
@@ -594,6 +661,7 @@ def load_service_manifest(manifest, path, objdir):
         ],
         "endpoints": endpoints,
         "depends": depends,
+        "publishes": publishes,
         "init": manifest.get("init"),
         "fini": None,
         "path": path,
@@ -983,6 +1051,7 @@ def pack_service_manifest(manifest):
     packed.records = []
     packed.endpoints = []
     packed.dependencies = []
+    packed.publications = []
     packed.init_offset = NO_ENTRY
 
     for index, segment in enumerate(layout["segments"]):
@@ -1047,6 +1116,15 @@ def pack_service_manifest(manifest):
             "optional": int(dependency.get("optional", 0)),
             "number": 0,
         })
+    for publish in manifest.get("publishes", []):
+        packed.publications.append({
+            "name": publish["name"],
+            "type": publish["type_code"],
+            "class": publish["class"],
+            "instance": publish["instance"],
+            "object": publish["object"],
+            "number": 0,
+        })
 
     if packed.bss_size > 0xFFFF or len(packed.image) + packed.bss_size > 0xFFFF:
         raise ZmodError("%s: image + bss overflows 16 bits" % where)
@@ -1082,13 +1160,20 @@ def build_service_container(packed, row):
     `row` carries the host-planned absolute base of each segment role; every
     address field in the container is final, and the header's relocation
     fields are zero (architecture 36.11)."""
+    publications = list(getattr(packed, "publications", []))
+    if len(publications) > SERVICE_MAX_PUBLICATIONS:
+        raise ZmodError("%s: %d publications; the section holds %d"
+                        % (packed.name, len(publications),
+                           SERVICE_MAX_PUBLICATIONS))
     segment_offset = SERVICE_HEADER_SIZE
     endpoint_offset = segment_offset + SERVICE_SEGMENT_SIZE * \
         len(packed.segments)
     dependency_offset = endpoint_offset + SERVICE_ENDPOINT_SIZE * \
         len(packed.endpoints)
-    section_size = dependency_offset + SERVICE_DEPENDENCY_SIZE * \
+    publication_offset = dependency_offset + SERVICE_DEPENDENCY_SIZE * \
         len(packed.dependencies)
+    section_size = publication_offset + SERVICE_PUBLICATION_SIZE * \
+        len(publications)
     payload_offset = SERVICE_SECTION_OFFSET + section_size
     image = link_service_image(packed, row)
     image_size = len(image)
@@ -1104,7 +1189,8 @@ def build_service_container(packed, row):
     header[0:4] = MAGIC
     header[4] = FORMAT_VERSION
     header[5] = TYPE_SERVICE
-    header[6] = SERVICE_ABI_VERSION
+    header[6] = (SERVICE_ABI_PUBLICATIONS if publications
+                 else SERVICE_ABI_VERSION)
     header[7] = FLAG_NONE
     put16(header, 0x08, image_size)
     put16(header, 0x0A, packed.bss_size)
@@ -1125,6 +1211,10 @@ def build_service_container(packed, row):
     section[0x08] = len(packed.segments)
     section[0x09] = len(packed.endpoints)
     section[0x0A] = len(packed.dependencies)
+    if publications:
+        # ABI 4: the section header's reserved bytes carry the table.
+        section[0x0B] = len(publications)
+        put16(section, 0x0C, publication_offset)
 
     for segment in packed.segments:
         base = row[segment["role"]]
@@ -1154,6 +1244,15 @@ def build_service_container(packed, row):
         record[0x00] = dependency["class"]
         record[0x01] = dependency["instance"]
         put16(record, 0x02, dependency["number"])
+        section += record
+    for publication in publications:
+        record = bytearray(SERVICE_PUBLICATION_SIZE)
+        raw = publication["name"].encode("ascii")
+        record[0:len(raw)] = raw
+        record[0x10] = publication["type"]
+        record[0x11] = publication["number"]
+        record[0x12] = publication["object"]
+        record[0x13] = 0
         section += record
     if len(section) != section_size:
         raise ZmodError("internal: service section size mismatch")
@@ -1392,7 +1491,7 @@ def parse_service_container(data, source="<container>"):
 
     if version != FORMAT_VERSION:
         raise ZmodError("%s: unsupported format version %d" % (source, version))
-    if abi != SERVICE_ABI_VERSION:
+    if abi not in (SERVICE_ABI_VERSION, SERVICE_ABI_PUBLICATIONS):
         raise ZmodError("%s: unsupported service ABI %d" % (source, abi))
     if flags != FLAG_NONE or reserved != 0:
         raise ZmodError("%s: bad flags/reserved fields" % source)
@@ -1421,9 +1520,15 @@ def parse_service_container(data, source="<container>"):
     segment_count = data[section_at + 0x08]
     endpoint_count = data[section_at + 0x09]
     dependency_count = data[section_at + 0x0A]
-    section_reserved = data[section_at + 0x0B]
-    if (section_reserved != 0 or get16(data, section_at + 0x0C) != 0 or
-            get16(data, section_at + 0x0E) != 0):
+    # ABI 4 (package 42a) reuses the reserved bytes for the publication
+    # table; ABI 3 keeps them zero and carries no table.
+    if abi == SERVICE_ABI_PUBLICATIONS:
+        publication_count = data[section_at + 0x0B]
+        publication_offset = get16(data, section_at + 0x0C)
+    else:
+        publication_count = 0
+        publication_offset = 0
+    if get16(data, section_at + 0x0E) != 0:
         raise ZmodError("%s: service section reserved bytes are not zero"
                         % source)
     if segment_count == 0 or segment_count > SERVICE_MAX_SEGMENTS:
@@ -1443,11 +1548,22 @@ def parse_service_container(data, source="<container>"):
         segment_count
     expected_dependency = expected_endpoint + SERVICE_ENDPOINT_SIZE * \
         endpoint_count
-    expected_end = expected_dependency + SERVICE_DEPENDENCY_SIZE * \
+    expected_publication = expected_dependency + SERVICE_DEPENDENCY_SIZE * \
         dependency_count
+    if publication_count > SERVICE_MAX_PUBLICATIONS:
+        raise ZmodError("%s: bad publication count %d"
+                        % (source, publication_count))
+    if abi == SERVICE_ABI_PUBLICATIONS and publication_count == 0:
+        raise ZmodError("%s: ABI 4 without a publication table" % source)
+    if abi == SERVICE_ABI_VERSION and publication_count != 0:
+        raise ZmodError("%s: ABI 3 cannot carry publications" % source)
+    expected_end = expected_publication + SERVICE_PUBLICATION_SIZE * \
+        publication_count
     if (segment_offset != expected_segment or
             endpoint_offset != expected_endpoint or
             dependency_offset != expected_dependency or
+            publication_offset != (expected_publication
+                                   if publication_count else 0) or
             section_size < expected_end):
         raise ZmodError("%s: service section tables are not the canonical "
                         "back-to-back layout" % source)
@@ -1543,6 +1659,27 @@ def parse_service_container(data, source="<container>"):
             "number": get16(data, at + 0x02),
         })
 
+    publications = []
+    for index in range(publication_count):
+        at = (section_at + publication_offset +
+              SERVICE_PUBLICATION_SIZE * index)
+        raw = data[at:at + SERVICE_PUBLICATION_NAME]
+        end = raw.find(b"\0")
+        if end <= 0 or raw[0:1] != b"/":
+            raise ZmodError("%s: publication %d has no name" % (source, index))
+        if data[at + 0x10] == 0 or data[at + 0x11] == 0:
+            raise ZmodError("%s: publication %d has no type or endpoint"
+                            % (source, index))
+        if data[at + 0x13] != 0:
+            raise ZmodError("%s: publication %d flags are not zero"
+                            % (source, index))
+        publications.append({
+            "name": raw[:end].decode("ascii"),
+            "type": data[at + 0x10],
+            "number": data[at + 0x11],
+            "object": data[at + 0x12],
+        })
+
     return {
         "source": source,
         "module_type": "service",
@@ -1560,6 +1697,7 @@ def parse_service_container(data, source="<container>"):
         "segments": segments,
         "endpoints": endpoints,
         "dependencies": dependencies,
+        "publications": publications,
         "payload": bytes(data[payload_offset:payload_offset + image_size]),
     }
 
@@ -1664,7 +1802,8 @@ def format_report(info, name=None):
     lines.append("%s" % label)
     if info.get("module_type") == "service":
         lines.append("  format:        ZMOD v%d driver image, ABI %d"
-                     % (FORMAT_VERSION, SERVICE_ABI_VERSION))
+                     % (FORMAT_VERSION, info.get("service_abi",
+                                                 SERVICE_ABI_VERSION)))
         lines.append("  image:         %d bytes (host-linked, no "
                      "relocations)" % info["image_size"])
     else:
@@ -1708,6 +1847,11 @@ def format_report(info, name=None):
             lines.append("  depends on:    %d.%d -> %s"
                          % (dependency["class"], dependency["instance"],
                             target))
+        for publication in info.get("publications", []):
+            lines.append("  publishes:     %-15s type %d endpoint %d "
+                         "object %d"
+                         % (publication["name"], publication["type"],
+                            publication["number"], publication["object"]))
     else:
         lines.append("  allocation:    %d x %d-byte granules"
                      % (info["required_granules"], GRANULE_SIZE))
@@ -1728,10 +1872,12 @@ def report_json(info, name, packed=None):
         "image_sha256": hashlib.sha256(info["payload"]).hexdigest(),
     }
     if info.get("module_type") == "service":
-        report["service_abi"] = SERVICE_ABI_VERSION
+        report["service_abi"] = info.get("service_abi",
+                                         SERVICE_ABI_VERSION)
         report["segments"] = info["segments"]
         report["endpoints"] = info["endpoints"]
         report["dependencies"] = info["dependencies"]
+        report["publications"] = info.get("publications", [])
     else:
         report["relocations"] = [patch for _, patch in info["relocs"]]
         report["driver_abi"] = DRIVER_ABI_VERSION
@@ -2226,6 +2372,47 @@ def plan_service_set(packs):
                     "image in the load order"
                     % (pack.name, key[0], key[1]))
             dependency["number"] = resolved
+
+    # Publications (work package 42a): every image's declared namespace
+    # names, with the serving endpoint resolved the same way a dependency
+    # is - to an export by this image or an earlier one in the load order.
+    seen_paths = {}
+    parent_rows = set()
+    published = 0
+    for index, pack in enumerate(packs):
+        for publication in pack.publications:
+            key = (publication["class"], publication["instance"])
+            resolved = 0
+            for earlier in range(index + 1):
+                for endpoint in packs[earlier].endpoints:
+                    if (endpoint["class"], endpoint["instance"]) == key:
+                        resolved = endpoint["number"]
+                        break
+                if resolved != 0:
+                    break
+            if resolved == 0:
+                raise ZmodError(
+                    "%s: publication %s names endpoint %d.%d, which no "
+                    "image in the load order exports"
+                    % (pack.name, SERVICE_DEVICE_ROOT + publication["name"],
+                       key[0], key[1]))
+            publication["number"] = resolved
+            full = (SERVICE_DEVICE_ROOT + publication["name"]).lower()
+            if full in seen_paths:
+                raise ZmodError("%s: %s is already published by %s"
+                                % (pack.name,
+                                   SERVICE_DEVICE_ROOT +
+                                   publication["name"], seen_paths[full]))
+            seen_paths[full] = pack.name
+            published += 1
+            name = publication["name"]
+            if "/" in name[1:]:
+                parent_rows.add(name.rsplit("/", 1)[0].lower())
+    if published + len(parent_rows) > SERVICE_MAX_PUBLICATIONS:
+        raise ZmodError(
+            "services: %d publications and %d grouping rows; the "
+            "provider table takes %d rows"
+            % (published, len(parent_rows), SERVICE_MAX_PUBLICATIONS))
 
     ledger = service_ledger(packs, rows)
     return rows, ledger

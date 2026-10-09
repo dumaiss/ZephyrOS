@@ -656,3 +656,106 @@ mode change, while the `SYS_EXEC` path buffer is bank-7 `_DATA`
 (`docs/validation/2026-10-05-m9-nested-exec.md`).  The `fstest` suite runs
 one more case (`exec`, `PASS 10/10`, confirmed on hardware) and the nested
 `exec` acceptance is replayed by `tests/test_m9_exec_sim.py`.
+
+## 13. M10 namespace: the root router and the static providers (package 42a)
+
+M10 replaces the M9 mount table with a *root router* over exactly three
+static nucleus providers (architecture 36.13, 36.14).  The VFS still owns
+`/`, but a path is no longer matched against a mount table: `bind` and
+`ns_enum` normalize the caller's path and route its first component,
+case-insensitively, to one of
+
+| root | provider | owner of |
+| --- | --- | --- |
+| `/FS` | the build's filesystem driver, over IPC | everything below `/FS`; `bind` returns `-ZOS_ENODEV` in 42a |
+| `/SYSTEM` | ROMFS, in-process, usable before any driver | everything below `/SYSTEM` |
+| `/dev` | the host-built publication table | everything below `/dev` |
+
+`/` is a directory of those three roots, not a provider: a root-level name
+(such as `/ns.zex`) has no owner and is refused with `-ZOS_ENOENT`.  A
+provider owns the whole subtree: the router hands it the remaining path
+and never interprets it.  There is no mount table, no provider
+registration, no root merge and no flat-prefix matching anywhere in the
+new path.
+
+**Source layout (all of it `cold`, `config/residency.json`).**
+
+```text
+kernel/vfs/ns.c        the router, the DEVICE provider over the publication
+                       table, enumeration and the standard handles
+kernel/vfs/ns_file.c   the ROMFS FILE provider (bind, read, seek, metadata)
+kernel/syscall/object.c  the syscall bodies: bind, call, unbind, ns_enum
+kernel/ipc/ipc.c       nucleus endpoints: provider objects are reached
+                       through the same handle-call path as bank-6 ones
+kernel/vfs/process.c   the handle table: the M9 descriptor pool, extended
+```
+
+**The handle table.**  `bind` returns a handle `>= ZOS_HANDLE_FIRST_BOUND`
+(3) plus an 8-bit protocol type (`ZOS_TYPE_*`).  Handles 1 and 2 are the
+standard handles - `/dev/console` bound at process start to stdout and
+stdin - and `bind` never returns them.  The table is the M9 descriptor
+pool (one global owner-tagged array, `VFS_FD_MAX` entries in the
+`namespace-selftest` image), so an entry records the owner PID, the type,
+the endpoint and the provider's object identity beside the M9 file fields;
+a descriptor whose owner is the calling pid and whose number is bound is
+the only thing a `call`/`unbind` accepts.  Exit unbinds every handle the
+process owns, and `SYS_EXEC` gives a child entries for the standard
+handles only.
+
+**The DEVICE provider.**  `/dev` names come from the *host*: each service
+manifest may declare `publishes` rows (name below `/dev`, 8-bit type,
+serving endpoint, provider object), the packer resolves them against the
+build's load order and writes a publication table into the container
+(ABI 4, `include/zephyros/service.h`), and the loader installs the table
+into the provider, synthesizing the grouping rows (`/dev/input`,
+`/dev/serial`) from the names themselves.  A grouping row is a
+`container` entry: enumerating it works, binding it is `-ZOS_EISDIR`.
+Drivers never look each other up at run time (docs/devices.md).
+
+**The ROMFS provider.**  A `/SYSTEM` bind returns a `FILE` handle served
+*in-process* by a nucleus endpoint through the same call path as a bank-6
+endpoint; the one ROMFS reader serves it, chunked through the common copy
+gate.  `ZFILE_OP_READ`, `ZFILE_OP_SEEK` and `ZFILE_OP_META` are supported
+and `ZFILE_OP_WRITE` is `-ZOS_EROFS` (ROMFS is read-only), with the bind
+flags checked first.
+
+**What the new code reuses.**  Package 42b deletes the M9 machinery; these
+objects stay because the router and its providers call them:
+
+| kept | what the namespace uses |
+| --- | --- |
+| `kernel/vfs/path.c` | `vfs_path_normalize_at()` - the one path normalizer (CWD-relative, `.`/`..`, repeated slashes) |
+| `kernel/vfs/process.c` | `vfs_cwd_for()` and the per-process CWD slots, `vfs_handle_alloc()` and the descriptor pool, `vfs_fd_check()` for file handles |
+| `romfs.rel` | the ROMFS reader: `romfs_lookup_ci()`, `romfs_entry_at()`, `romfs_copy_logical()` |
+| `kernel/ipc/ipc.c` | the endpoint table, the frame/descriptor resolver and the restricted copy calls (`ipc_call_object`, `ipc_nucleus_copy_out`) |
+| `kernel/syscall/fs.c` | `zos_fs_copy_path()` for the caller path and the block/window validation helpers |
+
+**What 42b deletes.**  Everything the M9 path owns once the router and
+its providers serve the same callers: the mount table and the mount pass
+(`kernel/vfs/mount.c`, the generated mount table `vfs_mounts`,
+`config/mounts.json`), the M9 provider ABI and the VFS
+file/directory/mutation API (`kernel/vfs/file.c`, `kernel/vfs/dir.c`,
+`kernel/vfs/mutate.c`, `fs/romfs/romfs_provider.c`), the M9 `FS_*` syscall
+front end (`kernel/syscall/fs.c`), the
+device registry (`kernel/device/registry.c`, dead in production since the
+endpoint table replaced it) and the IOC-FAT provider in bank 7's arena
+with the granules it occupies (13 of the 16 the cold arena holds).  The
+per-object bytes are itemized in
+[`docs/validation/2026-10-09-m10-namespace-handles.md`](./validation/2026-10-09-m10-namespace-handles.md).
+
+**Acceptance.**  `make ns-selftest` builds the `namespace-selftest` image
+(the production boot path with a small service set: SIO, the console
+service and a synthetic publisher whose manifest declares
+`/dev/input/keyboard` and `/dev/video`), boots an ordinary SDK client as
+`/SYSTEM/ns.zex`, and replays it: the standard handles, the publication
+types, grouping-name refusals, a call through a handle, a `/SYSTEM` FILE
+read/seek/metadata, `ZOS_EROFS`, table exhaustion and release, paged
+`ns_enum` over `/`, `/dev` and `/SYSTEM`, and a child that proves the
+inherited standard handles.  `tests/test_ns_selftest.py` pins the ABI, the
+packed publication tables and the residency classification;
+`tests/test_ns_selftest_sim.py` compares the transcript with the packed
+store.  Production links none of it in this package, so its image stays
+byte-identical (`config/residency.json` classifies `vfs_ns`, `vfs_ns_file`
+and `object` as `cold` + `test_link`); the measurement and the projected
+production ledger after 42b are in
+[`docs/validation/2026-10-09-m10-namespace-handles.md`](./validation/2026-10-09-m10-namespace-handles.md).

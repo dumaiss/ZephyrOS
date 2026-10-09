@@ -27,6 +27,11 @@ ZEX_CRT0        := $(ZEX_SDK_BUILD)/crt0.rel
 ZEX_RUNTIME     := $(ZEX_SDK_BUILD)/runtime.rel
 ZEX_LIBZOS      := $(ZEX_SDK_BUILD)/libzos.lib
 ZEX_SDK_LOW_SIZE := 68
+# The program code base the ordinary layout uses: the SDK's gate-visible
+# data area (ZEX_SDK_LOW_SIZE bytes at LOWBASE) plus the low window base.
+# A program that reserves a caller buffer or links a larger SDK data area
+# passes CODEBASE explicitly.
+ZEX_DEFAULT_CODEBASE := 0x0144
 ZOS_SDK_ROOT    := user/sdk
 ZOS_SDK_INCLUDE := $(ZOS_SDK_ROOT)/include
 ZOS_SDK_SRC     := $(ZOS_SDK_ROOT)/src
@@ -50,8 +55,20 @@ ZOS_SDK_C_SRC := args.c fs.c ipc.c exec.c console_io.c \
     zlibc/memcmp.c zlibc/strlcpy.c zlibc/strlcat.c \
     zlibc/utoa.c zlibc/ultoa.c zlibc/itoa.c zlibc/ltoa.c \
     zlibc/printf.c zlibc/sdcc_arith.c zlibc/sdcc_arith_signed.c
-ZOS_SDK_ASM_SRC := gate.asm fsgate.asm ipcgate.asm diaggate.asm \
+ZOS_SDK_ASM_SRC := gate.asm fsgate.asm ipcgate.asm diaggate.asm nsgate.asm \
     zlibc/sdcc_arith_entries.asm zlibc/sdcc_arith_signed_entries.asm
+
+# Namespace acceptance image (work package 42a, correction 01): the SDK
+# variant marshals bind/unbind/ns_enum through its own gate blocks and
+# names object handles, so its programs link nsgate.asm's 21 extra
+# low-data bytes, which moves the default code base up.  Production's SDK
+# is untouched: no production program references the blocks, so the
+# archive member is never linked.
+ifeq ($(ZOS_NS_SELFTEST),1)
+ZEX_CFLAGS         += -DZOS_NS_HANDLES=1
+ZEX_SDK_LOW_SIZE   := 89
+ZEX_DEFAULT_CODEBASE := 0x0159
+endif
 
 ZOS_SDK_C_OBJS   := $(addprefix $(ZEX_SDK_BUILD)/,$(patsubst %.c,%.rel,$(ZOS_SDK_C_SRC)))
 ZOS_SDK_ASM_OBJS := $(addprefix $(ZEX_SDK_BUILD)/,$(patsubst %.asm,%.rel,$(ZOS_SDK_ASM_SRC)))
@@ -106,7 +123,7 @@ $(1)_ENTRY  := $$(if $$(filter ENTRY=%,$$($(1)_OPTS)),$$(patsubst ENTRY=%,%,$$(f
 # ordinary layout reserves 0100h-0143h and starts code at 0144h.  A program
 # that reserves a caller buffer supplies both bases explicitly.
 $(1)_LOWBASE := $$(if $$(filter LOWBASE=%,$$($(1)_OPTS)),$$(patsubst LOWBASE=%,%,$$(filter LOWBASE=%,$$($(1)_OPTS))),0x0100)
-$(1)_CODEBASE := $$(if $$(filter CODEBASE=%,$$($(1)_OPTS)),$$(patsubst CODEBASE=%,%,$$(filter CODEBASE=%,$$($(1)_OPTS))),0x0144)
+$(1)_CODEBASE := $$(if $$(filter CODEBASE=%,$$($(1)_OPTS)),$$(patsubst CODEBASE=%,%,$$(filter CODEBASE=%,$$($(1)_OPTS))),$$(ZEX_DEFAULT_CODEBASE))
 $(1)_NOCRT0 := $$(if $$(filter NO_CRT0=1,$$($(1)_OPTS)),1,)
 $(1)_STAGE  := $$(if $$(filter STAGE=1,$$($(1)_OPTS)),1,)
 $(1)_INC    := $$(if $$(filter INCLUDES=%,$$($(1)_OPTS)),$$(patsubst INCLUDES=%,%,$$(filter INCLUDES=%,$$($(1)_OPTS))),)
