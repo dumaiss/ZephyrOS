@@ -135,6 +135,13 @@ static void fsf_note(const char *s)
 	fsf_puts("\r\n");
 }
 
+static void m9s_note(const char *s)
+{
+	fsf_puts("m9 selftest: ");
+	fsf_puts(s);
+	fsf_puts("\r\n");
+}
+
 /* --- pattern, hash and I/O helpers ------------------------------------ */
 
 static unsigned char fsf_pattern(unsigned int i)
@@ -754,6 +761,65 @@ static int fsf_errors(void)
 	return 0;
 }
 
+/* The two provider faults are driven here, in the native client that
+ * already owns the acceptance buffers.  This keeps test-only code out of
+ * the bank-7 IOC-FAT arena while preserving the exact transcript fences. */
+static int fsf_faults(void)
+{
+	static const char path[] = FSF_ROOT "/FT.TXT";
+	int fd;
+	int result;
+
+	fd = zos_open(path, (unsigned char)(ZFS_O_WRITE | ZFS_O_CREATE |
+					    ZFS_O_TRUNC));
+	if (fd < 0 || fsf_write_pattern((unsigned int)fd, 1040u) != 0 ||
+	    zos_close((unsigned int)fd) != 0) {
+		return 1;
+	}
+
+	fd = zos_open(path, ZFS_O_READ);
+	if (fd < 0 || zos_read((unsigned int)fd, fsf_buf, 16u) != 16 ||
+	    !fsf_slice_ok(fsf_buf, 0u, 16u)) {
+		return 2;
+	}
+	m9s_note("fault:stale:arm");
+	if (zos_seek((unsigned int)fd, 1024L, ZFS_SEEK_SET) != 1024L) {
+		return 3;
+	}
+	result = zos_read((unsigned int)fd, fsf_buf, 16u);
+	if (result == -ZOS_ESTALE) {
+		m9s_note("fault:stale:observed");
+	} else if (result == 16 && fsf_slice_ok(fsf_buf, 1024u, 16u)) {
+		m9s_note("fault:stale:fresh");
+	} else {
+		return 3;
+	}
+	m9s_note("fault:stale:end");
+	(void)zos_close((unsigned int)fd);
+
+	fd = zos_open(path, ZFS_O_WRITE);
+	if (fd < 0 || zos_seek((unsigned int)fd, 4L, ZFS_SEEK_SET) != 4L) {
+		return 4;
+	}
+	m9s_note("fault:write:arm");
+	result = zos_write((unsigned int)fd, fsf_ref, 4u);
+	if (result == -ZOS_EIO) {
+		m9s_note("fault:write:observed");
+		if (zos_seek((unsigned int)fd, 0L, ZFS_SEEK_CUR) != 4L ||
+		    zos_stat(path, &fsf_stat) != 0 || fsf_stat.size != 1040u) {
+			return 5;
+		}
+	} else if (result == 4) {
+		m9s_note("fault:write:fresh");
+	} else {
+		return 5;
+	}
+	m9s_note("fault:write:end");
+	(void)zos_close((unsigned int)fd);
+
+	return zos_unlink(path) == 0 ? 0 : 6;
+}
+
 /* --- main ------------------------------------------------------------- */
 
 int main(void)
@@ -771,6 +837,7 @@ int main(void)
 	fsf_report("pool", fsf_pool());
 	fsf_report("exdev", fsf_exdev());
 	fsf_report("errors", fsf_errors());
+	fsf_report("faults", fsf_faults());
 	(void)zos_rmdir(FSF_ROOT);
 
 	if (fsf_pass == fsf_total) {

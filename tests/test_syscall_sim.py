@@ -107,7 +107,7 @@ class TestM9FsAcceptance(M9FsSimBase):
 
         for line in ("ZephyrOS 0.0", "platform: Zephyr-80",
                      "kernel entry: OK", "serial: OK",
-                     "console: dynamic sio0.b OK"):
+                     "console: service OK"):
             self.assertIn(line + "\r\n", sio)
         self.assertIn(FSTEST_PASS, sio)
         self.assertIn(FSTEST_LAUNCHER_OK, sio)

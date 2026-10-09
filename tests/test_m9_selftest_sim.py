@@ -42,13 +42,13 @@ SELFTEST_EROFS = "m9 selftest: OK (read-only card)\r\n"
 SELFTEST_FAIL = "m9 selftest: FAIL 0x"
 FAIL_MARKERS = (SELFTEST_FAIL, "PANIC", SELFTEST_ABSENT, SELFTEST_EROFS)
 FSTEST_PASS = "fstest: PASS 5/5\r\n"
-FSFAT_PASS = "fsfat: PASS 8/8\r\n"
+FSFAT_PASS = "fsfat: PASS 9/9\r\n"
 MONITOR = "Z80> "
 GATE_STACK_SIZE = 256
 
 FSTEST_CASES = ("namespace", "romfs", "iocfat", "window", "fat")
 FSFAT_CASES = ("namespace", "basic", "sizes", "large", "cache", "pool",
-               "exdev", "errors")
+               "exdev", "errors", "faults")
 STALE_ARM = "m9 selftest: fault:stale:arm\r\n"
 STALE_END = "m9 selftest: fault:stale:end\r\n"
 WRITE_ARM = "m9 selftest: fault:write:arm\r\n"
@@ -156,7 +156,7 @@ class TestM9IntegrationAcceptance(M9IntegrationSimBase):
 
         for line in ("ZephyrOS 0.0", "platform: Zephyr-80",
                      "kernel entry: OK", "serial: OK",
-                     "console: dynamic sio0.b OK"):
+                     "console: service OK"):
             self.assertIn(line + "\r\n", sio)
         self.assertNotIn("unavailable", sio)
         self.assertNotIn("PANIC", sio)
@@ -236,7 +236,7 @@ class TestM9IntegrationAcceptance(M9IntegrationSimBase):
         self.assertNotIn(SELFTEST_FAIL, sio)
         self.assertNotIn("PANIC", sio)
         # `/SYSTEM` and the console are unaffected.
-        self.assertIn("console: dynamic sio0.b OK", sio)
+        self.assertIn("console: service OK", sio)
         self.assertEqual(
             z.bank7[self.syms["_m9_integration_selftest_result"]], 0)
 

@@ -10,8 +10,9 @@ on:
     caps one ZEX image, since the SDK links its argument scratch at the
     image end);
   - `fsfat.zex` covering the section-33 items that do not fit in fstest;
-  - `m9_selftest.c` running fstest, the depth probe and the two fault
-    probes, then checking the pools are back to baseline;
+  - the fixed runner exec'ing fstest and the depth probe, with fsfat owning
+    the two provider-fault probes in the ordinary client bank, then checking
+    the pools are back to baseline;
   - the serial smoke mode and its completion contract.
 
 Run with: `python3 -m unittest tests.test_m9_selftest`.
@@ -29,6 +30,8 @@ MAIN_C = os.path.join(ROOT, "kernel", "main.c")
 TARGET_TEST = os.path.join(ROOT, "tests", "target", "support",
                            "target_test.c")
 SELFTEST_C = os.path.join(ROOT, "tests", "target", "m9", "m9_selftest.c")
+RUNNER_C = os.path.join(ROOT, "tests", "target", "m9",
+                        "m9_selftest_runner.c")
 HEADER = os.path.join(ROOT, "tests", "target", "include",
                       "m9_integration_selftest.h")
 FSTEST_C = os.path.join(ROOT, "tests", "target", "m9", "fstest", "fstest.c")
@@ -122,7 +125,7 @@ class TestFstestDelegation(unittest.TestCase):
 
 class TestIntegrationTargetTest(unittest.TestCase):
     def test_runs_the_whole_acceptance(self):
-        text = read(SELFTEST_C)
+        text = read(RUNNER_C)
         self.assertIn('process_exec("/SYSTEM/fstest.zex"', text)
         self.assertIn('process_exec("/SYSTEM/fsdeep.zex"', text)
         self.assertIn("ZOS_EXEC_MAX_DEPTH", text)
@@ -130,15 +133,16 @@ class TestIntegrationTargetTest(unittest.TestCase):
         self.assertIn("process_free_banks()", text)
 
     def test_carries_the_two_fault_windows(self):
-        text = read(SELFTEST_C)
+        text = read(FSFAT_C)
         for fence in ("fault:stale:arm", "fault:stale:observed",
                       "fault:stale:fresh", "fault:stale:end",
                       "fault:write:arm", "fault:write:observed",
                       "fault:write:fresh", "fault:write:end"):
-            self.assertIn(fence, text, "the target test lacks %r" % fence)
+            self.assertIn(fence, text, "the client test lacks %r" % fence)
         # Both documented degraded paths are named outcomes.
-        self.assertIn("m9 selftest: OK (card absent)", text)
-        self.assertIn("m9 selftest: OK (read-only card)", text)
+        runner = read(RUNNER_C)
+        self.assertIn("m9 selftest: OK (card absent)", runner)
+        self.assertIn("m9 selftest: OK (read-only card)", runner)
 
     def test_header_pins_the_result_codes(self):
         text = read(HEADER)

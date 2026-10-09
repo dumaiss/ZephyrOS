@@ -1,11 +1,10 @@
 ; -----------------------------------------------------------------------------
 ; ZephyrOS libzos: shared runtime state (work/28c-m9-user-sdk).
 ;
-; Owns the one low-window scratch block every wrapper marshals through and
-; the carry-to-errno mapper the FS and diagnostic gates share.  The
-; standard ZEX link layout places _DATA at the image end (inside the
-; syscall argument window 0100h-1FFFh for every program the SDK builds);
-; the manifest-checked symbol `zos_scratch` proves it stays there.
+; Owns the fixed low-window data area every wrapper marshals through and
+; the carry-to-errno mapper the FS and diagnostic gates share.  zex.mk
+; links _ZOS_SDK_DATA before executable code, so these blocks stay inside
+; 0100h-1FFFh even when a program's ordinary _DATA follows a large image.
 ;
 ; The block is large enough for the largest argument block (the eight-byte
 ; exec/rename blocks) and for the getinfo record.
@@ -16,6 +15,9 @@
 	.globl _zex_runtime_error
 	.globl _zos_scratch
 	.globl zos_scratch
+	.globl _zos_ipc_raw_req
+	.globl _zos_ipc_lookup_block
+	.globl _zos_ipc_call_block
 
 	.area _CODE
 
@@ -32,11 +34,22 @@ _zex_runtime_error::
 	ld	d,a
 	ret
 
+; Declare ordinary BSS after code even in NO_CRT0 programs.  The linker
+; fixes _ZOS_SDK_DATA at its independent low address, so it must not alter
+; the normal _CODE -> _DATA placement order.
 	.area _DATA
 
-; The shared low-window syscall argument block.  Both the C-mangling form
-; and the plain name are exported so the generated manifest can pin the
-; readable name.
+	.area _ZOS_SDK_DATA
+
+; Gate-visible state.  The sizes are pinned by the public ABI and by
+; tests/test_ipc_selftest.py: scratch 16, raw request 4, lookup block 4,
+; call block 44.  This single 68-byte area is loaded as writable zeroes.
 _zos_scratch::
 zos_scratch::
 	.ds	16
+_zos_ipc_raw_req::
+	.ds	4
+_zos_ipc_lookup_block::
+	.ds	4
+_zos_ipc_call_block::
+	.ds	44

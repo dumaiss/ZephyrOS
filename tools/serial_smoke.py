@@ -5,10 +5,10 @@ Opens the SIO0/B serial link (115200 8N1, raw) on the given device,
 captures output with a bounded timeout, and verifies the expected output:
 
     --mode normal    the production boot contract: the exact banner, the
-                     dynamic console line, the monitor banner and its
+                     console-service line, the monitor banner and its
                      prompt (optional-module diagnostics tolerated)
     --mode subsystem  the subsystem acceptance image: the banner, the
-                     dynamic console line, the five mechanism groups
+                     console-service line, the five mechanism groups
                      (`syscall selftest: OK`, `irq selftest: OK`,
                      `romfs selftest: OK`, `process selftest: OK`,
                      `loader selftest: OK`) and no FAIL/PANIC marker,
@@ -21,7 +21,7 @@ captures output with a bounded timeout, and verifies the expected output:
                      early-console panic marker `PANIC: romfs: corrupt
                      recovery image` with no module execution.  Passes
                      only when that panic is present.
-    --mode ioc  the IOC image: banner, the dynamic console line,
+    --mode ioc  the IOC image: banner, the console-service line,
                      the host contract level line (08h), the controller
                      firmware level returned by PING (4Ah for the pinned
                      deployment), four repeated PING exchanges, the bulk
@@ -39,7 +39,7 @@ captures output with a bounded timeout, and verifies the expected output:
                      never printing its OK result.  Any other marker
                      value is a failure.  The boot log is captured
                      once, so start this tool first and reset the board.
-    --mode hid  the HID image: banner, the dynamic console line,
+    --mode hid  the HID image: banner, the console-service line,
                      the HID keyboard registration, the scripted
                      USB-keyboard pass, the typed-byte echo lines in
                      exact order (`hid: rx XX` for a B 3 Enter
@@ -92,17 +92,6 @@ captures output with a bounded timeout, and verifies the expected output:
                      0x05`; the console binds SIO/SIO, so both the
                      invited input byte and the console marker are
                      verified in this serial transcript.
-    --mode console-fb-badioc  the malformed-IOC fallback: the fixture IOC
-                     (null command operation) fails HID init
-                     (`hid: unavailable 0x0B`) while V9958 still
-                     loads; the console binds SIO/V9958 (input byte
-                     scripted, output marker on the display).
-    --mode console-fb-arena  the arena-exhaustion fallback: the v9958.zmod
-                     entry is an oversized allocation (`v9958:
-                     unavailable 0x06`); HID stays the input, SIO the
-                     output, so the console marker is verified in this
-                     serial transcript.
-
 All new subsystem modes send the host sync sequence while the banner is
 pending, because the acceptance builds hold the first byte until the
 host is listening (the bench reset also resets the USB bridge).
@@ -120,7 +109,7 @@ before they print anything, so those modes send that sequence once the
 port is open and repeat it until the first byte arrives.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|ioc|hid|video|console|console-integration|console-fb-nohid|console-fb-nohid-nov9958|console-fb-badioc|console-fb-arena|m9-fs|m9-exec|m9-iocfat|m9]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|ioc|hid|video|console|console-integration|console-fb-nohid|console-fb-nohid-nov9958|m9-fs|m9-exec|m9-iocfat|m9]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -138,7 +127,7 @@ BANNER = (
     b"kernel entry: OK\r\n"
     b"serial: OK\r\n"
 )
-CONSOLE_DYNAMIC_OK = b"console: dynamic sio0.b OK\r\n"
+CONSOLE_SERVICE_OK = b"console: service OK\r\n"
 
 # --- subsystem acceptance image ---------------------------------------------
 # The subsystem image exercises every retained mechanism group on the
@@ -181,7 +170,6 @@ MONITOR_BANNER = b"ZephyrOS native monitor"
 # hardware legitimately falls back to SIO -- but a failed console bind or
 # an unbound console is a failure.
 PRODUCTION_CONSOLE_FAIL = (b"console: unbound\r\n",
-                           b"console: dynamic driver failed\r\n",
                            b"console: service failed\r\n")
 # A failed optional boot module prints "<name>: unavailable 0x<code>"; the
 # production boot set must be complete, so this is a failure in the
@@ -202,20 +190,19 @@ SUBSYS_EXIT = b"monitor: exit status 0x"
 ROMFS_CORRUPT_PANIC = b"PANIC: romfs: corrupt recovery image\r\n"
 
 # --- IOC command + bulk transport ----------------------------------------
-IOC_TRANSPORT_LEVEL = b"ioc: transport level 08\r\n"
-IOC_CONTROLLER_LEVEL = b"ioc: controller level 4A\r\n"
-IOC_PING_OK = b"ioc: ping x4 OK\r\n"
-IOC_BULK_WRITE_OK = b"ioc: bulk write 1/128/512 OK\r\n"
+IOC_ENDPOINT_OK = b"ioc: endpoint class 05 version 01\r\n"
+IOC_READY_OK = b"ioc: ready 01\r\n"
+IOC_REPLY_OK = b"ioc: reply 81 status 00 length 1A\r\n"
+IOC_ECHO_OK = b"ioc: echo 10 level 4A power 40\r\n"
+IOC_STATUS_RE = re.compile(rb"ioc: status 000[01]\r\n")
+IOC_BULK_WRITE_OK = b"ioc: bulk write 0100 OK\r\n"
 # The PENDING outcome is exactly the verified unknown-command class 0FEh;
 # any other code in either marker is a failure, never PENDING.
 IOC_BULK_WRITE_PENDING_RE = re.compile(
     rb"ioc: bulk write PENDING 0xFE\r\n")
-IOC_BULK_READ_OK = b"ioc: bulk read 1/128/512 OK\r\n"
-IOC_DONE_OK = b"ioc: done x3 OK\r\n"
-# Deletion is proven only by the frozen no-file status 34h; any other
-# code (a media/filesystem error, for example) is not cleanup evidence.
-IOC_CLEANUP_RE = re.compile(rb"ioc: cleanup OK 0x34\r\n")
-IOC_HID_STATUS_RE = re.compile(rb"ioc: hid status [0-9A-F]{2}\r\n")
+IOC_BULK_READ_OK = b"ioc: bulk read 0100 OK\r\n"
+IOC_CLEANUP_OK = b"ioc: cleanup OK\r\n"
+IOC_MALFORMED_OK = b"ioc: malformed refused 05\r\n"
 IOC_SELFTEST_OK = b"ioc selftest: OK\r\n"
 IOC_SELFTEST_PENDING_RE = re.compile(
     rb"ioc selftest: PENDING 0xFE\r\n")
@@ -226,28 +213,31 @@ IOC_FAIL = b"ioc selftest: FAIL"
 IOC_UNAVAILABLE = b"ioc: unavailable"
 
 # --- HID keyboard/text input ---------------------------------------------
-HID_KEYBOARD_OK = b"hid: keyboard0 OK\r\n"
-HID_READY = b"hid: ready for input\r\n"
+HID_ENDPOINT_RE = re.compile(rb"hid: class 04 v01 handle [0-9A-F]{2}\r\n")
+HID_IOC_RE = re.compile(rb"hid: ioc class 05 v01 handle [0-9A-F]{2}\r\n")
+HID_READY = b"hid: ready 1\r\n"
+HID_POLL_OK = b"hid: poll 1\r\n"
 # The MCU's translation of the scripted key pass: a, B, 3, Enter,
 # Backspace, Ctrl-X, Arrow-Up (ESC [ A).  Every byte must appear exactly
 # once, in this order, in the `hid: rx XX` echo lines.
 HID_RX_RE = re.compile(rb"hid: rx ([0-9A-F]{2})\r\n")
 HID_TYPED_BYTES = (0x61, 0x42, 0x33, 0x0D, 0x08, 0x18, 0x1B, 0x5B, 0x41)
-HID_TYPED_OK = b"hid: typed pass OK\r\n"
-HID_SIO_PROMPT = b"hid: sio fallback, send R\r\n"
-HID_FALLBACK_OK = b"hid: sio fallback OK\r\n"
+HID_TYPED_OK = b"hid: typed 09\r\n"
+HID_CONSOLE_INPUT = b"hid: console input\r\n"
+HID_CONSOLE_OK = b"hid: console OK\r\n"
+HID_FAULT_OK = b"hid: fault OK\r\n"
+HID_REJECTED_OK = b"hid: rejected calls OK\r\n"
 HID_SELFTEST_OK = b"hid selftest: OK\r\n"
 HID_FAIL = b"hid selftest: FAIL"
 HID_UNAVAILABLE = b"hid: unavailable"
-HID_FALLBACK_BYTE = b"R"
 
 # --- V9958 video core -----------------------------------------------------
-VIDEO_VIDEO_OK = b"video: video0 OK\r\n"
+VIDEO_ENDPOINT_OK = b"video: endpoint class 02 version 01\r\n"
+VIDEO_PEERS_OK = b"video: peers serial=01 console=01\r\n"
+VIDEO_PRESENT_OK = b"video: present OK\r\n"
 VIDEO_MALFORMED_OK = b"video: malformed rejected\r\n"
 VIDEO_RESET_OK = b"video: reset OK\r\n"
-VIDEO_CONSOLE_OK = b"video: console v9958.0 OK\r\n"
-VIDEO_FILL_OK = b"video: fill presented\r\n"
-VIDEO_PATTERN_OK = b"video: pattern drawn\r\n"
+VIDEO_MARKER_OK = b"video: marker V41\r\n"
 VIDEO_SELFTEST_OK = b"video selftest: OK\r\n"
 VIDEO_FAIL = b"video selftest: FAIL"
 VIDEO_UNAVAILABLE = b"v9958: unavailable"
@@ -257,8 +247,9 @@ VIDEO_UNAVAILABLE = b"v9958: unavailable"
 # classes; the interactive session itself runs over the HID input and the
 # V9958 output and can only be confirmed on the physical keyboard and
 # display (or replayed by tests/test_console_sim.py).
-CONSOLE_INPUT_OK = b"console: input hid.keyboard0 class 04\r\n"
-CONSOLE_OUTPUT_OK = b"console: output v9958.0 class 02\r\n"
+CONSOLE_INPUT_OK = b"console selftest: input class 04 (hid)\r\n"
+CONSOLE_OUTPUT_OK = b"console selftest: output class 02 (video)\r\n"
+CONSOLE_TYPED_OK = b"console selftest: typed\r\n"
 CONSOLE_SELFTEST_OK = b"console selftest: OK\r\n"
 CONSOLE_FAIL = b"console selftest: FAIL"
 
@@ -312,18 +303,6 @@ FALLBACK_MODES = {
                         b"v9958: unavailable 0x05\r\n"),
         "serial_marker": True,
     },
-    "console-fb-badioc": {
-        "input": (b"sio0.b", b"01"),
-        "output": (b"v9958.0", b"02"),
-        "diagnostics": (b"hid: unavailable 0x0B\r\n",),
-        "serial_marker": False,
-    },
-    "console-fb-arena": {
-        "input": (b"hid.keyboard0", b"04"),
-        "output": (b"sio0.b", b"01"),
-        "diagnostics": (b"v9958: unavailable 0x06\r\n",),
-        "serial_marker": True,
-    },
 }
 
 
@@ -340,7 +319,7 @@ def _production_strong(data):
     This is the stronger contract: a bench whose console falls back to SIO
     prints the console-service line, the monitor banner and the prompt."""
     return all(needle in data for needle in
-               (BANNER, CONSOLE_DYNAMIC_OK, MONITOR_BANNER, SUBSYS_PROMPT))
+               (BANNER, CONSOLE_SERVICE_OK, MONITOR_BANNER, SUBSYS_PROMPT))
 
 
 def _production_result(data, quiet_elapsed):
@@ -416,14 +395,14 @@ IOC_HOST_SYNC = b"\xaa\x55"
 
 def _ioc_complete(data):
     """True when the full write/read/cleanup/OK transcript is present."""
-    if not (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-            IOC_TRANSPORT_LEVEL in data and
-            IOC_CONTROLLER_LEVEL in data and IOC_PING_OK in data and
+    if not (BANNER in data and b"console: service OK\r\n" in data and
+            IOC_ENDPOINT_OK in data and IOC_READY_OK in data and
+            IOC_REPLY_OK in data and IOC_ECHO_OK in data and
+            IOC_STATUS_RE.search(data) is not None and
             IOC_SELFTEST_OK in data):
         return False
-    return (IOC_BULK_WRITE_OK in data and IOC_DONE_OK in data and
-            IOC_BULK_READ_OK in data and
-            IOC_CLEANUP_RE.search(data) is not None)
+    return (IOC_BULK_WRITE_OK in data and IOC_BULK_READ_OK in data and
+            IOC_CLEANUP_OK in data and IOC_MALFORMED_OK in data)
 
 
 def _ioc_pending(data):
@@ -431,12 +410,11 @@ def _ioc_pending(data):
     answered the writable /SHARED open with the unknown-command class.
     It never mixes with the OK path and is never acceptance evidence."""
     if (IOC_SELFTEST_OK in data or IOC_BULK_WRITE_OK in data or
-            IOC_DONE_OK in data or IOC_BULK_READ_OK in data or
-            IOC_CLEANUP_RE.search(data) is not None):
+            IOC_BULK_READ_OK in data or IOC_CLEANUP_OK in data):
         return False
-    return (BANNER in data and CONSOLE_DYNAMIC_OK in data and
-            IOC_TRANSPORT_LEVEL in data and
-            IOC_CONTROLLER_LEVEL in data and IOC_PING_OK in data and
+    return (BANNER in data and b"console: service OK\r\n" in data and
+            IOC_ENDPOINT_OK in data and IOC_READY_OK in data and
+            IOC_REPLY_OK in data and IOC_ECHO_OK in data and
             IOC_BULK_WRITE_PENDING_RE.search(data) is not None and
             IOC_SELFTEST_PENDING_RE.search(data) is not None)
 
@@ -447,10 +425,7 @@ def _ioc_result(data):
     if IOC_FAIL in data or IOC_UNAVAILABLE in data or b"PANIC" in data:
         return "fail"
     if _ioc_complete(data):
-        if (IOC_HID_STATUS_RE.search(data) is not None and
-                b"FAIL" not in data):
-            return "ok"
-        return "fail"
+        return "ok" if b"FAIL" not in data else "fail"
     if _ioc_pending(data):
         return "pending"
     return "fail"
@@ -465,11 +440,14 @@ def _hid_result(data):
     if HID_FAIL in data or HID_UNAVAILABLE in data or \
             b"PANIC" in data:
         return "fail"
-    for needle in (BANNER, CONSOLE_DYNAMIC_OK, HID_KEYBOARD_OK,
-                   HID_READY, HID_TYPED_OK, HID_SIO_PROMPT,
-                   HID_FALLBACK_OK, HID_SELFTEST_OK):
+    for needle in (BANNER, b"console: service OK\r\n", HID_READY,
+                   HID_POLL_OK, HID_TYPED_OK, HID_CONSOLE_INPUT,
+                   HID_CONSOLE_OK, HID_FAULT_OK, HID_REJECTED_OK,
+                   HID_SELFTEST_OK):
         if needle not in data:
             return "fail"
+    if HID_ENDPOINT_RE.search(data) is None or HID_IOC_RE.search(data) is None:
+        return "fail"
     found = tuple(int(match.group(1), 16)
                   for match in HID_RX_RE.finditer(data))
     if found != HID_TYPED_BYTES:
@@ -479,11 +457,11 @@ def _hid_result(data):
 
 def _subsys_result(data):
     """True when the subsystem image's serial sections completed: the
-    banner, the dynamic console line and the five mechanism-group
+    banner, the console-service line and the five mechanism-group
     markers, with no FAIL/PANIC marker anywhere in the transcript."""
     if SUBSYS_FAIL in data or b"PANIC" in data:
         return False
-    for needle in (BANNER, CONSOLE_DYNAMIC_OK, SUBSYS_SYSCALL_OK,
+    for needle in (BANNER, CONSOLE_SERVICE_OK, SUBSYS_SYSCALL_OK,
                    SUBSYS_IRQ_OK, SUBSYS_ROMFS_OK, SUBSYS_PROCESS_DONE,
                    SUBSYS_LOADER_OK):
         if needle not in data:
@@ -512,9 +490,9 @@ def _video_result(data):
     if VIDEO_FAIL in data or VIDEO_UNAVAILABLE in data:
         return False
     return (BANNER in data and
-            VIDEO_VIDEO_OK in data and VIDEO_MALFORMED_OK in data and
-            VIDEO_RESET_OK in data and VIDEO_CONSOLE_OK in data and
-            VIDEO_FILL_OK in data and VIDEO_PATTERN_OK in data and
+            VIDEO_ENDPOINT_OK in data and VIDEO_PEERS_OK in data and
+            VIDEO_PRESENT_OK in data and VIDEO_RESET_OK in data and
+            VIDEO_MARKER_OK in data and VIDEO_MALFORMED_OK in data and
             VIDEO_SELFTEST_OK in data)
 
 
@@ -523,7 +501,8 @@ def _console_result(data):
     if CONSOLE_FAIL in data or b"PANIC" in data:
         return False
     return (BANNER in data and CONSOLE_INPUT_OK in data and
-            CONSOLE_OUTPUT_OK in data and CONSOLE_SELFTEST_OK in data)
+            CONSOLE_OUTPUT_OK in data and CONSOLE_TYPED_OK in data and
+            CONSOLE_SELFTEST_OK in data)
 
 
 def _m9fs_result(data):
@@ -613,7 +592,6 @@ def main(argv):
                                            "console", "console-integration",
                                            "console-fb-nohid",
                                            "console-fb-nohid-nov9958",
-                                           "console-fb-badioc", "console-fb-arena",
                                            "m9-fs", "m9-exec",
                                            "m9-iocfat", "m9"),
                         default="normal")
@@ -760,8 +738,7 @@ def main(argv):
                 host_sync_at = 0.0
             if (args.mode in ("ioc", "hid", "video",
                               "console", "console-integration", "console-fb-nohid",
-                              "console-fb-nohid-nov9958", "console-fb-badioc",
-                              "console-fb-arena") and
+                              "console-fb-nohid-nov9958") and
                     BANNER not in data and
                     time.monotonic() >= host_sync_at):
                 # The smoke image holds the banner for this sequence; keep
@@ -809,15 +786,6 @@ def main(argv):
                     if (_ioc_complete(data) or _ioc_pending(data)):
                         break
                 elif args.mode == "hid":
-                    if HID_SIO_PROMPT in data and not rx_byte_sent:
-                        try:
-                            link.write(HID_FALLBACK_BYTE)
-                            link.flush()
-                        except (serial.SerialException, OSError):
-                            pass  # the read notices a dropped link
-                        rx_byte_sent = True
-                        print("serial_smoke: sent fallback byte %r"
-                              % HID_FALLBACK_BYTE)
                     if _hid_result(data) == "ok" or \
                             HID_FAIL in data or \
                             HID_UNAVAILABLE in data:
@@ -891,7 +859,7 @@ def main(argv):
         expected = ("the four banner lines in order and a quiet %gs window "
                     "with no PANIC, no failed console bind and no "
                     "'<module>: unavailable' line; or, on an SIO-fallback "
-                    "bench, 'console: dynamic sio0.b OK', the monitor "
+                    "bench, 'console: service OK', the monitor "
                     "banner and the 'Z80> ' prompt" % args.quiet)
         if ok and not _production_strong(data):
             print("serial_smoke: banner-only PASS - the production console "
@@ -901,7 +869,7 @@ def main(argv):
                   "then type a key")
     elif args.mode == "subsystem":
         ok = _subsys_complete(data)
-        expected = ("the banner, the dynamic console line, the five "
+        expected = ("the banner, the console-service line, the five "
                     "mechanism groups (syscall/irq/romfs/process/loader "
                     "selftest: OK) with no FAIL/PANIC marker, and one "
                     "interactive monitor step ending on 'monitor: exit "
@@ -920,7 +888,7 @@ def main(argv):
                   "class; the bulk-write criterion is not acceptance "
                   "evidence")
             return 3
-        expected = ("the banner, the dynamic console line, host transport "
+        expected = ("the banner, the console-service line, host transport "
                     "level 08h, the controller level 4Ah returned by PING, "
                     "repeated PINGs, the bulk 1/128/512 write with matching "
                     "DONE records, the read-back of all three sections, "
@@ -929,7 +897,7 @@ def main(argv):
                     "and 'ioc selftest: OK'")
     elif args.mode == "hid":
         ok = _hid_result(data) == "ok"
-        expected = ("the banner, the dynamic console line, the HID "
+        expected = ("the banner, the console-service line, the HID "
                     "keyboard registration, the scripted USB-keyboard "
                     "typed-byte echo lines in exact order (a B 3 Enter "
                     "Backspace Ctrl-X Arrow-Up), the forced SIO fallback "
@@ -1075,11 +1043,11 @@ def _explain_wrong_image(mode, data):
             print("serial_smoke: hint: the production boot reported a "
                   "panic or a console failure (see the marker in the "
                   "transcript above)", file=sys.stderr)
-        elif BANNER in data and CONSOLE_DYNAMIC_OK not in data:
+        elif BANNER in data and CONSOLE_SERVICE_OK not in data:
             print("serial_smoke: hint: only the early serial banner was "
                   "captured.  The production image binds its console to "
                   "the V9958 output (architecture section 30.9), so "
-                  "'console: dynamic sio0.b OK', the monitor banner and "
+                  "'console: service OK', the monitor banner and "
                   "the 'Z80> ' prompt are rendered on the V9958 display "
                   "and never reach the SIO port; --mode normal can only "
                   "gate an SIO-fallback bench.  Confirm the monitor "

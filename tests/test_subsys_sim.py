@@ -60,7 +60,7 @@ LOADER_PROGRESS = "loader selftest: "
 MONITOR_EXIT = "monitor: exit status 0x"
 MONITOR_BANNER = "ZephyrOS native monitor"
 MONITOR_PROMPT = "Z80> "
-CONSOLE_BOUND = "console: dynamic sio0.b OK"
+CONSOLE_BOUND = "console: service OK"
 
 FAIL_MARKER = b"FAIL"
 

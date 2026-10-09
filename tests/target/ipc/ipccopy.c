@@ -22,7 +22,8 @@
  * checks that the bytes arrive.
  *
  * The program is linked with its code above the buffer window
- * (CODEBASE=0x0300, NO_CRT0), so 0100h-02FFh is a plain 512-byte buffer
+ * (LOWBASE=0x0300, CODEBASE=0x0344, NO_CRT0), so 0100h-02FFh is a plain
+ * 512-byte buffer
  * with no code or data of this program in it: that is the only way a ZEX
  * can exercise the caller window itself.
  */

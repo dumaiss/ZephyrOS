@@ -481,7 +481,7 @@ class TestBuiltArtifacts(unittest.TestCase):
         _p, image = self._read("build-subsys-selftest/"
                                "zephyros-subsys-selftest.bin")
         for marker in (b"romfs selftest: OK\r\n",
-                       b"console: dynamic sio0.b OK\r\n",
+                       b"console: service OK\r\n",
                        b"romfs: corrupt recovery image"):
             self.assertIn(marker, image)
         syms = read_symbols(os.path.join(ROOT, "build-subsys-selftest",
@@ -523,7 +523,7 @@ class TestBuiltArtifacts(unittest.TestCase):
                                  "zephyros-subsys-selftest.bin")
         _p, corrupt = self._read("build-romfs-corrupt/"
                                  "zephyros-romfs-corrupt.bin")
-        for const in (serial_smoke.CONSOLE_DYNAMIC_OK,
+        for const in (serial_smoke.CONSOLE_SERVICE_OK,
                       serial_smoke.SUBSYS_ROMFS_OK):
             self.assertIn(const, success)
         # panic() writes "PANIC: " and the message as separate literals;

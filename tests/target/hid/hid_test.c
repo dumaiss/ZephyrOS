@@ -2,9 +2,9 @@
  * package 41).
  *
  * The kernel calls zos_run_hid_selftest() from the late boot hook, after
- * the service loader placed and started the image's `sio ioc hid` set
- * (and the console service, when the image's store carries it, composed
- * its input from the HID endpoint) and after the nucleus console probe.
+ * the service loader placed and started the image's
+ * `sio ioc hid console` set, the console service composed its input from
+ * the HID endpoint, and the nucleus console probe completed.
  * The diagnostic is itself a bank-7 client of the resident services (see
  * tests/target/include/service_client.h): it holds no descriptor, so it
  * drives the HID protocol through the descriptor-less byte forms -
@@ -25,12 +25,9 @@
  *     queue ('a', 'B', '3', Enter, Backspace, Ctrl-X, Arrow-Up): POLL
  *     reports pending, repeated GETC returns the queued bytes exactly in
  *     FIFO order, and the drained service answers -ZOS_EAGAIN;
- *   - when the image's store carries the console service, its input
- *     direction is the HID engine: the replay-queued pair read back
- *     through ZCONSOLE_OP_GETC is the composition row the console's boot
- *     probe selected.  An image without the console endpoint reports
- *     "hid: console absent" and leaves the composition row to the
- *     console integration diagnostics;
+ *   - the console service's input direction is the HID engine: the
+ *     replay-queued pair read back through ZCONSOLE_OP_GETC is the
+ *     composition row the console's boot probe selected;
  *   - malformed-reply atomicity: one injected short CMD_HID_INPUT reply
  *     delivers nothing from it; the clean pair queued behind it arrives
  *     afterwards in FIFO order (after the engine's bounded stuck-doorbell
@@ -49,7 +46,7 @@
 #include "hid_selftest.h"
 #include "service_client.h"
 
-#if ZOS_HID_SELFTEST || ZOS_HID_NOIOC || ZOS_HID_BADIOC
+#if ZOS_HID_SELFTEST
 
 /* Failure codes recorded in ace_hid_selftest_result (0 = success). */
 #define HID_FAIL_BOOT    0x01u /* endpoint discovery failed          */
@@ -70,8 +67,6 @@ static void hid_fail(const char *phase, uint8_t code, uint8_t detail)
 	service_cli_puts(phase);
 	service_cli_puts("\r\n");
 }
-
-#if ZOS_HID_SELFTEST
 
 #define HID_TYPED_LEN   9u
 #define HID_PAIR_LEN    2u
@@ -182,29 +177,25 @@ void zos_run_hid_selftest(void)
 	}
 	service_cli_puts("hid: typed 09\r\n");
 
-	/* Console pass: when the image's store carries the console service,
-	 * it composed HID as its input; the replay queues the pair this
-	 * reads back through the console endpoint.  An image whose store
-	 * omits the console service has no endpoint to exercise here (the
-	 * console integration diagnostics carry the composition row), so the
-	 * phase reports the absence and the rest of the diagnostic stands. */
+	/* Console pass: this image's declared service set includes console,
+	 * which composes HID as its input.  The replay queues the pair this
+	 * reads back through the console endpoint. */
 	ace_hid_selftest_result = HID_FAIL_CONSOLE;
-	if (service_cli_endpoint(ZOS_CLASS_CONSOLE, &console_endpoint) != 0u) {
-		service_cli_puts("hid: console input\r\n");
-		for (index = 0u; index < HID_PAIR_LEN; ++index) {
-			if (hid_wait_byte(console_endpoint, ZCONSOLE_OP_GETC,
-					  hid_console[index],
-					  HID_CONSOLE_SPINS) == 0u) {
-				hid_fail("console", HID_FAIL_CONSOLE,
-					 hid_console[index]);
-				return;
-			}
-			hid_rx("con rx ", hid_console[index]);
-		}
-		service_cli_puts("hid: console OK\r\n");
-	} else {
-		service_cli_puts("hid: console absent\r\n");
+	if (service_cli_endpoint(ZOS_CLASS_CONSOLE, &console_endpoint) == 0u) {
+		hid_fail("console", HID_FAIL_CONSOLE, 0x01u);
+		return;
 	}
+	service_cli_puts("hid: console input\r\n");
+	for (index = 0u; index < HID_PAIR_LEN; ++index) {
+		if (hid_wait_byte(console_endpoint, ZCONSOLE_OP_GETC,
+				  hid_console[index], HID_CONSOLE_SPINS) == 0u) {
+			hid_fail("console", HID_FAIL_CONSOLE,
+				 hid_console[index]);
+			return;
+		}
+		hid_rx("con rx ", hid_console[index]);
+	}
+	service_cli_puts("hid: console OK\r\n");
 
 	/* Fault pass: the replay queues the clean pair behind one short
 	 * CMD_HID_INPUT reply.  The service must deliver nothing from the
@@ -250,34 +241,4 @@ void zos_run_hid_selftest(void)
 	ace_hid_selftest_result = 0x00u;
 	service_cli_puts("hid selftest: OK\r\n");
 }
-
-#else /* ZOS_HID_NOIOC || ZOS_HID_BADIOC */
-
-/* Retired dependency-failure images: with no IOC service in the set the
- * loader never brings the HID image up (its declared dependency cannot
- * be satisfied), so the remaining service facts are the absent HID
- * endpoint and the serial service the console falls back to. */
-void zos_run_hid_selftest(void)
-{
-	uint8_t handle = 0u;
-
-	ace_hid_selftest_result = HID_FAIL_BOOT;
-	if (service_cli_endpoint(ZOS_CLASS_SERIAL, &handle) == 0u) {
-		hid_fail("boot", HID_FAIL_BOOT, 0x01u);
-		return;
-	}
-	service_cli_puts("hid: serial class 01 v01 handle ");
-	service_cli_hex8(handle);
-	service_cli_puts("\r\n");
-	if (service_cli_endpoint(ZOS_CLASS_HID, &handle) != 0u) {
-		hid_fail("dependency", 0x11u, handle);
-		return;
-	}
-	service_cli_puts("hid: hid absent (ioc dependency)\r\n");
-	ace_hid_selftest_result = 0x00u;
-	service_cli_puts("hid selftest: OK\r\n");
-}
-
 #endif /* ZOS_HID_SELFTEST */
-
-#endif /* ZOS_HID_SELFTEST || ZOS_HID_NOIOC || ZOS_HID_BADIOC */

@@ -17,6 +17,8 @@
 #   ENTRY=SYMBOL        ZEX entry symbol (zos_entry)
 #   NO_CRT0=1           do not link crt0; ENTRY names the program's own
 #                       entry object (used by the raw-return test child)
+#   LOWBASE=ADDR        SDK gate-visible data base (0x0100)
+#   CODEBASE=ADDR       program code base (0x0144)
 # -----------------------------------------------------------------------------
 
 ZEX_USER_ROOT   := $(BUILD)/user
@@ -24,6 +26,7 @@ ZEX_SDK_BUILD   := $(ZEX_USER_ROOT)/sdk
 ZEX_CRT0        := $(ZEX_SDK_BUILD)/crt0.rel
 ZEX_RUNTIME     := $(ZEX_SDK_BUILD)/runtime.rel
 ZEX_LIBZOS      := $(ZEX_SDK_BUILD)/libzos.lib
+ZEX_SDK_LOW_SIZE := 68
 ZOS_SDK_ROOT    := user/sdk
 ZOS_SDK_INCLUDE := $(ZOS_SDK_ROOT)/include
 ZOS_SDK_SRC     := $(ZOS_SDK_ROOT)/src
@@ -69,9 +72,9 @@ $(ZEX_CRT0): $(ZOS_SDK_SRC)/crt0.asm
 	@mkdir -p $(dir $@)
 	$(SDASZ80) $(ZEX_ASFLAGS) -o $@ $<
 
-# The shared runtime object (scratch + errno mapper) is linked explicitly
-# right after crt0 so its low-window scratch stays at the start of BSS,
-# ahead of the program's own (possibly large) BSS.
+# The shared runtime object owns the fixed low-data area and errno mapper.
+# It is linked explicitly for every program, including programs that pull
+# no archive member needing a gate block.
 $(ZEX_RUNTIME): $(ZOS_SDK_SRC)/runtime.asm
 	@mkdir -p $(dir $@)
 	$(SDASZ80) $(ZEX_ASFLAGS) -o $@ $<
@@ -99,11 +102,11 @@ $(1)_STACK  := $$(if $$(filter STACK=%,$$($(1)_OPTS)),$$(patsubst STACK=%,%,$$(f
 $(1)_SCRATCH:= $$(if $$(filter SCRATCH=%,$$($(1)_OPTS)),$$(patsubst SCRATCH=%,%,$$(filter SCRATCH=%,$$($(1)_OPTS))),zos_scratch:16)
 $(1)_SCRATCHARG := $$(if $$($(1)_SCRATCH), --scratch $$($(1)_SCRATCH),)
 $(1)_ENTRY  := $$(if $$(filter ENTRY=%,$$($(1)_OPTS)),$$(patsubst ENTRY=%,%,$$(filter ENTRY=%,$$($(1)_OPTS))),zos_entry)
-# Link base of the program's _CODE area.  The ZEX loader always loads the
-# image at its fixed base; a program that leaves the low part of its window
-# as a plain data buffer for the caller-address tests links its code above
-# it instead (work package 39 correction 01).
-$(1)_CODEBASE := $$(if $$(filter CODEBASE=%,$$($(1)_OPTS)),$$(patsubst CODEBASE=%,%,$$(filter CODEBASE=%,$$($(1)_OPTS))),0x0100)
+# The fixed SDK area is 68 bytes (_ZOS_SDK_DATA in runtime.asm), so the
+# ordinary layout reserves 0100h-0143h and starts code at 0144h.  A program
+# that reserves a caller buffer supplies both bases explicitly.
+$(1)_LOWBASE := $$(if $$(filter LOWBASE=%,$$($(1)_OPTS)),$$(patsubst LOWBASE=%,%,$$(filter LOWBASE=%,$$($(1)_OPTS))),0x0100)
+$(1)_CODEBASE := $$(if $$(filter CODEBASE=%,$$($(1)_OPTS)),$$(patsubst CODEBASE=%,%,$$(filter CODEBASE=%,$$($(1)_OPTS))),0x0144)
 $(1)_NOCRT0 := $$(if $$(filter NO_CRT0=1,$$($(1)_OPTS)),1,)
 $(1)_STAGE  := $$(if $$(filter STAGE=1,$$($(1)_OPTS)),1,)
 $(1)_INC    := $$(if $$(filter INCLUDES=%,$$($(1)_OPTS)),$$(patsubst INCLUDES=%,%,$$(filter INCLUDES=%,$$($(1)_OPTS))),)
@@ -125,6 +128,7 @@ $$($(1)_OBJDIR)/$(1).lk: $$($(1)_LINKOBJS) $$(ZEX_LIBZOS) $(ZOS_SDK_ROOT)/zex.mk
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
 	  printf '%s\n' '-i $$($(1)_OBJDIR)/$(1).ihx'; \
+	  printf '%s\n' '-b _ZOS_SDK_DATA = $$($(1)_LOWBASE)'; \
 	  printf '%s\n' '-b _CODE = $$($(1)_CODEBASE)'; \
 	  printf '%s\n' $$($(1)_LINKOBJS); \
 	  printf '%s\n' '-l $$(ZEX_LIBZOS)'; \

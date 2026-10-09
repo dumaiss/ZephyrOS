@@ -4,11 +4,10 @@
  * client of the resident HID service (see
  * tests/target/include/service_client.h).  The kernel calls
  * zos_run_hid_selftest() from the late boot hook, after the service
- * loader placed the image's `sio ioc hid` set (and started the console
- * service when the image's store carries it), and the diagnostic pins
+ * loader placed the image's `sio ioc hid console` set, and the diagnostic pins
  * the HID endpoint at the protocol version, its IOC dependency, the
  * ZHID_OP_READY probe, the scripted typed FIFO pass, the console
- * service's HID input direction when that service is present,
+ * service's HID input direction,
  * malformed-reply atomicity and the malformed-call refusals.
  *
  * Its last transcript line is "hid selftest: OK" or

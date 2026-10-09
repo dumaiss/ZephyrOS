@@ -17,10 +17,10 @@
  * service may return its own negative status, and the wrapper passes it
  * through unchanged.
  *
- * The argument block lives in the program's BSS next to the shared
- * scratch: the ZEX link layout places _DATA near the image end, inside
- * the syscall argument window 0100h-1FFFh, and the kernel rejects a block
- * outside that window with ZOS_EINVAL.
+ * The argument blocks live in the SDK's fixed low-data area, linked before
+ * executable code inside 0100h-1FFFh.  Ordinary program BSS may extend
+ * above that window; the kernel still rejects an argument block outside
+ * it with ZOS_EINVAL.
  */
 
 #ifndef ZOS_SDK_IPC_H

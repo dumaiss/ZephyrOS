@@ -313,7 +313,7 @@ class TestM9RequiredMount(M9VfsSimBase):
         # `unavailable` diagnostic.
         self.assertNotIn(OPTIONAL_FAIL_LINE + "\r\n", sio)
         # The fatal mount pass stops the boot before the monitor.
-        self.assertNotIn("console: dynamic driver failed", sio)
+        self.assertNotIn("console: service failed", sio)
         self.assertNotIn("monitor", sio)
 
     def test_mount_state_reports_system_mounted_required_failed(self):

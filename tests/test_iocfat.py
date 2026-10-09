@@ -308,7 +308,7 @@ class TestIocFatSmokeObservation(unittest.TestCase):
         return self.capture(self.tool._root_observation, "normal", data)
 
     def test_mounted_root_is_reported(self):
-        text = self.observe(self.tool.BANNER + b"console: dynamic sio0.b OK\r\n")
+        text = self.observe(self.tool.BANNER + b"console: service OK\r\n")
         self.assertIn("mounted without a diagnostic", text)
         self.assertIn("media present", text)
 
@@ -340,7 +340,7 @@ class TestIocFatSmokeObservation(unittest.TestCase):
         # `/` mounted, but the first real I/O failed: the card state never
         # reached the provider, and the operator needs to know that is a
         # bench/firmware observation rather than a provider bug.
-        data = (self.tool.BANNER + b"console: dynamic sio0.b OK\r\n"
+        data = (self.tool.BANNER + b"console: service OK\r\n"
                 + b"m9 iocfat selftest: FAIL 0x03\r\n")
         err = io.StringIO()
         with contextlib.redirect_stderr(err):

@@ -59,10 +59,15 @@
 
 /* The plan and ledger lines are acceptance evidence the replay pins
  * against the packer's report; production links only the error lines
- * (work package 41).  ZOS_TARGET_TEST_BUILD is the single production-side
- * guard (kernel/syscall.c carries the same preamble). */
+ * (work package 41).  Target images normally inherit the shared
+ * ZOS_TARGET_TEST_BUILD guard.  The M9 integration image suppresses only
+ * this verbose evidence so its IOC-FAT arena remains production-sized.
+ * kernel/syscall.c carries the shared-guard preamble too. */
 #ifndef ZOS_TARGET_TEST_BUILD
 #define ZOS_TARGET_TEST_BUILD 0
+#endif
+#ifndef ZOS_SERVICE_TEST_EVIDENCE
+#define ZOS_SERVICE_TEST_EVIDENCE ZOS_TARGET_TEST_BUILD
 #endif
 
 /* Bank 6 is the resident service domain (revision 13: bank = ZOS_BANK_MASK
@@ -154,7 +159,7 @@ static void service_puts(const char *text)
 	early_console_puts(text);
 }
 
-#if ZOS_TARGET_TEST_BUILD
+#if ZOS_SERVICE_TEST_EVIDENCE
 static void service_put_hex16(uint16_t value)
 {
 	uint8_t shift;
@@ -166,7 +171,7 @@ static void service_put_hex16(uint16_t value)
 	}
 	early_console_putc('h');
 }
-#endif /* ZOS_TARGET_TEST_BUILD */
+#endif /* ZOS_SERVICE_TEST_EVIDENCE */
 
 /* Decimal without the SDCC division runtime (work/30b audit: the kernel
  * links no arithmetic helpers): repeated subtraction of the powers of
@@ -676,7 +681,7 @@ static int service_open(const romfs_file_t *manifest, uint16_t index,
 
 /* One image's assigned base for `role`, if it has that segment (evidence
  * only: the plan line). */
-#if ZOS_TARGET_TEST_BUILD
+#if ZOS_SERVICE_TEST_EVIDENCE
 static uint8_t service_role_base(uint8_t role,
 				 const struct service_image *image,
 				 uint16_t *base)
@@ -698,12 +703,12 @@ static uint8_t service_role_base(uint8_t role,
 	}
 	return 0u;
 }
-#endif /* ZOS_TARGET_TEST_BUILD */
+#endif /* ZOS_SERVICE_TEST_EVIDENCE */
 
 /* The plan line the acceptance transcript pins: the roles in the order
  * tools/zmodpack.py's `services` command prints them, absent roles left
  * out.  Evidence only: production does not link it. */
-#if ZOS_TARGET_TEST_BUILD
+#if ZOS_SERVICE_TEST_EVIDENCE
 static void service_report(const struct service_image *image)
 {
 	static const uint8_t roles[3] = {
@@ -726,7 +731,7 @@ static void service_report(const struct service_image *image)
 	}
 	service_puts("\r\n");
 }
-#endif /* ZOS_TARGET_TEST_BUILD */
+#endif /* ZOS_SERVICE_TEST_EVIDENCE */
 
 int service_load_all(const char *manifest_name)
 {
@@ -996,13 +1001,13 @@ int service_load_all(const char *manifest_name)
 		if (result != ZMOD_OK) {
 			return result;
 		}
-#if ZOS_TARGET_TEST_BUILD
+#if ZOS_SERVICE_TEST_EVIDENCE
 		service_report(image);
 #endif
 	}
 
 	service_loader_ran = 1u;
-#if ZOS_TARGET_TEST_BUILD
+#if ZOS_SERVICE_TEST_EVIDENCE
 	/* Evidence only: the ledger tail the replay pins against the
 	 * packer's report. */
 	service_puts("service loader: ");

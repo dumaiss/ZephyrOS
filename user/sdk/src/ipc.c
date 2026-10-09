@@ -9,15 +9,13 @@
 
 #include "zos.h"
 
-/* The syscall argument blocks.  They are ordinary statics of the program
- * that links libzos, and the syscall ABI requires an argument block to
- * lie inside the caller window (0100h-1FFFh: the only part of a caller
- * bank the P-normalizing gate leaves visible while the nucleus runs).
- * The symbols are exported so a program's own manifest or acceptance
- * check can prove the placement; docs/sdk.md states the rule. */
-struct zos_ipc_call_req zos_ipc_raw_req;
-struct zos_ipc_lookup_args zos_ipc_lookup_block;
-struct zos_ipc_call_args zos_ipc_call_block;
+/* The syscall argument blocks live in runtime.asm's fixed
+ * _ZOS_SDK_DATA area.  They are declared here with their ABI types so the
+ * C marshalling stays checked, while one explicitly linked object owns
+ * every gate-visible byte and places it before executable code. */
+extern struct zos_ipc_call_req zos_ipc_raw_req;
+extern struct zos_ipc_lookup_args zos_ipc_lookup_block;
+extern struct zos_ipc_call_args zos_ipc_call_block;
 
 /* The lookup cache: a small rolling table so repeated discovery of the
  * same (class, instance) pair costs no syscall.  It is a fast path, never

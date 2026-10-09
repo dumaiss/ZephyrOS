@@ -151,7 +151,7 @@ class TestSmokeMismatchHints(unittest.TestCase):
         # The subsystem image boots the module groups; a run with
         # --mode romfs-corrupt must point back at the subsystem image.
         transcript = (serial_smoke.BANNER +
-                      serial_smoke.CONSOLE_DYNAMIC_OK +
+                      serial_smoke.CONSOLE_SERVICE_OK +
                       serial_smoke.SUBSYS_ROMFS_OK)
         hint = self._hint("romfs-corrupt", transcript)
         self.assertIn("subsystem", hint,

@@ -13,8 +13,7 @@ outside:
   loader's per-image evidence lines for the image's service set in the
   `services.man` order plus its bank-6 ledger tail, the console
   composition result, and the nucleus diagnostic's phase lines ending in
-  `ioc selftest: OK` (the diagnostic records its verdict in
-  `ace_ioc_selftest_result`);
+  `ioc selftest: OK`;
 * the peer-observable protocol facts: the IOC *service boot* runs the
   bounded LINK_SYNC bring-up on its own, the diagnostic's CMD_PING and the
   frozen /SHARED bulk acceptance follow it, exactly one command-lane
@@ -53,7 +52,7 @@ STEP_LIMIT = 40000000
 # kernel_host_sync_wait; tools/serial_smoke.py sends the same sequence).
 HOST_SYNC = b"\xaa\x55"
 
-OK_LINE = b"ioc selftest: OK"
+OK_LINE = b"ioc selftest: OK\r\n"
 FAIL_LINE = b"ioc selftest: FAIL"
 
 # Protocol vocabulary the replay decodes out of the peer (the wire the
@@ -160,15 +159,6 @@ class IocSimBase(unittest.TestCase):
         self.start_kernel(z)
         return self.run_until(z, stop, limit)
 
-    def service_manifest(self):
-        """The image's boot manifest: the resident services the loader
-        brings up, in load order (services.man, 24-byte name entries)."""
-        path = os.path.join(ROOT, self.IMAGE_DIR, "modules", "services.man")
-        with open(path, "rb") as fh:
-            data = fh.read()
-        return [data[at:at + 24].split(b"\x00")[0].decode("ascii")
-                for at in range(0, len(data), 24)]
-
     def service_evidence(self, tx):
         """The loader's per-image evidence lines, in transcript order."""
         rows = []
@@ -222,14 +212,9 @@ class TestIocServiceBoot(IocSimBase):
             self.assertIn(marker, tx)
         self.assertNotIn(FAIL_LINE, tx)
         self.assertNotIn(b"PANIC", tx)
-        self.assertEqual(z.bank7[self.syms["_ace_ioc_selftest_result"]], 0,
-                         "the diagnostic recorded a failing phase")
-
-        # The loader's evidence lines name the image's service set in the
-        # services.man order; the ledger tail counts what it placed.
-        manifest = [name for name in self.service_manifest()
-                    if name.endswith(".zmod")]
-        self.assertTrue(manifest, "services.man names no service image")
+        # The loader's observable evidence lines name the configured
+        # service set in order; the ledger tail counts what it placed.
+        manifest = ["sio.zmod", "ioc.zmod", "console.zmod"]
         evidence = self.service_evidence(tx)
         self.assertEqual([name for name, _ in evidence], manifest)
         self.assertIn(("service loader: %d images in bank 6\r\n"

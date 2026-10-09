@@ -172,7 +172,7 @@ class TestMonitorArtifacts(unittest.TestCase):
             self.skipTest("the monitor manifest has not been built")
         manifest = zexpack.load_manifest(MONITOR_JSON)
         self.assertEqual(manifest["entry"], "zos_entry")
-        self.assertEqual(manifest["entry_offset"], 0)
+        self.assertEqual(manifest["entry_offset"], 0x44)
         self.assertEqual(manifest["scratch"]["symbol"], "zos_scratch")
         self.assertEqual(manifest["scratch"]["size"], 16)
 
@@ -188,7 +188,7 @@ class TestMonitorArtifacts(unittest.TestCase):
         self.assertEqual(fields["image_size"], manifest["image_size"])
         self.assertEqual(fields["bss_size"], manifest["bss_size"])
         self.assertEqual(fields["stack_size"], manifest["stack_size"])
-        self.assertEqual(geo["entry"], 0x0100)
+        self.assertEqual(geo["entry"], 0x0144)
         self.assertEqual(report["sha256"],
                          hashlib.sha256(data).hexdigest())
         self.assertEqual(report["scratch"], manifest["scratch"])
@@ -391,7 +391,7 @@ class TestSubsystemSmokeMode(unittest.TestCase):
         import serial_smoke
         return (
             serial_smoke.BANNER
-            + serial_smoke.CONSOLE_DYNAMIC_OK
+            + serial_smoke.CONSOLE_SERVICE_OK
             + serial_smoke.SUBSYS_SYSCALL_OK
             + serial_smoke.SUBSYS_IRQ_OK
             + serial_smoke.SUBSYS_ROMFS_OK
@@ -440,7 +440,7 @@ class TestSubsystemSmokeMode(unittest.TestCase):
         import serial_smoke
 
         payload = (serial_smoke.BANNER
-                   + serial_smoke.CONSOLE_DYNAMIC_OK
+                   + serial_smoke.CONSOLE_SERVICE_OK
                    + serial_smoke.SUBSYS_SYSCALL_OK)
         code, _out, err, link = self.run_main(payload)
         self.assertEqual(code, 1)
@@ -464,7 +464,7 @@ class TestProductionSmokeMode(unittest.TestCase):
         import serial_smoke
         return (serial_smoke.BANNER
                 + diagnostics
-                + serial_smoke.CONSOLE_DYNAMIC_OK
+                + serial_smoke.CONSOLE_SERVICE_OK
                 + serial_smoke.MONITOR_BANNER
                 + serial_smoke.SUBSYS_PROMPT)
 
@@ -570,7 +570,7 @@ class TestProductionSmokeMode(unittest.TestCase):
         import serial_smoke
 
         code, _out, err = self.run_main(
-            serial_smoke.BANNER + b"console: dynamic driver failed\r\n")
+            serial_smoke.BANNER + b"console: service failed\r\n")
         self.assertEqual(code, 1)
         self.assertIn("was not observed", err)
 

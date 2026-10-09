@@ -49,7 +49,7 @@
 #include "service_client.h"
 #include "video_selftest.h"
 
-#if ZOS_VIDEO_SELFTEST || ZOS_VIDEO_FONTFAIL
+#if ZOS_VIDEO_SELFTEST
 
 uint8_t ace_video_selftest_result;
 
@@ -169,4 +169,4 @@ void zos_run_video_selftest(void)
 	service_cli_puts("video selftest: OK\r\n");
 }
 
-#endif /* ZOS_VIDEO_SELFTEST || ZOS_VIDEO_FONTFAIL */
+#endif /* ZOS_VIDEO_SELFTEST */

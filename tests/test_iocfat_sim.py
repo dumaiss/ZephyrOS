@@ -178,7 +178,7 @@ class TestM9IocFatAcceptance(M9IocFatSimBase):
 
         for line in ("ZephyrOS 0.0", "platform: Zephyr-80",
                      "kernel entry: OK", "serial: OK",
-                     "console: dynamic sio0.b OK"):
+                     "console: service OK"):
             self.assertIn(line + "\r\n", sio)
         self.assertNotIn("unavailable", sio)
         self.assertNotIn("PANIC", sio)
@@ -345,7 +345,7 @@ class TestM9IocFatAcceptance(M9IocFatSimBase):
         # The recovery store and the console are unaffected: the target
         # selftest could only run from `/SYSTEM`, and it reported through
         # the SIO console.
-        self.assertIn("console: dynamic sio0.b OK", sio)
+        self.assertIn("console: service OK", sio)
         self.assertEqual(
             z.bank7[self.syms["_m9_iocfat_selftest_result"]], 0)
         depth = self.syms["zos_gate_stack_top"] - min_sp

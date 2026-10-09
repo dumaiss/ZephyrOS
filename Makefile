@@ -362,8 +362,13 @@ endif
 # baseline.  With a card, `/` is the real FAT volume, so this is the image
 # that proves M9 end to end.
 ifeq ($(ZOS_M9_SELFTEST),1)
-CFLAGS    += -DZOS_M9_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m9_selftest.rel
+CFLAGS    += -DZOS_M9_SELFTEST=1 -DZOS_SERVICE_TEST_EVIDENCE=0
+TARGET_TEST_OBJS += $(BUILD)/m9_selftest.rel \
+		    $(BUILD)/m9_selftest_runner.rel
+# This image needs all 13 IOC-FAT arena granules.  Its compact target hook
+# fits the fixed code gap; only its bounded data belongs in the cold half.
+TEST_FIXED_OBJS := $(BUILD)/target_test.rel $(BUILD)/m9_selftest.rel \
+		   $(BUILD)/m9_selftest_runner.rel
 PK_SUFFIX := -m9-selftest
 ZOS_SERVICES := sio ioc console
 endif
@@ -396,13 +401,12 @@ endif
 # leftover space, which is the moves tier's documented fallback
 # (see config/residency.json).
 IPC_DIR   := tests/target/ipc
-# The stage-4/5 `moves` objects that still fit beside the loader compile
-# cold in this image (see above).  Defined unconditionally so the
-# ipc-selftest target below can repeat the list for the ledger run, where
-# the image's own build directory is the only thing under test.
-IPC_COLD_EXTRA := romfs_provider vfs_dir vfs_file vfs_mount \
-	vfs_process
-IPC_COLD_EXTRA_CSV := romfs_provider,vfs_dir,vfs_file,vfs_mount,vfs_process
+# The IPC image uses production's placement.  Its old five-object cold
+# override overflowed the cold half after the arena shrink moved the
+# derived data base; the remaining `moves` objects fit the fixed core's
+# documented leftover space.
+IPC_COLD_EXTRA :=
+IPC_COLD_EXTRA_CSV :=
 
 ifeq ($(ZOS_IPC_SELFTEST),1)
 CFLAGS    += -DZOS_IPC_SELFTEST=1 -Itests/target/include
@@ -412,9 +416,8 @@ PK_SUFFIX := -ipc-selftest
 # carries them), so this image adds nothing to the fixed/cold kernel sets:
 # listing them again duplicated every symbol in the probe link.
 IPC_FIXED_OBJS := $(IPC_SUBSTRATE_OBJS)
-# This image places the stage-4/5 `moves` objects in the cold half (they
-# fit beside the loader there); the same list goes to mapcheck below.
-COLD_EXTRA_CSV := $(IPC_COLD_EXTRA_CSV)
+# No image-specific placement override: use the production cold set.
+COLD_EXTRA_CSV :=
 ZOS_SERVICES := sio console
 ZOS_ARENA_MODULES :=
 endif
@@ -509,7 +512,8 @@ ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_IPC_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1 \
 		-Itests/target/include
-TARGET_TEST_OBJS := $(BUILD)/target_test.rel $(BUILD)/service_client.rel \
+TARGET_TEST_OBJS := $(BUILD)/target_test.rel \
+		$(if $(filter 1,$(ZOS_M9_SELFTEST)),,$(BUILD)/service_client.rel) \
 		$(TARGET_TEST_OBJS)
 endif
 
@@ -520,9 +524,10 @@ endif
 # the fixed core's leftover.  This block sits after the list it filters.
 COLD_OBJS  := $(addprefix $(BUILD)/,$(addsuffix .rel,$(COLD_STEMS)))
 ifneq ($(TARGET_TEST_OBJS),)
-COLD_OBJS  += $(filter-out $(IPC_FIXED_OBJS),$(TARGET_TEST_OBJS))
+COLD_OBJS  += $(filter-out $(IPC_FIXED_OBJS) $(TEST_FIXED_OBJS),$(TARGET_TEST_OBJS))
 endif
 $(COLD_OBJS): CFLAGS += --codeseg WINDOW --dataseg WINDOW_DATA
+$(TEST_FIXED_OBJS): CFLAGS += --dataseg WINDOW_DATA
 
 # Production images (no acceptance objects) must reject every acceptance
 # symbol in the linked map; mapcheck --production enforces this.
@@ -632,7 +637,6 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	smoke-hardware-video smoke-hardware-console \
 	smoke-hardware-console-integration smoke-hardware-console-fb-nohid \
 	smoke-hardware-console-fb-nohid-nov9958 \
-	smoke-hardware-console-fb-arena \
 	smoke-hardware-m9-fs \
 	smoke-hardware-m9-exec \
 	smoke-hardware-m9-iocfat \
@@ -1041,10 +1045,6 @@ $(MODULES)/abi_probe.zmod: tests/modules/abi_probe.json $(MODULES)/abi_probe.rel
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
 		--report $(MODULES)/abi_probe.report.json
 
-# Arena-exhaustion fixture for the package-20 fallback matrix: a tiny
-# image with a 36-granule BSS pad, large enough that its allocation can
-# never succeed in the derived production arena.  Loaded as `v9958.zmod`
-# by tests/console/manifest-fallback-arena.json; the init is never reached.
 # --- M9 writable-provider fixtures (test only) ---
 
 $(MODULES)/ramfs.rel: tests/modules/ramfs.c \
@@ -1232,7 +1232,8 @@ $(BUILD)/ioc_test.rel: tests/target/ioc/ioc_test.c \
 		include/zephyros/device.h include/zephyros/ioc.h \
 		include/zephyros/kernel.h drivers/ioc/ioc_proto.h \
 		include/zephyros/ioc_protocol.h \
-		tests/target/include/ioc_selftest.h | $(BUILD)
+		tests/target/include/ioc_selftest.h \
+		tests/target/include/service_client.h | $(BUILD)
 	$(SDCC) $(CFLAGS) -Idrivers/ioc $< -o $@
 
 $(BUILD)/hid_test.rel: tests/target/hid/hid_test.c \
@@ -1304,9 +1305,17 @@ $(BUILD)/m9_iocfat_test.rel: tests/target/m9/m9_iocfat_test.c \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/m9_selftest.rel: tests/target/m9/m9_selftest.c \
+		tests/target/m9/m9_selftest_internal.h \
 		include/zephyros/kernel.h \
 		include/zephyros/process.h abi/zos/fs.h \
 		kernel/lib/name.h kernel/vfs/vfs.h \
+		tests/target/include/m9_integration_selftest.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/m9_selftest_runner.rel: tests/target/m9/m9_selftest_runner.c \
+		tests/target/m9/m9_selftest_internal.h \
+		include/zephyros/kernel.h include/zephyros/process.h \
+		abi/zos/fs.h kernel/vfs/vfs.h \
 		tests/target/include/m9_integration_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
@@ -1354,12 +1363,13 @@ $(eval $(call zex_program,ipc,tests/target/ipc,\
 
 # IPC caller-buffer probe (work package 39, correction 01): the boot
 # program of the IPC acceptance image.  NO_CRT0 with a custom entry and
-# CODEBASE=0x0300 pushes its own code above 0100h-02FFh, which is left as
+# LOWBASE=0x0300 and CODEBASE=0x0344 put the SDK's 68-byte low-data area
+# immediately above 0100h-02FFh, which is left as
 # a plain 512-byte buffer: the only way a ZEX image can name the caller
 # window itself as a copy destination.
 $(eval $(call zex_program,ipccopy,tests/target/ipc,\
 	ipccopy.c ipccopy_entry.asm,NO_CRT0=1,ENTRY=ipc_copy_entry,\
-	CODEBASE=0x0300,STACK=256,STAGE=1,\
+	LOWBASE=0x0300,CODEBASE=0x0344,STAGE=1,\
 	INCLUDES=tests/target/include))
 
 # Deterministic malformed containers (one per validation boundary; see
@@ -2164,9 +2174,9 @@ smoke-hardware-console:
 	@$(call smoke_preflight,build-console-selftest/zephyros-console-selftest.bin,console-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode console --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
-# Package-20 modes: the full integration image (serial portion: early
+# Console modes: the full integration image (serial portion: early
 # diagnostics, binding report and the target selftest; the interactive
-# monitor session over HID/V9958 is the human gate) and the four
+# monitor session over HID/V9958 is the human gate) and the two retained
 # observable failure variants, each asserting its exact binding.  The
 # host sync is sent while the banner is pending, as for the other console
 # smoke modes.
@@ -2182,10 +2192,6 @@ smoke-hardware-console-fb-nohid:
 smoke-hardware-console-fb-nohid-nov9958:
 	@$(call smoke_preflight,build-console-fb-nohid-nov9958/zephyros-console-fb-nohid-nov9958.bin,console-fallback-selftests)
 	$(PYTHON) tools/serial_smoke.py --mode console-fb-nohid-nov9958 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-console-fb-arena:
-	@$(call smoke_preflight,build-console-fb-arena/zephyros-console-fb-arena.bin,console-fallback-selftests)
-	$(PYTHON) tools/serial_smoke.py --mode console-fb-arena --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-m9-fs:
 	@$(call smoke_preflight,build-m9-fs-selftest/zephyros-m9-fs-selftest.bin,m9-fs-selftest)

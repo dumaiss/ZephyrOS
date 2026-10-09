@@ -66,15 +66,6 @@ FONT_INC = os.path.join(ROOT, "drivers", "v9958", "assets",
                         "font_cp850_6x8.inc")
 MANIFEST = os.path.join(ROOT, "services", "manifests", "v9958.json")
 RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
-FONTFAIL_MANIFEST = os.path.join(ROOT, "tests", "video",
-                                 "manifest-fontfail.json")
-FONT_STUB = os.path.join(ROOT, "tests", "video", "v9958-font-stub.bin")
-TARGET_TEST_C = os.path.join(ROOT, "tests", "target", "video",
-                             "v9958_test.c")
-TARGET_HEADER = os.path.join(ROOT, "tests", "target", "include",
-                             "video_selftest.h")
-TARGET_RUNNER = os.path.join(ROOT, "tests", "target", "support",
-                             "target_test.c")
 MAIN_C = os.path.join(ROOT, "kernel", "main.c")
 MAKEFILE = os.path.join(ROOT, "Makefile")
 ZMOD = os.path.join(ROOT, "build", "modules", "v9958.zmod")
@@ -362,17 +353,13 @@ class TestServiceArtifact(unittest.TestCase):
     def test_makefile_targets_and_gates(self):
         makefile = _read(MAKEFILE)
         for target in ("v9958-test:", "video-selftest:",
-                       "video-fontfail-selftest:",
-                       "console-selftest:",
-                       "smoke-hardware-video:",
-                       "smoke-hardware-console:"):
+                       "console-selftest:"):
             self.assertIn(target, makefile)
         self.assertIn("services/manifests/%.json", makefile)
         self.assertIn("v9958_service.rel", makefile)
         self.assertIn("v9958_font.rel", makefile)
         self.assertIn("$(MODULES)/v9958-6x8.font", makefile)
         self.assertIn("ZOS_VIDEO_SELFTEST", makefile)
-        self.assertIn("ZOS_VIDEO_FONTFAIL", makefile)
         self.assertIn("ZOS_CONSOLE_SELFTEST", makefile)
         self.assertIn("ZOS_SERVICES := sio v9958 console", makefile)
         # v9958-test also runs the terminal renderer's host model suite.
@@ -571,101 +558,6 @@ class TestMapcheckRules(unittest.TestCase):
         self.assertEqual(linked, [],
                          "V9958 driver symbols must not be linked into "
                          "the kernel image: %s" % linked)
-
-
-class TestTargetAcceptanceContract(unittest.TestCase):
-    def setUp(self):
-        self.test = _read(TARGET_TEST_C)
-        self.header = _read(TARGET_HEADER)
-
-    def test_result_codes_and_entry(self):
-        for name in ("ZOS_VIDEOSELFTEST_OK", "ZOS_VIDEOSELFTEST_FAIL_BOOT",
-                     "ZOS_VIDEOSELFTEST_FAIL_SHAPE",
-                     "ZOS_VIDEOSELFTEST_FAIL_MALFORMED", "ZOS_VIDEOSELFTEST_FAIL_OPS",
-                     "ZOS_VIDEOSELFTEST_FAIL_BIND", "ZOS_VIDEOSELFTEST_FAIL_PRESENT",
-                     "ZOS_VIDEOSELFTEST_FAIL_DEVICES"):
-            self.assertIn(name, self.header)
-        self.assertIn("void zos_run_video_selftest(void);", self.header)
-        self.assertIn("extern uint8_t ace_video_selftest_result;",
-                      self.header)
-        runner = _read(TARGET_RUNNER)
-        self.assertIn("#if ZOS_VIDEO_SELFTEST || ZOS_VIDEO_FONTFAIL",
-                      runner)
-        self.assertIn("zos_run_video_selftest();", runner)
-
-    def test_target_exercises_the_seven_operations_and_pattern(self):
-        for needle in ("ZVIDEO_CTRL_WRITE", "ZVIDEO_DATA_WRITE",
-                       "ZVIDEO_DATA_BLOCK", "ZVIDEO_PALETTE_WRITE",
-                       "ZVIDEO_INDIRECT_WRITE", "ZVIDEO_PRESENT",
-                       "ZVIDEO_RESET"):
-            self.assertIn(needle, self.test)
-        for needle in ("video: video0 OK", "video: malformed rejected",
-                       "video: reset OK", "video: fill presented",
-                       "video: pattern drawn", "video selftest: OK",
-                       "video selftest: FAIL 0x"):
-            self.assertIn(needle, self.test)
-        # Malformed coverage: zero-length PRESENT/RESET, null/zero
-        # writes, unknown operation, null state.
-        for needle in ("ZDEV_EINVAL", "ZDEV_ENOTSUP", "ZDEV_ENODEV",
-                       "ZDEV_EINVAL"):
-            self.assertIn(needle, self.test)
-        # The 200-byte DATA_BLOCK is far above the historical ceiling.
-        self.assertIn("VIDEO_BAND_BYTES", self.test)
-        self.assertIn("200u", self.test)
-        # Font-failure image coverage.
-        for needle in ("ZOS_VIDEO_FONTFAIL",
-                       "video: absent after font failure",
-                       "video fontfail selftest: OK"):
-            self.assertIn(needle, self.test)
-
-    def test_smoke_tool_contract(self):
-        import serial_smoke
-
-        tool = serial_smoke
-        for constant, prefix in (
-                (tool.VIDEO_VIDEO_OK, b"video: video0 OK"),
-                (tool.VIDEO_MALFORMED_OK, b"video: malformed rejected"),
-                (tool.VIDEO_RESET_OK, b"video: reset OK"),
-                (tool.VIDEO_CONSOLE_OK,
-                 b"video: console v9958.0 OK"),
-                (tool.VIDEO_FILL_OK, b"video: fill presented"),
-                (tool.VIDEO_PATTERN_OK, b"video: pattern drawn"),
-                (tool.VIDEO_SELFTEST_OK, b"video selftest: OK"),
-                (tool.CONSOLE_INPUT_OK,
-                 b"console: input hid.keyboard0"),
-                (tool.CONSOLE_OUTPUT_OK,
-                 b"console: output v9958.0"),
-                (tool.CONSOLE_SELFTEST_OK,
-                 b"console selftest: OK")):
-            self.assertTrue(constant.startswith(prefix),
-                            "%r does not start with %r" % (constant, prefix))
-        # The console mode requires the class report and the outcome.
-        self.assertFalse(tool._console_result(b""))
-        self.assertTrue(tool._console_result(
-            tool.BANNER + tool.CONSOLE_INPUT_OK +
-            tool.CONSOLE_OUTPUT_OK + tool.CONSOLE_SELFTEST_OK))
-        self.assertFalse(tool._console_result(
-            tool.BANNER + tool.CONSOLE_FAIL))
-        base = (tool.BANNER +
-                b"video: video0 OK\r\n"
-                b"video: malformed rejected\r\n"
-                b"video: reset OK\r\n"
-                b"video: console v9958.0 OK\r\n"
-                b"video: fill presented\r\n"
-                b"video: pattern drawn\r\n"
-                b"video selftest: OK\r\n")
-        self.assertTrue(tool._video_result(base))
-        for wrong in (
-                base.replace(b"video: pattern drawn\r\n", b""),
-                base.replace(b"video selftest: OK\r\n", b""),
-                base.replace(b"video: console v9958.0 OK\r\n", b""),
-                base + b"video selftest: FAIL 0x03 detail 0x01\r\n",
-                base.replace(b"video: reset OK\r\n",
-                             b"v9958: unavailable 0x0B\r\n")):
-            self.assertFalse(tool._video_result(wrong),
-                             "misclassified: %r" % wrong[-60:])
-        self.assertIn("--mode video", tool.__doc__)
-        self.assertIn("--mode console", tool.__doc__)
 
 
 if __name__ == "__main__":

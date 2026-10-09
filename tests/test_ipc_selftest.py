@@ -48,12 +48,10 @@ SERVICE_MANIFESTS = os.path.join(CLIENT_DIR, "manifests")
 
 IMAGE_SUBDIR = os.path.join(ROOT, "build-ipc-selftest")
 PROD_SUBDIR = os.path.join(ROOT, "build")
-# The service images, their reports and the boot manifest are packed into
-# the shared module directory (the recovery manifest names them there).
-MODULE_DIR = os.path.join(ROOT, "build", "modules", "ipc-modules")
-# Package 41: the boot manifest and its plan are the shared ones beside
-# the service images, because the same rule builds every image's manifest.
-SERVICE_DIR = os.path.join(ROOT, "build", "modules")
+# The service images, reports and boot manifest belong to the IPC image's
+# own module directory.
+MODULE_DIR = os.path.join(IMAGE_SUBDIR, "modules", "ipc-modules")
+SERVICE_DIR = os.path.join(IMAGE_SUBDIR, "modules")
 
 SYSCALL_WINDOW_BASE = 0x0100
 SYSCALL_WINDOW_END = 0x2000
@@ -104,11 +102,13 @@ class TestIpcBuildWiring(unittest.TestCase):
         text = read(MAKEFILE)
         self.assertIn("ipccopy.c ipccopy_entry.asm", text)
         self.assertIn("NO_CRT0=1,ENTRY=ipc_copy_entry", text)
-        self.assertIn("CODEBASE=0x0300", text)
+        self.assertIn("LOWBASE=0x0300,CODEBASE=0x0344", text)
 
     def test_zex_rule_owns_the_code_base_option(self):
         text = read(ZEX_MK)
         self.assertIn("CODEBASE=", text)
+        self.assertIn("LOWBASE=", text)
+        self.assertIn("'-b _ZOS_SDK_DATA = $$($(1)_LOWBASE)'", text)
         self.assertIn("'-b _CODE = $$($(1)_CODEBASE)'", text)
 
     def test_container_data_area_is_named_for_the_rule(self):
@@ -133,10 +133,10 @@ class TestIpcBuildWiring(unittest.TestCase):
             self.assertIn(token, text, token)
         # The image links the substrate into the fixed core, the loader and
         # its cold body into the cold half, and packs the six service
-        # images with the boot manifest (residency --cold-extra names the
-        # moves objects that still fit beside the loader).
+        # images with the boot manifest.  It uses production placement;
+        # an image-specific cold-extra set would overflow its cold half.
         self.assertIn("IPC_COLD_EXTRA_CSV", text)
-        self.assertIn("--cold-extra $(IPC_COLD_EXTRA_CSV)", text)
+        self.assertIn("IPC_COLD_EXTRA_CSV :=", text)
         self.assertIn("$(MODULES)/services.man", text)
         self.assertIn("zmodpack.py services", text)
         self.assertIn("IPC_SERVICE_NAMES := ioc fat vfs echo con irqx", text)
@@ -306,8 +306,9 @@ class TestIpcImageLayout(unittest.TestCase):
             if entry["io_base"] is not None:
                 self.assertGreaterEqual(entry["io_base"], 0x8000, entry)
                 self.assertLess(entry["io_base"], 0xC000, entry)
-            self.assertGreaterEqual(entry["boot_base"], 0, entry)
-            self.assertLess(entry["boot_base"], 0x6000, entry)
+            if entry["boot_base"] is not None:
+                self.assertGreaterEqual(entry["boot_base"], 0, entry)
+                self.assertLess(entry["boot_base"], 0x6000, entry)
         nucleus = report["nucleus"]
         self.assertLessEqual(nucleus["service_hot_bytes"],
                              nucleus["service_hot_capacity_bytes"])
@@ -316,7 +317,7 @@ class TestIpcImageLayout(unittest.TestCase):
 
 
 class TestIpcClientWindow(unittest.TestCase):
-    """The client program and libzos must fit the argument window."""
+    """Every block the syscall gate touches must fit its caller window."""
 
     def setUp(self):
         self.report_path = os.path.join(IMAGE_SUBDIR, "user", "ipc",
@@ -327,15 +328,6 @@ class TestIpcClientWindow(unittest.TestCase):
         with open(self.report_path, encoding="utf-8") as handle:
             self.report = json.load(handle)
         self.syms = symbols(self.map_path)
-
-    def test_program_and_bss_fit_the_caller_window(self):
-        header = self.report["header"]
-        end = SYSCALL_WINDOW_BASE + header["image_size"] + \
-            header["bss_size"]
-        self.assertLessEqual(end, SYSCALL_WINDOW_END,
-                             "the program ends at %04Xh" % end)
-        print("ipc: client image %d bytes + bss %d bytes ends at %04Xh"
-              % (header["image_size"], header["bss_size"], end))
 
     def test_every_marshalling_block_is_in_the_caller_window(self):
         for name, size in (("zos_ipc_raw_req", 4),
@@ -379,10 +371,11 @@ class TestIpcCorrection01Layout(unittest.TestCase):
         # 0100h-02FFh is the 512-byte buffer the probe names as a caller
         # buffer: the image is loaded there, so its code starts above it
         # and the entry offset points into the code.
-        self.assertEqual(syms["s__CODE"], 0x0300)
+        self.assertEqual(syms["s__ZOS_SDK_DATA"], 0x0300)
+        self.assertEqual(syms["s__CODE"], 0x0344)
         self.assertGreaterEqual(report["header"]["entry_offset"], 0x0300 -
                                 0x0100)
-        self.assertGreater(syms["ipc_copy_entry"], 0x0300)
+        self.assertGreater(syms["ipc_copy_entry"], 0x0344)
         self.assertLess(syms["_ipc_copy_entry"], syms["s__DATA"])
         end = SYSCALL_WINDOW_BASE + report["header"]["image_size"] + \
             report["header"]["bss_size"]

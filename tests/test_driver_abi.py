@@ -795,8 +795,6 @@ class TestBootSetPlan(unittest.TestCase):
 
 
 INTEGRATION_FIXTURE_MANIFESTS = {
-    "manifest-fallback-arena.json":
-        os.path.join(ROOT, "tests", "console", "manifest-fallback-arena.json"),
     "manifest-fallback-nohid.json":
         os.path.join(ROOT, "tests", "console", "manifest-fallback-nohid.json"),
     "manifest-fallback-nohid-nov9958.json":
@@ -855,15 +853,12 @@ class TestManifests(unittest.TestCase):
         self.assertEqual(index["monitor.zex"], len(names) - 1,
                          "the monitor launcher is last")
 
-    def test_production_and_failure_manifests(self):
+    def test_production_and_fallback_manifests(self):
         cases = (
             (os.path.join(ROOT, "recovery", "manifest.json"),
              INTEGRATION_PRODUCTION_SET),
-            # Each fallback variant is a service-set subset now: the console
-            # composes whatever the store booted.
-            (INTEGRATION_FIXTURE_MANIFESTS["manifest-fallback-arena.json"],
-             ["sio.zmod", "ioc.zmod", "hid.zmod", "console.zmod",
-              "services.man", "v9958.zmod", "monitor.zex"]),
+            # Each retained fallback variant is a service-set subset now:
+            # the console composes whatever the store booted.
             (INTEGRATION_FIXTURE_MANIFESTS["manifest-fallback-nohid.json"],
              ["sio.zmod", "ioc.zmod", "v9958.zmod", "console.zmod",
               "services.man", "monitor.zex"]),
@@ -883,15 +878,10 @@ class TestManifests(unittest.TestCase):
                              "production manifests must not substitute "
                              "fixture bytes")
 
-    def test_failure_manifests_substitute_only_named_slots(self):
-        # Package 41: the font is the video image's bulk segment and the
-        # IOC link is the IOC service's business, so the two M8 variants
-        # that injected fixture bytes for them are gone.  What remains is
-        # the arena variant, whose `v9958.zmod` slot carries the
-        # exhaustion fixture (the load fails before any service byte runs).
+    def test_fallback_manifests_use_real_artifacts(self):
+        # The retained variants omit unavailable services; they do not
+        # substitute failure containers into live service slots.
         substitutions = {
-            "manifest-fallback-arena.json": {
-                "v9958.zmod": "arena_fill.zmod"},
             "manifest-fallback-nohid.json": {},
             "manifest-fallback-nohid-nov9958.json": {},
         }
@@ -913,9 +903,7 @@ class TestManifests(unittest.TestCase):
                        "console-fallback-selftests:",
                        "smoke-hardware-console-integration:",
                        "smoke-hardware-console-fb-nohid:",
-                       "smoke-hardware-console-fb-nohid-nov9958:",
-                       "smoke-hardware-console-fb-badioc:",
-                       "smoke-hardware-console-fb-arena:"):
+                       "smoke-hardware-console-fb-nohid-nov9958:"):
             self.assertIn(target, makefile)
         for flag in ("ZOS_CONSOLE_INTEGRATION_SELFTEST", "ZOS_CONSOLE_FALLBACK_SELFTEST",
                      "ZOS_CONSOLE_FALLBACK"):
@@ -934,8 +922,7 @@ class TestManifests(unittest.TestCase):
         import serial_smoke as tool
         self.assertEqual(
             sorted(tool.FALLBACK_MODES),
-            ["console-fb-arena", "console-fb-badioc", "console-fb-nohid",
-             "console-fb-nohid-nov9958"])
+            ["console-fb-nohid", "console-fb-nohid-nov9958"])
         for mode in tool.FALLBACK_MODES:
             self.assertIn(mode, tool.__doc__)
         base = (tool.BANNER +

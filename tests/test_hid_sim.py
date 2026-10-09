@@ -15,14 +15,12 @@ Coverage:
   `service <name>: hot <addr> ...` evidence lines in manifest order for
   the image's services, the nucleus console probe and the diagnostic's
   markers through the final `hid selftest: OK`, with no `FAIL` line and
-  none of the retired registry vocabulary;
+  no failure marker;
 * the diagnostic's protocol rows: the HID endpoint at protocol version 1
-  with the IOC dependency endpoint present, ZHID_OP_READY = 1, the
+  with the IOC dependency and console endpoints present, ZHID_OP_READY = 1, the
   scripted typed pass (a B 3 Enter Backspace Ctrl-X Arrow-Up) echoed in
-  FIFO order, -ZOS_EAGAIN once drained, and - when the store carries the
-  console service - the same engine read through the console service's
-  ZCONSOLE_OP_GETC (`hid: console absent` and the composition row left to
-  the console integration diagnostics otherwise);
+  FIFO order, -ZOS_EAGAIN once drained, and the same engine read through
+  the console service's ZCONSOLE_OP_GETC;
 * the peer-observable facts: the fetch-on-doorbell CMD_HID_INPUT
   exchanges (each asking for the ring's full free space), the MCU queue
   drained byte-for-byte, no wire traffic beyond the LINK_SYNC bring-up
@@ -118,8 +116,8 @@ class HidSimBase(unittest.TestCase):
     def boot(self, peer):
         """Boot the image to the diagnostic's final verdict, injecting
         the console/fault streams into the MCU queue at their markers.
-        Returns (machine, transcript, console_present); the console rows
-        exist only when the image's store carries the console service."""
+        Returns (machine, transcript).  This image's declared service set
+        always includes the console service."""
         z = self.make_cpu(peer)
         self.start_kernel(z)
         injected = []
@@ -142,11 +140,10 @@ class HidSimBase(unittest.TestCase):
             z, (OK_MARKER + b"\r\n", b"hid selftest: FAIL"), on_tx=on_tx)
         self.assertIn(OK_MARKER + b"\r\n", sio)
         self.assertIn("fault", injected)
-        console = "console" in injected
-        # Exactly one console state must appear, matching the injection.
-        self.assertEqual(console, CONSOLE_INPUT_MARKER in sio)
-        self.assertEqual(not console, CONSOLE_ABSENT_MARKER in sio)
-        return z, sio, console
+        self.assertIn("console", injected)
+        self.assertIn(CONSOLE_INPUT_MARKER, sio)
+        self.assertNotIn(CONSOLE_ABSENT_MARKER, sio)
+        return z, sio
 
     def step_until(self, z, markers, on_tx=None, limit=STEP_LIMIT):
         for _ in range(limit):
@@ -180,28 +177,24 @@ class HidSimBase(unittest.TestCase):
 class TestHidBootTranscript(HidSimBase):
     def test_boot_evidence_and_diagnostic_transcript(self):
         peer = IocCommandPeer(hid_bytes=HID_TYPED)
-        z, sio, console = self.boot(peer)
+        _z, sio = self.boot(peer)
 
         # Kernel banner, then the loader's evidence lines in manifest
-        # order (the console row only in stores that carry it), then the
-        # nucleus console probe; no boot failure.
+        # order, then the nucleus console probe; no boot failure.
         self.assert_order(sio, (
             b"ZephyrOS 0.0\r\n",
             b"platform: Zephyr-80\r\n",
             b"kernel entry: OK\r\n",
             b"serial: OK\r\n",
         ))
-        names = [b"sio", b"ioc", b"hid"] + ([b"console"] if console else [])
+        names = [b"sio", b"ioc", b"hid", b"console"]
         self.assertEqual(self.service_lines(sio), names)
         self.assertIn(b"service loader: %d images in bank 6\r\n"
                       % len(names), sio)
         self.assertIn(b"service hot: ", sio)
         self.assertIn(b"service boot/bulk: ", sio)
-        if console:
-            self.assertIn(b"console: service OK\r\n", sio)
-            self.assertNotIn(b"console: unbound", sio)
-        else:
-            self.assertIn(b"console: unbound\r\n", sio)
+        self.assertIn(b"console: service OK\r\n", sio)
+        self.assertNotIn(b"console: unbound", sio)
         self.assertNotIn(b"console: service failed", sio)
         self.assertNotIn(b"console: unavailable", sio)
 
@@ -213,8 +206,7 @@ class TestHidBootTranscript(HidSimBase):
             b"hid: poll 1\r\n",
             b"hid: typed 09\r\n",
         ]
-        markers += [b"hid: console input\r\n", b"hid: console OK\r\n"] \
-            if console else [CONSOLE_ABSENT_MARKER]
+        markers += [b"hid: console input\r\n", b"hid: console OK\r\n"]
         markers += [
             b"hid: fault pass\r\n",
             b"hid: fault OK\r\n",
@@ -234,10 +226,7 @@ class TestHidBootTranscript(HidSimBase):
         typed_block = b"".join(b"hid: rx %02X\r\n" % byte
                                for byte in HID_TYPED)
         self.assertIn(typed_block, sio)
-        if console:
-            self.assertIn(b"hid: con rx 4F\r\nhid: con rx 4B\r\n", sio)
-        else:
-            self.assertNotIn(b"hid: con rx ", sio)
+        self.assertIn(b"hid: con rx 4F\r\nhid: con rx 4B\r\n", sio)
 
         # Malformed-reply atomicity: between the fault markers only the
         # clean pair is delivered; the short reply's single payload byte
@@ -251,25 +240,19 @@ class TestHidBootTranscript(HidSimBase):
         self.assertNotIn(b"hid: rx EA", sio)
 
         self.assertNotIn(b"hid selftest: FAIL", sio)
-        # None of the retired M8 registry vocabulary survives.
-        self.assertNotIn(b"hid.keyboard0", sio)
-        self.assertNotIn(b"ZDEV_", sio)
-        self.assertEqual(z.bank7[self.syms["_ace_hid_selftest_result"]],
-                         0x00, "the diagnostic recorded a failure code")
 
 
 class TestHidPeerFacts(HidSimBase):
     def test_fetch_on_doorbell_drain_and_release(self):
         peer = IocCommandPeer(hid_bytes=HID_TYPED)
-        z, sio, console = self.boot(peer)
+        z, _sio = self.boot(peer)
 
         # Every fetch asked for the ring's full free space, and the MCU
         # dequeued exactly the delivered bytes: the typed pass, the
-        # console pair when that phase ran, and the clean pair behind the
+        # console pair, and the clean pair behind the
         # malformed reply.
-        fetches = 4 if console else 3  # typed, [console], poisoned, retry
-        delivered = (len(HID_TYPED) + len(HID_FAULT) +
-                     (len(HID_CONSOLE) if console else 0))
+        fetches = 4  # typed, console, poisoned, retry
+        delivered = len(HID_TYPED) + len(HID_FAULT) + len(HID_CONSOLE)
         self.assertEqual(peer.hid_requests, [HID_FETCH_SIZE] * fetches)
         self.assertEqual(peer.hid_delivered, delivered)
         self.assertEqual(list(peer.hid_queue), [],

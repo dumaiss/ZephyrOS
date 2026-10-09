@@ -27,10 +27,10 @@
 #if ZOS_IOC_SELFTEST
 #include "ioc_selftest.h"
 #endif
-#if ZOS_HID_SELFTEST || ZOS_HID_NOIOC || ZOS_HID_BADIOC
+#if ZOS_HID_SELFTEST
 #include "hid_selftest.h"
 #endif
-#if ZOS_VIDEO_SELFTEST || ZOS_VIDEO_FONTFAIL
+#if ZOS_VIDEO_SELFTEST
 #include "video_selftest.h"
 #endif
 #if ZOS_CONSOLE_SELFTEST
@@ -121,10 +121,10 @@ void zos_target_test_late(void)
 #if ZOS_IOC_SELFTEST
 	zos_run_ioc_selftest();
 #endif
-#if ZOS_HID_SELFTEST || ZOS_HID_NOIOC || ZOS_HID_BADIOC
+#if ZOS_HID_SELFTEST
 	zos_run_hid_selftest();
 #endif
-#if ZOS_VIDEO_SELFTEST || ZOS_VIDEO_FONTFAIL
+#if ZOS_VIDEO_SELFTEST
 	zos_run_video_selftest();
 #endif
 #if ZOS_CONSOLE_SELFTEST

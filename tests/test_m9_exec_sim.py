@@ -44,7 +44,7 @@ IMAGE_SUBDIR = "build-m9-exec-selftest"
 IMAGE_NAME = "zephyros-m9-exec-selftest.bin"
 
 BANNER = ("ZephyrOS 0.0\r\nplatform: Zephyr-80\r\nkernel entry: OK\r\n"
-          "serial: OK\r\nconsole: dynamic sio0.b OK\r\n")
+          "serial: OK\r\nconsole: service OK\r\n")
 FSTEST_PASS = "fstest: PASS 10/10\r\n"
 SELFTEST_OK = "m9 exec selftest: OK\r\n"
 GATE_STACK_SIZE = 256

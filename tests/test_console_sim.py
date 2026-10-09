@@ -52,15 +52,12 @@ HOST_SYNC = b"\xaa\x55"
 ZVIDEO_PRESENT = 0x03
 ZDEV_EINVAL = -2
 
-# The monitor, rebuilt in package 28c on the user SDK: it is now an
-# ordinary SDK program (crt0 + libzos, no entry assembly and no
-# hand-written manifest), so the packed container bytes changed; the size
-# is still 20-byte header + linked image.  ZephyrOS carries no
-# backward-compatibility obligation for milestone artifacts
-# (work/M9-REFERENCE.md), so this is the current oracle.
-MONITOR_SIZE = 4786
-MONITOR_SHA256 = ("515304486a599922648ab317d47dad255859cc14a31b0fa4d630dbd21e5cc6"
-                  "3c")
+# The monitor is an ordinary SDK program.  Package 41 correction 01 gives
+# every program a fixed 68-byte gate-visible area before code, so the
+# packed bytes and size below are the current artifact oracle.
+MONITOR_SIZE = 4854
+MONITOR_SHA256 = ("eda1bb4a1798252354658b03add1f7b8998e739b1178b35735e038974992ce"
+                  "0f")
 
 # Shared markers: the visible session, the early-SIO transcript and the
 # console diagnostic's marker and typed-line echo (package 41).

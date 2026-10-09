@@ -102,7 +102,9 @@ manifest from the link map, packs and validates
 | `STACK=N` | `256` | child stack reservation in the manifest |
 | `SCRATCH=SYM:SIZE` | `zos_scratch:16` | scratch symbol the packer must find in `0100h-1FFFh`; `SCRATCH=` declares none |
 | `ENTRY=SYM` | `zos_entry` | entry symbol (crt0's entry) |
-| `NO_CRT0=1` | off | link no crt0 and no runtime object; `ENTRY` names the program's own entry (used by the raw-return test child `fsraw`) |
+| `NO_CRT0=1` | off | link no crt0; `ENTRY` names the program's own entry (the fixed SDK low-data/runtime object remains) |
+| `LOWBASE=ADDR` | `0x0100` | base of the SDK's fixed 68-byte gate-visible data area |
+| `CODEBASE=ADDR` | `0x0144` | base of executable code, immediately after the ordinary low-data area |
 | `STAGE=1` | off | copy the packed program into `$(MODULES)` so a recovery manifest can name it |
 | `INCLUDES=a:b` | empty | extra include roots (colon separated), for test-owned headers only |
 
@@ -345,16 +347,16 @@ selects, so a client never has to think about where its data is - only a
 Like every other wrapper, the IPC pair marshals through an argument block
 inside the caller window: `zos_ipc_lookup_block` (4 bytes),
 `zos_ipc_call_block` (44) and `zos_ipc_raw_req` (4) are exported so a
-program's own acceptance check can prove their placement.  They are
-ordinary statics of the program that links `ipc.c`, so the window rule is
-a property of the program's whole image+BSS: with today's SDK and a
-512-byte payload buffer the client's data ends at `1FBEh`, 66 bytes below
-`2000h`.  `docs/abi.md` section 12 states the ABI rule.
+program's own acceptance check can prove their placement.  `runtime.asm`
+owns them beside `zos_scratch` in one fixed 68-byte `_ZOS_SDK_DATA` area;
+ordinary program BSS may grow beyond `2000h` without moving a gate-visible
+block.  `docs/abi.md` section 12 states the ABI rule.
 
 ## 7. Memory layout
 
 ```text
-0100h                 crt0 (zos_entry) - the entry offset is 0
+0100h-0143h           fixed SDK low data (`_ZOS_SDK_DATA`, 68 bytes)
+0144h                 crt0 (zos_entry) - the ordinary entry offset is 44h
 0100h + image_size    end of the linked image (s__DATA), start of BSS
                       crt0's tail pointer, its 127-byte tail copy and its
                       argv store, the shared scratch, then the program's
@@ -366,19 +368,18 @@ a property of the program's whole image+BSS: with today's SDK and a
                       IPC lookup/call blocks) must live entirely inside it
 ```
 
-The rule links `crt0.rel` and `runtime.rel` **explicitly, first**, before
-the program objects and `libzos`, so `zos_scratch` always sits at the very
-start of `_DATA`: even a program with a large BSS (`fstest.zex`) keeps its
-scratch inside the window.  Omitting `-b _DATA` lets the linker place
-`_DATA` directly after `_CODE`, which is what makes
+The rule links `runtime.rel` explicitly in every program and fixes its
+`_ZOS_SDK_DATA` area before `_CODE`.  `zos_scratch` and all three IPC
+blocks therefore stay in the gate window even for a large-BSS program such
+as `fstest.zex`.  Omitting `-b _DATA` still lets the linker place ordinary
+`_DATA` directly after `_CODE`, which keeps
 `image_size = s__DATA - 0100h` true by construction; the packer verifies
-it.
+it and `zexmanifest` keeps its explicit scratch-window check.
 
-A program linked with `NO_CRT0=1` gets none of this: it owns its entry
-(`ENTRY=`), declares `SCRATCH=` and is used for the raw-return acceptance child
-and for the IPC caller-buffer probe.  The probe additionally lifts
-its own code above the low window with `CODEBASE=` (the rule's
-default is `0x0100`), which leaves `0100h-02FFh` as a plain
+A program linked with `NO_CRT0=1` owns its entry (`ENTRY=`) but still gets
+the runtime's fixed low-data area; `SCRATCH=` may disable only the manifest
+pin.  The IPC caller-buffer probe sets `LOWBASE=0x0300` and
+`CODEBASE=0x0344`, which leaves `0100h-02FFh` as a plain
 512-byte buffer: it is the only way a ZEX can name the caller
 window itself as a copy destination, and the only program in the
 tree that links that way.
@@ -419,7 +420,7 @@ above:
 - `libzos` has one member per source, no kernel object, and no member
   named after kernel code;
 - `hello.zex`'s manifest equals what its link map implies, the container
-  validates, the entry is crt0 at `0100h`, the scratch is inside the
+  validates, the entry is crt0 at `0144h`, the scratch is inside the
   window, and no FS/diag member is linked;
 `make check` builds `build/user/hello.zex` so these run in the standard
 host check; the image test is added by `make helloworld-image`.

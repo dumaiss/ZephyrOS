@@ -297,20 +297,22 @@ class TestHelloZex(unittest.TestCase):
                          self.symbols["s__DATA"][0] - LOAD_BASE)
         self.assertEqual(self.manifest["bss_size"],
                          self.symbols["l__DATA"][0])
-        self.assertGreaterEqual(self.symbols["l__CODE"][0],
-                                self.manifest["image_size"])
+        self.assertEqual(self.manifest["image_size"],
+                         self.symbols["l__ZOS_SDK_DATA"][0] +
+                         self.symbols["l__CODE"][0])
 
-    def test_container_validates_and_enters_at_the_load_base(self):
+    def test_container_validates_and_enters_after_low_data(self):
         fields, geometry = zexpack.validate_image(self.image)
-        self.assertEqual(fields["entry_offset"], 0)
-        self.assertEqual(geometry["entry"], LOAD_BASE)
+        self.assertEqual(fields["entry_offset"], 0x44)
+        self.assertEqual(geometry["entry"], LOAD_BASE + 0x44)
         self.assertEqual(geometry["image_size"], self.manifest["image_size"])
         self.assertEqual(geometry["stack_base"], STACK_TOP - 256)
         self.assertEqual(self.manifest["stack_size"], 256)
 
     def test_entry_symbol_is_crt0_not_entry_assembly(self):
         self.assertEqual(self.manifest["entry"], "zos_entry")
-        self.assertEqual(self.symbols["zos_entry"], (LOAD_BASE, "zos_crt0"))
+        self.assertEqual(self.symbols["zos_entry"],
+                         (LOAD_BASE + 0x44, "zos_crt0"))
         # A program never writes entry assembly: no .asm beside the demo.
         for name in os.listdir(os.path.join(ROOT, "user", "helloworld")):
             self.assertFalse(name.endswith(".asm"),
@@ -609,7 +611,7 @@ class TestHelloWorldImage(unittest.TestCase):
 
     GREETING = "Hello, ZephyrOS!"
     REPORT = "monitor: exit status 0x0000 active 0 free-banks 6"
-    CONSOLE_BOUND = "console: dynamic sio0.b OK"
+    CONSOLE_BOUND = "console: service OK"
 
     @classmethod
     def setUpClass(cls):

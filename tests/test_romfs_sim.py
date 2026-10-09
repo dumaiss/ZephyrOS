@@ -307,7 +307,7 @@ class TestSubsystemRomfsReplay(RomfsSimBase):
 
         tx = bytes(z.sio_tx)
         self.assertIn(b"ZephyrOS 0.0\r\n", tx)
-        self.assertIn(b"console: dynamic sio0.b OK\r\n", tx)
+        self.assertIn(b"console: service OK\r\n", tx)
         self.assertIn(b"romfs selftest: OK\r\n", tx)
         self.assertNotIn(b"PANIC", tx)
         self.assertEqual(z.bank7[self.syms["_romfs_selftest_result"]], 0x00,
@@ -443,8 +443,8 @@ class TestCorruptImageReplay(unittest.TestCase):
         self.assertIn(("romfs: init failed, code 0x0A, latch 0x18, "
                        "header %s\r\n" % header_hex).encode("ascii"), tx)
         self.assertIn(b"PANIC: romfs: corrupt recovery image\r\n", tx)
-        self.assertNotIn(b"console: dynamic sio0.b OK\r\n", tx)
-        self.assertNotIn(b"console: dynamic driver failed\r\n", tx)
+        self.assertNotIn(b"console: service OK\r\n", tx)
+        self.assertNotIn(b"console: service failed\r\n", tx)
 
 
 class TestRomAccessPrimitive(RomfsSimBase):

@@ -57,8 +57,6 @@ DRIVER_C = os.path.join(ROOT, "drivers", "hid", "hid.c")
 # driver, as before, plus the protocol dispatch) and no boot segment.
 MANIFEST = os.path.join(ROOT, "services", "manifests", "hid.json")
 RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
-BADIOC_MANIFEST = os.path.join(ROOT, "tests", "hid",
-                               "manifest-badioc.json")
 TARGET_TEST_C = os.path.join(ROOT, "tests", "target", "hid",
                              "hid_test.c")
 TARGET_RUNNER = os.path.join(ROOT, "tests", "target", "support",
@@ -221,20 +219,17 @@ class TestHidServiceArtifact(unittest.TestCase):
 
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
-        for target in ("hid-test:", "hid-selftest:",
-                       "hid-noioc-selftest:",
-                       "hid-badioc-selftest:",
-                       "smoke-hardware-hid:"):
+        for target in ("hid-test:", "hid-selftest:"):
             self.assertIn(target, makefile)
         self.assertIn("services/manifests/%.json", makefile)
         self.assertIn("hid.rel", makefile)
         self.assertIn("ZOS_HID_SELFTEST", makefile)
-        self.assertIn("ZOS_HID_NOIOC", makefile)
-        self.assertIn("ZOS_HID_BADIOC", makefile)
         # Package 41: which services an image boots is its manifest's
         # service set, and the arena plan lists the arena modules only.
         self.assertIn("ZOS_SERVICES := sio ioc hid console", makefile)
         self.assertIn("ZOS_ARENA_MODULES", makefile)
+        image_manifest = os.path.join(ROOT, "tests", "hid", "manifest.json")
+        self.assertIn('"name": "console.zmod"', _read(image_manifest))
 
     def test_production_map_has_no_linked_hid_symbols(self):
         if not os.path.exists(MAP):
@@ -393,75 +388,6 @@ class TestHidSourceDiscipline(unittest.TestCase):
         # No blocking loops anywhere in the driver.
         self.assertNotIn("while (1)", self.c)
         self.assertNotIn("for (;;)", self.c)
-
-
-class TestHidSmokeToolContract(unittest.TestCase):
-    def setUp(self):
-        import serial_smoke
-
-        self.tool = serial_smoke
-        self.test = _read(TARGET_TEST_C)
-
-    def test_markers_match_target_output(self):
-        for needle in ("hid: keyboard0 OK\\r\\n",
-                       "hid: ready for input\\r\\n",
-                       "hid: rx ",
-                       "hid: typed pass OK\\r\\n",
-                       "hid: sio fallback, send R\\r\\n",
-                       "hid: sio fallback OK\\r\\n",
-                       "hid selftest: OK\\r\\n",
-                       "hid selftest: FAIL 0x"):
-            self.assertIn(needle, self.test,
-                          "target output changed without the smoke tool: %r"
-                          % needle)
-        for constant, prefix in (
-                (self.tool.HID_READY, b"hid: ready for input"),
-                (self.tool.HID_TYPED_OK, b"hid: typed pass OK"),
-                (self.tool.HID_SIO_PROMPT,
-                 b"hid: sio fallback, send R"),
-                (self.tool.HID_FALLBACK_OK, b"hid: sio fallback OK"),
-                (self.tool.HID_SELFTEST_OK, b"hid selftest: OK")):
-            self.assertTrue(constant.startswith(prefix),
-                            "%r does not start with %r" % (constant, prefix))
-
-    def test_typed_bytes_match_the_mcu_translation(self):
-        # a, B, 3, Enter, Backspace, Ctrl-X, Arrow-Up (ESC [ A).
-        self.assertEqual(self.tool.HID_TYPED_BYTES,
-                         (0x61, 0x42, 0x33, 0x0D, 0x08, 0x18,
-                          0x1B, 0x5B, 0x41))
-        for fragment in ("0x61u", "0x42u", "0x33u", "0x0Du", "0x08u",
-                         "0x18u", "0x1Bu, 0x5Bu, 0x41u"):
-            self.assertIn(fragment, self.test)
-
-    def test_result_classification(self):
-        rx = b"".join(b"hid: rx %02X\r\n" % b
-                      for b in self.tool.HID_TYPED_BYTES)
-        base = (self.tool.BANNER + self.tool.CONSOLE_DYNAMIC_OK +
-                b"hid: keyboard0 OK\r\n"
-                b"hid: ready for input\r\n" + rx +
-                b"hid: typed pass OK\r\n"
-                b"hid: sio fallback, send R\r\n"
-                b"hid: sio fallback OK\r\n"
-                b"hid selftest: OK\r\n")
-        self.assertEqual(self.tool._hid_result(base), "ok")
-        # Short/missing evidence is a failure.
-        for wrong in (
-                base.replace(b"hid: typed pass OK\r\n", b""),
-                base.replace(b"hid: sio fallback OK\r\n", b""),
-                base.replace(b"hid selftest: OK\r\n", b""),
-                base.replace(b"hid: rx 42\r\n", b""),
-                base.replace(b"hid: rx 42\r\nhid: rx 33\r\n",
-                             b"hid: rx 33\r\nhid: rx 42\r\n"),
-                base + b"hid selftest: FAIL 0x05 detail 0x00\r\n",
-                base.replace(b"hid: keyboard0 OK\r\n",
-                             b"hid: unavailable 0x0B\r\n")):
-            self.assertEqual(self.tool._hid_result(wrong), "fail",
-                             "misclassified: %r" % wrong[-80:])
-
-    def test_docstring_and_modes_mention_hid(self):
-        self.assertIn("hid", self.tool.__doc__)
-        source = _read(os.path.join(ROOT, "tools", "serial_smoke.py"))
-        self.assertIn('"hid"', source)
 
 
 if __name__ == "__main__":

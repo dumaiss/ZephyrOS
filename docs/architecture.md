@@ -4755,9 +4755,11 @@ Its responsibilities are:
 
 ```text
 two-bank operating system
-    bank 7: the nucleus (machine authority, IPC, processes, memory, IRQs)
-    bank 6: resident services (drivers, VFS, providers, console)
-    endpoint-based synchronous IPC between applications, services and nucleus
+        bank 7: the nucleus (machine authority, VFS namespace, IPC, processes,
+            memory, IRQs, the built-in ROMFS provider)
+    bank 6: resident services (drivers, the console, pluggable filesystems)
+    programs open objects by name in the VFS and operate on them by
+    synchronous IPC on the returned handle
 
 extended/far memory
     process-owned auxiliary memory objects
@@ -4861,38 +4863,37 @@ the system does not fit, it is slimmed, or code moves to a lower tier
 
 ## 36.4 Nucleus versus services
 
-Placement test:
-
-> Does the operation require global authority over machine state?
-
-If it does, it belongs to the nucleus. Otherwise it is a service operation.
-
-The nucleus owns:
+The nucleus is the core of the operating system. It owns everything that
+is global, permanent and not pluggable:
 
 - process identity, creation, image replacement, exit and execution context;
 - physical bank and extended-memory ownership;
 - execution-domain transitions and cross-bank copy primitives;
-- endpoint registration, lookup and IPC dispatch;
+- **the VFS: the single global namespace** (section 36.13), with its
+  per-process handle tables;
+- the endpoint table and IPC dispatch;
 - IRQ ownership, dispatch and the final `RETI`;
 - loading and validating ZEX images and resident service images;
-- the bootstrap ROMFS reader (section 36.12);
+- the ROMFS reader and the **built-in ROMFS provider** (the system
+  filesystem, needed at boot);
 - early bootstrap, the early console, failure handling and panic.
 
-Resident services provide:
+Resident services are the pluggable parts: specific devices and specific
+filesystems. Each publishes objects into the VFS namespace.
 
-- the VFS / global object namespace and its providers (ROMFS provider,
-  IOC-FAT);
 - IOC transport and block access;
 - HID, V9958 video, SIO serial and other device facilities;
-- the console, composed from HID, video and serial endpoints.
+- the console, composed from HID, video and serial endpoints;
+- pluggable filesystems, first IOC-FAT, mounted into the namespace.
 
 Retired by M10:
 
 ```text
-the filesystem syscall front end (FS_*)      replaced by the VFS service protocol
-the device registry                          replaced by the endpoint table
+the filesystem syscall front end (FS_*)      replaced by open/call/close on VFS handles
+per-feature syscalls (console read/write)    replaced by messages on handles
+the device registry                          replaced by the VFS namespace and the endpoint table
 the zdriver_api kernel import table          replaced by the service bootstrap interface
-the bank-7 driver arena                      drivers are services in bank 6
+the bank-7 driver arena                      drivers and filesystems are services in bank 6
 ```
 
 ---
@@ -4959,49 +4960,53 @@ E000h-FFFFh of bank 6   not used                hidden by common in modes 10 and
   bank. Services never address it directly; they use descriptors (section
   36.8).
 
-Measured projection (package 36): hot drivers 14,166 bytes, VFS service
-11,495 bytes, console 606 bytes, giving **26,267 of 32,768** bytes in the
-hot tier. Boot-only drivers (1,957 bytes) plus the font (2,048 bytes) use
-the boot/bulk tier.
+Measured (package 41): SIO, IOC, HID, V9958 and the console use 13,216
+of 32,768 bytes of the hot tier, and 2,170 bytes of the boot/bulk tier
+(the font included). IOC-FAT (about 6.6 KB plus its service wrapper) is
+the remaining planned tenant. The VFS stays in the nucleus.
 
 ---
 
 ## 36.7 Endpoints, handles and IPC
 
-Services export **endpoints**. The nucleus keeps an endpoint table in fixed
-data with, for each endpoint:
+Services export **endpoints**. Each endpoint has an **endpoint number
+assigned on the host** when the services are packed. The nucleus keeps
+them in an endpoint table in fixed data, internal to the nucleus:
 
 ```text
-owner service, class, instance, version
-dispatch target
+endpoint number, owner service, dispatch target
 flags: re-entrant
 state: busy (on the current call stack)
 ```
 
 The table is reportable through diagnostic introspection (M11).
 
-Operations:
+**Programs never see endpoint numbers.** They name objects in the VFS
+namespace (36.13):
 
 ```text
-register(class, instance, version, dispatch, flags)   services, at boot only
-lookup(class, instance) -> handle + version            anyone
-call(handle, op, frame) -> status                      anyone
+open(path) -> handle         the VFS resolves the name to (endpoint, object)
+call(handle, op, frame)      synchronous message on that object
+close(handle)
+lookup(class, instance) -> name     optional, if the budget allows: returns the
+                                    namespace name of a well-known object
+                                    (for example "/dev/console"), to be opened
 ```
 
 - **Synchronous call/reply** is the only IPC model. There are no queues and
   no asynchronous messages.
-- **Frame:** a fixed **32-byte** request/reply frame. The caller's frame is
-  copied in at entry and copied back on reply. Large payloads move through
-  descriptors, never through the frame.
-- **Handles** are opaque. They are not bank numbers and not pointers.
-  Clients never see a dispatch address.
-- **Services are permanent.** They are loaded at boot and never unloaded,
-  and handles stay valid for the whole boot. There is no revocation and no
-  restart.
+- **Frame:** one standard **32-byte** request/reply frame for every
+  object. What the fields mean is decided by each service's protocol. The
+  SDK supplies a client API per protocol that fills in and decodes the
+  frame (for example a sound API that builds the sound driver's
+  messages). The frame is copied in at entry and back on reply. Large
+  payloads move through descriptors, never through the frame.
+- **Handles** are per-process, opaque and small. They are not bank
+  numbers, pointers or endpoint numbers.
+- **Services are permanent.** They are loaded at boot and never unloaded.
+  There is no revocation and no restart.
 - **Same-domain calls:** a service calling another service may be
-  dispatched locally without a bank switch. This is an optimization that is
-  invisible in the ABI and keeps the same validation.
-- The SDK caches lookups. Discovery stays a fixed (class, instance) query.
+  dispatched locally without a bank switch, invisibly to the ABI.
 
 Measured cost: a null call is about 15,500 T-states through the
 production-shaped path (package 39; the frame copies dominate), and one
@@ -5021,6 +5026,9 @@ There are no raw cross-domain pointers.
 - Services move data only through nucleus primitives
   `copy_in(id, offset, buffer, length)` and
   `copy_out(id, offset, buffer, length)`. Bounds are checked on every use.
+- **Validation lives in the nucleus only:** handle, endpoint, descriptor
+  and frame-bounds checks at the boundary. Services trust what the nucleus
+  hands them and do not re-validate (36.22).
 - **Direct copies.** A descriptor id may be passed down a call chain, and
   the service that holds the data copies it straight to the caller. Data is
   not staged through intermediate services. "Direct" means no service
@@ -5054,8 +5062,8 @@ There are no raw cross-domain pointers.
 
 ## 36.9 Nesting, re-entrancy and stacks
 
-- **Nesting limit: 4** calls deep (application → VFS → IOC-FAT → IOC, and
-  the loader's upcall chain). Deeper calls are refused.
+- **Nesting limit: 4** calls deep (application → IOC-FAT → IOC, a
+  composed service such as the console, and the loader's read chain). Deeper calls are refused.
 - **Re-entrancy:** the nucleus refuses, with `ZOS_EBUSY`, a call into an
   endpoint that is already on the call stack, unless that endpoint declares
   itself re-entrant. Each service states how it protects its state.
@@ -5093,26 +5101,31 @@ T-states to deliver an interrupt to a service handler.
 ## 36.11 Resident service images
 
 Services are **ZMOD images extended with service metadata**. No separate
-ZSVC format is introduced, and the ZMOD relocator and validation are
-reused.
+ZSVC format is introduced.
+
+**The host computes everything.** The host packer links every service at
+its **final bank-6 addresses**. It assigns the endpoint numbers, checks
+dependencies and duplicate endpoints, and emits the manifest together with
+a prebuilt endpoint table and namespace entries. Service images carry no
+relocation records. The resident loader only:
+
+- copies each image's segments to their fixed addresses;
+- installs the endpoint table and namespace entries;
+- runs each boot segment once;
+- runs each hot init once.
+
+It checks only the bounds that protect the nucleus.
 
 A service image declares:
-
-- its hot segment (linked for and relocated into the hot tier);
-- its boot segment (relocated into the boot/bulk tier);
-- its bulk data;
-- the endpoints it exports;
-- the endpoints it depends on.
-
-The host packer pre-computes and validates the layout. The resident loader
-only places, patches and registers.
+- its hot segment, linked for the hot tier;
+- its `SERVICE_IO` data, linked in `8000h-BFFFh`;
+- its boot segment and bulk data, linked for the boot/bulk tier;
+- the objects it publishes (namespace names) and the endpoints behind them.
 
 A service sees the **service bootstrap interface**, not a kernel import
 table:
-
-- register endpoints;
-- look up and call endpoints;
 - the descriptor copy primitives;
+- calls to other endpoints;
 - IRQ claim and release;
 - the few other nucleus primitives a service legitimately needs, each
   named in that interface.
@@ -5126,88 +5139,91 @@ reset
   v
 nucleus initialization (fixed core and cold half)
   v
-bootstrap ROMFS reader            nucleus primitive; flat, constant names only
+VFS namespace with the built-in ROMFS provider mounted at /SYSTEM
   v
-load service images from the boot manifest into bank 6
+copy service images from the boot manifest into bank 6
+install the host-built endpoint table and namespace entries
   v
-run each service's boot segment   mode-10 gate, Q = 6
-  +--> IOC transport, HID, video, serial
-  +--> ROMFS provider, IOC-FAT provider
-  +--> VFS namespace service (mounts)
-  +--> console service (composes HID + video / serial)
+run each service's boot segment     mode-10 gate, Q = 6
+  +--> IOC transport, HID, video, serial    published under /dev
+  +--> console service                      /dev/console (composes HID + video / serial)
+  +--> IOC-FAT                              mounted at /
   v
-resolve the boot program through VFS and execute it as an object
+resolve the boot program in the VFS and execute it
 ```
 
-The bootstrap reader is not a second VFS and must not grow into one. After
-boot, the ROMFS provider service calls the same reader as a nucleus
-primitive, so there is a single ROMFS reader in the system. The early
-console and the panic path stay in the nucleus and are usable before the
-console service exists.
+There is a single ROMFS reader in the system, used by the built-in ROMFS
+provider. The early console and the panic path stay in the nucleus and are
+usable before the console service exists.
 
 ---
 
-## 36.13 VFS as a service, and object-based execution
+## 36.13 The VFS: the global namespace
 
-VFS is the global object namespace. It owns:
+The VFS is a **core nucleus component**, like IPC and the memory manager.
+It is the single global namespace: the place where programs find files,
+devices and services. It is not a service, it is not replaceable, and it
+lives in bank 7's cold half.
 
-- path resolution;
-- roots and current directories;
-- mounts;
-- object handles and descriptors;
-- directory enumeration;
-- dispatch from a named object to its provider.
+The VFS owns:
+- path resolution, mounts, and per-process roots and current directories;
+- the **namespace**: filesystem mounts (`/` = IOC-FAT, `/SYSTEM` =
+  ROMFS) and the objects services publish (`/dev/<name>`);
+- **per-process handle tables**: a handle names an (endpoint, object)
+  pair;
+- `open` and `close`, and the namespace operations that are its own
+  (`chdir`, `getcwd`, mount points).
 
-**Per-process namespace context** (descriptors, root, current directory)
-belongs to the VFS service, keyed by process id.
-
-Providers (ROMFS, IOC-FAT, devices) sit beneath VFS in the service domain.
-
-> **VFS translates names into object handles. The nucleus operates on opaque handles and never parses pathnames.**
-
-Execution:
+Operations on an object are **IPC messages to the object's provider**,
+sent on the handle. The VFS is not in the data path:
 
 ```text
-SDK exec("/bin/editor.zex", tail)
-    |  resolve through VFS
-    v
-executable object handle
-    |  SYS_EXEC(object, tail)
-    v
-nucleus loader    streams the object through a VFS upcall; validates; builds
-                  the process image and page zero; transfers control
+open("/data/log.txt")  -> VFS resolves the mount  -> handle (IOC-FAT endpoint, file object)
+call(handle, READ, frame, descriptor) -> IOC-FAT copies straight to the caller (36.8)
+open("/dev/console")   -> handle (console endpoint)
+call(handle, WRITE, ...)
 ```
 
-When a process exits, the nucleus notifies VFS through an upcall, and VFS
-releases that process's descriptors and context. The startup block v1 and
-the raw-tail contract are unchanged.
+Directory operations (`readdir`, `stat`, `mkdir`, `unlink`, `rename`)
+are messages to the provider, either on a directory handle or carrying the
+path remainder below the mount point. The built-in ROMFS provider answers
+the same messages in-process.
+
+**Standard handles.** Every process starts with console input and output
+handles already open, inherited from its parent.
+
+**Execution.** `SYS_EXEC(path, tail)`: the VFS resolves the path, and the
+cold loader reads the executable through its provider. Exit releases the
+process's handles. The startup block v1 and the raw-tail contract are
+unchanged.
 
 ---
 
 ## 36.14 Syscall ABI after M10
 
-Syscalls become the **nucleus mechanism ABI**:
+Syscalls are the **nucleus ABI**, and they are few:
 
 ```text
-IPC          lookup, call
-process      exec (object handle + tail), exit
+objects      open(path), call(handle, op, frame), close(handle)
+             lookup(class, instance) -> name (optional; see 36.7)
+             chdir, getcwd
+process      exec(path, tail), exit
 xmem         alloc, free, read, write, info, map
 segments     segment info, segment map
-diagnostics  the M7 diagnostic family (reshaped for the endpoint table)
+diagnostics  the M7 diagnostic family (reshaped for the namespace and endpoint table)
 ```
 
-Feature syscalls (the `FS_*` family, console read/write) are removed. The
-SDK's file and console functions become client stubs for the VFS and
-console service protocols. The native ABI is not frozen before M12, so no
-compatibility path is kept.
+The `FS_*` family and the console syscalls are removed. The SDK's file,
+console and device functions are thin client APIs that fill in the
+standard frame for each service protocol (36.7). The native ABI is not
+frozen before M12, so no compatibility path is kept.
 
 ABI layers:
-
 1. **nucleus ABI:** the syscalls above;
 2. **IPC envelope:** handle, operation, 32-byte frame, status, descriptors;
-3. **versioned service protocols:** VFS, console, IOC, HID, video and so
-   on;
-4. **SDK:** C interfaces that hide discovery, frames and transport.
+3. **service protocols:** console, IOC, HID, video, filesystem and so on.
+   Each defines what the frame fields mean;
+4. **SDK:** C client APIs per protocol that fill in and decode the frame.
 
 ---
 
@@ -5436,6 +5452,8 @@ Zephyr-80 has no MMU. The nucleus/service split gives modularity, ownership
 rules, controlled transitions and ABI discipline, not memory protection:
 
 - a defect in resident code can still corrupt any memory;
+- validation is done once, in the nucleus, at the boundary; services do
+  not repeat it, because there is no protection model for it to serve;
 - handles prevent accidental address coupling, but they are not
   hardware-enforced capabilities;
 - an application can write the latch.
@@ -5473,14 +5491,17 @@ The Z80 remains a cooperative, single-running-process machine.
    descriptors, copy primitives, the nesting and re-entrancy rules, IRQ
    delivery to services.
 4. **Services:** service-image metadata and loader; the boot manifest; the
-   drivers and the console as services; registry, `zdriver_api` and the
-   bank-7 arena retired.
-5. **VFS as a service:** namespace and providers in bank 6; the bootstrap
-   reader shared; the `FS_*` front end retired; SDK stubs; object-based
-   exec and the exit upcall.
-6. **Extended memory and ZEX v2:** bank map, xmem objects, map tokens and
+   drivers and the console as services (done, packages 40-41).
+5. **Simplification:** services linked at their final addresses on the
+   host, so the loader becomes a copier; host-assigned endpoint numbers;
+   validation in the nucleus only.
+6. **Namespace and handles:** the VFS publishes service objects; open,
+   call and close on handles; standard console handles; `FS_*` retired;
+   IOC-FAT a mounted service; the arena, `zdriver_api` and the registry
+   retired.
+7. **Extended memory and ZEX v2:** bank map, xmem objects, map tokens and
    the aperture, ZEX v2 and the packer, v1 removed.
-7. **Acceptance** (section 37).
+8. **Acceptance** (section 37).
 
 ---
 
@@ -5506,15 +5527,16 @@ IPC:
     service-owned IRQ fires during a service call; interrupted latch restored exactly
 
 services and boot:
-    all drivers, providers, VFS and console run as bank-6 services
-    boot from the manifest with the bootstrap reader; one ROMFS reader
+    drivers, console and IOC-FAT run as bank-6 services, linked at their final addresses on the host
+    boot copies the manifest images; host-built endpoint table; one ROMFS reader
     console fallback and panic before the console service exists
     registry, zdriver_api, FS_* front end and bank-7 arena absent
 
-VFS and exec:
-    file and directory operations through SDK stubs
-    exec by object handle; nucleus holds no pathname code
-    exit notification releases descriptors and context
+namespace and handles:
+    open/call/close on files, directories and /dev objects
+    standard console handles at process start, inherited
+    file and directory operations through the SDK client APIs
+    exec(path) resolved by the VFS; exit releases handles
     nested exec, startup-tail transport and CWD inheritance unchanged
 
 ordinary ZEX v2:
