@@ -7,9 +7,9 @@ Coverage (all executing the real linked bytes):
 
 * production-style boot: the resident service loader places and starts
   the three service images and prints its early-SIO evidence lines
-  (`service sio.zmod: hot ... boot ...`,
-  `service v9958.zmod: hot ... boot ... bulk ...`,
-  `service console.zmod: hot ...`), the v9958 bulk row being the font
+  (`driver sio.zmod: hot ... boot ...`,
+  `driver v9958.zmod: hot ... boot ... bulk ...`,
+  `driver console.zmod: hot ...`), the v9958 bulk row being the font
   the run-time reset re-reads through the nucleus bulk copy;
 * the nucleus console probe: `console: service OK` is written through
   the console service and appears in the decoded V9958 glyph trace,
@@ -180,10 +180,10 @@ class TestVideoServiceBoot(VideoSimBase):
         # The loader's evidence rows, in manifest order.  The v9958 row
         # carries the bulk placement of the font.
         rows = [
-            r"service sio.zmod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h\r\n",
-            r"service v9958.zmod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h "
+            r"driver sio.zmod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h\r\n",
+            r"driver v9958.zmod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h "
             r"bulk [0-9A-F]{4}h\r\n",
-            r"service console.zmod: hot [0-9A-F]{4}h\r\n",
+            r"driver console.zmod: hot [0-9A-F]{4}h\r\n",
         ]
         positions = []
         for row in rows:

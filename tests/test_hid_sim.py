@@ -12,7 +12,7 @@ bytes.
 Coverage:
 
 * the early-SIO boot transcript: the kernel banner, the loader's
-  `service <name>: hot <addr> ...` evidence lines in manifest order for
+  `driver <name>: hot <addr> ...` evidence lines in manifest order for
   the image's services, the nucleus console probe and the diagnostic's
   markers through the final `hid selftest: OK`, with no `FAIL` line and
   no failure marker;
@@ -169,7 +169,7 @@ class HidSimBase(unittest.TestCase):
     def service_lines(self, sio):
         # The loader names each image by its ROMFS entry (`sio.zmod`).
         return re.findall(
-            rb"service ([a-z0-9]+)\.zmod: hot [0-9A-F]{4}h"
+            rb"driver ([a-z0-9]+)\.zmod: hot [0-9A-F]{4}h"
             rb"(?: io [0-9A-F]{4}h)?(?: boot [0-9A-F]{4}h)?"
             rb"(?: bulk [0-9A-F]{4}h)?\r\n", sio)
 
@@ -191,8 +191,8 @@ class TestHidBootTranscript(HidSimBase):
         self.assertEqual(self.service_lines(sio), names)
         self.assertIn(b"service loader: %d images in bank 6\r\n"
                       % len(names), sio)
-        self.assertIn(b"service hot: ", sio)
-        self.assertIn(b"service boot/bulk: ", sio)
+        self.assertIn(b"driver hot: ", sio)
+        self.assertIn(b"driver boot/bulk: ", sio)
         self.assertIn(b"console: service OK\r\n", sio)
         self.assertNotIn(b"console: unbound", sio)
         self.assertNotIn(b"console: service failed", sio)

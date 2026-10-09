@@ -493,14 +493,17 @@ container bytes live — all of it comes from the bounded source.
 (retired static-driver remnants, test runners/results, fixture catalogs,
 embedded boot blob/catalog symbols, test SIO module entries).
 
-## 7. Resident service images (module_type 2)
+## 7. Resident driver images (module_type 2)
 
-M10 makes bank 6 the **resident service domain**: services are permanent
+M10 makes bank 6 the **resident driver domain**: drivers are permanent
 ZMOD containers (`ZMOD_TYPE_SERVICE`, generic header unchanged) that the
 cold nucleus loader places in the bank's two code tiers at boot.  The
-format lives in `include/zephyros/service.h`; `tools/zmodpack.py`
-validates and pre-encodes it on the host (`pack`, `services`) and
-`kernel/service/service_loader.c` performs the placement.
+host assembles them (architecture 36.11): `tools/zmodpack.py` links every
+segment at its final bank-6 address, assigns the endpoint numbers and
+resolves the inter-driver dependencies, and
+`kernel/service/service_loader.c` only copies the segments, installs the
+host-built tables and runs the boot and init entries.  The format lives in
+`include/zephyros/service.h`.
 
 ### 7.1 Container layout
 
@@ -508,20 +511,22 @@ validates and pre-encodes it on the host (`pack`, `services`) and
 offset 0                 28-byte header (module_type = 2)
 offset 28                service section: 16-byte header, segment table,
                          endpoint table, dependency table
-offset reloc_offset      4 * reloc_count records (section 2.2)
 offset payload_offset    segment images, concatenated in table order
 total_size = payload_offset + image_size (all segment images)
 ```
 
-Header fields keep their meaning with service values:
+The container carries **no relocation records**: the packer links every
+segment at its final bank-6 address on the host (architecture 36.11), and
+the header's `reloc_offset`/`reloc_count` fields are zero.  Header fields
+keep their meaning with service values:
 
 | Field | Service meaning |
 | --- | --- |
 | `image_size` | total payload bytes (all segment images) |
 | `bss_size` | total BSS bytes (all segment BSS areas) |
-| `required_granules` | `0`: per-tier allocation comes from the segment table |
-| `init_offset` | hot-segment image offset run once at load, or `FFFFh` |
-| `fini_offset` | `FFFFh`: services are permanent (no unload, no restart) |
+| `required_granules` | `0`: the host assigned the per-tier bases |
+| `init_offset` | absolute hot-tier init entry run once at load, or `FFFFh` |
+| `fini_offset` | `FFFFh`: drivers are permanent (no unload, no restart) |
 
 The 16-byte section header carries the section size, the three table
 offsets (relative to the section start) and the three entry counts
@@ -529,18 +534,18 @@ offsets (relative to the section start) and the three entry counts
 Each table entry is byte-packed:
 
 ```text
-segment      role:u8  flags:u8(=0)  image_size:u16  bss_size:u16
-             entry_offset:u16  payload_offset:u16
-             reloc_start:u16  reloc_count:u16
+segment      role:u8 flags:u8(=0) base:u16 image_size:u16 bss_size:u16
+             entry:u16 payload_offset:u16 reserved:u16(=0)
 endpoint     class:u8 instance:u8 version:u8 flags:u8
-             dispatch_offset:u16  reserved:u16(=0)
-dependency   class:u8 instance:u8
+             number:u16 dispatch:u16
+dependency   class:u8 instance:u8 number:u16
 ```
 
-### 7.2 Segments and destination tiers
+### 7.2 Segments and host-assigned addresses
 
-Exactly one segment per role; `hot` is required and `init_offset` and
-every endpoint dispatch offset are relative to its image.
+Exactly one segment per role; `hot` is required, and `init_offset`,
+`entry` and every endpoint `dispatch` are absolute addresses the packer
+computed (they must lie inside the segment's final image).
 
 | Role | Destination | Visibility |
 | --- | --- | --- |
@@ -549,43 +554,55 @@ every endpoint dispatch offset are relative to its image.
 | `boot` | bank 6 `0000h-5FFFh` | once, at load, through the mode-10 gate with Q = 6; never executed again |
 | `bulk` | bank 6 `0000h-5FFFh` | reached only by nucleus copies |
 
-`entry_offset` is only meaningful for `boot` (the entry the gate calls);
-segment relocation records are the `ZREL_ABS16` records at
-`reloc_start .. reloc_start + reloc_count` and are applied per segment as
-section 2.2 describes.
+`base` is the segment's final address (`image_size + bss_size` bytes from
+there); `entry` is only meaningful for `boot` (the absolute entry the gate
+calls).  The packer applies the mini-link's `ZREL_ABS16` records on the
+host (`word += target segment base`), so the container's payload holds
+final addresses.
 
 ### 7.3 Allocation and ledgers
 
-The loader allocates the same way `tools/zmodpack.py services` does, so a
-set that packs always places:
+The **packer** allocates (`tools/zmodpack.py services`' policy, applied
+when an image is packed against its `--set`), so a set that packs always
+places; the loader only checks the result:
 
 1. every image's `io` segment, in load order, packed contiguously from
    `C000h` down - the whole block `[io_low, C000h)` is known before any
-   code is placed; a block leaving `8000h-BFFFh` fails the load;
+   code is placed; a block leaving `8000h-BFFFh` fails the pack;
 2. the `hot` segments largest-first, each taking the lowest free run of
    the hot tier that does not cross the reserved io block (below it when
    it fits, otherwise just above `C000h`);
 3. `boot` segments bumping up from `0000h` and `bulk` data down from
    `6000h`, in load order.
 
-The nucleus holds the allocation map (both cursors are monotone; services
-are never freed) and reports the two architecture-36.20 ledgers on the
-early console: `service hot:` (hot plus io bytes of 32768) and
-`service boot/bulk:` (boot plus bulk bytes of 24576).  Each placed image
-is reported as `service <name>: hot <addr> [io <addr>] [boot <addr>]
-[bulk <addr>]`, the same line `tools/zmodpack.py services` prints, and the
-run ends with `service loader: <n> images in bank 6`.
+The loader refuses (a boot error) any container whose segment base and
+allocation leave the tier of its role, whose entry or dispatch address
+leaves its segment image, or whose tables leave the container: those are
+the bounds that protect the nucleus and the fixed driver-bank layout.
+It reports the two architecture-36.20 ledgers on the early console:
+`driver hot:` (hot plus io bytes of 32768) and `driver boot/bulk:` (boot
+plus bulk bytes of 24576).  Each placed image is reported as
+`driver <name>: hot <addr> [io <addr>] [boot <addr>] [bulk <addr>]`, the
+same line `tools/zmodpack.py services` prints, and the run ends with
+`service loader: <n> images in bank 6`.
 
-### 7.4 Endpoints and dependencies
+### 7.4 Endpoints and host-resolved dependencies
 
-An endpoint entry declares `(class, instance, version, dispatch_offset,
+An endpoint entry declares `(class, instance, version, number, dispatch,
 flags)`; `flags` bit 0 is the re-entrancy declaration
-(`ZOS_IPC_EP_REENTRANT`).  Dependency entries declare `(class,
-instance)`: the loader refuses an image whose dependency is not registered
-yet, which the manifest order guarantees for a valid set, and reports
-`service loader: <name>: missing dependency <class>.<instance>` on the
-early console.  The packer validates the same closure statically, so a
-missing dependency fails the host build too.
+(`ZOS_IPC_EP_REENTRANT`), `number` is the host-assigned endpoint number
+(1..N in load order) and `dispatch` the absolute dispatch entry.  The
+loader installs the records into the nucleus table before any driver code
+runs; there is no runtime registration path.
+
+Dependency entries declare `(class, instance, optional)` in the manifest;
+the packer resolves each to the endpoint number of an earlier (or the
+image's own) export and writes `(class, instance, number)` into the
+container.  A missing *required* dependency is a pack-time error; an
+absent *optional* one resolves to `0`, which the driver reads as "this
+build selected no such driver" (the console's independent input/output
+fallback).  The loader installs the resolved numbers into the fixed-core
+array the boot bundle names, so no driver looks a peer up at run time.
 
 ### 7.5 Boot manifest
 
@@ -596,34 +613,49 @@ reads it with the bootstrap ROMFS reader (`kernel/romfs`, fixed-core since
 package 38) and requires the file size to be a multiple of the record
 size.  At most `ZMOD_SERVICE_MAX_IMAGES` (8) images are placed.
 
-### 7.6 Service bootstrap interface
+### 7.6 Driver bootstrap interface
 
-`struct ipc_service_api` (`include/zephyros/ipc.h`) is the versioned set
-of nucleus entry points a resident service may call, passed in `HL` to the
-hot init entry.  It is not a kernel import table: every entry is listed
-and justified in the header (`version`, `register_ep`, `lookup`, `call`,
-`copy_in`, `copy_out`, `move`, `console_putc`, `console_poll`,
-`console_getc`, `irq_claim`, `irq_release`).  Boot segments run with bank 7
-unmapped and therefore cannot call it; they may touch bank 6, the common
-region and I/O ports only.
+`struct ipc_service_boot` (`include/zephyros/ipc.h`) is what the hot init
+entry receives in `HL`: the versioned `struct ipc_service_api` table of
+nucleus entry points plus the resolved dependency numbers, one byte per
+declared dependency in manifest order (`0` = absent optional export).  It
+is not a kernel import table: every entry is listed and justified in the
+header (`version`, `call`, `copy_in`, `copy_out`, `move`, `bulk_read`,
+`console_putc`, `console_poll`, `console_getc`, `irq_claim`,
+`irq_release`).  A call from one resident driver to another is
+near-direct: the frame is passed by reference and the target's window is
+already open, so no frame copy and no bank switch happen.  Boot segments
+run with bank 7 unmapped and therefore cannot call the interface; they may
+touch bank 6, the common region and I/O ports only.
 
 ### 7.7 Packer commands and report
 
 ```sh
 python3 tools/zmodpack.py pack tests/target/ipc/manifests/echo.json \
     build/modules/ipc-modules/ipc-echo.zmod \
-    --objdir build/modules/ipc-modules --report echo.report.json
+    --objdir build/modules/ipc-modules --report echo.report.json \
+    --set tests/target/ipc/manifests/echo.json \
+          tests/target/ipc/manifests/one.json
 python3 tools/zmodpack.py services build/modules/ipc-modules/services.man \
     build/modules/ipc-modules/ipc-*.zmod --report services.plan.json
 python3 tools/zmodpack.py dump <container.zmod>
 ```
 
-A service manifest names its objects, its `init` entry, its `segments`
+`pack` for a service manifest requires `--set`: every manifest of the
+image's load order, this one included.  The packer links this image
+against the whole set (one plan, one endpoint numbering, one dependency
+resolution), so an image rebuilt alone still matches its siblings.
+
+A driver manifest names its objects, its `init` entry, its `segments`
 (role, `image_areas`, `bss_areas`, optional `entry`), its `endpoints`
 (`class`, `instance`, `version`, `dispatch` symbol, flags) and its
-`depends` records; the packer resolves the dispatch and entry symbols and
-refuses anything that does not fit.  The per-image report carries each segment's
-role, size, payload offset and relocation count, every symbol's
-segment-relative offset with the segment it belongs to (`symbols`,
-`symbol_segments`), and the relocation targets; the set report carries the
-load order, the plan's bases per image and the two tier ledgers.
+`depends` records (`class`, `instance`, optional `optional`); the packer
+resolves the dispatch, entry and dependency symbols and refuses anything
+that does not fit - including a required dependency no earlier image
+exports, a duplicate endpoint, and a set that leaves its tiers.  The
+per-image report carries each segment's role, final base, sizes and
+payload offset, every symbol's segment-relative offset with the segment it
+belongs to (`symbols`, `symbol_segments`), the endpoint numbers and
+absolute dispatch entries, and the resolved dependency numbers; the set
+report carries the load order, the bases per image and the two tier
+ledgers.

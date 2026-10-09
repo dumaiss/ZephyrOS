@@ -872,18 +872,20 @@ HID (character output and the terminal remain with the console
 package).  The M3 numeric registry model still holds; its placeholder
 class names were refined in place.
 
-## 12. Resident service protocols (M10, package 41)
+## 12. Resident driver protocols (M10, packages 41-41b)
 
-The five service images the production store carries are the SIO serial
+The five driver images the production store carries are the SIO serial
 transport, the IOC transport, HID input, the V9958 video core and the
-console.  Each is a ZMOD service image (`docs/module-format.md`, ABI 2)
-placed in bank 6 by the resident service loader (`service_load_all`,
-manifest `services.man`), each registers exactly one endpoint
-`(class, instance) = (ZOS_CLASS_*, 0)` at `ZOS_PROTOCOL_VERSION` 1, and
-each is entered only through `struct ipc_service_api` - a service never
-calls another service's symbols.  `abi/zos/protocol.h` is the whole
-contract; this section records the operation numbers, frames and
-descriptor conventions the images implement.
+console.  Each is a ZMOD driver image (`docs/module-format.md`, service
+ABI 3, host-linked at its final bank-6 address) placed by the resident
+loader (`service_load_all`, manifest `services.man`); the host packer
+assigns each endpoint number and resolves the console's and HID's
+symbolic dependencies, the loader installs the host-built tables, and each
+image is entered only through `struct ipc_service_boot` (the nucleus table
+plus the resolved dependency numbers) - a driver never calls another
+driver's symbols and never looks a peer up at run time.  `abi/zos/protocol.h`
+is the whole contract; this section records the operation numbers, frames
+and descriptor conventions the images implement.
 
 Common shape.  Every operation is one `call(handle, op, frame)`:
 `frame->arg0`/`arg1` are the operation's two words, `frame->payload` is
@@ -895,15 +897,16 @@ one call moves one bounded run.  Operations that return a single word
 (the status queries and the byte-sized forms) publish it as the call's
 return value.
 
-Shared-memory staging.  A service that has bytes to hand on names its own
+Shared-memory staging.  A driver that has bytes to hand on names its own
 service-window buffer in the reply payload; the peer or the nucleus
 finishes the transfer.  Two client classes exist, and both are stated by
 the protocol:
 
-- a *service* client (HID, the console, the V9958 character path) is
+- a *driver* client (HID, the console, the V9958 character path) is
   dispatched by the nucleus, so it may hold descriptors and may use
-  `move` for same-domain staging.  This is the resident-domain
-  convention;
+  `move` for same-domain staging (a driver-to-driver call is near-direct:
+  the frame travels by reference and no bank switch happens).  This is
+  the resident-domain convention;
 - a *bank-7* client (the IOC class shim the module loader publishes to
   the IOC-FAT provider, `kernel/module/ioc_shim.c`, and the nucleus's own
   boot probe) can hold neither descriptor nor `move`, so it stages bytes
@@ -944,10 +947,11 @@ the mode-11 service window).
 
 The M8 engine unchanged: fetch-on-doorbell with a 16-byte local ring, the
 stuck-doorbell penalty, and strict reply validation before a byte is
-committed.  The service declares its IOC dependency in its image
-metadata, so a missing IOC image is a loader boot error; `ZHID_OP_READY`
-is the run-time probe the console composes its input from (the role the
-device registry's registration presence played before M10).
+committed.  The image declares its IOC dependency symbolically; the host
+packer resolves it to the endpoint number and a missing IOC image is a
+build error, so the driver never looks a peer up at run time.
+`ZHID_OP_READY` is the run-time probe the console composes its input from
+(the role the device registry's registration presence played before M10).
 
 | op | number | frame | result |
 |----|--------|-------|--------|
@@ -983,12 +987,15 @@ package 42.
 
 ### 12.5 Console (class `ZOS_CLASS_CONSOLE`, 6)
 
-The console composes the services the store booted - HID input when
-`ZHID_OP_READY` answers 1, otherwise the serial service; V9958 output when
-the video endpoint is registered, otherwise the serial service - exactly
-as `console_bind_defaults()` did for the M8 device set.  It is the
-endpoint the SDK console functions and the monitor use; the early console
-and the panic path do not depend on it.
+The console composes the drivers the build selected - HID input when its
+resolved dependency is present and `ZHID_OP_READY` answers 1, otherwise
+the serial driver; V9958 output when the video dependency is present,
+otherwise the serial driver - exactly as `console_bind_defaults()` did for
+the M8 device set.  The host packer resolves the three symbolic
+dependencies (HID, SERIAL, VIDEO); an absent optional dependency resolves
+to endpoint number 0, which is the fallback.  It is the endpoint the SDK
+console functions and the monitor use; the early console and the panic
+path do not depend on it.
 
 | op | number | frame | result |
 |----|--------|-------|--------|
@@ -1007,13 +1014,14 @@ transcript on the early console.
 ### 12.6 Placement, IRQs and ledgers
 
 The five images own bank 6's two resident tiers (architecture 36.6,
-36.20): the hot segments (`_CODE` + `_SERVICE_IO`, the one bank-6 range
-the mode-11 window and the mode-10 aperture both show) total 13,318 bytes
-of the 32,768-byte hot tier, and the boot segments plus the V9958 font
-bulk segment total 2,170 bytes of the 24,576-byte boot/bulk tier.  No
-service image owns an IRQ in this package: SIO0/B is polled, the IOC and
-HID paths are polled through the same lane, and the V9958 is
-register-driven.  The arena holds the IOC-FAT provider alone (13
-granules), and the ledger lines the build prints are
-`zmodpack: service hot: ...` / `service boot/bulk: ...` with one row per
+36.20): the host packer links each segment at its final address, and the
+hot segments (`_CODE` + `_SERVICE_IO`, the one bank-6 range the mode-11
+window and the mode-10 aperture both show) total 12,930 bytes of the
+32,768-byte hot tier; the boot segments plus the V9958 font bulk segment
+total 2,170 bytes of the 24,576-byte boot/bulk tier.  No driver image owns
+an IRQ in this package: SIO0/B is polled, the IOC and HID paths are polled
+through the same lane, and the V9958 is register-driven.  The arena holds
+the IOC-FAT provider alone (13 granules), and the ledger lines the build
+prints are
+`zmodpack: driver hot: ...` / `driver boot/bulk: ...` with one row per
 image (see `docs/memory.md`).

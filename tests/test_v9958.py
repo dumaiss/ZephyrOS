@@ -276,7 +276,7 @@ class TestServiceArtifact(unittest.TestCase):
         manifest = _load_json(MANIFEST)
         self.assertEqual(manifest["name"], "v9958")
         self.assertEqual(manifest["type"], "service")
-        self.assertEqual(manifest["abi"], 2)
+        self.assertEqual(manifest["abi"], 3)
         self.assertEqual(manifest["init"], "v9958_service_init")
         self.assertEqual([segment["role"] for segment in manifest["segments"]],
                          ["hot", "boot", "bulk"])
@@ -301,7 +301,7 @@ class TestServiceArtifact(unittest.TestCase):
         data = _read(ZMOD, "rb")
         info = zmodpack.parse_container(data, "v9958.zmod")
         self.assertEqual(info["module_type"], "service")
-        self.assertEqual(info["service_abi"], 2)
+        self.assertEqual(info["service_abi"], 3)
         self.assertGreater(info["image_size"], 0)
         self.assertGreater(info["bss_size"], 0)
         self.assertNotEqual(info["init_offset"], 0xFFFF)
@@ -313,7 +313,6 @@ class TestServiceArtifact(unittest.TestCase):
         # The font is the bulk segment, byte for byte the pinned asset
         # (the same source tools/fontpack.py packs for the ROMFS copy).
         self.assertEqual(bulk["image_size"], 2048)
-        self.assertEqual(bulk["reloc_count"], 0)
         asset = fontpack.parse_font(FONT_INC)
         at = bulk["payload_offset"]
         self.assertEqual(info["payload"][at:at + 2048],
@@ -322,9 +321,12 @@ class TestServiceArtifact(unittest.TestCase):
         # The boot tier is a bounded bring-up entry, not a second copy of
         # the driver: every path reachable after boot is hot.
         self.assertLess(boot["image_size"] + boot["bss_size"], 0x200)
-        self.assertNotEqual(boot["entry_offset"], 0xFFFF)
-        for target, _patch in info["relocs"]:
-            self.assertLess(target, len(info["segments"]))
+        # Host-linked: the boot entry lies inside the boot image and the
+        # container carries no relocation records.
+        self.assertNotEqual(boot["entry"], 0xFFFF)
+        self.assertGreaterEqual(boot["entry"], boot["base"])
+        self.assertLess(boot["entry"], boot["base"] + boot["image_size"])
+        self.assertEqual(info["reloc_count"], 0)
 
     def test_romfs_entry_and_boot_order(self):
         manifest = _load_json(RECOVERY_MANIFEST)
@@ -341,12 +343,13 @@ class TestServiceArtifact(unittest.TestCase):
         self.assertNotIn("v9958-6x8.font", names)
         main = _read(MAIN_C)
         self.assertIn("service_load_all(ZOS_SERVICE_MANIFEST_NAME)", main)
-        # The image's own boot tier runs the bring-up (registration is the
-        # loader's), and the reset path re-reads the font through the
-        # nucleus bulk copy because the window cannot show the bulk tier.
+        # The image's own boot tier runs the bring-up (the endpoint and
+        # bulk extent are the loader's), and the reset path re-reads the
+        # font through the nucleus bulk copy because the window cannot
+        # show the bulk tier.
         loader = _read(os.path.join(ROOT, "kernel", "service",
                                     "service_loader.c"))
-        self.assertIn("ipc_service_bulk_set", loader)
+        self.assertIn("bulk_base", loader)
         self.assertIn("bulk_read", os.path.join(
             _read(os.path.join(ROOT, "drivers", "v9958", "v9958_service.c"))))
 

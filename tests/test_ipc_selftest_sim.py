@@ -1656,7 +1656,7 @@ class TestIpcServiceImages(IpcSimBase):
         tx = self.transcript()
         plan = self.plan()
         for entry in plan["services"]:
-            line = "service %s: hot %04Xh" % (entry["name"],
+            line = "driver %s: hot %04Xh" % (entry["name"],
                                               entry["hot_base"])
             if entry["io_base"] is not None:
                 line += " io %04Xh" % entry["io_base"]
@@ -1666,16 +1666,16 @@ class TestIpcServiceImages(IpcSimBase):
                 line += " bulk %04Xh" % entry["bulk_base"]
             self.assertIn(line.encode() + b"\r\n", tx, line)
         nucleus = plan["nucleus"]
-        self.assertIn(("service hot: %d bytes of %d\r\n"
+        self.assertIn(("driver hot: %d bytes of %d\r\n"
                        % (nucleus["service_hot_bytes"],
                           nucleus["service_hot_capacity_bytes"])).encode(),
                       tx)
-        self.assertIn(("service boot/bulk: %d bytes of %d\r\n"
+        self.assertIn(("driver boot/bulk: %d bytes of %d\r\n"
                        % (nucleus["service_boot_bytes"],
                           nucleus["service_boot_capacity_bytes"])).encode(),
                       tx)
         print("ipc %s: six service images placed from the manifest, "
-              "service hot %d/%d, service boot/bulk %d/%d"
+              "driver hot %d/%d, driver boot/bulk %d/%d"
               % (self.image_ident, nucleus["service_hot_bytes"],
                  nucleus["service_hot_capacity_bytes"],
                  nucleus["service_boot_bytes"],

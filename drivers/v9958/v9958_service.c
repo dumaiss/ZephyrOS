@@ -47,6 +47,8 @@ static int16_t v9958_service_stream(struct zos_ipc_frame *frame)
 	uint16_t done = 0u;
 
 	(void)offset;
+	/* The streaming operations' protocol rule, the same one
+	 * v9958_send() applies: a zero-length transfer is refused. */
 	if (length == 0u) {
 		return (int16_t)-ZOS_EINVAL;
 	}
@@ -121,9 +123,10 @@ int16_t v9958_service_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void v9958_service_init(const struct ipc_service_api *api)
+void v9958_service_init(const struct ipc_service_boot *boot)
 {
 	uint8_t probe[V9958_FONT_CHUNK];
+	const struct ipc_service_api *api = boot->api;
 
 	v9958_service_api = api;
 	v9958_set_api(api);

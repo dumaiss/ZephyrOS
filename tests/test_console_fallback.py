@@ -102,7 +102,7 @@ class FallbackBase(ConsoleSimBase):
 
         # The loader started exactly the store's set, in manifest order.
         for name in self.SERVICES:
-            self.assertIn("service %s.zmod: hot " % name, sio)
+            self.assertIn("driver %s.zmod: hot " % name, sio)
         self.assertIn("service loader: %d images in bank 6\r\n"
                       % len(self.SERVICES), sio)
 

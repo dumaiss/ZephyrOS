@@ -1,31 +1,27 @@
-/* ZephyrOS resident-service bootstrap interface (module-facing, M10).
+/* ZephyrOS resident-driver bootstrap interface (module-facing, M10).
  *
- * A resident service image receives exactly one table pointer: the init
- * entry named by its container is called with a `const struct
- * ipc_service_api *` in HL, and every nucleus primitive the service may
- * use is a function in that table (architecture 36.11).  There is no
- * kernel import table: a service relocates against its own image only.
+ * A resident driver image receives exactly one pointer: the init entry
+ * named by its container is called with a `const struct
+ * ipc_service_boot *` in HL, naming the nucleus table the driver may use
+ * and the host-resolved dependency array (architecture 36.11).  There is
+ * no kernel import table: a driver is linked against its own image and
+ * its host-resolved endpoints only.
  *
- * The table is versioned: `version` always carries
- * ZOS_IPC_SERVICE_API_VERSION; a service init may refuse a table that
+ * The interface is versioned: `version` always carries
+ * ZOS_IPC_SERVICE_API_VERSION; a driver init may refuse a table that
  * does not (the format's service ABI version, include/zephyros/service.h,
  * tracks the same contract).
  *
  * Every entry, and why it is in the interface (36.11 asks for the list):
  *
  *   version         the table's version marker.
- *   register_ep     the one registration path: the resident loader
- *                   registers the endpoints the image's metadata declares
- *                   through it before any service code runs, and a
- *                   service that must add an endpoint the host cannot
- *                   name uses the same call.  Handles stay opaque and the
- *                   dispatch entry is validated against the window.
- *   lookup          dependency discovery by (class, instance) - never a
- *                   raw address or bank number; the SDK caches lookups,
- *                   the discovery query stays fixed.
- *   call            synchronous call/reply into a peer with the
- *                   nucleus-owned 32-byte frame; the only IPC model
- *                   (36.7).
+ *   call            synchronous call/reply into a peer named by a
+ *                   host-resolved dependency number or an application
+ *                   handle; the only IPC model (36.7).  A call from one
+ *                   resident driver to another is near-direct: the frame
+ *                   is passed by reference and the target's window is
+ *                   already open, so no frame copy and no bank switch
+ *                   happen.
  *   copy_in         caller descriptor -> service buffer, bounds checked
  *   copy_out        service buffer -> caller descriptor, bounds checked
  *                   on every use (36.8); a service never names a caller
@@ -52,16 +48,21 @@
  *                   stack and the final RETI (36.10).
  *
  * There is no entry for paths, mounts, devices or file objects: those are
- * protocol payloads between services.
+ * protocol payloads between drivers.
  *
- * Endpoint lifecycle:
- *   - register_ep(class, instance, dispatch, flags, version) returns a
- *     handle (1..N) or -ZOS_ENOSPC when the table is full;
- *   - lookup(class, instance) returns a peer's handle (or 0 when no
- *     endpoint matches);
- *   - call(handle, op, frame) dispatches synchronously into the peer and
- *     returns its status.  The frame is the nucleus-owned 32-byte copy;
- *     a service only ever reads and writes its own copy.
+ * Endpoint lifecycle (architecture 36.11): the host assembly resolves
+ * every endpoint number and every inter-driver dependency; the loader
+ * installs the host-built tables before any driver code runs, and the
+ * driver's init receives its resolved dependency numbers in
+ * `struct ipc_service_boot.deps`, one byte per declared dependency in
+ * manifest order (0 = an optional dependency this build does not
+ * export).  A driver never looks another up at run time:
+ *   - call(handle, op, frame) dispatches synchronously into the peer
+ *     named by a resolved dependency number (or an application handle)
+ *     and returns its status.  The frame is the caller's 32-byte
+ *     envelope; the outermost application call copies it once at the
+ *     gate boundary, and a driver-to-driver call passes its own frame by
+ *     reference.
  *
  * Copies: a service moves data between its own domain and the caller's
  * buffer only through copy_in/copy_out with a nucleus-issued descriptor
@@ -82,10 +83,10 @@
  * nucleus keeps the IM2 vectoring, the ISR stack and the final RETI, and
  * enters the handler with the owner's window selected and the interrupted
  * latch saved in the IRQ gate's own slot (architecture 36.10).  A handler
- * runs under the restricted API: register_ep, lookup, call, copy_in,
- * copy_out and move are refused with -ZOS_EBUSY while an interrupt is
- * being delivered.  The console primitives are the nucleus-owned early
- * console (polled SIO0/B, common-resident) and stay callable.
+ * runs under the restricted API: call, copy_in, copy_out and move are
+ * refused with -ZOS_EBUSY while an interrupt is being delivered.  The
+ * console primitives are the nucleus-owned early console (polled SIO0/B,
+ * common-resident) and stay callable.
  */
 
 #ifndef ZEPHYROS_IPC_H
@@ -94,23 +95,25 @@
 #include "zos/ipc.h"
 #include "zos/types.h"
 
-/* The bootstrap interface's version (architecture 36.11).  A service init
+/* The bootstrap interface's version (architecture 36.11).  A driver init
  * may refuse a table that does not carry it; the format's service ABI
  * version (include/zephyros/service.h) tracks the same contract.
  *
- * Version 2 (work package 41) adds `bulk_read`, the one entry package 40's
+ * Version 2 (work package 41) added `bulk_read`, the entry package 40's
  * version 1 could not express: the V9958 display reset re-uploads the
- * font, which 36.6 places in the boot/bulk tier. */
-#define ZOS_IPC_SERVICE_API_VERSION 2u
+ * font, which 36.6 places in the boot/bulk tier.
+ *
+ * Version 3 (work package 41b) removes `register_ep` and `lookup`: the
+ * loader installs the host-built endpoint table and each driver receives
+ * its resolved dependency numbers in `struct ipc_service_boot`. */
+#define ZOS_IPC_SERVICE_API_VERSION 3u
+
+/* Bound of the resolved dependency array the loader installs
+ * (ZMOD_SERVICE_MAX_DEPENDENCIES, include/zephyros/service.h). */
+#define ZOS_IPC_SERVICE_MAX_DEPS 8u
 
 struct ipc_service_api {
 	uint8_t version; /* ZOS_IPC_SERVICE_API_VERSION */
-
-	/* Endpoint table (services, at boot only). */
-	int8_t (*register_ep)(uint8_t class, uint8_t instance,
-			      uint16_t entry, uint8_t flags,
-			      uint8_t version);
-	int8_t (*lookup)(uint8_t class, uint8_t instance);
 
 	/* Synchronous call/reply with a nucleus-owned frame copy. */
 	int16_t (*call)(uint8_t handle, uint8_t op,
@@ -142,7 +145,17 @@ struct ipc_service_api {
 	int8_t (*irq_release)(uint8_t source);
 };
 
-/* The container's init entry: void init(const struct ipc_service_api *). */
-typedef void (*ipc_service_init_fn)(const struct ipc_service_api *api);
+/* The boot bundle the loader hands a driver's init: the nucleus table and
+ * the resolved dependency numbers, one byte per declared dependency in
+ * manifest order (0 = an optional dependency this build does not export).
+ * Both live in the fixed core, which stays visible while the driver's
+ * window shows bank 6. */
+struct ipc_service_boot {
+	const struct ipc_service_api *api;
+	const uint8_t *deps;
+};
+
+/* The container's init entry: void init(const struct ipc_service_boot *). */
+typedef void (*ipc_service_init_fn)(const struct ipc_service_boot *boot);
 
 #endif /* ZEPHYROS_IPC_H */

@@ -7,15 +7,19 @@
  * stubs and the monitor use; the early console and the panic path do not
  * depend on it (architecture 36.12).
  *
- * Composition (the M8 policy, now over endpoints):
+ * Composition (the M8 policy, now over host-resolved dependencies):
  *   input   HID when its endpoint is present, its declared dependency
  *           resolved and its link up (ZHID_OP_READY); otherwise the
  *           serial service; otherwise none;
  *   output  the video service when present; otherwise the serial
  *           service; otherwise none.
- * Each direction falls back independently, and the two fallback probes
- * happen once at boot (-console-service init-), exactly where the M8
- * device-registry binding decided.
+ * Each direction falls back independently, and the fallback choice
+ * happens once at boot (-console-service init-), exactly where the M8
+ * device-registry binding decided.  The three endpoints are wired by the
+ * host packer (architecture 36.11): the image declares symbolic
+ * dependencies on HID, SERIAL and VIDEO, and reads the resolved numbers
+ * from the boot bundle; the READY probe stays a protocol interaction, not
+ * a lookup.
  *
  * Every operation is one forwarded call: the caller's descriptor travels
  * down the chain (36.8), so a WRITE moves the whole transfer through the
@@ -26,6 +30,11 @@
 #include "zephyros/errno.h"
 #include "zephyros/ipc.h"
 #include "zos/protocol.h"
+
+/* Manifest dependency order (services/manifests/console.json). */
+#define CONSOLE_DEP_HID    0u
+#define CONSOLE_DEP_SERIAL 1u
+#define CONSOLE_DEP_VIDEO  2u
 
 static const struct ipc_service_api *console_api;
 static uint8_t console_in;
@@ -97,8 +106,9 @@ int16_t console_service_dispatch(struct zos_ipc_frame *frame)
  * shows); preferred output: the video service.  Each direction falls
  * back independently to the serial service, so one missing direction
  * never clears a valid other direction. */
-void console_service_init(const struct ipc_service_api *api)
+void console_service_init(const struct ipc_service_boot *boot)
 {
+	const struct ipc_service_api *api = boot->api;
 	uint8_t handle;
 	struct zos_ipc_frame frame;
 
@@ -108,7 +118,12 @@ void console_service_init(const struct ipc_service_api *api)
 	console_in_hid = 0u;
 	console_out_video = 0u;
 
-	handle = (uint8_t)api->lookup(ZOS_CLASS_HID, ZOS_CLASS_INSTANCE);
+	/* Preferred input: the HID endpoint, but only when its engine is
+	 * ready (the ZHID_OP_READY probe, which is where a missing or down
+	 * IOC link shows); otherwise the serial endpoint.  The host
+	 * resolved both numbers; 0 means the build selected no such
+	 * driver. */
+	handle = boot->deps[CONSOLE_DEP_HID];
 	if (handle != 0u) {
 		frame.op = ZHID_OP_READY;
 		frame.flags = 0u;
@@ -121,22 +136,16 @@ void console_service_init(const struct ipc_service_api *api)
 		}
 	}
 	if (console_in == 0u) {
-		handle = (uint8_t)api->lookup(ZOS_CLASS_SERIAL,
-					      ZOS_CLASS_INSTANCE);
-		if (handle != 0u) {
-			console_in = handle;
-		}
+		console_in = boot->deps[CONSOLE_DEP_SERIAL];
 	}
 
-	handle = (uint8_t)api->lookup(ZOS_CLASS_VIDEO, ZOS_CLASS_INSTANCE);
+	/* Preferred output: the video endpoint; otherwise the serial
+	 * endpoint.  Each direction falls back independently. */
+	handle = boot->deps[CONSOLE_DEP_VIDEO];
 	if (handle != 0u) {
 		console_out = handle;
 		console_out_video = 1u;
 	} else {
-		handle = (uint8_t)api->lookup(ZOS_CLASS_SERIAL,
-					      ZOS_CLASS_INSTANCE);
-		if (handle != 0u) {
-			console_out = handle;
-		}
+		console_out = boot->deps[CONSOLE_DEP_SERIAL];
 	}
 }

@@ -368,7 +368,7 @@ class TestIocServiceArtifact(unittest.TestCase):
         manifest = _load_json(MANIFEST)
         self.assertEqual(manifest["name"], "ioc")
         self.assertEqual(manifest["type"], "service")
-        self.assertEqual(manifest["abi"], 2)
+        self.assertEqual(manifest["abi"], 3)
         self.assertEqual(manifest["init"], "ioc_service_init")
         roles = [segment["role"] for segment in manifest["segments"]]
         self.assertEqual(roles, ["hot", "boot"])
@@ -568,15 +568,13 @@ class TestIocSourceDiscipline(unittest.TestCase):
         # Every SIO1/A access lives in the driver's own assembly.
         self.assertIn("ZOS_SIO1A_CTRL", self.asm)
         self.assertNotIn("ZOS_SIO1A", self.c)
-        # The service registers one endpoint through the passed API and
-        # the image declares the class, the version and the ops it serves.
-        self.assertIn("ZOS_CLASS_IOC", self.service)
-        self.assertIn("ZOS_PROTOCOL_VERSION", self.service)
-        # The endpoint itself is declared by the image metadata and
-        # registered by the resident loader, not by driver code.
-        self.assertIn("api->register_ep",
+        # The endpoint is declared by the image metadata; the host packer
+        # assigns its number and the resident loader installs the record
+        # (architecture 36.11), so no driver code registers anything.
+        self.assertIn("ipc_install_endpoint",
                       open(os.path.join(ROOT, "kernel", "service",
                                         "service_loader.c")).read())
+        self.assertNotIn("register_ep", self.service)
         self.assertIn("ZOS_CLASS_IOC", self.service)
         self.assertIn("ZOS_PROTOCOL_VERSION", self.service)
         for op in ("ZIOC_OP_COMMAND", "ZIOC_OP_BULK_READ",

@@ -131,15 +131,18 @@ MAX_GRANULES = 95
 DRIVER_ABI_VERSION = 3
 A_BYTES = 4
 
-# Service images (M10 stage 4, architecture 36.6/36.11): the same header
-# and ZREL records plus the service section.  The constants mirror
+# Service images (M10 stage 5, architecture 36.6/36.11): the same header
+# plus the service section, with every segment linked at its final bank-6
+# address.  The packer resolves the tier plan, the endpoint numbers and
+# the symbolic inter-driver dependencies on the host; the container
+# carries no relocation records.  The constants mirror
 # include/zephyros/service.h and are pinned by host tests.
-SERVICE_ABI_VERSION = 2
+SERVICE_ABI_VERSION = 3
 SERVICE_SECTION_OFFSET = HEADER_SIZE
 SERVICE_HEADER_SIZE = 16
 SERVICE_SEGMENT_SIZE = 14
 SERVICE_ENDPOINT_SIZE = 8
-SERVICE_DEPENDENCY_SIZE = 2
+SERVICE_DEPENDENCY_SIZE = 4
 SERVICE_ROLE_CODES = {"hot": 1, "boot": 2, "io": 3, "bulk": 4}
 SERVICE_ROLE_NAMES = {value: key for key, value in SERVICE_ROLE_CODES.items()}
 SERVICE_MAX_SEGMENTS = 4
@@ -147,6 +150,16 @@ SERVICE_MAX_ENDPOINTS = 8
 SERVICE_MAX_DEPENDENCIES = 8
 SERVICE_MAX_IMAGES = 8
 SERVICE_EP_REENTRANT = 0x01
+# Dependency declaration flags (the manifest's `optional`): an optional
+# dependency that no image in the set exports resolves to endpoint 0.
+SERVICE_DEP_OPTIONAL = 0x01
+# Destination tiers of each segment role (address range, end exclusive).
+SERVICE_TIERS = {
+    "hot": (0x6000, 0xE000),
+    "io": (0x8000, 0xC000),
+    "boot": (0x0000, 0x6000),
+    "bulk": (0x0000, 0x6000),
+}
 
 # Bank-6 destination geometry (architecture 36.6), mirrored by
 # kernel/service/service_loader.c: the hot tier 6000h-DFFFh (service I/O
@@ -564,6 +577,8 @@ def load_service_manifest(manifest, path, objdir):
             value = int(dependency[field])
             if value < 0 or value > 0xFF:
                 raise ZmodError("%s: %s out of range" % (where, field))
+        if int(dependency.get("optional", 0)) not in (0, 1):
+            raise ZmodError("%s: optional must be 0 or 1" % where)
 
     return {
         "kind": "service",
@@ -1029,6 +1044,8 @@ def pack_service_manifest(manifest):
         packed.dependencies.append({
             "class": int(dependency["class"]),
             "instance": int(dependency["instance"]),
+            "optional": int(dependency.get("optional", 0)),
+            "number": 0,
         })
 
     if packed.bss_size > 0xFFFF or len(packed.image) + packed.bss_size > 0xFFFF:
@@ -1036,9 +1053,35 @@ def pack_service_manifest(manifest):
     return packed
 
 
-def build_service_container(packed):
-    """Assemble the service container: header, service section with its
-    three tables, the ZREL records, then the concatenated segment images."""
+def link_service_image(packed, row):
+    """Link one image at the host-planned segment bases (architecture
+    36.11): every ZREL_ABS16 record is applied here as
+    `word += target segment base`, exactly the arithmetic the loader used
+    to perform, so the container carries final addresses and no relocation
+    records.  Returns the linked payload."""
+    image = bytearray(packed.image)
+    roles = [segment["role"] for segment in packed.segments]
+    for segment in packed.segments:
+        start = segment["payload_offset"]
+        for index in range(segment["reloc_count"]):
+            target, patch = packed.records[segment["reloc_start"] + index]
+            at = start + patch
+            value = image[at] | (image[at + 1] << 8)
+            value += row[roles[target]]
+            if value > 0xFFFF:
+                raise ZmodError("%s: relocation at %04Xh overflows 16 bits"
+                                % (packed.name, patch))
+            image[at] = value & 0xFF
+            image[at + 1] = (value >> 8) & 0xFF
+    return image
+
+
+def build_service_container(packed, row):
+    """Assemble the host-linked service container: header, service section
+    with its three tables, then the concatenated linked segment images.
+    `row` carries the host-planned absolute base of each segment role; every
+    address field in the container is final, and the header's relocation
+    fields are zero (architecture 36.11)."""
     segment_offset = SERVICE_HEADER_SIZE
     endpoint_offset = segment_offset + SERVICE_SEGMENT_SIZE * \
         len(packed.segments)
@@ -1046,12 +1089,16 @@ def build_service_container(packed):
         len(packed.endpoints)
     section_size = dependency_offset + SERVICE_DEPENDENCY_SIZE * \
         len(packed.dependencies)
-    reloc_offset = SERVICE_SECTION_OFFSET + section_size
-    payload_offset = reloc_offset + RELOC_SIZE * len(packed.records)
-    image_size = len(packed.image)
+    payload_offset = SERVICE_SECTION_OFFSET + section_size
+    image = link_service_image(packed, row)
+    image_size = len(image)
     total_size = payload_offset + image_size
     if total_size > 0xFFFF:
         raise ZmodError("container exceeds the 16-bit size range")
+
+    hot_base = row["hot"]
+    init = (NO_ENTRY if packed.init_offset == NO_ENTRY
+            else hot_base + packed.init_offset)
 
     header = bytearray(HEADER_SIZE)
     header[0:4] = MAGIC
@@ -1061,11 +1108,11 @@ def build_service_container(packed):
     header[7] = FLAG_NONE
     put16(header, 0x08, image_size)
     put16(header, 0x0A, packed.bss_size)
-    put16(header, 0x0C, 0)  # per-tier allocation is the loader's
-    put16(header, 0x0E, packed.init_offset)
+    put16(header, 0x0C, 0)  # per-tier allocation is the host packer's
+    put16(header, 0x0E, init)
     put16(header, 0x10, NO_ENTRY)
-    put16(header, 0x12, reloc_offset)
-    put16(header, 0x14, len(packed.records))
+    put16(header, 0x12, 0)  # linked on the host: no relocation records
+    put16(header, 0x14, 0)
     put16(header, 0x16, payload_offset)
     put16(header, 0x18, total_size)
     put16(header, 0x1A, 0)
@@ -1080,34 +1127,37 @@ def build_service_container(packed):
     section[0x0A] = len(packed.dependencies)
 
     for segment in packed.segments:
-        entry = bytearray(SERVICE_SEGMENT_SIZE)
-        entry[0x00] = SERVICE_ROLE_CODES[segment["role"]]
-        entry[0x01] = 0
-        put16(entry, 0x02, segment["image_size"])
-        put16(entry, 0x04, segment["bss_size"])
-        put16(entry, 0x06, segment["entry_offset"])
-        put16(entry, 0x08, segment["payload_offset"])
-        put16(entry, 0x0A, segment["reloc_start"])
-        put16(entry, 0x0C, segment["reloc_count"])
-        section += entry
+        base = row[segment["role"]]
+        entry = (NO_ENTRY if segment["entry_offset"] == NO_ENTRY
+                 else base + segment["entry_offset"])
+        record = bytearray(SERVICE_SEGMENT_SIZE)
+        record[0x00] = SERVICE_ROLE_CODES[segment["role"]]
+        record[0x01] = 0
+        put16(record, 0x02, base)
+        put16(record, 0x04, segment["image_size"])
+        put16(record, 0x06, segment["bss_size"])
+        put16(record, 0x08, entry)
+        put16(record, 0x0A, segment["payload_offset"])
+        put16(record, 0x0C, 0)
+        section += record
     for endpoint in packed.endpoints:
-        entry = bytearray(SERVICE_ENDPOINT_SIZE)
-        entry[0x00] = endpoint["class"]
-        entry[0x01] = endpoint["instance"]
-        entry[0x02] = endpoint["version"]
-        entry[0x03] = endpoint["flags"]
-        put16(entry, 0x04, endpoint["dispatch_offset"])
-        put16(entry, 0x06, 0)
-        section += entry
+        record = bytearray(SERVICE_ENDPOINT_SIZE)
+        record[0x00] = endpoint["class"]
+        record[0x01] = endpoint["instance"]
+        record[0x02] = endpoint["version"]
+        record[0x03] = endpoint["flags"]
+        put16(record, 0x04, endpoint["number"])
+        put16(record, 0x06, hot_base + endpoint["dispatch_offset"])
+        section += record
     for dependency in packed.dependencies:
-        section += bytes((dependency["class"], dependency["instance"]))
+        record = bytearray(SERVICE_DEPENDENCY_SIZE)
+        record[0x00] = dependency["class"]
+        record[0x01] = dependency["instance"]
+        put16(record, 0x02, dependency["number"])
+        section += record
     if len(section) != section_size:
         raise ZmodError("internal: service section size mismatch")
-
-    body = bytearray()
-    for target, patch in packed.records:
-        body += bytes((ZREL_ABS16, target, patch & 0xFF, (patch >> 8) & 0xFF))
-    return bytes(header + section + body + bytes(packed.image))
+    return bytes(header + section + bytes(image))
 
 
 def resolve_relocation_area(manifest, layout, symbols, obj_index, mode, ref):
@@ -1332,7 +1382,7 @@ def parse_service_container(data, source="<container>"):
     image_size = get16(data, 0x08)
     bss_size = get16(data, 0x0A)
     required = get16(data, 0x0C)
-    init_offset = get16(data, 0x0E)
+    init = get16(data, 0x0E)
     fini_offset = get16(data, 0x10)
     reloc_offset = get16(data, 0x12)
     reloc_count = get16(data, 0x14)
@@ -1352,6 +1402,9 @@ def parse_service_container(data, source="<container>"):
     if fini_offset != NO_ENTRY:
         raise ZmodError("%s: services are permanent; fini must be FFFFh"
                         % source)
+    if reloc_offset != 0 or reloc_count != 0:
+        raise ZmodError("%s: a host-linked image carries no relocation "
+                        "records" % source)
     if total_size != len(data):
         raise ZmodError("%s: total_size %d != container length %d"
                         % (source, total_size, len(data)))
@@ -1382,9 +1435,9 @@ def parse_service_container(data, source="<container>"):
                         % (source, dependency_count))
 
     section_end = section_at + section_size
-    if section_size < SERVICE_HEADER_SIZE or section_end > reloc_offset:
-        raise ZmodError("%s: service section overlaps the relocation table "
-                        "or is truncated" % source)
+    if section_size < SERVICE_HEADER_SIZE or section_end > payload_offset:
+        raise ZmodError("%s: service section overlaps the payload or is "
+                        "truncated" % source)
     expected_segment = SERVICE_HEADER_SIZE
     expected_endpoint = expected_segment + SERVICE_SEGMENT_SIZE * \
         segment_count
@@ -1398,12 +1451,6 @@ def parse_service_container(data, source="<container>"):
             section_size < expected_end):
         raise ZmodError("%s: service section tables are not the canonical "
                         "back-to-back layout" % source)
-
-    if reloc_offset < HEADER_SIZE:
-        raise ZmodError("%s: reloc_offset inside the header" % source)
-    reloc_end = reloc_offset + RELOC_SIZE * reloc_count
-    if reloc_end > payload_offset:
-        raise ZmodError("%s: relocation table overlaps the payload" % source)
 
     segments = []
     roles = set()
@@ -1420,44 +1467,49 @@ def parse_service_container(data, source="<container>"):
         if data[at + 1] != 0:
             raise ZmodError("%s: segment %d flags are not zero"
                             % (source, index))
-        segment_image = get16(data, at + 0x02)
-        segment_bss = get16(data, at + 0x04)
-        entry_offset = get16(data, at + 0x06)
-        segment_payload = get16(data, at + 0x08)
-        reloc_start = get16(data, at + 0x0A)
-        segment_relocs = get16(data, at + 0x0C)
+        base = get16(data, at + 0x02)
+        segment_image = get16(data, at + 0x04)
+        segment_bss = get16(data, at + 0x06)
+        entry = get16(data, at + 0x08)
+        segment_payload = get16(data, at + 0x0A)
+        if get16(data, at + 0x0C) != 0:
+            raise ZmodError("%s: segment %s reserved field is not zero"
+                            % (source, role))
         if segment_image + segment_bss == 0:
             raise ZmodError("%s: segment %s is empty" % (source, role))
         if segment_payload + segment_image > image_size:
             raise ZmodError("%s: segment %s overruns the payload"
                             % (source, role))
-        if reloc_start + segment_relocs > reloc_count:
-            raise ZmodError("%s: segment %s overruns the relocation table"
-                            % (source, role))
-        if entry_offset != NO_ENTRY:
+        tier_base, tier_end = SERVICE_TIERS[role]
+        if base < tier_base or base + segment_image + segment_bss > tier_end:
+            raise ZmodError(
+                "%s: segment %s at %04Xh (+%d) leaves its tier "
+                "%04Xh-%04Xh" % (source, role, base,
+                                 segment_image + segment_bss,
+                                 tier_base, tier_end - 1))
+        if entry != NO_ENTRY:
             if role != "boot":
                 raise ZmodError("%s: only the boot role carries an entry"
                                 % source)
-            if entry_offset >= segment_image:
-                raise ZmodError("%s: the boot entry is outside the image"
-                                % source)
+            if entry < base or entry >= base + segment_image:
+                raise ZmodError("%s: the boot entry %04Xh is outside the "
+                                "boot image" % (source, entry))
         segments.append({
             "role": role,
+            "base": base,
             "image_size": segment_image,
             "bss_size": segment_bss,
-            "entry_offset": entry_offset,
+            "entry": entry,
             "payload_offset": segment_payload,
-            "reloc_start": reloc_start,
-            "reloc_count": segment_relocs,
         })
     if "hot" not in roles:
         raise ZmodError("%s: a service image needs a hot segment" % source)
-    if init_offset != NO_ENTRY:
-        hot = [segment for segment in segments
-               if segment["role"] == "hot"][0]
-        if init_offset >= hot["image_size"]:
-            raise ZmodError("%s: init_offset outside the hot segment"
-                            % source)
+    hot = [segment for segment in segments
+           if segment["role"] == "hot"][0]
+    if init != NO_ENTRY and (init < hot["base"] or
+                             init >= hot["base"] + hot["image_size"]):
+        raise ZmodError("%s: init %04Xh outside the hot image"
+                        % (source, init))
 
     endpoints = []
     for index in range(endpoint_count):
@@ -1467,52 +1519,29 @@ def parse_service_container(data, source="<container>"):
             "instance": data[at + 1],
             "version": data[at + 2],
             "flags": data[at + 3],
-            "dispatch_offset": get16(data, at + 0x04),
+            "number": get16(data, at + 0x04),
+            "dispatch": get16(data, at + 0x06),
         }
-        if get16(data, at + 0x06) != 0:
-            raise ZmodError("%s: endpoint %d reserved field is not zero"
-                            % (source, index))
         if endpoint["flags"] & ~SERVICE_EP_REENTRANT:
             raise ZmodError("%s: endpoint %d has unknown flags %02Xh"
                             % (source, index, endpoint["flags"]))
-        hot = [segment for segment in segments
-               if segment["role"] == "hot"][0]
-        if endpoint["dispatch_offset"] >= hot["image_size"]:
-            raise ZmodError("%s: endpoint %d dispatch outside the hot "
-                            "segment" % (source, index))
+        if endpoint["number"] == 0:
+            raise ZmodError("%s: endpoint %d has no host-assigned number"
+                            % (source, index))
+        if (endpoint["dispatch"] < hot["base"] or endpoint["dispatch"] >=
+                hot["base"] + hot["image_size"]):
+            raise ZmodError("%s: endpoint %d dispatch %04Xh outside the hot "
+                            "image" % (source, index, endpoint["dispatch"]))
         endpoints.append(endpoint)
 
     dependencies = []
     for index in range(dependency_count):
         at = section_at + dependency_offset + SERVICE_DEPENDENCY_SIZE * index
-        dependencies.append({"class": data[at], "instance": data[at + 1]})
-
-    # (target segment, patch) per record, segment-table order.
-    relocs = []
-    for segment in segments:
-        for index in range(segment["reloc_count"]):
-            at = reloc_offset + RELOC_SIZE * (segment["reloc_start"] + index)
-            rtype = data[at]
-            target = data[at + 1]
-            patch = get16(data, at + 2)
-            if rtype != ZREL_ABS16:
-                raise ZmodError("%s: unsupported relocation type %d"
-                                % (source, rtype))
-            if target >= segment_count:
-                raise ZmodError("%s: relocation %d names segment %d out of "
-                                "range" % (source, index, target))
-            if patch + 2 > segment["image_size"]:
-                raise ZmodError("%s: relocation %d patch %04Xh crosses the "
-                                "segment image" % (source, index, patch))
-            target_role = segments[target]["role"]
-            if segment["role"] == "hot" and target_role in ("boot", "bulk"):
-                raise ZmodError("%s: relocation %d reaches from the hot "
-                                "segment into the invisible %s tier"
-                                % (source, index, target_role))
-            if segment["role"] == "bulk":
-                raise ZmodError("%s: relocation %d is inside bulk data"
-                                % (source, index))
-            relocs.append((target, patch))
+        dependencies.append({
+            "class": data[at],
+            "instance": data[at + 1],
+            "number": get16(data, at + 0x02),
+        })
 
     return {
         "source": source,
@@ -1521,13 +1550,13 @@ def parse_service_container(data, source="<container>"):
         "image_size": image_size,
         "bss_size": bss_size,
         "required_granules": 0,
-        "init_offset": init_offset,
+        "init_offset": init,
         "fini_offset": fini_offset,
         "reloc_offset": reloc_offset,
         "reloc_count": reloc_count,
         "payload_offset": payload_offset,
         "total_size": total_size,
-        "relocs": relocs,
+        "relocs": [],
         "segments": segments,
         "endpoints": endpoints,
         "dependencies": dependencies,
@@ -1634,18 +1663,21 @@ def format_report(info, name=None):
     label = name if name else info["source"]
     lines.append("%s" % label)
     if info.get("module_type") == "service":
-        lines.append("  format:        ZMOD v%d service, ABI %d"
+        lines.append("  format:        ZMOD v%d driver image, ABI %d"
                      % (FORMAT_VERSION, SERVICE_ABI_VERSION))
+        lines.append("  image:         %d bytes (host-linked, no "
+                     "relocations)" % info["image_size"])
     else:
         lines.append("  format:        ZMOD v%d driver, ABI %d"
                      % (FORMAT_VERSION, DRIVER_ABI_VERSION))
-    lines.append("  image:         %d bytes" % info["image_size"])
+        lines.append("  image:         %d bytes" % info["image_size"])
     lines.append("  bss:           %d bytes" % info["bss_size"])
-    lines.append("  relocations:   %d (ZREL_ABS16)" % info["reloc_count"])
+    if info.get("module_type") != "service":
+        lines.append("  relocations:   %d (ZREL_ABS16)" % info["reloc_count"])
     if info["init_offset"] == NO_ENTRY:
         lines.append("  init:          none")
     else:
-        lines.append("  init:          +0x%04X" % info["init_offset"])
+        lines.append("  init:          %04Xh" % info["init_offset"])
     if info["fini_offset"] == NO_ENTRY:
         lines.append("  fini:          none")
     else:
@@ -1654,22 +1686,28 @@ def format_report(info, name=None):
     if info.get("module_type") == "service":
         for segment in info["segments"]:
             entry = ""
-            if segment["entry_offset"] != NO_ENTRY:
-                entry = ", entry +0x%04X" % segment["entry_offset"]
-            lines.append("  %-5s segment: image %d + bss %d, payload +0x%04X,"
-                         " %d relocs%s"
-                         % (segment["role"], segment["image_size"],
-                            segment["bss_size"], segment["payload_offset"],
-                            segment["reloc_count"], entry))
+            if segment["entry"] != NO_ENTRY:
+                entry = ", entry %04Xh" % segment["entry"]
+            lines.append("  %-5s segment: base %04Xh, image %d + bss %d,"
+                         " payload +0x%04X%s"
+                         % (segment["role"], segment["base"],
+                            segment["image_size"], segment["bss_size"],
+                            segment["payload_offset"], entry))
         for endpoint in info["endpoints"]:
-            lines.append("  endpoint:      %d.%d v%d dispatch +0x%04X%s"
+            lines.append("  endpoint:      %d.%d v%d number %d dispatch "
+                         "%04Xh%s"
                          % (endpoint["class"], endpoint["instance"],
-                            endpoint["version"],
-                            endpoint["dispatch_offset"],
+                            endpoint["version"], endpoint["number"],
+                            endpoint["dispatch"],
                             " reentrant" if endpoint["flags"] else ""))
         for dependency in info["dependencies"]:
-            lines.append("  depends on:    %d.%d"
-                         % (dependency["class"], dependency["instance"]))
+            if dependency["number"] == 0:
+                target = "none (optional, not in this set)"
+            else:
+                target = "endpoint %d" % dependency["number"]
+            lines.append("  depends on:    %d.%d -> %s"
+                         % (dependency["class"], dependency["instance"],
+                            target))
     else:
         lines.append("  allocation:    %d x %d-byte granules"
                      % (info["required_granules"], GRANULE_SIZE))
@@ -1688,16 +1726,14 @@ def report_json(info, name, packed=None):
         "reloc_count": info["reloc_count"],
         "total_size": info["total_size"],
         "image_sha256": hashlib.sha256(info["payload"]).hexdigest(),
-        "relocations": [patch for _, patch in info["relocs"]],
     }
     if info.get("module_type") == "service":
         report["service_abi"] = SERVICE_ABI_VERSION
-        report["relocation_targets"] = [target for target, _ in
-                                        info["relocs"]]
         report["segments"] = info["segments"]
         report["endpoints"] = info["endpoints"]
         report["dependencies"] = info["dependencies"]
     else:
+        report["relocations"] = [patch for _, patch in info["relocs"]]
         report["driver_abi"] = DRIVER_ABI_VERSION
         report["required_granules"] = info["required_granules"]
     if packed is not None:
@@ -1712,13 +1748,61 @@ def report_json(info, name, packed=None):
 # Commands
 # --------------------------------------------------------------------------
 
+def set_member_location(spec, objdir):
+    """Split one --set entry into (manifest path, object directory).
+
+    `[OBJDIR:]MANIFEST` names the manifest's object directory explicitly,
+    so a set that mixes the production images (one module directory) with
+    an acceptance image's synthetic images (another) links as one plan;
+    a plain path uses the command's --objdir."""
+    if ":" in spec:
+        member_objdir, path = spec.split(":", 1)
+        return path, member_objdir
+    return spec, objdir
+
+
+def pack_service_set_member(manifest_path, manifest, set_paths, objdir):
+    """Link one service image against its whole set (architecture 36.11).
+
+    The set is the load order: every manifest listed by `--set`, this one
+    included.  The packer plans the bank-6 tiers, assigns endpoint numbers,
+    resolves the symbolic dependencies and links this image's segments at
+    their final addresses; the other images in the set are linked by their
+    own invocations, with the same plan."""
+    if not set_paths:
+        raise ZmodError("%s: a service image is linked against its whole "
+                        "set: pass --set with every manifest in load order"
+                        % manifest_path)
+    self_abs = os.path.abspath(manifest_path)
+    packs = []
+    index_of_self = None
+    for spec in set_paths:
+        path, member_objdir = set_member_location(spec, objdir)
+        loaded = manifest if os.path.abspath(path) == self_abs \
+            else load_manifest(path, member_objdir)
+        if loaded["kind"] != "service":
+            raise ZmodError("%s: not a service manifest" % path)
+        if os.path.abspath(path) == self_abs:
+            if index_of_self is not None:
+                raise ZmodError("%s: listed twice in --set" % manifest_path)
+            index_of_self = len(packs)
+        packs.append(pack_service_manifest(loaded))
+    if index_of_self is None:
+        raise ZmodError("%s: the manifest is not in its own --set"
+                        % manifest_path)
+    rows, _ledger = plan_service_set(packs)
+    packed = packs[index_of_self]
+    return build_service_container(packed, rows[index_of_self]), packed
+
+
 def cmd_pack(args):
     if len(args) < 2:
         raise ZmodError("usage: zmodpack.py pack <manifest> <out.zmod> "
-                        "[--objdir DIR] [--report FILE]")
+                        "[--objdir DIR] [--set MANIFEST ...] [--report FILE]")
     manifest_path, out_path = args[0], args[1]
     objdir = None
     report_path = None
+    set_paths = []
     rest = args[2:]
     while rest:
         flag = rest.pop(0)
@@ -1726,12 +1810,23 @@ def cmd_pack(args):
             objdir = rest.pop(0)
         elif flag == "--report" and rest:
             report_path = rest.pop(0)
+        elif flag == "--set":
+            while rest and not rest[0].startswith("--"):
+                set_paths.append(rest.pop(0))
+            if not set_paths:
+                raise ZmodError("pack: --set needs at least one manifest")
         else:
             raise ZmodError("unknown pack option %r" % flag)
 
     manifest = load_manifest(manifest_path, objdir)
-    packed = pack_manifest(manifest)
-    container = build_container(packed)
+    if manifest["kind"] == "service":
+        container, packed = pack_service_set_member(
+            manifest_path, manifest, set_paths, objdir)
+    else:
+        if set_paths:
+            raise ZmodError("pack: --set is a service-image option")
+        packed = pack_manifest(manifest)
+        container = build_container(packed)
     info = parse_container(container, out_path)
 
     with open(out_path, "wb") as handle:
@@ -1752,9 +1847,13 @@ def cmd_validate(args):
     for path in args:
         data = open(path, "rb").read()
         info = parse_container(data, path)
-        print("zmodpack: %s: OK (%d image bytes, %d bss, %d relocations)"
-              % (path, info["image_size"], info["bss_size"],
-                 info["reloc_count"]))
+        if info.get("module_type") == "service":
+            print("zmodpack: %s: OK (%d image bytes, %d bss, host-linked)"
+                  % (path, info["image_size"], info["bss_size"]))
+        else:
+            print("zmodpack: %s: OK (%d image bytes, %d bss, %d relocations)"
+                  % (path, info["image_size"], info["bss_size"],
+                     info["reloc_count"]))
     return 0
 
 
@@ -1765,8 +1864,9 @@ def cmd_dump(args):
         data = open(path, "rb").read()
         info = parse_container(data, path)
         print(format_report(info, path))
-        for index, (_, patch) in enumerate(info["relocs"]):
-            print("  reloc %3d:    +0x%04X  ZREL_ABS16" % (index, patch))
+        if info.get("module_type") != "service":
+            for index, (_, patch) in enumerate(info["relocs"]):
+                print("  reloc %3d:    +0x%04X  ZREL_ABS16" % (index, patch))
     return 0
 
 
@@ -2033,57 +2133,156 @@ class ServiceTierPlan:
         return base
 
 
-def service_segments(info):
-    return {segment["role"]: segment for segment in info["segments"]}
+def service_segments(pack):
+    return {segment["role"]: segment for segment in pack.segments}
 
 
 def segment_size(segment):
     return segment["image_size"] + segment["bss_size"]
 
 
-def plan_service_tiers(infos):
-    """Allocate every image's segments and return (rows, ledger).
+def plan_service_set(packs):
+    """Host assembly for one image's driver set (architecture 36.11).
 
-    rows: one dict per image with the segment bases; ledger: the
-    `service hot` / `service boot/bulk` used-byte lines.  Raises
-    ZmodError when the set does not fit."""
+    Places every image's segments with the existing tier plan, assigns the
+    host endpoint numbers in load order and table order, and resolves each
+    image's symbolic dependencies to the typed endpoint reference of an
+    earlier (or the image's own) export.  Duplicate-image,
+    duplicate-endpoint, tier-fit and overlap checks all run here.  Returns
+    (rows, ledger); each pack carries its resolved dependency numbers and
+    each endpoint its host number."""
+    if not packs:
+        raise ZmodError("services: no images given")
+    if len(packs) > SERVICE_MAX_IMAGES:
+        raise ZmodError("services: %d images; the loader holds %d"
+                        % (len(packs), SERVICE_MAX_IMAGES))
+    names = [pack.name for pack in packs]
+    lowered = [name.lower() for name in names]
+    if len(set(lowered)) != len(lowered):
+        raise ZmodError("services: duplicate image name in %s"
+                        % ", ".join(names))
+
+    seen = {}
+    for pack in packs:
+        for endpoint in pack.endpoints:
+            key = (endpoint["class"], endpoint["instance"])
+            if key in seen:
+                raise ZmodError(
+                    "%s: endpoint %d.%d is already exported by %s"
+                    % (pack.name, key[0], key[1], seen[key]))
+            seen[key] = pack.name
+
     plan = ServiceTierPlan()
-    rows = [{"name": info["source"]} for info in infos]
-    for row, info in zip(rows, infos):
-        io = service_segments(info).get("io")
+    rows = [{"name": pack.name} for pack in packs]
+    for row, pack in zip(rows, packs):
+        io = service_segments(pack).get("io")
         row["io"] = plan.reserve_io(segment_size(io) if io else 0)
 
     hot_order = sorted(
-        range(len(infos)),
+        range(len(packs)),
         key=lambda index: (-segment_size(
-            service_segments(infos[index]).get("hot"))))
+            service_segments(packs[index])["hot"])))
     for index in hot_order:
-        segment = service_segments(infos[index])["hot"]
+        segment = service_segments(packs[index])["hot"]
         rows[index]["hot"] = plan.place_hot(segment_size(segment))
-    for row, info in zip(rows, infos):
-        segments = service_segments(info)
+    for row, pack in zip(rows, packs):
+        segments = service_segments(pack)
         boot = segments.get("boot")
         bulk = segments.get("bulk")
         row["boot"] = plan.place_boot(segment_size(boot) if boot else 0)
         row["bulk"] = plan.place_bulk(segment_size(bulk) if bulk else 0)
 
+    check_tier_overlap(rows, packs)
+
+    # Host-assigned endpoint numbers: load order, endpoint-table order.
+    number = 1
+    for pack in packs:
+        for endpoint in pack.endpoints:
+            endpoint["number"] = number
+            number += 1
+    if number - 1 > SERVICE_MAX_ENDPOINTS * SERVICE_MAX_IMAGES:
+        raise ZmodError("services: %d endpoints; the nucleus table holds %d"
+                        % (number - 1,
+                           SERVICE_MAX_ENDPOINTS * SERVICE_MAX_IMAGES))
+
+    # Symbolic dependencies: resolved to the typed endpoint reference of
+    # an export by this image or an earlier one in the load order.  An
+    # optional dependency that no image exports resolves to 0; a missing
+    # required one is a build error (architecture 36.11: no fallback).
+    for index, pack in enumerate(packs):
+        for dependency in pack.dependencies:
+            key = (dependency["class"], dependency["instance"])
+            resolved = 0
+            for earlier in range(index + 1):
+                for endpoint in packs[earlier].endpoints:
+                    if (endpoint["class"], endpoint["instance"]) == key:
+                        resolved = endpoint["number"]
+                        break
+                if resolved != 0:
+                    break
+            if resolved == 0 and not dependency["optional"]:
+                raise ZmodError(
+                    "%s: dependency %d.%d is not exported by an earlier "
+                    "image in the load order"
+                    % (pack.name, key[0], key[1]))
+            dependency["number"] = resolved
+
+    ledger = service_ledger(packs, rows)
+    return rows, ledger
+
+
+def _entry_name(entry):
+    return entry["name"] if isinstance(entry, dict) else entry.name
+
+
+def _entry_segments(entry):
+    return entry["segments"] if isinstance(entry, dict) else entry.segments
+
+
+def check_tier_overlap(rows, entries):
+    """Every placed block must lie inside its tier and no two blocks may
+    overlap (architecture 36.6, fixed driver-bank layout)."""
+    for role in ("hot", "io", "boot", "bulk"):
+        tier_base, tier_end = SERVICE_TIERS[role]
+        blocks = []
+        for row, entry in zip(rows, entries):
+            for segment in _entry_segments(entry):
+                if segment["role"] != role:
+                    continue
+                base = row[role]
+                size = segment_size(segment)
+                if base is None or base < tier_base or \
+                        base + size > tier_end:
+                    raise ZmodError("%s: %s segment outside its tier"
+                                    % (_entry_name(entry), role))
+                blocks.append((base, size, _entry_name(entry)))
+        blocks.sort()
+        end = tier_base
+        for base, size, name in blocks:
+            if base < end:
+                raise ZmodError("%s: %s segment at %04Xh overlaps the "
+                                "previous block" % (name, role, base))
+            end = base + size
+
+
+def service_ledger(entries, rows):
+    """The architecture-36.20 `driver hot` and `driver boot/bulk` ledgers:
+    the placed bytes of each tier, taken from the plan rows."""
     hot_used = 0
     boot_used = 0
-    for info in infos:
-        segments = service_segments(info)
-        for role in ("hot", "io"):
-            if role in segments:
-                hot_used += segment_size(segments[role])
-        for role in ("boot", "bulk"):
-            if role in segments:
-                boot_used += segment_size(segments[role])
-    ledger = {
+    for row, entry in zip(rows, entries):
+        for segment in _entry_segments(entry):
+            size = segment_size(segment)
+            if segment["role"] in ("hot", "io"):
+                hot_used += size
+            else:
+                boot_used += size
+    return {
         "service_hot_bytes": hot_used,
         "service_hot_capacity_bytes": HOT_TIER_END - HOT_TIER_BASE,
         "service_boot_bytes": boot_used,
         "service_boot_capacity_bytes": BOOT_TIER_END - BOOT_TIER_BASE,
     }
-    return rows, ledger
 
 
 def format_service_row(row):
@@ -2091,7 +2290,7 @@ def format_service_row(row):
     for role in ("hot", "io", "boot", "bulk"):
         if row.get(role) is not None:
             parts.append("%s %04Xh" % (role, row[role]))
-    return "service %s: %s" % (row["name"], " ".join(parts))
+    return "driver %s: %s" % (row["name"], " ".join(parts))
 
 
 def cmd_services(args):
@@ -2113,7 +2312,10 @@ def cmd_services(args):
 
     infos = []
     names = []
-    seen = {}
+    rows = []
+    seen_key = {}
+    seen_number = {}
+    number_key = {}
     for path in containers:
         data = open(path, "rb").read()
         info = parse_container(data, path)
@@ -2128,29 +2330,52 @@ def cmd_services(args):
                             % (path, name, MANIFEST_ENTRY_SIZE - 1))
         if name.lower() in [existing.lower() for existing in names]:
             raise ZmodError("%s: duplicate image name %r" % (path, name))
+        row = {"name": name}
+        for segment in info["segments"]:
+            row[segment["role"]] = segment["base"]
         for endpoint in info["endpoints"]:
             key = (endpoint["class"], endpoint["instance"])
-            if key in seen:
+            number = endpoint["number"]
+            if key in seen_key:
                 raise ZmodError(
                     "%s: endpoint %d.%d is already exported by %s"
-                    % (path, key[0], key[1], seen[key]))
-            seen[key] = path
+                    % (path, key[0], key[1], seen_key[key]))
+            if number in seen_number:
+                raise ZmodError(
+                    "%s: endpoint number %d is already used by %s"
+                    % (path, number, seen_number[number]))
+            seen_key[key] = path
+            seen_number[number] = path
+            number_key[number] = key
         for dependency in info["dependencies"]:
             key = (dependency["class"], dependency["instance"])
-            if key not in seen:
+            number = dependency["number"]
+            if number == 0:
+                # An optional dependency no image exports: the driver's
+                # host-configured fallback (architecture 36.11).
+                continue
+            if number not in number_key:
                 raise ZmodError(
-                    "%s: dependency %d.%d is not exported by an earlier "
-                    "image in the load order" % (path, key[0], key[1]))
+                    "%s: dependency %d.%d resolved to endpoint %d, which no "
+                    "earlier image exports"
+                    % (path, key[0], key[1], number))
+            if number_key[number] != key:
+                raise ZmodError(
+                    "%s: dependency %d.%d resolved to endpoint %d of "
+                    "protocol %d.%d"
+                    % (path, key[0], key[1], number,
+                       number_key[number][0], number_key[number][1]))
         infos.append(info)
         names.append(name)
+        rows.append(row)
     if len(infos) > SERVICE_MAX_IMAGES:
         raise ZmodError("services: %d images; the loader holds %d"
                         % (len(infos), SERVICE_MAX_IMAGES))
 
-    rows, ledger = plan_service_tiers(infos)
-    # The printed rows carry the ROMFS names the manifest lists.
-    for row, name in zip(rows, names):
-        row["name"] = name
+    placed = [{"name": name, "segments": info["segments"]}
+              for name, info in zip(names, infos)]
+    check_tier_overlap(rows, placed)
+    ledger = service_ledger(placed, rows)
 
     manifest = bytearray()
     for name in names:
@@ -2165,7 +2390,7 @@ def cmd_services(args):
         ledger["service_hot_bytes"], ledger["service_hot_capacity_bytes"])))
     print("zmodpack: %s" % (pack_image.SERVICE_BOOT_LEDGER_LINE % (
         ledger["service_boot_bytes"], ledger["service_boot_capacity_bytes"])))
-    print("zmodpack: %s: %d service images, load order as listed"
+    print("zmodpack: %s: %d driver images, load order as listed"
           % (out_path, len(infos)))
 
     if report_path:

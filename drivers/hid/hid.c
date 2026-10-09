@@ -302,19 +302,23 @@ int16_t hid_service_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void hid_service_init(const struct ipc_service_api *api)
+void hid_service_init(const struct ipc_service_boot *boot)
 {
 	uint8_t handle;
 	struct zos_ipc_frame frame;
 
-	hid_api = api;
+	hid_api = boot->api;
 	hid_state.read_buffer_address = (uint16_t)hid_state.read_buffer;
 	hid_state.head = 0u;
 	hid_state.tail = 0u;
 	hid_state.count = 0u;
 	hid_state.penalty = 0u;
 
-	handle = (uint8_t)api->lookup(ZOS_CLASS_IOC, ZOS_CLASS_INSTANCE);
+	/* The one dependency (the IOC transport, manifest position 0): the
+	 * host resolved it to the endpoint number; the driver never looks a
+	 * peer up at run time.  The manifest declares it required, so the
+	 * packer refused a build without it. */
+	handle = boot->deps[HID_DEP_IOC];
 	hid_state.ioc_handle = handle;
 
 	/* Probe the link once: a down link keeps the ring empty, and a

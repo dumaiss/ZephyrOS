@@ -1,15 +1,22 @@
 {
   "name": "hid",
   "type": "service",
-  "abi": 2,
+  "abi": 3,
   "flags": 0,
-  "objects": ["hid.rel", "sdcc_indirect_calls.rel"],
+  "objects": [
+    "hid.rel",
+    "sdcc_indirect_calls.rel"
+  ],
   "init": "hid_service_init",
   "segments": [
     {
       "role": "hot",
-      "image_areas": ["_CODE"],
-      "bss_areas": ["_SERVICE_IO"]
+      "image_areas": [
+        "_CODE"
+      ],
+      "bss_areas": [
+        "_SERVICE_IO"
+      ]
     }
   ],
   "endpoints": [
@@ -22,6 +29,9 @@
     }
   ],
   "depends": [
-    {"class": 5, "instance": 0}
+    {
+      "class": 5,
+      "instance": 0
+    }
   ]
 }

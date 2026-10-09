@@ -992,6 +992,16 @@ $(MODULES)/sdcc_indirect_calls.rel: modules/runtime/sdcc_indirect_calls.asm \
 		| $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
+# Synthetic IPC service set (work packages 39-40): six images packed as
+# real service images with the service section, loaded by the acceptance
+# image's `services.man`.  Defined here because the production pack rule
+# below links against the whole load-order set and needs their objects.
+IPC_MODDIR := $(MODULES)/ipc-modules
+IPC_SERVICE_NAMES := ioc fat vfs echo con irqx
+IPC_HOT_OBJS := $(addprefix $(IPC_MODDIR)/,$(addsuffix .rel,$(IPC_SERVICE_NAMES)))
+IPC_BOOT_OBJS := $(addprefix $(IPC_MODDIR)/,$(addsuffix _boot.rel,$(IPC_SERVICE_NAMES)))
+IPC_ZMODS := $(addprefix $(IPC_MODDIR)/ipc-,$(addsuffix .zmod,$(IPC_SERVICE_NAMES)))
+
 SVC_OBJS := $(MODULES)/sdcc_indirect_calls.rel \
 	$(MODULES)/sio.rel $(MODULES)/sio_io.rel $(MODULES)/sio_service.rel \
 	$(MODULES)/sio_boot.rel \
@@ -1003,11 +1013,30 @@ SVC_OBJS := $(MODULES)/sdcc_indirect_calls.rel \
 	$(MODULES)/v9958_boot.rel \
 	$(MODULES)/console_service.rel
 
+# The packer links every image against the whole load-order set (--set):
+# the tier plan, the endpoint numbers and the inter-driver dependencies
+# are all host-computed, so one pack reads every member's objects.  Both
+# pack rules below wait for the whole set, or a parallel build could link
+# an image against a half-built one.
+SVC_SET_OBJS = $(SVC_OBJS) $(if $(filter 1,$(ZOS_IPC_SELFTEST)),\
+	$(IPC_HOT_OBJS) $(IPC_BOOT_OBJS) \
+	$(IPC_MODDIR)/con_slow.rel $(IPC_MODDIR)/sdcc_indirect_calls.rel)
+
 # One image per service manifest; the report carries the symbol offsets the
-# replays read the boot markers and the placements through.
-$(SVC_ZMODS): $(MODULES)/%.zmod: services/manifests/%.json $(SVC_OBJS) \
-		tools/zmodpack.py | $(MODULES)
+# replays read the boot markers and the placements through.  The packer
+# links each image at its final bank-6 address against the whole set it is
+# loaded with (--set, in load order): the tier plan, the endpoint numbers
+# and the inter-driver dependencies are all host-computed, so every image
+# of one build must see the same set.
+SVC_PACK_SET = $(addprefix services/manifests/,$(addsuffix .json,$(ZOS_SERVICES))) \
+	$(if $(filter 1,$(ZOS_IPC_SELFTEST)),$(addprefix $(IPC_DIR)/manifests/,$(addsuffix .json,$(IPC_SERVICE_NAMES))))
+SVC_PACK_IMAGES = $(addprefix $(MODULES):,$(addprefix services/manifests/,$(addsuffix .json,$(ZOS_SERVICES)))) \
+	$(if $(filter 1,$(ZOS_IPC_SELFTEST)),$(addprefix $(IPC_MODDIR):,$(addprefix $(IPC_DIR)/manifests/,$(addsuffix .json,$(IPC_SERVICE_NAMES)))))
+
+$(SVC_ZMODS): $(MODULES)/%.zmod: services/manifests/%.json $(SVC_SET_OBJS) \
+		$(SVC_PACK_SET) tools/zmodpack.py | $(MODULES)
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
+		--set $(SVC_PACK_IMAGES) \
 		--report $(MODULES)/$*.report.json
 
 # The service set an image boots, resolved to its packed images.
@@ -1507,19 +1536,15 @@ ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 endif
 
 # --- resident service images (work packages 39-40) ---------------------------
-# Six synthetic services packed as real service images (ZMOD module_type 2
-# with the service section) into the recovery store, listed by the boot
-# manifest `services.man` and loaded by the nucleus service loader
-# (kernel/service/service_loader.c).  Acceptance-only; nothing here is
-# built for any other configuration.
-#
-# The images live under the shared build/modules/ so the recovery store's
-# manifest can name them with one --objdir, like every other boot entry.
-IPC_MODDIR := $(MODULES)/ipc-modules
-IPC_SERVICE_NAMES := ioc fat vfs echo con irqx
-IPC_HOT_OBJS := $(addprefix $(IPC_MODDIR)/,$(addsuffix .rel,$(IPC_SERVICE_NAMES)))
-IPC_BOOT_OBJS := $(addprefix $(IPC_MODDIR)/,$(addsuffix _boot.rel,$(IPC_SERVICE_NAMES)))
-IPC_ZMODS := $(addprefix $(IPC_MODDIR)/ipc-,$(addsuffix .zmod,$(IPC_SERVICE_NAMES)))
+# Six synthetic services packed as real service images into the recovery
+# store, listed by the boot manifest `services.man` and loaded by the
+# nucleus service loader (kernel/service/service_loader.c).
+# Acceptance-only; nothing here is built for any other configuration.
+# The images live under the shared build/modules/ipc-modules/ so a --set
+# token can name their own objdir.  The set's object variables are
+# defined with the production service objects above, because the pack
+# rules there link every image against the whole set (--set) and have to
+# see them before those rules are read.
 
 ifeq ($(ZOS_IPC_SELFTEST),1)
 $(IPC_MODDIR):
@@ -1551,15 +1576,13 @@ $(IPC_MODDIR)/sdcc_indirect_calls.rel: \
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 # One service image per manifest; the report carries the symbol offsets
-# the replay reads the boot-segment markers and placements through.
+# the replay reads the boot-segment markers and placements through.  The
+# whole set's objects are prerequisites because each pack links the set.
 $(IPC_ZMODS): $(IPC_MODDIR)/ipc-%.zmod: $(IPC_DIR)/manifests/%.json \
-		$(IPC_MODDIR)/%.rel $(IPC_MODDIR)/%_boot.rel \
-		$(IPC_MODDIR)/sdcc_indirect_calls.rel tools/zmodpack.py \
-		| $(IPC_MODDIR)
+		$(SVC_SET_OBJS) $(SVC_PACK_SET) tools/zmodpack.py | $(IPC_MODDIR)
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(IPC_MODDIR) \
+		--set $(SVC_PACK_IMAGES) \
 		--report $(IPC_MODDIR)/$*.report.json
-
-$(IPC_MODDIR)/ipc-con.zmod: $(IPC_MODDIR)/con_slow.rel
 
 endif
 

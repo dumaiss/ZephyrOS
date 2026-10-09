@@ -1,13 +1,15 @@
-/* ZephyrOS resident service images (architecture 36.11, work package 40).
+/* ZephyrOS resident driver images (architecture 36.11, work package 41b).
  *
- * A resident service is a ZMOD container extended with a *service
+ * A resident driver is a ZMOD container extended with a *service
  * section*: the same 28-byte header, module_type = 2 (service), service
- * ABI in the abi byte.  The section, the segment table, the exported
- * endpoints and the declared dependencies are described here and pinned
- * by compile-time assertions; `tools/zmodpack.py` validates and packs the
- * same format on the host and pre-computes the layout, and
- * `kernel/service/service_loader.c` places the image with the existing
- * ZMOD relocation records (ZREL_ABS16) into the bank-6 tiers.
+ * ABI 3 in the abi byte.  The section, the segment table, the exported
+ * endpoints and the resolved dependencies are described here and pinned
+ * by compile-time assertions; `tools/zmodpack.py` links every image at its
+ * final bank-6 addresses on the host - the tier plan, the endpoint numbers
+ * and the symbolic inter-driver dependencies are all resolved there - and
+ * `kernel/service/service_loader.c` only copies each segment to its base,
+ * installs the host-built endpoint and dependency tables and runs the
+ * entry points.  A container carries no relocation records.
  *
  * Segments and destination tiers (architecture 36.6):
  *
@@ -20,30 +22,32 @@
  *   bulk   0000h-5FFFh of bank 6   bulk data, reached only by nucleus
  *                                  copies
  *
- * Each segment is a contiguous image plus a BSS area; its relocation
- * records are the existing 4-byte ZREL_ABS16 records, indexed by
- * `patch_offset` relative to the segment's image.  In a service
- * container the record's second byte names the *target segment* and the
- * loader applies `word += target segment base`, exactly the driver
- * arena's rule with each segment relocated independently, so hot code
- * can patch in the addresses of its io buffers.  The driver arena keeps
- * the byte reserved (0) because it is one contiguous arena.  Segments
- * may only reach tiers the mode-11 window shows: hot code may not point
- * into boot or bulk code, and bulk segments carry no relocation records.
+ * Each segment is a contiguous image plus a BSS area, linked at its
+ * final bank-6 address: the packer applies every 4-byte ZREL_ABS16
+ * record on the host (`word += target segment base`, each segment's
+ * coordinate space being its image followed by its BSS areas) and the
+ * loader copies the bytes verbatim.  Segments may only reach tiers the
+ * mode-11 window shows: hot code may not point into boot or bulk code,
+ * and bulk segments carry no relocation records.
  *
- * A service image declares its exported endpoints (class, instance,
- * version, hot-image dispatch offset, flags) and the endpoints it
- * depends on (class, instance).  The resident loader registers the
- * declared endpoints before any service code runs and refuses an image
- * whose declared dependencies are not registered yet, in manifest order.
+ * A driver image declares its exported endpoints (class, instance,
+ * version, the host-assigned endpoint number, the absolute hot-segment
+ * dispatch entry and flags) and its symbolic dependencies on other
+ * resident protocol objects (class, instance, optional flag).  The host
+ * packer resolves each dependency to the endpoint number of an earlier
+ * (or the image's own) export; the loader installs the resulting
+ * per-image dependency array before the image's init runs, and a driver
+ * never looks a peer up at run time.
  *
  * The service *bootstrap interface* the code calls is `struct
- * ipc_service_api` (include/zephyros/ipc.h), a small versioned table of
- * nucleus entry points, never a kernel import table.
+ * ipc_service_api` plus the driver's resolved dependency array, both named
+ * by `struct ipc_service_boot` (include/zephyros/ipc.h), a small versioned
+ * table of nucleus entry points and one host-resolved reference row, never
+ * a kernel import table.
  *
  * The boot manifest (`ZOS_SERVICE_MANIFEST_NAME`) is the flat ROMFS file
  * the bootstrap reader (kernel/romfs) reads: a sequence of 24-byte name
- * records, exactly the ROMFS name field, naming the service images in
+ * records, exactly the ROMFS name field, naming the driver images in
  * load order.  Flat constant names only: no path syntax, no directory.
  */
 
@@ -59,7 +63,7 @@
 #define ZMOD_TYPE_SERVICE 2u
 
 /* Service ABI carried in the header's abi byte (header offset 06h). */
-#define ZMOD_SERVICE_ABI_VERSION 2u
+#define ZMOD_SERVICE_ABI_VERSION 3u
 
 /* The service section always starts directly after the container header. */
 #define ZMOD_SERVICE_SECTION_OFFSET ZMOD_HEADER_SIZE
@@ -73,6 +77,11 @@
 /* Endpoint flags: bit 0 is the re-entrancy declaration, the same bit the
  * endpoint table keeps (ZOS_IPC_EP_REENTRANT, abi/zos/ipc.h). */
 #define ZMOD_SERVICE_EP_REENTRANT ZOS_IPC_EP_REENTRANT
+
+/* Dependency declaration flags: an optional dependency that no image in
+ * the build exports resolves to endpoint number 0 (the driver's own
+ * fallback); a missing required dependency is a pack-time error. */
+#define ZMOD_SERVICE_DEP_OPTIONAL 0x01u
 
 /* Service section header, 16 bytes, little-endian.  All table offsets are
  * relative to the section start (ZMOD_SERVICE_SECTION_OFFSET) and every
@@ -91,41 +100,44 @@ struct zmod_service_header {
 };
 
 /* One segment, 14 bytes.  `image_size` + `bss_size` must be non-zero and
- * the pair is the segment's allocation; the payload is
- * `payload_offset .. payload_offset + image_size` in the container payload
- * area, and the segment's relocation records are the `reloc_count`
- * records starting at index `reloc_start` in the container's one ZREL
- * table.  `entry_offset` names an entry point inside the image (only the
- * boot role may carry one) or ZMOD_NO_ENTRY. */
+ * the pair is the segment's allocation at its final, host-assigned
+ * address: `base .. base + image_size + bss_size`, inside the tier of its
+ * role.  The payload is `payload_offset .. payload_offset + image_size`
+ * in the container payload area, already relocated for `base`.  `entry`
+ * is the absolute entry point inside the image (only the boot role may
+ * carry one) or ZMOD_NO_ENTRY. */
 struct zmod_service_segment {
 	uint8_t  role;             /* ZMOD_SEGMENT_*                     */
 	uint8_t  flags;            /* 0                                  */
+	uint16_t base;             /* final bank-6 address               */
 	uint16_t image_size;
 	uint16_t bss_size;
-	uint16_t entry_offset;     /* boot entry; ZMOD_NO_ENTRY = none    */
+	uint16_t entry;            /* absolute boot entry; FFFFh = none  */
 	uint16_t payload_offset;   /* relative to the container payload   */
-	uint16_t reloc_start;      /* first relocation record            */
-	uint16_t reloc_count;
+	uint16_t reserved;         /* 0                                  */
 };
 
-/* One exported endpoint, 8 bytes.  `dispatch_offset` is relative to the
- * hot segment's image; the resident loader registers
- * hot_base + dispatch_offset. */
+/* One exported endpoint, 8 bytes.  `number` is the host-assigned endpoint
+ * number (1..N across the build's load order) the nucleus table and every
+ * resolved dependency reference use; `dispatch` is the absolute hot-tier
+ * dispatch entry. */
 struct zmod_service_endpoint {
 	uint8_t  class;
 	uint8_t  instance;
 	uint8_t  version;
 	uint8_t  flags;            /* ZMOD_SERVICE_EP_*                  */
-	uint16_t dispatch_offset;
-	uint16_t reserved;         /* 0                                  */
+	uint16_t number;           /* host-assigned endpoint number      */
+	uint16_t dispatch;         /* absolute dispatch entry            */
 };
 
-/* One declared dependency, 2 bytes.  The loader requires an endpoint
- * with the same (class, instance) to be registered before the image is
- * loaded. */
+/* One resolved dependency, 4 bytes.  The host resolved the declared
+ * (class, instance) to `number`, the endpoint number of an earlier (or
+ * this image's own) export; 0 means the declaration was optional and no
+ * image in the build exports it. */
 struct zmod_service_dependency {
 	uint8_t  class;
 	uint8_t  instance;
+	uint16_t number;           /* resolved endpoint number; 0 = absent */
 };
 
 /* Pinned on-disk sizes; the assertions below keep the structures and
@@ -133,7 +145,7 @@ struct zmod_service_dependency {
 #define ZMOD_SERVICE_HEADER_SIZE     16u
 #define ZMOD_SERVICE_SEGMENT_SIZE    14u
 #define ZMOD_SERVICE_ENDPOINT_SIZE   8u
-#define ZMOD_SERVICE_DEPENDENCY_SIZE 2u
+#define ZMOD_SERVICE_DEPENDENCY_SIZE 4u
 
 /* Format maxima (the loader's tables and the packer agree). */
 #define ZMOD_SERVICE_MAX_SEGMENTS     4u
@@ -150,10 +162,10 @@ struct zmod_service_dependency {
  *   required_granules  0: per-tier allocation is the loader's, computed
  *                      from the segment table, so the driver granule field
  *                      is unused and must be zero
- *   init_offset        hot-segment-relative init entry; ZMOD_NO_ENTRY = none
+ *   init_offset        absolute hot-segment init entry; ZMOD_NO_ENTRY = none
  *   fini_offset        ZMOD_NO_ENTRY (services are permanent; no unload)
- *   reloc_offset       the single ZREL_ABS16 record table
- *   reloc_count        records in that table
+ *   reloc_offset       0 (host-linked: no relocation records)
+ *   reloc_count        0
  *   payload_offset     payload area (segment images concatenated)
  *   total_size         exact container length
  *   reserved           0
@@ -185,26 +197,29 @@ _Static_assert(sizeof(struct zmod_service_segment) ==
 	       ZMOD_SERVICE_SEGMENT_SIZE,
 	       "service segment must be 14 bytes");
 _Static_assert(__builtin_offsetof(struct zmod_service_segment,
-				  image_size) == 0x02,
+				  base) == 0x02,
+	       "service segment base offset");
+_Static_assert(__builtin_offsetof(struct zmod_service_segment,
+				  image_size) == 0x04,
 	       "service segment image_size offset");
 _Static_assert(__builtin_offsetof(struct zmod_service_segment,
-				  entry_offset) == 0x06,
-	       "service segment entry_offset offset");
+				  entry) == 0x08,
+	       "service segment entry offset");
 _Static_assert(__builtin_offsetof(struct zmod_service_segment,
-				  payload_offset) == 0x08,
+				  payload_offset) == 0x0A,
 	       "service segment payload_offset offset");
-_Static_assert(__builtin_offsetof(struct zmod_service_segment,
-				  reloc_start) == 0x0A,
-	       "service segment reloc_start offset");
 _Static_assert(sizeof(struct zmod_service_endpoint) ==
 	       ZMOD_SERVICE_ENDPOINT_SIZE,
 	       "service endpoint must be 8 bytes");
 _Static_assert(__builtin_offsetof(struct zmod_service_endpoint,
-				  dispatch_offset) == 0x04,
-	       "service endpoint dispatch_offset offset");
+				  number) == 0x04,
+	       "service endpoint number offset");
+_Static_assert(__builtin_offsetof(struct zmod_service_endpoint,
+				  dispatch) == 0x06,
+	       "service endpoint dispatch offset");
 _Static_assert(sizeof(struct zmod_service_dependency) ==
 	       ZMOD_SERVICE_DEPENDENCY_SIZE,
-	       "service dependency must be 2 bytes");
+	       "service dependency must be 4 bytes");
 #endif /* __SDCC */
 
 /* The flat ROMFS name of the boot manifest.  The bootstrap reader

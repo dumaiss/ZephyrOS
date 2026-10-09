@@ -166,13 +166,13 @@ int16_t irqx_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void ipc_irqx_init(const struct ipc_service_api *table)
+void ipc_irqx_init(const struct ipc_service_boot *boot)
 {
-	api = table;
+	api = boot->api;
 	irqx_buffer_address = (uint16_t)irqx_buffer;
-	/* The endpoint is registered by the resident loader from the image
+	/* The endpoint is installed by the resident loader from the image
 	 * metadata; the IRQ claim is the service's own bring-up step, run
 	 * here in the mode-11 window where the fixed core (and so the
 	 * bootstrap interface) is visible. */
-	(void)table->irq_claim(IPC_IRQ_CTC0, (uint16_t)irqx_handler, 0u);
+	(void)boot->api->irq_claim(IPC_IRQ_CTC0, (uint16_t)irqx_handler, 0u);
 }

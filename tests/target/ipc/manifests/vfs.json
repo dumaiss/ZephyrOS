@@ -1,7 +1,7 @@
 {
   "name": "vfs",
   "type": "service",
-  "abi": 2,
+  "abi": 3,
   "flags": 0,
   "objects": [
     "vfs.rel",
@@ -43,6 +43,10 @@
     }
   ],
   "depends": [
+    {
+      "class": 18,
+      "instance": 0
+    },
     {
       "class": 19,
       "instance": 0

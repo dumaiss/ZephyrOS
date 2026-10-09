@@ -115,15 +115,17 @@ class TestIpcBuildWiring(unittest.TestCase):
         text = read(MAKEFILE)
         self.assertIn("--dataseg SERVICE_IO", text)
 
-    def test_loader_enforces_the_service_io_range(self):
+    def test_loader_and_packer_enforce_the_service_io_range(self):
         text = read(os.path.join(ROOT, "kernel", "service",
                                 "service_loader.c"))
-        # The nucleus loader refuses an image whose io segment leaves bank
-        # 6's 8000h-BFFFh (correction 01's service I/O buffer rule).
+        # The nucleus loader refuses an image whose io segment's final
+        # base or allocation leaves bank 6's 8000h-BFFFh (the service I/O
+        # buffer rule); the packer refuses the same set at build time.
         self.assertIn("SERVICE_IO_BASE", text)
         self.assertIn("SERVICE_IO_END", text)
-        self.assertIn("io_cursor < SERVICE_IO_BASE", text)
-        self.assertIn("io range full", text)
+        packer = read(os.path.join(ROOT, "tools", "zmodpack.py"))
+        self.assertIn('"io": (0x8000, 0xC000)', packer)
+        self.assertIn("leaves its tier", packer)
 
     def test_makefile_builds_the_substrate_and_the_loader(self):
         text = read(MAKEFILE)
@@ -257,7 +259,8 @@ class TestIpcImageLayout(unittest.TestCase):
         self.syms = symbols(self.map_path)
 
     def test_substrate_is_fixed_and_the_bodies_are_cold(self):
-        for name in ("_ipc_lookup", "_ipc_syscall_call", "_ipc_service_api",
+        for name in ("_ipc_lookup", "_ipc_syscall_call",
+                     "_ipc_install_endpoint", "_ipc_service_boot",
                      "_ipc_copy_run", "_ipc_invoke", "_ipc_gate_latch"):
             address = self.syms[name]
             self.assertGreaterEqual(address, 0x2000, name)
@@ -506,7 +509,7 @@ class TestIpcSdkSurface(unittest.TestCase):
             self.assertTrue(os.path.exists(path), path)
             manifest = json.loads(read(path))
             self.assertEqual(manifest["type"], "service", name)
-            self.assertEqual(manifest["abi"], 2, name)
+            self.assertEqual(manifest["abi"], 3, name)
             self.assertIn("ipc_%s_init" % name,
                           manifest["init"], name)
             for endpoint in manifest["endpoints"]:
@@ -514,9 +517,11 @@ class TestIpcSdkSurface(unittest.TestCase):
                 self.assertEqual(endpoint["version"],
                                  IPC_ENDPOINT_VERSION, name)
             # The manifest order is the load order, so a dependency must
-            # name an endpoint an earlier image exports: the loader refuses
-            # the image otherwise.
-            exports = set()
+            # name an endpoint this image or an earlier one exports (the
+            # loop probes re-enter their own endpoints): the packer
+            # refuses anything else at build time.
+            exports = set((endpoint["class"], endpoint["instance"])
+                          for endpoint in manifest["endpoints"])
             for earlier in LOADS_BEFORE[name]:
                 other = json.loads(read(os.path.join(SERVICE_MANIFESTS,
                                                      earlier + ".json")))

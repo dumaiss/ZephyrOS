@@ -51,6 +51,8 @@ static int16_t ioc_service_command(struct zos_ipc_frame *frame)
 	uint8_t index;
 	int result;
 
+	/* Own-array bound: the copy below indexes request.data and
+	 * frame->payload with arg1 as the count. */
 	if (frame->arg1 > ZIOC_PROTOCOL_REQUEST_MAX) {
 		return (int16_t)-ZOS_EINVAL;
 	}
@@ -95,6 +97,8 @@ static int16_t ioc_service_reply(struct zos_ipc_frame *frame)
 	uint16_t offset = frame->arg0;
 	uint16_t length = frame->arg1;
 
+	/* Own-array bound: the staged reply frame is this driver's array
+	 * and the nucleus copy below names it as the source. */
 	if (length == 0u || offset > ZIOC_PROTOCOL_FRAME_SIZE ||
 	    length > (uint16_t)(ZIOC_PROTOCOL_FRAME_SIZE - offset)) {
 		return (int16_t)-ZOS_EINVAL;
@@ -109,9 +113,9 @@ static int16_t ioc_service_bulk_read(struct zos_ipc_frame *frame)
 	uint16_t length = frame->arg1;
 	int result;
 
-	if (length == 0u || length > ZIOC_BULK_MAX) {
-		return (int16_t)-ZOS_EINVAL;
-	}
+	/* The transfer length is not re-validated here: ioc_bulk_read()
+	 * refuses 0 and anything above ZIOC_BULK_MAX before any I/O, and
+	 * the copy below runs only on its success. */
 	result = ioc_bulk_read((void *)&ioc_state, ioc_bulk_buffer, length);
 	if (result != ZIOC_OK) {
 		return (int16_t)result;
@@ -132,9 +136,8 @@ static int16_t ioc_service_bulk_write(struct zos_ipc_frame *frame)
 	uint16_t length = frame->arg1;
 	int result;
 
-	if (length == 0u || length > ZIOC_BULK_MAX) {
-		return (int16_t)-ZOS_EINVAL;
-	}
+	/* The transfer length is not re-validated here: ioc_bulk_write()
+	 * refuses 0 and anything above ZIOC_BULK_MAX before any I/O. */
 	if (frame->desc != ZOS_IPC_DESC_NONE) {
 		/* The descriptor form stages the caller's bytes into the
 		 * service block first (the LOADER-mediated equivalent of
@@ -172,9 +175,9 @@ int16_t ioc_service_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void ioc_service_init(const struct ipc_service_api *api)
+void ioc_service_init(const struct ipc_service_boot *boot)
 {
-	ioc_api = api;
+	ioc_api = boot->api;
 	ioc_reply_address = (uint16_t)ioc_reply_frame;
 	ioc_bulk_address = (uint16_t)ioc_bulk_buffer;
 	/* The one bounded LINK_SYNC bring-up, here in the mode-11 window

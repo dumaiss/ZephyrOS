@@ -119,8 +119,8 @@ int16_t sio_service_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void sio_service_init(const struct ipc_service_api *api)
+void sio_service_init(const struct ipc_service_boot *boot)
 {
-	sio_api = api;
+	sio_api = boot->api;
 	sio_batch_address = (uint16_t)sio_batch;
 }

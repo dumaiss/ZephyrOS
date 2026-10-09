@@ -20,10 +20,41 @@
 
 #include "zephyros/ipc.h"
 
-/* Endpoint lookup for the SYS_IPC_LOOKUP body and the service API table.
- * Returns the handle (1..N) or 0 when no endpoint matches; `version` is
- * filled on a match when non-null. */
+/* Endpoint lookup for the SYS_IPC_LOOKUP body and nucleus code (the
+ * IOC-FAT class shim, the boot console probe).  Returns the handle (1..N)
+ * or 0 when no endpoint matches; `version` is filled on a match when
+ * non-null. */
 int8_t ipc_lookup(uint8_t class, uint8_t instance, uint8_t *version);
+
+/* One host-built endpoint record (architecture 36.11), read from a
+ * resident driver container by the loader and installed verbatim.  The
+ * nucleus validates the entry against the driver window and the number
+ * against its table. */
+struct ipc_endpoint_record {
+	uint8_t class;
+	uint8_t instance;
+	uint8_t version;
+	uint8_t flags;
+	uint8_t number;    /* host-assigned endpoint number */
+	uint16_t entry;    /* absolute bank-6 dispatch address */
+	uint16_t bulk_base;
+	uint16_t bulk_size;
+};
+
+/* Install one endpoint record.  Returns 0, or -ZOS_EINVAL/-ZOS_ENOSPC.
+ * Replaces runtime registration: the loader installs the host-built table
+ * before any driver code runs. */
+int8_t ipc_install_endpoint(const struct ipc_endpoint_record *record);
+
+/* The fixed-core dependency array the boot bundle names: the loader
+ * installs the resolved endpoint numbers of the image whose init it is
+ * about to run, one byte per declared dependency in manifest order, and
+ * zeros the unused tail (architecture 36.11).  Fixed data, so the driver's
+ * window always shows it. */
+extern uint8_t zos_service_deps[ZOS_IPC_SERVICE_MAX_DEPS];
+
+/* The boot bundle the loader hands a driver's init entry in HL. */
+const struct ipc_service_boot *ipc_service_boot(void);
 
 /* SYS_IPC_CALL body: validate and dispatch the caller's block.  The block
  * is in the caller window (visible while the gate dispatches with P = 0);
@@ -32,18 +63,6 @@ int8_t ipc_lookup(uint8_t class, uint8_t instance, uint8_t *version);
  * carry clear); a structural problem in the block is reported to the
  * caller before this is reached. */
 int16_t ipc_syscall_call(struct zos_ipc_call_args *args);
-
-/* The service bootstrap table (include/zephyros/ipc.h) a service init
- * entry receives in HL.  The resident loader reads it before handing the
- * pointer to the upcall shim. */
-const struct ipc_service_api *ipc_service_api(void);
-
-/* Register the bulk extent of the image whose endpoints the loader is
- * about to register (architecture 36.6): the next register_ep call copies
- * the pair into the endpoint record, so bulk_read can validate the
- * calling service's own extent.  The loader calls this once per image
- * (0, 0 for an image with no bulk segment) before its endpoint pass. */
-void ipc_service_bulk_set(uint16_t base, uint16_t size);
 
 /* Synchronous call into a service from nucleus code (bank 7, no process
  * and no syscall gate): the IOC-FAT provider's class shim and the boot

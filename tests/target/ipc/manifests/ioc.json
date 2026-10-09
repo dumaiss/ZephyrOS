@@ -1,7 +1,7 @@
 {
   "name": "ioc",
   "type": "service",
-  "abi": 2,
+  "abi": 3,
   "flags": 0,
   "objects": [
     "ioc.rel",

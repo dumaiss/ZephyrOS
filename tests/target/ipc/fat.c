@@ -54,13 +54,12 @@ int16_t fat_dispatch(struct zos_ipc_frame *frame)
 	return fat_read(frame);
 }
 
-void ipc_fat_init(const struct ipc_service_api *table)
+void ipc_fat_init(const struct ipc_service_boot *boot)
 {
-	api = table;
+	api = boot->api;
 	fat_block_address = (uint16_t)fat_block;
-	/* Dependency discovery: the provider finds its transport by
-	 * class/instance, never by a raw address or bank number.  The
-	 * declared dependency was checked and the endpoint registered by
-	 * the resident loader before this init ran. */
-	ioc_handle = (uint8_t)table->lookup(IPC_CLASS_IOC, 0u);
+	/* Manifest dependency 0: the IOC transport, resolved to its
+	 * endpoint number by the host packer - the provider never looks a
+	 * peer up at run time. */
+	ioc_handle = boot->deps[0];
 }

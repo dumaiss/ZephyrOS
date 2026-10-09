@@ -246,7 +246,7 @@ class TestProductionImage(ConsoleReplayBase):
             with open(path, "rb") as handle:
                 info = zmodpack.parse_container(handle.read(), name)
             self.assertEqual(info["module_type"], "service", name)
-            self.assertEqual(info["service_abi"], 2, name)
+            self.assertEqual(info["service_abi"], 3, name)
             self.assertEqual([(ep["class"], ep["instance"], ep["version"])
                               for ep in info["endpoints"]],
                              [(klass, 0, 1)], name)
@@ -287,10 +287,10 @@ class TestIntegrationImage(ConsoleReplayBase):
         # ledger the packer's report pins.
         for name in ("sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
                      "console.zmod"):
-            self.assertIn(("service %s: hot " % name).encode(), sio)
+            self.assertIn(("driver %s: hot " % name).encode(), sio)
         self.assertIn(b"service loader: 5 images in bank 6\r\n", sio)
-        self.assertIn(b"service hot: 13216 bytes of 32768\r\n", sio)
-        self.assertIn(b"service boot/bulk: 2170 bytes of 24576\r\n", sio)
+        self.assertIn(b"driver hot: 12930 bytes of 32768\r\n", sio)
+        self.assertIn(b"driver boot/bulk: 2170 bytes of 24576\r\n", sio)
         for line in INTEGRATION_LINES:
             self.assertIn(line, sio)
         self.assertNotIn(b"console integration: FAIL", sio)

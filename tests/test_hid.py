@@ -161,7 +161,7 @@ class TestHidServiceArtifact(unittest.TestCase):
         manifest = _load_json(MANIFEST)
         self.assertEqual(manifest["name"], "hid")
         self.assertEqual(manifest["type"], "service")
-        self.assertEqual(manifest["abi"], 2)
+        self.assertEqual(manifest["abi"], 3)
         self.assertEqual(manifest["init"], "hid_service_init")
         self.assertEqual(manifest["objects"],
                          ["hid.rel", "sdcc_indirect_calls.rel"])
@@ -184,7 +184,7 @@ class TestHidServiceArtifact(unittest.TestCase):
         data = _read(ZMOD, "rb")
         info = zmodpack.parse_container(data, "hid.zmod")
         self.assertEqual(info["module_type"], "service")
-        self.assertEqual(info["service_abi"], 2)
+        self.assertEqual(info["service_abi"], 3)
         self.assertGreater(info["image_size"], 0)
         self.assertGreater(info["bss_size"], 0)
         self.assertNotEqual(info["init_offset"], 0xFFFF)
@@ -196,10 +196,13 @@ class TestHidServiceArtifact(unittest.TestCase):
         # The loader places the segment inside the service I/O window
         # 8000h-BFFFh, so the resident footprint must fit in it.
         self.assertLess(hot["image_size"] + hot["bss_size"], 0x4000)
-        # Every record names a target segment (the packer refuses the
-        # byte-fragmented forms outright, tools/zmodpack.py).
-        for target, _patch in info["relocs"]:
-            self.assertLess(target, len(info["segments"]))
+        # Host-linked: the dispatch entry lies inside the hot image and
+        # the container carries no relocation records.
+        self.assertEqual(info["reloc_count"], 0)
+        endpoint = info["endpoints"][0]
+        self.assertGreaterEqual(endpoint["dispatch"], hot["base"])
+        self.assertLess(endpoint["dispatch"],
+                        hot["base"] + hot["image_size"])
 
     def test_romfs_entry_and_boot_order(self):
         manifest = _load_json(RECOVERY_MANIFEST)
@@ -303,12 +306,13 @@ class TestHidSourceDiscipline(unittest.TestCase):
                 self.assertNotIn(needle, body,
                                  "HID must not reference %r" % needle)
 
-    def test_discovery_is_endpoint_lookup_only(self):
-        # The M8 device query is an endpoint lookup on the IOC class now;
-        # the image metadata declares the dependency, so a store without
-        # an IOC image fails the load before this code runs.
-        self.assertIn("api->lookup(ZOS_CLASS_IOC, ZOS_CLASS_INSTANCE)",
-                      self.init)
+    def test_discovery_is_host_resolved_only(self):
+        # The M8 device query is a host-resolved dependency now: the image
+        # metadata declares the IOC dependency, the packer resolves it to
+        # the endpoint number and the init reads it from the boot bundle -
+        # no run-time lookup at all.
+        self.assertIn("boot->deps[HID_DEP_IOC]", self.init)
+        self.assertNotIn("lookup", self.init)
         self.assertIn("ZIOC_OP_READY", self.init)
         # The engine speaks the IOC protocol and never a driver symbol.
         for op in ("ZIOC_OP_COMMAND", "ZIOC_OP_STATUS"):

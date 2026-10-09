@@ -717,8 +717,8 @@ class TestBootSetPlan(unittest.TestCase):
             self.assertIn("nucleus cold: code 64 bytes end 6040h", text)
             self.assertIn("arena 32 granules (2 boot, 30 free)", text)
             self.assertIn("data 16 bytes at D800h | room 16304 bytes", text)
-            self.assertIn("service hot: 0 bytes of 32768", text)
-            self.assertIn("service boot/bulk: 0 bytes of 24576", text)
+            self.assertIn("driver hot: 0 bytes of 32768", text)
+            self.assertIn("driver boot/bulk: 0 bytes of 24576", text)
             self.assertIn("ceiling 3072, m10 512, limit 2560", text)
 
     def test_plan_requires_the_geometry_ledger_inputs(self):

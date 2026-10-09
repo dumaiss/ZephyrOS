@@ -45,8 +45,10 @@ int16_t echo_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void ipc_echo_init(const struct ipc_service_api *table)
+void ipc_echo_init(const struct ipc_service_boot *boot)
 {
-	api = table;
-	self_handle = (uint8_t)table->lookup(IPC_CLASS_ECHO, 0u);
+	api = boot->api;
+	/* Manifest dependency 0: this image's own endpoint, resolved on the
+	 * host (the ECHO_SELF refusal probe calls it). */
+	self_handle = boot->deps[0];
 }

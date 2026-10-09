@@ -164,7 +164,7 @@ class IocSimBase(unittest.TestCase):
         rows = []
         for line in tx.split(b"\r\n"):
             match = re.match(
-                rb"^service (\S+): hot ([0-9A-F]{4})h"
+                rb"^driver (\S+): hot ([0-9A-F]{4})h"
                 rb"( io ([0-9A-F]{4})h)?( boot ([0-9A-F]{4})h)?"
                 rb"( bulk ([0-9A-F]{4})h)?$", line)
             if match:
@@ -219,8 +219,8 @@ class TestIocServiceBoot(IocSimBase):
         self.assertEqual([name for name, _ in evidence], manifest)
         self.assertIn(("service loader: %d images in bank 6\r\n"
                        % len(manifest)).encode("ascii"), tx)
-        self.assertRegex(tx, rb"service hot: \d+ bytes of 32768\r\n")
-        self.assertRegex(tx, rb"service boot/bulk: \d+ bytes of 24576\r\n")
+        self.assertRegex(tx, rb"driver hot: \d+ bytes of 32768\r\n")
+        self.assertRegex(tx, rb"driver boot/bulk: \d+ bytes of 24576\r\n")
 
         # --- peer-observable protocol facts -------------------------
         # The service's own init ran the bounded LINK_SYNC bring-up, then

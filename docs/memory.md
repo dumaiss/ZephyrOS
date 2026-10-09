@@ -293,8 +293,8 @@ format definition); host tests check every figure against the linked map:
 ```text
 nucleus fixed: required <bytes> | overflow <bytes> | stacks <bytes> | room <bytes>
 nucleus cold: code <bytes> end <addr> | arena <n> granules (<used> boot, <free> free) | data <bytes> at <addr> | room <bytes>
-service hot: <bytes> of <capacity>
-service boot/bulk: <bytes> of <capacity>
+driver hot: <bytes> of <capacity>
+driver boot/bulk: <bytes> of <capacity>
 common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>, m10 <n>, limit <n>
 ```
 
@@ -308,10 +308,11 @@ common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>, m10
   cold code, the arena shows its granules (boot-set used and free), `data`
   is `_WINDOW_DATA` and `room` is what is left outside the arena
   (`32768 - code - data - arena bytes`).
-- **`service hot:`/`service boot/bulk:`** the bank-6 tiers of architecture
-  36.6.  Nothing is placed there before stage 4, so both report zero
-  against their capacities (32 KiB and 24 KiB); the lines exist now so the
-  ledgers cannot silently lose the budget.
+- **`driver hot:`/`driver boot/bulk:`** the bank-6 tiers of architecture
+  36.6 (renamed from `service` when M10 stage 5 moved the drivers into the
+  host-assembled resident domain).  The arena plan reports zero (the arena
+  holds no driver image); the service plan and the loader report the
+  placed bytes against their capacities (32 KiB and 24 KiB).
 - **`common:`** the permanently mapped common window, which the nucleus
   lines cannot see.  `used` is the packed `_COMMON` + `_COMMON_DATA` run
   and `capacity` is `ZOS_COMMON_CODE_END - ZOS_COMMON_BASE` (7424 bytes);

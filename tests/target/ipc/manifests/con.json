@@ -1,7 +1,7 @@
 {
   "name": "con",
   "type": "service",
-  "abi": 2,
+  "abi": 3,
   "flags": 0,
   "objects": [
     "con.rel",

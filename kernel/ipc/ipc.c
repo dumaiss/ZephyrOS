@@ -5,11 +5,17 @@
  * touched, while the mode-11 window shows bank 6 (the resident service
  * domain):
  *
- *   - the endpoint table: owner domain, class/instance, version, dispatch
- *     entry, the re-entrancy flag and the busy mark left on the call
- *     stack;
- *   - register_ep / lookup / call with the fixed 32-byte request/reply
- *     frame, copied in at entry and back on reply;
+ *   - the endpoint table: the host-assigned number, class/instance,
+ *     version, dispatch entry, the owner's bulk extent, the re-entrancy
+ *     flag and the busy mark left on the call stack.  The loader installs
+ *     the host-built records (ipc_install_endpoint); there is no runtime
+ *     registration path;
+ *   - call with the fixed 32-byte request/reply frame.  The outermost
+ *     call copies the frame into the fixed boundary buffer (needed for a
+ *     caller frame in the cold half); a call from one resident driver to
+ *     another is near-direct - the frame is passed by reference and the
+ *     target's window is already open, so no copy and no bank switch
+ *     happen (architecture 36.7, work package 41b);
  *   - nucleus-issued buffer descriptors captured at call entry from the
  *     syscall gate's saved execution latch, and the copy resolvers with
  *     bounds checked on every use.  The resolver picks one of three
@@ -33,8 +39,8 @@
  * through the upcall shim and the copy primitives, so no loader stays in
  * the fixed core.
  *
- * Single-tasking: the call depth, the descriptor table and the frame
- * array are nucleus state, serialised by the syscall gate and the
+ * Single-tasking: the call depth, the descriptor table and the boundary
+ * frame are nucleus state, serialised by the syscall gate and the
  * non-reentrant IRQ entry.
  */
 
@@ -104,12 +110,12 @@ extern uint8_t zos_user_copy_staging[];
 #define IPC_DESC_MAX 4u
 
 struct ipc_endpoint {
-	uint16_t dispatch; /* service dispatch entry in the owner's domain */
+	uint16_t dispatch; /* driver dispatch entry in the owner's domain */
 	uint8_t class;
 	uint8_t instance;
 	uint8_t flags;
 	uint8_t version;
-	uint8_t registered;
+	uint8_t number;    /* host-assigned endpoint number (1..N) */
 	uint8_t busy;
 	uint16_t bulk_base; /* the owner's bulk extent in bank 6 (36.6) */
 	uint16_t bulk_size;
@@ -118,10 +124,10 @@ struct ipc_endpoint {
 static struct ipc_endpoint endpoints[IPC_ENDPOINT_MAX];
 static uint8_t endpoint_count;
 
-/* The bulk extent of the image whose endpoints are being registered; the
- * loader sets it before its endpoint pass (ipc_service_bulk_set). */
-static uint16_t pending_bulk_base;
-static uint16_t pending_bulk_size;
+/* The boot bundle the loader hands a driver's init (fixed core, so the
+ * driver's window always shows it): the API table and the resolved
+ * dependency numbers of the image being brought up. */
+uint8_t zos_service_deps[ZOS_IPC_SERVICE_MAX_DEPS];
 
 /* The endpoint being dispatched at each call level: api_bulk_read resolves
  * the calling service from the innermost entry (services register one
@@ -139,9 +145,11 @@ struct ipc_desc {
 
 static struct ipc_desc descs[IPC_DESC_MAX];
 
-/* The nucleus-owned frame copies, one per call level.  frames[0] is the
- * caller's frame; a call at depth d works on frames[d]. */
-static struct zos_ipc_frame frames[ZOS_IPC_MAX_NESTING + 1u];
+/* The one nucleus-owned frame copy: the boundary buffer for the
+ * outermost call, whose caller frame may live in bank 7's cold half (the
+ * IOC-FAT class shim) or in the caller window (the syscall boundary).
+ * Nested driver-to-driver calls pass their own frames by reference. */
+static struct zos_ipc_frame call_frame;
 
 static uint8_t call_depth;
 
@@ -445,72 +453,68 @@ int8_t ipc_lookup(uint8_t class, uint8_t instance, uint8_t *version)
 	uint8_t index;
 
 	for (index = 0u; index < endpoint_count; ++index) {
-		if (endpoints[index].registered &&
-		    endpoints[index].class == class &&
+		if (endpoints[index].class == class &&
 		    endpoints[index].instance == instance) {
 			if (version != (uint8_t *)0) {
 				*version = endpoints[index].version;
 			}
-			return (int8_t)(index + 1u);
+			return (int8_t)endpoints[index].number;
 		}
 	}
 	return 0;
 }
 
+/* The endpoint a handle names.  The handle is the host-assigned endpoint
+ * number (architecture 36.11): the loader installs the records in number
+ * order, so the slot is the number's index and the stored number confirms
+ * the record. */
 static struct ipc_endpoint *endpoint_for(uint8_t handle)
 {
-	if (handle == 0u || handle > endpoint_count) {
-		return (struct ipc_endpoint *)0;
-	}
-	if (!endpoints[handle - 1u].registered) {
+	if (handle == 0u || handle > endpoint_count ||
+	    endpoints[handle - 1u].number != handle) {
 		return (struct ipc_endpoint *)0;
 	}
 	return &endpoints[handle - 1u];
 }
 
-static int8_t api_register_ep(uint8_t class, uint8_t instance,
-			      uint16_t entry, uint8_t flags, uint8_t version)
+/* Install one host-built endpoint record (architecture 36.11).  Only the
+ * loader calls this, before any driver code runs; the checks protect the
+ * nucleus table and the fixed driver window. */
+int8_t ipc_install_endpoint(const struct ipc_endpoint_record *record)
 {
 	struct ipc_endpoint *ep;
 
-	if (ipc_irq_active) {
-		return (int8_t)(-ZOS_EBUSY);
-	}
-	if (endpoint_count >= IPC_ENDPOINT_MAX) {
+	/* The loader already checked the record against the container; the
+	 * checks here protect the nucleus table (capacity, number order)
+	 * and the call machinery (a dispatch entry inside the driver
+	 * window). */
+	if (endpoint_count >= IPC_ENDPOINT_MAX ||
+	    record->number != (uint8_t)(endpoint_count + 1u)) {
 		return (int8_t)(-ZOS_ENOSPC);
 	}
-	if (entry < ZOS_REV13_WINDOW_BASE ||
-	    entry >= ZOS_BANK7_RUNTIME_END) {
+	if (record->entry < ZOS_REV13_WINDOW_BASE ||
+	    record->entry >= ZOS_BANK7_RUNTIME_END) {
 		return (int8_t)(-ZOS_EINVAL);
 	}
 	ep = &endpoints[endpoint_count];
-	ep->dispatch = entry;
-	ep->class = class;
-	ep->instance = instance;
-	ep->flags = flags;
-	ep->version = version;
-	ep->registered = 1u;
+	ep->dispatch = record->entry;
+	ep->class = record->class;
+	ep->instance = record->instance;
+	ep->flags = record->flags;
+	ep->version = record->version;
+	ep->number = record->number;
 	ep->busy = 0u;
-	ep->bulk_base = pending_bulk_base;
-	ep->bulk_size = pending_bulk_size;
+	ep->bulk_base = record->bulk_base;
+	ep->bulk_size = record->bulk_size;
 	++endpoint_count;
-	return (int8_t)endpoint_count;
+	return 0;
 }
 
-/* The loader registers each image's bulk extent just before that image's
- * endpoints (architecture 36.6: bulk data lives in the boot/bulk tier and
- * is read through a nucleus copy). */
-void ipc_service_bulk_set(uint16_t base, uint16_t size)
-{
-	pending_bulk_base = base;
-	pending_bulk_size = size;
-}
-
-/* Invoke one service dispatch entry: open the owner's domain when
- * crossing into it, switch to the fixed service stack at the outermost
- * call, and run the bounded frame through the fixed primitive.  A nested
- * call whose target is already in the current domain takes the same-domain
- * fast path and does not touch the mapping. */
+/* Invoke one driver dispatch entry: open the owner's domain when crossing
+ * into it, switch to the fixed driver stack at the outermost call, and run
+ * the frame through the fixed primitive.  A nested call whose target is
+ * already in the current domain takes the same-domain fast path and does
+ * not touch the mapping. */
 static int16_t invoke_endpoint(const struct ipc_endpoint *ep,
 			       struct zos_ipc_frame *frame, uint8_t nested)
 {
@@ -539,10 +543,16 @@ static int16_t invoke_endpoint(const struct ipc_endpoint *ep,
 	return result;
 }
 
+/* Dispatch one call.  At the outermost level (call_depth == 0) the caller
+ * may be an application or cold nucleus code whose frame is outside the
+ * driver window, so it works on the fixed boundary buffer the callers
+ * stage into.  Every nested call - a resident driver calling a resolved
+ * peer - is near-direct (architecture 36.7): the caller's own frame is
+ * passed by reference, the window already shows bank 6, and neither a
+ * frame copy nor a bank switch happens. */
 static int16_t ipc_call_endpoint(uint8_t handle, struct zos_ipc_frame *frame)
 {
 	struct ipc_endpoint *ep = endpoint_for(handle);
-	struct zos_ipc_frame *target;
 	uint8_t nested = call_depth;
 	int16_t result;
 
@@ -555,26 +565,23 @@ static int16_t ipc_call_endpoint(uint8_t handle, struct zos_ipc_frame *frame)
 	if (call_depth >= ZOS_IPC_MAX_NESTING) {
 		return -ZOS_ENOSPC;
 	}
-	target = &frames[call_depth + 1u];
-	*target = *frame;
 	ep->busy = 1u;
 	call_owner[call_depth] = ep;
 	++call_depth;
-	result = invoke_endpoint(ep, target, nested);
+	result = invoke_endpoint(ep, frame, nested);
 	--call_depth;
 	ep->busy = 0u;
-	*frame = *target;
 	frame->status = result;
 	return result;
 }
 
 /* --- nucleus-side calls -------------------------------------------------- */
 
-/* The cold half's way into a service: the same endpoint dispatch a syscall
+/* The cold half's way into a driver: the same endpoint dispatch a syscall
  * takes, entered without a gate latch, so the frame carries no descriptor
- * (a bank-7 caller has no caller buffer to name).  The dispatch itself
- * selects the service window, which is what makes this reachable from
- * bank 7. */
+ * (a bank-7 caller has no caller buffer to name).  The cold caller's frame
+ * is staged through the fixed boundary buffer, the one frame a driver's
+ * window always shows. */
 int16_t ipc_nucleus_call(uint8_t handle, struct zos_ipc_frame *frame)
 {
 	int16_t result;
@@ -582,7 +589,9 @@ int16_t ipc_nucleus_call(uint8_t handle, struct zos_ipc_frame *frame)
 	if (frame == (struct zos_ipc_frame *)0) {
 		return -ZOS_EINVAL;
 	}
-	result = ipc_call_endpoint(handle, frame);
+	call_frame = *frame;
+	result = ipc_call_endpoint(handle, &call_frame);
+	*frame = call_frame;
 	frame->status = result;
 	return result;
 }
@@ -602,14 +611,6 @@ static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t service_addr,
 		return -ZOS_EINVAL;
 	}
 	return copy_move(desc, service_addr, offset, length, dir);
-}
-
-static int8_t api_lookup(uint8_t class, uint8_t instance)
-{
-	if (ipc_irq_active) {
-		return (int8_t)(-ZOS_EBUSY);
-	}
-	return ipc_lookup(class, instance, (uint8_t *)0);
 }
 
 static int16_t api_call(uint8_t handle, uint8_t op,
@@ -763,8 +764,6 @@ static int8_t api_irq_release(uint8_t source)
 
 static const struct ipc_service_api ipc_api = {
 	ZOS_IPC_SERVICE_API_VERSION,
-	api_register_ep,
-	api_lookup,
 	api_call,
 	api_copy_in,
 	api_copy_out,
@@ -777,12 +776,21 @@ static const struct ipc_service_api ipc_api = {
 	api_irq_release,
 };
 
-/* The table a service init entry receives in HL.  The resident loader
- * (kernel/service/service_loader.c) reads it here before it hands the
- * pointer to the upcall shim, so the pointer crosses no bank by itself. */
-const struct ipc_service_api *ipc_service_api(void)
+/* The boot bundle a driver init entry receives in HL.  Both halves live in
+ * the fixed core, which stays visible while the driver's window shows
+ * bank 6; the loader reads the pointer here before it hands it to the
+ * upcall shim, so it crosses no bank by itself. */
+static struct ipc_service_boot service_boot = {
+	&ipc_api,
+	zos_service_deps,
+};
+
+/* The boot bundle a driver init entry receives in HL; the loader installs
+ * the resolved dependency numbers into zos_service_deps before each init
+ * (architecture 36.11). */
+const struct ipc_service_boot *ipc_service_boot(void)
 {
-	return &ipc_api;
+	return &service_boot;
 }
 
 /* --- syscall entry ------------------------------------------------------- */
@@ -807,10 +815,10 @@ int16_t ipc_syscall_call(struct zos_ipc_call_args *args)
 			return -ZOS_EINVAL;
 		}
 	}
-	frames[0] = args->frame;
-	frames[0].desc = (id >= 0) ? (uint8_t)id : ZOS_IPC_DESC_NONE;
-	result = ipc_call_endpoint(args->handle, &frames[0]);
-	args->frame = frames[0];
+	call_frame = args->frame;
+	call_frame.desc = (id >= 0) ? (uint8_t)id : ZOS_IPC_DESC_NONE;
+	result = ipc_call_endpoint(args->handle, &call_frame);
+	args->frame = call_frame;
 	args->status = result;
 	desc_release_all();
 	return result;

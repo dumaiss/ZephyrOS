@@ -88,8 +88,8 @@ int16_t con_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void ipc_con_init(const struct ipc_service_api *table)
+void ipc_con_init(const struct ipc_service_boot *boot)
 {
-	api = table;
+	api = boot->api;
 	con_slow_address = (uint16_t)ipc_con_slow_buffer;
 }

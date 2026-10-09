@@ -116,15 +116,15 @@ int16_t vfs_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void ipc_vfs_init(const struct ipc_service_api *table)
+void ipc_vfs_init(const struct ipc_service_boot *boot)
 {
-	api = table;
+	api = boot->api;
 	vfs_block_address = (uint16_t)vfs_block;
-	/* The declared endpoints are registered by the resident loader; the
-	 * init resolves its own handle and its peer by class/instance.  VFS
-	 * declares itself re-entrant in the image metadata: a
+	/* Manifest dependencies: 0 is this image's own endpoint (the
+	 * recursion probe), 1 the FAT provider; both were resolved on the
+	 * host.  VFS declares itself re-entrant in the image metadata: a
 	 * name-resolution path may re-enter the namespace service while it
 	 * is active. */
-	self_handle = (uint8_t)table->lookup(IPC_CLASS_VFS, 0u);
-	fat_handle = (uint8_t)table->lookup(IPC_CLASS_FAT, 0u);
+	self_handle = boot->deps[0];
+	fat_handle = boot->deps[1];
 }

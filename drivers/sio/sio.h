@@ -21,7 +21,7 @@ void sio0b_hw_init(void);
 /* Hot segment: the endpoint dispatch and the init entry the loader calls
  * with the service bootstrap table. */
 int16_t sio_service_dispatch(struct zos_ipc_frame *frame);
-void sio_service_init(const struct ipc_service_api *api);
+void sio_service_init(const struct ipc_service_boot *boot);
 
 int sio0b_putc(void *state, char ch);
 int sio0b_write(void *state, const char *buf, uint16_t len);

@@ -252,8 +252,8 @@ NUCLEUS_FIXED_LEDGER_LINE = (
 NUCLEUS_COLD_LEDGER_LINE = (
     "nucleus cold: code %d bytes end %04Xh | arena %d granules "
     "(%d boot, %d free) | data %d bytes at %04Xh | room %d bytes")
-SERVICE_HOT_LEDGER_LINE = "service hot: %d bytes of %d"
-SERVICE_BOOT_LEDGER_LINE = "service boot/bulk: %d bytes of %d"
+SERVICE_HOT_LEDGER_LINE = "driver hot: %d bytes of %d"
+SERVICE_BOOT_LEDGER_LINE = "driver boot/bulk: %d bytes of %d"
 COMMON_LEDGER_LINE = ("common: used %d of %d bytes (code %d, data %d) | "
                       "ceiling %d, m10 %d, limit %d")
 
