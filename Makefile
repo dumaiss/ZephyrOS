@@ -10,11 +10,12 @@
 # files) comes from platform/zephyr80/config.mk.
 #
 # The drivers are not linked into the kernel: each is packed as a ZMOD
-# module (build/modules/*.zmod), stored in the ROMFS recovery image
-# (build/recovery.romfs, pages 2-7 of the 512 KiB ROM), and loaded at boot
-# from /SYSTEM through the VFS and the loader's bounded read-source
-# adapter.  There is one boot path: every image derives its driver arena
-# from the aligned linked kernel end and boots from the recovery store.
+# service image (build/modules/*.zmod), stored in the ROMFS recovery image
+# (build/recovery.romfs, pages 2-7 of the 512 KiB ROM) and placed in bank 6
+# at boot by the resident loader, which reads the store through the fixed
+# ROMFS reader.  There is one boot path: every image boots from the
+# recovery store, and residency has exactly two tiers (config/
+# residency.json).
 #
 #   make          build the ROM images under build/
 #   make test     run host-side image/layout tests and integrity checks
@@ -71,7 +72,7 @@ ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/page_zero.rel $(BUILD)/syscall_entry.rel \
              $(BUILD)/irq_entry.rel $(BUILD)/irq_vectors.rel \
              $(BUILD)/platform_irq.rel $(BUILD)/sdcc_helpers.rel \
-             $(BUILD)/arena.rel $(BUILD)/rom_access.rel \
+             $(BUILD)/bank7_end.rel $(BUILD)/rom_access.rel \
              $(BUILD)/process_launch.rel $(BUILD)/user_copy.rel \
              $(BUILD)/upcall.rel $(BUILD)/diag_io.rel \
              $(BUILD)/ipc_asm.rel $(BUILD)/ipc_common.rel \
@@ -122,12 +123,12 @@ ZOS_REV13_WINDOW_BASE := 0x6000
 # (kernel/main.c holds only the two TEST-ONLY HOOKs).
 TARGET_TEST_OBJS :=
 PK_SUFFIX :=
-# Subsystem acceptance image: the current production boot path (derived
-# arena, VFS plus ROMFS recovery store, SIO-only boot set) with the
-# relocated mechanism selftests linked in.  One image carries the syscall,
-# IRQ, loader, ROMFS-reader and process/ZEX acceptance surfaces, so no
-# per-milestone acceptance image and no per-milestone build exists
-# (work/00-SUPERVISOR.md retention rule).
+# Subsystem acceptance image: the current production boot path (VFS plus
+# the ROMFS recovery store, the SIO and console service images placed by
+# the service loader) with the mechanism selftests linked in.  One image
+# carries the syscall, IRQ, ROMFS-reader and process/ZEX acceptance
+# surfaces, so no per-milestone acceptance image and no per-milestone
+# build exists (work/00-SUPERVISOR.md retention rule).
 ifeq ($(ZOS_SUBSYS_SELFTEST),1)
 CFLAGS    += -DZOS_SUBSYS_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/syscall_test.rel $(BUILD)/syscall_selftest_asm.rel \
@@ -137,7 +138,6 @@ TARGET_TEST_OBJS += $(BUILD)/syscall_test.rel $(BUILD)/syscall_selftest_asm.rel 
                     $(BUILD)/process_test.rel
 PK_SUFFIX := -subsys-selftest
 ZOS_SERVICES := sio console
-ZOS_ARENA_MODULES :=
 endif
 
 # Subsystem corrupt-store image: the same current boot path, but the
@@ -148,15 +148,14 @@ ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
 CFLAGS    += -DZOS_ROMFS_CORRUPT_SELFTEST=1
 PK_SUFFIX := -romfs-corrupt
 ZOS_SERVICES := sio console
-ZOS_ARENA_MODULES :=
 endif
 
-# IOC acceptance image: production-style boot (derived arena, SIO +
-# IOC from ROMFS), the target diagnostic reporting through the direct
-# early SIO (command lane plus the bulk READY/DONE acceptance over the
-# /SHARED service), then the unchanged monitor launcher.  It keeps the
-# derived arena so the acceptance image exercises the production geometry
-# with the target objects linked in.
+# IOC acceptance image: production-style boot (the SIO, IOC and console
+# service images from the recovery store), the target diagnostic reporting
+# through the direct early SIO (command lane plus the bulk READY/DONE
+# acceptance over the /SHARED service), then the unchanged monitor
+# launcher.  It keeps production's residency geometry with the target
+# objects linked in.
 # The V9958 boot load stays compiled out: this image's accepted contract
 # is the IOC transport with the SIO console, and the console-capable
 # V9958 module (package 19) is exercised by video-selftest and console-selftest.
@@ -165,11 +164,11 @@ CFLAGS    += -DZOS_IOC_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/ioc_test.rel
 PK_SUFFIX := -ioc-selftest
 ZOS_SERVICES := sio ioc console
-ZOS_ARENA_MODULES :=
 endif
 
-# HID acceptance image: production-style boot (derived arena, SIO +
-# IOC + HID from ROMFS), the HID target diagnostic (HID class/device
+# HID acceptance image: production-style boot (the SIO, IOC, HID and
+# console service images from the recovery store), the HID target
+# diagnostic (HID class/device
 # shape, the scripted USB-keyboard typing pass with output through the
 # bound SIO console, then the forced SIO input fallback), then the
 # unchanged monitor launcher.
@@ -181,11 +180,10 @@ CFLAGS    += -DZOS_HID_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/hid_test.rel
 PK_SUFFIX := -hid-selftest
 ZOS_SERVICES := sio ioc hid console
-ZOS_ARENA_MODULES :=
 endif
 
-# video acceptance image: production-style boot (derived
-# arena, SIO + IOC + HID + the V9958 video core from ROMFS), the video
+# video acceptance image: production-style boot (the SIO, IOC, HID, V9958
+# and console service images from the recovery store), the video
 # target diagnostic (VIDEO class/device shape, all seven native
 # operations, malformed rejection, reset, and the deterministic visible
 # pattern), then the unchanged monitor launcher.  The smoke image waits
@@ -196,7 +194,6 @@ CFLAGS    += -DZOS_VIDEO_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/video_test.rel
 PK_SUFFIX := -video-selftest
 ZOS_SERVICES := sio v9958 console
-ZOS_ARENA_MODULES :=
 endif
 
 # console acceptance image (package 19): the full production stack
@@ -212,7 +209,6 @@ CFLAGS    += -DZOS_CONSOLE_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/console_test.rel
 PK_SUFFIX := -console-selftest
 ZOS_SERVICES := sio ioc hid v9958 console
-ZOS_ARENA_MODULES :=
 endif
 
 # console integration acceptance image (package 20): the full production
@@ -230,7 +226,6 @@ CFLAGS    += -DZOS_CONSOLE_INTEGRATION_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/console_integration_test.rel
 PK_SUFFIX := -console-integration-selftest
 ZOS_SERVICES := sio ioc hid v9958 console
-ZOS_ARENA_MODULES :=
 endif
 
 # console fallback-matrix images (package 20): the same four-module boot
@@ -244,7 +239,6 @@ endif
 ifeq ($(ZOS_CONSOLE_FALLBACK_SELFTEST),1)
 CFLAGS    += -DZOS_CONSOLE_FALLBACK_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/console_fallback_test.rel
-ZOS_ARENA_MODULES :=
 ifeq ($(ZOS_CONSOLE_FALLBACK),nohid)
 PK_SUFFIX := -console-fb-nohid
 ZOS_SERVICES := sio ioc v9958 console
@@ -273,8 +267,8 @@ endif
 # path with the revision-13 gate and upcall-shim acceptance surface linked
 # in.  The smoke caller runs in application bank 0 with the service page
 # selected, and a cold-half caller exercises the fixed upcall shim against
-# a stub installed in bank 6.  SIO-only boot set, like the subsystem image:
-# the test objects own the derived arena.
+# a stub installed in bank 6.  SIO-only boot set, like the subsystem
+# image: the test objects own the cold half's slack.
 ifeq ($(ZOS_NUCLEUS_SELFTEST),1)
 CFLAGS    += -DZOS_NUCLEUS_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/nucleus_test.rel \
@@ -282,7 +276,6 @@ TARGET_TEST_OBJS += $(BUILD)/nucleus_test.rel \
                     $(BUILD)/ctc_test.rel
 PK_SUFFIX := -nucleus-selftest
 ZOS_SERVICES := sio console
-ZOS_ARENA_MODULES :=
 endif
 
 # IPC substrate acceptance image (work package 39, M10 stage 3; service
@@ -297,10 +290,9 @@ endif
 # leftover space, which is the moves tier's documented fallback
 # (see config/residency.json).
 IPC_DIR   := tests/target/ipc
-# The IPC image uses production's placement.  Its old five-object cold
-# override overflowed the cold half after the arena shrink moved the
-# derived data base; the remaining `moves` objects fit the fixed core's
-# documented leftover space.
+# The IPC image uses production's placement: its cold override is empty,
+# and the two-tier classification of config/residency.json decides every
+# object.
 IPC_COLD_EXTRA :=
 IPC_COLD_EXTRA_CSV :=
 
@@ -315,20 +307,16 @@ IPC_FIXED_OBJS := $(IPC_SUBSTRATE_OBJS)
 # No image-specific placement override: use the production cold set.
 COLD_EXTRA_CSV :=
 ZOS_SERVICES := sio console
-ZOS_ARENA_MODULES :=
 endif
 
 # Namespace and handle acceptance image (work package 42a, correction 01).
-# Production bank 7 cannot hold the object/namespace family while the M9
-# `FS_*` front end, the M9 VFS machinery and the IOC-FAT arena are linked
-# (the switch-over and those deletions are 42b), so this image builds the
-# family on top of a small boot set with no arena modules: the placement
-# config/residency.json names is the placement production will use, and the
-# image's ledgers are the projection of production's after 42b.
+# The object/namespace family is production cold code since 42b; this image
+# builds it on top of a small boot set (no filesystem driver) so the
+# namespace surfaces can be replayed: the placement config/residency.json
+# names is production's, and the image's ledgers are production's.
 #   * SIO and the console service: the DEVICE provider's real publications
 #     and the standard handles need a live `/dev/console`;
-#   * no arena modules: the derived arena belongs to the family, and the
-#     M9 file path is not exercised here (42b replaces it);
+#   * no filesystem driver: the `/FS` path is not exercised here;
 #   * the client program is an ordinary SDK program that checks its own
 #     results and prints them (`tests/target/ns`).
 NS_DIR   := tests/target/ns
@@ -341,7 +329,6 @@ PK_SUFFIX := -ns-selftest
 # (tests/target/ns/nsdev.c).
 ZOS_SERVICES := sio console nsdev
 SVC_MANIFEST_DIR := tests/ns/manifests
-ZOS_ARENA_MODULES :=
 ZOS_BOOT_PROGRAM := /SYSTEM/ns.zex
 # The object family links where production links it (config/residency.json
 # carries vfs_ns, vfs_ns_file and object as `cold`); the shared runner and
@@ -379,38 +366,33 @@ endif
 # or leaves out the filesystem driver lists its own set (see the per-image
 # blocks below), which is the M8 `ZOS_*_BOOT` gate's replacement.  The
 # filesystem driver is one of them since 42b: IOC-FAT is a bank-6 service
-# publishing `/FS`, and the arena boot set is empty.
+# publishing `/FS`.
 ZOS_SERVICES ?= sio ioc hid v9958 console iocfat
-ZOS_ARENA_MODULES ?=
 
 OBJS      := $(ASM_OBJS) $(C_OBJS) $(BUILD)/ipc.rel $(IPC_COLD_OBJS) \
              $(BUILD)/vfs_ns.rel $(BUILD)/vfs_ns_file.rel $(BUILD)/object.rel
 
 
-# Nucleus residency (architecture 36.5, work package 38).  Every
-# production image is a revision-13 two-region build: the fixed areas
-# (_CODE and friends, _DATA/_INITIALIZED) must link inside 2000h-5FFFh,
-# and the objects in config/residency.json's `cold_half` list compile into
-# the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh) that the window
-# shows with P = 0.  The classification, its tiers and the reasons live in
+# Nucleus residency (architecture 36.5, work package 38; two-tier
+# classification from package 42c).  Every production image is a
+# revision-13 two-region build: the fixed areas (_CODE and friends,
+# _DATA/_INITIALIZED) must link inside 2000h-5FFFh, and the objects in
+# config/residency.json's `cold_half` list compile into the cold areas
+# (_WINDOW / _WINDOW_DATA at 6000h-DFFFh) that the window shows with
+# P = 0.  The classification, its tiers and the reasons live in
 # config/residency.json; tools/mapcheck.py fails the build when an object
 # is missing or when a fixed-required object links at or above 6000h.
 #
 # Acceptance images compile their target-test objects cold too, so test
-# code consumes the driver arena's slack, never the fixed core.  An image
-# whose boot set leaves the cold half nearly empty may also place its
-# stage-4/5 `moves` objects there instead of overflowing them into the
-# fixed core (the placement freedom of architecture 36.20); it passes
-# that extra cold set to mapcheck with --cold-extra and to the codegen
-# through COLD_EXTRA, so both stay in step.
+# code consumes the cold half's space, never the fixed core's: an image
+# with its own cold set passes it to mapcheck with --cold-extra and to
+# the codegen through COLD_EXTRA, so both stay in step.
 RESIDENCY  := config/residency.json
-# Package 42b: the namespace family (vfs_ns, vfs_ns_file, object) is
-# production cold code now - it replaces the retired `FS_*` front end and
-# the M9 VFS machinery, so residency.json lists the three as `cold`.  The
-# two `moves` objects that remain keep the moves tier's documented
-# fallback and overflow into the fixed core's leftover space, which the
-# substrate shares; both ledgers report the split.  An image that wants a
-# different split passes it here (the IPC acceptance image does).
+# Package 42c: the classification is two-tier (fixed-required and cold)
+# and places every object.  The namespace family and the VFS core are
+# production cold code (the syscall dispatcher and the service loader run
+# with P = 0); an acceptance image with its own cold set passes it here
+# (the IPC acceptance image does).
 COLD_EXTRA ?=
 COLD_EXTRA_CSV ?= $(COLD_EXTRA)
 ifeq ($(COLD_EXTRA_CSV),)
@@ -420,10 +402,11 @@ else
 COLD_STEMS := $(shell $(PYTHON) tools/mapcheck.py residency \
 		--cold-stems $(RESIDENCY) --cold-extra $(COLD_EXTRA_CSV))
 endif
-# Driver-arena geometry ---------------------------------------------------
-# Every image derives the arena and the runtime data base from the aligned
-# linked-kernel end with a two-pass link.  There is one geometry; the probe
-# link places no arena.
+# Bank-7 geometry ---------------------------------------------------------
+# Every image derives the two runtime-data bases from a probe link: the
+# fixed core's from the runtime-data size, the cold half's straight from
+# the linked cold code end.  There is one geometry; the probe link places
+# no boundary.
 
 
 # Common acceptance wiring: the single guard plus the shared runner.
@@ -441,11 +424,18 @@ TARGET_TEST_OBJS := $(BUILD)/target_test.rel \
 		$(TARGET_TEST_OBJS)
 endif
 
+# The two-tier placement decides which objects compile into the window
+# areas, so a residency change must rebuild them: without this, an object
+# stays in the area its previous classification chose and the mapcheck
+# rule fires on a stale .rel.
+$(C_OBJS) $(COLD_OBJS): $(RESIDENCY)
+
 # The cold placement follows the target-test list: the acceptance objects
 # (and the shared service client every M10 driver diagnostic links) are
 # compiled into the window areas at 6000h-DFFFh, exactly like the
-# production cold half, so test code consumes the arena's slack and never
-# the fixed core's leftover.  This block sits after the list it filters.
+# production cold half, so test code consumes the cold half's slack and
+# never the fixed core's leftover.  This block sits after the list it
+# filters.
 COLD_OBJS  := $(addprefix $(BUILD)/,$(addsuffix .rel,$(COLD_STEMS)))
 ifneq ($(TARGET_TEST_OBJS),)
 COLD_OBJS  += $(filter-out $(IPC_FIXED_OBJS) $(TEST_FIXED_OBJS),$(TARGET_TEST_OBJS))
@@ -466,14 +456,6 @@ RESIDENCY_FLAGS := --residency $(RESIDENCY) \
 # change the derived bases: it changes which objects link cold).
 RESIDENCY_DERIVE_FLAGS := --residency $(RESIDENCY)
 
-# The arena plan's boot set: the modules the loader still places in the
-# derived driver arena.  The services are not part of it - they own bank
-# 6's resident tiers and are placed by the service loader from
-# `services.man` - so production's arena set is the IOC-FAT provider
-# alone, and every other image declares its own fixture modules.
-# (MODULES is defined below this point, so keep these recursive
-# assignments.)
-
 IMAGE := $(BUILD)/zephyros$(PK_SUFFIX).bin
 MAME_IMAGE := $(BUILD)/zephyr80$(PK_SUFFIX).bin
 
@@ -483,19 +465,20 @@ MAME_IMAGE := $(BUILD)/zephyr80$(PK_SUFFIX).bin
 # per-image geometry that every assembly unit and layout tool reads.
 GEOMETRY_DIR       := $(BUILD)/geometry
 GEOMETRY_PROBE_DIR := $(BUILD)/probe
-GEOMETRY_INC       := $(GEOMETRY_DIR)/arena_geometry.inc
 ASM_MEMORY_INC     := $(ZOS_PLATFORM_MEMORY_INC)
+GEOMETRY_MEMORY    := $(GEOMETRY_DIR)/memory.inc
+MEMORY_INC         := $(GEOMETRY_MEMORY)
 
-GEOMETRY_MEMORY := $(GEOMETRY_DIR)/memory.inc
-MEMORY_INC := $(GEOMETRY_MEMORY)
+# Bank-7 geometry --------------------------------------------------------------
+# kernel/memory/bank7_end.asm always includes the generated
+# bank7_end.inc.  The build first links a probe image (the same object
+# list with a bootstrap boundary object that places nothing), measures the
+# loadable areas and the runtime-data size in its map, then regenerates
+# the include and the memory.inc variant before the real link.  The final
+# map is re-verified by mapcheck.py, so a stale generated value cannot
+# survive.
 
-# --- driver-arena geometry generation --------------------------------------------
-# kernel/module/arena.asm always includes the generated
-# arena_geometry.inc.  The build first links a probe image (the same object
-# list with a bootstrap arena object that places no arena), measures the
-# loadable areas and the runtime-data size in its map, then regenerates the
-# include and the memory.inc variant before the real link.  The final map is
-# re-verified by mapcheck.py, so a stale generated value cannot survive.
+GEOMETRY_INC       := $(GEOMETRY_DIR)/bank7_end.inc
 
 $(GEOMETRY_INC) $(GEOMETRY_MEMORY): $(BUILD)/zephyros.probe.map \
 		tools/mapcheck.py $(ASM_MEMORY_INC) $(RESIDENCY) | $(BUILD)
@@ -504,22 +487,23 @@ $(GEOMETRY_INC) $(GEOMETRY_MEMORY): $(BUILD)/zephyros.probe.map \
 		$(ASM_MEMORY_INC) $(GEOMETRY_INC) $(GEOMETRY_MEMORY) \
 		$(RESIDENCY_DERIVE_FLAGS)
 
-$(GEOMETRY_PROBE_DIR)/arena_geometry.inc: $(ZOS_PLATFORM_MEMORY_INC) \
+$(GEOMETRY_PROBE_DIR)/bank7_end.inc: $(ZOS_PLATFORM_MEMORY_INC) \
 		tools/mapcheck.py | $(BUILD)
 	mkdir -p $(GEOMETRY_PROBE_DIR)
 	$(PYTHON) tools/mapcheck.py geometry probe $(ZOS_PLATFORM_MEMORY_INC) $@
 
-$(GEOMETRY_PROBE_DIR)/arena.rel: kernel/module/arena.asm \
-		$(GEOMETRY_PROBE_DIR)/arena_geometry.inc | $(BUILD)
+$(GEOMETRY_PROBE_DIR)/bank7_end.rel: kernel/memory/bank7_end.asm \
+		$(GEOMETRY_PROBE_DIR)/bank7_end.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -I$(GEOMETRY_PROBE_DIR) -o $@ $<
 
-# Probe link: identical objects, bootstrap arena symbols.  Kept under
-# build/probe/ so the canonical build/ object list stays exactly the
-# committed linker file's list.  Target-test objects (acceptance images)
-# are part of the real link and therefore part of the geometry probe.
-PROBE_OBJS := $(filter-out $(BUILD)/arena.rel,$(OBJS) $(TARGET_TEST_OBJS) \
-		$(END_OBJ)) \
-		$(GEOMETRY_PROBE_DIR)/arena.rel
+# Probe link: identical objects, a bootstrap boundary that places nothing.
+# Kept under build/probe/ so the canonical build/ object list stays exactly
+# the committed linker file's list.  Target-test objects (acceptance
+# images) are part of the real link and therefore part of the geometry
+# probe.
+PROBE_OBJS := $(filter-out $(BUILD)/bank7_end.rel,$(OBJS) \
+		$(TARGET_TEST_OBJS) $(END_OBJ)) \
+		$(GEOMETRY_PROBE_DIR)/bank7_end.rel
 
 $(BUILD)/zephyros.probe.lk: $(PROBE_OBJS) | $(BUILD)
 	{ \
@@ -596,7 +580,7 @@ $(BUILD)/platform_irq.rel: kernel/irq/init.asm \
 $(BUILD)/sdcc_helpers.rel: kernel/runtime/sdcc_helpers.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/arena.rel: kernel/module/arena.asm $(GEOMETRY_INC) | $(BUILD)
+$(BUILD)/bank7_end.rel: kernel/memory/bank7_end.asm $(GEOMETRY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -I$(dir $(GEOMETRY_INC)) -o $@ $<
 
 $(BUILD)/rom_access.rel: kernel/romfs/rom_access.asm \
@@ -638,7 +622,7 @@ $(BUILD)/panic.rel: kernel/panic.c \
 
 $(BUILD)/main.rel: kernel/main.c include/zephyros/kernel.h \
 		include/zephyros/irq.h \
-		include/zephyros/module.h include/zephyros/process.h | $(BUILD)
+ include/zephyros/process.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/irq.rel: kernel/irq/irq.c include/zephyros/irq.h \
@@ -677,14 +661,14 @@ $(BUILD)/name.rel: kernel/lib/name.c kernel/lib/name.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/romfs.rel: kernel/romfs/romfs.c include/zephyros/romfs.h \
-		include/zephyros/module.h include/zephyros/platform.h \
+ include/zephyros/platform.h \
 		kernel/lib/name.h platform/zephyr80/memory.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- VFS objects (the handle pool, paths and the workspace) -------------------
 
 $(BUILD)/vfs_path.rel: kernel/vfs/path.c kernel/vfs/vfs.h \
-		abi/zos/fs.h include/zephyros/vfs.h | $(BUILD)
+		abi/zos/fs.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 
@@ -692,12 +676,12 @@ $(BUILD)/vfs_path.rel: kernel/vfs/path.c kernel/vfs/vfs.h \
 
 
 $(BUILD)/vfs_process.rel: kernel/vfs/process.c kernel/vfs/vfs.h \
-		abi/zos/fs.h include/zephyros/vfs.h \
+		abi/zos/fs.h \
 		include/zephyros/process.h include/zephyros/errno.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_workspace.rel: kernel/vfs/workspace.c kernel/vfs/vfs.h \
-		abi/zos/fs.h include/zephyros/vfs.h \
+		abi/zos/fs.h \
 		include/zephyros/kernel.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
@@ -753,15 +737,6 @@ MOD_CFLAGS := -mz80 -c --nostdinc --Werror $(ZOS_SDCC_OPT) \
 $(MODULES):
 	mkdir -p $@
 
-# Declared boot-set arena plan: per-module image+BSS/granules and the
-# used/free totals; the build fails here when the declared boot set cannot
-# coexist in the derived arena.  The plan also carries the bank-7 ledger.
-ARENA_PLAN := $(BUILD)/arena.plan.json
-$(ARENA_PLAN): tools/zmodpack.py tools/pack_image.py \
-		$(MEMORY_INC) | $(BUILD)
-	$(PYTHON) tools/zmodpack.py plan --geometry $(MEMORY_INC) \
-		--report $@
-
 # --- bank-6 resident services (work package 41) ------------------------------
 # The SIO, IOC, HID, V9958 and console driver stacks are bank-6 services:
 # each is packed as a service image (ZMOD module_type 2) into the recovery
@@ -807,7 +782,7 @@ $(MODULES)/sio_boot.rel: drivers/sio/sio_boot.c drivers/sio/sio.h \
 $(MODULES)/ioc.rel: drivers/ioc/ioc.c drivers/ioc/ioc_driver.h \
 		drivers/ioc/ioc_proto.h include/zephyros/ioc.h \
 		include/zephyros/ioc_protocol.h \
-		include/zephyros/device.h include/zephyros/platform.h | $(MODULES)
+ include/zephyros/platform.h | $(MODULES)
 	$(SDCC) $(SVC_HOT) $< -o $@
 
 $(MODULES)/ioc_io.rel: drivers/ioc/ioc_io.asm \
@@ -825,14 +800,13 @@ $(MODULES)/ioc_boot.rel: drivers/ioc/ioc_boot.c drivers/ioc/ioc_driver.h \
 	$(SDCC) $(SVC_BOOT) $< -o $@
 
 $(MODULES)/hid.rel: drivers/hid/hid.c drivers/hid/hid_driver.h \
-		include/zephyros/ioc_protocol.h include/zephyros/hid.h \
-		include/zephyros/ioc.h include/zephyros/device.h \
+		include/zephyros/ioc_protocol.h \
+		include/zephyros/ioc.h \
 		include/zephyros/ipc.h $(SVC_PROTOCOL_H) \
 		include/zephyros/platform.h | $(MODULES)
 	$(SDCC) $(SVC_HOT) $< -o $@
 
 $(MODULES)/v9958.rel: drivers/v9958/v9958.c drivers/v9958/v9958_driver.h \
-		include/zephyros/video.h include/zephyros/device.h \
 		include/zephyros/ipc.h $(SVC_PROTOCOL_H) \
 		include/zephyros/platform.h | $(MODULES)
 	$(SDCC) $(SVC_HOT) $< -o $@
@@ -842,7 +816,7 @@ $(MODULES)/v9958_io.rel: drivers/v9958/v9958_io.asm \
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(MODULES)/v9958_service.rel: drivers/v9958/v9958_service.c \
-		drivers/v9958/v9958_driver.h include/zephyros/video.h \
+		drivers/v9958/v9958_driver.h \
 		include/zephyros/ipc.h $(SVC_PROTOCOL_H) | $(MODULES)
 	$(SDCC) $(SVC_HOT) $< -o $@
 
@@ -955,38 +929,6 @@ $(MODULES)/v9958-6x8.font: drivers/v9958/assets/font_cp850_6x8.inc \
 		tools/fontpack.py | $(MODULES)
 	$(PYTHON) tools/fontpack.py $< $@
 
-# --- synthetic M4 fixtures ---
-
-$(MODULES)/m4_probe.rel: tests/modules/m4_probe.c \
-		include/zephyros/device.h include/zephyros/driver.h \
-		include/zephyros/irq.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-$(MODULES)/m4_fail.rel: tests/modules/m4_fail.c \
-		include/zephyros/device.h include/zephyros/driver.h \
-		include/zephyros/irq.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-$(MODULES)/m4_filler.rel: tests/modules/m4_filler.c \
-		include/zephyros/driver.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-$(MODULES)/abi_probe.rel: tests/modules/abi_probe.c \
-		include/zephyros/device.h include/zephyros/driver.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-$(MODULES)/abi_probe.zmod: tests/modules/abi_probe.json $(MODULES)/abi_probe.rel \
-		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
-		--report $(MODULES)/abi_probe.report.json
-
-$(MODULES)/%.zmod: tests/modules/%.json $(MODULES)/%.rel \
-		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES)
-
-FIXTURE_ZMODS := $(MODULES)/m4_probe.zmod $(MODULES)/m4_fail.zmod \
-		$(MODULES)/m4_filler.zmod $(MODULES)/abi_probe.zmod
-
 # --- target acceptance objects (tests/target/, acceptance builds only) -------
 
 $(BUILD)/target_test.rel: tests/target/support/target_test.c \
@@ -1045,7 +987,7 @@ $(BUILD)/ipc_common.rel: kernel/ipc/ipc_common.asm \
 
 $(BUILD)/service_loader.rel: kernel/service/service_loader.c \
 		include/zephyros/service.h include/zephyros/ipc.h \
-		include/zephyros/module.h include/zephyros/romfs.h \
+ include/zephyros/romfs.h \
 		include/zephyros/errno.h include/zephyros/kernel.h \
 		include/zephyros/process.h kernel/ipc/ipc.h \
 		kernel/memory/upcall.h kernel/syscall/diag.h | $(BUILD)
@@ -1085,7 +1027,7 @@ $(BUILD)/nucleus_selftest_asm.rel: tests/target/nucleus/nucleus_entry.asm \
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/romfs_test.rel: tests/target/romfs/romfs_test.c \
-		include/zephyros/romfs.h include/zephyros/module.h \
+		include/zephyros/romfs.h \
 		include/zephyros/kernel.h \
 		tests/target/include/romfs_selftest.h $(BUILD)/romfs_expect.inc | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
@@ -1103,7 +1045,6 @@ $(BUILD)/process_expect.inc: $(BUILD)/user/zextest/zextest.json \
 
 $(BUILD)/process_test.rel: tests/target/process/process_test.c \
 		include/zephyros/process.h abi/zos/syscall.h \
-		include/zephyros/module.h \
 		include/zephyros/kernel.h \
 		tests/target/include/process_selftest.h $(BUILD)/process_expect.inc | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
@@ -1113,7 +1054,7 @@ $(BUILD)/process_test.rel: tests/target/process/process_test.c \
 # the bulk-arming class gate, and the unknown-class reply, which are
 # transport-private by design.
 $(BUILD)/ioc_test.rel: tests/target/ioc/ioc_test.c \
-		include/zephyros/device.h include/zephyros/ioc.h \
+ include/zephyros/ioc.h \
 		include/zephyros/kernel.h drivers/ioc/ioc_proto.h \
 		include/zephyros/ioc_protocol.h \
 		tests/target/include/ioc_selftest.h \
@@ -1121,13 +1062,11 @@ $(BUILD)/ioc_test.rel: tests/target/ioc/ioc_test.c \
 	$(SDCC) $(CFLAGS) -Idrivers/ioc $< -o $@
 
 $(BUILD)/hid_test.rel: tests/target/hid/hid_test.c \
-		include/zephyros/device.h \
-		include/zephyros/hid.h include/zephyros/kernel.h \
+ include/zephyros/kernel.h \
 		tests/target/include/hid_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/video_test.rel: tests/target/video/v9958_test.c \
-		include/zephyros/video.h include/zephyros/device.h \
 		include/zephyros/kernel.h \
 		tests/target/include/video_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
@@ -1215,17 +1154,12 @@ $(eval $(call zex_program,nschild,tests/ns,\
 	nschild.c,STACK=192,STAGE=1,\
 	INCLUDES=tests/target/include))
 
-# Deterministic malformed containers (one per validation boundary; see
-# tests/subsys/gen_zex_fixtures.py and gen_zmod_fixtures.py) shared by the
-# subsystem acceptance manifest.  gen_zmod_fixtures.py derives its damaged
-# ZMODs from the reviewed loader fixture `m4_probe.zmod`, so that fixture
-# is a real prerequisite: `make clean && make zex-test` must be able to
-# build the stamp on its own.
+# Deterministic malformed ZEX containers (see
+# tests/subsys/gen_zex_fixtures.py) shared by the subsystem acceptance
+# manifest; the stamp makes `make clean && make zex-test` self-contained.
 $(MODULES)/zex-fixtures.stamp: tests/subsys/gen_zex_fixtures.py \
-		tests/subsys/gen_zmod_fixtures.py $(MODULES)/m4_probe.zmod \
 		tools/zexpack.py | $(MODULES)
 	$(PYTHON) tests/subsys/gen_zex_fixtures.py $(MODULES)
-	$(PYTHON) tests/subsys/gen_zmod_fixtures.py $(MODULES)
 	touch $@
 
 # --- ROMFS recovery store (ROM pages 2-7) ------------------------------------
@@ -1248,9 +1182,9 @@ else ifeq ($(ZOS_VIDEO_SELFTEST),1)
 ROMFS_MANIFEST := tests/video/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 else ifeq ($(ZOS_CONSOLE_SELFTEST),1)
-# Console acceptance store: the full production service set (the IOC-FAT
-# arena module is compiled out of this image, so its entry is absent) plus
-# the monitor launcher.
+# Console acceptance store: the full device service set (the filesystem
+# driver is compiled out of this image, so its entry is absent) plus the
+# monitor launcher.
 ROMFS_MANIFEST := tests/console/manifest-integration.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 else ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)
@@ -1261,8 +1195,6 @@ ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 else ifeq ($(ZOS_SUBSYS_SELFTEST),1)
 ROMFS_MANIFEST := tests/subsys/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/romfs_crosspage.bin \
-		$(MODULES)/m4_probe.zmod $(MODULES)/m4_fail.zmod \
-		$(MODULES)/m4_filler.zmod $(MODULES)/abi_probe.zmod \
 		$(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
 else ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
 ROMFS_MANIFEST := recovery/manifest.json
@@ -1524,10 +1456,10 @@ endif
 # complete.
 
 $(IMAGE): $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map \
-		$(BUILD)/recovery.romfs $(ARENA_PLAN) \
+		$(BUILD)/recovery.romfs \
 		tools/pack_image.py tools/mapcheck.py $(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) $(RESIDENCY_FLAGS) \
-		--boot-plan $(ARENA_PLAN) $(BUILD)/zephyros.map \
+		$(BUILD)/zephyros.map \
 		$(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) tools/pack_image.py $(MAPCHECK_FLAGS) $(BUILD)/zephyros.ihx \
 		$(BUILD)/zephyros.map $(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC)
@@ -1560,12 +1492,12 @@ check:
 	@$(MAKE) check-fast
 
 # --- subsystem acceptance image ----------------------------------------------
-# One current-boot-path image carries every relocated mechanism selftest: the
-# syscall gate and the IRQ executive (early hook), then the ROMFS reader, the
-# process/ZEX lifecycle and the loader (late hook), and finally the monitor
-# launcher's scripted session.  The declared boot set is the SIO fallback
-# only, so the loader's relocation, rollback and arena-exhaustion checks own
-# the derived arena (work/25a-retire-pre-m8-acceptance/WORK.md).
+# One current-boot-path image carries the mechanism selftests: the syscall
+# gate and the IRQ executive (early hook), then the ROMFS reader and the
+# process/ZEX lifecycle (late hook), and finally the monitor launcher's
+# scripted session.  The declared boot set is the SIO serial service plus
+# the console service that composes it, placed by the resident loader
+# (work package 42c deleted the arena loader the loader group exercised).
 
 subsystem-selftest:
 	$(MAKE) BUILD=build-subsys-selftest ZOS_SUBSYS_SELFTEST=1 \
@@ -1601,7 +1533,7 @@ romfs-corrupt-selftest:
 check-fast: $(ZEX_USER_ROOT)/hello.zex $(MODULES)/zextest.zex
 	$(PYTHON) -m unittest discover -s tests -v
 	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) $(RESIDENCY_FLAGS) \
-		--boot-plan $(ARENA_PLAN) $(BUILD)/zephyros.map \
+		$(BUILD)/zephyros.map \
 		$(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) tools/pack_image.py $(MAPCHECK_FLAGS) $(BUILD)/zephyros.ihx \
 		$(BUILD)/zephyros.map $(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC)
@@ -1613,15 +1545,11 @@ clean:
 	rm -rf $(BUILD) build-*
 
 # --- host-side ZMOD tooling tests -------------------------------------------
-# Builds the module containers and the synthetic loader fixtures with the
-# real toolchain, validates them, then runs the host container suite
-# (fixture-dependent tests skip when the packed modules are absent).
+# Builds the service containers with the real toolchain, validates them,
+# then runs the host container suite (the packed service images).
 
-zmod-test: $(MODULES)/sio.zmod $(MODULES)/sio-irq.zmod \
-		$(MODULES)/sio-fail.zmod $(FIXTURE_ZMODS)
-	$(PYTHON) tools/zmodpack.py validate $(MODULES)/sio.zmod \
-		$(MODULES)/sio-irq.zmod $(MODULES)/sio-fail.zmod
-	$(PYTHON) tools/zmodpack.py validate $(FIXTURE_ZMODS)
+zmod-test: $(SVC_SET_ZMODS)
+	$(PYTHON) tools/zmodpack.py validate $(SVC_SET_ZMODS)
 	$(PYTHON) tools/zmodpack.py dump $(MODULES)/sio.zmod
 	$(PYTHON) -m unittest discover -s tests -p 'test_zmod.py' -v
 	@echo "zmod-test: OK"
@@ -1699,7 +1627,6 @@ v9958-test: $(MODULES)/v9958.zmod $(MODULES)/v9958-6x8.font
 	$(PYTHON) tools/zmodpack.py dump $(MODULES)/v9958.zmod
 	$(PYTHON) tools/fontpack.py verify drivers/v9958/assets/font_cp850_6x8.inc
 	$(PYTHON) -m unittest discover -s tests -p 'test_v9958.py' -v
-	$(PYTHON) -m unittest discover -s tests -p 'test_v9958_console.py' -v
 	@echo "v9958-test: OK"
 
 video-selftest:
@@ -1834,7 +1761,7 @@ ns-selftest: all
 # Nucleus-layout acceptance image (work package 38): the revision-13 gates
 # with P != 0 on entry (syscall, IRQ), the cold-half handler placement and
 # the fixed upcall shim against a stub in bank 6.  SIO-only boot set, so
-# the derived arena belongs to the test objects.
+# the cold half's slack belongs to the test objects.
 nucleus-selftest: all
 	$(MAKE) BUILD=build-nucleus-selftest ZOS_NUCLEUS_SELFTEST=1 \
 		build-nucleus-selftest/zephyros-nucleus-selftest.bin \

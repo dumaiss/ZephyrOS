@@ -1,14 +1,13 @@
 /* M2 fixed-source, one-owner IRQ registry and revision-13 dispatcher. */
 #include "zephyros/irq.h"
-#include "zephyros/module.h"
 #include "zephyros/platform.h"
 
 #include "irq_private.h"
 
 extern volatile uint8_t irq_active_source;
 extern uint8_t irq_kernel_code_end;
-/* Exclusive end of the linked cold-half code (kernel/module/arena.asm and
- * the derived build/geometry/arena_geometry.inc). */
+/* Exclusive end of the linked cold-half code (kernel/memory/bank7_end.asm
+ * and the derived build/geometry/bank7_end.inc). */
 extern uint8_t __kernel_code_end[];
 
 static irq_handler_t handlers[IRQ_SOURCE_COUNT];

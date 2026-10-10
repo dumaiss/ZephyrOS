@@ -1,8 +1,5 @@
 {
   "name": "nsdev",
-  "type": "service",
-  "abi": 3,
-  "flags": 0,
   "objects": [
     "nsdev.rel",
     "nsdev_boot.rel",

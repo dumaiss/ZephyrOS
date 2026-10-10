@@ -12,7 +12,7 @@
  *
  * M3 adds generic subsystem error numbers.  They are plain int values so
  * that internal int-returning APIs can signal failure as the negated
- * code (e.g. -ZOS_EINVAL); see ZDEV_E* in device.h.  None of the M3
+ * code (e.g. -ZOS_EINVAL).  None of the M3
  * values are syscall-visible and the numeric values are internal.
  *
  * M6 makes a subset of these syscall-visible: the native syscall

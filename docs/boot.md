@@ -42,7 +42,7 @@ ROM page 1:
     0000h-002Fh   byte-identical copy of the reset copier (mirrored)
     0030h-1FFFh   FFh (caller-window gap; bank 7 is invisible there)
     2000h-data base  bank-7 loadable kernel image (ends at the derived
-                     arena start; the derived area below is not ROM-loaded)
+                     fixed code end; the derived area below is not loaded)
     data base-DFFFh  FFh (bank-7 runtime data plus ISR stack; never loaded)
     E000h-FFFFh   FFh (not visible in mode 11)
 
@@ -118,26 +118,25 @@ After the four banner lines, `kernel_main()` continues:
 
 1. `irq_init()` establishes the M2 IM2 executive (kernel-owned vectors,
    IRQ stacks, and source registry).
-2. `device_registry_init()` and `module_loader_init()` prepare the
-   registry and the derived bank-7 driver arena.
-3. `vfs_init()` registers the built-in filesystem providers and mounts
-   the unique system entry (`/SYSTEM`, ROMFS on the `recovery` source)
-   before any module runs; a failed system mount produces the same
-   corrupt-store diagnostics and panic (`make romfs-corrupt-selftest`).
-4. the boot module set loads in order -- SIO, then IOC, then HID, then
-   V9958 -- from `/SYSTEM/<name>.zmod` through the VFS file API and the
-   bounded loader source (the SIO fallback loads first and stays
-   resident if a later module fails).
-5. `vfs_mount_all()` runs the normal mount pass (a no-op in production,
-   which mounts only `/SYSTEM`) and VFS enters the ready phase.
-6. `console_bind_defaults()` performs the single console bind (HID input
-   / V9958 output, else the SIO fallback).
-7. the monitor launcher `process_exec("/SYSTEM/monitor.zex")` starts the
+2. `vfs_init()` brings up the three static roots: the ROMFS reader (the
+   `/SYSTEM` FILE endpoint and the store), the handle table and the
+   in-process FILE endpoint; a corrupt store produces the
+   `romfs_diagnose()` lines and the panic
+   (`make romfs-corrupt-selftest`).
+3. `service_load_all(ZOS_SERVICE_MANIFEST_NAME)` reads `services.man`
+   with the bootstrap ROMFS reader and, in load order, copies each
+   service image's segments to their host-assigned bank-6 addresses,
+   installs the endpoint and publication records and the resolved
+   dependency numbers, runs the boot entry once and the hot init once
+   (the SIO serial service loads first, so a later failure still leaves
+   the recovery console).
+4. the monitor launcher `process_exec("/SYSTEM/monitor.zex")` starts the
    native monitor and re-executes it after every normal exit; that launch
    is where interrupts are first enabled.
 
-See `docs/vfs.md` for the VFS bootstrap, the generated mount table and
-the M9 arena figures.
+The M9 steps this replaced (`device_registry_init`,
+`module_loader_init`, one VFS open per boot module, `vfs_mount_all`) are
+recorded in `docs/vfs.md` sections 5 and 13.
 
 Acceptance builds interpose the `TEST-ONLY HOOK` seam here; see
 `docs/devices.md` section 3 and `docs/architecture.md` section 30.
@@ -163,19 +162,17 @@ E000h +-------------------------------+
   while the window shows another bank, its data, the service stack and the
   ISR stack).
 - `6000h-DFFFh`: physical SRAM bank 7, the cold half (visible while the
-  window shows bank 7), including the driver arena and the cold runtime
-  data.
+  window shows bank 7): the linked cold code, then the cold runtime data. The driver arena M9 reserved between them is deleted (work package 42c).
 - `E000h-FFFFh`: physical SRAM bank 0 (permanent common region).
 
 The linker control file fixes `_CODE` at `2000h` and `_WINDOW` at
 `6000h`, and derives the two zero-initialized runtime areas: `_DATA` at
 `align_down(ZOS_SERVICE_STACK_BASE - runtime_data_size, 512)` and
-`_WINDOW_DATA` at `align_down(E000h - window_data_size, 512)`; the common
-segment stays at `E000h`.  The loadable bank-7 image (fixed code,
-`_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`, then the cold `_WINDOW`
-code) must fit around the driver arena; from the derived bases to the
-stacks, and the arena between the cold code end and the cold data base,
-are never loaded from ROM.
+`_WINDOW_DATA` at `align_up(cold_code_end, 512)`; the common segment
+stays at `E000h`.  The loadable bank-7 image (fixed code, `_HOME`,
+`_INITIALIZER`, `_GSINIT`, `_GSFINAL`, then the cold `_WINDOW` code) must
+fit the window; the derived areas and the runs are never loaded from
+ROM.
 
 ## 4. SDCC C runtime initialization
 

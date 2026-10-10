@@ -4,10 +4,6 @@
 Covers the declarative and structural surface that can be checked
 without executing target code:
 
-  - include/zephyros/hid.h: operation order, the reserved key-event and
-    gamepad shapes, layout assertions, and the capability-authoritative
-    ZDEV_ENOTSUP convention (absent methods are null and are never
-    called);
   - the client-visible MCU HID service vocabulary shared through the
     public IOC protocol contract (include/zephyros/ioc_protocol.h):
     CMD_HID_INPUT 0Eh, RSP_HID_INPUT 8Eh, 2 metadata bytes and a 24-byte
@@ -16,10 +12,10 @@ without executing target code:
   - the packed hid.zmod container, manifest, ROMFS entry and boot order
     (SIO, then IOC, then HID), with a failed/malformed dependency not
     invalidating earlier devices;
-  - the driver source discipline: IOC discovery through device_find /
-    device_interface only (no imported IOC-module symbol, no name
-    lookup, no port/status constants, no IN/OUT or register access),
-    the exact input-only descriptor, fetch-on-doorbell only, exact
+  - the driver source discipline: IOC discovery through the driver's own
+    protocol calls only (no imported IOC-module symbol, no name lookup,
+    no port/status constants, no IN/OUT or register access), the exact
+    input-only descriptor, fetch-on-doorbell only, exact
     request sizing, strict reply validation before any ring commit, and
     the proven 64-call stuck-doorbell penalty;
   - the fake-IOC fixture and the no-IOC/malformed images that prove
@@ -44,11 +40,8 @@ sys.path.insert(0, HERE)
 
 import mapcheck  # noqa: E402
 import zmodpack  # noqa: E402
-from test_ioc import struct_member_order  # noqa: E402
 from maptools import evaluate, parse_c_header  # noqa: E402
 
-HID_H = os.path.join(ROOT, "include", "zephyros", "hid.h")
-DEVICE_H = os.path.join(ROOT, "include", "zephyros", "device.h")
 PROTO_H = os.path.join(ROOT, "include", "zephyros", "ioc_protocol.h")
 IOC_PRIVATE_H = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.h")
 DRIVER_H = os.path.join(ROOT, "drivers", "hid", "hid_driver.h")
@@ -75,51 +68,6 @@ def _read(path, mode="r"):
 def _load_json(path):
     with open(path) as handle:
         return json.load(handle)
-
-
-class TestHidClassContract(unittest.TestCase):
-    def setUp(self):
-        self.text = _read(HID_H)
-        self.env = parse_c_header(HID_H)
-
-    def test_ops_order_and_reserved_shapes(self):
-        self.assertEqual(
-            struct_member_order(self.text, "zhid_ops",
-                                function_pointers=True),
-            ["read_text", "read_gamepad"])
-        self.assertEqual(struct_member_order(self.text, "zhid_key_event"),
-                         ["usage", "modifiers", "pressed", "reserved"])
-        self.assertEqual(struct_member_order(self.text,
-                                             "zhid_gamepad_state"),
-                         ["buttons", "reserved", "x", "y"])
-
-    def test_layout_assertions_present(self):
-        for needle in ("sizeof(struct zhid_ops) == 4",
-                       "sizeof(struct zhid_key_event) == 4",
-                       "sizeof(struct zhid_gamepad_state) == 4",
-                       "__builtin_offsetof(struct zhid_ops, read_gamepad)"
-                       " == 2"):
-            self.assertIn(needle, self.text)
-
-    def test_capabilities_are_authoritative(self):
-        # Absent methods stay null and unsupported capabilities must be
-        # reported as ZDEV_ENOTSUP instead of being inferred from the
-        # name; M8 implements only ZCAP_HID_TEXT.
-        self.assertIn("ZDEV_ENOTSUP", self.text)
-        self.assertIn("never inferred", self.text)
-        self.assertIn("Absent methods stay null", self.text)
-        self.assertIn("M8 implements only ZCAP_HID_TEXT", self.text)
-
-    def test_general_api_keeps_mcu_command_numbers_private(self):
-        self.assertNotIn("CMD_HID", self.text)
-        self.assertNotIn("RSP_HID", self.text)
-        self.assertNotIn("0x0E", self.text)
-
-    def test_text_read_semantics_documented(self):
-        for needle in ("returns 0 when nothing is available",
-                       "ZDEV_EAGAIN",
-                       "NUL and", "multi-byte VT100"):
-            self.assertIn(needle, self.text)
 
 
 class TestHidProtocolConstants(unittest.TestCase):
@@ -160,8 +108,6 @@ class TestHidServiceArtifact(unittest.TestCase):
     def test_manifest_shape(self):
         manifest = _load_json(MANIFEST)
         self.assertEqual(manifest["name"], "hid")
-        self.assertEqual(manifest["type"], "service")
-        self.assertEqual(manifest["abi"], 3)
         self.assertEqual(manifest["init"], "hid_service_init")
         self.assertEqual(manifest["objects"],
                          ["hid.rel", "sdcc_indirect_calls.rel"])
@@ -183,10 +129,11 @@ class TestHidServiceArtifact(unittest.TestCase):
             self.skipTest("build/modules/hid.zmod missing; build it first")
         data = _read(ZMOD, "rb")
         info = zmodpack.parse_container(data, "hid.zmod")
-        self.assertEqual(info["module_type"], "service")
-        # Service ABI 4: the image carries its host-built publications
+        # The image carries its host-built publications
         # (`/dev/input/keyboard`, package 42b).
-        self.assertEqual(info["service_abi"], 4)
+        self.assertEqual([publication["name"]
+                          for publication in info["publications"]],
+                         ["/input/keyboard"])
         self.assertGreater(info["image_size"], 0)
         self.assertGreater(info["bss_size"], 0)
         self.assertNotEqual(info["init_offset"], 0xFFFF)
@@ -198,9 +145,8 @@ class TestHidServiceArtifact(unittest.TestCase):
         # The loader places the segment inside the service I/O window
         # 8000h-BFFFh, so the resident footprint must fit in it.
         self.assertLess(hot["image_size"] + hot["bss_size"], 0x4000)
-        # Host-linked: the dispatch entry lies inside the hot image and
-        # the container carries no relocation records.
-        self.assertEqual(info["reloc_count"], 0)
+        # Host-linked: the dispatch entry lies inside the hot image (the
+        # flat plan carries no relocation records at all).
         endpoint = info["endpoints"][0]
         self.assertGreaterEqual(endpoint["dispatch"], hot["base"])
         self.assertLess(endpoint["dispatch"],
@@ -229,10 +175,8 @@ class TestHidServiceArtifact(unittest.TestCase):
         self.assertIn("services/manifests/%.json", makefile)
         self.assertIn("hid.rel", makefile)
         self.assertIn("ZOS_HID_SELFTEST", makefile)
-        # Package 41: which services an image boots is its manifest's
-        # service set, and the arena plan lists the arena modules only.
+        # Which services an image boots is its manifest's service set.
         self.assertIn("ZOS_SERVICES := sio ioc hid console", makefile)
-        self.assertIn("ZOS_ARENA_MODULES", makefile)
         image_manifest = os.path.join(ROOT, "tests", "hid", "manifest.json")
         self.assertIn('"name": "console.zmod"', _read(image_manifest))
 
@@ -389,8 +333,8 @@ class TestHidSourceDiscipline(unittest.TestCase):
         self.assertIn("state->penalty = 0u;", self.service)
 
     def test_getc_and_read_text_are_nonblocking(self):
-        self.assertIn("return ZDEV_EAGAIN;", self.c)
-        self.assertIn("ZDEV_EINVAL", self.c)
+        self.assertIn("return (-ZOS_EAGAIN);", self.c)
+        self.assertIn("(-ZOS_EINVAL)", self.c)
         # No blocking loops anywhere in the driver.
         self.assertNotIn("while (1)", self.c)
         self.assertNotIn("for (;;)", self.c)

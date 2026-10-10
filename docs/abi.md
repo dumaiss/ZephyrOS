@@ -697,10 +697,12 @@ is 1 in the `namespace-selftest` acceptance image (`make ns-selftest`,
 work package 42a correction 01), where `kernel/syscall.c` routes 06h-09h
 to the object dispatcher, the SDK is built with the bind/unbind/ns_enum
 wrappers and the standard handles, and the M9 `FS_*` front end still
-serves `/SYSTEM` for the legacy path.  Package 42b turns the default over
-and deletes the M9 machinery in the same step, when the arena, the `fs`
-front end and the M9 VFS objects leave bank 7 (the measurement is in
-[`docs/validation/2026-10-09-m10-namespace-handles.md`](./validation/2026-10-09-m10-namespace-handles.md)).
+served `/SYSTEM` for the legacy path.  Packages 42b/42c then turned the
+default over and deleted the M9 machinery: the mount table, the provider
+ABI, the `FS_*` front end, the arena and the driver ABI are gone
+(`docs/validation/2026-10-09-m10-namespace-handles.md`,
+`docs/validation/2026-10-09-m10-prune-nucleus.md`), and SIO plus the
+console service are the image's service set.
 
 Validation: the `namespace-selftest` image boots SIO, the console service
 and a synthetic publisher whose manifest declares `/dev/input/keyboard`

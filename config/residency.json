@@ -1,22 +1,21 @@
 {
   "format": "zos-residency/1",
   "split": "0x6000",
-  "note": "Nucleus residency under the resident-service model (architecture 36.2, 36.5, 36.24 step 2). One entry per kernel object linked into the production image (the objects of linker/zephyr80.lk); tools/mapcheck.py fails the build when an object is missing or when a fixed-required object is compiled into the cold areas. Tiers: fixed-required = code that executes, or data that is touched, while the window shows another bank (36.5) - it must link inside 2000h-5FFFh; cold = everything else that belongs to bank 7 (syscall side, boot, loader, extended memory); moves = objects that leave bank 7 for bank 6 in the named stage. Placement in this package: cold objects fill the cold half (6000h-DFFFh); the moves objects that do not fit beside the driver arena overflow into the fixed core's leftover space and are reported as the fixed ledger's overflow. No image sets P outside mode 00 in this package, so every image behaves as at M9.",
+  "note": "Nucleus residency under the resident-service model (architecture 36.5, 36.24; two-tier classification from package 42c). One entry per kernel object linked into the production image (the objects of linker/zephyr80.lk); tools/mapcheck.py fails the build when an object is missing or when a fixed-required object is compiled into the cold areas. Tiers: fixed-required = code that executes, or data that is touched, while the window shows another bank (36.5) - it must link inside 2000h-5FFFh; cold = everything else that belongs to bank 7 (the syscall side, boot, the VFS core, process management and the resident-service loader). There are only these two tiers: every object is placed, and the cold data base follows the linked cold code (no arena, no moves).",
   "tiers": {
     "fixed-required": "Must be visible in the 2000h-5FFFh fixed core: the gates and transition code, the copy primitives, the IRQ executive, the ROMFS bootstrap reader, the processes' raw entry, common-resident boot/panic code and the stacks. mapcheck rejects a fixed-required object whose bytes link at or above 6000h.",
-    "cold": "Belongs to bank 7's cold half (6000h-DFFFh), reached only while the window shows bank 7 (P = 0): the syscall dispatcher and bodies, boot and idle, process management, the loader, the device registry and the FS front end.",
-    "moves": "Leaves bank 7 for bank 6 in the named stage. Until it leaves it is placed where the cold half's remaining space allows and otherwise overflows into the fixed core's leftover space (reported, not a failure)."
+    "cold": "Belongs to bank 7's cold half (6000h-DFFFh), reached only while the window shows bank 7 (P = 0): the syscall dispatcher and bodies, boot and idle, process management, the VFS core, the resident-service loader and the diagnostics."
   },
   "objects": [
-    {
-      "object": "arena",
-      "tier": "cold",
-      "reason": "zero-byte ABS bound labels describing the driver arena, which lives in the cold half; the object emits no linked bytes and is declared ABS-only, so the build compiles it nowhere (it stays out of cold_half so the residency-driven codegen flags cannot propagate down its dependency on the generated geometry include)"
-    },
     {
       "object": "banking",
       "tier": "fixed-required",
       "reason": "common-resident latch and mode gates: the only mapping-changing code, always visible"
+    },
+    {
+      "object": "bank7_end",
+      "tier": "cold",
+      "reason": "zero-byte ABS label exporting __kernel_code_end, the exclusive end of the linked cold code; the object emits no linked bytes and carries the derived build/geometry/bank7_end.inc, so it stays out of cold_half (the residency-driven codegen flags cannot propagate down its dependency on the generated include)"
     },
     {
       "object": "vfs_ns",
@@ -160,21 +159,18 @@
     },
     {
       "object": "vfs_path",
-      "tier": "moves",
-      "stage": 5,
-      "reason": "VFS core: path walking moves to the VFS service in bank 6"
+      "tier": "cold",
+      "reason": "VFS core: path walking is production cold code beside the syscall dispatcher and the service loader (the retired stage-5 move left it in bank 7; package 42c placed every object)"
     },
     {
       "object": "vfs_process",
-      "tier": "moves",
-      "stage": 5,
-      "reason": "VFS core: per-process handles and workspace move to the VFS service in bank 6"
+      "tier": "cold",
+      "reason": "VFS core: per-process handles and workspace is production cold code beside the syscall dispatcher and the service loader (the retired stage-5 move left it in bank 7; package 42c placed every object)"
     },
     {
       "object": "vfs_workspace",
-      "tier": "moves",
-      "stage": 5,
-      "reason": "VFS core: per-process workspace data moves to the VFS service in bank 6"
+      "tier": "fixed-required",
+      "reason": "The path view a resident service reads: the frame handed to a bank-6 dispatch names the path by address, so the workspace is touched while the window shows bank 6 (36.5's fixed rule)"
     },
     {
       "object": "ipc",
@@ -203,6 +199,8 @@
     }
   ],
   "cold_half": [
+    "vfs_path",
+    "vfs_process",
     "vfs_ns",
     "vfs_ns_file",
     "object",
@@ -214,5 +212,5 @@
     "syscall",
     "service_loader"
   ],
-  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): every cold object, the two IPC cold bodies (the syscall IPC dispatcher and the resident service loader), the IOC class shim the loader publishes to bank-7 modules, and the service-destined VFS objects that fit beside them.  Package 41 moved the drivers out of the arena, so the freed cold space holds what used to overflow into the fixed core, which then holds the substrate; tools/mapcheck.py fails the build when the linked cold code or data overruns the derived bases.  The fixed ledger reports what still overflows."
+  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): the syscall dispatcher and its bodies, the boot path, the process lifecycle, the VFS core and the resident-service loader (package 42c placed every object; the cold data base follows the linked cold code). tools/mapcheck.py fails the build when the linked cold code or data overruns the derived bases, and the fixed ledger reports the remaining fixed-core bytes."
 }

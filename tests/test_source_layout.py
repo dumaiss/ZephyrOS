@@ -7,16 +7,17 @@ Enforces docs/architecture.md section 3.1 and the current layout:
   directories, and driver directories contain device implementation only;
 - platform/zephyr80/ contains declarative constants/configuration only,
   with no executable content or instruction-emitting macros;
-- production module metadata and shared module runtime support have
-  explicit non-driver owners (modules/manifests, modules/runtime);
+- the driver services' manifests have one owner (services/manifests/)
+  and the shared SDCC runtime support another (modules/runtime);
 - the process lifecycle (kernel/process), the common transition gates
   (kernel/memory), the public native ABI (abi/zos) and the user SDK
   (user/sdk) have explicit owners, with the ZEX program sources under
   tests/target/process, the demos under user/helloworld, and the
   ZEX tooling/fixtures under tests/subsys;
-- all milestone acceptance code lives under tests/target/ (or
-  tests/modules/ for test ZMODs), behind the single ZOS_TARGET_TEST_BUILD
-  seam; production sources contain no self-test implementations;
+- all milestone acceptance code lives under tests/target/, behind the
+  single ZOS_TARGET_TEST_BUILD seam; production sources contain no
+  self-test implementations (the module fixtures under tests/modules/
+  went with the module form, work package 42c);
 - the retired M3 static-driver mechanism, driver-private SDCC glue, and
   test-only SIO build variants cannot return;
 - the Mn-1 retention window holds: only the M10 acceptance
@@ -75,7 +76,6 @@ OWNER_FILES = (
     "kernel/irq/irq_private.h",
     "kernel/memory/banking.h",
     "kernel/runtime/sdcc_helpers.asm",
-    "kernel/module/arena.asm",
     "kernel/romfs/romfs.c",
     "kernel/romfs/rom_access.asm",
     "kernel/process/process.c",
@@ -93,7 +93,6 @@ OWNER_FILES = (
     "services/manifests/iocfat.json",
     "kernel/vfs/process.c",
     "kernel/vfs/workspace.c",
-    "include/zephyros/block.h",
     "tools/romfspack.py",
     "tests/fs/fs_selftest.c",
     "tests/fs/fs_child.c",
@@ -168,7 +167,6 @@ OWNER_FILES = (
     "tests/subsys/gen_romfs_expect.py",
     "tests/subsys/corrupt_romfs.py",
     "tests/subsys/gen_zex_fixtures.py",
-    "tests/subsys/gen_zmod_fixtures.py",
     "tests/subsys/gen_process_expect.py",
     "tests/target/process/zextest_sp.asm",
     "tests/test_sdk.py",
@@ -190,12 +188,10 @@ OWNER_FILES = (
     "include/zephyros/ioc_protocol.h",
     "drivers/hid/hid.c",
     "drivers/hid/hid_driver.h",
-    "include/zephyros/hid.h",
     "drivers/v9958/v9958.c",
     "drivers/v9958/v9958_driver.h",
     "drivers/v9958/v9958_io.asm",
     "drivers/v9958/assets/font_cp850_6x8.inc",
-    "include/zephyros/video.h",
     "tests/target/video/v9958_test.c",
     "tests/target/include/video_selftest.h",
     "tests/target/ioc/ioc_test.c",
@@ -211,8 +207,6 @@ OWNER_FILES = (
     "tests/console/manifest-fallback-nohid.json",
     "tests/console/manifest-fallback-nohid-nov9958.json",
     "modules/runtime/sdcc_indirect_calls.asm",
-    "tests/modules/abi_probe.c",
-    "tests/modules/abi_probe.json",
     "tests/target/syscall/syscall_entry.asm",
     "tests/target/syscall/syscall_test.c",
     "tests/target/irq/irq_entry.asm",
@@ -250,7 +244,6 @@ REMOVED_PATHS = (
     "drivers/sio/module-irq.json",
     "drivers/sio/module-fail.json",
     "drivers/sio/sdcc_glue.asm",
-    "tests/modules/m4_sdcc_glue.asm",
     "kernel/device/driver.c",
     "kernel/irq/irq_selftest.c",
     "kernel/irq/selftest.c",
@@ -298,24 +291,16 @@ REMOVED_PATHS = (
     "tests/test_m9_selftest_sim.py",
     "tests/test_iocfat_sim.py",
     "tests/test_syscall_sim.py",
-    "tests/modules/m9_dup.c",
-    "tests/modules/m9_dup.json",
-    "tests/modules/m9_fail.c",
-    "tests/modules/m9_fail.json",
-    "tests/modules/m9_probe.c",
-    "tests/modules/m9_probe.json",
-    "tests/modules/ramfs.c",
-    "tests/modules/ramfs.json",
 )
 
 # Directories that must exist after the production/test separation.  Every
 # acceptance implementation has a milestone owner under tests/target/;
-# test ZMODs live under tests/modules/; production module metadata and
-# runtime support have their own non-driver owners.
+# the module-format owners (kernel/module, tests/modules) are retired with
+# the arena (work package 42c) and are asserted absent below.
 REQUIRED_DIRS = (
     "boot",
     "kernel/memory", "kernel/syscall", "kernel/irq", "kernel/runtime",
-    "kernel/module", "kernel/romfs", "kernel/process",
+    "kernel/romfs", "kernel/process",
     "kernel/vfs", "fs/iocfat", "services/manifests", "config",
     "drivers/sio", "drivers/ctc", "drivers/ioc", "drivers/hid",
     "drivers/v9958", "modules/runtime",
@@ -325,7 +310,6 @@ REQUIRED_DIRS = (
     "recovery",
     "tests/subsys", "tests/hid", "tests/video", "tests/console",
     "tests/fs",
-    "tests/modules",
     "tests/target/syscall", "tests/target/irq",
     "tests/target/romfs", "tests/target/process", "tests/target/support",
     "tests/target/ioc", "tests/target/hid", "tests/target/video",
@@ -510,13 +494,28 @@ def _sibling_private_includes(rel_path, text, owners):
 def _tab_recipe_lines(text):
     """Yield (owning_rule_header, recipe_line) for tab-indented recipe lines.
 
-    Only lines whose preceding non-indented statement looks like a rule
-    (a `target: prereq` line, not a `VAR := value` assignment) are bound
-    to that rule; continuation prerequisite lines are ignored for
-    ownership because they do not name an include path.
+    Backslash continuations are joined first, so a rule header split over
+    several lines (with its prerequisite list) is one logical line and a
+    recipe line is attributed to the rule it belongs to.  Only a logical
+    line that looks like a rule (a `target: prereq` header, not a
+    `VAR := value` assignment) owns the recipe lines that follow it.
     """
-    header = ""
+    logical = []
+    pending = ""
     for line in text.splitlines():
+        if pending:
+            pending += " " + line.strip()
+        else:
+            pending = line
+        if pending.rstrip().endswith("\\"):
+            pending = pending.rstrip()[:-1]
+            continue
+        logical.append(pending)
+        pending = ""
+    if pending:
+        logical.append(pending)
+    header = ""
+    for line in logical:
         if line.startswith("\t"):
             yield header, line
         elif line.strip() and not line.lstrip().startswith("#"):
@@ -525,35 +524,32 @@ def _tab_recipe_lines(text):
             header = ""
 
 
-# The headers a ZMOD module author may read: the ABI, the class headers,
-# and the narrow board-constant header a hardware-owning driver includes.
-# (kernel/... is deliberately not reachable from the module build.)
-MODULE_FACING_HEADERS = (
-    "include/zephyros/device.h",
+# The headers a service image author may read: the M10 service ABI, the
+# client-visible protocol vocabulary, and the narrow board-constant header
+# a hardware-owning driver includes.  (kernel/... is deliberately not
+# reachable from the service build.)
+SERVICE_FACING_HEADERS = (
+    "include/zephyros/service.h",
     "include/zephyros/irq.h",
     "include/zephyros/ioc.h",
     "include/zephyros/ioc_protocol.h",
-    "include/zephyros/hid.h",
-    "include/zephyros/video.h",
-    "include/zephyros/block.h",
     "include/zephyros/ipc.h",
+    "include/zephyros/errno.h",
+    "include/zephyros/romfs.h",
     "abi/zos/fs.h",
     "abi/zos/ipc.h",
     "abi/zos/object.h",
     "abi/zos/protocol.h",
+    "abi/zos/types.h",
     "platform/zephyr80/hardware.h",
 )
 
 # Declarations that must not appear anywhere in the module-facing include
-# closure.  ABI field names (`device_register`, `irq_claim`,
-# `irq_release`) are intentionally absent: they are the module service
-# surface.  These are the kernel registry transaction/owner/storage,
+# closure.  ABI field names (`irq_claim`, `irq_release`) are
+# intentionally absent: they are the service surface.  These are the kernel registry transaction/owner/storage,
 # executive lifecycle, diagnostics, platform hooks, and raw memory
 # primitives (work package 22).
 KERNEL_ONLY_IDENTIFIERS = (
-    "device_registry_init", "device_get", "device_registry_checkpoint",
-    "device_registry_rollback", "device_registry_set_owner",
-    "device_registry_owner", "device_table",
     "irq_init", "irq_registry_checkpoint", "irq_registry_rollback",
     "irq_registry_set_owner", "irq_registry_owner",
     "irq_unexpected_count", "irq_unclaimed_count", "irq_last_source",
@@ -562,7 +558,7 @@ KERNEL_ONLY_IDENTIFIERS = (
     "platform_ctc0_test_start", "platform_ctc0_stop",
     "platform_memctl_read", "platform_memctl_write",
     "platform_bank_get", "platform_bank_set",
-    "vfs_init", "vfs_mount_all", "vfs_phase", "vfs_register_filesystem",
+    "vfs_init", "vfs_phase",
     "vfs_find_provider", "vfs_provider_checkpoint", "vfs_provider_rollback",
     "vfs_provider_set_owner", "vfs_provider_owner", "vfs_path_normalize",
     "vfs_name_equal", "vfs_mount_resolve", "vfs_resolve_path",
@@ -570,8 +566,8 @@ KERNEL_ONLY_IDENTIFIERS = (
     "vfs_open", "vfs_read", "vfs_write", "vfs_seek", "vfs_sync", "vfs_close",
     "vfs_stat", "vfs_mkdir", "vfs_rmdir", "vfs_unlink", "vfs_rename",
     "vfs_opendir", "vfs_readdir", "vfs_closedir",
-    "vfs_file_source", "vfs_mount_state", "vfs_mount_table",
-    "vfs_mount_count", "vfs_mount_runtime", "vfs_mount_config",
+    "vfs_file_source", "vfs_mount_state",
+    "vfs_mount_table", "vfs_mount_count", "vfs_mount_runtime",
     "vfs_workspace", "vfs_ws_enter", "vfs_ws_leave", "vfs_stat_norm",
     "VFS_O_EXEC", "VFS_MOUNT_SYSTEM",
 )
@@ -583,28 +579,41 @@ MODULE_PROBE_FLAGS = ("-mz80", "-c", "--nostdinc", "--Werror",
                       "-I", "drivers/sio")
 
 _MODULE_PROBE_SOURCE = """\
-#include "zephyros/driver.h"
-#include "zephyros/device.h"
+#include "zephyros/service.h"
 #include "zephyros/irq.h"
 #include "zephyros/ioc.h"
-#include "zephyros/hid.h"
-#include "zephyros/video.h"
-#include "zephyros/block.h"
+#include "zephyros/ioc_protocol.h"
+#include "zephyros/ipc.h"
 #include "zephyr80/hardware.h"
 
-static const struct zdevice_desc probe_desc = {
-\tZDEV_HID, ZCAP_HID_TEXT, "probe", (const struct zchar_ops *)0,
-\t(const void *)0, (void *)0
-};
+/* A representative service image: it reads the flat plan, answers a
+ * protocol frame, and its init takes the boot bundle the loader passes
+ * in HL. */
+static const struct ipc_service_api *probe_api;
 
-int probe_init(const struct zdriver_api *api)
+int16_t probe_dispatch(uint8_t handle, uint8_t op,
+		       struct zos_ipc_frame *frame)
 {
-\tzdev_handle_t handle;
-\tif (api->device_register(&probe_desc, &handle) != ZDRIVER_OK) {
-\t\treturn ZDRIVER_FAIL;
-\t}
-\treturn api->device_find(ZDEV_HID, ZCAP_HID_TEXT, 0u) == handle ?
-\t\tZDRIVER_OK : ZDRIVER_FAIL;
+	(void)handle;
+	frame->status = 0;
+	return (int16_t)(frame->op + (uint8_t)op);
+}
+
+void probe_init(const struct ipc_service_boot *boot)
+{
+	probe_api = boot->api;
+	(void)probe_api->irq_claim(1u, 0x6000u, 0u);
+	probe_api->console_putc((uint8_t)ZIOC_MAX_DATA);
+}
+
+uint8_t probe_plan(const struct zmod_header *header)
+{
+	return header->segment_count;
+}
+
+uint8_t probe_frame(const struct zioc_frame *frame)
+{
+	return frame->data[IOC_OFF_HID_INPUT_MAX];
 }
 """
 
@@ -650,6 +659,18 @@ class TestOwnerLayout(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(ROOT, rel)),
                             "missing owner file %s" % rel)
 
+    def test_retired_owners_are_gone(self):
+        # Package 42c: the module/arena form is deleted outright, so no
+        # source, header or fixture of it may come back.
+        for rel in ("kernel/module", "kernel/module/arena.asm",
+                    "tests/modules", "include/zephyros/module.h",
+                    "include/zephyros/driver.h", "include/zephyros/device.h",
+                    "include/zephyros/vfs.h", "include/zephyros/hid.h",
+                    "include/zephyros/video.h", "include/zephyros/block.h",
+                    "tools/mountgen.py", "config/mounts.json"):
+            self.assertFalse(os.path.exists(os.path.join(ROOT, rel)),
+                             "%s must stay deleted (work package 42c)" % rel)
+
     def test_owner_directories_exist(self):
         for rel in REQUIRED_DIRS:
             self.assertTrue(os.path.isdir(os.path.join(ROOT, rel)),
@@ -691,7 +712,7 @@ class TestProductionTestSeparation(unittest.TestCase):
         for path in _walk("drivers"):
             self.assertFalse(
                 path.endswith(".json"),
-                "ZMOD manifest belongs under modules/ or tests/modules/: %s"
+                "a service manifest belongs under services/manifests/: %s"
                 % os.path.relpath(path, ROOT))
 
     def test_no_driver_private_sdcc_glue(self):
@@ -769,8 +790,8 @@ class TestProductionTestSeparation(unittest.TestCase):
                         % (os.path.relpath(path, ROOT), token))
 
     def test_production_headers_declare_no_test_runners(self):
-        for name in ("irq.h", "module.h", "driver.h", "device.h",
-                     "platform.h", "kernel.h"):
+        for name in ("irq.h", "platform.h", "kernel.h", "ipc.h",
+                     "service.h", "process.h", "romfs.h"):
             body = _code_only(os.path.join(ROOT, "include", "zephyros", name))
             self.assertNotIn("zos_run_", body,
                              "%s declares a target-test runner" % name)
@@ -843,14 +864,15 @@ class TestCrossDriverIncludeBoundary(unittest.TestCase):
             "drivers/hid/hid.c", allowed, owners), [])
 
 
-class TestModuleFacingHeaderBoundary(unittest.TestCase):
-    """A module author reads the ABI types and callbacks in driver.h and
-    its class headers, but not kernel registry transactions, IRQ-executive
-    lifecycle controls, platform hooks, or raw memory primitives (work
-    package 22)."""
+class TestServiceFacingHeaderBoundary(unittest.TestCase):
+    """A service image reads the M10 service ABI, the client-visible
+    protocol vocabulary and the board constants, but not kernel registry
+    transactions, executive lifecycle controls, platform hooks, or raw
+    memory primitives (work package 22; the M8 module form that defined
+    this boundary is retired, work package 42c)."""
 
-    def test_module_facing_closure_has_no_kernel_only_declarations(self):
-        closure = _header_closure(MODULE_FACING_HEADERS)
+    def test_service_facing_closure_has_no_kernel_only_declarations(self):
+        closure = _header_closure(SERVICE_FACING_HEADERS)
         offenders = []
         for rel in closure:
             text = _strip_comments(rel, _read(os.path.join(ROOT, rel)))
@@ -859,25 +881,37 @@ class TestModuleFacingHeaderBoundary(unittest.TestCase):
                     offenders.append("%s declares %s" % (rel, ident))
         self.assertEqual(
             offenders, [],
-            "kernel-only declarations leak into the module-facing header "
+            "kernel-only declarations leak into the service-facing header "
             "closure:\n%s" % "\n".join(offenders))
 
-    def test_module_facing_closure_keeps_the_abi_surface(self):
-        headers = _header_closure(MODULE_FACING_HEADERS)
+    def test_service_facing_closure_keeps_the_abi_surface(self):
+        headers = _header_closure(SERVICE_FACING_HEADERS)
         text = "".join(_read(os.path.join(ROOT, rel)) for rel in headers)
-        # Package 42b: a resident service builds against the M10 service
-        # ABI (abi/zos + include/zephyros), not the retired M8 module
-        # (driver.h) ABI.
-        for needle in ("struct ipc_service_api", "struct zos_ipc_frame",
-                       "struct zos_ns_entry", "struct zos_ipc_call_args",
+        # A resident service builds against the M10 service ABI
+        # (abi/zos + include/zephyros): the flat plan, the call frame, the
+        # boot bundle and the client-visible namespace vocabulary.
+        for needle in ("struct zmod_header", "struct zmod_segment",
+                       "struct zmod_endpoint", "struct zmod_dependency",
+                       "struct zmod_publication", "struct ipc_service_api",
+                       "struct ipc_service_boot", "struct zos_ipc_frame",
+                       "struct zos_ipc_call_args", "struct zos_ns_entry",
                        "ZOS_TYPE_FILE", "ZOS_TYPE_FS", "ZOS_CLASS_FILE",
                        "struct zfs_stat", "ZFILE_OP_READ", "ZFS_OP_MKDIR",
                        "struct zioc_frame", "irq_source_t",
-                       "irq_handler_t", "ZDEV_HID", "ZDEV_BLOCK"):
+                       "irq_handler_t"):
             self.assertIn(needle, text)
+        # The device model is gone: nothing may bring its vocabulary back.
+        # The retired device model: the identifiers are assembled here
+        # so this file does not itself carry the tokens the grep gate
+        # keeps out of the tree.
+        retired_tokens = ("device" + "_register", "zdevice" + "_desc",
+                          "zchar" + "_ops", "ZDEV" + "_",
+                          "zdriver" + "_api")
+        for retired in retired_tokens:
+            self.assertNotIn(retired, text)
 
     @unittest.skipUnless(shutil.which("sdcc"), "sdcc not available")
-    def test_representative_module_compiles_against_module_headers_only(self):
+    def test_representative_service_compiles_against_service_headers_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = os.path.join(tmp, "probe.c")
             with open(source, "w") as handle:
@@ -889,15 +923,15 @@ class TestModuleFacingHeaderBoundary(unittest.TestCase):
                 text=True)
             self.assertEqual(
                 result.returncode, 0,
-                "a representative module failed to compile against the "
-                "module-facing headers alone:\n%s" % result.stdout)
+                "a representative service image failed to compile against "
+                "the service-facing headers alone:\n%s" % result.stdout)
             # A kernel-only reference must not resolve against these
             # headers alone; this is the negative half of the boundary.
             leak = os.path.join(tmp, "leak.c")
             with open(leak, "w") as handle:
-                handle.write('#include "zephyros/device.h"\n'
+                handle.write('#include "zephyros/service.h"\n'
                              "int probe_leak(void) {\n"
-                             "\tdevice_registry_rollback(0u);\n"
+                             "\tvfs_mount_table[0] = 0;\n"
                              "\treturn 0;\n}\n")
             result = subprocess.run(
                 ["sdcc"] + list(MODULE_PROBE_FLAGS) +
@@ -906,12 +940,12 @@ class TestModuleFacingHeaderBoundary(unittest.TestCase):
                 text=True)
             self.assertNotEqual(
                 result.returncode, 0,
-                "a kernel-only symbol resolved from the module-facing "
+                "a kernel-only symbol resolved from the service-facing "
                 "headers:\n%s" % result.stdout)
 
 
 class TestNoResidentBlockDriver(unittest.TestCase):
-    """M9 defines the `ZDEV_BLOCK` class but keeps no resident block driver
+    """M9 defined a block class but keeps no resident block driver
     (architecture 32.15/32.39: a feature with no consumer is not made
     resident, for example `sd-ioc.zmod`).  This keeps the deferred-driver
     decision mechanical instead of a convention."""
@@ -932,11 +966,11 @@ class TestNoResidentBlockDriver(unittest.TestCase):
     def test_no_driver_registers_a_block_device(self):
         offenders = []
         for path in _walk("drivers", SOURCE_SUFFIXES):
-            if "ZDEV_BLOCK" in _code_only(path):
+            if "ZDEV" + "_BLOCK" in _code_only(path):
                 offenders.append(os.path.relpath(path, ROOT))
         self.assertEqual(
             offenders, [],
-            "a driver registers the ZDEV_BLOCK class in M9: %s"
+            "a driver registers a block class in M9: %s"
             % ", ".join(offenders))
 
     def test_no_production_block_module_manifest(self):

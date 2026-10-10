@@ -47,10 +47,10 @@ int sio0b_putc(void *state, char ch)
 	(void)state;
 	if (!sio0b_wait_tx_ready()) {
 		++sio0b_state.tx_timeouts;
-		return ZDEV_ETIMEDOUT;
+		return (-ZOS_ETIMEDOUT);
 	}
 	sio0b_write_data((uint8_t)ch);
-	return ZDEV_OK;
+	return 0;
 }
 
 int sio0b_write(void *state, const char *buf, uint16_t len)
@@ -58,8 +58,8 @@ int sio0b_write(void *state, const char *buf, uint16_t len)
 	uint16_t n;
 
 	for (n = 0; n < len; ++n) {
-		if (sio0b_putc(state, buf[n]) != ZDEV_OK) {
-			return n == 0 ? ZDEV_ETIMEDOUT : (int)n;
+		if (sio0b_putc(state, buf[n]) != 0) {
+			return n == 0 ? (-ZOS_ETIMEDOUT) : (int)n;
 		}
 	}
 	return (int)len;
@@ -75,7 +75,7 @@ int sio0b_getc(void *state)
 {
 	(void)state;
 	if ((sio0b_status() & ZOS_SIO_RR0_RX_AVAILABLE) == 0) {
-		return ZDEV_EAGAIN;
+		return (-ZOS_EAGAIN);
 	}
 	++sio0b_state.rx_reads;
 	return (int)sio0b_read_data();

@@ -200,10 +200,10 @@ int hid_read_text(void *vstate, uint8_t *dst, uint16_t max_len)
 	uint16_t done = 0u;
 
 	if (state == (struct zhid_state *)0) {
-		return ZDEV_ENODEV;
+		return (-ZOS_ENODEV);
 	}
 	if (dst == (uint8_t *)0 || max_len == 0u) {
-		return ZDEV_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	if (state->count == 0u) {
 		(void)hid_service(state);
@@ -224,7 +224,7 @@ int hid_poll(void *vstate)
 	struct zhid_state *state = (struct zhid_state *)vstate;
 
 	if (state == (struct zhid_state *)0) {
-		return ZDEV_ENODEV;
+		return (-ZOS_ENODEV);
 	}
 	return hid_service(state) != 0u ? 1 : 0;
 }
@@ -236,13 +236,13 @@ int hid_getc(void *vstate)
 	uint8_t byte;
 
 	if (state == (struct zhid_state *)0) {
-		return ZDEV_ENODEV;
+		return (-ZOS_ENODEV);
 	}
 	if (state->count == 0u) {
 		(void)hid_service(state);
 	}
 	if (state->count == 0u) {
-		return ZDEV_EAGAIN;
+		return (-ZOS_EAGAIN);
 	}
 	tail = state->tail;
 	byte = state->ring[tail];

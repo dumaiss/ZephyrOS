@@ -1,8 +1,5 @@
 {
   "name": "ioc",
-  "type": "service",
-  "abi": 3,
-  "flags": 0,
   "objects": [
     "ioc.rel",
     "ioc_boot.rel",

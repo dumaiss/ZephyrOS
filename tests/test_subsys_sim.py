@@ -4,16 +4,14 @@ simulator.
 
 Coverage (all executing the real linked bytes, on the current boot path):
 
-* the machine boots the production path -- derived arena, VFS mounted
-  from the ROMFS recovery store, the SIO fallback module loaded through
-  `module_load_source` -- and the console service binds before the
+* the machine boots the production path -- `vfs_init()`, the SIO and
+  console service images placed from the ROMFS recovery store by
+  `service_load_all` -- and the console service binds before the
   acceptance hooks run;
 * the early hook runs the syscall gate and the interrupt executive
   selftests: `syscall selftest: OK` and `irq selftest: OK`;
-* the late hook runs the ROMFS-reader, process/ZEX and loader
-  selftests: `romfs selftest: OK`, `process selftest: OK`,
-  `loader selftest: OK`, with the loader's arena-exhaustion progress
-  line;
+* the late hook runs the ROMFS-reader and process/ZEX selftests:
+  `romfs selftest: OK` and `process selftest: OK`;
 * every target result word is zero (no FAIL marker): the assembly-owned
   status words live in the common window, the C-owned ones in bank-7
   data;
@@ -55,8 +53,6 @@ SYSCALL_OK = "syscall selftest: OK"
 IRQ_OK = "irq selftest: OK"
 ROMFS_OK = "romfs selftest: OK"
 PROCESS_OK = "process selftest: OK"
-LOADER_OK = "loader selftest: OK"
-LOADER_PROGRESS = "loader selftest: "
 MONITOR_EXIT = "monitor: exit status 0x"
 MONITOR_BANNER = "ZephyrOS native monitor"
 MONITOR_PROMPT = "Z80> "
@@ -71,7 +67,6 @@ RESULT_SYMBOLS = (
     "_zos_irq_test_result",       # interrupt executive (common window)
     "_romfs_selftest_result",     # ROMFS reader (bank-7 data)
     "_process_selftest_result",   # process/ZEX lifecycle (bank-7 data)
-    "_loader_selftest_result",    # loader (bank-7 data)
 )
 
 
@@ -180,14 +175,13 @@ class TestSubsystemBoot(SubsystemSimBase):
         base.run_to(z, CONSOLE_BOUND)
         base.run_to(z, ROMFS_OK)
         base.run_to(z, PROCESS_OK)
-        base.run_to(z, LOADER_OK)
         cls.boot_base = base
         cls.z = z
         cls.out = bytes(z.sio_tx)
 
     def test_acceptance_groups_pass_on_the_current_boot_path(self):
         for marker in (SYSCALL_OK, IRQ_OK, CONSOLE_BOUND, ROMFS_OK,
-                       PROCESS_OK, LOADER_OK):
+                       PROCESS_OK):
             self.assertIn(marker.encode("ascii"), self.out)
         self.assertNotIn(FAIL_MARKER, self.out)
 
@@ -199,10 +193,6 @@ class TestSubsystemBoot(SubsystemSimBase):
             self.assertEqual(value, 0x00,
                              "%s reports failure 0x%02X"
                              % (symbol, value))
-
-    def test_loader_exhausts_the_derived_arena(self):
-        self.assertIn(b"fillers to exhaustion",
-                      self.out.replace(b"\r\n", b"\n"))
 
     def test_monitor_session_runs_and_relaunches_after_exit(self):
         start = len(self.z.sio_tx)
@@ -218,18 +208,11 @@ class TestSubsystemBoot(SubsystemSimBase):
 
 class TestSubsystemManifest(SubsystemSimBase):
     def test_manifest_carries_the_current_boot_set_and_fixtures(self):
-        for name in ("sio.zmod", "monitor.zex", "crosspage.bin",
-                     "m4probe.zmod", "m4fail.zmod", "m4filler.zmod",
-                     "badmagic.zmod", "truncated.zmod",
+        for name in ("sio.zmod", "console.zmod", "services.man",
+                     "monitor.zex", "crosspage.bin",
                      "zextest.zex", "zex-return.zex", "zex-truncated.zex",
                      "zex-wrong-type.dat"):
             self.assertIn(name, self.entries)
-
-    def test_malformed_fixtures_are_packed_but_invalid(self):
-        bad = self.entries["badmagic.zmod"]
-        short = self.entries["truncated.zmod"]
-        self.assertEqual(short["size"], 0x1C)
-        self.assertGreater(bad["size"], 0x1C)
 
 
 if __name__ == "__main__":

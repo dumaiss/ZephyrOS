@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Host-side tests for the host-assembled driver images (work package 41b).
+"""Host-side tests for the host-assembled service images (packages 41b-42c).
 
 Pure tests build synthetic SDCC .rel text, pack service containers with
 `tools/zmodpack.py` and check the host assembly: the linked segment bases,
 the relocation arithmetic the packer applies, the host-assigned endpoint
 numbers, the dependency resolution (including the optional and missing
-cases), the load-order validation and the tier plan.
+cases), the load-order validation and the tier plan.  The flat container
+carries no relocation records or version field (work package 42c), so the
+tests that read them are gone with them.
 
 Run with: `python3 -m unittest tests.test_service_images`.
 """
@@ -146,8 +148,6 @@ class TestServiceFormat(unittest.TestCase):
             "depends": [{"class": 5, "instance": 0, "optional": 1}],
         })
         info = zmodpack.parse_container(container)
-        self.assertEqual(info["module_type"], "service")
-        self.assertEqual(info["service_abi"], 3)
         self.assertEqual([segment["role"] for segment in info["segments"]],
                          ["hot", "boot", "io"])
         hot, boot, io = info["segments"]
@@ -179,21 +179,6 @@ class TestServiceFormat(unittest.TestCase):
         # The one declared dependency is optional and nothing exports it.
         self.assertEqual(info["dependencies"],
                          [{"class": 5, "instance": 0, "number": 0}])
-        # Host-linked: the container carries no relocation records.
-        self.assertEqual(info["reloc_count"], 0)
-        self.assertEqual(info["relocs"], [])
-
-    def test_a_container_rejects_relocation_records(self):
-        container = bytearray(pack_service(self.tmp.name, "norel", {
-            "hot.rel": ([("_CODE", 2)], [("_norel_init", 0, 0)],
-                        [(0, 0, [0xC9, 0x00], [])]),
-        }, {
-            "init": "_norel_init",
-            "segments": [{"role": "hot", "image_areas": ["_CODE"]}],
-        }))
-        container[0x12] = 0x30  # reloc_offset no longer zero
-        with self.assertRaisesRegex(zmodpack.ZmodError, "no relocation"):
-            zmodpack.parse_container(bytes(container), "reloc.zmod")
 
     def test_every_segment_role_has_exactly_one_segment(self):
         with self.assertRaises(zmodpack.ZmodError) as caught:

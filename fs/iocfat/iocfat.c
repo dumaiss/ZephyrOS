@@ -37,7 +37,7 @@
  * receives the caller's entry array as the call descriptor.  A card that is
  * absent or unreadable does not fail the driver's init (a required driver
  * that cannot initialize is a boot failure, and `/SYSTEM` must stay
- * usable): every operation then answers -ZOS_ENODEV.
+ * usable): every operation then answers (-ZOS_ENODEV).
  *
  * All protocol constants are private to this file.
  */
@@ -301,7 +301,7 @@ static int iocfat_exchange(uint8_t type, uint8_t length)
 	/* Own-array bound: `iocfat_request.data` is indexed with the request
 	 * length this driver passes (never above the frame field). */
 	if (length > (uint8_t)ZIOC_PROTOCOL_REQUEST_MAX) {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	iocfat_frame.op = ZIOC_OP_COMMAND;
 	iocfat_frame.flags = 0u;
@@ -312,7 +312,7 @@ static int iocfat_exchange(uint8_t type, uint8_t length)
 		    (uint16_t)length);
 	if (iocfat_api->call(iocfat_ioc, ZIOC_OP_COMMAND,
 			     &iocfat_frame) != 0) {
-		return -ZOS_EIO;
+		return (-ZOS_EIO);
 	}
 	/* The reply frame lives in the service's staged slot: a plain bank-6
 	 * access, because only bank 6 is mapped while this driver runs. */
@@ -323,7 +323,7 @@ static int iocfat_exchange(uint8_t type, uint8_t length)
 	iocfat_reply.length = src[2];
 	/* Own-array bound: the FS2 DATA field is 26 bytes. */
 	if (iocfat_reply.length > (uint8_t)ZIOC_PROTOCOL_FRAME_DATA) {
-		return -ZOS_EIO;
+		return (-ZOS_EIO);
 	}
 	/* Own-array bound: the reply length is the field checked above, and
 	 * the FS2 DATA field is 26 bytes. */
@@ -331,10 +331,10 @@ static int iocfat_exchange(uint8_t type, uint8_t length)
 	iocfat_frame.arg0 = iocfat_reply.type;
 	iocfat_frame.arg1 = iocfat_reply.length;
 	if (iocfat_reply.type == FS2_RSP_UNKNOWN_CMD) {
-		return -ZOS_ENOTSUP;
+		return (-ZOS_ENOTSUP);
 	}
 	if (iocfat_reply.type != (uint8_t)(type | 0x80u)) {
-		return -ZOS_EIO;
+		return (-ZOS_EIO);
 	}
 	return 0;
 }
@@ -365,12 +365,12 @@ static int iocfat_map_status(uint8_t status, uint8_t no_handle_emfile)
 		return 0;
 	}
 	if (status == FS2_STATUS_NO_HANDLE) {
-		return (no_handle_emfile != 0u) ? -ZOS_EMFILE : -ZOS_ESTALE;
+		return (no_handle_emfile != 0u) ? (-ZOS_EMFILE) : (-ZOS_ESTALE);
 	}
 	if (status >= FS2_STATUS_NOT_FOUND && status <= FS2_STATUS_IO) {
 		return -(int)table[status - FS2_STATUS_NOT_FOUND];
 	}
-	return -ZOS_EIO;
+	return (-ZOS_EIO);
 }
 
 /* --- cache ------------------------------------------------------------ */
@@ -500,28 +500,28 @@ static int iocfat_walk(const char *path, uint8_t index, uint8_t *out,
 	uint8_t n = 0;
 
 	if (path == (const char *)0 || path[0] != '/') {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	scan = path + 1;
 	while (scan[0] != '\0') {
 		uint16_t length;
 
 		if (n >= (uint8_t)IOCFAT_COMPONENT_MAX) {
-			return -ZOS_EINVAL;
+			return (-ZOS_EINVAL);
 		}
 		length = iocfat_pack(scan, (n == index) ? out : (uint8_t *)0);
 		if (length == 0xFFFFu) {
-			return -ZOS_EINVAL;
+			return (-ZOS_EINVAL);
 		}
 		++n;
 		scan += length;
 		if (scan[0] == '/') {
 			if (scan[1] == '\0') {
-				return -ZOS_EINVAL; /* no trailing slash */
+				return (-ZOS_EINVAL); /* no trailing slash */
 			}
 			++scan;
 		} else if (scan[0] != '\0') {
-			return -ZOS_EINVAL;
+			return (-ZOS_EINVAL);
 		}
 	}
 	*count = n;
@@ -608,7 +608,7 @@ static int iocfat_file_generation(struct iocfat_file *file)
 {
 	if (file->generation != iocfat.generation) {
 		iocfat_cache_invalidate_all();
-		return -ZOS_ESTALE;
+		return (-ZOS_ESTALE);
 	}
 	return 0;
 }
@@ -641,13 +641,13 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 	bulk = iocfat_addr(&iocfat_frame.payload[3]);
 	if (iocfat_reply.status == FS2_STATUS_STALE) {
 		iocfat_cache_invalidate_all();
-		return -ZOS_ESTALE;
+		return (-ZOS_ESTALE);
 	}
 	if (iocfat_reply.status != FS2_STATUS_OK) {
 		return iocfat_map_status(iocfat_reply.status, 0u);
 	}
 	if (iocfat_reply.length != FS2_READY_LEN) {
-		return -ZOS_EIO;
+		return (-ZOS_EIO);
 	}
 	ready_len = iocfat_get16(&iocfat_reply.data[FS2_OFF_READY_LEN]);
 	if (command == FS2_CMD_READ) {
@@ -664,7 +664,7 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 			    FS2_DIR_MCU_TO_Z80 ||
 		    iocfat_get32(&iocfat_reply.data[FS2_OFF_READY_OFF]) !=
 			    offset) {
-			return -ZOS_EIO;
+			return (-ZOS_EIO);
 		}
 		iocfat_frame.op = ZIOC_OP_BULK_READ;
 		iocfat_frame.flags = 0u;
@@ -673,7 +673,7 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 		iocfat_frame.arg1 = ready_len;
 		if (iocfat_api->call(iocfat_ioc, ZIOC_OP_BULK_READ,
 				     &iocfat_frame) != (int16_t)ready_len) {
-			return -ZOS_EIO;
+			return (-ZOS_EIO);
 		}
 		bulk = iocfat_addr(iocfat_frame.payload);
 		src = (const uint8_t *)bulk;
@@ -687,7 +687,7 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 	    iocfat_reply.data[FS2_OFF_READY_ID] == 0u ||
 	    iocfat_reply.data[FS2_OFF_READY_DIR] != FS2_DIR_Z80_TO_MCU ||
 	    iocfat_get32(&iocfat_reply.data[FS2_OFF_READY_OFF]) != offset) {
-		return -ZOS_EIO;
+		return (-ZOS_EIO);
 	}
 	/* The staged form: the service reads what this driver placed in its
 	 * bulk buffer, which the COMMAND reply named. */
@@ -706,16 +706,16 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 	iocfat_frame.arg1 = length;
 	if (iocfat_api->call(iocfat_ioc, ZIOC_OP_BULK_WRITE,
 			     &iocfat_frame) != (int16_t)length) {
-		return -ZOS_EIO;
+		return (-ZOS_EIO);
 	}
 	result = iocfat_exchange(FS2_CMD_XFER_STATUS, 0u);
 	if (result != 0) {
-		return -ZOS_EIO;
+		return (-ZOS_EIO);
 	}
 	if (iocfat_reply.type != FS2_RSP_XFER_STATUS ||
 	    iocfat_reply.length < FS2_DONE_MIN_DATA ||
 	    iocfat_reply.data[FS2_OFF_DONE_STATUS] != FS2_STATUS_OK) {
-		return -ZOS_EIO;
+		return (-ZOS_EIO);
 	}
 	return (int)length;
 }
@@ -776,14 +776,14 @@ static int iocfat_open_send(const char *path, uint8_t count, uint8_t entry,
 	}
 	if (iocfat_reply.status == FS2_STATUS_STALE) {
 		iocfat_cache_invalidate_all();
-		return -ZOS_ESTALE;
+		return (-ZOS_ESTALE);
 	}
 	result = iocfat_map_status(iocfat_reply.status, 1u);
 	if (result != 0) {
 		return result;
 	}
 	if (iocfat_reply.length != FS2_OPEN_REPLY_LEN) {
-		return -ZOS_EIO;
+		return (-ZOS_EIO);
 	}
 	token = iocfat_get16(&iocfat_reply.data[FS2_OFF_OPEN_TOKEN]);
 	file_size = iocfat_get32(&iocfat_reply.data[FS2_OFF_OPEN_SIZE]);
@@ -835,7 +835,7 @@ static int iocfat_file_open(const char *path, uint16_t flags, uint8_t *object,
 		return result;
 	}
 	if (count == 0u) {
-		return -ZOS_EISDIR; /* the root is a directory */
+		return (-ZOS_EISDIR); /* the root is a directory */
 	}
 	/* Own-array bound: the table has 16 entries and the index is masked. */
 	{
@@ -844,19 +844,19 @@ static int iocfat_file_open(const char *path, uint16_t flags, uint8_t *object,
 		entry = decision[(uint8_t)((flags >> 1) & 0x0Fu)];
 	}
 	if (entry == FS2_OPENF_INVALID) {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	read_only = (uint8_t)((entry & FS2_OPENF_RO) != 0u ? 1u : 0u);
 	if (read_only == 0u && iocfat.read_only != 0u) {
-		return -ZOS_EROFS;
+		return (-ZOS_EROFS);
 	}
 	id = iocfat_file_alloc();
 	if (id == 0u) {
-		return -ZOS_EMFILE;
+		return (-ZOS_EMFILE);
 	}
 	slot = iocfat_file_get(id);
 	result = iocfat_open_send(path, count, entry, &token, &file_size);
-	if (result == -ZOS_ENOENT && (entry & FS2_OPENF_FALLBACK) != 0u) {
+	if (result == (-ZOS_ENOENT) && (entry & FS2_OPENF_FALLBACK) != 0u) {
 		result = iocfat_open_send(path, count, 0x01u, &token,
 					  &file_size);
 	}
@@ -880,12 +880,12 @@ static int iocfat_file_close(uint8_t object)
 	int result = 0;
 
 	if (handle == (struct iocfat_file *)0) {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	iocfat_cache_invalidate_file(handle);
 	if (iocfat_file_generation(handle) != 0) {
 		handle->used = 0u;
-		return -ZOS_ESTALE;
+		return (-ZOS_ESTALE);
 	}
 	/* close is SYNC then CLOSE. */
 	iocfat_put16(&iocfat_request.data[FS2_OFF_TOKEN], handle->token);
@@ -909,7 +909,7 @@ static int iocfat_file_read(struct iocfat_file *handle, uint16_t len)
 	uint16_t remaining = len;
 
 	if (iocfat_file_generation(handle) != 0) {
-		return -ZOS_ESTALE;
+		return (-ZOS_ESTALE);
 	}
 	while (remaining != 0u) {
 		uint32_t block = offset & ~((uint32_t)IOCFAT_BLOCK_SIZE - 1uL);
@@ -956,10 +956,10 @@ static int iocfat_file_write(struct iocfat_file *handle, uint16_t chunk)
 	int result;
 
 	if (iocfat_file_generation(handle) != 0) {
-		return -ZOS_ESTALE;
+		return (-ZOS_ESTALE);
 	}
 	if (iocfat.read_only != 0u || (handle->flags & IOCFAT_H_WRITE) == 0u) {
-		return -ZOS_EROFS;
+		return (-ZOS_EROFS);
 	}
 	result = iocfat_transfer(FS2_CMD_WRITE, handle->token,
 				 handle->offset, chunk, iocfat_batch);
@@ -978,7 +978,7 @@ static int iocfat_file_sync(struct iocfat_file *handle)
 	int result;
 
 	if (iocfat_file_generation(handle) != 0) {
-		return -ZOS_ESTALE;
+		return (-ZOS_ESTALE);
 	}
 	iocfat_put16(&iocfat_request.data[FS2_OFF_TOKEN], handle->token);
 	result = iocfat_exchange(FS2_CMD_SYNC, 2u);
@@ -1008,7 +1008,7 @@ static int iocfat_stat_path(const char *path, struct zfs_stat *out)
 			return result;
 		}
 		if (iocfat_reply.length != FS2_STAT_REPLY_LEN) {
-			return -ZOS_EIO;
+			return (-ZOS_EIO);
 		}
 		if ((iocfat_reply.data[FS2_OFF_STAT_ATTR] & FS2_ATTR_DIR) == 0u) {
 			out->type = ZFS_TYPE_FILE;
@@ -1034,7 +1034,7 @@ static int iocfat_dir_open(const char *path, uint8_t count,
 	int result;
 
 	if (dir == (struct iocfat_dir *)0) {
-		return -ZOS_EMFILE;
+		return (-ZOS_EMFILE);
 	}
 	result = iocfat_resolve(path, count, 0u);
 	if (result != 0) {
@@ -1049,7 +1049,7 @@ static int iocfat_dir_open(const char *path, uint8_t count,
 	if (iocfat_reply.status == FS2_STATUS_STALE) {
 		dir->used = 0u;
 		iocfat_cache_invalidate_all();
-		return -ZOS_ESTALE;
+		return (-ZOS_ESTALE);
 	}
 	result = iocfat_map_status(iocfat_reply.status, 1u);
 	if (result != 0) {
@@ -1058,7 +1058,7 @@ static int iocfat_dir_open(const char *path, uint8_t count,
 	}
 	if (iocfat_reply.length != FS2_DIR_REPLY_LEN) {
 		dir->used = 0u;
-		return -ZOS_EIO;
+		return (-ZOS_EIO);
 	}
 	dir->token = iocfat_get16(&iocfat_reply.data[0]);
 	dir->generation = iocfat.generation;
@@ -1091,7 +1091,7 @@ static int iocfat_dir_read(struct iocfat_dir *dir, struct zfs_dirent *out)
 
 	if (dir->generation != iocfat.generation) {
 		iocfat_cache_invalidate_all();
-		return -ZOS_ESTALE;
+		return (-ZOS_ESTALE);
 	}
 	iocfat_put16(&iocfat_request.data[FS2_OFF_TOKEN], dir->token);
 	result = iocfat_exchange(FS2_CMD_READDIR, 2u);
@@ -1103,13 +1103,13 @@ static int iocfat_dir_read(struct iocfat_dir *dir, struct zfs_dirent *out)
 	}
 	if (iocfat_reply.status == FS2_STATUS_STALE) {
 		iocfat_cache_invalidate_all();
-		return -ZOS_ESTALE;
+		return (-ZOS_ESTALE);
 	}
 	if (iocfat_reply.status != FS2_STATUS_OK) {
 		return iocfat_map_status(iocfat_reply.status, 0u);
 	}
 	if (iocfat_reply.length != FS2_DIRENT_REPLY_LEN) {
-		return -ZOS_EIO;
+		return (-ZOS_EIO);
 	}
 	out->type = ((iocfat_reply.data[FS2_OFF_DIRENT_ATTR] & FS2_ATTR_DIR)
 			     != 0u) ? ZFS_TYPE_DIR : ZFS_TYPE_FILE;
@@ -1122,7 +1122,7 @@ static int iocfat_dir_read(struct iocfat_dir *dir, struct zfs_dirent *out)
 	out->name_length = iocfat_unpack(
 		&iocfat_reply.data[FS2_OFF_DIRENT_NAME], out->name);
 	if (out->name_length < 2u) {
-		return -ZOS_EIO;
+		return (-ZOS_EIO);
 	}
 	return 1;
 }
@@ -1159,7 +1159,7 @@ static int iocfat_leaf_op(const char *path, uint8_t count, uint8_t command)
 	}
 	if (iocfat_reply.status == FS2_STATUS_STALE) {
 		iocfat_cache_invalidate_all();
-		return -ZOS_ESTALE;
+		return (-ZOS_ESTALE);
 	}
 	return iocfat_map_status(iocfat_reply.status, 0u);
 }
@@ -1170,14 +1170,14 @@ static int iocfat_mkdir_path(const char *path)
 	int result;
 
 	if (iocfat.read_only != 0u) {
-		return -ZOS_EROFS;
+		return (-ZOS_EROFS);
 	}
 	result = iocfat_walk(path, 0xFFu, (uint8_t *)0, &count);
 	if (result != 0) {
 		return result;
 	}
 	if (count == 0u) {
-		return -ZOS_EEXIST;
+		return (-ZOS_EEXIST);
 	}
 	return iocfat_leaf_op(path, count, FS2_CMD_MKDIR);
 }
@@ -1188,14 +1188,14 @@ static int iocfat_unlink_path(const char *path)
 	int result;
 
 	if (iocfat.read_only != 0u) {
-		return -ZOS_EROFS;
+		return (-ZOS_EROFS);
 	}
 	result = iocfat_walk(path, 0xFFu, (uint8_t *)0, &count);
 	if (result != 0) {
 		return result;
 	}
 	if (count == 0u) {
-		return -ZOS_EBUSY;
+		return (-ZOS_EBUSY);
 	}
 	result = iocfat_leaf_op(path, count, FS2_CMD_UNLINK);
 	if (result == 0) {
@@ -1223,7 +1223,7 @@ static int iocfat_dir_is_empty(const char *path, uint8_t count)
 	if (result < 0) {
 		return result;
 	}
-	return (result == 1) ? -ZOS_ENOTEMPTY : 0;
+	return (result == 1) ? (-ZOS_ENOTEMPTY) : 0;
 }
 
 static int iocfat_rmdir_path(const char *path)
@@ -1232,17 +1232,17 @@ static int iocfat_rmdir_path(const char *path)
 	int result;
 
 	if (iocfat.read_only != 0u) {
-		return -ZOS_EROFS;
+		return (-ZOS_EROFS);
 	}
 	result = iocfat_walk(path, 0xFFu, (uint8_t *)0, &count);
 	if (result != 0) {
 		return result;
 	}
 	if (count == 0u) {
-		return -ZOS_EBUSY;
+		return (-ZOS_EBUSY);
 	}
 	if (count > (uint8_t)IOCFAT_PUSH_MAX) {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	result = iocfat_dir_is_empty(path, count);
 	if (result != 0) {
@@ -1284,7 +1284,7 @@ static int iocfat_rename_path(const char *oldpath, const char *newpath)
 	int result;
 
 	if (iocfat.read_only != 0u) {
-		return -ZOS_EROFS;
+		return (-ZOS_EROFS);
 	}
 	result = iocfat_walk(oldpath, 0xFFu, (uint8_t *)0, &nold);
 	if (result != 0) {
@@ -1295,10 +1295,10 @@ static int iocfat_rename_path(const char *oldpath, const char *newpath)
 		return result;
 	}
 	if (nold == 0u || nnew == 0u) {
-		return -ZOS_EBUSY;
+		return (-ZOS_EBUSY);
 	}
 	if (!iocfat_same_parent(oldpath, nold, newpath, nnew)) {
-		return -ZOS_EXDEV;
+		return (-ZOS_EXDEV);
 	}
 	result = iocfat_resolve(oldpath, nold, 1u); /* old leaf in iocfat_name */
 	if (result != 0) {
@@ -1332,7 +1332,7 @@ static int16_t iocfat_read_op(struct zos_ipc_frame *frame)
 
 	if (file == (struct iocfat_file *)0 ||
 	    frame->desc == ZOS_IPC_DESC_NONE) {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	while (done < length) {
 		uint16_t chunk = (uint16_t)(length - done);
@@ -1373,7 +1373,7 @@ static int16_t iocfat_write_op(struct zos_ipc_frame *frame)
 
 	if (file == (struct iocfat_file *)0 ||
 	    frame->desc == ZOS_IPC_DESC_NONE) {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	while (done < length) {
 		uint16_t chunk = (uint16_t)(length - done);
@@ -1406,7 +1406,7 @@ static int16_t iocfat_seek_op(struct zos_ipc_frame *frame)
 	int32_t target;
 
 	if (file == (struct iocfat_file *)0) {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	if (frame->arg0 == ZFS_SEEK_SET) {
 		base = 0;
@@ -1415,11 +1415,11 @@ static int16_t iocfat_seek_op(struct zos_ipc_frame *frame)
 	} else if (frame->arg0 == ZFS_SEEK_END) {
 		base = (int32_t)file->size;
 	} else {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	target = base + (int32_t)iocfat_get32(&frame->payload[1]);
 	if (target < 0) {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	file->offset = (uint32_t)target;
 	iocfat_put32(&frame->payload[1], file->offset);
@@ -1435,7 +1435,7 @@ static int16_t iocfat_meta_op(struct zos_ipc_frame *frame)
 	uint8_t i;
 
 	if (file == (struct iocfat_file *)0) {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	st.type = ZFS_TYPE_FILE;
 	st.attributes = 0u;
@@ -1456,7 +1456,7 @@ static int16_t iocfat_sync_op(struct zos_ipc_frame *frame)
 	struct iocfat_file *file = iocfat_file_get(frame->payload[0]);
 
 	if (file == (struct iocfat_file *)0) {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	return (int16_t)iocfat_file_sync(file);
 }
@@ -1525,14 +1525,14 @@ static int16_t iocfat_enum_op(struct zos_ipc_frame *frame)
 
 	if (frame->desc == ZOS_IPC_DESC_NONE ||
 	    out_size < ZOS_NS_ENTRY_SIZE) {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	result = iocfat_walk(path, 0xFFu, (uint8_t *)0, &count);
 	if (result != 0) {
 		return (int16_t)result;
 	}
 	if (count > (uint8_t)IOCFAT_PUSH_MAX) {
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	result = iocfat_dir_open(path, count, &dir);
 	if (result != 0) {
@@ -1591,10 +1591,10 @@ static int16_t iocfat_enum_op(struct zos_ipc_frame *frame)
 int16_t iocfat_dispatch(struct zos_ipc_frame *frame)
 {
 	if (iocfat_ready == 0u) {
-		return -ZOS_ENODEV; /* absent or unreadable card */
+		return (-ZOS_ENODEV); /* absent or unreadable card */
 	}
 	if (frame->flags != 0u) {
-		return -ZOS_EINVAL; /* the operations define no flags */
+		return (-ZOS_EINVAL); /* the operations define no flags */
 	}
 	switch (frame->op) {
 	case ZFILE_OP_READ:
@@ -1629,7 +1629,7 @@ int16_t iocfat_dispatch(struct zos_ipc_frame *frame)
 	case ZFS_OP_ENUM:
 		return iocfat_enum_op(frame);
 	default:
-		return -ZOS_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 }
 
@@ -1686,7 +1686,7 @@ void iocfat_init(const struct ipc_service_boot *boot)
 
 	/* Probe the root: it must be openable on mounted media.  An absent
 	 * or FAT-less card stops here, and every operation then reports
-	 * -ZOS_ENODEV while `/SYSTEM` and the console stay usable. */
+	 * (-ZOS_ENODEV) while `/SYSTEM` and the console stay usable. */
 	{
 		struct iocfat_dir *dir;
 

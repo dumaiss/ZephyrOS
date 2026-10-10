@@ -1,8 +1,5 @@
 {
   "name": "fat",
-  "type": "service",
-  "abi": 3,
-  "flags": 0,
   "objects": [
     "fat.rel",
     "fat_boot.rel",

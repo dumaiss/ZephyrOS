@@ -1,20 +1,31 @@
 # ZephyrOS Device, Driver, and Console Model (through M10 services)
 
-This document describes the implemented device layer.  M10 (work package
-41) replaced the M4-M9 model - drivers as bank-7 ZMOD modules registered
-in a device registry, with a console device and console syscalls on top -
-with **resident services**: the SIO0/B serial, IOC command+bulk
-transport, HID keyboard/text and V9958 video driver stacks each run in
-bank 6 as a service image, the console is a fifth service that composes
-them, and the SDK and the nucleus reach all of it through the versioned
-protocols in `abi/zos/protocol.h` (section 12 below).  The device
-registry survives only for the module loader's acceptance fixtures, the
-console device and the `SYS_CONSOLE_*` syscalls are gone, and the driver
-ABI (`docs/module-format.md`) now serves the one remaining arena module,
-the IOC-FAT provider.  The architectural contract is
-`docs/architecture.md` sections 20-22, 30.2-30.3 and 36.4-36.14; this
-file records what the build actually places where and how it is
-validated.
+This document describes the implemented service layer.  M10 replaced the
+M4-M9 model - drivers as bank-7 ZMOD modules registered in a device
+registry, with a console device and console syscalls on top - with
+**resident services**: the SIO0/B serial, IOC command+bulk transport, HID
+keyboard/text and V9958 video driver stacks each run in bank 6 as a
+service image, the console is a fifth service that composes them, and the
+SDK and the nucleus reach all of it through the versioned protocols in
+`abi/zos/protocol.h` (section 12 below).
+
+Package 42c deletes what M10 left behind: the device registry, the
+device class/capability model and the driver ABI are **gone**, together
+with the `SYS_CONSOLE_*` syscalls and the console device object.  A
+service image declares the namespace names it publishes and the peer
+endpoints it depends on, the host packer resolves both against the build's
+load order, and the nucleus installs the resulting tables - nothing
+registers itself at run time and no driver looks a peer up.  A driver is
+entered only through `struct ipc_service_boot` (section 12), and the last
+arena module, the IOC-FAT provider, became the FS service image that
+publishes `/FS`.  The architectural contract is `docs/architecture.md`
+sections 36.4-36.14; the image format is `docs/module-format.md`.
+
+Sections 1-11 below are the M8/M9 implementation record (the class and
+capability vocabulary, registration semantics, per-driver bindings);
+section 12 is the current contract.  Read the earlier sections for the
+driver internals and hardware behavior they describe, not for the
+interfaces.
 
 M3 introduced the model with every driver statically linked.  M4 replaced
 the *source of driver code*: the SIO driver is packed as a relocatable
@@ -41,199 +52,146 @@ acceptance image (`tests/target/{syscall,irq,romfs,process,loader}/`,
 
 ## 1. Concepts
 
+M10 vocabulary (section 12 is the contract):
+
 ```text
-driver      implementation code for a hardware family
-device      one registered hardware instance
-capability  operations a device can provide
-service     OS-level binding that selects devices for a role
+service image   one bank-6 driver image: segments, its endpoints and the
+                namespace names it publishes (docs/module-format.md)
+endpoint        a (class, instance) protocol entry with a host-assigned
+                number; the way anything is reached
+protocol class  SERIAL=1, VIDEO=2, BLOCK=3, INPUT=4, IOC=5, CONSOLE=6
+                (abi/zos/object.h); the 8-bit type of a publication
+publication     a name below /dev (or the FS root) bound to a serving
+                endpoint: how a name is reached
+dependency      a declared peer endpoint, resolved by the host packer to
+                a number the image receives in its boot bundle
 ```
 
 ```text
-SIO driver (drivers/sio)
+SIO service image (drivers/sio)
     │
-    └── device "sio0.b"
-          ├── class: ZDEV_SERIAL
-          ├── caps:  CHAR_IN | CHAR_OUT | CONSOLE_IN | CONSOLE_OUT
-          └── char:  putc/write/poll/getc (polling)
+    ├── endpoint  SERIAL/0, version 1
+    │     putc, write, poll, getc, read (polling)
+    └── publishes /dev/serial/0
 ```
 
-A device may expose generic character operations (`char_ops`), a
-class-specific interface (`class_ops`, type determined by `class_id`),
-or both.  Capabilities are authoritative: unsupported class operations
-fail predictably rather than being inferred from the device name.  Class
-values are stable: SERIAL=1, VIDEO=2, BLOCK=3 (formerly STORAGE), HID=4
-(formerly INPUT), IOC=5 (formerly TRANSPORT), OTHER=6; capability ranges
-are documented per class (generic 0-3, VIDEO 8-14, HID 16-18, BLOCK
-20-23, IOC 24-27).
+Nothing is registered at run time: reachability is the host's endpoint
+numbering plus the publication table the loader installs.  A client holds
+an endpoint number and calls it; a driver that needs a peer declares a
+dependency and reads the resolved number.  Unsupported operations fail
+predictably with a negative `ZOS_E*`/class error rather than being
+inferred from a name.
 
-`ZDEV_BLOCK` is the generic raw block-device class.  M9 renames the
-never-driven `ZDEV_STORAGE` numeric slot to `ZDEV_BLOCK` (the value 3 is
-preserved, with no alias) and publishes its class contract in
-`include/zephyros/block.h`: the `zblock_info` geometry, the `zblock_ops`
-operations, and the `ZCAP_BLOCK_READ | ZCAP_BLOCK_WRITE |
-ZCAP_BLOCK_FLUSH | ZCAP_BLOCK_REMOVABLE` capability bits in the
-previously unused range 20-23.  M9 ships no resident `ZDEV_BLOCK` driver,
-because nothing consumes one: IOC-FAT talks to `ZDEV_IOC` directly.  The
-first block driver arrives with its first consumer, the first native
-filesystem (`sd-ioc.zmod`, a `ZDEV_BLOCK` driver that consumes
-`ZDEV_IOC`).
+The M3-M9 vocabulary this replaced - a driver registering one or more
+named **devices** in a fixed kernel registry, each carrying a class and a
+capability mask, reached through generic `char_ops` or a class-specific
+operations table, with a separate `SYS_CONSOLE_*` device API - is
+**deleted** (M10, work package 42c).  Class values survive as the
+protocol numbers above; capabilities, handles, registry slots and the
+block class contract do not.  A capability-like preference (console input
+from HID, output from V9958) is now the console service's own composition
+policy over resolved dependencies.
 
-M9's resident filesystem provider is `iocfat.zmod`: loaded last through the
-same VFS-backed loader (driver ABI v3 `fs_register`), it talks to the
-`ZDEV_IOC` class interface only (`FS2` commands `30h-44h`, responses
-`B0h-C4h`) and registers the `iocfat` provider, which the normal mount pass
-attaches at `/` from `ioc.0`.  It owns a one-slot write-through 512-byte
-file-data cache; `drivers/ioc/` was not changed by M9.  The acceptance image
-is `make m9-selftest` (see
+M9's filesystem provider `iocfat.zmod` is the FS service image: it talks
+to the IOC service's protocol only (`FS2` commands `30h-44h`, responses
+`B0h-C4h`), owns a one-slot write-through 512-byte file-data cache, and
+publishes `/FS`; `drivers/ioc/` was never changed for it.  Its acceptance
+image is `make fs-selftest` (see
 [`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md)).
 
-A capability may be provided by different devices (a V9958 provides
-VIDEO + CONSOLE_OUT; an HID device provides HID + CONSOLE_IN), so console
-input and output bind independently.
+Two endpoints may serve the same role (a V9958 video endpoint; an HID
+input endpoint), so the console service composes input and output
+independently.
 
-## 2. Device registry
+## 2. Device registry (deleted in M10)
 
-Fixed-size, heap-free, bank-7 kernel data
-(`kernel/device/registry.c`, `include/zephyros/device.h` for the
-module-facing types, `kernel/device/registry.h` for the kernel-private
-lifecycle and storage):
+> **Deleted (M10, work package 42c).**  The fixed-size, heap-free bank-7
+> device registry, its handles, its registration transaction, its
+> checkpoint/rollback pair and the IRQ claims stored beside it are gone,
+> with `kernel/device/` and the module-facing device header.  Reachability
+> is now the **endpoint table** (numbers the host assigned, installed by
+> the loader before any image runs) and the **publication table** (names
+> below `/dev` bound to those numbers); a client that needs a peer
+> receives the peer's number in its boot bundle, so there is nothing to
+> search, claim or roll back.
 
-- 16 entries; handles are the slot index + 1, issued in the range
-  `1..16`.  Handle `0` is invalid.  Handles are valid for one boot and are
-  not an external ABI.
-- Each entry stores copied metadata (class, 32-bit capabilities, name
+The M8/M9 record, kept because the driver sections below refer to it:
+
+- 16 entries; handles were the slot index + 1, issued in the range
+  `1..16`, with `0` invalid.  Handles were valid for one boot and were
+  never an external ABI.
+- Each entry stored copied metadata (class, 32-bit capability mask, name
   pointer) and the driver-owned `char_ops`/`class_ops`/`state` pointers;
-  the registry never absorbs driver-private state.
-- Registration rejects null descriptors, null/empty names, descriptors
+  the registry never absorbed driver-private state.
+- Registration rejected null descriptors, null/empty names, descriptors
   with neither a character nor a class interface, out-of-range classes,
-  duplicate instance names (`ZDEV_EBUSY`), and registry overflow
-  (`ZDEV_ENOSPC`) without touching existing entries.
-- Discovery is read-only:
-  `device_find(class_id, required_caps, after)` returns the first
-  registered device at or after cursor `after` whose class matches
-  (`ZDEV_CLASS_ANY` = any) and whose 32-bit mask contains every required
-  bit; zero `required_caps` and invalid classes/cursors yield handle `0`.
-  `device_interface(handle, expected_class, &class_ops, &state)` verifies
-  the live handle, the class, and a non-null class interface; it returns
-  `ZDEV_EINVAL` (invalid handle/class/null outputs), `ZDEV_ENODEV`
-  (stale/freed slot), or `ZDEV_ENOTSUP` (class mismatch or no class
-  interface).  No client can mutate the registry.
-- Registry mutation runs with maskable interrupts disabled through the M2
-  executive lock (`irq_arch_lock`/`irq_arch_unlock`).
+  duplicate instance names and registry overflow, without touching
+  existing entries.
+- Discovery was read-only: a class id plus the required capability bits
+  found the first matching live entry, and an interface call verified the
+  live handle, the class and a non-null class interface; invalid handles,
+  stale slots and class mismatches had their own errors.  No client could
+  mutate the registry.
+- Registry mutation ran with maskable interrupts disabled through the M2
+  executive lock.
 
-The module-facing `include/zephyros/device.h` carries only the ABI types,
-the descriptor and registry-entry layouts, the class/capability values,
-and the read-only discovery calls.  The lifecycle
-(`device_registry_init`, `device_get`), the registration transaction
-(`device_registry_checkpoint`/`_rollback`), the owner token, and the
-bank-7 `device_table` storage are declared in the kernel-private
-`kernel/device/registry.h`; a ZMOD module reaches registration only
-through `zdriver_api.device_register`.
+**Registration transaction (also deleted).**  Each driver initialization
+ran inside a checkpoint/rollback pair: a checkpoint snapshotted the
+registration generation, and a failed init removed exactly the entries
+created after that snapshot (wrap-safe comparison), never those of an
+earlier driver.  M10 needs no equivalent: an image's endpoints and
+publications are data the host produced, and the loader either installs
+them all before the image runs or refuses the image and reports a boot
+error (architecture 36.12).
 
-### 2.1 Registration transactions
+---
 
-Each driver initialization is wrapped in a registration transaction:
+## 3. Driver contract (deleted in M10)
 
-```c
-zdev_checkpoint_t checkpoint = device_registry_checkpoint();
-result = driver->init(&api);
-if (result != ZDRIVER_OK)
-        device_registry_rollback(checkpoint);
-```
+> **Deleted (M10, work package 42c).**  `include/zephyros/driver.h`, the
+> driver ABI version word, the kernel import block it carried
+> (registration, discovery, IRQ claim/release and the two ROMFS resource
+> imports) and every class header are gone.  A service image has no
+> import table at all: it receives the nucleus interface table and its
+> resolved dependency numbers through `struct ipc_service_boot`
+> (section 12), and the only peer interaction it can make is a call to an
+> endpoint number.
 
-`device_registry_checkpoint()` snapshots the registration generation;
-`device_registry_rollback()` removes exactly the entries created after
-that snapshot (wrap-safe generation comparison) and returns how many were
-removed.  Entries registered by earlier drivers are never touched.  This
-is the same transaction boundary M4 reuses for module loads.
+The M8/M9 record: the ABI block exposed a registration call, an IRQ
+claim/release pair, two read-only discovery calls (class plus capability
+mask, then interface lookup with a class check), and two bounded ROMFS
+`DATA` resource imports that never handed out reader state.  Its callback
+order and structure layouts were pinned by compile-time assertions and
+host tests, and `driver.h` plus its class headers were the complete
+module-facing compile-time surface (the registry lifecycle, the
+IRQ-executive internals and the raw memory-latch/bank primitives stayed
+kernel-private; `tests/test_source_layout.py` resolves the module-facing
+include closure and compiles a representative module against it).  Init
+convention was `0` on success or `-1` on failure; a driver never touched
+the interrupt flag, the IM2 page, the memory mode, the IRQ stacks or
+`RETI`.
 
-## 3. Driver contract (module API)
+The M4 loader accepted that ABI version in the container header and
+passed the block to the module; the M3 static driver table (`boot_drivers
+[]`, the static init entry, the `_driver_static_*` symbols) was retired
+by M4 and `tools/mapcheck.py --production` still rejects any static-driver
+or acceptance symbol that would creep back in.
 
-`include/zephyros/driver.h`:
+**Boot order replaced.**  The M9 path - `device_registry_init()`, the
+module-loader init, a VFS open per boot module with the loader placing
+each one in the derived bank-7 arena, then a console binding call - is the
+M9 record in section 5 below and no longer describes the build.  The
+current path is architecture 36.12 (`vfs_init`, `service_load_all`,
+`console_bind_defaults`, monitor); the acceptance code is selected under
+`tests/target/support/` and the two target hooks are the entire
+production-side integration surface.
 
-```c
-#define ZDRIVER_ABI_VERSION 2u
+## 4. SIO0/B service image
 
-struct zdriver_api {
-        int (*device_register)(const struct zdevice_desc *, zdev_handle_t *);
-        int (*irq_claim)(irq_source_t, irq_handler_t, void *);
-        int (*irq_release)(irq_source_t);
-        zdev_handle_t (*device_find)(uint8_t class_id,
-                                     zdev_caps_t required_caps,
-                                     zdev_handle_t after);
-        int (*device_interface)(zdev_handle_t, uint8_t expected_class,
-                                const void **class_ops, void **state);
-        int (*resource_size)(const char *name, uint16_t *out_size);
-        int (*resource_read)(const char *name, uint16_t offset, void *dst,
-                             uint16_t length);
-};
-```
-
-The callback order and structure layouts are pinned by compile-time
-assertions and host tests.  The two discovery calls expose no registry
-mutation; the two resource imports resolve only ROMFS `DATA` entries,
-bound every read, and never hand out `romfs_file_t` or mutable kernel
-state.
-
-`driver.h` and its class headers are the complete module-facing
-compile-time surface.  They expose the ABI types and callbacks a driver
-uses but no kernel-only declaration: the device registry lifecycle and
-storage (`kernel/device/registry.h`), the IRQ-executive lifecycle,
-claim transaction, diagnostics, platform hooks and interrupt-state lock
-(`kernel/irq/irq_private.h`), and the raw memory-latch/bank primitives
-(`kernel/memory/banking.h`) are all kernel-private.  Hardware-owning
-driver implementations include the narrow `platform/zephyr80/`
-constant header they require; `zephyros/platform.h` remains the
-kernel's declarative constant aggregator.  `tests/test_source_layout.py`
-resolves the module-facing include closure and compiles a representative
-module against only those headers to keep the boundary mechanical.
-
-- Init convention: `ZDRIVER_OK` (0) or `ZDRIVER_FAIL` (-1).
-- This API is the interface the M4 loader passes to a loaded ZMOD
-  module.  The M3 static driver table (`struct zdriver`,
-  `boot_drivers[]`, `driver_init_static()`) is **retired**: no static
-  driver table is linked into production images, and
-  `tools/mapcheck.py --production` rejects any acceptance or
-  static-driver symbol that would creep back in.
-- Drivers are not offered any other kernel service: they never touch `I`,
-  the IM2 page, the memory mode, the IRQ stacks, or `RETI`; those belong
-  to the M2 executive.
-
-Boot order in `kernel_main()` (after the M1/M2 stages):
-
-```text
-irq_init()
-banner (early console)
-[TEST-ONLY HOOK: zos_target_test_early() in acceptance builds]
-device_registry_init()
-module_loader_init()
-boot module source (kernel_boot_module()):
-    vfs_init()
-      (register built-in providers, mount /SYSTEM from the "recovery"
-       source; a failure prints the M5 romfs_diagnose() lines and
-       panics with "romfs: corrupt recovery image")
-    vfs_open("/SYSTEM/sio.zmod")   -> module_load_source()
-    vfs_open("/SYSTEM/ioc.zmod")   ; M8, gated by ZOS_IOC_BOOT
-    vfs_open("/SYSTEM/hid.zmod")   ; M8, gated by ZOS_HID_BOOT
-    vfs_open("/SYSTEM/v9958.zmod") ; M8, gated by ZOS_V9958_BOOT
-    vfs_mount_all()  ; no-op in production
-      (failure: "<name>: unavailable 0x<ZOS_E*>"
-       on the early console -- the exact code names a
-       missing entry 0x05, a malformed container 0x0A,
-       an exhausted arena 0x06 or a refused init 0x0B;
-       the SIO fallback and every earlier resident
-       module are untouched)
-console_bind_defaults()       ; one final call, after all four loads
-dynamic console line via console service
-[TEST-ONLY HOOK: zos_target_test_late() in acceptance builds]
-monitor launcher (unchanged process_exec("/SYSTEM/monitor.zex"))
-halt loop
-```
-
-Acceptance code is selected only under `tests/target/support/`; the two
-hooks above are the entire production-side integration surface.
-
-## 4. SIO0/B module driver
+> The per-driver sections 4-7 describe the M8/M9 **driver internals** -
+> port programming, protocols, failure policy - which still hold; the
+> registration, class/capability and operations-table vocabulary in them
+> is the M8 record, and the current contract is section 12.
 
 `drivers/sio/` (`sio_io.asm`, `sio.c`, `sio_module.c`, `sio.h`, plus the
 production manifest `modules/manifests/sio.json` and the shared
@@ -244,24 +202,25 @@ module-runtime glue `modules/runtime/sdcc_indirect_calls.asm`):
   by `mapcheck.py`).
   Module sources must avoid byte-fragmented relocations, so the device
   descriptor is a `static const` and the module provides its own
-  `___sdcc_call_iy/hl` glue (`docs/module-format.md` section 6).
+  `___sdcc_call_iy/hl` glue (the M4 container carried no call helpers;
+  `docs/module-format.md` describes today's service image).
   `sio_module.c` is production-only; the IRQ and init-failure container
   fixtures live under `tests/modules/` (`sio_irq_module.c`,
   `sio_fail_module.c`) with their own manifests.
 - Ports: data `22h`, control `23h`; 115200 8N1, polled, interrupts stay
   disabled (`WR1 = 00h`).
-- Registers exactly one device named `sio0.b`, class `ZDEV_SERIAL`, with
-  `ZCAP_CHAR_IN | ZCAP_CHAR_OUT | ZCAP_CONSOLE_IN | ZCAP_CONSOLE_OUT`.
-- Init explicitly re-establishes the documented programming sequence
+- Registered exactly one `sio0.b` device in M8/M9; in M10 the image
+  exports the SERIAL protocol endpoint instead.
+- Init re-establishes the documented programming sequence
   (`18h, WR4=44h, WR3=C1h, WR5=EAh, WR1=00h`); it is idempotent with the
   early console's setup.
 - Operations are bounded polling:
   - `putc` waits for TX-empty with a finite budget
-    (`ZOS_SIO_TX_TIMEOUT`) and returns `ZDEV_ETIMEDOUT` on expiry;
+    (`ZOS_SIO_TX_TIMEOUT`) and returns the timeout error on expiry;
   - `write` returns the number of bytes written (partial count on a
     timeout after the first byte);
   - `poll` returns 1/0 for RX-available;
-  - `getc` returns the byte, or `ZDEV_EAGAIN` when nothing is pending.
+  - `getc` returns the byte, or `ZOS_EAGAIN` when nothing is pending.
 - Driver-private state lives in the module's zero-initialized allocation
   (relocated `_DATA`); the registry only holds the relocated pointer.
 
@@ -289,11 +248,9 @@ produced a CRC-verified matching reply.
   production driver other than the IOC driver includes it.  A driver
   reaches its own directory's private headers through same-directory
   quote includes, never through a shared `-I drivers/<name>` module flag.
-- Class and capabilities: `ZDEV_IOC` with
-  `ZCAP_IOC_COMMAND | ZCAP_IOC_BULK_READ | ZCAP_IOC_BULK_WRITE |
-  ZCAP_IOC_STATUS`.  The architecture's operation order (`command`,
-  `bulk_read`, `bulk_write`, `status`) is pinned by
-  `include/zephyros/ioc.h`; `ZIOC_BULK_MAX` is 512 DATA bytes.
+- Contract: the IOC protocol endpoint (class 5) with the command,
+  bulk-read, bulk-write and status operations in that order;
+  `ZIOC_BULK_MAX` is 512 DATA bytes.
 - Native API: `struct zioc_frame` is TYPE, STATUS, DATA length, and up
   to 26 DATA bytes.  The rolling sequence and the wire CRC are
   transport-private.  `command()` maps one frame to the exact
@@ -381,8 +338,8 @@ produced a CRC-verified matching reply.
   re-establishes both lanes before normal traffic, so no stale READY
   can survive a fault.
 - Serialization: a module-private foreground busy guard makes
-  recursive/overlapping use fail with `ZDEV_EBUSY`; the M2 registry
-  lock is never held over transport I/O.
+  recursive/overlapping use fail with `ZOS_EBUSY`; no kernel lock is
+  held over transport I/O.
 - Boot integration: production images carry `sio.zmod`, `ioc.zmod`,
   `hid.zmod`, and `monitor.zex` in the ROMFS recovery store and load
   SIO first, then IOC, then HID, as part of the deterministic boot set
@@ -431,23 +388,20 @@ implements the native HID class (`include/zephyros/hid.h`) on top of the
 IOC transport and registers exactly one input-only device after it has
 discovered the IOC class; the MCU firmware is untouched.
 
-- Class and capabilities: `hid.keyboard0`, class `ZDEV_HID`, with
-  `ZCAP_HID_TEXT | ZCAP_CHAR_IN | ZCAP_CONSOLE_IN` and nothing else.
-  `ZCAP_HID_KEY_EVENTS` and `ZCAP_HID_GAMEPAD` are reserved and absent;
-  their shapes are frozen in `hid.h` so a later implementation can add
-  the operation without changing the class boundary.  `read_gamepad`
-  stays null, and an unsupported capability must be reported as
-  `ZDEV_ENOTSUP` by a dispatcher, never inferred from the name.  M8
-  implements only `ZCAP_HID_TEXT`.
-- Dependency discovery is by class/capability/interface only:
-  `device_find(ZDEV_IOC, ZCAP_IOC_COMMAND | ZCAP_IOC_STATUS, ...)` plus
-  `device_interface()`.  The module contains no imported IOC symbol and
-  no name lookup; its only IOC compile-time surface is the public
-  `include/zephyros/ioc_protocol.h` vocabulary, never the IOC driver's
-  private headers.  A missing or malformed dependency (null command or
-  status operation, class mismatch, no class interface) fails the init;
-  the loader rolls the (empty) registration set back and the SIO
-  fallback and IOC transport stay untouched.
+- Contract: the HID protocol endpoint (class 4); M8 implemented the text
+  operation only.  Key-event and gamepad shapes were reserved and are
+  absent; an unsupported operation must be reported as an error by the
+  dispatcher, never inferred from a name.
+- Dependency discovery became **host resolution**: the image declares a
+  symbolic dependency on the IOC endpoint (M8: a class/capability search
+  plus an interface lookup), the packer resolves it to a number, and the
+  driver reads that number from its boot bundle.  The module contains no
+  imported IOC symbol and no name lookup; its only IOC compile-time
+  surface is the public `include/zephyros/ioc_protocol.h` vocabulary,
+  never the IOC driver's private headers.  A missing dependency is a pack
+  error; an absent optional one resolves to 0 and the driver reports its
+  own failure, after which the SIO fallback and the IOC service stay
+  untouched.
 - Input path: a 16-byte power-of-two local ring.  `poll`/`getc`/
   `read_text` report buffered bytes first; otherwise they sample the
   semantic `ZIOC_STATUS_HID_PENDING` doorbell and issue exactly one
@@ -462,7 +416,7 @@ discovered the IOC class; the MCU firmware is untouched.
 - Failure policy: an asserted doorbell followed by a failed or empty
   fetch imposes the proven 64-call stuck-doorbell penalty before
   another IOC command; successful data or a released doorbell clears
-  it.  A transport failure is reported as no input (0 / `ZDEV_EAGAIN`)
+  it.  A transport failure is reported as no input (0 / `ZOS_EAGAIN`)
   with the penalty throttling retries, so a broken IOC link cannot wedge
   console polling.  HID never samples SIO1, RR0, CTS or any port; raw
   status stays an IOC implementation detail.
@@ -500,18 +454,15 @@ the direct-hardware LunchCrema V9958 core ported from the pinned
 Zephyr-80 reference.  It delivers the hardware-safe initialization, the
 native VIDEO class operation surface, the ROMFS-backed font atlas, the
 low-level graphics/command primitives, and (package 19) the ported 85x26
-6x8 terminal renderer behind an output-only `zchar_ops` table, so the
+6x8 terminal renderer behind an output-only character interface, so the
 same hardware serves graphics clients and the normal text console.
 
-- Class and capabilities: `v9958.0`, class `ZDEV_VIDEO`, with exactly
-  the seven `ZCAP_VIDEO_*` bits (control/data/block/palette/indirect/
-  present/reset) plus `ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT` for the
-  character renderer.  `char_ops` points at `v9958_char_ops`, whose
-  `putc`/`write` entries feed one byte / the whole 16-bit length into
-  the terminal parser and whose `poll`/`getc` entries are null (the
-  device is output only); `console_bind_defaults()` therefore selects
-  it as the preferred console output, while input comes from a separate
-  device.
+- Contract: the VIDEO protocol endpoint (class 2) with the seven native
+  operations, plus the character path the console composes: its write
+  operation feeds one byte or the whole 16-bit length into the terminal
+  parser, and the read side is absent (output only).  The console service
+  therefore selects it as its output when the endpoint is present, while
+  input comes from the HID endpoint.
 - Terminal behavior (ported from the pinned reference, hardware-proven
   layout): 85 logical columns, 26 rows, 6x8 glyph cells on a 208-line
   text surface with a four-line margin inside the circular 256-line
@@ -536,7 +487,7 @@ same hardware serves graphics clients and the normal text console.
   terminal state or the page-zero bitmap.  Print runs batch up to 64
   glyphs and flush before control operations, present and cursor
   updates so ordinary strings stay efficient and visible.
-- Private renderer stack: the `zchar_ops` entries are assembly wrappers
+- Private renderer stack: the character entries are assembly wrappers
   (`v9958_io.asm`) that switch to a private 256-byte module stack before
   entering the C workers, because a complete renderer call chain exceeds
   the common syscall gate stack depth that syscall-context callers run
@@ -547,14 +498,14 @@ same hardware serves graphics clients and the normal text console.
   `ZVIDEO_CTRL_WRITE` (1), `ZVIDEO_DATA_WRITE` (2),
   `ZVIDEO_DATA_BLOCK` (3), `ZVIDEO_PALETTE_WRITE` (4),
   `ZVIDEO_INDIRECT_WRITE` (5), `ZVIDEO_PRESENT` (6), `ZVIDEO_RESET`
-  (7), dispatched through `zvideo_ops.send`.  The numbers are native,
+  (7), dispatched through the VIDEO endpoint's send operation.  The
+  numbers are native,
   not Virtual Drip packet numbers.  `send` validates before any I/O:
   write operations require a non-null payload and a nonzero length and
   stream the full 16-bit length (native ZephyrOS does not inherit the
   historical 16-byte non-block ceiling); PRESENT/RESET require zero
-  length; unknown operations return `ZDEV_ENOTSUP`, malformed requests
-  `ZDEV_EINVAL`, and a null instance `ZDEV_ENODEV`.  Capabilities are
-  authoritative.
+  length; unknown operations return the unsupported-operation error,
+  malformed requests `ZOS_EINVAL`.
 - Hardware discipline (ports A0h-A4h; declarative ports, latch bits,
   register values and the bounded bootstrap delay live in
   `platform/zephyr80/hardware.{h,inc}`, paired and parity-tested): the
@@ -601,7 +552,9 @@ same hardware serves graphics clients and the normal text console.
   byte-for-byte, CE command-completion waits, 128-KiB R#14 addressing,
   RESET, the deterministic visible pattern, malformed no-I/O cases, a
   4096-byte `DATA_BLOCK`, and the font-failure rollback.
-  `tests/test_v9958_console.py` drives the module's `zchar_ops` and
+  `tests/test_v9958_console.py` drove the module's character interface
+  (retired in M10: the character contract lives in the VIDEO protocol and
+  is covered by `tests/test_v9958.py`) and
   `ZVIDEO_RESET` with scripted byte streams and decodes the VDP command
   trace into a physical-bitmap screen model (glyph copies, fills, row
   copies, R#23 origin); fixed golden cases cover printable placement,
@@ -619,37 +572,45 @@ same hardware serves graphics clients and the normal text console.
 
 ## 8. Console service
 
-`kernel/device/console.c`, `include/zephyros/console.h`:
+`services/console/console_service.c` (M10, work package 41; the M8
+binding policy carried over):
 
-- Stores separate input and output handles; operations dispatch through
-  the bound device's generic `struct zchar_ops`.
-- `console_bind_defaults()` selects by class preference first and falls
-  back independently per direction to any device carrying the generic
-  console capability:
+- The console is a **service image**, not kernel code: it owns one
+  endpoint (class `ZOS_CLASS_CONSOLE`, instance 0) and publishes
+  `/dev/console`.  It is the endpoint the SDK console stubs and the
+  monitor use; the early console and the panic path never depend on it.
+- It declares symbolic dependencies on the HID, SERIAL and VIDEO
+  endpoints and reads their host-resolved numbers from its boot bundle.
+  At init it composes one input and one output, changing the M8 policy
+  only in where the choice comes from:
 
   ```text
-  input   ZDEV_HID   + ZCAP_CONSOLE_IN, else any + ZCAP_CONSOLE_IN
-  output  ZDEV_VIDEO + ZCAP_CONSOLE_OUT, else any + ZCAP_CONSOLE_OUT
+  input   HID when its endpoint is present, resolved and up
+          (ZHID_OP_READY), otherwise SERIAL, otherwise none
+  output  VIDEO when its endpoint is present, otherwise SERIAL,
+          otherwise none
   ```
 
-  A missing direction never clears a valid other direction: whichever
-  handles were found stay bound and the call returns `ZDEV_ENODEV` only
-  when at least one direction is unbound.  SIO remains the
+  Each direction falls back independently, once, at boot - exactly where
+  the M8 device-registry binding decided.  SIO remains the
   both-direction fallback.
-- `console_bind(input, output)` validates non-zero handles against the
-  matching capability; either handle may be `ZDEV_HANDLE_INVALID` to leave
-  that direction unbound.
-- Operations pass through to the bound device:
+- Every operation is one forwarded call: the caller's descriptor travels
+  down the chain, so a write moves the whole transfer through the console
+  and its output service without a staging copy here.  The console owns
+  no buffer, no IRQ and no state beyond its two endpoint numbers.
+- An unbound direction is reported as "no such service"; the M8 table of
+  per-call error passthrough still describes the behavior, with the class
+  error names replaced by the protocol's own.
 
 | Call | Unbound | Op unsupported | Device error |
 | --- | --- | --- | --- |
-| `console_putc` | `ZDEV_ENODEV` | `ZDEV_ENOTSUP` | passed through |
-| `console_write` | `ZDEV_ENODEV` | `ZDEV_ENOTSUP` | byte count / error |
-| `console_poll` | `ZDEV_ENODEV` | `ZDEV_ENOTSUP` | 1/0 / error |
-| `console_getc` | `ZDEV_ENODEV` | `ZDEV_ENOTSUP` | byte / `ZDEV_EAGAIN` |
+| `console_putc` | no-service error | unsupported-operation error | passed through |
+| `console_write` | no-service error | unsupported-operation error | byte count / error |
+| `console_poll` | no-service error | unsupported-operation error | 1/0 / error |
+| `console_getc` | no-service error | unsupported-operation error | byte / `ZOS_EAGAIN` |
 
 Normal boot prints its acceptance line through this service (the device
-is the dynamically loaded module):
+is the resident console image, and the serial path behind it):
 
 ```text
 console: dynamic sio0.b OK
@@ -659,115 +620,103 @@ console: dynamic sio0.b OK
 
 Five distinct paths must not be confused:
 
-- native VIDEO class writes (`zvideo_ops.send`): graphics/register
-  operations to `v9958.0`, independent of any text mode.
-- V9958 character output (`ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT`, the
-  output-only `zchar_ops` table): the 85x26 terminal renderer, consumed
-  by the console service and therefore by `console_putc`/`console_write`.
-- HID character input (`ZCAP_CONSOLE_IN`): keyboard bytes fetched by the
-  console service from `hid.keyboard0`, decoded by the HID module from
+- native VIDEO operations (`ZVIDEO_OP_SEND`): graphics/register
+  operations to the video endpoint, independent of any text mode.
+- V9958 character output (the video endpoint's write operation): the
+  85x26 terminal renderer, consumed by the console service and therefore
+  by `console_putc`/`console_write`.
+- HID character input (the HID endpoint): keyboard bytes fetched by the
+  console service from the input endpoint, decoded by the HID image from
   IOC replies.
-- SIO console fallback (`ZCAP_CONSOLE_IN`/`ZCAP_CONSOLE_OUT` on
-  `sio0.b`): the both-direction fallback used when a preferred
-  direction is unavailable; this is also the M7-normal binding.
+- serial console fallback (the SERIAL endpoint): the both-direction
+  fallback used when a preferred direction is unavailable; this is also
+  the M7-normal binding.
 - direct early SIO (`early_console_*`): the permanently resident,
-  binding-independent path used by the boot banner, the target
-  control transcripts and `panic()`.  It never consults the console
-  service, so it works even when the bound pair is HID/V9958.
+  binding-independent path used by the boot banner, the target control
+  transcripts and `panic()`.  It never consults the console service, so
+  it works even when the composed pair is HID/V9958.
 
-The console service composes one bound input with one bound output;
-neither module knows about the other.  The acceptance image
-`build-console-selftest/` binds HID input to V9958 output and runs the
-unchanged M7 `monitor.zex` through that pair; `make
+The console service composes one input endpoint with one output endpoint;
+neither image knows about the other.  The acceptance image
+`build-console-selftest/` composes HID input with V9958 output and runs
+the unchanged M7 `monitor.zex` through that pair; `make
 smoke-hardware-console` validates the early-SIO boot transcript while
 the operator confirms the visible session.  The package-20 integration
-image `build-console-integration-selftest/` binds the same pair, runs the package-20
-target diagnostic, and is driven by `make smoke-hardware-console-integration` followed by
-the human monitor pass (section 8.2).
+image `build-console-integration-selftest/` composes the same pair, runs
+the package-20 target diagnostic, and is driven by
+`make smoke-hardware-console-integration` followed by the human monitor
+pass (section 8.2).
 
-### 6.1 Failure-path evidence
+### 8.2 Failure-path evidence
 
 The retired M3 fallback flags (`ZOS_M3_NO_STATIC_DRIVERS`,
-`ZOS_M3_NO_CONSOLE_BIND`) no longer exist, and the M4 failure image that
-proved failed-init rollback on target was retired under the Mn-1
-retention rule (work package 25a).  The rollback mechanism is now covered
-by the loader group of the subsystem acceptance image
-(`tests/target/loader/loader_test.c`, `tests/test_subsys_sim.py`), which
-loads the failed-init fixture `tests/modules/m4_fail.c` from `/SYSTEM`
-and checks exact device/IRQ/granule/descriptor rollback; the
-`sio_fail`/`sio-irq` ZMOD fixtures remain packed containers for
-`make zmod-test`.  The runtime fallback evidence is the M8
-failure/fallback matrix in section 8.2:
+`ZOS_M3_NO_CONSOLE_BIND`) no longer exist.  The M4 failure image that
+proved failed-init rollback, the loader group's failed-init fixture and
+the `sio_fail`/`sio-irq` container fixtures were all **deleted** in M10
+(work packages 42b/42c) with the registry, the driver ABI and the arena
+they exercised.
 
-| Scenario | Behavior | Early-console diagnostic |
-| --- | --- | --- |
-| runtime failure | an optional module's load/init failure is rolled back and diagnosed (`build-console-fb-*`) | `<name>: unavailable 0x<ZOS_E*>` |
-| runtime failure | required SIO load/init reports failure | `console: dynamic driver failed` |
-| runtime failure | binding finds no suitable device | `console: unbound` |
-| runtime service failure | bound device reports an error | `console: service failed` |
+What survives is the *composition* fallback, and it is now a property of
+the store rather than a per-image boot gate: because the console service
+derives its input and output from the endpoints the store provided, a
+fallback row is simply a boot manifest that lists fewer services.  Two
+rows are built and replayed by `make console-fallback-selftests`:
 
-Every production image keeps the full M0 banner and panic path.
+| Image | Store | Composition | Marker lane |
+| --- | --- | --- | --- |
+| `build-console-fb-nohid/` | `sio ioc v9958 console` | input SERIAL, output VIDEO | V9958 trace (never the serial link) |
+| `build-console-fb-nohid-nov9958/` | `sio ioc console` | input SERIAL, output SERIAL | serial link |
 
-### 8.2 Console integration acceptance (package 20)
+Each image also boots its target diagnostic from the late hook, and
+`tests/test_console_fallback.py` pins the early-SIO transcript, the
+composition rows, the lane each direction used and the packed store the
+image carried.  Every production image keeps the full M0 banner and panic
+path.
 
-Package 20 freezes the production device stack and adds its
-integration gate:
+A load or bring-up failure is no longer reported as
+`<name>: unavailable 0x<ZOS_E*>`: the store either names an image the
+loader can place or it does not, and the loader's own line
+(`docs/module-format.md` section 7) is the diagnostic.  ROMFS corruption
+keeps the fatal recovery policy.
 
-- **Boot contract**: `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod`
-  (plus `v9958-6x8.font` and `monitor.zex`) are the only production
-  ROMFS entries and are loaded in that order through their
-  `/SYSTEM/<name>.zmod` VFS paths (M9); a single
-  `console_bind_defaults()` runs after all four loads, followed by the
-  unchanged `process_exec("/SYSTEM/monitor.zex")` launcher.  A failed optional
-  module prints `<name>: unavailable 0x<ZOS_E*>` on the direct early
-  SIO (0x05 missing entry, 0x06 arena exhausted, 0x0A malformed
-  container, 0x0B refused init) and the boot continues; ROMFS
-  corruption keeps the fatal recovery policy.
-- **Failure/fallback matrix** (each row asserts its exact binding,
-  diagnostics and observable direction from the real linked bytes):
+### 8.3 Console integration acceptance (package 20)
 
-  | Image | Injected failure | Early-SIO diagnostic | Binding |
-  | --- | --- | --- | --- |
-  | `build-console-integration-selftest/`, `build/` | none (all four modules) | -- | HID/V9958 |
-  | `build-video-fontfail-selftest/` | undersized ROMFS font | `v9958: unavailable 0x0B` | HID/SIO |
-  | `build-console-fb-nohid/` | `hid.zmod` entry absent | `hid: unavailable 0x05` | SIO/V9958 |
-  | `build-console-fb-badioc/` | fake IOC (null command op) fails HID init | `hid: unavailable 0x0B` | SIO/V9958 |
-  | `build-console-fb-nohid-nov9958/` | HID and V9958 entries absent | both `unavailable 0x05` | SIO/SIO |
-  | `build-console-fb-arena/` | `v9958.zmod` replaced by an oversized allocation | `v9958: unavailable 0x06` | HID/SIO |
+The package-20 integration gate keeps its shape - one production service
+set, one target diagnostic, one scripted monitor session - over the M10
+boot path:
 
-- **Host/simulator evidence**: `make console-integration-selftest` builds the
-  integration image (full stack + package-20 target diagnostic + monitor
-  launcher) and replays the production bytes
-  (`tests/test_console_acceptance.py`): boot order and binding, IOC
-  command/status/repeated-PING and the /SHARED READY/DONE bulk
-  interlock, HID queue traffic with the stuck-doorbell penalty, the
-  scripted monitor session with two Q exit/relaunch cycles,
-  malformed/null/class/capability rejections with device-table,
-  granule-allocation and lane-handshake invariants, and post-fault
-  recovery.  `make console-fallback-selftests` builds every variant above
-  and replays `tests/test_console_fallback.py`; `tests/test_driver_abi.py`
-  reconciles the aligned linked-kernel end, derived arena, arena plan
-  and image manifest, and checks every subsystem ROMFS manifest's
-  content/types/order.
-- **Physical gate**: flash `build-console-integration-selftest/zephyros-console-integration-selftest.bin`,
-  run `make smoke-hardware-console-integration` before reset, perform the human
-  HID/V9958 monitor pass, then run each `make smoke-hardware-console-integration-fb-*`
-  mode on its image and record what was observed on the display.  The
-  package-20 validation record
-  (`docs/validation/2026-10-03-m8-device-stack.md`) carries the exact
-  image hashes; all physical items were observed on the 2026-10-04
-  bench (serial smoke, the full monitor pass — including the `R`
-  screen and the rejected-input `ERR: ARG` lines — the four fallback
-  runs and the operator's display confirmations for the V9958-bound
-  variants), and M8 is marked complete.
+- **Boot contract**: `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod`,
+  the console image and `monitor.zex` are the production store's entries,
+  named by `services.man` in load order; the loader places them, installs
+  the publications and runs their boot and init entries, and only then
+  does the monitor launcher run.  A failed placement or init is a boot
+  error with the loader's line, and ROMFS corruption keeps the fatal
+  recovery policy.
+- **Host/simulator evidence**: `make console-integration-selftest` builds
+  the integration image (full service set + the target diagnostic + the
+  monitor launcher) and replays the production bytes
+  (`tests/test_console_acceptance.py`): the load order and the composed
+  binding, IOC command/status/repeated-PING and the /SHARED READY/DONE
+  bulk interlock, HID queue traffic with the stuck-doorbell penalty, the
+  scripted monitor session with two Q exit/relaunch cycles, the
+  malformed-request refusals, and the publication/endpoint invariants the
+  packed containers carry.
+- **Physical gate**: flash
+  `build-console-integration-selftest/zephyros-console-integration-selftest.bin`,
+  run `make smoke-hardware-console-integration` before reset, perform the
+  human HID/V9958 monitor pass, then run the `-fb-*` smoke modes on their
+  images.  The package-20 validation record
+  (`docs/validation/2026-10-03-m8-device-stack.md`) carries the M8 image
+  hashes and the observed results; the M10 re-run is recorded in
+  `docs/validation/2026-10-09-m10-prune-nucleus.md`.
 
 ## 9. Drivers and interrupts
 
-A loaded module may claim an M2 logical source through
-`zdriver_api.irq_claim` and receives a bank-7 handler; the executive maps
-bank 7 before dispatch and owns the final `RETI`.  The production SIO
-module stays polling-only.  Two current paths prove the IRQ integration
-on the subsystem acceptance image (`tests/test_subsys_sim.py`):
+A service image claims an M2 logical source through the boot bundle's
+`irq_claim` entry and receives a handler; the executive maps its bank
+before dispatch and owns the final `RETI`.  The production SIO image
+stays polling-only, and the IRQ integration is exercised on the subsystem
+acceptance image (`tests/test_subsys_sim.py`):
 
 - the IRQ group (`tests/target/irq/irq_test.c`) drives the executive
   directly: registry semantics (invalid source/handler, duplicate claim,
@@ -789,16 +738,18 @@ CTC owner (`drivers/ctc/ctc.c`) keeps only `platform_irq_quiesce()`;
 
 ## 10. Placement and validation
 
-All driver/service code, descriptors, ops tables, and state live in
-bank 7 (linked `_CODE`/`_DATA` for the remaining kernel objects; the
-loaded module inside the derived driver arena).  None of it may enter
-permanent common memory.  Production derives the arena start from the
-aligned linked-kernel end and the arena end from the runtime-data size
-(`data_base = align_down(DF00h - data_size, 512)`), with at least 16 KiB
-remaining; the fixed `A000h-BFFFh` geometry of the earlier acceptance
-images is retired (work packages 25a/25b), so there is exactly one
-geometry (see `docs/memory.md` section 2.2 and `docs/module-format.md`
-section 1).
+**M10 (work package 42c):** a driver is bank-6 service code - its hot
+segment in `6000h-DFFFh` (the mode-11 window), its boot/bulk segments in
+`0000h-5FFFh` - placed by the resident loader at the addresses the host
+packer assigned; the bank-7 arena the M4-M9 drivers occupied is deleted,
+and nothing a driver owns may enter permanent common memory.  The
+residency of every kernel object is the two-tier classification of
+`config/residency.json` (architecture 36.5; `docs/memory.md` section 2.2).
+
+The M8/M9 rules this replaced: all driver code, descriptors, ops tables
+and state lived in bank 7 or in the loaded module's arena granules, with
+the arena derived from the aligned linked-kernel end and the runtime-data
+size and at least 16 KiB remaining.
 `tools/mapcheck.py` enforces this with an explicit symbol list and a
 prefix sweep over `_device_`, `_console_`, and `_m3_` symbols.  A
 rejection sweep fails the build on any linked `_sio_`, `_sio0b_`,
@@ -810,21 +761,15 @@ SIO module entries) in the production image.
 
 Host validation layers:
 
-- `tests/test_driver_abi.py` – driver ABI version/structure/order and capability-range
-  contract, derived-arena geometry (alignment, 16-KiB minimum, unaligned
-  relation, linked bytes in the arena), the boot-set arena plan and its
-  overflow rejection, ABI v1 rejection, and the architectural granule
-  bound.
-- `tests/test_zmod.py`, `tests/test_source_layout.py` – the ZMOD
-  container/relocation contract (including a two-base relocation check
-  and bad version/ABI rejection), the module-facing include closure, and
-  the milestone-retention window (only M9/M10 acceptance machinery may
-  exist).
+- `tests/test_service_images.py`, `tests/test_zmod.py` – the service-image
+  contract: the flat container, the plan the packer emits, the loader's
+  bounds, endpoint numbering, dependency resolution and publications.
+- `tests/test_source_layout.py` – the service-facing include closure and
+  the milestone-retention window (retired owners must stay deleted).
 - `tests/test_subsys_sim.py` – replays the subsystem acceptance image in
   the Z80 simulator: the syscall and IRQ groups at the early hook, the
-  ROMFS-reader, process/ZEX and loader groups at the late hook (with
-  injected CTC0 vectors and loader arena exhaustion), and the scripted
-  monitor session.
+  ROMFS-reader and process/ZEX groups at the late hook (with injected CTC0
+  vectors), and the scripted monitor session.
 - `tests/test_romfs_sim.py` – the ROMFS reader/access replay and the
   corrupt-store image (`TestCorruptImageReplay`: panics with
   `PANIC: romfs: corrupt recovery image` before any module runs).
@@ -832,9 +777,11 @@ Host validation layers:
   contract and the real SIO+IOC+HID image replay (section 6).
 - `tests/test_v9958.py` / `tests/test_v9958_sim.py` – the V9958 VIDEO
   class/driver contract, the font asset pipeline, and the real
-  SIO+IOC+HID+V9958 image replay against the V9958 peer (section 7).
+  SIO+IOC+HID+V9958 image replay against the V9958 peer (section 7),
+  plus the character-path coverage that moved out of the retired
+  `test_v9958_console.py`.
 - `make subsystem-selftest` / `make romfs-corrupt-selftest` – the
-  migrated mechanism acceptance image and the corrupt-store image.
+  mechanism acceptance image and the corrupt-store image.
 - `make smoke-hardware-subsystem SERIAL_PORT=...` – driving the subsystem
   image: the five group `... selftest: OK` lines and the interactive
   monitor step (the tool sends `Q` and expects `monitor: exit status 0x`).
@@ -852,11 +799,10 @@ subsystem and corrupt-store images, and the changed production image
 
 ## 11. Out of scope
 
-No heap, no module unload or hot-plug, no filesystem API for modules
-(beyond the two bounded DATA resource imports), no process API here, and
-no user-visible device syscall.  M9 defines the `ZDEV_BLOCK` class
-contract without a resident driver: the first block driver arrives with
-its first consumer (architecture 32.15/32.39).  M4 stages 07-08 (this
+No heap, no service unload or hot-plug, no filesystem API for images, no
+process API here, and no user-visible device syscall.  The block class M9
+defined is deleted with no resident driver: the first block driver
+arrives with its first consumer (architecture 36.4).  M4 stages 07-08 (this
 document plus `docs/module-format.md`) delivered the loader and the
 relocatable SIO driver module; M8 work package 14 delivered driver ABI
 v2 (raised to v3 by M9 package 26), the read-only discovery calls, the
@@ -869,15 +815,15 @@ keyboard/text class, its boot load after IOC, and the input-only
 core: the `v9958.0` VIDEO device with the seven native operations, the
 ROMFS-backed font atlases and the command/VRAM primitives, loaded after
 HID (character output and the terminal remain with the console
-package).  The M3 numeric registry model still holds; its placeholder
-class names were refined in place.
+package).  The M3 numeric registry model it describes is deleted (M10, work package
+42c); the class numbers survive as the protocol types of section 12.
 
 ## 12. Resident driver protocols (M10, packages 41-41b)
 
 The five driver images the production store carries are the SIO serial
 transport, the IOC transport, HID input, the V9958 video core and the
-console.  Each is a ZMOD driver image (`docs/module-format.md`, service
-ABI 3, host-linked at its final bank-6 address) placed by the resident
+console.  Each is a ZMOD service image (`docs/module-format.md`,
+host-linked at its final bank-6 address) placed by the resident
 loader (`service_load_all`, manifest `services.man`); the host packer
 assigns each endpoint number and resolves the console's and HID's
 symbolic dependencies, the loader installs the host-built tables, and each
@@ -907,11 +853,10 @@ the protocol:
   `move` for same-domain staging (a driver-to-driver call is near-direct:
   the frame travels by reference and no bank switch happens).  This is
   the resident-domain convention;
-- a *bank-7* client (the IOC class shim the module loader publishes to
-  the IOC-FAT provider, `kernel/module/ioc_shim.c`, and the nucleus's own
-  boot probe) can hold neither descriptor nor `move`, so it stages bytes
-  through the common copy gate in `ZOS_SYSCALL_STAGE_SIZE` chunks against
-  the service-window address the reply names.
+- a *nucleus* client (the FS service image's fixed-core companion and the
+  nucleus's own boot probe) can hold neither descriptor nor `move`, so it
+  stages bytes through the common copy gate in `ZOS_SYSCALL_STAGE_SIZE`
+  chunks against the service-window address the reply names.
 
 ### 12.1 SIO serial (class `ZOS_CLASS_SERIAL`, 1)
 
@@ -922,7 +867,7 @@ without, any service.
 
 | op | number | frame | result |
 |----|--------|-------|--------|
-| `ZSIO_OP_PUTC`  | 0 | `arg0` = byte | 0 or `-ZDEV_ETIMEDOUT` |
+| `ZSIO_OP_PUTC`  | 0 | `arg0` = byte | 0 or `-ZOS_ETIMEDOUT` |
 | `ZSIO_OP_WRITE` | 1 | desc IN, `arg0` offset, `arg1` length | bytes written |
 | `ZSIO_OP_POLL`  | 2 | - | 1 when a byte is pending, else 0 |
 | `ZSIO_OP_GETC`  | 3 | - | byte 0..255 or `-ZOS_EAGAIN` |
@@ -981,9 +926,9 @@ and no deployed request class exceeds 24 DATA bytes, so the exchange
 control travels in the frame words and `payload[3..4]` reports where the
 bulk buffer is: a descriptor-less (bank-7) client writes the bytes it
 wants written to that address through the copy gate and then issues
-`ZIOC_OP_BULK_WRITE` without a descriptor.  `kernel/module/ioc_shim.c`
-does exactly that for the IOC-FAT provider and disappears with it in
-package 42.
+`ZIOC_OP_BULK_WRITE` without a descriptor.  The FS service image's
+fixed-core companion did exactly that for the IOC-FAT provider; work
+packages 42b/42c deleted it with the arena module loader it lived in.
 
 ### 12.5 Console (class `ZOS_CLASS_CONSOLE`, 6)
 
@@ -1044,7 +989,7 @@ decision 13):
    when it checks the table size (`/input` for `/input/keyboard`), and the
    provider synthesizes them from the names it installs.
 2. The resolved rows become the container's publication table: ABI 4
-   (`docs/module-format.md` section 7.8), 20 bytes per row, ordered after
+   (`docs/module-format.md` section 6), 20 bytes per row, ordered after
    the segment, endpoint and dependency tables in the service section.
 3. The loader validates each row (name shape, protocol type in range,
    endpoint number non-zero) and installs it in the DEVICE provider's

@@ -31,7 +31,7 @@ enum {
 /* The executive lifecycle, the claim transaction (checkpoint, rollback,
  * owner), the dispatch diagnostics, the platform vector/quiesce/test
  * hooks, and the interrupt-state lock are kernel-private and live in
- * kernel/irq/irq_private.h.  A ZMOD module uses only the loader's
- * `zdriver_api.irq_claim`/`irq_release` callbacks. */
+ * kernel/irq/irq_private.h.  A resident service uses only the bootstrap
+ * interface's `irq_claim`/`irq_release` (include/zephyros/ipc.h). */
 
 #endif

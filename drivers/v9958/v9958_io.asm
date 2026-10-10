@@ -204,7 +204,7 @@ v9958_indirect_loop:
 ; and the SIO console path was designed to fit in that budget.  The
 ; ported text renderer's call chain (parser -> control action -> flush ->
 ; glyph HMMM -> command start) is deeper than that budget, so both
-; zchar_ops entries run the C worker on a private module stack instead:
+; The terminal entries run the C worker on a private service stack instead:
 ; the caller's SP, return address and arguments are parked in module BSS,
 ; SP moves to _v9958_alt_stack_top, the worker runs there, and SP plus
 ; the return path are restored exactly.  The renderer is single-depth by

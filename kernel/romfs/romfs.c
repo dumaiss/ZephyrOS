@@ -340,11 +340,10 @@ int romfs_read(const romfs_file_t *file, uint32_t offset, void *dst,
 	return (int)length;
 }
 
-/* --- module-facing resource imports (driver ABI v3) --------------------
+/* --- bootstrap resource reads -------------------------------------------
  * Narrow, kernel-owned wrappers: resolve by name, require exactly
  * ROMFS_FLAG_DATA, bound every access, and never expose romfs_file_t or
- * the mutable filesystem state.  A module sees only these two callbacks
- * through zdriver_api. */
+ * the mutable filesystem state. */
 
 static int romfs_resource_lookup(const char *name, romfs_file_t *file)
 {

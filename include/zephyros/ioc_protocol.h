@@ -1,21 +1,19 @@
 /* ZephyrOS IOC client-visible service vocabulary (M8).
  *
- * The IOC class ABI lives in include/zephyros/ioc.h: the native
- * `struct zioc_frame`, the `struct zioc_ops` table, the semantic status
- * bits, and the transport error codes.  This header is the *vocabulary*
- * half of the contract: it names the deployed MCU command/reply classes
- * and the client-visible DATA payload offsets that a protocol-aware
- * client must share to use the transport.  It is service vocabulary,
- * not another device interface.
+ * The IOC transport surface lives in include/zephyros/ioc.h: the native
+ * `struct zioc_frame`, the semantic status bits and the transport error
+ * codes.  This header is the *vocabulary* half of the contract: it names
+ * the deployed MCU command/reply classes and the client-visible DATA
+ * payload offsets that a protocol-aware client must share to use the
+ * transport.  It is service vocabulary, not another device interface.
  *
  * The wire framing, the rolling sequence, CRC handling, lane setup, the
  * READY/DONE bulk admission state, bulk recovery, the frozen bulk-arming
  * class gate, and every pinned-driver implementation detail remain
- * private to drivers/ioc/.  Ordinary clients use `struct zioc_frame` /
- * `struct zioc_ops` and never include this header.  Protocol-aware
- * clients -- the HID driver and the M8 target diagnostics -- include it
- * to name command types and decode payload offsets as native-frame DATA
- * offsets.
+ * private to drivers/ioc/.  Ordinary clients use `struct zioc_frame`
+ * and never include this header.  Protocol-aware clients -- the HID
+ * driver and the target diagnostics -- include it to name command types
+ * and decode payload offsets as native-frame DATA offsets.
  *
  * The numeric values pin the deployed Zephyr-80 IOC firmware, which is
  * never modified; this header documents what it advertises.  Payload

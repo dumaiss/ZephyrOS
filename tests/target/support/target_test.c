@@ -7,7 +7,7 @@
  * implementations (docs/architecture.md section 3).
  *
  * Boot phases:
- *   early  before the boot module load (syscall gate, IRQ executive)
+ *   early  before the boot program load (syscall gate, IRQ executive)
  *   late   after console binding (ROMFS reader, process/ZEX, loader)
  *
  * Each acceptance image selects exactly one group: the subsystem image
@@ -55,14 +55,6 @@
 #include "zos/ipc.h"
 #endif
 
-/* Boot-time acceptance modules, called between the production boot set and
- * the normal mount pass.  Only an image that needs extra resident providers
- * defines anything here; every other acceptance image is a no-op (package
- * 42b removed the arena module loader, so no image loads one). */
-void zos_boot_test_modules(void)
-{
-}
-
 void zos_target_test_early(void)
 {
 #if ZOS_SUBSYS_SELFTEST
@@ -77,9 +69,7 @@ void zos_target_test_early(void)
 void zos_target_test_late(void)
 {
 #if ZOS_SUBSYS_SELFTEST
-	/* ROMFS reader, then the process/ZEX lifecycle.  The module-loader
-	 * group is retired with the arena (work package 42b): IOC-FAT is a
-	 * bank-6 service and no module is loaded into the driver arena. */
+	/* ROMFS reader, then the process/ZEX lifecycle. */
 	zos_run_romfs_selftest();
 	zos_run_process_selftest();
 #endif

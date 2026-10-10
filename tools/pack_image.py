@@ -17,9 +17,9 @@ Region contract (see docs/architecture.md sections 36.2/36.5, docs/boot.md):
                   ROM-loaded), then the service stack (5D00h-5F00h) and the
                   ISR stack (5F00h-6000h); the code is ROM-loaded
     6000h-DFFFh   bank-7 cold half (the mode-11 window): linked cold code
-                  up to the cold code end, the derived driver arena
-                  (load-time only, no ROM payload) and the cold runtime
-                  data at the derived window data base (never ROM-loaded)
+                  up to the cold code end and the cold runtime data at
+                  the derived window data base (never ROM-loaded); no
+                  reservation sits between them
     E000h-FEFFh   permanent common code/data (physical bank 0)
     FF00h-FFFFh   common boot/runtime stack (must stay empty in the image)
 
@@ -44,12 +44,13 @@ fixed-core latch audit (see verify_no_banked_latch_writes); the evaluation
 images pass no flag and keep their own placement.
 
 The optional memory.inc is the generated bank-7 geometry include; it must
-declare the derived arena start/end, granule count and data base (a missing
+declare the derived data bases and the fixed-core ledger fields (a missing
 key is a hard error, never a fall back to a retired default).  With no
 include the synthetic host defaults are used.  When <build_dir> is given,
-<build_dir>/recovery.romfs must exist and is placed into pages 2-7; when it
-is None (host unit tests) an all-FF recovery store is emitted unless `romfs`
-is passed explicitly.
+<build_dir>/recovery.romfs must exist and is placed into pages 2-7, and
+<build_dir>/modules/services.plan.json supplies the bank-6 driver ledger;
+when it is None (host unit tests) an all-FF recovery store is emitted
+unless `romfs` is passed explicitly.
 """
 
 import json
@@ -100,11 +101,8 @@ SERVICE_BOOT_CAPACITY = 0x6000     # 0000h-5FFFh of bank 6
 # generated build/geometry/memory.inc, which must carry every derived
 # value; these literals only seed the synthetic path where no include is
 # supplied (host unit tests and hand-held validation maps).
-ARENA_BASE = 0x6200
-ARENA_END = 0x6A00
 DATA_BASE = 0x5A00
-GRANULE_SIZE = 0x0200
-GRANULE_COUNT = ((ARENA_END - ARENA_BASE) // GRANULE_SIZE)
+BANK7_DATA_ALIGN = 0x0200
 WINDOW_DATA_BASE = 0xD800
 # Fixed-core ledger fields (the generated include carries them; the
 # synthetic defaults describe an empty overflow).
@@ -139,9 +137,8 @@ def make_regions():
          "bank-7 fixed core runtime data (never ROM-loaded)", False),
         (SERVICE_STACK_BASE, WINDOW_BASE,
          "fixed-core service and ISR stacks", False),
-        (WINDOW_BASE, ARENA_BASE, "bank-7 cold half code", True),
-        (ARENA_BASE, ARENA_END, "driver arena (load-time only)", False),
-        (ARENA_END, WINDOW_DATA_BASE,
+        (WINDOW_BASE, WINDOW_DATA_BASE, "bank-7 cold half code", True),
+        (WINDOW_DATA_BASE, BANK7_RUNTIME_END,
          "bank-7 cold half runtime data (never ROM-loaded)", False),
         (COMMON_BASE, COMMON_CODE_END, "permanent common code/data", True),
         (IRQ_VECTOR_BASE, IRQ_VECTOR_END, "IM2 vector page plus guard", True),
@@ -166,7 +163,7 @@ def require_value(values, name, path):
 
 def apply_memory_inc(path):
     """Override the bank-7 geometry declarations from a generated memory.inc."""
-    global ARENA_BASE, ARENA_END, DATA_BASE, GRANULE_SIZE, GRANULE_COUNT
+    global DATA_BASE, BANK7_DATA_ALIGN
     global REGIONS, FIXED_CODE_END, FIXED_REQUIRED_BYTES
     global FIXED_OVERFLOW_BYTES, FIXED_STACKS_BYTES, FIXED_ROOM_BYTES
     global BANK7_RUNTIME_END, IRQ_ISR_STACK_SIZE
@@ -181,15 +178,13 @@ def apply_memory_inc(path):
         match = re.match(r"([A-Za-z_]\w*)\s+=\s+(0[xX][0-9a-fA-F]+|\d+)$", line)
         if match:
             values[match.group(1)] = int(match.group(2), 0)
-    # The bank-7 geometry (fixed code end, fixed data base, cold-half arena
-    # start/end and granule count, cold data base, and the fixed-core
-    # ledger fields) is derived per image and carried by the generated
-    # memory include.  It is required: a missing key must fail loudly
-    # rather than validate against a retired boundary.
+    # The bank-7 geometry (fixed code end, the two data bases and the
+    # fixed-core ledger fields) is derived per image and carried by the
+    # generated memory include.  It is required: a missing key must fail
+    # loudly rather than validate against a retired boundary.
     for name in ("ZOS_REV13_WINDOW_BASE", "ZOS_SERVICE_STACK_BASE",
                  "ZOS_SERVICE_STACK_TOP", "ZOS_SERVICE_STACK_SIZE",
-                 "ZOS_DRIVER_ARENA_BASE", "ZOS_DRIVER_ARENA_END",
-                 "ZOS_DRIVER_GRANULES", "ZOS_DATA_BASE",
+                 "ZOS_BANK7_DATA_ALIGN", "ZOS_DATA_BASE",
                  "ZOS_WINDOW_DATA_BASE", "ZOS_FIXED_CODE_END",
                  "ZOS_FIXED_REQUIRED_BYTES", "ZOS_FIXED_OVERFLOW_BYTES",
                  "ZOS_FIXED_STACKS_BYTES", "ZOS_FIXED_ROOM_BYTES"):
@@ -198,8 +193,7 @@ def apply_memory_inc(path):
     SERVICE_STACK_BASE = values["ZOS_SERVICE_STACK_BASE"]
     SERVICE_STACK_TOP = values["ZOS_SERVICE_STACK_TOP"]
     SERVICE_STACK_SIZE = values["ZOS_SERVICE_STACK_SIZE"]
-    ARENA_BASE = values["ZOS_DRIVER_ARENA_BASE"]
-    ARENA_END = values["ZOS_DRIVER_ARENA_END"]
+    BANK7_DATA_ALIGN = values["ZOS_BANK7_DATA_ALIGN"]
     DATA_BASE = values["ZOS_DATA_BASE"]
     WINDOW_DATA_BASE = values["ZOS_WINDOW_DATA_BASE"]
     FIXED_CODE_END = values["ZOS_FIXED_CODE_END"]
@@ -207,8 +201,6 @@ def apply_memory_inc(path):
     FIXED_OVERFLOW_BYTES = values["ZOS_FIXED_OVERFLOW_BYTES"]
     FIXED_STACKS_BYTES = values["ZOS_FIXED_STACKS_BYTES"]
     FIXED_ROOM_BYTES = values["ZOS_FIXED_ROOM_BYTES"]
-    GRANULE_SIZE = values["ZOS_DRIVER_GRANULE_SIZE"]
-    GRANULE_COUNT = values["ZOS_DRIVER_GRANULES"]
     BANK7_RUNTIME_END = values["ZOS_BANK7_RUNTIME_END"]
     IRQ_ISR_STACK_SIZE = values["ZOS_IRQ_ISR_STACK_SIZE"]
     ROMFS_FIRST_PAGE = values["ZOS_ROMFS_FIRST_PAGE"]
@@ -250,8 +242,8 @@ NUCLEUS_FIXED_LEDGER_LINE = (
     "nucleus fixed: required %d bytes | overflow %d bytes | stacks %d | "
     "room %d bytes")
 NUCLEUS_COLD_LEDGER_LINE = (
-    "nucleus cold: code %d bytes end %04Xh | arena %d granules "
-    "(%d boot, %d free) | data %d bytes at %04Xh | room %d bytes")
+    "nucleus cold: code %d bytes end %04Xh | data %d bytes at %04Xh | "
+    "room %d bytes")
 SERVICE_HOT_LEDGER_LINE = "driver hot: %d bytes of %d"
 SERVICE_BOOT_LEDGER_LINE = "driver boot/bulk: %d bytes of %d"
 COMMON_LEDGER_LINE = ("common: used %d of %d bytes (code %d, data %d) | "
@@ -391,11 +383,9 @@ def build_pages(mem, romfs=None):
         pages[0][addr] = mem.get(addr, FILL)
 
     # Page 1 additionally carries the bank-7 loadable content: the fixed
-    # core's code and the cold half's code, up to the driver arena.  The
-    # arena is never part of a ROM payload; the module loader fills it
-    # from the recovery store at boot.  Both runtime-data regions and the
-    # two stack reservations stay FILL.
-    for addr in range(BANK7_BASE, ARENA_BASE):
+    # core's code and the cold half's code, up to the cold data base.
+    # Both runtime-data regions and the two stack reservations stay FILL.
+    for addr in range(BANK7_BASE, WINDOW_DATA_BASE):
         pages[1][addr] = mem.get(addr, FILL)
 
     # Copier mirroring: instruction fetch continues across the ROM-page
@@ -567,30 +557,23 @@ def check_symbol_regions(symbols):
         raise LayoutError("_reset is at %04Xh, expected 0000h"
                           % (reset if reset is not None else -1))
 
-    # Derived arena bounds: the ROM image never contains arena bytes, but
-    # the linked symbols must describe the reserved region exactly.  Real
-    # builds additionally pin the start to the aligned linked-kernel end,
-    # the end to the derived data base, and enforce the floor.
-    arena_start = symbols.get("__driver_arena_start")
-    arena_end = symbols.get("__driver_arena_end")
-    if arena_start != ARENA_BASE or arena_end != ARENA_END:
-        raise LayoutError(
-            "driver arena symbols are %s/%s, expected %04Xh/%04Xh"
-            % (arena_start, arena_end, ARENA_BASE, ARENA_END)
-        )
-    if (arena_end - arena_start) != GRANULE_COUNT * GRANULE_SIZE:
-        raise LayoutError("driver arena geometry does not match granules")
+    # M10 (package 42c): the cold half has no driver arena.  The linked
+    # __kernel_code_end must be the exclusive end of the cold code and the
+    # cold data base must be align_up of it; the fixed data base is the
+    # derived one and both runtime-data regions must stay below their
+    # stacks.
     kernel_end = symbols.get("__kernel_code_end")
     if kernel_end is not None:
-        expected = (kernel_end + GRANULE_SIZE - 1) & ~(GRANULE_SIZE - 1)
-        if arena_start != expected:
-            raise LayoutError(
-                "__driver_arena_start %04Xh is not align_up(%04Xh) = %04Xh"
-                % (arena_start, kernel_end, expected))
         if not (WINDOW_BASE <= kernel_end <= WINDOW_DATA_BASE):
             raise LayoutError(
                 "__kernel_code_end %04Xh is outside the cold half"
                 % kernel_end)
+        expected = (kernel_end + BANK7_DATA_ALIGN - 1) & \
+            ~(BANK7_DATA_ALIGN - 1)
+        if WINDOW_DATA_BASE != expected:
+            raise LayoutError(
+                "the cold data base %04Xh is not align_up(%04Xh) = %04Xh"
+                % (WINDOW_DATA_BASE, kernel_end, expected))
         data_base = symbols.get("s__DATA")
         if data_base != DATA_BASE:
             raise LayoutError(
@@ -642,7 +625,26 @@ def common_usage(symbols):
     return code, data, code + data, capacity
 
 
-def nucleus_ledger(symbols, plan=None):
+def load_service_plan(build_dir):
+    """The bank-6 service set's ledger from <build_dir>/modules/
+    services.plan.json (tools/zmodpack.py services), or None for a
+    synthetic build without one (the driver ledger then reports zeros)."""
+    if build_dir is None:
+        return None
+    path = Path(build_dir) / "modules" / "services.plan.json"
+    if not path.exists():
+        return None
+    with open(path) as handle:
+        plan = json.load(handle)
+    nucleus = plan.get("nucleus", {})
+    for field in ("service_hot_bytes", "service_hot_capacity_bytes",
+                  "service_boot_bytes", "service_boot_capacity_bytes"):
+        if field not in nucleus:
+            raise LayoutError("%s is missing %s" % (path, field))
+    return plan
+
+
+def nucleus_ledger(symbols, service_plan=None):
     """The five ledger lines of architecture 36.20 from a linked map.
 
     Returns None for synthetic host maps without the derived symbols.
@@ -651,17 +653,17 @@ def nucleus_ledger(symbols, plan=None):
     The fixed-core `required`/`overflow` split is attributed per object by
     the derive step (tools/mapcheck.py geometry derive --residency) and
     carried in the generated memory include; the map checks the extents.
-    The service ledgers are zero until stage 4 places images in bank 6."""
+    The two bank-6 driver ledgers come from the packed service set's plan
+    (work package 42c; before that they were hard-zeroed and mis-reported
+    production as 0)."""
     kernel_end = symbols.get("__kernel_code_end")
     data_base = symbols.get("s__DATA")
     window_data_base = symbols.get("s__WINDOW_DATA")
     if kernel_end is None or data_base is None or window_data_base is None:
         return None
-    used = sum(entry["granules"] for entry in plan["modules"]) if plan else 0
     cold_code = kernel_end - WINDOW_BASE
     cold_data = symbols.get("l__WINDOW_DATA", 0)
-    cold_room = (BANK7_RUNTIME_END - WINDOW_BASE) - cold_code - cold_data \
-        - GRANULE_COUNT * GRANULE_SIZE
+    cold_room = BANK7_RUNTIME_END - window_data_base - cold_data
     common = common_usage(symbols)
     common_fields = {}
     if common is not None:
@@ -674,6 +676,12 @@ def nucleus_ledger(symbols, plan=None):
             "common_m10_reservation_bytes": COMMON_M10_RESERVATION,
             "common_limit_bytes": COMMON_CEILING - COMMON_M10_RESERVATION,
         }
+    driver = {"service_hot_bytes": 0,
+              "service_hot_capacity_bytes": SERVICE_HOT_CAPACITY,
+              "service_boot_bytes": 0,
+              "service_boot_capacity_bytes": SERVICE_BOOT_CAPACITY}
+    if service_plan is not None:
+        driver.update(service_plan["nucleus"])
     return dict(common_fields, **{
         "fixed_code_end": FIXED_CODE_END,
         "fixed_required_bytes": FIXED_REQUIRED_BYTES,
@@ -685,19 +693,10 @@ def nucleus_ledger(symbols, plan=None):
                              + symbols.get("l__INITIALIZED", 0)),
         "cold_code_bytes": cold_code,
         "cold_code_end": kernel_end,
-        "cold_arena_base": ARENA_BASE,
-        "cold_arena_end": ARENA_END,
-        "cold_arena_granules": GRANULE_COUNT,
-        "cold_arena_used_granules": used,
-        "cold_arena_free_granules": GRANULE_COUNT - used,
         "cold_data_bytes": cold_data,
         "cold_data_base": window_data_base,
         "cold_room_bytes": cold_room,
-        "service_hot_bytes": 0,
-        "service_hot_capacity_bytes": SERVICE_HOT_CAPACITY,
-        "service_boot_bytes": 0,
-        "service_boot_capacity_bytes": SERVICE_BOOT_CAPACITY,
-    })
+    }, **driver)
 
 
 def format_nucleus_ledger(ledger):
@@ -710,9 +709,8 @@ def format_nucleus_ledger(ledger):
             ledger["fixed_stacks_bytes"], ledger["fixed_room_bytes"]),
         NUCLEUS_COLD_LEDGER_LINE % (
             ledger["cold_code_bytes"], ledger["cold_code_end"],
-            ledger["cold_arena_granules"], ledger["cold_arena_used_granules"],
-            ledger["cold_arena_free_granules"], ledger["cold_data_bytes"],
-            ledger["cold_data_base"], ledger["cold_room_bytes"]),
+            ledger["cold_data_bytes"], ledger["cold_data_base"],
+            ledger["cold_room_bytes"]),
         SERVICE_HOT_LEDGER_LINE % (
             ledger["service_hot_bytes"],
             ledger["service_hot_capacity_bytes"]),
@@ -726,93 +724,6 @@ def format_nucleus_ledger(ledger):
             ledger["common_m10_reservation_bytes"],
             ledger["common_limit_bytes"]),
     ))
-
-
-def align_up(value, alignment=GRANULE_SIZE):
-    """Round `value` up to the next `alignment` boundary."""
-    return (value + alignment - 1) & ~(alignment - 1)
-
-
-def align_down(value, alignment=GRANULE_SIZE):
-    """Round `value` down to the previous `alignment` boundary."""
-    return value & ~(alignment - 1)
-
-
-def granule_thresholds(total_size, granule=GRANULE_SIZE):
-    """Granule rounding distances for one module/user image.
-
-    `above_lower_bytes` is the saving that reaches the next lower granule
-    threshold, so removing it frees one granule.  `before_higher_bytes` is
-    the room left before the next higher threshold costs one granule.  A
-    saving smaller than `above_lower_bytes` frees no granule at all."""
-    if total_size <= 0:
-        return {"granules": 0, "above_lower_bytes": 0,
-                "before_higher_bytes": granule}
-    granules = (total_size + granule - 1) // granule
-    return {
-        "granules": granules,
-        "above_lower_bytes": total_size - (granules - 1) * granule,
-        "before_higher_bytes": granules * granule - total_size,
-    }
-
-
-def kernel_granule_thresholds(code_end, data_base, data_size, runtime_end,
-                              granule=GRANULE_SIZE):
-    """Kernel-side granule thresholds (section 32.39 ledger companion).
-
-    Two boundaries move as the kernel changes: the arena start follows the
-    aligned linked code end, and the arena end is the derived data base
-    `align_down(runtime_end - data_size, granule)`.  For each, the returned
-    pair gives the bytes that free one granule (a downward move) and the
-    bytes left before the next higher granule is spent (an upward move).
-
-    `data_above_lower_bytes`/`data_before_higher_bytes` are expressed as
-    runtime-data size changes: shrinking the data size by the former moves
-    the data base up one granule; growing it by the latter moves it down
-    one granule.  With the derived-base invariant the values are exact; a
-    synthetic geometry that does not satisfy it clamps at zero."""
-    top = runtime_end - data_base
-    return {
-        "code_end": code_end,
-        "code_above_lower_bytes": code_end - align_down(code_end, granule),
-        "code_before_higher_bytes": align_up(code_end, granule) - code_end,
-        "data_base": data_base,
-        "data_size": data_size,
-        "data_above_lower_bytes": max(0, data_size - (top - granule)),
-        "data_before_higher_bytes": max(0, top - data_size),
-    }
-
-
-def format_granule_thresholds(modules, kernel):
-    """Readable granule-threshold table for `zmodpack plan` and the packer.
-
-    `modules` is the boot-set entry list (with `above_lower_bytes`/
-    `before_higher_bytes`); `kernel` is a `kernel_granule_thresholds()`
-    dict.  Byte-identical between tools/zmodpack.py and tools/pack_image.py
-    (pinned by a host test)."""
-    lines = ["granule thresholds: bytes above the lower threshold free one "
-             "granule; bytes before the higher threshold spend one"]
-    header = "  %-10s %7s %6s %7s %8s %12s %13s"
-    lines.append(header % ("module", "image", "bss", "total", "granules",
-                           "free-granule", "cost-granule"))
-    for entry in modules:
-        lines.append("  %-10s %7d %6d %7d %8d %12d %13d"
-                     % (entry["name"], entry["image_size"],
-                        entry["bss_size"], entry["total_size"],
-                        entry["granules"], entry["above_lower_bytes"],
-                        entry["before_higher_bytes"]))
-    lines.append("  %-10s %7s %6s %7s %8s %12s %13s"
-                 % ("kernel", "-", "-", "-", "-", "-", "-"))
-    lines.append("  code end %04Xh: %d bytes free a granule, %d before one "
-                 "is spent"
-                 % (kernel["code_end"], kernel["code_above_lower_bytes"],
-                    kernel["code_before_higher_bytes"]))
-    lines.append("  data size %d at %04Xh: %d bytes free a granule, %d "
-                 "before one is spent"
-                 % (kernel["data_size"], kernel["data_base"],
-                    kernel["data_above_lower_bytes"],
-                    kernel["data_before_higher_bytes"]))
-    return "\n".join(lines)
 
 
 def romfs_placement(size):
@@ -835,41 +746,8 @@ def romfs_placement(size):
     return placement
 
 
-def load_arena_plan(build_dir):
-    """Load the boot-set arena plan emitted by tools/zmodpack.py plan.
-
-    Returns None when no plan was generated (host tests).  The
-    plan must agree with the declared arena geometry; a boot set that
-    cannot coexist is a build error here as well as in the planner.
-    """
-    if build_dir is None:
-        return None
-    path = Path(build_dir) / "arena.plan.json"
-    if not path.exists():
-        return None
-    try:
-        plan = json.loads(path.read_text())
-    except ValueError as exc:
-        raise LayoutError("arena.plan.json is malformed: %s" % exc)
-    arena = plan.get("arena", {})
-    for field, expected in (("start", ARENA_BASE), ("end", ARENA_END),
-                            ("granules", GRANULE_COUNT)):
-        if arena.get(field) != expected:
-            raise LayoutError(
-                "arena plan %s is %r, expected %r"
-                % (field, arena.get(field), expected))
-    used = sum(entry["granules"] for entry in plan.get("modules", []))
-    if used != arena.get("used_granules"):
-        raise LayoutError("arena plan used_granules does not match modules")
-    if used > GRANULE_COUNT:
-        raise LayoutError(
-            "declared boot set needs %d granules; arena holds %d"
-            % (used, GRANULE_COUNT))
-    return plan
-
-
 def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
-                   plan=None):
+                   service_plan=None):
     """Emit a small machine-readable manifest for debugging/reproducibility."""
     entries = {
         name: symbols.get(name) for name in (
@@ -880,21 +758,13 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
             "irq_transition_stack", "irq_transition_stack_top",
             "irq_isr_stack", "irq_isr_stack_top",
             "__kernel_code_end",
-            "__driver_arena_start", "__driver_arena_end",
             "s__DATA", "l__DATA", "s__INITIALIZED", "l__INITIALIZED",
             "rom_access_trampoline", "rom_access_sync",
             "rom_access_sync_end",
         )
     }
     stub = rom_access_stub_bytes(mem)
-    used = sum(entry["granules"] for entry in plan["modules"]) if plan else 0
-    ledger = nucleus_ledger(symbols, plan)
-    kernel = None
-    if symbols.get("__kernel_code_end") is not None \
-            and symbols.get("s__WINDOW_DATA") is not None:
-        kernel = kernel_granule_thresholds(
-            symbols["__kernel_code_end"], symbols["s__WINDOW_DATA"],
-            symbols.get("l__WINDOW_DATA", 0), BANK7_RUNTIME_END)
+    ledger = nucleus_ledger(symbols, service_plan)
     manifest = {
         "tool": "pack_image.py",
         "layout": {
@@ -910,8 +780,6 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
             "fixed_code_end": FIXED_CODE_END,
             "data_base": DATA_BASE,
             "window_data_base": WINDOW_DATA_BASE,
-            "driver_arena_base": ARENA_BASE,
-            "driver_arena_end": ARENA_END,
             "common_base": COMMON_BASE,
             "stack_base": STACK_BASE,
             "rom_page_size": PAGE_SIZE,
@@ -924,17 +792,6 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
             "rom_access_size": ROM_ACCESS_SIZE,
         },
         "nucleus": ledger,
-        "kernel": kernel,
-        "arena": {
-            "start": ARENA_BASE,
-            "end": ARENA_END,
-            "size": ARENA_END - ARENA_BASE,
-            "granule_size": GRANULE_SIZE,
-            "granules": GRANULE_COUNT,
-            "used_granules": used,
-            "free_granules": GRANULE_COUNT - used,
-            "modules": plan["modules"] if plan else [],
-        },
         "image": {"size": len(image), "sha256": hashlib.sha256(image).hexdigest()},
         "pages": [
             {
@@ -982,6 +839,76 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
     return manifest
 
 
+def _z80_length_table():
+    """Instruction lengths of the Z80's primary opcode map (0 = unknown).
+
+    The latch audit below must not mistake an operand byte for an opcode,
+    and the SDCC code this build links is full of `ld -45(ix),#0`
+    encodings (`DD 36 D3 00`), whose third byte alone looks like a latch
+    write.  Prefixes (CB, ED, DD, FD) are resolved by
+    instruction_length()."""
+    lengths = bytearray(1 for _ in range(256))
+    for op in (0x01, 0x11, 0x21, 0x31, 0x22, 0x2A, 0x32, 0x3A,
+               0xC2, 0xC3, 0xC4, 0xCA, 0xCC, 0xCD, 0xD2, 0xD4, 0xDA,
+               0xDC, 0xE2, 0xE4, 0xEA, 0xEC, 0xF2, 0xF4, 0xFA, 0xFC):
+        lengths[op] = 3
+    for op in (0x06, 0x0E, 0x16, 0x1E, 0x26, 0x2E, 0x36, 0x3E,
+               0x10, 0x18, 0x20, 0x28, 0x30, 0x38,
+               0xC6, 0xCE, 0xD3, 0xD6, 0xDB, 0xDE, 0xE6, 0xEE,
+               0xF6, 0xFE):
+        lengths[op] = 2
+    return bytes(lengths)
+
+
+_Z80_LENGTH = _z80_length_table()
+
+# Opcodes whose (HL) operand becomes (IX/IY+d) under a DD/FD prefix: the
+# encoded instruction grows by the displacement byte.
+_INDEX_DISPLACEMENT = frozenset(
+    [0x34, 0x35, 0x36, 0x46, 0x4E, 0x56, 0x5E, 0x66, 0x6E, 0x7E,
+     0x86, 0x8E, 0x96, 0x9E, 0xA6, 0xAE, 0xB6, 0xBE] +
+    list(range(0x70, 0x78)))
+
+
+def instruction_length(mem, addr):
+    """Encoded length of the instruction at `addr`, 0 when the address
+    holds no byte (a gap: callers advance one byte and resynchronise)."""
+    op = mem.get(addr)
+    if op is None:
+        return 0
+    if op in (0xCB, 0xED):
+        return 2
+    if op in (0xDD, 0xFD):
+        base = mem.get(addr + 1)
+        if base is None:
+            return 0
+        if base == 0xCB:
+            return 4  # DD/FD CB d op
+        return 1 + _Z80_LENGTH[base] + (
+            1 if base in _INDEX_DISPLACEMENT else 0)
+    return _Z80_LENGTH[op]
+
+
+def instruction_starts(mem, start, end, anchors=()):
+    """Instruction-start addresses of a code region [start, end).
+
+    A walk from the region start decodes forward; a region also carries
+    its own function symbols, and every symbol address is an instruction
+    boundary by construction, so each one anchors a second walk (a walk
+    may desynchronise where a region interleaves data, e.g. the string
+    literals SDCC emits between functions)."""
+    starts = set()
+    bases = [start] + [a for a in anchors if start <= a < end]
+    for base in sorted(set(bases)):
+        addr = base
+        while addr < end:
+            if addr in starts:
+                break
+            starts.add(addr)
+            addr += instruction_length(mem, addr) or 1
+    return starts
+
+
 def verify_no_banked_latch_writes(mem, symbols=None, production=True):
     """No un-audited mapping-changing instruction may be linked in bank 7.
 
@@ -1019,8 +946,13 @@ def verify_no_banked_latch_writes(mem, symbols=None, production=True):
     shim = extent("_zos_upcall", "zos_upcall_end")
     domain = extent("_ipc_domain_enter", "ipc_domain_switch_end")
     blob = extent("zos_nucleus_blob_start", "zos_nucleus_blob_end")
-    for addr in sorted(mem):
-        if mem[addr] != 0xD3 or mem.get(addr + 1) != 0x00:
+    anchors = [addr for addr in symbols.values() if isinstance(addr, int)]
+    candidates = set()
+    for start, end in ((BANK7_BASE, WINDOW_BASE),
+                       (WINDOW_BASE, COMMON_BASE)):
+        candidates |= instruction_starts(mem, start, end, anchors)
+    for addr in sorted(candidates):
+        if mem.get(addr) != 0xD3 or mem.get(addr + 1) != 0x00:
             continue
         if WINDOW_BASE <= addr < COMMON_BASE:
             raise LayoutError(
@@ -1082,9 +1014,9 @@ def pack(ihx_text, map_text, build_dir, suffix="", romfs=None,
             (build / ("page%d%s.bin" % (index, suffix))).write_bytes(bytes(page))
         (build / ("zephyros%s.bin" % suffix)).write_bytes(image)
         (build / ("zephyr80%s.bin" % suffix)).write_bytes(image)
-        plan = load_arena_plan(build_dir)
+        service_plan = load_service_plan(build_dir)
         write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
-                       plan)
+                       service_plan)
     return image
 
 
@@ -1109,24 +1041,10 @@ def main(argv):
     symbols = parse_map_symbols(map_text)
     digest = hashlib.sha256(image).hexdigest()
     print("pack_image.py: %d bytes, sha256 %s" % (len(image), digest))
-    plan = load_arena_plan(build_dir)
-    ledger = nucleus_ledger(symbols, plan)
+    service_plan = load_service_plan(build_dir)
+    ledger = nucleus_ledger(symbols, service_plan)
     if ledger is not None:
         print(format_nucleus_ledger(ledger))
-    kernel = None
-    if symbols.get("__kernel_code_end") is not None \
-            and symbols.get("s__WINDOW_DATA") is not None:
-        kernel = kernel_granule_thresholds(
-            symbols["__kernel_code_end"], symbols["s__WINDOW_DATA"],
-            symbols.get("l__WINDOW_DATA", 0), BANK7_RUNTIME_END)
-    if kernel is not None and plan is not None:
-        print(format_granule_thresholds(plan["modules"], kernel))
-    if plan is not None:
-        print("pack_image.py: boot set uses %d granules (%s), %d free"
-              % (plan["arena"]["used_granules"],
-                 ", ".join("%s x%d" % (entry["name"], entry["granules"])
-                           for entry in plan["modules"]),
-                 plan["arena"]["free_granules"]))
     print("pack_image.py: rom-access stub %d bytes at %04Xh mirrored into "
           "recovery pages %d-%d"
           % (ROM_ACCESS_SIZE, ROM_ACCESS_BASE, ROMFS_FIRST_PAGE,

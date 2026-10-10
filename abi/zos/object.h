@@ -84,10 +84,10 @@
 
 /* --- 8-bit protocol types ------------------------------------------------ */
 
-/* Device protocols keep the pinned M8 class slots (include/zephyros/device.h
- * ZDEV_*), so a protocol type and a service class coincide for the device
- * families; FILE and the filesystem-namespace protocol are not device
- * classes and continue the sequence. */
+/* The device families keep the pinned M8 class slots (the numbers are
+ * part of the deployed ABI), so a protocol type and a service class
+ * coincide for them; FILE and the filesystem-namespace protocol are not
+ * device classes and continue the sequence. */
 #define ZOS_TYPE_SERIAL  1u
 #define ZOS_TYPE_VIDEO   2u
 #define ZOS_TYPE_BLOCK   3u

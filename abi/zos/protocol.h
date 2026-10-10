@@ -22,10 +22,9 @@
  * (package 42b).
  *
  * Every service carries protocol version ZOS_PROTOCOL_VERSION (the
- * endpoint's registered version, returned by SYS_IPC_LOOKUP).  Classes
- * keep the numeric slots the M8 device contracts pinned (ZDEV_SERIAL,
- * ZDEV_VIDEO, ZDEV_BLOCK, ZDEV_HID, ZDEV_IOC, include/zephyros/device.h);
- * class 6 is the console service, which is not a device class.
+ * endpoint's registered version).  Classes keep the numeric slots the
+ * M8 device contracts pinned (1-5); class 6 is the console service,
+ * which is not a device class.
  *
  * Frame conventions (struct zos_ipc_frame, abi/zos/ipc.h):
  *
@@ -132,9 +131,12 @@
 
 /* --- video service (class ZOS_CLASS_VIDEO) -------------------------------
  *
- * The V9958 driver: the seven native VIDEO operations of
- * include/zephyros/video.h (ZVIDEO_CTRL_WRITE .. ZVIDEO_RESET) and the
- * character-output path the console composes.
+ * The V9958 driver: the seven native VIDEO operations (ZVIDEO_CTRL_WRITE
+ * .. ZVIDEO_RESET) and the character-output path the console composes.
+ * A directly attached video chip implements "write control/register
+ * bytes", "write VRAM data bytes", "write palette bytes", "write
+ * indirect-register bytes", "present" and "reset"; it does not implement
+ * packet types.
  *
  *   ZVIDEO_OP_SEND  (0)  arg0 = the native VIDEO operation; desc IN with
  *                        arg0 = offset, arg1 = payload length for the
@@ -155,13 +157,23 @@
 #define ZVIDEO_OP_WRITE 1u
 #define ZVIDEO_OP_PUTC  2u
 
+/* The native VIDEO operations (the ZVIDEO_OP_SEND argument; exact values,
+ * not Virtual Drip packet numbers). */
+#define ZVIDEO_CTRL_WRITE     1u
+#define ZVIDEO_DATA_WRITE     2u
+#define ZVIDEO_DATA_BLOCK     3u
+#define ZVIDEO_PALETTE_WRITE  4u
+#define ZVIDEO_INDIRECT_WRITE 5u
+#define ZVIDEO_PRESENT        6u
+#define ZVIDEO_RESET          7u
+
 /* --- serial service (class ZOS_CLASS_SERIAL) -----------------------------
  *
  * SIO0/B, the same channel as the early console, as a resident service.
  * Polling-only: the SIO interrupt mode stays disabled, so this service
  * owns no IRQ.
  *
- *   ZSIO_OP_PUTC  (0)  arg0 = byte; returns 0 or -ZDEV_ETIMEDOUT.
+ *   ZSIO_OP_PUTC  (0)  arg0 = byte; returns 0 or -ZOS_ETIMEDOUT.
  *   ZSIO_OP_WRITE (1)  desc IN: arg0 = offset, arg1 = length; returns
  *                      the bytes written.
  *   ZSIO_OP_POLL  (2)  returns 1 when a received byte is pending, else 0.
@@ -178,8 +190,8 @@
 /* --- IOC transport service (class ZOS_CLASS_IOC) -------------------------
  *
  * The command/reply lane and the bulk lanes of the Z80-to-MCU transport
- * (include/zephyros/ioc.h owns the class semantics and the transport
- * error codes; include/zephyros/ioc_protocol.h owns the command
+ * (include/zephyros/ioc.h owns the transport surface and its error
+ * codes; include/zephyros/ioc_protocol.h owns the command
  * vocabulary).  The service owns the wire framing, sequence, CRC, lane
  * setup and the READY/DONE bulk admission; a client sees native frames.
  *

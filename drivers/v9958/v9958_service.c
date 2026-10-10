@@ -26,7 +26,6 @@
 
 #include "zephyros/errno.h"
 #include "zephyros/ipc.h"
-#include "zephyros/video.h"
 #include "zos/protocol.h"
 
 #include "v9958_driver.h"
@@ -65,7 +64,7 @@ static int16_t v9958_service_stream(struct zos_ipc_frame *frame)
 					  : (int16_t)-ZOS_EINVAL;
 		}
 		if (v9958_send(&v9958_state, operation, v9958_batch,
-			       chunk) != ZDEV_OK) {
+			       chunk) != 0) {
 			return (int16_t)-ZOS_EINVAL;
 		}
 		done = (uint16_t)(done + chunk);

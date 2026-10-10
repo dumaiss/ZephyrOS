@@ -1,8 +1,5 @@
 {
   "name": "sio",
-  "type": "service",
-  "abi": 3,
-  "flags": 0,
   "objects": [
     "sio.rel",
     "sio_io.rel",

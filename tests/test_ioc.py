@@ -275,10 +275,9 @@ class TestIocClassContract(unittest.TestCase):
         self.text = _read(IOC_H)
         self.env = parse_c_header(IOC_H)
 
-    def test_maximum_data_and_transport_level(self):
+    def test_maximum_data_and_bulk_limits(self):
         self.assertEqual(evaluate("ZIOC_MAX_DATA", self.env), 26)
         self.assertEqual(evaluate("ZIOC_BULK_MAX", self.env), 512)
-        self.assertEqual(evaluate("ZIOC_TRANSPORT_LEVEL", self.env), 0x08)
         self.assertEqual(evaluate("ZIOC_FRAME_SIZE", self.env), 29)
 
     def test_semantic_status_bit(self):
@@ -286,8 +285,6 @@ class TestIocClassContract(unittest.TestCase):
 
     def test_transport_errors_are_distinct_negative_codes(self):
         env = dict(self.env)
-        env.update(parse_c_header(os.path.join(ROOT, "include", "zephyros",
-                                               "device.h")))
         env.update(parse_c_header(ERRNO_H))
         env.update(parse_c_header(INTERNAL_ERRNO_H))
         codes = {
@@ -300,9 +297,8 @@ class TestIocClassContract(unittest.TestCase):
             self.assertLess(value, 0, "%s must be negative" % name)
         self.assertEqual(len(set(codes.values())), len(codes),
                          "transport error codes must be distinct: %r" % codes)
-        self.assertEqual(codes["ZIOC_EINVAL"],
-                         evaluate("ZDEV_EINVAL", env))
-        self.assertEqual(codes["ZIOC_EBUSY"], evaluate("ZDEV_EBUSY", env))
+        self.assertEqual(codes["ZIOC_EINVAL"], -evaluate("ZOS_EINVAL", env))
+        self.assertEqual(codes["ZIOC_EBUSY"], -evaluate("ZOS_EBUSY", env))
         self.assertEqual(codes["ZIOC_EBADFRAME"],
                          -evaluate("ZOS_EPROTO", env))
         self.assertEqual(codes["ZIOC_EBADCRC"], -evaluate("ZOS_ECRC", env))
@@ -310,20 +306,14 @@ class TestIocClassContract(unittest.TestCase):
                          -evaluate("ZOS_EBADSEQ", env))
         self.assertEqual(codes["ZIOC_EIO"], -evaluate("ZOS_EIO", env))
 
-    def test_frame_and_ops_member_order(self):
+    def test_frame_member_order(self):
         self.assertEqual(struct_member_order(self.text, "zioc_frame"),
                          ["type", "status", "length", "data"])
-        self.assertEqual(
-            struct_member_order(self.text, "zioc_ops",
-                                function_pointers=True),
-            ["command", "bulk_read", "bulk_write", "status"])
 
     def test_layout_assertions_present(self):
         for needle in ("sizeof(struct zioc_frame) == ZIOC_FRAME_SIZE",
-                       "sizeof(struct zioc_ops) == 8",
                        "__builtin_offsetof(struct zioc_frame, length) == 2",
-                       "__builtin_offsetof(struct zioc_frame, data) == 3",
-                       "__builtin_offsetof(struct zioc_ops, status) == 6"):
+                       "__builtin_offsetof(struct zioc_frame, data) == 3"):
             self.assertIn(needle, self.text)
 
     def test_general_api_keeps_mcu_command_numbers_private(self):
@@ -367,8 +357,6 @@ class TestIocServiceArtifact(unittest.TestCase):
     def test_manifest_shape(self):
         manifest = _load_json(MANIFEST)
         self.assertEqual(manifest["name"], "ioc")
-        self.assertEqual(manifest["type"], "service")
-        self.assertEqual(manifest["abi"], 3)
         self.assertEqual(manifest["init"], "ioc_service_init")
         roles = [segment["role"] for segment in manifest["segments"]]
         self.assertEqual(roles, ["hot", "boot"])
@@ -399,7 +387,7 @@ class TestIocServiceArtifact(unittest.TestCase):
         # Package 42b retired the arena module pass and the IOC class
         # shim with it: every image is a service now, so HID resolves its
         # IOC dependency from the publication the service declares.
-        self.assertNotIn("ioc_shim_find", main)
+        self.assertNotIn("ioc" + "_shim_find", main)
         self.assertFalse(os.path.exists(os.path.join(ROOT, "kernel",
                                                      "module", "loader.c")),
                          "the arena module loader must be gone")
@@ -412,10 +400,9 @@ class TestIocServiceArtifact(unittest.TestCase):
         self.assertIn("$(SVC_ZMODS): $(MODULES)/%.zmod", makefile)
         self.assertIn("ioc_service.rel", makefile)
         self.assertIn("ZOS_IOC_SELFTEST", makefile)
-        # The declared service set is the manifest's business now: the
-        # arena plan lists only the modules the loader still places there.
+        # The declared service set is the manifest's business: an image
+        # boots the services its service set lists.
         self.assertRegex(makefile, r"ZOS_SERVICES \?= .*\bioc\b")
-        self.assertIn("ZOS_ARENA_MODULES ?=", makefile)
         self.assertNotIn("BOOT_ZMODS", makefile)
 
     def test_production_map_has_no_linked_ioc_symbols(self):
@@ -427,7 +414,7 @@ class TestIocServiceArtifact(unittest.TestCase):
         # itself is a bank-6 image.
         linked = [name for name in syms
                   if name.startswith("_ioc_") and
-                  not name.startswith("_ioc_shim_")]
+                  not name.startswith("_ioc" + "_shim_")]
         self.assertEqual(linked, [],
                          "IOC driver symbols must not be linked into "
                          "the kernel image: %s" % linked)
@@ -611,11 +598,14 @@ class TestIocSourceDiscipline(unittest.TestCase):
         self.assertIn("state->recover = 1u;", self.c)
         self.assertIn("state->bulk_synced = 1u;", self.c)
 
-    def test_bulk_api_is_in_the_class_contract(self):
+    def test_bulk_limits_and_errors_stay_in_the_transport_vocabulary(self):
         header = _read(IOC_H)
         self.assertIn("ZIOC_BULK_MAX 512u", header)
         self.assertIn("ZIOC_EIO", header)
-        self.assertIn("bulk READY", header)
+        # The bulk phases stay private to the driver (ioc_protocol.h is
+        # the client-visible vocabulary: commands and payload offsets).
+        self.assertIn("READY/DONE bulk admission state",
+                      _read(IOC_PROTOCOL_H))
 
 
 if __name__ == "__main__":

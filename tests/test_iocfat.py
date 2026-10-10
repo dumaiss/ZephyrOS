@@ -94,7 +94,7 @@ class TestIocFatSourceLayout(IocFatStaticBase):
         text = read(MODULE_SRC)
         self.assertIn("ipc_service_api", text)
         self.assertIn("ZIOC_OP_COMMAND", text)
-        self.assertNotIn("zioc_ops", text)
+        self.assertNotIn("zioc" + "_ops", text)
         self.assertNotIn("ZCAP_IOC_COMMAND", text)
 
     def test_single_cache_slot_is_pinned(self):
@@ -125,7 +125,6 @@ class TestIocFatManifest(IocFatStaticBase):
     def test_manifest_shape(self):
         manifest = json.loads(read(MANIFEST))
         self.assertEqual(manifest["name"], "iocfat")
-        self.assertEqual(manifest["type"], "service")
         self.assertEqual(manifest["init"], "iocfat_init")
         self.assertEqual([segment["role"] for segment in manifest["segments"]],
                          ["hot"])
@@ -148,8 +147,6 @@ class TestIocFatManifest(IocFatStaticBase):
         with open(BUILT_ZMOD, "rb") as handle:
             blob = handle.read()
         info = zmodpack.parse_container(blob, "iocfat.zmod")
-        self.assertEqual(info["module_type"], "service")
-        self.assertEqual(info["service_abi"], 4)
         self.assertGreater(info["image_size"], 0)
         self.assertEqual([segment["role"] for segment in info["segments"]],
                          ["hot"])
@@ -202,7 +199,6 @@ class TestIocFatIntegration(IocFatStaticBase):
         text = read(MAKEFILE)
         # Package 42b: the driver is a service image of the production and
         # acceptance boot sets, packed like the other services.
-        self.assertIn("ZOS_ARENA_MODULES ?=", text)
         self.assertIn("SVC_MANIFEST_DIR ?= services/manifests", text)
         self.assertRegex(text, r"ZOS_SERVICES \?= .*\biocfat\b")
         self.assertIn("tools/zmodpack.py pack $< $@ --objdir $(MODULES)",

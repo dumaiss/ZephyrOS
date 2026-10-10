@@ -111,21 +111,20 @@ current boot).
   fallback-image matrix with its display confirmations) passed
   2026-10-04.**
 - **M9 — Native VFS and filesystem framework**: the kernel VFS core (path
-  normalization, flat first-component mount selection, path-based provider
-  registry, four-phase lifecycle, kernel file/directory API, `zmod_source`
-  adapter), the generated static mount table (`config/mounts.json` +
-  `tools/mountgen.py`), ROMFS as a statically linked filesystem provider
-  mounted at `/SYSTEM`, the global owner-tagged descriptor pool and
-  per-process CWD, the pinned native `FS_*` syscall family (`10h-1Fh`), the
-  user SDK and its `fstest.zex` acceptance program, driver ABI v3
-  `fs_register`, the deferred `ZDEV_BLOCK` class, `SYS_EXEC` nesting with
-  the startup block v1 argument contract, and the resident IOC-FAT provider
-  (`iocfat.zmod`) mounted at `/` from `ioc.0` with its one-slot
-  write-through 512-byte file-data cache.  The milestone's end-to-end
-  acceptance is `make m9-selftest` on a card; the full matrix, the
-  tree/image hashes and the final bank-7 ledger are in
-  `docs/validation/2026-10-05-m9-filesystem.md`, and the implementation
-  record is `docs/vfs.md`.
+  normalization, root selection, the kernel file API), ROMFS serving
+  `/SYSTEM`, the global owner-tagged descriptor pool and per-process CWD,
+  the native `FS_*` syscall family (`10h-1Fh`), the user SDK and its
+  `fstest.zex` acceptance program, `SYS_EXEC` nesting with the startup
+  block v1 argument contract, and the resident IOC-FAT provider
+  (`iocfat.zmod`) with its one-slot write-through 512-byte file-data
+  cache.  M9's acceptance matrix, the tree/image hashes and the bank-7
+  ledger of the time are in `docs/validation/2026-10-05-m9-filesystem.md`;
+  the implementation record is `docs/vfs.md`.
+  **M10 (work packages 42a-42c) then replaced the M9 mount table, the
+  provider ABI and the driver ABI**: VFS owns three static roots (`/FS`,
+  `/SYSTEM`, `/dev`), the filesystem driver is a bank-6 service image that
+  publishes `/FS`, and its outcome image is `make fs-selftest`
+  (`docs/validation/2026-10-09-m10-prune-nucleus.md`).
   **Status: see the M9 acceptance matrix in
   `docs/validation/2026-10-05-m9-filesystem.md`** (the milestone closes only
   when every required row has passed).
@@ -147,18 +146,16 @@ make test          # host image/layout/ABI tests + artifact integrity checks
 make check         # reproducible-rebuild proof + full validation stack
 make subsystem-selftest
                    # subsystem acceptance: the current boot path with an
-                   # SIO-only boot set + loader/ROMFS/process fixtures,
-                   # replaying the migrated syscall/IRQ/ROMFS/process/
-                   # loader mechanism groups and the monitor session
-                   # (build-subsys-selftest/)
+                   # SIO + console service set, replaying the syscall,
+                   # IRQ, ROMFS-reader and process/ZEX mechanism groups
+                   # and the monitor session (build-subsys-selftest/)
 make romfs-corrupt-selftest
                    # corrupt-recovery-store image: the kernel rejects the
                    # store and panics before any module runs
                    # (build-romfs-corrupt/)
 make zmod-test
-                   # build/pack/validate the SIO module variants and the
-                   # synthetic ZMOD fixtures; host packer tests
-                   # (build/modules/)
+                   # build/pack/validate the service images; host packer
+                   # and container tests (build/modules/)
 make romfs-test
                    # validate/dump the ROMFS recovery store; host format
                    # and reader tests
@@ -183,40 +180,28 @@ make video-selftest
 make console-selftest
                    # console binding acceptance image + host replay
 make console-integration-selftest
-                   # console integration acceptance: full four-module image +
-                   # package-20 target diagnostic + monitor launcher, and
-                   # the production-byte simulator replay (boot order,
-                   # binding, IOC command/bulk, HID queue, scripted
-                   # monitor session, post-fault recovery)
+                   # console integration acceptance: full five-service image +
+                   # target diagnostic + monitor launcher, and the
+                   # production-byte simulator replay (load order, binding,
+                   # IOC command/bulk, HID queue, scripted monitor session)
                    # (build-console-integration-selftest/)
-make m9-vfs-selftest
-                   # M9 VFS bootstrap acceptance: /SYSTEM mounted by VFS,
-                   # modules + monitor loaded by path, target VFS selftest
-                   # (build-m9-vfs-selftest/)
-make m9-required-mount-selftest
-                   # M9 mount-policy acceptance image + host replay
 make console-fallback-selftests
-                   # builds every failure/fallback variant image (no HID,
-                   # no HID+V9958, malformed IOC, arena exhaustion, font
-                   # failure, HID rollback) and replays each against its
-                   # exact binding and early-SIO diagnostics
-make m9-provider-selftest
-                   # M9 provider ABI acceptance: the test-only writable
-                   # RAM provider registered through ABI v3
-make m9-fs-selftest
-                   # M9 filesystem syscall acceptance: the native
-                   # fstest.zex over the public FS_* family
-make m9-exec-selftest
-                   # M9 SYS_EXEC acceptance: nesting, argument transport and
-                   # the depth probe
-make m9-iocfat-selftest
-                   # M9 IOC-FAT provider acceptance: the resident FS2
-                   # provider against the simulator's FatFs peer
-make m9-selftest
-                   # M9 integration acceptance: the production boot path with
-                   # `/` on the card, running fstest.zex (and its deep-matrix
-                   # child fsfat.zex), the fsdeep.zex depth probe and the two
-                   # fault windows (build-m9-selftest/)
+                   # the two service-set subsets (no HID; no HID and no
+                   # V9958) and their exact composition lanes
+make fs-selftest
+                   # filesystem outcome image: writes, reads, seeks,
+                   # renames, unlinks and enumerates through FILE handles
+                   # on `/FS` and `/SYSTEM` (build-fs-selftest/)
+make ns-selftest
+                   # namespace/handle outcome image: the three static
+                   # roots, the standard handles, publications and
+                   # enumeration (build-ns-selftest/)
+make ipc-selftest
+                   # IPC substrate acceptance image + host and simulator
+                   # replays (build-ipc-selftest/)
+make nucleus-selftest
+                   # fixed-core and upcall-shim acceptance image
+                   # (build-nucleus-selftest/)
 # Hardware smoke checks: each mode verifies ONE specific image, and the
 # production image and the acceptance images have different serial
 # transcripts.  Build the image (`make hardware-images` builds them all),
@@ -230,10 +215,6 @@ make smoke-hardware SERIAL_PORT=/dev/ttyUSB0
                    # monitor banner + 'Z80> ' prompt (optional boot-module
                    # diagnostics are tolerated; a panic or an unbound
                    # console fails)
-make smoke-hardware-m9 SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-m9-selftest/zephyros-m9-selftest.bin
-                   # (make m9-selftest): the whole M9 integration
-                   # acceptance on a writable FAT card
 make smoke-hardware-subsystem SERIAL_PORT=/dev/ttyUSB0
                    # flash build-subsys-selftest/zephyros-subsys-selftest.bin
                    # (make subsystem-selftest): the five group
@@ -264,9 +245,8 @@ make smoke-hardware-console-integration SERIAL_PORT=/dev/ttyUSB0
                    # human HID/V9958 monitor pass on the display
 make smoke-hardware-console-fb-nohid SERIAL_PORT=/dev/ttyUSB0
                    # flash build-console-fb-nohid/zephyros-console-fb-nohid.bin
-                   # (make console-fallback-selftests); fallback variants (also
-                   # -console-fb-nohid-nov9958, -console-fb-badioc,
-                   # -console-fb-arena) each verify
+                   # (make console-fallback-selftests); the second fallback
+                   # subset (-console-fb-nohid-nov9958) verifies
                    # their exact binding, early-SIO diagnostic and scripted
                    # serial input where the input is SIO; V9958-bound output
                    # is confirmed on the display by the operator
@@ -356,27 +336,25 @@ ZephyrOS/
 │                          devices.md, module-format.md,
 │                          romfs-format.md, zex-format.md, monitor.md,
 │                          sdk.md, vfs.md
-├── config/mounts.json     production VFS mount policy (only /SYSTEM)
-├── include/zephyros/      types.h, platform.h, kernel.h, syscall.h,
-│                          errno.h, irq.h, device.h, driver.h,
-│                          console.h, module.h, romfs.h, process.h,
-│                          zex.h, ioc.h, hid.h, video.h, fs.h, vfs.h
-├── fs/romfs/              M9 ROMFS VFS provider (romfs_provider.c)
+├── include/zephyros/      kernel.h, errno.h, irq.h, ipc.h, service.h,
+│                          romfs.h, process.h, zex.h, ioc.h,
+│                          ioc_protocol.h, platform.h
+├── services/              console/ (the console service image),
+│                          manifests/ (one service manifest per image)
+├── fs/iocfat/             the FS service image's provider body
 ├── boot/start.asm         common boot entry + C runtime initialization
 ├── boot/shadow_copy.asm   reset/ROM-to-SRAM copier
 ├── kernel/                main.c, panic.c, early_console.c, syscall.c,
 │                          memory/ (banking.asm, user_copy.asm),
 │                          syscall/ (entry.asm, page_zero.asm, diag.c,
 │                          diag_io.asm), runtime/ (sdcc_helpers.asm),
-│                          device/ (registry.c, console.c),
-│                          irq/, module/ (arena.asm, loader.c,
-│                          relocate.c),
+│                          irq/, service/ (service_loader.c,
+│                          service_boot.asm),
 │                          romfs/ (romfs.c, rom_access.asm),
-│                          vfs/ (mount_config.h, path.c, mount.c, file.c,
-│                          dir.c),
+│                          vfs/ (ns.c, ns_file.c, path.c, process.c,
+│                          workspace.c),
 │                          process/ (process.c, exec.c, launch.asm)
-├── drivers/               sio/ (sio.c, sio_io.asm, sio_module.c),
-│                          ioc/, hid/, v9958/ (device modules),
+├── drivers/               sio/, ioc/, hid/, v9958/ (service images),
 │                          ctc/ (ctc.c)
 ├── modules/               manifests/ (production ZMOD metadata),
 │                          runtime/ (shared module-local SDCC glue)
@@ -391,17 +369,14 @@ ZephyrOS/
 │                          monitor/ (native monitor.zex sources + its
 │                          hex/dump/status helpers),
 │                          helloworld/ (bootable SDK demo)
-├── recovery/manifest.json production ROMFS contents (sio.zmod, ioc.zmod,
-│                          hid.zmod, v9958.zmod, v9958-6x8.font,
-│                          monitor.zex)
-├── tools/                 pack_image.py, mapcheck.py, mountgen.py,
-│                          zmodpack.py, romfspack.py, zexpack.py,
-│                          fontpack.py, serial_smoke.py
+├── recovery/manifest.json production ROMFS contents (the five service
+│                          images, services.man and monitor.zex)
+├── tools/                 pack_image.py, mapcheck.py, zmodpack.py,
+│                          romfspack.py, zexpack.py, fontpack.py,
+│                          serial_smoke.py
 ├── tests/                 host-side image/layout/ABI tests + Z80 replays;
-│                          hid/, video/, console/, m9/, subsys/
-│                          (manifests, fixtures, generators); modules/
-│                          (test ZMOD sources + manifests); target/
-│                          (subsystem acceptance code, headers, shared
-│                          runner)
+│                          hid/, video/, console/, ipc/, ns/, fs/, subsys/
+│                          (manifests and generators); target/ (acceptance
+│                          code, headers, shared runner)
 └── work/                  milestone worker contracts
 ```

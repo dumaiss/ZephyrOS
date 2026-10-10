@@ -61,7 +61,7 @@ static int zfs_call(unsigned char handle, unsigned char op, void *buffer,
  * the CWD's first component otherwise (a relative operation belongs to
  * whichever provider owns the CWD).  Returns the root length (1..127,
  * including the leading slash) or 0xFFFF. */
-static unsigned int zfs_provider_root(const char *path, char *root,
+static unsigned int zfs_root_of(const char *path, char *root,
 				      unsigned int root_size)
 {
 	unsigned int n;
@@ -95,10 +95,10 @@ static unsigned int zfs_provider_root(const char *path, char *root,
 
 /* Bind the owning provider root for a name operation and return its
  * filesystem-namespace handle, or the negated error. */
-static int zfs_provider(const char *path)
+static int zfs_bind_root(const char *path)
 {
 	char root[ZOS_PATH_MAX];
-	unsigned int length = zfs_provider_root(path, root, sizeof(root));
+	unsigned int length = zfs_root_of(path, root, sizeof(root));
 	unsigned char type = 0u;
 	int handle;
 
@@ -126,7 +126,7 @@ static int zfs_path_op(const char *path, unsigned char op)
 	if (length == 0xFFFFu) {
 		return -ZOS_EINVAL;
 	}
-	handle = zfs_provider(path);
+	handle = zfs_bind_root(path);
 	if (handle < 0) {
 		return handle;
 	}
@@ -235,7 +235,7 @@ int zos_stat(const char *path, struct zfs_stat *out)
 	if (length == 0xFFFFu) {
 		return -ZOS_EINVAL;
 	}
-	handle = zfs_provider(path);
+	handle = zfs_bind_root(path);
 	if (handle < 0) {
 		return handle;
 	}
@@ -292,7 +292,7 @@ int zos_rename(const char *oldpath, const char *newpath)
 		zos_rename_paths[from_len + 1u + i] = newpath[i];
 	}
 	zos_rename_paths[from_len] = '\0';
-	handle = zfs_provider(oldpath);
+	handle = zfs_bind_root(oldpath);
 	if (handle < 0) {
 		return handle;
 	}

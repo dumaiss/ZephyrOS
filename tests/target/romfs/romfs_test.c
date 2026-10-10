@@ -19,7 +19,6 @@
  */
 
 #include "zephyros/romfs.h"
-#include "zephyros/module.h"
 #include "service_client.h"
 #include "zephyros/kernel.h"
 
@@ -85,11 +84,9 @@ void zos_run_romfs_selftest(void)
 
 	romfs_selftest_result = ZOS_RFST_FAIL_BOOT;
 
-	/* The ROMFS boot must have left a resident module and a bound
-	 * console; everything below is relative to that baseline. */
-	if (module_count() == 0 ||
-	    module_get(0) == (const struct zmod_module *)0 ||
-	    service_cli_console_handle() == 0) {
+	/* The resident service boot must have left a bound console;
+	 * everything below is relative to that baseline. */
+	if (service_cli_console_handle() == 0) {
 		romfs_fail(ZOS_RFST_FAIL_BOOT);
 		return;
 	}

@@ -60,7 +60,7 @@ static int16_t sio_write_buffer(struct zos_ipc_frame *frame)
 		if (sio0b_write(&sio0b_state, (const char *)sio_batch,
 				chunk) != (int)chunk) {
 			return done != 0u ? (int16_t)done
-					  : (int16_t)ZDEV_ETIMEDOUT;
+					  : (int16_t)-ZOS_ETIMEDOUT;
 		}
 		done = (uint16_t)(done + chunk);
 	}
@@ -95,7 +95,7 @@ static int16_t sio_read_buffer(struct zos_ipc_frame *frame)
 		if (sio_api->copy_out(frame->desc, (uint16_t)(offset + done -
 							      chunk),
 				      sio_batch_address, chunk) < 0) {
-			return (int16_t)ZDEV_EINVAL;
+			return (int16_t)-ZOS_EINVAL;
 		}
 	}
 	return (int16_t)done;

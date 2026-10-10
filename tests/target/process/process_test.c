@@ -21,10 +21,9 @@
 #include "zephyros/process.h"
 #include "zos/syscall.h"
 #include "service_client.h"
-#include "zephyros/module.h"
 #include "zephyros/kernel.h"
 #include "zephyros/romfs.h"
-#include "zephyros/device.h"
+#include "zephyros/errno.h"
 #include "kernel/vfs/vfs.h"
 
 #include "process_selftest.h"
@@ -139,11 +138,9 @@ void zos_run_process_selftest(void)
 
 	process_selftest_result = ZOS_PCST_FAIL_BOOT;
 
-	/* The ROMFS boot must have left a resident module and a bound
-	 * normal console; the process table starts empty. */
-	if (module_count() == 0 ||
-	    module_get(0) == (const struct zmod_module *)0 ||
-	    service_cli_console_handle() == 0 || !process_idle_ok()) {
+	/* The resident service boot must have left a bound normal
+	 * console; the process table starts empty. */
+	if (service_cli_console_handle() == 0 || !process_idle_ok()) {
 		process_fail(ZOS_PCST_FAIL_BOOT, 0);
 		return;
 	}
@@ -354,17 +351,17 @@ void zos_run_process_selftest(void)
 					(uint16_t)(rsize - n), res_buf, n) !=
 				(int)n ||
 		    romfs_resource_read(ZOS_PCST_DATA_NAME, rsize, res_buf, 1) !=
-				ZDEV_EINVAL) {
+				(-ZOS_EINVAL)) {
 			process_fail(ZOS_PCST_FAIL_RESOURCE, 5); return;
 		}
 		/* ZMOD/ZEX files are not importable; missing names and null
 		 * buffers fail predictably. */
 		if (romfs_resource_size(ZOS_PCST_ZEXTEST_NAME, &rsize) !=
-				ZDEV_EINVAL ||
-		    romfs_resource_size("sio.zmod", &rsize) != ZDEV_EINVAL ||
-		    romfs_resource_size("absent.bin", &rsize) != ZDEV_ENOENT ||
+				(-ZOS_EINVAL) ||
+		    romfs_resource_size("sio.zmod", &rsize) != (-ZOS_EINVAL) ||
+		    romfs_resource_size("absent.bin", &rsize) != (-ZOS_ENOENT) ||
 		    romfs_resource_read(ZOS_PCST_DATA_NAME, 0, (void *)0, 1) !=
-				ZDEV_EINVAL) {
+				(-ZOS_EINVAL)) {
 			process_fail(ZOS_PCST_FAIL_RESOURCE, 6); return;
 		}
 	}

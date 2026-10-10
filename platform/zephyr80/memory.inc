@@ -20,16 +20,17 @@ ZOS_PAGE_ZERO_END       = 0x0100
 ;                touched, while the window shows another bank, plus the
 ;                ISR stack and the service stack.
 ;   6000h-DFFFh  cold half, visible while the window shows bank 7
-;                (P = 0): syscall-side and boot code, the driver arena
-;                and the objects that move to bank 6 in stages 4-5.
+;                (P = 0): the syscall dispatcher and bodies, process
+;                management, the service loader and the VFS core.
 ;
 ; The fixed core's loadable (ROM-initialized) part ends at the linked
 ; end of the fixed code areas; its zero-initialized runtime data begins
 ; at the derived data base
 ; (align_down(ZOS_SERVICE_STACK_BASE - fixed_data_size, 512)) and is
-; never loaded from ROM.  In the cold half the driver arena sits between
-; the granule-aligned end of the window code and the derived window data
-; base (align_down(ZOS_BANK7_RUNTIME_END - window_data_size, 512)).
+; never loaded from ROM.  The cold half's data base derives straight
+; from the linked end of the window code:
+; align_up(window_code_end, ZOS_BANK7_DATA_ALIGN), so code and data sit
+; back to back with no reservation between them.
 ZOS_BANK7_BASE          = 0x2000
 ZOS_REV13_WINDOW_BASE   = 0x6000
 ZOS_BANK7_RUNTIME_END   = 0xE000
@@ -53,17 +54,11 @@ ZOS_SERVICE_STACK_SIZE  = 0x0200
 ; this top; nothing else may use the reservation.
 ZOS_IPC_APERTURE_STACK_SIZE = 4
 
-; Driver arena.  There is one geometry: the two-pass build derives the
-; arena start from the granule-aligned end of the linked window code and
-; the arena end from the window-data size, exporting __kernel_code_end /
-; __driver_arena_start / __driver_arena_end through kernel/module/arena.asm
-; and the generated build/geometry/arena_geometry.inc (its memory.inc
-; variant additionally carries both data bases, the granule count and the
-; fixed-core ledger fields).  The probe link places no arena.  There is
-; no granule floor: the arena only has to hold the declared boot set,
-; which tools/zmodpack.py's plan and tools/pack_image.py enforce.  The
-; window data base is never part of the allocator.
-ZOS_DRIVER_GRANULE_SIZE = 0x0200
+; Bank-7 data alignment.  The two derived runtime-data bases (the fixed
+; core's, below the service stack, and the cold half's, straight after
+; the linked window code) are aligned to this granule so the linker's
+; segment bases are reproducible.
+ZOS_BANK7_DATA_ALIGN = 0x0200
 
 ; Permanent common code/data in physical SRAM bank 0.  ZOS_COMMON_CODE_END
 ; is the exclusive end of ordinary common content; the IM2 vector page and

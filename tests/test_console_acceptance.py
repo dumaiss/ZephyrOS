@@ -18,14 +18,14 @@ Coverage, all against those linked bytes:
   (the service transcript and the boot line `console: service OK` travel
   over the console service, i.e. on the V9958 lane), the store's manifest
   lists the five services in load order and every image is a service
-  container registering exactly one endpoint at version 1;
+  container exporting exactly one endpoint at version 1;
 * the scripted visible monitor session: the nucleus writes its boot line
   through the console service, the monitor runs its banner and prompt on
   the V9958, a typed `r` returns the sysinfo/process/bank rows through
   the HID-input path the console composed, and `q` exits and relaunches;
 * the IOC lane the store's filesystem service (IOC-FAT) drives through the
-  nucleus class shim: link bring-up plus the FS2 command exchange, seen
-  from the emulated MCU peer;
+  IOC endpoint: link bring-up plus the FS2 command exchange, seen from
+  the emulated MCU peer;
 * the integration image: the loader's per-service evidence rows and
   ledger, the target diagnostic's endpoint/composition/marker/typed-line
   /PING/rejection transcript, the same bytes on the visible lane, and the
@@ -37,6 +37,7 @@ Skipped when the images have not been built.
 """
 
 import hashlib
+import json
 import os
 import re
 import sys
@@ -86,7 +87,7 @@ INTEGRATION_LINES = (
 )
 
 # IOC peer traffic: the lane's one bounded bring-up, then the IOC-FAT
-# module's FS2 exchange through the nucleus class shim.
+# service's FS2 exchange through its resolved IOC endpoint.
 LINK_SYNC_REQUEST = 0x0C
 PING_REQUEST = 0x01
 PING_RESPONSE = 0x81
@@ -248,12 +249,14 @@ class TestProductionImage(ConsoleReplayBase):
             path = os.path.join(ROOT, "build", "modules", name)
             with open(path, "rb") as handle:
                 info = zmodpack.parse_container(handle.read(), name)
-            self.assertEqual(info["module_type"], "service", name)
-            # ABI 4: every production image carries its publications.
-            self.assertEqual(info["service_abi"], 4, name)
+            # The flat plan: one endpoint per image, and every
+            # production image carries its publication (work package 42c).
             self.assertEqual([(ep["class"], ep["instance"], ep["version"])
                               for ep in info["endpoints"]],
                              [(klass, 0, 1)], name)
+            self.assertEqual(len(info["publications"]), 1, name)
+            self.assertEqual(info["publications"][0]["number"],
+                             info["endpoints"][0]["number"], name)
 
     @staticmethod
     def manifest_names(path):
@@ -263,7 +266,6 @@ class TestProductionImage(ConsoleReplayBase):
                 data = handle.read()
             return [data[i:i + 24].split(b"\0")[0].decode()
                     for i in range(0, len(data), 24)]
-        import json
         with open(path) as handle:
             return [entry["name"] for entry in json.load(handle)["files"]]
 
@@ -281,6 +283,14 @@ class TestIntegrationImage(ConsoleReplayBase):
     IMAGE_SUBDIR = INTEGRATION_DIR
     IMAGE_NAME = INTEGRATION_IMAGE
 
+    def service_plan(self):
+        """The nucleus ledger the packer's set report carries for this
+        image (tools/zmodpack.py services --report services.plan.json)."""
+        path = os.path.join(ROOT, INTEGRATION_DIR, "modules",
+                            "services.plan.json")
+        with open(path, "r") as handle:
+            return json.load(handle)["nucleus"]
+
     def test_diagnostic_transcript_and_visible_lanes(self):
         z = self.start(queue=INTEGRATION_TYPED)
         self.boot_to_prompt(z)
@@ -293,8 +303,13 @@ class TestIntegrationImage(ConsoleReplayBase):
                      "console.zmod"):
             self.assertIn(("driver %s: hot " % name).encode(), sio)
         self.assertIn(b"service loader: 5 images in bank 6\r\n", sio)
-        self.assertIn(b"driver hot: 12930 bytes of 32768\r\n", sio)
-        self.assertIn(b"driver boot/bulk: 2170 bytes of 24576\r\n", sio)
+        # The loader's two ledgers must equal what the packer's plan
+        # (services.plan.json) reports for the same set.
+        plan = self.service_plan()
+        self.assertIn(b"driver hot: %d bytes of 32768\r\n"
+                      % plan["service_hot_bytes"], sio)
+        self.assertIn(b"driver boot/bulk: %d bytes of 24576\r\n"
+                      % plan["service_boot_bytes"], sio)
         for line in INTEGRATION_LINES:
             self.assertIn(line, sio)
         self.assertNotIn(b"console integration: FAIL", sio)

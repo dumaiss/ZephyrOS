@@ -6,8 +6,8 @@ Covers the declarative and structural surface that can be checked
 without executing target code:
 
   - include/zephyros/video.h: the exact native operation values
-    (CTRL_WRITE=1 .. RESET=7), the zvideo_ops.send shape, the
-    capability-authoritative ZDEV_ENOTSUP convention and the documented
+    (CTRL_WRITE=1 .. RESET=7), the driver's operation order and the
+    documented
     no-I/O validation rules; the matching capability bits stay in
     device.h (allocated by package 14) and are not redefined;
   - platform/zephyr80/hardware.{h,inc}: paired ports A0h-A4h, latch
@@ -158,49 +158,6 @@ def _code_only(path):
     return text
 
 
-class TestVideoClassContract(unittest.TestCase):
-    def setUp(self):
-        self.text = _read(VIDEO_H)
-        self.env = parse_c_header(VIDEO_H)
-
-    def test_exact_operation_values(self):
-        for name, value in VIDEO_OPS.items():
-            self.assertIn(name, self.env, "video.h missing %s" % name)
-            self.assertEqual(evaluate(name, self.env), value, name)
-
-    def test_ops_shape(self):
-        self.assertEqual(
-            struct_member_order(self.text, "zvideo_ops",
-                                function_pointers=True),
-            ["send"])
-        self.assertIn("sizeof(struct zvideo_ops) == 2", self.text)
-
-    def test_capability_bits_stay_allocated_in_device_h(self):
-        device = parse_c_header(DEVICE_H)
-        caps = {
-            "ZCAP_VIDEO_CTRL_WRITE": 0x00000100,
-            "ZCAP_VIDEO_DATA_WRITE": 0x00000200,
-            "ZCAP_VIDEO_DATA_BLOCK": 0x00000400,
-            "ZCAP_VIDEO_PALETTE": 0x00000800,
-            "ZCAP_VIDEO_INDIRECT": 0x00001000,
-            "ZCAP_VIDEO_PRESENT": 0x00002000,
-            "ZCAP_VIDEO_RESET": 0x00004000,
-        }
-        for name, value in caps.items():
-            self.assertIn(name, device, "device.h missing %s" % name)
-            self.assertEqual(evaluate(name, device), value, name)
-        # video.h documents them but does not redefine them.
-        for name in caps:
-            self.assertNotIn("#define " + name, self.text)
-
-    def test_capabilities_are_authoritative_and_validation_documented(self):
-        for needle in ("Capabilities are\n * authoritative",
-                       "ZDEV_ENOTSUP",
-                       "malformed request performs no I/O",
-                       "16-byte", "ZDEV_EINVAL", "ZDEV_ENODEV"):
-            self.assertIn(needle, self.text)
-
-
 class TestPlatformConstants(unittest.TestCase):
     def setUp(self):
         self.c = parse_c_header(HARDWARE_H)
@@ -275,8 +232,6 @@ class TestServiceArtifact(unittest.TestCase):
     def test_manifest_shape(self):
         manifest = _load_json(MANIFEST)
         self.assertEqual(manifest["name"], "v9958")
-        self.assertEqual(manifest["type"], "service")
-        self.assertEqual(manifest["abi"], 3)
         self.assertEqual(manifest["init"], "v9958_service_init")
         self.assertEqual([segment["role"] for segment in manifest["segments"]],
                          ["hot", "boot", "bulk"])
@@ -300,10 +255,11 @@ class TestServiceArtifact(unittest.TestCase):
             self.skipTest("build/modules/v9958.zmod missing; build first")
         data = _read(ZMOD, "rb")
         info = zmodpack.parse_container(data, "v9958.zmod")
-        self.assertEqual(info["module_type"], "service")
-        # Service ABI 4: the image carries its host-built publications
-        # (`/dev/video`, package 42b).
-        self.assertEqual(info["service_abi"], 4)
+        # The image carries its host-built publications (`/dev/video`,
+        # package 42b).
+        self.assertEqual([publication["name"]
+                          for publication in info["publications"]],
+                         ["/video"])
         self.assertGreater(info["image_size"], 0)
         self.assertGreater(info["bss_size"], 0)
         self.assertNotEqual(info["init_offset"], 0xFFFF)
@@ -323,12 +279,11 @@ class TestServiceArtifact(unittest.TestCase):
         # The boot tier is a bounded bring-up entry, not a second copy of
         # the driver: every path reachable after boot is hot.
         self.assertLess(boot["image_size"] + boot["bss_size"], 0x200)
-        # Host-linked: the boot entry lies inside the boot image and the
-        # container carries no relocation records.
+        # Host-linked: the boot entry lies inside the boot image (the
+        # flat plan carries no relocation records at all).
         self.assertNotEqual(boot["entry"], 0xFFFF)
         self.assertGreaterEqual(boot["entry"], boot["base"])
         self.assertLess(boot["entry"], boot["base"] + boot["image_size"])
-        self.assertEqual(info["reloc_count"], 0)
 
     def test_romfs_entry_and_boot_order(self):
         manifest = _load_json(RECOVERY_MANIFEST)
@@ -367,8 +322,10 @@ class TestServiceArtifact(unittest.TestCase):
         self.assertIn("ZOS_VIDEO_SELFTEST", makefile)
         self.assertIn("ZOS_CONSOLE_SELFTEST", makefile)
         self.assertIn("ZOS_SERVICES := sio v9958 console", makefile)
-        # v9958-test also runs the terminal renderer's host model suite.
-        self.assertIn("test_v9958_console.py", makefile)
+        # The terminal renderer's own model suite (the M8 device-model
+        # entry points it drove) is retired with the device model (work
+        # package 42c); the renderer runs in the video/console images.
+        self.assertNotIn("test_v9958_console.py", makefile)
 
 
 class TestDriverSourceDiscipline(unittest.TestCase):
@@ -382,7 +339,7 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.init = self.c.split("static int v9958_init_display")[1].split(
             "/* --- class operations")[0]
         self.send = self.c.split("int v9958_send")[1].split(
-            "const struct zvideo_ops")[0]
+            "int16_t v9958_service_dispatch")[0]
 
     def test_all_port_io_lives_in_the_asm_file(self):
         for body in self.sources:
@@ -412,7 +369,8 @@ class TestDriverSourceDiscipline(unittest.TestCase):
     def test_no_ioc_or_hid_import_and_no_kernel_symbols(self):
         for body in self.sources:
             for needle in ("_ioc_", "_hid_", "_sio_", "_kernel_main",
-                           "register_ep", "console_", "device_register"):
+                           "register_ep", "console_",
+                           "device" + "_register"):
                 self.assertNotIn(needle, body,
                                  "v9958 must not reference %r" % needle)
         # The service's own API table is the only kernel surface it uses.
@@ -475,7 +433,7 @@ class TestDriverSourceDiscipline(unittest.TestCase):
 
     def test_validate_before_io(self):
         validation = self.send.index("payload == (const void *)0")
-        reject = self.send.index("return ZDEV_EINVAL", validation)
+        reject = self.send.index("return (-ZOS_EINVAL)", validation)
         streams = [self.send.index(name) for name in
                    ("v9958_io_stream_ctrl", "v9958_io_stream_data",
                     "v9958_io_stream_palette", "v9958_io_stream_indirect")]
@@ -487,8 +445,8 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         reset = self.send.split("case ZVIDEO_RESET:")[1]
         self.assertLess(reset.index("length != 0u"),
                         reset.index("v9958_init_display"))
-        self.assertIn("return ZDEV_ENOTSUP;", self.send)
-        self.assertIn("return ZDEV_ENODEV;", self.send)
+        self.assertIn("return (-ZOS_ENOTSUP);", self.send)
+        self.assertIn("return (-ZOS_ENODEV);", self.send)
 
     def test_font_is_streamed_not_resident(self):
         # Bounded 64-byte resource reads, chunk-wise atlas conversion

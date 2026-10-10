@@ -13,8 +13,6 @@
 #ifndef ZEPHYROS_DRIVERS_HID_DRIVER_H
 #define ZEPHYROS_DRIVERS_HID_DRIVER_H
 
-#include "zephyros/device.h"
-#include "zephyros/hid.h"
 #include "zephyros/ipc.h"
 #include "zephyros/ioc.h"
 #include "zos/types.h"

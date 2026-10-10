@@ -1,8 +1,5 @@
 {
   "name": "hid",
-  "type": "service",
-  "abi": 3,
-  "flags": 0,
   "objects": [
     "hid.rel",
     "sdcc_indirect_calls.rel"

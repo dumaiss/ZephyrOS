@@ -34,6 +34,17 @@ met (`bank7: code 27990 bytes end 8D56h | arena 36 granules (33 boot, 3
 free) | data 2241 bytes at D600h | isr 256 | slack 63 bytes`, i.e. 1599
 bytes of total slack against the 1 KiB floor).
 
+**M10 (work packages 42a/42b/42c).**  The M9 machinery this document
+records - the generated mount table, the provider ABI with its
+registration path, the VFS file/directory/mutation API and the `FS_*`
+syscall front end - is **deleted**.  Section 13 is the current model: VFS
+owns three static roots (`/FS`, `/SYSTEM`, `/dev`), the filesystem driver
+is a resident service image publishing `/FS`, and there is no mount table
+and no registry.  Package 42c then removed the driver ABI and the
+provider ops-table interface, so nothing provider-facing is exported to
+an image any more.  Sections 1-12 are kept as the M9 implementation
+record; section 13 is normative together with architecture 36.13.
+
 This document records the implementation of the M9 bootstrap slice:
 the kernel VFS core, the generated static mount table, and the ROMFS
 filesystem provider mounted at `/SYSTEM` before any module loads.
@@ -76,15 +87,13 @@ Three headers, with a deliberate visibility split:
 
 | Header | Audience | Content |
 | --- | --- | --- |
-| `abi/zos/fs.h` | native applications, syscalls, providers (`include/zephyros/fs.h` re-exports it) | `ZOS_PATH_MAX` (128), `ZFS_NAME_MAX` (64), `ZFS_TYPE_*`, `ZFS_ATTR_*`, `ZFS_TIME_UNKNOWN`, `struct zfs_stat` (16 bytes), `struct zfs_dirent` (80 bytes), `ZFS_O_*`, `ZFS_SEEK_*`.  There is no `zfs_statfs` in M9. |
-| `include/zephyros/vfs.h` | module-facing provider ABI | `struct zfs_ops` (the 14 path-based operations of architecture 32.12, in order), `struct zfs_provider` |
-| `kernel/vfs/vfs.h` | kernel only | lifecycle, registry, mount runtime state, path helpers, kernel file/dir API, the mutation entry points, `zmod_source` adapter, `VFS_O_EXEC` |
+| `abi/zos/fs.h` | native applications and syscalls | `ZOS_PATH_MAX` (128), `ZFS_NAME_MAX` (64), `ZFS_TYPE_*`, `ZFS_ATTR_*`, `ZFS_TIME_UNKNOWN`, `struct zfs_stat` (16 bytes), `struct zfs_dirent` (80 bytes), `ZFS_O_*`, `ZFS_SEEK_*`.  There is no `zfs_statfs`. |
+| `kernel/vfs/vfs.h` | kernel only | the three static roots, path helpers, the handle table, the CWD/workspace state, `VFS_O_EXEC` |
 
-`include/zephyros/vfs.h` is module-facing and passes the package 22
-module-header boundary checks; kernel-only declarations are never
-reachable from a ZMOD.  All three layouts are pinned by
-`_Static_assert` and by host tests (`tests/test_m9_vfs.py`, which also
-checks the operation list and every signature against section 32.12).
+The M9 `include/zephyros/vfs.h` (a module-facing provider ABI) was
+**deleted in M10**: no image exports provider operations, because a
+filesystem driver is reached as a service endpoint instead.  What remains
+is pinned by `_Static_assert` and by host tests.
 
 Providers are **path-based**.  Handles (`fs`, `file`, `dir`) are opaque
 to VFS and carry no object identity: VFS keeps no node objects, no node
@@ -105,24 +114,27 @@ operation into `ZOS_EROFS` in one place.
 
 ## 3. Source layout
 
+Current layout (M10, work packages 42b/42c):
+
 ```text
-kernel/vfs/mount_config.h    generated-table build contract (kernel-private)
+kernel/vfs/ns.c              the root router, the DEVICE provider over the
+                             publication table, enumeration
+kernel/vfs/ns_file.c         the ROMFS FILE provider (`/SYSTEM`)
 kernel/vfs/path.c            normalization + case-insensitive compare
-kernel/vfs/mount.c           registry, runtime state, mount selection, phases
-kernel/vfs/file.c            resolve-path, file API, zmod_source adapter
-kernel/vfs/dir.c             directory API, root enumeration
-kernel/vfs/mutate.c          mutation entry points (the EROFS rule's home)
-fs/romfs/romfs_provider.c    ROMFS provider over the unchanged M5 reader
-fs/romfs/romfs_provider.h    provider declaration used by the build table
-fs/iocfat/iocfat.c           resident IOC-FAT provider (package 30)
-tools/mountgen.py            manifest -> generated C mount table
-config/mounts.json           production policy (`/SYSTEM` plus optional `/`)
-tests/m9/mounts-*.json       acceptance policies
+kernel/vfs/process.c         the handle table, per-process CWD slots
+kernel/vfs/workspace.c       the per-process workspace/copy state
+kernel/romfs/romfs.c         the one ROMFS reader (fixed core)
+fs/iocfat/iocfat.c           the FS service image's provider body
+kernel/service/service_loader.c  places the images and installs the
+                             publications (`/FS`, `/dev` names)
 ```
 
-The provider registry has capacity 4 (`VFS_PROVIDER_MAX`) and the mount
-table capacity is 4 (`VFS_MAX_MOUNTS`); the generator rejects a larger
-manifest and VFS re-checks the capacity at run time.
+Deleted in M10 (42b/42c): `kernel/vfs/mount_config.h`,
+`kernel/vfs/mount.c`, `kernel/vfs/file.c`, `kernel/vfs/dir.c`,
+`kernel/vfs/mutate.c`, `fs/romfs/romfs_provider.c`, the `FS_*` syscall
+front end in `kernel/syscall/fs.c`, the device registry, the provider
+registry and its capacity-4 table, and `tools/mountgen.py` with
+`config/mounts.json`.
 
 ## 4. Path rules and mount selection
 
@@ -167,47 +179,45 @@ discipline).
 
 ## 5. Lifecycle and boot integration
 
+> **Retired (M10, work packages 42b/42c).**  The M9 lifecycle - four VFS
+> phases, a provider lookup by name, one `vfs_open("/SYSTEM/<name>.zmod")`
+> per boot module through the VFS and a mount pass at the end - is
+> deleted.  The current order is the boot path of architecture 36.12:
+>
+> ```text
+> kernel_main()
+>   irq_init()
+>   vfs_init()                       the three static roots, the ROMFS
+>                                    reader and the handle table
+>   service_load_all("services.man") the service loader places the
+>                                    images, installs the publications,
+>                                    runs the boot and init entries
+>   console_bind_defaults()
+>   process_exec("/SYSTEM/monitor.zex")
+> ```
+>
+> The loader reads the store with the fixed-core ROMFS reader, so the
+> boot assets no longer travel through the VFS file API.  A failed
+> manifest or image is a boot error with the loader's own console line
+> (`docs/module-format.md` section 7); there is no mount failure path
+> because there is no mount.
+
+The M9 record of that lifecycle follows.
+
 ```text
 kernel_main()
   irq_init()
   device_registry_init()
   module_loader_init()
-  vfs_init()                       VFS_PHASE_BOOTSTRAP -> VFS_PHASE_MODULES
+  vfs_init()                       bootstrap, then the module phase
       register built-ins (romfs)
-      find the unique VFS_MOUNT_SYSTEM entry (panic if not exactly one)
+      find the unique system mount entry (panic if not exactly one)
       provider lookup by name, ops->mount(source = "recovery")
-  kernel_load_vfs_module("sio" | "ioc" | "hid" | "v9958")
-      vfs_open("/SYSTEM/<name>.zmod", ZFS_O_READ)
-      vfs_file_source() -> module_load_source()
-  vfs_mount_all()                  VFS_PHASE_MOUNT -> VFS_PHASE_READY
+  load the boot images from /SYSTEM/<name>.zmod through the VFS
+  the mount pass            the remaining configured mounts
   console_bind_defaults()
   process_exec("/SYSTEM/monitor.zex")
 ```
-
-Boot order, module failure semantics and every console line are
-unchanged from M8.  A failed system mount prints the existing
-`romfs_diagnose()` lines and panics with
-`romfs: corrupt recovery image`; the M5 corrupt-image transcript is
-reproduced byte for byte.
-
-Non-system mounts follow architecture 32.32.4: a failed optional mount
-prints the pinned line and boot continues, a failed required mount prints
-the same line and then panics (`PANIC: vfs: mount failed`).  Production
-and the M8 images configure no non-system mount, so the whole pass is a
-no-op there and prints nothing.
-
-Both outcomes are proven from real linked bytes: `tests/m9/mounts-optional-fail.json`
-in the `m9-vfs-selftest` image, and `tests/m9/mounts-required-fail.json`
-in the `m9-required-mount-selftest` image (which keeps the production
-32-granule gate, because the required failure happens before the monitor
-launcher and no test hook is linked).
-
-`ZOS_ROMFS_BOOT=0` images (pre-M5 acceptance) keep the embedded-catalog
-path and link no VFS code at all: the object group is dropped from the
-link (`M9_VFS_OBJS`), `kernel/process/exec.c` compiles its M6 ROMFS
-body instead of the VFS body, `kernel/romfs/romfs.c` compiles the
-M9-only accessors out, and `tools/mapcheck.py` rejects any VFS symbol in
-those maps (`docs/validation/2026-10-04-m9-vfs-bootstrap.md` section 9).
 
 ## 6. Kernel file and directory API
 
@@ -261,17 +271,23 @@ provider is consulted: `ZOS_EBUSY` for `rmdir`/`unlink`/`rename`,
 `ZOS_EEXIST` for `mkdir`; `rename` is the only operation that needs two
 pathnames and owns the second 128-byte scratch buffer.
 
-`vfs_file_source()` bounds a `zmod_source` to an open file so the M4
+The deleted M9 source adapter bounded a byte source to an open file so the M4
 loader and ZEX validation read through the kernel file API without
 knowing where the bytes live.  A file larger than 64 KiB is rejected
 with `ZOS_ENOSPC` because the source interface is 16-bit.
 
 ## 7. ROMFS provider
 
-`fs/romfs/romfs_provider.c` exposes the unchanged M5 reader
-(`kernel/romfs/`) through the path-based `zfs_ops`; the on-ROM format, the
-ROM-access primitive and the module-facing `romfs_resource_*` imports are
-untouched.
+> **Retired (M10, work packages 42b/42c).**  The M9 path-based ROMFS
+> *provider* is deleted; the reader itself stays.  Today `kernel/romfs/
+> romfs.c` is the one reader, it is **fixed core** (package 38) and it
+> serves two callers: `/SYSTEM` reads through `kernel/vfs/ns_file.c` as an
+> in-process `FILE` endpoint, and the service loader reads
+> `services.man` and the image containers through it.
+
+The M9 record: the provider exposed the unchanged M5 reader through the
+path-based operations table, and the on-ROM format, the ROM-access
+primitive and the module-facing resource imports were untouched.
 
 ```text
 mount      source must be "recovery", else ZOS_EINVAL; calls romfs_init()
@@ -471,6 +487,10 @@ images.)
 
 ## 10. Acceptance evidence
 
+The M9 package's table (the suite names are the M9 files, deleted with the
+machinery they covered; the current coverage is section 13's and
+`docs/devices.md` section 10):
+
 | Property | Evidence |
 | --- | --- |
 | ABI sizes and layouts | `tests/test_m9_vfs.py` (`_Static_assert` mirrors, header boundary) |
@@ -487,14 +507,15 @@ images.)
 | ZEX/ZMOD loading through VFS, M8 transcripts unchanged | `tests/test_m3_sim.py` (production boot replay), `tests/test_m8*.py`, `tests/test_romfs*.py` |
 | ROMFS name validation | `tests/test_romfs.py` (slash and case-collision negatives) |
 | production arena gate, `ZOS_ARENA_MIN_GRANULES` | `tools/mapcheck.py`, `tools/pack_image.py`, `make check` |
-| embedded-catalog images link no VFS byte | `tools/mapcheck.py` (`vfs_image` classification + `VFS_FORBIDDEN_PREFIXES`), `tests/test_romfs.py` (`TestRomfsMapcheck.test_embedded_catalog_image_rejects_vfs_symbols`), `tests/test_m4.py` (per-image symbol sweep), `tests/test_m9_vfs.py` |
+| embedded-catalog images link no VFS byte | `tools/mapcheck.py` (`VFS_FORBIDDEN_PREFIXES`) and `tests/test_romfs.py` (`TestRomfsMapcheck`) |
 | physical boot | `docs/validation/2026-10-04-m9-vfs-bootstrap.md` (**PENDING**) |
 
 ## 11. Writable-provider acceptance (package 26)
 
-Driver ABI v3 adds `fs_register(provider)` to the `zdriver_api` block
+The M9 driver ABI (deleted in M10, package 42c) added a provider
+registration call to the kernel import block
 (`include/zephyros/driver.h`), so a loadable module can register a
-path-based `struct zfs_provider`.  The loader wraps it: `fs_register`
+a path-based provider descriptor.  The loader wrapped it: the registration call
 succeeds only during the module-loading phase, and the VFS provider
 registry takes a checkpoint before every module init and rolls back the
 providers registered after it when the init fails, exactly like the

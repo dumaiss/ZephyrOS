@@ -2,12 +2,13 @@
  *
  * v9958.c owns the GRAPHIC 6 display state, the ported initialization
  * and command sequencing, the font-atlas upload, and the output-only
- * 85x26 text terminal renderer behind `zchar_ops`; v9958_io.asm owns
- * every port access and the timing-critical streaming loops;
- * v9958_module.c owns the zdevice descriptor and the module init entry.
- * The module reaches the kernel only through the passed `zdriver_api`
- * (resource imports for the ROMFS font; no imported kernel symbol and
- * no direct ROMFS access).  Not a kernel ABI.
+ * 85x26 text terminal renderer; v9958_io.asm owns every port access and
+ * the timing-critical streaming loops; v9958_boot.c owns the boot-tier
+ * bring-up and v9958_service.c the resident-service protocol dispatch.
+ * The driver reaches the nucleus only through the service bootstrap
+ * interface (include/zephyros/ipc.h); its bulk font lives in bank 6's
+ * boot/bulk tier and is re-read through the nucleus bulk copy.  Not a
+ * kernel ABI.
  *
  * The ported behavior is the hardware-proven 85x26, 6x8 CP850 GRAPHIC 6
  * bring-up of the pinned Zephyr-80 reference (LunchCrema V9958,
@@ -21,16 +22,16 @@
  * The terminal is a straight port of the reference's ANSI/VT100-light
  * CONOUT parser and drawing algorithms with the CP/M dispatch table,
  * BIOS addresses, HID coupling and historical packet ceiling removed.
- * It is strictly output-only: bytes arrive through zchar_ops.putc() /
- * zchar_ops.write(), and nothing here knows about SIO, IOC or HID.
+ * It is strictly output-only: bytes arrive through
+ * v9958_char_putc()/v9958_char_write(), and nothing here knows about
+ * SIO, IOC or HID.
  */
 
 #ifndef ZEPHYROS_DRIVERS_V9958_DRIVER_H
 #define ZEPHYROS_DRIVERS_V9958_DRIVER_H
 
-#include "zephyros/device.h"
 #include "zephyros/ipc.h"
-#include "zephyros/video.h"
+#include "zos/protocol.h"
 
 /* --- GRAPHIC 6 layout (hardware-proven 85x26 console baseline) ---------
  *
@@ -163,10 +164,10 @@ void v9958_io_stream_data(struct v9958_block *block);
 void v9958_io_stream_palette(struct v9958_block *block);
 void v9958_io_stream_indirect(struct v9958_block *block);
 
-/* zchar_ops entries: assembly wrappers that run the C renderer workers
- * on a private module stack (the kernel syscall gate stack is too small
- * for the renderer's call chain).  Prototypes are the exact sdcccall(1)
- * zchar_ops shapes. */
+/* Terminal byte entries: assembly wrappers that run the C renderer
+ * workers on a private service stack (the kernel syscall gate stack is
+ * too small for the renderer's call chain).  Prototypes are the exact
+ * sdcccall(1) shapes the service dispatch calls. */
 int v9958_char_putc(void *state, char ch);
 int v9958_char_write(void *state, const char *buf, uint16_t len);
 

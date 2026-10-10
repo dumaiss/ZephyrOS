@@ -22,7 +22,7 @@ outside:
   direction, and no request after the diagnostic's bulk phase.
 
 The diagnostic is a bank-7 client of the service (the
-`kernel/module/ioc_shim.c` pattern): descriptor-less calls plus staged
+class-shim pattern): descriptor-less calls plus staged
 moves through the common copy gate, so the wire framing, CRC, sequence and
 lane admission stay inside the service - this module only asserts what the
 peer can see.  The service (not the diagnostic) owns SIO1/B and SIO1/A; the

@@ -256,6 +256,19 @@ class TestPackerRejections(ValidatorCLIBase):
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertRegex(result.stderr, r"cold half")
 
+    def test_operand_bytes_are_not_latch_writes(self):
+        # `ld -45(ix),#0` encodes as DD 36 D3 00 and is the byte pattern
+        # the audit must not mistake for the latch write (the audit
+        # decodes instructions instead of scanning for the pair).
+        good = insert_before_eof(
+            valid_ihx(),
+            ihx_record(0x8100, [0xDD, 0x36, 0xD3, 0x00, 0xC9]))
+        self.write_ihx(good)
+        self.write_map(make_map())
+        result = self.run_tool(PACK_IMAGE, self.ihx_path, self.map_path,
+                               self.tmp)
+        self.assertNotRegex(result.stderr, r"latch write")
+
     def test_vector_symbol_missing(self):
         self.check(valid_ihx(), make_map(symbols={"_zos_rst30_vector": None}),
                    r"expected 0030h")

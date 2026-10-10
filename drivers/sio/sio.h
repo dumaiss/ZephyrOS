@@ -10,7 +10,6 @@
 #ifndef ZEPHYROS_DRIVERS_SIO_H
 #define ZEPHYROS_DRIVERS_SIO_H
 
-#include "zephyros/device.h"
 #include "zephyros/ipc.h"
 #include "zos/types.h"
 

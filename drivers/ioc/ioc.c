@@ -34,13 +34,11 @@
  *     bounded LINK_SYNC sequence before normal traffic.
  *
  * Every wait is bounded and every exit restores the exact entry interrupt
- * state.  This source is compiled into the IOC ZMOD module; the state
- * below lives in module BSS (`_DATA`) and is relocated with the module
- * image.  The module reaches the kernel only through the passed
- * `zdriver_api`.
+ * state.  This source is compiled into the IOC service image; the state
+ * below lives in its SERVICE_IO area.  The driver reaches the nucleus
+ * only through the service bootstrap interface.
  */
 
-#include "zephyros/device.h"
 #include "zephyros/ioc.h"
 
 #include "zephyr80/hardware.h"
@@ -585,10 +583,3 @@ int ioc_link_bringup(void)
 	ioc_state.recover = 1u;
 	return ZIOC_ETIMEDOUT;
 }
-
-const struct zioc_ops ioc_ops = {
-	ioc_command,
-	ioc_bulk_read,
-	ioc_bulk_write,
-	ioc_status
-};

@@ -123,8 +123,7 @@ class TestNsBuildWiring(unittest.TestCase):
         for token in ("ZOS_SERVICES := sio console nsdev",
                       "SVC_MANIFEST_DIR := tests/ns/manifests",
                       "ZOS_BOOT_PROGRAM := /SYSTEM/ns.zex",
-                      "ZOS_ARENA_MODULES :=",
-                      "$(BUILD)/vfs_ns.rel $(BUILD)/vfs_ns_file.rel "
+                                "$(BUILD)/vfs_ns.rel $(BUILD)/vfs_ns_file.rel "
                       "$(BUILD)/object.rel"):
             self.assertIn(token, text, token)
         # The image links the namespace objects cold, in the placement
@@ -187,27 +186,27 @@ class TestNsAbi(unittest.TestCase):
 
 
 class TestNsContainers(unittest.TestCase):
-    def test_service_header_declares_abi_four(self):
+    def test_service_header_declares_the_flat_plan(self):
         text = read(SERVICE_HEADER)
-        self.assertRegex(text, r"#define ZMOD_SERVICE_ABI_VERSION\s+3u")
-        self.assertRegex(text, r"#define ZMOD_SERVICE_ABI_PUBLICATIONS\s+4u")
+        # Work package 42c: one flat plan per service image, no ABI
+        # version field and no separate service section.
+        self.assertRegex(text, r"#define ZMOD_HEADER_SIZE\s+16u")
+        self.assertRegex(text, r"#define ZMOD_SEGMENT_SIZE\s+12u")
+        self.assertRegex(text, r"#define ZMOD_ENDPOINT_SIZE\s+8u")
+        self.assertRegex(text, r"#define ZMOD_DEPENDENCY_SIZE\s+4u")
         self.assertRegex(text,
-                         r"#define ZMOD_SERVICE_PUBLICATION_SIZE\s+20u")
+                         r"#define ZMOD_PUBLICATION_SIZE\s+20u")
         self.assertRegex(text,
-                         r"#define ZMOD_SERVICE_MAX_PUBLICATIONS\s+12u")
-        # ABI 4 lives in the section's reserved bytes: the byte at 0Bh is
-        # the count, the little-endian word at 0Ch the table offset.
-        self.assertIn("0Bh) is the publication count", text)
-        self.assertIn("publication table's offset", text)
-        self.assertIn("publication must be 20 bytes", text)
+                         r"#define ZMOD_MAX_PUBLICATIONS\s+12u")
+        self.assertIn("payload_offset", text)
+        self.assertNotIn("ZMOD_SERVICE_ABI_VERSION", text)
 
     def test_packer_emits_and_validates_the_table(self):
         text = read(PACKER)
-        for token in ("SERVICE_ABI_PUBLICATIONS = 4",
-                      "SERVICE_PUBLICATION_SIZE = 20",
-                      "SERVICE_PUBLICATION_NAME = 16",
-                      "SERVICE_MAX_PUBLICATIONS = 12",
-                      "publishes", "SERVICE_DEVICE_ROOT"):
+        for token in ("PUBLICATION_SIZE = 20",
+                      "PUBLICATION_NAME = 16",
+                      "MAX_PUBLICATIONS = 12",
+                      "publishes", "DEVICE_ROOT"):
             self.assertIn(token, text, token)
         # Grouping names are derived by the kernel, never published.
         self.assertIn("grouping", text)
@@ -234,8 +233,9 @@ class TestNsContainers(unittest.TestCase):
         self.assertEqual([entry["name"] for entry in data["files"]], STORE)
 
     def test_packed_containers_carry_the_table(self):
-        """Decode the image's own containers: ABI 4, section counts and
-        every publication row with its host-resolved endpoint number."""
+        """Decode the image's own containers: the flat header, the four
+        tables in canonical order and every publication row with its
+        host-resolved endpoint number."""
         for name in SERVICE_ORDER:
             path = os.path.join(MODULE_DIR, "%s.zmod" % name)
             if not os.path.exists(path):
@@ -244,20 +244,24 @@ class TestNsContainers(unittest.TestCase):
             with open(path, "rb") as handle:
                 raw = handle.read()
             self.assertEqual(raw[0:4], b"ZMOD", name)
-            self.assertEqual(raw[5], 2, name)     # ZMOD_TYPE_SERVICE
-            self.assertEqual(raw[6], 4, name)     # ABI 4
-            section = 28
-            fields = struct.unpack_from("<HHHHBBBBHH", raw, section)
-            (section_size, _seg, _ep, _dep, _sc, _ec, _dc, count, offset,
-             reserved3) = fields
-            self.assertEqual(reserved3, 0, name)
-            self.assertLessEqual(section_size, len(raw) - section, name)
+            segments, endpoints, dependencies, count = struct.unpack_from(
+                "<BBBB", raw, 4)
+            _init, offset, total = struct.unpack_from("<HHH", raw, 8)
+            self.assertEqual(struct.unpack_from("<H", raw, 14)[0], 0, name)
+            self.assertEqual(total, len(raw), name)
+            self.assertLessEqual(segments, 4, name)
+            self.assertLessEqual(endpoints, 8, name)
+            self.assertLessEqual(dependencies, 8, name)
+            self.assertEqual(len(PUBLICATIONS[name]), count, name)
+            self.assertEqual(offset, 16 + 12 * segments + 8 * endpoints +
+                             4 * dependencies + 20 * count, name)
             rows = []
+            at = 16 + 12 * segments + 8 * endpoints + 4 * dependencies
             for index in range(count):
-                at = section + offset + index * 20
-                label = raw[at:at + 16].split(b"\x00")[0].decode("ascii")
+                row = at + index * 20
+                label = raw[row:row + 16].split(b"\x00")[0].decode("ascii")
                 kind, number, obj, flags = struct.unpack_from("<BBBB", raw,
-                                                              at + 16)
+                                                              row + 16)
                 self.assertEqual(flags, 0, label)
                 self.assertLessEqual(number, 3, label)
                 rows.append((label, kind, number, obj))
@@ -302,7 +306,8 @@ class TestNsResidency(unittest.TestCase):
                      "build/vfs_mount.rel", "build/vfs_dir.rel",
                      "build/vfs_mutate.rel", "build/romfs_provider.rel",
                      "build/registry.rel", "build/module_loader.rel",
-                     "build/ipc_syscall.rel", "build/ioc_shim.rel"):
+                     "build/ipc" + "_syscall.rel",
+                     "build/ioc" + "_shim.rel"):
             self.assertNotIn(name, text, name)
         # The reused M9 helpers stay linked.
         for name in ("vfs_path.rel", "vfs_process.rel", "vfs_workspace.rel"):

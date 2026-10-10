@@ -1,8 +1,5 @@
 {
   "name": "iocfat",
-  "type": "service",
-  "abi": 3,
-  "flags": 0,
   "objects": [
     "iocfat.rel",
     "sdcc_indirect_calls.rel"

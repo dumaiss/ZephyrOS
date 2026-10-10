@@ -42,9 +42,9 @@ E000h +-------------------------------+
 | `fixed code end-5D00h` | bank 7 in mode 11 | fixed-core zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded; the base is derived per image (`align_down(ZOS_SERVICE_STACK_BASE - data size, 512)`) so the area ends directly below the stacks |
 | `5D00h-5EFFh` | bank 7 in mode 11 | 512-byte **service stack** (architecture 36.9); the IPC substrate switches to it for every service call (stage 3).  It is a fixed assembly reservation, exported as the ABS symbol `zos_service_stack`/`_top` (`kernel/ipc/ipc_asm.asm`), so no ordinary allocation can enter it.  The acceptance replay measures its high-water mark: 256 of 512 bytes in the package-39 correction-01 image.  Grows down from `ZOS_SERVICE_STACK_TOP` |
 | `5F00h-5FFFh` | bank 7 in mode 11 | 256-byte **ISR stack** (`_IRQ_ISR_STACK`); the IRQ gate switches to it in `irq_common_entry` |
-| `6000h-cold code end` | bank 7 while the window shows bank 7 (P = 0) | **cold half**: nucleus code that only ever runs with the window on bank 7 (syscall dispatcher and bodies, boot/idle, process management, loader, device registry, FS front end); ends at the derived `ZOS_KERNEL_CODE_END` |
-| `cold code end-cold data base` | bank 7 while P = 0 | driver arena, derived from the aligned cold code end `__driver_arena_start` to the derived cold data base; its granule count is whatever the cold half leaves (there is no floor - the declared boot set must fit, and `tools/zmodpack.py plan` / `tools/pack_image.py` enforce that). Never part of the ROM payload and never linked by content |
-| `cold data base-E000h` | bank 7 while P = 0 | cold-half zero-initialized runtime area (`_WINDOW_DATA`), never ROM-loaded; the base is derived per image (`align_down(ZOS_BANK7_RUNTIME_END - data size, 512)`) |
+| `6000h-cold code end` | bank 7 while the window shows bank 7 (P = 0) | **cold half**: nucleus code that only ever runs with the window on bank 7 (the syscall dispatcher and bodies, boot/idle, process management, the VFS core and the resident-service loader); ends at the derived `ZOS_KERNEL_CODE_END` |
+| `cold code end-cold data base` | bank 7 while P = 0 | the cold half's slack, straight from the aligned cold code end to the derived cold data base.  The driver arena that used to fill it is deleted (work package 42c): there is no granule accounting and no floor |
+| `cold data base-E000h` | bank 7 while P = 0 | cold-half zero-initialized runtime area (`_WINDOW_DATA`), never ROM-loaded; the base is derived per image from the linked cold code end (`data_base = align_up(code_end, 512)`) |
 | `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`), including the M5 ROM-access staging buffer, the package-28 exec continuation state and the package-39 correction-01 aperture copy primitive (`ipc_common.asm`: the mode-10 stub, its request block, its saved latch/SP and its 4-byte interrupt-push reservation); `EEFEh-EF07h` is the fixed ROM-access transition block (trampoline + mirrored stub) |
 | `FD00h-FDFFh` | physical bank 0 | 256-byte-aligned IM2 vector page (`I=FDh`) |
 | `FE00h` | physical bank 0 | vector-`FFh` guard byte |
@@ -139,10 +139,10 @@ _COMMON      = E000h            permanent common code/data
 
 Both data bases are derived, not fixed: the two-pass build computes
 `data_base = align_down(ZOS_SERVICE_STACK_BASE - (l__DATA + l__INITIALIZED),
-512)` and `window_data_base = align_down(ZOS_BANK7_RUNTIME_END -
-l__WINDOW_DATA, 512)`, so runtime data sits directly below the fixed-core
-stacks and directly below the cold half's end; the driver arena fills
-everything between the aligned cold code end and the cold data base.
+512)` and `window_data_base = align_up(code_end, 512)` (work package 42c:
+the cold base follows the linked cold code, so no reservation sits between
+them), so runtime data sits directly below the fixed-core stacks and
+directly after the cold half's code.
 
 Unbased areas follow their preceding based area in first-appearance order,
 fixed by the declarations at the top of `boot/start.asm`:
@@ -207,14 +207,14 @@ runs in an application bank, is the one further allowance), and
 `tests/test_nucleus_sim.py` exercises the shim against a fixed-core test
 routine.
 
-## 2.2 Bank-7 geometry: two regions, one derived arena (M10, package 38)
+## 2.2 Bank-7 geometry: two regions, both derived from the code ends (M10)
 
 There is one bank-7 geometry, and it is the same two-pass mechanism as
-package 25b, extended to both regions:
+package 25b:
 
 1. **Probe link.**  The same object list links with a bootstrap
-   `arena.asm` object that places no arena at all (`ZOS_ARENA_PROBE = 1`);
-   nothing can constrain kernel growth.
+   `kernel/memory/bank7_end.asm` object that only carries the
+   `__kernel_code_end` label; nothing can constrain kernel growth.
 2. **Derive.**  `tools/mapcheck.py geometry derive` measures, in the probe
    map:
 
@@ -227,72 +227,56 @@ package 25b, extended to both regions:
    and writes both regions:
 
    ```text
-   fixed_code_end       = max end of the fixed loadable areas
-   data_base            = align_down(ZOS_SERVICE_STACK_BASE - data_size, 512)
-   __kernel_code_end    = end of _WINDOW (the cold code end)
-   window_data_base     = align_down(ZOS_BANK7_RUNTIME_END - cold_data_size, 512)
-   __driver_arena_start = align_up(__kernel_code_end, 512)
-   __driver_arena_end   = window_data_base
+   fixed_code_end    = max end of the fixed loadable areas
+   data_base         = align_down(ZOS_SERVICE_STACK_BASE - data_size, 512)
+   __kernel_code_end = end of _WINDOW (the cold code end)
+   window_data_base  = align_up(__kernel_code_end, 512)
    ```
 
    It also computes the fixed-core ledger figures (required/overflow
    bytes from `config/residency.json` plus the per-object `.rel` sizes,
-   the two stack reservations, and the room) and the granule count.
+   the two stack reservations, and the room).
 
-`kernel/module/arena.asm` consumes the generated
-`build/geometry/arena_geometry.inc`; `build/geometry/memory.inc` carries
-the same values plus both data bases, the granule count, the ledger fields
-and the stack reservations for every assembly unit and layout tool.  No
-linked content may occupy the arena, and the loader computes its granule
-count from the linked bounds (bounded by the architectural maximum
-`(E000h-6000h)/512 = 64`).
+   The cold data base derives **straight from the cold code end** (work
+   package 42c): package 38's 24-granule arena reservation between the two
+   is deleted, so the cold half is one contiguous region from `6000h` to
+   its data base.  `__driver_arena_start`/`__driver_arena_end` and the
+   `GEOMETRY_*` arena derivation are gone with it.
+
+`kernel/memory/bank7_end.asm` consumes the generated
+`build/geometry/bank7_end.inc`; `build/geometry/memory.inc` carries both
+data bases, the ledger fields and the stack reservations for every
+assembly unit and layout tool.
 
 **Placement rule (architecture 36.5).**  `config/residency.json`
-classifies every production object as `fixed-required`, `cold` or `moves`
-(with the stage that moves it to bank 6).  Fixed-required objects link in
-`2000h-5FFFh`; `tools/mapcheck.py` fails the build when one of them
-compiles into `_WINDOW`/`_WINDOW_DATA`, when an object is missing from the
-classification, or when an object's areas disagree with its cold-half
-placement.  The production cold half holds the cold objects plus the
-objects that do not fit beside the driver arena; those are reported as the
-fixed ledger's `overflow`, never as an error.
+classifies every production object as `fixed-required` or `cold` (the M9
+`moves` stage is retired with the module form).  Fixed-required objects
+link in `2000h-5FFFh`; `tools/mapcheck.py` fails the build when one of
+them compiles into `_WINDOW`/`_WINDOW_DATA`, when an object is missing
+from the classification, or when an object's areas disagree with its
+cold-half placement.  The production cold half holds the cold objects
+plus the objects that do not fit in the fixed core; those are reported as
+the fixed ledger's `overflow`, never as an error.
 
-**No granule floor.**  The M9 32-granule floor is retired: the arena only
-has to hold the image's declared boot set.  `tools/zmodpack.py plan` fails
-when the boot modules cannot coexist in the derived arena, and
-`tools/pack_image.py` reconciles the image manifest against that plan
-(`arena.plan.json`), so an image whose modules do not fit still fails the
-build.  The `make` targets of the acceptance images pass
-`--residency config/residency.json --boot-plan build*/arena.plan.json` to
-`mapcheck.py`, which checks the derived geometry against the linked map.
-
-`tools/mapcheck.py` rejects any linked area overlapping the arena, pins
-`__driver_arena_start == align_up(__kernel_code_end, 512)` and
-`__kernel_code_end ==` the linked cold code end, checks that `_DATA` and
-`_WINDOW_DATA` start at their derived bases, that fixed runtime data stops
-below the service stack and that the fixed core holds its two stacks.
-`tools/pack_image.py` treats the arena as non-ROM-loadable and reconciles
-the boot-set plan (per-module image+BSS/granules, used/free totals; see
-`docs/module-format.md`).  `tests/test_pack_image.py` and
-`tests/test_driver_abi.py` pin the whole reconciliation: the image
-manifest's arena block must equal the plan, every per-module size/granule
-count must match the packed container the plan names, the production boot
-set must fit with a non-negative remainder, and the arena must end exactly
-at the derived cold data base.  The loader/relocator routines are bank-7
-code enforced by an explicit list and a prefix sweep over `_module_`,
-`_zmod_`, `_z4_`, `_m4_`, and `_irq_registry_` symbols.  Loaded modules are
-placed inside the arena by the loader.
+`tools/mapcheck.py` pins `__kernel_code_end ==` the linked cold code end
+and `window_data_base == align_up(__kernel_code_end, 512)`, checks that
+`_DATA` and `_WINDOW_DATA` start at their derived bases, that fixed
+runtime data stops below the service stack and that the fixed core holds
+its two stacks.  The bank-6 service set is not linked into bank 7 at all:
+it is packed into the recovery store and placed by the cold nucleus loader
+(`docs/module-format.md`), so no bank-7 geometry depends on it.
 
 ### 2.2.1 The nucleus budget ledgers
 
-`tools/pack_image.py` and `tools/zmodpack.py plan` print the same five
+`tools/pack_image.py` and `tools/zmodpack.py services` print the same five
 ledger lines (architecture 36.20) and emit them as matching JSON
-(`manifest["nucleus"]` and `arena.plan.json["nucleus"]`, sharing one
-format definition); host tests check every figure against the linked map:
+(`manifest["nucleus"]` and `modules/services.plan.json["nucleus"]`,
+sharing one format definition); host tests check every figure against the
+linked map:
 
 ```text
 nucleus fixed: required <bytes> | overflow <bytes> | stacks <bytes> | room <bytes>
-nucleus cold: code <bytes> end <addr> | arena <n> granules (<used> boot, <free> free) | data <bytes> at <addr> | room <bytes>
+nucleus cold: code <bytes> end <addr> | data <bytes> at <addr> | room <bytes>
 driver hot: <bytes> of <capacity>
 driver boot/bulk: <bytes> of <capacity>
 common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>, m10 <n>, limit <n>
@@ -305,14 +289,13 @@ common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>, m10
   256-byte ISR stack = 768) and `room` is what is left:
   `16384 - required - overflow - stacks`.
 - **`nucleus cold:`** the cold half's 32 KiB.  `code`/`end` are the linked
-  cold code, the arena shows its granules (boot-set used and free), `data`
-  is `_WINDOW_DATA` and `room` is what is left outside the arena
-  (`32768 - code - data - arena bytes`).
+  cold code, `data` is `_WINDOW_DATA` (`base` is derived from `end`) and
+  `room` is what is left (`32768 - code - data bytes`, the alignment gap
+  included in the room).
 - **`driver hot:`/`driver boot/bulk:`** the bank-6 tiers of architecture
-  36.6 (renamed from `service` when M10 stage 5 moved the drivers into the
-  host-assembled resident domain).  The arena plan reports zero (the arena
-  holds no driver image); the service plan and the loader report the
-  placed bytes against their capacities (32 KiB and 24 KiB).
+  36.6.  `tools/pack_image.py` prints them from the services plan
+  (`services.plan.json`), and the loader's own acceptance line prints the
+  same figures (32 KiB hot tier, 24 KiB boot/bulk tier).
 - **`common:`** the permanently mapped common window, which the nucleus
   lines cannot see.  `used` is the packed `_COMMON` + `_COMMON_DATA` run
   and `capacity` is `ZOS_COMMON_CODE_END - ZOS_COMMON_BASE` (7424 bytes);
@@ -345,17 +328,15 @@ moved 128 bytes of path buffer back out to bank 7.
 
 The figures in this subsection were measured under the M9 single-region
 layout and are kept as the historical ledger; package 38 re-derived the
-same content as the nucleus lines above (the production image's fixed core,
-cold half and arena are recorded in the package-38 validation record).
+same content as the nucleus lines above, and work package 42c deleted the
+arena the later figures still mention (the package-38 validation record
+has the M10-era ledgers before that prune).
 
-Both tools print a granule-threshold table right after the ledger lines,
-and carry the same figures in the JSON.  For every boot-set module
-the plan entry gains `above_lower_bytes` (the saving that reaches the lower
-granule threshold, so removing it frees one granule) and
-`before_higher_bytes` (the room left before the next higher threshold
-spends one).  A `kernel` object gives the same two distances for the
-arena start (the cold code end, `__kernel_code_end`) and for the derived
-cold data base (the cold runtime-data size against `E000h`):
+The tools print the ledger lines and carry the same figures in the JSON.
+There is no granule table any more (work package 42c): the packer places
+each bank-6 segment and the loader bounds it.  The image manifest's
+`kernel` object still gives the two distances the old plan used for the
+cold code end and the cold runtime-data size:
 `code_above_lower_bytes`/`code_before_higher_bytes` and
 `data_above_lower_bytes`/`data_before_higher_bytes`.  The data pair is
 expressed as runtime-data size changes - shrinking by the first moves the
@@ -705,22 +686,23 @@ in `2000h-DFFFh` would disappear when the mode changes.
   an exec'd child) with the packed store.
 - `tests/test_subsys_sim.py` — boot of the subsystem acceptance image on
   the current path: the syscall gate and interrupt-executive groups (with
-  injected CTC0 deliveries), the ROMFS reader, the process/ZEX lifecycle
-  and the loader groups, every target status word, and the monitor
-  session with its relaunch.
+  injected CTC0 deliveries), the ROMFS reader and the process/ZEX
+  lifecycle groups, every target status word, and the monitor session with
+  its relaunch.
 - `tests/test_romfs.py` / `tests/test_romfs_sim.py` — ROMFS tooling,
   constant/placement contracts, corrupted-metadata rejection, the
   ROM-access transition replay (stackless mode-00 window pinned to the
   mirrored stub, exact latch/IFF restoration, bounds and reentry
   rejection), and the source-backed module load (`build-subsys-selftest`).
-- `tests/test_m9_vfs.py` / `tests/test_m9_vfs_sim.py` — M9 VFS ABI sizes
-  and header boundary, mount-table generation and validation, and a
-  replay of the real linked VFS bootstrap (`/SYSTEM` mounted before any
-  module loads, modules and the monitor opened by path, arena figures).
-  `tools/mapcheck.py` additionally enforces the `_vfs_`/`_romfs_provider`
-  bank-7 placement list and the derived geometry, and
-  `tools/pack_image.py` reconciles arena use against the boot-set plan
-  (there is no granule floor; fitting the boot set is the check).
+- (retired) `tests/test_m9_vfs.py` / `tests/test_m9_vfs_sim.py` — the M9
+  VFS ABI sizes, the mount-table generation and a replay of the M9
+  bootstrap; deleted with the machinery they covered (M10, work packages
+  42b/42c).
+- `tools/mapcheck.py` enforces the two-tier residency classification and
+  the derived geometry (fixed core, cold code end, cold data base), and
+  `tools/pack_image.py` reports the two bank-6 ledgers from
+  `services.plan.json` instead of an arena plan (there is no granule
+  floor any more: the packer places and the loader bounds).
 - Runtime: boot asserts mode `11` over bank 0 (assembly latch read-back and
   a C re-check in `kernel_main()`), then exercises the bank primitives; any
   failure prints a fault through the early console and halts.

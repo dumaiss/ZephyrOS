@@ -264,53 +264,38 @@ the common region stays writable while reads come from ROM.  Bank 7 is
 never addressable during the copy, and no byte of `2000h-DFFFh` is
 executed, returned into, or stacked on.
 
-## 6. Module loading integration
+## 6. Reader integration
 
-`struct zmod_source` (in `include/zephyros/module.h`) is the generic
-bounded byte source:
+The reader is **fixed core** (package 38) and serves two callers, both
+compiled against `include/zephyros/romfs.h`:
 
-```c
-typedef int (*zmod_source_read_fn)(const void *ctx, uint16_t offset,
-                                   uint8_t *dst, uint16_t length);
-struct zmod_source {
-    zmod_source_read_fn read;
-    const void *ctx;
-    uint16_t size;
-};
-```
+* `kernel/vfs/ns_file.c` - the `/SYSTEM` provider: `romfs_lookup_ci()`,
+  `romfs_entry_at()` and `romfs_copy_logical()` behind an in-process
+  `FILE` endpoint, so a bound `/SYSTEM` handle is served without a bank-6
+  driver;
+* `kernel/service/service_loader.c` - the resident loader: it reads
+  `services.man`, then each container's header, tables and segment images
+  through `romfs_read()`, staging every copy in chunks through the common
+  application-bank copy gate.  There is no abstract byte source any more:
+  the arena loader that needed one is deleted (work packages 42b/42c), and
+  a service image is the only container form.
 
-* `module_load_source(name, source)` is the only load path: it validates
-  the entire container
-  structure (header, sizes, relocations) **before** the arena is touched,
-  allocates granules, streams the image copy and relocation records
-  through the source in bounded chunks, applies `ZREL_ABS16` relocations,
-  and keeps the M4 transactional rollback intact;
-* the source of a boot module is a VFS open file: `kernel/main.c` opens
-  `/SYSTEM/<name>.zmod` through the kernel file API and binds the file
-  with `vfs_file_source()` (`docs/vfs.md`).  The container bytes come
-  from `romfs_read()` underneath the ROMFS provider and are never
-  assumed to be contiguous in memory;
-* the ZMOD on-disk format, `build/modules/sio.zmod`, and all M4 loader
-  semantics are unchanged; the source path is the same loader, not a
-  second one.  `romfs_load_zmod()` no longer exists.
-
-Production/M9 boot sequence:
+The reader's own access primitive is unchanged: every read goes through
+the mode-00 ROM window (`kernel/romfs/rom_access.asm`), which restores the
+exact latch, interrupt state and stack of its caller, so a corrupt
+recovery image fails through the early console before any service code
+runs:
 
 ```text
-device_registry_init()
-module_loader_init()
 vfs_init()                   fail -> romfs_diagnose() +
                                     panic("romfs: corrupt recovery image")
-vfs_open("/SYSTEM/sio.zmod") fail -> "console: dynamic driver failed"
-module_load_source()         ok   -> "console: dynamic sio0.b OK"
+service_load_all("services.man")
+                             fail -> "service loader: <name>: <what>"
 ```
 
-A corrupt recovery image therefore fails through the early console
-before any module execution.  The embedded catalog loader
-(`kernel/module/embedded.c`) survives only in the pre-M5 acceptance
-images; `tools/mapcheck.py --production` rejects
-`_z4_module_boot`/`_zmod_catalog`/`_module_catalog_load_all` and the
-catalog table/loader must be linked together or not at all.
+`tools/mapcheck.py --production` rejects the retired embedded-catalog
+symbols (`_z4_module_boot`, `_zmod_catalog`, `_module_catalog_load_all`):
+production carries no boot blob, only the packed recovery store.
 
 ## 7. Acceptance evidence map
 
@@ -320,9 +305,9 @@ catalog table/loader must be linked together or not at all.
 | placement in pages 2-7, boot pages untouched, capacity/window rules | `tests/test_romfs.py`, `tests/test_pack_image.py`, `tests/test_validation_cli.py` |
 | valid kernel reader, EOF/bound semantics, corrupt-metadata rejection | `tests/test_romfs_sim.py` (mutated header/table replays) |
 | exact latch/IFF restoration, stackless mode-00 window pinned to the mirrored stub, reentry and bounds rejection | `tests/test_romfs_sim.py` (ROM-access primitive replays + `RomWindowWatcher`) |
-| source-backed loading, reject-before-allocate, byte-identity with `sio.zmod` | `tests/test_romfs_sim.py`, `tests/test_romfs.py`, `tests/test_m4_sim.py` |
-| ROMFS as the `/SYSTEM` bootstrap provider (path-based `zfs_ops`): one case-folded lookup, `/` the only directory, read-only semantics, `ZOS_ENOTDIR`/`ZOS_ENOENT` for deeper paths, `ZOS_EROFS` from the null mutation pointers | `tests/test_fs_selftest_sim.py` (`make fs-selftest`: the `/SYSTEM` stat/open/read/close outcomes) |
+| source-backed loading, reject-before-allocate, byte-identity with `sio.zmod` | `tests/test_romfs_sim.py`, `tests/test_romfs.py` |
+| ROMFS as the `/SYSTEM` root (in-process `FILE` endpoint, nucleus): one case-folded lookup, `/` the only directory, read-only semantics, `ZOS_ENOTDIR`/`ZOS_ENOENT` for deeper paths, `ZOS_EROFS` for writes | `tests/test_fs_selftest_sim.py` (`make fs-selftest`: the `/SYSTEM` stat/open/read/close outcomes) |
 | the single case-folded lookup resolves every spelling | `tests/test_romfs_sim.py` (case variants of `sio.zmod`) |
-| production has no embedded boot blob/catalog | `tools/mapcheck.py --production`, `tests/test_m4.py` |
+| production has no embedded boot blob/catalog | `tools/mapcheck.py --production` |
 | corrupt image panics before module execution | `tests/test_romfs_sim.py`, image marker tests |
 | physical success and corrupt transcripts | `docs/validation/2026-10-03-m5-romfs.md` (**pending hardware**) |

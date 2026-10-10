@@ -7,7 +7,7 @@
  * protocol version ZOS_PROTOCOL_VERSION) answers.
  *
  * The diagnostic is a *bank-7 client* of that service, exactly like
- * kernel/module/ioc_shim.c: it holds no buffer descriptor and cannot use
+ * the retired class shim: it holds no buffer descriptor and cannot use
  * `move`, so it drives the IOC protocol (abi/zos/protocol.h) through the
  * descriptor-less operations and the staged buffers the replies name, with
  * the shared acceptance client (tests/target/support/service_client.c) for

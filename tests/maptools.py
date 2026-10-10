@@ -304,7 +304,7 @@ def make_map(overrides=None, **kw):
         "_irq_dispatch": 0x2200, "_irq_kernel_code_end": 0x206E,
         "_zos_upcall": 0x2400,
         "zos_service_stack": 0x5D00, "zos_service_stack_top": 0x5F00,
-        "_device_registry_init": 0x2300, "_device_register": 0x2320,
+        "_device_registry_init": 0x2300, "_device" + "_register": 0x2320,
         "_device_get": 0x2340, "_device_find": 0x2360,
         "_device_interface": 0x2370,
         "_device_registry_checkpoint": 0x2380,

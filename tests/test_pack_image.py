@@ -84,8 +84,6 @@ class MinimalImageCase:
                 "     00006000  _kernel_main                     main",
                 "     00002100  zos_syscall_dispatch             syscall_entry",
                 "     00002200  _irq_dispatch                    irq",
-                "     00006200  __driver_arena_start             arena",
-                "     00006A00  __driver_arena_end               arena",
                 "     0000EEFE  rom_access_trampoline            rom_access",
                 "     0000EF00  rom_access_sync                  rom_access",
                 "     0000EF08  rom_access_sync_end              rom_access",
@@ -368,112 +366,83 @@ class TestRealArtifacts(unittest.TestCase):
                 stub, "recovery page %d stub mirror differs" % page)
 
 
-class TestGranuleThresholds(unittest.TestCase):
-    """Section 32.39 companion: the bytes that free or spend one granule."""
+class TestNucleusLedgers(unittest.TestCase):
+    """The five architecture-36.20 ledger lines, and the driver ledger fix
+    package 42c made: `driver hot`/`driver boot/bulk` come from the packed
+    service set's plan instead of being hard-zeroed."""
 
-    def test_module_threshold_arithmetic(self):
-        # Exact multiples sit at the top of their band: removing half a
-        # band frees a granule, and no room remains before the next one.
-        self.assertEqual(
-            pack_image.granule_thresholds(1024),
-            {"granules": 2, "above_lower_bytes": 512,
-             "before_higher_bytes": 0})
-        # One byte over a threshold: the saving needed is that one byte.
-        self.assertEqual(pack_image.granule_thresholds(513),
-                         {"granules": 2, "above_lower_bytes": 1,
-                          "before_higher_bytes": 511})
-        # One byte under a threshold: 511 bytes of room before it is spent.
-        self.assertEqual(pack_image.granule_thresholds(511),
-                         {"granules": 1, "above_lower_bytes": 511,
-                          "before_higher_bytes": 1})
+    def test_ledger_lines_carry_the_service_plan(self):
+        plan = {
+            "nucleus": {
+                "service_hot_bytes": 22013,
+                "service_hot_capacity_bytes": 0x8000,
+                "service_boot_bytes": 2170,
+                "service_boot_capacity_bytes": 0x6000,
+            },
+        }
+        symbols = {"__kernel_code_end": 0xA570, "s__WINDOW_DATA": 0xA600,
+                   "l__WINDOW_DATA": 0x6D9, "s__DATA": 0x5A00,
+                   "l__DATA": 0x40}
+        ledger = pack_image.nucleus_ledger(symbols, plan)
+        self.assertEqual(ledger["service_hot_bytes"], 22013)
+        self.assertEqual(ledger["service_boot_bytes"], 2170)
+        self.assertEqual(ledger["cold_code_bytes"], 0xA570 - 0x6000)
+        self.assertEqual(ledger["cold_data_bytes"], 0x6D9)
+        self.assertEqual(ledger["cold_data_base"], 0xA600)
+        self.assertEqual(ledger["cold_room_bytes"], 0xE000 - 0xA600 - 0x6D9)
 
-    def test_saving_below_the_threshold_frees_nothing(self):
-        # A 979-byte module uses two granules; removing 466 bytes still
-        # needs two, and removing one more crosses to one.
-        self.assertEqual(pack_image.granule_thresholds(979 - 466)["granules"],
-                         2)
-        self.assertEqual(pack_image.granule_thresholds(979 - 467)["granules"],
-                         1)
+    def test_ledger_without_a_service_plan_reports_zeros(self):
+        # A synthetic host map has no packed service set: the two bank-6
+        # ledgers stay zero rather than being invented.
+        symbols = {"__kernel_code_end": 0xA570, "s__WINDOW_DATA": 0xA600,
+                   "l__WINDOW_DATA": 0x6D9, "s__DATA": 0x5A00}
+        ledger = pack_image.nucleus_ledger(symbols, None)
+        self.assertEqual(ledger["service_hot_bytes"], 0)
+        self.assertEqual(ledger["service_boot_bytes"], 0)
 
-    def test_kernel_threshold_arithmetic(self):
-        # Two-region geometry: the cold code ends at 8F3Ch and the derived
-        # cold data base is D600h for 2241 bytes of runtime data, with the
-        # cold half running to E000h.
-        thresholds = pack_image.kernel_granule_thresholds(
-            0x8F3C, 0xD600, 2241, 0xE000)
-        self.assertEqual(thresholds["code_above_lower_bytes"], 0x8F3C - 0x8E00)
-        self.assertEqual(thresholds["code_before_higher_bytes"], 0x9000 - 0x8F3C)
-        # Granule-aligned data base: 2241 bytes is 193 above the band floor
-        # (2048) and 319 below the 2560-byte half.
-        self.assertEqual(thresholds["data_above_lower_bytes"], 193)
-        self.assertEqual(thresholds["data_before_higher_bytes"], 319)
+    def test_ledger_without_derived_symbols_is_none(self):
+        self.assertIsNone(pack_image.nucleus_ledger({}, None))
 
-    def test_kernel_thresholds_match_the_linked_map(self):
-        map_path = os.path.join(ROOT, "build", "zephyros.map")
+    def test_ledger_lines_match_the_built_image(self):
         manifest_path = os.path.join(ROOT, "build",
                                      "zephyros.manifest.json")
-        plan_path = os.path.join(ROOT, "build", "arena.plan.json")
-        if not all(os.path.exists(p) for p in
-                   (map_path, manifest_path, plan_path)):
-            self.skipTest("derived production build missing; run make")
-
-        symbols = pack_image.parse_map_symbols(open(map_path).read())
-        expected = pack_image.kernel_granule_thresholds(
-            symbols["__kernel_code_end"], symbols["s__WINDOW_DATA"],
-            symbols["l__WINDOW_DATA"], pack_image.BANK7_RUNTIME_END)
-        manifest = json.load(open(manifest_path))
-        plan = json.load(open(plan_path))
-        self.assertEqual(manifest["kernel"], expected)
-        self.assertEqual(plan["kernel"], expected)
-        # The arena start follows align_up(code end): the two directions
-        # describe exactly the distance to that boundary.
-        self.assertEqual(
-            symbols["__driver_arena_start"],
-            symbols["__kernel_code_end"]
-            + expected["code_before_higher_bytes"])
-
-    def test_module_thresholds_match_the_packed_containers(self):
-        plan_path = os.path.join(ROOT, "build", "arena.plan.json")
-        if not os.path.exists(plan_path):
-            self.skipTest("derived production build missing; run make")
-        plan = json.load(open(plan_path))
-        for entry in plan["modules"]:
-            expected = pack_image.granule_thresholds(entry["total_size"])
-            self.assertEqual(entry["granules"], expected["granules"],
-                             entry["name"])
-            self.assertEqual(entry["above_lower_bytes"],
-                             expected["above_lower_bytes"], entry["name"])
-            self.assertEqual(entry["before_higher_bytes"],
-                             expected["before_higher_bytes"], entry["name"])
-            self.assertEqual(entry["total_size"],
-                             entry["image_size"] + entry["bss_size"],
-                             entry["name"])
-        text = pack_image.format_granule_thresholds(plan["modules"],
-                                                    plan["kernel"])
-        # Package 42b: the arena carries no module any more - the driver
-        # hot tier is the only budgeted image area left.
-        self.assertEqual(plan["modules"], [])
         plan_path = os.path.join(ROOT, "build", "modules",
                                  "services.plan.json")
-        if not os.path.exists(plan_path):
+        if not all(os.path.exists(p) for p in (manifest_path, plan_path)):
             self.skipTest("derived production build missing; run make")
-        services = json.load(open(plan_path))
-        self.assertIn("iocfat.zmod", services["order"])
-        hot = services["nucleus"]
-        # `arena.plan.json`'s ledger does not know the service set; the
-        # authoritative hot-tier numbers are the service plan's.
-        self.assertEqual(plan["nucleus"]["service_hot_capacity_bytes"],
+        ledger = json.load(open(manifest_path))["nucleus"]
+        plan = json.load(open(plan_path))
+        hot = plan["nucleus"]
+        # The production ledger and the packer's plan agree: this is what
+        # the mis-reported driver line looked like before package 42c.
+        self.assertGreater(hot["service_hot_bytes"], 0)
+        self.assertEqual(ledger["service_hot_bytes"],
+                         hot["service_hot_bytes"])
+        self.assertEqual(ledger["service_boot_bytes"],
+                         hot["service_boot_bytes"])
+        self.assertEqual(ledger["service_hot_capacity_bytes"],
                          hot["service_hot_capacity_bytes"])
         self.assertGreaterEqual(
             hot["service_hot_capacity_bytes"] - hot["service_hot_bytes"],
             4096, "driver hot tier room")
-        ledger = pack_image.format_nucleus_ledger(plan["nucleus"])
-        self.assertIn("driver hot: 0 bytes of %d"
-                      % hot["service_hot_capacity_bytes"], ledger)
-        self.assertIn("code end %04Xh" % plan["kernel"]["code_end"], text)
-        self.assertIn("data size %d at %04Xh"
-                      % (plan["kernel"]["data_size"],
-                         plan["kernel"]["data_base"]), text)
+        text = pack_image.format_nucleus_ledger(ledger)
+        self.assertIn("driver hot: %d bytes of %d"
+                      % (hot["service_hot_bytes"],
+                         hot["service_hot_capacity_bytes"]), text)
+        self.assertIn("driver boot/bulk: %d bytes of %d"
+                      % (hot["service_boot_bytes"],
+                         hot["service_boot_capacity_bytes"]), text)
+        self.assertIn("nucleus cold: code %d bytes end %04Xh" % (
+            ledger["cold_code_bytes"], ledger["cold_code_end"]), text)
+
+    def test_service_plan_loader_reads_the_build_directory(self):
+        plan_path = os.path.join(ROOT, "build", "modules",
+                                 "services.plan.json")
+        if not os.path.exists(plan_path):
+            self.skipTest("derived production build missing; run make")
+        plan = pack_image.load_service_plan(os.path.join(ROOT, "build"))
+        self.assertIn("iocfat.zmod", plan["order"])
+        self.assertIsNone(pack_image.load_service_plan(None))
 
 
 class TestCommonCeiling(unittest.TestCase):
@@ -501,8 +470,7 @@ class TestCommonCeiling(unittest.TestCase):
     def test_production_ledger_carries_the_ceiling(self):
         manifest_path = os.path.join(ROOT, "build",
                                      "zephyros.manifest.json")
-        plan_path = os.path.join(ROOT, "build", "arena.plan.json")
-        if not (os.path.exists(manifest_path) and os.path.exists(plan_path)):
+        if not os.path.exists(manifest_path):
             self.skipTest("derived production build missing; run make")
         ledger = json.load(open(manifest_path))["nucleus"]
         self.assertEqual(ledger["common_ceiling_bytes"], 3072)

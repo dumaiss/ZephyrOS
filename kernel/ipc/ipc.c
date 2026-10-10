@@ -953,7 +953,6 @@ static int8_t api_irq_release(uint8_t source)
 }
 
 static const struct ipc_service_api ipc_api = {
-	ZOS_IPC_SERVICE_API_VERSION,
 	api_call,
 	api_copy_in,
 	api_copy_out,

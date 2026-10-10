@@ -362,9 +362,19 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	if (file == (struct vfs_descriptor *)0) {
 		return -ZOS_EINVAL;
 	}
-	/* The M6 media-type gate: the loader reads the size first (a
-	 * directory cannot be bound as a FILE anyway) and a ZEX that is not
-	 * exactly header + image is refused below. */
+	/* The M6 media gate: an executable under `/SYSTEM` must be a ZEX
+	 * entry, not DATA or a service image (the M9 provider enforced this
+	 * through its exec flag, which the namespace bind does not carry).
+	 * A filesystem driver's FILE has no such kind and is validated by
+	 * its header alone, exactly like a card executable in M9. */
+	if (file->endpoint == VFS_NS_FILE_ENDPOINT &&
+	    file->u.ns.romfs.flags != ROMFS_FLAG_ZEX) {
+		exec_close(file, vfs_owner_current());
+		return ZEX_EXEC_ERR_TYPE;
+	}
+	/* The loader reads the size next (a directory cannot be bound as a
+	 * FILE anyway) and a ZEX that is not exactly header + image is
+	 * refused below. */
 	result = exec_file_size(file, &file_size);
 	if (result != 0) {
 		exec_close(file, vfs_owner_current());

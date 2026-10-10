@@ -50,7 +50,6 @@
 
 #include "zephyros/errno.h"
 #include "zephyros/ipc.h"
-#include "zephyros/video.h"
 
 #include "zephyr80/hardware.h"
 
@@ -487,7 +486,7 @@ static int v9958_init_display(void)
  * Output-only 85x26 text terminal (ported reference renderer)
  * ======================================================================
  *
- * The byte stream arrives exclusively through zchar_ops.putc/write.  The
+ * The byte stream arrives exclusively through the terminal entries.  The
  * drawing algorithms are the reference ones: each glyph is one HMMM copy
  * from the precolored atlas page selected by the current SGR attribute,
  * erases are HMMV fills in the current background, scrolling advances the
@@ -1432,7 +1431,7 @@ static void v9958_term_set_defaults(void)
 
 /* --- generic character interface (output only) ------------------------
  *
- * The zchar_ops entries are assembly wrappers (v9958_io.asm) that run
+ * The terminal entries are assembly wrappers (v9958_io.asm) that run
  * these C workers on a private module renderer stack: the kernel syscall
  * gate stack is only about 70 bytes deep, which the ported renderer's
  * call chain exceeds.  The wrappers preserve the exact sdcccall(1)
@@ -1443,13 +1442,13 @@ static void v9958_term_set_defaults(void)
 int v9958_char_putc_worker(void *vstate, char ch)
 {
 	if (vstate == (void *)0) {
-		return ZDEV_ENODEV;
+		return (-ZOS_ENODEV);
 	}
 	/* A standalone byte has no later flush opportunity in the console
 	 * service, so putc completes with a visible update. */
 	v9958_term_feed((uint8_t)ch);
 	v9958_term_sync();
-	return ZDEV_OK;
+	return 0;
 }
 
 int v9958_char_write_worker(void *vstate, const char *buf, uint16_t len)
@@ -1457,13 +1456,13 @@ int v9958_char_write_worker(void *vstate, const char *buf, uint16_t len)
 	uint16_t i;
 
 	if (vstate == (void *)0) {
-		return ZDEV_ENODEV;
+		return (-ZOS_ENODEV);
 	}
 	if (len == 0u) {
 		return 0;
 	}
 	if (buf == (const char *)0) {
-		return ZDEV_EINVAL;
+		return (-ZOS_EINVAL);
 	}
 	/* The whole 16-bit transfer is processed; the print run batches up
 	 * to 64 glyphs internally and one final sync makes it visible. */
@@ -1483,7 +1482,7 @@ int v9958_send(void *vstate, uint8_t operation, const void *payload,
 	struct v9958_block block;
 
 	if (state == (struct v9958_state *)0) {
-		return ZDEV_ENODEV;
+		return (-ZOS_ENODEV);
 	}
 
 	switch (operation) {
@@ -1495,7 +1494,7 @@ int v9958_send(void *vstate, uint8_t operation, const void *payload,
 		/* Validate before any I/O: a malformed request must cause
 		 * no port writes.  The full 16-bit length is streamed. */
 		if (payload == (const void *)0 || length == 0u) {
-			return ZDEV_EINVAL;
+			return (-ZOS_EINVAL);
 		}
 		block.src = (const uint8_t *)payload;
 		block.length = length;
@@ -1514,31 +1513,31 @@ int v9958_send(void *vstate, uint8_t operation, const void *payload,
 			v9958_io_stream_indirect(&block);
 			break;
 		}
-		return ZDEV_OK;
+		return 0;
 	case ZVIDEO_PRESENT:
 		if (length != 0u) {
-			return ZDEV_EINVAL;
+			return (-ZOS_EINVAL);
 		}
 		/* Flush pending terminal output first: PRESENT is a blocking
 		 * point, so nothing of the console stream may stay queued
 		 * behind it. */
 		v9958_out_flush();
 		v9958_io_wait_command();
-		return ZDEV_OK;
+		return 0;
 	case ZVIDEO_RESET:
 		if (length != 0u) {
-			return ZDEV_EINVAL;
+			return (-ZOS_EINVAL);
 		}
 		/* Full reset: parser/cursor/rendition defaults, both font
 		 * atlases reloaded from ROMFS, circular bitmap cleared,
 		 * cursor re-initialized, present, display enabled. */
 		v9958_term_set_defaults();
 		if (v9958_init_display() != V9958_OK) {
-			return ZDEV_ENODEV;
+			return (-ZOS_ENODEV);
 		}
-		return ZDEV_OK;
+		return 0;
 	default:
-		return ZDEV_ENOTSUP;
+		return (-ZOS_ENOTSUP);
 	}
 }
 

@@ -1,32 +1,36 @@
 /* ZephyrOS resident-driver loader and boot manifest reader.
  *
- * Architecture 36.6, 36.11 and 36.12 (work packages 40-41b).  This
- * cold-half nucleus loader turns the driver images the recovery store
+ * Architecture 36.6, 36.11 and 36.12 (work packages 40-42c).  This
+ * cold-half nucleus loader turns the flat load plans the recovery store
  * carries into the bank-6 resident domain, in manifest order:
  *
  *   1. read the boot manifest (ZOS_SERVICE_MANIFEST_NAME) with the
  *      bootstrap ROMFS reader: a flat DATA file of 24-byte ROMFS name
  *      records, the load order;
- *   2. for each image, read its descriptors and bound-check them against
- *      the container and against the fixed bank-6 layout: every segment's
- *      final base lies in its tier, every entry and dispatch address lies
- *      inside its segment, every table lies inside the container (the
- *      packer validated all of this on the host: M10-REFERENCE decision
- *      2, so the loader checks only the bounds that protect the nucleus);
- *   3. copy every segment image to its host-assigned base and zero its
- *      BSS, through the common application-bank copy gate;
- *   4. install the image's host-built endpoint records into the nucleus
- *      endpoint table, with the image's bulk extent, and install the
- *      resolved dependency numbers of this image;
- *   5. run the boot segment once through the mode-10 gate with Q = 6, and
- *      run the hot init entry once through the fixed upcall shim with the
- *      boot bundle (interface table and dependency array) in HL.
+ *   2. read each image's flat plan (include/zephyros/service.h) and
+ *      iterate it: copy every segment image to its host-assigned base and
+ *      zero its BSS through the common application-bank copy gate,
+ *      install the host-built endpoint records into the nucleus endpoint
+ *      table, install the publications and the resolved dependency
+ *      numbers, run the boot entry once through the mode-10 gate with
+ *      Q = 6, and run the hot init entry once through the fixed upcall
+ *      shim with the boot bundle (interface table and dependency array)
+ *      in HL;
+ *   3. keep the two architecture-36.20 ledgers in acceptance builds,
+ *      `driver hot` (hot plus io bytes) and `driver boot/bulk` (boot plus
+ *      bulk bytes); production takes them from the packer's report.
  *
- * There is no relocation, no placement policy and no dependency check
- * here: the host linked the images at their final addresses and resolved
- * the endpoints and dependencies (architecture 36.11).  The loader keeps
- * the two architecture-36.20 ledgers, `driver hot` (hot plus io bytes)
- * and `driver boot/bulk` (boot plus bulk bytes).
+ * The host computed everything (M10-REFERENCE decision 2): the container
+ * carries no version, no module type, no relocation records and no
+ * placement policy, and there is no magic check - the ROMFS entry's ZMOD
+ * flag (validated by romfs_init) is what proves the file is a service
+ * image.  The loader reads each plan once and checks only the bounds that
+ * protect the nucleus and the fixed driver-bank layout - the header's
+ * table counts against the loader's tables, each segment's allocation
+ * inside its tier, each called entry inside the region it will run in,
+ * each dependency number against what the nucleus has installed, each
+ * endpoint number nonzero and the dispatch entry inside the driver window
+ * (ipc_install_endpoint).
  *
  * Boot-tier code runs with bank 7 unmapped (see kernel/service/
  * service_boot.asm): the boot entry may touch bank 6, the common region
@@ -37,7 +41,6 @@
 #include "zephyros/errno.h"
 #include "zephyros/ipc.h"
 #include "zephyros/kernel.h"
-#include "zephyros/module.h"
 #include "zephyros/process.h"
 #include "zephyros/romfs.h"
 
@@ -49,9 +52,7 @@
 /* The plan and ledger lines are acceptance evidence the replay pins
  * against the packer's report; production links only the error lines
  * (work package 41).  Target images normally inherit the shared
- * ZOS_TARGET_TEST_BUILD guard.  The M9 integration image suppresses only
- * this verbose evidence so its IOC-FAT arena remains production-sized.
- * kernel/syscall.c carries the shared-guard preamble too. */
+ * ZOS_TARGET_TEST_BUILD guard. */
 #ifndef ZOS_TARGET_TEST_BUILD
 #define ZOS_TARGET_TEST_BUILD 0
 #endif
@@ -64,13 +65,11 @@
 #define SERVICE_BANK (uint8_t)(ZOS_BANK_MASK - 1u)
 
 /* Destination tiers (architecture 36.6): the hot tier 6000h-DFFFh (the io
- * role lives inside 8000h-BFFFh), the boot/bulk tier 0000h-5FFFh.  The
- * host computed each address; these are the ranges the loader checks. */
+ * role lives inside 8000h-BFFFh, which the hot-tier bound already
+ * contains), the boot/bulk tier 0000h-5FFFh.  The host computed each
+ * address; these are the ranges the loader checks. */
 #define SERVICE_HOT_BASE  ZOS_REV13_WINDOW_BASE /* 6000h */
 #define SERVICE_HOT_END   ZOS_BANK7_RUNTIME_END /* E000h */
-#define SERVICE_IO_BASE   0x8000u
-#define SERVICE_IO_END    0xC000u
-#define SERVICE_BOOT_BASE 0x0000u
 #define SERVICE_BOOT_END  ZOS_REV13_WINDOW_BASE /* 6000h */
 
 /* The boot gate (kernel/service/service_boot.asm) and the upcall shim's
@@ -81,56 +80,18 @@ extern struct zos_upcall_req zos_service_upcall_block;
 /* Manifest entry N's logical offset: 24 = 16 + 8, computed with shifts
  * because the kernel links no multiply runtime (kernel/romfs/romfs.c). */
 #define SERVICE_MANIFEST_AT(n) \
-	(((uint32_t)(n) << 4) + ((uint32_t)(n) << 3))
+	((uint16_t)(((uint16_t)(n) << 4) + ((uint16_t)(n) << 3)))
 
 static uint8_t service_loader_ran;
+#if ZOS_SERVICE_TEST_EVIDENCE
 static uint16_t service_hot_ledger;
 static uint16_t service_boot_ledger;
-
-/* Parsed container summary (cold data: the loader only runs with P = 0,
- * and single-tasking keeps it unambiguous). */
-struct service_segment_info {
-	uint8_t role;
-	uint8_t flags;
-	uint16_t base;
-	uint16_t image_size;
-	uint16_t bss_size;
-	uint16_t entry;
-	uint16_t payload_offset;
-	uint16_t reserved;
-};
-
-struct service_endpoint_info {
-	uint8_t class;
-	uint8_t instance;
-	uint8_t version;
-	uint8_t flags;
-	uint16_t number;
-	uint16_t dispatch;
-};
-
-struct service_layout {
-	uint16_t image_size;
-	uint16_t bss_size;
-	uint16_t init;
-	uint16_t payload_offset;
-	uint16_t segment_offset;
-	uint16_t endpoint_offset;
-	uint16_t dependency_offset;
-	uint8_t segment_count;
-	uint8_t endpoint_count;
-	uint8_t dependency_count;
-	uint8_t hot_index;
-	uint16_t publication_offset;
-	uint8_t publication_count;
-	struct service_segment_info segment[ZMOD_SERVICE_MAX_SEGMENTS];
-	struct service_endpoint_info endpoint[ZMOD_SERVICE_MAX_ENDPOINTS];
-};
-
-static struct service_layout service_layout;
-
-/* The manifest name record currently read, reused for every image. */
-static uint8_t service_name[ZOS_SERVICE_MANIFEST_ENTRY];
+/* ZMOD_SEGMENT_* - 1.  The sentinel and not 0 marks an absent role: a
+ * boot or bulk segment may legitimately be placed at 0000h. */
+#define SERVICE_ROLE_ABSENT 0xFFFFu
+static uint16_t service_role_base[4];
+static const uint8_t *service_report_name;
+#endif
 
 /* --- reporting (early console, written before any driver exists) --------- */
 
@@ -153,6 +114,7 @@ static void service_put_hex16(uint16_t value)
 }
 #endif /* ZOS_SERVICE_TEST_EVIDENCE */
 
+#if ZOS_SERVICE_TEST_EVIDENCE
 /* Decimal without the SDCC division runtime (work/30b audit: the kernel
  * links no arithmetic helpers): repeated subtraction of the powers of
  * ten, which for a 16-bit value is at most 50 iterations. */
@@ -175,287 +137,49 @@ static void service_put_dec16(uint16_t value)
 		}
 	}
 }
+#endif /* ZOS_SERVICE_TEST_EVIDENCE */
 
 /* One failure line: "service loader: <name>: <what>", the boot error the
- * contract requires on the early console. */
-static void service_fail(const uint8_t *name, const char *what)
+ * contract requires on the early console.  The class carries the text, so
+ * every failing step only returns its code; the words are short because
+ * the loader's byte budget is an architectural resource (36.3):
+ * "no image" the store does not hold the manifest's file, "copy" a segment
+ * that does not fit or a refused copy, "endpoint" the endpoint table is
+ * full, "publication" the namespace refused the row, "invalid" a corrupt
+ * or truncated container (docs/module-format.md section 7). */
+static void service_fail(const uint8_t *name, int result)
 {
 	service_puts("service loader: ");
 	if (name != (const uint8_t *)0) {
 		service_puts((const char *)name);
 		service_puts(": ");
 	}
-	service_puts(what);
+	if (result == ZMOD_ENOENT) {
+		service_puts("no image");
+	} else if (result == ZMOD_ENOTSUP) {
+		service_puts("copy");
+	} else if (result == ZMOD_ENOSPC) {
+		service_puts("endpoint");
+	} else if (result == ZMOD_EBUSY) {
+		service_puts("publication");
+	} else {
+		service_puts("invalid");
+	}
 	service_puts("\r\n");
 }
 
 /* --- container reads ----------------------------------------------------- */
 
-static uint16_t service_le16(const uint8_t *p)
+/* Read one plan record of `size` bytes at `at`, advancing `at`.  The
+ * reader bounds the file itself (romfs_read rejects a request that leaves
+ * the file), so this only has to walk the tables the header declared. */
+static int service_record(const romfs_file_t *file, uint16_t *at,
+			  void *record, uint8_t size)
 {
-	return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
-}
-
-static int service_source_read(const void *ctx, uint16_t offset, uint8_t *dst,
-			       uint16_t length)
-{
-	const romfs_file_t *file = (const romfs_file_t *)ctx;
-
-	return romfs_read(file, offset, dst, length);
-}
-
-static int service_read(const struct zmod_source *source, uint16_t offset,
-			uint8_t *dst, uint16_t length)
-{
-	if ((uint32_t)offset + length > source->size) {
+	if (romfs_read(file, *at, record, size) != (int)size) {
 		return ZMOD_EFORMAT;
 	}
-	if (length == 0u) {
-		return ZMOD_OK;
-	}
-	if (source->read(source->ctx, offset, dst, length) < 0) {
-		return ZMOD_EFORMAT;
-	}
-	return ZMOD_OK;
-}
-
-/* A manifest name record: a non-empty printable-ASCII string inside the
- * ROMFS name field (the rule the ROMFS reader applies to stored names). */
-static uint8_t service_name_ok(const uint8_t *name)
-{
-	uint8_t index;
-
-	for (index = 0u; index < ZOS_SERVICE_MANIFEST_ENTRY; ++index) {
-		uint8_t c = name[index];
-
-		if (c == 0u) {
-			return (index != 0u) ? 1u : 0u;
-		}
-		if (c < 0x21u || c > 0x7Eu) {
-			return 0u;
-		}
-	}
-	return 0u;
-}
-
-/* End of a table of `count` `size`-byte entries starting at `offset`,
- * saturating at 16 bits so a wrapped table can never look like it lies
- * inside the container. */
-static uint16_t service_table_end(uint16_t offset, uint8_t size,
-				  uint8_t count)
-{
-	uint32_t end = (uint32_t)offset + (uint16_t)(size * count);
-
-	return (end > 0xFFFFu) ? 0xFFFFu : (uint16_t)end;
-}
-
-/* Read and bound-check one driver container's descriptors.  The packer
- * linked the image on the host (architecture 36.11): the loader checks
- * the bounds that protect the nucleus - every table inside the container,
- * every segment's final base inside its tier, every entry and dispatch
- * address inside its segment - and copies. */
-static int service_read_layout(const struct zmod_source *source,
-			       struct service_layout *layout)
-{
-	uint8_t header[ZMOD_HEADER_SIZE];
-	uint8_t section[ZMOD_SERVICE_HEADER_SIZE];
-	uint8_t record[ZMOD_SERVICE_SEGMENT_SIZE];
-	uint8_t roles = 0u;
-	uint16_t index;
-
-	if (source->size < (uint16_t)(ZMOD_HEADER_SIZE +
-				      ZMOD_SERVICE_HEADER_SIZE) ||
-	    service_read(source, 0u, header, ZMOD_HEADER_SIZE) != ZMOD_OK) {
-		return ZMOD_EFORMAT;
-	}
-	if (header[0] != ZMOD_MAGIC_0 || header[1] != ZMOD_MAGIC_1 ||
-	    header[2] != ZMOD_MAGIC_2 || header[3] != ZMOD_MAGIC_3) {
-		return ZMOD_EINVAL;
-	}
-	if (header[4] != ZMOD_FORMAT_VERSION ||
-	    /* ABI 4 carries the publication table (package 42a); this build
-	     * installs it into the DEVICE provider's table below. */
-	    (header[6] != ZMOD_SERVICE_ABI_VERSION &&
-	     header[6] != ZMOD_SERVICE_ABI_PUBLICATIONS)) {
-		return ZMOD_ENOTSUP;
-	}
-	if (header[5] != ZMOD_TYPE_SERVICE ||
-	    header[7] != ZMOD_FLAG_NONE ||
-	    service_le16(header + 0x0C) != 0u ||
-	    service_le16(header + 0x10) != ZMOD_NO_ENTRY ||
-	    service_le16(header + 0x12) != 0u ||
-	    service_le16(header + 0x14) != 0u ||
-	    service_le16(header + 0x18) != source->size ||
-	    service_le16(header + 0x1A) != 0u) {
-		return ZMOD_EINVAL;
-	}
-	layout->image_size = service_le16(header + 0x08);
-	layout->bss_size = service_le16(header + 0x0A);
-	layout->init = service_le16(header + 0x0E);
-	layout->payload_offset = service_le16(header + 0x16);
-	if (layout->payload_offset < (uint16_t)(ZMOD_HEADER_SIZE +
-						ZMOD_SERVICE_HEADER_SIZE) ||
-	    (uint16_t)(layout->payload_offset + layout->image_size) !=
-	    source->size) {
-		return ZMOD_EFORMAT;
-	}
-	if (service_read(source, ZMOD_SERVICE_SECTION_OFFSET, section,
-			 ZMOD_SERVICE_HEADER_SIZE) != ZMOD_OK) {
-		return ZMOD_EFORMAT;
-	}
-	layout->segment_count = section[0x08];
-	layout->endpoint_count = section[0x09];
-	layout->dependency_count = section[0x0A];
-	layout->publication_count = (header[6] ==
-				     ZMOD_SERVICE_ABI_PUBLICATIONS)
-		? section[0x0B] : 0u;
-	layout->segment_offset = service_le16(section + 0x02);
-	layout->endpoint_offset = service_le16(section + 0x04);
-	layout->dependency_offset = service_le16(section + 0x06);
-	layout->publication_offset = (layout->publication_count != 0u)
-		? service_le16(section + 0x0C) : 0u;
-	if (layout->segment_count == 0u ||
-	    layout->segment_count > ZMOD_SERVICE_MAX_SEGMENTS ||
-	    layout->endpoint_count > ZMOD_SERVICE_MAX_ENDPOINTS ||
-	    layout->dependency_count > ZMOD_SERVICE_MAX_DEPENDENCIES
-	    || layout->publication_count > ZMOD_SERVICE_MAX_PUBLICATIONS
-	    ) {
-		return ZMOD_EFORMAT;
-	}
-	/* Every table sits inside the container, below the payload. */
-	if (service_table_end(layout->segment_offset,
-			      ZMOD_SERVICE_SEGMENT_SIZE,
-			      layout->segment_count) > layout->payload_offset ||
-	    service_table_end(layout->endpoint_offset,
-			      ZMOD_SERVICE_ENDPOINT_SIZE,
-			      layout->endpoint_count) >
-	    layout->payload_offset ||
-	    service_table_end(layout->dependency_offset,
-			      ZMOD_SERVICE_DEPENDENCY_SIZE,
-			      layout->dependency_count) >
-	    layout->payload_offset) {
-		return ZMOD_EFORMAT;
-	}
-	if (service_table_end(layout->publication_offset,
-			      ZMOD_SERVICE_PUBLICATION_SIZE,
-			      layout->publication_count) >
-	    layout->payload_offset) {
-		return ZMOD_EFORMAT;
-	}
-
-	layout->hot_index = 0xFFu;
-	for (index = 0u; index < layout->segment_count; ++index) {
-		struct service_segment_info *segment = &layout->segment[index];
-		uint8_t role_bit;
-		uint16_t tier_base;
-		uint16_t tier_end;
-
-		if (service_read(source,
-				 (uint16_t)(ZMOD_SERVICE_SECTION_OFFSET +
-					    layout->segment_offset +
-					    (uint16_t)(ZMOD_SERVICE_SEGMENT_SIZE *
-						       index)),
-				 record, ZMOD_SERVICE_SEGMENT_SIZE) !=
-		    ZMOD_OK) {
-			return ZMOD_EFORMAT;
-		}
-		if (record[0] == 0u || record[0] > ZMOD_SEGMENT_BULK) {
-			return ZMOD_EINVAL;
-		}
-		role_bit = (uint8_t)(1u << record[0]);
-		if ((roles & role_bit) != 0u) {
-			return ZMOD_EFORMAT; /* one segment per role */
-		}
-		roles = (uint8_t)(roles | role_bit);
-		segment->role = record[0];
-		segment->flags = record[1];
-		segment->base = service_le16(record + 0x02);
-		segment->image_size = service_le16(record + 0x04);
-		segment->bss_size = service_le16(record + 0x06);
-		segment->entry = service_le16(record + 0x08);
-		segment->payload_offset = service_le16(record + 0x0A);
-		segment->reserved = service_le16(record + 0x0C);
-		if (segment->flags != 0u || segment->reserved != 0u) {
-			return ZMOD_EINVAL;
-		}
-		if (segment->image_size == 0u && segment->bss_size == 0u) {
-			return ZMOD_EFORMAT;
-		}
-		if ((uint32_t)segment->payload_offset +
-		    segment->image_size > layout->image_size) {
-			return ZMOD_EFORMAT;
-		}
-		/* The final base and the whole allocation stay in the
-		 * segment's tier: this is what protects the fixed driver-bank
-		 * layout and the nucleus's own windows. */
-		if (segment->role == ZMOD_SEGMENT_HOT) {
-			tier_base = SERVICE_HOT_BASE;
-			tier_end = SERVICE_HOT_END;
-			layout->hot_index = index;
-		} else if (segment->role == ZMOD_SEGMENT_IO) {
-			tier_base = SERVICE_IO_BASE;
-			tier_end = SERVICE_IO_END;
-		} else {
-			tier_base = SERVICE_BOOT_BASE;
-			tier_end = SERVICE_BOOT_END;
-		}
-		if (segment->base < tier_base ||
-		    (uint32_t)segment->base + segment->image_size +
-		    segment->bss_size > tier_end) {
-			return ZMOD_EFORMAT;
-		}
-		if (segment->entry != ZMOD_NO_ENTRY &&
-		    (segment->role != ZMOD_SEGMENT_BOOT ||
-		     segment->entry < segment->base ||
-		     segment->entry >=
-		     (uint16_t)(segment->base + segment->image_size))) {
-			return ZMOD_EFORMAT;
-		}
-	}
-	if (layout->hot_index == 0xFFu) {
-		return ZMOD_EFORMAT;
-	}
-	if (layout->init != ZMOD_NO_ENTRY &&
-	    (layout->init < layout->segment[layout->hot_index].base ||
-	     layout->init >=
-	     (uint16_t)(layout->segment[layout->hot_index].base +
-			layout->segment[layout->hot_index].image_size))) {
-		return ZMOD_EFORMAT;
-	}
-
-	for (index = 0u; index < layout->endpoint_count; ++index) {
-		struct service_endpoint_info *endpoint = &layout->endpoint[index];
-		const struct service_segment_info *hot =
-			&layout->segment[layout->hot_index];
-
-		if (service_read(source,
-				 (uint16_t)(ZMOD_SERVICE_SECTION_OFFSET +
-					    layout->endpoint_offset +
-					    (uint16_t)(ZMOD_SERVICE_ENDPOINT_SIZE *
-						       index)),
-				 record, ZMOD_SERVICE_ENDPOINT_SIZE) !=
-		    ZMOD_OK) {
-			return ZMOD_EFORMAT;
-		}
-		endpoint->class = record[0];
-		endpoint->instance = record[1];
-		endpoint->version = record[2];
-		endpoint->flags = record[3];
-		endpoint->number = service_le16(record + 0x04);
-		endpoint->dispatch = service_le16(record + 0x06);
-		if (endpoint->number == 0u ||
-		    (endpoint->flags & (uint8_t)~ZMOD_SERVICE_EP_REENTRANT) !=
-		    0u) {
-			return ZMOD_EINVAL;
-		}
-		/* The dispatch entry must lie inside the hot image: the
-		 * one address the nucleus will call in bank 6. */
-		if (endpoint->dispatch < hot->base ||
-		    endpoint->dispatch >=
-		    (uint16_t)(hot->base + hot->image_size)) {
-			return ZMOD_EINVAL;
-		}
-	}
+	*at = (uint16_t)(*at + size);
 	return ZMOD_OK;
 }
 
@@ -476,7 +200,7 @@ static uint8_t service_bank_op(uint8_t op, uint16_t addr, uint16_t length)
 /* Copy `length` container bytes to bank-6 `dst` through the common
  * staging buffer and the gate (which validates the bank and restores the
  * exact latch, stack and interrupt state). */
-static int service_place(const struct zmod_source *source, uint16_t offset,
+static int service_place(const romfs_file_t *file, uint16_t offset,
 			 uint16_t dst, uint16_t length)
 {
 	uint16_t done = 0u;
@@ -487,8 +211,8 @@ static int service_place(const struct zmod_source *source, uint16_t offset,
 		if (chunk > ZOS_SYSCALL_STAGE_SIZE) {
 			chunk = ZOS_SYSCALL_STAGE_SIZE;
 		}
-		if (service_read(source, (uint16_t)(offset + done),
-				 zos_user_copy_staging, chunk) != ZMOD_OK) {
+		if (romfs_read(file, (uint16_t)(offset + done),
+			       zos_user_copy_staging, chunk) != (int)chunk) {
 			return ZMOD_EFORMAT;
 		}
 		if (service_bank_op(ZOS_BANK_OP_WRITE,
@@ -500,254 +224,277 @@ static int service_place(const struct zmod_source *source, uint16_t offset,
 	return ZMOD_OK;
 }
 
-/* --- table installation and bring-up ------------------------------------- */
-
-/* Install every endpoint the image declares, with the image's bulk extent,
- * into the nucleus table (the host-built table, copied in).  The nucleus
- * validates the record; a refusal is a boot error. */
-static int service_install_endpoints(const struct service_layout *layout,
-				     uint16_t bulk_base, uint16_t bulk_size,
-				     uint8_t *number_high)
-{
-	uint8_t index;
-
-	for (index = 0u; index < layout->endpoint_count; ++index) {
-		const struct service_endpoint_info *endpoint =
-			&layout->endpoint[index];
-		struct ipc_endpoint_record record;
-
-		record.class = endpoint->class;
-		record.instance = endpoint->instance;
-		record.version = endpoint->version;
-		record.flags = endpoint->flags;
-		record.number = (uint8_t)endpoint->number;
-		record.entry = endpoint->dispatch;
-		record.bulk_base = bulk_base;
-		record.bulk_size = bulk_size;
-		if (ipc_install_endpoint(&record) < 0) {
-			service_fail(service_name, "endpoint refused");
-			return ZMOD_ENOSPC;
-		}
-		if (endpoint->number > *number_high) {
-			*number_high = (uint8_t)endpoint->number;
-		}
-	}
-	return ZMOD_OK;
-}
-
-/* Install the image's host-built publications into the DEVICE provider's
- * table (architecture 36.13, work package 42a).  The packer resolved the
- * serving endpoint number; the loader checks the record against the table
- * that is actually installed - the name shape, the protocol type and that
- * the endpoint is one this build has - and the provider refuses anything
- * that would overflow or collide. */
-static int service_install_publications(const struct zmod_source *source,
-					const struct service_layout *layout)
-{
-	uint8_t index;
-
-	for (index = 0u; index < layout->publication_count; ++index) {
-		uint8_t record[ZMOD_SERVICE_PUBLICATION_SIZE];
-		uint8_t length;
-		uint8_t number;
-
-		if (service_read(source,
-				 (uint16_t)(ZMOD_SERVICE_SECTION_OFFSET +
-					    layout->publication_offset +
-					    ZMOD_SERVICE_PUBLICATION_SIZE *
-					    index),
-				 record, ZMOD_SERVICE_PUBLICATION_SIZE) !=
-		    ZMOD_OK) {
-			return ZMOD_EFORMAT;
-		}
-		length = 0u;
-		while (length < (uint8_t)sizeof(((struct
-						  zmod_service_publication *)
-						 0)->name) &&
-		       record[length] != '\0') {
-			++length;
-		}
-		if (length == 0u ||
-		    length >= (uint8_t)sizeof(((struct
-						zmod_service_publication *)
-					       0)->name) ||
-		    record[0] != '/' || record[0x10] == 0u) {
-			return ZMOD_EFORMAT;
-		}
-		number = record[0x11];
-		if (number == 0u) {
-			return ZMOD_EFORMAT;
-		}
-		if (vfs_ns_install_publication((const char *)record,
-					       record[0x10], number,
-					       record[0x12]) < 0) {
-			return ZMOD_EFORMAT;
-		}
-	}
-	return ZMOD_OK;
-}
-
-
-/* Install the image's resolved dependency numbers into the fixed-core
- * array the boot bundle names.  The host resolved each number against an
- * earlier (or this image's own) export; the loader checks that the number
- * it installs is one the nucleus already has, and zeroes the unused
- * tail. */
-static int service_read_dependencies(const struct zmod_source *source,
-				     const struct service_layout *layout,
-				     uint8_t number_high)
-{
-	uint8_t index;
-
-	for (index = 0u; index < ZMOD_SERVICE_MAX_DEPENDENCIES; ++index) {
-		uint16_t number = 0u;
-
-		if (index < layout->dependency_count) {
-			uint8_t record[ZMOD_SERVICE_DEPENDENCY_SIZE];
-			uint16_t at = (uint16_t)(ZMOD_SERVICE_SECTION_OFFSET +
-				layout->dependency_offset +
-				(uint16_t)(ZMOD_SERVICE_DEPENDENCY_SIZE *
-					   index));
-
-			if (service_read(source, at, record,
-					 ZMOD_SERVICE_DEPENDENCY_SIZE) !=
-			    ZMOD_OK) {
-				return ZMOD_EFORMAT;
-			}
-			number = service_le16(record + 0x02);
-			if (number > number_high) {
-				return ZMOD_EFORMAT;
-			}
-		}
-		zos_service_deps[index] = (uint8_t)number;
-	}
-	return ZMOD_OK;
-}
-
-static int service_run_boot(const struct service_layout *layout)
-{
-	uint8_t index;
-
-	for (index = 0u; index < layout->segment_count; ++index) {
-		if (layout->segment[index].role != ZMOD_SEGMENT_BOOT) {
-			continue;
-		}
-		if (layout->segment[index].entry == ZMOD_NO_ENTRY) {
-			continue; /* a boot/bulk data segment runs nothing */
-		}
-		if (zos_service_run_boot(layout->segment[index].entry) != 0u) {
-			service_fail(service_name, "boot refused");
-			return ZMOD_EINVAL;
-		}
-	}
-	return ZMOD_OK;
-}
-
-/* The hot init entry, once, through the fixed upcall shim: the mode-11
- * window shows bank 6 and the fixed core stays visible, so the driver
- * reads its boot bundle and claims its IRQs here. */
-static int service_run_init(const struct service_layout *layout)
-{
-	if (layout->init == ZMOD_NO_ENTRY) {
-		return ZMOD_OK;
-	}
-	zos_service_upcall_block.page = ZOS_UPCALL_PAGE_SERVICE;
-	zos_service_upcall_block.entry = layout->init;
-	zos_service_upcall_block.args = (void *)ipc_service_boot();
-	zos_service_upcall_block.result = 0u;
-	if (zos_upcall(&zos_service_upcall_block) != 0u) {
-		service_fail(service_name, "init refused");
-		return ZMOD_EINVAL;
-	}
-	return ZMOD_OK;
-}
-
-/* --- the loader ---------------------------------------------------------- */
-
-/* Open manifest entry `index` as a container: read its name record, resolve
- * it in the recovery store and bind the read source to it. */
-static int service_open(const romfs_file_t *manifest, uint16_t index,
-			romfs_file_t *file, struct zmod_source *source)
-{
-	if (romfs_read(manifest, SERVICE_MANIFEST_AT(index), service_name,
-		       ZOS_SERVICE_MANIFEST_ENTRY) !=
-	    (int)ZOS_SERVICE_MANIFEST_ENTRY ||
-	    !service_name_ok(service_name)) {
-		service_fail((const uint8_t *)0, "bad manifest entry");
-		return ZMOD_EFORMAT;
-	}
-	if (romfs_lookup_ci((const char *)service_name, file) != 0 ||
-	    file->flags != ROMFS_FLAG_ZMOD || file->size > 0xFFFFu) {
-		service_fail(service_name, "no image");
-		return ZMOD_ENOENT;
-	}
-	source->read = service_source_read;
-	source->ctx = file;
-	source->size = (uint16_t)file->size;
-	return ZMOD_OK;
-}
-
-/* The image's bulk extent, if it carries a bulk segment (architecture 36.6:
- * the run-time bulk copy is bound to the driver that owns the dispatched
- * endpoint). */
-static void service_bulk_extent(const struct service_layout *layout,
-				uint16_t *base, uint16_t *size)
-{
-	uint8_t index;
-
-	*base = 0u;
-	*size = 0u;
-	for (index = 0u; index < layout->segment_count; ++index) {
-		if (layout->segment[index].role == ZMOD_SEGMENT_BULK) {
-			*base = layout->segment[index].base;
-			*size = (uint16_t)(layout->segment[index].image_size +
-					   layout->segment[index].bss_size);
-		}
-	}
-}
-
 /* The plan line the acceptance transcript pins: the roles in the order
  * tools/zmodpack.py's `services` command prints them, absent roles left
  * out.  Evidence only: production does not link it. */
 #if ZOS_SERVICE_TEST_EVIDENCE
-static void service_report(const struct service_layout *layout)
+static void service_report(void)
 {
-	static const uint8_t roles[4] = {
+	static const uint8_t order[4] = {
 		ZMOD_SEGMENT_HOT, ZMOD_SEGMENT_IO,
 		ZMOD_SEGMENT_BOOT, ZMOD_SEGMENT_BULK
 	};
 	static const char *const names[4] = {
-		" hot ", " io ", " boot ", " bulk "
+		" hot ", " boot ", " io ", " bulk "
 	};
-	uint8_t role_index;
+	uint8_t index;
 
 	service_puts("driver ");
-	service_puts((const char *)service_name);
+	service_puts((const char *)service_report_name);
 	service_puts(":");
-	for (role_index = 0u; role_index < 4u; ++role_index) {
-		uint8_t index;
+	for (index = 0u; index < 4u; ++index) {
+		uint8_t role = order[index];
+		uint16_t base = service_role_base[role - 1u];
 
-		for (index = 0u; index < layout->segment_count; ++index) {
-			if (layout->segment[index].role != roles[role_index]) {
-				continue;
-			}
-			service_puts(names[role_index]);
-			service_put_hex16(layout->segment[index].base);
-			break;
+		if (base != SERVICE_ROLE_ABSENT) {
+			service_puts(names[role - 1u]);
+			service_put_hex16(base);
 		}
 	}
 	service_puts("\r\n");
 }
 #endif /* ZOS_SERVICE_TEST_EVIDENCE */
 
+/* --- one image's flat plan ------------------------------------------------ */
+
+/* Copy the segments, install the tables and run the entries of one image.
+ * `source` is the container; every address is host-final, so the checks
+ * here are the ones that keep a bad plan out of the nucleus: the tier
+ * bounds, the boot/init entry bounds, the endpoint numbers and the
+ * dependency numbers.  A failure returns a loader error code and the one
+ * caller prints the line. */
+static int service_load_image(const romfs_file_t *file,
+			      const struct zmod_header *header)
+{
+	struct zmod_segment segment;
+	uint16_t at = ZMOD_HEADER_SIZE;
+	uint16_t boot_entry = ZMOD_NO_ENTRY;
+	uint16_t hot_base = 0u;
+	uint16_t hot_image = 0u;
+	uint8_t number_high = 0u;
+	uint8_t index;
+	uint8_t count = header->segment_count;
+	uint16_t bulk_base = 0u;
+	uint16_t bulk_size = 0u;
+
+#if ZOS_SERVICE_TEST_EVIDENCE
+	for (index = 0u; index < 4u; ++index) {
+		service_role_base[index] = SERVICE_ROLE_ABSENT;
+	}
+#endif
+
+	/* Segment pass: place before installing, so a segment that fails
+	 * its bounds costs no table state. */
+	for (index = 0u; index < count; ++index) {
+		uint16_t end;
+		uint16_t payload_at;
+
+		if (service_record(file, &at, &segment,
+				   ZMOD_SEGMENT_SIZE) != ZMOD_OK) {
+			return ZMOD_EFORMAT;
+		}
+		if (segment.role == 0u || segment.role > ZMOD_SEGMENT_BULK) {
+			return ZMOD_EINVAL;
+		}
+		/* The whole allocation must sit in the segment's tier: this
+		 * is what protects the fixed driver-bank layout.  The sum
+		 * wrapping (end < base) would put it outside every tier. */
+		end = (uint16_t)(segment.base + segment.image_size +
+				 segment.bss_size);
+		if (end < segment.base ||
+		    end > ((segment.base >= SERVICE_HOT_BASE)
+			   ? SERVICE_HOT_END : SERVICE_BOOT_END)) {
+			return ZMOD_EFORMAT;
+		}
+		if (segment.role == ZMOD_SEGMENT_HOT) {
+			hot_base = segment.base;
+			hot_image = segment.image_size;
+		}
+		if (segment.role == ZMOD_SEGMENT_BULK) {
+			bulk_base = segment.base;
+			bulk_size = (uint16_t)(segment.image_size +
+					       segment.bss_size);
+		}
+		if (segment.entry != ZMOD_NO_ENTRY) {
+			/* Only the boot role carries one, and it runs with
+			 * the whole bank 6 visible (mode 10, Q = 6). */
+			if (segment.role != ZMOD_SEGMENT_BOOT ||
+			    segment.entry >= SERVICE_BOOT_END) {
+				return ZMOD_EINVAL;
+			}
+			boot_entry = segment.entry;
+		}
+		/* The copy walks the container with 16-bit offsets: refuse
+		 * a payload range that wraps (the reader refuses a range
+		 * that leaves the file). */
+		payload_at = (uint16_t)(header->payload_offset +
+					segment.payload_offset);
+		if (payload_at < header->payload_offset ||
+		    (uint16_t)(payload_at + segment.image_size) < payload_at ||
+		    service_place(file, payload_at, segment.base,
+				  segment.image_size) != ZMOD_OK) {
+			return ZMOD_ENOTSUP;
+		}
+		if (segment.bss_size != 0u &&
+		    service_bank_op(ZOS_BANK_OP_ZERO,
+				    (uint16_t)(segment.base +
+					       segment.image_size),
+				    segment.bss_size) != 0u) {
+			return ZMOD_ENOTSUP;
+		}
+#if ZOS_SERVICE_TEST_EVIDENCE
+		if (segment.role == ZMOD_SEGMENT_HOT ||
+		    segment.role == ZMOD_SEGMENT_IO) {
+			service_hot_ledger = (uint16_t)(
+				service_hot_ledger + segment.image_size +
+				segment.bss_size);
+		} else {
+			service_boot_ledger = (uint16_t)(
+				service_boot_ledger + segment.image_size +
+				segment.bss_size);
+		}
+		service_role_base[segment.role - 1u] = segment.base;
+#endif
+	}
+	if (hot_image == 0u ||
+	    (header->init_entry != ZMOD_NO_ENTRY &&
+	     (header->init_entry < hot_base ||
+	      header->init_entry >= (uint16_t)(hot_base + hot_image)))) {
+		return ZMOD_EINVAL;
+	}
+
+	/* Endpoint table: ipc_install_endpoint validates the dispatch entry
+	 * and the table shape; the loader refuses number 0 (the nucleus
+	 * reads 0 as "no endpoint"). */
+	for (index = 0u, count = header->endpoint_count; index < count;
+	     ++index) {
+		struct zmod_endpoint endpoint;
+		struct ipc_endpoint_record record;
+
+		if (service_record(file, &at, &endpoint,
+				   ZMOD_ENDPOINT_SIZE) != ZMOD_OK) {
+			return ZMOD_EFORMAT;
+		}
+		if (endpoint.number == 0u) {
+			return ZMOD_EINVAL;
+		}
+		record.class = endpoint.class;
+		record.instance = endpoint.instance;
+		record.version = endpoint.version;
+		record.flags = endpoint.flags;
+		record.number = (uint8_t)endpoint.number;
+		record.entry = endpoint.dispatch;
+		record.bulk_base = bulk_base;
+		record.bulk_size = bulk_size;
+		if (ipc_install_endpoint(&record) < 0) {
+			return ZMOD_ENOSPC;
+		}
+		if (endpoint.number > number_high) {
+			number_high = (uint8_t)endpoint.number;
+		}
+	}
+
+	/* Dependency table: the host resolved each declaration to an
+	 * endpoint number the nucleus already has, and zeroed the unused
+	 * tail so the init always reads a full array. */
+	for (index = 0u; index < ZMOD_MAX_DEPENDENCIES; ++index) {
+		uint16_t number = 0u;
+
+		if (index < header->dependency_count) {
+			struct zmod_dependency dependency;
+
+			if (service_record(file, &at, &dependency,
+					   ZMOD_DEPENDENCY_SIZE) != ZMOD_OK) {
+				return ZMOD_EFORMAT;
+			}
+			number = dependency.number;
+			if (number > number_high) {
+				return ZMOD_EFORMAT;
+			}
+		}
+		zos_service_deps[index] = (uint8_t)number;
+	}
+
+	/* Publication table: the DEVICE and FS providers validate the name,
+	 * the type and the number; the loader only keeps the provider from
+	 * scanning past the record. */
+	for (index = 0u, count = header->publication_count; index < count;
+	     ++index) {
+		struct zmod_publication publication;
+
+		if (service_record(file, &at, &publication,
+				   ZMOD_PUBLICATION_SIZE) != ZMOD_OK) {
+			return ZMOD_EFORMAT;
+		}
+		if (publication.name[15] != '\0' ||
+		    vfs_ns_install_publication(publication.name,
+					       publication.type,
+					       publication.number,
+					       publication.object) < 0) {
+			return ZMOD_EBUSY;
+		}
+	}
+
+	/* The boot segment once, through the mode-10 gate, then the hot
+	 * init once, through the fixed upcall shim. */
+	if (boot_entry != ZMOD_NO_ENTRY &&
+	    zos_service_run_boot(boot_entry) != 0u) {
+		return ZMOD_EINVAL;
+	}
+	if (header->init_entry != ZMOD_NO_ENTRY) {
+		/* The mode-11 window shows bank 6 and the fixed core stays
+		 * visible, so the driver reads its boot bundle and claims
+		 * its IRQs here. */
+		zos_service_upcall_block.page = ZOS_UPCALL_PAGE_SERVICE;
+		zos_service_upcall_block.entry = header->init_entry;
+		zos_service_upcall_block.args = (void *)ipc_service_boot();
+		zos_service_upcall_block.result = 0u;
+		if (zos_upcall(&zos_service_upcall_block) != 0u) {
+			return ZMOD_EINVAL;
+		}
+	}
+#if ZOS_SERVICE_TEST_EVIDENCE
+	service_report();
+#endif
+	return ZMOD_OK;
+}
+
+/* --- the loader ---------------------------------------------------------- */
+
+/* Read and bound one image's flat plan header: it must hold the header,
+ * the table counts must fit the loader's tables, and the payload must
+ * start inside the image.  There is no magic and no version check: the
+ * ROMFS entry's ZMOD flag (validated by romfs_init) is what proves the
+ * file is a service image, and the packer is its only writer.  The
+ * endpoint and publication counts are not bounded here: the nucleus
+ * tables (ipc_install_endpoint, vfs_ns_install_publication) refuse an
+ * overflow themselves. */
+static int service_read_header(const romfs_file_t *file, uint16_t size,
+			       struct zmod_header *header)
+{
+	if (size < ZMOD_HEADER_SIZE ||
+	    romfs_read(file, 0u, header,
+		       ZMOD_HEADER_SIZE) != (int)ZMOD_HEADER_SIZE) {
+		return ZMOD_EFORMAT;
+	}
+	if (header->segment_count > ZMOD_MAX_SEGMENTS ||
+	    header->dependency_count > ZMOD_MAX_DEPENDENCIES ||
+	    header->total_size != size ||
+	    header->payload_offset > size) {
+		return ZMOD_EFORMAT;
+	}
+	return ZMOD_OK;
+}
+
 int service_load_all(const char *manifest_name)
 {
 	romfs_file_t manifest;
 	romfs_file_t file;
-	struct zmod_source source;
+	struct zmod_header header;
+	uint8_t name[ZOS_SERVICE_MANIFEST_ENTRY];
+	uint16_t size;
 	uint16_t entries;
 	uint16_t index;
-	uint8_t number_high = 0u;
 	int result;
 
 	if (service_loader_ran) {
@@ -755,20 +502,22 @@ int service_load_all(const char *manifest_name)
 	}
 	if (manifest_name == (const char *)0 ||
 	    romfs_lookup_ci(manifest_name, &manifest) != 0) {
-		service_fail((const uint8_t *)0, "no manifest");
-		return ZMOD_ENOENT;
+		service_fail((const uint8_t *)0, ZMOD_EFORMAT);
+		return ZMOD_EFORMAT;
 	}
 	if (manifest.flags != ROMFS_FLAG_DATA ||
-	    manifest.size > 0xFFFFu ||
-	    manifest.size == 0u) {
-		service_fail((const uint8_t *)0, "bad manifest");
+	    manifest.size == 0u ||
+	    manifest.size > (uint32_t)(ZOS_SERVICE_MANIFEST_ENTRY *
+				       ZMOD_MAX_IMAGES)) {
+		service_fail((const uint8_t *)0, ZMOD_EFORMAT);
 		return ZMOD_EFORMAT;
 	}
 	/* Entry count by repeated subtraction: the kernel links no SDCC
-	 * division helpers (work/30b audit). */
+	 * division helpers (work/30b audit), so the count is taken from the
+	 * size and the manifest must be whole records. */
 	entries = 0u;
 	{
-		uint16_t remaining = manifest.size;
+		uint16_t remaining = (uint16_t)manifest.size;
 
 		while (remaining >= ZOS_SERVICE_MANIFEST_ENTRY) {
 			remaining = (uint16_t)(remaining -
@@ -776,96 +525,44 @@ int service_load_all(const char *manifest_name)
 			++entries;
 		}
 		if (remaining != 0u) {
-			service_fail((const uint8_t *)0,
-				     "bad manifest");
+			service_fail((const uint8_t *)0, ZMOD_EFORMAT);
 			return ZMOD_EFORMAT;
 		}
 	}
-	if (entries > ZMOD_SERVICE_MAX_IMAGES) {
-		service_fail((const uint8_t *)0, "too many images");
-		return ZMOD_ENOSPC;
-	}
 
-	/* Load pass, in manifest order: copy the host-linked segments, install
-	 * the host-built endpoint and dependency tables, run the boot segment
-	 * once through the mode-10 gate, then the hot init entry once through
-	 * the fixed upcall shim. */
+	/* Load pass, in manifest order: resolve the name record in the
+	 * recovery store, read the image's flat plan, then copy the
+	 * host-linked segments, install the host-built tables and run the
+	 * boot and init entries. */
 	for (index = 0u; index < entries; ++index) {
-		uint16_t bulk_base;
-		uint16_t bulk_size;
-		uint8_t segment_index;
-
-		result = service_open(&manifest, index, &file, &source);
-		if (result == ZMOD_OK) {
-			result = service_read_layout(&source, &service_layout);
-			if (result != ZMOD_OK) {
-				service_fail(service_name, "invalid image");
-			}
+		if (romfs_read(&manifest, SERVICE_MANIFEST_AT(index), name,
+			       ZOS_SERVICE_MANIFEST_ENTRY) !=
+		    (int)ZOS_SERVICE_MANIFEST_ENTRY) {
+			service_fail((const uint8_t *)0, ZMOD_EFORMAT);
+			return ZMOD_EFORMAT;
 		}
-		if (result != ZMOD_OK) {
-			return result;
+		/* The name field is fixed-width; the ROMFS reader and the
+		 * packer both terminate it, so this only keeps the print
+		 * inside it. */
+		name[ZOS_SERVICE_MANIFEST_ENTRY - 1u] = '\0';
+		if (romfs_lookup_ci((const char *)name, &file) != 0 ||
+		    file.flags != ROMFS_FLAG_ZMOD ||
+		    file.size > 0xFFFFu) {
+			service_fail(name, ZMOD_ENOENT);
+			return ZMOD_ENOENT;
 		}
-		for (segment_index = 0u;
-		     segment_index < service_layout.segment_count;
-		     ++segment_index) {
-			const struct service_segment_info *segment =
-				&service_layout.segment[segment_index];
-
-			result = service_place(
-				&source,
-				(uint16_t)(service_layout.payload_offset +
-					   segment->payload_offset),
-				segment->base, segment->image_size);
-			if (result == ZMOD_OK && segment->bss_size != 0u &&
-			    service_bank_op(ZOS_BANK_OP_ZERO,
-					    (uint16_t)(segment->base +
-						       segment->image_size),
-					    segment->bss_size) != 0u) {
-				result = ZMOD_EFORMAT;
-			}
-			if (result != ZMOD_OK) {
-				service_fail(service_name, "copy refused");
-				return result;
-			}
-			if (segment->role == ZMOD_SEGMENT_HOT ||
-			    segment->role == ZMOD_SEGMENT_IO) {
-				service_hot_ledger = (uint16_t)(
-					service_hot_ledger +
-					segment->image_size + segment->bss_size);
-			} else {
-				service_boot_ledger = (uint16_t)(
-					service_boot_ledger +
-					segment->image_size + segment->bss_size);
-			}
-		}
-		service_bulk_extent(&service_layout, &bulk_base, &bulk_size);
-		result = service_install_endpoints(&service_layout, bulk_base,
-						   bulk_size, &number_high);
-		if (result != ZMOD_OK) {
-			return result;
-		}
-		result = service_install_publications(&source,
-						      &service_layout);
-		if (result != ZMOD_OK) {
-			service_fail(service_name, "publication refused");
-			return result;
-		}
-		result = service_read_dependencies(&source, &service_layout,
-						   number_high);
-		if (result != ZMOD_OK) {
-			service_fail(service_name, "invalid image");
-			return result;
-		}
-		result = service_run_boot(&service_layout);
-		if (result == ZMOD_OK) {
-			result = service_run_init(&service_layout);
-		}
-		if (result != ZMOD_OK) {
-			return result;
-		}
+		size = (uint16_t)file.size;
 #if ZOS_SERVICE_TEST_EVIDENCE
-		service_report(&service_layout);
+		service_report_name = name;
 #endif
+		result = service_read_header(&file, size, &header);
+		if (result == ZMOD_OK) {
+			result = service_load_image(&file, &header);
+		}
+		if (result != ZMOD_OK) {
+			service_fail(name, result);
+			return result;
+		}
 	}
 
 	service_loader_ran = 1u;
@@ -883,19 +580,4 @@ int service_load_all(const char *manifest_name)
 	service_puts(" bytes of 24576\r\n");
 #endif
 	return ZMOD_OK;
-}
-
-uint8_t service_images_loaded(void)
-{
-	return service_loader_ran;
-}
-
-uint16_t service_hot_used(void)
-{
-	return service_hot_ledger;
-}
-
-uint16_t service_boot_used(void)
-{
-	return service_boot_ledger;
 }

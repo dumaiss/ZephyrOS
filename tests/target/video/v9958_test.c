@@ -44,7 +44,6 @@
 #include "zos/protocol.h"
 
 #include "zephyros/errno.h"
-#include "zephyros/video.h"
 
 #include "service_client.h"
 #include "video_selftest.h"

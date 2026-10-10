@@ -50,7 +50,7 @@ STACK = 0xFFFE
 HOST_SYNC = b"\xaa\x55"
 
 ZVIDEO_PRESENT = 0x03
-ZDEV_EINVAL = -2
+RET_EINVAL = -2
 
 # The monitor is an ordinary SDK program.  Package 42b's SDK gives every
 # program a fixed 93-byte gate-visible area before code (the scratch, the

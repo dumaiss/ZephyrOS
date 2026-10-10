@@ -149,6 +149,9 @@ void service_cli_putchar(uint8_t byte)
 	early_console_putc(byte);
 }
 
+/* Write the line to the acceptance console (the direct early SIO path) and
+ * report the bytes written, which is what the groups' final console checks
+ * compare against their line length. */
 int service_cli_write(const uint8_t *data, uint16_t length)
 {
 	uint16_t index;
@@ -156,7 +159,7 @@ int service_cli_write(const uint8_t *data, uint16_t length)
 	for (index = 0u; index < length; ++index) {
 		early_console_putc(data[index]);
 	}
-	return 0;
+	return (int)length;
 }
 
 uint8_t service_cli_console_handle(void)

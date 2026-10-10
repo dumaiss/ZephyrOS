@@ -27,31 +27,6 @@
       "path": "monitor.zex"
     },
     {
-      "name": "m4probe.zmod",
-      "type": "ZMOD",
-      "path": "m4_probe.zmod"
-    },
-    {
-      "name": "m4fail.zmod",
-      "type": "ZMOD",
-      "path": "m4_fail.zmod"
-    },
-    {
-      "name": "m4filler.zmod",
-      "type": "ZMOD",
-      "path": "m4_filler.zmod"
-    },
-    {
-      "name": "badmagic.zmod",
-      "type": "ZMOD",
-      "path": "badmagic.zmod"
-    },
-    {
-      "name": "truncated.zmod",
-      "type": "ZMOD",
-      "path": "truncated.zmod"
-    },
-    {
       "name": "zextest.zex",
       "type": "ZEX",
       "path": "zextest.zex"

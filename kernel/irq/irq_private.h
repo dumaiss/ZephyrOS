@@ -1,9 +1,10 @@
 /* ZephyrOS kernel-private interrupt-registry interface (kernel/irq).
  *
- * The module-facing interrupt contract is include/zephyros/irq.h: the
+ * The driver-facing interrupt contract is include/zephyros/irq.h: the
  * `irq_source_t`/`irq_handler_t` types, the logical source enum, and the
- * result codes.  A ZMOD module claims and releases sources only through
- * the loader's `zdriver_api` callbacks.
+ * result codes.  A resident service claims and releases sources only
+ * through the bootstrap interface's `irq_claim`/`irq_release`
+ * (include/zephyros/ipc.h).
  *
  * This header owns the executive lifecycle, the claim
  * checkpoint/rollback transaction and owner token, the dispatch

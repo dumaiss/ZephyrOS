@@ -39,7 +39,7 @@ build/ipc_common.rel
 build/service_boot.rel
 build/ipc.rel
 build/service_loader.rel
-build/arena.rel
+build/bank7_end.rel
 build/rom_access.rel
 build/process_launch.rel
 build/user_copy.rel

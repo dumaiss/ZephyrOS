@@ -1,8 +1,5 @@
 {
   "name": "echo",
-  "type": "service",
-  "abi": 3,
-  "flags": 0,
   "objects": [
     "echo.rel",
     "echo_boot.rel",

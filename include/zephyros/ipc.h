@@ -7,14 +7,12 @@
  * no kernel import table: a driver is linked against its own image and
  * its host-resolved endpoints only.
  *
- * The interface is versioned: `version` always carries
- * ZOS_IPC_SERVICE_API_VERSION; a driver init may refuse a table that
- * does not (the format's service ABI version, include/zephyros/service.h,
- * tracks the same contract).
+ * There is no version field: the host packer links the driver against
+ * this one table (work package 42c removed the runtime ABI/version
+ * checks; the packer validates on the host).
  *
  * Every entry, and why it is in the interface (36.11 asks for the list):
  *
- *   version         the table's version marker.
  *   call            synchronous call/reply into a peer named by a
  *                   host-resolved dependency number or an application
  *                   handle; the only IPC model (36.7).  A call from one
@@ -95,26 +93,11 @@
 #include "zos/ipc.h"
 #include "zos/types.h"
 
-/* The bootstrap interface's version (architecture 36.11).  A driver init
- * may refuse a table that does not carry it; the format's service ABI
- * version (include/zephyros/service.h) tracks the same contract.
- *
- * Version 2 (work package 41) added `bulk_read`, the entry package 40's
- * version 1 could not express: the V9958 display reset re-uploads the
- * font, which 36.6 places in the boot/bulk tier.
- *
- * Version 3 (work package 41b) removes `register_ep` and `lookup`: the
- * loader installs the host-built endpoint table and each driver receives
- * its resolved dependency numbers in `struct ipc_service_boot`. */
-#define ZOS_IPC_SERVICE_API_VERSION 3u
-
 /* Bound of the resolved dependency array the loader installs
- * (ZMOD_SERVICE_MAX_DEPENDENCIES, include/zephyros/service.h). */
+ * (ZMOD_MAX_DEPENDENCIES, include/zephyros/service.h). */
 #define ZOS_IPC_SERVICE_MAX_DEPS 8u
 
 struct ipc_service_api {
-	uint8_t version; /* ZOS_IPC_SERVICE_API_VERSION */
-
 	/* Synchronous call/reply with a nucleus-owned frame copy. */
 	int16_t (*call)(uint8_t handle, uint8_t op,
 			struct zos_ipc_frame *frame);

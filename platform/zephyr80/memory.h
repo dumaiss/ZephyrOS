@@ -1,7 +1,7 @@
 /* Zephyr-80 memory-map constants (C visible).
  *
  * Region geometry of the mode 10/11 machine: the page-zero/reset budget,
- * the bank-7 loadable/runtime areas, the M4 driver arena, permanent common
+ * the bank-7 loadable/runtime areas, permanent common
  * memory, stacks, and the ROM image geometry.  The bank-7 ISR stack is part
  * of the bank-7 region budget; IM2 vector-page and IRQ transition wiring
  * constants live in irq.h/.inc.
@@ -39,15 +39,11 @@
 #define ZOS_SERVICE_STACK_TOP       0x5F00u
 #define ZOS_SERVICE_STACK_SIZE      0x0200u
 
-/* Driver arena.  The single mechanism derives the start from the
- * granule-aligned end of the linked window code and the end from the
- * window-data size, exporting __kernel_code_end / __driver_arena_start /
- * __driver_arena_end through kernel/module/arena.asm and the generated
- * build/geometry/arena_geometry.inc; the probe link places no arena.
- * There is no granule floor: the arena only has to hold the declared boot
- * set, which tools/zmodpack.py's plan and tools/pack_image.py enforce.  The
- * window data base is never part of the allocator. */
-#define ZOS_DRIVER_GRANULE_SIZE     0x0200u
+/* Bank-7 data alignment.  The two derived runtime-data bases (the fixed
+ * core's, below the service stack, and the cold half's, straight after
+ * the linked window code) are aligned to this granule so the linker's
+ * segment bases are reproducible. */
+#define ZOS_BANK7_DATA_ALIGN        0x0200u
 
 /* Permanent common code/data in physical SRAM bank 0.  ZOS_COMMON_CODE_END
  * is the exclusive end of ordinary common content; the IM2 vector page and

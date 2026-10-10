@@ -41,9 +41,6 @@
  * runs after console binding. */
 void zos_target_test_early(void);
 void zos_target_test_late(void);
-/* Boot-time acceptance work: runs after the production boot set.
- * Implementation lives in the test tree. */
-void zos_boot_test_modules(void);
 #endif
 
 /* Hardware-smoke host sync.  Diagnostic images built with
@@ -126,10 +123,10 @@ static void kernel_service_manifest_failed(int result)
  * and inits in dependency order (architecture 36.4).  The store's manifest
  * is what the image boots: production lists the five driver services (the
  * selected filesystem driver among them, publishing `/FS`), and an image
- * that needs the serial-only fallback lists a subset.  There is no arena
- * and no module pass: the services are the whole bank-6 population.
+ * that needs the serial-only fallback lists a subset.  The services are
+ * the whole bank-6 population: there is no separate module pass.
  */
-static uint8_t kernel_boot_module(void)
+static uint8_t kernel_boot_services(void)
 {
 	int result = vfs_init();
 
@@ -141,10 +138,6 @@ static uint8_t kernel_boot_module(void)
 	if (result != 0) {
 		kernel_service_manifest_failed(result);
 	}
-#if ZOS_TARGET_TEST_BUILD
-	/* TEST-ONLY HOOK: acceptance-only boot work (tests/target). */
-	zos_boot_test_modules();
-#endif
 	return 0;
 }
 
@@ -451,9 +444,9 @@ void kernel_main(void)
 	 * booted one - becomes what the boot path prints through.  Load
 	 * diagnostics go to the early console before any service output. */
 	{
-		uint8_t module_failures = kernel_boot_module();
+		uint8_t service_failures = kernel_boot_services();
 
-		if (module_failures != 0) {
+		if (service_failures != 0) {
 			early_console_puts("console: service failed\r\n");
 		} else if (kernel_console_handle() == 0u) {
 			early_console_puts("console: unbound\r\n");

@@ -1770,26 +1770,18 @@ Therefore a console is not assumed to be one physical device. Input and output m
 
 The registry uses a small class identifier plus a capability bitmask.
 
-Initial classes should include:
+Initial classes were to include a serial, video, storage, input,
+transport and "other" class.
 
-```text
-ZDEV_SERIAL
-ZDEV_VIDEO
-ZDEV_STORAGE
-ZDEV_HID
-ZDEV_IOC
-ZDEV_OTHER
-```
-
-> **M8 update (section 30.3).** The M3 placeholder names `ZDEV_INPUT`
-> and `ZDEV_TRANSPORT` were refined to `ZDEV_HID` (4) and `ZDEV_IOC`
-> (5); the numeric slots are unchanged. Driver ABI v2 makes
-> `capabilities` a 32-bit mask with documented per-class ranges
-> (generic 0-3, VIDEO 8-14, HID 16-18, IOC 24-27).
->
-> **M9 update (section 32).** `ZDEV_STORAGE` is renamed directly to
-> `ZDEV_BLOCK`, preserving the existing numeric class value. M9 does not
-> retain a second storage alias as an architectural interface.
+> **Retired (M10, work package 42c).** The M3 device class and
+> capability model -- the class identifiers, the capability bitmask, the
+> device handles and the class registration calls -- is **deleted**.  A
+> driver is a bank-6 service image (section 36.4) and what a client binds
+> is a *protocol class*: the class numbers now live in
+> `abi/zos/protocol.h` (`ZOS_CLASS_*`) and describe protocols, not
+> device kinds, so no registry, no handles and no capability bits remain.
+> The M8 and M9 refinements of this list are history; see sections 30.3
+> and 32 for the milestone record.
 
 Initial capability bits should include only what is needed by real drivers, beginning with:
 
@@ -1808,89 +1800,39 @@ Clients should prefer capability queries over testing a specific driver name.
 
 ## 20.4 Device registry
 
-M3 uses a fixed-size registry allocated by the kernel.
-
-No heap allocator is required.
-
-Conceptually (updated for driver ABI v2; see section 30.3):
-
-```c
-typedef uint8_t zdev_handle_t;
-typedef uint32_t zdev_caps_t;
-
-struct zdevice {
-    zdev_handle_t          handle;
-    uint8_t                class_id;
-    zdev_caps_t            capabilities;
-    const char            *name;
-    const struct zchar_ops *char_ops;  /* optional generic interface */
-    const void            *class_ops;  /* type by class_id           */
-    void                  *state;
-    const void            *driver;
-};
-```
-
-The exact C layout is internal, pinned to the driver ABI version, and asserted at compile time.
-
-Required registry operations are semantically equivalent to:
-
-```c
-void device_registry_init(void);
-
-int device_register(const struct zdevice_desc *desc,
-                    zdev_handle_t *out_handle);
-
-const struct zdevice *device_get(zdev_handle_t handle);
-
-zdev_handle_t device_find(uint8_t class_id,
-                          zdev_caps_t required_caps,
-                          zdev_handle_t after);
-
-int device_interface(zdev_handle_t handle,
-                     uint8_t expected_class,
-                     const void **class_ops,
-                     void **state);
-```
-
-Rules:
-
-- handles are kernel-issued;
-- handle `0` is reserved as invalid;
-- registration order must not be treated as a permanent external ABI;
-- duplicate instance registration is rejected;
-- registry overflow is an explicit error;
-- the registry stores references to driver-private state; it does not absorb that state.
+> **Retired (M10, work package 42c).**  M3's fixed-size device registry
+> -- the device entries (handle, class, capability mask, name, the
+> optional generic character interface, the per-class operations pointer,
+> driver-private state), its initialization, its registration entry and
+> its lookup calls -- is **deleted**.  There is no device handle and no
+> capability query anywhere in the tree.  The M4-M8 record of the M3
+> registry is kept in sections 30.3 and 32; what replaced it is the
+> namespace of section 36.13: a driver *publishes* a named protocol
+> object (`/dev/console`, `/dev/serial/0`, `/FS`) and a client binds the
+> name through the VFS namespace, which routes the call to the serving
+> endpoint of that object's protocol class.
 
 ---
 
 ## 20.5 Driver descriptor
 
-> **Retirement notice (stage 10).** The static driver table described in
-> sections 20.5-20.7 (`struct zdriver`, `boot_drivers[]`,
-> `driver_init_static()`) is **retired**. Since M4 the kernel boots only
-> embedded ZMOD drivers; production images link no static driver table.
-> These sections are retained as M3 milestone history and must not be read
-> as the current production tree. The `zdriver_api` contract itself is
-> still current: it is the interface the loader passes to a loaded module
-> (`drivers/sio/sio_module.c` is the production example).
+> **Retirement notice (stage 10, work package 42c).** The static driver
+> table described in sections 20.5-20.7 (the driver descriptor,
+> `boot_drivers[]`, `driver_init_static()`), and the driver-entry-table
+> contract the loader used to hand a loaded module, are **deleted**.
+> Since M4 the kernel boots only embedded service images, and since M10 a
+> driver receives the M10 service ABI instead: the loader runs the
+> image's boot entry and its init with the boot bundle (the nucleus call
+> table plus the resolved dependency array, section 36.11).  These
+> sections are retained as M3 milestone history.
 
-A statically linked driver exposes a descriptor and initialization entry.
+A service image carries its own entry points in its flat plan.
 
-Conceptually:
+Driver initialization failure is reported to the kernel (the loader
+prints it on the early console) and does not corrupt already installed
+endpoints or publications.
 
-```c
-struct zdriver {
-    const char *name;
-    uint8_t     abi_version;
-    int       (*init)(const struct zdriver_api *api);
-};
-```
-
-A driver may register zero, one, or several device instances.
-
-Driver initialization failure is reported to the kernel and does not corrupt already registered devices.
-
-M3 does not require driver unload.
+M10 does not require driver unload: services are permanent for the boot.
 
 ---
 
@@ -2086,7 +2028,7 @@ __driver_arena_end
 
 The build must report arena usage.
 
-Implemented geometry (stage `07-m4-module-loader`): the initial arena is `A000h-BFFFh` (8192 bytes, 16 granules) between the loadable kernel image and the `C000h-DFFFh` runtime area, declared in `platform/zephyr80/memory.inc`, exported by `kernel/module/arena.asm`, and enforced by `tools/mapcheck.py` / `tools/pack_image.py` (no kernel section, stack, or ROM payload may occupy it). The build prints arena geometry plus free granules, and `zephyros.manifest.json` carries an `arena` object. Concrete loader behavior, error codes, and tooling are documented in `docs/module-format.md`.
+Implemented geometry (stage `07-m4-module-loader`): the initial arena is `A000h-BFFFh` (8192 bytes, 16 granules) between the loadable kernel image and the `C000h-DFFFh` runtime area, declared in `platform/zephyr80/memory.inc`, exported by `kernel/module/arena.asm`, and enforced by `tools/mapcheck.py` / `tools/pack_image.py` (no kernel section, stack, or ROM payload may occupy it). The build prints arena geometry plus free granules, and `zephyros.manifest.json` carries an `arena` object. Concrete loader behavior, error codes, and tooling were documented in `docs/module-format.md`, which now describes the M10 service image instead.
 
 This `A000h-BFFFh` geometry is the historical M4 acceptance geometry, not the long-term production budget. M8 supersedes it with a linker-derived arena sized from the end of the linked kernel to `C000h`; see section 30.2.
 
@@ -2120,7 +2062,7 @@ reloc_offset
 reloc_count
 ```
 
-Implemented header (stage 07): a packed little-endian 28-byte structure with `payload_offset`, `total_size`, and a `reserved` word, pinned by `include/zephyros/module.h` compile-time assertions. `docs/module-format.md` records the byte table and the manifest/packer contract.
+Implemented header (stage 07): a packed little-endian 28-byte structure with `payload_offset`, `total_size`, and a `reserved` word, pinned by `include/zephyros/module.h` compile-time assertions. `docs/module-format.md` then recorded the byte table and the manifest/packer contract (it now describes the M10 service image).
 
 All addresses stored in the module are offsets relative to the module load base unless explicitly defined otherwise by a relocation record.
 
@@ -2162,20 +2104,16 @@ No relocation is permitted to patch arbitrary kernel memory.
 
 A dynamic driver must not link directly against arbitrary private kernel symbols.
 
-At initialization the kernel passes a versioned driver API object:
-
-```c
-int driver_init(const struct zdriver_api *api);
-```
-
-The API provides the operations a driver needs, such as:
+At initialization the loader passes the image the M10 boot bundle
+(`struct ipc_service_boot`, section 36.11): the nucleus call table and
+the resolved dependency numbers.  The table provides the operations a
+driver needs:
 
 ```text
-device_register
-irq_claim
-irq_release
-console-independent diagnostic logging if provided
-platform-safe helpers explicitly exposed to drivers
+call / copy_in / copy_out / move    the IPC protocol boundary
+bulk_read                           this image's bulk segment
+console_putc / console_poll / console_getc
+irq_claim / irq_release             IRQ ownership in this image
 ```
 
 The driver ABI version in the module header must match a supported kernel ABI.
@@ -2369,7 +2307,7 @@ tests/target/m4/m4_test.c       loader/dynamic-driver acceptance test
 tools/zmodpack.py               pack/validate/dump/emit-asm
 ```
 
-M2's registry gained claim serials, owner tokens, and checkpoint/rollback (`irq_registry_checkpoint/rollback/set_owner`) so a failed module init rolls back its IRQ claims exactly like its device registrations. `irq_claim` now accepts handler addresses that are linked bank-7 code or lie inside the active/committed module images; see `docs/module-format.md` section 4.1.
+M2's registry gained claim serials, owner tokens, and checkpoint/rollback (`irq_registry_checkpoint/rollback/set_owner`) so a failed module init rolls back its IRQ claims exactly like its device registrations. `irq_claim` now accepts handler addresses that are linked bank-7 code or lie inside the active/committed module images; see the M4 record in `docs/validation/2026-10-02-m4-acceptance.md` (the container's IRQ-handler validation is deleted with the arena loader).
 
 Stage 08 (`08-m4-dynamic-driver-acceptance`) then removed the static SIO driver from the kernel entirely; stage 10 separated production drivers, module packaging/runtime support, and acceptance code:
 
@@ -2389,7 +2327,7 @@ tests/modules/sio_fail_module.c init-failure variant entry
 * `kernel_main()` prints `console: dynamic sio0.b OK` through the bound module (or `console: dynamic driver failed` on load failure);
 * `tools/mapcheck.py` rejects any linked `_sio_`/`_sio0b_`/`_sio_driver` symbol, so the static driver cannot return unnoticed.
 
-See `docs/module-format.md` section 6 for the pipeline and `docs/devices.md` for the resulting device-layer behavior.
+See `docs/devices.md` for the resulting driver-layer behavior (the M4 container pipeline that followed is deleted; `docs/module-format.md` describes the service image).
 
 ---
 
@@ -2928,44 +2866,51 @@ section 32.39 requires.
 
 ## 30.3 Driver ABI v2 and class-aware operations
 
-Driver ABI v2 uses 32-bit capabilities, optional generic character operations and class-specific operations. The current classes include:
-
-```text
-ZDEV_SERIAL
-ZDEV_VIDEO
-ZDEV_BLOCK      # M9 rename of the former ZDEV_STORAGE numeric slot
-ZDEV_HID
-ZDEV_IOC
-ZDEV_OTHER
-```
-
-The numeric slot formerly called `ZDEV_STORAGE` is preserved but the architectural name is now `ZDEV_BLOCK`.
-
-M9 publishes the block class contract in `include/zephyros/block.h` (`zblock_info`, `zblock_ops`) with the `ZCAP_BLOCK_READ | ZCAP_BLOCK_WRITE | ZCAP_BLOCK_FLUSH | ZCAP_BLOCK_REMOVABLE` bits in capability range 20-23 (section 32.15). No `ZDEV_BLOCK` driver is resident: the first block driver arrives with its first consumer.
+> **Superseded (M10, work package 42c).**  The v2 driver ABI -- 32-bit
+> capability masks, the optional generic character interface and the
+> per-class operations tables -- is deleted.  A driver is a service
+> image; its class-visible surface is a *protocol* (section 36.11), and
+> the class numbers in `abi/zos/protocol.h` name protocols, not device
+> kinds.  The M9 milestone record of the v2 classes and of the block
+> class it defined follows as history: the class list was the serial,
+> video, storage, input, transport and "other" set, refined to the
+> class numbers that survive today as protocol numbers.
 
 ---
 
 ## 30.4 VIDEO class and V9958
 
-V9958 registers `ZDEV_VIDEO`, the native `ZVIDEO_*` operations and `ZCAP_CHAR_OUT | ZCAP_CONSOLE_OUT`. It provides the 85x26 6x8 terminal/VT-style console renderer and remains independent of IOC.
+The V9958 driver serves the video protocol class: the
+`ZVIDEO_*` operations now live in `abi/zos/protocol.h` and reach the
+driver through its service dispatch.  It provides the 85x26 6x8
+terminal/VT-style console renderer and remains independent of IOC.
 
 ---
 
 ## 30.5 HID class
 
-HID registers keyboard/text input above IOC and advertises `ZCAP_HID_TEXT | ZCAP_CHAR_IN | ZCAP_CONSOLE_IN`. It discovers IOC by class/capability rather than name or symbols.
+HID serves the input protocol class above IOC, translating the MCU's
+terminal bytes.  It resolves its IOC dependency from the endpoint the
+IOC service exports (declared in its manifest and resolved by the packer
+into the flat plan) rather than by name or symbols.
 
 ---
 
 ## 30.6 IOC class
 
-IOC owns the SIO1 command/reply and bulk transport, READY/DONE lifecycle, sequencing, timeouts/recovery and semantic status. Consumers never see raw SIO/CTS/CRC details. M9 uses the same IOC class for both the raw-SD block driver and the IOC-FAT filesystem provider.
+IOC owns the SIO1 command/reply and bulk transport, READY/DONE
+lifecycle, sequencing, timeouts/recovery and semantic status. Consumers
+never see raw SIO/CTS/CRC details.
 
 ---
 
 ## 30.7 Driver-to-driver discovery
 
-Loaded modules discover dependencies by class plus capabilities using the ABI-v2 `device_find()` / `device_interface()` path. Modules remain resident until reboot, so no lifetime reference counting is required.
+A service image declares its dependencies in its manifest (class plus
+instance); the packer resolves them to the endpoint numbers of images
+earlier in the load order and the loader installs those numbers in the
+dependency array the init reads.  Services are permanent for the boot,
+so no lifetime reference counting is required.
 
 ---
 
@@ -2977,14 +2922,11 @@ M8 production boot loads `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod` from t
 
 ## 30.9 Console binding policy
 
-Preferred console:
-
-```text
-input:   ZDEV_HID   + ZCAP_CONSOLE_IN
-output:  ZDEV_VIDEO + ZCAP_CONSOLE_OUT
-```
-
-Each direction independently falls back to a generic console-capable device, normally SIO. Panic/early boot remains direct SIO.
+The console service composes its two lanes from the published objects:
+input from the keyboard publication, output from the video publication.
+A store without a video image falls back to the serial publication, and
+a store without HID keeps the serial input lane; panic and early boot
+stay on the direct SIO early console.
 
 ---
 
@@ -3073,14 +3015,13 @@ native applications
                               |                      v
                               |                block layer
                               |                      |
-                              |                  ZDEV_BLOCK
-                              |                      |
-                              |                 SD-over-IOC
+                              |             the block protocol
+                              |             (no driver is resident)
                               |                      |
                               +----------+-----------+
                                          |
                                          v
-                                      ZDEV_IOC
+                                  the IOC protocol
                                          |
                                          v
                                         MCU
@@ -3141,9 +3082,18 @@ The filesystem attached at `/` is the normal writable filesystem, but it does no
 
 ## 32.5 Static mount configuration
 
-M9 does not provide runtime `mount` or `umount` commands. Mount topology is defined by build-time JSON configuration and established during boot.
+> **Retired (M10, work packages 42b/42c).**  M9 defined the mount topology
+> in build-time JSON configuration (`config/mounts.json`, translated by
+> `tools/mountgen.py`) and established it at boot.  M10 deletes the mount
+> table, the configuration, the generator and the mount phase: VFS owns
+> three static roots -- `/FS`, `/SYSTEM` and `/dev` (36.13) -- and the
+> chosen filesystem driver publishes `/FS` itself.  The M9 description
+> below is kept as the design record of what the table meant; nothing in
+> it is current.
 
-The production manifest is:
+M9 does not provide runtime `mount` or `umount` commands. Mount topology was defined by build-time JSON configuration and established during boot.
+
+The production manifest was:
 
 ```text
 config/mounts.json
@@ -3248,7 +3198,7 @@ A future manifest may look like:
 }
 ```
 
-The `source` field is provider-specific. For example, ROMFS may interpret `recovery` as the built-in recovery ROM source, IOC-FAT may interpret `ioc.0` as the MCU filesystem service, while native VFAT/Fuzix providers may interpret `cf.0` or `sd.1` as `ZDEV_BLOCK` instances. VFS does not interpret those strings.
+The `source` field is provider-specific. For example, ROMFS may interpret `recovery` as the built-in recovery ROM source, IOC-FAT may interpret `ioc.0` as the MCU filesystem service, while a future native provider may interpret `cf.0` or `sd.1` as a block object it serves. VFS does not interpret those strings.
 
 ### 32.5.1 Manifest validation
 
@@ -3371,70 +3321,28 @@ VFS must not contain FAT parsing, FS2 command numbers, IOC READY/DONE handling, 
 
 ## 32.11 Filesystem-provider registration
 
-Filesystem providers register directly with VFS; they are not represented as hardware devices merely because some providers are ZMODs.
-
-Conceptually:
-
-```c
-int vfs_register_filesystem(const struct zfs_provider *provider);
-
-struct zfs_provider {
-    const char *name;
-    const struct zfs_ops *ops;
-    void *provider_state;
-};
-```
-
-This creates distinct registries:
-
-```text
-device registry
-    SIO
-    IOC
-    HID
-    VIDEO
-    BLOCK
-
-VFS filesystem-provider registry
-    ROMFS
-    IOC-FAT
-    future VFAT
-    future Fuzix filesystem
-```
-
-The build-time mount configuration selects a provider and source and attaches an instance to a namespace path.
+> **Retired (M10, work package 42c).**  The M9 provider registry -- the
+> registration call, its provider record (name, the 14-operation
+> path-based table, provider-private state) and the separate "filesystem
+> providers" table -- is **deleted**.  There are two providers and both
+> are nucleus code: the ROMFS reader in the recovery store and the FS
+> publication below `/FS` (section 36.13).  A filesystem *driver* is an
+> ordinary service image that publishes `/FS`; the nucleus FS provider
+> routes the call to that publication's endpoint, so no registration table
+> and no `ZFS_OP_*` dispatch vocabulary remain.
 
 ---
 
 ## 32.12 Filesystem-provider interface
 
-Providers are **path-based**. M9 has a flat namespace (section 32.6) and no use for a Unix-style vnode layer, so VFS does not keep node objects, node lifetimes, or per-component traversal state. Every operation receives a provider-relative path.
-
-```c
-struct zfs_ops {
-    int (*mount)(void *provider_state, const char *source, void **fs);
-
-    int (*open)(void *fs, const char *path, uint16_t flags, void **file,
-                uint32_t *size);
-    int (*close)(void *fs, void *file);
-    int (*read)(void *fs, void *file, uint32_t offset,
-                void *buf, uint16_t len);
-    int (*write)(void *fs, void *file, uint32_t offset,
-                 const void *buf, uint16_t len);
-    int (*sync)(void *fs, void *file);
-
-    int (*stat)(void *fs, const char *path, struct zfs_stat *out);
-
-    int (*opendir)(void *fs, const char *path, void **dir);
-    int (*readdir)(void *fs, void *dir, struct zfs_dirent *out);
-    int (*closedir)(void *fs, void *dir);
-
-    int (*mkdir)(void *fs, const char *path);
-    int (*rmdir)(void *fs, const char *path);
-    int (*unlink)(void *fs, const char *path);
-    int (*rename)(void *fs, const char *oldpath, const char *newpath);
-};
-```
+> **Retired (M10, work package 42c).**  The path-based provider
+> operations table (mount, open, close, read, write, sync, stat, the
+> directory operations, mkdir, rmdir, unlink, rename) is **deleted** with
+> the provider registry above.  What a filesystem client uses today is
+> the FILE protocol of `abi/zos/protocol.h` (`ZFILE_OP_*`) through the
+> namespace, and what a filesystem driver implements is the FS protocol
+> (`ZFS_OP_*`) below its `/FS` publication; both are IPC protocols, not
+> C operation tables.  The contract text below is the M9 record.
 
 Contract for every path argument:
 
@@ -3462,13 +3370,7 @@ ROM page access
 existing ROMFS format reader
       |
       v
-fs/romfs
-      |
-      v
-zfs_ops
-      |
-      v
-VFS mount at /SYSTEM
+the nucleus ROMFS reader (boot/recovery assets)
 ```
 
 ROMFS remains read-only, resident in recovery ROM pages, available without SD, and authoritative for boot/recovery assets. Mutation operations return `EROFS`. ROMFS has no cache: its reads already come straight from ROM.
@@ -3493,46 +3395,15 @@ The exact contents are build-time configuration, not VFS policy. Typical content
 
 ## 32.15 Generic block devices
 
-The existing `ZDEV_STORAGE` class is renamed directly to:
-
-```text
-ZDEV_BLOCK
-```
-
-The numeric class value is preserved; no compatibility alias is part of the architecture.
-
-A block device exposes geometry and raw block I/O:
-
-```c
-struct zblock_info {
-    uint16_t block_size;
-    uint32_t block_count;
-    uint16_t max_transfer_blocks;
-    uint16_t flags;
-};
-
-struct zblock_ops {
-    int (*get_info)(void *state, struct zblock_info *out);
-    int (*read)(void *state, uint32_t lba, uint16_t count, void *buffer);
-    int (*write)(void *state, uint32_t lba, uint16_t count, const void *buffer);
-    int (*flush)(void *state);
-    int (*media_status)(void *state);
-};
-```
-
-For current hardware:
-
-```text
-sd-ioc.zmod
-    |
-    | consumes ZDEV_IOC
-    v
-ZDEV_BLOCK: sd.0
-```
-
-The SD block driver translates generic block requests to the MCU raw-SD command/bulk protocol. It does not implement FAT.
-
-**M9 scope:** M9 renames the class and publishes `include/zephyros/block.h` (the `zblock_info` / `zblock_ops` contract and capability bits). No `ZDEV_BLOCK` driver is resident in M9, because nothing consumes one: IOC-FAT talks to `ZDEV_IOC` directly. `sd-ioc.zmod` is built when the first native filesystem (VFAT/Fuzix) needs raw blocks.
+> **Deleted (M10, work package 42c).**  The block class, its geometry
+> record, its raw-block operations table and `include/zephyros/block.h`
+> are **gone**, together with the deferred SD-over-IOC driver plan.  No
+> driver serves a block protocol today: a future native filesystem
+> introduces the block protocol it needs as an IPC protocol (the same
+> way FILE and FS are protocols), not as a C operations table.  The M9
+> record of the class (a block class, geometry plus read/write/
+> flush/media-status operations, no resident driver) is kept in the M9
+> milestone sections.
 
 ---
 
@@ -3540,16 +3411,16 @@ The SD block driver translates generic block requests to the MCU raw-SD command/
 
 This is an architectural invariant. `drivers/ioc/` owns SIO1 framing, command and bulk lanes, READY/DONE lifecycle, sequencing, timeouts/recovery and semantic IOC status. It does not own namespace, FAT semantics, file handles, directory traversal, caching policy or native path syntax.
 
-Both raw SD and IOC-FAT may consume IOC:
+A raw-block driver and IOC-FAT would consume the same IOC service:
 
 ```text
-                    ZDEV_IOC
-                    /       \
-                   /         \
-                  v           v
-          SD block driver   IOC-FAT filesystem
-               |                  |
-          ZDEV_BLOCK           zfs_ops
+                 the IOC protocol
+                    /        \
+                   /          \
+                  v            v
+          a future block   IOC-FAT filesystem
+          driver (deferred)  (the FS protocol
+                              below /FS)
 ```
 
 ---
@@ -3565,14 +3436,14 @@ iocfat.zmod
 Stack:
 
 ```text
-VFS
+VFS (the FS provider below /FS)
  |
  v
-IOC-FAT filesystem provider
+IOC-FAT service image (iocfat.zmod)
  |
  | FS2 filesystem protocol
  v
-ZDEV_IOC
+the IOC service image (ioc.zmod)
  |
  v
 MCU FatFs
@@ -3581,7 +3452,8 @@ MCU FatFs
 SD
 ```
 
-`iocfat.zmod` discovers `ZDEV_IOC`, initializes private provider state, and calls `vfs_register_filesystem()`.
+`iocfat.zmod` declares its IOC dependency in its manifest, publishes
+`/FS`, and serves the FS protocol from its service dispatch.
 
 IOC-FAT owns FS2 commands, file/directory tokens, generation/cookie handling, MCU/FatFs error translation, filesystem-specific command/bulk sequencing, and its file-data cache (section 32.19). FS2 tokens never escape into the native application ABI.
 
@@ -3594,19 +3466,14 @@ The current backend may retain FAT 8.3 limitations if required by deployed firmw
 The block-device layer deliberately enables Z80-side filesystems:
 
 ```text
-VFS
+the FS provider below /FS
  |
- +--> IOC-FAT
+ +--> IOC-FAT service image (today)
  |
- +--> native VFAT
- |       |
- |       v
- |    ZDEV_BLOCK
- |
- +--> Fuzix filesystem
-         |
-         v
-      ZDEV_BLOCK
+ +--> a future native filesystem
+          |
+          v
+      a block protocol it defines
 ```
 
 Changing the filesystem provider must not require changes to the shell, native ABI, VFS namespace, CWD semantics or IOC transport.
@@ -3659,7 +3526,7 @@ native filesystem
 generic block cache
     |
     v
-ZDEV_BLOCK
+the block protocol it defines
 ```
 
 This is distinct from the IOC-FAT file-data cache. Block caching must not be buried inside IOC.
@@ -3981,7 +3848,7 @@ Conceptually:
 VFS file
    |
    v
-generic zmod_source.read()
+the fixed ROMFS reader
    |
    v
 module loader
@@ -4012,20 +3879,22 @@ Conceptual lifecycle:
 ```text
 VFS_PHASE_BOOTSTRAP
     vfs_init()
-    register built-in providers
-    instantiate system filesystem
-    publish /SYSTEM
-
-VFS_PHASE_MODULES
-    load resident modules through VFS
-    modules register devices/providers
-
-VFS_PHASE_MOUNT
-    instantiate remaining configured mounts
+    initialize the ROMFS reader, the handle table
+    and the in-process FILE endpoint
 
 VFS_PHASE_READY
-    expose normal process filesystem services
+    the boot manifest's services have been placed
+    (service_load_all), their publications installed
+    and their inits run: normal process filesystem
+    services are available
 ```
+
+> **M10 (work package 42c).**  The phase that loaded resident modules
+> through VFS and let them register devices and providers is **deleted**,
+> as is the configuration-selected mount phase: there is no mount table
+> and no registry.  A service image brings its own object up by publishing its
+> name (section 36.13); the phase the client sees is only
+> "bootstrap" then "ready".
 
 A literal phase enum is not required, but this lifecycle and dependency order are architectural.
 
@@ -4058,6 +3927,10 @@ recovery monitor / diagnostics remain usable
 ---
 
 ## 32.33 Build-time mount table generation
+
+> **Deleted (M10, work package 42c).**  The generator, the manifest and the
+> generated table are gone: no mount policy exists to translate, and the
+> root set is static (36.13).  The section below is the M9 design record.
 
 Mount policy flows in one direction, from a reviewed manifest to an immutable kernel table to runtime mount state. Nothing flows back, and nothing in the path re-decides policy.
 
@@ -4164,7 +4037,7 @@ M9 does not implement:
 - write-back file caching;
 - a VFS-level cache of any kind;
 - generic raw block caching unless a native filesystem actually requires it;
-- a resident `ZDEV_BLOCK` driver (`sd-ioc.zmod`) before a consumer exists;
+- a resident block driver before a consumer exists;
 - `FS_STATFS` and truncate-to-arbitrary-size (deferred until a consumer
   requires them, not M10);
 - provider `unmount`, `syncfs`, `truncate`, `statfs`, or node lookup operations;
@@ -4199,11 +4072,11 @@ M9 preserves these rules:
 13. **The normal writable SD FAT filesystem is mounted at `/`.**
 14. **Filesystem providers do not know their external mountpoint.**
 15. **IOC is transport, not a filesystem or block-device API.**
-16. **`ZDEV_STORAGE` is renamed directly to `ZDEV_BLOCK`.**
-17. **`ZDEV_BLOCK` is defined in M9; its first resident driver arrives with the first consumer (native VFAT/Fuzix).**
+16. **The M9 storage class was renamed to the block class; M10 deletes both.**
+17. **No block driver is resident; the first one arrives with its first consumer (native VFAT/Fuzix).**
 18. **IOC-FAT is a resident ZMOD filesystem provider registered with VFS.**
 19. **MCU FatFs support is one filesystem backend, not the VFS architecture.**
-20. **Future VFAT/Fuzix-style filesystems may consume `ZDEV_BLOCK` directly.**
+20. **Future VFAT/Fuzix-style filesystems may define the block protocol they consume.**
 21. **Native I/O is path-, descriptor-, and byte-oriented.**
 22. **VFS has one global, owner-tagged pool of 8 descriptors shared by files and directories.**
 23. **M9 provides both `CLOSE` and `SYNC`.**
@@ -4249,7 +4122,7 @@ drivers/
     ioc/
         ...
 
-    sd/              # future: first ZDEV_BLOCK driver, with its first consumer
+    sd/              # future: first block driver, with its first consumer
         ...
 
 include/zephyros/
@@ -4295,7 +4168,7 @@ This is architectural guidance, not a requirement to create every file immediate
       (no cache)                           (file-data cache)
           |                                           |
           |                                           v
-          |                                        ZDEV_IOC
+          |                                        the IOC protocol
           |                                           |
           |                                           v
           |                                          MCU
@@ -4311,13 +4184,13 @@ This is architectural guidance, not a requirement to create every file immediate
                            block cache
                                 |
                                 v
-                           ZDEV_BLOCK
+                           a block protocol
                                 |
                                 v
                            SD-over-IOC
                                 |
                                 v
-                             ZDEV_IOC
+                             the IOC protocol
 ```
 
 The system-filesystem rule makes VFS part of the boot foundation rather than a service layered on top of module loading: the kernel mounts one dependency-free built-in filesystem first, then uses it to obtain the modules and providers required to construct the rest of the machine.
@@ -4332,25 +4205,29 @@ the implementation record.
 abi/zos/fs.h             native metadata/limit ABI (stat, dirent, flags;
                          no statfs) -- syscall blocks arrive in pkg 27;
                          include/zephyros/fs.h re-exports it
-include/zephyros/vfs.h   provider ABI: zfs_ops (the 14 path-based
-                         operations of 32.12), zfs_provider
-kernel/vfs/              mount_config.h, path.c, mount.c, file.c, dir.c,
-                         mutate.c
-fs/romfs/romfs_provider  ROMFS over the M5 reader, path-based (pkg 25)
-tools/mountgen.py        manifest -> build/generated/vfs_mounts.c
+include/zephyros/vfs.h   (deleted in M10: the FS provider lives
+                         in kernel/vfs/, the protocol in abi/zos/)
+kernel/vfs/              ns.c (the three static roots), path.c,
+                         ns_file.c, process.c, workspace.c
+kernel/romfs/romfs.c     the nucleus ROMFS reader (fixed core)
+tools/mountgen.py        (deleted in M10) manifest -> a mount table
 ```
 
-Implemented: normalization; flat first-component mount selection
-(section 32.8, so `/SYSTEMX` does not select `/SYSTEM`); the capacity-4
-provider registry; the four lifecycle phases; the kernel file API on
-caller-provided `vfs_file` storage plus the `zmod_source` adapter; the
-mutation entry points that turn a null provider operation into `ZOS_EROFS`;
-one ASCII case-folded ROMFS lookup (section 32.13) serving the provider,
-the ZEX launcher and the module resource imports; `/SYSTEM` mounted by
-`vfs_init()` before any module load; every boot ZMOD and
-`monitor.zex` opened by VFS path; `vfs_mount_all()` for the remaining
-configured mounts; and the generated static mount table with its
-validation rules.
+Implemented (M9): normalization; flat first-component root selection
+(section 32.8, so `/SYSTEMX` does not select `/SYSTEM`); the kernel file
+API on caller-provided `vfs_file` storage (deleted in M10 with the M9 VFS);
+the mutation entry points that turn a null provider operation into
+`ZOS_EROFS`; one ASCII case-folded ROMFS lookup (section 32.13) serving
+the reader, the ZEX launcher and the boot assets; `/SYSTEM` available from
+`vfs_init()` before any image is placed; every boot ZMOD and `monitor.zex`
+opened by VFS path.
+
+**M10 (work packages 42b/42c)** then deleted the provider registry and its
+capacity-4 table, the four lifecycle phases, the generated mount table with
+its validation rules and the `vfs_mount_all()` mount pass.  What remains is
+`kernel/vfs/`: the three static roots of 36.13, the path/namespace code, the
+handle table, the process CWD/workspace state and the in-process FILE
+endpoint.
 
 VFS keeps no node objects, no object identity and no cache: providers are
 path-based, so there is no per-component walk and no `object_id`.  The
@@ -4389,9 +4266,9 @@ docs/vfs.md            VFS core, provider ABI, descriptor/CWD model,
                        syscalls, ROMFS and IOC-FAT providers
 docs/abi.md            native syscall ABI: FS_* family, SYS_EXEC and the
                        startup block v1 argument contract, error values
-docs/devices.md        device/class model, driver ABI v3, ZDEV_BLOCK and the
+docs/devices.md        the service model, the protocol classes and the
                        resident IOC-FAT provider
-docs/module-format.md  ZMOD v1 and the loader lifecycle at ABI v3
+docs/module-format.md  the ZMOD service image and the resident loader
 docs/memory.md         bank-7 geometry, the M9 runtime-data inventory, the
                        common-memory budget and the final ledger
 docs/boot.md           the boot path and the VFS lifecycle
@@ -4409,7 +4286,7 @@ monitor launcher.  The per-package images (`m9-vfs`, `m9-provider`,
 subsystem regression coverage.
 
 Deliberately deferred beyond M9: `FS_STATFS` and arbitrary-size truncate
-(no M9 consumer), runtime unmount, the first `ZDEV_BLOCK` driver (it
+(no M9 consumer), runtime unmount, the first block driver (it
 arrives with the first native VFAT/Fuzix consumer), and every
 compatibility/personality layer.  Nothing in M9 is kept as a
 backward-compatibility path.
@@ -4672,7 +4549,7 @@ M9  COMPLETE (host + simulator; physical by byte identity + owner acceptance)
 ├── filesystem-provider registration API
 ├── path-based provider ABI
 ├── IOC-FAT ZMOD provider mounted at /, with its own 512-byte file-data cache
-├── ZDEV_BLOCK class defined (first driver deferred to its first consumer)
+├── block class defined (first driver deferred to its first consumer)
 ├── global descriptor pool, native path/descriptor/byte-oriented syscall ABI
 └── budgeted bank-7 residency
     │
@@ -4911,7 +4788,7 @@ the filesystem syscall front end (FS_*)      replaced by typed object protocols
 the console syscall family                   replaced by the CONSOLE protocol
 the device/class/capability registry          replaced by /dev host publications + endpoint table
 the filesystem-provider registry/mount model replaced by the three static root namespace providers
-the zdriver_api kernel import table           replaced by the driver bootstrap interface
+the driver-entry-table kernel import table    replaced by the service boot bundle
 the bank-7 driver arena                       resident drivers live at host-linked addresses in bank 6
 runtime device-name registration/probing      the selected image defines the machine
 ```
@@ -5610,6 +5487,11 @@ payloads
   geometry, overlap and bounds and pre-encodes the container, so the loader
   only reads descriptors, checks bounds that protect the kernel, copies
   payloads and zeroes BSS.
+- **Media gate:** an executable under `/SYSTEM` must be a ZEX entry
+  (`ROMFS_FLAG_ZEX`); a `DATA` or service-image entry is refused with the
+  ZEX type error, and a filesystem driver's `FILE` has no entry kind and is
+  judged by the header alone (work package 42c restored the rule when exec
+  moved onto the namespace bind).
 - `SYS_SEG_INFO(segment)` returns a segment's size, kind and load state.
 
 ---
@@ -5736,7 +5618,7 @@ The Z80 remains a cooperative, single-running-process machine.
 7. **Files on typed handles:** FS provider routes `/FS` to IOC-FAT; ROMFS
    serves `/SYSTEM`; FILE `open/close/read/write/...` live in `fs.h` over
    bind/call/unbind; remove generic DIRECTORY handles and retire `FS_*`.
-8. **Pruning:** delete the arena/module relocator path, `zdriver_api`, the
+8. **Pruning:** delete the arena/module relocator path, the driver ABI, the
    device/class/capability registry, filesystem-provider registration,
    runtime mount machinery, old console binding policy and transitional
    headers/tests. No compatibility copy survives construction.

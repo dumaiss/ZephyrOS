@@ -1,706 +1,315 @@
-# ZMOD v1 Module Format and Loader Lifecycle
+# ZMOD service image format and the resident loader
 
-**Status:** current through M9, driver ABI v3 (package 26).  The SIO,
-IOC, HID, and V9958 drivers ship as packed ZMOD modules and are loaded
-during boot through the generic M4 loader; since M5 the container bytes
-come from the ROMFS recovery store and since M9 they are opened as
-`/SYSTEM/<name>.zmod` through the kernel VFS and bound with
-`vfs_file_source()` (the on-disk ZMOD format and the bounded read-source
-adapter are unchanged; see `docs/vfs.md`).  Since M8 the header `driver_abi`
-must equal `ZDRIVER_ABI_VERSION` (3) and production derives the driver
-arena from the aligned linked kernel end in a two-pass link.  The
-production kernel and every ROMFS-boot image (M5 onward) link no embedded
-boot blob at all (`tools/mapcheck.py --production` rejects embedded boot
-blob/catalog symbols).  The stage-07/stage-08 records above are retained
-as historical acceptance evidence (`docs/validation/`); the description
-below reflects the current boot path.  The stage-07 loader was
-hardware-validated on 2026-10-02 (`m4 loader selftest: OK`; see
-`docs/validation/2026-10-02-m4-loader-hardware.md`); stage 08 added the
-dynamic-console transcript, the IRQ self-test module variant, a
-shifted-base placement image using identical module bytes, and an
-init-failure image that proves exact rollback.  The stage-08 acceptance
-image was hardware-validated on 2026-10-02 (`console: dynamic sio0.b OK`,
-`m4 loader selftest: OK`, `m4 selftest: sio at 0xA000`, `m4 selftest:
-OK`) after fixing the CTC0 start/claim race.  The placement image then
-passed with the same module bytes relocated to the shifted base
-(`m4 selftest: sio at 0x9E00`) and the failure image passed with exact
-rollback (`console: dynamic driver failed`, `m4 failure selftest: OK`);
-all runs are recorded in `docs/validation/2026-10-02-m4-acceptance.md`.
-M5 host evidence is recorded in `docs/validation/2026-10-03-m5-romfs.md`.
+**Status: M10, work package 42c.**  There is exactly one ZMOD form: the
+**service image**, a flat load plan the host packer links and the nucleus
+loader copies.  The arena module loader (`kernel/module/loader.c`,
+`relocate.c`, `arena.asm`), the relocation-record container, the module
+types, the import tables and the host `emit-asm` test fixtures are
+**deleted**; the record of that model is the M4-M9 history in
+`docs/architecture.md` (sections 22-31) and `docs/validation/`.  The file
+keeps its historical name because the container is still the ZMOD
+container; the format it describes is now the service form only.
 
-The embedded test catalog and the M1-M7 acceptance images that used it
-were retired under the Mn-1 retention rule (work package 25a).  Every
-image now boots its module set from the recovery store through the VFS,
-and the loader mechanism coverage (validation, relocation, failed-init
-rollback, arena exhaustion) runs on that path in the subsystem acceptance
-image (`tests/target/loader/`, exercised by
-`tests/test_subsys_sim.py`).
+The split of work is the M10 rule (M10-REFERENCE decision 2): **the host
+computes everything.**  `tools/zmodpack.py` mini-links the declared
+objects, links every segment at its final bank-6 address, applies the
+`ZREL_ABS16` records on the host, assigns endpoint numbers, resolves
+inter-driver dependencies and validates the whole container; the nucleus
+loader (`kernel/service/service_loader.c`) copies the finished images and
+checks only the bounds that protect the nucleus and the fixed driver-bank
+layout.  Nothing is linked, patched or version-checked at boot.
 
-This document is the authoritative description of the ZephyrOS module
-container (`ZMOD v1`), the bank-7 driver arena, the host packer, and the
-transactional kernel loader.  The architectural contract is in
-`docs/architecture.md` section 22; this file records the concrete format
-that is now implemented and pinned by `include/zephyros/module.h` and
-`tools/zmodpack.py`.
+The architectural contract is `docs/architecture.md` sections 36.6
+(driver bank), 36.11 (resident images and host assembly), 36.12 (boot),
+36.13 (namespace providers) and 36.20 (ledgers).  The concrete layout is
+pinned by `include/zephyros/service.h` and by the compile-time assertions
+the target build enforces.
 
 ---
 
-## 1. Driver arena
+## 1. Container layout
 
-The arena is a linker-reserved region of the bank-7 **cold half**.  Every
-image derives its bounds from the aligned end of the linked cold code and
-the derived cold runtime-data base in a two-pass link:
-
-```text
-arena           = [align_up(__kernel_code_end, 512), window_data_base)
-__kernel_code_end  = end of _WINDOW (the linked cold code)
-window_data_base   = align_down(E000h - l__WINDOW_DATA, 512)
-```
-
-There is exactly one geometry; the probe link places no arena and the
-fixed `A000h-BFFFh` rectangle is retired (work packages 25a/25b).  There
-is no granule floor: the arena only has to hold the image's declared boot
-set, which `zmodpack.py plan` and `pack_image.py` check (package 38).  The
-derived arena of the current production image is `9A00h-DBFFh` (33
-granules, 33 used by the boot set) -- see `docs/memory.md` section 2.2
-and `docs/architecture.md` section 30.2.
-The loader and the generated `arena_geometry.inc` consume the linked
-symbols; nothing below depends on the numeric base.*
-
-* Declared by the generated `memory.inc` include
-  (`ZOS_DRIVER_ARENA_BASE/END`, `ZOS_DATA_BASE/SIZE`,
-  `ZOS_DRIVER_GRANULE_SIZE`, `ZOS_DRIVER_GRANULES`) and exported as the
-  link symbols `__driver_arena_start` / `__driver_arena_end` by
-  `kernel/module/arena.asm`.  The loader uses the symbols, never the
-  numeric values; module code uses neither.
-* The cold loadable area (`_WINDOW`) must end below the arena start
-  (`__driver_arena_start`, the aligned cold code end), so the two passes
-  must agree.  `tools/mapcheck.py` rejects any area overlapping the arena
-  and `tools/pack_image.py` rejects ROM payload bytes inside it; the
-  512 KiB boot image carries no arena content.
-* The fixed runtime data (`_DATA`/`_INITIALIZED`) starts at its derived
-  base and must stay below the 512-byte service stack at `5D00h`; the cold
-  runtime data (`_WINDOW_DATA`) starts at the derived cold base and must
-  stay below `E000h`.
-* Only the loader allocates granules, at boot, from its byte source:
-  the ROMFS recovery store reached as `/SYSTEM` through the VFS (since
-  M9), in production and every acceptance image.
-
-The build reports arena geometry, free granules and the single bank-7
-budget ledger: `mapcheck.py` and `pack_image.py` both print the summary,
-`zephyros.manifest.json` carries an `arena` object
-(`start`, `end`, `size`, `granule_size`, `granules`, `free_granules`,
-`modules`) plus a `nucleus` ledger object (the five M10 lines of
-`docs/architecture.md` section 36.20), and `arena.plan.json` carries the
-same ledger.
-
-`zmodpack.py plan` and `pack_image.py` additionally print a granule-
-threshold table and carry the same figures in JSON: each boot-set module
-entry gains `above_lower_bytes` (the saving that frees one granule) and
-`before_higher_bytes` (the room left before one is spent), and a `kernel`
-object gives the same two distances for the arena start (linked code end)
-and the derived data base (runtime-data size).  See `docs/memory.md`
-section 2.2.1.
-
-## 2. Container layout
-
-A ZMOD v1 container is a packed little-endian byte stream:
+A container is a packed little-endian byte stream: a 16-byte header, the
+four tables in a fixed order, then the payload.
 
 ```text
-offset 0                28-byte header
-offset reloc_offset     4 * reloc_count relocation records
-offset payload_offset   linked-at-zero image (image_size bytes)
-total_size = payload_offset + image_size
+offset 0                 header, 16 bytes
+offset 16                segment table,    12 * segment_count
+after the segments       endpoint table,    8 * endpoint_count
+after the endpoints      dependency table,  4 * dependency_count
+after the dependencies   publication table, 20 * publication_count
+payload_offset           segment images, concatenated in table order
+total_size = payload_offset + sum(image_size)
 ```
 
-`total_size` must equal the exact byte length handed to the loader.
-Relocation records and payload may not overlap the header or each other;
-the packer emits the table directly after the header and the payload
-directly after the table.
+`payload_offset` must equal the canonical table end
+(`16 + 12*sc + 8*ec + 4*dc + 20*pc`) and `total_size` must equal the exact
+container length: the loader and the packer both refuse a container whose
+tables and payload do not end at those bytes.  The mandatory payload order
+is what lets the loader read the container once, front to back, without a
+record index.
 
-### 2.1 Header (28 bytes)
+Header (16 bytes; `include/zephyros/service.h` `struct zmod_header`):
 
-| Offset | Size | Field | Meaning |
-| ---: | ---: | --- | --- |
-| `00h` | 4 | `magic[4]` | `"ZMOD"` |
-| `04h` | 1 | `format_version` | `1` |
-| `05h` | 1 | `module_type` | `1` = `DRIVER`, `2` = `SERVICE` (M10) |
-| `06h` | 1 | `driver_abi` | `ZDRIVER_ABI_VERSION` (3) for drivers, `ZMOD_SERVICE_ABI_VERSION` (1) for services |
-| `07h` | 1 | `flags` | `0` (reserved) |
-| `08h` | 2 | `image_size` | payload bytes loaded at `load_base` |
-| `0Ah` | 2 | `bss_size` | zero-initialized bytes after the image |
-| `0Ch` | 2 | `required_granules` | `ceil((image+bss)/512)`, 1..80 (format maximum), further bounded by the linked arena's live granule count |
-| `0Eh` | 2 | `init_offset` | image-relative init entry (required) |
-| `10h` | 2 | `fini_offset` | image-relative cleanup entry, `FFFFh` = none |
-| `12h` | 2 | `reloc_offset` | offset of the relocation table |
-| `14h` | 2 | `reloc_count` | number of 4-byte records |
-| `16h` | 2 | `payload_offset` | offset of the image bytes |
-| `18h` | 2 | `total_size` | total container bytes |
-| `1Ah` | 2 | `reserved` | `0` |
+| Offset | Field | Meaning |
+| --- | --- | --- |
+| 00 | `magic[4]` | `"ZMOD"` |
+| 04 | `segment_count` | 1..4, `hot` required |
+| 05 | `endpoint_count` | 0..8 |
+| 06 | `dependency_count` | 0..8 |
+| 07 | `publication_count` | 0..12 |
+| 08 | `init_entry` | absolute hot-tier init entry, `FFFFh` = none |
+| 0A | `payload_offset` | first payload byte (canonical table end) |
+| 0C | `total_size` | exact container length |
+| 0E | `reserved` | 0 |
 
-`struct zmod_header` in `include/zephyros/module.h` overlays this layout;
-compile-time assertions pin `sizeof` and every field offset.
+There is no version field, no module type, no import table, no `fini`
+entry and no relocation record.  A service image has no runtime format
+negotiation: an image that does not match this layout is a pack-time
+error, not a boot error.
 
-### 2.2 Relocation records
+## 2. Segments and the bank-6 tiers
+
+One record per role, at most one segment per role.  `base` is the final
+bank-6 address the host assigned; the image is
+`payload[payload_offset .. payload_offset + image_size)`, the BSS area
+follows the image at `base + image_size`.
 
 ```text
-type:u8 (1 = ZREL_ABS16)   target:u8   patch_offset:u16
+segment  role:u8 0:u8 base:u16 image_size:u16 bss_size:u16
+         entry:u16 payload_offset:u16
 ```
 
-`patch_offset` is relative to the loaded image and must satisfy
-`patch_offset + 2 <= image_size`.  At load time each record is applied as:
+| Role | Destination | Visibility, and what runs there |
+| --- | --- | --- |
+| `hot` | bank 6 `6000h-DFFFh` | the mode-11 window (P = 1): all run-time code and data, plus the init entry |
+| `io` | bank 6 `8000h-BFFFh` | `SERVICE_IO` buffers, the sources and targets of `copy_in`/`copy_out` |
+| `boot` | bank 6 `0000h-5FFFh` | boot-only code, run once through the mode-10 gate with Q = 6, never again |
+| `bulk` | bank 6 `0000h-5FFFh` | bulk data, reached only by nucleus copies |
+
+`entry` is the absolute boot entry and only the `boot` role may carry one
+(`FFFFh` otherwise); `init_entry` in the header is the absolute hot
+init the loader calls once after the boot entry.  Both must lie inside
+their own segment's image.
+
+Because every address in the payload is final, a segment may only
+reference addresses the mode-11 window can still see: hot code and data
+sit in bank 6 `6000h-DFFFh` and may not point into `boot` or `bulk` code.
+`bulk` carries no relocation records at all.  The `io` block is allocated
+first (see section 5), so the hot tier keeps its low addresses for code
+and its `8000h-BFFFh` window for buffers.
+
+## 3. Endpoints
 
 ```text
-word_at(load_base + patch_offset) += load_base
+endpoint  class:u8 instance:u8 version:u8 flags:u8
+          number:u16 dispatch:u16
 ```
 
-The addition is checked against 16-bit overflow before it is stored; no
-record may touch a byte outside the image.  Although the container could
-express it, `ZREL_ABS16` is the only relocation type M4 supports.
+`(class, instance)` is the protocol identity (the classes of
+`abi/zos/object.h`); `version` is the image's own protocol version, kept
+in the record but never checked at boot; `flags` bit 0 is the
+re-entrancy declaration (`ZOS_IPC_EP_REENTRANT`); `number` is the
+host-assigned endpoint number (`1..N` across the load order) and
+`dispatch` the absolute hot-tier dispatch entry inside the hot image.
 
-The second byte is reserved and must be `0` in driver containers, where a
-single base covers the whole image.  In a service container it names the
-*target segment* (section 7.2), because the loader relocates each segment
-against its own base:
+The host assigns numbers in load order, so the numbering of an image
+depends on its position in the set, not on its name.  `number` 0 is
+invalid everywhere: the loader refuses an endpoint record whose number is
+zero, and installs the rest into the nucleus endpoint table before any
+driver code runs.  There is no run-time registration, lookup or
+unregistration path.
+
+## 4. Dependencies
 
 ```text
-word_at(segment_base[owner] + patch_offset) += segment_base[target]
+dependency  class:u8 instance:u8 number:u16
 ```
 
-A service record may only reach tiers the mode-11 window shows (hot code
-may not point into boot or bulk segments) and bulk segments carry no
-records; the packer enforces both.
+A manifest declares dependencies symbolically; the packer resolves each
+one to the endpoint number of an export in an earlier image or in the
+image itself.  A missing *required* dependency is a pack error.  A
+missing *optional* one resolves to `0`, which a driver reads as "this
+build selected no such peer" (the console's independent input/output
+fallback).  The resolved numbers are installed into the fixed-core array
+the boot bundle names (`struct ipc_service_boot`, `include/zephyros/
+ipc.h`), one byte per declaration in manifest order; no driver looks a
+peer up at run time.
 
-## 3. Module image conventions
+## 5. Placement and the two ledgers
 
-* Modules are linked **at base zero** by `tools/zmodpack.py`.  Every
-  private pointer in the image is a module-relative offset that the
-  loader corrects through the relocation table.  The packer rejects any
-  relocation it cannot express as `ZREL_ABS16`.
-* A module may reach the kernel only through the `const struct
-  zdriver_api *` passed to its init entry.  Direct references to kernel
-  symbols are unresolved externals and are rejected at pack time.
-* Kernel imports are limited to the driver ABI v3 services:
-  `device_register`, `irq_claim`, `irq_release`, `device_find`,
-  `device_interface`, `resource_size`, `resource_read`, `fs_register`.
-  The callback order in `struct zdriver_api` is part of the ABI (pinned
-  by compile-time assertions and host tests).
-* `device_find(class_id, required_caps, after)` selects by class plus
-  required capabilities (`ZDEV_CLASS_ANY` = any class; zero
-  `required_caps` is invalid); `device_interface(handle, class, &ops,
-  &state)` verifies the class and a non-null class interface.  Both are
-  read-only; the registry exposes no mutation path.
-* `resource_size(name, &size)` and `resource_read(name, offset, dst,
-  length)` resolve only ROMFS entries carrying `ROMFS_FLAG_DATA` and
-  bound every read to the resource; `romfs_file_t` and the mutable
-  filesystem state stay kernel-private.
-* `fs_register(provider)` registers a path-based `struct zfs_provider`
-  with the kernel VFS (architecture section 32.11, `zephyros/vfs.h`).  It
-  succeeds only during the module-loading phase and joins the loader's
-  registration transaction: a provider registered by a module whose init
-  then fails is removed together with that module's devices and IRQ
-  claims.  It rejects a null/malformed provider, a duplicate name
-  (compared case-insensitively) and a full registry (capacity 4) with a
-  negative `ZOS_E*` value (duplicate `ZOS_EEXIST`, full `ZOS_ENOSPC`).
-* SDCC emits byte-fragmented address stores (relocation modes `09h`/`89h`)
-  for stack-built structures whose pointer fields are written with
-  `ld (ix+d), #<sym` / `# >sym`.  These cannot be relocated by a 16-bit
-  word patch, so the packer rejects them; module code must use static
-  (`const`) descriptor initializers instead.
-* Modules must provide their own SDCC indirect-call trampolines
-  (`___sdcc_call_iy`, `___sdcc_call_hl`) because the kernel's copies are
-  private; `modules/runtime/sdcc_indirect_calls.asm` is the single shared
-  source, compiled separately into every ZMOD that needs it so each
-  container remains self-contained.
-* Uninitialized module state belongs to BSS areas (`_DATA` in SDCC
-  output); the loader zeroes it before init and stores private state
-  inside the module allocation only.
+The packer allocates; the loader verifies.  The policy, applied when an
+image is packed against its `--set`:
 
-### 3.1 Module manifest
+1. every image's `io` segment packs contiguously **down from `C000h`**,
+   in load order - the whole `[io_low, C000h)` block is known before any
+   code is placed, and a block that would leave `8000h-BFFFh` fails the
+   pack;
+2. the `hot` segments take the lowest free run of the hot tier,
+   largest first, on one side of the io block (below it when it fits,
+   otherwise just above `C000h`);
+3. `boot` segments bump up from `0000h` and `bulk` data down from
+   `6000h`, in load order.
 
-`tools/zmodpack.py pack` takes a small JSON manifest (see
-`tests/modules/*.json`):
+A set that packs therefore always places.  The loader re-checks the
+result, because the container arrives from the recovery store: each
+segment's `base` and size must leave the tier of its role, `entry` and
+`init_entry` must stay inside their images, each endpoint `dispatch`
+inside the hot image and each dependency number inside what the nucleus
+has installed.
+
+Both sides report the same two architecture-36.20 ledgers:
+
+```text
+driver hot: <bytes> of 32768          hot + io bytes of the 6000h-DFFFh tier
+driver boot/bulk: <bytes> of 24576    boot + bulk bytes of the 0000h-5FFFh tier
+```
+
+The loader prints them in acceptance builds; production takes them from
+the packer's report (`services.plan.json`), which is what
+`tools/pack_image.py` folds into the bank-6 part of the image manifest.
+Each placed image is reported as `driver <name>: hot <addr> [io <addr>]
+[boot <addr>] [bulk <addr>]` - the same line `zmodpack.py services`
+prints - and the run ends with
+`service loader: <n> images in bank 6`.
+
+## 6. Publications
+
+A publication is a namespace name below the **DEVICE provider's** `/dev`
+root, or the `/FS` root of a filesystem provider, that the image serves
+(architecture 36.13):
+
+```text
+publication  name[16] type:u8 number:u8 object:u8 flags:u8
+```
+
+`name` is the provider-relative remainder of the path, NUL-terminated and
+zero-padded; `type` is the 8-bit protocol type (`ZOS_TYPE_*`, listed in
+`tools/zmodpack.py`); `number` is the host-assigned number of the
+endpoint that serves it; `object` is the provider's own object identity,
+handed back with every call.  `flags` is 0.
+
+A grouping name is never published: the packer counts the derived rows
+(`/input`, `/serial`) and the DEVICE provider synthesizes them from the
+names it installs.  The packer refuses a name that is the root, longer
+than the 15 provider-relative bytes a record holds, non-printable, or
+duplicated anywhere in the set (compared case-insensitively), and refuses
+more than `ZMOD_MAX_PUBLICATIONS` (12) rows per manifest, an unknown type
+name, a type outside 1..255, an object above 255, or a set whose rows
+plus the derived grouping rows overflow the nucleus publication table.
+
+An image with no publications carries ABI 3 byte for byte (count 0, empty
+table); one with publications carries ABI 4.  The publications of the
+whole set are installed before the first driver's boot entry runs.
+
+## 7. Boot manifest and the boot path
+
+`services.man` (`ZOS_SERVICE_MANIFEST_NAME`) is a flat ROMFS `DATA` file
+of 24-byte records - the ROMFS name field exactly, NUL-terminated and
+zero-padded - naming the packed containers in load order.  The loader
+reads it with the bootstrap ROMFS reader (`kernel/romfs`, fixed-core
+since package 38) and requires the file size to be a multiple of the
+record size.  At most `ZMOD_MAX_IMAGES` (8) images are placed.
+
+Per image, in manifest order (`kernel/service/service_loader.c`):
+
+1. copy the segment images to their host-assigned bases and zero their
+   BSS through the common application-bank copy gate;
+2. install the endpoint records into the nucleus endpoint table and the
+   publications into the namespace;
+3. run the boot entry once through the mode-10 gate with Q = 6;
+4. run the hot init entry once through the fixed upcall shim with the
+   boot bundle in `HL`.
+
+Boot entry code runs with bank 7 unmapped: it may touch bank 6, the
+common region and I/O ports, and must not call the bootstrap interface.
+The hot init runs with the window open and has the interface table and
+its resolved dependency numbers.
+
+A failure is a boot error and prints one line on the early console:
+`service loader: <name>: <what>`, where `<what>` is `no image` (the
+manifest named a file the store does not hold), `copy` (a segment that
+does not fit its tier or a copy the gate rejected), `endpoint` (the
+endpoint table is full), `publication` (the namespace refused the row),
+or `invalid` (corrupt or truncated container - the same word for a
+manifest whose size is not a multiple of the record size).  The words are
+short because the loader's byte budget is an architectural resource
+(section 8).  Services are permanent (M10
+decision 11): no unload, no restart, no fini entry, and a second
+`service_load_all` call is a no-op.
+
+## 8. Loader size
+
+The loader's byte cost is an architectural resource (36.3): it shares the
+fixed core with the ABI, the copy primitives and the IRQ executive.  The
+42c loader measures **1,970 bytes** (1,969 code + 1 data) against the
+2,000-byte target of the 41b review, down from 5,122 bytes at the M9
+source - it no longer parses or re-validates container tables the packer
+already validated.  The evidence lines (`driver <name>:`, the two
+ledgers) are acceptance-only; production links the error lines only.
+
+## 9. Packer commands, manifest and reports
+
+```sh
+python3 tools/zmodpack.py pack <manifest.json> <out.zmod> \
+    --objdir DIR --set MANIFEST [...] --report FILE
+python3 tools/zmodpack.py validate <container.zmod> [...]
+python3 tools/zmodpack.py dump <container.zmod> [...]
+python3 tools/zmodpack.py services <out.man> <container.zmod> [...] \
+    --report services.plan.json
+```
+
+`pack` for a service manifest requires `--set`, the whole load order
+including this image: the packer links this image against the set (one
+plan, one endpoint numbering, one dependency resolution), so an image
+rebuilt alone still matches its siblings.  `validate` and `dump` both run
+`parse_container`, the host's authoritative validation.
+
+A manifest names its objects, its `init` entry, its `segments` (role,
+`image_areas`, `bss_areas`, optional boot `entry`), its `endpoints`
+(`class`, `instance`, `version`, `dispatch` symbol, `flags`), its
+`publishes` rows and its `depends` records (`class`, `instance`,
+optional `optional`):
 
 ```json
 {
-  "name": "m4.probe",
-  "type": "driver",
-  "abi": 3,
-  "flags": 0,
-  "objects": ["m4_probe.rel", "sdcc_indirect_calls.rel"],
-  "image_areas": ["_CODE"],
-  "bss_areas": ["_DATA"],
-  "init": "m4_probe_init",
-  "fini": null
+  "name": "ioc",
+  "objects": ["ioc.rel", "ioc_boot.rel", "sdcc_indirect_calls.rel"],
+  "init": "ioc_service_init",
+  "segments": [
+    {"role": "hot",  "image_areas": ["_CODE"],
+     "bss_areas": ["_SERVICE_IO"]},
+    {"role": "boot", "image_areas": ["_BOOT"],
+     "entry": "ioc_boot_entry"}
+  ],
+  "endpoints": [
+    {"class": 5, "instance": 0, "version": 1,
+     "dispatch": "ioc_service_dispatch", "flags": 0}
+  ],
+  "publishes": [],
+  "depends": []
 }
 ```
 
-`objects` are resolved against `--objdir` (default: the manifest's
-directory).  `image_areas` are concatenated in the listed order starting
-at offset zero; `bss_areas` follow the image.  Every non-empty area in the
-objects must be listed; empty SDCC areas are ignored.  `init`/`fini` are C
-identifiers (the packer also accepts the `_`-prefixed assembler spelling).
+The per-image report carries each segment's role, final base, image and
+BSS sizes and payload offset, every symbol's segment-relative offset with
+its segment (`symbols`, `symbol_segments`), the endpoint numbers with
+their absolute dispatch entries, and the resolved dependency numbers.
+The set report (`services.plan.json`) carries the load order, the bases
+per image and the two tier ledgers; `tools/pack_image.py` reads it for the
+bank-6 ledger of the image manifest.
 
-### 3.2 Packer output and guarantees
+## 10. Retired with the arena loader
 
-For each output the packer reports:
-
-```text
-build/modules/m4_probe.zmod
-  format:        ZMOD v1 driver, ABI 3
-  image:         182 bytes
-  bss:           2 bytes
-  relocations:   16 (ZREL_ABS16)
-  init:          +0x0037
-  fini:          none
-  total:         266 bytes
-  allocation:    1 x 512-byte granules
-```
-
-The tool rejects, deterministically: bad radix/escape encodings,
-unsupported relocation modes, unresolved externals, byte-fragmented
-address stores, out-of-range entries, partial relocation-site overwrites,
-area overruns, manifest/area mismatches, granule overflows, and container
-overlap/truncation.  `validate` re-checks a container against the same
-rules the kernel loader enforces; `dump` prints the canonical report plus
-every relocation offset.
-
-## 4. Loader lifecycle (kernel/module/loader.c, kernel/module/relocate.c)
-
-```text
-module_load_source(name, source)
-  │ VFS-bound file source
-  │ (vfs_file_source over an open
-  │  /SYSTEM/<name>.zmod)
-  └──────────────┬─────────────────────┘
-                 ▼
-  zmod_validate_source()               header, sizes, offsets, granule math,
-                                       and every relocation record, read
-                                       through the bounded source and
-                                       validated before the arena is touched
-  ├─ first-fit granule allocation      bitmap over the architectural
-  │                                    maximum (80 granules); live count
-  │                                    derived from the linked arena
-  │                                    bounds at module_loader_init();
-  │                                    required_granules cross-checked
-  ├─ descriptor ← LOADING              owner token for registrations/claims
-  ├─ stream image copy, zero BSS,      image and relocations are read in
-  │  apply relocations                 bounded chunks (128 bytes);
-  │                                    ZREL_ABS16: word += load_base
-  ├─ init(load_base + init_offset)     driver ABI v3, under device, IRQ and
-  │                                    registry checkpoints
-  │     ├─ success → RESIDENT          never freed; no unload operation
-  │     └─ failure → fini (optional)   device/IRQ rollback, allocation
-  │                                    zeroed and released, EMPTY again
-```
-
-* **Byte sources.**  `struct zmod_source` (`read(ctx, offset, dst, length)`,
-  `ctx`, `size`) is the only way container bytes enter the loader.  The
-  since M9 the boot modules are opened with
-  `vfs_open("/SYSTEM/<name>.zmod")` and wrapped by
-  `vfs_file_source()` (the ROMFS bytes underneath are read by the M5
-  reader through the M9 ROMFS provider; `romfs_load_zmod()` no longer
-  exists).  Both share the same validation, copy, relocation, and
-  transaction code — there is no second loader.  The M9 boot set is
-  `sio`, `ioc`, `hid`, `v9958` and `iocfat` (the last a filesystem
-  provider that registers through the same ABI v3 entry and is attached at
-  `/` by the normal mount pass; see
-  [`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md)).
-* **Allocator.**  First-fit over a 512-byte granule bitmap sized to the
-  architectural maximum (80 granules), with the live granule count
-  derived from the linked arena bounds at loader init.  Allocation
-  rounds `image_size + bss_size` up to 512 bytes, rejects zero, 16-bit
-  overflow, a `required_granules` mismatch, and exhaustion (`ZMOD_ENOSPC`).
-  Slack inside an allocation belongs to the module.  No public unload
-  exists; freeing is internal to a failed load.
-* **Validation-before-mutation.**  Header and relocation records are
-  validated completely — through the bounded source for source-backed
-  containers — before any arena byte is written.  Tests plant canaries at
-  the arena edges and prove rejection leaves them untouched; corrupted
-  ROMFS containers are rejected with the exact loader error codes before
-  allocation.
-* **Transactions.**  `device_registry_set_owner`/`irq_registry_set_owner`
-  record the loading module in every registration and claim made during
-  init.  On failure `device_registry_rollback` and `irq_registry_rollback`
-  remove exactly that module's changes; earlier modules are untouched.
-  `fini_offset` runs only as init cleanup and only when present; its
-  result is ignored.
-* **States.**  `ZMOD_STATE_EMPTY` → `LOADING` → `RESIDENT`; a failed load
-  returns the descriptor to `EMPTY` and increments `module_failed_count`.
-* **Loader errors** (negated `ZOS_*` values, see `module.h`):
-  `ZMOD_EINVAL` (bad field/argument), `ZMOD_EFORMAT` (structure,
-  truncation, overlap, range), `ZMOD_ENOTSUP` (version/type/ABI/reloc),
-  `ZMOD_ENOSPC` (arena/descriptor exhaustion), `ZMOD_ENOENT` (no such
-  source entry),
-  `ZMOD_EINIT` (module init returned failure).
-
-### 4.1 IRQ handler validation
-
-`irq_claim` accepts a handler address when it lies
-
-* inside linked bank-7 kernel code (`2000h` .. `irq_kernel_code_end`), or
-* inside the image of the currently initializing (LOADING) module, or
-* inside a RESIDENT module allocation.
-
-Failed/freed allocations, LOADING modules that are not the active load,
-and any other address are rejected with `IRQ_EINVAL`.  Once a module is
-RESIDENT its registered handler cannot become dangling because M4 has no
-unload.
-
-### 4.2 Boot-module source
-
-Every image -- production and acceptance -- uses the one container
-source: the ROMFS recovery store reached as `/SYSTEM` through the VFS,
-opened with `vfs_open("/SYSTEM/<name>.zmod")` and wrapped by
-`vfs_file_source()`.  The embedded boot catalog (`kernel/module/embedded.c`,
-`module_catalog_load_all`, the `zmod_catalog` table and
-`struct zmod_catalog_entry`) was deleted under the Mn-1 retention rule
-(work package 25a); `tools/mapcheck.py --production` still rejects its
-symbols (`_z4_module_boot`, `_zmod_catalog`, `_module_catalog_load_all`)
-so they cannot creep back in.
-
-## 5. Synthetic fixtures and self-test
-
-| Fixture | Purpose | Image | BSS | Granules |
-| --- | --- | ---: | ---: | ---: |
-| `m4.probe` | picks device `m4.probe.a`/`m4.probe.b` from bit 9 of its relocated state pointer; the even-granule instance additionally claims `IRQ_CTC0` with an in-image handler | 182 | 2 | 1 |
-| `m4.fail` | registers `m4.fail` and claims `IRQ_CTC1`, then returns failure so rollback is observable | 130 | 2 | 1 |
-| `m4.filler` | verifies its 600-byte BSS pad is zero and registers nothing; used to exhaust the arena | 48 | 602 | 2 |
-| `m8.api` | driver ABI v3 discovery/resource-import fixture: class+capability `device_find` iteration, `device_interface` success/mismatch/stale errors, and resource imports before ROMFS is published | 1129 | 6 | 3 |
-
-The fixtures are built with the real toolchain and packed under
-`build/modules/`; `make zmod-test` validates every container.  The loader
-mechanism coverage runs on the current boot path: the loader group of the
-subsystem acceptance image (`tests/target/loader/loader_test.c`, replayed
-by `tests/test_subsys_sim.py`) opens each fixture as `/SYSTEM/<name>.zmod`
-through the same `vfs_open` + `vfs_file_source` + `module_load_source`
-path the kernel boot uses, so it exercises the production loader and the
-production filesystem stack together.  The boot module is RESIDENT and the
-console is bound before the fixtures load, the baseline for every count:
-
-1. malformed containers (bad magic, truncated header) are rejected by
-   `zmod_validate_source` with their exact error (`ZMOD_EINVAL`,
-   `ZMOD_EFORMAT`) before the arena, the descriptor table or the registry
-   is touched, and the rejection is not counted as a failed init,
-2. `m4.fail` registers a device, claims `IRQ_CTC1` and returns failure;
-   the loader rolls the registration, the claim, the granules and the
-   descriptor back exactly, and the identical load is repeatable,
-3. `m4.probe` loads from the recovery store; its registered device, ops,
-   name and state pointers all lie inside its own allocation with state
-   at `load_base + image_size`, and its init-time `IRQ_CTC0` claim is
-   owned by the module,
-4. IRQ handler addresses are validated against RESIDENT module images
-   only (a pointer inside the allocation is accepted; a stale or
-   out-of-arena address is refused with `IRQ_EINVAL`),
-5. `m4.filler` verifies its 600-byte BSS pad is zero before init,
-6. repeated fillers exhaust the derived arena with `ZMOD_ENOSPC` while
-   the earlier residents and the boot module stay intact, and the bound
-   console keeps working.
-
-`m8.api` remains a host-validated ABI v3 discovery/resource-import
-container (`tests/test_zmod.py`); it is not part of the subsystem
-group.
-
-Host coverage:
-
-* `tests/test_zmod.py` — packer/validator/container tests; the fixture
-  test links the same objects with `sdldz80` at the packer's layout and
-  compares every image byte (proving the mini-linker agrees with the real
-  linker), and relocation is checked at two bases
-  (`test_two_bases_shift_patched_words_by_the_delta`); bad version/ABI
-  and every relocation-rejection class are covered here.
-* `tests/test_subsys_sim.py` — replays the linked subsystem image in the
-  Z80 simulator, including the loader group above and its arena
-  exhaustion.
-* `m8-fb-arena` (`tests/test_m8_fallback.py`) — the current on-target
-  arena-exhaustion image.
-
-## 6. SIO module build pipeline
-
-The production SIO driver is no longer linked.  `drivers/sio/sio.c`,
-`drivers/sio/sio_io.asm`, and the production-only entry
-`drivers/sio/sio_module.c` are built under `build/modules/` (shared by
-every image, so the packed bytes are identical everywhere),
-together with the shared `modules/runtime/sdcc_indirect_calls.asm` glue,
-and packed through three manifests — the production manifest under
-`modules/manifests/`, the test-variant manifests under `tests/modules/`:
-
-| Module | Manifest | Module entry | Image | BSS | Granules |
-| --- | --- | --- | ---: | ---: | ---: |
-| `sio.zmod` | `modules/manifests/sio.json` | `sio_module_init` | 313 | 4 | 1 |
-| `sio-irq.zmod` | `tests/modules/sio-irq.json` | `sio_irq_module_init` | 586 | 8 | 2 |
-| `sio-fail.zmod` | `tests/modules/sio-fail.json` | `sio_fail_module_init` | 376 | 4 | 1 |
-
-The IRQ variant (`tests/modules/sio_irq_module.c`) claims `IRQ_CTC0`
-inside its relocated init, verifies a second claim returns `IRQ_EBUSY`,
-runs a bounded EI spin until three deliveries are counted, checks its
-relocated state pointer, and releases the source before registering the
-device.  The failure variant (`tests/modules/sio_fail_module.c`)
-registers its device and claims CTC1, then returns `ZDRIVER_FAIL` so the
-loader's rollback can be verified exactly.  Both remain packed test
-containers validated by `make zmod-test`; the IRQ mechanisms that ran
-through the pre-M8 images are now covered on the current boot path by the
-IRQ group of the subsystem acceptance image (`tests/target/irq/`,
-`tests/test_subsys_sim.py`) with its test-owned CTC0 helper
-(`tests/target/support/ctc_test.c`).  The production entry contains no
-test branches.
-
-Module sources use `static const` descriptors and link the shared
-`modules/runtime/sdcc_indirect_calls.asm` source (compiled to
-`build/modules/sdcc_indirect_calls.rel`) for
-`___sdcc_call_iy`/`___sdcc_call_hl`, because the packer rejects the
-byte-fragmented relocations SDCC emits for stack-built descriptors and
-indirect-call libcalls, and a module may not import the kernel's private
-copy.  Every variant packs without warnings and the packer reports
-per-variant relocation counts and init offsets.
-
-`tools/zmodpack.py pack --report` writes `*.report.json` with the symbol
-offsets the host replays use (`emit-asm` can still emit a container as an
-assembly blob plus header, host-tested by `tests/test_zmod.py`).  No image
-links such a blob: the Makefile selects the boot module source per image:
-
-| Image | Boot module / source |
-| --- | --- |
-| `build/` (production) | `sio.zmod` from ROMFS through the VFS (`/SYSTEM`) |
-| `build-m9-vfs-selftest/` (`make m9-vfs-selftest`) | ROMFS at `/SYSTEM` through VFS: `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod` + font + monitor, optional-mount failure diagnosed |
-| `build-subsys-selftest/` (`make subsystem-selftest`) | the current boot path with the SIO-only boot set, plus the loader/ROMFS/process fixtures |
-| `build-romfs-corrupt/` (`make romfs-corrupt-selftest`) | corrupted ROMFS metadata: panic before loading |
-| `build-m8-selftest/` (`make m8-selftest`) | ROMFS: `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod` + font + monitor |
-| `build-m8-fb-*/` (`make m8-fallback-selftests`) | ROMFS failure variants (missing/substituted entries), same load order |
-
-`kernel/main.c` runs `module_loader_init()` and then loads the boot
-module from the one source: `vfs_init()` (which mounts ROMFS at
-`/SYSTEM`) followed by `vfs_open("/SYSTEM/<name>.zmod")` +
-`vfs_file_source()`.  The embedded-catalog alternative was deleted under
-the Mn-1 retention rule (work package 25a).  The boot path continues with the
-deterministic `ioc.zmod`, `hid.zmod`, `v9958.zmod` sequence (each load
-gated by `ZOS_IOC_BOOT` / `ZOS_HID_BOOT` / `ZOS_V9958_BOOT`), and a
-failed optional module is rolled back by the loader and reported as
-`<name>: unavailable 0x<ZOS_E*>` on the direct early SIO; every earlier
-resident stays registered.  The console is then bound with
-`console_bind_defaults()` (capability-based, name-agnostic) and the
-monitor launcher runs.  Module failures of the required SIO fallback
-print `console: dynamic driver failed`; success prints
-`console: dynamic sio0.b OK` through the bound module.  A corrupt
-recovery image panics with `PANIC: romfs: corrupt recovery image` before
-any module execution.  The loader makes no assumptions about the module
-name, size, load address, relocation list, init entry, or where the
-container bytes live — all of it comes from the bounded source.
-
-`tools/mapcheck.py` fails the build on any linked `_sio_`, `_sio0b_`, or
-`_sio_driver` symbol, so a static SIO copy cannot creep back in;
-`mapcheck.py --production` additionally rejects every acceptance symbol
-(retired static-driver remnants, test runners/results, fixture catalogs,
-embedded boot blob/catalog symbols, test SIO module entries).
-
-## 7. Resident driver images (module_type 2)
-
-M10 makes bank 6 the **resident driver domain**: drivers are permanent
-ZMOD containers (`ZMOD_TYPE_SERVICE`, generic header unchanged) that the
-cold nucleus loader places in the bank's two code tiers at boot.  The
-host assembles them (architecture 36.11): `tools/zmodpack.py` links every
-segment at its final bank-6 address, assigns the endpoint numbers and
-resolves the inter-driver dependencies, and
-`kernel/service/service_loader.c` only copies the segments, installs the
-host-built tables and runs the boot and init entries.  The format lives in
-`include/zephyros/service.h`.
-
-### 7.1 Container layout
-
-```text
-offset 0                 28-byte header (module_type = 2)
-offset 28                service section: 16-byte header, segment table,
-                         endpoint table, dependency table
-offset payload_offset    segment images, concatenated in table order
-total_size = payload_offset + image_size (all segment images)
-```
-
-The container carries **no relocation records**: the packer links every
-segment at its final bank-6 address on the host (architecture 36.11), and
-the header's `reloc_offset`/`reloc_count` fields are zero.  Header fields
-keep their meaning with service values:
-
-| Field | Service meaning |
-| --- | --- |
-| `image_size` | total payload bytes (all segment images) |
-| `bss_size` | total BSS bytes (all segment BSS areas) |
-| `required_granules` | `0`: the host assigned the per-tier bases |
-| `init_offset` | absolute hot-tier init entry run once at load, or `FFFFh` |
-| `fini_offset` | `FFFFh`: drivers are permanent (no unload, no restart) |
-
-The 16-byte section header carries the section size, the three table
-offsets (relative to the section start) and the three entry counts
-(segment ≤ 4, endpoint ≤ 8, dependency ≤ 8); all reserved bytes are `0`.
-Each table entry is byte-packed:
-
-```text
-segment      role:u8 flags:u8(=0) base:u16 image_size:u16 bss_size:u16
-             entry:u16 payload_offset:u16 reserved:u16(=0)
-endpoint     class:u8 instance:u8 version:u8 flags:u8
-             number:u16 dispatch:u16
-dependency   class:u8 instance:u8 number:u16
-```
-
-### 7.2 Segments and host-assigned addresses
-
-Exactly one segment per role; `hot` is required, and `init_offset`,
-`entry` and every endpoint `dispatch` are absolute addresses the packer
-computed (they must lie inside the segment's final image).
-
-| Role | Destination | Visibility |
-| --- | --- | --- |
-| `hot` | bank 6 `6000h-DFFFh` | mode-11 window (P = 1) with P = 0 |
-| `io` | bank 6 `8000h-BFFFh` | window and far aperture; the SERVICE_IO buffers `copy_in`/`copy_out` name |
-| `boot` | bank 6 `0000h-5FFFh` | once, at load, through the mode-10 gate with Q = 6; never executed again |
-| `bulk` | bank 6 `0000h-5FFFh` | reached only by nucleus copies |
-
-`base` is the segment's final address (`image_size + bss_size` bytes from
-there); `entry` is only meaningful for `boot` (the absolute entry the gate
-calls).  The packer applies the mini-link's `ZREL_ABS16` records on the
-host (`word += target segment base`), so the container's payload holds
-final addresses.
-
-### 7.3 Allocation and ledgers
-
-The **packer** allocates (`tools/zmodpack.py services`' policy, applied
-when an image is packed against its `--set`), so a set that packs always
-places; the loader only checks the result:
-
-1. every image's `io` segment, in load order, packed contiguously from
-   `C000h` down - the whole block `[io_low, C000h)` is known before any
-   code is placed; a block leaving `8000h-BFFFh` fails the pack;
-2. the `hot` segments largest-first, each taking the lowest free run of
-   the hot tier that does not cross the reserved io block (below it when
-   it fits, otherwise just above `C000h`);
-3. `boot` segments bumping up from `0000h` and `bulk` data down from
-   `6000h`, in load order.
-
-The loader refuses (a boot error) any container whose segment base and
-allocation leave the tier of its role, whose entry or dispatch address
-leaves its segment image, or whose tables leave the container: those are
-the bounds that protect the nucleus and the fixed driver-bank layout.
-It reports the two architecture-36.20 ledgers on the early console:
-`driver hot:` (hot plus io bytes of 32768) and `driver boot/bulk:` (boot
-plus bulk bytes of 24576).  Each placed image is reported as
-`driver <name>: hot <addr> [io <addr>] [boot <addr>] [bulk <addr>]`, the
-same line `tools/zmodpack.py services` prints, and the run ends with
-`service loader: <n> images in bank 6`.
-
-### 7.4 Endpoints and host-resolved dependencies
-
-An endpoint entry declares `(class, instance, version, number, dispatch,
-flags)`; `flags` bit 0 is the re-entrancy declaration
-(`ZOS_IPC_EP_REENTRANT`), `number` is the host-assigned endpoint number
-(1..N in load order) and `dispatch` the absolute dispatch entry.  The
-loader installs the records into the nucleus table before any driver code
-runs; there is no runtime registration path.
-
-Dependency entries declare `(class, instance, optional)` in the manifest;
-the packer resolves each to the endpoint number of an earlier (or the
-image's own) export and writes `(class, instance, number)` into the
-container.  A missing *required* dependency is a pack-time error; an
-absent *optional* one resolves to `0`, which the driver reads as "this
-build selected no such driver" (the console's independent input/output
-fallback).  The loader installs the resolved numbers into the fixed-core
-array the boot bundle names, so no driver looks a peer up at run time.
-
-### 7.5 Boot manifest
-
-`services.man` (`ZOS_SERVICE_MANIFEST_NAME`) is a flat ROMFS `DATA` file
-of 24-byte records - exactly the ROMFS name field, NUL-terminated and
-zero-padded - naming the packed containers in load order.  The loader
-reads it with the bootstrap ROMFS reader (`kernel/romfs`, fixed-core since
-package 38) and requires the file size to be a multiple of the record
-size.  At most `ZMOD_SERVICE_MAX_IMAGES` (8) images are placed.
-
-### 7.6 Driver bootstrap interface
-
-`struct ipc_service_boot` (`include/zephyros/ipc.h`) is what the hot init
-entry receives in `HL`: the versioned `struct ipc_service_api` table of
-nucleus entry points plus the resolved dependency numbers, one byte per
-declared dependency in manifest order (`0` = absent optional export).  It
-is not a kernel import table: every entry is listed and justified in the
-header (`version`, `call`, `copy_in`, `copy_out`, `move`, `bulk_read`,
-`console_putc`, `console_poll`, `console_getc`, `irq_claim`,
-`irq_release`).  A call from one resident driver to another is
-near-direct: the frame is passed by reference and the target's window is
-already open, so no frame copy and no bank switch happen.  Boot segments
-run with bank 7 unmapped and therefore cannot call the interface; they may
-touch bank 6, the common region and I/O ports only.
-
-### 7.7 Packer commands and report
-
-```sh
-python3 tools/zmodpack.py pack tests/target/ipc/manifests/echo.json \
-    build/modules/ipc-modules/ipc-echo.zmod \
-    --objdir build/modules/ipc-modules --report echo.report.json \
-    --set tests/target/ipc/manifests/echo.json \
-          tests/target/ipc/manifests/one.json
-python3 tools/zmodpack.py services build/modules/ipc-modules/services.man \
-    build/modules/ipc-modules/ipc-*.zmod --report services.plan.json
-python3 tools/zmodpack.py dump <container.zmod>
-```
-
-`pack` for a service manifest requires `--set`: every manifest of the
-image's load order, this one included.  The packer links this image
-against the whole set (one plan, one endpoint numbering, one dependency
-resolution), so an image rebuilt alone still matches its siblings.
-
-A driver manifest names its objects, its `init` entry, its `segments`
-(role, `image_areas`, `bss_areas`, optional `entry`), its `endpoints`
-(`class`, `instance`, `version`, `dispatch` symbol, flags) and its
-`depends` records (`class`, `instance`, optional `optional`); the packer
-resolves the dispatch, entry and dependency symbols and refuses anything
-that does not fit - including a required dependency no earlier image
-exports, a duplicate endpoint, and a set that leaves its tiers.  The
-per-image report carries each segment's role, final base, sizes and
-payload offset, every symbol's segment-relative offset with the segment it
-belongs to (`symbols`, `symbol_segments`), the endpoint numbers and
-absolute dispatch entries, and the resolved dependency numbers; the set
-report carries the load order, the bases per image and the two tier
-ledgers.
-
-### 7.8 Publications (service ABI 4, package 42a)
-
-A service manifest may declare the namespace names its image *publishes*
-(architecture 36.13): one row per name under the `/dev` root, with the
-8-bit protocol type, the serving endpoint as a (class, instance) pair, and
-the provider's own object identity.
-
-```json
-"publishes": [
-  { "path": "/dev/input/keyboard", "type": "INPUT",
-    "endpoint": { "class": 30, "instance": 0 }, "object": 1 }
-]
-```
-
-The packer resolves the endpoint against the load order (the serving image
-is this one or an earlier one), strips the `/dev` root, and refuses a row
-that names the root, a name longer than the 15 provider-relative bytes the
-record holds, a name with a non-printable byte, a duplicate name across
-the set (compared case-insensitively), an unknown type name, a type
-outside 1..255, an object above 255, more than
-`ZMOD_SERVICE_MAX_PUBLICATIONS` (12) rows in one manifest, or a set whose
-publications plus the derived grouping rows exceed the nucleus table
-(also 12).  Grouping names (`/dev/input`, `/dev/serial`) are never
-declared: the packer counts them, and the DEVICE provider synthesizes them
-from the names it installs.
-
-A container **without** publications keeps service ABI 3 byte for byte, so
-the production store is unchanged until package 42b turns the manifests
-over.  A container **with** publications carries ABI 4: the service
-section's reserved bytes are reused - the byte at offset `0Bh` is the
-publication count, the little-endian word at `0Ch` the table offset
-relative to the section start, and `0Eh` stays 0 - and the table follows
-the segment, endpoint and dependency tables:
-
-```text
-publication  name[16] type:u8 number:u8 object:u8 flags:u8(=0)
-```
-
-`name` is the provider-relative name, NUL-terminated and zero-padded;
-`number` is the host-assigned endpoint number that serves it; `object` is
-the value the provider receives with every call to that publication.  The
-record is 20 bytes and the header static-asserts the layout
-(`include/zephyros/service.h`); `python3 tools/zmodpack.py dump` prints
-the rows beside the endpoints.
+Work package 42c removed, with the format that used them: the relocation
+records and every runtime relocation target; the header's format-version
+byte, module type, fini entry and granule requirement; the driver arena,
+its linker symbols and its granule plan; the import and resource-import
+tables; the kernel driver-entry import table; every driver ops table; the
+device class/capability model with its registration call; the filesystem
+provider ops-table interface and its registration path; and the arena
+loader's self-test fixtures (the packer's fixture emitter,
+`tests/modules/`).  Bytes removed per item and the before/after ledgers
+are recorded in `docs/validation/2026-10-09-m10-prune-nucleus.md`; the
+history of the delete-and-reconcile pass is in
+`work/42c-m10-prune-nucleus/progress.md`.

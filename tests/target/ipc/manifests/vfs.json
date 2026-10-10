@@ -1,8 +1,5 @@
 {
   "name": "vfs",
-  "type": "service",
-  "abi": 3,
-  "flags": 0,
   "objects": [
     "vfs.rel",
     "vfs_boot.rel",
