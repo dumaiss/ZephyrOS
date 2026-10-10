@@ -8,19 +8,40 @@
 #include "zos/protocol.h"
 
 #include "kernel/ipc/ipc.h"
+#include "kernel/vfs/ns.h"
 
 extern uint8_t zos_user_copy_staging[];
 
+/* Class -> host-built publication name (architecture 36.13).  Package
+ * 42b retired the class/instance lookup: a provider is named by its
+ * publication, and the nucleus router answers the endpoint number the
+ * packer resolved. */
+static const char *service_cli_publication(uint8_t class_id)
+{
+	switch (class_id) {
+	case ZOS_CLASS_CONSOLE: return "/console";
+	case ZOS_CLASS_SERIAL:  return "/serial/0";
+	case ZOS_CLASS_HID:     return "/input/keyboard";
+	case ZOS_CLASS_VIDEO:   return "/video";
+	case ZOS_CLASS_IOC:     return "/ioc";
+	default:                return (const char *)0;
+	}
+}
+
 uint8_t service_cli_endpoint(uint8_t class_id, uint8_t *handle)
 {
-	uint8_t version = 0u;
-	int8_t found = ipc_lookup(class_id, ZOS_CLASS_INSTANCE, &version);
+	const char *rel = service_cli_publication(class_id);
+	uint8_t number;
 
-	if (found <= 0 || version != ZOS_PROTOCOL_VERSION) {
+	if (rel == (const char *)0) {
+		return 0u;
+	}
+	number = vfs_ns_publication_endpoint(rel);
+	if (number == 0u) {
 		return 0u;
 	}
 	if (handle != (uint8_t *)0) {
-		*handle = (uint8_t)found;
+		*handle = number;
 	}
 	return 1u;
 }

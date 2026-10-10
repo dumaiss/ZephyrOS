@@ -42,6 +42,17 @@
       "flags": 1
     }
   ],
+  "publishes": [
+    {
+      "path": "/dev/ipc/vfs",
+      "type": "TIMER",
+      "endpoint": {
+        "class": 18,
+        "instance": 0
+      },
+      "object": 1
+    }
+  ],
   "depends": [
     {
       "class": 18,

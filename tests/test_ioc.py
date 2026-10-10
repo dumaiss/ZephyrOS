@@ -396,10 +396,13 @@ class TestIocServiceArtifact(unittest.TestCase):
         self.assertIn("def cmd_services", order)
         main = _read(MAIN_C)
         self.assertIn("service_load_all(ZOS_SERVICE_MANIFEST_NAME)", main)
-        # The nucleus answers the IOC class a bank-7 module asks for from
-        # the service; the loader wires that shim into the module API.
-        self.assertIn("ioc_shim_find", _read(os.path.join(
-            ROOT, "kernel", "module", "loader.c")))
+        # Package 42b retired the arena module pass and the IOC class
+        # shim with it: every image is a service now, so HID resolves its
+        # IOC dependency from the publication the service declares.
+        self.assertNotIn("ioc_shim_find", main)
+        self.assertFalse(os.path.exists(os.path.join(ROOT, "kernel",
+                                                     "module", "loader.c")),
+                         "the arena module loader must be gone")
 
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
@@ -411,10 +414,9 @@ class TestIocServiceArtifact(unittest.TestCase):
         self.assertIn("ZOS_IOC_SELFTEST", makefile)
         # The declared service set is the manifest's business now: the
         # arena plan lists only the modules the loader still places there.
-        self.assertIn("ZOS_SERVICES ?= sio ioc hid v9958 console", makefile)
-        self.assertIn("ZOS_ARENA_MODULES", makefile)
-        self.assertIn("BOOT_ZMODS = $(addprefix $(MODULES)/,$(addsuffix .zmod,$(ZOS_ARENA_MODULES)))",
-                      makefile)
+        self.assertRegex(makefile, r"ZOS_SERVICES \?= .*\bioc\b")
+        self.assertIn("ZOS_ARENA_MODULES ?=", makefile)
+        self.assertNotIn("BOOT_ZMODS", makefile)
 
     def test_production_map_has_no_linked_ioc_symbols(self):
         if not os.path.exists(MAP):

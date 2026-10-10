@@ -26,12 +26,12 @@ ZEX_SDK_BUILD   := $(ZEX_USER_ROOT)/sdk
 ZEX_CRT0        := $(ZEX_SDK_BUILD)/crt0.rel
 ZEX_RUNTIME     := $(ZEX_SDK_BUILD)/runtime.rel
 ZEX_LIBZOS      := $(ZEX_SDK_BUILD)/libzos.lib
-ZEX_SDK_LOW_SIZE := 68
+ZEX_SDK_LOW_SIZE := 93
 # The program code base the ordinary layout uses: the SDK's gate-visible
 # data area (ZEX_SDK_LOW_SIZE bytes at LOWBASE) plus the low window base.
 # A program that reserves a caller buffer or links a larger SDK data area
 # passes CODEBASE explicitly.
-ZEX_DEFAULT_CODEBASE := 0x0144
+ZEX_DEFAULT_CODEBASE := 0x015D
 ZOS_SDK_ROOT    := user/sdk
 ZOS_SDK_INCLUDE := $(ZOS_SDK_ROOT)/include
 ZOS_SDK_SRC     := $(ZOS_SDK_ROOT)/src
@@ -55,20 +55,8 @@ ZOS_SDK_C_SRC := args.c fs.c ipc.c exec.c console_io.c \
     zlibc/memcmp.c zlibc/strlcpy.c zlibc/strlcat.c \
     zlibc/utoa.c zlibc/ultoa.c zlibc/itoa.c zlibc/ltoa.c \
     zlibc/printf.c zlibc/sdcc_arith.c zlibc/sdcc_arith_signed.c
-ZOS_SDK_ASM_SRC := gate.asm fsgate.asm ipcgate.asm diaggate.asm nsgate.asm \
+ZOS_SDK_ASM_SRC := gate.asm ipcgate.asm diaggate.asm nsgate.asm \
     zlibc/sdcc_arith_entries.asm zlibc/sdcc_arith_signed_entries.asm
-
-# Namespace acceptance image (work package 42a, correction 01): the SDK
-# variant marshals bind/unbind/ns_enum through its own gate blocks and
-# names object handles, so its programs link nsgate.asm's 21 extra
-# low-data bytes, which moves the default code base up.  Production's SDK
-# is untouched: no production program references the blocks, so the
-# archive member is never linked.
-ifeq ($(ZOS_NS_SELFTEST),1)
-ZEX_CFLAGS         += -DZOS_NS_HANDLES=1
-ZEX_SDK_LOW_SIZE   := 89
-ZEX_DEFAULT_CODEBASE := 0x0159
-endif
 
 ZOS_SDK_C_OBJS   := $(addprefix $(ZEX_SDK_BUILD)/,$(patsubst %.c,%.rel,$(ZOS_SDK_C_SRC)))
 ZOS_SDK_ASM_OBJS := $(addprefix $(ZEX_SDK_BUILD)/,$(patsubst %.asm,%.rel,$(ZOS_SDK_ASM_SRC)))

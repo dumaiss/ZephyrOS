@@ -19,6 +19,21 @@
       "reason": "common-resident latch and mode gates: the only mapping-changing code, always visible"
     },
     {
+      "object": "vfs_ns",
+      "tier": "cold",
+      "reason": "namespace root router, FS provider and publication table: reached only through the syscall dispatcher or the service loader, both with P = 0 (production switch-over, package 42b)"
+    },
+    {
+      "object": "vfs_ns_file",
+      "tier": "cold",
+      "reason": "the ROMFS FILE provider behind /SYSTEM and its metadata reader, called from the router with P = 0 (package 42b)"
+    },
+    {
+      "object": "object",
+      "tier": "cold",
+      "reason": "bind/call/unbind/ns_enum/chdir/getcwd bodies, reached from the syscall dispatcher with P = 0 (package 42b)"
+    },
+    {
       "object": "diag",
       "tier": "cold",
       "reason": "diagnostic syscall bodies, reached only through the syscall dispatcher, which the gate runs with P = 0"
@@ -32,11 +47,6 @@
       "object": "early_console",
       "tier": "fixed-required",
       "reason": "common-resident early console and panic path: must survive any mapping"
-    },
-    {
-      "object": "fs",
-      "tier": "cold",
-      "reason": "native FS_* syscall front end, called only from the dispatcher (P = 0); retired in stage 5, when the VFS service and IPC dispatch replace it"
     },
     {
       "object": "irq",
@@ -67,16 +77,6 @@
       "object": "main",
       "tier": "cold",
       "reason": "kernel boot and idle path: every service-facing call returns with the caller's latch restored, so it only ever runs with P = 0"
-    },
-    {
-      "object": "module_loader",
-      "tier": "cold",
-      "reason": "ZEX/ZMOD loader; its service reads (the executable stream) go through a fixed upcall shim, so the loader body is cold"
-    },
-    {
-      "object": "module_relocate",
-      "tier": "cold",
-      "reason": "relocator called by the loader inside the same cold path"
     },
     {
       "object": "name",
@@ -114,11 +114,6 @@
       "reason": "common-resident raw application entry jump: no window-visible state"
     },
     {
-      "object": "registry",
-      "tier": "cold",
-      "reason": "device registry (boot registration and syscall-side lookups, P = 0); retired in stage 4, replaced by the endpoint table"
-    },
-    {
       "object": "reset",
       "tier": "fixed-required",
       "reason": "ROM-resident page-zero reset copier: runs before any mapping exists"
@@ -132,12 +127,6 @@
       "object": "romfs",
       "tier": "fixed-required",
       "reason": "the one ROMFS reader, kept in the nucleus as the bootstrap-reader primitive a bank-6 provider calls through the fixed core"
-    },
-    {
-      "object": "romfs_provider",
-      "tier": "cold",
-      "stage": 5,
-      "reason": "VFS core: the ROMFS provider callbacks; package 41 compiles it into the cold half beside the service loader (the drivers left the arena), so the placement is production's own, not the moves tier's fallback"
     },
     {
       "object": "sdcc_helpers",
@@ -168,36 +157,6 @@
       "object": "upcall",
       "tier": "fixed-required",
       "reason": "revision-13 upcall shim: cold code that calls a resident service saves the latch, selects the window page, calls and restores; its code, its continuation and its request state must stay visible while the window shows another bank (36.5)"
-    },
-    {
-      "object": "vfs_dir",
-      "tier": "cold",
-      "stage": 5,
-      "reason": "VFS core: directory iteration; package 41 compiles it into the cold half beside the service loader (the drivers left the arena), so the placement is production's own, not the moves tier's fallback"
-    },
-    {
-      "object": "vfs_file",
-      "tier": "moves",
-      "stage": 5,
-      "reason": "VFS core: file objects move to the VFS service in bank 6"
-    },
-    {
-      "object": "vfs_mount",
-      "tier": "moves",
-      "stage": 5,
-      "reason": "VFS core: mount registry moves to the VFS service in bank 6"
-    },
-    {
-      "object": "vfs_mounts",
-      "tier": "moves",
-      "stage": 5,
-      "reason": "VFS core: generated mount table moves to the VFS service in bank 6"
-    },
-    {
-      "object": "vfs_mutate",
-      "tier": "moves",
-      "stage": 5,
-      "reason": "VFS core: writable-provider mutations move to the VFS service in bank 6"
     },
     {
       "object": "vfs_path",
@@ -233,11 +192,6 @@
       "reason": "M10 stage 3 common-resident aperture copy (kernel/ipc/ipc_common.asm, work package 39 correction 01): the path-B primitive runs with mode 10 and page 1 in force, where bank 7 is not mapped, so its code, its request block, its saved latch/SP and its interrupt-push stack must all be common.  It is the only code the fixed-core reservoir of ZOS_COMMON_M10_RESERVATION was held back for.  Same stage as `ipc`: test images only until package 41."
     },
     {
-      "object": "ipc_syscall",
-      "tier": "cold",
-      "reason": "M10 stage 3 IPC syscall bodies (SYS_IPC_LOOKUP / SYS_IPC_CALL, kernel/syscall/ipc.c): reached only through the P-normalizing syscall gate, so they run with the window showing bank 7.  Only the ipc-selftest image links them until package 41."
-    },
-    {
       "object": "service_loader",
       "tier": "cold",
       "reason": "M10 stage 4 resident-service loader (kernel/service/service_loader.c, architecture 36.11/36.12): reads the boot manifest through the fixed ROMFS reader, validates and places every service image through the common application-bank copy gate, and runs the boot segments and hot inits.  It runs with P = 0 only (the syscall gate normalizes before any syscall, and the boot path is mode 11), so the body is cold code; the acceptance image links it now, production adopts it in package 41."
@@ -246,52 +200,19 @@
       "object": "service_boot",
       "tier": "fixed-required",
       "reason": "M10 stage 4 service boot gate (kernel/service/service_boot.asm): switches mode 10 over bank 6 (Q = 6) and calls a boot segment.  Its code and continuation execute with bank 7 unmapped, so the gate is common-resident; its request/transition state is fixed-core data because the upcall shim reads the loader's request block with bank 7 mapped.  Same stage as the loader: test images only until package 41."
-    },
-    {
-      "object": "ioc_shim",
-      "tier": "cold",
-      "reason": "IOC class publication for a bank-7 module (kernel/module/ioc_shim.c): it runs in the loader's own phase and is reached from a module's class query, so it lives beside the loader in the cold half and disappears with the IOC-FAT module in package 42"
-    },
-    {
-      "object": "vfs_ns",
-      "tier": "cold",
-      "reason": "M10 stage 6 VFS root router and static namespace providers (kernel/vfs/ns.c, architecture 36.13): the router, the DEVICE provider over the host-built publication table and the in-process ROMFS FILE endpoint are reached only through the syscall dispatcher, which the gate runs with P = 0, so they belong beside `fs` in the cold half.  Linked by the namespace-selftest acceptance image now (test_link, in the cold set through the image's --cold-extra, the placement production will use); production adopts it in package 42b, when the M9 FS front end, the M9 VFS machinery and the IOC-FAT arena leave bank 7."
-    },
-    {
-      "object": "vfs_ns_file",
-      "tier": "cold",
-      "reason": "M10 stage 6 ROMFS FILE provider (kernel/vfs/ns_file.c, architecture 36.13): the bind/read/seek/metadata operations of a `/SYSTEM` FILE handle, served in-process through the same handle-call path as a bank-6 endpoint.  Cold half for the same reason as vfs_ns; test-linked by the namespace-selftest acceptance image until package 42b."
-    },
-    {
-      "object": "object",
-      "tier": "cold",
-      "reason": "M10 stage 6 object and namespace syscall bodies (kernel/syscall/object.c, architecture 36.7/36.14): bind, call-on-a-handle, unbind and ns_enum, reached only through the syscall dispatcher (P = 0), beside the M9 `fs` front end they replace in 42b.  Test-linked by the namespace-selftest acceptance image until then."
     }
   ],
   "cold_half": [
-    "diag",
-    "diag_io",
-    "fs",
-    "main",
-    "module_loader",
-    "module_relocate",
-    "process",
-    "process_exec",
-    "registry",
-    "syscall",
-    "vfs_mounts",
-    "vfs_mutate",
-    "ipc_syscall",
-    "service_loader",
-    "ioc_shim",
-    "romfs_provider",
-    "vfs_dir"
-  ],
-  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): every cold object, the two IPC cold bodies (the syscall IPC dispatcher and the resident service loader), the IOC class shim the loader publishes to bank-7 modules, and the service-destined VFS objects that fit beside them.  Package 41 moved the drivers out of the arena, so the freed cold space holds what used to overflow into the fixed core, which then holds the substrate; tools/mapcheck.py fails the build when the linked cold code or data overruns the derived bases.  The fixed ledger reports what still overflows.",
-  "test_link": [
     "vfs_ns",
     "vfs_ns_file",
-    "object"
+    "object",
+    "diag",
+    "diag_io",
+    "main",
+    "process",
+    "process_exec",
+    "syscall",
+    "service_loader"
   ],
-  "test_link_note": "Package 42a (correction 01): the namespace and typed-handle family is classified in the tier production will link it in, but only the namespace-selftest acceptance image links it until package 42b switches production over (the M9 FS front end, the M9 VFS machinery and the IOC-FAT arena have to leave bank 7 first).  Production itself is untouched and reproduces its own image hash.  The acceptance images add their own test-linked objects, which mapcheck.py reports as fixed-core overflow unless the image places them in the cold half with --cold-extra."
+  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): every cold object, the two IPC cold bodies (the syscall IPC dispatcher and the resident service loader), the IOC class shim the loader publishes to bank-7 modules, and the service-destined VFS objects that fit beside them.  Package 41 moved the drivers out of the arena, so the freed cold space holds what used to overflow into the fixed core, which then holds the substrate; tools/mapcheck.py fails the build when the linked cold code or data overruns the derived bases.  The fixed ledger reports what still overflows."
 }

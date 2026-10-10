@@ -3,24 +3,23 @@
 Pins the structural facts the `ns-selftest` image, its client program and
 its replay depend on, without booting anything:
 
-  - the build wiring (target, the `ZOS_NS_HANDLES` guard define, image
-    names, the service set and its manifest directory, the boot program);
+  - the build wiring (target, image names, the service set and its
+    manifest directory, the boot program);
   - the pinned ABI: the four syscall numbers, the argument blocks and the
     namespace entry in abi/zos/object.h, the 8-bit protocol types, the two
     standard handle numbers;
-  - production keeps the stage-3 pair: `ZOS_SYSCALL_IPC_LOOKUP` and the
-    `ZOS_NS_HANDLES 0` default are what makes the production image
-    byte-identical;
+  - production switch-over (package 42b): the guard macro and
+    `ZOS_SYSCALL_IPC_LOOKUP` are gone, and the family is production code;
   - the container ABI 4 publication table: the section's reserved-byte
     rule, the 20-byte record, the packer's parse/plan/emit and the three
     packed containers of the image (ABI byte, names, protocol types and
     host-resolved endpoint numbers);
   - the image's service manifests and store, and `services.man` holding
     one 24-byte record per loaded image in load order;
-  - the residency classification: the three new objects are `cold` and
-    test-linked, so production links none of them;
-  - the SDK variant: the guarded bind/unbind/ns_enum declarations and the
-    gate blocks the image's zex programs link.
+  - the residency classification: the three new objects are production
+    `cold` code (package 42b), so every image links them;
+  - the SDK: the bind/unbind/ns_enum/chdir/getcwd wrappers and the gate
+    blocks every program links.
 
 Run with: `python3 -m unittest tests.test_ns_selftest`.
 """
@@ -42,6 +41,10 @@ import romfspack  # noqa: E402
 MAKEFILE = os.path.join(ROOT, "Makefile")
 OBJECT_ABI = os.path.join(ROOT, "abi", "zos", "object.h")
 IPC_ABI = os.path.join(ROOT, "abi", "zos", "ipc.h")
+ABI_SYSCALL = os.path.join(ROOT, "abi", "zos", "syscall.h")
+SDK_IPC = os.path.join(ROOT, "user", "sdk", "include", "zos", "ipc.h")
+SDK_IPC_SOURCE = os.path.join(ROOT, "user", "sdk", "src", "ipc.c")
+NUCLEUS_IPC_C = os.path.join(ROOT, "kernel", "ipc", "ipc.c")
 SERVICE_HEADER = os.path.join(ROOT, "include", "zephyros", "service.h")
 PACKER = os.path.join(ROOT, "tools", "zmodpack.py")
 RESIDENCY = os.path.join(ROOT, "config", "residency.json")
@@ -113,8 +116,6 @@ class TestNsBuildWiring(unittest.TestCase):
         self.assertIn("ZOS_NS_SELFTEST=1", text)
         self.assertIn("zephyros-ns-selftest.bin", text)
         self.assertIn("zephyr80-ns-selftest.bin", text)
-        # The guard the image defines is the one abi/zos/object.h defaults.
-        self.assertIn("-DZOS_NS_HANDLES=1", text)
         self.assertIn("test_ns_selftest*.py", text)
 
     def test_makefile_selects_the_image_configuration(self):
@@ -123,8 +124,8 @@ class TestNsBuildWiring(unittest.TestCase):
                       "SVC_MANIFEST_DIR := tests/ns/manifests",
                       "ZOS_BOOT_PROGRAM := /SYSTEM/ns.zex",
                       "ZOS_ARENA_MODULES :=",
-                      "NS_OBJS := $(BUILD)/vfs_ns.rel "
-                      "$(BUILD)/vfs_ns_file.rel $(BUILD)/object.rel"):
+                      "$(BUILD)/vfs_ns.rel $(BUILD)/vfs_ns_file.rel "
+                      "$(BUILD)/object.rel"):
             self.assertIn(token, text, token)
         # The image links the namespace objects cold, in the placement
         # production will use (config/residency.json tier `cold`).
@@ -170,15 +171,19 @@ class TestNsAbi(unittest.TestCase):
         self.assertIn('__builtin_offsetof(struct zos_ns_enum_args, count) '
                       '== 10', text)
 
-    def test_production_keeps_the_stage_three_pair(self):
-        # The acceptance image builds bind/call/unbind/ns_enum over 06h-09h;
-        # production still dispatches SYS_IPC_LOOKUP through 06h until
-        # package 42b, which is what keeps it byte-identical.
+    def test_production_switch_over_retires_the_guard_and_lookup(self):
+        # Package 42b: the family is production code, so the compile-time
+        # guard and the stage-3 lookup number are both gone.
+        for path in (OBJECT_ABI, ABI_SYSCALL, SDK_IPC, SDK_IPC_SOURCE,
+                     NUCLEUS_IPC_C):
+            text = read(path)
+            self.assertNotIn("ZOS_NS_HANDLES", text, path)
+            self.assertNotIn("ZOS_SYSCALL_IPC_LOOKUP", text, path)
+            self.assertNotIn("ipc_lookup", text, path)
         text = read(OBJECT_ABI)
-        self.assertIn("#define ZOS_NS_HANDLES 0", text)
-        self.assertIn("ZOS_SYSCALL_IPC_LOOKUP", text)
-        ipc = read(IPC_ABI)
-        self.assertRegex(ipc, r"#define ZOS_SYSCALL_IPC_LOOKUP\s+0x06u")
+        self.assertRegex(text, r"#define ZOS_SYSCALL_BIND\s+0x06u")
+        self.assertRegex(text, r"#define ZOS_SYSCALL_CHDIR\s+0x0Au")
+        self.assertRegex(text, r"#define ZOS_SYSCALL_GETCWD\s+0x0Bu")
 
 
 class TestNsContainers(unittest.TestCase):
@@ -278,22 +283,29 @@ class TestNsContainers(unittest.TestCase):
 
 
 class TestNsResidency(unittest.TestCase):
-    def test_the_three_objects_are_cold_and_test_linked(self):
+    def test_the_three_objects_are_cold_production_code(self):
+        # Package 42b: the family is production cold code, so residency.json
+        # classifies it and nothing is test-linked any more.
         tiers, cold_half, test_link = mapcheck.load_residency(RESIDENCY)
         for name in ("vfs_ns", "vfs_ns_file", "object"):
             self.assertEqual(tiers[name], "cold", name)
-            self.assertIn(name, test_link)
-        # Production's cold set is unchanged: the namespace objects reach
-        # the image through its own --cold-extra, not through cold_half.
-        for name in ("vfs_ns", "vfs_ns_file", "object"):
-            self.assertNotIn(name, cold_half)
+            self.assertIn(name, cold_half)
+        self.assertEqual(sorted(test_link), [])
 
-    def test_production_linker_script_omits_the_namespace(self):
+    def test_production_linker_script_lists_the_namespace(self):
+        # Package 42b: the family is production, and the M9 machinery it
+        # replaces is gone from the link.
         text = read(LINKER)
         for name in ("vfs_ns.rel", "vfs_ns_file.rel", "object.rel"):
+            self.assertIn(name, text, name)
+        for name in ("build/fs.rel", "build/vfs_file.rel",
+                     "build/vfs_mount.rel", "build/vfs_dir.rel",
+                     "build/vfs_mutate.rel", "build/romfs_provider.rel",
+                     "build/registry.rel", "build/module_loader.rel",
+                     "build/ipc_syscall.rel", "build/ioc_shim.rel"):
             self.assertNotIn(name, text, name)
-        # The M9 machinery it replaces is still linked, untouched.
-        for name in ("fs.rel", "vfs_file.rel", "vfs_process.rel"):
+        # The reused M9 helpers stay linked.
+        for name in ("vfs_path.rel", "vfs_process.rel", "vfs_workspace.rel"):
             self.assertIn(name, text, name)
 
     def test_production_image_carries_no_namespace_symbol(self):
@@ -301,15 +313,14 @@ class TestNsResidency(unittest.TestCase):
         if not os.path.exists(map_path):
             self.skipTest("build/zephyros.map missing; run make all")
         found = symbols(map_path)
-        # The M9 pair is what production dispatches: the fixed-core lookup
-        # and call bodies, and the cold syscall front end.
-        for name in ("_ipc_lookup", "_ipc_syscall_call", "_zos_ipc_dispatch"):
-            self.assertIn(name, found, name)
-        self.assertLess(found["_ipc_lookup"], SPLIT)
-        self.assertLess(found["_ipc_syscall_call"], SPLIT)
-        self.assertGreaterEqual(found["_zos_ipc_dispatch"], SPLIT)
+        # Package 42b switched production over: the namespace family is
+        # linked in the cold half and the stage-3 lookup is gone.
         for name in ("_vfs_ns_bind", "_vfs_ns_file_bind",
                      "_zos_object_dispatch", "_vfs_ns_enum"):
+            self.assertIn(name, found, name)
+            self.assertGreaterEqual(found[name], SPLIT, name)
+            self.assertLess(found[name], 0xE000, name)
+        for name in ("_ipc_lookup", "_ipc_syscall_call", "_vfs_mount_all"):
             self.assertNotIn(name, found, name)
 
 
@@ -345,18 +356,24 @@ class TestNsClient(unittest.TestCase):
                       "*cookie,"):
             self.assertIn(token, header, token)
         source = read(SDK_SOURCE)
-        self.assertIn("ZOS_NS_HANDLES", source)
+        # Package 42b: no guard - the wrappers are the only form.
+        self.assertNotIn("ZOS_NS_HANDLES", source)
         for token in ("ZOS_SYSCALL_BIND", "ZOS_SYSCALL_UNBIND",
-                      "ZOS_SYSCALL_NS_ENUM", "zos_bind_block",
-                      "zos_unbind_block", "zos_ns_enum_block"):
+                      "ZOS_SYSCALL_NS_ENUM", "ZOS_SYSCALL_CHDIR",
+                      "ZOS_SYSCALL_GETCWD", "zos_bind_block",
+                      "zos_unbind_block", "zos_ns_enum_block",
+                      "zos_chdir_block", "zos_getcwd_block"):
             self.assertIn(token, source, token)
         gate = read(SDK_GATE)
-        # The three argument blocks the guarded marshalling writes: bind 8,
-        # unbind 1, ns_enum 12 bytes, in the one writable SDK data area.
+        # The five argument blocks the marshalling writes: bind 8, unbind
+        # 1, ns_enum 12, chdir 4 and getcwd 4 bytes, in the one writable
+        # SDK data area.
         self.assertIn(".area _ZOS_SDK_DATA", gate)
         self.assertIn("_zos_bind_block::\n\t.ds\t8", gate)
         self.assertIn("_zos_unbind_block::\n\t.ds\t1", gate)
         self.assertIn("_zos_ns_enum_block::\n\t.ds\t12", gate)
+        self.assertIn("_zos_chdir_block::\n\t.ds\t4", gate)
+        self.assertIn("_zos_getcwd_block::\n\t.ds\t4", gate)
         zex_mk = read(ZEX_MK)
         self.assertIn("ZEX_DEFAULT_CODEBASE", zex_mk)
         self.assertIn("nsgate", zex_mk)
@@ -376,15 +393,15 @@ class TestNsImageLayout(unittest.TestCase):
             address = self.syms[name]
             self.assertGreaterEqual(address, SPLIT, name)
             self.assertLess(address, 0xE000, name)
-        # The stage-3 lookup body stays in the fixed core (it is linked but
-        # unreachable: 06h routes to `bind` in this image).
-        self.assertLess(self.syms["_ipc_lookup"], SPLIT)
+        # The stage-3 lookup is gone from every image (package 42b): the
+        # family is the production front end and nothing calls it.
+        self.assertNotIn("_ipc_lookup", self.syms)
 
     def test_the_acceptance_image_routes_the_family(self):
         """06h-09h reach the object dispatcher: the client's binds work
         only if the guarded family is the one the dispatcher calls."""
         source = read(os.path.join(ROOT, "kernel", "syscall.c"))
-        self.assertIn("#if ZOS_NS_HANDLES", source)
+        self.assertNotIn("ZOS_NS_HANDLES", source)
         self.assertIn("zos_object_dispatch(zos_syscall_number", source)
         self.assertIn("_zos_object_dispatch", self.syms)
         self.assertIn("_vfs_ns_bind", self.syms)

@@ -32,19 +32,14 @@
       "path": "monitor.zex"
     },
     {
-      "name": "fstest.zex",
+      "name": "fs_selftest.zex",
       "type": "ZEX",
-      "path": "fstest.zex"
+      "path": "fs_selftest.zex"
     },
     {
-      "name": "fsfat.zex",
+      "name": "fs_child.zex",
       "type": "ZEX",
-      "path": "fsfat.zex"
-    },
-    {
-      "name": "fsdeep.zex",
-      "type": "ZEX",
-      "path": "fsdeep.zex"
+      "path": "fs_child.zex"
     }
   ]
 }

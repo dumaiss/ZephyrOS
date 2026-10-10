@@ -11,8 +11,8 @@ not just the transcript:
   reports PASS (>= 49 checks);
 * the phase markers bound per-call T-state spans; the replay measures them
   for the null call, the 256-byte console write, the 512-byte chained
-  read (direct, offset slice, staged and repeated) and the M9 filesystem
-  baseline on the same 512-byte chunk;
+  read (direct, offset slice, staged and repeated) and the filesystem
+  baseline - a file read on a bound handle - on the same 512-byte chunk;
 * every service-domain interval restores the caller's latch *exactly*,
   including the one that was interrupted by CTC0: two deliveries arrive
   while a call is in progress, the handler runs in the service domain on
@@ -22,9 +22,10 @@ not just the transcript:
 * the reserved stacks (service 5D00h-5F00h, ISR 5F00h-6000h, gate stack)
   stay inside their regions: the replay watches SP and records the
   high-water mark of each;
-* the SDK lookup cache is real: exactly eight SYS_IPC_LOOKUP syscalls for
-  six endpoint classes, the miss and the version query, although the
-  client issues one additional cached lookup.
+* every provider is reached through a path bind: the census reads the
+  client's own ZOS_SYSCALL_BIND calls -- one per provider, the file it
+  reads, the deliberate miss and the grouping-container refusal -- and
+  every block they marshal sits in the caller window.
 
 Ported from the package-35 spike replay (retired in this package with
 the spike it measured): the same T-state table, the same tracer mechanics
@@ -143,15 +144,15 @@ PROBE_PATTERN_BASE = 0x80
 COPY_COUNTERS = ("ipc_copy_window", "ipc_copy_aperture",
                  "ipc_copy_slow")
 
-# Phases that issue an IPC call (the others measure today's direct kernel
-# path: the console write and the filesystem read the chain is compared
-# against, so they must not issue any).
-IPC_PHASES = ("n", "c", "o", "r", "s", "t", "u")
-DIRECT_PHASES = ("f",)
+# Phases that issue an IPC call.  Package 42b retired the M9 filesystem
+# front end, so the filesystem baseline ("f") is a bound file handle and
+# its reads are IPC calls like any other: there is no phase left that
+# measures a direct kernel path beside the chain.
+IPC_PHASES = ("n", "c", "o", "r", "s", "t", "u", "f")
 
 # The IPC phases whose calls move payload bytes through the service domain:
-# the null call ("n") moves nothing, and the two direct phases move no
-# bytes through a domain at all.
+# the null call ("n") moves nothing, and the filesystem baseline moves its
+# bytes through the in-process ROMFS provider, never through a domain.
 COPY_PHASES = ("c", "r", "s", "t", "u")
 
 COUNT_RE = re.compile(rb"ipc: (\d+)/(\d+) checks\r\n")
@@ -167,8 +168,13 @@ STACK_NAMES = ("service", "isr", "gate")
 # tests/target/include/ipc_test.h and abi/zos/ipc.h).
 IPC_FRAME_SIZE = 32
 IPC_BLOCK_BYTES = 512
-LOOKUP_SYSCALL = 0x06
+# Package 42b replaced the stage-3 class/instance lookup with a path bind:
+# 06h is ZOS_SYSCALL_BIND and 07h ZOS_SYSCALL_CALL on an object handle.
+# The lookup syscall and its SDK cache no longer exist in the ABI.
+BIND_SYSCALL = 0x06
 CALL_SYSCALL = 0x07
+USER_WINDOW_BASE = 0x0100
+USER_WINDOW_END = 0x2000
 
 # Bytes moved per call in each probe phase (correction 01): the reads and
 # single copies move one 512-byte block, the service-side slow case
@@ -748,6 +754,22 @@ class IpcTracer:
         self.open = next((entry for entry in reversed(self.pending)
                           if entry["domain"]), None)
 
+    def _read_path(self, z, head):
+        """The path string a bind block names, as the caller spells it.
+
+        `head` is the block's first four bytes: a 16-bit pointer and a
+        16-bit length, both supplied by the caller, so this only reads a
+        window address (and never more than 127 bytes) -- the two things
+        the ABI pins for a path field.
+        """
+        pointer = head[0] | (head[1] << 8)
+        length = head[2] | (head[3] << 8)
+        if not USER_WINDOW_BASE <= pointer < 0x10000 or \
+                not 1 <= length <= 127:
+            return None
+        return bytes(z.rd((pointer + index) & 0xFFFF)
+                     for index in range(length))
+
     def watch(self, z):
         if z.pc == self.syms["zos_syscall_entry"]:
             # The gate's return PC is on top of the caller's stack: the
@@ -759,10 +781,24 @@ class IpcTracer:
                      # at entry: the program's memory is reused later.
                      "bytes": bytes(z.rd((z.hl + i) & 0xFFFF)
                                     for i in range(4))}
+            if z.a == BIND_SYSCALL:
+                # A bind block is {path, length, flags, type, reserved}:
+                # keep the spelled path, the one thing the census needs
+                # that the four snapshot bytes cannot hold.
+                entry["path"] = self._read_path(z, entry["bytes"])
+            entry["sp"] = z.sp
             self.syscalls.append(entry)
             self._pending = entry
         elif (self._pending is not None and
-                z.pc == self._pending["ret"]):
+                z.pc == self._pending["ret"] and
+                z.sp == (self._pending["sp"] + 2) & 0xFFFF and
+                z.latch == self._pending["latch"]):
+            # The span ends at the *return*, not at the first instruction
+            # at that address: the fixed-core SDK puts several call sites
+            # at one address, so pc alone is ambiguous (a nested call
+            # entered from there ended an earlier span early).  The gate
+            # returns the caller's SP and latch exactly (ABI), so both are
+            # part of the match.
             self._pending["span"] = self.tstates - self._pending["t"]
             self._pending = None
         for name, base, top in self.stacks:
@@ -774,7 +810,7 @@ class IpcTracer:
             self._tx_len = len(z.sio_tx)
             self.tx = bytes(z.sio_tx)
             if self.client_start is None and CLIENT_START in self.tx:
-                # The client's banner goes out before its first lookup, so
+                # The client's banner goes out before its first bind, so
                 # it separates the two programs' censuses (correction 01
                 # boots the client from the probe through zos_exec).
                 self.client_start = self.tstates
@@ -1221,11 +1257,6 @@ class TestIpcMeasurement(IpcSimBase):
             a, c = tracer.mark(code, "a"), tracer.mark(code, "c")
             b = tracer.mark(code, "b")
             inside = [entry for entry in calls if a <= entry["t"] <= c]
-            if code in DIRECT_PHASES:
-                # The body makes no IPC call.  Up to eight calls belong to
-                # the trailing marker, now written through console IPC.
-                self.assertLessEqual(len(inside), 8, name)
-                continue
             measured = [entry for entry in inside if entry["t"] >= b]
             self.assertTrue(measured, name)
             kernel = sum(entry["span"] for entry in measured) / float(
@@ -1238,9 +1269,10 @@ class TestIpcMeasurement(IpcSimBase):
         tracer = self.boot()[1]
         calls = [entry for entry in tracer.syscalls
                  if entry["number"] == CALL_SYSCALL]
-        # 8 warm-up + 24 measured calls per IPC phase, plus the single-call
-        # checks around them.  The fsread body uses the FS syscall; only
-        # its boundary marker reaches IPC through the console service.
+        # 8 warm-up + 24 measured iterations per phase.  Every phase is an
+        # IPC phase in the 42b model: the filesystem baseline reads through
+        # a bound file handle, whose protocol calls go through the gate
+        # like the chain's.
         self.assertGreaterEqual(len(calls), len(IPC_PHASES) * (N1 + N2))
         marks = tracer.marks
         census = {}
@@ -1249,10 +1281,7 @@ class TestIpcMeasurement(IpcSimBase):
             c = marks[(code, "c")]
             inside = [entry for entry in calls if a <= entry["t"] <= c]
             census[name] = len(inside)
-            if code in DIRECT_PHASES:
-                self.assertLessEqual(len(inside), 8, name)
-            else:
-                self.assertGreaterEqual(len(inside), N1 + N2, name)
+            self.assertGreaterEqual(len(inside), N1 + N2, name)
         print("ipc %s: SYS_IPC_CALL per phase %s"
               % (self.image_ident, census))
 
@@ -1732,46 +1761,53 @@ class TestIpcPlacement(IpcSimBase):
         self.assertLess(low, service_top)
         self.assertGreater(low, service_base)
 
-    def test_lookup_census_and_cache(self):
-        """The kernel sees fewer lookups than the client issues: the SDK
-        cache answers its repeat, and every SDK lookup marshals through the
-        one argument block inside the caller window."""
+    def test_bind_census_and_refusals(self):
+        """Package 42b: the client provably reaches every provider through
+        one path bind, not a class/instance lookup.
+
+        The census reads the bind syscalls the client itself issues: one
+        per provider it needs, the file it reads, the deliberate miss, the
+        grouping-container refusal, plus one out-of-window block the
+        P-normalizing gate refuses before any provider sees it.  Every
+        block the client marshals sits in the caller window, which is what
+        makes the gate's promise checkable rather than assumed."""
         tracer = self.boot()[1]
-        # The caller-buffer probe (correction 01) looks up five classes of
-        # its own before it starts the client, so the census is taken from
-        # the client's banner line on: it is the client's cache that is
-        # under test, and the banner precedes its first lookup.
         start = tracer.client_start
         self.assertIsNotNone(start, "the client never started")
-        lookups = [entry for entry in tracer.syscalls
-                   if entry["number"] == LOOKUP_SYSCALL and
-                   entry["t"] >= start]
-        window = [entry for entry in lookups
-                  if 0x0100 <= entry["block"] < 0x2000]
-        outside = [entry for entry in lookups
-                   if not 0x0100 <= entry["block"] < 0x2000]
-        # The client issues nine SDK lookups: six handle discoveries, a
-        # repeated discovery, the deliberate miss and the version query.
-        # The cache answers the repeat, so the kernel sees eight of them;
-        # the ninth lookup syscall is the client's deliberate out-of-window
-        # refusal check, which never reaches the substrate.
-        self.assertEqual(len(window), 8,
-                         "the SDK cache let %d lookups through"
-                         % len(window))
-        self.assertEqual(len(outside), 1)
-        self.assertEqual(sorted(entry["bytes"][0] for entry in window),
-                         [9, 16, 16, 17, 18, 19, 20, 21])
+        binds = [entry for entry in tracer.syscalls
+                 if entry["number"] == BIND_SYSCALL and entry["t"] >= start]
+        window = [entry for entry in binds
+                  if USER_WINDOW_BASE <= entry["block"] < USER_WINDOW_END]
+        outside = [entry for entry in binds
+                   if not USER_WINDOW_BASE <= entry["block"] < USER_WINDOW_END]
+        self.assertEqual(len(outside), 1,
+                         "the client marshalled %d blocks outside the "
+                         "window" % len(outside))
+        census = {}
+        for entry in window:
+            self.assertIsNotNone(entry.get("path"),
+                                 "bind at %d named no readable path"
+                                 % entry["t"])
+            census[entry["path"]] = census.get(entry["path"], 0) + 1
+        # The six providers the promoted suite binds, once each.
+        for name in ("echo", "con", "vfs", "fat", "ioc", "irqx"):
+            key = b"/dev/ipc/" + name.encode()
+            self.assertEqual(census.get(key), 1,
+                             "client bound %s %d times"
+                             % (name, census.get(key, 0)))
+        # The deliberate refusals: an unknown name and a grouping
+        # container.  The kernel answers both without a provider.
+        self.assertEqual(census.get(b"/dev/ipc/nosuch"), 1)
+        self.assertEqual(census.get(b"/dev/ipc"), 1)
+        # And the one file the client reads, through the same mechanism.
+        self.assertGreaterEqual(census.get(b"/SYSTEM/ipc.zex", 0), 1)
         blocks = set(entry["block"] for entry in window)
         self.assertEqual(len(blocks), 1,
                          "the SDK marshals through %d blocks" % len(blocks))
-        clients = set(entry["ret"] for entry in lookups
-                      if entry["t"] >= start)
-        self.assertEqual(len(clients), 1, clients)
-        print("ipc %s: %d SYS_IPC_LOOKUP calls for nine SDK lookups "
-              "(one cache hit), all through block %04X, plus one refused "
-              "out-of-window block %04X"
+        print("ipc %s: %d binds through block %04X (%d paths), "
+              "plus one refused out-of-window block %04X"
               % (self.image_ident, len(window), next(iter(blocks)),
-                 outside[0]["block"]))
+                 len(census), outside[0]["block"]))
 
     def test_fixed_core_symbols_stay_below_the_split(self):
         for name in ("ipc_asm_begin", "ipc_asm_end", "_ipc_lookup",

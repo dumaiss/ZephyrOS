@@ -4,8 +4,11 @@
  * ROMFS reader (kernel/romfs), usable before any resident driver exists.
  * `bind("/SYSTEM/name", flags)` resolves the flat name with
  * `romfs_lookup_ci` and creates a FILE instance inline in the handle
- * entry, so the ROMFS provider needs no second table; the FILE endpoint is
- * an in-process *nucleus* endpoint installed by `vfs_ns_init()`, and a
+ * entry, so the ROMFS provider needs no second table; `bind("/SYSTEM", 0)`
+ * yields the filesystem-namespace handle the name operations use
+ * (`fs.h`'s `stat`; every mutation is `-ZOS_EROFS`), and the namespace
+ * operations themselves are routed by kernel/vfs/ns.c.  The FILE endpoint
+ * is an in-process *nucleus* endpoint installed by `vfs_ns_init()`, and a
  * call reaches `vfs_ns_file_dispatch()` through the same handle-call path
  * as a bank-6 endpoint (frame staging, descriptor capture, nesting and
  * re-entrancy all belong to the fixed-core IPC substrate).
@@ -67,7 +70,20 @@ int vfs_ns_file_bind(uint8_t pid, const char *name, uint16_t flags,
 		return -ZOS_EROFS; /* ROMFS is read-only */
 	}
 	if (name[0] == '\0') {
-		return -ZOS_EISDIR; /* `/SYSTEM` itself is a directory */
+		/* `/SYSTEM` itself: the filesystem-namespace handle
+		 * (`fs.h`'s `stat` and the mutations it refuses). */
+		struct vfs_descriptor *root =
+			vfs_handle_alloc(pid, ZOS_HANDLE_FIRST_BOUND);
+
+		if (root == (struct vfs_descriptor *)0) {
+			return -ZOS_EMFILE;
+		}
+		root->type = ZOS_TYPE_FS;
+		root->endpoint = VFS_NS_FS_ENDPOINT;
+		root->object = 0u;
+		root->flags = 0u;
+		*type = ZOS_TYPE_FS;
+		return (int)root->number;
 	}
 	if (name[0] != '/') {
 		return -ZOS_EINVAL;
@@ -138,14 +154,14 @@ static int16_t ns_file_read(struct vfs_ns_file *file,
 	return (int16_t)done;
 }
 
-/* ZFILE_OP_SEEK: `arg0` = whence, payload[0..3] = signed 32-bit offset;
- * the reply payload carries the resulting position. */
+/* ZFILE_OP_SEEK: `arg0` = whence, payload[1..4] = signed 32-bit offset;
+ * the reply payload carries the resulting position at the same place. */
 static int16_t ns_file_seek(struct vfs_ns_file *file,
 			    struct zos_ipc_frame *frame)
 {
 	int32_t base;
 	int32_t result;
-	uint8_t *payload = frame->payload;
+	uint8_t *payload = &frame->payload[1];
 
 	if (frame->arg0 == ZFS_SEEK_SET) {
 		base = 0;
@@ -185,11 +201,47 @@ static int16_t ns_file_meta(struct vfs_ns_file *file,
 	return 0;
 }
 
+/* `ZFS_OP_STAT` for one `/SYSTEM` path: `rel` is the provider-relative
+ * remainder ("" for the ROMFS root).  The reply payload holds the packed
+ * `struct zfs_stat`, exactly like the driver's STAT. */
+int vfs_ns_file_meta(const char *rel, struct zos_ipc_frame *frame)
+{
+	struct zfs_stat st;
+	const uint8_t *src = (const uint8_t *)&st;
+	romfs_file_t romfs;
+	uint8_t i;
+
+	if (rel[0] == '\0') {
+		st.type = ZFS_TYPE_DIR; /* ROMFS is a flat directory */
+		st.attributes = 0u;
+		st.reserved = 0u;
+		st.size = 0u;
+	} else {
+		if (rel[0] != '/' || rel[1] == '\0') {
+			return -ZOS_EINVAL;
+		}
+		if (romfs_lookup_ci(&rel[1], &romfs) != 0) {
+			return -ZOS_ENOENT;
+		}
+		st.type = ZFS_TYPE_FILE;
+		st.attributes = 0u;
+		st.reserved = 0u;
+		st.size = romfs.size;
+	}
+	st.ctime = ZFS_TIME_UNKNOWN;
+	st.mtime = ZFS_TIME_UNKNOWN;
+	src = (const uint8_t *)&st;
+	for (i = 0u; i < (uint8_t)sizeof(st); ++i) {
+		frame->payload[i] = src[i];
+	}
+	return 0;
+}
+
 int16_t vfs_ns_file_dispatch(uint8_t handle, uint8_t object,
 			     struct zos_ipc_frame *frame)
 {
 	struct vfs_descriptor *desc =
-		vfs_handle_find(process_current_pid(), handle);
+		vfs_handle_find(vfs_owner_current(), handle);
 
 	(void)object; /* the FILE instance is the handle entry itself */
 	if (desc == (struct vfs_descriptor *)0 ||

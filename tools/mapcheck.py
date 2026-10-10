@@ -136,7 +136,9 @@ IRQ_STACK_SIZE = 0x0080
 BANK7_TOP = BANK7_RUNTIME_END
 STACK_BASE = 0xFF00
 MEM_TOP = 0x10000
-GATE_STACK_SIZE = 256
+# Default when the caller passes no generated include; the build's
+# include carries ZOS_GATE_STACK_SIZE (platform/zephyr80/memory.inc).
+GATE_STACK_SIZE = 384
 ROMFS_STAGING_SIZE = 0x80
 ROM_ACCESS_BASE = 0xEF00
 ROM_ACCESS_SIZE = 8
@@ -784,33 +786,15 @@ COMMON_ONLY_SYMBOLS = (
 # Bank-7 internal routines (visible only while mode 11 is active).
 BANK7_ROUTINES = ("zos_syscall_dispatch", "_irq_dispatch")
 
-# M3 device registry routines: bank 7 only.  The SIO driver is not
-# statically linked (it is a bank-6 service image now) and the static
-# driver table was retired; what remains here is the registry the module
-# loader still answers class queries from, and its state.  The console
-# device is gone with the console syscalls (package 41): the console is a
-# bank-6 service, so no `_console_*` symbol belongs in the nucleus map.
-M3_BANK7_ROUTINES = (
-    "_device_registry_init",
-    "_device_register",
-    "_device_get",
-    "_device_find",
-    "_device_interface",
-    "_device_registry_checkpoint",
-    "_device_registry_rollback",
-)
-
-# M3 registry objects and private state: bank-7 data or code, never common
-# memory.
-M3_BANK7_OBJECTS = (
-    "_device_table",
-)
-
-# Any symbol with one of these prefixes is M3 device/service code or state
-# and must be bank-7 resident (the sweep also covers the test-only M3
-# symbols present in the m3-selftest image).
+# M3-era device registry: retired in package 42b.  The registry, the
+# module loader that answered class queries from it and the IOC class shim
+# are gone: device discovery is the host-built `/dev` publication table
+# plus the service API, and the drivers are bank-6 service images.  The
+# sweep below stays as a tripwire for a static driver or a resurrected
+# registry row.
 M3_BANK7_PREFIXES = (
-    "_device_",
+    "_device_registry_",
+    "_device_table",
     "_console_",
     "_m3_",
 )
@@ -868,26 +852,12 @@ STATIC_HID_PREFIXES = ("_hid_",)
 # symbol means a static copy crept back into the kernel image.
 STATIC_V9958_PREFIXES = ("_v9958_",)
 
-# M4 module-loader routines: bank-7 code and data only, and never inside
-# the driver arena (which has no linked content by design).  The prefix
-# sweep also covers the test-only fixture symbols in selftest images.
-M4_BANK7_ROUTINES = (
-    "_module_loader_init",
-    "_module_load_source",
-    "_module_count",
-    "_module_free_granules",
-    "_module_failed_count",
-    "_module_get",
-    "_module_code_allowed",
-    "_zmod_validate_source",
-    "_zmod_copy_image",
-    "_zmod_zero_bss",
-    "_zmod_apply_relocations",
-    "_zmod_zero_allocation",
-    "_irq_registry_checkpoint",
-    "_irq_registry_rollback",
-    "_irq_registry_set_owner",
-)
+# M4 module-loader routines: retired in package 42b - the driver arena
+# boot set is empty and IOC-FAT is a bank-6 service, so the loader, the
+# relocator and the IRQ-claim rollback that belonged to it emit no bytes.
+# The sweep stays as a tripwire: any linked module-loader symbol means the
+# arena path crept back into the nucleus.
+M4_BANK7_ROUTINES = ()
 
 M4_BANK7_PREFIXES = ("_module_", "_zmod_", "_z4_", "_m4_",
                     "_irq_registry_")
@@ -915,39 +885,44 @@ ROMFS_M9_ROUTINES = (
     "_romfs_entry_at",
 )
 
-# M9 VFS core and the statically linked ROMFS provider: bank-7 code and
-# data only, below the ISR stack.  The generated `const` mount table lands
-# in the bank-7 loadable image like other ROM-loaded const data.
+# M9 VFS core machinery was replaced by the M10 namespace family (package
+# 42b): what remains of the M9 core is the handle pool, the path helpers
+# and the workspace, which keep their place below the ISR stack.  The
+# mount table, the provider registry and the `FS_*` front end are gone.
 VFS_BANK7_ROUTINES = (
+    # The reused M9 machinery: the handle pool, the path helpers and the
+    # fixed-core workspace the namespace bodies marshal through.
     "_vfs_init",
-    "_vfs_mount_all",
     "_vfs_phase",
-    "_vfs_register_filesystem",
-    "_vfs_find_provider",
-    "_vfs_provider_checkpoint",
-    "_vfs_provider_rollback",
-    "_vfs_provider_set_owner",
-    "_vfs_mount_resolve",
-    "_vfs_resolve_path",
-    "_vfs_is_mountpoint",
-    "_vfs_mount_is_root",
-    "_vfs_mount_is_root_level",
-    "_vfs_open",
-    "_vfs_read",
-    "_vfs_write",
-    "_vfs_seek",
-    "_vfs_sync",
-    "_vfs_close",
-    "_vfs_stat",
-    "_vfs_mkdir",
-    "_vfs_rmdir",
-    "_vfs_unlink",
-    "_vfs_rename",
-    "_vfs_opendir",
-    "_vfs_readdir",
-    "_vfs_closedir",
-    "_vfs_file_source",
-    "_romfs_provider",
+    "_vfs_path_normalize_at",
+    "_vfs_handle_alloc",
+    "_vfs_handle_find",
+    "_vfs_handle_release",
+    "_vfs_cwd_for",
+    "_vfs_cwd_store",
+    "_vfs_process_start",
+    "_vfs_process_exit",
+    # The M10 namespace family (package 42a, production since 42b): the
+    # root router and its publication table, the `/SYSTEM` FILE provider
+    # and the object syscall bodies.
+    "_vfs_ns_init",
+    "_vfs_ns_reset",
+    "_vfs_ns_install_publication",
+    "_vfs_ns_publication_endpoint",
+    "_vfs_ns_bind",
+    "_vfs_ns_unbind",
+    "_vfs_ns_resolve",
+    "_vfs_ns_standard_handles",
+    "_vfs_ns_enum",
+    "_vfs_ns_fs_call",
+    "_vfs_ns_fs_release",
+    "_vfs_ns_file_bind",
+    "_vfs_ns_file_call",
+    "_vfs_ns_file_meta",
+    "_vfs_ns_file_dispatch",
+    "_vfs_ns_dir_check",
+    "_zos_object_copy_path",
+    "_zos_object_dispatch",
 )
 
 VFS_BANK7_PREFIXES = ("_vfs_",)
@@ -1374,18 +1349,10 @@ def check_symbols(areas, symbols, production=False):
                 % (name, addr, WINDOW_BASE - 1)
             )
 
-    # M3: registry, console service, static drivers, ops tables, and
-    # driver-private state live in bank 7 (code or runtime data), never in
-    # the permanently mapped common region.
-    for name in M3_BANK7_ROUTINES + M3_BANK7_OBJECTS:
-        if name not in symbols:
-            raise MapError("map has no M3 symbol %s" % name)
-        addr = symbols[name]
-        if not (BANK7_BASE <= addr < BANK7_TOP):
-            raise MapError(
-                "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
-                % (name, addr)
-            )
+    # M3-era registry state and the console service live in bank 7 (code
+    # or runtime data), never in the permanently mapped common region.
+    # Since package 42b the registry itself is gone, so only the sweep
+    # remains (see M3_BANK7_PREFIXES).
     for name, addr in symbols.items():
         if addr != 0 and name.startswith(M3_BANK7_PREFIXES):
             if not (BANK7_BASE <= addr < BANK7_TOP):

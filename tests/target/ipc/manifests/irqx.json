@@ -42,5 +42,16 @@
       "flags": 0
     }
   ],
+  "publishes": [
+    {
+      "path": "/dev/ipc/irqx",
+      "type": "SERIAL",
+      "endpoint": {
+        "class": 21,
+        "instance": 0
+      },
+      "object": 1
+    }
+  ],
   "depends": []
 }

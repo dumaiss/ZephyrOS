@@ -42,6 +42,17 @@
       "flags": 0
     }
   ],
+  "publishes": [
+    {
+      "path": "/dev/ipc/fat",
+      "type": "TIMER",
+      "endpoint": {
+        "class": 19,
+        "instance": 0
+      },
+      "object": 1
+    }
+  ],
   "depends": [
     {
       "class": 20,

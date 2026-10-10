@@ -351,7 +351,7 @@ def make_map(overrides=None, **kw):
         "zos_gate_saved_sp": 0xE100, "zos_gate_saved_latch": 0xE102,
         "zos_gate_result_hl": 0xE103, "zos_gate_result_a": 0xE105,
         "zos_gate_result_c": 0xE106,
-        "zos_gate_stack": 0xE107, "zos_gate_stack_top": 0xE207,
+        "zos_gate_stack": 0xE107, "zos_gate_stack_top": 0xE287,
         # M6 process gates (common), copy state (common), and bank-7
         # process/ZEX code and data.
         "_zos_process_launch": 0xE300, "_zos_process_resume": 0xE310,
@@ -391,26 +391,30 @@ def make_map(overrides=None, **kw):
         "_zos_diag_hw_in": 0x2010, "_zos_diag_hw_out": 0x2016,
         "_zos_syscall_success": 0x2632, "_zos_syscall_error": 0x263D,
         "_zos_syscall_block_ok": 0x264C,
-        # M9 VFS core, ROMFS provider and generated mount table.
-        "_vfs_init": 0x3000, "_vfs_mount_all": 0x3020,
-        "_vfs_phase": 0x3040, "_vfs_register_filesystem": 0x3060,
-        "_vfs_find_provider": 0x3080,
-        "_vfs_provider_checkpoint": 0x3090,
-        "_vfs_provider_rollback": 0x3098,
-        "_vfs_provider_set_owner": 0x30A0,
-        "_vfs_mount_resolve": 0x3100, "_vfs_resolve_path": 0x3120,
-        "_vfs_is_mountpoint": 0x3140, "_vfs_mount_is_root": 0x3160,
-        "_vfs_mount_is_root_level": 0x3170,
-        "_vfs_open": 0x3180, "_vfs_read": 0x31A0, "_vfs_write": 0x31C0,
-        "_vfs_seek": 0x31C8,
-        "_vfs_sync": 0x31D0, "_vfs_close": 0x31E0,
-        "_vfs_stat": 0x3200, "_vfs_mkdir": 0x3210,
-        "_vfs_rmdir": 0x3220, "_vfs_unlink": 0x3230,
-        "_vfs_rename": 0x3238,
-        "_vfs_opendir": 0x3240, "_vfs_readdir": 0x3260,
-        "_vfs_closedir": 0x3280, "_vfs_file_source": 0x32A0,
-        "_romfs_provider": 0xDA00, "_vfs_mount_table": 0xDA20,
-        "_vfs_mount_count": 0xDA40, "_vfs_mount_state": 0xDA50,
+        # VFS handles, paths and the namespace family (package 42b): the
+        # reused M9 helpers plus the M10 router, the `/SYSTEM` FILE
+        # provider and the object syscall bodies.  The mount table, the
+        # provider registry and the `FS_*` front end are retired.
+        "_vfs_init": 0x3000,
+        "_vfs_phase": 0x3040,
+        "_vfs_path_normalize_at": 0x3060,
+        "_vfs_handle_alloc": 0x3080, "_vfs_handle_find": 0x3090,
+        "_vfs_handle_release": 0x3098,
+        "_vfs_cwd_for": 0x30A0, "_vfs_cwd_store": 0x30A8,
+        "_vfs_process_start": 0x30B0, "_vfs_process_exit": 0x30B8,
+        "_vfs_ns_init": 0x3100, "_vfs_ns_reset": 0x3110,
+        "_vfs_ns_install_publication": 0x3120,
+        "_vfs_ns_publication_endpoint": 0x3140,
+        "_vfs_ns_bind": 0x3160, "_vfs_ns_unbind": 0x3180,
+        "_vfs_ns_resolve": 0x3190,
+        "_vfs_ns_standard_handles": 0x31A0,
+        "_vfs_ns_enum": 0x31C0,
+        "_vfs_ns_fs_call": 0x3200, "_vfs_ns_fs_release": 0x3210,
+        "_vfs_ns_file_bind": 0x3220, "_vfs_ns_file_call": 0x3240,
+        "_vfs_ns_file_meta": 0x3250, "_vfs_ns_file_dispatch": 0x3260,
+        "_vfs_ns_dir_check": 0x3280,
+        "_zos_object_copy_path": 0x32A0, "_zos_object_dispatch": 0x32C0,
+        "_vfs_ns_publications": 0xDA00,
     }
     if kw.get("areas") is not None:
         areas = dict(areas)

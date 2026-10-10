@@ -52,12 +52,12 @@ HOST_SYNC = b"\xaa\x55"
 ZVIDEO_PRESENT = 0x03
 ZDEV_EINVAL = -2
 
-# The monitor is an ordinary SDK program.  Package 41 correction 01 gives
-# every program a fixed 68-byte gate-visible area before code, so the
-# packed bytes and size below are the current artifact oracle.
-MONITOR_SIZE = 4854
-MONITOR_SHA256 = ("eda1bb4a1798252354658b03add1f7b8998e739b1178b35735e038974992ce"
-                  "0f")
+# The monitor is an ordinary SDK program.  Package 42b's SDK gives every
+# program a fixed 93-byte gate-visible area before code (the scratch, the
+# raw request, the call block and the nsgate blocks), so the packed bytes
+# and size below are the current artifact oracle.
+MONITOR_SIZE = 4961
+MONITOR_SHA256 = ("ec4d1cbd10bc341d45b053e2319c91397a1307ae72ee2f911c830d04fd2e81c1")
 
 # Shared markers: the visible session, the early-SIO transcript and the
 # console diagnostic's marker and typed-line echo (package 41).

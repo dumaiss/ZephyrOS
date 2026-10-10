@@ -4537,13 +4537,12 @@ Startup block (package 28b):
   shell is that one line plus the ZEX in the manifest, with no kernel
   edit.
 
-Acceptance: `make m9-exec-selftest` (extended `fstest.zex` exec case plus
-the recursive `fsdeep.zex` depth probe) replayed by
-`tests/test_m9_exec_sim.py`, which measures the copied frame against
-`ZOS_EXEC_FRAME_SAVE`, compares the restored frame byte-for-byte with the
-suspended one at every depth, and checks the parent returns over its own
-bank; `tests/test_m9_exec.py` pins the ABI, the geometry, the launch
-primitive's structure and the production map.
+Acceptance: the nested exec in the M10 outcome image
+(`make fs-selftest`, replayed by `tests/test_fs_selftest_sim.py`), which
+checks the child's tail and exit status and that the parent resumes over
+its own bank with its gate state intact; the ABI, the geometry and the
+launch primitive's structure are pinned by `include/zephyros/process.h`'s
+static asserts and by `kernel/process/launch.asm`'s shift-chain comments.
 
 ---
 
@@ -5116,8 +5115,10 @@ There are no raw cross-domain pointers.
   - **driver stack:** 512 bytes in the fixed core, shared by the resident
     driver-call chain (measured high-water 278 bytes);
   - **ISR stack:** 256 bytes in the fixed core;
-  - **gate stack:** 256 bytes in common; the worst case is measured for
-    every syscall path and stays at or below 240.
+  - **gate stack:** 384 bytes in common (raised from 256 in package 42b:
+    nested exec → ROMFS read → driver transaction measured 287 bytes); the
+    worst case is measured for every syscall path and stays at or below
+    360.
 
 ---
 
@@ -5640,7 +5641,7 @@ these ledgers and the bytes it adds, attributed per object:
 | `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | ≥ 4,096 |
 | `driver boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
 | `common:` | `E000h-FFFFh` packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | — |
-| gate stack | common | 256 | worst case ≤ 240 |
+| gate stack | common | 384 | worst case ≤ 360 |
 
 - `ZOS_COMMON_CEILING` stays at 3072 bytes and may not be raised. The
   512-byte M10 reservation of section 7.2 is released to M10's transitions
@@ -5755,7 +5756,7 @@ hardware:
 residency:
     nucleus fixed / nucleus cold / driver hot / driver boot-bulk / common
     ledgers emitted and within section 36.20, headroom targets met
-    gate-stack worst case <= 240; driver-stack high-water reported
+    gate-stack worst case <= 360; driver-stack high-water reported
 
 IPC / typed object lifecycle:
     bind -> handle + 8-bit type; no expected-type argument

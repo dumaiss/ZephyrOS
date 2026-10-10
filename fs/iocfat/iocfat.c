@@ -1,38 +1,54 @@
-/* ZephyrOS M9 IOC-FAT filesystem provider (`iocfat.zmod`).
+/* ZephyrOS IOC-FAT resident filesystem driver (packages 30, 42b).
  *
- * Exposes the deployed MCU FatFs FS2 service to VFS through the path-based
- * `zfs_ops` provider ABI (architecture sections 32.12, 32.17 and 32.19).
- * The provider owns the whole FS2 protocol -- commands, replies, payload
- * offsets, status mapping and the READY/DONE bulk sequencing -- and a one
- * slot write-through 512-byte file-data cache.  `drivers/ioc/` stays
- * transport-only: this module consumes it only through the class interface
- * (`zioc_ops`) obtained with `device_find`/`device_interface` at init.
+ * The deployed MCU FatFs FS2 service behind the M10 file language
+ * (architecture 36.13): this driver implements the FILE protocol
+ * (`bind`/`call`/`unbind` on `/FS/...`) and the filesystem-namespace
+ * protocol (`stat`, `mkdir`, `rmdir`, `unlink`, `rename`, enumeration) of
+ * the `/FS` root.  The nucleus FS provider routes and forwards; it holds no
+ * FAT/FS2 semantics, and this driver owns pathname meaning, file creation,
+ * mutation, enumeration and backend state below `/FS`.
+ *
+ * Placement (architecture 36.6, 36.11): the driver is host-linked at its
+ * final bank-6 addresses and its IOC transport dependency is host-resolved
+ * (`depends: [{class: 5, instance: 0}]`), so it never looks a peer up at
+ * run time.  Every buffer it names in a copy is `SERVICE_IO`
+ * (8000h-BFFFh), and the FS2 cache and the transfer staging live there.
+ * Driver-to-driver data movement is direct: the IOC service's staged reply
+ * frame and bulk buffer are bank-6 memory, so one same-domain copy reaches
+ * them (36.8).
  *
  * Ownership and limits:
- *   - the only accepted mount source is `ioc.0`;
  *   - two file handles and one directory handle, matching the CAPS v1 slot
  *     counts, so provider exhaustion is ZOS_EMFILE;
  *   - paths are packed into 11-byte upper-case 8.3 FCB names; a component
  *     FatFs cannot represent is rejected with ZOS_EINVAL before any IOC
- *     traffic (architecture 32.8; the firmware's own name rules are
- *     mirrored here);
- *   - the resolver is stateless between provider calls: every operation
- *     sends ROOT and then one PUSH per directory component;
- *   - FS2 tokens never escape the provider; VFS handles are private.
+ *     traffic (the firmware's own name rules are mirrored here);
+ *   - the resolver is stateless between operations: every operation sends
+ *     ROOT and then one PUSH per directory component;
+ *   - enumeration is stateless too: the cookie is the entry index, and a
+ *     batch re-opens the directory and skips to it;
+ *   - FS2 tokens never escape the driver; a bound file's identity is its
+ *     slot index plus one, which the nucleus records as the handle's object
+ *     (`payload[0]` of every FILE operation).
  *
- * Size discipline (architecture 32.39, correction-01): one bulk-transfer
- * helper, one 8.3 codec, one directory-open path and table-driven status and
- * open-mode mapping keep the module within the 13-granule budget.  Every
- * automatic object is small; the 512-byte cache and the transfer staging
- * live in module BSS, never on the gate stack.
+ * Nucleus transport (abi/zos/protocol.h): name operations receive their path
+ * in a nucleus request buffer named by `payload[0..1]` - the fixed-core VFS
+ * workspace, which this driver's window always maps - and enumeration also
+ * receives the caller's entry array as the call descriptor.  A card that is
+ * absent or unreadable does not fail the driver's init (a required driver
+ * that cannot initialize is a boot failure, and `/SYSTEM` must stay
+ * usable): every operation then answers -ZOS_ENODEV.
  *
  * All protocol constants are private to this file.
  */
 
-#include "zephyros/driver.h"
 #include "zephyros/errno.h"
+#include "zephyros/ipc.h"
 #include "zephyros/ioc.h"
-#include "zephyros/vfs.h"
+
+#include "zos/fs.h"
+#include "zos/object.h"
+#include "zos/protocol.h"
 
 /* --- FS2 protocol (private) ------------------------------------------- */
 
@@ -131,7 +147,7 @@
 #define FS2_CAP_CHUNK_MIN      512u
 #define FS2_CAP_READ_ONLY      0x0001u
 
-/* --- provider limits -------------------------------------------------- */
+/* --- instance state --------------------------------------------------- */
 
 #define IOCFAT_NAME_LEN      11u
 #define IOCFAT_FILE_HANDLES  2u
@@ -140,24 +156,19 @@
 #define IOCFAT_PUSH_MAX      16u
 #define IOCFAT_COMPONENT_MAX (IOCFAT_PUSH_MAX + 1u)
 
-/* The file-data cache slot count is a module build setting (architecture
- * section 32.19).  The one-slot value is the project-owner budget decision
- * (correction-01): a second slot would not fit the 13-granule ceiling. */
-#ifndef IOCFAT_CACHE_SLOTS
-#define IOCFAT_CACHE_SLOTS 1u
-#endif
+/* The driver's one dependency: the IOC transport, manifest position 0. */
+#define IOCFAT_DEP_IOC 0u
 
-#if (IOCFAT_CACHE_SLOTS != 1u)
-#error IOCFAT_CACHE_SLOTS other than 1 exceeds the bank-7 budget
-#endif
+/* Bound object identities presented to the nucleus: file slot i is object
+ * i + 1; 0 is the filesystem-namespace root (no instance).  The directory
+ * slot is internal to one enumeration call. */
+#define IOCFAT_FILE_OBJECT_MAX ((uint8_t)IOCFAT_FILE_HANDLES)
 
 /* Open decision table entry bits (`iocfat_open_table`). */
 #define FS2_OPENF_RO       0x80u /* OPEN_RO (else OPEN_RW)                */
 #define FS2_OPENF_TRUNC    0x40u /* UPDATE then FS2_TRUNCATE to zero      */
 #define FS2_OPENF_FALLBACK 0x20u /* UPDATE then CREATE_NEW on NOT_FOUND   */
 #define FS2_OPENF_INVALID  0xFFu
-
-/* --- instance state --------------------------------------------------- */
 
 #define IOCFAT_H_WRITE 0x01u
 
@@ -166,6 +177,8 @@ struct iocfat_file {
 	uint8_t flags;
 	uint16_t token;
 	uint32_t generation;
+	uint32_t offset; /* the bound instance's position */
+	uint32_t size;
 };
 
 struct iocfat_dir {
@@ -185,7 +198,7 @@ struct iocfat_cache_slot {
 struct iocfat_instance {
 	struct iocfat_file files[IOCFAT_FILE_HANDLES];
 	struct iocfat_dir dirs[IOCFAT_DIR_HANDLES];
-	struct iocfat_cache_slot cache[IOCFAT_CACHE_SLOTS];
+	struct iocfat_cache_slot cache[1];
 	uint32_t generation;
 	uint8_t mounted;
 	uint8_t read_only;
@@ -193,23 +206,29 @@ struct iocfat_instance {
 
 static struct iocfat_instance iocfat;
 
-/* Transport state captured at init and used by every provider operation. */
-static const struct zioc_ops *iocfat_ioc_ops;
-static void *iocfat_ioc_state;
+/* Transport state captured at init. */
+static const struct ipc_service_api *iocfat_api;
+static uint8_t iocfat_ioc;   /* the host-resolved IOC endpoint               */
+static uint8_t iocfat_ready; /* CAPS and the root probe succeeded            */
+static struct zos_ipc_frame iocfat_frame;
 static struct zioc_frame iocfat_request;
 static struct zioc_frame iocfat_reply;
 static uint8_t iocfat_name[IOCFAT_NAME_LEN];
 static uint8_t iocfat_name2[IOCFAT_NAME_LEN];
+/* Transfer staging and the enumeration entry, in SERVICE_IO (8000h-BFFFh). */
+static uint8_t iocfat_batch[IOCFAT_BLOCK_SIZE];
+static uint16_t iocfat_batch_address;
 
-static void *iocfat_self(void);
+static void iocfat_zero_instance(void);
 static int iocfat_leaf_op(const char *path, uint8_t count, uint8_t command);
 static int iocfat_dir_open(const char *path, uint8_t count,
 			   struct iocfat_dir **out);
-static int iocfat_opendir(void *fs, const char *path, void **dir_out);
-static int iocfat_readdir(void *fs, void *dir_handle, struct zfs_dirent *out);
-static int iocfat_closedir(void *fs, void *dir_handle);
-
-/* --- little-endian helpers -------------------------------------------- */
+static int iocfat_dir_read(struct iocfat_dir *dir, struct zfs_dirent *out);
+static int iocfat_dir_close(struct iocfat_dir *dir);
+static int iocfat_file_open(const char *path, uint16_t flags, uint8_t *object,
+			    uint32_t *size);
+static int iocfat_file_close(uint8_t object);
+static struct iocfat_file *iocfat_file_get(uint8_t object);
 
 static uint16_t iocfat_get16(const uint8_t *p)
 {
@@ -245,37 +264,72 @@ static void iocfat_copy(uint8_t *dst, const uint8_t *src, uint16_t n)
 	}
 }
 
-/* Copy `n` bytes of the cache block starting at `offset` into `dst`.  The
- * source base arrives as a parameter so SDCC emits a word relocation for the
- * global address instead of a byte-fragmented store. */
-static void iocfat_copy_from(const uint8_t *src, uint16_t offset, uint8_t *dst,
-			     uint16_t n)
+/* Copy `n` bytes of `src` starting at `offset` into `dst` starting at
+ * `at`.  Both bases arrive as parameters so SDCC emits a word relocation
+ * for the global address instead of a byte-fragmented store. */
+static void iocfat_copy_range(const uint8_t *src, uint16_t offset,
+			      uint8_t *dst, uint16_t at, uint16_t n)
 {
 	uint16_t i;
 
 	for (i = 0; i < n; ++i) {
-		dst[i] = src[offset + i];
+		dst[at + i] = src[offset + i];
 	}
 }
 
+static uint16_t iocfat_addr(const uint8_t *payload);
 /* --- transport -------------------------------------------------------- */
 
-/* One command exchange.  Returns 0 when the transport completed and the
- * reply is the expected class (or the explicit unknown-class reply, which
- * callers turn into ZOS_ENOTSUP); otherwise a negative transport error.
- * The reply is left in the module-static `iocfat_reply`. */
+/* Address a nucleus request-buffer payload word pair names (the path or the
+ * reply staging the nucleus wrote for this call). */
+static uint16_t iocfat_addr(const uint8_t *payload)
+{
+	return (uint16_t)((uint16_t)payload[0] |
+			  ((uint16_t)payload[1] << 8));
+}
+
+/* One command exchange with the resident IOC service.  The request travels
+ * in the 32-byte protocol frame; the reply frame the service staged is
+ * bank-6 memory this driver reaches directly (one same-domain copy, 36.8).
+ * Returns 0 or a negative transport error; the reply is left in
+ * `iocfat_reply`. */
 static int iocfat_exchange(uint8_t type, uint8_t length)
 {
-	int result;
+	const uint8_t *src;
+	uint16_t address;
 
-	iocfat_request.type = type;
-	iocfat_request.status = 0u;
-	iocfat_request.length = length;
-	result = iocfat_ioc_ops->command(iocfat_ioc_state, &iocfat_request,
-					 &iocfat_reply);
-	if (result != ZIOC_OK) {
+	/* Own-array bound: `iocfat_request.data` is indexed with the request
+	 * length this driver passes (never above the frame field). */
+	if (length > (uint8_t)ZIOC_PROTOCOL_REQUEST_MAX) {
+		return -ZOS_EINVAL;
+	}
+	iocfat_frame.op = ZIOC_OP_COMMAND;
+	iocfat_frame.flags = 0u;
+	iocfat_frame.desc = ZOS_IPC_DESC_NONE;
+	iocfat_frame.arg0 = type;
+	iocfat_frame.arg1 = length;
+	iocfat_copy(iocfat_frame.payload, iocfat_request.data,
+		    (uint16_t)length);
+	if (iocfat_api->call(iocfat_ioc, ZIOC_OP_COMMAND,
+			     &iocfat_frame) != 0) {
 		return -ZOS_EIO;
 	}
+	/* The reply frame lives in the service's staged slot: a plain bank-6
+	 * access, because only bank 6 is mapped while this driver runs. */
+	address = iocfat_addr(iocfat_frame.payload);
+	src = (const uint8_t *)address;
+	iocfat_reply.type = src[0];
+	iocfat_reply.status = src[1];
+	iocfat_reply.length = src[2];
+	/* Own-array bound: the FS2 DATA field is 26 bytes. */
+	if (iocfat_reply.length > (uint8_t)ZIOC_PROTOCOL_FRAME_DATA) {
+		return -ZOS_EIO;
+	}
+	/* Own-array bound: the reply length is the field checked above, and
+	 * the FS2 DATA field is 26 bytes. */
+	iocfat_copy(iocfat_reply.data, src + 3, (uint16_t)iocfat_reply.length);
+	iocfat_frame.arg0 = iocfat_reply.type;
+	iocfat_frame.arg1 = iocfat_reply.length;
 	if (iocfat_reply.type == FS2_RSP_UNKNOWN_CMD) {
 		return -ZOS_ENOTSUP;
 	}
@@ -285,9 +339,6 @@ static int iocfat_exchange(uint8_t type, uint8_t length)
 	return 0;
 }
 
-/* FS2 status -> native error, indexed by (status - FS2_STATUS_NOT_FOUND).
- * NO_HANDLE is resolved by the caller (slot exhaustion vs a stale handle);
- * the value here is only a fallback. */
 static const uint8_t iocfat_status_table[] = {
 	0x05u, /* NOT_FOUND -> ENOENT  */
 	0x0Au, /* END       -> EIO    (never mapped here) */
@@ -359,8 +410,6 @@ static void iocfat_cache_invalidate_other(void *keep)
 
 /* --- 8.3 codec -------------------------------------------------------- */
 
-/* True when a name byte can appear in an FS2 packed 8.3 name.  Mirrors the
- * firmware's name rules, so a component it rejects never reaches the lane. */
 static uint8_t iocfat_legal(uint8_t c)
 {
 	if (c < 0x21u || c > 0x7Eu) {
@@ -441,10 +490,9 @@ static uint16_t iocfat_pack(const char *scan, uint8_t *out)
 }
 
 /* The single 8.3 codec: walk `path`, validating every component and packing
- * component `index` (0-based) into `out` (11 bytes, or null when `index` is
- * the 0xFF "pack none" sentinel).  `*count` receives the number of
- * components, 0 for `/`.  Returns 0 or -ZOS_EINVAL; an unrepresentable
- * component is rejected before any IOC traffic. */
+ * component `index` (0-based) into `out` (11 bytes, or null when the caller
+ * wants only the walk).  `*count` receives the number of components, or a
+ * negative error. */
 static int iocfat_walk(const char *path, uint8_t index, uint8_t *out,
 		       uint8_t *count)
 {
@@ -481,8 +529,8 @@ static int iocfat_walk(const char *path, uint8_t index, uint8_t *out,
 }
 
 /* Send ROOT, then one PUSH per component.  With `leaf` nonzero the final
- * component is not pushed; it is packed into `iocfat_name` instead.  `count`
- * arrives from iocfat_walk, so every component is already known-valid. */
+ * component is not pushed; it is packed into `iocfat_name` instead, and
+ * `count` names the number of components the path has. */
 static int iocfat_resolve(const char *path, uint8_t count, uint8_t leaf)
 {
 	const char *scan = path + 1;
@@ -521,29 +569,28 @@ static int iocfat_resolve(const char *path, uint8_t count, uint8_t leaf)
 /* --- handle pools ----------------------------------------------------- */
 
 /* Two file slots and one directory slot, matching CAPS v1.  They are small
- * and fixed, so they are unrolled rather than iterated. */
-static struct iocfat_file *iocfat_file_alloc(void)
+ * and fixed, so they are unrolled rather than iterated; a file slot's object
+ * identity is its index plus one. */
+static uint8_t iocfat_file_alloc(void)
 {
 	if (iocfat.files[0].used == 0u) {
 		iocfat.files[0].used = 1u;
-		return &iocfat.files[0];
+		return 1u;
 	}
 	if (iocfat.files[1].used == 0u) {
 		iocfat.files[1].used = 1u;
-		return &iocfat.files[1];
+		return 2u;
 	}
-	return (struct iocfat_file *)0;
+	return 0u;
 }
 
-static struct iocfat_file *iocfat_file_get(void *handle)
+static struct iocfat_file *iocfat_file_get(uint8_t object)
 {
-	if (handle == (void *)&iocfat.files[0]) {
-		return (iocfat.files[0].used != 0u) ? &iocfat.files[0]
-						    : (struct iocfat_file *)0;
+	if (object == 1u && iocfat.files[0].used != 0u) {
+		return &iocfat.files[0];
 	}
-	if (handle == (void *)&iocfat.files[1]) {
-		return (iocfat.files[1].used != 0u) ? &iocfat.files[1]
-						    : (struct iocfat_file *)0;
+	if (object == 2u && iocfat.files[1].used != 0u) {
+		return &iocfat.files[1];
 	}
 	return (struct iocfat_file *)0;
 }
@@ -557,15 +604,6 @@ static struct iocfat_dir *iocfat_dir_alloc(void)
 	return (struct iocfat_dir *)0;
 }
 
-static struct iocfat_dir *iocfat_dir_get(void *handle)
-{
-	if (handle == (void *)&iocfat.dirs[0] && iocfat.dirs[0].used != 0u) {
-		return &iocfat.dirs[0];
-	}
-	return (struct iocfat_dir *)0;
-}
-
-/* Reject a generation change on a live handle: nothing is retried. */
 static int iocfat_file_generation(struct iocfat_file *file)
 {
 	if (file->generation != iocfat.generation) {
@@ -575,50 +613,21 @@ static int iocfat_file_generation(struct iocfat_file *file)
 	return 0;
 }
 
-/* --- instance lifecycle ----------------------------------------------- */
-
-static void iocfat_zero_instance(void);
-
-/* Clear the per-mount session.  `read_only` comes from the device's CAPS, so
- * it survives the reset: a write-protected card must be refused before the
- * provider sends anything, not by the firmware's status alone. */
-static void iocfat_reset(void)
-{
-	uint8_t read_only = iocfat.read_only;
-
-	iocfat_zero_instance();
-	iocfat.read_only = read_only;
-}
-
-static int iocfat_query_generation(void)
-{
-	int result;
-
-	result = iocfat_exchange(FS2_CMD_GENERATION, 0u);
-	if (result != 0) {
-		return result;
-	}
-	if (iocfat_reply.status != FS2_STATUS_OK ||
-	    iocfat_reply.length < FS2_GENERATION_REPLY_LEN) {
-		int mapped = iocfat_map_status(iocfat_reply.status, 0u);
-
-		return (mapped != 0) ? mapped : -ZOS_EIO;
-	}
-	iocfat.generation = iocfat_get32(&iocfat_reply.data[0]);
-	return 0;
-}
-
 /* --- bulk transfer ---------------------------------------------------- */
 
 /* One FS2 data transfer: the FS2_READ/FS2_WRITE command, READY validation
- * (exact length for a write, at most `length` and non-empty for a read, plus
- * direction, nonzero transfer id and the echoed offset) and the matching
- * bulk phase.  A write also awaits its DONE.  Returns the transferred byte
- * count (0 for an end-of-file read), or a negative error. */
+ * (exact length for a write, at most `length` and non-empty for a read,
+ * plus direction, nonzero transfer id and the echoed offset) and the
+ * matching bulk phase.  A write also awaits its DONE.  `data` is this
+ * driver's SERVICE_IO buffer (the cache slot or the transfer staging).
+ * Returns the transferred byte count (0 for an end-of-file read), or a
+ * negative error. */
 static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 			   uint16_t length, uint8_t *data)
 {
+	uint16_t bulk;
 	uint16_t ready_len;
+	uint16_t i;
 	int result;
 
 	iocfat_put16(&iocfat_request.data[FS2_OFF_TOKEN], token);
@@ -628,6 +637,8 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 	if (result != 0) {
 		return result;
 	}
+	/* The staged bulk slot the service named in the COMMAND reply. */
+	bulk = iocfat_addr(&iocfat_frame.payload[3]);
 	if (iocfat_reply.status == FS2_STATUS_STALE) {
 		iocfat_cache_invalidate_all();
 		return -ZOS_ESTALE;
@@ -640,10 +651,14 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 	}
 	ready_len = iocfat_get16(&iocfat_reply.data[FS2_OFF_READY_LEN]);
 	if (command == FS2_CMD_READ) {
+		const uint8_t *src;
+
 		if (ready_len == 0u) {
 			return 0; /* end of file: a successful short read */
 		}
+		/* Own-array bound: the copy below fills the caller's block. */
 		if (ready_len > length ||
+		    ready_len > (uint16_t)IOCFAT_BLOCK_SIZE ||
 		    iocfat_reply.data[FS2_OFF_READY_ID] == 0u ||
 		    iocfat_reply.data[FS2_OFF_READY_DIR] !=
 			    FS2_DIR_MCU_TO_Z80 ||
@@ -651,20 +666,46 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 			    offset) {
 			return -ZOS_EIO;
 		}
-		if (iocfat_ioc_ops->bulk_read(iocfat_ioc_state, data,
-					      ready_len) != ZIOC_OK) {
+		iocfat_frame.op = ZIOC_OP_BULK_READ;
+		iocfat_frame.flags = 0u;
+		iocfat_frame.desc = ZOS_IPC_DESC_NONE;
+		iocfat_frame.arg0 = 0u;
+		iocfat_frame.arg1 = ready_len;
+		if (iocfat_api->call(iocfat_ioc, ZIOC_OP_BULK_READ,
+				     &iocfat_frame) != (int16_t)ready_len) {
 			return -ZOS_EIO;
+		}
+		bulk = iocfat_addr(iocfat_frame.payload);
+		src = (const uint8_t *)bulk;
+		for (i = 0u; i < ready_len; ++i) {
+			data[i] = src[i];
 		}
 		return (int)ready_len;
 	}
 	if (ready_len != length ||
+	    ready_len > (uint16_t)IOCFAT_BLOCK_SIZE ||
 	    iocfat_reply.data[FS2_OFF_READY_ID] == 0u ||
 	    iocfat_reply.data[FS2_OFF_READY_DIR] != FS2_DIR_Z80_TO_MCU ||
 	    iocfat_get32(&iocfat_reply.data[FS2_OFF_READY_OFF]) != offset) {
 		return -ZOS_EIO;
 	}
-	if (iocfat_ioc_ops->bulk_write(iocfat_ioc_state, data,
-				       length) != ZIOC_OK) {
+	/* The staged form: the service reads what this driver placed in its
+	 * bulk buffer, which the COMMAND reply named. */
+	{
+		uint8_t *dst = (uint8_t *)bulk;
+
+		for (i = 0u; i < length; ++i) {
+			dst[i] = data[i];
+		}
+	}
+	/* The transfer length is the frame's `arg1`: the COMMAND exchange
+	 * left the command's own data length there, so it is set again for
+	 * the bulk call (the read branch does the same with `ready_len`). */
+	iocfat_frame.desc = ZOS_IPC_DESC_NONE;
+	iocfat_frame.arg0 = 0u;
+	iocfat_frame.arg1 = length;
+	if (iocfat_api->call(iocfat_ioc, ZIOC_OP_BULK_WRITE,
+			     &iocfat_frame) != (int16_t)length) {
 		return -ZOS_EIO;
 	}
 	result = iocfat_exchange(FS2_CMD_XFER_STATUS, 0u);
@@ -699,41 +740,6 @@ static int iocfat_cache_fill(struct iocfat_file *file, uint32_t block)
 	return 0;
 }
 
-/* --- zfs_ops: instantiation ------------------------------------------- */
-
-static int iocfat_mount(void *provider_state, const char *source, void **fs)
-{
-	struct iocfat_dir *dir;
-	int result;
-
-	(void)provider_state;
-	if (fs == (void **)0 || source == (const char *)0 ||
-	    source[0] != 'i' || source[1] != 'o' || source[2] != 'c' ||
-	    source[3] != '.' || source[4] != '0' || source[5] != '\0') {
-		return -ZOS_EINVAL;
-	}
-	iocfat_reset();
-	result = iocfat_query_generation();
-	if (result != 0) {
-		return result;
-	}
-	/* Probe the root: opening `/` must succeed on mounted media; an absent
-	 * or FAT-less card fails here (NO_MEDIA maps to ZOS_ENODEV). */
-	result = iocfat_dir_open("/", 0u, &dir);
-	if (result != 0) {
-		return result;
-	}
-	(void)iocfat_closedir((void *)0, dir);
-	iocfat.mounted = 1u;
-	*fs = iocfat_self();
-	return 0;
-}
-
-/* --- zfs_ops: files --------------------------------------------------- */
-
-/* Open decision table, indexed by `(flags >> 1) & 0x0F` = WRITE | CREATE<<1 |
- * EXCL<<2 | TRUNC<<3.  The low two bits are the FS2 OPEN_RW mode
- * (0 UPDATE, 1 CREATE_NEW, 2 CREATE_ALWAYS). */
 static const uint8_t iocfat_open_table[16] = {
 	FS2_OPENF_RO, 0x00u, FS2_OPENF_INVALID, FS2_OPENF_FALLBACK,
 	FS2_OPENF_INVALID, FS2_OPENF_INVALID, FS2_OPENF_INVALID, 0x01u,
@@ -806,31 +812,37 @@ static int iocfat_open_send(const char *path, uint8_t count, uint8_t entry,
 	*size_out = file_size;
 	return 0;
 }
+/* --- files ------------------------------------------------------------ */
 
-static int iocfat_open(void *fs, const char *path, uint16_t flags,
-		       void **file, uint32_t *size)
+/* Allocate the slot, resolve the parent, send OPEN_RO/OPEN_RW (plus a
+ * truncating TRUNCATE) and record the instance.  Returns 0 or a negative
+ * error; *object receives the identity the nucleus stores. */
+static int iocfat_file_open(const char *path, uint16_t flags, uint8_t *object,
+			    uint32_t *size)
 {
 	const uint8_t *table = iocfat_open_table;
 	struct iocfat_file *slot;
 	uint8_t entry;
-	uint8_t count;
+	uint8_t count = 0u;
 	uint8_t read_only;
+	uint8_t id;
 	uint16_t token = 0u;
 	uint32_t file_size = 0u;
 	int result;
 
-	(void)fs;
-	if (file == (void **)0 || size == (uint32_t *)0) {
-		return -ZOS_EINVAL;
-	}
 	result = iocfat_walk(path, 0xFFu, (uint8_t *)0, &count);
 	if (result != 0) {
 		return result;
 	}
 	if (count == 0u) {
-		return -ZOS_EISDIR; /* the root is a synthesized directory */
+		return -ZOS_EISDIR; /* the root is a directory */
 	}
-	entry = table[(uint8_t)((flags >> 1) & 0x0Fu)];
+	/* Own-array bound: the table has 16 entries and the index is masked. */
+	{
+		const uint8_t *decision = iocfat_open_table;
+
+		entry = decision[(uint8_t)((flags >> 1) & 0x0Fu)];
+	}
 	if (entry == FS2_OPENF_INVALID) {
 		return -ZOS_EINVAL;
 	}
@@ -838,10 +850,11 @@ static int iocfat_open(void *fs, const char *path, uint16_t flags,
 	if (read_only == 0u && iocfat.read_only != 0u) {
 		return -ZOS_EROFS;
 	}
-	slot = iocfat_file_alloc();
-	if (slot == (struct iocfat_file *)0) {
+	id = iocfat_file_alloc();
+	if (id == 0u) {
 		return -ZOS_EMFILE;
 	}
+	slot = iocfat_file_get(id);
 	result = iocfat_open_send(path, count, entry, &token, &file_size);
 	if (result == -ZOS_ENOENT && (entry & FS2_OPENF_FALLBACK) != 0u) {
 		result = iocfat_open_send(path, count, 0x01u, &token,
@@ -854,17 +867,18 @@ static int iocfat_open(void *fs, const char *path, uint16_t flags,
 	slot->token = token;
 	slot->generation = iocfat.generation;
 	slot->flags = (read_only != 0u) ? 0u : IOCFAT_H_WRITE;
-	*file = slot;
+	slot->offset = 0u;
+	slot->size = file_size;
+	*object = id;
 	*size = file_size;
 	return 0;
 }
 
-static int iocfat_close(void *fs, void *file)
+static int iocfat_file_close(uint8_t object)
 {
-	struct iocfat_file *handle = iocfat_file_get(file);
+	struct iocfat_file *handle = iocfat_file_get(object);
 	int result = 0;
 
-	(void)fs;
 	if (handle == (struct iocfat_file *)0) {
 		return -ZOS_EINVAL;
 	}
@@ -873,7 +887,7 @@ static int iocfat_close(void *fs, void *file)
 		handle->used = 0u;
 		return -ZOS_ESTALE;
 	}
-	/* close is SYNC then CLOSE (architecture 32.27). */
+	/* close is SYNC then CLOSE. */
 	iocfat_put16(&iocfat_request.data[FS2_OFF_TOKEN], handle->token);
 	result = iocfat_exchange(FS2_CMD_SYNC, 2u);
 	iocfat_put16(&iocfat_request.data[FS2_OFF_TOKEN], handle->token);
@@ -885,18 +899,15 @@ static int iocfat_close(void *fs, void *file)
 	return result;
 }
 
-static int iocfat_read(void *fs, void *file, uint32_t offset, void *buf,
-		       uint16_t len)
+/* Read `len` bytes at the instance's position into this driver's
+ * `iocfat_batch` staging and advance the position.  Returns the count or a
+ * negative error. */
+static int iocfat_file_read(struct iocfat_file *handle, uint16_t len)
 {
-	struct iocfat_file *handle = iocfat_file_get(file);
-	uint8_t *dst = (uint8_t *)buf;
-	uint32_t confirmed = 0;
+	uint32_t offset = handle->offset;
+	uint32_t confirmed = 0u;
 	uint16_t remaining = len;
 
-	(void)fs;
-	if (handle == (struct iocfat_file *)0 || buf == (void *)0) {
-		return -ZOS_EINVAL;
-	}
 	if (iocfat_file_generation(handle) != 0) {
 		return -ZOS_ESTALE;
 	}
@@ -918,67 +929,54 @@ static int iocfat_read(void *fs, void *file, uint32_t offset, void *buf,
 		}
 		available = iocfat.cache[0].valid;
 		if (within >= available) {
-			return (int)confirmed; /* short read / EOF */
+			break; /* short read / end of file */
 		}
 		n = (uint16_t)(available - within);
 		if (n > remaining) {
 			n = remaining;
 		}
-		iocfat_copy_from(iocfat.cache[0].data, within, &dst[confirmed], n);
+		/* Own-array bound: the copy runs inside the cache block.
+		 * The chunk lands at `confirmed`: a run that crosses a
+		 * block boundary appends its next chunk instead of
+		 * overwriting the one before it. */
+		iocfat_copy_range(iocfat.cache[0].data, within, iocfat_batch,
+				  (uint16_t)confirmed, n);
 		confirmed += n;
 		offset += n;
 		remaining = (uint16_t)(remaining - n);
 	}
+	handle->offset = offset;
 	return (int)confirmed;
 }
 
-static int iocfat_write(void *fs, void *file, uint32_t offset,
-			const void *buf, uint16_t len)
+/* Write the staged `chunk` bytes at the instance's position.  Returns 0 or a
+ * negative error. */
+static int iocfat_file_write(struct iocfat_file *handle, uint16_t chunk)
 {
-	struct iocfat_file *handle = iocfat_file_get(file);
-	const uint8_t *src = (const uint8_t *)buf;
-	uint32_t confirmed = 0;
+	int result;
 
-	(void)fs;
-	if (handle == (struct iocfat_file *)0 || buf == (const void *)0) {
-		return -ZOS_EINVAL;
-	}
 	if (iocfat_file_generation(handle) != 0) {
 		return -ZOS_ESTALE;
 	}
 	if (iocfat.read_only != 0u || (handle->flags & IOCFAT_H_WRITE) == 0u) {
 		return -ZOS_EROFS;
 	}
-	while (confirmed < (uint32_t)len) {
-		uint16_t chunk = (uint16_t)((uint32_t)len - confirmed);
-		int result;
-
-		if (chunk > IOCFAT_BLOCK_SIZE) {
-			chunk = (uint16_t)IOCFAT_BLOCK_SIZE;
-		}
-		result = iocfat_transfer(FS2_CMD_WRITE, handle->token,
-					 offset + confirmed, chunk,
-					 (uint8_t *)&src[confirmed]);
-		if (result < 0) {
-			return result;
-		}
-		/* Write-through: only a confirmed DONE reaches here. */
-		iocfat_cache_invalidate_file(handle);
-		iocfat_cache_invalidate_other(handle);
-		confirmed += chunk;
+	result = iocfat_transfer(FS2_CMD_WRITE, handle->token,
+				 handle->offset, chunk, iocfat_batch);
+	if (result < 0) {
+		return result;
 	}
+	/* Write-through: only a confirmed DONE reaches here. */
+	iocfat_cache_invalidate_file(handle);
+	iocfat_cache_invalidate_other(handle);
+	handle->offset += chunk;
 	return 0;
 }
 
-static int iocfat_sync(void *fs, void *file)
+static int iocfat_file_sync(struct iocfat_file *handle)
 {
-	struct iocfat_file *handle = iocfat_file_get(file);
 	int result;
 
-	(void)fs;
-	if (handle == (struct iocfat_file *)0) {
-		return -ZOS_EINVAL;
-	}
 	if (iocfat_file_generation(handle) != 0) {
 		return -ZOS_ESTALE;
 	}
@@ -990,24 +988,20 @@ static int iocfat_sync(void *fs, void *file)
 	return iocfat_map_status(iocfat_reply.status, 0u);
 }
 
-/* --- zfs_ops: metadata ------------------------------------------------ */
+/* --- metadata --------------------------------------------------------- */
 
-static int iocfat_stat(void *fs, const char *path, struct zfs_stat *out)
+static int iocfat_stat_path(const char *path, struct zfs_stat *out)
 {
-	uint8_t count;
+	uint8_t count = 0u;
 	uint32_t size;
 	int result;
 
-	(void)fs;
-	if (out == (struct zfs_stat *)0) {
-		return -ZOS_EINVAL;
-	}
 	result = iocfat_walk(path, 0xFFu, (uint8_t *)0, &count);
 	if (result != 0) {
 		return result;
 	}
 	size = 0u;
-	out->type = ZFS_TYPE_DIR; /* `/` is a synthesized directory */
+	out->type = ZFS_TYPE_DIR; /* `/` is the filesystem root */
 	if (count != 0u) {
 		result = iocfat_leaf_op(path, count, FS2_CMD_STAT);
 		if (result != 0) {
@@ -1029,10 +1023,10 @@ static int iocfat_stat(void *fs, const char *path, struct zfs_stat *out)
 	return 0;
 }
 
-/* --- zfs_ops: directories --------------------------------------------- */
+/* --- enumeration ------------------------------------------------------ */
 
-/* Allocate the directory handle, resolve the directory, OPENDIR and store
- * its token.  Returns 0 or a negative error. */
+/* Allocate the directory slot, resolve the directory, OPENDIR and store its
+ * token.  Returns 0 or a negative error. */
 static int iocfat_dir_open(const char *path, uint8_t count,
 			   struct iocfat_dir **out)
 {
@@ -1072,27 +1066,6 @@ static int iocfat_dir_open(const char *path, uint8_t count,
 	return 0;
 }
 
-static int iocfat_opendir(void *fs, const char *path, void **dir_out)
-{
-	uint8_t count;
-	int result;
-
-	(void)fs;
-	if (dir_out == (void **)0) {
-		return -ZOS_EINVAL;
-	}
-	result = iocfat_walk(path, 0xFFu, (uint8_t *)0, &count);
-	if (result != 0) {
-		return result;
-	}
-	if (count > (uint8_t)IOCFAT_PUSH_MAX) {
-		return -ZOS_EINVAL; /* the firmware resolver is 16 deep */
-	}
-	return iocfat_dir_open(path, count, (struct iocfat_dir **)dir_out);
-}
-
-/* Unpack an 11-byte packed name into `NAME.EXT` (no trailing dot).  Packed
- * names carry no interior spaces, so a space ends the significant run. */
 static uint16_t iocfat_unpack(const uint8_t *packed, char *out)
 {
 	uint8_t n = 0;
@@ -1111,16 +1084,11 @@ static uint16_t iocfat_unpack(const uint8_t *packed, char *out)
 	return (uint16_t)(n + 1u);
 }
 
-static int iocfat_readdir(void *fs, void *dir_handle,
-			  struct zfs_dirent *out)
+/* One directory entry, or 0 at end of stream, or a negative error. */
+static int iocfat_dir_read(struct iocfat_dir *dir, struct zfs_dirent *out)
 {
-	struct iocfat_dir *dir = iocfat_dir_get(dir_handle);
 	int result;
 
-	(void)fs;
-	if (dir == (struct iocfat_dir *)0 || out == (struct zfs_dirent *)0) {
-		return -ZOS_EINVAL;
-	}
 	if (dir->generation != iocfat.generation) {
 		iocfat_cache_invalidate_all();
 		return -ZOS_ESTALE;
@@ -1159,15 +1127,10 @@ static int iocfat_readdir(void *fs, void *dir_handle,
 	return 1;
 }
 
-static int iocfat_closedir(void *fs, void *dir_handle)
+static int iocfat_dir_close(struct iocfat_dir *dir)
 {
-	struct iocfat_dir *dir = iocfat_dir_get(dir_handle);
 	int result = 0;
 
-	(void)fs;
-	if (dir == (struct iocfat_dir *)0) {
-		return -ZOS_EINVAL;
-	}
 	if (dir->generation == iocfat.generation) {
 		iocfat_put16(&iocfat_request.data[FS2_OFF_TOKEN], dir->token);
 		result = iocfat_exchange(FS2_CMD_CLOSEDIR, 2u);
@@ -1179,10 +1142,8 @@ static int iocfat_closedir(void *fs, void *dir_handle)
 	return result;
 }
 
-/* --- zfs_ops: namespace mutations ------------------------------------- */
+/* --- namespace mutations ---------------------------------------------- */
 
-/* Resolve the parent, pack the leaf name and send a namespace command
- * (STAT/MKDIR/RMDIR/UNLINK).  Returns 0 or a negative native error. */
 static int iocfat_leaf_op(const char *path, uint8_t count, uint8_t command)
 {
 	int result = iocfat_resolve(path, count, 1u);
@@ -1203,12 +1164,11 @@ static int iocfat_leaf_op(const char *path, uint8_t count, uint8_t command)
 	return iocfat_map_status(iocfat_reply.status, 0u);
 }
 
-static int iocfat_mkdir(void *fs, const char *path)
+static int iocfat_mkdir_path(const char *path)
 {
-	uint8_t count;
+	uint8_t count = 0u;
 	int result;
 
-	(void)fs;
 	if (iocfat.read_only != 0u) {
 		return -ZOS_EROFS;
 	}
@@ -1222,12 +1182,11 @@ static int iocfat_mkdir(void *fs, const char *path)
 	return iocfat_leaf_op(path, count, FS2_CMD_MKDIR);
 }
 
-static int iocfat_unlink(void *fs, const char *path)
+static int iocfat_unlink_path(const char *path)
 {
-	uint8_t count;
+	uint8_t count = 0u;
 	int result;
 
-	(void)fs;
 	if (iocfat.read_only != 0u) {
 		return -ZOS_EROFS;
 	}
@@ -1248,7 +1207,7 @@ static int iocfat_unlink(void *fs, const char *path)
 }
 
 /* Emptiness check: open the directory through the shared path and enumerate
- * one entry.  The single directory slot makes a directory this provider
+ * one entry.  The single directory slot makes a directory this driver
  * already has open report ZOS_EMFILE. */
 static int iocfat_dir_is_empty(const char *path, uint8_t count)
 {
@@ -1259,20 +1218,19 @@ static int iocfat_dir_is_empty(const char *path, uint8_t count)
 	if (result != 0) {
 		return result;
 	}
-	result = iocfat_readdir((void *)0, dir, &entry);
-	(void)iocfat_closedir((void *)0, dir);
+	result = iocfat_dir_read(dir, &entry);
+	(void)iocfat_dir_close(dir);
 	if (result < 0) {
 		return result;
 	}
 	return (result == 1) ? -ZOS_ENOTEMPTY : 0;
 }
 
-static int iocfat_rmdir(void *fs, const char *path)
+static int iocfat_rmdir_path(const char *path)
 {
-	uint8_t count;
+	uint8_t count = 0u;
 	int result;
 
-	(void)fs;
 	if (iocfat.read_only != 0u) {
 		return -ZOS_EROFS;
 	}
@@ -1306,10 +1264,10 @@ static uint8_t iocfat_same_parent(const char *a, uint8_t na,
 	}
 	for (i = 0u; i + 1u < na; ++i) {
 		uint8_t k;
-		uint8_t count;
+		uint8_t unused;
 
-		(void)iocfat_walk(a, i, iocfat_name, &count);
-		(void)iocfat_walk(b, i, iocfat_name2, &count);
+		(void)iocfat_walk(a, i, iocfat_name, &unused);
+		(void)iocfat_walk(b, i, iocfat_name2, &unused);
 		for (k = 0u; k < (uint8_t)IOCFAT_NAME_LEN; ++k) {
 			if (iocfat_name[k] != iocfat_name2[k]) {
 				return 0u;
@@ -1319,13 +1277,12 @@ static uint8_t iocfat_same_parent(const char *a, uint8_t na,
 	return 1u;
 }
 
-static int iocfat_rename(void *fs, const char *oldpath, const char *newpath)
+static int iocfat_rename_path(const char *oldpath, const char *newpath)
 {
-	uint8_t nold;
-	uint8_t nnew;
+	uint8_t nold = 0u;
+	uint8_t nnew = 0u;
 	int result;
 
-	(void)fs;
 	if (iocfat.read_only != 0u) {
 		return -ZOS_EROFS;
 	}
@@ -1361,41 +1318,326 @@ static int iocfat_rename(void *fs, const char *oldpath, const char *newpath)
 	return iocfat_map_status(iocfat_reply.status, 0u);
 }
 
-static const struct zfs_ops iocfat_ops = {
-	iocfat_mount,
-	iocfat_open,
-	iocfat_close,
-	iocfat_read,
-	iocfat_write,
-	iocfat_sync,
-	iocfat_stat,
-	iocfat_opendir,
-	iocfat_readdir,
-	iocfat_closedir,
-	iocfat_mkdir,
-	iocfat_rmdir,
-	iocfat_unlink,
-	iocfat_rename
-};
+/* --- the driver dispatch ---------------------------------------------- */
 
-static const struct zfs_provider iocfat_provider = {
-	"iocfat",
-	&iocfat_ops,
-	(void *)0
-};
-
-/* --- module entry ----------------------------------------------------- */
-
-/* Address of the single provider instance, returned rather than stored so
- * SDCC emits a word relocation instead of a byte-fragmented address store. */
-static void *iocfat_self(void)
+/* ZFILE_OP_READ: `arg1` bytes at the instance's position into the caller's
+ * buffer at `arg0`.  The descriptor is required: the nucleus always issues
+ * one, and this driver names no caller address. */
+static int16_t iocfat_read_op(struct zos_ipc_frame *frame)
 {
-	return (void *)&iocfat;
+	struct iocfat_file *file = iocfat_file_get(frame->payload[0]);
+	uint16_t length = frame->arg1;
+	uint16_t offset = frame->arg0;
+	uint16_t done = 0u;
+
+	if (file == (struct iocfat_file *)0 ||
+	    frame->desc == ZOS_IPC_DESC_NONE) {
+		return -ZOS_EINVAL;
+	}
+	while (done < length) {
+		uint16_t chunk = (uint16_t)(length - done);
+		int result;
+
+		if (chunk > (uint16_t)IOCFAT_BLOCK_SIZE) {
+			chunk = (uint16_t)IOCFAT_BLOCK_SIZE;
+		}
+		result = iocfat_file_read(file, chunk);
+		if (result < 0) {
+			return (done != 0u) ? (int16_t)done : (int16_t)result;
+		}
+		if (result == 0) {
+			break; /* end of file: a short successful read */
+		}
+		if (iocfat_api->copy_out(frame->desc,
+					 (uint16_t)(offset + done),
+					 iocfat_batch_address,
+					 (uint16_t)result) < 0) {
+			return (done != 0u) ? (int16_t)done
+					    : (int16_t)-ZOS_EINVAL;
+		}
+		done = (uint16_t)(done + (uint16_t)result);
+		if ((uint16_t)result < chunk) {
+			break;
+		}
+	}
+	return (int16_t)done;
 }
+
+/* ZFILE_OP_WRITE: `arg1` bytes from the caller's buffer at `arg0`. */
+static int16_t iocfat_write_op(struct zos_ipc_frame *frame)
+{
+	struct iocfat_file *file = iocfat_file_get(frame->payload[0]);
+	uint16_t length = frame->arg1;
+	uint16_t offset = frame->arg0;
+	uint16_t done = 0u;
+
+	if (file == (struct iocfat_file *)0 ||
+	    frame->desc == ZOS_IPC_DESC_NONE) {
+		return -ZOS_EINVAL;
+	}
+	while (done < length) {
+		uint16_t chunk = (uint16_t)(length - done);
+		int result;
+
+		if (chunk > (uint16_t)IOCFAT_BLOCK_SIZE) {
+			chunk = (uint16_t)IOCFAT_BLOCK_SIZE;
+		}
+		if (iocfat_api->copy_in(frame->desc,
+					(uint16_t)(offset + done),
+					iocfat_batch_address, chunk) < 0) {
+			return (done != 0u) ? (int16_t)done
+					    : (int16_t)-ZOS_EINVAL;
+		}
+		result = iocfat_file_write(file, chunk);
+		if (result < 0) {
+			return (done != 0u) ? (int16_t)done : (int16_t)result;
+		}
+		done = (uint16_t)(done + chunk);
+	}
+	return (int16_t)done;
+}
+
+/* ZFILE_OP_SEEK: `arg0` = whence, `payload[1..4]` = the signed offset; the
+ * reply carries the new position in the same four bytes. */
+static int16_t iocfat_seek_op(struct zos_ipc_frame *frame)
+{
+	struct iocfat_file *file = iocfat_file_get(frame->payload[0]);
+	int32_t base;
+	int32_t target;
+
+	if (file == (struct iocfat_file *)0) {
+		return -ZOS_EINVAL;
+	}
+	if (frame->arg0 == ZFS_SEEK_SET) {
+		base = 0;
+	} else if (frame->arg0 == ZFS_SEEK_CUR) {
+		base = (int32_t)file->offset;
+	} else if (frame->arg0 == ZFS_SEEK_END) {
+		base = (int32_t)file->size;
+	} else {
+		return -ZOS_EINVAL;
+	}
+	target = base + (int32_t)iocfat_get32(&frame->payload[1]);
+	if (target < 0) {
+		return -ZOS_EINVAL;
+	}
+	file->offset = (uint32_t)target;
+	iocfat_put32(&frame->payload[1], file->offset);
+	return 0;
+}
+
+/* ZFILE_OP_META: the reply payload holds a packed `struct zfs_stat`. */
+static int16_t iocfat_meta_op(struct zos_ipc_frame *frame)
+{
+	struct iocfat_file *file = iocfat_file_get(frame->payload[0]);
+	struct zfs_stat st;
+	const uint8_t *src;
+	uint8_t i;
+
+	if (file == (struct iocfat_file *)0) {
+		return -ZOS_EINVAL;
+	}
+	st.type = ZFS_TYPE_FILE;
+	st.attributes = 0u;
+	st.reserved = 0u;
+	st.size = file->size;
+	st.ctime = ZFS_TIME_UNKNOWN;
+	st.mtime = ZFS_TIME_UNKNOWN;
+	src = (const uint8_t *)&st;
+	for (i = 0u; i < (uint8_t)sizeof(st); ++i) {
+		frame->payload[i] = src[i];
+	}
+	return 0;
+}
+
+/* ZFILE_OP_SYNC: flush the instance. */
+static int16_t iocfat_sync_op(struct zos_ipc_frame *frame)
+{
+	struct iocfat_file *file = iocfat_file_get(frame->payload[0]);
+
+	if (file == (struct iocfat_file *)0) {
+		return -ZOS_EINVAL;
+	}
+	return (int16_t)iocfat_file_sync(file);
+}
+
+/* ZFS_OP_OPEN: the path is a nucleus request buffer the FS provider staged
+ * (`payload[0..1]`), the flags are `payload[2..3]`; the reply payload holds
+ * the instance identity. */
+static int16_t iocfat_open_op(struct zos_ipc_frame *frame)
+{
+	const char *path = (const char *)iocfat_addr(frame->payload);
+	uint16_t flags = (uint16_t)((uint16_t)frame->payload[2] |
+				    ((uint16_t)frame->payload[3] << 8));
+	uint8_t object = 0u;
+	uint32_t size = 0u;
+	int result = iocfat_file_open(path, flags, &object, &size);
+
+	if (result != 0) {
+		return (int16_t)result;
+	}
+	frame->payload[0] = object;
+	return 0;
+}
+
+/* ZFS_OP_CLOSE: release the instance `payload[0]` names. */
+static int16_t iocfat_close_op(struct zos_ipc_frame *frame)
+{
+	return (int16_t)iocfat_file_close(frame->payload[0]);
+}
+
+/* ZFS_OP_STAT: the path's metadata goes back in the reply payload. */
+static int16_t iocfat_stat_op(struct zos_ipc_frame *frame)
+{
+	const char *path = (const char *)iocfat_addr(frame->payload);
+	struct zfs_stat st;
+	const uint8_t *src;
+	uint8_t i;
+	int result = iocfat_stat_path(path, &st);
+
+	if (result != 0) {
+		return (int16_t)result;
+	}
+	src = (const uint8_t *)&st;
+	for (i = 0u; i < (uint8_t)sizeof(st); ++i) {
+		frame->payload[i] = src[i];
+	}
+	return 0;
+}
+
+/* ZFS_OP_ENUM: batch entries into the caller's array (the call descriptor),
+ * resuming at `payload[2..3]` (the cookie = entry index) and replying the
+ * next cookie there. */
+static int16_t iocfat_enum_op(struct zos_ipc_frame *frame)
+{
+	const char *path = (const char *)iocfat_addr(frame->payload);
+	uint16_t cookie = (uint16_t)((uint16_t)frame->payload[2] |
+				     ((uint16_t)frame->payload[3] << 8));
+	uint16_t out_size = (uint16_t)((uint16_t)frame->payload[4] |
+				       ((uint16_t)frame->payload[5] << 8));
+	struct iocfat_dir *dir;
+	struct zos_ns_entry entry;
+	uint16_t slot = 0u;
+	uint16_t skip = 0u;
+	uint16_t written = 0u;
+	uint8_t count = 0u;
+	int result;
+
+	if (frame->desc == ZOS_IPC_DESC_NONE ||
+	    out_size < ZOS_NS_ENTRY_SIZE) {
+		return -ZOS_EINVAL;
+	}
+	result = iocfat_walk(path, 0xFFu, (uint8_t *)0, &count);
+	if (result != 0) {
+		return (int16_t)result;
+	}
+	if (count > (uint8_t)IOCFAT_PUSH_MAX) {
+		return -ZOS_EINVAL;
+	}
+	result = iocfat_dir_open(path, count, &dir);
+	if (result != 0) {
+		return (int16_t)result;
+	}
+	/* The cookie is a stateless entry index: skip what the caller has. */
+	while (skip < cookie) {
+		struct zfs_dirent seen;
+		int read = iocfat_dir_read(dir, &seen);
+
+		if (read <= 0) {
+			cookie = 0u;
+			(void)iocfat_dir_close(dir);
+			frame->payload[2] = 0u;
+			frame->payload[3] = 0u;
+			return 0;
+		}
+		++skip;
+	}
+	while ((uint16_t)(slot + ZOS_NS_ENTRY_SIZE) <= out_size) {
+		struct zfs_dirent file;
+		uint8_t i;
+
+		result = iocfat_dir_read(dir, &file);
+		if (result <= 0) {
+			break; /* end of stream */
+		}
+		entry.type = (file.type == ZFS_TYPE_DIR) ? 0u
+							 : ZOS_TYPE_FILE;
+		entry.flags = (file.type == ZFS_TYPE_DIR)
+				      ? ZOS_NS_ENTRY_CONTAINER : 0u;
+		entry.name_length = (uint8_t)file.name_length;
+		entry.reserved = 0u;
+		for (i = 0u; i < (uint8_t)ZOS_NS_NAME_MAX; ++i) {
+			entry.name[i] = (i < (uint8_t)file.name_length)
+						? file.name[i] : '\0';
+		}
+		iocfat_copy(iocfat_batch, (const uint8_t *)&entry,
+			    (uint16_t)ZOS_NS_ENTRY_SIZE);
+		if (iocfat_api->copy_out(frame->desc, slot,
+					 iocfat_batch_address,
+					 (uint16_t)ZOS_NS_ENTRY_SIZE) < 0) {
+			break;
+		}
+		slot = (uint16_t)(slot + ZOS_NS_ENTRY_SIZE);
+		++written;
+		++skip;
+		++cookie;
+	}
+	(void)iocfat_dir_close(dir);
+	frame->payload[2] = (uint8_t)cookie;
+	frame->payload[3] = (uint8_t)(cookie >> 8);
+	return (int16_t)written;
+}
+
+int16_t iocfat_dispatch(struct zos_ipc_frame *frame)
+{
+	if (iocfat_ready == 0u) {
+		return -ZOS_ENODEV; /* absent or unreadable card */
+	}
+	if (frame->flags != 0u) {
+		return -ZOS_EINVAL; /* the operations define no flags */
+	}
+	switch (frame->op) {
+	case ZFILE_OP_READ:
+		return iocfat_read_op(frame);
+	case ZFILE_OP_WRITE:
+		return iocfat_write_op(frame);
+	case ZFILE_OP_SEEK:
+		return iocfat_seek_op(frame);
+	case ZFILE_OP_META:
+		return iocfat_meta_op(frame);
+	case ZFILE_OP_SYNC:
+		return iocfat_sync_op(frame);
+	case ZFS_OP_OPEN:
+		return iocfat_open_op(frame);
+	case ZFS_OP_CLOSE:
+		return iocfat_close_op(frame);
+	case ZFS_OP_STAT:
+		return iocfat_stat_op(frame);
+	case ZFS_OP_MKDIR:
+		return (int16_t)iocfat_mkdir_path(
+			(const char *)iocfat_addr(frame->payload));
+	case ZFS_OP_RMDIR:
+		return (int16_t)iocfat_rmdir_path(
+			(const char *)iocfat_addr(frame->payload));
+	case ZFS_OP_UNLINK:
+		return (int16_t)iocfat_unlink_path(
+			(const char *)iocfat_addr(frame->payload));
+	case ZFS_OP_RENAME:
+		return (int16_t)iocfat_rename_path(
+			(const char *)iocfat_addr(frame->payload),
+			(const char *)iocfat_addr(&frame->payload[2]));
+	case ZFS_OP_ENUM:
+		return iocfat_enum_op(frame);
+	default:
+		return -ZOS_EINVAL;
+	}
+}
+
+/* --- driver entry ----------------------------------------------------- */
 
 static void iocfat_zero_instance(void)
 {
-	uint8_t *p = (uint8_t *)iocfat_self();
+	uint8_t *p = (uint8_t *)&iocfat;
 	uint16_t i;
 
 	for (i = 0u; i < (uint16_t)sizeof(struct iocfat_instance); ++i) {
@@ -1403,57 +1645,38 @@ static void iocfat_zero_instance(void)
 	}
 }
 
-int iocfat_init(const struct zdriver_api *api)
+void iocfat_init(const struct ipc_service_boot *boot)
 {
-	zdev_handle_t handle;
-	const void *class_ops = (const void *)0;
-	void *ioc_state = (void *)0;
-	const struct zioc_ops *ops;
 	uint16_t chunk_max;
 	uint16_t flags;
 	int result;
 
-	if (api == (const struct zdriver_api *)0) {
-		return ZDRIVER_FAIL;
-	}
+	iocfat_api = boot->api;
+	iocfat_ioc = boot->deps[IOCFAT_DEP_IOC];
+	iocfat_batch_address = (uint16_t)iocfat_batch;
+	iocfat_ready = 0u;
 	iocfat_zero_instance();
-	handle = api->device_find(ZDEV_IOC,
-				  ZCAP_IOC_COMMAND | ZCAP_IOC_BULK_READ |
-				  ZCAP_IOC_BULK_WRITE, 0u);
-	if (handle == ZDEV_HANDLE_INVALID) {
-		return -ZOS_ENODEV;
+	if (iocfat_ioc == 0u) {
+		return;
 	}
-	if (api->device_interface(handle, ZDEV_IOC, &class_ops, &ioc_state) !=
-	    ZDEV_OK) {
-		return -ZOS_ENODEV;
-	}
-	ops = (const struct zioc_ops *)class_ops;
-	if (ops == (const struct zioc_ops *)0 || ops->command == 0 ||
-	    ops->bulk_read == 0 || ops->bulk_write == 0) {
-		return -ZOS_ENODEV;
-	}
-	iocfat_ioc_ops = ops;
-	iocfat_ioc_state = ioc_state;
 
 	/* CAPS v1: version, 2-byte tokens and a 512-byte chunk. */
 	result = iocfat_exchange(FS2_CMD_CAPS, 0u);
-	if (result != 0) {
-		return result;
-	}
-	if (iocfat_reply.status != FS2_STATUS_OK ||
+	if (result != 0 || iocfat_reply.status != FS2_STATUS_OK ||
 	    iocfat_reply.length < FS2_CAP_REPLY_LEN) {
-		return -ZOS_EIO;
+		return;
 	}
 	if (iocfat_reply.data[FS2_OFF_CAP_VERSION] != FS2_CAP_VERSION ||
 	    iocfat_reply.data[FS2_OFF_CAP_STATUS_VERSION] !=
 		    FS2_CAP_STATUS_VERSION ||
 	    iocfat_reply.data[FS2_OFF_CAP_TOKEN_BYTES] !=
 		    FS2_CAP_TOKEN_BYTES) {
-		return -ZOS_ENOTSUP;
+		return;
 	}
 	chunk_max = iocfat_get16(&iocfat_reply.data[FS2_OFF_CAP_CHUNK_MAX]);
-	if (chunk_max < FS2_CAP_CHUNK_MIN) {
-		return -ZOS_ENOTSUP;
+	if (chunk_max < FS2_CAP_CHUNK_MIN ||
+	    chunk_max > (uint16_t)IOCFAT_BLOCK_SIZE) {
+		return;
 	}
 	flags = iocfat_get16(&iocfat_reply.data[FS2_OFF_CAP_FLAGS]);
 	iocfat.read_only =
@@ -1461,5 +1684,18 @@ int iocfat_init(const struct zdriver_api *api)
 	iocfat.generation =
 		iocfat_get32(&iocfat_reply.data[FS2_OFF_CAP_GENERATION]);
 
-	return api->fs_register(&iocfat_provider);
+	/* Probe the root: it must be openable on mounted media.  An absent
+	 * or FAT-less card stops here, and every operation then reports
+	 * -ZOS_ENODEV while `/SYSTEM` and the console stay usable. */
+	{
+		struct iocfat_dir *dir;
+
+		result = iocfat_dir_open("/", 0u, &dir);
+		if (result != 0) {
+			return;
+		}
+		(void)iocfat_dir_close(dir);
+	}
+	iocfat.mounted = 1u;
+	iocfat_ready = 1u;
 }

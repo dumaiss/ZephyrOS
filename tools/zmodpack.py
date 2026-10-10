@@ -153,6 +153,11 @@ SERVICE_MAX_PUBLICATIONS = 12
 # full namespace path and the container carries the provider-relative
 # remainder, which is what the provider resolves.
 SERVICE_DEVICE_ROOT = "/dev"
+# The filesystem-namespace root (architecture 36.14, work package 42b): a
+# filesystem driver publishes `/FS` itself, so its publication path is the
+# provider root rather than a name below SERVICE_DEVICE_ROOT.  The record's
+# name is the full path ("/FS"), which is what the FS provider matches.
+SERVICE_FS_ROOT = "/FS"
 # The 8-bit protocol types a publication may name (abi/zos/object.h).
 SERVICE_TYPES = {
     "SERIAL": 1, "VIDEO": 2, "BLOCK": 3, "INPUT": 4, "IOC": 5,
@@ -587,34 +592,49 @@ def load_service_manifest(manifest, path, objdir):
     for index, publish in enumerate(publishes):
         where = "%s: publication %d" % (path, index)
         full = publish.get("path")
-        if not isinstance(full, str) or not full.startswith(
-                SERVICE_DEVICE_ROOT + "/"):
-            raise ZmodError("%s: path must be a string below %s/"
-                            % (where, SERVICE_DEVICE_ROOT))
-        name = full[len(SERVICE_DEVICE_ROOT):]
-        if len(name) + 1 > SERVICE_PUBLICATION_NAME:
-            raise ZmodError("%s: %s is longer than %d provider-relative "
-                            "bytes" % (where, full,
-                                       SERVICE_PUBLICATION_NAME - 1))
-        if name.endswith("/") or "//" in name:
-            raise ZmodError("%s: %s is not a clean name" % (where, full))
-        for char in name:
-            if not (0x21 <= ord(char) <= 0x7E):
-                raise ZmodError("%s: %s carries a non-printable byte"
+        if not isinstance(full, str):
+            raise ZmodError("%s: path must be a string below %s/ or %s"
+                            % (where, SERVICE_DEVICE_ROOT, SERVICE_FS_ROOT))
+        if full == SERVICE_FS_ROOT:
+            # The filesystem-namespace root: the whole volume is one
+            # instance, so it names no object.
+            if publish.get("type") != "FS":
+                raise ZmodError("%s: %s must be published with type FS"
+                                % (where, SERVICE_FS_ROOT))
+            if int(publish.get("object", 0)) != 0:
+                raise ZmodError("%s: %s is the provider root and names no "
+                                "object" % (where, SERVICE_FS_ROOT))
+            publish["type_code"] = SERVICE_TYPES["FS"]
+            name = SERVICE_FS_ROOT
+        elif full.startswith(SERVICE_DEVICE_ROOT + "/"):
+            name = full[len(SERVICE_DEVICE_ROOT):]
+            if len(name) + 1 > SERVICE_PUBLICATION_NAME:
+                raise ZmodError("%s: %s is longer than %d provider-relative "
+                                "bytes" % (where, full,
+                                           SERVICE_PUBLICATION_NAME - 1))
+            if name.endswith("/") or "//" in name:
+                raise ZmodError("%s: %s is not a clean name"
                                 % (where, full))
-        publish["name"] = name
-        publish_type = publish.get("type")
-        if isinstance(publish_type, str):
-            if publish_type not in SERVICE_TYPES:
-                raise ZmodError("%s: unknown type %r"
-                                % (where, publish_type))
-            publish["type_code"] = SERVICE_TYPES[publish_type]
+            for char in name:
+                if not (0x21 <= ord(char) <= 0x7E):
+                    raise ZmodError("%s: %s carries a non-printable byte"
+                                    % (where, full))
+            publish_type = publish.get("type")
+            if isinstance(publish_type, str):
+                if publish_type not in SERVICE_TYPES:
+                    raise ZmodError("%s: unknown type %r"
+                                    % (where, publish_type))
+                publish["type_code"] = SERVICE_TYPES[publish_type]
+            else:
+                value = int(publish_type if publish_type is not None else 0)
+                if value < 1 or value > 0xFF:
+                    raise ZmodError("%s: type %r out of range"
+                                    % (where, publish_type))
+                publish["type_code"] = value
         else:
-            value = int(publish_type if publish_type is not None else 0)
-            if value < 1 or value > 0xFF:
-                raise ZmodError("%s: type %r out of range"
-                                % (where, publish_type))
-            publish["type_code"] = value
+            raise ZmodError("%s: path must be a string below %s/ or %s"
+                            % (where, SERVICE_DEVICE_ROOT, SERVICE_FS_ROOT))
+        publish["name"] = name
         endpoint = publish.get("endpoint")
         if not isinstance(endpoint, dict) or "class" not in endpoint or \
                 "instance" not in endpoint:
@@ -2390,23 +2410,24 @@ def plan_service_set(packs):
                         break
                 if resolved != 0:
                     break
+            root = (SERVICE_FS_ROOT if publication["name"] ==
+                    SERVICE_FS_ROOT else SERVICE_DEVICE_ROOT)
             if resolved == 0:
                 raise ZmodError(
                     "%s: publication %s names endpoint %d.%d, which no "
                     "image in the load order exports"
-                    % (pack.name, SERVICE_DEVICE_ROOT + publication["name"],
-                       key[0], key[1]))
+                    % (pack.name, root + publication["name"]
+                       if root == SERVICE_DEVICE_ROOT
+                       else publication["name"], key[0], key[1]))
             publication["number"] = resolved
-            full = (SERVICE_DEVICE_ROOT + publication["name"]).lower()
+            full = (root + publication["name"]).lower()
             if full in seen_paths:
                 raise ZmodError("%s: %s is already published by %s"
-                                % (pack.name,
-                                   SERVICE_DEVICE_ROOT +
-                                   publication["name"], seen_paths[full]))
+                                % (pack.name, full, seen_paths[full]))
             seen_paths[full] = pack.name
             published += 1
             name = publication["name"]
-            if "/" in name[1:]:
+            if root == SERVICE_DEVICE_ROOT and "/" in name[1:]:
                 parent_rows.add(name.rsplit("/", 1)[0].lower())
     if published + len(parent_rows) > SERVICE_MAX_PUBLICATIONS:
         raise ZmodError(

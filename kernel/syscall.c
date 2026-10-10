@@ -36,11 +36,7 @@
 #include "kernel/vfs/vfs.h"
 
 #include "syscall/diag.h"
-#include "syscall/fs.h"
-#include "syscall/ipc.h"
-#if ZOS_NS_HANDLES
 #include "syscall/object.h"
-#endif
 
 /* Dispatcher input/output state (written by the asm boundary, read by C). */
 uint8_t zos_syscall_number;
@@ -216,9 +212,10 @@ static void syscall_exec(uint8_t bank, uint16_t block)
 		syscall_error(ZOS_EINVAL);
 		return;
 	}
-	result = zos_fs_copy_path(read_le16((const uint8_t *)block),
-				  read_le16((const uint8_t *)(block + 2)),
-				  zos_process_path_scratch);
+	result = zos_object_copy_path(bank,
+				      read_le16((const uint8_t *)block),
+				      read_le16((const uint8_t *)(block + 2)),
+				      zos_process_path_scratch);
 	if (result == 0) {
 		result = process_prepare(zos_process_path_scratch, pid, args,
 					 args_length, &child);
@@ -243,33 +240,16 @@ void kernel_syscall_dispatch(void)
 	/* M1 default: unknown numbers stay deterministic. */
 	syscall_error(ZOS_ENOSYS);
 
-	/* M9 native filesystem family (10h-1Fh). */
-	if (zos_syscall_number >= ZOS_SYSCALL_FS_OPEN &&
-	    zos_syscall_number <= ZOS_SYSCALL_FS_SYNC) {
-		zos_fs_dispatch(zos_syscall_number, bank, zos_syscall_args);
-		return;
-	}
-
-#if ZOS_NS_HANDLES
-	/* Namespace and object-handle family (06h-09h, work package 42a;
-	 * the acceptance image builds it, production switches over in 42b).
-	 * The stage-3 lookup number 06h is the object `bind` number here, so
-	 * the lookup pair is not reachable: `zos_ipc_dispatch` is linked but
-	 * no number routes to it. */
+	/* Object and namespace family (06h-0Bh, package 42b): bind, call,
+	 * unbind, ns_enum, chdir, getcwd.  The M9 `FS_*` family and the
+	 * stage-3 lookup/call pair are retired; their numbers route to the
+	 * M1 default above (ZOS_ENOSYS). */
 	if (zos_syscall_number >= ZOS_SYSCALL_BIND &&
-	    zos_syscall_number <= ZOS_SYSCALL_NS_ENUM) {
+	    zos_syscall_number <= ZOS_SYSCALL_GETCWD) {
 		zos_object_dispatch(zos_syscall_number, bank,
 				    zos_syscall_args);
 		return;
 	}
-#else
-	/* Resident-service IPC family (06h/07h, package 39). */
-	if (zos_syscall_number == ZOS_SYSCALL_IPC_LOOKUP ||
-	    zos_syscall_number == ZOS_SYSCALL_IPC_CALL) {
-		zos_ipc_dispatch(zos_syscall_number, bank, zos_syscall_args);
-		return;
-	}
-#endif
 
 	switch (zos_syscall_number) {
 	case ZOS_SYSCALL_EXIT:

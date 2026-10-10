@@ -19,9 +19,10 @@ Enforces docs/architecture.md section 3.1 and the current layout:
   seam; production sources contain no self-test implementations;
 - the retired M3 static-driver mechanism, driver-private SDCC glue, and
   test-only SIO build variants cannot return;
-- the Mn-1 retention window holds: only the M9/M10 acceptance
-  configurations exist (work/00-SUPERVISOR.md), no pre-M9 acceptance
-  target, image directory or boot-mode flag can come back, and the
+- the Mn-1 retention window holds: only the M10 acceptance
+  configurations exist (work/00-SUPERVISOR.md), no pre-M10 acceptance
+  target, image directory or boot-mode flag can come back (correction 01
+  to work package 42b deletes the M9 machinery outright), and the
   mechanism coverage that replaced them is present;
 - live build/source documentation contains no references to the removed
   implementation paths (dated acceptance records under docs/validation/
@@ -72,12 +73,9 @@ OWNER_FILES = (
     "kernel/irq/entry.asm",
     "kernel/irq/vectors.asm",
     "kernel/irq/irq_private.h",
-    "kernel/device/registry.h",
     "kernel/memory/banking.h",
     "kernel/runtime/sdcc_helpers.asm",
     "kernel/module/arena.asm",
-    "kernel/module/loader.c",
-    "kernel/module/relocate.c",
     "kernel/romfs/romfs.c",
     "kernel/romfs/rom_access.asm",
     "kernel/process/process.c",
@@ -85,71 +83,22 @@ OWNER_FILES = (
     "kernel/process/launch.asm",
     "kernel/memory/user_copy.asm",
     "kernel/vfs/vfs.h",
-    "kernel/vfs/mount_config.h",
     "kernel/vfs/path.c",
-    "kernel/vfs/mount.c",
-    "kernel/vfs/file.c",
-    "kernel/vfs/dir.c",
-    "kernel/vfs/mutate.c",
+    "kernel/vfs/ns.h",
+    "kernel/vfs/ns.c",
+    "kernel/vfs/ns_file.c",
+    "kernel/syscall/object.c",
+    "kernel/syscall/object.h",
+    "fs/iocfat/iocfat.c",
+    "services/manifests/iocfat.json",
     "kernel/vfs/process.c",
     "kernel/vfs/workspace.c",
-    "kernel/syscall/fs.c",
-    "kernel/syscall/fs.h",
-    "fs/romfs/romfs_provider.c",
-    "fs/romfs/romfs_provider.h",
     "include/zephyros/block.h",
-    "include/zephyros/vfs.h",
-    "config/mounts.json",
-    "tools/mountgen.py",
     "tools/romfspack.py",
-    "tests/m9/mounts-optional-fail.json",
-    "tests/m9/mounts-required-fail.json",
-    "tests/m9/mounts-system-only.json",
-    "tests/m9/mounts-ramfs.json",
-    "tests/m9/mounts-ramfs-optional-fail.json",
-    "tests/m9/mounts-ramfs-required-fail.json",
-    "tests/m9/manifest-provider.json",
-    "tests/m9/manifest-vfs.json",
-    "tests/target/m9/m9_vfs_test.c",
-    "tests/target/m9/m9_provider_test.c",
-    "tests/target/m9/m9_fs_test.c",
-    "tests/target/m9/m9_exec_test.c",
-    "tests/target/m9/fstest/fstest.c",
-    "tests/target/m9/fstest/fstest_l.c",
-    "tests/target/include/m9_selftest.h",
-    "tests/target/include/m9_provider_selftest.h",
-    "tests/target/include/m9_fs_selftest.h",
-    "tests/target/include/m9_exec_selftest.h",
-    "tests/m9/manifest-fs.json",
-    "tests/m9/manifest-exec.json",
-    "tests/test_m9_fs.py",
-    "tests/test_m9_exec.py",
-    "tests/test_m9_exec_sim.py",
-    "tests/target/m9/exec/fschild.c",
-    "tests/target/m9/exec/fsdeep.c",
-    "tests/target/m9/exec/fsraw.c",
-    "tests/target/m9/exec/fsraw_entry.asm",
-    "tests/target/m9/m9_selftest.c",
-    "tests/target/m9/m9_selftest_runner.c",
-    "tests/target/m9/m9_selftest_internal.h",
-    "tests/target/m9/fstest/fsfat.c",
-    "tests/target/include/m9_integration_selftest.h",
-    "tests/m9/manifest-selftest.json",
-    "tests/test_m9_selftest.py",
-    "tests/test_m9_selftest_sim.py",
-    "tests/test_syscall_sim.py",
-    "tests/modules/ramfs.c",
-    "tests/modules/ramfs.json",
-    "tests/modules/m9_probe.c",
-    "tests/modules/m9_probe.json",
-    "tests/modules/m9_dup.c",
-    "tests/modules/m9_dup.json",
-    "tests/modules/m9_fail.c",
-    "tests/modules/m9_fail.json",
-    "tests/test_m9_vfs.py",
-    "tests/test_block.py",
-    "tests/test_m9_vfs_sim.py",
-    "tests/test_m9_provider_sim.py",
+    "tests/fs/fs_selftest.c",
+    "tests/fs/fs_child.c",
+    "tests/fs/manifest.json",
+    "tests/test_fs_selftest_sim.py",
     "include/zephyros/romfs.h",
     "include/zephyros/process.h",
     "include/zephyros/zex.h",
@@ -172,7 +121,6 @@ OWNER_FILES = (
     "user/sdk/src/runtime.asm",
     "user/sdk/src/console_service.c",
     "user/sdk/src/gate.asm",
-    "user/sdk/src/fsgate.asm",
     "user/sdk/src/diaggate.asm",
     "user/sdk/src/args.c",
     "user/sdk/src/fs.c",
@@ -226,7 +174,6 @@ OWNER_FILES = (
     "tests/test_sdk.py",
     "tools/zexmanifest.py",
     "tests/target/romfs/romfs_test.c",
-    "tests/target/loader/loader_test.c",
     "tests/target/process/process_test.c",
     "tests/target/process/zextest.c",
     "drivers/ctc/ctc.c",
@@ -274,7 +221,6 @@ OWNER_FILES = (
     "tests/target/include/syscall_entry.inc",
     "tests/target/include/irq_entry.inc",
     "tests/target/include/romfs_selftest.h",
-    "tests/target/include/loader_selftest.h",
     "tests/target/include/process_selftest.h",
     "tests/target/include/ctc_test.h",
     "tests/target/nucleus/nucleus_entry.asm",
@@ -320,15 +266,46 @@ REMOVED_PATHS = (
     "user/monitor/monitor.json",
     "tests/subsys/zextest.json",
     "tests/target/process/zextest_entry.asm",
-    "tests/target/m9/fstest/fstest.json",
-    "tests/target/m9/fstest/fstest_l.json",
-    "tests/target/m9/fstest/fstest_entry.asm",
-    "tests/target/m9/fstest/fstest_l_entry.asm",
-    "tests/target/m9/exec/fschild.json",
-    "tests/target/m9/exec/fschild_entry.asm",
-    "tests/target/m9/exec/fsdeep.json",
-    "tests/target/m9/exec/fsdeep_entry.asm",
-    "tests/target/m9/exec/fsraw.json",
+    # Correction 01 to work package 42b deleted the whole M9 acceptance
+    # surface: its subjects are gone from M10, so the images, programs,
+    # manifests and host modules may not come back.
+    "tests/target/m9",
+    "tests/target/m9/fstest",
+    "tests/target/m9/exec",
+    "tests/target/m9/iocfat",
+    "tests/target/m9/fstest/fstest.c",
+    "tests/target/m9/fstest/fstest_l.c",
+    "tests/target/m9/fstest/fsfat.c",
+    "tests/target/m9/exec/fschild.c",
+    "tests/target/m9/exec/fsdeep.c",
+    "tests/target/m9/exec/fsraw.c",
+    "tests/target/m9/exec/fsraw_entry.asm",
+    "tests/target/m9/iocfat/iocfat.c",
+    "tests/target/m9/m9_exec_test.c",
+    "tests/target/m9/m9_selftest.c",
+    "tests/target/m9/m9_selftest_internal.h",
+    "tests/target/m9/m9_selftest_runner.c",
+    "tests/target/include/m9_selftest.h",
+    "tests/target/include/m9_exec_selftest.h",
+    "tests/target/include/m9_integration_selftest.h",
+    "tests/target/include/m9_iocfat_selftest.h",
+    "tests/m9/manifest-exec.json",
+    "tests/m9/manifest-iocfat.json",
+    "tests/m9/manifest-selftest.json",
+    "tests/test_m9_exec.py",
+    "tests/test_m9_exec_sim.py",
+    "tests/test_m9_selftest.py",
+    "tests/test_m9_selftest_sim.py",
+    "tests/test_iocfat_sim.py",
+    "tests/test_syscall_sim.py",
+    "tests/modules/m9_dup.c",
+    "tests/modules/m9_dup.json",
+    "tests/modules/m9_fail.c",
+    "tests/modules/m9_fail.json",
+    "tests/modules/m9_probe.c",
+    "tests/modules/m9_probe.json",
+    "tests/modules/ramfs.c",
+    "tests/modules/ramfs.json",
 )
 
 # Directories that must exist after the production/test separation.  Every
@@ -339,22 +316,20 @@ REQUIRED_DIRS = (
     "boot",
     "kernel/memory", "kernel/syscall", "kernel/irq", "kernel/runtime",
     "kernel/module", "kernel/romfs", "kernel/process",
-    "kernel/vfs", "fs/romfs", "config",
+    "kernel/vfs", "fs/iocfat", "services/manifests", "config",
     "drivers/sio", "drivers/ctc", "drivers/ioc", "drivers/hid",
-    "drivers/v9958", "modules/manifests", "modules/runtime",
+    "drivers/v9958", "modules/runtime",
     "abi", "abi/zos",
     "user/sdk", "user/sdk/include", "user/sdk/src",
     "user/helloworld", "user/monitor",
     "recovery",
     "tests/subsys", "tests/hid", "tests/video", "tests/console",
-    "tests/m9",
+    "tests/fs",
     "tests/modules",
-    "tests/target/syscall", "tests/target/irq", "tests/target/loader",
+    "tests/target/syscall", "tests/target/irq",
     "tests/target/romfs", "tests/target/process", "tests/target/support",
     "tests/target/ioc", "tests/target/hid", "tests/target/video",
-    "tests/target/console", "tests/target/m9",
-    "tests/target/m9/fstest",
-    "tests/target/m9/exec",
+    "tests/target/console", "tests/target/ns",
     "tests/target/include",
     "tests/target/support",
 )
@@ -554,15 +529,18 @@ def _tab_recipe_lines(text):
 # and the narrow board-constant header a hardware-owning driver includes.
 # (kernel/... is deliberately not reachable from the module build.)
 MODULE_FACING_HEADERS = (
-    "include/zephyros/driver.h",
     "include/zephyros/device.h",
     "include/zephyros/irq.h",
     "include/zephyros/ioc.h",
+    "include/zephyros/ioc_protocol.h",
     "include/zephyros/hid.h",
     "include/zephyros/video.h",
     "include/zephyros/block.h",
+    "include/zephyros/ipc.h",
     "abi/zos/fs.h",
-    "include/zephyros/vfs.h",
+    "abi/zos/ipc.h",
+    "abi/zos/object.h",
+    "abi/zos/protocol.h",
     "platform/zephyr80/hardware.h",
 )
 
@@ -887,10 +865,15 @@ class TestModuleFacingHeaderBoundary(unittest.TestCase):
     def test_module_facing_closure_keeps_the_abi_surface(self):
         headers = _header_closure(MODULE_FACING_HEADERS)
         text = "".join(_read(os.path.join(ROOT, rel)) for rel in headers)
-        for needle in ("struct zdriver_api", "struct zdevice_desc",
-                       "struct zchar_ops", "irq_source_t", "irq_handler_t",
-                       "ZCAP_IOC_COMMAND", "ZDEV_HID", "ZDEV_BLOCK",
-                       "struct zblock_ops", "ZCAP_BLOCK_READ"):
+        # Package 42b: a resident service builds against the M10 service
+        # ABI (abi/zos + include/zephyros), not the retired M8 module
+        # (driver.h) ABI.
+        for needle in ("struct ipc_service_api", "struct zos_ipc_frame",
+                       "struct zos_ns_entry", "struct zos_ipc_call_args",
+                       "ZOS_TYPE_FILE", "ZOS_TYPE_FS", "ZOS_CLASS_FILE",
+                       "struct zfs_stat", "ZFILE_OP_READ", "ZFS_OP_MKDIR",
+                       "struct zioc_frame", "irq_source_t",
+                       "irq_handler_t", "ZDEV_HID", "ZDEV_BLOCK"):
             self.assertIn(needle, text)
 
     @unittest.skipUnless(shutil.which("sdcc"), "sdcc not available")
@@ -957,12 +940,12 @@ class TestNoResidentBlockDriver(unittest.TestCase):
             % ", ".join(offenders))
 
     def test_no_production_block_module_manifest(self):
-        manifests = os.path.join(ROOT, "modules", "manifests")
+        manifests = os.path.join(ROOT, "services", "manifests")
         offenders = [name for name in sorted(os.listdir(manifests))
                      if self.BLOCK_NAME_RE.search(name)]
         self.assertEqual(
             offenders, [],
-            "a production module manifest names a block driver: %s"
+            "a production service manifest names a block driver: %s"
             % ", ".join(offenders))
 
     def test_production_romfs_packs_no_block_driver(self):
@@ -1088,12 +1071,13 @@ class TestNoStaleRemovedPaths(unittest.TestCase):
 # predecessor keep acceptance machinery.  This list moves forward at the
 # start of each milestone -- bump the lower bound when a milestone closes
 # and add the new milestone on the right.
-ALLOWED_MILESTONES = (9, 10)
+ALLOWED_MILESTONES = (10,)
 
-# Acceptance configurations retired by the Mn-1 rule (M1-M8).  Each name
-# belonged to exactly one milestone; none may come back, because their
-# mechanism coverage now lives on the current boot path (the subsystem
-# images and the M9 acceptance images).
+# Acceptance configurations retired by the Mn-1 rule.  Each name belonged
+# to exactly one milestone; none may come back, because their mechanism
+# coverage now lives on the current boot path (the subsystem images and the
+# M10 acceptance images).  Correction 01 to work package 42b retired the M9
+# images and their hardware smoke targets outright.
 RETIRED_ACCEPTANCE_TARGETS = (
     "syscall-selftest", "irq-selftest", "m3-selftest",
     "m4-loader-selftest", "m4-selftest", "m4-placement-selftest",
@@ -1111,6 +1095,9 @@ RETIRED_ACCEPTANCE_TARGETS = (
     "smoke-hardware-m8-v9958", "smoke-hardware-m8-console",
     "smoke-hardware-m8-fb-nohid", "smoke-hardware-m8-fb-nohid-nov9958",
     "smoke-hardware-m8-fb-badioc", "smoke-hardware-m8-fb-arena",
+    "m9-selftest", "m9-exec-selftest", "m9-iocfat-selftest",
+    "smoke-hardware-m9", "smoke-hardware-m9-exec",
+    "smoke-hardware-m9-iocfat",
 )
 
 # Retired boot modes and boot-phase hooks.  Production keeps exactly one
@@ -1324,10 +1311,10 @@ class TestKernelNameComparison(unittest.TestCase):
         # (file, expected selector text) - the two trailing arguments are
         # the field bound and the case-fold selector.
         expected = {
-            "kernel/vfs/dir.c": "0u, 1u",
-            "kernel/vfs/mount.c": "0u, 1u",
+            # Package 42b: the namespace router's publication table is the
+            # only other caller; the M9 dir/mount/registry callers are gone.
+            "kernel/vfs/ns.c": "0u, 1u",
             "kernel/romfs/romfs.c": "ROMFS_NAME_SIZE, 1u",
-            "kernel/device/registry.c": "0u, 0u",
         }
         for rel, selector in expected.items():
             body = _code_only(os.path.join(ROOT, rel))
@@ -1355,13 +1342,8 @@ class TestUserSdkBoundary(unittest.TestCase):
     ZEX_FILES = (
         "tests/target/process/zextest.c",
         "tests/target/process/zextest_sp.asm",
-        "tests/target/m9/fstest/fstest.c",
-        "tests/target/m9/fstest/fstest_l.c",
-        "tests/target/m9/fstest/fsfat.c",
-        "tests/target/m9/exec/fschild.c",
-        "tests/target/m9/exec/fsdeep.c",
-        "tests/target/m9/exec/fsraw.c",
-        "tests/target/m9/exec/fsraw_entry.asm",
+        "tests/fs/fs_selftest.c",
+        "tests/fs/fs_child.c",
     )
     FORBIDDEN = (
         re.compile(r'#\s*include\s+"zephyros/'),

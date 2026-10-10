@@ -301,7 +301,9 @@ class TestServiceArtifact(unittest.TestCase):
         data = _read(ZMOD, "rb")
         info = zmodpack.parse_container(data, "v9958.zmod")
         self.assertEqual(info["module_type"], "service")
-        self.assertEqual(info["service_abi"], 3)
+        # Service ABI 4: the image carries its host-built publications
+        # (`/dev/video`, package 42b).
+        self.assertEqual(info["service_abi"], 4)
         self.assertGreater(info["image_size"], 0)
         self.assertGreater(info["bss_size"], 0)
         self.assertNotEqual(info["init_offset"], 0xFFFF)

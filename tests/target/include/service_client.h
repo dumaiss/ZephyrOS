@@ -9,8 +9,10 @@
  *
  * This helper is the one place that knows those gymnastics:
  *
- *   service_cli_endpoint()   endpoint lookup (class, instance 0) at
- *                            ZOS_PROTOCOL_VERSION, 0 when absent;
+ *   service_cli_endpoint()   endpoint resolution through the host-built
+ *                            `/dev` publication the class names (package
+ *                            42b retired the class/instance lookup), 0
+ *                            when the image serves no such provider;
  *   service_cli_call()       one ipc_nucleus_call with a caller-owned
  *                            frame, returning the frame status;
  *   service_cli_stage_read()/

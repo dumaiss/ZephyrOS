@@ -28,6 +28,17 @@
       "flags": 0
     }
   ],
+  "publishes": [
+    {
+      "path": "/dev/console",
+      "type": "CONSOLE",
+      "endpoint": {
+        "class": 6,
+        "instance": 0
+      },
+      "object": 0
+    }
+  ],
   "depends": [
     {
       "class": 4,

@@ -42,5 +42,16 @@
       "flags": 0
     }
   ],
+  "publishes": [
+    {
+      "path": "/dev/ipc/ioc",
+      "type": "IOC",
+      "endpoint": {
+        "class": 20,
+        "instance": 0
+      },
+      "object": 1
+    }
+  ],
   "depends": []
 }

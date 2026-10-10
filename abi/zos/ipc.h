@@ -13,17 +13,12 @@
  * else is refused with carry set and A = ZOS_EINVAL before the IPC layer
  * is entered.  A caller therefore marshals through a low-window scratch:
  * libzos exports `zos_scratch` (shared, 16 bytes, pinned by the program
- * manifest) and its own `zos_ipc_lookup_block` / `zos_ipc_call_block` /
- * `zos_ipc_raw_req` for the two IPC numbers (docs/sdk.md).
+ * manifest) and its own `zos_ipc_call_block` / `zos_ipc_raw_req` for the
+ * two IPC numbers (docs/sdk.md).
  *
  * Native syscalls (docs/abi.md section 12):
  *
- *   RST 30h, A = ZOS_SYSCALL_IPC_LOOKUP, HL = &struct zos_ipc_lookup_args
- *       carry clear: HL = handle (1..N), args->version filled; HL = 0
- *       means no endpoint is registered for that (class, instance).
- *       carry set:  A = ZOS_EINVAL, the block is not in the caller window.
- *
- *   RST 30h, A = ZOS_SYSCALL_IPC_CALL, HL = &struct zos_ipc_call_args
+ *   RST 30h, A = ZOS_SYSCALL_CALL, HL = &struct zos_ipc_call_args
  *       carry clear: the call was dispatched (or refused by the IPC
  *       layer); HL = the IPC status: 0 or positive from the service,
  *       negative -ZOS_E* for a refusal (unknown handle or descriptor,
@@ -84,9 +79,10 @@
 
 #include "zos/types.h"
 
-/* Native syscall numbers (M10 stage 3, pinned). */
-#define ZOS_SYSCALL_IPC_LOOKUP 0x06u
-#define ZOS_SYSCALL_IPC_CALL   0x07u
+/* Native syscall numbers.  Package 42b retired the stage-3
+ * ZOS_SYSCALL_IPC_LOOKUP (06h): a client reaches a provider through a
+ * bound namespace handle (abi/zos/object.h), never by class/instance. */
+#define ZOS_SYSCALL_CALL   0x07u
 
 /* The request/reply frame: fixed size, copied at every crossing. */
 #define ZOS_IPC_FRAME_SIZE   32u
@@ -120,15 +116,6 @@ struct zos_ipc_frame {
 	int16_t status;                    /* call status, filled by the nucleus */
 };
 
-/* 06h LOOKUP {class, instance, version}: `version` is filled from the
- * registered endpoint; the handle is returned in HL. */
-struct zos_ipc_lookup_args {
-	uint8_t class;
-	uint8_t instance;
-	uint8_t version;
-	uint8_t reserved;
-};
-
 /* 07h CALL {handle, op, flags, frame_length, buffer, length, direction,
  * reserved, frame, status}.  `frame_length` is the protocol frame size
  * (1..32); `buffer`/`length`/`direction` name the one optional caller
@@ -155,8 +142,6 @@ _Static_assert(__builtin_offsetof(struct zos_ipc_frame, payload) == 6,
 	       "IPC frame payload must follow the header words");
 _Static_assert(__builtin_offsetof(struct zos_ipc_frame, status) == 30,
 	       "IPC frame status must be the last field");
-_Static_assert(sizeof(struct zos_ipc_lookup_args) == 4,
-	       "IPC lookup argument block must be 4 packed bytes");
 _Static_assert(sizeof(struct zos_ipc_call_args) == 44,
 	       "IPC call argument block must be 44 packed bytes");
 _Static_assert(__builtin_offsetof(struct zos_ipc_call_args, frame) == 10,

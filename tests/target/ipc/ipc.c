@@ -209,8 +209,10 @@ static int op_vfs_staged(void)
 }
 static int op_vfs_offset(void) { return vfs_read(448u, 64u, 0u); }
 
-/* Today's direct filesystem path on the same 512-byte chunk: the C3
- * baseline the resident chain is compared against. */
+/* The filesystem baseline on the same 512-byte chunk: the file is
+ * reached through a bound handle and its protocol calls, so this is what
+ * the resident chain is compared against (package 42b: there is no
+ * special-cased direct path left - the M9 front end it named is gone). */
 static int op_fs_read(void)
 {
 	static int fd;
@@ -286,31 +288,37 @@ static void report_u16(const char *label, unsigned int value)
 int main(int argc, char **argv)
 {
 	int rc;
-	unsigned char version = 0u;
+	unsigned char type = 0u;
+	unsigned char con_type = 0u;
+	unsigned char vfs_type = 0u;
+	unsigned char fat_type = 0u;
+	unsigned char ioc_type = 0u;
 	unsigned int index;
 
 	(void)argc;
 	(void)argv;
 	zos_puts("ipc selftest: client OK\r\n");
 
-	echo_handle = (uint8_t)zos_ipc_lookup(IPC_CLASS_ECHO, 0u);
-	con_handle = (uint8_t)zos_ipc_lookup(IPC_CLASS_CON, 0u);
-	vfs_handle = (uint8_t)zos_ipc_lookup(IPC_CLASS_VFS, 0u);
-	fat_handle = (uint8_t)zos_ipc_lookup(IPC_CLASS_FAT, 0u);
-	ioc_handle = (uint8_t)zos_ipc_lookup(IPC_CLASS_IOC, 0u);
-	irqx_handle = (uint8_t)zos_ipc_lookup(IPC_CLASS_IRQX, 0u);
-	check("lookup-echo", echo_handle != 0u);
-	check("lookup-con", con_handle != 0u);
-	check("lookup-vfs", vfs_handle != 0u);
-	check("lookup-fat", fat_handle != 0u);
-	check("lookup-ioc", ioc_handle != 0u);
-	check("lookup-irqx", irqx_handle != 0u);
-	check("lookup-cache", zos_ipc_lookup(IPC_CLASS_ECHO, 0u) ==
-			      (int)echo_handle);
-	check("lookup-missing", zos_ipc_lookup(9u, 0u) == -ZOS_ENOENT);
-	check("lookup-version",
-	      zos_ipc_lookup_version(IPC_CLASS_ECHO, 0u, &version) ==
-		      (int)echo_handle && version == 1u);
+	/* Package 42b: every provider is reached through a bound namespace
+	 * handle; the three host-built publications of the production
+	 * services would resolve here too (the image's own set is below
+	 * /dev/ipc). */
+	echo_handle = (uint8_t)zos_ipc_bind("/dev/ipc/echo", 0u, &type);
+	check("bind-echo", echo_handle != 0u && type == ZOS_TYPE_SERIAL);
+	con_handle = (uint8_t)zos_ipc_bind("/dev/ipc/con", 0u, &con_type);
+	vfs_handle = (uint8_t)zos_ipc_bind("/dev/ipc/vfs", 0u, &vfs_type);
+	fat_handle = (uint8_t)zos_ipc_bind("/dev/ipc/fat", 0u, &fat_type);
+	ioc_handle = (uint8_t)zos_ipc_bind("/dev/ipc/ioc", 0u, &ioc_type);
+	irqx_handle = (uint8_t)zos_ipc_bind("/dev/ipc/irqx", 0u, &type);
+	check("bind-con", con_handle != 0u && con_type == ZOS_TYPE_CONSOLE);
+	check("bind-vfs", vfs_handle != 0u && vfs_type != 0u);
+	check("bind-fat", fat_handle != 0u && fat_type != 0u);
+	check("bind-ioc", ioc_handle != 0u && ioc_type == ZOS_TYPE_IOC);
+	check("bind-irqx", irqx_handle != 0u);
+	check("bind-missing",
+	      zos_ipc_bind("/dev/ipc/nosuch", 0u, &type) == -ZOS_ENOENT);
+	check("bind-group",
+	      zos_ipc_bind("/dev/ipc", 0u, &type) == -ZOS_EISDIR);
 
 	fill_console_pattern();
 
@@ -345,12 +353,11 @@ int main(int argc, char **argv)
 	raw_block.status = 0;
 	memset(&raw_block.frame, 0, ZOS_IPC_FRAME_SIZE);
 	check("frame-len-refused",
-	      raw_ipc(ZOS_SYSCALL_IPC_CALL, &raw_block) == -ZOS_EINVAL);
+	      raw_ipc(ZOS_SYSCALL_CALL, &raw_block) == -ZOS_EINVAL);
 	check("block-refused",
-	      raw_ipc(ZOS_SYSCALL_IPC_CALL, (void *)0x8000u) == -ZOS_EINVAL);
-	check("lookup-block-refused",
-	      raw_ipc(ZOS_SYSCALL_IPC_LOOKUP, (void *)0x8000u) ==
-		      -ZOS_EINVAL);
+	      raw_ipc(ZOS_SYSCALL_CALL, (void *)0x8000u) == -ZOS_EINVAL);
+	check("bind-block-refused",
+	      raw_ipc(ZOS_SYSCALL_BIND, (void *)0x8000u) == -ZOS_EINVAL);
 
 	/* C1/C3: con.WRITE at four sizes, one offset slice, and today's
 	 * direct console path. */
@@ -396,7 +403,7 @@ int main(int argc, char **argv)
 	check("read2-status", rc == IPC_BLOCK_BYTES);
 	check("conform-payload", same_bytes(target, source, IPC_BLOCK_BYTES));
 
-	/* Today's direct filesystem path on the same 512-byte chunk. */
+	/* The filesystem baseline: one file read on a bound handle. */
 	MEASURE('f', MEASURE_N1, MEASURE_N2, rc = op_fs_read());
 	check("fsread-status", rc > 0);
 

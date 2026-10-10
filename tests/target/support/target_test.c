@@ -22,7 +22,6 @@
 #include "irq_selftest.h"
 #include "romfs_selftest.h"
 #include "process_selftest.h"
-#include "loader_selftest.h"
 #endif
 #if ZOS_IOC_SELFTEST
 #include "ioc_selftest.h"
@@ -42,29 +41,8 @@
 #if ZOS_CONSOLE_FALLBACK_SELFTEST
 #include "console_fallback_selftest.h"
 #endif
-#if ZOS_M9_VFS_SELFTEST
-#include "m9_selftest.h"
-#endif
-#if ZOS_M9_PROVIDER_SELFTEST
-#include "m9_provider_selftest.h"
-/* Defined in kernel/main.c: the provider image loads its test modules
- * through the same VFS-backed loader the production boot set uses. */
-extern int kernel_load_vfs_module(const char *name);
-#endif
-#if ZOS_M9_FS_SELFTEST
-#include "m9_fs_selftest.h"
-/* Defined in kernel/main.c: the FS image loads the test-only ramfs
- * provider through the same VFS-backed loader the boot set uses. */
-extern int kernel_load_vfs_module(const char *name);
-#endif
 #if ZOS_M9_EXEC_SELFTEST
 #include "m9_exec_selftest.h"
-/* Defined in kernel/main.c: the exec image loads the test-only ramfs
- * provider through the same VFS-backed loader the boot set uses. */
-extern int kernel_load_vfs_module(const char *name);
-#endif
-#if ZOS_M9_IOCFAT_SELFTEST
-#include "m9_iocfat_selftest.h"
 #endif
 #if ZOS_M9_SELFTEST
 #include "m9_integration_selftest.h"
@@ -75,26 +53,14 @@ extern int kernel_load_vfs_module(const char *name);
 #if ZOS_IPC_SELFTEST
 #include "zephyros/service.h"
 #include "zos/ipc.h"
-#include "kernel/syscall/ipc.h"
 #endif
 
 /* Boot-time acceptance modules, called between the production boot set and
  * the normal mount pass.  Only an image that needs extra resident providers
- * defines anything here; every other acceptance image is a no-op. */
+ * defines anything here; every other acceptance image is a no-op (package
+ * 42b removed the arena module loader, so no image loads one). */
 void zos_boot_test_modules(void)
 {
-#if ZOS_M9_PROVIDER_SELFTEST
-	(void)kernel_load_vfs_module("ramfs");
-	(void)kernel_load_vfs_module("m9probe");
-	(void)kernel_load_vfs_module("m9dup");
-	(void)kernel_load_vfs_module("m9fail");
-#endif
-#if ZOS_M9_FS_SELFTEST
-	(void)kernel_load_vfs_module("ramfs");
-#endif
-#if ZOS_M9_EXEC_SELFTEST
-	(void)kernel_load_vfs_module("ramfs");
-#endif
 }
 
 void zos_target_test_early(void)
@@ -111,12 +77,11 @@ void zos_target_test_early(void)
 void zos_target_test_late(void)
 {
 #if ZOS_SUBSYS_SELFTEST
-	/* ROMFS reader, then the process/ZEX lifecycle, then the loader: the
-	 * loader's fixtures stay resident and hold arena for the rest of the
-	 * boot, so that group runs last. */
+	/* ROMFS reader, then the process/ZEX lifecycle.  The module-loader
+	 * group is retired with the arena (work package 42b): IOC-FAT is a
+	 * bank-6 service and no module is loaded into the driver arena. */
 	zos_run_romfs_selftest();
 	zos_run_process_selftest();
-	zos_run_loader_selftest();
 #endif
 #if ZOS_IOC_SELFTEST
 	zos_run_ioc_selftest();
@@ -136,20 +101,8 @@ void zos_target_test_late(void)
 #if ZOS_CONSOLE_FALLBACK_SELFTEST
 	zos_run_console_fallback_selftest();
 #endif
-#if ZOS_M9_VFS_SELFTEST
-	zos_run_m9_vfs_selftest();
-#endif
-#if ZOS_M9_PROVIDER_SELFTEST
-	zos_run_m9_provider_selftest();
-#endif
-#if ZOS_M9_FS_SELFTEST
-	zos_run_m9_fs_selftest();
-#endif
 #if ZOS_M9_EXEC_SELFTEST
 	zos_run_m9_exec_selftest();
-#endif
-#if ZOS_M9_IOCFAT_SELFTEST
-	zos_run_m9_iocfat_selftest();
 #endif
 #if ZOS_M9_SELFTEST
 	zos_run_m9_selftest();
@@ -167,20 +120,13 @@ void zos_target_test_late(void)
 }
 
 /* TEST-ONLY HOOK: routes acceptance-only syscall numbers to their bodies.
- * Production links neither these bodies nor this hook; package 41 moves
- * the two native IPC numbers into the dispatcher switch proper
- * (work package 39 requirement 6).  Returns non-zero when handled. */
+ * Production links neither these bodies nor this hook (package 42b: the
+ * object family is production code, so only an acceptance-only number
+ * reaches this hook).  Returns non-zero when handled. */
 uint8_t zos_target_test_syscall(uint8_t number, uint8_t bank, uint16_t block)
 {
-#if ZOS_IPC_SELFTEST
-	if (number == ZOS_SYSCALL_IPC_LOOKUP || number == ZOS_SYSCALL_IPC_CALL) {
-		zos_ipc_dispatch(number, bank, block);
-		return 1u;
-	}
-#else
 	(void)number;
 	(void)bank;
 	(void)block;
-#endif
 	return 0u;
 }

@@ -450,7 +450,26 @@ class TestGranuleThresholds(unittest.TestCase):
                              entry["name"])
         text = pack_image.format_granule_thresholds(plan["modules"],
                                                     plan["kernel"])
-        self.assertIn("iocfat", text)
+        # Package 42b: the arena carries no module any more - the driver
+        # hot tier is the only budgeted image area left.
+        self.assertEqual(plan["modules"], [])
+        plan_path = os.path.join(ROOT, "build", "modules",
+                                 "services.plan.json")
+        if not os.path.exists(plan_path):
+            self.skipTest("derived production build missing; run make")
+        services = json.load(open(plan_path))
+        self.assertIn("iocfat.zmod", services["order"])
+        hot = services["nucleus"]
+        # `arena.plan.json`'s ledger does not know the service set; the
+        # authoritative hot-tier numbers are the service plan's.
+        self.assertEqual(plan["nucleus"]["service_hot_capacity_bytes"],
+                         hot["service_hot_capacity_bytes"])
+        self.assertGreaterEqual(
+            hot["service_hot_capacity_bytes"] - hot["service_hot_bytes"],
+            4096, "driver hot tier room")
+        ledger = pack_image.format_nucleus_ledger(plan["nucleus"])
+        self.assertIn("driver hot: 0 bytes of %d"
+                      % hot["service_hot_capacity_bytes"], ledger)
         self.assertIn("code end %04Xh" % plan["kernel"]["code_end"], text)
         self.assertIn("data size %d at %04Xh"
                       % (plan["kernel"]["data_size"],

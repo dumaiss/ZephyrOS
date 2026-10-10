@@ -11,8 +11,7 @@
  * actually resolved and a caller that cares checks it.  Handles are
  * process-owned, opaque and small: they are neither addresses, bank
  * numbers nor endpoint numbers (endpoint numbers stay nucleus-internal).
- * One global owner-tagged handle table serves every process; the M9 FS_*
- * descriptors share it until package 42b.
+ * One global owner-tagged handle table serves every process.
  *
  * Standard handles: every process starts with console input and output
  * already bound to `/dev/console` at the fixed numbers below, inherited
@@ -28,10 +27,11 @@
  *
  * Argument-block placement: blocks live in the caller window,
  * 0100h-1FFFh, exactly like every other native syscall family; the path
- * fields are `{pointer, length}` pairs of 1..127 non-NUL caller-window
- * bytes resolved against the caller's CWD, and `out` is a caller-bank
- * address in the 0100h-DFFFh buffer window, written only through the
- * checked bank-copy gate.
+ * fields are `{pointer, length}` pairs of 1..127 non-NUL bytes in the
+ * caller's buffer window (0100h-DFFFh: a path is ordinary caller data, so
+ * a literal or a stack buffer both qualify), resolved against the
+ * caller's CWD; `out` is a caller-bank address in the same window,
+ * written only through the checked bank-copy gate.
  *
  * Native syscalls (docs/abi.md section 12):
  *
@@ -52,6 +52,16 @@
  *       stream) and args->cookie the next cookie; carry set: A = ZOS_E*
  *       (ZOS_ENOENT bad path, ZOS_ENODEV, ZOS_ENOTDIR an entry below a
  *       non-container, ZOS_EINVAL a bad block).
+ *
+ *   RST 30h, A = ZOS_SYSCALL_CHDIR, HL = &struct zos_chdir_args
+ *       carry clear: HL = 0 and the caller's CWD is the canonical path;
+ *       carry set: A = ZOS_E* (ZOS_ENOENT, ZOS_ENOTDIR, ZOS_ENODEV,
+ *       ZOS_EINVAL a bad block or an over-long path).
+ *
+ *   RST 30h, A = ZOS_SYSCALL_GETCWD, HL = &struct zos_getcwd_args
+ *       carry clear: HL = the path length in bytes excluding the NUL and
+ *       the caller's buffer holds the path; carry set: A = ZOS_EINVAL
+ *       (bad block or a buffer too small).
  */
 
 #ifndef ZOS_OBJECT_H
@@ -59,28 +69,18 @@
 
 #include "zos/types.h"
 
-/* Build selection (work package 42a, correction 01).  The root router, the
- * DEVICE and ROMFS providers, the typed handle table, bind/call/unbind and
- * ns_enum link in the `namespace-selftest` acceptance image; production
- * adopts them in package 42b, when the M9 `FS_*` front end, the M9 VFS
- * machinery and the IOC-FAT arena leave bank 7.  Production builds do not
- * define the macro, and every source that carries both behaviours guards
- * the new half with `#if ZOS_NS_HANDLES`. */
-#ifndef ZOS_NS_HANDLES
-#define ZOS_NS_HANDLES 0
-#endif
-
 /* --- native syscall numbers (docs/abi.md section 12) -------------------- */
 
-/* 06h and 07h are the numbers the stage-3 IPC ABI pinned
- * (abi/zos/ipc.h ZOS_SYSCALL_IPC_LOOKUP / ZOS_SYSCALL_IPC_CALL).  From 42b
- * 06h is `bind` and 07h is `call` on an object handle, and the lookup
- * syscall disappears with the SDK lookup cache; until then production
- * keeps the stage-3 pair and the acceptance image builds this family. */
+/* 06h and 07h reuse the two numbers the stage-3 IPC ABI pinned; the
+ * lookup syscall and its SDK cache are gone (package 42b), so 06h is
+ * `bind` and 07h is `call` on an object handle.  08h/09h are the rest of
+ * the object family and 0Ah/0Bh the namespace family. */
 #define ZOS_SYSCALL_BIND    0x06u
 #define ZOS_SYSCALL_CALL    0x07u
 #define ZOS_SYSCALL_UNBIND  0x08u
 #define ZOS_SYSCALL_NS_ENUM 0x09u
+#define ZOS_SYSCALL_CHDIR   0x0Au
+#define ZOS_SYSCALL_GETCWD  0x0Bu
 
 /* --- 8-bit protocol types ------------------------------------------------ */
 
@@ -157,6 +157,20 @@ struct zos_ns_enum_args {
 	uint16_t count;    /* out: entries written                  */
 };
 
+/* 0Ah CHDIR {path, length}. */
+struct zos_chdir_args {
+	uint16_t path;
+	uint16_t length;
+};
+
+/* 0Bh GETCWD {buffer, length}: `buffer` is a caller-bank address in the
+ * 0100h-DFFFh buffer window and `length` the bytes available there,
+ * *including* the terminating NUL. */
+struct zos_getcwd_args {
+	uint16_t buffer;
+	uint16_t length;
+};
+
 #if defined(__SDCC)
 _Static_assert(sizeof(struct zos_ns_entry) == ZOS_NS_ENTRY_SIZE,
 	       "namespace entry must be 28 packed bytes");
@@ -174,6 +188,14 @@ _Static_assert(__builtin_offsetof(struct zos_ns_enum_args, cookie) == 4,
 	       "ns_enum cookie offset");
 _Static_assert(__builtin_offsetof(struct zos_ns_enum_args, count) == 10,
 	       "ns_enum count offset");
+_Static_assert(sizeof(struct zos_chdir_args) == 4,
+	       "chdir argument block must be 4 packed bytes");
+_Static_assert(__builtin_offsetof(struct zos_chdir_args, path) == 0,
+	       "chdir path offset");
+_Static_assert(sizeof(struct zos_getcwd_args) == 4,
+	       "getcwd argument block must be 4 packed bytes");
+_Static_assert(__builtin_offsetof(struct zos_getcwd_args, buffer) == 0,
+	       "getcwd buffer offset");
 #endif
 
 #endif /* ZOS_OBJECT_H */

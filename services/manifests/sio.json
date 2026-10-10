@@ -38,5 +38,16 @@
       "flags": 0
     }
   ],
+  "publishes": [
+    {
+      "path": "/dev/serial/0",
+      "type": "SERIAL",
+      "endpoint": {
+        "class": 1,
+        "instance": 0
+      },
+      "object": 0
+    }
+  ],
   "depends": []
 }

@@ -42,6 +42,17 @@
       "flags": 0
     }
   ],
+  "publishes": [
+    {
+      "path": "/dev/ipc/echo",
+      "type": "SERIAL",
+      "endpoint": {
+        "class": 16,
+        "instance": 0
+      },
+      "object": 1
+    }
+  ],
   "depends": [
     {
       "class": 16,

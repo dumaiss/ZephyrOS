@@ -321,7 +321,7 @@ catalog table/loader must be linked together or not at all.
 | valid kernel reader, EOF/bound semantics, corrupt-metadata rejection | `tests/test_romfs_sim.py` (mutated header/table replays) |
 | exact latch/IFF restoration, stackless mode-00 window pinned to the mirrored stub, reentry and bounds rejection | `tests/test_romfs_sim.py` (ROM-access primitive replays + `RomWindowWatcher`) |
 | source-backed loading, reject-before-allocate, byte-identity with `sio.zmod` | `tests/test_romfs_sim.py`, `tests/test_romfs.py`, `tests/test_m4_sim.py` |
-| ROMFS as the `/SYSTEM` bootstrap provider (path-based `zfs_ops`): one case-folded lookup, `/` the only directory, read-only semantics, `ZOS_ENOTDIR`/`ZOS_ENOENT` for deeper paths, `ZOS_EROFS` from the null mutation pointers | `tests/test_m9_vfs_sim.py`, `tests/target/m9/m9_vfs_test.c` |
+| ROMFS as the `/SYSTEM` bootstrap provider (path-based `zfs_ops`): one case-folded lookup, `/` the only directory, read-only semantics, `ZOS_ENOTDIR`/`ZOS_ENOENT` for deeper paths, `ZOS_EROFS` from the null mutation pointers | `tests/test_fs_selftest_sim.py` (`make fs-selftest`: the `/SYSTEM` stat/open/read/close outcomes) |
 | the single case-folded lookup resolves every spelling | `tests/test_romfs_sim.py` (case variants of `sio.zmod`) |
 | production has no embedded boot blob/catalog | `tools/mapcheck.py --production`, `tests/test_m4.py` |
 | corrupt image panics before module execution | `tests/test_romfs_sim.py`, image marker tests |

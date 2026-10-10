@@ -31,7 +31,7 @@
 #include "zos/errno.h"
 #include "zos/process.h"
 
-/* Native syscall numbers (stable from M6; filesystem set from M9). */
+/* Native syscall numbers (stable from M6; object set from M10). */
 #define ZOS_SYSCALL_EXIT          0x00u
 /* 01h-03h were SYS_CONSOLE_WRITE / SYS_CONSOLE_READ / SYS_CONSOLE_POLL.
  * Package 41 removed them: a program's console I/O goes to the console
@@ -41,26 +41,12 @@
 #define ZOS_SYSCALL_GETINFO       0x04u
 #define ZOS_SYSCALL_EXEC          0x05u /* package 28 */
 
-/* M9 native filesystem family (package 27, architecture section 32.26).
- * Numbers are pinned by work/M9-REFERENCE.md.  Argument blocks are
- * declared in abi/zos/fs.h; before the VFS READY phase every call fails
- * with ZOS_EBUSY. */
-#define ZOS_SYSCALL_FS_OPEN     0x10u /* 16 */
-#define ZOS_SYSCALL_FS_CLOSE    0x11u /* 17 */
-#define ZOS_SYSCALL_FS_READ     0x12u /* 18 */
-#define ZOS_SYSCALL_FS_WRITE    0x13u /* 19 */
-#define ZOS_SYSCALL_FS_SEEK     0x14u /* 20 */
-#define ZOS_SYSCALL_FS_STAT     0x15u /* 21 */
-#define ZOS_SYSCALL_FS_OPENDIR  0x16u /* 22 */
-#define ZOS_SYSCALL_FS_READDIR  0x17u /* 23 */
-#define ZOS_SYSCALL_FS_CLOSEDIR 0x18u /* 24 */
-#define ZOS_SYSCALL_FS_MKDIR    0x19u /* 25 */
-#define ZOS_SYSCALL_FS_RMDIR    0x1Au /* 26 */
-#define ZOS_SYSCALL_FS_UNLINK   0x1Bu /* 27 */
-#define ZOS_SYSCALL_FS_RENAME   0x1Cu /* 28 */
-#define ZOS_SYSCALL_FS_CHDIR    0x1Du /* 29 */
-#define ZOS_SYSCALL_FS_GETCWD   0x1Eu /* 30 */
-#define ZOS_SYSCALL_FS_SYNC     0x1Fu /* 31 */
+/* The M9 native filesystem family (10h-1Fh, `SYS_FS_*`) is retired
+ * (package 42b): files are typed handles behind `bind`/`call`/`unbind`
+ * (abi/zos/object.h), the SDK `fs.h` builds `open`/`close` on them, and
+ * `chdir`/`getcwd` are the namespace syscalls 0Ah/0Bh.  The numbers stay
+ * reserved so a stale caller fails with ZOS_ENOSYS instead of reaching
+ * something unexpected. */
 
 /* Address windows enforced before any caller byte is touched. */
 #define ZOS_SYSCALL_WINDOW_BASE 0x0100u /* argument blocks begin here */
@@ -78,7 +64,7 @@ struct zos_exit_args {
 /* SYS_EXEC 05h {path:u16, length:u16, args:u16, args_length:u16} - run a
  * child synchronously (packages 28/28b, docs/abi.md section 11).  `path`
  * addresses 1..127 non-NUL caller-window bytes resolved against the
- * caller's CWD; the rules are identical to the FS_* family.  `args`
+ * caller's CWD; the rules are those of the namespace family.  `args`
  * addresses `args_length` raw bytes in the caller buffer window
  * `0100h-DFFFh`; the kernel copies them verbatim into the child's startup
  * block and never splits or quotes them.  `args_length` 0 means no

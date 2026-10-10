@@ -23,7 +23,7 @@ Coverage, all against those linked bytes:
   through the console service, the monitor runs its banner and prompt on
   the V9958, a typed `r` returns the sysinfo/process/bank rows through
   the HID-input path the console composed, and `q` exits and relaunches;
-* the IOC lane the store's arena module (IOC-FAT) drives through the
+* the IOC lane the store's filesystem service (IOC-FAT) drives through the
   nucleus class shim: link bring-up plus the FS2 command exchange, seen
   from the emulated MCU peer;
 * the integration image: the loader's per-service evidence rows and
@@ -65,8 +65,10 @@ INTEGRATION_IMAGE = "zephyros-console-integration-selftest.bin"
 
 # The five service images the production store carries, in manifest order,
 # with the endpoint class each registers.
+# The production boot set (package 42b): the four device services plus the
+# filesystem driver, which publishes `/FS` (class 7, the file service).
 SERVICE_SET = (("sio.zmod", 1), ("ioc.zmod", 5), ("hid.zmod", 4),
-               ("v9958.zmod", 2), ("console.zmod", 6))
+               ("v9958.zmod", 2), ("console.zmod", 6), ("iocfat.zmod", 7))
 
 # The characters the integration diagnostic writes through the console
 # service and the line the replay queues for its input row.
@@ -211,13 +213,14 @@ class TestProductionImage(ConsoleReplayBase):
             self.assertIn(line, trace)
         self.assertGreaterEqual(trace.count(BANNER), 2)
 
-    def test_ioc_lane_serves_the_arena_module(self):
+    def test_ioc_lane_serves_the_filesystem_driver(self):
         z = self.start()
         self.boot_to_prompt(z)
         peer = z.ioc_peer
         requests = [entry[0] for entry in peer.requests]
         # The IOC service's one bounded LINK_SYNC bring-up, then the
-        # IOC-FAT provider's FS2 commands through the class shim.
+        # IOC-FAT service's FS2 commands (the driver calls its
+        # dependency directly; there is no class shim since 42b).
         self.assertEqual(requests[0], LINK_SYNC_REQUEST)
         self.assertIn(0x30, requests)  # CMD_FS2_CAPS
         self.assertEqual(peer.channel_resets, 1)
@@ -246,7 +249,8 @@ class TestProductionImage(ConsoleReplayBase):
             with open(path, "rb") as handle:
                 info = zmodpack.parse_container(handle.read(), name)
             self.assertEqual(info["module_type"], "service", name)
-            self.assertEqual(info["service_abi"], 3, name)
+            # ABI 4: every production image carries its publications.
+            self.assertEqual(info["service_abi"], 4, name)
             self.assertEqual([(ep["class"], ep["instance"], ep["version"])
                               for ep in info["endpoints"]],
                              [(klass, 0, 1)], name)

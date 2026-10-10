@@ -479,7 +479,7 @@ images.)
 | built-in list == `ZOS_VFS_BUILTIN` | `tests/test_m9_vfs.py` |
 | `/SYSTEM` mounted before any module loads; every boot ZMOD and the monitor loaded by VFS path | `tests/test_m9_vfs_sim.py` (real linked bytes, boot transcript + monitor handoff) |
 | flat mount selection: `/SYSTEMX` must not match `/SYSTEM` | `tests/test_m9_vfs_sim.py` (`test_flat_mount_selection_in_the_linked_kernel`, direct kernel-API call on linked bytes) + the target selftest's FLAT case |
-| normalization, case-insensitive resolution, per-entry stat/read byte-compared with the packed files, `/SYSTEM` directory enumeration, `stat("/")`, `stat("/SYSTEM")`, ENOENT, ENOTDIR below a file, deeper-path ENOENT, `VFS_O_EXEC` gate | `tests/test_m9_vfs_sim.py` + `tests/target/m9/m9_vfs_test.c` (`m9-vfs-selftest`) |
+| normalization, case-insensitive resolution, per-entry stat/read byte-compared with the packed files, `/SYSTEM` directory enumeration, `stat("/")`, `stat("/SYSTEM")`, ENOENT, ENOTDIR below a file, deeper-path ENOENT, `VFS_O_EXEC` gate | `tests/test_romfs_sim.py` (ROMFS resolution) + `tests/test_fs_selftest_sim.py` (`/SYSTEM` stat/open/read/close outcomes, `make fs-selftest`) |
 | EROFS from the null mutation operations (write flags at open, `vfs_mkdir`/`rmdir`/`unlink`/`rename`, and the provider's null pointers) | target selftest EROFS/MUTATE cases; `kernel/vfs/{file,mutate}.c` |
 | one ROMFS lookup, ASCII case-folded, serving the provider and the resource imports | `tests/test_romfs_sim.py` (case-folded spellings), `tools/mapcheck.py` `ROMFS_BANK7_ROUTINES` |
 | optional-mount failure line `vfs: /DATA unavailable 0x03` and tolerant boot | `tests/test_m9_vfs_sim.py` (`tests/m9/mounts-optional-fail.json`, `m9-vfs-selftest`) |
@@ -503,35 +503,13 @@ rejects a null/malformed provider (`ZOS_EINVAL`), a duplicate name
 compared case-insensitively (`ZOS_EEXIST`) and a full registry
 (`ZOS_ENOSPC`).
 
-The test-only module `tests/modules/ramfs.c` (packed as `ramfs.zmod`,
-driver ABI v3) registers the `ramfs` provider.  It is path-based and
-hierarchical, matches ASCII case-insensitively, and is bounded by 16
-nodes and 2048 bytes of file data per instance over two instances.  Its
-documented reserved control names are:
-
-```text
-/FAILWRITE   the next write fails with ZOS_EIO and commits nothing
-/STALE       creating it invalidates every open handle (ZOS_ESTALE)
-/STATS       virtual read-only file exposing the call counters and the
-             open-handle count
-source "refuse"  makes the instance's mount() fail with ZOS_EIO
-```
-
-The acceptance image (`make m9-provider-selftest`) boots SIO-only so the
-derived arena holds the bounded RAM provider and the registration
-fixtures `m9.probe`, `m9.dup` (duplicate rejection) and `m9.fail`
-(rollback).  `tests/m9/mounts-ramfs.json` mounts ramfs at `/` (required)
-and `/R2` (optional); `mounts-ramfs-optional-fail.json` and
-`mounts-ramfs-required-fail.json` are the failure variants.  The
-mount-table generator accepts `/` alongside a root-level mountpoint
-because the M9 model treats them as siblings, not as nested mounts.
-
-Evidence: `tests/test_m9_provider_sim.py` (boot transcript, result byte,
-mount state), `tests/target/m9/m9_provider_test.c` (registration/
-rollback, mount state, mutations and errors, root merge and shadowing,
-the section-33 size set, 32-bit seek past 64 KiB, stale handles, a failed
-confirmed write, EXDEV, counters) and `tests/test_m9_vfs.py` (generator
-acceptance of the ramfs manifests).
+The package-26 acceptance used a bounded RAM provider registered by a
+test-only module plus three registration fixtures, driven by its own M9
+acceptance image.  Package 42b correction 01 retired that acceptance
+with the M9 machinery: the M10 namespace routes `/FS` to the IOC-FAT
+driver (`fs/iocfat/`) through the nucleus provider, and the outcome image
+`make fs-selftest` is the writable-provider acceptance now (see section
+13 and `docs/validation/*-m10-files-on-handles-c01.md`).
 
 ### Physical acceptance
 
@@ -557,7 +535,7 @@ Nothing in provider semantics changed; the new layers are:
 kernel/vfs/process.c   global owner-tagged descriptor pool + per-process CWD
 kernel/syscall/fs.c    the FS_* service bodies (argument + window validation)
 user/sdk/src/fsgate.asm + fs.c       native gate stub + C wrappers
-tests/target/m9/fstest/  fstest.zex (suite) and fstest_l.zex (second-exec)
+tests/fs/                fs_selftest.zex (outcomes) and fs_child.zex (nested exec)
 ```
 
 **Descriptor pool.** One global `_DATA` array of 8 `struct
@@ -609,21 +587,17 @@ by staging data.  A host test pins the guard wiring: it is off in
 production, on for the `m9-fs-selftest` image whose replay asserts "no
 PANIC", and every claim is balanced.
 
-**Acceptance.** `make m9-fs-selftest` builds the SIO-only image with ROMFS
-at `/SYSTEM` and the test-only `ramfs` at `/` and `/R2`, and runs two
-native programs: `fstest.zex` (namespace, ROMFS read/stat/enumeration/
-EROFS, ramfs mutation/TRUNC/sizes, error paths, pool exhaustion, stale
-handles, a failed confirmed write, `EXDEV` and argument-window faults) and
-`fstest_l.zex`, exec'd a second time, which proves the 8-entry pool and the
-CWD were released.  `tests/test_syscall_sim.py` replays the linked image,
-checks the transcript and the released pool, and asserts the worst-case
-kernel gate-stack depth stays inside 256 bytes.  The physical gate is
-`make smoke-hardware-m9-fs SERIAL_PORT=/dev/ttyUSB0`, which observed
-`fstest: PASS 9/9`, `fstest: launcher OK` and `m9 fs selftest: OK`
-on hardware (2026-10-05; `docs/validation/2026-10-05-m9-fs-syscalls.md`).
-Package 28 extends the suite with the `exec` case, so the current image
-prints `fstest: PASS 10/10`; that was confirmed on hardware the same day
-(`docs/validation/2026-10-05-m9-nested-exec.md`).
+**Acceptance (package 42b correction 01).** `make fs-selftest` builds
+the image with the IOC-FAT driver serving `/FS` and ROMFS at `/SYSTEM`,
+boots `/SYSTEM/fs_selftest.zex` and replays it with the host FS2 peer
+serving the card (`tests/test_fs_selftest_sim.py`): card
+create/write/stat/read/seek/enumerate/mkdir/rename/unlink/rmdir, `/SYSTEM`
+read, the absent-card branch, the nested exec with its exit status and the
+release of the child's leaked handles (driver slots and the 12-entry
+descriptor pool are read straight out of the machine).  The replay also
+pins the worst-case kernel gate-stack depth (287 bytes, inside the
+384-byte reservation).  The physical gate is
+`make smoke-hardware-fs SERIAL_PORT=/dev/ttyUSB0`.
 
 **Budget (section 32.39).** The production ledger moved from package 26
 (`code 23526 end 7BE6h`, `arena 46 granules`, `data 1501`) to package 27
@@ -654,8 +628,9 @@ three 48-byte frame saves, the gate-state shadows and the `SYS_EXEC` path
 scratch) is common-resident because the resume gate restores it across the
 mode change, while the `SYS_EXEC` path buffer is bank-7 `_DATA`
 (`docs/validation/2026-10-05-m9-nested-exec.md`).  The `fstest` suite runs
-one more case (`exec`, `PASS 10/10`, confirmed on hardware) and the nested
-`exec` acceptance is replayed by `tests/test_m9_exec_sim.py`.
+one more case (`exec`, `PASS 10/10`, confirmed on hardware on 2026-10-05; that M9
+suite was retired by package 42b correction 01) and the nested `exec`
+acceptance is replayed now by `tests/test_fs_selftest_sim.py`.
 
 ## 13. M10 namespace: the root router and the static providers (package 42a)
 

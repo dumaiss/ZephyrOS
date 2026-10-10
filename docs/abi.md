@@ -321,8 +321,8 @@ by `_Static_assert` and by host tests).
 
 Rules:
 
-- Path fields address 1..127 non-NUL bytes in the caller window
-  `0100h-1FFFh`; they are copied into a shared static pathname scratch and
+- Path fields address 1..127 non-NUL bytes in the caller buffer window
+  `0100h-DFFFh`; they are copied into a shared static pathname scratch and
   resolved against the calling process' CWD.  A zero length, an over-long
   path, an embedded NUL or a window violation is `ZOS_EINVAL`.
 - `buffer`/`out` fields address the user-buffer window `0100h-DFFFh` and
@@ -362,13 +362,13 @@ take NUL-terminated strings, reject a string over 127 bytes (or an
 empty/null one) locally with `-ZOS_EINVAL`, and return the negated native
 error code on failure.
 
-Validation: `make m9-fs-selftest` builds the SIO-only acceptance image
-(ROMFS at `/SYSTEM`, the test-only `ramfs` at `/` and `/R2`), runs the
-native `fstest.zex` suite and the `fstest_l.zex` second-exec cleanup check,
-and replays the whole boot and both programs in the Z80 simulator
-(`tests/test_syscall_sim.py`).  The physical gate is
-`make smoke-hardware-m9-fs SERIAL_PORT=/dev/ttyUSB0`, which expects
-`fstest: PASS`, `fstest: launcher OK` and `m9 fs selftest: OK`.
+Validation: `make fs-selftest` builds the M10 outcome image (the
+filesystem driver serving `/FS`, ROMFS at `/SYSTEM`) and replays it in the
+Z80 simulator with the host FS2 peer serving the card
+(`tests/test_fs_selftest_sim.py`): every outcome line, the pinned check
+count, the card-absent run and the handle-release run.  The physical gate
+is `make smoke-hardware-fs SERIAL_PORT=/dev/ttyUSB0`, which expects
+`fs-selftest: PASS` and the monitor's `Z80> ` prompt.
 
 ## 11. M9 native process exec (SYS_EXEC)
 
@@ -388,9 +388,9 @@ passed.  A raw command tail is transported for the child.
 
 Rules:
 
-- `path` follows the `FS_*` rules verbatim: 1..127 non-NUL bytes in the
-  caller window `0100h-1FFFh`, copied in through the same shared pathname
-  scratch and resolved against the calling process' CWD.
+- `path` follows the namespace rules verbatim: 1..127 non-NUL bytes in
+  the caller buffer window `0100h-DFFFh`, copied in through the same
+  shared pathname scratch and resolved against the calling process' CWD.
 - `args` addresses `args_length` raw bytes in the caller buffer window
   `0100h-DFFFh` (no wrap).  The kernel copies them byte-exact into the
   child's startup block and never splits, quotes or interprets them;
@@ -481,15 +481,14 @@ Implementation notes:
   Common memory is not an isolated region - mode 10 maps it just as
   mode 11 does - so nothing is placed there for safety.
 
-Validation: `make m9-exec-selftest` builds the SIO-only image that runs
-the extended `fstest.zex` `exec` case and the recursive `fsdeep.zex` depth
-probe (which must stop at exactly `ZOS_EXEC_MAX_DEPTH` with `ZOS_EBUSY`);
-`tests/test_m9_exec_sim.py` replays it and checks the restored gate frame
-byte-for-byte at every depth, and `tests/test_m9_exec.py` pins the ABI,
-the geometry and the production image.  The physical gate is
-`make smoke-hardware-m9-exec SERIAL_PORT=/dev/ttyUSB0`, which observed
-`fstest: exec OK`, `fstest: PASS 10/10` and `m9 exec selftest: OK` on the
-bench (2026-10-05; `docs/validation/2026-10-05-m9-nested-exec.md`).
+Validation: the geometry is pinned by `include/zephyros/process.h`
+(`ZOS_EXEC_MAX_DEPTH`, `ZOS_EXEC_FRAME_SAVE` with its static asserts) and
+by `kernel/process/launch.asm`; the nested exec runs in the M10 outcome
+image (`make fs-selftest`), where the boot program `SYS_EXEC`s
+`/SYSTEM/fs_child.zex` and checks the child's tail, stdout, exit status
+and the release of the handles it leaked
+(`tests/test_fs_selftest_sim.py`).  The physical gate is
+`make smoke-hardware-fs SERIAL_PORT=/dev/ttyUSB0`.
 
 ## 12. M10 native IPC (SYS_IPC_LOOKUP, SYS_IPC_CALL)
 

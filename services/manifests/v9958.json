@@ -48,5 +48,16 @@
       "flags": 0
     }
   ],
+  "publishes": [
+    {
+      "path": "/dev/video",
+      "type": "VIDEO",
+      "endpoint": {
+        "class": 2,
+        "instance": 0
+      },
+      "object": 0
+    }
+  ],
   "depends": []
 }

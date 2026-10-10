@@ -228,7 +228,7 @@ _zos_process_launch::
 	; HL = a * ZOS_EXEC_FRAME_SAVE.  The factor is a shift chain
 	; (a + 2a = 3a, then four doublings = 48a) because the Z80 has no
 	; multiply; ZOS_EXEC_FRAME_SAVE in include/zephyros/process.h is
-	; pinned against this chain by tests/test_m9_exec.py.
+	; pinned against this chain by include/zephyros/process.h.
 	ld	l,a
 	ld	h,#0
 	ld	d,h
@@ -342,7 +342,7 @@ _zos_process_resume::
 	; HL = a * ZOS_EXEC_FRAME_SAVE.  The factor is a shift chain
 	; (a + 2a = 3a, then four doublings = 48a) because the Z80 has no
 	; multiply; ZOS_EXEC_FRAME_SAVE in include/zephyros/process.h is
-	; pinned against this chain by tests/test_m9_exec.py.
+	; pinned against this chain by include/zephyros/process.h.
 	ld	l,a
 	ld	h,#0
 	ld	d,h

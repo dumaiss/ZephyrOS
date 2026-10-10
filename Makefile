@@ -28,11 +28,7 @@
 #   make hid-selftest         HID input acceptance image
 #   make video-selftest       V9958 video acceptance image
 #   make console-selftest     console binding acceptance image
-#   make m9-vfs-selftest      M9 VFS acceptance image
-#   make m9-provider-selftest M9 writable-provider acceptance image
-#   make m9-fs-selftest       M9 filesystem syscall acceptance image
-#   make m9-exec-selftest     M9 SYS_EXEC nesting acceptance image
-#   make m9-iocfat-selftest   M9 IOC-FAT provider acceptance image
+#   make fs-selftest          filesystem outcome acceptance image
 #   make ipc-selftest        resident-service IPC acceptance image
 #   make clean    remove all generated files
 #
@@ -53,13 +49,6 @@ MAKEFLAGS += -j$(ZOS_JOBS)
 
 BUILD     := build
 .DEFAULT_GOAL := all
-
-# M9 VFS mount policy (work/M9-REFERENCE.md).  ZOS_MOUNTS selects the one
-# manifest per image; acceptance images point it at tests/m9/mounts-*.json.
-# ZOS_VFS_BUILTIN names the filesystem providers statically linked into the
-# kernel (the registry/vs-generator invariant is checked by test_mountgen.py).
-ZOS_MOUNTS      ?= config/mounts.json
-ZOS_VFS_BUILTIN ?= romfs
 
 # System build configuration (work/28b-m9-shell-readiness/WORK.md):
 # ZOS_BOOT_PROGRAM selects the program the kernel launcher starts.  The
@@ -87,31 +76,28 @@ ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/upcall.rel $(BUILD)/diag_io.rel \
              $(BUILD)/ipc_asm.rel $(BUILD)/ipc_common.rel \
              $(BUILD)/service_boot.rel
-# M9 VFS core, generated mount table and statically linked ROMFS provider.
-M9_VFS_OBJS := $(BUILD)/vfs_mounts.rel $(BUILD)/vfs_path.rel \
-               $(BUILD)/vfs_mount.rel $(BUILD)/vfs_file.rel \
-               $(BUILD)/vfs_dir.rel $(BUILD)/vfs_mutate.rel \
-               $(BUILD)/vfs_process.rel $(BUILD)/vfs_workspace.rel \
-               $(BUILD)/romfs_provider.rel
+# Handle-pool, path and CWD machinery (42a's reused set) plus the ROMFS
+# reader behind `/SYSTEM`.
+VFS_OBJS := $(BUILD)/vfs_path.rel \
+               $(BUILD)/vfs_process.rel $(BUILD)/vfs_workspace.rel
 C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
-             $(BUILD)/syscall.rel $(BUILD)/diag.rel $(BUILD)/fs.rel \
+             $(BUILD)/syscall.rel $(BUILD)/diag.rel \
              $(BUILD)/irq.rel \
-             $(BUILD)/irq_sources.rel $(BUILD)/registry.rel \
-             $(BUILD)/module_relocate.rel $(BUILD)/module_loader.rel \
-             $(BUILD)/ioc_shim.rel \
+             $(BUILD)/irq_sources.rel \
              $(BUILD)/romfs.rel $(BUILD)/process.rel $(BUILD)/process_exec.rel \
              $(BUILD)/name.rel \
-             $(M9_VFS_OBJS)
+             $(VFS_OBJS)
 # Resident-service IPC substrate (package 39) and the service loader
 # (package 40): production links both from package 41 on.  The substrate
 # is fixed-required - the endpoint table, the call machinery, the
 # descriptor table and the boot gate execute while the window shows bank 6
-# - and the loader's callable half (the syscall bodies and the load pass)
-# is a cold-half object.  Both lists are pinned by
-# config/residency.json and the checked-in linker file.
+# - and the loader's load pass is a cold-half object.  Both lists are
+# pinned by config/residency.json and the checked-in linker file.
+# Package 42b retires SYS_IPC_LOOKUP with the rest of the `FS_*` front end,
+# so the substrate has no syscall-body object left to place.
 IPC_SUBSTRATE_OBJS := $(BUILD)/ipc.rel $(BUILD)/ipc_asm.rel \
              $(BUILD)/ipc_common.rel $(BUILD)/service_boot.rel
-IPC_COLD_OBJS := $(BUILD)/ipc_syscall.rel $(BUILD)/service_loader.rel
+IPC_COLD_OBJS := $(BUILD)/service_loader.rel
 END_OBJ   := $(BUILD)/irq_code_end.rel
 # OBJS is assigned after the acceptance/catalog selection below, once
 # every conditional object append has been decided.
@@ -147,7 +133,7 @@ CFLAGS    += -DZOS_SUBSYS_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/syscall_test.rel $(BUILD)/syscall_selftest_asm.rel \
                     $(BUILD)/irq_test.rel $(BUILD)/irq_selftest_asm.rel \
                     $(BUILD)/ctc_test.rel \
-                    $(BUILD)/romfs_test.rel $(BUILD)/loader_test.rel \
+                    $(BUILD)/romfs_test.rel \
                     $(BUILD)/process_test.rel
 PK_SUFFIX := -subsys-selftest
 ZOS_SERVICES := sio console
@@ -270,110 +256,17 @@ $(error ZOS_CONSOLE_FALLBACK_SELFTEST needs ZOS_CONSOLE_FALLBACK=nohid|nohid-nov
 endif
 endif
 
-# M9 VFS bootstrap acceptance image (package 25): production-style VFS
-# boot -- ROMFS mounted at /SYSTEM by vfs_init(), the four resident modules
-# and the monitor loaded through VFS paths, the normal mount pass consuming
-# a test manifest whose optional mount names an unregistered provider (so it
-# fails, is diagnosed, and leaves the namespace usable) -- then the M9 target
-# VFS selftest.  The ROMFS carries the four-module set without iocfat.zmod
-# (tests/m9/manifest-vfs.json): package 30 added iocfat to the production
-# store, but this image's target test already fills the derived arena, so
-# the IOC-FAT provider is compiled out here (package 30c correction).
-ifeq ($(ZOS_M9_VFS_SELFTEST),1)
-CFLAGS    += -DZOS_M9_VFS_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m9_vfs_test.rel
-PK_SUFFIX := -m9-vfs-selftest
-ZOS_MOUNTS := tests/m9/mounts-optional-fail.json
-ZOS_SERVICES := sio ioc hid v9958 console
-ZOS_ARENA_MODULES :=
-endif
-
-# M9 required-mount failure image (package 25): the same production boot,
-# but the configured non-system mount is `required: true` and names an
-# unregistered provider, so the normal mount pass must diagnose it and
-# panic before the monitor launcher runs (architecture section 32.32.4).
-ifeq ($(ZOS_M9_REQUIRED_MOUNT),1)
-ZOS_MOUNTS := tests/m9/mounts-required-fail.json
-PK_SUFFIX := -m9-required-mount
-endif
-
-# M9 writable-provider acceptance image (package 26): the test-only ramfs
-# ZMOD registers through driver ABI v3 and the normal mount pass attaches it
-# at `/` (required) and `/R2` (optional).  The boot set is SIO-only: the
-# console falls back to SIO and the freed arena granules hold the bounded
-# RAM provider and the registration fixture modules.  The target selftest
-# covers registration rollback, every mutation semantic, the root merge and
-# the size/seek cases.
-ifeq ($(ZOS_M9_PROVIDER_SELFTEST),1)
-CFLAGS    += -DZOS_M9_PROVIDER_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m9_provider_test.rel
-PK_SUFFIX := -m9-provider-selftest
-ZOS_MOUNTS := tests/m9/mounts-ramfs.json
-ZOS_SERVICES := sio console
-ZOS_ARENA_MODULES :=
-endif
-
-# M9 filesystem syscall acceptance image (package 27): the SIO-only boot
-# set plus the test-only ramfs provider mounted at `/` (required) and `/R2`
-# (optional); the native `fstest.zex` runs the public FS_* family, then the
-# launcher-cleanup program is exec'd a second time to prove the descriptor
-# pool and CWD were released.  The production boot set (IOC/HID/V9958) is
-# compiled out so the derived arena holds the RAM provider.
-ifeq ($(ZOS_M9_FS_SELFTEST),1)
-CFLAGS    += -DZOS_M9_FS_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m9_fs_test.rel
-PK_SUFFIX := -m9-fs-selftest
-ZOS_MOUNTS := tests/m9/mounts-ramfs.json
-ZOS_SERVICES := sio console
-ZOS_ARENA_MODULES :=
-endif
-
-# M9 SYS_EXEC acceptance image (package 28): the SIO-only boot set plus the
-# test-only ramfs provider at `/` and `/R2`, and the extended native
-# programs fstest.zex, fschild.zex, fsraw.zex and fsdeep.zex.  The target
-# hook runs the user-side exec cases and the depth probe.
-ifeq ($(ZOS_M9_EXEC_SELFTEST),1)
-CFLAGS    += -DZOS_M9_EXEC_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m9_exec_test.rel
-PK_SUFFIX := -m9-exec-selftest
-ZOS_MOUNTS := tests/m9/mounts-ramfs.json
-ZOS_SERVICES := sio console
-ZOS_ARENA_MODULES :=
-endif
-
-# M9 IOC-FAT acceptance image (package 30).  The production boot set (SIO,
-# IOC, HID, V9958) plus `iocfat.zmod` loaded last, with the production
-# `config/mounts.json` attaching `/` to `iocfat` as an optional mount.  The
-# target hook drives the provider through the ordinary VFS while the
-# simulator's FS2 peer serves the MCU side; the same image runs on hardware
-# against a real SD card.  HID and V9958 are dropped so the derived arena
-# holds the acceptance object alongside the provider and the console still
-# binds the SIO fallback.
-ifeq ($(ZOS_M9_IOCFAT_SELFTEST),1)
-CFLAGS    += -DZOS_M9_IOCFAT_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/m9_iocfat_test.rel
-PK_SUFFIX := -m9-iocfat-selftest
-ZOS_SERVICES := sio ioc console
-endif
-
-# M9 integration acceptance image (package 31).  The production boot set
-# minus HID/V9958 (so the whole acceptance transcript arrives on SIO, as for
-# every other M9 acceptance image), the resident IOC-FAT provider, and every
-# native acceptance program.  The target hook exec's fstest.zex -- which
-# exec's the deep-matrix program fsfat.zex -- then the fsdeep.zex depth
-# probe, and checks the process, bank and descriptor pools are back to
-# baseline.  With a card, `/` is the real FAT volume, so this is the image
-# that proves M9 end to end.
-ifeq ($(ZOS_M9_SELFTEST),1)
-CFLAGS    += -DZOS_M9_SELFTEST=1 -DZOS_SERVICE_TEST_EVIDENCE=0
-TARGET_TEST_OBJS += $(BUILD)/m9_selftest.rel \
-		    $(BUILD)/m9_selftest_runner.rel
-# This image needs all 13 IOC-FAT arena granules.  Its compact target hook
-# fits the fixed code gap; only its bounded data belongs in the cold half.
-TEST_FIXED_OBJS := $(BUILD)/target_test.rel $(BUILD)/m9_selftest.rel \
-		   $(BUILD)/m9_selftest_runner.rel
-PK_SUFFIX := -m9-selftest
-ZOS_SERVICES := sio ioc console
+# Filesystem outcome image (work package 42b, correction 01).  The
+# production boot set (SIO and IOC, so the FS2 transport is the real one)
+# plus `iocfat.zmod` as a bank-6 service publishing `/FS`, the monitor and
+# two SDK programs: the checks run in `/SYSTEM/fs_selftest.zex`, which
+# SYS_EXECs `/SYSTEM/fs_child.zex` for the nested-exec and handle-release
+# outcomes.  The simulator's FS2 peer serves the MCU side, so the same
+# image runs on hardware against a real SD card.
+ifeq ($(ZOS_FS_SELFTEST),1)
+PK_SUFFIX := -fs-selftest
+ZOS_BOOT_PROGRAM := /SYSTEM/fs_selftest.zex
+ZOS_SERVICES := sio ioc console iocfat
 endif
 
 # Nucleus-layout acceptance image (work package 38): the production boot
@@ -440,7 +333,7 @@ endif
 #     results and prints them (`tests/target/ns`).
 NS_DIR   := tests/target/ns
 ifeq ($(ZOS_NS_SELFTEST),1)
-CFLAGS    += -DZOS_NS_HANDLES=1 -Itests/target/include
+CFLAGS    += -Itests/target/include
 PK_SUFFIX := -ns-selftest
 # sio and console are the real services whose publications the DEVICE
 # table carries (`/dev/serial/0`, `/dev/console`); `nsdev` is the test
@@ -450,12 +343,10 @@ ZOS_SERVICES := sio console nsdev
 SVC_MANIFEST_DIR := tests/ns/manifests
 ZOS_ARENA_MODULES :=
 ZOS_BOOT_PROGRAM := /SYSTEM/ns.zex
-# The object family links where production will link it (config/
-# residency.json: vfs_ns, vfs_ns_file and object are `cold`), which this
-# image reaches by naming them in its extra cold set; the shared runner and
+# The object family links where production links it (config/residency.json
+# carries vfs_ns, vfs_ns_file and object as `cold`); the shared runner and
 # the guard the other acceptance images use come with it.
 ZOS_VFS_WS_GUARD := 1
-NS_OBJS := $(BUILD)/vfs_ns.rel $(BUILD)/vfs_ns_file.rel $(BUILD)/object.rel
 # The family itself compiles cold (its production tier), and so do the
 # `moves` objects that still hold the handle pool and the path/CWD
 # machinery it calls: this image's cold half has the room, and it is the
@@ -483,26 +374,18 @@ CFLAGS    += -DZOS_SMOKE_HOST_SYNC=1
 endif
 
 # The resident service set the nucleus boots (kernel/main.c).  Production
-# loads the five services from the recovery store's `services.man` in the
-# order the manifest lists; an acceptance image that needs the serial-only
-# fallback lists a subset (see the per-image blocks below), which is the
-# M8 `ZOS_*_BOOT` gate's replacement.  The arena plan lists the modules the
-# loader still places in the derived arena (IOC-FAT in production).
-ZOS_SERVICES ?= sio ioc hid v9958 console
-ZOS_ARENA_MODULES ?= iocfat
-
-# The IOC-FAT arena provider's boot gate follows the arena set: an image
-# whose declared boot set does not carry iocfat does not attempt the load
-# (the M8 per-image boot gates' M10 replacement - the store says what the
-# image boots, and the image's own code follows it).
-ifneq ($(filter iocfat,$(ZOS_ARENA_MODULES)),)
-CFLAGS    += -DZOS_IOCFAT_BOOT=1
-else
-CFLAGS    += -DZOS_IOCFAT_BOOT=0
-endif
+# loads them from the recovery store's `services.man` in the order the
+# manifest lists; an acceptance image that needs the serial-only fallback
+# or leaves out the filesystem driver lists its own set (see the per-image
+# blocks below), which is the M8 `ZOS_*_BOOT` gate's replacement.  The
+# filesystem driver is one of them since 42b: IOC-FAT is a bank-6 service
+# publishing `/FS`, and the arena boot set is empty.
+ZOS_SERVICES ?= sio ioc hid v9958 console iocfat
+ZOS_ARENA_MODULES ?=
 
 OBJS      := $(ASM_OBJS) $(C_OBJS) $(BUILD)/ipc.rel $(IPC_COLD_OBJS) \
-             $(NS_OBJS)
+             $(BUILD)/vfs_ns.rel $(BUILD)/vfs_ns_file.rel $(BUILD)/object.rel
+
 
 # Nucleus residency (architecture 36.5, work package 38).  Every
 # production image is a revision-13 two-region build: the fixed areas
@@ -521,13 +404,13 @@ OBJS      := $(ASM_OBJS) $(C_OBJS) $(BUILD)/ipc.rel $(IPC_COLD_OBJS) \
 # that extra cold set to mapcheck with --cold-extra and to the codegen
 # through COLD_EXTRA, so both stay in step.
 RESIDENCY  := config/residency.json
-# Package 41: residency.json now names the two `moves` objects production
-# compiles cold (vfs_dir, romfs_provider - they fit beside the new cold
-# bodies: the resident service loader, the syscall IPC dispatcher and the
-# IOC class shim).  The rest keep the moves tier's documented fallback and
-# overflow into the fixed core's leftover space, which the substrate now
-# shares; both ledgers report the split.  An image that wants a different
-# split passes it here (the IPC acceptance image does).
+# Package 42b: the namespace family (vfs_ns, vfs_ns_file, object) is
+# production cold code now - it replaces the retired `FS_*` front end and
+# the M9 VFS machinery, so residency.json lists the three as `cold`.  The
+# two `moves` objects that remain keep the moves tier's documented
+# fallback and overflow into the fixed core's leftover space, which the
+# substrate shares; both ledgers report the split.  An image that wants a
+# different split passes it here (the IPC acceptance image does).
 COLD_EXTRA ?=
 COLD_EXTRA_CSV ?= $(COLD_EXTRA)
 ifeq ($(COLD_EXTRA_CSV),)
@@ -548,15 +431,13 @@ ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_IOC_SELFTEST) $(ZOS_HID_SELFTEST) \
 	$(ZOS_VIDEO_SELFTEST) \
 	$(ZOS_CONSOLE_SELFTEST) $(ZOS_CONSOLE_INTEGRATION_SELFTEST) \
-	$(ZOS_CONSOLE_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
-	$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST) \
-	$(ZOS_M9_EXEC_SELFTEST) $(ZOS_M9_IOCFAT_SELFTEST) \
-	$(ZOS_M9_SELFTEST) $(ZOS_NUCLEUS_SELFTEST) \
+	$(ZOS_CONSOLE_FALLBACK_SELFTEST) \
+	$(ZOS_FS_SELFTEST) $(ZOS_NUCLEUS_SELFTEST) \
 	$(ZOS_IPC_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1 \
 		-Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel \
-		$(if $(filter 1,$(ZOS_M9_SELFTEST)),,$(BUILD)/service_client.rel) \
+		$(if $(filter 1,$(ZOS_FS_SELFTEST)),,$(BUILD)/service_client.rel) \
 		$(TARGET_TEST_OBJS)
 endif
 
@@ -592,8 +473,6 @@ RESIDENCY_DERIVE_FLAGS := --residency $(RESIDENCY)
 # alone, and every other image declares its own fixture modules.
 # (MODULES is defined below this point, so keep these recursive
 # assignments.)
-BOOT_ZMODS = $(addprefix $(MODULES)/,$(addsuffix .zmod,$(ZOS_ARENA_MODULES)))
-
 
 IMAGE := $(BUILD)/zephyros$(PK_SUFFIX).bin
 MAME_IMAGE := $(BUILD)/zephyr80$(PK_SUFFIX).bin
@@ -664,13 +543,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	v9958-test video-selftest \
 	console-selftest \
 	console-integration-selftest console-fallback-selftests \
-	m9-vfs-selftest \
-	m9-required-mount-selftest \
-	m9-provider-selftest \
-	m9-fs-selftest \
-	m9-exec-selftest \
-	m9-iocfat-selftest \
-	m9-selftest \
+	fs-selftest \
 	ipc-selftest \
 	nucleus-selftest \
 	hardware-images \
@@ -680,10 +553,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	smoke-hardware-video smoke-hardware-console \
 	smoke-hardware-console-integration smoke-hardware-console-fb-nohid \
 	smoke-hardware-console-fb-nohid-nov9958 \
-	smoke-hardware-m9-fs \
-	smoke-hardware-m9-exec \
-	smoke-hardware-m9-iocfat \
-	smoke-hardware-m9
+	smoke-hardware-fs
 
 all: $(IMAGE) $(MAME_IMAGE)
 
@@ -793,34 +663,16 @@ $(BUILD)/diag.rel: kernel/syscall/diag.c kernel/syscall/diag.h \
 
 # --- M3 device/driver/service objects (bank-7 code and data) -----------------
 
-$(BUILD)/registry.rel: kernel/device/registry.c include/zephyros/device.h \
-		kernel/device/registry.h kernel/lib/name.h \
-		include/zephyros/irq.h include/zephyros/errno.h \
-		abi/zos/types.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M4 module loader objects (bank-7 code and data) -------------------------
 
-$(BUILD)/module_relocate.rel: kernel/module/relocate.c \
-		include/zephyros/module.h include/zephyros/driver.h \
-		include/zephyros/errno.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/module_loader.rel: kernel/module/loader.c \
-		include/zephyros/module.h include/zephyros/driver.h \
-		include/zephyros/device.h include/zephyros/irq.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/ioc_shim.rel: kernel/module/ioc_shim.c kernel/module/ioc_shim.h \
-		include/zephyros/ioc.h include/zephyros/device.h \
-		include/zephyros/ipc.h include/zephyros/process.h \
-		abi/zos/protocol.h kernel/ipc/ipc.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M5 ROMFS objects (bank-7 reader + common ROM-access primitive) ----------
 
-# Shared kernel ASCII name comparison (package 30c, F3): one helper for VFS,
-# ROMFS and the device registry.
+# Shared kernel ASCII name comparison (package 30c, F3): one helper for the
+# namespace router and ROMFS.
 $(BUILD)/name.rel: kernel/lib/name.c kernel/lib/name.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
@@ -829,29 +681,15 @@ $(BUILD)/romfs.rel: kernel/romfs/romfs.c include/zephyros/romfs.h \
 		kernel/lib/name.h platform/zephyr80/memory.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-# --- M9 VFS objects (bank-7 core + ROMFS provider + generated mount table) ---
+# --- VFS objects (the handle pool, paths and the workspace) -------------------
 
 $(BUILD)/vfs_path.rel: kernel/vfs/path.c kernel/vfs/vfs.h \
 		abi/zos/fs.h include/zephyros/vfs.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/vfs_mount.rel: kernel/vfs/mount.c kernel/vfs/vfs.h \
-		kernel/vfs/mount_config.h kernel/lib/name.h abi/zos/fs.h \
-		include/zephyros/vfs.h fs/romfs/romfs_provider.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/vfs_file.rel: kernel/vfs/file.c kernel/vfs/vfs.h \
-		abi/zos/fs.h include/zephyros/vfs.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/vfs_dir.rel: kernel/vfs/dir.c kernel/vfs/vfs.h kernel/lib/name.h \
-		abi/zos/fs.h include/zephyros/vfs.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/vfs_mutate.rel: kernel/vfs/mutate.c kernel/vfs/vfs.h \
-		abi/zos/fs.h include/zephyros/vfs.h \
-		include/zephyros/process.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_process.rel: kernel/vfs/process.c kernel/vfs/vfs.h \
 		abi/zos/fs.h include/zephyros/vfs.h \
@@ -877,36 +715,12 @@ $(BUILD)/vfs_ns_file.rel: kernel/vfs/ns_file.c kernel/vfs/ns.h \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/object.rel: kernel/syscall/object.c kernel/syscall/object.h \
-		kernel/syscall/fs.h kernel/syscall/diag.h kernel/vfs/ns.h \
+		kernel/syscall/diag.h kernel/vfs/ns.h \
 		abi/zos/object.h abi/zos/ipc.h abi/zos/syscall.h \
 		include/zephyros/errno.h include/zephyros/process.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/fs.rel: kernel/syscall/fs.c kernel/syscall/fs.h \
-		kernel/syscall/diag.h kernel/vfs/vfs.h \
-		abi/zos/syscall.h abi/zos/fs.h \
-		include/zephyros/process.h include/zephyros/errno.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/romfs_provider.rel: fs/romfs/romfs_provider.c \
-		fs/romfs/romfs_provider.h kernel/vfs/vfs.h \
-		include/zephyros/romfs.h include/zephyros/vfs.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-# The mount table is generated in the build tree only (never committed) and
-# regenerated whenever the manifest, the generator, or the Makefile variables
-# change; its content is exactly the reviewed manifest.
-$(BUILD)/generated/vfs_mounts.c $(BUILD)/generated/vfs_mounts.json: \
-		$(ZOS_MOUNTS) tools/mountgen.py Makefile | $(BUILD)
-	mkdir -p $(BUILD)/generated
-	$(PYTHON) tools/mountgen.py $(ZOS_MOUNTS) \
-		--builtin "$(ZOS_VFS_BUILTIN)" \
-		--out $(BUILD)/generated/vfs_mounts.c \
-		--report $(BUILD)/generated/vfs_mounts.json
-
-$(BUILD)/vfs_mounts.rel: $(BUILD)/generated/vfs_mounts.c \
-		kernel/vfs/mount_config.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M6 process lifecycle objects (bank-7 code and data) --------------------
 
@@ -943,10 +757,10 @@ $(MODULES):
 # used/free totals; the build fails here when the declared boot set cannot
 # coexist in the derived arena.  The plan also carries the bank-7 ledger.
 ARENA_PLAN := $(BUILD)/arena.plan.json
-$(ARENA_PLAN): $(BOOT_ZMODS) tools/zmodpack.py tools/pack_image.py \
+$(ARENA_PLAN): tools/zmodpack.py tools/pack_image.py \
 		$(MEMORY_INC) | $(BUILD)
 	$(PYTHON) tools/zmodpack.py plan --geometry $(MEMORY_INC) \
-		--report $@ $(BOOT_ZMODS)
+		--report $@
 
 # --- bank-6 resident services (work package 41) ------------------------------
 # The SIO, IOC, HID, V9958 and console driver stacks are bank-6 services:
@@ -971,8 +785,7 @@ SVC_BOOT   := $(SVC_CFLAGS) --codeseg BOOT --dataseg BOOT_DATA
 # The declared production boot set, in load order: IOC before HID (HID's
 # image declares the dependency), and the console last, because its init
 # probes the services it composes.
-ZOS_SERVICES ?= sio ioc hid v9958 console
-SVC_NAMES := sio ioc hid v9958 console
+SVC_NAMES := sio ioc hid v9958 console iocfat
 SVC_ZMODS := $(addprefix $(MODULES)/,$(addsuffix .zmod,$(SVC_NAMES)))
 
 $(MODULES)/sio.rel: drivers/sio/sio.c drivers/sio/sio.h \
@@ -1050,6 +863,16 @@ $(MODULES)/console_service.rel: services/console/console_service.c \
 		$(SVC_PROTOCOL_H) include/zephyros/errno.h | $(MODULES)
 	$(SDCC) $(SVC_HOT) $< -o $@
 
+# The filesystem driver's hot image: the same source the M9 resident
+# provider used, rebuilt as bank-6 service code.  Its FS2 transfer staging,
+# the 512-byte cache and the handle pools are `_SERVICE_IO`; the IOC
+# dependency is host-resolved at pack time (`depends`).
+$(MODULES)/iocfat.rel: fs/iocfat/iocfat.c \
+		include/zephyros/ipc.h include/zephyros/ioc.h \
+		abi/zos/fs.h abi/zos/object.h abi/zos/protocol.h \
+		include/zephyros/errno.h | $(MODULES)
+	$(SDCC) $(SVC_HOT) $< -o $@
+
 $(MODULES)/sdcc_indirect_calls.rel: modules/runtime/sdcc_indirect_calls.asm \
 		| $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
@@ -1073,7 +896,8 @@ SVC_OBJS := $(MODULES)/sdcc_indirect_calls.rel \
 	$(MODULES)/v9958.rel $(MODULES)/v9958_io.rel \
 	$(MODULES)/v9958_service.rel $(MODULES)/v9958_font.rel \
 	$(MODULES)/v9958_boot.rel \
-	$(MODULES)/console_service.rel
+	$(MODULES)/console_service.rel \
+	$(MODULES)/iocfat.rel
 
 # The packer links every image against the whole load-order set (--set):
 # the tier plan, the endpoint numbers and the inter-driver dependencies
@@ -1156,41 +980,6 @@ $(MODULES)/abi_probe.zmod: tests/modules/abi_probe.json $(MODULES)/abi_probe.rel
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
 		--report $(MODULES)/abi_probe.report.json
 
-# --- M9 writable-provider fixtures (test only) ---
-
-$(MODULES)/ramfs.rel: tests/modules/ramfs.c \
-		include/zephyros/driver.h include/zephyros/vfs.h \
-		abi/zos/fs.h include/zephyros/errno.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-$(MODULES)/m9_probe.rel: tests/modules/m9_probe.c \
-		include/zephyros/driver.h include/zephyros/vfs.h \
-		include/zephyros/errno.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-$(MODULES)/m9_dup.rel: tests/modules/m9_dup.c \
-		include/zephyros/driver.h include/zephyros/vfs.h \
-		include/zephyros/errno.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-$(MODULES)/m9_fail.rel: tests/modules/m9_fail.c \
-		include/zephyros/driver.h include/zephyros/vfs.h \
-		include/zephyros/errno.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-# --- M9 IOC-FAT provider (package 30) ---
-# The resident path-based FS2 provider, loaded last by production (see the
-# ZOS_IOCFAT_BOOT gate) and mounted at the optional `/`.
-$(MODULES)/iocfat.rel: fs/iocfat/iocfat.c \
-		include/zephyros/driver.h include/zephyros/vfs.h \
-		include/zephyros/ioc.h abi/zos/fs.h include/zephyros/errno.h | $(MODULES)
-	$(SDCC) $(MOD_CFLAGS) $< -o $@
-
-$(MODULES)/iocfat.zmod: modules/manifests/iocfat.json $(MODULES)/iocfat.rel \
-		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
-		--report $(MODULES)/iocfat.report.json
-
 $(MODULES)/%.zmod: tests/modules/%.json $(MODULES)/%.rel \
 		$(MODULES)/sdcc_indirect_calls.rel tools/zmodpack.py
 	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES)
@@ -1203,7 +992,6 @@ FIXTURE_ZMODS := $(MODULES)/m4_probe.zmod $(MODULES)/m4_fail.zmod \
 $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		include/zephyros/kernel.h tests/target/include/syscall_selftest.h \
 		tests/target/include/irq_selftest.h \
-		tests/target/include/loader_selftest.h \
 		tests/target/include/romfs_selftest.h \
 		tests/target/include/process_selftest.h \
 		tests/target/include/hid_selftest.h \
@@ -1211,14 +999,8 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/console_selftest.h \
 		tests/target/include/console_integration_selftest.h \
 		tests/target/include/console_fallback_selftest.h \
-		tests/target/include/m9_selftest.h \
-		tests/target/include/m9_provider_selftest.h \
-		tests/target/include/m9_fs_selftest.h \
-		tests/target/include/m9_exec_selftest.h \
-		tests/target/include/m9_iocfat_selftest.h \
 		abi/zos/ipc.h \
-		include/zephyros/service.h \
-		kernel/syscall/ipc.h | $(BUILD)
+		include/zephyros/service.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # The resident-service acceptance client every M10 driver diagnostic links
@@ -1260,9 +1042,6 @@ $(BUILD)/ipc_common.rel: kernel/ipc/ipc_common.asm \
 		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/ipc_syscall.rel: kernel/syscall/ipc.c kernel/syscall/ipc.h \
-		kernel/ipc/ipc.h abi/zos/ipc.h kernel/syscall/diag.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/service_loader.rel: kernel/service/service_loader.c \
 		include/zephyros/service.h include/zephyros/ipc.h \
@@ -1311,12 +1090,6 @@ $(BUILD)/romfs_test.rel: tests/target/romfs/romfs_test.c \
 		tests/target/include/romfs_selftest.h $(BUILD)/romfs_expect.inc | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/loader_test.rel: tests/target/loader/loader_test.c \
-		include/zephyros/module.h include/zephyros/kernel.h \
-		include/zephyros/device.h include/zephyros/irq.h \
-		include/zephyros/vfs.h \
-		tests/target/include/loader_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
 # The process acceptance layout header is generated from the SDK-produced
 # zextest manifest (work/28c-m9-user-sdk); there is no hand-written
@@ -1378,57 +1151,12 @@ $(BUILD)/console_fallback_test.rel: tests/target/console/fallback_test.c \
 		tests/target/include/console_fallback_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/m9_vfs_test.rel: tests/target/m9/m9_vfs_test.c \
-		abi/zos/fs.h include/zephyros/vfs.h \
-		include/zephyros/romfs.h include/zephyros/module.h \
-		include/zephyros/kernel.h \
-		kernel/vfs/vfs.h kernel/vfs/mount_config.h \
-		tests/target/include/m9_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/m9_provider_test.rel: tests/target/m9/m9_provider_test.c \
-		abi/zos/fs.h include/zephyros/vfs.h \
-		include/zephyros/module.h \
-		include/zephyros/kernel.h \
-		kernel/vfs/vfs.h kernel/vfs/mount_config.h \
-		tests/target/include/m9_provider_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/m9_fs_test.rel: tests/target/m9/m9_fs_test.c \
-		include/zephyros/process.h \
-		include/zephyros/kernel.h abi/zos/fs.h \
-		kernel/vfs/vfs.h \
-		tests/target/include/m9_fs_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/m9_exec_test.rel: tests/target/m9/m9_exec_test.c \
-		include/zephyros/process.h \
-		include/zephyros/kernel.h abi/zos/fs.h \
-		kernel/vfs/vfs.h \
-		tests/target/include/m9_exec_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/m9_iocfat_test.rel: tests/target/m9/m9_iocfat_test.c \
-		include/zephyros/device.h \
-		include/zephyros/kernel.h abi/zos/fs.h \
-		kernel/vfs/vfs.h \
-		tests/target/include/m9_iocfat_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/m9_selftest.rel: tests/target/m9/m9_selftest.c \
-		tests/target/m9/m9_selftest_internal.h \
-		include/zephyros/kernel.h \
-		include/zephyros/process.h abi/zos/fs.h \
-		kernel/lib/name.h kernel/vfs/vfs.h \
-		tests/target/include/m9_integration_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/m9_selftest_runner.rel: tests/target/m9/m9_selftest_runner.c \
-		tests/target/m9/m9_selftest_internal.h \
-		include/zephyros/kernel.h include/zephyros/process.h \
-		abi/zos/fs.h kernel/vfs/vfs.h \
-		tests/target/include/m9_integration_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- native user programs (SDK, work/28c-m9-user-sdk) ------------------------
 # Every ZEX is built by one zex_program line from user/sdk/zex.mk.  The
@@ -1452,29 +1180,22 @@ $(eval $(call zex_program,zextest,tests/target/process,\
 	zextest.c zextest_sp.asm,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include))
 
-$(eval $(call zex_program,fstest,tests/target/m9/fstest,fstest.c,\
-	STACK=320,STAGE=1))
-$(eval $(call zex_program,fsfat,tests/target/m9/fstest,fsfat.c,\
-	STACK=256,STAGE=1))
-$(eval $(call zex_program,fstest_l,tests/target/m9/fstest,fstest_l.c,\
-	STACK=256,STAGE=1))
-$(eval $(call zex_program,fschild,tests/target/m9/exec,fschild.c,\
-	STACK=256,STAGE=1))
-$(eval $(call zex_program,fsdeep,tests/target/m9/exec,fsdeep.c,\
-	STACK=128,STAGE=1))
-$(eval $(call zex_program,fsraw,tests/target/m9/exec,fsraw.c fsraw_entry.asm,\
-	NO_CRT0=1,ENTRY=rw_entry,STACK=32,SCRATCH=,STAGE=1))
+# Filesystem outcome programs (work package 42b, correction 01): the checks
+# the image boots (`ZOS_BOOT_PROGRAM=/SYSTEM/fs_selftest.zex`) and the child
+# it SYS_EXECs.  Both are ordinary SDK programs.
+$(eval $(call zex_program,fs_selftest,tests/fs,\
+	fs_selftest.c,STACK=384,STAGE=1))
 
-# IPC acceptance client (work package 39): an ordinary SDK program.  It
-# consumes the native SYS_IPC_LOOKUP / SYS_IPC_CALL wrappers from libzos
-# and the test protocol header; it owns no syscall stub of its own.
+$(eval $(call zex_program,fs_child,tests/fs,\
+	fs_child.c,STACK=192,STAGE=1))
+
 $(eval $(call zex_program,ipc,tests/target/ipc,\
 	ipc.c,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include))
 
 # IPC caller-buffer probe (work package 39, correction 01): the boot
 # program of the IPC acceptance image.  NO_CRT0 with a custom entry and
-# LOWBASE=0x0300 and CODEBASE=0x0344 put the SDK's 68-byte low-data area
+# LOWBASE=0x0300 and CODEBASE=0x0344 put the SDK's 93-byte low-data area
 # immediately above 0100h-02FFh, which is left as
 # a plain 512-byte buffer: the only way a ZEX image can name the caller
 # window itself as a copy destination.
@@ -1485,9 +1206,7 @@ $(eval $(call zex_program,ipccopy,tests/target/ipc,\
 
 # Namespace acceptance programs (work package 42a): the client the image
 # boots (ZOS_BOOT_PROGRAM=/SYSTEM/ns.zex) and the child it SYS_EXECs.  Both
-# are ordinary SDK programs; the image's SDK variant carries the object
-# wrappers and moves the default code base above the enlarged gate blocks
-# (user/sdk/zex.mk ZEX_SDK_LOW_SIZE).
+# are ordinary SDK programs.
 $(eval $(call zex_program,ns,tests/ns,\
 	ns.c,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include))
@@ -1559,52 +1278,16 @@ else ifeq ($(ZOS_CONSOLE_FALLBACK),nohid-nov9958)
 # the IOC transport survive, and the console binds SIO/SIO.
 ROMFS_MANIFEST := tests/console/manifest-fallback-nohid-nov9958.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
-else ifeq ($(ZOS_M9_VFS_SELFTEST),1)
-# Production-style VFS boot without IOC-FAT: the four resident modules, the
-# V9958 font and the monitor.  The VFS target test already fills the
-# derived arena, so the IOC-FAT provider is compiled out and its ROMFS
-# entry is omitted (package 30c correction).
-ROMFS_MANIFEST := tests/m9/manifest-vfs.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
-else ifeq ($(ZOS_M9_PROVIDER_SELFTEST),1)
-# SIO-only boot: the SIO fallback module, the writable RAM provider, the
-# registration fixtures and the monitor.  No IOC/HID/V9958 entries, so the
-# derived arena holds the bounded RAM provider.
-ROMFS_MANIFEST := tests/m9/manifest-provider.json
-ROMFS_EXTRA_DEPS := $(MODULES)/ramfs.zmod $(MODULES)/m9_probe.zmod \
-		$(MODULES)/m9_dup.zmod $(MODULES)/m9_fail.zmod \
-		$(MODULES)/monitor.zex
-else ifeq ($(ZOS_M9_FS_SELFTEST),1)
-# SIO-only boot: the SIO fallback, the RAM provider mounted at `/` and
-# `/R2`, the monitor and the two native filesystem acceptance programs.
-ROMFS_MANIFEST := tests/m9/manifest-fs.json
-ROMFS_EXTRA_DEPS := $(MODULES)/ramfs.zmod $(MODULES)/monitor.zex \
-		$(MODULES)/fstest.zex $(MODULES)/fstest_l.zex \
-		$(MODULES)/fschild.zex $(MODULES)/fsraw.zex
-else ifeq ($(ZOS_M9_EXEC_SELFTEST),1)
-# SIO-only boot: the SIO fallback, the RAM provider at `/` and `/R2`, the
-# monitor and the native exec acceptance programs (the depth probe is only
-# used by this image).
-ROMFS_MANIFEST := tests/m9/manifest-exec.json
-ROMFS_EXTRA_DEPS := $(MODULES)/ramfs.zmod $(MODULES)/monitor.zex \
-		$(MODULES)/fstest.zex $(MODULES)/fschild.zex \
-		$(MODULES)/fsraw.zex $(MODULES)/fsdeep.zex
-else ifeq ($(ZOS_M9_SELFTEST),1)
-# Integration image: the IOC transport, the resident FS2 provider and the
-# whole native acceptance set, all loaded from the recovery store.  `/` is
-# the card, so nothing else may be assumed present.
-ROMFS_MANIFEST := tests/m9/manifest-selftest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex \
-		$(MODULES)/fstest.zex $(MODULES)/fsfat.zex \
-		$(MODULES)/fsdeep.zex
-else ifeq ($(ZOS_M9_IOCFAT_SELFTEST),1)
-# Production boot set minus HID/V9958: the SIO fallback, the IOC transport,
-# the resident FS2 filesystem provider and the console, plus the native
-# filesystem acceptance program the target hook exec's.  The image's `/` is
-# the card, so nothing else may be assumed present.
-ROMFS_MANIFEST := tests/m9/manifest-iocfat.json
-ROMFS_EXTRA_DEPS := $(MODULES)/iocfat.zmod $(MODULES)/monitor.zex \
-		$(MODULES)/fstest.zex
+else ifeq ($(ZOS_FS_SELFTEST),1)
+# Filesystem outcome store (work package 42b, correction 01): the SIO/IOC/
+# console services the production boot set loads, the IOC-FAT service
+# publishing `/FS`, the monitor the boot program hands the console to, and
+# the two SDK programs - the checks in /SYSTEM/fs_selftest.zex and the
+# child it SYS_EXECs.
+ROMFS_MANIFEST := tests/fs/manifest.json
+# Recursive: the module variables are defined below this chain.
+ROMFS_EXTRA_DEPS = $(MODULES)/fs_selftest.zex $(MODULES)/fs_child.zex \
+	$(MODULES)/monitor.zex $(MODULES)/services.man
 else ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
 # SDK demo image (work/28c-m9-user-sdk): the production boot set and store
 # plus the hello demo, which the launcher starts instead of the monitor
@@ -1749,7 +1432,7 @@ CFLAGS    += -DZOS_BOOT_PROGRAM='"$(ZOS_BOOT_PROGRAM)"'
 $(BUILD)/main.rel: $(BOOT_PROGRAM_STAMP)
 
 $(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(SVC_SET_ZMODS) \
-		$(MODULES)/services.man $(BOOT_ZMODS) $(ROMFS_EXTRA_DEPS) \
+		$(MODULES)/services.man $(ROMFS_EXTRA_DEPS) \
 		tools/romfspack.py $(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
 ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
 	$(PYTHON) tools/romfspack.py --memory-inc $(ZOS_PLATFORM_MEMORY_INC) pack \
@@ -1783,9 +1466,8 @@ ZOS_TEST_LINK := $(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 		$(ZOS_IOC_SELFTEST) $(ZOS_HID_SELFTEST) \
 		$(ZOS_VIDEO_SELFTEST) \
 		$(ZOS_CONSOLE_SELFTEST) $(ZOS_CONSOLE_INTEGRATION_SELFTEST) \
-		$(ZOS_CONSOLE_FALLBACK_SELFTEST) $(ZOS_M9_VFS_SELFTEST) \
-		$(ZOS_M9_PROVIDER_SELFTEST) $(ZOS_M9_FS_SELFTEST) \
-		$(ZOS_M9_EXEC_SELFTEST) $(ZOS_M9_IOCFAT_SELFTEST))
+		$(ZOS_CONSOLE_FALLBACK_SELFTEST) \
+		$(ZOS_FS_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -2094,125 +1776,29 @@ console-fallback-selftests:
 	@echo "  build-console-fb-nohid/zephyros-console-fb-nohid.bin"
 	@echo "  build-console-fb-nohid-nov9958/zephyros-console-fb-nohid-nov9958.bin"
 
-# --- M9 VFS bootstrap acceptance image ---------------------------------------
-# Production-style VFS boot: ROMFS at /SYSTEM, the four resident modules and
-# the monitor loaded through VFS, the optional-mount failure diagnosed, then
-# the target VFS selftest replayed in the simulator.
-
-m9-vfs-selftest: all
-	$(MAKE) BUILD=build-m9-vfs-selftest ZOS_M9_VFS_SELFTEST=1 \
-		build-m9-vfs-selftest/zephyros-m9-vfs-selftest.bin \
-		build-m9-vfs-selftest/zephyr80-m9-vfs-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) build-m9-vfs-selftest/zephyros.map \
-		build-m9-vfs-selftest/geometry/memory.inc $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m9_vfs_sim.py' -v
-	@echo "m9 vfs image: build-m9-vfs-selftest/zephyros-m9-vfs-selftest.bin"
-
-# M9 required-mount failure image: the normal mount pass meets a required
-# non-system mount whose provider is absent; boot must diagnose it and panic
-# (tests/test_m9_vfs_sim.py TestM9RequiredMount).
-
-m9-required-mount-selftest: all
-	$(MAKE) BUILD=build-m9-required-mount-selftest ZOS_M9_REQUIRED_MOUNT=1 \
-		build-m9-required-mount-selftest/zephyros-m9-required-mount.bin \
-		build-m9-required-mount-selftest/zephyr80-m9-required-mount.bin
-	$(PYTHON) tools/mapcheck.py --production --residency $(RESIDENCY) \
-		--boot-plan build-m9-required-mount-selftest/arena.plan.json \
-		build-m9-required-mount-selftest/zephyros.map \
-		build-m9-required-mount-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m9_vfs_sim.py' -v
-	@echo "m9 required-mount image: build-m9-required-mount-selftest/zephyros-m9-required-mount.bin"
-
-# M9 writable-provider acceptance image: SIO-only boot, the test RAM
-# filesystem mounted at `/` (required) and `/R2` (optional), the
-# registration fixtures loaded by the target boot hook, and the provider
-# selftest (registration rollback, mutations, root merge, sizes, seek).
-
-m9-provider-selftest: all
-	$(MAKE) BUILD=build-m9-provider-selftest ZOS_M9_PROVIDER_SELFTEST=1 \
-		build-m9-provider-selftest/zephyros-m9-provider-selftest.bin \
-		build-m9-provider-selftest/zephyr80-m9-provider-selftest.bin
+# Filesystem outcome image (work package 42b, correction 01): the
+# production boot path with the IOC-FAT service publishing `/FS` and the SDK
+# outcome program booting as /SYSTEM/fs_selftest.zex.  The simulator replay
+# serves FS2 from a host peer, so the same image runs on hardware against a
+# real card; the checks and their counts are pinned by
+# tests/test_fs_selftest_sim.py.
+fs-selftest: all
+	$(MAKE) BUILD=build-fs-selftest ZOS_FS_SELFTEST=1 \
+		build-fs-selftest/zephyros-fs-selftest.bin \
+		build-fs-selftest/zephyr80-fs-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-m9-provider-selftest/zephyros.map \
-		build-m9-provider-selftest/geometry/memory.inc \
+		build-fs-selftest/zephyros.map \
+		build-fs-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m9_provider_sim.py' -v
-	@echo "m9 provider image: build-m9-provider-selftest/zephyros-m9-provider-selftest.bin"
+	$(PYTHON) -m unittest discover -s tests -p 'test_fs_selftest*.py' -v
+	@echo "filesystem image: build-fs-selftest/zephyros-fs-selftest.bin"
 
-# M9 filesystem syscall acceptance image: SIO-only boot, the test RAM
-# filesystem at `/` and `/R2`, and the two native acceptance programs.  The
-# target hook launches fstest.zex, checks the pool is clean, then exec's the
-# launcher-cleanup program; the simulator replay pins the transcript.
-
-m9-fs-selftest: all
-	$(MAKE) BUILD=build-m9-fs-selftest ZOS_M9_FS_SELFTEST=1 \
-		build-m9-fs-selftest/zephyros-m9-fs-selftest.bin \
-		build-m9-fs-selftest/zephyr80-m9-fs-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-m9-fs-selftest/zephyros.map \
-		build-m9-fs-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_syscall_sim.py' -v
-	$(PYTHON) -m unittest discover -s tests -p 'test_m9_fs.py' -v
-	@echo "m9 fs image: build-m9-fs-selftest/zephyros-m9-fs-selftest.bin"
-
-# M9 SYS_EXEC acceptance image: SIO-only boot, the test RAM filesystem at
-# `/` and `/R2`, and the native fstest/fschild/fsraw/fsdeep programs.  The
-# target hook runs the user-side exec cases and the depth probe; the
-# simulator replay pins the transcript and the resource baseline.
-
-m9-exec-selftest: all
-	$(MAKE) BUILD=build-m9-exec-selftest ZOS_M9_EXEC_SELFTEST=1 \
-		build-m9-exec-selftest/zephyros-m9-exec-selftest.bin \
-		build-m9-exec-selftest/zephyr80-m9-exec-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-m9-exec-selftest/zephyros.map \
-		build-m9-exec-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m9_exec_sim.py' -v
-	@echo "m9 exec image: build-m9-exec-selftest/zephyros-m9-exec-selftest.bin"
-
-# M9 IOC-FAT acceptance image (package 30): the production boot set plus
-# `iocfat.zmod` and the production mount manifest (which attaches `/` to
-# `iocfat` as optional), with the target-side provider selftest.  The
-# simulator replay serves FS2 from a host peer, proves the cache rules with
-# FS2 command counts, and measures the gate-stack depth through the
-# provider.
-m9-iocfat-selftest: all
-	$(MAKE) BUILD=build-m9-iocfat-selftest ZOS_M9_IOCFAT_SELFTEST=1 \
-		build-m9-iocfat-selftest/zephyros-m9-iocfat-selftest.bin \
-		build-m9-iocfat-selftest/zephyr80-m9-iocfat-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-m9-iocfat-selftest/zephyros.map \
-		build-m9-iocfat-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_iocfat_sim.py' -v
-	@echo "m9 iocfat image: build-m9-iocfat-selftest/zephyros-m9-iocfat-selftest.bin"
-
-# M9 integration acceptance image (package 31): the production boot path with
-# `/` served by the resident IOC-FAT provider, and the whole native
-# acceptance set.  The target hook exec's fstest.zex (which exec's the
-# deep-matrix program fsfat.zex), the fsdeep.zex depth probe and the two
-# fault probes, so the image is the milestone's end-to-end proof on a card.
-m9-selftest: all
-	$(MAKE) BUILD=build-m9-selftest ZOS_M9_SELFTEST=1 \
-		build-m9-selftest/zephyros-m9-selftest.bin \
-		build-m9-selftest/zephyr80-m9-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-m9-selftest/zephyros.map \
-		build-m9-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_m9_selftest_sim.py' -v
-	@echo "m9 integration image: build-m9-selftest/zephyros-m9-selftest.bin"
-
-# IPC substrate acceptance image (work package 39, M10 stage 3): the
-# production boot path with the fixed-core substrate, the six synthetic
-# bank-6 services placed by the acceptance loader, and the SDK client
-# program booting as /SYSTEM/ipc.zex.  The client runs the promoted
-# conformance suite and checks its own results; the simulator replay
-# measures the spans, the stack high-water marks, the latch intervals and
-# the IRQ delivery.
+# IPC acceptance image (work package 39): the production boot path with
+# the fixed-core substrate, the six synthetic bank-6 services placed by
+# the acceptance loader, and the SDK client program booting as
+# /SYSTEM/ipccopy.zex.  The client runs the promoted conformance suite and
+# checks its own results; the simulator replay measures the spans, the
+# stack high-water marks, the latch intervals and the IRQ delivery.
 ipc-selftest: all
 	$(MAKE) BUILD=build-ipc-selftest ZOS_IPC_SELFTEST=1 \
 		ZOS_BOOT_PROGRAM=/SYSTEM/ipccopy.zex \
@@ -2299,7 +1885,7 @@ helloworld-image: all
 #                                                                             make console-selftest
 #   smoke-hardware-console-integration             build-console-integration-selftest/zephyros-console-integration-selftest.bin  make console-integration-selftest
 #   smoke-hardware-console-fb-*        build-console-fb-*/zephyros-console-fb-*.bin          make console-fallback-selftests
-#   smoke-hardware-m9             build-m9-selftest/zephyros-m9-selftest.bin  make m9-selftest
+#   smoke-hardware-fs             build-fs-selftest/zephyros-fs-selftest.bin  make fs-selftest
 #
 # `make hardware-images` builds every image the smoke modes need.  The
 # images wait for the tool's host-sync sequence, so start the smoke tool and
@@ -2315,7 +1901,7 @@ endef
 hardware-images: all subsystem-selftest romfs-corrupt-selftest \
 		console-integration-selftest ioc-selftest hid-selftest \
 		video-selftest console-selftest console-fallback-selftests \
-		m9-fs-selftest m9-exec-selftest m9-iocfat-selftest m9-selftest
+		fs-selftest
 	@echo "hardware-images: every smoke image is built under build*/"
 
 smoke-hardware:
@@ -2365,18 +1951,6 @@ smoke-hardware-console-fb-nohid-nov9958:
 	@$(call smoke_preflight,build-console-fb-nohid-nov9958/zephyros-console-fb-nohid-nov9958.bin,console-fallback-selftests)
 	$(PYTHON) tools/serial_smoke.py --mode console-fb-nohid-nov9958 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
-smoke-hardware-m9-fs:
-	@$(call smoke_preflight,build-m9-fs-selftest/zephyros-m9-fs-selftest.bin,m9-fs-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode m9-fs --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-m9-exec:
-	@$(call smoke_preflight,build-m9-exec-selftest/zephyros-m9-exec-selftest.bin,m9-exec-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode m9-exec --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-m9-iocfat:
-	@$(call smoke_preflight,build-m9-iocfat-selftest/zephyros-m9-iocfat-selftest.bin,m9-iocfat-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode m9-iocfat --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-m9:
-	@$(call smoke_preflight,build-m9-selftest/zephyros-m9-selftest.bin,m9-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode m9 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+smoke-hardware-fs:
+	@$(call smoke_preflight,build-fs-selftest/zephyros-fs-selftest.bin,fs-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode fs --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))

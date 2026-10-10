@@ -76,7 +76,7 @@ KERNEL_INCLUDE_ROOTS = ("include", "kernel", "platform", "drivers", "fs",
 # printf/string helpers it actually calls.
 HELLO_LIBRARY_MODULES = {
     "zos_crt0", "zos_runtime", "hello", "args", "console_service", "ipc",
-    "zos_gate", "zos_ipcgate", "printf",
+    "zos_gate", "zos_ipcgate", "nsgate", "printf",
     "strlen", "utoa", "ultoa", "itoa", "ltoa", "sdcc_arith",
     "zos_sdcc_arith_entries",
 }
@@ -303,8 +303,8 @@ class TestHelloZex(unittest.TestCase):
 
     def test_container_validates_and_enters_after_low_data(self):
         fields, geometry = zexpack.validate_image(self.image)
-        self.assertEqual(fields["entry_offset"], 0x44)
-        self.assertEqual(geometry["entry"], LOAD_BASE + 0x44)
+        self.assertEqual(fields["entry_offset"], 0x5D)
+        self.assertEqual(geometry["entry"], LOAD_BASE + 0x5D)
         self.assertEqual(geometry["image_size"], self.manifest["image_size"])
         self.assertEqual(geometry["stack_base"], STACK_TOP - 256)
         self.assertEqual(self.manifest["stack_size"], 256)
@@ -312,7 +312,7 @@ class TestHelloZex(unittest.TestCase):
     def test_entry_symbol_is_crt0_not_entry_assembly(self):
         self.assertEqual(self.manifest["entry"], "zos_entry")
         self.assertEqual(self.symbols["zos_entry"],
-                         (LOAD_BASE + 0x44, "zos_crt0"))
+                         (LOAD_BASE + 0x5D, "zos_crt0"))
         # A program never writes entry assembly: no .asm beside the demo.
         for name in os.listdir(os.path.join(ROOT, "user", "helloworld")):
             self.assertFalse(name.endswith(".asm"),
@@ -367,11 +367,12 @@ class TestSdkBoundary(unittest.TestCase):
         # and its caller-buffer probe: declared by the same generic rule,
         # but only the ZOS_IPC_SELFTEST configuration builds them.  `ns`
         # and `nschild` are the namespace acceptance client and the child
-        # it execs, built by ZOS_NS_SELFTEST.
+        # it execs (ZOS_NS_SELFTEST); `fs_selftest` and `fs_child` are the
+        # filesystem outcome programs (ZOS_FS_SELFTEST).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
-                         ["fschild", "fsdeep", "fsfat", "fsraw", "fstest",
-                          "fstest_l", "hello", "ipc", "ipccopy", "monitor",
-                          "ns", "nschild", "zextest"])
+                         ["fs_child", "fs_selftest", "hello", "ipc",
+                          "ipccopy", "monitor", "ns", "nschild",
+                          "zextest"])
         for name, directory, _sources, _options in programs:
             count = sum(_read(path).count("zex_program,%s," % name)
                         for path in ("Makefile",
@@ -424,14 +425,14 @@ class TestSdkBoundary(unittest.TestCase):
         # ASM sources see the ABI only (the SDK's asm uses no C header).
         self.assertIn("ZEX_ASFLAGS := -Iabi", rule)
 
-    def test_no_crt0_programs_are_the_documented_pair(self):
+    def test_the_one_no_crt0_program_is_the_caller_buffer_probe(self):
         no_crt0 = [name for name, _d, _s, options in _declared_programs()
                    if _program_options(options, "NO_CRT0")]
-        # `fsraw` is the raw-return acceptance child; `ipccopy` is the
-        # caller-buffer probe, which links without the C startup so that
-        # CODEBASE= can lift its code above the 0100h-02FFh buffer it
-        # names as a caller buffer (work package 39 correction 01).
-        self.assertEqual(sorted(no_crt0), ["fsraw", "ipccopy"])
+        # `ipccopy` is the caller-buffer probe, which links without the C
+        # startup so that CODEBASE= can lift its code above the
+        # 0100h-02FFh buffer it names as a caller buffer (work package 39
+        # correction 01).
+        self.assertEqual(sorted(no_crt0), ["ipccopy"])
         for name, _d, _s, options in _declared_programs():
             if _program_options(options, "NO_CRT0"):
                 self.assertTrue(_program_options(options, "ENTRY"),
@@ -464,7 +465,7 @@ class TestSdkSplitterInSimulator(unittest.TestCase):
     the loader places it, and the splitter is called the way crt0 calls it
     (HL = tail, DE = argv, capacity on the stack).  This is the argv half
     of the startup contract; the end-to-end transport from the kernel is
-    asserted by the exec acceptance replay (tests/test_m9_exec_sim.py).
+    asserted by the exec acceptance replay (tests/test_fs_selftest_sim.py).
     """
 
     TAIL = 0x1200

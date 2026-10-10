@@ -1,12 +1,17 @@
 /* ZephyrOS libzos: synchronous SYS_EXEC wrapper.
  *
- * Shares the filesystem wrappers' argument block and gate stub, so the
- * string-length rule and the negated-errno convention are identical.
+ * Shares the namespace wrappers' argument block and gate stub, so the
+ * string-length rule and the negated-errno convention are identical.  The
+ * kernel does the binding (it opens the image as a FILE handle with
+ * `bind`, streams it through FILE calls and unbinds before launch), so
+ * there is no client-side file work here.
  * `args` is the raw command tail: the kernel copies it byte-exact into
  * the child's startup block and never splits or quotes it.
  */
 
 #include "zos.h"
+#include "zos/syscall.h"
+
 #include "zos_internal.h"
 
 /* Raw argument-tail length: 0 for null/empty, the byte count, or 0xFFFF
@@ -50,8 +55,6 @@ int zos_exec(const char *path, const char *args)
 {
 	unsigned int n = zexec_path_len(path);
 	unsigned int an = zexec_tail_len(args);
-	struct zos_fs_call_req req;
-
 	if (n == 0xFFFFu || an == 0xFFFFu) {
 		return -ZOS_EINVAL;
 	}
@@ -59,7 +62,5 @@ int zos_exec(const char *path, const char *args)
 	zos_scratch.exec.length = n;
 	zos_scratch.exec.args = (unsigned int)args;
 	zos_scratch.exec.args_length = an;
-	req.number = (unsigned char)ZOS_SYSCALL_EXEC;
-	req.block = &zos_scratch.exec;
-	return zos_fs_call(&req);
+	return zos_ipc_raw(ZOS_SYSCALL_EXEC, &zos_scratch.exec);
 }

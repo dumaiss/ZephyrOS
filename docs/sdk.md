@@ -103,7 +103,7 @@ manifest from the link map, packs and validates
 | `SCRATCH=SYM:SIZE` | `zos_scratch:16` | scratch symbol the packer must find in `0100h-1FFFh`; `SCRATCH=` declares none |
 | `ENTRY=SYM` | `zos_entry` | entry symbol (crt0's entry) |
 | `NO_CRT0=1` | off | link no crt0; `ENTRY` names the program's own entry (the fixed SDK low-data/runtime object remains) |
-| `LOWBASE=ADDR` | `0x0100` | base of the SDK's fixed gate-visible data area (68 bytes; 89 in the `ZOS_NS_HANDLES` variant) |
+| `LOWBASE=ADDR` | `0x0100` | base of the SDK's fixed gate-visible data area (93 bytes: the object/namespace enumeration and exec blocks are part of it) |
 | `CODEBASE=ADDR` | `0x0144` | base of executable code, immediately after the ordinary low-data area (`0x0159` in the `ZOS_NS_HANDLES` variant) |
 | `STAGE=1` | off | copy the packed program into `$(MODULES)` so a recovery manifest can name it |
 | `INCLUDES=a:b` | empty | extra include roots (colon separated), for test-owned headers only |
@@ -348,7 +348,7 @@ Like every other wrapper, the IPC pair marshals through an argument block
 inside the caller window: `zos_ipc_lookup_block` (4 bytes),
 `zos_ipc_call_block` (44) and `zos_ipc_raw_req` (4) are exported so a
 program's own acceptance check can prove their placement.  `runtime.asm`
-owns them beside `zos_scratch` in one fixed 68-byte `_ZOS_SDK_DATA` area;
+owns them beside `zos_scratch` in one fixed 93-byte `_ZOS_SDK_DATA` area;
 ordinary program BSS may grow beyond `2000h` without moving a gate-visible
 block.  `docs/abi.md` section 12 states the ABI rule.
 
@@ -380,9 +380,9 @@ bytes and its default code base moves to `0x0159` (`zex.mk`
 ## 7. Memory layout
 
 ```text
-0100h-0143h           fixed SDK low data (`_ZOS_SDK_DATA`, 68 bytes;
-                      89 bytes and shifted code in the ZOS_NS_HANDLES variant)
-0144h                 crt0 (zos_entry) - the ordinary entry offset is 44h
+0100h-015Ch           fixed SDK low data (`_ZOS_SDK_DATA`, 93 bytes: the
+                      console, IPC, namespace-enumeration and exec blocks)
+015Dh                 crt0 (zos_entry) - the ordinary entry offset is 5Dh
 0100h + image_size    end of the linked image (s__DATA), start of BSS
                       crt0's tail pointer, its 127-byte tail copy and its
                       argv store, the shared scratch, then the program's

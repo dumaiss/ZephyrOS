@@ -21,12 +21,6 @@
 
 #include "zephyros/ipc.h"
 
-/* Endpoint lookup for the SYS_IPC_LOOKUP body and nucleus code (the
- * IOC-FAT class shim, the boot console probe).  Returns the handle (1..N)
- * or 0 when no endpoint matches; `version` is filled on a match when
- * non-null. */
-int8_t ipc_lookup(uint8_t class, uint8_t instance, uint8_t *version);
-
 /* One host-built endpoint record (architecture 36.11), read from a
  * resident driver container by the loader and installed verbatim.  The
  * nucleus validates the entry against the driver window and the number
@@ -57,16 +51,7 @@ extern uint8_t zos_service_deps[ZOS_IPC_SERVICE_MAX_DEPS];
 /* The boot bundle the loader hands a driver's init entry in HL. */
 const struct ipc_service_boot *ipc_service_boot(void);
 
-/* SYS_IPC_CALL body: validate and dispatch the caller's block.  The block
- * is in the caller window (visible while the gate dispatches with P = 0);
- * the reply frame, status and descriptor capture land back in it.  The
- * return value is the IPC status (the syscall publishes it in HL with
- * carry clear); a structural problem in the block is reported to the
- * caller before this is reached. */
-int16_t ipc_syscall_call(struct zos_ipc_call_args *args);
-
-#if ZOS_NS_HANDLES
-/* --- in-process (nucleus) endpoints (package 42a, acceptance image) ----
+/* --- in-process (nucleus) endpoints ------------------------------------
  *
  * Architecture 36.13: a namespace provider the nucleus serves itself -
  * the ROMFS FILE provider - exports an endpoint like any other; its
@@ -91,24 +76,64 @@ int8_t ipc_install_nucleus_endpoint(uint8_t number, uint8_t flags,
 int16_t ipc_call_object(uint8_t endpoint, uint8_t object, uint8_t handle,
 			struct zos_ipc_frame *frame);
 
-/* Descriptor copy for a nucleus endpoint: `length` bytes staged in the
- * common staging block (zos_user_copy_staging) land in the caller buffer
- * of descriptor `desc` at `offset`, through the same checked copy resolver
- * a bank-6 service uses. */
-int16_t ipc_nucleus_copy_out(uint8_t desc, uint16_t offset, uint16_t length);
-
-/* SYS_CALL body for the object family: the syscall body resolved the bound
- * handle to its endpoint and publication object first (kernel/vfs/ns.c). */
+/* SYS_CALL body: validate and dispatch the caller's block.  The block is
+ * in the caller window (visible while the gate dispatches with P = 0);
+ * the reply frame, status and descriptor capture land back in it, and the
+ * caller's bound handle resolved to `endpoint`/`object` by the syscall
+ * body first (kernel/vfs/ns.c).  The return value is the IPC status (the
+ * syscall publishes it in HL with carry clear). */
 int16_t ipc_syscall_call_object(struct zos_ipc_call_args *args,
 				uint8_t endpoint, uint8_t object);
-#endif
+
+/* Descriptor capture and release for a nucleus caller that has a caller
+ * buffer of its own to hand a driver (the FS provider's enumeration
+ * forward, the cold loader's image stream).  `latch` is the buffer's
+ * execution latch: the syscall gate's saved latch for a caller buffer,
+ * or 0 when the address is in the common window, which every mapping
+ * shows.  A returned id is valid for the call the nucleus makes next and
+ * must be released afterwards. */
+int8_t ipc_desc_capture(uint8_t latch, uint16_t addr, uint16_t length,
+			uint8_t dir);
+void ipc_desc_release(void);
+
+/* --- nucleus-side calls -------------------------------------------------- */
 
 /* Synchronous call into a service from nucleus code (bank 7, no process
- * and no syscall gate): the IOC-FAT provider's class shim and the boot
- * console probe.  No descriptor is issued - only the syscall gate's latch
- * names a caller buffer - so a caller that has to move bytes uses the
- * staged form plus the common copy gate (architecture 36.8).  `frame` is
- * the caller's own 32-byte copy; the reply lands back in it. */
+ * and no syscall gate): the boot console probe.  No descriptor is issued -
+ * only the syscall gate's latch names a caller buffer - so a caller that
+ * has to move bytes uses ipc_nucleus_call_common() or the staged form
+ * plus the common copy gate (architecture 36.8).  `frame` is the caller's
+ * own 32-byte copy; the reply lands back in it. */
 int16_t ipc_nucleus_call(uint8_t handle, struct zos_ipc_frame *frame);
+
+/* Nucleus call with one caller buffer: the same dispatch, with a
+ * descriptor captured for `addr`/`length` from the syscall gate's saved
+ * latch (the FS provider's enumeration forward). */
+int16_t ipc_nucleus_call_gate(uint8_t handle, struct zos_ipc_frame *frame,
+			      uint16_t addr, uint16_t length, uint8_t dir);
+
+/* Nucleus call whose buffer is the common staging block, `length` bytes
+ * (the cold loader's FILE reads, `length` at most
+ * ZOS_SYSCALL_STAGE_SIZE): path A in every mapping, so no bank-7 scratch
+ * is ever named to a driver. */
+int16_t ipc_nucleus_call_common(uint8_t handle, struct zos_ipc_frame *frame,
+				uint16_t length, uint8_t dir);
+
+/* The same two forms for a bound instance: the object/handle pair is set
+ * for an in-process provider that reads its instance from it (the cold
+ * loader's reads on a ROMFS FILE handle). */
+int16_t ipc_nucleus_call_object(uint8_t endpoint, uint8_t object,
+				uint8_t handle, struct zos_ipc_frame *frame);
+int16_t ipc_nucleus_call_object_common(uint8_t endpoint, uint8_t object,
+				       uint8_t handle,
+				       struct zos_ipc_frame *frame,
+				       uint16_t length, uint8_t dir);
+
+/* Descriptor copy for an in-process provider: `length` requested bytes
+ * move between the caller buffer of descriptor `desc` (at `offset`) and
+ * the common staging block, through the same checked copy resolver a
+ * bank-6 service uses. */
+int16_t ipc_nucleus_copy_out(uint8_t desc, uint16_t offset, uint16_t length);
+int16_t ipc_nucleus_copy_in(uint8_t desc, uint16_t offset, uint16_t length);
 
 #endif /* ZEPHYROS_KERNEL_IPC_IPC_H */

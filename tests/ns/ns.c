@@ -259,16 +259,16 @@ static void test_file(void)
 
 	req.frame.op = ZFILE_OP_SEEK;
 	req.frame.arg0 = ZFS_SEEK_END;
-	req.frame.payload[0] = 0u;
 	req.frame.payload[1] = 0u;
 	req.frame.payload[2] = 0u;
 	req.frame.payload[3] = 0u;
+	req.frame.payload[4] = 0u;
 	result = zos_ipc_call((unsigned char)handle, &req);
 	check("file-seek-end", result == 0);
-	size = (int)(((unsigned long)req.frame.payload[3] << 24) |
-		     ((unsigned long)req.frame.payload[2] << 16) |
-		     ((unsigned long)req.frame.payload[1] << 8) |
-		     (unsigned long)req.frame.payload[0]);
+	size = (int)(((unsigned long)req.frame.payload[4] << 24) |
+		     ((unsigned long)req.frame.payload[3] << 16) |
+		     ((unsigned long)req.frame.payload[2] << 8) |
+		     (unsigned long)req.frame.payload[1]);
 	check("file-size", size == NS_MAN_RECORD * 3);
 	zos_printf("ns: file size %d\r\n", size);
 
@@ -284,10 +284,10 @@ static void test_file(void)
 	/* Seek back to the start: the instance keeps its own position. */
 	req.frame.op = ZFILE_OP_SEEK;
 	req.frame.arg0 = ZFS_SEEK_SET;
-	req.frame.payload[0] = 8u;
-	req.frame.payload[1] = 0u;
+	req.frame.payload[1] = 8u;
 	req.frame.payload[2] = 0u;
 	req.frame.payload[3] = 0u;
+	req.frame.payload[4] = 0u;
 	result = zos_ipc_call((unsigned char)handle, &req);
 	check("file-seek-set", result == 0);
 	req.frame.op = ZFILE_OP_READ;

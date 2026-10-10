@@ -1,0 +1,48 @@
+{
+  "name": "iocfat",
+  "type": "service",
+  "abi": 3,
+  "flags": 0,
+  "objects": [
+    "iocfat.rel",
+    "sdcc_indirect_calls.rel"
+  ],
+  "init": "iocfat_init",
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ],
+      "bss_areas": [
+        "_SERVICE_IO"
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 7,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "iocfat_dispatch",
+      "flags": 0
+    }
+  ],
+  "publishes": [
+    {
+      "path": "/FS",
+      "type": "FS",
+      "endpoint": {
+        "class": 7,
+        "instance": 0
+      },
+      "object": 0
+    }
+  ],
+  "depends": [
+    {
+      "class": 5,
+      "instance": 0
+    }
+  ]
+}

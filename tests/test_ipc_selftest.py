@@ -130,8 +130,9 @@ class TestIpcBuildWiring(unittest.TestCase):
     def test_makefile_builds_the_substrate_and_the_loader(self):
         text = read(MAKEFILE)
         for token in ("kernel/ipc/ipc.c", "kernel/ipc/ipc_asm.asm",
-                      "kernel/syscall/ipc.c", "kernel/service/service_loader.c",
-                      "kernel/service/service_boot.asm"):
+                      "kernel/service/service_loader.c",
+                      "kernel/service/service_boot.asm",
+                      "kernel/vfs/ns.c", "kernel/syscall/object.c"):
             self.assertIn(token, text, token)
         # The image links the substrate into the fixed core, the loader and
         # its cold body into the cold half, and packs the six service
@@ -153,13 +154,14 @@ class TestIpcBuildWiring(unittest.TestCase):
         self.assertIn("tests/ipc/manifest.json", text)
 
     def test_dispatch_is_routed_in_the_dispatcher_proper(self):
-        # Package 41 removed the ZOS_TARGET_TEST_BUILD routing seam: the
-        # IPC pair dispatches from the production switch like the
-        # filesystem family, and no acceptance hook remains.
+        # Package 41 removed the ZOS_TARGET_TEST_BUILD routing seam and
+        # package 42b retired the stage-3 lookup: 06h-0Bh reach the object
+        # family from the production switch, and no acceptance hook
+        # remains.
         text = read(os.path.join(ROOT, "kernel", "syscall.c"))
-        self.assertIn("ZOS_SYSCALL_IPC_LOOKUP", text)
-        self.assertIn("ZOS_SYSCALL_IPC_CALL", text)
-        self.assertIn("zos_ipc_dispatch", text)
+        self.assertIn("ZOS_SYSCALL_BIND", text)
+        self.assertIn("zos_object_dispatch", text)
+        self.assertNotIn("ZOS_SYSCALL_IPC_LOOKUP", text)
         self.assertNotIn("zos_target_test_syscall", text)
         self.assertNotIn("ZOS_TARGET_TEST_BUILD", text)
 
@@ -168,8 +170,7 @@ class TestIpcAbi(unittest.TestCase):
     def test_pinned_numbers_and_layouts(self):
         text = read(ABI)
         for pattern, value in (
-                ("ZOS_SYSCALL_IPC_LOOKUP", 0x06),
-                ("ZOS_SYSCALL_IPC_CALL", 0x07),
+                ("ZOS_SYSCALL_CALL", 0x07),
                 ("ZOS_IPC_FRAME_SIZE", 32),
         ):
             match = re.search(r"#define %s\s+(0x[0-9A-Fa-f]+|[0-9]+)" % pattern,
@@ -180,7 +181,6 @@ class TestIpcAbi(unittest.TestCase):
     def test_argument_blocks_and_frame_are_static_asserted(self):
         text = read(ABI)
         for token in ("sizeof(struct zos_ipc_frame) == ZOS_IPC_FRAME_SIZE",
-                      "sizeof(struct zos_ipc_lookup_args) == 4",
                       "sizeof(struct zos_ipc_call_args) == 44",
                       "offsetof(struct zos_ipc_call_args, frame) == 10",
                       "offsetof(struct zos_ipc_call_args, status) == 42",
@@ -217,39 +217,45 @@ class TestIpcResidency(unittest.TestCase):
         # The aperture primitive is common, not fixed-core: it runs with
         # mode 10 and page 1 in force, where bank 7 is not mapped at all.
         self.assertEqual(tiers["ipc_common"], "fixed-required")
-        self.assertEqual(tiers["ipc_syscall"], "cold")
         self.assertEqual(tiers["service_loader"], "cold")
         self.assertEqual(tiers["service_boot"], "fixed-required")
-        # Package 41 linked them into production, so the substrate itself
-        # is not test-linked; package 42a's namespace objects are (they
-        # stay out of production until 42b).
-        self.assertEqual(sorted(test_link),
-                         ["object", "vfs_ns", "vfs_ns_file"])
-        for name in ("ipc_syscall", "service_loader"):
-            self.assertIn(name, cold_half)
-        self.assertEqual(tiers["ioc_shim"], "cold")
+        # Package 41 linked the substrate into production, and package 42b
+        # switched the namespace family over too, so nothing is test-linked
+        # and the retired rows are gone.
+        self.assertEqual(sorted(test_link), [])
+        self.assertIn("service_loader", cold_half)
+        for gone in ("ipc_syscall", "ioc_shim", "fs", "registry",
+                     "module_loader"):
+            self.assertNotIn(gone, tiers, gone)
 
     def test_production_linker_script_lists_the_substrate(self):
-        # Package 41: the production image links the substrate, the
-        # syscall bodies and the resident service loader.
+        # Package 41 linked the substrate and the resident service loader;
+        # package 42b also links the namespace family and drops the retired
+        # syscall front end and class shim.
         text = read(LINKER)
         for name in ("ipc.rel", "ipc_asm.rel", "ipc_common.rel",
-                     "ipc_syscall.rel", "service_loader.rel",
-                     "service_boot.rel", "ioc_shim.rel"):
+                     "service_loader.rel", "service_boot.rel",
+                     "vfs_ns.rel", "vfs_ns_file.rel", "object.rel"):
             self.assertIn(name, text, name)
+        for gone in ("ipc_syscall.rel", "ioc_shim.rel", "vfs_mount.rel",
+                     "vfs_file.rel", "vfs_dir.rel", "registry.rel",
+                     "module_loader.rel", "romfs_provider.rel"):
+            self.assertNotIn(gone, text, gone)
 
     def test_production_image_carries_the_substrate(self):
         map_path = os.path.join(PROD_SUBDIR, "zephyros.map")
         if not os.path.exists(map_path):
             self.skipTest("build/zephyros.map missing; run make all")
         found = symbols(map_path)
-        for name in ("_ipc_lookup", "_ipc_syscall_call", "_ipc_copy_run",
+        for name in ("_ipc_install_endpoint", "_ipc_copy_run",
                      "_ipc_gate_latch", "_service_load_all",
                      "_ipc_nucleus_call", "zos_service_stack"):
             self.assertIn(name, found, name)
         # The substrate's fixed core is where the call machinery runs, and
-        # the loader's bodies are cold-half code.
-        self.assertLess(found["_ipc_lookup"], 0x6000)
+        # the loader's bodies are cold-half code.  The stage-3 lookup is
+        # gone (package 42b).
+        self.assertLess(found["_ipc_install_endpoint"], 0x6000)
+        self.assertNotIn("_ipc_lookup", found)
         self.assertGreaterEqual(found["_service_load_all"], 0x6000)
 
 
@@ -261,13 +267,14 @@ class TestIpcImageLayout(unittest.TestCase):
         self.syms = symbols(self.map_path)
 
     def test_substrate_is_fixed_and_the_bodies_are_cold(self):
-        for name in ("_ipc_lookup", "_ipc_syscall_call",
-                     "_ipc_install_endpoint", "_ipc_service_boot",
+        for name in ("_ipc_install_endpoint", "_ipc_service_boot",
                      "_ipc_copy_run", "_ipc_invoke", "_ipc_gate_latch"):
             address = self.syms[name]
             self.assertGreaterEqual(address, 0x2000, name)
             self.assertLess(address, SPLIT, name)
-        self.assertGreaterEqual(self.syms["_zos_ipc_dispatch"], SPLIT)
+        # The IPC dispatch body lives with the syscall gates?  No: the
+        # object family's dispatcher is cold code (package 42b).
+        self.assertGreaterEqual(self.syms["_zos_object_dispatch"], SPLIT)
         # The service loader is cold code too, and the boot gate it calls
         # is common-resident (bank 7 is unmapped while a boot segment runs).
         self.assertGreaterEqual(self.syms["_service_load_all"], SPLIT)
@@ -336,8 +343,8 @@ class TestIpcClientWindow(unittest.TestCase):
 
     def test_every_marshalling_block_is_in_the_caller_window(self):
         for name, size in (("zos_ipc_raw_req", 4),
-                           ("zos_ipc_lookup_block", 4),
                            ("zos_ipc_call_block", 44),
+                           ("zos_bind_block", 8),
                            ("zos_scratch", 16)):
             address = self.syms["_" + name]
             self.assertGreaterEqual(address, SYSCALL_WINDOW_BASE, name)
@@ -489,15 +496,24 @@ class TestIpcCorrection01Layout(unittest.TestCase):
 class TestIpcSdkSurface(unittest.TestCase):
     def test_client_wrappers_are_declared(self):
         text = read(SDK_HEADER)
-        for token in ("int zos_ipc_lookup(", "int zos_ipc_lookup_version(",
+        for token in ("int zos_ipc_bind(const char *path",
+                      "int zos_ipc_unbind(unsigned char handle)",
+                      "int zos_chdir(const char *path)",
+                      "int zos_getcwd(char *buffer",
+                      "int zos_ns_enum(const char *path",
                       "int zos_ipc_call(",
                       "int zos_ipc_raw_call(struct zos_ipc_call_req *req)"):
             self.assertIn(token, text, token)
 
     def test_sdk_owns_the_gate_and_the_cache(self):
         text = read(SDK_SOURCE)
+        # Package 42b: no lookup and no cache - a client binds a name and
+        # the kernel resolves it, so the SDK holds only the marshalling
+        # blocks.
         self.assertIn("zos_ipc_call_block", text)
-        self.assertIn("ZOS_IPC_CACHE_ENTRIES", text)
+        self.assertIn("zos_bind_block", text)
+        self.assertNotIn("ZOS_IPC_CACHE_ENTRIES", text)
+        self.assertNotIn("zos_ipc_lookup", text)
         gate = read(SDK_GATE)
         self.assertIn("_zos_ipc_raw_call", gate)
         # The carry records a structural refusal, so an IPC status carried

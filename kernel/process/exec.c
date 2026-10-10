@@ -1,37 +1,47 @@
-/* ZephyrOS M6 ZEX validation and process loading.
+/* ZephyrOS M6/M10 ZEX validation and process loading.
  *
- * process_prepare() is the one loader path: it opens a ZEX, validates the
- * complete geometry before any bank content changes, allocates the lowest
- * free process slot and application bank, constructs the child's bank
- * deterministically (zero 0000h-DFFFh, page zero with exactly the RST 30h
- * vector at 0030h, image at 0100h, zero BSS), and closes the executable
- * source before returning a prepared child.  The kernel launcher and
- * SYS_EXEC both use it; the common launch gate (kernel/process/launch.asm)
- * then enters the child and restores the launcher on exit.
+ * process_prepare() is the one loader path: it binds the executable as a
+ * FILE object (architecture 36.13: exec binds the path, requires FILE and
+ * streams the image through FILE calls), validates the complete geometry
+ * before any bank content changes, allocates the lowest free process slot
+ * and application bank, constructs the child's bank deterministically
+ * (zero 0000h-DFFFh, page zero with exactly the RST 30h vector at 0030h,
+ * image at 0100h, zero BSS), and unbinds the source before returning a
+ * prepared child.  The kernel launcher and SYS_EXEC both use it; the
+ * common launch gate (kernel/process/launch.asm) then enters the child and
+ * restores the launcher on exit.
  *
- * Every failure path rolls the slot back to FREE and releases the bank;
- * a partially written bank is never observable as a process because the
- * table entry is published as RUNNING only at launch time.
+ * Every failure path rolls the slot back to FREE, releases the bank and
+ * unbinds the source; a partially written bank is never observable as a
+ * process because the table entry is published as RUNNING only at launch
+ * time.
  *
  * All copying goes through the common-resident gates
  * (kernel/memory/user_copy.asm) and the bounded staging path; bank 7 is
  * rejected by both allocators and the copy gates.
  *
- * The ZEX *source* is read through the kernel VFS file API, exactly as
- * kernel_boot_module() loads the boot modules: the loader resolves the
- * path and streams the container, so the loader never learns where the
- * bytes live.
+ * The FILE calls are nucleus calls whose caller buffer is the common
+ * staging block: the cold loader holds no descriptor and names no bank-7
+ * buffer to a driver (the call machinery stages the frame in the fixed
+ * boundary buffer), so a `/FS` executable living behind a bank-6 driver
+ * streams exactly like a `/SYSTEM` one.
  */
 
 #include "zephyros/process.h"
 #include "zos/syscall.h"
+#include "zos/object.h"
+#include "zos/protocol.h"
 #include "zephyros/romfs.h"
+#include "kernel/ipc/ipc.h"
+#include "kernel/syscall/diag.h"
+#include "zephyros/kernel.h"
 #include "kernel/vfs/vfs.h"
+#include "kernel/vfs/ns.h"
 
 /* Common-resident copy gate and the deterministic page-zero vector. */
 extern const uint8_t zos_process_page_zero_vector[];
 
-#define ZEX_LOAD_CHUNK 64u /* equals the common copy staging size */
+#define ZEX_LOAD_CHUNK ZOS_SYSCALL_STAGE_SIZE
 
 /* One copy request against the child bank, through the common gate. */
 static uint8_t exec_bank_write(uint8_t bank, uint16_t addr,
@@ -174,30 +184,99 @@ int zex_validate_header(const struct zex_header *header, uint32_t file_size,
 
 /* --- loading ---------------------------------------------------------- */
 
-/* VFS-backed source: the path is resolved and read through the kernel
- * file API, so the loader no longer knows where the bytes live. */
-
-static int exec_read_header(struct vfs_file *file,
-			    struct zex_header *header)
+/* One FILE call on the bound executable.  `length` nonzero reads that many
+ * bytes into the common staging block and returns the count (the caller
+ * copies them where they belong); zero is the descriptor-less form
+ * (metadata, seek, sync).  Returns the call status. */
+static int exec_file_call(const struct vfs_descriptor *file, uint8_t op,
+			  uint8_t arg0, uint16_t arg1, uint16_t length,
+			  uint8_t dir, struct zos_ipc_frame *reply)
 {
+	struct zos_ipc_frame frame;
 	int result;
 
-	if (file->size < ZEX_HEADER_SIZE) {
-		return ZEX_EXEC_ERR_FILESIZE;
+	frame.op = op;
+	frame.flags = 0u;
+	frame.desc = ZOS_IPC_DESC_NONE;
+	frame.arg0 = arg0;
+	frame.arg1 = arg1;
+	frame.payload[0] = file->object;
+	result = vfs_ns_file_call(file->number, file->object, &frame, length,
+				  dir);
+	if (reply != (struct zos_ipc_frame *)0) {
+		*reply = frame;
 	}
-	result = vfs_seek(file, 0, ZFS_SEEK_SET, (uint32_t *)0);
+	return result;
+}
+
+/* The file's size, from the FILE metadata operation. */
+static int exec_file_size(const struct vfs_descriptor *file,
+			  uint32_t *size)
+{
+	struct zos_ipc_frame frame;
+	int result;
+
+	result = exec_file_call(file, ZFILE_OP_META, 0u, 0u, 0u,
+				ZOS_IPC_DESC_NONE, &frame);
+	if (result < 0) {
+		return result;
+	}
+	*size = (uint32_t)frame.payload[4] |
+		((uint32_t)frame.payload[5] << 8) |
+		((uint32_t)frame.payload[6] << 16) |
+		((uint32_t)frame.payload[7] << 24);
+	return 0;
+}
+
+static int exec_seek(const struct vfs_descriptor *file, uint32_t offset)
+{
+	struct zos_ipc_frame frame;
+	int result;
+
+	frame.op = ZFILE_OP_SEEK;
+	frame.flags = 0u;
+	frame.desc = ZOS_IPC_DESC_NONE;
+	frame.arg0 = ZFS_SEEK_SET;
+	frame.arg1 = 0u;
+	frame.payload[0] = file->object;
+	frame.payload[1] = (uint8_t)offset;
+	frame.payload[2] = (uint8_t)(offset >> 8);
+	frame.payload[3] = (uint8_t)(offset >> 16);
+	frame.payload[4] = (uint8_t)(offset >> 24);
+	result = vfs_ns_file_call(file->number, file->object, &frame, 0u,
+				  ZOS_IPC_DESC_NONE);
+	return result;
+}
+
+/* Read the ZEX header into the caller's own storage through the common
+ * staging block. */
+static int exec_read_header(const struct vfs_descriptor *file,
+			    struct zex_header *header)
+{
+	uint16_t i;
+	int result;
+
+	result = exec_seek(file, 0u);
 	if (result != 0) {
 		return result; /* provider error, passed through */
 	}
-	result = vfs_read(file, header, ZEX_HEADER_SIZE);
+	result = exec_file_call(file, ZFILE_OP_READ, 0u, ZEX_HEADER_SIZE,
+				ZEX_HEADER_SIZE, ZOS_IPC_DESC_OUT,
+				(struct zos_ipc_frame *)0);
+	if (result < 0) {
+		return result;
+	}
 	if (result != (int)ZEX_HEADER_SIZE) {
-		return result < 0 ? result : ZEX_EXEC_ERR_FILESIZE;
+		return ZEX_EXEC_ERR_FILESIZE;
+	}
+	for (i = 0u; i < ZEX_HEADER_SIZE; ++i) {
+		((uint8_t *)header)[i] = zos_user_copy_staging[i];
 	}
 	return ZEX_EXEC_OK;
 }
 
-/* Stream the image (header payload) into the child bank at 0100h. */
-static int exec_load_image(struct vfs_file *file,
+/* Stream the image (the header payload) into the child bank at 0100h. */
+static int exec_load_image(const struct vfs_descriptor *file,
 			   const struct zex_geometry *geo, uint8_t bank)
 {
 	uint16_t offset = 0;
@@ -209,15 +288,20 @@ static int exec_load_image(struct vfs_file *file,
 		if (chunk > ZEX_LOAD_CHUNK) {
 			chunk = ZEX_LOAD_CHUNK;
 		}
-		result = vfs_seek(file,
-				  (int32_t)ZEX_HEADER_SIZE + (int32_t)offset,
-				  ZFS_SEEK_SET, (uint32_t *)0);
+		result = exec_seek(file,
+				   (uint32_t)ZEX_HEADER_SIZE +
+					   (uint32_t)offset);
 		if (result != 0) {
 			return result;
 		}
-		result = vfs_read(file, zos_user_copy_staging, chunk);
+		result = exec_file_call(file, ZFILE_OP_READ, 0u, chunk, chunk,
+					ZOS_IPC_DESC_OUT,
+					(struct zos_ipc_frame *)0);
+		if (result < 0) {
+			return result;
+		}
 		if (result != (int)chunk) {
-			return result < 0 ? result : ZEX_EXEC_ERR_READ;
+			return ZEX_EXEC_ERR_READ;
 		}
 		if (exec_bank_write(bank,
 				    (uint16_t)(ZEX_LOAD_BASE + offset),
@@ -229,19 +313,31 @@ static int exec_load_image(struct vfs_file *file,
 	return ZEX_EXEC_OK;
 }
 
+/* The loader reads forward from a fixed offset and never needs the reply
+ * position, so no ZFILE_OP_SEEK/CUR/END use exists. */
+
 /* Every allocating and fallible step, with the executable source closed
  * before returning.  Native -ZOS_E* codes are returned for path, read and
  * allocation failures (a provider read error is passed through unchanged);
  * a ZEX_EXEC_ERR_* code reports a malformed container.  Nothing is
  * published as RUNNING. */
+/* Release the bound executable: the provider's release runs (a driver's
+ * CLOSE for `/FS`, the entry itself for ROMFS), then the entry. */
+static void exec_close(const struct vfs_descriptor *file, uint8_t pid)
+{
+	(void)vfs_ns_unbind(pid, file->number);
+}
+
 int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 		    uint16_t args_length, struct process_child *child)
 {
-	struct vfs_file file;
+	struct vfs_descriptor *file;
 	struct zex_header header;
 	struct zex_geometry geo;
+	uint8_t type = 0u;
 	uint8_t pid;
 	uint8_t bank;
+	uint32_t file_size = 0u;
 	int error;
 	int result;
 
@@ -249,29 +345,47 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 		return -ZOS_EINVAL;
 	}
 
-	/* VFS_O_EXEC preserves the M6 media-type gate: a file that is not an
-	 * executable is refused. */
-	result = vfs_open(path, (uint16_t)(ZFS_O_READ | VFS_O_EXEC), &file);
-	if (result != 0) {
+	/* The path resolves through the namespace like any other name; exec
+	 * requires a FILE (architecture 36.13).  The handle belongs to the
+	 * running process - the launcher's or the parent's - and is
+	 * released before the child is entered. */
+	result = vfs_ns_bind(vfs_owner_current(), path,
+			     (uint16_t)ZFS_O_READ, &type);
+	if (result < 0) {
 		return result;
 	}
-
-	error = exec_read_header(&file, &header);
+	if (type != ZOS_TYPE_FILE) {
+		(void)vfs_ns_unbind(vfs_owner_current(), (uint8_t)result);
+		return -ZOS_EISDIR;
+	}
+	file = vfs_handle_find(vfs_owner_current(), (uint8_t)result);
+	if (file == (struct vfs_descriptor *)0) {
+		return -ZOS_EINVAL;
+	}
+	/* The M6 media-type gate: the loader reads the size first (a
+	 * directory cannot be bound as a FILE anyway) and a ZEX that is not
+	 * exactly header + image is refused below. */
+	result = exec_file_size(file, &file_size);
+	if (result != 0) {
+		exec_close(file, vfs_owner_current());
+		return result;
+	}
+	error = exec_read_header(file, &header);
 	if (error != ZEX_EXEC_OK) {
-		(void)vfs_close(&file);
+		exec_close(file, vfs_owner_current());
 		return error;
 	}
-	result = zex_validate_header(&header, file.size, &geo);
+	result = zex_validate_header(&header, file_size, &geo);
 	if (result != ZEX_EXEC_OK) {
-		(void)vfs_close(&file);
+		exec_close(file, vfs_owner_current());
 		return result;
 	}
 
 	/* Reserve bookkeeping before any bank content changes; every
-	 * failure from here releases it through the same rollback label. */
+	 * failure from here releases it through the same rollback path. */
 	result = process_slot_alloc();
 	if (result < 0) {
-		(void)vfs_close(&file);
+		exec_close(file, vfs_owner_current());
 		return result;
 	}
 	pid = (uint8_t)result;
@@ -282,13 +396,13 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	result = vfs_process_start(pid, parent_pid);
 	if (result != 0) {
 		process_slot_release(pid);
-		(void)vfs_close(&file);
+		exec_close(file, vfs_owner_current());
 		return result;
 	}
 	result = process_alloc_bank();
 	if (result < 0) {
 		process_slot_release(pid);
-		(void)vfs_close(&file);
+		exec_close(file, vfs_owner_current());
 		return result;
 	}
 	bank = (uint8_t)result;
@@ -307,7 +421,7 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 		error = ZEX_EXEC_ERR_READ;
 	}
 	if (error == ZEX_EXEC_OK) {
-		error = exec_load_image(&file, &geo, bank);
+		error = exec_load_image(file, &geo, bank);
 	}
 	if (error == ZEX_EXEC_OK && geo.bss_size > 0) {
 		if (exec_bank_zero(bank, (uint16_t)(ZEX_LOAD_BASE +
@@ -318,13 +432,13 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	}
 	if (error != ZEX_EXEC_OK) {
 		process_slot_release(pid);
-		(void)vfs_close(&file);
+		exec_close(file, vfs_owner_current());
 		return error;
 	}
 
-	/* The whole image is in the child bank; release the source before
+	/* The whole image is in the child bank; unbind the source before
 	 * returning so no loader or provider state survives the child. */
-	(void)vfs_close(&file);
+	exec_close(file, vfs_owner_current());
 
 	/* Startup block v1: the kernel transports the parent's raw tail
 	 * byte-exact into the child's page zero (0080h).  It is built from

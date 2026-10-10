@@ -13,44 +13,23 @@
  *                           which is what zos_putc() uses: no descriptor
  *                           capture, no copy, one call.
  *
- * The endpoint handle is looked up once and cached (services are
- * permanent).  Return convention matches zos/console.h: a non-negative
- * result, or the negated native error code; a program with no console
- * service sees -ZOS_ENOENT from the lookup.
+ * The console is the `/dev/console` object and the two standard handles
+ * every process starts with (architecture 36.13): ZOS_HANDLE_STDOUT for
+ * output, ZOS_HANDLE_STDIN for input, bound at process start and inherited
+ * across SYS_EXEC.  There is no lookup and no cache; a program whose build
+ * published no console gets -ZOS_EINVAL from the call, because the standard
+ * handles are then absent.
  *
- * In the namespace image (ZOS_NS_HANDLES, work package 42a) the console is
- * the `/dev/console` object and the two standard handles every process
- * starts with (architecture 36.13):
- * ZOS_HANDLE_STDOUT for output, ZOS_HANDLE_STDIN for input.  No discovery
- * and no cache: a program whose build published no console sees
- * -ZOS_EINVAL, because the standard handles are then absent.
+ * Return convention matches zos/console.h: a non-negative result, or the
+ * negated native error code.
  */
 
 #include "zos.h"
 
 #include "zos/protocol.h"
 
-#if !ZOS_NS_HANDLES
-static unsigned char console_endpoint;
-
-static int console_handle(void)
-{
-	int handle = (int)console_endpoint;
-
-	if (handle != 0) {
-		return handle;
-	}
-	handle = zos_ipc_lookup(ZOS_CLASS_CONSOLE, ZOS_CLASS_INSTANCE);
-	if (handle <= 0) {
-		return handle;
-	}
-	console_endpoint = (unsigned char)handle;
-	return handle;
-}
-#else
 #define console_handle() ZOS_HANDLE_STDOUT
 #define console_input_handle() ZOS_HANDLE_STDIN
-#endif
 
 int zex_write(const char *buf, unsigned int len)
 {
@@ -64,11 +43,6 @@ int zex_write(const char *buf, unsigned int len)
 		return -ZOS_EINVAL;
 	}
 	handle = console_handle();
-#if !ZOS_NS_HANDLES
-	if (handle <= 0) {
-		return handle;
-	}
-#endif
 	req.frame.op = ZCONSOLE_OP_WRITE;
 	req.frame.flags = 0;
 	req.frame.arg0 = 0u;
@@ -90,14 +64,7 @@ int zex_read(char *buf, unsigned int len)
 	if (buf == (char *)0) {
 		return -ZOS_EINVAL;
 	}
-#if ZOS_NS_HANDLES
 	handle = console_input_handle();
-#else
-	handle = console_handle();
-	if (handle <= 0) {
-		return handle;
-	}
-#endif
 	req.frame.op = ZCONSOLE_OP_READ;
 	req.frame.flags = 0;
 	req.frame.arg0 = 0u;
@@ -113,14 +80,7 @@ int zex_poll(void)
 	struct zos_ipc_request req;
 	int handle;
 
-#if ZOS_NS_HANDLES
 	handle = console_input_handle();
-#else
-	handle = console_handle();
-	if (handle <= 0) {
-		return handle;
-	}
-#endif
 	req.frame.op = ZCONSOLE_OP_POLL;
 	req.frame.flags = 0;
 	req.frame.arg0 = 0u;
@@ -136,15 +96,8 @@ int zex_poll(void)
 int zex_putc(int ch)
 {
 	struct zos_ipc_request req;
-#if ZOS_NS_HANDLES
 	unsigned char handle = console_handle();
-#else
-	int handle = console_handle();
 
-	if (handle <= 0) {
-		return handle;
-	}
-#endif
 	req.frame.op = ZCONSOLE_OP_PUTC;
 	req.frame.flags = 0;
 	req.frame.arg0 = (unsigned char)ch;

@@ -16,7 +16,6 @@
 
 #include "zephyros/kernel.h"
 #include "zephyros/irq.h"
-#include "zephyros/module.h"
 #include "zephyros/romfs.h"
 #include "zephyros/process.h"
 #include "zephyros/service.h"
@@ -24,6 +23,7 @@
 #include "zos/protocol.h"
 
 #include "kernel/ipc/ipc.h"
+#include "kernel/vfs/ns.h"
 #include "kernel/irq/irq_private.h"
 #include "kernel/memory/banking.h"
 #include "kernel/vfs/vfs.h"
@@ -37,58 +37,13 @@
 #if ZOS_TARGET_TEST_BUILD
 /* TEST-ONLY HOOK: target acceptance runner; implementation and milestone
  * selection live in tests/target/support/target_test.c (acceptance images
- * only).  The early hook runs before the boot module load; the late hook
+ * only).  The early hook runs before the boot program load; the late hook
  * runs after console binding. */
 void zos_target_test_early(void);
 void zos_target_test_late(void);
-/* Boot-time acceptance modules: loaded after the production boot set and
- * before the normal mount pass.  Implementation lives in the test tree. */
+/* Boot-time acceptance work: runs after the production boot set.
+ * Implementation lives in the test tree. */
 void zos_boot_test_modules(void);
-#endif
-
-/* IOC transport boot load.  Production and the M8 images carry
- * `ioc.zmod` in the recovery store and load it deterministically after
- * the SIO fallback; a failed load or a failed link bring-up is rolled
- * back by the loader and must not invalidate the already loaded SIO
- * console.  Pre-M8 acceptance images do not carry the module and compile
- * this block out so their accepted boot stays exactly as validated. */
-#ifndef ZOS_IOC_BOOT
-#define ZOS_IOC_BOOT 1
-#endif
-
-/* HID keyboard/text boot load.  Production and the M8 images carry
- * `hid.zmod` in the recovery store and load it after the IOC transport;
- * the module discovers IOC by class/capability and a missing or
- * malformed dependency is a load failure rolled back by the loader.
- * The SIO fallback and the IOC transport are never disturbed.  Pre-M8
- * acceptance images compile this block out so their accepted boot stays
- * exactly as validated. */
-#ifndef ZOS_HID_BOOT
-#define ZOS_HID_BOOT 1
-#endif
-
-/* V9958 video boot load.  Production and the M8 images carry
- * `v9958.zmod` (and its ROMFS DATA font) in the recovery store and load
- * it after HID; the module has no IOC dependency.  A missing font
- * resource or a failed VDP bring-up fails the module init, the loader
- * rolls the (empty) registration set back, and the SIO fallback, the
- * IOC transport and HID remain usable.  Pre-M8 acceptance images
- * compile this block out so their accepted boot stays exactly as
- * validated. */
-#ifndef ZOS_V9958_BOOT
-#define ZOS_V9958_BOOT 1
-#endif
-
-/* IOC-FAT root filesystem boot load (package 30).  Production carries
- * `iocfat.zmod` in the recovery store and loads it last, after the console
- * devices.  The module discovers the IOC class, registers the `iocfat`
- * provider and a failed init (missing IOC, a CAPS failure or an unknown
- * command) is rolled back by the loader and reported; the SIO fallback and
- * every earlier device remain usable.  The optional `/` mount is
- * instantiated by the normal mount pass.  Acceptance images that replace the
- * boot set compile this block out. */
-#ifndef ZOS_IOCFAT_BOOT
-#define ZOS_IOCFAT_BOOT 1
 #endif
 
 /* Hardware-smoke host sync.  Diagnostic images built with
@@ -148,33 +103,6 @@ static void romfs_diagnose(int result)
 	early_console_puts("\r\n");
 }
 
-/* Failure-only early-SIO diagnostic for one optional boot module: the
- * module name plus the two-hex-digit ZOS_E* code behind the failed load
- * (the loader and ROMFS return negated codes).  A missing ROMFS entry
- * (0x05), a malformed container (0x0A), an allocation that no longer
- * fits (0x06) and a refused init (0x0B) therefore all distinguish on
- * the serial link without any code from the failed module being
- * executed.  The resident services are not optional - the manifest is
- * the image's boot contract - so a manifest that cannot be placed is
- * reported the same way and the boot continues to the mount pass, where
- * the failure shows up as the console and `/` being unusable.
- *
- * Compiled only when an optional load exists, so pre-M8 acceptance
- * images (which compile every optional block out) keep their bytes. */
-#if ZOS_IOCFAT_BOOT
-static void kernel_module_unavailable(const char *name, int result)
-{
-	static const char hex[] = "0123456789ABCDEF";
-	unsigned code = (unsigned)(-result) & 0xFFu;
-
-	early_console_puts(name);
-	early_console_puts(": unavailable 0x");
-	early_console_putc(hex[(code >> 4) & 0x0Fu]);
-	early_console_putc(hex[code & 0x0Fu]);
-	early_console_puts("\r\n");
-}
-#endif
-
 static void kernel_service_manifest_failed(int result)
 {
 	static const char hex[] = "0123456789ABCDEF";
@@ -186,66 +114,20 @@ static void kernel_service_manifest_failed(int result)
 	early_console_puts("\r\n");
 }
 
-/* Module-phase loader: open `/SYSTEM/<name>.zmod` through VFS and stream it
- * into the unchanged M4 loader through the bounded zmod_source adapter.  The
- * path lives in the shared bank-7 VFS workspace path slot and the file
- * handle in static storage, so the boot path is free of gate-stack-sized
- * automatic objects (work/M9-REFERENCE.md).  Non-static so the host replay
- * can drive the same VFS-backed load path. */
-static struct vfs_file kernel_boot_file;
-
-int kernel_load_vfs_module(const char *name)
-{
-	static const char prefix[] = "/SYSTEM/";
-	static const char suffix[] = ".zmod";
-	struct zmod_source source;
-	/* The boot set is a handful of compile-time names, so the path is
-	 * assembled in the shared bank-7 VFS workspace path slot instead of a
-	 * dedicated buffer; no syscall is active during the module phase. */
-	char *out = VFS_WS_IN_A;
-	const char *scan;
-	int result;
-
-	/* The module phase runs before any process exists, so the path view
-	 * is provably free; claiming it here keeps the guard's invariant
-	 * ("the two views are never live together") true for boot too. */
-	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	for (scan = prefix; *scan != '\0'; ++scan) {
-		*out++ = *scan;
-	}
-	for (scan = name; *scan != '\0'; ++scan) {
-		*out++ = *scan;
-	}
-	for (scan = suffix; *scan != '\0'; ++scan) {
-		*out++ = *scan;
-	}
-	*out = '\0';
-
-	result = vfs_open(VFS_WS_IN_A, ZFS_O_READ, &kernel_boot_file);
-	if (result == 0) {
-		result = vfs_file_source(&kernel_boot_file, &source);
-		if (result == 0) {
-			result = module_load_source(name, &source);
-		}
-		(void)vfs_close(&kernel_boot_file);
-	}
-	vfs_ws_leave(VFS_WS_VIEW_PATH);
-	return result;
-}
-
 /* Resolve the boot path through the selected source.  A corrupt recovery
- * store fails here through the early-console panic path, before any
- * image code is ever executed.
+ * store fails here through the early-console panic path, before any image
+ * code is ever executed.
  *
  * Production boot order is explicit and deterministic (no general
- * dependency resolver).  The nucleus mounts the recovery store, reads the
+ * dependency resolver).  The nucleus initializes the namespace (the ROMFS
+ * reader, the handle table and the in-process FILE endpoint), reads the
  * boot manifest and hands it to the resident service loader, which places
  * every service the manifest lists into bank 6 and runs their boot tiers
  * and inits in dependency order (architecture 36.4).  The store's manifest
- * is what the image boots: production lists the five driver services, and
- * an image that needs the serial-only fallback lists a subset.  The arena
- * modules the store still carries (the IOC-FAT provider) load through the
- * unchanged module loader after the services, and the mount pass runs last.
+ * is what the image boots: production lists the five driver services (the
+ * selected filesystem driver among them, publishing `/FS`), and an image
+ * that needs the serial-only fallback lists a subset.  There is no arena
+ * and no module pass: the services are the whole bank-6 population.
  */
 static uint8_t kernel_boot_module(void)
 {
@@ -259,27 +141,10 @@ static uint8_t kernel_boot_module(void)
 	if (result != 0) {
 		kernel_service_manifest_failed(result);
 	}
-#if ZOS_IOCFAT_BOOT
-	/* The IOC-FAT root filesystem provider, an arena module.  It
-	 * discovers the IOC class through the nucleus's class shim (the
-	 * service owns the transport) and registers the `iocfat` provider;
-	 * a missing IOC endpoint, a CAPS failure or an unknown command
-	 * fails its init and the loader rolls it back.  The optional `/`
-	 * mount is instantiated by the mount pass below, so an absent or
-	 * broken card leaves `/SYSTEM` and the console fully usable. */
-	result = kernel_load_vfs_module("iocfat");
-	if (result < 0) {
-		kernel_module_unavailable("iocfat", result);
-	}
-#endif
 #if ZOS_TARGET_TEST_BUILD
-	/* TEST-ONLY HOOK: acceptance-only boot modules (tests/target). */
+	/* TEST-ONLY HOOK: acceptance-only boot work (tests/target). */
 	zos_boot_test_modules();
 #endif
-	/* Normal mount phase: production has only the system entry, so this
-	 * is a no-op; acceptance manifests exercise optional/required
-	 * mounts here (architecture section 32.32.4). */
-	(void)vfs_mount_all();
 	return 0;
 }
 
@@ -390,20 +255,16 @@ static char *kernel_boot_put_dec(char *out, uint8_t value)
 	return out;
 }
 
-/* The console service endpoint, looked up once (0 while the store
- * provided none). */
+/* The console service endpoint, resolved once from the host-built
+ * publication the resident loader installed (0 while the store provided
+ * none).  There is no runtime class lookup (architecture 36.11). */
 static uint8_t kernel_console_endpoint;
 
 static uint8_t kernel_console_handle(void)
 {
 	if (kernel_console_endpoint == 0u) {
-		uint8_t version = 0u;
-		int8_t handle = ipc_lookup(ZOS_CLASS_CONSOLE,
-					   ZOS_CLASS_INSTANCE, &version);
-
-		if (handle > 0 && version == ZOS_PROTOCOL_VERSION) {
-			kernel_console_endpoint = (uint8_t)handle;
-		}
+		kernel_console_endpoint = vfs_ns_publication_endpoint(
+			"/console");
 	}
 	return kernel_console_endpoint;
 }
@@ -585,16 +446,13 @@ void kernel_main(void)
 #endif
 
 	/* The early console above stays authoritative: it, and the panic
-	 * path, work with no service at all.  The module loader is then
-	 * initialized, the resident service set and the arena modules load
+	 * path, work with no service at all.  The resident service set loads
 	 * from the recovery store, and the console service - if the store
 	 * booted one - becomes what the boot path prints through.  Load
 	 * diagnostics go to the early console before any service output. */
 	{
-		uint8_t module_failures;
+		uint8_t module_failures = kernel_boot_module();
 
-		(void)module_loader_init();
-		module_failures = kernel_boot_module();
 		if (module_failures != 0) {
 			early_console_puts("console: service failed\r\n");
 		} else if (kernel_console_handle() == 0u) {

@@ -9,6 +9,7 @@
 #define ZOS_SRC_INTERNAL_H
 
 #include "zos/fs.h"
+#include "zos/ipc.h"
 #include "zos/syscall.h"
 
 union zos_fs_block {
@@ -25,5 +26,10 @@ union zos_fs_block {
 };
 
 extern union zos_fs_block zos_scratch;
+
+/* One raw syscall through the shared gate stub: `number` with `block` as
+ * the packed argument block.  Returns the syscall result or the negated
+ * error code; the block is always this program's low-window scratch. */
+int zos_ipc_raw(unsigned char number, void *block);
 
 #endif /* ZOS_SRC_INTERNAL_H */

@@ -1,12 +1,14 @@
-/* ZephyrOS M9 native filesystem ABI (application-visible types).
+/* ZephyrOS native filesystem ABI (application-visible types).
  *
- * This header owns the native metadata and limit definitions shared by the
- * kernel VFS, filesystem providers, the native syscall family (package 27)
- * and native applications.  It deliberately contains no provider callbacks;
- * those live in include/zephyros/vfs.h.
+ * The metadata and limit vocabulary the FILE protocol and the
+ * filesystem-namespace protocol share (architecture 36.13, 36.14): the
+ * kernel router and providers, the filesystem driver, the SDK `fs.h`
+ * wrappers and native programs.  `fs.h` (the SDK header of the same name)
+ * adds the wrapper prototypes; `abi/zos/protocol.h` owns the operation
+ * numbers and frame layouts.  The M9 syscall argument blocks are gone:
+ * files are typed handles, and the `FS_*` family is retired (package 42b).
  *
- * Values are pinned by work/M9-REFERENCE.md and architecture section 32.25.
- * A path or component over a limit is ZOS_EINVAL; see include/zephyros/errno.h.
+ * A path or component over a limit is ZOS_EINVAL; see zephyros/errno.h.
  */
 
 #ifndef ZEPHYROS_FS_H
@@ -58,7 +60,9 @@ struct zfs_dirent {
 	char     name[ZFS_NAME_MAX];
 };
 
-/* open() flags (package 27 exposes them through SYS_FS_OPEN). */
+/* open() flags: the bind flags `fs_open` passes to `bind` and the selected
+ * filesystem provider interprets (architecture 36.7 "FILE uses it for
+ * read/write/create/truncate style open flags"). */
 #define ZFS_O_READ   0x01u
 #define ZFS_O_WRITE  0x02u
 #define ZFS_O_CREATE 0x04u
@@ -70,131 +74,7 @@ struct zfs_dirent {
 #define ZFS_SEEK_CUR 1u
 #define ZFS_SEEK_END 2u
 
-/* Native filesystem syscall argument blocks (package 27, architecture
- * section 32.26).  Every block lives in the caller window
- * 0100h-1FFFh and is packed on the Z80: the numeric file descriptor is
- * the one-byte VFS descriptor-pool index, never a provider handle.
- *
- * Path fields are `{path:u16, length:u16}`: `path` addresses 1..127
- * non-NUL bytes of the caller's bank, read only through the caller
- * window.  `out`/`buffer` fields are caller-bank addresses in the
- * 0100h-DFFFh user-buffer window and move only through the checked
- * bank-copy gates. */
-struct zfs_path_args {          /* 4 bytes: MKDIR/RMDIR/UNLINK/CHDIR */
-	uint16_t path;
-	uint16_t length;
-};
-
-struct zfs_open_args {          /* 5 bytes */
-	uint16_t path;
-	uint16_t length;
-	uint8_t  flags;         /* ZFS_O_* */
-};
-
-struct zfs_io_args {            /* 5 bytes: READ/WRITE */
-	uint8_t  fd;
-	uint16_t buffer;
-	uint16_t length;
-};
-
-struct zfs_seek_args {          /* 6 bytes; offset written back on return */
-	uint8_t  fd;
-	uint8_t  whence;        /* ZFS_SEEK_* */
-	int32_t  offset;
-};
-
-struct zfs_stat_args {          /* 6 bytes */
-	uint16_t path;
-	uint16_t length;
-	uint16_t out;           /* struct zfs_stat destination */
-};
-
-struct zfs_readdir_args {       /* 3 bytes */
-	uint8_t  fd;
-	uint16_t out;           /* struct zfs_dirent destination */
-};
-
-struct zfs_getcwd_args {        /* 4 bytes */
-	uint16_t buffer;
-	uint16_t length;        /* bytes available, including the NUL */
-};
-
-struct zfs_rename_args {        /* 8 bytes */
-	uint16_t from;
-	uint16_t from_length;
-	uint16_t to;
-	uint16_t to_length;
-};
-
-struct zfs_fd_args {            /* 1 byte: CLOSE/CLOSEDIR/SYNC */
-	uint8_t  fd;
-};
-
 #if defined(__SDCC)
-_Static_assert(sizeof(struct zfs_path_args) == 4,
-	       "zfs_path_args must be 4 packed bytes");
-_Static_assert(__builtin_offsetof(struct zfs_path_args, path) == 0,
-	       "zfs_path_args path offset");
-_Static_assert(__builtin_offsetof(struct zfs_path_args, length) == 2,
-	       "zfs_path_args length offset");
-_Static_assert(sizeof(struct zfs_open_args) == 5,
-	       "zfs_open_args must be 5 packed bytes");
-_Static_assert(__builtin_offsetof(struct zfs_open_args, path) == 0,
-	       "zfs_open_args path offset");
-_Static_assert(__builtin_offsetof(struct zfs_open_args, length) == 2,
-	       "zfs_open_args length offset");
-_Static_assert(__builtin_offsetof(struct zfs_open_args, flags) == 4,
-	       "zfs_open_args flags offset");
-_Static_assert(sizeof(struct zfs_io_args) == 5,
-	       "zfs_io_args must be 5 packed bytes");
-_Static_assert(__builtin_offsetof(struct zfs_io_args, fd) == 0,
-	       "zfs_io_args fd offset");
-_Static_assert(__builtin_offsetof(struct zfs_io_args, buffer) == 1,
-	       "zfs_io_args buffer offset");
-_Static_assert(__builtin_offsetof(struct zfs_io_args, length) == 3,
-	       "zfs_io_args length offset");
-_Static_assert(sizeof(struct zfs_seek_args) == 6,
-	       "zfs_seek_args must be 6 packed bytes");
-_Static_assert(__builtin_offsetof(struct zfs_seek_args, fd) == 0,
-	       "zfs_seek_args fd offset");
-_Static_assert(__builtin_offsetof(struct zfs_seek_args, whence) == 1,
-	       "zfs_seek_args whence offset");
-_Static_assert(__builtin_offsetof(struct zfs_seek_args, offset) == 2,
-	       "zfs_seek_args offset offset");
-_Static_assert(sizeof(struct zfs_stat_args) == 6,
-	       "zfs_stat_args must be 6 packed bytes");
-_Static_assert(__builtin_offsetof(struct zfs_stat_args, path) == 0,
-	       "zfs_stat_args path offset");
-_Static_assert(__builtin_offsetof(struct zfs_stat_args, length) == 2,
-	       "zfs_stat_args length offset");
-_Static_assert(__builtin_offsetof(struct zfs_stat_args, out) == 4,
-	       "zfs_stat_args out offset");
-_Static_assert(sizeof(struct zfs_readdir_args) == 3,
-	       "zfs_readdir_args must be 3 packed bytes");
-_Static_assert(__builtin_offsetof(struct zfs_readdir_args, fd) == 0,
-	       "zfs_readdir_args fd offset");
-_Static_assert(__builtin_offsetof(struct zfs_readdir_args, out) == 1,
-	       "zfs_readdir_args out offset");
-_Static_assert(sizeof(struct zfs_getcwd_args) == 4,
-	       "zfs_getcwd_args must be 4 packed bytes");
-_Static_assert(__builtin_offsetof(struct zfs_getcwd_args, buffer) == 0,
-	       "zfs_getcwd_args buffer offset");
-_Static_assert(__builtin_offsetof(struct zfs_getcwd_args, length) == 2,
-	       "zfs_getcwd_args length offset");
-_Static_assert(sizeof(struct zfs_rename_args) == 8,
-	       "zfs_rename_args must be 8 packed bytes");
-_Static_assert(__builtin_offsetof(struct zfs_rename_args, from) == 0,
-	       "zfs_rename_args from offset");
-_Static_assert(__builtin_offsetof(struct zfs_rename_args, from_length) == 2,
-	       "zfs_rename_args from_length offset");
-_Static_assert(__builtin_offsetof(struct zfs_rename_args, to) == 4,
-	       "zfs_rename_args to offset");
-_Static_assert(__builtin_offsetof(struct zfs_rename_args, to_length) == 6,
-	       "zfs_rename_args to_length offset");
-_Static_assert(sizeof(struct zfs_fd_args) == 1,
-	       "zfs_fd_args must be 1 packed byte");
-_Static_assert(__builtin_offsetof(struct zfs_fd_args, fd) == 0,
-	       "zfs_fd_args fd offset");
 _Static_assert(sizeof(struct zfs_stat) == 16,
 	       "zfs_stat must be 16 packed bytes");
 _Static_assert(__builtin_offsetof(struct zfs_stat, type) == 0,

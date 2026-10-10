@@ -273,15 +273,18 @@ void ipc_copy_entry(void)
 	int rc;
 	int copies;
 	uint16_t expect;
+	unsigned char type = 0u;
 
 	zos_puts("ipccopy: probe OK\r\n");
 
-	echo_handle = (uint8_t)zos_ipc_lookup(IPC_CLASS_ECHO, 0u);
-	vfs_handle = (uint8_t)zos_ipc_lookup(IPC_CLASS_VFS, 0u);
-	ioc_handle = (uint8_t)zos_ipc_lookup(IPC_CLASS_IOC, 0u);
-	con_handle = (uint8_t)zos_ipc_lookup(IPC_CLASS_CON, 0u);
-	irqx_handle = (uint8_t)zos_ipc_lookup(IPC_CLASS_IRQX, 0u);
-	check("lookup", vfs_handle != 0u && ioc_handle != 0u &&
+	/* Package 42b: a client reaches a provider through a bound
+	 * namespace handle, never by class/instance. */
+	echo_handle = (uint8_t)zos_ipc_bind("/dev/ipc/echo", 0u, &type);
+	vfs_handle = (uint8_t)zos_ipc_bind("/dev/ipc/vfs", 0u, &type);
+	ioc_handle = (uint8_t)zos_ipc_bind("/dev/ipc/ioc", 0u, &type);
+	con_handle = (uint8_t)zos_ipc_bind("/dev/ipc/con", 0u, &type);
+	irqx_handle = (uint8_t)zos_ipc_bind("/dev/ipc/irqx", 0u, &type);
+	check("bind", vfs_handle != 0u && ioc_handle != 0u &&
 			con_handle != 0u && irqx_handle != 0u);
 
 	case_at(PROBE_CALLER_WINDOW, 'A', 'P', "window-bytes");
@@ -315,6 +318,16 @@ void ipc_copy_entry(void)
 	check("apcopy-copies", req.frame.payload[3] == 4u);
 	check("apcopy-sum", IPC_FRAME_WORD(req.frame.payload, 0u) == expect);
 	check("apcopy-irq", req.frame.payload[2] >= 1u);
+
+	/* The handle pool is one global 12-entry table and a suspended
+	 * parent keeps its handles while the child runs, so the probe hands
+	 * its five back before starting the client: the client binds six of
+	 * its own plus the two standard handles every process owns. */
+	(void)zos_ipc_unbind(echo_handle);
+	(void)zos_ipc_unbind(vfs_handle);
+	(void)zos_ipc_unbind(ioc_handle);
+	(void)zos_ipc_unbind(con_handle);
+	(void)zos_ipc_unbind(irqx_handle);
 
 	/* The full promoted conformance suite, as a child process. */
 	rc = zos_exec(client_path, (const char *)0);

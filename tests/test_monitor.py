@@ -63,8 +63,8 @@ MONITOR_SOURCES = (
 # kernel was dragged into the ZEX link).
 MONITOR_MODULES = {
     "zos_crt0", "zos_runtime", "zos_gate", "zos_diaggate",
-    "zos_ipcgate", "args", "console_io", "console_service", "ipc",
-    "monitor", "monitor_mem", "monitor_io",
+    "zos_ipcgate", "nsgate", "args", "console_io", "console_service",
+    "ipc", "monitor", "monitor_mem", "monitor_io",
     "hexfmt", "hexdump", "status",
 }
 
@@ -172,7 +172,9 @@ class TestMonitorArtifacts(unittest.TestCase):
             self.skipTest("the monitor manifest has not been built")
         manifest = zexpack.load_manifest(MONITOR_JSON)
         self.assertEqual(manifest["entry"], "zos_entry")
-        self.assertEqual(manifest["entry_offset"], 0x44)
+        # The SDK's low-data area (package 42b) is 93 bytes: the scratch
+        # and raw request blocks, the call block and the nsgate blocks.
+        self.assertEqual(manifest["entry_offset"], 93)
         self.assertEqual(manifest["scratch"]["symbol"], "zos_scratch")
         self.assertEqual(manifest["scratch"]["size"], 16)
 
@@ -188,7 +190,7 @@ class TestMonitorArtifacts(unittest.TestCase):
         self.assertEqual(fields["image_size"], manifest["image_size"])
         self.assertEqual(fields["bss_size"], manifest["bss_size"])
         self.assertEqual(fields["stack_size"], manifest["stack_size"])
-        self.assertEqual(geo["entry"], 0x0144)
+        self.assertEqual(geo["entry"], 0x015D)
         self.assertEqual(report["sha256"],
                          hashlib.sha256(data).hexdigest())
         self.assertEqual(report["scratch"], manifest["scratch"])
@@ -534,7 +536,7 @@ class TestProductionSmokeMode(unittest.TestCase):
         import serial_smoke
 
         code, _out, err = self.run_main(
-            serial_smoke.BANNER + b"ramfs: unavailable 0x07\r\n")
+            serial_smoke.BANNER + b"iocfat: unavailable 0x07\r\n")
         self.assertEqual(code, 1)
         self.assertIn("was not observed", err)
 

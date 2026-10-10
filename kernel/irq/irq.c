@@ -21,14 +21,14 @@ static uint16_t unexpected;
 static uint16_t unclaimed;
 static irq_source_t last_source;
 
-/* A handler address is valid when it lies inside linked nucleus code or
- * inside a committed (RESIDENT) module image.  Nucleus code is the fixed
- * core (2000h up to the linked fixed code end) plus the cold-half code
- * area (6000h up to the linked cold code end, below the driver arena);
- * the IRQ gate dispatches with P = 0, so both are addressable.  The
- * module currently running its init may claim handlers that point into
- * its own LOADING allocation; failed/freed and out-of-arena addresses are
- * rejected. */
+/* A handler address is valid when it lies inside linked nucleus code.
+ * Nucleus code is the fixed core (2000h up to the linked fixed code end)
+ * plus the cold-half code area (6000h up to the linked cold code end,
+ * below the driver arena); the IRQ gate dispatches with P = 0, so both
+ * are addressable.  A bank-6 resident service never registers its own
+ * address here: it hands the nucleus an in-image handler through the
+ * service API, and the nucleus's trampoline (fixed core) is what this
+ * registry holds (architecture 36.6, service IRQ upcall). */
 static uint8_t handler_is_valid(irq_handler_t handler)
 {
 	uint16_t address = (uint16_t)handler;
@@ -43,7 +43,7 @@ static uint8_t handler_is_valid(irq_handler_t handler)
 			return 1;
 		}
 	}
-	return module_code_allowed(address);
+	return 0;
 }
 
 void irq_init(void)

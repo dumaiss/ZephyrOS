@@ -15,10 +15,11 @@
  *   IOC       class 5, instance 0: the command/reply lane, the bulk
  *                                  lanes and the semantic status word
  *
- * Package 42a adds the FILE protocol (type ZOS_TYPE_FILE) that the
- * namespace providers bind: the ROMFS provider serves reads, seeks and
- * metadata for `/SYSTEM` files, and package 42b routes `/FS` files to
- * IOC-FAT through the same operation numbers.
+ * The FILE protocol (type ZOS_TYPE_FILE) and the filesystem-namespace
+ * protocol (type ZOS_TYPE_FS) are the file language of M10: the ROMFS
+ * provider serves `/SYSTEM`, the build's filesystem driver (IOC-FAT)
+ * serves `/FS`, and both answer through the same operation numbers
+ * (package 42b).
  *
  * Every service carries protocol version ZOS_PROTOCOL_VERSION (the
  * endpoint's registered version, returned by SYS_IPC_LOOKUP).  Classes
@@ -74,6 +75,8 @@
 #define ZOS_CLASS_HID     4u
 #define ZOS_CLASS_IOC     5u
 #define ZOS_CLASS_CONSOLE 6u
+#define ZOS_CLASS_FILE    7u /* the file service: FILE objects and the
+                              * filesystem-namespace provider behind /FS */
 
 /* The instance every device-facing service registers (one instance). */
 #define ZOS_CLASS_INSTANCE 0u
@@ -254,30 +257,95 @@
  * frame's 24-byte payload). */
 #define ZIOC_PROTOCOL_REQUEST_MAX 24u
 
-/* --- FILE protocol (type ZOS_TYPE_FILE) ---------------------------------
+/* --- FILE protocol (type ZOS_TYPE_FILE) --------------------------------
  *
- * The filesystem object protocol (architecture 36.14, the file language):
- * `bind(path, flags)` yields a FILE handle and the operations below act on
- * the bound instance.  Package 42a serves `/SYSTEM` files from the static
- * ROMFS provider; package 42b serves `/FS` files through IOC-FAT with the
- * same operation numbers.
+ * The filesystem object protocol (architecture 36.13-36.14, the file
+ * language): `bind(path, flags)` yields a FILE handle and the operations
+ * below act on the bound instance - the ROMFS provider in process for
+ * `/SYSTEM`, the selected filesystem driver for `/FS`.
+ *
+ * Instance identity: `payload[0]` of every operation names the bound
+ * instance (the provider's object identity).  The FS provider stamps it
+ * from the caller's handle before it forwards the call to its driver, so
+ * a bank-6 dispatch finds its per-open state without a handle table of
+ * its own; the in-process ROMFS provider reads its instance from the
+ * handle entry.
  *
  *   ZFILE_OP_READ (0)  desc OUT: arg0 = offset inside the caller buffer,
- *                      arg1 = length.  Returns the bytes transferred
+ *                      arg1 = length.  Reads from the instance's position
+ *                      and advances it.  Returns the bytes transferred
  *                      (0 at end of file).
  *   ZFILE_OP_WRITE (1) desc IN: arg0 = offset, arg1 = length.  Returns
  *                      the bytes written; a read-only provider answers
  *                      ZOS_EROFS.
- *   ZFILE_OP_SEEK (2)  arg0 = ZFS_SEEK_SET/CUR/END and payload[0..3] = a
+ *   ZFILE_OP_SEEK (2)  arg0 = ZFS_SEEK_SET/CUR/END and payload[1..4] = a
  *                      little-endian signed 32-bit offset; the reply
- *                      carries the new position as payload[0..3] and the
+ *                      carries the new position in payload[1..4] and the
  *                      status is 0.
  *   ZFILE_OP_META (3)  no descriptor; the reply payload holds a packed
  *                      `struct zfs_stat` (16 bytes, abi/zos/fs.h).
+ *   ZFILE_OP_SYNC (4)  no descriptor; flushes the instance (the file
+ *                      close path is SYNC then unbind).
  */
 #define ZFILE_OP_READ  0u
 #define ZFILE_OP_WRITE 1u
 #define ZFILE_OP_SEEK  2u
 #define ZFILE_OP_META  3u
+#define ZFILE_OP_SYNC  4u
+
+/* --- filesystem-namespace protocol (type ZOS_TYPE_FS) -------------------
+ *
+ * `bind(path, 0)` on a provider root - `bind("/FS", 0)` or
+ * `bind("/SYSTEM", 0)` - yields a filesystem-namespace handle: the
+ * caller's key to the name operations that act on paths rather than on an
+ * open file (architecture 36.13).  `mkdir`, `rmdir`, `unlink`, `rename`
+ * and `stat` in `fs.h` build on it; there is no DIRECTORY handle and no
+ * universal directory protocol.
+ *
+ * The application passes the **path remainder** - the target path with
+ * the bound provider root removed, e.g. `/GAMES` for `/FS/GAMES` - in the
+ * call's one descriptor.  `stat` replies the packed `struct zfs_stat` in
+ * the payload; every other operation replies only its status.  The
+ * operation numbers start at 08h so a dispatch shared with the FILE
+ * protocol (0-4 above) tells the two apart without consulting the type.
+ *
+ *   ZFS_OP_MKDIR  (8)  desc IN: the path to create.
+ *   ZFS_OP_RMDIR  (9)  desc IN: the path to remove (must be empty).
+ *   ZFS_OP_UNLINK (10, 0Ah)  desc IN: the file to remove.
+ *   ZFS_OP_RENAME (11, 0Bh)  desc IN: the source path, NUL, then the
+ *                      target path.
+ *   ZFS_OP_STAT   (12, 0Ch)  desc IN: the path; the reply payload holds a
+ *                      packed `struct zfs_stat`.
+ *
+ * A provider refuses a name operation it cannot serve (ROMFS answers
+ * ZOS_EROFS for every mutation) and owns the meaning of the path below
+ * its root: the FS provider forwards the remainder to the filesystem
+ * driver (kernel/vfs/ns.c), which performs it.
+ *
+ * **Nucleus transport.**  Between the nucleus provider and a bank-6
+ * filesystem driver the same operations travel with the path staged in a
+ * nucleus request buffer (the fixed core, always visible to a driver)
+ *
+ *   ZFS_OP_OPEN  (13, 0Dh)  payload[0..1] = path address, payload[2..3] =
+ *                      ZFS_O_* flags; reply payload[0] = the provider
+ *                      instance identity.  The FS provider's `bind`.
+ *   ZFS_OP_CLOSE (14, 0Eh)  payload[0] = instance; the provider's
+ *                      `unbind`.
+ *   ZFS_OP_ENUM  (15, 0Fh)  desc OUT: the caller's entry array; payload[0..1]
+ *                      = path address, payload[2..3] = cookie,
+ *                      payload[4..5] = the caller's byte count.  Writes
+ *                      up to that many `struct zos_ns_entry` records,
+ *                      replies the next cookie in payload[2..3], returns
+ *                      the entry count, and is what `ns_enum` below
+ *                      `/FS` runs (architecture 36.13).
+ */
+#define ZFS_OP_MKDIR  8u
+#define ZFS_OP_RMDIR  9u
+#define ZFS_OP_UNLINK 10u
+#define ZFS_OP_RENAME 11u
+#define ZFS_OP_STAT   12u
+#define ZFS_OP_OPEN   13u
+#define ZFS_OP_CLOSE  14u
+#define ZFS_OP_ENUM   15u
 
 #endif /* ZOS_PROTOCOL_H */

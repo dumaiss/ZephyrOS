@@ -88,9 +88,10 @@ TRANSCRIPT = [
     "ns: exec /SYSTEM/nschild.zex -> 0\r\n",
 ]
 
-# The M9 mount pass still runs in this image (the M9 VFS leaves bank 7 in
-# package 42b) and reports no `/` mount, because the router now owns `/`.
-MOUNT_LINE = "vfs: / unavailable 0x03\r\n"
+# The M9 mount pass is gone with the M9 VFS it belonged to (package 42b):
+# the namespace owns `/` from the first instruction, so no boot line
+# reports a mount outcome any more.  The image must not grow one back.
+MOUNT_LINE = "vfs: "
 
 # /SYSTEM/services.man: one 24-byte record per loaded image, load order.
 MAN_RECORD = 24
@@ -157,7 +158,7 @@ class NsSelftestReplay(unittest.TestCase):
                                     % (line, sio))
             position = found + len(line)
 
-        self.assertIn(MOUNT_LINE, sio)
+        self.assertNotIn(MOUNT_LINE, sio)
         self.assertIn(SELFTEST_OK, sio)
         self.assertNotIn(SELFTEST_FAIL, sio)
         self.assertNotIn("FAIL", sio)
