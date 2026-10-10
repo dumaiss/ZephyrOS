@@ -289,7 +289,7 @@ class TestServiceArtifact(unittest.TestCase):
         manifest = _load_json(RECOVERY_MANIFEST)
         names = [entry["name"] for entry in manifest["files"]]
         self.assertEqual(names, ["sio.zmod", "ioc.zmod", "hid.zmod",
-                                 "v9958.zmod", "console.zmod",
+                                 "v9958.zmod", "console-v9958-hid.zmod",
                                  "services.man", "iocfat.zmod",
                                  "monitor.zex"])
         types = {entry["name"]: entry["type"]
@@ -321,7 +321,7 @@ class TestServiceArtifact(unittest.TestCase):
         self.assertIn("$(MODULES)/v9958-6x8.font", makefile)
         self.assertIn("ZOS_VIDEO_SELFTEST", makefile)
         self.assertIn("ZOS_CONSOLE_SELFTEST", makefile)
-        self.assertIn("ZOS_SERVICES := sio v9958 console", makefile)
+        self.assertIn("ZOS_SERVICES := sio v9958 console-serial", makefile)
         # The terminal renderer's own model suite (the M8 device-model
         # entry points it drove) is retired with the device model (work
         # package 42c); the renderer runs in the video/console images.

@@ -116,7 +116,7 @@ int16_t vfs_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void ipc_vfs_init(const struct ipc_service_boot *boot)
+uint8_t ipc_vfs_init(const struct ipc_service_boot *boot)
 {
 	api = boot->api;
 	vfs_block_address = (uint16_t)vfs_block;
@@ -127,4 +127,5 @@ void ipc_vfs_init(const struct ipc_service_boot *boot)
 	 * is active. */
 	self_handle = boot->deps[0];
 	fat_handle = boot->deps[1];
+	return 0u;
 }

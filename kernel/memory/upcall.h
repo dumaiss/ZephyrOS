@@ -17,7 +17,9 @@
  *     common region or the fixed core (the syscall gate stack and the ISR
  *     stack both satisfy this);
  *   - `args` is passed to the target in HL, the target's HL return value
- *     is published in `result`;
+ *     is published in `result`, and its A register at return is published
+ *     in `zos_upcall_ret_a` (the sdcccall(1) 8-bit return, which is how a
+ *     driver's init reports its status);
  *   - single-depth: the state below is not reentrant (single-tasking, like
  *     the common transition gates).
  *
@@ -64,5 +66,10 @@ _Static_assert(__builtin_offsetof(struct zos_upcall_req, result) == 5,
 /* Returns 0, or ZOS_EINVAL when the page is not one the operating system
  * uses or the entry does not lie in the window. */
 uint8_t zos_upcall(const struct zos_upcall_req *req);
+
+/* The target's A register at return (upcall.asm): a `uint8_t`-returning
+ * entry publishes its sdcccall(1) result here.  The service loader reads
+ * it back as the init status. */
+extern uint8_t zos_upcall_ret_a;
 
 #endif /* ZEPHYROS_KERNEL_MEMORY_UPCALL_H */

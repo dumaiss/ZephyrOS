@@ -4,10 +4,11 @@ simulator.
 
 Coverage (all executing the real linked bytes):
 
-* production-style boot of the HID-input / V9958-output image with the
-  SIO + IOC + HID + V9958 module set loaded from the recovery store, the
+* production-style boot of the HID-input / V9958-output image
+  (`console-v9958-hid`, work package 42e) with the
+  SIO + IOC + HID + V9958 driver set loaded from the recovery store, the
   console selftest's early-SIO transcript reporting the selected classes,
-  and early-SIO independence from the bound console;
+  and early-SIO independence from the console driver;
 * the scripted visible monitor session driven through the HID input lane
   and decoded from the V9958 command trace: banner and prompt, unknown
   command, help, system/bank/process information, current/bank dumps,
@@ -15,16 +16,15 @@ Coverage (all executing the real linked bytes):
   input, latch-port rejections, line overflow with bell + recovery,
   backspace editing, CRLF handling, `Q` exit and one relaunch cycle with
   stable launcher counts;
-* kernel-context binding matrix over the real console service: the four
-  input/output states that the loaded modules make possible
-  (HID/V9958, HID/SIO, SIO/V9958, SIO/SIO), each direction proven
-  independently, input/output channels proven disjoint per state, and a
-  rejected video operation leaving both directions and the device
-  registry intact;
 * early/panic SIO bypass: the fatal path stays on the serial link while
-  the console is bound to the V9958 output;
+  the console driver routes to the V9958 output;
 * byte identity of the ROMFS monitor payload with the packed artifact
   and the pinned M7 size/hash.
+
+The runtime binding matrix (HID/V9958, HID/SIO, SIO/V9958, SIO/SIO) was
+retired with the runtime console fallback (work package 42e): the build
+selects the console, and the serial configuration is covered by
+tests/test_console_serial.py.
 
 Skipped when the console image / packed monitor have not been built.
 """

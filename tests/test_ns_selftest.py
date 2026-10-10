@@ -76,17 +76,17 @@ HANDLES = {"ZOS_HANDLE_STDOUT": "1u", "ZOS_HANDLE_STDIN": "2u",
 
 # The publication table the three packed containers must carry: name below
 # the DEVICE root, protocol type, serving endpoint (the host assigns them
-# in load order: sio, console, nsdev) and the provider's object identity.
+# in load order: sio, console-serial, nsdev) and the provider's object identity.
 PUBLICATIONS = {
     "sio": [("/serial/0", 1, 1, 0)],
-    "console": [("/console", 6, 2, 0)],
+    "console-serial": [("/console", 6, 2, 0)],
     "nsdev": [("/input/keyboard", 4, 3, 1), ("/video", 2, 3, 2)],
 }
-SERVICE_ORDER = ["sio", "console", "nsdev"]
+SERVICE_ORDER = ["sio", "console-serial", "nsdev"]
 
 # The store the image boots from, in manifest order; `services.man` is the
 # loader's own boot manifest, one 24-byte record per loaded image.
-STORE = ["sio.zmod", "console.zmod", "nsdev.zmod", "services.man",
+STORE = ["sio.zmod", "console-serial.zmod", "nsdev.zmod", "services.man",
          "ns.zex", "nschild.zex"]
 MAN_RECORD = 24
 # The namespace leaves the M9 mount pass without a `/` mount to check.
@@ -120,7 +120,7 @@ class TestNsBuildWiring(unittest.TestCase):
 
     def test_makefile_selects_the_image_configuration(self):
         text = read(MAKEFILE)
-        for token in ("ZOS_SERVICES := sio console nsdev",
+        for token in ("ZOS_SERVICES := sio console-serial nsdev",
                       "SVC_MANIFEST_DIR := tests/ns/manifests",
                       "ZOS_BOOT_PROGRAM := /SYSTEM/ns.zex",
                                 "$(BUILD)/vfs_ns.rel $(BUILD)/vfs_ns_file.rel "
@@ -214,7 +214,7 @@ class TestNsContainers(unittest.TestCase):
     def test_manifests_declare_the_publications(self):
         expected = {
             "sio": ("/dev/serial/0", "SERIAL", 1, 0),
-            "console": ("/dev/console", "CONSOLE", 6, 0),
+            "console-serial": ("/dev/console", "CONSOLE", 6, 0),
             "nsdev": ("/dev/input/keyboard", "INPUT", 30, 1),
         }
         for name, (path, kind, cls, obj) in expected.items():

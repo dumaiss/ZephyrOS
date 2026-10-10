@@ -15,7 +15,9 @@
  *      numbers, run the boot entry once through the mode-10 gate with
  *      Q = 6, and run the hot init entry once through the fixed upcall
  *      shim with the boot bundle (interface table and dependency array)
- *      in HL;
+ *      in HL.  A non-zero init status (the entrant's uint8_t return,
+ *      published by the shim) refuses the image: a required driver that
+ *      fails to initialize is a boot failure (36.11);
  *   3. keep the two architecture-36.20 ledgers in acceptance builds,
  *      `driver hot` (hot plus io bytes) and `driver boot/bulk` (boot plus
  *      bulk bytes); production takes them from the packer's report.
@@ -444,12 +446,14 @@ static int service_load_image(const romfs_file_t *file,
 	if (header->init_entry != ZMOD_NO_ENTRY) {
 		/* The mode-11 window shows bank 6 and the fixed core stays
 		 * visible, so the driver reads its boot bundle and claims
-		 * its IRQs here. */
+		 * its IRQs here.  The init's uint8_t return is published by
+		 * the upcall shim; a non-zero status fails the image and
+		 * the boot (36.11). */
 		zos_service_upcall_block.page = ZOS_UPCALL_PAGE_SERVICE;
 		zos_service_upcall_block.entry = header->init_entry;
 		zos_service_upcall_block.args = (void *)ipc_service_boot();
-		zos_service_upcall_block.result = 0u;
-		if (zos_upcall(&zos_service_upcall_block) != 0u) {
+		if (zos_upcall(&zos_service_upcall_block) != 0u ||
+		    zos_upcall_ret_a != 0u) {
 			return ZMOD_EINVAL;
 		}
 	}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Host-side V9958 video service acceptance: replay the real
-video-selftest image (the `sio v9958 console` service set, production
-geometry) in the Z80 simulator against the V9958 peer.
+video-selftest image (the `sio v9958 console-serial` service set,
+production geometry) in the Z80 simulator against the V9958 peer.
 
 Coverage (all executing the real linked bytes):
 
@@ -9,11 +9,12 @@ Coverage (all executing the real linked bytes):
   the three service images and prints its early-SIO evidence lines
   (`driver sio.zmod: hot ... boot ...`,
   `driver v9958.zmod: hot ... boot ... bulk ...`,
-  `driver console.zmod: hot ...`), the v9958 bulk row being the font
-  the run-time reset re-reads through the nucleus bulk copy;
-* the nucleus console probe: `console: service OK` is written through
-  the console service and appears in the decoded V9958 glyph trace,
-  never on the serial lane;
+  `driver console-serial.zmod: hot ...`), the v9958 bulk row being the
+  font the run-time reset re-reads through the nucleus bulk copy;
+* the nucleus console line: `console: service OK` is written through
+  the build-selected console driver; this image's SIO-only set selects
+  `console-serial`, so the line is on the serial lane and nothing the
+  console prints reaches the V9958 trace;
 * the target diagnostic's early-SIO transcript: endpoint discovery
   (video class 02 at protocol version 01, serial and console peers),
   the argument-free PRESENT, the display reset, the `V41` terminal
@@ -27,8 +28,9 @@ Coverage (all executing the real linked bytes):
   run-time one fed by the service's bulk segment), the full-page
   clear-screen HMMV runs once per bring-up with its CE-busy handshake,
   and the malformed-call phase performs no VDP access at all;
-* the marker glyphs `V41` follow the probe line in the decoded glyph
-  trace, proving the renderer path end to end.
+* the marker glyphs `V41` reach the decoded glyph trace through the
+  diagnostic's direct video-endpoint writes (after its reset), proving
+  the renderer path end to end.
 
 Skipped when the image has not been built (`make video-selftest`).
 """
@@ -183,7 +185,7 @@ class TestVideoServiceBoot(VideoSimBase):
             r"driver sio.zmod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h\r\n",
             r"driver v9958.zmod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h "
             r"bulk [0-9A-F]{4}h\r\n",
-            r"driver console.zmod: hot [0-9A-F]{4}h\r\n",
+            r"driver console-serial.zmod: hot [0-9A-F]{4}h\r\n",
         ]
         positions = []
         for row in rows:
@@ -208,24 +210,23 @@ class TestVideoServiceBoot(VideoSimBase):
         self.assertEqual(z.bank7[self.syms["_ace_video_selftest_result"]],
                          0x00)
 
-    def test_console_probe_and_marker_glyphs(self):
+    def test_console_line_and_marker_glyphs(self):
         z = self.make_cpu()
         self.boot_to_video_ok(z)
         sio = bytes(z.sio_tx).decode("ascii", "replace")
         trace = "".join(z.glyphs)
 
-        # The nucleus console probe is the console service's own output:
-        # it renders through the V9958 output and never reaches the
-        # serial lane, while the early-SIO transcript is the reverse.
-        self.assertIn(PROBE_LINE, trace)
-        self.assertNotIn(PROBE_LINE, sio)
+        # The console line is the build-selected driver's own output:
+        # this image selects `console-serial`, so the line is on the
+        # serial lane and never in the V9958 glyph trace.
+        self.assertIn(PROBE_LINE, sio)
+        self.assertNotIn(PROBE_LINE, trace)
         self.assertIn(VIDEO_OK, sio)
 
-        # The marker glyphs follow the probe: the reset cleared the
-        # plane, the PUTC pass redrew at the home cell.
+        # The marker glyphs come from the diagnostic's direct video
+        # writes: the reset cleared the plane, the PUTC pass redrew at
+        # the home cell.
         self.assertIn(MARKER_GLYPHS, trace)
-        self.assertGreater(trace.index(MARKER_GLYPHS),
-                           trace.index(PROBE_LINE))
 
         # The marker line records the pass on the early console too.
         self.assertIn(VIDEO_MARKER, sio)

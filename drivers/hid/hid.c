@@ -32,8 +32,11 @@
  *     poll.  Successful data or a released doorbell clears the penalty
  *     immediately.
  *   - transport failures are reported as "no input" (0 / EAGAIN), never
- *     as a poll error; the console service composes its input at boot
- *     from ZHID_OP_READY and otherwise binds the serial fallback.
+ *     as a poll error, and a link that is down at init keeps the engine
+ *     registered: the first ordinary operation retries the whole-link
+ *     recovery.  The console no longer composes itself from
+ *     ZHID_OP_READY (package 42e made the console build-selected), so a
+ *     down link is a recoverable condition, not a boot decision.
  *
  * Translation is the MCU's: this driver copies bytes verbatim, including
  * NUL, control bytes and multi-byte VT100 key sequences.
@@ -302,7 +305,7 @@ int16_t hid_service_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void hid_service_init(const struct ipc_service_boot *boot)
+uint8_t hid_service_init(const struct ipc_service_boot *boot)
 {
 	uint8_t handle;
 	struct zos_ipc_frame frame;
@@ -317,17 +320,17 @@ void hid_service_init(const struct ipc_service_boot *boot)
 	/* The one dependency (the IOC transport, manifest position 0): the
 	 * host resolved it to the endpoint number; the driver never looks a
 	 * peer up at run time.  The manifest declares it required, so the
-	 * packer refused a build without it. */
+	 * packer refused a build without it; a zero here is a malformed
+	 * bundle and fails the init (the loader fails the boot, 36.11). */
 	handle = boot->deps[HID_DEP_IOC];
 	hid_state.ioc_handle = handle;
-
-	/* Probe the link once: a down link keeps the ring empty, and a
-	 * service that never delivers data is exactly what the console
-	 * must not bind.  The probe is the composition decision (the M8
-	 * registration-presence equivalent). */
 	if (handle == 0u) {
-		return;
+		return 1u;
 	}
+
+	/* Probe the link once: a down link keeps the ring empty and the
+	 * engine registered; the first ordinary operation retries the
+	 * whole-link recovery.  ZHID_OP_READY reports the link state. */
 	frame.op = ZIOC_OP_READY;
 	frame.flags = 0u;
 	frame.desc = ZOS_IPC_DESC_NONE;
@@ -336,4 +339,5 @@ void hid_service_init(const struct ipc_service_boot *boot)
 	if (hid_api->call(handle, ZIOC_OP_READY, &frame) != 1) {
 		hid_state.ioc_handle = 0u;
 	}
+	return 0u;
 }

@@ -42,7 +42,7 @@ void ioc_boot_entry(void);
  * with the service bootstrap table (which runs the one LINK_SYNC
  * bring-up and records the readiness bit). */
 int16_t ioc_service_dispatch(struct zos_ipc_frame *frame);
-void ioc_service_init(const struct ipc_service_boot *boot);
+uint8_t ioc_service_init(const struct ipc_service_boot *boot);
 
 extern struct ioc_state ioc_state;
 

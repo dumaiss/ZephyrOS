@@ -459,8 +459,9 @@ class TestProductionSmokeMode(unittest.TestCase):
     carries the early banner.  The contract is therefore what serial can
     observe: the four banner lines in order, then a quiet window with no
     PANIC, no failed console bind and no '<module>: unavailable' line.  A
-    bench whose console falls back to SIO still gets the stronger check
-    (console line + monitor banner + prompt)."""
+    bench running the console-serial variant routes the whole console to
+    serial and therefore gets the stronger check (console line + monitor
+    banner + prompt); with build-selected consoles there is no fallback."""
 
     def transcript(self, diagnostics=b""):
         import serial_smoke
@@ -496,12 +497,12 @@ class TestProductionSmokeMode(unittest.TestCase):
                 sys.modules["serial"] = previous
         return code, out.text.getvalue(), err.getvalue()
 
-    def test_sio_fallback_transcript_passes_the_strong_check(self):
+    def test_sio_console_transcript_passes_the_strong_check(self):
         code, out, err = self.run_main(self.transcript())
         self.assertEqual(code, 0, err)
         self.assertIn("serial_smoke: OK", out)
 
-    def test_sio_fallback_transcript_prints_no_display_hint(self):
+    def test_sio_console_transcript_prints_no_display_hint(self):
         code, _out, err = self.run_main(self.transcript())
         self.assertEqual(code, 0, err)
         self.assertNotIn("V9958", err)

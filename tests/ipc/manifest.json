@@ -7,9 +7,9 @@
       "path": "sio.zmod"
     },
     {
-      "name": "console.zmod",
+      "name": "console-serial.zmod",
       "type": "ZMOD",
-      "path": "console.zmod"
+      "path": "console-serial.zmod"
     },
     {
       "name": "ipccopy.zex",

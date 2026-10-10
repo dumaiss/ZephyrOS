@@ -130,8 +130,10 @@ A manifest declares dependencies symbolically; the packer resolves each
 one to the endpoint number of an export in an earlier image or in the
 image itself.  A missing *required* dependency is a pack error.  A
 missing *optional* one resolves to `0`, which a driver reads as "this
-build selected no such peer" (the console's independent input/output
-fallback).  The resolved numbers are installed into the fixed-core array
+build selected no such peer" (optional dependencies survive only in
+acceptance doubles; the production console drivers declare every
+dependency required).  The resolved numbers are installed into the
+fixed-core array
 the boot bundle names (`struct ipc_service_boot`, `include/zephyros/
 ipc.h`), one byte per declaration in manifest order; no driver looks a
 peer up at run time.
@@ -219,7 +221,9 @@ Per image, in manifest order (`kernel/service/service_loader.c`):
    publications into the namespace;
 3. run the boot entry once through the mode-10 gate with Q = 6;
 4. run the hot init entry once through the fixed upcall shim with the
-   boot bundle in `HL`.
+   boot bundle in `HL`; the init's `uint8_t` return is its status (the
+   shim publishes it), and a non-zero status refuses the image - a
+   required driver that fails to initialize is a boot failure (36.11).
 
 Boot entry code runs with bank 7 unmapped: it may touch bank 6, the
 common region and I/O ports, and must not call the bootstrap interface.
@@ -231,8 +235,13 @@ A failure is a boot error and prints one line on the early console:
 manifest named a file the store does not hold), `copy` (a segment that
 does not fit its tier or a copy the gate rejected), `endpoint` (the
 endpoint table is full), `publication` (the namespace refused the row),
-or `invalid` (corrupt or truncated container - the same word for a
-manifest whose size is not a multiple of the record size).  The words are
+or `invalid` (corrupt or truncated container, or an init status that is
+not 0 - the same word for a
+manifest whose size is not a multiple of the record size).  The nucleus
+then prints `services: unavailable 0x<code>` and stops the boot on the
+early console: a required driver that fails to load or initialize is an
+explicit boot failure, never a fallback (36.11, work package 42e).  The
+words are
 short because the loader's byte budget is an architectural resource
 (section 8).  Services are permanent (M10
 decision 11): no unload, no restart, no fini entry, and a second

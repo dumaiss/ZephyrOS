@@ -3,10 +3,12 @@
 production bytes and the integration acceptance image in the Z80 simulator.
 
 Both images boot the resident-service model this package delivers: the
-recovery store lists the SIO, IOC, HID, V9958 and console services in the
+recovery store lists the SIO, IOC, HID, V9958 and CONSOLE services in the
 manifest order, the nucleus service loader places them in bank 6 and runs
-their boot tiers and inits, and the console service - not a kernel binding
-- composes the input and output lanes.  The production image is the same
+their boot tiers and inits, and the build-selected console driver - not a
+kernel binding and with no runtime fallback - forwards the console
+protocol to the input/output services its manifest names.  The production
+image is the same
 source and store the physical acceptance image is built from minus the
 target-test objects; the integration image adds the target diagnostic
 (tests/target/console/integration_test.c) behind the early-SIO driver
@@ -22,13 +24,14 @@ Coverage, all against those linked bytes:
 * the scripted visible monitor session: the nucleus writes its boot line
   through the console service, the monitor runs its banner and prompt on
   the V9958, a typed `r` returns the sysinfo/process/bank rows through
-  the HID-input path the console composed, and `q` exits and relaunches;
+  the HID-input path the build selected, and `q` exits and relaunches;
 * the IOC lane the store's filesystem service (IOC-FAT) drives through the
   IOC endpoint: link bring-up plus the FS2 command exchange, seen from
   the emulated MCU peer;
 * the integration image: the loader's per-service evidence rows and
   ledger, the target diagnostic's endpoint/composition/marker/typed-line
-  /PING/rejection transcript, the same bytes on the visible lane, and the
+  /PING/rejection transcript, the same bytes on the visible lane, the
+  ESC c display reset the boot program runs (work package 42e), and the
   monitor session that follows it;
 * ROMFS payload identity: the packed monitor artifact is stored
   byte-for-byte and the store's directory matches the image's manifest.
@@ -54,6 +57,7 @@ import romfspack  # noqa: E402
 from test_console_sim import (  # noqa: E402
     ConsoleSimBase, MONITOR_SIZE, MONITOR_SHA256, PROMPT, BANNER,
     SYSINFO, PROCESS, BANK_INFO, MONITOR_EXIT)
+from test_v9958_sim import bringup_starts  # noqa: E402
 
 RET = 0x1234
 STEP_LIMIT = 12000000
@@ -65,11 +69,16 @@ INTEGRATION_DIR = "build-console-integration-selftest"
 INTEGRATION_IMAGE = "zephyros-console-integration-selftest.bin"
 
 # The five service images the production store carries, in manifest order,
-# with the endpoint class each registers.
-# The production boot set (package 42b): the four device services plus the
-# filesystem driver, which publishes `/FS` (class 7, the file service).
+# with the endpoint class each registers.  The production CONSOLE driver
+# is `console-v9958-hid` (work package 42e); the serial variant selects
+# `console-serial` from the same shared source.
 SERVICE_SET = (("sio.zmod", 1), ("ioc.zmod", 5), ("hid.zmod", 4),
-               ("v9958.zmod", 2), ("console.zmod", 6), ("iocfat.zmod", 7))
+               ("v9958.zmod", 2), ("console-v9958-hid.zmod", 6),
+               ("iocfat.zmod", 7))
+
+# The console image's required dependencies (class, instance), in
+# manifest order.  `console-serial` is exercised by test_console_serial.
+CONSOLE_DEPS = {"console-v9958-hid.zmod": ((4, 0), (2, 0))}
 
 # The characters the integration diagnostic writes through the console
 # service and the line the replay queues for its input row.
@@ -257,6 +266,33 @@ class TestProductionImage(ConsoleReplayBase):
             self.assertEqual(len(info["publications"]), 1, name)
             self.assertEqual(info["publications"][0]["number"],
                              info["endpoints"][0]["number"], name)
+            # The console image's required dependencies (work package
+            # 42e: no optional dependency and no runtime fallback).  The
+            # other images' dependencies are pinned by their own tests.
+            if name in CONSOLE_DEPS:
+                self.assertEqual([(dep["class"], dep["instance"])
+                                  for dep in info["dependencies"]],
+                                 list(CONSOLE_DEPS[name]), name)
+                for dep in info["dependencies"]:
+                    self.assertGreater(dep["number"], 0, name)
+
+    def test_console_manifests_select_the_build(self):
+        """The two CONSOLE manifests differ only in what the build
+        selects (work package 42e), and both require it."""
+        expected = {
+            "console-v9958-hid": [(4, 0), (2, 0)],   # HID, VIDEO
+            "console-serial": [(1, 0)],              # SERIAL
+        }
+        for name, deps in expected.items():
+            path = os.path.join(ROOT, "services", "manifests",
+                                "%s.json" % name)
+            with open(path) as handle:
+                document = json.load(handle)
+            self.assertEqual(document["name"], name)
+            self.assertEqual([(dep["class"], dep["instance"])
+                              for dep in document["depends"]], deps, name)
+            for dep in document["depends"]:
+                self.assertNotIn("optional", dep, name)
 
     @staticmethod
     def manifest_names(path):
@@ -300,7 +336,7 @@ class TestIntegrationImage(ConsoleReplayBase):
         # Loader evidence: one row per image, in manifest order, plus the
         # ledger the packer's report pins.
         for name in ("sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
-                     "console.zmod"):
+                     "console-v9958-hid.zmod"):
             self.assertIn(("driver %s: hot " % name).encode(), sio)
         self.assertIn(b"service loader: 5 images in bank 6\r\n", sio)
         # The loader's two ledgers must equal what the packer's plan
@@ -323,11 +359,19 @@ class TestIntegrationImage(ConsoleReplayBase):
         self.assertIn(INTEGRATION_MARKER, trace)
         self.assertIn("K41", trace)          # the typed echo
         self.assertIn("integration done", trace)
+
+        # The image boot program is the ESC c check (work package 42e):
+        # it reset the display and printed its line before handing the
+        # console to the monitor, so the V9958 bring-up sequence ran
+        # twice - the driver's boot segment and the ESC c reset.
+        self.assertIn("escc: display reset", trace)
+        self.assertEqual(len(bringup_starts(z.vdp)), 2)
         self.assertIn(BANNER, trace)
         self.assertIn(PROMPT, trace)
 
         # The IOC traffic the diagnostic drove: the service's link
-        # bring-up, the console's HID probe fetch, then its PING.
+        # bring-up, then the HID fetch its console read drove and its
+        # PING.
         requests = [entry for entry in z.ioc_peer.requests]
         kinds = [entry[0] for entry in requests]
         self.assertEqual(kinds[0], LINK_SYNC_REQUEST)

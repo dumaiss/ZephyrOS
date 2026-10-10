@@ -1,0 +1,45 @@
+{
+  "name": "console-serial",
+  "objects": [
+    "console-serial.rel",
+    "sdcc_indirect_calls.rel"
+  ],
+  "init": "console_service_init",
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ],
+      "bss_areas": [
+        "_SERVICE_IO"
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 6,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "console_service_dispatch",
+      "flags": 0
+    }
+  ],
+  "publishes": [
+    {
+      "path": "/dev/console",
+      "type": "CONSOLE",
+      "endpoint": {
+        "class": 6,
+        "instance": 0
+      },
+      "object": 0
+    }
+  ],
+  "depends": [
+    {
+      "class": 1,
+      "instance": 0
+    }
+  ]
+}

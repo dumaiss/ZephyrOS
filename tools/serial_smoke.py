@@ -82,16 +82,14 @@ captures output with a bounded timeout, and verifies the expected output:
                      monitor session runs over the HID input and the
                      V9958 output and is the human gate; the image
                      waits for the host sync sequence.
-    --mode console-fb-nohid  the fallback image with no hid.zmod in the
-                     recovery store: `hid: unavailable 0x05`, input
-                     falls back to sio0.b, output stays v9958.0; the
-                     tool sends the invited input byte and the operator
-                     confirms the console marker on the display.
-    --mode console-fb-nohid-nov9958  HID and V9958 both absent:
-                     `hid: unavailable 0x05` and `v9958: unavailable
-                     0x05`; the console binds SIO/SIO, so both the
-                     invited input byte and the console marker are
-                     verified in this serial transcript.
+    --mode console-serial  the console-serial variant image (work package
+                     42e): the production service set with the SERIAL
+                     console, so the whole dynamic transcript - banner,
+                     `console: service OK`, the monitor banner and prompt -
+                     is on the serial lane.  The tool types `r` at the
+                     prompt and checks the monitor's system row comes back
+                     on the same lane.  The image waits for the host sync
+                     sequence; start this tool first and reset the board.
 All new subsystem modes send the host sync sequence while the banner is
 pending, because the acceptance builds hold the first byte until the
 host is listening (the bench reset also resets the USB bridge).
@@ -109,7 +107,7 @@ before they print anything, so those modes send that sequence once the
 port is open and repeat it until the first byte arrives.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|ioc|hid|video|console|console-integration|console-fb-nohid|console-fb-nohid-nov9958|fs]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|ioc|hid|video|console|console-integration|console-serial|fs]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -257,42 +255,26 @@ INTEGRATION_SELFTEST_OK = b"console integration: OK\r\n"
 INTEGRATION_FAIL = b"console integration: FAIL"
 INTEGRATION_UNAVAILABLE_ANY = b": unavailable 0x"
 
-# --- console fallback matrix (package 20) ----------------------------------------
-FALLBACK_INPUT_RE = re.compile(
-    rb"console fallback: input ([A-Za-z0-9._]+) class ([0-9A-F]{2})\r\n")
-FALLBACK_OUTPUT_RE = re.compile(
-    rb"console fallback: output ([A-Za-z0-9._]+) class ([0-9A-F]{2})\r\n")
-FALLBACK_DEVICES_RE = re.compile(rb"console fallback: devices (\d{1,2})\r\n")
-FALLBACK_SEND_INPUT = b"console fallback: send input\r\n"
-FALLBACK_INPUT_BYTE = b"R"
-FALLBACK_INPUT_OK_RE = re.compile(rb"console fallback: input OK 0x([0-9A-F]{2})\r\n")
-FALLBACK_INPUT_NONE = b"console fallback: input none\r\n"
-FALLBACK_CONSOLE_MARKER = b"console fallback: console output\r\n"
-FALLBACK_WRITE_OK = b"console fallback: console write OK\r\n"
-FALLBACK_SELFTEST_OK = b"console fallback selftest: OK\r\n"
-FALLBACK_FAIL = b"console fallback selftest: FAIL"
+# --- console-serial variant (work package 42e) --------------------------------
+# The variant selects `console-serial`, so every dynamic console byte -
+# the console-service line, the monitor banner and prompt, and the
+# monitor's answers - is on the serial lane.  The mode types `r` at the
+# prompt and requires the system row on the same lane; the production
+# `console-v9958-hid` build would never print any of it here.
+CONSOLE_SERIAL_SYSINFO = \
+    b"system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02\r\n"
 
-# Observable contract per failure variant: the bound console pair, the
-# exact early-SIO diagnostics (ZOS_E* code), and whether the console
-# marker must be visible in the serial transcript (output = SIO) or is
-# display-only and must therefore NOT appear on the link (output =
-# V9958).  A serial-bound input must show the scripted byte read back
-# through the console service.
-FALLBACK_MODES = {
-    "console-fb-nohid": {
-        "input": (b"sio0.b", b"01"),
-        "output": (b"v9958.0", b"02"),
-        "diagnostics": (b"hid: unavailable 0x05\r\n",),
-        "serial_marker": False,
-    },
-    "console-fb-nohid-nov9958": {
-        "input": (b"sio0.b", b"01"),
-        "output": (b"sio0.b", b"01"),
-        "diagnostics": (b"hid: unavailable 0x05\r\n",
-                        b"v9958: unavailable 0x05\r\n"),
-        "serial_marker": True,
-    },
-}
+
+def _serial_result(data):
+    """True when the console-serial variant's transcript is complete: the
+    boot banner, the console-service line, the monitor banner and prompt,
+    and the system row the mode typed `r` for - all on the serial lane."""
+    if b"PANIC" in data or any(marker in data
+                               for marker in PRODUCTION_CONSOLE_FAIL):
+        return False
+    return (BANNER in data and CONSOLE_SERVICE_OK in data and
+            MONITOR_BANNER in data and SUBSYS_PROMPT in data and
+            CONSOLE_SERIAL_SYSINFO in data)
 
 
 def _production_failure(data):
@@ -303,10 +285,11 @@ def _production_failure(data):
 
 
 def _production_strong(data):
-    """True when the SIO-fallback bench printed the console/monitor lines.
+    """True when the serial console printed the console/monitor lines.
 
-    This is the stronger contract: a bench whose console falls back to SIO
-    prints the console-service line, the monitor banner and the prompt."""
+    This is the stronger contract: the console-serial variant routes the
+    dynamic console to this lane, so it prints the console-service line,
+    the monitor banner and the prompt."""
     return all(needle in data for needle in
                (BANNER, CONSOLE_SERVICE_OK, MONITOR_BANNER, SUBSYS_PROMPT))
 
@@ -317,8 +300,8 @@ def _production_result(data, quiet_elapsed):
     On real hardware the production console binds to the V9958, so serial
     carries only the 65-byte early banner.  PASS when the four banner lines
     arrive in order and no failure marker follows within the quiet window.
-    If the console/monitor lines do reach serial (an SIO-fallback bench),
-    the stronger check applies."""
+    If the console/monitor lines do reach serial (the console-serial
+    variant), the stronger check applies."""
     if _production_failure(data):
         return False
     if _production_strong(data):
@@ -338,40 +321,6 @@ def _integration_result(data):
             return False
     return True
 
-
-def _fallback_result(mode, data):
-    """True when the variant's observable contract is complete."""
-    spec = FALLBACK_MODES[mode]
-    if FALLBACK_FAIL in data or b"PANIC" in data:
-        return False
-    for needle in (BANNER, FALLBACK_WRITE_OK, FALLBACK_SELFTEST_OK):
-        if needle not in data:
-            return False
-    match = FALLBACK_INPUT_RE.search(data)
-    if match is None or (match.group(1), match.group(2)) != spec["input"]:
-        return False
-    match = FALLBACK_OUTPUT_RE.search(data)
-    if match is None or (match.group(1), match.group(2)) != spec["output"]:
-        return False
-    if FALLBACK_DEVICES_RE.search(data) is None:
-        return False
-    for needle in spec["diagnostics"]:
-        if data.count(needle) != 1:
-            return False
-    if spec["input"][1] == b"01":
-        if FALLBACK_SEND_INPUT not in data or FALLBACK_INPUT_NONE in data:
-            return False
-        match = FALLBACK_INPUT_OK_RE.search(data)
-        if match is None or match.group(1) != b"52":
-            return False
-    if spec["serial_marker"]:
-        if FALLBACK_CONSOLE_MARKER not in data:
-            return False
-    elif FALLBACK_CONSOLE_MARKER in data:
-        # The bound output is the V9958 display: a marker on the serial
-        # link would contradict the reported binding.
-        return False
-    return True
 
 # Host sync the smoke image waits for before the banner (bench quirk: the
 # board's reset line also resets the USB bridge, so the board must not
@@ -529,8 +478,7 @@ def main(argv):
                                            "romfs-corrupt", "ioc",
                                            "hid", "video",
                                            "console", "console-integration",
-                                           "console-fb-nohid",
-                                           "console-fb-nohid-nov9958",
+                                           "console-serial",
                                            "fs"),
                         default="normal")
     parser.add_argument(
@@ -629,25 +577,14 @@ def main(argv):
               "the HID input and the V9958 output; confirm the banner, "
               "prompt and documented command pass on the physical "
               "keyboard/display")
-    if args.mode in FALLBACK_MODES:
-        spec = FALLBACK_MODES[args.mode]
-        print("serial_smoke: mode %s checks the fallback boot log "
-              "(expected %s input / %s output); power-cycle the board or "
-              "press RESET now so the boot is captured; the image waits "
-              "for the host sync sequence"
-              % (args.mode, spec["input"][0].decode(),
-                 spec["output"][0].decode()))
-        if spec["input"][1] == b"01":
-            print("serial_smoke: when 'console fallback: send input' appears, "
-                  "this tool sends the invited byte over the serial link "
-                  "and validates the read-back")
-        if spec["serial_marker"]:
-            print("serial_smoke: the console output is the SIO fallback; "
-                  "the marker is verified in this transcript")
-        else:
-            print("serial_smoke: the console output is the V9958; "
-                  "visually confirm 'console fallback: console output' on the "
-                  "display")
+    if args.mode == "console-serial":
+        print("serial_smoke: mode console-serial checks the console-serial "
+              "variant boot log; power-cycle the board or press RESET now "
+              "so the boot is captured; the image waits for the host sync "
+              "sequence")
+        print("serial_smoke: the dynamic console is the serial lane here; "
+              "this tool types 'r' at the monitor prompt and requires the "
+              "monitor's system row on the same lane")
     deadline = time.monotonic() + args.timeout
     data = b""
     bridge_drops = 0
@@ -671,8 +608,8 @@ def main(argv):
                       % (args.port, bridge_drops))
                 host_sync_at = 0.0
             if (args.mode in ("ioc", "hid", "video",
-                              "console", "console-integration", "console-fb-nohid",
-                              "console-fb-nohid-nov9958") and
+                              "console", "console-integration",
+                              "console-serial") and
                     BANNER not in data and
                     time.monotonic() >= host_sync_at):
                 # The smoke image holds the banner for this sequence; keep
@@ -740,24 +677,25 @@ def main(argv):
                     if _fs_image_result(data) or FS_IMAGE_FAIL in data or \
                             b"fs-child: FAIL" in data:
                         break
-                elif args.mode in FALLBACK_MODES:
-                    if FALLBACK_SEND_INPUT in data and not rx_byte_sent:
+                elif args.mode == "console-serial":
+                    # The dynamic console is the serial lane: type `r` at
+                    # the prompt and finish on the monitor's system row.
+                    if SUBSYS_PROMPT in data and not rx_byte_sent:
                         try:
-                            link.write(FALLBACK_INPUT_BYTE)
+                            link.write(b"r\r")
                             link.flush()
                         except (serial.SerialException, OSError):
                             pass  # the read notices a dropped link
                         rx_byte_sent = True
-                        print("serial_smoke: sent invited input byte %r"
-                              % FALLBACK_INPUT_BYTE)
-                    if _fallback_result(args.mode, data) or FALLBACK_FAIL in data:
+                        print("serial_smoke: sent 'r' at the monitor prompt")
+                    if _serial_result(data):
                         break
             if args.mode == "normal":
                 # Banner-only contract: the V9958-bound production console
                 # sends only the early banner on serial.  PASS once the
                 # banner is complete and the quiet window elapsed with no
-                # failure marker; an SIO-fallback bench passes early on the
-                # stronger console/monitor evidence.
+                # failure marker; the console-serial variant passes early
+                # on the stronger console/monitor evidence.
                 if BANNER in data and normal_banner_at == 0.0:
                     normal_banner_at = time.monotonic()
                 if _production_failure(data) or _production_strong(data):
@@ -784,8 +722,8 @@ def main(argv):
         ok = _production_result(data, quiet_elapsed)
         expected = ("the four banner lines in order and a quiet %gs window "
                     "with no PANIC, no failed console bind and no "
-                    "'<module>: unavailable' line; or, on an SIO-fallback "
-                    "bench, 'console: service OK', the monitor "
+                    "'<module>: unavailable' line; or, on the console-serial "
+                    "variant, 'console: service OK', the monitor "
                     "banner and the 'Z80> ' prompt" % args.quiet)
         if ok and not _production_strong(data):
             print("serial_smoke: banner-only PASS - the production console "
@@ -861,16 +799,12 @@ def main(argv):
                     "count, and then the monitor prompt 'Z80> ' on the same "
                     "SIO console - with a writable FAT card and no "
                     "card-absent diagnostic")
-    elif args.mode in FALLBACK_MODES:
-        ok = _fallback_result(args.mode, data)
-        spec = FALLBACK_MODES[args.mode]
-        expected = ("the %s/%s binding report, its exact early-SIO "
-                    "diagnostic(s), the scripted serial input byte where "
-                    "the input is SIO, the console marker where it is "
-                    "serial-visible (otherwise confirmed on the display), "
-                    "and 'console fallback selftest: OK'"
-                    % (spec["input"][0].decode(),
-                       spec["output"][0].decode()))
+    elif args.mode == "console-serial":
+        ok = _serial_result(data)
+        expected = ("the banner, 'console: service OK', the monitor banner "
+                    "and the 'Z80> ' prompt, and the monitor's system row "
+                    "for the typed 'r' - all on the serial lane (the "
+                    "console-serial variant routes /dev/console to SERIAL)")
 
     _root_observation(args.mode, data)
     if not ok:
@@ -951,7 +885,7 @@ def _explain_wrong_image(mode, data):
                   "'console: service OK', the monitor banner and "
                   "the 'Z80> ' prompt are rendered on the V9958 display "
                   "and never reach the SIO port; --mode normal can only "
-                  "gate an SIO-fallback bench.  Confirm the monitor "
+                  "gate the console-serial variant.  Confirm the monitor "
                   "prompt and HID input on the V9958 display; that is "
                   "the accepted production gate until the mode is split",
                   file=sys.stderr)
@@ -1113,17 +1047,23 @@ def _explain_wrong_image(mode, data):
                   "boot got.  The interactive monitor session must be "
                   "confirmed on the physical keyboard and display",
                   file=sys.stderr)
-    elif mode in FALLBACK_MODES:
-        spec = FALLBACK_MODES[mode]
-        if b"console integration: OK" in data:
-            print("serial_smoke: hint: the integration image appears to "
-                  "be flashed; use --mode console-integration", file=sys.stderr)
-        print("serial_smoke: hint: this mode expects the %s/%s binding "
-              "and the exact diagnostic '%s'; the transcript above shows "
-              "what the flashed image actually provides"
-              % (spec["input"][0].decode(), spec["output"][0].decode(),
-                 spec["diagnostics"][0].decode().rstrip()),
-              file=sys.stderr)
+    elif mode == "console-serial":
+        if CONSOLE_INPUT_OK in data:
+            print("serial_smoke: hint: the V9958-console acceptance image "
+                  "appears to be flashed; flash build-console-serial-selftest/"
+                  "zephyros-console-serial-selftest.bin", file=sys.stderr)
+        elif not BANNER in data:
+            print("serial_smoke: hint: no boot log was captured.  This "
+                  "image waits for the host sync sequence before the "
+                  "banner; start this tool first, then power-cycle the "
+                  "board or press RESET while it waits, and rerun",
+                  file=sys.stderr)
+        else:
+            print("serial_smoke: hint: the serial-console transcript is "
+                  "incomplete; the last marker above shows how far the "
+                  "boot got.  The dynamic console must answer on this "
+                  "lane: check the console-service line and the monitor "
+                  "prompt above", file=sys.stderr)
 
 
 if __name__ == "__main__":

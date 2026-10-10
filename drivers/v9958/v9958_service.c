@@ -122,7 +122,7 @@ int16_t v9958_service_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void v9958_service_init(const struct ipc_service_boot *boot)
+uint8_t v9958_service_init(const struct ipc_service_boot *boot)
 {
 	uint8_t probe[V9958_FONT_CHUNK];
 	const struct ipc_service_api *api = boot->api;
@@ -134,4 +134,5 @@ void v9958_service_init(const struct ipc_service_boot *boot)
 	 * boot segment's direct source has done its job. */
 	v9958_set_font_base(0u);
 	(void)api->bulk_read(0u, (uint16_t)probe, V9958_FONT_CHUNK);
+	return 0u;
 }

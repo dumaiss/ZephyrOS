@@ -52,7 +52,7 @@ int hid_getc(void *state);
 /* Hot segment: the endpoint dispatch and the init entry the loader calls
  * with the service bootstrap table. */
 int16_t hid_service_dispatch(struct zos_ipc_frame *frame);
-void hid_service_init(const struct ipc_service_boot *boot);
+uint8_t hid_service_init(const struct ipc_service_boot *boot);
 
 extern struct zhid_state hid_state;
 

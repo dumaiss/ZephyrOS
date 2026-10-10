@@ -1,7 +1,7 @@
 {
-  "name": "console",
+  "name": "console-v9958-hid",
   "objects": [
-    "console_service.rel",
+    "console-v9958-hid.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "console_service_init",
@@ -39,18 +39,11 @@
   "depends": [
     {
       "class": 4,
-      "instance": 0,
-      "optional": 1
-    },
-    {
-      "class": 1,
-      "instance": 0,
-      "optional": 1
+      "instance": 0
     },
     {
       "class": 2,
-      "instance": 0,
-      "optional": 1
+      "instance": 0
     }
   ]
 }

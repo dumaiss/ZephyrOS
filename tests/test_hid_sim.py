@@ -125,7 +125,11 @@ class HidSimBase(unittest.TestCase):
 
         def on_tx(tx):
             if not done["console"] and CONSOLE_INPUT_MARKER in tx:
-                peer.hid_queue.extend(HID_CONSOLE)
+                # This image selects `console-serial` (work package 42e):
+                # the console's input is the SERIAL service, so the pair
+                # travels on SIO0/B.  The HID engine is driven directly by
+                # the other phases.
+                z.sio_rx.extend(HID_CONSOLE)
                 done["console"] = True
                 injected.append("console")
             if not done["fault"] and FAULT_MARKER in tx:
@@ -169,7 +173,7 @@ class HidSimBase(unittest.TestCase):
     def service_lines(self, sio):
         # The loader names each image by its ROMFS entry (`sio.zmod`).
         return re.findall(
-            rb"driver ([a-z0-9]+)\.zmod: hot [0-9A-F]{4}h"
+            rb"driver ([a-z0-9-]+)\.zmod: hot [0-9A-F]{4}h"
             rb"(?: io [0-9A-F]{4}h)?(?: boot [0-9A-F]{4}h)?"
             rb"(?: bulk [0-9A-F]{4}h)?\r\n", sio)
 
@@ -187,7 +191,7 @@ class TestHidBootTranscript(HidSimBase):
             b"kernel entry: OK\r\n",
             b"serial: OK\r\n",
         ))
-        names = [b"sio", b"ioc", b"hid", b"console"]
+        names = [b"sio", b"ioc", b"hid", b"console-serial"]
         self.assertEqual(self.service_lines(sio), names)
         self.assertIn(b"service loader: %d images in bank 6\r\n"
                       % len(names), sio)
@@ -248,11 +252,12 @@ class TestHidPeerFacts(HidSimBase):
         z, _sio = self.boot(peer)
 
         # Every fetch asked for the ring's full free space, and the MCU
-        # dequeued exactly the delivered bytes: the typed pass, the
-        # console pair, and the clean pair behind the
-        # malformed reply.
-        fetches = 4  # typed, console, poisoned, retry
-        delivered = len(HID_TYPED) + len(HID_FAULT) + len(HID_CONSOLE)
+        # dequeued exactly the delivered bytes: the typed pass, and the
+        # clean pair behind the malformed reply.  The console pair is not
+        # here: this image selects `console-serial`, so its console reads
+        # the serial lane, not the HID engine.
+        fetches = 3  # typed, poisoned, retry
+        delivered = len(HID_TYPED) + len(HID_FAULT)
         self.assertEqual(peer.hid_requests, [HID_FETCH_SIZE] * fetches)
         self.assertEqual(peer.hid_delivered, delivered)
         self.assertEqual(list(peer.hid_queue), [],

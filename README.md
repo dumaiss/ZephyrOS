@@ -181,13 +181,17 @@ make console-selftest
                    # console binding acceptance image + host replay
 make console-integration-selftest
                    # console integration acceptance: full five-service image +
-                   # target diagnostic + monitor launcher, and the
-                   # production-byte simulator replay (load order, binding,
-                   # IOC command/bulk, HID queue, scripted monitor session)
+                   # target diagnostic + ESC c display-reset program + monitor
+                   # launcher, and the production-byte simulator replay
+                   # (load order, binding, IOC command/bulk, HID queue,
+                   # ESC c reset, scripted monitor session)
                    # (build-console-integration-selftest/)
-make console-fallback-selftests
-                   # the two service-set subsets (no HID; no HID and no
-                   # V9958) and their exact composition lanes
+make console-serial-selftest
+                   # the console-serial production variant (the same service
+                   # set with the other CONSOLE driver): monitor prompt,
+                   # typed line and relaunch on the serial lane; plus the
+                   # required-console boot-failure image
+                   # (build-console-serial-selftest/)
 make fs-selftest
                    # filesystem outcome image: writes, reads, seeks,
                    # renames, unlinks and enumerates through FILE handles
@@ -243,13 +247,11 @@ make smoke-hardware-console-integration SERIAL_PORT=/dev/ttyUSB0
                    # portion (binding report, PING level, rejected-call
                    # invariants, 'console integration: OK'); then perform the
                    # human HID/V9958 monitor pass on the display
-make smoke-hardware-console-fb-nohid SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-console-fb-nohid/zephyros-console-fb-nohid.bin
-                   # (make console-fallback-selftests); the second fallback
-                   # subset (-console-fb-nohid-nov9958) verifies
-                   # their exact binding, early-SIO diagnostic and scripted
-                   # serial input where the input is SIO; V9958-bound output
-                   # is confirmed on the display by the operator
+make smoke-hardware-console-serial SERIAL_PORT=/dev/ttyUSB0
+                   # flash build-console-serial-selftest/zephyros-console-serial-selftest.bin
+                   # (make console-serial-selftest): the whole dynamic
+                   # console is the serial lane; the tool types 'r' at the
+                   # prompt and checks the monitor's answer
 make hardware-images
                    # build every image the smoke modes need
 make clean         # remove generated files under build*/
@@ -269,13 +271,13 @@ subsystem and console modes must be listening before the board boots: start the
 tool, then power-cycle or press RESET (the boot-log lines are printed once;
 the console/subsystem images additionally wait for the tool's host-sync sequence before the
 banner).  The `subsystem`, `romfs-corrupt`, `console-integration` and
-`console-fb-*` modes assert
+`console-serial` modes assert
 the exact acceptance transcript, binding and diagnostics, scripting the
-serial input where the bound input is SIO; V9958-bound output is confirmed
-on the display by the operator.  Note: `smoke-hardware` (mode `normal`)
-reads the console-service line and the monitor prompt from the serial link,
-which only happens on an SIO-fallback bench (HID/V9958 absent).  On a full
-bench the console binds HID input / V9958 output, so those appear on the
+serial input where the console routes there; V9958-bound output is
+confirmed on the display by the operator.  Note: `smoke-hardware` (mode
+`normal`) reads the console-service line and the monitor prompt from the
+serial link, which only happens with the console-serial variant.  On a
+full bench the console is `console-v9958-hid`, so those appear on the
 display and only the banner is on the serial link -- use
 `smoke-hardware-console-integration` plus the human display check there.  Dated acceptance
 records live under

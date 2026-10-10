@@ -223,7 +223,7 @@ void v9958_boot_entry(void);
 /* Hot segment: the endpoint dispatch and the init entry the loader calls
  * with the service bootstrap table. */
 int16_t v9958_service_dispatch(struct zos_ipc_frame *frame);
-void v9958_service_init(const struct ipc_service_boot *boot);
+uint8_t v9958_service_init(const struct ipc_service_boot *boot);
 
 /* The class operation implementation (exposed for the descriptor).  A
  * ZVIDEO_RESET reinitializes the terminal parser, cursor/rendition

@@ -215,7 +215,7 @@ class TestIocFatIntegration(IocFatStaticBase):
     def test_acceptance_image_manifest(self):
         entries = [f["name"] for f in
                    json.loads(read(IMAGE_MANIFEST))["files"]]
-        self.assertEqual(entries, ["sio.zmod", "ioc.zmod", "console.zmod",
+        self.assertEqual(entries, ["sio.zmod", "ioc.zmod", "console-serial.zmod",
                                    "services.man", "iocfat.zmod",
                                    "monitor.zex", "fs_selftest.zex",
                                    "fs_child.zex"])

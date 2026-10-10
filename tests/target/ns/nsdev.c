@@ -44,7 +44,8 @@ int16_t nsdev_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void nsdev_init(const struct ipc_service_boot *boot)
+uint8_t nsdev_init(const struct ipc_service_boot *boot)
 {
 	(void)boot;
+	return 0u;
 }

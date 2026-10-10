@@ -116,6 +116,15 @@ ZOS_NS_SELFTEST     ?= 0
 # 36.2); the fixed core is 2000h-5FFFh.  Every image links that way.
 ZOS_REV13_WINDOW_BASE := 0x6000
 
+# --- console selection (work package 42e) -------------------------------
+# Consoles are selected per build (architecture 36.11, decision 12):
+# `console-v9958-hid` is the production CONSOLE (HID input, VIDEO output);
+# `console-serial` is the variant with the SERIAL service in both
+# directions.  The two drivers are one shared source compiled into two
+# images; an image set that has no HID+VIDEO pair (the subsystem, IOC,
+# HID, video and IPC images) selects `console-serial` explicitly.
+ZOS_CONSOLE ?= console-v9958-hid
+
 # --- target acceptance build selection ---------------------------------
 # Acceptance images link the shared runner (tests/target/support/) plus
 # the per-milestone test code under tests/target/; production images link
@@ -137,7 +146,7 @@ TARGET_TEST_OBJS += $(BUILD)/syscall_test.rel $(BUILD)/syscall_selftest_asm.rel 
                     $(BUILD)/romfs_test.rel \
                     $(BUILD)/process_test.rel
 PK_SUFFIX := -subsys-selftest
-ZOS_SERVICES := sio console
+ZOS_SERVICES := sio console-serial
 endif
 
 # Subsystem corrupt-store image: the same current boot path, but the
@@ -147,7 +156,7 @@ endif
 ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
 CFLAGS    += -DZOS_ROMFS_CORRUPT_SELFTEST=1
 PK_SUFFIX := -romfs-corrupt
-ZOS_SERVICES := sio console
+ZOS_SERVICES := sio console-serial
 endif
 
 # IOC acceptance image: production-style boot (the SIO, IOC and console
@@ -163,7 +172,7 @@ ifeq ($(ZOS_IOC_SELFTEST),1)
 CFLAGS    += -DZOS_IOC_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/ioc_test.rel
 PK_SUFFIX := -ioc-selftest
-ZOS_SERVICES := sio ioc console
+ZOS_SERVICES := sio ioc console-serial
 endif
 
 # HID acceptance image: production-style boot (the SIO, IOC, HID and
@@ -179,7 +188,7 @@ ifeq ($(ZOS_HID_SELFTEST),1)
 CFLAGS    += -DZOS_HID_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/hid_test.rel
 PK_SUFFIX := -hid-selftest
-ZOS_SERVICES := sio ioc hid console
+ZOS_SERVICES := sio ioc hid console-serial
 endif
 
 # video acceptance image: production-style boot (the SIO, IOC, HID, V9958
@@ -193,7 +202,7 @@ ifeq ($(ZOS_VIDEO_SELFTEST),1)
 CFLAGS    += -DZOS_VIDEO_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/video_test.rel
 PK_SUFFIX := -video-selftest
-ZOS_SERVICES := sio v9958 console
+ZOS_SERVICES := sio v9958 console-serial
 endif
 
 # console acceptance image (package 19): the full production stack
@@ -208,46 +217,45 @@ ifeq ($(ZOS_CONSOLE_SELFTEST),1)
 CFLAGS    += -DZOS_CONSOLE_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/console_test.rel
 PK_SUFFIX := -console-selftest
-ZOS_SERVICES := sio ioc hid v9958 console
+ZOS_SERVICES := sio ioc hid v9958 $(ZOS_CONSOLE)
 endif
 
-# console integration acceptance image (package 20): the full production
-# stack (SIO + IOC + HID + the V9958 video/console module) from ROMFS,
-# the integration target diagnostic (class/capability discovery of all
-# four residents, the single default binding, PING command/status,
-# malformed/null/class/capability rejections and their invariants)
-# reported over the direct early SIO, then the unchanged M7
-# `monitor.zex` launcher for the human HID/V9958 session.  This is the
-# image the final physical acceptance gate builds and flashes;
+# console integration acceptance image (package 20, work package 42e):
+# the full production stack (SIO + IOC + HID + V9958 + the selected
+# CONSOLE driver) from ROMFS, the integration target diagnostic reported
+# over the direct early SIO, then the ESC c check program, which resets
+# the V9958 display, prints its line and hands the console to the
+# unchanged M7 `monitor.zex` for the human HID/V9958 session.  This is
+# the image the final physical acceptance gate builds and flashes;
 # tests/test_console_acceptance.py replays these exact bytes plus the
 # production image.
 ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)
 CFLAGS    += -DZOS_CONSOLE_INTEGRATION_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/console_integration_test.rel
 PK_SUFFIX := -console-integration-selftest
-ZOS_SERVICES := sio ioc hid v9958 console
+ZOS_BOOT_PROGRAM := /SYSTEM/escc.zex
+ZOS_SERVICES := sio ioc hid v9958 $(ZOS_CONSOLE)
 endif
 
-# console fallback-matrix images (package 20): the same four-module boot
-# contract with one deliberate failure injected through the variant's
-# ROMFS manifest (`ZOS_CONSOLE_FALLBACK` = nohid or nohid-nov9958).  The
-# boot path is the production one - the loader starts exactly the store's
-# service set - so each variant exercises the real load path, the
-# per-service evidence rows and the console's own composition policy.
-# The shared target diagnostic reports the surviving directions and the
-# replay pins the lane each one took (tests/test_console_fallback.py).
-ifeq ($(ZOS_CONSOLE_FALLBACK_SELFTEST),1)
-CFLAGS    += -DZOS_CONSOLE_FALLBACK_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/console_fallback_test.rel
-ifeq ($(ZOS_CONSOLE_FALLBACK),nohid)
-PK_SUFFIX := -console-fb-nohid
-ZOS_SERVICES := sio ioc v9958 console
-else ifeq ($(ZOS_CONSOLE_FALLBACK),nohid-nov9958)
-PK_SUFFIX := -console-fb-nohid-nov9958
-ZOS_SERVICES := sio ioc console
-else
-$(error ZOS_CONSOLE_FALLBACK_SELFTEST needs ZOS_CONSOLE_FALLBACK=nohid|nohid-nov9958)
+# console-serial variant (work package 42e): the production image set with
+# `console-serial` in place of the production `console-v9958-hid`, built in
+# its own directory.  It boots the production-like store and the monitor;
+# the replay proves the monitor works on the serial lane.  The service
+# loader's evidence rows are linked so the transcript pins the loaded set.
+ifeq ($(ZOS_CONSOLE_SERIAL_SELFTEST),1)
+CFLAGS    += -DZOS_SERVICE_TEST_EVIDENCE=1
+PK_SUFFIX := -console-serial-selftest
+ZOS_SERVICES := sio ioc hid v9958 $(ZOS_CONSOLE) iocfat
 endif
+
+# Required-console boot-failure variant (work package 42e): the same set and
+# services.man as the serial variant, but the ROMFS manifest omits the
+# console image.  The loader's lookup fails, and the boot must stop
+# explicitly on the early console (36.11) instead of falling back.
+ifeq ($(ZOS_CONSOLE_SERIAL_FAIL_SELFTEST),1)
+CFLAGS    += -DZOS_SERVICE_TEST_EVIDENCE=1
+PK_SUFFIX := -console-serial-fail-selftest
+ZOS_SERVICES := sio ioc hid v9958 $(ZOS_CONSOLE) iocfat
 endif
 
 # Filesystem outcome image (work package 42b, correction 01).  The
@@ -260,7 +268,7 @@ endif
 ifeq ($(ZOS_FS_SELFTEST),1)
 PK_SUFFIX := -fs-selftest
 ZOS_BOOT_PROGRAM := /SYSTEM/fs_selftest.zex
-ZOS_SERVICES := sio ioc console iocfat
+ZOS_SERVICES := sio ioc console-serial iocfat
 endif
 
 # Nucleus-layout acceptance image (work package 38): the production boot
@@ -275,7 +283,7 @@ TARGET_TEST_OBJS += $(BUILD)/nucleus_test.rel \
                     $(BUILD)/nucleus_selftest_asm.rel \
                     $(BUILD)/ctc_test.rel
 PK_SUFFIX := -nucleus-selftest
-ZOS_SERVICES := sio console
+ZOS_SERVICES := sio console-serial
 endif
 
 # IPC substrate acceptance image (work package 39, M10 stage 3; service
@@ -306,7 +314,7 @@ PK_SUFFIX := -ipc-selftest
 IPC_FIXED_OBJS := $(IPC_SUBSTRATE_OBJS)
 # No image-specific placement override: use the production cold set.
 COLD_EXTRA_CSV :=
-ZOS_SERVICES := sio console
+ZOS_SERVICES := sio console-serial
 endif
 
 # Namespace and handle acceptance image (work package 42a, correction 01).
@@ -327,7 +335,7 @@ PK_SUFFIX := -ns-selftest
 # table carries (`/dev/serial/0`, `/dev/console`); `nsdev` is the test
 # double that adds a third type and a second grouping container
 # (tests/target/ns/nsdev.c).
-ZOS_SERVICES := sio console nsdev
+ZOS_SERVICES := sio console-serial nsdev
 SVC_MANIFEST_DIR := tests/ns/manifests
 ZOS_BOOT_PROGRAM := /SYSTEM/ns.zex
 # The object family links where production links it (config/residency.json
@@ -367,7 +375,7 @@ endif
 # blocks below), which is the M8 `ZOS_*_BOOT` gate's replacement.  The
 # filesystem driver is one of them since 42b: IOC-FAT is a bank-6 service
 # publishing `/FS`.
-ZOS_SERVICES ?= sio ioc hid v9958 console iocfat
+ZOS_SERVICES ?= sio ioc hid v9958 $(ZOS_CONSOLE) iocfat
 
 OBJS      := $(ASM_OBJS) $(C_OBJS) $(BUILD)/ipc.rel $(IPC_COLD_OBJS) \
              $(BUILD)/vfs_ns.rel $(BUILD)/vfs_ns_file.rel $(BUILD)/object.rel
@@ -414,7 +422,6 @@ ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 	$(ZOS_IOC_SELFTEST) $(ZOS_HID_SELFTEST) \
 	$(ZOS_VIDEO_SELFTEST) \
 	$(ZOS_CONSOLE_SELFTEST) $(ZOS_CONSOLE_INTEGRATION_SELFTEST) \
-	$(ZOS_CONSOLE_FALLBACK_SELFTEST) \
 	$(ZOS_FS_SELFTEST) $(ZOS_NUCLEUS_SELFTEST) \
 	$(ZOS_IPC_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1 \
@@ -526,7 +533,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	hid-selftest \
 	v9958-test video-selftest \
 	console-selftest \
-	console-integration-selftest console-fallback-selftests \
+	console-integration-selftest console-serial-selftest \
 	fs-selftest \
 	ipc-selftest \
 	nucleus-selftest \
@@ -535,8 +542,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	smoke-hardware-subsystem smoke-hardware-romfs-corrupt \
 	smoke-hardware-ioc smoke-hardware-hid \
 	smoke-hardware-video smoke-hardware-console \
-	smoke-hardware-console-integration smoke-hardware-console-fb-nohid \
-	smoke-hardware-console-fb-nohid-nov9958 \
+	smoke-hardware-console-integration smoke-hardware-console-serial \
 	smoke-hardware-fs
 
 all: $(IMAGE) $(MAME_IMAGE)
@@ -758,9 +764,10 @@ SVC_HOT    := $(SVC_CFLAGS) --codeseg CODE --dataseg SERVICE_IO
 SVC_BOOT   := $(SVC_CFLAGS) --codeseg BOOT --dataseg BOOT_DATA
 
 # The declared production boot set, in load order: IOC before HID (HID's
-# image declares the dependency), and the console last, because its init
-# probes the services it composes.
-SVC_NAMES := sio ioc hid v9958 console iocfat
+# image declares the dependency), the selected CONSOLE driver after the
+# services it composes (work package 42e: HID and VIDEO for the production
+# build, SERIAL for `console-serial`), and the filesystem driver last.
+SVC_NAMES := sio ioc hid v9958 console-v9958-hid console-serial iocfat
 SVC_ZMODS := $(addprefix $(MODULES)/,$(addsuffix .zmod,$(SVC_NAMES)))
 
 $(MODULES)/sio.rel: drivers/sio/sio.c drivers/sio/sio.h \
@@ -832,10 +839,18 @@ $(MODULES)/v9958_font.rel: drivers/v9958/v9958_font.asm \
 		drivers/v9958/assets/font_cp850_6x8.inc | $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -Idrivers/v9958/assets -o $@ $<
 
-$(MODULES)/console_service.rel: services/console/console_service.c \
-		include/zephyros/ipc.h \
-		$(SVC_PROTOCOL_H) include/zephyros/errno.h | $(MODULES)
+# The two build-selected CONSOLE drivers are one source compiled twice
+# (work package 42e): the production HID-input/VIDEO-output image and the
+# SERIAL image.  Each packed container names its own object.
+$(MODULES)/console-v9958-hid.rel: services/console/console_service.c \
+		include/zephyros/ipc.h abi/zos/protocol.h \
+		include/zephyros/errno.h | $(MODULES)
 	$(SDCC) $(SVC_HOT) $< -o $@
+
+$(MODULES)/console-serial.rel: services/console/console_service.c \
+		include/zephyros/ipc.h abi/zos/protocol.h \
+		include/zephyros/errno.h | $(MODULES)
+	$(SDCC) $(SVC_HOT) -DZOS_CONSOLE_SERIAL=1 $< -o $@
 
 # The filesystem driver's hot image: the same source the M9 resident
 # provider used, rebuilt as bank-6 service code.  Its FS2 transfer staging,
@@ -870,7 +885,7 @@ SVC_OBJS := $(MODULES)/sdcc_indirect_calls.rel \
 	$(MODULES)/v9958.rel $(MODULES)/v9958_io.rel \
 	$(MODULES)/v9958_service.rel $(MODULES)/v9958_font.rel \
 	$(MODULES)/v9958_boot.rel \
-	$(MODULES)/console_service.rel \
+	$(MODULES)/console-v9958-hid.rel $(MODULES)/console-serial.rel \
 	$(MODULES)/iocfat.rel
 
 # The packer links every image against the whole load-order set (--set):
@@ -940,7 +955,6 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/video_selftest.h \
 		tests/target/include/console_selftest.h \
 		tests/target/include/console_integration_selftest.h \
-		tests/target/include/console_fallback_selftest.h \
 		abi/zos/ipc.h \
 		include/zephyros/service.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
@@ -1084,13 +1098,6 @@ $(BUILD)/console_integration_test.rel: tests/target/console/integration_test.c \
 		tests/target/include/console_integration_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/console_fallback_test.rel: tests/target/console/fallback_test.c \
-		include/zephyros/kernel.h abi/zos/protocol.h \
-		tests/target/include/service_client.h \
-		tests/target/include/console_fallback_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-
 
 
 
@@ -1154,6 +1161,15 @@ $(eval $(call zex_program,nschild,tests/ns,\
 	nschild.c,STACK=192,STAGE=1,\
 	INCLUDES=tests/target/include))
 
+# ESC c display-reset check (work package 42e, test-only): a tiny SDK
+# program the console integration image boots before the monitor.  It
+# writes ESC `c` - the V9958 display reset - and a line through the
+# console, then hands the console to the monitor, so the owner can watch
+# the board's display reset.  It is acceptance content: nothing packs it
+# into the production store.
+$(eval $(call zex_program,escc,tests/console,\
+	escc.c,STACK=256,STAGE=1))
+
 # Deterministic malformed ZEX containers (see
 # tests/subsys/gen_zex_fixtures.py) shared by the subsystem acceptance
 # manifest; the stamp makes `make clean && make zex-test` self-contained.
@@ -1184,14 +1200,15 @@ ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 else ifeq ($(ZOS_CONSOLE_SELFTEST),1)
 # Console acceptance store: the full device service set (the filesystem
 # driver is compiled out of this image, so its entry is absent) plus the
-# monitor launcher.
+# monitor launcher and the ESC c display-reset check program.
 ROMFS_MANIFEST := tests/console/manifest-integration.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/escc.zex
 else ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)
-# Console integration acceptance store: the same full service set plus the
-# monitor launcher.
+# Console integration acceptance store: the same full service set, the
+# monitor launcher and the ESC c check program the image boots
+# (ZOS_BOOT_PROGRAM=/SYSTEM/escc.zex, package 42e).
 ROMFS_MANIFEST := tests/console/manifest-integration.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/escc.zex
 else ifeq ($(ZOS_SUBSYS_SELFTEST),1)
 ROMFS_MANIFEST := tests/subsys/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/romfs_crosspage.bin \
@@ -1199,16 +1216,18 @@ ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/romfs_crosspage.bin \
 else ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
 ROMFS_MANIFEST := recovery/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex tests/subsys/corrupt_romfs.py
-else ifeq ($(ZOS_CONSOLE_FALLBACK),nohid)
-# Failure variant: the required set minus hid.zmod, so the kernel's HID
-# load takes the missing-ROMFS-entry path (-ZOS_ENOENT) and the console
-# falls back to SIO input with the V9958 output.
-ROMFS_MANIFEST := tests/console/manifest-fallback-nohid.json
+else ifeq ($(ZOS_CONSOLE_SERIAL_SELFTEST),1)
+# Console-serial variant store (work package 42e): the production service
+# set with `console-serial` in the CONSOLE slot; the image boots the
+# monitor on the serial lane.
+ROMFS_MANIFEST := tests/console/manifest-serial.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
-else ifeq ($(ZOS_CONSOLE_FALLBACK),nohid-nov9958)
-# Failure variant: HID and V9958 both absent; only the SIO fallback and
-# the IOC transport survive, and the console binds SIO/SIO.
-ROMFS_MANIFEST := tests/console/manifest-fallback-nohid-nov9958.json
+else ifeq ($(ZOS_CONSOLE_SERIAL_FAIL_SELFTEST),1)
+# Required-console boot-failure store (work package 42e): the same set and
+# services.man, but the ROMFS manifest omits `console-serial.zmod`, so the
+# loader's lookup fails and the boot must stop explicitly on the early
+# console (36.11) - no fallback and no launcher.
+ROMFS_MANIFEST := tests/console/manifest-serial-missing.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 else ifeq ($(ZOS_FS_SELFTEST),1)
 # Filesystem outcome store (work package 42b, correction 01): the SIO/IOC/
@@ -1398,7 +1417,6 @@ ZOS_TEST_LINK := $(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 		$(ZOS_IOC_SELFTEST) $(ZOS_HID_SELFTEST) \
 		$(ZOS_VIDEO_SELFTEST) \
 		$(ZOS_CONSOLE_SELFTEST) $(ZOS_CONSOLE_INTEGRATION_SELFTEST) \
-		$(ZOS_CONSOLE_FALLBACK_SELFTEST) \
 		$(ZOS_FS_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
@@ -1666,13 +1684,9 @@ console-selftest:
 # launcher.  tests/test_console_acceptance.py replays the production bytes
 # (build/zephyros.bin) and these bytes: boot order, binding, IOC
 # command/status/bulk sequencing, HID queue traffic, the V9958 trace,
-# the split console, the scripted monitor session with two exit/relaunch
-# cycles, post-fault recovery and the malformed-call invariants.
-#
-# console-fallback-selftests builds every observable failure variant plus
-# the accepted font-failure image and replays the matrix
-# (tests/test_console_fallback.py); each variant's exact binding, early-SIO
-# diagnostic and direction are asserted from the real linked bytes.
+# the split console, the ESC c display reset, the scripted monitor session
+# with two exit/relaunch cycles, post-fault recovery and the malformed-call
+# invariants.
 
 console-integration-selftest: all
 	$(MAKE) BUILD=build-console-integration-selftest ZOS_CONSOLE_INTEGRATION_SELFTEST=1 ZOS_SMOKE_HOST_SYNC=1 \
@@ -1685,23 +1699,30 @@ console-integration-selftest: all
 	$(PYTHON) -m unittest discover -s tests -p 'test_console_acceptance.py' -v
 	@echo "console integration image: build-console-integration-selftest/zephyros-console-integration-selftest.bin"
 
-# console fallback matrix (package 20): the two service-set subsets the
-# store expresses (nohid, nohid-nov9958) with the target composition
-# diagnostic and the monitor launcher, replayed by
-# tests/test_console_fallback.py and by the matching serial_smoke modes.
+# console-serial variant (work package 42e): the production image set with
+# the other CONSOLE driver.  The first image boots the monitor on the
+# serial lane (the runtime-fallback images' replacement outcome); the
+# second omits the console image from its ROMFS manifest, so the required
+# driver cannot be loaded and the boot must stop explicitly on the early
+# console.  tests/test_console_serial.py replays both.
 
-console-fallback-selftests:
-	$(MAKE) BUILD=build-console-fb-nohid ZOS_CONSOLE_FALLBACK_SELFTEST=1 \
-		ZOS_CONSOLE_FALLBACK=nohid ZOS_SMOKE_HOST_SYNC=1 \
-		build-console-fb-nohid/zephyros-console-fb-nohid.bin
-	$(MAKE) BUILD=build-console-fb-nohid-nov9958 \
-		ZOS_CONSOLE_FALLBACK_SELFTEST=1 \
-		ZOS_CONSOLE_FALLBACK=nohid-nov9958 ZOS_SMOKE_HOST_SYNC=1 \
-		build-console-fb-nohid-nov9958/zephyros-console-fb-nohid-nov9958.bin
-	$(PYTHON) -m unittest discover -s tests -p 'test_console_fallback.py' -v
-	@echo "console fallback images:"
-	@echo "  build-console-fb-nohid/zephyros-console-fb-nohid.bin"
-	@echo "  build-console-fb-nohid-nov9958/zephyros-console-fb-nohid-nov9958.bin"
+console-serial-selftest:
+	$(MAKE) BUILD=build-console-serial-selftest \
+		ZOS_CONSOLE_SERIAL_SELFTEST=1 ZOS_CONSOLE=console-serial \
+		ZOS_SMOKE_HOST_SYNC=1 \
+		build-console-serial-selftest/zephyros-console-serial-selftest.bin \
+		build-console-serial-selftest/zephyr80-console-serial-selftest.bin
+	$(MAKE) BUILD=build-console-serial-fail-selftest \
+		ZOS_CONSOLE_SERIAL_FAIL_SELFTEST=1 ZOS_CONSOLE=console-serial \
+		ZOS_SMOKE_HOST_SYNC=1 \
+		build-console-serial-fail-selftest/zephyros-console-serial-fail-selftest.bin
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
+		build-console-serial-selftest/zephyros.map \
+		build-console-serial-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_console_serial.py' -v
+	@echo "console serial image: build-console-serial-selftest/zephyros-console-serial-selftest.bin"
+	@echo "console serial failure image: build-console-serial-fail-selftest/zephyros-console-serial-fail-selftest.bin"
 
 # Filesystem outcome image (work package 42b, correction 01): the
 # production boot path with the IOC-FAT service publishing `/FS` and the SDK
@@ -1811,7 +1832,7 @@ helloworld-image: all
 #   smoke-hardware-console     build-console-selftest/zephyros-console-selftest.bin
 #                                                                             make console-selftest
 #   smoke-hardware-console-integration             build-console-integration-selftest/zephyros-console-integration-selftest.bin  make console-integration-selftest
-#   smoke-hardware-console-fb-*        build-console-fb-*/zephyros-console-fb-*.bin          make console-fallback-selftests
+#   smoke-hardware-console-serial      build-console-serial-selftest/zephyros-console-serial-selftest.bin  make console-serial-selftest
 #   smoke-hardware-fs             build-fs-selftest/zephyros-fs-selftest.bin  make fs-selftest
 #
 # `make hardware-images` builds every image the smoke modes need.  The
@@ -1827,7 +1848,7 @@ endef
 
 hardware-images: all subsystem-selftest romfs-corrupt-selftest \
 		console-integration-selftest ioc-selftest hid-selftest \
-		video-selftest console-selftest console-fallback-selftests \
+		video-selftest console-selftest console-serial-selftest \
 		fs-selftest
 	@echo "hardware-images: every smoke image is built under build*/"
 
@@ -1860,23 +1881,19 @@ smoke-hardware-console:
 	$(PYTHON) tools/serial_smoke.py --mode console --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 # Console modes: the full integration image (serial portion: early
-# diagnostics, binding report and the target selftest; the interactive
-# monitor session over HID/V9958 is the human gate) and the two retained
-# observable failure variants, each asserting its exact binding.  The
-# host sync is sent while the banner is pending, as for the other console
-# smoke modes.
+# diagnostics, binding report, the target selftest and the ESC c reset
+# program's evidence; the interactive monitor session over HID/V9958 is
+# the human gate) and the console-serial variant, whose whole dynamic
+# console is this serial lane.  The host sync is sent while the banner is
+# pending, as for the other console smoke modes.
 
 smoke-hardware-console-integration:
 	@$(call smoke_preflight,build-console-integration-selftest/zephyros-console-integration-selftest.bin,console-integration-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode console-integration --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
-smoke-hardware-console-fb-nohid:
-	@$(call smoke_preflight,build-console-fb-nohid/zephyros-console-fb-nohid.bin,console-fallback-selftests)
-	$(PYTHON) tools/serial_smoke.py --mode console-fb-nohid --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-console-fb-nohid-nov9958:
-	@$(call smoke_preflight,build-console-fb-nohid-nov9958/zephyros-console-fb-nohid-nov9958.bin,console-fallback-selftests)
-	$(PYTHON) tools/serial_smoke.py --mode console-fb-nohid-nov9958 --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+smoke-hardware-console-serial:
+	@$(call smoke_preflight,build-console-serial-selftest/zephyros-console-serial-selftest.bin,console-serial-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode console-serial --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-fs:
 	@$(call smoke_preflight,build-fs-selftest/zephyros-fs-selftest.bin,fs-selftest)

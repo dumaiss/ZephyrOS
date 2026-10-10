@@ -175,16 +175,17 @@ int16_t ioc_service_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void ioc_service_init(const struct ipc_service_boot *boot)
+uint8_t ioc_service_init(const struct ipc_service_boot *boot)
 {
 	ioc_api = boot->api;
 	ioc_reply_address = (uint16_t)ioc_reply_frame;
 	ioc_bulk_address = (uint16_t)ioc_bulk_buffer;
 	/* The one bounded LINK_SYNC bring-up, here in the mode-11 window
-	 * where the bootstrap interface is visible.  A failure is not a
-	 * load refusal: the service stays registered and ZIOC_OP_READY
-	 * reports 0, so HID's probe fails, the console falls back to
-	 * serial input, and the first ordinary operation attempts the
-	 * whole-link recovery (the M8 fallback semantics). */
+	 * where the bootstrap interface is visible.  A down link is not a
+	 * load refusal: the service initializes, ZIOC_OP_READY reports 0,
+	 * and the first ordinary operation attempts the whole-link
+	 * recovery.  A build whose own dependencies need the link fails
+	 * its boot through those drivers (42e). */
 	ioc_link_ready = (uint8_t)(ioc_link_bringup() == ZIOC_OK ? 1u : 0u);
+	return 0u;
 }

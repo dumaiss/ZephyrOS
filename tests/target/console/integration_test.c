@@ -25,8 +25,8 @@
  *   - every class the production store carries answers an endpoint
  *     lookup at ZOS_PROTOCOL_VERSION;
  *   - the console endpoint speaks the console protocol, and the
- *     composition the console service derives (video output, HID input
- *     when ZHID_OP_READY answers) is what this image's store implies;
+ *     composition the build selected (`console-v9958-hid`: video output,
+ *     HID input) is what this image's manifest implies;
  *   - a written marker reaches the visible console, and a typed line
  *     queued for HID arrives through the console input;
  *   - the IOC transport answers a PING through its own endpoint with the

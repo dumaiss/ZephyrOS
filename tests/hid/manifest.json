@@ -17,9 +17,9 @@
       "path": "hid.zmod"
     },
     {
-      "name": "console.zmod",
+      "name": "console-serial.zmod",
       "type": "ZMOD",
-      "path": "console.zmod"
+      "path": "console-serial.zmod"
     },
     {
       "name": "services.man",

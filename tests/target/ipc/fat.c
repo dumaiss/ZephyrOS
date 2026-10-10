@@ -54,7 +54,7 @@ int16_t fat_dispatch(struct zos_ipc_frame *frame)
 	return fat_read(frame);
 }
 
-void ipc_fat_init(const struct ipc_service_boot *boot)
+uint8_t ipc_fat_init(const struct ipc_service_boot *boot)
 {
 	api = boot->api;
 	fat_block_address = (uint16_t)fat_block;
@@ -62,4 +62,5 @@ void ipc_fat_init(const struct ipc_service_boot *boot)
 	 * endpoint number by the host packer - the provider never looks a
 	 * peer up at run time. */
 	ioc_handle = boot->deps[0];
+	return 0u;
 }

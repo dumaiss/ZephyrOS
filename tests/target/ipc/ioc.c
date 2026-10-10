@@ -76,8 +76,9 @@ int16_t ioc_dispatch(struct zos_ipc_frame *frame)
 	return ioc_read(frame);
 }
 
-void ipc_ioc_init(const struct ipc_service_boot *boot)
+uint8_t ipc_ioc_init(const struct ipc_service_boot *boot)
 {
 	api = boot->api;
 	ioc_block_address = (uint16_t)ioc_block;
+	return 0u;
 }

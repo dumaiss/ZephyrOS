@@ -208,7 +208,7 @@ class TestSubsystemBoot(SubsystemSimBase):
 
 class TestSubsystemManifest(SubsystemSimBase):
     def test_manifest_carries_the_current_boot_set_and_fixtures(self):
-        for name in ("sio.zmod", "console.zmod", "services.man",
+        for name in ("sio.zmod", "console-serial.zmod", "services.man",
                      "monitor.zex", "crosspage.bin",
                      "zextest.zex", "zex-return.zex", "zex-truncated.zex",
                      "zex-wrong-type.dat"):

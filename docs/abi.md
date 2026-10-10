@@ -719,8 +719,8 @@ compares the transcript with the packed store.
 
 
 A program's console I/O is not a syscall any more: `user/sdk/src/console_service.c`
-resolves the console service endpoint (`ZOS_CLASS_CONSOLE`, instance 0,
-via `SYS_IPC_LOOKUP`) and speaks the protocol in `abi/zos/protocol.h`:
+speaks the protocol in `abi/zos/protocol.h` through the standard handles
+every process starts with (work packages 41-42b).
 
 | SDK function | console service operation | descriptor |
 | --- | --- | --- |
@@ -735,10 +735,9 @@ console service sees `-ZOS_ENOENT` from every one of them.  `zos_puts`,
 of these four.  The early console and the panic path remain nucleus-only
 and syscall-free: a boot with no service at all still reports.
 
-In the build that defines `ZOS_NS_HANDLES` (the `namespace-selftest`
-image, section 12.1) the four functions speak through the *standard
-handles* instead: the nucleus binds `/dev/console` to handle 1 (stdout) and
+The nucleus binds `/dev/console` to handle 1 (stdout) and
 handle 2 (stdin) at process start, an exec'd child receives its own pair,
-and the console client needs no lookup at all - the build selection is
-`user/sdk/src/console_service.c`, whose lookup half is guarded the same
-way the kernel's is.  Production keeps the lookup path until package 42b.
+and the console client needs no lookup at all.  Which console driver
+answers the handle is the build's selection (work package 42e:
+`console-v9958-hid` in production, `console-serial` in the serial
+variant); the program cannot tell the difference.

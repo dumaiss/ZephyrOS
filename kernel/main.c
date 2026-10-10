@@ -137,6 +137,7 @@ static uint8_t kernel_boot_services(void)
 	result = service_load_all(ZOS_SERVICE_MANIFEST_NAME);
 	if (result != 0) {
 		kernel_service_manifest_failed(result);
+		return 1u;
 	}
 	return 0;
 }
@@ -447,7 +448,14 @@ void kernel_main(void)
 		uint8_t service_failures = kernel_boot_services();
 
 		if (service_failures != 0) {
+			/* A required driver failed to initialize: the loader
+			 * named it on the early console.  The boot fails
+			 * here, before the launcher (36.11). */
 			early_console_puts("console: service failed\r\n");
+			__asm__("di");
+			for (;;) {
+				__asm__("halt");
+			}
 		} else if (kernel_console_handle() == 0u) {
 			early_console_puts("console: unbound\r\n");
 		} else {

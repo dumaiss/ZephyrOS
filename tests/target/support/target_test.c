@@ -38,9 +38,6 @@
 #if ZOS_CONSOLE_INTEGRATION_SELFTEST
 #include "console_integration_selftest.h"
 #endif
-#if ZOS_CONSOLE_FALLBACK_SELFTEST
-#include "console_fallback_selftest.h"
-#endif
 #if ZOS_M9_EXEC_SELFTEST
 #include "m9_exec_selftest.h"
 #endif
@@ -87,9 +84,6 @@ void zos_target_test_late(void)
 #endif
 #if ZOS_CONSOLE_INTEGRATION_SELFTEST
 	zos_run_console_integration_selftest();
-#endif
-#if ZOS_CONSOLE_FALLBACK_SELFTEST
-	zos_run_console_fallback_selftest();
 #endif
 #if ZOS_M9_EXEC_SELFTEST
 	zos_run_m9_exec_selftest();

@@ -75,7 +75,7 @@ TRANSCRIPT = [
     "ns: /dev entry input type 0 container\r\n",
     "ns: /dev entry video type 2\r\n",
     "ns: /SYSTEM entry sio.zmod\r\n",
-    "ns: /SYSTEM entry console.zmod\r\n",
+    "ns: /SYSTEM entry console-serial.zmod\r\n",
     "ns: /SYSTEM entry nsdev.zmod\r\n",
     "ns: /SYSTEM entry services.man\r\n",
     "ns: /SYSTEM entry ns.zex\r\n",

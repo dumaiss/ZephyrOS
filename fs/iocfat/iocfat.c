@@ -1645,7 +1645,7 @@ static void iocfat_zero_instance(void)
 	}
 }
 
-void iocfat_init(const struct ipc_service_boot *boot)
+uint8_t iocfat_init(const struct ipc_service_boot *boot)
 {
 	uint16_t chunk_max;
 	uint16_t flags;
@@ -1657,26 +1657,29 @@ void iocfat_init(const struct ipc_service_boot *boot)
 	iocfat_ready = 0u;
 	iocfat_zero_instance();
 	if (iocfat_ioc == 0u) {
-		return;
+		/* A malformed bundle: the required IOC dependency is
+		 * missing, so the driver cannot serve even an absent card
+		 * (the loader fails the boot, 36.11). */
+		return 1u;
 	}
 
 	/* CAPS v1: version, 2-byte tokens and a 512-byte chunk. */
 	result = iocfat_exchange(FS2_CMD_CAPS, 0u);
 	if (result != 0 || iocfat_reply.status != FS2_STATUS_OK ||
 	    iocfat_reply.length < FS2_CAP_REPLY_LEN) {
-		return;
+		return 0u;
 	}
 	if (iocfat_reply.data[FS2_OFF_CAP_VERSION] != FS2_CAP_VERSION ||
 	    iocfat_reply.data[FS2_OFF_CAP_STATUS_VERSION] !=
 		    FS2_CAP_STATUS_VERSION ||
 	    iocfat_reply.data[FS2_OFF_CAP_TOKEN_BYTES] !=
 		    FS2_CAP_TOKEN_BYTES) {
-		return;
+		return 0u;
 	}
 	chunk_max = iocfat_get16(&iocfat_reply.data[FS2_OFF_CAP_CHUNK_MAX]);
 	if (chunk_max < FS2_CAP_CHUNK_MIN ||
 	    chunk_max > (uint16_t)IOCFAT_BLOCK_SIZE) {
-		return;
+		return 0u;
 	}
 	flags = iocfat_get16(&iocfat_reply.data[FS2_OFF_CAP_FLAGS]);
 	iocfat.read_only =
@@ -1692,10 +1695,11 @@ void iocfat_init(const struct ipc_service_boot *boot)
 
 		result = iocfat_dir_open("/", 0u, &dir);
 		if (result != 0) {
-			return;
+			return 0u;
 		}
 		(void)iocfat_dir_close(dir);
 	}
 	iocfat.mounted = 1u;
 	iocfat_ready = 1u;
+	return 0u;
 }

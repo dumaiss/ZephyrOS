@@ -156,7 +156,7 @@ class TestHidServiceArtifact(unittest.TestCase):
         manifest = _load_json(RECOVERY_MANIFEST)
         names = [entry["name"] for entry in manifest["files"]]
         self.assertEqual(names, ["sio.zmod", "ioc.zmod", "hid.zmod",
-                                 "v9958.zmod", "console.zmod",
+                                 "v9958.zmod", "console-v9958-hid.zmod",
                                  "services.man", "iocfat.zmod",
                                  "monitor.zex"])
         # The boot manifest orders the services; HID's declared dependency
@@ -176,9 +176,10 @@ class TestHidServiceArtifact(unittest.TestCase):
         self.assertIn("hid.rel", makefile)
         self.assertIn("ZOS_HID_SELFTEST", makefile)
         # Which services an image boots is its manifest's service set.
-        self.assertIn("ZOS_SERVICES := sio ioc hid console", makefile)
+        self.assertIn("ZOS_SERVICES := sio ioc hid console-serial", makefile)
+        # Which services an image boots is its manifest's service set.
         image_manifest = os.path.join(ROOT, "tests", "hid", "manifest.json")
-        self.assertIn('"name": "console.zmod"', _read(image_manifest))
+        self.assertIn('"name": "console-serial.zmod"', _read(image_manifest))
 
     def test_production_map_has_no_linked_hid_symbols(self):
         if not os.path.exists(MAP):
@@ -224,7 +225,7 @@ class TestHidSourceDiscipline(unittest.TestCase):
             "int hid_read_text")[0]
         self.fetch = self.c.split("static uint8_t hid_fetch")[1].split(
             "static uint8_t hid_service")[0]
-        self.init = self.c.split("void hid_service_init")[1].split(
+        self.init = self.c.split("uint8_t hid_service_init")[1].split(
             "int16_t hid_service_dispatch")[0]
 
     def test_no_sio1_rr0_or_port_constants_anywhere(self):
@@ -272,7 +273,8 @@ class TestHidSourceDiscipline(unittest.TestCase):
         # Input-only: the driver exposes no output path at all.
         self.assertNotIn("ZCAP_CHAR_OUT", self.c)
         self.assertNotIn("putc", self.header)
-        # The ready probe is the console composition hook.
+        # The ready probe reports the link state; no console driver
+        # probes it any more (work package 42e).
         self.assertIn("hid_state.ioc_handle", self.c)
 
     def test_ring_and_penalty_constants(self):

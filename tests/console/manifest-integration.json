@@ -22,9 +22,9 @@
       "path": "v9958.zmod"
     },
     {
-      "name": "console.zmod",
+      "name": "console-v9958-hid.zmod",
       "type": "ZMOD",
-      "path": "console.zmod"
+      "path": "console-v9958-hid.zmod"
     },
     {
       "name": "services.man",
@@ -35,6 +35,11 @@
       "name": "monitor.zex",
       "type": "ZEX",
       "path": "monitor.zex"
+    },
+    {
+      "name": "escc.zex",
+      "type": "ZEX",
+      "path": "escc.zex"
     }
   ]
 }

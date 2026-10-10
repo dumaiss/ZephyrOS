@@ -214,7 +214,7 @@ class TestIocServiceBoot(IocSimBase):
         self.assertNotIn(b"PANIC", tx)
         # The loader's observable evidence lines name the configured
         # service set in order; the ledger tail counts what it placed.
-        manifest = ["sio.zmod", "ioc.zmod", "console.zmod"]
+        manifest = ["sio.zmod", "ioc.zmod", "console-serial.zmod"]
         evidence = self.service_evidence(tx)
         self.assertEqual([name for name, _ in evidence], manifest)
         self.assertIn(("service loader: %d images in bank 6\r\n"

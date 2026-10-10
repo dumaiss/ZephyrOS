@@ -2953,12 +2953,14 @@ rollback rows, `make hid-selftest`, `make hid-noioc-selftest`,
 `tests/test_v9958_sim.py` (V9958 init, renderer and the font-failure
 rollback, `make video-selftest`, `make video-fontfail-selftest`),
 `tests/target/console/console_test.c` with `tests/test_console_sim.py`
-(console binding), and `tests/target/console/integration_test.c` and
-`tests/target/console/fallback_test.c` with `tests/test_console_acceptance.py`
-and `tests/test_console_fallback.py` (integration and the no-HID,
-no-HID/V9958, bad-IOC and arena-exhaustion fallbacks,
-`make console-selftest`, `make console-integration-selftest`,
-`make console-fallback-selftests`).
+(console binding, `make console-selftest`), and
+`tests/target/console/integration_test.c` with
+`tests/test_console_acceptance.py` (integration, the ESC `c` display
+reset and the build-selected production console).  The runtime-fallback
+console matrix and `tests/test_console_fallback.py` were retired by work
+package 42e, which made the console a build-selected driver with its own
+serial variant (`tests/test_console_serial.py`,
+`make console-serial-selftest`).
 
 ---
 

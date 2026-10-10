@@ -302,7 +302,7 @@ class TestIpcImageLayout(unittest.TestCase):
 
         # Package 41: the image also boots the SIO and console services
         # its SDK programs print through, ahead of the synthetic set.
-        order = ["sio.zmod", "console.zmod",
+        order = ["sio.zmod", "console-serial.zmod",
                  "ipc-ioc.zmod", "ipc-fat.zmod", "ipc-vfs.zmod",
                  "ipc-echo.zmod", "ipc-con.zmod", "ipc-irqx.zmod"]
         with open(os.path.join(SERVICE_DIR, "services.man"), "rb") as handle:

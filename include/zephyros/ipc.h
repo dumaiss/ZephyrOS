@@ -138,7 +138,10 @@ struct ipc_service_boot {
 	const uint8_t *deps;
 };
 
-/* The container's init entry: void init(const struct ipc_service_boot *). */
-typedef void (*ipc_service_init_fn)(const struct ipc_service_boot *boot);
+/* The container's init entry: `uint8_t init(const struct ipc_service_boot
+ * *)`, returning 0 when the driver is initialized.  A non-zero status is
+ * an explicit boot failure: the loader refuses the image and the nucleus
+ * stops on the early console (36.11, work package 42e). */
+typedef uint8_t (*ipc_service_init_fn)(const struct ipc_service_boot *boot);
 
 #endif /* ZEPHYROS_IPC_H */

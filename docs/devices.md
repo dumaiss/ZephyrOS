@@ -181,9 +181,9 @@ or acceptance symbol that would creep back in.
 module-loader init, a VFS open per boot module with the loader placing
 each one in the derived bank-7 arena, then a console binding call - is the
 M9 record in section 5 below and no longer describes the build.  The
-current path is architecture 36.12 (`vfs_init`, `service_load_all`,
-`console_bind_defaults`, monitor); the acceptance code is selected under
-`tests/target/support/` and the two target hooks are the entire
+current path is architecture 36.12 (`vfs_init`, `service_load_all`, the
+selected console driver's init, monitor); the acceptance code is selected
+under `tests/target/support/` and the two target hooks are the entire
 production-side integration surface.
 
 ## 4. SIO0/B service image
@@ -341,18 +341,14 @@ produced a CRC-verified matching reply.
   recursive/overlapping use fail with `ZOS_EBUSY`; no kernel lock is
   held over transport I/O.
 - Boot integration: production images carry `sio.zmod`, `ioc.zmod`,
-  `hid.zmod`, and `monitor.zex` in the ROMFS recovery store and load
-  SIO first, then IOC, then HID, as part of the deterministic boot set
-  reported by the arena plan.  A failed IOC load/bring-up prints
-  `ioc: unavailable 0x<ZOS_E*>` and the console still binds to SIO.
-  Package 20 adds the observable failure variants: the fallback images
-  (`build-console-fb-nohid`, `-nohid-nov9958`, `-badioc`, `-arena`, plus
-  the font-failure and HID rollback images) boot the same four-module
-  sequence with one manifest/interface failure and are replayed
-  against their exact bindings by `tests/test_console_fallback.py` (see
-  section 8.2).  Earlier
-  acceptance images compile the IOC and HID loads out (`ZOS_IOC_BOOT=0`
-  / `ZOS_HID_BOOT=0`) and stay byte-identical to their accepted builds.
+  `hid.zmod`, `v9958.zmod`, the selected console image and `iocfat.zmod`
+  in the ROMFS recovery store, named by `services.man` in load order.
+  A failed IOC load or init is a loader boot error with the loader's own
+  line; a down link at init is not a load refusal (the first ordinary
+  operation recovers it), and the serial console variant keeps working
+  without the MCU link.  The M8-era per-image boot gates and the
+  observable fallback images were retired with the runtime console
+  fallback (work package 42e; see section 8.2).
 - Host validation: `tests/test_ioc.py` pins the platform constants of
   both lanes (including the explicitly paired bulk CRC bypass),
   class contract, module artifact, boot order, and mapcheck rules;
@@ -420,14 +416,14 @@ discovered the IOC class; the MCU firmware is untouched.
   with the penalty throttling retries, so a broken IOC link cannot wedge
   console polling.  HID never samples SIO1, RR0, CTS or any port; raw
   status stays an IOC implementation detail.
-- Boot integration: production images carry `sio.zmod`, `ioc.zmod`,
-  `hid.zmod`, and `monitor.zex` in the ROMFS recovery store and load
-  SIO, then IOC, then HID; a failed HID load prints
-  `hid: unavailable 0x<ZOS_E*>` and the console still binds SIO (the
-  `build-console-fb-badioc` malformed-IOC and `build-console-fb-nohid`
-  missing-entry variants prove both failure classes -- section 8.2).
-  With HID registered, `console_bind_defaults()` selects HID input and
-  the preferred V9958 output, or the SIO output fallback when the
+- Boot integration: production images load SIO, then IOC, then HID
+  before the console driver; a missing or refused image is the loader's
+  boot error (section 8.2).  A down IOC link at init keeps HID
+  registered and reports it through `ZHID_OP_READY`; `console-v9958-hid`
+  does not probe it (the console is build-selected, not composed), and
+  the first ordinary fetch retries the whole-link recovery.  The M8
+  `console_bind_defaults()` composition and its fallback images are gone
+  (work package 42e).
   V9958 device is absent.
 - Host validation: `tests/test_hid.py` pins the class contract,
   protocol constants, module artifact, boot order, source discipline
@@ -529,15 +525,13 @@ same hardware serves graphics clients and the normal text console.
   streams it through the ABI-v2 resource imports in bounded 256-byte
   chunks, and converts each 32-glyph group into the normal and reverse
   atlases at 10000h and 14000h in the 128-KiB VRAM space.
-- Boot integration: production images carry `v9958.zmod` and
-  `v9958-6x8.font` in the ROMFS recovery store and load the module
-  after HID (every console candidate is registered before binding).  A
-  missing/undersized font resource or a failed VDP sequence fails the
-  init, the loader rolls the (empty) registration set back, and the SIO
-  fallback, IOC transport and HID remain untouched (`v9958:
-  unavailable 0x<ZOS_E*>` on the early console; the font-failure image
-  and the `build-console-fb-arena` allocation-exhaustion image cover both
-  paths -- section 8.2).
+- Boot integration: production images carry `v9958.zmod` (its font
+  travels in the image's bulk segment) in the ROMFS recovery store and
+  load it before the console driver, which declares it as a required
+  dependency.  A missing/undersized font resource or a failed VDP
+  sequence is refused by the packer or fails the loader's init check;
+  the M8 font-failure and allocation-exhaustion images were retired with
+  the module format they exercised (section 8.2).
 - Host validation: `tests/test_v9958.py` pins the class contract, the
   paired platform constants, the font asset pipeline, the module
   artifact (including the console-capable descriptor and the private
@@ -570,50 +564,55 @@ same hardware serves graphics clients and the normal text console.
   `tests/test_console_sim.py`; the operator confirms the documented pattern
   and the visible monitor session.
 
-## 8. Console service
+## 8. Console drivers (build-selected)
 
-`services/console/console_service.c` (M10, work package 41; the M8
-binding policy carried over):
+`services/console/console_service.c` (work package 42e; one shared
+source compiled into two images):
 
-- The console is a **service image**, not kernel code: it owns one
+- The console is a **driver image**, not kernel code: each image owns one
   endpoint (class `ZOS_CLASS_CONSOLE`, instance 0) and publishes
   `/dev/console`.  It is the endpoint the SDK console stubs and the
   monitor use; the early console and the panic path never depend on it.
-- It declares symbolic dependencies on the HID, SERIAL and VIDEO
-  endpoints and reads their host-resolved numbers from its boot bundle.
-  At init it composes one input and one output, changing the M8 policy
-  only in where the choice comes from:
+- The implementation is **selected per build**, not probed at run time
+  (architecture 36.11, M10-REFERENCE decision 12):
 
-  ```text
-  input   HID when its endpoint is present, resolved and up
-          (ZHID_OP_READY), otherwise SERIAL, otherwise none
-  output  VIDEO when its endpoint is present, otherwise SERIAL,
-          otherwise none
-  ```
+  | Image | Manifest | Input | Output |
+  | --- | --- | --- | --- |
+  | `console-v9958-hid` | `services/manifests/console-v9958-hid.json` | HID (class 4) | VIDEO (class 2) |
+  | `console-serial` | `services/manifests/console-serial.json` | SERIAL (class 1) | SERIAL (class 1) |
 
-  Each direction falls back independently, once, at boot - exactly where
-  the M8 device-registry binding decided.  SIO remains the
-  both-direction fallback.
+  Production packs `console-v9958-hid`; the `console-serial` production
+  variant packs the same image set with the other console
+  (`make console-serial-selftest`).  Both declare their dependencies in
+  the image manifest; the host packer resolves them to endpoint numbers
+  before the image is packed, and the driver reads only those numbers
+  from its boot bundle.
+- There is **no runtime probe and no fallback**: each console operation
+  forwards to the endpoint the build selected, and a required dependency
+  the bundle does not resolve fails the driver's init.  A required driver
+  that fails to load or initialize is a boot failure (36.11): the loader
+  names it on the early console and the nucleus stops the boot there.
 - Every operation is one forwarded call: the caller's descriptor travels
   down the chain, so a write moves the whole transfer through the console
-  and its output service without a staging copy here.  The console owns
+  and its output driver without a staging copy here.  The console owns
   no buffer, no IRQ and no state beyond its two endpoint numbers.
-- An unbound direction is reported as "no such service"; the M8 table of
-  per-call error passthrough still describes the behavior, with the class
-  error names replaced by the protocol's own.
+- A missing endpoint number is reported as "no such service"; the M8
+  table of per-call error passthrough still describes the behavior, with
+  the class error names replaced by the protocol's own.
 
-| Call | Unbound | Op unsupported | Device error |
+| Call | No endpoint | Op unsupported | Device error |
 | --- | --- | --- | --- |
 | `console_putc` | no-service error | unsupported-operation error | passed through |
 | `console_write` | no-service error | unsupported-operation error | byte count / error |
 | `console_poll` | no-service error | unsupported-operation error | 1/0 / error |
 | `console_getc` | no-service error | unsupported-operation error | byte / `ZOS_EAGAIN` |
 
-Normal boot prints its acceptance line through this service (the device
-is the resident console image, and the serial path behind it):
+Normal boot prints its acceptance line through the selected console
+driver (the production build routes it to the V9958; the serial variant
+to SIO0/B):
 
 ```text
-console: dynamic sio0.b OK
+console: service OK
 ```
 
 ### 8.1 Console channels
@@ -623,29 +622,30 @@ Five distinct paths must not be confused:
 - native VIDEO operations (`ZVIDEO_OP_SEND`): graphics/register
   operations to the video endpoint, independent of any text mode.
 - V9958 character output (the video endpoint's write operation): the
-  85x26 terminal renderer, consumed by the console service and therefore
-  by `console_putc`/`console_write`.
-- HID character input (the HID endpoint): keyboard bytes fetched by the
-  console service from the input endpoint, decoded by the HID image from
-  IOC replies.
-- serial console fallback (the SERIAL endpoint): the both-direction
-  fallback used when a preferred direction is unavailable; this is also
-  the M7-normal binding.
+  85x26 terminal renderer, consumed by `console-v9958-hid` and therefore
+  by `console_putc`/`console_write` in the production build.  ESC `c`
+  through this path runs the full display reset.
+- HID character input (the HID endpoint): keyboard bytes fetched by
+  `console-v9958-hid` from the input endpoint, decoded by the HID image
+  from IOC replies.
+- serial console (the SERIAL endpoint): the `console-serial` driver's
+  both-direction path; the M7-normal binding.
 - direct early SIO (`early_console_*`): the permanently resident,
   binding-independent path used by the boot banner, the target control
-  transcripts and `panic()`.  It never consults the console service, so
-  it works even when the composed pair is HID/V9958.
+  transcripts and `panic()`.  It never consults a console driver, so it
+  works even when the selected console is HID/V9958.
 
-The console service composes one input endpoint with one output endpoint;
-neither image knows about the other.  The acceptance image
-`build-console-selftest/` composes HID input with V9958 output and runs
-the unchanged M7 `monitor.zex` through that pair; `make
+No console driver knows about the other implementations.  The console
+acceptance image `build-console-selftest/` boots `console-v9958-hid` and
+runs the unchanged M7 `monitor.zex` through that pair; `make
 smoke-hardware-console` validates the early-SIO boot transcript while
 the operator confirms the visible session.  The package-20 integration
-image `build-console-integration-selftest/` composes the same pair, runs
-the package-20 target diagnostic, and is driven by
+image `build-console-integration-selftest/` boots the same pair, runs the
+package-20 target diagnostic and the ESC `c` display-reset program
+(`tests/console/escc.c`, work package 42e), and is driven by
 `make smoke-hardware-console-integration` followed by the human monitor
-pass (section 8.2).
+pass.  The `console-serial` variant is validated by `make
+console-serial-selftest` and `make smoke-hardware-console-serial`.
 
 ### 8.2 Failure-path evidence
 
@@ -656,28 +656,24 @@ the `sio_fail`/`sio-irq` container fixtures were all **deleted** in M10
 (work packages 42b/42c) with the registry, the driver ABI and the arena
 they exercised.
 
-What survives is the *composition* fallback, and it is now a property of
-the store rather than a per-image boot gate: because the console service
-derives its input and output from the endpoints the store provided, a
-fallback row is simply a boot manifest that lists fewer services.  Two
-rows are built and replayed by `make console-fallback-selftests`:
+With build-selected consoles there is no composition fallback at all:
+the store either provides the drivers the manifests require or the boot
+fails.  The observable failure row is
+`build-console-serial-fail-selftest/`, built and replayed by
+`tests/test_console_serial.py`: its ROMFS manifest omits
+`console-serial.zmod` while `services.man` still lists it, so the loader
+prints
 
-| Image | Store | Composition | Marker lane |
-| --- | --- | --- | --- |
-| `build-console-fb-nohid/` | `sio ioc v9958 console` | input SERIAL, output VIDEO | V9958 trace (never the serial link) |
-| `build-console-fb-nohid-nov9958/` | `sio ioc console` | input SERIAL, output SERIAL | serial link |
+```text
+service loader: console-serial.zmod: no image
+services: unavailable 0x05
+console: service failed
+```
 
-Each image also boots its target diagnostic from the late hook, and
-`tests/test_console_fallback.py` pins the early-SIO transcript, the
-composition rows, the lane each direction used and the packed store the
-image carried.  Every production image keeps the full M0 banner and panic
-path.
-
-A load or bring-up failure is no longer reported as
-`<name>: unavailable 0x<ZOS_E*>`: the store either names an image the
-loader can place or it does not, and the loader's own line
-(`docs/module-format.md` section 7) is the diagnostic.  ROMFS corruption
-keeps the fatal recovery policy.
+on the early console and halts before the launcher.  A load or bring-up
+failure is never reported as `<name>: unavailable 0x<ZOS_E*>` any more:
+the loader's own line (`docs/module-format.md` section 7) is the
+diagnostic.  ROMFS corruption keeps the fatal recovery policy.
 
 ### 8.3 Console integration acceptance (package 20)
 
@@ -686,29 +682,38 @@ set, one target diagnostic, one scripted monitor session - over the M10
 boot path:
 
 - **Boot contract**: `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod`,
-  the console image and `monitor.zex` are the production store's entries,
-  named by `services.man` in load order; the loader places them, installs
-  the publications and runs their boot and init entries, and only then
-  does the monitor launcher run.  A failed placement or init is a boot
-  error with the loader's line, and ROMFS corruption keeps the fatal
-  recovery policy.
+  the selected console image (`console-v9958-hid` in the integration
+  image) and `monitor.zex` are the production store's entries, named by
+  `services.man` in load order; the loader places them, installs the
+  publications and runs their boot and init entries, and only then does
+  the ESC `c` program run (it writes the display reset and its line, then
+  execs the monitor).  A failed placement or init is a boot error with
+  the loader's line, and ROMFS corruption keeps the fatal recovery
+  policy.
 - **Host/simulator evidence**: `make console-integration-selftest` builds
   the integration image (full service set + the target diagnostic + the
-  monitor launcher) and replays the production bytes
-  (`tests/test_console_acceptance.py`): the load order and the composed
-  binding, IOC command/status/repeated-PING and the /SHARED READY/DONE
-  bulk interlock, HID queue traffic with the stuck-doorbell penalty, the
-  scripted monitor session with two Q exit/relaunch cycles, the
-  malformed-request refusals, and the publication/endpoint invariants the
-  packed containers carry.
+  ESC `c` program + the monitor launcher) and replays the production
+  bytes (`tests/test_console_acceptance.py`): the load order and the
+  build-selected binding, IOC command/status/repeated-PING and the
+  /SHARED READY/DONE bulk interlock, HID queue traffic with the
+  stuck-doorbell penalty, the ESC `c` display reset (the V9958 bring-up
+  sequence runs twice), the scripted monitor session with two Q
+  exit/relaunch cycles, the malformed-request refusals, and the
+  publication/endpoint invariants the packed containers carry.
+  `make console-serial-selftest` replays the same set with
+  `console-serial`: the monitor prompt, the typed line and the
+  relaunch all on the serial lane (`tests/test_console_serial.py`).
 - **Physical gate**: flash
   `build-console-integration-selftest/zephyros-console-integration-selftest.bin`,
-  run `make smoke-hardware-console-integration` before reset, perform the
-  human HID/V9958 monitor pass, then run the `-fb-*` smoke modes on their
-  images.  The package-20 validation record
+  run `make smoke-hardware-console-integration` before reset, watch the
+  ESC `c` display reset, perform the human HID/V9958 monitor pass, then
+  flash the console-serial variant and run
+  `make smoke-hardware-console-serial` with a serial terminal.  The
+  package-20 validation record
   (`docs/validation/2026-10-03-m8-device-stack.md`) carries the M8 image
-  hashes and the observed results; the M10 re-run is recorded in
-  `docs/validation/2026-10-09-m10-prune-nucleus.md`.
+  hashes and the observed results; the M10 re-runs are recorded in
+  `docs/validation/2026-10-09-m10-prune-nucleus.md` and
+  `docs/validation/2026-10-10-m10-console-builds.md`.
 
 ## 9. Drivers and interrupts
 
@@ -895,8 +900,9 @@ stuck-doorbell penalty, and strict reply validation before a byte is
 committed.  The image declares its IOC dependency symbolically; the host
 packer resolves it to the endpoint number and a missing IOC image is a
 build error, so the driver never looks a peer up at run time.
-`ZHID_OP_READY` is the run-time probe the console composes its input from
-(the role the device registry's registration presence played before M10).
+`ZHID_OP_READY` reports whether the IOC link came up; no console driver
+probes it any more (work package 42e: consoles are build-selected, and
+`console-v9958-hid` requires HID by manifest).
 
 | op | number | frame | result |
 |----|--------|-------|--------|
@@ -932,15 +938,14 @@ packages 42b/42c deleted it with the arena module loader it lived in.
 
 ### 12.5 Console (class `ZOS_CLASS_CONSOLE`, 6)
 
-The console composes the drivers the build selected - HID input when its
-resolved dependency is present and `ZHID_OP_READY` answers 1, otherwise
-the serial driver; V9958 output when the video dependency is present,
-otherwise the serial driver - exactly as `console_bind_defaults()` did for
-the M8 device set.  The host packer resolves the three symbolic
-dependencies (HID, SERIAL, VIDEO); an absent optional dependency resolves
-to endpoint number 0, which is the fallback.  It is the endpoint the SDK
-console functions and the monitor use; the early console and the panic
-path do not depend on it.
+The console forwards to the drivers its build selected (work package
+42e): `console-v9958-hid` maps input to HID and output to VIDEO, and
+`console-serial` maps both directions to SERIAL.  The host packer
+resolves each manifest's symbolic dependencies to endpoint numbers; the
+driver reads them from its boot bundle, requires them (a zero fails its
+init and the boot, 36.11) and never probes a peer at run time.  It is the
+endpoint the SDK console functions and the monitor use; the early console
+and the panic path do not depend on it.
 
 | op | number | frame | result |
 |----|--------|-------|--------|

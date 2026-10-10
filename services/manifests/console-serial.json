@@ -1,7 +1,7 @@
 {
-  "name": "console",
+  "name": "console-serial",
   "objects": [
-    "console_service.rel",
+    "console-serial.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "console_service_init",
@@ -25,23 +25,6 @@
       "flags": 0
     }
   ],
-  "depends": [
-    {
-      "class": 4,
-      "instance": 0,
-      "optional": 1
-    },
-    {
-      "class": 1,
-      "instance": 0,
-      "optional": 1
-    },
-    {
-      "class": 2,
-      "instance": 0,
-      "optional": 1
-    }
-  ],
   "publishes": [
     {
       "path": "/dev/console",
@@ -51,6 +34,12 @@
         "instance": 0
       },
       "object": 0
+    }
+  ],
+  "depends": [
+    {
+      "class": 1,
+      "instance": 0
     }
   ]
 }

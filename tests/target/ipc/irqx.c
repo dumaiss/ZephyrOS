@@ -166,7 +166,7 @@ int16_t irqx_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-void ipc_irqx_init(const struct ipc_service_boot *boot)
+uint8_t ipc_irqx_init(const struct ipc_service_boot *boot)
 {
 	api = boot->api;
 	irqx_buffer_address = (uint16_t)irqx_buffer;
@@ -175,4 +175,5 @@ void ipc_irqx_init(const struct ipc_service_boot *boot)
 	 * here in the mode-11 window where the fixed core (and so the
 	 * bootstrap interface) is visible. */
 	(void)boot->api->irq_claim(IPC_IRQ_CTC0, (uint16_t)irqx_handler, 0u);
+	return 0u;
 }

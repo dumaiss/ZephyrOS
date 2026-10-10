@@ -308,7 +308,7 @@ is gone; their mechanism coverage now runs inside the subsystem
 acceptance image (`make subsystem-selftest`), the device subsystem
 images (`make ioc-selftest`, `make hid-selftest`, `make video-selftest`,
 `make console-selftest`, `make console-integration-selftest`,
-`make console-fallback-selftests`) and the M9 acceptance images.
+`make console-serial-selftest`) and the M9 acceptance images.
 
 M9's integration acceptance image is `make m9-selftest`: the production
 boot path with `/` served by the resident IOC-FAT provider from the card,

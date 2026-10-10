@@ -5,7 +5,7 @@
 ; service: it validates the request, saves the exact banking latch,
 ; selects the window page (P), makes one call into the window
 ; 6000h-DFFFh, restores the saved latch, and publishes the target's HL
-; result.
+; result and its A register at return.
 ;
 ;   struct zos_upcall_req {
 ;       uint8_t  page;   0 = bank 7's cold half, 1 = bank 6
@@ -42,6 +42,7 @@
 	.globl zos_upcall_args
 	.globl zos_upcall_result
 	.globl zos_upcall_result_ptr
+	.globl _zos_upcall_ret_a
 	.globl zos_upcall_saved_latch
 
 ; Window pages the operating system uses (mirror kernel/memory/upcall.h).
@@ -111,7 +112,10 @@ _zos_upcall::
 	ret
 zos_upcall_return:
 	; Back to the caller's exact latch before touching its memory; the
-	; request block is in the fixed core, visible either way.
+	; request block is in the fixed core, visible either way.  A holds
+	; the target's 8-bit return, so it is published before this code
+	; clobbers it.
+	ld	(_zos_upcall_ret_a),a
 	ld	a,(zos_upcall_saved_latch)
 	out	(ZOS_MEMCTL_PORT),a
 	ld	(zos_upcall_result),hl
@@ -138,5 +142,7 @@ zos_upcall_result::
 	.ds	2
 zos_upcall_result_ptr::
 	.ds	2
+_zos_upcall_ret_a::
+	.ds	1
 zos_upcall_saved_latch::
 	.ds	1

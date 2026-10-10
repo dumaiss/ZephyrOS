@@ -1,12 +1,12 @@
 /* ZephyrOS console acceptance diagnostic (work package 41).
  *
  * The package-19 console image is the operator's HID-keyboard/V9958 pass
- * image.  Its diagnostic is a *bank-7 client* of the resident services
+ * image, which selects `console-v9958-hid` (work package 42e).  Its
+ * diagnostic is a *bank-7 client* of the resident services
  * (tests/target/include/service_client.h): it reports the composition the
- * console service derived from the store's endpoint set - the M8
- * "console_bind_defaults" decision, now made inside the service - writes
+ * build selected - HID input and VIDEO output - writes
  * one visible marker through the console output, reads the line the
- * replay queues on the surviving input lane, and leaves the unchanged M7
+ * replay queues on the HID input lane, and leaves the unchanged M7
  * monitor running for the human session.
  *
  * The transcript goes through the direct early SIO.
