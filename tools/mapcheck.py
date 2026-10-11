@@ -108,12 +108,11 @@ FIXED_ROOM_BYTES = (REV13_WINDOW_SPLIT - BANK7_BASE
                     - FIXED_STACKS_BYTES)
 COMMON_BASE = 0xE000
 COMMON_CODE_END = 0xFD00
-# Architectural ceiling on the packed `_COMMON` + `_COMMON_DATA` run and
-# the M10 far-call reservation held back from it (platform/zephyr80/
-# memory.inc; work package 30c).  M9 enforces
-# `used <= COMMON_CEILING - COMMON_M10_RESERVATION`.
+# Architectural ceiling on the packed `_COMMON` + `_COMMON_DATA` run
+# (platform/zephyr80/memory.inc; work package 30c).  The 512-byte M9
+# reservation was released to M10's transitions and IPC (work package 43,
+# architecture 36.20), so `used <= COMMON_CEILING` is the rule.
 COMMON_CEILING = 0x0C00
-COMMON_M10_RESERVATION = 0x0200
 IRQ_VECTOR_BASE = 0xFD00
 IRQ_VECTOR_SIZE = 0x0101
 IRQ_STATE_BASE = 0xFE01
@@ -337,7 +336,7 @@ def apply_layout(values, source=None):
     global FIXED_CODE_END, FIXED_REQUIRED_BYTES, FIXED_OVERFLOW_BYTES
     global FIXED_STACKS_BYTES, FIXED_ROOM_BYTES
     global ROMFS_STAGING_SIZE, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
-    global COMMON_CEILING, COMMON_M10_RESERVATION
+    global COMMON_CEILING
     PAGE_ZERO_END = values["ZOS_PAGE_ZERO_END"]
     RESET_TOP = values["ZOS_RESET_TOP"]
     BANK7_BASE = values["ZOS_BANK7_BASE"]
@@ -366,12 +365,10 @@ def apply_layout(values, source=None):
                        "the window base %04Xh"
                        % (SERVICE_STACK_BASE, SERVICE_STACK_TOP,
                           WINDOW_BASE))
-    # The common ceiling and the M10 reservation are build-time
-    # architecture constants; the generated include always carries them.
+    # The common ceiling is a build-time architecture constant; the
+    # generated include always carries it.
     require_key(values, "ZOS_COMMON_CEILING", source)
-    require_key(values, "ZOS_COMMON_M10_RESERVATION", source)
     COMMON_CEILING = values["ZOS_COMMON_CEILING"]
-    COMMON_M10_RESERVATION = values["ZOS_COMMON_M10_RESERVATION"]
     IRQ_ISR_STACK_BASE = values["ZOS_IRQ_ISR_STACK_BASE"]
     IRQ_ISR_STACK_TOP = values["ZOS_IRQ_ISR_STACK_TOP"]
     IRQ_ISR_STACK_SIZE = values["ZOS_IRQ_ISR_STACK_SIZE"]
@@ -1108,18 +1105,15 @@ def check_areas(areas, symbols):
             if addr + size > IRQ_VECTOR_BASE:
                 raise MapError("%s overlaps the IM2 reservation at FD00h" % name)
 
-    # The packed common window has an architectural ceiling with an M10
-    # reservation held back (work package 30c; target architecture 2.18).
-    # Growth that would eat the M10 far-call budget fails the build here.
+    # The packed common window has an architectural ceiling (work package
+    # 30c; target architecture 36.20, reservation released by package 43).
+    # Growth past the ceiling fails the build here.
     common_used = sum(areas[name][1] for name in ("_COMMON", "_COMMON_DATA")
                       if name in areas)
-    common_limit = COMMON_CEILING - COMMON_M10_RESERVATION
-    if common_used > common_limit:
+    if common_used > COMMON_CEILING:
         raise MapError(
-            "packed common memory is %d bytes, over the %d-byte M9 limit "
-            "(ceiling %d minus the %d-byte M10 reservation)"
-            % (common_used, common_limit, COMMON_CEILING,
-               COMMON_M10_RESERVATION))
+            "packed common memory is %d bytes, over the %d-byte ceiling"
+            % (common_used, COMMON_CEILING))
 
 
 # Symbols that must stay reachable while the window shows another bank:

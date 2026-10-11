@@ -11,7 +11,9 @@ and section 11 is the M9 `SYS_EXEC` with the startup block v1 argument
 contract; section 12 is the M10 resident-service IPC pair, and section
 12.1 the M10 object and namespace family that replaces it - the
 `namespace-selftest` acceptance image builds that family now (work
-package 42a) and production switches over in 42b.
+package 42a) and production switches over in 42b; section 14 is the M10
+extended-memory family (`SYS_XMEM_*`, `20h-25h`), its map tokens and the
+buffer-identity rule (work package 43).
 M9's end-to-end acceptance (the `m9-selftest` image and the
 full matrix) is recorded in
 [`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md).
@@ -750,3 +752,66 @@ and the console client needs no lookup at all.  Which console driver
 answers the handle is the build's selection (work package 42e:
 `console-v9958-hid` in production, `console-serial` in the serial
 variant); the program cannot tell the difference.
+
+---
+
+## 14. M10 extended memory and the far aperture (package 43)
+
+The application bank map (architecture 36.15) turns the six application
+banks into free, primary (one process's bank) or auxiliary memory; an
+auxiliary bank carries seven 8 KiB slots at `0000h-DFFFh`.  A process
+allocates *extended-memory objects* out of the auxiliary slots and reaches
+them by copy or through the mode-10 far aperture (36.16/36.17).  The
+family is pinned in `abi/zos/xmem.h` (every offset static-asserted):
+
+```text
+20h  SYS_XMEM_ALLOC  args {size:u16, flags:u16}       -> HL = handle (>= 1)
+21h  SYS_XMEM_FREE   args {handle:u16}                -> HL = 0
+22h  SYS_XMEM_READ   args {handle:u16, offset:u16,
+                           buffer:u16, length:u16}    -> HL = bytes moved
+23h  SYS_XMEM_WRITE  (same block as read)             -> HL = bytes moved
+24h  SYS_XMEM_INFO   args {handle:u16, buffer:u16 out}-> 8-byte record
+25h  SYS_XMEM_MAP    args {handle:u16, address:u16 out}
+                      -> HL = the aperture token, `address` = the object's
+                         address in the aperture
+```
+
+`flags` is `ZOS_XMEM_FLAG_MAPPABLE` (at most 16 KiB, placed in the
+aperture slice so `SYS_XMEM_MAP` can open it) or `ZOS_XMEM_FLAG_NONE`;
+any other bit is `-ZOS_EINVAL`, as are a zero size and a mappable size over
+the limit.  A size over the 32 KiB maximum object, an exhausted object
+table or a free region without a fitting run is `-ZOS_ENOSPC`.  The size
+rounds up to whole 8 KiB slots and one object is contiguous inside one
+bank; placement is never visible through the API.
+
+**Contents are undefined**: nothing pre-zeroes an object (36.19), so a
+program that needs zeroes writes them.  Every range - `offset + length`
+against the allocated size, the buffer against the caller window - is
+checked before any byte moves, and a copy-gate failure is `-ZOS_EFAULT`.
+`SYS_XMEM_INFO` returns `requested`, `allocated`, `flags` and `type`
+(`ZOS_XMEM_TYPE_RUNTIME`), never a bank or slot.
+
+**Map tokens.**  In mode 10 with a nonzero page field P, the caller's
+`8000h-BFFFh` names bank 7 - P (36.17).  `SYS_XMEM_MAP` returns the
+*execution-latch value* that opens that aperture onto the object together
+with the object's aperture address (`8000h` in the lower slice, `A000h` in
+the upper one).  The SDK helpers are register-only and take no syscall:
+`zos_aperture_open(token)` writes the token to the memory-control port and
+returns the previous latch, `zos_aperture_close(saved)` writes that latch
+back.  Only the caller's own mappable objects can be mapped - a stale,
+foreign or non-mappable handle is `-ZOS_EINVAL` - and every object bank
+maps to a page field of 2..7, so no token ever names bank 6 or bank 7.
+
+**Buffer identity** (36.8).  A caller address in `8000h-BFFFh` while the
+caller's saved latch has a nonzero page field names the far bank, not the
+primary bank: `read`/`write` buffers resolve that way, and every other
+syscall that moves caller bytes - descriptor capture included - applies
+the same rule.  A buffer that would cross the aperture boundary is refused
+with `-ZOS_EINVAL` before anything is copied.
+
+**Handles and lifetime.**  A handle is opaque, owner-tagged and
+generation-counted: a freed and reused entry hands out a different
+handle, so a stale or foreign handle is refused before any state changes.
+A process owns its objects; a child inherits none of them, and `SYS_EXIT`
+releases every object of the exiting process after its handles are
+unbound (36.13).  Objects are read/write and non-executable.

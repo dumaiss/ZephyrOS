@@ -28,6 +28,7 @@
 #   make console-integration-selftest  console + IOC/HID/V9958 diagnostics
 #   make console-serial-selftest   serial-console image and its failure store
 #   make fs-selftest               filesystem outcome acceptance image
+#   make xmem-selftest             extended-memory and aperture outcome image
 #   make ns-selftest               namespace acceptance image
 #   make ipc-selftest              resident-service IPC acceptance image
 #   make helloworld-image          SDK demo image (no kernel change)
@@ -74,6 +75,7 @@ ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/platform_irq.rel $(BUILD)/sdcc_helpers.rel \
              $(BUILD)/bank7_end.rel $(BUILD)/rom_access.rel \
              $(BUILD)/process_launch.rel $(BUILD)/user_copy.rel \
+             $(BUILD)/window_copy.rel \
              $(BUILD)/upcall.rel $(BUILD)/diag_io.rel \
              $(BUILD)/ipc_asm.rel $(BUILD)/ipc_common.rel \
              $(BUILD)/service_boot.rel
@@ -83,6 +85,7 @@ VFS_OBJS := $(BUILD)/vfs_path.rel \
                $(BUILD)/vfs_process.rel $(BUILD)/vfs_workspace.rel
 C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
              $(BUILD)/syscall.rel $(BUILD)/diag.rel \
+             $(BUILD)/xmem.rel \
              $(BUILD)/irq.rel \
              $(BUILD)/irq_sources.rel \
              $(BUILD)/romfs.rel $(BUILD)/process.rel $(BUILD)/process_exec.rel \
@@ -204,6 +207,18 @@ ifeq ($(ZOS_FS_SELFTEST),1)
 PK_SUFFIX := -fs-selftest
 ZOS_BOOT_PROGRAM := /SYSTEM/fs_selftest.zex
 ZOS_SERVICES := sio ioc console-serial iocfat
+endif
+
+# Extended-memory outcome image (work package 43): the production boot
+# path with the SIO/console service set and the SDK outcome program
+# booting as /SYSTEM/xmem_selftest.zex, which SYS_EXECs
+# /SYSTEM/xmem_child.zex from a path in its own far aperture.  The
+# aperture is hardware-authoritative: the owner runs this image on the
+# board (architecture 37, far code and data rows without ZEX v2).
+ifeq ($(ZOS_XMEM_SELFTEST),1)
+PK_SUFFIX := -xmem-selftest
+ZOS_BOOT_PROGRAM := /SYSTEM/xmem_selftest.zex
+ZOS_SERVICES := sio console-serial
 endif
 
 # Nucleus-layout acceptance image (work package 38): the production boot
@@ -469,7 +484,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	monitor-test ioc-test hid-test v9958-test \
 	subsystem-selftest nucleus-selftest \
 	console-integration-selftest console-serial-selftest \
-	fs-selftest ns-selftest ipc-selftest helloworld-image \
+	fs-selftest ns-selftest ipc-selftest xmem-selftest helloworld-image \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-subsystem \
@@ -532,6 +547,10 @@ $(BUILD)/user_copy.rel: kernel/memory/user_copy.asm \
 		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
+$(BUILD)/window_copy.rel: kernel/memory/window_copy.asm \
+		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
 $(BUILD)/upcall.rel: kernel/memory/upcall.asm \
 		platform/zephyr80/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
@@ -580,6 +599,14 @@ $(BUILD)/syscall.rel: kernel/syscall.c kernel/syscall/diag.h \
 $(BUILD)/diag.rel: kernel/syscall/diag.c kernel/syscall/diag.h \
 		abi/zos/syscall.h include/zephyros/process.h \
 		include/zephyros/platform.h include/zephyros/errno.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+# Extended-memory family (work package 43): the xmem syscall bodies, the
+# object table and the aperture token.  Cold code like the rest of the
+# syscall dispatcher (P = 0 while it runs).
+$(BUILD)/xmem.rel: kernel/syscall/xmem.c kernel/syscall/xmem.h \
+		abi/zos/xmem.h abi/zos/syscall.h include/zephyros/process.h \
+		include/zephyros/errno.h kernel/ipc/ipc.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M3 device/driver/service objects (bank-7 code and data) -----------------
@@ -1059,6 +1086,15 @@ $(eval $(call zex_program,fs_selftest,tests/fs,\
 $(eval $(call zex_program,fs_child,tests/fs,\
 	fs_child.c,STACK=192,STAGE=1))
 
+# Extended-memory outcome programs (work package 43): the checks the image
+# boots (`ZOS_BOOT_PROGRAM=/SYSTEM/xmem_selftest.zex`) and the child it
+# SYS_EXECs while its aperture is open.  Both are ordinary SDK programs.
+$(eval $(call zex_program,xmem_selftest,tests/xmem,\
+	xmem_selftest.c,STACK=512,STAGE=1))
+
+$(eval $(call zex_program,xmem_child,tests/xmem,\
+	xmem_child.c,STACK=256,STAGE=1))
+
 $(eval $(call zex_program,ipc,tests/target/ipc,\
 	ipc.c,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include))
@@ -1151,6 +1187,15 @@ ROMFS_MANIFEST := tests/fs/manifest.json
 # Recursive: the module variables are defined below this chain.
 ROMFS_EXTRA_DEPS = $(MODULES)/fs_selftest.zex $(MODULES)/fs_child.zex \
 	$(MODULES)/monitor.zex $(MODULES)/services.man
+else ifeq ($(ZOS_XMEM_SELFTEST),1)
+# Extended-memory outcome store (work package 43): the SIO and console
+# services the production boot path loads, and the two SDK programs - the
+# checks in /SYSTEM/xmem_selftest.zex and the child it SYS_EXECs.  No
+# monitor: the launcher's exit report is the last line the replay needs.
+ROMFS_MANIFEST := tests/xmem/manifest.json
+# Recursive: the module variables are defined below this chain.
+ROMFS_EXTRA_DEPS = $(MODULES)/xmem_selftest.zex \
+	$(MODULES)/xmem_child.zex $(MODULES)/services.man
 else ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
 # SDK demo image (work/28c-m9-user-sdk): the production boot set and store
 # plus the hello demo, which the launcher starts instead of the monitor
@@ -1593,6 +1638,25 @@ ipc-selftest: all
 	$(PYTHON) -m unittest discover -s tests -p 'test_ipc_selftest*.py' -v
 	@echo "ipc image: build-ipc-selftest/zephyros-ipc-selftest.bin"
 
+# Extended-memory outcome image (work package 43): the production boot
+# path with the SIO/console service set and the SDK outcome program
+# booting as /SYSTEM/xmem_selftest.zex.  The client drives the whole
+# extended-memory family and the mode-10 aperture and checks its own
+# results; it then SYS_EXECs /SYSTEM/xmem_child.zex with a path living in
+# the aperture, and the simulator replay asserts the transcript
+# (tests/test_xmem_selftest_sim.py).  The aperture itself is
+# hardware-authoritative: the owner runs this image on the board.
+xmem-selftest: all
+	$(MAKE) BUILD=build-xmem-selftest ZOS_XMEM_SELFTEST=1 \
+		build-xmem-selftest/zephyros-xmem-selftest.bin \
+		build-xmem-selftest/zephyr80-xmem-selftest.bin
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
+		build-xmem-selftest/zephyros.map \
+		build-xmem-selftest/geometry/memory.inc \
+		$(ZOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_xmem_selftest*.py' -v
+	@echo "xmem image: build-xmem-selftest/zephyros-xmem-selftest.bin"
+
 # Namespace and handle acceptance image (work package 42a, correction 01):
 # the production boot path with the DEVICE/ROMFS providers, the typed
 # handle table, bind/call/unbind/ns_enum and the standard handles linked
@@ -1671,7 +1735,7 @@ endef
 
 hardware-images: all subsystem-selftest \
 		console-integration-selftest console-serial-selftest \
-		fs-selftest
+		fs-selftest xmem-selftest
 	@echo "hardware-images: every smoke image is built under build*/"
 
 smoke-hardware:

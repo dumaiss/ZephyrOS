@@ -368,13 +368,15 @@ class TestSdkBoundary(unittest.TestCase):
         # but only the ZOS_IPC_SELFTEST configuration builds them.  `ns`
         # and `nschild` are the namespace acceptance client and the child
         # it execs (ZOS_NS_SELFTEST); `fs_selftest` and `fs_child` are the
-        # filesystem outcome programs (ZOS_FS_SELFTEST); `escc` is the
+        # filesystem outcome programs (ZOS_FS_SELFTEST); `xmem_selftest`
+        # and `xmem_child` are the extended-memory outcome programs
+        # (ZOS_XMEM_SELFTEST); `escc` is the
         # ESC c display-reset check the console integration image boots
         # (work package 42e).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["escc", "fs_child", "fs_selftest", "hello",
                           "ipc", "ipccopy", "monitor", "ns", "nschild",
-                          "zextest"])
+                          "xmem_child", "xmem_selftest", "zextest"])
         for name, directory, _sources, _options in programs:
             count = sum(_read(path).count("zex_program,%s," % name)
                         for path in ("Makefile",

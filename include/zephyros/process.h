@@ -281,11 +281,23 @@ _Static_assert(__builtin_offsetof(struct zos_bank_copy_req, length) == 6,
 	       "bank copy length offset");
 #endif
 
-/* Returns 0 or ZOS_EINVAL. */
+/* Return 0 or ZOS_EINVAL. */
 uint8_t zos_bank_copy(const struct zos_bank_copy_req *req);
 
 /* Common staging buffer the syscall service transfers through. */
 extern uint8_t zos_user_copy_staging[];
+
+/* --- mode-11 window copy (kernel/memory/user_copy.asm, package 43) ----
+ *
+ * The copy primitive for auxiliary slots 3-6: mode 11 keeps the fixed
+ * core and picks P = 7 - bank, so 6000h-DFFFh shows bank F at the object's
+ * own addresses while common memory still answers at E000h.  One LDIR
+ * moves the run between the window and a common-resident buffer.  Slots
+ * 0-2 cannot be shown this way and use `zos_bank_copy` (mode 10) instead.
+ * The request has the same layout as `zos_bank_copy_req`; `bank` is the
+ * auxiliary bank (0-5), rejected otherwise with ZOS_EINVAL.  Read/write
+ * direction matches ZOS_BANK_OP_READ/WRITE.  Single-depth. */
+uint8_t zos_window_copy(const struct zos_bank_copy_req *req);
 
 /* Bank reservation through the same deterministic allocator exec uses
  * (lowest free bank).  process_bank_reserve() returns the bank or
@@ -293,6 +305,36 @@ extern uint8_t zos_user_copy_staging[];
  * reserved and bank 7.  Reservations never outlive the boot session. */
 int process_bank_reserve(void);
 void process_bank_release(uint8_t bank);
+
+/* --- auxiliary bank slots (architecture 36.15/36.16, package 43) ------
+ *
+ * An auxiliary bank is divided into seven 8-KiB slots covering
+ * 0000h-DFFFh.  The slot map is one owner byte per slot (pid + 1, 0 =
+ * free); a bank is FREE when no slot is owned and no process holds it as
+ * its primary bank, PRIMARY(process) while a table entry owns it and
+ * AUXILIARY while any slot is owned.  Allocation packs existing auxiliary
+ * banks first (highest bank first) and opens the highest completely free
+ * bank last; a bank with a live slot can never become a primary bank
+ * (process_alloc_bank skips it and exec can report ZOS_ENOSPC while
+ * slots are still free). */
+#define ZOS_AUX_SLOT_COUNT 7u
+#define ZOS_AUX_SLOT_SIZE  0x2000u
+#define ZOS_AUX_SLOT_BASE(slot) \
+	((uint16_t)((uint16_t)(slot) * ZOS_AUX_SLOT_SIZE))
+
+/* Reserve `slots` contiguous slots (1..4; `mappable` selects the aperture
+ * slice: one or two slots in 4-5) for `pid`.  Returns 0 with the bank and
+ * slot written, or -ZOS_EINVAL for a bad request or -ZOS_ENOSPC when no
+ * bank has a fitting run. */
+int process_aux_alloc(uint8_t pid, uint8_t slots, uint8_t mappable,
+		      uint8_t *bank, uint8_t *slot);
+
+/* Release `slots` slots starting at `slot` for `pid`.  Slots the pid does
+ * not own are left untouched. */
+void process_aux_free(uint8_t pid, uint8_t bank, uint8_t slot, uint8_t slots);
+
+/* Any live slot in `bank`?  (A live slot keeps the bank auxiliary.) */
+uint8_t process_aux_live(uint8_t bank);
 
 /* Process teardown (bank-7, called from the syscall dispatcher /
  * common return trap; never returns - the parent is resumed through

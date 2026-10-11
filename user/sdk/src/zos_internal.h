@@ -1,8 +1,9 @@
 /* ZephyrOS libzos internal: the shared argument-block overlay.
  *
- * The FS/exec wrappers build every packed block here and marshal it
- * through the shared low-window scratch defined in runtime.asm.  This
- * header is private to user/sdk/src and is never installed.
+ * The FS/exec wrappers and the extended-memory wrappers (package 43)
+ * build every packed block here and marshal it through the shared
+ * low-window scratch defined in runtime.asm.  This header is private to
+ * user/sdk/src and is never installed.
  */
 
 #ifndef ZOS_SRC_INTERNAL_H
@@ -11,8 +12,9 @@
 #include "zos/fs.h"
 #include "zos/ipc.h"
 #include "zos/syscall.h"
+#include "zos/xmem.h"
 
-union zos_fs_block {
+union zos_syscall_block {
 	struct zfs_path_args    path;
 	struct zfs_open_args    open;
 	struct zfs_io_args      io;
@@ -23,9 +25,14 @@ union zos_fs_block {
 	struct zfs_rename_args  rename;
 	struct zfs_fd_args      fd;
 	struct zos_exec_args    exec;
+	struct zos_xmem_alloc_args xmem_alloc;
+	struct zos_xmem_free_args  xmem_free;
+	struct zos_xmem_io_args    xmem_io;
+	struct zos_xmem_info_args  xmem_info;
+	struct zos_xmem_map_args   xmem_map;
 };
 
-extern union zos_fs_block zos_scratch;
+extern union zos_syscall_block zos_scratch;
 
 /* One raw syscall through the shared gate stub: `number` with `block` as
  * the packed argument block.  Returns the syscall result or the negated

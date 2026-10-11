@@ -12,16 +12,15 @@
 #include "zos/types.h"
 
 /* The object and namespace family bodies (06h-0Bh).  `block` is the raw
- * argument-block pointer from the register ABI; `bank` is the caller's
- * execution bank (the namespace enumeration and `getcwd` write there). */
-void zos_object_dispatch(uint8_t number, uint8_t bank, uint16_t block);
+ * argument-block pointer from the register ABI. */
+void zos_object_dispatch(uint8_t number, uint16_t block);
 
 /* Copy one caller-window path into `out` (NUL-terminated, at most 127
- * bytes) with the shared validation rules; `bank` is the caller's
- * execution bank, which the staged read needs.  Returns 0,
- * -ZOS_EINVAL or -ZOS_EFAULT.  SYS_EXEC uses it so its path rules match
- * `bind`'s exactly. */
-int zos_object_copy_path(uint8_t bank, uint16_t addr, uint16_t length,
-			 char *out);
+ * bytes) with the shared validation rules.  The path is ordinary caller
+ * data, so its bank follows the buffer-identity rule (an address behind
+ * the mode-10 aperture names the far bank).  Returns 0, -ZOS_EINVAL or
+ * -ZOS_EFAULT.  SYS_EXEC uses it so its path rules match `bind`'s
+ * exactly. */
+int zos_object_copy_path(uint16_t addr, uint16_t length, char *out);
 
 #endif /* ZEPHYROS_KERNEL_SYSCALL_OBJECT_H */

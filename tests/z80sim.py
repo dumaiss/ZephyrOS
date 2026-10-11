@@ -2455,7 +2455,9 @@ class Z80:
             self.sp = reg
         elif op2 in (0x09, 0x19, 0x29, 0x39):  # add ix/iy,rr (flags approx.)
             rr = (op2 >> 4) & 3
-            res = reg + self.get_rr(rr)
+            # The prefixed forms answer the index register where the
+            # unprefixed encoding selects HL (add iy,iy is FD 29).
+            res = reg + (reg if rr == 2 else self.get_rr(rr))
             if op == 0xDD:
                 self.ix = res & 0xFFFF
             else:

@@ -114,12 +114,11 @@ FIXED_ROOM_BYTES = (WINDOW_BASE - BANK7_BASE - FIXED_REQUIRED_BYTES
                     - FIXED_OVERFLOW_BYTES - FIXED_STACKS_BYTES)
 COMMON_BASE = 0xE000
 COMMON_CODE_END = 0xFD00
-# Architectural ceiling on the packed `_COMMON` + `_COMMON_DATA` run and
-# the M10 far-call reservation held back from it (work package 30c, from
-# the 30b audit).  The generated memory include overrides both; these
-# literals only seed the synthetic host path.
+# Architectural ceiling on the packed `_COMMON` + `_COMMON_DATA` run
+# (work package 30c, from the 30b audit; the M9 reservation itself was
+# released by work package 43).  The generated memory include overrides
+# it; this literal only seeds the synthetic host path.
 COMMON_CEILING = 0x0C00
-COMMON_M10_RESERVATION = 0x0200
 IRQ_VECTOR_BASE = 0xFD00
 IRQ_VECTOR_END = 0xFE01
 IRQ_STATE_BASE = 0xFE01
@@ -171,7 +170,7 @@ def apply_memory_inc(path):
     global WINDOW_BASE, WINDOW_DATA_BASE
     global ROMFS_FIRST_PAGE, ROMFS_PAGE_COUNT, ROMFS_WINDOW_SIZE
     global ROMFS_CAPACITY, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
-    global COMMON_CEILING, COMMON_M10_RESERVATION
+    global COMMON_CEILING
     values = {}
     for line in open(path):
         line = line.split(";")[0].strip()
@@ -210,9 +209,7 @@ def apply_memory_inc(path):
     ROM_ACCESS_BASE = values["ZOS_ROM_ACCESS_BASE"]
     ROM_ACCESS_SIZE = values["ZOS_ROM_ACCESS_SIZE"]
     require_value(values, "ZOS_COMMON_CEILING", path)
-    require_value(values, "ZOS_COMMON_M10_RESERVATION", path)
     COMMON_CEILING = values["ZOS_COMMON_CEILING"]
-    COMMON_M10_RESERVATION = values["ZOS_COMMON_M10_RESERVATION"]
     REGIONS = make_regions()
 
 # Common-resident entry points (must be callable through the permanently
@@ -247,7 +244,7 @@ NUCLEUS_COLD_LEDGER_LINE = (
 SERVICE_HOT_LEDGER_LINE = "driver hot: %d bytes of %d"
 SERVICE_BOOT_LEDGER_LINE = "driver boot/bulk: %d bytes of %d"
 COMMON_LEDGER_LINE = ("common: used %d of %d bytes (code %d, data %d) | "
-                      "ceiling %d, m10 %d, limit %d")
+                      "ceiling %d")
 
 
 class LayoutError(Exception):
@@ -616,12 +613,11 @@ def common_usage(symbols):
             "packed common memory is %d bytes, over the %d-byte window "
             "%04Xh-%04Xh" % (code + data, capacity, COMMON_BASE,
                              COMMON_CODE_END - 1))
-    limit = COMMON_CEILING - COMMON_M10_RESERVATION
+    limit = COMMON_CEILING
     if code + data > limit:
         raise LayoutError(
-            "packed common memory is %d bytes, over the %d-byte M9 limit "
-            "(ceiling %d minus the %d-byte M10 reservation)"
-            % (code + data, limit, COMMON_CEILING, COMMON_M10_RESERVATION))
+            "packed common memory is %d bytes, over the %d-byte ceiling"
+            % (code + data, limit))
     return code, data, code + data, capacity
 
 
@@ -673,8 +669,6 @@ def nucleus_ledger(symbols, service_plan=None):
             "common_used_bytes": common[2],
             "common_capacity_bytes": common[3],
             "common_ceiling_bytes": COMMON_CEILING,
-            "common_m10_reservation_bytes": COMMON_M10_RESERVATION,
-            "common_limit_bytes": COMMON_CEILING - COMMON_M10_RESERVATION,
         }
     driver = {"service_hot_bytes": 0,
               "service_hot_capacity_bytes": SERVICE_HOT_CAPACITY,
@@ -720,9 +714,7 @@ def format_nucleus_ledger(ledger):
         COMMON_LEDGER_LINE % (
             ledger["common_used_bytes"], ledger["common_capacity_bytes"],
             ledger["common_code_bytes"], ledger["common_data_bytes"],
-            ledger["common_ceiling_bytes"],
-            ledger["common_m10_reservation_bytes"],
-            ledger["common_limit_bytes"]),
+            ledger["common_ceiling_bytes"]),
     ))
 
 
@@ -932,7 +924,11 @@ def verify_no_banked_latch_writes(mem, symbols=None, production=True):
     new page bits, which leaves the fixed core itself mapped, exactly as
     the shim does), and the nucleus self-test's caller blob, which the
     harness copies into an application bank and runs there, so its
-    caller-side selection happens in the caller window.  Nothing else may.
+    caller-side selection happens in the caller window.  Work package 43
+    adds the mode-11 window copy (kernel/memory/window_copy.asm): it
+    preserves the mode and the bank field and writes only the page field
+    `7 - bank`, so the fixed core - including its own continuation - stays
+    mapped, exactly like the shim.  Nothing else may.
     """
     symbols = symbols or {}
 
@@ -946,6 +942,7 @@ def verify_no_banked_latch_writes(mem, symbols=None, production=True):
     shim = extent("_zos_upcall", "zos_upcall_end")
     domain = extent("_ipc_domain_enter", "ipc_domain_switch_end")
     blob = extent("zos_nucleus_blob_start", "zos_nucleus_blob_end")
+    window = extent("_zos_window_copy", "zos_window_copy_end")
     anchors = [addr for addr in symbols.values() if isinstance(addr, int)]
     candidates = set()
     for start, end in ((BANK7_BASE, WINDOW_BASE),
@@ -965,20 +962,23 @@ def verify_no_banked_latch_writes(mem, symbols=None, production=True):
             if not production:
                 continue
             if any(r is not None and r[0] <= addr < r[1]
-                   for r in (shim, domain, blob)):
+                   for r in (shim, domain, blob, window)):
                 continue
             raise LayoutError(
                 "latch write OUT (00h),A encoding at %04Xh in the fixed "
                 "core; only the upcall shim (%s-%s), the IPC page selects "
-                "(%s-%s) and the self-test caller blob (%s-%s) may carry "
-                "one, every other mapping change is common-resident"
+                "(%s-%s), the self-test caller blob (%s-%s) and the mode-11 "
+                "window copy (%s-%s) may carry one, every other mapping "
+                "change is common-resident"
                 % (addr,
                    "%04Xh" % shim[0] if shim else "absent",
                    "%04Xh" % shim[1] if shim else "absent",
                    "%04Xh" % domain[0] if domain else "absent",
                    "%04Xh" % domain[1] if domain else "absent",
                    "%04Xh" % blob[0] if blob else "absent",
-                   "%04Xh" % blob[1] if blob else "absent")
+                   "%04Xh" % blob[1] if blob else "absent",
+                   "%04Xh" % window[0] if window else "absent",
+                   "%04Xh" % window[1] if window else "absent")
             )
 
 

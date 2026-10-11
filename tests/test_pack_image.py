@@ -446,26 +446,22 @@ class TestNucleusLedgers(unittest.TestCase):
 
 
 class TestCommonCeiling(unittest.TestCase):
-    """The pinned common-memory ceiling and its M10 reservation."""
+    """The pinned common-memory ceiling (the M10 reservation is released)."""
 
     def test_pinned_values(self):
         self.assertEqual(pack_image.COMMON_CEILING, 3072)
-        self.assertEqual(pack_image.COMMON_M10_RESERVATION, 512)
-        self.assertEqual(pack_image.COMMON_CEILING
-                         - pack_image.COMMON_M10_RESERVATION, 2560)
 
-    def test_common_usage_rejects_over_the_m9_limit(self):
-        # 0x600 + 0x500 = 2816 bytes of packed common.
-        symbols = {"s__COMMON": 0xE000, "l__COMMON": 0x600,
-                   "s__COMMON_DATA": 0xE600, "l__COMMON_DATA": 0x500}
-        with self.assertRaisesRegex(pack_image.LayoutError,
-                                    "M10 reservation"):
+    def test_common_usage_rejects_over_the_ceiling(self):
+        # 0x700 + 0x600 = 3328 bytes of packed common.
+        symbols = {"s__COMMON": 0xE000, "l__COMMON": 0x700,
+                   "s__COMMON_DATA": 0xE700, "l__COMMON_DATA": 0x600}
+        with self.assertRaisesRegex(pack_image.LayoutError, "ceiling"):
             pack_image.common_usage(symbols)
 
-    def test_common_usage_accepts_at_the_m9_limit(self):
+    def test_common_usage_accepts_at_the_ceiling(self):
         symbols = {"s__COMMON": 0xE000, "l__COMMON": 0x600,
-                   "s__COMMON_DATA": 0xE600, "l__COMMON_DATA": 0x400}
-        self.assertEqual(pack_image.common_usage(symbols)[2], 2560)
+                   "s__COMMON_DATA": 0xE600, "l__COMMON_DATA": 0x600}
+        self.assertEqual(pack_image.common_usage(symbols)[2], 3072)
 
     def test_production_ledger_carries_the_ceiling(self):
         manifest_path = os.path.join(ROOT, "build",
@@ -474,12 +470,13 @@ class TestCommonCeiling(unittest.TestCase):
             self.skipTest("derived production build missing; run make")
         ledger = json.load(open(manifest_path))["nucleus"]
         self.assertEqual(ledger["common_ceiling_bytes"], 3072)
-        self.assertEqual(ledger["common_m10_reservation_bytes"], 512)
-        self.assertEqual(ledger["common_limit_bytes"], 2560)
+        self.assertNotIn("common_m10_reservation_bytes", ledger)
+        self.assertNotIn("common_limit_bytes", ledger)
         self.assertLessEqual(ledger["common_used_bytes"],
-                             ledger["common_limit_bytes"])
+                             ledger["common_ceiling_bytes"])
         text = pack_image.format_nucleus_ledger(ledger)
-        self.assertIn("ceiling 3072, m10 512, limit 2560", text)
+        self.assertIn("ceiling 3072", text)
+        self.assertNotIn("m10", text)
 
 
 if __name__ == "__main__":

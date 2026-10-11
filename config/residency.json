@@ -38,6 +38,11 @@
       "reason": "diagnostic syscall bodies, reached only through the syscall dispatcher, which the gate runs with P = 0"
     },
     {
+      "object": "xmem",
+      "tier": "cold",
+      "reason": "extended-memory syscall bodies, the object table and the aperture token (work package 43): reached only through the syscall dispatcher, which the gate runs with P = 0"
+    },
+    {
       "object": "diag_io",
       "tier": "cold",
       "reason": "diagnostic port primitives reached only from the diagnostic syscall bodies (P = 0)"
@@ -153,6 +158,11 @@
       "reason": "common-resident application-bank copy gate (mode-10 crossings from common memory)"
     },
     {
+      "object": "window_copy",
+      "tier": "fixed-required",
+      "reason": "mode-11 window copy for auxiliary slots 3-6 (work package 43): runs with the window showing bank 7 - bank, where only the fixed core and common memory answer; fixed keeps the cost off the scarce common region"
+    },
+    {
       "object": "upcall",
       "tier": "fixed-required",
       "reason": "revision-13 upcall shim: cold code that calls a resident service saves the latch, selects the window page, calls and restores; its code, its continuation and its request state must stay visible while the window shows another bank (36.5)"
@@ -185,7 +195,7 @@
     {
       "object": "ipc_common",
       "tier": "fixed-required",
-      "reason": "M10 stage 3 common-resident aperture copy (kernel/ipc/ipc_common.asm, work package 39 correction 01): the path-B primitive runs with mode 10 and page 1 in force, where bank 7 is not mapped, so its code, its request block, its saved latch/SP and its interrupt-push stack must all be common.  It is the only code the fixed-core reservoir of ZOS_COMMON_M10_RESERVATION was held back for.  Same stage as `ipc`: test images only until package 41."
+      "reason": "M10 stage 3 common-resident aperture copy (kernel/ipc/ipc_common.asm, work package 39 correction 01): the path-B primitive runs with mode 10 and page 1 in force, where bank 7 is not mapped, so its code, its request block, its saved latch/SP and its interrupt-push stack must all be common.  The fixed-core reservoir the M9 ledger held back (ZOS_COMMON_M10_RESERVATION) was released to M10 by work package 43 (architecture 36.20), so this primitive and package 43's mode-11 window copy share the whole ceiling.  Same stage as `ipc`: test images only until package 41."
     },
     {
       "object": "service_loader",
@@ -205,6 +215,7 @@
     "vfs_ns_file",
     "object",
     "diag",
+    "xmem",
     "diag_io",
     "main",
     "process",
@@ -212,5 +223,5 @@
     "syscall",
     "service_loader"
   ],
-  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): the syscall dispatcher and its bodies, the boot path, the process lifecycle, the VFS core and the resident-service loader (package 42c placed every object; the cold data base follows the linked cold code). tools/mapcheck.py fails the build when the linked cold code or data overruns the derived bases, and the fixed ledger reports the remaining fixed-core bytes."
+  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): the syscall dispatcher and its bodies (including the extended-memory family, package 43), the boot path, the process lifecycle, the VFS core and the resident-service loader (package 42c placed every object; the cold data base follows the linked cold code). tools/mapcheck.py fails the build when the linked cold code or data overruns the derived bases, and the fixed ledger reports the remaining fixed-core bytes."
 }

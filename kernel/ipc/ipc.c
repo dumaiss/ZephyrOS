@@ -60,7 +60,6 @@
 
 /* Fixed-region primitives (kernel/ipc/ipc_asm.asm). */
 extern uint8_t ipc_latch(void);
-extern uint8_t ipc_gate_latch(void);
 extern void ipc_domain_enter(uint8_t page_bits);
 extern void ipc_domain_set(uint8_t page_bits);
 extern void ipc_domain_exit(void);
@@ -219,11 +218,12 @@ static uint8_t crosses_aperture(uint16_t addr, uint16_t length)
  * would cross the aperture boundary, so the whole descriptor resolves to
  * one bank.
  *
- * Package-43 hook: this is the only place a nonzero-page aperture
- * address becomes a bank.  Token-based resolution lands here - an
- * aperture descriptor keeps its owner's bank, which forces the chunked
- * path C because that bank is not the caller's primary bank - and the
- * capture keeps the full latch (Q, mode, P) for it. */
+ * This is the only place a nonzero-page aperture address becomes a bank:
+ * an aperture descriptor keeps its owner's bank, which forces the chunked
+ * path C because that bank is not the caller's primary bank, and the
+ * capture keeps the full latch (Q, mode, P) for it.  The syscall-side
+ * copies resolve the same way (kernel/syscall.c
+ * `zos_syscall_buffer_bank`). */
 static uint8_t desc_bank(const struct ipc_desc *desc)
 {
 	uint8_t page = (uint8_t)((desc->latch & ZOS_ROM_PAGE_MASK) >>

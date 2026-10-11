@@ -55,8 +55,7 @@ static void object_fail(int result)
  * the gate maps the calling bank at an arbitrary address in that window.
  * SYS_EXEC uses the same rule, so its path is validated exactly like
  * `bind`'s. */
-int zos_object_copy_path(uint8_t bank, uint16_t addr, uint16_t length,
-			 char *out)
+int zos_object_copy_path(uint16_t addr, uint16_t length, char *out)
 {
 	uint16_t done = 0u;
 
@@ -73,8 +72,7 @@ int zos_object_copy_path(uint8_t bank, uint16_t addr, uint16_t length,
 		if (chunk > ZOS_SYSCALL_STAGE_SIZE) {
 			chunk = ZOS_SYSCALL_STAGE_SIZE;
 		}
-		if (zos_syscall_bank_read(bank,
-					  (uint16_t)(addr + done),
+		if (zos_syscall_bank_read((uint16_t)(addr + done),
 					  chunk) != 0u) {
 			return -ZOS_EFAULT;
 		}
@@ -94,12 +92,11 @@ int zos_object_copy_path(uint8_t bank, uint16_t addr, uint16_t length,
 
 /* Copy the caller path and normalize it against the caller's CWD into the
  * workspace's normalized slot.  Returns 0 or -ZOS_EINVAL. */
-static int object_normalize_path(uint8_t bank, uint16_t addr,
-				 uint16_t length)
+static int object_normalize_path(uint16_t addr, uint16_t length)
 {
 	int result;
 
-	result = zos_object_copy_path(bank, addr, length, VFS_WS_IN_A);
+	result = zos_object_copy_path(addr, length, VFS_WS_IN_A);
 	if (result != 0) {
 		return result;
 	}
@@ -108,7 +105,7 @@ static int object_normalize_path(uint8_t bank, uint16_t addr,
 				     ZOS_PATH_MAX);
 }
 
-static void object_bind(uint8_t bank, uint16_t block)
+static void object_bind(uint16_t block)
 {
 	struct zos_bind_args *args = (struct zos_bind_args *)block;
 	uint8_t type = 0u;
@@ -119,7 +116,7 @@ static void object_bind(uint8_t bank, uint16_t block)
 		return;
 	}
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	result = object_normalize_path(bank, args->path, args->length);
+	result = object_normalize_path(args->path, args->length);
 	if (result == 0) {
 		result = vfs_ns_bind(process_current_pid(), VFS_WS_NORM_A,
 				     args->flags, &type);
@@ -151,7 +148,7 @@ static void object_unbind(uint16_t block)
 	zos_syscall_success(0);
 }
 
-static void object_ns_enum(uint8_t bank, uint16_t block)
+static void object_ns_enum(uint16_t block)
 {
 	struct zos_ns_enum_args *args = (struct zos_ns_enum_args *)block;
 	uint16_t cookie;
@@ -165,14 +162,15 @@ static void object_ns_enum(uint8_t bank, uint16_t block)
 		return;
 	}
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	result = object_normalize_path(bank, args->path, args->length);
+	result = object_normalize_path(args->path, args->length);
 	vfs_ws_leave(VFS_WS_VIEW_PATH);
 	if (result != 0) {
 		object_fail(result);
 		return;
 	}
 	cookie = args->cookie;
-	result = vfs_ns_enum(bank, VFS_WS_NORM_A, &cookie, args->out,
+	result = vfs_ns_enum(zos_syscall_buffer_bank(args->out),
+			     VFS_WS_NORM_A, &cookie, args->out,
 			     args->out_size, &count);
 	if (result < 0) {
 		object_fail(result);
@@ -183,14 +181,13 @@ static void object_ns_enum(uint8_t bank, uint16_t block)
 	zos_syscall_success(count);
 }
 
-static void object_call(uint8_t bank, uint16_t block)
+static void object_call(uint16_t block)
 {
 	struct zos_ipc_call_args *args = (struct zos_ipc_call_args *)block;
 	uint8_t endpoint = 0u;
 	uint8_t object = 0u;
 	int result;
 
-	(void)bank; /* the resolved object's dispatch owns the caller bank */
 	if (!zos_syscall_block_ok(block, sizeof(*args)) ||
 	    args->frame_length == 0u ||
 	    args->frame_length > ZOS_IPC_FRAME_SIZE ||
@@ -217,7 +214,7 @@ static void object_call(uint8_t bank, uint16_t block)
  * whether the path is a traversable location, and only then store the
  * canonical global path (architecture 36.13: chdir does not bind a
  * directory object). */
-static void object_chdir(uint8_t bank, uint16_t block)
+static void object_chdir(uint16_t block)
 {
 	struct zos_chdir_args *args = (struct zos_chdir_args *)block;
 	uint8_t ok = 0u;
@@ -228,7 +225,7 @@ static void object_chdir(uint8_t bank, uint16_t block)
 		return;
 	}
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	result = object_normalize_path(bank, args->path, args->length);
+	result = object_normalize_path(args->path, args->length);
 	if (result == 0) {
 		result = vfs_ns_dir_check(VFS_WS_NORM_A, &ok);
 		if (result == 0 && ok == 0u) {
@@ -248,7 +245,7 @@ static void object_chdir(uint8_t bank, uint16_t block)
 
 /* SYS_GETCWD: the canonical CWD into the caller's buffer, through the
  * checked bank-write gate.  Returns the length excluding the NUL. */
-static void object_getcwd(uint8_t bank, uint16_t block)
+static void object_getcwd(uint16_t block)
 {
 	struct zos_getcwd_args *args = (struct zos_getcwd_args *)block;
 	const char *cwd;
@@ -279,9 +276,8 @@ static void object_getcwd(uint8_t bank, uint16_t block)
 			zos_user_copy_staging[i] =
 				(uint8_t)cwd[done + i];
 		}
-		if (zos_syscall_bank_write(
-			    bank, (uint16_t)(args->buffer + done),
-			    chunk) != 0u) {
+		if (zos_syscall_bank_write((uint16_t)(args->buffer + done),
+					   chunk) != 0u) {
 			zos_syscall_error(ZOS_EFAULT);
 			return;
 		}
@@ -290,26 +286,26 @@ static void object_getcwd(uint8_t bank, uint16_t block)
 	zos_syscall_success(length);
 }
 
-void zos_object_dispatch(uint8_t number, uint8_t bank, uint16_t block)
+void zos_object_dispatch(uint8_t number, uint16_t block)
 {
 	switch (number) {
 	case ZOS_SYSCALL_BIND:
-		object_bind(bank, block);
+		object_bind(block);
 		return;
 	case ZOS_SYSCALL_CALL:
-		object_call(bank, block);
+		object_call(block);
 		return;
 	case ZOS_SYSCALL_UNBIND:
 		object_unbind(block);
 		return;
 	case ZOS_SYSCALL_NS_ENUM:
-		object_ns_enum(bank, block);
+		object_ns_enum(block);
 		return;
 	case ZOS_SYSCALL_CHDIR:
-		object_chdir(bank, block);
+		object_chdir(block);
 		return;
 	case ZOS_SYSCALL_GETCWD:
-		object_getcwd(bank, block);
+		object_getcwd(block);
 		return;
 	default:
 		zos_syscall_error(ZOS_ENOSYS);

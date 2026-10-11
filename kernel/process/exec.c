@@ -73,23 +73,24 @@ static uint8_t exec_bank_zero(uint8_t bank, uint16_t addr, uint16_t length)
  * into the child's page zero at 0080h.
  *
  * The tail is read from the parent's bank only here, after the executable
- * source is closed, and it is never kept.  The one existing 128-byte
- * common staging view (the ROMFS access buffer, exactly the startup-block
- * size and free once the source is closed) is the gate buffer; the VFS
- * workspace's staging view is bank-7 data and bank 7 is not mapped while
- * the gate runs in mode 10.  Nothing new is allocated and nothing is
- * written beyond the child's page zero.  The parent's bank cannot change
- * during process_prepare().  Returns 0 or 1 (the caller maps it to a read
- * error). */
-static uint8_t exec_startup_block(uint8_t child_bank, uint8_t parent_bank,
-				  uint16_t args, uint16_t args_length)
+ * source is closed, and it is never kept; its bank follows the
+ * buffer-identity rule, so a tail behind the parent's aperture is read
+ * from the far bank.  The one existing 128-byte common staging view (the
+ * ROMFS access buffer, exactly the startup-block size and free once the
+ * source is closed) is the gate buffer; the VFS workspace's staging view
+ * is bank-7 data and bank 7 is not mapped while the gate runs in mode 10.
+ * Nothing new is allocated and nothing is written beyond the child's page
+ * zero.  The parent's bank cannot change during process_prepare().
+ * Returns 0 or 1 (the caller maps it to a read error). */
+static uint8_t exec_startup_block(uint8_t child_bank, uint16_t args,
+				  uint16_t args_length)
 {
 	struct zos_bank_copy_req req;
 
 	rom_access_staging[0] = ZOS_STARTUP_VERSION;
 	rom_access_staging[1] = (uint8_t)args_length;
 	if (args_length != 0) {
-		req.bank = parent_bank;
+		req.bank = zos_syscall_buffer_bank(args);
 		req.op = ZOS_BANK_OP_READ;
 		req.addr = args;
 		req.buffer = rom_access_staging + 2;
@@ -457,8 +458,7 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	 * context, so the running process is the parent and its bank is
 	 * current; the kernel launcher passes an empty tail and never reads
 	 * it.  The parent's bank cannot change during process_prepare(). */
-	if (exec_startup_block(bank, process_current_bank(), args,
-			       args_length) != 0) {
+	if (exec_startup_block(bank, args, args_length) != 0) {
 		process_slot_release(pid);
 		return ZEX_EXEC_ERR_READ;
 	}

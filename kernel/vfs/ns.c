@@ -686,10 +686,10 @@ static int ns_fs_bind_file(uint8_t pid, const char *rel, uint16_t flags,
 }
 
 /* Copy the namespace operation's caller path (1..127 caller-bank bytes;
- * RENAME packs "from\0to") into the workspace's copy-in slot.  Returns 0
- * or a negative ZOS_E* value. */
-static int ns_fs_read_path(uint8_t bank,
-			   const struct zos_ipc_call_args *args)
+ * RENAME packs "from\0to") into the workspace's copy-in slot.  The
+ * buffer's bank follows the buffer-identity rule.  Returns 0 or a
+ * negative ZOS_E* value. */
+static int ns_fs_read_path(const struct zos_ipc_call_args *args)
 {
 	uint16_t length = args->length;
 	uint16_t done = 0u;
@@ -705,8 +705,7 @@ static int ns_fs_read_path(uint8_t bank,
 		if (chunk > ZOS_SYSCALL_STAGE_SIZE) {
 			chunk = ZOS_SYSCALL_STAGE_SIZE;
 		}
-		if (zos_syscall_bank_read(bank,
-					  (uint16_t)(args->buffer + done),
+		if (zos_syscall_bank_read((uint16_t)(args->buffer + done),
 					  chunk) != 0u) {
 			return -ZOS_EFAULT;
 		}
@@ -801,7 +800,7 @@ int16_t vfs_ns_fs_call(uint8_t handle, uint8_t object,
 		return -ZOS_EINVAL;
 	}
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	result = ns_fs_read_path(process_current_bank(), args);
+	result = ns_fs_read_path(args);
 	if (result == 0) {
 		uint8_t has_b = 0u;
 

@@ -33,10 +33,12 @@
 #include "zos/ipc.h"
 #include "zephyros/process.h"
 
+#include "kernel/ipc/ipc.h"
 #include "kernel/vfs/vfs.h"
 
 #include "syscall/diag.h"
 #include "syscall/object.h"
+#include "syscall/xmem.h"
 
 /* Dispatcher input/output state (written by the asm boundary, read by C). */
 uint8_t zos_syscall_number;
@@ -51,14 +53,15 @@ extern uint8_t zos_user_copy_staging[];
 #define USER_STAGE_SIZE ZOS_SYSCALL_STAGE_SIZE
 
 /* One transfer chunk against the caller bank, through the common gate.
- * The staging buffer is common-resident, so it survives the mapping
+ * The bank follows the buffer-identity rule, so the same helper serves a
+ * buffer in the primary bank and one behind the mode-10 aperture.  The
+ * staging buffer is common-resident, so it survives the mapping
  * switch and stays valid while mode 10 is active. */
-uint8_t zos_syscall_bank_read(uint8_t bank, uint16_t user_src,
-			      uint16_t length)
+uint8_t zos_syscall_bank_read(uint16_t user_src, uint16_t length)
 {
 	struct zos_bank_copy_req req;
 
-	req.bank = bank;
+	req.bank = zos_syscall_buffer_bank(user_src);
 	req.op = ZOS_BANK_OP_READ;
 	req.addr = user_src;
 	req.buffer = zos_user_copy_staging;
@@ -66,12 +69,11 @@ uint8_t zos_syscall_bank_read(uint8_t bank, uint16_t user_src,
 	return zos_bank_copy(&req);
 }
 
-uint8_t zos_syscall_bank_write(uint8_t bank, uint16_t user_dst,
-			       uint16_t length)
+uint8_t zos_syscall_bank_write(uint16_t user_dst, uint16_t length)
 {
 	struct zos_bank_copy_req req;
 
-	req.bank = bank;
+	req.bank = zos_syscall_buffer_bank(user_dst);
 	req.op = ZOS_BANK_OP_WRITE;
 	req.addr = user_dst;
 	req.buffer = zos_user_copy_staging;
@@ -115,13 +117,55 @@ uint8_t zos_syscall_block_ok(uint16_t addr, uint16_t len)
 #define syscall_error	zos_syscall_error
 #define block_ok	zos_syscall_block_ok
 
-/* Read/write buffer: 0100h-DFFFh, no length wrap. */
+/* Read/write buffer: 0100h-DFFFh, no length wrap, and under a nonzero
+ * saved page never across the aperture boundary (the two sides of
+ * 8000h-BFFFh are different banks). */
 uint8_t zos_syscall_buffer_ok(uint16_t addr, uint16_t len)
 {
+	uint8_t latch;
+
 	if (addr < ZOS_USER_BUFFER_BASE || addr >= ZOS_USER_BUFFER_END) {
 		return 0;
 	}
-	return len <= (uint16_t)(ZOS_USER_BUFFER_END - addr);
+	if (len > (uint16_t)(ZOS_USER_BUFFER_END - addr)) {
+		return 0;
+	}
+	latch = ipc_gate_latch();
+	if ((latch & ZOS_MODE_MASK) == ZOS_MODE_APPLICATION &&
+	    (latch & ZOS_ROM_PAGE_MASK) != 0u) {
+		uint16_t end = (uint16_t)(addr + len);
+
+		if (addr < ZOS_XMEM_APERTURE_BASE +
+				   ZOS_XMEM_APERTURE_SIZE &&
+		    end > ZOS_XMEM_APERTURE_BASE &&
+		    !(addr >= ZOS_XMEM_APERTURE_BASE &&
+		      end <= ZOS_XMEM_APERTURE_BASE +
+			     ZOS_XMEM_APERTURE_SIZE)) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+/* The bank a caller buffer address resolves to (architecture 36.8/36.17,
+ * buffer identity): inside the mode-10 far aperture under a nonzero saved
+ * page it is the far bank 7 - P, everywhere else the running process's
+ * primary bank.  Descriptor capture (kernel/ipc) applies the same rule to
+ * the buffers a service names. */
+uint8_t zos_syscall_buffer_bank(uint16_t addr)
+{
+	uint8_t latch = ipc_gate_latch();
+
+	if ((latch & ZOS_MODE_MASK) == ZOS_MODE_APPLICATION &&
+	    (latch & ZOS_ROM_PAGE_MASK) != 0u &&
+	    addr >= ZOS_XMEM_APERTURE_BASE &&
+	    addr < (uint16_t)(ZOS_XMEM_APERTURE_BASE +
+			      ZOS_XMEM_APERTURE_SIZE)) {
+		return (uint8_t)(ZOS_BANK_MASK -
+				 (uint8_t)((latch & ZOS_ROM_PAGE_MASK) >>
+					   ZOS_ROM_PAGE_SHIFT));
+	}
+	return process_current_bank();
 }
 
 static void syscall_exit(uint16_t block)
@@ -170,7 +214,7 @@ static void syscall_getinfo(uint16_t block)
  * then process_prepare() does every fallible step with its own rollback
  * and process_launch() enters the child.  Past the launch nothing can
  * fail. */
-static void syscall_exec(uint8_t bank, uint16_t block)
+static void syscall_exec(uint16_t block)
 {
 	struct process_child child;
 	uint8_t pid = process_current_pid();
@@ -179,7 +223,6 @@ static void syscall_exec(uint8_t bank, uint16_t block)
 	uint16_t args_length;
 	int result;
 
-	(void)bank; /* the path and tail are copied through the common gate */
 	if (!block_ok(block, 8)) {
 		syscall_error(ZOS_EINVAL);
 		return;
@@ -212,8 +255,7 @@ static void syscall_exec(uint8_t bank, uint16_t block)
 		syscall_error(ZOS_EINVAL);
 		return;
 	}
-	result = zos_object_copy_path(bank,
-				      read_le16((const uint8_t *)block),
+	result = zos_object_copy_path(read_le16((const uint8_t *)block),
 				      read_le16((const uint8_t *)(block + 2)),
 				      zos_process_path_scratch);
 	if (result == 0) {
@@ -235,8 +277,6 @@ static void syscall_exec(uint8_t bank, uint16_t block)
 
 void kernel_syscall_dispatch(void)
 {
-	uint8_t bank = process_current_bank();
-
 	/* M1 default: unknown numbers stay deterministic. */
 	syscall_error(ZOS_ENOSYS);
 
@@ -246,8 +286,15 @@ void kernel_syscall_dispatch(void)
 	 * M1 default above (ZOS_ENOSYS). */
 	if (zos_syscall_number >= ZOS_SYSCALL_BIND &&
 	    zos_syscall_number <= ZOS_SYSCALL_GETCWD) {
-		zos_object_dispatch(zos_syscall_number, bank,
-				    zos_syscall_args);
+		zos_object_dispatch(zos_syscall_number, zos_syscall_args);
+		return;
+	}
+
+	/* Extended-memory family (20h-25h, package 43): alloc, free, read,
+	 * write, info, map (architecture 36.15-36.17). */
+	if (zos_syscall_number >= ZOS_SYSCALL_XMEM_ALLOC &&
+	    zos_syscall_number <= ZOS_SYSCALL_XMEM_MAP) {
+		zos_xmem_dispatch(zos_syscall_number, zos_syscall_args);
 		return;
 	}
 
@@ -259,7 +306,7 @@ void kernel_syscall_dispatch(void)
 		syscall_getinfo(zos_syscall_args);
 		break;
 	case ZOS_SYSCALL_EXEC:
-		syscall_exec(bank, zos_syscall_args);
+		syscall_exec(zos_syscall_args);
 		break;
 	case ZOS_SYSCALL_DIAG_MEM_READ:
 		zos_diag_mem_read(zos_syscall_args);

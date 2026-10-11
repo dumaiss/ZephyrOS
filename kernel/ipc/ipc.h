@@ -21,6 +21,12 @@
 
 #include "zephyros/ipc.h"
 
+/* The syscall gate's saved caller latch (bank, mode and page), read from
+ * common state (kernel/ipc/ipc_asm.asm).  The copy resolver and the
+ * buffer-identity rule (kernel/syscall.c `zos_syscall_buffer_bank`) both
+ * resolve caller addresses against it. */
+uint8_t ipc_gate_latch(void);
+
 /* One host-built endpoint record (architecture 36.11), read from a
  * resident driver container by the loader and installed verbatim.  The
  * nucleus validates the entry against the driver window and the number

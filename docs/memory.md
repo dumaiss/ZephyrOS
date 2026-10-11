@@ -279,7 +279,7 @@ nucleus fixed: required <bytes> | overflow <bytes> | stacks <bytes> | room <byte
 nucleus cold: code <bytes> end <addr> | data <bytes> at <addr> | room <bytes>
 driver hot: <bytes> of <capacity>
 driver boot/bulk: <bytes> of <capacity>
-common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>, m10 <n>, limit <n>
+common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>
 ```
 
 - **`nucleus fixed:`** the fixed core's 16 KiB.  `required` is the linked
@@ -309,18 +309,17 @@ reservation.
 
 The `common:` figures are the pinned common-memory budget (work package
 30c, from the 30b audit): `ceiling` is `ZOS_COMMON_CEILING` (3072) and
-`m10` is `ZOS_COMMON_M10_RESERVATION` (512), held back for M10's far-call
-gate and per-process far state; `limit` is `ceiling - m10` (2560) and
-`used` may not exceed it.  The first M10 tenant of that reservation is the
-correction-01 aperture copy primitive: 44 bytes of common code and 14
-bytes of common data (the request block, the saved latch and SP, and the
-4-byte reservation an interrupt taken inside its mode-10 window pushes
-onto).  It is common and not fixed-core because mode 10 does not map bank
+`used` may not exceed it.  The 512-byte reservation the M9 ledger held
+back for M10's far-call state is released (work package 43, architecture
+36.20): M10 builds no far-call gate, and the region's tenants are the
+correction-01 aperture copy primitive (44 bytes of common code and 14
+bytes of common data) and package 43's mode-11 window copy (see section
+2.5).  It is common and not fixed-core because mode 10 does not map bank
 7: the stub's instructions, every byte it reads or pushes, and the
 interrupt entry that may run inside its window all have to be permanently
 mapped.  `mapcheck.py` and the packer both fail the
-build over the limit, and neither value may be raised to make a package
-fit (target architecture section 2.18).  Common memory is the scarcest
+build over the ceiling, and it may not be raised to make a package fit
+(target architecture section 2.18).  Common memory is the scarcest
 region: package 28 added 167 bytes of continuation state and correction-01
 moved 128 bytes of path buffer back out to bank 7.
 
