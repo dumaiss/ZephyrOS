@@ -24,9 +24,15 @@
  *     (capacity before == capacity after);
  *   * exit releases the process's own objects: the program leaves the two
  *     anchor objects live, and the launcher's `free-banks 6` report
- *     proves the release (their bank is free again).
+ *     proves the release (their bank is free again);
+ *   * far code (package 44b): it SYS_EXECs /SYSTEM/xmem_far.zex, whose
+ *     two FAR_CODE segments run through the aperture, and its own
+ *     capacity check around that exec proves the far program's exit
+ *     released its segments, objects and bank slots.
  *
- * The replay asserts the lines below; the final line is the verdict.
+ * The far-code program's own outcomes are
+ * tests/xmem/xmem_far.c.  The replay asserts the lines below; the final
+ * line is the verdict.
  */
 
 #include "zos.h"
@@ -39,6 +45,8 @@
 
 #define CHILD_PATH   "/SYSTEM/xmem_child.zex"
 #define CHILD_STATUS 42
+#define FAR_PATH     "/SYSTEM/xmem_far.zex"
+#define FAR_STATUS   43
 
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
  * D7-D5.  The aperture checks read it directly. */
@@ -188,8 +196,10 @@ static void write_aperture_string(unsigned int address, const char *text)
 	*p = 0u;
 }
 
-/* Decimal digits of a handle, for the child's command tail. */
-static void handle_tail(char *out, unsigned int handle)
+/* Decimal digits of a handle and the far-segment field, for the child's
+ * command tail: "<handle> <segment>".  This program declares no segments,
+ * so the field is 0. */
+static void child_tail(char *out, unsigned int handle)
 {
 	char digits[6];
 	unsigned int count = 0u;
@@ -201,6 +211,8 @@ static void handle_tail(char *out, unsigned int handle)
 	while (count != 0u) {
 		*out++ = digits[--count];
 	}
+	*out++ = ' ';
+	*out++ = '0';
 	*out = '\0';
 }
 
@@ -504,7 +516,7 @@ int main(void)
 		char tail[8];
 		unsigned int after;
 
-		handle_tail(tail, anchor);
+		child_tail(tail, anchor);
 		write_aperture_string(0x8100u, CHILD_PATH);
 		count = fill_until_full(8192u, 0u);
 		release_held(count);
@@ -524,6 +536,24 @@ int main(void)
 
 	zos_aperture_close((unsigned char)saved);
 	check("aperture-close", ((unsigned int)latch_port & 0xE0u) == 0u);
+
+	/* Far code (package 44b): /SYSTEM/xmem_far.zex runs its own
+	 * FAR_CODE segments through the aperture - map, plain CALL and
+	 * return, far code calling primary code, syscalls with an aperture
+	 * buffer, and an exec from far context whose child refuses this
+	 * process's handle and segment id.  It exits from far context; this
+	 * process's aperture capacity before and after proves the exit
+	 * released its segments, objects and bank slots. */
+	{
+		unsigned int before = fill_until_full(8192u, MAPPABLE);
+
+		release_held(before);
+		status = zos_exec(FAR_PATH, "");
+		check("far-program-status", status == FAR_STATUS);
+		count = fill_until_full(8192u, MAPPABLE);
+		check("far-program-released", count == before);
+		release_held(count);
+	}
 
 	/* The anchors stay live: exit must release them, which the
 	 * launcher's `free-banks 6` report proves. */

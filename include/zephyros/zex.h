@@ -73,21 +73,24 @@
 #define ZEX_MIN_STACK_SIZE 0x0002u
 
 /* Segment kinds.  `DATA` segments become extended-memory objects owned by
- * the process (architecture 36.16/36.18); `FAR_CODE` is the package-44b
- * kind - linked at 8000h and executed in place through the aperture - and
- * this loader refuses it until that package lands. */
+ * the process (architecture 36.16/36.18); `FAR_CODE` segments are linked
+ * at 8000h and loaded into the aperture slice of an auxiliary bank, one
+ * per bank, and executed in place through the mode-10 aperture (36.17):
+ * the largest far-code segment is the 16 KiB aperture. */
 #define ZEX_SEG_KIND_FAR_CODE 1u
 #define ZEX_SEG_KIND_DATA     2u
 
 /* Container limits.  The feasibility check uses the slot total: an
  * auxiliary object is contiguous in one bank, a data segment occupies at
- * most the four non-aperture slots of its bank, and the child's primary
- * bank can never hold auxiliary slots, so no container can ever place
- * more than five banks' worth. */
+ * most the four non-aperture slots of its bank, a far-code segment at
+ * most the two aperture slots of its bank, and the child's primary bank
+ * can never hold auxiliary slots, so a container is bounded by five
+ * banks' worth; the packer enforces the same ceiling on the host. */
 #define ZEX_MAX_SEGMENTS    8u
 #define ZEX_MAX_TOTAL_SLOTS 20u
 #define ZEX_SEG_SLOT_SIZE   0x2000u /* one auxiliary slot          */
 #define ZEX_SEG_MAX_SIZE    0x8000u /* image + BSS, the largest object */
+#define ZEX_SEG_MAX_FAR_SIZE 0x4000u /* image + BSS, the aperture slice */
 
 /* On-disk header, little-endian, packed. */
 struct zex_header {

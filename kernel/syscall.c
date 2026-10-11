@@ -291,11 +291,11 @@ void kernel_syscall_dispatch(void)
 		return;
 	}
 
-	/* Extended-memory family (20h-26h, packages 43-44a): alloc, free,
-	 * read, write, info, map and segment info (architecture
+	/* Extended-memory family (20h-27h, packages 43-44b): alloc, free,
+	 * read, write, info, map, segment info and segment map (architecture
 	 * 36.15-36.18). */
 	if (zos_syscall_number >= ZOS_SYSCALL_XMEM_ALLOC &&
-	    zos_syscall_number <= ZOS_SYSCALL_SEG_INFO) {
+	    zos_syscall_number <= ZOS_SYSCALL_SEG_MAP) {
 		zos_xmem_dispatch(zos_syscall_number, zos_syscall_args);
 		return;
 	}

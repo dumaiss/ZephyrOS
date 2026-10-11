@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "kind": "FAR_CODE",
+    "area": "_FAR_CODE",
+    "bss_size": 0
+  },
+  {
+    "id": 2,
+    "kind": "FAR_CODE",
+    "area": "_FAR_CODE",
+    "bss_size": 0
+  }
+]

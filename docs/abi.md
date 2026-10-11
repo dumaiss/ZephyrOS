@@ -779,7 +779,9 @@ family is pinned in `abi/zos/xmem.h` (every offset static-asserted):
                          address in the aperture
 26h  SYS_SEG_INFO    args {segment:u8, reserved:u8,
                            buffer:u16 out}            -> 8-byte record
-                         (section 15; a ZEX v2 DATA segment object)
+                         (section 15; a ZEX v2 segment)
+27h  SYS_SEG_MAP     args {segment:u8, reserved:u8}   -> HL = the aperture
+                         token of a FAR_CODE segment (section 15)
 ```
 
 `flags` is `ZOS_XMEM_FLAG_MAPPABLE` (at most 16 KiB, placed in the
@@ -825,11 +827,13 @@ A process owns its objects; a child inherits none of them, and `SYS_EXIT`
 releases every object of the exiting process after its handles are
 unbound (36.13).  Objects are read/write and non-executable.
 
-## 15. M10 ZEX v2 segments (SYS_SEG_INFO, package 44a)
+## 15. M10 ZEX v2 segments (SYS_SEG_INFO, SYS_SEG_MAP, packages 44a/44b)
 
 ```text
 26h  SYS_SEG_INFO  args {segment:u8, reserved:u8, buffer:u16}
                    -> 8-byte record at `buffer`, HL = 0
+27h  SYS_SEG_MAP   args {segment:u8, reserved:u8}
+                   -> HL = the aperture token of a FAR_CODE segment
 ```
 
 A ZEX v2 container declares zero or more auxiliary segments
@@ -839,7 +843,7 @@ calling process's own segments, named by its container id
 
 ```text
 offset 0  u16  size    image + BSS, the segment's logical size
-offset 2  u8   kind    ZOS_SEG_KIND_DATA (1 = far code, package 44b)
+offset 2  u8   kind    ZOS_SEG_KIND_DATA (2) or ZOS_SEG_KIND_FAR_CODE (1)
 offset 3  u8   state   ZOS_SEG_STATE_LOADED
 offset 4  u16  handle  DATA: the extended-memory object handle; else 0
 offset 6  u16  reserved  0
@@ -850,9 +854,11 @@ offset 6  u16  reserved  0
   `SYS_XMEM_READ`/`SYS_XMEM_WRITE` take.  The segment is released only at
   exit, so `SYS_XMEM_FREE` refuses its handle with `-ZOS_EINVAL`, and
   `SYS_XMEM_INFO` reports type `ZOS_XMEM_TYPE_SEGMENT`.
-- A `FAR_CODE` segment (package 44b) has no handle and reports 0; this
-  package's loader refuses far-code containers, so only `DATA` is live in
-  M10 step 10a.
+- A `FAR_CODE` segment (package 44b) has no handle and reports 0: it is
+  linked at `8000h`, the loader places it in the aperture slice of its own
+  auxiliary bank (one far-code segment per bank) and it executes in place
+  there.  `SYS_SEG_MAP` returns the token that opens it.  The SDK's
+  `zos_far_call` is the far-call helper on top of it.
 - Every segment of a loaded container is placed by the loader or the exec
   fails and rolls back, so a live segment always reports `LOADED`.
 - The ids are the calling process's own container: another process's
@@ -860,5 +866,25 @@ offset 6  u16  reserved  0
   `-ZOS_EINVAL`, as is a bad argument block or a record buffer outside
   the caller buffer window `0100h-DFFFh`.
 
-The SDK wrapper is `zos_seg_info(segment, &info)`
-(`user/sdk/include/zos/seg.h`), which returns 0 or `-errno`.
+```text
+27h  SYS_SEG_MAP  args {segment:u8, reserved:u8}  -> HL = token (>= 1)
+```
+
+`SYS_SEG_MAP` returns the execution-latch token that opens the mode-10
+aperture onto one of the caller's own `FAR_CODE` segments; the token is
+the same shape `SYS_XMEM_MAP` returns (section 14) with the segment's
+application bank `0-5` selecting `P = 7 - bank`, so it never names bank 6
+or bank 7.  The segment is always at `8000h`, so no address is returned:
+with the aperture open, `8000h` names the far segment and a `CALL` to an
+address in `8000h-BFFFh` runs the far code.  Only `FAR_CODE` segments have
+a token - an unknown id, a `DATA` segment's id (reached by handle, not
+mapped) or a bad argument block is `-ZOS_EINVAL`.  A caller address in
+`8000h-BFFFh` while the aperture is open names the far bank by the buffer
+identity rule (section 14), so a syscall issued from far code may name a
+buffer inside the aperture.  The SDK opens and restores the aperture for
+one call: `zos_far_call(segment, entry, a, b)`
+(`user/sdk/include/zos/seg.h`).
+
+The SDK wrappers are `zos_seg_info(segment, &info)` and
+`zos_seg_map(segment)`, which return 0 or `-errno` (the token for
+`zos_seg_map`).

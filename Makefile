@@ -1122,14 +1122,22 @@ $(eval $(call zex_program,fs_selftest,tests/fs,\
 $(eval $(call zex_program,fs_child,tests/fs,\
 	fs_child.c,STACK=192,STAGE=1))
 
-# Extended-memory outcome programs (work package 43): the checks the image
-# boots (`ZOS_BOOT_PROGRAM=/SYSTEM/xmem_selftest.zex`) and the child it
-# SYS_EXECs while its aperture is open.  Both are ordinary SDK programs.
+# Extended-memory outcome programs (work package 43, far code package 44b):
+# the checks the image boots (`ZOS_BOOT_PROGRAM=/SYSTEM/xmem_selftest.zex`),
+# the child it SYS_EXECs while its aperture is open, and the far-code
+# program it SYS_EXECs last.  All are ordinary SDK programs; xmem_far
+# links the far half into the _FAR_CODE area at 8000h (FAR=) and its
+# container declares two FAR_CODE segments (SEGMENTS=).
 $(eval $(call zex_program,xmem_selftest,tests/xmem,\
 	xmem_selftest.c,STACK=512,STAGE=1))
 
 $(eval $(call zex_program,xmem_child,tests/xmem,\
 	xmem_child.c,STACK=256,STAGE=1))
+
+$(eval $(call zex_program,xmem_far,tests/xmem,\
+	xmem_far.c,STACK=384,STAGE=1,\
+	FAR=xmem_far_code.c,\
+	SEGMENTS=tests/xmem/xmem_far.segments.json))
 
 $(eval $(call zex_program,ipc,tests/target/ipc,\
 	ipc.c,STACK=256,STAGE=1,\
@@ -1228,21 +1236,25 @@ ROMFS_MANIFEST := tests/fs/manifest.json
 ROMFS_EXTRA_DEPS = $(MODULES)/fs_selftest.zex $(MODULES)/fs_child.zex \
 	$(MODULES)/monitor.zex $(MODULES)/services.man
 else ifeq ($(ZOS_XMEM_SELFTEST),1)
-# Extended-memory outcome store (work package 43): the SIO and console
-# services the production boot path loads, and the two SDK programs - the
-# checks in /SYSTEM/xmem_selftest.zex and the child it SYS_EXECs.  No
-# monitor: the launcher's exit report is the last line the replay needs.
+# Extended-memory outcome store (work package 43, far code package 44b):
+# the SIO and console services the production boot path loads, and the
+# three SDK programs - the checks in /SYSTEM/xmem_selftest.zex, the child
+# it SYS_EXECs, and the far-code program (two FAR_CODE segments) it
+# SYS_EXECs last.  No monitor: the launcher's exit report is the last line
+# the replay needs.
 ROMFS_MANIFEST := tests/xmem/manifest.json
 # Recursive: the module variables are defined below this chain.
 ROMFS_EXTRA_DEPS = $(MODULES)/xmem_selftest.zex \
-	$(MODULES)/xmem_child.zex $(MODULES)/services.man
+	$(MODULES)/xmem_child.zex $(MODULES)/xmem_far.zex \
+	$(MODULES)/services.man
 else ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
 # SDK demo image (work/28c-m9-user-sdk): the production boot set and store
 # plus the hello demo, which the launcher starts instead of the monitor
 # (ZOS_BOOT_PROGRAM=/SYSTEM/hello.zex).  Booting a user program needs no
 # kernel change, which is exactly what this image demonstrates.
 ROMFS_MANIFEST := user/helloworld/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/hello.zex
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/hello.zex \
+	$(MODULES)/fardemo.zex
 else ifeq ($(ZOS_IPC_SELFTEST),1)
 # IPC acceptance image (work packages 39-40): the SIO fallback plus the two
 # SDK programs the launcher boots and the probe starts

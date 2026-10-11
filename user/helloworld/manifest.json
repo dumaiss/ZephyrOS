@@ -40,6 +40,11 @@
       "name": "hello.zex",
       "type": "ZEX",
       "path": "hello.zex"
+    },
+    {
+      "name": "fardemo.zex",
+      "type": "ZEX",
+      "path": "fardemo.zex"
     }
   ]
 }

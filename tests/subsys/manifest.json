@@ -157,6 +157,11 @@
       "path": "zex-seg-kind.zex"
     },
     {
+      "name": "zex-far-oversize.zex",
+      "type": "ZEX",
+      "path": "zex-far-oversize.zex"
+    },
+    {
       "name": "zex-seg-payload.zex",
       "type": "ZEX",
       "path": "zex-seg-payload.zex"

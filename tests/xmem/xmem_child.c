@@ -1,8 +1,10 @@
-/* ZephyrOS extended-memory outcome acceptance (work package 43): the
+/* ZephyrOS extended-memory outcome acceptance (work packages 43/44b): the
  * nested-exec child.
  *
- * SYS_EXEC starts it from /SYSTEM/xmem_child.zex while the parent's
- * aperture is open, so this program proves what the parent cannot:
+ * SYS_EXEC starts it twice: from /SYSTEM/xmem_selftest.zex while that
+ * program's (object) aperture is open, and from the far code of
+ * /SYSTEM/xmem_far.zex while a FAR_CODE segment's aperture is open.  It
+ * proves what the exec'ing process cannot, from its own side:
  *
  *   * the child starts in mode 10 with page 0 (exec starts every child
  *     with P = 0, architecture 36.17) - it reads the banking latch itself,
@@ -13,13 +15,19 @@
  *   * a child inherits none of the parent's objects: every use of the
  *     parent's live handle (passed in the command tail) is refused
  *     (architecture 36.15: a foreign handle is ZOS_EINVAL);
+ *   * a child inherits none of the parent's segments either: the
+ *     parent's live FAR_CODE segment id (also in the tail) has no
+ *     description and no token here, even though the id namespace is
+ *     per-container;
  *   * its own objects work, including a mapped one written through the
  *     aperture;
  *   * it exits from far context (aperture open) with objects leaked, so
  *     the parent's post-exit capacity check proves exit released them all.
  *
- * Its exit status is the value the parent compares (CHILD_STATUS when
- * every check passed, 1 otherwise).
+ * The command tail is "<handle> <segment>": the exec'ing process's live
+ * object handle and far-segment id, or 0 for either.  Its exit status is
+ * the value the parent compares (CHILD_STATUS when every check passed, 1
+ * otherwise).
  */
 
 #include "zos.h"
@@ -57,33 +65,47 @@ static int matches_pattern(void)
 	return 1;
 }
 
-/* The parent's handle number arrives as the command tail in decimal. */
-static unsigned int tail_handle(void)
+/* The exec'ing process's command tail: "<handle> <segment>", the live
+ * object handle and far-segment id to attempt, or 0 for either.  Returns
+ * 1 when the tail was parsed, 0 otherwise. */
+static int tail_numbers(unsigned int *handle, unsigned int *segment)
 {
 	struct zos_startup *boot = zos_args();
 	unsigned int value = 0u;
 	unsigned int i = 0u;
 
+	*handle = 0u;
+	*segment = 0u;
 	if (boot == (struct zos_startup *)0 || boot->version != 1u ||
 	    boot->length == 0u) {
-		return 0u;
+		return 0;
 	}
-	while (i < (unsigned int)boot->length && boot->tail[i] != '\0') {
-		char c = boot->tail[i];
-
-		if (c < '0' || c > '9') {
-			return 0u;
-		}
-		value = value * 10u + (unsigned int)(c - '0');
+	while (i < (unsigned int)boot->length && boot->tail[i] >= '0' &&
+	       boot->tail[i] <= '9') {
+		value = value * 10u + (unsigned int)(boot->tail[i] - '0');
 		++i;
 	}
-	return value;
+	*handle = value;
+	if (i >= (unsigned int)boot->length || boot->tail[i] == '\0') {
+		return 1;
+	}
+	++i; /* one separator */
+	value = 0u;
+	while (i < (unsigned int)boot->length && boot->tail[i] >= '0' &&
+	       boot->tail[i] <= '9') {
+		value = value * 10u + (unsigned int)(boot->tail[i] - '0');
+		++i;
+	}
+	*segment = value;
+	return 1;
 }
 
 int main(int argc, char **argv)
 {
 	unsigned char latch = latch_port;
-	unsigned int foreign = tail_handle();
+	struct zos_seg_info info;
+	unsigned int foreign = 0u;
+	unsigned int foreign_seg = 0u;
 	unsigned int address = 0u;
 	unsigned int token = 0u;
 	unsigned int saved;
@@ -100,6 +122,10 @@ int main(int argc, char **argv)
 	 * aperture would sabotage everything it writes above 8000h. */
 	if ((latch & 0xE0u) != 0u) {
 		zos_puts("xmem-child: FAIL latch-page\r\n");
+		ok = 0;
+	}
+	if (!tail_numbers(&foreign, &foreign_seg)) {
+		zos_puts("xmem-child: FAIL foreign-handle\r\n");
 		ok = 0;
 	}
 
@@ -136,6 +162,27 @@ int main(int argc, char **argv)
 		}
 		if (zos_xmem_map(foreign, &address) != -ZOS_EINVAL) {
 			zos_puts("xmem-child: FAIL foreign-map\r\n");
+			ok = 0;
+		}
+	}
+
+	/* And the exec'ing process's live FAR_CODE segments (their id
+	 * arrives in the tail): a child inherits none, so an id that exists
+	 * in the parent's container does not exist here - no description
+	 * and no token, even though this process could map its own segment
+	 * with the same id. */
+	if (foreign_seg != 0u) {
+		info.size = 0u;
+		info.kind = 0u;
+		info.state = 0u;
+		info.handle = 0u;
+		info.reserved = 0u;
+		if (zos_seg_info(foreign_seg, &info) != -ZOS_EINVAL) {
+			zos_puts("xmem-child: FAIL foreign-seg-info\r\n");
+			ok = 0;
+		}
+		if (zos_seg_map(foreign_seg) != -ZOS_EINVAL) {
+			zos_puts("xmem-child: FAIL foreign-seg-map\r\n");
 			ok = 0;
 		}
 	}

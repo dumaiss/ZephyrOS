@@ -23,7 +23,8 @@ include/zephyros/zex.h plus two well-formed control files:
     zex-seg-slots.zex          ZEX_EXEC_ERR_SEG_SLOTS   (21 slots)
     zex-seg-total.zex          ZEX_EXEC_ERR_SEG_SLOTS   (header total wrong)
     zex-seg-table.zex          ZEX_EXEC_ERR_SEG_TABLE   (table outside file)
-    zex-seg-kind.zex           ZEX_EXEC_ERR_SEG_KIND    (FAR_CODE, 44b)
+    zex-seg-kind.zex          ZEX_EXEC_ERR_SEG_KIND    (unknown kind)
+    zex-far-oversize.zex       ZEX_EXEC_ERR_SEGMENT     (FAR_CODE over 16 KiB)
     zex-seg-payload.zex        ZEX_EXEC_ERR_SEGMENT     (payload outside file)
     zex-seg-id.zex             ZEX_EXEC_ERR_SEGMENT     (ids not 1..N)
     zex-seg-reserved.zex       ZEX_EXEC_ERR_SEGMENT     (row reserved set)
@@ -194,9 +195,16 @@ def build_fixtures():
          "ZEX_EXEC_ERR_SEG_TABLE"),
         ("zex-seg-kind.zex",
          _container(_fields(), _image(4),
-                    [_valid_segment(kind=zexpack.KIND_FAR_CODE)],
+                    [_valid_segment(kind=3)],
                     [SEG_PAYLOAD]),
          "ZEX_EXEC_ERR_SEG_KIND"),
+        ("zex-far-oversize.zex",
+         _container(_fields(), _image(4),
+                    [_valid_segment(kind=zexpack.KIND_FAR_CODE,
+                                    image_size=zexpack.SEG_MAX_FAR_SIZE +
+                                    1)],
+                    [SEG_PAYLOAD]),
+         "ZEX_EXEC_ERR_SEGMENT"),
         ("zex-seg-payload.zex",
          _container(_fields(), _image(4),
                     [_valid_segment(image_size=64)], [SEG_PAYLOAD]),

@@ -1,15 +1,20 @@
-/* ZephyrOS native segment ABI (public native ABI, package 44a).
+/* ZephyrOS native segment ABI (public native ABI, packages 44a/44b).
  *
  * A ZEX v2 container declares zero or more auxiliary segments in its
  * segment table (architecture 36.18).  A `DATA` segment becomes an
  * extended-memory object owned by the process (36.16): the loader places
  * it before the program runs, `SYS_SEG_INFO` names it and returns the
  * object handle, and the contents are read and written with the
- * abi/zos/xmem.h calls.  A `FAR_CODE` segment is the package-44b kind
- * (executed in place through the aperture); it has no handle and this
- * package's loader refuses it.
+ * abi/zos/xmem.h calls.  A `FAR_CODE` segment (36.17) is linked at
+ * `8000h`, loaded into the aperture slice of an auxiliary bank and
+ * executed in place through the mode-10 aperture: the loader places one
+ * far-code segment per auxiliary bank, the code is `8000h` when the
+ * aperture is opened onto it, and a far call is an ordinary `CALL` while
+ * the aperture is open.  It has no handle; `SYS_SEG_MAP` returns the
+ * aperture token.
  *
  *   SYS_SEG_INFO  a segment's logical size, kind and load state
+ *   SYS_SEG_MAP   the aperture token of a FAR_CODE segment
  *
  * Segment ids are the container's table ids: 1..segment_count, in table
  * order.  An id outside the container, or a segment of another process,
@@ -25,11 +30,13 @@
 /* --- native syscall numbers (docs/abi.md section 15) -------------------- */
 
 #define ZOS_SYSCALL_SEG_INFO 0x26u
+#define ZOS_SYSCALL_SEG_MAP  0x27u
 
 /* --- segment kinds ------------------------------------------------------ */
 
-/* The loader refuses a `FAR_CODE` segment until package 44b; `SYS_SEG_INFO`
- * therefore reports only `DATA` in M10 step 10a. */
+/* A container's kinds: far code is linked at 8000h and executed in place
+ * through the aperture; data becomes a process-owned extended-memory
+ * object reached by handle. */
 #define ZOS_SEG_KIND_FAR_CODE 1u
 #define ZOS_SEG_KIND_DATA     2u
 
@@ -62,11 +69,29 @@ struct zos_seg_info_args {
 	uint16_t buffer;
 };
 
+/* SYS_SEG_MAP 27h {segment:u8, reserved:u8}
+ *   -> HL = the aperture token (>= 1) that opens the mode-10 aperture
+ *      onto this FAR_CODE segment.
+ *
+ * Only the calling process's own `FAR_CODE` segments have a token: an
+ * unknown id, a `DATA` segment's id (it is reached by handle, not mapped)
+ * or a bad block is ZOS_EINVAL.  The segment is always at `8000h`, so no
+ * address is returned; the token keeps the caller's own bank field and
+ * selects P = 7 - bank with the segment's application bank 0-5, so a
+ * token never names bank 6 or bank 7.  The SDK opens the aperture with
+ * it (`zos_far_call`) and restores the previous latch. */
+struct zos_seg_map_args {
+	uint8_t segment;
+	uint8_t reserved;
+};
+
 #if defined(__SDCC)
 _Static_assert(sizeof(struct zos_seg_info) == 8,
 	       "seg info record must be 8 packed bytes");
 _Static_assert(sizeof(struct zos_seg_info_args) == 4,
 	       "seg info block must be 4 packed bytes");
+_Static_assert(sizeof(struct zos_seg_map_args) == 2,
+	       "seg map block must be 2 packed bytes");
 _Static_assert(__builtin_offsetof(struct zos_seg_info, size) == 0,
 	       "seg info size is the first word");
 _Static_assert(__builtin_offsetof(struct zos_seg_info, kind) == 2,

@@ -19,10 +19,20 @@
 #                       entry object (used by the raw-return test child)
 #   LOWBASE=ADDR        SDK gate-visible data base (0x0100)
 #   CODEBASE=ADDR       program code base (0x0144)
-#   SEGMENTS=FILE       JSON list of ZEX v2 DATA segment declarations
-#                       (id/kind/input/bss_size); FILE is a prerequisite
-#                       and its payload `input` names resolve against the
-#                       program's object directory (package 44a)
+#   SEGMENTS=FILE       JSON list of ZEX v2 auxiliary segment
+#                       declarations (id/kind/input or area/bss_size); FILE
+#                       is a prerequisite and its payload `input` names
+#                       resolve against the program's object directory
+#                       (package 44a)
+#   FAR=SRC:SRC ...     far-code sources (relative to DIR) compiled into the
+#                       _FAR_CODE area and linked at 8000h, executed in
+#                       place through the aperture; a .c source is compiled
+#                       with --codeseg FAR_CODE, a .asm source opens
+#                       `.area _FAR_CODE` itself.  Without SEGMENTS= the
+#                       rule declares one FAR_CODE segment (id 1) for the
+#                       area, and the packer checks the 36.17 link rule
+#                       (primary image, BSS and stack outside 8000h-BFFFh)
+#                       (package 44b)
 # -----------------------------------------------------------------------------
 
 ZEX_USER_ROOT   := $(BUILD)/user
@@ -61,7 +71,7 @@ ZOS_SDK_C_SRC := args.c fs.c ipc.c exec.c console_io.c \
     zlibc/utoa.c zlibc/ultoa.c zlibc/itoa.c zlibc/ltoa.c \
     zlibc/printf.c zlibc/sdcc_arith.c zlibc/sdcc_arith_signed.c
 ZOS_SDK_ASM_SRC := gate.asm ipcgate.asm diaggate.asm nsgate.asm \
-    xmemgate.asm \
+    xmemgate.asm sdcc_calls.asm \
     zlibc/sdcc_arith_entries.asm zlibc/sdcc_arith_signed_entries.asm
 
 ZOS_SDK_C_OBJS   := $(addprefix $(ZEX_SDK_BUILD)/,$(patsubst %.c,%.rel,$(ZOS_SDK_C_SRC)))
@@ -113,8 +123,18 @@ $(1)_STACK  := $$(if $$(filter STACK=%,$$($(1)_OPTS)),$$(patsubst STACK=%,%,$$(f
 $(1)_SCRATCH:= $$(if $$(filter SCRATCH=%,$$($(1)_OPTS)),$$(patsubst SCRATCH=%,%,$$(filter SCRATCH=%,$$($(1)_OPTS))),zos_scratch:16)
 $(1)_SCRATCHARG := $$(if $$($(1)_SCRATCH), --scratch $$($(1)_SCRATCH),)
 $(1)_SEGMENTS := $$(if $$(filter SEGMENTS=%,$$($(1)_OPTS)),$$(patsubst SEGMENTS=%,%,$$(filter SEGMENTS=%,$$($(1)_OPTS))),)
-$(1)_SEGMENTSARG := $$(if $$($(1)_SEGMENTS), --segments $$($(1)_SEGMENTS),)
-$(1)_SEGMENTSDEP := $$(if $$($(1)_SEGMENTS), $$($(1)_SEGMENTS),)
+$(1)_FAR    := $$(if $$(filter FAR=%,$$($(1)_OPTS)),$$(patsubst FAR=%,%,$$(filter FAR=%,$$($(1)_OPTS))),)
+$(1)_FARSRC := $$(subst :, ,$$($(1)_FAR))
+$(1)_FARCOBJS := $$(addprefix $$($(1)_OBJDIR)/,$$(patsubst %.c,%.rel,$$(notdir $$(filter %.c,$$($(1)_FARSRC)))))
+$(1)_FARAOBJS := $$(addprefix $$($(1)_OBJDIR)/,$$(patsubst %.asm,%.rel,$$(notdir $$(filter %.asm,$$($(1)_FARSRC)))))
+$(1)_FAROBJS  := $$($(1)_FARCOBJS) $$($(1)_FARAOBJS)
+# Without SEGMENTS= the rule declares the one far-code segment the linked
+# _FAR_CODE area becomes; a program with several far segments (or a far
+# BSS) declares them itself through SEGMENTS=.
+$(1)_FARDECL := $$(if $$($(1)_FAR),$$(if $$($(1)_SEGMENTS),,$$($(1)_OBJDIR)/$(1).far.json),)
+$(1)_SEGARGSRC := $$(if $$($(1)_SEGMENTS),$$($(1)_SEGMENTS),$$($(1)_FARDECL))
+$(1)_SEGMENTSARG := $$(if $$($(1)_SEGARGSRC), --segments $$($(1)_SEGARGSRC),)
+$(1)_SEGMENTSDEP := $$(if $$($(1)_SEGARGSRC), $$($(1)_SEGARGSRC),)
 $(1)_ENTRY  := $$(if $$(filter ENTRY=%,$$($(1)_OPTS)),$$(patsubst ENTRY=%,%,$$(filter ENTRY=%,$$($(1)_OPTS))),zos_entry)
 # The fixed SDK area is 68 bytes (_ZOS_SDK_DATA in runtime.asm), so the
 # ordinary layout reserves 0100h-0143h and starts code at 0144h.  A program
@@ -125,7 +145,7 @@ $(1)_NOCRT0 := $$(if $$(filter NO_CRT0=1,$$($(1)_OPTS)),1,)
 $(1)_STAGE  := $$(if $$(filter STAGE=1,$$($(1)_OPTS)),1,)
 $(1)_INC    := $$(if $$(filter INCLUDES=%,$$($(1)_OPTS)),$$(patsubst INCLUDES=%,%,$$(filter INCLUDES=%,$$($(1)_OPTS))),)
 $(1)_INCFLAGS := $$(patsubst %, -I%,$(subst :, ,$$($(1)_INC)))
-$(1)_LINKOBJS := $$(if $$($(1)_NOCRT0),,$$(ZEX_CRT0)) $$(ZEX_RUNTIME) $$($(1)_OBJS)
+$(1)_LINKOBJS := $$(if $$($(1)_NOCRT0),,$$(ZEX_CRT0)) $$(ZEX_RUNTIME) $$($(1)_OBJS) $$($(1)_FAROBJS)
 $(1)_ZEX    := $$(ZEX_USER_ROOT)/$(1).zex
 
 $$($(1)_OBJDIR):
@@ -138,12 +158,30 @@ $$($(1)_COBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.c $$($(1)_HEADERS) \
 $$($(1)_AOBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.asm | $$($(1)_OBJDIR)
 	$(SDASZ80) $(ZEX_ASFLAGS) $$($(1)_INCFLAGS) -I$(2) -o $$@ $$<
 
+# Far-code objects (package 44b): the same compile with --codeseg
+# FAR_CODE, so their _FAR_CODE area is based at 8000h by the link script.
+$$($(1)_FARCOBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.c $$($(1)_HEADERS) \
+		| $$($(1)_OBJDIR)
+	$(SDCC) $(ZEX_CFLAGS) --codeseg FAR_CODE $$($(1)_INCFLAGS) -I $(2) -c $$< -o $$@
+
+$$($(1)_FARAOBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.asm | $$($(1)_OBJDIR)
+	$(SDASZ80) $(ZEX_ASFLAGS) $$($(1)_INCFLAGS) -I$(2) -o $$@ $$<
+
+ifneq ($$($(1)_FARDECL),)
+# The default far-segment declaration: the linked _FAR_CODE area becomes
+# segment id 1 (regenerated when the rule changes, so an id/bss edit is
+# never masked by a stale file).
+$$($(1)_FARDECL): $(ZOS_SDK_ROOT)/zex.mk | $$($(1)_OBJDIR)
+	@printf '%s\n' '[{"id": 1, "kind": "FAR_CODE", "area": "_FAR_CODE", "bss_size": 0}]' > $$@
+endif
+
 $$($(1)_OBJDIR)/$(1).lk: $$($(1)_LINKOBJS) $$(ZEX_LIBZOS) $(ZOS_SDK_ROOT)/zex.mk | $$($(1)_OBJDIR)
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
 	  printf '%s\n' '-i $$($(1)_OBJDIR)/$(1).ihx'; \
 	  printf '%s\n' '-b _ZOS_SDK_DATA = $$($(1)_LOWBASE)'; \
 	  printf '%s\n' '-b _CODE = $$($(1)_CODEBASE)'; \
+	  $$(if $$($(1)_FAR),printf '%s\n' '-b _FAR_CODE = 0x8000';,) \
 	  printf '%s\n' $$($(1)_LINKOBJS); \
 	  printf '%s\n' '-l $$(ZEX_LIBZOS)'; \
 	  printf '%s\n' '-e'; \

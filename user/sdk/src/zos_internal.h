@@ -1,9 +1,9 @@
 /* ZephyrOS libzos internal: the shared argument-block overlay.
  *
- * The FS/exec wrappers and the extended-memory wrappers (package 43)
- * build every packed block here and marshal it through the shared
- * low-window scratch defined in runtime.asm.  This header is private to
- * user/sdk/src and is never installed.
+ * The FS/exec wrappers and the extended-memory wrappers (packages 43,
+ * 44a and 44b) build every packed block here and marshal it through the
+ * shared low-window scratch defined in runtime.asm.  This header is
+ * private to user/sdk/src and is never installed.
  */
 
 #ifndef ZOS_SRC_INTERNAL_H
@@ -32,6 +32,7 @@ union zos_syscall_block {
 	struct zos_xmem_info_args  xmem_info;
 	struct zos_xmem_map_args   xmem_map;
 	struct zos_seg_info_args   seg_info;
+	struct zos_seg_map_args    seg_map;
 };
 
 extern union zos_syscall_block zos_scratch;

@@ -322,11 +322,19 @@ void process_bank_release(uint8_t bank);
 #define ZOS_AUX_SLOT_BASE(slot) \
 	((uint16_t)((uint16_t)(slot) * ZOS_AUX_SLOT_SIZE))
 
-/* Reserve `slots` contiguous slots (1..4; `mappable` selects the aperture
- * slice: one or two slots in 4-5) for `pid`.  Returns 0 with the bank and
- * slot written, or -ZOS_EINVAL for a bad request or -ZOS_ENOSPC when no
- * bank has a fitting run. */
-int process_aux_alloc(uint8_t pid, uint8_t slots, uint8_t mappable,
+/* What an allocation is for (package 44b): a data object prefers the
+ * window-speed slots, a mappable object lives in the aperture slice, and
+ * a far-code segment is linked at 8000h so it takes slot 4 (slots 4-5
+ * when it is over 8 KiB) - which is what keeps one far-code segment per
+ * auxiliary bank. */
+#define ZOS_AUX_PLACE_DATA     0u
+#define ZOS_AUX_PLACE_MAPPABLE 1u
+#define ZOS_AUX_PLACE_FAR      2u
+
+/* Reserve `slots` contiguous slots (1..4; `place` is ZOS_AUX_PLACE_*) for
+ * `pid`.  Returns 0 with the bank and slot written, or -ZOS_EINVAL for a
+ * bad request or -ZOS_ENOSPC when no bank has a fitting run. */
+int process_aux_alloc(uint8_t pid, uint8_t slots, uint8_t place,
 		      uint8_t *bank, uint8_t *slot);
 
 /* Release `slots` slots starting at `slot` for `pid`.  Slots the pid does

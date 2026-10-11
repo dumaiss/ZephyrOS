@@ -5,14 +5,15 @@
  * streams the image through FILE calls), makes one up-front feasibility
  * check from the v2 header (geometry, segment count and slot total,
  * table/payload placement), allocates the lowest free process slot,
- * application bank and the container's `DATA` segments as extended-memory
- * objects, and only then constructs the child's bank: the page-zero RST
- * 30h vector at 0030h, the primary image at 0100h, zero BSS, each
- * segment's payload and zero BSS.  Nothing else is pre-zeroed (36.19):
- * there is no whole-bank clear and no zeroing of xmem objects.  The
- * kernel launcher and SYS_EXEC both use it; the common launch gate
- * (kernel/process/launch.asm) then enters the child and restores the
- * launcher on exit.
+ * application bank and the container's segments - `DATA` segments as
+ * extended-memory objects and `FAR_CODE` segments in the aperture slice
+ * of their own auxiliary banks (one far-code segment per bank) - and only
+ * then constructs the child's bank: the page-zero RST 30h vector at
+ * 0030h, the primary image at 0100h, zero BSS, each segment's payload and
+ * zero BSS.  Nothing else is pre-zeroed (36.19): there is no whole-bank
+ * clear and no zeroing of xmem objects.  The kernel launcher and SYS_EXEC
+ * both use it; the common launch gate (kernel/process/launch.asm) then
+ * enters the child and restores the launcher on exit.
  *
  * Every failure path rolls the slot back to FREE, releases the bank, the
  * child's segments/objects and unbinds the source; a partially written
@@ -282,9 +283,11 @@ int zex_validate_header(const struct zex_header *header, uint32_t file_size,
 }
 
 /* Protective bounds for one segment row, checked before the row is
- * allocated or copied: a known kind, a non-empty image + BSS within the
- * largest object, zero reserved fields and a payload inside the file.
- * The packer proves the same geometry on the host. */
+ * allocated or copied: a known kind, a non-empty image + BSS that fits its
+ * placement (a DATA segment the four non-aperture slots of one bank, a
+ * FAR_CODE segment the 16 KiB aperture slice), zero reserved fields and a
+ * payload inside the file.  The packer proves the same geometry on the
+ * host. */
 int zex_validate_segment(const struct zex_segment *segment,
 			 uint32_t file_size)
 {
@@ -293,8 +296,8 @@ int zex_validate_segment(const struct zex_segment *segment,
 	if (segment == (const struct zex_segment *)0) {
 		return ZEX_EXEC_ERR_ARG;
 	}
-	/* FAR_CODE is the package-44b kind; this loader refuses it. */
-	if (segment->kind != ZEX_SEG_KIND_DATA) {
+	if (segment->kind != ZEX_SEG_KIND_DATA &&
+	    segment->kind != ZEX_SEG_KIND_FAR_CODE) {
 		return ZEX_EXEC_ERR_SEG_KIND;
 	}
 	if (segment->image_size == 0 || segment->reserved0 != 0u ||
@@ -302,7 +305,9 @@ int zex_validate_segment(const struct zex_segment *segment,
 		return ZEX_EXEC_ERR_SEGMENT;
 	}
 	total = (uint32_t)segment->image_size + segment->bss_size;
-	if (total > ZEX_SEG_MAX_SIZE) {
+	if (total > (segment->kind == ZEX_SEG_KIND_FAR_CODE
+			     ? ZEX_SEG_MAX_FAR_SIZE
+			     : ZEX_SEG_MAX_SIZE)) {
 		return ZEX_EXEC_ERR_SEGMENT;
 	}
 	if ((uint32_t)segment->payload_offset + segment->image_size >
@@ -526,7 +531,9 @@ static int exec_load_image(const struct vfs_descriptor *file,
 	return ZEX_EXEC_OK;
 }
 
-/* Stream one segment's payload into its object and zero its BSS. */
+/* Stream one segment's payload into its bank slots (a `DATA` object or a
+ * `FAR_CODE` aperture slice; both start at their slot base) and zero its
+ * BSS. */
 static int exec_load_segment(const struct vfs_descriptor *file,
 			     const struct zex_segment *segment, uint8_t bank,
 			     uint8_t slot)
@@ -685,10 +692,12 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 		? PROCESS_FLAG_KERNEL_PARENT : 0;
 	process_table[pid].exit_status = 0;
 
-	/* Place the container's DATA segments as the child's extended-memory
-	 * objects before the bank is touched (36.18): a refusal is a clean
-	 * NOSPACE rollback, and a later copy failure releases them through
-	 * process_slot_release() -> zos_xmem_release_process(). */
+	/* Place the container's segments before the bank is touched
+	 * (36.18): a refusal is a clean NOSPACE rollback, and a later copy
+	 * failure releases them through process_slot_release() ->
+	 * zos_xmem_release_process().  A DATA segment becomes the child's
+	 * extended-memory object; a FAR_CODE segment takes the aperture
+	 * slice of an auxiliary bank (its handle stays 0). */
 	error = ZEX_EXEC_OK;
 	for (i = 0u; i < zex_pending_header.segment_count; ++i) {
 		const struct zex_segment *segment = &zex_pending_segments[i];

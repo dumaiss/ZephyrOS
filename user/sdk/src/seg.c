@@ -1,8 +1,11 @@
-/* ZephyrOS libzos: ZEX v2 segment wrapper (package 44a).
+/* ZephyrOS libzos: ZEX v2 segment wrappers (packages 44a/44b).
  *
- * The 4-byte argument block is marshalled through the shared low-window
+ * The argument blocks are marshalled through the shared low-window
  * scratch union (zos_internal.h) and the raw gate stub
  * (user/sdk/src/ipcgate.asm), exactly like the extended-memory family.
+ * `zos_far_call` is the far-call helper (architecture 36.17): map the
+ * segment, write the token to the memory-control port, make the plain
+ * CALL and restore the previous latch.
  */
 
 #include "zos.h"
@@ -17,4 +20,32 @@ int zos_seg_info(unsigned int segment, struct zos_seg_info *out)
 	zos_scratch.seg_info.reserved = 0u;
 	zos_scratch.seg_info.buffer = (unsigned int)out;
 	return zos_ipc_raw(ZOS_SYSCALL_SEG_INFO, &zos_scratch.seg_info);
+}
+
+int zos_seg_map(unsigned int segment)
+{
+	if (segment > 0xFFu) {
+		return -ZOS_EINVAL;
+	}
+	zos_scratch.seg_map.segment = (unsigned char)segment;
+	zos_scratch.seg_map.reserved = 0u;
+	return zos_ipc_raw(ZOS_SYSCALL_SEG_MAP, &zos_scratch.seg_map);
+}
+
+int zos_far_call(unsigned int segment, zos_far_fn entry, int a, int b)
+{
+	int token;
+	unsigned char saved;
+
+	if (entry == (zos_far_fn)0) {
+		return -ZOS_EINVAL;
+	}
+	token = zos_seg_map(segment);
+	if (token < 0) {
+		return token;
+	}
+	saved = zos_aperture_open((unsigned char)token);
+	a = entry(a, b);
+	zos_aperture_close(saved);
+	return a;
 }

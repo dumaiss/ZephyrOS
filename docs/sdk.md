@@ -32,16 +32,19 @@ abi/zos/                  the public native ABI (one copy, all builds)
 
 user/sdk/
   include/zos.h           the umbrella header a program includes
-  include/zos/            console.h fs.h process.h diag.h
+  include/zos/            console.h fs.h ipc.h process.h diag.h seg.h xmem.h
   include/zlibc/          string.h fmt.h stdarg.h
   src/crt0.asm            C startup: startup block, argv, main, SYS_EXIT
   src/runtime.asm         shared argument scratch + error mapper
   src/gate.asm            exit/getinfo gate stubs
   src/fsgate.asm          filesystem gate stub
   src/diaggate.asm        diagnostic gate stubs
+  src/sdcc_calls.asm      the indirect-call trampolines the far call emits
   src/args.c              zos_args(), zos_split()
   src/fs.c                zos_open/zos_read/... wrappers
   src/exec.c              zos_exec()
+  src/xmem.c              extended-memory and aperture wrappers
+  src/seg.c               ZEX v2 segment wrappers, zos_far_call
   src/console_service.c   console-service client (write/read/poll/putc)
   src/console_io.c        zos_putc/zos_puts/zos_getc/zos_read_line
   src/zlibc/              one archive member per function
@@ -50,7 +53,7 @@ user/sdk/
   template/hello.c        the copyable minimal program
 
 user/monitor/             monitor program + monitor-private helpers
-user/helloworld/          demos (hello.c) and their Makefile fragment
+user/helloworld/          demos (hello.c, fardemo.c) and their Makefile fragment
 ```
 
 `user/monitor/` keeps only what is specific to the monitor: its command
@@ -66,8 +69,8 @@ sdcc -mz80 -c --nostdinc --Werror -I abi -I user/sdk/include -I <program dir>
 ```
 
 - **`#include "zos.h"`** is the only header a program needs; it pulls in
-  `zos/console.h`, `zos/fs.h`, `zos/process.h`, `zos/diag.h`,
-  `zlibc/string.h` and `zlibc/fmt.h`.
+  `zos/console.h`, `zos/fs.h`, `zos/ipc.h`, `zos/process.h`, `zos/diag.h`,
+  `zos/seg.h`, `zos/xmem.h`, `zlibc/string.h` and `zlibc/fmt.h`.
 - The SDK's `zos/*.h` headers include the matching **`abi/zos/*.h`**
   header, so the ABI declarations exist exactly once.  SDCC resolves a
   quoted include in the including file's own directory first, which is why
@@ -107,7 +110,8 @@ manifest from the link map, packs and validates
 | `CODEBASE=ADDR` | `0x0144` | base of executable code, immediately after the ordinary low-data area (`0x0159` in the `ZOS_NS_HANDLES` variant) |
 | `STAGE=1` | off | copy the packed program into `$(MODULES)` so a recovery manifest can name it |
 | `INCLUDES=a:b` | empty | extra include roots (colon separated), for test-owned headers only |
-| `SEGMENTS=FILE` | none | a JSON list of ZEX v2 `DATA` segment declarations (`id`, `kind`, `input`, `bss_size`); `FILE` is a build prerequisite and each payload `input` resolves against the program's object directory |
+| `SEGMENTS=FILE` | none | a JSON list of ZEX v2 segment declarations: `DATA` rows (`id`, `kind`, `input`, `bss_size`) and `FAR_CODE` rows (`id`, `kind`, `area`, `bss_size`); `FILE` is a build prerequisite and each payload `input` resolves against the program's object directory |
+| `FAR=SRC:SRC` | none | far-code sources (relative to `DIR`) placed in `_FAR_CODE`, which the link bases at `8000h`; a `.c` source is compiled with `--codeseg FAR_CODE` and an `.asm` source opens `.area _FAR_CODE` itself.  Without `SEGMENTS=` the rule declares the one `FAR_CODE` segment (id 1) for it |
 
 The rule file is a prerequisite of the archive and of every link script,
 so editing it (a new source, a changed flag) re-archives `libzos` from
@@ -119,9 +123,16 @@ There is **no hand-written manifest**: `tools/zexmanifest.py` computes
 `entry_offset = ENTRY - 0100h` from the link map, and `zexpack` validates
 the packed container against the map's symbols (including the scratch
 window rule).  `SEGMENTS=FILE` merges auxiliary segment declarations;
-the packer derives each segment's `image_size` from its payload file and
-lays out the 36-byte v2 header, the table and the payloads
-(`docs/zex-format.md`).
+the packer derives each `DATA` segment's `image_size` from its payload
+file and each `FAR_CODE` segment's from the map's `l__<area>` (whose
+`s__<area>` must be `8000h`), then lays out the 36-byte v2 header, the
+table and the payloads (`docs/zex-format.md`).
+
+A rule line with `FAR=` also switches on the **36.17 link rule**: the
+packer proves the primary image and BSS end below `8000h` and the stack
+base sits at or above `C000h`, so a program that uses far code keeps
+`8000h-BFFFh` for the aperture alone.  `fardemo` (section 10) is the
+smallest program that links that way.
 
 ## 4. crt0, argv and exit
 
@@ -381,6 +392,31 @@ member and no other build links, so that variant's fixed low area is 89
 bytes and its default code base moves to `0x0159` (`zex.mk`
 `ZEX_SDK_LOW_SIZE`, `ZEX_DEFAULT_CODEBASE`).
 
+`zos/xmem.h` (`xmem.c`) wraps the extended-memory family
+(`zos_xmem_alloc`/`_free`/`_read`/`_write`/`_info`/`_map`) and the two
+register-only aperture helpers `zos_aperture_open(token)` /
+`zos_aperture_close(previous)` (`docs/abi.md` section 14).
+`zos/seg.h` (`seg.c`) wraps the ZEX v2 segment family:
+
+```c
+int zos_seg_info(unsigned int segment, struct zos_seg_info *out);
+int zos_seg_map(unsigned int segment);   /* FAR_CODE token, >= 1      */
+typedef int (*zos_far_fn)(int, int);
+int zos_far_call(unsigned int segment, zos_far_fn entry, int a, int b);
+```
+
+`zos_far_call` is the **far-call helper** (architecture 36.17): it maps
+the program's own `FAR_CODE` segment, opens the aperture onto it, makes
+the plain `CALL` to the linked far entry and restores the caller's latch
+exactly.  The primary half takes the far entry's address from the
+program's own link, so no relocation and no address arithmetic is
+involved; the far half may call primary code directly (its address is
+outside the aperture) and issue its own syscalls, whose buffers follow
+the buffer-identity rule while the aperture is open.  An SDCC indirect
+call to an address the compiler cannot see needs the trampolines in
+`sdcc_calls.asm` (`___sdcc_call_iy`/`___sdcc_call_hl`), which is why the
+archive carries that one assembly member.
+
 ## 7. Memory layout
 
 ```text
@@ -396,6 +432,9 @@ bytes and its default code base moves to `0x0159` (`zex.mk`
 0100h-1FFFh           syscall argument window: the shared scratch and
                       every libzos marshalling block (the FS block, the
                       IPC lookup/call blocks) must live entirely inside it
+8000h-BFFFh           the aperture slice: with the aperture open this
+                      names a far bank - the program's FAR_CODE segment
+                      (linked at 8000h) or a mappable object
 ```
 
 The rule links `runtime.rel` explicitly in every program and fixes its
@@ -414,6 +453,14 @@ pin.  The IPC caller-buffer probe sets `LOWBASE=0x0300` and
 window itself as a copy destination, and the only program in the
 tree that links that way.
 
+A program built with `FAR=` moves its far code out of this map entirely:
+the `_FAR_CODE` area is linked at `8000h` and becomes a `FAR_CODE`
+segment, so the primary image, its BSS and the whole stack stay inside
+`0100h-7FFFh`/`C000h-DFFFh` and the aperture `8000h-BFFFh` is free for
+the far bank.  `fardemo` (section 10) is the demo; the far code is
+executed in place through the mode-10 aperture, so it costs no primary
+bank space at all.
+
 ## 8. Which member pulls in what
 
 `libzos` is an archive: a member is only linked when a symbol it defines is
@@ -429,7 +476,9 @@ still undefined.  The observed pulls (from the link maps) are:
 | `zos_ipc_lookup`, `zos_ipc_call` | `ipc` + `ipcgate` | the resident-service client and its gate stub |
 | `zos_ipc_bind`, `zos_ipc_unbind`, `zos_ns_enum` | `ipc` + `ipcgate` + `nsgate` | the `ZOS_NS_HANDLES` variant: the three object/namespace blocks (`nsgate` is a member only that variant links; the runtime's stage-3 blocks stay in `runtime`) |
 | `zos_exec` | `exec` + `fsgate` | shares the FS argument block and gate |
-| `zos_seg_info` | `seg` | the ZEX v2 segment record; shares the raw gate stub |
+| `zos_seg_info`, `zos_seg_map` | `seg` | the ZEX v2 segment record and the `FAR_CODE` aperture token; shares the raw gate stub |
+| `zos_far_call` | `seg` + the program's far objects | maps, calls and restores; the far entry's address comes from the program's own link |
+| an indirect call the compiler cannot bind at link time | `sdcc_calls` | `___sdcc_call_iy`/`___sdcc_call_hl` trampolines (SDCC emits these calls when a function pointer is not a constant) |
 | `zex_diag_*` | `zos_diaggate` | the diagnostic gate stubs |
 | `zos_printf` | `printf`, `strlen`, and the `*oa` formatters it needs (`utoa`, `ultoa`, `itoa`, `ltoa`) | `printf` is the largest member; a program that only needs a greeting can use `zos_puts` and link none of it |
 | `/` or `%` on any integer type | `sdcc_arith` / `sdcc_arith_signed` (+ their `*_entries` stubs) | only when the compiler emits a helper call |
@@ -448,8 +497,14 @@ above:
 - every declared program's first source includes `zos.h`, every quoted
   include resolves inside `{program dir, user/sdk/include, abi,
   INCLUDES=...}` and none resolves into `include/`, `kernel/`, `drivers/`,
-  `platform/`, `fs/` or `services/`;
-- `zex.mk` compiles with `-I abi -I $(ZOS_SDK_INCLUDE)` and nothing else;
+  `platform/`, `fs/` or `services/` - `FAR=` sources exactly as the
+  ordinary ones;
+- `zex.mk` compiles with `-I abi -I $(ZOS_SDK_INCLUDE)` and nothing else,
+  compiles far sources with `--codeseg FAR_CODE` and bases `_FAR_CODE` at
+  `8000h`;
+- `zexpack` refuses a `FAR_CODE` row that is not based at `8000h`, over
+  16 KiB, overlapping another far area, or whose program's primary image,
+  BSS or stack reaches into `8000h-BFFFh`;
 - `libzos` has one member per source, no kernel object, and no member
   named after kernel code;
 - `hello.zex`'s manifest equals what its link map implies, the container
@@ -491,6 +546,33 @@ The repetition is the evidence, not a fault: it is `hello.zex` being
 loaded from the recovery store, run, exited and torn down by the
 unmodified 28b launcher, with the counters constant every cycle.  A
 single, non-repeating line would mean the program never exited.
+
+The same image also carries **`fardemo.zex`** (`user/helloworld/fardemo.c`
+and its far half `fardemo_far.c`, declared with
+`FAR=fardemo_far.c,STACK=256,STAGE=1`): the smallest complete far-code
+program.  Its primary half maps its own `FAR_CODE` segment with
+`zos_seg_map`, calls the far entry through `zos_far_call` and compares the
+returned latch with the token; the far half writes its line from a
+literal inside the aperture, calls back into primary code and returns
+`(latch << 8) | value`.  Booting an image whose boot program is
+`/SYSTEM/fardemo.zex` (`make BUILD=build-fardemo ZOS_HELLOWORLD_IMAGE=1
+ZOS_BOOT_PROGRAM=/SYSTEM/fardemo.zex
+build-fardemo/zephyros-helloworld.bin`) prints
+
+```text
+fardemo: begin
+fardemo: token 50
+fardemo: hello from the far bank
+fardemo: far result 502B
+fardemo: PASS
+```
+
+The token is the aperture latch `P = 7 - bank` for the bank the loader
+chose (bank 5 here, so page `2`); the far call returns that latch plus the
+primary value the far half computed.  The far code runs in place through
+the aperture, so none of it is in the primary image, and the packer proved
+before the link that this program's image, BSS and stack stay outside
+`8000h-BFFFh`.
 
 ## 11. M10 and later
 

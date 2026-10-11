@@ -12,8 +12,12 @@ Coverage:
   content outside the declared image, entry/BSS/scratch/geometry drift,
   and produces byte- and report-identical output on repeat runs;
 * DATA-segment packing: the table rows, payload offsets, slot total and
-  a container over 64 KiB; the manifest refusals (far code, id order,
+  a container over 64 KiB; the manifest refusals (unknown kinds, id order,
   empty/oversized payloads, too many slots);
+* FAR_CODE packing: the payload comes from the program's linked `_FAR_CODE`
+  area (one or several segment declarations), the area must be linked at
+  8000h and fit the 16 KiB aperture, and the 36.17 rule keeps the primary
+  image, BSS and stack outside 8000h-BFFFh;
 * the real zextest/outcome artifacts: the packed containers validate,
   their reports match the bytes, the subsystem acceptance ROMFS stores
   identical payloads, and the generated layout header matches the
@@ -79,6 +83,7 @@ class TestZexConstantParity(unittest.TestCase):
             "ZEX_MAX_TOTAL_SLOTS": zexpack.MAX_TOTAL_SLOTS,
             "ZEX_SEG_SLOT_SIZE": zexpack.SEG_SLOT_SIZE,
             "ZEX_SEG_MAX_SIZE": zexpack.SEG_MAX_SIZE,
+            "ZEX_SEG_MAX_FAR_SIZE": zexpack.SEG_MAX_FAR_SIZE,
             "ZEX_SEG_KIND_FAR_CODE": zexpack.KIND_FAR_CODE,
             "ZEX_SEG_KIND_DATA": zexpack.KIND_DATA,
         }
@@ -379,13 +384,22 @@ class TestSegmentPacking(unittest.TestCase):
                            0x10000)
         self.assertEqual(result["size"], len(data))
 
-    def test_far_code_kind_refused(self):
-        self.program.write_payload("seg1.bin", self.payload1)
+    def test_far_code_without_an_area_refused(self):
         with self.assertRaises(zexpack.ZexError) as caught:
             self.program.pack(segments=[
                 {"id": 1, "kind": "FAR_CODE", "input": "seg1.bin",
                  "bss_size": 0}])
-        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_SEG_KIND")
+        self.assertIn("'area'", str(caught.exception))
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_ARG")
+
+    def test_data_with_an_area_refused(self):
+        self.program.write_payload("seg1.bin", self.payload1)
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(segments=[
+                {"id": 1, "kind": "DATA", "input": "seg1.bin",
+                 "area": "_FAR_CODE", "bss_size": 0}])
+        self.assertIn("not 'area'", str(caught.exception))
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_ARG")
 
     def test_unknown_kind_refused(self):
         self.program.write_payload("seg1.bin", self.payload1)
@@ -457,6 +471,130 @@ class TestSegmentPacking(unittest.TestCase):
         self.assertIn("segments 2/2 slots", text)
         self.assertIn("segment 1  kind DATA  image 64  bss 4", text)
         self.assertIn("segment 2  kind DATA  image 96  bss 96", text)
+
+
+class TestFarCodePacking(unittest.TestCase):
+    """The ZEX v2 FAR_CODE path (package 44b): the SDK links one
+    `_FAR_CODE` area at 8000h, the packer takes its bytes out of the
+    program's IHX and enforces the 36.17 aperture link rule."""
+
+    def setUp(self):
+        self.program = SyntheticProgram()
+        self.far = bytes([0x3E, 0x5A, 0xC9])  # LD A,5Ah / RET
+
+    def _declaration(self, **overrides):
+        far = {"id": 1, "kind": "FAR_CODE", "area": "_FAR_CODE",
+               "bss_size": 0}
+        far.update(overrides)
+        return [far]
+
+    def _inputs(self, far_bytes=None, far_base=zexpack.FAR_BASE,
+                area="_FAR_CODE"):
+        far_bytes = self.far if far_bytes is None else far_bytes
+        mem = dict(self.program.mem)
+        for index, byte in enumerate(far_bytes):
+            mem[far_base + index] = byte
+        symbols = dict(self.program.symbols)
+        symbols["s_" + area] = far_base
+        symbols["l_" + area] = len(far_bytes)
+        return mem, symbols
+
+    def test_far_segment_packs_from_the_linked_area(self):
+        mem, symbols = self._inputs()
+        out_path, result = self.program.pack(mem=mem, symbols=symbols,
+                                             segments=self._declaration())
+        data = open(out_path, "rb").read()
+        fields, _geo = zexpack.validate_image(data)
+        self.assertEqual(fields["segment_count"], 1)
+        row = zexpack.parse_segment_row(data,
+                                        fields["segment_table_offset"])
+        self.assertEqual(row["kind"], zexpack.KIND_FAR_CODE)
+        self.assertEqual(row["image_size"], len(self.far))
+        self.assertEqual(row["bss_size"], 0)
+        self.assertEqual(
+            data[row["payload_offset"]:
+                 row["payload_offset"] + len(self.far)], self.far)
+        self.assertEqual(result["segments"][0]["kind"], "FAR_CODE")
+        self.assertEqual(result["segments"][0]["sha256"],
+                         hashlib.sha256(self.far).hexdigest())
+
+    def test_several_far_segments_from_one_area(self):
+        mem, symbols = self._inputs()
+        segments = self._declaration() + self._declaration(id=2)
+        out_path, _result = self.program.pack(mem=mem, symbols=symbols,
+                                              segments=segments)
+        data = open(out_path, "rb").read()
+        fields, _geo = zexpack.validate_image(data)
+        self.assertEqual(fields["segment_count"], 2)
+        self.assertEqual(fields["total_segment_slots"], 2)
+        rows = [zexpack.parse_segment_row(
+            data, fields["segment_table_offset"] + i * 16) for i in range(2)]
+        self.assertEqual([row["kind"] for row in rows],
+                         [zexpack.KIND_FAR_CODE, zexpack.KIND_FAR_CODE])
+        for row in rows:
+            self.assertEqual(
+                data[row["payload_offset"]:
+                     row["payload_offset"] + len(self.far)], self.far)
+
+    def test_far_area_must_be_linked_at_8000h(self):
+        mem, symbols = self._inputs(far_base=0x8100)
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(mem=mem, symbols=symbols,
+                              segments=self._declaration())
+        self.assertIn("linked at", str(caught.exception))
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_ARG")
+
+    def test_far_area_over_the_aperture_refused(self):
+        size = zexpack.SEG_MAX_FAR_SIZE + 1
+        mem, symbols = self._inputs(far_bytes=bytes(size))
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(mem=mem, symbols=symbols,
+                              segments=self._declaration())
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_SEGMENT")
+
+    def test_far_image_plus_bss_limit_enforced(self):
+        mem, symbols = self._inputs(
+            far_bytes=bytes(zexpack.SEG_MAX_FAR_SIZE))
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(mem=mem, symbols=symbols,
+                              segments=self._declaration(bss_size=1))
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_SEGMENT")
+
+    def test_far_bytes_outside_the_declared_area_refused(self):
+        mem, symbols = self._inputs()
+        mem[zexpack.FAR_BASE + 0x40] = 0x77
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(mem=mem, symbols=symbols,
+                              segments=self._declaration())
+        self.assertIn("outside the declared image", str(caught.exception))
+
+    def test_linked_bytes_above_the_aperture_need_a_far_segment(self):
+        mem = dict(self.program.mem)
+        mem[zexpack.FAR_BASE] = 0x77
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(mem=mem, symbols=self.program.symbols)
+        self.assertIn("outside the declared image", str(caught.exception))
+
+    def test_aperture_rule_needs_the_image_under_8000h(self):
+        mem, symbols = self._inputs()
+        symbols["s__DATA"] = zexpack.LOAD_BASE + zexpack.FAR_IMAGE_END
+        symbols["l__DATA"] = 0
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(mem=mem, symbols=symbols,
+                              segments=self._declaration(),
+                              image_size=zexpack.FAR_IMAGE_END, bss_size=0)
+        self.assertIn("outside", str(caught.exception))
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_ARG")
+
+    def test_aperture_rule_needs_the_stack_above_bfffh(self):
+        mem, symbols = self._inputs()
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(mem=mem, symbols=symbols,
+                              segments=self._declaration(),
+                              stack_size=zexpack.STACK_TOP -
+                              zexpack.FAR_STACK_MIN + 1)
+        self.assertIn("outside", str(caught.exception))
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_ARG")
 
 
 class TestZexpackCLI(unittest.TestCase):

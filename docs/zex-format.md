@@ -77,9 +77,11 @@ One 16-byte row per segment, in ascending id order from 1:
   program runs, and `SYS_SEG_INFO` names each one and returns the handle
   that `SYS_XMEM_READ`/`SYS_XMEM_WRITE` use.  A loader segment is
   released only at exit; `SYS_XMEM_FREE` refuses it.
-- **`FAR_CODE` segments** are the package-44b kind (linked at `8000h`,
-  executed in place through the aperture).  This package's loader
-  refuses one with `ZEX_EXEC_ERR_SEG_KIND`.
+- **`FAR_CODE` segments** are linked at `8000h` and executed in place
+  through the aperture (package 44b): the loader places each one in the
+  aperture slice of its own auxiliary bank - one far-code segment per
+  bank (36.17) - and `SYS_SEG_MAP` returns the token that opens it.  A
+  far-code segment has no handle: `SYS_SEG_INFO` reports `0`.
 
 ## 4. Geometry rules
 
@@ -105,8 +107,8 @@ Validated in this order (first violation wins); the codes are also the
 | 15 | `0100h + image_size <= E000h` | `ZEX_EXEC_ERR_IMAGE_END` |
 | 16 | `image_end + bss_size <= E000h` | `ZEX_EXEC_ERR_BSS_END` |
 | 17 | `stack_base >= 0100h` and `stack_base >= bss_end` | `ZEX_EXEC_ERR_COLLISION` |
-| 18 | row kind is `DATA` | `ZEX_EXEC_ERR_SEG_KIND` |
-| 19 | row geometry: non-empty, `image + bss <= 32 KiB`, reserved zero, payload inside the file | `ZEX_EXEC_ERR_SEGMENT` |
+| 18 | row kind is `DATA` or `FAR_CODE` | `ZEX_EXEC_ERR_SEG_KIND` |
+| 19 | row geometry: non-empty, `image + bss` within its kind's limit (`DATA` 32 KiB, `FAR_CODE` 16 KiB), reserved zero, payload inside the file | `ZEX_EXEC_ERR_SEGMENT` |
 | 20 | row ids are `1..segment_count` in order | `ZEX_EXEC_ERR_SEGMENT` |
 | 21 | row slot sums equal `total_segment_slots` | `ZEX_EXEC_ERR_SEG_SLOTS` |
 
@@ -116,10 +118,13 @@ before a slot, a bank or a byte changes.  Checks 15-17 are part of that
 same header validation; checks 18-21 are the protective bounds applied to
 the table as it is read, before anything is allocated.
 
-The slot total is 20 because an auxiliary object is contiguous inside one
-bank, a `DATA` segment occupies at most the four non-aperture slots of
-its bank, and the child's primary bank can never hold auxiliary slots -
-five banks' worth is the most any container can ever place.
+The slot total is 20 because a `DATA` object is contiguous inside one
+bank and takes at most the four non-aperture slots of its bank, and the
+child's primary bank can never hold auxiliary slots - five banks' worth
+is the most a container can place.  The same bound covers far code: a
+`FAR_CODE` segment occupies the aperture slice of its own bank (one far
+segment per bank, at most two slots) and the packer sums every row's
+slots into this one field.
 
 The loader adds these result codes around the geometry checks:
 `ZEX_EXEC_ERR_ARG` (null argument / invalid request),
@@ -159,11 +164,27 @@ without crt0 (the raw-return test child) declares no scratch at all.
 
 A `DATA` segment is declared in the manifest with a raw payload file and
 a BSS size (`SEGMENTS=` on the `zex_program` line); the packer derives
-its `image_size` from the payload file and lays out the table.  Package
-44b extends this with linked far-code areas.
+its `image_size` from the payload file and lays out the table.
 
-`tools/zexpack.py` rejects any violation, so the generic rule cannot pack
-a program that the kernel would later refuse.
+A **`FAR_CODE` segment** is declared with a linker `area` instead
+(`{"id": 1, "kind": "FAR_CODE", "area": "_FAR_CODE", "bss_size": 0}`):
+the rule compiles the program's `FAR=` sources with `--codeseg FAR_CODE`
+and the link bases `_FAR_CODE` at `8000h` (`-b _FAR_CODE = 0x8000`), so
+the area is resolved by the program's own link and the packer takes its
+bytes from the program's IHX (holes zero-filled) using the map's
+`s__FAR_CODE`/`l__FAR_CODE` symbols.  One linked area is therefore one
+segment (id order is manifest order); a program that wants several
+declares several far areas, each based at `8000h` in its own link.  With
+no `SEGMENTS=` the rule generates the one-segment declaration for
+`_FAR_CODE` itself.
+
+Every declaration is checked against the **36.17 link rule**: a program
+with far code must keep its primary image and BSS below `8000h` and its
+stack base at or above `C000h`, so the aperture `8000h-BFFFh` belongs to
+far code alone; a far area's `image + bss` is at most 16 KiB and each
+auxiliary bank holds at most one far segment.  `tools/zexpack.py` rejects
+any violation, so the generic rule cannot pack a program that the kernel
+would later refuse.
 
 ## 6. Load sequence
 
@@ -181,8 +202,11 @@ steps: `process_prepare()` loads, then `process_launch()` enters.
 5. allocate a process slot (fails with `ZEX_EXEC_ERR_NOSPACE` if none is
    free), the child's VFS state and the lowest free application bank
    `0-5`;
-6. allocate each `DATA` segment as an extended-memory object owned by the
-   child (fails with `ZEX_EXEC_ERR_NOSPACE`, rolled back completely);
+6. place the container's segments (fails with `ZEX_EXEC_ERR_NOSPACE`,
+   rolled back completely): a `DATA` segment becomes an extended-memory
+   object owned by the child, a `FAR_CODE` segment takes the aperture
+   slice of its own auxiliary bank (one far segment per bank, token from
+   `SYS_SEG_MAP`, no handle);
 7. write the native page-zero vector at `0030h`: `C3` followed by the
    entry address (the `RST 30h` gateway from `docs/abi.md`);
 8. copy the primary payload in 64-byte chunks from the source through the
@@ -315,7 +339,14 @@ through the startup block (`zos_args`/`zos_split` above).
 
 `user/sdk/include/zos/seg.h` adds `zos_seg_info(segment, &info)`: the
 `SYS_SEG_INFO` wrapper that describes a container segment and hands out
-the `DATA` segment's extended-memory handle (`docs/abi.md` section 15).
+the `DATA` segment's extended-memory handle, and `zos_seg_map(segment)`:
+the `SYS_SEG_MAP` wrapper (`docs/abi.md` section 15) that returns the
+aperture token for one of the caller's own `FAR_CODE` segments.  On top
+of it the SDK offers `zos_far_call(segment, entry, a, b)`: it maps the
+segment, calls the linked far entry `entry(a, b)` in place at `8000h` and
+restores the caller's aperture latch, so primary code reaches far code by
+taking the far function's address in the program's own link (see
+`docs/sdk.md`).
 
 ## 8. Tooling
 

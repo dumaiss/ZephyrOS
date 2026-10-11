@@ -30,8 +30,14 @@ initialized-data areas, keeping the load image deterministic.
 
 A `DATA` segment is emitted from a raw payload file; the loader copies it
 into a process-owned extended-memory object and zeroes its BSS
-(architecture 36.16/36.18).  The `FAR_CODE` kind is package 44b and is
-refused here until that package lands.
+(architecture 36.16/36.18).  A `FAR_CODE` segment is linked at `8000h`
+inside the program's own link (`--codeseg FAR_CODE` in the SDK rule) and
+becomes a bank slice executed in place through the aperture; its
+declaration names the linker `area` (for example `_FAR_CODE`) and this
+tool resolves `s__<area>`/`l__<area>` from the program's map and takes
+those IHX bytes (holes zero-filled).  The 36.17 link rule is enforced
+here: with any far-code segment the primary image, its BSS and the stack
+must stay outside `8000h-BFFFh`.
 
 Packing validates every geometry boundary before emitting a byte; the
 result codes match the kernel reader exactly (include/zephyros/zex.h).
@@ -57,15 +63,18 @@ Manifest (zex-v2):
       "stack_size": 256,
       "scratch": {"symbol": "zos_scratch", "size": 16},
       "segments": [
-        {"id": 1, "kind": "DATA", "input": "seg1.bin", "bss_size": 64}
+        {"id": 1, "kind": "DATA", "input": "seg1.bin", "bss_size": 64},
+        {"id": 2, "kind": "FAR_CODE", "area": "_FAR_CODE", "bss_size": 0}
       ]
     }
 
-`input`/`map`/segment payloads resolve against --objdir (default: the
+`input`/`map`/DATA payloads resolve against --objdir (default: the
 manifest directory).  `scratch` is optional but required by the provided
 user runtime contract: it names the low-window syscall argument block and
-is rejected when it cannot fit in 0100h-1FFFh.  `segments` is optional;
-each segment's `image_size` is the size of its payload file.
+is rejected when it cannot fit in 0100h-1FFFh.  `segments` is optional; a
+DATA segment's `image_size` is the size of its payload file, a FAR_CODE
+segment's is the size of the linked area (`l__<area>`), whose `s__<area>`
+must be `8000h` and at most `SEG_MAX_FAR_SIZE`.
 
 Exit status: 0 success, 1 rejected geometry/manifest, 2 usage error.
 """
@@ -94,6 +103,12 @@ SYSCALL_WINDOW_END = 0x2000
 IMAGE_FILL = 0x00
 SEG_SLOT_SIZE = 0x2000
 SEG_MAX_SIZE = 0x8000
+SEG_MAX_FAR_SIZE = 0x4000
+FAR_BASE = 0x8000
+# The 36.17 link rule for a program with far-code segments: the primary
+# image, its BSS and the whole stack stay outside the aperture.
+FAR_IMAGE_END = 0x8000
+FAR_STACK_MIN = 0xC000
 MAX_SEGMENTS = 8
 MAX_TOTAL_SLOTS = 20
 PAYLOAD_ALIGN = 4
@@ -137,7 +152,7 @@ MANIFEST_KEYS = {
     "format", "name", "input", "map", "entry", "entry_offset",
     "image_size", "bss_size", "stack_size", "scratch", "segments",
 }
-SEGMENT_MANIFEST_KEYS = {"id", "kind", "input", "bss_size"}
+SEGMENT_MANIFEST_KEYS = {"id", "kind", "input", "area", "bss_size"}
 
 SYMBOL_RE = re.compile(r"\s*([0-9A-Fa-f]{8})\s+(\S+)(?:\s+\S+)?\s*$")
 
@@ -350,12 +365,14 @@ def validate_fields(fields, file_size):
 
 def validate_segment_row(row, file_size):
     """Mirror kernel/process/exec.c zex_validate_segment()."""
-    if row["kind"] != KIND_DATA:
+    if row["kind"] not in (KIND_DATA, KIND_FAR_CODE):
         return "ZEX_EXEC_ERR_SEG_KIND"
     if (row["image_size"] == 0 or row["reserved0"] != 0 or
             row["reserved1"] != 0):
         return "ZEX_EXEC_ERR_SEGMENT"
-    if row["image_size"] + row["bss_size"] > SEG_MAX_SIZE:
+    limit = (SEG_MAX_FAR_SIZE if row["kind"] == KIND_FAR_CODE
+             else SEG_MAX_SIZE)
+    if row["image_size"] + row["bss_size"] > limit:
         return "ZEX_EXEC_ERR_SEGMENT"
     if row["payload_offset"] + row["image_size"] > file_size:
         return "ZEX_EXEC_ERR_SEGMENT"
@@ -467,12 +484,14 @@ def _validate_segment_manifest(segments):
             raise ZexError("ZEX_EXEC_ERR_ARG",
                            "unknown segment keys: %s"
                            % ", ".join(sorted(unknown)))
-        for key in ("id", "kind", "input", "bss_size"):
+        for key in ("id", "kind", "bss_size"):
             if key not in segment:
                 raise ZexError("ZEX_EXEC_ERR_ARG",
                                "segment %d is missing '%s'"
                                % (index + 1, key))
-        if not isinstance(segment["input"], str) or not segment["input"]:
+        if segment["kind"] == "DATA" and (
+                not isinstance(segment.get("input"), str)
+                or not segment["input"]):
             raise ZexError("ZEX_EXEC_ERR_ARG",
                            "segment %d input must be a file name"
                            % (index + 1))
@@ -484,12 +503,25 @@ def _validate_segment_manifest(segments):
             raise ZexError("ZEX_EXEC_ERR_ARG",
                            "segment %d bss_size must be non-negative"
                            % (index + 1))
-        if segment["kind"] != "DATA":
-            if segment["kind"] == "FAR_CODE":
-                raise ZexError("ZEX_EXEC_ERR_SEG_KIND",
-                               "segment %d kind FAR_CODE is package 44b; "
-                               "this packer emits DATA segments only"
-                               % (index + 1))
+        if segment["kind"] == "FAR_CODE":
+            # Far code is linked at 8000h: the payload comes from the
+            # program's own IHX far area, named through `area`, not from a
+            # raw payload file.
+            area = segment.get("area")
+            if not isinstance(area, str) or not area:
+                raise ZexError("ZEX_EXEC_ERR_ARG",
+                               "segment %d kind FAR_CODE needs an 'area' "
+                               "name" % (index + 1))
+            if "input" in segment:
+                raise ZexError("ZEX_EXEC_ERR_ARG",
+                               "segment %d kind FAR_CODE takes 'area', not "
+                               "'input'" % (index + 1))
+        elif segment["kind"] == "DATA":
+            if "area" in segment:
+                raise ZexError("ZEX_EXEC_ERR_ARG",
+                               "segment %d kind DATA takes 'input', not "
+                               "'area'" % (index + 1))
+        else:
             raise ZexError("ZEX_EXEC_ERR_SEG_KIND",
                            "segment %d kind %r is unknown"
                            % (index + 1, segment["kind"]))
@@ -532,14 +564,65 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
     stack_size = manifest["stack_size"]
     image_end = LOAD_BASE + image_size
 
-    # Declared image: every linked byte must be inside 0100h..0100h+size.
+    # Far-code segments come out of the program's own linked IHX: resolve
+    # each declared area to its map symbols (`s__<area>`/`l__<area>`) and
+    # take those bytes before the primary image is checked, because far
+    # bytes are linked above the image and are not part of it.  Holes in a
+    # linked area are zero-filled.
+    declared = manifest.get("segments") or []
+    far_ranges = []
+    far_payloads = {}
+    for index, segment in enumerate(declared):
+        if segment["kind"] != "FAR_CODE":
+            continue
+        area = segment["area"]
+        start = symbols.get("s_" + area)
+        length = symbols.get("l_" + area)
+        if start is None or length is None:
+            raise ZexError("ZEX_EXEC_ERR_ARG",
+                           "segment %d: map has no s_%s/l_%s far area"
+                           % (index + 1, area, area))
+        if start != FAR_BASE:
+            raise ZexError("ZEX_EXEC_ERR_ARG",
+                           "segment %d: far area %s is linked at %04Xh; "
+                           "far code is linked at %04Xh"
+                           % (index + 1, area, start, FAR_BASE))
+        if length <= 0 or length > SEG_MAX_FAR_SIZE:
+            raise ZexError("ZEX_EXEC_ERR_SEGMENT",
+                           "segment %d: far area %s is %d bytes, over the "
+                           "%d-byte aperture"
+                           % (index + 1, area, length, SEG_MAX_FAR_SIZE))
+        for other in far_ranges:
+            if other == (start, length):
+                continue
+            if not (start + length <= other[0] or other[0] + other[1] <= start):
+                raise ZexError("ZEX_EXEC_ERR_ARG",
+                               "segment %d: far area %s at %04Xh overlaps "
+                               "the area at %04Xh" % (index + 1, area, start,
+                                                      other[0]))
+        far_ranges.append((start, length))
+        payload = bytearray(length)
+        for addr in range(start, start + length):
+            if addr in mem:
+                payload[addr - start] = mem[addr]
+        far_payloads[index] = bytes(payload)
+
+    def in_far(addr):
+        return any(start <= addr < start + length
+                   for start, length in far_ranges)
+
+    # Declared image: every linked byte is either inside 0100h..image_end
+    # or inside a declared far area.
     outside = [addr for addr in sorted(mem)
-               if addr < LOAD_BASE or addr >= image_end]
+               if not in_far(addr)
+               and (addr < LOAD_BASE or addr >= image_end)]
     if outside:
         raise ZexError(
             "ZEX_EXEC_ERR_ARG",
             "linked content at %04Xh lies outside the declared image "
-            "%04Xh-%04Xh" % (outside[0], LOAD_BASE, image_end - 1))
+            "%04Xh-%04Xh%s"
+            % (outside[0], LOAD_BASE, image_end - 1,
+               " and the declared far areas" if far_ranges else ""))
 
     # Entry symbol must resolve inside the image, exactly where the
     # declared entry offset says (the manifest is the program-side
@@ -589,8 +672,25 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                            "syscall argument window 0100h-1FFFh"
                            % (scratch["symbol"], address, scratch["size"]))
 
+    # The 36.17 link rule for far-using programs: code, stack and data
+    # used while the aperture is open live outside 8000h-BFFFh of the
+    # primary image, so the whole primary image and BSS end at 8000h and
+    # the stack begins at C000h or above.
+    if far_ranges:
+        bss_end = image_end + bss_size
+        stack_base = STACK_TOP - stack_size
+        if (image_end > FAR_IMAGE_END or bss_end > FAR_IMAGE_END or
+                stack_base < FAR_STACK_MIN):
+            raise ZexError(
+                "ZEX_EXEC_ERR_ARG",
+                "far code needs the primary image, BSS and stack outside "
+                "8000h-BFFFh: image ends %04Xh, BSS ends %04Xh, stack base "
+                "%04Xh" % (image_end, bss_end, stack_base))
+
     image = bytearray((IMAGE_FILL,) * image_size)
     for addr, byte in mem.items():
+        if in_far(addr):
+            continue
         image[addr - LOAD_BASE] = byte
     image = bytes(image)
 
@@ -600,31 +700,36 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
     segments = []
     payloads = []
     total_slots = 0
-    for index, declared in enumerate(manifest.get("segments") or []):
+    for index, declared in enumerate(declared):
         if declared["id"] != index + 1:
             raise ZexError("ZEX_EXEC_ERR_SEGMENT",
                            "segment %d declares id %d; ids must be 1..N in "
                            "order" % (index + 1, declared["id"]))
-        payload_path = _resolve(declared["input"], manifest_path, objdir)
-        if not payload_path.is_file():
-            raise ZexError("ZEX_EXEC_ERR_ARG",
-                           "segment %d payload not found: %s"
-                           % (index + 1, payload_path))
-        payload = payload_path.read_bytes()
+        kind = KIND_BY_NAME[declared["kind"]]
+        if kind == KIND_FAR_CODE:
+            payload = far_payloads[index]
+        else:
+            payload_path = _resolve(declared["input"], manifest_path, objdir)
+            if not payload_path.is_file():
+                raise ZexError("ZEX_EXEC_ERR_ARG",
+                               "segment %d payload not found: %s"
+                               % (index + 1, payload_path))
+            payload = payload_path.read_bytes()
         if len(payload) == 0:
             raise ZexError("ZEX_EXEC_ERR_SEGMENT",
                            "segment %d payload is empty" % (index + 1))
-        if len(payload) + declared["bss_size"] > SEG_MAX_SIZE:
+        limit = SEG_MAX_FAR_SIZE if kind == KIND_FAR_CODE else SEG_MAX_SIZE
+        if len(payload) + declared["bss_size"] > limit:
             raise ZexError("ZEX_EXEC_ERR_SEGMENT",
                            "segment %d image + BSS is %d bytes, over the %d "
                            "limit" % (index + 1,
                                       len(payload) + declared["bss_size"],
-                                      SEG_MAX_SIZE))
+                                      limit))
         total_slots += segment_slots(len(payload), declared["bss_size"])
         payloads.append(payload)
         segments.append({
             "id": declared["id"],
-            "kind": KIND_BY_NAME[declared["kind"]],
+            "kind": kind,
             "image_size": len(payload),
             "bss_size": declared["bss_size"],
             "reserved0": 0,

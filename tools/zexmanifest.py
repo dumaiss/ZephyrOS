@@ -12,9 +12,9 @@ size is ever hand-entered:
 The stack size and scratch symbol come from the rule's options or the
 SDK defaults.  The output JSON uses the exact key set tools/zexpack.py
 accepts.  `--segments FILE` merges a JSON list of auxiliary segment
-declarations (id/kind/input/bss_size; the packer resolves the payload
-against the same objdir); the package-44b far-code area tooling extends
-this when far code lands.
+declarations (id/kind/input or area/bss_size; the packer resolves a DATA
+payload against the same objdir and reads a FAR_CODE segment out of the
+program's own linked IHX far area, package 44b).
 
 Usage:
     zexmanifest.py MAP OUT --name NAME [--entry SYM] [--stack N]

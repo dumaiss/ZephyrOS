@@ -374,13 +374,14 @@ class TestSdkBoundary(unittest.TestCase):
         # ESC c display-reset check the console integration image boots
         # (work package 42e); `zex2probe`, `zex2seg` and `zex2big` are the
         # ZEX v2 loader-outcome programs the subsystem process selftest
-        # runs (work package 44a).
+        # runs (work package 44a); `fardemo` is the SDK far-code demo and
+        # `xmem_far` the far-code outcome program (work package 44b).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
-                         ["escc", "fs_child", "fs_selftest", "hello",
-                          "ipc", "ipccopy", "monitor", "ns", "nschild",
-                          "xmem_child", "xmem_selftest",
-                          "zex2big", "zex2probe", "zex2seg",
-                          "zextest"])
+                         ["escc", "fardemo", "fs_child", "fs_selftest",
+                          "hello", "ipc", "ipccopy", "monitor", "ns",
+                          "nschild", "xmem_child", "xmem_far",
+                          "xmem_selftest", "zex2big", "zex2probe",
+                          "zex2seg", "zextest"])
         for name, directory, _sources, _options in programs:
             count = sum(_read(path).count("zex_program,%s," % name)
                         for path in ("Makefile",
@@ -406,6 +407,12 @@ class TestSdkBoundary(unittest.TestCase):
             roots = [os.path.join(ROOT, directory)]
             roots += [os.path.join(ROOT, r) for r in PROGRAM_INCLUDE_ROOTS]
             roots += [os.path.join(ROOT, r) for r in extra]
+            # The far-code sources (FAR=, package 44b) are program
+            # sources too and see exactly the same include surface.
+            for far in _program_options(options, "FAR"):
+                for source in far.split(":"):
+                    if source and source not in sources:
+                        sources = sources + [source]
             for path in _program_files(directory, sources, extra):
                 for include in _quoted_includes(os.path.join(ROOT, path)):
                     found = [r for r in roots
@@ -445,6 +452,37 @@ class TestSdkBoundary(unittest.TestCase):
             if _program_options(options, "NO_CRT0"):
                 self.assertTrue(_program_options(options, "ENTRY"),
                                 "%s owns an entry" % name)
+
+    def test_far_programs_declare_their_sources_and_areas(self):
+        """The FAR= option (package 44b) names the far sources; the rule
+        compiles them with --codeseg FAR_CODE and bases _FAR_CODE at
+        8000h, and without SEGMENTS= it declares the one far segment."""
+        rule = _read(ZEX_MK)
+        self.assertIn("--codeseg FAR_CODE", rule)
+        self.assertIn("-b _FAR_CODE = 0x8000", rule)
+        far_programs = [(name, options) for name, _d, _s, options
+                        in _declared_programs()
+                        if _program_options(options, "FAR")]
+        self.assertEqual(sorted(name for name, _o in far_programs),
+                         ["fardemo", "xmem_far"])
+        for name, options in far_programs:
+            for far in _program_options(options, "FAR"):
+                for source in far.split(":"):
+                    self.assertTrue(
+                        source.endswith(".c") or source.endswith(".asm"),
+                        "%s FAR source %s" % (name, source))
+        # The far segments each program declares exist where the packer
+        # resolves them: the rule's generated declaration for fardemo,
+        # and the checked-in list for the two-segment xmem program.
+        self.assertIn("$(1).far.json", rule)
+        self.assertIn("--codeseg FAR_CODE", rule)
+        segments = json.loads(
+            _read(os.path.join("tests", "xmem",
+                               "xmem_far.segments.json")))
+        self.assertEqual([segment["kind"] for segment in segments],
+                         ["FAR_CODE", "FAR_CODE"])
+        self.assertEqual([segment["area"] for segment in segments],
+                         ["_FAR_CODE", "_FAR_CODE"])
 
     def test_the_moved_headers_have_one_owner(self):
         for name in ("types.h", "errno.h", "syscall.h", "fs.h", "process.h",

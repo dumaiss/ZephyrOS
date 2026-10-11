@@ -122,14 +122,23 @@ static void aux_run_take(uint8_t pid, uint8_t bank, uint8_t first,
 }
 
 /* The candidate runs for one allocation, as first-slot values in
- * preference order (architecture 36.16: a mappable object lives in the
- * aperture slice, slots 4-5; a non-mappable object prefers the
- * window-speed slots 3 and 6, then slots 0-2).  Returns the candidate
+ * preference order (architecture 36.16): a far-code segment is linked at
+ * 8000h so it takes slot 4 (slots 4-5 when it is over 8 KiB), which is
+ * what keeps one far-code segment per auxiliary bank; a mappable object
+ * lives in the aperture slice, slots 4-5; a non-mappable object prefers
+ * the window-speed slots 3 and 6, then slots 0-2.  Returns the candidate
  * count, 0 when the size cannot be placed at all. */
-static uint8_t aux_candidates(uint8_t mappable, uint8_t slots,
+static uint8_t aux_candidates(uint8_t place, uint8_t slots,
 			      uint8_t *firsts)
 {
-	if (mappable != 0u) {
+	if (place == ZOS_AUX_PLACE_FAR) {
+		if (slots == 1u || slots == 2u) {
+			firsts[0] = 4u;
+			return 1u;
+		}
+		return 0u;
+	}
+	if (place == ZOS_AUX_PLACE_MAPPABLE) {
 		if (slots == 1u) {
 			firsts[0] = 4u;
 			firsts[1] = 5u;
@@ -167,14 +176,14 @@ static uint8_t aux_candidates(uint8_t mappable, uint8_t slots,
 }
 
 /* The preferred free run of this class and size in `bank`, if any. */
-static uint8_t aux_bank_run(uint8_t bank, uint8_t mappable, uint8_t slots,
+static uint8_t aux_bank_run(uint8_t bank, uint8_t place, uint8_t slots,
 			    uint8_t *first)
 {
 	uint8_t firsts[5];
 	uint8_t count;
 	uint8_t i;
 
-	count = aux_candidates(mappable, slots, firsts);
+	count = aux_candidates(place, slots, firsts);
 	for (i = 0u; i < count; ++i) {
 		if (aux_run_free(bank, firsts[i], slots) != 0u) {
 			*first = firsts[i];
@@ -184,7 +193,7 @@ static uint8_t aux_bank_run(uint8_t bank, uint8_t mappable, uint8_t slots,
 	return 0u;
 }
 
-int process_aux_alloc(uint8_t pid, uint8_t slots, uint8_t mappable,
+int process_aux_alloc(uint8_t pid, uint8_t slots, uint8_t place,
 		      uint8_t *bank, uint8_t *slot)
 {
 	uint8_t b;
@@ -192,7 +201,8 @@ int process_aux_alloc(uint8_t pid, uint8_t slots, uint8_t mappable,
 
 	if (pid >= PROCESS_TABLE_SIZE || bank == (uint8_t *)0 ||
 	    slot == (uint8_t *)0 || slots == 0u ||
-	    slots > ZOS_AUX_SLOT_COUNT) {
+	    slots > ZOS_AUX_SLOT_COUNT ||
+	    place > ZOS_AUX_PLACE_FAR) {
 		return -ZOS_EINVAL;
 	}
 	/* Pack an existing auxiliary bank first (36.15), highest first. */
@@ -200,7 +210,7 @@ int process_aux_alloc(uint8_t pid, uint8_t slots, uint8_t mappable,
 		if (!aux_bank_open(b) || !process_aux_live(b)) {
 			continue;
 		}
-		if (aux_bank_run(b, mappable, slots, &first) != 0u) {
+		if (aux_bank_run(b, place, slots, &first) != 0u) {
 			aux_run_take(pid, b, first, slots);
 			*bank = b;
 			*slot = first;
@@ -212,7 +222,7 @@ int process_aux_alloc(uint8_t pid, uint8_t slots, uint8_t mappable,
 		if (!aux_bank_open(b) || process_aux_live(b)) {
 			continue;
 		}
-		if (aux_bank_run(b, mappable, slots, &first) != 0u) {
+		if (aux_bank_run(b, place, slots, &first) != 0u) {
 			aux_run_take(pid, b, first, slots);
 			*bank = b;
 			*slot = first;

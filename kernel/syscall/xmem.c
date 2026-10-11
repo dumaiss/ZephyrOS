@@ -1,12 +1,14 @@
 /* ZephyrOS extended-memory syscall services (architecture 36.15-36.18,
- * work packages 43 and 44a).
+ * work packages 43, 44a and 44b).
  *
- * Implements SYS_XMEM_ALLOC / _FREE / _READ / _WRITE / _INFO / _MAP and
- * SYS_SEG_INFO.  A runtime object is process-owned, read/write and
- * non-executable; a loader-created ZEX `DATA` segment is the same object
- * with type ZOS_XMEM_TYPE_SEGMENT and a container id.  The size is
- * rounded up to whole 8-KiB auxiliary slots and the object is contiguous
- * inside one bank (kernel/process/process.c owns the slot map).
+ * Implements SYS_XMEM_ALLOC / _FREE / _READ / _WRITE / _INFO / _MAP,
+ * SYS_SEG_INFO and SYS_SEG_MAP.  A runtime object is process-owned,
+ * read/write and non-executable; a loader-created ZEX segment is the same
+ * object with type ZOS_XMEM_TYPE_SEGMENT and a container id - a `DATA`
+ * segment is reached by handle, a `FAR_CODE` segment is executed in place
+ * through the aperture and its map token comes from SYS_SEG_MAP.  The
+ * size is rounded up to whole 8-KiB auxiliary slots and the object is
+ * contiguous inside one bank (kernel/process/process.c owns the slot map).
  * **Contents are undefined**: nothing here clears a slot (36.19) - a
  * previous object's bytes are what a new one starts with.
  *
@@ -14,8 +16,10 @@
  * freed-and-reused table entry hands out a different handle and a stale
  * or foreign handle is refused before any state changes.  `SYS_XMEM_MAP`
  * returns the aperture token (the latch value mode 10 | Q = caller bank |
- * P = 7 - bank) and the object's aperture address; tokens therefore never
- * name bank 6 or bank 7 and never another process's object.
+ * P = 7 - bank) and the object's aperture address, `SYS_SEG_MAP` the
+ * token of a FAR_CODE segment at its fixed address 8000h; tokens
+ * therefore never name bank 6 or bank 7 and never another process's
+ * object or segment.
  *
  * Copies: every range is checked before a byte moves, then the transfer
  * goes chunk by chunk between the object and the common staging block.
@@ -189,7 +193,10 @@ void zos_xmem_alloc(uint16_t block)
 		zos_syscall_error(ZOS_ENOSPC);
 		return;
 	}
-	if (process_aux_alloc(pid, slots, mappable, &bank, &slot) != 0) {
+	if (process_aux_alloc(pid, slots,
+			      mappable != 0u ? ZOS_AUX_PLACE_MAPPABLE
+					     : ZOS_AUX_PLACE_DATA,
+			      &bank, &slot) != 0) {
 		zos_syscall_error(ZOS_ENOSPC);
 		return;
 	}
@@ -211,26 +218,39 @@ void zos_xmem_alloc(uint16_t block)
 	zos_syscall_success((uint16_t)(((uint16_t)index << 4) | obj->gen));
 }
 
-/* One loader-created DATA segment (kernel/process/exec.c): allocate its
- * slots and register the object before the child bank is touched, so a
- * failure is a clean rollback through process_slot_release().  Segments
- * are non-mappable - a DATA segment is reached by handle - and the
- * caller receives the placement it copies the payload into and zeroes the
- * BSS at. */
+/* One loader-created segment (kernel/process/exec.c): allocate its slots
+ * and register the object before the child bank is touched, so a failure
+ * is a clean rollback through process_slot_release().  A `DATA` segment
+ * is non-mappable - it is reached by handle - and the caller receives the
+ * placement it copies the payload into and zeroes the BSS at.  A
+ * `FAR_CODE` segment is linked at 8000h, so it is placed in slot 4 (slots
+ * 4-5 when it is over 8 KiB): one far-code segment per auxiliary bank,
+ * and it has no handle (SYS_SEG_MAP returns its aperture token). */
 int zos_xmem_segment_alloc(uint8_t pid, uint8_t id, uint8_t kind,
 			   uint16_t size, uint16_t *handle, uint8_t *bank,
 			   uint8_t *slot)
 {
 	struct xmem_object *obj;
+	uint8_t place;
 	uint8_t slots;
 	uint8_t index;
 
 	if (handle == (uint16_t *)0 || bank == (uint8_t *)0 ||
 	    slot == (uint8_t *)0 || pid >= PROCESS_TABLE_SIZE ||
-	    id == 0u || size == 0u || size > ZEX_SEG_MAX_SIZE) {
+	    id == 0u || size == 0u) {
 		return -ZOS_EINVAL;
 	}
-	if (kind != ZEX_SEG_KIND_DATA) {
+	if (kind == ZEX_SEG_KIND_DATA) {
+		if (size > ZEX_SEG_MAX_SIZE) {
+			return -ZOS_EINVAL;
+		}
+		place = ZOS_AUX_PLACE_DATA;
+	} else if (kind == ZEX_SEG_KIND_FAR_CODE) {
+		if (size > ZEX_SEG_MAX_FAR_SIZE) {
+			return -ZOS_EINVAL;
+		}
+		place = ZOS_AUX_PLACE_FAR;
+	} else {
 		return -ZOS_EINVAL;
 	}
 	slots = (uint8_t)(((uint32_t)size + (ZOS_XMEM_SLOT_SIZE - 1u)) >>
@@ -243,7 +263,7 @@ int zos_xmem_segment_alloc(uint8_t pid, uint8_t id, uint8_t kind,
 	if (index == XMEM_MAX_OBJECTS) {
 		return -ZOS_ENOSPC;
 	}
-	if (process_aux_alloc(pid, slots, 0u, bank, slot) != 0) {
+	if (process_aux_alloc(pid, slots, place, bank, slot) != 0) {
 		return -ZOS_ENOSPC;
 	}
 	obj = &xmem_table[index];
@@ -261,7 +281,9 @@ int zos_xmem_segment_alloc(uint8_t pid, uint8_t id, uint8_t kind,
 	obj->seg_id = id;
 	obj->seg_kind = kind;
 	obj->requested = size;
-	*handle = (uint16_t)(((uint16_t)index << 4) | obj->gen);
+	*handle = (kind == ZEX_SEG_KIND_DATA)
+		? (uint16_t)(((uint16_t)index << 4) | obj->gen)
+		: 0u;
 	return 0;
 }
 
@@ -445,15 +467,17 @@ void zos_xmem_map(uint16_t block)
 
 /* SYS_SEG_INFO (26h): the running process's own ZEX v2 segments, named by
  * their container ids.  A DATA segment reports its extended-memory handle
- * (the abi/zos/xmem.h calls reach it); a live segment of a loaded
- * container is LOADED by construction - the loader places every segment
- * or the exec fails and rolls back. */
+ * (the abi/zos/xmem.h calls reach it); a FAR_CODE segment has none (it is
+ * executed in place through the aperture, not copied) and reports 0.  A
+ * live segment of a loaded container is LOADED by construction - the
+ * loader places every segment or the exec fails and rolls back. */
 void zos_seg_info(uint16_t block)
 {
 	struct zos_seg_info_args *args = (struct zos_seg_info_args *)block;
 	struct xmem_object *obj;
 	uint8_t *record = zos_user_copy_staging;
 	uint8_t index = 0u;
+	uint16_t handle = 0u;
 
 	if (!zos_syscall_block_ok(block, sizeof(*args)) ||
 	    !zos_syscall_buffer_ok(args->buffer,
@@ -466,12 +490,15 @@ void zos_seg_info(uint16_t block)
 		zos_syscall_error(ZOS_EINVAL);
 		return;
 	}
+	if (obj->seg_kind == ZEX_SEG_KIND_DATA) {
+		handle = (uint16_t)(((uint16_t)index << 4) | obj->gen);
+	}
 	record[0] = (uint8_t)obj->requested;
 	record[1] = (uint8_t)(obj->requested >> 8);
 	record[2] = obj->seg_kind;
 	record[3] = ZOS_SEG_STATE_LOADED;
-	record[4] = (uint8_t)(((uint16_t)index << 4) | obj->gen);
-	record[5] = 0u;
+	record[4] = (uint8_t)handle;
+	record[5] = (uint8_t)(handle >> 8);
 	record[6] = 0u;
 	record[7] = 0u;
 	if (zos_syscall_bank_write(args->buffer,
@@ -481,6 +508,35 @@ void zos_seg_info(uint16_t block)
 		return;
 	}
 	zos_syscall_success(0);
+}
+
+/* SYS_SEG_MAP (27h): the token that opens the aperture onto one of the
+ * caller's own FAR_CODE segments.  The token keeps the caller's bank field
+ * and selects P = 7 - bank, so it can never show bank 6 or bank 7; the
+ * segment is always at 8000h (its linked address), so no address is
+ * returned.  A DATA segment has no token - it is reached by handle. */
+void zos_seg_map(uint16_t block)
+{
+	struct zos_seg_map_args *args = (struct zos_seg_map_args *)block;
+	struct xmem_object *obj;
+	uint8_t index = 0u;
+	uint8_t latch;
+	uint8_t token;
+
+	if (!zos_syscall_block_ok(block, sizeof(*args))) {
+		zos_syscall_error(ZOS_EINVAL);
+		return;
+	}
+	obj = xmem_segment_find(process_current_pid(), args->segment, &index);
+	if (obj == (struct xmem_object *)0 ||
+	    obj->seg_kind != ZEX_SEG_KIND_FAR_CODE) {
+		zos_syscall_error(ZOS_EINVAL);
+		return;
+	}
+	latch = ipc_gate_latch();
+	token = (uint8_t)((latch & ZOS_BANK_MASK) | ZOS_MODE_APPLICATION |
+			  (uint8_t)((7u - obj->bank) << ZOS_ROM_PAGE_SHIFT));
+	zos_syscall_success(token);
 }
 
 void zos_xmem_dispatch(uint8_t number, uint16_t block)
@@ -506,6 +562,9 @@ void zos_xmem_dispatch(uint8_t number, uint16_t block)
 		return;
 	case ZOS_SYSCALL_SEG_INFO:
 		zos_seg_info(block);
+		return;
+	case ZOS_SYSCALL_SEG_MAP:
+		zos_seg_map(block);
 		return;
 	default:
 		zos_syscall_error(ZOS_ENOSYS);

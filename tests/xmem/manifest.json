@@ -25,6 +25,11 @@
       "name": "xmem_child.zex",
       "type": "ZEX",
       "path": "xmem_child.zex"
+    },
+    {
+      "name": "xmem_far.zex",
+      "type": "ZEX",
+      "path": "xmem_far.zex"
     }
   ]
 }
