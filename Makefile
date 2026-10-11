@@ -1004,15 +1004,22 @@ $(BUILD)/romfs_test.rel: tests/target/romfs/romfs_test.c \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 
-# The process acceptance layout header is generated from the SDK-produced
-# zextest manifest (work/28c-m9-user-sdk); there is no hand-written
-# manifest.  zextest.c no longer includes it (the program uses the rule's
-# STACK), so this generation cannot cycle through the program build.
-$(BUILD)/process_expect.inc: $(BUILD)/user/zextest/zextest.json \
+# The process acceptance layout header is generated from the packed
+# containers the process selftest runs (work/28c-m9-user-sdk, package 44a:
+# the SDK-produced zextest plus the loader-outcome programs).  Reading the
+# containers themselves means the test can only agree with what the loader
+# reads.  No program includes this header, so the generation cannot cycle
+# through a program build.
+$(BUILD)/process_expect.inc: $(BUILD)/user/zextest.zex \
+		$(BUILD)/user/zex2probe.zex $(BUILD)/user/zex2seg.zex \
+		$(BUILD)/user/zex2big.zex \
 		tests/subsys/gen_process_expect.py \
 		tests/subsys/gen_zex_fixtures.py tools/zexpack.py | $(BUILD)
-	$(PYTHON) tests/subsys/gen_process_expect.py \
-		$(BUILD)/user/zextest/zextest.json $@
+	$(PYTHON) tests/subsys/gen_process_expect.py $@ \
+		PROCESS_ZEX=$(BUILD)/user/zextest.zex \
+		ZEX2_PROBE=$(BUILD)/user/zex2probe.zex \
+		ZEX2_SEG=$(BUILD)/user/zex2seg.zex \
+		ZEX2_BIG=$(BUILD)/user/zex2big.zex
 
 $(BUILD)/process_test.rel: tests/target/process/process_test.c \
 		include/zephyros/process.h abi/zos/syscall.h \
@@ -1076,6 +1083,35 @@ $(eval $(call zex_program,monitor,user/monitor,\
 $(eval $(call zex_program,zextest,tests/target/process,\
 	zextest.c zextest_sp.asm,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include))
+
+# ZEX v2 loader-outcome programs (work package 44a, test only): the
+# subsystem process selftest runs them to prove the 36.19 zero-only rule
+# (BSS zeroed, bank not cleared), the DATA-segment wiring and the
+# container-over-64-KiB path.  zex2seg and zex2big attach DATA segment
+# payloads through SEGMENTS=; the payload files are generated next to the
+# program's manifest so the packer resolves them against --objdir.
+ZEX2_SEG_DIR := $(ZEX_USER_ROOT)/zex2seg
+ZEX2_BIG_DIR := $(ZEX_USER_ROOT)/zex2big
+
+$(ZEX2_SEG_DIR)/zex2seg.segments.json: tests/subsys/gen_zex2_segments.py
+	$(PYTHON) tests/subsys/gen_zex2_segments.py seg $(ZEX2_SEG_DIR)
+
+$(ZEX2_BIG_DIR)/zex2big.segments.json: tests/subsys/gen_zex2_segments.py
+	$(PYTHON) tests/subsys/gen_zex2_segments.py big $(ZEX2_BIG_DIR)
+
+$(eval $(call zex_program,zex2probe,tests/target/process,\
+	zex2probe.c,STACK=256,STAGE=1,\
+	INCLUDES=tests/target/include))
+
+$(eval $(call zex_program,zex2seg,tests/target/process,\
+	zex2seg.c,STACK=256,STAGE=1,\
+	INCLUDES=tests/target/include,\
+	SEGMENTS=$(ZEX2_SEG_DIR)/zex2seg.segments.json))
+
+$(eval $(call zex_program,zex2big,tests/target/process,\
+	zex2big.c,STACK=256,STAGE=1,\
+	INCLUDES=tests/target/include,\
+	SEGMENTS=$(ZEX2_BIG_DIR)/zex2big.segments.json))
 
 # Filesystem outcome programs (work package 42b, correction 01): the checks
 # the image boots (`ZOS_BOOT_PROGRAM=/SYSTEM/fs_selftest.zex`) and the child
@@ -1154,7 +1190,9 @@ ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/escc.zex
 else ifeq ($(ZOS_SUBSYS_SELFTEST),1)
 ROMFS_MANIFEST := tests/subsys/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/romfs_crosspage.bin \
-		$(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
+		$(MODULES)/zextest.zex $(MODULES)/zex2probe.zex \
+		$(MODULES)/zex2seg.zex $(MODULES)/zex2big.zex \
+		$(MODULES)/zex-fixtures.stamp
 else ifeq ($(ZOS_NUCLEUS_SELFTEST),1)
 # Nucleus-layout acceptance store (work package 42d): the same SIO-only
 # boot set and fixtures as the subsystem image, which is the store its
@@ -1163,7 +1201,9 @@ else ifeq ($(ZOS_NUCLEUS_SELFTEST),1)
 # driver images it did not select.
 ROMFS_MANIFEST := tests/subsys/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/romfs_crosspage.bin \
-		$(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
+		$(MODULES)/zextest.zex $(MODULES)/zex2probe.zex \
+		$(MODULES)/zex2seg.zex $(MODULES)/zex2big.zex \
+		$(MODULES)/zex-fixtures.stamp
 else ifeq ($(ZOS_CONSOLE_SERIAL_SELFTEST),1)
 # Console-serial variant store (work package 42e): the production service
 # set with `console-serial` in the CONSOLE slot; the image boots the

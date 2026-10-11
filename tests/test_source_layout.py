@@ -391,6 +391,12 @@ SCAN_ROOTS = (
 )
 SCAN_TOP_FILES = ("Makefile", "README.md")
 
+# ZEX v1 code tokens (work package 44a): v2 replaced v1 outright, so the
+# old magic, manifest format and header size cannot reappear.  Prose that
+# names the historical format ("ZEX v1") is not a code token and stays
+# allowed.
+ZEX_V1_TOKENS = ("ZEX1", "zex-v1", "ZEX_HEADER_SIZE 20")
+
 # Historical/worker records and this test's own data are exempt.
 SCAN_EXCLUDED_DIRS = {
     os.path.join(ROOT, "docs", "validation"),
@@ -1093,6 +1099,29 @@ class TestNoStaleRemovedPaths(unittest.TestCase):
         for removed in REMOVED_PATHS:
             self.assertFalse(os.path.exists(os.path.join(ROOT, removed)),
                              "removed path still exists: %s" % removed)
+
+    def test_no_zex_v1_format_code_remains(self):
+        """ZEX v2 replaced ZEX v1 with no compatibility path (36.18):
+        the v1 magic, its manifest format string and its fixed header
+        size are code tokens that must not survive in any live file.
+        docs/architecture.md is the normative document (its M6 sections
+        keep the history); every other live file is scanned."""
+        exempt = {os.path.join(ROOT, "docs", "architecture.md")}
+        stale = []
+        for path in self._live_files():
+            if path in exempt:
+                continue
+            try:
+                text = _read(path)
+            except (IOError, OSError):
+                continue
+            for token in ZEX_V1_TOKENS:
+                if token in text:
+                    stale.append("%s: %s"
+                                 % (os.path.relpath(path, ROOT), token))
+        self.assertEqual(stale, [],
+                         "ZEX v1 code tokens survived in live files:\n%s"
+                         % "\n".join(stale))
 
 
 # The milestone acceptance window (work/00-SUPERVISOR.md, "Milestone

@@ -1,12 +1,14 @@
-/* ZephyrOS extended-memory syscall services (architecture 36.15-36.17,
- * work package 43).
+/* ZephyrOS extended-memory syscall services (architecture 36.15-36.18,
+ * work packages 43 and 44a).
  *
- * Implements SYS_XMEM_ALLOC / _FREE / _READ / _WRITE / _INFO / _MAP.  A
- * runtime object is process-owned, read/write and non-executable; the
- * size is rounded up to whole 8-KiB auxiliary slots and the object is
- * contiguous inside one bank (kernel/process/process.c owns the slot
- * map).  **Contents are undefined**: nothing here clears a slot (36.19) -
- * a previous object's bytes are what a new one starts with.
+ * Implements SYS_XMEM_ALLOC / _FREE / _READ / _WRITE / _INFO / _MAP and
+ * SYS_SEG_INFO.  A runtime object is process-owned, read/write and
+ * non-executable; a loader-created ZEX `DATA` segment is the same object
+ * with type ZOS_XMEM_TYPE_SEGMENT and a container id.  The size is
+ * rounded up to whole 8-KiB auxiliary slots and the object is contiguous
+ * inside one bank (kernel/process/process.c owns the slot map).
+ * **Contents are undefined**: nothing here clears a slot (36.19) - a
+ * previous object's bytes are what a new one starts with.
  *
  * Handles are opaque and owner-tagged: `(index << 4) | generation`, so a
  * freed-and-reused table entry hands out a different handle and a stale
@@ -26,14 +28,24 @@
 
 #include "zos/syscall.h"
 #include "zos/xmem.h"
+#include "zos/seg.h"
 #include "zephyros/errno.h"
 #include "zephyros/platform.h"
 #include "zephyros/process.h"
+#include "zephyros/zex.h"
 
 #include "kernel/ipc/ipc.h"
 
 #include "diag.h"
 #include "xmem.h"
+
+/* The public segment kinds are the container's kinds, pinned once. */
+#if defined(__SDCC)
+_Static_assert(ZEX_SEG_KIND_FAR_CODE == ZOS_SEG_KIND_FAR_CODE,
+	       "segment kind FAR_CODE must match the ABI");
+_Static_assert(ZEX_SEG_KIND_DATA == ZOS_SEG_KIND_DATA,
+	       "segment kind DATA must match the ABI");
+#endif
 
 /* One table entry per live object; the acceptance image holds several
  * objects per bank plus a full bank map, so sixteen entries cover a whole
@@ -56,14 +68,16 @@ struct xmem_object {
 	uint8_t  slots;    /* whole slots, 1-4 */
 	uint8_t  flags;    /* ZOS_XMEM_FLAG_* */
 	uint8_t  type;     /* ZOS_XMEM_TYPE_* */
+	uint8_t  seg_id;   /* SEGMENT: the ZEX container id, 1..N */
+	uint8_t  seg_kind; /* SEGMENT: ZEX_SEG_KIND_* */
 	uint16_t requested;/* logical bytes asked for */
 };
 
 static struct xmem_object xmem_table[XMEM_MAX_OBJECTS];
 
 #if defined(__SDCC)
-_Static_assert(sizeof(struct xmem_object) == 10,
-	       "xmem object entry must be 10 packed bytes");
+_Static_assert(sizeof(struct xmem_object) == 12,
+	       "xmem object entry must be 12 packed bytes");
 #endif
 
 /* The object `handle` names for `pid`, or null for a dead, stale or
@@ -191,8 +205,87 @@ void zos_xmem_alloc(uint16_t block)
 	obj->slots = slots;
 	obj->flags = flags;
 	obj->type = ZOS_XMEM_TYPE_RUNTIME;
+	obj->seg_id = 0u;
+	obj->seg_kind = 0u;
 	obj->requested = size;
 	zos_syscall_success((uint16_t)(((uint16_t)index << 4) | obj->gen));
+}
+
+/* One loader-created DATA segment (kernel/process/exec.c): allocate its
+ * slots and register the object before the child bank is touched, so a
+ * failure is a clean rollback through process_slot_release().  Segments
+ * are non-mappable - a DATA segment is reached by handle - and the
+ * caller receives the placement it copies the payload into and zeroes the
+ * BSS at. */
+int zos_xmem_segment_alloc(uint8_t pid, uint8_t id, uint8_t kind,
+			   uint16_t size, uint16_t *handle, uint8_t *bank,
+			   uint8_t *slot)
+{
+	struct xmem_object *obj;
+	uint8_t slots;
+	uint8_t index;
+
+	if (handle == (uint16_t *)0 || bank == (uint8_t *)0 ||
+	    slot == (uint8_t *)0 || pid >= PROCESS_TABLE_SIZE ||
+	    id == 0u || size == 0u || size > ZEX_SEG_MAX_SIZE) {
+		return -ZOS_EINVAL;
+	}
+	if (kind != ZEX_SEG_KIND_DATA) {
+		return -ZOS_EINVAL;
+	}
+	slots = (uint8_t)(((uint32_t)size + (ZOS_XMEM_SLOT_SIZE - 1u)) >>
+			  13);
+	for (index = 0u; index < XMEM_MAX_OBJECTS; ++index) {
+		if (xmem_table[index].used == 0u) {
+			break;
+		}
+	}
+	if (index == XMEM_MAX_OBJECTS) {
+		return -ZOS_ENOSPC;
+	}
+	if (process_aux_alloc(pid, slots, 0u, bank, slot) != 0) {
+		return -ZOS_ENOSPC;
+	}
+	obj = &xmem_table[index];
+	obj->gen = (uint8_t)(obj->gen + 1u);
+	if (obj->gen >= XMEM_GENERATIONS) {
+		obj->gen = 1u;
+	}
+	obj->used = 1u;
+	obj->pid = pid;
+	obj->bank = *bank;
+	obj->slot = *slot;
+	obj->slots = slots;
+	obj->flags = ZOS_XMEM_FLAG_NONE;
+	obj->type = ZOS_XMEM_TYPE_SEGMENT;
+	obj->seg_id = id;
+	obj->seg_kind = kind;
+	obj->requested = size;
+	*handle = (uint16_t)(((uint16_t)index << 4) | obj->gen);
+	return 0;
+}
+
+/* The live segment object of container id `id` owned by `pid`, plus its
+ * table index, or null. */
+static struct xmem_object *xmem_segment_find(uint8_t pid, uint8_t id,
+					     uint8_t *index)
+{
+	uint8_t i;
+
+	if (id == 0u) {
+		return (struct xmem_object *)0;
+	}
+	for (i = 0u; i < XMEM_MAX_OBJECTS; ++i) {
+		struct xmem_object *obj = &xmem_table[i];
+
+		if (obj->used != 0u && obj->pid == pid &&
+		    obj->type == ZOS_XMEM_TYPE_SEGMENT &&
+		    obj->seg_id == id) {
+			*index = i;
+			return obj;
+		}
+	}
+	return (struct xmem_object *)0;
 }
 
 void zos_xmem_free(uint16_t block)
@@ -205,7 +298,8 @@ void zos_xmem_free(uint16_t block)
 		return;
 	}
 	obj = xmem_lookup(args->handle, process_current_pid());
-	if (obj == (struct xmem_object *)0) {
+	if (obj == (struct xmem_object *)0 ||
+	    obj->type != ZOS_XMEM_TYPE_RUNTIME) {
 		zos_syscall_error(ZOS_EINVAL);
 		return;
 	}
@@ -349,6 +443,46 @@ void zos_xmem_map(uint16_t block)
 	zos_syscall_success(token);
 }
 
+/* SYS_SEG_INFO (26h): the running process's own ZEX v2 segments, named by
+ * their container ids.  A DATA segment reports its extended-memory handle
+ * (the abi/zos/xmem.h calls reach it); a live segment of a loaded
+ * container is LOADED by construction - the loader places every segment
+ * or the exec fails and rolls back. */
+void zos_seg_info(uint16_t block)
+{
+	struct zos_seg_info_args *args = (struct zos_seg_info_args *)block;
+	struct xmem_object *obj;
+	uint8_t *record = zos_user_copy_staging;
+	uint8_t index = 0u;
+
+	if (!zos_syscall_block_ok(block, sizeof(*args)) ||
+	    !zos_syscall_buffer_ok(args->buffer,
+				   (uint16_t)sizeof(struct zos_seg_info))) {
+		zos_syscall_error(ZOS_EINVAL);
+		return;
+	}
+	obj = xmem_segment_find(process_current_pid(), args->segment, &index);
+	if (obj == (struct xmem_object *)0) {
+		zos_syscall_error(ZOS_EINVAL);
+		return;
+	}
+	record[0] = (uint8_t)obj->requested;
+	record[1] = (uint8_t)(obj->requested >> 8);
+	record[2] = obj->seg_kind;
+	record[3] = ZOS_SEG_STATE_LOADED;
+	record[4] = (uint8_t)(((uint16_t)index << 4) | obj->gen);
+	record[5] = 0u;
+	record[6] = 0u;
+	record[7] = 0u;
+	if (zos_syscall_bank_write(args->buffer,
+				   (uint16_t)sizeof(struct zos_seg_info)) !=
+	    0u) {
+		zos_syscall_error(ZOS_EFAULT);
+		return;
+	}
+	zos_syscall_success(0);
+}
+
 void zos_xmem_dispatch(uint8_t number, uint16_t block)
 {
 	switch (number) {
@@ -369,6 +503,9 @@ void zos_xmem_dispatch(uint8_t number, uint16_t block)
 		return;
 	case ZOS_SYSCALL_XMEM_MAP:
 		zos_xmem_map(block);
+		return;
+	case ZOS_SYSCALL_SEG_INFO:
+		zos_seg_info(block);
 		return;
 	default:
 		zos_syscall_error(ZOS_ENOSYS);

@@ -1,6 +1,6 @@
 /* ZephyrOS M7 native monitor (user/monitor).
  *
- * Ordinary ZEX v1 program linked into the user bank by the unchanged M6
+ * Ordinary ZEX v2 program linked into the user bank by the unchanged
  * loader.  All ordinary input/output goes through the SYS_CONSOLE_*
  * runtime wrappers; every memory, port, and system operation goes
  * through SYS_DIAG_* wrappers.  The monitor has no SIO/V9958/HID

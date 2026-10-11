@@ -78,7 +78,8 @@ current boot).
   `docs/validation/2026-10-03-m5-romfs.md`).
 - **M6 — Native process and ZEX v1**: fixed process descriptors, lowest
   free application-bank allocation, a deterministic native page zero,
-  the packed single-bank ZEX v1 executable format (`docs/zex-format.md`),
+  the packed single-bank ZEX v1 executable format (replaced by the ZEX v2
+  container in M10; `docs/zex-format.md` documents the current format),
   the native console/exit/getinfo syscalls, and synchronous child
   exec/exit with exact parent restoration.  Accepted on physical
   hardware 2026-10-03 (`docs/validation/2026-10-03-m6-zex.md`).
@@ -124,7 +125,11 @@ current boot).
   provider ABI and the driver ABI**: VFS owns three static roots (`/FS`,
   `/SYSTEM`, `/dev`), the filesystem driver is a bank-6 service image that
   publishes `/FS`, and its outcome image is `make fs-selftest`
-  (`docs/validation/2026-10-09-m10-prune-nucleus.md`).
+  (`docs/validation/2026-10-09-m10-prune-nucleus.md`).  **ZEX v2 (package
+  44a) then replaced ZEX v1 as the only executable format**: a 36-byte
+  header with 32-bit geometry, a segment table, `DATA` segments as
+  process-owned extended-memory objects (`SYS_SEG_INFO`), and a loader
+  that zeroes only BSS, the startup block and the page-zero vector.
   **Status: see the M9 acceptance matrix in
   `docs/validation/2026-10-05-m9-filesystem.md`** (the milestone closes only
   when every required row has passed).

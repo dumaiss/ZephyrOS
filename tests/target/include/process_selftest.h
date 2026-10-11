@@ -36,6 +36,70 @@
 #define ZOS_PCST_ZT_FAIL_GETINFO 0x04u
 #define ZOS_PCST_ZT_FAIL_WRITE   0x05u
 
+/* Package 44a loader-outcome selftest codes (0x0D-0x10 are the ZEX v2
+ * group: BSS/bank zeroing, DATA segments, the >64-KiB container and the
+ * segment-allocation rollback). */
+#define ZOS_PCST_FAIL_ZEX2_BSS  0x0Du /* BSS zeroed / bank not cleared   */
+#define ZOS_PCST_FAIL_ZEX2_SEG  0x0Eu /* DATA segment wiring             */
+#define ZOS_PCST_FAIL_ZEX2_BIG  0x0Fu /* container over 64 KiB           */
+#define ZOS_PCST_FAIL_ZEX2_ROLL 0x10u /* segment allocation rollback     */
+
+/* --- ZEX v2 loader-outcome programs (work package 44a) ----------------
+ *
+ * Three SDK programs in the subsystem store that exercise the loader
+ * outcomes the v2 contract names: the primary BSS is zeroed after the
+ * whole-bank clear was removed, the bank outside image/BSS/stack is NOT
+ * cleared, a DATA segment's contents and BSS are placed correctly, and a
+ * container over 64 KiB loads.  Each exits with PASS | bank. */
+#define ZOS_PCST_PROBE_NAME "zex2probe.zex"
+#define ZOS_PCST_SEG_NAME   "zex2seg.zex"
+#define ZOS_PCST_BIG_NAME   "zex2big.zex"
+
+#define ZOS_PCST_ZEX2_PASS 0xB500u
+#define ZOS_PCST_ZEX2_FAIL 0x0200u
+
+/* Program check codes (low byte of a failing status). */
+#define ZOS_PCST_Z2_FAIL_BSS     0x01u /* BSS not zeroed                  */
+#define ZOS_PCST_Z2_FAIL_MARK    0x02u /* bank was cleared                */
+#define ZOS_PCST_Z2_FAIL_IMAGE   0x03u /* image bytes wrong               */
+#define ZOS_PCST_Z2_FAIL_SEGINFO 0x04u /* SYS_SEG_INFO wrong/not refused  */
+#define ZOS_PCST_Z2_FAIL_SEGDATA 0x05u /* segment payload wrong           */
+#define ZOS_PCST_Z2_FAIL_SEGBSS  0x06u /* segment BSS not zeroed          */
+#define ZOS_PCST_Z2_FAIL_FREE    0x07u /* SYS_XMEM_FREE accepted a segment*/
+#define ZOS_PCST_Z2_FAIL_WRITE   0x08u /* segment write-back failed       */
+#define ZOS_PCST_Z2_FAIL_GETINFO 0x09u /* GETINFO failed                  */
+
+/* The pattern the kernel test writes into the child's bank outside its
+ * image, BSS and stack.  The loader must leave it alone (36.19). */
+#define ZOS_PCST_ZEX2_MARK_ADDR 0xD000u
+#define ZOS_PCST_ZEX2_MARK_SIZE 4u
+#define ZOS_PCST_ZEX2_MARK_0 0x5Au
+#define ZOS_PCST_ZEX2_MARK_1 0x69u
+#define ZOS_PCST_ZEX2_MARK_2 0xA5u
+#define ZOS_PCST_ZEX2_MARK_3 0xC3u
+
+/* Segment fixture pins: the sizes and patterns
+ * tests/subsys/gen_zex2_segments.py writes and the programs expect.  The
+ * kernel test reads the exact geometry from the packed containers
+ * (process_expect.inc) and uses these for the auxiliary-bank dirt. */
+#define ZOS_PCST_SEG_IMAGE  1024u
+#define ZOS_PCST_SEG_BSS    64u
+#define ZOS_PCST_SEG_MUL    7u
+#define ZOS_PCST_SEG_ADD    0x13u
+/* The first one-slot auxiliary object of a clean bank map lands in the
+ * highest free bank's window-speed slot (36.16 placement policy); the
+ * test dirties exactly that slot's BSS to prove the loader zeroes it. */
+#define ZOS_PCST_SEG_BANK   5u
+#define ZOS_PCST_SEG_BASE   0x6000u
+#define ZOS_PCST_BIG1_IMAGE 32760u
+#define ZOS_PCST_BIG1_BSS   8u
+#define ZOS_PCST_BIG1_MUL   11u
+#define ZOS_PCST_BIG1_ADD   0x29u
+#define ZOS_PCST_BIG2_IMAGE 32760u
+#define ZOS_PCST_BIG2_BSS   8u
+#define ZOS_PCST_BIG2_MUL   13u
+#define ZOS_PCST_BIG2_ADD   0x5Bu
+
 /* Acceptance-manifest names (tests/subsys/manifest.json). */
 #define ZOS_PCST_ZEXTEST_NAME "zextest.zex"
 #define ZOS_PCST_RETURN_NAME  "zex-return.zex"

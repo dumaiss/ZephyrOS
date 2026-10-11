@@ -107,6 +107,7 @@ manifest from the link map, packs and validates
 | `CODEBASE=ADDR` | `0x0144` | base of executable code, immediately after the ordinary low-data area (`0x0159` in the `ZOS_NS_HANDLES` variant) |
 | `STAGE=1` | off | copy the packed program into `$(MODULES)` so a recovery manifest can name it |
 | `INCLUDES=a:b` | empty | extra include roots (colon separated), for test-owned headers only |
+| `SEGMENTS=FILE` | none | a JSON list of ZEX v2 `DATA` segment declarations (`id`, `kind`, `input`, `bss_size`); `FILE` is a build prerequisite and each payload `input` resolves against the program's object directory |
 
 The rule file is a prerequisite of the archive and of every link script,
 so editing it (a new source, a changed flag) re-archives `libzos` from
@@ -117,7 +118,10 @@ There is **no hand-written manifest**: `tools/zexmanifest.py` computes
 `image_size = s__DATA - 0100h`, `bss_size = l__DATA` and
 `entry_offset = ENTRY - 0100h` from the link map, and `zexpack` validates
 the packed container against the map's symbols (including the scratch
-window rule).
+window rule).  `SEGMENTS=FILE` merges auxiliary segment declarations;
+the packer derives each segment's `image_size` from its payload file and
+lays out the 36-byte v2 header, the table and the payloads
+(`docs/zex-format.md`).
 
 ## 4. crt0, argv and exit
 
@@ -425,6 +429,7 @@ still undefined.  The observed pulls (from the link maps) are:
 | `zos_ipc_lookup`, `zos_ipc_call` | `ipc` + `ipcgate` | the resident-service client and its gate stub |
 | `zos_ipc_bind`, `zos_ipc_unbind`, `zos_ns_enum` | `ipc` + `ipcgate` + `nsgate` | the `ZOS_NS_HANDLES` variant: the three object/namespace blocks (`nsgate` is a member only that variant links; the runtime's stage-3 blocks stay in `runtime`) |
 | `zos_exec` | `exec` + `fsgate` | shares the FS argument block and gate |
+| `zos_seg_info` | `seg` | the ZEX v2 segment record; shares the raw gate stub |
 | `zex_diag_*` | `zos_diaggate` | the diagnostic gate stubs |
 | `zos_printf` | `printf`, `strlen`, and the `*oa` formatters it needs (`utoa`, `ultoa`, `itoa`, `ltoa`) | `printf` is the largest member; a program that only needs a greeting can use `zos_puts` and link none of it |
 | `/` or `%` on any integer type | `sdcc_arith` / `sdcc_arith_signed` (+ their `*_entries` stubs) | only when the compiler emits a helper call |

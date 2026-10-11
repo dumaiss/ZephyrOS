@@ -31,6 +31,7 @@
 #include "zephyros/kernel.h"
 #include "zos/syscall.h"
 #include "zos/ipc.h"
+#include "zos/seg.h"
 #include "zephyros/process.h"
 
 #include "kernel/ipc/ipc.h"
@@ -290,10 +291,11 @@ void kernel_syscall_dispatch(void)
 		return;
 	}
 
-	/* Extended-memory family (20h-25h, package 43): alloc, free, read,
-	 * write, info, map (architecture 36.15-36.17). */
+	/* Extended-memory family (20h-26h, packages 43-44a): alloc, free,
+	 * read, write, info, map and segment info (architecture
+	 * 36.15-36.18). */
 	if (zos_syscall_number >= ZOS_SYSCALL_XMEM_ALLOC &&
-	    zos_syscall_number <= ZOS_SYSCALL_XMEM_MAP) {
+	    zos_syscall_number <= ZOS_SYSCALL_SEG_INFO) {
 		zos_xmem_dispatch(zos_syscall_number, zos_syscall_args);
 		return;
 	}

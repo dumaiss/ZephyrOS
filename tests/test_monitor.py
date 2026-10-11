@@ -7,7 +7,7 @@ Coverage:
 * diagnostic syscall numbers and packed-block constants are value-identical
   across abi/zos/diag.h and the SDK assembly wrappers in
   user/sdk/src/diaggate.asm;
-* the monitor manifest/rights: ordinary ZEX v1, entry at 0100h, exact
+* the monitor manifest/rights: ordinary ZEX v2, entry at 0100h, exact
   linked image size, stack reservation, and a low-window scratch block;
 * the linked monitor map contains only monitor/runtime modules - no
   kernel-private symbols, no SIO/early-console/CP/M dependencies - and

@@ -276,7 +276,7 @@ _zos_process_launch::
 	ld	hl,(zos_proc_entry)
 	push	hl
 
-	; ZEX v1 startup block v1 lives at 0080h in the child page zero;
+	; The startup block (v1) lives at 0080h in the child page zero;
 	; the program is entered with HL = 0080h.  A program that ignores
 	; HL is unaffected.  The RET enters the child with interrupts
 	; enabled; the trap address stays on the stack.

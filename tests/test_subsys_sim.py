@@ -149,7 +149,8 @@ class TestSubsystemManifest(SubsystemSimBase):
         for name in ("sio.zmod", "console-serial.zmod", "services.man",
                      "monitor.zex", "crosspage.bin",
                      "zextest.zex", "zex-return.zex", "zex-truncated.zex",
-                     "zex-wrong-type.dat"):
+                     "zex-wrong-type.dat",
+                     "zex2probe.zex", "zex2seg.zex", "zex2big.zex"):
             self.assertIn(name, self.entries)
 
 

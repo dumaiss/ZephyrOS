@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a ZEX v1 manifest from an sdldz80 link map (work package 28c).
+"""Generate a ZEX v2 manifest from an sdldz80 link map (work package 28c).
 
 The generic `zex_program` rule in user/sdk/zex.mk links a program, then
 calls this tool to derive `image_size` and `bss_size` from the map.  No
@@ -11,11 +11,14 @@ size is ever hand-entered:
 
 The stack size and scratch symbol come from the rule's options or the
 SDK defaults.  The output JSON uses the exact key set tools/zexpack.py
-accepts.
+accepts.  `--segments FILE` merges a JSON list of auxiliary segment
+declarations (id/kind/input/bss_size; the packer resolves the payload
+against the same objdir); the package-44b far-code area tooling extends
+this when far code lands.
 
 Usage:
     zexmanifest.py MAP OUT --name NAME [--entry SYM] [--stack N]
-                   [--scratch SYM:SIZE] [--input FILE]
+                   [--scratch SYM:SIZE] [--input FILE] [--segments FILE]
 
 Reads the map, writes the manifest.  Exit 1 on a geometry error.
 """
@@ -37,7 +40,8 @@ class ManifestError(Exception):
     pass
 
 
-def build_manifest(map_path, name, entry, stack_size, scratch, input_name=None):
+def build_manifest(map_path, name, entry, stack_size, scratch, input_name=None,
+                   segments_path=None):
     text = Path(map_path).read_text()
     symbols = parse_symbols(text)
     for key in ("s__DATA", "l__DATA", "l__CODE"):
@@ -64,7 +68,7 @@ def build_manifest(map_path, name, entry, stack_size, scratch, input_name=None):
         raise ManifestError("image + BSS collide with the stack top")
 
     manifest = {
-        "format": "zex-v1",
+        "format": "zex-v2",
         "name": name,
         "input": input_name or (os.path.splitext(name)[0] + ".ihx"),
         "map": os.path.basename(map_path),
@@ -90,6 +94,16 @@ def build_manifest(map_path, name, entry, stack_size, scratch, input_name=None):
                 "scratch %s at %04Xh size %d leaves the 0100h-1FFFh window"
                 % (sym, addr, size))
         manifest["scratch"] = {"symbol": sym, "size": size}
+    if segments_path is not None:
+        try:
+            raw = json.loads(Path(segments_path).read_text())
+        except OSError as exc:
+            raise ManifestError("cannot read segments: %s" % exc)
+        except ValueError as exc:
+            raise ManifestError("segments is not valid JSON: %s" % exc)
+        if not isinstance(raw, list):
+            raise ManifestError("segments must be a JSON list")
+        manifest["segments"] = raw
     return manifest
 
 
@@ -102,10 +116,12 @@ def main(argv):
     parser.add_argument("--stack", type=int, default=256)
     parser.add_argument("--scratch", default=None)
     parser.add_argument("--input", default=None)
+    parser.add_argument("--segments", default=None)
     args = parser.parse_args(argv)
     try:
         manifest = build_manifest(args.map, args.name, args.entry,
-                                  args.stack, args.scratch, args.input)
+                                  args.stack, args.scratch, args.input,
+                                  args.segments)
     except (ManifestError, OSError, ValueError) as exc:
         print("zexmanifest: %s" % exc, file=sys.stderr)
         return 1

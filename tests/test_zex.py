@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""Host-side ZEX tooling tests for the subsystem acceptance image.
+"""Host-side ZEX v2 tooling tests for the subsystem acceptance image.
 
 Coverage:
 
-* constant parity: tools/zexpack.py result codes and format constants are
-  value-identical with include/zephyros/zex.h;
+* constant parity: tools/zexpack.py format constants, segment constants
+  and result codes are value-identical with include/zephyros/zex.h;
 * one malformed fixture per validation boundary rejects with the exact
   boundary code, and the fixture set matches the subsystem ROMFS
   acceptance manifest (names, media types, control files);
-* packing a synthetic linked image honors the manifest, rejects content
-  outside the declared image, entry/BSS/scratch/geometry drift, and
-  produces byte- and report-identical output on repeat runs;
-* the real zextest artifacts: the packed .zex validates, its report
-  matches the bytes, the subsystem acceptance ROMFS stores identical
-  payloads (including the truncated corrupt-entry fixture beside the
-  valid copy), and the generated layout header matches the manifest;
+* packing a synthetic linked program honors the manifest, rejects
+  content outside the declared image, entry/BSS/scratch/geometry drift,
+  and produces byte- and report-identical output on repeat runs;
+* DATA-segment packing: the table rows, payload offsets, slot total and
+  a container over 64 KiB; the manifest refusals (far code, id order,
+  empty/oversized payloads, too many slots);
+* the real zextest/outcome artifacts: the packed containers validate,
+  their reports match the bytes, the subsystem acceptance ROMFS stores
+  identical payloads, and the generated layout header matches the
+  containers;
 * mapcheck's process/ZEX placement rules (common gates/state, bank-7
   process code, staging/stack sizes).
 
@@ -68,9 +71,16 @@ class TestZexConstantParity(unittest.TestCase):
             "ZEX_ABI_VERSION": zexpack.ABI_VERSION,
             "ZEX_FLAG_NONE": zexpack.FLAGS_NONE,
             "ZEX_HEADER_SIZE": zexpack.HEADER_SIZE,
+            "ZEX_SEGMENT_ENTRY_SIZE": zexpack.SEGMENT_ENTRY_SIZE,
             "ZEX_LOAD_BASE": zexpack.LOAD_BASE,
             "ZEX_STACK_TOP": zexpack.STACK_TOP,
             "ZEX_MIN_STACK_SIZE": zexpack.MIN_STACK_SIZE,
+            "ZEX_MAX_SEGMENTS": zexpack.MAX_SEGMENTS,
+            "ZEX_MAX_TOTAL_SLOTS": zexpack.MAX_TOTAL_SLOTS,
+            "ZEX_SEG_SLOT_SIZE": zexpack.SEG_SLOT_SIZE,
+            "ZEX_SEG_MAX_SIZE": zexpack.SEG_MAX_SIZE,
+            "ZEX_SEG_KIND_FAR_CODE": zexpack.KIND_FAR_CODE,
+            "ZEX_SEG_KIND_DATA": zexpack.KIND_DATA,
         }
         for name, value in expected.items():
             self.assertEqual(evaluate(self.env[name], self.env), value,
@@ -78,7 +88,7 @@ class TestZexConstantParity(unittest.TestCase):
                              % name)
         # Magic characters spelled out as C char literals.
         text = open(ZEX_H).read()
-        for index, char in enumerate("ZEX1"):
+        for index, char in enumerate("ZEX2"):
             self.assertIn("#define ZEX_MAGIC_%d '%s'" % (index, char), text)
 
 
@@ -112,7 +122,9 @@ class TestFixtureBoundaries(unittest.TestCase):
         # Media types: the malformed/return ZEX files are ZEX, the
         # wrong-type control is packed as DATA.
         self.assertEqual(entries["zex-wrong-type.dat"]["type"], "DATA")
-        for name in ("zextest.zex", "zex-return.zex", "zex-bad-magic.zex"):
+        for name in ("zextest.zex", "zex-return.zex", "zex-bad-magic.zex",
+                     "zex-seg-kind.zex", "zex2probe.zex", "zex2seg.zex",
+                     "zex2big.zex"):
             self.assertEqual(entries[name]["type"], "ZEX")
         self.assertIn("sio.zmod", entries)
         # The corrupt-entry rollback is no longer a separate failure
@@ -123,10 +135,17 @@ class TestFixtureBoundaries(unittest.TestCase):
         self.assertIn("zextest.zex", entries)
 
 
-class TestSyntheticPacking(unittest.TestCase):
-    """Packing behavior on controlled linked inputs."""
+def ihx_record(addr, data):
+    length = len(data)
+    body = bytes([length, (addr >> 8) & 0xFF, addr & 0xFF, 0x00]) + bytes(data)
+    checksum = (-sum(body)) & 0xFF
+    return ":%s%02X" % (body.hex().upper(), checksum)
 
-    def setUp(self):
+
+class SyntheticProgram:
+    """A controlled linked program plus manifest, packed on demand."""
+
+    def __init__(self):
         self.tmp = tempfile.mkdtemp(prefix="zoszex-")
         self.image_size = 0x20
         self.bss_size = 0x20
@@ -141,21 +160,20 @@ class TestSyntheticPacking(unittest.TestCase):
             "zos_runtime_scratch": 0x0120,
         }
 
-    def _write(self, mem=None, symbols=None, **manifest_overrides):
+    def write_manifest(self, mem=None, symbols=None, segments=None,
+                       **manifest_overrides):
         mem = dict(self.mem if mem is None else mem)
         symbols = dict(self.symbols if symbols is None else symbols)
         ihx_lines = [ihx_record(addr, [byte])
                      for addr, byte in sorted(mem.items())]
         ihx_lines.append(":00000001FF")
-        ihx_path = os.path.join(self.tmp, "prog.ihx")
-        map_path = os.path.join(self.tmp, "prog.map")
-        with open(ihx_path, "w") as fh:
+        with open(os.path.join(self.tmp, "prog.ihx"), "w") as fh:
             fh.write("\n".join(ihx_lines) + "\n")
-        with open(map_path, "w") as fh:
+        with open(os.path.join(self.tmp, "prog.map"), "w") as fh:
             for name, addr in sorted(symbols.items()):
                 fh.write("     %08X  %-32s fixture\n" % (addr, name))
         manifest = {
-            "format": "zex-v1",
+            "format": "zex-v2",
             "name": "prog.zex",
             "input": "prog.ihx",
             "map": "prog.map",
@@ -166,107 +184,279 @@ class TestSyntheticPacking(unittest.TestCase):
             "stack_size": self.stack_size,
             "scratch": {"symbol": "zos_runtime_scratch", "size": 8},
         }
+        if segments is not None:
+            manifest["segments"] = segments
         manifest.update(manifest_overrides)
         manifest_path = os.path.join(self.tmp, "prog.json")
         with open(manifest_path, "w") as fh:
             json.dump(manifest, fh)
         return manifest_path
 
-    def _pack(self, **kw):
-        manifest_path = self._write(**kw)
+    def write_payload(self, name, data):
+        path = os.path.join(self.tmp, name)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        return path
+
+    def pack(self, **kw):
+        manifest_path = self.write_manifest(**kw)
         out_path = os.path.join(self.tmp, "prog.zex")
         result = zexpack.pack(manifest_path, out_path)
         return out_path, result
 
+
+class TestSyntheticPacking(unittest.TestCase):
+    """Packing behavior on controlled linked inputs."""
+
+    def setUp(self):
+        self.program = SyntheticProgram()
+
     def test_valid_pack_produces_the_header_and_image(self):
-        out_path, result = self._pack()
+        out_path, result = self.program.pack()
         data = open(out_path, "rb").read()
         fields, geo = zexpack.validate_image(data)
-        self.assertEqual(fields["image_size"], self.image_size)
-        self.assertEqual(fields["bss_size"], self.bss_size)
-        self.assertEqual(fields["stack_size"], self.stack_size)
+        self.assertEqual(fields["image_size"], self.program.image_size)
+        self.assertEqual(fields["bss_size"], self.program.bss_size)
+        self.assertEqual(fields["stack_size"], self.program.stack_size)
+        self.assertEqual(fields["segment_count"], 0)
+        self.assertEqual(fields["total_segment_slots"], 0)
+        self.assertEqual(fields["primary_payload_offset"],
+                         zexpack.HEADER_SIZE)
+        self.assertEqual(fields["segment_table_offset"],
+                         zexpack.HEADER_SIZE + self.program.image_size)
         self.assertEqual(geo["entry"], 0x0100)
-        self.assertEqual(data[20:23], bytes((0xC9, 0x00, 0xAA)))
-        self.assertEqual(len(data), 20 + self.image_size)
+        self.assertEqual(data[36:39], bytes((0xC9, 0x00, 0xAA)))
+        self.assertEqual(len(data), 36 + self.program.image_size)
         self.assertEqual(result["sha256"], hashlib.sha256(data).hexdigest())
 
     def test_pack_is_byte_and_report_deterministic(self):
-        out_a, _ = self._pack()
-        out_b, _ = self._pack()
+        out_a, _ = self.program.pack()
+        out_b, _ = self.program.pack()
         self.assertEqual(open(out_a, "rb").read(), open(out_b, "rb").read())
-        report_a = os.path.join(self.tmp, "a.report.json")
-        report_b = os.path.join(self.tmp, "b.report.json")
-        manifest = self._write()
+        report_a = os.path.join(self.program.tmp, "a.report.json")
+        report_b = os.path.join(self.program.tmp, "b.report.json")
+        manifest = self.program.write_manifest()
         zexpack.pack(manifest, out_a, report_path=report_a)
         zexpack.pack(manifest, out_b, report_path=report_b)
         self.assertEqual(open(report_a, "rb").read(),
                          open(report_b, "rb").read())
 
     def test_content_outside_declared_image_rejected(self):
-        mem = dict(self.mem)
-        mem[0x100 + self.image_size] = 0x55
+        mem = dict(self.program.mem)
+        mem[0x100 + self.program.image_size] = 0x55
         with self.assertRaises(zexpack.ZexError) as caught:
-            self._pack(mem=mem)
+            self.program.pack(mem=mem)
         self.assertIn("outside the declared image", str(caught.exception))
 
     def test_entry_mismatch_rejected(self):
         with self.assertRaises(zexpack.ZexError) as caught:
-            self._pack(entry_offset=1)
+            self.program.pack(entry_offset=1)
         self.assertIn("declared offset", str(caught.exception))
 
     def test_bss_base_mismatch_rejected(self):
-        symbols = dict(self.symbols)
+        symbols = dict(self.program.symbols)
         symbols["s__DATA"] = 0x0130
         with self.assertRaises(zexpack.ZexError) as caught:
-            self._pack(symbols=symbols)
+            self.program.pack(symbols=symbols)
         self.assertIn("BSS base", str(caught.exception))
 
     def test_bss_overflow_rejected(self):
-        symbols = dict(self.symbols)
-        symbols["l__DATA"] = self.bss_size + 1
+        symbols = dict(self.program.symbols)
+        symbols["l__DATA"] = self.program.bss_size + 1
         with self.assertRaises(zexpack.ZexError) as caught:
-            self._pack(symbols=symbols)
+            self.program.pack(symbols=symbols)
         self.assertIn("bss_size", str(caught.exception))
 
     def test_initialized_data_rejected(self):
-        symbols = dict(self.symbols)
+        symbols = dict(self.program.symbols)
         symbols["l__INITIALIZER"] = 4
         with self.assertRaises(zexpack.ZexError) as caught:
-            self._pack(symbols=symbols)
+            self.program.pack(symbols=symbols)
         self.assertIn("initialized data", str(caught.exception))
 
     def test_scratch_outside_window_rejected(self):
-        symbols = dict(self.symbols)
+        symbols = dict(self.program.symbols)
         symbols["zos_runtime_scratch"] = 0x2000
         with self.assertRaises(zexpack.ZexError) as caught:
-            self._pack(symbols=symbols)
+            self.program.pack(symbols=symbols)
         self.assertIn("argument window", str(caught.exception))
 
     def test_declared_geometry_rejected(self):
         with self.assertRaises(zexpack.ZexError) as caught:
-            self._pack(stack_size=1)
+            self.program.pack(stack_size=1)
         self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_STACK")
 
     def test_unknown_and_missing_manifest_keys_rejected(self):
         with self.assertRaises(zexpack.ZexError) as caught:
-            self._pack(mystery=1)
+            self.program.pack(mystery=1)
         self.assertIn("unknown manifest keys", str(caught.exception))
-        manifest_path = self._write()
+        manifest_path = self.program.write_manifest()
         manifest = json.loads(open(manifest_path).read())
         del manifest["bss_size"]
         with open(manifest_path, "w") as fh:
             json.dump(manifest, fh)
         with self.assertRaises(zexpack.ZexError) as caught:
             zexpack.pack(manifest_path,
-                         os.path.join(self.tmp, "out.zex"))
+                         os.path.join(self.program.tmp, "out.zex"))
         self.assertIn("missing 'bss_size'", str(caught.exception))
 
 
-def ihx_record(addr, data):
-    length = len(data)
-    body = bytes([length, (addr >> 8) & 0xFF, addr & 0xFF, 0x00]) + bytes(data)
-    checksum = (-sum(body)) & 0xFF
-    return ":%s%02X" % (body.hex().upper(), checksum)
+class TestSegmentPacking(unittest.TestCase):
+    """The ZEX v2 DATA-segment path (package 44a)."""
+
+    def setUp(self):
+        self.program = SyntheticProgram()
+        self.payload1 = bytes(range(64))
+        self.payload2 = bytes([0xA5] * 96)
+
+    def _segments(self, **overrides):
+        first = {"id": 1, "kind": "DATA", "input": "seg1.bin",
+                 "bss_size": 4}
+        second = {"id": 2, "kind": "DATA", "input": "seg2.bin",
+                  "bss_size": 96}
+        first.update(overrides)
+        return [first, second], second
+
+    def _pack_two(self, **overrides):
+        segments, _second = self._segments(**overrides)
+        self.program.write_payload("seg1.bin", self.payload1)
+        self.program.write_payload("seg2.bin", self.payload2)
+        return self.program.pack(segments=segments)
+
+    def test_table_rows_offsets_and_slot_total(self):
+        out_path, result = self._pack_two()
+        data = open(out_path, "rb").read()
+        fields, _geo = zexpack.validate_image(data)
+        self.assertEqual(fields["segment_count"], 2)
+        self.assertEqual(fields["total_segment_slots"], 2)
+        rows = [
+            zexpack.parse_segment_row(
+                data, fields["segment_table_offset"] +
+                i * zexpack.SEGMENT_ENTRY_SIZE)
+            for i in range(2)
+        ]
+        self.assertEqual([row["id"] for row in rows], [1, 2])
+        self.assertEqual([row["kind"] for row in rows],
+                         [zexpack.KIND_DATA, zexpack.KIND_DATA])
+        self.assertEqual([row["image_size"] for row in rows],
+                         [len(self.payload1), len(self.payload2)])
+        self.assertEqual([row["bss_size"] for row in rows], [4, 96])
+        # Payloads lie inside the file, 4-byte aligned, and match the
+        # input files byte for byte.
+        self.assertEqual(
+            data[rows[0]["payload_offset"]:
+                 rows[0]["payload_offset"] + len(self.payload1)],
+            self.payload1)
+        self.assertEqual(
+            data[rows[1]["payload_offset"]:
+                 rows[1]["payload_offset"] + len(self.payload2)],
+            self.payload2)
+        self.assertEqual(rows[0]["payload_offset"] % 4, 0)
+        self.assertEqual(len(data), fields["file_size"])
+        self.assertEqual(result["segments"][0]["sha256"],
+                         hashlib.sha256(self.payload1).hexdigest())
+
+    def test_container_over_64_kib(self):
+        big = bytes(((i * 7 + 0x13) & 0xFF) for i in range(32768 - 8))
+        segments = [
+            {"id": 1, "kind": "DATA", "input": "big1.bin", "bss_size": 8},
+            {"id": 2, "kind": "DATA", "input": "big2.bin", "bss_size": 8},
+        ]
+        self.program.write_payload("big1.bin", big)
+        self.program.write_payload("big2.bin", big)
+        out_path, result = self.program.pack(segments=segments)
+        data = open(out_path, "rb").read()
+        self.assertGreater(len(data), 0x10000)
+        fields, _geo = zexpack.validate_image(data)
+        self.assertEqual(fields["file_size"], len(data))
+        self.assertEqual(fields["total_segment_slots"], 8)
+        # The second payload starts before 64 KiB and ends after it.
+        row2 = zexpack.parse_segment_row(
+            data, fields["segment_table_offset"] +
+            zexpack.SEGMENT_ENTRY_SIZE)
+        self.assertLess(row2["payload_offset"], 0x10000)
+        self.assertGreater(row2["payload_offset"] + row2["image_size"],
+                           0x10000)
+        self.assertEqual(result["size"], len(data))
+
+    def test_far_code_kind_refused(self):
+        self.program.write_payload("seg1.bin", self.payload1)
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(segments=[
+                {"id": 1, "kind": "FAR_CODE", "input": "seg1.bin",
+                 "bss_size": 0}])
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_SEG_KIND")
+
+    def test_unknown_kind_refused(self):
+        self.program.write_payload("seg1.bin", self.payload1)
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(segments=[
+                {"id": 1, "kind": "VECTOR", "input": "seg1.bin",
+                 "bss_size": 0}])
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_SEG_KIND")
+
+    def test_ids_must_be_one_through_n(self):
+        self.program.write_payload("seg1.bin", self.payload1)
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(segments=[
+                {"id": 2, "kind": "DATA", "input": "seg1.bin",
+                 "bss_size": 0}])
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_SEGMENT")
+
+    def test_empty_payload_refused(self):
+        self.program.write_payload("seg1.bin", b"")
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(segments=[
+                {"id": 1, "kind": "DATA", "input": "seg1.bin",
+                 "bss_size": 0}])
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_SEGMENT")
+
+    def test_missing_payload_refused(self):
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(segments=[
+                {"id": 1, "kind": "DATA", "input": "absent.bin",
+                 "bss_size": 0}])
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_ARG")
+
+    def test_image_plus_bss_limit_enforced(self):
+        self.program.write_payload("seg1.bin", b"\x00" * 64)
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(segments=[
+                {"id": 1, "kind": "DATA", "input": "seg1.bin",
+                 "bss_size": zexpack.SEG_MAX_SIZE - 63}])
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_SEGMENT")
+
+    def test_slot_total_limit_enforced(self):
+        # Six 32-KiB segments need 24 slots, over the 20-slot ceiling.
+        segments = []
+        for index in range(6):
+            name = "fill%d.bin" % index
+            self.program.write_payload(name, b"\x00" * (32768 - 8))
+            segments.append({"id": index + 1, "kind": "DATA",
+                             "input": name, "bss_size": 8})
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(segments=segments)
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_SEG_SLOTS")
+
+    def test_segment_count_limit_enforced(self):
+        segments = []
+        for index in range(zexpack.MAX_SEGMENTS + 1):
+            name = "tiny%d.bin" % index
+            self.program.write_payload(name, b"\x01")
+            segments.append({"id": index + 1, "kind": "DATA",
+                             "input": name, "bss_size": 0})
+        with self.assertRaises(zexpack.ZexError) as caught:
+            self.program.pack(segments=segments)
+        self.assertEqual(caught.exception.code, "ZEX_EXEC_ERR_SEG_SLOTS")
+
+    def test_round_trip_through_validate_and_dump(self):
+        out_path, _result = self._pack_two()
+        data = open(out_path, "rb").read()
+        zexpack.validate_image(data)
+        text = zexpack.dump(out_path)
+        self.assertIn("segments 2/2 slots", text)
+        self.assertIn("segment 1  kind DATA  image 64  bss 4", text)
+        self.assertIn("segment 2  kind DATA  image 96  bss 96", text)
 
 
 class TestZexpackCLI(unittest.TestCase):
@@ -376,6 +566,41 @@ class TestSubsystemArtifacts(unittest.TestCase):
                          zexpack.LOAD_BASE + manifest["entry_offset"])
         self.assertEqual(report["sha256"],
                          hashlib.sha256(data).hexdigest())
+        self.assertEqual(report["format"], "zex-v2")
+
+    def test_outcome_programs_pack_and_carry_their_segments(self):
+        _p, probe = self._read("build/user/zex2probe.zex")
+        fields, _geo = zexpack.validate_image(probe)
+        self.assertEqual(fields["segment_count"], 0)
+
+        name, seg = self._read("build/user/zex2seg.zex")
+        self.assertIn("zex2seg.zex", name)
+        fields, _geo = zexpack.validate_image(seg)
+        self.assertEqual(fields["segment_count"], 1)
+        self.assertEqual(fields["total_segment_slots"], 1)
+        row = zexpack.parse_segment_row(seg, fields["segment_table_offset"])
+        self.assertEqual((row["kind"], row["image_size"], row["bss_size"]),
+                         (zexpack.KIND_DATA, 1024, 64))
+
+        _p, big = self._read("build/user/zex2big.zex")
+        fields, _geo = zexpack.validate_image(big)
+        self.assertEqual(fields["segment_count"], 2)
+        self.assertEqual(fields["total_segment_slots"], 8)
+        self.assertGreater(len(big), 0x10000)
+
+    def test_generated_expect_header_matches_the_containers(self):
+        _p, text = self._read("build-subsys-selftest/process_expect.inc")
+        lines = text.decode("ascii")
+        _p, probe = self._read("build-subsys-selftest/user/zex2probe.zex")
+        fields, _geo = zexpack.validate_image(probe)
+        self.assertIn("#define ZEX2_PROBE_IMAGE_SIZE 0x%04Xu"
+                      % fields["image_size"], lines)
+        self.assertIn("#define ZEX2_PROBE_BSS_START  0x%04Xu"
+                      % (zexpack.LOAD_BASE + fields["image_size"]), lines)
+        _p, seg = self._read("build-subsys-selftest/user/zex2seg.zex")
+        fields, _geo = zexpack.validate_image(seg)
+        self.assertIn("#define ZEX2_SEG_SEG1_IMAGE 0x%04Xu" % 1024, lines)
+        self.assertIn("#define ZEX2_SEG_SEG1_BSS   0x%04Xu" % 64, lines)
 
     def test_acceptance_romfs_carries_the_same_zextest_bytes(self):
         _p, stream = self._read("build-subsys-selftest/recovery.romfs")
@@ -384,13 +609,18 @@ class TestSubsystemArtifacts(unittest.TestCase):
         _p, data = self._read("build/modules/zextest.zex")
         self.assertEqual(names["zextest.zex"]["payload"], data)
         self.assertEqual(names["zextest.zex"]["flags"], romfspack.FLAG_ZEX)
-        # Every malformed fixture is present with its generated bytes.
-        outdir = os.path.join(ROOT, "build", "modules")
+        # Every malformed fixture and outcome program is present with its
+        # generated bytes.
+        outdir = os.path.join(ROOT, "build-subsys-selftest", "modules")
         for fixture in gen_fixtures.build_fixtures():
             path = os.path.join(outdir, fixture["name"])
             if not os.path.exists(path):
                 continue
             self.assertEqual(names[fixture["name"]]["payload"],
+                             open(path, "rb").read())
+        for name in ("zex2probe.zex", "zex2seg.zex", "zex2big.zex"):
+            path = os.path.join(ROOT, "build-subsys-selftest", "user", name)
+            self.assertEqual(names[name]["payload"],
                              open(path, "rb").read())
 
     def test_recovery_store_carries_the_corrupt_entry_fixture(self):
@@ -415,7 +645,11 @@ class TestSubsystemArtifacts(unittest.TestCase):
                        b"romfs selftest: OK\r\n",
                        b"process selftest: OK\r\n",
                        b"zextest: OK\r\n",
-                       b"process selftest: two-bank OK\r\n"):
+                       b"process selftest: two-bank OK\r\n",
+                       b"process selftest: zex2 BSS/bank OK\r\n",
+                       b"process selftest: zex2 segment OK\r\n",
+                       b"process selftest: zex2 big container OK\r\n",
+                       b"process selftest: zex2 rollback OK\r\n"):
             self.assertIn(marker, image)
         # The corrupt-entry rollback is now in the same image (the
         # current equivalent of the retired m6-failure image's marker).

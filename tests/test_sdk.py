@@ -9,7 +9,7 @@ that contract:
 * `libzos` is one object per source, exports only the SDK surface and
   contains no kernel code;
 * `hello.zex` is packed from a manifest derived entirely from its link map
-  (no hand-entered size), validates as a ZEX v1 container, and pulls in
+  (no hand-entered size), validates as a ZEX v2 container, and pulls in
   neither the filesystem nor the diagnostic library members;
 * every ZEX program source compiles against the ABI and the SDK include
   root alone -- never a kernel header;
@@ -337,7 +337,7 @@ class TestHelloZex(unittest.TestCase):
 
     def test_no_zex_manifest_is_checked_in(self):
         """Every ZEX manifest is generated; only the helloworld ROMFS
-        manifest (not a zex-v1 manifest) is a source file."""
+        manifest (not a ZEX container manifest) is a source file."""
         checked_in = []
         for base in ("tests/target", "user/monitor", "user/helloworld"):
             for dirpath, _dirnames, filenames in os.walk(
@@ -372,11 +372,15 @@ class TestSdkBoundary(unittest.TestCase):
         # and `xmem_child` are the extended-memory outcome programs
         # (ZOS_XMEM_SELFTEST); `escc` is the
         # ESC c display-reset check the console integration image boots
-        # (work package 42e).
+        # (work package 42e); `zex2probe`, `zex2seg` and `zex2big` are the
+        # ZEX v2 loader-outcome programs the subsystem process selftest
+        # runs (work package 44a).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["escc", "fs_child", "fs_selftest", "hello",
                           "ipc", "ipccopy", "monitor", "ns", "nschild",
-                          "xmem_child", "xmem_selftest", "zextest"])
+                          "xmem_child", "xmem_selftest",
+                          "zex2big", "zex2probe", "zex2seg",
+                          "zextest"])
         for name, directory, _sources, _options in programs:
             count = sum(_read(path).count("zex_program,%s," % name)
                         for path in ("Makefile",

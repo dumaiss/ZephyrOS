@@ -32,6 +32,21 @@
       "path": "zextest.zex"
     },
     {
+      "name": "zex2probe.zex",
+      "type": "ZEX",
+      "path": "zex2probe.zex"
+    },
+    {
+      "name": "zex2seg.zex",
+      "type": "ZEX",
+      "path": "zex2seg.zex"
+    },
+    {
+      "name": "zex2big.zex",
+      "type": "ZEX",
+      "path": "zex2big.zex"
+    },
+    {
       "name": "zex-return.zex",
       "type": "ZEX",
       "path": "zex-return.zex"
@@ -115,6 +130,46 @@
       "name": "zex-wrong-type.dat",
       "type": "DATA",
       "path": "zex-wrong-type.dat"
+    },
+    {
+      "name": "zex-seg-count.zex",
+      "type": "ZEX",
+      "path": "zex-seg-count.zex"
+    },
+    {
+      "name": "zex-seg-slots.zex",
+      "type": "ZEX",
+      "path": "zex-seg-slots.zex"
+    },
+    {
+      "name": "zex-seg-total.zex",
+      "type": "ZEX",
+      "path": "zex-seg-total.zex"
+    },
+    {
+      "name": "zex-seg-table.zex",
+      "type": "ZEX",
+      "path": "zex-seg-table.zex"
+    },
+    {
+      "name": "zex-seg-kind.zex",
+      "type": "ZEX",
+      "path": "zex-seg-kind.zex"
+    },
+    {
+      "name": "zex-seg-payload.zex",
+      "type": "ZEX",
+      "path": "zex-seg-payload.zex"
+    },
+    {
+      "name": "zex-seg-id.zex",
+      "type": "ZEX",
+      "path": "zex-seg-id.zex"
+    },
+    {
+      "name": "zex-seg-reserved.zex",
+      "type": "ZEX",
+      "path": "zex-seg-reserved.zex"
     }
   ]
 }

@@ -19,6 +19,10 @@
 #                       entry object (used by the raw-return test child)
 #   LOWBASE=ADDR        SDK gate-visible data base (0x0100)
 #   CODEBASE=ADDR       program code base (0x0144)
+#   SEGMENTS=FILE       JSON list of ZEX v2 DATA segment declarations
+#                       (id/kind/input/bss_size); FILE is a prerequisite
+#                       and its payload `input` names resolve against the
+#                       program's object directory (package 44a)
 # -----------------------------------------------------------------------------
 
 ZEX_USER_ROOT   := $(BUILD)/user
@@ -49,7 +53,7 @@ ZEX_HEADERS := $(wildcard abi/zos/*.h) $(wildcard $(ZOS_SDK_INCLUDE)/*.h)
 ZEX_ASFLAGS := -Iabi
 
 ZOS_SDK_C_SRC := args.c fs.c ipc.c exec.c console_io.c \
-    xmem.c \
+    xmem.c seg.c \
     console_service.c \
     zlibc/strlen.c zlibc/strcmp.c zlibc/strncmp.c zlibc/strchr.c \
     zlibc/strrchr.c zlibc/memcpy.c zlibc/memmove.c zlibc/memset.c \
@@ -108,6 +112,9 @@ $(1)_OPTS   := $(4) $(5) $(6) $(7) $(8) $(9)
 $(1)_STACK  := $$(if $$(filter STACK=%,$$($(1)_OPTS)),$$(patsubst STACK=%,%,$$(filter STACK=%,$$($(1)_OPTS))),256)
 $(1)_SCRATCH:= $$(if $$(filter SCRATCH=%,$$($(1)_OPTS)),$$(patsubst SCRATCH=%,%,$$(filter SCRATCH=%,$$($(1)_OPTS))),zos_scratch:16)
 $(1)_SCRATCHARG := $$(if $$($(1)_SCRATCH), --scratch $$($(1)_SCRATCH),)
+$(1)_SEGMENTS := $$(if $$(filter SEGMENTS=%,$$($(1)_OPTS)),$$(patsubst SEGMENTS=%,%,$$(filter SEGMENTS=%,$$($(1)_OPTS))),)
+$(1)_SEGMENTSARG := $$(if $$($(1)_SEGMENTS), --segments $$($(1)_SEGMENTS),)
+$(1)_SEGMENTSDEP := $$(if $$($(1)_SEGMENTS), $$($(1)_SEGMENTS),)
 $(1)_ENTRY  := $$(if $$(filter ENTRY=%,$$($(1)_OPTS)),$$(patsubst ENTRY=%,%,$$(filter ENTRY=%,$$($(1)_OPTS))),zos_entry)
 # The fixed SDK area is 68 bytes (_ZOS_SDK_DATA in runtime.asm), so the
 # ordinary layout reserves 0100h-0143h and starts code at 0144h.  A program
@@ -146,10 +153,10 @@ $$($(1)_OBJDIR)/$(1).link: $$($(1)_OBJDIR)/$(1).lk
 	$(SDLDZ80) -f $$<
 	touch $$@
 
-$$($(1)_OBJDIR)/$(1).json: $$($(1)_OBJDIR)/$(1).link
+$$($(1)_OBJDIR)/$(1).json: $$($(1)_OBJDIR)/$(1).link $$($(1)_SEGMENTSDEP)
 	$(PYTHON) tools/zexmanifest.py $$($(1)_OBJDIR)/$(1).map $$@ \
 	    --name $(1).zex --entry $$($(1)_ENTRY) --stack $$($(1)_STACK) \
-	    $$($(1)_SCRATCHARG)
+	    $$($(1)_SCRATCHARG) $$($(1)_SEGMENTSARG)
 
 $$($(1)_ZEX): $$($(1)_OBJDIR)/$(1).json tools/zexpack.py
 	$(PYTHON) tools/zexpack.py pack $$($(1)_OBJDIR)/$(1).json $$@ \

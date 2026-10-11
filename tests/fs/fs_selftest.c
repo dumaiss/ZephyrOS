@@ -58,7 +58,7 @@ static struct zos_ns_entry entries[ENUM_PAGE];
 
 static unsigned int checks;
 static unsigned int failures;
-/* ZEX v1 has no initialized writable data: every static starts zeroed. */
+/* ZEX v2 has no initialized writable data: every static starts zeroed. */
 static int card;
 
 static void check(const char *label, int ok)

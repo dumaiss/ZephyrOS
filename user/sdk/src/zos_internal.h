@@ -12,6 +12,7 @@
 #include "zos/fs.h"
 #include "zos/ipc.h"
 #include "zos/syscall.h"
+#include "zos/seg.h"
 #include "zos/xmem.h"
 
 union zos_syscall_block {
@@ -30,6 +31,7 @@ union zos_syscall_block {
 	struct zos_xmem_io_args    xmem_io;
 	struct zos_xmem_info_args  xmem_info;
 	struct zos_xmem_map_args   xmem_map;
+	struct zos_seg_info_args   seg_info;
 };
 
 extern union zos_syscall_block zos_scratch;

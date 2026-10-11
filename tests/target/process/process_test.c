@@ -40,6 +40,75 @@ uint8_t process_selftest_result;
  * ROMFS-relative and are prefixed with the mountpoint here. */
 static char process_path[ZOS_PATH_MAX];
 
+/* --- ZEX v2 loader-outcome helpers (work package 44a) -----------------
+ *
+ * The loader-outcome tests write into a free application bank through
+ * the common copy gate before an exec, so the child can prove from
+ * inside what the v2 loader did or did not clear (36.19).  The common
+ * staging block is one 64-byte chunk; longer runs are chunked here. */
+#define PROCESS_Z2_CHUNK 64u
+
+static void zex2_bank_fill(uint8_t bank, uint16_t addr, uint16_t length,
+			   uint8_t value)
+{
+	struct zos_bank_copy_req req;
+	uint16_t done = 0u;
+	uint16_t i;
+
+	for (i = 0u; i < PROCESS_Z2_CHUNK; ++i) {
+		zos_user_copy_staging[i] = value;
+	}
+	while (done < length) {
+		uint16_t chunk = (uint16_t)(length - done);
+
+		if (chunk > PROCESS_Z2_CHUNK) {
+			chunk = PROCESS_Z2_CHUNK;
+		}
+		req.bank = bank;
+		req.op = ZOS_BANK_OP_WRITE;
+		req.addr = (uint16_t)(addr + done);
+		req.buffer = zos_user_copy_staging;
+		req.length = chunk;
+		(void)zos_bank_copy(&req);
+		done = (uint16_t)(done + chunk);
+	}
+}
+
+/* The marker the probe programs must still find outside image/BSS/stack. */
+static void zex2_marker_write(uint8_t bank)
+{
+	struct zos_bank_copy_req req;
+
+	zos_user_copy_staging[0] = ZOS_PCST_ZEX2_MARK_0;
+	zos_user_copy_staging[1] = ZOS_PCST_ZEX2_MARK_1;
+	zos_user_copy_staging[2] = ZOS_PCST_ZEX2_MARK_2;
+	zos_user_copy_staging[3] = ZOS_PCST_ZEX2_MARK_3;
+	req.bank = bank;
+	req.op = ZOS_BANK_OP_WRITE;
+	req.addr = (uint16_t)ZOS_PCST_ZEX2_MARK_ADDR;
+	req.buffer = zos_user_copy_staging;
+	req.length = (uint16_t)ZOS_PCST_ZEX2_MARK_SIZE;
+	(void)zos_bank_copy(&req);
+}
+
+static uint8_t zex2_marker_check(uint8_t bank)
+{
+	struct zos_bank_copy_req req;
+
+	req.bank = bank;
+	req.op = ZOS_BANK_OP_READ;
+	req.addr = (uint16_t)ZOS_PCST_ZEX2_MARK_ADDR;
+	req.buffer = zos_user_copy_staging;
+	req.length = (uint16_t)ZOS_PCST_ZEX2_MARK_SIZE;
+	if (zos_bank_copy(&req) != 0u) {
+		return 0u;
+	}
+	return (uint8_t)(zos_user_copy_staging[0] == ZOS_PCST_ZEX2_MARK_0 &&
+			 zos_user_copy_staging[1] == ZOS_PCST_ZEX2_MARK_1 &&
+			 zos_user_copy_staging[2] == ZOS_PCST_ZEX2_MARK_2 &&
+			 zos_user_copy_staging[3] == ZOS_PCST_ZEX2_MARK_3);
+}
+
 static const char *process_vfs_path(const char *name)
 {
 	static const char prefix[] = "/SYSTEM/";
@@ -363,6 +432,143 @@ void zos_run_process_selftest(void)
 		    romfs_resource_read(ZOS_PCST_DATA_NAME, 0, (void *)0, 1) !=
 				(-ZOS_EINVAL)) {
 			process_fail(ZOS_PCST_FAIL_RESOURCE, 6); return;
+		}
+	}
+
+	/* 8. ZEX v2 loader outcomes (work package 44a).  The v2 loader
+	 *    zeroes only BSS and the startup block (36.19), places DATA
+	 *    segments as process-owned extended-memory objects and handles
+	 *    a container over 64 KiB.  The kernel side dirties the child's
+	 *    bank through the copy gate first, so the values the programs
+	 *    read back prove exactly what the loader did. */
+	{
+		/* 8a. BSS zeroed, bank not cleared: dirty the probe's whole
+		 * BSS range and write the marker outside its
+		 * image/BSS/stack in bank 0 - the lowest free bank the
+		 * child will get.  The probe checks both from inside and
+		 * the marker is checked here again after it exited. */
+		zex2_bank_fill(0u, (uint16_t)ZEX2_PROBE_BSS_START,
+			       (uint16_t)(ZEX2_PROBE_BSS_END -
+					  ZEX2_PROBE_BSS_START),
+			       ZOS_PCST_ZEX2_MARK_0);
+		zex2_marker_write(0u);
+		code = process_run_checked(ZOS_PCST_PROBE_NAME,
+					   (uint16_t)ZOS_PCST_ZEX2_PASS,
+					   &detail);
+		if (code != ZOS_PCST_OK) {
+			process_fail(ZOS_PCST_FAIL_ZEX2_BSS, detail);
+			return;
+		}
+		if (!zex2_marker_check(0u)) {
+			process_fail(ZOS_PCST_FAIL_ZEX2_BSS, 0x5A5Au);
+			return;
+		}
+		{
+			static const char ok[] =
+				"process selftest: zex2 BSS/bank OK\r\n";
+
+			service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		}
+
+		/* 8b. DATA segment: dirty the auxiliary bank's segment-BSS
+		 * area (the clean bank map places the first one-slot object
+		 * in bank 5, slot 3, at 6000h), then run the segment
+		 * program; it reads the dirty area back as zero. */
+		zex2_bank_fill(ZOS_PCST_SEG_BANK,
+			       (uint16_t)(ZOS_PCST_SEG_BASE +
+					  ZEX2_SEG_SEG1_IMAGE),
+			       (uint16_t)ZEX2_SEG_SEG1_BSS,
+			       ZOS_PCST_ZEX2_MARK_0);
+		code = process_run_checked(ZOS_PCST_SEG_NAME,
+					   (uint16_t)ZOS_PCST_ZEX2_PASS,
+					   &detail);
+		if (code != ZOS_PCST_OK) {
+			process_fail(ZOS_PCST_FAIL_ZEX2_SEG, detail);
+			return;
+		}
+		{
+			static const char ok[] =
+				"process selftest: zex2 segment OK\r\n";
+
+			service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		}
+
+		/* 8c. A container over 64 KiB: two 32-KiB DATA segments,
+		 * the second one's last byte past the 64-KiB file offset. */
+		code = process_run_checked(ZOS_PCST_BIG_NAME,
+					   (uint16_t)ZOS_PCST_ZEX2_PASS,
+					   &detail);
+		if (code != ZOS_PCST_OK) {
+			process_fail(ZOS_PCST_FAIL_ZEX2_BIG, detail);
+			return;
+		}
+		{
+			static const char ok[] =
+				"process selftest: zex2 big container OK\r\n";
+
+			service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		}
+
+		/* 8d. Segment-allocation rollback: with banks 0-4 reserved
+		 * the child would take bank 5, and its DATA segment has no
+		 * auxiliary bank at all, so the load must fail with NOSPACE
+		 * and leave no slot, bank, object or segment behind. */
+		for (i = 0u; i < (PROCESS_BANK_COUNT - 1u); ++i) {
+			int bank = process_bank_reserve();
+
+			if (bank != (int)i) {
+				process_fail(ZOS_PCST_FAIL_ZEX2_ROLL,
+					     (uint16_t)bank);
+				return;
+			}
+		}
+		{
+			uint16_t status = 0xFFFFu;
+
+			result = process_exec_named(ZOS_PCST_SEG_NAME,
+						    &status);
+			if (result != ZEX_EXEC_ERR_NOSPACE ||
+			    process_active_count() != 0u ||
+			    process_current_pid() != PROCESS_NO_PROCESS) {
+				process_fail(ZOS_PCST_FAIL_ZEX2_ROLL,
+					     (uint16_t)(0 - result));
+				return;
+			}
+		}
+		for (i = 0u; i < (PROCESS_BANK_COUNT - 1u); ++i) {
+			process_bank_release(i);
+		}
+		if (!process_idle_ok()) {
+			process_fail(ZOS_PCST_FAIL_ZEX2_ROLL, 0xFFFFu);
+			return;
+		}
+		{
+			static const char ok[] =
+				"process selftest: zex2 rollback OK\r\n";
+
+			service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		}
+
+		/* 8e. The rejected program still runs once the release
+		 * restored the allocator, with its segment BSS dirtied
+		 * again. */
+		zex2_bank_fill(ZOS_PCST_SEG_BANK,
+			       (uint16_t)(ZOS_PCST_SEG_BASE +
+					  ZEX2_SEG_SEG1_IMAGE),
+			       (uint16_t)ZEX2_SEG_SEG1_BSS,
+			       ZOS_PCST_ZEX2_MARK_0);
+		code = process_run_checked(ZOS_PCST_SEG_NAME,
+					   (uint16_t)ZOS_PCST_ZEX2_PASS,
+					   &detail);
+		if (code != ZOS_PCST_OK) {
+			process_fail(ZOS_PCST_FAIL_ZEX2_SEG, detail);
+			return;
+		}
+		{
+			static const char ok[] =
+				"process selftest: zex v2 outcomes OK\r\n";
+
+			service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 		}
 	}
 

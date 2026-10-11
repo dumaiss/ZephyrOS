@@ -22,6 +22,10 @@
  * largest object is 32 KiB; a `MAPPABLE` object is at most 16 KiB and
  * lands in the aperture slice.
  *
+ * A ZEX v2 `DATA` segment is one of these objects with type
+ * `ZOS_XMEM_TYPE_SEGMENT` (SYS_SEG_INFO names it); it is read and written
+ * with this family's calls and released only at exit.
+ *
  * **Contents are undefined.**  Nothing pre-zeroes an object (architecture
  * 36.19): a program that needs zeroes writes them.  Every range
  * (`offset + length` against the allocated size, the caller buffer against
@@ -95,7 +99,9 @@ struct zos_xmem_alloc_args {
 };
 
 /* SYS_XMEM_FREE 21h {handle:u16} -> HL = 0.  A handle that is not live,
- * not this process's, or stale (a reused entry) is ZOS_EINVAL. */
+ * not this process's, or stale (a reused entry) is ZOS_EINVAL, and so is
+ * a loader-created `ZOS_XMEM_TYPE_SEGMENT` object: a ZEX data segment is
+ * released only at exit (architecture 36.16). */
 struct zos_xmem_free_args {
 	uint16_t handle;
 };
@@ -123,7 +129,8 @@ struct zos_xmem_info {
 	uint8_t  reserved;
 };
 
-#define ZOS_XMEM_TYPE_RUNTIME 1u /* SYS_XMEM_ALLOC object */
+#define ZOS_XMEM_TYPE_RUNTIME 1u /* SYS_XMEM_ALLOC object           */
+#define ZOS_XMEM_TYPE_SEGMENT 2u /* loader-created ZEX data segment */
 
 struct zos_xmem_info_args {
 	uint16_t handle;

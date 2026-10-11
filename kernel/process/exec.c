@@ -1,24 +1,29 @@
-/* ZephyrOS M6/M10 ZEX validation and process loading.
+/* ZephyrOS M6/M10 ZEX v2 validation and process loading.
  *
  * process_prepare() is the one loader path: it binds the executable as a
  * FILE object (architecture 36.13: exec binds the path, requires FILE and
- * streams the image through FILE calls), validates the complete geometry
- * before any bank content changes, allocates the lowest free process slot
- * and application bank, constructs the child's bank deterministically
- * (zero 0000h-DFFFh, page zero with exactly the RST 30h vector at 0030h,
- * image at 0100h, zero BSS), and unbinds the source before returning a
- * prepared child.  The kernel launcher and SYS_EXEC both use it; the
- * common launch gate (kernel/process/launch.asm) then enters the child and
- * restores the launcher on exit.
+ * streams the image through FILE calls), makes one up-front feasibility
+ * check from the v2 header (geometry, segment count and slot total,
+ * table/payload placement), allocates the lowest free process slot,
+ * application bank and the container's `DATA` segments as extended-memory
+ * objects, and only then constructs the child's bank: the page-zero RST
+ * 30h vector at 0030h, the primary image at 0100h, zero BSS, each
+ * segment's payload and zero BSS.  Nothing else is pre-zeroed (36.19):
+ * there is no whole-bank clear and no zeroing of xmem objects.  The
+ * kernel launcher and SYS_EXEC both use it; the common launch gate
+ * (kernel/process/launch.asm) then enters the child and restores the
+ * launcher on exit.
  *
- * Every failure path rolls the slot back to FREE, releases the bank and
- * unbinds the source; a partially written bank is never observable as a
- * process because the table entry is published as RUNNING only at launch
- * time.
+ * Every failure path rolls the slot back to FREE, releases the bank, the
+ * child's segments/objects and unbinds the source; a partially written
+ * bank is never observable as a process because the table entry is
+ * published as RUNNING only at launch time.
  *
  * All copying goes through the common-resident gates
- * (kernel/memory/user_copy.asm) and the bounded staging path; bank 7 is
- * rejected by both allocators and the copy gates.
+ * (kernel/memory/user_copy.asm): the primary bank and non-aperture slots
+ * through the mode-10 gate, auxiliary slots 3-6 through the mode-11
+ * window copy.  The segment table and header live in bank-7 `_DATA`
+ * (never on the gate stack, which is 256 bytes and shared with SYS_EXEC).
  *
  * The FILE calls are nucleus calls whose caller buffer is the common
  * staging block: the cold loader holds no descriptor and names no bank-7
@@ -34,6 +39,7 @@
 #include "zephyros/romfs.h"
 #include "kernel/ipc/ipc.h"
 #include "kernel/syscall/diag.h"
+#include "kernel/syscall/xmem.h"
 #include "zephyros/kernel.h"
 #include "kernel/vfs/vfs.h"
 #include "kernel/vfs/ns.h"
@@ -42,6 +48,25 @@
 extern const uint8_t zos_process_page_zero_vector[];
 
 #define ZEX_LOAD_CHUNK ZOS_SYSCALL_STAGE_SIZE
+
+/* Slots 0-2 live below the mode-11 window boundary and are copied through
+ * the mode-10 gate; 6000h and above go through the window. */
+#define EXEC_WINDOW_BASE 0x6000u
+
+/* The header and segment table of the container being loaded.  They live
+ * in bank-7 `_DATA`, not on the caller's stack: process_prepare() runs on
+ * the 256-byte gate stack under SYS_EXEC and declares no automatic object
+ * larger than 32 bytes, and the rows must stay visible for the whole load.
+ * Single-tasking: exactly one load is in progress at a time. */
+static struct zex_header zex_pending_header;
+static struct zex_segment zex_pending_segments[ZEX_MAX_SEGMENTS];
+static uint8_t zex_segment_bank[ZEX_MAX_SEGMENTS];
+static uint8_t zex_segment_slot[ZEX_MAX_SEGMENTS];
+
+#if defined(__SDCC)
+_Static_assert(sizeof(zex_pending_segments) <= 256u,
+	       "the segment table must stay small enough for bank-7 data");
+#endif
 
 /* One copy request against the child bank, through the common gate. */
 static uint8_t exec_bank_write(uint8_t bank, uint16_t addr,
@@ -67,6 +92,58 @@ static uint8_t exec_bank_zero(uint8_t bank, uint16_t addr, uint16_t length)
 	req.buffer = (uint8_t *)0;
 	req.length = length;
 	return zos_bank_copy(&req);
+}
+
+/* One segment-object transfer: from 6000h up through the mode-11 window
+ * (the copy runs with the page field set, so only 6000h-DFFFh is
+ * reachable), below that through the mode-10 gate, which shows the whole
+ * bank even when a one-chunk run crosses the boundary. */
+static uint8_t exec_seg_write(uint8_t bank, uint16_t addr,
+			      const uint8_t *src, uint16_t length)
+{
+	struct zos_bank_copy_req req;
+
+	req.bank = bank;
+	req.op = ZOS_BANK_OP_WRITE;
+	req.addr = addr;
+	req.buffer = (uint8_t *)src;
+	req.length = length;
+	if (addr >= EXEC_WINDOW_BASE) {
+		return zos_window_copy(&req);
+	}
+	return zos_bank_copy(&req);
+}
+
+/* Zero `length` bytes of a segment object.  The mode-10 gate has a ZERO
+ * op; the window copy does not, so the window path writes a zeroed staging
+ * block instead. */
+static uint8_t exec_seg_zero(uint8_t bank, uint16_t addr, uint16_t length)
+{
+	uint16_t done = 0u;
+
+	while (done < length) {
+		uint16_t chunk = (uint16_t)(length - done);
+		uint16_t at = (uint16_t)(addr + done);
+
+		if (chunk > ZEX_LOAD_CHUNK) {
+			chunk = ZEX_LOAD_CHUNK;
+		}
+		if (at >= EXEC_WINDOW_BASE) {
+			uint16_t i;
+
+			for (i = 0u; i < chunk; ++i) {
+				zos_user_copy_staging[i] = 0u;
+			}
+			if (exec_seg_write(bank, at, zos_user_copy_staging,
+					   chunk) != 0) {
+				return 1;
+			}
+		} else if (exec_bank_zero(bank, at, chunk) != 0) {
+			return 1;
+		}
+		done = (uint16_t)(done + chunk);
+	}
+	return 0;
 }
 
 /* Build startup block v1 in the common ROMFS staging view and write it
@@ -110,12 +187,16 @@ static uint8_t exec_startup_block(uint8_t child_bank, uint16_t args,
 
 /* --- format validation ------------------------------------------------ */
 
+/* The one up-front feasibility check: every count and size in the header,
+ * validated in 32 bits before anything is allocated or written.  Segment
+ * rows are checked separately before they are used. */
 int zex_validate_header(const struct zex_header *header, uint32_t file_size,
 			struct zex_geometry *out)
 {
 	uint32_t image_end;
 	uint32_t bss_end;
 	uint32_t stack_base;
+	uint32_t table_end;
 
 	if (header == (const struct zex_header *)0) {
 		return ZEX_EXEC_ERR_ARG;
@@ -141,14 +222,13 @@ int zex_validate_header(const struct zex_header *header, uint32_t file_size,
 	if (header->header_size != ZEX_HEADER_SIZE) {
 		return ZEX_EXEC_ERR_HEADER;
 	}
-	if (header->reserved1 != 0) {
+	if (header->reserved1 != 0u) {
 		return ZEX_EXEC_ERR_RESERVED1;
 	}
 	if (header->image_size == 0) {
 		return ZEX_EXEC_ERR_IMAGE;
 	}
-	if (file_size != (uint32_t)header->header_size +
-			 header->image_size) {
+	if (file_size != header->file_size) {
 		return ZEX_EXEC_ERR_FILESIZE;
 	}
 	if (header->entry_offset >= header->image_size) {
@@ -156,6 +236,24 @@ int zex_validate_header(const struct zex_header *header, uint32_t file_size,
 	}
 	if (header->stack_size < ZEX_MIN_STACK_SIZE) {
 		return ZEX_EXEC_ERR_STACK;
+	}
+	if (header->segment_count > ZEX_MAX_SEGMENTS ||
+	    header->total_segment_slots > ZEX_MAX_TOTAL_SLOTS) {
+		return ZEX_EXEC_ERR_SEG_SLOTS;
+	}
+
+	/* The segment table and the primary payload must lie inside the
+	 * file (all arithmetic 32-bit before it is used). */
+	table_end = header->segment_table_offset +
+		    ((uint32_t)header->segment_count *
+		     ZEX_SEGMENT_ENTRY_SIZE);
+	if (table_end < header->segment_table_offset ||
+	    table_end > file_size) {
+		return ZEX_EXEC_ERR_SEG_TABLE;
+	}
+	if ((uint32_t)header->primary_payload_offset + header->image_size >
+	    file_size) {
+		return ZEX_EXEC_ERR_FILESIZE;
 	}
 
 	/* All geometry arithmetic is checked in 32 bits before it is
@@ -179,6 +277,37 @@ int zex_validate_header(const struct zex_header *header, uint32_t file_size,
 		out->entry = (uint16_t)(ZEX_LOAD_BASE + header->entry_offset);
 		out->stack_size = header->stack_size;
 		out->stack_base = (uint16_t)stack_base;
+	}
+	return ZEX_EXEC_OK;
+}
+
+/* Protective bounds for one segment row, checked before the row is
+ * allocated or copied: a known kind, a non-empty image + BSS within the
+ * largest object, zero reserved fields and a payload inside the file.
+ * The packer proves the same geometry on the host. */
+int zex_validate_segment(const struct zex_segment *segment,
+			 uint32_t file_size)
+{
+	uint32_t total;
+
+	if (segment == (const struct zex_segment *)0) {
+		return ZEX_EXEC_ERR_ARG;
+	}
+	/* FAR_CODE is the package-44b kind; this loader refuses it. */
+	if (segment->kind != ZEX_SEG_KIND_DATA) {
+		return ZEX_EXEC_ERR_SEG_KIND;
+	}
+	if (segment->image_size == 0 || segment->reserved0 != 0u ||
+	    segment->reserved1 != 0u) {
+		return ZEX_EXEC_ERR_SEGMENT;
+	}
+	total = (uint32_t)segment->image_size + segment->bss_size;
+	if (total > ZEX_SEG_MAX_SIZE) {
+		return ZEX_EXEC_ERR_SEGMENT;
+	}
+	if ((uint32_t)segment->payload_offset + segment->image_size >
+	    file_size) {
+		return ZEX_EXEC_ERR_SEGMENT;
 	}
 	return ZEX_EXEC_OK;
 }
@@ -249,10 +378,9 @@ static int exec_seek(const struct vfs_descriptor *file, uint32_t offset)
 	return result;
 }
 
-/* Read the ZEX header into the caller's own storage through the common
+/* Read the ZEX header into the loader's bank-7 storage through the common
  * staging block. */
-static int exec_read_header(const struct vfs_descriptor *file,
-			    struct zex_header *header)
+static int exec_read_header(const struct vfs_descriptor *file)
 {
 	uint16_t i;
 	int result;
@@ -271,26 +399,110 @@ static int exec_read_header(const struct vfs_descriptor *file,
 		return ZEX_EXEC_ERR_FILESIZE;
 	}
 	for (i = 0u; i < ZEX_HEADER_SIZE; ++i) {
-		((uint8_t *)header)[i] = zos_user_copy_staging[i];
+		((uint8_t *)&zex_pending_header)[i] = zos_user_copy_staging[i];
 	}
 	return ZEX_EXEC_OK;
 }
 
-/* Stream the image (the header payload) into the child bank at 0100h. */
+/* Stream `length` bytes at `file_offset` into `dst` through the staging
+ * block, `chunk` at a time.  Returns a native provider error (negative) or
+ * a ZEX_EXEC_ERR_* code. */
+static int exec_stream(const struct vfs_descriptor *file, uint32_t offset,
+		       uint8_t *dst, uint16_t length)
+{
+	while (length != 0u) {
+		uint16_t chunk = length;
+		int result;
+
+		if (chunk > ZEX_LOAD_CHUNK) {
+			chunk = ZEX_LOAD_CHUNK;
+		}
+		result = exec_seek(file, offset);
+		if (result != 0) {
+			return result;
+		}
+		result = exec_file_call(file, ZFILE_OP_READ, 0u, chunk, chunk,
+					ZOS_IPC_DESC_OUT,
+					(struct zos_ipc_frame *)0);
+		if (result < 0) {
+			return result;
+		}
+		if (result != (int)chunk) {
+			return ZEX_EXEC_ERR_READ;
+		}
+		{
+			uint16_t i;
+
+			for (i = 0u; i < chunk; ++i) {
+				dst[i] = zos_user_copy_staging[i];
+			}
+		}
+		dst = dst + chunk;
+		offset += chunk;
+		length = (uint16_t)(length - chunk);
+	}
+	return ZEX_EXEC_OK;
+}
+
+/* Read the segment table into the loader's own storage and validate every
+ * row against the header before anything is allocated: the row's bounds,
+ * its ascending container id and the slot total the header promised. */
+static int exec_read_segments(const struct vfs_descriptor *file,
+			      const struct zex_header *header)
+{
+	uint16_t rows_size =
+		(uint16_t)((uint16_t)header->segment_count *
+			   ZEX_SEGMENT_ENTRY_SIZE);
+	uint8_t slots = 0u;
+	uint8_t i;
+	int result;
+
+	if (rows_size != 0u) {
+		result = exec_stream(file, header->segment_table_offset,
+				     (uint8_t *)zex_pending_segments,
+				     rows_size);
+		if (result != ZEX_EXEC_OK) {
+			return result;
+		}
+	}
+	for (i = 0u; i < header->segment_count; ++i) {
+		const struct zex_segment *segment = &zex_pending_segments[i];
+
+		result = zex_validate_segment(segment, header->file_size);
+		if (result != ZEX_EXEC_OK) {
+			return result;
+		}
+		if (segment->id != (uint8_t)(i + 1u)) {
+			return ZEX_EXEC_ERR_SEGMENT;
+		}
+		slots = (uint8_t)(slots +
+				  ((uint8_t)(((uint32_t)segment->image_size +
+					      segment->bss_size +
+					      (ZEX_SEG_SLOT_SIZE - 1u)) >>
+					     13)));
+	}
+	if (slots != header->total_segment_slots) {
+		return ZEX_EXEC_ERR_SEG_SLOTS;
+	}
+	return ZEX_EXEC_OK;
+}
+
+/* Stream the primary payload (the header payload) into the child bank at
+ * 0100h. */
 static int exec_load_image(const struct vfs_descriptor *file,
-			   const struct zex_geometry *geo, uint8_t bank)
+			   const struct zex_header *header, uint8_t bank)
 {
 	uint16_t offset = 0;
 
-	while (offset < geo->image_size) {
-		uint16_t chunk = (uint16_t)(geo->image_size - offset);
+	while (offset < header->image_size) {
+		uint16_t chunk = (uint16_t)(header->image_size - offset);
 		int result;
 
 		if (chunk > ZEX_LOAD_CHUNK) {
 			chunk = ZEX_LOAD_CHUNK;
 		}
 		result = exec_seek(file,
-				   (uint32_t)ZEX_HEADER_SIZE +
+				   (uint32_t)header->primary_payload_offset +
 					   (uint32_t)offset);
 		if (result != 0) {
 			return result;
@@ -314,14 +526,53 @@ static int exec_load_image(const struct vfs_descriptor *file,
 	return ZEX_EXEC_OK;
 }
 
+/* Stream one segment's payload into its object and zero its BSS. */
+static int exec_load_segment(const struct vfs_descriptor *file,
+			     const struct zex_segment *segment, uint8_t bank,
+			     uint8_t slot)
+{
+	uint16_t base = (uint16_t)((uint16_t)slot * ZEX_SEG_SLOT_SIZE);
+	uint16_t offset = 0;
+
+	while (offset < segment->image_size) {
+		uint16_t chunk = (uint16_t)(segment->image_size - offset);
+		int result;
+
+		if (chunk > ZEX_LOAD_CHUNK) {
+			chunk = ZEX_LOAD_CHUNK;
+		}
+		result = exec_seek(file,
+				   (uint32_t)segment->payload_offset +
+					   (uint32_t)offset);
+		if (result != 0) {
+			return result;
+		}
+		result = exec_file_call(file, ZFILE_OP_READ, 0u, chunk, chunk,
+					ZOS_IPC_DESC_OUT,
+					(struct zos_ipc_frame *)0);
+		if (result < 0) {
+			return result;
+		}
+		if (result != (int)chunk) {
+			return ZEX_EXEC_ERR_READ;
+		}
+		if (exec_seg_write(bank, (uint16_t)(base + offset),
+				   zos_user_copy_staging, chunk) != 0) {
+			return ZEX_EXEC_ERR_READ;
+		}
+		offset = (uint16_t)(offset + chunk);
+	}
+	if (segment->bss_size != 0u &&
+	    exec_seg_zero(bank, (uint16_t)(base + segment->image_size),
+			  segment->bss_size) != 0) {
+		return ZEX_EXEC_ERR_READ;
+	}
+	return ZEX_EXEC_OK;
+}
+
 /* The loader reads forward from a fixed offset and never needs the reply
  * position, so no ZFILE_OP_SEEK/CUR/END use exists. */
 
-/* Every allocating and fallible step, with the executable source closed
- * before returning.  Native -ZOS_E* codes are returned for path, read and
- * allocation failures (a provider read error is passed through unchanged);
- * a ZEX_EXEC_ERR_* code reports a malformed container.  Nothing is
- * published as RUNNING. */
 /* Release the bound executable: the provider's release runs (a driver's
  * CLOSE for `/FS`, the entry itself for ROMFS), then the entry. */
 static void exec_close(const struct vfs_descriptor *file, uint8_t pid)
@@ -329,15 +580,20 @@ static void exec_close(const struct vfs_descriptor *file, uint8_t pid)
 	(void)vfs_ns_unbind(pid, file->number);
 }
 
+/* Every allocating and fallible step, with the executable source closed
+ * before returning.  Native -ZOS_E* codes are returned for path, read and
+ * allocation failures (a provider read error is passed through unchanged);
+ * a ZEX_EXEC_ERR_* code reports a malformed container.  Nothing is
+ * published as RUNNING. */
 int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 		    uint16_t args_length, struct process_child *child)
 {
 	struct vfs_descriptor *file;
-	struct zex_header header;
 	struct zex_geometry geo;
 	uint8_t type = 0u;
 	uint8_t pid;
 	uint8_t bank;
+	uint8_t i;
 	uint32_t file_size = 0u;
 	int error;
 	int result;
@@ -374,22 +630,28 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 		return ZEX_EXEC_ERR_TYPE;
 	}
 	/* The loader reads the size next (a directory cannot be bound as a
-	 * FILE anyway) and a ZEX that is not exactly header + image is
-	 * refused below. */
+	 * FILE anyway) and requires it to match the header's file_size. */
 	result = exec_file_size(file, &file_size);
 	if (result != 0) {
 		exec_close(file, vfs_owner_current());
 		return result;
 	}
-	error = exec_read_header(file, &header);
+	error = exec_read_header(file);
 	if (error != ZEX_EXEC_OK) {
 		exec_close(file, vfs_owner_current());
 		return error;
 	}
-	result = zex_validate_header(&header, file_size, &geo);
+	/* The one up-front feasibility check (36.18): every count and size
+	 * the load needs, before a slot, a bank or a byte changes. */
+	result = zex_validate_header(&zex_pending_header, file_size, &geo);
 	if (result != ZEX_EXEC_OK) {
 		exec_close(file, vfs_owner_current());
 		return result;
+	}
+	error = exec_read_segments(file, &zex_pending_header);
+	if (error != ZEX_EXEC_OK) {
+		exec_close(file, vfs_owner_current());
+		return error;
 	}
 
 	/* Reserve bookkeeping before any bank content changes; every
@@ -423,16 +685,35 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 		? PROCESS_FLAG_KERNEL_PARENT : 0;
 	process_table[pid].exit_status = 0;
 
+	/* Place the container's DATA segments as the child's extended-memory
+	 * objects before the bank is touched (36.18): a refusal is a clean
+	 * NOSPACE rollback, and a later copy failure releases them through
+	 * process_slot_release() -> zos_xmem_release_process(). */
 	error = ZEX_EXEC_OK;
-	/* Deterministic child bank: zero 0000h-DFFFh first, then install
-	 * the single page-zero vector, then the image and BSS. */
-	if (exec_bank_zero(bank, 0x0000, 0xE000u) != 0 ||
+	for (i = 0u; i < zex_pending_header.segment_count; ++i) {
+		const struct zex_segment *segment = &zex_pending_segments[i];
+		uint16_t handle; /* SYS_SEG_INFO derives it again by id */
+
+		if (zos_xmem_segment_alloc(pid, segment->id, segment->kind,
+					   (uint16_t)(segment->image_size +
+						      segment->bss_size),
+					   &handle, &zex_segment_bank[i],
+					   &zex_segment_slot[i]) != 0) {
+			error = ZEX_EXEC_ERR_NOSPACE;
+			break;
+		}
+	}
+
+	/* Construct the child's bank (36.19: only what the ABI requires -
+	 * the page-zero vector, the image, BSS and the startup block; no
+	 * whole-bank clear). */
+	if (error == ZEX_EXEC_OK &&
 	    exec_bank_write(bank, 0x0030, zos_process_page_zero_vector,
 			    3) != 0) {
 		error = ZEX_EXEC_ERR_READ;
 	}
 	if (error == ZEX_EXEC_OK) {
-		error = exec_load_image(file, &geo, bank);
+		error = exec_load_image(file, &zex_pending_header, bank);
 	}
 	if (error == ZEX_EXEC_OK && geo.bss_size > 0) {
 		if (exec_bank_zero(bank, (uint16_t)(ZEX_LOAD_BASE +
@@ -440,6 +721,12 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 				   geo.bss_size) != 0) {
 			error = ZEX_EXEC_ERR_READ;
 		}
+	}
+	for (i = 0u; error == ZEX_EXEC_OK &&
+		     i < zex_pending_header.segment_count; ++i) {
+		error = exec_load_segment(file, &zex_pending_segments[i],
+					  zex_segment_bank[i],
+					  zex_segment_slot[i]);
 	}
 	if (error != ZEX_EXEC_OK) {
 		process_slot_release(pid);

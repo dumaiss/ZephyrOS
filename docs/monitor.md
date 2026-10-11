@@ -2,7 +2,7 @@
 
 `monitor.zex` is the first useful native ZephyrOS program and the
 interactive recovery/diagnostic environment used before the M10 shell.
-It is an **ordinary ZEX v1 executable**, stored in the ROMFS recovery
+It is an **ordinary ZEX v2 executable**, stored in the ROMFS recovery
 store and launched through the unchanged M6 `process_exec()` path; it is
 not linked into the kernel and has no special executable format.  When
 the shell arrives, the same monitor remains available as a diagnostic
@@ -143,7 +143,7 @@ make smoke-hardware-m7 SERIAL_PORT=/dev/ttyUSB0
                            # board so the boot log is captured
 ```
 
-`make monitor-test` proves the ZEX v1 layout (entry `0100h`, exact
+`make monitor-test` proves the ZEX v2 layout (entry `0100h`, exact
 image/BSS/stack geometry, low-window scratch) and that the linked map
 contains only the monitor/runtime modules - no kernel, SIO, early
 console, or CP/M symbols.  `make m7-selftest` builds an image whose

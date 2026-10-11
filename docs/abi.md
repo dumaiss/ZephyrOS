@@ -411,7 +411,9 @@ Rules:
 - The child is an ordinary process in a fresh application bank: it is
   never bank 7, it gets its own page zero, and a raw `RET` from its entry
   is a fault reported as an exit status of `ZOS_EFAULT`, exactly like a
-  program launched by the kernel.
+  program launched by the kernel.  The v2 loader zeroes only the child's
+  BSS (primary and per segment), its startup block and the page-zero
+  vector (36.19); nothing else in the bank is cleared.
 - Nesting is bounded by `ZOS_EXEC_MAX_DEPTH` (4) user processes in one
   synchronous chain; the kernel launcher is not one of them.  A
   suspension needs at most `ZOS_EXEC_FRAME_SAVE` gate-stack bytes
@@ -420,10 +422,11 @@ Rules:
   `SYS_EXEC` returns.
 - Past the suspension point nothing can fail: every allocating or
   fallible step (path copy-in, tail copy, slot/bank allocation, CWD start,
-  ZEX load/validate, page zero, startup block) happens in
-  `process_prepare()` before the child is entered, with the executable
-  source closed before it returns.  `process_launch()` only performs the
-  transition.
+  the ZEX v2 header check, segment allocation and load, page zero, startup
+  block) happens in `process_prepare()` before the child is entered, with
+  the executable source closed before it returns.  `process_launch()` only
+  performs the transition.  A failed load releases the child's slot, bank,
+  CWD state and segment objects before it returns.
 
 ## 11.1 Startup block v1 and HL
 
@@ -774,6 +777,9 @@ family is pinned in `abi/zos/xmem.h` (every offset static-asserted):
 25h  SYS_XMEM_MAP    args {handle:u16, address:u16 out}
                       -> HL = the aperture token, `address` = the object's
                          address in the aperture
+26h  SYS_SEG_INFO    args {segment:u8, reserved:u8,
+                           buffer:u16 out}            -> 8-byte record
+                         (section 15; a ZEX v2 DATA segment object)
 ```
 
 `flags` is `ZOS_XMEM_FLAG_MAPPABLE` (at most 16 KiB, placed in the
@@ -789,7 +795,10 @@ program that needs zeroes writes them.  Every range - `offset + length`
 against the allocated size, the buffer against the caller window - is
 checked before any byte moves, and a copy-gate failure is `-ZOS_EFAULT`.
 `SYS_XMEM_INFO` returns `requested`, `allocated`, `flags` and `type`
-(`ZOS_XMEM_TYPE_RUNTIME`), never a bank or slot.
+(`ZOS_XMEM_TYPE_RUNTIME`, or `ZOS_XMEM_TYPE_SEGMENT` for a loader-created
+ZEX v2 `DATA` segment - section 15), never a bank or slot.  `SYS_XMEM_FREE`
+refuses a segment object with `-ZOS_EINVAL`: a loader segment is released
+only at exit.
 
 **Map tokens.**  In mode 10 with a nonzero page field P, the caller's
 `8000h-BFFFh` names bank 7 - P (36.17).  `SYS_XMEM_MAP` returns the
@@ -815,3 +824,41 @@ handle, so a stale or foreign handle is refused before any state changes.
 A process owns its objects; a child inherits none of them, and `SYS_EXIT`
 releases every object of the exiting process after its handles are
 unbound (36.13).  Objects are read/write and non-executable.
+
+## 15. M10 ZEX v2 segments (SYS_SEG_INFO, package 44a)
+
+```text
+26h  SYS_SEG_INFO  args {segment:u8, reserved:u8, buffer:u16}
+                   -> 8-byte record at `buffer`, HL = 0
+```
+
+A ZEX v2 container declares zero or more auxiliary segments
+(`docs/zex-format.md` section 3).  `SYS_SEG_INFO` describes one of the
+calling process's own segments, named by its container id
+(`1..segment_count`, in table order), and returns:
+
+```text
+offset 0  u16  size    image + BSS, the segment's logical size
+offset 2  u8   kind    ZOS_SEG_KIND_DATA (1 = far code, package 44b)
+offset 3  u8   state   ZOS_SEG_STATE_LOADED
+offset 4  u16  handle  DATA: the extended-memory object handle; else 0
+offset 6  u16  reserved  0
+```
+
+- A `DATA` segment is a loader-created extended-memory object of type
+  `ZOS_XMEM_TYPE_SEGMENT` owned by the process: `handle` is what
+  `SYS_XMEM_READ`/`SYS_XMEM_WRITE` take.  The segment is released only at
+  exit, so `SYS_XMEM_FREE` refuses its handle with `-ZOS_EINVAL`, and
+  `SYS_XMEM_INFO` reports type `ZOS_XMEM_TYPE_SEGMENT`.
+- A `FAR_CODE` segment (package 44b) has no handle and reports 0; this
+  package's loader refuses far-code containers, so only `DATA` is live in
+  M10 step 10a.
+- Every segment of a loaded container is placed by the loader or the exec
+  fails and rolls back, so a live segment always reports `LOADED`.
+- The ids are the calling process's own container: another process's
+  segment does not exist for it, and an id outside `1..segment_count` is
+  `-ZOS_EINVAL`, as is a bad argument block or a record buffer outside
+  the caller buffer window `0100h-DFFFh`.
+
+The SDK wrapper is `zos_seg_info(segment, &info)`
+(`user/sdk/include/zos/seg.h`), which returns 0 or `-errno`.

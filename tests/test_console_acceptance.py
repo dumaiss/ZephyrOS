@@ -63,9 +63,9 @@ SMOKE_HOST_SYNC = b"\xaa\x55"
 
 # The packed monitor artifact (pinned by user/monitor/ and the tooling
 # tests; the store must deliver these exact bytes).
-MONITOR_SIZE = 4961
+MONITOR_SIZE = 4977
 MONITOR_SHA256 = (
-    "ec4d1cbd10bc341d45b053e2319c91397a1307ae72ee2f911c830d04fd2e81c1")
+    "6676ba211e3cc343b2d75d926aa1965d265440030d3a46f694a0a3651e266da5")
 
 # The monitor's visible rows, decoded from the V9958 trace.
 PROMPT = "Z80> "
