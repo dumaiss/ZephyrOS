@@ -1,18 +1,19 @@
-#!/usr/bin/env python3
-"""Console integration acceptance tests (work package 41): replay the real
-production bytes and the integration acceptance image in the Z80 simulator.
+"""Console integration acceptance tests (work package 41, consolidated by
+package 42d): replay the real production bytes and the integration
+acceptance image in the Z80 simulator.
 
-Both images boot the resident-service model this package delivers: the
-recovery store lists the SIO, IOC, HID, V9958 and CONSOLE services in the
-manifest order, the nucleus service loader places them in bank 6 and runs
-their boot tiers and inits, and the build-selected console driver - not a
-kernel binding and with no runtime fallback - forwards the console
-protocol to the input/output services its manifest names.  The production
-image is the same
-source and store the physical acceptance image is built from minus the
-target-test objects; the integration image adds the target diagnostic
-(tests/target/console/integration_test.c) behind the early-SIO driver
-transcript and the unchanged M7 `monitor.zex` launcher.
+Both images boot the resident-service model: the recovery store lists the
+SIO, IOC, HID, V9958 and CONSOLE services in the manifest order, the
+nucleus service loader places them in bank 6 and runs their boot tiers
+and inits, and the build-selected console driver - not a kernel binding
+and with no runtime fallback - forwards the console protocol to the
+input/output services its manifest names.  The production image is the
+same source and store the physical acceptance image is built from minus
+the target-test objects; the integration image adds the target
+diagnostics - the integration pass plus the IOC, HID and V9958 device
+diagnostics (work package 42d merged the per-device images into this
+one) - behind the early-SIO driver transcript, and the unchanged M7
+`monitor.zex` launcher.
 
 Coverage, all against those linked bytes:
 
@@ -29,10 +30,11 @@ Coverage, all against those linked bytes:
   IOC endpoint: link bring-up plus the FS2 command exchange, seen from
   the emulated MCU peer;
 * the integration image: the loader's per-service evidence rows and
-  ledger, the target diagnostic's endpoint/composition/marker/typed-line
-  /PING/rejection transcript, the same bytes on the visible lane, the
-  ESC c display reset the boot program runs (work package 42e), and the
-  monitor session that follows it;
+  ledger, the target diagnostics' endpoint/composition/marker/typed-line
+  /PING/rejection transcript (and the IOC/HID/V9958 diagnostics the same
+  image carries), the same bytes on the visible lane, the ESC c display
+  reset the boot program runs (work package 42e), and the monitor session
+  that follows it;
 * ROMFS payload identity: the packed monitor artifact is stored
   byte-for-byte and the store's directory matches the image's manifest.
 
@@ -49,19 +51,29 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import Z80, IocCommandPeer, V9958Peer, read_symbols  # noqa: E402
+from replay import (STEP_LIMIT, ConsoleReplay,  # noqa: E402
+                    IntegrationInputs, integration_peer)
+from z80sim import IocCommandPeer  # noqa: E402
 import zmodpack  # noqa: E402
 import romfspack  # noqa: E402
-from test_console_sim import (  # noqa: E402
-    ConsoleSimBase, MONITOR_SIZE, MONITOR_SHA256, PROMPT, BANNER,
-    SYSINFO, PROCESS, BANK_INFO, MONITOR_EXIT)
 from test_v9958_sim import bringup_starts  # noqa: E402
 
-RET = 0x1234
-STEP_LIMIT = 12000000
+SMOKE_HOST_SYNC = b"\xaa\x55"
 
+# The packed monitor artifact (pinned by user/monitor/ and the tooling
+# tests; the store must deliver these exact bytes).
+MONITOR_SIZE = 4961
+MONITOR_SHA256 = (
+    "ec4d1cbd10bc341d45b053e2319c91397a1307ae72ee2f911c830d04fd2e81c1")
+
+# The monitor's visible rows, decoded from the V9958 trace.
+PROMPT = "Z80> "
+BANNER = "ZephyrOS native monitor"
+SYSINFO = "system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02"
+PROCESS = "process: pid 0 bank 0 flags 0001"
+BANK_INFO = "bank: current 00 mask 7F"
+MONITOR_EXIT = "monitor: exit status 0x"
 PRODUCTION_DIR = "build"
 PRODUCTION_IMAGE = "zephyros.bin"
 
@@ -83,7 +95,6 @@ CONSOLE_DEPS = {"console-v9958-hid.zmod": ((4, 0), (2, 0))}
 # The characters the integration diagnostic writes through the console
 # service and the line the replay queues for its input row.
 INTEGRATION_MARKER = "C41"
-INTEGRATION_TYPED = b"K41\r"
 INTEGRATION_LINES = (
     b"console integration: services sio=01 ioc=01 hid=01 video=01 "
     b"console=01\r\n",
@@ -102,80 +113,44 @@ PING_REQUEST = 0x01
 PING_RESPONSE = 0x81
 
 
-class ConsoleReplayBase(ConsoleSimBase):
+class ConsoleReplayBase(ConsoleReplay, unittest.TestCase):
     """Boot one image with the emulated peers the services talk to."""
 
     IMAGE_SUBDIR = PRODUCTION_DIR
     IMAGE_NAME = PRODUCTION_IMAGE
-    HOST_SYNC = False
+    HOST_SYNC = b""
+    # The merged image's four diagnostics need their scripted inputs;
+    # production carries none of them and reads the monitor's typed
+    # input instead.
+    INPUT_STREAMS = False
 
     def setUp(self):
-        super().setUp()
-        self.syms = read_symbols(os.path.join(ROOT, self.IMAGE_SUBDIR,
-                                              "zephyros.map"))
+        self.load_image()
 
-    def start(self, queue=None):
+    def make_peer(self):
+        return IocCommandPeer()
+
+    def start(self):
+        """Boot with the emulated peers; the integration image's input
+        streams are attached to the stepping helpers."""
         z = self.make_cpu()
-        if queue:
-            z.hid.hid_queue.extend(queue)
-        if self.HOST_SYNC:
-            self.start_kernel(z)
-        else:
-            self.start_kernel(z)
+        z.hid = z.ioc_peer = self.make_peer()
+        if self.INPUT_STREAMS:
+            self.input_driver = IntegrationInputs(z.ioc_peer)
+        self.start_kernel(z, host_sync=self.HOST_SYNC)
         return z
-
-    def boot_to_prompt(self, z, limit=STEP_LIMIT):
-        """Step until the monitor prompt appears on the visible lane."""
-        for step in range(limit):
-            self.skip_delay(z)
-            z.step()
-            if step % 0x1FFF == 0:
-                self.pump(z)
-                if PROMPT in "".join(z.glyphs):
-                    self.pump(z)
-                    return step
-        self.pump(z)
-        raise AssertionError("no monitor prompt (PC=%04X, trace=%r)"
-                             % (z.pc, "".join(z.glyphs)[-160:]))
-
-    def type_line(self, z, text, expect, limit=STEP_LIMIT):
-        """Type one line into the HID queue and wait for its output."""
-        start = len(z.glyphs)
-        z.hid.hid_queue.extend(text if isinstance(text, bytes)
-                               else text.encode("ascii"))
-        for step in range(limit):
-            self.skip_delay(z)
-            z.step()
-            if step % 0x1FFF == 0:
-                self.pump(z)
-                if expect in "".join(z.glyphs[start:]):
-                    self.pump(z)
-                    return
-        self.pump(z)
-        raise AssertionError("%r did not follow %r (tail=%r)"
-                             % (expect, text,
-                                "".join(z.glyphs[start:])[-160:]))
-
-    def wait_for_count(self, z, expect, count, limit=STEP_LIMIT):
-        """Step until `expect` has appeared `count` times."""
-        for step in range(limit):
-            self.skip_delay(z)
-            z.step()
-            if step % 0x1FFF == 0:
-                self.pump(z)
-                if "".join(z.glyphs).count(expect) >= count:
-                    return
-        self.pump(z)
-        raise AssertionError("%r did not appear %d times (trace=%r)"
-                             % (expect, count,
-                                "".join(z.glyphs)[-160:]))
 
     def read_sio(self, z):
         return bytes(z.sio_tx)
 
     def read_trace(self, z):
-        self.pump(z)
-        return "".join(z.glyphs)
+        return self.trace(z)
+
+    def type_line(self, z, text, expect, limit=STEP_LIMIT):
+        self.send_raw(z, text, expect, limit=limit)
+
+    def wait_for_count(self, z, expect, count, limit=STEP_LIMIT):
+        self.run_until_count(z, expect, count, limit=limit)
 
 
 class TestProductionImage(ConsoleReplayBase):
@@ -318,6 +293,11 @@ class TestIntegrationImage(ConsoleReplayBase):
 
     IMAGE_SUBDIR = INTEGRATION_DIR
     IMAGE_NAME = INTEGRATION_IMAGE
+    HOST_SYNC = SMOKE_HOST_SYNC
+    INPUT_STREAMS = True
+
+    def make_peer(self):
+        return integration_peer()
 
     def service_plan(self):
         """The nucleus ledger the packer's set report carries for this
@@ -328,7 +308,7 @@ class TestIntegrationImage(ConsoleReplayBase):
             return json.load(handle)["nucleus"]
 
     def test_diagnostic_transcript_and_visible_lanes(self):
-        z = self.start(queue=INTEGRATION_TYPED)
+        z = self.start()
         self.boot_to_prompt(z)
         sio = self.read_sio(z)
         trace = self.read_trace(z)
@@ -362,10 +342,12 @@ class TestIntegrationImage(ConsoleReplayBase):
 
         # The image boot program is the ESC c check (work package 42e):
         # it reset the display and printed its line before handing the
-        # console to the monitor, so the V9958 bring-up sequence ran
-        # twice - the driver's boot segment and the ESC c reset.
+        # console to the monitor.  The V9958 bring-up sequence ran three
+        # times now that the video diagnostic lives in this image (work
+        # package 42d): the service's boot segment, the diagnostic's
+        # ZVIDEO_RESET, and the ESC c display reset.
         self.assertIn("escc: display reset", trace)
-        self.assertEqual(len(bringup_starts(z.vdp)), 2)
+        self.assertEqual(len(bringup_starts(z.vdp)), 3)
         self.assertIn(BANNER, trace)
         self.assertIn(PROMPT, trace)
 
@@ -377,13 +359,25 @@ class TestIntegrationImage(ConsoleReplayBase):
         self.assertEqual(kinds[0], LINK_SYNC_REQUEST)
         self.assertIn(0x0E, kinds)           # CMD_HID_INPUT
         self.assertIn(PING_REQUEST, kinds)
-        ping = [entry for entry in requests if entry[0] == PING_REQUEST][0]
-        self.assertEqual(ping[1:], (3, 0, b"@ABC"))
-        self.assertEqual(z.ioc_peer.hid_delivered, len(INTEGRATION_TYPED))
+        # Two PINGs hit the lane: the IOC diagnostic's own echo and the
+        # integration diagnostic's cross-service row, whose payload is
+        # the pinned ASCII pattern.
+        pings = [entry for entry in requests if entry[0] == PING_REQUEST
+                 and entry[3] == b"@ABC"]
+        self.assertEqual(len(pings), 1)
+        self.assertEqual(pings[0][2], 0)
+        # Every stream the merged diagnostics read came from the MCU:
+        # the HID typed pass and fault pair, the console pair and the
+        # integration diagnostic's typed line.
+        self.assertEqual(z.ioc_peer.hid_delivered,
+                         len(IntegrationInputs.TYPED) +
+                         len(IntegrationInputs.FAULT_PAIR) +
+                         len(IntegrationInputs.CONSOLE_PAIR) +
+                         len(IntegrationInputs.TYPED_LINE))
         self.assertEqual(z.ioc_peer.channel_resets, 1)
 
     def test_monitor_runs_after_the_diagnostic(self):
-        z = self.start(queue=INTEGRATION_TYPED)
+        z = self.start()
         self.boot_to_prompt(z)
         self.type_line(z, b"q\r", MONITOR_EXIT)
         self.wait_for_count(z, BANNER, 2)

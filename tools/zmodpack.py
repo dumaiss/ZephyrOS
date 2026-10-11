@@ -868,7 +868,6 @@ def pack_service_manifest(manifest):
     packed.kind = "service"
     packed.image = image
     packed.bss_size = layout["bss_size"]
-    packed.required_granules = 0
     packed.symbols = collect_symbol_offsets(manifest, layout)
     packed.symbol_segments = collect_symbol_segments(manifest, layout)
     packed.segments = []

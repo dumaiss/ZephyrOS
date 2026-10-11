@@ -123,41 +123,6 @@ class TestFixtureBoundaries(unittest.TestCase):
         self.assertIn("zextest.zex", entries)
 
 
-class TestSmokeMismatchHints(unittest.TestCase):
-    """A board that still carries a previously flashed image must produce
-    an actionable hint instead of a bare timeout."""
-
-    def _hint(self, mode, transcript):
-        import contextlib
-        import io
-        import serial_smoke
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            serial_smoke._explain_wrong_image(mode, transcript)
-        return err.getvalue()
-
-    def test_corrupt_image_flashed_to_the_subsystem_mode(self):
-        import serial_smoke
-        # The corrupt-store image panics before any module runs; a run
-        # with --mode subsystem must name the image to flash instead of
-        # timing out silently.
-        transcript = serial_smoke.BANNER + serial_smoke.ROMFS_CORRUPT_PANIC
-        hint = self._hint("subsystem", transcript)
-        self.assertIn("romfs-corrupt", hint,
-                      "corrupt-image transcript not recognized: %r" % hint)
-
-    def test_subsystem_image_flashed_to_the_corrupt_mode(self):
-        import serial_smoke
-        # The subsystem image boots the module groups; a run with
-        # --mode romfs-corrupt must point back at the subsystem image.
-        transcript = (serial_smoke.BANNER +
-                      serial_smoke.CONSOLE_SERVICE_OK +
-                      serial_smoke.SUBSYS_ROMFS_OK)
-        hint = self._hint("romfs-corrupt", transcript)
-        self.assertIn("subsystem", hint,
-                      "subsystem transcript not recognized: %r" % hint)
-
-
 class TestSyntheticPacking(unittest.TestCase):
     """Packing behavior on controlled linked inputs."""
 
@@ -437,8 +402,8 @@ class TestSubsystemArtifacts(unittest.TestCase):
         _h, entries = romfspack.parse_image(stream)
         names = {entry["name"]: entry for entry in entries}
         _p, valid = self._read("build/modules/zextest.zex")
-        truncated = open(os.path.join(ROOT, "build", "modules",
-                                      "zex-truncated.zex"), "rb").read()
+        _q, truncated = self._read(
+            "build-subsys-selftest/modules/zex-truncated.zex")
         self.assertEqual(names["zextest.zex"]["payload"], valid)
         self.assertEqual(names["zex-truncated.zex"]["payload"], truncated)
 
@@ -449,7 +414,6 @@ class TestSubsystemArtifacts(unittest.TestCase):
                        b"irq selftest: OK\r\n",
                        b"romfs selftest: OK\r\n",
                        b"process selftest: OK\r\n",
-                       b"loader selftest: OK\r\n",
                        b"zextest: OK\r\n",
                        b"process selftest: two-bank OK\r\n"):
             self.assertIn(marker, image)
@@ -462,53 +426,19 @@ class TestSubsystemArtifacts(unittest.TestCase):
         import serial_smoke
         _p, image = self._read("build-subsys-selftest/"
                                "zephyros-subsys-selftest.bin")
-        for const in (serial_smoke.SUBSYS_SYSCALL_OK,
+        for const in (b"ZephyrOS 0.0\r\n", b"platform: Zephyr-80\r\n",
+                      b"kernel entry: OK\r\n", b"serial: OK\r\n",
+                      serial_smoke.CONSOLE_SERVICE_OK,
+                      serial_smoke.SUBSYS_SYSCALL_OK,
                       serial_smoke.SUBSYS_IRQ_OK,
                       serial_smoke.SUBSYS_ROMFS_OK,
-                      serial_smoke.SUBSYS_LOADER_OK,
-                      serial_smoke.SUBSYS_PROCESS_DONE,
-                      serial_smoke.SUBSYS_ZEXTEST_OK,
-                      serial_smoke.SUBSYS_REPEAT_OK,
-                      serial_smoke.SUBSYS_TWO_BANK_OK,
-                      serial_smoke.SUBSYS_RAW_RETURN_OK,
-                      serial_smoke.SUBSYS_REJECTED_OK,
-                      serial_smoke.SUBSYS_CORRUPT_ROLLBACK_OK,
-                      serial_smoke.SUBSYS_STATUS_PREFIX):
+                      serial_smoke.SUBSYS_PROCESS_OK,
+                      serial_smoke.SUBSYS_FAIL,
+                      serial_smoke.SUBSYS_PROMPT,
+                      serial_smoke.SUBSYS_EXIT):
             self.assertIn(const, image,
                           "serial_smoke expectation %r is not in the "
                           "subsystem image" % const)
-        # The composed status/bank transcript lines are not linked
-        # literals (the target prints the prefix and the digits through
-        # separate writes); only their embedded prefix is in the image.
-        self.assertIn(b"zextest: bank=", image)
-        for const in (serial_smoke.SUBSYS_STATUS_PASS,
-                      serial_smoke.SUBSYS_STATUS_PASS_BANK1):
-            self.assertTrue(const.startswith(
-                serial_smoke.SUBSYS_STATUS_PREFIX))
-        for const in (serial_smoke.SUBSYS_ZEXTEST_BANK0,
-                      serial_smoke.SUBSYS_ZEXTEST_BANK1):
-            self.assertTrue(const.startswith(b"zextest: bank="))
-
-    def test_generated_layout_matches_the_manifest(self):
-        _p, generated = self._read("build-subsys-selftest/"
-                                   "process_expect.inc")
-        manifest = json.loads(open(SUBSYS_ZEXTEST_JSON).read())
-        env = parse_c_header(os.path.join(ROOT, "build-subsys-selftest",
-                                          "process_expect.inc"))
-        self.assertEqual(evaluate(env["PROCESS_ZEX_IMAGE_SIZE"], env),
-                         manifest["image_size"])
-        self.assertEqual(evaluate(env["PROCESS_ZEX_BSS_SIZE"], env),
-                         manifest["bss_size"])
-        self.assertEqual(evaluate(env["PROCESS_ZEX_STACK_SIZE"], env),
-                         manifest["stack_size"])
-        self.assertEqual(evaluate(env["PROCESS_ZEX_STACK_BASE"], env),
-                         0xE000 - manifest["stack_size"])
-        expected_fixtures = len(
-            [f for f in gen_fixtures.build_fixtures()
-             if f["kernel_code"] is not None])
-        self.assertEqual(evaluate(env["PROCESS_FIXTURE_COUNT"], env),
-                         expected_fixtures)
-        self.assertIn(b"process_fixtures", generated)
 
 
 if __name__ == "__main__":

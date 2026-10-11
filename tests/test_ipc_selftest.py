@@ -89,12 +89,16 @@ def symbols(map_path):
 class TestIpcBuildWiring(unittest.TestCase):
     def test_makefile_has_the_acceptance_image(self):
         text = read(MAKEFILE)
+        for token in ("ifeq ($(ZOS_IPC_SELFTEST),1)",
+                      "PK_SUFFIX := -ipc-selftest",
+                      "-DZOS_IPC_SELFTEST=1",
+                      "ROMFS_MANIFEST := tests/ipc/manifest.json"):
+            self.assertIn(token, text, token)
+        # The image's own target builds it, replays it and prints the
+        # packed path.
         self.assertIn("ipc-selftest:", text)
-        self.assertIn("ZOS_IPC_SELFTEST=1", text)
-        self.assertIn("PK_SUFFIX := -ipc-selftest", text)
         self.assertIn("build-ipc-selftest/zephyros-ipc-selftest.bin", text)
-        self.assertIn("tests/ipc/manifest.json", text)
-        self.assertIn("ZOS_BOOT_PROGRAM=/SYSTEM/ipccopy.zex", text)
+        self.assertIn("test_ipc_selftest*.py", text)
         self.assertIn("$(MODULES)/ipccopy.zex", text)
         self.assertIn('"name": "ipccopy.zex"', read(MANIFEST))
 
@@ -141,8 +145,9 @@ class TestIpcBuildWiring(unittest.TestCase):
         # its cold body into the cold half, and packs the six service
         # images with the boot manifest.  It uses production placement;
         # an image-specific cold-extra set would overflow its cold half.
-        self.assertIn("IPC_COLD_EXTRA_CSV", text)
-        self.assertIn("IPC_COLD_EXTRA_CSV :=", text)
+        # The image uses production placement: its row sets
+        # COLD_EXTRA_CSV empty and names no image-specific cold set.
+        self.assertIn("COLD_EXTRA_CSV :=", text)
         self.assertIn("$(MODULES)/services.man", text)
         self.assertIn("zmodpack.py services", text)
         self.assertIn("IPC_SERVICE_NAMES := ioc fat vfs echo con irqx", text)

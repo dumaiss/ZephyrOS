@@ -35,13 +35,10 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import Z80, read_symbols, skip_serial_connect_delay  # noqa: E402
+from replay import Replay, STEP_LIMIT  # noqa: E402
 
 RET = 0x1234
-STACK = 0xFFFE
-STEP_LIMIT = 20000000
 COMMON_BASE = 0xE000
 
 IMAGE_SUBDIR = "build-nucleus-selftest"
@@ -105,75 +102,35 @@ class NucleusCtc0Injector:
             self.armed = False
 
 
-class NucleusSimBase(unittest.TestCase):
+class NucleusSimBase(Replay, unittest.TestCase):
+    IMAGE_SUBDIR = IMAGE_SUBDIR
+    IMAGE_NAME = IMAGE_NAME
+
     def setUp(self):
-        self.bin_path = os.path.join(ROOT, IMAGE_SUBDIR, IMAGE_NAME)
-        if not os.path.exists(self.bin_path):
-            self.skipTest("%s missing; build the image first" % self.bin_path)
-        with open(self.bin_path, "rb") as handle:
-            self.image = handle.read()
-        self.syms = read_symbols(
-            os.path.join(ROOT, IMAGE_SUBDIR, "zephyros.map"))
-
-    def make_cpu(self):
-        pages = {n: self.image[n * 0x10000:(n + 1) * 0x10000]
-                 for n in range(8)}
-        z = Z80(pages[0], pages[1],
-                rom_pages={n: pages[n] for n in range(2, 8)})
-        z.latch = 0x18
-        z.sp = STACK
-        return z
-
-    def read(self, symbol):
-        """One byte of linked state from the booted machine: common memory
-        lives in bank 0, the fixed core and the cold half in bank 7."""
-        address = self.syms[symbol]
-        return (self._z.bank0[address] if address >= COMMON_BASE
-                else self._z.bank7[address])
-
-    def read16(self, symbol):
-        address = self.syms[symbol]
-        bank = self._z.bank0 if address >= COMMON_BASE else self._z.bank7
-        return bank[address] | (bank[address + 1] << 8)
-
-    def _linked_bank7(self, address, length):
-        """Bank-7 bytes of the linked image: page 1 of the ROM image."""
-        page1 = self.image[0x10000:0x20000]
-        return bytes(page1[address:address + length])
-
-    def crt0(self, z):
-        z.push16(RET)
-        z.pc = self.syms["__zos_crt0_init"]
-        for _ in range(2000000):
-            z.step()
-            if z.pc == RET:
-                return
-        raise AssertionError("C runtime init did not return")
+        self.load_image()
 
     def boot(self, z, limit=STEP_LIMIT):
-        """Run the kernel to the acceptance marker.  Returns the injector
-        and the step count."""
-        self.crt0(z)
-        z.push16(RET)
-        z.pc = self.syms["_kernel_main"]
+        """Run the kernel to the acceptance marker.  Returns the
+        injector and the step count."""
         watch = NucleusCtc0Injector(self.syms, 0x1000, STUB_BASE)
-        delay = self.syms["_kernel_serial_connect_delay"]
-        for step in range(limit):
-            skip_serial_connect_delay(z, delay)
-            watch(z)
-            z.step()
-            if (OK_MARKER.encode() in z.sio_tx or
-                    FAIL_MARKER.encode() in z.sio_tx or
-                    b"PANIC" in z.sio_tx or z.halted):
-                return watch, step
-        raise AssertionError(
-            "acceptance never completed (PC=%04X, tail=%r)"
-            % (z.pc, bytes(z.sio_tx)[-200:]))
+        self.start_kernel(z, ctc0=True)
+        steps = self.run_until(z, (OK_MARKER, FAIL_MARKER, b"PANIC"),
+                               limit=limit, on_step=watch, halt_ok=True)
+        return watch, steps
 
 
 class TestNucleusLayout(NucleusSimBase):
     """One boot serves every assertion (the image runs the whole surface in
     a single pass), so the replay is split by assertion, not by run."""
+
+    def reg16(self, symbol):
+        """One word of the image's published evidence."""
+        return self.read16(self.boot_once(), symbol)
+
+    def reg(self, symbol):
+        """One byte of the image's published evidence (the mixin's `read`
+        takes the machine as its first argument)."""
+        return self.read(self.boot_once(), symbol)
 
     def boot_once(self):
         if getattr(self, "_watch", None) is None:
@@ -193,7 +150,7 @@ class TestNucleusLayout(NucleusSimBase):
         self.assertIn(OK_MARKER, self._sio)
         self.assertNotIn("FAIL", self._sio)
         self.assertNotIn("PANIC", self._sio)
-        self.assertEqual(self.read("_zos_nucleus_result"), 0)
+        self.assertEqual(self.reg("_zos_nucleus_result"), 0)
         self.assertEqual(self._watch.deliveries, 2,
                          "the replay injected %d CTC0 deliveries, not 2"
                          % self._watch.deliveries)
@@ -203,13 +160,13 @@ class TestNucleusLayout(NucleusSimBase):
     def test_syscall_and_irq_gates_normalize_the_page_field(self):
         self.boot_once()
         # The caller's latch (mode 10, bank 0, page 1) came back exactly.
-        self.assertEqual(self.read("zos_nucleus_p_latch"),
+        self.assertEqual(self.reg("zos_nucleus_p_latch"),
                          MODE_APPLICATION | APP_BANK |
                          (PAGE_SERVICE << 5))
         # The mode-10 delivery: the handler is cold-half code, so this can
         # only pass with P = 0; it recorded the latch it observed.
-        self.assertEqual(self.read("_zos_nucleus_irq_evidence"), EV_ALL)
-        self.assertEqual(self.read("_zos_nucleus_irq_latch"),
+        self.assertEqual(self.reg("_zos_nucleus_irq_evidence"), EV_ALL)
+        self.assertEqual(self.reg("_zos_nucleus_irq_latch"),
                          MODE_OS | APP_BANK)
 
     def test_irq_during_an_upcall_normalizes_and_restores(self):
@@ -217,29 +174,29 @@ class TestNucleusLayout(NucleusSimBase):
         # The delivery arrived while the shim had bank 6 mapped; the
         # handler still ran (bank-7 cold code) with P = 0 ...
         self.assertEqual(
-            self.read("_zos_nucleus_upcall_irq_evidence"), EV_ALL)
-        self.assertEqual(self.read("_zos_nucleus_upcall_irq_latch"),
+            self.reg("_zos_nucleus_upcall_irq_evidence"), EV_ALL)
+        self.assertEqual(self.reg("_zos_nucleus_upcall_irq_latch"),
                          MODE_OS | APP_BANK)
         # ... and the interrupted page came back before the stub resumed.
-        self.assertEqual(self.read("_zos_nucleus_stub_status"),
+        self.assertEqual(self.reg("_zos_nucleus_stub_status"),
                          STUB_STATUS_DELIVERED)
-        self.assertEqual(self.read("_zos_nucleus_stub_latch"),
+        self.assertEqual(self.reg("_zos_nucleus_stub_latch"),
                          MODE_OS | APP_BANK | (PAGE_SERVICE << 5))
-        self.assertEqual(self.read("_zos_nucleus_stub_latch_after"),
+        self.assertEqual(self.reg("_zos_nucleus_stub_latch_after"),
                          MODE_OS | APP_BANK | (PAGE_SERVICE << 5))
 
     def test_upcall_shim_selects_the_page_and_publishes_the_result(self):
         self.boot_once()
         # The shim's own request state: the target ran inside the window.
-        self.assertEqual(self.read("_zos_nucleus_stub_witness"),
+        self.assertEqual(self.reg("_zos_nucleus_stub_witness"),
                          STUB_WITNESS)
-        self.assertEqual(self.read16("_zos_nucleus_stub_args"),
+        self.assertEqual(self.reg16("_zos_nucleus_stub_args"),
                          self.syms["_zos_nucleus_upcall_arg"])
-        self.assertEqual(self.read16("zos_upcall_result"), STUB_MAGIC)
+        self.assertEqual(self.reg16("zos_upcall_result"), STUB_MAGIC)
         # The install helper copied the stub into bank 6 through the window.
         stub_size = (self.syms["zos_nucleus_stub_end"] -
                      self.syms["zos_nucleus_stub_start"])
-        want = self._linked_bank7(self.syms["zos_nucleus_stub_start"],
+        want = self.linked_bank7(self.syms["zos_nucleus_stub_start"],
                                   stub_size)
         self.assertEqual(
             bytes(self._z.banks[SERVICE_BANK][STUB_BASE:STUB_BASE +
@@ -251,7 +208,7 @@ class TestNucleusLayout(NucleusSimBase):
         # The fixed install helper recorded the caller's latch, and the
         # driver only reaches the OK marker when the shim restored exactly
         # that value after the call.
-        self.assertEqual(self.read("zos_nucleus_upcall_latch0"),
+        self.assertEqual(self.reg("zos_nucleus_upcall_latch0"),
                          MODE_OS | APP_BANK)
 
     def test_the_page_selection_is_load_bearing(self):
@@ -261,9 +218,9 @@ class TestNucleusLayout(NucleusSimBase):
         self.boot_once()
         stub_size = (self.syms["zos_nucleus_stub_end"] -
                      self.syms["zos_nucleus_stub_start"])
-        stub = self._linked_bank7(self.syms["zos_nucleus_stub_start"],
+        stub = self.linked_bank7(self.syms["zos_nucleus_stub_start"],
                                   stub_size)
-        at_window = self._linked_bank7(STUB_BASE, stub_size)
+        at_window = self.linked_bank7(STUB_BASE, stub_size)
         self.assertNotEqual(stub, at_window,
                             "bank 7 carries the stub bytes at 0x%04X; the "
                             "page-selection proof would be vacuous"

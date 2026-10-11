@@ -312,16 +312,21 @@ class TestServiceArtifact(unittest.TestCase):
 
     def test_makefile_targets_and_gates(self):
         makefile = _read(MAKEFILE)
-        for target in ("v9958-test:", "video-selftest:",
-                       "console-selftest:"):
+        for target in ("v9958-test:", "console-integration-selftest"):
             self.assertIn(target, makefile)
         self.assertIn("services/manifests/%.json", makefile)
         self.assertIn("v9958_service.rel", makefile)
         self.assertIn("v9958_font.rel", makefile)
         self.assertIn("$(MODULES)/v9958-6x8.font", makefile)
+        # The video diagnostic runs in the console-integration image (work
+        # package 42d merged the per-device images).
         self.assertIn("ZOS_VIDEO_SELFTEST", makefile)
-        self.assertIn("ZOS_CONSOLE_SELFTEST", makefile)
-        self.assertIn("ZOS_SERVICES := sio v9958 console-serial", makefile)
+        index = makefile.index("ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)")
+        self.assertIn("$(BUILD)/video_test.rel", makefile[index:index + 400])
+        self.assertIn("video_test", makefile)
+        self.assertRegex(
+            makefile,
+            r"ZOS_SERVICES := sio ioc hid v9958 \$\(ZOS_CONSOLE\)")
         # The terminal renderer's own model suite (the M8 device-model
         # entry points it drove) is retired with the device model (work
         # package 42c); the renderer runs in the video/console images.

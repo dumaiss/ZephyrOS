@@ -37,12 +37,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import Z80, read_symbols, skip_serial_connect_delay  # noqa: E402
+from replay import STEP_LIMIT, Replay  # noqa: E402
 import romfspack  # noqa: E402
-
-RET = 0x1234
-STACK = 0xFFFE
-STEP_LIMIT = 60000000
 
 IMAGE_SUBDIR = "build-ns-selftest"
 IMAGE_NAME = "zephyros-ns-selftest.bin"
@@ -98,54 +94,28 @@ MAN_RECORD = 24
 MAN_SIZE = MAN_RECORD * 3
 
 
-def symbols(map_path):
-    found = {}
-    with open(map_path, encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            match = re.match(r"\s*([0-9A-Fa-f]{4,8})\s+(\S+)(?:\s+\S+)?\s*$",
-                             line)
-            if match:
-                found[match.group(2)] = int(match.group(1), 16)
-    return found
+class NsSelftestReplay(Replay, unittest.TestCase):
+    IMAGE_SUBDIR = IMAGE_SUBDIR
+    IMAGE_NAME = IMAGE_NAME
 
-
-class NsSelftestReplay(unittest.TestCase):
     def setUp(self):
-        self.bin_path = os.path.join(ROOT, IMAGE_SUBDIR, IMAGE_NAME)
-        if not os.path.exists(self.bin_path):
-            self.skipTest("%s missing; build the image first" % self.bin_path)
-        with open(self.bin_path, "rb") as handle:
-            self.image = handle.read()
-        self.syms = symbols(os.path.join(ROOT, IMAGE_SUBDIR,
-                                        "zephyros.map"))
+        self.load_image()
 
     def boot(self, limit=STEP_LIMIT):
-        pages = {n: self.image[n * 0x10000:(n + 1) * 0x10000]
-                 for n in range(8)}
-        z = Z80(pages[0], pages[1],
-                rom_pages={n: pages[n] for n in range(2, 8)})
-        z.latch = 0x18
-        z.sp = STACK
-        z.push16(RET)
-        z.pc = self.syms["__zos_crt0_init"]
-        for _ in range(2000000):
-            z.step()
-            if z.pc == RET:
-                break
-        z.push16(RET)
-        z.pc = self.syms["_kernel_main"]
-        delay = self.syms["_kernel_serial_connect_delay"]
+        """Boot until the monitor reports the client's exit status (the
+        verdict line arrives before it)."""
+        z = self.make_cpu()
+        self.start_kernel(z)
         for _ in range(limit):
-            skip_serial_connect_delay(z, delay)
+            self.skip_delay(z)
+            self.feed(z)
             z.step()
             if z.halted:
                 return z
-            # The monitor reports the client's exit status after the verdict.
-            tail = z.sio_tx.split(b"monitor: exit status", 1)
+            tail = bytes(z.sio_tx).split(b"monitor: exit status", 1)
             if len(tail) == 2 and b"\r\n" in tail[1]:
                 break
         return z
-
     def test_boot_transcript_and_verdict(self):
         z = self.boot()
         sio = z.sio_tx.decode("ascii", "replace")

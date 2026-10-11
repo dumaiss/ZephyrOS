@@ -121,8 +121,10 @@ After the four banner lines, `kernel_main()` continues:
 2. `vfs_init()` brings up the three static roots: the ROMFS reader (the
    `/SYSTEM` FILE endpoint and the store), the handle table and the
    in-process FILE endpoint; a corrupt store produces the
-   `romfs_diagnose()` lines and the panic
-   (`make romfs-corrupt-selftest`).
+   `romfs_diagnose()` lines and the panic.  Work package 42d folded that
+   outcome into `tests/test_romfs_sim.py`, which patches the header of a
+   freshly packed store image in place and replays the panic; the
+   corrupt-store image and its target are gone.
 3. `service_load_all(ZOS_SERVICE_MANIFEST_NAME)` reads `services.man`
    with the bootstrap ROMFS reader and, in load order, copies each
    service image's segments to their host-assigned bank-6 addresses,
@@ -279,12 +281,8 @@ make smoke-hardware SERIAL_PORT=/dev/ttyUSB0                 # flash build/zephy
                                                              # console line, monitor
 make smoke-hardware-subsystem SERIAL_PORT=/dev/ttyUSB0       # flash build-subsys-selftest/
                                                              # zephyros-subsys-selftest.bin
-make smoke-hardware-romfs-corrupt SERIAL_PORT=/dev/ttyUSB0   # flash build-romfs-corrupt/
-                                                             # zephyros-romfs-corrupt.bin
 make smoke-hardware-console-integration SERIAL_PORT=/dev/ttyUSB0              # flash build-console-integration-selftest/
                                                              # zephyros-console-integration-selftest.bin
-make smoke-hardware-ioc SERIAL_PORT=/dev/ttyUSB0          # flash build-ioc-selftest/
-                                                             # zephyros-ioc-selftest.bin
 make smoke-hardware-m9-fs SERIAL_PORT=/dev/ttyUSB0           # flash build-m9-fs-selftest/
                                                              # zephyros-m9-fs-selftest.bin
 make smoke-hardware-m9-exec SERIAL_PORT=/dev/ttyUSB0         # flash build-m9-exec-selftest/
@@ -305,10 +303,11 @@ the tool's host-sync sequence, so start the tool first and then press RESET.
 
 Every acceptance image retired under the Mn-1 retention rule (M1-M8)
 is gone; their mechanism coverage now runs inside the subsystem
-acceptance image (`make subsystem-selftest`), the device subsystem
-images (`make ioc-selftest`, `make hid-selftest`, `make video-selftest`,
-`make console-selftest`, `make console-integration-selftest`,
-`make console-serial-selftest`) and the M9 acceptance images.
+acceptance image (`make subsystem-selftest`), the console-integration
+image (`make console-integration-selftest`, which carries the IOC, HID,
+V9958 and console diagnostics since work package 42d), the
+`console-serial` variant (`make console-serial-selftest`) and the M9
+acceptance images.
 
 M9's integration acceptance image is `make m9-selftest`: the production
 boot path with `/` served by the resident IOC-FAT provider from the card,

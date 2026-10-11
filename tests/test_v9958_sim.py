@@ -1,38 +1,29 @@
 #!/usr/bin/env python3
-"""Host-side V9958 video service acceptance: replay the real
-video-selftest image (the `sio v9958 console-serial` service set,
-production geometry) in the Z80 simulator against the V9958 peer.
+"""Host-side V9958 video service acceptance: the video diagnostic runs in
+the console-integration image (work package 42d merged the per-device
+images); this module replays that image's `sio ioc hid v9958
+console-v9958-hid` service set, production geometry, against the V9958
+peer.
 
 Coverage (all executing the real linked bytes):
 
-* production-style boot: the resident service loader places and starts
-  the three service images and prints its early-SIO evidence lines
-  (`driver sio.zmod: hot ... boot ...`,
-  `driver v9958.zmod: hot ... boot ... bulk ...`,
-  `driver console-serial.zmod: hot ...`), the v9958 bulk row being the
-  font the run-time reset re-reads through the nucleus bulk copy;
-* the nucleus console line: `console: service OK` is written through
-  the build-selected console driver; this image's SIO-only set selects
-  `console-serial`, so the line is on the serial lane and nothing the
-  console prints reaches the V9958 trace;
-* the target diagnostic's early-SIO transcript: endpoint discovery
-  (video class 02 at protocol version 01, serial and console peers),
-  the argument-free PRESENT, the display reset, the `V41` terminal
-  marker written after the reset, the malformed refusals, and the
-  pinned final `video selftest: OK`, which is also the last line the
-  boot writes before the launcher starts the monitor;
+* the boot transcript: the nucleaus banner, the resident service loader's
+  evidence rows for the image's set, and the video diagnostic's early-SIO
+  transcript (endpoint discovery, argument-free PRESENT, the display
+  reset, the `V41` terminal marker, the malformed refusals and the pinned
+  `video selftest: OK`);
 * the peer-observable protocol facts: the reset re-ran the complete
   bring-up - the 24-write GRAPHIC 6 register sequence appears exactly
-  twice (the boot segment and the reset), both 6-KiB font atlas
-  windows are written exactly twice (12,288 bytes per bring-up, the
-  run-time one fed by the service's bulk segment), the full-page
-  clear-screen HMMV runs once per bring-up with its CE-busy handshake,
-  and the malformed-call phase performs no VDP access at all;
+  twice (the boot segment and the reset), both 6-KiB font atlas windows
+  are written exactly twice (12,288 bytes per bring-up, the run-time one
+  fed by the service's bulk segment), the full-page clear-screen HMMV
+  runs once per bring-up with its CE-busy handshake, and the
+  malformed-call phase performs no VDP access at all;
 * the marker glyphs `V41` reach the decoded glyph trace through the
   diagnostic's direct video-endpoint writes (after its reset), proving
   the renderer path end to end.
 
-Skipped when the image has not been built (`make video-selftest`).
+Skipped when the image has not been built (`make console-integration-selftest`).
 """
 
 import os
@@ -43,15 +34,14 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from test_console_sim import ConsoleSimBase  # noqa: E402
-from z80sim import skip_serial_connect_delay  # noqa: E402
+from replay import (BANNER, PROMPT, STEP_LIMIT, ConsoleReplay,  # noqa: E402
+                    IntegrationInputs, integration_peer)
 
 STEP_LIMIT = 80000000
 
-# Early-SIO boot transcript.
-BANNER = "ZephyrOS 0.0"
+# Early-SIO boot transcript.  BANNER and PROMPT come from the replay
+# helper (the monitor's visible lane).
 PLATFORM = "platform: Zephyr-80"
 KERNEL_OK = "kernel entry: OK"
 SERIAL_OK = "serial: OK"
@@ -65,9 +55,12 @@ VIDEO_MARKER = "video: marker V41"
 VIDEO_REJECTS = "video: malformed rejected"
 VIDEO_OK = "video selftest: OK"
 
-# Visible side.
+# Visible side.  This image selects the production HID/V9958 console, so
+# the nucleus console line and the video diagnostic's marker share the
+# V9958 lane with the monitor.
 PROBE_LINE = "console: service OK"
 MARKER_GLYPHS = "V41"
+SMOKE_HOST_SYNC = b"\xaa\x55"
 
 # The proven GRAPHIC 6 bring-up register sequence, in order (value,
 # register): the paced head, R#0..R#11, the selector block and R#25
@@ -133,37 +126,26 @@ def peer_snapshot(peer):
             len(peer.status_reads), len(peer.commands))
 
 
-class VideoSimBase(ConsoleSimBase):
-    """Boot, stepping and trace helpers for the video service image."""
+class VideoSimBase(ConsoleReplay, unittest.TestCase):
+    """Boot, stepping and trace helpers for the video diagnostic."""
 
-    IMAGE_SUBDIR = "build-video-selftest"
-    IMAGE_NAME = "zephyros-video-selftest.bin"
+    IMAGE_SUBDIR = "build-console-integration-selftest"
+    IMAGE_NAME = "zephyros-console-integration-selftest.bin"
 
-    def skip_delay(self, z):
-        """Return from the kernel's serial connect spin (see
-        z80sim.skip_serial_connect_delay)."""
-        skip_serial_connect_delay(
-            z, self.syms["_kernel_serial_connect_delay"])
+    def setUp(self):
+        self.load_image()
 
     def run_to_sio(self, z, expect, limit=STEP_LIMIT):
         """Step until `expect` appears in the early-SIO output."""
-        data = expect.encode("ascii")
-        for i in range(limit):
-            self.skip_delay(z)
-            z.step()
-            if i % 0x1FF == 0:
-                self.pump(z)
-                if data in z.sio_tx:
-                    return
-        self.pump(z)
-        raise AssertionError(
-            "did not reach %r (PC=%04X, sio tail=%r)"
-            % (expect, z.pc, bytes(z.sio_tx)[-160:]))
+        data = expect.encode("ascii") if isinstance(expect, str) else expect
+        self.run_until(z, [data], limit=limit, since=0)
 
     def boot_to_video_ok(self, z, limit=STEP_LIMIT):
-        self.start_kernel(z)
-        self.run_to_sio(z, VIDEO_OK + "\r\n", limit)
-        return "".join(z.glyphs)
+        inputs = IntegrationInputs(z.ioc_peer)
+        self.start_kernel(z, host_sync=SMOKE_HOST_SYNC)
+        self.run_until(z, [VIDEO_OK + "\r\n"], limit=limit,
+                       on_step=inputs)
+        return self.trace(z)
 
 
 class TestVideoServiceBoot(VideoSimBase):
@@ -172,6 +154,7 @@ class TestVideoServiceBoot(VideoSimBase):
 
     def test_boot_transcript_and_loader_evidence(self):
         z = self.make_cpu()
+        z.ioc_peer = integration_peer()
         self.boot_to_video_ok(z)
         sio = bytes(z.sio_tx).decode("ascii", "replace")
 
@@ -183,9 +166,11 @@ class TestVideoServiceBoot(VideoSimBase):
         # carries the bulk placement of the font.
         rows = [
             r"driver sio.zmod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h\r\n",
+            r"driver ioc.zmod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h\r\n",
+            r"driver hid.zmod: hot [0-9A-F]{4}h\r\n",
             r"driver v9958.zmod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h "
             r"bulk [0-9A-F]{4}h\r\n",
-            r"driver console-serial.zmod: hot [0-9A-F]{4}h\r\n",
+            r"driver console-v9958-hid.zmod: hot [0-9A-F]{4}h\r\n",
         ]
         positions = []
         for row in rows:
@@ -201,8 +186,9 @@ class TestVideoServiceBoot(VideoSimBase):
         positions = [sio.index(line) for line in transcript]
         self.assertEqual(positions, sorted(positions),
                          "diagnostic transcript is out of order")
-        self.assertTrue(sio.rstrip("\r\n").endswith(VIDEO_OK),
-                        "the last transcript line is not %r" % VIDEO_OK)
+        # The video group is followed by the integration group in the
+        # same image; the video marker is still its own pass record.
+        self.assertIn(VIDEO_OK + "\r\n", sio)
         self.assertNotIn("FAIL", sio)
         self.assertNotIn("PANIC", sio)
 
@@ -212,15 +198,16 @@ class TestVideoServiceBoot(VideoSimBase):
 
     def test_console_line_and_marker_glyphs(self):
         z = self.make_cpu()
+        z.ioc_peer = integration_peer()
         self.boot_to_video_ok(z)
         sio = bytes(z.sio_tx).decode("ascii", "replace")
-        trace = "".join(z.glyphs)
+        trace = self.trace(z)
 
         # The console line is the build-selected driver's own output:
-        # this image selects `console-serial`, so the line is on the
-        # serial lane and never in the V9958 glyph trace.
-        self.assertIn(PROBE_LINE, sio)
-        self.assertNotIn(PROBE_LINE, trace)
+        # this image selects `console-v9958-hid`, so the line is on the
+        # V9958 lane and never on the serial link.
+        self.assertNotIn(PROBE_LINE, sio)
+        self.assertIn(PROBE_LINE, trace)
         self.assertIn(VIDEO_OK, sio)
 
         # The marker glyphs come from the diagnostic's direct video
@@ -237,6 +224,7 @@ class TestVideoServicePeerEvidence(VideoSimBase):
 
     def test_reset_reruns_the_full_bringup(self):
         z = self.make_cpu()
+        z.ioc_peer = integration_peer()
         self.boot_to_video_ok(z)
         peer = z.vdp
 
@@ -277,13 +265,15 @@ class TestVideoServicePeerEvidence(VideoSimBase):
 
     def test_malformed_phase_makes_no_vdp_access(self):
         z = self.make_cpu()
-        self.start_kernel(z)
-        self.run_to_sio(z, VIDEO_MARKER + "\r\n")
+        z.ioc_peer = integration_peer()
+        inputs = IntegrationInputs(z.ioc_peer)
+        self.start_kernel(z, host_sync=SMOKE_HOST_SYNC)
+        self.run_until(z, [VIDEO_MARKER + "\r\n"], on_step=inputs)
         snapshot = peer_snapshot(z.vdp)
-        self.run_to_sio(z, VIDEO_REJECTS + "\r\n")
+        self.run_until(z, [VIDEO_REJECTS + "\r\n"], on_step=inputs)
         self.assertEqual(peer_snapshot(z.vdp), snapshot,
                          "the malformed refusals touched the VDP")
-        self.run_to_sio(z, VIDEO_OK + "\r\n")
+        self.run_until(z, [VIDEO_OK + "\r\n"], on_step=inputs)
 
 
 if __name__ == "__main__":

@@ -149,10 +149,6 @@ make subsystem-selftest
                    # SIO + console service set, replaying the syscall,
                    # IRQ, ROMFS-reader and process/ZEX mechanism groups
                    # and the monitor session (build-subsys-selftest/)
-make romfs-corrupt-selftest
-                   # corrupt-recovery-store image: the kernel rejects the
-                   # store and panics before any module runs
-                   # (build-romfs-corrupt/)
 make zmod-test
                    # build/pack/validate the service images; host packer
                    # and container tests (build/modules/)
@@ -170,18 +166,10 @@ make hid-test
 make v9958-test
                    # pack/validate v9958.zmod + font pipeline + renderer
                    # model suites
-make ioc-selftest
-                   # IOC transport acceptance image + host replay
-                   # (build-ioc-selftest/)
-make hid-selftest
-                   # HID input acceptance image + host replay
-make video-selftest
-                   # V9958 video acceptance image + host replay
-make console-selftest
-                   # console binding acceptance image + host replay
 make console-integration-selftest
                    # console integration acceptance: full five-service image +
-                   # target diagnostic + ESC c display-reset program + monitor
+                   # target diagnostic + the merged IOC/HID/V9958 device
+                   # diagnostics + ESC c display-reset program + monitor
                    # launcher, and the production-byte simulator replay
                    # (load order, binding, IOC command/bulk, HID queue,
                    # ESC c reset, scripted monitor session)
@@ -206,6 +194,9 @@ make ipc-selftest
 make nucleus-selftest
                    # fixed-core and upcall-shim acceptance image
                    # (build-nucleus-selftest/)
+make helloworld-image
+                   # SDK demo image: the production boot path with
+                   # /SYSTEM/hello.zex as the boot program (build-helloworld/)
 # Hardware smoke checks: each mode verifies ONE specific image, and the
 # production image and the acceptance images have different serial
 # transcripts.  Build the image (`make hardware-images` builds them all),
@@ -224,29 +215,14 @@ make smoke-hardware-subsystem SERIAL_PORT=/dev/ttyUSB0
                    # (make subsystem-selftest): the five group
                    # '... selftest: OK' lines and the interactive monitor
                    # session (sends 'Q', expects 'monitor: exit status 0x')
-make smoke-hardware-romfs-corrupt SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-romfs-corrupt/zephyros-romfs-corrupt.bin
-                   # (make romfs-corrupt-selftest):
-                   # 'PANIC: romfs: corrupt recovery image'
-make smoke-hardware-ioc SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-ioc-selftest/zephyros-ioc-selftest.bin
-                   # (make ioc-selftest): contract level, PING, bulk
-                   # READY/DONE sections and the frozen no-file status
-make smoke-hardware-hid SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-hid-selftest/zephyros-hid-selftest.bin
-                   # (make hid-selftest): the queue/doorbell transcript
-make smoke-hardware-video SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-video-selftest/zephyros-video-selftest.bin
-                   # (make video-selftest): the video transcript
-make smoke-hardware-console SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-console-selftest/zephyros-console-selftest.bin
-                   # (make console-selftest): the serial portion
 make smoke-hardware-console-integration SERIAL_PORT=/dev/ttyUSB0
                    # flash build-console-integration-selftest/zephyros-console-integration-selftest.bin
                    # (make console-integration-selftest): the integration image's serial
                    # portion (binding report, PING level, rejected-call
-                   # invariants, 'console integration: OK'); then perform the
-                   # human HID/V9958 monitor pass on the display
+                   # invariants, the IOC/HID/V9958 device diagnostics,
+                   # 'console integration: OK'); type 'K41' + Enter on the
+                   # USB keyboard when the console lanes are reported, then
+                   # perform the human HID/V9958 monitor pass on the display
 make smoke-hardware-console-serial SERIAL_PORT=/dev/ttyUSB0
                    # flash build-console-serial-selftest/zephyros-console-serial-selftest.bin
                    # (make console-serial-selftest): the whole dynamic
@@ -270,8 +246,8 @@ mode -- the smoke target itself prints the image path and sha256.  The
 subsystem and console modes must be listening before the board boots: start the
 tool, then power-cycle or press RESET (the boot-log lines are printed once;
 the console/subsystem images additionally wait for the tool's host-sync sequence before the
-banner).  The `subsystem`, `romfs-corrupt`, `console-integration` and
-`console-serial` modes assert
+banner).  The `subsystem`, `console-integration`, `console-serial` and
+`fs` modes assert
 the exact acceptance transcript, binding and diagnostics, scripting the
 serial input where the console routes there; V9958-bound output is
 confirmed on the display by the operator.  Note: `smoke-hardware` (mode

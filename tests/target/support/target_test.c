@@ -32,17 +32,8 @@
 #if ZOS_VIDEO_SELFTEST
 #include "video_selftest.h"
 #endif
-#if ZOS_CONSOLE_SELFTEST
-#include "console_selftest.h"
-#endif
 #if ZOS_CONSOLE_INTEGRATION_SELFTEST
 #include "console_integration_selftest.h"
-#endif
-#if ZOS_M9_EXEC_SELFTEST
-#include "m9_exec_selftest.h"
-#endif
-#if ZOS_M9_SELFTEST
-#include "m9_integration_selftest.h"
 #endif
 #if ZOS_NUCLEUS_SELFTEST
 #include "nucleus_selftest.h"
@@ -71,6 +62,10 @@ void zos_target_test_late(void)
 	zos_run_process_selftest();
 #endif
 #if ZOS_IOC_SELFTEST
+	/* The console-integration image carries the device diagnostics
+	 * (work package 42d): IOC transport, HID input, V9958 video, then
+	 * the integration pass itself.  Each is a bank-7 client of the
+	 * resident services; the transcript runs on the early SIO. */
 	zos_run_ioc_selftest();
 #endif
 #if ZOS_HID_SELFTEST
@@ -79,17 +74,8 @@ void zos_target_test_late(void)
 #if ZOS_VIDEO_SELFTEST
 	zos_run_video_selftest();
 #endif
-#if ZOS_CONSOLE_SELFTEST
-	zos_run_console_selftest();
-#endif
 #if ZOS_CONSOLE_INTEGRATION_SELFTEST
 	zos_run_console_integration_selftest();
-#endif
-#if ZOS_M9_EXEC_SELFTEST
-	zos_run_m9_exec_selftest();
-#endif
-#if ZOS_M9_SELFTEST
-	zos_run_m9_selftest();
 #endif
 #if ZOS_IPC_SELFTEST
 	/* The six synthetic resident services are real service images in

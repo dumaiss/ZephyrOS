@@ -29,12 +29,8 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import zmodpack  # noqa: E402
-from z80sim import (Z80, IocCommandPeer, V9958Peer, read_symbols,  # noqa: E402
-                    skip_serial_connect_delay)
-
-RET = 0x1234
-STACK = 0xFFFE
-STEP_LIMIT = 60000000
+from replay import STEP_LIMIT, Replay  # noqa: E402
+from z80sim import IocCommandPeer
 
 IMAGE_SUBDIR = "build-fs-selftest"
 IMAGE_NAME = "zephyros-fs-selftest.bin"
@@ -82,58 +78,30 @@ ABSENT_OUTCOMES = (
 )
 
 
-class FsSelftestSimBase(unittest.TestCase):
+class FsSelftestSimBase(Replay, unittest.TestCase):
+    IMAGE_SUBDIR = IMAGE_SUBDIR
+    IMAGE_NAME = IMAGE_NAME
+
     def setUp(self):
-        self.bin_path = os.path.join(ROOT, IMAGE_SUBDIR, IMAGE_NAME)
-        if not os.path.exists(self.bin_path):
-            self.skipTest("%s missing; run make fs-selftest" % self.bin_path)
-        with open(self.bin_path, "rb") as handle:
-            self.image = handle.read()
-        self.syms = read_symbols(os.path.join(ROOT, IMAGE_SUBDIR,
-                                              "zephyros.map"))
+        self.load_image()
 
     def make_cpu(self, **peer_kwargs):
-        pages = {n: self.image[n * 0x10000:(n + 1) * 0x10000]
-                 for n in range(8)}
-        z = Z80(pages[0], pages[1],
-                rom_pages={n: pages[n] for n in range(2, 8)})
-        z.latch = 0x18
-        z.sp = STACK
+        z = super().make_cpu()
         peer = IocCommandPeer(**peer_kwargs)
         z.hid = peer
         z.ioc_peer = peer
         z.peer = peer
-        z.vdp = V9958Peer()
-        z.vdp_peer = z.vdp
+        z.vdp = z.vdp_peer
         z.glyphs = []
         z.glyph_pos = 0
         z.glyph_last = None
         return z
 
-    def crt0(self, z):
-        z.push16(RET)
-        z.pc = self.syms["__zos_crt0_init"]
-        for _ in range(2000000):
-            z.step()
-            if z.pc == RET:
-                return
-        raise AssertionError("C runtime init did not return")
-
     def run_kernel(self, z, stop, limit=STEP_LIMIT):
         """Boot until one of `stop` appears in the serial transcript."""
-        stops = [s.encode() for s in stop]
-        self.crt0(z)
-        z.push16(RET)
-        z.pc = self.syms["_kernel_main"]
-        delay = self.syms["_kernel_serial_connect_delay"]
-        for step in range(limit):
-            skip_serial_connect_delay(z, delay)
-            z.step()
-            if z.halted:
-                break
-            if any(s in z.sio_tx for s in stops):
-                return step
-        raise AssertionError("acceptance never completed (PC=%04X)" % z.pc)
+        self.start_kernel(z)
+        self.run_until(z, stop, limit=limit, halt_ok=True, panic=None)
+        return bytes(z.sio_tx)
 
     def boot(self, **peer_kwargs):
         """Boot until the monitor prompt (or a failure marker): the

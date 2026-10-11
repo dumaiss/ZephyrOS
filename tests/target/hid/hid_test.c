@@ -2,10 +2,10 @@
  * package 41).
  *
  * The kernel calls zos_run_hid_selftest() from the late boot hook, after
- * the service loader placed and started the image's
- * `sio ioc hid console-serial` set (work package 42e: consoles are
- * build-selected, and this SIO-only set selects `console-serial`), and
- * the nucleus console line completed.
+ * the service loader placed and started the console-integration image's
+ * `sio ioc hid v9958 console-v9958-hid` set (work package 42d merged the
+ * per-device images; the console composes HID input with the V9958
+ * output), and the nucleus console line completed.
  * The diagnostic is itself a bank-7 client of the resident services (see
  * tests/target/include/service_client.h): it holds no descriptor, so it
  * drives the HID protocol through the descriptor-less byte forms -
@@ -27,8 +27,9 @@
  *     reports pending, repeated GETC returns the queued bytes exactly in
  *     FIFO order, and the drained service answers -ZOS_EAGAIN;
  *   - the console endpoint's GETC delivers the pair the replay queues
- *     on the serial input lane: this SIO-only set selects
- *     `console-serial`, so the console's input is the SERIAL service;
+ *     for the MCU: the production console's input is this same HID
+ *     engine, so the console read drives the engine the diagnostic
+ *     just drained;
  *   - malformed-reply atomicity: one injected short CMD_HID_INPUT reply
  *     delivers nothing from it; the clean pair queued behind it arrives
  *     afterwards in FIFO order (after the engine's bounded stuck-doorbell
@@ -145,7 +146,7 @@ void zos_run_hid_selftest(void)
 	service_cli_hex8(ioc_endpoint);
 	service_cli_puts("\r\n");
 
-	/* The engine's dependency probe: the row the console composition
+	/* The console input row: the console's GETC reaches this engine
 	 * selected its input from at boot. */
 	if (service_cli_getc(hid_endpoint, ZHID_OP_READY) != 1) {
 		hid_fail("ready", HID_FAIL_READY, 0x01u);
@@ -179,9 +180,8 @@ void zos_run_hid_selftest(void)
 	service_cli_puts("hid: typed 09\r\n");
 
 	/* Console pass: this image's declared service set includes the
-	 * console, and this SIO-only set selects `console-serial`: the
-	 * console input is the SERIAL service.  The replay queues the pair
-	 * this reads back through the console endpoint. */
+	 * console endpoint.  The replay queues the pair for the MCU when
+	 * this row prints, so the console read drives the HID engine. */
 	ace_hid_selftest_result = HID_FAIL_CONSOLE;
 	if (service_cli_endpoint(ZOS_CLASS_CONSOLE, &console_endpoint) == 0u) {
 		hid_fail("console", HID_FAIL_CONSOLE, 0x01u);

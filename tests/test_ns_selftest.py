@@ -112,11 +112,12 @@ def symbols(map_path):
 class TestNsBuildWiring(unittest.TestCase):
     def test_makefile_has_the_acceptance_image(self):
         text = read(MAKEFILE)
+        for token in ("ifeq ($(ZOS_NS_SELFTEST),1)",
+                      "PK_SUFFIX := -ns-selftest",
+                      "test_ns_selftest*.py"):
+            self.assertIn(token, text, token)
         self.assertIn("ns-selftest:", text)
-        self.assertIn("ZOS_NS_SELFTEST=1", text)
-        self.assertIn("zephyros-ns-selftest.bin", text)
-        self.assertIn("zephyr80-ns-selftest.bin", text)
-        self.assertIn("test_ns_selftest*.py", text)
+        self.assertIn("build-ns-selftest/zephyros-ns-selftest.bin", text)
 
     def test_makefile_selects_the_image_configuration(self):
         text = read(MAKEFILE)

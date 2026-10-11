@@ -394,15 +394,22 @@ class TestIocServiceArtifact(unittest.TestCase):
 
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
-        for target in ("ioc-test:", "ioc-selftest:"):
-            self.assertIn(target, makefile)
+        self.assertIn("ioc-test:", makefile)
         self.assertIn("services/manifests/%.json", makefile)
         self.assertIn("$(SVC_ZMODS): $(MODULES)/%.zmod", makefile)
         self.assertIn("ioc_service.rel", makefile)
+        # The IOC diagnostic runs in the console-integration image (work
+        # package 42d merged the per-device images); the table row links
+        # it and defines the group's guard.
         self.assertIn("ZOS_IOC_SELFTEST", makefile)
+        index = makefile.index("ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)")
+        self.assertIn("$(BUILD)/ioc_test.rel",
+                      makefile[index:index + 400])
+        self.assertIn("ioc_test", makefile)
         # The declared service set is the manifest's business: an image
         # boots the services its service set lists.
-        self.assertRegex(makefile, r"ZOS_SERVICES \?= .*\bioc\b")
+        self.assertRegex(makefile,
+                         r"ZOS_SERVICES \?= .*\bioc\b")
         self.assertNotIn("BOOT_ZMODS", makefile)
 
     def test_production_map_has_no_linked_ioc_symbols(self):

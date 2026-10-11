@@ -1,34 +1,33 @@
 #!/usr/bin/env python3
 """Host-side IOC resident-service acceptance replay (work package 41).
 
-Package 41 moved the IOC command/reply and bulk transport out of the
-nucleus into a bank-6 *resident service* driven by the versioned IOC
-protocol (`abi/zos/protocol.h`, class `ZOS_CLASS_IOC`) over the package-39
-IPC substrate.  This module replays the real linked acceptance image
-(`build-ioc-selftest/zephyros-ioc-selftest.bin`, `make ioc-selftest`) in
-the Z80 simulator against the emulated MCU IOC peer and asserts, from the
-outside:
+The IOC command/reply and bulk transport live in a bank-6 *resident
+service* driven by the versioned IOC protocol (`abi/zos/protocol.h`,
+class `ZOS_CLASS_IOC`) over the IPC substrate.  Work package 42d merged
+the per-device images: this module replays the IOC diagnostic inside
+`build-console-integration-selftest` (the `sio ioc hid v9958
+console-v9958-hid` set) against the emulated MCU IOC peer and asserts,
+from the outside:
 
 * the early-SIO boot transcript: the kernel banner, the resident service
   loader's per-image evidence lines for the image's service set in the
-  `services.man` order plus its bank-6 ledger tail, the console
-  composition result, and the nucleus diagnostic's phase lines ending in
-  `ioc selftest: OK`;
+  `services.man` order plus its bank-6 ledger tail, and the IOC
+  diagnostic's phase lines ending in `ioc selftest: OK`;
 * the peer-observable protocol facts: the IOC *service boot* runs the
   bounded LINK_SYNC bring-up on its own, the diagnostic's CMD_PING and the
-  frozen /SHARED bulk acceptance follow it, exactly one command-lane
-  channel reset and one Enter Hunt for the whole boot, RTS asserted once
-  and released once per exchange, one verified bulk phase in each
-  direction, and no request after the diagnostic's bulk phase.
+  frozen /SHARED bulk acceptance follow it (the image's HID service may
+  interleave its own fetch requests), exactly one command-lane channel
+  reset and one Enter Hunt for the whole boot, RTS asserted once and
+  released once per exchange, one verified bulk phase in each direction,
+  and the fixture file deleted at the end of the bulk acceptance.
 
-The diagnostic is a bank-7 client of the service (the
-class-shim pattern): descriptor-less calls plus staged
-moves through the common copy gate, so the wire framing, CRC, sequence and
-lane admission stay inside the service - this module only asserts what the
-peer can see.  The service (not the diagnostic) owns SIO1/B and SIO1/A; the
-diagnostic sees native `struct zioc_frame` records.
+The diagnostic is a bank-7 client of the service: descriptor-less calls
+plus staged moves through the common copy gate, so the wire framing, CRC,
+sequence and lane admission stay inside the service - this module only
+asserts what the peer can see.
 
-Skipped when the IOC image has not been built.
+Skipped when the image has not been built
+(`make console-integration-selftest`).
 """
 
 import os
@@ -39,18 +38,17 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import (Z80, IocCommandPeer, V9958Peer, read_symbols,
-                    skip_serial_connect_delay)  # noqa: E402
-
-RET = 0x1234
-STACK = 0xFFFE
-STEP_LIMIT = 40000000
+from replay import (RET, STACK, STEP_LIMIT, IntegrationInputs,  # noqa: E402
+                    Replay, integration_peer)
+from z80sim import IocCommandPeer  # noqa: E402
 
 # Host sync the smoke image waits for before the banner (kernel/main.c
 # kernel_host_sync_wait; tools/serial_smoke.py sends the same sequence).
 HOST_SYNC = b"\xaa\x55"
+
+OK_LINE = b"ioc selftest: OK\r\n"
+FAIL_LINE = b"ioc selftest: FAIL"
 
 OK_LINE = b"ioc selftest: OK\r\n"
 FAIL_LINE = b"ioc selftest: FAIL"
@@ -83,7 +81,10 @@ MARKERS = (
     b"ioc: ready 01\r\n",
     b"ioc: reply 81 status 00 length 1A\r\n",
     b"ioc: echo 10 level 4A power 40\r\n",
-    b"ioc: status 0000\r\n",
+    # The merged image runs its diagnostics with the HID stream queued, so
+    # the semantic status word carries the doorbell bit (the diagnostic
+    # checks that the word is nothing but that bit).
+    b"ioc: status 0001\r\n",
     b"ioc: bulk write 0100 OK\r\n",
     b"ioc: bulk read 0100 OK\r\n",
     b"ioc: cleanup OK\r\n",
@@ -96,68 +97,27 @@ def ioc_pattern(length):
     return bytes((i ^ 0x5A) & 0xFF for i in range(length))
 
 
-class IocSimBase(unittest.TestCase):
-    IMAGE_DIR = "build-ioc-selftest"
-    IMAGE_NAME = "zephyros-ioc-selftest.bin"
+class IocSimBase(Replay, unittest.TestCase):
+    """One boot of the integration image serves every assertion."""
+
+    IMAGE_SUBDIR = "build-console-integration-selftest"
+    IMAGE_NAME = "zephyros-console-integration-selftest.bin"
 
     def setUp(self):
-        self.bin_path = os.path.join(ROOT, self.IMAGE_DIR, self.IMAGE_NAME)
-        if not os.path.exists(self.bin_path):
-            self.skipTest("%s missing; build the image first" % self.bin_path)
-        with open(self.bin_path, "rb") as fh:
-            self.image = fh.read()
-        self.syms = read_symbols(
-            os.path.join(ROOT, self.IMAGE_DIR, "zephyros.map"))
+        self.load_image()
 
     def make_cpu(self, peer=None):
-        pages = {n: self.image[n * 0x10000:(n + 1) * 0x10000]
-                 for n in range(8)}
-        z = Z80(pages[0], pages[1],
-                rom_pages={n: pages[n] for n in range(2, 8)})
-        z.latch = 0x18
-        z.sp = STACK
+        z = super().make_cpu()
         z.ioc_peer = peer if peer is not None else IocCommandPeer()
-        z.vdp_peer = V9958Peer()
         return z
 
-    def skip_delay(self, z):
-        skip_serial_connect_delay(
-            z, self.syms["_kernel_serial_connect_delay"])
-
-    def crt0(self, z):
-        z.push16(RET)
-        z.pc = self.syms["__zos_crt0_init"]
-        for _ in range(2000000):
-            z.step()
-            if z.pc == RET:
-                return
-        raise AssertionError("C runtime init did not return")
-
-    def start_kernel(self, z):
-        """Reset into the kernel with the host sync the smoke image waits
-        for already on the serial input (the bench's reset also resets the
-        USB bridge, so the host reopens its port before the boot log)."""
-        self.crt0(z)
-        z.push16(RET)
-        z.sio_rx.extend(HOST_SYNC)
-        z.pc = self.syms["_kernel_main"]
-
-    def run_until(self, z, stop=OK_LINE, limit=STEP_LIMIT):
-        """Step an already-started kernel until `stop` appears in the
-        early-SIO transcript."""
-        for _ in range(limit):
-            z.step()
-            self.skip_delay(z)
-            tx = bytes(z.sio_tx)
-            if stop in tx:
-                return tx
-        raise AssertionError("boot did not reach %r (PC=%04X, tail=%r)"
-                             % (stop, z.pc, bytes(z.sio_tx)[-160:]))
-
     def boot(self, z, stop=OK_LINE, limit=STEP_LIMIT):
-        """Start the kernel and step until `stop` appears."""
-        self.start_kernel(z)
-        return self.run_until(z, stop, limit)
+        """Start the kernel with the smoke host sync and step until
+        `stop` appears (the IOC diagnostic's verdict)."""
+        self.start_kernel(z, host_sync=HOST_SYNC)
+        self.run_until(z, [stop], limit=limit,
+                       on_step=IntegrationInputs(z.ioc_peer))
+        return bytes(z.sio_tx)
 
     def service_evidence(self, tx):
         """The loader's per-image evidence lines, in transcript order."""
@@ -196,25 +156,27 @@ class TestIocServiceBoot(IocSimBase):
             self.skip_delay(z)
         self.assertEqual(bytes(z.sio_tx), b"", "broken host sync released")
         z.sio_rx.extend(HOST_SYNC)
-        tx = self.run_until(z)
+        self.run_until(z, [OK_LINE],
+                       on_step=IntegrationInputs(z.ioc_peer))
+        tx = bytes(z.sio_tx)
         self.assertIn(b"ZephyrOS 0.0\r\n", tx)
         self.assertFalse(z.sio_rx, "host sync sequence not consumed")
 
     def test_service_boot_transcript_and_protocol_facts(self):
-        peer = IocCommandPeer()
+        peer = integration_peer()
         z = self.make_cpu(peer)
         tx = self.boot(z)
 
         # --- boot transcript: banner, service evidence, diagnostic ---
         self.assertIn(b"ZephyrOS 0.0\r\n", tx)
-        self.assertIn(b"console: service OK\r\n", tx)
         for marker in MARKERS:
             self.assertIn(marker, tx)
         self.assertNotIn(FAIL_LINE, tx)
         self.assertNotIn(b"PANIC", tx)
         # The loader's observable evidence lines name the configured
         # service set in order; the ledger tail counts what it placed.
-        manifest = ["sio.zmod", "ioc.zmod", "console-serial.zmod"]
+        manifest = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
+                    "console-v9958-hid.zmod"]
         evidence = self.service_evidence(tx)
         self.assertEqual([name for name, _ in evidence], manifest)
         self.assertIn(("service loader: %d images in bank 6\r\n"
@@ -225,11 +187,19 @@ class TestIocServiceBoot(IocSimBase):
         # --- peer-observable protocol facts -------------------------
         # The service's own init ran the bounded LINK_SYNC bring-up, then
         # the diagnostic's PING and the staged /SHARED bulk acceptance
-        # followed on the same command lane, in that order and sequence.
-        self.assertEqual([request[0] for request in peer.requests],
-                         [CMD_LINK_SYNC, CMD_PING,
-                          CMD_FS_OPEN, CMD_FS_WRITE, CMD_XFER_STATUS,
-                          CMD_FS_READ, CMD_FS_CLOSE, CMD_FS_DELETE])
+        # followed on the same command lane, in that order.  The image's
+        # HID service interleaves its own fetch requests, so the check is
+        # the diagnostic's ordered subsequence.
+        kinds = [request[0] for request in peer.requests]
+        wanted = [CMD_LINK_SYNC, CMD_PING,
+                  CMD_FS_OPEN, CMD_FS_WRITE, CMD_XFER_STATUS,
+                  CMD_FS_READ, CMD_FS_CLOSE, CMD_FS_DELETE]
+        start = 0
+        for kind in wanted:
+            self.assertIn(kind, kinds[start:],
+                          "request 0x%02X missing or out of order" % kind)
+            start = kinds.index(kind, start) + 1
+        # Sequence numbers are the service's own, strictly increasing.
         self.assertEqual([request[1] for request in peer.requests],
                          list(range(1, len(peer.requests) + 1)))
 
@@ -263,10 +233,10 @@ class TestIocServiceBoot(IocSimBase):
         self.assertEqual(send[7:7 + BULK_BYTES], ioc_pattern(BULK_BYTES))
         self.assertEqual(send[-2:], b"\x00\x00")
 
-        # No request after the diagnostic's bulk phase: the delete that
-        # cleans the fixture file is the last exchange on the lane, and
-        # the file is gone from the peer's /SHARED namespace.
-        self.assertEqual(peer.requests[-1][0], CMD_FS_DELETE)
+        # The delete that cleans the fixture file is the diagnostic's
+        # last exchange, and the file is gone from the peer's /SHARED
+        # namespace.
+        self.assertIn(CMD_FS_DELETE, kinds)
         self.assertNotIn(IOC_NAME, peer.fs_files)
 
 

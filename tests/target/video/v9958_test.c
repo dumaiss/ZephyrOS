@@ -2,12 +2,13 @@
  * work package 41).
  *
  * The kernel calls zos_run_video_selftest() from the late boot hook,
- * after the resident service loader has placed and started this image's
- * service set (`sio v9958 console`, the loader's `service ...` evidence
- * lines precede this transcript) and after the nucleus console probe
- * wrote `console: service OK` through the console service - the console
- * composes the V9958 output with the serial input fallback this store
- * implies, so that line is visible in the V9958 command trace.
+ * after the resident service loader has placed and started the
+ * console-integration image's service set (`sio ioc hid v9958
+ * console-v9958-hid`, the loader's `driver ...` evidence lines precede
+ * this transcript) and after the nucleus console probe wrote `console:
+ * service OK` through the console service - the production console
+ * composes this V9958 output with HID input, so that line is visible in
+ * the V9958 command trace.
  *
  * This diagnostic is a *bank-7 client* of the video service (see
  * tests/target/include/service_client.h): it holds no descriptor and
@@ -20,8 +21,7 @@
  *   - endpoint discovery: the VIDEO endpoint answers at
  *     ZOS_PROTOCOL_VERSION (class 02, version 01), and the serial and
  *     console endpoints are present (the console is this service's
- *     composed client; the serial service is the early-console and
- *     console-input fallback);
+ *     composed client; the serial service is the early console);
  *   - ZVIDEO_PRESENT (argument-free) answers 0: the registered state is
  *     live and the command engine drained;
  *   - ZVIDEO_RESET (argument-free) answers 0 and re-runs the complete

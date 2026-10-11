@@ -23,14 +23,14 @@
 #   make romfs-test           ROMFS image + host ROMFS tool tests
 #   make zmod-test            packed-module tooling tests
 #   make zex-test             packed-program tooling tests
-#   make subsystem-selftest   current-path mechanism acceptance image
-#   make romfs-corrupt-selftest  corrupt-recovery-store failure image
-#   make ioc-selftest         IOC transport acceptance image
-#   make hid-selftest         HID input acceptance image
-#   make video-selftest       V9958 video acceptance image
-#   make console-selftest     console binding acceptance image
-#   make fs-selftest          filesystem outcome acceptance image
-#   make ipc-selftest        resident-service IPC acceptance image
+#   make subsystem-selftest        current-path and ROMFS acceptance image
+#   make nucleus-selftest          revision-13 window/nucleus acceptance image
+#   make console-integration-selftest  console + IOC/HID/V9958 diagnostics
+#   make console-serial-selftest   serial-console image and its failure store
+#   make fs-selftest               filesystem outcome acceptance image
+#   make ns-selftest               namespace acceptance image
+#   make ipc-selftest              resident-service IPC acceptance image
+#   make helloworld-image          SDK demo image (no kernel change)
 #   make clean    remove all generated files
 #
 # Builds are parallel by default (ZOS_JOBS defaults to nproc); use
@@ -149,89 +149,24 @@ PK_SUFFIX := -subsys-selftest
 ZOS_SERVICES := sio console-serial
 endif
 
-# Subsystem corrupt-store image: the same current boot path, but the
-# packed ROMFS header metadata is deliberately corrupted, so the kernel
-# must reject the whole store through the early-console panic before any
-# module code runs.
-ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
-CFLAGS    += -DZOS_ROMFS_CORRUPT_SELFTEST=1
-PK_SUFFIX := -romfs-corrupt
-ZOS_SERVICES := sio console-serial
-endif
-
-# IOC acceptance image: production-style boot (the SIO, IOC and console
-# service images from the recovery store), the target diagnostic reporting
-# through the direct early SIO (command lane plus the bulk READY/DONE
-# acceptance over the /SHARED service), then the unchanged monitor
-# launcher.  It keeps production's residency geometry with the target
-# objects linked in.
-# The V9958 boot load stays compiled out: this image's accepted contract
-# is the IOC transport with the SIO console, and the console-capable
-# V9958 module (package 19) is exercised by video-selftest and console-selftest.
-ifeq ($(ZOS_IOC_SELFTEST),1)
-CFLAGS    += -DZOS_IOC_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/ioc_test.rel
-PK_SUFFIX := -ioc-selftest
-ZOS_SERVICES := sio ioc console-serial
-endif
-
-# HID acceptance image: production-style boot (the SIO, IOC, HID and
-# console service images from the recovery store), the HID target
-# diagnostic (HID class/device
-# shape, the scripted USB-keyboard typing pass with output through the
-# bound SIO console, then the forced SIO input fallback), then the
-# unchanged monitor launcher.
-# The V9958 boot load stays compiled out so the accepted HID/SIO and
-# SIO/SIO console bindings of this package's images are preserved; the
-# HID/V9958 and SIO/V9958 bindings are covered by the package 19 images.
-ifeq ($(ZOS_HID_SELFTEST),1)
-CFLAGS    += -DZOS_HID_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/hid_test.rel
-PK_SUFFIX := -hid-selftest
-ZOS_SERVICES := sio ioc hid console-serial
-endif
-
-# video acceptance image: production-style boot (the SIO, IOC, HID, V9958
-# and console service images from the recovery store), the video
-# target diagnostic (VIDEO class/device shape, all seven native
-# operations, malformed rejection, reset, and the deterministic visible
-# pattern), then the unchanged monitor launcher.  The smoke image waits
-# for the host sync sequence because this bench's reset also resets the
-# USB bridge.
-ifeq ($(ZOS_VIDEO_SELFTEST),1)
-CFLAGS    += -DZOS_VIDEO_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/video_test.rel
-PK_SUFFIX := -video-selftest
-ZOS_SERVICES := sio v9958 console-serial
-endif
-
-# console acceptance image (package 19): the full production stack
-# (SIO + IOC + HID + the V9958 video core with its character renderer)
-# from ROMFS, the console target diagnostic reporting the selected
-# input/output classes over the direct early SIO, and the unchanged M7
-# `monitor.zex` running through the normal HID-input/V9958-output
-# binding.  This is the image the human keyboard/display pass uses; the
-# interactive session is replayed from these exact bytes by
-# tests/test_console_sim.py.
-ifeq ($(ZOS_CONSOLE_SELFTEST),1)
-CFLAGS    += -DZOS_CONSOLE_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/console_test.rel
-PK_SUFFIX := -console-selftest
-ZOS_SERVICES := sio ioc hid v9958 $(ZOS_CONSOLE)
-endif
-
 # console integration acceptance image (package 20, work package 42e):
 # the full production stack (SIO + IOC + HID + V9958 + the selected
 # CONSOLE driver) from ROMFS, the integration target diagnostic reported
 # over the direct early SIO, then the ESC c check program, which resets
 # the V9958 display, prints its line and hands the console to the
 # unchanged M7 `monitor.zex` for the human HID/V9958 session.  This is
-# the image the final physical acceptance gate builds and flashes;
-# tests/test_console_acceptance.py replays these exact bytes plus the
-# production image.
+# the image the final physical acceptance gate builds and flashes.
+# Work package 42d merged the IOC, HID, V9958 and console acceptance
+# images into it: the three device diagnostics and the console session
+# run in this one image, and tests/test_console_acceptance.py,
+# test_ioc_sim.py, test_hid_sim.py and test_v9958_sim.py replay it
+# (plus the production image, which no acceptance image may replace).
 ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)
 CFLAGS    += -DZOS_CONSOLE_INTEGRATION_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/console_integration_test.rel
+CFLAGS    += -DZOS_IOC_SELFTEST=1 -DZOS_HID_SELFTEST=1 -DZOS_VIDEO_SELFTEST=1
+TARGET_TEST_OBJS += $(BUILD)/console_integration_test.rel \
+                    $(BUILD)/ioc_test.rel $(BUILD)/hid_test.rel \
+                    $(BUILD)/video_test.rel
 PK_SUFFIX := -console-integration-selftest
 ZOS_BOOT_PROGRAM := /SYSTEM/escc.zex
 ZOS_SERVICES := sio ioc hid v9958 $(ZOS_CONSOLE)
@@ -298,10 +233,10 @@ endif
 # leftover space, which is the moves tier's documented fallback
 # (see config/residency.json).
 IPC_DIR   := tests/target/ipc
-# The IPC image uses production's placement: its cold override is empty,
+# The IPC image uses production's placement: its cold override is empty
+# (the ipc selection block sets it, and the target passes it to mapcheck),
 # and the two-tier classification of config/residency.json decides every
 # object.
-IPC_COLD_EXTRA :=
 IPC_COLD_EXTRA_CSV :=
 
 ifeq ($(ZOS_IPC_SELFTEST),1)
@@ -357,6 +292,11 @@ endif
 # manifest, which is the point of the demo.
 ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
 PK_SUFFIX := -helloworld
+# The demo's store carries the production console stack and no filesystem
+# driver, so the boot manifest must list exactly that set: inheriting the
+# production default made the loader fail on the `iocfat.zmod` its
+# manifest does not pack (work package 42d).
+ZOS_SERVICES := sio ioc hid v9958 $(ZOS_CONSOLE)
 endif
 
 # Hardware-smoke host sync (kernel/main.c): the IOC smoke image waits
@@ -419,9 +359,7 @@ endif
 
 # Common acceptance wiring: the single guard plus the shared runner.
 ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
-	$(ZOS_IOC_SELFTEST) $(ZOS_HID_SELFTEST) \
-	$(ZOS_VIDEO_SELFTEST) \
-	$(ZOS_CONSOLE_SELFTEST) $(ZOS_CONSOLE_INTEGRATION_SELFTEST) \
+	$(ZOS_CONSOLE_INTEGRATION_SELFTEST) \
 	$(ZOS_FS_SELFTEST) $(ZOS_NUCLEUS_SELFTEST) \
 	$(ZOS_IPC_SELFTEST)),)
 CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1 \
@@ -528,20 +466,13 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	$(SDLDZ80) -f $(BUILD)/zephyros.probe.lk
 
 .PHONY: all test check check-fast clean zmod-test romfs-test zex-test \
-	subsystem-selftest romfs-corrupt-selftest \
-	monitor-test ioc-test ioc-selftest hid-test \
-	hid-selftest \
-	v9958-test video-selftest \
-	console-selftest \
+	monitor-test ioc-test hid-test v9958-test \
+	subsystem-selftest nucleus-selftest \
 	console-integration-selftest console-serial-selftest \
-	fs-selftest \
-	ipc-selftest \
-	nucleus-selftest \
+	fs-selftest ns-selftest ipc-selftest helloworld-image \
 	hardware-images \
 	smoke-hardware \
-	smoke-hardware-subsystem smoke-hardware-romfs-corrupt \
-	smoke-hardware-ioc smoke-hardware-hid \
-	smoke-hardware-video smoke-hardware-console \
+	smoke-hardware-subsystem \
 	smoke-hardware-console-integration smoke-hardware-console-serial \
 	smoke-hardware-fs
 
@@ -953,7 +884,6 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/process_selftest.h \
 		tests/target/include/hid_selftest.h \
 		tests/target/include/video_selftest.h \
-		tests/target/include/console_selftest.h \
 		tests/target/include/console_integration_selftest.h \
 		abi/zos/ipc.h \
 		include/zephyros/service.h | $(BUILD)
@@ -1085,12 +1015,6 @@ $(BUILD)/video_test.rel: tests/target/video/v9958_test.c \
 		tests/target/include/video_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-$(BUILD)/console_test.rel: tests/target/console/console_test.c \
-		include/zephyros/kernel.h abi/zos/protocol.h \
-		tests/target/include/service_client.h \
-		tests/target/include/console_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
 $(BUILD)/console_integration_test.rel: tests/target/console/integration_test.c \
 		include/zephyros/kernel.h include/zephyros/ioc.h \
 		abi/zos/protocol.h \
@@ -1180,42 +1104,30 @@ $(MODULES)/zex-fixtures.stamp: tests/subsys/gen_zex_fixtures.py \
 
 # --- ROMFS recovery store (ROM pages 2-7) ------------------------------------
 # Every image packs a manifest; the subsystem acceptance image adds the
-# loader/ROMFS/ZEX fixtures, and the corrupt-store image patches the packed
-# production image so the kernel's validation is exercised on target.
-ifeq ($(ZOS_IOC_SELFTEST),1)
-# IOC acceptance store: the SIO fallback and the IOC transport services the
-# image boots, plus the monitor launcher that follows the diagnostic.
-ROMFS_MANIFEST := tests/ioc/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
-else ifeq ($(ZOS_HID_SELFTEST),1)
-# HID acceptance store: SIO, the IOC transport the HID engine depends on,
-# HID itself and the monitor.
-ROMFS_MANIFEST := tests/hid/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
-else ifeq ($(ZOS_VIDEO_SELFTEST),1)
-# Video acceptance store: SIO, the V9958 video service (its font travels in
-# the image's bulk segment) and the console that composes them.
-ROMFS_MANIFEST := tests/video/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
-else ifeq ($(ZOS_CONSOLE_SELFTEST),1)
-# Console acceptance store: the full device service set (the filesystem
-# driver is compiled out of this image, so its entry is absent) plus the
-# monitor launcher and the ESC c display-reset check program.
-ROMFS_MANIFEST := tests/console/manifest-integration.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/escc.zex
-else ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)
-# Console integration acceptance store: the same full service set, the
-# monitor launcher and the ESC c check program the image boots
-# (ZOS_BOOT_PROGRAM=/SYSTEM/escc.zex, package 42e).
+# loader/ROMFS/ZEX fixtures, and tests/test_romfs_sim.py patches the packed
+# subsystem image in place to exercise the kernel's validation (work
+# package 42d: the corrupt-store image is gone, its outcome is that test).
+ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)
+# Console integration acceptance store: the full device service set (the
+# filesystem driver is compiled out of this image, so its entry is
+# absent), the monitor launcher and the ESC c check program the image
+# boots (ZOS_BOOT_PROGRAM=/SYSTEM/escc.zex, package 42e).  Work package
+# 42d merged the IOC, HID, video and console acceptance stores into it.
 ROMFS_MANIFEST := tests/console/manifest-integration.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/escc.zex
 else ifeq ($(ZOS_SUBSYS_SELFTEST),1)
 ROMFS_MANIFEST := tests/subsys/manifest.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/romfs_crosspage.bin \
 		$(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
-else ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
-ROMFS_MANIFEST := recovery/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex tests/subsys/corrupt_romfs.py
+else ifeq ($(ZOS_NUCLEUS_SELFTEST),1)
+# Nucleus-layout acceptance store (work package 42d): the same SIO-only
+# boot set and fixtures as the subsystem image, which is the store its
+# boot path loads.  Before 42d the row fell through to the production
+# manifest while packing only this set, so the pack could not find the
+# driver images it did not select.
+ROMFS_MANIFEST := tests/subsys/manifest.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/romfs_crosspage.bin \
+		$(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
 else ifeq ($(ZOS_CONSOLE_SERIAL_SELFTEST),1)
 # Console-serial variant store (work package 42e): the production service
 # set with `console-serial` in the CONSOLE slot; the image boots the
@@ -1385,14 +1297,8 @@ $(BUILD)/main.rel: $(BOOT_PROGRAM_STAMP)
 $(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(SVC_SET_ZMODS) \
 		$(MODULES)/services.man $(ROMFS_EXTRA_DEPS) \
 		tools/romfspack.py $(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
-ifeq ($(ZOS_ROMFS_CORRUPT_SELFTEST),1)
-	$(PYTHON) tools/romfspack.py --memory-inc $(ZOS_PLATFORM_MEMORY_INC) pack \
-		$(ROMFS_MANIFEST) $(BUILD)/recovery-clean.romfs --objdir $(MODULES)
-	$(PYTHON) tests/subsys/corrupt_romfs.py $(BUILD)/recovery-clean.romfs $@
-else
 	$(PYTHON) tools/romfspack.py --memory-inc $(ZOS_PLATFORM_MEMORY_INC) pack \
 		$(ROMFS_MANIFEST) $@ --objdir $(MODULES)
-endif
 
 # Deterministic cross-page pattern asset for the subsystem manifest.
 $(MODULES)/romfs_crosspage.bin: tests/subsys/gen_crosspage.py | $(MODULES)
@@ -1413,10 +1319,7 @@ $(BUILD)/romfs_expect.inc: tests/subsys/manifest.json $(MODULES)/sio.zmod \
 
 ZOS_TEST_LINK := $(filter 1,$(ZOS_SUBSYS_SELFTEST) \
 		$(ZOS_NUCLEUS_SELFTEST) \
-		$(ZOS_ROMFS_CORRUPT_SELFTEST) \
-		$(ZOS_IOC_SELFTEST) $(ZOS_HID_SELFTEST) \
-		$(ZOS_VIDEO_SELFTEST) \
-		$(ZOS_CONSOLE_SELFTEST) $(ZOS_CONSOLE_INTEGRATION_SELFTEST) \
+		$(ZOS_CONSOLE_INTEGRATION_SELFTEST) \
 		$(ZOS_FS_SELFTEST))
 ifeq ($(BUILD),build)
 ifneq ($(ZOS_TEST_LINK),)
@@ -1526,22 +1429,8 @@ subsystem-selftest:
 		build-subsys-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_subsys_sim.py' -v
-	@echo "subsystem-selftest image: build-subsys-selftest/zephyros-subsys-selftest.bin"
-
-# Corrupt-recovery-store image: the production manifest, packed and then
-# patched so the kernel's validation rejects the whole store through the
-# early-console panic before any module code runs.
-
-romfs-corrupt-selftest:
-	$(MAKE) BUILD=build-romfs-corrupt ZOS_ROMFS_CORRUPT_SELFTEST=1 \
-		build-romfs-corrupt/zephyros-romfs-corrupt.bin \
-		build-romfs-corrupt/zephyr80-romfs-corrupt.bin
-	$(PYTHON) tools/mapcheck.py \
-		build-romfs-corrupt/zephyros.map \
-		build-romfs-corrupt/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_romfs_sim.py' -v
-	@echo "romfs-corrupt image: build-romfs-corrupt/zephyros-romfs-corrupt.bin"
+	@echo "subsystem-selftest image: build-subsys-selftest/zephyros-subsys-selftest.bin"
 
 # The SDK's own tests (tests/test_sdk.py) and the generated-manifest
 # checks need the packed demo and the argument test program, so the
@@ -1599,22 +1488,7 @@ ioc-test: $(MODULES)/ioc.zmod
 	$(PYTHON) -m unittest discover -s tests -p 'test_ioc.py' -v
 	@echo "ioc-test: OK"
 
-ioc-selftest:
-	$(MAKE) BUILD=build-ioc-selftest ZOS_IOC_SELFTEST=1 \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-ioc-selftest/zephyros-ioc-selftest.bin \
-		build-ioc-selftest/zephyr80-ioc-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-ioc-selftest/zephyros.map \
-		build-ioc-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_ioc_sim.py' -v
-	@echo "ioc image: build-ioc-selftest/zephyros-ioc-selftest.bin"
-
-# --- HID tooling, acceptance images, and hardware smoke -------------------
-# hid-test proves the packed HID module and the class/source contracts on
-# the host; hid-selftest builds the production-geometry acceptance
-# image (SIO + IOC + HID from ROMFS) and replays it in the simulator;
+# --- HID tooling ----------------------------------------------------------
 
 hid-test: $(MODULES)/hid.zmod
 	$(PYTHON) tools/zmodpack.py validate $(MODULES)/hid.zmod
@@ -1622,23 +1496,7 @@ hid-test: $(MODULES)/hid.zmod
 	$(PYTHON) -m unittest discover -s tests -p 'test_hid.py' -v
 	@echo "hid-test: OK"
 
-hid-selftest:
-	$(MAKE) BUILD=build-hid-selftest ZOS_HID_SELFTEST=1 \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-hid-selftest/zephyros-hid-selftest.bin \
-		build-hid-selftest/zephyr80-hid-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-hid-selftest/zephyros.map \
-		build-hid-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_hid_sim.py' -v
-	@echo "hid image: build-hid-selftest/zephyros-hid-selftest.bin"
-
-# --- video tooling, acceptance images, and hardware smoke -----------
-# v9958-test proves the packed module, the font asset pipeline and the
-# class/platform/source contracts on the host; video-selftest builds
-# the production-geometry acceptance image (SIO + IOC + HID + V9958
-# from ROMFS) and replays it in the simulator against the V9958 peer;
+# --- video tooling --------------------------------------------------------
 
 v9958-test: $(MODULES)/v9958.zmod $(MODULES)/v9958-6x8.font
 	$(PYTHON) tools/zmodpack.py validate $(MODULES)/v9958.zmod
@@ -1647,46 +1505,18 @@ v9958-test: $(MODULES)/v9958.zmod $(MODULES)/v9958-6x8.font
 	$(PYTHON) -m unittest discover -s tests -p 'test_v9958.py' -v
 	@echo "v9958-test: OK"
 
-video-selftest:
-	$(MAKE) BUILD=build-video-selftest ZOS_VIDEO_SELFTEST=1 \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-video-selftest/zephyros-video-selftest.bin \
-		build-video-selftest/zephyr80-video-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-video-selftest/zephyros.map \
-		build-video-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_v9958_sim.py' -v
-	@echo "video image: build-video-selftest/zephyros-video-selftest.bin"
-
-# The console acceptance image (package 19) boots the full production
-# stack, reports the selected console input/output classes over the
-# direct early SIO, and runs the unchanged M7 monitor through the
-# HID-input/V9958-output binding.  The serial portion proves boot, the
-# renderer char interface and the binding; the visible monitor session
-# is replayed from these exact bytes by tests/test_console_sim.py and typed
-# by the operator on hardware.
-console-selftest:
-	$(MAKE) BUILD=build-console-selftest ZOS_CONSOLE_SELFTEST=1 \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-console-selftest/zephyros-console-selftest.bin \
-		build-console-selftest/zephyr80-console-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-console-selftest/zephyros.map \
-		build-console-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_console_sim.py' -v
-	@echo "console image: build-console-selftest/zephyros-console-selftest.bin"
-
 # --- console integration acceptance and fallback matrix (package 20) --------------
 # console-integration-selftest is the final acceptance image: the full production stack
-# plus the integration target diagnostic and the unchanged monitor
+# plus the integration target diagnostic, the IOC, HID and V9958 device
+# diagnostics (merged here by work package 42d) and the unchanged monitor
 # launcher.  tests/test_console_acceptance.py replays the production bytes
 # (build/zephyros.bin) and these bytes: boot order, binding, IOC
 # command/status/bulk sequencing, HID queue traffic, the V9958 trace,
 # the split console, the ESC c display reset, the scripted monitor session
 # with two exit/relaunch cycles, post-fault recovery and the malformed-call
-# invariants.
+# invariants; test_ioc_sim.py, test_hid_sim.py and test_v9958_sim.py
+# replay the same image for their device diagnostics (and the console
+# session the retired console-selftest image carried).
 
 console-integration-selftest: all
 	$(MAKE) BUILD=build-console-integration-selftest ZOS_CONSOLE_INTEGRATION_SELFTEST=1 ZOS_SMOKE_HOST_SYNC=1 \
@@ -1697,6 +1527,9 @@ console-integration-selftest: all
 		build-console-integration-selftest/geometry/memory.inc \
 		$(ZOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_console_acceptance.py' -v
+	$(PYTHON) -m unittest discover -s tests -p 'test_ioc_sim.py' -v
+	$(PYTHON) -m unittest discover -s tests -p 'test_hid_sim.py' -v
+	$(PYTHON) -m unittest discover -s tests -p 'test_v9958_sim.py' -v
 	@echo "console integration image: build-console-integration-selftest/zephyros-console-integration-selftest.bin"
 
 # console-serial variant (work package 42e): the production image set with
@@ -1821,16 +1654,6 @@ helloworld-image: all
 #   smoke-hardware                build/zephyros.bin                          make
 #   smoke-hardware-subsystem      build-subsys-selftest/zephyros-subsys-selftest.bin
 #                                                                             make subsystem-selftest
-#   smoke-hardware-romfs-corrupt  build-romfs-corrupt/zephyros-romfs-corrupt.bin
-#                                                                             make romfs-corrupt-selftest
-#   smoke-hardware-ioc         build-ioc-selftest/zephyros-ioc-selftest.bin
-#                                                                             make ioc-selftest
-#   smoke-hardware-hid         build-hid-selftest/zephyros-hid-selftest.bin
-#                                                                             make hid-selftest
-#   smoke-hardware-video       build-video-selftest/zephyros-video-selftest.bin
-#                                                                             make video-selftest
-#   smoke-hardware-console     build-console-selftest/zephyros-console-selftest.bin
-#                                                                             make console-selftest
 #   smoke-hardware-console-integration             build-console-integration-selftest/zephyros-console-integration-selftest.bin  make console-integration-selftest
 #   smoke-hardware-console-serial      build-console-serial-selftest/zephyros-console-serial-selftest.bin  make console-serial-selftest
 #   smoke-hardware-fs             build-fs-selftest/zephyros-fs-selftest.bin  make fs-selftest
@@ -1846,9 +1669,8 @@ define smoke_preflight
 if [ ! -f "$(1)" ]; then echo "smoke: $(1) is missing - build it first: make $(2)"; exit 1; fi; printf 'smoke: image to flash: %s\n       sha256: %s\n' "$(1)" "$$(sha256sum '$(1)' | cut -d' ' -f1)"
 endef
 
-hardware-images: all subsystem-selftest romfs-corrupt-selftest \
-		console-integration-selftest ioc-selftest hid-selftest \
-		video-selftest console-selftest console-serial-selftest \
+hardware-images: all subsystem-selftest \
+		console-integration-selftest console-serial-selftest \
 		fs-selftest
 	@echo "hardware-images: every smoke image is built under build*/"
 
@@ -1859,26 +1681,6 @@ smoke-hardware:
 smoke-hardware-subsystem:
 	@$(call smoke_preflight,build-subsys-selftest/zephyros-subsys-selftest.bin,subsystem-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode subsystem --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-romfs-corrupt:
-	@$(call smoke_preflight,build-romfs-corrupt/zephyros-romfs-corrupt.bin,romfs-corrupt-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode romfs-corrupt --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-ioc:
-	@$(call smoke_preflight,build-ioc-selftest/zephyros-ioc-selftest.bin,ioc-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode ioc --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-hid:
-	@$(call smoke_preflight,build-hid-selftest/zephyros-hid-selftest.bin,hid-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode hid --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-video:
-	@$(call smoke_preflight,build-video-selftest/zephyros-video-selftest.bin,video-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode video --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
-
-smoke-hardware-console:
-	@$(call smoke_preflight,build-console-selftest/zephyros-console-selftest.bin,console-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode console --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 # Console modes: the full integration image (serial portion: early
 # diagnostics, binding report, the target selftest and the ESC c reset

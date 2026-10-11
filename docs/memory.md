@@ -592,7 +592,8 @@ The gate stack size is validated exactly (`zos_gate_stack_top - zos_gate_stack
 == 256`, from the platform constant) and the whole block must sit inside
 `E000h-FEFFh`.
 
-Self-test builds only (`make syscall-selftest`) add a second small block
+Self-test builds only (`make subsystem-selftest` links
+`ZOS_SUBSYS_SELFTEST`) add a second small block
 (`zos_selftest_kernel_sp`, `_zos_selftest_bank`, `_zos_selftest_result`)
 in the same common data area.
 
@@ -671,12 +672,14 @@ in `2000h-DFFFh` would disappear when the mode changes.
   therefore unchanged.
 - `tests/test_ipc_selftest.py` / `tests/test_ipc_selftest_sim.py` — the
   IPC substrate acceptance image: the pinned ABI, the residency
-  classification and the client's caller-window layout on the host, and a
-  replay that measures per-call T-states, the domain latch intervals (every
-  one closed on the latch it found, with the caller's latch restored at the
-  gate), the two CTC0 deliveries into the service domain, the reserved
-  stack high-water marks (service `5E08h`, ISR `5FF4h`, gate `E5FAh`), the
-  window LDIRs and the lookup census.
+  classification and the client's caller-window layout on the host, and one
+  outcome replay (work package 42d): both verdicts with their check counts,
+  the phase markers, the resolver's copy-path counters, the reserved stack
+  high-water marks, the caller's mapping restored at the end of the run,
+  the loader's placement report against the packer's plan and the one-shot
+  boot segments.  The per-instruction tracer that measured per-call
+  T-states, the domain latch intervals and the CTC0 deliveries was
+  retired with it (the figures live in the package-42b record).
 - `tests/test_ns_selftest.py` / `tests/test_ns_selftest_sim.py` — the
   namespace acceptance image (work package 42a): the pinned ABI, the
   packed publication tables, the residency classification and the
@@ -688,7 +691,9 @@ in `2000h-DFFFh` would disappear when the mode changes.
   the current path: the syscall gate and interrupt-executive groups (with
   injected CTC0 deliveries), the ROMFS reader and the process/ZEX
   lifecycle groups, every target status word, and the monitor session with
-  its relaunch.
+  its relaunch.  The image is also the store `tests/test_romfs_sim.py`
+  patches in place to prove the corrupt-store panic (work package 42d
+  folded the retired corrupt-store image into that test).
 - `tests/test_romfs.py` / `tests/test_romfs_sim.py` — ROMFS tooling,
   constant/placement contracts, corrupted-metadata rejection, the
   ROM-access transition replay (stackless mode-00 window pinned to the

@@ -46,11 +46,17 @@
 
 #define INTEGRATION_TAG "console integration: "
 /* Bytes the replay queues for HID: the typed line this diagnostic reads
- * back through the console (CR terminates it). */
+ * back through the console (CR terminates it).  On hardware the same
+ * bytes come from the USB keyboard, so the read waits for them. */
 #define INTEGRATION_TYPED "K41"
 #define INTEGRATION_TYPED_END '\r'
 #define INTEGRATION_READ_MAX 8u
-#define INTEGRATION_POLL_BUDGET 512u
+/* The wait for a key, in polls: the replay has the line queued before
+ * this hook runs, so it succeeds immediately; on hardware the operator
+ * types it on the USB keyboard, which the old 512-poll budget expired
+ * before - the hardware run printed `FAIL read` even though the
+ * composition row is fine. */
+#define INTEGRATION_POLL_BUDGET 100000u
 /* PING request DATA (the pinned firmware accepts up to 24 bytes). */
 #define INTEGRATION_PING_DATA_LEN 4u
 #define INTEGRATION_PING_LEVEL_INDEX 16u
@@ -112,10 +118,11 @@ static int integration_write(const char *text)
 
 /* The typed line, one byte per call through the console input: the
  * console asks HID because its engine answered ready, which is the
- * composition row this reads back. */
+ * composition row this reads back.  The poll waits for the key rather
+ * than assuming it is already pending (see INTEGRATION_POLL_BUDGET). */
 static uint8_t integration_read(uint8_t *out)
 {
-	uint16_t attempts = 0u;
+	uint32_t attempts = 0u;
 	uint8_t count = 0u;
 
 	while (attempts < INTEGRATION_POLL_BUDGET &&

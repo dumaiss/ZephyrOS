@@ -112,11 +112,12 @@ return path (common memory):
   gate path, bank-7 placement of the dispatcher, absence of direct
   C-symbol addresses in the vector (`make test`, `make check`), plus a
   Z80 simulation that replays the real image bytes for banks 0 and 6.
-- Target: `make syscall-selftest` builds an image whose smoke caller runs
-  in application banks 0 and 6, exercises the whole contract from a stack
-  above `2000h`, and prints `syscall selftest: OK` (or a precise failure).
-  Capture and verify it on hardware with
-  `make smoke-hardware-selftest SERIAL_PORT=/dev/ttyUSB0`.
+- Target: `make subsystem-selftest` builds the current boot path with the
+  smoke caller linked in; it runs in application banks 0 and 6, exercises
+  the whole contract from a stack above `2000h`, and prints
+  `syscall selftest: OK` (or a precise failure).  Capture and verify it on
+  hardware with `make smoke-hardware-subsystem SERIAL_PORT=/dev/ttyUSB0`
+  (the per-milestone `syscall-selftest` image was retired).
 - The dated acceptance record is `docs/validation/`.
 
 ## 7. M2 interrupt delivery contract
@@ -145,10 +146,12 @@ boundary once the foreground enables maskable interrupts:
 - Handlers are bank-7 code registered per logical source
   (`irq_claim`/`irq_release`); unexpected or unclaimed interrupts take a
   compact counter/source record and, for CTC0, a safe quiesce.
-- The `irq-selftest` image exercises mode-10 delivery (banks 0 and 6,
-  stack above `2000h`), mode-11 delivery, repeated delivery, exact `AF`
+- The subsystem acceptance image exercises mode-10 delivery (banks 0 and
+  6, stack above `2000h`), mode-11 delivery, repeated delivery, exact `AF`
   restoration, the unclaimed path, and the syscall gate's IFF restore
-  (`make irq-selftest`, then `make smoke-hardware-irq SERIAL_PORT=...`).
+  (`make subsystem-selftest`, then
+  `make smoke-hardware-subsystem SERIAL_PORT=...`; the per-milestone
+  `irq-selftest` image was retired).
 
 ## 8. M6 native syscalls
 
@@ -207,7 +210,7 @@ Native programs use `user/sdk/include/zos/console.h` (`zex_exit`,
 the console service protocol with the private SDCC convention; programs
 never call `RST 30h` directly unless they re-implement that convention.
 
-Validation: `make m6-selftest` runs `zextest.zex` from ROMFS in two
+Validation: `make subsystem-selftest` runs `zextest.zex` from ROMFS in two
 application banks and checks the exact exit statuses; the simulator
 replays the full image transcript (`tests/test_m6_sim.py`), including
 the raw-return fault path and the malformed-ZEX matrix.  The physical
@@ -284,7 +287,7 @@ The packed numbers and block layouts are declared in
 `user/sdk/src/diaggate.asm`); host tests pin the two headers
 and the assembly wrapper constants together.
 
-Validation: `make m7-selftest` boots the monitor image, runs the
+Validation: `make subsystem-selftest` boots the monitor image, runs the
 kernel-side diagnostic selftest (`tests/target/m7/m7_test.c`) and
 replays the scripted interactive session (`tests/test_m7_sim.py`),
 including per-class rejections, canary/table stability, and exact
@@ -617,14 +620,20 @@ placed by the cold loader and the SDK *probe* program booting as
 and a single `copy_out`, runs the service-side slow case and a path-B copy
 with the timer armed, then starts the conformance client
 (`/SYSTEM/ipc.zex`) and folds its 55-check verdict into its own line
-(`ipccopy: PASS`).  `tests/test_ipc_selftest_sim.py` replays the boot and
-measures the evidence (per-case T-states and T/byte, the path each case
-took from the resolver's counters, the aperture latch installs and their
-exact restores, the CTC0 delivery taken inside a mode-10 window, the
-domain latch intervals, the reserved-stack high-water marks, the window
-LDIRs and the lookup census); `tests/test_ipc_selftest.py` pins the ABI
-numbers, the residency classification, the client- and probe-window
-layouts and the service I/O area rule.  The production image links none of
+(`ipccopy: PASS`).  `tests/test_ipc_selftest_sim.py` boots the image once
+and asserts the outcomes: both verdicts and their check counts, every
+phase marker on the wire, the resolver's copy-path counters (one per
+outcome, so every path provably carried bytes), the reserved-stack
+high-water marks, the console bytes of the service-side slow case, the
+loader's placement report against the packer's plan, the one-shot boot
+segments, and the caller's mapping restored at the end of the run.
+Work package 42d replaced the per-instruction tracer that measured
+per-case T-states, latch installs and the CTC0 injection framing this way:
+those figures are in the package-42b and package-42e records, and the
+client and the probe verify every path from the inside before printing
+their verdicts.  `tests/test_ipc_selftest.py` pins the ABI numbers, the
+residency classification, the client- and probe-window layouts and the
+service I/O area rule.  The production image links none of
 it before package 41, so it stayed byte-identical until then
 (`config/residency.json` classified the objects as `test_link`).
 

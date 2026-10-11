@@ -4,10 +4,9 @@ common ROM-access primitive, and the ROMFS reader in the Z80 simulator.
 
 Coverage (all executing the real linked bytes):
 
-* boot of the subsystem acceptance image: the SIO module is read
-  from the ROMFS recovery store through the shared M4 loader, relocated
-  exactly like an independent model predicts, the console binds, and the
-  target selftest prints OK;
+* boot of the subsystem acceptance image: the store is read through the
+  common ROM-access primitive (validation-before-mapping, the mirrored
+  mode-00 stub), the console binds, and the target selftest prints OK;
 * the common ROM-access primitive (kernel/romfs/rom_access.asm):
   validation-before-mapping, exact latch/IFF restoration, a stackless
   mode-00 window that executes only the mirrored stub in the ROM page,
@@ -15,15 +14,14 @@ Coverage (all executing the real linked bytes):
   rejection;
 * the ROMFS reader (kernel/romfs/romfs.c): header/table validation,
   lookup semantics, and rejection of mutated header/table metadata;
-* the corrupt-metadata image (production manifest, patched): panic
-  through the early console before any module execution;
-* the source-backed loader: corrupted containers are rejected with the
-  exact loader error codes before the arena is touched.
+* the corrupt-store boot: the packed store's header reserved field is
+  patched in the loaded image (the bytes tests/subsys/corrupt_romfs.py
+  used to build a second image), and the boot must panic through the
+  early console before any module execution.
 
 Skipped when the images / packed modules have not been built.
 """
 
-import json
 import os
 import sys
 import unittest
@@ -31,17 +29,12 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import (Ctc0Injector, Z80, read_symbols,
-                    skip_serial_connect_delay)  # noqa: E402
-import romfspack  # noqa: E402
+from replay import RET, Replay, STACK  # noqa: E402
 import zmodpack  # noqa: E402
 
-RET = 0x1234
 STEP_LIMIT = 60000000
 SCRATCH_SIZE = 0x200      # host scratch is derived per image in setUp
-STACK = 0xFFFE            # common boot stack
 
 ROMFS_PAGE_WINDOW = 0xC000
 ROMFS_FIRST_PAGE = 2
@@ -49,18 +42,6 @@ ROMFS_FIRST_PAGE = 2
 ZOS_EINVAL = 0x02
 ZOS_ENOENT = 0x05
 ZOS_EBUSY = 0x04
-ZMOD_EINVAL = (-0x02) & 0xFFFF
-ZMOD_EFORMAT = (-0x0A) & 0xFFFF
-ZMOD_ENOTSUP = (-0x07) & 0xFFFF
-
-
-def le16(data, at):
-    return data[at] | (data[at + 1] << 8)
-
-
-def le32(data, at):
-    return (data[at] | (data[at + 1] << 8) | (data[at + 2] << 16)
-            | (data[at + 3] << 24))
 
 
 def pattern_byte(i):
@@ -95,61 +76,36 @@ def call2(z, addr, hl, de, limit=STEP_LIMIT):
     raise AssertionError("function at %04X did not return" % addr)
 
 
-class RomfsSimBase(unittest.TestCase):
+class RomfsSimBase(Replay, unittest.TestCase):
     IMAGE_SUBDIR = "build-subsys-selftest"
     IMAGE_NAME = "zephyros-subsys-selftest.bin"
 
     def setUp(self):
-        self.bin_path = os.path.join(ROOT, self.IMAGE_SUBDIR, self.IMAGE_NAME)
-        if not os.path.exists(self.bin_path):
-            self.skipTest("%s missing; build the image first" % self.bin_path)
-        with open(self.bin_path, "rb") as fh:
-            self.image = fh.read()
-        self.syms = read_symbols(os.path.join(
-            ROOT, self.IMAGE_SUBDIR, "zephyros.map"))
+        self.load_image()
         self.zmod_path = os.path.join(ROOT, "build", "modules", "sio.zmod")
         if not os.path.exists(self.zmod_path):
             self.skipTest("build/modules/sio.zmod missing; run make first")
         with open(self.zmod_path, "rb") as fh:
             self.sio_zmod = fh.read()
-        self.romfs_path = os.path.join(ROOT, self.IMAGE_SUBDIR,
-                                       "recovery.romfs")
-        if not os.path.exists(self.romfs_path):
-            self.skipTest("%s missing; build the image first"
-                          % self.romfs_path)
-        with open(self.romfs_path, "rb") as fh:
-            stream = fh.read()
-        _header, entries = romfspack.parse_image(stream)
-        self.romfs_entries = {entry["name"]: entry for entry in entries}
+        self.romfs_entries = self.romfs_entries()
         self.sio_entry = self.romfs_entries["sio.zmod"]
         self.cross_entry = self.romfs_entries["crosspage.bin"]
         self.scratch = self._derive_scratch()
 
     def _derive_scratch(self):
-        """First free arena granule above the packed boot set.
+        """A free window address above the linked cold data.
 
-        The bank-7 window is fully derived, so the host scratch cannot use
-        a fixed address; it must sit in the free arena space below the
-        derived runtime data base."""
-        plan_path = os.path.join(ROOT, self.IMAGE_SUBDIR, "arena.plan.json")
-        self.assertTrue(os.path.exists(plan_path),
-                        "arena.plan.json missing; build the image first")
-        with open(plan_path) as fh:
-            arena = json.load(fh)["arena"]
-        scratch = arena["start"] + arena["used_granules"] * arena["granule_size"]
-        self.assertLessEqual(scratch + SCRATCH_SIZE, arena["end"],
-                             "scratch %04X is not in the free arena space"
+        The host scratch cannot use a fixed address: the window is
+        derived.  It sits above the cold data run and below the common
+        region, inside the mode-11 window the cold code writes."""
+        geometry = self.geometry()
+        end = (geometry["ZOS_WINDOW_DATA_BASE"] +
+               geometry["ZOS_WINDOW_DATA_SIZE"])
+        scratch = (end + 0x1FF) & ~0x1FF
+        self.assertLessEqual(scratch + SCRATCH_SIZE, 0xE000,
+                             "scratch %04X does not fit the window"
                              % scratch)
         return scratch
-
-    def make_cpu(self, latch=0x18):
-        pages = {n: self.image[n * 0x10000:(n + 1) * 0x10000]
-                 for n in range(8)}
-        z = Z80(pages[0], pages[1],
-                rom_pages={n: pages[n] for n in range(2, 8)})
-        z.latch = latch
-        z.sp = STACK
-        return z
 
     def boot_kernel(self, z, on_step=None, stop_at=None):
         """__zos_crt0_init + kernel_main replay with the connect delay
@@ -157,30 +113,21 @@ class RomfsSimBase(unittest.TestCase):
 
         `stop_at` names a byte string in the serial transcript; the
         current boot path ends in the monitor's input loop rather than a
-        halt, so acceptance replays stop when their group reports."""
-        run_function(z, self.syms["__zos_crt0_init"])
-        z.push16(RET)
-        z.pc = self.syms["_kernel_main"]
-        delay = self.syms["_kernel_serial_connect_delay"]
-        # The interrupt-executive group of the subsystem image needs the
-        # host to stand in for CTC0 (the simulator has no timer model).
-        inject = Ctc0Injector(self.syms)
-        z.wr(self.syms["_irq_active_source"], 0x00)
-        for i in range(STEP_LIMIT):
-            inject(z)
-            z.step()
+        halt, so acceptance replays stop when their group reports.  The
+        interrupt-executive group needs the host to stand in for CTC0
+        (the simulator has no timer model), so the injector runs until
+        the caller's marker stops the replay."""
+        inject = self.injector(z)
+
+        def watch(cpu):
+            inject(cpu)
             if on_step is not None:
-                on_step(z)
-            skip_serial_connect_delay(z, delay)
-            if stop_at is not None:
-                # The image keeps running into the monitor after the
-                # group reports; HALT is part of the interrupt-executive
-                # delivery windows, so it is not a terminal state here.
-                if i % 0x3FFF == 0 and stop_at in bytes(z.sio_tx):
-                    return
-            elif z.pc == RET or z.halted:
-                return
-        raise AssertionError("kernel_main did not finish (PC=%04X)" % z.pc)
+                on_step(cpu)
+
+        self.start_kernel(z)
+        if stop_at is None:
+            return self.run_until(z, (), on_step=watch)
+        return self.run_until(z, [stop_at], on_step=watch)
 
     def patch_rom(self, z, logical, data):
         """Overwrite logical ROMFS stream bytes in the simulated ROM."""
@@ -209,30 +156,6 @@ class RomfsSimBase(unittest.TestCase):
         name_at = self.scratch + 0x100
         z.bank7[name_at:name_at + len(name) + 1] = name + b"\x00"
         return call2(z, self.syms["_romfs_lookup_ci"], name_at, out_addr)
-
-    def vfs_init(self, z):
-        z.push16(RET)
-        z.pc = self.syms["_vfs_init"]
-        for _ in range(STEP_LIMIT):
-            z.step()
-            if z.pc == RET:
-                return z.de
-        raise AssertionError("vfs_init did not return")
-
-    def load_zmod(self, z, name, romfs_name):
-        # M9 loads through VFS: kernel_load_vfs_module() resolves
-        # "/SYSTEM/<name>.zmod"; romfs_name is retained for call sites.
-        name_at = self.scratch + 0x100
-        z.bank7[name_at:name_at + len(name) + 1] = name + b"\x00"
-        z.push16(RET)
-        z.hl = name_at
-        z.de = 0
-        z.pc = self.syms["_kernel_load_vfs_module"]
-        for _ in range(STEP_LIMIT):
-            z.step()
-            if z.pc == RET:
-                return z.de
-        raise AssertionError("kernel_load_vfs_module did not return")
 
     def call_rom_access(self, z, page, offset, length, req_addr=None,
                         on_step=None):
@@ -303,7 +226,7 @@ class TestSubsystemRomfsReplay(RomfsSimBase):
         z = self.make_cpu()
         watcher = RomWindowWatcher(self.syms["rom_access_sync"],
                                    self.syms["rom_access_sync_end"])
-        self.boot_kernel(z, on_step=watcher, stop_at=b"loader selftest: OK")
+        self.boot_kernel(z, on_step=watcher, stop_at=b"process selftest: OK")
 
         tx = bytes(z.sio_tx)
         self.assertIn(b"ZephyrOS 0.0\r\n", tx)
@@ -358,27 +281,8 @@ class TestSubsystemRomfsReplay(RomfsSimBase):
                          "boot path left memory mode 11 (latch 0x%02X)"
                          % z.latch)
 
-        # The loaded module image must equal an independent relocation of
-        # the container ROMFS delivered (byte-identical source proven by
-        # the module tests; this recomputes the loader transform).
-        info = zmodpack.parse_container(self.sio_zmod, "sio.zmod")
-        base = self.syms["__driver_arena_start"]
-        expected = bytearray(info["payload"])
-        for _type, patch in info["relocs"]:
-            value = le16(expected, patch) + base
-            self.assertLessEqual(value, 0xFFFF)
-            expected[patch] = value & 0xFF
-            expected[patch + 1] = (value >> 8) & 0xFF
-        arena = bytes(z.bank7[base:base + info["image_size"]])
-        self.assertEqual(arena, bytes(expected),
-                         "loaded module image differs from the expected "
-                         "relocation of the packed container")
-
         # The boot module is resident; no recovery-page byte was written.
         z.halted = False  # leave the halt loop so helpers can run
-        run_function(z, self.syms["_module_count"])
-        # The boot module plus whatever the loader acceptance hook loaded.
-        self.assertGreaterEqual(z.a, 0x01)
         for page in range(ROMFS_FIRST_PAGE, 8):
             self.assertEqual(bytes(z.rom[page]),
                              self.image[page * 0x10000:(page + 1) * 0x10000],
@@ -390,7 +294,7 @@ class TestSubsystemRomfsReplay(RomfsSimBase):
         z = self.make_cpu()
         at = self.cross_entry["offset"]
         self.patch_rom(z, at, bytes([self.rom_byte(z, at) ^ 0xFF]))
-        self.boot_kernel(z, stop_at=b"romfs selftest: ")
+        self.boot_kernel(z, stop_at=b"romfs selftest: FAIL 0x06")
         tx = bytes(z.sio_tx)
         self.assertIn(b"romfs selftest: FAIL 0x06\r\n", tx)
         self.assertNotIn(b"romfs selftest: OK", tx)
@@ -408,38 +312,24 @@ class TestSubsystemRomfsReplay(RomfsSimBase):
         self.assertIn(b"romfs selftest: FAIL 0x04\r\n", tx)
 
 
-class TestCorruptImageReplay(unittest.TestCase):
-    def test_corrupt_image_panics_before_module_execution(self):
-        bin_path = os.path.join(ROOT, "build-romfs-corrupt",
-                                "zephyros-romfs-corrupt.bin")
-        if not os.path.exists(bin_path):
-            self.skipTest("%s missing; build the image first" % bin_path)
-        image = open(bin_path, "rb").read()
-        syms = read_symbols(os.path.join(ROOT, "build-romfs-corrupt",
-                                         "zephyros.map"))
-        pages = {n: image[n * 0x10000:(n + 1) * 0x10000] for n in range(8)}
-        z = Z80(pages[0], pages[1],
-                rom_pages={n: pages[n] for n in range(2, 8)})
-        z.latch = 0x18
-        z.sp = STACK
-        run_function(z, syms["__zos_crt0_init"])
-        z.push16(RET)
-        z.pc = syms["_kernel_main"]
-        delay = syms["_kernel_serial_connect_delay"]
-        for _ in range(STEP_LIMIT):
-            z.step()
-            skip_serial_connect_delay(z, delay)
-            if z.halted:
-                break
-        else:
-            self.fail("corrupt image did not halt (PC=%04X)" % z.pc)
+class TestCorruptStoreReplay(RomfsSimBase):
+    """Corrupt-store boot: the header reserved field of the store the
+    subsystem image carries is patched in the loaded ROM (the exact
+    bytes tests/subsys/corrupt_romfs.py used to write a second image),
+    and the kernel must reject the whole store through the early-console
+    panic before any module code runs."""
+
+    def test_corrupt_store_panics_before_module_execution(self):
+        z = self.make_cpu()
+        self.patch_rom(z, 10, b"\x01")  # header reserved := 1
+        self.start_kernel(z)
+        self.run_until(z, (), halt_ok=True, panic=None)
 
         tx = bytes(z.sio_tx)
         self.assertIn(b"ZephyrOS 0.0\r\n", tx)
-        with open(os.path.join(ROOT, "build-romfs-corrupt",
-                               "recovery.romfs"), "rb") as fh:
-            packed = fh.read()
-        header_hex = " ".join("%02X" % byte for byte in packed[:8])
+        header_hex = " ".join(
+            "%02X" % byte
+            for byte in self.image[2 * 0x10000:2 * 0x10000 + 8])
         self.assertIn(("romfs: init failed, code 0x0A, latch 0x18, "
                        "header %s\r\n" % header_hex).encode("ascii"), tx)
         self.assertIn(b"PANIC: romfs: corrupt recovery image\r\n", tx)
@@ -634,63 +524,6 @@ class TestRomfsReaderRejections(RomfsSimBase):
     def test_empty_name(self):
         self.assert_init_rejects(
             lambda z: self.patch_rom(z, 16, b"\x00"))
-
-
-class TestSourceBackedLoadRejections(RomfsSimBase):
-    """Corrupt containers delivered from ROMFS fail before the arena."""
-
-    def boot_romfs_and_loader(self):
-        z = self.make_cpu()
-        run_function(z, self.syms["__zos_crt0_init"])
-        self.assertEqual(self.vfs_init(z), 0)
-        run_function(z, self.syms["_module_loader_init"])
-        return z
-
-    def arena_granules(self):
-        """The linked driver arena size in granules (never a fixed
-        constant: the geometry is derived)."""
-        span = (self.syms["__driver_arena_end"]
-                - self.syms["__driver_arena_start"])
-        self.assertEqual(span % 512, 0, "arena is not granule aligned")
-        return span // 512
-
-    def free_granules(self, z):
-        run_function(z, self.syms["_module_free_granules"])
-        return z.a
-
-    def test_corrupt_magic_rejected_without_allocation(self):
-        z = self.boot_romfs_and_loader()
-        self.patch_rom(z, self.sio_entry["offset"], b"X")
-        result = self.load_zmod(z, b"sio", b"sio.zmod")
-        self.assertEqual(result, ZMOD_EINVAL)
-        self.assertEqual(self.free_granules(z), self.arena_granules())
-
-    def test_corrupt_total_size_rejected_without_allocation(self):
-        z = self.boot_romfs_and_loader()
-        self.patch_rom(z, self.sio_entry["offset"] + 0x18, b"\x00\x00")
-        result = self.load_zmod(z, b"sio", b"sio.zmod")
-        self.assertEqual(result, ZMOD_EFORMAT)
-        self.assertEqual(self.free_granules(z), self.arena_granules())
-
-    def test_corrupt_reloc_type_rejected_without_allocation(self):
-        info = zmodpack.parse_container(self.sio_zmod, "sio.zmod")
-        reloc_offset = info["reloc_offset"]
-        z = self.boot_romfs_and_loader()
-        self.patch_rom(z, self.sio_entry["offset"] + reloc_offset, b"\x02")
-        result = self.load_zmod(z, b"sio", b"sio.zmod")
-        self.assertEqual(result, ZMOD_ENOTSUP)
-        self.assertEqual(self.free_granules(z), self.arena_granules())
-
-    def test_truncated_source_rejected(self):
-        """A ROMFS entry claiming fewer bytes than the container needs must
-        be rejected by the bounded source before allocation."""
-        z = self.boot_romfs_and_loader()
-        # Shrink the directory entry size field of sio.zmod (entry 2).
-        at = 16 + 36 + 28
-        self.patch_rom(z, at, (len(self.sio_zmod) - 4).to_bytes(4, "little"))
-        result = self.load_zmod(z, b"sio", b"sio.zmod")
-        self.assertEqual(result, ZMOD_EFORMAT)
-        self.assertEqual(self.free_granules(z), self.arena_granules())
 
 
 if __name__ == "__main__":

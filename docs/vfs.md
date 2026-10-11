@@ -538,12 +538,13 @@ The production image (`build/zephyros.bin`, sha256
 `03f776a9...95cec`) boots to the monitor with HID and V9958 bound; the
 run, transcript and photograph are recorded in
 `docs/validation/2026-10-05-m9-provider-abi-hardware.md`.  Note that
-`tools/serial_smoke.py --mode normal` requires the console acceptance
-line and monitor prompt on the serial transcript, so it reports a
-timeout whenever the console-capable module is resident (architecture
-30.9 binding policy); that mode is only applicable to an SIO-fallback
-bench.  The M8 serial smoke modes were re-run on the ABI v3 module bytes
-and pass.
+`tools/serial_smoke.py --mode normal` accepts either transcript: the
+full boot contract, or (on the console-serial variant) the console
+service line, monitor banner and prompt on the serial lane.  On a bench
+whose console is `console-v9958-hid` the monitor text is on the display,
+so the operator confirms it there while the tool validates the banner
+(work package 42d brought the tool's expectations in line with the
+current transcripts; the per-mode table is in `docs/boot.md`).
 
 ## 12. Native filesystem syscalls (package 27)
 

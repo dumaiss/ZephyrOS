@@ -165,7 +165,6 @@ OWNER_FILES = (
     "tests/subsys/manifest.json",
     "tests/subsys/gen_crosspage.py",
     "tests/subsys/gen_romfs_expect.py",
-    "tests/subsys/corrupt_romfs.py",
     "tests/subsys/gen_zex_fixtures.py",
     "tests/subsys/gen_process_expect.py",
     "tests/target/process/zextest_sp.asm",
@@ -198,9 +197,7 @@ OWNER_FILES = (
     "tests/target/include/ioc_selftest.h",
     "tests/target/hid/hid_test.c",
     "tests/target/include/hid_selftest.h",
-    "tests/target/console/console_test.c",
     "tests/target/console/integration_test.c",
-    "tests/target/include/console_selftest.h",
     "tests/target/include/console_integration_selftest.h",
     "tests/console/manifest-serial.json",
     "tests/console/manifest-serial-missing.json",
@@ -306,7 +303,7 @@ REQUIRED_DIRS = (
     "user/sdk", "user/sdk/include", "user/sdk/src",
     "user/helloworld", "user/monitor",
     "recovery",
-    "tests/subsys", "tests/hid", "tests/video", "tests/console",
+    "tests/subsys", "tests/console",
     "tests/fs",
     "tests/target/syscall", "tests/target/irq",
     "tests/target/romfs", "tests/target/process", "tests/target/support",
@@ -1208,9 +1205,11 @@ class TestMilestoneRetentionWindow(unittest.TestCase):
             self.assertNotIn(
                 '"%s"' % mode, text,
                 "retired serial_smoke mode %r reappeared" % mode)
-        # The two current acceptance modes stay available.
+        # The current acceptance modes stay available.
         self.assertIn('"subsystem"', text)
-        self.assertIn('"romfs-corrupt"', text)
+        self.assertIn('"console-integration"', text)
+        self.assertIn('"console-serial"', text)
+        self.assertIn('"fs"', text)
 
     def test_retired_milestone_data_directories_are_gone(self):
         for name in ("m5", "m6", "m7", "m8"):

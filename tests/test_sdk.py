@@ -37,8 +37,8 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 import pack_image  # noqa: E402
 import zexpack  # noqa: E402
 import zexmanifest  # noqa: E402
-from z80sim import (IocCommandPeer, V9958Peer, Z80,  # noqa: E402
-                    read_symbols, skip_serial_connect_delay)
+from replay import ConsoleReplay  # noqa: E402
+from z80sim import Z80, read_symbols  # noqa: E402
 
 RET = 0x1234
 STACK = 0xFFFE
@@ -611,92 +611,29 @@ class TestSdkSplitterInSimulator(unittest.TestCase):
         self.assertEqual(words, ["w%d" % i for i in range(self.CAPACITY)])
 
 
-class TestHelloWorldImage(unittest.TestCase):
+class TestHelloWorldImage(ConsoleReplay, unittest.TestCase):
     """Boot the helloworld image: a user program needs no kernel change."""
 
+    IMAGE_SUBDIR = IMAGE_SUBDIR
+    IMAGE_NAME = IMAGE_NAME
     GREETING = "Hello, ZephyrOS!"
     REPORT = "monitor: exit status 0x0000 active 0 free-banks 6"
     CONSOLE_BOUND = "console: service OK"
 
     @classmethod
     def setUpClass(cls):
-        cls.bin_path = os.path.join(ROOT, IMAGE_SUBDIR, IMAGE_NAME)
-        if not os.path.exists(cls.bin_path):
-            raise unittest.SkipTest(
-                "%s missing; run make helloworld-image" % cls.bin_path)
-        cls.image = Path(cls.bin_path).read_bytes()
-        cls.symbols = read_symbols(os.path.join(ROOT, IMAGE_SUBDIR,
-                                                "zephyros.map"))
-        cls.transcript = cls.boot()
-
-    @classmethod
-    def pump(cls, z):
-        """Decode newly issued glyph copies into text.
-
-        The console binds to the loaded V9958 module, so the demo's output
-        is visible on the video console: a 6x8 HMMM copy is a printable
-        glyph, and a copy that does not continue the previous one starts a
-        new model line."""
-        commands = z.vdp.commands
-        while z.glyph_pos < len(commands):
-            cmd = commands[z.glyph_pos]
-            z.glyph_pos += 1
-            block = cmd.get("block")
-            if (cmd.get("code") != 0xD0 or not block
-                    or (block[8] | (block[9] << 8)) != 6
-                    or (block[10] | (block[11] << 8)) != 8):
-                continue
-            sx = block[0] | (block[1] << 8)
-            sy = block[2]
-            dx = block[4] | (block[5] << 8)
-            dy = block[6] | (block[7] << 8)
-            glyph = ((sy & 0x3F) >> 3) * 32 + sx // 6
-            if 32 <= glyph < 127:
-                if z.glyph_last == [dy, dx - 6]:
-                    z.glyphs.append(chr(glyph))
-                else:
-                    z.glyphs.append("\n" + chr(glyph))
-                z.glyph_last = [dy, dx]
-
-    @classmethod
-    def boot(cls):
-        pages = {n: cls.image[n * 0x10000:(n + 1) * 0x10000]
-                 for n in range(8)}
-        z = Z80(pages[0], pages[1],
-                rom_pages={n: pages[n] for n in range(2, 8)})
-        z.latch = 0x18
-        z.sp = STACK
-        z.hid = IocCommandPeer()
-        z.ioc_peer = z.hid
-        z.vdp = V9958Peer()
-        z.vdp_peer = z.vdp
-        z.glyphs = []
-        z.glyph_pos = 0
-        z.glyph_last = None
-        z.push16(RET)
-        z.pc = cls.symbols["__zos_crt0_init"]
-        for _ in range(2000000):
-            z.step()
-            if z.pc == RET:
-                break
-        else:
-            raise AssertionError("C runtime init did not return")
-        z.push16(RET)
-        z.pc = cls.symbols["_kernel_main"]
-        delay = cls.symbols["_kernel_serial_connect_delay"]
-        for step in range(STEP_LIMIT):
-            skip_serial_connect_delay(z, delay)
-            z.step()
-            if step % 0x1FFF == 0:
-                cls.pump(z)
-                if "".join(z.glyphs).count(cls.REPORT) >= 2:
-                    break
-        cls.serial = bytes(z.sio_tx)
-        return "".join(z.glyphs)
+        cls.replay = cls.open(IMAGE_SUBDIR, IMAGE_NAME)
+        cls.z = cls.replay.make_cpu()
+        cls.replay.start_kernel(cls.z)
+        # The demo prints the greeting twice: once as the monitor's boot
+        # program and once relaunched by the monitor's prompt hook.
+        cls.replay.run_until_count(cls.z, cls.REPORT, 2)
+        cls.serial = bytes(cls.z.sio_tx)
+        cls.transcript = cls.replay.trace(cls.z)
 
     def test_kernel_carries_the_demo_as_its_boot_program(self):
-        self.assertIn(BOOT_PROGRAM.encode("ascii"), self.image)
-        self.assertNotIn(b"/SYSTEM/monitor.zex", self.image)
+        self.assertIn(BOOT_PROGRAM.encode("ascii"), self.replay.image)
+        self.assertNotIn(b"/SYSTEM/monitor.zex", self.replay.image)
 
     def test_demo_prints_the_greeting_on_the_bound_console(self):
         self.assertIn(self.CONSOLE_BOUND, self.transcript)

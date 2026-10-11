@@ -356,10 +356,11 @@ produced a CRC-verified matching reply.
   the simulator's IOC command+bulk peer (exact wire bytes on both
   lanes, READY/DONE interlocks, one-time Hunt per lane, fault injection
   on both directions, bounded failure, whole-link recovery, canaries,
-  IFF restoration, rollback, and semantic status).  The physical
-  acceptance image is `build-ioc-selftest/` and is driven by
-  `make smoke-hardware-ioc`; board timing remains a physical
-  hardware authority.  The target diagnostic runs the full /SHARED
+  IFF restoration, rollback, and semantic status).  The transport runs
+  in the console-integration image (`build-console-integration-selftest/`)
+  since work package 42d merged the per-device images; its physical gate
+  is `make smoke-hardware-console-integration`, and board timing remains a
+  physical hardware authority.  The target diagnostic runs the full /SHARED
   READY/DONE acceptance (write 1/128/512, matching DONE records, read
   back and verify, delete the dedicated `IOCBULKT.BIN`, prove the delete
   by a reopen answered exactly with the frozen no-file status (34h) and
@@ -435,11 +436,12 @@ discovered the IOC class; the MCU firmware is untouched.
   sizing, ring wraparound and control-byte preservation,
   malformed-reply atomicity, transport-error throttling, the 64-call
   stuck penalty, the eight-byte READY collision, the no-IOC rollback,
-  and the malformed-IOC interface rejection).  The physical acceptance
-  image is `build-hid-selftest/`, driven by
-  `make smoke-hardware-hid`: the USB-keyboard pass is typed by the
-  operator, the tool validates the echoed `hid: rx XX` transcript,
-  and then sends the forced SIO-fallback byte.
+  and the malformed-IOC interface rejection).  The HID diagnostic runs
+  in the console-integration image (`build-console-integration-selftest/`)
+  since work package 42d merged the per-device images, and its physical
+  gate is `make smoke-hardware-console-integration`: the USB-keyboard pass
+  is typed by the operator (the integration diagnostic waits for its
+  `K41` line), and the tool validates the echoed transcripts.
 
 ## 7. V9958 video core (M8)
 
@@ -557,12 +559,13 @@ same hardware serves graphics clients and the normal text console.
   reverse video and reverse-background fills, save/restore, insert/
   delete lines, circular scrolling, cursor visibility, all reset paths,
   print-run batching, arbitrary write chunking, and exact command-block
-  geometry.  The physical acceptance image is
-  `build-video-selftest/`, driven by `make smoke-hardware-video`;
-  the console image `build-console-selftest/` (HID input + V9958
-  output) is driven by `make smoke-hardware-console` and by
-  `tests/test_console_sim.py`; the operator confirms the documented pattern
-  and the visible monitor session.
+  geometry.  The V9958 diagnostic runs in the console-integration image
+  (`build-console-integration-selftest/`, work package 42d) with the
+  console sessions (HID input + V9958 output) the retired per-device
+  images carried; it is driven by
+  `make smoke-hardware-console-integration` and replayed by
+  `tests/test_console_acceptance.py`, and the operator confirms the
+  documented pattern and the visible monitor session.
 
 ## 8. Console drivers (build-selected)
 
@@ -635,14 +638,13 @@ Five distinct paths must not be confused:
   transcripts and `panic()`.  It never consults a console driver, so it
   works even when the selected console is HID/V9958.
 
-No console driver knows about the other implementations.  The console
-acceptance image `build-console-selftest/` boots `console-v9958-hid` and
-runs the unchanged M7 `monitor.zex` through that pair; `make
-smoke-hardware-console` validates the early-SIO boot transcript while
-the operator confirms the visible session.  The package-20 integration
-image `build-console-integration-selftest/` boots the same pair, runs the
-package-20 target diagnostic and the ESC `c` display-reset program
-(`tests/console/escc.c`, work package 42e), and is driven by
+No console driver knows about the other implementations.  The
+console-integration image `build-console-integration-selftest/` (which
+absorbed the console-binding image in work package 42d) boots
+`console-v9958-hid` and runs the unchanged M7 `monitor.zex` through that
+pair.  It runs the package-20 target diagnostic and the ESC `c`
+display-reset program (`tests/console/escc.c`, work package 42e), and is
+driven by
 `make smoke-hardware-console-integration` followed by the human monitor
 pass.  The `console-serial` variant is validated by `make
 console-serial-selftest` and `make smoke-hardware-console-serial`.
@@ -785,8 +787,10 @@ Host validation layers:
   SIO+IOC+HID+V9958 image replay against the V9958 peer (section 7),
   plus the character-path coverage that moved out of the retired
   `test_v9958_console.py`.
-- `make subsystem-selftest` / `make romfs-corrupt-selftest` – the
-  mechanism acceptance image and the corrupt-store image.
+- `make subsystem-selftest` – the mechanism acceptance image (its
+  `test_romfs_sim.py` replay also patches a store header in place to
+  prove the corrupt-store panic, which work package 42d folded out of
+  the retired corrupt-store image).
 - `make smoke-hardware-subsystem SERIAL_PORT=...` – driving the subsystem
   image: the five group `... selftest: OK` lines and the interactive
   monitor step (the tool sends `Q` and expects `monitor: exit status 0x`).

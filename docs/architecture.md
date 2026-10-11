@@ -2946,17 +2946,17 @@ The M8 acceptance images (`m8-ioc-selftest`, `m8-hid-selftest`,
 Mn-1 retention rule (work package 32). Their mechanism coverage now runs,
 on the current production boot path, in the subsystem-owned tests:
 `tests/target/ioc/ioc_test.c` with `tests/test_ioc_sim.py` (IOC command and
-bulk lanes, `make ioc-selftest`), `tests/target/hid/hid_test.c` with
-`tests/test_hid_sim.py` (HID text input and the missing/malformed IOC
-rollback rows, `make hid-selftest`, `make hid-noioc-selftest`,
-`make hid-badioc-selftest`), `tests/target/video/v9958_test.c` with
-`tests/test_v9958_sim.py` (V9958 init, renderer and the font-failure
-rollback, `make video-selftest`, `make video-fontfail-selftest`),
-`tests/target/console/console_test.c` with `tests/test_console_sim.py`
-(console binding, `make console-selftest`), and
+bulk lanes), `tests/target/hid/hid_test.c` with `tests/test_hid_sim.py`
+(HID text input and the missing/malformed IOC rollback rows),
+`tests/target/video/v9958_test.c` with `tests/test_v9958_sim.py` (V9958
+init, renderer and the font-failure rollback), and
 `tests/target/console/integration_test.c` with
 `tests/test_console_acceptance.py` (integration, the ESC `c` display
-reset and the build-selected production console).  The runtime-fallback
+reset and the build-selected production console).  Work package 42d
+merged the four device acceptance images into that one integration image
+(`make console-integration-selftest`), which every one of those replays
+boots, and folded the console-binding diagnostic into the integration
+diagnostic.  The runtime-fallback
 console matrix and `tests/test_console_fallback.py` were retired by work
 package 42e, which made the console a build-selected driver with its own
 serial variant (`tests/test_console_serial.py`,

@@ -397,8 +397,7 @@ class TestSubsystemSmokeMode(unittest.TestCase):
             + serial_smoke.SUBSYS_SYSCALL_OK
             + serial_smoke.SUBSYS_IRQ_OK
             + serial_smoke.SUBSYS_ROMFS_OK
-            + serial_smoke.SUBSYS_PROCESS_DONE
-            + serial_smoke.SUBSYS_LOADER_OK
+            + serial_smoke.SUBSYS_PROCESS_OK
             + b"ZephyrOS native monitor\r\n"
             + serial_smoke.SUBSYS_PROMPT
             + serial_smoke.SUBSYS_EXIT

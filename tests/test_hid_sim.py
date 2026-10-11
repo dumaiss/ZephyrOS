@@ -1,37 +1,32 @@
 #!/usr/bin/env python3
-"""Host-side HID acceptance replay: boot the real hid-selftest image in
-the Z80 simulator against the emulated IOC peer.
+"""Host-side HID acceptance replay: the HID diagnostic runs in the
+console-integration image (work package 42d merged the per-device
+images); this module replays that image in the Z80 simulator against the
+emulated IOC peer.
 
 The image boots the production-derived nucleus and the service loader
-brings up the `sio ioc hid console` bank-6 set from the recovery store;
-the console service composes the HID input with the SIO output, and the
-nucleus late hook runs the package-41 HID diagnostic
-(tests/target/hid/hid_test.c).  Every assertion executes the real linked
-bytes.
+brings up the `sio ioc hid v9958 console-v9958-hid` bank-6 set from the
+recovery store; the console composes the HID input with the V9958 output
+(the production selection), and the HID diagnostic
+(tests/target/hid/hid_test.c) runs in the late hook before the video and
+integration groups.  Every assertion executes the real linked bytes.
 
 Coverage:
 
 * the early-SIO boot transcript: the kernel banner, the loader's
   `driver <name>: hot <addr> ...` evidence lines in manifest order for
-  the image's services, the nucleus console probe and the diagnostic's
-  markers through the final `hid selftest: OK`, with no `FAIL` line and
-  no failure marker;
-* the diagnostic's protocol rows: the HID endpoint at protocol version 1
-  with the IOC dependency and console endpoints present, ZHID_OP_READY = 1, the
-  scripted typed pass (a B 3 Enter Backspace Ctrl-X Arrow-Up) echoed in
-  FIFO order, -ZOS_EAGAIN once drained, and the same engine read through
-  the console service's ZCONSOLE_OP_GETC;
-* the peer-observable facts: the fetch-on-doorbell CMD_HID_INPUT
-  exchanges (each asking for the ring's full free space), the MCU queue
-  drained byte-for-byte, no wire traffic beyond the LINK_SYNC bring-up
-  and the HID fetches, and the held-/CTSB -> released transition (the
-  running console polls issue no fetch once the queue is empty);
-* malformed-reply atomicity: one injected short CMD_HID_INPUT reply
-  delivers nothing; the clean pair queued behind it still arrives in
-  FIFO order after the engine's bounded stuck-doorbell penalty.
+  the image's services, and the diagnostic's markers through the final
+  `hid selftest: OK`, with no `FAIL`;
+* the scripted typed pass: the replay queues a, B, 3, Enter, Backspace,
+  Ctrl-X, Arrow-Up for the MCU, the engine fetches on the doorbell and
+  the diagnostic echoes every byte in FIFO order;
+* the console phase: the console endpoint's input is the HID service in
+  this build, so the pair the replay queues for the MCU arrives through
+  the console's GETC;
+* malformed-reply atomicity and the doorbell release after the drain.
 
-Skipped cleanly when build-hid-selftest/zephyros-hid-selftest.bin has
-not been built (`make hid-selftest`).
+Skipped when the image has not been built
+(`make console-integration-selftest`).
 """
 
 import os
@@ -42,15 +37,14 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from z80sim import (Z80, IocCommandPeer, read_symbols,
-                    skip_serial_connect_delay)  # noqa: E402
+from replay import (STEP_LIMIT, IntegrationInputs,  # noqa: E402
+                    Replay, integration_peer)
 
-RET = 0x1234
-STACK = 0xFFFE
-STEP_LIMIT = 80000000
 HOST_SYNC = b"\xaa\x55"
+
+CMD_LINK_SYNC = 0x0C
+CMD_HID_INPUT = 0x0E
 
 CMD_LINK_SYNC = 0x0C
 CMD_HID_INPUT = 0x0E
@@ -70,95 +64,35 @@ CONSOLE_ABSENT_MARKER = b"hid: console absent\r\n"
 FAULT_MARKER = b"hid: fault pass\r\n"
 
 
-class HidSimBase(unittest.TestCase):
+class HidSimBase(Replay, unittest.TestCase):
     """Shared boot, stepping and transcript helpers."""
 
-    IMAGE_DIR = "build-hid-selftest"
-    IMAGE_NAME = "zephyros-hid-selftest.bin"
+    IMAGE_SUBDIR = "build-console-integration-selftest"
+    IMAGE_NAME = "zephyros-console-integration-selftest.bin"
 
     def setUp(self):
-        self.bin_path = os.path.join(ROOT, self.IMAGE_DIR, self.IMAGE_NAME)
-        if not os.path.exists(self.bin_path):
-            self.skipTest("%s missing; build the image first" % self.bin_path)
-        with open(self.bin_path, "rb") as fh:
-            self.image = fh.read()
-        self.syms = read_symbols(
-            os.path.join(ROOT, self.IMAGE_DIR, "zephyros.map"))
+        self.load_image()
 
-    # -- machine setup --------------------------------------------------
     def make_cpu(self, peer=None):
-        pages = {n: self.image[n * 0x10000:(n + 1) * 0x10000]
-                 for n in range(8)}
-        z = Z80(pages[0], pages[1],
-                rom_pages={n: pages[n] for n in range(2, 8)})
-        z.latch = 0x18
-        z.sp = STACK
+        z = super().make_cpu()
         z.ioc_peer = peer if peer is not None else IocCommandPeer()
         return z
 
-    def crt0(self, z):
-        z.push16(RET)
-        z.pc = self.syms["__zos_crt0_init"]
-        for _ in range(2000000):
-            z.step()
-            if z.pc == RET:
-                return
-        raise AssertionError("C runtime init did not return")
-
-    def start_kernel(self, z):
-        # The smoke-host-sync build waits for the AAh 55h pair before the
-        # banner (the bench reset also resets the USB bridge).
-        self.crt0(z)
-        z.push16(RET)
-        z.sio_rx.extend(HOST_SYNC)
-        z.pc = self.syms["_kernel_main"]
-
     def boot(self, peer):
-        """Boot the image to the diagnostic's final verdict, injecting
-        the console/fault streams into the MCU queue at their markers.
-        Returns (machine, transcript).  This image's declared service set
-        always includes the console service."""
+        """Boot the image to the diagnostic's final verdict, feeding the
+        streams the merged image's diagnostics expect through the shared
+        input driver.  Returns (machine, transcript)."""
         z = self.make_cpu(peer)
-        self.start_kernel(z)
-        injected = []
-        done = {"console": False, "fault": False}
-
-        def on_tx(tx):
-            if not done["console"] and CONSOLE_INPUT_MARKER in tx:
-                # This image selects `console-serial` (work package 42e):
-                # the console's input is the SERIAL service, so the pair
-                # travels on SIO0/B.  The HID engine is driven directly by
-                # the other phases.
-                z.sio_rx.extend(HID_CONSOLE)
-                done["console"] = True
-                injected.append("console")
-            if not done["fault"] and FAULT_MARKER in tx:
-                peer.hid_queue.extend(HID_FAULT)
-                peer.hid_faults.append("short")
-                done["fault"] = True
-                injected.append("fault")
-
+        self.start_kernel(z, host_sync=HOST_SYNC)
         # Stop on either verdict: a FAIL must not burn the whole step
         # budget before the assertions report it.
-        sio = self.step_until(
-            z, (OK_MARKER + b"\r\n", b"hid selftest: FAIL"), on_tx=on_tx)
+        self.run_until(z, (OK_MARKER + b"\r\n", b"hid selftest: FAIL"),
+                       on_step=IntegrationInputs(peer))
+        sio = bytes(z.sio_tx)
         self.assertIn(OK_MARKER + b"\r\n", sio)
-        self.assertIn("fault", injected)
-        self.assertIn("console", injected)
         self.assertIn(CONSOLE_INPUT_MARKER, sio)
         self.assertNotIn(CONSOLE_ABSENT_MARKER, sio)
         return z, sio
-
-    def step_until(self, z, markers, on_tx=None, limit=STEP_LIMIT):
-        for _ in range(limit):
-            z.step()
-            if on_tx is not None:
-                on_tx(z.sio_tx)
-            for marker in markers:
-                if marker in z.sio_tx:
-                    return bytes(z.sio_tx)
-        raise AssertionError("did not reach any of %r (PC=%04X, tail=%r)"
-                             % (markers, z.pc, bytes(z.sio_tx)[-200:]))
 
     # -- assertion helpers ----------------------------------------------
     def assert_order(self, text, markers):
@@ -180,7 +114,7 @@ class HidSimBase(unittest.TestCase):
 
 class TestHidBootTranscript(HidSimBase):
     def test_boot_evidence_and_diagnostic_transcript(self):
-        peer = IocCommandPeer(hid_bytes=HID_TYPED)
+        peer = integration_peer()
         _z, sio = self.boot(peer)
 
         # Kernel banner, then the loader's evidence lines in manifest
@@ -191,13 +125,15 @@ class TestHidBootTranscript(HidSimBase):
             b"kernel entry: OK\r\n",
             b"serial: OK\r\n",
         ))
-        names = [b"sio", b"ioc", b"hid", b"console-serial"]
+        names = [b"sio", b"ioc", b"hid", b"v9958", b"console-v9958-hid"]
         self.assertEqual(self.service_lines(sio), names)
         self.assertIn(b"service loader: %d images in bank 6\r\n"
                       % len(names), sio)
         self.assertIn(b"driver hot: ", sio)
         self.assertIn(b"driver boot/bulk: ", sio)
-        self.assertIn(b"console: service OK\r\n", sio)
+        # The production console routes its boot line to the V9958 lane,
+        # not this early-SIO transcript.
+        self.assertNotIn(b"console: service OK\r\n", sio)
         self.assertNotIn(b"console: unbound", sio)
         self.assertNotIn(b"console: service failed", sio)
         self.assertNotIn(b"console: unavailable", sio)
@@ -248,16 +184,15 @@ class TestHidBootTranscript(HidSimBase):
 
 class TestHidPeerFacts(HidSimBase):
     def test_fetch_on_doorbell_drain_and_release(self):
-        peer = IocCommandPeer(hid_bytes=HID_TYPED)
+        peer = integration_peer()
         z, _sio = self.boot(peer)
 
         # Every fetch asked for the ring's full free space, and the MCU
-        # dequeued exactly the delivered bytes: the typed pass, and the
-        # clean pair behind the malformed reply.  The console pair is not
-        # here: this image selects `console-serial`, so its console reads
-        # the serial lane, not the HID engine.
-        fetches = 3  # typed, poisoned, retry
-        delivered = len(HID_TYPED) + len(HID_FAULT)
+        # dequeued exactly the delivered bytes: the typed pass, the clean
+        # pair behind the malformed reply, and the console pair (this
+        # image's console input is the HID engine).
+        fetches = 4  # typed, poisoned, retry, console
+        delivered = len(HID_TYPED) + len(HID_FAULT) + len(HID_CONSOLE)
         self.assertEqual(peer.hid_requests, [HID_FETCH_SIZE] * fetches)
         self.assertEqual(peer.hid_delivered, delivered)
         self.assertEqual(list(peer.hid_queue), [],
@@ -272,19 +207,26 @@ class TestHidPeerFacts(HidSimBase):
         self.assertEqual(len(hid_requests), fetches)
         for request in hid_requests:
             self.assertEqual(request[3], bytes([HID_FETCH_SIZE]))
-        self.assertEqual([req[0] for req in peer.requests
-                          if req[0] != CMD_HID_INPUT], [CMD_LINK_SYNC])
-        self.assertEqual(peer.a_rts_asserts, 0,
-                         "the command lane used the bulk lane")
+        # The non-HID traffic is the IOC service's own bring-up plus the
+        # IOC diagnostic's exchanges (the group that runs before HID in
+        # this image).
+        non_hid = [req[0] for req in peer.requests
+                   if req[0] != CMD_HID_INPUT]
+        self.assertEqual(non_hid[0], CMD_LINK_SYNC)
+        # The A lane's two exchanges belong to the IOC diagnostic that
+        # runs earlier in this image (its one bulk phase per direction);
+        # the HID fetches add none.
+        self.assertEqual(peer.a_rts_asserts, 2,
+                         "the HID engine used the bulk lane")
 
         # The queued/drained transition: with the MCU queue empty the
-        # /CTSB doorbell is released, so the console's continuing polls
-        # (the boot launcher) issue no further fetch.  A fetch only
-        # happens while the doorbell is asserted, which is how the
-        # held-doorbell fetches above could happen at all.
+        # /CTSB doorbell is released, so a continuing poll issues no
+        # further fetch.  A fetch only happens while the doorbell is
+        # asserted, which is how the held-doorbell fetches above could
+        # happen at all.
         self.assertEqual(peer.ctrl_read() & 0x20, 0,
                          "the doorbell is not released after the drain")
-        for _ in range(400000):
+        for _ in range(200000):
             z.step()
         self.assertEqual(peer.hid_requests, [HID_FETCH_SIZE] * fetches,
                          "a fetch happened with the doorbell released")

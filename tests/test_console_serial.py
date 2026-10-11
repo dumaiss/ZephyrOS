@@ -37,8 +37,9 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import romfspack  # noqa: E402
-from test_console_sim import BANNER, MONITOR_EXIT, PROMPT  # noqa: E402
-from test_console_acceptance import ConsoleReplayBase  # noqa: E402
+from replay import STEP_LIMIT  # noqa: E402
+from test_console_acceptance import (  # noqa: E402
+    BANNER, MONITOR_EXIT, PROMPT, ConsoleReplayBase)
 
 # The production set with the serial console, in manifest (load) order,
 # with the endpoint class each image registers.
@@ -56,11 +57,15 @@ LOADER_NO_IMAGE = b"service loader: console-serial.zmod: no image\r\n"
 MANIFEST_UNAVAILABLE = b"services: unavailable 0x05\r\n"
 CONSOLE_SERVICE_FAILED = b"console: service failed\r\n"
 
-STEP_LIMIT = 20000000
-
 
 class SerialBase(ConsoleReplayBase):
-    """Boot one `console-serial` image with the emulated peers."""
+    """Boot one `console-serial` image with the emulated peers.
+
+    Both images are smoke images: the kernel holds its banner until the
+    host sync sequence arrives (tools/serial_smoke.py sends it on every
+    open), so the replay preloads the same two bytes."""
+
+    HOST_SYNC = b"\xaa\x55"
 
     def setUp(self):
         if type(self) is SerialBase:

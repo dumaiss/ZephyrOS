@@ -1169,12 +1169,11 @@ REV13_FIXED_SYMBOLS = (
 # Cold (cold-half-resident) objects: their absence is not an error (an
 # object can be reclassified), but a symbol that exists and sits in the
 # fixed region is one.  The syscall gate clears the page field before
-# dispatching, so the dispatcher, the boot/idle path and the loader body
-# only ever run with P = 0 and live in the cold half.
+# dispatching, so the dispatcher and the boot/idle path only ever run
+# with P = 0 and live in the cold half.
 REV13_COLD_SYMBOLS = (
     "_kernel_main",
     "_kernel_syscall_dispatch",
-    "_module_loader_load",
     "_zos_ipc_dispatch",
 )
 

@@ -450,7 +450,10 @@ class TestBuiltArtifacts(unittest.TestCase):
         _p, stream = self._read("build-subsys-selftest/recovery.romfs")
         _header, entries = romfspack.parse_image(stream)
         names = {entry["name"]: entry for entry in entries}
-        _p, zmod = self._read("build/modules/sio.zmod")
+        # The store belongs to the image's own build: its service set
+        # (SIO + the serial console) is what the packer links each
+        # container against, so the canonical build's bytes differ.
+        _p, zmod = self._read("build-subsys-selftest/modules/sio.zmod")
         self.assertEqual(names["sio.zmod"]["payload"], zmod)
         cross = names["crosspage.bin"]
         self.assertEqual(cross["size"], 0xC040)

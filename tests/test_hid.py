@@ -170,16 +170,21 @@ class TestHidServiceArtifact(unittest.TestCase):
 
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
-        for target in ("hid-test:", "hid-selftest:"):
-            self.assertIn(target, makefile)
+        self.assertIn("hid-test:", makefile)
         self.assertIn("services/manifests/%.json", makefile)
         self.assertIn("hid.rel", makefile)
+        # The HID diagnostic runs in the console-integration image (work
+        # package 42d merged the per-device images); the table row links
+        # it and defines the group's guard.
         self.assertIn("ZOS_HID_SELFTEST", makefile)
+        index = makefile.index("ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)")
+        self.assertIn("$(BUILD)/hid_test.rel",
+                      makefile[index:index + 400])
+        self.assertIn("hid_test", makefile)
         # Which services an image boots is its manifest's service set.
-        self.assertIn("ZOS_SERVICES := sio ioc hid console-serial", makefile)
-        # Which services an image boots is its manifest's service set.
-        image_manifest = os.path.join(ROOT, "tests", "hid", "manifest.json")
-        self.assertIn('"name": "console-serial.zmod"', _read(image_manifest))
+        image_manifest = os.path.join(ROOT, "tests", "console",
+                                      "manifest-integration.json")
+        self.assertIn('"name": "hid.zmod"', _read(image_manifest))
 
     def test_production_map_has_no_linked_hid_symbols(self):
         if not os.path.exists(MAP):
