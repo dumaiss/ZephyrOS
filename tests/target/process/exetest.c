@@ -1,6 +1,6 @@
-/* ZephyrOS process acceptance program: zextest.
+/* KonaOS process acceptance program: exetest.
  *
- * Built as tests/subsys/zextest.zex (user/sdk/src/crt0.asm
+ * Built as tests/subsys/exetest.exe (user/sdk/src/crt0.asm
  * + this file + user/sdk/src/console.asm), stored in the subsystem
  * recovery image, and executed by the kernel as the child of the process
  * acceptance test.  It verifies, on target and in the host replay:
@@ -20,14 +20,14 @@
  * kernel symbols or SDCC's calling conventions across the ABI.
  */
 
-#include "zos.h"
+#include "kos.h"
 #include "process_selftest.h"
 
-/* Stack window: must match the zextest zex_program STACK=256 option. */
+/* Stack window: must match the exetest exe_program STACK=256 option. */
 #define ZT_STACK_TOP  0xE000u
 #define ZT_STACK_SIZE 256u
 
-/* Assembly helpers (tests/target/m6/zextest_entry.asm). */
+/* Assembly helpers (tests/target/m6/exetest_entry.asm). */
 extern unsigned int zt_get_sp(void);
 
 /* Uninitialized: the loader must zero this whole region. */
@@ -36,11 +36,11 @@ static unsigned char bss_probe[32];
 /* Initialized constant: must arrive from the packed image intact. */
 static const unsigned char ro_sentinel[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
 
-static const char bank_prefix[] = "zextest: bank=";
+static const char bank_prefix[] = "exetest: bank=";
 static const char pid_sep[] = " pid=";
 static const char line_end[] = "\r\n";
-static const char ok_line[] = "zextest: OK\r\n";
-static const char fail_prefix[] = "zextest: FAIL 0x";
+static const char ok_line[] = "exetest: OK\r\n";
+static const char fail_prefix[] = "exetest: FAIL 0x";
 static const char hex_digits[] = "0123456789ABCDEF";
 
 static unsigned char scratch_char;
@@ -55,33 +55,33 @@ static void zt_fail(unsigned char code)
 	scratch_char = hex_digits[code & 0x0Fu];
 	console_write(&scratch_char, 1);
 	console_write(line_end, sizeof(line_end) - 1);
-	exit(ZOS_PCST_ZEXTEST_FAIL | code);
+	exit(KOS_PCST_EXETEST_FAIL | code);
 }
 
 static void zt_write_str(const char *text, unsigned int len)
 {
 	if (console_write(text, len) != (int)len) {
-		zt_fail(ZOS_PCST_ZT_FAIL_WRITE);
+		zt_fail(KOS_PCST_ZT_FAIL_WRITE);
 	}
 }
 
 int main(void)
 {
-	struct zos_info_record info;
+	struct kos_info_record info;
 	unsigned char i;
 	unsigned int sp;
 
 	/* 1. BSS zero. */
 	for (i = 0; i < sizeof(bss_probe); ++i) {
 		if (bss_probe[i] != 0) {
-			zt_fail(ZOS_PCST_ZT_FAIL_BSS);
+			zt_fail(KOS_PCST_ZT_FAIL_BSS);
 		}
 	}
 
 	/* 2. Image copy. */
 	if (ro_sentinel[0] != 0xDEu || ro_sentinel[1] != 0xADu ||
 	    ro_sentinel[2] != 0xBEu || ro_sentinel[3] != 0xEFu) {
-		zt_fail(ZOS_PCST_ZT_FAIL_IMAGE);
+		zt_fail(KOS_PCST_ZT_FAIL_IMAGE);
 	}
 
 	/* 3. Stack bounds: SP must be strictly inside the reserved window
@@ -89,17 +89,17 @@ int main(void)
 	sp = zt_get_sp();
 	if (sp >= ZT_STACK_TOP ||
 	    sp < (unsigned int)(ZT_STACK_TOP - ZT_STACK_SIZE + 4u)) {
-		zt_fail(ZOS_PCST_ZT_FAIL_STACK);
+		zt_fail(KOS_PCST_ZT_FAIL_STACK);
 	}
 
 	/* 4. GETINFO record. */
-	if (getinfo(&info) != ZOS_GETINFO_SIZE) {
-		zt_fail(ZOS_PCST_ZT_FAIL_GETINFO);
+	if (getinfo(&info) != KOS_GETINFO_SIZE) {
+		zt_fail(KOS_PCST_ZT_FAIL_GETINFO);
 	}
-	if (info.size != ZOS_GETINFO_SIZE || info.abi != ZOS_GETINFO_ABI ||
+	if (info.size != KOS_GETINFO_SIZE || info.abi != KOS_GETINFO_ABI ||
 	    info.bank > 6u || info.pid > 6u ||
-	    (info.flags & ZOS_PROCESS_FLAG_KERNEL_PARENT) == 0u) {
-		zt_fail(ZOS_PCST_ZT_FAIL_GETINFO);
+	    (info.flags & KOS_PROCESS_FLAG_KERNEL_PARENT) == 0u) {
+		zt_fail(KOS_PCST_ZT_FAIL_GETINFO);
 	}
 
 	/* 5. Normal-console output through the syscall. */
@@ -113,6 +113,6 @@ int main(void)
 	zt_write_str(ok_line, sizeof(ok_line) - 1);
 
 	/* 6. Known exit status carrying the bank that executed this image. */
-	exit(ZOS_PCST_ZEXTEST_PASS | info.bank);
+	exit(KOS_PCST_EXETEST_PASS | info.bank);
 	return 0; /* unreachable */
 }

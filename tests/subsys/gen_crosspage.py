@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the deterministic cross-page pattern asset (test artifact).
 
-The asset is ZOS_RFST_CROSSPAGE_SIZE (0xC040) bytes:
+The asset is KOS_RFST_CROSSPAGE_SIZE (0xC040) bytes:
 
     byte i = ((i & 0xFF) ^ ((i >> 8) & 0xFF)) & 0xFF
 

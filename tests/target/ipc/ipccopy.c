@@ -1,9 +1,9 @@
-/* ZephyrOS IPC acceptance: the caller-buffer probe (test artifact).
+/* KonaOS IPC acceptance: the caller-buffer probe (test artifact).
  *
  * The ipc-selftest image boots this program; it measures the chained
  * 512-byte read and a single descriptor copy_out for every caller-buffer
  * location the correction-01 copy paths cover, then starts the promoted
- * conformance client (/system/ipc.zex) and folds its verdict into its own
+ * conformance client (/system/ipc.exe) and folds its verdict into its own
  * line.
  *
  * The five addresses are the correction's matrix:
@@ -24,11 +24,11 @@
  * The program is linked with its code above the buffer window
  * (LOWBASE=0x0300, CODEBASE=0x0344, NO_CRT0), so 0100h-02FFh is a plain
  * 512-byte buffer
- * with no code or data of this program in it: that is the only way a ZEX
+ * with no code or data of this program in it: that is the only way a EXE
  * can exercise the caller window itself.
  */
 
-#include "zos.h"
+#include "kos.h"
 
 #include "ipc_test.h"
 
@@ -45,7 +45,7 @@
 #define PROBE_PATTERN_BASE 0x80u
 #define PROBE_PATTERN_MASK 0x3Fu
 
-static struct zos_ipc_request req;
+static struct kos_ipc_request req;
 
 static uint8_t echo_handle;
 static uint8_t vfs_handle;
@@ -56,7 +56,7 @@ static uint8_t irqx_handle;
 static unsigned int checks;
 static unsigned int failures;
 
-static const char client_path[] = "/system/ipc.zex";
+static const char client_path[] = "/system/ipc.exe";
 
 static void check(const char *label, int ok)
 {
@@ -90,14 +90,14 @@ static void frame_prepare(uint8_t op, uint8_t flags)
 {
 	req.frame.op = op;
 	req.frame.flags = flags;
-	req.frame.desc = ZOS_IPC_DESC_NONE;
+	req.frame.desc = KOS_IPC_DESC_NONE;
 	req.frame.arg0 = 0u;
 	req.frame.arg1 = 0u;
 	req.frame.status = 0;
-	memset(req.frame.payload, 0, ZOS_IPC_PAYLOAD_SIZE);
+	memset(req.frame.payload, 0, KOS_IPC_PAYLOAD_SIZE);
 	req.buffer = (void *)0;
 	req.length = 0u;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 }
 
 static int ipccopy_call(uint8_t handle, uint8_t op, uint8_t flags, void *buffer,
@@ -121,7 +121,7 @@ static int read_chain(void *buffer)
 	req.frame.payload[1] = IPC_WORD_HI(IPC_BLOCK_BYTES);
 	req.buffer = buffer;
 	req.length = IPC_BLOCK_BYTES;
-	req.direction = ZOS_IPC_DESC_OUT;
+	req.direction = KOS_IPC_DESC_OUT;
 	return call(vfs_handle, &req);
 }
 
@@ -135,7 +135,7 @@ static int read_single(void *buffer)
 	req.frame.payload[1] = IPC_WORD_HI(IPC_BLOCK_BYTES);
 	req.buffer = buffer;
 	req.length = IPC_BLOCK_BYTES;
-	req.direction = ZOS_IPC_DESC_OUT;
+	req.direction = KOS_IPC_DESC_OUT;
 	return call(ioc_handle, &req);
 }
 
@@ -148,7 +148,7 @@ static int forged_at(void *buffer)
 	req.frame.payload[1] = 0u;
 	req.buffer = buffer;
 	req.length = 16u;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 	return call(con_handle, &req);
 }
 
@@ -162,7 +162,7 @@ static int con_slow_one(void)
 	req.frame.arg1 = 16u;
 	req.buffer = (void *)PROBE_CALLER_WINDOW;
 	req.length = 16u;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 	return call(con_handle, &req);
 }
 
@@ -175,7 +175,7 @@ static int irqx_copies(void *buffer)
 	req.frame.arg1 = 4u;
 	req.buffer = buffer;
 	req.length = IRQX_COPY_BYTES;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 	return call(irqx_handle, &req);
 }
 
@@ -265,7 +265,7 @@ static void case_at(unsigned int address, char read_code, char single_code,
 	MEASURE(single_code, rc = read_single(buffer));
 	check(label, rc == (int)IPC_BLOCK_BYTES &&
 		     ioc_pattern_ok(buffer, IPC_BLOCK_BYTES));
-	check("forged-refused", forged_at(buffer) == -ZOS_EINVAL);
+	check("forged-refused", forged_at(buffer) == -KOS_EINVAL);
 }
 
 void ipc_copy_entry(void)
@@ -298,8 +298,8 @@ void ipc_copy_entry(void)
 	 * the same address.  ECHO_DESC only reports the captured id, so no
 	 * kernel byte is read or written by this check. */
 	rc = ipccopy_call(echo_handle, IPC_OP_ECHO_DESC, 0u, (void *)0xE100u, 16u,
-		  ZOS_IPC_DESC_IN);
-	check("common-accepted", rc >= 0 && rc != (int)ZOS_IPC_DESC_NONE);
+		  KOS_IPC_DESC_IN);
+	check("common-accepted", rc >= 0 && rc != (int)KOS_IPC_DESC_NONE);
 
 	/* The driver-side slow case: the caller buffer is in the window
 	 * (path A as an address), so only the driver's out-of-range target

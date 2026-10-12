@@ -6,8 +6,8 @@
 	.globl irq_vector_page, irq_vector_guard, irq_ff_unexpected
 
 	.area _IRQ_VECTOR (ABS)
-	.org ZOS_IRQ_VECTOR_BASE
+	.org KOS_IRQ_VECTOR_BASE
 irq_vector_page::
 	.ds	0x00FF
 	.dw	irq_ff_unexpected
-irq_vector_guard = ZOS_IRQ_VECTOR_BASE + 0x0100
+irq_vector_guard = KOS_IRQ_VECTOR_BASE + 0x0100

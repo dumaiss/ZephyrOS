@@ -1,4 +1,4 @@
-/* ZephyrOS namespace acceptance: the `nsdev` driver's boot segment
+/* KonaOS namespace acceptance: the `nsdev` driver's boot segment
  * (test artifact).
  *
  * Boot-tier code runs once through the mode-10 gate with Q = 6

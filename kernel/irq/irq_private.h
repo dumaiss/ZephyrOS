@@ -1,4 +1,4 @@
-/* ZephyrOS kernel-private interrupt-registry interface (kernel/irq).
+/* KonaOS kernel-private interrupt-registry interface (kernel/irq).
  *
  * The driver-facing interrupt contract is kernel/include/irq_types.h: the
  * `irq_source_t`/`irq_handler_t` types, the logical source enum, and the
@@ -13,8 +13,8 @@
  * owning path.
  */
 
-#ifndef ZEPHYROS_KERNEL_IRQ_PRIVATE_H
-#define ZEPHYROS_KERNEL_IRQ_PRIVATE_H
+#ifndef KONAOS_KERNEL_IRQ_PRIVATE_H
+#define KONAOS_KERNEL_IRQ_PRIVATE_H
 
 #include "irq_types.h"
 
@@ -52,4 +52,4 @@ uint8_t irq_arch_lock(void);
 void irq_arch_unlock(uint8_t enabled);
 void irq_arch_init(void);
 
-#endif /* ZEPHYROS_KERNEL_IRQ_PRIVATE_H */
+#endif /* KONAOS_KERNEL_IRQ_PRIVATE_H */

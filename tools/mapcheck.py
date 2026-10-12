@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ZephyrOS map/layout checker (through M10).
+"""KonaOS map/layout checker (through M10).
 
 Validates the sdldz80 map against the implemented mode 10/11 memory
 ownership contract (see docs/memory.md):
@@ -15,7 +15,7 @@ ownership contract (see docs/memory.md):
 The two bank-7 runtime data bases are derived, not fixed: the probe link
 measures the runtime-data size (`l__DATA + l__INITIALIZED`) and the
 exclusive end of the linked cold code (`_WINDOW`); the fixed data base is
-`align_down(ZOS_DRIVER_STACK_BASE - data_size, 512)` and the cold data
+`align_down(KOS_DRIVER_STACK_BASE - data_size, 512)` and the cold data
 base is `align_up(window_code_end, 512)`, straight after the code.
 
 M3 adds placement checks for the device registry, console driver, static
@@ -35,7 +35,7 @@ table and empty areas are accepted when their zero-length placement address
 lies inside the expected region.
 
 Usage:
-    mapcheck.py [--production] <zephyros.map>
+    mapcheck.py [--production] <konaos.map>
                 [platform/zephyr80/private/memory.inc
                  [platform/zephyr80/private/irq.inc]]
 
@@ -54,7 +54,7 @@ The `geometry` commands implement the two-pass bank-7 build.  The
 boundary is placed; a fixed placeholder could constrain kernel growth).
 The `derive` mode measures the exclusive end of the fixed loadable areas
 and of `_WINDOW` in the probe-link map, derives the fixed data base as
-`align_down(ZOS_DRIVER_STACK_BASE - data_size, 512)` and the cold data
+`align_down(KOS_DRIVER_STACK_BASE - data_size, 512)` and the cold data
 base as `align_up(window_code_end, 512)`, and writes both the small
 include consumed by kernel/memory/bank7_end.asm and (when requested) a
 full memory.inc variant for the layout tools.  The derived values are
@@ -124,7 +124,7 @@ BANK7_TOP = BANK7_RUNTIME_END
 STACK_BASE = 0xFF00
 MEM_TOP = 0x10000
 # Default when the caller passes no generated include; the build's
-# include carries ZOS_GATE_STACK_SIZE (platform/zephyr80/private/memory.inc).
+# include carries KOS_GATE_STACK_SIZE (platform/zephyr80/private/memory.inc).
 GATE_STACK_SIZE = 384
 ROMFS_STAGING_SIZE = 0x80
 ROM_ACCESS_BASE = 0xEF00
@@ -183,8 +183,8 @@ def load_residency(path):
     classified, but the production linker script does not list them)."""
     with open(path) as handle:
         data = json.load(handle)
-    if data.get("format") != "zos-residency/1":
-        raise MapError("%s is not a zos-residency/1 file" % path)
+    if data.get("format") != "kos-residency/1":
+        raise MapError("%s is not a kos-residency/1 file" % path)
     tiers = {}
     for entry in data.get("objects", []):
         name = entry.get("object")
@@ -337,25 +337,25 @@ def apply_layout(values, source=None):
     global FIXED_STACKS_BYTES, FIXED_ROOM_BYTES
     global ROMFS_STAGING_SIZE, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
     global COMMON_CEILING
-    PAGE_ZERO_END = values["ZOS_PAGE_ZERO_END"]
-    RESET_TOP = values["ZOS_RESET_TOP"]
-    BANK7_BASE = values["ZOS_BANK7_BASE"]
-    COMMON_BASE = values["ZOS_COMMON_BASE"]
-    STACK_BASE = values["ZOS_COMMON_STACK_BASE"]
-    BANK7_RUNTIME_END = values["ZOS_BANK7_RUNTIME_END"]
+    PAGE_ZERO_END = values["KOS_PAGE_ZERO_END"]
+    RESET_TOP = values["KOS_RESET_TOP"]
+    BANK7_BASE = values["KOS_BANK7_BASE"]
+    COMMON_BASE = values["KOS_COMMON_BASE"]
+    STACK_BASE = values["KOS_COMMON_STACK_BASE"]
+    BANK7_RUNTIME_END = values["KOS_BANK7_RUNTIME_END"]
     BANK7_TOP = BANK7_RUNTIME_END
-    COMMON_CODE_END = values["ZOS_COMMON_CODE_END"]
+    COMMON_CODE_END = values["KOS_COMMON_CODE_END"]
     # The revision-13 split, the two stack reservations and the two-data-base
     # geometry are build-time architecture constants; the generated include
     # always carries them.
-    require_key(values, "ZOS_REV13_WINDOW_BASE", source)
-    require_key(values, "ZOS_DRIVER_STACK_BASE", source)
-    require_key(values, "ZOS_DRIVER_STACK_TOP", source)
-    require_key(values, "ZOS_DRIVER_STACK_SIZE", source)
-    WINDOW_BASE = values["ZOS_REV13_WINDOW_BASE"]
-    DRIVER_STACK_BASE = values["ZOS_DRIVER_STACK_BASE"]
-    DRIVER_STACK_TOP = values["ZOS_DRIVER_STACK_TOP"]
-    DRIVER_STACK_SIZE = values["ZOS_DRIVER_STACK_SIZE"]
+    require_key(values, "KOS_REV13_WINDOW_BASE", source)
+    require_key(values, "KOS_DRIVER_STACK_BASE", source)
+    require_key(values, "KOS_DRIVER_STACK_TOP", source)
+    require_key(values, "KOS_DRIVER_STACK_SIZE", source)
+    WINDOW_BASE = values["KOS_REV13_WINDOW_BASE"]
+    DRIVER_STACK_BASE = values["KOS_DRIVER_STACK_BASE"]
+    DRIVER_STACK_TOP = values["KOS_DRIVER_STACK_TOP"]
+    DRIVER_STACK_SIZE = values["KOS_DRIVER_STACK_SIZE"]
     if WINDOW_BASE != REV13_WINDOW_SPLIT:
         raise MapError("the mode-11 window base is %04Xh, expected %04Xh"
                        % (WINDOW_BASE, REV13_WINDOW_SPLIT))
@@ -367,47 +367,47 @@ def apply_layout(values, source=None):
                           WINDOW_BASE))
     # The common ceiling is a build-time architecture constant; the
     # generated include always carries it.
-    require_key(values, "ZOS_COMMON_CEILING", source)
-    COMMON_CEILING = values["ZOS_COMMON_CEILING"]
-    IRQ_ISR_STACK_BASE = values["ZOS_IRQ_ISR_STACK_BASE"]
-    IRQ_ISR_STACK_TOP = values["ZOS_IRQ_ISR_STACK_TOP"]
-    IRQ_ISR_STACK_SIZE = values["ZOS_IRQ_ISR_STACK_SIZE"]
-    GATE_STACK_SIZE = values["ZOS_GATE_STACK_SIZE"]
+    require_key(values, "KOS_COMMON_CEILING", source)
+    COMMON_CEILING = values["KOS_COMMON_CEILING"]
+    IRQ_ISR_STACK_BASE = values["KOS_IRQ_ISR_STACK_BASE"]
+    IRQ_ISR_STACK_TOP = values["KOS_IRQ_ISR_STACK_TOP"]
+    IRQ_ISR_STACK_SIZE = values["KOS_IRQ_ISR_STACK_SIZE"]
+    GATE_STACK_SIZE = values["KOS_GATE_STACK_SIZE"]
     # The bank-7 geometry (fixed data base, cold data base) is derived per
     # image and carried by the generated memory include.  It is required:
     # a missing key must fail loudly rather than validate against a
     # retired boundary.
-    require_key(values, "ZOS_WINDOW_DATA_BASE", source)
-    require_key(values, "ZOS_DATA_BASE", source)
-    WINDOW_DATA_BASE = values["ZOS_WINDOW_DATA_BASE"]
-    BANK7_DATA_ALIGN = values["ZOS_BANK7_DATA_ALIGN"]
+    require_key(values, "KOS_WINDOW_DATA_BASE", source)
+    require_key(values, "KOS_DATA_BASE", source)
+    WINDOW_DATA_BASE = values["KOS_WINDOW_DATA_BASE"]
+    BANK7_DATA_ALIGN = values["KOS_BANK7_DATA_ALIGN"]
     if not (WINDOW_BASE <= WINDOW_DATA_BASE <= BANK7_RUNTIME_END):
         raise MapError("window data base %04Xh is outside %04Xh-%04Xh"
                        % (WINDOW_DATA_BASE, WINDOW_BASE,
                           BANK7_RUNTIME_END))
     # The fixed-core ledger fields travel with the geometry so both ledger
-    # printers (tools/pack_image.py, tools/zmodpack.py) show one truth.
-    for name in ("ZOS_FIXED_CODE_END", "ZOS_FIXED_REQUIRED_BYTES",
-                 "ZOS_FIXED_OVERFLOW_BYTES", "ZOS_FIXED_STACKS_BYTES",
-                 "ZOS_FIXED_ROOM_BYTES"):
+    # printers (tools/pack_image.py, tools/modpack.py) show one truth.
+    for name in ("KOS_FIXED_CODE_END", "KOS_FIXED_REQUIRED_BYTES",
+                 "KOS_FIXED_OVERFLOW_BYTES", "KOS_FIXED_STACKS_BYTES",
+                 "KOS_FIXED_ROOM_BYTES"):
         require_key(values, name, source)
     # Fixed-core ledger fields (the derived include carries them; a
     # synthetic map carries no per-object attribution and reports an
     # empty overflow).
-    FIXED_CODE_END = values["ZOS_FIXED_CODE_END"]
-    FIXED_REQUIRED_BYTES = values["ZOS_FIXED_REQUIRED_BYTES"]
-    FIXED_OVERFLOW_BYTES = values["ZOS_FIXED_OVERFLOW_BYTES"]
-    FIXED_STACKS_BYTES = values["ZOS_FIXED_STACKS_BYTES"]
-    FIXED_ROOM_BYTES = values["ZOS_FIXED_ROOM_BYTES"]
+    FIXED_CODE_END = values["KOS_FIXED_CODE_END"]
+    FIXED_REQUIRED_BYTES = values["KOS_FIXED_REQUIRED_BYTES"]
+    FIXED_OVERFLOW_BYTES = values["KOS_FIXED_OVERFLOW_BYTES"]
+    FIXED_STACKS_BYTES = values["KOS_FIXED_STACKS_BYTES"]
+    FIXED_ROOM_BYTES = values["KOS_FIXED_ROOM_BYTES"]
     # The fixed core's data starts at the derived base; the cold half's
     # data starts at the derived window data base.
-    DATA_BASE = values["ZOS_DATA_BASE"]
+    DATA_BASE = values["KOS_DATA_BASE"]
     if not (BANK7_BASE < DATA_BASE <= DRIVER_STACK_BASE):
         raise MapError("fixed data base %04Xh is outside the fixed core"
                        % DATA_BASE)
-    ROMFS_STAGING_SIZE = values["ZOS_ROMFS_STAGING_SIZE"]
-    ROM_ACCESS_BASE = values["ZOS_ROM_ACCESS_BASE"]
-    ROM_ACCESS_SIZE = values["ZOS_ROM_ACCESS_SIZE"]
+    ROMFS_STAGING_SIZE = values["KOS_ROMFS_STAGING_SIZE"]
+    ROM_ACCESS_BASE = values["KOS_ROM_ACCESS_BASE"]
+    ROM_ACCESS_SIZE = values["KOS_ROM_ACCESS_SIZE"]
     OWNED_AREAS = {
         "_CODE": (BANK7_BASE, WINDOW_BASE),
         "_HOME": (BANK7_BASE, WINDOW_BASE),
@@ -509,8 +509,8 @@ def derive_geometry(map_text, values,
     `align_up(window_code_end, 512)` - code and data sit back to back.
     Raises MapError when either region's content does not fit."""
     areas, symbols = parse_map(map_text)
-    granule = values["ZOS_BANK7_DATA_ALIGN"]
-    fixed_top = values["ZOS_DRIVER_STACK_BASE"]
+    granule = values["KOS_BANK7_DATA_ALIGN"]
+    fixed_top = values["KOS_DRIVER_STACK_BASE"]
     data_size = runtime_data_size(areas, symbols)
     fixed_code_end = loadable_end(areas, symbols, FIXED_LOADABLE_AREAS)
     if data_size > fixed_top - BANK7_BASE:
@@ -526,7 +526,7 @@ def derive_geometry(map_text, values,
     window_code_end = loadable_end(areas, symbols, ("_WINDOW",))
     window_data_size = area_sizes(areas, symbols,
                                   ("_WINDOW_DATA",))["_WINDOW_DATA"]
-    top = values["ZOS_BANK7_RUNTIME_END"]
+    top = values["KOS_BANK7_RUNTIME_END"]
     window_data_base = align_up(window_code_end, granule)
     if window_data_base > top or \
             window_data_size > top - window_data_base:
@@ -535,7 +535,7 @@ def derive_geometry(map_text, values,
             "%04Xh-%04Xh" % (window_code_end, window_data_size,
                              REV13_WINDOW_SPLIT, top - 1))
     common = area_sizes(areas, symbols, COMMON_AREAS)
-    stacks = values["ZOS_DRIVER_STACK_SIZE"] + values["ZOS_IRQ_ISR_STACK_SIZE"]
+    stacks = values["KOS_DRIVER_STACK_SIZE"] + values["KOS_IRQ_ISR_STACK_SIZE"]
     if fixed_required_bytes is None:
         fixed_required_bytes = fixed_code_end - BANK7_BASE
     if fixed_overflow_bytes is None:
@@ -576,14 +576,14 @@ def format_probe_geometry_inc():
     return ("; Generated by tools/mapcheck.py geometry -- do not edit.\n"
             "; Probe-link geometry: the probe image places no boundary; the\n"
             "; derive step measures the loadable areas in its map.\n"
-            "ZOS_KERNEL_CODE_END = 0x0000\n")
+            "KOS_KERNEL_CODE_END = 0x0000\n")
 
 
 def format_geometry_inc(geometry):
     lines = [
         "; Generated by tools/mapcheck.py geometry -- do not edit.",
         "; Bank-7 geometry for kernel/memory/bank7_end.asm.",
-        "ZOS_KERNEL_CODE_END = 0x%04X" % geometry["kernel_code_end"],
+        "KOS_KERNEL_CODE_END = 0x%04X" % geometry["kernel_code_end"],
     ]
     return "\n".join(lines) + "\n"
 
@@ -591,20 +591,20 @@ def format_geometry_inc(geometry):
 def format_memory_variant(memory_inc_text, geometry):
     """Full memory.inc copy with the derived geometry declarations."""
     replacements = {
-        "ZOS_KERNEL_CODE_END": "0x%04X" % geometry["kernel_code_end"],
-        "ZOS_FIXED_CODE_END": "0x%04X" % geometry["fixed_code_end"],
-        "ZOS_DATA_BASE": "0x%04X" % geometry["data_base"],
-        "ZOS_DATA_SIZE": str(geometry["data_size"]),
-        "ZOS_FIXED_REQUIRED_BYTES": str(geometry["fixed_required_bytes"]),
-        "ZOS_FIXED_OVERFLOW_BYTES": str(geometry["fixed_overflow_bytes"]),
-        "ZOS_FIXED_STACKS_BYTES": str(geometry["fixed_stacks_bytes"]),
-        "ZOS_FIXED_ROOM_BYTES": str(geometry["fixed_room_bytes"]),
-        "ZOS_COMMON_CODE_SIZE": str(geometry["common_code_size"]),
-        "ZOS_COMMON_DATA_SIZE": str(geometry["common_data_size"]),
-        "ZOS_REV13_WINDOW_BASE": "0x%04X" % geometry["window_split"],
-        "ZOS_WINDOW_CODE_END": "0x%04X" % geometry["window_code_end"],
-        "ZOS_WINDOW_DATA_BASE": "0x%04X" % geometry["window_data_base"],
-        "ZOS_WINDOW_DATA_SIZE": str(geometry["window_data_size"]),
+        "KOS_KERNEL_CODE_END": "0x%04X" % geometry["kernel_code_end"],
+        "KOS_FIXED_CODE_END": "0x%04X" % geometry["fixed_code_end"],
+        "KOS_DATA_BASE": "0x%04X" % geometry["data_base"],
+        "KOS_DATA_SIZE": str(geometry["data_size"]),
+        "KOS_FIXED_REQUIRED_BYTES": str(geometry["fixed_required_bytes"]),
+        "KOS_FIXED_OVERFLOW_BYTES": str(geometry["fixed_overflow_bytes"]),
+        "KOS_FIXED_STACKS_BYTES": str(geometry["fixed_stacks_bytes"]),
+        "KOS_FIXED_ROOM_BYTES": str(geometry["fixed_room_bytes"]),
+        "KOS_COMMON_CODE_SIZE": str(geometry["common_code_size"]),
+        "KOS_COMMON_DATA_SIZE": str(geometry["common_data_size"]),
+        "KOS_REV13_WINDOW_BASE": "0x%04X" % geometry["window_split"],
+        "KOS_WINDOW_CODE_END": "0x%04X" % geometry["window_code_end"],
+        "KOS_WINDOW_DATA_BASE": "0x%04X" % geometry["window_data_base"],
+        "KOS_WINDOW_DATA_SIZE": str(geometry["window_data_size"]),
     }
     seen = set()
     lines = []
@@ -627,12 +627,12 @@ def apply_irq_layout(values):
     """Apply IM2 vector/transition declarations from irq.inc."""
     global IRQ_VECTOR_BASE, IRQ_VECTOR_SIZE, IRQ_STATE_BASE
     global IRQ_STACK_BASE, IRQ_STACK_TOP, IRQ_STACK_SIZE
-    IRQ_VECTOR_BASE = values.get("ZOS_IRQ_VECTOR_BASE", IRQ_VECTOR_BASE)
-    IRQ_VECTOR_SIZE = values.get("ZOS_IRQ_VECTOR_SIZE", IRQ_VECTOR_SIZE)
-    IRQ_STATE_BASE = values.get("ZOS_IRQ_STATE_BASE", IRQ_STATE_BASE)
-    IRQ_STACK_BASE = values.get("ZOS_IRQ_STACK_BASE", IRQ_STACK_BASE)
-    IRQ_STACK_TOP = values.get("ZOS_IRQ_STACK_TOP", IRQ_STACK_TOP)
-    IRQ_STACK_SIZE = values.get("ZOS_IRQ_STACK_SIZE", IRQ_STACK_SIZE)
+    IRQ_VECTOR_BASE = values.get("KOS_IRQ_VECTOR_BASE", IRQ_VECTOR_BASE)
+    IRQ_VECTOR_SIZE = values.get("KOS_IRQ_VECTOR_SIZE", IRQ_VECTOR_SIZE)
+    IRQ_STATE_BASE = values.get("KOS_IRQ_STATE_BASE", IRQ_STATE_BASE)
+    IRQ_STACK_BASE = values.get("KOS_IRQ_STACK_BASE", IRQ_STACK_BASE)
+    IRQ_STACK_TOP = values.get("KOS_IRQ_STACK_TOP", IRQ_STACK_TOP)
+    IRQ_STACK_SIZE = values.get("KOS_IRQ_STACK_SIZE", IRQ_STACK_SIZE)
 
 
 # Owned areas and their allowed placement range.  Fixed-core sections must
@@ -656,12 +656,12 @@ OWNED_AREAS = {
 # after a mapping change, must be common-resident.
 COMMON_ROUTINES = (
     "_boot_common_entry",
-    "__zos_crt0_init",
-    "__zos_mode_fault",
-    "zos_enter_os_mode",
-    "zos_leave_os_mode",
-    "zos_os_continuation",
-    "zos_syscall_entry",
+    "__kos_crt0_init",
+    "__kos_mode_fault",
+    "kos_enter_os_mode",
+    "kos_leave_os_mode",
+    "kos_os_continuation",
+    "kos_syscall_entry",
     "_platform_memctl_read",
     "_platform_memctl_write",
     "_platform_bank_get",
@@ -680,11 +680,11 @@ COMMON_ROUTINES = (
     # M6: process launch/resume/trap and the application-bank copy gate
     # all switch the memory mapping; the page-zero vector is copied into
     # process banks from common data.
-    "_zos_process_launch",
-    "_zos_process_resume",
-    "zos_process_return_trap",
-    "_zos_process_page_zero_vector",
-    "_zos_bank_copy",
+    "_kos_process_launch",
+    "_kos_process_resume",
+    "kos_process_return_trap",
+    "_kos_process_page_zero_vector",
+    "_kos_bank_copy",
 )
 
 # Common-resident only if the image links them.  Same reason as above, but
@@ -706,15 +706,15 @@ COMMON_ONLY_SYMBOLS = (
     # mode 10 selected over bank 6, where bank 7 is unmapped; its code,
     # transition state and the loader's upcall request block must live in
     # common memory.
-    "_zos_driver_run_boot",
-    "zos_driver_boot_entry",
-    "zos_driver_boot_saved_latch",
-    "zos_driver_boot_saved_iff",
-    "_zos_driver_upcall_block",
+    "_kos_driver_run_boot",
+    "kos_driver_boot_entry",
+    "kos_driver_boot_saved_latch",
+    "kos_driver_boot_saved_iff",
+    "_kos_driver_upcall_block",
 )
 
 # Bank-7 internal routines (visible only while mode 11 is active).
-BANK7_ROUTINES = ("zos_syscall_dispatch", "_irq_dispatch")
+BANK7_ROUTINES = ("kos_syscall_dispatch", "_irq_dispatch")
 
 # M3-era device registry: retired in package 42b.  The registry, the
 # module loader that answered class queries from it and the IOC class shim
@@ -742,14 +742,14 @@ PRODUCTION_FORBIDDEN = (
     "_m3_",
     "_m4_selftest",
     "_m4_fixture",
-    "_zmod_fixture",
+    "_mod_fixture",
     "_z4_fixture",
     "_z4_module_boot",
-    "_zmod_catalog",
+    "_mod_catalog",
     "_target_test",
-    "_zos_run_",
-    "_zos_target_test_",
-    "_zos_ctc0_",
+    "_kos_run_",
+    "_kos_target_test_",
+    "_kos_ctc0_",
     "_platform_ctc0_",
     "_platform_irq_vector",
     "_m7_",
@@ -785,12 +785,12 @@ STATIC_V9958_PREFIXES = ("_v9958_",)
 # retired module path crept back into the nucleus.
 M4_BANK7_ROUTINES = ()
 
-M4_BANK7_PREFIXES = ("_module_", "_zmod_", "_z4_", "_m4_",
+M4_BANK7_PREFIXES = ("_module_", "_mod_", "_z4_", "_m4_",
                     "_irq_registry_")
 
 # M5 ROMFS reader routines: bank-7 code only.  The embedded boot catalog
 # (kernel/module/embedded.c) is fully retired and its return is prevented
-# by the source-layout retention test; `_z4_module_boot`/`_zmod_catalog`
+# by the source-layout retention test; `_z4_module_boot`/`_mod_catalog`
 # remain rejected above as extra defence.
 # `_romfs_lookup_ci` is M9's single ASCII-folded lookup (architecture
 # section 32.13): the removed case-sensitive `_romfs_lookup` has no
@@ -847,13 +847,13 @@ VFS_BANK7_ROUTINES = (
     "_vfs_ns_file_meta",
     "_vfs_ns_file_dispatch",
     "_vfs_ns_dir_check",
-    "_zos_object_copy_path",
-    "_zos_object_dispatch",
+    "_kos_object_copy_path",
+    "_kos_object_dispatch",
 )
 
 VFS_BANK7_PREFIXES = ("_vfs_",)
 
-# M6 process/ZEX code and state: bank 7 only, below the ISR stack (the
+# M6 process/EXE code and state: bank 7 only, below the ISR stack (the
 # common-resident gates are listed in COMMON_ROUTINES instead).
 M6_BANK7_ROUTINES = (
     "_process_exec",
@@ -864,67 +864,67 @@ M6_BANK7_ROUTINES = (
     "_process_alloc_bank",
     "_process_slot_alloc",
     "_process_slot_release",
-    "_zex_validate_header",
+    "_exe_validate_header",
 )
 
-M6_BANK7_PREFIXES = ("_process_", "_zex_")
+M6_BANK7_PREFIXES = ("_process_", "_exe_")
 
 # M7 diagnostic drivers and the shared dispatcher helpers: bank-7
 # kernel code only.  The drivers reuse the M6 common copy gate, so no
 # new permanent-common symbol is introduced.
 M7_BANK7_ROUTINES = (
-    "_zos_diag_mem_read",
-    "_zos_diag_mem_write",
-    "_zos_diag_io_in",
-    "_zos_diag_io_out",
-    "_zos_diag_bank_info",
-    "_zos_diag_system_info",
-    "_zos_diag_hw_in",
-    "_zos_diag_hw_out",
-    "_zos_syscall_success",
-    "_zos_syscall_error",
-    "_zos_syscall_block_ok",
+    "_kos_diag_mem_read",
+    "_kos_diag_mem_write",
+    "_kos_diag_io_in",
+    "_kos_diag_io_out",
+    "_kos_diag_bank_info",
+    "_kos_diag_system_info",
+    "_kos_diag_hw_in",
+    "_kos_diag_hw_out",
+    "_kos_syscall_success",
+    "_kos_syscall_error",
+    "_kos_syscall_block_ok",
 )
 
-M7_BANK7_PREFIXES = ("_zos_diag_",)
+M7_BANK7_PREFIXES = ("_kos_diag_",)
 
 # M6 transition state and the syscall copy staging block (common RAM).
 M6_COMMON_STATE = (
-    "_zos_user_copy_staging",
-    "zos_copy_op",
-    "zos_copy_bank",
-    "zos_copy_addr",
-    "zos_copy_buffer",
-    "zos_copy_length",
-    "zos_copy_saved_sp",
-    "zos_copy_saved_latch",
-    "zos_copy_saved_iff",
-    "zos_copy_stack",
-    "zos_copy_stack_top",
-    "zos_proc_cont",
-    "zos_proc_ix",
-    "zos_proc_latch",
-    "zos_proc_iff",
-    "zos_proc_index",
-    "zos_proc_status",
-    "zos_proc_bank",
-    "zos_proc_entry",
-    "zos_proc_gate_sp",
-    "zos_proc_gate_latch",
-    "zos_proc_gate_iff",
-    "zos_proc_frames",
-    "zos_proc_frames_end",
+    "_kos_user_copy_staging",
+    "kos_copy_op",
+    "kos_copy_bank",
+    "kos_copy_addr",
+    "kos_copy_buffer",
+    "kos_copy_length",
+    "kos_copy_saved_sp",
+    "kos_copy_saved_latch",
+    "kos_copy_saved_iff",
+    "kos_copy_stack",
+    "kos_copy_stack_top",
+    "kos_proc_cont",
+    "kos_proc_ix",
+    "kos_proc_latch",
+    "kos_proc_iff",
+    "kos_proc_index",
+    "kos_proc_status",
+    "kos_proc_bank",
+    "kos_proc_entry",
+    "kos_proc_gate_sp",
+    "kos_proc_gate_latch",
+    "kos_proc_gate_iff",
+    "kos_proc_frames",
+    "kos_proc_frames_end",
 )
 
 USER_COPY_STAGING_SIZE = 64
 USER_COPY_STACK_SIZE = 16
 
-# Package 28 continuation state: ZOS_EXEC_MAX_DEPTH levels, with
-# ZOS_EXEC_MAX_DEPTH - 1 gate-frame save areas of ZOS_EXEC_FRAME_SAVE
+# Package 28 continuation state: KOS_EXEC_MAX_DEPTH levels, with
+# KOS_EXEC_MAX_DEPTH - 1 gate-frame save areas of KOS_EXEC_FRAME_SAVE
 # bytes (kernel/include/process.h; pinned here so a mismatch fails the
 # production map rather than silently truncating a saved frame).
-ZOS_EXEC_MAX_DEPTH = 4
-ZOS_EXEC_FRAME_SAVE = 48
+KOS_EXEC_MAX_DEPTH = 4
+KOS_EXEC_FRAME_SAVE = 48
 
 # M5 ROM-access transition state: permanent common memory only.  The
 # staging buffer and saved latch/IFF/request state are what the
@@ -942,13 +942,13 @@ ROMFS_COMMON_STATE = (
 
 # Transition-critical state block (common RAM).
 COMMON_STATE = (
-    "zos_gate_saved_sp",
-    "zos_gate_saved_latch",
-    "zos_gate_result_hl",
-    "zos_gate_result_a",
-    "zos_gate_result_c",
-    "zos_gate_stack",
-    "zos_gate_stack_top",
+    "kos_gate_saved_sp",
+    "kos_gate_saved_latch",
+    "kos_gate_result_hl",
+    "kos_gate_result_a",
+    "kos_gate_result_c",
+    "kos_gate_stack",
+    "kos_gate_stack_top",
 )
 
 IRQ_STATE = (
@@ -957,7 +957,7 @@ IRQ_STATE = (
 
 
 class MapError(Exception):
-    """The linked map violates the ZephyrOS memory contract."""
+    """The linked map violates the KonaOS memory contract."""
 
 
 def parse_map(text):
@@ -1130,8 +1130,8 @@ REV13_FIXED_SYMBOLS = (
     "irq_ctc0_stub",
     "_irq_arch_lock",
     "_irq_arch_unlock",
-    "zos_syscall_entry",
-    "zos_syscall_dispatch",
+    "kos_syscall_entry",
+    "kos_syscall_dispatch",
     # Correction 01 (45b): the VFS workspace's path view.  A bind or exec
     # frame names the caller's path by address and a bank-6 provider
     # dereferences it while its own window is open, so the block must
@@ -1141,11 +1141,11 @@ REV13_FIXED_SYMBOLS = (
     "_irq_dispatch",
     "_irq_active_source",
     "_boot_common_entry",
-    "_zos_bank_copy",
-    "_zos_user_copy_staging",
+    "_kos_bank_copy",
+    "_kos_user_copy_staging",
     "_platform_memctl_read",
     "_platform_memctl_write",
-    "_zos_upcall",
+    "_kos_upcall",
     # M10 stage 3: the IPC substrate executes while the window shows the
     # resident driver domain, so its dispatcher, its frame and descriptor
     # tables and its fixed transition primitives stay in the fixed core.
@@ -1174,7 +1174,7 @@ REV13_FIXED_SYMBOLS = (
 REV13_COLD_SYMBOLS = (
     "_kernel_main",
     "_kernel_syscall_dispatch",
-    "_zos_ipc_dispatch",
+    "_kos_ipc_dispatch",
 )
 
 
@@ -1200,8 +1200,8 @@ def check_rev13_window(symbols):
                 % (name, addr, WINDOW_BASE, BANK7_TOP - 1))
     for name, base in (("irq_isr_stack", IRQ_ISR_STACK_BASE),
                        ("irq_isr_stack_top", IRQ_ISR_STACK_TOP),
-                       ("zos_driver_stack", DRIVER_STACK_BASE),
-                       ("zos_driver_stack_top", DRIVER_STACK_TOP)):
+                       ("kos_driver_stack", DRIVER_STACK_BASE),
+                       ("kos_driver_stack_top", DRIVER_STACK_TOP)):
         if name not in symbols:
             continue
         # The top labels are exclusive (a stack top is the first byte above
@@ -1348,7 +1348,7 @@ def check_symbols(areas, symbols, production=False):
                        % (staging, ROMFS_STAGING_SIZE))
 
     # M5 ROM-access transition block: the trampoline lands exactly two
-    # bytes before the mirrored stub at ZOS_ROM_ACCESS_BASE, the stub is
+    # bytes before the mirrored stub at KOS_ROM_ACCESS_BASE, the stub is
     # ROM_ACCESS_SIZE bytes, and the whole block is common-resident.
     expected_block = {
         "rom_access_trampoline": ROM_ACCESS_BASE - 2,
@@ -1393,7 +1393,7 @@ def check_symbols(areas, symbols, production=False):
                     "VFS symbol %s at %04Xh is not bank-7 resident"
                     % (name, addr))
 
-    # M6: process/ZEX code and the process table stay bank-7 resident.
+    # M6: process/EXE code and the process table stay bank-7 resident.
     for name in M6_BANK7_ROUTINES:
         if name not in symbols:
             raise MapError("map has no M6 symbol %s" % name)
@@ -1436,13 +1436,13 @@ def check_symbols(areas, symbols, production=False):
             raise MapError(
                 "%s at %04Xh is not in the common region E000h-FEFFh"
                 % (name, addr))
-    staging_delta = (symbols["zos_copy_op"]
-                     - symbols["_zos_user_copy_staging"])
+    staging_delta = (symbols["kos_copy_op"]
+                     - symbols["_kos_user_copy_staging"])
     if staging_delta != USER_COPY_STAGING_SIZE:
         raise MapError("user copy staging is %d bytes, expected %d"
                        % (staging_delta, USER_COPY_STAGING_SIZE))
-    stack_delta = (symbols["zos_copy_stack_top"]
-                   - symbols["zos_copy_stack"])
+    stack_delta = (symbols["kos_copy_stack_top"]
+                   - symbols["kos_copy_stack"])
     if stack_delta != USER_COPY_STACK_SIZE:
         raise MapError("user copy stack is %d bytes, expected %d"
                        % (stack_delta, USER_COPY_STACK_SIZE))
@@ -1456,14 +1456,14 @@ def check_symbols(areas, symbols, production=False):
 
     # Package 28: the continuation stack must be sized for the pinned
     # depth and frame save, not truncated by a stale assembly .ds.
-    frames_delta = (symbols["zos_proc_frames_end"]
-                    - symbols["zos_proc_frames"])
-    expected_frames = ZOS_EXEC_FRAME_SAVE * (ZOS_EXEC_MAX_DEPTH - 1)
+    frames_delta = (symbols["kos_proc_frames_end"]
+                    - symbols["kos_proc_frames"])
+    expected_frames = KOS_EXEC_FRAME_SAVE * (KOS_EXEC_MAX_DEPTH - 1)
     if frames_delta != expected_frames:
         raise MapError("exec frame saves are %d bytes, expected %d "
                        "(%d x %d)" % (frames_delta, expected_frames,
-                                      ZOS_EXEC_MAX_DEPTH - 1,
-                                      ZOS_EXEC_FRAME_SAVE))
+                                      KOS_EXEC_MAX_DEPTH - 1,
+                                      KOS_EXEC_FRAME_SAVE))
 
     # M10 (package 42c): the cold half has no driver arena; the linked
     # cold code ends at __kernel_code_end and the cold runtime data base
@@ -1534,7 +1534,7 @@ def check_symbols(areas, symbols, production=False):
             raise MapError(
                 "%s at %04Xh is not in the common region E000h-FEFFh" % (name, addr)
             )
-    stack_size = symbols["zos_gate_stack_top"] - symbols["zos_gate_stack"]
+    stack_size = symbols["kos_gate_stack_top"] - symbols["kos_gate_stack"]
     if stack_size != GATE_STACK_SIZE:
         raise MapError("gate stack is %d bytes, expected %d" % (stack_size, GATE_STACK_SIZE))
 
@@ -1591,12 +1591,12 @@ def check_symbols(areas, symbols, production=False):
         )
     if not page_zero_areas:
         raise MapError("map has no _PAGE_ZERO area for the RST 30h vector")
-    if symbols.get("_zos_rst30_vector") != RESET_TOP:
+    if symbols.get("_kos_rst30_vector") != RESET_TOP:
         raise MapError(
-            "_zos_rst30_vector is at %04Xh, expected %04Xh"
-            % (symbols.get("_zos_rst30_vector", -1), RESET_TOP)
+            "_kos_rst30_vector is at %04Xh, expected %04Xh"
+            % (symbols.get("_kos_rst30_vector", -1), RESET_TOP)
         )
-    vector_size = symbols.get("_zos_rst30_end", 0) - RESET_TOP
+    vector_size = symbols.get("_kos_rst30_end", 0) - RESET_TOP
     if vector_size != 3:
         raise MapError("RST 30h vector is %d bytes, expected exactly 3" % vector_size)
 

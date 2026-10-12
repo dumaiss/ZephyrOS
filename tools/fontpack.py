@@ -12,7 +12,7 @@ deterministic ROMFS DATA payload `v9958-6x8.font`:
 The pinned SHA-256 of the 2048-byte payload is
 6db207e0466a05af42894d378261f876da51bb391240e1beda4f1d5f12ec442f;
 a mismatch is an error, never a warning.  The payload never enters the
-resident ZMOD module: the driver reads it from ROMFS in bounded chunks.
+resident MOD module: the driver reads it from ROMFS in bounded chunks.
 """
 
 import hashlib

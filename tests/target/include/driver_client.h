@@ -1,7 +1,7 @@
-/* ZephyrOS resident-driver acceptance client (work package 41).
+/* KonaOS resident-driver acceptance client (work package 41).
  *
  * The M10 driver acceptance images run their diagnostic inside the
- * nucleus (kernel/main.c calls zos_target_test_early/late), which makes
+ * nucleus (kernel/main.c calls kos_target_test_early/late), which makes
  * that diagnostic a *bank-7 client* of the resident drivers: it holds no
  * descriptor and cannot use `move`, so it drives each protocol through
  * the descriptor-less forms plus the staged buffers that drivers name in
@@ -29,8 +29,8 @@
  * which is what the simulator replays pin.
  */
 
-#ifndef ZOS_TARGET_DRIVER_CLIENT_H
-#define ZOS_TARGET_DRIVER_CLIENT_H
+#ifndef KOS_TARGET_DRIVER_CLIENT_H
+#define KOS_TARGET_DRIVER_CLIENT_H
 
 #include "driver.h"
 
@@ -47,10 +47,10 @@
 uint8_t driver_cli_endpoint(uint8_t class_id, uint8_t *handle);
 
 /* One synchronous call into a resident driver with the caller's frame. */
-int16_t driver_cli_call(uint8_t handle, struct zos_ipc_frame *frame);
+int16_t driver_cli_call(uint8_t handle, struct kos_ipc_frame *frame);
 
 /* Prepare a descriptor-less frame. */
-void driver_cli_frame(struct zos_ipc_frame *frame, uint8_t op, uint8_t arg0,
+void driver_cli_frame(struct kos_ipc_frame *frame, uint8_t op, uint8_t arg0,
 		       uint16_t arg1);
 
 /* Staged moves over the driver bank through the copy gate. */
@@ -76,4 +76,4 @@ void driver_cli_hex16(uint16_t value);
  * readiness check the retired `console_output_handle()` performed. */
 uint8_t driver_cli_console_handle(void);
 
-#endif /* ZOS_TARGET_DRIVER_CLIENT_H */
+#endif /* KOS_TARGET_DRIVER_CLIENT_H */

@@ -1,4 +1,4 @@
-/* ZephyrOS IOC command + bulk transport driver implementation (drivers/ioc/).
+/* KonaOS IOC command + bulk transport driver implementation (drivers/ioc/).
  *
  * The class surface lives in drivers/include/ioc.h.  This file owns the
  * command exchange (sequence stamping, exact common-packet construction
@@ -49,13 +49,13 @@
 /* The deployed pair bypasses bulk DATA CRC on both sides.  Fail the build
  * if the paired platform headers ever disagree with this driver's mode
  * instead of silently growing a one-sided check. */
-#if ZOS_IOC_BULK_CRC_BYPASS != 1
+#if KOS_IOC_BULK_CRC_BYPASS != 1
 #error "IOC bulk driver expects the deployed pair's CRC bypass mode"
 #endif
 
 /* Largest raw wire frame: markers + LEN + fixed header + DATA + CRC. */
-#define IOC_WIRE_MAX (2u + 2u + ZOS_IOC_PACKET_FIXED_LEN + \
-		      ZOS_IOC_CMD_MAX_DATA + ZOS_IOC_PACKET_CRC_BYTES)
+#define IOC_WIRE_MAX (2u + 2u + KOS_IOC_PACKET_FIXED_LEN + \
+		      KOS_IOC_CMD_MAX_DATA + KOS_IOC_PACKET_CRC_BYTES)
 
 /* Reply capture outcomes reported by ioc_io.asm (command lane). */
 #define IOC_RX_CAPTURED     0u
@@ -149,15 +149,15 @@ static uint16_t ioc_crc16(uint16_t crc, const uint8_t *data, uint8_t count)
 
 /* Build the exact common request packet and its wire CRC. */
 static void ioc_build_request(struct ioc_state *state,
-			      const struct zioc_frame *request)
+			      const struct kioc_frame *request)
 {
 	uint8_t *packet = state->packet;
-	uint8_t len = (uint8_t)(ZOS_IOC_PACKET_FIXED_LEN + request->length);
+	uint8_t len = (uint8_t)(KOS_IOC_PACKET_FIXED_LEN + request->length);
 	uint16_t crc;
 	uint8_t i;
 
-	packet[0] = ZOS_IOC_PACKET_SYNC0;
-	packet[1] = ZOS_IOC_PACKET_SYNC1;
+	packet[0] = KOS_IOC_PACKET_SYNC0;
+	packet[1] = KOS_IOC_PACKET_SYNC1;
 	packet[2] = len;
 	packet[3] = 0;
 	packet[4] = request->type;
@@ -201,8 +201,8 @@ static uint8_t ioc_bulk_arming_request(uint8_t type)
  * only adds the bulk-specific shape checks.  Returns 1 when a bulk phase
  * was admitted. */
 static uint8_t ioc_ready_admit(struct ioc_state *state,
-			       const struct zioc_frame *request,
-			       const struct zioc_frame *reply)
+			       const struct kioc_frame *request,
+			       const struct kioc_frame *reply)
 {
 	uint8_t id = reply->data[IOC_OFF_READY_XFER_ID];
 	uint8_t dir = reply->data[IOC_OFF_READY_DIRECTION];
@@ -213,7 +213,7 @@ static uint8_t ioc_ready_admit(struct ioc_state *state,
 	 * else is an ordinary successful reply that happens to be 8
 	 * bytes long. */
 	if (id == 0u || dir > IOC_BULK_DIR_Z80_TO_MCU ||
-	    len == 0u || len > ZIOC_BULK_MAX) {
+	    len == 0u || len > KIOC_BULK_MAX) {
 		return 0u;
 	}
 
@@ -235,28 +235,28 @@ static uint8_t ioc_ready_admit(struct ioc_state *state,
 /* One command exchange, including the READY/DONE admission state.
  * ioc_command() adds the whole-link recovery gate. */
 static int ioc_command_inner(struct ioc_state *state,
-			     const struct zioc_frame *request,
-			     struct zioc_frame *reply)
+			     const struct kioc_frame *request,
+			     struct kioc_frame *reply)
 {
 	uint8_t result;
 	uint8_t data_len;
 	uint8_t i;
 	uint16_t crc;
 
-	if (request->length > ZIOC_MAX_DATA) {
-		return ZIOC_EINVAL;
+	if (request->length > KIOC_MAX_DATA) {
+		return KIOC_EINVAL;
 	}
 	if (state->busy != 0u) {
-		return ZIOC_EBUSY;
+		return KIOC_EBUSY;
 	}
 	/* A READY admits exactly one bulk phase; no command may displace
 	 * it.  A write awaiting its DONE record accepts only that query. */
 	if (state->phase == IOC_PHASE_ADMITTED) {
-		return ZIOC_EBUSY;
+		return KIOC_EBUSY;
 	}
 	if (state->phase == IOC_PHASE_DONE_REQUIRED &&
 	    request->type != IOC_CMD_XFER_STATUS) {
-		return ZIOC_EBUSY;
+		return KIOC_EBUSY;
 	}
 	state->busy = 1u;
 
@@ -268,14 +268,14 @@ static int ioc_command_inner(struct ioc_state *state,
 	 * in command-idle.  Bounded; runs before any lane traffic. */
 	if (ioc_io_wait_ready() != 0u) {
 		state->busy = 0u;
-		return ZIOC_ETIMEDOUT;
+		return KIOC_ETIMEDOUT;
 	}
 
 	/* Interrupts off for the bounded send/arm segment.  The exact
 	 * entry state is restored on every exit below. */
 	ioc_io.buf = state->packet;
-	ioc_io.len = (uint8_t)(2u + 2u + ZOS_IOC_PACKET_FIXED_LEN +
-			       request->length + ZOS_IOC_PACKET_CRC_BYTES);
+	ioc_io.len = (uint8_t)(2u + 2u + KOS_IOC_PACKET_FIXED_LEN +
+			       request->length + KOS_IOC_PACKET_CRC_BYTES);
 	ioc_io.hunt = (state->rx_synced == 0u) ? 1u : 0u;
 	ioc_io.resume = 0u;
 
@@ -283,7 +283,7 @@ static int ioc_command_inner(struct ioc_state *state,
 	if (ioc_io_tx(&ioc_io) != 0u) {
 		ioc_io_irq_restore(state->irq_token);
 		state->busy = 0u;
-		return ZIOC_ETIMEDOUT;
+		return KIOC_ETIMEDOUT;
 	}
 
 	/* The receiver is armed and the MCU turnaround guard is running;
@@ -295,41 +295,41 @@ static int ioc_command_inner(struct ioc_state *state,
 	state->busy = 0u;
 
 	if (result == IOC_RX_TIMEOUT) {
-		return ZIOC_ETIMEDOUT;
+		return KIOC_ETIMEDOUT;
 	}
 	if (result == IOC_RX_BAD_SCAN || result == IOC_RX_BAD_HEADER) {
-		return ZIOC_EBADFRAME;
+		return KIOC_EBADFRAME;
 	}
 	if (result != IOC_RX_CAPTURED) {
-		return ZIOC_ETIMEDOUT;
+		return KIOC_ETIMEDOUT;
 	}
 
 	/* The capture loop bounds LEN; repeat it here so the validation
 	 * below cannot be fooled by a future assembly change. */
-	if (state->raw[1] != 0u || state->raw[0] < ZOS_IOC_PACKET_FIXED_LEN ||
-	    state->raw[0] > (uint8_t)(ZOS_IOC_PACKET_FIXED_LEN +
-				      ZOS_IOC_CMD_MAX_DATA)) {
-		return ZIOC_EBADFRAME;
+	if (state->raw[1] != 0u || state->raw[0] < KOS_IOC_PACKET_FIXED_LEN ||
+	    state->raw[0] > (uint8_t)(KOS_IOC_PACKET_FIXED_LEN +
+				      KOS_IOC_CMD_MAX_DATA)) {
+		return KIOC_EBADFRAME;
 	}
-	data_len = (uint8_t)(state->raw[0] - ZOS_IOC_PACKET_FIXED_LEN);
+	data_len = (uint8_t)(state->raw[0] - KOS_IOC_PACKET_FIXED_LEN);
 
 	/* CRC over LEN_LO through the final DATA byte. */
 	crc = ioc_crc16(0u, state->raw, (uint8_t)(2u + state->raw[0]));
 	if (state->raw[2u + state->raw[0]] != (uint8_t)(crc >> 8) ||
 	    state->raw[3u + state->raw[0]] != (uint8_t)(crc & 0xFFu)) {
-		return ZIOC_EBADCRC;
+		return KIOC_EBADCRC;
 	}
 
 	/* The reply must echo this exchange's sequence. */
 	if (state->raw[3] != state->seq) {
-		return ZIOC_EBADSEQ;
+		return KIOC_EBADSEQ;
 	}
 
 	/* Exchange type binding: the deployed firmware answers the request
 	 * class with bit 7 set; RSP_UNKNOWN_COMMAND is its own class. */
 	if (state->raw[2] != (uint8_t)(request->type | 0x80u) &&
 	    state->raw[2] != IOC_RSP_UNKNOWN_CMD) {
-		return ZIOC_EBADFRAME;
+		return KIOC_EBADFRAME;
 	}
 
 	/* A CRC-verified reply is the proof that the persistent character
@@ -342,7 +342,7 @@ static int ioc_command_inner(struct ioc_state *state,
 	for (i = 0; i < data_len; ++i) {
 		reply->data[i] = state->raw[5u + i];
 	}
-	for (i = data_len; i < ZIOC_MAX_DATA; ++i) {
+	for (i = data_len; i < KIOC_MAX_DATA; ++i) {
 		reply->data[i] = 0u;
 	}
 
@@ -354,17 +354,17 @@ static int ioc_command_inner(struct ioc_state *state,
 		if (reply->type != IOC_RSP_XFER_STATUS ||
 		    reply->length < IOC_DONE_MIN_DATA) {
 			state->recover = 1u;
-			return ZIOC_EBADFRAME;
+			return KIOC_EBADFRAME;
 		}
 		if (reply->data[IOC_OFF_DONE_XFER_ID] != state->admit_id) {
 			state->recover = 1u;
-			return ZIOC_EBADFRAME;
+			return KIOC_EBADFRAME;
 		}
 		if (reply->data[IOC_OFF_DONE_STATUS] != IOC_STATUS_OK) {
 			state->recover = 1u;
-			return ZIOC_EIO;
+			return KIOC_EIO;
 		}
-		return ZIOC_OK;
+		return KIOC_OK;
 	}
 
 	/* Exact READY shape from a request class that can arm the bulk lane?
@@ -375,32 +375,32 @@ static int ioc_command_inner(struct ioc_state *state,
 	    reply->status == 0u && reply->length == IOC_READY_PAYLOAD_LEN) {
 		(void)ioc_ready_admit(state, request, reply);
 	}
-	return ZIOC_OK;
+	return KIOC_OK;
 }
 
-int ioc_command(void *vstate, const struct zioc_frame *request,
-		struct zioc_frame *reply)
+int ioc_command(void *vstate, const struct kioc_frame *request,
+		struct kioc_frame *reply)
 {
 	struct ioc_state *state = (struct ioc_state *)vstate;
 
 	if (state == (struct ioc_state *)0 ||
-	    request == (const struct zioc_frame *)0 ||
-	    reply == (struct zioc_frame *)0) {
-		return ZIOC_EINVAL;
+	    request == (const struct kioc_frame *)0 ||
+	    reply == (struct kioc_frame *)0) {
+		return KIOC_EINVAL;
 	}
-	if (request->length > ZIOC_MAX_DATA) {
-		return ZIOC_EINVAL;
+	if (request->length > KIOC_MAX_DATA) {
+		return KIOC_EINVAL;
 	}
 	if (state->busy != 0u) {
-		return ZIOC_EBUSY;
+		return KIOC_EBUSY;
 	}
 
 	/* A failed bulk phase leaves the bulk lane untrusted; the next
 	 * operation re-establishes both lanes together before any normal
 	 * traffic.  Malformed arguments never trigger I/O. */
 	if (state->recover != 0u) {
-		if (ioc_link_bringup() != ZIOC_OK) {
-			return ZIOC_ETIMEDOUT;
+		if (ioc_link_bringup() != KIOC_OK) {
+			return KIOC_ETIMEDOUT;
 		}
 	}
 	return ioc_command_inner(state, request, reply);
@@ -414,13 +414,13 @@ int ioc_bulk_read(void *vstate, void *dst, uint16_t length)
 	uint8_t result;
 
 	if (state == (struct ioc_state *)0 || dst == (void *)0) {
-		return ZIOC_EINVAL;
+		return KIOC_EINVAL;
 	}
-	if (length == 0u || length > ZIOC_BULK_MAX) {
-		return ZIOC_EINVAL;
+	if (length == 0u || length > KIOC_BULK_MAX) {
+		return KIOC_EINVAL;
 	}
 	if (state->busy != 0u) {
-		return ZIOC_EBUSY;
+		return KIOC_EBUSY;
 	}
 	/* Invalid sequencing fails before any lane I/O: a bulk phase must
 	 * have been admitted by a READY, with the same direction and the
@@ -428,7 +428,7 @@ int ioc_bulk_read(void *vstate, void *dst, uint16_t length)
 	if (state->phase != IOC_PHASE_ADMITTED ||
 	    state->admit_dir != IOC_BULK_DIR_MCU_TO_Z80 ||
 	    state->admit_len != length) {
-		return ZIOC_EBUSY;
+		return KIOC_EBUSY;
 	}
 	state->busy = 1u;
 
@@ -446,31 +446,31 @@ int ioc_bulk_read(void *vstate, void *dst, uint16_t length)
 	if (result != IOC_BULK_OK) {
 		state->recover = 1u;
 		if (result == IOC_BULK_TIMEOUT) {
-			return ZIOC_ETIMEDOUT;
+			return KIOC_ETIMEDOUT;
 		}
 		if (result == IOC_BULK_HW_ERROR) {
-			return ZIOC_EIO;
+			return KIOC_EIO;
 		}
-		return ZIOC_EBADFRAME;
+		return KIOC_EBADFRAME;
 	}
 
 	/* The captured header must be exactly the packet the READY
 	 * authorized: wire length, TYPE, sequence, and a zero STATUS.
 	 * Validation happens after the stream is safely in RAM. */
-	wire_len = (uint16_t)(length + ZOS_IOC_PACKET_FIXED_LEN);
+	wire_len = (uint16_t)(length + KOS_IOC_PACKET_FIXED_LEN);
 	if (bulk->header[0] != (uint8_t)wire_len ||
 	    bulk->header[1] != (uint8_t)(wire_len >> 8) ||
 	    bulk->header[2] != state->admit_rx_type ||
 	    bulk->header[3] != state->admit_seq ||
 	    bulk->header[4] != 0u) {
 		state->recover = 1u;
-		return ZIOC_EBADFRAME;
+		return KIOC_EBADFRAME;
 	}
 
 	/* A fully validated bulk read is the only proof the bulk-lane
 	 * character boundary is real; from here the lane is left alone. */
 	state->bulk_synced = 1u;
-	return ZIOC_OK;
+	return KIOC_OK;
 }
 
 int ioc_bulk_write(void *vstate, const void *src, uint16_t length)
@@ -481,18 +481,18 @@ int ioc_bulk_write(void *vstate, const void *src, uint16_t length)
 	uint8_t result;
 
 	if (state == (struct ioc_state *)0 || src == (const void *)0) {
-		return ZIOC_EINVAL;
+		return KIOC_EINVAL;
 	}
-	if (length == 0u || length > ZIOC_BULK_MAX) {
-		return ZIOC_EINVAL;
+	if (length == 0u || length > KIOC_BULK_MAX) {
+		return KIOC_EINVAL;
 	}
 	if (state->busy != 0u) {
-		return ZIOC_EBUSY;
+		return KIOC_EBUSY;
 	}
 	if (state->phase != IOC_PHASE_ADMITTED ||
 	    state->admit_dir != IOC_BULK_DIR_Z80_TO_MCU ||
 	    state->admit_len != length) {
-		return ZIOC_EBUSY;
+		return KIOC_EBUSY;
 	}
 	state->busy = 1u;
 
@@ -503,7 +503,7 @@ int ioc_bulk_write(void *vstate, const void *src, uint16_t length)
 	bulk->buf = (uint8_t *)src;
 	bulk->len = length;
 	bulk->hunt = 0u;
-	wire_len = (uint16_t)(length + ZOS_IOC_PACKET_FIXED_LEN);
+	wire_len = (uint16_t)(length + KOS_IOC_PACKET_FIXED_LEN);
 	bulk->header[0] = (uint8_t)wire_len;
 	bulk->header[1] = (uint8_t)(wire_len >> 8);
 	bulk->header[2] = state->admit_tx_type;
@@ -518,9 +518,9 @@ int ioc_bulk_write(void *vstate, const void *src, uint16_t length)
 	if (result != IOC_BULK_OK) {
 		state->recover = 1u;
 		if (result == IOC_BULK_TIMEOUT) {
-			return ZIOC_ETIMEDOUT;
+			return KIOC_ETIMEDOUT;
 		}
-		return ZIOC_EIO;
+		return KIOC_EIO;
 	}
 
 	/* The lane carried the bytes, but bytes reaching the controller is
@@ -528,7 +528,7 @@ int ioc_bulk_write(void *vstate, const void *src, uint16_t length)
 	 * report the write complete, and until it arrives only the DONE
 	 * query is accepted. */
 	state->phase = IOC_PHASE_DONE_REQUIRED;
-	return ZIOC_OK;
+	return KIOC_OK;
 }
 
 uint16_t ioc_status(void *vstate)
@@ -544,17 +544,17 @@ uint16_t ioc_status(void *vstate)
 	if (ioc_io_status_sample() == 0u) {
 		return 0u;
 	}
-	return ZIOC_STATUS_HID_PENDING;
+	return KIOC_STATUS_HID_PENDING;
 }
 
 int ioc_link_bringup(void)
 {
-	struct zioc_frame request;
-	struct zioc_frame reply;
-	uint8_t tries = ZOS_IOC_LINK_BRINGUP_TRIES;
+	struct kioc_frame request;
+	struct kioc_frame reply;
+	uint8_t tries = KOS_IOC_LINK_BRINGUP_TRIES;
 	int result;
 
-	request.type = ZOS_IOC_CMD_LINK_SYNC;
+	request.type = KOS_IOC_CMD_LINK_SYNC;
 	request.status = 0u;
 	request.length = 0u;
 
@@ -572,14 +572,14 @@ int ioc_link_bringup(void)
 		/* The recovery exchange itself must bypass the recovery
 		 * gate: call the inner exchange, not ioc_command(). */
 		result = ioc_command_inner(&ioc_state, &request, &reply);
-		if (result == ZIOC_OK &&
-		    reply.type == ZOS_IOC_RSP_LINK_SYNC) {
-			return ZIOC_OK;
+		if (result == KIOC_OK &&
+		    reply.type == KOS_IOC_RSP_LINK_SYNC) {
+			return KIOC_OK;
 		}
 	}
 	ioc_state.rx_synced = 0u;
 	ioc_state.bulk_synced = 0u;
 	ioc_state.phase = IOC_PHASE_IDLE;
 	ioc_state.recover = 1u;
-	return ZIOC_ETIMEDOUT;
+	return KIOC_ETIMEDOUT;
 }

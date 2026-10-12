@@ -1,7 +1,7 @@
 ; -----------------------------------------------------------------------------
 ; Minimal SDCC runtime helpers for the freestanding kernel.
 ;
-; ZephyrOS is freestanding (no libsdcc is linked).  The canonical
+; KonaOS is freestanding (no libsdcc is linked).  The canonical
 ; ___sdcc_call_iy trampoline already lives at the end of _CODE in
 ; kernel/irq/code_end.asm (M2 needs it for the IRQ handler table); this
 ; file adds the matching ___sdcc_call_hl variant in case the code

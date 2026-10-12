@@ -13,8 +13,8 @@
  * this header.  The firmware is never modified.
  */
 
-#ifndef ZEPHYROS_DRIVERS_IOC_PROTO_H
-#define ZEPHYROS_DRIVERS_IOC_PROTO_H
+#ifndef KONAOS_DRIVERS_IOC_PROTO_H
+#define KONAOS_DRIVERS_IOC_PROTO_H
 
 #include "ioc_protocol.h"
 
@@ -82,4 +82,4 @@
 /* Controller status byte inside the DONE record. */
 #define IOC_STATUS_OK           0x00u
 
-#endif /* ZEPHYROS_DRIVERS_IOC_PROTO_H */
+#endif /* KONAOS_DRIVERS_IOC_PROTO_H */

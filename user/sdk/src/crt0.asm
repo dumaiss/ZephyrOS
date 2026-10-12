@@ -1,11 +1,11 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS libzos: C runtime startup (work/28c-m9-user-sdk).
+; KonaOS libkos: C runtime startup (work/28c-m9-user-sdk).
 ;
-; The launch gate enters here in mode 10 with HL = ZOS_STARTUP_BASE, the
+; The launch gate enters here in mode 10 with HL = KOS_STARTUP_BASE, the
 ; startup block v1.  crt0 saves the block for startup(), copies the raw
 ; tail into program data (the kernel's page-zero copy is not preserved
 ; across a syscall), runs the documented whitespace/double-quote splitter
-; over that copy into a bounded argv (ZOS_ARGV_MAX entries in BSS), calls
+; over that copy into a bounded argv (KOS_ARGV_MAX entries in BSS), calls
 ; int main(int argc, char **argv), and exits with the low 16 bits of the
 ; result.  A program never writes entry assembly.
 ;
@@ -13,27 +13,27 @@
 ; (tail copy, argv) sits at the start of the data area.
 ; -----------------------------------------------------------------------------
 
-	.module zos_crt0
+	.module kos_crt0
 
-	.globl zos_entry
+	.globl kos_entry
 	.globl _main
 	.globl _splitargs
 	.globl _exit
-	.globl _zos_startup_block
+	.globl _kos_startup_block
 
 	.area _CODE
 
-zos_entry::
-	ld	(_zos_startup_block),hl
+kos_entry::
+	ld	(_kos_startup_block),hl
 	; Validate version and length; anything unexpected yields an empty
 	; command line instead of reading past the block.
-	ld	de,#_zos_tail_buffer
+	ld	de,#_kos_tail_buffer
 	ld	a,(hl)
 	cp	#0x01
 	jr	nz,003$
 	inc	hl
 	ld	a,(hl)
-	cp	#126			; > ZOS_STARTUP_TAIL_MAX (125)
+	cp	#126			; > KOS_STARTUP_TAIL_MAX (125)
 	jr	nc,003$
 	inc	hl
 	; Copy tail_length bytes (B) from the block to the program buffer,
@@ -58,14 +58,14 @@ zos_entry::
 	xor	a			; empty command line
 	ld	(de),a
 004$:
-	ld	hl,#_zos_tail_buffer
-	ld	(_zos_tail),hl
-	; splitargs(tail, argv, ZOS_ARGV_MAX): the third argument is a stack
+	ld	hl,#_kos_tail_buffer
+	ld	(_kos_tail),hl
+	; splitargs(tail, argv, KOS_ARGV_MAX): the third argument is a stack
 	; argument on the SDCC Z80 and the callee pops it.
 	ld	hl,#16
 	push	hl
-	ld	hl,#_zos_tail_buffer
-	ld	de,#_zos_argv
+	ld	hl,#_kos_tail_buffer
+	ld	de,#_kos_argv
 	call	_splitargs
 	; DE = total word count; clamp argc to the stored capacity.
 	ex	de,hl
@@ -78,7 +78,7 @@ zos_entry::
 005$:
 	ld	hl,#16
 006$:
-	ld	de,#_zos_argv
+	ld	de,#_kos_argv
 	call	_main
 	; int main(...) returns the status in DE; SYS_EXIT takes HL.
 	ex	de,hl
@@ -91,10 +91,10 @@ zos_entry::
 	.area _DATA
 
 ; Bounded argv store, the tail copy and the tail pointer, zero-initialized
-; by the ZEX loader (the block is writable BSS, never an initializer).
-_zos_tail::
+; by the EXE loader (the block is writable BSS, never an initializer).
+_kos_tail::
 	.ds	2
-_zos_tail_buffer::
-	.ds	127			; ZOS_STARTUP_TAIL_MAX + 1
-_zos_argv::
+_kos_tail_buffer::
+	.ds	127			; KOS_STARTUP_TAIL_MAX + 1
+_kos_argv::
 	.ds	32

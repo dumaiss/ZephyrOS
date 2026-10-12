@@ -1,4 +1,4 @@
-/* ZephyrOS required-driver init-failure acceptance driver (work package
+/* KonaOS required-driver init-failure acceptance driver (work package
  * 45, test artifact).
  *
  * The one job of this resident bank-6 image is to refuse: its init

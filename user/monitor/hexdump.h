@@ -1,4 +1,4 @@
-/* ZephyrOS user runtime: 16-byte hexdump row formatting.
+/* KonaOS user runtime: 16-byte hexdump row formatting.
  *
  * The row format matches the familiar Zephyr-80 monitor output:
  *
@@ -11,8 +11,8 @@
  * SYS_DIAG_MEM_READ).
  */
 
-#ifndef ZEPHYROS_USER_HEXDUMP_H
-#define ZEPHYROS_USER_HEXDUMP_H
+#ifndef KONAOS_USER_HEXDUMP_H
+#define KONAOS_USER_HEXDUMP_H
 
 /* Worst case: 6 + 16*3 + 1 + 16 + 1 (NUL) = 72 bytes. */
 #define ZRT_HEXDUMP_ROW_MAX 72
@@ -21,4 +21,4 @@
 void zrt_hexdump_row(char *dst, unsigned int addr,
 		     const unsigned char *bytes, unsigned int count);
 
-#endif /* ZEPHYROS_USER_HEXDUMP_H */
+#endif /* KONAOS_USER_HEXDUMP_H */

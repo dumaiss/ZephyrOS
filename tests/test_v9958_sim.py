@@ -64,7 +64,7 @@ SMOKE_HOST_SYNC = b"\xaa\x55"
 
 # The proven GRAPHIC 6 bring-up register sequence, in order (value,
 # register): the paced head, R#0..R#11, the selector block and R#25
-# WAIT_ON.  The boot segment and the run-time ZVIDEO_RESET run the same
+# WAIT_ON.  The boot segment and the run-time KVIDEO_RESET run the same
 # chain, so the sequence must appear exactly twice.
 G6_TABLE = [
     (0x0A, 0), (0x00, 1), (0x1F, 2), (0x00, 3), (0x00, 4), (0xE4, 5),
@@ -130,7 +130,7 @@ class VideoSimBase(ConsoleReplay, unittest.TestCase):
     """Boot, stepping and trace helpers for the video diagnostic."""
 
     IMAGE_SUBDIR = "build-console-integration-selftest"
-    IMAGE_NAME = "zephyros-console-integration-selftest.bin"
+    IMAGE_NAME = "konaos-console-integration-selftest.bin"
 
     def setUp(self):
         self.load_image()
@@ -165,12 +165,12 @@ class TestVideoDriverBoot(VideoSimBase):
         # The loader's evidence rows, in manifest order.  The v9958 row
         # carries the bulk placement of the font.
         rows = [
-            r"driver sio.zmod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h\r\n",
-            r"driver ioc.zmod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h\r\n",
-            r"driver hid.zmod: hot [0-9A-F]{4}h\r\n",
-            r"driver v9958.zmod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h "
+            r"driver sio.mod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h\r\n",
+            r"driver ioc.mod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h\r\n",
+            r"driver hid.mod: hot [0-9A-F]{4}h\r\n",
+            r"driver v9958.mod: hot [0-9A-F]{4}h boot [0-9A-F]{4}h "
             r"bulk [0-9A-F]{4}h\r\n",
-            r"driver console-v9958-hid.zmod: hot [0-9A-F]{4}h\r\n",
+            r"driver console-v9958-hid.mod: hot [0-9A-F]{4}h\r\n",
         ]
         positions = []
         for row in rows:
@@ -229,7 +229,7 @@ class TestVideoDriverPeerEvidence(VideoSimBase):
         peer = z.vdp
 
         # Two complete GRAPHIC 6 register sequences: the boot segment's
-        # initial bring-up and the diagnostic's ZVIDEO_RESET re-run.
+        # initial bring-up and the diagnostic's KVIDEO_RESET re-run.
         starts = bringup_starts(peer)
         self.assertEqual(len(starts), 2,
                          "expected the boot and reset bring-ups, got %r"

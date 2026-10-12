@@ -1,4 +1,4 @@
-# ZephyrOS M10-M12 Target Architecture — folded
+# KonaOS M10-M12 Target Architecture — folded
 
 **Status:** folded into `docs/architecture.md` when M9 closed (work package
 31, 2026-10-05).
@@ -16,7 +16,7 @@ architecture it used to hold is sections 35-42 of
 | 5. M11 acceptance criteria | architecture 39 |
 | 6. Milestone M12 (subsections 6.1-6.12) | architecture 40 (40.1-40.12) |
 | 7. M12 acceptance criteria | architecture 41 |
-| 8. Native ZephyrOS completion boundary | architecture 42 |
+| 8. Native KonaOS completion boundary | architecture 42 |
 | 9. Milestone summary | architecture 34 (the M0-M12 summary) |
 
 Folded content is identical except for section numbering, the M9 residency

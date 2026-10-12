@@ -22,22 +22,22 @@
 
 ; uint8_t sio0b_status(void);  read RR0 from the control port.
 _sio0b_status::
-	in	a,(ZOS_SIO0B_CTRL)
+	in	a,(KOS_SIO0B_CTRL)
 	ld	l,a
 	ret
 
 ; void sio0b_write_ctrl(uint8_t value);  A = value.
 _sio0b_write_ctrl::
-	out	(ZOS_SIO0B_CTRL),a
+	out	(KOS_SIO0B_CTRL),a
 	ret
 
 ; uint8_t sio0b_read_data(void);  read one RX byte.
 _sio0b_read_data::
-	in	a,(ZOS_SIO0B_DATA)
+	in	a,(KOS_SIO0B_DATA)
 	ld	l,a
 	ret
 
 ; void sio0b_write_data(uint8_t value);  A = value.
 _sio0b_write_data::
-	out	(ZOS_SIO0B_DATA),a
+	out	(KOS_SIO0B_DATA),a
 	ret

@@ -1,10 +1,10 @@
-/* ZephyrOS user runtime: common status/error output.
+/* KonaOS user runtime: common status/error output.
  *
  * See status.h for the vocabulary.
  */
 
 #include "status.h"
-#include "zos.h"
+#include "kos.h"
 #include "hexfmt.h"
 
 void zrt_status_ok(void)

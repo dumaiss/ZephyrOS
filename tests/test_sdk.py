@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """User SDK acceptance tests (work package 28c-m9-user-sdk).
 
-The SDK is the only way a native ZEX is built: `user/sdk/` provides crt0,
-libzos and zlibc, `user/sdk/zex.mk` provides the one-line `zex_program`
-rule, and the public native ABI lives once in `abi/zos/`.  These tests pin
+The SDK is the only way a native EXE is built: `user/sdk/` provides crt0,
+libkos and klibc, `user/sdk/exe.mk` provides the one-line `exe_program`
+rule, and the public native ABI lives once in `abi/kos/`.  These tests pin
 that contract:
 
-* `libzos` is one object per source, exports only the SDK surface and
+* `libkos` is one object per source, exports only the SDK surface and
   contains no kernel code;
-* `hello.zex` is packed from a manifest derived entirely from its link map
-  (no hand-entered size), validates as a ZEX v2 container, and pulls in
+* `hello.exe` is packed from a manifest derived entirely from its link map
+  (no hand-entered size), validates as a EXE v2 container, and pulls in
   neither the filesystem nor the diagnostic library members;
-* every ZEX program source compiles against the ABI and the SDK include
+* every EXE program source compiles against the ABI and the SDK include
   root alone -- never a kernel header;
 * the Z80 simulator executes the SDK startup path: `_splitargs` turns the
   kernel's raw command tail into argv with the documented quoting, and the
-  `helloworld` image boots `hello.zex` as `/system/hello.zex` through the
+  `helloworld` image boots `hello.exe` as `/system/hello.exe` through the
   unmodified production launcher, prints the greeting and is re-executed
   after a clean exit 0.
 
@@ -35,8 +35,8 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import pack_image  # noqa: E402
-import zexpack  # noqa: E402
-import zexmanifest  # noqa: E402
+import exepack  # noqa: E402
+import exemanifest  # noqa: E402
 from replay import ConsoleReplay  # noqa: E402
 from z80sim import Z80, read_symbols  # noqa: E402
 
@@ -50,19 +50,19 @@ WINDOW_END = 0x2000
 SDK_DIR = "user/sdk"
 SDK_SRC = os.path.join(SDK_DIR, "src")
 SDK_INCLUDE = os.path.join(SDK_DIR, "include")
-ZEX_MK = os.path.join(SDK_DIR, "zex.mk")
+EXE_MK = os.path.join(SDK_DIR, "exe.mk")
 
-LIBZOS = os.path.join("build", "user", "sdk", "libzos.lib")
+LIBKOS = os.path.join("build", "user", "sdk", "libkos.lib")
 HELLO_OBJDIR = os.path.join("build", "user", "hello")
 HELLO_JSON = os.path.join(HELLO_OBJDIR, "hello.json")
 HELLO_MAP = os.path.join(HELLO_OBJDIR, "hello.map")
-HELLO_ZEX = os.path.join("build", "user", "hello.zex")
+HELLO_EXE = os.path.join("build", "user", "hello.exe")
 
 IMAGE_SUBDIR = "build-helloworld"
-IMAGE_NAME = "zephyros-helloworld.bin"
-BOOT_PROGRAM = "/system/hello.zex"
+IMAGE_NAME = "konaos-helloworld.bin"
+BOOT_PROGRAM = "/system/hello.exe"
 
-# The include roots a ZEX program may resolve a quoted include against: its
+# The include roots a EXE program may resolve a quoted include against: its
 # own directory, the public ABI, the SDK, and the SDK rule's INCLUDES=.
 PROGRAM_INCLUDE_ROOTS = (SDK_INCLUDE, "abi")
 
@@ -75,10 +75,10 @@ KERNEL_INCLUDE_ROOTS = ("kernel", "drivers", "formats", "platform", "boot",
 # protocol client with its IPC gate, the argv members, and the
 # printf/string helpers it actually calls.
 HELLO_LIBRARY_MODULES = {
-    "zos_crt0", "zos_runtime", "hello", "args", "console_proto", "ipc",
-    "zos_gate", "zos_ipcgate", "nsgate", "printf",
+    "kos_crt0", "kos_runtime", "hello", "args", "console_proto", "ipc",
+    "kos_gate", "kos_ipcgate", "nsgate", "printf",
     "strlen", "utoa", "ultoa", "itoa", "ltoa", "sdcc_arith",
-    "zos_sdcc_arith_entries",
+    "kos_sdcc_arith_entries",
 }
 
 # Kernel drivers a program must not link: the filesystem, the diagnostic
@@ -143,10 +143,10 @@ def _ar_members(path):
 
 
 def _rule_sources(variable):
-    """The source list of one ``:=`` assignment in user/sdk/zex.mk."""
+    """The source list of one ``:=`` assignment in user/sdk/exe.mk."""
     match = re.search(r"^%s\s*:=\s*((?:.*\\\n)*.*)" % variable,
-                      _read(ZEX_MK), re.M)
-    assert match is not None, "zex.mk defines no %s" % variable
+                      _read(EXE_MK), re.M)
+    assert match is not None, "exe.mk defines no %s" % variable
     return match.group(1).replace("\\\n", " ").split()
 
 
@@ -173,14 +173,14 @@ def _split_call_arguments(text, start):
 
 
 def _declared_programs():
-    """Every declared ZEX: (name, dir, sources, options).
+    """Every declared EXE: (name, dir, sources, options).
 
     The declarations live in the top-level Makefile and in the
     sub-project fragments it includes (user/helloworld/Makefile)."""
     programs = []
     for name in ("Makefile", os.path.join("user", "helloworld", "Makefile")):
         text = _read(name)
-        for match in re.finditer(r"\$\(eval \$\(call\s+zex_program,",
+        for match in re.finditer(r"\$\(eval \$\(call\s+exe_program,",
                                  text):
             args = _split_call_arguments(text, match.end())
             programs.append((args[0], args[1], args[2].split(), args[3:]))
@@ -222,23 +222,23 @@ def _quoted_includes(path):
 
 
 class TestSdkLibrary(unittest.TestCase):
-    """libzos is the whole user-space library, one member per source."""
+    """libkos is the whole user-space library, one member per source."""
 
     @classmethod
     def setUpClass(cls):
-        path = os.path.join(ROOT, LIBZOS)
+        path = os.path.join(ROOT, LIBKOS)
         if not os.path.exists(path):
-            raise unittest.SkipTest("libzos has not been built")
+            raise unittest.SkipTest("libkos has not been built")
         cls.members = _ar_members(path)
 
     def test_every_sdk_source_is_its_own_archive_member(self):
-        sources = (_rule_sources("ZOS_SDK_C_SRC")
-                   + _rule_sources("ZOS_SDK_ASM_SRC"))
-        self.assertTrue(sources, "zex.mk lists no library sources")
+        sources = (_rule_sources("KOS_SDK_C_SRC")
+                   + _rule_sources("KOS_SDK_ASM_SRC"))
+        self.assertTrue(sources, "exe.mk lists no library sources")
         expected = sorted(os.path.splitext(os.path.basename(source))[0]
                           + ".rel" for source in sources)
         self.assertEqual(sorted(self.members), expected,
-                         "libzos members do not match the SDK sources")
+                         "libkos members do not match the SDK sources")
         # One member per source file, so an unused helper is never linked.
         self.assertEqual(len(self.members), len(set(self.members)))
         # The archive is rebuilt from those sources alone; crt0 and the
@@ -249,15 +249,15 @@ class TestSdkLibrary(unittest.TestCase):
                    - standalone),
             sorted(os.path.basename(source) for source in sources))
 
-    def test_library_is_named_libzos_and_lives_under_the_sdk_build(self):
-        self.assertTrue(LIBZOS.startswith(os.path.join("build", "user")))
+    def test_library_is_named_libkos_and_lives_under_the_sdk_build(self):
+        self.assertTrue(LIBKOS.startswith(os.path.join("build", "user")))
         self.assertTrue(all(name.endswith(".rel") for name in self.members))
 
     def test_no_archive_member_is_kernel_code(self):
         for member in self.members:
             self.assertNotIn("kernel", member)
             self.assertFalse(member.startswith("vfs"),
-                             "kernel object %s is in libzos" % member)
+                             "kernel object %s is in libkos" % member)
 
     def test_sdk_sources_include_only_the_abi_and_the_sdk(self):
         for path in _sdk_sources():
@@ -272,24 +272,24 @@ class TestSdkLibrary(unittest.TestCase):
                     "%s includes kernel header %s" % (rel, include))
 
 
-class TestHelloZex(unittest.TestCase):
-    """hello.zex is packed from the map, not from hand-entered numbers."""
+class TestHelloExe(unittest.TestCase):
+    """hello.exe is packed from the map, not from hand-entered numbers."""
 
     @classmethod
     def setUpClass(cls):
-        for path in (HELLO_JSON, HELLO_MAP, HELLO_ZEX):
+        for path in (HELLO_JSON, HELLO_MAP, HELLO_EXE):
             if not os.path.exists(os.path.join(ROOT, path)):
                 raise unittest.SkipTest(
-                    "%s has not been built; run make build/user/hello.zex"
+                    "%s has not been built; run make build/user/hello.exe"
                     % path)
-        cls.manifest = zexpack.load_manifest(os.path.join(ROOT, HELLO_JSON))
+        cls.manifest = exepack.load_manifest(os.path.join(ROOT, HELLO_JSON))
         cls.symbols = _symbols(HELLO_MAP)
-        cls.image = Path(os.path.join(ROOT, HELLO_ZEX)).read_bytes()
+        cls.image = Path(os.path.join(ROOT, HELLO_EXE)).read_bytes()
 
     def test_manifest_is_exactly_what_the_link_map_implies(self):
-        derived = zexmanifest.build_manifest(
-            os.path.join(ROOT, HELLO_MAP), "hello.zex", "zos_entry", 256,
-            "zos_scratch:16")
+        derived = exemanifest.build_manifest(
+            os.path.join(ROOT, HELLO_MAP), "hello.exe", "kos_entry", 256,
+            "kos_scratch:16")
         self.assertEqual(derived, self.manifest)
 
     def test_sizes_come_from_the_map(self):
@@ -298,11 +298,11 @@ class TestHelloZex(unittest.TestCase):
         self.assertEqual(self.manifest["bss_size"],
                          self.symbols["l__DATA"][0])
         self.assertEqual(self.manifest["image_size"],
-                         self.symbols["l__ZOS_SDK_DATA"][0] +
+                         self.symbols["l__KOS_SDK_DATA"][0] +
                          self.symbols["l__CODE"][0])
 
     def test_container_validates_and_enters_after_low_data(self):
-        fields, geometry = zexpack.validate_image(self.image)
+        fields, geometry = exepack.validate_image(self.image)
         self.assertEqual(fields["entry_offset"], 0x5D)
         self.assertEqual(geometry["entry"], LOAD_BASE + 0x5D)
         self.assertEqual(geometry["image_size"], self.manifest["image_size"])
@@ -310,9 +310,9 @@ class TestHelloZex(unittest.TestCase):
         self.assertEqual(self.manifest["stack_size"], 256)
 
     def test_entry_symbol_is_crt0_not_entry_assembly(self):
-        self.assertEqual(self.manifest["entry"], "zos_entry")
-        self.assertEqual(self.symbols["zos_entry"],
-                         (LOAD_BASE + 0x5D, "zos_crt0"))
+        self.assertEqual(self.manifest["entry"], "kos_entry")
+        self.assertEqual(self.symbols["kos_entry"],
+                         (LOAD_BASE + 0x5D, "kos_crt0"))
         # A program never writes entry assembly: no .asm beside the demo.
         for name in os.listdir(os.path.join(ROOT, "user", "helloworld")):
             self.assertFalse(name.endswith(".asm"),
@@ -330,14 +330,14 @@ class TestHelloZex(unittest.TestCase):
         for name in FORBIDDEN_HELLO_MODULES:
             self.assertNotIn(name, modules)
         for symbol in self.symbols:
-            for prefix in ("_zos_fs_", "_zos_diag_", "_vfs_", "_kernel_"):
+            for prefix in ("_kos_fs_", "_kos_diag_", "_vfs_", "_kernel_"):
                 self.assertFalse(
                     symbol.startswith(prefix),
-                    "hello.zex links kernel/FS/diag symbol %s" % symbol)
+                    "hello.exe links kernel/FS/diag symbol %s" % symbol)
 
-    def test_no_zex_manifest_is_checked_in(self):
-        """Every ZEX manifest is generated; only the helloworld ROMFS
-        manifest (not a ZEX container manifest) is a source file."""
+    def test_no_exe_manifest_is_checked_in(self):
+        """Every EXE manifest is generated; only the helloworld ROMFS
+        manifest (not a EXE container manifest) is a source file."""
         checked_in = []
         for base in ("tests/target", "user/monitor", "user/helloworld"):
             for dirpath, _dirnames, filenames in os.walk(
@@ -347,8 +347,8 @@ class TestHelloZex(unittest.TestCase):
                         checked_in.append(
                             os.path.join(dirpath, filename)
                             .replace(ROOT + os.sep, "").replace(os.sep, "/"))
-        # tests/target/ipc/manifests/*.json are the work-package-39 ZMOD
-        # container pack inputs (acceptance images only), not ZEX
+        # tests/target/ipc/manifests/*.json are the work-package-39 MOD
+        # container pack inputs (acceptance images only), not EXE
         # manifests.
         checked_in = [path for path in checked_in
                       if not path.startswith(
@@ -365,27 +365,27 @@ class TestSdkBoundary(unittest.TestCase):
         programs = _declared_programs()
         # `ipc` and `ipccopy` are the resident-driver acceptance client
         # and its caller-buffer probe: declared by the same generic rule,
-        # but only the ZOS_IPC_SELFTEST configuration builds them.  `ns`
+        # but only the KOS_IPC_SELFTEST configuration builds them.  `ns`
         # and `nschild` are the namespace acceptance client and the child
-        # it execs (ZOS_NS_SELFTEST); `fs_selftest` and `fs_child` are the
-        # filesystem outcome programs (ZOS_FS_SELFTEST); `xmem_selftest`
+        # it execs (KOS_NS_SELFTEST); `fs_selftest` and `fs_child` are the
+        # filesystem outcome programs (KOS_FS_SELFTEST); `xmem_selftest`
         # and `xmem_child` are the extended-memory outcome programs
-        # (ZOS_XMEM_SELFTEST); `escc` is the
+        # (KOS_XMEM_SELFTEST); `escc` is the
         # ESC c display-reset check the console integration image boots
-        # (work package 42e); `zex2probe`, `zex2seg` and `zex2big` are the
-        # ZEX v2 loader-outcome programs the subsystem process selftest
+        # (work package 42e); `exe2probe`, `exe2seg` and `exe2big` are the
+        # EXE v2 loader-outcome programs the subsystem process selftest
         # runs (work package 44a); `fardemo` is the SDK far-code demo and
         # `xmem_far` the far-code outcome program (work package 44b);
         # `hwtest` is the production store's feature exerciser and the
         # runner of those outcome programs (work package 45b).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
-                         ["escc", "fardemo", "fs_child", "fs_selftest",
+                         ["escc", "exe2big", "exe2probe", "exe2seg",
+                          "exetest", "fardemo", "fs_child", "fs_selftest",
                           "hello", "hwtest", "ipc", "ipccopy", "monitor",
                           "ns", "nschild", "xmem_child", "xmem_far",
-                          "xmem_selftest", "zex2big", "zex2probe",
-                          "zex2seg", "zextest"])
+                          "xmem_selftest"])
         for name, directory, _sources, _options in programs:
-            count = sum(_read(path).count("zex_program,%s," % name)
+            count = sum(_read(path).count("exe_program,%s," % name)
                         for path in ("Makefile",
                                      os.path.join("user", "helloworld",
                                                   "Makefile")))
@@ -399,8 +399,8 @@ class TestSdkBoundary(unittest.TestCase):
             if _program_options(options, "NO_CRT0"):
                 continue  # the raw-return child has no C startup at all
             path = os.path.join(ROOT, directory, sources[0])
-            self.assertIn("zos.h", _quoted_includes(path),
-                          "%s (%s) does not include zos.h"
+            self.assertIn("kos.h", _quoted_includes(path),
+                          "%s (%s) does not include kos.h"
                           % (name, sources[0]))
 
     def test_every_quoted_include_resolves_inside_the_sdk_boundary(self):
@@ -428,19 +428,19 @@ class TestSdkBoundary(unittest.TestCase):
                         "%s reaches %s" % (path, resolved))
 
     def test_rule_compiles_with_the_abi_and_sdk_include_roots_only(self):
-        rule = _read(ZEX_MK)
-        match = re.search(r"^ZEX_CFLAGS\s*:=\s*(.+)$", rule, re.M)
-        self.assertIsNotNone(match, "zex.mk defines no ZEX_CFLAGS")
+        rule = _read(EXE_MK)
+        match = re.search(r"^EXE_CFLAGS\s*:=\s*(.+)$", rule, re.M)
+        self.assertIsNotNone(match, "exe.mk defines no EXE_CFLAGS")
         flags = match.group(1)
         self.assertIn("--nostdinc", flags)
         self.assertIn("-I abi", flags)
-        self.assertIn("-I $(ZOS_SDK_INCLUDE)", flags)
+        self.assertIn("-I $(KOS_SDK_INCLUDE)", flags)
         for root in KERNEL_INCLUDE_ROOTS:
             self.assertNotIn("-I %s" % root, flags,
                              "the program rule adds -I %s" % root)
-        self.assertNotIn("zephyros" + "/", rule)
+        self.assertNotIn("konaos" + "/", rule)
         # ASM sources see the ABI only (the SDK's asm uses no C header).
-        self.assertIn("ZEX_ASFLAGS := -Iabi", rule)
+        self.assertIn("EXE_ASFLAGS := -Iabi", rule)
 
     def test_the_one_no_crt0_program_is_the_caller_buffer_probe(self):
         no_crt0 = [name for name, _d, _s, options in _declared_programs()
@@ -459,7 +459,7 @@ class TestSdkBoundary(unittest.TestCase):
         """The FAR= option (package 44b) names the far sources; the rule
         compiles them with --codeseg FAR_CODE and bases _FAR_CODE at
         8000h, and without SEGMENTS= it declares the one far segment."""
-        rule = _read(ZEX_MK)
+        rule = _read(EXE_MK)
         self.assertIn("--codeseg FAR_CODE", rule)
         self.assertIn("-b _FAR_CODE = 0x8000", rule)
         far_programs = [(name, options) for name, _d, _s, options
@@ -490,8 +490,8 @@ class TestSdkBoundary(unittest.TestCase):
         for name in ("types.h", "errno.h", "syscall.h", "fs.h", "process.h",
                      "diag.h"):
             self.assertTrue(os.path.isfile(
-                os.path.join(ROOT, "abi", "zos", name)),
-                "abi/zos/%s is missing" % name)
+                os.path.join(ROOT, "abi", "kos", name)),
+                "abi/kos/%s is missing" % name)
         for name in ("fs.h", "syscall.h"):
             for owner in ("drivers/include", "kernel/include",
                           "formats/include"):
@@ -501,10 +501,10 @@ class TestSdkBoundary(unittest.TestCase):
 
     def test_sdk_headers_are_the_only_user_headers(self):
         self.assertTrue(os.path.isfile(
-            os.path.join(ROOT, SDK_INCLUDE, "zos.h")))
+            os.path.join(ROOT, SDK_INCLUDE, "kos.h")))
         for name in ("console.h", "fs.h", "process.h", "diag.h"):
             self.assertTrue(os.path.isfile(
-                os.path.join(ROOT, SDK_INCLUDE, "zos", name)))
+                os.path.join(ROOT, SDK_INCLUDE, "kos", name)))
 
 
 class TestSdkSplitterInSimulator(unittest.TestCase):
@@ -525,8 +525,8 @@ class TestSdkSplitterInSimulator(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not os.path.exists(os.path.join(ROOT, HELLO_JSON)):
-            raise unittest.SkipTest("hello.zex has not been built")
-        manifest = zexpack.load_manifest(os.path.join(ROOT, HELLO_JSON))
+            raise unittest.SkipTest("hello.exe has not been built")
+        manifest = exepack.load_manifest(os.path.join(ROOT, HELLO_JSON))
         ihx = os.path.join(ROOT, HELLO_OBJDIR, manifest["input"])
         cls.image = pack_image.parse_ihx(Path(ihx).read_text())
         cls.manifest = manifest
@@ -605,7 +605,7 @@ class TestSdkSplitterInSimulator(unittest.TestCase):
         self.startup_block(bank, 'one "two words" three')
         z.hl = self.BLOCK
         z.push16(RET)
-        z.pc = self.symbols["zos_entry"]
+        z.pc = self.symbols["kos_entry"]
         for _ in range(200000):
             z.step()
             if z.pc == self.symbols["_main"]:
@@ -641,7 +641,7 @@ class TestSdkSplitterInSimulator(unittest.TestCase):
             bank[self.BLOCK + 1] = length
             z.hl = self.BLOCK
             z.push16(RET)
-            z.pc = self.symbols["zos_entry"]
+            z.pc = self.symbols["kos_entry"]
             for _ in range(200000):
                 z.step()
                 if z.pc == self.symbols["_main"]:
@@ -663,7 +663,7 @@ class TestHelloWorldImage(ConsoleReplay, unittest.TestCase):
 
     IMAGE_SUBDIR = IMAGE_SUBDIR
     IMAGE_NAME = IMAGE_NAME
-    GREETING = "Hello, ZephyrOS!"
+    GREETING = "Hello, KonaOS!"
     REPORT = "monitor: exit status 0x0000 active 0 free-banks 6"
     CONSOLE_BOUND = "console: driver OK"
 
@@ -680,7 +680,7 @@ class TestHelloWorldImage(ConsoleReplay, unittest.TestCase):
 
     def test_kernel_carries_the_demo_as_its_boot_program(self):
         self.assertIn(BOOT_PROGRAM.encode("ascii"), self.replay.image)
-        self.assertNotIn(b"/system/monitor.zex", self.replay.image)
+        self.assertNotIn(b"/system/monitor.exe", self.replay.image)
 
     def test_demo_prints_the_greeting_on_the_bound_console(self):
         self.assertIn(self.CONSOLE_BOUND, self.transcript)
@@ -696,7 +696,7 @@ class TestHelloWorldImage(ConsoleReplay, unittest.TestCase):
 
     def test_early_console_still_reports_the_machine(self):
         self.assertIn(b"kernel entry: OK", self.serial)
-        self.assertIn(b"ZephyrOS 0.0", self.serial)
+        self.assertIn(b"KonaOS 0.0", self.serial)
 
 
 if __name__ == "__main__":

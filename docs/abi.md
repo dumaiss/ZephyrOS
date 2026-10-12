@@ -1,6 +1,6 @@
-# ZephyrOS Native Syscall ABI (M2-M6)
+# KonaOS Native Syscall ABI (M2-M6)
 
-This document defines the only stable interface between native ZephyrOS
+This document defines the only stable interface between native KonaOS
 callers and the kernel.  C names, argument layouts, and SDCC calling
 conventions are private implementation details and must never appear in
 this interface.  Section 1-6 describe the M1/M2 gate contract; section 7
@@ -21,7 +21,7 @@ full matrix) is recorded in
 ## 1. Entry
 
 Native entry is the `RST 30h` instruction.  The page-zero vector at
-`0030h` is exactly `JP zos_syscall_entry`; `zos_syscall_entry` is the
+`0030h` is exactly `JP kos_syscall_entry`; `kos_syscall_entry` is the
 common-memory gate and the dispatcher lives in bank 7.
 
 ```text
@@ -48,7 +48,7 @@ HL          = primary result
 A           = error code when carry is set
 ```
 
-At M1 the dispatcher returns `A = ZOS_ENOSYS (01h)`, `HL = 0000h`, carry
+At M1 the dispatcher returns `A = KOS_ENOSYS (01h)`, `HL = 0000h`, carry
 set for every syscall number.
 
 ## 3. Register contract
@@ -82,7 +82,7 @@ set for every syscall number.
 application, mode 10 over bank N
     │ RST 30h        (return PC pushed on the caller stack)
     ▼
-0030h: JP zos_syscall_entry        page zero
+0030h: JP kos_syscall_entry        page zero
     ▼
 common memory, still mode 10
     ├── save A, snapshot IFF2, and DI
@@ -96,7 +96,7 @@ common memory, still mode 10
     │                                       the revision-13 page field is 0)
     ▼
 mode 11, bank 7 visible at 2000h-DFFFh
-    └── zos_syscall_dispatch (bank-7 boundary -> internal C dispatcher)
+    └── kos_syscall_dispatch (bank-7 boundary -> internal C dispatcher)
     ▼
 return path (common memory):
     ├── stash HL/A/carry in common state
@@ -173,12 +173,12 @@ remain as they shipped.
 
 All argument blocks must lie inside the caller window `0100h-1FFFh`
 (checked before any caller byte is read); data buffers may span
-`0100h-DFFFh`.  Unimplemented numbers return `ZOS_ENOSYS (01h)` with
+`0100h-DFFFh`.  Unimplemented numbers return `KOS_ENOSYS (01h)` with
 carry set.
 
 Work package 41 removed the three console syscalls: a program's console
 I/O is a client of the console driver now (section 13 below), and the
-numbers stay reserved - a stale caller gets `ZOS_ENOSYS` instead of
+numbers stay reserved - a stale caller gets `KOS_ENOSYS` instead of
 writing somewhere unexpected.
 
 Per-syscall behavior:
@@ -187,9 +187,9 @@ Per-syscall behavior:
   releases the process's bank and slot, and resumes the suspended parent
   (initially the kernel launcher) after its `exec` call.  An argument
   block outside the caller window is treated as a fatal user fault:
-  the process exits with status `ZOS_EFAULT`.  A raw `RET` from a
+  the process exits with status `KOS_EFAULT`.  A raw `RET` from a
   program entry behaves the same way - the common return trap turns it
-  into an exit with `ZOS_EFAULT`, so a process can never unwind into
+  into an exit with `KOS_EFAULT`, so a process can never unwind into
   the kernel or a previous process.
 - `SYS_GETINFO` writes a six-byte versioned record at the argument
   pointer and returns `6` in `HL`:
@@ -202,20 +202,20 @@ Per-syscall behavior:
   | `3` | 1 | `bank` (application bank `0-6`) |
   | `4` | 2 | `flags`: bit 0 `PROCESS_INFO_FLAG_KERNEL_PARENT` |
 
-Errors use the shared errno values in `abi/zos/errno.h`
-(`ZOS_EINVAL`, `ZOS_EFAULT`, `ZOS_ENOSPC`, `ZOS_EBUSY`, ...) as negated
-words in `HL`; a bad pointer range is `ZOS_EFAULT`, a bad argument block
-or length is `ZOS_EINVAL`.
+Errors use the shared errno values in `abi/kos/errno.h`
+(`KOS_EINVAL`, `KOS_EFAULT`, `KOS_ENOSPC`, `KOS_EBUSY`, ...) as negated
+words in `HL`; a bad pointer range is `KOS_EFAULT`, a bad argument block
+or length is `KOS_EINVAL`.
 
-Native programs use `user/sdk/include/zos/console.h` (`exit`,
+Native programs use `user/sdk/include/kos/console.h` (`exit`,
 `getinfo` and the console functions), which wraps these numbers and
 the console driver protocol with the private SDCC convention; programs
 never call `RST 30h` directly unless they re-implement that convention.
 
-Validation: `make subsystem-selftest` runs `zextest.zex` from ROMFS in two
+Validation: `make subsystem-selftest` runs `exetest.exe` from ROMFS in two
 application banks and checks the exact exit statuses; the simulator
 replays the full image transcript (`tests/test_m6_sim.py`), including
-the raw-return fault path and the malformed-ZEX matrix.  The physical
+the raw-return fault path and the malformed-EXE matrix.  The physical
 gate is `make smoke-hardware-m6 SERIAL_PORT=/dev/ttyUSB0` with the
 transcript expectations pinned in `tools/serial_smoke.py`.
 
@@ -252,13 +252,13 @@ Memory access rules:
   `0100h-DFFFh`.  The native page zero `0000h-00FFh` and common memory
   are protected.
 - Bank `7`, out-of-range addresses, arithmetic wrap, and a nonzero
-  reserved field are rejected with `ZOS_EINVAL`.
+  reserved field are rejected with `KOS_EINVAL`.
 
 Port rules:
 
 - `SYS_DIAG_IO_IN` / `SYS_DIAG_IO_OUT` accept ports `10h-FFh` only.
   Ports `00h-0Fh` alias the memory-control latch; an access there would
-  be a bank/mode operation in disguise, so `ZOS_EINVAL` is returned
+  be a bank/mode operation in disguise, so `KOS_EINVAL` is returned
   before anything is executed.
 
 `SYS_DIAG_BANK_INFO` returns `HL = (mask << 8) | bank`:
@@ -284,8 +284,8 @@ in `HL`:
 | `7` | 1 | `romfs_first_page` | 2 |
 
 The packed numbers and block layouts are declared in
-`abi/zos/diag.h` (the single public source) and mirrored by the SDK's
-`user/sdk/include/zos/diag.h` (`diag_*` gate wrappers in
+`abi/kos/diag.h` (the single public source) and mirrored by the SDK's
+`user/sdk/include/kos/diag.h` (`diag_*` gate wrappers in
 `user/sdk/src/diaggate.asm`); host tests pin the two headers
 and the assembly wrapper constants together.
 
@@ -293,7 +293,7 @@ Validation: `make subsystem-selftest` boots the monitor image, runs the
 kernel-side diagnostic selftest (`tests/target/m7/m7_test.c`) and
 replays the scripted interactive session (`tests/test_m7_sim.py`),
 including per-class rejections, canary/table stability, and exact
-latch/SP/IFF restoration; `make monitor-test` checks the monitor ZEX
+latch/SP/IFF restoration; `make monitor-test` checks the monitor EXE
 layout and its source/map freedom from kernel/serial dependencies.  The
 physical gate is `make smoke-hardware-m7 SERIAL_PORT=/dev/ttyUSB0` (see
 `docs/monitor.md`).
@@ -302,7 +302,7 @@ physical gate is `make smoke-hardware-m7 SERIAL_PORT=/dev/ttyUSB0` (see
 
 M9 (package 27) exposes the VFS to native programs behind the unchanged
 gate.  The family is `10h-1Fh`; argument blocks are declared in
-`abi/zos/fs.h` and are packed on the Z80 (every field is pinned
+`abi/kos/fs.h` and are packed on the Z80 (every field is pinned
 by `_Static_assert` and by host tests).
 
 ```text
@@ -311,7 +311,7 @@ by `_Static_assert` and by host tests).
 12h  SYS_FS_READ      {fd:u8, buffer:u16, length:u16}         -> count in HL
 13h  SYS_FS_WRITE     {fd:u8, buffer:u16, length:u16}         -> count in HL
 14h  SYS_FS_SEEK      {fd:u8, whence:u8, offset:i32}          -> position written back
-15h  SYS_FS_STAT      {path:u16, length:u16, out:u16}         -> struct zfs_stat out
+15h  SYS_FS_STAT      {path:u16, length:u16, out:u16}         -> struct kfs_stat out
 16h  SYS_FS_OPENDIR   {path:u16, length:u16}                  -> fd in HL
 17h  SYS_FS_READDIR   {fd:u8, out:u16}                        -> 1 entry / 0 end
 18h  SYS_FS_CLOSEDIR  {fd:u8}
@@ -329,42 +329,42 @@ Rules:
 - Path fields address 1..127 non-NUL bytes in the caller buffer window
   `0100h-DFFFh`; they are copied into a shared static pathname scratch and
   resolved against the calling process' CWD.  A zero length, an over-long
-  path, an embedded NUL or a window violation is `ZOS_EINVAL`.
+  path, an embedded NUL or a window violation is `KOS_EINVAL`.
 - `buffer`/`out` fields address the user-buffer window `0100h-DFFFh` and
   move only through the checked bank-copy gates.  File data is transferred
   in bounded chunks through the single 512-byte bank-7 staging buffer.
 - The descriptor an application names is the global 8-entry VFS pool index
   (`kernel/vfs/`, owner-tagged).  Every fd-taking call verifies range, type
-  (`FILE` vs `DIRECTORY`) and owner; a mismatch is `ZOS_EINVAL`, a full pool
-  is `ZOS_EMFILE`.  Provider handles are never exposed.  Descriptors are not
+  (`FILE` vs `DIRECTORY`) and owner; a mismatch is `KOS_EINVAL`, a full pool
+  is `KOS_EMFILE`.  Provider handles are never exposed.  Descriptors are not
   `stdin`/`stdout`, are not inherited across `exec`, and there is no dup.
 - CWD is a VFS concept; `CHDIR` stores the canonical path and crosses mounts
   transparently, and `GETCWD` writes the NUL-terminated canonical path and
-  returns its length excluding the NUL.  A too-small buffer is `ZOS_EINVAL`.
+  returns its length excluding the NUL.  A too-small buffer is `KOS_EINVAL`.
 - `READ`/`WRITE` return the confirmed byte count in `HL`; a failure after at
   least one confirmed chunk returns the confirmed count, otherwise the
   error.  `SEEK` writes the resulting 32-bit position back into the
   `offset` field of the block and returns `0` in `HL`.
-- `READDIR` returns `HL = 1` with a `zfs_dirent` at `out`, or `HL = 0` at
+- `READDIR` returns `HL = 1` with a `kfs_dirent` at `out`, or `HL = 0` at
   end of stream.
 - M9 has no `SYS_FS_STATFS` and no truncate-to-arbitrary-size; truncation to
-  zero is `SYS_FS_OPEN` with `ZFS_O_TRUNC`.
-- Before the VFS READY phase every `FS_*` call returns `ZOS_EBUSY`; every
+  zero is `SYS_FS_OPEN` with `KFS_O_TRUNC`.
+- Before the VFS READY phase every `FS_*` call returns `KOS_EBUSY`; every
   driver validates its complete block before any state change.
 
-Errors use the shared values in `abi/zos/errno.h`; M9 adds
-`ZOS_EEXIST (10h)`, `ZOS_ENOTDIR (11h)`, `ZOS_EISDIR (12h)`,
-`ZOS_ENOTEMPTY (13h)`, `ZOS_EROFS (14h)`, `ZOS_ESTALE (15h)`,
-`ZOS_EXDEV (16h)` and `ZOS_EMFILE (17h)`.  `ZOS_EMFILE` reports
+Errors use the shared values in `abi/kos/errno.h`; M9 adds
+`KOS_EEXIST (10h)`, `KOS_ENOTDIR (11h)`, `KOS_EISDIR (12h)`,
+`KOS_ENOTEMPTY (13h)`, `KOS_EROFS (14h)`, `KOS_ESTALE (15h)`,
+`KOS_EXDEV (16h)` and `KOS_EMFILE (17h)`.  `KOS_EMFILE` reports
 descriptor-pool or provider open-handle exhaustion, distinct from
-`ZOS_ENOSPC` (storage full).
+`KOS_ENOSPC` (storage full).
 
-Native programs use the wrappers in `user/sdk/include/zos/fs.h`
+Native programs use the wrappers in `user/sdk/include/kos/fs.h`
 (`open`, `close`, `read`, `write`, `seek`, `stat`,
-`zos_opendir`, `zos_readdir`, `zos_closedir`, `mkdir`, `rmdir`,
+`kos_opendir`, `kos_readdir`, `kos_closedir`, `mkdir`, `rmdir`,
 `unlink`, `rename`, `chdir`, `getcwd`, `sync`).  They
 take NUL-terminated strings, reject a string over 127 bytes (or an
-empty/null one) locally with `-ZOS_EINVAL`, and return the negated native
+empty/null one) locally with `-KOS_EINVAL`, and return the negated native
 error code on failure.
 
 Validation: `make fs-selftest` builds the M10 outcome image (the
@@ -384,7 +384,7 @@ is `make smoke-hardware-fs SERIAL_PORT=/dev/ttyUSB0`, which expects
 
 `SYS_EXEC` (package 28, extended by package 28b) runs a child program to
 completion and returns the child's u16 exit status.  It is a thin
-composition of the existing process machinery - the same slot, bank, ZEX
+composition of the existing process machinery - the same slot, bank, EXE
 loader, page-zero, VFS-hook and exit path the kernel launcher uses - plus
 a bounded continuation stack for the shared syscall gate.  There is no
 second process manager and no asynchronous spawn: the call is
@@ -405,30 +405,30 @@ Rules:
 - `args` addresses `args_length` raw bytes in the caller buffer window
   `0100h-DFFFh` (no wrap).  The kernel copies them byte-exact into the
   child's startup block and never splits, quotes or interprets them;
-  user space owns parsing (`user/sdk/include/zos/process.h`).  `args_length` 0
+  user space owns parsing (`user/sdk/include/kos/process.h`).  `args_length` 0
   means no arguments and `args` is ignored; a length above 125 or a
-  pointer outside the window is `ZOS_EINVAL`, checked in the preflight
+  pointer outside the window is `KOS_EINVAL`, checked in the preflight
   before anything is allocated.  An argument block outside `0100h-1FFFh`,
-  like a path one, is also `ZOS_EINVAL`.
+  like a path one, is also `KOS_EINVAL`.
 - The child inherits the parent's CWD and nothing else: the descriptor
   pool is not inherited (a child's fd numbers belong to the child), and
   the parent's open files keep their own offsets and data.  The child's
   `chdir` never affects the parent.
 - The child is an ordinary process in a fresh application bank: it is
   never bank 7, it gets its own page zero, and a raw `RET` from its entry
-  is a fault reported as an exit status of `ZOS_EFAULT`, exactly like a
+  is a fault reported as an exit status of `KOS_EFAULT`, exactly like a
   program launched by the kernel.  The v2 loader zeroes only the child's
   BSS (primary and per segment), its startup block and the page-zero
   vector (36.19); nothing else in the bank is cleared.
-- Nesting is bounded by `ZOS_EXEC_MAX_DEPTH` (4) user processes in one
+- Nesting is bounded by `KOS_EXEC_MAX_DEPTH` (4) user processes in one
   synchronous chain; the kernel launcher is not one of them.  A
-  suspension needs at most `ZOS_EXEC_FRAME_SAVE` gate-stack bytes
+  suspension needs at most `KOS_EXEC_FRAME_SAVE` gate-stack bytes
   (`kernel/include/process.h`), which the launch gate copies out of the
   single common gate stack and restores before the parent's
   `SYS_EXEC` returns.
 - Past the suspension point nothing can fail: every allocating or
   fallible step (path copy-in, tail copy, slot/bank allocation, CWD start,
-  the ZEX v2 header check, segment allocation and load, page zero, startup
+  the EXE v2 header check, segment allocation and load, page zero, startup
   block) happens in `process_prepare()` before the child is entered, with
   the executable source closed before it returns.  `process_launch()` only
   performs the transition.  A failed load releases the child's slot, bank,
@@ -452,41 +452,41 @@ buffer window, so a program must copy the tail into its own data before
 passing it to a syscall (the runtime `startup()` accessor returns the
 block, and `splitargs()` parses a copy).  Programs that ignore `HL` are
 unaffected.  The entry glue that preserves `HL` is the SDK's crt0
-(`user/sdk/src/crt0.asm`, entry symbol `zos_entry`): it stores the block
+(`user/sdk/src/crt0.asm`, entry symbol `kos_entry`): it stores the block
 for `startup()` and never modifies it, so the kernel's copy stays valid.
 
-Error mapping (carry set, `A` = `ZOS_E*`, nothing allocated):
+Error mapping (carry set, `A` = `KOS_E*`, nothing allocated):
 
 | Condition | Error |
 | --- | --- |
-| missing file | `ZOS_ENOENT` |
-| directory | `ZOS_EISDIR` |
-| malformed or oversize ZEX | `ZOS_EINVAL` |
-| bad argument block, tail over 125 bytes, or tail pointer outside the window | `ZOS_EINVAL` |
-| no free slot or bank | `ZOS_ENOSPC` |
-| depth limit or frame too large | `ZOS_EBUSY` |
+| missing file | `KOS_ENOENT` |
+| directory | `KOS_EISDIR` |
+| malformed or oversize EXE | `KOS_EINVAL` |
+| bad argument block, tail over 125 bytes, or tail pointer outside the window | `KOS_EINVAL` |
+| no free slot or bank | `KOS_ENOSPC` |
+| depth limit or frame too large | `KOS_EBUSY` |
 | provider read error | passed through unchanged |
 
 On success carry is clear and `HL` holds the child's exit status; the
 result is not a file descriptor and there is no result block.
 
-Native programs use `user/sdk/include/zos/process.h`
+Native programs use `user/sdk/include/kos/process.h`
 (`run(const char *path, const char *args)`), which takes the
 NUL-terminated path and raw tail, rejects a path over 127 bytes or a tail
-over 125 bytes (or an empty/null path) locally with `-ZOS_EINVAL`, and
+over 125 bytes (or an empty/null path) locally with `-KOS_EINVAL`, and
 returns the child's status or the negated native error code.  A NULL or
 empty `args` means no arguments.
 
 Implementation notes:
 
-- The syscall gate's transition state (`zos_gate_saved_sp/latch/iff`) is
+- The syscall gate's transition state (`kos_gate_saved_sp/latch/iff`) is
   single-depth in common RAM, so every syscall of the running process
   overwrites it.  The launch gate therefore shadows the launcher's copy
   per depth and the resume puts it back, which is what lets a *resumed*
   parent return through the gate with its own stack pointer, bank and
   interrupt state rather than the child's.
 - One continuation record (`saved_sp`, `saved_latch`, `saved_iff`) exists
-  per depth, plus `ZOS_EXEC_MAX_DEPTH - 1` gate-frame save areas: the
+  per depth, plus `KOS_EXEC_MAX_DEPTH - 1` gate-frame save areas: the
   outermost process is launched by the kernel from the boot stack and
   needs no copy.  All of it is common-resident
   (`kernel/process/launch.asm`) because the resume gate reads it *while*
@@ -498,10 +498,10 @@ Implementation notes:
   placed there for safety.
 
 Validation: the geometry is pinned by `kernel/include/process.h`
-(`ZOS_EXEC_MAX_DEPTH`, `ZOS_EXEC_FRAME_SAVE` with its static asserts) and
+(`KOS_EXEC_MAX_DEPTH`, `KOS_EXEC_FRAME_SAVE` with its static asserts) and
 by `kernel/process/launch.asm`; the nested exec runs in the M10 outcome
 image (`make fs-selftest`), where the boot program `SYS_EXEC`s
-`/system/fs_child.zex` and checks the child's tail, stdout, exit status
+`/system/fs_child.exe` and checks the child's tail, stdout, exit status
 and the release of the handles it leaked
 (`tests/test_fs_selftest_sim.py`).  The physical gate is
 `make smoke-hardware-fs SERIAL_PORT=/dev/ttyUSB0`.
@@ -523,32 +523,32 @@ nucleus mechanism behind these two numbers: drivers export *endpoints*
 identified by a (class, instance) pair, a client holds an opaque handle
 returned by the lookup, and a call is one bounded 32-byte frame copied in
 at entry and back on reply.  The numbers, the frame layout, the argument
-blocks and the descriptor conventions are pinned in `abi/zos/ipc.h`, which
+blocks and the descriptor conventions are pinned in `abi/kos/ipc.h`, which
 static-asserts every offset.
 
 Both blocks live in the caller *window*, `0100h-1FFFh`: the P-normalizing
 gate leaves only that part of the caller's bank visible while the nucleus
 runs, so a block anywhere else (including the caller's own data above
-`2000h`) is refused with carry set and `A = ZOS_EINVAL` before the IPC
-layer is entered.  A program marshals through a low-window scratch; libzos
-exports `zos_scratch` plus its own `zos_ipc_lookup_block`,
-`zos_ipc_call_block` and `zos_ipc_raw_req` (docs/sdk.md).
+`2000h`) is refused with carry set and `A = KOS_EINVAL` before the IPC
+layer is entered.  A program marshals through a low-window scratch; libkos
+exports `kos_scratch` plus its own `kos_ipc_lookup_block`,
+`kos_ipc_call_block` and `kos_ipc_raw_req` (docs/sdk.md).
 
 Result conventions:
 
 - `SYS_IPC_LOOKUP` returns the handle in `HL` with carry clear; `HL = 0`
   means "not registered" and `args->version` is filled on success.
-  A block outside the window is a carried `ZOS_EINVAL`.
+  A block outside the window is a carried `KOS_EINVAL`.
 - `SYS_IPC_CALL` returns the IPC *status* in `HL` with carry clear.  The
   status is the driver's own result (0 or positive), or a negated
-  `ZOS_E*` for an IPC-layer refusal: unknown or stale handle
-  (`ZOS_EINVAL`), forged or released descriptor id (`ZOS_EINVAL`),
-  `offset + length` past the captured descriptor (`ZOS_EINVAL`),
-  re-entrant call into a non-re-entrant endpoint (`ZOS_EBUSY`), nesting
-  deeper than `ZOS_IPC_MAX_NESTING` (`ZOS_ENOSPC`).  The reply frame, the
+  `KOS_E*` for an IPC-layer refusal: unknown or stale handle
+  (`KOS_EINVAL`), forged or released descriptor id (`KOS_EINVAL`),
+  `offset + length` past the captured descriptor (`KOS_EINVAL`),
+  re-entrant call into a non-re-entrant endpoint (`KOS_EBUSY`), nesting
+  deeper than `KOS_IPC_MAX_NESTING` (`KOS_ENOSPC`).  The reply frame, the
   captured descriptor id in `frame.desc` and `status` are written back
   into the block, so a caller that only reads `status` sees the refusal
-  too.  A carried `ZOS_EINVAL` means the request never reached the IPC
+  too.  A carried `KOS_EINVAL` means the request never reached the IPC
   layer: block outside the window, `frame_length` 0 or above 32, or a
   non-zero `reserved` byte.
 - The IPC status is a *protocol* result, not a syscall result: a driver
@@ -558,14 +558,14 @@ Result conventions:
 Descriptor convention (one optional caller buffer per call, named by
 `buffer`/`length`/`direction`):
 
-- `direction` is `ZOS_IPC_DESC_IN` (caller supplies, 0) or
-  `ZOS_IPC_DESC_OUT` (caller receives, 1).  A zero `length` means "no
-  buffer" and `frame.desc` is `ZOS_IPC_DESC_NONE` (`FFh`).
+- `direction` is `KOS_IPC_DESC_IN` (caller supplies, 0) or
+  `KOS_IPC_DESC_OUT` (caller receives, 1).  A zero `length` means "no
+  buffer" and `frame.desc` is `KOS_IPC_DESC_NONE` (`FFh`).
 - The nucleus captures the buffer at entry from the gate's saved caller
   latch (bank and page), bounds-checks it against
-  `ZOS_USER_BUFFER_BASE`/`ZOS_USER_BUFFER_END` (the caller's own bank,
+  `KOS_USER_BUFFER_BASE`/`KOS_USER_BUFFER_END` (the caller's own bank,
   `0100h-DFFFh`), the common window (`E000h-FFFFh`, which every mapping
-  shows at the same address) and `ZOS_IPC_DESC_MAX` (4096), and hands the
+  shows at the same address) and `KOS_IPC_DESC_MAX` (4096), and hands the
   driver a small id.  The caller's *raw address is never visible to a
   driver*: drivers reach the buffer only through the restricted copy
   calls (`copy_in`/`copy_out`/`move`), and every use re-checks
@@ -596,11 +596,11 @@ staging block in bank 6's `8000h-BFFFh`; one that does not still works,
 on path C, and the nucleus counts it (the three path counters are read
 out of the image by the acceptance replay).
 
-Nesting and re-entrancy: `ZOS_IPC_MAX_NESTING` is 4 (the outermost call
+Nesting and re-entrancy: `KOS_IPC_MAX_NESTING` is 4 (the outermost call
 plus three nested levels).  An endpoint registered with
-`ZOS_IPC_EP_REENTRANT` may be re-entered; every other endpoint refuses a
-call that arrives while it is active with `ZOS_EBUSY`.  A driver executes
-on the fixed driver stack (`ZOS_DRIVER_STACK_BASE`, 512 bytes) with the
+`KOS_IPC_EP_REENTRANT` may be re-entered; every other endpoint refuses a
+call that arrives while it is active with `KOS_EBUSY`.  A driver executes
+on the fixed driver stack (`KOS_DRIVER_STACK_BASE`, 512 bytes) with the
 driver page mapped, so its code, its data and its stack are all fixed or
 bank 6; the nucleus keeps its own stack, the common gate stack and the
 IRQ vectoring.  An IRQ delivered while a call is in progress runs the
@@ -608,12 +608,12 @@ driver handler through the restricted API (`ipc_irq_active`; no register,
 lookup, call or copy) on the ISR stack and restores the interrupted latch
 exactly, so the call's frame and mapping survive.
 
-Native programs use the wrappers in `user/sdk/include/zos/ipc.h`:
-`zos_ipc_lookup(class, instance)`, `zos_ipc_lookup_version(...)` and
-`call(handle, struct zos_ipc_request *)`; the raw
-`zos_ipc_raw_call(struct zos_ipc_call_req *)` the tests drive directly is
-SDK-private (`user/sdk/src/zos_internal.h`, package 46 T6).
-The lookup wrapper caches up to `ZOS_IPC_CACHE_ENTRIES` (8) (class,
+Native programs use the wrappers in `user/sdk/include/kos/ipc.h`:
+`kos_ipc_lookup(class, instance)`, `kos_ipc_lookup_version(...)` and
+`call(handle, struct kos_ipc_request *)`; the raw
+`kos_ipc_raw_call(struct kos_ipc_call_req *)` the tests drive directly is
+SDK-private (`user/sdk/src/kos_internal.h`, package 46 T6).
+The lookup wrapper caches up to `KOS_IPC_CACHE_ENTRIES` (8) (class,
 instance, handle) triples, so a repeated discovery costs no syscall; the
 cache is an optimisation only, never a correctness dependency (the kernel
 owns the endpoint table and handles are permanent).
@@ -622,18 +622,18 @@ Package 41 moved the substrate from `test_link` into production: the
 fixed core links it (2,562 bytes of code and data), the cold half links
 the syscall bodies and the resident driver loader, and every production
 image boots its driver set from the store's `drivers.man`.  The
-`ZOS_TARGET_TEST_BUILD` routing seam in `kernel/syscall.c` is gone - the
+`KOS_TARGET_TEST_BUILD` routing seam in `kernel/syscall.c` is gone - the
 IPC pair is dispatched like the filesystem family, in
 `kernel/syscall/ipc.c`.
 
 Validation: `make ipc-selftest` builds the production boot path with the
 substrate linked into the fixed core, the six synthetic bank-6 drivers
 placed by the cold loader and the SDK *probe* program booting as
-`/system/ipccopy.zex`.  The probe names five caller-buffer addresses
+`/system/ipccopy.exe`.  The probe names five caller-buffer addresses
 (`0100h`, `3000h`, `7000h`, `C000h`, `9000h`) in the chained 512-byte read
 and a single `copy_out`, runs the driver-side slow case and a path-B copy
 with the timer armed, then starts the conformance client
-(`/system/ipc.zex`) and folds its 55-check verdict into its own line
+(`/system/ipc.exe`) and folds its 55-check verdict into its own line
 (`ipccopy: PASS`).  `tests/test_ipc_selftest_sim.py` boots the image once
 and asserts the outcomes: both verdicts and their check counts, every
 phase marker on the wire, the resolver's copy-path counters (one per
@@ -656,19 +656,19 @@ it before package 41, so it stayed byte-identical until then
 The stage-3 lookup disappears with the milestone's typed-namespace model
 (architecture 36.13/36.14): a program names what it wants, `bind` returns
 a *typed handle*, and endpoint numbers stay private to the nucleus.  The
-family is pinned in `abi/zos/object.h` (every offset static-asserted):
+family is pinned in `abi/kos/object.h` (every offset static-asserted):
 
 ```text
 06h  SYS_BIND     args {path:u16, length:u16, flags:u16,
                          type:u8 out, reserved:u8 out}
                   -> HL = handle (>= 3) with the 8-bit protocol type
-                     written to `type`; negative -ZOS_E* on refusal
+                     written to `type`; negative -KOS_E* on refusal
 07h  SYS_CALL     args {handle:u8, op:u8, flags:u8, frame_length:u8,
                          buffer:u16, length:u16, direction:u8,
                          reserved:u8, frame:32, status:i16}
                   -> HL = the protocol status (the same value as `status`)
 08h  SYS_UNBIND   args {handle:u8}
-                  -> HL = 0, or -ZOS_EINVAL for a handle the caller
+                  -> HL = 0, or -KOS_EINVAL for a handle the caller
                      does not own, a standard handle or an unbound number
 09h  SYS_NS_ENUM  args {path:u16, length:u16, cookie:u16 in/out, out:u16,
                          out_size:u16, count:u16 out}
@@ -682,7 +682,7 @@ changes is only what a handle *is*: one global, owner-tagged table (the
 extended M9 descriptor pool, `VFS_FD_MAX` entries), where each entry
 records the owner PID, the 8-bit protocol type, the endpoint (a bank-6
 driver endpoint or a nucleus one) and the provider's own object identity.
-`bind` never returns `ZOS_HANDLE_STDOUT` (1) or `ZOS_HANDLE_STDIN` (2);
+`bind` never returns `KOS_HANDLE_STDOUT` (1) or `KOS_HANDLE_STDIN` (2);
 those two are the *standard handles*, bound at process start to the
 `/dev/console` publication when the build has one, and re-created for a
 child by `SYS_EXEC`, which inherits no bound handle.  Process exit unbinds
@@ -692,28 +692,28 @@ Paths are resolved by the root router: `bind`/`ns_enum` normalize the
 caller's path (`vfs_path_normalize_at`, relative to the process CWD) and
 route the first component, case-insensitively, to one of the three static
 nucleus providers - `/fs` (the filesystem driver; `bind` below it returns
-`-ZOS_ENODEV` until package 42b), `/system` (ROMFS, usable before any
+`-KOS_ENODEV` until package 42b), `/system` (ROMFS, usable before any
 driver) and `/dev` (the host-built publication table).  A provider owns
 everything below its root and the VFS does not interpret it.  `/` is a
 directory of those three roots, not a provider: a root-level name has no
-owner and is refused with `-ZOS_ENOENT`.  There is no mount table, no
+owner and is refused with `-KOS_ENOENT`.  There is no mount table, no
 provider registration and no root merge.
 
-`ns_enum` returns `ZOS_NS_ENTRY_SIZE` (28) bytes per entry - `type`,
+`ns_enum` returns `KOS_NS_ENTRY_SIZE` (28) bytes per entry - `type`,
 `flags`, `name_length`, `reserved` and a NUL-terminated, zero-padded
 24-byte `name` - starting at the index in `cookie`; the cookie is written
 back so a caller pages with one entry at a time, and the container flag
-`ZOS_NS_ENTRY_CONTAINER` marks a name that is a grouping level, not a
+`KOS_NS_ENTRY_CONTAINER` marks a name that is a grouping level, not a
 bindable object (`/dev/input`, `/dev/serial`).
 
-A ROMFS bind returns the type `ZOS_TYPE_FILE` and an in-process FILE
+A ROMFS bind returns the type `KOS_TYPE_FILE` and an in-process FILE
 handle served by a nucleus endpoint through the same call path as a bank-6
-endpoint, with the one ROMFS reader (`ZFILE_OP_READ`, `ZFILE_OP_SEEK`,
-`ZFILE_OP_META`; `ZFILE_OP_WRITE` is `-ZOS_EROFS`).  `/dev` names come from
+endpoint, with the one ROMFS reader (`KFILE_OP_READ`, `KFILE_OP_SEEK`,
+`KFILE_OP_META`; `KFILE_OP_WRITE` is `-KOS_EROFS`).  `/dev` names come from
 the publications the packer resolves into each driver container and the
 loader installs (docs/devices.md, docs/module-format.md).
 
-**Build selection.**  `abi/zos/object.h` defaults `ZOS_NS_HANDLES` to 0:
+**Build selection.**  `abi/kos/object.h` defaults `KOS_NS_HANDLES` to 0:
 production keeps `SYS_IPC_LOOKUP`/`SYS_IPC_CALL` on 06h/07h, links none of
 the namespace objects, and is byte-for-byte the stage-3 image.  The macro
 is 1 in the `namespace-selftest` acceptance image (`make ns-selftest`,
@@ -729,7 +729,7 @@ console driver are the image's driver set.
 
 Validation: the `namespace-selftest` image boots SIO, the console driver
 and a synthetic publisher whose manifest declares `/dev/input/keyboard`
-and `/dev/video`, then an ordinary SDK client (`/system/ns.zex`) that
+and `/dev/video`, then an ordinary SDK client (`/system/ns.exe`) that
 binds `/dev` objects and their grouping names, calls the publisher through
 the handle, reads and seeks `/system/drivers.man`, exhausts and releases
 the handle table, pages the three namespaces and `SYS_EXEC`s a child that
@@ -742,18 +742,18 @@ compares the transcript with the packed store.
 
 
 A program's console I/O is not a syscall any more: `user/sdk/src/console_proto.c`
-speaks the protocol in `abi/zos/protocol.h` through the standard handles
+speaks the protocol in `abi/kos/protocol.h` through the standard handles
 every process starts with (work packages 41-42b).
 
 | SDK function | console driver operation | descriptor |
 | --- | --- | --- |
-| `console_write(buf, len)` | `ZCONSOLE_OP_WRITE` | IN: the caller's buffer |
-| `console_read(buf, len)` | `ZCONSOLE_OP_READ` (non-blocking drain) | OUT: the caller's buffer |
-| `console_poll()` | `ZCONSOLE_OP_POLL` | none |
-| `putchar(ch)` | `ZCONSOLE_OP_PUTC` | none |
+| `console_write(buf, len)` | `KCONSOLE_OP_WRITE` | IN: the caller's buffer |
+| `console_read(buf, len)` | `KCONSOLE_OP_READ` (non-blocking drain) | OUT: the caller's buffer |
+| `console_poll()` | `KCONSOLE_OP_POLL` | none |
+| `putchar(ch)` | `KCONSOLE_OP_PUTC` | none |
 
 The handle is looked up once and cached; a program whose store lists no
-console driver sees `-ZOS_ENOENT` from every one of them.  `console_puts`,
+console driver sees `-KOS_ENOENT` from every one of them.  `console_puts`,
 `console_write`, `getchar` and `console_readline` are unchanged on top
 of these four.  The early console and the panic path remain nucleus-only
 and syscall-free: a boot with no driver at all still reports.
@@ -774,7 +774,7 @@ banks into free, primary (one process's bank) or auxiliary memory; an
 auxiliary bank carries seven 8 KiB slots at `0000h-DFFFh`.  A process
 allocates *extended-memory objects* out of the auxiliary slots and reaches
 them by copy or through the mode-10 far aperture (36.16/36.17).  The
-family is pinned in `abi/zos/xmem.h` (every offset static-asserted):
+family is pinned in `abi/kos/xmem.h` (every offset static-asserted):
 
 ```text
 20h  SYS_XMEM_ALLOC  args {size:u16, flags:u16}       -> HL = handle (>= 1)
@@ -788,27 +788,27 @@ family is pinned in `abi/zos/xmem.h` (every offset static-asserted):
                          address in the aperture
 26h  SYS_SEG_INFO    args {segment:u8, reserved:u8,
                            buffer:u16 out}            -> 8-byte record
-                         (section 15; a ZEX v2 segment)
+                         (section 15; a EXE v2 segment)
 27h  SYS_SEG_MAP     args {segment:u8, reserved:u8}   -> HL = the aperture
                          token of a FAR_CODE segment (section 15)
 ```
 
-`flags` is `ZOS_XMEM_FLAG_MAPPABLE` (at most 16 KiB, placed in the
-aperture slice so `SYS_XMEM_MAP` can open it) or `ZOS_XMEM_FLAG_NONE`;
-any other bit is `-ZOS_EINVAL`, as are a zero size and a mappable size over
+`flags` is `KOS_XMEM_FLAG_MAPPABLE` (at most 16 KiB, placed in the
+aperture slice so `SYS_XMEM_MAP` can open it) or `KOS_XMEM_FLAG_NONE`;
+any other bit is `-KOS_EINVAL`, as are a zero size and a mappable size over
 the limit.  A size over the 32 KiB maximum object, an exhausted object
-table or a free region without a fitting run is `-ZOS_ENOSPC`.  The size
+table or a free region without a fitting run is `-KOS_ENOSPC`.  The size
 rounds up to whole 8 KiB slots and one object is contiguous inside one
 bank; placement is never visible through the API.
 
 **Contents are undefined**: nothing pre-zeroes an object (36.19), so a
 program that needs zeroes writes them.  Every range - `offset + length`
 against the allocated size, the buffer against the caller window - is
-checked before any byte moves, and a copy-gate failure is `-ZOS_EFAULT`.
+checked before any byte moves, and a copy-gate failure is `-KOS_EFAULT`.
 `SYS_XMEM_INFO` returns `requested`, `allocated`, `flags` and `type`
-(`ZOS_XMEM_TYPE_RUNTIME`, or `ZOS_XMEM_TYPE_SEGMENT` for a loader-created
-ZEX v2 `DATA` segment - section 15), never a bank or slot.  `SYS_XMEM_FREE`
-refuses a segment object with `-ZOS_EINVAL`: a loader segment is released
+(`KOS_XMEM_TYPE_RUNTIME`, or `KOS_XMEM_TYPE_SEGMENT` for a loader-created
+EXE v2 `DATA` segment - section 15), never a bank or slot.  `SYS_XMEM_FREE`
+refuses a segment object with `-KOS_EINVAL`: a loader segment is released
 only at exit.
 
 **Map tokens.**  In mode 10 with a nonzero page field P, the caller's
@@ -819,7 +819,7 @@ the upper one).  The SDK helpers are register-only and take no syscall:
 `aperture_open(token)` writes the token to the memory-control port and
 returns the previous latch, `aperture_close(saved)` writes that latch
 back.  Only the caller's own mappable objects can be mapped - a stale,
-foreign or non-mappable handle is `-ZOS_EINVAL` - and every object bank
+foreign or non-mappable handle is `-KOS_EINVAL` - and every object bank
 maps to a page field of 2..7, so no token ever names bank 6 or bank 7.
 
 **Buffer identity** (36.8).  A caller address in `8000h-BFFFh` while the
@@ -827,7 +827,7 @@ caller's saved latch has a nonzero page field names the far bank, not the
 primary bank: `read`/`write` buffers resolve that way, and every other
 syscall that moves caller bytes - descriptor capture included - applies
 the same rule.  A buffer that would cross the aperture boundary is refused
-with `-ZOS_EINVAL` before anything is copied.
+with `-KOS_EINVAL` before anything is copied.
 
 **Handles and lifetime.**  A handle is opaque, owner-tagged and
 generation-counted: a freed and reused entry hands out a different
@@ -836,7 +836,7 @@ A process owns its objects; a child inherits none of them, and `SYS_EXIT`
 releases every object of the exiting process after its handles are
 unbound (36.13).  Objects are read/write and non-executable.
 
-## 15. M10 ZEX v2 segments (SYS_SEG_INFO, SYS_SEG_MAP, packages 44a/44b)
+## 15. M10 EXE v2 segments (SYS_SEG_INFO, SYS_SEG_MAP, packages 44a/44b)
 
 ```text
 26h  SYS_SEG_INFO  args {segment:u8, reserved:u8, buffer:u16}
@@ -845,24 +845,24 @@ unbound (36.13).  Objects are read/write and non-executable.
                    -> HL = the aperture token of a FAR_CODE segment
 ```
 
-A ZEX v2 container declares zero or more auxiliary segments
-(`docs/zex-format.md` section 3).  `SYS_SEG_INFO` describes one of the
+A EXE v2 container declares zero or more auxiliary segments
+(`docs/exe-format.md` section 3).  `SYS_SEG_INFO` describes one of the
 calling process's own segments, named by its container id
 (`1..segment_count`, in table order), and returns:
 
 ```text
 offset 0  u16  size    image + BSS, the segment's logical size
-offset 2  u8   kind    ZOS_SEG_KIND_DATA (2) or ZOS_SEG_KIND_FAR_CODE (1)
-offset 3  u8   state   ZOS_SEG_STATE_LOADED
+offset 2  u8   kind    KOS_SEG_KIND_DATA (2) or KOS_SEG_KIND_FAR_CODE (1)
+offset 3  u8   state   KOS_SEG_STATE_LOADED
 offset 4  u16  handle  DATA: the extended-memory object handle; else 0
 offset 6  u16  reserved  0
 ```
 
 - A `DATA` segment is a loader-created extended-memory object of type
-  `ZOS_XMEM_TYPE_SEGMENT` owned by the process: `handle` is what
+  `KOS_XMEM_TYPE_SEGMENT` owned by the process: `handle` is what
   `SYS_XMEM_READ`/`SYS_XMEM_WRITE` take.  The segment is released only at
-  exit, so `SYS_XMEM_FREE` refuses its handle with `-ZOS_EINVAL`, and
-  `SYS_XMEM_INFO` reports type `ZOS_XMEM_TYPE_SEGMENT`.
+  exit, so `SYS_XMEM_FREE` refuses its handle with `-KOS_EINVAL`, and
+  `SYS_XMEM_INFO` reports type `KOS_XMEM_TYPE_SEGMENT`.
 - A `FAR_CODE` segment (package 44b) has no handle and reports 0: it is
   linked at `8000h`, the loader places it in the aperture slice of its own
   auxiliary bank (one far-code segment per bank) and it executes in place
@@ -872,7 +872,7 @@ offset 6  u16  reserved  0
   fails and rolls back, so a live segment always reports `LOADED`.
 - The ids are the calling process's own container: another process's
   segment does not exist for it, and an id outside `1..segment_count` is
-  `-ZOS_EINVAL`, as is a bad argument block or a record buffer outside
+  `-KOS_EINVAL`, as is a bad argument block or a record buffer outside
   the caller buffer window `0100h-DFFFh`.
 
 ```text
@@ -887,12 +887,12 @@ or bank 7.  The segment is always at `8000h`, so no address is returned:
 with the aperture open, `8000h` names the far segment and a `CALL` to an
 address in `8000h-BFFFh` runs the far code.  Only `FAR_CODE` segments have
 a token - an unknown id, a `DATA` segment's id (reached by handle, not
-mapped) or a bad argument block is `-ZOS_EINVAL`.  A caller address in
+mapped) or a bad argument block is `-KOS_EINVAL`.  A caller address in
 `8000h-BFFFh` while the aperture is open names the far bank by the buffer
 identity rule (section 14), so a syscall issued from far code may name a
 buffer inside the aperture.  The SDK opens and restores the aperture for
 one call: `farcall(segment, entry, a, b)`
-(`user/sdk/include/zos/seg.h`).
+(`user/sdk/include/kos/seg.h`).
 
 The SDK wrappers are `seginfo(segment, &info)` and
 `segmap(segment)`, which return 0 or `-errno` (the token for

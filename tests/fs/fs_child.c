@@ -1,6 +1,6 @@
-/* ZephyrOS filesystem outcome acceptance: the nested-exec child.
+/* KonaOS filesystem outcome acceptance: the nested-exec child.
  *
- * SYS_EXEC starts it from /system/fs_child.zex with the tail the parent
+ * SYS_EXEC starts it from /system/fs_child.exe with the tail the parent
  * passes, so this program proves three things the parent cannot:
  *
  *   * a child writes through its own standard handle;
@@ -12,7 +12,7 @@
  *     handle slots and the kernel's descriptor table after this program
  *     exits.
  *
- * Its exit status is the value the parent compares (ZOS_EXIT_STATUS).
+ * Its exit status is the value the parent compares (KOS_EXIT_STATUS).
  *
  * Two tails are accepted (work package 45b).  `tail-42` is the fs image's
  * contract: the card file is /fs/CHILD.TMP.  `stage` runs it as the
@@ -21,9 +21,9 @@
  * byte-exact, and everything else about the program is unchanged.
  */
 
-#include "zos.h"
+#include "kos.h"
 
-#define ZOS_EXIT_STATUS 42
+#define KOS_EXIT_STATUS 42
 
 #define CHILD_TAIL "tail-42"
 #define CHILD_STAGE "stage"
@@ -54,7 +54,7 @@ static unsigned int tail_length(const char *text)
 
 int main(int argc, char **argv)
 {
-	struct zos_startup *boot = startup();
+	struct kos_startup *boot = startup();
 	const char *tail = CHILD_TAIL;
 	const char *card_path = CHILD_FILE;
 	unsigned char type = 0u;
@@ -73,7 +73,7 @@ int main(int argc, char **argv)
 
 	console_puts("fs-child: stdout ok\r\n");
 
-	if (boot == (struct zos_startup *)0 || boot->version != 1u ||
+	if (boot == (struct kos_startup *)0 || boot->version != 1u ||
 	    boot->length != (unsigned char)tail_length(tail) ||
 	    !same(boot->tail, tail)) {
 		console_puts("fs-child: FAIL startup\r\n");
@@ -90,27 +90,27 @@ int main(int argc, char **argv)
 	 * or write-protected legitimately refuses the card file, so only the
 	 * `/fs` handle and the store handle are then leaked. */
 	bound = bind("/fs", 0u, &type);
-	if (bound >= (int)ZOS_HANDLE_FIRST_BOUND && type == ZOS_TYPE_FS) {
+	if (bound >= (int)KOS_HANDLE_FIRST_BOUND && type == KOS_TYPE_FS) {
 		++leaked;
-	} else if (bound != -ZOS_ENODEV && bound != -ZOS_EROFS) {
+	} else if (bound != -KOS_ENODEV && bound != -KOS_EROFS) {
 		printf("fs-child: FAIL bind %d\r\n", bound);
 		ok = 0;
 	}
 	card_file = open(card_path,
-			     (unsigned char)(ZFS_O_WRITE | ZFS_O_CREATE |
-					     ZFS_O_TRUNC));
-	if (card_file >= (int)ZOS_HANDLE_FIRST_BOUND) {
+			     (unsigned char)(KFS_O_WRITE | KFS_O_CREATE |
+					     KFS_O_TRUNC));
+	if (card_file >= (int)KOS_HANDLE_FIRST_BOUND) {
 		++leaked;
-	} else if (card_file == -ZOS_ENODEV) {
+	} else if (card_file == -KOS_ENODEV) {
 		console_puts("fs-child: card absent\r\n");
-	} else if (card_file == -ZOS_EROFS) {
+	} else if (card_file == -KOS_EROFS) {
 		console_puts("fs-child: card not writable\r\n");
 	} else {
 		printf("fs-child: FAIL create %d\r\n", card_file);
 		ok = 0;
 	}
-	system_file = open("/system/drivers.man", ZFS_O_READ);
-	if (system_file >= (int)ZOS_HANDLE_FIRST_BOUND) {
+	system_file = open("/system/drivers.man", KFS_O_READ);
+	if (system_file >= (int)KOS_HANDLE_FIRST_BOUND) {
 		++leaked;
 	} else {
 		printf("fs-child: FAIL system %d\r\n", system_file);
@@ -122,5 +122,5 @@ int main(int argc, char **argv)
 	}
 
 	console_puts(ok ? "fs-child: PASS\r\n" : "fs-child: FAIL\r\n");
-	return ok ? ZOS_EXIT_STATUS : 1;
+	return ok ? KOS_EXIT_STATUS : 1;
 }

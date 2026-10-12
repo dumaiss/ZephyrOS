@@ -67,14 +67,14 @@ class MinimalImageCase:
             [
                 "     00000000  _reset                            reset",
                 "     00000026  _reset_end                        reset",
-                "     00000030  _zos_rst30_vector                 page_zero",
-                "     00000033  _zos_rst30_end                    page_zero",
+                "     00000030  _kos_rst30_vector                 page_zero",
+                "     00000033  _kos_rst30_end                    page_zero",
                 "     0000E000  _boot_common_entry               start",
                 "     0000E010  _early_console_init              early_console",
                 "     0000E020  _early_console_putc              early_console",
                 "     0000E030  _early_console_puts              early_console",
                 "     0000E040  _panic                           panic",
-                "     0000E0F0  zos_syscall_entry                syscall_entry",
+                "     0000E0F0  kos_syscall_entry                syscall_entry",
                 "     0000E110  irq_ctc0_stub                   irq_entry",
                 "     0000E130  irq_ff_unexpected               irq_entry",
                 "     0000E140  irq_common_entry                irq_entry",
@@ -82,7 +82,7 @@ class MinimalImageCase:
                 "     0000FD00  irq_vector_page                 irq_vectors",
                 "     0000FE00  irq_vector_guard                irq_vectors",
                 "     00006000  _kernel_main                     main",
-                "     00002100  zos_syscall_dispatch             syscall_entry",
+                "     00002100  kos_syscall_dispatch             syscall_entry",
                 "     00002200  _irq_dispatch                    irq",
                 "     0000EEFE  rom_access_trampoline            rom_access",
                 "     0000EF00  rom_access_sync                  rom_access",
@@ -174,7 +174,7 @@ class TestSyntheticPacking(unittest.TestCase):
 
     def test_rst30_stub_wrong_vector_rejected(self):
         bad_map = self.case.map_text.replace(
-            "     00000030  _zos_rst30_vector", "     00000040  _zos_rst30_vector"
+            "     00000030  _kos_rst30_vector", "     00000040  _kos_rst30_vector"
         )
         with self.assertRaises(pack_image.LayoutError):
             pack_image.pack(self.case.ihx, bad_map, None)
@@ -258,7 +258,7 @@ class TestRecoveryPlacement(unittest.TestCase):
 
     def test_build_dir_requires_recovery_romfs(self):
         case = MinimalImageCase()
-        with tempfile.TemporaryDirectory(prefix="zosimg-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="kosimg-") as tmp:
             with self.assertRaisesRegex(pack_image.LayoutError,
                                         "recovery.romfs missing"):
                 pack_image.pack(case.ihx, case.map_text, tmp)
@@ -315,7 +315,7 @@ class TestRealArtifacts(unittest.TestCase):
     """Integration checks against the artifacts produced by `make`."""
 
     def setUp(self):
-        self.build = os.path.join(ROOT, "build", "zephyros.bin")
+        self.build = os.path.join(ROOT, "build", "konaos.bin")
         self.mame = os.path.join(ROOT, "build", "zephyr80.bin")
 
     def test_artifacts_exist_and_match(self):
@@ -405,7 +405,7 @@ class TestNucleusLedgers(unittest.TestCase):
 
     def test_ledger_lines_match_the_built_image(self):
         manifest_path = os.path.join(ROOT, "build",
-                                     "zephyros.manifest.json")
+                                     "konaos.manifest.json")
         plan_path = os.path.join(ROOT, "build", "modules",
                                  "drivers.plan.json")
         if not all(os.path.exists(p) for p in (manifest_path, plan_path)):
@@ -441,7 +441,7 @@ class TestNucleusLedgers(unittest.TestCase):
         if not os.path.exists(plan_path):
             self.skipTest("derived production build missing; run make")
         plan = pack_image.load_driver_plan(os.path.join(ROOT, "build"))
-        self.assertIn("iocfat.zmod", plan["order"])
+        self.assertIn("iocfat.mod", plan["order"])
         self.assertIsNone(pack_image.load_driver_plan(None))
 
 
@@ -465,7 +465,7 @@ class TestCommonCeiling(unittest.TestCase):
 
     def test_production_ledger_carries_the_ceiling(self):
         manifest_path = os.path.join(ROOT, "build",
-                                     "zephyros.manifest.json")
+                                     "konaos.manifest.json")
         if not os.path.exists(manifest_path):
             self.skipTest("derived production build missing; run make")
         ledger = json.load(open(manifest_path))["nucleus"]

@@ -1,19 +1,19 @@
-# ZMOD driver image format and the resident loader
+# MOD driver image format and the resident loader
 
-**Status: M10, work package 42c.**  There is exactly one ZMOD form: the
+**Status: M10, work package 42c.**  There is exactly one MOD form: the
 **driver image**, a flat load plan the host packer links and the nucleus
 loader copies.  The arena module loader (`kernel/module/loader.c`,
 `relocate.c`, `arena.asm`), the relocation-record container, the module
 types, the import tables and the host `emit-asm` test fixtures are
 **deleted**; the record of that model is the M4-M9 history in
 `docs/architecture.md` (sections 22-31) and `docs/validation/`.  The file
-keeps its historical name because the container is still the ZMOD
+keeps its historical name because the container is still the MOD
 container; the format it describes is now the driver form only.
 
 The split of work is the M10 rule (M10-REFERENCE decision 2): **the host
-computes everything.**  `tools/zmodpack.py` mini-links the declared
+computes everything.**  `tools/modpack.py` mini-links the declared
 objects, links every segment at its final bank-6 address, applies the
-`ZREL_ABS16` records on the host, assigns endpoint numbers, resolves
+`KREL_ABS16` records on the host, assigns endpoint numbers, resolves
 inter-driver dependencies and validates the whole container; the nucleus
 loader (`kernel/driver/driver_loader.c`) copies the finished images and
 checks only the bounds that protect the nucleus and the fixed driver-bank
@@ -22,7 +22,7 @@ layout.  Nothing is linked, patched or version-checked at boot.
 The architectural contract is `docs/architecture.md` sections 36.6
 (driver bank), 36.11 (resident images and host assembly), 36.12 (boot),
 36.13 (namespace providers) and 36.20 (ledgers).  The concrete layout is
-pinned by `formats/include/zmod.h` and by the compile-time assertions
+pinned by `formats/include/mod.h` and by the compile-time assertions
 the target build enforces.
 
 ---
@@ -49,11 +49,11 @@ tables and payload do not end at those bytes.  The mandatory payload order
 is what lets the loader read the container once, front to back, without a
 record index.
 
-Header (16 bytes; `formats/include/zmod.h` `struct zmod_header`):
+Header (16 bytes; `formats/include/mod.h` `struct mod_header`):
 
 | Offset | Field | Meaning |
 | --- | --- | --- |
-| 00 | `magic[4]` | `"ZMOD"` |
+| 00 | `magic[4]` | `"KMOD"` |
 | 04 | `segment_count` | 1..4, `hot` required |
 | 05 | `endpoint_count` | 0..8 |
 | 06 | `dependency_count` | 0..8 |
@@ -107,9 +107,9 @@ endpoint  class:u8 instance:u8 version:u8 flags:u8
 ```
 
 `(class, instance)` is the protocol identity (the classes of
-`abi/zos/object.h`); `version` is the image's own protocol version, kept
+`abi/kos/object.h`); `version` is the image's own protocol version, kept
 in the record but never checked at boot; `flags` bit 0 is the
-re-entrancy declaration (`ZOS_IPC_EP_REENTRANT`); `number` is the
+re-entrancy declaration (`KOS_IPC_EP_REENTRANT`); `number` is the
 host-assigned endpoint number (`1..N` across the load order) and
 `dispatch` the absolute hot-tier dispatch entry inside the hot image.
 
@@ -171,7 +171,7 @@ The loader prints them in acceptance builds; production takes them from
 the packer's report (`drivers.plan.json`), which is what
 `tools/pack_image.py` folds into the bank-6 part of the image manifest.
 Each placed image is reported as `driver <name>: hot <addr> [io <addr>]
-[boot <addr>] [bulk <addr>]` - the same line `zmodpack.py drivers`
+[boot <addr>] [bulk <addr>]` - the same line `modpack.py drivers`
 prints - and the run ends with
 `driver loader: <n> images in bank 6`.
 
@@ -186,8 +186,8 @@ publication  name[16] type:u8 number:u8 object:u8 flags:u8
 ```
 
 `name` is the provider-relative remainder of the path, NUL-terminated and
-zero-padded; `type` is the 8-bit protocol type (`ZOS_TYPE_*`, listed in
-`tools/zmodpack.py`); `number` is the host-assigned number of the
+zero-padded; `type` is the 8-bit protocol type (`KOS_TYPE_*`, listed in
+`tools/modpack.py`); `number` is the host-assigned number of the
 endpoint that serves it; `object` is the provider's own object identity,
 handed back with every call.  `flags` is 0.
 
@@ -196,7 +196,7 @@ A grouping name is never published: the packer counts the derived rows
 names it installs.  The packer refuses a name that is the root, longer
 than the 15 provider-relative bytes a record holds, non-printable, or
 duplicated anywhere in the set (compared case-insensitively), and refuses
-more than `ZMOD_MAX_PUBLICATIONS` (12) rows per manifest, an unknown type
+more than `MOD_MAX_PUBLICATIONS` (12) rows per manifest, an unknown type
 name, a type outside 1..255, an object above 255, or a set whose rows
 plus the derived grouping rows overflow the nucleus publication table.
 
@@ -206,12 +206,12 @@ whole set are installed before the first driver's boot entry runs.
 
 ## 7. Boot manifest and the boot path
 
-`drivers.man` (`ZOS_DRIVER_MANIFEST_NAME`) is a flat ROMFS `DATA` file
+`drivers.man` (`KOS_DRIVER_MANIFEST_NAME`) is a flat ROMFS `DATA` file
 of 24-byte records - the ROMFS name field exactly, NUL-terminated and
 zero-padded - naming the packed containers in load order.  The loader
 reads it with the bootstrap ROMFS reader (`kernel/romfs`, fixed-core
 since package 38) and requires the file size to be a multiple of the
-record size.  At most `ZMOD_MAX_IMAGES` (8) images are placed.
+record size.  At most `MOD_MAX_IMAGES` (8) images are placed.
 
 Per image, in manifest order (`kernel/driver/driver_loader.c`):
 
@@ -260,11 +260,11 @@ ledgers) are acceptance-only; production links the error lines only.
 ## 9. Packer commands, manifest and reports
 
 ```sh
-python3 tools/zmodpack.py pack <manifest.json> <out.zmod> \
+python3 tools/modpack.py pack <manifest.json> <out.mod> \
     --objdir DIR --set MANIFEST [...] --report FILE
-python3 tools/zmodpack.py validate <container.zmod> [...]
-python3 tools/zmodpack.py dump <container.zmod> [...]
-python3 tools/zmodpack.py drivers <out.man> <container.zmod> [...] \
+python3 tools/modpack.py validate <container.mod> [...]
+python3 tools/modpack.py dump <container.mod> [...]
+python3 tools/modpack.py drivers <out.man> <container.mod> [...] \
     --report drivers.plan.json
 ```
 

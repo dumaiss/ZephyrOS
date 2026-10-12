@@ -1,9 +1,9 @@
-/* ZephyrOS HID keyboard/text driver implementation (drivers/hid/).
+/* KonaOS HID keyboard/text driver implementation (drivers/hid/).
  *
  * The M8 `hid` driver as a bank-6 driver image: the 16-byte local ring,
  * the fetch-on-doorbell engine, and the stuck-doorbell penalty behind the
- * HID protocol of abi/zos/protocol.h (class ZOS_CLASS_HID, instance 0,
- * version ZOS_PROTOCOL_VERSION).
+ * HID protocol of abi/kos/protocol.h (class KOS_CLASS_HID, instance 0,
+ * version KOS_PROTOCOL_VERSION).
  *
  * Input path (the deployed MCU is the authority, the firmware is never
  * modified):
@@ -11,7 +11,7 @@
  *   - the MCU translates a USB boot keyboard to terminal bytes and keeps
  *     its own 128-byte queue; `/CTSB` is asserted while that queue holds
  *     anything, and the IOC class maps the level to
- *     ZIOC_STATUS_HID_PENDING.  HID samples that semantic bit only; it
+ *     KIOC_STATUS_HID_PENDING.  HID samples that semantic bit only; it
  *     never touches SIO1, RR0, CTS or any port.
  *   - CMD_HID_INPUT carries one request byte: the maximum number of
  *     bytes wanted.  The reply DATA is `queued`, `dropped`, then up to
@@ -35,7 +35,7 @@
  *     as a poll error, and a link that is down at init keeps the engine
  *     registered: the first ordinary operation retries the whole-link
  *     recovery.  The console no longer composes itself from
- *     ZHID_OP_READY (package 42e made the console build-selected), so a
+ *     KHID_OP_READY (package 42e made the console build-selected), so a
  *     down link is a recoverable condition, not a boot decision.
  *
  * Translation is the MCU's: this driver copies bytes verbatim, including
@@ -48,29 +48,29 @@
  * missing IOC image is a loader boot error before any HID byte runs.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "driver.h"
 
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 #include "ioc_protocol.h"
 
 #include "hid_driver.h"
 
-struct zhid_state hid_state;
+struct khid_state hid_state;
 
 static const struct driver_api *hid_api;
 
 /* One command exchange and one reply, through the IOC driver endpoint.
  * The transport owns framing, CRC and the rolling sequence. */
-static uint8_t hid_fetch(struct zhid_state *state)
+static uint8_t hid_fetch(struct khid_state *state)
 {
-	uint8_t free_space = (uint8_t)(ZHID_RING_SIZE - state->count);
+	uint8_t free_space = (uint8_t)(KHID_RING_SIZE - state->count);
 	uint8_t payload;
 	uint16_t insert;
 	uint16_t room;
 	uint16_t first;
-	struct zos_ipc_frame frame;
+	struct kos_ipc_frame frame;
 	int16_t result;
 
 	if (free_space == 0u) {
@@ -82,13 +82,13 @@ static uint8_t hid_fetch(struct zhid_state *state)
 	if (free_space > IOC_HID_INPUT_MAX_DATA) {
 		free_space = IOC_HID_INPUT_MAX_DATA;
 	}
-	frame.op = ZIOC_OP_COMMAND;
+	frame.op = KIOC_OP_COMMAND;
 	frame.flags = 0u;
-	frame.desc = ZOS_IPC_DESC_NONE;
+	frame.desc = KOS_IPC_DESC_NONE;
 	frame.arg0 = IOC_CMD_HID_INPUT;
 	frame.arg1 = 1u;
 	frame.payload[0] = free_space;
-	result = hid_api->call(state->ioc_handle, ZIOC_OP_COMMAND, &frame);
+	result = hid_api->call(state->ioc_handle, KIOC_OP_COMMAND, &frame);
 	if (result != 0) {
 		return 0u;
 	}
@@ -111,7 +111,7 @@ static uint8_t hid_fetch(struct zhid_state *state)
 	if (payload > free_space) {
 		return 0u;
 	}
-	if (payload > (uint8_t)(ZHID_RING_SIZE - state->count)) {
+	if (payload > (uint8_t)(KHID_RING_SIZE - state->count)) {
 		return 0u;
 	}
 	/* The translated bytes follow the two DATA head bytes in the reply
@@ -129,7 +129,7 @@ static uint8_t hid_fetch(struct zhid_state *state)
 					     IOC_HID_INPUT_META_LEN);
 
 		insert = state->head;
-		room = (uint16_t)(ZHID_RING_SIZE - insert);
+		room = (uint16_t)(KHID_RING_SIZE - insert);
 		first = payload;
 		if (first > room) {
 			first = room;
@@ -146,7 +146,7 @@ static uint8_t hid_fetch(struct zhid_state *state)
 		}
 	}
 	state->head = (uint8_t)((state->head + payload) &
-				(ZHID_RING_SIZE - 1u));
+				(KHID_RING_SIZE - 1u));
 	state->count = (uint8_t)(state->count + payload);
 	return payload;
 }
@@ -155,9 +155,9 @@ static uint8_t hid_fetch(struct zhid_state *state)
  * when a byte is buffered after the call, 0 otherwise.  Only here (and
  * only while the semantic doorbell is asserted) is any IOC command
  * issued. */
-static uint8_t hid_driver(struct zhid_state *state)
+static uint8_t hid_driver(struct khid_state *state)
 {
-	struct zos_ipc_frame frame;
+	struct kos_ipc_frame frame;
 	int16_t status;
 
 	if (state->count != 0u) {
@@ -167,14 +167,14 @@ static uint8_t hid_driver(struct zhid_state *state)
 		return 0u;
 	}
 
-	frame.op = ZIOC_OP_STATUS;
+	frame.op = KIOC_OP_STATUS;
 	frame.flags = 0u;
-	frame.desc = ZOS_IPC_DESC_NONE;
+	frame.desc = KOS_IPC_DESC_NONE;
 	frame.arg0 = 0u;
 	frame.arg1 = 0u;
-	status = hid_api->call(state->ioc_handle, ZIOC_OP_STATUS, &frame);
+	status = hid_api->call(state->ioc_handle, KIOC_OP_STATUS, &frame);
 	if (status < 0 ||
-	    ((uint16_t)status & ZIOC_STATUS_HID_PENDING) == 0u) {
+	    ((uint16_t)status & KIOC_STATUS_HID_PENDING) == 0u) {
 		/* A line that can still fall is not stuck: the released
 		 * doorbell clears the penalty at no IOC cost. */
 		state->penalty = 0u;
@@ -193,20 +193,20 @@ static uint8_t hid_driver(struct zhid_state *state)
 	 * controller stuck with the line asserted.  Ignore the doorbell
 	 * for a bounded number of calls instead of paying an IOC round
 	 * trip on every console poll. */
-	state->penalty = ZHID_STUCK_PENALTY;
+	state->penalty = KHID_STUCK_PENALTY;
 	return 0u;
 }
 
 int hid_read_text(void *vstate, uint8_t *dst, uint16_t max_len)
 {
-	struct zhid_state *state = (struct zhid_state *)vstate;
+	struct khid_state *state = (struct khid_state *)vstate;
 	uint16_t done = 0u;
 
-	if (state == (struct zhid_state *)0) {
-		return (-ZOS_ENODEV);
+	if (state == (struct khid_state *)0) {
+		return (-KOS_ENODEV);
 	}
 	if (dst == (uint8_t *)0 || max_len == 0u) {
-		return (-ZOS_EINVAL);
+		return (-KOS_EINVAL);
 	}
 	if (state->count == 0u) {
 		(void)hid_driver(state);
@@ -215,7 +215,7 @@ int hid_read_text(void *vstate, uint8_t *dst, uint16_t max_len)
 		uint16_t tail = state->tail;
 
 		dst[done] = state->ring[tail];
-		state->tail = (uint8_t)((tail + 1u) & (ZHID_RING_SIZE - 1u));
+		state->tail = (uint8_t)((tail + 1u) & (KHID_RING_SIZE - 1u));
 		state->count = (uint8_t)(state->count - 1u);
 		++done;
 	}
@@ -224,39 +224,39 @@ int hid_read_text(void *vstate, uint8_t *dst, uint16_t max_len)
 
 int hid_poll(void *vstate)
 {
-	struct zhid_state *state = (struct zhid_state *)vstate;
+	struct khid_state *state = (struct khid_state *)vstate;
 
-	if (state == (struct zhid_state *)0) {
-		return (-ZOS_ENODEV);
+	if (state == (struct khid_state *)0) {
+		return (-KOS_ENODEV);
 	}
 	return hid_driver(state) != 0u ? 1 : 0;
 }
 
 int hid_getc(void *vstate)
 {
-	struct zhid_state *state = (struct zhid_state *)vstate;
+	struct khid_state *state = (struct khid_state *)vstate;
 	uint16_t tail;
 	uint8_t byte;
 
-	if (state == (struct zhid_state *)0) {
-		return (-ZOS_ENODEV);
+	if (state == (struct khid_state *)0) {
+		return (-KOS_ENODEV);
 	}
 	if (state->count == 0u) {
 		(void)hid_driver(state);
 	}
 	if (state->count == 0u) {
-		return (-ZOS_EAGAIN);
+		return (-KOS_EAGAIN);
 	}
 	tail = state->tail;
 	byte = state->ring[tail];
-	state->tail = (uint8_t)((tail + 1u) & (ZHID_RING_SIZE - 1u));
+	state->tail = (uint8_t)((tail + 1u) & (KHID_RING_SIZE - 1u));
 	state->count = (uint8_t)(state->count - 1u);
 	return (int)byte;
 }
 
 /* READ_TEXT: drain the ring into the caller's descriptor in bounded
  * chunks through the driver I/O staging block. */
-static int16_t hid_driver_read(struct zos_ipc_frame *frame)
+static int16_t hid_driver_read(struct kos_ipc_frame *frame)
 {
 	uint16_t offset = frame->arg0;
 	uint16_t length = frame->arg1;
@@ -266,8 +266,8 @@ static int16_t hid_driver_read(struct zos_ipc_frame *frame)
 		uint16_t chunk = (uint16_t)(length - done);
 		int result;
 
-		if (chunk > ZHID_READ_BATCH) {
-			chunk = ZHID_READ_BATCH;
+		if (chunk > KHID_READ_BATCH) {
+			chunk = KHID_READ_BATCH;
 		}
 		result = hid_read_text(&hid_state, hid_state.read_buffer,
 				       chunk);
@@ -280,35 +280,35 @@ static int16_t hid_driver_read(struct zos_ipc_frame *frame)
 		if (hid_api->copy_out(frame->desc, (uint16_t)(offset + done),
 				      hid_state.read_buffer_address,
 				      (uint16_t)result) < 0) {
-			return (int16_t)-ZOS_EINVAL;
+			return (int16_t)-KOS_EINVAL;
 		}
 		done = (uint16_t)(done + (uint16_t)result);
 	}
 	return (int16_t)done;
 }
 
-int16_t hid_driver_dispatch(struct zos_ipc_frame *frame)
+int16_t hid_driver_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
-	case ZHID_OP_READ_TEXT:
+	case KHID_OP_READ_TEXT:
 		return hid_driver_read(frame);
-	case ZHID_OP_POLL:
+	case KHID_OP_POLL:
 		return (int16_t)hid_poll(&hid_state);
-	case ZHID_OP_GETC:
+	case KHID_OP_GETC:
 		return (int16_t)hid_getc(&hid_state);
-	case ZHID_OP_READY:
+	case KHID_OP_READY:
 		/* Ready once the dependency is present and its link is up:
 		 * the console composes its input from this probe. */
 		return (int16_t)(hid_state.ioc_handle != 0u ? 1 : 0);
 	default:
-		return (int16_t)-ZOS_EINVAL;
+		return (int16_t)-KOS_EINVAL;
 	}
 }
 
 uint8_t hid_driver_init(const struct driver_boot *boot)
 {
 	uint8_t handle;
-	struct zos_ipc_frame frame;
+	struct kos_ipc_frame frame;
 
 	hid_api = boot->api;
 	hid_state.read_buffer_address = (uint16_t)hid_state.read_buffer;
@@ -330,13 +330,13 @@ uint8_t hid_driver_init(const struct driver_boot *boot)
 
 	/* Probe the link once: a down link keeps the ring empty and the
 	 * engine registered; the first ordinary operation retries the
-	 * whole-link recovery.  ZHID_OP_READY reports the link state. */
-	frame.op = ZIOC_OP_READY;
+	 * whole-link recovery.  KHID_OP_READY reports the link state. */
+	frame.op = KIOC_OP_READY;
 	frame.flags = 0u;
-	frame.desc = ZOS_IPC_DESC_NONE;
+	frame.desc = KOS_IPC_DESC_NONE;
 	frame.arg0 = 0u;
 	frame.arg1 = 0u;
-	if (hid_api->call(handle, ZIOC_OP_READY, &frame) != 1) {
+	if (hid_api->call(handle, KIOC_OP_READY, &frame) != 1) {
 		hid_state.ioc_handle = 0u;
 	}
 	return 0u;

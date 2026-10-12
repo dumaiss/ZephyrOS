@@ -27,11 +27,11 @@
  * SIO, IOC or HID.
  */
 
-#ifndef ZEPHYROS_DRIVERS_V9958_DRIVER_H
-#define ZEPHYROS_DRIVERS_V9958_DRIVER_H
+#ifndef KONAOS_DRIVERS_V9958_DRIVER_H
+#define KONAOS_DRIVERS_V9958_DRIVER_H
 
 #include "driver.h"
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 /* --- GRAPHIC 6 layout (hardware-proven 85x26 console baseline) ---------
  *
@@ -208,7 +208,7 @@ struct v9958_state {
 
 /* The shared display bring-up (full initialization incl. the font
  * upload), used by the boot segment's initial pass and by the run-time
- * ZVIDEO_RESET.  Returns ZDRIVER_OK or ZDRIVER_FAIL. */
+ * KVIDEO_RESET.  Returns ZDRIVER_OK or ZDRIVER_FAIL. */
 int v9958_display_bringup(void);
 
 /* The boot-tier direct font source: the boot entry leaves the font's
@@ -222,11 +222,11 @@ void v9958_boot_entry(void);
 
 /* Hot segment: the endpoint dispatch and the init entry the loader calls
  * with the driver bootstrap table. */
-int16_t v9958_driver_dispatch(struct zos_ipc_frame *frame);
+int16_t v9958_driver_dispatch(struct kos_ipc_frame *frame);
 uint8_t v9958_driver_init(const struct driver_boot *boot);
 
 /* The class operation implementation (exposed for the descriptor).  A
- * ZVIDEO_RESET reinitializes the terminal parser, cursor/rendition
+ * KVIDEO_RESET reinitializes the terminal parser, cursor/rendition
  * defaults, every VDP-owned register and selector, both font atlases,
  * the circular bitmap and the sprite cursor, then presents and leaves
  * the display enabled. */
@@ -236,4 +236,4 @@ int v9958_send(void *state, uint8_t operation, const void *payload,
 extern struct v9958_state v9958_state;
 extern volatile uint8_t v9958_boot_runs;
 
-#endif /* ZEPHYROS_DRIVERS_V9958_DRIVER_H */
+#endif /* KONAOS_DRIVERS_V9958_DRIVER_H */

@@ -1,4 +1,4 @@
-/* ZephyrOS M1 kernel entry.
+/* KonaOS M1 kernel entry.
  *
  * Preconditions established by boot/start.asm:
  *   - interrupts disabled,
@@ -18,9 +18,10 @@
 #include "irq_types.h"
 #include "romfs.h"
 #include "process.h"
-#include "zmod.h"
+#include "mod.h"
+#include "boot_program.h"
 
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 #include "kernel/ipc/ipc.h"
 #include "kernel/vfs/vfs.h"
@@ -29,21 +30,21 @@
 
 /* Single integration seam for target acceptance builds; the runner and
  * the acceptance-group selection live in tests/target/support/target_test.c. */
-#ifndef ZOS_TARGET_TEST_BUILD
-#define ZOS_TARGET_TEST_BUILD 0
+#ifndef KOS_TARGET_TEST_BUILD
+#define KOS_TARGET_TEST_BUILD 0
 #endif
 
-#if ZOS_TARGET_TEST_BUILD
+#if KOS_TARGET_TEST_BUILD
 /* TEST-ONLY HOOK: target acceptance runner; implementation and milestone
  * selection live in tests/target/support/target_test.c (acceptance images
  * only).  The early hook runs before the boot program load; the late hook
  * runs after console binding. */
-void zos_target_test_early(void);
-void zos_target_test_late(void);
+void kos_target_test_early(void);
+void kos_target_test_late(void);
 #endif
 
 /* Hardware-smoke host sync.  Diagnostic images built with
- * ZOS_SMOKE_HOST_SYNC=1 (the M8 IOC smoke image) replace the blind
+ * KOS_SMOKE_HOST_SYNC=1 (the M8 IOC smoke image) replace the blind
  * one-second connect delay with a wait for the host's two-byte sync
  * sequence on SIO0/B before the banner.  On this bench the board's reset
  * line also resets the USB bridge, so the boot log is only capturable if
@@ -51,8 +52,8 @@ void zos_target_test_late(void);
  * sequence (tools/serial_smoke.py sends it once the port is open and
  * repeats it until the first byte arrives).  Production and every other
  * image compile the gate out. */
-#ifndef ZOS_SMOKE_HOST_SYNC
-#define ZOS_SMOKE_HOST_SYNC 0
+#ifndef KOS_SMOKE_HOST_SYNC
+#define KOS_SMOKE_HOST_SYNC 0
 #endif
 
 /* Failure-only hardware bring-up aid (never runs on a healthy image):
@@ -78,7 +79,7 @@ static void romfs_diagnose(int result)
 	early_console_putc(hex[(latch >> 4) & 0x0F]);
 	early_console_putc(hex[latch & 0x0F]);
 
-	probe.page = ZOS_ROMFS_FIRST_PAGE;
+	probe.page = KOS_ROMFS_FIRST_PAGE;
 	probe.offset = 0;
 	probe.length = 8;
 	status = rom_access_copy(&probe);
@@ -133,7 +134,7 @@ static uint8_t kernel_boot_drivers(void)
 		romfs_diagnose(result);
 		panic("romfs: corrupt recovery image");
 	}
-	result = driver_load_all(ZOS_DRIVER_MANIFEST_NAME);
+	result = driver_load_all(KOS_DRIVER_MANIFEST_NAME);
 	if (result != 0) {
 		kernel_driver_manifest_failed(result);
 		return 1u;
@@ -170,7 +171,7 @@ static void kernel_assert_os_mode(void)
 {
 	uint8_t latch = platform_memctl_read();
 
-	if ((latch & (ZOS_MODE_MASK | ZOS_BANK_MASK)) != ZOS_MODE_OS) {
+	if ((latch & (KOS_MODE_MASK | KOS_BANK_MASK)) != KOS_MODE_OS) {
 		panic("mode 11 not active at kernel entry");
 	}
 }
@@ -200,10 +201,10 @@ static void kernel_exercise_banking(void)
 /* --- native boot launcher (M9 shell readiness, package 28b) ------------
  *
  * The launcher starts the configured boot program - the ROMFS
- * `monitor.zex` by default - through its `/system` VFS path via the
+ * `monitor.exe` by default - through its `/system` VFS path via the
  * unchanged `process_exec()` path, and re-execs it after every normal
- * exit.  `ZOS_BOOT_PROGRAM` (config/system.mk) selects the program: M10's
- * shell is one build setting plus its ZEX in the recovery manifest, with
+ * exit.  `KOS_BOOT_PROGRAM` (config/system.mk) selects the program: M10's
+ * shell is one build setting plus its EXE in the recovery manifest, with
  * no kernel edit.
  *
  * The child's exit status and the recovered process/bank counts are
@@ -211,8 +212,10 @@ static void kernel_exercise_banking(void)
  * otherwise); a launch failure names the configured path on the early
  * console and takes the controlled halt path. */
 
-/* Configured boot program; the build validates it (tools/bootprogram.py). */
-static const char kernel_boot_program[] = ZOS_BOOT_PROGRAM;
+/* Configured boot program: tools/bootprogram.py validates it and the
+ * build writes it into boot_program.h (the SDCC 4.5.0 driver cannot take
+ * the ".exe" path through -D). */
+static const char kernel_boot_program[] = KOS_BOOT_PROGRAM;
 
 static char *kernel_boot_put_hex16(char *out, uint16_t value)
 {
@@ -266,11 +269,11 @@ static uint8_t kernel_console_handle(void)
  * one operation a caller without a descriptor can drive (36.7). */
 static int kernel_console_putc(uint8_t handle, uint8_t ch)
 {
-	struct zos_ipc_frame frame;
+	struct kos_ipc_frame frame;
 
-	frame.op = ZCONSOLE_OP_PUTC;
+	frame.op = KCONSOLE_OP_PUTC;
 	frame.flags = 0u;
-	frame.desc = ZOS_IPC_DESC_NONE;
+	frame.desc = KOS_IPC_DESC_NONE;
 	frame.arg0 = ch;
 	frame.arg1 = 0u;
 	return ipc_nucleus_call(handle, &frame);
@@ -284,7 +287,7 @@ static int kernel_console_write(const char *line, uint16_t length)
 	uint8_t handle = kernel_console_handle();
 
 	if (handle == 0u) {
-		return -ZOS_ENODEV;
+		return -KOS_ENODEV;
 	}
 	while (length != 0u) {
 		int result = kernel_console_putc(handle, (uint8_t)*line);
@@ -375,21 +378,21 @@ static void kernel_boot_launcher(void)
 		uint16_t status = 0;
 		int result = process_exec(kernel_boot_program, &status);
 
-		if (result != ZEX_EXEC_OK) {
+		if (result != EXE_EXEC_OK) {
 			kernel_boot_fail((uint16_t)(0u - (uint16_t)result));
 		}
 		kernel_boot_report(status);
 	}
 }
-#if ZOS_SMOKE_HOST_SYNC
+#if KOS_SMOKE_HOST_SYNC
 /* TEST-ONLY HOOK: hold the first banner byte until the host is listening.
  * The SIO0/B receiver is live from early_console_init (boot/start.asm);
  * the channel reset that follows a board reset clears any stale bytes, so
  * the wait is only entered on a fresh boot.  The two-state scan discards
  * every byte that does not continue the sequence, which makes repeated
  * sends and glitch bytes harmless. */
-static __sfr __at ZOS_SIO0B_CTRL kernel_host_sync_ctrl;
-static __sfr __at ZOS_SIO0B_DATA kernel_host_sync_data;
+static __sfr __at KOS_SIO0B_CTRL kernel_host_sync_ctrl;
+static __sfr __at KOS_SIO0B_DATA kernel_host_sync_data;
 
 static void kernel_host_sync_wait(void)
 {
@@ -398,26 +401,26 @@ static void kernel_host_sync_wait(void)
 	for (;;) {
 		uint8_t ch;
 
-		while ((kernel_host_sync_ctrl & ZOS_SIO_RR0_RX_AVAILABLE)
+		while ((kernel_host_sync_ctrl & KOS_SIO_RR0_RX_AVAILABLE)
 		       == 0u) {
 			/* Nothing has been printed yet. */
 		}
 		ch = kernel_host_sync_data;
-		if (ch == ZOS_SMOKE_HOST_SYNC_FIRST) {
+		if (ch == KOS_SMOKE_HOST_SYNC_FIRST) {
 			matched_first = 1u;
 		} else if (matched_first != 0u &&
-			   ch == ZOS_SMOKE_HOST_SYNC_SECOND) {
+			   ch == KOS_SMOKE_HOST_SYNC_SECOND) {
 			return;
 		} else {
 			matched_first = 0u;
 		}
 	}
 }
-#endif /* ZOS_SMOKE_HOST_SYNC */
+#endif /* KOS_SMOKE_HOST_SYNC */
 
 void kernel_main(void)
 {
-#if ZOS_SMOKE_HOST_SYNC
+#if KOS_SMOKE_HOST_SYNC
 	/* TEST-ONLY HOOK: hold the first byte until the host is listening
 	 * (bench quirk: the board's reset also resets the USB bridge). */
 	kernel_host_sync_wait();
@@ -428,14 +431,14 @@ void kernel_main(void)
 	kernel_exercise_banking();
 	irq_init();
 
-	early_console_puts("ZephyrOS 0.0\r\n");
+	early_console_puts("KonaOS 0.0\r\n");
 	early_console_puts("platform: Zephyr-80\r\n");
 	early_console_puts("kernel entry: OK\r\n");
 	early_console_puts("serial: OK\r\n");
 
-#if ZOS_TARGET_TEST_BUILD
+#if KOS_TARGET_TEST_BUILD
 	/* TEST-ONLY HOOK: subsystem acceptance phase (target_test.c). */
-	zos_target_test_early();
+	kos_target_test_early();
 #endif
 
 	/* The early console above stays authoritative: it, and the panic
@@ -469,9 +472,9 @@ void kernel_main(void)
 		}
 	}
 
-#if ZOS_TARGET_TEST_BUILD
+#if KOS_TARGET_TEST_BUILD
 	/* TEST-ONLY HOOK: subsystem/M8/M9 acceptance phases (target_test.c). */
-	zos_target_test_late();
+	kos_target_test_late();
 #endif
 
 	/* Native boot launcher: exec the configured program through the

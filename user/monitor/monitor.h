@@ -1,6 +1,6 @@
-/* ZephyrOS M7 native monitor (user/monitor).
+/* KonaOS M7 native monitor (user/monitor).
  *
- * Ordinary ZEX v2 program linked into the user bank by the unchanged
+ * Ordinary EXE v2 program linked into the user bank by the unchanged
  * loader.  All ordinary input/output goes through the SYS_CONSOLE_*
  * runtime wrappers; every memory, port, and system operation goes
  * through SYS_DIAG_* wrappers.  The monitor has no SIO/V9958/HID
@@ -25,20 +25,20 @@
  *   MB bank addr value modify one byte in application bank 0-6
  *   I port            read I/O port 10h-FFh
  *   O port value      write I/O port 10h-FFh
- *   X path [tail]     run a ZEX from /system, print its status
+ *   X path [tail]     run a EXE from /system, print its status
  *   Q                 exit (resumes the kernel launcher)
  *
  * Intel HEX load/export, GO, APP, and CP/M register-snapshot semantics
  * are deliberately not ported.
  */
 
-#ifndef ZEPHYROS_USER_MONITOR_H
-#define ZEPHYROS_USER_MONITOR_H
+#ifndef KONAOS_USER_MONITOR_H
+#define KONAOS_USER_MONITOR_H
 
-#include "zos.h"
+#include "kos.h"
 
 /* Command-line capacity: at most 80 characters plus the terminating NUL. */
-#define MON_LINE_MAX (ZOS_LINE_MAX + 1)
+#define MON_LINE_MAX (KOS_LINE_MAX + 1)
 
 /* Monitor exit statuses; Q uses 0 and the launcher reports the rest. */
 #define MON_EXIT_QUIT    0x0000
@@ -69,4 +69,4 @@ unsigned char mon_scan_bank(char **cursor, unsigned char *bank);
 void mon_put_hex8(unsigned int value);
 void mon_put_hex16(unsigned int value);
 
-#endif /* ZEPHYROS_USER_MONITOR_H */
+#endif /* KONAOS_USER_MONITOR_H */

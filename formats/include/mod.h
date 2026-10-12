@@ -1,8 +1,8 @@
-/* ZephyrOS resident driver images (architecture 36.11, work package 42c).
+/* KonaOS resident driver images (architecture 36.11, work package 42c).
  *
- * A resident driver is a ZMOD driver image: a flat, host-linked load
+ * A resident driver is a MOD driver image: a flat, host-linked load
  * plan the nucleus loader iterates with protective bounds only.  The host
- * packer (tools/zmodpack.py) links every segment at its final bank-6
+ * packer (tools/modpack.py) links every segment at its final bank-6
  * address, assigns the endpoint numbers and resolves the symbolic
  * dependencies, and emits:
  *
@@ -33,7 +33,7 @@
  *                                  copies
  *
  * Each segment is a contiguous image plus a BSS area, linked at its
- * final bank-6 address: the packer applies every 4-byte ZREL_ABS16
+ * final bank-6 address: the packer applies every 4-byte KREL_ABS16
  * record on the host and the loader copies the bytes verbatim.  Segments
  * may only reach tiers the mode-11 window shows: hot code may not point
  * into boot or bulk code, and bulk segments carry no relocation records.
@@ -44,59 +44,59 @@
  * table of nucleus entry points and one host-resolved reference row,
  * never a kernel import table.
  *
- * The boot manifest (`ZOS_DRIVER_MANIFEST_NAME`) is the flat ROMFS file
+ * The boot manifest (`KOS_DRIVER_MANIFEST_NAME`) is the flat ROMFS file
  * the bootstrap reader (kernel/romfs) reads: a sequence of 24-byte name
  * records, exactly the ROMFS name field, naming the driver images in
  * load order.  Flat constant names only: no path syntax, no directory.
  */
 
-#ifndef ZEPHYROS_DRIVER_H
-#define ZEPHYROS_DRIVER_H
+#ifndef KONAOS_DRIVER_H
+#define KONAOS_DRIVER_H
 
 #include "driver.h"
 #include "romfs.h"
-#include "zos/types.h"
+#include "kos/types.h"
 
 /* --- the flat container ------------------------------------------------ */
 
-#define ZMOD_MAGIC_0 0x5Au /* 'Z' */
-#define ZMOD_MAGIC_1 0x4Du /* 'M' */
-#define ZMOD_MAGIC_2 0x4Fu /* 'O' */
-#define ZMOD_MAGIC_3 0x44u /* 'D' */
+#define MOD_MAGIC_0 0x4Bu /* 'K' */
+#define MOD_MAGIC_1 0x4Du /* 'M' */
+#define MOD_MAGIC_2 0x4Fu /* 'O' */
+#define MOD_MAGIC_3 0x44u /* 'D' */
 
-#define ZMOD_HEADER_SIZE      16u
-#define ZMOD_SEGMENT_SIZE     12u
-#define ZMOD_ENDPOINT_SIZE    8u
-#define ZMOD_DEPENDENCY_SIZE  4u
-#define ZMOD_PUBLICATION_SIZE 20u
+#define MOD_HEADER_SIZE      16u
+#define MOD_SEGMENT_SIZE     12u
+#define MOD_ENDPOINT_SIZE    8u
+#define MOD_DEPENDENCY_SIZE  4u
+#define MOD_PUBLICATION_SIZE 20u
 
-#define ZMOD_NO_ENTRY 0xFFFFu
+#define MOD_NO_ENTRY 0xFFFFu
 
 /* Format maxima (the loader's tables and the packer agree). */
-#define ZMOD_MAX_SEGMENTS     4u
-#define ZMOD_MAX_ENDPOINTS    8u
-#define ZMOD_MAX_DEPENDENCIES 8u
+#define MOD_MAX_SEGMENTS     4u
+#define MOD_MAX_ENDPOINTS    8u
+#define MOD_MAX_DEPENDENCIES 8u
 /* Publications per image; the nucleus publication table is smaller (the
  * loader refuses a set that overflows it, VFS_NS_PUB_MAX). */
-#define ZMOD_MAX_PUBLICATIONS 12u
+#define MOD_MAX_PUBLICATIONS 12u
 
 /* Boot manifest bound: the loader's per-image loop. */
-#define ZMOD_MAX_IMAGES       8u
+#define MOD_MAX_IMAGES       8u
 
 /* Segment roles.  At most one segment per role; `hot` is required. */
-#define ZMOD_SEGMENT_HOT  1u
-#define ZMOD_SEGMENT_BOOT 2u
-#define ZMOD_SEGMENT_IO   3u
-#define ZMOD_SEGMENT_BULK 4u
+#define MOD_SEGMENT_HOT  1u
+#define MOD_SEGMENT_BOOT 2u
+#define MOD_SEGMENT_IO   3u
+#define MOD_SEGMENT_BULK 4u
 
 /* Endpoint flags: bit 0 is the re-entrancy declaration, the same bit the
- * endpoint table keeps (ZOS_IPC_EP_REENTRANT, abi/zos/ipc.h). */
-#define ZMOD_EP_REENTRANT ZOS_IPC_EP_REENTRANT
+ * endpoint table keeps (KOS_IPC_EP_REENTRANT, abi/kos/ipc.h). */
+#define MOD_EP_REENTRANT KOS_IPC_EP_REENTRANT
 
 /* Container header, 16 bytes, little-endian.  `payload_offset` is the
  * first payload byte and equals the end of the tables; `total_size` is
  * the exact container length (the tables and the payload end there). */
-struct zmod_header {
+struct mod_header {
 	uint8_t  magic[4];
 	uint8_t  segment_count;
 	uint8_t  endpoint_count;
@@ -112,9 +112,9 @@ struct zmod_header {
  * address; the image is `payload_offset .. payload_offset + image_size`
  * in the container payload, and the BSS area follows the image at
  * `base + image_size`.  `entry` is the absolute boot entry (only the
- * boot role may carry one) or ZMOD_NO_ENTRY. */
-struct zmod_segment {
-	uint8_t  role;            /* ZMOD_SEGMENT_*                    */
+ * boot role may carry one) or MOD_NO_ENTRY. */
+struct mod_segment {
+	uint8_t  role;            /* MOD_SEGMENT_*                    */
 	uint8_t  reserved;        /* 0                                 */
 	uint16_t base;
 	uint16_t image_size;
@@ -126,11 +126,11 @@ struct zmod_segment {
 /* One exported endpoint, 8 bytes.  `number` is the host-assigned endpoint
  * number (1..N across the build's load order); `dispatch` is the
  * absolute hot-tier dispatch entry. */
-struct zmod_endpoint {
+struct mod_endpoint {
 	uint8_t  class;
 	uint8_t  instance;
 	uint8_t  version;
-	uint8_t  flags;           /* ZMOD_EP_*                         */
+	uint8_t  flags;           /* MOD_EP_*                         */
 	uint16_t number;
 	uint16_t dispatch;
 };
@@ -139,7 +139,7 @@ struct zmod_endpoint {
  * (class, instance) to `number`, the endpoint number of an earlier (or
  * this image's own) export; 0 means the declaration was optional and no
  * image in the build exports it. */
-struct zmod_dependency {
+struct mod_dependency {
 	uint8_t  class;
 	uint8_t  instance;
 	uint16_t number;
@@ -148,71 +148,71 @@ struct zmod_dependency {
 /* One publication, 20 bytes.  `name` is the provider-relative namespace
  * name below the DEVICE provider's `/dev` root (`"/console"`),
  * NUL-terminated and zero-padded; `type` is the 8-bit protocol type
- * (abi/zos/object.h ZOS_TYPE_*); `number` is the serving endpoint's
+ * (abi/kos/object.h KOS_TYPE_*); `number` is the serving endpoint's
  * host-assigned number; `object` is the provider's own object identity,
  * which a nucleus provider receives with every call to the publication.
  * A host build never publishes a grouping name: the kernel derives the
  * container rows (`/input`, `/serial`) from the names themselves. */
-struct zmod_publication {
+struct mod_publication {
 	char     name[16];        /* "/console", NUL-terminated */
-	uint8_t  type;            /* ZOS_TYPE_*                */
+	uint8_t  type;            /* KOS_TYPE_*                */
 	uint8_t  number;          /* serving endpoint number   */
 	uint8_t  object;          /* provider object identity  */
 	uint8_t  flags;           /* 0                         */
 };
 
 #if defined(__SDCC)
-_Static_assert(sizeof(struct zmod_header) == ZMOD_HEADER_SIZE,
-	       "zmod header must be 16 bytes");
-_Static_assert(__builtin_offsetof(struct zmod_header, segment_count) == 4,
-	       "zmod header segment_count offset");
-_Static_assert(__builtin_offsetof(struct zmod_header, init_entry) == 8,
-	       "zmod header init_entry offset");
-_Static_assert(__builtin_offsetof(struct zmod_header, payload_offset) == 10,
-	       "zmod header payload_offset offset");
-_Static_assert(sizeof(struct zmod_segment) == ZMOD_SEGMENT_SIZE,
-	       "zmod segment must be 12 bytes");
-_Static_assert(__builtin_offsetof(struct zmod_segment, base) == 2,
-	       "zmod segment base offset");
-_Static_assert(__builtin_offsetof(struct zmod_segment, entry) == 8,
-	       "zmod segment entry offset");
-_Static_assert(sizeof(struct zmod_endpoint) == ZMOD_ENDPOINT_SIZE,
-	       "zmod endpoint must be 8 bytes");
-_Static_assert(__builtin_offsetof(struct zmod_endpoint, number) == 4,
-	       "zmod endpoint number offset");
-_Static_assert(__builtin_offsetof(struct zmod_endpoint, dispatch) == 6,
-	       "zmod endpoint dispatch offset");
-_Static_assert(sizeof(struct zmod_dependency) == ZMOD_DEPENDENCY_SIZE,
-	       "zmod dependency must be 4 bytes");
-_Static_assert(sizeof(struct zmod_publication) == ZMOD_PUBLICATION_SIZE,
-	       "zmod publication must be 20 bytes");
+_Static_assert(sizeof(struct mod_header) == MOD_HEADER_SIZE,
+	       "mod header must be 16 bytes");
+_Static_assert(__builtin_offsetof(struct mod_header, segment_count) == 4,
+	       "mod header segment_count offset");
+_Static_assert(__builtin_offsetof(struct mod_header, init_entry) == 8,
+	       "mod header init_entry offset");
+_Static_assert(__builtin_offsetof(struct mod_header, payload_offset) == 10,
+	       "mod header payload_offset offset");
+_Static_assert(sizeof(struct mod_segment) == MOD_SEGMENT_SIZE,
+	       "mod segment must be 12 bytes");
+_Static_assert(__builtin_offsetof(struct mod_segment, base) == 2,
+	       "mod segment base offset");
+_Static_assert(__builtin_offsetof(struct mod_segment, entry) == 8,
+	       "mod segment entry offset");
+_Static_assert(sizeof(struct mod_endpoint) == MOD_ENDPOINT_SIZE,
+	       "mod endpoint must be 8 bytes");
+_Static_assert(__builtin_offsetof(struct mod_endpoint, number) == 4,
+	       "mod endpoint number offset");
+_Static_assert(__builtin_offsetof(struct mod_endpoint, dispatch) == 6,
+	       "mod endpoint dispatch offset");
+_Static_assert(sizeof(struct mod_dependency) == MOD_DEPENDENCY_SIZE,
+	       "mod dependency must be 4 bytes");
+_Static_assert(sizeof(struct mod_publication) == MOD_PUBLICATION_SIZE,
+	       "mod publication must be 20 bytes");
 #endif /* __SDCC */
 
 /* Loader error codes (0 = success, negative = failure). */
-#define ZMOD_OK       0
-#define ZMOD_EINVAL   (-ZOS_EINVAL)  /* invalid argument/field value       */
-#define ZMOD_EFORMAT  (-ZOS_EIO)     /* corrupt/truncated/overlapping data */
-#define ZMOD_ENOTSUP  (-ZOS_ENOTSUP) /* unsupported version/type/reloc     */
-#define ZMOD_ENOSPC   (-ZOS_ENOSPC)  /* table or publication exhaustion    */
-#define ZMOD_ENOENT   (-ZOS_ENOENT)  /* no such manifest/file              */
-#define ZMOD_EBUSY    (-ZOS_EBUSY)   /* nucleus table refused the record   */
+#define MOD_OK       0
+#define MOD_EINVAL   (-KOS_EINVAL)  /* invalid argument/field value       */
+#define MOD_EFORMAT  (-KOS_EIO)     /* corrupt/truncated/overlapping data */
+#define MOD_ENOTSUP  (-KOS_ENOTSUP) /* unsupported version/type/reloc     */
+#define MOD_ENOSPC   (-KOS_ENOSPC)  /* table or publication exhaustion    */
+#define MOD_ENOENT   (-KOS_ENOENT)  /* no such manifest/file              */
+#define MOD_EBUSY    (-KOS_EBUSY)   /* nucleus table refused the record   */
 
 /* The flat ROMFS name of the boot manifest.  The bootstrap reader
  * (kernel/romfs) resolves it like any other flat name, without path
  * syntax; every read is staged through common memory. */
-#define ZOS_DRIVER_MANIFEST_NAME "drivers.man"
+#define KOS_DRIVER_MANIFEST_NAME "drivers.man"
 
 /* Manifest record: exactly the ROMFS name field, NUL-terminated and
  * zero-padded.  The manifest file's size is a multiple of this. */
-#define ZOS_DRIVER_MANIFEST_ENTRY ROMFS_NAME_SIZE
+#define KOS_DRIVER_MANIFEST_ENTRY ROMFS_NAME_SIZE
 
 /* --- the resident loader (kernel/driver/driver_loader.c) --------------
  *
  * Cold nucleus code: read the boot manifest and bring up every driver
- * image it names, in load order.  Returns 0 or a negative ZMOD/ZOS error;
+ * image it names, in load order.  Returns 0 or a negative MOD/KOS error;
  * a failure is a boot error and is reported on the early console.
  * Drivers are permanent (M10-REFERENCE decision 11), so a second call is
  * a no-op. */
 int driver_load_all(const char *manifest_name);
 
-#endif /* ZEPHYROS_DRIVER_H */
+#endif /* KONAOS_DRIVER_H */

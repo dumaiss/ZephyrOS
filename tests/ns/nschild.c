@@ -1,21 +1,21 @@
-/* ZephyrOS namespace acceptance: the nested-exec child (test artifact).
+/* KonaOS namespace acceptance: the nested-exec child (test artifact).
  *
- * SYS_EXEC starts it from /system/nschild.zex while the parent holds bound
+ * SYS_EXEC starts it from /system/nschild.exe while the parent holds bound
  * handles.  Its job is the inheritance rule of architecture 36.13: a child
  * gets *new* entries for the two standard handles and nothing else, so its
- * own numbering starts at ZOS_HANDLE_FIRST_BOUND and a handle number the
+ * own numbering starts at KOS_HANDLE_FIRST_BOUND and a handle number the
  * parent still uses is meaningless here.  It also checks the CWD half of
  * the rule: it starts in the parent's CWD and its own `chdir` moves only
  * its own slot.
  *
- * The lines it prints come through its own ZOS_HANDLE_STDOUT; the replay
+ * The lines it prints come through its own KOS_HANDLE_STDOUT; the replay
  * reads them after the parent's `ns: exec` line.
  */
 
-#include "zos.h"
+#include "kos.h"
 
 #include "ns_test.h"
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 int main(int argc, char **argv)
 {
@@ -50,15 +50,15 @@ int main(int argc, char **argv)
 
 	handle = bind("/dev/console", 0u, &type);
 	printf("nschild: /dev/console -> %d handle %d\r\n", type, handle);
-	if (handle != (int)ZOS_HANDLE_FIRST_BOUND ||
-	    type != ZOS_TYPE_CONSOLE) {
+	if (handle != (int)KOS_HANDLE_FIRST_BOUND ||
+	    type != KOS_TYPE_CONSOLE) {
 		console_puts("nschild: FAIL own table\r\n");
 		return 1;
 	}
 
 	/* A number the parent owns is not in this table. */
 	result = unbind((unsigned char)(handle + 2));
-	if (result != -ZOS_EINVAL) {
+	if (result != -KOS_EINVAL) {
 		console_puts("nschild: FAIL foreign handle\r\n");
 		return 1;
 	}

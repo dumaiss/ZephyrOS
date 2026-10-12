@@ -1,63 +1,63 @@
-/* ZephyrOS libzos: extended-memory wrappers (package 43).
+/* KonaOS libkos: extended-memory wrappers (package 43).
  *
  * Every argument block is marshalled through the shared low-window
- * scratch union (zos_internal.h, the 16 bytes zex.mk places at 0100h), so
+ * scratch union (kos_internal.h, the 16 bytes exe.mk places at 0100h), so
  * the family needs no gate block of its own; the raw gate stub is the
  * shared one (user/sdk/src/ipcgate.asm).  The aperture helpers are
  * register-only (user/sdk/src/xmemgate.asm) - no syscall is involved in
  * opening or closing the aperture.
  */
 
-#include "zos.h"
-#include "zos_internal.h"
+#include "kos.h"
+#include "kos_internal.h"
 
 int xalloc(unsigned int size, unsigned int flags)
 {
-	zos_scratch.xmem_alloc.size = size;
-	zos_scratch.xmem_alloc.flags = flags;
-	return zos_ipc_raw(ZOS_SYSCALL_XMEM_ALLOC,
-			   &zos_scratch.xmem_alloc);
+	kos_scratch.xmem_alloc.size = size;
+	kos_scratch.xmem_alloc.flags = flags;
+	return kos_ipc_raw(KOS_SYSCALL_XMEM_ALLOC,
+			   &kos_scratch.xmem_alloc);
 }
 
 int xfree(unsigned int handle)
 {
-	zos_scratch.xmem_free.handle = handle;
-	return zos_ipc_raw(ZOS_SYSCALL_XMEM_FREE, &zos_scratch.xmem_free);
+	kos_scratch.xmem_free.handle = handle;
+	return kos_ipc_raw(KOS_SYSCALL_XMEM_FREE, &kos_scratch.xmem_free);
 }
 
 static int zxmem_io(unsigned char number, unsigned int handle,
 		    unsigned int offset, const void *buffer,
 		    unsigned int length)
 {
-	zos_scratch.xmem_io.handle = handle;
-	zos_scratch.xmem_io.offset = offset;
-	zos_scratch.xmem_io.buffer = (unsigned int)buffer;
-	zos_scratch.xmem_io.length = length;
-	return zos_ipc_raw(number, &zos_scratch.xmem_io);
+	kos_scratch.xmem_io.handle = handle;
+	kos_scratch.xmem_io.offset = offset;
+	kos_scratch.xmem_io.buffer = (unsigned int)buffer;
+	kos_scratch.xmem_io.length = length;
+	return kos_ipc_raw(number, &kos_scratch.xmem_io);
 }
 
 int xread(unsigned int handle, unsigned int offset, void *buffer,
 		  unsigned int length)
 {
-	return zxmem_io(ZOS_SYSCALL_XMEM_READ, handle, offset, buffer,
+	return zxmem_io(KOS_SYSCALL_XMEM_READ, handle, offset, buffer,
 			length);
 }
 
 int xwrite(unsigned int handle, unsigned int offset,
 		   const void *buffer, unsigned int length)
 {
-	return zxmem_io(ZOS_SYSCALL_XMEM_WRITE, handle, offset, buffer,
+	return zxmem_io(KOS_SYSCALL_XMEM_WRITE, handle, offset, buffer,
 			length);
 }
 
-int xinfo(unsigned int handle, struct zos_xmem_info *out)
+int xinfo(unsigned int handle, struct kos_xmem_info *out)
 {
-	if (out == (struct zos_xmem_info *)0) {
-		return -ZOS_EINVAL;
+	if (out == (struct kos_xmem_info *)0) {
+		return -KOS_EINVAL;
 	}
-	zos_scratch.xmem_info.handle = handle;
-	zos_scratch.xmem_info.buffer = (unsigned int)out;
-	return zos_ipc_raw(ZOS_SYSCALL_XMEM_INFO, &zos_scratch.xmem_info);
+	kos_scratch.xmem_info.handle = handle;
+	kos_scratch.xmem_info.buffer = (unsigned int)out;
+	return kos_ipc_raw(KOS_SYSCALL_XMEM_INFO, &kos_scratch.xmem_info);
 }
 
 int xmap(unsigned int handle, unsigned int *address)
@@ -65,14 +65,14 @@ int xmap(unsigned int handle, unsigned int *address)
 	int token;
 
 	if (address == (unsigned int *)0) {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
-	zos_scratch.xmem_map.handle = handle;
-	zos_scratch.xmem_map.address = 0u;
-	token = zos_ipc_raw(ZOS_SYSCALL_XMEM_MAP, &zos_scratch.xmem_map);
+	kos_scratch.xmem_map.handle = handle;
+	kos_scratch.xmem_map.address = 0u;
+	token = kos_ipc_raw(KOS_SYSCALL_XMEM_MAP, &kos_scratch.xmem_map);
 	if (token < 0) {
 		return token;
 	}
-	*address = zos_scratch.xmem_map.address;
+	*address = kos_scratch.xmem_map.address;
 	return token;
 }

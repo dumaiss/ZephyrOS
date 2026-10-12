@@ -1,4 +1,4 @@
-/* ZephyrOS VFS part: /dev, the DEVICE provider. */
+/* KonaOS VFS part: /dev, the DEVICE provider. */
 
 #include "kernel/vfs/vfs.h"
 #include "kernel/lib/name.h"
@@ -6,11 +6,11 @@
 #include "kernel/syscall/diag.h"
 
 #include "kernel.h"
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "process.h"
 #include "romfs.h"
 
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 static struct vfs_ns_publication
 	vfs_ns_publications[VFS_NS_PUB_MAX];
@@ -31,7 +31,7 @@ const struct vfs_ns_publication *vfs_pub_find(const char *rel)
 	uint8_t i;
 
 	for (i = 0; i < vfs_ns_pub_count; ++i) {
-		if (zos_ascii_equal(vfs_ns_publications[i].name, rel, 0u,
+		if (kos_ascii_equal(vfs_ns_publications[i].name, rel, 0u,
 				    1u)) {
 			return &vfs_ns_publications[i];
 		}
@@ -91,7 +91,7 @@ static int ns_pub_add(const char *name, uint8_t length, uint8_t type,
 	uint8_t i;
 
 	if (pub == (struct vfs_ns_publication *)0) {
-		return -ZOS_ENOSPC;
+		return -KOS_ENOSPC;
 	}
 	for (i = 0; i <= length; ++i) {
 		pub->name[i] = name[i];
@@ -111,39 +111,39 @@ int vfs_ns_install_publication(const char *name, uint8_t type, uint8_t number,
 	uint8_t i;
 
 	if (name == (const char *)0 || name[0] != '/') {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	while (name[length] != '\0') {
 		uint8_t c = (uint8_t)name[length];
 
 		if ((uint16_t)length + 1u >= VFS_NS_NAME_MAX ||
 		    c < 0x21u || c > 0x7Eu) {
-			return -ZOS_EINVAL;
+			return -KOS_EINVAL;
 		}
 		++length;
 	}
 	if (length == 1u) { /* "/" alone is the provider root, not an object */
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
-	if (type < ZOS_TYPE_SERIAL || type > ZOS_TYPE_TIMER || number == 0u) {
-		return -ZOS_EINVAL;
+	if (type < KOS_TYPE_SERIAL || type > KOS_TYPE_TIMER || number == 0u) {
+		return -KOS_EINVAL;
 	}
 	/* The `/fs` root is the filesystem-namespace publication: it names
 	 * the build's filesystem driver and stays out of the `/dev` table
 	 * (the FS provider routes to it). */
-	if (length == 3u && type == ZOS_TYPE_FS &&
+	if (length == 3u && type == KOS_TYPE_FS &&
 	    vfs_component_eq(name + 1, 2u, "fs")) {
 		if (object != 0u) {
-			return -ZOS_EINVAL;
+			return -KOS_EINVAL;
 		}
 		if (vfs_ns_fs_endpoint != 0u) {
-			return -ZOS_EEXIST;
+			return -KOS_EEXIST;
 		}
 		vfs_ns_fs_endpoint = number;
 		return 0;
 	}
 	if (vfs_pub_find(name) != (const struct vfs_ns_publication *)0) {
-		return -ZOS_EEXIST;
+		return -KOS_EEXIST;
 	}
 	/* Synthesize the grouping rows of every parent path ("/input" for
 	 * "/input/keyboard"), never duplicating one already present. */
@@ -167,7 +167,7 @@ int vfs_ns_install_publication(const char *name, uint8_t type, uint8_t number,
 			continue;
 		}
 		result = ns_pub_add(parent, i, 0u, 0u, 0u,
-				    ZOS_NS_ENTRY_CONTAINER);
+				    KOS_NS_ENTRY_CONTAINER);
 		if (result != 0) {
 			return result;
 		}
@@ -185,20 +185,20 @@ int vfs_device_bind(uint8_t pid, const char *rel, uint16_t flags,
 	struct vfs_handle_entry *entry;
 
 	if ((flags & (uint16_t)~0x00FFu) != 0u) {
-		return -ZOS_EINVAL; /* the entry records one flag byte */
+		return -KOS_EINVAL; /* the entry records one flag byte */
 	}
 	if (pub == (const struct vfs_ns_publication *)0) {
 		if (rel[0] == '\0') {
-			return -ZOS_EISDIR; /* `/dev` itself */
+			return -KOS_EISDIR; /* `/dev` itself */
 		}
-		return -ZOS_ENOENT;
+		return -KOS_ENOENT;
 	}
 	if (pub->flags != 0u) {
-		return -ZOS_EISDIR; /* a grouping entry, not an object */
+		return -KOS_EISDIR; /* a grouping entry, not an object */
 	}
-	entry = vfs_handle_alloc(pid, ZOS_HANDLE_FIRST_BOUND);
+	entry = vfs_handle_alloc(pid, KOS_HANDLE_FIRST_BOUND);
 	if (entry == (struct vfs_handle_entry *)0) {
-		return -ZOS_EMFILE;
+		return -KOS_EMFILE;
 	}
 	entry->type = pub->type;
 	entry->endpoint = pub->number;
@@ -232,7 +232,7 @@ int vfs_enum_device(uint8_t bank, const char *rel, uint16_t *cookie,
 		if (vfs_emit(bank, out, slot, component, length,
 			    vfs_ns_publications[i].type,
 			    vfs_ns_publications[i].flags) != 0) {
-			return -ZOS_EFAULT;
+			return -KOS_EFAULT;
 		}
 		++slot;
 		++*count;

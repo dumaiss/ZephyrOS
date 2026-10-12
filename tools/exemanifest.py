@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Generate a ZEX v2 manifest from an sdldz80 link map (work package 28c).
+"""Generate a EXE v2 manifest from an sdldz80 link map (work package 28c).
 
-The generic `zex_program` rule in user/sdk/zex.mk links a program, then
+The generic `exe_program` rule in user/sdk/exe.mk links a program, then
 calls this tool to derive `image_size` and `bss_size` from the map.  No
 size is ever hand-entered:
 
@@ -10,14 +10,14 @@ size is ever hand-entered:
     entry_offset = <entry symbol> - LOAD_BASE
 
 The stack size and scratch symbol come from the rule's options or the
-SDK defaults.  The output JSON uses the exact key set tools/zexpack.py
+SDK defaults.  The output JSON uses the exact key set tools/exepack.py
 accepts.  `--segments FILE` merges a JSON list of auxiliary segment
 declarations (id/kind/input or area/bss_size; the packer resolves a DATA
 payload against the same objdir and reads a FAR_CODE segment out of the
 program's own linked IHX far area, package 44b).
 
 Usage:
-    zexmanifest.py MAP OUT --name NAME [--entry SYM] [--stack N]
+    exemanifest.py MAP OUT --name NAME [--entry SYM] [--stack N]
                    [--scratch SYM:SIZE] [--input FILE] [--segments FILE]
 
 Reads the map, writes the manifest.  Exit 1 on a geometry error.
@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from zexpack import parse_symbols  # noqa: E402
+from exepack import parse_symbols  # noqa: E402
 
 LOAD_BASE = 0x0100
 STACK_TOP = 0xE000
@@ -68,7 +68,7 @@ def build_manifest(map_path, name, entry, stack_size, scratch, input_name=None,
         raise ManifestError("image + BSS collide with the stack top")
 
     manifest = {
-        "format": "zex-v2",
+        "format": "exe-v2",
         "name": name,
         "input": input_name or (os.path.splitext(name)[0] + ".ihx"),
         "map": os.path.basename(map_path),
@@ -108,11 +108,11 @@ def build_manifest(map_path, name, entry, stack_size, scratch, input_name=None,
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(prog="zexmanifest.py")
+    parser = argparse.ArgumentParser(prog="exemanifest.py")
     parser.add_argument("map")
     parser.add_argument("output")
     parser.add_argument("--name", required=True)
-    parser.add_argument("--entry", default="zos_entry")
+    parser.add_argument("--entry", default="kos_entry")
     parser.add_argument("--stack", type=int, default=256)
     parser.add_argument("--scratch", default=None)
     parser.add_argument("--input", default=None)
@@ -123,7 +123,7 @@ def main(argv):
                                   args.stack, args.scratch, args.input,
                                   args.segments)
     except (ManifestError, OSError, ValueError) as exc:
-        print("zexmanifest: %s" % exc, file=sys.stderr)
+        print("exemanifest: %s" % exc, file=sys.stderr)
         return 1
     Path(args.output).write_text(json.dumps(manifest, indent=2) + "\n")
     return 0

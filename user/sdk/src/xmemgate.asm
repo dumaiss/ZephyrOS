@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS libzos: aperture latch helpers (work package 43).
+; KonaOS libkos: aperture latch helpers (work package 43).
 ;
 ; Opening the mode-10 far aperture is not a syscall: the program writes
 ; the token SYS_XMEM_MAP returned to the memory-control port and keeps the
@@ -11,12 +11,12 @@
 ; sees platform headers, so the constant is local and pinned here).
 ; -----------------------------------------------------------------------------
 
-	.module zos_xmemgate
+	.module kos_xmemgate
 
 	.globl _aperture_open
 	.globl _aperture_close
 
-ZOS_MEMCTL_PORT = 0x00
+KOS_MEMCTL_PORT = 0x00
 
 	.area _CODE
 
@@ -24,14 +24,14 @@ ZOS_MEMCTL_PORT = 0x00
 ; Writes the token and returns the previous latch in A.
 _aperture_open::
 	ld	c,a
-	in	a,(ZOS_MEMCTL_PORT)
+	in	a,(KOS_MEMCTL_PORT)
 	ld	b,a
 	ld	a,c
-	out	(ZOS_MEMCTL_PORT),a
+	out	(KOS_MEMCTL_PORT),a
 	ld	a,b
 	ret
 
 ; void aperture_close(unsigned char previous);  A = the latch to restore.
 _aperture_close::
-	out	(ZOS_MEMCTL_PORT),a
+	out	(KOS_MEMCTL_PORT),a
 	ret

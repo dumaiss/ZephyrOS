@@ -1,4 +1,4 @@
-/* ZephyrOS kernel ASCII name comparison (work package 30c, finding F3).
+/* KonaOS kernel ASCII name comparison (work package 30c, finding F3).
  *
  * Replaces the three independent copies the kernel used to carry:
  * `vfs_name_equal` (VFS mount and provider names), `romfs_name_match`
@@ -9,7 +9,7 @@
 
 #include "kernel/lib/name.h"
 
-uint8_t zos_ascii_equal(const char *stored, const char *wanted,
+uint8_t kos_ascii_equal(const char *stored, const char *wanted,
 			uint16_t field_size, uint8_t fold)
 {
 	uint16_t i = 0;

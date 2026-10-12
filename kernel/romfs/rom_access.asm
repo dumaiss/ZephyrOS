@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS M5 common ROM-access primitive.
+; KonaOS M5 common ROM-access primitive.
 ;
 ; Reads a bounded window (offset/length inside 0000h-BFFFh) of one
 ; configured recovery ROM page into the common staging buffer and restores
@@ -26,7 +26,7 @@
 ;   - the routine is non-reentrant (busy flag).
 ;
 ; Entry: HL = const struct rom_access_req * (page:u8, offset:u16, length:u16)
-; Exit:  A = 0 (staged OK), ZOS_EINVAL (bad request), ZOS_EBUSY (reentry).
+; Exit:  A = 0 (staged OK), KOS_EINVAL (bad request), KOS_EBUSY (reentry).
 ;        On success the staged bytes are in rom_access_staging.
 ; Clobbers: AF, AF', BC, DE, HL.  Interrupts restored to their entry state.
 ; -----------------------------------------------------------------------------
@@ -35,11 +35,11 @@
 	.include "hardware.inc"
 	.include "memory.inc"
 
-; Status codes returned in A.  They are the positive ZOS_* values from
-; abi/zos/errno.h; tests/test_romfs.py enforces the parity so
+; Status codes returned in A.  They are the positive KOS_* values from
+; abi/kos/errno.h; tests/test_romfs.py enforces the parity so
 ; the two representations cannot drift.
-RAX_EINVAL = 0x02		; ZOS_EINVAL
-RAX_EBUSY  = 0x04		; ZOS_EBUSY
+RAX_EINVAL = 0x02		; KOS_EINVAL
+RAX_EBUSY  = 0x04		; KOS_EBUSY
 
 	.globl _rom_access_copy
 	.globl _rom_access_staging
@@ -71,7 +71,7 @@ _rom_access_copy::
 	ld	h,(hl)			; [4] length hi
 	ld	l,a			; HL = length
 
-	; length must be 1..ZOS_ROMFS_STAGING_SIZE (never 0x100: LDIR would
+	; length must be 1..KOS_ROMFS_STAGING_SIZE (never 0x100: LDIR would
 	; run 65536 iterations).
 	ld	a,h
 	or	a
@@ -79,14 +79,14 @@ _rom_access_copy::
 	ld	a,l
 	or	a
 	jp	z, rax_invalid
-	cp	#(ZOS_ROMFS_STAGING_SIZE + 1)
+	cp	#(KOS_ROMFS_STAGING_SIZE + 1)
 	jp	nc, rax_invalid
 
 	; page must be one of the configured recovery pages.
 	ld	a,c
-	cp	#ZOS_ROMFS_FIRST_PAGE
+	cp	#KOS_ROMFS_FIRST_PAGE
 	jp	c, rax_invalid
-	cp	#(ZOS_ROMFS_FIRST_PAGE + ZOS_ROMFS_PAGE_COUNT)
+	cp	#(KOS_ROMFS_FIRST_PAGE + KOS_ROMFS_PAGE_COUNT)
 	jp	nc, rax_invalid
 
 	; offset + length must stay inside the 0000h-BFFFh window without
@@ -97,7 +97,7 @@ _rom_access_copy::
 	ld	a,d
 	adc	a,h
 	jp	c, rax_invalid		; wrapped past 64 KiB
-	cp	#(ZOS_ROMFS_WINDOW_SIZE >> 8)
+	cp	#(KOS_ROMFS_WINDOW_SIZE >> 8)
 	jp	c, rax_window_ok	; high byte below the window
 	jp	nz, rax_invalid		; high byte above the window
 	ld	a,e
@@ -128,7 +128,7 @@ rax_iff_captured:
 	ld	(rom_access_saved_iff),a
 
 	; ---- save the exact caller latch and mark the transition busy ----
-	in	a,(ZOS_MEMCTL_PORT)
+	in	a,(KOS_MEMCTL_PORT)
 	ld	(rom_access_saved_latch),a
 	ld	a,#1
 	ld	(rom_access_busy),a
@@ -149,7 +149,7 @@ rax_iff_captured:
 	rrca
 	rrca
 	rrca
-	and	#ZOS_ROM_PAGE_MASK	; A = page<<5 | mode 00 | bank 0
+	and	#KOS_ROM_PAGE_MASK	; A = page<<5 | mode 00 | bank 0
 	jp	rom_access_trampoline
 
 	; ---- post-window epilogue: back in mode 11 on the caller bank ----
@@ -182,7 +182,7 @@ rax_busy:
 	.area _COMMON_DATA
 
 _rom_access_staging::
-	.ds	ZOS_ROMFS_STAGING_SIZE
+	.ds	KOS_ROMFS_STAGING_SIZE
 rom_access_saved_latch::
 	.ds	1
 rom_access_saved_iff::
@@ -206,13 +206,13 @@ rom_access_busy::
 ; sync extent; tools/pack_image.py copies the sync bytes into the image.
 ; ---------------------------------------------------------------------------
 	.area _ROM_ACCESS_STUB (ABS)
-	.org	ZOS_ROM_ACCESS_BASE - 2
+	.org	KOS_ROM_ACCESS_BASE - 2
 
 rom_access_trampoline::
-	out	(ZOS_MEMCTL_PORT),a	; enter mode 00 on the selected page
+	out	(KOS_MEMCTL_PORT),a	; enter mode 00 on the selected page
 rom_access_sync::
 	ldir				; ROM (HL) -> SRAM bank 0 (DE)
 	ex	af,af'			; A = exact caller latch
-	out	(ZOS_MEMCTL_PORT),a	; leave mode 00 before any stack read
+	out	(KOS_MEMCTL_PORT),a	; leave mode 00 before any stack read
 	jp	rom_access_epilogue	; ordinary common code, back in mode 11
 rom_access_sync_end::

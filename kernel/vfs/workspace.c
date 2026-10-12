@@ -1,5 +1,5 @@
-/* ZephyrOS VFS part: the staging buffer. */
-/* ZephyrOS M9 bank-7 VFS workspace (package 27, correction-01).
+/* KonaOS VFS part: the staging buffer. */
+/* KonaOS M9 bank-7 VFS workspace (package 27, correction-01).
  *
  * Owns the single 512-byte VFS workspace and, in debug/acceptance builds,
  * the guard that asserts its two views are never used together.  See
@@ -22,7 +22,7 @@ _Static_assert(VFS_PATH_SLOTS * VFS_PATH_SLOT_SIZE == VFS_WORKSPACE_SIZE,
 	       "the VFS workspace views must exactly tile the buffer");
 #endif
 
-#if ZOS_VFS_WS_GUARD
+#if KOS_VFS_WS_GUARD
 /* Which view currently owns the workspace (0 = free).  Execution is
  * single-tasking, so one byte is enough.  Entering a view while the other
  * one is still active would mean a live path pointer was overwritten by
@@ -33,4 +33,4 @@ void vfs_ws_fault(void)
 {
 	panic("vfs: workspace view overlap");
 }
-#endif /* ZOS_VFS_WS_GUARD */
+#endif /* KOS_VFS_WS_GUARD */

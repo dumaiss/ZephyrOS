@@ -2,16 +2,16 @@
  *
  * sio.c owns the bounded polling operations and the private state;
  * sio_boot.c owns the one-time 115200 8N1 programming sequence;
- * sio_proto.c owns the serial-protocol dispatch (abi/zos/protocol.h).
+ * sio_proto.c owns the serial-protocol dispatch (abi/kos/protocol.h).
  * The image is packed as the `sio` resident driver (work package 41).
  * Not a kernel ABI.
  */
 
-#ifndef ZEPHYROS_DRIVERS_SIO_H
-#define ZEPHYROS_DRIVERS_SIO_H
+#ifndef KONAOS_DRIVERS_SIO_H
+#define KONAOS_DRIVERS_SIO_H
 
 #include "driver.h"
-#include "zos/types.h"
+#include "kos/types.h"
 
 /* Boot segment: re-establish the documented 115200 8N1 programming
  * sequence; called once, through the mode-10 boot gate. */
@@ -19,7 +19,7 @@ void sio0b_hw_init(void);
 
 /* Hot segment: the endpoint dispatch and the init entry the loader calls
  * with the driver bootstrap table. */
-int16_t sio_driver_dispatch(struct zos_ipc_frame *frame);
+int16_t sio_driver_dispatch(struct kos_ipc_frame *frame);
 uint8_t sio_driver_init(const struct driver_boot *boot);
 
 int sio0b_putc(void *state, char ch);
@@ -35,4 +35,4 @@ struct sio0b_state {
 
 extern struct sio0b_state sio0b_state;
 
-#endif /* ZEPHYROS_DRIVERS_SIO_H */
+#endif /* KONAOS_DRIVERS_SIO_H */

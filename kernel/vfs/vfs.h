@@ -1,4 +1,4 @@
-/* ZephyrOS M10 kernel VFS internal interface (kernel-private).
+/* KonaOS M10 kernel VFS internal interface (kernel-private).
  *
  * This header is never visible to modules or applications.  It owns the
  * pieces of the M9 VFS the namespace model keeps (architecture 36.13,
@@ -24,12 +24,12 @@
  * fixed-core workspace owned by kernel/vfs.
  */
 
-#ifndef ZEPHYROS_KERNEL_VFS_H
-#define ZEPHYROS_KERNEL_VFS_H
+#ifndef KONAOS_KERNEL_VFS_H
+#define KONAOS_KERNEL_VFS_H
 
-#include "zos/types.h"
-#include "zos/fs.h"
-#include "zos/object.h"
+#include "kos/types.h"
+#include "kos/fs.h"
+#include "kos/object.h"
 #include "romfs.h"
 #include "driver.h"
 #include "kernel/ipc/ipc.h"
@@ -41,7 +41,7 @@
 
 /* One-time nucleus setup: the ROMFS reader, the handle table, the CWD
  * pool, the provider tables and the in-process FILE endpoint.  There is
- * no mount phase (architecture 36.13).  Returns 0 or a negative ZOS_E*
+ * no mount phase (architecture 36.13).  Returns 0 or a negative KOS_E*
  * value. */
 int vfs_init(void);
 uint8_t vfs_phase(void);
@@ -84,16 +84,16 @@ _Static_assert(VFS_PATH_SLOTS * VFS_PATH_SLOT_SIZE == VFS_WORKSPACE_SIZE,
 	       "the VFS workspace views must exactly tile the buffer");
 #endif
 
-/* View guard: the debug/acceptance builds (ZOS_VFS_WS_GUARD=1) fault on a
+/* View guard: the debug/acceptance builds (KOS_VFS_WS_GUARD=1) fault on a
  * path-view / staging-view overlap; production compiles it out. */
-#ifndef ZOS_VFS_WS_GUARD
-#define ZOS_VFS_WS_GUARD 0
+#ifndef KOS_VFS_WS_GUARD
+#define KOS_VFS_WS_GUARD 0
 #endif
 
 #define VFS_WS_VIEW_PATH 1u
 #define VFS_WS_VIEW_DATA 2u
 
-#if ZOS_VFS_WS_GUARD
+#if KOS_VFS_WS_GUARD
 extern uint8_t vfs_ws_view; /* 0 free, else the active view */
 void vfs_ws_fault(void);    /* never returns */
 
@@ -121,7 +121,7 @@ void vfs_ws_fault(void);    /* never returns */
  * relative `path` against the canonical `base` directory (which must
  * itself be an absolute canonical path): repeated and trailing slashes
  * collapsed, `.` removed, `..` applied with traversal above `/` clamped
- * to `/`.  Preserves case.  Returns 0, or -ZOS_EINVAL for a null
+ * to `/`.  Preserves case.  Returns 0, or -KOS_EINVAL for a null
  * argument, an over-long path/component, or a buffer that cannot hold the
  * result.  `base` and `out` must not alias. */
 int vfs_path_normalize_at(const char *base, const char *path, char *out,
@@ -133,8 +133,8 @@ int vfs_path_normalize_at(const char *base, const char *path, char *out,
  * tagged, and the handle a process names is the per-process number `bind`
  * handed out (1 and 2 are the standard console handles).  A suspended
  * parent keeps its handles while a child runs (single-tasking), so the
- * pool is never per-process.  A full pool reports ZOS_EMFILE; a
- * stale/foreign/mistyped handle reports ZOS_EINVAL.
+ * pool is never per-process.  A full pool reports KOS_EMFILE; a
+ * stale/foreign/mistyped handle reports KOS_EINVAL.
  *
  * A bound FILE instance keeps its immutable metadata (the file size the
  * provider's bind reported, and - for the in-process ROMFS provider - the
@@ -153,12 +153,12 @@ int vfs_path_normalize_at(const char *base, const char *path, char *out,
 struct vfs_ns_file {
 	romfs_file_t romfs; /* the in-process ROMFS provider's source */
 	uint32_t offset;    /* its read position                      */
-	uint8_t flags;      /* ZFS_O_* subset of the bind flags       */
+	uint8_t flags;      /* KFS_O_* subset of the bind flags       */
 };
 
 struct vfs_handle_entry {
 	uint8_t owner;    /* pid, or VFS_FD_NONE when FREE       */
-	uint8_t type;     /* ZOS_TYPE_*, 0 when FREE             */
+	uint8_t type;     /* KOS_TYPE_*, 0 when FREE             */
 	uint8_t number;   /* per-process handle number           */
 	uint8_t endpoint; /* serving endpoint (provider marker)  */
 	uint8_t object;   /* provider-private instance identity  */
@@ -208,7 +208,7 @@ uint8_t vfs_handle_active_count(void);
 
 /* CWD lifecycle.  vfs_process_start() gives the child the parent's CWD
  * (or the constant `/` when `parent_pid` is PROCESS_KERNEL_PARENT / an
- * unknown/missing parent) and fails with -ZOS_ENOSPC when no slot is
+ * unknown/missing parent) and fails with -KOS_ENOSPC when no slot is
  * free.  vfs_process_exit() releases every handle owned by `pid` (through
  * the owning provider) and its CWD slot, and is idempotent; it runs on
  * every exit path.  `vfs_cwd_for()` never returns null (`/` when
@@ -218,11 +218,11 @@ void vfs_process_exit(uint8_t pid);
 const char *vfs_cwd_for(uint8_t pid);
 
 /* Store the canonical path `norm` as the running process' CWD (SYS_CHDIR,
- * after the owning provider accepted it).  Returns 0 or -ZOS_EINVAL when
+ * after the owning provider accepted it).  Returns 0 or -KOS_EINVAL when
  * the caller owns no CWD slot. */
 int vfs_cwd_store(const char *norm);
 
-/* ZephyrOS M10 VFS root router and static namespace providers (kernel-private).
+/* KonaOS M10 VFS root router and static namespace providers (kernel-private).
  *
  * Package 42a (architecture 36.7 and 36.13): the VFS owns the global root
  * `/` and routes a normalized global path, ASCII case-insensitively, by
@@ -278,15 +278,15 @@ int vfs_cwd_store(const char *norm);
 
 struct vfs_ns_publication {
 	char    name[VFS_NS_NAME_MAX]; /* provider-relative, e.g. "/console" */
-	uint8_t type;                  /* ZOS_TYPE_*, 0 on a container       */
+	uint8_t type;                  /* KOS_TYPE_*, 0 on a container       */
 	uint8_t number;                /* endpoint number, 0 on a container  */
 	uint8_t object;                /* provider object identity           */
-	uint8_t flags;                 /* ZOS_NS_ENTRY_CONTAINER on a grouping row */
+	uint8_t flags;                 /* KOS_NS_ENTRY_CONTAINER on a grouping row */
 };
 
 /* One-time nucleus setup (the in-process FILE endpoint) plus the empty
  * start for the provider tables; called from vfs_init().  Returns 0 or a
- * negative ZOS_E* value. */
+ * negative KOS_E* value. */
 int vfs_ns_init(void);
 
 /* Discard every host-built publication (vfs_init(), and the acceptance
@@ -299,7 +299,7 @@ void vfs_ns_reset(void);
  * already checked the record against the container; the checks here
  * protect the nucleus table: capacity, a bounded printable name beginning
  * with '/', a legal protocol type and a nonzero endpoint.  Returns 0 or
- * -ZOS_EINVAL/-ZOS_ENOSPC. */
+ * -KOS_EINVAL/-KOS_ENOSPC. */
 int vfs_ns_install_publication(const char *name, uint8_t type, uint8_t number,
 			       uint8_t object);
 
@@ -311,12 +311,12 @@ uint8_t vfs_ns_publication_endpoint(const char *rel);
 
 /* Resolve the normalized absolute path `norm` and bind an instance for
  * `pid`, storing the 8-bit protocol type in *type and returning the handle
- * number (>= 1) or a negative ZOS_E* value.  `flags` is the caller's
+ * number (>= 1) or a negative KOS_E* value.  `flags` is the caller's
  * 16-bit bind flags, interpreted by the selected provider. */
 int vfs_ns_bind(uint8_t pid, const char *norm, uint16_t flags, uint8_t *type);
 
 /* Release the instance the handle names for `pid`.  Returns 0 or
- * -ZOS_EINVAL.  The standard handles (1, 2) are refused. */
+ * -KOS_EINVAL.  The standard handles (1, 2) are refused. */
 int vfs_ns_unbind(uint8_t pid, uint8_t handle);
 
 /* Release one bound object: the provider's release, then the entry.
@@ -326,7 +326,7 @@ int vfs_ns_unbind(uint8_t pid, uint8_t handle);
 void vfs_ns_release_entry(struct vfs_handle_entry *entry);
 
 /* The handle's endpoint and object identity for SYS_CALL, or a negative
- * ZOS_E* value when the handle is not a bound object. */
+ * KOS_E* value when the handle is not a bound object. */
 int vfs_ns_resolve(uint8_t pid, uint8_t handle, uint8_t *endpoint,
 		   uint8_t *object);
 
@@ -335,9 +335,9 @@ int vfs_ns_resolve(uint8_t pid, uint8_t handle, uint8_t *endpoint,
 void vfs_ns_standard_handles(uint8_t pid);
 
 /* Namespace enumeration for SYS_NS_ENUM: write as many `struct
- * zos_ns_entry` records as fit `out_size` bytes to the caller buffer
+ * kos_ns_entry` records as fit `out_size` bytes to the caller buffer
  * (bank `bank`, address `out`) starting at `*cookie`, returning the count
- * written and updating `*cookie`, or a negative ZOS_E* value.  Below
+ * written and updating `*cookie`, or a negative KOS_E* value.  Below
  * `/fs` the provider forwards to the filesystem driver, whose entries
  * land in the caller's buffer through the descriptor copy gate. */
 int vfs_ns_enum(uint8_t bank, const char *norm, uint16_t *cookie,
@@ -352,7 +352,7 @@ int vfs_ns_enum(uint8_t bank, const char *norm, uint16_t *cookie,
  * module) to the driver.  `object` is the instance the handle resolved
  * to. */
 int16_t vfs_ns_fs_call(uint8_t handle, uint8_t object,
-		       struct zos_ipc_call_args *args);
+		       struct kos_ipc_call_args *args);
 
 /* One SYS_UNBIND of a bound `/fs` object: release the driver's instance
  * (a filesystem-namespace handle has none). */
@@ -360,7 +360,7 @@ void vfs_ns_fs_release(uint8_t type, uint8_t object);
 
 /* The provider the normalized path `norm` belongs to is asked whether it
  * names a traversable directory (SYS_CHDIR): 0 with *ok set, or a
- * negative ZOS_E* value. */
+ * negative KOS_E* value. */
 int vfs_ns_dir_check(const char *norm, uint8_t *ok);
 
 /* One nucleus-side FILE call on a bound FILE handle (the cold loader):
@@ -369,29 +369,29 @@ int vfs_ns_dir_check(const char *norm, uint8_t *ok);
  * staging block in direction `dir` (FILE data); length 0 is the
  * descriptor-less form (metadata, seek, sync).  Returns the call status. */
 int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
-			 struct zos_ipc_frame *frame, uint16_t length,
+			 struct kos_ipc_frame *frame, uint16_t length,
 			 uint8_t dir);
 
 /* --- the ROMFS FILE provider (kernel/vfs/system.c) ------------------- */
 
-/* Bind the ROMFS entry `name` (provider-relative, e.g. "/MONITOR.ZEX") as
+/* Bind the ROMFS entry `name` (provider-relative, e.g. "/MONITOR.EXE") as
  * a FILE instance for `pid`, or the `/system` root (`name` empty) as the
- * filesystem-namespace handle.  Returns the handle or a negative ZOS_E*
- * value; `flags` carries the ZFS_O_* open flags. */
+ * filesystem-namespace handle.  Returns the handle or a negative KOS_E*
+ * value; `flags` carries the KFS_O_* open flags. */
 int vfs_ns_file_bind(uint8_t pid, const char *name, uint16_t flags,
 		     uint8_t *type);
 
-/* `ZFS_OP_STAT` for one `/system` path: `rel` is the provider-relative
+/* `KFS_OP_STAT` for one `/system` path: `rel` is the provider-relative
  * remainder ("" for the ROMFS root) and the reply payload receives the
- * packed `struct zfs_stat`.  Returns 0 or a negative ZOS_E* value. */
-int vfs_ns_file_meta(const char *rel, struct zos_ipc_frame *frame);
+ * packed `struct kfs_stat`.  Returns 0 or a negative KOS_E* value. */
+int vfs_ns_file_meta(const char *rel, struct kos_ipc_frame *frame);
 
 /* The in-process FILE endpoint's dispatch (installed by vfs_ns_init());
  * the nucleus calls it through the ordinary handle-call path.  `handle`
  * is the caller's handle number, `object` the publication identity (unused
  * by ROMFS: the instance is the handle entry). */
 int16_t vfs_ns_file_dispatch(uint8_t handle, uint8_t object,
-			     struct zos_ipc_frame *frame);
+			     struct kos_ipc_frame *frame);
 
 /* --- cross-file helpers (package 46 T4) --------------------------------
  *
@@ -420,7 +420,7 @@ int vfs_fs_bind_file(uint8_t pid, const char *rel, uint16_t flags,
 		     uint8_t *type);
 void vfs_fs_put_path(uint8_t *payload, const char *path);
 const char *vfs_fs_rel(const char *norm);
-int vfs_fs_read_path(const struct zos_ipc_call_args *args);
+int vfs_fs_read_path(const struct kos_ipc_call_args *args);
 int vfs_enum_fs(const char *rel, uint16_t *cookie, uint16_t out,
 		uint16_t out_size, uint16_t *count);
 
@@ -430,9 +430,9 @@ int vfs_enum_romfs(uint8_t bank, uint16_t *cookie, uint16_t out,
 
 /* router.c */
 int vfs_fs_namespace_op(uint8_t op, const char *norm, const char *norm_b,
-			struct zos_ipc_frame *frame);
+			struct kos_ipc_frame *frame);
 uint8_t vfs_room(uint16_t slot, uint16_t out_size);
 int vfs_emit(uint8_t bank, uint16_t out, uint16_t slot, const char *name,
 	     uint16_t name_length, uint8_t type, uint8_t flags);
 
-#endif /* ZEPHYROS_KERNEL_VFS_H */
+#endif /* KONAOS_KERNEL_VFS_H */

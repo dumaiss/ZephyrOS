@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """IPC substrate acceptance replay (work packages 39 and 42d).
 
-Boots build-ipc-selftest/zephyros-ipc-selftest.bin -- the production boot
+Boots build-ipc-selftest/konaos-ipc-selftest.bin -- the production boot
 path with the fixed-core IPC substrate linked in, the six synthetic
 resident drivers placed in bank 6 by the cold loader, and the SDK client
-program booting as /system/ipc.zex -- once, and asserts the outcomes of
+program booting as /system/ipc.exe -- once, and asserts the outcomes of
 that one run:
 
 * the promoted package-35 conformance suite runs from the client and
@@ -57,7 +57,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 from replay import RET, STEP_LIMIT, Replay  # noqa: E402
 
 IMAGE_SUBDIR = "build-ipc-selftest"
-IMAGE_NAME = "zephyros-ipc-selftest.bin"
+IMAGE_NAME = "konaos-ipc-selftest.bin"
 
 PASS = b"ipc: PASS\r\n"
 CLIENT_START = b"ipc selftest: client OK\r\n"
@@ -113,7 +113,7 @@ PHASES = {
 # caller buffer it names, and the copy path the correction requires.
 # "window" is path A (one mode-11 LDIR), "aperture" is path B (one LDIR
 # with the mode-10 aperture open), "slow" is path C (the chunked copy
-# through the zos_bank_copy gate).
+# through the kos_bank_copy gate).
 PROBE_PHASES = {
     "A": ("window-read", 0x0100, "window"),
     "P": ("window-single", 0x0100, "window"),
@@ -243,12 +243,12 @@ class IpcSim(Replay, unittest.TestCase):
         # stack starts (5F00h), and a push reaching the region's top is
         # still inside it.
         return (
-            ("driver", self.syms["zos_driver_stack"],
-             self.syms["zos_driver_stack_top"] - 1),
+            ("driver", self.syms["kos_driver_stack"],
+             self.syms["kos_driver_stack_top"] - 1),
             ("isr", self.syms["irq_isr_stack"] + 1,
              self.syms["irq_isr_stack_top"] - 1),
-            ("gate", self.syms["zos_gate_stack"],
-             self.syms["zos_gate_stack_top"] - 1),
+            ("gate", self.syms["kos_gate_stack"],
+             self.syms["kos_gate_stack_top"] - 1),
         )
 
     def drive(self, z):
@@ -311,7 +311,7 @@ class IpcSim(Replay, unittest.TestCase):
         """The bank-6 address of a driver image symbol: the packer's
         segment-relative offset in the segment the report names."""
         entry = [item for item in self.plan()["drivers"]
-                 if item["name"] == "ipc-%s.zmod" % name][0]
+                 if item["name"] == "ipc-%s.mod" % name][0]
         report = self.report(name)
         role = report["symbol_segments"][symbol]
         base = {"hot": entry["hot_base"], "boot": entry["boot_base"],
@@ -325,7 +325,7 @@ class TestIpcAcceptance(IpcSim):
 
     def test_client_passes_the_promoted_suite(self):
         tx = self.transcript()
-        for line in (b"ZephyrOS 0.0\r\n", b"platform: Zephyr-80\r\n",
+        for line in (b"KonaOS 0.0\r\n", b"platform: Zephyr-80\r\n",
                      b"kernel entry: OK\r\n", b"serial: OK\r\n"):
             self.assertIn(line, tx)
         self.assertIn(LOADER_OK, tx)
@@ -468,7 +468,7 @@ class TestIpcDriverImages(IpcSim):
         """`con`'s slow buffer sits in the hot tier, not in 8000h-BFFFh."""
         plan = self.plan()
         entry = [item for item in plan["drivers"]
-                 if item["name"] == "ipc-con.zmod"][0]
+                 if item["name"] == "ipc-con.mod"][0]
         address = entry["hot_base"] + \
             self.report("con")["symbols"]["_ipc_con_slow_buffer"]
         self.assertFalse(0x8000 <= address < 0xC000,
@@ -490,12 +490,12 @@ class TestIpcPlacement(IpcSim):
                 continue
             self.assertGreaterEqual(address, 0x2000, name)
             self.assertLess(address, 0x6000, name)
-        self.assertEqual(self.syms["zos_driver_stack"], 0x5D00)
-        self.assertEqual(self.syms["zos_driver_stack_top"], 0x5F00)
+        self.assertEqual(self.syms["kos_driver_stack"], 0x5D00)
+        self.assertEqual(self.syms["kos_driver_stack_top"], 0x5F00)
         self.assertEqual(self.syms["irq_isr_stack"], 0x5F00)
         self.assertEqual(self.syms["irq_isr_stack_top"], 0x6000)
-        for name in ("zos_syscall_entry", "zos_gate_stack",
-                     "zos_gate_stack_top"):
+        for name in ("kos_syscall_entry", "kos_gate_stack",
+                     "kos_gate_stack_top"):
             self.assertGreaterEqual(self.syms[name], 0xE000, name)
         # The cold half starts at the split and the fixed core ends there.
         geometry = self.geometry()
@@ -510,16 +510,16 @@ class TestIpcPlacement(IpcSim):
               % (self.syms["ipc_asm_begin"],
                  self.syms["ipc_asm_end"], geometry["FIXED_CODE_END"],
                  self.syms["__kernel_code_end"],
-                 self.syms["zos_driver_stack"],
-                 self.syms["zos_driver_stack_top"]))
+                 self.syms["kos_driver_stack"],
+                 self.syms["kos_driver_stack_top"]))
 
     def geometry(self):
-        """The build's generated memory geometry (ZOS_* constants)."""
+        """The build's generated memory geometry (KOS_* constants)."""
         values = {}
         with open(os.path.join(ROOT, IMAGE_SUBDIR, "geometry",
                                "memory.inc")) as handle:
             for line in handle:
-                match = re.match(r"^ZOS_([A-Z0-9_]+)\s*=\s*0x([0-9A-Fa-f]+)",
+                match = re.match(r"^KOS_([A-Z0-9_]+)\s*=\s*0x([0-9A-Fa-f]+)",
                                  line)
                 if match:
                     values[match.group(1)] = int(match.group(2), 16)

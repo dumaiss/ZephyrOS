@@ -1,21 +1,21 @@
-/* ZephyrOS M10 feature exerciser (work package 45b).
+/* KonaOS M10 feature exerciser (work package 45b).
  *
- * `/system/hwtest.zex` is the production store's runner: the owner starts
- * it from the monitor (`X /system/hwtest.zex`) on the real machine and
+ * `/system/hwtest.exe` is the production store's runner: the owner starts
+ * it from the monitor (`X /system/hwtest.exe`) on the real machine and
  * reads one line per stage plus the verdict.  It drives the same outcome
  * programs the acceptance images boot, so the mechanisms stay one
  * implementation:
  *
- *   xmem+far  `/system/xmem_selftest.zex` with the `stage` tail (the
+ *   xmem+far  `/system/xmem_selftest.exe` with the `stage` tail (the
  *             extended-memory rows, stated against the banks this context
- *             opens) and then `/system/xmem_far.zex` directly (two far
+ *             opens) and then `/system/xmem_far.exe` directly (two far
  *             segments through the aperture, unmodified): the far program
  *             runs one exec level shallower than it would below the
  *             selftest, because the chain monitor -> runner -> stage
  *             already sits at the kernel's four-level exec limit.  Both
  *             runs are bracketed by this runner's own whole-bank counts,
  *             so each child's exit must return every bank it held;
- *   files     `/system/fs_selftest.zex` with the `stage` tail: the same
+ *   files     `/system/fs_selftest.exe` with the `stage` tail: the same
  *             checks with every write inside `/fs/HWTEST`, which this
  *             runner creates and removes - also after a failure - so the
  *             card keeps no trace.  With no card (or a read-only one) the
@@ -48,17 +48,17 @@
  * FAIL - the status the monitor prints.
  */
 
-#include "zos.h"
-#include "zlibc/fmt.h"
-#include "zlibc/string.h"
-#include "zos/protocol.h"
+#include "kos.h"
+#include "klibc/fmt.h"
+#include "klibc/string.h"
+#include "kos/protocol.h"
 
 #define LINE_MAX 96
 
 #define LANE_NAME    "/dev/serial/0"
-#define XMEM_PROGRAM "/system/xmem_selftest.zex"
-#define FAR_PROGRAM  "/system/xmem_far.zex"
-#define FS_PROGRAM   "/system/fs_selftest.zex"
+#define XMEM_PROGRAM "/system/xmem_selftest.exe"
+#define FAR_PROGRAM  "/system/xmem_far.exe"
+#define FS_PROGRAM   "/system/fs_selftest.exe"
 #define XMEM_STAGE_TAIL "stage"
 #define FS_STAGE_TAIL   "stage"
 
@@ -71,7 +71,7 @@
 #define HW_RENAMED "/fs/HWTEST/RENAMED.TMP"
 #define HW_SUBDIR "/fs/HWTEST/SELFTEST.D"
 #define HW_CHILD  "/fs/HWTEST/CHILD.TMP"
-#define HW_PROGRAM "/fs/HWTEST/CHILD.ZEX"
+#define HW_PROGRAM "/fs/HWTEST/CHILD.EXE"
 
 /* kernel/vfs/vfs.h VFS_HANDLE_MAX: the process handle pool. */
 #define FD_MAX 12u
@@ -91,9 +91,9 @@
 
 static char hw_line[LINE_MAX];
 static unsigned char hw_lane;
-static struct zos_ipc_request req;
-static struct zos_ns_entry entries[ENUM_PAGE];
-static struct zfs_stat st;
+static struct kos_ipc_request req;
+static struct kos_ns_entry entries[ENUM_PAGE];
+static struct kfs_stat st;
 
 /* The runner's own name: every line, so the transcript is unambiguous. */
 static const char hw_name[] = "hwtest";
@@ -111,13 +111,13 @@ static char ns_fail_detail[NS_DETAIL_MAX];
 
 static void hw_lane_write(const char *text, unsigned int length)
 {
-	req.frame.op = ZSIO_OP_WRITE;
+	req.frame.op = KSIO_OP_WRITE;
 	req.frame.flags = 0u;
 	req.frame.arg0 = 0u;
 	req.frame.arg1 = length;
 	req.buffer = (void *)text;
 	req.length = length;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 	if (call(hw_lane, &req) < 0) {
 		hw_lane = 0u; /* the lane failed: the console remains */
 	}
@@ -143,7 +143,7 @@ static void hw_lane_open(void)
 	unsigned char type = 0u;
 	int handle = bind(LANE_NAME, 0u, &type);
 
-	if (handle >= (int)ZOS_HANDLE_FIRST_BOUND && type == ZOS_TYPE_SERIAL) {
+	if (handle >= (int)KOS_HANDLE_FIRST_BOUND && type == KOS_TYPE_SERIAL) {
 		hw_lane = (unsigned char)handle;
 	}
 }
@@ -225,8 +225,8 @@ static unsigned int hw_pool_banks(void)
 	return hwtest_open;
 }
 
-/* The extended-memory rows run in `/system/xmem_selftest.zex`; the far
- * rows run in `/system/xmem_far.zex` directly rather than nested below it
+/* The extended-memory rows run in `/system/xmem_selftest.exe`; the far
+ * rows run in `/system/xmem_far.exe` directly rather than nested below it
  * (45b): the chain is already monitor -> runner -> stage and the kernel
  * allows four, so the far program's own nested exec would be the fifth.
  * The two pool counts around each run are this runner's own evidence that
@@ -287,7 +287,7 @@ static int hw_scratch_make(void)
 	if (result == 0) {
 		return CARD_PRESENT;
 	}
-	if (result == -ZOS_ENODEV) {
+	if (result == -KOS_ENODEV) {
 		return CARD_ABSENT;
 	}
 	return CARD_READONLY;
@@ -308,7 +308,7 @@ static int hw_stage_files(int *card)
 			return 0;
 		}
 		hw_scratch_remove();
-		if (stat(HW_DIR, &st) != -ZOS_ENOENT) {
+		if (stat(HW_DIR, &st) != -KOS_ENOENT) {
 			hw_stage_verdict("files", "FAIL", "scratch-removed");
 			return 0;
 		}
@@ -423,7 +423,7 @@ static int hw_enum_has(const char *path, const char *name, int container)
 		for (index = 0; index < count; ++index) {
 			int is_container =
 				(entries[index].flags &
-				 ZOS_NS_ENTRY_CONTAINER) != 0u;
+				 KOS_NS_ENTRY_CONTAINER) != 0u;
 
 			if (strcmp(entries[index].name, name) == 0 &&
 			    is_container == (container != 0)) {
@@ -452,7 +452,7 @@ static void hw_check_bind(const char *label, const char *path,
 	unsigned char bound_type = 0u;
 	int handle = bind(path, 0u, &bound_type);
 
-	if (handle < (int)ZOS_HANDLE_FIRST_BOUND) {
+	if (handle < (int)KOS_HANDLE_FIRST_BOUND) {
 		hw_check_accepted(label, handle);
 		return;
 	}
@@ -514,17 +514,17 @@ static void hw_check_table(void)
 
 	count = hw_fill_table(handles, &result);
 	hw_check("table-fills", count >= 3u && count < FD_MAX);
-	hw_check_status("table-emfile", result, -ZOS_EMFILE);
+	hw_check_status("table-emfile", result, -KOS_EMFILE);
 	hw_release_table(handles, count);
 
 	second = hw_fill_table(again, &result);
-	hw_check_status("table-restored", result, -ZOS_EMFILE);
+	hw_check_status("table-restored", result, -KOS_EMFILE);
 	hw_check("table-restored-count", second == count);
 	hw_release_table(again, second);
 
 	result = bind("/dev/console", 0u, &type);
 	hw_check_accepted("table-reuse", result);
-	if (result >= (int)ZOS_HANDLE_FIRST_BOUND) {
+	if (result >= (int)KOS_HANDLE_FIRST_BOUND) {
 		hw_check_status("table-reuse-unbind",
 				unbind((unsigned char)result), 0);
 	}
@@ -543,35 +543,35 @@ static void hw_stage_namespace(int card)
 	hw_lane_close();
 
 	/* The real production publications and the type each carries. */
-	hw_check_bind("bind-dev-console", "/dev/console", ZOS_TYPE_CONSOLE);
-	hw_check_bind("bind-dev-video", "/dev/video", ZOS_TYPE_VIDEO);
+	hw_check_bind("bind-dev-console", "/dev/console", KOS_TYPE_CONSOLE);
+	hw_check_bind("bind-dev-video", "/dev/video", KOS_TYPE_VIDEO);
 	hw_check_bind("bind-dev-input", "/dev/input/keyboard",
-		      ZOS_TYPE_INPUT);
-	hw_check_bind("bind-dev-serial", "/dev/serial/0", ZOS_TYPE_SERIAL);
-	hw_check_bind("bind-dev-ioc", "/dev/ioc", ZOS_TYPE_IOC);
+		      KOS_TYPE_INPUT);
+	hw_check_bind("bind-dev-serial", "/dev/serial/0", KOS_TYPE_SERIAL);
+	hw_check_bind("bind-dev-ioc", "/dev/ioc", KOS_TYPE_IOC);
 
 	/* Refusals: a grouping entry is not bindable, an absent name and an
 	 * absent card are distinct, and an empty path is malformed. */
 	hw_check_status("bind-container", bind("/dev", 0u, &type),
-			-ZOS_EISDIR);
+			-KOS_EISDIR);
 	hw_check_status("bind-container-input",
-			bind("/dev/input", 0u, &type), -ZOS_EISDIR);
+			bind("/dev/input", 0u, &type), -KOS_EISDIR);
 	hw_check_status("bind-unknown-device",
 			bind("/dev/nosuch", 0u, &type),
-			-ZOS_ENOENT);
+			-KOS_ENOENT);
 	hw_check_status("bind-unknown-file",
-			bind("/system/nosuch.zex", 0u, &type),
-			-ZOS_ENOENT);
+			bind("/system/nosuch.exe", 0u, &type),
+			-KOS_ENOENT);
 	hw_check_status("bind-empty-einval", bind("", 0u, &type),
-			-ZOS_EINVAL);
+			-KOS_EINVAL);
 	if (card == CARD_PRESENT) {
 		hw_check_status("bind-card-absent-name",
 				bind("/fs/nosuch", 0u, &type),
-				-ZOS_ENOENT);
+				-KOS_ENOENT);
 	} else {
 		hw_check_status("bind-card-enodev",
 				bind("/fs/nosuch", 0u, &type),
-				-ZOS_ENODEV);
+				-KOS_ENODEV);
 	}
 
 	/* Enumeration: the root and the device tree hold the production
@@ -585,13 +585,13 @@ static void hw_stage_namespace(int card)
 	hw_check_enum("enum-dev-input", hw_enum_has("/dev", "input", 1));
 	hw_check_enum("enum-dev-serial", hw_enum_has("/dev", "serial", 1));
 	hw_check_enum("enum-system-monitor",
-		      hw_enum_has("/system", "monitor.zex", 0));
+		      hw_enum_has("/system", "monitor.exe", 0));
 	hw_check_enum("enum-system-hwtest",
-		      hw_enum_has("/system", "hwtest.zex", 0));
+		      hw_enum_has("/system", "hwtest.exe", 0));
 	hw_check_enum("enum-system-xmem",
-		      hw_enum_has("/system", "xmem_selftest.zex", 0));
+		      hw_enum_has("/system", "xmem_selftest.exe", 0));
 	hw_check_enum("enum-system-fs",
-		      hw_enum_has("/system", "fs_selftest.zex", 0));
+		      hw_enum_has("/system", "fs_selftest.exe", 0));
 	if (card == CARD_PRESENT) {
 		hw_check_status("enum-card", hw_enum_status(FS_DIR), 0);
 	}
@@ -606,7 +606,7 @@ static void hw_stage_namespace(int card)
 	result = getcwd(cwd, sizeof(cwd));
 	hw_check_status("cwd-system", result, 7);
 	hw_check("cwd-system-path", strcmp(cwd, "/system") == 0);
-	hw_check_bind("cwd-relative-bind", "drivers.man", ZOS_TYPE_FILE);
+	hw_check_bind("cwd-relative-bind", "drivers.man", KOS_TYPE_FILE);
 	if (card == CARD_PRESENT) {
 		hw_check_status("chdir-card", chdir(FS_DIR), 0);
 		result = getcwd(cwd, sizeof(cwd));
@@ -614,14 +614,14 @@ static void hw_stage_namespace(int card)
 		hw_check("cwd-card-path", strcmp(cwd, FS_DIR) == 0);
 	} else {
 		hw_check_status("chdir-card-enodev", chdir(FS_DIR),
-				-ZOS_ENODEV);
+				-KOS_ENODEV);
 	}
 	/* The two refusals must leave the CWD where it was: `/system` without
 	 * a card, the card root with one. */
 	hw_check_status("chdir-object-refused", chdir("/dev/console"),
-			-ZOS_ENOTDIR);
+			-KOS_ENOTDIR);
 	hw_check_status("chdir-absent", chdir("/dev/nosuch"),
-			-ZOS_ENOENT);
+			-KOS_ENOENT);
 	result = getcwd(cwd, sizeof(cwd));
 	hw_check_status("cwd-survives-refusal", result,
 			(card == CARD_PRESENT) ? 3 : 7);
@@ -630,18 +630,18 @@ static void hw_stage_namespace(int card)
 
 	/* Bad handles: a value no process owns is refused by both the call
 	 * and the release path. */
-	req.frame.op = ZCONSOLE_OP_POLL;
+	req.frame.op = KCONSOLE_OP_POLL;
 	req.frame.flags = 0u;
 	req.frame.arg0 = 0u;
 	req.frame.arg1 = 0u;
 	req.buffer = (void *)0;
 	req.length = 0u;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 	hw_check_status("call-bad-handle", call(BAD_HANDLE, &req),
-			-ZOS_EINVAL);
+			-KOS_EINVAL);
 	hw_check_status("unbind-bad-handle", unbind(BAD_HANDLE),
-			-ZOS_EINVAL);
-	hw_check_status("unbind-zero", unbind(0u), -ZOS_EINVAL);
+			-KOS_EINVAL);
+	hw_check_status("unbind-zero", unbind(0u), -KOS_EINVAL);
 
 	/* The table fills to its documented size, refuses with EMFILE, and
 	 * every slot comes back. */

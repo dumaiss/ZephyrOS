@@ -1,4 +1,4 @@
-# ZephyrOS M9 Filesystem Architecture Proposal
+# KonaOS M9 Filesystem Architecture Proposal
 
 **Status:** historical.  This was the M9 *proposal*; it is superseded by
 `docs/architecture.md` section 32, which is the normative record of what M9
@@ -20,7 +20,7 @@ consumes (architecture 36.13).  What this document says about *mounts*,
 
 **Scope:** M9 native filesystem architecture  
 **Target:** Zephyr-80  
-**Purpose:** Define the native ZephyrOS filesystem framework before implementation. This document intentionally excludes CP/M filesystem semantics.
+**Purpose:** Define the native KonaOS filesystem framework before implementation. This document intentionally excludes CP/M filesystem semantics.
 
 The bootstrap slice (VFS core, the generated mount table, the ROMFS root
 at `/system`, VFS-path boot loading) was implemented by work package
@@ -32,7 +32,7 @@ packages 26 and 30; the syscall family by package 27.  See `docs/vfs.md`.
 
 ## 1. Goals
 
-M9 gives ZephyrOS a real native filesystem framework rather than hard-wiring the OS to the current MCU FAT implementation.
+M9 gives KonaOS a real native filesystem framework rather than hard-wiring the OS to the current MCU FAT implementation.
 
 The architecture must support:
 
@@ -105,13 +105,13 @@ Ownership is deliberately separated:
 - **Block devices** expose raw sector/block storage.
 - **IOC** owns only the Z80-to-MCU transport.
 
-The MCU currently provides both raw SD primitives and a FatFs-based filesystem driver. ZephyrOS exposes both without making either one the architectural foundation of the other.
+The MCU currently provides both raw SD primitives and a FatFs-based filesystem driver. KonaOS exposes both without making either one the architectural foundation of the other.
 
 ---
 
 ## 3. Native namespace
 
-ZephyrOS has exactly one native namespace:
+KonaOS has exactly one native namespace:
 
 ```text
 /
@@ -144,10 +144,10 @@ Typical visible contents might be:
 |-- TOOLS/
 |-- DOCS/
 `-- SYSTEM/
-    |-- monitor.zex
-    |-- shell.zex
-    |-- sio.zmod
-    |-- ioc.zmod
+    |-- monitor.exe
+    |-- shell.exe
+    |-- sio.mod
+    |-- ioc.mod
     `-- ...
 ```
 
@@ -160,7 +160,7 @@ Future devices may be attached at additional root-level mountpoints:
 /BACKUP
 ```
 
-No drive-selection state exists in native ZephyrOS.
+No drive-selection state exists in native KonaOS.
 
 ---
 
@@ -339,7 +339,7 @@ zero system filesystems
 more than one system filesystem
 system filesystem marked as depending on a loadable provider
 relative mount paths
-paths longer than ZOS_PATH_MAX
+paths longer than KOS_PATH_MAX
 '.' or '..' in configured mountpoints
 duplicate mountpoints
 case-only duplicate mountpoints
@@ -443,7 +443,7 @@ M9 supports:
 ```text
 /
 /system
-/GAMES/FOO.ZEX
+/GAMES/FOO.EXE
 .
 ..
 repeated slash normalization
@@ -459,8 +459,8 @@ cwd = /GAMES
 open("SAVE.DAT")
     -> /GAMES/SAVE.DAT
 
-open("../TOOLS/EDIT.ZEX")
-    -> /TOOLS/EDIT.ZEX
+open("../TOOLS/EDIT.EXE")
+    -> /TOOLS/EDIT.EXE
 ```
 
 Traversal above `/` remains at `/`.
@@ -472,9 +472,9 @@ Native VFS pathname comparison is ASCII case-insensitive.
 Thus:
 
 ```text
-/system/monitor.zex
-/system/MONITOR.ZEX
-/System/Monitor.Zex
+/system/monitor.exe
+/system/MONITOR.EXE
+/System/Monitor.Exe
 ```
 
 refer to the same namespace object.
@@ -488,7 +488,7 @@ A-Z == a-z
 all other byte values compare exactly
 ```
 
-ZephyrOS does not attempt Unicode case folding.
+KonaOS does not attempt Unicode case folding.
 
 ### 8.2 Mount selection
 
@@ -497,20 +497,20 @@ VFS resolves the owning mount before calling a filesystem implementation.
 Example:
 
 ```text
-/system/monitor.zex
+/system/monitor.exe
 
 VFS mount      = /system
-FS-relative    = /monitor.zex
+FS-relative    = /monitor.exe
 filesystem     = ROMFS
 ```
 
 while:
 
 ```text
-/GAMES/DOOM.ZEX
+/GAMES/DOOM.EXE
 
 VFS mount      = /
-FS-relative    = /GAMES/DOOM.ZEX
+FS-relative    = /GAMES/DOOM.EXE
 filesystem     = IOC-FAT
 ```
 
@@ -523,15 +523,15 @@ A filesystem implementation never needs to know that its own root appears as `/s
 M9 pins:
 
 ```text
-ZOS_PATH_MAX = 128
-ZFS_NAME_MAX = 64
+KOS_PATH_MAX = 128
+KFS_NAME_MAX = 64
 ```
 
-`ZOS_PATH_MAX` includes the terminating NUL for user-facing C wrappers.
+`KOS_PATH_MAX` includes the terminating NUL for user-facing C wrappers.
 
 The syscall ABI should still use explicit pointer/length fields rather than require unbounded kernel scans for NUL.
 
-`ZFS_NAME_MAX = 64` deliberately avoids baking FAT 8.3 restrictions into the native ABI.
+`KFS_NAME_MAX = 64` deliberately avoids baking FAT 8.3 restrictions into the native ABI.
 
 The current IOC-FAT provider may return much shorter names if that is all the deployed MCU firmware supports.
 
@@ -583,7 +583,7 @@ Those belong to lower or later layers.
 
 Filesystem providers register directly with VFS.
 
-They are not represented as hardware devices merely because some providers are loadable ZMODs.
+They are not represented as hardware devices merely because some providers are loadable MODs.
 
 M9 implemented this as an **in-kernel** registration path
 (`kernel/vfs/`): a provider descriptor carrying a name, an operations
@@ -651,7 +651,7 @@ future Fuzix inode structures
 
 ## 13. ROMFS becomes a filesystem provider
 
-The existing M5 ROMFS was intentionally created as a small recovery-store API before ZephyrOS had a VFS.
+The existing M5 ROMFS was intentionally created as a small recovery-store API before KonaOS had a VFS.
 
 M9 preserves its proven low-level reader but exposes it through the filesystem-provider framework.
 
@@ -688,10 +688,10 @@ There is no requirement in M9 to redesign the ROMFS format to add subdirectories
 VFS initializes before the resident images are placed. The ROMFS reader is statically available and serves the `/system` root from `vfs_init()` on (architecture 36.13).
 
 **M10 (work packages 42b/42c):** the M9 boot path opened every image
-through the VFS (`vfs_file_source()` over `/system/<name>.zmod`) and the
+through the VFS (`vfs_file_source()` over `/system/<name>.mod`) and the
 M9 `/system` *provider* object is deleted; the reader itself stayed.  The
 driver loader reads `drivers.man` and the containers through it
-directly, and a ZEX program is still loaded through the `/system` FILE
+directly, and a EXE program is still loaded through the `/system` FILE
 endpoint.
 
 A tiny direct ROM access primitive may still exist underneath the ROMFS provider, but it is not a parallel filesystem API.
@@ -703,7 +703,7 @@ A tiny direct ROM access primitive may still exist underneath the ROMFS provider
 `/system` contains the minimum ROM-resident material required to:
 
 ```text
-boot ZephyrOS
+boot KonaOS
 recover from external-storage failure
 meaningfully diagnose the machine
 ```
@@ -713,9 +713,9 @@ The exact contents are build-time configuration, not VFS policy.
 Typical contents may include:
 
 ```text
-essential ZMODs
-monitor.zex
-shell.zex
+essential MODs
+monitor.exe
+shell.exe
 diagnostic/recovery assets
 fonts/resources required by the boot environment
 ```
@@ -786,7 +786,7 @@ Conceptually:
      it will define
 ```
 
-The current firmware feature set therefore does not define the long-term ZephyrOS storage architecture.
+The current firmware feature set therefore does not define the long-term KonaOS storage architecture.
 
 ---
 
@@ -794,10 +794,10 @@ The current firmware feature set therefore does not define the long-term ZephyrO
 
 The current MCU already provides FatFs-backed file operations.
 
-M9 exposes that facility as a resident ZMOD filesystem provider:
+M9 exposes that facility as a resident MOD filesystem provider:
 
 ```text
-iocfat.zmod
+iocfat.mod
 ```
 
 Its stack is:
@@ -819,7 +819,7 @@ MCU FatFs
 SD
 ```
 
-`iocfat.zmod`:
+`iocfat.mod`:
 
 ```text
 receives the resolved IOC endpoint in its boot bundle
@@ -843,7 +843,7 @@ The current backend may retain FAT 8.3 component limits if that is what the depl
 
 ### 17.1 Implemented provider (M9, package 30)
 
-`iocfat.zmod` is resident in production, loaded last from the recovery store
+`iocfat.mod` is resident in production, loaded last from the recovery store
 and mounted at the optional `/` from `ioc.0` (architecture sections 32.17,
 32.19 and 32.39).  Its implemented rules:
 
@@ -855,7 +855,7 @@ names      one component is packed to an 11-byte upper-case 8.3 FCB name:
 paths      VFS hands over a normalized absolute path; the resolver sends
            ROOT plus one PUSH per component, at most 16
 handles    two file handles and one directory handle, exactly what the FS2
-           command set serves; exhaustion is ZOS_EMFILE
+           command set serves; exhaustion is KOS_EMFILE
 cache      one 512-byte block slot (architecture section 32.19): a repeated
            read is served locally, a cross-block read fetches only the block
            that is not resident, and a confirmed write, an `unlink`, a
@@ -868,7 +868,7 @@ errors     FS2 status is mapped once (ENOENT/EEXIST/EINVAL/EROFS/ENOSPC/
 ```
 
 `rename` is same-directory only, so a cross-directory rename is `EXDEV`
-rather than a copy.  Absent media surfaces as `ZOS_ENODEV` at mount time,
+rather than a copy.  Absent media surfaces as `KOS_ENODEV` at mount time,
 which leaves `/system` and the console usable.
 
 ---
@@ -1137,7 +1137,7 @@ The shell uses the same `chdir()` operation for all of them.
 
 ## 24. Native file handles
 
-Applications receive small ZephyrOS descriptors.
+Applications receive small KonaOS descriptors.
 
 Conceptually:
 
@@ -1171,21 +1171,21 @@ The first native metadata ABI should expose only broadly useful filesystem-neutr
 ### 25.1 Types
 
 ```c
-#define ZFS_TYPE_FILE 1u
-#define ZFS_TYPE_DIR  2u
+#define KFS_TYPE_FILE 1u
+#define KFS_TYPE_DIR  2u
 ```
 
 ### 25.2 Attributes
 
 ```c
-#define ZFS_ATTR_READONLY 0x01u
-#define ZFS_ATTR_HIDDEN   0x02u
-#define ZFS_ATTR_SYSTEM   0x04u
+#define KFS_ATTR_READONLY 0x01u
+#define KFS_ATTR_HIDDEN   0x02u
+#define KFS_ATTR_SYSTEM   0x04u
 ```
 
 There is no native `ARCHIVE` attribute.
 
-The FAT archive bit is a legacy backup-software concept and is not useful enough to include in the ZephyrOS VFS contract.
+The FAT archive bit is a legacy backup-software concept and is not useful enough to include in the KonaOS VFS contract.
 
 ### 25.3 Timestamps
 
@@ -1194,7 +1194,7 @@ Zephyr-80 has no RTC.
 M9 therefore defines:
 
 ```c
-#define ZFS_TIME_UNKNOWN 0u
+#define KFS_TIME_UNKNOWN 0u
 ```
 
 A timestamp value of zero means:
@@ -1230,7 +1230,7 @@ IOC-FAT may translate FAT timestamps when available.
 Conceptually:
 
 ```c
-struct zfs_stat {
+struct kfs_stat {
     uint8_t  type;
     uint8_t  attributes;
     uint16_t reserved;
@@ -1246,7 +1246,7 @@ struct zfs_stat {
 Conceptually:
 
 ```c
-struct zfs_dirent {
+struct kfs_dirent {
     uint8_t  type;
     uint8_t  attributes;
     uint16_t name_length;
@@ -1255,7 +1255,7 @@ struct zfs_dirent {
     uint32_t ctime;
     uint32_t mtime;
 
-    char name[ZFS_NAME_MAX];
+    char name[KFS_NAME_MAX];
 };
 ```
 
@@ -1337,7 +1337,7 @@ M9 does not require a Unix-style global user-facing `sync` command.
 
 ## 28. Byte-oriented I/O
 
-Native ZephyrOS I/O is byte-oriented.
+Native KonaOS I/O is byte-oriented.
 
 A typical read path is:
 
@@ -1518,7 +1518,7 @@ The system filesystem provider must:
 
 ```text
 be statically available in the kernel image
-have no dependency on ZMODs
+have no dependency on MODs
 have no dependency on dynamically registered devices
 have no dependency on a non-system filesystem
 use only primitive facilities already available at bootstrap
@@ -1531,11 +1531,11 @@ Failure to instantiate the system filesystem is fatal and is reported through th
 Once `/system` exists, boot assets are loaded through VFS:
 
 ```text
-/system/sio.zmod
-/system/ioc.zmod
-/system/hid.zmod
-/system/v9958.zmod
-/system/iocfat.zmod
+/system/sio.mod
+/system/ioc.mod
+/system/hid.mod
+/system/v9958.mod
+/system/iocfat.mod
 ...
 ```
 
@@ -1551,13 +1551,13 @@ the fixed ROMFS reader
 driver loader
 ```
 
-The same source-neutral approach carries ZEX loading.
+The same source-neutral approach carries EXE loading.
 
 A resident image registers nothing at run time: it declares the namespace
 names it serves and the host build resolves the table.  For example:
 
 ```text
-iocfat.zmod (the FS driver image)
+iocfat.mod (the FS driver image)
     |
     +--> receives the resolved IOC endpoint in its boot bundle
     |
@@ -1670,7 +1670,7 @@ The important properties are:
 M9 should use an ordinary native test program such as:
 
 ```text
-fstest.zex
+fstest.exe
 ```
 
 loaded from `/system`.
@@ -1830,10 +1830,10 @@ M9 preserves these rules:
 5. **The system filesystem provider is statically available and has no dependency on resident images or dynamically registered devices.**
 6. **The system filesystem is available before resident images are placed.**
 7. **After the system filesystem is available, subsequent boot assets are loaded through VFS.**
-8. **Native ZephyrOS has no drive letters.**
+8. **Native KonaOS has no drive letters.**
 9. **Native path comparison is ASCII case-insensitive.**
-10. **`ZOS_PATH_MAX = 128`.**
-11. **`ZFS_NAME_MAX = 64`.**
+10. **`KOS_PATH_MAX = 128`.**
+11. **`KFS_NAME_MAX = 64`.**
 12. **ROMFS serves the `/system` root.**
 13. **The normal writable SD FAT filesystem serves `/fs`.**
 14. **A filesystem provider does not know its external root name.**
@@ -1895,7 +1895,7 @@ drivers/
     sd/
         ...
 
-abi/zos/
+abi/kos/
     fs.h
 
 kernel/vfs/
@@ -1970,7 +1970,7 @@ The resulting architecture is:
                            IOC protocol
 ```
 
-This gives ZephyrOS a small but real filesystem framework without importing Unix complexity or CP/M drive semantics, while preserving room for new storage hardware, new filesystem implementations, future personalities, and more sophisticated caching later.
+This gives KonaOS a small but real filesystem framework without importing Unix complexity or CP/M drive semantics, while preserving room for new storage hardware, new filesystem implementations, future personalities, and more sophisticated caching later.
 
 The built-in-filesystem rule also makes VFS part of the boot foundation
 rather than a driver layered on top of resident images: the nucleus

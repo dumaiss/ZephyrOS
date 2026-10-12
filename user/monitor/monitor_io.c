@@ -1,4 +1,4 @@
-/* ZephyrOS M7 native monitor: I/O port commands (I/O).
+/* KonaOS M7 native monitor: I/O port commands (I/O).
  *
  * Ports 00h-0Fh alias the banking latch on Zephyr-80 and are rejected by
  * both this program and SYS_DIAG_IO_IN/OUT; the monitor reports them as
@@ -7,14 +7,14 @@
  */
 
 #include "monitor.h"
-#include "zos.h"
+#include "kos.h"
 #include "diag.h" /* the SDK diag wrappers */
 #include "hexfmt.h"
 #include "status.h"
 
 void mon_cmd_io_in(char *cursor)
 {
-	struct zos_diag_io_in_args req;
+	struct kos_diag_io_in_args req;
 	unsigned int port;
 	int value;
 
@@ -22,7 +22,7 @@ void mon_cmd_io_in(char *cursor)
 		zrt_status_err_arg();
 		return;
 	}
-	if (port < ZOS_DIAG_IO_PORT_MIN) {
+	if (port < KOS_DIAG_IO_PORT_MIN) {
 		zrt_status_err_arg(); /* latch alias: refused, not executed */
 		return;
 	}
@@ -39,7 +39,7 @@ void mon_cmd_io_in(char *cursor)
 
 void mon_cmd_io_out(char *cursor)
 {
-	struct zos_diag_io_out_args req;
+	struct kos_diag_io_out_args req;
 	unsigned int port;
 	unsigned int value;
 	int result;
@@ -50,7 +50,7 @@ void mon_cmd_io_out(char *cursor)
 		zrt_status_err_arg();
 		return;
 	}
-	if (port < ZOS_DIAG_IO_PORT_MIN) {
+	if (port < KOS_DIAG_IO_PORT_MIN) {
 		zrt_status_err_arg(); /* latch alias: refused, not executed */
 		return;
 	}

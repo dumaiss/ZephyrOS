@@ -1,7 +1,7 @@
 -n
 -m
 -w
--i build/zephyros.ihx
+-i build/konaos.ihx
 -b _CODE = 0x2000
 -b _DATA = @DATA_BASE@
 -b _WINDOW = 0x6000

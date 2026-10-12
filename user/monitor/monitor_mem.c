@@ -1,4 +1,4 @@
-/* ZephyrOS M7 native monitor: memory commands (D/DB/M/MB).
+/* KonaOS M7 native monitor: memory commands (D/DB/M/MB).
  *
  * Every access crosses SYS_DIAG_MEM_READ / SYS_DIAG_MEM_WRITE, so the
  * kernel re-validates the bank (0-6), the read range 0000h-DFFFh, the
@@ -9,7 +9,7 @@
  */
 
 #include "monitor.h"
-#include "zos.h"
+#include "kos.h"
 #include "diag.h" /* the SDK diag wrappers */
 #include "hexfmt.h"
 #include "hexdump.h"
@@ -37,7 +37,7 @@ static void mon_dump(unsigned char bank, unsigned int addr,
 		unsigned int i;
 
 		for (i = 0; i < count; ++i) {
-			struct zos_diag_mem_read_args req;
+			struct kos_diag_mem_read_args req;
 			int value;
 
 			req.bank = bank;
@@ -75,7 +75,7 @@ void mon_cmd_mem(char *cursor, unsigned char with_bank,
 		return;
 	}
 	if (modify) {
-		struct zos_diag_mem_write_args req;
+		struct kos_diag_mem_write_args req;
 		int result;
 
 		if (!zrt_parse_hex8(&cursor, &value) ||
@@ -83,8 +83,8 @@ void mon_cmd_mem(char *cursor, unsigned char with_bank,
 			zrt_status_err_arg();
 			return;
 		}
-		if (addr < ZOS_DIAG_MEM_WRITE_MIN ||
-		    addr > ZOS_DIAG_MEM_WRITE_MAX) {
+		if (addr < KOS_DIAG_MEM_WRITE_MIN ||
+		    addr > KOS_DIAG_MEM_WRITE_MAX) {
 			zrt_status_err_arg();
 			return;
 		}

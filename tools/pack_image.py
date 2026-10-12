@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ZephyrOS ROM image packer and layout validator.
+"""KonaOS ROM image packer and layout validator.
 
 Builds the 512 KiB programmed image from the linked Intel HEX output:
 
@@ -25,9 +25,9 @@ Region contract (see docs/architecture.md sections 36.2/36.5, docs/boot.md):
 
 Pages 2-7 carry the logical ROMFS stream (build/recovery.romfs, produced
 from recovery/manifest.json by tools/romfspack.py): logical byte L is
-placed at offset L % C000h of page (ZOS_ROMFS_FIRST_PAGE + L / C000h);
+placed at offset L % C000h of page (KOS_ROMFS_FIRST_PAGE + L / C000h);
 the C000h-FFFFh half of every recovery page and every unused byte are
-FFh, except the fixed ROM-access stub mirror at ZOS_ROM_ACCESS_BASE
+FFh, except the fixed ROM-access stub mirror at KOS_ROM_ACCESS_BASE
 (linked in common at the same address and copied into every recovery
 page here, so instruction fetch survives the mode-00 window).  The boot
 pages 0/1 never receive recovery content.
@@ -36,7 +36,7 @@ Any linked byte outside its assigned region is a build error, as are map
 symbols whose addresses fall outside their expected region.
 
 Usage:
-    pack_image.py [--production] <zephyros.ihx> <zephyros.map> <build_dir>
+    pack_image.py [--production] <konaos.ihx> <konaos.map> <build_dir>
                   [suffix] [build/geometry/memory.inc]
 
 `--production` declares the production placement, which turns on the
@@ -72,7 +72,7 @@ ROMFS_CAPACITY = 0x48000
 ROMFS_HEADER_SIZE = 16  # tools/romfspack.py owns full content validation
 
 # ROM-access transition stub (kernel/romfs/rom_access.asm): linked in
-# common at ZOS_ROM_ACCESS_BASE and mirrored into every recovery page so
+# common at KOS_ROM_ACCESS_BASE and mirrored into every recovery page so
 # the mode-00 window can execute it from ROM.  Pattern-checked below.
 ROM_ACCESS_BASE = 0xEF00
 ROM_ACCESS_SIZE = 8
@@ -181,35 +181,35 @@ def apply_memory_inc(path):
     # fixed-core ledger fields) is derived per image and carried by the
     # generated memory include.  It is required: a missing key must fail
     # loudly rather than validate against a retired boundary.
-    for name in ("ZOS_REV13_WINDOW_BASE", "ZOS_DRIVER_STACK_BASE",
-                 "ZOS_DRIVER_STACK_TOP", "ZOS_DRIVER_STACK_SIZE",
-                 "ZOS_BANK7_DATA_ALIGN", "ZOS_DATA_BASE",
-                 "ZOS_WINDOW_DATA_BASE", "ZOS_FIXED_CODE_END",
-                 "ZOS_FIXED_REQUIRED_BYTES", "ZOS_FIXED_OVERFLOW_BYTES",
-                 "ZOS_FIXED_STACKS_BYTES", "ZOS_FIXED_ROOM_BYTES"):
+    for name in ("KOS_REV13_WINDOW_BASE", "KOS_DRIVER_STACK_BASE",
+                 "KOS_DRIVER_STACK_TOP", "KOS_DRIVER_STACK_SIZE",
+                 "KOS_BANK7_DATA_ALIGN", "KOS_DATA_BASE",
+                 "KOS_WINDOW_DATA_BASE", "KOS_FIXED_CODE_END",
+                 "KOS_FIXED_REQUIRED_BYTES", "KOS_FIXED_OVERFLOW_BYTES",
+                 "KOS_FIXED_STACKS_BYTES", "KOS_FIXED_ROOM_BYTES"):
         require_value(values, name, path)
-    WINDOW_BASE = values["ZOS_REV13_WINDOW_BASE"]
-    DRIVER_STACK_BASE = values["ZOS_DRIVER_STACK_BASE"]
-    DRIVER_STACK_TOP = values["ZOS_DRIVER_STACK_TOP"]
-    DRIVER_STACK_SIZE = values["ZOS_DRIVER_STACK_SIZE"]
-    BANK7_DATA_ALIGN = values["ZOS_BANK7_DATA_ALIGN"]
-    DATA_BASE = values["ZOS_DATA_BASE"]
-    WINDOW_DATA_BASE = values["ZOS_WINDOW_DATA_BASE"]
-    FIXED_CODE_END = values["ZOS_FIXED_CODE_END"]
-    FIXED_REQUIRED_BYTES = values["ZOS_FIXED_REQUIRED_BYTES"]
-    FIXED_OVERFLOW_BYTES = values["ZOS_FIXED_OVERFLOW_BYTES"]
-    FIXED_STACKS_BYTES = values["ZOS_FIXED_STACKS_BYTES"]
-    FIXED_ROOM_BYTES = values["ZOS_FIXED_ROOM_BYTES"]
-    BANK7_RUNTIME_END = values["ZOS_BANK7_RUNTIME_END"]
-    IRQ_ISR_STACK_SIZE = values["ZOS_IRQ_ISR_STACK_SIZE"]
-    ROMFS_FIRST_PAGE = values["ZOS_ROMFS_FIRST_PAGE"]
-    ROMFS_PAGE_COUNT = values["ZOS_ROMFS_PAGE_COUNT"]
-    ROMFS_WINDOW_SIZE = values["ZOS_ROMFS_WINDOW_SIZE"]
-    ROMFS_CAPACITY = values["ZOS_ROMFS_CAPACITY"]
-    ROM_ACCESS_BASE = values["ZOS_ROM_ACCESS_BASE"]
-    ROM_ACCESS_SIZE = values["ZOS_ROM_ACCESS_SIZE"]
-    require_value(values, "ZOS_COMMON_CEILING", path)
-    COMMON_CEILING = values["ZOS_COMMON_CEILING"]
+    WINDOW_BASE = values["KOS_REV13_WINDOW_BASE"]
+    DRIVER_STACK_BASE = values["KOS_DRIVER_STACK_BASE"]
+    DRIVER_STACK_TOP = values["KOS_DRIVER_STACK_TOP"]
+    DRIVER_STACK_SIZE = values["KOS_DRIVER_STACK_SIZE"]
+    BANK7_DATA_ALIGN = values["KOS_BANK7_DATA_ALIGN"]
+    DATA_BASE = values["KOS_DATA_BASE"]
+    WINDOW_DATA_BASE = values["KOS_WINDOW_DATA_BASE"]
+    FIXED_CODE_END = values["KOS_FIXED_CODE_END"]
+    FIXED_REQUIRED_BYTES = values["KOS_FIXED_REQUIRED_BYTES"]
+    FIXED_OVERFLOW_BYTES = values["KOS_FIXED_OVERFLOW_BYTES"]
+    FIXED_STACKS_BYTES = values["KOS_FIXED_STACKS_BYTES"]
+    FIXED_ROOM_BYTES = values["KOS_FIXED_ROOM_BYTES"]
+    BANK7_RUNTIME_END = values["KOS_BANK7_RUNTIME_END"]
+    IRQ_ISR_STACK_SIZE = values["KOS_IRQ_ISR_STACK_SIZE"]
+    ROMFS_FIRST_PAGE = values["KOS_ROMFS_FIRST_PAGE"]
+    ROMFS_PAGE_COUNT = values["KOS_ROMFS_PAGE_COUNT"]
+    ROMFS_WINDOW_SIZE = values["KOS_ROMFS_WINDOW_SIZE"]
+    ROMFS_CAPACITY = values["KOS_ROMFS_CAPACITY"]
+    ROM_ACCESS_BASE = values["KOS_ROM_ACCESS_BASE"]
+    ROM_ACCESS_SIZE = values["KOS_ROM_ACCESS_SIZE"]
+    require_value(values, "KOS_COMMON_CEILING", path)
+    COMMON_CEILING = values["KOS_COMMON_CEILING"]
     REGIONS = make_regions()
 
 # Common-resident entry points (must be callable through the permanently
@@ -220,17 +220,17 @@ COMMON_SYMBOLS = (
     "_early_console_putc",
     "_early_console_puts",
     "_panic",
-    "zos_syscall_entry",
+    "kos_syscall_entry",
     "irq_ctc0_stub",
     "irq_ff_unexpected",
     "irq_common_entry",
     "_irq_arch_init",
 )
-BANK7_SYMBOLS = ("_kernel_main", "zos_syscall_dispatch", "_irq_dispatch")
+BANK7_SYMBOLS = ("_kernel_main", "kos_syscall_dispatch", "_irq_dispatch")
 
 RST30_VECTOR = 0x0030
 
-# Budget ledger formats (tools/zmodpack.py prints the identical lines; a
+# Budget ledger formats (tools/modpack.py prints the identical lines; a
 # host test pins the two against each other and against the linked map).
 # Architecture 36.20: nucleus fixed (required, overflow, stacks, room),
 # nucleus cold, the two bank-6 driver tiers (zero until stage 4) and the
@@ -248,7 +248,7 @@ COMMON_LEDGER_LINE = ("common: used %d of %d bytes (code %d, data %d) | "
 
 
 class LayoutError(Exception):
-    """The linked image violates the ZephyrOS memory-layout contract."""
+    """The linked image violates the KonaOS memory-layout contract."""
 
 
 def parse_ihx(text):
@@ -327,23 +327,23 @@ def validate_layout(mem):
 
 
 def verify_rst30_stub(mem, symbols):
-    """Verify the page-zero vector: exactly JP zos_syscall_entry at 0030h."""
-    vector = symbols.get("_zos_rst30_vector")
+    """Verify the page-zero vector: exactly JP kos_syscall_entry at 0030h."""
+    vector = symbols.get("_kos_rst30_vector")
     if vector != RST30_VECTOR:
         raise LayoutError(
-            "_zos_rst30_vector is at %04Xh, expected %04Xh"
+            "_kos_rst30_vector is at %04Xh, expected %04Xh"
             % (vector if vector is not None else -1, RST30_VECTOR)
         )
-    target = symbols.get("zos_syscall_entry")
+    target = symbols.get("kos_syscall_entry")
     if target is None:
-        raise LayoutError("map has no symbol zos_syscall_entry")
+        raise LayoutError("map has no symbol kos_syscall_entry")
     expected = bytes((0xC3, target & 0xFF, (target >> 8) & 0xFF))
     for i, byte in enumerate(expected):
         addr = RST30_VECTOR + i
         if mem.get(addr, FILL) != byte:
             raise LayoutError(
                 "RST 30h vector byte at %04Xh is %02Xh, expected %02Xh "
-                "(JP zos_syscall_entry)" % (addr, mem.get(addr, FILL), byte)
+                "(JP kos_syscall_entry)" % (addr, mem.get(addr, FILL), byte)
             )
 
 
@@ -402,7 +402,7 @@ def build_pages(mem, romfs=None):
 def rom_access_stub_bytes(mem):
     """Extract and pattern-check the linked ROM-access stub bytes.
 
-    The stub is the fixed block at ZOS_ROM_ACCESS_BASE: one mirrored
+    The stub is the fixed block at KOS_ROM_ACCESS_BASE: one mirrored
     copy in common SRAM, one byte-identical copy per recovery ROM page.
     Checking the encoding here catches any layout drift before an image
     is programmed.
@@ -623,7 +623,7 @@ def common_usage(symbols):
 
 def load_driver_plan(build_dir):
     """The bank-6 driver set's ledger from <build_dir>/modules/
-    drivers.plan.json (tools/zmodpack.py drivers), or None for a
+    drivers.plan.json (tools/modpack.py drivers), or None for a
     synthetic build without one (the driver ledger then reports zeros)."""
     if build_dir is None:
         return None
@@ -696,7 +696,7 @@ def nucleus_ledger(symbols, driver_plan=None):
 def format_nucleus_ledger(ledger):
     """The five budget lines (architecture 36.20) in place of the M9
     `bank7:` line, plus the common-memory line for the permanently mapped
-    window.  Byte-identical to tools/zmodpack.py (pinned by a host test)."""
+    window.  Byte-identical to tools/modpack.py (pinned by a host test)."""
     return "\n".join((
         NUCLEUS_FIXED_LEDGER_LINE % (
             ledger["fixed_required_bytes"], ledger["fixed_overflow_bytes"],
@@ -743,9 +743,9 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
     """Emit a small machine-readable manifest for debugging/reproducibility."""
     entries = {
         name: symbols.get(name) for name in (
-            "_reset", "_zos_rst30_vector", "_kernel_main",
-            "zos_syscall_entry", "zos_syscall_dispatch",
-            "zos_gate_stack", "zos_gate_stack_top",
+            "_reset", "_kos_rst30_vector", "_kernel_main",
+            "kos_syscall_entry", "kos_syscall_dispatch",
+            "kos_gate_stack", "kos_gate_stack_top",
             "irq_vector_page", "irq_vector_guard", "irq_ff_unexpected",
             "irq_transition_stack", "irq_transition_stack_top",
             "irq_isr_stack", "irq_isr_stack_top",
@@ -825,7 +825,7 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
     if build_dir is not None:
         build = Path(build_dir)
         build.mkdir(parents=True, exist_ok=True)
-        (build / ("zephyros%s.manifest.json" % suffix)).write_text(
+        (build / ("konaos%s.manifest.json" % suffix)).write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n"
         )
     return manifest
@@ -939,10 +939,10 @@ def verify_no_banked_latch_writes(mem, symbols=None, production=True):
             return (start, end)
         return None
 
-    shim = extent("_zos_upcall", "zos_upcall_end")
+    shim = extent("_kos_upcall", "kos_upcall_end")
     domain = extent("_ipc_domain_enter", "ipc_domain_switch_end")
-    blob = extent("zos_nucleus_blob_start", "zos_nucleus_blob_end")
-    window = extent("_zos_window_copy", "zos_window_copy_end")
+    blob = extent("kos_nucleus_blob_start", "kos_nucleus_blob_end")
+    window = extent("_kos_window_copy", "kos_window_copy_end")
     anchors = [addr for addr in symbols.values() if isinstance(addr, int)]
     candidates = set()
     for start, end in ((BANK7_BASE, WINDOW_BASE),
@@ -1012,7 +1012,7 @@ def pack(ihx_text, map_text, build_dir, suffix="", romfs=None,
         build.mkdir(parents=True, exist_ok=True)
         for index, page in enumerate(pages):
             (build / ("page%d%s.bin" % (index, suffix))).write_bytes(bytes(page))
-        (build / ("zephyros%s.bin" % suffix)).write_bytes(image)
+        (build / ("konaos%s.bin" % suffix)).write_bytes(image)
         (build / ("zephyr80%s.bin" % suffix)).write_bytes(image)
         driver_plan = load_driver_plan(build_dir)
         write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,

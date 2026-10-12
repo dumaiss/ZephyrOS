@@ -1,4 +1,4 @@
-/* ZephyrOS namespace acceptance: the `nsdev` synthetic publisher (test
+/* KonaOS namespace acceptance: the `nsdev` synthetic publisher (test
  * artifact).
  *
  * One resident bank-6 driver whose publications give the DEVICE provider
@@ -13,7 +13,7 @@
  * no dependency.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "driver.h"
 
 #include "ns_test.h"
@@ -25,7 +25,7 @@ uint16_t nsdev_calls;
 
 /* The endpoint dispatch entry the manifest names: a module-global symbol
  * so the packer can resolve its hot-image offset. */
-int16_t nsdev_dispatch(struct zos_ipc_frame *frame)
+int16_t nsdev_dispatch(struct kos_ipc_frame *frame)
 {
 	nsdev_calls = (uint16_t)(nsdev_calls + 1u);
 	switch (frame->op) {
@@ -40,7 +40,7 @@ int16_t nsdev_dispatch(struct zos_ipc_frame *frame)
 	case NS_OP_DESC:
 		return (int16_t)frame->desc;
 	default:
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 }
 

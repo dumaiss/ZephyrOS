@@ -1,4 +1,4 @@
-# ZephyrOS Boot
+# KonaOS Boot
 
 **Scope:** the reset/ROM-copy sequence, memory map, early console, and
 image layout in this document are the current, unchanged boot path.  The
@@ -14,7 +14,7 @@ validate the result in the emulator and on physical hardware.
 
 ## 1. Boot image format
 
-The ZephyrOS boot ROM is a single 512 KiB image of eight 64 KiB pages:
+The KonaOS boot ROM is a single 512 KiB image of eight 64 KiB pages:
 
 ```text
 offset          content
@@ -26,7 +26,7 @@ offset          content
 
 All eight pages are exactly 64 KiB; every byte that is not linked
 content or recovery-store data is filled with `FFh`.  ROM page numbering
-is independent of SRAM bank identity; page 1 is the ZephyrOS OS page,
+is independent of SRAM bank identity; page 1 is the KonaOS OS page,
 not "page 7".
 
 Region contract per page (enforced at build time by `tools/pack_image.py`):
@@ -105,7 +105,7 @@ latch value   meaning                            effect
 
 The reset/copy sequence and the early kernel-entry phase run with
 maskable interrupts disabled.  The M2 interrupt executive is
-initialized later in `kernel_main()` (section 2.1); the monitor ZEX
+initialized later in `kernel_main()` (section 2.1); the monitor EXE
 launch is the first path that enables interrupts (`EI`), so `EI` is not
 executed anywhere in the reset path itself.
 
@@ -125,14 +125,14 @@ After the four banner lines, `kernel_main()` continues:
    outcome into `tests/test_romfs_sim.py`, which patches the header of a
    freshly packed store image in place and replays the panic; the
    corrupt-store image and its target are gone.
-3. `driver_load_all(ZOS_DRIVER_MANIFEST_NAME)` reads `drivers.man`
+3. `driver_load_all(KOS_DRIVER_MANIFEST_NAME)` reads `drivers.man`
    with the bootstrap ROMFS reader and, in load order, copies each
    driver image's segments to their host-assigned bank-6 addresses,
    installs the endpoint and publication records and the resolved
    dependency numbers, runs the boot entry once and the hot init once
    (the SIO serial driver loads first, so a later failure still leaves
    the recovery console).
-4. the monitor launcher `process_exec("/system/monitor.zex")` starts the
+4. the monitor launcher `process_exec("/system/monitor.exe")` starts the
    native monitor and re-executes it after every normal exit; that launch
    is where interrupts are first enabled.
 
@@ -169,7 +169,7 @@ E000h +-------------------------------+
 
 The linker control file fixes `_CODE` at `2000h` and `_WINDOW` at
 `6000h`, and derives the two zero-initialized runtime areas: `_DATA` at
-`align_down(ZOS_DRIVER_STACK_BASE - runtime_data_size, 512)` and
+`align_down(KOS_DRIVER_STACK_BASE - runtime_data_size, 512)` and
 `_WINDOW_DATA` at `align_up(cold_code_end, 512)`; the common segment
 stays at `E000h`.  The loadable bank-7 image (fixed code, `_HOME`,
 `_INITIALIZER`, `_GSINIT`, `_GSFINAL`, then the cold `_WINDOW` code) must
@@ -187,12 +187,12 @@ Implemented contract (not the "fail if non-empty" alternative):
 2. the `_INITIALIZER` ROM image is copied to `_INITIALIZED`
    (`s__INITIALIZER`/`s__INITIALIZED`/`l__INITIALIZER`);
 3. compiler-emitted `_GSINIT` code (static initializers) is executed via
-   the `__zos_gsinit` label at the head of the `_GSINIT` area, with the
+   the `__kos_gsinit` label at the head of the `_GSINIT` area, with the
    `_GSFINAL` `ret` terminating it.
 
 No hosted CRT or standard library is linked; only the five freestanding
 objects are.  Calls between C and assembly are internal implementation
-details, not a ZephyrOS ABI.
+details, not a KonaOS ABI.
 
 ## 5. Early serial console
 
@@ -216,7 +216,7 @@ therefore available during mode/bank transitions and kernel failures.
 ## 6. Banner output
 
 ```text
-ZephyrOS 0.0
+KonaOS 0.0
 platform: Zephyr-80
 kernel entry: OK
 serial: OK
@@ -236,13 +236,13 @@ Everything is generated under `build/` (git-ignored):
 
 ```text
 build/recovery.romfs  logical ROMFS recovery stream (pages 2-7 payload)
-build/modules/sio.zmod  packed SIO driver module (unchanged M4 format)
-build/zephyros.ihx    sdldz80 Intel HEX output
-build/zephyros.map    linker map (symbols and area placement)
+build/modules/sio.mod  packed SIO driver module (unchanged M4 format)
+build/konaos.ihx    sdldz80 Intel HEX output
+build/konaos.map    linker map (symbols and area placement)
 build/page0.bin ... page7.bin   the eight ROM pages, 64 KiB each
-build/zephyros.bin    512 KiB boot image (page 0..7, FF-filled)
+build/konaos.bin    512 KiB boot image (page 0..7, FF-filled)
 build/zephyr80.bin    byte-identical copy for MAME
-build/zephyros.manifest.json  sizes, per-page hashes, ROMFS placement
+build/konaos.manifest.json  sizes, per-page hashes, ROMFS placement
 ```
 
 `tools/romfspack.py` builds and validates `build/recovery.romfs` from
@@ -252,10 +252,10 @@ logical offset `L` into offset `L % C000h` of page `2 + L / C000h`, keeps
 the boot pages untouched, and fails the build if any byte is linked
 outside its assigned region, if a key entry point symbol is outside its
 required region, or if the recovery stream exceeds the declared capacity.
-It also verifies the page-zero `RST 30h` vector (`JP zos_syscall_entry`,
+It also verifies the page-zero `RST 30h` vector (`JP kos_syscall_entry`,
 exactly three bytes at `0030h`), rejects conflicting/ambiguous IHX
 records and any latch-write encoding in bank 7, and emits
-`build/zephyros.manifest.json`.  `tools/mapcheck.py` runs automatically on
+`build/konaos.manifest.json`.  `tools/mapcheck.py` runs automatically on
 every build as the authoritative post-link layout check, deriving all
 boundaries from `platform/zephyr80/private/memory.inc`; `make check` proves a
 clean rebuild reproduces the identical binary.
@@ -263,7 +263,7 @@ clean rebuild reproduces the identical binary.
 ### Syscall self-test image
 
 `make syscall-selftest` builds a second image
-(`build-selftest/zephyros-selftest.bin`, with a `zephyr80-selftest.bin`
+(`build-selftest/konaos-selftest.bin`, with a `zephyr80-selftest.bin`
 MAME alias) that adds the target-side smoke caller.  On hardware it prints
 the normal banner followed by `syscall selftest: OK` after exercising
 `RST 30h` from application banks 0 and 6 (or a precise failure line
@@ -275,23 +275,23 @@ otherwise).
 bounded timeout and verifies the expected output:
 
 ```sh
-make smoke-hardware SERIAL_PORT=/dev/ttyUSB0                 # flash build/zephyros.bin;
+make smoke-hardware SERIAL_PORT=/dev/ttyUSB0                 # flash build/konaos.bin;
                                                              # on an SIO-fallback
                                                              # bench only: banner,
                                                              # console line, monitor
 make smoke-hardware-subsystem SERIAL_PORT=/dev/ttyUSB0       # flash build-subsys-selftest/
-                                                             # zephyros-subsys-selftest.bin
+                                                             # konaos-subsys-selftest.bin
 make smoke-hardware-console-integration SERIAL_PORT=/dev/ttyUSB0              # flash build-console-integration-selftest/
-                                                             # zephyros-console-integration-selftest.bin
+                                                             # konaos-console-integration-selftest.bin
 make smoke-hardware-m9-fs SERIAL_PORT=/dev/ttyUSB0           # flash build-m9-fs-selftest/
-                                                             # zephyros-m9-fs-selftest.bin
+                                                             # konaos-m9-fs-selftest.bin
 make smoke-hardware-m9-exec SERIAL_PORT=/dev/ttyUSB0         # flash build-m9-exec-selftest/
-                                                             # zephyros-m9-exec-selftest.bin
+                                                             # konaos-m9-exec-selftest.bin
 make smoke-hardware-m9-iocfat SERIAL_PORT=/dev/ttyUSB0       # flash build-m9-iocfat-selftest/
-                                                             # zephyros-m9-iocfat-selftest.bin
+                                                             # konaos-m9-iocfat-selftest.bin
                                                              # (with a writable FAT card)
 make smoke-hardware-m9 SERIAL_PORT=/dev/ttyUSB0              # flash build-m9-selftest/
-                                                             # zephyros-m9-selftest.bin
+                                                             # konaos-m9-selftest.bin
                                                              # (with a writable FAT card);
                                                              # the whole M9 acceptance
 ```
@@ -311,12 +311,12 @@ acceptance images.
 
 M9's integration acceptance image is `make m9-selftest`: the production
 boot path with `/` served by the resident IOC-FAT provider from the card,
-running the whole native acceptance (`fstest.zex`, its deep-matrix child
-`fsfat.zex`, the `fsdeep.zex` depth probe and the two fault windows) and then
+running the whole native acceptance (`fstest.exe`, its deep-matrix child
+`fsfat.exe`, the `fsdeep.exe` depth probe and the two fault windows) and then
 the ordinary monitor launcher.  Its matrix and transcripts are in
 [`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md).
 
-The device can also be passed via the `ZOS_SERIAL_PORT` / `ZOS_SERIAL_BAUD`
+The device can also be passed via the `KOS_SERIAL_PORT` / `KOS_SERIAL_BAUD`
 environment variables.  A missing device or incomplete output fails
 clearly; ordinary host-only `make test` never touches the serial port.
 `make clean` removes only build artifacts — never serial devices or
@@ -324,7 +324,7 @@ captured evidence.
 
 ## 9. Emulator validation (MAME)
 The currently available Zephyr-80 MAME driver is **not configured for the
-ZephyrOS architecture**: its banking decode does not implement the mode
+KonaOS architecture**: its banking decode does not implement the mode
 `10`/`11` mapping required here (bank 7 is not presented at `2000h-DFFFh`
 in OS mode), so it cannot provide M0 acceptance evidence.  Emulator
 validation is deferred until a driver matching this architecture is
@@ -341,8 +341,8 @@ Prerequisite: EPROM/Flash programmer with a 512 KiB (or larger) image
 compatible with the Zephyr-80 ROM socket.
 
 1. `make clean && make && make test` — all host tests pass;
-   `build/zephyros.bin` is exactly 524288 bytes.
-2. Program `build/zephyros.bin` into the ROM device.
+   `build/konaos.bin` is exactly 524288 bytes.
+2. Program `build/konaos.bin` into the ROM device.
 3. Connect a 115200 8N1 serial terminal to SIO0/B (data `22h`).
 4. Apply power / assert reset.
 5. Expected: the four-line banner, then the console-driver line

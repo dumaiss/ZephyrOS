@@ -1,21 +1,21 @@
-/* ZephyrOS user SDK umbrella header (work/28c-m9-user-sdk).
+/* KonaOS user SDK umbrella header (work/28c-m9-user-sdk).
  *
- * A native program includes only "zos.h"; it never includes a kernel
+ * A native program includes only "kos.h"; it never includes a kernel
  * header and never writes entry assembly.  The SDK re-exports the public
- * native ABI types (via the abi/zos headers) and declares the libzos
- * wrappers and the zlibc subset.  See docs/sdk.md.
+ * native ABI types (via the abi/kos headers) and declares the libkos
+ * wrappers and the klibc subset.  See docs/sdk.md.
  */
 
-#ifndef ZOS_H
-#define ZOS_H
+#ifndef KOS_H
+#define KOS_H
 
-#include "zos/console.h"
-#include "zos/fs.h"
-#include "zos/ipc.h"
-#include "zos/process.h"
-#include "zos/seg.h"
-#include "zos/xmem.h"
-#include "zlibc/string.h"
-#include "zlibc/fmt.h"
+#include "kos/console.h"
+#include "kos/fs.h"
+#include "kos/ipc.h"
+#include "kos/process.h"
+#include "kos/seg.h"
+#include "kos/xmem.h"
+#include "klibc/string.h"
+#include "klibc/fmt.h"
 
-#endif /* ZOS_H */
+#endif /* KOS_H */

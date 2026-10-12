@@ -33,11 +33,11 @@ static uint8_t handler_is_valid(irq_handler_t handler)
 	uint16_t address = (uint16_t)handler;
 
 	if (handler != (irq_handler_t)0) {
-		if (address >= ZOS_BANK7_BASE &&
+		if (address >= KOS_BANK7_BASE &&
 		    address < (uint16_t)&irq_kernel_code_end) {
 			return 1;
 		}
-		if (address >= ZOS_REV13_WINDOW_BASE &&
+		if (address >= KOS_REV13_WINDOW_BASE &&
 		    address < (uint16_t)__kernel_code_end) {
 			return 1;
 		}

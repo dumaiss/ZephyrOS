@@ -1,4 +1,4 @@
-# ZephyrOS Architecture
+# KonaOS Architecture
 
 **Status:** M0-M9 complete; M10 architecture defined and under implementation; M11-M12 defined for native completion
 **Scope:** Milestones M0 through M12
@@ -9,24 +9,24 @@
 
 ## 1. Purpose
 
-ZephyrOS is the native operating system for the Zephyr-80.
+KonaOS is the native operating system for the Zephyr-80.
 
-The initial milestones intentionally build the native operating system from the machine outward. CP/M compatibility is not part of native bring-up; it is a later compatibility personality layered over a complete and useful native ZephyrOS environment.
+The initial milestones intentionally build the native operating system from the machine outward. CP/M compatibility is not part of native bring-up; it is a later compatibility personality layered over a complete and useful native KonaOS environment.
 
 The milestones covered by this document are:
 
-- **M0 — Kernel bring-up:** boot ZephyrOS, initialize the early serial console, print a banner, and halt. **Complete.**
+- **M0 — Kernel bring-up:** boot KonaOS, initialize the early serial console, print a banner, and halt. **Complete.**
 - **M1 — Kernel foundation:** establish the kernel memory model, page-zero ownership, common kernel entry points, and the initial native ABI scaffolding. **Complete.**
 - **M2 — Interrupt executive:** establish kernel-owned IM2, safe mode-crossing IRQ entry/return, source ownership, and the first hardware interrupt. **Complete.**
 - **M3 — Device registry and static drivers:** establish the driver/device model and prove it with statically linked hardware drivers. **Complete.**
 - **M4 — Dynamic driver/module loading:** load relocatable driver modules into a managed bank-7 driver arena and register their devices at boot. **Complete.**
 - **M5 — ROM recovery filesystem:** provide a tiny read-only ROM-backed recovery store for boot modules and native recovery programs. **Complete.**
-- **M6 — Native process and ZEX execution:** establish single-tasking native process lifecycle and execute a single-bank native program from ROMFS. **Complete.**
-- **M7 — Native monitor / diagnostic foundation:** port the Zephyr monitor as the first useful native ZEX and establish the foundation for the later diagnostic suite. **Complete.**
+- **M6 — Native process and EXE execution:** establish single-tasking native process lifecycle and execute a single-bank native program from ROMFS. **Complete.**
+- **M7 — Native monitor / diagnostic foundation:** port the Zephyr monitor as the first useful native EXE and establish the foundation for the later diagnostic suite. **Complete.**
 - **M8 — Native device stack completion:** provide the normal V9958/HID console and IOC transport through class-aware dynamically loaded drivers. **Complete.**
 - **M9 — Native VFS and filesystem framework:** establish the native namespace, filesystem-provider model, bootstrap/system filesystem, IOC-FAT provider (with its own file-data cache), block-device class, and native file/directory syscall ABI.
 
-The native shell and full userland, complete diagnostic suite, and extended/far-memory drivers remain later native ZephyrOS milestones. Compatibility personalities begin only after those native facilities are complete.
+The native shell and full userland, complete diagnostic suite, and extended/far-memory drivers remain later native KonaOS milestones. Compatibility personalities begin only after those native facilities are complete.
 
 ---
 
@@ -34,9 +34,9 @@ The native shell and full userland, complete diagnostic suite, and extended/far-
 
 Even at M0/M1, several rules are considered architectural invariants.
 
-### 2.1 ZephyrOS owns the machine
+### 2.1 KonaOS owns the machine
 
-Once control enters ZephyrOS, the kernel owns:
+Once control enters KonaOS, the kernel owns:
 
 - CPU operating state
 - memory banking state
@@ -90,7 +90,7 @@ The rule is:
 
 ### 2.3 Early debug output is special
 
-The early serial console is not the future ZephyrOS console subsystem.
+The early serial console is not the future KonaOS console subsystem.
 
 It is a permanently available low-level diagnostic path intended for:
 
@@ -105,13 +105,13 @@ It may access the SIO hardware directly.
 
 SDCC calling conventions are an implementation detail.
 
-Any stable ZephyrOS ABI — including later system calls, driver interfaces, executable entry conventions, or module interfaces — must be explicitly defined by ZephyrOS and accessed through assembly glue where necessary.
+Any stable KonaOS ABI — including later system calls, driver interfaces, executable entry conventions, or module interfaces — must be explicitly defined by KonaOS and accessed through assembly glue where necessary.
 
 ### 2.5 No compatibility constraints in the native kernel
 
 CP/M compatibility will later be implemented as a compatibility personality.
 
-Native ZephyrOS does not reserve kernel architecture around CP/M concepts such as BDOS, FCBs, 128-byte records, USER areas, or `CALL 0005h`.
+Native KonaOS does not reserve kernel architecture around CP/M concepts such as BDOS, FCBs, 128-byte records, USER areas, or `CALL 0005h`.
 
 The native system must be complete and useful before the compatibility layers are introduced.
 
@@ -122,7 +122,7 @@ The native system must be complete and useful before the compatibility layers ar
 The tree should grow only as each milestone requires it.
 
 ```text
-ZephyrOS/
+KonaOS/
 ├── README.md
 ├── Makefile
 │
@@ -133,7 +133,7 @@ ZephyrOS/
 ├── kernel/include/       kernel.h, process.h, platform.h,
 │                         irq_types.h
 ├── drivers/include/      driver.h, ioc.h, ioc_protocol.h
-├── formats/include/      romfs.h, zex.h, zmod.h
+├── formats/include/      romfs.h, exe.h, mod.h
 ├── platform/zephyr80/    config.mk, public/, private/
 │
 ├── boot/
@@ -197,19 +197,19 @@ ZephyrOS/
 ├── recovery/
 │   ├── manifest.json
 │   └── files/
-│       ├── sio.zmod
-│       └── monitor.zex
+│       ├── sio.mod
+│       └── monitor.exe
 │
 ├── abi/
-│   └── zos/
+│   └── kos/
 │       ├── types.h, errno.h, syscall.h
 │       └── fs.h, process.h, diag.h
 │
 ├── user/
 │   ├── sdk/
-│   │   ├── include/ (zos.h, zos/, zlibc/)
-│   │   ├── src/ (crt0.asm, runtime.asm, gates, args/fs/exec, zlibc/)
-│   │   ├── zex.mk
+│   │   ├── include/ (kos.h, kos/, klibc/)
+│   │   ├── src/ (crt0.asm, runtime.asm, gates, args/fs/exec, klibc/)
+│   │   ├── exe.mk
 │   │   └── template/hello.c
 │   ├── helloworld/
 │   │   ├── hello.c
@@ -244,9 +244,9 @@ ZephyrOS/
 │
 └── tools/
     ├── mapcheck.py
-    ├── zmodpack.py
+    ├── modpack.py
     ├── romfspack.py
-    └── zexpack.py
+    └── exepack.py
 ```
 
 Directories for later facilities are added only as each milestone requires them.
@@ -333,7 +333,7 @@ Owns active device behavior:
 
 For example, SIO ports `22h/23h` are declared by the platform description; the code that writes WR3/WR4/WR5 or polls RR0 belongs to the SIO driver, except for the deliberately separate early-console implementation in `kernel/`.
 
-### `abi/zos/`
+### `abi/kos/`
 
 Owns the public native ABI: the one copy of every header a native program
 or module may compile against (`types.h`, `errno.h`, `syscall.h`, `fs.h`,
@@ -341,14 +341,14 @@ or module may compile against (`types.h`, `errno.h`, `syscall.h`, `fs.h`,
 
 Headers under the audience roots (`drivers/include/`, `kernel/include/`
 and `formats/include/`) that used to carry those declarations now include
-the `abi/zos/` header and add only kernel-internal detail, so
+the `abi/kos/` header and add only kernel-internal detail, so
 there is exactly one definition of every packed block, constant and
 equate.  The kernel build, the module build and the user build all get
 `-I abi`; nothing else is shared.
 
 ### `user/`
 
-Owns native ZephyrOS programs: the monitor (`user/monitor/`), the demos
+Owns native KonaOS programs: the monitor (`user/monitor/`), the demos
 (`user/helloworld/`) and, from M10, the shell (`user/ZShell/`).  User
 programs consume the public ABI through the SDK and never reach into
 private kernel symbols or driver internals.
@@ -357,12 +357,12 @@ private kernel symbols or driver internals.
 
 Owns the user SDK: the only supported way to build a native program.
 
-- `user/sdk/include/` - `zos.h` (the umbrella a program includes) and
-  the `zos/` and `zlibc/` headers;
-- `user/sdk/src/` - crt0, libzos (console/diag/fs/exec gate stubs and
-  wrappers) and `zlibc/`;
-- `user/sdk/zex.mk` - the generic `zex_program` rule: one line per
-  program, manifest generated from the link map, `zexpack` validation;
+- `user/sdk/include/` - `kos.h` (the umbrella a program includes) and
+  the `kos/` and `klibc/` headers;
+- `user/sdk/src/` - crt0, libkos (console/diag/fs/exec gate stubs and
+  wrappers) and `klibc/`;
+- `user/sdk/exe.mk` - the generic `exe_program` rule: one line per
+  program, manifest generated from the link map, `exepack` validation;
 - `user/sdk/template/` - the copyable minimal program.
 
 A program or sub-project (`user/helloworld/`, `user/ZShell/`) is built
@@ -379,7 +379,7 @@ The linker may consume values derived from the platform description, but linker 
 
 Owns host-side build, validation, packing, and inspection tools.
 
-These rules apply equally to the early milestones and later native ZephyrOS work.
+These rules apply equally to the early milestones and later native KonaOS work.
 
 ---
 
@@ -407,7 +407,7 @@ sdasz80           │
                sdldz80
                   │
                   ▼
-             zephyros.bin
+             konaos.bin
 ```
 
 Initial tools:
@@ -430,17 +430,17 @@ A tiny private kernel runtime may later provide functions such as `memcpy`, `mem
 
 M0 is complete when the physical Zephyr-80 and the emulator can:
 
-1. enter ZephyrOS from reset/boot,
+1. enter KonaOS from reset/boot,
 2. establish a valid stack,
 3. initialize the early serial console,
 4. call C code successfully,
-5. print a ZephyrOS banner,
+5. print a KonaOS banner,
 6. enter a controlled halt loop.
 
 Example output:
 
 ```text
-ZephyrOS 0.0
+KonaOS 0.0
 platform: Zephyr-80
 kernel entry: OK
 serial: OK
@@ -474,7 +474,7 @@ The minimum I/O map is:
 | `22h` | SIO B data | early console TX |
 | `23h` | SIO B control | early console init/status |
 
-The banking latch is decoded by hardware across `00h-0Fh`; ZephyrOS software must use canonical port `00h`.
+The banking latch is decoded by hardware across `00h-0Fh`; KonaOS software must use canonical port `00h`.
 
 ### 5.2.2 Reset and memory-latch state
 
@@ -739,7 +739,7 @@ M0 explicitly does **not** include:
 - IOC drivers
 - CP/M compatibility
 - `.COM` loading
-- `.ZEX` loading
+- `.EXE` loading
 - shell or userland
 - keyboard input
 
@@ -763,7 +763,7 @@ These checks are supplementary. They do not replace hardware validation of the m
 
 M1 establishes the execution environment that future kernel subsystems can rely on.
 
-M1 is complete when ZephyrOS has:
+M1 is complete when KonaOS has:
 
 - a documented kernel memory map,
 - a deterministic bank/memory mode at kernel entry,
@@ -810,7 +810,7 @@ application mapping = MODE_APPLICATION | N
 OS mapping          = MODE_OS          | N
 ```
 
-Bank `7` is reserved to ZephyrOS and must not be exposed as an ordinary application bank.
+Bank `7` is reserved to KonaOS and must not be exposed as an ordinary application bank.
 
 The minimum platform API for M1 should provide semantics equivalent to:
 
@@ -841,7 +841,7 @@ M1 does **not** yet define the later application memory allocator or far-memory 
 
 ## 7.2 Kernel-visible regions
 
-ZephyrOS carries forward the proven **mode 10 / mode 11** execution model from the current Zephyr-80 OS.
+KonaOS carries forward the proven **mode 10 / mode 11** execution model from the current Zephyr-80 OS.
 
 The model reserves:
 
@@ -872,7 +872,7 @@ E000h-FFFFh  physical SRAM bank 0
 
 The selected bank number remains the identity of the running application/process.
 
-This mode gives the application a contiguous 56 KiB private view while keeping the permanent ZephyrOS common region visible.
+This mode gives the application a contiguous 56 KiB private view while keeping the permanent KonaOS common region visible.
 
 ### Mode 11 — OS execution
 
@@ -912,7 +912,7 @@ the runtime data (package 25b):
 
 ```text
 2000h                     kernel code, then __kernel_code_end
-__driver_arena_start      loaded ZMOD modules (derived, >= 32 granules)
+__driver_arena_start      loaded MOD modules (derived, >= 32 granules)
 data_base = arena end     _DATA / _INITIALIZED (derived base)
 DF00h                     fixed 256-byte ISR stack
 E000h                     end of bank 7 in mode 11
@@ -928,7 +928,7 @@ The bank selector continues to identify the suspended/running application bank w
 
 ### Architectural consequences
 
-This memory model is a deliberate ZephyrOS invariant.
+This memory model is a deliberate KonaOS invariant.
 
 The three important regions are:
 
@@ -968,8 +968,8 @@ Two clarifications, both learned by having to fix them:
   ledger carries a `common: used <n> of <n> bytes (code <n>, data <n>) |
   ceiling <n>` line with the region ledgers (docs/memory.md section
   2.2.1).  The architectural ceiling on the packed
-  `_COMMON` + `_COMMON_DATA` run is `ZOS_COMMON_CEILING` (3072 bytes).
-  The M9-era 512-byte reservation (`ZOS_COMMON_M10_RESERVATION`) was
+  `_COMMON` + `_COMMON_DATA` run is `KOS_COMMON_CEILING` (3072 bytes).
+  The M9-era 512-byte reservation (`KOS_COMMON_M10_RESERVATION`) was
   released to M10's transitions and IPC (work package 43, section 36.20);
   `mapcheck.py` fails the build when common use exceeds the ceiling.  The
   ceiling may not be raised to make a package fit.
@@ -980,9 +980,9 @@ M1 should preserve this mapping rather than introduce a new generic kernel memor
 
 # 8. Page-zero ownership
 
-Page zero is part of the execution environment selected by ZephyrOS.
+Page zero is part of the execution environment selected by KonaOS.
 
-For native ZephyrOS execution, ZephyrOS owns `0000h-00FFh`.
+For native KonaOS execution, KonaOS owns `0000h-00FFh`.
 
 M1 reserves a native syscall vector, tentatively:
 
@@ -1000,10 +1000,10 @@ The page-zero entry remains tiny:
 
 ```asm
 .org 0x0030
-    jp zos_syscall_gate
+    jp kos_syscall_gate
 ```
 
-`zos_syscall_gate` must be located in permanent common memory (`E000h-FFFFh`), not directly in the bank-7 kernel body.
+`kos_syscall_gate` must be located in permanent common memory (`E000h-FFFFh`), not directly in the bank-7 kernel body.
 
 This is required because an `RST` occurs while mode `10` is active. The common gate is responsible for safely transitioning into mode `11` before dispatching into bank 7.
 
@@ -1035,7 +1035,7 @@ Return:
 
 The initial M1 dispatcher may simply report an unimplemented syscall through the early console and return an error or panic.
 
-The syscall mechanism is only for native ZephyrOS execution.
+The syscall mechanism is only for native KonaOS execution.
 
 Future CP/M `.COM` processes will receive a separate CP/M-compatible page-zero environment, including `CALL 0005h`, rather than being required to use the native `RST` ABI.
 
@@ -1057,7 +1057,7 @@ application, mode 10
     │ RST 30h
     │ CPU pushes return PC on caller stack
     ▼
-0030h: JP zos_syscall_gate
+0030h: JP kos_syscall_gate
     │
     ▼
 common memory, still mode 10
@@ -1165,7 +1165,7 @@ each condition above.  `tools/pack_image.py` independently enforces the
 byte-level image contract (exact size, FF fill, reset-copier mirroring,
 page ownership, the three-byte `RST 30h` stub, no mapping-changing code in
 bank 7, no conflicting/ambiguous IHX input) and emits
-`build/zephyros.manifest.json` with sizes, hashes, fill counts, and entry
+`build/konaos.manifest.json` with sizes, hashes, fill counts, and entry
 addresses.  `make check` additionally proves a clean rebuild reproduces
 the identical binary and runs the whole host validation stack;
 `tools/serial_smoke.py` (`make smoke-hardware`) captures and verifies the
@@ -1197,9 +1197,9 @@ M0/M1 C code includes:
 - simple initialization logic
 - later syscall dispatch policy
 
-Stable ZephyrOS interfaces must not expose SDCC's internal calling convention.
+Stable KonaOS interfaces must not expose SDCC's internal calling convention.
 
-Assembly wrappers should isolate compiler conventions from ZephyrOS-defined ABIs.
+Assembly wrappers should isolate compiler conventions from KonaOS-defined ABIs.
 
 ---
 
@@ -1237,7 +1237,7 @@ The early serial console remains outside that mechanism permanently as a panic a
 
 # 16. Relationship to future CP/M compatibility
 
-M0 and M1 are native ZephyrOS only.
+M0 and M1 are native KonaOS only.
 
 Later, launching a CP/M `.COM` executable will construct a CP/M-compatible execution environment with its own page zero, including entries such as:
 
@@ -1250,13 +1250,13 @@ Later, launching a CP/M `.COM` executable will construct a CP/M-compatible execu
 0100h   COM program
 ```
 
-That compatibility environment must not determine the native ZephyrOS ABI.
+That compatibility environment must not determine the native KonaOS ABI.
 
 ---
 
 # 16.1 Emulator validation
 
-ZephyrOS must not assume that a complete Zephyr-80 emulator exists.
+KonaOS must not assume that a complete Zephyr-80 emulator exists.
 
 M0/M1 correctness depends on platform-specific behavior, especially:
 
@@ -1288,7 +1288,7 @@ MAME support is therefore a useful later integration target, not a prerequisite 
 M0 is accepted when:
 
 - the kernel links reproducibly,
-- the ROM/bootstrap reaches the ZephyrOS bank-7 image using the documented port-`00h` memory-control sequence,
+- the ROM/bootstrap reaches the KonaOS bank-7 image using the documented port-`00h` memory-control sequence,
 - the kernel executes in mode `11`,
 - the generated image boots on physical Zephyr-80 hardware,
 - SIOB is initialized on ports `22h/23h` as 115200 8N1 polling I/O,
@@ -1312,7 +1312,7 @@ M1 is accepted when:
   - `2000h-DFFFh` changes between caller bank and bank 7,
   - `E000h-FFFFh` remains physical bank 0,
 - bank 7 cannot be selected as a normal application bank,
-- page zero is under ZephyrOS control,
+- page zero is under KonaOS control,
 - the native syscall vector is installed,
 - syscall entry moves to the common gate stack before entering mode `11`,
 - the syscall gate can enter bank 7 and return safely to the original caller stack in mode `10`,
@@ -1344,7 +1344,7 @@ D5-D7          ROM page
 18h|N          OS mode over caller bank N
 
 Valid application N: 0..6
-Bank 7:        reserved to ZephyrOS
+Bank 7:        reserved to KonaOS
 
 
 Early serial console
@@ -1376,11 +1376,11 @@ No other hardware interface is required for M0/M1 completion.
 
 ## 18.1 Objective
 
-M2 establishes a single interrupt architecture owned by ZephyrOS.
+M2 establishes a single interrupt architecture owned by KonaOS.
 
 M2 is complete when:
 
-- ZephyrOS owns the Z80 `I` register and interrupt mode;
+- KonaOS owns the Z80 `I` register and interrupt mode;
 - a common-memory IM2 table is installed;
 - an interrupt can arrive while either mode `10` or mode `11` is active;
 - the IRQ entry path preserves the interrupted context;
@@ -1439,7 +1439,7 @@ The vector page must:
 - reserve **257 bytes**, because vector `FFh` reads one byte beyond the nominal 256-byte page;
 - remain visible in both mode `10` and mode `11`.
 
-The initial ZephyrOS placement is:
+The initial KonaOS placement is:
 
 ```text
 FD00h-FDFFh   IM2 vector page
@@ -1450,7 +1450,7 @@ I = FDh
 
 The linker and `mapcheck.py` must treat the page plus guard as one constrained object.
 
-Every vector used by ZephyrOS must resolve to common-memory IRQ entry code.
+Every vector used by KonaOS must resolve to common-memory IRQ entry code.
 
 ### FFh vector invariant
 
@@ -1603,7 +1603,7 @@ alternate AF'
 alternate BC' DE' HL'
 ```
 
-The `I` register is kernel-owned and remains set to the ZephyrOS IM2 page.
+The `I` register is kernel-owned and remains set to the KonaOS IM2 page.
 
 The `R` register is not treated as application state.
 
@@ -1690,7 +1690,7 @@ M2 is accepted when all of the following pass on physical Zephyr-80 hardware:
 - `I = FDh` and IM2 is active after IRQ initialization;
 - `FD00h-FE00h` is validated as the IM2 page plus guard;
 - the `FFh` vector resolves to `irq_ff_unexpected` in the final linked image;
-- CTC0 at port `40h` repeatedly interrupts through the ZephyrOS executive;
+- CTC0 at port `40h` repeatedly interrupts through the KonaOS executive;
 - a handler registered for `IRQ_CTC0` receives the interrupts;
 - the handler executes in mode `11`;
 - the interrupted bank identity is preserved;
@@ -1709,7 +1709,7 @@ CPU-level emulation may exercise context save/restore logic, but physical hardwa
 
 ## 20.1 Objective
 
-M3 introduces the ZephyrOS device/driver model while keeping every driver statically linked into the kernel image.
+M3 introduces the KonaOS device/driver model while keeping every driver statically linked into the kernel image.
 
 M3 proves the architecture without yet introducing module relocation or runtime loading.
 
@@ -1719,7 +1719,7 @@ The first migrated device is SIO0/B, because it is already known-good hardware a
 
 ## 20.2 Driver, device, capability, and driver
 
-ZephyrOS distinguishes four concepts.
+KonaOS distinguishes four concepts.
 
 ```text
 driver
@@ -1776,7 +1776,7 @@ transport and "other" class.
 > device handles and the class registration calls -- is **deleted**.  A
 > driver is a bank-6 driver image (section 36.4) and what a client binds
 > is a *protocol class*: the class numbers now live in
-> `abi/zos/protocol.h` (`ZOS_CLASS_*`) and describe protocols, not
+> `abi/kos/protocol.h` (`KOS_CLASS_*`) and describe protocols, not
 > device kinds, so no registry, no handles and no capability bits remain.
 > The M8 and M9 refinements of this list are history; see sections 30.3
 > and 32 for the milestone record.
@@ -1784,10 +1784,10 @@ transport and "other" class.
 Initial capability bits should include only what is needed by real drivers, beginning with:
 
 ```text
-ZCAP_CHAR_IN
-ZCAP_CHAR_OUT
-ZCAP_CONSOLE_IN
-ZCAP_CONSOLE_OUT
+KCAP_CHAR_IN
+KCAP_CHAR_OUT
+KCAP_CONSOLE_IN
+KCAP_CONSOLE_OUT
 ```
 
 Later milestones may add block I/O, graphics, event, or transport-specific capabilities without changing the basic registry model.
@@ -1880,7 +1880,7 @@ If a static driver claims an IRQ source, its handler may remain in bank 7 becaus
 
 ## 20.8 SIO0/B static driver
 
-*(M3 history: since M4 stage 08 this driver is loaded as a ZMOD module instead of being linked; see sections 22.9 and 22.13. The registry, capability, and console contracts below are unchanged.)*
+*(M3 history: since M4 stage 08 this driver is loaded as a MOD module instead of being linked; see sections 22.9 and 22.13. The registry, capability, and console contracts below are unchanged.)*
 
 The first M3 driver wraps the same physical channel used by the early console:
 
@@ -2026,7 +2026,7 @@ __driver_arena_end
 
 The build must report arena usage.
 
-Implemented geometry (stage `07-m4-module-loader`): the initial arena is `A000h-BFFFh` (8192 bytes, 16 granules) between the loadable kernel image and the `C000h-DFFFh` runtime area, declared in `platform/zephyr80/private/memory.inc`, exported by `kernel/module/arena.asm`, and enforced by `tools/mapcheck.py` / `tools/pack_image.py` (no kernel section, stack, or ROM payload may occupy it). The build prints arena geometry plus free granules, and `zephyros.manifest.json` carries an `arena` object. Concrete loader behavior, error codes, and tooling were documented in `docs/module-format.md`, which now describes the M10 driver image instead.
+Implemented geometry (stage `07-m4-module-loader`): the initial arena is `A000h-BFFFh` (8192 bytes, 16 granules) between the loadable kernel image and the `C000h-DFFFh` runtime area, declared in `platform/zephyr80/private/memory.inc`, exported by `kernel/module/arena.asm`, and enforced by `tools/mapcheck.py` / `tools/pack_image.py` (no kernel section, stack, or ROM payload may occupy it). The build prints arena geometry plus free granules, and `konaos.manifest.json` carries an `arena` object. Concrete loader behavior, error codes, and tooling were documented in `docs/module-format.md`, which now describes the M10 driver image instead.
 
 This `A000h-BFFFh` geometry is the historical M4 acceptance geometry, not the long-term production budget. M8 supersedes it with a linker-derived arena sized from the end of the linked kernel to `C000h`; see section 30.2.
 
@@ -2034,16 +2034,16 @@ This `A000h-BFFFh` geometry is the historical M4 acceptance geometry, not the lo
 
 ## 22.3 Module format
 
-M4 introduces **Zephyr Module Format v1 (ZMOD)**.
+M4 introduces **Zephyr Module Format v1 (MOD)**.
 
-ZMOD is a generic relocatable container. M4 supports only module type `DRIVER`.
+MOD is a generic relocatable container. M4 supports only module type `DRIVER`.
 
-Later executable milestones may reuse its relocation machinery where useful, but native program execution has its own ZEX contract.
+Later executable milestones may reuse its relocation machinery where useful, but native program execution has its own EXE contract.
 
-A ZMOD v1 header contains, at minimum:
+A MOD v1 header contains, at minimum:
 
 ```text
-magic               "ZMOD"
+magic               "KMOD"
 format_version      1
 module_type         DRIVER
 driver_abi_version
@@ -2060,7 +2060,7 @@ reloc_offset
 reloc_count
 ```
 
-Implemented header (stage 07): a packed little-endian 28-byte structure with `payload_offset`, `total_size`, and a `reserved` word, pinned by `formats/include/zmod.h` compile-time assertions. `docs/module-format.md` then recorded the byte table and the manifest/packer contract (it now describes the M10 driver image).
+Implemented header (stage 07): a packed little-endian 28-byte structure with `payload_offset`, `total_size`, and a `reserved` word, pinned by `formats/include/mod.h` compile-time assertions. `docs/module-format.md` then recorded the byte table and the manifest/packer contract (it now describes the M10 driver image).
 
 All addresses stored in the module are offsets relative to the module load base unless explicitly defined otherwise by a relocation record.
 
@@ -2075,7 +2075,7 @@ M4 modules are not linked to a fixed slot address.
 The initial required relocation type is:
 
 ```text
-ZREL_ABS16
+KREL_ABS16
 ```
 
 Meaning:
@@ -2086,7 +2086,7 @@ word_at(module_base + patch_offset) += module_base
 
 The host packer/link step derives patch locations from the SDCC/ASxxxx relocation records. Symbol information is used to resolve addresses; the loader does not scan opcodes or infer relocation sites from symbols alone.
 
-The host tool resolves the module at virtual base `0000h`, emits a complete payload, and converts surviving module-base-dependent absolute references into the compact ZMOD patch table. The target-side loader therefore needs no object-file parser or symbol table.
+The host tool resolves the module at virtual base `0000h`, emits a complete payload, and converts surviving module-base-dependent absolute references into the compact MOD patch table. The target-side loader therefore needs no object-file parser or symbol table.
 
 The host packer must reject object constructs that require relocation types the M4 loader does not understand.
 
@@ -2199,7 +2199,7 @@ embedded_modules[]
     "sio" -> byte blob / size
 ```
 
-M5 replaces this production source with the ROM recovery filesystem. The ZMOD allocator, relocation, driver initialization, device registration, and IRQ ownership machinery remain unchanged; only the byte source changes.
+M5 replaces this production source with the ROM recovery filesystem. The MOD allocator, relocation, driver initialization, device registration, and IRQ ownership machinery remain unchanged; only the byte source changes.
 
 ---
 
@@ -2210,7 +2210,7 @@ The M3 SIO driver is the first M4 module.
 For the M4 acceptance build:
 
 - remove the normal SIO driver from the static boot-driver table;
-- package it as a ZMOD driver;
+- package it as a MOD driver;
 - load it from the embedded module catalog;
 - allocate it at a loader-selected driver-arena address;
 - relocate it;
@@ -2263,7 +2263,7 @@ An optional `fini_offset` exists only for failed-initialization cleanup or futur
 
 ## 22.12 Host-side module tooling
 
-`tools/zmodpack.py` produces and validates ZMOD files.
+`tools/modpack.py` produces and validates MOD files.
 
 It must:
 
@@ -2277,7 +2277,7 @@ It must:
 The build should be able to produce a human-readable report similar to:
 
 ```text
-sio.zmod
+sio.mod
   image:        734 bytes
   bss:           82 bytes
   relocations:   19
@@ -2293,16 +2293,16 @@ Numbers above are illustrative; the build reports the real values.
 The loader half of M4 is implemented as:
 
 ```text
-formats/include/zmod.h          ZMOD v1 definitions, errors, catalog,
+formats/include/mod.h          MOD v1 definitions, errors, catalog,
                                 descriptors, loader API, size asserts
 kernel/module/arena.asm         __driver_arena_start/__driver_arena_end
 kernel/module/relocate.c        container validation, copy, BSS,
-                                ZREL_ABS16 application
+                                KREL_ABS16 application
 kernel/module/loader.c          first-fit granule allocator, descriptors,
                                 transactional module_load_source,
                                 module_code_allowed (IRQ validation hook)
 tests/target/m4/m4_test.c       loader/dynamic-driver acceptance test
-tools/zmodpack.py               pack/validate/dump/emit-asm
+tools/modpack.py               pack/validate/dump/emit-asm
 ```
 
 M2's registry gained claim serials, owner tokens, and checkpoint/rollback (`irq_registry_checkpoint/rollback/set_owner`) so a failed module init rolls back its IRQ claims exactly like its device registrations. `irq_claim` now accepts handler addresses that are linked bank-7 code or lie inside the active/committed module images; see the M4 record in `docs/validation/2026-10-02-m4-acceptance.md` (the container's IRQ-handler validation is deleted with the arena loader).
@@ -2320,7 +2320,7 @@ tests/modules/sio_fail_module.c init-failure variant entry
 ```
 
 * the M3 static driver table is retired: no `boot_drivers[]`, `driver_init_static()`, or `_driver_static_*` symbol is linked, and `tools/mapcheck.py --production` rejects any acceptance symbol;
-* every M4 image embeds a boot module through the generated catalog: `sio.zmod` (production, loader image, placement image), `sio-irq.zmod` (`make m4-selftest`), or `sio-fail.zmod` (`make m4-failure-selftest`).  **The M1-M7 acceptance images, the embedded boot catalog and the legacy fixed-arena geometry were retired under the Mn-1 retention rule at the start of M9 (work package 25a); the loader mechanisms this section proves are now exercised on the current boot path by the loader group of the subsystem acceptance image -- `tests/target/loader/` replayed by `tests/test_subsys_sim.py` -- with container validation and two-base relocation proven on host by `tests/test_zmod.py` and arena exhaustion by the `console-fb-arena` image;**
+* every M4 image embeds a boot module through the generated catalog: `sio.mod` (production, loader image, placement image), `sio-irq.mod` (`make m4-selftest`), or `sio-fail.mod` (`make m4-failure-selftest`).  **The M1-M7 acceptance images, the embedded boot catalog and the legacy fixed-arena geometry were retired under the Mn-1 retention rule at the start of M9 (work package 25a); the loader mechanisms this section proves are now exercised on the current boot path by the loader group of the subsystem acceptance image -- `tests/target/loader/` replayed by `tests/test_subsys_sim.py` -- with container validation and two-base relocation proven on host by `tests/test_mod.py` and arena exhaustion by the `console-fb-arena` image;**
 * the (retired) placement image regenerated `platform/zephyr80/private/memory.inc` with the arena shifted to 9E00h-BE00h and embedded byte-identical module files;
 * `kernel_main()` prints `console: dynamic sio0.b OK` through the bound module (or `console: dynamic driver failed` on load failure);
 * `tools/mapcheck.py` rejects any linked `_sio_`/`_sio0b_`/`_sio_driver` symbol, so the static driver cannot return unnoticed.
@@ -2335,9 +2335,9 @@ M4 is accepted when:
 
 - the driver arena is linker-reserved and excluded from kernel/static state;
 - the granule allocator detects full/exhausted conditions safely;
-- a ZMOD header with bad magic, bad version, invalid size, invalid relocation, or unsupported ABI is rejected without corrupting the arena;
+- a MOD header with bad magic, bad version, invalid size, invalid relocation, or unsupported ABI is rejected without corrupting the arena;
 - the SIO driver is absent from the static driver table;
-- the SIO ZMOD is loaded from the embedded module catalog;
+- the SIO MOD is loaded from the embedded module catalog;
 - its actual load address is chosen by the allocator rather than compiled into the driver;
 - relocation is applied successfully;
 - BSS/private state is zeroed;
@@ -2350,7 +2350,7 @@ M4 is accepted when:
 - failed module initialization rolls back its arena allocation and registry changes;
 - no runtime unload capability is required.
 
-Evidence mapping (as of M4): `tests/test_m4.py`/`tests/test_m4_sim.py` and `tests/test_zmod.py` proved every criterion on host (including the shifted placement and the failure rollback); `make m4-selftest`, `make m4-placement-selftest`, `make m4-failure-selftest` and the corresponding `smoke-hardware-*` captures provided the physical-hardware record (`docs/validation/2026-10-02-m4-acceptance.md`).  Those images and tests were retired under the Mn-1 retention rule (work package 25a); the criteria are now carried by `tests/test_zmod.py`, the loader group of `tests/target/loader/` replayed by `tests/test_subsys_sim.py`, and the `console-fb-arena` image.
+Evidence mapping (as of M4): `tests/test_m4.py`/`tests/test_m4_sim.py` and `tests/test_mod.py` proved every criterion on host (including the shifted placement and the failure rollback); `make m4-selftest`, `make m4-placement-selftest`, `make m4-failure-selftest` and the corresponding `smoke-hardware-*` captures provided the physical-hardware record (`docs/validation/2026-10-02-m4-acceptance.md`).  Those images and tests were retired under the Mn-1 retention rule (work package 25a); the criteria are now carried by `tests/test_mod.py`, the loader group of `tests/target/loader/` replayed by `tests/test_subsys_sim.py`, and the `console-fb-arena` image.
 
 ---
 
@@ -2360,12 +2360,12 @@ Evidence mapping (as of M4): `tests/test_m4.py`/`tests/test_m4_sim.py` and `test
 
 M5 adds a deliberately small read-only filesystem backed by ROM.
 
-Its job is not to define the general ZephyrOS filesystem architecture. It is the **boot and recovery store** that exists even when the IOC, SD card, FAT filesystem, or later shell are unavailable.
+Its job is not to define the general KonaOS filesystem architecture. It is the **boot and recovery store** that exists even when the IOC, SD card, FAT filesystem, or later shell are unavailable.
 
 M5 provides a dependable source for:
 
-- boot-time ZMOD drivers;
-- the first native ZEX programs;
+- boot-time MOD drivers;
+- the first native EXE programs;
 - recovery and diagnostic programs;
 - small immutable configuration or recovery assets where useful.
 
@@ -2388,7 +2388,7 @@ mode 00 window (one bounded copy)
 This has three consequences:
 
 1. the code executing between the two `OUT`s must be byte-identical in common SRAM and in every selected ROM page, must not touch the stack, and must not read any SRAM variable (registers only);
-2. the logical ROMFS payload uses only `0000h-BFFFh` of each allocated ROM page; the `C000h-FFFFh` half is never file data (it carries the fixed stub mirror at `ZOS_ROM_ACCESS_BASE` and `FFh` elsewhere);
+2. the logical ROMFS payload uses only `0000h-BFFFh` of each allocated ROM page; the `C000h-FFFFh` half is never file data (it carries the fixed stub mirror at `KOS_ROM_ACCESS_BASE` and `FFh` elsewhere);
 3. the common staging destination is reached correctly because the mode-00 latch selects SRAM bank 0, and mode-00 writes land in bank 0 across the whole address space.
 
 The logical ROMFS page payload is therefore:
@@ -2474,7 +2474,7 @@ A checksum/CRC may be added if it materially improves recovery diagnostics, but 
 
 `logical_offset` is measured across the concatenated 48-KiB usable windows of the configured ROMFS pages; the reader translates it into `(ROM page, offset within 0000h-BFFFh)`.
 
-Names are native ZephyrOS recovery names, not CP/M 8.3 names.
+Names are native KonaOS recovery names, not CP/M 8.3 names.
 
 ---
 
@@ -2508,8 +2508,8 @@ Conceptually:
 ```text
 recovery/manifest.json
     │
-    ├── sio.zmod
-    ├── monitor.zex        (added by M7)
+    ├── sio.mod
+    ├── monitor.exe        (added by M7)
     └── recovery assets
     │
     ▼
@@ -2546,11 +2546,11 @@ M5 is complete and physically accepted. Its recovery-store and ROM-access invari
 
 ---
 
-# 26. Milestone M6 — Native process and ZEX execution
+# 26. Milestone M6 — Native process and EXE execution
 
 ## 26.1 Objective
 
-M6 introduces the first native ZephyrOS process lifecycle and the ability to execute a native program.
+M6 introduces the first native KonaOS process lifecycle and the ability to execute a native program.
 
 M6 remains deliberately single-tasking:
 
@@ -2595,15 +2595,15 @@ Only one process is RUNNING at a time.
 
 ## 26.3 Native page zero
 
-Every native process receives a ZephyrOS-owned page zero in its own application bank.
+Every native process receives a KonaOS-owned page zero in its own application bank.
 
 At minimum it contains the native syscall gateway already reserved by M1:
 
 ```text
-0030h   RST 30h entry / JP zos_syscall_gate
+0030h   RST 30h entry / JP kos_syscall_gate
 ```
 
-Other bytes are initialized by ZephyrOS rather than inherited from a previous program.
+Other bytes are initialized by KonaOS rather than inherited from a previous program.
 
 ```text
 0080h   startup block v1 (all 128 bytes at 0080h-00FFh)
@@ -2616,7 +2616,7 @@ Every native process receives this block, including the kernel-launched
 one; the launcher passes an empty tail.  The launch gate enters the
 program with `HL = 0080h`.  The kernel transports a `SYS_EXEC` caller's
 raw command tail into `tail` byte-exact and never parses it; user space
-owns splitting (`user/sdk/include/zos/process.h`, docs/zex-format.md section
+owns splitting (`user/sdk/include/kos/process.h`, docs/exe-format.md section
 5.1).  The block is inside the caller-visible low window, so it is
 readable in both mode `10` and mode `11`; it sits below the `0100h`
 syscall buffer window, so a program copies the tail into its own data
@@ -2631,9 +2631,9 @@ the launch contract, because the program reads its shape from
 
 ---
 
-## 26.4 ZEX v1: single-bank native executable
+## 26.4 EXE v1: single-bank native executable
 
-M6 defines the first **ZEX** executable contract.
+M6 defines the first **EXE** executable contract.
 
 The M6 form is intentionally simpler than the later far-code/far-data format:
 
@@ -2651,18 +2651,18 @@ The executable's logical load address is fixed at:
 0100h
 ```
 
-This is important: selecting a different physical application bank does **not** change the Z80 logical addresses seen by the program. A normal single-bank ZEX linked at `0100h` therefore does not need M4-style base relocation merely because it is loaded into bank 0, 1, 2, etc.
+This is important: selecting a different physical application bank does **not** change the Z80 logical addresses seen by the program. A normal single-bank EXE linked at `0100h` therefore does not need M4-style base relocation merely because it is loaded into bank 0, 1, 2, etc.
 
-M12 may extend ZEX with segment/relocation metadata for auxiliary far code/data without changing this simple primary-bank model.
+M12 may extend EXE with segment/relocation metadata for auxiliary far code/data without changing this simple primary-bank model.
 
 ---
 
-## 26.5 ZEX v1 header
+## 26.5 EXE v1 header
 
-A ZEX v1 header contains at minimum:
+A EXE v1 header contains at minimum:
 
 ```text
-magic               "ZEX1"
+magic               "EXE1"
 format_version      1
 abi_version
 flags
@@ -2682,8 +2682,8 @@ The loader validates that the image and BSS fit below the reserved stack, the en
 ## 26.6 Native process memory layout
 
 ```text
-0000h-00FFh   ZephyrOS native page zero
-0100h-....    ZEX image
+0000h-00FFh   KonaOS native page zero
+0100h-....    EXE image
 ....          zero-initialized BSS
 ....          free process memory
 ....-DFFFh    process stack growing downward
@@ -2692,9 +2692,9 @@ E000h-FFFFh   permanent physical bank-0 common memory
 
 ---
 
-## 26.7 ZEX load/launch sequence
+## 26.7 EXE load/launch sequence
 
-M6 loads programs from M5 ROMFS through the source-backed ZEX/process loader. M9 will make that loader source-neutral with VFS-backed input without changing ZEX validation or process-bank semantics.
+M6 loads programs from M5 ROMFS through the source-backed EXE/process loader. M9 will make that loader source-neutral with VFS-backed input without changing EXE validation or process-bank semantics.
 
 ---
 
@@ -2725,7 +2725,7 @@ reaches the child's startup block and enters every program with
 M6 restored exactly one suspended launcher: the kernel launcher on the boot
 stack. Package 28 keeps that same lifecycle but generalizes "the suspended
 parent" to an ordinary process suspended in its own `SYS_EXEC`, up to
-`ZOS_EXEC_MAX_DEPTH` (4) user processes deep (section 32.40). The process
+`KOS_EXEC_MAX_DEPTH` (4) user processes deep (section 32.40). The process
 table's `parent` field is the only nesting state; there is no second
 process manager, no separate exec table and no new loader.
 
@@ -2739,13 +2739,13 @@ M6 excluded scheduling, signals, pipes/redirection, dynamic linking, writable fi
 
 ## 26.11 M6 implementation notes (stage 12)
 
-M6 is implemented, host-validated and physically accepted. The concrete process table, launch/copy gates, syscall implementation, ZEX runtime, acceptance programs and physical evidence are documented in `docs/zex-format.md`, `docs/abi.md` and `docs/validation/2026-10-03-m6-zex.md`.
+M6 is implemented, host-validated and physically accepted. The concrete process table, launch/copy gates, syscall implementation, EXE runtime, acceptance programs and physical evidence are documented in `docs/exe-format.md`, `docs/abi.md` and `docs/validation/2026-10-03-m6-exe.md`.
 
 ---
 
 # 27. M6 acceptance criteria
 
-M6 is complete and physically accepted. Its application-bank, page-zero, ZEX validation, syscall-crossing and parent-resume invariants remain binding for M9.
+M6 is complete and physically accepted. Its application-bank, page-zero, EXE validation, syscall-crossing and parent-resume invariants remain binding for M9.
 
 ---
 
@@ -2753,19 +2753,19 @@ M6 is complete and physically accepted. Its application-bank, page-zero, ZEX val
 
 ## 28.1 Objective
 
-M7 ports the Zephyr-80 monitor concept into a native ZephyrOS ZEX program and establishes the reusable diagnostic boundary. The monitor is the recovery environment used before the native shell exists.
+M7 ports the Zephyr-80 monitor concept into a native KonaOS EXE program and establishes the reusable diagnostic boundary. The monitor is the recovery environment used before the native shell exists.
 
 ---
 
 ## 28.2 Port, do not transplant
 
-The monitor preserves useful operator behavior while using native ZephyrOS drivers rather than old monitor-ROM or CP/M assumptions.
+The monitor preserves useful operator behavior while using native KonaOS drivers rather than old monitor-ROM or CP/M assumptions.
 
 ---
 
 ## 28.3 Monitor uses native console drivers
 
-`monitor.zex` performs normal input/output only through native console syscalls and therefore runs unchanged through the M8 HID/V9958 console or SIO fallback.
+`monitor.exe` performs normal input/output only through native console syscalls and therefore runs unchanged through the M8 HID/V9958 console or SIO fallback.
 
 ---
 
@@ -2783,7 +2783,7 @@ Reusable line editing, the diagnostic runtime wrappers and the string/format hel
 
 ## 28.6 Monitor packaging and launch
 
-`monitor.zex` is an ordinary ZEX. Under M9 the boot/recovery launcher should obtain it through `/system` and VFS rather than direct ROMFS lookup.
+`monitor.exe` is an ordinary EXE. Under M9 the boot/recovery launcher should obtain it through `/system` and VFS rather than direct ROMFS lookup.
 
 ---
 
@@ -2807,7 +2807,7 @@ M7 is complete and physically accepted. Its monitor remains device-independent a
 
 ## 30.1 Objective
 
-M8 establishes the normal native ZephyrOS device environment:
+M8 establishes the normal native KonaOS device environment:
 
 ```text
 normal console input   -> HID keyboard
@@ -2819,7 +2819,7 @@ early/panic console    -> direct SIO0/B, permanently independent
 
 M8 turns the M3/M4 character-device proof into a class-aware device architecture. The registry remains the common discovery mechanism, but video, HID and IOC gain explicit class contracts rather than being forced through a single character-device operations shape.
 
-The V9958, HID and IOC drivers are ordinary resident ZMOD modules sourced from ROMFS and relocated by the M4 loader.
+The V9958, HID and IOC drivers are ordinary resident MOD modules sourced from ROMFS and relocated by the M4 loader.
 
 ### M8 source-tree additions
 
@@ -2855,7 +2855,7 @@ arena_end  = data_base
 with a minimum production arena of 16 KiB (32 granules) and 512-byte
 allocation granularity.  The bank-7 layout is therefore kernel code, then
 the derived arena, then the derived runtime data, then the fixed 256-byte
-ISR stack at `DF00h-DFFFh`.  `ZOS_BANK7_LOAD_END` (`C000h`) is only the
+ISR stack at `DF00h-DFFFh`.  `KOS_BANK7_LOAD_END` (`C000h`) is only the
 architectural ceiling on the loadable kernel end, not a boundary.
 `pack_image.py` and the arena plan print the single bank-7 budget ledger
 section 32.39 requires.
@@ -2868,7 +2868,7 @@ section 32.39 requires.
 > capability masks, the optional generic character interface and the
 > per-class operations tables -- is deleted.  A driver is a driver
 > image; its class-visible surface is a *protocol* (section 36.11), and
-> the class numbers in `abi/zos/protocol.h` name protocols, not device
+> the class numbers in `abi/kos/protocol.h` name protocols, not device
 > kinds.  The M9 milestone record of the v2 classes and of the block
 > class it defined follows as history: the class list was the serial,
 > video, storage, input, transport and "other" set, refined to the
@@ -2879,7 +2879,7 @@ section 32.39 requires.
 ## 30.4 VIDEO class and V9958
 
 The V9958 driver serves the video protocol class: the
-`ZVIDEO_*` operations now live in `abi/zos/protocol.h` and reach the
+`KVIDEO_*` operations now live in `abi/kos/protocol.h` and reach the
 driver through its driver dispatch.  It provides the 85x26 6x8
 terminal/VT-style console renderer and remains independent of IOC.
 
@@ -2914,7 +2914,7 @@ so no lifetime reference counting is required.
 
 ## 30.8 Boot order
 
-M8 production boot loads `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod` from the recovery store, then binds the normal console and launches the monitor. M9 supersedes the direct ROMFS aspect of that sequence by bringing VFS up before dynamic module loading and reading those module files through `/system`.
+M8 production boot loads `sio.mod`, `ioc.mod`, `hid.mod`, `v9958.mod` from the recovery store, then binds the normal console and launches the monitor. M9 supersedes the direct ROMFS aspect of that sequence by bringing VFS up before dynamic module loading and reading those module files through `/system`.
 
 ---
 
@@ -2966,7 +2966,7 @@ serial variant (`tests/test_console_serial.py`,
 
 ## 32.1 Objective and goals
 
-M9 gives ZephyrOS a real native filesystem framework rather than hard-wiring the OS to the current MCU FAT implementation.
+M9 gives KonaOS a real native filesystem framework rather than hard-wiring the OS to the current MCU FAT implementation.
 
 The architecture must support:
 
@@ -3037,13 +3037,13 @@ Ownership is deliberately separated:
 - **Block devices** expose raw sector/block storage.
 - **IOC** owns only the Z80-to-MCU transport.
 
-The MCU currently provides both raw SD primitives and a FatFs-based filesystem driver. ZephyrOS exposes both without making either one the architectural foundation of the other.
+The MCU currently provides both raw SD primitives and a FatFs-based filesystem driver. KonaOS exposes both without making either one the architectural foundation of the other.
 
 ---
 
 ## 32.3 Native namespace
 
-ZephyrOS has exactly one native namespace:
+KonaOS has exactly one native namespace:
 
 ```text
 /
@@ -3058,7 +3058,7 @@ The initial system layout is:
 /system     -> internal ROMFS
 ```
 
-Future devices may be attached at additional root-level mountpoints such as `/CF`, `/SD2`, `/EXTERNAL`, or `/BACKUP`. No drive-selection state exists in native ZephyrOS.
+Future devices may be attached at additional root-level mountpoints such as `/CF`, `/SD2`, `/EXTERNAL`, or `/BACKUP`. No drive-selection state exists in native KonaOS.
 
 ---
 
@@ -3213,7 +3213,7 @@ more than one system filesystem
 system filesystem naming a provider that is not built into the kernel
 `required` present on the system entry
 relative mount paths
-paths longer than ZOS_PATH_MAX
+paths longer than KOS_PATH_MAX
 '.' or '..' in configured mountpoints
 non-canonical mount paths (lowercase letters, trailing '/', repeated '/')
 duplicate mountpoints
@@ -3252,12 +3252,12 @@ M9 supports `/`, `.`, `..`, repeated slash normalization, absolute paths and rel
 Native pathname comparison is ASCII case-insensitive:
 
 ```text
-/system/monitor.zex
-/system/MONITOR.ZEX
-/System/Monitor.Zex
+/system/monitor.exe
+/system/MONITOR.EXE
+/System/Monitor.Exe
 ```
 
-refer to the same namespace object. The comparison rule is simply `A-Z == a-z`; all other bytes compare exactly. ZephyrOS does not attempt Unicode case folding.
+refer to the same namespace object. The comparison rule is simply `A-Z == a-z`; all other bytes compare exactly. KonaOS does not attempt Unicode case folding.
 
 The rule is split between VFS and providers:
 
@@ -3267,14 +3267,14 @@ The rule is split between VFS and providers:
 VFS selects the owning mount before calling a provider. M9 mount selection is flat (section 32.6): if the first component matches a mounted root-level mountpoint, that mount owns the path; otherwise the filesystem attached at `/` owns it. For example:
 
 ```text
-/system/monitor.zex
+/system/monitor.exe
     mount       = /system
-    FS-relative = /monitor.zex
+    FS-relative = /monitor.exe
     provider    = ROMFS
 
-/GAMES/DOOM.ZEX
+/GAMES/DOOM.EXE
     mount       = /
-    FS-relative = /GAMES/DOOM.ZEX
+    FS-relative = /GAMES/DOOM.EXE
     provider    = IOC-FAT
 ```
 
@@ -3287,11 +3287,11 @@ A provider never needs to know its external mountpoint.
 M9 pins:
 
 ```text
-ZOS_PATH_MAX = 128
-ZFS_NAME_MAX = 64
+KOS_PATH_MAX = 128
+KFS_NAME_MAX = 64
 ```
 
-`ZOS_PATH_MAX` includes the terminating NUL for user-facing C wrappers. The syscall ABI still uses explicit pointer/length fields rather than requiring unbounded kernel scans for NUL. `ZFS_NAME_MAX = 64` deliberately avoids baking FAT 8.3 restrictions into the native ABI.
+`KOS_PATH_MAX` includes the terminating NUL for user-facing C wrappers. The syscall ABI still uses explicit pointer/length fields rather than requiring unbounded kernel scans for NUL. `KFS_NAME_MAX = 64` deliberately avoids baking FAT 8.3 restrictions into the native ABI.
 
 ---
 
@@ -3329,7 +3329,7 @@ VFS must not contain FAT parsing, FS2 command numbers, IOC READY/DONE handling, 
 > publication below `/fs` (section 36.13).  A filesystem *driver* is an
 > ordinary driver image that publishes `/fs`; the nucleus FS provider
 > routes the call to that publication's endpoint, so no registration table
-> and no `ZFS_OP_*` dispatch vocabulary remain.
+> and no `KFS_OP_*` dispatch vocabulary remain.
 
 ---
 
@@ -3339,21 +3339,21 @@ VFS must not contain FAT parsing, FS2 command numbers, IOC READY/DONE handling, 
 > operations table (mount, open, close, read, write, sync, stat, the
 > directory operations, mkdir, rmdir, unlink, rename) is **deleted** with
 > the provider registry above.  What a filesystem client uses today is
-> the FILE protocol of `abi/zos/protocol.h` (`ZFILE_OP_*`) through the
+> the FILE protocol of `abi/kos/protocol.h` (`KFILE_OP_*`) through the
 > namespace, and what a filesystem driver implements is the FS protocol
-> (`ZFS_OP_*`) below its `/fs` publication; both are IPC protocols, not
+> (`KFS_OP_*`) below its `/fs` publication; both are IPC protocols, not
 > C operation tables.  The contract text below is the M9 record.
 
 Contract for every path argument:
 
 - absolute within the provider (begins with `/`; `/` is the provider root);
 - already normalized by VFS: no `.`, `..`, empty or repeated components, no trailing `/`;
-- NUL-terminated, at most `ZOS_PATH_MAX - 1` bytes;
+- NUL-terminated, at most `KOS_PATH_MAX - 1` bytes;
 - compared by the provider with ASCII case-insensitive semantics (section 32.8).
 
-`open` flags are the native `ZFS_O_*` flags, including `ZFS_O_TRUNC`; `open` reports the current file size. A read-only provider may leave mutation pointers null; VFS returns `EROFS` for a null mutation operation. `readdir` returns 1 with an entry, 0 at the end, or a negative error.
+`open` flags are the native `KFS_O_*` flags, including `KFS_O_TRUNC`; `open` reports the current file size. A read-only provider may leave mutation pointers null; VFS returns `EROFS` for a null mutation operation. `readdir` returns 1 with an entry, 0 at the end, or a negative error.
 
-Deliberately absent in M9: `unmount` (no runtime unmounting), filesystem-wide `syncfs`, a separate `truncate` operation (`ZFS_O_TRUNC` covers M9), `statfs` (deferred until a consumer requires it, as sections 32.26 and 32.34 record), and any lookup/release/node operations. They are added when a real consumer appears. ZephyrOS is still being built and keeps no backward-compatibility obligation, so such additions may reshape the interface freely.
+Deliberately absent in M9: `unmount` (no runtime unmounting), filesystem-wide `syncfs`, a separate `truncate` operation (`KFS_O_TRUNC` covers M9), `statfs` (deferred until a consumer requires it, as sections 32.26 and 32.34 record), and any lookup/release/node operations. They are added when a real consumer appears. KonaOS is still being built and keeps no backward-compatibility obligation, so such additions may reshape the interface freely.
 
 Opaque provider handles remain private. Applications never see ROMFS entry indices, FatFs `FIL` objects, FS2 tokens, FAT clusters, or future filesystem-native inode structures.
 
@@ -3381,15 +3381,15 @@ The current ROMFS format may remain flat; there is no M9 requirement to add on-R
 
 VFS initializes before dynamic module loading. The ROMFS provider is statically available, registers with VFS during bootstrap, and is instantiated as the configured system filesystem at `/system`.
 
-Normal boot must therefore not require a separate `romfs_load_zmod()`-style path once VFS bootstrap is complete. After `/system` is mounted, module and executable loading consume files through generic VFS-backed source adapters. A tiny direct ROM access primitive remains underneath the ROMFS provider, but it is not a parallel filesystem API.
+Normal boot must therefore not require a separate `romfs_load_mod()`-style path once VFS bootstrap is complete. After `/system` is mounted, module and executable loading consume files through generic VFS-backed source adapters. A tiny direct ROM access primitive remains underneath the ROMFS provider, but it is not a parallel filesystem API.
 
 ---
 
 ## 32.14 `/system` policy
 
-`/system` contains the minimum ROM-resident material required to boot ZephyrOS, recover from external-storage failure, and meaningfully diagnose the machine.
+`/system` contains the minimum ROM-resident material required to boot KonaOS, recover from external-storage failure, and meaningfully diagnose the machine.
 
-The exact contents are build-time configuration, not VFS policy. Typical contents include essential ZMODs, the monitor, possibly the recovery shell, diagnostic assets, and fonts/resources required by the boot environment.
+The exact contents are build-time configuration, not VFS policy. Typical contents include essential MODs, the monitor, possibly the recovery shell, diagnostic assets, and fonts/resources required by the boot environment.
 
 ---
 
@@ -3428,10 +3428,10 @@ A raw-block driver and IOC-FAT would consume the same IOC driver:
 
 ## 32.17 IOC-FAT filesystem provider
 
-The MCU FatFs driver is exposed as a resident ZMOD filesystem provider:
+The MCU FatFs driver is exposed as a resident MOD filesystem provider:
 
 ```text
-iocfat.zmod
+iocfat.mod
 ```
 
 Stack:
@@ -3440,11 +3440,11 @@ Stack:
 VFS (the FS provider below /fs)
  |
  v
-IOC-FAT driver image (iocfat.zmod)
+IOC-FAT driver image (iocfat.mod)
  |
  | FS2 filesystem protocol
  v
-the IOC driver image (ioc.zmod)
+the IOC driver image (ioc.mod)
  |
  v
 MCU FatFs
@@ -3453,7 +3453,7 @@ MCU FatFs
 SD
 ```
 
-`iocfat.zmod` declares its IOC dependency in its manifest, publishes
+`iocfat.mod` declares its IOC dependency in its manifest, publishes
 `/fs`, and serves the FS protocol from its driver dispatch.
 
 IOC-FAT owns FS2 commands, file/directory tokens, generation/cookie handling, MCU/FatFs error translation, filesystem-specific command/bulk sequencing, and its file-data cache (section 32.19). FS2 tokens never escape into the native application ABI.
@@ -3555,7 +3555,7 @@ Files and directory iterators share one **global** VFS descriptor pool:
 8 descriptors total, each owner-tagged
 ```
 
-Each entry is `FREE`, `FILE`, or `DIRECTORY` and records its owner PID, mount, provider handle, uint32 offset and access flags. ZephyrOS is single-tasking, so per-process reserved tables would mostly sit empty. A process may use any free entry; a suspended parent's open descriptors stay allocated to it while its child runs. Exhaustion returns `EMFILE`.
+Each entry is `FREE`, `FILE`, or `DIRECTORY` and records its owner PID, mount, provider handle, uint32 offset and access flags. KonaOS is single-tasking, so per-process reserved tables would mostly sit empty. A process may use any free entry; a suspended parent's open descriptors stay allocated to it while its child runs. Exhaustion returns `EMFILE`.
 
 The descriptor number a process sees is a small per-process index; one process can never name another process's descriptor.
 
@@ -3571,7 +3571,7 @@ CWD is a VFS namespace concept, not a provider token exposed to applications. Ap
 
 ## 32.24 Native file handles
 
-Applications receive small ZephyrOS descriptors. Conceptually:
+Applications receive small KonaOS descriptors. Conceptually:
 
 ```text
 application fd
@@ -3597,16 +3597,16 @@ The first metadata ABI exposes only broadly useful filesystem-neutral informatio
 Types:
 
 ```c
-#define ZFS_TYPE_FILE 1u
-#define ZFS_TYPE_DIR  2u
+#define KFS_TYPE_FILE 1u
+#define KFS_TYPE_DIR  2u
 ```
 
 Attributes:
 
 ```c
-#define ZFS_ATTR_READONLY 0x01u
-#define ZFS_ATTR_HIDDEN   0x02u
-#define ZFS_ATTR_SYSTEM   0x04u
+#define KFS_ATTR_READONLY 0x01u
+#define KFS_ATTR_HIDDEN   0x02u
+#define KFS_ATTR_SYSTEM   0x04u
 ```
 
 There is no native `ARCHIVE` attribute.
@@ -3614,7 +3614,7 @@ There is no native `ARCHIVE` attribute.
 Zephyr-80 has no RTC. M9 defines:
 
 ```c
-#define ZFS_TIME_UNKNOWN 0u
+#define KFS_TIME_UNKNOWN 0u
 ```
 
 A zero timestamp means unknown/unavailable. The ABI still uses 32-bit fields so adding a time source later does not change structure layout. M9 exposes `ctime` and `mtime`, not `atime`.
@@ -3622,7 +3622,7 @@ A zero timestamp means unknown/unavailable. The ABI still uses 32-bit fields so 
 Conceptual `stat()` result:
 
 ```c
-struct zfs_stat {
+struct kfs_stat {
     uint8_t  type;
     uint8_t  attributes;
     uint16_t reserved;
@@ -3635,14 +3635,14 @@ struct zfs_stat {
 Conceptual `readdir()` result:
 
 ```c
-struct zfs_dirent {
+struct kfs_dirent {
     uint8_t  type;
     uint8_t  attributes;
     uint16_t name_length;
     uint32_t size;
     uint32_t ctime;
     uint32_t mtime;
-    char name[ZFS_NAME_MAX];
+    char name[KFS_NAME_MAX];
 };
 ```
 
@@ -3699,7 +3699,7 @@ M9 has no filesystem-wide sync operation and no Unix-style global sync command.
 
 ## 32.28 Byte-oriented I/O
 
-Native ZephyrOS I/O is byte-oriented. EOF is a successful zero-byte read and short reads are valid.
+Native KonaOS I/O is byte-oriented. EOF is a successful zero-byte read and short reads are valid.
 
 Read path:
 
@@ -3828,18 +3828,18 @@ mountpoint = /system
 system     = true
 ```
 
-The system provider must be statically available, have no dependency on ZMODs, dynamically registered devices, or non-system filesystems, and use only primitive facilities already available at bootstrap. Failure is fatal and reported through early direct SIO.
+The system provider must be statically available, have no dependency on MODs, dynamically registered devices, or non-system filesystems, and use only primitive facilities already available at bootstrap. Failure is fatal and reported through early direct SIO.
 
 ### 32.32.3 Module-loading phase
 
 Once `/system` exists, boot assets are loaded through VFS:
 
 ```text
-/system/sio.zmod
-/system/ioc.zmod
-/system/hid.zmod
-/system/v9958.zmod
-/system/iocfat.zmod
+/system/sio.mod
+/system/ioc.mod
+/system/hid.mod
+/system/v9958.mod
+/system/iocfat.mod
 ...
 ```
 
@@ -3855,9 +3855,9 @@ the fixed ROMFS reader
 module loader
 ```
 
-The same source-neutral approach should later be used for ZEX loading.
+The same source-neutral approach should later be used for EXE loading.
 
-Loadable modules may register devices, filesystem providers, and other resident drivers. `iocfat.zmod`, for example, discovers IOC and registers the `iocfat` provider with VFS.
+Loadable modules may register devices, filesystem providers, and other resident drivers. `iocfat.mod`, for example, discovers IOC and registers the `iocfat` provider with VFS.
 
 ### 32.32.4 Normal mount phase
 
@@ -4065,17 +4065,17 @@ M9 preserves these rules:
 5. **The system filesystem provider is statically available and has no dependency on loadable modules or dynamically registered devices.**
 6. **The system filesystem is instantiated before resident modules are loaded.**
 7. **After the system filesystem is mounted, subsequent boot assets are loaded through VFS.**
-8. **Native ZephyrOS has no drive letters.**
+8. **Native KonaOS has no drive letters.**
 9. **Native path comparison is ASCII case-insensitive.**
-10. **`ZOS_PATH_MAX = 128`.**
-11. **`ZFS_NAME_MAX = 64`.**
+10. **`KOS_PATH_MAX = 128`.**
+11. **`KFS_NAME_MAX = 64`.**
 12. **ROMFS is a filesystem provider mounted at `/system`.**
 13. **The normal writable SD FAT filesystem is mounted at `/`.**
 14. **Filesystem providers do not know their external mountpoint.**
 15. **IOC is transport, not a filesystem or block-device API.**
 16. **The M9 storage class was renamed to the block class; M10 deletes both.**
 17. **No block driver is resident; the first one arrives with its first consumer (native VFAT/Fuzix).**
-18. **IOC-FAT is a resident ZMOD filesystem provider registered with VFS.**
+18. **IOC-FAT is a resident MOD filesystem provider registered with VFS.**
 19. **MCU FatFs support is one filesystem backend, not the VFS architecture.**
 20. **Future VFAT/Fuzix-style filesystems may define the block protocol they consume.**
 21. **Native I/O is path-, descriptor-, and byte-oriented.**
@@ -4126,7 +4126,7 @@ drivers/
     sd/              # future: first block driver, with its first consumer
         ...
 
-abi/zos/
+abi/kos/
     fs.h
 
 kernel/vfs/
@@ -4156,7 +4156,7 @@ This is architectural guidance, not a requirement to create every file immediate
                             /system
                               ROMFS
                                 |
-                      load resident ZMODs
+                      load resident MODs
                                 |
                                 v
                     register normal providers
@@ -4204,7 +4204,7 @@ The bootstrap slice above is implemented by work package
 the implementation record.
 
 ```text
-abi/zos/fs.h             native metadata/limit ABI (stat, dirent, flags;
+abi/kos/fs.h             native metadata/limit ABI (stat, dirent, flags;
                          no statfs) -- syscall blocks arrive in pkg 27
 kernel/vfs/              router.c (the three static roots), dev.c,
                          fs.c, system.c, handles.c, path.c,
@@ -4217,9 +4217,9 @@ Implemented (M9): normalization; flat first-component root selection
 (section 32.8, so `/SYSTEMX` does not select `/system`); the kernel file
 API on caller-provided `vfs_file` storage (deleted in M10 with the M9 VFS);
 the mutation entry points that turn a null provider operation into
-`ZOS_EROFS`; one ASCII case-folded ROMFS lookup (section 32.13) serving
-the reader, the ZEX launcher and the boot assets; `/system` available from
-`vfs_init()` before any image is placed; every boot ZMOD and `monitor.zex`
+`KOS_EROFS`; one ASCII case-folded ROMFS lookup (section 32.13) serving
+the reader, the EXE launcher and the boot assets; `/system` available from
+`vfs_init()` before any image is placed; every boot MOD and `monitor.exe`
 opened by VFS path.
 
 **M10 (work packages 42b/42c)** then deleted the provider registry and its
@@ -4231,7 +4231,7 @@ endpoint.
 
 VFS keeps no node objects, no object identity and no cache: providers are
 path-based, so there is no per-component walk and no `object_id`.  The
-`ZOS_ROMFS_BOOT=0` embedded-catalog images link no VFS byte at all
+`KOS_ROMFS_BOOT=0` embedded-catalog images link no VFS byte at all
 (correction-01): the object group is dropped and `kernel/process/exec.c`
 compiles its M6 ROMFS body instead of the VFS body.
 
@@ -4239,8 +4239,8 @@ Deliberately deferred at stage 25 (all since implemented): descriptors and
 syscalls (package 27), provider-local caching (IOC-FAT, package 30), a
 writable provider and the `/` mount (packages 26/30).  Cross-filesystem move
 semantics are implemented by the VFS rename path (architecture 32.31): a
-rename across mounts returns `ZOS_EXDEV` and VFS never copies.
-`romfs_load_zmod()` no longer exists.
+rename across mounts returns `KOS_EXDEV` and VFS never copies.
+`romfs_load_mod()` no longer exists.
 
 Budget (section 32.39): package 25 measured production `_CODE` ending at
 `7BC5h` with a `7C00h-C000h` arena — 34 granules against the unchanged
@@ -4268,19 +4268,19 @@ docs/abi.md            native syscall ABI: FS_* family, SYS_EXEC and the
                        startup block v1 argument contract, error values
 docs/devices.md        the driver model, the protocol classes and the
                        resident IOC-FAT provider
-docs/module-format.md  the ZMOD driver image and the resident loader
+docs/module-format.md  the MOD driver image and the resident loader
 docs/memory.md         bank-7 geometry, the M9 runtime-data inventory, the
                        common-memory budget and the final ledger
 docs/boot.md           the boot path and the VFS lifecycle
-docs/sdk.md            the native user SDK and its ZEX programs
+docs/sdk.md            the native user SDK and its EXE programs
 docs/validation/2026-10-05-m9-filesystem.md
                        the M9 acceptance matrix, transcripts and hashes
 ```
 
 The milestone's own acceptance image is `make m9-selftest`: the production
 boot path with `/` served by IOC-FAT from the card, running the native
-`fstest.zex` (which exec's the deep-matrix program `fsfat.zex`), the
-`fsdeep.zex` depth probe and the two fault windows, then the unchanged
+`fstest.exe` (which exec's the deep-matrix program `fsfat.exe`), the
+`fsdeep.exe` depth probe and the two fault windows, then the unchanged
 monitor launcher.  The per-package images (`m9-vfs`, `m9-provider`,
 `m9-fs`, `m9-exec`, `m9-iocfat`) remain as their packages' evidence and as
 subsystem regression coverage.
@@ -4300,7 +4300,7 @@ Bank 7 holds everything resident in OS mode except common memory. The kernel exe
 
 ```text
 2000h ............ kernel executive (_CODE, linked)
-align 512 ........ resident ZMOD arena (derived)
+align 512 ........ resident MOD arena (derived)
 derived .......... runtime data (_DATA/_INITIALIZED, derived down from DF00h)
 DF00h-DFFFh ...... ISR stack
 ```
@@ -4308,7 +4308,7 @@ DF00h-DFFFh ...... ISR stack
 After the first M9 slice (package 25), the kernel executive was 24.3 KiB and the original M9 design projected about 48 KiB of resident code at SDCC density, beyond the window. M9 therefore treats resident bytes as an architectural resource. Because the arena start follows the kernel end and the arena end follows the data base, kernel code, module code and runtime data are interchangeable within the window. The budget is therefore one total, not separate per-kind limits:
 
 ```text
-2000h-DEFFh  47.75 KiB  kernel + resident ZMODs + runtime data + ISR stack
+2000h-DEFFh  47.75 KiB  kernel + resident MODs + runtime data + ISR stack
 -------------------------------------------------------------------------
 production arena floor   >= 32 granules, holding the production boot set
 slack                    >= 1 KiB at the end of M9
@@ -4329,10 +4329,10 @@ Rules:
 - Every package reports a one-line `bank7:` ledger before and after, and the bytes its own code and data add.
 - Reserved data is sized from measurement, not round numbers. For example, exec frame saves follow the measured worst-case gate-stack depth.
 - Provider caches are sized by budget. The IOC-FAT cache defaults to one 512-byte slot unless the ledger shows room for more (section 32.19).
-- A mechanism that M9 replaces is deleted, not kept as a compatibility path. ZephyrOS is still under construction: no interface, binary format, image or transcript carries a backward-compatibility obligation. Completed milestones prove mechanisms; they do not freeze them.
-- A feature with no consumer is not made resident (for example `sd-ioc.zmod`, `FS_STATFS`).
+- A mechanism that M9 replaces is deleted, not kept as a compatibility path. KonaOS is still under construction: no interface, binary format, image or transcript carries a backward-compatibility obligation. Completed milestones prove mechanisms; they do not freeze them.
+- A feature with no consumer is not made resident (for example `sd-ioc.mod`, `FS_STATFS`).
 - Supervisor checkpoints compare the measured ledger with the remaining projection: after package 26 (passed 2026-10-05: 26 free granules, 291 bytes of slack, projected end-of-M9 slack 1.4-3.2 KiB before the measures above), and after package 28, before IOC-FAT is built.
-- Package 30 (passed 2026-10-05) is the last bank-7 consumer: `bank7: code 28476 bytes end 8F3Ch | arena 35 granules (33 boot, 2 free) | data 2241 bytes at D600h | isr 256 | slack 63 bytes`, i.e. 2 free granules and 1087 bytes of total slack against the 1 KiB target. `iocfat.zmod` is 6006 image + 637 BSS = 6643 bytes, 13 granules, 13 bytes under the 6656-byte ceiling.
+- Package 30 (passed 2026-10-05) is the last bank-7 consumer: `bank7: code 28476 bytes end 8F3Ch | arena 35 granules (33 boot, 2 free) | data 2241 bytes at D600h | isr 256 | slack 63 bytes`, i.e. 2 free granules and 1087 bytes of total slack against the 1 KiB target. `iocfat.mod` is 6006 image + 637 BSS = 6643 bytes, 13 granules, 13 bytes under the 6656-byte ceiling.
 - Package 30c (passed 2026-10-05) then removed dead kernel code and shared one ASCII name helper, moving the arena start one granule down.  Package 31 changes no kernel or module byte; it is the acceptance and documentation package.  The **final end-of-M9 ledger** is:
 
 ```text
@@ -4351,7 +4351,7 @@ common: used 2104 of 7424 bytes (code 1410, data 694) | ceiling 3072, m10 512, l
 general parent/child mechanism: any ordinary process may run a child
 synchronously and receives its exit status, and a child may do the same.
 Everything is the existing machinery - one process table, one bank
-allocator, one ZEX loader, one page-zero path, one VFS process hook, one
+allocator, one EXE loader, one page-zero path, one VFS process hook, one
 exit path - plus a bounded continuation stack for the shared gate stack.
 
 Geometry:
@@ -4359,8 +4359,8 @@ Geometry:
 ```text
 depth 0 (kernel launcher, boot stack)      no saved gate frame
 depth 1 (first user process)               kernel continuation
-depth 2..ZOS_EXEC_MAX_DEPTH                frame save #depth-2
-the next exec at the limit                 ZOS_EBUSY, nothing allocated
+depth 2..KOS_EXEC_MAX_DEPTH                frame save #depth-2
+the next exec at the limit                 KOS_EBUSY, nothing allocated
 ```
 
 Suspension and resume:
@@ -4370,7 +4370,7 @@ Suspension and resume:
   `process_launch()` enter the common gate. Nothing past the suspension
   point can fail, so no rollback of suspended processes exists.
 - The gate saves the launcher's SP/IX/latch/IFF per depth and copies the
-  gate frame `[saved_sp, zos_gate_stack_top)` into that depth's save area
+  gate frame `[saved_sp, kos_gate_stack_top)` into that depth's save area
   (48 bytes, measured 32 + margin). The child's own syscalls reuse the
   same common gate stack, clobbering the suspended frame; the
   resume copies it back and restores SP, IX, latch and IFF before the
@@ -4395,7 +4395,7 @@ Suspension and resume:
 Failure mapping is pinned in `docs/abi.md` section 11 (`ENOENT`,
 `EISDIR`, `EINVAL`, `ENOSPC`, `EBUSY`, provider errors passed through),
 because user-visible error semantics matter more here than in the kernel
-launcher's internal `ZEX_EXEC_ERR_*` space.
+launcher's internal `EXE_EXEC_ERR_*` space.
 
 Startup block (package 28b):
 
@@ -4404,18 +4404,18 @@ Startup block (package 28b):
   launch gate enters it with `HL = 0080h` (section 26.3).
 - `SYS_EXEC`'s block gains `{args, args_length}`: the kernel copies the
   caller's raw tail byte-exact and never parses it; user space owns
-  splitting (`user/sdk/include/zos/process.h`, docs/zex-format.md section 5.1).
-  A tail over 125 bytes or outside `0100h-DFFFh` is `ZOS_EINVAL` in the
+  splitting (`user/sdk/include/kos/process.h`, docs/exe-format.md section 5.1).
+  A tail over 125 bytes or outside `0100h-DFFFh` is `KOS_EINVAL` in the
   preflight, and the copy is made at the end of `process_prepare()` once
   the executable source is closed and the VFS workspace is free again
   (correction 01 holds the workspace's path view only around the bind,
   kernel/process/exec.c), through the existing checked bank-copy gate
   into the VFS staging view.  No tail is ever stored: there is no
   persistent kernel argument buffer, in bank 7 or common memory.
-- The boot program is a build setting, `ZOS_BOOT_PROGRAM`
+- The boot program is a build setting, `KOS_BOOT_PROGRAM`
   (`config/system.mk`), validated against the recovery manifest and
   compiled into the kernel as a constant string.  Switching to the M10
-  shell is that one line plus the ZEX in the manifest, with no kernel
+  shell is that one line plus the EXE in the manifest, with no kernel
   edit.
 
 Acceptance: the nested exec in the M10 outcome image
@@ -4432,7 +4432,7 @@ static asserts and by `kernel/process/launch.asm`'s shift-chain comments.
 M9 acceptance uses an ordinary native program such as:
 
 ```text
-fstest.zex
+fstest.exe
 ```
 
 loaded from `/system`. It exercises the public native filesystem ABI, not IOC or FS2 directly.
@@ -4500,9 +4500,9 @@ process lifecycle:
     child CWD changes do not alter parent
     child descriptors close on exit
     repeated exec/exit leaks no handles
-    nested exec chain reaches exactly ZOS_EXEC_MAX_DEPTH levels
+    nested exec chain reaches exactly KOS_EXEC_MAX_DEPTH levels
     the level past the limit is refused with EBUSY and leaks nothing
-    exit-status round trip, including a raw-return ZOS_EFAULT
+    exit-status round trip, including a raw-return KOS_EFAULT
     the suspended gate frame is restored byte-for-byte at every depth
 ```
 
@@ -4552,7 +4552,7 @@ M9  COMPLETE (host + simulator; physical by byte identity + owner acceptance)
 ├── VFS-backed boot module loading
 ├── filesystem-provider registration API
 ├── path-based provider ABI
-├── IOC-FAT ZMOD provider mounted at /, with its own 512-byte file-data cache
+├── IOC-FAT MOD provider mounted at /, with its own 512-byte file-data cache
 ├── block class defined (first driver deferred to its first consumer)
 ├── global descriptor pool, native path/descriptor/byte-oriented syscall ABI
 └── budgeted bank-7 residency
@@ -4561,14 +4561,14 @@ M9  COMPLETE (host + simulator; physical by byte identity + owner acceptance)
 M10 COMPLETE (host + simulator + physical acceptance passed)
 │
 ├── resident-driver nucleus (two-bank OS)
-└── extended memory / far code+data + ZEX v2      (see section 36)
+└── extended memory / far code+data + EXE v2      (see section 36)
     │
     ▼
 M11 complete native diagnostic suite                (see section 38)
 M12 native shell and core built-in userland         (see section 40)
     │
     ▼
----------------- native ZephyrOS complete ----------------
+---------------- native KonaOS complete ----------------
     │
     ▼
 compatibility/personality architecture              (deferred)
@@ -4579,7 +4579,7 @@ taken for M10 (a nucleus in bank 7 and resident drivers in bank 6) is
 recorded in section 35.
 
 **M10** (resident-driver nucleus, extended memory, far code and data,
-ZEX v2) is **COMPLETE** (work package 45, 2026-10-11; the hardware
+EXE v2) is **COMPLETE** (work package 45, 2026-10-11; the hardware
 sign-off is complete as of 2026-10-12: production `hwtest` with and without
 a card, `ipc-selftest`, `subsystem-selftest` and both console builds pass
 on the board). Implementation and the host/simulator acceptance
@@ -4602,7 +4602,7 @@ M10 built:
   resolved at build time;
 - extended-memory objects, the mode-10 far aperture (`SYS_XMEM_MAP`,
   `SYS_SEG_MAP`) and far code through a plain `CALL`;
-- ZEX v2 as the only executable format (segment table, containers over
+- EXE v2 as the only executable format (segment table, containers over
   64 KiB, no v1 path).
 
 Final production ledgers against section 36.20 (measured on the closing
@@ -4626,13 +4626,13 @@ The native sequence after M9 is:
 ```text
 M10  Resident-driver nucleus (two-bank OS)
      + extended memory / far code / far data
-     + ZEX v2
+     + EXE v2
 
 M11  Complete native diagnostic suite
 
 M12  Native shell and core built-in userland
 
----------------- native ZephyrOS complete ----------------
+---------------- native KonaOS complete ----------------
 
 Later compatibility/personality architecture
 ```
@@ -4642,7 +4642,7 @@ The ordering is deliberate:
 1. M10 completes the native kernel structure and executable mechanisms.
 2. M11 validates and exercises the completed native mechanisms and hardware.
 3. M12 builds the normal interactive environment entirely on those completed mechanisms.
-4. Compatibility personalities begin only after native ZephyrOS is complete.
+4. Compatibility personalities begin only after native KonaOS is complete.
 
 M9 already supplies the process-startup and argument-tail contract required by the later shell. Package 28b establishes startup block v1 and synchronous `SYS_EXEC` argument transport; M10 does not redesign that contract.
 
@@ -4651,10 +4651,10 @@ M9 facts the target relies on, all unchanged by M10-M12:
 ```text
 startup block v1 at 0080h, and the raw-tail argument contract of SYS_EXEC
   (package 28/28b; user-space splitting only, kernel never parses)
-ZOS_BOOT_PROGRAM (config/system.mk) as the single boot-program selector
-the native user SDK (user/sdk, docs/sdk.md): a program includes only "zos.h"
-  and links crt0 plus libzos; it never includes a kernel header
-the common-memory ceiling ZOS_COMMON_CEILING (3072 bytes)
+KOS_BOOT_PROGRAM (config/system.mk) as the single boot-program selector
+the native user SDK (user/sdk, docs/sdk.md): a program includes only "kos.h"
+  and links crt0 plus libkos; it never includes a kernel header
+the common-memory ceiling KOS_COMMON_CEILING (3072 bytes)
 ```
 
 **Residency decision (taken 2026-10-07).** The end-of-M9 bank-7 ledger
@@ -4666,7 +4666,7 @@ chosen over the alternatives they evaluated. The M9 bank-7 budget of section
 32.39, including the 32-granule arena floor, governs M9 only; M10 replaces
 it with the ledgers of section 36.20.
 
-# 36. Milestone M10 — Resident-driver nucleus, extended memory, far code/data and ZEX v2
+# 36. Milestone M10 — Resident-driver nucleus, extended memory, far code/data and EXE v2
 
 ## 36.1 Objective
 
@@ -4694,7 +4694,7 @@ extended/far memory
     direct access to mappable far data through the mode-10 aperture
 
 extended native executables
-    ZEX v2
+    EXE v2
     far-code segments executed in place through the aperture
 ```
 
@@ -4759,7 +4759,7 @@ Rules:
 - Mode 10's **far aperture** `8000h-BFFFh` opens only when P ≠ 0
   (section 36.17).
 - Mode 01 is reserved for later personalities (Coleco, CP/M flat 64 KiB).
-  It has no common region; ZephyrOS must not assume common memory is
+  It has no common region; KonaOS must not assume common memory is
   mapped while a personality runs.
 
 The decoder only selects which bank answers an 8 KiB region, always at the
@@ -4771,7 +4771,7 @@ equations are written in inverted polarity, 9/9/9 product terms against the
 22V10's 10/12/14 budgets. No further decoder capacity is assumed.
 
 Revision 13 is programmed on the board (2026-10-07); CP/M and the
-production ZephyrOS image boot on it unchanged. The simulator's default decoder becomes revision 13 in
+production KonaOS image boot on it unchanged. The simulator's default decoder becomes revision 13 in
 stage 1 (section 36.24).
 
 ---
@@ -4785,7 +4785,7 @@ banks 0-5   applications and extended memory
 bank 0      also supplies common memory at E000h-FFFFh (as before)
 ```
 
-Bank 6 leaves the application pool. Bank 7 remains reserved to ZephyrOS.
+Bank 6 leaves the application pool. Bank 7 remains reserved to KonaOS.
 
 Owner rule: the operating system uses **at most two banks plus common**. A
 third OS bank is not a fallback. It would take a whole bank from
@@ -4808,7 +4808,7 @@ is global, permanent and not pluggable:
 - the global owner-tagged typed-handle table;
 - the endpoint table and IPC dispatch;
 - IRQ ownership, dispatch and the final `RETI`;
-- loading and validating ZEX images and resident driver images;
+- loading and validating EXE images and resident driver images;
 - the ROMFS reader used by the static ROMFS namespace provider;
 - early bootstrap, the early console, failure handling and panic.
 
@@ -4864,7 +4864,7 @@ the window shows another bank lives in the fixed core. That is:
 - the data all of these use.
 
 **Cold rule:** everything else lives in the cold half: the syscall
-dispatcher and syscall bodies, process management and the ZEX loader,
+dispatcher and syscall bodies, process management and the EXE loader,
 extended-memory allocation and the bank map, boot-only setup, diagnostics
 and panic formatting. The syscall gate clears P before dispatching, so
 syscall code always runs with the window showing bank 7.
@@ -4899,7 +4899,7 @@ E000h-FFFFh of bank 6   not used                 hidden by common in modes 10 an
 - The **hot tier** is reached through the window (P = 1). It holds
   everything a driver runs after boot, including paths reachable at run
   time from user requests (for example the V9958 display reset behind
-  ESC `c`/RIS/`ZVIDEO_RESET`).
+  ESC `c`/RIS/`KVIDEO_RESET`).
 - The **boot/bulk tier** holds driver code that runs only during bring-up
   (initialization, font and atlas upload, filesystem setup). The nucleus
   executes it at boot through the mode-10 gate with Q = 6. The tier also
@@ -5017,7 +5017,7 @@ There are no raw cross-domain pointers.
   |---|---|---|
   | **A** | caller buffer in the caller window `0000h-1FFFh` or in common | mode 11, one `LDIR` |
   | **B** | driver buffer in bank 6 `8000h-BFFFh`, and caller buffer in the caller's bank outside `8000h-BFFFh` | a common-resident stub switches to mode 10 with Q = the caller's bank and P = 1 (the aperture shows bank 6), runs one `LDIR` and restores the latch |
-  | **C** | everything else: a caller buffer in `8000h-BFFFh` (including far-bank buffers), or a driver buffer outside `8000h-BFFFh` | chunked through the common `zos_bank_copy` gate; correct, but slow |
+  | **C** | everything else: a caller buffer in `8000h-BFFFh` (including far-bank buffers), or a driver buffer outside `8000h-BFFFh` | chunked through the common `kos_bank_copy` gate; correct, but slow |
 
   The P = 1 that path B uses is internal to the nucleus; applications
   never get a bank-6 token. An interrupt taken inside path B restores the
@@ -5038,7 +5038,7 @@ There are no raw cross-domain pointers.
 - **Nesting limit: 4** calls deep (application → IOC-FAT → IOC, a
   composed driver such as the console, and the loader's read chain). Deeper
   calls are refused.
-- **Re-entrancy:** the nucleus refuses, with `ZOS_EBUSY`, a call into an
+- **Re-entrancy:** the nucleus refuses, with `KOS_EBUSY`, a call into an
   endpoint that is already on the call stack, unless that endpoint declares
   itself re-entrant. Each driver states how it protects its state.
 - **Stacks:**
@@ -5076,7 +5076,7 @@ T-states to deliver an interrupt to a resident driver handler.
 
 ## 36.11 Resident driver images and host assembly
 
-Resident drivers are **ZMOD images extended with driver metadata**. No
+Resident drivers are **MOD images extended with driver metadata**. No
 separate resident-image format is introduced.
 
 **The host computes everything.** The host packer links every selected
@@ -5250,7 +5250,7 @@ driver may implement several types.
 
 A slash below a root provider is syntax owned by that provider. `/fs/GAMES`
 may mean a filesystem directory; `/dev/input` may simply be a grouping in a
-static device table; ROMFS may remain flat internally. ZephyrOS therefore
+static device table; ROMFS may remain flat internally. KonaOS therefore
 defines **no universal `DIRECTORY` object protocol** and creates no generic
 directory handles.
 
@@ -5310,7 +5310,7 @@ VFS is not in the data path:
 bind("/fs/data/log.txt", READ) -> FILE handle backed by IOC-FAT
 call(file, FILE_READ, frame, descriptor) -> IOC-FAT copies to the caller
 
-bind("/system/diag.zex", READ) -> FILE handle backed by ROMFS
+bind("/system/diag.exe", READ) -> FILE handle backed by ROMFS
 
 bind("/dev/video", 0) -> VIDEO handle
 call(video, VIDEO_INFO, frame)
@@ -5388,7 +5388,7 @@ P = 0:
 
 ```text
 0000h-00FFh   native page zero
-0100h-....    primary ZEX image/data
+0100h-....    primary EXE image/data
 ....-DFFFh    primary stack (grows down from E000h)
 E000h-FFFFh   permanent common memory
 ```
@@ -5412,11 +5412,11 @@ Allocation policy:
   banks before opening a new one.
 
 A bank with any live auxiliary slot cannot become a primary bank. `SYS_EXEC`
-may therefore fail with `ZOS_ENOSPC` while auxiliary slots are still free.
+may therefore fail with `KOS_ENOSPC` while auxiliary slots are still free.
 
 **Ownership and lifetime:**
 
-- every auxiliary allocation (runtime object, ZEX segment) has exactly one
+- every auxiliary allocation (runtime object, EXE segment) has exactly one
   owning process;
 - exit releases all of a process's resources;
 - a suspended parent keeps its resources while a child runs;
@@ -5516,13 +5516,13 @@ A program that never asks for a token never has P ≠ 0.
 
 ---
 
-## 36.18 ZEX v2
+## 36.18 EXE v2
 
-M10 replaces ZEX v1 with ZEX v2. There is no compatibility path. All
+M10 replaces EXE v1 with EXE v2. There is no compatibility path. All
 first-party programs, tools and tests convert, and the v1 parser, packer
 path and format code are removed once v2 is accepted.
 
-A ZEX v2 file contains:
+A EXE v2 file contains:
 
 ```text
 header           every count and size the loader needs for one up-front feasibility check
@@ -5543,13 +5543,13 @@ payloads
 - **32-bit file geometry:** file, payload and table offsets and the total
   size are validated with 32-bit arithmetic. The container may exceed
   64 KiB.
-- **The host computes everything it can.** `tools/zexpack.py` validates
+- **The host computes everything it can.** `tools/exepack.py` validates
   geometry, overlap and bounds and pre-encodes the container, so the loader
   only reads descriptors, checks bounds that protect the kernel, copies
   payloads and zeroes BSS.
-- **Media gate:** an executable under `/system` must be a ZEX entry
-  (`ROMFS_FLAG_ZEX`); a `DATA` or driver-image entry is refused with the
-  ZEX type error, and a filesystem driver's `FILE` has no entry kind and is
+- **Media gate:** an executable under `/system` must be a EXE entry
+  (`ROMFS_FLAG_EXE`); a `DATA` or driver-image entry is refused with the
+  EXE type error, and a filesystem driver's `FILE` has no entry kind and is
   judged by the header alone (work package 42c restored the rule when exec
   moved onto the namespace bind).
 - `SYS_SEG_INFO(segment)` returns a segment's size, kind and load state.
@@ -5558,14 +5558,14 @@ payloads
 
 ## 36.19 Memory initialization
 
-ZephyrOS zeroes **only what the language or the ABI requires**:
+KonaOS zeroes **only what the language or the ABI requires**:
 
 - the BSS of the primary image and of each segment, at load;
 - the startup block and page zero, at exec.
 
 Nothing else is pre-zeroed: not extended-memory objects, not whole banks,
 not windows. There is no
-whole-bank clear at exec and no per-call clear of any window. ZephyrOS is a
+whole-bank clear at exec and no per-call clear of any window. KonaOS is a
 single-user system that runs one process at a time, so clearing memory for
 isolation buys nothing. Clearing a whole bank costs about 120 ms per exec.
 
@@ -5585,7 +5585,7 @@ these ledgers and the bytes it adds, attributed per object:
 | `common:` | `E000h-FFFFh` packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | — |
 | gate stack | common | 384 | worst case ≤ 360 |
 
-- `ZOS_COMMON_CEILING` stays at 3072 bytes and may not be raised. The
+- `KOS_COMMON_CEILING` stays at 3072 bytes and may not be raised. The
   512-byte M10 reservation of section 7.2 is released to M10's transitions
   and IPC; no far-call gate is built. Its first tenant is the path-B copy
   stub (58 bytes, package 39).
@@ -5606,7 +5606,7 @@ mode 10 / mode 11, the 6000h window, RST 30h
 the fixed/cold and hot/boot tier split
 ```
 
-Native ZephyrOS concepts:
+Native KonaOS concepts:
 
 ```text
 process, primary address space
@@ -5622,7 +5622,7 @@ aperture.
 
 ## 36.22 Protection model
 
-Zephyr-80 has no MMU, and ZephyrOS is trusted and single-tasking. Bank-6
+Zephyr-80 has no MMU, and KonaOS is trusted and single-tasking. Bank-6
 drivers are trusted resident extensions. The nucleus/driver split gives
 modularity, ownership rules, controlled bank crossing and ABI discipline,
 not protection:
@@ -5683,7 +5683,7 @@ The Z80 remains a cooperative, single-running-process machine.
    runtime mount machinery, old console binding policy and transitional
    headers/tests. No compatibility copy survives construction.
 9. **Extended memory:** bank map, xmem objects, map tokens and aperture.
-10. **ZEX v2:** v2 replaces v1; far code executes through the aperture.
+10. **EXE v2:** v2 replaces v1; far code executes through the aperture.
 11. **Acceptance:** section 37.
 
 ---
@@ -5750,7 +5750,7 @@ process lifetime:
     exit force-unbinds leaked handles before releasing xmem/segments/bank
     nested exec, startup-tail transport and CWD inheritance unchanged
 
-ordinary ZEX v2:
+ordinary EXE v2:
     zero segments; normal exec/exit; nested parent/child exec
     full 0000h-DFFFh available; P = 0 throughout
 
@@ -5770,7 +5770,7 @@ far code and data:
     exec from far context starts the child with P = 0; parent latch restored
     exit from far context releases everything
 
-ZEX v2:
+EXE v2:
     one and several far-code segments; data segments; image + BSS
     container larger than 64 KiB; malformed header/table rejection
     segment allocation rollback
@@ -5790,7 +5790,7 @@ interrupt interaction and resident-driver IRQ delivery.
 
 ## 38.1 Objective
 
-M11 builds the complete native ZephyrOS diagnostic environment on top of the now-complete kernel mechanisms.
+M11 builds the complete native KonaOS diagnostic environment on top of the now-complete kernel mechanisms.
 
 M11 is primarily userland.
 
@@ -5824,10 +5824,10 @@ The suite does not acquire arbitrary bank-7 read/write access.
 The primary diagnostic program is:
 
 ```text
-/system/diag.zex
+/system/diag.exe
 ```
 
-`diag.zex` is an ordinary ZEX v2 executable.
+`diag.exe` is an ordinary EXE v2 executable.
 
 It may use M10 auxiliary code segments to keep the primary image small and to make the diagnostic suite the first substantial production consumer of far-code support.
 
@@ -6056,20 +6056,20 @@ Human-readable detail may precede the summary, but automated acceptance must be 
 
 ## 38.8 Monitor relationship
 
-`monitor.zex` remains small, independent and recovery-oriented.
+`monitor.exe` remains small, independent and recovery-oriented.
 
 M11 does not absorb the full diagnostic suite into the monitor.
 
 The monitor remains usable if:
 
 ```text
-diag.zex is missing
+diag.exe is missing
 an auxiliary allocation fails
 a diagnostic far segment is malformed
 external storage is absent
 ```
 
-Before M12 supplies the normal shell, acceptance images may launch `diag.zex` directly.
+Before M12 supplies the normal shell, acceptance images may launch `diag.exe` directly.
 
 A minimal monitor command that executes a named native program through the ordinary `SYS_EXEC` path may be added for operator convenience, but it creates no new privileged execution path.
 
@@ -6089,7 +6089,7 @@ CP/M diagnostics
 personality-specific diagnostics
 ```
 
-It diagnoses native ZephyrOS and the physical Zephyr-80 platform.
+It diagnoses native KonaOS and the physical Zephyr-80 platform.
 
 ---
 
@@ -6146,10 +6146,10 @@ aggregate:
     meaningful exit status
 
 architecture:
-    no private kernel/driver links in diag.zex
+    no private kernel/driver links in diag.exe
     diagnostic ABI exposes no kernel pointers
     monitor still works independently
-    ZEX far segments used successfully where configured
+    EXE far segments used successfully where configured
 
 budget:
     production residency ledgers pass
@@ -6163,7 +6163,7 @@ Hardware-observable device tests require physical acceptance.
 
 ## 40.1 Objective
 
-M12 provides the normal interactive native ZephyrOS environment.
+M12 provides the normal interactive native KonaOS environment.
 
 At the beginning of M12 the kernel, memory system, process model, filesystem, device stack, diagnostics and executable model are already complete.
 
@@ -6180,10 +6180,10 @@ If a fundamental kernel facility is found missing, the omission is treated as an
 The native shell is:
 
 ```text
-/system/shell.zex
+/system/shell.exe
 ```
 
-and is an ordinary ZEX v2 application.
+and is an ordinary EXE v2 application.
 
 It has no private kernel imports.
 
@@ -6231,15 +6231,15 @@ resident drivers and host-selected /dev publications
     ->
 standard handles bound to /dev/console
     ->
-launch /system/shell.zex
+launch /system/shell.exe
 ```
 
-`/system/shell.zex` is part of the recovery filesystem so the native environment remains available without writable SD media.
+`/system/shell.exe` is part of the recovery filesystem so the native environment remains available without writable SD media.
 
-If the shell cannot be loaded or launched, ZephyrOS falls back to:
+If the shell cannot be loaded or launched, KonaOS falls back to:
 
 ```text
-/system/monitor.zex
+/system/monitor.exe
 ```
 
 through the established recovery path.
@@ -6251,13 +6251,13 @@ An abnormal shell failure is reported and may enter the monitor rather than endl
 The exact exit-status policy is pinned during implementation and tested.
 
 **Reconciliation with the M9 launcher (stated M12 change).** M9's
-`ZOS_BOOT_PROGRAM` (`config/system.mk`, compiled into the kernel as a
+`KOS_BOOT_PROGRAM` (`config/system.mk`, compiled into the kernel as a
 constant string) already selects the single program the boot launcher starts
-and, on a normal exit, re-executes; switching native ZephyrOS to the shell is
-that one setting plus a `shell.zex` entry in the selected recovery manifest.
+and, on a normal exit, re-executes; switching native KonaOS to the shell is
+that one setting plus a `shell.exe` entry in the selected recovery manifest.
 What is **new in M12, not M9**, is the failure policy above: the M9 launcher
 reports and re-executes its configured program, whereas M12 adds the
-`/system/monitor.zex` fallback for a shell that cannot be loaded or launched
+`/system/monitor.exe` fallback for a shell that cannot be loaded or launched
 and stops an abnormally failing shell from being relaunched indefinitely.
 That fallback is implemented and tested in M12; M9 leaves the launcher
 unchanged.
@@ -6321,7 +6321,7 @@ help
 exit
 ```
 
-These commands are part of the shell executable rather than separate ZEX programs.
+These commands are part of the shell executable rather than separate EXE programs.
 
 This has several advantages on Zephyr-80:
 
@@ -6338,7 +6338,7 @@ Commands such as `cd`, `pwd`, `path` and `exit` necessarily operate on shell-own
 
 For architectural simplicity and compactness, M12 applies the same model to the remaining core commands.
 
-This packaging choice is deliberate but does not make the commands kernel drivers. They remain ordinary userland logic inside `shell.zex`.
+This packaging choice is deliberate but does not make the commands kernel drivers. They remain ordinary userland logic inside `shell.exe`.
 
 ---
 
@@ -6361,7 +6361,7 @@ Rules:
 internal CWD /fs/GAMES        displayed by the shell as /GAMES
 user /GAMES/ZAXXON.ROM        translated by the shell to /fs/GAMES/ZAXXON.ROM
 user /dev/video               kept as /dev/video
-user /system/diag.zex         kept as /system/diag.zex
+user /system/diag.exe         kept as /system/diag.exe
 user /fs/dev                  explicitly names the filesystem entry /dev below /fs
 ```
 
@@ -6393,7 +6393,7 @@ A suitable initial internal default is:
 
 Missing path components are skipped.
 
-The shell may try the exact name and then the conventional `.zex` suffix.
+The shell may try the exact name and then the conventional `.exe` suffix.
 
 The kernel has no `PATH` concept and performs no command search.
 
@@ -6405,7 +6405,7 @@ Changing the shell command path changes only shell state.
 
 The core native userland is the shell itself.
 
-The following facilities are built into `shell.zex`:
+The following facilities are built into `shell.exe`:
 
 ```text
 filesystem navigation
@@ -6431,13 +6431,13 @@ general shell utilities
     exit
 ```
 
-Larger or specialized applications remain ordinary external ZEX programs.
+Larger or specialized applications remain ordinary external EXE programs.
 
 Examples include:
 
 ```text
-diag.zex
-monitor.zex
+diag.exe
+monitor.exe
 editors
 compilers
 language runtimes
@@ -6449,10 +6449,10 @@ Thus the distinction is:
 
 ```text
 small universal operating commands     -> shell built-ins
-substantial applications/tools          -> external ZEX programs
+substantial applications/tools          -> external EXE programs
 ```
 
-The exact internal organization of built-ins may use separate source modules, but they link into one `shell.zex`.
+The exact internal organization of built-ins may use separate source modules, but they link into one `shell.exe`.
 
 ---
 
@@ -6479,7 +6479,7 @@ The same API works for `/fs/...` and read-only `/system/...` FILE objects.
 
 Within one writable filesystem namespace the shell first attempts the
 filesystem protocol's native `rename`. If the source and destination belong
-to different namespace providers, or the filesystem reports `ZOS_EXDEV`,
+to different namespace providers, or the filesystem reports `KOS_EXDEV`,
 the shell may implement:
 
 ```text
@@ -6518,15 +6518,15 @@ exists:
 /
 |-- FS/          provider present; backing filesystem may report unavailable media
 |-- SYSTEM/
-|   |-- shell.zex
-|   |-- monitor.zex
-|   |-- diag.zex
+|   |-- shell.exe
+|   |-- monitor.exe
+|   |-- diag.exe
 |   `-- essential recovery assets
 `-- dev/
     `-- objects published by the selected resident drivers
 ```
 
-The shell starts normally from `/system/shell.zex` and may still present
+The shell starts normally from `/system/shell.exe` and may still present
 `/fs` as `/` for interactive filesystem syntax. Read-only commands against
 `/system` continue to work. Mutation attempts there report the normal
 read-only error.
@@ -6559,7 +6559,7 @@ ordinary xmem
 far code
 ```
 
-through exactly the M10 interfaces available to every other native ZEX.
+through exactly the M10 interfaces available to every other native EXE.
 
 Because the shell contains the complete core userland command set, M10 far-code support may be used to partition built-in command families into auxiliary executable segments if the primary image would otherwise become unnecessarily large.
 
@@ -6628,7 +6628,7 @@ execution:
     bare-name command search
     explicit absolute path
     explicit relative path
-    .zex suffix handling
+    .exe suffix handling
     child exit 0
     child nonzero exit
     malformed executable
@@ -6665,9 +6665,9 @@ Physical acceptance includes a complete interactive session with the V9958+HID C
 
 ---
 
-# 42. Native ZephyrOS completion boundary
+# 42. Native KonaOS completion boundary
 
-Completion of M12 marks the first complete native ZephyrOS environment.
+Completion of M12 marks the first complete native KonaOS environment.
 
 At that point the system has:
 
@@ -6680,7 +6680,7 @@ VFS root with static FS / ROMFS / DEVICE namespace providers
 typed bind/call/unbind object model
 native CONSOLE / VIDEO / INPUT / SERIAL / IOC / optional SOUND protocols
 process lifecycle
-ZEX v2 native executable format
+EXE v2 native executable format
 /fs writable filesystem namespace and /system recovery namespace
 extended/far memory
 far code/data
@@ -6691,7 +6691,7 @@ core built-in userland
 
 Only after this boundary does detailed compatibility/personality architecture begin.
 
-Personality implementations consume native ZephyrOS mechanisms rather than forcing compatibility concepts into the native kernel.
+Personality implementations consume native KonaOS mechanisms rather than forcing compatibility concepts into the native kernel.
 
 Initial Zephyr-80 personality candidates include:
 
@@ -6701,7 +6701,7 @@ Coleco
 GameOS
 ```
 
-Future ZephyrOS ports may define personalities appropriate to their processor/platform family.
+Future KonaOS ports may define personalities appropriate to their processor/platform family.
 
 The native kernel itself remains free of:
 
@@ -6718,7 +6718,7 @@ except at explicit personality boundaries.
 
 ## 42.1 Native ABI baseline
 
-During M0-M12 ZephyrOS deliberately carries no backward-compatibility obligation between development milestones.
+During M0-M12 KonaOS deliberately carries no backward-compatibility obligation between development milestones.
 
 Completion of M12 ends that phase.
 
@@ -6728,14 +6728,14 @@ The accepted:
 native syscall ABI
 VFS namespace + bind/call/unbind ABI
 8-bit protocol-type assignments and protocol frame ABIs
-ZEX v2 format
+EXE v2 format
 resident-driver image/bootstrap contract
 FILE/filesystem-namespace ABI
 process-startup ABI
 extended-memory ABI
 ```
 
-form the first stable native ZephyrOS compatibility baseline.
+form the first stable native KonaOS compatibility baseline.
 
 Subsequent incompatible changes require an explicit ABI or format version change rather than silently changing an established contract.
 

@@ -14,7 +14,7 @@ by tests/test_console_acceptance.py.
   arrives on the serial lane, while the V9958 trace carries no monitor
   text at all (the console never routes there).
 * `build-console-serial-fail-selftest` boots the same set and
-  `drivers.man` from a store that omits `console-serial.zmod`: the
+  `drivers.man` from a store that omits `console-serial.mod`: the
   required driver cannot be loaded, so the loader names it on the early
   console and the nucleus stops the boot there - an explicit boot failure
   (36.11), never a fallback - and the launcher is never reached.
@@ -49,9 +49,9 @@ from test_console_acceptance import (  # noqa: E402
 
 # The production set with the serial console, in manifest (load) order,
 # with the endpoint class each image registers.
-DRIVER_SET = (("sio.zmod", 1), ("ioc.zmod", 5), ("hid.zmod", 4),
-               ("v9958.zmod", 2), ("console-serial.zmod", 6),
-               ("iocfat.zmod", 7))
+DRIVER_SET = (("sio.mod", 1), ("ioc.mod", 5), ("hid.mod", 4),
+               ("v9958.mod", 2), ("console-serial.mod", 6),
+               ("iocfat.mod", 7))
 
 CONSOLE_DRIVER_OK = b"console: driver OK\r\n"
 SERIAL_SYSINFO = \
@@ -59,13 +59,13 @@ SERIAL_SYSINFO = \
 
 # The required driver's failure: the loader names the image it could not
 # find, the nucleus reports the manifest failure and stops.
-LOADER_NO_IMAGE = b"driver loader: console-serial.zmod: no image\r\n"
+LOADER_NO_IMAGE = b"driver loader: console-serial.mod: no image\r\n"
 MANIFEST_UNAVAILABLE = b"drivers: unavailable 0x05\r\n"
 CONSOLE_DRIVER_FAILED = b"console: driver failed\r\n"
 
 # The init-status refusal (work package 45): the image loaded, its init
 # returned non-zero, and the loader's failure line names it.
-LOADER_INVALID = b"driver loader: init_fail.zmod: invalid\r\n"
+LOADER_INVALID = b"driver loader: init_fail.mod: invalid\r\n"
 
 
 class SerialBase(ConsoleReplayBase):
@@ -84,7 +84,7 @@ class SerialBase(ConsoleReplayBase):
 
     def driver_plan(self):
         """The nucleus ledger the packer's set report carries for this
-        image (tools/zmodpack.py drivers --report drivers.plan.json)."""
+        image (tools/modpack.py drivers --report drivers.plan.json)."""
         path = os.path.join(ROOT, self.IMAGE_SUBDIR, "modules",
                             "drivers.plan.json")
         with open(path, "r") as handle:
@@ -142,7 +142,7 @@ class TestSerialVariant(SerialBase):
     """`build-console-serial-selftest`: the other CONSOLE driver."""
 
     IMAGE_SUBDIR = "build-console-serial-selftest"
-    IMAGE_NAME = "zephyros-console-serial-selftest.bin"
+    IMAGE_NAME = "konaos-console-serial-selftest.bin"
 
     def test_monitor_runs_on_the_serial_lane(self):
         z = self.start()
@@ -153,8 +153,8 @@ class TestSerialVariant(SerialBase):
         # The loader placed the production image set with the serial
         # console, in manifest order, and the ledger matches the packer's
         # plan.  The evidence rows are linked for the variant image.
-        for name in ("sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
-                     "console-serial.zmod", "iocfat.zmod"):
+        for name in ("sio.mod", "ioc.mod", "hid.mod", "v9958.mod",
+                     "console-serial.mod", "iocfat.mod"):
             self.assertIn(("driver %s: hot " % name).encode("ascii"), sio)
         self.assertIn(b"driver loader: 6 images in bank 6\r\n", sio)
         plan = self.driver_plan()
@@ -194,8 +194,8 @@ class TestSerialVariant(SerialBase):
         with open(manifest) as handle:
             names = [entry["name"] for entry in json.load(handle)["files"]]
         self.assertEqual(sorted(entries), sorted(names))
-        self.assertIn("console-serial.zmod", entries)
-        self.assertIn("monitor.zex", entries)
+        self.assertIn("console-serial.mod", entries)
+        self.assertIn("monitor.exe", entries)
 
 
 class TestRequiredConsoleFailure(SerialBase):
@@ -203,7 +203,7 @@ class TestRequiredConsoleFailure(SerialBase):
     from the store, so the boot must fail explicitly on the early console."""
 
     IMAGE_SUBDIR = "build-console-serial-fail-selftest"
-    IMAGE_NAME = "zephyros-console-serial-fail-selftest.bin"
+    IMAGE_NAME = "konaos-console-serial-fail-selftest.bin"
 
     def run_to_halt(self, z, limit=STEP_LIMIT):
         for step in range(limit):
@@ -222,10 +222,10 @@ class TestRequiredConsoleFailure(SerialBase):
 
         # Every image before the console loaded; the console image the
         # manifest names is not in the store.
-        for name in ("sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod"):
+        for name in ("sio.mod", "ioc.mod", "hid.mod", "v9958.mod"):
             self.assertIn(("driver %s: hot " % name).encode("ascii"), sio)
-        self.assertNotIn(b"driver console-serial.zmod:", sio)
-        self.assertNotIn(b"driver iocfat.zmod:", sio)
+        self.assertNotIn(b"driver console-serial.mod:", sio)
+        self.assertNotIn(b"driver iocfat.mod:", sio)
         self.assertIn(LOADER_NO_IMAGE, sio)
         self.assertIn(MANIFEST_UNAVAILABLE, sio)
         self.assertIn(CONSOLE_DRIVER_FAILED, sio)
@@ -249,7 +249,7 @@ class TestRequiredConsoleFailure(SerialBase):
         with open(manifest) as handle:
             names = [entry["name"] for entry in json.load(handle)["files"]]
         self.assertEqual(sorted(entries), sorted(names))
-        self.assertNotIn("console-serial.zmod", entries)
+        self.assertNotIn("console-serial.mod", entries)
 
         # The boot manifest still lists the console: the store is what is
         # incomplete, which is the failure this image exercises.
@@ -267,7 +267,7 @@ class TestRequiredConsoleInitFailure(SerialBase):
     on the early console through the loader's init-status branch."""
 
     IMAGE_SUBDIR = "build-driver-init-fail-selftest"
-    IMAGE_NAME = "zephyros-driver-init-fail-selftest.bin"
+    IMAGE_NAME = "konaos-driver-init-fail-selftest.bin"
 
     def run_to_halt(self, z, limit=STEP_LIMIT):
         for step in range(limit):
@@ -309,7 +309,7 @@ class TestRequiredConsoleInitFailure(SerialBase):
         with open(manifest) as handle:
             names = [entry["name"] for entry in json.load(handle)["files"]]
         self.assertEqual(sorted(entries), sorted(names))
-        self.assertIn("init_fail.zmod", entries)
+        self.assertIn("init_fail.mod", entries)
 
         # The boot manifest lists exactly the refusing image, and the
         # packed container refuses through its init symbol.
@@ -318,7 +318,7 @@ class TestRequiredConsoleInitFailure(SerialBase):
             data = handle.read()
         listed = [data[i:i + 24].split(b"\0")[0].decode()
                   for i in range(0, len(data), 24)]
-        self.assertEqual(listed, ["init_fail.zmod"])
+        self.assertEqual(listed, ["init_fail.mod"])
         # The packed container carries no endpoint and no publication:
         # the failure is the init status alone.
         report_path = os.path.join(ROOT, self.IMAGE_SUBDIR, "modules",

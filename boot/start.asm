@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS common boot entry and SDCC C runtime initialization.
+; KonaOS common boot entry and SDCC C runtime initialization.
 ;
 ; The .area declarations at the top fix the linker allocation order for the
 ; areas that do not have an explicit base address:
@@ -12,11 +12,11 @@
 ; All of _HOME/_INITIALIZER/_GSINIT/_GSFINAL therefore land inside the
 ; fixed core (2000h-5FFFh), and _DATA/_INITIALIZED land in the
 ; zero-initialized fixed runtime region below the stacks.  The _DATA base is
-; derived per image (align_down(ZOS_DRIVER_STACK_BASE - data_size, 512)) and
+; derived per image (align_down(KOS_DRIVER_STACK_BASE - data_size, 512)) and
 ; substituted by the build; the startup code below uses the linked s__/l__
 ; symbols, never a fixed address.  _WINDOW/_WINDOW_DATA are the cold half
 ; (6000h-DFFFh): _WINDOW holds the cold code, _WINDOW_DATA its uninitialized
-; data and its base is derived (align_down(ZOS_BANK7_RUNTIME_END - size,
+; data and its base is derived (align_down(KOS_BANK7_RUNTIME_END - size,
 ; 512)).  The cold code runs only through the window drivers, so it is
 ; neither copied nor executed at boot; _WINDOW_DATA must be zeroed by the
 ; startup path below just like _DATA.
@@ -59,8 +59,8 @@
 	.globl _kernel_main
 	.globl _early_console_init
 	.globl _panic
-	.globl __zos_crt0_init
-	.globl __zos_mode_fault
+	.globl __kos_crt0_init
+	.globl __kos_mode_fault
 	; Linker-synthesized SDCC runtime area symbols.
 	.globl s__DATA, l__DATA
 	.globl s__WINDOW_DATA, l__WINDOW_DATA
@@ -74,29 +74,29 @@
 _boot_common_entry::
 	; Common boot/runtime stack: FF00h-FFFFh, grown down from FFFFh.
 	; SP = 0000h is top-exclusive at 10000h.
-	ld	sp,#ZOS_STACK_INIT_SP
+	ld	sp,#KOS_STACK_INIT_SP
 
 	; Enter OS mode over bank 0: 18h | 00h = 18h.  Bank 7 becomes
 	; visible at 2000h-DFFFh; E000h-FFFFh stays in physical bank 0.
 	; This code continues from the common region, which is mapped in
 	; both modes.
-	ld	a,#ZOS_MODE_OS
-	out	(ZOS_MEMCTL_PORT),a
+	ld	a,#KOS_MODE_OS
+	out	(KOS_MEMCTL_PORT),a
 
 	; Boot-time latch assertion: mode 11 over bank 0 must be active
 	; before any bank-7 code executes.  On failure, take the
 	; common-resident fault path (console + halt).
-	in	a,(ZOS_MEMCTL_PORT)
-	and	#(ZOS_MODE_MASK | ZOS_BANK_MASK)
-	cp	#ZOS_MODE_OS
-	jp	nz,__zos_mode_fault
+	in	a,(KOS_MEMCTL_PORT)
+	and	#(KOS_MODE_MASK | KOS_BANK_MASK)
+	cp	#KOS_MODE_OS
+	jp	nz,__kos_mode_fault
 
 	; Early console first: the very first thing a broken boot can
 	; report through is a common-resident console.
 	call	_early_console_init
 
 	; SDCC C runtime state (zero DATA, copy initializers, run GSINIT).
-	call	__zos_crt0_init
+	call	__kos_crt0_init
 
 	; kernel_main() does not return.
 	call	_kernel_main
@@ -116,18 +116,18 @@ _boot_str_kernel_main_returned:
 	.asciz	"kernel_main returned"
 
 ; ---------------------------------------------------------------------------
-; __zos_crt0_init - prepare the SDCC C runtime state actually used by the
+; __kos_crt0_init - prepare the SDCC C runtime state actually used by the
 ; kernel.  Runs with bank 7 visible (mode 11).  Clobbers AF/BC/DE/HL.
 ; ---------------------------------------------------------------------------
-__zos_crt0_init::
+__kos_crt0_init::
 	; 1. Zero the _DATA area.
 	ld	hl,#s__DATA
 	ld	bc,#l__DATA
-	call	__zos_zero_area
+	call	__kos_zero_area
 	; 2. Zero the _WINDOW_DATA area (cold-half uninitialized data).
 	ld	hl,#s__WINDOW_DATA
 	ld	bc,#l__WINDOW_DATA
-	call	__zos_zero_area
+	call	__kos_zero_area
 	; 3. Copy the _INITIALIZER ROM image into _INITIALIZED.
 	ld	bc,#l__INITIALIZER
 	ld	a,b
@@ -138,15 +138,15 @@ __zos_crt0_init::
 	ldir
 101$:
 	; 4. Run compiler-emitted static initializers (_GSINIT area).
-	call	__zos_gsinit
+	call	__kos_gsinit
 	ret
 
 ; ---------------------------------------------------------------------------
-; __zos_zero_area - zero a runtime data area.  HL = area start, BC = length.
+; __kos_zero_area - zero a runtime data area.  HL = area start, BC = length.
 ; Clobbers AF/BC/DE/HL.  Called with bank 7 visible, so the fixed _DATA area
 ; and the cold _WINDOW_DATA area are both addressable.
 ; ---------------------------------------------------------------------------
-__zos_zero_area:
+__kos_zero_area:
 	ld	a,b
 	or	a,c
 	ret	z
@@ -164,7 +164,7 @@ __zos_zero_area:
 	.area _GSINIT
 ; Label at the head of the _GSINIT area: compiler-emitted static
 ; initializer code from the C objects is concatenated after this label.
-__zos_gsinit::
+__kos_gsinit::
 
 	.area _GSFINAL
 	ret

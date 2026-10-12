@@ -1,4 +1,4 @@
-#include "zlibc/fmt.h"
+#include "klibc/fmt.h"
 
 void itoa(char *dst, int value, unsigned char base,
 	      unsigned char width, char pad)

@@ -1,13 +1,13 @@
-/* ZephyrOS M6/M7 native syscall dispatcher (bank 7).
+/* KonaOS M6/M7 native syscall dispatcher (bank 7).
  *
  * The stable register ABI (docs/abi.md) is converted to internal C state
- * by the assembly boundary zos_syscall_dispatch (kernel/syscall/entry.asm);
+ * by the assembly boundary kos_syscall_dispatch (kernel/syscall/entry.asm);
  * SDCC calling conventions never cross the syscall boundary.
  *
  * M6 drivers: SYS_EXIT and SYS_GETINFO.  The console bytes a program
  * writes and reads are no longer syscalls: the SDK's console functions
- * are clients of the console driver (abi/zos/protocol.h, class
- * ZOS_CLASS_CONSOLE) through the IPC pair below, so the nucleus keeps no
+ * are clients of the console driver (abi/kos/protocol.h, class
+ * KOS_CLASS_CONSOLE) through the IPC pair below, so the nucleus keeps no
  * console binding at all.  Every caller byte is still validated against
  * the documented windows before it is touched:
  *
@@ -23,15 +23,15 @@
  * M10 IPC pair dispatch to their own cold bodies (syscall/fs.h,
  * syscall/ipc.h) from the same switch.
  *
- * Failure returns A = ZOS_E* with carry set and HL = 0; success returns
+ * Failure returns A = KOS_E* with carry set and HL = 0; success returns
  * carry clear with HL = primary result.  Process bookkeeping is never
  * damaged by a failed operation.
  */
 
 #include "kernel.h"
-#include "zos/syscall.h"
-#include "zos/ipc.h"
-#include "zos/seg.h"
+#include "kos/syscall.h"
+#include "kos/ipc.h"
+#include "kos/seg.h"
 #include "process.h"
 
 #include "kernel/ipc/ipc.h"
@@ -42,44 +42,44 @@
 #include "syscall/xmem.h"
 
 /* Dispatcher input/output state (written by the asm boundary, read by C). */
-uint8_t zos_syscall_number;
-uint16_t zos_syscall_args;
-uint8_t zos_syscall_result_a;
-uint8_t zos_syscall_result_c;
-uint16_t zos_syscall_result_hl;
+uint8_t kos_syscall_number;
+uint16_t kos_syscall_args;
+uint8_t kos_syscall_result_a;
+uint8_t kos_syscall_result_c;
+uint16_t kos_syscall_result_hl;
 
 /* Common-resident copy gate and its staging block. */
-extern uint8_t zos_user_copy_staging[];
+extern uint8_t kos_user_copy_staging[];
 
-#define USER_STAGE_SIZE ZOS_SYSCALL_STAGE_SIZE
+#define USER_STAGE_SIZE KOS_SYSCALL_STAGE_SIZE
 
 /* One transfer chunk against the caller bank, through the common gate.
  * The bank follows the buffer-identity rule, so the same helper serves a
  * buffer in the primary bank and one behind the mode-10 aperture.  The
  * staging buffer is common-resident, so it survives the mapping
  * switch and stays valid while mode 10 is active. */
-uint8_t zos_syscall_bank_read(uint16_t user_src, uint16_t length)
+uint8_t kos_syscall_bank_read(uint16_t user_src, uint16_t length)
 {
-	struct zos_bank_copy_req req;
+	struct kos_bank_copy_req req;
 
-	req.bank = zos_syscall_buffer_bank(user_src);
-	req.op = ZOS_BANK_OP_READ;
+	req.bank = kos_syscall_buffer_bank(user_src);
+	req.op = KOS_BANK_OP_READ;
 	req.addr = user_src;
-	req.buffer = zos_user_copy_staging;
+	req.buffer = kos_user_copy_staging;
 	req.length = length;
-	return zos_bank_copy(&req);
+	return kos_bank_copy(&req);
 }
 
-uint8_t zos_syscall_bank_write(uint16_t user_dst, uint16_t length)
+uint8_t kos_syscall_bank_write(uint16_t user_dst, uint16_t length)
 {
-	struct zos_bank_copy_req req;
+	struct kos_bank_copy_req req;
 
-	req.bank = zos_syscall_buffer_bank(user_dst);
-	req.op = ZOS_BANK_OP_WRITE;
+	req.bank = kos_syscall_buffer_bank(user_dst);
+	req.op = KOS_BANK_OP_WRITE;
 	req.addr = user_dst;
-	req.buffer = zos_user_copy_staging;
+	req.buffer = kos_user_copy_staging;
 	req.length = length;
-	return zos_bank_copy(&req);
+	return kos_bank_copy(&req);
 }
 
 static uint16_t read_le16(const uint8_t *p)
@@ -90,58 +90,58 @@ static uint16_t read_le16(const uint8_t *p)
 /* The result publication and argument-window helpers are shared with
  * kernel/syscall/diag.c (declared in diag.h); the M6 driver bodies
  * below keep their short local names. */
-void zos_syscall_success(uint16_t result)
+void kos_syscall_success(uint16_t result)
 {
-	zos_syscall_result_hl = result;
-	zos_syscall_result_a = 0;
-	zos_syscall_result_c = 0;
+	kos_syscall_result_hl = result;
+	kos_syscall_result_a = 0;
+	kos_syscall_result_c = 0;
 }
 
-void zos_syscall_error(uint8_t err)
+void kos_syscall_error(uint8_t err)
 {
-	zos_syscall_result_hl = 0;
-	zos_syscall_result_a = err;
-	zos_syscall_result_c = 1;
+	kos_syscall_result_hl = 0;
+	kos_syscall_result_a = err;
+	kos_syscall_result_c = 1;
 }
 
 /* Argument block: 0100h-1FFFh, every byte inside the caller window. */
-uint8_t zos_syscall_block_ok(uint16_t addr, uint16_t len)
+uint8_t kos_syscall_block_ok(uint16_t addr, uint16_t len)
 {
-	if (addr < ZOS_SYSCALL_WINDOW_BASE ||
-	    addr >= ZOS_SYSCALL_WINDOW_END) {
+	if (addr < KOS_SYSCALL_WINDOW_BASE ||
+	    addr >= KOS_SYSCALL_WINDOW_END) {
 		return 0;
 	}
-	return len <= (uint16_t)(ZOS_SYSCALL_WINDOW_END - addr);
+	return len <= (uint16_t)(KOS_SYSCALL_WINDOW_END - addr);
 }
 
-#define syscall_success	zos_syscall_success
-#define syscall_error	zos_syscall_error
-#define block_ok	zos_syscall_block_ok
+#define syscall_success	kos_syscall_success
+#define syscall_error	kos_syscall_error
+#define block_ok	kos_syscall_block_ok
 
 /* Read/write buffer: 0100h-DFFFh, no length wrap, and under a nonzero
  * saved page never across the aperture boundary (the two sides of
  * 8000h-BFFFh are different banks). */
-uint8_t zos_syscall_buffer_ok(uint16_t addr, uint16_t len)
+uint8_t kos_syscall_buffer_ok(uint16_t addr, uint16_t len)
 {
 	uint8_t latch;
 
-	if (addr < ZOS_USER_BUFFER_BASE || addr >= ZOS_USER_BUFFER_END) {
+	if (addr < KOS_USER_BUFFER_BASE || addr >= KOS_USER_BUFFER_END) {
 		return 0;
 	}
-	if (len > (uint16_t)(ZOS_USER_BUFFER_END - addr)) {
+	if (len > (uint16_t)(KOS_USER_BUFFER_END - addr)) {
 		return 0;
 	}
 	latch = ipc_gate_latch();
-	if ((latch & ZOS_MODE_MASK) == ZOS_MODE_APPLICATION &&
-	    (latch & ZOS_ROM_PAGE_MASK) != 0u) {
+	if ((latch & KOS_MODE_MASK) == KOS_MODE_APPLICATION &&
+	    (latch & KOS_ROM_PAGE_MASK) != 0u) {
 		uint16_t end = (uint16_t)(addr + len);
 
-		if (addr < ZOS_XMEM_APERTURE_BASE +
-				   ZOS_XMEM_APERTURE_SIZE &&
-		    end > ZOS_XMEM_APERTURE_BASE &&
-		    !(addr >= ZOS_XMEM_APERTURE_BASE &&
-		      end <= ZOS_XMEM_APERTURE_BASE +
-			     ZOS_XMEM_APERTURE_SIZE)) {
+		if (addr < KOS_XMEM_APERTURE_BASE +
+				   KOS_XMEM_APERTURE_SIZE &&
+		    end > KOS_XMEM_APERTURE_BASE &&
+		    !(addr >= KOS_XMEM_APERTURE_BASE &&
+		      end <= KOS_XMEM_APERTURE_BASE +
+			     KOS_XMEM_APERTURE_SIZE)) {
 			return 0;
 		}
 	}
@@ -153,18 +153,18 @@ uint8_t zos_syscall_buffer_ok(uint16_t addr, uint16_t len)
  * page it is the far bank 7 - P, everywhere else the running process's
  * primary bank.  Descriptor capture (kernel/ipc) applies the same rule to
  * the buffers a driver names. */
-uint8_t zos_syscall_buffer_bank(uint16_t addr)
+uint8_t kos_syscall_buffer_bank(uint16_t addr)
 {
 	uint8_t latch = ipc_gate_latch();
 
-	if ((latch & ZOS_MODE_MASK) == ZOS_MODE_APPLICATION &&
-	    (latch & ZOS_ROM_PAGE_MASK) != 0u &&
-	    addr >= ZOS_XMEM_APERTURE_BASE &&
-	    addr < (uint16_t)(ZOS_XMEM_APERTURE_BASE +
-			      ZOS_XMEM_APERTURE_SIZE)) {
-		return (uint8_t)(ZOS_BANK_MASK -
-				 (uint8_t)((latch & ZOS_ROM_PAGE_MASK) >>
-					   ZOS_ROM_PAGE_SHIFT));
+	if ((latch & KOS_MODE_MASK) == KOS_MODE_APPLICATION &&
+	    (latch & KOS_ROM_PAGE_MASK) != 0u &&
+	    addr >= KOS_XMEM_APERTURE_BASE &&
+	    addr < (uint16_t)(KOS_XMEM_APERTURE_BASE +
+			      KOS_XMEM_APERTURE_SIZE)) {
+		return (uint8_t)(KOS_BANK_MASK -
+				 (uint8_t)((latch & KOS_ROM_PAGE_MASK) >>
+					   KOS_ROM_PAGE_SHIFT));
 	}
 	return process_current_bank();
 }
@@ -174,9 +174,9 @@ static void syscall_exit(uint16_t block)
 	uint16_t status;
 
 	/* SYS_EXIT does not return.  A malformed block cannot be reported,
-	 * so it is defined to exit with ZOS_EFAULT. */
+	 * so it is defined to exit with KOS_EFAULT. */
 	if (!block_ok(block, 2)) {
-		process_exit(ZOS_EFAULT);
+		process_exit(KOS_EFAULT);
 	}
 	status = read_le16((const uint8_t *)block);
 	process_exit(status);
@@ -187,18 +187,18 @@ static void syscall_getinfo(uint16_t block)
 	uint8_t pid;
 	uint8_t *record;
 
-	if (!block_ok(block, ZOS_GETINFO_SIZE)) {
-		syscall_error(ZOS_EINVAL);
+	if (!block_ok(block, KOS_GETINFO_SIZE)) {
+		syscall_error(KOS_EINVAL);
 		return;
 	}
 	pid = process_current_pid();
 	if (pid >= PROCESS_TABLE_SIZE) {
-		syscall_error(ZOS_EINVAL);
+		syscall_error(KOS_EINVAL);
 		return;
 	}
 	record = (uint8_t *)block;
-	record[0] = (uint8_t)ZOS_GETINFO_SIZE;
-	record[1] = (uint8_t)ZOS_GETINFO_ABI;
+	record[0] = (uint8_t)KOS_GETINFO_SIZE;
+	record[1] = (uint8_t)KOS_GETINFO_ABI;
 	record[2] = pid;
 	record[3] = process_table[pid].bank;
 	{
@@ -207,7 +207,7 @@ static void syscall_getinfo(uint16_t block)
 		record[4] = (uint8_t)(flags & 0xFFu);
 		record[5] = (uint8_t)(flags >> 8);
 	}
-	syscall_success(ZOS_GETINFO_SIZE);
+	syscall_success(KOS_GETINFO_SIZE);
 }
 
 /* SYS_EXEC 05h.  Thin composition of the one process machinery: the
@@ -225,23 +225,23 @@ static void syscall_exec(uint16_t block)
 	int result;
 
 	if (!block_ok(block, 8)) {
-		syscall_error(ZOS_EINVAL);
+		syscall_error(KOS_EINVAL);
 		return;
 	}
 	if (pid >= PROCESS_TABLE_SIZE || vfs_phase() != VFS_PHASE_READY) {
-		syscall_error(ZOS_EBUSY);
+		syscall_error(KOS_EBUSY);
 		return;
 	}
 	/* Depth and frame-size refusals allocate nothing.  The preflight
 	 * measures this handler's frame; the copy the launch gate takes is
-	 * deeper by ZOS_EXEC_FRAME_SLACK at most (see process.h). */
-	if (process_active_count() >= ZOS_EXEC_MAX_DEPTH) {
-		syscall_error(ZOS_EBUSY);
+	 * deeper by KOS_EXEC_FRAME_SLACK at most (see process.h). */
+	if (process_active_count() >= KOS_EXEC_MAX_DEPTH) {
+		syscall_error(KOS_EBUSY);
 		return;
 	}
-	len = zos_process_continuation_size();
-	if (len > ZOS_EXEC_FRAME_SAVE - ZOS_EXEC_FRAME_SLACK) {
-		syscall_error(ZOS_EBUSY);
+	len = kos_process_continuation_size();
+	if (len > KOS_EXEC_FRAME_SAVE - KOS_EXEC_FRAME_SLACK) {
+		syscall_error(KOS_EBUSY);
 		return;
 	}
 	/* The argument tail is validated before any allocation: a length
@@ -250,10 +250,10 @@ static void syscall_exec(uint16_t block)
 	 * arguments and the pointer is ignored. */
 	args = read_le16((const uint8_t *)(block + 4));
 	args_length = read_le16((const uint8_t *)(block + 6));
-	if (args_length > ZOS_STARTUP_TAIL_MAX ||
+	if (args_length > KOS_STARTUP_TAIL_MAX ||
 	    (args_length != 0 &&
-	     !zos_syscall_buffer_ok(args, args_length))) {
-		syscall_error(ZOS_EINVAL);
+	     !kos_syscall_buffer_ok(args, args_length))) {
+		syscall_error(KOS_EINVAL);
 		return;
 	}
 	/* The caller's path is staged in the VFS workspace's path view,
@@ -265,7 +265,7 @@ static void syscall_exec(uint16_t block)
 	 * follows reads the bound FILE through descriptors and the common
 	 * staging block, and never touches the workspace. */
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	result = zos_object_copy_path(read_le16((const uint8_t *)block),
+	result = kos_object_copy_path(read_le16((const uint8_t *)block),
 				      read_le16((const uint8_t *)(block + 2)),
 				      VFS_WS_IN_A);
 	if (result == 0) {
@@ -274,10 +274,10 @@ static void syscall_exec(uint16_t block)
 	}
 	vfs_ws_leave(VFS_WS_VIEW_PATH);
 	if (result != 0) {
-		/* Malformed containers (ZEX_EXEC_ERR_* <= -0x20) are EINVAL;
-		 * every other code is a native -ZOS_E* passed through. */
+		/* Malformed containers (EXE_EXEC_ERR_* <= -0x20) are EINVAL;
+		 * every other code is a native -KOS_E* passed through. */
 		syscall_error(result <= -0x20
-				      ? ZOS_EINVAL
+				      ? KOS_EINVAL
 				      : (uint8_t)(uint16_t)(0u -
 						(uint16_t)result));
 		return;
@@ -289,54 +289,54 @@ static void syscall_exec(uint16_t block)
 void kernel_syscall_dispatch(void)
 {
 	/* M1 default: unknown numbers stay deterministic. */
-	syscall_error(ZOS_ENOSYS);
+	syscall_error(KOS_ENOSYS);
 
 	/* Object and namespace family (06h-0Bh, package 42b): bind, call,
 	 * unbind, ns_enum, chdir, getcwd.  The M9 `FS_*` family and the
 	 * stage-3 lookup/call pair are retired; their numbers route to the
-	 * M1 default above (ZOS_ENOSYS). */
-	if (zos_syscall_number >= ZOS_SYSCALL_BIND &&
-	    zos_syscall_number <= ZOS_SYSCALL_GETCWD) {
-		zos_object_dispatch(zos_syscall_number, zos_syscall_args);
+	 * M1 default above (KOS_ENOSYS). */
+	if (kos_syscall_number >= KOS_SYSCALL_BIND &&
+	    kos_syscall_number <= KOS_SYSCALL_GETCWD) {
+		kos_object_dispatch(kos_syscall_number, kos_syscall_args);
 		return;
 	}
 
 	/* Extended-memory family (20h-27h, packages 43-44b): alloc, free,
 	 * read, write, info, map, segment info and segment map (architecture
 	 * 36.15-36.18). */
-	if (zos_syscall_number >= ZOS_SYSCALL_XMEM_ALLOC &&
-	    zos_syscall_number <= ZOS_SYSCALL_SEG_MAP) {
-		zos_xmem_dispatch(zos_syscall_number, zos_syscall_args);
+	if (kos_syscall_number >= KOS_SYSCALL_XMEM_ALLOC &&
+	    kos_syscall_number <= KOS_SYSCALL_SEG_MAP) {
+		kos_xmem_dispatch(kos_syscall_number, kos_syscall_args);
 		return;
 	}
 
-	switch (zos_syscall_number) {
-	case ZOS_SYSCALL_EXIT:
-		syscall_exit(zos_syscall_args);
+	switch (kos_syscall_number) {
+	case KOS_SYSCALL_EXIT:
+		syscall_exit(kos_syscall_args);
 		break;
-	case ZOS_SYSCALL_GETINFO:
-		syscall_getinfo(zos_syscall_args);
+	case KOS_SYSCALL_GETINFO:
+		syscall_getinfo(kos_syscall_args);
 		break;
-	case ZOS_SYSCALL_EXEC:
-		syscall_exec(zos_syscall_args);
+	case KOS_SYSCALL_EXEC:
+		syscall_exec(kos_syscall_args);
 		break;
-	case ZOS_SYSCALL_DIAG_MEM_READ:
-		zos_diag_mem_read(zos_syscall_args);
+	case KOS_SYSCALL_DIAG_MEM_READ:
+		kos_diag_mem_read(kos_syscall_args);
 		break;
-	case ZOS_SYSCALL_DIAG_MEM_WRITE:
-		zos_diag_mem_write(zos_syscall_args);
+	case KOS_SYSCALL_DIAG_MEM_WRITE:
+		kos_diag_mem_write(kos_syscall_args);
 		break;
-	case ZOS_SYSCALL_DIAG_IO_IN:
-		zos_diag_io_in(zos_syscall_args);
+	case KOS_SYSCALL_DIAG_IO_IN:
+		kos_diag_io_in(kos_syscall_args);
 		break;
-	case ZOS_SYSCALL_DIAG_IO_OUT:
-		zos_diag_io_out(zos_syscall_args);
+	case KOS_SYSCALL_DIAG_IO_OUT:
+		kos_diag_io_out(kos_syscall_args);
 		break;
-	case ZOS_SYSCALL_DIAG_BANK_INFO:
-		zos_diag_bank_info();
+	case KOS_SYSCALL_DIAG_BANK_INFO:
+		kos_diag_bank_info();
 		break;
-	case ZOS_SYSCALL_DIAG_SYSTEM_INFO:
-		zos_diag_system_info(zos_syscall_args);
+	case KOS_SYSCALL_DIAG_SYSTEM_INFO:
+		kos_diag_system_info(kos_syscall_args);
 		break;
 	default:
 		break;

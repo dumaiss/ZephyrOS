@@ -1,4 +1,4 @@
-/* ZephyrOS nucleus-layout acceptance test (test artifact; linked only in
+/* KonaOS nucleus-layout acceptance test (test artifact; linked only in
  * acceptance image builds).
  *
  * Runs the revision-13 gate and upcall acceptance surface of work package
@@ -15,7 +15,7 @@
  *      interrupted latch came back byte-exactly;
  *   3. the upcall shim: the fixed-core install helper writes the target
  *      stub into bank 6 through the window page, and this cold-half test
- *      code - the cold-caller case of architecture 36.5 - calls zos_upcall
+ *      code - the cold-caller case of architecture 36.5 - calls kos_upcall
  *      and checks the selected page, the target's result and argument, and
  *      the exact restore of the latch.
  *
@@ -31,61 +31,61 @@
 #include "kernel/memory/banking.h"
 #include "kernel/memory/upcall.h"
 
-#include "zos/diag.h"
+#include "kos/diag.h"
 
 #include "ctc_test.h"
 #include "nucleus_selftest.h"
 
 /* The mirror of tests/target/include/nucleus_entry.inc must agree with the
  * native ABI: a drifted constant fails this build, not the replay. */
-_Static_assert(ZOS_NS_SYSCALL_NUM == ZOS_SYSCALL_DIAG_SYSTEM_INFO,
+_Static_assert(KOS_NS_SYSCALL_NUM == KOS_SYSCALL_DIAG_SYSTEM_INFO,
 	       "nucleus selftest syscall number differs from the diag ABI");
-_Static_assert(ZOS_NS_SYSCALL_RESULT == ZOS_DIAG_SYSTEM_INFO_SIZE,
+_Static_assert(KOS_NS_SYSCALL_RESULT == KOS_DIAG_SYSTEM_INFO_SIZE,
 	       "nucleus selftest syscall result differs from the diag ABI");
-_Static_assert(ZOS_NS_SYSTEM_INFO_SIZE == ZOS_DIAG_SYSTEM_INFO_SIZE,
+_Static_assert(KOS_NS_SYSTEM_INFO_SIZE == KOS_DIAG_SYSTEM_INFO_SIZE,
 	       "nucleus selftest system-info size differs from the diag ABI");
-_Static_assert(ZOS_NS_SYSTEM_INFO_ABI == ZOS_DIAG_SYSTEM_INFO_ABI,
+_Static_assert(KOS_NS_SYSTEM_INFO_ABI == KOS_DIAG_SYSTEM_INFO_ABI,
 	       "nucleus selftest system-info ABI differs from the diag ABI");
-_Static_assert(ZOS_NS_MODE_APPLICATION == ZOS_MODE_APPLICATION,
+_Static_assert(KOS_NS_MODE_APPLICATION == KOS_MODE_APPLICATION,
 	       "nucleus selftest application mode differs from the platform");
-_Static_assert(ZOS_NS_MODE_OS == ZOS_MODE_OS,
+_Static_assert(KOS_NS_MODE_OS == KOS_MODE_OS,
 	       "nucleus selftest OS mode differs from the platform");
-_Static_assert(ZOS_NS_KERNEL_BANK == PROCESS_KERNEL_BANK,
+_Static_assert(KOS_NS_KERNEL_BANK == PROCESS_KERNEL_BANK,
 	       "nucleus selftest kernel bank differs from the process model");
-_Static_assert(ZOS_NS_ROMFS_PAGE == ZOS_ROMFS_FIRST_PAGE,
+_Static_assert(KOS_NS_ROMFS_PAGE == KOS_ROMFS_FIRST_PAGE,
 	       "nucleus selftest ROMFS page differs from the platform");
-_Static_assert(ZOS_NS_PAGE_DRIVER == 1u && ZOS_UPCALL_PAGE_DRIVER == 1u,
+_Static_assert(KOS_NS_PAGE_DRIVER == 1u && KOS_UPCALL_PAGE_DRIVER == 1u,
 	       "nucleus selftest driver page differs from the upcall shim");
 
 /* Common test state owned by tests/target/nucleus/nucleus_entry.asm. */
-extern volatile uint8_t zos_nucleus_result;
-extern volatile uint8_t zos_nucleus_irq_evidence;
-extern volatile uint8_t zos_nucleus_irq_latch;
-extern volatile uint8_t zos_nucleus_phase;
-extern volatile uint8_t zos_nucleus_upcall_irq_evidence;
-extern volatile uint8_t zos_nucleus_upcall_irq_latch;
-extern void zos_nucleus_selftest_run(uint8_t bank);
-extern uint8_t zos_nucleus_sp_is_isr(void);
+extern volatile uint8_t kos_nucleus_result;
+extern volatile uint8_t kos_nucleus_irq_evidence;
+extern volatile uint8_t kos_nucleus_irq_latch;
+extern volatile uint8_t kos_nucleus_phase;
+extern volatile uint8_t kos_nucleus_upcall_irq_evidence;
+extern volatile uint8_t kos_nucleus_upcall_irq_latch;
+extern void kos_nucleus_selftest_run(uint8_t bank);
+extern uint8_t kos_nucleus_sp_is_isr(void);
 
 /* Fixed-core upcall state and helpers (same file). */
-extern uint8_t zos_nucleus_upcall_latch0;
-extern uint16_t zos_nucleus_upcall_arg;
-extern uint8_t zos_nucleus_stub_latch;
-extern uint16_t zos_nucleus_stub_args;
-extern uint8_t zos_nucleus_stub_witness;
-extern uint8_t zos_nucleus_stub_status;
-extern uint8_t zos_nucleus_stub_latch_after;
-extern uint8_t zos_nucleus_stub_install(void);
+extern uint8_t kos_nucleus_upcall_latch0;
+extern uint16_t kos_nucleus_upcall_arg;
+extern uint8_t kos_nucleus_stub_latch;
+extern uint16_t kos_nucleus_stub_args;
+extern uint8_t kos_nucleus_stub_witness;
+extern uint8_t kos_nucleus_stub_status;
+extern uint8_t kos_nucleus_stub_latch_after;
+extern uint8_t kos_nucleus_stub_install(void);
 
-static const char zos_nucleus_hex_digits[] = "0123456789ABCDEF";
+static const char kos_nucleus_hex_digits[] = "0123456789ABCDEF";
 
 static void nucleus_selftest_report_fail(const char *phase, uint8_t code)
 {
 	early_console_puts("nucleus selftest: FAIL ");
 	early_console_puts(phase);
 	early_console_puts(" code=0x");
-	early_console_putc(zos_nucleus_hex_digits[code >> 4]);
-	early_console_putc(zos_nucleus_hex_digits[code & 0x0F]);
+	early_console_putc(kos_nucleus_hex_digits[code >> 4]);
+	early_console_putc(kos_nucleus_hex_digits[code & 0x0F]);
 	early_console_puts("\r\n");
 }
 
@@ -95,26 +95,26 @@ static void nucleus_selftest_report_fail(const char *phase, uint8_t code)
  * gate that left the page field set could not reach it at all. */
 static void nucleus_selftest_handler(void *context)
 {
-	uint8_t evidence = ZOS_NS_EV_DELIVERED;
+	uint8_t evidence = KOS_NS_EV_DELIVERED;
 	uint8_t latch = platform_memctl_read();
 
 	(void)context;
-	if ((latch & ZOS_MODE_MASK) == ZOS_MODE_OS) {
-		evidence |= ZOS_NS_EV_PAGE_ZERO;
+	if ((latch & KOS_MODE_MASK) == KOS_MODE_OS) {
+		evidence |= KOS_NS_EV_PAGE_ZERO;
 	}
-	if ((latch & ZOS_MODE_MASK) == ZOS_MODE_OS &&
-	    (latch & ZOS_BANK_MASK) == ZOS_NS_APP_BANK) {
-		evidence |= ZOS_NS_EV_BANK;
+	if ((latch & KOS_MODE_MASK) == KOS_MODE_OS &&
+	    (latch & KOS_BANK_MASK) == KOS_NS_APP_BANK) {
+		evidence |= KOS_NS_EV_BANK;
 	}
-	if (zos_nucleus_sp_is_isr()) {
-		evidence |= ZOS_NS_EV_ISR_STACK;
+	if (kos_nucleus_sp_is_isr()) {
+		evidence |= KOS_NS_EV_ISR_STACK;
 	}
-	if (zos_nucleus_phase == ZOS_NS_PHASE_UPCALL) {
-		zos_nucleus_upcall_irq_latch = latch;
-		zos_nucleus_upcall_irq_evidence |= evidence;
+	if (kos_nucleus_phase == KOS_NS_PHASE_UPCALL) {
+		kos_nucleus_upcall_irq_latch = latch;
+		kos_nucleus_upcall_irq_evidence |= evidence;
 	} else {
-		zos_nucleus_irq_latch = latch;
-		zos_nucleus_irq_evidence |= evidence;
+		kos_nucleus_irq_latch = latch;
+		kos_nucleus_irq_evidence |= evidence;
 	}
 }
 
@@ -123,40 +123,40 @@ static void nucleus_selftest_handler(void *context)
  * shim makes the call instead. */
 static uint8_t nucleus_selftest_upcall(void)
 {
-	struct zos_upcall_req req;
+	struct kos_upcall_req req;
 	uint8_t before;
 	uint8_t expected;
 
 	/* Common state is linked image content, not zeroed RAM: reset the
 	 * evidence this phase reads before it runs. */
-	zos_nucleus_upcall_irq_evidence = 0;
-	zos_nucleus_upcall_irq_latch = 0;
-	zos_nucleus_stub_witness = 0;
-	zos_nucleus_stub_status = 0;
-	zos_nucleus_stub_latch = 0;
-	zos_nucleus_stub_latch_after = 0;
-	if (zos_nucleus_stub_install() != 0) {
-		return ZOS_NS_FAIL_UPCALL_ENTER;
+	kos_nucleus_upcall_irq_evidence = 0;
+	kos_nucleus_upcall_irq_latch = 0;
+	kos_nucleus_stub_witness = 0;
+	kos_nucleus_stub_status = 0;
+	kos_nucleus_stub_latch = 0;
+	kos_nucleus_stub_latch_after = 0;
+	if (kos_nucleus_stub_install() != 0) {
+		return KOS_NS_FAIL_UPCALL_ENTER;
 	}
 	before = platform_memctl_read();
-	expected = (uint8_t)((before & (ZOS_MODE_MASK | ZOS_BANK_MASK)) |
-			     (ZOS_NS_PAGE_DRIVER << ZOS_ROM_PAGE_SHIFT));
+	expected = (uint8_t)((before & (KOS_MODE_MASK | KOS_BANK_MASK)) |
+			     (KOS_NS_PAGE_DRIVER << KOS_ROM_PAGE_SHIFT));
 
 	/* Rejected requests must not touch the latch. */
-	req.page = ZOS_NS_PAGE_DRIVER + 1u;
-	req.entry = ZOS_NS_STUB_BASE;
+	req.page = KOS_NS_PAGE_DRIVER + 1u;
+	req.entry = KOS_NS_STUB_BASE;
 	req.args = (void *)0;
 	req.result = 0;
-	if (zos_upcall(&req) != ZOS_NS_EINVAL) {
-		return ZOS_NS_FAIL_UPCALL_EINVAL;
+	if (kos_upcall(&req) != KOS_NS_EINVAL) {
+		return KOS_NS_FAIL_UPCALL_EINVAL;
 	}
-	req.page = ZOS_NS_PAGE_DRIVER;
+	req.page = KOS_NS_PAGE_DRIVER;
 	req.entry = 0x5000u; /* the fixed core: outside the window */
-	if (zos_upcall(&req) != ZOS_NS_EINVAL) {
-		return ZOS_NS_FAIL_UPCALL_EINVAL;
+	if (kos_upcall(&req) != KOS_NS_EINVAL) {
+		return KOS_NS_FAIL_UPCALL_EINVAL;
 	}
 	if (platform_memctl_read() != before) {
-		return ZOS_NS_FAIL_UPCALL_RESTORE;
+		return KOS_NS_FAIL_UPCALL_RESTORE;
 	}
 
 	/* The upcall itself: select page 1, call the bank-6 stub, restore.
@@ -164,41 +164,41 @@ static uint8_t nucleus_selftest_upcall(void)
 	 * window on bank 6 - so this is also the case the IRQ gate has to
 	 * normalize: the cold-half handler must be reachable and the stub
 	 * must find its page still selected when it resumes. */
-	req.entry = ZOS_NS_STUB_BASE;
-	req.args = (void *)&zos_nucleus_upcall_arg;
+	req.entry = KOS_NS_STUB_BASE;
+	req.args = (void *)&kos_nucleus_upcall_arg;
 	req.result = 0;
-	if (zos_upcall(&req) != 0) {
-		return ZOS_NS_FAIL_UPCALL_ENTER;
+	if (kos_upcall(&req) != 0) {
+		return KOS_NS_FAIL_UPCALL_ENTER;
 	}
-	if (req.result != ZOS_NS_STUB_MAGIC ||
-	    zos_nucleus_stub_witness != ZOS_NS_STUB_WITNESS ||
-	    zos_nucleus_stub_args != (uint16_t)&zos_nucleus_upcall_arg) {
-		return ZOS_NS_FAIL_UPCALL_RESULT;
+	if (req.result != KOS_NS_STUB_MAGIC ||
+	    kos_nucleus_stub_witness != KOS_NS_STUB_WITNESS ||
+	    kos_nucleus_stub_args != (uint16_t)&kos_nucleus_upcall_arg) {
+		return KOS_NS_FAIL_UPCALL_RESULT;
 	}
-	if (zos_nucleus_stub_latch != expected) {
-		return ZOS_NS_FAIL_UPCALL_LATCH;
+	if (kos_nucleus_stub_latch != expected) {
+		return KOS_NS_FAIL_UPCALL_LATCH;
 	}
-	if (zos_nucleus_stub_status != ZOS_NS_STUB_STATUS_DELIVERED ||
-	    zos_nucleus_upcall_irq_evidence !=
-		    (ZOS_NS_EV_DELIVERED | ZOS_NS_EV_PAGE_ZERO | ZOS_NS_EV_BANK |
-		     ZOS_NS_EV_ISR_STACK) ||
-	    zos_nucleus_upcall_irq_latch !=
-		    (uint8_t)(ZOS_MODE_OS | ZOS_NS_APP_BANK)) {
-		return ZOS_NS_FAIL_UPCALL_IRQ;
+	if (kos_nucleus_stub_status != KOS_NS_STUB_STATUS_DELIVERED ||
+	    kos_nucleus_upcall_irq_evidence !=
+		    (KOS_NS_EV_DELIVERED | KOS_NS_EV_PAGE_ZERO | KOS_NS_EV_BANK |
+		     KOS_NS_EV_ISR_STACK) ||
+	    kos_nucleus_upcall_irq_latch !=
+		    (uint8_t)(KOS_MODE_OS | KOS_NS_APP_BANK)) {
+		return KOS_NS_FAIL_UPCALL_IRQ;
 	}
-	if (zos_nucleus_stub_latch_after != expected) {
-		return ZOS_NS_FAIL_UPCALL_SPAN;
+	if (kos_nucleus_stub_latch_after != expected) {
+		return KOS_NS_FAIL_UPCALL_SPAN;
 	}
 	if (platform_memctl_read() != before) {
-		return ZOS_NS_FAIL_UPCALL_RESTORE;
+		return KOS_NS_FAIL_UPCALL_RESTORE;
 	}
-	return ZOS_NS_OK;
+	return KOS_NS_OK;
 }
 
 /* Runs the smoke caller in application bank 0 (syscall and IRQ gates with
  * the driver page selected), then the upcall shim from the cold half,
  * including the CTC0 delivery that arrives while bank 6 is mapped. */
-void zos_run_nucleus_selftest(void)
+void kos_run_nucleus_selftest(void)
 {
 	uint8_t code;
 
@@ -206,24 +206,24 @@ void zos_run_nucleus_selftest(void)
 		nucleus_selftest_report_fail("claim", 0xFFu);
 		return;
 	}
-	zos_nucleus_result = 0xFFu;
+	kos_nucleus_result = 0xFFu;
 	/* CTC0 stays programmed across both phases: the delivery arrives in
 	 * the smoke caller's mode-10 window and again while the upcall shim
 	 * has bank 6 mapped. */
-	zos_ctc0_test_start();
-	zos_nucleus_selftest_run(ZOS_NS_APP_BANK);
+	kos_ctc0_test_start();
+	kos_nucleus_selftest_run(KOS_NS_APP_BANK);
 
-	code = zos_nucleus_result;
-	if (code != ZOS_NS_OK) {
-		zos_ctc0_test_stop();
+	code = kos_nucleus_result;
+	if (code != KOS_NS_OK) {
+		kos_ctc0_test_stop();
 		(void)irq_release(IRQ_CTC0);
 		nucleus_selftest_report_fail("gates", code);
 		return;
 	}
 	code = nucleus_selftest_upcall();
-	zos_ctc0_test_stop();
+	kos_ctc0_test_stop();
 	(void)irq_release(IRQ_CTC0);
-	if (code != ZOS_NS_OK) {
+	if (code != KOS_NS_OK) {
 		nucleus_selftest_report_fail("upcall", code);
 		return;
 	}

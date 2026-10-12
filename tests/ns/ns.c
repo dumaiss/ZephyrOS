@@ -1,8 +1,8 @@
-/* ZephyrOS namespace acceptance client (work package 42a, test artifact).
+/* KonaOS namespace acceptance client (work package 42a, test artifact).
  *
- * The ZEX primary the namespace-selftest image boots.  It is an ordinary
+ * The EXE primary the namespace-selftest image boots.  It is an ordinary
  * SDK program: the kernel links the object family into the image, the SDK
- * variant (ZOS_NS_HANDLES) exposes bind/unbind/ns_enum and every console
+ * variant (KOS_NS_HANDLES) exposes bind/unbind/ns_enum and every console
  * write below goes through the two standard handles an ordinary program
  * starts with.
  *
@@ -11,16 +11,16 @@
  *   * the standard handles work and console output is one of them;
  *   * `bind` resolves the host-built `/dev` publications and reports the
  *     8-bit protocol type the table declares (CONSOLE, INPUT, VIDEO,
- *     SERIAL), and grouping entries refuse with ZOS_EISDIR;
+ *     SERIAL), and grouping entries refuse with KOS_EISDIR;
  *   * `call` on a bound handle reaches the publishing endpoint: the
  *     synthetic publisher answers deterministically, so a wrong endpoint
  *     cannot look like a pass;
  *   * a `/system` FILE handle reads, seeks and reports metadata, and reads
  *     0 bytes at end of file;
  *   * unknown names, `/fs` (42b), foreign/stale handles and a malformed
- *     path are refused with the documented ZOS_E* values;
+ *     path are refused with the documented KOS_E* values;
  *   * the handle table fills to exactly VFS_HANDLE_MAX entries, reports
- *     -ZOS_EMFILE, and releases every entry `unbind` returns;
+ *     -KOS_EMFILE, and releases every entry `unbind` returns;
  *   * `ns_enum` lists `/`, `/dev`, `/dev/input` and `/system`, paged with
  *     its cookie;
  *   * `chdir`/`getcwd` traverse the namespace through provider validation:
@@ -37,10 +37,10 @@
  * handles, so a broken console path cannot print a pass.
  */
 
-#include "zos.h"
+#include "kos.h"
 
 #include "ns_test.h"
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 /* The namespace image's pool: kernel/vfs/vfs.h VFS_HANDLE_MAX. */
 #define NS_FD_MAX 12u
@@ -51,8 +51,8 @@
 /* /system/drivers.man holds one 24-byte record per resident driver. */
 #define NS_MAN_RECORD 24u
 
-static struct zos_ipc_request req;
-static struct zos_ns_entry entries[NS_ENUM_PAGE];
+static struct kos_ipc_request req;
+static struct kos_ns_entry entries[NS_ENUM_PAGE];
 static unsigned char file_data[32];
 static unsigned int checks;
 static unsigned int failures;
@@ -78,7 +78,7 @@ static int ns_call(unsigned char handle, unsigned char op)
 	req.frame.arg1 = 0u;
 	req.buffer = (void *)0;
 	req.length = 0u;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 	return call(handle, &req);
 }
 
@@ -95,19 +95,19 @@ static void test_devices(void)
 	int result;
 
 	/* The transcript itself proves the two standard handles: every
-	 * line below is written through ZOS_HANDLE_STDOUT. */
+	 * line below is written through KOS_HANDLE_STDOUT. */
 	handle = bind("/dev/console", 0u, &type);
-	check("bind-dev-console", handle >= 3 && type == ZOS_TYPE_CONSOLE);
+	check("bind-dev-console", handle >= 3 && type == KOS_TYPE_CONSOLE);
 	printf("ns: /dev/console -> %d handle %d\r\n", type, handle);
 	console = (unsigned char)handle;
 
 	handle = bind("/dev/input/keyboard", 0u, &type);
-	check("bind-dev-input", handle >= 3 && type == ZOS_TYPE_INPUT);
+	check("bind-dev-input", handle >= 3 && type == KOS_TYPE_INPUT);
 	printf("ns: /dev/input/keyboard -> %d\r\n", type);
 	keyboard = (unsigned char)handle;
 
 	handle = bind("/dev/video", 0u, &type);
-	check("bind-dev-video", handle >= 3 && type == ZOS_TYPE_VIDEO);
+	check("bind-dev-video", handle >= 3 && type == KOS_TYPE_VIDEO);
 	printf("ns: /dev/video -> %d\r\n", type);
 	video = (unsigned char)handle;
 
@@ -119,45 +119,45 @@ static void test_devices(void)
 	printf("ns: call /dev/video whoami -> %04x\r\n", result);
 
 	report_ping(video);
-	check("stdout-call", ns_call(console, ZCONSOLE_OP_POLL) >= 0);
+	check("stdout-call", ns_call(console, KCONSOLE_OP_POLL) >= 0);
 
 	handle = bind("/dev/serial/0", 0u, &type);
-	check("bind-dev-serial", handle >= 3 && type == ZOS_TYPE_SERIAL);
+	check("bind-dev-serial", handle >= 3 && type == KOS_TYPE_SERIAL);
 	printf("ns: /dev/serial/0 -> %d\r\n", type);
 	serial = (unsigned char)handle;
 
 	/* Grouping entries are namespace metadata, not objects. */
 	result = bind("/dev", 0u, &type);
-	check("bind-container", result == -ZOS_EISDIR);
+	check("bind-container", result == -KOS_EISDIR);
 	check("bind-container-input",
-	      bind("/dev/input", 0u, &type) == -ZOS_EISDIR);
+	      bind("/dev/input", 0u, &type) == -KOS_EISDIR);
 	result = bind("/dev/nosuch", 0u, &type);
-	check("bind-unknown-device", result == -ZOS_ENOENT);
-	result = bind("/system/nosuch.zex", 0u, &type);
-	check("bind-unknown-file", result == -ZOS_ENOENT);
+	check("bind-unknown-device", result == -KOS_ENOENT);
+	result = bind("/system/nosuch.exe", 0u, &type);
+	check("bind-unknown-file", result == -KOS_ENOENT);
 	/* /fs is package 42b's provider: this build refuses it cleanly. */
 	result = bind("/fs/data", 0u, &type);
-	check("bind-fs-enodev", result == -ZOS_ENODEV);
+	check("bind-fs-enodev", result == -KOS_ENODEV);
 	result = bind("", 0u, &type);
-	check("bind-empty-einval", result == -ZOS_EINVAL);
+	check("bind-empty-einval", result == -KOS_EINVAL);
 
-	/* A foreign or stale handle is ZOS_EINVAL, never another process'
+	/* A foreign or stale handle is KOS_EINVAL, never another process'
 	 * object. */
-	check("call-bad-handle", ns_call(90u, NS_OP_WHOAMI) == -ZOS_EINVAL);
-	check("unbind-bad-handle", unbind(90u) == -ZOS_EINVAL);
-	check("unbind-zero", unbind(0u) == -ZOS_EINVAL);
+	check("call-bad-handle", ns_call(90u, NS_OP_WHOAMI) == -KOS_EINVAL);
+	check("unbind-bad-handle", unbind(90u) == -KOS_EINVAL);
+	check("unbind-zero", unbind(0u) == -KOS_EINVAL);
 
 	/* Release the bound instances again: the handles must be reusable
 	 * and the standard handles must never be released. */
 	check("unbind-console", unbind(console) == 0);
-	check("unbind-unbound", unbind(console) == -ZOS_EINVAL);
+	check("unbind-unbound", unbind(console) == -KOS_EINVAL);
 	check("unbind-keyboard", unbind(keyboard) == 0);
 	check("unbind-video", unbind(video) == 0);
 	check("unbind-serial", unbind(serial) == 0);
 	/* The standard handles are standard: a program must not release
 	 * them, and the next bind must still see the table empty again. */
-	check("unbind-stdout", unbind(ZOS_HANDLE_STDOUT) == -ZOS_EINVAL);
-	check("unbind-stdin", unbind(ZOS_HANDLE_STDIN) == -ZOS_EINVAL);
+	check("unbind-stdout", unbind(KOS_HANDLE_STDOUT) == -KOS_EINVAL);
+	check("unbind-stdin", unbind(KOS_HANDLE_STDIN) == -KOS_EINVAL);
 }
 
 /* The ping echo: the reply carries the caller's own word back. */
@@ -173,7 +173,7 @@ static void report_ping(unsigned char handle)
 	req.frame.payload[1] = 0x12u;
 	req.buffer = (void *)0;
 	req.length = 0u;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 	result = call(handle, &req);
 	check("call-ping-status", result == (int)NS_MAGIC);
 	check("call-ping-payload",
@@ -202,7 +202,7 @@ static void test_handle_table(void)
 		handles[count++] = (unsigned char)result;
 	}
 	check("table-fills", count == NS_FD_MAX - 2u);
-	check("table-emfile", result == -ZOS_EMFILE);
+	check("table-emfile", result == -KOS_EMFILE);
 	printf("ns: handle table %u bound, refuse %d\r\n", count, result);
 	for (index = 0u; index < count; ++index) {
 		check("table-release", unbind(handles[index]) == 0);
@@ -227,44 +227,44 @@ static void test_file(void)
 	/* `/` is a directory of provider roots, not a provider itself: a
 	 * root-level name has no owner and is refused. */
 	check("file-root-refused",
-	      bind("/drivers.man", ZFS_O_READ, &type) == -ZOS_ENOENT);
+	      bind("/drivers.man", KFS_O_READ, &type) == -KOS_ENOENT);
 
-	handle = bind("/system/drivers.man", ZFS_O_READ, &type);
-	check("file-bind", handle >= 3 && type == ZOS_TYPE_FILE);
+	handle = bind("/system/drivers.man", KFS_O_READ, &type);
+	check("file-bind", handle >= 3 && type == KOS_TYPE_FILE);
 	if (handle < 3) {
 		return;
 	}
 
 	/* Read the first record: the boot manifest lists the drivers in
 	 * load order, and this image boots SIO first (kernel/driver). */
-	req.frame.op = ZFILE_OP_READ;
+	req.frame.op = KFILE_OP_READ;
 	req.frame.flags = 0u;
 	req.frame.arg0 = 0u;
 	req.frame.arg1 = NS_MAN_RECORD;
 	req.buffer = file_data;
 	req.length = NS_MAN_RECORD;
-	req.direction = ZOS_IPC_DESC_OUT;
+	req.direction = KOS_IPC_DESC_OUT;
 	result = call((unsigned char)handle, &req);
 	check("file-read", result == NS_MAN_RECORD);
 	check("file-record",
-	      strncmp((const char *)file_data, "sio.zmod", 8u) == 0);
+	      strncmp((const char *)file_data, "sio.mod", 8u) == 0);
 	printf("ns: file read %d, first %s\r\n", result, file_data);
 
 	/* Metadata, then the size rule: seek to the end reports the size,
 	 * and a read there transfers zero bytes. */
-	req.frame.op = ZFILE_OP_META;
+	req.frame.op = KFILE_OP_META;
 	req.frame.flags = 0u;
 	req.frame.arg0 = 0u;
 	req.frame.arg1 = 0u;
 	req.buffer = (void *)0;
 	req.length = 0u;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 	result = call((unsigned char)handle, &req);
 	check("file-meta", result == 0);
-	check("file-meta-type", req.frame.payload[0] == ZFS_TYPE_FILE);
+	check("file-meta-type", req.frame.payload[0] == KFS_TYPE_FILE);
 
-	req.frame.op = ZFILE_OP_SEEK;
-	req.frame.arg0 = ZFS_SEEK_END;
+	req.frame.op = KFILE_OP_SEEK;
+	req.frame.arg0 = KFS_SEEK_END;
 	req.frame.payload[1] = 0u;
 	req.frame.payload[2] = 0u;
 	req.frame.payload[3] = 0u;
@@ -278,43 +278,43 @@ static void test_file(void)
 	check("file-size", size == NS_MAN_RECORD * 3);
 	printf("ns: file size %d\r\n", size);
 
-	req.frame.op = ZFILE_OP_READ;
+	req.frame.op = KFILE_OP_READ;
 	req.frame.arg0 = 0u;
 	req.frame.arg1 = 8u;
 	req.buffer = file_data;
 	req.length = 8u;
-	req.direction = ZOS_IPC_DESC_OUT;
+	req.direction = KOS_IPC_DESC_OUT;
 	result = call((unsigned char)handle, &req);
 	check("file-read-eof", result == 0);
 
 	/* Seek back to the start: the instance keeps its own position. */
-	req.frame.op = ZFILE_OP_SEEK;
-	req.frame.arg0 = ZFS_SEEK_SET;
+	req.frame.op = KFILE_OP_SEEK;
+	req.frame.arg0 = KFS_SEEK_SET;
 	req.frame.payload[1] = 8u;
 	req.frame.payload[2] = 0u;
 	req.frame.payload[3] = 0u;
 	req.frame.payload[4] = 0u;
 	result = call((unsigned char)handle, &req);
 	check("file-seek-set", result == 0);
-	req.frame.op = ZFILE_OP_READ;
+	req.frame.op = KFILE_OP_READ;
 	req.frame.arg0 = 0u;
 	req.frame.arg1 = 8u;
 	req.buffer = file_data;
 	req.length = 8u;
-	req.direction = ZOS_IPC_DESC_OUT;
+	req.direction = KOS_IPC_DESC_OUT;
 	result = call((unsigned char)handle, &req);
 	check("file-read-after-seek", result == 8);
 
-	/* ROMFS is read-only: the FILE protocol says ZOS_EROFS, and the
+	/* ROMFS is read-only: the FILE protocol says KOS_EROFS, and the
 	 * bind flags refuse a write open before that. */
-	req.frame.op = ZFILE_OP_WRITE;
+	req.frame.op = KFILE_OP_WRITE;
 	req.frame.arg0 = 0u;
 	req.frame.arg1 = 1u;
 	result = call((unsigned char)handle, &req);
-	check("file-write-erofs", result == -ZOS_EROFS);
+	check("file-write-erofs", result == -KOS_EROFS);
 	check("file-bind-write",
-	      bind("/system/drivers.man", ZFS_O_WRITE, &type) ==
-		      -ZOS_EROFS);
+	      bind("/system/drivers.man", KFS_O_WRITE, &type) ==
+		      -KOS_EROFS);
 	check("file-unbind", unbind((unsigned char)handle) == 0);
 }
 
@@ -337,7 +337,7 @@ static void enum_page(const char *path, unsigned int *pages)
 		++*pages;
 		printf("ns: %s entry %s type %d%s\r\n", path,
 			   entries[0].name, entries[0].type,
-			   (entries[0].flags & ZOS_NS_ENTRY_CONTAINER)
+			   (entries[0].flags & KOS_NS_ENTRY_CONTAINER)
 				   ? " container" : "");
 		if (seen > 32u) {
 			break;
@@ -358,7 +358,7 @@ static void test_enum(void)
 	check("enum-root", result == 3);
 	for (index = 0u; index < (unsigned int)result; ++index) {
 		check("enum-root-container",
-		      (entries[index].flags & ZOS_NS_ENTRY_CONTAINER) != 0u);
+		      (entries[index].flags & KOS_NS_ENTRY_CONTAINER) != 0u);
 	}
 	check("enum-root-cookie", cookie == 3u);
 	/* The cookie is the index: a second page is the empty tail. */
@@ -374,7 +374,7 @@ static void test_enum(void)
 	if (result == 1) {
 		check("enum-input-name",
 		      strcmp(entries[0].name, "keyboard") == 0);
-		check("enum-input-type", entries[0].type == ZOS_TYPE_INPUT);
+		check("enum-input-type", entries[0].type == KOS_TYPE_INPUT);
 	}
 	cookie = 0u;
 	result = list("/system", &cookie, entries, NS_ENUM_PAGE);
@@ -400,9 +400,9 @@ static void test_enum(void)
 	printf("ns: /system %u entries\r\n", count);
 
 	check("enum-unknown", list("/dev/nosuch", &cookie, entries,
-					  NS_ENUM_PAGE) == -ZOS_ENOENT);
+					  NS_ENUM_PAGE) == -KOS_ENOENT);
 	check("enum-bad-page", list("/", &cookie, entries, 0u)
-			       == -ZOS_EINVAL);
+			       == -KOS_EINVAL);
 }
 
 /* --- CWD traversal and inheritance --------------------------------------- */
@@ -426,8 +426,8 @@ static void test_cwd(void)
 	printf("ns: cwd %s\r\n", cwd);
 
 	/* A relative path resolves against the stored CWD. */
-	handle = bind("drivers.man", ZFS_O_READ, &type);
-	check("cwd-relative-bind", handle >= 3 && type == ZOS_TYPE_FILE);
+	handle = bind("drivers.man", KFS_O_READ, &type);
+	check("cwd-relative-bind", handle >= 3 && type == KOS_TYPE_FILE);
 	if (handle >= 3) {
 		check("cwd-relative-unbind",
 		      unbind((unsigned char)handle) == 0);
@@ -444,9 +444,9 @@ static void test_cwd(void)
 	check("cwd-dev-input",
 	      result == 10 && strcmp(cwd, "/dev/input") == 0);
 	check("chdir-object-refused",
-	      chdir("/dev/console") == -ZOS_ENOTDIR);
-	check("chdir-absent", chdir("/dev/nosuch") == -ZOS_ENOENT);
-	check("chdir-no-provider", chdir("/fs") == -ZOS_ENODEV);
+	      chdir("/dev/console") == -KOS_ENOTDIR);
+	check("chdir-absent", chdir("/dev/nosuch") == -KOS_ENOENT);
+	check("chdir-no-provider", chdir("/fs") == -KOS_ENODEV);
 	result = getcwd(cwd, sizeof(cwd));
 	check("cwd-survives-refusal",
 	      result == 10 && strcmp(cwd, "/dev/input") == 0);
@@ -460,7 +460,7 @@ static void test_cwd(void)
 
 /* --- the child ------------------------------------------------------------ */
 
-#define NS_CHILD "/system/nschild.zex"
+#define NS_CHILD "/system/nschild.exe"
 
 static void test_child(void)
 {

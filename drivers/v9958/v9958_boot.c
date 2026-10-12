@@ -1,4 +1,4 @@
-/* ZephyrOS V9958 driver boot segment (work package 41).
+/* KonaOS V9958 driver boot segment (work package 41).
  *
  * Runs once through the mode-10 gate with Q = 6 (architecture 36.6): the
  * whole resident bank is mapped - including this image's bulk segment,
@@ -13,7 +13,7 @@
  * fetched through the nucleus bulk copy instead.
  */
 
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 #include "v9958_driver.h"
 

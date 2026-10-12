@@ -1,4 +1,4 @@
-/* ZephyrOS zlibc: SDCC integer-arithmetic support.
+/* KonaOS klibc: SDCC integer-arithmetic support.
  *
  * SDCC lowers the / and % operators to calls to the compiler helpers
  * __divuint/__moduint/__divulong/__modulong (unsigned) and
@@ -12,14 +12,14 @@
  * this member.
  */
 
-#include "zos/types.h"
+#include "kos/types.h"
 
-unsigned int  zos_divuint(unsigned int a, unsigned int b);
-unsigned int  zos_moduint(unsigned int a, unsigned int b);
-unsigned long zos_divulong(unsigned long a, unsigned long b);
-unsigned long zos_modulong(unsigned long a, unsigned long b);
+unsigned int  kos_divuint(unsigned int a, unsigned int b);
+unsigned int  kos_moduint(unsigned int a, unsigned int b);
+unsigned long kos_divulong(unsigned long a, unsigned long b);
+unsigned long kos_modulong(unsigned long a, unsigned long b);
 
-unsigned int zos_divuint(unsigned int a, unsigned int b)
+unsigned int kos_divuint(unsigned int a, unsigned int b)
 {
 	unsigned int q = 0;
 	unsigned int r = 0;
@@ -40,7 +40,7 @@ unsigned int zos_divuint(unsigned int a, unsigned int b)
 	return q;
 }
 
-unsigned int zos_moduint(unsigned int a, unsigned int b)
+unsigned int kos_moduint(unsigned int a, unsigned int b)
 {
 	unsigned int r = 0;
 	unsigned char i;
@@ -58,7 +58,7 @@ unsigned int zos_moduint(unsigned int a, unsigned int b)
 	return r;
 }
 
-unsigned long zos_divulong(unsigned long a, unsigned long b)
+unsigned long kos_divulong(unsigned long a, unsigned long b)
 {
 	unsigned long q = 0;
 	unsigned long r = 0;
@@ -79,7 +79,7 @@ unsigned long zos_divulong(unsigned long a, unsigned long b)
 	return q;
 }
 
-unsigned long zos_modulong(unsigned long a, unsigned long b)
+unsigned long kos_modulong(unsigned long a, unsigned long b)
 {
 	unsigned long r = 0;
 	unsigned char i;

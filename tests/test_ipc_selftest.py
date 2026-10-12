@@ -5,14 +5,14 @@ its replay depend on, without booting anything:
 
   - the build wiring (target, guard define, image names, manifest);
   - the pinned ABI: the two syscall numbers, the frame and argument-block
-    layouts and the descriptor conventions in abi/zos/ipc.h;
+    layouts and the descriptor conventions in abi/kos/ipc.h;
   - the residency classification: the substrate is `fixed-required`, its
     cold syscall body is `cold`, and all three are `test_link` objects the
     production linker script does not list (production stays byte-identical
     until package 41 adopts them);
   - the production image really carries no substrate symbol;
   - the client program's data fits the syscall argument window, including
-    every libzos marshalling block (the SDK's lookup/call blocks);
+    every libkos marshalling block (the SDK's lookup/call blocks);
   - the SDK surface and the six container manifests the loader validates;
   - correction 01: the caller-buffer probe's window layout (code above the
     0100h-02FFh buffer it names), the driver I/O buffer rule in the
@@ -35,12 +35,12 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 import mapcheck  # noqa: E402
 
 MAKEFILE = os.path.join(ROOT, "Makefile")
-ABI = os.path.join(ROOT, "abi", "zos", "ipc.h")
-SDK_HEADER = os.path.join(ROOT, "user", "sdk", "include", "zos", "ipc.h")
-SDK_INTERNAL = os.path.join(ROOT, "user", "sdk", "src", "zos_internal.h")
+ABI = os.path.join(ROOT, "abi", "kos", "ipc.h")
+SDK_HEADER = os.path.join(ROOT, "user", "sdk", "include", "kos", "ipc.h")
+SDK_INTERNAL = os.path.join(ROOT, "user", "sdk", "src", "kos_internal.h")
 SDK_SOURCE = os.path.join(ROOT, "user", "sdk", "src", "ipc.c")
 SDK_GATE = os.path.join(ROOT, "user", "sdk", "src", "ipcgate.asm")
-ZEX_MK = os.path.join(ROOT, "user", "sdk", "zex.mk")
+EXE_MK = os.path.join(ROOT, "user", "sdk", "exe.mk")
 RESIDENCY = os.path.join(ROOT, "config", "residency.json")
 LINKER = os.path.join(ROOT, "linker", "zephyr80.lk")
 MANIFEST = os.path.join(ROOT, "tests", "ipc", "manifest.json")
@@ -90,18 +90,18 @@ def symbols(map_path):
 class TestIpcBuildWiring(unittest.TestCase):
     def test_makefile_has_the_acceptance_image(self):
         text = read(MAKEFILE)
-        for token in ("ifeq ($(ZOS_IPC_SELFTEST),1)",
+        for token in ("ifeq ($(KOS_IPC_SELFTEST),1)",
                       "PK_SUFFIX := -ipc-selftest",
-                      "-DZOS_IPC_SELFTEST=1",
+                      "-DKOS_IPC_SELFTEST=1",
                       "ROMFS_MANIFEST := tests/ipc/manifest.json"):
             self.assertIn(token, text, token)
         # The image's own target builds it, replays it and prints the
         # packed path.
         self.assertIn("ipc-selftest:", text)
-        self.assertIn("build-ipc-selftest/zephyros-ipc-selftest.bin", text)
+        self.assertIn("build-ipc-selftest/konaos-ipc-selftest.bin", text)
         self.assertIn("test_ipc_selftest*.py", text)
-        self.assertIn("$(MODULES)/ipccopy.zex", text)
-        self.assertIn('"name": "ipccopy.zex"', read(MANIFEST))
+        self.assertIn("$(MODULES)/ipccopy.exe", text)
+        self.assertIn('"name": "ipccopy.exe"', read(MANIFEST))
 
     def test_makefile_builds_the_probe_above_its_caller_buffer(self):
         text = read(MAKEFILE)
@@ -109,11 +109,11 @@ class TestIpcBuildWiring(unittest.TestCase):
         self.assertIn("NO_CRT0=1,ENTRY=ipc_copy_entry", text)
         self.assertIn("LOWBASE=0x0300,CODEBASE=0x0344", text)
 
-    def test_zex_rule_owns_the_code_base_option(self):
-        text = read(ZEX_MK)
+    def test_exe_rule_owns_the_code_base_option(self):
+        text = read(EXE_MK)
         self.assertIn("CODEBASE=", text)
         self.assertIn("LOWBASE=", text)
-        self.assertIn("'-b _ZOS_SDK_DATA = $$($(1)_LOWBASE)'", text)
+        self.assertIn("'-b _KOS_SDK_DATA = $$($(1)_LOWBASE)'", text)
         self.assertIn("'-b _CODE = $$($(1)_CODEBASE)'", text)
 
     def test_container_data_area_is_named_for_the_rule(self):
@@ -130,7 +130,7 @@ class TestIpcBuildWiring(unittest.TestCase):
         self.assertIn("DRIVER_HOT_BASE", text)
         self.assertIn("DRIVER_HOT_END", text)
         self.assertIn("DRIVER_BOOT_END", text)
-        packer = read(os.path.join(ROOT, "tools", "zmodpack.py"))
+        packer = read(os.path.join(ROOT, "tools", "modpack.py"))
         self.assertIn('"io": (0x8000, 0xC000)', packer)
         self.assertIn('"hot": (0x6000, 0xE000)', packer)
         self.assertIn("does not fit its tier", packer)
@@ -150,37 +150,37 @@ class TestIpcBuildWiring(unittest.TestCase):
         # COLD_EXTRA_CSV empty and names no image-specific cold set.
         self.assertIn("COLD_EXTRA_CSV :=", text)
         self.assertIn("$(MODULES)/drivers.man", text)
-        self.assertIn("zmodpack.py drivers", text)
+        self.assertIn("modpack.py drivers", text)
         self.assertIn("IPC_DRIVER_NAMES := ioc fat vfs echo con irqx", text)
-        self.assertIn("$(IPC_MODDIR)/ipc-%.zmod:", text)
+        self.assertIn("$(IPC_MODDIR)/ipc-%.mod:", text)
         for token in ("--codeseg BOOT --dataseg BOOT_DATA",
                       "--dataseg HOT", "--dataseg DRIVER_IO"):
             self.assertIn(token, text, token)
 
     def test_client_program_is_an_ordinary_sdk_program(self):
         text = read(MAKEFILE)
-        self.assertIn("zex_program,ipc,tests/target/ipc", text)
+        self.assertIn("exe_program,ipc,tests/target/ipc", text)
         self.assertIn("tests/ipc/manifest.json", text)
 
     def test_dispatch_is_routed_in_the_dispatcher_proper(self):
-        # Package 41 removed the ZOS_TARGET_TEST_BUILD routing seam and
+        # Package 41 removed the KOS_TARGET_TEST_BUILD routing seam and
         # package 42b retired the stage-3 lookup: 06h-0Bh reach the object
         # family from the production switch, and no acceptance hook
         # remains.
         text = read(os.path.join(ROOT, "kernel", "syscall.c"))
-        self.assertIn("ZOS_SYSCALL_BIND", text)
-        self.assertIn("zos_object_dispatch", text)
-        self.assertNotIn("ZOS_SYSCALL_IPC_LOOKUP", text)
-        self.assertNotIn("zos_target_test_syscall", text)
-        self.assertNotIn("ZOS_TARGET_TEST_BUILD", text)
+        self.assertIn("KOS_SYSCALL_BIND", text)
+        self.assertIn("kos_object_dispatch", text)
+        self.assertNotIn("KOS_SYSCALL_IPC_LOOKUP", text)
+        self.assertNotIn("kos_target_test_syscall", text)
+        self.assertNotIn("KOS_TARGET_TEST_BUILD", text)
 
 
 class TestIpcAbi(unittest.TestCase):
     def test_pinned_numbers_and_layouts(self):
         text = read(ABI)
         for pattern, value in (
-                ("ZOS_SYSCALL_CALL", 0x07),
-                ("ZOS_IPC_FRAME_SIZE", 32),
+                ("KOS_SYSCALL_CALL", 0x07),
+                ("KOS_IPC_FRAME_SIZE", 32),
         ):
             match = re.search(r"#define %s\s+(0x[0-9A-Fa-f]+|[0-9]+)" % pattern,
                               text)
@@ -189,11 +189,11 @@ class TestIpcAbi(unittest.TestCase):
 
     def test_argument_blocks_and_frame_are_static_asserted(self):
         text = read(ABI)
-        for token in ("sizeof(struct zos_ipc_frame) == ZOS_IPC_FRAME_SIZE",
-                      "sizeof(struct zos_ipc_call_args) == 44",
-                      "offsetof(struct zos_ipc_call_args, frame) == 10",
-                      "offsetof(struct zos_ipc_call_args, status) == 42",
-                      "offsetof(struct zos_ipc_frame, status) == 30"):
+        for token in ("sizeof(struct kos_ipc_frame) == KOS_IPC_FRAME_SIZE",
+                      "sizeof(struct kos_ipc_call_args) == 44",
+                      "offsetof(struct kos_ipc_call_args, frame) == 10",
+                      "offsetof(struct kos_ipc_call_args, status) == 42",
+                      "offsetof(struct kos_ipc_frame, status) == 30"):
             self.assertIn(token, text, token)
 
     def test_the_window_rule_is_documented(self):
@@ -203,7 +203,7 @@ class TestIpcAbi(unittest.TestCase):
         # runs.  Descriptor buffers may go further (the patch below in
         # this file and correction 01 in docs/abi.md section 12).
         self.assertIn("0100h-1FFFh", text)
-        self.assertIn("ZOS_USER_BUFFER_BASE", text)
+        self.assertIn("KOS_USER_BUFFER_BASE", text)
         self.assertIn("E000h-FFFFh", text)
         self.assertIn("Copy paths (correction 01", text)
         for token in ("A  the caller buffer", "B  the caller buffer",
@@ -256,13 +256,13 @@ class TestIpcResidency(unittest.TestCase):
             self.assertNotIn(gone, text, gone)
 
     def test_production_image_carries_the_substrate(self):
-        map_path = os.path.join(PROD_SUBDIR, "zephyros.map")
+        map_path = os.path.join(PROD_SUBDIR, "konaos.map")
         if not os.path.exists(map_path):
-            self.skipTest("build/zephyros.map missing; run make all")
+            self.skipTest("build/konaos.map missing; run make all")
         found = symbols(map_path)
         for name in ("_ipc_install_endpoint", "_ipc_copy_run",
                      "_ipc_gate_latch", "_driver_load_all",
-                     "_ipc_nucleus_call", "zos_driver_stack"):
+                     "_ipc_nucleus_call", "kos_driver_stack"):
             self.assertIn(name, found, name)
         # The substrate's fixed core is where the call machinery runs, and
         # the loader's bodies are cold-half code.  The stage-3 lookup is
@@ -274,7 +274,7 @@ class TestIpcResidency(unittest.TestCase):
 
 class TestIpcImageLayout(unittest.TestCase):
     def setUp(self):
-        self.map_path = os.path.join(IMAGE_SUBDIR, "zephyros.map")
+        self.map_path = os.path.join(IMAGE_SUBDIR, "konaos.map")
         if not os.path.exists(self.map_path):
             self.skipTest("build-ipc-selftest missing; run make ipc-selftest")
         self.syms = symbols(self.map_path)
@@ -287,31 +287,31 @@ class TestIpcImageLayout(unittest.TestCase):
             self.assertLess(address, SPLIT, name)
         # The IPC dispatch body lives with the syscall gates?  No: the
         # object family's dispatcher is cold code (package 42b).
-        self.assertGreaterEqual(self.syms["_zos_object_dispatch"], SPLIT)
+        self.assertGreaterEqual(self.syms["_kos_object_dispatch"], SPLIT)
         # The driver loader is cold code too, and the boot gate it calls
         # is common-resident (bank 7 is unmapped while a boot segment runs).
         self.assertGreaterEqual(self.syms["_driver_load_all"], SPLIT)
         self.assertLess(self.syms["_driver_load_all"], 0xDFFF)
-        self.assertGreaterEqual(self.syms["_zos_driver_run_boot"], 0xE000)
-        self.assertLess(self.syms["_zos_driver_run_boot"], 0xFD00)
-        self.assertEqual(self.syms["zos_driver_stack"], 0x5D00)
-        self.assertEqual(self.syms["zos_driver_stack_top"], 0x5F00)
+        self.assertGreaterEqual(self.syms["_kos_driver_run_boot"], 0xE000)
+        self.assertLess(self.syms["_kos_driver_run_boot"], 0xFD00)
+        self.assertEqual(self.syms["kos_driver_stack"], 0x5D00)
+        self.assertEqual(self.syms["kos_driver_stack_top"], 0x5F00)
 
     def test_six_driver_containers_are_packed_and_manifested(self):
-        if not os.path.exists(os.path.join(MODULE_DIR, "ipc-echo.zmod")):
+        if not os.path.exists(os.path.join(MODULE_DIR, "ipc-echo.mod")):
             self.skipTest("the IPC image's driver images are not packed; "
                           "run make ipc-selftest")
         # The drivers are no longer linked into the kernel: they are
         # containers in the recovery store, named by the boot manifest the
         # loader reads.  The image carries no blob symbol.
         for name in ("echo", "con", "ioc", "fat", "vfs", "irqx"):
-            self.assertNotIn("_ipc_%s_zmod" % name, self.syms, name)
+            self.assertNotIn("_ipc_%s_mod" % name, self.syms, name)
 
         # Package 41: the image also boots the SIO and console drivers
         # its SDK programs print through, ahead of the synthetic set.
-        order = ["sio.zmod", "console-serial.zmod",
-                 "ipc-ioc.zmod", "ipc-fat.zmod", "ipc-vfs.zmod",
-                 "ipc-echo.zmod", "ipc-con.zmod", "ipc-irqx.zmod"]
+        order = ["sio.mod", "console-serial.mod",
+                 "ipc-ioc.mod", "ipc-fat.mod", "ipc-vfs.mod",
+                 "ipc-echo.mod", "ipc-con.mod", "ipc-irqx.mod"]
         with open(os.path.join(DRIVER_DIR, "drivers.man"), "rb") as handle:
             data = handle.read()
         self.assertEqual(len(data), 24 * len(order))
@@ -355,25 +355,25 @@ class TestIpcClientWindow(unittest.TestCase):
         self.syms = symbols(self.map_path)
 
     def test_every_marshalling_block_is_in_the_caller_window(self):
-        for name, size in (("zos_ipc_raw_req", 4),
-                           ("zos_ipc_call_block", 44),
-                           ("zos_bind_block", 8),
-                           ("zos_scratch", 16)):
+        for name, size in (("kos_ipc_raw_req", 4),
+                           ("kos_ipc_call_block", 44),
+                           ("kos_bind_block", 8),
+                           ("kos_scratch", 16)):
             address = self.syms["_" + name]
             self.assertGreaterEqual(address, SYSCALL_WINDOW_BASE, name)
             self.assertLessEqual(address + size, SYSCALL_WINDOW_END, name)
 
     def test_the_manifest_pins_the_shared_scratch(self):
         scratch = self.report["scratch"]
-        self.assertEqual(scratch["symbol"], "zos_scratch")
+        self.assertEqual(scratch["symbol"], "kos_scratch")
         self.assertEqual(scratch["size"], 16)
-        self.assertEqual(self.report["entry"]["symbol"], "zos_entry")
+        self.assertEqual(self.report["entry"]["symbol"], "kos_entry")
 
 
 class TestIpcCorrection01Layout(unittest.TestCase):
     """Correction 01: the probe's window layout and the common aperture.
 
-    The probe is the only ZEX that can name the caller window as a copy
+    The probe is the only EXE that can name the caller window as a copy
     destination, which it does by linking its own code above the buffer;
     the aperture primitive is the only code in the image that runs with
     mode 10 and page 1 in force, so every byte of it must be common.
@@ -384,7 +384,7 @@ class TestIpcCorrection01Layout(unittest.TestCase):
                                         "ipccopy.report.json")
         self.map_path = os.path.join(IMAGE_SUBDIR, "user", "ipccopy",
                                      "ipccopy.map")
-        self.kernel_map = os.path.join(IMAGE_SUBDIR, "zephyros.map")
+        self.kernel_map = os.path.join(IMAGE_SUBDIR, "konaos.map")
         if not os.path.exists(self.report_path) or \
                 not os.path.exists(self.kernel_map):
             self.skipTest("the ipc image has not been built")
@@ -396,7 +396,7 @@ class TestIpcCorrection01Layout(unittest.TestCase):
         # 0100h-02FFh is the 512-byte buffer the probe names as a caller
         # buffer: the image is loaded there, so its code starts above it
         # and the entry offset points into the code.
-        self.assertEqual(syms["s__ZOS_SDK_DATA"], 0x0300)
+        self.assertEqual(syms["s__KOS_SDK_DATA"], 0x0300)
         self.assertEqual(syms["s__CODE"], 0x0344)
         self.assertGreaterEqual(report["header"]["entry_offset"], 0x0300 -
                                 0x0100)
@@ -517,27 +517,27 @@ class TestIpcSdkSurface(unittest.TestCase):
                       "int call("):
             self.assertIn(token, text, token)
         # Package 46 T6: the raw gate stub is SDK-private, so the public
-        # header no longer names it and zos_internal.h declares it.
+        # header no longer names it and kos_internal.h declares it.
         internal = read(SDK_INTERNAL)
-        self.assertIn("int zos_ipc_raw_call(struct zos_ipc_call_req *req)",
+        self.assertIn("int kos_ipc_raw_call(struct kos_ipc_call_req *req)",
                       internal)
-        self.assertNotIn("zos_ipc_raw_call", text)
+        self.assertNotIn("kos_ipc_raw_call", text)
 
     def test_sdk_owns_the_gate_and_the_cache(self):
         text = read(SDK_SOURCE)
         # Package 42b: no lookup and no cache - a client binds a name and
         # the kernel resolves it, so the SDK holds only the marshalling
         # blocks.
-        self.assertIn("zos_ipc_call_block", text)
-        self.assertIn("zos_bind_block", text)
-        self.assertNotIn("ZOS_IPC_CACHE_ENTRIES", text)
-        self.assertNotIn("zos_ipc_lookup", text)
+        self.assertIn("kos_ipc_call_block", text)
+        self.assertIn("kos_bind_block", text)
+        self.assertNotIn("KOS_IPC_CACHE_ENTRIES", text)
+        self.assertNotIn("kos_ipc_lookup", text)
         gate = read(SDK_GATE)
-        self.assertIn("_zos_ipc_raw_call", gate)
+        self.assertIn("_kos_ipc_raw_call", gate)
         # The carry records a structural refusal, so an IPC status carried
         # in HL is never confused with -errno.
-        self.assertIn("_zex_runtime_error", gate)
-        self.assertIn("ipcgate.asm", read(ZEX_MK))
+        self.assertIn("_exe_runtime_error", gate)
+        self.assertIn("ipcgate.asm", read(EXE_MK))
 
     def test_container_manifests_are_driver_manifests(self):
         for name in ("echo", "con", "ioc", "fat", "vfs", "irqx"):
@@ -572,8 +572,8 @@ class TestIpcSdkSurface(unittest.TestCase):
     def test_recovery_manifest_carries_the_client_program(self):
         manifest = json.loads(read(MANIFEST))
         names = json.dumps(manifest)
-        self.assertIn("sio.zmod", names)
-        self.assertIn("ipc.zex", names)
+        self.assertIn("sio.mod", names)
+        self.assertIn("ipc.exe", names)
 
 
 if __name__ == "__main__":

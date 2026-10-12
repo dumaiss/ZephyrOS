@@ -1,10 +1,10 @@
-/* ZephyrOS extended-memory outcome acceptance (work package 43).
+/* KonaOS extended-memory outcome acceptance (work package 43).
  *
- * The ZEX primary the `xmem-selftest` image boots: an ordinary SDK
+ * The EXE primary the `xmem-selftest` image boots: an ordinary SDK
  * program that drives the extended-memory family and the mode-10 far
- * aperture through `zos/xmem.h` and prints one line per outcome.  It
+ * aperture through `kos/xmem.h` and prints one line per outcome.  It
  * covers the architecture-37 `xmem` rows and the far-data rows that need
- * no ZEX v2 (far-code segments are package 44):
+ * no EXE v2 (far-code segments are package 44):
  *
  *   * sizes and slot rounding (1 / 8191 / 8192 / 8193 bytes), the largest
  *     object, oversized rejection, exhaustion and fragmentation;
@@ -25,7 +25,7 @@
  *   * exit releases the process's own objects: the program leaves the two
  *     anchor objects live, and the launcher's `free-banks 6` report
  *     proves the release (their bank is free again);
- *   * far code (package 44b): it SYS_EXECs /system/xmem_far.zex, whose
+ *   * far code (package 44b): it SYS_EXECs /system/xmem_far.exe, whose
  *     two FAR_CODE segments run through the aperture, and its own
  *     capacity check around that exec proves the far program's exit
  *     released its segments, objects and bank slots.
@@ -46,9 +46,9 @@
  * sub-exec - is unchanged.
  */
 
-#include "zos.h"
+#include "kos.h"
 
-#define MAPPABLE ZOS_XMEM_FLAG_MAPPABLE
+#define MAPPABLE KOS_XMEM_FLAG_MAPPABLE
 
 #define APERTURE_BASE 0x8000u
 #define APERTURE_END  0xC000u
@@ -57,9 +57,9 @@
 /* The stage tail (work package 45b). */
 #define XMEM_STAGE_TAIL "stage"
 
-#define CHILD_PATH   "/system/xmem_child.zex"
+#define CHILD_PATH   "/system/xmem_child.exe"
 #define CHILD_STATUS 42
-#define FAR_PATH     "/system/xmem_far.zex"
+#define FAR_PATH     "/system/xmem_far.exe"
 #define FAR_STATUS   43
 
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
@@ -68,7 +68,7 @@ __sfr __at 0x00 latch_port;
 
 static unsigned char pattern[BLK];
 static unsigned char buf[BLK];
-/* One entry per object the allocation loops hold; they stop at ZOS_ENOSPC
+/* One entry per object the allocation loops hold; they stop at KOS_ENOSPC
  * well before this. */
 static unsigned int held[20];
 
@@ -78,7 +78,7 @@ static unsigned int failures;
  * banks and the far sub-exec belongs to the runner. */
 static int stage;
 /* Whole banks this process can open: 5 in the acceptance image (set in
- * main; ZEX v2 has no initialized writable data). */
+ * main; EXE v2 has no initialized writable data). */
 static unsigned int banks;
 
 static void check(const char *label, int ok)
@@ -250,9 +250,9 @@ static int same(const char *a, const char *b)
 
 int main(int argc, char **argv)
 {
-	struct zos_startup *boot = startup();
+	struct kos_startup *boot = startup();
 	const char *tail = (const char *)0;
-	struct zos_xmem_info info;
+	struct kos_xmem_info info;
 	unsigned int anchor;
 	unsigned int second;
 	unsigned int token_a;
@@ -278,9 +278,9 @@ int main(int argc, char **argv)
 	/* Boot contract: version 1 with the empty tail; a stage run proves
 	 * the option tail arrived byte-exact instead. */
 	check("startup-version",
-	      boot != (struct zos_startup *)0 && boot->version == 1u);
+	      boot != (struct kos_startup *)0 && boot->version == 1u);
 	check("startup-tail",
-	      boot != (struct zos_startup *)0 &&
+	      boot != (struct kos_startup *)0 &&
 	      (tail == (const char *)0
 		       ? boot->length == 0u
 		       : (boot->length == 5u && same(boot->tail, tail))));
@@ -314,14 +314,14 @@ int main(int argc, char **argv)
 	check("anchor-info",
 	      xinfo(anchor, &info) == 0 && info.requested == 8192u &&
 	      info.allocated == 8192u && info.flags == MAPPABLE &&
-	      info.type == ZOS_XMEM_TYPE_RUNTIME);
+	      info.type == KOS_XMEM_TYPE_RUNTIME);
 
 	/* Sizes and rounding. */
-	check("alloc-zero-rejected", xalloc(0u, 0u) == -ZOS_EINVAL);
-	check("alloc-flags-rejected", xalloc(64u, 2u) == -ZOS_EINVAL);
-	check("alloc-oversized", xalloc(32769u, 0u) == -ZOS_ENOSPC);
+	check("alloc-zero-rejected", xalloc(0u, 0u) == -KOS_EINVAL);
+	check("alloc-flags-rejected", xalloc(64u, 2u) == -KOS_EINVAL);
+	check("alloc-oversized", xalloc(32769u, 0u) == -KOS_ENOSPC);
 	check("alloc-mappable-oversized",
-	      xalloc(16385u, MAPPABLE) == -ZOS_EINVAL);
+	      xalloc(16385u, MAPPABLE) == -KOS_EINVAL);
 
 	handle = xalloc(1u, 0u);
 	check("size-1",
@@ -364,31 +364,31 @@ int main(int argc, char **argv)
 	      check_range((unsigned int)handle, 0u, 16384u));
 	check("range-read-end",
 	      xread((unsigned int)handle, 16384u, buf, 1u) ==
-	      -ZOS_EINVAL);
+	      -KOS_EINVAL);
 	check("range-read-straddle",
 	      xread((unsigned int)handle, 16383u, buf, 2u) ==
-	      -ZOS_EINVAL);
+	      -KOS_EINVAL);
 	check("range-write-end",
 	      xwrite((unsigned int)handle, 16384u, pattern, 1u) ==
-	      -ZOS_EINVAL);
+	      -KOS_EINVAL);
 	check("range-offset",
 	      xread((unsigned int)handle, 0xF000u, buf, 1u) ==
-	      -ZOS_EINVAL);
+	      -KOS_EINVAL);
 	check("range-buffer",
 	      xread((unsigned int)handle, 0u, (void *)0xE000u, 1u) ==
-	      -ZOS_EINVAL);
+	      -KOS_EINVAL);
 	{
 		unsigned int old = (unsigned int)handle;
 
 		(void)xfree(old);
-		check("stale-free", xfree(old) == -ZOS_EINVAL);
+		check("stale-free", xfree(old) == -KOS_EINVAL);
 		handle = xalloc(8193u, 0u);
 		check("stale-reused",
 		      handle >= 1 && (unsigned int)handle != old);
 		check("stale-read-live",
-		      xread(old, 0u, buf, 1u) == -ZOS_EINVAL);
+		      xread(old, 0u, buf, 1u) == -KOS_EINVAL);
 		check("stale-info-live",
-		      xinfo(old, &info) == -ZOS_EINVAL);
+		      xinfo(old, &info) == -KOS_EINVAL);
 		(void)xfree((unsigned int)handle);
 	}
 
@@ -482,9 +482,9 @@ int main(int argc, char **argv)
 		}
 		check("fill-banks", ok);
 		check("fragmentation-32k",
-		      xalloc(32768u, 0u) == -ZOS_ENOSPC);
+		      xalloc(32768u, 0u) == -KOS_ENOSPC);
 		check("fragmentation-16k",
-		      xalloc(16384u, 0u) == -ZOS_ENOSPC);
+		      xalloc(16384u, 0u) == -KOS_ENOSPC);
 		handle = xalloc(8192u, 0u);
 		check("fragmentation-hole", handle >= 1);
 		(void)xfree(big[banks - 1u]);
@@ -505,7 +505,7 @@ int main(int argc, char **argv)
 	count = fill_until_full(16384u, 0u);
 	check("exhaustion-16k-count", count == 2u * banks);
 	check("exhaustion-16k",
-	      xalloc(16384u, 0u) == -ZOS_ENOSPC);
+	      xalloc(16384u, 0u) == -KOS_ENOSPC);
 	release_held(count);
 	handle = xalloc(16384u, 0u);
 	check("exhaustion-16k-refill", handle >= 1);
@@ -514,7 +514,7 @@ int main(int argc, char **argv)
 	count = fill_until_full(8192u, MAPPABLE);
 	check("exhaustion-mappable-count", count == 2u * banks - 2u);
 	check("exhaustion-mappable",
-	      xalloc(8192u, MAPPABLE) == -ZOS_ENOSPC);
+	      xalloc(8192u, MAPPABLE) == -KOS_ENOSPC);
 	release_held(count);
 	handle = xalloc(8192u, MAPPABLE);
 	check("exhaustion-mappable-refill", handle >= 1);
@@ -538,7 +538,7 @@ int main(int argc, char **argv)
 	handle = xalloc(64u, 0u);
 	check("map-non-mappable",
 	      handle >= 1 &&
-	      xmap((unsigned int)handle, &address_a) == -ZOS_EINVAL);
+	      xmap((unsigned int)handle, &address_a) == -KOS_EINVAL);
 	(void)xfree((unsigned int)handle);
 
 	saved = (unsigned int)aperture_open((unsigned char)token_a);
@@ -595,7 +595,7 @@ int main(int argc, char **argv)
 	aperture_close((unsigned char)saved);
 	check("aperture-close", ((unsigned int)latch_port & 0xE0u) == 0u);
 
-	/* Far code (package 44b): /system/xmem_far.zex runs its own
+	/* Far code (package 44b): /system/xmem_far.exe runs its own
 	 * FAR_CODE segments through the aperture - map, plain CALL and
 	 * return, far code calling primary code, syscalls with an aperture
 	 * buffer, and an exec from far context whose child refuses this

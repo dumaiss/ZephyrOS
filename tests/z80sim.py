@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal Z80 simulator to replay the ZephyrOS selftest flows.
+"""Minimal Z80 simulator to replay the KonaOS selftest flows.
 
 Models the banking latch (MEM_DECODER rev 12):
   mode 00: 0000-FFFF reads from the selected ROM page; writes target the
@@ -25,7 +25,7 @@ FILL = 0xFF
 class IocCommandPeer:
     """Register-level model of the deployed MCU IOC command-lane peer.
 
-    Models exactly what the ZephyrOS IOC driver can observe through
+    Models exactly what the KonaOS IOC driver can observe through
     SIO1/B (data port 32h, control port 33h):
 
       - the WR0 command / register-pointer protocol, including channel
@@ -1270,7 +1270,7 @@ def ioc_crc16(data):
 class V9958Peer:
     """Register/VRAM-level model of the LunchCrema V9958 (ports A0h-A4h).
 
-    Models exactly what the ZephyrOS v9958 driver can observe:
+    Models exactly what the KonaOS v9958 driver can observe:
 
       - the command-port two-byte protocol: a first byte is latched, the
         second byte selects a register (bit 7) or the VRAM address
@@ -2541,10 +2541,10 @@ class Ctc0Injector:
     """
 
     def __init__(self, syms, caller_base=0x1000, vector=0x00):
-        self.blob_start = syms["zos_irq_test_blob_start"]
-        self.blob_end = syms["zos_irq_test_blob_end"]
-        self.helper_start = syms["_zos_irq_test_mode11"]
-        self.helper_end = syms["zos_irq_test_mode11_end"]
+        self.blob_start = syms["kos_irq_test_blob_start"]
+        self.blob_end = syms["kos_irq_test_blob_end"]
+        self.helper_start = syms["_kos_irq_test_mode11"]
+        self.helper_end = syms["kos_irq_test_mode11_end"]
         self.source_cell = syms["_irq_active_source"]
         self.caller_base = caller_base
         self.vector = vector
@@ -2610,11 +2610,11 @@ def main():
         img = handle.read()
     page0, page1 = img[:0x10000], img[0x10000:]
     z = Z80(page0, page1)
-    syms = read_symbols(img_path.replace("zephyros-selftest.bin", "zephyros.map"))
+    syms = read_symbols(img_path.replace("konaos-selftest.bin", "konaos.map"))
 
-    # Locate the driver's `call _zos_selftest_run` to find the return site.
-    run = syms["_zos_selftest_run"]
-    driver = syms["_zos_run_syscall_selftest"]
+    # Locate the driver's `call _kos_selftest_run` to find the return site.
+    run = syms["_kos_selftest_run"]
+    driver = syms["_kos_run_syscall_selftest"]
     code = bytes(page1[a] if a >= 0x2000 and a < 0xE000 else page0[a] for a in range(driver, driver + 0x80))
     call_bytes = bytes([0xCD, run & 0xFF, (run >> 8) & 0xFF])
     ret_site = driver + code.index(call_bytes) + 3
@@ -2644,7 +2644,7 @@ def main():
         if z.pc == ret_site:
             print("sim: returned to driver at step %d" % steps)
             print("sim: result=%02X bank=%02X sp=%04X"
-                  % (z.bank0[syms["_zos_selftest_result"]], z.bank0[syms["_zos_selftest_bank"]], z.sp))
+                  % (z.bank0[syms["_kos_selftest_result"]], z.bank0[syms["_kos_selftest_bank"]], z.sp))
             break
         if z.pc > 0x10000 or steps > limit:
             print("sim: runaway at step %d, PC=%04X" % (steps, z.pc))

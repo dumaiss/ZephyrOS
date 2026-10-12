@@ -1,4 +1,4 @@
-/* ZephyrOS M5 ROMFS read-only recovery filesystem.
+/* KonaOS M5 ROMFS read-only recovery filesystem.
  *
  * ROMFS v1 is the tiny, allocation-free boot/recovery store placed in the
  * platform's recovery ROM pages (platform/zephyr80/private/memory.h).  The image
@@ -24,11 +24,11 @@
  * ROMFS provider in fs/romfs/ is the only caller that enumerates.
  */
 
-#ifndef ZEPHYROS_ROMFS_H
-#define ZEPHYROS_ROMFS_H
+#ifndef KONAOS_ROMFS_H
+#define KONAOS_ROMFS_H
 
 #include "platform.h"
-#include "zos/errno.h"
+#include "kos/errno.h"
 
 /* ROMFS v1 format constants. */
 #define ROMFS_MAGIC_0 'Z'
@@ -41,15 +41,15 @@
 #define ROMFS_NAME_SIZE   24u
 
 /* Entry flags / media types. */
-#define ROMFS_FLAG_ZMOD 1u
-#define ROMFS_FLAG_ZEX  2u
+#define ROMFS_FLAG_MOD 1u
+#define ROMFS_FLAG_EXE  2u
 #define ROMFS_FLAG_DATA 3u
 
 /* Bounded common staging buffer used by the ROM-access primitive.  The
  * size is a platform memory reservation (memory.h/.inc) shared with
  * kernel/romfs/rom_access.asm; the host tests and mapcheck enforce the
  * pairing. */
-#define ROMFS_STAGING_SIZE ZOS_ROMFS_STAGING_SIZE
+#define ROMFS_STAGING_SIZE KOS_ROMFS_STAGING_SIZE
 
 /* Immutable metadata identifying one ROMFS entry. */
 typedef struct romfs_file {
@@ -65,9 +65,9 @@ int romfs_init(void);
 
 /* The one ROMFS lookup: resolve a native name with ASCII case-folded
  * comparison (architecture sections 32.8 and 32.13).  It serves the VFS
- * ROMFS provider, the ZEX launcher and the module resource imports; there
+ * ROMFS provider, the EXE launcher and the module resource imports; there
  * is no case-sensitive variant beside it.  Returns 0 on success, or
- * -ZOS_ENOENT / a negative error. */
+ * -KOS_ENOENT / a negative error. */
 int romfs_lookup_ci(const char *name, romfs_file_t *out);
 
 /* Bounded read from `offset` (file-relative) into `dst`.  Returns the
@@ -80,7 +80,7 @@ int romfs_read(const romfs_file_t *file, uint32_t offset, void *dst,
 /* --- provider support ---------------------------------------------------
  * Indexed access to the validated directory.  It exists for the VFS ROMFS
  * provider's `readdir`, which is the only consumer that needs to enumerate;
- * ROMFS-boot builds only.  Returns 0, or -ZOS_ENOENT past the end of the
+ * ROMFS-boot builds only.  Returns 0, or -KOS_ENOENT past the end of the
  * directory (which the provider reports as end-of-stream). */
 int romfs_entry_at(uint16_t index, romfs_file_t *out, char *name,
 		   uint16_t name_size);
@@ -88,20 +88,20 @@ int romfs_entry_at(uint16_t index, romfs_file_t *out, char *name,
 /* --- module-facing resource imports (driver ABI v3) --------------------
  * The only filesystem-like drivers a loaded module receives.  Both
  * accept a name and operate on entries carrying exactly ROMFS_FLAG_DATA;
- * ZMOD/ZEX entries are rejected with -ZOS_EINVAL.  `romfs_file_t` and the
+ * MOD/EXE entries are rejected with -KOS_EINVAL.  `romfs_file_t` and the
  * mutable filesystem state stay kernel-private; a resource larger than
- * 16 bits is rejected with -ZOS_ENOSPC.  The functions validate the
+ * 16 bits is rejected with -KOS_ENOSPC.  The functions validate the
  * complete ROMFS image at init, so a lookup can never be driven by
  * unvalidated metadata. */
 
 /* Size lookup by name.  Returns 0 and stores the 16-bit size, or a
- * negative error (-ZOS_EINVAL invalid/not DATA, -ZOS_ENOENT missing,
- * -ZOS_ENOSPC size > 0xFFFF, -ZOS_EINVAL before romfs_init()). */
+ * negative error (-KOS_EINVAL invalid/not DATA, -KOS_ENOENT missing,
+ * -KOS_ENOSPC size > 0xFFFF, -KOS_EINVAL before romfs_init()). */
 int romfs_resource_size(const char *name, uint16_t *out_size);
 
 /* Bounded read by name: `offset + length` may not leave the resource.
- * Returns the number of bytes copied, or a negative error (-ZOS_EINVAL
- * invalid/not DATA/out of bounds, -ZOS_ENOENT missing). */
+ * Returns the number of bytes copied, or a negative error (-KOS_EINVAL
+ * invalid/not DATA/out of bounds, -KOS_ENOENT missing). */
 int romfs_resource_read(const char *name, uint16_t offset, void *dst,
 			uint16_t length);
 
@@ -115,7 +115,7 @@ int romfs_resource_read(const char *name, uint16_t offset, void *dst,
  */
 
 struct rom_access_req {
-	uint8_t page;    /* recovery ROM page (ZOS_ROMFS_FIRST_PAGE..) */
+	uint8_t page;    /* recovery ROM page (KOS_ROMFS_FIRST_PAGE..) */
 	uint16_t offset; /* byte offset within the 0000h-BFFFh window  */
 	uint16_t length; /* bytes to stage, 1..ROMFS_STAGING_SIZE      */
 };
@@ -131,10 +131,10 @@ _Static_assert(__builtin_offsetof(struct rom_access_req, length) == 3,
 	       "rom_access_req length field");
 #endif
 
-/* Returns 0 or a positive ZOS_E* error code (0 = staged OK). */
+/* Returns 0 or a positive KOS_E* error code (0 = staged OK). */
 uint8_t rom_access_copy(const struct rom_access_req *req);
 
 /* Bounded common staging buffer filled by rom_access_copy(). */
 extern uint8_t rom_access_staging[];
 
-#endif /* ZEPHYROS_ROMFS_H */
+#endif /* KONAOS_ROMFS_H */

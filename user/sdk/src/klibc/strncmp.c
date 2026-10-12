@@ -1,4 +1,4 @@
-#include "zlibc/string.h"
+#include "klibc/string.h"
 
 int strncmp(const char *a, const char *b, unsigned int n)
 {

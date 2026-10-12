@@ -1,7 +1,7 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS M6 common-resident application-bank copy gate.
+; KonaOS M6 common-resident application-bank copy gate.
 ;
-; The syscall dispatcher and the ZEX loader run in mode 11, where only the
+; The syscall dispatcher and the EXE loader run in mode 11, where only the
 ; caller window 0000h-1FFFh of the application bank is visible.  This gate
 ; performs the one bounded transfer that needs the full application
 ; mapping: it switches to mode 10 over the requested bank in common
@@ -12,15 +12,15 @@
 ; mode 11 - before any state changes - so the request itself may live in
 ; bank-7 or common kernel memory; `buffer` must be common-resident:
 ;
-;   struct zos_bank_copy_req {
-;       uint8_t  bank;   0-6 (bank 7 rejected with ZOS_EINVAL)
-;       uint8_t  op;     ZOS_BANK_OP_READ / _WRITE / _ZERO
+;   struct kos_bank_copy_req {
+;       uint8_t  bank;   0-6 (bank 7 rejected with KOS_EINVAL)
+;       uint8_t  op;     KOS_BANK_OP_READ / _WRITE / _ZERO
 ;       uint16_t addr;   user-side logical address
 ;       uint8_t *buffer; common staging address (op READ/WRITE)
 ;       uint16_t length; 0 is a validated no-op
 ;   };
-;   uint8_t zos_bank_copy(const struct zos_bank_copy_req *req);
-;       returns 0 or ZOS_EINVAL (see zos/errno.h)
+;   uint8_t kos_bank_copy(const struct kos_bank_copy_req *req);
+;       returns 0 or KOS_EINVAL (see kos/errno.h)
 ;
 ; SDCC sdcccall(1): a single 16-bit pointer argument arrives in HL; the
 ; 8-bit result is returned in A.
@@ -34,45 +34,45 @@
 	.include "hardware.inc"
 	.include "memory.inc"
 
-	.globl _zos_bank_copy
-	.globl _zos_user_copy_staging
-	.globl zos_copy_op
-	.globl zos_copy_bank
-	.globl zos_copy_addr
-	.globl zos_copy_buffer
-	.globl zos_copy_length
-	.globl zos_copy_saved_sp
-	.globl zos_copy_saved_latch
-	.globl zos_copy_saved_iff
-	.globl zos_copy_stack
-	.globl zos_copy_stack_top
+	.globl _kos_bank_copy
+	.globl _kos_user_copy_staging
+	.globl kos_copy_op
+	.globl kos_copy_bank
+	.globl kos_copy_addr
+	.globl kos_copy_buffer
+	.globl kos_copy_length
+	.globl kos_copy_saved_sp
+	.globl kos_copy_saved_latch
+	.globl kos_copy_saved_iff
+	.globl kos_copy_stack
+	.globl kos_copy_stack_top
 
 	.area _COMMON
 
 ; Operation codes (mirror process.h).
-ZOS_COPY_OP_READ  = 1
-ZOS_COPY_OP_WRITE = 2
-ZOS_COPY_OP_ZERO  = 3
+KOS_COPY_OP_READ  = 1
+KOS_COPY_OP_WRITE = 2
+KOS_COPY_OP_ZERO  = 3
 
 	.area _COMMON
 
 ; ---------------------------------------------------------------------------
-; _zos_bank_copy - C name zos_bank_copy.  Entry: HL = request pointer.
+; _kos_bank_copy - C name kos_bank_copy.  Entry: HL = request pointer.
 ;
 ; Decode and validate everything while the request is still visible, then
 ; switch mapping and perform the transfer from common state.
 ; ---------------------------------------------------------------------------
-_zos_bank_copy::
+_kos_bank_copy::
 	ld	a,(hl)			; bank
-	cp	#ZOS_BANK_MASK		; bank 7 and above are not application
+	cp	#KOS_BANK_MASK		; bank 7 and above are not application
 	jr	c,001$
-	ld	a,#0x02			; ZOS_EINVAL
+	ld	a,#0x02			; KOS_EINVAL
 	ret
 001$:
-	ld	(zos_copy_bank),a
+	ld	(kos_copy_bank),a
 	inc	hl
 	ld	a,(hl)			; op
-	ld	(zos_copy_op),a
+	ld	(kos_copy_op),a
 	dec	a			; valid ops are 1..3 -> 0..2
 	cp	#0x03
 	jr	c,002$
@@ -81,28 +81,28 @@ _zos_bank_copy::
 002$:
 	inc	hl
 	ld	a,(hl)			; addr
-	ld	(zos_copy_addr),a
+	ld	(kos_copy_addr),a
 	inc	hl
 	ld	a,(hl)
-	ld	(zos_copy_addr+1),a
+	ld	(kos_copy_addr+1),a
 	inc	hl
 	ld	a,(hl)			; buffer
-	ld	(zos_copy_buffer),a
+	ld	(kos_copy_buffer),a
 	inc	hl
 	ld	a,(hl)
-	ld	(zos_copy_buffer+1),a
+	ld	(kos_copy_buffer+1),a
 	inc	hl
 	ld	a,(hl)			; length
-	ld	(zos_copy_length),a
+	ld	(kos_copy_length),a
 	inc	hl
 	ld	a,(hl)
-	ld	(zos_copy_length+1),a
+	ld	(kos_copy_length+1),a
 
 	; A zero length is a silent success (bank/op still validated).
-	ld	a,(zos_copy_length)
+	ld	a,(kos_copy_length)
 	or	a
 	jr	nz,003$
-	ld	a,(zos_copy_length+1)
+	ld	a,(kos_copy_length+1)
 	or	a
 	jr	nz,003$
 	xor	a
@@ -111,27 +111,27 @@ _zos_bank_copy::
 003$:
 	ld	a,i			; snapshot IFF2 before DI clears it
 	di
-	ld	(zos_copy_saved_sp),sp
-	ld	sp,#zos_copy_stack_top
+	ld	(kos_copy_saved_sp),sp
+	ld	sp,#kos_copy_stack_top
 	ld	a,#0
 	jp	po,004$
 	inc	a
 004$:
-	ld	(zos_copy_saved_iff),a
-	in	a,(ZOS_MEMCTL_PORT)
-	ld	(zos_copy_saved_latch),a
-	ld	a,(zos_copy_bank)
-	or	#ZOS_MODE_APPLICATION
-	out	(ZOS_MEMCTL_PORT),a
+	ld	(kos_copy_saved_iff),a
+	in	a,(KOS_MEMCTL_PORT)
+	ld	(kos_copy_saved_latch),a
+	ld	a,(kos_copy_bank)
+	or	#KOS_MODE_APPLICATION
+	out	(KOS_MEMCTL_PORT),a
 	; Everything below is fetched from common memory; both the
 	; application bank and the common data area are now mapped.
-	ld	a,(zos_copy_op)
-	cp	#ZOS_COPY_OP_ZERO
+	ld	a,(kos_copy_op)
+	cp	#KOS_COPY_OP_ZERO
 	jr	z,006$
-	ld	bc,(zos_copy_length)
-	ld	de,(zos_copy_buffer)
-	ld	hl,(zos_copy_addr)
-	cp	#ZOS_COPY_OP_WRITE
+	ld	bc,(kos_copy_length)
+	ld	de,(kos_copy_buffer)
+	ld	hl,(kos_copy_addr)
+	cp	#KOS_COPY_OP_WRITE
 	jr	z,005$
 	; READ: user -> buffer (HL = user, DE = buffer, BC = length)
 	ldir
@@ -143,8 +143,8 @@ _zos_bank_copy::
 	jr	007$
 006$:
 	; ZERO: fill the user range with zero bytes.
-	ld	hl,(zos_copy_addr)
-	ld	bc,(zos_copy_length)
+	ld	hl,(kos_copy_addr)
+	ld	bc,(kos_copy_length)
 	ld	d,h
 	ld	e,l
 	inc	de
@@ -155,10 +155,10 @@ _zos_bank_copy::
 	jr	z,007$
 	ldir
 007$:
-	ld	a,(zos_copy_saved_latch)
-	out	(ZOS_MEMCTL_PORT),a
-	ld	sp,(zos_copy_saved_sp)
-	ld	a,(zos_copy_saved_iff)
+	ld	a,(kos_copy_saved_latch)
+	out	(KOS_MEMCTL_PORT),a
+	ld	sp,(kos_copy_saved_sp)
+	ld	a,(kos_copy_saved_iff)
 	or	a
 	jr	z,008$
 	ei
@@ -171,29 +171,29 @@ _zos_bank_copy::
 ; Bounded staging buffer owned by the copy contract: syscall buffers are
 ; transferred through this common block, never through a banked pointer.
 ; 64 bytes keeps the gate cheap while the syscall driver owns the
-; chunking.  (C name zos_user_copy_staging.)
-_zos_user_copy_staging::
+; chunking.  (C name kos_user_copy_staging.)
+_kos_user_copy_staging::
 	.ds	64
 
 ; Decoded request and transition state (single-depth; see the module
 ; header).  The op byte doubles as the end-of-staging marker for the
 ; mapcheck size proof.
-zos_copy_op::
-	.db	ZOS_COPY_OP_READ
-zos_copy_bank::
+kos_copy_op::
+	.db	KOS_COPY_OP_READ
+kos_copy_bank::
 	.ds	1
-zos_copy_addr::
+kos_copy_addr::
 	.ds	2
-zos_copy_buffer::
+kos_copy_buffer::
 	.ds	2
-zos_copy_length::
+kos_copy_length::
 	.ds	2
-zos_copy_saved_sp::
+kos_copy_saved_sp::
 	.ds	2
-zos_copy_saved_latch::
+kos_copy_saved_latch::
 	.ds	1
-zos_copy_saved_iff::
+kos_copy_saved_iff::
 	.ds	1
-zos_copy_stack::
+kos_copy_stack::
 	.ds	16
-zos_copy_stack_top::
+kos_copy_stack_top::

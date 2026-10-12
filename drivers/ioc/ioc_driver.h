@@ -7,12 +7,12 @@
  * ABI.
  */
 
-#ifndef ZEPHYROS_DRIVERS_IOC_DRIVER_H
-#define ZEPHYROS_DRIVERS_IOC_DRIVER_H
+#ifndef KONAOS_DRIVERS_IOC_DRIVER_H
+#define KONAOS_DRIVERS_IOC_DRIVER_H
 
 #include "ioc.h"
 #include "driver.h"
-#include "zos/types.h"
+#include "kos/types.h"
 
 /* One-time SIO1/B (command) and SIO1/A (bulk) programming: channel reset,
  * WR1 interrupts/WAIT off, External Sync x1, FFh/AAh fill, RX disabled
@@ -24,13 +24,13 @@ void ioc_hw_init(void);
  * flags and re-arms local Hunt so the MCU emits a fresh /SYNC edge;
  * success requires a CRC-verified LINK_SYNC reply with the matching
  * sequence.  Also the explicit whole-link recovery path.  Returns
- * ZIOC_OK or ZIOC_ETIMEDOUT. */
+ * KIOC_OK or KIOC_ETIMEDOUT. */
 int ioc_link_bringup(void);
 
 /* The class operation implementations (exposed for the descriptor and
  * for focused host tests). */
-int ioc_command(void *state, const struct zioc_frame *request,
-		struct zioc_frame *reply);
+int ioc_command(void *state, const struct kioc_frame *request,
+		struct kioc_frame *reply);
 int ioc_bulk_read(void *state, void *dst, uint16_t length);
 int ioc_bulk_write(void *state, const void *src, uint16_t length);
 uint16_t ioc_status(void *state);
@@ -41,9 +41,9 @@ void ioc_boot_entry(void);
 /* Hot segment: the endpoint dispatch and the init entry the loader calls
  * with the driver bootstrap table (which runs the one LINK_SYNC
  * bring-up and records the readiness bit). */
-int16_t ioc_driver_dispatch(struct zos_ipc_frame *frame);
+int16_t ioc_driver_dispatch(struct kos_ipc_frame *frame);
 uint8_t ioc_driver_init(const struct driver_boot *boot);
 
 extern struct ioc_state ioc_state;
 
-#endif /* ZEPHYROS_DRIVERS_IOC_DRIVER_H */
+#endif /* KONAOS_DRIVERS_IOC_DRIVER_H */

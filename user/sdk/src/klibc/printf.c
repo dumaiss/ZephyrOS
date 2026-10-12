@@ -1,4 +1,4 @@
-/* ZephyrOS zlibc: printf / snprintf.
+/* KonaOS klibc: printf / snprintf.
  *
  * A small output sink backs both entry points: snprintf appends to a
  * bounded caller buffer; printf flushes through the console wrapper in
@@ -6,10 +6,10 @@
  * with an optional '0' zero-pad flag and a decimal width.
  */
 
-#include "zlibc/fmt.h"
-#include "zlibc/string.h"
-#include "zlibc/stdarg.h"
-#include "zos/console.h"
+#include "klibc/fmt.h"
+#include "klibc/string.h"
+#include "klibc/stdarg.h"
+#include "kos/console.h"
 
 struct zout {
 	char *buf;                 /* NULL selects the console sink */

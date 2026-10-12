@@ -12,9 +12,9 @@
 
 #include "kernel/irq/irq_private.h"
 
-static __sfr __at ZOS_CTC0_PORT zos_ctc0;
+static __sfr __at KOS_CTC0_PORT kos_ctc0;
 
 void platform_irq_quiesce(irq_source_t source)
 {
-	if (source == IRQ_CTC0) zos_ctc0 = ZOS_CTC0_RESET;
+	if (source == IRQ_CTC0) kos_ctc0 = KOS_CTC0_RESET;
 }

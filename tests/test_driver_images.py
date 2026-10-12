@@ -2,7 +2,7 @@
 """Host-side tests for the host-assembled driver images (packages 41b-42c).
 
 Pure tests build synthetic SDCC .rel text, pack driver containers with
-`tools/zmodpack.py` and check the host assembly: the linked segment bases,
+`tools/modpack.py` and check the host assembly: the linked segment bases,
 the relocation arithmetic the packer applies, the host-assigned endpoint
 numbers, the dependency resolution (including the optional and missing
 cases), the load-order validation and the tier plan.  The flat container
@@ -23,7 +23,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, HERE)
 
-import zmodpack  # noqa: E402
+import modpack  # noqa: E402
 
 HOT_TIER = (0x6000, 0xE000)
 IO_TIER = (0x8000, 0xC000)
@@ -90,17 +90,17 @@ def load_driver(tmp, name, objects, manifest):
     path = os.path.join(tmp, name + ".json")
     with open(path, "w") as handle:
         json.dump(manifest, handle)
-    return zmodpack.load_manifest(path, tmp)
+    return modpack.load_manifest(path, tmp)
 
 
 def pack_set(tmp, images):
     """Host-assemble a set of synthetic images, in load order: returns
     (containers, ledger) with the same code path the packer CLI uses."""
-    packs = [zmodpack.pack_driver_manifest(
+    packs = [modpack.pack_driver_manifest(
         load_driver(tmp, name, objects, manifest))
         for name, objects, manifest in images]
-    rows, ledger = zmodpack.plan_driver_set(packs)
-    return [zmodpack.build_driver_container(packed, row)
+    rows, ledger = modpack.plan_driver_set(packs)
+    return [modpack.build_driver_container(packed, row)
             for packed, row in zip(packs, rows)], ledger
 
 
@@ -147,7 +147,7 @@ class TestDriverFormat(unittest.TestCase):
                            "dispatch": "_svc_dispatch", "flags": 0}],
             "depends": [{"class": 5, "instance": 0, "optional": 1}],
         })
-        info = zmodpack.parse_container(container)
+        info = modpack.parse_container(container)
         self.assertEqual([segment["role"] for segment in info["segments"]],
                          ["hot", "boot", "io"])
         hot, boot, io = info["segments"]
@@ -181,7 +181,7 @@ class TestDriverFormat(unittest.TestCase):
                          [{"class": 5, "instance": 0, "number": 0}])
 
     def test_every_segment_role_has_exactly_one_segment(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             pack_driver(self.tmp.name, "dup", {
                 "dup.rel": ([("_CODE", 2)], [("_dup_init", 0, 0)],
                             [(0, 0, [0xC9, 0x00], [])]),
@@ -195,7 +195,7 @@ class TestDriverFormat(unittest.TestCase):
         self.assertIn("duplicate role", str(caught.exception))
 
     def test_a_hot_segment_is_required(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             pack_driver(self.tmp.name, "noht", {
                 "io.rel": ([("_IOBUF", 4)], [], [(0, 0, [0xAA] * 4, [])]),
             }, {
@@ -204,7 +204,7 @@ class TestDriverFormat(unittest.TestCase):
         self.assertIn("hot segment", str(caught.exception))
 
     def test_only_the_boot_role_carries_an_entry(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             pack_driver(self.tmp.name, "badent", {
                 "x.rel": ([("_CODE", 2)], [("_x", 0, 0)],
                           [(0, 0, [0xC9, 0x00], [])]),
@@ -216,7 +216,7 @@ class TestDriverFormat(unittest.TestCase):
         self.assertIn("entry", str(caught.exception))
 
     def test_a_boot_entry_must_live_in_the_boot_segment(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             pack_driver(self.tmp.name, "bootent", {
                 "h.rel": ([("_CODE", 2)], [("_svc_init", 0, 0)],
                           [(0, 0, [0xC9, 0x00], [])]),
@@ -233,7 +233,7 @@ class TestDriverFormat(unittest.TestCase):
         self.assertIn("boot", str(caught.exception))
 
     def test_init_must_live_in_the_hot_segment(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             pack_driver(self.tmp.name, "badinit", {
                 "h.rel": ([("_CODE", 2)], [("_svc_init", 0, 0)],
                           [(0, 0, [0xC9, 0x00], [])]),
@@ -249,7 +249,7 @@ class TestDriverFormat(unittest.TestCase):
         self.assertIn("init", str(caught.exception))
 
     def test_endpoint_flags_are_bounded(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             pack_driver(self.tmp.name, "flags", {
                 "fl.rel": ([("_CODE", 4)], [("_fl_init", 0, 0),
                                             ("_fl_dispatch", 0, 0)],
@@ -302,7 +302,7 @@ class TestHostLinking(unittest.TestCase):
         })
 
     def test_the_io_pointer_lands_in_the_io_blocks_final_base(self):
-        info = zmodpack.parse_container(self.build())
+        info = modpack.parse_container(self.build())
         hot = info["segments"][0]
         io = info["segments"][2]
         payload = info["payload"]
@@ -314,7 +314,7 @@ class TestHostLinking(unittest.TestCase):
         self.assertEqual(payload[2] | (payload[3] << 8), hot["base"] + 6)
 
     def test_the_boot_pointer_lands_in_the_hot_images_final_base(self):
-        info = zmodpack.parse_container(self.build())
+        info = modpack.parse_container(self.build())
         hot = info["segments"][0]
         boot = info["segments"][1]
         payload = info["payload"]
@@ -325,7 +325,7 @@ class TestHostLinking(unittest.TestCase):
     def test_a_relocation_overflow_is_refused_at_pack_time(self):
         # A word holding F000h plus the target segment's base (at least
         # 6000h for a hot segment) overflows 16 bits at link time.
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             pack_driver(self.tmp.name, "ovf", {
                 "h.rel": (
                     [("_CODE", 4)],
@@ -339,7 +339,7 @@ class TestHostLinking(unittest.TestCase):
         self.assertIn("overflow", str(caught.exception))
 
     def test_hot_code_reaching_the_boot_tier_is_refused(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             pack_driver(self.tmp.name, "hotboot", {
                 "h.rel": (
                     [("_CODE", 4)],
@@ -357,7 +357,7 @@ class TestHostLinking(unittest.TestCase):
         self.assertIn("invisible", str(caught.exception))
 
     def test_bulk_data_carries_no_relocations(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             pack_driver(self.tmp.name, "bulkrel", {
                 "h.rel": ([("_CODE", 2)], [("_svc_init", 0, 0)],
                           [(0, 0, [0xC9, 0x00], [])]),
@@ -390,7 +390,7 @@ class TestHostLinking(unittest.TestCase):
                 {"role": "bulk", "asset": "font.bin"},
             ],
         })
-        info = zmodpack.parse_container(container)
+        info = modpack.parse_container(container)
         bulk = [s for s in info["segments"] if s["role"] == "bulk"][0]
         self.assertEqual(bulk["image_size"], 2048)
         self.assertEqual(bulk["bss_size"], 0)
@@ -400,7 +400,7 @@ class TestHostLinking(unittest.TestCase):
     def test_an_asset_segment_takes_no_areas(self):
         with open(os.path.join(self.tmp.name, "font.bin"), "wb") as handle:
             handle.write(b"\x01\x02")
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             pack_driver(self.tmp.name, "assetbad", {
                 "h.rel": ([("_CODE", 2)], [("_svc_init", 0, 0)],
                           [(0, 0, [0xC9, 0x00], [])]),
@@ -476,14 +476,14 @@ class TestDriverSet(unittest.TestCase):
     def drivers(self, paths):
         out = os.path.join(self.tmp.name, "drivers.man")
         report = os.path.join(self.tmp.name, "plan.json")
-        zmodpack.cmd_drivers([out] + paths + ["--report", report])
+        modpack.cmd_drivers([out] + paths + ["--report", report])
         with open(out, "rb") as handle:
             manifest = handle.read()
         with open(report, encoding="utf-8") as handle:
             return manifest, json.load(handle)
 
     def size_of(self, container, role):
-        info = zmodpack.parse_container(container)
+        info = modpack.parse_container(container)
         for segment in info["segments"]:
             if segment["role"] == role:
                 return segment["image_size"] + segment["bss_size"]
@@ -492,19 +492,19 @@ class TestDriverSet(unittest.TestCase):
     def test_manifest_names_the_images_in_load_order(self):
         containers, _ = self.pack(self.image("one", export=(10, 0)),
                                   self.image("two", export=(11, 0)))
-        manifest, report = self.drivers([self.write("one.zmod", containers[0]),
-                                          self.write("two.zmod", containers[1])])
+        manifest, report = self.drivers([self.write("one.mod", containers[0]),
+                                          self.write("two.mod", containers[1])])
         entries = [manifest[i:i + 24].split(b"\0")[0]
                    for i in range(0, len(manifest), 24)]
-        self.assertEqual(entries, [b"one.zmod", b"two.zmod"])
+        self.assertEqual(entries, [b"one.mod", b"two.mod"])
         self.assertEqual([entry["name"] for entry in report["drivers"]],
-                         ["one.zmod", "two.zmod"])
+                         ["one.mod", "two.mod"])
 
     def test_endpoint_numbers_are_host_assigned_in_load_order(self):
         containers, _ = self.pack(self.image("one", export=(10, 0)),
                                   self.image("two", export=(11, 0)))
-        one = zmodpack.parse_container(containers[0])
-        two = zmodpack.parse_container(containers[1])
+        one = modpack.parse_container(containers[0])
+        two = modpack.parse_container(containers[1])
         self.assertEqual(one["endpoints"][0]["number"], 1)
         self.assertEqual(two["endpoints"][0]["number"], 2)
 
@@ -513,7 +513,7 @@ class TestDriverSet(unittest.TestCase):
             self.image("ioc", export=(5, 0)),
             self.image("hid", export=(4, 0),
                        depends=[{"class": 5, "instance": 0}]))
-        hid = zmodpack.parse_container(containers[1])
+        hid = modpack.parse_container(containers[1])
         self.assertEqual(hid["dependencies"],
                          [{"class": 5, "instance": 0, "number": 1}])
 
@@ -523,18 +523,18 @@ class TestDriverSet(unittest.TestCase):
             self.image("console", export=(6, 0),
                        depends=[{"class": 4, "instance": 0, "optional": 1},
                                 {"class": 1, "instance": 0, "optional": 1}]))
-        console = zmodpack.parse_container(containers[1])
+        console = modpack.parse_container(containers[1])
         self.assertEqual([dep["number"] for dep in console["dependencies"]],
                          [0, 1])
 
     def test_a_missing_required_dependency_is_refused(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             self.pack(self.image("hid", export=(4, 0),
                                  depends=[{"class": 5, "instance": 0}]))
         self.assertIn("dependency 5.0", str(caught.exception))
 
     def test_a_dependency_on_a_later_image_is_refused(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             self.pack(self.image("hid", export=(4, 0),
                                  depends=[{"class": 5, "instance": 0}]),
                       self.image("ioc", export=(5, 0)))
@@ -544,29 +544,29 @@ class TestDriverSet(unittest.TestCase):
         containers, _ = self.pack(
             self.image("echo", export=(16, 0),
                        depends=[{"class": 16, "instance": 0}]))
-        echo = zmodpack.parse_container(containers[0])
+        echo = modpack.parse_container(containers[0])
         self.assertEqual(echo["dependencies"],
                          [{"class": 16, "instance": 0, "number": 1}])
 
     def test_a_duplicate_endpoint_is_refused(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             self.pack(self.image("one", export=(10, 0)),
                       self.image("two", export=(10, 0)))
         self.assertIn("already exported", str(caught.exception))
 
     def test_a_duplicate_image_name_is_refused(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             self.pack(self.image("one", export=(10, 0)),
                       self.image("one", export=(11, 0)))
         self.assertIn("duplicate image name", str(caught.exception))
 
     def test_an_oversized_hot_segment_is_refused(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             self.pack(self.image("big", hot_bss=0x8000))
         self.assertIn("tier", str(caught.exception))
 
     def test_the_driver_io_block_is_bounded(self):
-        with self.assertRaises(zmodpack.ZmodError) as caught:
+        with self.assertRaises(modpack.ModError) as caught:
             self.pack(self.image("bigio", io_size=0x4001))
         self.assertIn("range", str(caught.exception))
 
@@ -575,8 +575,8 @@ class TestDriverSet(unittest.TestCase):
             self.image("one", export=(10, 0), io_size=32, boot=True),
             self.image("two", export=(11, 0), boot=True, bulk=64))
         rows = {}
-        for name, container in zip(("one.zmod", "two.zmod"), containers):
-            info = zmodpack.parse_container(container)
+        for name, container in zip(("one.mod", "two.mod"), containers):
+            info = modpack.parse_container(container)
             rows[name] = dict((segment["role"], segment["base"])
                               for segment in info["segments"])
         hot_used = sum(self.size_of(c, "hot") + (self.size_of(c, "io") or 0)
@@ -586,8 +586,8 @@ class TestDriverSet(unittest.TestCase):
                         for c in containers)
         self.assertEqual(ledger["driver_hot_bytes"], hot_used)
         self.assertEqual(ledger["driver_boot_bytes"], boot_used)
-        for name, container in zip(("one.zmod", "two.zmod"), containers):
-            info = zmodpack.parse_container(container)
+        for name, container in zip(("one.mod", "two.mod"), containers):
+            info = modpack.parse_container(container)
             for segment in info["segments"]:
                 self.assertEqual(segment["base"], rows[name][segment["role"]])
 
@@ -597,13 +597,13 @@ class TestDriverSet(unittest.TestCase):
             self.image("hid", export=(4, 0),
                        depends=[{"class": 5, "instance": 0}]))
         _manifest, report = self.drivers(
-            [self.write("ioc.zmod", containers[0]),
-             self.write("hid.zmod", containers[1])])
+            [self.write("ioc.mod", containers[0]),
+             self.write("hid.mod", containers[1])])
         self.assertEqual(report["nucleus"], ledger)
         self.assertEqual(report["drivers"][1]["dependencies"],
                          [{"class": 5, "instance": 0, "number": 1}])
         self.assertEqual(report["drivers"][1]["hot_base"],
-                         zmodpack.parse_container(
+                         modpack.parse_container(
                              containers[1])["segments"][0]["base"])
 
     def test_the_drivers_command_reports_the_driver_ledgers(self):
@@ -613,10 +613,10 @@ class TestDriverSet(unittest.TestCase):
         out = os.path.join(self.tmp.name, "drivers.man")
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
-            zmodpack.cmd_drivers([out,
-                                   self.write("one.zmod", containers[0])])
+            modpack.cmd_drivers([out,
+                                   self.write("one.mod", containers[0])])
         text = buffer.getvalue()
-        self.assertIn("driver one.zmod: hot ", text)
+        self.assertIn("driver one.mod: hot ", text)
         self.assertIn("driver hot: ", text)
         self.assertIn("driver boot/bulk: ", text)
 
@@ -626,7 +626,7 @@ class TestDriverSet(unittest.TestCase):
             self.image("two", export=(11, 0), bulk=64))
         spans = []
         for container in containers:
-            info = zmodpack.parse_container(container)
+            info = modpack.parse_container(container)
             for segment in info["segments"]:
                 if segment["role"] in ("bulk", "io"):
                     spans.append((segment["base"],
@@ -639,7 +639,7 @@ class TestDriverSet(unittest.TestCase):
     def test_boot_and_bulk_share_the_lower_tier(self):
         containers, _ = self.pack(
             self.image("one", export=(10, 0), boot=True, bulk=64))
-        info = zmodpack.parse_container(containers[0])
+        info = modpack.parse_container(containers[0])
         boot = [s for s in info["segments"] if s["role"] == "boot"][0]
         bulk = [s for s in info["segments"] if s["role"] == "bulk"][0]
         self.assertEqual(boot["base"], 0x0000)

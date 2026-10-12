@@ -1,4 +1,4 @@
-/* ZephyrOS user runtime: common status/error output.
+/* KonaOS user runtime: common status/error output.
  *
  * The status vocabulary shared by the monitor and, later, the native
  * diagnostic suite.  Strings are written through the console component;
@@ -6,8 +6,8 @@
  * is reported through the program's exit status instead.
  */
 
-#ifndef ZEPHYROS_USER_STATUS_H
-#define ZEPHYROS_USER_STATUS_H
+#ifndef KONAOS_USER_STATUS_H
+#define KONAOS_USER_STATUS_H
 
 /* "OK\r\n" */
 void zrt_status_ok(void);
@@ -22,4 +22,4 @@ void zrt_status_err_command(void);
  * magnitude of the negated native error (two uppercase hex digits). */
 void zrt_status_err_code(int status);
 
-#endif /* ZEPHYROS_USER_STATUS_H */
+#endif /* KONAOS_USER_STATUS_H */

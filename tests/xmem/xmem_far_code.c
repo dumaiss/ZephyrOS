@@ -1,4 +1,4 @@
-/* ZephyrOS far-code outcome program (work package 44b): the far half.
+/* KonaOS far-code outcome program (work package 44b): the far half.
  *
  * Built with `--codeseg FAR_CODE` through the SDK's FAR= option and
  * linked at 8000h, so this module - its code and its string literals -
@@ -17,7 +17,7 @@
  *   * it runs syscalls whose buffers lie in the far bank: a console write
  *     of the far-area literal and an xmem write of the same bytes (the
  *     buffer-identity rule, 36.8);
- *   * it execs /system/xmem_child.zex from far context, with both the
+ *   * it execs /system/xmem_child.exe from far context, with both the
  *     path and the command tail in the far area - the child starts with
  *     P = 0 and this process's latch comes back exactly;
  *   * it returns (latch << 8) | child status, so the primary half proves
@@ -28,9 +28,9 @@
  * at exit (the launcher's report and the parent's capacity check).
  */
 
-#include "zos.h"
+#include "kos.h"
 
-#define CHILD_PATH "/system/xmem_child.zex"
+#define CHILD_PATH "/system/xmem_child.exe"
 
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
  * D7-D5.  Read directly. */

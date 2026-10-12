@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; IOC two-lane port I/O and streaming loops (drivers/ioc, ZMOD module).
+; IOC two-lane port I/O and streaming loops (drivers/ioc, MOD module).
 ;
 ; All SIO1/B (command lane) and SIO1/A (bulk lane) access for the IOC class
 ; lives here.  The C side (ioc.c) owns framing, CRC, validation, and state;
@@ -43,7 +43,7 @@
 ;   ioc_io_bulk_write     0 = sent and /CTSA deasserted; 1 = bounded
 ;                            stall (RTS released); 2 = sent but /CTSA
 ;                            never deasserted
-;   ioc_io_status_sample  ZOS_IOC_HID_DOORBELL_MASK or 0
+;   ioc_io_status_sample  KOS_IOC_HID_DOORBELL_MASK or 0
 ;   ioc_io_irq_save_disable  previous IFF2 state (1 = enabled)
 ;
 ; Every wait is bounded by the verified platform budgets.  Interrupts: the C
@@ -80,23 +80,23 @@
 
 ; void ioc_io_ctrl_write(uint8_t value);  A = value.
 _ioc_io_ctrl_write::
-	out	(ZOS_SIO1B_CTRL),a
+	out	(KOS_SIO1B_CTRL),a
 	ret
 
 ; uint8_t ioc_io_ctrl_read(void);  A = L = RR0.
 _ioc_io_ctrl_read::
-	in	a,(ZOS_SIO1B_CTRL)
+	in	a,(KOS_SIO1B_CTRL)
 	ld	l,a
 	ret
 
 ; void ioc_io_data_write(uint8_t value);  A = value.
 _ioc_io_data_write::
-	out	(ZOS_SIO1B_DATA),a
+	out	(KOS_SIO1B_DATA),a
 	ret
 
 ; uint8_t ioc_io_data_read(void);  A = L = one data byte.
 _ioc_io_data_read::
-	in	a,(ZOS_SIO1B_DATA)
+	in	a,(KOS_SIO1B_DATA)
 	ld	l,a
 	ret
 
@@ -108,14 +108,14 @@ _ioc_io_data_read::
 ;   Out: A = 0 ready, 1 bounded timeout.  Clobbers AF, BC, DE.
 ; ---------------------------------------------------------------------------
 _ioc_io_wait_ready::
-	ld	b,#ZOS_IOC_CMD_READY_OUTER
+	ld	b,#KOS_IOC_CMD_READY_OUTER
 ioc_ready_outer:
-	ld	de,#ZOS_IOC_CMD_READY_TIMEOUT
+	ld	de,#KOS_IOC_CMD_READY_TIMEOUT
 ioc_ready_wait:
-	ld	a,#ZOS_IOC_WR0_RESET_EXT_STATUS
-	out	(ZOS_SIO1B_CTRL),a
-	in	a,(ZOS_SIO1B_CTRL)
-	and	#ZOS_IOC_CMD_READY_MASK
+	ld	a,#KOS_IOC_WR0_RESET_EXT_STATUS
+	out	(KOS_SIO1B_CTRL),a
+	in	a,(KOS_SIO1B_CTRL)
+	and	#KOS_IOC_CMD_READY_MASK
 	jr	nz,ioc_ready_ok
 	dec	de
 	ld	a,d
@@ -134,10 +134,10 @@ ioc_ready_ok:
 ;   0; no other RR0 bit ever leaves this module.
 ; ---------------------------------------------------------------------------
 _ioc_io_status_sample::
-	ld	a,#ZOS_IOC_WR0_RESET_EXT_STATUS
-	out	(ZOS_SIO1B_CTRL),a
-	in	a,(ZOS_SIO1B_CTRL)
-	and	#ZOS_IOC_HID_DOORBELL_MASK
+	ld	a,#KOS_IOC_WR0_RESET_EXT_STATUS
+	out	(KOS_SIO1B_CTRL),a
+	in	a,(KOS_SIO1B_CTRL)
+	and	#KOS_IOC_HID_DOORBELL_MASK
 	ld	l,a
 	ret
 
@@ -163,9 +163,9 @@ _ioc_io_tx::
 	; Restore the documented idle programming: every previous
 	; transaction ended with WR5 = 00h (TX disabled).
 	ld	a,#0x05
-	out	(ZOS_SIO1B_CTRL),a
-	ld	a,#ZOS_IOC_WR5_TX_RTS_OFF
-	out	(ZOS_SIO1B_CTRL),a
+	out	(KOS_SIO1B_CTRL),a
+	ld	a,#KOS_IOC_WR5_TX_RTS_OFF
+	out	(KOS_SIO1B_CTRL),a
 
 	; PRELOAD, THEN GRANT.  Nothing shifts until the MCU clocks, so the
 	; preloaded A5 waits in the transmitter; asserting RTS against an
@@ -177,14 +177,14 @@ _ioc_io_tx::
 
 	; First byte is buffered: reset the Tx Underrun/EOM latch so the
 	; transmitter leaves idle marking and shifts the preloaded byte.
-	ld	a,#ZOS_IOC_WR0_RESET_EOM
-	out	(ZOS_SIO1B_CTRL),a
+	ld	a,#KOS_IOC_WR0_RESET_EOM
+	out	(KOS_SIO1B_CTRL),a
 
 	; Grant.  RTS is a held "unacknowledged request" level.
 	ld	a,#0x05
-	out	(ZOS_SIO1B_CTRL),a
-	ld	a,#ZOS_IOC_WR5_TX_RTS_ON
-	out	(ZOS_SIO1B_CTRL),a
+	out	(KOS_SIO1B_CTRL),a
+	ld	a,#KOS_IOC_WR5_TX_RTS_ON
+	out	(KOS_SIO1B_CTRL),a
 
 	; The remaining packet bytes.
 	inc	de
@@ -199,9 +199,9 @@ ioc_tx_body:
 
 	; Two FFh trailers so the final frame byte has left the transmitter
 	; before the release disables it.
-	ld	b,#ZOS_IOC_SEND_TRAILER_BYTES
+	ld	b,#KOS_IOC_SEND_TRAILER_BYTES
 ioc_tx_trailer:
-	ld	c,#ZOS_IOC_SEND_TRAILER_FILL
+	ld	c,#KOS_IOC_SEND_TRAILER_FILL
 	call	ioc_put_byte
 	jp	c,ioc_tx_fail
 	djnz	ioc_tx_trailer
@@ -209,25 +209,25 @@ ioc_tx_trailer:
 	; Release RTS by disabling TX: an External-Sync transmitter never
 	; reports empty, so clearing only the RTS bit would latch /RTS low.
 	ld	a,#0x05
-	out	(ZOS_SIO1B_CTRL),a
-	ld	a,#ZOS_IOC_WR5_IDLE
-	out	(ZOS_SIO1B_CTRL),a
+	out	(KOS_SIO1B_CTRL),a
+	ld	a,#KOS_IOC_WR5_IDLE
+	out	(KOS_SIO1B_CTRL),a
 
 	; Arm the receiver before interrupts return.  Clear the error latch
 	; without resetting the channel, then enable RX - Enter Hunt only
 	; for the first establishment (HL still addresses io->hunt).
-	ld	a,#ZOS_IOC_WR0_RESET_ERROR
-	out	(ZOS_SIO1B_CTRL),a
+	ld	a,#KOS_IOC_WR0_RESET_ERROR
+	out	(KOS_SIO1B_CTRL),a
 	ld	a,(hl)
 	or	a
-	ld	b,#ZOS_IOC_WR3_RX_NO_HUNT
+	ld	b,#KOS_IOC_WR3_RX_NO_HUNT
 	jr	z,ioc_tx_arm
-	ld	b,#ZOS_IOC_WR3_RX_HUNT
+	ld	b,#KOS_IOC_WR3_RX_HUNT
 ioc_tx_arm:
 	ld	a,#0x03
-	out	(ZOS_SIO1B_CTRL),a
+	out	(KOS_SIO1B_CTRL),a
 	ld	a,b
-	out	(ZOS_SIO1B_CTRL),a
+	out	(KOS_SIO1B_CTRL),a
 	xor	a
 	ret
 
@@ -237,9 +237,9 @@ ioc_tx_fail:
 	; channel reset, a receiver disable, or Enter Hunt ends character
 	; assembly, so a partial request cannot destroy the boundary.
 	ld	a,#0x05
-	out	(ZOS_SIO1B_CTRL),a
-	ld	a,#ZOS_IOC_WR5_IDLE
-	out	(ZOS_SIO1B_CTRL),a
+	out	(KOS_SIO1B_CTRL),a
+	ld	a,#KOS_IOC_WR5_IDLE
+	out	(KOS_SIO1B_CTRL),a
 	ld	a,#1
 	ret
 
@@ -266,22 +266,22 @@ _ioc_io_rx::
 	push	af			; stash the resume flag
 
 	; Clear the error latch (not the channel, not the receiver).
-	ld	a,#ZOS_IOC_WR0_RESET_ERROR
-	out	(ZOS_SIO1B_CTRL),a
+	ld	a,#KOS_IOC_WR0_RESET_ERROR
+	out	(KOS_SIO1B_CTRL),a
 
 	; Drain at most the FIFO depth plus one stale full-duplex byte.
-	ld	b,#ZOS_IOC_RX_DRAIN_LIMIT
+	ld	b,#KOS_IOC_RX_DRAIN_LIMIT
 ioc_rx_drain:
 	xor	a
-	out	(ZOS_SIO1B_CTRL),a
-	in	a,(ZOS_SIO1B_CTRL)
-	and	#ZOS_SIO_RR0_RX_AVAILABLE
+	out	(KOS_SIO1B_CTRL),a
+	in	a,(KOS_SIO1B_CTRL)
+	and	#KOS_SIO_RR0_RX_AVAILABLE
 	jr	z,ioc_rx_drained
-	in	a,(ZOS_SIO1B_DATA)
+	in	a,(KOS_SIO1B_DATA)
 	djnz	ioc_rx_drain
 ioc_rx_drained:
-	ld	a,#ZOS_IOC_WR0_RESET_ERROR
-	out	(ZOS_SIO1B_CTRL),a
+	ld	a,#KOS_IOC_WR0_RESET_ERROR
+	out	(KOS_SIO1B_CTRL),a
 
 	; Restore interrupts for the potentially long MCU reply wait when
 	; the transaction entered with them enabled.
@@ -290,12 +290,12 @@ ioc_rx_drained:
 	jr	z,ioc_rx_wait_first
 	ei
 ioc_rx_wait_first:
-	ld	b,#ZOS_IOC_CMD_BYTE_OUTER
+	ld	b,#KOS_IOC_CMD_BYTE_OUTER
 ioc_rx_wait_outer:
-	ld	de,#ZOS_IOC_CMD_BYTE_TIMEOUT
+	ld	de,#KOS_IOC_CMD_BYTE_TIMEOUT
 ioc_rx_wait:
-	in	a,(ZOS_SIO1B_CTRL)
-	and	#ZOS_SIO_RR0_RX_AVAILABLE
+	in	a,(KOS_SIO1B_CTRL)
+	and	#KOS_SIO_RR0_RX_AVAILABLE
 	jr	nz,ioc_rx_streaming
 	dec	de
 	ld	a,d
@@ -311,20 +311,20 @@ ioc_rx_streaming:
 	; Bounded search for the complete A5 5A marker.  The previous
 	; reply's trailing FFh can become FIFO-visible only under these
 	; clocks, so the marker - not byte zero - defines the frame start.
-	ld	b,#ZOS_IOC_CMD_REPLY_SCAN_LIMIT
+	ld	b,#KOS_IOC_CMD_REPLY_SCAN_LIMIT
 ioc_rx_scan0:
 	call	ioc_get_byte
 	jr	c,ioc_rx_marker_timeout
-	cp	#ZOS_IOC_PACKET_SYNC0
+	cp	#KOS_IOC_PACKET_SYNC0
 	jr	z,ioc_rx_scan1
 	djnz	ioc_rx_scan0
 	jr	ioc_rx_scan_fail
 ioc_rx_scan1:
 	call	ioc_get_byte
 	jr	c,ioc_rx_marker_timeout
-	cp	#ZOS_IOC_PACKET_SYNC1
+	cp	#KOS_IOC_PACKET_SYNC1
 	jr	z,ioc_rx_header
-	cp	#ZOS_IOC_PACKET_SYNC0
+	cp	#KOS_IOC_PACKET_SYNC0
 	jr	z,ioc_rx_scan1		; overlapping A5 A5 5A
 	djnz	ioc_rx_scan0
 ioc_rx_scan_fail:
@@ -357,11 +357,11 @@ ioc_rx_header_loop:
 	jr	nz,ioc_rx_bad_header
 	dec	de			; DE -> LEN_LO
 	ld	a,(de)
-	cp	#ZOS_IOC_PACKET_FIXED_LEN
+	cp	#KOS_IOC_PACKET_FIXED_LEN
 	jr	c,ioc_rx_bad_header
-	cp	#(ZOS_IOC_PACKET_FIXED_LEN + ZOS_IOC_CMD_MAX_DATA + 1)
+	cp	#(KOS_IOC_PACKET_FIXED_LEN + KOS_IOC_CMD_MAX_DATA + 1)
 	jr	nc,ioc_rx_bad_header
-	sub	#ZOS_IOC_PACKET_FIXED_LEN
+	sub	#KOS_IOC_PACKET_FIXED_LEN
 	or	a
 	jr	z,ioc_rx_crc
 	ld	b,a
@@ -397,12 +397,12 @@ ioc_rx_body_timeout:
 ioc_put_byte:
 	push	de
 	push	bc
-	ld	b,#ZOS_IOC_CMD_BYTE_OUTER
+	ld	b,#KOS_IOC_CMD_BYTE_OUTER
 ioc_pb_outer:
-	ld	de,#ZOS_IOC_CMD_BYTE_TIMEOUT
+	ld	de,#KOS_IOC_CMD_BYTE_TIMEOUT
 ioc_pb_wait:
-	in	a,(ZOS_SIO1B_CTRL)
-	and	#ZOS_SIO_RR0_TX_EMPTY
+	in	a,(KOS_SIO1B_CTRL)
+	and	#KOS_SIO_RR0_TX_EMPTY
 	jr	nz,ioc_pb_ready
 	dec	de
 	ld	a,d
@@ -416,7 +416,7 @@ ioc_pb_wait:
 ioc_pb_ready:
 	pop	bc
 	ld	a,c
-	out	(ZOS_SIO1B_DATA),a
+	out	(KOS_SIO1B_DATA),a
 	pop	de
 	or	a
 	ret
@@ -424,12 +424,12 @@ ioc_pb_ready:
 ; Out: carry set on timeout; else A = received byte.  Clobbers AF, DE.
 ioc_get_byte:
 	push	bc
-	ld	b,#ZOS_IOC_CMD_BYTE_OUTER
+	ld	b,#KOS_IOC_CMD_BYTE_OUTER
 ioc_gb_outer:
-	ld	de,#ZOS_IOC_CMD_BYTE_TIMEOUT
+	ld	de,#KOS_IOC_CMD_BYTE_TIMEOUT
 ioc_gb_wait:
-	in	a,(ZOS_SIO1B_CTRL)
-	and	#ZOS_SIO_RR0_RX_AVAILABLE
+	in	a,(KOS_SIO1B_CTRL)
+	and	#KOS_SIO_RR0_RX_AVAILABLE
 	jr	nz,ioc_gb_ready
 	dec	de
 	ld	a,d
@@ -440,7 +440,7 @@ ioc_gb_wait:
 	scf
 	ret
 ioc_gb_ready:
-	in	a,(ZOS_SIO1B_DATA)
+	in	a,(KOS_SIO1B_DATA)
 	pop	bc
 	or	a
 	ret
@@ -488,38 +488,38 @@ _ioc_io_irq_restore::
 ;   assembly.
 ; ---------------------------------------------------------------------------
 _ioc_io_bulk_init::
-	ld	a,#ZOS_IOC_WR0_RESET_CHANNEL
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR0_RESET_CHANNEL
+	out	(KOS_SIO1A_CTRL),a
 
-	ld	a,#ZOS_SIO_WR_SELECT_WR1
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_WR1_INT_WAIT_OFF
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_SIO_WR_SELECT_WR1
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR1_INT_WAIT_OFF
+	out	(KOS_SIO1A_CTRL),a
 
-	ld	a,#ZOS_SIO_WR_SELECT_WR4
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_WR4_EXTSYNC_X1
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_SIO_WR_SELECT_WR4
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR4_EXTSYNC_X1
+	out	(KOS_SIO1A_CTRL),a
 
-	ld	a,#ZOS_IOC_WR_SELECT_WR6
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_BULK_SYNC_FILL
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR_SELECT_WR6
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_BULK_SYNC_FILL
+	out	(KOS_SIO1A_CTRL),a
 
-	ld	a,#ZOS_IOC_WR_SELECT_WR7
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_BULK_SYNC_FILL
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR_SELECT_WR7
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_BULK_SYNC_FILL
+	out	(KOS_SIO1A_CTRL),a
 
-	ld	a,#ZOS_SIO_WR_SELECT_WR3
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_WR3_BULK_RX_NO_HUNT
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_SIO_WR_SELECT_WR3
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR3_BULK_RX_NO_HUNT
+	out	(KOS_SIO1A_CTRL),a
 
-	ld	a,#ZOS_SIO_WR_SELECT_WR5
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_WR5_BULK_IDLE
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_SIO_WR_SELECT_WR5
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR5_BULK_IDLE
+	out	(KOS_SIO1A_CTRL),a
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -557,48 +557,48 @@ _ioc_io_bulk_read::
 	ld	(_ioc_bulk_hunt),a
 
 	; Clear the error latch without resetting the channel.
-	ld	a,#ZOS_IOC_WR0_RESET_ERROR
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR0_RESET_ERROR
+	out	(KOS_SIO1A_CTRL),a
 
 	; Receiver: Hunt is used only until the first verified bulk packet.
-	ld	a,#ZOS_SIO_WR_SELECT_WR3
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_SIO_WR_SELECT_WR3
+	out	(KOS_SIO1A_CTRL),a
 	ld	a,(_ioc_bulk_hunt)
 	or	a
-	ld	a,#ZOS_IOC_WR3_BULK_RX_NO_HUNT
+	ld	a,#KOS_IOC_WR3_BULK_RX_NO_HUNT
 	jr	z,ioc_br_wr3
-	ld	a,#ZOS_IOC_WR3_BULK_RX_HUNT
+	ld	a,#KOS_IOC_WR3_BULK_RX_HUNT
 ioc_br_wr3:
-	out	(ZOS_SIO1A_CTRL),a
+	out	(KOS_SIO1A_CTRL),a
 
 	; Drain at most the FIFO depth plus one stale full-duplex byte.
 	; Unbounded, this races the reply and swallows its first byte; the
 	; remainder is drained at the head of the next transfer.
-	ld	b,#ZOS_IOC_RX_DRAIN_LIMIT
+	ld	b,#KOS_IOC_RX_DRAIN_LIMIT
 ioc_br_drain:
-	in	a,(ZOS_SIO1A_CTRL)
-	and	#ZOS_SIO_RR0_RX_AVAILABLE
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_RR0_RX_AVAILABLE
 	jr	z,ioc_br_drained
-	in	a,(ZOS_SIO1A_DATA)
+	in	a,(KOS_SIO1A_DATA)
 	djnz	ioc_br_drain
 ioc_br_drained:
 
 	; Tell the controller we are in the read loop.  It is blocked on
 	; this; RTS is a held level, not an edge.
 	ld	a,#0x05
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_WR5_BULK_RTS_ON
-	out	(ZOS_SIO1A_CTRL),a
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR5_BULK_RTS_ON
+	out	(KOS_SIO1A_CTRL),a
 
 	; RX admission.  Auto Enables is off, so /DCDA is a software level:
 	; the controller asserts it, waits, and only then opens the clock
 	; gate, so no bit can arrive before this poll succeeds.
 	ld	bc,#0
 ioc_br_dcd_wait:
-	ld	a,#ZOS_IOC_WR0_RESET_EXT_STATUS
-	out	(ZOS_SIO1A_CTRL),a
-	in	a,(ZOS_SIO1A_CTRL)
-	and	#ZOS_SIO_RR0_DCD
+	ld	a,#KOS_IOC_WR0_RESET_EXT_STATUS
+	out	(KOS_SIO1A_CTRL),a
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_RR0_DCD
 	jr	nz,ioc_br_admitted
 	dec	bc
 	ld	a,b
@@ -610,20 +610,20 @@ ioc_br_admitted:
 	; Locate the complete A5 5A marker.  A trailing fill byte from the
 	; preceding transaction can become FIFO-visible only under these
 	; clocks, so the first visible byte is not necessarily a frame start.
-	ld	b,#ZOS_IOC_BULK_SCAN_LIMIT
+	ld	b,#KOS_IOC_BULK_SCAN_LIMIT
 ioc_br_scan0:
 	call	ioc_bulk_get
 	jp	c,ioc_br_timeout
-	cp	#ZOS_IOC_PACKET_SYNC0
+	cp	#KOS_IOC_PACKET_SYNC0
 	jr	z,ioc_br_scan1
 	djnz	ioc_br_scan0
 	jp	ioc_br_marker_fail
 ioc_br_scan1:
 	call	ioc_bulk_get
 	jp	c,ioc_br_timeout
-	cp	#ZOS_IOC_PACKET_SYNC1
+	cp	#KOS_IOC_PACKET_SYNC1
 	jr	z,ioc_br_header
-	cp	#ZOS_IOC_PACKET_SYNC0
+	cp	#KOS_IOC_PACKET_SYNC0
 	jr	z,ioc_br_scan1		; overlapping A5 A5 5A
 	djnz	ioc_br_scan0
 	jp	ioc_br_marker_fail
@@ -634,11 +634,11 @@ ioc_br_scan1:
 ioc_br_header:
 	ld	hl,#_ioc_bulk_hdr
 	ld	b,#5
-	ld	c,#ZOS_SIO1A_DATA
+	ld	c,#KOS_SIO1A_DATA
 	ld	de,#0
 ioc_br_hdr_wait:
-	in	a,(ZOS_SIO1A_CTRL)
-	and	#ZOS_SIO_RR0_RX_AVAILABLE
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_RR0_RX_AVAILABLE
 	jr	nz,ioc_br_hdr_ready
 	dec	de
 	ld	a,d
@@ -658,7 +658,7 @@ ioc_br_hdr_ready:
 	ld	a,d
 	ld	b,e
 	push	af
-	ld	c,#ZOS_SIO1A_DATA
+	ld	c,#KOS_SIO1A_DATA
 	ld	de,#0
 	ld	a,b
 	or	a
@@ -671,8 +671,8 @@ ioc_br_chunk:
 	push	af
 	ld	b,#0			; B = 0 means 256 bytes
 ioc_br_poll:
-	in	a,(ZOS_SIO1A_CTRL)
-	and	#ZOS_SIO_RR0_RX_AVAILABLE
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_RR0_RX_AVAILABLE
 	jr	nz,ioc_br_got
 	dec	de
 	ld	a,d
@@ -699,10 +699,10 @@ ioc_br_trailer:
 	call	ioc_bulk_rts_off
 	ld	de,#0
 ioc_br_cts_wait:
-	ld	a,#ZOS_IOC_WR0_RESET_EXT_STATUS
-	out	(ZOS_SIO1A_CTRL),a
-	in	a,(ZOS_SIO1A_CTRL)
-	and	#ZOS_SIO_RR0_CTS
+	ld	a,#KOS_IOC_WR0_RESET_EXT_STATUS
+	out	(KOS_SIO1A_CTRL),a
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_RR0_CTS
 	jr	z,ioc_br_ok
 	dec	de
 	ld	a,d
@@ -767,56 +767,56 @@ _ioc_io_bulk_write::
 	; Arm channel A for transmit without touching the persistent RX
 	; boundary: WR3 C1 keeps the receiver enabled.  The full-duplex
 	; idle bytes received while we send are drained by the next read.
-	ld	a,#ZOS_IOC_WR0_RESET_ERROR
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_SIO_WR_SELECT_WR3
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_WR3_BULK_TX
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR0_RESET_ERROR
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_SIO_WR_SELECT_WR3
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR3_BULK_TX
+	out	(KOS_SIO1A_CTRL),a
 
 	; Fill of its own (AAh), so a trailer byte is never mistaken for a
 	; zeroed CRC register.
-	ld	a,#ZOS_IOC_WR_SELECT_WR6
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_BULK_SYNC_FILL
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_WR_SELECT_WR7
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_BULK_SYNC_FILL
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR_SELECT_WR6
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_BULK_SYNC_FILL
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR_SELECT_WR7
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_BULK_SYNC_FILL
+	out	(KOS_SIO1A_CTRL),a
 
 	; Transmitter enabled, RTS still off.
 	ld	a,#0x05
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_WR5_BULK_RTS_OFF
-	out	(ZOS_SIO1A_CTRL),a
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR5_BULK_RTS_OFF
+	out	(KOS_SIO1A_CTRL),a
 
 	; Arm the TX CRC generator before the first byte so its coverage is
 	; the whole transmission; the sacrificial lead-in is inside it.
-	ld	a,#ZOS_IOC_WR0_RESET_TX_CRC
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR0_RESET_TX_CRC
+	out	(KOS_SIO1A_CTRL),a
 
 	; Stage the lead-in BEFORE RTS.  RTS is the controller's "go":
 	; whatever sits in the transmitter at that moment goes on the wire,
 	; and an empty transmitter would emit fill first.
-	ld	a,#ZOS_IOC_BULK_LEADIN
+	ld	a,#KOS_IOC_BULK_LEADIN
 	call	ioc_bulk_put
 	jp	c,ioc_bw_stall
 
 	; Grant.
 	ld	a,#0x05
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_WR5_BULK_RTS_ON
-	out	(ZOS_SIO1A_CTRL),a
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR5_BULK_RTS_ON
+	out	(KOS_SIO1A_CTRL),a
 
 	; TX admission.  Auto Enables is off: /CTSA is sampled as a level
 	; and the clock gate stays closed until the controller is ready.
 	ld	de,#0
 ioc_bw_cts_wait:
-	ld	a,#ZOS_IOC_WR0_RESET_EXT_STATUS
-	out	(ZOS_SIO1A_CTRL),a
-	in	a,(ZOS_SIO1A_CTRL)
-	and	#ZOS_SIO_RR0_CTS
+	ld	a,#KOS_IOC_WR0_RESET_EXT_STATUS
+	out	(KOS_SIO1A_CTRL),a
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_RR0_CTS
 	jr	nz,ioc_bw_admitted
 	dec	de
 	ld	a,d
@@ -826,10 +826,10 @@ ioc_bw_cts_wait:
 ioc_bw_admitted:
 
 	; Marker, then the five-byte header the C side built for this READY.
-	ld	a,#ZOS_IOC_PACKET_SYNC0
+	ld	a,#KOS_IOC_PACKET_SYNC0
 	call	ioc_bulk_put
 	jp	c,ioc_bw_stall
-	ld	a,#ZOS_IOC_PACKET_SYNC1
+	ld	a,#KOS_IOC_PACKET_SYNC1
 	call	ioc_bulk_put
 	jp	c,ioc_bw_stall
 	ld	hl,(_ioc_bulk_block)
@@ -849,7 +849,7 @@ ioc_bw_header:
 	ld	a,d
 	ld	b,e
 	push	af
-	ld	c,#ZOS_SIO1A_DATA
+	ld	c,#KOS_SIO1A_DATA
 	ld	de,#0
 	ld	a,b
 	or	a
@@ -862,8 +862,8 @@ ioc_bw_chunk:
 	push	af
 	ld	b,#0
 ioc_bw_poll:
-	in	a,(ZOS_SIO1A_CTRL)
-	and	#ZOS_SIO_TX_READY
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_TX_READY
 	jr	nz,ioc_bw_got
 	dec	de
 	ld	a,d
@@ -882,15 +882,15 @@ ioc_bw_sent:
 	; accumulated CRC in place of fill; issued earlier it would have
 	; made the CTS-admission underrun emit the CRC.  Nothing may be
 	; written to the data port after this.
-	ld	a,#ZOS_IOC_WR0_RESET_EOM
-	out	(ZOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR0_RESET_EOM
+	out	(KOS_SIO1A_CTRL),a
 
 	; Wait for the transmitter to run dry: RR0 D6 is the underrun flag
 	; and marks the moment the CRC starts going out.
 	ld	de,#0
 ioc_bw_eom_wait:
-	in	a,(ZOS_SIO1A_CTRL)
-	and	#ZOS_SIO_RR0_TX_UNDERRUN
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_RR0_TX_UNDERRUN
 	jr	nz,ioc_bw_eom_done
 	dec	de
 	ld	a,d
@@ -902,7 +902,7 @@ ioc_bw_eom_done:
 	; Measured guard for the two CRC characters to clear the shift
 	; register.  Counted, because RR1's All Sent reads "always 1" in
 	; sync mode.  128 iterations is five times the requirement.
-	ld	de,#ZOS_IOC_BULK_UNDERRUN_GUARD
+	ld	de,#KOS_IOC_BULK_UNDERRUN_GUARD
 ioc_bw_crc_out:
 	dec	de
 	ld	a,d
@@ -917,10 +917,10 @@ ioc_bw_crc_out:
 	call	ioc_bulk_irq_restore
 	ld	de,#0
 ioc_bw_cts_out:
-	ld	a,#ZOS_IOC_WR0_RESET_EXT_STATUS
-	out	(ZOS_SIO1A_CTRL),a
-	in	a,(ZOS_SIO1A_CTRL)
-	and	#ZOS_SIO_RR0_CTS
+	ld	a,#KOS_IOC_WR0_RESET_EXT_STATUS
+	out	(KOS_SIO1A_CTRL),a
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_RR0_CTS
 	jr	z,ioc_bw_ok
 	dec	de
 	ld	a,d
@@ -948,9 +948,9 @@ ioc_bw_stall:
 ; character boundary.
 ioc_bulk_rts_off:
 	ld	a,#0x05
-	out	(ZOS_SIO1A_CTRL),a
-	ld	a,#ZOS_IOC_WR5_BULK_IDLE
-	out	(ZOS_SIO1A_CTRL),a
+	out	(KOS_SIO1A_CTRL),a
+	ld	a,#KOS_IOC_WR5_BULK_IDLE
+	out	(KOS_SIO1A_CTRL),a
 	ret
 
 ; In: A = byte.  Out: carry set on the bounded timeout.  Clobbers AF, DE;
@@ -960,8 +960,8 @@ ioc_bulk_put:
 	ld	c,a
 	ld	de,#0
 ioc_bput_wait:
-	in	a,(ZOS_SIO1A_CTRL)
-	and	#ZOS_SIO_TX_READY
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_TX_READY
 	jr	nz,ioc_bput_ready
 	dec	de
 	ld	a,d
@@ -972,7 +972,7 @@ ioc_bput_wait:
 	ret
 ioc_bput_ready:
 	ld	a,c
-	out	(ZOS_SIO1A_DATA),a
+	out	(KOS_SIO1A_DATA),a
 	pop	bc
 	or	a
 	ret
@@ -982,8 +982,8 @@ ioc_bput_ready:
 ioc_bulk_get:
 	ld	de,#0
 ioc_bget_wait:
-	in	a,(ZOS_SIO1A_CTRL)
-	and	#ZOS_SIO_RR0_RX_AVAILABLE
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_RR0_RX_AVAILABLE
 	jr	nz,ioc_bget_ready
 	dec	de
 	ld	a,d
@@ -992,7 +992,7 @@ ioc_bget_wait:
 	scf
 	ret
 ioc_bget_ready:
-	in	a,(ZOS_SIO1A_DATA)
+	in	a,(KOS_SIO1A_DATA)
 	or	a
 	ret
 

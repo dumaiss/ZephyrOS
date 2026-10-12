@@ -1,13 +1,13 @@
-/* ZephyrOS zlibc: the minimal freestanding string/memory subset.
+/* KonaOS klibc: the minimal freestanding string/memory subset.
  *
  * No hosted C library is linked (--nostdinc); every function here has
- * its own libzos archive member so a program links only what it uses.
+ * its own libkos archive member so a program links only what it uses.
  */
 
-#ifndef ZLIBC_STRING_H
-#define ZLIBC_STRING_H
+#ifndef KLIBC_STRING_H
+#define KLIBC_STRING_H
 
-#include "zos/types.h"
+#include "kos/types.h"
 
 unsigned int strlen(const char *s);
 int          strcmp(const char *a, const char *b);
@@ -26,4 +26,4 @@ int          memcmp(const void *a, const void *b, unsigned int n);
 unsigned int strlcpy(char *dst, const char *src, unsigned int size);
 unsigned int strlcat(char *dst, const char *src, unsigned int size);
 
-#endif /* ZLIBC_STRING_H */
+#endif /* KLIBC_STRING_H */

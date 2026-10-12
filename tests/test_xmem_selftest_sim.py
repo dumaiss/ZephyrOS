@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Extended-memory outcome acceptance replay (work packages 43/44b).
 
-Boots `build-xmem-selftest/zephyros-xmem-selftest.bin` -- the production
+Boots `build-xmem-selftest/konaos-xmem-selftest.bin` -- the production
 boot path with the SIO/console driver set and the SDK outcome program
-booting as `/system/xmem_selftest.zex` -- and asserts the recorded
+booting as `/system/xmem_selftest.exe` -- and asserts the recorded
 transcript:
 
 * the boot lanes and the program's verdict line (every check passed, the
@@ -49,7 +49,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 from replay import STEP_LIMIT, Replay  # noqa: E402
 
 IMAGE_SUBDIR = "build-xmem-selftest"
-IMAGE_NAME = "zephyros-xmem-selftest.bin"
+IMAGE_NAME = "konaos-xmem-selftest.bin"
 
 PASS = "xmem-selftest: PASS\r\n"
 FAIL = "xmem-selftest: FAIL"
@@ -112,7 +112,7 @@ OUTCOMES = [
 CHECKS = len(OUTCOMES)
 
 # The far-code program's outcomes (package 44b), in order; it is
-# /system/xmem_far.zex, SYS_EXECed by the parent above.
+# /system/xmem_far.exe, SYS_EXECed by the parent above.
 FAR_OUTCOMES = [
     "seg-info-1", "seg-info-2", "seg-info-unknown",
     "seg-map-token", "seg-map-page", "seg-map-several", "seg-map-refused",
@@ -133,7 +133,7 @@ FAR_CONSOLE = "xmem-far: far code says hello\r\n"
 
 # The boot lanes every image prints before the boot program runs.
 BOOT_LINES = [
-    "ZephyrOS 0.0\r\n",
+    "KonaOS 0.0\r\n",
     "platform: Zephyr-80\r\n",
     "kernel entry: OK\r\n",
     "serial: OK\r\n",

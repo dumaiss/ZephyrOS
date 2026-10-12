@@ -68,7 +68,7 @@ class HidSimBase(Replay, unittest.TestCase):
     """Shared boot, stepping and transcript helpers."""
 
     IMAGE_SUBDIR = "build-console-integration-selftest"
-    IMAGE_NAME = "zephyros-console-integration-selftest.bin"
+    IMAGE_NAME = "konaos-console-integration-selftest.bin"
 
     def setUp(self):
         self.load_image()
@@ -105,9 +105,9 @@ class HidSimBase(Replay, unittest.TestCase):
             at = found + len(marker)
 
     def driver_lines(self, sio):
-        # The loader names each image by its ROMFS entry (`sio.zmod`).
+        # The loader names each image by its ROMFS entry (`sio.mod`).
         return re.findall(
-            rb"driver ([a-z0-9-]+)\.zmod: hot [0-9A-F]{4}h"
+            rb"driver ([a-z0-9-]+)\.mod: hot [0-9A-F]{4}h"
             rb"(?: io [0-9A-F]{4}h)?(?: boot [0-9A-F]{4}h)?"
             rb"(?: bulk [0-9A-F]{4}h)?\r\n", sio)
 
@@ -120,7 +120,7 @@ class TestHidBootTranscript(HidSimBase):
         # Kernel banner, then the loader's evidence lines in manifest
         # order, then the nucleus console probe; no boot failure.
         self.assert_order(sio, (
-            b"ZephyrOS 0.0\r\n",
+            b"KonaOS 0.0\r\n",
             b"platform: Zephyr-80\r\n",
             b"kernel entry: OK\r\n",
             b"serial: OK\r\n",

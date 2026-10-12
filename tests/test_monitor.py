@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Host-side monitor tests: ABI/tool constant parity, ZEX layout,
+"""Host-side monitor tests: ABI/tool constant parity, EXE layout,
 source/map dependency inspection, and artifact integrity.
 
 Coverage:
 
 * diagnostic syscall numbers and packed-block constants are value-identical
-  across abi/zos/diag.h and the SDK assembly wrappers in
+  across abi/kos/diag.h and the SDK assembly wrappers in
   user/sdk/src/diaggate.asm;
-* the monitor manifest/rights: ordinary ZEX v2, entry at 0100h, exact
+* the monitor manifest/rights: ordinary EXE v2, entry at 0100h, exact
   linked image size, stack reservation, and a low-window scratch block;
 * the linked monitor map contains only monitor/runtime modules - no
   kernel-private symbols, no SIO/early-console/CP/M dependencies - and
-  the packed monitor.zex is stored byte-identically in the subsystem
+  the packed monitor.exe is stored byte-identically in the subsystem
   acceptance and production ROMFS images;
 * the monitor and its runtime sources contain no direct port I/O, SIO
   port constants, early-console calls, CP/M vectors/BDOS calls, or
@@ -38,12 +38,12 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import mapcheck  # noqa: E402
 import romfspack  # noqa: E402
-import zexpack  # noqa: E402
+import exepack  # noqa: E402
 from maptools import evaluate, make_map, parse_c_header  # noqa: E402
 
-DIAG_H = os.path.join(ROOT, "abi", "zos", "diag.h")
+DIAG_H = os.path.join(ROOT, "abi", "kos", "diag.h")
 RUNTIME_ASM = os.path.join(ROOT, "user", "sdk", "src", "diaggate.asm")
-CONSOLE_H = os.path.join(ROOT, "user", "sdk", "include", "zos", "console.h")
+CONSOLE_H = os.path.join(ROOT, "user", "sdk", "include", "kos", "console.h")
 MONITOR_JSON = os.path.join(ROOT, "build", "user", "monitor", "monitor.json")
 MONITOR_MAP = os.path.join(ROOT, "build", "user", "monitor", "monitor.map")
 SUBSYS_MANIFEST = os.path.join(ROOT, "tests", "subsys", "manifest.json")
@@ -61,22 +61,22 @@ MONITOR_SOURCES = (
 )
 
 # The complete module set of the linked monitor (proves nothing from the
-# kernel was dragged into the ZEX link).
+# kernel was dragged into the EXE link).
 MONITOR_MODULES = {
-    "zos_crt0", "zos_runtime", "zos_gate", "zos_diaggate",
-    "zos_ipcgate", "nsgate", "args", "console_io", "console_proto",
+    "kos_crt0", "kos_runtime", "kos_gate", "kos_diaggate",
+    "kos_ipcgate", "nsgate", "args", "console_io", "console_proto",
     "ipc", "monitor", "monitor_exec", "monitor_mem", "monitor_io",
     "hexfmt", "hexdump", "status", "exec",
 }
 
-# Private kernel symbols that must never appear in a user ZEX.  The
-# runtime's own `zos_scratch` is a user-side object (M6), so the
-# sweep names the kernel families instead of the bare `_zos_` prefix.
+# Private kernel symbols that must never appear in a user EXE.  The
+# runtime's own `kos_scratch` is a user-side object (M6), so the
+# sweep names the kernel families instead of the bare `_kos_` prefix.
 KERNEL_PREFIXES = (
-    "_zos_syscall", "_zos_diag", "_zos_bank", "_zos_user", "_zos_process",
+    "_kos_syscall", "_kos_diag", "_kos_bank", "_kos_user", "_kos_process",
     "_process_", "_kernel", "_irq_", "_console_driver", "_console_forward",
     "_console_api", "_console_in", "_console_out", "_device_",
-    "_romfs_", "_module_", "_zmod_", "_zex_validate", "_early_console",
+    "_romfs_", "_module_", "_mod_", "_exe_validate", "_early_console",
     "_panic", "_platform_", "_rom_access", "irq_", "romfs_",
 )
 
@@ -113,47 +113,47 @@ class TestDiagConstantParity(unittest.TestCase):
         }
         for name, value in expected.items():
             self.assertEqual(
-                self._diag(name.replace("SYS_", "ZOS_SYSCALL_")),
+                self._diag(name.replace("SYS_", "KOS_SYSCALL_")),
                 value, "%s is mispinned" % name)
             self.assertEqual(self.asm.get(name), value,
                              "%s differs from the SDK assembly wrapper"
                              % name)
 
     def test_range_and_mask_constants(self):
-        for name, value in (("ZOS_DIAG_MEM_BANK_MAX", 6),
-                            ("ZOS_DIAG_MEM_READ_MIN", 0x0000),
-                            ("ZOS_DIAG_MEM_READ_MAX", 0xDFFF),
-                            ("ZOS_DIAG_MEM_WRITE_MIN", 0x0100),
-                            ("ZOS_DIAG_MEM_WRITE_MAX", 0xDFFF),
-                            ("ZOS_DIAG_IO_PORT_MIN", 0x10),
-                            ("ZOS_DIAG_IO_PORT_MAX", 0xFF),
-                            ("ZOS_DIAG_BANK_MASK", 0x7F),
-                            ("ZOS_DIAG_SYSTEM_INFO_SIZE", 8),
-                            ("ZOS_DIAG_SYSTEM_INFO_ABI", 1)):
+        for name, value in (("KOS_DIAG_MEM_BANK_MAX", 6),
+                            ("KOS_DIAG_MEM_READ_MIN", 0x0000),
+                            ("KOS_DIAG_MEM_READ_MAX", 0xDFFF),
+                            ("KOS_DIAG_MEM_WRITE_MIN", 0x0100),
+                            ("KOS_DIAG_MEM_WRITE_MAX", 0xDFFF),
+                            ("KOS_DIAG_IO_PORT_MIN", 0x10),
+                            ("KOS_DIAG_IO_PORT_MAX", 0xFF),
+                            ("KOS_DIAG_BANK_MASK", 0x7F),
+                            ("KOS_DIAG_SYSTEM_INFO_SIZE", 8),
+                            ("KOS_DIAG_SYSTEM_INFO_ABI", 1)):
             self.assertEqual(self._diag(name), value,
                              "%s is mispinned" % name)
 
     def test_packed_block_asserts_present(self):
         text = re.sub(r"\s+", " ", read_text(DIAG_H))
         for statement in (
-                "sizeof(struct zos_diag_mem_read_args) == 4",
-                "sizeof(struct zos_diag_mem_write_args) == 4",
-                "sizeof(struct zos_diag_io_in_args) == 1",
-                "sizeof(struct zos_diag_io_out_args) == 2",
-                "sizeof(struct zos_diag_system_info) == "
-                "ZOS_DIAG_SYSTEM_INFO_SIZE",
-                "__builtin_offsetof(struct zos_diag_system_info, "
+                "sizeof(struct kos_diag_mem_read_args) == 4",
+                "sizeof(struct kos_diag_mem_write_args) == 4",
+                "sizeof(struct kos_diag_io_in_args) == 1",
+                "sizeof(struct kos_diag_io_out_args) == 2",
+                "sizeof(struct kos_diag_system_info) == "
+                "KOS_DIAG_SYSTEM_INFO_SIZE",
+                "__builtin_offsetof(struct kos_diag_system_info, "
                 "common_base) == 4",
-                "__builtin_offsetof(struct zos_diag_system_info, "
+                "__builtin_offsetof(struct kos_diag_system_info, "
                 "kernel_bank) == 6",
-                "__builtin_offsetof(struct zos_diag_system_info, "
+                "__builtin_offsetof(struct kos_diag_system_info, "
                 "romfs_first_page) == 7"):
             self.assertIn(statement, text,
                           "packed-layout assertion missing: %s" % statement)
 
     def test_line_limit_is_80_characters(self):
         console = parse_c_header(CONSOLE_H)
-        self.assertEqual(evaluate(console["ZOS_LINE_MAX"], console), 80)
+        self.assertEqual(evaluate(console["KOS_LINE_MAX"], console), 80)
         monitor_h = parse_c_header(
             os.path.join(ROOT, "user", "monitor", "monitor.h"))
         env = dict(console)
@@ -169,26 +169,26 @@ class TestMonitorArtifacts(unittest.TestCase):
         with open(path, "rb") as fh:
             return path, fh.read()
 
-    def test_manifest_declares_ordinary_zex_with_low_scratch(self):
+    def test_manifest_declares_ordinary_exe_with_low_scratch(self):
         if not os.path.exists(MONITOR_JSON):
             self.skipTest("the monitor manifest has not been built")
-        manifest = zexpack.load_manifest(MONITOR_JSON)
-        self.assertEqual(manifest["entry"], "zos_entry")
+        manifest = exepack.load_manifest(MONITOR_JSON)
+        self.assertEqual(manifest["entry"], "kos_entry")
         # The SDK's low-data area (package 42b) is 93 bytes: the scratch
         # and raw request blocks, the call block and the nsgate blocks.
         self.assertEqual(manifest["entry_offset"], 93)
-        self.assertEqual(manifest["scratch"]["symbol"], "zos_scratch")
+        self.assertEqual(manifest["scratch"]["symbol"], "kos_scratch")
         self.assertEqual(manifest["scratch"]["size"], 16)
 
     def test_packed_monitor_matches_the_manifest_and_report(self):
-        _p, data = self._read("build/modules/monitor.zex")
+        _p, data = self._read("build/modules/monitor.exe")
         _p, report_text = self._read(
             "build/user/monitor/monitor.report.json")
         report = json.loads(report_text)
         if not os.path.exists(MONITOR_JSON):
             self.skipTest("the monitor manifest has not been built")
-        manifest = zexpack.load_manifest(MONITOR_JSON)
-        fields, geo = zexpack.validate_image(data)
+        manifest = exepack.load_manifest(MONITOR_JSON)
+        fields, geo = exepack.validate_image(data)
         self.assertEqual(fields["image_size"], manifest["image_size"])
         self.assertEqual(fields["bss_size"], manifest["bss_size"])
         self.assertEqual(fields["stack_size"], manifest["stack_size"])
@@ -196,7 +196,7 @@ class TestMonitorArtifacts(unittest.TestCase):
         self.assertEqual(report["sha256"],
                          hashlib.sha256(data).hexdigest())
         self.assertEqual(report["scratch"], manifest["scratch"])
-        self.assertEqual(report["entry"]["symbol"], "zos_entry")
+        self.assertEqual(report["entry"]["symbol"], "kos_entry")
 
     def test_linked_map_contains_only_monitor_and_runtime_modules(self):
         _p, raw = self._read("build/user/monitor/monitor.map")
@@ -218,13 +218,13 @@ class TestMonitorArtifacts(unittest.TestCase):
                     "linked monitor map references private symbol %s"
                     % name)
         # The SDK's shared scratch symbol stays inside the caller window.
-        for name in ("zos_scratch",):
+        for name in ("kos_scratch",):
             address = symbols[name]
             self.assertGreaterEqual(address, 0x0100)
             self.assertLess(address, 0x2000)
 
     def test_romfs_images_store_the_same_monitor_bytes(self):
-        _p, packed = self._read("build/modules/monitor.zex")
+        _p, packed = self._read("build/modules/monitor.exe")
         rels = ["build-subsys-selftest/recovery.romfs"]
         if os.path.exists(os.path.join(ROOT, "build", "recovery.romfs")):
             rels.append("build/recovery.romfs")
@@ -232,32 +232,32 @@ class TestMonitorArtifacts(unittest.TestCase):
             _p, stream = self._read(rel)
             _h, entries = romfspack.parse_image(stream)
             names = {entry["name"]: entry for entry in entries}
-            self.assertIn("monitor.zex", names,
-                          "%s does not carry monitor.zex" % rel)
-            self.assertEqual(names["monitor.zex"]["flags"],
-                             romfspack.FLAG_ZEX)
-            self.assertEqual(names["monitor.zex"]["payload"], packed,
-                             "%s monitor.zex payload differs from the "
+            self.assertIn("monitor.exe", names,
+                          "%s does not carry monitor.exe" % rel)
+            self.assertEqual(names["monitor.exe"]["flags"],
+                             romfspack.FLAG_EXE)
+            self.assertEqual(names["monitor.exe"]["payload"], packed,
+                             "%s monitor.exe payload differs from the "
                              "packed artifact" % rel)
 
-    def test_manifests_name_monitor_as_a_zex(self):
+    def test_manifests_name_monitor_as_a_exe(self):
         accepted = json.loads(read_text(SUBSYS_MANIFEST))
         entries = {entry["name"]: entry for entry in accepted["files"]}
-        self.assertEqual(entries["monitor.zex"]["type"], "ZEX")
-        self.assertIn("sio.zmod", entries)
+        self.assertEqual(entries["monitor.exe"]["type"], "EXE")
+        self.assertIn("sio.mod", entries)
         production = json.loads(read_text(PROD_MANIFEST))
         pentries = {entry["name"]: entry for entry in production["files"]}
-        self.assertEqual(pentries["monitor.zex"]["type"], "ZEX")
-        self.assertIn("sio.zmod", pentries)
+        self.assertEqual(pentries["monitor.exe"]["type"], "EXE")
+        self.assertIn("sio.mod", pentries)
 
     def test_image_contains_the_monitor_command_surface(self):
         _p, image = self._read("build-subsys-selftest/"
-                               "zephyros-subsys-selftest.bin")
-        for marker in (b"ZephyrOS native monitor\r\n",
+                               "konaos-subsys-selftest.bin")
+        for marker in (b"KonaOS native monitor\r\n",
                        b"system: abi ",
                        b"ERR: ARG\r\n",
                        b"ERR: COMMAND\r\n",
-                       b"X path [tail]  run a ZEX from /system\r\n",
+                       b"X path [tail]  run a EXE from /system\r\n",
                        b"exec: exit status 0x",
                        b"monitor: exit status 0x"):
             self.assertIn(marker, image,
@@ -328,17 +328,17 @@ class TestM7MapcheckRules(unittest.TestCase):
         mapcheck.check_map(make_map())
 
     def test_diag_driver_must_be_bank7(self):
-        text = make_map(symbols={"_zos_diag_mem_read": 0xE100})
+        text = make_map(symbols={"_kos_diag_mem_read": 0xE100})
         with self.assertRaisesRegex(mapcheck.MapError, "bank-7"):
             mapcheck.check_map(text)
 
     def test_diag_prefix_sweep(self):
-        text = make_map(symbols={"_zos_diag_future_driver": 0xE140})
+        text = make_map(symbols={"_kos_diag_future_driver": 0xE140})
         with self.assertRaisesRegex(mapcheck.MapError, "bank-7"):
             mapcheck.check_map(text)
 
     def test_missing_diag_symbol_rejected(self):
-        text = make_map(symbols={"_zos_diag_io_out": None})
+        text = make_map(symbols={"_kos_diag_io_out": None})
         with self.assertRaisesRegex(mapcheck.MapError,
                                     "map has no M7 symbol"):
             mapcheck.check_map(text)
@@ -402,7 +402,7 @@ class TestSubsystemSmokeMode(unittest.TestCase):
             + serial_smoke.SUBSYS_IRQ_OK
             + serial_smoke.SUBSYS_ROMFS_OK
             + serial_smoke.SUBSYS_PROCESS_OK
-            + b"ZephyrOS native monitor\r\n"
+            + b"KonaOS native monitor\r\n"
             + serial_smoke.SUBSYS_PROMPT
             + serial_smoke.SUBSYS_EXIT
             + b"0000 active 0 free-banks 6\r\n"

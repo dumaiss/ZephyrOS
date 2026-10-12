@@ -1,11 +1,11 @@
-/* ZephyrOS namespace acceptance test contract (test artifact).
+/* KonaOS namespace acceptance test contract (test artifact).
  *
  * Shared by the `nsdev` synthetic publisher (tests/target/ns/nsdev.c), its
  * driver manifest (tests/ns/manifests/nsdev.json), the client program
  * (tests/ns/ns.c) and the simulator replay.  It is the package-42a
  * conformance protocol, never the native ABI: the object lifecycle, the
- * argument blocks and the FILE protocol come from abi/zos/object.h,
- * abi/zos/ipc.h and abi/zos/protocol.h, and every constant here belongs to
+ * argument blocks and the FILE protocol come from abi/kos/object.h,
+ * abi/kos/ipc.h and abi/kos/protocol.h, and every constant here belongs to
  * the acceptance set.
  *
  * The image boots the real SIO and console drivers plus this one
@@ -26,15 +26,15 @@
  *   NS_OP_DESC       returns the frame's descriptor id
  */
 
-#ifndef ZEPHYROS_TARGET_NS_TEST_H
-#define ZEPHYROS_TARGET_NS_TEST_H
+#ifndef KONAOS_TARGET_NS_TEST_H
+#define KONAOS_TARGET_NS_TEST_H
 
-#include "zos/ipc.h"
-#include "zos/object.h"
-#include "zos/types.h"
+#include "kos/ipc.h"
+#include "kos/object.h"
+#include "kos/types.h"
 
 /* Test-only driver class: 1-8 are the production driver classes
- * (abi/zos/protocol.h), 16+ is the IPC image's synthetic set. */
+ * (abi/kos/protocol.h), 16+ is the IPC image's synthetic set. */
 #define NS_CLASS_DEV 30u
 
 /* Every synthetic endpoint exports version 1, instance 0. */
@@ -52,4 +52,4 @@
 #define NS_OBJECT_KEYBOARD 1u
 #define NS_OBJECT_VIDEO    2u
 
-#endif /* ZEPHYROS_TARGET_NS_TEST_H */
+#endif /* KONAOS_TARGET_NS_TEST_H */

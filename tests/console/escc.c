@@ -1,7 +1,7 @@
-/* ZephyrOS ESC c display-reset check (work package 42e, test-only).
+/* KonaOS ESC c display-reset check (work package 42e, test-only).
  *
  * The console integration image boots this tiny program before the
- * monitor (ZOS_BOOT_PROGRAM=/system/escc.zex).  It writes ESC `c` - the
+ * monitor (KOS_BOOT_PROGRAM=/system/escc.exe).  It writes ESC `c` - the
  * V9958 display reset, which re-runs the whole bring-up including the
  * font reload - and then a line of text through the console, so the owner
  * watching the board sees the display reset and the new line, and the
@@ -12,7 +12,7 @@
  * store.
  */
 
-#include "zos.h"
+#include "kos.h"
 
 int main(void)
 {
@@ -21,6 +21,6 @@ int main(void)
 	 * resets the display. */
 	console_puts("\x1b" "c");
 	console_puts("escc: display reset\r\n");
-	(void)run("/system/monitor.zex", "");
+	(void)run("/system/monitor.exe", "");
 	return 0;
 }

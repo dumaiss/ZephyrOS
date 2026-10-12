@@ -1,12 +1,12 @@
-/* ZephyrOS kernel interface for M0.
+/* KonaOS kernel interface for M0.
  *
  * Declares the M0 kernel entry, the fatal-error path, and the early serial
- * console.  These are internal implementation details of the ZephyrOS
- * bring-up; they are not a stable ZephyrOS ABI.
+ * console.  These are internal implementation details of the KonaOS
+ * bring-up; they are not a stable KonaOS ABI.
  */
 
-#ifndef ZEPHYROS_KERNEL_H
-#define ZEPHYROS_KERNEL_H
+#ifndef KONAOS_KERNEL_H
+#define KONAOS_KERNEL_H
 
 #include "platform.h"
 
@@ -26,4 +26,4 @@ void early_console_init(void);
 void early_console_putc(char ch);
 void early_console_puts(const char *s);
 
-#endif /* ZEPHYROS_KERNEL_H */
+#endif /* KONAOS_KERNEL_H */

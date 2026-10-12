@@ -14,23 +14,23 @@
 
 /* IM2 vector page: 256-byte-aligned FD00h page plus the vector-FFh guard
  * byte at FE00h (the FFh vector reads one byte past the nominal page). */
-#define ZOS_IRQ_VECTOR_BASE         0xFD00u
-#define ZOS_IRQ_VECTOR_SIZE         0x0101u
+#define KOS_IRQ_VECTOR_BASE         0xFD00u
+#define KOS_IRQ_VECTOR_SIZE         0x0101u
 
 /* Common IRQ transition state: a fixed header followed by the saved
  * interrupted state, starting at FE01h. */
-#define ZOS_IRQ_STATE_BASE          0xFE01u
-#define ZOS_IRQ_STATE_HEADER_SIZE   0x0006u
+#define KOS_IRQ_STATE_BASE          0xFE01u
+#define KOS_IRQ_STATE_HEADER_SIZE   0x0006u
 
 /* 128-byte common IRQ transition stack, above the state block. */
-#define ZOS_IRQ_STACK_BASE          0xFE80u
-#define ZOS_IRQ_STACK_TOP           0xFF00u
-#define ZOS_IRQ_STACK_SIZE          0x0080u
+#define KOS_IRQ_STACK_BASE          0xFE80u
+#define KOS_IRQ_STACK_TOP           0xFF00u
+#define KOS_IRQ_STACK_SIZE          0x0080u
 
 /* Kernel-owned IM2 vector page base (the value loaded into the I register). */
-#define ZOS_IM2_I_VALUE             0xFDu
+#define KOS_IM2_I_VALUE             0xFDu
 
 /* CTC0 (physical channel 0, port 40h) IM2 vector byte. */
-#define ZOS_CTC0_VECTOR_BASE        0x00u
+#define KOS_CTC0_VECTOR_BASE        0x00u
 
 #endif /* ZEPHYR80_IRQ_H */

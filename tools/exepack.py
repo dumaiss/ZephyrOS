@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""ZephyrOS ZEX v2 native-executable packer, validator, and inspector.
+"""KonaOS EXE v2 native-executable packer, validator, and inspector.
 
-ZEX v2 is the only native executable container (architecture 36.18): a
+EXE v2 is the only native executable container (architecture 36.18): a
 primary image loaded at logical 0100h plus zero or more auxiliary
 segments, all described by one up-front feasibility-checked header (see
-docs/zex-format.md and formats/include/zex.h):
+docs/exe-format.md and formats/include/exe.h):
 
-    00 magic[4]="ZEX2"   04 format_version=2   05 abi_version=1
+    00 magic[4]="KEX2"   04 format_version=2   05 abi_version=1
     06 flags=0           07 reserved0=0
     08 header_size=36    0A segment_count      0B total_segment_slots
     0C primary_image_size  0E primary_bss_size 10 entry_offset
@@ -24,7 +24,7 @@ A program is linked as one contiguous primary image at 0100h:
     _DATA = 0100h+image_size   zero-initialized data (BSS)
 
 so the loader can copy the image byte-for-byte and zero the BSS without
-running a C startup.  Initialized writable data is not part of ZEX v2:
+running a C startup.  Initialized writable data is not part of EXE v2:
 the packer rejects linked content outside the declared image and rejects
 initialized-data areas, keeping the load image deterministic.
 
@@ -40,28 +40,28 @@ here: with any far-code segment the primary image, its BSS and the stack
 must stay outside `8000h-BFFFh`.
 
 Packing validates every geometry boundary before emitting a byte; the
-result codes match the kernel reader exactly (formats/include/zex.h).
+result codes match the kernel reader exactly (formats/include/exe.h).
 
 Usage:
-    zexpack.py pack <manifest.json> <out.zex> [--objdir DIR]
+    exepack.py pack <manifest.json> <out.exe> [--objdir DIR]
                    [--report FILE]
-    zexpack.py validate <file.zex>
-    zexpack.py dump <file.zex>
-    zexpack.py get <manifest.json> <field>
+    exepack.py validate <file.exe>
+    exepack.py dump <file.exe>
+    exepack.py get <manifest.json> <field>
 
-Manifest (zex-v2):
+Manifest (exe-v2):
 
     {
-      "format": "zex-v2",
-      "name": "zextest.zex",
-      "input": "zextest.ihx",
-      "map": "zextest.map",
+      "format": "exe-v2",
+      "name": "exetest.exe",
+      "input": "exetest.ihx",
+      "map": "exetest.map",
       "entry": "zt_entry",
       "entry_offset": 0,
       "image_size": 1792,
       "bss_size": 512,
       "stack_size": 256,
-      "scratch": {"symbol": "zos_scratch", "size": 16},
+      "scratch": {"symbol": "kos_scratch", "size": 16},
       "segments": [
         {"id": 1, "kind": "DATA", "input": "seg1.bin", "bss_size": 64},
         {"id": 2, "kind": "FAR_CODE", "area": "_FAR_CODE", "bss_size": 0}
@@ -90,7 +90,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 import pack_image  # noqa: E402  (parse_ihx, parse_map_symbols)
 
-MAGIC = b"ZEX2"
+MAGIC = b"KEX2"
 FORMAT_VERSION = 2
 ABI_VERSION = 1
 FLAGS_NONE = 0
@@ -118,33 +118,33 @@ KIND_FAR_CODE = 1
 KIND_DATA = 2
 KIND_BY_NAME = {"FAR_CODE": KIND_FAR_CODE, "DATA": KIND_DATA}
 
-# Result codes: kept value-identical with formats/include/zex.h; the
+# Result codes: kept value-identical with formats/include/exe.h; the
 # host parity test cross-checks the two so they cannot drift.
 RESULT_CODES = (
-    ("ZEX_EXEC_OK", 0),
-    ("ZEX_EXEC_ERR_ARG", -0x21),
-    ("ZEX_EXEC_ERR_ROMFS", -0x22),
-    ("ZEX_EXEC_ERR_TYPE", -0x23),
-    ("ZEX_EXEC_ERR_NOSPACE", -0x24),
-    ("ZEX_EXEC_ERR_READ", -0x25),
-    ("ZEX_EXEC_ERR_MAGIC", -0x31),
-    ("ZEX_EXEC_ERR_FORMAT", -0x32),
-    ("ZEX_EXEC_ERR_ABI", -0x33),
-    ("ZEX_EXEC_ERR_FLAGS", -0x34),
-    ("ZEX_EXEC_ERR_RESERVED0", -0x35),
-    ("ZEX_EXEC_ERR_HEADER", -0x36),
-    ("ZEX_EXEC_ERR_RESERVED1", -0x37),
-    ("ZEX_EXEC_ERR_IMAGE", -0x38),
-    ("ZEX_EXEC_ERR_FILESIZE", -0x39),
-    ("ZEX_EXEC_ERR_ENTRY", -0x3A),
-    ("ZEX_EXEC_ERR_STACK", -0x3B),
-    ("ZEX_EXEC_ERR_IMAGE_END", -0x3C),
-    ("ZEX_EXEC_ERR_BSS_END", -0x3D),
-    ("ZEX_EXEC_ERR_COLLISION", -0x3E),
-    ("ZEX_EXEC_ERR_SEG_SLOTS", -0x3F),
-    ("ZEX_EXEC_ERR_SEG_TABLE", -0x40),
-    ("ZEX_EXEC_ERR_SEGMENT", -0x41),
-    ("ZEX_EXEC_ERR_SEG_KIND", -0x42),
+    ("EXE_EXEC_OK", 0),
+    ("EXE_EXEC_ERR_ARG", -0x21),
+    ("EXE_EXEC_ERR_ROMFS", -0x22),
+    ("EXE_EXEC_ERR_TYPE", -0x23),
+    ("EXE_EXEC_ERR_NOSPACE", -0x24),
+    ("EXE_EXEC_ERR_READ", -0x25),
+    ("EXE_EXEC_ERR_MAGIC", -0x31),
+    ("EXE_EXEC_ERR_FORMAT", -0x32),
+    ("EXE_EXEC_ERR_ABI", -0x33),
+    ("EXE_EXEC_ERR_FLAGS", -0x34),
+    ("EXE_EXEC_ERR_RESERVED0", -0x35),
+    ("EXE_EXEC_ERR_HEADER", -0x36),
+    ("EXE_EXEC_ERR_RESERVED1", -0x37),
+    ("EXE_EXEC_ERR_IMAGE", -0x38),
+    ("EXE_EXEC_ERR_FILESIZE", -0x39),
+    ("EXE_EXEC_ERR_ENTRY", -0x3A),
+    ("EXE_EXEC_ERR_STACK", -0x3B),
+    ("EXE_EXEC_ERR_IMAGE_END", -0x3C),
+    ("EXE_EXEC_ERR_BSS_END", -0x3D),
+    ("EXE_EXEC_ERR_COLLISION", -0x3E),
+    ("EXE_EXEC_ERR_SEG_SLOTS", -0x3F),
+    ("EXE_EXEC_ERR_SEG_TABLE", -0x40),
+    ("EXE_EXEC_ERR_SEGMENT", -0x41),
+    ("EXE_EXEC_ERR_SEG_KIND", -0x42),
 )
 CODE_BY_NAME = dict(RESULT_CODES)
 
@@ -173,10 +173,10 @@ def parse_symbols(map_text):
     return symbols
 
 
-class ZexError(Exception):
-    """A ZEX image or build violates the v2 contract.
+class ExeError(Exception):
+    """A EXE image or build violates the v2 contract.
 
-    Carries the boundary name (a ZEX_EXEC_ERR_* key) so the packer, the
+    Carries the boundary name (a EXE_EXEC_ERR_* key) so the packer, the
     validator, and the target tests all report the same reason.
     """
 
@@ -271,9 +271,9 @@ def base_segment_row():
 
 
 def parse_header(data):
-    """Parse the first 36 bytes; raises ZexError on a short file."""
+    """Parse the first 36 bytes; raises ExeError on a short file."""
     if len(data) < HEADER_SIZE:
-        raise ZexError("ZEX_EXEC_ERR_FILESIZE",
+        raise ExeError("EXE_EXEC_ERR_FILESIZE",
                        "file is %d bytes, shorter than the %d-byte header"
                        % (len(data), HEADER_SIZE))
     return {
@@ -299,7 +299,7 @@ def parse_header(data):
 def parse_segment_row(data, offset=0):
     raw = data[offset:offset + SEGMENT_ENTRY_SIZE]
     if len(raw) < SEGMENT_ENTRY_SIZE:
-        raise ZexError("ZEX_EXEC_ERR_SEG_TABLE",
+        raise ExeError("EXE_EXEC_ERR_SEG_TABLE",
                        "segment table is truncated")
     return {
         "id": raw[0],
@@ -315,67 +315,67 @@ def parse_segment_row(data, offset=0):
 def validate_fields(fields, file_size):
     """Validate header fields against the total file size.
 
-    Mirrors kernel/process/exec.c zex_validate_header() boundary by
-    boundary and returns the ZEX_EXEC_ERR_* name of the first violation,
+    Mirrors kernel/process/exec.c exe_validate_header() boundary by
+    boundary and returns the EXE_EXEC_ERR_* name of the first violation,
     or None when the header is valid.
     """
     if fields["magic"] != MAGIC:
-        return "ZEX_EXEC_ERR_MAGIC"
+        return "EXE_EXEC_ERR_MAGIC"
     if fields["format_version"] != FORMAT_VERSION:
-        return "ZEX_EXEC_ERR_FORMAT"
+        return "EXE_EXEC_ERR_FORMAT"
     if fields["abi_version"] != ABI_VERSION:
-        return "ZEX_EXEC_ERR_ABI"
+        return "EXE_EXEC_ERR_ABI"
     if fields["flags"] != FLAGS_NONE:
-        return "ZEX_EXEC_ERR_FLAGS"
+        return "EXE_EXEC_ERR_FLAGS"
     if fields["reserved0"] != 0:
-        return "ZEX_EXEC_ERR_RESERVED0"
+        return "EXE_EXEC_ERR_RESERVED0"
     if fields["header_size"] != HEADER_SIZE:
-        return "ZEX_EXEC_ERR_HEADER"
+        return "EXE_EXEC_ERR_HEADER"
     if fields["reserved1"] != 0:
-        return "ZEX_EXEC_ERR_RESERVED1"
+        return "EXE_EXEC_ERR_RESERVED1"
     if fields["image_size"] == 0:
-        return "ZEX_EXEC_ERR_IMAGE"
+        return "EXE_EXEC_ERR_IMAGE"
     if file_size != fields["file_size"]:
-        return "ZEX_EXEC_ERR_FILESIZE"
+        return "EXE_EXEC_ERR_FILESIZE"
     if fields["entry_offset"] >= fields["image_size"]:
-        return "ZEX_EXEC_ERR_ENTRY"
+        return "EXE_EXEC_ERR_ENTRY"
     if fields["stack_size"] < MIN_STACK_SIZE:
-        return "ZEX_EXEC_ERR_STACK"
+        return "EXE_EXEC_ERR_STACK"
     if (fields["segment_count"] > MAX_SEGMENTS or
             fields["total_segment_slots"] > MAX_TOTAL_SLOTS):
-        return "ZEX_EXEC_ERR_SEG_SLOTS"
+        return "EXE_EXEC_ERR_SEG_SLOTS"
     table_end = fields["segment_table_offset"] + \
         fields["segment_count"] * SEGMENT_ENTRY_SIZE
     if table_end > file_size:
-        return "ZEX_EXEC_ERR_SEG_TABLE"
+        return "EXE_EXEC_ERR_SEG_TABLE"
     payload_end = fields["primary_payload_offset"] + fields["image_size"]
     if payload_end > U32_MAX or payload_end > file_size:
-        return "ZEX_EXEC_ERR_FILESIZE"
+        return "EXE_EXEC_ERR_FILESIZE"
     image_end = LOAD_BASE + fields["image_size"]
     if image_end > STACK_TOP:
-        return "ZEX_EXEC_ERR_IMAGE_END"
+        return "EXE_EXEC_ERR_IMAGE_END"
     bss_end = image_end + fields["bss_size"]
     if bss_end > STACK_TOP:
-        return "ZEX_EXEC_ERR_BSS_END"
+        return "EXE_EXEC_ERR_BSS_END"
     stack_base = STACK_TOP - fields["stack_size"]
     if stack_base < LOAD_BASE or bss_end > stack_base:
-        return "ZEX_EXEC_ERR_COLLISION"
+        return "EXE_EXEC_ERR_COLLISION"
     return None
 
 
 def validate_segment_row(row, file_size):
-    """Mirror kernel/process/exec.c zex_validate_segment()."""
+    """Mirror kernel/process/exec.c exe_validate_segment()."""
     if row["kind"] not in (KIND_DATA, KIND_FAR_CODE):
-        return "ZEX_EXEC_ERR_SEG_KIND"
+        return "EXE_EXEC_ERR_SEG_KIND"
     if (row["image_size"] == 0 or row["reserved0"] != 0 or
             row["reserved1"] != 0):
-        return "ZEX_EXEC_ERR_SEGMENT"
+        return "EXE_EXEC_ERR_SEGMENT"
     limit = (SEG_MAX_FAR_SIZE if row["kind"] == KIND_FAR_CODE
              else SEG_MAX_SIZE)
     if row["image_size"] + row["bss_size"] > limit:
-        return "ZEX_EXEC_ERR_SEGMENT"
+        return "EXE_EXEC_ERR_SEGMENT"
     if row["payload_offset"] + row["image_size"] > file_size:
-        return "ZEX_EXEC_ERR_SEGMENT"
+        return "EXE_EXEC_ERR_SEGMENT"
     return None
 
 
@@ -390,11 +390,11 @@ def geometry(fields):
 
 
 def validate_image(data):
-    """Validate a complete .zex byte string; returns (fields, geometry)."""
+    """Validate a complete .exe byte string; returns (fields, geometry)."""
     fields = parse_header(data)
     code = validate_fields(fields, len(data))
     if code is not None:
-        raise ZexError(code, "%s (file %d bytes)" % (code, len(data)))
+        raise ExeError(code, "%s (file %d bytes)" % (code, len(data)))
     segments = []
     slots = 0
     for index in range(fields["segment_count"]):
@@ -402,23 +402,23 @@ def validate_image(data):
                                 index * SEGMENT_ENTRY_SIZE)
         code = validate_segment_row(row, len(data))
         if code is not None:
-            raise ZexError(code, "%s (segment %d)" % (code, index + 1))
+            raise ExeError(code, "%s (segment %d)" % (code, index + 1))
         if row["id"] != index + 1:
-            raise ZexError("ZEX_EXEC_ERR_SEGMENT",
+            raise ExeError("EXE_EXEC_ERR_SEGMENT",
                            "segment %d has id %d, expected %d"
                            % (index + 1, row["id"], index + 1))
         slots += segment_slots(row["image_size"], row["bss_size"])
         segments.append(row)
     if slots != fields["total_segment_slots"]:
-        raise ZexError("ZEX_EXEC_ERR_SEG_SLOTS",
+        raise ExeError("EXE_EXEC_ERR_SEG_SLOTS",
                        "segments need %d slots, header says %d"
                        % (slots, fields["total_segment_slots"]))
     return fields, geometry(fields)
 
 
 def reported_name(code):
-    """Human-readable boundary name for a ZEX_EXEC_ERR_* key."""
-    return code if code.startswith("ZEX_") else str(code)
+    """Human-readable boundary name for a EXE_EXEC_ERR_* key."""
+    return code if code.startswith("EXE_") else str(code)
 
 
 # --- manifest handling -----------------------------------------------------
@@ -431,27 +431,27 @@ def load_manifest(path):
     try:
         manifest = json.loads(Path(path).read_text())
     except OSError as exc:
-        raise ZexError("ZEX_EXEC_ERR_ARG", "cannot read manifest: %s" % exc)
+        raise ExeError("EXE_EXEC_ERR_ARG", "cannot read manifest: %s" % exc)
     except ValueError as exc:
-        raise ZexError("ZEX_EXEC_ERR_ARG",
+        raise ExeError("EXE_EXEC_ERR_ARG",
                        "manifest is not valid JSON: %s" % exc)
     if not isinstance(manifest, dict):
-        raise ZexError("ZEX_EXEC_ERR_ARG", "manifest must be an object")
+        raise ExeError("EXE_EXEC_ERR_ARG", "manifest must be an object")
     unknown = set(manifest) - MANIFEST_KEYS
     if unknown:
-        raise ZexError("ZEX_EXEC_ERR_ARG",
+        raise ExeError("EXE_EXEC_ERR_ARG",
                        "unknown manifest keys: %s" % ", ".join(sorted(unknown)))
-    if manifest.get("format") != "zex-v2":
-        raise ZexError("ZEX_EXEC_ERR_ARG",
-                       "manifest format must be 'zex-v2'")
+    if manifest.get("format") != "exe-v2":
+        raise ExeError("EXE_EXEC_ERR_ARG",
+                       "manifest format must be 'exe-v2'")
     for key in ("name", "input", "map", "entry", "entry_offset",
                 "image_size", "bss_size", "stack_size"):
         if key not in manifest:
-            raise ZexError("ZEX_EXEC_ERR_ARG",
+            raise ExeError("EXE_EXEC_ERR_ARG",
                            "manifest is missing '%s'" % key)
     for key in ("entry_offset", "image_size", "bss_size", "stack_size"):
         if not _non_negative_int(manifest[key]):
-            raise ZexError("ZEX_EXEC_ERR_ARG",
+            raise ExeError("EXE_EXEC_ERR_ARG",
                            "manifest '%s' must be a non-negative integer" % key)
     scratch = manifest.get("scratch")
     if scratch is not None:
@@ -459,7 +459,7 @@ def load_manifest(path):
                 or "size" not in scratch
                 or not isinstance(scratch["size"], int)
                 or scratch["size"] <= 0):
-            raise ZexError("ZEX_EXEC_ERR_ARG",
+            raise ExeError("EXE_EXEC_ERR_ARG",
                            "manifest 'scratch' must be {symbol, size>0}")
     _validate_segment_manifest(manifest.get("segments"))
     return manifest
@@ -469,38 +469,38 @@ def _validate_segment_manifest(segments):
     if segments is None:
         return
     if not isinstance(segments, list):
-        raise ZexError("ZEX_EXEC_ERR_ARG",
+        raise ExeError("EXE_EXEC_ERR_ARG",
                        "manifest 'segments' must be a list")
     if len(segments) > MAX_SEGMENTS:
-        raise ZexError("ZEX_EXEC_ERR_SEG_SLOTS",
+        raise ExeError("EXE_EXEC_ERR_SEG_SLOTS",
                        "%d segments exceed the %d-row table"
                        % (len(segments), MAX_SEGMENTS))
     for index, segment in enumerate(segments):
         if not isinstance(segment, dict):
-            raise ZexError("ZEX_EXEC_ERR_ARG",
+            raise ExeError("EXE_EXEC_ERR_ARG",
                            "segment %d must be an object" % (index + 1))
         unknown = set(segment) - SEGMENT_MANIFEST_KEYS
         if unknown:
-            raise ZexError("ZEX_EXEC_ERR_ARG",
+            raise ExeError("EXE_EXEC_ERR_ARG",
                            "unknown segment keys: %s"
                            % ", ".join(sorted(unknown)))
         for key in ("id", "kind", "bss_size"):
             if key not in segment:
-                raise ZexError("ZEX_EXEC_ERR_ARG",
+                raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d is missing '%s'"
                                % (index + 1, key))
         if segment["kind"] == "DATA" and (
                 not isinstance(segment.get("input"), str)
                 or not segment["input"]):
-            raise ZexError("ZEX_EXEC_ERR_ARG",
+            raise ExeError("EXE_EXEC_ERR_ARG",
                            "segment %d input must be a file name"
                            % (index + 1))
         if (not _non_negative_int(segment["id"]) or segment["id"] < 1 or
                 segment["id"] > 255):
-            raise ZexError("ZEX_EXEC_ERR_ARG",
+            raise ExeError("EXE_EXEC_ERR_ARG",
                            "segment %d id must be 1..255" % (index + 1))
         if not _non_negative_int(segment["bss_size"]):
-            raise ZexError("ZEX_EXEC_ERR_ARG",
+            raise ExeError("EXE_EXEC_ERR_ARG",
                            "segment %d bss_size must be non-negative"
                            % (index + 1))
         if segment["kind"] == "FAR_CODE":
@@ -509,20 +509,20 @@ def _validate_segment_manifest(segments):
             # raw payload file.
             area = segment.get("area")
             if not isinstance(area, str) or not area:
-                raise ZexError("ZEX_EXEC_ERR_ARG",
+                raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d kind FAR_CODE needs an 'area' "
                                "name" % (index + 1))
             if "input" in segment:
-                raise ZexError("ZEX_EXEC_ERR_ARG",
+                raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d kind FAR_CODE takes 'area', not "
                                "'input'" % (index + 1))
         elif segment["kind"] == "DATA":
             if "area" in segment:
-                raise ZexError("ZEX_EXEC_ERR_ARG",
+                raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d kind DATA takes 'input', not "
                                "'area'" % (index + 1))
         else:
-            raise ZexError("ZEX_EXEC_ERR_SEG_KIND",
+            raise ExeError("EXE_EXEC_ERR_SEG_KIND",
                            "segment %d kind %r is unknown"
                            % (index + 1, segment["kind"]))
 
@@ -541,22 +541,22 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
     try:
         raw = json.loads(Path(manifest_path).read_text())
     except OSError as exc:
-        raise ZexError("ZEX_EXEC_ERR_ARG", "cannot read manifest: %s" % exc)
+        raise ExeError("EXE_EXEC_ERR_ARG", "cannot read manifest: %s" % exc)
     except ValueError as exc:
-        raise ZexError("ZEX_EXEC_ERR_ARG",
+        raise ExeError("EXE_EXEC_ERR_ARG",
                        "manifest is not valid JSON: %s" % exc)
     manifest = load_manifest(manifest_path)
     ihx_path = _resolve(manifest["input"], manifest_path, objdir)
     map_path = _resolve(manifest["map"], manifest_path, objdir)
     if not ihx_path.is_file():
-        raise ZexError("ZEX_EXEC_ERR_ARG", "input not found: %s" % ihx_path)
+        raise ExeError("EXE_EXEC_ERR_ARG", "input not found: %s" % ihx_path)
     if not map_path.is_file():
-        raise ZexError("ZEX_EXEC_ERR_ARG", "map not found: %s" % map_path)
+        raise ExeError("EXE_EXEC_ERR_ARG", "map not found: %s" % map_path)
 
     try:
         mem = pack_image.parse_ihx(ihx_path.read_text())
     except pack_image.LayoutError as exc:
-        raise ZexError("ZEX_EXEC_ERR_ARG", "IHX rejected: %s" % exc)
+        raise ExeError("EXE_EXEC_ERR_ARG", "IHX rejected: %s" % exc)
     symbols = parse_symbols(map_path.read_text())
 
     image_size = manifest["image_size"]
@@ -579,16 +579,16 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
         start = symbols.get("s_" + area)
         length = symbols.get("l_" + area)
         if start is None or length is None:
-            raise ZexError("ZEX_EXEC_ERR_ARG",
+            raise ExeError("EXE_EXEC_ERR_ARG",
                            "segment %d: map has no s_%s/l_%s far area"
                            % (index + 1, area, area))
         if start != FAR_BASE:
-            raise ZexError("ZEX_EXEC_ERR_ARG",
+            raise ExeError("EXE_EXEC_ERR_ARG",
                            "segment %d: far area %s is linked at %04Xh; "
                            "far code is linked at %04Xh"
                            % (index + 1, area, start, FAR_BASE))
         if length <= 0 or length > SEG_MAX_FAR_SIZE:
-            raise ZexError("ZEX_EXEC_ERR_SEGMENT",
+            raise ExeError("EXE_EXEC_ERR_SEGMENT",
                            "segment %d: far area %s is %d bytes, over the "
                            "%d-byte aperture"
                            % (index + 1, area, length, SEG_MAX_FAR_SIZE))
@@ -596,7 +596,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
             if other == (start, length):
                 continue
             if not (start + length <= other[0] or other[0] + other[1] <= start):
-                raise ZexError("ZEX_EXEC_ERR_ARG",
+                raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d: far area %s at %04Xh overlaps "
                                "the area at %04Xh" % (index + 1, area, start,
                                                       other[0]))
@@ -617,8 +617,8 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                if not in_far(addr)
                and (addr < LOAD_BASE or addr >= image_end)]
     if outside:
-        raise ZexError(
-            "ZEX_EXEC_ERR_ARG",
+        raise ExeError(
+            "EXE_EXEC_ERR_ARG",
             "linked content at %04Xh lies outside the declared image "
             "%04Xh-%04Xh%s"
             % (outside[0], LOAD_BASE, image_end - 1,
@@ -630,44 +630,44 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
     entry_name = manifest["entry"]
     entry_offset = manifest["entry_offset"]
     if entry_offset >= image_size:
-        raise ZexError("ZEX_EXEC_ERR_ENTRY",
+        raise ExeError("EXE_EXEC_ERR_ENTRY",
                        "declared entry_offset %d is outside the image"
                        % entry_offset)
     if entry_name not in symbols:
-        raise ZexError("ZEX_EXEC_ERR_ARG",
+        raise ExeError("EXE_EXEC_ERR_ARG",
                        "map has no entry symbol %s" % entry_name)
     entry = symbols[entry_name]
     if entry != LOAD_BASE + entry_offset:
-        raise ZexError("ZEX_EXEC_ERR_ARG",
+        raise ExeError("EXE_EXEC_ERR_ARG",
                        "entry %s is at %04Xh, declared offset says %04Xh"
                        % (entry_name, entry, LOAD_BASE + entry_offset))
 
     # BSS must begin exactly at the image end so the loader's zero-fill
     # covers every writable static.  Initialized writable data has no
-    # startup support in ZEX v2 and is rejected outright.
+    # startup support in EXE v2 and is rejected outright.
     if symbols.get("s__DATA") != image_end:
-        raise ZexError("ZEX_EXEC_ERR_ARG",
+        raise ExeError("EXE_EXEC_ERR_ARG",
                        "BSS base s__DATA is %04Xh, expected image end %04Xh"
                        % (symbols.get("s__DATA", -1), image_end))
     if symbols.get("l__DATA", 0) > bss_size:
-        raise ZexError("ZEX_EXEC_ERR_ARG",
+        raise ExeError("EXE_EXEC_ERR_ARG",
                        "BSS is %d bytes, declared bss_size is %d"
                        % (symbols.get("l__DATA", 0), bss_size))
     for area in ("INITIALIZER", "INITIALIZED"):
         if symbols.get("l__" + area, 0) != 0:
-            raise ZexError("ZEX_EXEC_ERR_ARG",
-                           "initialized data is not supported by ZEX v2 "
+            raise ExeError("EXE_EXEC_ERR_ARG",
+                           "initialized data is not supported by EXE v2 "
                            "(_%s is non-empty)" % area)
 
     scratch = manifest.get("scratch")
     if scratch is not None:
         address = symbols.get(scratch["symbol"])
         if address is None:
-            raise ZexError("ZEX_EXEC_ERR_ARG",
+            raise ExeError("EXE_EXEC_ERR_ARG",
                            "map has no scratch symbol %s" % scratch["symbol"])
         if not (LOAD_BASE <= address
                 and address + scratch["size"] <= SYSCALL_WINDOW_END):
-            raise ZexError("ZEX_EXEC_ERR_ARG",
+            raise ExeError("EXE_EXEC_ERR_ARG",
                            "scratch %s at %04Xh (size %d) is not inside the "
                            "syscall argument window 0100h-1FFFh"
                            % (scratch["symbol"], address, scratch["size"]))
@@ -681,8 +681,8 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
         stack_base = STACK_TOP - stack_size
         if (image_end > FAR_IMAGE_END or bss_end > FAR_IMAGE_END or
                 stack_base < FAR_STACK_MIN):
-            raise ZexError(
-                "ZEX_EXEC_ERR_ARG",
+            raise ExeError(
+                "EXE_EXEC_ERR_ARG",
                 "far code needs the primary image, BSS and stack outside "
                 "8000h-BFFFh: image ends %04Xh, BSS ends %04Xh, stack base "
                 "%04Xh" % (image_end, bss_end, stack_base))
@@ -702,7 +702,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
     total_slots = 0
     for index, declared in enumerate(declared):
         if declared["id"] != index + 1:
-            raise ZexError("ZEX_EXEC_ERR_SEGMENT",
+            raise ExeError("EXE_EXEC_ERR_SEGMENT",
                            "segment %d declares id %d; ids must be 1..N in "
                            "order" % (index + 1, declared["id"]))
         kind = KIND_BY_NAME[declared["kind"]]
@@ -711,16 +711,16 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
         else:
             payload_path = _resolve(declared["input"], manifest_path, objdir)
             if not payload_path.is_file():
-                raise ZexError("ZEX_EXEC_ERR_ARG",
+                raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d payload not found: %s"
                                % (index + 1, payload_path))
             payload = payload_path.read_bytes()
         if len(payload) == 0:
-            raise ZexError("ZEX_EXEC_ERR_SEGMENT",
+            raise ExeError("EXE_EXEC_ERR_SEGMENT",
                            "segment %d payload is empty" % (index + 1))
         limit = SEG_MAX_FAR_SIZE if kind == KIND_FAR_CODE else SEG_MAX_SIZE
         if len(payload) + declared["bss_size"] > limit:
-            raise ZexError("ZEX_EXEC_ERR_SEGMENT",
+            raise ExeError("EXE_EXEC_ERR_SEGMENT",
                            "segment %d image + BSS is %d bytes, over the %d "
                            "limit" % (index + 1,
                                       len(payload) + declared["bss_size"],
@@ -737,7 +737,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
             "reserved1": 0,
         })
     if total_slots > MAX_TOTAL_SLOTS:
-        raise ZexError("ZEX_EXEC_ERR_SEG_SLOTS",
+        raise ExeError("EXE_EXEC_ERR_SEG_SLOTS",
                        "segments need %d slots, over the %d limit"
                        % (total_slots, MAX_TOTAL_SLOTS))
 
@@ -773,7 +773,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
 
     code = validate_fields(fields, len(output))
     if code is not None:
-        raise ZexError(code, "declared geometry rejected: %s" % code)
+        raise ExeError(code, "declared geometry rejected: %s" % code)
     validate_image(bytes(output))
 
     out = Path(out_path)
@@ -782,8 +782,8 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
     out.write_bytes(output)
 
     result = {
-        "tool": "zexpack.py",
-        "format": "zex-v2",
+        "tool": "exepack.py",
+        "format": "exe-v2",
         "name": manifest["name"],
         "output": str(out),
         "size": len(output),
@@ -830,7 +830,7 @@ def dump(path):
     image = data[fields["primary_payload_offset"]:
                  fields["primary_payload_offset"] + fields["image_size"]]
     lines = [
-        "zexpack: %s (%d bytes)" % (path, len(data)),
+        "exepack: %s (%d bytes)" % (path, len(data)),
         "  magic %s  format %d  abi %d  flags %d"
         % (fields["magic"].decode("ascii", "replace"),
            fields["format_version"], fields["abi_version"],
@@ -867,17 +867,17 @@ def dump(path):
 def get_field(manifest_path, field):
     manifest = load_manifest(manifest_path)
     if field not in ("image_size", "bss_size", "stack_size"):
-        raise ZexError("ZEX_EXEC_ERR_ARG",
+        raise ExeError("EXE_EXEC_ERR_ARG",
                        "get supports image_size, bss_size, stack_size")
     return int(manifest[field])
 
 
 def main(argv):
     parser = argparse.ArgumentParser(
-        prog="zexpack.py", description="ZephyrOS ZEX v2 packer/validator")
+        prog="exepack.py", description="KonaOS EXE v2 packer/validator")
     sub = parser.add_subparsers(dest="mode", required=True)
 
-    pack_cmd = sub.add_parser("pack", help="build a .zex from linked objects")
+    pack_cmd = sub.add_parser("pack", help="build a .exe from linked objects")
     pack_cmd.add_argument("manifest")
     pack_cmd.add_argument("output")
     pack_cmd.add_argument("--objdir", default=None,
@@ -886,7 +886,7 @@ def main(argv):
                           help="write a deterministic JSON report")
 
     for name in ("validate", "dump"):
-        cmd = sub.add_parser(name, help="%s a .zex" % name)
+        cmd = sub.add_parser(name, help="%s a .exe" % name)
         cmd.add_argument("image")
 
     get_cmd = sub.add_parser("get", help="read one manifest layout field")
@@ -899,22 +899,22 @@ def main(argv):
             result = pack(args.manifest, args.output, objdir=args.objdir,
                           report_path=args.report)
             entry_address = result["entry"]["address"]
-            print("zexpack: %s -> %s (%d bytes, entry %04Xh, sha256 %s)"
+            print("exepack: %s -> %s (%d bytes, entry %04Xh, sha256 %s)"
                   % (args.manifest, args.output, result["size"],
                      entry_address,
                      result["sha256"][:16]))
         elif args.mode == "validate":
             data = Path(args.image).read_bytes()
             validate_image(data)
-            print("zexpack: %s OK (%d bytes, sha256 %s)"
+            print("exepack: %s OK (%d bytes, sha256 %s)"
                   % (args.image, len(data),
                      hashlib.sha256(data).hexdigest()))
         elif args.mode == "dump":
             print(dump(args.image))
         else:
             print(get_field(args.manifest, args.field))
-    except ZexError as exc:
-        print("zexpack: %s: %s" % (reported_name(exc.code), exc),
+    except ExeError as exc:
+        print("exepack: %s: %s" % (reported_name(exc.code), exc),
               file=sys.stderr)
         return 1
     return 0

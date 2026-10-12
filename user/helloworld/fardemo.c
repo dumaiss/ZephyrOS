@@ -1,7 +1,7 @@
-/* ZephyrOS far-code SDK demo (work package 44b): the primary half.
+/* KonaOS far-code SDK demo (work package 44b): the primary half.
  *
  * The simplest complete far-code program: `fardemo_far.c` is compiled
- * into the `_FAR_CODE` area and linked at 8000h through the zex_program
+ * into the `_FAR_CODE` area and linked at 8000h through the exe_program
  * FAR= option, the packer proves the 36.17 link rule (this image, its BSS
  * and the whole stack stay outside 8000h-BFFFh), and `farcall` maps
  * the segment, makes the plain CALL and restores the previous latch.
@@ -12,7 +12,7 @@
  * bank ran the code.
  */
 
-#include "zos.h"
+#include "kos.h"
 
 #define SEGMENT 1u
 #define SEED    0x2Au

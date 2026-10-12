@@ -1,13 +1,13 @@
-/* ZephyrOS resident-driver loader and boot manifest reader.
+/* KonaOS resident-driver loader and boot manifest reader.
  *
  * Architecture 36.6, 36.11 and 36.12 (work packages 40-42c).  This
  * cold-half nucleus loader turns the flat load plans the recovery store
  * carries into the bank-6 resident domain, in manifest order:
  *
- *   1. read the boot manifest (ZOS_DRIVER_MANIFEST_NAME) with the
+ *   1. read the boot manifest (KOS_DRIVER_MANIFEST_NAME) with the
  *      bootstrap ROMFS reader: a flat DATA file of 24-byte ROMFS name
  *      records, the load order;
- *   2. read each image's flat plan (formats/include/zmod.h) and
+ *   2. read each image's flat plan (formats/include/mod.h) and
  *      iterate it: copy every segment image to its host-assigned base and
  *      zero its BSS through the common application-bank copy gate,
  *      install the host-built endpoint records into the nucleus endpoint
@@ -24,7 +24,7 @@
  *
  * The host computed everything (M10-REFERENCE decision 2): the container
  * carries no version, no module type, no relocation records and no
- * placement policy, and there is no magic check - the ROMFS entry's ZMOD
+ * placement policy, and there is no magic check - the ROMFS entry's MOD
  * flag (validated by romfs_init) is what proves the file is a driver
  * image.  The loader reads each plan once and checks only the bounds that
  * protect the nucleus and the fixed driver-bank layout - the header's
@@ -39,8 +39,8 @@
  * and I/O ports, and it must not call the bootstrap interface.
  */
 
-#include "zmod.h"
-#include "zos/errno.h"
+#include "mod.h"
+#include "kos/errno.h"
 #include "driver.h"
 #include "kernel.h"
 #include "process.h"
@@ -54,30 +54,30 @@
 /* The plan and ledger lines are acceptance evidence the replay pins
  * against the packer's report; production links only the error lines
  * (work package 41).  Target images normally inherit the shared
- * ZOS_TARGET_TEST_BUILD guard. */
-#ifndef ZOS_TARGET_TEST_BUILD
-#define ZOS_TARGET_TEST_BUILD 0
+ * KOS_TARGET_TEST_BUILD guard. */
+#ifndef KOS_TARGET_TEST_BUILD
+#define KOS_TARGET_TEST_BUILD 0
 #endif
-#ifndef ZOS_DRIVER_TEST_EVIDENCE
-#define ZOS_DRIVER_TEST_EVIDENCE ZOS_TARGET_TEST_BUILD
+#ifndef KOS_DRIVER_TEST_EVIDENCE
+#define KOS_DRIVER_TEST_EVIDENCE KOS_TARGET_TEST_BUILD
 #endif
 
-/* Bank 6 is the resident driver domain (revision 13: bank = ZOS_BANK_MASK
+/* Bank 6 is the resident driver domain (revision 13: bank = KOS_BANK_MASK
  * - window page; the same derivation kernel/ipc/ipc.c uses). */
-#define DRIVER_BANK (uint8_t)(ZOS_BANK_MASK - 1u)
+#define DRIVER_BANK (uint8_t)(KOS_BANK_MASK - 1u)
 
 /* Destination tiers (architecture 36.6): the hot tier 6000h-DFFFh (the io
  * role lives inside 8000h-BFFFh, which the hot-tier bound already
  * contains), the boot/bulk tier 0000h-5FFFh.  The host computed each
  * address; these are the ranges the loader checks. */
-#define DRIVER_HOT_BASE  ZOS_REV13_WINDOW_BASE /* 6000h */
-#define DRIVER_HOT_END   ZOS_BANK7_RUNTIME_END /* E000h */
-#define DRIVER_BOOT_END  ZOS_REV13_WINDOW_BASE /* 6000h */
+#define DRIVER_HOT_BASE  KOS_REV13_WINDOW_BASE /* 6000h */
+#define DRIVER_HOT_END   KOS_BANK7_RUNTIME_END /* E000h */
+#define DRIVER_BOOT_END  KOS_REV13_WINDOW_BASE /* 6000h */
 
 /* The boot gate (kernel/driver/driver_boot.asm) and the upcall shim's
  * fixed-core request block and entry point (kernel/memory/upcall.h). */
-extern uint8_t zos_driver_run_boot(uint16_t entry);
-extern struct zos_upcall_req zos_driver_upcall_block;
+extern uint8_t kos_driver_run_boot(uint16_t entry);
+extern struct kos_upcall_req kos_driver_upcall_block;
 
 /* Manifest entry N's logical offset: 24 = 16 + 8, computed with shifts
  * because the kernel links no multiply runtime (kernel/romfs/romfs.c). */
@@ -85,10 +85,10 @@ extern struct zos_upcall_req zos_driver_upcall_block;
 	((uint16_t)(((uint16_t)(n) << 4) + ((uint16_t)(n) << 3)))
 
 static uint8_t driver_loader_ran;
-#if ZOS_DRIVER_TEST_EVIDENCE
+#if KOS_DRIVER_TEST_EVIDENCE
 static uint16_t driver_hot_ledger;
 static uint16_t driver_boot_ledger;
-/* ZMOD_SEGMENT_* - 1.  The sentinel and not 0 marks an absent role: a
+/* MOD_SEGMENT_* - 1.  The sentinel and not 0 marks an absent role: a
  * boot or bulk segment may legitimately be placed at 0000h. */
 #define DRIVER_ROLE_ABSENT 0xFFFFu
 static uint16_t driver_role_base[4];
@@ -102,7 +102,7 @@ static void driver_puts(const char *text)
 	early_console_puts(text);
 }
 
-#if ZOS_DRIVER_TEST_EVIDENCE
+#if KOS_DRIVER_TEST_EVIDENCE
 static void driver_put_hex16(uint16_t value)
 {
 	uint8_t shift;
@@ -114,9 +114,9 @@ static void driver_put_hex16(uint16_t value)
 	}
 	early_console_putc('h');
 }
-#endif /* ZOS_DRIVER_TEST_EVIDENCE */
+#endif /* KOS_DRIVER_TEST_EVIDENCE */
 
-#if ZOS_DRIVER_TEST_EVIDENCE
+#if KOS_DRIVER_TEST_EVIDENCE
 /* Decimal without the SDCC division runtime (work/30b audit: the kernel
  * links no arithmetic helpers): repeated subtraction of the powers of
  * ten, which for a 16-bit value is at most 50 iterations. */
@@ -139,7 +139,7 @@ static void driver_put_dec16(uint16_t value)
 		}
 	}
 }
-#endif /* ZOS_DRIVER_TEST_EVIDENCE */
+#endif /* KOS_DRIVER_TEST_EVIDENCE */
 
 /* One failure line: "driver loader: <name>: <what>", the boot error the
  * contract requires on the early console.  The class carries the text, so
@@ -156,13 +156,13 @@ static void driver_fail(const uint8_t *name, int result)
 		driver_puts((const char *)name);
 		driver_puts(": ");
 	}
-	if (result == ZMOD_ENOENT) {
+	if (result == MOD_ENOENT) {
 		driver_puts("no image");
-	} else if (result == ZMOD_ENOTSUP) {
+	} else if (result == MOD_ENOTSUP) {
 		driver_puts("copy");
-	} else if (result == ZMOD_ENOSPC) {
+	} else if (result == MOD_ENOSPC) {
 		driver_puts("endpoint");
-	} else if (result == ZMOD_EBUSY) {
+	} else if (result == MOD_EBUSY) {
 		driver_puts("publication");
 	} else {
 		driver_puts("invalid");
@@ -179,24 +179,24 @@ static int driver_record(const romfs_file_t *file, uint16_t *at,
 			  void *record, uint8_t size)
 {
 	if (romfs_read(file, *at, record, size) != (int)size) {
-		return ZMOD_EFORMAT;
+		return MOD_EFORMAT;
 	}
 	*at = (uint16_t)(*at + size);
-	return ZMOD_OK;
+	return MOD_OK;
 }
 
 /* --- bank-6 access through the common copy gate -------------------------- */
 
 static uint8_t driver_bank_op(uint8_t op, uint16_t addr, uint16_t length)
 {
-	struct zos_bank_copy_req req;
+	struct kos_bank_copy_req req;
 
 	req.bank = DRIVER_BANK;
 	req.op = op;
 	req.addr = addr;
-	req.buffer = zos_user_copy_staging;
+	req.buffer = kos_user_copy_staging;
 	req.length = length;
-	return zos_bank_copy(&req);
+	return kos_bank_copy(&req);
 }
 
 /* Copy `length` container bytes to bank-6 `dst` through the common
@@ -210,31 +210,31 @@ static int driver_place(const romfs_file_t *file, uint16_t offset,
 	while (done < length) {
 		uint16_t chunk = (uint16_t)(length - done);
 
-		if (chunk > ZOS_SYSCALL_STAGE_SIZE) {
-			chunk = ZOS_SYSCALL_STAGE_SIZE;
+		if (chunk > KOS_SYSCALL_STAGE_SIZE) {
+			chunk = KOS_SYSCALL_STAGE_SIZE;
 		}
 		if (romfs_read(file, (uint16_t)(offset + done),
-			       zos_user_copy_staging, chunk) != (int)chunk) {
-			return ZMOD_EFORMAT;
+			       kos_user_copy_staging, chunk) != (int)chunk) {
+			return MOD_EFORMAT;
 		}
-		if (driver_bank_op(ZOS_BANK_OP_WRITE,
+		if (driver_bank_op(KOS_BANK_OP_WRITE,
 				    (uint16_t)(dst + done), chunk) != 0u) {
-			return ZMOD_EFORMAT;
+			return MOD_EFORMAT;
 		}
 		done = (uint16_t)(done + chunk);
 	}
-	return ZMOD_OK;
+	return MOD_OK;
 }
 
 /* The plan line the acceptance transcript pins: the roles in the order
- * tools/zmodpack.py's `drivers` command prints them, absent roles left
+ * tools/modpack.py's `drivers` command prints them, absent roles left
  * out.  Evidence only: production does not link it. */
-#if ZOS_DRIVER_TEST_EVIDENCE
+#if KOS_DRIVER_TEST_EVIDENCE
 static void driver_report(void)
 {
 	static const uint8_t order[4] = {
-		ZMOD_SEGMENT_HOT, ZMOD_SEGMENT_IO,
-		ZMOD_SEGMENT_BOOT, ZMOD_SEGMENT_BULK
+		MOD_SEGMENT_HOT, MOD_SEGMENT_IO,
+		MOD_SEGMENT_BOOT, MOD_SEGMENT_BULK
 	};
 	static const char *const names[4] = {
 		" hot ", " boot ", " io ", " bulk "
@@ -255,7 +255,7 @@ static void driver_report(void)
 	}
 	driver_puts("\r\n");
 }
-#endif /* ZOS_DRIVER_TEST_EVIDENCE */
+#endif /* KOS_DRIVER_TEST_EVIDENCE */
 
 /* --- one image's flat plan ------------------------------------------------ */
 
@@ -266,11 +266,11 @@ static void driver_report(void)
  * dependency numbers.  A failure returns a loader error code and the one
  * caller prints the line. */
 static int driver_load_image(const romfs_file_t *file,
-			      const struct zmod_header *header)
+			      const struct mod_header *header)
 {
-	struct zmod_segment segment;
-	uint16_t at = ZMOD_HEADER_SIZE;
-	uint16_t boot_entry = ZMOD_NO_ENTRY;
+	struct mod_segment segment;
+	uint16_t at = MOD_HEADER_SIZE;
+	uint16_t boot_entry = MOD_NO_ENTRY;
 	uint16_t hot_base = 0u;
 	uint16_t hot_image = 0u;
 	uint8_t number_high = 0u;
@@ -279,7 +279,7 @@ static int driver_load_image(const romfs_file_t *file,
 	uint16_t bulk_base = 0u;
 	uint16_t bulk_size = 0u;
 
-#if ZOS_DRIVER_TEST_EVIDENCE
+#if KOS_DRIVER_TEST_EVIDENCE
 	for (index = 0u; index < 4u; ++index) {
 		driver_role_base[index] = DRIVER_ROLE_ABSENT;
 	}
@@ -292,11 +292,11 @@ static int driver_load_image(const romfs_file_t *file,
 		uint16_t payload_at;
 
 		if (driver_record(file, &at, &segment,
-				   ZMOD_SEGMENT_SIZE) != ZMOD_OK) {
-			return ZMOD_EFORMAT;
+				   MOD_SEGMENT_SIZE) != MOD_OK) {
+			return MOD_EFORMAT;
 		}
-		if (segment.role == 0u || segment.role > ZMOD_SEGMENT_BULK) {
-			return ZMOD_EINVAL;
+		if (segment.role == 0u || segment.role > MOD_SEGMENT_BULK) {
+			return MOD_EINVAL;
 		}
 		/* The whole allocation must sit in the segment's tier: this
 		 * is what protects the fixed driver-bank layout.  The sum
@@ -306,23 +306,23 @@ static int driver_load_image(const romfs_file_t *file,
 		if (end < segment.base ||
 		    end > ((segment.base >= DRIVER_HOT_BASE)
 			   ? DRIVER_HOT_END : DRIVER_BOOT_END)) {
-			return ZMOD_EFORMAT;
+			return MOD_EFORMAT;
 		}
-		if (segment.role == ZMOD_SEGMENT_HOT) {
+		if (segment.role == MOD_SEGMENT_HOT) {
 			hot_base = segment.base;
 			hot_image = segment.image_size;
 		}
-		if (segment.role == ZMOD_SEGMENT_BULK) {
+		if (segment.role == MOD_SEGMENT_BULK) {
 			bulk_base = segment.base;
 			bulk_size = (uint16_t)(segment.image_size +
 					       segment.bss_size);
 		}
-		if (segment.entry != ZMOD_NO_ENTRY) {
+		if (segment.entry != MOD_NO_ENTRY) {
 			/* Only the boot role carries one, and it runs with
 			 * the whole bank 6 visible (mode 10, Q = 6). */
-			if (segment.role != ZMOD_SEGMENT_BOOT ||
+			if (segment.role != MOD_SEGMENT_BOOT ||
 			    segment.entry >= DRIVER_BOOT_END) {
-				return ZMOD_EINVAL;
+				return MOD_EINVAL;
 			}
 			boot_entry = segment.entry;
 		}
@@ -334,19 +334,19 @@ static int driver_load_image(const romfs_file_t *file,
 		if (payload_at < header->payload_offset ||
 		    (uint16_t)(payload_at + segment.image_size) < payload_at ||
 		    driver_place(file, payload_at, segment.base,
-				  segment.image_size) != ZMOD_OK) {
-			return ZMOD_ENOTSUP;
+				  segment.image_size) != MOD_OK) {
+			return MOD_ENOTSUP;
 		}
 		if (segment.bss_size != 0u &&
-		    driver_bank_op(ZOS_BANK_OP_ZERO,
+		    driver_bank_op(KOS_BANK_OP_ZERO,
 				    (uint16_t)(segment.base +
 					       segment.image_size),
 				    segment.bss_size) != 0u) {
-			return ZMOD_ENOTSUP;
+			return MOD_ENOTSUP;
 		}
-#if ZOS_DRIVER_TEST_EVIDENCE
-		if (segment.role == ZMOD_SEGMENT_HOT ||
-		    segment.role == ZMOD_SEGMENT_IO) {
+#if KOS_DRIVER_TEST_EVIDENCE
+		if (segment.role == MOD_SEGMENT_HOT ||
+		    segment.role == MOD_SEGMENT_IO) {
 			driver_hot_ledger = (uint16_t)(
 				driver_hot_ledger + segment.image_size +
 				segment.bss_size);
@@ -359,10 +359,10 @@ static int driver_load_image(const romfs_file_t *file,
 #endif
 	}
 	if (hot_image == 0u ||
-	    (header->init_entry != ZMOD_NO_ENTRY &&
+	    (header->init_entry != MOD_NO_ENTRY &&
 	     (header->init_entry < hot_base ||
 	      header->init_entry >= (uint16_t)(hot_base + hot_image)))) {
-		return ZMOD_EINVAL;
+		return MOD_EINVAL;
 	}
 
 	/* Endpoint table: ipc_install_endpoint validates the dispatch entry
@@ -370,15 +370,15 @@ static int driver_load_image(const romfs_file_t *file,
 	 * reads 0 as "no endpoint"). */
 	for (index = 0u, count = header->endpoint_count; index < count;
 	     ++index) {
-		struct zmod_endpoint endpoint;
+		struct mod_endpoint endpoint;
 		struct ipc_endpoint_record record;
 
 		if (driver_record(file, &at, &endpoint,
-				   ZMOD_ENDPOINT_SIZE) != ZMOD_OK) {
-			return ZMOD_EFORMAT;
+				   MOD_ENDPOINT_SIZE) != MOD_OK) {
+			return MOD_EFORMAT;
 		}
 		if (endpoint.number == 0u) {
-			return ZMOD_EINVAL;
+			return MOD_EINVAL;
 		}
 		record.class = endpoint.class;
 		record.instance = endpoint.instance;
@@ -389,7 +389,7 @@ static int driver_load_image(const romfs_file_t *file,
 		record.bulk_base = bulk_base;
 		record.bulk_size = bulk_size;
 		if (ipc_install_endpoint(&record) < 0) {
-			return ZMOD_ENOSPC;
+			return MOD_ENOSPC;
 		}
 		if (endpoint.number > number_high) {
 			number_high = (uint8_t)endpoint.number;
@@ -399,22 +399,22 @@ static int driver_load_image(const romfs_file_t *file,
 	/* Dependency table: the host resolved each declaration to an
 	 * endpoint number the nucleus already has, and zeroed the unused
 	 * tail so the init always reads a full array. */
-	for (index = 0u; index < ZMOD_MAX_DEPENDENCIES; ++index) {
+	for (index = 0u; index < MOD_MAX_DEPENDENCIES; ++index) {
 		uint16_t number = 0u;
 
 		if (index < header->dependency_count) {
-			struct zmod_dependency dependency;
+			struct mod_dependency dependency;
 
 			if (driver_record(file, &at, &dependency,
-					   ZMOD_DEPENDENCY_SIZE) != ZMOD_OK) {
-				return ZMOD_EFORMAT;
+					   MOD_DEPENDENCY_SIZE) != MOD_OK) {
+				return MOD_EFORMAT;
 			}
 			number = dependency.number;
 			if (number > number_high) {
-				return ZMOD_EFORMAT;
+				return MOD_EFORMAT;
 			}
 		}
-		zos_driver_deps[index] = (uint8_t)number;
+		kos_driver_deps[index] = (uint8_t)number;
 	}
 
 	/* Publication table: the DEVICE and FS providers validate the name,
@@ -422,45 +422,45 @@ static int driver_load_image(const romfs_file_t *file,
 	 * scanning past the record. */
 	for (index = 0u, count = header->publication_count; index < count;
 	     ++index) {
-		struct zmod_publication publication;
+		struct mod_publication publication;
 
 		if (driver_record(file, &at, &publication,
-				   ZMOD_PUBLICATION_SIZE) != ZMOD_OK) {
-			return ZMOD_EFORMAT;
+				   MOD_PUBLICATION_SIZE) != MOD_OK) {
+			return MOD_EFORMAT;
 		}
 		if (publication.name[15] != '\0' ||
 		    vfs_ns_install_publication(publication.name,
 					       publication.type,
 					       publication.number,
 					       publication.object) < 0) {
-			return ZMOD_EBUSY;
+			return MOD_EBUSY;
 		}
 	}
 
 	/* The boot segment once, through the mode-10 gate, then the hot
 	 * init once, through the fixed upcall shim. */
-	if (boot_entry != ZMOD_NO_ENTRY &&
-	    zos_driver_run_boot(boot_entry) != 0u) {
-		return ZMOD_EINVAL;
+	if (boot_entry != MOD_NO_ENTRY &&
+	    kos_driver_run_boot(boot_entry) != 0u) {
+		return MOD_EINVAL;
 	}
-	if (header->init_entry != ZMOD_NO_ENTRY) {
+	if (header->init_entry != MOD_NO_ENTRY) {
 		/* The mode-11 window shows bank 6 and the fixed core stays
 		 * visible, so the driver reads its boot bundle and claims
 		 * its IRQs here.  The init's uint8_t return is published by
 		 * the upcall shim; a non-zero status fails the image and
 		 * the boot (36.11). */
-		zos_driver_upcall_block.page = ZOS_UPCALL_PAGE_DRIVER;
-		zos_driver_upcall_block.entry = header->init_entry;
-		zos_driver_upcall_block.args = (void *)driver_boot();
-		if (zos_upcall(&zos_driver_upcall_block) != 0u ||
-		    zos_upcall_ret_a != 0u) {
-			return ZMOD_EINVAL;
+		kos_driver_upcall_block.page = KOS_UPCALL_PAGE_DRIVER;
+		kos_driver_upcall_block.entry = header->init_entry;
+		kos_driver_upcall_block.args = (void *)driver_boot();
+		if (kos_upcall(&kos_driver_upcall_block) != 0u ||
+		    kos_upcall_ret_a != 0u) {
+			return MOD_EINVAL;
 		}
 	}
-#if ZOS_DRIVER_TEST_EVIDENCE
+#if KOS_DRIVER_TEST_EVIDENCE
 	driver_report();
 #endif
-	return ZMOD_OK;
+	return MOD_OK;
 }
 
 /* --- the loader ---------------------------------------------------------- */
@@ -468,53 +468,53 @@ static int driver_load_image(const romfs_file_t *file,
 /* Read and bound one image's flat plan header: it must hold the header,
  * the table counts must fit the loader's tables, and the payload must
  * start inside the image.  There is no magic and no version check: the
- * ROMFS entry's ZMOD flag (validated by romfs_init) is what proves the
+ * ROMFS entry's MOD flag (validated by romfs_init) is what proves the
  * file is a driver image, and the packer is its only writer.  The
  * endpoint and publication counts are not bounded here: the nucleus
  * tables (ipc_install_endpoint, vfs_ns_install_publication) refuse an
  * overflow themselves. */
 static int driver_read_header(const romfs_file_t *file, uint16_t size,
-			       struct zmod_header *header)
+			       struct mod_header *header)
 {
-	if (size < ZMOD_HEADER_SIZE ||
+	if (size < MOD_HEADER_SIZE ||
 	    romfs_read(file, 0u, header,
-		       ZMOD_HEADER_SIZE) != (int)ZMOD_HEADER_SIZE) {
-		return ZMOD_EFORMAT;
+		       MOD_HEADER_SIZE) != (int)MOD_HEADER_SIZE) {
+		return MOD_EFORMAT;
 	}
-	if (header->segment_count > ZMOD_MAX_SEGMENTS ||
-	    header->dependency_count > ZMOD_MAX_DEPENDENCIES ||
+	if (header->segment_count > MOD_MAX_SEGMENTS ||
+	    header->dependency_count > MOD_MAX_DEPENDENCIES ||
 	    header->total_size != size ||
 	    header->payload_offset > size) {
-		return ZMOD_EFORMAT;
+		return MOD_EFORMAT;
 	}
-	return ZMOD_OK;
+	return MOD_OK;
 }
 
 int driver_load_all(const char *manifest_name)
 {
 	romfs_file_t manifest;
 	romfs_file_t file;
-	struct zmod_header header;
-	uint8_t name[ZOS_DRIVER_MANIFEST_ENTRY];
+	struct mod_header header;
+	uint8_t name[KOS_DRIVER_MANIFEST_ENTRY];
 	uint16_t size;
 	uint16_t entries;
 	uint16_t index;
 	int result;
 
 	if (driver_loader_ran) {
-		return ZMOD_OK; /* drivers are permanent: load once */
+		return MOD_OK; /* drivers are permanent: load once */
 	}
 	if (manifest_name == (const char *)0 ||
 	    romfs_lookup_ci(manifest_name, &manifest) != 0) {
-		driver_fail((const uint8_t *)0, ZMOD_EFORMAT);
-		return ZMOD_EFORMAT;
+		driver_fail((const uint8_t *)0, MOD_EFORMAT);
+		return MOD_EFORMAT;
 	}
 	if (manifest.flags != ROMFS_FLAG_DATA ||
 	    manifest.size == 0u ||
-	    manifest.size > (uint32_t)(ZOS_DRIVER_MANIFEST_ENTRY *
-				       ZMOD_MAX_IMAGES)) {
-		driver_fail((const uint8_t *)0, ZMOD_EFORMAT);
-		return ZMOD_EFORMAT;
+	    manifest.size > (uint32_t)(KOS_DRIVER_MANIFEST_ENTRY *
+				       MOD_MAX_IMAGES)) {
+		driver_fail((const uint8_t *)0, MOD_EFORMAT);
+		return MOD_EFORMAT;
 	}
 	/* Entry count by repeated subtraction: the kernel links no SDCC
 	 * division helpers (work/30b audit), so the count is taken from the
@@ -523,14 +523,14 @@ int driver_load_all(const char *manifest_name)
 	{
 		uint16_t remaining = (uint16_t)manifest.size;
 
-		while (remaining >= ZOS_DRIVER_MANIFEST_ENTRY) {
+		while (remaining >= KOS_DRIVER_MANIFEST_ENTRY) {
 			remaining = (uint16_t)(remaining -
-					       ZOS_DRIVER_MANIFEST_ENTRY);
+					       KOS_DRIVER_MANIFEST_ENTRY);
 			++entries;
 		}
 		if (remaining != 0u) {
-			driver_fail((const uint8_t *)0, ZMOD_EFORMAT);
-			return ZMOD_EFORMAT;
+			driver_fail((const uint8_t *)0, MOD_EFORMAT);
+			return MOD_EFORMAT;
 		}
 	}
 
@@ -540,37 +540,37 @@ int driver_load_all(const char *manifest_name)
 	 * boot and init entries. */
 	for (index = 0u; index < entries; ++index) {
 		if (romfs_read(&manifest, DRIVER_MANIFEST_AT(index), name,
-			       ZOS_DRIVER_MANIFEST_ENTRY) !=
-		    (int)ZOS_DRIVER_MANIFEST_ENTRY) {
-			driver_fail((const uint8_t *)0, ZMOD_EFORMAT);
-			return ZMOD_EFORMAT;
+			       KOS_DRIVER_MANIFEST_ENTRY) !=
+		    (int)KOS_DRIVER_MANIFEST_ENTRY) {
+			driver_fail((const uint8_t *)0, MOD_EFORMAT);
+			return MOD_EFORMAT;
 		}
 		/* The name field is fixed-width; the ROMFS reader and the
 		 * packer both terminate it, so this only keeps the print
 		 * inside it. */
-		name[ZOS_DRIVER_MANIFEST_ENTRY - 1u] = '\0';
+		name[KOS_DRIVER_MANIFEST_ENTRY - 1u] = '\0';
 		if (romfs_lookup_ci((const char *)name, &file) != 0 ||
-		    file.flags != ROMFS_FLAG_ZMOD ||
+		    file.flags != ROMFS_FLAG_MOD ||
 		    file.size > 0xFFFFu) {
-			driver_fail(name, ZMOD_ENOENT);
-			return ZMOD_ENOENT;
+			driver_fail(name, MOD_ENOENT);
+			return MOD_ENOENT;
 		}
 		size = (uint16_t)file.size;
-#if ZOS_DRIVER_TEST_EVIDENCE
+#if KOS_DRIVER_TEST_EVIDENCE
 		driver_report_name = name;
 #endif
 		result = driver_read_header(&file, size, &header);
-		if (result == ZMOD_OK) {
+		if (result == MOD_OK) {
 			result = driver_load_image(&file, &header);
 		}
-		if (result != ZMOD_OK) {
+		if (result != MOD_OK) {
 			driver_fail(name, result);
 			return result;
 		}
 	}
 
 	driver_loader_ran = 1u;
-#if ZOS_DRIVER_TEST_EVIDENCE
+#if KOS_DRIVER_TEST_EVIDENCE
 	/* Evidence only: the ledger tail the replay pins against the
 	 * packer's report. */
 	driver_puts("driver loader: ");
@@ -583,5 +583,5 @@ int driver_load_all(const char *manifest_name)
 	driver_put_dec16(driver_boot_ledger);
 	driver_puts(" bytes of 24576\r\n");
 #endif
-	return ZMOD_OK;
+	return MOD_OK;
 }

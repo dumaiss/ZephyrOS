@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ZephyrOS ROMFS v1 recovery-image packer, validator, and inspector.
+"""KonaOS ROMFS v1 recovery-image packer, validator, and inspector.
 
 ROMFS is the tiny read-only recovery store placed in ROM pages 2-7 by
 tools/pack_image.py (see docs/romfs-format.md).  It is built from a JSON
@@ -7,7 +7,7 @@ manifest:
 
     {
       "files": [
-        {"name": "sio.zmod", "type": "ZMOD", "path": "sio.zmod"}
+        {"name": "sio.mod", "type": "MOD", "path": "sio.mod"}
       ]
     }
 
@@ -26,7 +26,7 @@ of the configured recovery pages; the reader maps logical byte L to
 (page = first_page + L / window, offset = L % window).  The C000h-FFFFh
 half of each recovery page is never part of the stream.
 
-Flags: ZMOD=1, ZEX=2, DATA=3.
+Flags: MOD=1, EXE=2, DATA=3.
 
 Usage:
     romfspack.py pack <manifest.json> <recovery.romfs>
@@ -52,11 +52,11 @@ HEADER_SIZE = 16
 ENTRY_SIZE = 36
 NAME_SIZE = 24
 
-FLAG_ZMOD = 1
-FLAG_ZEX = 2
+FLAG_MOD = 1
+FLAG_EXE = 2
 FLAG_DATA = 3
-FLAG_NAMES = {FLAG_ZMOD: "ZMOD", FLAG_ZEX: "ZEX", FLAG_DATA: "DATA"}
-TYPE_FLAGS = {"ZMOD": FLAG_ZMOD, "ZEX": FLAG_ZEX, "DATA": FLAG_DATA}
+FLAG_NAMES = {FLAG_MOD: "MOD", FLAG_EXE: "EXE", FLAG_DATA: "DATA"}
+TYPE_FLAGS = {"MOD": FLAG_MOD, "EXE": FLAG_EXE, "DATA": FLAG_DATA}
 
 U32_MAX = 0xFFFFFFFF
 
@@ -93,11 +93,11 @@ def load_geometry(path=None):
         if match:
             values[match.group(1)] = int(match.group(2), 0)
     try:
-        geom["page_size"] = values["ZOS_ROM_PAGE_SIZE"]
-        geom["first_page"] = values["ZOS_ROMFS_FIRST_PAGE"]
-        geom["page_count"] = values["ZOS_ROMFS_PAGE_COUNT"]
-        geom["window_size"] = values["ZOS_ROMFS_WINDOW_SIZE"]
-        geom["capacity"] = values["ZOS_ROMFS_CAPACITY"]
+        geom["page_size"] = values["KOS_ROM_PAGE_SIZE"]
+        geom["first_page"] = values["KOS_ROMFS_FIRST_PAGE"]
+        geom["page_count"] = values["KOS_ROMFS_PAGE_COUNT"]
+        geom["window_size"] = values["KOS_ROMFS_WINDOW_SIZE"]
+        geom["capacity"] = values["KOS_ROMFS_CAPACITY"]
     except KeyError as exc:
         raise RomfsError("memory.inc is missing %s" % exc)
     if geom["capacity"] != geom["page_count"] * geom["window_size"]:
@@ -256,7 +256,7 @@ def pack(manifest_path, out_path, objdir=None, geom=None):
         names.add(folded)
         media_type = entry.get("type")
         if media_type not in TYPE_FLAGS:
-            raise RomfsError("%s: unsupported type %r (ZMOD/ZEX/DATA)"
+            raise RomfsError("%s: unsupported type %r (MOD/EXE/DATA)"
                              % (where, media_type))
         raw_path = entry.get("path")
         if not isinstance(raw_path, str) or not raw_path:
@@ -423,7 +423,7 @@ def dump(path, geom=None):
 
 def main(argv):
     parser = argparse.ArgumentParser(
-        prog="romfspack.py", description="ZephyrOS ROMFS v1 packer/validator")
+        prog="romfspack.py", description="KonaOS ROMFS v1 packer/validator")
     parser.add_argument("--memory-inc", default=None,
                         help="platform memory.inc providing ROMFS geometry")
     sub = parser.add_subparsers(dest="mode", required=True)

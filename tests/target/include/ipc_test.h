@@ -1,10 +1,10 @@
-/* ZephyrOS IPC acceptance test contract (test artifact).
+/* KonaOS IPC acceptance test contract (test artifact).
  *
  * Shared by the six synthetic bank-6 drivers (tests/target/ipc), the
  * driver images' boot manifests (tests/target/ipc/manifests) and the
  * client program (ipc.c).  It is the package-39 conformance protocol,
  * never the native ABI: the frame layout, syscall numbers and descriptor
- * conventions come from abi/zos/ipc.h and drivers/include/driver.h, and
+ * conventions come from abi/kos/ipc.h and drivers/include/driver.h, and
  * every constant here belongs to the synthetic driver set.
  *
  * The synthetic set is the spike's (work package 35): `echo` (the null
@@ -12,19 +12,19 @@
  * chained reads, direct and staged) and `irqx` (the IRQ-owning driver).
  * Since package 40 each one is a real driver image: a hot segment
  * (_CODE), a boot segment (_BOOT/_BOOT_DATA) and its DRIVER_IO data
- * (_DRIVER_IO), packed by tools/zmodpack.py, listed in the boot manifest
+ * (_DRIVER_IO), packed by tools/modpack.py, listed in the boot manifest
  * and loaded by the nucleus driver loader.
  */
 
-#ifndef ZEPHYROS_TARGET_IPC_TEST_H
-#define ZEPHYROS_TARGET_IPC_TEST_H
+#ifndef KONAOS_TARGET_IPC_TEST_H
+#define KONAOS_TARGET_IPC_TEST_H
 
-#include "zos/ipc.h"
-#include "zos/types.h"
+#include "kos/ipc.h"
+#include "kos/types.h"
 
 /* --- endpoint classes --------------------------------------------------- */
 /* Test-only class range: 1-6 are the production driver classes
- * (abi/zos/protocol.h), and the IPC image boots the real SIO and console
+ * (abi/kos/protocol.h), and the IPC image boots the real SIO and console
  * drivers beside this synthetic set. */
 
 #define IPC_CLASS_ECHO 16u
@@ -39,7 +39,7 @@
 
 /* --- protocol operations ------------------------------------------------ */
 
-#define IPC_OP_ECHO_NULL     0u /* returns ZOS_IPC_FRAME_SIZE             */
+#define IPC_OP_ECHO_NULL     0u /* returns KOS_IPC_FRAME_SIZE             */
 #define IPC_OP_ECHO_EXCHANGE 1u /* payload[1] = payload[0], result + 1    */
 #define IPC_OP_ECHO_SELF     2u /* calls its own endpoint (refused)       */
 #define IPC_OP_ECHO_DESC     3u /* returns the frame's descriptor id      */
@@ -123,4 +123,4 @@
 	((uint16_t)((bytes)[offset] | \
 		    ((uint16_t)(bytes)[(offset) + 1u] << 8)))
 
-#endif /* ZEPHYROS_TARGET_IPC_TEST_H */
+#endif /* KONAOS_TARGET_IPC_TEST_H */

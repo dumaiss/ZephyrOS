@@ -1,10 +1,10 @@
-/* ZephyrOS CONSOLE drivers (work package 42e).
+/* KonaOS CONSOLE drivers (work package 42e).
  *
  * One source, two build-selected CONSOLE implementations (architecture
  * 36.11, M10-REFERENCE decision 12):
  *
  *   console-v9958-hid   input HID, output VIDEO  (the production build)
- *   console-serial      input and output SERIAL  (-DZOS_CONSOLE_SERIAL=1)
+ *   console-serial      input and output SERIAL  (-DKOS_CONSOLE_SERIAL=1)
  *
  * The host packer selects the implementation by packing the matching
  * manifest (drivers/console/console-v9958-hid.json or
@@ -20,29 +20,29 @@
  * console owns no buffer, no IRQ and no state beyond the two handles.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "driver.h"
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 /* Manifest dependency order, one entry per build. */
-#if defined(ZOS_CONSOLE_SERIAL)
+#if defined(KOS_CONSOLE_SERIAL)
 /* console-serial.json: the SERIAL driver serves both directions. */
 #define CONSOLE_IN_DEP    0u
 #define CONSOLE_OUT_DEP   0u
-#define CONSOLE_IN_READ   ZSIO_OP_READ
-#define CONSOLE_IN_GETC   ZSIO_OP_GETC
-#define CONSOLE_IN_POLL   ZSIO_OP_POLL
-#define CONSOLE_OUT_WRITE ZSIO_OP_WRITE
-#define CONSOLE_OUT_PUTC  ZSIO_OP_PUTC
+#define CONSOLE_IN_READ   KSIO_OP_READ
+#define CONSOLE_IN_GETC   KSIO_OP_GETC
+#define CONSOLE_IN_POLL   KSIO_OP_POLL
+#define CONSOLE_OUT_WRITE KSIO_OP_WRITE
+#define CONSOLE_OUT_PUTC  KSIO_OP_PUTC
 #else
 /* console-v9958-hid.json: HID input, VIDEO output. */
 #define CONSOLE_IN_DEP    0u
 #define CONSOLE_OUT_DEP   1u
-#define CONSOLE_IN_READ   ZHID_OP_READ_TEXT
-#define CONSOLE_IN_GETC   ZHID_OP_GETC
-#define CONSOLE_IN_POLL   ZHID_OP_POLL
-#define CONSOLE_OUT_WRITE ZVIDEO_OP_WRITE
-#define CONSOLE_OUT_PUTC  ZVIDEO_OP_PUTC
+#define CONSOLE_IN_READ   KHID_OP_READ_TEXT
+#define CONSOLE_IN_GETC   KHID_OP_GETC
+#define CONSOLE_IN_POLL   KHID_OP_POLL
+#define CONSOLE_OUT_WRITE KVIDEO_OP_WRITE
+#define CONSOLE_OUT_PUTC  KVIDEO_OP_PUTC
 #endif
 
 static const struct driver_api *console_api;
@@ -50,32 +50,32 @@ static uint8_t console_in;
 static uint8_t console_out;
 
 static int16_t console_forward(uint8_t handle, uint8_t op,
-			       const struct zos_ipc_frame *frame)
+			       const struct kos_ipc_frame *frame)
 {
-	struct zos_ipc_frame inner = *frame;
+	struct kos_ipc_frame inner = *frame;
 
 	if (handle == 0u) {
-		return (int16_t)-ZOS_ENODEV;
+		return (int16_t)-KOS_ENODEV;
 	}
 	inner.op = op;
 	return console_api->call(handle, op, &inner);
 }
 
-int16_t console_driver_dispatch(struct zos_ipc_frame *frame)
+int16_t console_driver_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
-	case ZCONSOLE_OP_WRITE:
+	case KCONSOLE_OP_WRITE:
 		return console_forward(console_out, CONSOLE_OUT_WRITE, frame);
-	case ZCONSOLE_OP_READ:
+	case KCONSOLE_OP_READ:
 		return console_forward(console_in, CONSOLE_IN_READ, frame);
-	case ZCONSOLE_OP_GETC:
+	case KCONSOLE_OP_GETC:
 		return console_forward(console_in, CONSOLE_IN_GETC, frame);
-	case ZCONSOLE_OP_POLL:
+	case KCONSOLE_OP_POLL:
 		return console_forward(console_in, CONSOLE_IN_POLL, frame);
-	case ZCONSOLE_OP_PUTC:
+	case KCONSOLE_OP_PUTC:
 		return console_forward(console_out, CONSOLE_OUT_PUTC, frame);
 	default:
-		return (int16_t)-ZOS_EINVAL;
+		return (int16_t)-KOS_EINVAL;
 	}
 }
 

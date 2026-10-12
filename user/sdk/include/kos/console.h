@@ -1,26 +1,26 @@
-/* ZephyrOS SDK: console entry points as console-driver clients.
+/* KonaOS SDK: console entry points as console-driver clients.
  *
  * The line helpers (getchar/console_readline/...) are the reusable console
  * front end the monitor and ZShell share, and they sit on the four
  * driver operations below.  Package 41 removed the SYS_CONSOLE_* syscalls:
- * the console is the resident console driver (abi/zos/protocol.h, class
- * ZOS_CLASS_CONSOLE), so every function here resolves that endpoint and
+ * the console is the resident console driver (abi/kos/protocol.h, class
+ * KOS_CLASS_CONSOLE), so every function here resolves that endpoint and
  * speaks its protocol.  A program with no console driver (an acceptance
- * image whose store lists none) sees -ZOS_ENOENT.
+ * image whose store lists none) sees -KOS_ENOENT.
  *
  * Return convention: a non-negative result, or the negated native error
  * code.
  */
 
-#ifndef ZOS_SDK_CONSOLE_H
-#define ZOS_SDK_CONSOLE_H
+#ifndef KOS_SDK_CONSOLE_H
+#define KOS_SDK_CONSOLE_H
 
-#include "zos/types.h"
-#include "zos/errno.h"
-#include "zos/process.h"
+#include "kos/types.h"
+#include "kos/errno.h"
+#include "kos/process.h"
 
-/* Line-editor capacity: at most ZOS_LINE_MAX characters plus a NUL. */
-#define ZOS_LINE_MAX 80
+/* Line-editor capacity: at most KOS_LINE_MAX characters plus a NUL. */
+#define KOS_LINE_MAX 80
 
 /* Terminate the process with `status`; does not return. */
 void exit(int status);
@@ -37,7 +37,7 @@ int putchar(int ch);
 
 /* Fill `record` with the six-byte v1 information record; returns 6 or a
  * negative error. */
-int getinfo(struct zos_info_record *record);
+int getinfo(struct kos_info_record *record);
 
 /* Write a NUL-terminated string.  Returns the transferred count or a
  * negative error (the terminator is not sent). */
@@ -53,4 +53,4 @@ int getchar(void);
  * Returns the line length or a negative console error. */
 int console_readline(char *buffer, unsigned int capacity);
 
-#endif /* ZOS_SDK_CONSOLE_H */
+#endif /* KOS_SDK_CONSOLE_H */

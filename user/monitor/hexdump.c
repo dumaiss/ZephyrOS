@@ -1,4 +1,4 @@
-/* ZephyrOS user runtime: 16-byte hexdump row formatting.
+/* KonaOS user runtime: 16-byte hexdump row formatting.
  *
  * See hexdump.h for the row contract.
  */

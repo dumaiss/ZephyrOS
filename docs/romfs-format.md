@@ -1,4 +1,4 @@
-# ZephyrOS ROMFS v1 Recovery Filesystem Format
+# KonaOS ROMFS v1 Recovery Filesystem Format
 
 **Status:** implemented by work package `11-m5-rom-recovery-filesystem`
 (2026-10-03).  Host-validated and physically accepted: both Zephyr-80
@@ -8,13 +8,13 @@ smoke transcripts (success and corrupt) are recorded in
 a statically linked, path-based VFS provider mounted at `/system`
 (`docs/vfs.md`), it has exactly one lookup and that lookup folds case
 (the case-sensitive `romfs_lookup` and the second folded variant were
-merged), and `romfs_load_zmod()` is gone.  The on-ROM format, the
+merged), and `romfs_load_mod()` is gone.  The on-ROM format, the
 ROM-access primitive and the module-facing resource imports are
 unchanged.
 
 ROMFS is the tiny read-only recovery store that boots the SIO driver (and
 later native recovery programs) out of the programmed ROM image.  It is
-not the general ZephyrOS filesystem: there is no heap, no allocator, no
+not the general KonaOS filesystem: there is no heap, no allocator, no
 write support and no directories, and it is not a general-purpose
 filesystem API -- since M9 it is the bootstrap *provider* behind the
 kernel VFS, which owns path resolution, mount policy and the native
@@ -56,7 +56,7 @@ address that half.  Pages 0/1 are never modified by ROMFS placement
 boot pages with and without a recovery stream).
 
 The geometry is single-sourced in `platform/zephyr80/private/memory.h` /
-`memory.inc` (`ZOS_ROM_*`, `ZOS_ROMFS_*`); the host tools and mapcheck
+`memory.inc` (`KOS_ROM_*`, `KOS_ROMFS_*`); the host tools and mapcheck
 read those declarations, and `tests/test_romfs.py` pins the values.
 
 ## 2. Logical layout
@@ -91,7 +91,7 @@ payloads                       (manifest order, no alignment gaps)
 | `20h` | 2 | `flags` |
 | `22h` | 2 | `reserved` (`0`) |
 
-Names are stored exactly as written (native ZephyrOS names, not CP/M 8.3).  A name
+Names are stored exactly as written (native KonaOS names, not CP/M 8.3).  A name
 must be 1..23 bytes of printable ASCII (`20h-7Eh`) followed by at least
 one NUL byte; all padding bytes are zero.  Duplicate names are rejected
 by the host tool.  A host tool must reject two names that differ only in
@@ -99,7 +99,7 @@ ASCII case: one ROMFS lookup serves the whole kernel and it matches
 case-insensitively (architecture section 32.13), so such a pair would be
 ambiguous.
 
-Flags/media types: `ZMOD = 1`, `ZEX = 2`, `DATA = 3`.  Any other value is
+Flags/media types: `MOD = 1`, `EXE = 2`, `DATA = 3`.  Any other value is
 rejected by both the tool and the kernel.
 
 Payloads are packed in manifest order immediately after the complete
@@ -123,18 +123,18 @@ The manifest is JSON:
 {
   "format": "romfs-v1",
   "files": [
-    {"name": "sio.zmod", "type": "ZMOD", "path": "sio.zmod"}
+    {"name": "sio.mod", "type": "MOD", "path": "sio.mod"}
   ]
 }
 ```
 
 Input paths resolve against `--objdir` (default: the manifest directory).
 The production manifest is `recovery/manifest.json`, which carries the
-boot SIO module (`sio.zmod`) and the native monitor (`monitor.zex`) in
+boot SIO module (`sio.mod`) and the native monitor (`monitor.exe`) in
 every image; the M7 acceptance image uses `tests/m7/manifest.json` with
 the same two entries, and the M6 acceptance images use
-`tests/m6/manifest.json` / `manifest-failure.json` (zextest plus the
-malformed-ZEX fixture matrix).  The M5 acceptance image uses
+`tests/m6/manifest.json` / `manifest-failure.json` (exetest plus the
+malformed-EXE fixture matrix).  The M5 acceptance image uses
 `tests/m5/manifest.json`, which adds the deterministic cross-page
 pattern asset `m5-crosspage.bin` (byte `i` is
 `(i & 0xFF) ^ ((i >> 8) & 0xFF)`; it is 0xC040 bytes and spans the
@@ -144,7 +144,7 @@ pattern asset `m5-crosspage.bin` (byte `i` is
 logical range, physical ROM page/range, type, size, and SHA-256 per file:
 
 ```text
-  sio.zmod                ZMOD       457  00000034h-000001FCh  page 2 0034h-01FCh
+  sio.mod                MOD       457  00000034h-000001FCh  page 2 0034h-01FCh
                           sha256 2543e08e...d36dd5
 ```
 
@@ -161,7 +161,7 @@ impossible within capacity, re-checked defensively).
 selected manifest), places it across pages 2-7, fills every unused byte
 with `FFh`, rejects a stream shorter than a header or larger than the
 capacity, and emits per-page hashes plus the ROMFS placement in
-`zephyros*.manifest.json`.
+`konaos*.manifest.json`.
 
 ## 4. Kernel interface
 
@@ -183,21 +183,21 @@ int romfs_entry_at(uint16_t index, romfs_file_t *out, char *name,
   never drives a latch value or an executable address.
 * `romfs_lookup_ci()` is **the** ROMFS lookup: it scans entries in order
   and compares names with ASCII case folding (architecture section 32.13).
-  There is no case-sensitive variant beside it; VFS, the ZEX launcher and
-  the module resource imports all arrive here.  It returns `-ZOS_ENOENT`
-  for absent names and `-ZOS_EINVAL` for an over-long component.
+  There is no case-sensitive variant beside it; VFS, the EXE launcher and
+  the module resource imports all arrive here.  It returns `-KOS_ENOENT`
+  for absent names and `-KOS_EINVAL` for an over-long component.
 * `romfs_read()` is strictly bounded: `offset <= size` and
   `length <= size - offset` are enforced in 32-bit arithmetic before
   anything is narrowed.  `offset == size` with `length == 0` is a clean
   EOF read (returns 0); any request that would read past EOF is rejected
-  with `-ZOS_EINVAL`.  Reads may cross 48-KiB window boundaries; they are
+  with `-KOS_EINVAL`.  Reads may cross 48-KiB window boundaries; they are
   split internally at window edges and at the 128-byte staging size.
 * `romfs_entry_at()` returns the entry at a validated index with its
   name, so the VFS provider can enumerate the directory without
   duplicating layout knowledge.  It is compiled only into ROMFS-boot
   builds; `tools/mapcheck.py` rejects it in an embedded-catalog image.
 
-M9 removed `romfs_load_zmod()` and the case-sensitive `romfs_lookup`;
+M9 removed `romfs_load_mod()` and the case-sensitive `romfs_lookup`;
 the file is no longer handed to the loader by the ROMFS reader.
 `kernel/romfs/` is now a metadata/byte reader only, and the filesystem
 path goes through the M9 VFS and the `fs/romfs` provider
@@ -226,7 +226,7 @@ uint8_t rom_access_copy(const struct rom_access_req *req);   /* A = 0/err */
 
 1. read and validate the request: page in `2..7`, length in `1..128`,
    `offset + length <= 0xC000` with no 16-bit wrap;
-2. refuse reentry (`ZOS_EBUSY`) before touching any state;
+2. refuse reentry (`KOS_EBUSY`) before touching any state;
 3. lock interrupts, capturing the exact IFF2 state (`ld a,i` then `di`);
 4. save the exact caller latch byte;
 5. arm the stub registers: `HL` = window source, `DE` = staging
@@ -294,7 +294,7 @@ driver_load_all("drivers.man")
 ```
 
 `tools/mapcheck.py --production` rejects the retired embedded-catalog
-symbols (`_z4_module_boot`, `_zmod_catalog`, `_module_catalog_load_all`):
+symbols (`_z4_module_boot`, `_mod_catalog`, `_module_catalog_load_all`):
 production carries no boot blob, only the packed recovery store.
 
 ## 7. Acceptance evidence map
@@ -305,9 +305,9 @@ production carries no boot blob, only the packed recovery store.
 | placement in pages 2-7, boot pages untouched, capacity/window rules | `tests/test_romfs.py`, `tests/test_pack_image.py`, `tests/test_validation_cli.py` |
 | valid kernel reader, EOF/bound semantics, corrupt-metadata rejection | `tests/test_romfs_sim.py` (mutated header/table replays) |
 | exact latch/IFF restoration, stackless mode-00 window pinned to the mirrored stub, reentry and bounds rejection | `tests/test_romfs_sim.py` (ROM-access primitive replays + `RomWindowWatcher`) |
-| source-backed loading, reject-before-allocate, byte-identity with `sio.zmod` | `tests/test_romfs_sim.py`, `tests/test_romfs.py` |
-| ROMFS as the `/system` root (in-process `FILE` endpoint, nucleus): one case-folded lookup, `/` the only directory, read-only semantics, `ZOS_ENOTDIR`/`ZOS_ENOENT` for deeper paths, `ZOS_EROFS` for writes | `tests/test_fs_selftest_sim.py` (`make fs-selftest`: the `/system` stat/open/read/close outcomes) |
-| the single case-folded lookup resolves every spelling | `tests/test_romfs_sim.py` (case variants of `sio.zmod`) |
+| source-backed loading, reject-before-allocate, byte-identity with `sio.mod` | `tests/test_romfs_sim.py`, `tests/test_romfs.py` |
+| ROMFS as the `/system` root (in-process `FILE` endpoint, nucleus): one case-folded lookup, `/` the only directory, read-only semantics, `KOS_ENOTDIR`/`KOS_ENOENT` for deeper paths, `KOS_EROFS` for writes | `tests/test_fs_selftest_sim.py` (`make fs-selftest`: the `/system` stat/open/read/close outcomes) |
+| the single case-folded lookup resolves every spelling | `tests/test_romfs_sim.py` (case variants of `sio.mod`) |
 | production has no embedded boot blob/catalog | `tools/mapcheck.py --production` |
 | corrupt image panics before module execution | `tests/test_romfs_sim.py`, image marker tests |
 | physical success and corrupt transcripts | `docs/validation/2026-10-03-m5-romfs.md` (**pending hardware**) |

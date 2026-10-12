@@ -23,8 +23,8 @@ without executing target code:
     no CP/M tables or fixed BIOS addresses, no Virtual Drip framing, no
     IOC/HID import or symbol, no VDP interrupt claim, the proven init
     order, validate-before-I/O, and the reset path;
-  - the ROMFS boot set (sio, ioc, hid, v9958.zmod, v9958-6x8.font,
-    monitor.zex) and the ZOS_V9958_BOOT gate (earlier images compile it
+  - the ROMFS boot set (sio, ioc, hid, v9958.mod, v9958-6x8.font,
+    monitor.exe) and the KOS_V9958_BOOT gate (earlier images compile it
     out);
   - mapcheck rejects linked V9958 driver symbols (module-only);
   - the smoke tool's video markers and result classification.
@@ -45,7 +45,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, HERE)
 
 import mapcheck  # noqa: E402
-import zmodpack  # noqa: E402
+import modpack  # noqa: E402
 import fontpack  # noqa: E402
 from test_ioc import struct_member_order  # noqa: E402
 from maptools import (  # noqa: E402
@@ -66,73 +66,73 @@ MANIFEST = os.path.join(ROOT, "drivers", "v9958", "v9958.json")
 RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
 MAIN_C = os.path.join(ROOT, "kernel", "main.c")
 MAKEFILE = os.path.join(ROOT, "Makefile")
-ZMOD = os.path.join(ROOT, "build", "modules", "v9958.zmod")
+MOD = os.path.join(ROOT, "build", "modules", "v9958.mod")
 FONT_BIN = os.path.join(ROOT, "build", "modules", "v9958-6x8.font")
-MAP = os.path.join(ROOT, "build", "zephyros.map")
+MAP = os.path.join(ROOT, "build", "konaos.map")
 
 PINNED_FONT_SHA256 = (
     "6db207e0466a05af42894d378261f876da51bb391240e1beda4f1d5f12ec442f"
 )
 
 V9958_CONSTANTS = {
-    "ZOS_V9958_DATA_PORT": 0xA0,
-    "ZOS_V9958_CMD_PORT": 0xA1,
-    "ZOS_V9958_PALETTE_PORT": 0xA2,
-    "ZOS_V9958_INDIRECT_PORT": 0xA3,
-    "ZOS_V9958_CONFIG_PORT": 0xA4,
-    "ZOS_V9958_CONFIG_INT_ROUTE": 0x01,
-    "ZOS_V9958_CONFIG_PORCH_OFF": 0x02,
-    "ZOS_V9958_REG_SELECT": 0x80,
-    "ZOS_V9958_STATUS2_CE": 0x01,
-    "ZOS_V9958_CMD_REGISTER_BASE": 32,
-    "ZOS_V9958_CMD_REGISTER_COUNT": 15,
-    "ZOS_V9958_REG_R0": 0,
-    "ZOS_V9958_REG_R1": 1,
-    "ZOS_V9958_REG_R2": 2,
-    "ZOS_V9958_REG_R3": 3,
-    "ZOS_V9958_REG_R4": 4,
-    "ZOS_V9958_REG_R5": 5,
-    "ZOS_V9958_REG_R6": 6,
-    "ZOS_V9958_REG_R7": 7,
-    "ZOS_V9958_REG_R8": 8,
-    "ZOS_V9958_REG_R9": 9,
-    "ZOS_V9958_REG_R10": 10,
-    "ZOS_V9958_REG_R11": 11,
-    "ZOS_V9958_REG_R14": 14,
-    "ZOS_V9958_REG_R15": 15,
-    "ZOS_V9958_REG_R16": 16,
-    "ZOS_V9958_REG_R17": 17,
-    "ZOS_V9958_REG_R18": 18,
-    "ZOS_V9958_REG_R23": 23,
-    "ZOS_V9958_REG_R25": 25,
-    "ZOS_V9958_REG_R26": 26,
-    "ZOS_V9958_REG_R27": 27,
-    "ZOS_V9958_REG_R46": 46,
-    "ZOS_V9958_R0_G6": 0x0A,
-    "ZOS_V9958_R1_DISPLAY_OFF": 0x00,
-    "ZOS_V9958_R1_DISPLAY_ON": 0x40,
-    "ZOS_V9958_R2_G6": 0x1F,
-    "ZOS_V9958_R5_SPRITE_BASE": 0xE4,
-    "ZOS_V9958_R6_SPRITE_PATTERN": 0x3F,
-    "ZOS_V9958_R7_BORDER": 0x04,
-    "ZOS_V9958_R8_64K_DRAM": 0x08,
-    "ZOS_V9958_R9_212_INTERLACE": 0x88,
-    "ZOS_V9958_R11_SPRITE_ATTR": 0x03,
-    "ZOS_V9958_R15_STATUS2": 0x02,
-    "ZOS_V9958_R23_TEXT_BASE": 0xFC,
-    "ZOS_V9958_R25_WAIT_OFF": 0x00,
-    "ZOS_V9958_R25_WAIT_ON": 0x04,
-    "ZOS_V9958_BOOT_DELAY_COUNT": 16,
+    "KOS_V9958_DATA_PORT": 0xA0,
+    "KOS_V9958_CMD_PORT": 0xA1,
+    "KOS_V9958_PALETTE_PORT": 0xA2,
+    "KOS_V9958_INDIRECT_PORT": 0xA3,
+    "KOS_V9958_CONFIG_PORT": 0xA4,
+    "KOS_V9958_CONFIG_INT_ROUTE": 0x01,
+    "KOS_V9958_CONFIG_PORCH_OFF": 0x02,
+    "KOS_V9958_REG_SELECT": 0x80,
+    "KOS_V9958_STATUS2_CE": 0x01,
+    "KOS_V9958_CMD_REGISTER_BASE": 32,
+    "KOS_V9958_CMD_REGISTER_COUNT": 15,
+    "KOS_V9958_REG_R0": 0,
+    "KOS_V9958_REG_R1": 1,
+    "KOS_V9958_REG_R2": 2,
+    "KOS_V9958_REG_R3": 3,
+    "KOS_V9958_REG_R4": 4,
+    "KOS_V9958_REG_R5": 5,
+    "KOS_V9958_REG_R6": 6,
+    "KOS_V9958_REG_R7": 7,
+    "KOS_V9958_REG_R8": 8,
+    "KOS_V9958_REG_R9": 9,
+    "KOS_V9958_REG_R10": 10,
+    "KOS_V9958_REG_R11": 11,
+    "KOS_V9958_REG_R14": 14,
+    "KOS_V9958_REG_R15": 15,
+    "KOS_V9958_REG_R16": 16,
+    "KOS_V9958_REG_R17": 17,
+    "KOS_V9958_REG_R18": 18,
+    "KOS_V9958_REG_R23": 23,
+    "KOS_V9958_REG_R25": 25,
+    "KOS_V9958_REG_R26": 26,
+    "KOS_V9958_REG_R27": 27,
+    "KOS_V9958_REG_R46": 46,
+    "KOS_V9958_R0_G6": 0x0A,
+    "KOS_V9958_R1_DISPLAY_OFF": 0x00,
+    "KOS_V9958_R1_DISPLAY_ON": 0x40,
+    "KOS_V9958_R2_G6": 0x1F,
+    "KOS_V9958_R5_SPRITE_BASE": 0xE4,
+    "KOS_V9958_R6_SPRITE_PATTERN": 0x3F,
+    "KOS_V9958_R7_BORDER": 0x04,
+    "KOS_V9958_R8_64K_DRAM": 0x08,
+    "KOS_V9958_R9_212_INTERLACE": 0x88,
+    "KOS_V9958_R11_SPRITE_ATTR": 0x03,
+    "KOS_V9958_R15_STATUS2": 0x02,
+    "KOS_V9958_R23_TEXT_BASE": 0xFC,
+    "KOS_V9958_R25_WAIT_OFF": 0x00,
+    "KOS_V9958_R25_WAIT_ON": 0x04,
+    "KOS_V9958_BOOT_DELAY_COUNT": 16,
 }
 
 VIDEO_OPS = {
-    "ZVIDEO_CTRL_WRITE": 1,
-    "ZVIDEO_DATA_WRITE": 2,
-    "ZVIDEO_DATA_BLOCK": 3,
-    "ZVIDEO_PALETTE_WRITE": 4,
-    "ZVIDEO_INDIRECT_WRITE": 5,
-    "ZVIDEO_PRESENT": 6,
-    "ZVIDEO_RESET": 7,
+    "KVIDEO_CTRL_WRITE": 1,
+    "KVIDEO_DATA_WRITE": 2,
+    "KVIDEO_DATA_BLOCK": 3,
+    "KVIDEO_PALETTE_WRITE": 4,
+    "KVIDEO_INDIRECT_WRITE": 5,
+    "KVIDEO_PRESENT": 6,
+    "KVIDEO_RESET": 7,
 }
 
 
@@ -173,26 +173,26 @@ class TestPlatformConstants(unittest.TestCase):
     def test_derived_relations(self):
         env = dict(self.c)
         # Latch: porch-off is the /WS_EN bit one above the D0 route.
-        self.assertEqual(evaluate("ZOS_V9958_CONFIG_PORCH_OFF", env),
-                         evaluate("ZOS_V9958_CONFIG_INT_ROUTE", env) << 1)
+        self.assertEqual(evaluate("KOS_V9958_CONFIG_PORCH_OFF", env),
+                         evaluate("KOS_V9958_CONFIG_INT_ROUTE", env) << 1)
         # R#25: waiting is the WTE bit; the off value clears VDS too.
-        self.assertEqual(evaluate("ZOS_V9958_R25_WAIT_ON", env), 0x04)
-        self.assertEqual(evaluate("ZOS_V9958_R25_WAIT_OFF", env), 0x00)
+        self.assertEqual(evaluate("KOS_V9958_R25_WAIT_ON", env), 0x04)
+        self.assertEqual(evaluate("KOS_V9958_R25_WAIT_OFF", env), 0x00)
         # R#23 = 100h - 4 (the proven 4-line display offset).
-        self.assertEqual(evaluate("ZOS_V9958_R23_TEXT_BASE", env) + 4,
+        self.assertEqual(evaluate("KOS_V9958_R23_TEXT_BASE", env) + 4,
                          0x100)
         # The command block covers R#32..R#46 inclusive.
-        self.assertEqual(evaluate("ZOS_V9958_CMD_REGISTER_BASE", env) +
-                         evaluate("ZOS_V9958_CMD_REGISTER_COUNT", env) - 1,
-                         evaluate("ZOS_V9958_REG_R46", env))
+        self.assertEqual(evaluate("KOS_V9958_CMD_REGISTER_BASE", env) +
+                         evaluate("KOS_V9958_CMD_REGISTER_COUNT", env) - 1,
+                         evaluate("KOS_V9958_REG_R46", env))
         # The data/command/palette/indirect/config ports form the A0h-A4h
         # block in order.
-        base = evaluate("ZOS_V9958_DATA_PORT", env)
-        for offset, name in enumerate(("ZOS_V9958_DATA_PORT",
-                                       "ZOS_V9958_CMD_PORT",
-                                       "ZOS_V9958_PALETTE_PORT",
-                                       "ZOS_V9958_INDIRECT_PORT",
-                                       "ZOS_V9958_CONFIG_PORT")):
+        base = evaluate("KOS_V9958_DATA_PORT", env)
+        for offset, name in enumerate(("KOS_V9958_DATA_PORT",
+                                       "KOS_V9958_CMD_PORT",
+                                       "KOS_V9958_PALETTE_PORT",
+                                       "KOS_V9958_INDIRECT_PORT",
+                                       "KOS_V9958_CONFIG_PORT")):
             self.assertEqual(evaluate(name, env), base + offset, name)
 
     def test_shared_names_are_value_identical(self):
@@ -249,10 +249,10 @@ class TestDriverArtifact(unittest.TestCase):
                            "dispatch": "v9958_driver_dispatch", "flags": 0}])
 
     def test_packed_container_and_the_bulk_font(self):
-        if not os.path.exists(ZMOD):
-            self.skipTest("build/modules/v9958.zmod missing; build first")
-        data = _read(ZMOD, "rb")
-        info = zmodpack.parse_container(data, "v9958.zmod")
+        if not os.path.exists(MOD):
+            self.skipTest("build/modules/v9958.mod missing; build first")
+        data = _read(MOD, "rb")
+        info = modpack.parse_container(data, "v9958.mod")
         # The image carries its host-built publications (`/dev/video`,
         # package 42b).
         self.assertEqual([publication["name"]
@@ -286,23 +286,23 @@ class TestDriverArtifact(unittest.TestCase):
     def test_romfs_entry_and_boot_order(self):
         manifest = _load_json(RECOVERY_MANIFEST)
         names = [entry["name"] for entry in manifest["files"]]
-        self.assertEqual(names, ["sio.zmod", "ioc.zmod", "hid.zmod",
-                                 "v9958.zmod", "console-v9958-hid.zmod",
-                                 "drivers.man", "iocfat.zmod",
-                                 "monitor.zex",
+        self.assertEqual(names, ["sio.mod", "ioc.mod", "hid.mod",
+                                 "v9958.mod", "console-v9958-hid.mod",
+                                 "drivers.man", "iocfat.mod",
+                                 "monitor.exe",
                                  # The production feature exerciser and the
                                  # outcome programs it runs (45b).
-                                 "hwtest.zex", "xmem_selftest.zex",
-                                 "xmem_child.zex", "xmem_far.zex",
-                                 "fs_selftest.zex", "fs_child.zex"])
+                                 "hwtest.exe", "xmem_selftest.exe",
+                                 "xmem_child.exe", "xmem_far.exe",
+                                 "fs_selftest.exe", "fs_child.exe"])
         types = {entry["name"]: entry["type"]
                  for entry in manifest["files"]}
-        self.assertEqual(types["v9958.zmod"], "ZMOD")
+        self.assertEqual(types["v9958.mod"], "MOD")
         # The font is the video image's bulk segment now; the recovery
         # store carries no separate copy of it.
         self.assertNotIn("v9958-6x8.font", names)
         main = _read(MAIN_C)
-        self.assertIn("driver_load_all(ZOS_DRIVER_MANIFEST_NAME)", main)
+        self.assertIn("driver_load_all(KOS_DRIVER_MANIFEST_NAME)", main)
         # The image's own boot tier runs the bring-up (the endpoint and
         # bulk extent are the loader's), and the reset path re-reads the
         # font through the nucleus bulk copy because the window cannot
@@ -323,13 +323,13 @@ class TestDriverArtifact(unittest.TestCase):
         self.assertIn("$(MODULES)/v9958-6x8.font", makefile)
         # The video diagnostic runs in the console-integration image (work
         # package 42d merged the per-device images).
-        self.assertIn("ZOS_VIDEO_SELFTEST", makefile)
-        index = makefile.index("ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)")
+        self.assertIn("KOS_VIDEO_SELFTEST", makefile)
+        index = makefile.index("ifeq ($(KOS_CONSOLE_INTEGRATION_SELFTEST),1)")
         self.assertIn("$(BUILD)/video_test.rel", makefile[index:index + 400])
         self.assertIn("video_test", makefile)
         self.assertRegex(
             makefile,
-            r"ZOS_DRIVERS := sio ioc hid v9958 \$\(ZOS_CONSOLE\)")
+            r"KOS_DRIVERS := sio ioc hid v9958 \$\(KOS_CONSOLE\)")
         # The terminal renderer's own model suite (the M8 device-model
         # entry points it drove) is retired with the device model (work
         # package 42c); the renderer runs in the video/console images.
@@ -356,12 +356,12 @@ class TestDriverSourceDiscipline(unittest.TestCase):
                 self.assertNotIn(needle, body,
                                  "driver C must not contain %r" % needle)
             self.assertNotRegex(body, r"(?m)^\s*(in|out)\s")
-        self.assertIn("out\t(ZOS_V9958_DATA_PORT),a", self.asm)
-        self.assertIn("out\t(ZOS_V9958_CMD_PORT),a", self.asm)
-        self.assertIn("out\t(ZOS_V9958_PALETTE_PORT),a", self.asm)
-        self.assertIn("out\t(ZOS_V9958_INDIRECT_PORT),a", self.asm)
-        self.assertIn("out\t(ZOS_V9958_CONFIG_PORT),a", self.asm)
-        self.assertIn("in\ta,(ZOS_V9958_CMD_PORT)", self.asm)
+        self.assertIn("out\t(KOS_V9958_DATA_PORT),a", self.asm)
+        self.assertIn("out\t(KOS_V9958_CMD_PORT),a", self.asm)
+        self.assertIn("out\t(KOS_V9958_PALETTE_PORT),a", self.asm)
+        self.assertIn("out\t(KOS_V9958_INDIRECT_PORT),a", self.asm)
+        self.assertIn("out\t(KOS_V9958_CONFIG_PORT),a", self.asm)
+        self.assertIn("in\ta,(KOS_V9958_CMD_PORT)", self.asm)
 
     def test_no_cpm_bios_or_vdrip_remnants(self):
         for body in self.sources + (self.asm,):
@@ -387,7 +387,7 @@ class TestDriverSourceDiscipline(unittest.TestCase):
 
     def test_no_vdp_interrupt_claim(self):
         for body in self.sources + (self.asm,):
-            for needle in ("irq_claim", "irq_release", "ZOS_IRQ",
+            for needle in ("irq_claim", "irq_release", "KOS_IRQ",
                            "IRQ_VDP"):
                 self.assertNotIn(needle, body,
                                  "V9958 must keep /INT disabled: %r"
@@ -398,19 +398,19 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         # on, palette, atlases, clear, cursor, present, display on.
         order = [
             "v9958_porch_off();",
-            "ZOS_V9958_R25_WAIT_OFF",
-            "ZOS_V9958_R8_64K_DRAM",
-            "ZOS_V9958_REG_R46",
+            "KOS_V9958_R25_WAIT_OFF",
+            "KOS_V9958_R8_64K_DRAM",
+            "KOS_V9958_REG_R46",
             "v9958_g6_registers",
-            "ZOS_V9958_R23_TEXT_BASE",
-            "ZOS_V9958_R25_WAIT_ON",
+            "KOS_V9958_R23_TEXT_BASE",
+            "KOS_V9958_R25_WAIT_ON",
             "v9958_porch_on();",
             "v9958_init_palette();",
             "v9958_upload_font_atlas()",
             "v9958_clear_screen();",
             "v9958_cursor_init();",
             "v9958_io_wait_command();",
-            "ZOS_V9958_R1_DISPLAY_ON",
+            "KOS_V9958_R1_DISPLAY_ON",
         ]
         positions = []
         cursor = 0
@@ -429,32 +429,32 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.assertIn("v9958_io_reg(", self.c)
         porch = self.c.split("static void v9958_porch_off")[1].split(
             "static void v9958_porch_on")[0]
-        self.assertIn("ZOS_V9958_CONFIG_INT_ROUTE", porch)
-        self.assertIn("ZOS_V9958_CONFIG_PORCH_OFF", porch)
+        self.assertIn("KOS_V9958_CONFIG_INT_ROUTE", porch)
+        self.assertIn("KOS_V9958_CONFIG_PORCH_OFF", porch)
         latch = self.c.split("static void v9958_porch_on")[1].split(
             "/* Write one precolored")[0]
-        self.assertIn("ZOS_V9958_CONFIG_INT_ROUTE", latch)
-        self.assertNotIn("ZOS_V9958_CONFIG_PORCH_OFF", latch)
+        self.assertIn("KOS_V9958_CONFIG_INT_ROUTE", latch)
+        self.assertNotIn("KOS_V9958_CONFIG_PORCH_OFF", latch)
         self.assertIn("v9958_io_latch_write", latch)
         # The delay primitive is the bounded platform count.
-        self.assertIn("ZOS_V9958_BOOT_DELAY_COUNT", self.asm)
+        self.assertIn("KOS_V9958_BOOT_DELAY_COUNT", self.asm)
 
     def test_validate_before_io(self):
         validation = self.send.index("payload == (const void *)0")
-        reject = self.send.index("return (-ZOS_EINVAL)", validation)
+        reject = self.send.index("return (-KOS_EINVAL)", validation)
         streams = [self.send.index(name) for name in
                    ("v9958_io_stream_ctrl", "v9958_io_stream_data",
                     "v9958_io_stream_palette", "v9958_io_stream_indirect")]
         self.assertLess(reject, min(streams),
                         "the write branch must validate before any I/O")
-        present = self.send.split("case ZVIDEO_PRESENT:")[1]
+        present = self.send.split("case KVIDEO_PRESENT:")[1]
         self.assertLess(present.index("length != 0u"),
                         present.index("v9958_io_wait_command"))
-        reset = self.send.split("case ZVIDEO_RESET:")[1]
+        reset = self.send.split("case KVIDEO_RESET:")[1]
         self.assertLess(reset.index("length != 0u"),
                         reset.index("v9958_init_display"))
-        self.assertIn("return (-ZOS_ENOTSUP);", self.send)
-        self.assertIn("return (-ZOS_ENODEV);", self.send)
+        self.assertIn("return (-KOS_ENOTSUP);", self.send)
+        self.assertIn("return (-KOS_ENODEV);", self.send)
 
     def test_font_is_streamed_not_resident(self):
         # Bounded 64-byte resource reads, chunk-wise atlas conversion
@@ -473,17 +473,17 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         # The device descriptor became a driver endpoint: the VIDEO class
         # is what the console and the SDK look up, and the image is
         # output-only by construction (the protocol has no input path).
-        self.assertIn("zos/protocol.h", self.proto)
-        protocol = _read(os.path.join(ROOT, "abi", "zos", "protocol.h"))
-        self.assertIn("ZOS_CLASS_VIDEO", protocol)
-        for op in ("ZVIDEO_OP_SEND", "ZVIDEO_OP_WRITE", "ZVIDEO_OP_PUTC"):
+        self.assertIn("kos/protocol.h", self.proto)
+        protocol = _read(os.path.join(ROOT, "abi", "kos", "protocol.h"))
+        self.assertIn("KOS_CLASS_VIDEO", protocol)
+        for op in ("KVIDEO_OP_SEND", "KVIDEO_OP_WRITE", "KVIDEO_OP_PUTC"):
             self.assertIn(op, self.proto, op)
-        # ZVIDEO_OP_SEND carries any native VIDEO operation, so the five
+        # KVIDEO_OP_SEND carries any native VIDEO operation, so the five
         # streaming forms take a descriptor and the two control forms do
         # not; the driver core keeps the native operation names.
-        for op in ("ZVIDEO_CTRL_WRITE", "ZVIDEO_DATA_WRITE",
-                   "ZVIDEO_DATA_BLOCK", "ZVIDEO_PALETTE",
-                   "ZVIDEO_INDIRECT", "ZVIDEO_PRESENT", "ZVIDEO_RESET"):
+        for op in ("KVIDEO_CTRL_WRITE", "KVIDEO_DATA_WRITE",
+                   "KVIDEO_DATA_BLOCK", "KVIDEO_PALETTE",
+                   "KVIDEO_INDIRECT", "KVIDEO_PRESENT", "KVIDEO_RESET"):
             self.assertIn(op, self.c, op)
         # The single-byte and character-buffer paths the console uses end
         # at the ported renderer, which is strictly output-only.
@@ -518,7 +518,7 @@ class TestMapcheckRules(unittest.TestCase):
 
     def test_production_map_has_no_linked_v9958_symbols(self):
         if not os.path.exists(MAP):
-            self.skipTest("build/zephyros.map missing; build first")
+            self.skipTest("build/konaos.map missing; build first")
         syms = {}
         with open(MAP) as handle:
             for line in handle:

@@ -13,7 +13,7 @@ the target-test objects; the integration image adds the target
 diagnostics - the integration pass plus the IOC, HID and V9958 device
 diagnostics (work package 42d merged the per-device images into this
 one) - behind the early-SIO driver transcript, and the unchanged M7
-`monitor.zex` launcher.
+`monitor.exe` launcher.
 
 Coverage, all against those linked bytes:
 
@@ -55,7 +55,7 @@ sys.path.insert(0, HERE)
 from replay import (STEP_LIMIT, ConsoleReplay,  # noqa: E402
                     IntegrationInputs, integration_peer)
 from z80sim import IocCommandPeer  # noqa: E402
-import zmodpack  # noqa: E402
+import modpack  # noqa: E402
 import romfspack  # noqa: E402
 from test_v9958_sim import bringup_starts  # noqa: E402
 
@@ -63,37 +63,37 @@ SMOKE_HOST_SYNC = b"\xaa\x55"
 
 # The packed monitor artifact (pinned by user/monitor/ and the tooling
 # tests; the store must deliver these exact bytes).  Re-pinned by package
-# 46 T6 (SDK names): the merged `putchar` returns the byte it wrote, which
-# costs 15 code bytes (10 in the PUTC client, 5 widening `char` call
-# sites to the mandated `int`).
-MONITOR_SIZE = 6068
+# 48 (the KonaOS rename): the banner reads "KonaOS native monitor" (two
+# bytes shorter) and the renamed SDK symbols change the linker's library
+# pull order, so the linked layout differs from package 46's.
+MONITOR_SIZE = 6066
 MONITOR_SHA256 = (
-    "41430a5fbb99b67720c6c126580f90b51d7462e94a194d80f215fe2c0e431070")
+    "4d27328bd1ca820f156594ef47b5691e0c69369cc33f7da06cbf1772ccca7d18")
 
 # The monitor's visible rows, decoded from the V9958 trace.
 PROMPT = "Z80> "
-BANNER = "ZephyrOS native monitor"
+BANNER = "KonaOS native monitor"
 SYSINFO = "system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02"
 PROCESS = "process: pid 0 bank 0 flags 0001"
 BANK_INFO = "bank: current 00 mask 7F"
 MONITOR_EXIT = "monitor: exit status 0x"
 PRODUCTION_DIR = "build"
-PRODUCTION_IMAGE = "zephyros.bin"
+PRODUCTION_IMAGE = "konaos.bin"
 
 INTEGRATION_DIR = "build-console-integration-selftest"
-INTEGRATION_IMAGE = "zephyros-console-integration-selftest.bin"
+INTEGRATION_IMAGE = "konaos-console-integration-selftest.bin"
 
 # The five driver images the production store carries, in manifest order,
 # with the endpoint class each registers.  The production CONSOLE driver
 # is `console-v9958-hid` (work package 42e); the serial variant selects
 # `console-serial` from the same shared source.
-DRIVER_SET = (("sio.zmod", 1), ("ioc.zmod", 5), ("hid.zmod", 4),
-               ("v9958.zmod", 2), ("console-v9958-hid.zmod", 6),
-               ("iocfat.zmod", 7))
+DRIVER_SET = (("sio.mod", 1), ("ioc.mod", 5), ("hid.mod", 4),
+               ("v9958.mod", 2), ("console-v9958-hid.mod", 6),
+               ("iocfat.mod", 7))
 
 # The console image's required dependencies (class, instance), in
 # manifest order.  `console-serial` is exercised by test_console_serial.
-CONSOLE_DEPS = {"console-v9958-hid.zmod": ((4, 0), (2, 0))}
+CONSOLE_DEPS = {"console-v9958-hid.mod": ((4, 0), (2, 0))}
 
 # The characters the integration diagnostic writes through the console
 # driver and the line the replay queues for its input row.
@@ -157,7 +157,7 @@ class ConsoleReplayBase(ConsoleReplay, unittest.TestCase):
 
 
 class TestProductionImage(ConsoleReplayBase):
-    """`build/zephyros.bin`: the store's five drivers and the monitor."""
+    """`build/konaos.bin`: the store's five drivers and the monitor."""
 
     def test_boot_lanes_and_driver_store(self):
         z = self.start()
@@ -168,7 +168,7 @@ class TestProductionImage(ConsoleReplayBase):
         # The early console prints its banner and nothing else: every
         # later line is produced through the console driver, so it
         # reaches the V9958 lane instead of the serial link.
-        for line in (b"ZephyrOS 0.0\r\n", b"platform: Zephyr-80\r\n",
+        for line in (b"KonaOS 0.0\r\n", b"platform: Zephyr-80\r\n",
                      b"kernel entry: OK\r\n", b"serial: OK\r\n"):
             self.assertIn(line, sio)
         self.assertEqual(sio.count(b"\n"), 4, sio)
@@ -184,8 +184,8 @@ class TestProductionImage(ConsoleReplayBase):
         self.assertIn(PROMPT, trace)
 
         # The production image links no acceptance symbol at all.
-        for name in ("_zos_run_console_integration_selftest",
-                     "_ace_integration_result", "_zos_target_test_late"):
+        for name in ("_kos_run_console_integration_selftest",
+                     "_ace_integration_result", "_kos_target_test_late"):
             self.assertNotIn(name, self.syms)
 
         self.assert_driver_store()
@@ -198,7 +198,7 @@ class TestProductionImage(ConsoleReplayBase):
         # 45b): a missing argument reports the monitor's ARG error and an
         # absent program the native code, both back at the prompt.
         self.type_line(z, b"X\r", "ERR: ARG")
-        self.type_line(z, b"X /system/nosuch.zex\r", "ERR: 05")
+        self.type_line(z, b"X /system/nosuch.exe\r", "ERR: 05")
         self.type_line(z, b"q\r", MONITOR_EXIT)
         self.wait_for_count(z, BANNER, 2)  # launcher relaunch
         trace = self.read_trace(z)
@@ -227,7 +227,7 @@ class TestProductionImage(ConsoleReplayBase):
         manifest = os.path.join(ROOT, "recovery", "manifest.json")
         self.assertEqual(sorted(entries), sorted(self.manifest_names(
             manifest)))
-        monitor = entries["monitor.zex"]["payload"]
+        monitor = entries["monitor.exe"]["payload"]
         self.assertEqual(len(monitor), MONITOR_SIZE)
         self.assertEqual(hashlib.sha256(monitor).hexdigest(),
                          MONITOR_SHA256)
@@ -240,7 +240,7 @@ class TestProductionImage(ConsoleReplayBase):
         for name, klass in DRIVER_SET:
             path = os.path.join(ROOT, "build", "modules", name)
             with open(path, "rb") as handle:
-                info = zmodpack.parse_container(handle.read(), name)
+                info = modpack.parse_container(handle.read(), name)
             # The flat plan: one endpoint per image, and every
             # production image carries its publication (work package 42c).
             self.assertEqual([(ep["class"], ep["instance"], ep["version"])
@@ -309,7 +309,7 @@ class TestIntegrationImage(ConsoleReplayBase):
 
     def driver_plan(self):
         """The nucleus ledger the packer's set report carries for this
-        image (tools/zmodpack.py drivers --report drivers.plan.json)."""
+        image (tools/modpack.py drivers --report drivers.plan.json)."""
         path = os.path.join(ROOT, INTEGRATION_DIR, "modules",
                             "drivers.plan.json")
         with open(path, "r") as handle:
@@ -323,8 +323,8 @@ class TestIntegrationImage(ConsoleReplayBase):
 
         # Loader evidence: one row per image, in manifest order, plus the
         # ledger the packer's report pins.
-        for name in ("sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
-                     "console-v9958-hid.zmod"):
+        for name in ("sio.mod", "ioc.mod", "hid.mod", "v9958.mod",
+                     "console-v9958-hid.mod"):
             self.assertIn(("driver %s: hot " % name).encode(), sio)
         self.assertIn(b"driver loader: 5 images in bank 6\r\n", sio)
         # The loader's two ledgers must equal what the packer's plan
@@ -353,7 +353,7 @@ class TestIntegrationImage(ConsoleReplayBase):
         # console to the monitor.  The V9958 bring-up sequence ran three
         # times now that the video diagnostic lives in this image (work
         # package 42d): the driver's boot segment, the diagnostic's
-        # ZVIDEO_RESET, and the ESC c display reset.
+        # KVIDEO_RESET, and the ESC c display reset.
         self.assertIn("escc: display reset", trace)
         self.assertEqual(len(bringup_starts(z.vdp)), 3)
         self.assertIn(BANNER, trace)

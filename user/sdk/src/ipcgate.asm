@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS libzos: IPC gate stub (work package 39).
+; KonaOS libkos: IPC gate stub (work package 39).
 ;
 ; Sibling of console.asm, fsgate.asm and diaggate.asm.  The IPC wrappers
 ; build their packed argument block (and the caller's frame) in the
@@ -11,18 +11,18 @@
 ; runtime.asm.
 ; -----------------------------------------------------------------------------
 
-	.module zos_ipcgate
+	.module kos_ipcgate
 
-	.globl _zos_ipc_raw_call
-	.globl _zex_runtime_error
+	.globl _kos_ipc_raw_call
+	.globl _exe_runtime_error
 
 	.area _CODE
 
-; int zos_ipc_raw_call(struct zos_ipc_call_req *req);  HL = req.
+; int kos_ipc_raw_call(struct kos_ipc_call_req *req);  HL = req.
 ; Request layout (packed): +0 number, +1..+2 block pointer, +3 error flag.
 ; Returns the primary result in DE (the gate publishes it in HL) or, with
 ; the carried error recorded in the request, -errno.
-_zos_ipc_raw_call::
+_kos_ipc_raw_call::
 	ld	a,(hl)			; syscall number
 	inc	hl
 	ld	e,(hl)
@@ -38,7 +38,7 @@ _zos_ipc_raw_call::
 	; return -errno (the ABI error code is in A).
 	pop	hl
 	ld	(hl),#1
-	jp	_zex_runtime_error
+	jp	_exe_runtime_error
 001$:
 	pop	de			; discard &error (DE = &error)
 	ex	de,hl			; DE = primary result, HL = &error

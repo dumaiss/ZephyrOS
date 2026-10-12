@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS fixed-core IPC primitives (kernel/ipc, architecture 36.5-36.9).
+; KonaOS fixed-core IPC primitives (kernel/ipc, architecture 36.5-36.9).
 ;
 ; Every symbol here is fixed-core by construction: it must stay visible in
 ; 2000h-5FFFh while the resident driver domain (bank 6) is mapped into
@@ -16,7 +16,7 @@
 ;   second 16-bit argument in DE, first 8-bit argument in A.
 ;
 ; The driver stack is the 512-byte reservation of architecture 36.9 at
-; ZOS_DRIVER_STACK_BASE, below the relocated ISR stack; like the ISR
+; KOS_DRIVER_STACK_BASE, below the relocated ISR stack; like the ISR
 ; stack it is declared ABS so no ordinary allocation can enter it.
 ; -----------------------------------------------------------------------------
 
@@ -30,8 +30,8 @@
 	.globl _ipc_copy_req, _ipc_copy_run
 	.globl _ipc_invoke, _ipc_invoke_here
 	.globl _ipc_saved_latch
-	.globl zos_gate_saved_latch
-	.globl zos_driver_stack, zos_driver_stack_top
+	.globl kos_gate_saved_latch
+	.globl kos_driver_stack, kos_driver_stack_top
 	.globl ipc_asm_begin, ipc_asm_end
 	.globl ipc_domain_switch_end
 
@@ -43,7 +43,7 @@ ipc_asm_begin::
 ; uint8_t ipc_latch(void);            read the banking latch (A)
 ; ---------------------------------------------------------------------------
 _ipc_latch::
-	in	a,(ZOS_MEMCTL_PORT)
+	in	a,(KOS_MEMCTL_PORT)
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ _ipc_latch::
 ; so the read goes through this two-instruction accessor.
 ; ---------------------------------------------------------------------------
 _ipc_gate_latch::
-	ld	a,(zos_gate_saved_latch)
+	ld	a,(kos_gate_saved_latch)
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -68,12 +68,12 @@ _ipc_gate_latch::
 ; ---------------------------------------------------------------------------
 _ipc_domain_enter::
 	ld	b,a			; B = page bits
-	in	a,(ZOS_MEMCTL_PORT)
+	in	a,(KOS_MEMCTL_PORT)
 	ld	(_ipc_saved_latch),a
-	and	#ZOS_BANK_MASK
-	or	#ZOS_MODE_OS
+	and	#KOS_BANK_MASK
+	or	#KOS_MODE_OS
 	or	b
-	out	(ZOS_MEMCTL_PORT),a
+	out	(KOS_MEMCTL_PORT),a
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -86,11 +86,11 @@ _ipc_domain_enter::
 ; ---------------------------------------------------------------------------
 _ipc_domain_set::
 	ld	b,a			; B = page bits
-	in	a,(ZOS_MEMCTL_PORT)
-	and	#ZOS_BANK_MASK
-	or	#ZOS_MODE_OS
+	in	a,(KOS_MEMCTL_PORT)
+	and	#KOS_BANK_MASK
+	or	#KOS_MODE_OS
 	or	b
-	out	(ZOS_MEMCTL_PORT),a
+	out	(KOS_MEMCTL_PORT),a
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ _ipc_domain_set::
 ; ---------------------------------------------------------------------------
 _ipc_domain_exit::
 	ld	a,(_ipc_saved_latch)
-	out	(ZOS_MEMCTL_PORT),a
+	out	(KOS_MEMCTL_PORT),a
 	ret
 
 ; The three page selects above are the fixed core's only mapping changes:
@@ -142,7 +142,7 @@ _ipc_copy_run::
 	ret
 
 ; ---------------------------------------------------------------------------
-; int16_t ipc_invoke(uint16_t entry, struct zos_ipc_frame *frame);
+; int16_t ipc_invoke(uint16_t entry, struct kos_ipc_frame *frame);
 ;   HL = entry (a window address in the resident domain),
 ;   DE = frame (nucleus-owned copy).
 ;
@@ -159,7 +159,7 @@ _ipc_copy_run::
 ; ---------------------------------------------------------------------------
 _ipc_invoke::
 	ld	(_ipc_saved_sp),sp
-	ld	sp,#zos_driver_stack_top
+	ld	sp,#kos_driver_stack_top
 	ex	de,hl			; DE = entry, HL = frame
 	ld	(_ipc_entry),de
 	ld	de,#001$
@@ -174,7 +174,7 @@ _ipc_invoke::
 	ret
 
 ; ---------------------------------------------------------------------------
-; int16_t ipc_invoke_here(uint16_t entry, struct zos_ipc_frame *frame);
+; int16_t ipc_invoke_here(uint16_t entry, struct kos_ipc_frame *frame);
 ;
 ; A nested call: the driver stack is already active, so only the CALL
 ; happens.  Same result convention.  This is the same-domain fast path:
@@ -223,7 +223,7 @@ _ipc_copy_req::
 ; allocation can enter the reservation.
 ; ---------------------------------------------------------------------------
 	.area _IPC_DRIVER_STACK (ABS)
-	.org ZOS_DRIVER_STACK_BASE
-zos_driver_stack::
-	.ds	ZOS_DRIVER_STACK_SIZE
-zos_driver_stack_top::
+	.org KOS_DRIVER_STACK_BASE
+kos_driver_stack::
+	.ds	KOS_DRIVER_STACK_SIZE
+kos_driver_stack_top::

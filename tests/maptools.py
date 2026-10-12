@@ -71,46 +71,46 @@ IRQ_SELFTEST_H = os.path.join(TARGET_TEST_INC, "irq_selftest.h")
 IRQ_SELFTEST_INC = os.path.join(TARGET_TEST_INC, "irq_selftest.inc")
 
 REQUIRED_HARDWARE_CONSTANTS = (
-    "ZOS_MEMCTL_PORT",
-    "ZOS_SIO0A_DATA", "ZOS_SIO0A_CTRL",
-    "ZOS_SIO0B_DATA", "ZOS_SIO0B_CTRL",
-    "ZOS_BANK_MASK", "ZOS_LATCH_NON_BANK_MASK",
-    "ZOS_MEM_MODE0", "ZOS_MEM_MODE1", "ZOS_MODE_MASK",
-    "ZOS_ROM_PAGE_SHIFT", "ZOS_ROM_PAGE_MASK",
-    "ZOS_MODE_BOOT", "ZOS_MODE_FLAT",
-    "ZOS_MODE_APPLICATION", "ZOS_MODE_OS",
-    "ZOS_SIO_RR0_RX_AVAILABLE", "ZOS_SIO_RR0_TX_EMPTY", "ZOS_SIO_RR0_CTS",
-    "ZOS_SIO_TX_READY",
-    "ZOS_SIO_WR0_CHANNEL_RESET", "ZOS_SIO_WR4_X16_1STOP_NOPARITY",
-    "ZOS_SIO_WR3_RX8_NO_AUTO_ENABLES", "ZOS_SIO_WR5_TX8_DTR_RTS_ASSERT",
-    "ZOS_SIO_WR1_INT_DISABLED", "ZOS_SIO_TX_TIMEOUT",
-    "ZOS_CTC0_PORT", "ZOS_CTC0_CONTROL_TEST",
-    "ZOS_CTC0_TIME_CONSTANT", "ZOS_CTC0_RESET",
+    "KOS_MEMCTL_PORT",
+    "KOS_SIO0A_DATA", "KOS_SIO0A_CTRL",
+    "KOS_SIO0B_DATA", "KOS_SIO0B_CTRL",
+    "KOS_BANK_MASK", "KOS_LATCH_NON_BANK_MASK",
+    "KOS_MEM_MODE0", "KOS_MEM_MODE1", "KOS_MODE_MASK",
+    "KOS_ROM_PAGE_SHIFT", "KOS_ROM_PAGE_MASK",
+    "KOS_MODE_BOOT", "KOS_MODE_FLAT",
+    "KOS_MODE_APPLICATION", "KOS_MODE_OS",
+    "KOS_SIO_RR0_RX_AVAILABLE", "KOS_SIO_RR0_TX_EMPTY", "KOS_SIO_RR0_CTS",
+    "KOS_SIO_TX_READY",
+    "KOS_SIO_WR0_CHANNEL_RESET", "KOS_SIO_WR4_X16_1STOP_NOPARITY",
+    "KOS_SIO_WR3_RX8_NO_AUTO_ENABLES", "KOS_SIO_WR5_TX8_DTR_RTS_ASSERT",
+    "KOS_SIO_WR1_INT_DISABLED", "KOS_SIO_TX_TIMEOUT",
+    "KOS_CTC0_PORT", "KOS_CTC0_CONTROL_TEST",
+    "KOS_CTC0_TIME_CONSTANT", "KOS_CTC0_RESET",
 )
 
 REQUIRED_MEMORY_CONSTANTS = (
-    "ZOS_RESET_TOP", "ZOS_PAGE_ZERO_END",
-    "ZOS_BANK7_BASE", "ZOS_REV13_WINDOW_BASE", "ZOS_BANK7_RUNTIME_END",
-    "ZOS_IRQ_ISR_STACK_BASE", "ZOS_IRQ_ISR_STACK_TOP",
-    "ZOS_IRQ_ISR_STACK_SIZE",
-    "ZOS_DRIVER_STACK_BASE", "ZOS_DRIVER_STACK_TOP",
-    "ZOS_DRIVER_STACK_SIZE",
-    "ZOS_DRIVER_GRANULE_SIZE",
-    "ZOS_COMMON_BASE", "ZOS_COMMON_CODE_END", "ZOS_COMMON_STACK_BASE",
-    "ZOS_COMMON_CEILING",
-    "ZOS_STACK_INIT_SP", "ZOS_GATE_STACK_SIZE",
-    "ZOS_ROM_PAGE_SIZE", "ZOS_ROM_PAGE_COUNT", "ZOS_BOOT_IMAGE_SIZE",
-    "ZOS_ROM_IMAGE_SIZE",
-    "ZOS_ROMFS_FIRST_PAGE", "ZOS_ROMFS_PAGE_COUNT",
-    "ZOS_ROMFS_WINDOW_SIZE", "ZOS_ROMFS_CAPACITY",
-    "ZOS_ROMFS_STAGING_SIZE", "ZOS_ROM_ACCESS_BASE", "ZOS_ROM_ACCESS_SIZE",
+    "KOS_RESET_TOP", "KOS_PAGE_ZERO_END",
+    "KOS_BANK7_BASE", "KOS_REV13_WINDOW_BASE", "KOS_BANK7_RUNTIME_END",
+    "KOS_IRQ_ISR_STACK_BASE", "KOS_IRQ_ISR_STACK_TOP",
+    "KOS_IRQ_ISR_STACK_SIZE",
+    "KOS_DRIVER_STACK_BASE", "KOS_DRIVER_STACK_TOP",
+    "KOS_DRIVER_STACK_SIZE",
+    "KOS_DRIVER_GRANULE_SIZE",
+    "KOS_COMMON_BASE", "KOS_COMMON_CODE_END", "KOS_COMMON_STACK_BASE",
+    "KOS_COMMON_CEILING",
+    "KOS_STACK_INIT_SP", "KOS_GATE_STACK_SIZE",
+    "KOS_ROM_PAGE_SIZE", "KOS_ROM_PAGE_COUNT", "KOS_BOOT_IMAGE_SIZE",
+    "KOS_ROM_IMAGE_SIZE",
+    "KOS_ROMFS_FIRST_PAGE", "KOS_ROMFS_PAGE_COUNT",
+    "KOS_ROMFS_WINDOW_SIZE", "KOS_ROMFS_CAPACITY",
+    "KOS_ROMFS_STAGING_SIZE", "KOS_ROM_ACCESS_BASE", "KOS_ROM_ACCESS_SIZE",
 )
 
 REQUIRED_IRQ_CONSTANTS = (
-    "ZOS_IRQ_VECTOR_BASE", "ZOS_IRQ_VECTOR_SIZE",
-    "ZOS_IRQ_STATE_BASE", "ZOS_IRQ_STATE_HEADER_SIZE",
-    "ZOS_IRQ_STACK_BASE", "ZOS_IRQ_STACK_TOP", "ZOS_IRQ_STACK_SIZE",
-    "ZOS_IM2_I_VALUE", "ZOS_CTC0_VECTOR_BASE",
+    "KOS_IRQ_VECTOR_BASE", "KOS_IRQ_VECTOR_SIZE",
+    "KOS_IRQ_STATE_BASE", "KOS_IRQ_STATE_HEADER_SIZE",
+    "KOS_IRQ_STACK_BASE", "KOS_IRQ_STACK_TOP", "KOS_IRQ_STACK_SIZE",
+    "KOS_IM2_I_VALUE", "KOS_CTC0_VECTOR_BASE",
 )
 
 
@@ -245,7 +245,7 @@ def parse_asm_inc(path):
 def make_map(overrides=None, **kw):
     """Build a synthetic map resembling the real layout, then apply edits.
 
-    The fixture is a *ROMFS-boot* image (ZOS_ROMFS_BOOT=1): the M9 VFS
+    The fixture is a *ROMFS-boot* image (KOS_ROMFS_BOOT=1): the M9 VFS
     symbols are present and the embedded boot catalog is not, which is the
     only combination mapcheck accepts.  Tests that need the
     embedded-catalog variant pass the catalog symbols explicitly, and the
@@ -285,15 +285,15 @@ def make_map(overrides=None, **kw):
         "s__COMMON_DATA": 0xE100, "l__COMMON_DATA": 0x43,
         "s__RESET": 0x0000, "l__RESET": 0x26,
         "_reset": 0x0000, "_reset_end": 0x0026,
-        "_zos_rst30_vector": 0x0030, "_zos_rst30_end": 0x0033,
+        "_kos_rst30_vector": 0x0030, "_kos_rst30_end": 0x0033,
         # Cold half: the boot/idle path runs only with P = 0.
         "_kernel_main": 0x6000,
         "_kernel_syscall_dispatch": 0x6020,
-        "zos_syscall_dispatch": 0x2100,
-        "_boot_common_entry": 0xE000, "__zos_crt0_init": 0xE02F,
-        "__zos_mode_fault": 0xE080, "zos_enter_os_mode": 0xE090,
-        "zos_leave_os_mode": 0xE0A0, "zos_os_continuation": 0xE09C,
-        "zos_syscall_entry": 0xE0A8,
+        "kos_syscall_dispatch": 0x2100,
+        "_boot_common_entry": 0xE000, "__kos_crt0_init": 0xE02F,
+        "__kos_mode_fault": 0xE080, "kos_enter_os_mode": 0xE090,
+        "kos_leave_os_mode": 0xE0A0, "kos_os_continuation": 0xE09C,
+        "kos_syscall_entry": 0xE0A8,
         "_platform_memctl_read": 0xE0B0, "_platform_memctl_write": 0xE0B4,
         "_platform_bank_get": 0xE0B8, "_platform_bank_set": 0xE0BC,
         "_early_console_init": 0xE0C0, "_early_console_putc": 0xE0E0,
@@ -302,8 +302,8 @@ def make_map(overrides=None, **kw):
         "irq_common_entry": 0xE140, "_irq_arch_lock": 0xE190,
         "_irq_arch_unlock": 0xE198, "_irq_arch_init": 0xE1A0,
         "_irq_dispatch": 0x2200, "_irq_kernel_code_end": 0x206E,
-        "_zos_upcall": 0x2400,
-        "zos_driver_stack": 0x5D00, "zos_driver_stack_top": 0x5F00,
+        "_kos_upcall": 0x2400,
+        "kos_driver_stack": 0x5D00, "kos_driver_stack_top": 0x5F00,
         "_device_registry_init": 0x2300, "_device" + "_register": 0x2320,
         "_device_get": 0x2340, "_device_find": 0x2360,
         "_device_interface": 0x2370,
@@ -320,10 +320,10 @@ def make_map(overrides=None, **kw):
         "_module_count": 0x27A0,
         "_module_free_granules": 0x27B0, "_module_failed_count": 0x27C0,
         "_module_get": 0x27D0, "_module_code_allowed": 0x27E0,
-        "_zmod_copy_image": 0x2880,
-        "_zmod_validate_source": 0x28E0,
-        "_zmod_zero_bss": 0x28A0, "_zmod_apply_relocations": 0x28C0,
-        "_zmod_zero_allocation": 0x2900,
+        "_mod_copy_image": 0x2880,
+        "_mod_validate_source": 0x28E0,
+        "_mod_zero_bss": 0x28A0, "_mod_apply_relocations": 0x28C0,
+        "_mod_zero_allocation": 0x2900,
         "_romfs_init": 0x2A00, "_romfs_read": 0x2B00,
         "_romfs_lookup_ci": 0x2B10, "_romfs_entry_at": 0x2B20,
         "_romfs_resource_size": 0x2BA0,
@@ -348,49 +348,49 @@ def make_map(overrides=None, **kw):
         "irq_common_sp": 0xFE04, "_irq_active_source": 0xFE06,
         "irq_transition_stack": 0xFE80, "irq_transition_stack_top": 0xFF00,
         "irq_isr_stack": 0x5F00, "irq_isr_stack_top": 0x6000,
-        "zos_gate_saved_sp": 0xE100, "zos_gate_saved_latch": 0xE102,
-        "zos_gate_result_hl": 0xE103, "zos_gate_result_a": 0xE105,
-        "zos_gate_result_c": 0xE106,
-        "zos_gate_stack": 0xE107, "zos_gate_stack_top": 0xE287,
+        "kos_gate_saved_sp": 0xE100, "kos_gate_saved_latch": 0xE102,
+        "kos_gate_result_hl": 0xE103, "kos_gate_result_a": 0xE105,
+        "kos_gate_result_c": 0xE106,
+        "kos_gate_stack": 0xE107, "kos_gate_stack_top": 0xE287,
         # M6 process gates (common), copy state (common), and bank-7
-        # process/ZEX code and data.
-        "_zos_process_launch": 0xE300, "_zos_process_resume": 0xE310,
-        "zos_process_return_trap": 0xE320,
-        "_zos_process_page_zero_vector": 0xE330,
-        "_zos_bank_copy": 0xE340,
-        "_zos_user_copy_staging": 0xE370,
-        "zos_copy_op": 0xE3B0, "zos_copy_bank": 0xE3B1,
-        "zos_copy_addr": 0xE3B2, "zos_copy_buffer": 0xE3B4,
-        "zos_copy_length": 0xE3B6, "zos_copy_saved_sp": 0xE3B8,
-        "zos_copy_saved_latch": 0xE3BA, "zos_copy_saved_iff": 0xE3BB,
-        "zos_copy_stack": 0xE3BC, "zos_copy_stack_top": 0xE3CC,
-        "zos_proc_cont": 0xE3D0, "zos_proc_ix": 0xE3D8,
-        "zos_proc_latch": 0xE3E0,
-        "zos_proc_iff": 0xE3E4, "zos_proc_index": 0xE3E8,
-        "zos_proc_status": 0xE3E9, "zos_proc_bank": 0xE3EB,
-        "zos_proc_entry": 0xE3EC,
-        "zos_proc_gate_sp": 0xE470, "zos_proc_gate_latch": 0xE478,
-        "zos_proc_gate_iff": 0xE47C,
-        "zos_proc_frames": 0xE48E, "zos_proc_frames_end": 0xE51E,
+        # process/EXE code and data.
+        "_kos_process_launch": 0xE300, "_kos_process_resume": 0xE310,
+        "kos_process_return_trap": 0xE320,
+        "_kos_process_page_zero_vector": 0xE330,
+        "_kos_bank_copy": 0xE340,
+        "_kos_user_copy_staging": 0xE370,
+        "kos_copy_op": 0xE3B0, "kos_copy_bank": 0xE3B1,
+        "kos_copy_addr": 0xE3B2, "kos_copy_buffer": 0xE3B4,
+        "kos_copy_length": 0xE3B6, "kos_copy_saved_sp": 0xE3B8,
+        "kos_copy_saved_latch": 0xE3BA, "kos_copy_saved_iff": 0xE3BB,
+        "kos_copy_stack": 0xE3BC, "kos_copy_stack_top": 0xE3CC,
+        "kos_proc_cont": 0xE3D0, "kos_proc_ix": 0xE3D8,
+        "kos_proc_latch": 0xE3E0,
+        "kos_proc_iff": 0xE3E4, "kos_proc_index": 0xE3E8,
+        "kos_proc_status": 0xE3E9, "kos_proc_bank": 0xE3EB,
+        "kos_proc_entry": 0xE3EC,
+        "kos_proc_gate_sp": 0xE470, "kos_proc_gate_latch": 0xE478,
+        "kos_proc_gate_iff": 0xE47C,
+        "kos_proc_frames": 0xE48E, "kos_proc_frames_end": 0xE51E,
         "_process_exec": 0x2C00, "_process_prepare": 0x2C20,
         "_process_launch": 0x2C40,
         "_process_exit": 0x2C80,
         "_process_abort": 0x2CA0, "_process_alloc_bank": 0x2CC0,
         "_process_slot_alloc": 0x2CE0, "_process_slot_release": 0x2D00,
-        "_zex_validate_header": 0x2D40,
+        "_exe_validate_header": 0x2D40,
         "_process_table": 0xD900, "_process_running_pid": 0xDD00,
         "_process_last_status": 0xDD01,
-        # Bank-7 runtime data.  `_zos_process_path_scratch` used to sit
+        # Bank-7 runtime data.  `_kos_process_path_scratch` used to sit
         # here; work package 45b correction 01 retired it, because a
         # bank-6 provider cannot see this half of bank 7.
         # M7 diagnostic drivers and shared dispatcher helpers (bank-7
         # kernel code; no new common state).
-        "_zos_diag_mem_read": 0x2E00, "_zos_diag_mem_write": 0x2E40,
-        "_zos_diag_io_in": 0x2E80, "_zos_diag_io_out": 0x2EA0,
-        "_zos_diag_bank_info": 0x2EC0, "_zos_diag_system_info": 0x2EE0,
-        "_zos_diag_hw_in": 0x2010, "_zos_diag_hw_out": 0x2016,
-        "_zos_syscall_success": 0x2632, "_zos_syscall_error": 0x263D,
-        "_zos_syscall_block_ok": 0x264C,
+        "_kos_diag_mem_read": 0x2E00, "_kos_diag_mem_write": 0x2E40,
+        "_kos_diag_io_in": 0x2E80, "_kos_diag_io_out": 0x2EA0,
+        "_kos_diag_bank_info": 0x2EC0, "_kos_diag_system_info": 0x2EE0,
+        "_kos_diag_hw_in": 0x2010, "_kos_diag_hw_out": 0x2016,
+        "_kos_syscall_success": 0x2632, "_kos_syscall_error": 0x263D,
+        "_kos_syscall_block_ok": 0x264C,
         # VFS handles, paths and the namespace family (package 42b): the
         # reused M9 helpers plus the M10 router, the `/system` FILE
         # provider and the object syscall bodies.  The mount table, the
@@ -413,7 +413,7 @@ def make_map(overrides=None, **kw):
         "_vfs_ns_file_bind": 0x3220, "_vfs_ns_file_call": 0x3240,
         "_vfs_ns_file_meta": 0x3250, "_vfs_ns_file_dispatch": 0x3260,
         "_vfs_ns_dir_check": 0x3280,
-        "_zos_object_copy_path": 0x32A0, "_zos_object_dispatch": 0x32C0,
+        "_kos_object_copy_path": 0x32A0, "_kos_object_dispatch": 0x32C0,
         "_vfs_ns_publications": 0xDA00,
     }
     if kw.get("areas") is not None:
@@ -443,5 +443,5 @@ def make_map(overrides=None, **kw):
         lines.append("%-20s %08X    %08X =           0. bytes (REL,CON)"
                      % (name, addr, size))
     for name, addr in sorted(symbols.items()):
-        lines.append("     %08X  %-32s zosmap" % (addr, name))
+        lines.append("     %08X  %-32s kosmap" % (addr, name))
     return "\n".join(lines) + "\n"

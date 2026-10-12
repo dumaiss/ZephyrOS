@@ -1,4 +1,4 @@
-/* ZephyrOS M7 native monitor: startup, command input, info/help
+/* KonaOS M7 native monitor: startup, command input, info/help
  * commands, dispatch loop.
  *
  * See monitor.h for the command surface.  The monitor resolves its own
@@ -11,11 +11,11 @@
  */
 
 #include "monitor.h"
-#include "zos.h"
+#include "kos.h"
 #include "diag.h" /* the SDK diag wrappers */
 #include "hexfmt.h"
 #include "status.h"
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 unsigned char mon_bank;
 unsigned char mon_mask;
@@ -26,7 +26,7 @@ unsigned char mon_line[MON_LINE_MAX];
  * path without touching live monitor state. */
 static unsigned char mon_scratch;
 
-static const char mon_banner[] = "\r\nZephyrOS native monitor\r\n";
+static const char mon_banner[] = "\r\nKonaOS native monitor\r\n";
 static const char mon_prompt[] = "Z80> ";
 static const char mon_bank_label[] = "bank=";
 static const char mon_pid_label[] = " pid=";
@@ -43,7 +43,7 @@ static const char mon_help[] =
 	"MB bank addr value set byte in bank 0-6\r\n"
 	"I port         input port (10-FF)\r\n"
 	"O port value   output port (10-FF)\r\n"
-	"X path [tail]  run a ZEX from /system\r\n"
+	"X path [tail]  run a EXE from /system\r\n"
 	"Q              quit\r\n"
 	"H or ?         help\r\n";
 
@@ -79,7 +79,7 @@ static unsigned char mon_lane_byte; /* 1: the current byte came from it  */
 /* One descriptor-free call on the lane. */
 static int mon_lane_call(unsigned char op, unsigned int arg0)
 {
-	struct zos_ipc_request req;
+	struct kos_ipc_request req;
 
 	req.frame.op = op;
 	req.frame.flags = 0u;
@@ -87,7 +87,7 @@ static int mon_lane_call(unsigned char op, unsigned int arg0)
 	req.frame.arg1 = 0u;
 	req.buffer = (void *)0;
 	req.length = 0u;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 	return call(mon_lane, &req);
 }
 
@@ -97,40 +97,40 @@ static void mon_lane_open(void)
 	unsigned char type = 0u;
 	int handle = bind(mon_lane_name, 0u, &type);
 
-	if (handle >= 1 && type == ZOS_TYPE_SERIAL) {
+	if (handle >= 1 && type == KOS_TYPE_SERIAL) {
 		mon_lane = (unsigned char)handle;
 	}
 }
 
-/* One pending lane byte, or -ZOS_EAGAIN.  A lane that fails is dropped
+/* One pending lane byte, or -KOS_EAGAIN.  A lane that fails is dropped
  * for the rest of the session: the console remains. */
 static int mon_lane_getc(void)
 {
 	int result;
 
 	if (mon_lane == 0u) {
-		return -ZOS_EAGAIN;
+		return -KOS_EAGAIN;
 	}
-	result = mon_lane_call(ZSIO_OP_POLL, 0u);
+	result = mon_lane_call(KSIO_OP_POLL, 0u);
 	if (result != 1) {
 		if (result < 0) {
 			mon_lane = 0u;
 		}
-		return -ZOS_EAGAIN;
+		return -KOS_EAGAIN;
 	}
-	result = mon_lane_call(ZSIO_OP_GETC, 0u);
+	result = mon_lane_call(KSIO_OP_GETC, 0u);
 	if (result < 0) {
-		if (result != -ZOS_EAGAIN) {
+		if (result != -KOS_EAGAIN) {
 			mon_lane = 0u;
 		}
-		return -ZOS_EAGAIN;
+		return -KOS_EAGAIN;
 	}
 	return result;
 }
 
 static void mon_lane_putc(unsigned int byte)
 {
-	if (mon_lane != 0u && mon_lane_call(ZSIO_OP_PUTC, byte) < 0) {
+	if (mon_lane != 0u && mon_lane_call(KSIO_OP_PUTC, byte) < 0) {
 		mon_lane = 0u;
 	}
 }
@@ -171,7 +171,7 @@ static int mon_getc(void)
 			mon_lane_byte = 0u;
 			return (int)(unsigned char)ch;
 		}
-		if (result < 0 && result != -ZOS_EAGAIN) {
+		if (result < 0 && result != -KOS_EAGAIN) {
 			return result;
 		}
 		result = mon_lane_getc();
@@ -308,15 +308,15 @@ void mon_cmd_help(char *cursor)
 
 void mon_cmd_info(char *cursor)
 {
-	struct zos_diag_system_info sysinfo;
-	struct zos_info_record info;
+	struct kos_diag_system_info sysinfo;
+	struct kos_info_record info;
 
 	if (!zrt_line_end(&cursor)) {
 		zrt_status_err_arg();
 		return;
 	}
-	if (diag_system_info(&sysinfo) != ZOS_DIAG_SYSTEM_INFO_SIZE) {
-		zrt_status_err_code(-ZOS_EINVAL);
+	if (diag_system_info(&sysinfo) != KOS_DIAG_SYSTEM_INFO_SIZE) {
+		zrt_status_err_code(-KOS_EINVAL);
 		return;
 	}
 	console_puts("system: abi ");
@@ -333,8 +333,8 @@ void mon_cmd_info(char *cursor)
 	mon_put_hex8(sysinfo.romfs_first_page);
 	console_puts(mon_line_end);
 
-	if (getinfo(&info) != ZOS_GETINFO_SIZE) {
-		zrt_status_err_code(-ZOS_EINVAL);
+	if (getinfo(&info) != KOS_GETINFO_SIZE) {
+		zrt_status_err_code(-KOS_EINVAL);
 		return;
 	}
 	console_puts("process: pid ");
@@ -356,12 +356,12 @@ void mon_cmd_info(char *cursor)
  * the M/D scratch tests use. */
 static void mon_print_banner(void)
 {
-	struct zos_info_record info;
+	struct kos_info_record info;
 
 	console_puts(mon_banner);
 	console_puts(mon_bank_label);
 	mon_put_hex8(mon_bank);
-	if (getinfo(&info) == ZOS_GETINFO_SIZE) {
+	if (getinfo(&info) == KOS_GETINFO_SIZE) {
 		console_puts(mon_pid_label);
 		mon_put_u8_dec(info.pid);
 	}
@@ -429,7 +429,7 @@ static void mon_dispatch(char *cursor)
 
 int main(void)
 {
-	struct zos_bank_info bank_info;
+	struct kos_bank_info bank_info;
 
 	if (diag_bank_info(&bank_info) != 2) {
 		console_puts(mon_fail_diag);

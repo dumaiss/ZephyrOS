@@ -1,9 +1,9 @@
-/* ZephyrOS extended-memory outcome acceptance (work packages 43/44b): the
+/* KonaOS extended-memory outcome acceptance (work packages 43/44b): the
  * nested-exec child.
  *
- * SYS_EXEC starts it twice: from /system/xmem_selftest.zex while that
+ * SYS_EXEC starts it twice: from /system/xmem_selftest.exe while that
  * program's (object) aperture is open, and from the far code of
- * /system/xmem_far.zex while a FAR_CODE segment's aperture is open.  It
+ * /system/xmem_far.exe while a FAR_CODE segment's aperture is open.  It
  * proves what the exec'ing process cannot, from its own side:
  *
  *   * the child starts in mode 10 with page 0 (exec starts every child
@@ -14,7 +14,7 @@
  *     objects still hold their own bytes;
  *   * a child inherits none of the parent's objects: every use of the
  *     parent's live handle (passed in the command tail) is refused
- *     (architecture 36.15: a foreign handle is ZOS_EINVAL);
+ *     (architecture 36.15: a foreign handle is KOS_EINVAL);
  *   * a child inherits none of the parent's segments either: the
  *     parent's live FAR_CODE segment id (also in the tail) has no
  *     description and no token here, even though the id namespace is
@@ -30,7 +30,7 @@
  * otherwise).
  */
 
-#include "zos.h"
+#include "kos.h"
 
 #define CHILD_STATUS 42
 
@@ -70,13 +70,13 @@ static int matches_pattern(void)
  * 1 when the tail was parsed, 0 otherwise. */
 static int tail_numbers(unsigned int *handle, unsigned int *segment)
 {
-	struct zos_startup *boot = startup();
+	struct kos_startup *boot = startup();
 	unsigned int value = 0u;
 	unsigned int i = 0u;
 
 	*handle = 0u;
 	*segment = 0u;
-	if (boot == (struct zos_startup *)0 || boot->version != 1u ||
+	if (boot == (struct kos_startup *)0 || boot->version != 1u ||
 	    boot->length == 0u) {
 		return 0;
 	}
@@ -103,7 +103,7 @@ static int tail_numbers(unsigned int *handle, unsigned int *segment)
 int main(int argc, char **argv)
 {
 	unsigned char latch = latch_port;
-	struct zos_seg_info info;
+	struct kos_seg_info info;
 	unsigned int foreign = 0u;
 	unsigned int foreign_seg = 0u;
 	unsigned int address = 0u;
@@ -148,19 +148,19 @@ int main(int argc, char **argv)
 		console_puts("xmem-child: FAIL foreign-handle\r\n");
 		ok = 0;
 	} else {
-		if (xfree(foreign) != -ZOS_EINVAL) {
+		if (xfree(foreign) != -KOS_EINVAL) {
 			console_puts("xmem-child: FAIL foreign-free\r\n");
 			ok = 0;
 		}
-		if (xread(foreign, 0u, buf, 1u) != -ZOS_EINVAL) {
+		if (xread(foreign, 0u, buf, 1u) != -KOS_EINVAL) {
 			console_puts("xmem-child: FAIL foreign-read\r\n");
 			ok = 0;
 		}
-		if (xwrite(foreign, 0u, pattern, 1u) != -ZOS_EINVAL) {
+		if (xwrite(foreign, 0u, pattern, 1u) != -KOS_EINVAL) {
 			console_puts("xmem-child: FAIL foreign-write\r\n");
 			ok = 0;
 		}
-		if (xmap(foreign, &address) != -ZOS_EINVAL) {
+		if (xmap(foreign, &address) != -KOS_EINVAL) {
 			console_puts("xmem-child: FAIL foreign-map\r\n");
 			ok = 0;
 		}
@@ -177,18 +177,18 @@ int main(int argc, char **argv)
 		info.state = 0u;
 		info.handle = 0u;
 		info.reserved = 0u;
-		if (seginfo(foreign_seg, &info) != -ZOS_EINVAL) {
+		if (seginfo(foreign_seg, &info) != -KOS_EINVAL) {
 			console_puts("xmem-child: FAIL foreign-seg-info\r\n");
 			ok = 0;
 		}
-		if (segmap(foreign_seg) != -ZOS_EINVAL) {
+		if (segmap(foreign_seg) != -KOS_EINVAL) {
 			console_puts("xmem-child: FAIL foreign-seg-map\r\n");
 			ok = 0;
 		}
 	}
 
 	/* Its own objects work. */
-	h1 = xalloc(32768u, ZOS_XMEM_FLAG_NONE);
+	h1 = xalloc(32768u, KOS_XMEM_FLAG_NONE);
 	if (h1 < 1) {
 		console_puts("xmem-child: FAIL own-alloc\r\n");
 		ok = 0;
@@ -204,7 +204,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	h2 = xalloc(8192u, ZOS_XMEM_FLAG_MAPPABLE);
+	h2 = xalloc(8192u, KOS_XMEM_FLAG_MAPPABLE);
 	if (h2 < 1) {
 		console_puts("xmem-child: FAIL own-mappable\r\n");
 		ok = 0;
@@ -240,11 +240,11 @@ int main(int argc, char **argv)
 			console_puts("xmem-child: FAIL own-free\r\n");
 			ok = 0;
 		}
-		again = xalloc(32768u, ZOS_XMEM_FLAG_NONE);
+		again = xalloc(32768u, KOS_XMEM_FLAG_NONE);
 		if (again < 1 || again == h1) {
 			console_puts("xmem-child: FAIL stale-handle\r\n");
 			ok = 0;
-		} else if (xfree((unsigned int)h1) != -ZOS_EINVAL) {
+		} else if (xfree((unsigned int)h1) != -KOS_EINVAL) {
 			console_puts("xmem-child: FAIL stale-free\r\n");
 			ok = 0;
 		} else {

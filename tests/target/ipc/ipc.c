@@ -1,6 +1,6 @@
-/* ZephyrOS IPC acceptance: the client program (test artifact).
+/* KonaOS IPC acceptance: the client program (test artifact).
  *
- * The ZEX primary the ipc-selftest image boots.  It is an ordinary SDK
+ * The EXE primary the ipc-selftest image boots.  It is an ordinary SDK
  * program: it discovers the synthetic endpoints through the SDK's cached
  * lookup, marshals frames and one buffer descriptor per call through the
  * SDK's call wrapper, runs the promoted package-35 conformance checks,
@@ -13,9 +13,9 @@
  * user-visible verdict.
  */
 
-#include "zos.h"
+#include "kos.h"
 
-#include "zos_internal.h"
+#include "kos_internal.h"
 
 #include "ipc_test.h"
 
@@ -25,9 +25,9 @@
 #define PATTERN_CON_BASE 0x80u /* bytes above ASCII: never a marker byte */
 #define PATTERN_MASK 0x3Fu
 
-static struct zos_ipc_request req;
-static struct zos_ipc_call_args raw_block;
-static struct zos_ipc_call_req raw_req;
+static struct kos_ipc_request req;
+static struct kos_ipc_call_args raw_block;
+static struct kos_ipc_call_req raw_req;
 
 static uint8_t source[IPC_BLOCK_BYTES];
 static uint8_t target[IPC_BLOCK_BYTES];
@@ -42,7 +42,7 @@ static uint8_t irqx_handle;
 static unsigned int checks;
 static unsigned int failures;
 
-static const char fs_path[] = "/system/ipc.zex";
+static const char fs_path[] = "/system/ipc.exe";
 
 static void check(const char *label, int ok)
 {
@@ -61,14 +61,14 @@ static void frame_prepare(uint8_t op, uint8_t flags)
 {
 	req.frame.op = op;
 	req.frame.flags = flags;
-	req.frame.desc = ZOS_IPC_DESC_NONE;
+	req.frame.desc = KOS_IPC_DESC_NONE;
 	req.frame.arg0 = 0u;
 	req.frame.arg1 = 0u;
 	req.frame.status = 0;
-	memset(req.frame.payload, 0, ZOS_IPC_PAYLOAD_SIZE);
+	memset(req.frame.payload, 0, KOS_IPC_PAYLOAD_SIZE);
 	req.buffer = (void *)0;
 	req.length = 0u;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 }
 
 static int dispatch(uint8_t handle)
@@ -90,7 +90,7 @@ static int raw_ipc(unsigned char number, void *block)
 {
 	raw_req.number = number;
 	raw_req.block = block;
-	return zos_ipc_raw_call(&raw_req);
+	return kos_ipc_raw_call(&raw_req);
 }
 
 /* --- pattern helpers ---------------------------------------------------- */
@@ -157,13 +157,13 @@ static int con_write(unsigned int offset, unsigned int length)
 	req.frame.arg1 = (uint16_t)length;
 	req.buffer = source;
 	req.length = IPC_BLOCK_BYTES;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 	return dispatch(con_handle);
 }
 
 /* One con.WRITE with an explicit descriptor length: the check that a
  * slice past the captured descriptor, and a slice past the driver's own
- * buffer, are both refused with -ZOS_EINVAL. */
+ * buffer, are both refused with -KOS_EINVAL. */
 static int con_slice(unsigned int descriptor, unsigned int offset)
 {
 	frame_prepare(IPC_OP_CON_WRITE, 0u);
@@ -171,7 +171,7 @@ static int con_slice(unsigned int descriptor, unsigned int offset)
 	req.frame.arg1 = 4u;
 	req.buffer = source;
 	req.length = descriptor;
-	req.direction = ZOS_IPC_DESC_IN;
+	req.direction = KOS_IPC_DESC_IN;
 	return dispatch(con_handle);
 }
 
@@ -200,7 +200,7 @@ static int vfs_read(unsigned int offset, unsigned int length, uint8_t flags)
 	req.frame.payload[1] = IPC_WORD_HI(length);
 	req.buffer = target;
 	req.length = IPC_BLOCK_BYTES;
-	req.direction = ZOS_IPC_DESC_OUT;
+	req.direction = KOS_IPC_DESC_OUT;
 	return dispatch(vfs_handle);
 }
 
@@ -222,13 +222,13 @@ static int op_fs_read(void)
 	long rc;
 
 	if (!fd_valid) {
-		fd = open(fs_path, ZFS_O_READ);
+		fd = open(fs_path, KFS_O_READ);
 		if (fd < 0) {
 			return fd;
 		}
 		fd_valid = 1u;
 	}
-	rc = seek((unsigned int)fd, 0, ZFS_SEEK_SET);
+	rc = seek((unsigned int)fd, 0, KFS_SEEK_SET);
 	if (rc < 0) {
 		return (int)rc;
 	}
@@ -246,7 +246,7 @@ static int irq_op(uint8_t op, unsigned int iterations)
 
 /* One marker per phase boundary.  The code is a single letter so the
  * replay can name the measured spans without carrying a string table in
- * the program (the caller window is 8 KiB and shared with libzos); the
+ * the program (the caller window is 8 KiB and shared with libkos); the
  * test's PHASE_NAMES table is the authoritative decoding. */
 static void phase_mark(char code, char suffix)
 {
@@ -306,21 +306,21 @@ int main(int argc, char **argv)
 	 * drivers would resolve here too (the image's own set is below
 	 * /dev/ipc). */
 	echo_handle = (uint8_t)bind("/dev/ipc/echo", 0u, &type);
-	check("bind-echo", echo_handle != 0u && type == ZOS_TYPE_SERIAL);
+	check("bind-echo", echo_handle != 0u && type == KOS_TYPE_SERIAL);
 	con_handle = (uint8_t)bind("/dev/ipc/con", 0u, &con_type);
 	vfs_handle = (uint8_t)bind("/dev/ipc/vfs", 0u, &vfs_type);
 	fat_handle = (uint8_t)bind("/dev/ipc/fat", 0u, &fat_type);
 	ioc_handle = (uint8_t)bind("/dev/ipc/ioc", 0u, &ioc_type);
 	irqx_handle = (uint8_t)bind("/dev/ipc/irqx", 0u, &type);
-	check("bind-con", con_handle != 0u && con_type == ZOS_TYPE_CONSOLE);
+	check("bind-con", con_handle != 0u && con_type == KOS_TYPE_CONSOLE);
 	check("bind-vfs", vfs_handle != 0u && vfs_type != 0u);
 	check("bind-fat", fat_handle != 0u && fat_type != 0u);
-	check("bind-ioc", ioc_handle != 0u && ioc_type == ZOS_TYPE_IOC);
+	check("bind-ioc", ioc_handle != 0u && ioc_type == KOS_TYPE_IOC);
 	check("bind-irqx", irqx_handle != 0u);
 	check("bind-missing",
-	      bind("/dev/ipc/nosuch", 0u, &type) == -ZOS_ENOENT);
+	      bind("/dev/ipc/nosuch", 0u, &type) == -KOS_ENOENT);
 	check("bind-group",
-	      bind("/dev/ipc", 0u, &type) == -ZOS_EISDIR);
+	      bind("/dev/ipc", 0u, &type) == -KOS_EISDIR);
 
 	fill_console_pattern();
 
@@ -328,20 +328,20 @@ int main(int argc, char **argv)
 	MEASURE('n', MEASURE_N1, MEASURE_N2, rc = op_echo_exchange());
 	check("null-status", rc == 0x12);
 	check("null-echo", req.frame.payload[1] == 0x11u);
-	check("null-ring", op_echo_null() == ZOS_IPC_FRAME_SIZE);
+	check("null-ring", op_echo_null() == KOS_IPC_FRAME_SIZE);
 
 	/* The descriptor id the nucleus issued: none without a buffer, the
 	 * captured id with one. */
 	check("desc-none", ipc_call(echo_handle, IPC_OP_ECHO_DESC, 0u, (void *)0,
-				0u, 0u) == ZOS_IPC_DESC_NONE);
+				0u, 0u) == KOS_IPC_DESC_NONE);
 	check("desc-in", ipc_call(echo_handle, IPC_OP_ECHO_DESC, 0u, source, 16u,
-			      ZOS_IPC_DESC_IN) == 0);
+			      KOS_IPC_DESC_IN) == 0);
 	check("desc-out", ipc_call(echo_handle, IPC_OP_ECHO_DESC, 0u, source, 16u,
-			       ZOS_IPC_DESC_OUT) == 0);
+			       KOS_IPC_DESC_OUT) == 0);
 	check("status-negative", ipc_call(echo_handle, 0x7Fu, 0u, (void *)0, 0u,
-				      0u) == -ZOS_EINVAL);
+				      0u) == -KOS_EINVAL);
 	check("handle-refused", ipc_call(0u, IPC_OP_ECHO_NULL, 0u, (void *)0, 0u,
-				     0u) == -ZOS_EINVAL);
+				     0u) == -KOS_EINVAL);
 
 	/* Structural refusals: the request never reaches the IPC layer. */
 	raw_block.handle = echo_handle;
@@ -350,16 +350,16 @@ int main(int argc, char **argv)
 	raw_block.frame_length = 0u;
 	raw_block.buffer = 0u;
 	raw_block.length = 0u;
-	raw_block.direction = ZOS_IPC_DESC_IN;
+	raw_block.direction = KOS_IPC_DESC_IN;
 	raw_block.reserved = 0u;
 	raw_block.status = 0;
-	memset(&raw_block.frame, 0, ZOS_IPC_FRAME_SIZE);
+	memset(&raw_block.frame, 0, KOS_IPC_FRAME_SIZE);
 	check("frame-len-refused",
-	      raw_ipc(ZOS_SYSCALL_CALL, &raw_block) == -ZOS_EINVAL);
+	      raw_ipc(KOS_SYSCALL_CALL, &raw_block) == -KOS_EINVAL);
 	check("block-refused",
-	      raw_ipc(ZOS_SYSCALL_CALL, (void *)0x8000u) == -ZOS_EINVAL);
+	      raw_ipc(KOS_SYSCALL_CALL, (void *)0x8000u) == -KOS_EINVAL);
 	check("bind-block-refused",
-	      raw_ipc(ZOS_SYSCALL_BIND, (void *)0x8000u) == -ZOS_EINVAL);
+	      raw_ipc(KOS_SYSCALL_BIND, (void *)0x8000u) == -KOS_EINVAL);
 
 	/* C1/C3: con.WRITE at four sizes, one offset slice, and today's
 	 * direct console path. */
@@ -373,12 +373,12 @@ int main(int argc, char **argv)
 	check("con256-status", rc == 256);
 	rc = op_conoffset();
 	check("conoffset-status", rc == 4);
-	check("conoffset-refused", con_slice(256u, 254u) == -ZOS_EINVAL);
+	check("conoffset-refused", con_slice(256u, 254u) == -KOS_EINVAL);
 	check("conbound-refused", con_slice(IPC_BLOCK_BYTES, 254u) ==
-			  -ZOS_EINVAL);
+			  -KOS_EINVAL);
 	check("dir-refused", ipc_call(con_handle, IPC_OP_CON_WRITE, 0u,
-				  source, 16u, ZOS_IPC_DESC_OUT) ==
-			     -ZOS_EINVAL);
+				  source, 16u, KOS_IPC_DESC_OUT) ==
+			     -KOS_EINVAL);
 	check("con-poll", ipc_call(con_handle, IPC_OP_CON_POLL, 0u, (void *)0, 0u,
 			       0u) >= 0);
 
@@ -412,28 +412,28 @@ int main(int argc, char **argv)
 	/* C7: re-entrancy is refused unless the endpoint declares it, and
 	 * the depth limit is four. */
 	check("reent-refused", ipc_call(echo_handle, IPC_OP_ECHO_SELF, 0u,
-				    (void *)0, 0u, 0u) == -ZOS_EBUSY);
+				    (void *)0, 0u, 0u) == -KOS_EBUSY);
 	frame_prepare(IPC_OP_VFS_SELF, 0u);
 	req.frame.arg0 = 3u;
 	check("reent-allowed", dispatch(vfs_handle) == 0);
 	frame_prepare(IPC_OP_VFS_SELF, 0u);
 	req.frame.arg0 = 4u;
-	check("depth-refused", dispatch(vfs_handle) == -ZOS_ENOSPC);
+	check("depth-refused", dispatch(vfs_handle) == -KOS_ENOSPC);
 
 	/* C2: forged descriptor ids and out-of-window buffers are refused. */
 	check("capture-low-refused", ipc_call(con_handle, IPC_OP_CON_WRITE, 0u,
 					  (void *)0x0040u, 16u,
-					  ZOS_IPC_DESC_IN) == -ZOS_EINVAL);
+					  KOS_IPC_DESC_IN) == -KOS_EINVAL);
 	frame_prepare(IPC_OP_CON_WRITE, 0u);
 	req.frame.arg1 = 16u;
 	req.buffer = source;
-	req.length = ZOS_IPC_DESC_MAX + 1u;
-	req.direction = ZOS_IPC_DESC_IN;
-	check("capture-length-refused", dispatch(con_handle) == -ZOS_EINVAL);
+	req.length = KOS_IPC_DESC_MAX + 1u;
+	req.direction = KOS_IPC_DESC_IN;
+	check("capture-length-refused", dispatch(con_handle) == -KOS_EINVAL);
 	frame_prepare(IPC_OP_CON_PROBE, 0u);
 	req.frame.payload[0] = 2u;
 	req.frame.payload[1] = 0u;
-	check("forged-refused", dispatch(con_handle) == -ZOS_EINVAL);
+	check("forged-refused", dispatch(con_handle) == -KOS_EINVAL);
 
 	/* Nucleus -> driver upcalls: the exit notification and the
 	 * executable-object stream (a nucleus-held object handle, no
@@ -455,7 +455,7 @@ int main(int argc, char **argv)
 	check("irq-unclaimed",
 	      irq_op(IPC_OP_IRQX_SPIN, 0x0800u) == 0);
 	check("irq-release-again",
-	      irq_op(IPC_OP_IRQX_RELEASE, 0u) == -ZOS_ENOENT);
+	      irq_op(IPC_OP_IRQX_RELEASE, 0u) == -KOS_ENOENT);
 	check("irq-reclaim", irq_op(IPC_OP_IRQX_CLAIM, 0u) == 0);
 	check("irq-driver", irq_op(IPC_OP_IRQX_SPIN, 0x0800u) == 1);
 	check("irq-count", irq_op(IPC_OP_IRQX_SPIN, 0x0800u) == 2);
@@ -463,7 +463,7 @@ int main(int argc, char **argv)
 	/* The client survived the IRQ-during-call, so the interrupted
 	 * call's latch and stack were restored: prove it by using the
 	 * substrate again after the deliveries. */
-	check("post-irq-call", op_echo_null() == ZOS_IPC_FRAME_SIZE);
+	check("post-irq-call", op_echo_null() == KOS_IPC_FRAME_SIZE);
 
 	report_u16("ipc: ", checks - failures);
 	report_u16("/", checks);

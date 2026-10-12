@@ -1,4 +1,4 @@
-/* ZephyrOS IPC acceptance: the IRQ-owning synthetic driver (test
+/* KonaOS IPC acceptance: the IRQ-owning synthetic driver (test
  * artifact).
  *
  * Proves that a resident driver can own a hardware IRQ without owning the
@@ -24,7 +24,7 @@
  * P = 1 - and the copy must finish with the bytes intact.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "driver.h"
 
 #include "hardware.h"
@@ -46,18 +46,18 @@ static uint16_t irqx_buffer_address;
  * time constant) and its reset, mirroring tests/target/support/ctc_test.c.
  * A real timer driver would own this programming; here it is the
  * synthetic IRQ source the suite needs. */
-static __sfr __at ZOS_CTC0_PORT ipc_ctc0;
+static __sfr __at KOS_CTC0_PORT ipc_ctc0;
 
 static void irqx_timer_start(void)
 {
-	ipc_ctc0 = ZOS_CTC0_VECTOR_BASE;
-	ipc_ctc0 = ZOS_CTC0_CONTROL_TEST;
-	ipc_ctc0 = ZOS_CTC0_TIME_CONSTANT;
+	ipc_ctc0 = KOS_CTC0_VECTOR_BASE;
+	ipc_ctc0 = KOS_CTC0_CONTROL_TEST;
+	ipc_ctc0 = KOS_CTC0_TIME_CONSTANT;
 }
 
 static void irqx_timer_stop(void)
 {
-	ipc_ctc0 = ZOS_CTC0_RESET;
+	ipc_ctc0 = KOS_CTC0_RESET;
 }
 
 /* The correction profile: same vector and control word, short time
@@ -65,8 +65,8 @@ static void irqx_timer_stop(void)
  * window. */
 static void irqx_timer_start_short(void)
 {
-	ipc_ctc0 = ZOS_CTC0_VECTOR_BASE;
-	ipc_ctc0 = ZOS_CTC0_CONTROL_TEST;
+	ipc_ctc0 = KOS_CTC0_VECTOR_BASE;
+	ipc_ctc0 = KOS_CTC0_CONTROL_TEST;
 	ipc_ctc0 = IPC_IRQX_TC_APERTURE;
 }
 
@@ -79,7 +79,7 @@ static void irqx_handler(void *context)
 	irq_flag = 0xA5u;
 }
 
-static int16_t irqx_spin(struct zos_ipc_frame *frame)
+static int16_t irqx_spin(struct kos_ipc_frame *frame)
 {
 	uint16_t iterations = frame->arg1;
 
@@ -107,7 +107,7 @@ static int16_t irqx_spin(struct zos_ipc_frame *frame)
  * 16-bit sum of what landed in the driver buffer, the deliveries and the
  * completed copies, and the delivery counter is cleared afterwards so the
  * client's absolute counts start from zero. */
-static int16_t irqx_copies(struct zos_ipc_frame *frame)
+static int16_t irqx_copies(struct kos_ipc_frame *frame)
 {
 	uint16_t iterations = frame->arg1;
 	uint8_t copies = 0u;
@@ -128,7 +128,7 @@ static int16_t irqx_copies(struct zos_ipc_frame *frame)
 			__endasm;
 			irqx_timer_stop();
 			irq_runs = 0u;
-			return -ZOS_EINVAL;
+			return -KOS_EINVAL;
 		}
 		++copies;
 		--iterations;
@@ -150,7 +150,7 @@ static int16_t irqx_copies(struct zos_ipc_frame *frame)
 
 /* The endpoint dispatch entry the manifest names: a module-global
  * symbol so the packer can resolve its hot-image offset. */
-int16_t irqx_dispatch(struct zos_ipc_frame *frame)
+int16_t irqx_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
 	case IPC_OP_IRQX_COPY:
@@ -162,7 +162,7 @@ int16_t irqx_dispatch(struct zos_ipc_frame *frame)
 	case IPC_OP_IRQX_RELEASE:
 		return api->irq_release(IPC_IRQ_CTC0);
 	default:
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 }
 

@@ -1,12 +1,12 @@
-/* ZephyrOS zlibc: freestanding varargs for the SDCC Z80 target.
+/* KonaOS klibc: freestanding varargs for the SDCC Z80 target.
  *
  * --nostdinc removes the compiler's stdarg.h, so the SDK carries this
  * minimal definition.  On the SDCC Z80 the variadic arguments follow the
  * last named parameter on the stack; va_list is a byte pointer.
  */
 
-#ifndef ZLIBC_STDARG_H
-#define ZLIBC_STDARG_H
+#ifndef KLIBC_STDARG_H
+#define KLIBC_STDARG_H
 
 typedef unsigned char *va_list;
 
@@ -16,4 +16,4 @@ typedef unsigned char *va_list;
 #define va_copy(dest, src) { (dest) = (src); }
 #define va_end(marker) { (marker) = (va_list)0; }
 
-#endif /* ZLIBC_STDARG_H */
+#endif /* KLIBC_STDARG_H */

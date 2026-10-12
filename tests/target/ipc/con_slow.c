@@ -1,4 +1,4 @@
-/* ZephyrOS IPC acceptance: the `con` driver's hot-segment slow buffer
+/* KonaOS IPC acceptance: the `con` driver's hot-segment slow buffer
  * (test artifact).
  *
  * Its own compilation unit and data area (_HOT) put it in con's hot

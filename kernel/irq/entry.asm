@@ -67,7 +67,7 @@ irq_common_entry::
 	push	hl
 	exx
 
-	in	a,(ZOS_MEMCTL_PORT)
+	in	a,(KOS_MEMCTL_PORT)
 	ld	(irq_saved_latch),a
 	; Revision 13: the IRQ gate normalizes the page field.  The whole
 	; latch (Q, mode, P) is saved in the gate's own slot above; dispatch
@@ -77,16 +77,16 @@ irq_common_entry::
 	; decode.  The exit path below restores the saved latch exactly, so
 	; an interrupted window call (36.10) finds its page selection
 	; untouched.
-	and	#(ZOS_MODE_MASK | ZOS_BANK_MASK)
-	or	#ZOS_MODE_OS
-	out	(ZOS_MEMCTL_PORT),a
+	and	#(KOS_MODE_MASK | KOS_BANK_MASK)
+	or	#KOS_MODE_OS
+	out	(KOS_MEMCTL_PORT),a
 	ld	(irq_common_sp),sp
 	ld	sp,#irq_isr_stack_top
 	call	_irq_dispatch
 	ld	sp,(irq_common_sp)
 
 	ld	a,(irq_saved_latch)
-	out	(ZOS_MEMCTL_PORT),a
+	out	(KOS_MEMCTL_PORT),a
 
 	exx
 	pop	hl
@@ -127,7 +127,7 @@ _irq_arch_unlock::
 
 ; Fixed transition state and stack; no ordinary allocation may enter here.
 	.area _IRQ_COMMON_STATE (ABS)
-	.org ZOS_IRQ_STATE_BASE
+	.org KOS_IRQ_STATE_BASE
 irq_saved_latch::
 	.ds	1
 irq_saved_sp::
@@ -136,13 +136,13 @@ irq_common_sp::
 	.ds	2
 _irq_active_source::
 	.ds	1
-	.ds	(ZOS_IRQ_STACK_BASE - ZOS_IRQ_STATE_BASE - ZOS_IRQ_STATE_HEADER_SIZE)
+	.ds	(KOS_IRQ_STACK_BASE - KOS_IRQ_STATE_BASE - KOS_IRQ_STATE_HEADER_SIZE)
 irq_transition_stack::
-	.ds	ZOS_IRQ_STACK_SIZE
+	.ds	KOS_IRQ_STACK_SIZE
 irq_transition_stack_top::
 
 	.area _IRQ_ISR_STACK (ABS)
-	.org ZOS_IRQ_ISR_STACK_BASE
+	.org KOS_IRQ_ISR_STACK_BASE
 irq_isr_stack::
-	.ds	ZOS_IRQ_ISR_STACK_SIZE
+	.ds	KOS_IRQ_ISR_STACK_SIZE
 irq_isr_stack_top::

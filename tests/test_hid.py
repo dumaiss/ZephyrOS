@@ -9,7 +9,7 @@ without executing target code:
     CMD_HID_INPUT 0Eh, RSP_HID_INPUT 8Eh, 2 metadata bytes and a 24-byte
     reply maximum (26 with metadata), never the IOC driver's private
     transport header;
-  - the packed hid.zmod container, manifest, ROMFS entry and boot order
+  - the packed hid.mod container, manifest, ROMFS entry and boot order
     (SIO, then IOC, then HID), with a failed/malformed dependency not
     invalidating earlier devices;
   - the driver source discipline: IOC discovery through the driver's own
@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, HERE)
 
 import mapcheck  # noqa: E402
-import zmodpack  # noqa: E402
+import modpack  # noqa: E402
 from maptools import evaluate, parse_c_header  # noqa: E402
 
 PROTO_H = os.path.join(ROOT, "drivers", "include", "ioc_protocol.h")
@@ -56,8 +56,8 @@ TARGET_RUNNER = os.path.join(ROOT, "tests", "target", "support",
                              "target_test.c")
 MAIN_C = os.path.join(ROOT, "kernel", "main.c")
 MAKEFILE = os.path.join(ROOT, "Makefile")
-ZMOD = os.path.join(ROOT, "build", "modules", "hid.zmod")
-MAP = os.path.join(ROOT, "build", "zephyros.map")
+MOD = os.path.join(ROOT, "build", "modules", "hid.mod")
+MAP = os.path.join(ROOT, "build", "konaos.map")
 
 
 def _read(path, mode="r"):
@@ -125,10 +125,10 @@ class TestHidDriverArtifact(unittest.TestCase):
                          [{"class": 5, "instance": 0}])
 
     def test_packed_container(self):
-        if not os.path.exists(ZMOD):
-            self.skipTest("build/modules/hid.zmod missing; build it first")
-        data = _read(ZMOD, "rb")
-        info = zmodpack.parse_container(data, "hid.zmod")
+        if not os.path.exists(MOD):
+            self.skipTest("build/modules/hid.mod missing; build it first")
+        data = _read(MOD, "rb")
+        info = modpack.parse_container(data, "hid.mod")
         # The image carries its host-built publications
         # (`/dev/input/keyboard`, package 42b).
         self.assertEqual([publication["name"]
@@ -155,22 +155,22 @@ class TestHidDriverArtifact(unittest.TestCase):
     def test_romfs_entry_and_boot_order(self):
         manifest = _load_json(RECOVERY_MANIFEST)
         names = [entry["name"] for entry in manifest["files"]]
-        self.assertEqual(names, ["sio.zmod", "ioc.zmod", "hid.zmod",
-                                 "v9958.zmod", "console-v9958-hid.zmod",
-                                 "drivers.man", "iocfat.zmod",
-                                 "monitor.zex",
+        self.assertEqual(names, ["sio.mod", "ioc.mod", "hid.mod",
+                                 "v9958.mod", "console-v9958-hid.mod",
+                                 "drivers.man", "iocfat.mod",
+                                 "monitor.exe",
                                  # The production feature exerciser and the
                                  # outcome programs it runs (45b).
-                                 "hwtest.zex", "xmem_selftest.zex",
-                                 "xmem_child.zex", "xmem_far.zex",
-                                 "fs_selftest.zex", "fs_child.zex"])
+                                 "hwtest.exe", "xmem_selftest.exe",
+                                 "xmem_child.exe", "xmem_far.exe",
+                                 "fs_selftest.exe", "fs_child.exe"])
         # The boot manifest orders the drivers; HID's declared dependency
         # on the IOC class is what makes the loader place IOC first.
-        manifest_name = _read(os.path.join(ROOT, "abi", "zos",
+        manifest_name = _read(os.path.join(ROOT, "abi", "kos",
                                            "protocol.h"))
-        self.assertIn("ZOS_CLASS_HID", manifest_name)
+        self.assertIn("KOS_CLASS_HID", manifest_name)
         main = _read(MAIN_C)
-        self.assertIn("driver_load_all(ZOS_DRIVER_MANIFEST_NAME)", main)
+        self.assertIn("driver_load_all(KOS_DRIVER_MANIFEST_NAME)", main)
         self.assertIn("console: unbound", main)
 
     def test_makefile_targets_and_module_rule(self):
@@ -181,19 +181,19 @@ class TestHidDriverArtifact(unittest.TestCase):
         # The HID diagnostic runs in the console-integration image (work
         # package 42d merged the per-device images); the table row links
         # it and defines the group's guard.
-        self.assertIn("ZOS_HID_SELFTEST", makefile)
-        index = makefile.index("ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)")
+        self.assertIn("KOS_HID_SELFTEST", makefile)
+        index = makefile.index("ifeq ($(KOS_CONSOLE_INTEGRATION_SELFTEST),1)")
         self.assertIn("$(BUILD)/hid_test.rel",
                       makefile[index:index + 400])
         self.assertIn("hid_test", makefile)
         # Which drivers an image boots is its manifest's driver set.
         image_manifest = os.path.join(ROOT, "tests", "console",
                                       "manifest-integration.json")
-        self.assertIn('"name": "hid.zmod"', _read(image_manifest))
+        self.assertIn('"name": "hid.mod"', _read(image_manifest))
 
     def test_production_map_has_no_linked_hid_symbols(self):
         if not os.path.exists(MAP):
-            self.skipTest("build/zephyros.map missing; build first")
+            self.skipTest("build/konaos.map missing; build first")
         syms = _map_symbols(MAP)
         linked = [name for name in syms
                   if name.startswith("_hid_") or name.startswith("_fake")]
@@ -239,8 +239,8 @@ class TestHidSourceDiscipline(unittest.TestCase):
             "int16_t hid_driver_dispatch")[0]
 
     def test_no_sio1_rr0_or_port_constants_anywhere(self):
-        forbidden = ("ZOS_SIO1", "ZOS_SIO_RR0", "ZOS_IOC_HID_DOORBELL",
-                     "ZOS_IOC_CMD_READY", "ZOS_IOC_WR", "ZOS_IOC_BULK",
+        forbidden = ("KOS_SIO1", "KOS_SIO_RR0", "KOS_IOC_HID_DOORBELL",
+                     "KOS_IOC_CMD_READY", "KOS_IOC_WR", "KOS_IOC_BULK",
                      "__sfr", "__asm", "CTSB_LAT")
         for body in self.sources:
             for needle in forbidden:
@@ -270,18 +270,18 @@ class TestHidSourceDiscipline(unittest.TestCase):
         # no run-time lookup at all.
         self.assertIn("boot->deps[HID_DEP_IOC]", self.init)
         self.assertNotIn("lookup", self.init)
-        self.assertIn("ZIOC_OP_READY", self.init)
+        self.assertIn("KIOC_OP_READY", self.init)
         # The engine speaks the IOC protocol and never a driver symbol.
-        for op in ("ZIOC_OP_COMMAND", "ZIOC_OP_STATUS"):
+        for op in ("KIOC_OP_COMMAND", "KIOC_OP_STATUS"):
             self.assertIn(op, self.c, op)
 
     def test_dispatch_serves_the_hid_protocol_only(self):
         self.assertIn("hid_driver_dispatch", self.c)
-        for op in ("ZHID_OP_READ_TEXT", "ZHID_OP_POLL", "ZHID_OP_GETC",
-                   "ZHID_OP_READY"):
+        for op in ("KHID_OP_READ_TEXT", "KHID_OP_POLL", "KHID_OP_GETC",
+                   "KHID_OP_READY"):
             self.assertIn(op, self.c, op)
         # Input-only: the driver exposes no output path at all.
-        self.assertNotIn("ZCAP_CHAR_OUT", self.c)
+        self.assertNotIn("KCAP_CHAR_OUT", self.c)
         self.assertNotIn("putc", self.header)
         # The ready probe reports the link state; no console driver
         # probes it any more (work package 42e).
@@ -289,16 +289,16 @@ class TestHidSourceDiscipline(unittest.TestCase):
 
     def test_ring_and_penalty_constants(self):
         env = parse_c_header(DRIVER_H)
-        self.assertEqual(evaluate("ZHID_RING_SIZE", env), 16)
-        self.assertEqual(evaluate("ZHID_STUCK_PENALTY", env), 64)
+        self.assertEqual(evaluate("KHID_RING_SIZE", env), 16)
+        self.assertEqual(evaluate("KHID_STUCK_PENALTY", env), 64)
         # Power-of-two ring: wraparound is the mask expression.
-        self.assertIn("ZHID_RING_SIZE - 1u", self.c)
+        self.assertIn("KHID_RING_SIZE - 1u", self.c)
 
     def test_fetch_on_doorbell_only_and_driver_order(self):
         # The semantic status sample comes before any fetch, and the
-        # fetch is gated on ZIOC_STATUS_HID_PENDING.
-        status = self.driver.index("ZIOC_OP_STATUS")
-        pending = self.driver.index("ZIOC_STATUS_HID_PENDING")
+        # fetch is gated on KIOC_STATUS_HID_PENDING.
+        status = self.driver.index("KIOC_OP_STATUS")
+        pending = self.driver.index("KIOC_STATUS_HID_PENDING")
         penalty = self.driver.index("state->penalty != 0u")
         fetch = self.driver.index("hid_fetch(state)")
         self.assertLess(status, pending)
@@ -322,7 +322,7 @@ class TestHidSourceDiscipline(unittest.TestCase):
                        "frame.arg1 > (uint8_t)(IOC_HID_INPUT_META_LEN",
                        "IOC_HID_INPUT_MAX_DATA)",
                        "payload > free_space",
-                       "payload > (uint8_t)(ZHID_RING_SIZE - "
+                       "payload > (uint8_t)(KHID_RING_SIZE - "
                        "state->count)"):
             self.assertIn(needle, self.fetch,
                           "fetch missing validation %r" % needle)
@@ -332,21 +332,21 @@ class TestHidSourceDiscipline(unittest.TestCase):
         # be).
         commit = self.fetch.index("state->head = (uint8_t)((state->head")
         for check in ("payload > free_space",
-                      "payload > (uint8_t)(ZHID_RING_SIZE - "
+                      "payload > (uint8_t)(KHID_RING_SIZE - "
                       "state->count)",
                       "hid_api->move(source, (uint16_t)(ring + insert)",
                       "hid_api->move((uint16_t)(source + first)"):
             self.assertLess(self.fetch.index(check), commit)
 
     def test_stuck_penalty_applied_and_cleared(self):
-        self.assertIn("state->penalty = ZHID_STUCK_PENALTY", self.driver)
+        self.assertIn("state->penalty = KHID_STUCK_PENALTY", self.driver)
         self.assertIn("--state->penalty", self.driver)
         # Successful data clears it.
         self.assertIn("state->penalty = 0u;", self.driver)
 
     def test_getc_and_read_text_are_nonblocking(self):
-        self.assertIn("return (-ZOS_EAGAIN);", self.c)
-        self.assertIn("(-ZOS_EINVAL)", self.c)
+        self.assertIn("return (-KOS_EAGAIN);", self.c)
+        self.assertIn("(-KOS_EINVAL)", self.c)
         # No blocking loops anywhere in the driver.
         self.assertNotIn("while (1)", self.c)
         self.assertNotIn("for (;;)", self.c)

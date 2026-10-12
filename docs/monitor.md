@@ -1,8 +1,8 @@
-# ZephyrOS M7 native monitor
+# KonaOS M7 native monitor
 
-`monitor.zex` is the first useful native ZephyrOS program and the
+`monitor.exe` is the first useful native KonaOS program and the
 interactive recovery/diagnostic environment used before the M10 shell.
-It is an **ordinary ZEX v2 executable**, stored in the ROMFS recovery
+It is an **ordinary EXE v2 executable**, stored in the ROMFS recovery
 store and launched through the unchanged M6 `process_exec()` path; it is
 not linked into the kernel and has no special executable format.  When
 the shell arrives, the same monitor remains available as a diagnostic
@@ -28,8 +28,8 @@ reset
   -> ROMFS + dynamic SIO module
   -> normal console bound ("console: dynamic sio0.b OK")
   -> optional milestone acceptance hook (acceptance images)
-  -> native boot launcher (ZOS_BOOT_PROGRAM, production default
-     /system/monitor.zex)
+  -> native boot launcher (KOS_BOOT_PROGRAM, production default
+     /system/monitor.exe)
        -> process_exec(kernel_boot_program, &status)
        -> monitor runs interactively in its application bank
        -> Q -> SYS_EXIT -> launcher resumes
@@ -41,8 +41,8 @@ reset
 A launch failure (for example a missing or rejected boot program) is
 reported on the early console as `<configured path>: launch failed 0xNN`
 and takes the controlled halt path.  The boot program is the
-`ZOS_BOOT_PROGRAM` build setting (`config/system.mk`); the default is
-`/system/monitor.zex`, and M10 points it at the shell.
+`KOS_BOOT_PROGRAM` build setting (`config/system.mk`); the default is
+`/system/monitor.exe`, and M10 points it at the shell.
 
 Because every cycle is an ordinary exec/exit, the launcher's repeated
 exit line is a live proof that no process slot or bank leaked: after a
@@ -70,7 +70,7 @@ answered with `ERR: ARG`.
 | `MB bank addr value` | modify one byte in application bank 0-6 |
 | `I port` | read I/O port `10h-FFh` |
 | `O port value` | write I/O port `10h-FFh` |
-| `X path [tail]` | run a ZEX from `/system` or `/fs`, print its exit status |
+| `X path [tail]` | run a EXE from `/system` or `/fs`, print its exit status |
 | `Q` | exit to the launcher |
 
 `X` runs the named program through the launcher's own `SYS_EXEC` path -
@@ -81,8 +81,8 @@ which is how the `stage` option reaches the outcome programs the
 exerciser starts.
 
 > **A card executable is runnable again (45b correction 01).**  Work
-> package 45b found that `X /fs/<name>.zex` failed with `ERR: 02`
-> (`ZOS_EINVAL`) before the filesystem provider was called at all:
+> package 45b found that `X /fs/<name>.exe` failed with `ERR: 02`
+> (`KOS_EINVAL`) before the filesystem provider was called at all:
 > `SYS_EXEC` staged the caller's path in bank-7 `_DATA` (`0xC0DD` in
 > that build), which lies in the `6000h-DFFFh` region a bank-6
 > provider's window replaces, so the `/fs` provider could not read it
@@ -95,7 +95,7 @@ exerciser starts.
 > `docs/validation/2026-10-11-m10-hardware-acceptance-correction-01.md`.
 
 ```text
-Z80> X /system/hwtest.zex
+Z80> X /system/hwtest.exe
 ... the exerciser's own lines (see "Serial command lane") ...
 exec: exit status 0x0000
 Z80>
@@ -109,7 +109,7 @@ kernel-reported `7Fh` mask, so bank 7 is never selectable), and ports
 executed.  `R`, `I`, `M`, and `O` report their results as:
 
 ```text
-ZephyrOS native monitor
+KonaOS native monitor
 bank=00 pid=0 scratch=0F19
 Z80> R
 system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02
@@ -141,7 +141,7 @@ state (the physical smoke parses this address from the banner).
 
 Deliberately deferred, not emulated: Intel HEX load/export (`L`),
 `G`, `APP`, and CP/M register-snapshot semantics.  `R` reports native
-system/bank/process identity instead, and `X` runs a ZEX from the store
+system/bank/process identity instead, and `X` runs a EXE from the store
 or a card.
 
 ## Serial command lane
@@ -167,14 +167,14 @@ swallowed), an overflow rings the bell instead of entering the byte, and
 other control bytes are ignored.
 
 The production store carries the exerciser this lane exists for:
-`/system/hwtest.zex` (work package 45b) runs, in order, the extended
+`/system/hwtest.exe` (work package 45b) runs, in order, the extended
 memory and far-code suite, the filesystem suite with every write confined
 to `/fs/HWTEST` (created and removed by the runner, also after a
 failure), and a namespace/handle stage against the real publications -
 one line per stage and a verdict:
 
 ```text
-Z80> X /system/hwtest.zex
+Z80> X /system/hwtest.exe
 hwtest: begin
 hwtest: xmem+far PASS
 hwtest: files PASS                 # or: card absent / card not writable
@@ -202,38 +202,38 @@ console, i.e. on the V9958 display.
 ## Program support (the user SDK)
 
 Since package 28c the monitor is an ordinary SDK program: it is built by
-one `zex_program` line (`user/sdk/zex.mk`) from the public ABI in
-`abi/zos/` and the shared user-space library, so it writes no entry
+one `exe_program` line (`user/sdk/exe.mk`) from the public ABI in
+`abi/kos/` and the shared user-space library, so it writes no entry
 assembly and no hand-written manifest.  Later diagnostic programs reuse
 the same layers (`docs/sdk.md` is canonical):
 
-- libzos (`user/sdk/`) - crt0 (startup block, `argv`, `SYS_EXIT`), the
+- libkos (`user/sdk/`) - crt0 (startup block, `argv`, `SYS_EXIT`), the
   console wrappers (`console_write`, `console_read`, `console_poll`, `getinfo`,
   `exit`) and the M7 diagnostic wrappers (`diag_mem_read`,
   `_write`, `_io_in`, `_io_out`, `_bank_info`, `_system_info`) in
-  `user/sdk/include/zos/{console,diag}.h` with their gate stubs in
+  `user/sdk/include/kos/{console,diag}.h` with their gate stubs in
   `user/sdk/src/{console,diaggate}.asm`; one shared low-window scratch;
-- zlibc (`user/sdk/src/zlibc/`) - `strlen`/`strcmp`/`mem*`/`strl*` and the
+- klibc (`user/sdk/src/klibc/`) - `strlen`/`strcmp`/`mem*`/`strl*` and the
   integer/`printf` formatters, one archive member each;
 - `user/monitor/` - the monitor's own helpers: `hexfmt.c` / `.h` (hex
   byte/word parsing and formatting), `hexdump.c` / `.h` (16-byte row
   formatting with address, hex and ASCII columns) and `status.c` / `.h`
   (`OK`, `ERR: ARG`, `ERR: COMMAND` and error-code output).
 
-These components link into the ZEX (`user/monitor/`), never into the
+These components link into the EXE (`user/monitor/`), never into the
 kernel.
 
 ## Build, test, and acceptance
 
 ```sh
-make monitor-test          # pack/validate monitor.zex + tests/test_monitor.py
+make monitor-test          # pack/validate monitor.exe + tests/test_monitor.py
 make m7-selftest           # build the M7 image + tests/test_m7_sim.py replay
 make smoke-hardware-m7 SERIAL_PORT=/dev/ttyUSB0
                            # start it first, then power-cycle/RESET the
                            # board so the boot log is captured
 ```
 
-`make monitor-test` proves the ZEX v2 layout (entry `0100h`, exact
+`make monitor-test` proves the EXE v2 layout (entry `0100h`, exact
 image/BSS/stack geometry, low-window scratch) and that the linked map
 contains only the monitor/runtime modules - no kernel, SIO, early
 console, or CP/M symbols.  `make m7-selftest` builds an image whose

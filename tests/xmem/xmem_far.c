@@ -1,7 +1,7 @@
-/* ZephyrOS far-code outcome program (work package 44b): the primary half.
+/* KonaOS far-code outcome program (work package 44b): the primary half.
  *
- * The third program of the xmem-selftest image: `xmem_selftest.zex` execs
- * it, it drives the far-code path and it SYS_EXECs `xmem_child.zex` from
+ * The third program of the xmem-selftest image: `xmem_selftest.exe` execs
+ * it, it drives the far-code path and it SYS_EXECs `xmem_child.exe` from
  * inside its far code.  Its container declares two FAR_CODE segments, both
  * the linked `_FAR_CODE` area (the SDK links one far area per program), so
  * the image exercises the loader's one-far-segment-per-auxiliary-bank
@@ -33,7 +33,7 @@
  *     the launcher's report prove the release.
  */
 
-#include "zos.h"
+#include "kos.h"
 
 #define FAR_STATUS   43
 #define CHILD_STATUS 42
@@ -99,9 +99,9 @@ static void make_tail(unsigned int handle)
 
 int main(void)
 {
-	struct zos_seg_info info1;
-	struct zos_seg_info info2;
-	struct zos_seg_info info;
+	struct kos_seg_info info1;
+	struct kos_seg_info info2;
+	struct kos_seg_info info;
 	unsigned int t1 = 0u;
 	unsigned int t2 = 0u;
 	unsigned int tm = 0u;
@@ -125,16 +125,16 @@ int main(void)
 	info2.handle = 0xFFFFu;
 	check("seg-info-1",
 	      seginfo(1u, &info1) == 0 &&
-	      info1.kind == ZOS_SEG_KIND_FAR_CODE &&
-	      info1.state == ZOS_SEG_STATE_LOADED &&
+	      info1.kind == KOS_SEG_KIND_FAR_CODE &&
+	      info1.state == KOS_SEG_STATE_LOADED &&
 	      info1.handle == 0u && info1.size > 0u);
 	check("seg-info-2",
 	      seginfo(2u, &info2) == 0 &&
-	      info2.kind == ZOS_SEG_KIND_FAR_CODE &&
-	      info2.state == ZOS_SEG_STATE_LOADED &&
+	      info2.kind == KOS_SEG_KIND_FAR_CODE &&
+	      info2.state == KOS_SEG_STATE_LOADED &&
 	      info2.handle == 0u && info2.size == info1.size);
 	info.size = 0u;
-	check("seg-info-unknown", seginfo(3u, &info) == -ZOS_EINVAL);
+	check("seg-info-unknown", seginfo(3u, &info) == -KOS_EINVAL);
 
 	/* SYS_SEG_MAP: a token for each of this process's FAR_CODE
 	 * segments.  The token keeps the caller's bank field and P =
@@ -150,13 +150,13 @@ int main(void)
 	t2 = (unsigned int)result;
 	check("seg-map-several", result >= 1 && t2 != t1);
 	check("seg-map-refused",
-	      segmap(0u) == -ZOS_EINVAL &&
-	      segmap(3u) == -ZOS_EINVAL);
+	      segmap(0u) == -KOS_EINVAL &&
+	      segmap(3u) == -KOS_EINVAL);
 
 	/* The far call: map, a plain CALL and return.  The far code moves
 	 * primary data and calls primary code; the child it execs checks
 	 * this process's handle and segment id (both foreign to it). */
-	handle = (unsigned int)xalloc(64u, ZOS_XMEM_FLAG_NONE);
+	handle = (unsigned int)xalloc(64u, KOS_XMEM_FLAG_NONE);
 	check("far-object", (int)handle >= 1);
 	if ((int)handle >= 1) {
 		xmem_far_marker = 0u;
@@ -197,7 +197,7 @@ int main(void)
 	 * so it shares the segment's token (same page) and appears at
 	 * A000h in the aperture. */
 	mappable = (unsigned int)xalloc(8192u,
-						ZOS_XMEM_FLAG_MAPPABLE);
+						KOS_XMEM_FLAG_MAPPABLE);
 	check("far-mappable-alloc", (int)mappable >= 1);
 	if ((int)mappable >= 1) {
 		result = xmap(mappable, &address);

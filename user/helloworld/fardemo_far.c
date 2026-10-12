@@ -1,6 +1,6 @@
-/* ZephyrOS far-code SDK demo (work package 44b): the far half.
+/* KonaOS far-code SDK demo (work package 44b): the far half.
  *
- * Compiled with `--codeseg FAR_CODE` through the zex_program FAR= option
+ * Compiled with `--codeseg FAR_CODE` through the exe_program FAR= option
  * and linked at 8000h, so this whole module becomes the `_FAR_CODE` area
  * the container loads into the aperture slice of one auxiliary bank.
  * While the primary half has the aperture open, this code runs in place
@@ -9,7 +9,7 @@
  * functions and its own syscalls normally.
  */
 
-#include "zos.h"
+#include "kos.h"
 
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
  * D7-D5.  The aperture is open, so P is the segment's page. */

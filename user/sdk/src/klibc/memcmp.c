@@ -1,4 +1,4 @@
-#include "zlibc/string.h"
+#include "klibc/string.h"
 
 int memcmp(const void *a, const void *b, unsigned int n)
 {

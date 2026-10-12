@@ -1,4 +1,4 @@
-/* ZephyrOS user runtime: hexadecimal parsing and formatting.
+/* KonaOS user runtime: hexadecimal parsing and formatting.
  *
  * Reusable support for native diagnostic programs.  Parsing mirrors the
  * familiar monitor behavior: leading spaces/tabs are skipped, at most
@@ -8,8 +8,8 @@
  * uppercase digits into a caller-supplied buffer.
  */
 
-#ifndef ZEPHYROS_USER_HEXFMT_H
-#define ZEPHYROS_USER_HEXFMT_H
+#ifndef KONAOS_USER_HEXFMT_H
+#define KONAOS_USER_HEXFMT_H
 
 /* Skip spaces and tabs at *cursor. */
 void zrt_skip_spaces(char **cursor);
@@ -30,4 +30,4 @@ unsigned char zrt_line_end(char **cursor);
 void zrt_fmt_hex8(char *dst, unsigned int value);
 void zrt_fmt_hex16(char *dst, unsigned int value);
 
-#endif /* ZEPHYROS_USER_HEXFMT_H */
+#endif /* KONAOS_USER_HEXFMT_H */

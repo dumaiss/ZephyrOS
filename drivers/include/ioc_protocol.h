@@ -1,7 +1,7 @@
-/* ZephyrOS IOC client-visible driver vocabulary (M8).
+/* KonaOS IOC client-visible driver vocabulary (M8).
  *
  * The IOC transport surface lives in drivers/include/ioc.h: the native
- * `struct zioc_frame`, the semantic status bits and the transport error
+ * `struct kioc_frame`, the semantic status bits and the transport error
  * codes.  This header is the *vocabulary* half of the contract: it names
  * the deployed MCU command/reply classes and the client-visible DATA
  * payload offsets that a protocol-aware client must share to use the
@@ -10,7 +10,7 @@
  * The wire framing, the rolling sequence, CRC handling, lane setup, the
  * READY/DONE bulk admission state, bulk recovery, the frozen bulk-arming
  * class gate, and every pinned-driver implementation detail remain
- * private to drivers/ioc/.  Ordinary clients use `struct zioc_frame`
+ * private to drivers/ioc/.  Ordinary clients use `struct kioc_frame`
  * and never include this header.  Protocol-aware clients -- the HID
  * driver and the target diagnostics -- include it to name command types
  * and decode payload offsets as native-frame DATA offsets.
@@ -21,8 +21,8 @@
  * mailbox header bytes).
  */
 
-#ifndef ZEPHYROS_IOC_PROTOCOL_H
-#define ZEPHYROS_IOC_PROTOCOL_H
+#ifndef KONAOS_IOC_PROTOCOL_H
+#define KONAOS_IOC_PROTOCOL_H
 
 /* PING command and reply.  The request carries an echo pattern; the
  * reply echoes those bytes and appends diagnostics. */
@@ -64,4 +64,4 @@
 #define IOC_HID_INPUT_META_LEN 2u  /* reply DATA: queued, dropped       */
 #define IOC_HID_INPUT_MAX_DATA 24u /* reply DATA: most translated bytes */
 
-#endif /* ZEPHYROS_IOC_PROTOCOL_H */
+#endif /* KONAOS_IOC_PROTOCOL_H */

@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; V9958 video port I/O and streaming primitives (drivers/v9958, ZMOD module).
+; V9958 video port I/O and streaming primitives (drivers/v9958, MOD module).
 ;
 ; Every A0h-A4h access for the VIDEO class lives here; v9958.c owns the
 ; sequencing, register values, palette table, atlas conversion and the
@@ -55,7 +55,7 @@
 ; ---------------------------------------------------------------------------
 _v9958_io_bootstrap_delay::
 	push	bc
-	ld	b,#ZOS_V9958_BOOT_DELAY_COUNT
+	ld	b,#KOS_V9958_BOOT_DELAY_COUNT
 v9958_delay_loop:
 	djnz	v9958_delay_loop
 	pop	bc
@@ -67,11 +67,11 @@ v9958_delay_loop:
 ;   valid while the porch is bypassed and WTE=0.
 ; ---------------------------------------------------------------------------
 _v9958_io_reg_paced::
-	out	(ZOS_V9958_CMD_PORT),a
+	out	(KOS_V9958_CMD_PORT),a
 	call	_v9958_io_bootstrap_delay
 	ld	a,l
-	or	#ZOS_V9958_REG_SELECT
-	out	(ZOS_V9958_CMD_PORT),a
+	or	#KOS_V9958_REG_SELECT
+	out	(KOS_V9958_CMD_PORT),a
 	jp	_v9958_io_bootstrap_delay
 
 ; ---------------------------------------------------------------------------
@@ -80,10 +80,10 @@ _v9958_io_reg_paced::
 ;   and the U11 porch enabled; the hardware holds the I/O cycle.
 ; ---------------------------------------------------------------------------
 _v9958_io_reg::
-	out	(ZOS_V9958_CMD_PORT),a
+	out	(KOS_V9958_CMD_PORT),a
 	ld	a,l
-	or	#ZOS_V9958_REG_SELECT
-	out	(ZOS_V9958_CMD_PORT),a
+	or	#KOS_V9958_REG_SELECT
+	out	(KOS_V9958_CMD_PORT),a
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ _v9958_io_reg::
 ;   VDP: bit 0 is CE, "a command is active".
 ; ---------------------------------------------------------------------------
 _v9958_io_status_read::
-	in	a,(ZOS_V9958_CMD_PORT)
+	in	a,(KOS_V9958_CMD_PORT)
 	ld	l,a
 	ret
 
@@ -103,8 +103,8 @@ _v9958_io_status_read::
 ; ---------------------------------------------------------------------------
 _v9958_io_wait_command::
 v9958_wait_cmd_loop:
-	in	a,(ZOS_V9958_CMD_PORT)
-	and	#ZOS_V9958_STATUS2_CE
+	in	a,(KOS_V9958_CMD_PORT)
+	and	#KOS_V9958_STATUS2_CE
 	jr	nz,v9958_wait_cmd_loop
 	ret
 
@@ -115,7 +115,7 @@ v9958_wait_cmd_loop:
 ;   emits the byte.
 ; ---------------------------------------------------------------------------
 _v9958_io_latch_write::
-	out	(ZOS_V9958_CONFIG_PORT),a
+	out	(KOS_V9958_CONFIG_PORT),a
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ _v9958_io_stream_ctrl::
 	ret	z
 v9958_ctrl_loop:
 	ld	a,(hl)
-	out	(ZOS_V9958_CMD_PORT),a
+	out	(KOS_V9958_CMD_PORT),a
 	inc	hl
 	dec	bc
 	ld	a,b
@@ -159,7 +159,7 @@ _v9958_io_stream_data::
 	ret	z
 v9958_data_loop:
 	ld	a,(hl)
-	out	(ZOS_V9958_DATA_PORT),a
+	out	(KOS_V9958_DATA_PORT),a
 	inc	hl
 	dec	bc
 	ld	a,b
@@ -173,7 +173,7 @@ _v9958_io_stream_palette::
 	ret	z
 v9958_palette_loop:
 	ld	a,(hl)
-	out	(ZOS_V9958_PALETTE_PORT),a
+	out	(KOS_V9958_PALETTE_PORT),a
 	inc	hl
 	dec	bc
 	ld	a,b
@@ -187,7 +187,7 @@ _v9958_io_stream_indirect::
 	ret	z
 v9958_indirect_loop:
 	ld	a,(hl)
-	out	(ZOS_V9958_INDIRECT_PORT),a
+	out	(KOS_V9958_INDIRECT_PORT),a
 	inc	hl
 	dec	bc
 	ld	a,b
@@ -200,7 +200,7 @@ v9958_indirect_loop:
 ; ===========================================================================
 ;
 ; The kernel dispatches system calls on the small common gate stack:
-; zos_gate_stack_top sits only ~70 bytes above the common syscall state,
+; kos_gate_stack_top sits only ~70 bytes above the common syscall state,
 ; and the SIO console path was designed to fit in that budget.  The
 ; ported text renderer's call chain (parser -> control action -> flush ->
 ; glyph HMMM -> command start) is deeper than that budget, so both

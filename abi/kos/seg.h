@@ -1,11 +1,11 @@
-/* ZephyrOS native segment ABI (public native ABI, packages 44a/44b).
+/* KonaOS native segment ABI (public native ABI, packages 44a/44b).
  *
- * A ZEX v2 container declares zero or more auxiliary segments in its
+ * A EXE v2 container declares zero or more auxiliary segments in its
  * segment table (architecture 36.18).  A `DATA` segment becomes an
  * extended-memory object owned by the process (36.16): the loader places
  * it before the program runs, `SYS_SEG_INFO` names it and returns the
  * object handle, and the contents are read and written with the
- * abi/zos/xmem.h calls.  A `FAR_CODE` segment (36.17) is linked at
+ * abi/kos/xmem.h calls.  A `FAR_CODE` segment (36.17) is linked at
  * `8000h`, loaded into the aperture slice of an auxiliary bank and
  * executed in place through the mode-10 aperture: the loader places one
  * far-code segment per auxiliary bank, the code is `8000h` when the
@@ -21,30 +21,30 @@
  * is refused: the table is the calling process's own.
  */
 
-#ifndef ZOS_SEG_H
-#define ZOS_SEG_H
+#ifndef KOS_SEG_H
+#define KOS_SEG_H
 
-#include "zos/types.h"
-#include "zos/errno.h"
+#include "kos/types.h"
+#include "kos/errno.h"
 
 /* --- native syscall numbers (docs/abi.md section 15) -------------------- */
 
-#define ZOS_SYSCALL_SEG_INFO 0x26u
-#define ZOS_SYSCALL_SEG_MAP  0x27u
+#define KOS_SYSCALL_SEG_INFO 0x26u
+#define KOS_SYSCALL_SEG_MAP  0x27u
 
 /* --- segment kinds ------------------------------------------------------ */
 
 /* A container's kinds: far code is linked at 8000h and executed in place
  * through the aperture; data becomes a process-owned extended-memory
  * object reached by handle. */
-#define ZOS_SEG_KIND_FAR_CODE 1u
-#define ZOS_SEG_KIND_DATA     2u
+#define KOS_SEG_KIND_FAR_CODE 1u
+#define KOS_SEG_KIND_DATA     2u
 
 /* --- load states -------------------------------------------------------- */
 
 /* Every segment of the running process's container is placed by the
  * loader or the whole exec fails, so a live segment reports LOADED. */
-#define ZOS_SEG_STATE_LOADED 1u
+#define KOS_SEG_STATE_LOADED 1u
 
 /* SYS_SEG_INFO 26h {segment:u8, reserved:u8, buffer:u16}
  *   -> the 8-byte record below at `buffer`, HL = 0.
@@ -53,17 +53,17 @@
  * extended-memory handle of a `DATA` segment, for SYS_XMEM_READ /
  * SYS_XMEM_WRITE; a `FAR_CODE` segment has none and reports 0.  An
  * unknown id, a bad block or a buffer outside the caller window is
- * ZOS_EINVAL, and `SYS_XMEM_FREE` refuses the handle (a loader segment is
+ * KOS_EINVAL, and `SYS_XMEM_FREE` refuses the handle (a loader segment is
  * released only at exit). */
-struct zos_seg_info {
+struct kos_seg_info {
 	uint16_t size;   /* image + BSS, the segment's logical size */
-	uint8_t  kind;   /* ZOS_SEG_KIND_*                          */
-	uint8_t  state;  /* ZOS_SEG_STATE_*                         */
+	uint8_t  kind;   /* KOS_SEG_KIND_*                          */
+	uint8_t  state;  /* KOS_SEG_STATE_*                         */
 	uint16_t handle; /* DATA: the xmem object handle; else 0    */
 	uint16_t reserved;
 };
 
-struct zos_seg_info_args {
+struct kos_seg_info_args {
 	uint8_t  segment;
 	uint8_t  reserved;
 	uint16_t buffer;
@@ -75,33 +75,33 @@ struct zos_seg_info_args {
  *
  * Only the calling process's own `FAR_CODE` segments have a token: an
  * unknown id, a `DATA` segment's id (it is reached by handle, not mapped)
- * or a bad block is ZOS_EINVAL.  The segment is always at `8000h`, so no
+ * or a bad block is KOS_EINVAL.  The segment is always at `8000h`, so no
  * address is returned; the token keeps the caller's own bank field and
  * selects P = 7 - bank with the segment's application bank 0-5, so a
  * token never names bank 6 or bank 7.  The SDK opens the aperture with
  * it (`farcall`) and restores the previous latch. */
-struct zos_seg_map_args {
+struct kos_seg_map_args {
 	uint8_t segment;
 	uint8_t reserved;
 };
 
 #if defined(__SDCC)
-_Static_assert(sizeof(struct zos_seg_info) == 8,
+_Static_assert(sizeof(struct kos_seg_info) == 8,
 	       "seg info record must be 8 packed bytes");
-_Static_assert(sizeof(struct zos_seg_info_args) == 4,
+_Static_assert(sizeof(struct kos_seg_info_args) == 4,
 	       "seg info block must be 4 packed bytes");
-_Static_assert(sizeof(struct zos_seg_map_args) == 2,
+_Static_assert(sizeof(struct kos_seg_map_args) == 2,
 	       "seg map block must be 2 packed bytes");
-_Static_assert(__builtin_offsetof(struct zos_seg_info, size) == 0,
+_Static_assert(__builtin_offsetof(struct kos_seg_info, size) == 0,
 	       "seg info size is the first word");
-_Static_assert(__builtin_offsetof(struct zos_seg_info, kind) == 2,
+_Static_assert(__builtin_offsetof(struct kos_seg_info, kind) == 2,
 	       "seg info kind follows the size");
-_Static_assert(__builtin_offsetof(struct zos_seg_info, state) == 3,
+_Static_assert(__builtin_offsetof(struct kos_seg_info, state) == 3,
 	       "seg info state follows the kind");
-_Static_assert(__builtin_offsetof(struct zos_seg_info, handle) == 4,
+_Static_assert(__builtin_offsetof(struct kos_seg_info, handle) == 4,
 	       "seg info handle follows the state");
-_Static_assert(__builtin_offsetof(struct zos_seg_info_args, buffer) == 2,
+_Static_assert(__builtin_offsetof(struct kos_seg_info_args, buffer) == 2,
 	       "seg info buffer is the second word");
 #endif
 
-#endif /* ZOS_SEG_H */
+#endif /* KOS_SEG_H */

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Validate the ZOS_BOOT_PROGRAM build setting (package 28b).
+"""Validate the KOS_BOOT_PROGRAM build setting (package 28b).
 
-The kernel launcher (kernel/main.c) starts `ZOS_BOOT_PROGRAM` through its
+The kernel launcher (kernel/main.c) starts `KOS_BOOT_PROGRAM` through its
 `/system` VFS path.  Because that path is compiled into the kernel as a
 constant string and must work without SD, the build rejects a setting that
 could not boot:
 
   - not an absolute path under `/system`;
-  - longer than `ZOS_PATH_MAX - 1` bytes;
-  - naming a file that is not a ZEX in the selected recovery manifest.
+  - longer than `KOS_PATH_MAX - 1` bytes;
+  - naming a file that is not a EXE in the selected recovery manifest.
 
 `check PROGRAM MANIFEST` exits 0 when the setting is valid and 2 with a
 one-line diagnostic otherwise.  The rule set is mirrored by host tests;
@@ -19,16 +19,16 @@ import argparse
 import json
 import sys
 
-# abi/zos/fs.h: ZOS_PATH_MAX counts the terminating NUL.
-ZOS_PATH_MAX = 128
-BOOT_PATH_MAX = ZOS_PATH_MAX - 1  # 127
+# abi/kos/fs.h: KOS_PATH_MAX counts the terminating NUL.
+KOS_PATH_MAX = 128
+BOOT_PATH_MAX = KOS_PATH_MAX - 1  # 127
 SYSTEM_PREFIX = "/system/"
 PRINTABLE_MIN = 0x21  # '!' - no spaces, controls, DEL or non-ASCII
 PRINTABLE_MAX = 0x7E  # '~'
 
 
 class BootProgramError(Exception):
-    """A rejected ZOS_BOOT_PROGRAM setting."""
+    """A rejected KOS_BOOT_PROGRAM setting."""
 
 
 def _basename(program):
@@ -73,9 +73,9 @@ def validate(program, manifest):
     for entry in files:
         if not isinstance(entry, dict) or entry.get("name") != name:
             continue
-        if entry.get("type") != "ZEX":
+        if entry.get("type") != "EXE":
             raise BootProgramError(
-                "boot program %r is not a ZEX in the manifest" % name)
+                "boot program %r is not a EXE in the manifest" % name)
         return program
     raise BootProgramError(
         "boot program %r is not in the selected recovery manifest" % name)
@@ -95,7 +95,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     check = sub.add_parser("check", help="validate a boot-program setting")
-    check.add_argument("program", help="the ZOS_BOOT_PROGRAM value")
+    check.add_argument("program", help="the KOS_BOOT_PROGRAM value")
     check.add_argument("manifest", help="the selected recovery manifest")
     args = parser.parse_args(argv)
 

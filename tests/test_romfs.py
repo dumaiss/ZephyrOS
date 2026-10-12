@@ -25,7 +25,7 @@ from z80sim import read_symbols  # noqa: E402
 from maptools import evaluate, make_map, parse_c_header, parse_asm_inc  # noqa: E402
 
 ROMFS_H = os.path.join(ROOT, "formats", "include", "romfs.h")
-ERRNO_H = os.path.join(ROOT, "abi", "zos", "errno.h")
+ERRNO_H = os.path.join(ROOT, "abi", "kos", "errno.h")
 MEMORY_H = os.path.join(ROOT, "platform", "zephyr80", "private", "memory.h")
 MEMORY_INC = os.path.join(ROOT, "platform", "zephyr80", "private", "memory.inc")
 ROM_ACCESS_ASM = os.path.join(ROOT, "kernel", "romfs", "rom_access.asm")
@@ -64,35 +64,35 @@ class TestRomfsConstants(unittest.TestCase):
         self.assertEqual(evaluate("ROMFS_HEADER_SIZE", self.romfs), 16)
         self.assertEqual(evaluate("ROMFS_ENTRY_SIZE", self.romfs), 36)
         self.assertEqual(evaluate("ROMFS_NAME_SIZE", self.romfs), 24)
-        self.assertEqual(evaluate("ROMFS_FLAG_ZMOD", self.romfs), 1)
-        self.assertEqual(evaluate("ROMFS_FLAG_ZEX", self.romfs), 2)
+        self.assertEqual(evaluate("ROMFS_FLAG_MOD", self.romfs), 1)
+        self.assertEqual(evaluate("ROMFS_FLAG_EXE", self.romfs), 2)
         self.assertEqual(evaluate("ROMFS_FLAG_DATA", self.romfs), 3)
 
     def test_platform_geometry(self):
         layout = mapcheck.parse_memory_inc(MEMORY_INC)
-        self.assertEqual(layout["ZOS_ROM_PAGE_SIZE"], 0x10000)
-        self.assertEqual(layout["ZOS_ROM_PAGE_COUNT"], 8)
-        self.assertEqual(layout["ZOS_ROM_IMAGE_SIZE"], 0x80000)
-        self.assertEqual(layout["ZOS_ROMFS_FIRST_PAGE"], 2)
-        self.assertEqual(layout["ZOS_ROMFS_PAGE_COUNT"], 6)
-        self.assertEqual(layout["ZOS_ROMFS_WINDOW_SIZE"], 0xC000)
-        self.assertEqual(layout["ZOS_ROMFS_CAPACITY"], 0x48000)
-        self.assertEqual(layout["ZOS_ROMFS_STAGING_SIZE"], ROMFS_STAGING)
-        self.assertEqual(layout["ZOS_ROM_ACCESS_BASE"], ROM_ACCESS_BASE)
-        self.assertEqual(layout["ZOS_ROM_ACCESS_SIZE"], ROM_ACCESS_SIZE)
+        self.assertEqual(layout["KOS_ROM_PAGE_SIZE"], 0x10000)
+        self.assertEqual(layout["KOS_ROM_PAGE_COUNT"], 8)
+        self.assertEqual(layout["KOS_ROM_IMAGE_SIZE"], 0x80000)
+        self.assertEqual(layout["KOS_ROMFS_FIRST_PAGE"], 2)
+        self.assertEqual(layout["KOS_ROMFS_PAGE_COUNT"], 6)
+        self.assertEqual(layout["KOS_ROMFS_WINDOW_SIZE"], 0xC000)
+        self.assertEqual(layout["KOS_ROMFS_CAPACITY"], 0x48000)
+        self.assertEqual(layout["KOS_ROMFS_STAGING_SIZE"], ROMFS_STAGING)
+        self.assertEqual(layout["KOS_ROM_ACCESS_BASE"], ROM_ACCESS_BASE)
+        self.assertEqual(layout["KOS_ROM_ACCESS_SIZE"], ROM_ACCESS_SIZE)
 
     def test_staging_size_is_single_sourced(self):
-        self.assertEqual(evaluate("ZOS_ROMFS_STAGING_SIZE", self.memory_c),
+        self.assertEqual(evaluate("KOS_ROMFS_STAGING_SIZE", self.memory_c),
                          ROMFS_STAGING)
-        self.assertEqual(evaluate("ZOS_ROMFS_STAGING_SIZE",
+        self.assertEqual(evaluate("KOS_ROMFS_STAGING_SIZE",
                                   self.memory_asm), ROMFS_STAGING)
 
     def test_rom_access_error_codes_match_errno(self):
-        """The assembly primitive returns positive ZOS_* codes; the local
-        equates must match abi/zos/errno.h."""
+        """The assembly primitive returns positive KOS_* codes; the local
+        equates must match abi/kos/errno.h."""
         text = open(ROM_ACCESS_ASM).read()
-        for name, errno_name in (("RAX_EINVAL", "ZOS_EINVAL"),
-                                 ("RAX_EBUSY", "ZOS_EBUSY")):
+        for name, errno_name in (("RAX_EINVAL", "KOS_EINVAL"),
+                                 ("RAX_EBUSY", "KOS_EBUSY")):
             match = re.search(r"^%s\s*=\s*(0[xX][0-9A-Fa-f]+)" % name,
                               text, re.M)
             self.assertIsNotNone(match, "rom_access.asm is missing %s" % name)
@@ -105,7 +105,7 @@ class TestRomfspack(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="romfs-") as tmp:
             manifest, objdir = make_manifest(tmp, [
                 ("a.bin", "DATA", "a.bin", bytes(range(256)) * 3),
-                ("b.zex", "ZEX", "b.bin", b"hello romfs"),
+                ("b.exe", "EXE", "b.bin", b"hello romfs"),
             ])
             stream, report = romfspack.pack(
                 manifest, os.path.join(tmp, "out.romfs"), objdir=objdir)
@@ -364,7 +364,7 @@ class TestRomfsMapcheck(unittest.TestCase):
             mapcheck.check_map(text)
 
     def test_production_rejects_embedded_catalog_symbols(self):
-        for symbol in ("_z4_module_boot", "_zmod_catalog"):
+        for symbol in ("_z4_module_boot", "_mod_catalog"):
             text = make_map(symbols={symbol: 0x2600})
             with self.assertRaisesRegex(mapcheck.MapError,
                                         "production image"):
@@ -380,17 +380,17 @@ class TestBuiltArtifacts(unittest.TestCase):
 
     def test_production_recovery_matches_packed_sio(self):
         _p, stream = self._read("build/recovery.romfs")
-        _p, zmod = self._read("build/modules/sio.zmod")
+        _p, mod = self._read("build/modules/sio.mod")
         header, entries = romfspack.parse_image(stream)
         names = {entry["name"]: entry for entry in entries}
-        self.assertIn("sio.zmod", names)
-        self.assertEqual(names["sio.zmod"]["flags"], romfspack.FLAG_ZMOD)
-        self.assertEqual(names["sio.zmod"]["payload"], zmod,
-                         "ROMFS sio.zmod payload differs from the packed "
+        self.assertIn("sio.mod", names)
+        self.assertEqual(names["sio.mod"]["flags"], romfspack.FLAG_MOD)
+        self.assertEqual(names["sio.mod"]["payload"], mod,
+                         "ROMFS sio.mod payload differs from the packed "
                          "container (byte identity violated)")
 
     def test_production_image_places_recovery_stream_only_in_pages_2_7(self):
-        _p, image = self._read("build/zephyros.bin")
+        _p, image = self._read("build/konaos.bin")
         _p, stream = self._read("build/recovery.romfs")
         self.assertEqual(len(image), 8 * 0x10000)
         geom = romfspack.load_geometry()
@@ -403,8 +403,8 @@ class TestBuiltArtifacts(unittest.TestCase):
         # every recovery page stays FF except the fixed ROM-access stub
         # mirror, which must equal the copy linked in common (page 0).
         layout = mapcheck.parse_memory_inc(MEMORY_INC)
-        base = layout["ZOS_ROM_ACCESS_BASE"]
-        size = layout["ZOS_ROM_ACCESS_SIZE"]
+        base = layout["KOS_ROM_ACCESS_BASE"]
+        size = layout["KOS_ROM_ACCESS_SIZE"]
         common_stub = image[base:base + size]
         self.assertNotEqual(common_stub, b"\xFF" * size,
                             "ROM-access stub is unlinked in page 0")
@@ -430,7 +430,7 @@ class TestBuiltArtifacts(unittest.TestCase):
         self.assertNotEqual(image[0], 0xFF)
 
     def test_manifest_records_pages_and_romfs_placement(self):
-        _p, text = self._read("build/zephyros.manifest.json")
+        _p, text = self._read("build/konaos.manifest.json")
         manifest = json.loads(text)
         self.assertEqual(len(manifest["pages"]), 8)
         self.assertTrue(manifest["romfs"]["present"])
@@ -438,7 +438,7 @@ class TestBuiltArtifacts(unittest.TestCase):
         self.assertGreater(len(placement), 0)
         self.assertEqual(placement[0]["page"], 2)
         self.assertEqual(placement[0]["logical_offset"], 0)
-        _p, image = self._read("build/zephyros.bin")
+        _p, image = self._read("build/konaos.bin")
         for page in manifest["pages"]:
             data = image[page["index"] * 0x10000:(page["index"] + 1) * 0x10000]
             import hashlib
@@ -453,8 +453,8 @@ class TestBuiltArtifacts(unittest.TestCase):
         # The store belongs to the image's own build: its driver set
         # (SIO + the serial console) is what the packer links each
         # container against, so the canonical build's bytes differ.
-        _p, zmod = self._read("build-subsys-selftest/modules/sio.zmod")
-        self.assertEqual(names["sio.zmod"]["payload"], zmod)
+        _p, mod = self._read("build-subsys-selftest/modules/sio.mod")
+        self.assertEqual(names["sio.mod"]["payload"], mod)
         cross = names["crosspage.bin"]
         self.assertEqual(cross["size"], 0xC040)
         for i in range(cross["size"]):
@@ -469,9 +469,9 @@ class TestBuiltArtifacts(unittest.TestCase):
         # the target uses it to place its boundary reads, so only the
         # size, window and asset name are pinned here.
         env = parse_c_header(ROMFS_SELFTEST_H)
-        self.assertEqual(evaluate("ZOS_RFST_CROSSPAGE_SIZE", env),
+        self.assertEqual(evaluate("KOS_RFST_CROSSPAGE_SIZE", env),
                          cross["size"])
-        self.assertEqual(evaluate("ZOS_RFST_WINDOW", env), 0xC000)
+        self.assertEqual(evaluate("KOS_RFST_WINDOW", env), 0xC000)
         self.assertIn('"crosspage.bin"', open(ROMFS_SELFTEST_H).read())
         # The acceptance manifest is a test artifact: the production
         # manifest must not carry the pattern asset.
@@ -482,15 +482,15 @@ class TestBuiltArtifacts(unittest.TestCase):
 
     def test_image_markers_and_no_embedded_catalog(self):
         _p, image = self._read("build-subsys-selftest/"
-                               "zephyros-subsys-selftest.bin")
+                               "konaos-subsys-selftest.bin")
         for marker in (b"romfs selftest: OK\r\n",
                        b"console: driver OK\r\n",
                        b"romfs: corrupt recovery image"):
             self.assertIn(marker, image)
         syms = read_symbols(os.path.join(ROOT, "build-subsys-selftest",
-                                         "zephyros.map"))
+                                         "konaos.map"))
         self.assertNotIn("_z4_module_boot", syms)
-        self.assertNotIn("_zmod_catalog", syms)
+        self.assertNotIn("_mod_catalog", syms)
 
     def test_corrupt_image_differs_only_in_corrupted_metadata(self):
         # The corrupt build packs the production manifest and then patches
@@ -510,11 +510,11 @@ class TestBuiltArtifacts(unittest.TestCase):
 
     def test_corrupt_image_carries_panic_marker(self):
         _p, image = self._read("build-romfs-corrupt/"
-                               "zephyros-romfs-corrupt.bin")
+                               "konaos-romfs-corrupt.bin")
         self.assertIn(b"PANIC: ", image)
         self.assertIn(b"romfs: corrupt recovery image", image)
         syms = read_symbols(os.path.join(ROOT, "build-romfs-corrupt",
-                                         "zephyros.map"))
+                                         "konaos.map"))
         self.assertNotIn("_romfs_selftest_result", syms)
 
     def test_smoke_constants_match_the_images(self):
@@ -523,9 +523,9 @@ class TestBuiltArtifacts(unittest.TestCase):
         success marker)."""
         import serial_smoke
         _p, success = self._read("build-subsys-selftest/"
-                                 "zephyros-subsys-selftest.bin")
+                                 "konaos-subsys-selftest.bin")
         _p, corrupt = self._read("build-romfs-corrupt/"
-                                 "zephyros-romfs-corrupt.bin")
+                                 "konaos-romfs-corrupt.bin")
         for const in (serial_smoke.CONSOLE_DRIVER_OK,
                       serial_smoke.SUBSYS_ROMFS_OK):
             self.assertIn(const, success)

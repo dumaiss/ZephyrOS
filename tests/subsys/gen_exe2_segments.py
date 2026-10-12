@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Deterministic ZEX v2 DATA-segment payloads (package 44a test artifact).
+"""Deterministic EXE v2 DATA-segment payloads (package 44a test artifact).
 
 Writes the payload files and the segment declaration list for the
 loader-outcome programs the subsystem process selftest runs:
 
-    seg <objdir>    zex2seg-seg1.bin + zex2seg.segments.json
+    seg <objdir>    exe2seg-seg1.bin + exe2seg.segments.json
                     one segment: 1024-byte image, 64-byte BSS
-    big <objdir>    zex2big-seg1.bin, zex2big-seg2.bin +
-                    zex2big.segments.json
+    big <objdir>    exe2big-seg1.bin, exe2big-seg2.bin +
+                    exe2big.segments.json
                     two segments: 32760-byte images, 8-byte BSS each, so
                     the container exceeds 64 KiB
 
@@ -17,7 +17,7 @@ bytes, and tests/target/include/process_selftest.h pins the sizes both
 sides use.
 
 Usage:
-    gen_zex2_segments.py seg|big <objdir>
+    gen_exe2_segments.py seg|big <objdir>
 """
 
 import json
@@ -27,11 +27,11 @@ from pathlib import Path
 # (image_size, bss_size, multiplier, addend) per segment of each program.
 PROGRAMS = {
     "seg": {
-        "name": "zex2seg",
+        "name": "exe2seg",
         "segments": [(1024, 64, 7, 0x13)],
     },
     "big": {
-        "name": "zex2big",
+        "name": "exe2big",
         "segments": [(32760, 8, 11, 0x29), (32760, 8, 13, 0x5B)],
     },
 }
@@ -60,12 +60,12 @@ def main(argv):
             "input": payload_name,
             "bss_size": bss_size,
         })
-        print("gen_zex2_segments: %s: %d bytes (mul %d add 0x%02X, bss %d)"
+        print("gen_exe2_segments: %s: %d bytes (mul %d add 0x%02X, bss %d)"
               % (outdir / payload_name, image_size, multiplier, addend,
                  bss_size))
     manifest = outdir / ("%s.segments.json" % program["name"])
     manifest.write_text(json.dumps(declared, indent=2) + "\n")
-    print("gen_zex2_segments: %s: %d segments" % (manifest, len(declared)))
+    print("gen_exe2_segments: %s: %d segments" % (manifest, len(declared)))
     return 0
 
 

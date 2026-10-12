@@ -1,4 +1,4 @@
-/* ZephyrOS VFS part: /fs, the forwarding provider. */
+/* KonaOS VFS part: /fs, the forwarding provider. */
 
 #include "kernel/vfs/vfs.h"
 #include "kernel/lib/name.h"
@@ -6,11 +6,11 @@
 #include "kernel/syscall/diag.h"
 
 #include "kernel.h"
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "process.h"
 #include "romfs.h"
 
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 /* The filesystem driver's endpoint, from the host-built `/fs` publication
  * (0 when the build selected no filesystem driver). */
@@ -42,8 +42,8 @@ static const char *ns_fs_root_path(void)
 
 /* The driver-relative spelling of the normalized `/fs` path `norm`: the
  * driver's own convention is a leading slash (the same spelling a FILE
- * bind passes), and the root itself is "/".  "/fs/ZOSTEST" therefore
- * stages as "/ZOSTEST" and "/fs" as "/". */
+ * bind passes), and the root itself is "/".  "/fs/KOSTEST" therefore
+ * stages as "/KOSTEST" and "/fs" as "/". */
 const char *vfs_fs_rel(const char *norm)
 {
 	return (norm[3] == '\0') ? ns_fs_root_path() : (norm + 3);
@@ -55,10 +55,10 @@ int vfs_fs_alloc(uint8_t pid, uint8_t type, uint8_t object,
 		       uint16_t flags)
 {
 	struct vfs_handle_entry *entry =
-		vfs_handle_alloc(pid, ZOS_HANDLE_FIRST_BOUND);
+		vfs_handle_alloc(pid, KOS_HANDLE_FIRST_BOUND);
 
 	if (entry == (struct vfs_handle_entry *)0) {
-		return -ZOS_EMFILE;
+		return -KOS_EMFILE;
 	}
 	entry->type = type;
 	entry->endpoint = VFS_NS_FS_ENDPOINT;
@@ -67,38 +67,38 @@ int vfs_fs_alloc(uint8_t pid, uint8_t type, uint8_t object,
 	return (int)entry->number;
 }
 
-/* ZFS_OP_CLOSE: release one driver instance. */
+/* KFS_OP_CLOSE: release one driver instance. */
 static void ns_fs_close(uint8_t object)
 {
-	struct zos_ipc_frame frame;
+	struct kos_ipc_frame frame;
 
-	frame.op = ZFS_OP_CLOSE;
+	frame.op = KFS_OP_CLOSE;
 	frame.flags = 0u;
-	frame.desc = ZOS_IPC_DESC_NONE;
+	frame.desc = KOS_IPC_DESC_NONE;
 	frame.arg0 = 0u;
 	frame.arg1 = 0u;
 	frame.payload[0] = object;
 	(void)ipc_nucleus_call(vfs_ns_fs_endpoint, &frame);
 }
 
-/* ZFS_OP_OPEN: bind one `/fs` path as a FILE instance.  `rel` is the
+/* KFS_OP_OPEN: bind one `/fs` path as a FILE instance.  `rel` is the
  * provider-relative remainder (it begins with '/', or is empty for the
  * provider root) in the fixed-core workspace the driver reads. */
 int vfs_fs_bind_file(uint8_t pid, const char *rel, uint16_t flags,
 			   uint8_t *type)
 {
-	struct zos_ipc_frame frame;
+	struct kos_ipc_frame frame;
 	uint8_t object;
 	int result;
 
-	if ((flags & (uint16_t)~((uint16_t)(ZFS_O_READ | ZFS_O_WRITE |
-					    ZFS_O_CREATE | ZFS_O_EXCL |
-					    ZFS_O_TRUNC))) != 0u) {
-		return -ZOS_EINVAL;
+	if ((flags & (uint16_t)~((uint16_t)(KFS_O_READ | KFS_O_WRITE |
+					    KFS_O_CREATE | KFS_O_EXCL |
+					    KFS_O_TRUNC))) != 0u) {
+		return -KOS_EINVAL;
 	}
-	frame.op = ZFS_OP_OPEN;
+	frame.op = KFS_OP_OPEN;
 	frame.flags = 0u;
-	frame.desc = ZOS_IPC_DESC_NONE;
+	frame.desc = KOS_IPC_DESC_NONE;
 	frame.arg0 = 0u;
 	frame.arg1 = 0u;
 	vfs_fs_put_path(frame.payload, rel);
@@ -109,41 +109,41 @@ int vfs_fs_bind_file(uint8_t pid, const char *rel, uint16_t flags,
 		return result;
 	}
 	object = frame.payload[0];
-	result = vfs_fs_alloc(pid, ZOS_TYPE_FILE, object, flags);
+	result = vfs_fs_alloc(pid, KOS_TYPE_FILE, object, flags);
 	if (result < 0) {
 		ns_fs_close(object);
 		return result;
 	}
-	*type = ZOS_TYPE_FILE;
+	*type = KOS_TYPE_FILE;
 	return result;
 }
 
 /* Copy the namespace operation's caller path (1..127 caller-bank bytes;
  * RENAME packs "from\0to") into the workspace's copy-in slot.  The
  * buffer's bank follows the buffer-identity rule.  Returns 0 or a
- * negative ZOS_E* value. */
-int vfs_fs_read_path(const struct zos_ipc_call_args *args)
+ * negative KOS_E* value. */
+int vfs_fs_read_path(const struct kos_ipc_call_args *args)
 {
 	uint16_t length = args->length;
 	uint16_t done = 0u;
 
-	if (length == 0u || length >= ZOS_PATH_MAX ||
-	    !zos_syscall_buffer_ok(args->buffer, length)) {
-		return -ZOS_EINVAL;
+	if (length == 0u || length >= KOS_PATH_MAX ||
+	    !kos_syscall_buffer_ok(args->buffer, length)) {
+		return -KOS_EINVAL;
 	}
 	while (done < length) {
 		uint16_t chunk = (uint16_t)(length - done);
 		uint16_t i;
 
-		if (chunk > ZOS_SYSCALL_STAGE_SIZE) {
-			chunk = ZOS_SYSCALL_STAGE_SIZE;
+		if (chunk > KOS_SYSCALL_STAGE_SIZE) {
+			chunk = KOS_SYSCALL_STAGE_SIZE;
 		}
-		if (zos_syscall_bank_read((uint16_t)(args->buffer + done),
+		if (kos_syscall_bank_read((uint16_t)(args->buffer + done),
 					  chunk) != 0u) {
-			return -ZOS_EFAULT;
+			return -KOS_EFAULT;
 		}
 		for (i = 0u; i < chunk; ++i) {
-			VFS_WS_IN_A[done + i] = (char)zos_user_copy_staging[i];
+			VFS_WS_IN_A[done + i] = (char)kos_user_copy_staging[i];
 		}
 		done = (uint16_t)(done + chunk);
 	}
@@ -155,7 +155,7 @@ int vfs_fs_read_path(const struct zos_ipc_call_args *args)
  * outermost call level (the syscall body calls this before the IPC layer),
  * so the driver it forwards to runs on the driver stack. */
 int16_t vfs_ns_fs_call(uint8_t handle, uint8_t object,
-		       struct zos_ipc_call_args *args)
+		       struct kos_ipc_call_args *args)
 {
 	struct vfs_handle_entry *entry =
 		vfs_handle_find(vfs_owner_current(), handle);
@@ -163,27 +163,27 @@ int16_t vfs_ns_fs_call(uint8_t handle, uint8_t object,
 
 	if (entry == (struct vfs_handle_entry *)0 ||
 	    entry->endpoint != VFS_NS_FS_ENDPOINT) {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
-	if (args->op <= ZFILE_OP_SYNC) {
+	if (args->op <= KFILE_OP_SYNC) {
 		/* FILE protocol: the driver acts on the bound instance. */
-		if (entry->type != ZOS_TYPE_FILE || vfs_ns_fs_endpoint == 0u) {
-			return -ZOS_EINVAL;
+		if (entry->type != KOS_TYPE_FILE || vfs_ns_fs_endpoint == 0u) {
+			return -KOS_EINVAL;
 		}
 		args->frame.payload[0] = object;
 		return ipc_syscall_call_object(args, vfs_ns_fs_endpoint,
 					       object);
 	}
-	if (args->op < ZFS_OP_MKDIR || args->op > ZFS_OP_STAT ||
-	    entry->type != ZOS_TYPE_FS) {
-		return -ZOS_EINVAL;
+	if (args->op < KFS_OP_MKDIR || args->op > KFS_OP_STAT ||
+	    entry->type != KOS_TYPE_FS) {
+		return -KOS_EINVAL;
 	}
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
 	result = vfs_fs_read_path(args);
 	if (result == 0) {
 		uint8_t has_b = 0u;
 
-		if (args->op == ZFS_OP_RENAME) {
+		if (args->op == KFS_OP_RENAME) {
 			/* Split "from\0to" into the two copy-in slots. */
 			uint16_t i = 0u;
 
@@ -191,7 +191,7 @@ int16_t vfs_ns_fs_call(uint8_t handle, uint8_t object,
 				++i;
 			}
 			if (i >= args->length || i + 1u >= args->length) {
-				result = -ZOS_EINVAL;
+				result = -KOS_EINVAL;
 			} else {
 				uint16_t k = (uint16_t)(i + 1u);
 				uint16_t n = 0u;
@@ -208,12 +208,12 @@ int16_t vfs_ns_fs_call(uint8_t handle, uint8_t object,
 		if (result == 0) {
 			result = vfs_path_normalize_at(
 				vfs_cwd_for(process_current_pid()),
-				VFS_WS_IN_A, VFS_WS_NORM_A, ZOS_PATH_MAX);
+				VFS_WS_IN_A, VFS_WS_NORM_A, KOS_PATH_MAX);
 		}
 		if (result == 0 && has_b != 0u) {
 			result = vfs_path_normalize_at(
 				vfs_cwd_for(process_current_pid()),
-				VFS_WS_IN_B, VFS_WS_NORM_B, ZOS_PATH_MAX);
+				VFS_WS_IN_B, VFS_WS_NORM_B, KOS_PATH_MAX);
 		}
 		if (result == 0) {
 			/* The frame must cross to the bank-6 driver in fixed
@@ -222,7 +222,7 @@ int16_t vfs_ns_fs_call(uint8_t handle, uint8_t object,
 			 * a staged copy (the same convention
 			 * ipc_syscall_call_object() applies to FILE ops) and
 			 * both halves of the reply travel back. */
-			struct zos_ipc_frame frame = args->frame;
+			struct kos_ipc_frame frame = args->frame;
 
 			result = vfs_fs_namespace_op(
 				args->op, VFS_WS_NORM_A,
@@ -239,7 +239,7 @@ int16_t vfs_ns_fs_call(uint8_t handle, uint8_t object,
 
 void vfs_ns_fs_release(uint8_t type, uint8_t object)
 {
-	if (type == ZOS_TYPE_FILE && object != 0u &&
+	if (type == KOS_TYPE_FILE && object != 0u &&
 	    vfs_ns_fs_endpoint != 0u) {
 		ns_fs_close(object);
 	}
@@ -250,12 +250,12 @@ void vfs_ns_fs_release(uint8_t type, uint8_t object)
 int vfs_enum_fs(const char *rel, uint16_t *cookie, uint16_t out,
 		      uint16_t out_size, uint16_t *count)
 {
-	struct zos_ipc_frame frame;
+	struct kos_ipc_frame frame;
 	int16_t result;
 
-	frame.op = ZFS_OP_ENUM;
+	frame.op = KFS_OP_ENUM;
 	frame.flags = 0u;
-	frame.desc = ZOS_IPC_DESC_NONE;
+	frame.desc = KOS_IPC_DESC_NONE;
 	frame.arg0 = 0u;
 	frame.arg1 = 0u;
 	vfs_fs_put_path(frame.payload,
@@ -265,7 +265,7 @@ int vfs_enum_fs(const char *rel, uint16_t *cookie, uint16_t out,
 	frame.payload[4] = (uint8_t)out_size;
 	frame.payload[5] = (uint8_t)(out_size >> 8);
 	result = ipc_nucleus_call_gate(vfs_ns_fs_endpoint, &frame, out,
-				       out_size, ZOS_IPC_DESC_OUT);
+				       out_size, KOS_IPC_DESC_OUT);
 	if (result < 0) {
 		return (int)result;
 	}

@@ -1,17 +1,17 @@
-/* ZephyrOS VFS part: the handle table. */
-/* ZephyrOS M10 process filesystem state (packages 27, 42a, 42b).
+/* KonaOS VFS part: the handle table. */
+/* KonaOS M10 process filesystem state (packages 27, 42a, 42b).
  *
  * Owns the single global handle table and the per-process CWD pool that
  * expose the namespace to native programs (architecture 36.13).  Both are
  * `_DATA` state; the provider handles they hold never leave the kernel,
  * and the handle a process names is its own per-process number.
  *
- * The table is global, not per-process: ZephyrOS is single-tasking, so a
+ * The table is global, not per-process: KonaOS is single-tasking, so a
  * suspended parent's handles stay allocated while its child runs.  A full
- * table is ZOS_EMFILE; every handle-taking operation verifies range, owner
- * and the bound mark and reports ZOS_EINVAL on any mismatch.
+ * table is KOS_EMFILE; every handle-taking operation verifies range, owner
+ * and the bound mark and reports KOS_EINVAL on any mismatch.
  *
- * CWD slots are a static pool of ZOS_EXEC_MAX_DEPTH canonical paths,
+ * CWD slots are a static pool of KOS_EXEC_MAX_DEPTH canonical paths,
  * allocated at process start and released at exit.  The kernel launcher
  * has no slot and its CWD is the constant `/`.
  *
@@ -25,15 +25,15 @@
 struct vfs_handle_entry vfs_handles[VFS_HANDLE_MAX];
 
 /* CWD pool: owner pid (or VFS_FD_NONE when free) plus the canonical path. */
-static uint8_t vfs_cwd_owner[ZOS_EXEC_MAX_DEPTH];
-static char vfs_cwd_path[ZOS_EXEC_MAX_DEPTH][ZOS_PATH_MAX];
+static uint8_t vfs_cwd_owner[KOS_EXEC_MAX_DEPTH];
+static char vfs_cwd_path[KOS_EXEC_MAX_DEPTH][KOS_PATH_MAX];
 
 /* NUL-terminate and never overflow. */
 static void vfs_path_copy(char *dst, const char *src)
 {
 	uint16_t i = 0;
 
-	while (src[i] != '\0' && i + 1u < ZOS_PATH_MAX) {
+	while (src[i] != '\0' && i + 1u < KOS_PATH_MAX) {
 		dst[i] = src[i];
 		++i;
 	}
@@ -57,7 +57,7 @@ void vfs_fs_state_init(void)
 		vfs_handles[i].u.ns.offset = 0;
 		vfs_handles[i].u.ns.flags = 0;
 	}
-	for (i = 0; i < ZOS_EXEC_MAX_DEPTH; ++i) {
+	for (i = 0; i < KOS_EXEC_MAX_DEPTH; ++i) {
 		vfs_cwd_owner[i] = VFS_FD_NONE;
 		vfs_cwd_path[i][0] = '\0';
 	}
@@ -169,7 +169,7 @@ const char *vfs_cwd_for(uint8_t pid)
 	uint8_t i;
 
 	if (pid != PROCESS_NO_PROCESS) {
-		for (i = 0; i < ZOS_EXEC_MAX_DEPTH; ++i) {
+		for (i = 0; i < KOS_EXEC_MAX_DEPTH; ++i) {
 			if (vfs_cwd_owner[i] == pid) {
 				return vfs_cwd_path[i];
 			}
@@ -182,13 +182,13 @@ static int vfs_cwd_alloc(uint8_t pid)
 {
 	uint8_t i;
 
-	for (i = 0; i < ZOS_EXEC_MAX_DEPTH; ++i) {
+	for (i = 0; i < KOS_EXEC_MAX_DEPTH; ++i) {
 		if (vfs_cwd_owner[i] == VFS_FD_NONE) {
 			vfs_cwd_owner[i] = pid;
 			return (int)i;
 		}
 	}
-	return -ZOS_ENOSPC;
+	return -KOS_ENOSPC;
 }
 
 int vfs_process_start(uint8_t pid, uint8_t parent_pid)
@@ -196,13 +196,13 @@ int vfs_process_start(uint8_t pid, uint8_t parent_pid)
 	int slot;
 
 	if (pid >= PROCESS_TABLE_SIZE) {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	/* A slot already owned by the pid is a repeat start: keep it. */
 	{
 		uint8_t i;
 
-		for (i = 0; i < ZOS_EXEC_MAX_DEPTH; ++i) {
+		for (i = 0; i < KOS_EXEC_MAX_DEPTH; ++i) {
 			if (vfs_cwd_owner[i] == pid) {
 				return 0;
 			}
@@ -234,7 +234,7 @@ void vfs_process_exit(uint8_t pid)
 			vfs_ns_release_entry(&vfs_handles[fd]);
 		}
 	}
-	for (i = 0; i < ZOS_EXEC_MAX_DEPTH; ++i) {
+	for (i = 0; i < KOS_EXEC_MAX_DEPTH; ++i) {
 		if (vfs_cwd_owner[i] == pid) {
 			vfs_cwd_owner[i] = VFS_FD_NONE;
 			vfs_cwd_path[i][0] = '\0';
@@ -246,13 +246,13 @@ int vfs_cwd_store(const char *norm)
 {
 	uint8_t i;
 
-	for (i = 0; i < ZOS_EXEC_MAX_DEPTH; ++i) {
+	for (i = 0; i < KOS_EXEC_MAX_DEPTH; ++i) {
 		if (vfs_cwd_owner[i] == process_running_pid) {
 			vfs_path_copy(vfs_cwd_path[i], norm);
 			return 0;
 		}
 	}
-	return -ZOS_EINVAL; /* no CWD slot: chdir from an unowned context */
+	return -KOS_EINVAL; /* no CWD slot: chdir from an unowned context */
 }
 
 void vfs_ns_release_entry(struct vfs_handle_entry *entry)
@@ -276,14 +276,14 @@ void vfs_ns_standard_handles(uint8_t pid)
 	if (pub == (const struct vfs_ns_publication *)0) {
 		return; /* no console driver in this build */
 	}
-	for (number = ZOS_HANDLE_STDOUT; number <= ZOS_HANDLE_STDIN;
+	for (number = KOS_HANDLE_STDOUT; number <= KOS_HANDLE_STDIN;
 	     ++number) {
 		struct vfs_handle_entry *entry = vfs_handle_alloc(pid, number);
 
 		if (entry == (struct vfs_handle_entry *)0) {
 			return;
 		}
-		entry->type = ZOS_TYPE_CONSOLE;
+		entry->type = KOS_TYPE_CONSOLE;
 		entry->endpoint = pub->number;
 		entry->object = pub->object;
 		entry->flags = 0u;

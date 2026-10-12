@@ -6,10 +6,10 @@ its replay depend on, without booting anything:
   - the build wiring (target, image names, the driver set and its
     manifest directory, the boot program);
   - the pinned ABI: the four syscall numbers, the argument blocks and the
-    namespace entry in abi/zos/object.h, the 8-bit protocol types, the two
+    namespace entry in abi/kos/object.h, the 8-bit protocol types, the two
     standard handle numbers;
   - production switch-over (package 42b): the guard macro and
-    `ZOS_SYSCALL_IPC_LOOKUP` are gone, and the family is production code;
+    `KOS_SYSCALL_IPC_LOOKUP` are gone, and the family is production code;
   - the container ABI 4 publication table: the section's reserved-byte
     rule, the 20-byte record, the packer's parse/plan/emit and the three
     packed containers of the image (ABI byte, names, protocol types and
@@ -39,20 +39,20 @@ import mapcheck  # noqa: E402
 import romfspack  # noqa: E402
 
 MAKEFILE = os.path.join(ROOT, "Makefile")
-OBJECT_ABI = os.path.join(ROOT, "abi", "zos", "object.h")
-IPC_ABI = os.path.join(ROOT, "abi", "zos", "ipc.h")
-ABI_SYSCALL = os.path.join(ROOT, "abi", "zos", "syscall.h")
-SDK_IPC = os.path.join(ROOT, "user", "sdk", "include", "zos", "ipc.h")
+OBJECT_ABI = os.path.join(ROOT, "abi", "kos", "object.h")
+IPC_ABI = os.path.join(ROOT, "abi", "kos", "ipc.h")
+ABI_SYSCALL = os.path.join(ROOT, "abi", "kos", "syscall.h")
+SDK_IPC = os.path.join(ROOT, "user", "sdk", "include", "kos", "ipc.h")
 SDK_IPC_SOURCE = os.path.join(ROOT, "user", "sdk", "src", "ipc.c")
 NUCLEUS_IPC_C = os.path.join(ROOT, "kernel", "ipc", "ipc.c")
-DRIVER_HEADER = os.path.join(ROOT, "formats", "include", "zmod.h")
-PACKER = os.path.join(ROOT, "tools", "zmodpack.py")
+DRIVER_HEADER = os.path.join(ROOT, "formats", "include", "mod.h")
+PACKER = os.path.join(ROOT, "tools", "modpack.py")
 RESIDENCY = os.path.join(ROOT, "config", "residency.json")
 LINKER = os.path.join(ROOT, "linker", "zephyr80.lk")
-SDK_HEADER = os.path.join(ROOT, "user", "sdk", "include", "zos", "ipc.h")
+SDK_HEADER = os.path.join(ROOT, "user", "sdk", "include", "kos", "ipc.h")
 SDK_SOURCE = os.path.join(ROOT, "user", "sdk", "src", "ipc.c")
 SDK_GATE = os.path.join(ROOT, "user", "sdk", "src", "nsgate.asm")
-ZEX_MK = os.path.join(ROOT, "user", "sdk", "zex.mk")
+EXE_MK = os.path.join(ROOT, "user", "sdk", "exe.mk")
 CLIENT = os.path.join(ROOT, "tests", "ns", "ns.c")
 CHILD = os.path.join(ROOT, "tests", "ns", "nschild.c")
 MANIFEST = os.path.join(ROOT, "tests", "ns", "manifest.json")
@@ -63,16 +63,16 @@ IMAGE_SUBDIR = os.path.join(ROOT, "build-ns-selftest")
 PROD_SUBDIR = os.path.join(ROOT, "build")
 MODULE_DIR = os.path.join(IMAGE_SUBDIR, "modules")
 
-# The syscall numbers and the protocol types abi/zos/object.h pins.
-SYSCALLS = {"ZOS_SYSCALL_BIND": "0x06u", "ZOS_SYSCALL_CALL": "0x07u",
-            "ZOS_SYSCALL_UNBIND": "0x08u", "ZOS_SYSCALL_NS_ENUM": "0x09u"}
-TYPES = {"ZOS_TYPE_SERIAL": "1u", "ZOS_TYPE_VIDEO": "2u",
-         "ZOS_TYPE_BLOCK": "3u", "ZOS_TYPE_INPUT": "4u",
-         "ZOS_TYPE_IOC": "5u", "ZOS_TYPE_CONSOLE": "6u",
-         "ZOS_TYPE_FILE": "7u", "ZOS_TYPE_FS": "8u",
-         "ZOS_TYPE_SOUND": "9u", "ZOS_TYPE_TIMER": "10u"}
-HANDLES = {"ZOS_HANDLE_STDOUT": "1u", "ZOS_HANDLE_STDIN": "2u",
-           "ZOS_HANDLE_FIRST_BOUND": "3u"}
+# The syscall numbers and the protocol types abi/kos/object.h pins.
+SYSCALLS = {"KOS_SYSCALL_BIND": "0x06u", "KOS_SYSCALL_CALL": "0x07u",
+            "KOS_SYSCALL_UNBIND": "0x08u", "KOS_SYSCALL_NS_ENUM": "0x09u"}
+TYPES = {"KOS_TYPE_SERIAL": "1u", "KOS_TYPE_VIDEO": "2u",
+         "KOS_TYPE_BLOCK": "3u", "KOS_TYPE_INPUT": "4u",
+         "KOS_TYPE_IOC": "5u", "KOS_TYPE_CONSOLE": "6u",
+         "KOS_TYPE_FILE": "7u", "KOS_TYPE_FS": "8u",
+         "KOS_TYPE_SOUND": "9u", "KOS_TYPE_TIMER": "10u"}
+HANDLES = {"KOS_HANDLE_STDOUT": "1u", "KOS_HANDLE_STDIN": "2u",
+           "KOS_HANDLE_FIRST_BOUND": "3u"}
 
 # The publication table the three packed containers must carry: name below
 # the DEVICE root, protocol type, serving endpoint (the host assigns them
@@ -86,8 +86,8 @@ DRIVER_ORDER = ["sio", "console-serial", "nsdev"]
 
 # The store the image boots from, in manifest order; `drivers.man` is the
 # loader's own boot manifest, one 24-byte record per loaded image.
-STORE = ["sio.zmod", "console-serial.zmod", "nsdev.zmod", "drivers.man",
-         "ns.zex", "nschild.zex"]
+STORE = ["sio.mod", "console-serial.mod", "nsdev.mod", "drivers.man",
+         "ns.exe", "nschild.exe"]
 MAN_RECORD = 24
 # The namespace leaves the M9 mount pass without a `/` mount to check.
 SPLIT = 0x6000
@@ -112,18 +112,18 @@ def symbols(map_path):
 class TestNsBuildWiring(unittest.TestCase):
     def test_makefile_has_the_acceptance_image(self):
         text = read(MAKEFILE)
-        for token in ("ifeq ($(ZOS_NS_SELFTEST),1)",
+        for token in ("ifeq ($(KOS_NS_SELFTEST),1)",
                       "PK_SUFFIX := -ns-selftest",
                       "test_ns_selftest*.py"):
             self.assertIn(token, text, token)
         self.assertIn("ns-selftest:", text)
-        self.assertIn("build-ns-selftest/zephyros-ns-selftest.bin", text)
+        self.assertIn("build-ns-selftest/konaos-ns-selftest.bin", text)
 
     def test_makefile_selects_the_image_configuration(self):
         text = read(MAKEFILE)
-        for token in ("ZOS_DRIVERS := sio console-serial nsdev",
+        for token in ("KOS_DRIVERS := sio console-serial nsdev",
                       "DRV_MANIFEST_DIR := tests/ns/manifests",
-                      "ZOS_BOOT_PROGRAM := /system/ns.zex",
+                      "KOS_BOOT_PROGRAM := /system/ns.exe",
                       "$(BUILD)/vfs_router.rel $(BUILD)/vfs_dev.rel",
                       "$(BUILD)/vfs_fs.rel $(BUILD)/vfs_system.rel",
                       "$(BUILD)/object.rel"):
@@ -137,8 +137,8 @@ class TestNsBuildWiring(unittest.TestCase):
         for path in (CLIENT, CHILD, NSDEV, MANIFEST):
             self.assertTrue(os.path.exists(path), path)
         text = read(MAKEFILE)
-        self.assertIn("$(call zex_program,ns,", text)
-        self.assertIn("$(call zex_program,nschild,", text)
+        self.assertIn("$(call exe_program,ns,", text)
+        self.assertIn("$(call exe_program,nschild,", text)
         self.assertIn("nsdev", text)
 
 
@@ -151,9 +151,9 @@ class TestNsAbi(unittest.TestCase):
             self.assertRegex(text, r"#define %s\s+%s" % (name, value))
         for name, value in HANDLES.items():
             self.assertRegex(text, r"#define %s\s+%s" % (name, value))
-        self.assertRegex(text, r"#define ZOS_NS_NAME_MAX\s+24u")
-        self.assertRegex(text, r"#define ZOS_NS_ENTRY_SIZE\s+28u")
-        self.assertRegex(text, r"#define ZOS_NS_ENTRY_CONTAINER\s+0x01u")
+        self.assertRegex(text, r"#define KOS_NS_NAME_MAX\s+24u")
+        self.assertRegex(text, r"#define KOS_NS_ENTRY_SIZE\s+28u")
+        self.assertRegex(text, r"#define KOS_NS_ENTRY_CONTAINER\s+0x01u")
 
     def test_argument_blocks_keep_their_sizes(self):
         text = read(OBJECT_ABI)
@@ -163,13 +163,13 @@ class TestNsAbi(unittest.TestCase):
         self.assertIn("unbind argument block must be 1 packed byte", text)
         self.assertIn("ns_enum argument block must be 12 packed bytes", text)
         self.assertIn("namespace entry must be 28 packed bytes", text)
-        self.assertIn('__builtin_offsetof(struct zos_ns_entry, name) == 4',
+        self.assertIn('__builtin_offsetof(struct kos_ns_entry, name) == 4',
                       text)
-        self.assertIn('__builtin_offsetof(struct zos_bind_args, type) == 6',
+        self.assertIn('__builtin_offsetof(struct kos_bind_args, type) == 6',
                       text)
-        self.assertIn('__builtin_offsetof(struct zos_ns_enum_args, cookie) '
+        self.assertIn('__builtin_offsetof(struct kos_ns_enum_args, cookie) '
                       '== 4', text)
-        self.assertIn('__builtin_offsetof(struct zos_ns_enum_args, count) '
+        self.assertIn('__builtin_offsetof(struct kos_ns_enum_args, count) '
                       '== 10', text)
 
     def test_production_switch_over_retires_the_guard_and_lookup(self):
@@ -178,13 +178,13 @@ class TestNsAbi(unittest.TestCase):
         for path in (OBJECT_ABI, ABI_SYSCALL, SDK_IPC, SDK_IPC_SOURCE,
                      NUCLEUS_IPC_C):
             text = read(path)
-            self.assertNotIn("ZOS_NS_HANDLES", text, path)
-            self.assertNotIn("ZOS_SYSCALL_IPC_LOOKUP", text, path)
+            self.assertNotIn("KOS_NS_HANDLES", text, path)
+            self.assertNotIn("KOS_SYSCALL_IPC_LOOKUP", text, path)
             self.assertNotIn("ipc_lookup", text, path)
         text = read(OBJECT_ABI)
-        self.assertRegex(text, r"#define ZOS_SYSCALL_BIND\s+0x06u")
-        self.assertRegex(text, r"#define ZOS_SYSCALL_CHDIR\s+0x0Au")
-        self.assertRegex(text, r"#define ZOS_SYSCALL_GETCWD\s+0x0Bu")
+        self.assertRegex(text, r"#define KOS_SYSCALL_BIND\s+0x06u")
+        self.assertRegex(text, r"#define KOS_SYSCALL_CHDIR\s+0x0Au")
+        self.assertRegex(text, r"#define KOS_SYSCALL_GETCWD\s+0x0Bu")
 
 
 class TestNsContainers(unittest.TestCase):
@@ -192,16 +192,16 @@ class TestNsContainers(unittest.TestCase):
         text = read(DRIVER_HEADER)
         # Work package 42c: one flat plan per driver image, no ABI
         # version field and no separate driver section.
-        self.assertRegex(text, r"#define ZMOD_HEADER_SIZE\s+16u")
-        self.assertRegex(text, r"#define ZMOD_SEGMENT_SIZE\s+12u")
-        self.assertRegex(text, r"#define ZMOD_ENDPOINT_SIZE\s+8u")
-        self.assertRegex(text, r"#define ZMOD_DEPENDENCY_SIZE\s+4u")
+        self.assertRegex(text, r"#define MOD_HEADER_SIZE\s+16u")
+        self.assertRegex(text, r"#define MOD_SEGMENT_SIZE\s+12u")
+        self.assertRegex(text, r"#define MOD_ENDPOINT_SIZE\s+8u")
+        self.assertRegex(text, r"#define MOD_DEPENDENCY_SIZE\s+4u")
         self.assertRegex(text,
-                         r"#define ZMOD_PUBLICATION_SIZE\s+20u")
+                         r"#define MOD_PUBLICATION_SIZE\s+20u")
         self.assertRegex(text,
-                         r"#define ZMOD_MAX_PUBLICATIONS\s+12u")
+                         r"#define MOD_MAX_PUBLICATIONS\s+12u")
         self.assertIn("payload_offset", text)
-        self.assertNotIn("ZMOD_DRIVER_ABI_VERSION", text)
+        self.assertNotIn("MOD_DRIVER_ABI_VERSION", text)
 
     def test_packer_emits_and_validates_the_table(self):
         text = read(PACKER)
@@ -239,13 +239,13 @@ class TestNsContainers(unittest.TestCase):
         tables in canonical order and every publication row with its
         host-resolved endpoint number."""
         for name in DRIVER_ORDER:
-            path = os.path.join(MODULE_DIR, "%s.zmod" % name)
+            path = os.path.join(MODULE_DIR, "%s.mod" % name)
             if not os.path.exists(path):
                 self.skipTest("build-ns-selftest missing; run make "
                               "ns-selftest")
             with open(path, "rb") as handle:
                 raw = handle.read()
-            self.assertEqual(raw[0:4], b"ZMOD", name)
+            self.assertEqual(raw[0:4], b"KMOD", name)
             segments, endpoints, dependencies, count = struct.unpack_from(
                 "<BBBB", raw, 4)
             _init, offset, total = struct.unpack_from("<HHH", raw, 8)
@@ -318,14 +318,14 @@ class TestNsResidency(unittest.TestCase):
             self.assertIn(name, text, name)
 
     def test_production_image_carries_no_namespace_symbol(self):
-        map_path = os.path.join(PROD_SUBDIR, "zephyros.map")
+        map_path = os.path.join(PROD_SUBDIR, "konaos.map")
         if not os.path.exists(map_path):
-            self.skipTest("build/zephyros.map missing; run make all")
+            self.skipTest("build/konaos.map missing; run make all")
         found = symbols(map_path)
         # Package 42b switched production over: the namespace family is
         # linked in the cold half and the stage-3 lookup is gone.
         for name in ("_vfs_ns_bind", "_vfs_ns_file_bind",
-                     "_zos_object_dispatch", "_vfs_ns_enum"):
+                     "_kos_object_dispatch", "_vfs_ns_enum"):
             self.assertIn(name, found, name)
             self.assertGreaterEqual(found[name], SPLIT, name)
             self.assertLess(found[name], 0xE000, name)
@@ -355,7 +355,7 @@ class TestExecStagesItsPathInFixedCore(unittest.TestCase):
         self.assertLess(call.index("process_prepare("),
                         call.index("vfs_ws_leave(VFS_WS_VIEW_PATH)"))
         # Nothing stages a second path buffer beside the workspace.
-        self.assertNotIn("zos_process_path_scratch", source)
+        self.assertNotIn("kos_process_path_scratch", source)
 
     def test_the_bind_holds_the_path_view_and_nothing_else_does(self):
         source = read(os.path.join(ROOT, "kernel", "process", "exec.c"))
@@ -370,7 +370,7 @@ class TestExecStagesItsPathInFixedCore(unittest.TestCase):
         for rel in ("kernel/process/process.c",
                     "kernel/include/process.h",
                     "kernel/process/launch.asm"):
-            self.assertNotIn("zos_process_path_scratch",
+            self.assertNotIn("kos_process_path_scratch",
                              read(os.path.join(ROOT, rel)), rel)
 
     def test_mapcheck_rejects_the_workspace_in_the_cold_half(self):
@@ -395,16 +395,16 @@ class TestNsClient(unittest.TestCase):
         # A root-level name has no provider owner: the router refuses it
         # instead of falling back to a provider.
         self.assertIn('check("file-root-refused"', text)
-        self.assertIn('== -ZOS_ENOENT', text)
-        self.assertIn("ZFILE_OP_READ", text)
-        self.assertIn("ZFILE_OP_SEEK", text)
-        self.assertIn("ZFILE_OP_META", text)
+        self.assertIn('== -KOS_ENOENT', text)
+        self.assertIn("KFILE_OP_READ", text)
+        self.assertIn("KFILE_OP_SEEK", text)
+        self.assertIn("KFILE_OP_META", text)
         # CWD traversal through provider validation (architecture 37
         # namespace/process-lifetime rows), including the root itself.
         for token in ('chdir("/system")', 'chdir("..")',
                       'chdir("/dev/input")',
-                      'chdir("/dev/console") == -ZOS_ENOTDIR',
-                      'chdir("/fs") == -ZOS_ENODEV',
+                      'chdir("/dev/console") == -KOS_ENOTDIR',
+                      'chdir("/fs") == -KOS_ENODEV',
                       'getcwd(', 'check("cwd-after-child"'):
             self.assertIn(token, text, token)
         # A refused chdir leaves the stored CWD untouched.
@@ -412,7 +412,7 @@ class TestNsClient(unittest.TestCase):
 
     def test_child_program_uses_the_standard_handles(self):
         text = read(CHILD)
-        self.assertIn("ZOS_HANDLE_STDOUT", text)
+        self.assertIn("KOS_HANDLE_STDOUT", text)
         self.assertIn("bind(\"/dev/console\"", text)
         self.assertIn("nschild: OK", text)
         # The child checks the CWD inheritance rule from its own side.
@@ -429,31 +429,31 @@ class TestNsClient(unittest.TestCase):
             self.assertIn(token, header, token)
         source = read(SDK_SOURCE)
         # Package 42b: no guard - the wrappers are the only form.
-        self.assertNotIn("ZOS_NS_HANDLES", source)
-        for token in ("ZOS_SYSCALL_BIND", "ZOS_SYSCALL_UNBIND",
-                      "ZOS_SYSCALL_NS_ENUM", "ZOS_SYSCALL_CHDIR",
-                      "ZOS_SYSCALL_GETCWD", "zos_bind_block",
-                      "zos_unbind_block", "zos_ns_enum_block",
-                      "zos_chdir_block", "zos_getcwd_block"):
+        self.assertNotIn("KOS_NS_HANDLES", source)
+        for token in ("KOS_SYSCALL_BIND", "KOS_SYSCALL_UNBIND",
+                      "KOS_SYSCALL_NS_ENUM", "KOS_SYSCALL_CHDIR",
+                      "KOS_SYSCALL_GETCWD", "kos_bind_block",
+                      "kos_unbind_block", "kos_ns_enum_block",
+                      "kos_chdir_block", "kos_getcwd_block"):
             self.assertIn(token, source, token)
         gate = read(SDK_GATE)
         # The five argument blocks the marshalling writes: bind 8, unbind
         # 1, ns_enum 12, chdir 4 and getcwd 4 bytes, in the one writable
         # SDK data area.
-        self.assertIn(".area _ZOS_SDK_DATA", gate)
-        self.assertIn("_zos_bind_block::\n\t.ds\t8", gate)
-        self.assertIn("_zos_unbind_block::\n\t.ds\t1", gate)
-        self.assertIn("_zos_ns_enum_block::\n\t.ds\t12", gate)
-        self.assertIn("_zos_chdir_block::\n\t.ds\t4", gate)
-        self.assertIn("_zos_getcwd_block::\n\t.ds\t4", gate)
-        zex_mk = read(ZEX_MK)
-        self.assertIn("ZEX_DEFAULT_CODEBASE", zex_mk)
-        self.assertIn("nsgate", zex_mk)
+        self.assertIn(".area _KOS_SDK_DATA", gate)
+        self.assertIn("_kos_bind_block::\n\t.ds\t8", gate)
+        self.assertIn("_kos_unbind_block::\n\t.ds\t1", gate)
+        self.assertIn("_kos_ns_enum_block::\n\t.ds\t12", gate)
+        self.assertIn("_kos_chdir_block::\n\t.ds\t4", gate)
+        self.assertIn("_kos_getcwd_block::\n\t.ds\t4", gate)
+        exe_mk = read(EXE_MK)
+        self.assertIn("EXE_DEFAULT_CODEBASE", exe_mk)
+        self.assertIn("nsgate", exe_mk)
 
 
 class TestNsImageLayout(unittest.TestCase):
     def setUp(self):
-        self.map_path = os.path.join(IMAGE_SUBDIR, "zephyros.map")
+        self.map_path = os.path.join(IMAGE_SUBDIR, "konaos.map")
         if not os.path.exists(self.map_path):
             self.skipTest("build-ns-selftest missing; run make ns-selftest")
         self.syms = symbols(self.map_path)
@@ -461,7 +461,7 @@ class TestNsImageLayout(unittest.TestCase):
     def test_namespace_objects_link_cold(self):
         for name in ("_vfs_ns_bind", "_vfs_ns_unbind", "_vfs_ns_enum",
                      "_vfs_ns_file_bind", "_vfs_ns_file_dispatch",
-                     "_zos_object_dispatch", "_vfs_ns_init"):
+                     "_kos_object_dispatch", "_vfs_ns_init"):
             address = self.syms[name]
             self.assertGreaterEqual(address, SPLIT, name)
             self.assertLess(address, 0xE000, name)
@@ -473,9 +473,9 @@ class TestNsImageLayout(unittest.TestCase):
         """06h-09h reach the object dispatcher: the client's binds work
         only if the guarded family is the one the dispatcher calls."""
         source = read(os.path.join(ROOT, "kernel", "syscall.c"))
-        self.assertNotIn("ZOS_NS_HANDLES", source)
-        self.assertIn("zos_object_dispatch(zos_syscall_number", source)
-        self.assertIn("_zos_object_dispatch", self.syms)
+        self.assertNotIn("KOS_NS_HANDLES", source)
+        self.assertIn("kos_object_dispatch(kos_syscall_number", source)
+        self.assertIn("_kos_object_dispatch", self.syms)
         self.assertIn("_vfs_ns_bind", self.syms)
 
 

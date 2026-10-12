@@ -1,82 +1,82 @@
-/* ZephyrOS IOC transport vocabulary (driver-facing, M10).
+/* KonaOS IOC transport vocabulary (driver-facing, M10).
  *
  * The IOC driver (drivers/ioc/) implements the Z80-to-MCU two-lane
  * transport: the command/reply lane (SIO1/B) and the bulk lane (SIO1/A).
  * The protocol clients (`hid.c`, `drivers/iocfat`) reach it through the IPC
- * protocol of abi/zos/protocol.h (class ZOS_CLASS_IOC) and see only the
+ * protocol of abi/kos/protocol.h (class KOS_CLASS_IOC) and see only the
  * native frame below; the rolling sequence and the wire CRC are
  * transport-private and never appear here.
  *
  * This header owns:
  *
- *   - `struct zioc_frame`, the native command/reply frame: TYPE, STATUS,
- *     DATA length and up to ZIOC_MAX_DATA (26) DATA bytes;
- *   - the bulk-phase limits (ZIOC_BULK_MAX);
+ *   - `struct kioc_frame`, the native command/reply frame: TYPE, STATUS,
+ *     DATA length and up to KIOC_MAX_DATA (26) DATA bytes;
+ *   - the bulk-phase limits (KIOC_BULK_MAX);
  *   - the semantic status bits a client reads from the driver's status
- *     operation (ZIOC_STATUS_HID_PENDING).
+ *     operation (KIOC_STATUS_HID_PENDING).
  *
  * The operation sequence, the bulk phases and the MCU packet vocabulary
  * live in drivers/include/ioc_protocol.h; the class contract text is
  * retired with the M8 device model (work package 42c).
  */
 
-#ifndef ZEPHYROS_IOC_H
-#define ZEPHYROS_IOC_H
+#ifndef KONAOS_IOC_H
+#define KONAOS_IOC_H
 
-#include "zos/types.h"
-#include "zos/errno.h"
+#include "kos/types.h"
+#include "kos/errno.h"
 
 /* Transport-class errors of the native IOC class (T3 moved them here from
  * the deleted private errno header): a peer frame that violates the
  * wire framing rules, a checksum mismatch, and a stale or mismatched
  * exchange sequence.  They are internal and are never returned in A by
  * the native syscall dispatcher. */
-#define ZOS_EPROTO    0x0D /* peer framing/length/type violation */
-#define ZOS_ECRC      0x0E /* checksum verification failed */
-#define ZOS_EBADSEQ   0x0F /* wrong or stale exchange sequence */
+#define KOS_EPROTO    0x0D /* peer framing/length/type violation */
+#define KOS_ECRC      0x0E /* checksum verification failed */
+#define KOS_EBADSEQ   0x0F /* wrong or stale exchange sequence */
 
-/* Maximum command DATA bytes carried by one zioc_frame / wire packet. */
-#define ZIOC_MAX_DATA 26u
+/* Maximum command DATA bytes carried by one kioc_frame / wire packet. */
+#define KIOC_MAX_DATA 26u
 
 /* Longest bulk DATA payload carried by one bulk_read()/bulk_write(). */
-#define ZIOC_BULK_MAX 512u
+#define KIOC_BULK_MAX 512u
 
 /* Packed frame size: TYPE + STATUS + LENGTH + DATA. */
-#define ZIOC_FRAME_SIZE (3u + ZIOC_MAX_DATA)
+#define KIOC_FRAME_SIZE (3u + KIOC_MAX_DATA)
 
 /* Semantic status bits returned by the driver's status operation. */
-#define ZIOC_STATUS_HID_PENDING 0x0001u
+#define KIOC_STATUS_HID_PENDING 0x0001u
 
 /* Transport results (see kernel/ipc/ipc.h for the call conventions). */
-#define ZIOC_OK        0
-#define ZIOC_EINVAL    (-ZOS_EINVAL)
-#define ZIOC_EBUSY     (-ZOS_EBUSY)
-#define ZIOC_ETIMEDOUT (-ZOS_ETIMEDOUT)
-#define ZIOC_EBADFRAME (-ZOS_EPROTO)
-#define ZIOC_EBADCRC   (-ZOS_ECRC)
-#define ZIOC_EBADSEQ   (-ZOS_EBADSEQ)
-#define ZIOC_EIO       (-ZOS_EIO)
+#define KIOC_OK        0
+#define KIOC_EINVAL    (-KOS_EINVAL)
+#define KIOC_EBUSY     (-KOS_EBUSY)
+#define KIOC_ETIMEDOUT (-KOS_ETIMEDOUT)
+#define KIOC_EBADFRAME (-KOS_EPROTO)
+#define KIOC_EBADCRC   (-KOS_ECRC)
+#define KIOC_EBADSEQ   (-KOS_EBADSEQ)
+#define KIOC_EIO       (-KOS_EIO)
 
 /* Native command/reply frame.  `length` is the number of valid DATA
  * bytes in a request, and the number of reply DATA bytes on success. */
-struct zioc_frame {
+struct kioc_frame {
 	uint8_t type;
 	uint8_t status;
 	uint8_t length;
-	uint8_t data[ZIOC_MAX_DATA];
+	uint8_t data[KIOC_MAX_DATA];
 };
 
 #if defined(__SDCC)
 /* Pin the packed native frame layout so a compiler/flag drift cannot
  * silently break the wire contract. */
-_Static_assert(sizeof(struct zioc_frame) == ZIOC_FRAME_SIZE,
-	       "zioc_frame must be 29 packed bytes");
-_Static_assert(__builtin_offsetof(struct zioc_frame, status) == 1,
-	       "zioc_frame status offset");
-_Static_assert(__builtin_offsetof(struct zioc_frame, length) == 2,
-	       "zioc_frame length offset");
-_Static_assert(__builtin_offsetof(struct zioc_frame, data) == 3,
-	       "zioc_frame data offset");
+_Static_assert(sizeof(struct kioc_frame) == KIOC_FRAME_SIZE,
+	       "kioc_frame must be 29 packed bytes");
+_Static_assert(__builtin_offsetof(struct kioc_frame, status) == 1,
+	       "kioc_frame status offset");
+_Static_assert(__builtin_offsetof(struct kioc_frame, length) == 2,
+	       "kioc_frame length offset");
+_Static_assert(__builtin_offsetof(struct kioc_frame, data) == 3,
+	       "kioc_frame data offset");
 #endif /* __SDCC */
 
-#endif /* ZEPHYROS_IOC_H */
+#endif /* KONAOS_IOC_H */

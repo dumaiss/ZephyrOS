@@ -31,7 +31,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 from replay import RET, Replay, STACK  # noqa: E402
-import zmodpack  # noqa: E402
+import modpack  # noqa: E402
 
 STEP_LIMIT = 60000000
 SCRATCH_SIZE = 0x200      # host scratch is derived per image in setUp
@@ -39,9 +39,9 @@ SCRATCH_SIZE = 0x200      # host scratch is derived per image in setUp
 ROMFS_PAGE_WINDOW = 0xC000
 ROMFS_FIRST_PAGE = 2
 
-ZOS_EINVAL = 0x02
-ZOS_ENOENT = 0x05
-ZOS_EBUSY = 0x04
+KOS_EINVAL = 0x02
+KOS_ENOENT = 0x05
+KOS_EBUSY = 0x04
 
 
 def pattern_byte(i):
@@ -78,17 +78,17 @@ def call2(z, addr, hl, de, limit=STEP_LIMIT):
 
 class RomfsSimBase(Replay, unittest.TestCase):
     IMAGE_SUBDIR = "build-subsys-selftest"
-    IMAGE_NAME = "zephyros-subsys-selftest.bin"
+    IMAGE_NAME = "konaos-subsys-selftest.bin"
 
     def setUp(self):
         self.load_image()
-        self.zmod_path = os.path.join(ROOT, "build", "modules", "sio.zmod")
-        if not os.path.exists(self.zmod_path):
-            self.skipTest("build/modules/sio.zmod missing; run make first")
-        with open(self.zmod_path, "rb") as fh:
-            self.sio_zmod = fh.read()
+        self.mod_path = os.path.join(ROOT, "build", "modules", "sio.mod")
+        if not os.path.exists(self.mod_path):
+            self.skipTest("build/modules/sio.mod missing; run make first")
+        with open(self.mod_path, "rb") as fh:
+            self.sio_mod = fh.read()
         self.romfs_entries = self.romfs_entries()
-        self.sio_entry = self.romfs_entries["sio.zmod"]
+        self.sio_entry = self.romfs_entries["sio.mod"]
         self.cross_entry = self.romfs_entries["crosspage.bin"]
         self.scratch = self._derive_scratch()
 
@@ -99,8 +99,8 @@ class RomfsSimBase(Replay, unittest.TestCase):
         derived.  It sits above the cold data run and below the common
         region, inside the mode-11 window the cold code writes."""
         geometry = self.geometry()
-        end = (geometry["ZOS_WINDOW_DATA_BASE"] +
-               geometry["ZOS_WINDOW_DATA_SIZE"])
+        end = (geometry["KOS_WINDOW_DATA_BASE"] +
+               geometry["KOS_WINDOW_DATA_SIZE"])
         scratch = (end + 0x1FF) & ~0x1FF
         self.assertLessEqual(scratch + SCRATCH_SIZE, 0xE000,
                              "scratch %04X does not fit the window"
@@ -108,7 +108,7 @@ class RomfsSimBase(Replay, unittest.TestCase):
         return scratch
 
     def boot_kernel(self, z, on_step=None, stop_at=None):
-        """__zos_crt0_init + kernel_main replay with the connect delay
+        """__kos_crt0_init + kernel_main replay with the connect delay
         skipped (its exported entry symbol is recognized).
 
         `stop_at` names a byte string in the serial transcript; the
@@ -229,7 +229,7 @@ class TestSubsystemRomfsReplay(RomfsSimBase):
         self.boot_kernel(z, on_step=watcher, stop_at=b"process selftest: OK")
 
         tx = bytes(z.sio_tx)
-        self.assertIn(b"ZephyrOS 0.0\r\n", tx)
+        self.assertIn(b"KonaOS 0.0\r\n", tx)
         self.assertIn(b"console: driver OK\r\n", tx)
         self.assertIn(b"romfs selftest: OK\r\n", tx)
         self.assertNotIn(b"PANIC", tx)
@@ -253,7 +253,7 @@ class TestSubsystemRomfsReplay(RomfsSimBase):
         # pages, and the boot module's own pages must have been read
         # through the mapping transition (the module really came from
         # ROM).  The acceptance groups deliberately touch further entries
-        # (fixtures and ZEX programs), which is why the set is a superset.
+        # (fixtures and EXE programs), which is why the set is a superset.
         configured = {page << 5
                       for page in range(ROMFS_FIRST_PAGE,
                                         ROMFS_FIRST_PAGE + 6)}
@@ -271,7 +271,7 @@ class TestSubsystemRomfsReplay(RomfsSimBase):
         # Exact latch restoration: the boot path returns to mode 11 with
         # the OS configuration latch restored.  The bank field is not
         # asserted here because the acceptance groups run the loader and
-        # the ZEX children -- which select their own banks -- before the
+        # the EXE children -- which select their own banks -- before the
         # marker this replay stops at; the mode field is the invariant.
         # The ROM window is closed (mode 11, never mode 00) and the live
         # configuration bits belong to the bound console module.  The
@@ -304,7 +304,7 @@ class TestSubsystemRomfsReplay(RomfsSimBase):
         z = self.make_cpu()
         # Flip one byte inside the container payload in the ROMFS stream
         # (past the relocation table, so the loader still succeeds).
-        info = zmodpack.parse_container(self.sio_zmod, "sio.zmod")
+        info = modpack.parse_container(self.sio_mod, "sio.mod")
         at = self.sio_entry["offset"] + info["payload_offset"] + 0x30
         self.patch_rom(z, at, bytes([self.rom_byte(z, at) ^ 0x01]))
         self.boot_kernel(z, stop_at=b"romfs selftest: FAIL")
@@ -326,7 +326,7 @@ class TestCorruptStoreReplay(RomfsSimBase):
         self.run_until(z, (), halt_ok=True, panic=None)
 
         tx = bytes(z.sio_tx)
-        self.assertIn(b"ZephyrOS 0.0\r\n", tx)
+        self.assertIn(b"KonaOS 0.0\r\n", tx)
         header_hex = " ".join(
             "%02X" % byte
             for byte in self.image[2 * 0x10000:2 * 0x10000 + 8])
@@ -379,7 +379,7 @@ class TestRomAccessPrimitive(RomfsSimBase):
                                      (2, 0xC000, 1),
                                      (7, 0xBFFF, 2)):
             status = self.call_rom_access(z, page, offset, length)
-            self.assertEqual(status, ZOS_EINVAL,
+            self.assertEqual(status, KOS_EINVAL,
                              "page %d offset %04X len %04X accepted"
                              % (page, offset, length))
         self.assertEqual(z.latch, latch)
@@ -390,7 +390,7 @@ class TestRomAccessPrimitive(RomfsSimBase):
         for page, offset, length in ((1, 0, 1), (8, 0, 1), (2, 0, 0),
                                      (2, 0, 0x81), (2, 0xBF80, 0x81)):
             self.assertEqual(
-                self.call_rom_access(z, page, offset, length), ZOS_EINVAL,
+                self.call_rom_access(z, page, offset, length), KOS_EINVAL,
                 "accepted page %d offset %04X len %04X"
                 % (page, offset, length))
         # Null request pointer.
@@ -401,7 +401,7 @@ class TestRomAccessPrimitive(RomfsSimBase):
             z.step()
             if z.pc == RET:
                 break
-        self.assertEqual(z.a, ZOS_EINVAL)
+        self.assertEqual(z.a, KOS_EINVAL)
 
     def test_reentry_is_rejected_with_busy(self):
         z = self.make_cpu()
@@ -412,7 +412,7 @@ class TestRomAccessPrimitive(RomfsSimBase):
             status = self.call_rom_access(z, 2, 0, 16)
         finally:
             z.bank0[busy_at] = 0
-        self.assertEqual(status, ZOS_EBUSY)
+        self.assertEqual(status, KOS_EBUSY)
         self.assertEqual(self.staging(z), canary)
 
     def test_exact_latch_restore_for_a_foreign_bank_field(self):
@@ -449,7 +449,7 @@ class TestRomfsReaderRejections(RomfsSimBase):
 
     def boot_romfs(self):
         z = self.make_cpu()
-        run_function(z, self.syms["__zos_crt0_init"])
+        run_function(z, self.syms["__kos_crt0_init"])
         return z
 
     def assert_init_rejects(self, mutation):
@@ -459,28 +459,28 @@ class TestRomfsReaderRejections(RomfsSimBase):
                             "romfs_init accepted corrupted metadata")
         # Not published: lookups must fail with EINVAL (never ENOENT).
         out = self.scratch + 0x40
-        self.assertEqual(self.lookup(z, b"sio.zmod", out), (-ZOS_EINVAL) & 0xFFFF)
+        self.assertEqual(self.lookup(z, b"sio.mod", out), (-KOS_EINVAL) & 0xFFFF)
 
     def test_valid_image_initializes(self):
         z = self.boot_romfs()
         self.assertEqual(self.init_romfs(z), 0)
         # Known entry: name/size/flags from the packed container.
         out = self.scratch + 0x40
-        self.assertEqual(self.lookup(z, b"sio.zmod", out), 0)
+        self.assertEqual(self.lookup(z, b"sio.mod", out), 0)
         self.assertEqual(z.bank7[out + 4] | (z.bank7[out + 5] << 8)
                          | (z.bank7[out + 6] << 16)
-                         | (z.bank7[out + 7] << 24), len(self.sio_zmod))
+                         | (z.bank7[out + 7] << 24), len(self.sio_mod))
         self.assertEqual(z.bank7[out + 8] | (z.bank7[out + 9] << 8), 1)
-        self.assertEqual(self.lookup(z, b"absent.zmod", out),
-                         (-ZOS_ENOENT) & 0xFFFF)
+        self.assertEqual(self.lookup(z, b"absent.mod", out),
+                         (-KOS_ENOENT) & 0xFFFF)
         # The single lookup folds case: any spelling finds the same entry.
-        for spelling in (b"SIO.ZMOD", b"Sio.Zmod", b"sio.ZMOD"):
+        for spelling in (b"SIO.MOD", b"Sio.Mod", b"sio.MOD"):
             self.assertEqual(self.lookup(z, spelling, out), 0,
                              "%r must resolve" % spelling)
             self.assertEqual(z.bank7[out + 4] | (z.bank7[out + 5] << 8)
                              | (z.bank7[out + 6] << 16)
                              | (z.bank7[out + 7] << 24),
-                             len(self.sio_zmod))
+                             len(self.sio_mod))
 
     def test_bad_magic(self):
         self.assert_init_rejects(

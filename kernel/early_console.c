@@ -1,4 +1,4 @@
-/* ZephyrOS M0 early serial console (Z80 SIO channel B).
+/* KonaOS M0 early serial console (Z80 SIO channel B).
  *
  * This is the permanent low-level diagnostic path, not the future console
  * subsystem.  It is compiled into the _COMMON code segment so the whole
@@ -21,35 +21,35 @@
 
 #include "kernel.h"
 
-static __sfr __at ZOS_SIO0B_CTRL zos_sio_b_ctrl;
-static __sfr __at ZOS_SIO0B_DATA zos_sio_b_data;
+static __sfr __at KOS_SIO0B_CTRL kos_sio_b_ctrl;
+static __sfr __at KOS_SIO0B_DATA kos_sio_b_data;
 
 void early_console_init(void)
 {
-	zos_sio_b_ctrl = ZOS_SIO_WR0_CHANNEL_RESET;
+	kos_sio_b_ctrl = KOS_SIO_WR0_CHANNEL_RESET;
 
-	zos_sio_b_ctrl = ZOS_SIO_WR_SELECT_WR4;
-	zos_sio_b_ctrl = ZOS_SIO_WR4_X16_1STOP_NOPARITY;
+	kos_sio_b_ctrl = KOS_SIO_WR_SELECT_WR4;
+	kos_sio_b_ctrl = KOS_SIO_WR4_X16_1STOP_NOPARITY;
 
-	zos_sio_b_ctrl = ZOS_SIO_WR_SELECT_WR3;
-	zos_sio_b_ctrl = ZOS_SIO_WR3_RX8_NO_AUTO_ENABLES;
+	kos_sio_b_ctrl = KOS_SIO_WR_SELECT_WR3;
+	kos_sio_b_ctrl = KOS_SIO_WR3_RX8_NO_AUTO_ENABLES;
 
-	zos_sio_b_ctrl = ZOS_SIO_WR_SELECT_WR5;
-	zos_sio_b_ctrl = ZOS_SIO_WR5_TX8_DTR_RTS_ASSERT;
+	kos_sio_b_ctrl = KOS_SIO_WR_SELECT_WR5;
+	kos_sio_b_ctrl = KOS_SIO_WR5_TX8_DTR_RTS_ASSERT;
 
-	zos_sio_b_ctrl = ZOS_SIO_WR_SELECT_WR1;
-	zos_sio_b_ctrl = ZOS_SIO_WR1_INT_DISABLED;
+	kos_sio_b_ctrl = KOS_SIO_WR_SELECT_WR1;
+	kos_sio_b_ctrl = KOS_SIO_WR1_INT_DISABLED;
 }
 
 void early_console_putc(char ch)
 {
-	uint16_t timeout = ZOS_SIO_TX_TIMEOUT;
+	uint16_t timeout = KOS_SIO_TX_TIMEOUT;
 
 	while (timeout--) {
-		uint8_t status = zos_sio_b_ctrl;
+		uint8_t status = kos_sio_b_ctrl;
 
-		if ((status & ZOS_SIO_TX_READY) == ZOS_SIO_TX_READY) {
-			zos_sio_b_data = ch;
+		if ((status & KOS_SIO_TX_READY) == KOS_SIO_TX_READY) {
+			kos_sio_b_data = ch;
 			return;
 		}
 	}

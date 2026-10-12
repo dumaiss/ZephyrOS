@@ -1,4 +1,4 @@
-/* ZephyrOS IPC acceptance: the `echo` driver's boot segment (test
+/* KonaOS IPC acceptance: the `echo` driver's boot segment (test
  * artifact).
  *
  * Boot-tier code runs once through the mode-10 gate with Q = 6

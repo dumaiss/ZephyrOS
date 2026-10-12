@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ZephyrOS physical-hardware serial smoke capture.
+"""KonaOS physical-hardware serial smoke capture.
 
 Opens the SIO0/B serial link (115200 8N1, raw) on the given device,
 captures output with a bounded timeout, and verifies the expected output:
@@ -40,7 +40,7 @@ captures output with a bounded timeout, and verifies the expected output:
                      then the monitor prompt on the same SIO console.
     --mode hwtest    the production image's feature exerciser (work
                      package 45b): the boot banner, then the tool types
-                     `X /system/hwtest.zex` at the monitor over this lane
+                     `X /system/hwtest.exe` at the monitor over this lane
                      - production's console input is the HID build, so
                      the monitor reads commands from the lane the runner
                      mirrors its lines to - and checks the three stage
@@ -51,7 +51,7 @@ All new subsystem modes send the host sync sequence while the banner is
 pending, because the acceptance builds hold the first byte until the
 host is listening (the bench reset also resets the USB bridge).
 
-The device is given with --port or the ZOS_SERIAL_PORT environment
+The device is given with --port or the KOS_SERIAL_PORT environment
 variable (the SERIAL_PORT make variable is passed through).  A missing or
 unopenable device fails clearly; ordinary host-only `make test` never
 invokes this tool.
@@ -77,7 +77,7 @@ import sys
 import time
 
 BANNER = (
-    b"ZephyrOS 0.0\r\n"
+    b"KonaOS 0.0\r\n"
     b"platform: Zephyr-80\r\n"
     b"kernel entry: OK\r\n"
     b"serial: OK\r\n"
@@ -88,7 +88,7 @@ CONSOLE_DRIVER_OK = b"console: driver OK\r\n"
 # The subsystem image exercises every retained mechanism group on the
 # current VFS/ROMFS boot path in one pass.  The transcript constants are
 # the group markers the target code prints; the process markers are
-# emitted by tests/target/process/ (process_test.c and the zextest ZEX
+# emitted by tests/target/process/ (process_test.c and the exetest EXE
 # program it runs).
 SUBSYS_SYSCALL_OK = b"syscall selftest: OK\r\n"
 SUBSYS_IRQ_OK = b"irq selftest: OK\r\n"
@@ -96,7 +96,7 @@ SUBSYS_ROMFS_OK = b"romfs selftest: OK\r\n"
 SUBSYS_PROCESS_OK = b"process selftest: OK\r\n"
 SUBSYS_FAIL = b"selftest: FAIL"
 SUBSYS_PROMPT = b"Z80> "
-MONITOR_BANNER = b"ZephyrOS native monitor"
+MONITOR_BANNER = b"KonaOS native monitor"
 
 # Production boot contract: the console driver must bind and the monitor
 # must reach its prompt.  Optional boot-module diagnostics ("<name>:
@@ -201,7 +201,7 @@ def _integration_result(data):
 # Host sync the smoke image waits for before the banner (bench quirk: the
 # board's reset line also resets the USB bridge, so the board must not
 # print until the host has reopened its port).  Mirrors
-# ZOS_SMOKE_HOST_SYNC_FIRST/SECOND in platform/zephyr80/public/
+# KOS_SMOKE_HOST_SYNC_FIRST/SECOND in platform/zephyr80/public/
 # hardware.{h,inc};
 # modes ioc and hid send it on every open and repeat it until the
 # first byte.
@@ -255,12 +255,12 @@ def _fs_image_result(data):
 
 
 # --- package 45b: the production hardware exerciser --------------------------
-# `X /system/hwtest.zex` on the production image.  The console is the
+# `X /system/hwtest.exe` on the production image.  The console is the
 # V9958/HID build there, so this lane is where the monitor takes its
 # commands (it polls the SERIAL object beside the console) and where the
 # runner mirrors every line - the tool therefore reads its own command
 # echoed back byte by byte and then the stage lines and the verdict.
-HW_COMMAND = b"X /system/hwtest.zex\r"
+HW_COMMAND = b"X /system/hwtest.exe\r"
 HW_TIMEOUT = 120.0
 HW_BEGIN = b"hwtest: begin\r\n"
 HW_STAGES = (b"hwtest: xmem+far PASS\r\n",
@@ -404,10 +404,10 @@ def _hwtest_complete(data):
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(description="ZephyrOS serial smoke check")
-    parser.add_argument("--port", default=os.environ.get("ZOS_SERIAL_PORT", ""))
+    parser = argparse.ArgumentParser(description="KonaOS serial smoke check")
+    parser.add_argument("--port", default=os.environ.get("KOS_SERIAL_PORT", ""))
     parser.add_argument(
-        "--baud", type=int, default=int(os.environ.get("ZOS_SERIAL_BAUD", "115200"))
+        "--baud", type=int, default=int(os.environ.get("KOS_SERIAL_BAUD", "115200"))
     )
     parser.add_argument("--mode", choices=("normal", "subsystem",
                                            "console-integration",
@@ -416,19 +416,19 @@ def main(argv):
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=None,
-        help="capture window in seconds (default: ZOS_SERIAL_TIMEOUT, else "
+        help="capture window in seconds (default: KOS_SERIAL_TIMEOUT, else "
              "15, or %g for hwtest, which runs the whole exerciser)"
              % HW_TIMEOUT
     )
     parser.add_argument(
         "--quiet", type=float,
-        default=float(os.environ.get("ZOS_SERIAL_QUIET", "5")),
+        default=float(os.environ.get("KOS_SERIAL_QUIET", "5")),
         help="normal mode: quiet window after the banner before a "
              "banner-only PASS (default 5s)")
     args = parser.parse_args(argv)
 
     if args.timeout is None:
-        env_timeout = os.environ.get("ZOS_SERIAL_TIMEOUT", "")
+        env_timeout = os.environ.get("KOS_SERIAL_TIMEOUT", "")
         if env_timeout:
             args.timeout = float(env_timeout)
         else:
@@ -436,7 +436,7 @@ def main(argv):
 
     if not args.port:
         print(
-            "serial_smoke: no serial device given; use --port or ZOS_SERIAL_PORT",
+            "serial_smoke: no serial device given; use --port or KOS_SERIAL_PORT",
             file=sys.stderr,
         )
         return 2
@@ -504,7 +504,7 @@ def main(argv):
         print("serial_smoke: mode hwtest checks the production image's "
               "feature exerciser; power-cycle the board or press RESET "
               "now so the boot is captured; the tool then types "
-              "'X /system/hwtest.zex' at the monitor over this lane (the "
+              "'X /system/hwtest.exe' at the monitor over this lane (the "
               "production console input is the HID build, so the monitor "
               "reads its commands here) and reads the stage lines and the "
               "verdict")
@@ -841,7 +841,7 @@ def _explain_wrong_image(mode, data):
                   "build, so the monitor takes it from this lane; confirm "
                   "the flashed image is the package-45b production image "
                   "(its monitor polls /dev/serial/0) and that the store "
-                  "carries /system/hwtest.zex", file=sys.stderr)
+                  "carries /system/hwtest.exe", file=sys.stderr)
         else:
             print("serial_smoke: hint: the exerciser started but its "
                   "verdict did not arrive inside the window; raise "

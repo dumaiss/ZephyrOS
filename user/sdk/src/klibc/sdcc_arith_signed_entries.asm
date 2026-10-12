@@ -1,28 +1,28 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS zlibc: SDCC signed arithmetic-helper entry points.
+; KonaOS klibc: SDCC signed arithmetic-helper entry points.
 ;
 ; The signed counterparts of sdcc_arith.asm; implementations live in
 ; sdcc_arith_signed.c.
 ; -----------------------------------------------------------------------------
 
-	.module zos_sdcc_arith_signed_entries
+	.module kos_sdcc_arith_signed_entries
 
 	.globl __divsint
 	.globl __modsint
 	.globl __divslong
 	.globl __modslong
-	.globl _zos_divsint
-	.globl _zos_modsint
-	.globl _zos_divslong
-	.globl _zos_modslong
+	.globl _kos_divsint
+	.globl _kos_modsint
+	.globl _kos_divslong
+	.globl _kos_modslong
 
 	.area _CODE
 
 __divsint::
-	jp	_zos_divsint
+	jp	_kos_divsint
 __modsint::
-	jp	_zos_modsint
+	jp	_kos_modsint
 __divslong::
-	jp	_zos_divslong
+	jp	_kos_divslong
 __modslong::
-	jp	_zos_modslong
+	jp	_kos_modslong

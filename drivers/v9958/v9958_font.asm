@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS V9958 font bulk segment (work package 41).
+; KonaOS V9958 font bulk segment (work package 41).
 ;
 ; The pinned CP850 6x8 bitmap font, assembled straight from the reviewable
 ; .inc asset into the driver image's bulk segment (_BULK, role `bulk`,

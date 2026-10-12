@@ -1,18 +1,18 @@
-/* ZephyrOS V9958 resident driver glue (work package 41).
+/* KonaOS V9958 resident driver glue (work package 41).
  *
- * The video protocol of abi/zos/protocol.h (class ZOS_CLASS_VIDEO,
- * instance 0, version ZOS_PROTOCOL_VERSION) in front of the driver in
+ * The video protocol of abi/kos/protocol.h (class KOS_CLASS_VIDEO,
+ * instance 0, version KOS_PROTOCOL_VERSION) in front of the driver in
  * v9958.c:
  *
- *   ZVIDEO_OP_SEND   the seven native operations; the streaming
+ *   KVIDEO_OP_SEND   the seven native operations; the streaming
  *                    operations copy the caller's payload into this
  *                    driver's DRIVER_IO staging block in bounded
  *                    chunks and stream it;
- *   ZVIDEO_OP_WRITE  terminal bytes, fed through the renderer's private
+ *   KVIDEO_OP_WRITE  terminal bytes, fed through the renderer's private
  *                    stack wrapper;
- *   ZVIDEO_OP_PUTC   one terminal byte.
+ *   KVIDEO_OP_PUTC   one terminal byte.
  *
- * The display reset (ZVIDEO_RESET, ESC c, RIS) re-runs the whole
+ * The display reset (KVIDEO_RESET, ESC c, RIS) re-runs the whole
  * bring-up chain, including the font upload: this is exactly why the
  * chain is hot, and why the font upload reads the bulk-tier font through
  * the nucleus bulk copy - the mode-11 window cannot show 0000h-5FFFh of
@@ -24,9 +24,9 @@
  * any run-time reset can need it.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "driver.h"
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 #include "v9958_driver.h"
 
@@ -38,7 +38,7 @@ static const struct driver_api *v9958_driver_api;
 static uint8_t v9958_batch[V9958_DRIVER_BATCH];
 static uint16_t v9958_batch_address;
 
-static int16_t v9958_driver_stream(struct zos_ipc_frame *frame)
+static int16_t v9958_driver_stream(struct kos_ipc_frame *frame)
 {
 	uint8_t operation = frame->arg0;
 	uint16_t offset = frame->arg0;
@@ -49,7 +49,7 @@ static int16_t v9958_driver_stream(struct zos_ipc_frame *frame)
 	/* The streaming operations' protocol rule, the same one
 	 * v9958_send() applies: a zero-length transfer is refused. */
 	if (length == 0u) {
-		return (int16_t)-ZOS_EINVAL;
+		return (int16_t)-KOS_EINVAL;
 	}
 	while (done < length) {
 		uint16_t chunk = (uint16_t)(length - done);
@@ -61,18 +61,18 @@ static int16_t v9958_driver_stream(struct zos_ipc_frame *frame)
 					       v9958_batch_address,
 					       chunk) < 0) {
 			return done != 0u ? (int16_t)done
-					  : (int16_t)-ZOS_EINVAL;
+					  : (int16_t)-KOS_EINVAL;
 		}
 		if (v9958_send(&v9958_state, operation, v9958_batch,
 			       chunk) != 0) {
-			return (int16_t)-ZOS_EINVAL;
+			return (int16_t)-KOS_EINVAL;
 		}
 		done = (uint16_t)(done + chunk);
 	}
 	return (int16_t)done;
 }
 
-static int16_t v9958_driver_write(struct zos_ipc_frame *frame)
+static int16_t v9958_driver_write(struct kos_ipc_frame *frame)
 {
 	uint16_t offset = frame->arg0;
 	uint16_t length = frame->arg1;
@@ -90,7 +90,7 @@ static int16_t v9958_driver_write(struct zos_ipc_frame *frame)
 					       v9958_batch_address,
 					       chunk) < 0) {
 			return done != 0u ? (int16_t)done
-					  : (int16_t)-ZOS_EINVAL;
+					  : (int16_t)-KOS_EINVAL;
 		}
 		result = v9958_char_write(&v9958_state,
 					  (const char *)v9958_batch, chunk);
@@ -102,23 +102,23 @@ static int16_t v9958_driver_write(struct zos_ipc_frame *frame)
 	return (int16_t)done;
 }
 
-int16_t v9958_driver_dispatch(struct zos_ipc_frame *frame)
+int16_t v9958_driver_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
-	case ZVIDEO_OP_SEND:
-		if (frame->arg0 == ZVIDEO_PRESENT ||
-		    frame->arg0 == ZVIDEO_RESET) {
+	case KVIDEO_OP_SEND:
+		if (frame->arg0 == KVIDEO_PRESENT ||
+		    frame->arg0 == KVIDEO_RESET) {
 			return (int16_t)v9958_send(&v9958_state, frame->arg0,
 						   (const void *)0, 0u);
 		}
 		return v9958_driver_stream(frame);
-	case ZVIDEO_OP_WRITE:
+	case KVIDEO_OP_WRITE:
 		return v9958_driver_write(frame);
-	case ZVIDEO_OP_PUTC:
+	case KVIDEO_OP_PUTC:
 		return (int16_t)v9958_char_putc(&v9958_state,
 						(char)frame->arg0);
 	default:
-		return (int16_t)-ZOS_EINVAL;
+		return (int16_t)-KOS_EINVAL;
 	}
 }
 

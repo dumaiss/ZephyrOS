@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Filesystem outcome acceptance replay (work package 42b, correction 01).
 
-Boots `build-fs-selftest/zephyros-fs-selftest.bin` in the Z80 simulator with
+Boots `build-fs-selftest/konaos-fs-selftest.bin` in the Z80 simulator with
 the host FS2 peer serving the card, and reads the transcript of the one SDK
-outcome program the image boots (`/system/fs_selftest.zex`):
+outcome program the image boots (`/system/fs_selftest.exe`):
 
 - with a writable card, every outcome line reports OK, the verdict carries
   the pinned check count, the nested-exec child reports its own stdout and
@@ -30,13 +30,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-import zmodpack  # noqa: E402
+import modpack  # noqa: E402
 from replay import STEP_LIMIT, Replay  # noqa: E402
 from z80sim import IocCommandPeer
 
 IMAGE_SUBDIR = "build-fs-selftest"
-IMAGE_NAME = "zephyros-fs-selftest.bin"
-ZMOD = os.path.join("build-fs-selftest", "modules", "iocfat.zmod")
+IMAGE_NAME = "konaos-fs-selftest.bin"
+MOD = os.path.join("build-fs-selftest", "modules", "iocfat.mod")
 
 PASS = "fs-selftest: PASS\r\n"
 FAIL = "fs-selftest: FAIL"
@@ -115,8 +115,8 @@ class FsSelftestSimBase(Replay, unittest.TestCase):
 
     def driver_base(self):
         """Base of the driver's data areas: its hot segment's image end."""
-        with open(os.path.join(ROOT, ZMOD), "rb") as handle:
-            info = zmodpack.parse_container(handle.read(), "iocfat.zmod")
+        with open(os.path.join(ROOT, MOD), "rb") as handle:
+            info = modpack.parse_container(handle.read(), "iocfat.mod")
         hot = [s for s in info["segments"] if s["role"] == "hot"][0]
         return hot["base"] + hot["image_size"]
 
@@ -125,7 +125,7 @@ class TestFsSelftestWritableCard(FsSelftestSimBase):
     def test_boot_and_outcomes(self):
         z, sio = self.boot()
 
-        for line in ("ZephyrOS 0.0", "platform: Zephyr-80",
+        for line in ("KonaOS 0.0", "platform: Zephyr-80",
                      "kernel entry: OK", "serial: OK",
                      "console: driver OK"):
             self.assertIn(line + "\r\n", sio)
@@ -148,7 +148,7 @@ class TestFsSelftestWritableCard(FsSelftestSimBase):
         self.assertNotIn("fs-child: FAIL", sio)
 
         # The image then handed the console to the monitor.
-        self.assertIn("ZephyrOS native monitor\r\n", sio)
+        self.assertIn("KonaOS native monitor\r\n", sio)
         self.assertIn(PROMPT, sio)
 
     def test_the_child_leaks_nothing_behind_it(self):

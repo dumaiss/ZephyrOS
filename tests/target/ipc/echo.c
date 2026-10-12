@@ -1,4 +1,4 @@
-/* ZephyrOS IPC acceptance: the `echo` synthetic driver (test artifact).
+/* KonaOS IPC acceptance: the `echo` synthetic driver (test artifact).
  *
  * The null call: the cheapest possible protocol on the IPC substrate, used
  * to measure the raw crossing and dispatch cost, to prove re-entrancy
@@ -13,7 +13,7 @@
  * same discovery a peer uses.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "driver.h"
 
 #include "ipc_test.h"
@@ -23,25 +23,25 @@ static uint8_t self_handle;
 
 /* The endpoint dispatch entry the manifest names: a module-global
  * symbol so the packer can resolve its hot-image offset. */
-int16_t echo_dispatch(struct zos_ipc_frame *frame)
+int16_t echo_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
 	case IPC_OP_ECHO_EXCHANGE:
 		frame->payload[1] = frame->payload[0];
 		return (int16_t)((uint16_t)frame->payload[0] + 1u);
 	case IPC_OP_ECHO_NULL:
-		return (int16_t)ZOS_IPC_FRAME_SIZE;
+		return (int16_t)KOS_IPC_FRAME_SIZE;
 	case IPC_OP_ECHO_SELF: {
-		struct zos_ipc_frame inner = *frame;
+		struct kos_ipc_frame inner = *frame;
 
 		/* The endpoint is active: the nucleus must refuse this with
-		 * -ZOS_EBUSY because echo declares no re-entrancy. */
+		 * -KOS_EBUSY because echo declares no re-entrancy. */
 		return api->call(self_handle, IPC_OP_ECHO_NULL, &inner);
 	}
 	case IPC_OP_ECHO_DESC:
 		return (int16_t)frame->desc;
 	default:
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 }
 

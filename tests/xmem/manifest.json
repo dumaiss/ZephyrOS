@@ -2,14 +2,14 @@
   "format": "romfs-v1",
   "files": [
     {
-      "name": "sio.zmod",
-      "type": "ZMOD",
-      "path": "sio.zmod"
+      "name": "sio.mod",
+      "type": "MOD",
+      "path": "sio.mod"
     },
     {
-      "name": "console-serial.zmod",
-      "type": "ZMOD",
-      "path": "console-serial.zmod"
+      "name": "console-serial.mod",
+      "type": "MOD",
+      "path": "console-serial.mod"
     },
     {
       "name": "drivers.man",
@@ -17,19 +17,19 @@
       "path": "drivers.man"
     },
     {
-      "name": "xmem_selftest.zex",
-      "type": "ZEX",
-      "path": "xmem_selftest.zex"
+      "name": "xmem_selftest.exe",
+      "type": "EXE",
+      "path": "xmem_selftest.exe"
     },
     {
-      "name": "xmem_child.zex",
-      "type": "ZEX",
-      "path": "xmem_child.zex"
+      "name": "xmem_child.exe",
+      "type": "EXE",
+      "path": "xmem_child.exe"
     },
     {
-      "name": "xmem_far.zex",
-      "type": "ZEX",
-      "path": "xmem_far.zex"
+      "name": "xmem_far.exe",
+      "type": "EXE",
+      "path": "xmem_far.exe"
     }
   ]
 }

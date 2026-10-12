@@ -1,13 +1,13 @@
-/* ZephyrOS M2 interrupt contract (module-facing types and result codes).
+/* KonaOS M2 interrupt contract (module-facing types and result codes).
  *
- * This header is what a ZMOD module and the driver ABI need: the
+ * This header is what a MOD module and the driver ABI need: the
  * `irq_source_t`/`irq_handler_t` types, the logical source enum, and the
  * claim/release result codes.  The executive lifecycle and registry
  * controls are kernel-private (kernel/irq/irq_private.h). */
-#ifndef ZEPHYROS_IRQ_H
-#define ZEPHYROS_IRQ_H
+#ifndef KONAOS_IRQ_H
+#define KONAOS_IRQ_H
 
-#include "zos/types.h"
+#include "kos/types.h"
 
 typedef uint8_t irq_source_t;
 typedef void (*irq_handler_t)(void *context);

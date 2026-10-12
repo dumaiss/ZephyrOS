@@ -1,4 +1,4 @@
-/* ZephyrOS SIO0/B driver implementation (drivers/sio/).
+/* KonaOS SIO0/B driver implementation (drivers/sio/).
  *
  * Wraps the same physical channel as the early console (data 22h,
  * control 23h, 115200 8N1) as a resident-driver operation set with
@@ -15,7 +15,7 @@
  * sio_proto.c (hot) and sio_boot.c (boot).
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 
 #include "hardware.h"
 
@@ -30,11 +30,11 @@ struct sio0b_state sio0b_state;
 
 static uint8_t sio0b_wait_tx_ready(void)
 {
-	uint16_t timeout = ZOS_SIO_TX_TIMEOUT;
+	uint16_t timeout = KOS_SIO_TX_TIMEOUT;
 
 	while (timeout != 0) {
-		if ((sio0b_status() & ZOS_SIO_TX_READY) ==
-		    ZOS_SIO_TX_READY) {
+		if ((sio0b_status() & KOS_SIO_TX_READY) ==
+		    KOS_SIO_TX_READY) {
 			return 1;
 		}
 		--timeout;
@@ -47,7 +47,7 @@ int sio0b_putc(void *state, char ch)
 	(void)state;
 	if (!sio0b_wait_tx_ready()) {
 		++sio0b_state.tx_timeouts;
-		return (-ZOS_ETIMEDOUT);
+		return (-KOS_ETIMEDOUT);
 	}
 	sio0b_write_data((uint8_t)ch);
 	return 0;
@@ -59,7 +59,7 @@ int sio0b_write(void *state, const char *buf, uint16_t len)
 
 	for (n = 0; n < len; ++n) {
 		if (sio0b_putc(state, buf[n]) != 0) {
-			return n == 0 ? (-ZOS_ETIMEDOUT) : (int)n;
+			return n == 0 ? (-KOS_ETIMEDOUT) : (int)n;
 		}
 	}
 	return (int)len;
@@ -68,14 +68,14 @@ int sio0b_write(void *state, const char *buf, uint16_t len)
 int sio0b_poll(void *state)
 {
 	(void)state;
-	return (sio0b_status() & ZOS_SIO_RR0_RX_AVAILABLE) != 0 ? 1 : 0;
+	return (sio0b_status() & KOS_SIO_RR0_RX_AVAILABLE) != 0 ? 1 : 0;
 }
 
 int sio0b_getc(void *state)
 {
 	(void)state;
-	if ((sio0b_status() & ZOS_SIO_RR0_RX_AVAILABLE) == 0) {
-		return (-ZOS_EAGAIN);
+	if ((sio0b_status() & KOS_SIO_RR0_RX_AVAILABLE) == 0) {
+		return (-KOS_EAGAIN);
 	}
 	++sio0b_state.rx_reads;
 	return (int)sio0b_read_data();

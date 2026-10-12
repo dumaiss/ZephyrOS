@@ -2,19 +2,19 @@
   "format": "romfs-v1",
   "files": [
     {
-      "name": "sio.zmod",
-      "type": "ZMOD",
-      "path": "sio.zmod"
+      "name": "sio.mod",
+      "type": "MOD",
+      "path": "sio.mod"
     },
     {
-      "name": "console-serial.zmod",
-      "type": "ZMOD",
-      "path": "console-serial.zmod"
+      "name": "console-serial.mod",
+      "type": "MOD",
+      "path": "console-serial.mod"
     },
     {
-      "name": "nsdev.zmod",
-      "type": "ZMOD",
-      "path": "nsdev.zmod"
+      "name": "nsdev.mod",
+      "type": "MOD",
+      "path": "nsdev.mod"
     },
     {
       "name": "drivers.man",
@@ -22,14 +22,14 @@
       "path": "drivers.man"
     },
     {
-      "name": "ns.zex",
-      "type": "ZEX",
-      "path": "ns.zex"
+      "name": "ns.exe",
+      "type": "EXE",
+      "path": "ns.exe"
     },
     {
-      "name": "nschild.zex",
-      "type": "ZEX",
-      "path": "nschild.zex"
+      "name": "nschild.exe",
+      "type": "EXE",
+      "path": "nschild.exe"
     }
   ]
 }

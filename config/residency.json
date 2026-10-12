@@ -1,5 +1,5 @@
 {
-  "format": "zos-residency/1",
+  "format": "kos-residency/1",
   "split": "0x6000",
   "note": "Nucleus residency under the resident-driver model (architecture 36.5, 36.24; two-tier classification from package 42c). One entry per kernel object linked into the production image (the objects of linker/zephyr80.lk); tools/mapcheck.py fails the build when an object is missing or when a fixed-required object is compiled into the cold areas. Tiers: fixed-required = code that executes, or data that is touched, while the window shows another bank (36.5) - it must link inside 2000h-5FFFh; cold = everything else that belongs to bank 7 (the syscall side, boot, the VFS core, process management and the resident-driver loader). There are only these two tiers: every object is placed, and the cold data base follows the linked cold code (no arena, no moves).",
   "tiers": {
@@ -200,12 +200,12 @@
     {
       "object": "ipc_asm",
       "tier": "fixed-required",
-      "reason": "M10 stage 3 fixed-core IPC primitives (kernel/ipc/ipc_asm.asm): the latch save/select/restore, the window LDIR and the driver-stack switch, plus the ABS declaration of the 512-byte driver stack at ZOS_DRIVER_STACK_BASE.  Same stage as `ipc`: test images only until package 41."
+      "reason": "M10 stage 3 fixed-core IPC primitives (kernel/ipc/ipc_asm.asm): the latch save/select/restore, the window LDIR and the driver-stack switch, plus the ABS declaration of the 512-byte driver stack at KOS_DRIVER_STACK_BASE.  Same stage as `ipc`: test images only until package 41."
     },
     {
       "object": "ipc_common",
       "tier": "fixed-required",
-      "reason": "M10 stage 3 common-resident aperture copy (kernel/ipc/ipc_common.asm, work package 39 correction 01): the path-B primitive runs with mode 10 and page 1 in force, where bank 7 is not mapped, so its code, its request block, its saved latch/SP and its interrupt-push stack must all be common.  The fixed-core reservoir the M9 ledger held back (ZOS_COMMON_M10_RESERVATION) was released to M10 by work package 43 (architecture 36.20), so this primitive and package 43's mode-11 window copy share the whole ceiling.  Same stage as `ipc`: test images only until package 41."
+      "reason": "M10 stage 3 common-resident aperture copy (kernel/ipc/ipc_common.asm, work package 39 correction 01): the path-B primitive runs with mode 10 and page 1 in force, where bank 7 is not mapped, so its code, its request block, its saved latch/SP and its interrupt-push stack must all be common.  The fixed-core reservoir the M9 ledger held back (KOS_COMMON_M10_RESERVATION) was released to M10 by work package 43 (architecture 36.20), so this primitive and package 43's mode-11 window copy share the whole ceiling.  Same stage as `ipc`: test images only until package 41."
     },
     {
       "object": "driver_loader",

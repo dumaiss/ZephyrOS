@@ -1,49 +1,49 @@
-/* ZephyrOS IOC resident-driver acceptance diagnostic (work package 41).
+/* KonaOS IOC resident-driver acceptance diagnostic (work package 41).
  *
  * Runs from the late boot hook, after the driver loader brought the
  * image's driver set (sio, ioc, console) up in bank 6 and after the
  * nucleus console probe: the IOC driver's init has run the bounded
- * LINK_SYNC bring-up and its endpoint (class ZOS_CLASS_IOC, instance 0,
- * protocol version ZOS_PROTOCOL_VERSION) answers.
+ * LINK_SYNC bring-up and its endpoint (class KOS_CLASS_IOC, instance 0,
+ * protocol version KOS_PROTOCOL_VERSION) answers.
  *
  * The diagnostic is a *bank-7 client* of that driver, exactly like
  * the retired class shim: it holds no buffer descriptor and cannot use
- * `move`, so it drives the IOC protocol (abi/zos/protocol.h) through the
+ * `move`, so it drives the IOC protocol (abi/kos/protocol.h) through the
  * descriptor-less operations and the staged buffers the replies name, with
  * the shared acceptance client (tests/target/support/driver_client.c) for
  * the calls, the copy-gate moves and the early-SIO transcript.  It sees
- * native `struct zioc_frame` records; framing, CRC, sequence and lane setup
+ * native `struct kioc_frame` records; framing, CRC, sequence and lane setup
  * never surface.
  *
- * Phases: endpoint discovery (class 05, version 01); ZIOC_OP_READY = 1; one
- * ZIOC_OP_COMMAND (CMD_PING) whose 29-byte staged reply frame is read back
+ * Phases: endpoint discovery (class 05, version 01); KIOC_OP_READY = 1; one
+ * KIOC_OP_COMMAND (CMD_PING) whose 29-byte staged reply frame is read back
  * and checked for type, echo pattern, controller level 4Ah and the
- * link-synced snapshot; ZIOC_OP_STATUS with no bit outside
- * ZIOC_STATUS_HID_PENDING; the staged bulk lane over the frozen /SHARED
+ * link-synced snapshot; KIOC_OP_STATUS with no bit outside
+ * KIOC_STATUS_HID_PENDING; the staged bulk lane over the frozen /SHARED
  * file driver (FS_WRITE arms a Z80->MCU phase, the pattern is placed at
  * the published bulk address and committed descriptor-less with
- * ZIOC_OP_BULK_WRITE, the DONE record confirms it, FS_READ arms the reverse
- * direction, ZIOC_OP_BULK_READ completes it, the staged bytes are read back
+ * KIOC_OP_BULK_WRITE, the DONE record confirms it, FS_READ arms the reverse
+ * direction, KIOC_OP_BULK_READ completes it, the staged bytes are read back
  * and compared, then the fixture file is closed and deleted); and malformed
- * calls refused with -ZOS_EINVAL (unknown operation, oversize request DATA,
+ * calls refused with -KOS_EINVAL (unknown operation, oversize request DATA,
  * descriptor-less REPLY, handle 0 and a bogus handle).
  *
  * If the deployed firmware answers the writable /SHARED open with the
  * unknown-command class it has no writable driver: the bulk criterion is
  * PENDING - never the OK marker, never acceptance evidence.  The last line
  * is "ioc selftest: OK" or "ioc selftest: FAIL <phase>", with the matching
- * ZOS_IOCSELFTEST_* code in ace_ioc_selftest_result.
+ * KOS_IOCSELFTEST_* code in ace_ioc_selftest_result.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "ioc.h"
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 #include "ioc_proto.h"
 #include "ioc_selftest.h"
 #include "driver_client.h"
 
-#if ZOS_IOC_SELFTEST
+#if KOS_IOC_SELFTEST
 
 /* Frozen /SHARED file-driver classes (mirrored from the pinned MCU
  * ioc_frame.h for this fixture only, as the M8 diagnostic did) and the
@@ -70,8 +70,8 @@ static const uint8_t ioc_name[IOC_NAME_LEN] = {
 	'I', 'O', 'C', 'B', 'U', 'L', 'K', 'T', 'B', 'I', 'N'
 };
 static uint8_t ioc_pattern[IOC_BULK_BYTES];
-static struct zioc_frame ioc_reply;
-static struct zos_ipc_frame ioc_frame;
+static struct kioc_frame ioc_reply;
+static struct kos_ipc_frame ioc_frame;
 static uint8_t ioc_file;
 static uint8_t ioc_xfer_id;
 
@@ -126,11 +126,11 @@ static uint8_t ioc_pattern_ok(void)
 	return 1u;
 }
 
-/* Frame one descriptor-less ZIOC_OP_COMMAND (the payload is zeroed; the
+/* Frame one descriptor-less KIOC_OP_COMMAND (the payload is zeroed; the
  * caller fills the request DATA) and clear the staged reply. */
 static void ioc_prepare(uint8_t type, uint8_t length)
 {
-	driver_cli_frame(&ioc_frame, ZIOC_OP_COMMAND, type, length);
+	driver_cli_frame(&ioc_frame, KIOC_OP_COMMAND, type, length);
 	ioc_reply.type = 0u;
 	ioc_reply.status = 0u;
 	ioc_reply.length = 0u;
@@ -148,7 +148,7 @@ static int16_t ioc_exchange(uint8_t handle)
 	address = (uint16_t)((uint16_t)ioc_frame.payload[0] |
 			     ((uint16_t)ioc_frame.payload[1] << 8));
 	if (address == 0u ||
-	    driver_cli_stage_read(address, ZIOC_FRAME_SIZE,
+	    driver_cli_stage_read(address, KIOC_FRAME_SIZE,
 				   (uint8_t *)&ioc_reply) == 0) {
 		return -1;
 	}
@@ -224,7 +224,7 @@ static void ioc_fs_transfer(uint8_t file)
 }
 
 /* The staged bulk write: place the pattern at the bulk address the READY
- * reply published, commit it with the descriptor-less ZIOC_OP_BULK_WRITE,
+ * reply published, commit it with the descriptor-less KIOC_OP_BULK_WRITE,
  * and read the matching DONE record back. */
 static uint8_t ioc_bulk_write(uint8_t handle)
 {
@@ -243,7 +243,7 @@ static uint8_t ioc_bulk_write(uint8_t handle)
 	    driver_cli_stage_write(address, IOC_BULK_BYTES, ioc_pattern) == 0) {
 		return 0u;
 	}
-	driver_cli_frame(&ioc_frame, ZIOC_OP_BULK_WRITE, 0u, IOC_BULK_BYTES);
+	driver_cli_frame(&ioc_frame, KIOC_OP_BULK_WRITE, 0u, IOC_BULK_BYTES);
 	if (driver_cli_call(handle, &ioc_frame) != (int16_t)IOC_BULK_BYTES) {
 		return 0u;
 	}
@@ -269,7 +269,7 @@ static uint8_t ioc_bulk_read(uint8_t handle)
 			  IOC_BULK_BYTES)) {
 		return 0u;
 	}
-	driver_cli_frame(&ioc_frame, ZIOC_OP_BULK_READ, 0u, IOC_BULK_BYTES);
+	driver_cli_frame(&ioc_frame, KIOC_OP_BULK_READ, 0u, IOC_BULK_BYTES);
 	if (driver_cli_call(handle, &ioc_frame) != (int16_t)IOC_BULK_BYTES) {
 		return 0u;
 	}
@@ -304,13 +304,13 @@ static uint8_t ioc_cleanup(uint8_t handle)
 			 ioc_reply.status == 0u);
 }
 
-void zos_run_ioc_selftest(void)
+void kos_run_ioc_selftest(void)
 {
 	/* The malformed command calls: an unknown operation, a request DATA
 	 * length above the inline maximum, and the descriptor-less REPLY form
 	 * (a bank-7 client reads the staged frame instead). */
 	static const uint8_t bad_op[3] = {
-		0x7Fu, ZIOC_OP_COMMAND, ZIOC_OP_REPLY
+		0x7Fu, KIOC_OP_COMMAND, KIOC_OP_REPLY
 	};
 	uint8_t handle = 0u;
 	uint8_t refused = 0u;
@@ -318,35 +318,35 @@ void zos_run_ioc_selftest(void)
 	int16_t result;
 	uint16_t word;
 
-	ace_ioc_selftest_result = ZOS_IOCSELFTEST_FAIL_ENDPOINT;
+	ace_ioc_selftest_result = KOS_IOCSELFTEST_FAIL_ENDPOINT;
 	ioc_fill_pattern();
 
-	if (driver_cli_endpoint(ZOS_CLASS_IOC, &handle) == 0u) {
-		ioc_fail("endpoint", ZOS_IOCSELFTEST_FAIL_ENDPOINT);
+	if (driver_cli_endpoint(KOS_CLASS_IOC, &handle) == 0u) {
+		ioc_fail("endpoint", KOS_IOCSELFTEST_FAIL_ENDPOINT);
 		return;
 	}
 	driver_cli_puts("ioc: endpoint class ");
-	driver_cli_hex8(ZOS_CLASS_IOC);
-	ioc_show8(" version ", ZOS_PROTOCOL_VERSION);
+	driver_cli_hex8(KOS_CLASS_IOC);
+	ioc_show8(" version ", KOS_PROTOCOL_VERSION);
 
-	result = driver_cli_getc(handle, ZIOC_OP_READY);
+	result = driver_cli_getc(handle, KIOC_OP_READY);
 	if (result != 1) {
-		ioc_fail("ready", ZOS_IOCSELFTEST_FAIL_READY);
+		ioc_fail("ready", KOS_IOCSELFTEST_FAIL_READY);
 		return;
 	}
 	ioc_show8("ioc: ready ", (uint8_t)result);
 
 	if (!ioc_ping(handle)) {
-		ioc_fail("command", ZOS_IOCSELFTEST_FAIL_COMMAND);
+		ioc_fail("command", KOS_IOCSELFTEST_FAIL_COMMAND);
 		return;
 	}
 
 	/* Semantic status only: the word may carry nothing but the HID
 	 * doorbell bit, which varies with what the peer has queued. */
-	result = driver_cli_getc(handle, ZIOC_OP_STATUS);
+	result = driver_cli_getc(handle, KIOC_OP_STATUS);
 	word = (uint16_t)result;
-	if (result < 0 || (word & (uint16_t)~ZIOC_STATUS_HID_PENDING) != 0u) {
-		ioc_fail("status", ZOS_IOCSELFTEST_FAIL_STATUS);
+	if (result < 0 || (word & (uint16_t)~KIOC_STATUS_HID_PENDING) != 0u) {
+		ioc_fail("status", KOS_IOCSELFTEST_FAIL_STATUS);
 		return;
 	}
 	ioc_show16("ioc: status ", word);
@@ -366,36 +366,36 @@ void zos_run_ioc_selftest(void)
 			 * file: PENDING, never the OK marker.  Nothing was
 			 * created, so nothing has to be undone. */
 			ioc_show8("ioc: bulk write PENDING 0x", ioc_reply.type);
-			ace_ioc_selftest_result = ZOS_IOCSELFTEST_PENDING;
+			ace_ioc_selftest_result = KOS_IOCSELFTEST_PENDING;
 			ioc_show8("ioc selftest: PENDING 0x", ioc_reply.type);
 			return;
 		}
-		ioc_fail("bulk", ZOS_IOCSELFTEST_FAIL_BULK);
+		ioc_fail("bulk", KOS_IOCSELFTEST_FAIL_BULK);
 		return;
 	}
 	ioc_file = ioc_reply.data[0];
 
 	if (!ioc_bulk_write(handle)) {
-		ioc_fail("bulk", ZOS_IOCSELFTEST_FAIL_BULK);
+		ioc_fail("bulk", KOS_IOCSELFTEST_FAIL_BULK);
 		return;
 	}
 	driver_cli_puts("ioc: bulk write ");
 	driver_cli_hex16(IOC_BULK_BYTES);
 	driver_cli_puts(" OK\r\n");
 	if (!ioc_bulk_read(handle)) {
-		ioc_fail("bulk", ZOS_IOCSELFTEST_FAIL_BULK);
+		ioc_fail("bulk", KOS_IOCSELFTEST_FAIL_BULK);
 		return;
 	}
 	driver_cli_puts("ioc: bulk read ");
 	driver_cli_hex16(IOC_BULK_BYTES);
 	driver_cli_puts(" OK\r\n");
 	if (!ioc_cleanup(handle)) {
-		ioc_fail("bulk", ZOS_IOCSELFTEST_FAIL_BULK);
+		ioc_fail("bulk", KOS_IOCSELFTEST_FAIL_BULK);
 		return;
 	}
 	driver_cli_puts("ioc: cleanup OK\r\n");
 
-	/* Malformed calls are refused with -ZOS_EINVAL before any wire
+	/* Malformed calls are refused with -KOS_EINVAL before any wire
 	 * traffic, including the invalid handles. */
 	for (index = 0u; index < 3u; ++index) {
 		driver_cli_frame(&ioc_frame, bad_op[index], 0u,
@@ -403,22 +403,22 @@ void zos_run_ioc_selftest(void)
 					     (index == 2u) ? 29u : 0u));
 		refused = (uint8_t)(refused +
 				    (driver_cli_call(handle, &ioc_frame) ==
-				     -ZOS_EINVAL));
+				     -KOS_EINVAL));
 	}
-	driver_cli_frame(&ioc_frame, ZIOC_OP_STATUS, 0u, 0u);
+	driver_cli_frame(&ioc_frame, KIOC_OP_STATUS, 0u, 0u);
 	refused = (uint8_t)(refused +
-			    (driver_cli_call(0u, &ioc_frame) == -ZOS_EINVAL));
+			    (driver_cli_call(0u, &ioc_frame) == -KOS_EINVAL));
 	refused = (uint8_t)(refused +
 			    (driver_cli_call((uint8_t)0x7Fu, &ioc_frame) ==
-			     -ZOS_EINVAL));
+			     -KOS_EINVAL));
 	if (refused != 5u) {
-		ioc_fail("refused", ZOS_IOCSELFTEST_FAIL_REFUSED);
+		ioc_fail("refused", KOS_IOCSELFTEST_FAIL_REFUSED);
 		return;
 	}
 	ioc_show8("ioc: malformed refused ", refused);
 
-	ace_ioc_selftest_result = ZOS_IOCSELFTEST_OK;
+	ace_ioc_selftest_result = KOS_IOCSELFTEST_OK;
 	driver_cli_puts("ioc selftest: OK\r\n");
 }
 
-#endif /* ZOS_IOC_SELFTEST */
+#endif /* KOS_IOC_SELFTEST */

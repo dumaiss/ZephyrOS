@@ -2,9 +2,9 @@
   "format": "romfs-v1",
   "files": [
     {
-      "name": "init_fail.zmod",
-      "type": "ZMOD",
-      "path": "init_fail.zmod"
+      "name": "init_fail.mod",
+      "type": "MOD",
+      "path": "init_fail.mod"
     },
     {
       "name": "drivers.man",
@@ -12,9 +12,9 @@
       "path": "drivers.man"
     },
     {
-      "name": "monitor.zex",
-      "type": "ZEX",
-      "path": "monitor.zex"
+      "name": "monitor.exe",
+      "type": "EXE",
+      "path": "monitor.exe"
     }
   ]
 }

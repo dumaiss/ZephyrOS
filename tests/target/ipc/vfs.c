@@ -1,4 +1,4 @@
-/* ZephyrOS IPC acceptance: the `vfs` synthetic namespace driver (test
+/* KonaOS IPC acceptance: the `vfs` synthetic namespace driver (test
  * artifact).
  *
  * Top of the object-read chain: the client passes the object handle, VFS
@@ -12,7 +12,7 @@
  * driver error through unchanged.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "driver.h"
 
 #include "ipc_test.h"
@@ -26,9 +26,9 @@ static uint8_t vfs_block[IPC_BLOCK_BYTES];
  * once (a plain 16-bit store) and offsets add to it at run time. */
 static uint16_t vfs_block_address;
 
-static int16_t vfs_read(struct zos_ipc_frame *frame)
+static int16_t vfs_read(struct kos_ipc_frame *frame)
 {
-	struct zos_ipc_frame inner = *frame;
+	struct kos_ipc_frame inner = *frame;
 	uint16_t offset = frame->arg1;
 	uint16_t length = IPC_FRAME_WORD(frame->payload, 0u);
 	int16_t result;
@@ -55,9 +55,9 @@ static int16_t vfs_read(struct zos_ipc_frame *frame)
 	return result;
 }
 
-static int16_t vfs_exec(struct zos_ipc_frame *frame)
+static int16_t vfs_exec(struct kos_ipc_frame *frame)
 {
-	struct zos_ipc_frame inner = *frame;
+	struct kos_ipc_frame inner = *frame;
 	int16_t result;
 
 	/* The nucleus holds the object handle; VFS streams it through the
@@ -85,7 +85,7 @@ static int16_t vfs_exec(struct zos_ipc_frame *frame)
 			return result;
 		}
 		if (header[0] != IPC_STREAM_MAGIC) {
-			return -ZOS_EINVAL;
+			return -KOS_EINVAL;
 		}
 	}
 	return (int16_t)IPC_STREAM_BYTES;
@@ -93,13 +93,13 @@ static int16_t vfs_exec(struct zos_ipc_frame *frame)
 
 /* The endpoint dispatch entry the manifest names: a module-global
  * symbol so the packer can resolve its hot-image offset. */
-int16_t vfs_dispatch(struct zos_ipc_frame *frame)
+int16_t vfs_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
 	case IPC_OP_VFS_READ:
 		return vfs_read(frame);
 	case IPC_OP_VFS_SELF: {
-		struct zos_ipc_frame inner = *frame;
+		struct kos_ipc_frame inner = *frame;
 
 		if (frame->arg0 == 0u) {
 			return 0;
@@ -112,7 +112,7 @@ int16_t vfs_dispatch(struct zos_ipc_frame *frame)
 	case IPC_OP_VFS_EXEC:
 		return vfs_exec(frame);
 	default:
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 }
 

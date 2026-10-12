@@ -9,7 +9,7 @@
 ;
 ; The generated file lives under the build directory and is included via
 ; the per-build include path; platform/zephyr80/private/memory.inc stays
-; declarative.  The probe link sets ZOS_KERNEL_CODE_END = 0, so kernel
+; declarative.  The probe link sets KOS_KERNEL_CODE_END = 0, so kernel
 ; growth can never collide with a placeholder.
 ;
 ; Exported symbol (the declaration area contains no bytes; a zero-size ABS
@@ -28,6 +28,6 @@
 
 	.area _BANK7_END_DECL (ABS)
 
-	.org ZOS_KERNEL_CODE_END
+	.org KOS_KERNEL_CODE_END
 __kernel_code_end::
 ___kernel_code_end::

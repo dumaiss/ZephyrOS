@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS libzos: SDCC z80 runtime helpers for indirect calls (package 44b).
+; KonaOS libkos: SDCC z80 runtime helpers for indirect calls (package 44b).
 ;
 ; The SDK is freestanding (no libsdcc is linked), so the trampolines the
 ; z80 code generator emits for an indirect call - `farcall`'s plain
@@ -11,7 +11,7 @@
 ; call never links it.
 ; -----------------------------------------------------------------------------
 
-	.module zos_sdcc_calls
+	.module kos_sdcc_calls
 	.globl ___sdcc_call_iy, ___sdcc_call_hl, ___sdcc_enter_ix
 
 	.area _CODE

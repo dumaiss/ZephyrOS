@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS common-resident IPC aperture copy (kernel/ipc, correction 01 to
+; KonaOS common-resident IPC aperture copy (kernel/ipc, correction 01 to
 ; architecture 36.8).
 ;
 ; Path B of the copy resolver.  The caller buffer lies in the caller's own
@@ -58,7 +58,7 @@ ipc_common_begin::
 ; caller's latch restored, SP back on the driver stack, length in DE.
 ; ---------------------------------------------------------------------------
 _ipc_ap_copy::
-	in	a,(ZOS_MEMCTL_PORT)	; the latch to come back to
+	in	a,(KOS_MEMCTL_PORT)	; the latch to come back to
 	ld	(_ipc_ap_saved_latch),a
 	ld	(_ipc_ap_saved_sp),sp
 	ld	sp,#_ipc_ap_stack_top	; common: visible in mode 10, and
@@ -67,10 +67,10 @@ _ipc_ap_copy::
 	ld	hl,(_ipc_ap_req+1)	; LDIR moves (HL) -> (DE)
 	ld	de,(_ipc_ap_req+3)
 	ld	bc,(_ipc_ap_req+5)
-	out	(ZOS_MEMCTL_PORT),a	; aperture opens: bank 6 at 8000h
+	out	(KOS_MEMCTL_PORT),a	; aperture opens: bank 6 at 8000h
 	ldir
 	ld	a,(_ipc_ap_saved_latch)
-	out	(ZOS_MEMCTL_PORT),a	; restore before SP leaves common
+	out	(KOS_MEMCTL_PORT),a	; restore before SP leaves common
 	ld	sp,(_ipc_ap_saved_sp)
 	ld	de,(_ipc_ap_req+5)
 	ret
@@ -90,5 +90,5 @@ _ipc_ap_saved_latch::
 _ipc_ap_saved_sp::
 	.ds	2
 _ipc_ap_stack::
-	.ds	ZOS_IPC_APERTURE_STACK_SIZE
+	.ds	KOS_IPC_APERTURE_STACK_SIZE
 _ipc_ap_stack_top::

@@ -1,7 +1,7 @@
-# ZephyrOS build
+# KonaOS build
 #
 # Freestanding SDCC/sdasz80/sdldz80 build.  No hosted CRT and no standard
-# library are linked; the tiny C runtime initialization ZephyrOS needs is
+# library are linked; the tiny C runtime initialization KonaOS needs is
 # implemented in boot/start.asm.  The two SDCC indirect-call helpers the
 # freestanding build needs for device ops tables are provided by
 # kernel/runtime/sdcc_helpers.asm.
@@ -9,8 +9,8 @@
 # Platform build configuration (include paths and declarative constant
 # files) comes from platform/zephyr80/config.mk.
 #
-# The drivers are not linked into the kernel: each is packed as a ZMOD
-# driver image (build/modules/*.zmod), stored in the ROMFS recovery image
+# The drivers are not linked into the kernel: each is packed as a MOD
+# driver image (build/modules/*.mod), stored in the ROMFS recovery image
 # (build/recovery.romfs, pages 2-7 of the 512 KiB ROM) and placed in bank 6
 # at boot by the resident loader, which reads the store through the fixed
 # ROMFS reader.  There is one boot path: every image boots from the
@@ -21,8 +21,8 @@
 #   make test     run host-side image/layout tests and integrity checks
 #   make check    reproducible rebuild + full host validation stack
 #   make romfs-test           ROMFS image + host ROMFS tool tests
-#   make zmod-test            packed-module tooling tests
-#   make zex-test             packed-program tooling tests
+#   make mod-test            packed-module tooling tests
+#   make exe-test             packed-program tooling tests
 #   make subsystem-selftest        current-path and ROMFS acceptance image
 #   make nucleus-selftest          revision-13 window/nucleus acceptance image
 #   make console-integration-selftest  console + IOC/HID/V9958 diagnostics
@@ -34,8 +34,8 @@
 #   make helloworld-image          SDK demo image (no kernel change)
 #   make clean    remove all generated files
 #
-# Builds are parallel by default (ZOS_JOBS defaults to nproc); use
-# `make ZOS_JOBS=1` for the serial build, which produces identical bytes.
+# Builds are parallel by default (KOS_JOBS defaults to nproc); use
+# `make KOS_JOBS=1` for the serial build, which produces identical bytes.
 
 SDCC      ?= sdcc
 SDASZ80   ?= sdasz80
@@ -43,17 +43,17 @@ SDLDZ80   ?= sdldz80
 PYTHON    ?= python3
 
 # Parallel by default.  The dependency graph is complete (the package-28
-# zex-fixtures stamp declares its loader-fixture prerequisite), so a
-# parallel build is race-free; `make ZOS_JOBS=1` reproduces the serial
+# exe-fixtures stamp declares its loader-fixture prerequisite), so a
+# parallel build is race-free; `make KOS_JOBS=1` reproduces the serial
 # build byte for byte.  MAKEFLAGS is exported to recursive image targets.
-ZOS_JOBS  ?= $(shell nproc 2>/dev/null || echo 1)
-MAKEFLAGS += -j$(ZOS_JOBS)
+KOS_JOBS  ?= $(shell nproc 2>/dev/null || echo 1)
+MAKEFLAGS += -j$(KOS_JOBS)
 
 BUILD     := build
 .DEFAULT_GOAL := all
 
 # System build configuration (work/28b-m9-shell-readiness/WORK.md):
-# ZOS_BOOT_PROGRAM selects the program the kernel launcher starts.  The
+# KOS_BOOT_PROGRAM selects the program the kernel launcher starts.  The
 # value is validated against the image's recovery manifest below, before
 # kernel/main.c is compiled.
 include config/system.mk
@@ -62,13 +62,13 @@ include config/system.mk
 # declarative constant files consumed by the build and layout tools).
 include platform/zephyr80/config.mk
 
-ASFLAGS   := $(ZOS_PLATFORM_ASFLAGS) -Itests/target/include
+ASFLAGS   := $(KOS_PLATFORM_ASFLAGS) -Itests/target/include
 # Kernel and acceptance sources include their private interfaces by
 # explicit owning path (kernel/...), so the nucleus build keeps `-I .`
 # (package 46 T3 roots); the module/driver build (DRV_CFLAGS, MOD_CFLAGS)
-# does not get this path, so a ZMOD cannot reach a kernel-private header.
-CFLAGS    := -mz80 -c --nostdinc --Werror $(ZOS_SDCC_OPT) \
-             -I . $(ZOS_PLATFORM_CFLAGS)
+# does not get this path, so a MOD cannot reach a kernel-private header.
+CFLAGS    := -mz80 -c --nostdinc --Werror $(KOS_SDCC_OPT) \
+             -I . $(KOS_PLATFORM_CFLAGS)
 
 ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/page_zero.rel $(BUILD)/syscall_entry.rel \
@@ -110,15 +110,15 @@ END_OBJ   := $(BUILD)/irq_code_end.rel
 # --- resident-driver IPC selection -------------------------------------
 # The M10 resident-driver nucleus is the only memory model: revision 13
 # at the 6000h split (the 32 KiB mode-11 window with the 16 KiB fixed core
-# at 2000h-5FFFh).  ZOS_IPC_SELFTEST builds the IPC acceptance image that
+# at 2000h-5FFFh).  KOS_IPC_SELFTEST builds the IPC acceptance image that
 # links the fixed-core substrate of work package 39.
-ZOS_IPC_SELFTEST    ?= 0
+KOS_IPC_SELFTEST    ?= 0
 # The namespace acceptance image (work package 42a, correction 01) links
 # the object/namespace family the production switch-over adopts in 42b.
-ZOS_NS_SELFTEST     ?= 0
+KOS_NS_SELFTEST     ?= 0
 # The revision-13 mode-11 window is 6000h-DFFFh (architecture section
 # 36.2); the fixed core is 2000h-5FFFh.  Every image links that way.
-ZOS_REV13_WINDOW_BASE := 0x6000
+KOS_REV13_WINDOW_BASE := 0x6000
 
 # --- console selection (work package 42e) -------------------------------
 # Consoles are selected per build (architecture 36.11, decision 12):
@@ -127,30 +127,30 @@ ZOS_REV13_WINDOW_BASE := 0x6000
 # directions.  The two drivers are one shared source compiled into two
 # images; an image set that has no HID+VIDEO pair (the subsystem, IOC,
 # HID, video and IPC images) selects `console-serial` explicitly.
-ZOS_CONSOLE ?= console-v9958-hid
+KOS_CONSOLE ?= console-v9958-hid
 
 # --- target acceptance build selection ---------------------------------
 # Acceptance images link the shared runner (tests/target/support/) plus
 # the per-milestone test code under tests/target/; production images link
-# none of it.  ZOS_TARGET_TEST_BUILD is the single production-side guard
+# none of it.  KOS_TARGET_TEST_BUILD is the single production-side guard
 # (kernel/main.c holds only the two TEST-ONLY HOOKs).
 TARGET_TEST_OBJS :=
 PK_SUFFIX :=
 # Subsystem acceptance image: the current production boot path (VFS plus
 # the ROMFS recovery store, the SIO and console driver images placed by
 # the driver loader) with the mechanism selftests linked in.  One image
-# carries the syscall, IRQ, ROMFS-reader and process/ZEX acceptance
+# carries the syscall, IRQ, ROMFS-reader and process/EXE acceptance
 # surfaces, so no per-milestone acceptance image and no per-milestone
 # build exists (work/00-SUPERVISOR.md retention rule).
-ifeq ($(ZOS_SUBSYS_SELFTEST),1)
-CFLAGS    += -DZOS_SUBSYS_SELFTEST=1
+ifeq ($(KOS_SUBSYS_SELFTEST),1)
+CFLAGS    += -DKOS_SUBSYS_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/syscall_test.rel $(BUILD)/syscall_selftest_asm.rel \
                     $(BUILD)/irq_test.rel $(BUILD)/irq_selftest_asm.rel \
                     $(BUILD)/ctc_test.rel \
                     $(BUILD)/romfs_test.rel \
                     $(BUILD)/process_test.rel
 PK_SUFFIX := -subsys-selftest
-ZOS_DRIVERS := sio console-serial
+KOS_DRIVERS := sio console-serial
 endif
 
 # console integration acceptance image (package 20, work package 42e):
@@ -158,22 +158,22 @@ endif
 # CONSOLE driver) from ROMFS, the integration target diagnostic reported
 # over the direct early SIO, then the ESC c check program, which resets
 # the V9958 display, prints its line and hands the console to the
-# unchanged M7 `monitor.zex` for the human HID/V9958 session.  This is
+# unchanged M7 `monitor.exe` for the human HID/V9958 session.  This is
 # the image the final physical acceptance gate builds and flashes.
 # Work package 42d merged the IOC, HID, V9958 and console acceptance
 # images into it: the three device diagnostics and the console session
 # run in this one image, and tests/test_console_acceptance.py,
 # test_ioc_sim.py, test_hid_sim.py and test_v9958_sim.py replay it
 # (plus the production image, which no acceptance image may replace).
-ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)
-CFLAGS    += -DZOS_CONSOLE_INTEGRATION_SELFTEST=1
-CFLAGS    += -DZOS_IOC_SELFTEST=1 -DZOS_HID_SELFTEST=1 -DZOS_VIDEO_SELFTEST=1
+ifeq ($(KOS_CONSOLE_INTEGRATION_SELFTEST),1)
+CFLAGS    += -DKOS_CONSOLE_INTEGRATION_SELFTEST=1
+CFLAGS    += -DKOS_IOC_SELFTEST=1 -DKOS_HID_SELFTEST=1 -DKOS_VIDEO_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/console_integration_test.rel \
                     $(BUILD)/ioc_test.rel $(BUILD)/hid_test.rel \
                     $(BUILD)/video_test.rel
 PK_SUFFIX := -console-integration-selftest
-ZOS_BOOT_PROGRAM := /system/escc.zex
-ZOS_DRIVERS := sio ioc hid v9958 $(ZOS_CONSOLE)
+KOS_BOOT_PROGRAM := /system/escc.exe
+KOS_DRIVERS := sio ioc hid v9958 $(KOS_CONSOLE)
 endif
 
 # console-serial variant (work package 42e): the production image set with
@@ -181,20 +181,20 @@ endif
 # its own directory.  It boots the production-like store and the monitor;
 # the replay proves the monitor works on the serial lane.  The driver
 # loader's evidence rows are linked so the transcript pins the loaded set.
-ifeq ($(ZOS_CONSOLE_SERIAL_SELFTEST),1)
-CFLAGS    += -DZOS_DRIVER_TEST_EVIDENCE=1
+ifeq ($(KOS_CONSOLE_SERIAL_SELFTEST),1)
+CFLAGS    += -DKOS_DRIVER_TEST_EVIDENCE=1
 PK_SUFFIX := -console-serial-selftest
-ZOS_DRIVERS := sio ioc hid v9958 $(ZOS_CONSOLE) iocfat
+KOS_DRIVERS := sio ioc hid v9958 $(KOS_CONSOLE) iocfat
 endif
 
 # Required-console boot-failure variant (work package 42e): the same set and
 # drivers.man as the serial variant, but the ROMFS manifest omits the
 # console image.  The loader's lookup fails, and the boot must stop
 # explicitly on the early console (36.11) instead of falling back.
-ifeq ($(ZOS_CONSOLE_SERIAL_FAIL_SELFTEST),1)
-CFLAGS    += -DZOS_DRIVER_TEST_EVIDENCE=1
+ifeq ($(KOS_CONSOLE_SERIAL_FAIL_SELFTEST),1)
+CFLAGS    += -DKOS_DRIVER_TEST_EVIDENCE=1
 PK_SUFFIX := -console-serial-fail-selftest
-ZOS_DRIVERS := sio ioc hid v9958 $(ZOS_CONSOLE) iocfat
+KOS_DRIVERS := sio ioc hid v9958 $(KOS_CONSOLE) iocfat
 endif
 
 # Required-driver init-failure variant (work package 45): the boot set is
@@ -203,35 +203,35 @@ endif
 # loader refuses the image and the boot must stop explicitly on the early
 # console (36.11) - the init-status half of the required-driver failure
 # row, which the missing-image store of 42e does not exercise.
-ifeq ($(ZOS_DRIVER_INIT_FAIL_SELFTEST),1)
+ifeq ($(KOS_DRIVER_INIT_FAIL_SELFTEST),1)
 PK_SUFFIX := -driver-init-fail-selftest
-ZOS_DRIVERS := init_fail
+KOS_DRIVERS := init_fail
 DRV_MANIFEST_DIR := tests/console/manifests
 endif
 
 # Filesystem outcome image (work package 42b, correction 01).  The
 # production boot set (SIO and IOC, so the FS2 transport is the real one)
-# plus `iocfat.zmod` as a bank-6 driver publishing `/fs`, the monitor and
-# two SDK programs: the checks run in `/system/fs_selftest.zex`, which
-# SYS_EXECs `/system/fs_child.zex` for the nested-exec and handle-release
+# plus `iocfat.mod` as a bank-6 driver publishing `/fs`, the monitor and
+# two SDK programs: the checks run in `/system/fs_selftest.exe`, which
+# SYS_EXECs `/system/fs_child.exe` for the nested-exec and handle-release
 # outcomes.  The simulator's FS2 peer serves the MCU side, so the same
 # image runs on hardware against a real SD card.
-ifeq ($(ZOS_FS_SELFTEST),1)
+ifeq ($(KOS_FS_SELFTEST),1)
 PK_SUFFIX := -fs-selftest
-ZOS_BOOT_PROGRAM := /system/fs_selftest.zex
-ZOS_DRIVERS := sio ioc console-serial iocfat
+KOS_BOOT_PROGRAM := /system/fs_selftest.exe
+KOS_DRIVERS := sio ioc console-serial iocfat
 endif
 
 # Extended-memory outcome image (work package 43): the production boot
 # path with the SIO/console driver set and the SDK outcome program
-# booting as /system/xmem_selftest.zex, which SYS_EXECs
-# /system/xmem_child.zex from a path in its own far aperture.  The
+# booting as /system/xmem_selftest.exe, which SYS_EXECs
+# /system/xmem_child.exe from a path in its own far aperture.  The
 # aperture is hardware-authoritative: the owner runs this image on the
-# board (architecture 37, far code and data rows without ZEX v2).
-ifeq ($(ZOS_XMEM_SELFTEST),1)
+# board (architecture 37, far code and data rows without EXE v2).
+ifeq ($(KOS_XMEM_SELFTEST),1)
 PK_SUFFIX := -xmem-selftest
-ZOS_BOOT_PROGRAM := /system/xmem_selftest.zex
-ZOS_DRIVERS := sio console-serial
+KOS_BOOT_PROGRAM := /system/xmem_selftest.exe
+KOS_DRIVERS := sio console-serial
 endif
 
 # Nucleus-layout acceptance image (work package 38): the production boot
@@ -240,13 +240,13 @@ endif
 # selected, and a cold-half caller exercises the fixed upcall shim against
 # a stub installed in bank 6.  SIO-only boot set, like the subsystem
 # image: the test objects own the cold half's slack.
-ifeq ($(ZOS_NUCLEUS_SELFTEST),1)
-CFLAGS    += -DZOS_NUCLEUS_SELFTEST=1
+ifeq ($(KOS_NUCLEUS_SELFTEST),1)
+CFLAGS    += -DKOS_NUCLEUS_SELFTEST=1
 TARGET_TEST_OBJS += $(BUILD)/nucleus_test.rel \
                     $(BUILD)/nucleus_selftest_asm.rel \
                     $(BUILD)/ctc_test.rel
 PK_SUFFIX := -nucleus-selftest
-ZOS_DRIVERS := sio console-serial
+KOS_DRIVERS := sio console-serial
 endif
 
 # IPC substrate acceptance image (work package 39, M10 stage 3; driver
@@ -254,7 +254,7 @@ endif
 # IPC substrate and the resident driver loader linked in, the six
 # synthetic drivers packed as real driver images in the recovery store
 # and loaded from the boot manifest, and the SDK client program booting as
-# /system/ipc.zex.  The substrate and the boot gate are fixed-required
+# /system/ipc.exe.  The substrate and the boot gate are fixed-required
 # (config/residency.json), the loader is cold code, and the stage-4/5
 # `moves` objects fill what the loader leaves: the cold half is nearly
 # full, so vfs_path and vfs_workspace overflow into the fixed core's
@@ -267,8 +267,8 @@ IPC_DIR   := tests/target/ipc
 # object.
 IPC_COLD_EXTRA_CSV :=
 
-ifeq ($(ZOS_IPC_SELFTEST),1)
-CFLAGS    += -DZOS_IPC_SELFTEST=1 -Itests/target/include
+ifeq ($(KOS_IPC_SELFTEST),1)
+CFLAGS    += -DKOS_IPC_SELFTEST=1 -Itests/target/include
 ASFLAGS   += -I$(BUILD)
 PK_SUFFIX := -ipc-selftest
 # The substrate and the loader are production-linked objects now (OBJS
@@ -277,7 +277,7 @@ PK_SUFFIX := -ipc-selftest
 IPC_FIXED_OBJS := $(IPC_SUBSTRATE_OBJS)
 # No image-specific placement override: use the production cold set.
 COLD_EXTRA_CSV :=
-ZOS_DRIVERS := sio console-serial
+KOS_DRIVERS := sio console-serial
 endif
 
 # Namespace and handle acceptance image (work package 42a, correction 01).
@@ -291,21 +291,21 @@ endif
 #   * the client program is an ordinary SDK program that checks its own
 #     results and prints them (`tests/target/ns`).
 NS_DIR   := tests/target/ns
-ifeq ($(ZOS_NS_SELFTEST),1)
+ifeq ($(KOS_NS_SELFTEST),1)
 CFLAGS    += -Itests/target/include
 PK_SUFFIX := -ns-selftest
 # sio and console are the real drivers whose publications the DEVICE
 # table carries (`/dev/serial/0`, `/dev/console`); `nsdev` is the test
 # double that adds a third type and a second grouping container
 # (tests/target/ns/nsdev.c).
-ZOS_DRIVERS := sio console-serial nsdev
+KOS_DRIVERS := sio console-serial nsdev
 DRV_MANIFEST_DIR := tests/ns/manifests
-ZOS_BOOT_PROGRAM := /system/ns.zex
+KOS_BOOT_PROGRAM := /system/ns.exe
 # The object family links where production links it (config/residency.json
 # carries vfs_router, vfs_dev, vfs_fs, vfs_system and object as `cold`);
 # the shared runner and the guard the other acceptance images use come
 # with it.
-ZOS_VFS_WS_GUARD := 1
+KOS_VFS_WS_GUARD := 1
 # The family itself compiles cold (its production tier), and so do the
 # `moves` objects that still hold the handle pool and the path/CWD
 # machinery it calls: this image's cold half has the room, and it is the
@@ -319,13 +319,13 @@ endif
 # kernel define and no target test object -- the image differs from
 # production only in the boot-program constant and in the recovery
 # manifest, which is the point of the demo.
-ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
+ifeq ($(KOS_HELLOWORLD_IMAGE),1)
 PK_SUFFIX := -helloworld
 # The demo's store carries the production console stack and no filesystem
 # driver, so the boot manifest must list exactly that set: inheriting the
-# production default made the loader fail on the `iocfat.zmod` its
+# production default made the loader fail on the `iocfat.mod` its
 # manifest does not pack (work package 42d).
-ZOS_DRIVERS := sio ioc hid v9958 $(ZOS_CONSOLE)
+KOS_DRIVERS := sio ioc hid v9958 $(KOS_CONSOLE)
 endif
 
 # Hardware-smoke host sync (kernel/main.c): the IOC smoke image waits
@@ -333,18 +333,18 @@ endif
 # because this bench's reset line also resets the USB bridge.  Only
 # diagnostic images enable it; production and every other acceptance
 # image compile the gate out byte-identically.
-ifeq ($(ZOS_SMOKE_HOST_SYNC),1)
-CFLAGS    += -DZOS_SMOKE_HOST_SYNC=1
+ifeq ($(KOS_SMOKE_HOST_SYNC),1)
+CFLAGS    += -DKOS_SMOKE_HOST_SYNC=1
 endif
 
 # The resident driver set the nucleus boots (kernel/main.c).  Production
 # loads them from the recovery store's `drivers.man` in the order the
 # manifest lists; an acceptance image that needs the serial-only fallback
 # or leaves out the filesystem driver lists its own set (see the per-image
-# blocks below), which is the M8 `ZOS_*_BOOT` gate's replacement.  The
+# blocks below), which is the M8 `KOS_*_BOOT` gate's replacement.  The
 # filesystem driver is one of them since 42b: IOC-FAT is a bank-6 driver
 # publishing `/fs`.
-ZOS_DRIVERS ?= sio ioc hid v9958 $(ZOS_CONSOLE) iocfat
+KOS_DRIVERS ?= sio ioc hid v9958 $(KOS_CONSOLE) iocfat
 
 OBJS      := $(ASM_OBJS) $(C_OBJS) $(BUILD)/ipc.rel $(IPC_COLD_OBJS) \
              $(BUILD)/vfs_router.rel $(BUILD)/vfs_dev.rel \
@@ -389,14 +389,14 @@ endif
 
 
 # Common acceptance wiring: the single guard plus the shared runner.
-ifneq ($(filter 1,$(ZOS_SUBSYS_SELFTEST) \
-	$(ZOS_CONSOLE_INTEGRATION_SELFTEST) \
-	$(ZOS_FS_SELFTEST) $(ZOS_NUCLEUS_SELFTEST) \
-	$(ZOS_IPC_SELFTEST)),)
-CFLAGS    += -DZOS_TARGET_TEST_BUILD=1 -DZOS_VFS_WS_GUARD=1 \
+ifneq ($(filter 1,$(KOS_SUBSYS_SELFTEST) \
+	$(KOS_CONSOLE_INTEGRATION_SELFTEST) \
+	$(KOS_FS_SELFTEST) $(KOS_NUCLEUS_SELFTEST) \
+	$(KOS_IPC_SELFTEST)),)
+CFLAGS    += -DKOS_TARGET_TEST_BUILD=1 -DKOS_VFS_WS_GUARD=1 \
 		-Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel \
-		$(if $(filter 1,$(ZOS_FS_SELFTEST)),,$(BUILD)/driver_client.rel) \
+		$(if $(filter 1,$(KOS_FS_SELFTEST)),,$(BUILD)/driver_client.rel) \
 		$(TARGET_TEST_OBJS)
 endif
 
@@ -432,7 +432,7 @@ RESIDENCY_FLAGS := --residency $(RESIDENCY) \
 # change the derived bases: it changes which objects link cold).
 RESIDENCY_DERIVE_FLAGS := --residency $(RESIDENCY)
 
-IMAGE := $(BUILD)/zephyros$(PK_SUFFIX).bin
+IMAGE := $(BUILD)/konaos$(PK_SUFFIX).bin
 MAME_IMAGE := $(BUILD)/zephyr80$(PK_SUFFIX).bin
 
 # Memory-layout source for this build: the platform memory.inc is the one
@@ -441,7 +441,7 @@ MAME_IMAGE := $(BUILD)/zephyr80$(PK_SUFFIX).bin
 # per-image geometry that every assembly unit and layout tool reads.
 GEOMETRY_DIR       := $(BUILD)/geometry
 GEOMETRY_PROBE_DIR := $(BUILD)/probe
-ASM_MEMORY_INC     := $(ZOS_PLATFORM_MEMORY_INC)
+ASM_MEMORY_INC     := $(KOS_PLATFORM_MEMORY_INC)
 GEOMETRY_MEMORY    := $(GEOMETRY_DIR)/memory.inc
 MEMORY_INC         := $(GEOMETRY_MEMORY)
 
@@ -456,17 +456,17 @@ MEMORY_INC         := $(GEOMETRY_MEMORY)
 
 GEOMETRY_INC       := $(GEOMETRY_DIR)/bank7_end.inc
 
-$(GEOMETRY_INC) $(GEOMETRY_MEMORY): $(BUILD)/zephyros.probe.map \
+$(GEOMETRY_INC) $(GEOMETRY_MEMORY): $(BUILD)/konaos.probe.map \
 		tools/mapcheck.py $(ASM_MEMORY_INC) $(RESIDENCY) | $(BUILD)
 	mkdir -p $(GEOMETRY_DIR)
-	$(PYTHON) tools/mapcheck.py geometry derive $(BUILD)/zephyros.probe.map \
+	$(PYTHON) tools/mapcheck.py geometry derive $(BUILD)/konaos.probe.map \
 		$(ASM_MEMORY_INC) $(GEOMETRY_INC) $(GEOMETRY_MEMORY) \
 		$(RESIDENCY_DERIVE_FLAGS)
 
-$(GEOMETRY_PROBE_DIR)/bank7_end.inc: $(ZOS_PLATFORM_MEMORY_INC) \
+$(GEOMETRY_PROBE_DIR)/bank7_end.inc: $(KOS_PLATFORM_MEMORY_INC) \
 		tools/mapcheck.py | $(BUILD)
 	mkdir -p $(GEOMETRY_PROBE_DIR)
-	$(PYTHON) tools/mapcheck.py geometry probe $(ZOS_PLATFORM_MEMORY_INC) $@
+	$(PYTHON) tools/mapcheck.py geometry probe $(KOS_PLATFORM_MEMORY_INC) $@
 
 $(GEOMETRY_PROBE_DIR)/bank7_end.rel: kernel/memory/bank7_end.asm \
 		$(GEOMETRY_PROBE_DIR)/bank7_end.inc | $(BUILD)
@@ -481,22 +481,22 @@ PROBE_OBJS := $(filter-out $(BUILD)/bank7_end.rel,$(OBJS) \
 		$(TARGET_TEST_OBJS) $(END_OBJ)) \
 		$(GEOMETRY_PROBE_DIR)/bank7_end.rel
 
-$(BUILD)/zephyros.probe.lk: $(PROBE_OBJS) | $(BUILD)
+$(BUILD)/konaos.probe.lk: $(PROBE_OBJS) | $(BUILD)
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
-	  printf '%s\n' '-i $(BUILD)/zephyros.probe.ihx'; \
+	  printf '%s\n' '-i $(BUILD)/konaos.probe.ihx'; \
 	  printf '%s\n' '-b _CODE = 0x2000' '-b _DATA = 0x5A00' \
-	                '-b _WINDOW = $(ZOS_REV13_WINDOW_BASE)' \
+	                '-b _WINDOW = $(KOS_REV13_WINDOW_BASE)' \
 	                '-b _WINDOW_DATA = 0xD800' '-b _COMMON = 0xE000'; \
 	  printf '%s\n' $(PROBE_OBJS); \
 	  printf '%s\n' '-e'; \
 	} > $@
 
-$(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
-		$(BUILD)/zephyros.probe.lk
-	$(SDLDZ80) -f $(BUILD)/zephyros.probe.lk
+$(BUILD)/konaos.probe.ihx $(BUILD)/konaos.probe.map: \
+		$(BUILD)/konaos.probe.lk
+	$(SDLDZ80) -f $(BUILD)/konaos.probe.lk
 
-.PHONY: all test check check-fast clean zmod-test romfs-test zex-test \
+.PHONY: all test check check-fast clean mod-test romfs-test exe-test \
 	monitor-test ioc-test hid-test v9958-test \
 	subsystem-selftest nucleus-selftest \
 	console-integration-selftest console-serial-selftest \
@@ -585,12 +585,12 @@ $(BUILD)/irq_code_end.rel: kernel/irq/code_end.asm | $(BUILD)
 
 $(BUILD)/early_console.rel: kernel/early_console.c \
 		kernel/include/kernel.h kernel/include/platform.h \
-		abi/zos/types.h platform/zephyr80/public/hardware.h | $(BUILD)
+		abi/kos/types.h platform/zephyr80/public/hardware.h | $(BUILD)
 	$(SDCC) $(CFLAGS) --codeseg COMMON $< -o $@
 
 $(BUILD)/panic.rel: kernel/panic.c \
 		kernel/include/kernel.h kernel/include/platform.h \
-		abi/zos/types.h platform/zephyr80/public/hardware.h | $(BUILD)
+		abi/kos/types.h platform/zephyr80/public/hardware.h | $(BUILD)
 	$(SDCC) $(CFLAGS) --codeseg COMMON $< -o $@
 
 $(BUILD)/main.rel: kernel/main.c kernel/include/kernel.h \
@@ -599,7 +599,7 @@ $(BUILD)/main.rel: kernel/main.c kernel/include/kernel.h \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/irq.rel: kernel/irq/irq.c kernel/include/irq_types.h \
-		abi/zos/types.h | $(BUILD)
+		abi/kos/types.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/irq_sources.rel: kernel/irq/ctc.c \
@@ -608,22 +608,22 @@ $(BUILD)/irq_sources.rel: kernel/irq/ctc.c \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/syscall.rel: kernel/syscall.c kernel/syscall/diag.h \
-		abi/zos/syscall.h abi/zos/errno.h \
+		abi/kos/syscall.h abi/kos/errno.h \
 		kernel/include/kernel.h kernel/include/process.h \
 		| $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/diag.rel: kernel/syscall/diag.c kernel/syscall/diag.h \
-		abi/zos/syscall.h kernel/include/process.h \
-		kernel/include/platform.h abi/zos/errno.h | $(BUILD)
+		abi/kos/syscall.h kernel/include/process.h \
+		kernel/include/platform.h abi/kos/errno.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # Extended-memory family (work package 43): the xmem syscall bodies, the
 # object table and the aperture token.  Cold code like the rest of the
 # syscall dispatcher (P = 0 while it runs).
 $(BUILD)/xmem.rel: kernel/syscall/xmem.c kernel/syscall/xmem.h \
-		abi/zos/xmem.h abi/zos/syscall.h kernel/include/process.h \
-		abi/zos/errno.h kernel/ipc/ipc.h | $(BUILD)
+		abi/kos/xmem.h abi/kos/syscall.h kernel/include/process.h \
+		abi/kos/errno.h kernel/ipc/ipc.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- M3 device/driver/driver objects (bank-7 code and data) -----------------
@@ -649,43 +649,43 @@ $(BUILD)/romfs.rel: kernel/romfs/romfs.c formats/include/romfs.h \
 # --- VFS objects (package 46 T4: one part per file) --------------------------
 
 $(BUILD)/vfs_path.rel: kernel/vfs/path.c kernel/vfs/vfs.h \
-		abi/zos/fs.h | $(BUILD)
+		abi/kos/fs.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_handles.rel: kernel/vfs/handles.c kernel/vfs/vfs.h \
-		abi/zos/fs.h \
-		kernel/include/process.h abi/zos/errno.h | $(BUILD)
+		abi/kos/fs.h \
+		kernel/include/process.h abi/kos/errno.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_workspace.rel: kernel/vfs/workspace.c kernel/vfs/vfs.h \
-		abi/zos/fs.h \
+		abi/kos/fs.h \
 		kernel/include/kernel.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_router.rel: kernel/vfs/router.c kernel/vfs/vfs.h \
-		abi/zos/object.h drivers/include/driver.h formats/include/romfs.h \
-		abi/zos/errno.h kernel/ipc/ipc.h kernel/syscall/diag.h | $(BUILD)
+		abi/kos/object.h drivers/include/driver.h formats/include/romfs.h \
+		abi/kos/errno.h kernel/ipc/ipc.h kernel/syscall/diag.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_dev.rel: kernel/vfs/dev.c kernel/vfs/vfs.h \
-		abi/zos/object.h abi/zos/errno.h kernel/lib/name.h | $(BUILD)
+		abi/kos/object.h abi/kos/errno.h kernel/lib/name.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_fs.rel: kernel/vfs/fs.c kernel/vfs/vfs.h \
-		abi/zos/fs.h abi/zos/protocol.h drivers/include/driver.h \
+		abi/kos/fs.h abi/kos/protocol.h drivers/include/driver.h \
 		kernel/ipc/ipc.h kernel/syscall/diag.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/vfs_system.rel: kernel/vfs/system.c kernel/vfs/vfs.h \
-		abi/zos/object.h abi/zos/protocol.h drivers/include/driver.h \
-		formats/include/romfs.h abi/zos/errno.h kernel/ipc/ipc.h \
+		abi/kos/object.h abi/kos/protocol.h drivers/include/driver.h \
+		formats/include/romfs.h abi/kos/errno.h kernel/ipc/ipc.h \
 		kernel/syscall/diag.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/object.rel: kernel/syscall/object.c kernel/syscall/object.h \
 		kernel/syscall/diag.h kernel/vfs/vfs.h \
-		abi/zos/object.h abi/zos/ipc.h abi/zos/syscall.h \
-		abi/zos/errno.h kernel/include/process.h | $(BUILD)
+		abi/kos/object.h abi/kos/ipc.h abi/kos/syscall.h \
+		abi/kos/errno.h kernel/include/process.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 
@@ -693,30 +693,30 @@ $(BUILD)/object.rel: kernel/syscall/object.c kernel/syscall/object.h \
 # --- M6 process lifecycle objects (bank-7 code and data) --------------------
 
 $(BUILD)/process.rel: kernel/process/process.c \
-		kernel/include/process.h formats/include/zex.h \
-		kernel/include/kernel.h abi/zos/errno.h | $(BUILD)
+		kernel/include/process.h formats/include/exe.h \
+		kernel/include/kernel.h abi/kos/errno.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/process_exec.rel: kernel/process/exec.c \
-		kernel/include/process.h formats/include/zex.h \
+		kernel/include/process.h formats/include/exe.h \
 		formats/include/romfs.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-# --- ZMOD modules (host-built, packed, embedded per-image catalogs) ----------
+# --- MOD modules (host-built, packed, embedded per-image catalogs) ----------
 # Every image packs its own module directory ($(BUILD)/modules): the packed
 # bytes are deterministic, so the same bytes reappear in any placement
 # build, and an image that boots a *different* resident-driver set or
 # carries its own fixtures cannot disturb another image's store.  The
 # canonical build keeps the historical build/modules/ path the host tests
 # read.  Each image embeds the boot module plus (in self-test builds) the
-# fixtures through a generated assembly blob emitted by tools/zmodpack.py.
+# fixtures through a generated assembly blob emitted by tools/modpack.py.
 
 MODULES   := $(BUILD)/modules
 # Every module sees the shared driver-facing roots and its own driver
 # directory context; no sibling driver's private path and no `.` (package
 # 46 T3).  A driver's local headers resolve through same-directory quote
 # includes.
-MOD_CFLAGS := -mz80 -c --nostdinc --Werror $(ZOS_SDCC_OPT) \
+MOD_CFLAGS := -mz80 -c --nostdinc --Werror $(KOS_SDCC_OPT) \
               -I abi -I drivers/include -I platform/zephyr80/public \
               -I $(BUILD) -I drivers/sio
 
@@ -725,8 +725,8 @@ $(MODULES):
 
 # --- bank-6 resident drivers (work package 41) ------------------------------
 # The SIO, IOC, HID, V9958 and console driver stacks are bank-6 drivers:
-# each is packed as a driver image (ZMOD module_type 2) into the recovery
-# store, listed by the boot manifest `drivers.man` (ZOS_DRIVERS, in load
+# each is packed as a driver image (MOD module_type 2) into the recovery
+# store, listed by the boot manifest `drivers.man` (KOS_DRIVERS, in load
 # order) and placed in bank 6 by the nucleus loader
 # (kernel/driver/driver_loader.c).  Per 36.6 the hot tier is _CODE with
 # its BSS in _DRIVER_IO (the one bank-6 range both the mode-11 window and
@@ -738,7 +738,7 @@ $(MODULES):
 # M8 modules used; the *_driver.c halves own the protocol dispatch and
 # init, the *_boot.c halves the boot tier.  Every image is a separate
 # object set, so each packed byte is identical across placement builds.
-DRV_CFLAGS := -mz80 -c --nostdinc --Werror $(ZOS_SDCC_OPT) \
+DRV_CFLAGS := -mz80 -c --nostdinc --Werror $(KOS_SDCC_OPT) \
               -I abi -I drivers/include -I platform/zephyr80/public \
               -I $(BUILD)
 DRV_HOT    := $(DRV_CFLAGS) --codeseg CODE --dataseg DRIVER_IO
@@ -749,7 +749,7 @@ DRV_BOOT   := $(DRV_CFLAGS) --codeseg BOOT --dataseg BOOT_DATA
 # drivers it composes (work package 42e: HID and VIDEO for the production
 # build, SERIAL for `console-serial`), and the filesystem driver last.
 DRV_NAMES := sio ioc hid v9958 console-v9958-hid console-serial iocfat
-DRV_ZMODS := $(addprefix $(MODULES)/,$(addsuffix .zmod,$(DRV_NAMES)))
+DRV_MODS := $(addprefix $(MODULES)/,$(addsuffix .mod,$(DRV_NAMES)))
 
 $(MODULES)/sio.rel: drivers/sio/sio.c drivers/sio/sio.h \
 		drivers/include/driver.h kernel/include/platform.h | $(MODULES)
@@ -824,14 +824,14 @@ $(MODULES)/v9958_font.rel: drivers/v9958/v9958_font.asm \
 # (work package 42e): the production HID-input/VIDEO-output image and the
 # SERIAL image.  Each packed container names its own object.
 $(MODULES)/console-v9958-hid.rel: drivers/console/console_proto.c \
-		drivers/include/driver.h abi/zos/protocol.h \
-		abi/zos/errno.h | $(MODULES)
+		drivers/include/driver.h abi/kos/protocol.h \
+		abi/kos/errno.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) $< -o $@
 
 $(MODULES)/console-serial.rel: drivers/console/console_proto.c \
-		drivers/include/driver.h abi/zos/protocol.h \
-		abi/zos/errno.h | $(MODULES)
-	$(SDCC) $(DRV_HOT) -DZOS_CONSOLE_SERIAL=1 $< -o $@
+		drivers/include/driver.h abi/kos/protocol.h \
+		abi/kos/errno.h | $(MODULES)
+	$(SDCC) $(DRV_HOT) -DKOS_CONSOLE_SERIAL=1 $< -o $@
 
 # The filesystem driver's hot image: the same source the M9 resident
 # provider used, rebuilt as bank-6 driver code.  Its FS2 transfer staging,
@@ -839,8 +839,8 @@ $(MODULES)/console-serial.rel: drivers/console/console_proto.c \
 # dependency is host-resolved at pack time (`depends`).
 $(MODULES)/iocfat.rel: drivers/iocfat/iocfat.c \
 		drivers/include/driver.h drivers/include/ioc.h \
-		abi/zos/fs.h abi/zos/object.h abi/zos/protocol.h \
-		abi/zos/errno.h | $(MODULES)
+		abi/kos/fs.h abi/kos/object.h abi/kos/protocol.h \
+		abi/kos/errno.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) $< -o $@
 
 $(MODULES)/sdcc_indirect_calls.rel: drivers/runtime/sdcc_indirect_calls.asm \
@@ -855,7 +855,7 @@ IPC_MODDIR := $(MODULES)/ipc-modules
 IPC_DRIVER_NAMES := ioc fat vfs echo con irqx
 IPC_HOT_OBJS := $(addprefix $(IPC_MODDIR)/,$(addsuffix .rel,$(IPC_DRIVER_NAMES)))
 IPC_BOOT_OBJS := $(addprefix $(IPC_MODDIR)/,$(addsuffix _boot.rel,$(IPC_DRIVER_NAMES)))
-IPC_ZMODS := $(addprefix $(IPC_MODDIR)/ipc-,$(addsuffix .zmod,$(IPC_DRIVER_NAMES)))
+IPC_MODS := $(addprefix $(IPC_MODDIR)/ipc-,$(addsuffix .mod,$(IPC_DRIVER_NAMES)))
 
 DRV_OBJS := $(MODULES)/sdcc_indirect_calls.rel \
 	$(MODULES)/sio.rel $(MODULES)/sio_io.rel $(MODULES)/sio_driver.rel \
@@ -874,9 +874,9 @@ DRV_OBJS := $(MODULES)/sdcc_indirect_calls.rel \
 # are all host-computed, so one pack reads every member's objects.  Both
 # pack rules below wait for the whole set, or a parallel build could link
 # an image against a half-built one.
-DRV_SET_OBJS = $(DRV_OBJS) $(if $(filter 1,$(ZOS_NS_SELFTEST)),\
+DRV_SET_OBJS = $(DRV_OBJS) $(if $(filter 1,$(KOS_NS_SELFTEST)),\
 	$(MODULES)/nsdev.rel $(MODULES)/nsdev_boot.rel) \
-	$(if $(filter 1,$(ZOS_IPC_SELFTEST)),\
+	$(if $(filter 1,$(KOS_IPC_SELFTEST)),\
 	$(IPC_HOT_OBJS) $(IPC_BOOT_OBJS) \
 	$(IPC_MODDIR)/con_slow.rel $(IPC_MODDIR)/sdcc_indirect_calls.rel)
 
@@ -896,24 +896,24 @@ DRV_SET_OBJS = $(DRV_OBJS) $(if $(filter 1,$(ZOS_NS_SELFTEST)),\
 DRV_MANIFEST_DIR ?=
 # One line: a `\` continuation would fold a space into every expansion.
 DRV_MANIFEST = $(if $(DRV_MANIFEST_DIR),$(DRV_MANIFEST_DIR)/$1.json,$(if $(filter console-%,$1),drivers/console/$1.json,drivers/$1/$1.json))
-DRV_PACK_SET = $(foreach drv,$(ZOS_DRIVERS),$(call DRV_MANIFEST,$(drv))) \
-	$(if $(filter 1,$(ZOS_IPC_SELFTEST)),$(addprefix $(IPC_DIR)/manifests/,$(addsuffix .json,$(IPC_DRIVER_NAMES))))
-DRV_PACK_IMAGES = $(foreach drv,$(ZOS_DRIVERS),$(MODULES):$(call DRV_MANIFEST,$(drv))) \
-	$(if $(filter 1,$(ZOS_IPC_SELFTEST)),$(addprefix $(IPC_MODDIR):,$(addprefix $(IPC_DIR)/manifests/,$(addsuffix .json,$(IPC_DRIVER_NAMES)))))
+DRV_PACK_SET = $(foreach drv,$(KOS_DRIVERS),$(call DRV_MANIFEST,$(drv))) \
+	$(if $(filter 1,$(KOS_IPC_SELFTEST)),$(addprefix $(IPC_DIR)/manifests/,$(addsuffix .json,$(IPC_DRIVER_NAMES))))
+DRV_PACK_IMAGES = $(foreach drv,$(KOS_DRIVERS),$(MODULES):$(call DRV_MANIFEST,$(drv))) \
+	$(if $(filter 1,$(KOS_IPC_SELFTEST)),$(addprefix $(IPC_MODDIR):,$(addprefix $(IPC_DIR)/manifests/,$(addsuffix .json,$(IPC_DRIVER_NAMES)))))
 
 # One rule per driver container, keyed on the manifest the driver owns.
-define zmod_pack_rule
-$(MODULES)/$(1).zmod: $(call DRV_MANIFEST,$(1)) $(DRV_SET_OBJS) \
-		$(DRV_PACK_SET) tools/zmodpack.py | $(MODULES)
-	$(PYTHON) tools/zmodpack.py pack $$< $$@ --objdir $(MODULES) \
+define mod_pack_rule
+$(MODULES)/$(1).mod: $(call DRV_MANIFEST,$(1)) $(DRV_SET_OBJS) \
+		$(DRV_PACK_SET) tools/modpack.py | $(MODULES)
+	$(PYTHON) tools/modpack.py pack $$< $$@ --objdir $(MODULES) \
 		--set $(DRV_PACK_IMAGES) \
 		--report $(MODULES)/$(1).report.json
 
 endef
-$(foreach drv,$(DRV_NAMES),$(eval $(call zmod_pack_rule,$(drv))))
+$(foreach drv,$(DRV_NAMES),$(eval $(call mod_pack_rule,$(drv))))
 
 # The driver set an image boots, resolved to its packed images.
-DRV_SET_ZMODS = $(foreach drv,$(ZOS_DRIVERS),$(MODULES)/$(drv).zmod)
+DRV_SET_MODS = $(foreach drv,$(KOS_DRIVERS),$(MODULES)/$(drv).mod)
 
 # ROMFS font asset (DATA): the reviewable .inc source is the pinned
 # reference font; fontpack.py verifies the exact 2048 bytes and the
@@ -932,8 +932,8 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/hid_selftest.h \
 		tests/target/include/video_selftest.h \
 		tests/target/include/console_integration_selftest.h \
-		abi/zos/ipc.h \
-		formats/include/zmod.h | $(BUILD)
+		abi/kos/ipc.h \
+		formats/include/mod.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # The resident-driver acceptance client every M10 driver diagnostic links
@@ -941,7 +941,7 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 $(BUILD)/driver_client.rel: tests/target/support/driver_client.c \
 		tests/target/include/driver_client.h \
 		kernel/include/kernel.h kernel/include/process.h \
-		abi/zos/protocol.h drivers/include/driver.h \
+		abi/kos/protocol.h drivers/include/driver.h \
 		kernel/ipc/ipc.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
@@ -960,7 +960,7 @@ $(BUILD)/ctc_test.rel: tests/target/support/ctc_test.c \
 # driver images packed into the recovery store and loaded from the boot
 # manifest, not fixture blobs.
 $(BUILD)/ipc.rel: kernel/ipc/ipc.c kernel/ipc/ipc.h \
-		drivers/include/driver.h abi/zos/ipc.h \
+		drivers/include/driver.h abi/kos/ipc.h \
 		kernel/include/irq_types.h kernel/include/platform.h \
 		kernel/include/kernel.h kernel/include/process.h \
 		kernel/irq/irq_private.h kernel/memory/upcall.h \
@@ -977,9 +977,9 @@ $(BUILD)/ipc_common.rel: kernel/ipc/ipc_common.asm \
 
 
 $(BUILD)/driver_loader.rel: kernel/driver/driver_loader.c \
-		formats/include/zmod.h drivers/include/driver.h \
+		formats/include/mod.h drivers/include/driver.h \
  formats/include/romfs.h \
-		abi/zos/errno.h kernel/include/kernel.h \
+		abi/kos/errno.h kernel/include/kernel.h \
 		kernel/include/process.h kernel/ipc/ipc.h \
 		kernel/memory/upcall.h kernel/syscall/diag.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
@@ -1009,7 +1009,7 @@ $(BUILD)/irq_selftest_asm.rel: tests/target/irq/irq_entry.asm \
 
 $(BUILD)/nucleus_test.rel: tests/target/nucleus/nucleus_test.c \
 		kernel/include/irq_types.h kernel/include/kernel.h \
-		kernel/include/platform.h abi/zos/diag.h \
+		kernel/include/platform.h abi/kos/diag.h \
 		kernel/memory/upcall.h tests/target/include/nucleus_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
@@ -1026,23 +1026,23 @@ $(BUILD)/romfs_test.rel: tests/target/romfs/romfs_test.c \
 
 # The process acceptance layout header is generated from the packed
 # containers the process selftest runs (work/28c-m9-user-sdk, package 44a:
-# the SDK-produced zextest plus the loader-outcome programs).  Reading the
+# the SDK-produced exetest plus the loader-outcome programs).  Reading the
 # containers themselves means the test can only agree with what the loader
 # reads.  No program includes this header, so the generation cannot cycle
 # through a program build.
-$(BUILD)/process_expect.inc: $(BUILD)/user/zextest.zex \
-		$(BUILD)/user/zex2probe.zex $(BUILD)/user/zex2seg.zex \
-		$(BUILD)/user/zex2big.zex \
+$(BUILD)/process_expect.inc: $(BUILD)/user/exetest.exe \
+		$(BUILD)/user/exe2probe.exe $(BUILD)/user/exe2seg.exe \
+		$(BUILD)/user/exe2big.exe \
 		tests/subsys/gen_process_expect.py \
-		tests/subsys/gen_zex_fixtures.py tools/zexpack.py | $(BUILD)
+		tests/subsys/gen_exe_fixtures.py tools/exepack.py | $(BUILD)
 	$(PYTHON) tests/subsys/gen_process_expect.py $@ \
-		PROCESS_ZEX=$(BUILD)/user/zextest.zex \
-		ZEX2_PROBE=$(BUILD)/user/zex2probe.zex \
-		ZEX2_SEG=$(BUILD)/user/zex2seg.zex \
-		ZEX2_BIG=$(BUILD)/user/zex2big.zex
+		PROCESS_EXE=$(BUILD)/user/exetest.exe \
+		EXE2_PROBE=$(BUILD)/user/exe2probe.exe \
+		EXE2_SEG=$(BUILD)/user/exe2seg.exe \
+		EXE2_BIG=$(BUILD)/user/exe2big.exe
 
 $(BUILD)/process_test.rel: tests/target/process/process_test.c \
-		kernel/include/process.h abi/zos/syscall.h \
+		kernel/include/process.h abi/kos/syscall.h \
 		kernel/include/kernel.h \
 		tests/target/include/process_selftest.h $(BUILD)/process_expect.inc | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
@@ -1071,7 +1071,7 @@ $(BUILD)/video_test.rel: tests/target/video/v9958_test.c \
 
 $(BUILD)/console_integration_test.rel: tests/target/console/integration_test.c \
 		kernel/include/kernel.h drivers/include/ioc.h \
-		abi/zos/protocol.h \
+		abi/kos/protocol.h \
 		tests/target/include/driver_client.h \
 		tests/target/include/console_integration_selftest.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
@@ -1083,95 +1083,95 @@ $(BUILD)/console_integration_test.rel: tests/target/console/integration_test.c \
 
 
 # --- native user programs (SDK, work/28c-m9-user-sdk) ------------------------
-# Every ZEX is built by one zex_program line from user/sdk/zex.mk.  The
+# Every EXE is built by one exe_program line from user/sdk/exe.mk.  The
 # sources compile with exactly -I abi -I user/sdk/include plus their own
-# directory (extended only by explicit test-owned INCLUDES), crt0 and libzos
-# are linked, the manifest is generated from the link map, and zexpack packs
-# and validates build/user/<name>.zex.  STAGE=1 additionally copies the
+# directory (extended only by explicit test-owned INCLUDES), crt0 and libkos
+# are linked, the manifest is generated from the link map, and exepack packs
+# and validates build/user/<name>.exe.  STAGE=1 additionally copies the
 # result to build/modules, which the recovery manifests consume.
 
-include user/sdk/zex.mk
+include user/sdk/exe.mk
 
-# The helloworld sub-project declares its own demos (one zex_program line
+# The helloworld sub-project declares its own demos (one exe_program line
 # per program) next to their sources.
 include user/helloworld/Makefile
 
 # The monitor calls the SDK's diag wrappers (`diag_mem_read`, ...) and the
-# SDK's diag header is the only place they are declared: `zos.h` no longer
+# SDK's diag header is the only place they are declared: `kos.h` no longer
 # includes it (package 46 T6), so the monitor names the SDK's diag
 # directory, which `"diag.h"` resolves to.
-$(eval $(call zex_program,monitor,user/monitor,\
+$(eval $(call exe_program,monitor,user/monitor,\
 	monitor.c monitor_exec.c monitor_mem.c monitor_io.c hexfmt.c \
 	hexdump.c status.c,\
-	STACK=512,STAGE=1,INCLUDES=user/sdk/include/zos))
+	STACK=512,STAGE=1,INCLUDES=user/sdk/include/kos))
 
-$(eval $(call zex_program,zextest,tests/target/process,\
-	zextest.c zextest_sp.asm,STACK=256,STAGE=1,\
+$(eval $(call exe_program,exetest,tests/target/process,\
+	exetest.c exetest_sp.asm,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include))
 
-# ZEX v2 loader-outcome programs (work package 44a, test only): the
+# EXE v2 loader-outcome programs (work package 44a, test only): the
 # subsystem process selftest runs them to prove the 36.19 zero-only rule
 # (BSS zeroed, bank not cleared), the DATA-segment wiring and the
-# container-over-64-KiB path.  zex2seg and zex2big attach DATA segment
+# container-over-64-KiB path.  exe2seg and exe2big attach DATA segment
 # payloads through SEGMENTS=; the payload files are generated next to the
 # program's manifest so the packer resolves them against --objdir.
-ZEX2_SEG_DIR := $(ZEX_USER_ROOT)/zex2seg
-ZEX2_BIG_DIR := $(ZEX_USER_ROOT)/zex2big
+EXE2_SEG_DIR := $(EXE_USER_ROOT)/exe2seg
+EXE2_BIG_DIR := $(EXE_USER_ROOT)/exe2big
 
-$(ZEX2_SEG_DIR)/zex2seg.segments.json: tests/subsys/gen_zex2_segments.py
-	$(PYTHON) tests/subsys/gen_zex2_segments.py seg $(ZEX2_SEG_DIR)
+$(EXE2_SEG_DIR)/exe2seg.segments.json: tests/subsys/gen_exe2_segments.py
+	$(PYTHON) tests/subsys/gen_exe2_segments.py seg $(EXE2_SEG_DIR)
 
-$(ZEX2_BIG_DIR)/zex2big.segments.json: tests/subsys/gen_zex2_segments.py
-	$(PYTHON) tests/subsys/gen_zex2_segments.py big $(ZEX2_BIG_DIR)
+$(EXE2_BIG_DIR)/exe2big.segments.json: tests/subsys/gen_exe2_segments.py
+	$(PYTHON) tests/subsys/gen_exe2_segments.py big $(EXE2_BIG_DIR)
 
-$(eval $(call zex_program,zex2probe,tests/target/process,\
-	zex2probe.c,STACK=256,STAGE=1,\
+$(eval $(call exe_program,exe2probe,tests/target/process,\
+	exe2probe.c,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include))
 
-$(eval $(call zex_program,zex2seg,tests/target/process,\
-	zex2seg.c,STACK=256,STAGE=1,\
+$(eval $(call exe_program,exe2seg,tests/target/process,\
+	exe2seg.c,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include,\
-	SEGMENTS=$(ZEX2_SEG_DIR)/zex2seg.segments.json))
+	SEGMENTS=$(EXE2_SEG_DIR)/exe2seg.segments.json))
 
-$(eval $(call zex_program,zex2big,tests/target/process,\
-	zex2big.c,STACK=256,STAGE=1,\
+$(eval $(call exe_program,exe2big,tests/target/process,\
+	exe2big.c,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include,\
-	SEGMENTS=$(ZEX2_BIG_DIR)/zex2big.segments.json))
+	SEGMENTS=$(EXE2_BIG_DIR)/exe2big.segments.json))
 
 # Filesystem outcome programs (work package 42b, correction 01): the checks
-# the image boots (`ZOS_BOOT_PROGRAM=/system/fs_selftest.zex`) and the child
+# the image boots (`KOS_BOOT_PROGRAM=/system/fs_selftest.exe`) and the child
 # it SYS_EXECs.  Both are ordinary SDK programs.
-$(eval $(call zex_program,fs_selftest,tests/fs,\
+$(eval $(call exe_program,fs_selftest,tests/fs,\
 	fs_selftest.c,STACK=384,STAGE=1))
 
-$(eval $(call zex_program,fs_child,tests/fs,\
+$(eval $(call exe_program,fs_child,tests/fs,\
 	fs_child.c,STACK=192,STAGE=1))
 
 # The hardware exerciser (work package 45b): the production store's
-# `/system/hwtest.zex` runner, started from the monitor's X command.  It
+# `/system/hwtest.exe` runner, started from the monitor's X command.  It
 # drives the programs above and the xmem family below from the store, so
 # it carries no checks of its own beyond the namespace stage.
-$(eval $(call zex_program,hwtest,tests/hwtest,\
+$(eval $(call exe_program,hwtest,tests/hwtest,\
 	hwtest.c,STACK=256,STAGE=1))
 
 # Extended-memory outcome programs (work package 43, far code package 44b):
-# the checks the image boots (`ZOS_BOOT_PROGRAM=/system/xmem_selftest.zex`),
+# the checks the image boots (`KOS_BOOT_PROGRAM=/system/xmem_selftest.exe`),
 # the child it SYS_EXECs while its aperture is open, and the far-code
 # program it SYS_EXECs last.  All are ordinary SDK programs; xmem_far
 # links the far half into the _FAR_CODE area at 8000h (FAR=) and its
 # container declares two FAR_CODE segments (SEGMENTS=).
-$(eval $(call zex_program,xmem_selftest,tests/xmem,\
+$(eval $(call exe_program,xmem_selftest,tests/xmem,\
 	xmem_selftest.c,STACK=512,STAGE=1))
 
-$(eval $(call zex_program,xmem_child,tests/xmem,\
+$(eval $(call exe_program,xmem_child,tests/xmem,\
 	xmem_child.c,STACK=256,STAGE=1))
 
-$(eval $(call zex_program,xmem_far,tests/xmem,\
+$(eval $(call exe_program,xmem_far,tests/xmem,\
 	xmem_far.c,STACK=384,STAGE=1,\
 	FAR=xmem_far_code.c,\
 	SEGMENTS=tests/xmem/xmem_far.segments.json))
 
-$(eval $(call zex_program,ipc,tests/target/ipc,\
+$(eval $(call exe_program,ipc,tests/target/ipc,\
 	ipc.c,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include:user/sdk/src))
 
@@ -1179,21 +1179,21 @@ $(eval $(call zex_program,ipc,tests/target/ipc,\
 # program of the IPC acceptance image.  NO_CRT0 with a custom entry and
 # LOWBASE=0x0300 and CODEBASE=0x0344 put the SDK's 93-byte low-data area
 # immediately above 0100h-02FFh, which is left as
-# a plain 512-byte buffer: the only way a ZEX image can name the caller
+# a plain 512-byte buffer: the only way a EXE image can name the caller
 # window itself as a copy destination.
-$(eval $(call zex_program,ipccopy,tests/target/ipc,\
+$(eval $(call exe_program,ipccopy,tests/target/ipc,\
 	ipccopy.c ipccopy_entry.asm,NO_CRT0=1,ENTRY=ipc_copy_entry,\
 	LOWBASE=0x0300,CODEBASE=0x0344,STAGE=1,\
 	INCLUDES=tests/target/include))
 
 # Namespace acceptance programs (work package 42a): the client the image
-# boots (ZOS_BOOT_PROGRAM=/system/ns.zex) and the child it SYS_EXECs.  Both
+# boots (KOS_BOOT_PROGRAM=/system/ns.exe) and the child it SYS_EXECs.  Both
 # are ordinary SDK programs.
-$(eval $(call zex_program,ns,tests/ns,\
+$(eval $(call exe_program,ns,tests/ns,\
 	ns.c,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include))
 
-$(eval $(call zex_program,nschild,tests/ns,\
+$(eval $(call exe_program,nschild,tests/ns,\
 	nschild.c,STACK=192,STAGE=1,\
 	INCLUDES=tests/target/include))
 
@@ -1203,130 +1203,130 @@ $(eval $(call zex_program,nschild,tests/ns,\
 # console, then hands the console to the monitor, so the owner can watch
 # the board's display reset.  It is acceptance content: nothing packs it
 # into the production store.
-$(eval $(call zex_program,escc,tests/console,\
+$(eval $(call exe_program,escc,tests/console,\
 	escc.c,STACK=256,STAGE=1))
 
-# Deterministic malformed ZEX containers (see
-# tests/subsys/gen_zex_fixtures.py) shared by the subsystem acceptance
-# manifest; the stamp makes `make clean && make zex-test` self-contained.
-$(MODULES)/zex-fixtures.stamp: tests/subsys/gen_zex_fixtures.py \
-		tools/zexpack.py | $(MODULES)
-	$(PYTHON) tests/subsys/gen_zex_fixtures.py $(MODULES)
+# Deterministic malformed EXE containers (see
+# tests/subsys/gen_exe_fixtures.py) shared by the subsystem acceptance
+# manifest; the stamp makes `make clean && make exe-test` self-contained.
+$(MODULES)/exe-fixtures.stamp: tests/subsys/gen_exe_fixtures.py \
+		tools/exepack.py | $(MODULES)
+	$(PYTHON) tests/subsys/gen_exe_fixtures.py $(MODULES)
 	touch $@
 
 # --- ROMFS recovery store (ROM pages 2-7) ------------------------------------
 # Every image packs a manifest; the subsystem acceptance image adds the
-# loader/ROMFS/ZEX fixtures, and tests/test_romfs_sim.py patches the packed
+# loader/ROMFS/EXE fixtures, and tests/test_romfs_sim.py patches the packed
 # subsystem image in place to exercise the kernel's validation (work
 # package 42d: the corrupt-store image is gone, its outcome is that test).
-ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)
+ifeq ($(KOS_CONSOLE_INTEGRATION_SELFTEST),1)
 # Console integration acceptance store: the full device driver set (the
 # filesystem driver is compiled out of this image, so its entry is
 # absent), the monitor launcher and the ESC c check program the image
-# boots (ZOS_BOOT_PROGRAM=/system/escc.zex, package 42e).  Work package
+# boots (KOS_BOOT_PROGRAM=/system/escc.exe, package 42e).  Work package
 # 42d merged the IOC, HID, video and console acceptance stores into it.
 ROMFS_MANIFEST := tests/console/manifest-integration.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/escc.zex
-else ifeq ($(ZOS_SUBSYS_SELFTEST),1)
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe $(MODULES)/escc.exe
+else ifeq ($(KOS_SUBSYS_SELFTEST),1)
 ROMFS_MANIFEST := tests/subsys/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/romfs_crosspage.bin \
-		$(MODULES)/zextest.zex $(MODULES)/zex2probe.zex \
-		$(MODULES)/zex2seg.zex $(MODULES)/zex2big.zex \
-		$(MODULES)/zex-fixtures.stamp
-else ifeq ($(ZOS_NUCLEUS_SELFTEST),1)
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe $(MODULES)/romfs_crosspage.bin \
+		$(MODULES)/exetest.exe $(MODULES)/exe2probe.exe \
+		$(MODULES)/exe2seg.exe $(MODULES)/exe2big.exe \
+		$(MODULES)/exe-fixtures.stamp
+else ifeq ($(KOS_NUCLEUS_SELFTEST),1)
 # Nucleus-layout acceptance store (work package 42d): the same SIO-only
 # boot set and fixtures as the subsystem image, which is the store its
 # boot path loads.  Before 42d the row fell through to the production
 # manifest while packing only this set, so the pack could not find the
 # driver images it did not select.
 ROMFS_MANIFEST := tests/subsys/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/romfs_crosspage.bin \
-		$(MODULES)/zextest.zex $(MODULES)/zex2probe.zex \
-		$(MODULES)/zex2seg.zex $(MODULES)/zex2big.zex \
-		$(MODULES)/zex-fixtures.stamp
-else ifeq ($(ZOS_CONSOLE_SERIAL_SELFTEST),1)
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe $(MODULES)/romfs_crosspage.bin \
+		$(MODULES)/exetest.exe $(MODULES)/exe2probe.exe \
+		$(MODULES)/exe2seg.exe $(MODULES)/exe2big.exe \
+		$(MODULES)/exe-fixtures.stamp
+else ifeq ($(KOS_CONSOLE_SERIAL_SELFTEST),1)
 # Console-serial variant store (work package 42e): the production driver
 # set with `console-serial` in the CONSOLE slot; the image boots the
 # monitor on the serial lane.
 ROMFS_MANIFEST := tests/console/manifest-serial.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
-else ifeq ($(ZOS_CONSOLE_SERIAL_FAIL_SELFTEST),1)
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe
+else ifeq ($(KOS_CONSOLE_SERIAL_FAIL_SELFTEST),1)
 # Required-console boot-failure store (work package 42e): the same set and
-# drivers.man, but the ROMFS manifest omits `console-serial.zmod`, so the
+# drivers.man, but the ROMFS manifest omits `console-serial.mod`, so the
 # loader's lookup fails and the boot must stop explicitly on the early
 # console (36.11) - no fallback and no launcher.
 ROMFS_MANIFEST := tests/console/manifest-serial-missing.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
-else ifeq ($(ZOS_DRIVER_INIT_FAIL_SELFTEST),1)
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe
+else ifeq ($(KOS_DRIVER_INIT_FAIL_SELFTEST),1)
 # Required-driver init-failure store (work package 45): the one test-only
 # driver image the boot manifest lists, whose init refuses; the loader
 # fails the boot explicitly on the early console (36.11) before the
 # launcher.  The monitor is in the store but never runs.
 ROMFS_MANIFEST := tests/console/manifest-init-fail.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
-else ifeq ($(ZOS_FS_SELFTEST),1)
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe
+else ifeq ($(KOS_FS_SELFTEST),1)
 # Filesystem outcome store (work package 42b, correction 01): the SIO/IOC/
 # console drivers the production boot set loads, the IOC-FAT driver
 # publishing `/fs`, the monitor the boot program hands the console to, and
-# the two SDK programs - the checks in /system/fs_selftest.zex and the
+# the two SDK programs - the checks in /system/fs_selftest.exe and the
 # child it SYS_EXECs.
 ROMFS_MANIFEST := tests/fs/manifest.json
 # Recursive: the module variables are defined below this chain.
-ROMFS_EXTRA_DEPS = $(MODULES)/fs_selftest.zex $(MODULES)/fs_child.zex \
-	$(MODULES)/monitor.zex $(MODULES)/drivers.man
-else ifeq ($(ZOS_XMEM_SELFTEST),1)
+ROMFS_EXTRA_DEPS = $(MODULES)/fs_selftest.exe $(MODULES)/fs_child.exe \
+	$(MODULES)/monitor.exe $(MODULES)/drivers.man
+else ifeq ($(KOS_XMEM_SELFTEST),1)
 # Extended-memory outcome store (work package 43, far code package 44b):
 # the SIO and console drivers the production boot path loads, and the
-# three SDK programs - the checks in /system/xmem_selftest.zex, the child
+# three SDK programs - the checks in /system/xmem_selftest.exe, the child
 # it SYS_EXECs, and the far-code program (two FAR_CODE segments) it
 # SYS_EXECs last.  No monitor: the launcher's exit report is the last line
 # the replay needs.
 ROMFS_MANIFEST := tests/xmem/manifest.json
 # Recursive: the module variables are defined below this chain.
-ROMFS_EXTRA_DEPS = $(MODULES)/xmem_selftest.zex \
-	$(MODULES)/xmem_child.zex $(MODULES)/xmem_far.zex \
+ROMFS_EXTRA_DEPS = $(MODULES)/xmem_selftest.exe \
+	$(MODULES)/xmem_child.exe $(MODULES)/xmem_far.exe \
 	$(MODULES)/drivers.man
-else ifeq ($(ZOS_HELLOWORLD_IMAGE),1)
+else ifeq ($(KOS_HELLOWORLD_IMAGE),1)
 # SDK demo image (work/28c-m9-user-sdk): the production boot set and store
 # plus the hello demo, which the launcher starts instead of the monitor
-# (ZOS_BOOT_PROGRAM=/system/hello.zex).  Booting a user program needs no
+# (KOS_BOOT_PROGRAM=/system/hello.exe).  Booting a user program needs no
 # kernel change, which is exactly what this image demonstrates.
 ROMFS_MANIFEST := user/helloworld/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/hello.zex \
-	$(MODULES)/fardemo.zex
-else ifeq ($(ZOS_IPC_SELFTEST),1)
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe $(MODULES)/hello.exe \
+	$(MODULES)/fardemo.exe
+else ifeq ($(KOS_IPC_SELFTEST),1)
 # IPC acceptance image (work packages 39-40): the SIO fallback plus the two
 # SDK programs the launcher boots and the probe starts
-# (ZOS_BOOT_PROGRAM=/system/ipccopy.zex).  The probe
+# (KOS_BOOT_PROGRAM=/system/ipccopy.exe).  The probe
 # (tests/target/ipc/ipccopy.c) measures the caller-buffer copy paths and
-# SYS_EXECs the conformance client (/system/ipc.zex), which is where the
+# SYS_EXECs the conformance client (/system/ipc.exe), which is where the
 # promoted suite lives.  The six synthetic drivers are real driver
 # images in the recovery store, listed by the boot manifest
 # (drivers.man) and placed in bank 6 by the nucleus driver loader.
 ROMFS_MANIFEST := tests/ipc/manifest.json
 # Recursive: the driver-image variables are defined below this chain.
-ROMFS_EXTRA_DEPS = $(MODULES)/ipc.zex $(MODULES)/ipccopy.zex \
-	$(IPC_ZMODS) $(MODULES)/drivers.man
-else ifeq ($(ZOS_NS_SELFTEST),1)
+ROMFS_EXTRA_DEPS = $(MODULES)/ipc.exe $(MODULES)/ipccopy.exe \
+	$(IPC_MODS) $(MODULES)/drivers.man
+else ifeq ($(KOS_NS_SELFTEST),1)
 # Namespace acceptance store (work package 42a): the SIO and console
 # drivers whose publications the DEVICE table carries, the synthetic
 # publisher that adds a second grouping container and a third protocol
-# type, and the two SDK programs - the checks run in /system/ns.zex, which
-# SYS_EXECs /system/nschild.zex for the inheritance rule.
+# type, and the two SDK programs - the checks run in /system/ns.exe, which
+# SYS_EXECs /system/nschild.exe for the inheritance rule.
 ROMFS_MANIFEST := tests/ns/manifest.json
 # Recursive: the module variables are defined below this chain.
-ROMFS_EXTRA_DEPS = $(MODULES)/ns.zex $(MODULES)/nschild.zex \
-	$(MODULES)/nsdev.zmod $(MODULES)/drivers.man
+ROMFS_EXTRA_DEPS = $(MODULES)/ns.exe $(MODULES)/nschild.exe \
+	$(MODULES)/nsdev.mod $(MODULES)/drivers.man
 else
 ROMFS_MANIFEST := recovery/manifest.json
 # The exerciser's programs (work package 45b) join the monitor the store
 # already carried: the runner plus the outcome programs it runs, all under
-# /system, so `X /system/hwtest.zex` works on the production image with no
+# /system, so `X /system/hwtest.exe` works on the production image with no
 # extra image or flash.
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/hwtest.zex \
-	$(MODULES)/xmem_selftest.zex $(MODULES)/xmem_child.zex \
-	$(MODULES)/xmem_far.zex $(MODULES)/fs_selftest.zex \
-	$(MODULES)/fs_child.zex
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe $(MODULES)/hwtest.exe \
+	$(MODULES)/xmem_selftest.exe $(MODULES)/xmem_child.exe \
+	$(MODULES)/xmem_far.exe $(MODULES)/fs_selftest.exe \
+	$(MODULES)/fs_child.exe
 endif
 
 # --- resident driver images (work packages 39-40) ---------------------------
@@ -1340,7 +1340,7 @@ endif
 # rules there link every image against the whole set (--set) and have to
 # see them before those rules are read.
 
-ifeq ($(ZOS_IPC_SELFTEST),1)
+ifeq ($(KOS_IPC_SELFTEST),1)
 $(IPC_MODDIR):
 	mkdir -p $@
 
@@ -1376,15 +1376,15 @@ $(IPC_MODDIR)/sdcc_indirect_calls.rel: \
 # One driver image per manifest; the report carries the symbol offsets
 # the replay reads the boot-segment markers and placements through.  The
 # whole set's objects are prerequisites because each pack links the set.
-$(IPC_ZMODS): $(IPC_MODDIR)/ipc-%.zmod: $(IPC_DIR)/manifests/%.json \
-		$(DRV_SET_OBJS) $(DRV_PACK_SET) tools/zmodpack.py | $(IPC_MODDIR)
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(IPC_MODDIR) \
+$(IPC_MODS): $(IPC_MODDIR)/ipc-%.mod: $(IPC_DIR)/manifests/%.json \
+		$(DRV_SET_OBJS) $(DRV_PACK_SET) tools/modpack.py | $(IPC_MODDIR)
+	$(PYTHON) tools/modpack.py pack $< $@ --objdir $(IPC_MODDIR) \
 		--set $(DRV_PACK_IMAGES) \
 		--report $(IPC_MODDIR)/$*.report.json
 
 endif
 
-ifeq ($(ZOS_NS_SELFTEST),1)
+ifeq ($(KOS_NS_SELFTEST),1)
 # Namespace acceptance synthetic publisher (work package 42a): one real
 # driver image in the recovery store, packed from the image's own
 # manifest (tests/ns/manifests/nsdev.json) so its /dev publications travel
@@ -1402,9 +1402,9 @@ $(MODULES)/nsdev_boot.rel: tests/target/ns/nsdev_boot.c \
 # The container: one pack against the image's whole load-order set, from
 # the image's own manifest, so the /dev publications are host-resolved
 # beside the endpoint numbers.
-$(MODULES)/nsdev.zmod: $(DRV_MANIFEST_DIR)/nsdev.json $(DRV_SET_OBJS) \
-		$(DRV_PACK_SET) tools/zmodpack.py | $(MODULES)
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
+$(MODULES)/nsdev.mod: $(DRV_MANIFEST_DIR)/nsdev.json $(DRV_SET_OBJS) \
+		$(DRV_PACK_SET) tools/modpack.py | $(MODULES)
+	$(PYTHON) tools/modpack.py pack $< $@ --objdir $(MODULES) \
 		--set $(DRV_PACK_IMAGES) \
 		--report $(MODULES)/nsdev.report.json
 
@@ -1415,11 +1415,11 @@ endif
 # keyed on the test manifest directory, so the production static pattern
 # rule above (the driver-tree manifests) does not apply; the loader refuses the
 # image and the boot stops (36.11).
-ifeq ($(ZOS_DRIVER_INIT_FAIL_SELFTEST),1)
-$(MODULES)/init_fail.zmod: tests/console/manifests/init_fail.json \
+ifeq ($(KOS_DRIVER_INIT_FAIL_SELFTEST),1)
+$(MODULES)/init_fail.mod: tests/console/manifests/init_fail.json \
 		$(MODULES)/init_fail.rel $(DRV_SET_OBJS) $(DRV_PACK_SET) \
-		tools/zmodpack.py | $(MODULES)
-	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
+		tools/modpack.py | $(MODULES)
+	$(PYTHON) tools/modpack.py pack $< $@ --objdir $(MODULES) \
 		--set $(DRV_PACK_IMAGES) \
 		--report $(MODULES)/init_fail.report.json
 
@@ -1433,36 +1433,40 @@ endif
 # An image boots what its manifest lists: the production store lists the
 # five driver drivers, the IPC image lists the SIO and console drivers
 # its SDK programs print through ahead of the synthetic set.
-DRV_MAN_INPUTS = $(DRV_SET_ZMODS) \
-	$(if $(filter 1,$(ZOS_IPC_SELFTEST)),$(IPC_ZMODS))
-$(MODULES)/drivers.man: $(DRV_MAN_INPUTS) tools/zmodpack.py | $(MODULES)
-	$(PYTHON) tools/zmodpack.py drivers $@ $(DRV_MAN_INPUTS) \
+DRV_MAN_INPUTS = $(DRV_SET_MODS) \
+	$(if $(filter 1,$(KOS_IPC_SELFTEST)),$(IPC_MODS))
+$(MODULES)/drivers.man: $(DRV_MAN_INPUTS) tools/modpack.py | $(MODULES)
+	$(PYTHON) tools/modpack.py drivers $@ $(DRV_MAN_INPUTS) \
 		--report $(MODULES)/drivers.plan.json
 
 # --- boot-program setting (package 28b) --------------------------------------
-# Validate ZOS_BOOT_PROGRAM against the manifest this image packs, then
-# compile it into kernel/main.c as a constant string.  The stamp makes the
+# Validate KOS_BOOT_PROGRAM against the manifest this image packs, then
+# write it into the generated header main.c includes.  The stamp makes the
 # check a prerequisite of main.rel, so parallel builds cannot link a
 # kernel whose boot path was never validated; the manifest dependency
-# re-validates for every image.
+# re-validates for every image.  The setting travels as a header, not as a
+# -D value: SDCC 4.5.0's driver aborts when any argument contains ".exe"
+# (SDCCutil.c's setPrefixSuffix asserts the preprocessor command line free
+# of the extension) and every boot program is an EXE.
 BOOT_PROGRAM_STAMP := $(BUILD)/generated/boot_program.stamp
+BOOT_PROGRAM_H     := $(BUILD)/boot_program.h
 
 $(BOOT_PROGRAM_STAMP): config/system.mk $(ROMFS_MANIFEST) \
 		tools/bootprogram.py | $(BUILD)
 	mkdir -p $(BUILD)/generated
-	$(PYTHON) tools/bootprogram.py check "$(ZOS_BOOT_PROGRAM)" \
+	$(PYTHON) tools/bootprogram.py check "$(KOS_BOOT_PROGRAM)" \
 		$(ROMFS_MANIFEST)
 	touch $@
 
-# Single quotes protect the C string quotes from the shell.
-CFLAGS    += -DZOS_BOOT_PROGRAM='"$(ZOS_BOOT_PROGRAM)"'
+$(BOOT_PROGRAM_H): $(BOOT_PROGRAM_STAMP)
+	printf '%s\n' '#define KOS_BOOT_PROGRAM "$(KOS_BOOT_PROGRAM)"' > $@
 
-$(BUILD)/main.rel: $(BOOT_PROGRAM_STAMP)
+$(BUILD)/main.rel: $(BOOT_PROGRAM_STAMP) $(BOOT_PROGRAM_H)
 
-$(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(DRV_SET_ZMODS) \
+$(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(DRV_SET_MODS) \
 		$(MODULES)/drivers.man $(ROMFS_EXTRA_DEPS) \
-		tools/romfspack.py $(ZOS_PLATFORM_MEMORY_INC) | $(BUILD)
-	$(PYTHON) tools/romfspack.py --memory-inc $(ZOS_PLATFORM_MEMORY_INC) pack \
+		tools/romfspack.py $(KOS_PLATFORM_MEMORY_INC) | $(BUILD)
+	$(PYTHON) tools/romfspack.py --memory-inc $(KOS_PLATFORM_MEMORY_INC) pack \
 		$(ROMFS_MANIFEST) $@ --objdir $(MODULES)
 
 # Deterministic cross-page pattern asset for the subsystem manifest.
@@ -1471,10 +1475,10 @@ $(MODULES)/romfs_crosspage.bin: tests/subsys/gen_crosspage.py | $(MODULES)
 
 # Expected-container constants for the ROMFS-reader target selftest: the
 # packed size/sum plus the manifest-derived first-payload offset.
-$(BUILD)/romfs_expect.inc: tests/subsys/manifest.json $(MODULES)/sio.zmod \
+$(BUILD)/romfs_expect.inc: tests/subsys/manifest.json $(MODULES)/sio.mod \
 		tests/subsys/gen_romfs_expect.py | $(BUILD)
 	$(PYTHON) tests/subsys/gen_romfs_expect.py tests/subsys/manifest.json \
-		$(MODULES)/sio.zmod $@ SIO_ZMOD
+		$(MODULES)/sio.mod $@ SIO_MOD
 
 # --- link --------------------------------------------------------------------
 # The canonical `build/` output uses the checked-in linker/zephyr80.lk.
@@ -1482,12 +1486,12 @@ $(BUILD)/romfs_expect.inc: tests/subsys/manifest.json $(MODULES)/sio.zmod \
 # objects) generates its linker file from the same object list the link
 # step depends on, so the lists cannot drift apart.
 
-ZOS_TEST_LINK := $(filter 1,$(ZOS_SUBSYS_SELFTEST) \
-		$(ZOS_NUCLEUS_SELFTEST) \
-		$(ZOS_CONSOLE_INTEGRATION_SELFTEST) \
-		$(ZOS_FS_SELFTEST))
+KOS_TEST_LINK := $(filter 1,$(KOS_SUBSYS_SELFTEST) \
+		$(KOS_NUCLEUS_SELFTEST) \
+		$(KOS_CONSOLE_INTEGRATION_SELFTEST) \
+		$(KOS_FS_SELFTEST))
 ifeq ($(BUILD),build)
-ifneq ($(ZOS_TEST_LINK),)
+ifneq ($(KOS_TEST_LINK),)
 GENERATED_LK := 1
 endif
 else
@@ -1497,22 +1501,22 @@ endif
 ifeq ($(GENERATED_LK),1)
 $(BUILD)/zephyr80.lk: $(OBJS) $(TARGET_TEST_OBJS) $(END_OBJ) \
 		$(GEOMETRY_MEMORY) | $(BUILD)
-	@data_base=$$(sed -n 's/^ZOS_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
+	@data_base=$$(sed -n 's/^KOS_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
 	test -n "$$data_base" || { echo "no derived data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
-	window_data_base=$$(sed -n 's/^ZOS_WINDOW_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
+	window_data_base=$$(sed -n 's/^KOS_WINDOW_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
 	test -n "$$window_data_base" || { echo "no derived window data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
-	  printf '%s\n' '-i $(BUILD)/zephyros.ihx'; \
+	  printf '%s\n' '-i $(BUILD)/konaos.ihx'; \
 	  printf '%s\n' '-b _CODE = 0x2000' "-b _DATA = $$data_base" \
-	                '-b _WINDOW = $(ZOS_REV13_WINDOW_BASE)' \
+	                '-b _WINDOW = $(KOS_REV13_WINDOW_BASE)' \
 	                "-b _WINDOW_DATA = $$window_data_base" \
 	                '-b _COMMON = 0xE000'; \
 	  printf '%s\n' $(OBJS) $(TARGET_TEST_OBJS) $(END_OBJ); \
 	  printf '%s\n' '-e'; \
 	} > $@
 
-$(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(OBJS) $(TARGET_TEST_OBJS) \
+$(BUILD)/konaos.ihx $(BUILD)/konaos.map: $(OBJS) $(TARGET_TEST_OBJS) \
 		$(END_OBJ) $(BUILD)/zephyr80.lk $(GEOMETRY_MEMORY) | $(BUILD)
 	$(SDLDZ80) -f $(BUILD)/zephyr80.lk
 else
@@ -1520,15 +1524,15 @@ else
 # object list; the two derived data bases are substituted into
 # build/zephyr80.lk.
 $(BUILD)/zephyr80.lk: linker/zephyr80.lk $(GEOMETRY_MEMORY) | $(BUILD)
-	@data_base=$$(sed -n 's/^ZOS_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
+	@data_base=$$(sed -n 's/^KOS_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
 	test -n "$$data_base" || { echo "no derived data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
-	window_data_base=$$(sed -n 's/^ZOS_WINDOW_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
+	window_data_base=$$(sed -n 's/^KOS_WINDOW_DATA_BASE = //p' $(GEOMETRY_MEMORY)); \
 	test -n "$$window_data_base" || { echo "no derived window data base in $(GEOMETRY_MEMORY)"; exit 1; }; \
 	sed -e "s/@DATA_BASE@/$$data_base/" \
 	    -e "s/@WINDOW_DATA_BASE@/$$window_data_base/" \
 	    linker/zephyr80.lk > $@
 
-$(BUILD)/zephyros.ihx $(BUILD)/zephyros.map: $(BUILD)/zephyr80.lk \
+$(BUILD)/konaos.ihx $(BUILD)/konaos.map: $(BUILD)/zephyr80.lk \
 		$(OBJS) $(END_OBJ) | $(BUILD)
 	$(SDLDZ80) -f $(BUILD)/zephyr80.lk
 endif
@@ -1541,14 +1545,14 @@ endif
 # and runs automatically on every build, before the ROM is considered
 # complete.
 
-$(IMAGE): $(BUILD)/zephyros.ihx $(BUILD)/zephyros.map \
+$(IMAGE): $(BUILD)/konaos.ihx $(BUILD)/konaos.map \
 		$(BUILD)/recovery.romfs \
-		tools/pack_image.py tools/mapcheck.py $(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
+		tools/pack_image.py tools/mapcheck.py $(MEMORY_INC) $(KOS_PLATFORM_IRQ_INC)
 	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) $(RESIDENCY_FLAGS) \
-		$(BUILD)/zephyros.map \
-		$(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/pack_image.py $(MAPCHECK_FLAGS) $(BUILD)/zephyros.ihx \
-		$(BUILD)/zephyros.map $(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC)
+		$(BUILD)/konaos.map \
+		$(MEMORY_INC) $(KOS_PLATFORM_IRQ_INC)
+	$(PYTHON) tools/pack_image.py $(MAPCHECK_FLAGS) $(BUILD)/konaos.ihx \
+		$(BUILD)/konaos.map $(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC)
 
 $(MAME_IMAGE): $(IMAGE)
 	cp $< $@
@@ -1580,35 +1584,35 @@ check:
 # --- subsystem acceptance image ----------------------------------------------
 # One current-boot-path image carries the mechanism selftests: the syscall
 # gate and the IRQ executive (early hook), then the ROMFS reader and the
-# process/ZEX lifecycle (late hook), and finally the monitor launcher's
+# process/EXE lifecycle (late hook), and finally the monitor launcher's
 # scripted session.  The declared boot set is the SIO serial driver plus
 # the console driver that composes it, placed by the resident loader
 # (work package 42c deleted the arena loader the loader group exercised).
 
 subsystem-selftest:
-	$(MAKE) BUILD=build-subsys-selftest ZOS_SUBSYS_SELFTEST=1 \
-		build-subsys-selftest/zephyros-subsys-selftest.bin \
+	$(MAKE) BUILD=build-subsys-selftest KOS_SUBSYS_SELFTEST=1 \
+		build-subsys-selftest/konaos-subsys-selftest.bin \
 		build-subsys-selftest/zephyr80-subsys-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-subsys-selftest/zephyros.map \
+		build-subsys-selftest/konaos.map \
 		build-subsys-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
+		$(KOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_subsys_sim.py' -v
 	$(PYTHON) -m unittest discover -s tests -p 'test_romfs_sim.py' -v
-	@echo "subsystem-selftest image: build-subsys-selftest/zephyros-subsys-selftest.bin"
+	@echo "subsystem-selftest image: build-subsys-selftest/konaos-subsys-selftest.bin"
 
 # The SDK's own tests (tests/test_sdk.py) and the generated-manifest
 # checks need the packed demo and the argument test program, so the
 # standard check always builds them.  Neither is part of a production
-# image: the demo lives in user/helloworld/ and zextest is an acceptance
+# image: the demo lives in user/helloworld/ and exetest is an acceptance
 # program.
-check-fast: $(ZEX_USER_ROOT)/hello.zex $(MODULES)/zextest.zex
+check-fast: $(EXE_USER_ROOT)/hello.exe $(MODULES)/exetest.exe
 	$(PYTHON) -m unittest discover -s tests -v
 	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) $(RESIDENCY_FLAGS) \
-		$(BUILD)/zephyros.map \
-		$(MEMORY_INC) $(ZOS_PLATFORM_IRQ_INC)
-	$(PYTHON) tools/pack_image.py $(MAPCHECK_FLAGS) $(BUILD)/zephyros.ihx \
-		$(BUILD)/zephyros.map $(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC)
+		$(BUILD)/konaos.map \
+		$(MEMORY_INC) $(KOS_PLATFORM_IRQ_INC)
+	$(PYTHON) tools/pack_image.py $(MAPCHECK_FLAGS) $(BUILD)/konaos.ihx \
+		$(BUILD)/konaos.map $(BUILD) "$(PK_SUFFIX)" $(MEMORY_INC)
 	sha256sum $(IMAGE) $(MAME_IMAGE)
 	cmp $(IMAGE) $(MAME_IMAGE)
 	@echo "make check: OK"
@@ -1616,56 +1620,56 @@ check-fast: $(ZEX_USER_ROOT)/hello.zex $(MODULES)/zextest.zex
 clean:
 	rm -rf $(BUILD) build-*
 
-# --- host-side ZMOD tooling tests -------------------------------------------
+# --- host-side MOD tooling tests -------------------------------------------
 # Builds the driver containers with the real toolchain, validates them,
 # then runs the host container suite (the packed driver images).
 
-zmod-test: $(DRV_SET_ZMODS)
-	$(PYTHON) tools/zmodpack.py validate $(DRV_SET_ZMODS)
-	$(PYTHON) tools/zmodpack.py dump $(MODULES)/sio.zmod
-	$(PYTHON) -m unittest discover -s tests -p 'test_zmod.py' -v
-	@echo "zmod-test: OK"
+mod-test: $(DRV_SET_MODS)
+	$(PYTHON) tools/modpack.py validate $(DRV_SET_MODS)
+	$(PYTHON) tools/modpack.py dump $(MODULES)/sio.mod
+	$(PYTHON) -m unittest discover -s tests -p 'test_mod.py' -v
+	@echo "mod-test: OK"
 
 
 romfs-test: $(BUILD)/recovery.romfs
-	$(PYTHON) tools/romfspack.py --memory-inc $(ZOS_PLATFORM_MEMORY_INC) \
+	$(PYTHON) tools/romfspack.py --memory-inc $(KOS_PLATFORM_MEMORY_INC) \
 		validate $(BUILD)/recovery.romfs
-	$(PYTHON) tools/romfspack.py --memory-inc $(ZOS_PLATFORM_MEMORY_INC) \
+	$(PYTHON) tools/romfspack.py --memory-inc $(KOS_PLATFORM_MEMORY_INC) \
 		dump $(BUILD)/recovery.romfs
 	$(PYTHON) -m unittest discover -s tests -p 'test_romfs.py' -v
 	@echo "romfs-test: OK"
 
-zex-test: $(MODULES)/zextest.zex $(MODULES)/zex-fixtures.stamp
-	$(PYTHON) tools/zexpack.py validate $(MODULES)/zextest.zex
-	$(PYTHON) tools/zexpack.py dump $(MODULES)/zextest.zex
-	$(PYTHON) -m unittest discover -s tests -p 'test_zex.py' -v
-	@echo "zex-test: OK"
+exe-test: $(MODULES)/exetest.exe $(MODULES)/exe-fixtures.stamp
+	$(PYTHON) tools/exepack.py validate $(MODULES)/exetest.exe
+	$(PYTHON) tools/exepack.py dump $(MODULES)/exetest.exe
+	$(PYTHON) -m unittest discover -s tests -p 'test_exe.py' -v
+	@echo "exe-test: OK"
 
-monitor-test: $(MODULES)/monitor.zex
-	$(PYTHON) tools/zexpack.py validate $(MODULES)/monitor.zex
-	$(PYTHON) tools/zexpack.py dump $(MODULES)/monitor.zex
+monitor-test: $(MODULES)/monitor.exe
+	$(PYTHON) tools/exepack.py validate $(MODULES)/monitor.exe
+	$(PYTHON) tools/exepack.py dump $(MODULES)/monitor.exe
 	$(PYTHON) -m unittest discover -s tests -p 'test_monitor.py' -v
 	@echo "monitor-test: OK"
 
-ioc-test: $(MODULES)/ioc.zmod
-	$(PYTHON) tools/zmodpack.py validate $(MODULES)/ioc.zmod
-	$(PYTHON) tools/zmodpack.py dump $(MODULES)/ioc.zmod
+ioc-test: $(MODULES)/ioc.mod
+	$(PYTHON) tools/modpack.py validate $(MODULES)/ioc.mod
+	$(PYTHON) tools/modpack.py dump $(MODULES)/ioc.mod
 	$(PYTHON) -m unittest discover -s tests -p 'test_ioc.py' -v
 	@echo "ioc-test: OK"
 
 # --- HID tooling ----------------------------------------------------------
 
-hid-test: $(MODULES)/hid.zmod
-	$(PYTHON) tools/zmodpack.py validate $(MODULES)/hid.zmod
-	$(PYTHON) tools/zmodpack.py dump $(MODULES)/hid.zmod
+hid-test: $(MODULES)/hid.mod
+	$(PYTHON) tools/modpack.py validate $(MODULES)/hid.mod
+	$(PYTHON) tools/modpack.py dump $(MODULES)/hid.mod
 	$(PYTHON) -m unittest discover -s tests -p 'test_hid.py' -v
 	@echo "hid-test: OK"
 
 # --- video tooling --------------------------------------------------------
 
-v9958-test: $(MODULES)/v9958.zmod $(MODULES)/v9958-6x8.font
-	$(PYTHON) tools/zmodpack.py validate $(MODULES)/v9958.zmod
-	$(PYTHON) tools/zmodpack.py dump $(MODULES)/v9958.zmod
+v9958-test: $(MODULES)/v9958.mod $(MODULES)/v9958-6x8.font
+	$(PYTHON) tools/modpack.py validate $(MODULES)/v9958.mod
+	$(PYTHON) tools/modpack.py dump $(MODULES)/v9958.mod
 	$(PYTHON) tools/fontpack.py verify drivers/v9958/assets/font_cp850_6x8.inc
 	$(PYTHON) -m unittest discover -s tests -p 'test_v9958.py' -v
 	@echo "v9958-test: OK"
@@ -1675,7 +1679,7 @@ v9958-test: $(MODULES)/v9958.zmod $(MODULES)/v9958-6x8.font
 # plus the integration target diagnostic, the IOC, HID and V9958 device
 # diagnostics (merged here by work package 42d) and the unchanged monitor
 # launcher.  tests/test_console_acceptance.py replays the production bytes
-# (build/zephyros.bin) and these bytes: boot order, binding, IOC
+# (build/konaos.bin) and these bytes: boot order, binding, IOC
 # command/status/bulk sequencing, HID queue traffic, the V9958 trace,
 # the split console, the ESC c display reset, the scripted monitor session
 # with two exit/relaunch cycles, post-fault recovery and the malformed-call
@@ -1684,18 +1688,18 @@ v9958-test: $(MODULES)/v9958.zmod $(MODULES)/v9958-6x8.font
 # session the retired console-selftest image carried).
 
 console-integration-selftest: all
-	$(MAKE) BUILD=build-console-integration-selftest ZOS_CONSOLE_INTEGRATION_SELFTEST=1 ZOS_SMOKE_HOST_SYNC=1 \
-		build-console-integration-selftest/zephyros-console-integration-selftest.bin \
+	$(MAKE) BUILD=build-console-integration-selftest KOS_CONSOLE_INTEGRATION_SELFTEST=1 KOS_SMOKE_HOST_SYNC=1 \
+		build-console-integration-selftest/konaos-console-integration-selftest.bin \
 		build-console-integration-selftest/zephyr80-console-integration-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-console-integration-selftest/zephyros.map \
+		build-console-integration-selftest/konaos.map \
 		build-console-integration-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
+		$(KOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_console_acceptance.py' -v
 	$(PYTHON) -m unittest discover -s tests -p 'test_ioc_sim.py' -v
 	$(PYTHON) -m unittest discover -s tests -p 'test_hid_sim.py' -v
 	$(PYTHON) -m unittest discover -s tests -p 'test_v9958_sim.py' -v
-	@echo "console integration image: build-console-integration-selftest/zephyros-console-integration-selftest.bin"
+	@echo "console integration image: build-console-integration-selftest/konaos-console-integration-selftest.bin"
 
 # console-serial variant (work package 42e): the production image set with
 # the other CONSOLE driver.  The first image boots the monitor on the
@@ -1708,150 +1712,150 @@ console-integration-selftest: all
 
 console-serial-selftest:
 	$(MAKE) BUILD=build-console-serial-selftest \
-		ZOS_CONSOLE_SERIAL_SELFTEST=1 ZOS_CONSOLE=console-serial \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-console-serial-selftest/zephyros-console-serial-selftest.bin \
+		KOS_CONSOLE_SERIAL_SELFTEST=1 KOS_CONSOLE=console-serial \
+		KOS_SMOKE_HOST_SYNC=1 \
+		build-console-serial-selftest/konaos-console-serial-selftest.bin \
 		build-console-serial-selftest/zephyr80-console-serial-selftest.bin
 	$(MAKE) BUILD=build-console-serial-fail-selftest \
-		ZOS_CONSOLE_SERIAL_FAIL_SELFTEST=1 ZOS_CONSOLE=console-serial \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-console-serial-fail-selftest/zephyros-console-serial-fail-selftest.bin
+		KOS_CONSOLE_SERIAL_FAIL_SELFTEST=1 KOS_CONSOLE=console-serial \
+		KOS_SMOKE_HOST_SYNC=1 \
+		build-console-serial-fail-selftest/konaos-console-serial-fail-selftest.bin
 	$(MAKE) BUILD=build-driver-init-fail-selftest \
-		ZOS_DRIVER_INIT_FAIL_SELFTEST=1 \
-		ZOS_SMOKE_HOST_SYNC=1 \
-		build-driver-init-fail-selftest/zephyros-driver-init-fail-selftest.bin
+		KOS_DRIVER_INIT_FAIL_SELFTEST=1 \
+		KOS_SMOKE_HOST_SYNC=1 \
+		build-driver-init-fail-selftest/konaos-driver-init-fail-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-console-serial-selftest/zephyros.map \
+		build-console-serial-selftest/konaos.map \
 		build-console-serial-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
+		$(KOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_console_serial.py' -v
-	@echo "console serial image: build-console-serial-selftest/zephyros-console-serial-selftest.bin"
-	@echo "console serial failure image: build-console-serial-fail-selftest/zephyros-console-serial-fail-selftest.bin"
-	@echo "driver init-failure image: build-driver-init-fail-selftest/zephyros-driver-init-fail-selftest.bin"
+	@echo "console serial image: build-console-serial-selftest/konaos-console-serial-selftest.bin"
+	@echo "console serial failure image: build-console-serial-fail-selftest/konaos-console-serial-fail-selftest.bin"
+	@echo "driver init-failure image: build-driver-init-fail-selftest/konaos-driver-init-fail-selftest.bin"
 
 # Filesystem outcome image (work package 42b, correction 01): the
 # production boot path with the IOC-FAT driver publishing `/fs` and the SDK
-# outcome program booting as /system/fs_selftest.zex.  The simulator replay
+# outcome program booting as /system/fs_selftest.exe.  The simulator replay
 # serves FS2 from a host peer, so the same image runs on hardware against a
 # real card; the checks and their counts are pinned by
 # tests/test_fs_selftest_sim.py.
 fs-selftest: all
-	$(MAKE) BUILD=build-fs-selftest ZOS_FS_SELFTEST=1 \
-		build-fs-selftest/zephyros-fs-selftest.bin \
+	$(MAKE) BUILD=build-fs-selftest KOS_FS_SELFTEST=1 \
+		build-fs-selftest/konaos-fs-selftest.bin \
 		build-fs-selftest/zephyr80-fs-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-fs-selftest/zephyros.map \
+		build-fs-selftest/konaos.map \
 		build-fs-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
+		$(KOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_fs_selftest*.py' -v
-	@echo "filesystem image: build-fs-selftest/zephyros-fs-selftest.bin"
+	@echo "filesystem image: build-fs-selftest/konaos-fs-selftest.bin"
 
 # IPC acceptance image (work package 39): the production boot path with
 # the fixed-core substrate, the six synthetic bank-6 drivers placed by
 # the acceptance loader, and the SDK client program booting as
-# /system/ipccopy.zex.  The client runs the promoted conformance suite and
+# /system/ipccopy.exe.  The client runs the promoted conformance suite and
 # checks its own results; the simulator replay measures the spans, the
 # stack high-water marks, the latch intervals and the IRQ delivery.
 ipc-selftest: all
-	$(MAKE) BUILD=build-ipc-selftest ZOS_IPC_SELFTEST=1 \
-		ZOS_BOOT_PROGRAM=/system/ipccopy.zex \
-		build-ipc-selftest/zephyros-ipc-selftest.bin \
+	$(MAKE) BUILD=build-ipc-selftest KOS_IPC_SELFTEST=1 \
+		KOS_BOOT_PROGRAM=/system/ipccopy.exe \
+		build-ipc-selftest/konaos-ipc-selftest.bin \
 		build-ipc-selftest/zephyr80-ipc-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		$(if $(IPC_COLD_EXTRA_CSV),--cold-extra $(IPC_COLD_EXTRA_CSV),) \
-		build-ipc-selftest/zephyros.map \
+		build-ipc-selftest/konaos.map \
 		build-ipc-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
+		$(KOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_ipc_selftest*.py' -v
-	@echo "ipc image: build-ipc-selftest/zephyros-ipc-selftest.bin"
+	@echo "ipc image: build-ipc-selftest/konaos-ipc-selftest.bin"
 
 # Extended-memory outcome image (work package 43): the production boot
 # path with the SIO/console driver set and the SDK outcome program
-# booting as /system/xmem_selftest.zex.  The client drives the whole
+# booting as /system/xmem_selftest.exe.  The client drives the whole
 # extended-memory family and the mode-10 aperture and checks its own
-# results; it then SYS_EXECs /system/xmem_child.zex with a path living in
+# results; it then SYS_EXECs /system/xmem_child.exe with a path living in
 # the aperture, and the simulator replay asserts the transcript
 # (tests/test_xmem_selftest_sim.py).  The aperture itself is
 # hardware-authoritative: the owner runs this image on the board.
 xmem-selftest: all
-	$(MAKE) BUILD=build-xmem-selftest ZOS_XMEM_SELFTEST=1 \
-		build-xmem-selftest/zephyros-xmem-selftest.bin \
+	$(MAKE) BUILD=build-xmem-selftest KOS_XMEM_SELFTEST=1 \
+		build-xmem-selftest/konaos-xmem-selftest.bin \
 		build-xmem-selftest/zephyr80-xmem-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-xmem-selftest/zephyros.map \
+		build-xmem-selftest/konaos.map \
 		build-xmem-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
+		$(KOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_xmem_selftest*.py' -v
-	@echo "xmem image: build-xmem-selftest/zephyros-xmem-selftest.bin"
+	@echo "xmem image: build-xmem-selftest/konaos-xmem-selftest.bin"
 
 # Namespace and handle acceptance image (work package 42a, correction 01):
 # the production boot path with the DEVICE/ROMFS providers, the typed
 # handle table, bind/call/unbind/ns_enum and the standard handles linked
 # on top of a small boot set, and the SDK client program booting as
-# /system/ns.zex.  The client checks the namespace outcomes itself and
+# /system/ns.exe.  The client checks the namespace outcomes itself and
 # prints them; the simulator replay compares the transcript.  Production
 # is not touched by this image: it reproduces its own image hash.
 ns-selftest: all
-	$(MAKE) BUILD=build-ns-selftest ZOS_NS_SELFTEST=1 \
-		build-ns-selftest/zephyros-ns-selftest.bin \
+	$(MAKE) BUILD=build-ns-selftest KOS_NS_SELFTEST=1 \
+		build-ns-selftest/konaos-ns-selftest.bin \
 		build-ns-selftest/zephyr80-ns-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		--cold-extra vfs_router,vfs_system,object,vfs_file \
-		build-ns-selftest/zephyros.map \
+		build-ns-selftest/konaos.map \
 		build-ns-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
+		$(KOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_ns_selftest*.py' -v
-	@echo "namespace image: build-ns-selftest/zephyros-ns-selftest.bin"
+	@echo "namespace image: build-ns-selftest/konaos-ns-selftest.bin"
 
 # Nucleus-layout acceptance image (work package 38): the revision-13 gates
 # with P != 0 on entry (syscall, IRQ), the cold-half handler placement and
 # the fixed upcall shim against a stub in bank 6.  SIO-only boot set, so
 # the cold half's slack belongs to the test objects.
 nucleus-selftest: all
-	$(MAKE) BUILD=build-nucleus-selftest ZOS_NUCLEUS_SELFTEST=1 \
-		build-nucleus-selftest/zephyros-nucleus-selftest.bin \
+	$(MAKE) BUILD=build-nucleus-selftest KOS_NUCLEUS_SELFTEST=1 \
+		build-nucleus-selftest/konaos-nucleus-selftest.bin \
 		build-nucleus-selftest/zephyr80-nucleus-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-nucleus-selftest/zephyros.map \
+		build-nucleus-selftest/konaos.map \
 		build-nucleus-selftest/geometry/memory.inc \
-		$(ZOS_PLATFORM_IRQ_INC)
+		$(KOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_nucleus_sim.py' -v
-	@echo "nucleus image: build-nucleus-selftest/zephyros-nucleus-selftest.bin"
+	@echo "nucleus image: build-nucleus-selftest/konaos-nucleus-selftest.bin"
 
 # SDK helloworld demo image (work/28c-m9-user-sdk): the production boot path
 # in its own build directory (build-helloworld) with the SDK hello demo
-# added to the recovery manifest, booted as /system/hello.zex.  This is the
+# added to the recovery manifest, booted as /system/hello.exe.  This is the
 # end-to-end proof that a user program needs no kernel change: the only
-# inputs that differ from production are the ZOS_BOOT_PROGRAM setting and
+# inputs that differ from production are the KOS_BOOT_PROGRAM setting and
 # the manifest.  The simulator replay checks the transcript.
 
 helloworld-image: all
-	$(MAKE) BUILD=build-helloworld ZOS_HELLOWORLD_IMAGE=1 \
-		ZOS_BOOT_PROGRAM=/system/hello.zex \
-		build-helloworld/zephyros-helloworld.bin \
+	$(MAKE) BUILD=build-helloworld KOS_HELLOWORLD_IMAGE=1 \
+		KOS_BOOT_PROGRAM=/system/hello.exe \
+		build-helloworld/konaos-helloworld.bin \
 		build-helloworld/zephyr80-helloworld.bin
 	$(PYTHON) -m unittest discover -s tests -p 'test_sdk.py' -v
-	@echo "helloworld image: build-helloworld/zephyros-helloworld.bin"
+	@echo "helloworld image: build-helloworld/konaos-helloworld.bin"
 
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching image
-# programmed.  Pass SERIAL_PORT=/dev/ttyUSB0 (or export ZOS_SERIAL_PORT).
+# programmed.  Pass SERIAL_PORT=/dev/ttyUSB0 (or export KOS_SERIAL_PORT).
 #
 # Each smoke mode checks ONE specific image, and the production image and the
 # acceptance images have different serial transcripts.  Build the image for
 # the mode, flash it, then run the mode:
 #
 #   mode                          image to flash                              build with
-#   smoke-hardware                build/zephyros.bin                          make
-#   smoke-hardware-hwtest         build/zephyros.bin                          make
-#   smoke-hardware-subsystem      build-subsys-selftest/zephyros-subsys-selftest.bin
+#   smoke-hardware                build/konaos.bin                          make
+#   smoke-hardware-hwtest         build/konaos.bin                          make
+#   smoke-hardware-subsystem      build-subsys-selftest/konaos-subsys-selftest.bin
 #                                                                             make subsystem-selftest
-#   smoke-hardware-console-integration             build-console-integration-selftest/zephyros-console-integration-selftest.bin  make console-integration-selftest
-#   smoke-hardware-console-serial      build-console-serial-selftest/zephyros-console-serial-selftest.bin  make console-serial-selftest
-#   smoke-hardware-fs             build-fs-selftest/zephyros-fs-selftest.bin  make fs-selftest
+#   smoke-hardware-console-integration             build-console-integration-selftest/konaos-console-integration-selftest.bin  make console-integration-selftest
+#   smoke-hardware-console-serial      build-console-serial-selftest/konaos-console-serial-selftest.bin  make console-serial-selftest
+#   smoke-hardware-fs             build-fs-selftest/konaos-fs-selftest.bin  make fs-selftest
 #
 # `smoke-hardware-hwtest` drives the production image's feature exerciser
-# (work package 45b): the tool types `X /system/hwtest.zex` over this lane
+# (work package 45b): the tool types `X /system/hwtest.exe` over this lane
 # - the production monitor polls the serial object for commands - and reads
 # the stage lines and the verdict, run once with a card and once without.
 #
@@ -1872,16 +1876,16 @@ hardware-images: all subsystem-selftest \
 	@echo "hardware-images: every smoke image is built under build*/"
 
 smoke-hardware:
-	@$(call smoke_preflight,build/zephyros.bin,all)
-	$(PYTHON) tools/serial_smoke.py --mode normal --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+	@$(call smoke_preflight,build/konaos.bin,all)
+	$(PYTHON) tools/serial_smoke.py --mode normal --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))
 
 smoke-hardware-hwtest:
-	@$(call smoke_preflight,build/zephyros.bin,all)
-	$(PYTHON) tools/serial_smoke.py --mode hwtest --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+	@$(call smoke_preflight,build/konaos.bin,all)
+	$(PYTHON) tools/serial_smoke.py --mode hwtest --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))
 
 smoke-hardware-subsystem:
-	@$(call smoke_preflight,build-subsys-selftest/zephyros-subsys-selftest.bin,subsystem-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode subsystem --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+	@$(call smoke_preflight,build-subsys-selftest/konaos-subsys-selftest.bin,subsystem-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode subsystem --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))
 
 # Console modes: the full integration image (serial portion: early
 # diagnostics, binding report, the target selftest and the ESC c reset
@@ -1891,13 +1895,13 @@ smoke-hardware-subsystem:
 # pending, as for the other console smoke modes.
 
 smoke-hardware-console-integration:
-	@$(call smoke_preflight,build-console-integration-selftest/zephyros-console-integration-selftest.bin,console-integration-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode console-integration --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+	@$(call smoke_preflight,build-console-integration-selftest/konaos-console-integration-selftest.bin,console-integration-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode console-integration --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))
 
 smoke-hardware-console-serial:
-	@$(call smoke_preflight,build-console-serial-selftest/zephyros-console-serial-selftest.bin,console-serial-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode console-serial --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+	@$(call smoke_preflight,build-console-serial-selftest/konaos-console-serial-selftest.bin,console-serial-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode console-serial --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))
 
 smoke-hardware-fs:
-	@$(call smoke_preflight,build-fs-selftest/zephyros-fs-selftest.bin,fs-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode fs --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+	@$(call smoke_preflight,build-fs-selftest/konaos-fs-selftest.bin,fs-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode fs --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))

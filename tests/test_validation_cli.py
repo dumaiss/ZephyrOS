@@ -23,7 +23,7 @@ from maptools import make_map  # noqa: E402  (shared synthetic map builder)
 MAPCHECK = os.path.join(ROOT, "tools", "mapcheck.py")
 PACK_IMAGE = os.path.join(ROOT, "tools", "pack_image.py")
 
-GATE = 0xE0A8  # zos_syscall_entry address used by the valid IHX fixture
+GATE = 0xE0A8  # kos_syscall_entry address used by the valid IHX fixture
 IRQ_FF = 0xE130
 
 
@@ -65,7 +65,7 @@ def insert_before_eof(ihx, record):
 
 class ValidatorCLIBase(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="zosval-")
+        self.tmp = tempfile.mkdtemp(prefix="kosval-")
         self.map_path = os.path.join(self.tmp, "fixture.map")
         self.ihx_path = os.path.join(self.tmp, "fixture.ihx")
         self.write_map(make_map())
@@ -101,7 +101,7 @@ class ValidatorCLIBase(unittest.TestCase):
 
 class TestValidatorCLISuccess(unittest.TestCase):
     def test_valid_map_passes_mapcheck(self):
-        with tempfile.TemporaryDirectory(prefix="zosval-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="kosval-") as tmp:
             map_path = os.path.join(tmp, "ok.map")
             open(map_path, "w").write(make_map())
             result = subprocess.run(
@@ -111,7 +111,7 @@ class TestValidatorCLISuccess(unittest.TestCase):
             self.assertIn("mapcheck: OK", result.stdout)
 
     def test_valid_image_passes_packer(self):
-        with tempfile.TemporaryDirectory(prefix="zosval-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="kosval-") as tmp:
             map_path = os.path.join(tmp, "ok.map")
             ihx_path = os.path.join(tmp, "ok.ihx")
             open(map_path, "w").write(make_map())
@@ -145,12 +145,12 @@ class TestMapcheckRejections(ValidatorCLIBase):
                    r"no _PAGE_ZERO area")
 
     def test_vector_wrong_address(self):
-        self.check(make_map(symbols={"_zos_rst30_vector": 0x0040,
-                                     "_zos_rst30_end": 0x0043}),
+        self.check(make_map(symbols={"_kos_rst30_vector": 0x0040,
+                                     "_kos_rst30_end": 0x0043}),
                    r"expected 0030h")
 
     def test_vector_wrong_size(self):
-        self.check(make_map(symbols={"_zos_rst30_end": 0x0035}),
+        self.check(make_map(symbols={"_kos_rst30_end": 0x0035}),
                    r"exactly 3")
 
     def test_bank7_section_leaves_region(self):
@@ -175,15 +175,15 @@ class TestMapcheckRejections(ValidatorCLIBase):
                    r"overlaps the common stack")
 
     def test_gate_not_in_common(self):
-        self.check(make_map(symbols={"zos_syscall_entry": 0x3000}),
-                   r"zos_syscall_entry .* not in the common region")
+        self.check(make_map(symbols={"kos_syscall_entry": 0x3000}),
+                   r"kos_syscall_entry .* not in the common region")
 
     def test_dispatcher_not_in_bank7(self):
-        self.check(make_map(symbols={"zos_syscall_dispatch": 0xE100}),
+        self.check(make_map(symbols={"kos_syscall_dispatch": 0xE100}),
                    r"outside the fixed core 2000h-5FFFh")
 
     def test_gate_stack_size_inconsistent(self):
-        self.check(make_map(symbols={"zos_gate_stack_top": 0xE14F}),
+        self.check(make_map(symbols={"kos_gate_stack_top": 0xE14F}),
                    r"gate stack is")
 
     def test_mapping_path_outside_common(self):
@@ -270,7 +270,7 @@ class TestPackerRejections(ValidatorCLIBase):
         self.assertNotRegex(result.stderr, r"latch write")
 
     def test_vector_symbol_missing(self):
-        self.check(valid_ihx(), make_map(symbols={"_zos_rst30_vector": None}),
+        self.check(valid_ihx(), make_map(symbols={"_kos_rst30_vector": None}),
                    r"expected 0030h")
 
     def test_broken_ff_guard(self):

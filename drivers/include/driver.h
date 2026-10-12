@@ -1,4 +1,4 @@
-/* ZephyrOS resident-driver bootstrap interface (module-facing, M10).
+/* KonaOS resident-driver bootstrap interface (module-facing, M10).
  *
  * A resident driver image receives exactly one pointer: the init entry
  * named by its container is called with a `const struct
@@ -82,25 +82,25 @@
  * enters the handler with the owner's window selected and the interrupted
  * latch saved in the IRQ gate's own slot (architecture 36.10).  A handler
  * runs under the restricted API: call, copy_in, copy_out and move are
- * refused with -ZOS_EBUSY while an interrupt is being delivered.  The
+ * refused with -KOS_EBUSY while an interrupt is being delivered.  The
  * console primitives are the nucleus-owned early console (polled SIO0/B,
  * common-resident) and stay callable.
  */
 
-#ifndef ZEPHYROS_IPC_H
-#define ZEPHYROS_IPC_H
+#ifndef KONAOS_IPC_H
+#define KONAOS_IPC_H
 
-#include "zos/ipc.h"
-#include "zos/types.h"
+#include "kos/ipc.h"
+#include "kos/types.h"
 
 /* Bound of the resolved dependency array the loader installs
- * (ZMOD_MAX_DEPENDENCIES, formats/include/zmod.h). */
-#define ZOS_IPC_DRIVER_MAX_DEPS 8u
+ * (MOD_MAX_DEPENDENCIES, formats/include/mod.h). */
+#define KOS_IPC_DRIVER_MAX_DEPS 8u
 
 struct driver_api {
 	/* Synchronous call/reply with a nucleus-owned frame copy. */
 	int16_t (*call)(uint8_t dependency_ref, uint8_t op,
-			struct zos_ipc_frame *frame);
+			struct kos_ipc_frame *frame);
 
 	/* Descriptor copies with bounds checks. */
 	int16_t (*copy_in)(uint8_t desc, uint16_t offset, uint16_t dst,
@@ -111,9 +111,9 @@ struct driver_api {
 
 	/* The calling driver's own bulk data (registered by the loader):
 	 * copies `length` bytes at `offset` into `dst`, a buffer in this
-	 * driver's window, and returns the length.  Refused (-ZOS_EINVAL)
+	 * driver's window, and returns the length.  Refused (-KOS_EINVAL)
 	 * when the extent, the offset/length pair or the destination is out
-	 * of bounds, -ZOS_EBUSY while an interrupt is delivered. */
+	 * of bounds, -KOS_EBUSY while an interrupt is delivered. */
 	int16_t (*bulk_read)(uint16_t offset, uint16_t dst, uint16_t length);
 
 	/* Nucleus-owned early console (used before the console driver
@@ -144,4 +144,4 @@ struct driver_boot {
  * stops on the early console (36.11, work package 42e). */
 typedef uint8_t (*driver_init_fn)(const struct driver_boot *boot);
 
-#endif /* ZEPHYROS_IPC_H */
+#endif /* KONAOS_IPC_H */

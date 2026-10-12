@@ -1,4 +1,4 @@
-; CP850 6x8 bitmap font (ZephyrOS V9958 video asset, work package 18).
+; CP850 6x8 bitmap font (KonaOS V9958 video asset, work package 18).
 ;
 ; Imported byte-for-byte from the pinned Zephyr-80 reference,
 ; Code/HOST/CPM2.2/src/assets/font_cp850_6x8.inc at commit 2c6b9650.

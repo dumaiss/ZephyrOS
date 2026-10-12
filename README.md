@@ -1,6 +1,6 @@
-# ZephyrOS
+# KonaOS
 
-ZephyrOS is the native operating system for the Zephyr-80.  The early
+KonaOS is the native operating system for the Zephyr-80.  The early
 milestones establish a clean boot path, a stable kernel execution
 environment, and the architectural boundaries later subsystems will build
 on.  See `docs/architecture.md` for the contract and `docs/boot.md` for the
@@ -20,7 +20,7 @@ current boot).
   mode gates, page-zero and transition-state reservation, boot-time latch
   assertion.  Accepted on physical hardware 2026-10-02 (banner unchanged).
 - **M1 — Native syscall scaffold**: `RST 30h` vector in native page zero,
-  common-memory entry/exit gate, bank-7 dispatcher returning `ZOS_ENOSYS`
+  common-memory entry/exit gate, bank-7 dispatcher returning `KOS_ENOSYS`
   (`docs/abi.md`), target-side smoke self-test.
   Accepted on physical hardware 2026-10-02 (`syscall selftest: OK`).
 - **M2 — Interrupt executive**: kernel-owned IM2 (`I=FDh`), fixed-source
@@ -40,16 +40,16 @@ current boot).
   from the recovery store.
 - **M4 — Module loader (stage 07)**: linker-reserved bank-7 driver arena
   (`A000h-BFFFh`, 16 x 512-byte granules in the M4-era images; M8
-  supersedes it with a linker-derived arena), packed ZMOD v1 driver
-  containers, host `tools/zmodpack.py` (pack/validate/dump), a
+  supersedes it with a linker-derived arena), packed MOD v1 driver
+  containers, host `tools/modpack.py` (pack/validate/dump), a
   transactional first-fit kernel loader with relocation, BSS, device/IRQ
   claim rollback, and `module_code_allowed` handler validation, plus
-  synthetic fixture modules proven by `make zmod-test`.  Hardware-validated
+  synthetic fixture modules proven by `make mod-test`.  Hardware-validated
   on the physical Zephyr-80 2026-10-02 (`m4 loader selftest: OK`; see
   `docs/validation/2026-10-02-m4-loader-hardware.md`).
 - **M4 — Dynamic driver acceptance (stage 08)**: the SIO driver is no
-  longer linked into the kernel.  It is packed as a ZMOD module
-  (`build/modules/sio.zmod`, plus IRQ and init-failure container
+  longer linked into the kernel.  It is packed as a MOD module
+  (`build/modules/sio.mod`, plus IRQ and init-failure container
   variants), loaded through the generic loader at boot, and bound by the
   console driver (`console: dynamic sio0.b OK`).  A placement image at a
   shifted arena base (9E00h-BE00h) used the identical module bytes, and a
@@ -62,9 +62,9 @@ current boot).
   `docs/validation/2026-10-02-m4-acceptance.md` (historical record).
 - **Stage 10 — production/test layout cleanup**: driver directories now
   contain device implementation only (`drivers/sio/sio_module.c` is the
-  production module entry), ZMOD manifests/runtime support live under
+  production module entry), MOD manifests/runtime support live under
   `modules/`, all milestone acceptance code lives under `tests/target/`
-  and `tests/modules/` behind the single `ZOS_TARGET_TEST_BUILD` seam,
+  and `tests/modules/` behind the single `KOS_TARGET_TEST_BUILD` seam,
   and the M3 static-driver path is retired.  Host validation is green
   (`make check` plus every acceptance target); because the kernel layout
   changed, the physical smoke runs must be repeated before citing
@@ -72,19 +72,19 @@ current boot).
 - Stage `04-m1-validation-acceptance` is accepted.
 - **M5 — ROM recovery filesystem**: safe runtime ROM access through the
   mirrored stackless stub, a validated read-only ROMFS v1 recovery store
-  (pages 2-7 of the 512 KiB ROM) with the host packer, and the boot ZMOD
+  (pages 2-7 of the 512 KiB ROM) with the host packer, and the boot MOD
   source moved from the embedded catalog to ROMFS.  Accepted on physical
   hardware 2026-10-03 (success and corrupt-metadata images; see
   `docs/validation/2026-10-03-m5-romfs.md`).
-- **M6 — Native process and ZEX v1**: fixed process descriptors, lowest
+- **M6 — Native process and EXE v1**: fixed process descriptors, lowest
   free application-bank allocation, a deterministic native page zero,
-  the packed single-bank ZEX v1 executable format (replaced by the ZEX v2
-  container in M10; `docs/zex-format.md` documents the current format),
+  the packed single-bank EXE v1 executable format (replaced by the EXE v2
+  container in M10; `docs/exe-format.md` documents the current format),
   the native console/exit/getinfo syscalls, and synchronous child
   exec/exit with exact parent restoration.  Accepted on physical
-  hardware 2026-10-03 (`docs/validation/2026-10-03-m6-zex.md`).
-- **M7 — Native monitor and diagnostic foundation**: `monitor.zex` as an
-  ordinary ZEX in ROMFS, the `SYS_DIAG_*` recovery boundary, the shared
+  hardware 2026-10-03 (`docs/validation/2026-10-03-m6-exe.md`).
+- **M7 — Native monitor and diagnostic foundation**: `monitor.exe` as an
+  ordinary EXE in ROMFS, the `SYS_DIAG_*` recovery boundary, the shared
   user-space program support that became the SDK (`user/sdk/`,
   `docs/sdk.md`), the temporary pre-shell launcher, and
   the interactive monitor (`docs/monitor.md`).  Host-validated and
@@ -93,7 +93,7 @@ current boot).
 - **Milestone retention (start of M9)**: the M1-M7 acceptance images,
   build targets, smoke modes and production hooks were retired under the
   Mn-1 retention rule (work package 25a); their still-relevant mechanism
-  coverage (syscall gate, IRQ executive, ROMFS reader, process/ZEX and
+  coverage (syscall gate, IRQ executive, ROMFS reader, process/EXE and
   loader) moved to the subsystem acceptance image
   (`make subsystem-selftest`, `tests/test_subsys_sim.py`).
 - **M8 — Native device stack**: driver ABI (v3) with a linker-derived
@@ -115,9 +115,9 @@ current boot).
   normalization, root selection, the kernel file API), ROMFS serving
   `/system`, the global owner-tagged descriptor pool and per-process CWD,
   the native `FS_*` syscall family (`10h-1Fh`), the user SDK and its
-  `fstest.zex` acceptance program, `SYS_EXEC` nesting with the startup
+  `fstest.exe` acceptance program, `SYS_EXEC` nesting with the startup
   block v1 argument contract, and the resident IOC-FAT provider
-  (`iocfat.zmod`) with its one-slot write-through 512-byte file-data
+  (`iocfat.mod`) with its one-slot write-through 512-byte file-data
   cache.  M9's acceptance matrix, the tree/image hashes and the bank-7
   ledger of the time are in `docs/validation/2026-10-05-m9-filesystem.md`;
   the implementation record is `docs/vfs.md`.
@@ -125,28 +125,28 @@ current boot).
   provider ABI and the driver ABI**: VFS owns three static roots (`/fs`,
   `/system`, `/dev`), the filesystem driver is a bank-6 driver image that
   publishes `/fs`, and its outcome image is `make fs-selftest`
-  (`docs/validation/2026-10-09-m10-prune-nucleus.md`).  **ZEX v2 (package
-  44a) then replaced ZEX v1 as the only executable format**: a 36-byte
+  (`docs/validation/2026-10-09-m10-prune-nucleus.md`).  **EXE v2 (package
+  44a) then replaced EXE v1 as the only executable format**: a 36-byte
   header with 32-bit geometry, a segment table, `DATA` segments as
   process-owned extended-memory objects (`SYS_SEG_INFO`), and a loader
   that zeroes only BSS, the startup block and the page-zero vector.
   **Status: see the M9 acceptance matrix in
   `docs/validation/2026-10-05-m9-filesystem.md`** (the milestone closes only
   when every required row has passed).
-- **M10 — Resident-driver nucleus, extended memory, far code/data, ZEX
+- **M10 — Resident-driver nucleus, extended memory, far code/data, EXE
   v2**: the two-bank operating system (bank-7 nucleus plus bank-6 resident
   drivers), the typed namespace rooted at `/` with the static `/fs`,
   `/system` and `/dev` providers, the IPC substrate with 32-byte frames
   and host-assembled driver endpoints, extended-memory objects with the
-  mode-10 far aperture and far code, and ZEX v2 as the only executable
+  mode-10 far aperture and far code, and EXE v2 as the only executable
   format (architecture section 36).  **Status: COMPLETE pending the
   owner's hardware sign-off** — the coverage map, the final ledgers and
   the hardware checklist are in
   `docs/validation/2026-10-11-m10-acceptance.md`.  The production store
   carries the feature exerciser the checklist's automated rows run on the
-  flashed system - `/system/hwtest.zex`, started with the monitor's
-  `X /system/hwtest.zex` - so no acceptance image has to be programmed for
-  them: program the ordinary `build/zephyros.bin` once and run the line
+  flashed system - `/system/hwtest.exe`, started with the monitor's
+  `X /system/hwtest.exe` - so no acceptance image has to be programmed for
+  them: program the ordinary `build/konaos.bin` once and run the line
   (nothing is loaded from the SD card, which is only the FAT medium the
   files stage writes to).  The exerciser, its smoke mode, its replay and
   the owner steps are in
@@ -164,30 +164,30 @@ linked.
 ## Build
 
 ```sh
-make               # build build/zephyros.bin and build/zephyr80.bin
+make               # build build/konaos.bin and build/zephyr80.bin
 make test          # host image/layout/ABI tests + artifact integrity checks
 make check         # reproducible-rebuild proof + full validation stack
 make subsystem-selftest
                    # subsystem acceptance: the current boot path with an
                    # SIO + console driver set, replaying the syscall,
-                   # IRQ, ROMFS-reader and process/ZEX mechanism groups
+                   # IRQ, ROMFS-reader and process/EXE mechanism groups
                    # and the monitor session (build-subsys-selftest/)
-make zmod-test
+make mod-test
                    # build/pack/validate the driver images; host packer
                    # and container tests (build/modules/)
 make romfs-test
                    # validate/dump the ROMFS recovery store; host format
                    # and reader tests
-make zex-test
-                   # pack/validate zextest.zex + the ZEX malformed matrix
+make exe-test
+                   # pack/validate exetest.exe + the EXE malformed matrix
 make monitor-test
-                   # pack/validate monitor.zex + ABI/layout/dependency tests
+                   # pack/validate monitor.exe + ABI/layout/dependency tests
 make ioc-test
-                   # pack/validate ioc.zmod + host transport contract suite
+                   # pack/validate ioc.mod + host transport contract suite
 make hid-test
-                   # pack/validate hid.zmod + host class/artifact suite
+                   # pack/validate hid.mod + host class/artifact suite
 make v9958-test
-                   # pack/validate v9958.zmod + font pipeline + renderer
+                   # pack/validate v9958.mod + font pipeline + renderer
                    # model suites
 make console-integration-selftest
                    # console integration acceptance: full five-driver image +
@@ -219,14 +219,14 @@ make nucleus-selftest
                    # (build-nucleus-selftest/)
 make helloworld-image
                    # SDK demo image: the production boot path with
-                   # /system/hello.zex as the boot program (build-helloworld/)
+                   # /system/hello.exe as the boot program (build-helloworld/)
 # Hardware smoke checks: each mode verifies ONE specific image, and the
 # production image and the acceptance images have different serial
 # transcripts.  Build the image (`make hardware-images` builds them all),
 # FLASH IT, then run the mode.  Each smoke target prints the exact image and
 # sha256 to flash, and refuses to run when that image is missing.
 make smoke-hardware SERIAL_PORT=/dev/ttyUSB0
-                   # flash build/zephyros.bin (make)
+                   # flash build/konaos.bin (make)
                    # capture + verify the production boot contract from
                    # physical hardware: the exact banner, the
                    # 'console: dynamic sio0.b OK' driver line and the
@@ -234,12 +234,12 @@ make smoke-hardware SERIAL_PORT=/dev/ttyUSB0
                    # diagnostics are tolerated; a panic or an unbound
                    # console fails)
 make smoke-hardware-subsystem SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-subsys-selftest/zephyros-subsys-selftest.bin
+                   # flash build-subsys-selftest/konaos-subsys-selftest.bin
                    # (make subsystem-selftest): the five group
                    # '... selftest: OK' lines and the interactive monitor
                    # session (sends 'Q', expects 'monitor: exit status 0x')
 make smoke-hardware-console-integration SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-console-integration-selftest/zephyros-console-integration-selftest.bin
+                   # flash build-console-integration-selftest/konaos-console-integration-selftest.bin
                    # (make console-integration-selftest): the integration image's serial
                    # portion (binding report, PING level, rejected-call
                    # invariants, the IOC/HID/V9958 device diagnostics,
@@ -247,13 +247,13 @@ make smoke-hardware-console-integration SERIAL_PORT=/dev/ttyUSB0
                    # USB keyboard when the console lanes are reported, then
                    # perform the human HID/V9958 monitor pass on the display
 make smoke-hardware-console-serial SERIAL_PORT=/dev/ttyUSB0
-                   # flash build-console-serial-selftest/zephyros-console-serial-selftest.bin
+                   # flash build-console-serial-selftest/konaos-console-serial-selftest.bin
                    # (make console-serial-selftest): the whole dynamic
                    # console is the serial lane; the tool types 'r' at the
                    # prompt and checks the monitor's answer
 make smoke-hardware-hwtest SERIAL_PORT=/dev/ttyUSB0
-                   # flash build/zephyros.bin (make): the tool types
-                   # 'X /system/hwtest.zex' on the serial command lane and
+                   # flash build/konaos.bin (make): the tool types
+                   # 'X /system/hwtest.exe' on the serial command lane and
                    # checks the feature exerciser's stage lines and verdict;
                    # run it once with a card fitted and once without
 make hardware-images
@@ -263,7 +263,7 @@ make clean         # remove generated files under build*/
 
 Every build automatically runs `tools/mapcheck.py` (authoritative
 post-link layout check) and `tools/pack_image.py` (byte-level image
-validation, page packing, `build/zephyros.manifest.json` with sizes,
+validation, page packing, `build/konaos.manifest.json` with sizes,
 hashes, fill counts, and entry addresses).  `make check` additionally
 proves that a clean rebuild reproduces the identical binary.
 
@@ -293,13 +293,13 @@ work package 25a).
 Artifacts (all under `build/`):
 
 ```text
-zephyros.ihx   linker output
-zephyros.map   symbol/area map
+konaos.ihx   linker output
+konaos.map   symbol/area map
 page0.bin ... page7.bin   the eight 64 KiB ROM pages
-zephyros.bin   512 KiB boot image (pages 0-7, FF-filled)
+konaos.bin   512 KiB boot image (pages 0-7, FF-filled)
 zephyr80.bin   identical copy for MAME
 recovery.romfs logical ROMFS recovery stream (pages 2-7 payload)
-modules/       packed ZMOD modules (+ dump/report JSON); every boot set
+modules/       packed MOD modules (+ dump/report JSON); every boot set
                is sourced from the ROMFS recovery store
 ```
 
@@ -319,7 +319,7 @@ checklist.  Expected output (the current boot then adds the dynamic
 console-driver line):
 
 ```text
-ZephyrOS 0.0
+KonaOS 0.0
 platform: Zephyr-80
 kernel entry: OK
 serial: OK
@@ -329,23 +329,23 @@ console: dynamic sio0.b OK
 On the production stack the console-driver line is written through
 the *bound* console (HID input / V9958 output), so it appears on the
 V9958 display rather than the serial link; the serial transcript keeps
-the early-SIO banner and any `<name>: unavailable 0x<ZOS_E*>`
+the early-SIO banner and any `<name>: unavailable 0x<KOS_E*>`
 diagnostics.  `make smoke-hardware-console-integration` verifies the serial portion of
 the integration image.
 
 ## Layout
 
 ```text
-ZephyrOS/
+KonaOS/
 ├── Makefile
 ├── docs/                  architecture.md, boot.md, memory.md, abi.md,
 │                          devices.md, module-format.md,
-│                          romfs-format.md, zex-format.md, monitor.md,
+│                          romfs-format.md, exe-format.md, monitor.md,
 │                          sdk.md, vfs.md
 ├── kernel/include/        kernel.h, process.h, platform.h,
 │                          irq_types.h
 ├── drivers/include/       driver.h, ioc.h, ioc_protocol.h
-├── formats/include/       romfs.h, zex.h, zmod.h
+├── formats/include/       romfs.h, exe.h, mod.h
 ├── platform/zephyr80/     config.mk, public/ and private/ constants
 ├── drivers/               sio/, ioc/, hid/, v9958/ (driver images and
 │                          their manifests), console/ (the console driver
@@ -368,17 +368,17 @@ ZephyrOS/
 │                          memory.h/.inc, irq.h/.inc, config.mk
 ├── linker/zephyr80.lk     sdldz80 control template (derived _DATA base
 │                          substituted into build/zephyr80.lk)
-├── abi/zos/               the public native ABI (types, errno, syscall,
+├── abi/kos/               the public native ABI (types, errno, syscall,
 │                          fs, process, diag) -- one copy, all builds
-├── user/                  sdk/ (crt0, libzos, zlibc, zex.mk -- the only
+├── user/                  sdk/ (crt0, libkos, klibc, exe.mk -- the only
 │                          way a native program is built),
-│                          monitor/ (native monitor.zex sources + its
+│                          monitor/ (native monitor.exe sources + its
 │                          hex/dump/status helpers),
 │                          helloworld/ (bootable SDK demo)
 ├── recovery/manifest.json production ROMFS contents (the five driver
-│                          images, drivers.man and monitor.zex)
-├── tools/                 pack_image.py, mapcheck.py, zmodpack.py,
-│                          romfspack.py, zexpack.py, fontpack.py,
+│                          images, drivers.man and monitor.exe)
+├── tools/                 pack_image.py, mapcheck.py, modpack.py,
+│                          romfspack.py, exepack.py, fontpack.py,
 │                          serial_smoke.py
 ├── tests/                 host-side image/layout/ABI tests + Z80 replays;
 │                          hid/, video/, console/, ipc/, ns/, fs/, subsys/

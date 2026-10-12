@@ -1,18 +1,18 @@
-/* ZephyrOS helloworld demo: the SDK's canonical minimal program.
+/* KonaOS helloworld demo: the SDK's canonical minimal program.
  *
- * Built by one zex_program line (user/helloworld/Makefile), packed to
- * build/user/hello.zex and optionally booted as /system/hello.zex.  It
+ * Built by one exe_program line (user/helloworld/Makefile), packed to
+ * build/user/hello.exe and optionally booted as /system/hello.exe.  It
  * prints the greeting, then one line per command-tail argument, and
  * exits 0.
  */
 
-#include "zos.h"
+#include "kos.h"
 
 int main(int argc, char **argv)
 {
 	int i;
 
-	printf("Hello, ZephyrOS!\r\n");
+	printf("Hello, KonaOS!\r\n");
 	for (i = 0; i < argc; ++i) {
 		printf("%s\r\n", argv[i]);
 	}

@@ -1,4 +1,4 @@
-/* ZephyrOS M0 fatal-error path.
+/* KonaOS M0 fatal-error path.
  *
  * Prints the clearest available diagnostic through the early console,
  * disables interrupts, and enters the controlled halt loop.  There is no

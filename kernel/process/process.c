@@ -1,4 +1,4 @@
-/* ZephyrOS M6 process lifecycle (bank-7 kernel code).
+/* KonaOS M6 process lifecycle (bank-7 kernel code).
  *
  * Owns the fixed seven-entry process table, the deterministic
  * lowest-free-bank allocator (including test/acceptance reservations),
@@ -11,7 +11,7 @@
  * rolls back through process_slot_release() below.
  *
  * Single-tasking contract: at most one process is RUNNING, and one
- * synchronous exec chain of at most ZOS_EXEC_MAX_DEPTH processes may be
+ * synchronous exec chain of at most KOS_EXEC_MAX_DEPTH processes may be
  * suspended at once (package 28).
  */
 
@@ -21,8 +21,8 @@
 #include "kernel/syscall/xmem.h"
 
 /* Common-resident gates (kernel/process/launch.asm). */
-void zos_process_launch(const struct zos_process_launch_req *req);
-void zos_process_resume(const struct zos_process_resume_req *req);
+void kos_process_launch(const struct kos_process_launch_req *req);
+void kos_process_resume(const struct kos_process_resume_req *req);
 
 struct process process_table[PROCESS_TABLE_SIZE];
 uint16_t process_last_status;
@@ -49,7 +49,7 @@ static int process_bank_in_use(uint8_t bank)
  * are derived: PRIMARY while a table entry owns the bank, AUXILIARY while
  * any slot is owned, FREE otherwise.  A bank reservation also excludes
  * auxiliary use: it is held for a primary allocation. */
-static uint8_t aux_owner[PROCESS_BANK_COUNT][ZOS_AUX_SLOT_COUNT];
+static uint8_t aux_owner[PROCESS_BANK_COUNT][KOS_AUX_SLOT_COUNT];
 
 uint8_t process_aux_live(uint8_t bank)
 {
@@ -58,7 +58,7 @@ uint8_t process_aux_live(uint8_t bank)
 	if (bank >= PROCESS_BANK_COUNT) {
 		return 0u;
 	}
-	for (slot = 0u; slot < ZOS_AUX_SLOT_COUNT; ++slot) {
+	for (slot = 0u; slot < KOS_AUX_SLOT_COUNT; ++slot) {
 		if (aux_owner[bank][slot] != 0u) {
 			return 1u;
 		}
@@ -111,14 +111,14 @@ static void aux_run_take(uint8_t pid, uint8_t bank, uint8_t first,
 static uint8_t aux_candidates(uint8_t place, uint8_t slots,
 			      uint8_t *firsts)
 {
-	if (place == ZOS_AUX_PLACE_FAR) {
+	if (place == KOS_AUX_PLACE_FAR) {
 		if (slots == 1u || slots == 2u) {
 			firsts[0] = 4u;
 			return 1u;
 		}
 		return 0u;
 	}
-	if (place == ZOS_AUX_PLACE_MAPPABLE) {
+	if (place == KOS_AUX_PLACE_MAPPABLE) {
 		if (slots == 1u) {
 			firsts[0] = 4u;
 			firsts[1] = 5u;
@@ -181,9 +181,9 @@ int process_aux_alloc(uint8_t pid, uint8_t slots, uint8_t place,
 
 	if (pid >= PROCESS_TABLE_SIZE || bank == (uint8_t *)0 ||
 	    slot == (uint8_t *)0 || slots == 0u ||
-	    slots > ZOS_AUX_SLOT_COUNT ||
-	    place > ZOS_AUX_PLACE_FAR) {
-		return -ZOS_EINVAL;
+	    slots > KOS_AUX_SLOT_COUNT ||
+	    place > KOS_AUX_PLACE_FAR) {
+		return -KOS_EINVAL;
 	}
 	/* Pack an existing auxiliary bank first (36.15), highest first. */
 	for (b = PROCESS_BANK_COUNT; b-- > 0;) {
@@ -209,7 +209,7 @@ int process_aux_alloc(uint8_t pid, uint8_t slots, uint8_t place,
 			return 0;
 		}
 	}
-	return -ZOS_ENOSPC;
+	return -KOS_ENOSPC;
 }
 
 void process_aux_free(uint8_t pid, uint8_t bank, uint8_t slot, uint8_t slots)
@@ -218,10 +218,10 @@ void process_aux_free(uint8_t pid, uint8_t bank, uint8_t slot, uint8_t slots)
 	uint8_t owner = (uint8_t)(pid + 1u);
 
 	if (bank >= PROCESS_BANK_COUNT || slots == 0u ||
-	    slot >= ZOS_AUX_SLOT_COUNT) {
+	    slot >= KOS_AUX_SLOT_COUNT) {
 		return;
 	}
-	for (i = 0u; i < slots && (uint8_t)(slot + i) < ZOS_AUX_SLOT_COUNT;
+	for (i = 0u; i < slots && (uint8_t)(slot + i) < KOS_AUX_SLOT_COUNT;
 	     ++i) {
 		if (aux_owner[bank][(uint8_t)(slot + i)] == owner) {
 			aux_owner[bank][(uint8_t)(slot + i)] = 0u;
@@ -248,7 +248,7 @@ int process_alloc_bank(void)
 		}
 		return (int)bank;
 	}
-	return -ZOS_ENOSPC;
+	return -KOS_ENOSPC;
 }
 
 int process_bank_reserve(void)
@@ -288,7 +288,7 @@ int process_slot_alloc(void)
 			return (int)pid;
 		}
 	}
-	return -ZOS_ENOSPC;
+	return -KOS_ENOSPC;
 }
 
 void process_slot_release(uint8_t pid)
@@ -300,7 +300,7 @@ void process_slot_release(uint8_t pid)
 	 * (descriptors and CWD) and any extended-memory objects already
 	 * allocated for it.  Idempotent. */
 	vfs_process_exit(pid);
-	zos_xmem_release_process(pid);
+	kos_xmem_release_process(pid);
 	process_table[pid].state = PROCESS_FREE;
 	process_table[pid].bank = PROCESS_NO_PROCESS;
 	process_table[pid].exit_status = 0;
@@ -358,7 +358,7 @@ uint8_t process_current_bank(void)
  * launcher context was restored exactly. */
 void process_launch(const struct process_child *child)
 {
-	struct zos_process_launch_req req;
+	struct kos_process_launch_req req;
 	uint8_t index = (uint8_t)(process_active_count() - 1u);
 
 	/* The launching process (when any) is suspended at this depth; the
@@ -381,13 +381,13 @@ void process_launch(const struct process_child *child)
 	 * no borrowed VFS workspace view outlives the call.  The child is
 	 * free to reuse all of it; restoring the saved frame restores only
 	 * the launcher's own continuation. */
-	zos_process_launch(&req);
+	kos_process_launch(&req);
 }
 
 /* Kernel-launcher convenience wrapper: prepare a depth-0 child, then run
  * it.  The child/parent linkage, the loader path and the exit path are
  * shared with SYS_EXEC; only the returned error space differs (the M6
- * ZEX_EXEC_ERR_* codes are preserved for the boot launcher and its
+ * EXE_EXEC_ERR_* codes are preserved for the boot launcher and its
  * acceptance tests). */
 int process_exec(const char *path, uint16_t *status)
 {
@@ -395,28 +395,28 @@ int process_exec(const char *path, uint16_t *status)
 	int result;
 
 	if (path == (const char *)0 || status == (uint16_t *)0) {
-		return ZEX_EXEC_ERR_ARG;
+		return EXE_EXEC_ERR_ARG;
 	}
 	result = process_prepare(path, PROCESS_KERNEL_PARENT, 0, 0, &child);
 	if (result != 0) {
-		if (result == -ZOS_ENOENT) {
-			return ZEX_EXEC_ERR_ROMFS;
+		if (result == -KOS_ENOENT) {
+			return EXE_EXEC_ERR_ROMFS;
 		}
-		if (result == -ZOS_EISDIR || result == -ZOS_ENOTDIR ||
-		    result == -ZOS_EINVAL) {
-			return ZEX_EXEC_ERR_TYPE;
+		if (result == -KOS_EISDIR || result == -KOS_ENOTDIR ||
+		    result == -KOS_EINVAL) {
+			return EXE_EXEC_ERR_TYPE;
 		}
-		if (result == -ZOS_ENOSPC || result == -ZOS_EBUSY) {
-			return ZEX_EXEC_ERR_NOSPACE;
+		if (result == -KOS_ENOSPC || result == -KOS_EBUSY) {
+			return EXE_EXEC_ERR_NOSPACE;
 		}
 		if (result <= -0x20) {
-			return result; /* granular ZEX_EXEC_ERR_* */
+			return result; /* granular EXE_EXEC_ERR_* */
 		}
-		return ZEX_EXEC_ERR_READ; /* provider read error */
+		return EXE_EXEC_ERR_READ; /* provider read error */
 	}
 	process_launch(&child);
 	*status = process_last_status;
-	return ZEX_EXEC_OK;
+	return EXE_EXEC_OK;
 }
 
 /* Teardown: release the running child's resources, then resume the
@@ -426,7 +426,7 @@ int process_exec(const char *path, uint16_t *status)
  * child resumes the boot launcher instead. */
 void process_exit(uint16_t status)
 {
-	struct zos_process_resume_req req;
+	struct kos_process_resume_req req;
 	uint8_t pid = process_running_pid;
 	uint8_t parent;
 
@@ -443,7 +443,7 @@ void process_exit(uint16_t status)
 	 * extended-memory objects (36.13/36.15: exit frees every object
 	 * after the handles are unbound). */
 	vfs_process_exit(pid);
-	zos_xmem_release_process(pid);
+	kos_xmem_release_process(pid);
 	/* After the child is released the active count is the parent's
 	 * depth, which is also the continuation index saved at its launch. */
 	req.status = status;
@@ -452,16 +452,16 @@ void process_exit(uint16_t status)
 		process_table[parent].state = PROCESS_RUNNING;
 		process_running_pid = parent;
 	}
-	zos_process_resume(&req);
+	kos_process_resume(&req);
 	for (;;) {
-		/* zos_process_resume never returns. */
+		/* kos_process_resume never returns. */
 	}
 }
 
 /* Common return trap continuation: a process entry returned without
- * calling SYS_EXIT.  The child is torn down with ZOS_EFAULT; all other
+ * calling SYS_EXIT.  The child is torn down with KOS_EFAULT; all other
  * exit rules are unchanged. */
 void process_abort(void)
 {
-	process_exit(ZOS_EFAULT);
+	process_exit(KOS_EFAULT);
 }

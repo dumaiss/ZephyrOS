@@ -1,6 +1,6 @@
 """Hardware exerciser static contract (work package 45b).
 
-The production store carries a feature exerciser (`/system/hwtest.zex`)
+The production store carries a feature exerciser (`/system/hwtest.exe`)
 and the outcome programs it runs, and the monitor gains the command that
 starts it.  `test_hwtest_sim.py` replays the outcomes in the simulator;
 this module pins what a replay cannot see: the runner's source surface,
@@ -37,9 +37,9 @@ STORE = os.path.join(ROOT, "build", "recovery.romfs")
 # The store's program set: the launcher plus the exerciser and the six
 # images its three stages run (the xmem family, the far program and the
 # filesystem family).
-STORE_PROGRAMS = ("monitor.zex", "hwtest.zex", "xmem_selftest.zex",
-                  "xmem_child.zex", "xmem_far.zex", "fs_selftest.zex",
-                  "fs_child.zex")
+STORE_PROGRAMS = ("monitor.exe", "hwtest.exe", "xmem_selftest.exe",
+                  "xmem_child.exe", "xmem_far.exe", "fs_selftest.exe",
+                  "fs_child.exe")
 
 # The store the exerciser shares with everything else.
 STORE_CAPACITY = 0x48000
@@ -55,18 +55,18 @@ class TestExerciserProgram(unittest.TestCase):
 
     def test_the_runner_removes_the_card_program_it_staged(self):
         text = read(RUNNER)
-        self.assertIn('#define HW_PROGRAM "/fs/HWTEST/CHILD.ZEX"', text)
+        self.assertIn('#define HW_PROGRAM "/fs/HWTEST/CHILD.EXE"', text)
         remove = text[text.index("static void hw_scratch_remove"):]
         remove = remove[:remove.index("\n}\n")]
         self.assertIn("unlink(HW_PROGRAM)", remove)
 
     def test_it_runs_the_three_stage_programs_from_the_store(self):
         text = read(RUNNER)
-        for path in ('"/system/xmem_selftest.zex"', '"/system/xmem_far.zex"',
-                     '"/system/fs_selftest.zex"'):
+        for path in ('"/system/xmem_selftest.exe"', '"/system/xmem_far.exe"',
+                     '"/system/fs_selftest.exe"'):
             self.assertIn(path, text)
         self.assertIn("run(", text)
-        self.assertIn('#include "zos.h"', text)
+        self.assertIn('#include "kos.h"', text)
 
     def test_the_stage_option_is_a_tail_not_a_copy(self):
         text = read(RUNNER)
@@ -82,7 +82,7 @@ class TestExerciserProgram(unittest.TestCase):
         # it made is gone again, so a failing run leaves no trace either.
         self.assertIn("rmdir(HW_DIR)", text)
         self.assertIn("stat(HW_DIR", text)
-        self.assertIn("-ZOS_ENOENT", text)
+        self.assertIn("-KOS_ENOENT", text)
         # Every card path the runner names is one of the scratch names;
         # `/fs/nosuch` is the deliberate absent-path row and `/fs` itself
         # the card root the namespace stage enumerates.
@@ -94,8 +94,8 @@ class TestExerciserProgram(unittest.TestCase):
     def test_it_reports_on_the_console_and_the_serial_lane(self):
         text = read(RUNNER)
         self.assertIn('LANE_NAME    "/dev/serial/0"', text)
-        self.assertIn("ZOS_TYPE_SERIAL", text)
-        self.assertIn("ZSIO_OP_WRITE", text)
+        self.assertIn("KOS_TYPE_SERIAL", text)
+        self.assertIn("KSIO_OP_WRITE", text)
         # The console comes first, so a lane that fails cannot cost the
         # owner the visible transcript.
         self.assertLess(text.index("console_write(text, length)"),
@@ -142,7 +142,7 @@ class TestTheExerciserReportsTheCodeItSaw(unittest.TestCase):
             self.assertIn('"%s"' % label, text)
         # The card-absent row compares the one documented no-media code.
         self.assertIn("chdir-card-enodev", text)
-        self.assertIn("-ZOS_ENODEV", text)
+        self.assertIn("-KOS_ENODEV", text)
 
 
 class TestReusedProgramOptions(unittest.TestCase):
@@ -167,8 +167,8 @@ class TestReusedProgramOptions(unittest.TestCase):
         # card, run from `/fs` - the bind path a bank-6 provider has to
         # read.  Both images' paths, one row pair.
         text = read(FS_PROGRAM)
-        self.assertIn('#define FS_CHILD_PROGRAM "/fs/CHILD.ZEX"', text)
-        self.assertIn('#define HW_CHILD_PROGRAM "/fs/HWTEST/CHILD.ZEX"', text)
+        self.assertIn('#define FS_CHILD_PROGRAM "/fs/CHILD.EXE"', text)
+        self.assertIn('#define HW_CHILD_PROGRAM "/fs/HWTEST/CHILD.EXE"', text)
         self.assertIn("copy_child_to_card(", text)
         self.assertIn('check("exec-card-copy", copy_child_to_card(copy))', text)
         self.assertIn('check("exec-card-status", status == CHILD_STATUS)',
@@ -215,8 +215,8 @@ class TestMonitorExecCommand(unittest.TestCase):
     def test_the_monitor_reads_the_serial_lane_the_smoke_drives(self):
         text = read(MONITOR)
         self.assertIn('mon_lane_name[] = "/dev/serial/0"', text)
-        self.assertIn("ZSIO_OP_POLL", text)
-        self.assertIn("ZSIO_OP_GETC", text)
+        self.assertIn("KSIO_OP_POLL", text)
+        self.assertIn("KSIO_OP_GETC", text)
         # The console is polled first, so the serial-console build keeps
         # one stream and echoes every byte exactly once.
         self.assertLess(text.index("console_read(&ch, 1)"),
@@ -237,14 +237,14 @@ class TestProductionStore(unittest.TestCase):
         entries = {entry["name"]: entry for entry in self.manifest()}
         for name in STORE_PROGRAMS:
             self.assertIn(name, entries, "%s is not in the store" % name)
-            self.assertEqual(entries[name]["type"], "ZEX", name)
+            self.assertEqual(entries[name]["type"], "EXE", name)
             self.assertEqual(entries[name]["path"], name, name)
 
     def test_the_store_fits_its_capacity(self):
         if not os.path.exists(STORE):
             raise unittest.SkipTest("%s missing; build the image first"
                                     % STORE)
-        capacity = mapcheck.parse_memory_inc(MEMORY_INC)["ZOS_ROMFS_CAPACITY"]
+        capacity = mapcheck.parse_memory_inc(MEMORY_INC)["KOS_ROMFS_CAPACITY"]
         self.assertEqual(capacity, STORE_CAPACITY)
         self.assertLessEqual(os.path.getsize(STORE), capacity,
                              "the recovery store is over its capacity")
@@ -253,12 +253,12 @@ class TestProductionStore(unittest.TestCase):
 class TestBuildWiring(unittest.TestCase):
     def test_the_runner_is_built_as_a_program(self):
         makefile = read(MAKEFILE)
-        self.assertIn("zex_program,hwtest,tests/hwtest", makefile)
+        self.assertIn("exe_program,hwtest,tests/hwtest", makefile)
         self.assertIn("hwtest.c,STACK=256,STAGE=1", makefile)
         # Production packs it and the programs its stages run.
         for name in STORE_PROGRAMS:
             self.assertIn("$(MODULES)/%s" % name, makefile)
-        # `X /system/hwtest.zex` needs the ZEX on the store, not a boot
+        # `X /system/hwtest.exe` needs the EXE on the store, not a boot
         # program: production still boots straight to the monitor.
         self.assertIn("ROMFS_MANIFEST := recovery/manifest.json", makefile)
 
@@ -269,7 +269,7 @@ class TestSmokeMode(unittest.TestCase):
     def test_the_mode_sends_the_command_and_checks_the_transcript(self):
         text = read(SMOKE)
         self.assertIn('"hwtest"', text)
-        self.assertIn('HW_COMMAND = b"X /system/hwtest.zex\\r"', text)
+        self.assertIn('HW_COMMAND = b"X /system/hwtest.exe\\r"', text)
         for marker in ("hwtest: begin", "hwtest: xmem+far PASS",
                        "hwtest: namespace+handles PASS", "hwtest: files PASS",
                        "hwtest: files card absent",

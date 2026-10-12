@@ -2,34 +2,34 @@
   "format": "romfs-v1",
   "files": [
     {
-      "name": "sio.zmod",
-      "type": "ZMOD",
-      "path": "sio.zmod"
+      "name": "sio.mod",
+      "type": "MOD",
+      "path": "sio.mod"
     },
     {
-      "name": "ioc.zmod",
-      "type": "ZMOD",
-      "path": "ioc.zmod"
+      "name": "ioc.mod",
+      "type": "MOD",
+      "path": "ioc.mod"
     },
     {
-      "name": "hid.zmod",
-      "type": "ZMOD",
-      "path": "hid.zmod"
+      "name": "hid.mod",
+      "type": "MOD",
+      "path": "hid.mod"
     },
     {
-      "name": "v9958.zmod",
-      "type": "ZMOD",
-      "path": "v9958.zmod"
+      "name": "v9958.mod",
+      "type": "MOD",
+      "path": "v9958.mod"
     },
     {
-      "name": "console-serial.zmod",
-      "type": "ZMOD",
-      "path": "console-serial.zmod"
+      "name": "console-serial.mod",
+      "type": "MOD",
+      "path": "console-serial.mod"
     },
     {
-      "name": "iocfat.zmod",
-      "type": "ZMOD",
-      "path": "iocfat.zmod"
+      "name": "iocfat.mod",
+      "type": "MOD",
+      "path": "iocfat.mod"
     },
     {
       "name": "drivers.man",
@@ -37,9 +37,9 @@
       "path": "drivers.man"
     },
     {
-      "name": "monitor.zex",
-      "type": "ZEX",
-      "path": "monitor.zex"
+      "name": "monitor.exe",
+      "type": "EXE",
+      "path": "monitor.exe"
     }
   ]
 }

@@ -1,4 +1,4 @@
-/* ZephyrOS IRQ-executive acceptance test (test artifact; linked only in
+/* KonaOS IRQ-executive acceptance test (test artifact; linked only in
  * acceptance image builds).
  *
  * Runs the full interrupt-executive acceptance surface:
@@ -27,20 +27,20 @@
 #include "irq_selftest.h"
 
 /* Common test state owned by tests/target/irq/irq_entry.asm. */
-extern volatile uint8_t zos_irq_test_result;
-extern volatile uint8_t zos_irq_test_delivered;
-extern volatile uint8_t zos_irq_test_evidence;
-extern void zos_irq_selftest_run(uint8_t bank);
-extern void zos_irq_test_mode11(void);
-extern uint8_t zos_irq_test_sp_is_isr(void);
+extern volatile uint8_t kos_irq_test_result;
+extern volatile uint8_t kos_irq_test_delivered;
+extern volatile uint8_t kos_irq_test_evidence;
+extern void kos_irq_selftest_run(uint8_t bank);
+extern void kos_irq_test_mode11(void);
+extern uint8_t kos_irq_test_sp_is_isr(void);
 
-static const char zos_irq_hex_digits[] = "0123456789ABCDEF";
+static const char kos_irq_hex_digits[] = "0123456789ABCDEF";
 
 static void irq_selftest_report_fail(uint8_t code)
 {
 	early_console_puts("irq selftest: FAIL code=0x");
-	early_console_putc(zos_irq_hex_digits[code >> 4]);
-	early_console_putc(zos_irq_hex_digits[code & 0x0F]);
+	early_console_putc(kos_irq_hex_digits[code >> 4]);
+	early_console_putc(kos_irq_hex_digits[code & 0x0F]);
 	early_console_puts("\r\n");
 }
 
@@ -49,16 +49,16 @@ static void irq_selftest_report_fail(uint8_t code)
 static void irq_selftest_handler(void *context)
 {
 	(void)context;
-	++zos_irq_test_delivered;
-	if ((platform_memctl_read() & ZOS_MODE_MASK) == ZOS_MODE_OS) {
-		zos_irq_test_evidence |= 0x01;
+	++kos_irq_test_delivered;
+	if ((platform_memctl_read() & KOS_MODE_MASK) == KOS_MODE_OS) {
+		kos_irq_test_evidence |= 0x01;
 	}
-	if (zos_irq_test_sp_is_isr()) {
-		zos_irq_test_evidence |= 0x02;
+	if (kos_irq_test_sp_is_isr()) {
+		kos_irq_test_evidence |= 0x02;
 	}
 }
 
-void zos_run_irq_selftest(void)
+void kos_run_irq_selftest(void)
 {
 	uint8_t bank;
 
@@ -84,51 +84,51 @@ void zos_run_irq_selftest(void)
 
 	/* --- mode-10 delivery: application banks 0 and 6 --- */
 	for (bank = 0; bank < 7; bank += 6) {
-		zos_ctc0_test_start();
-		zos_irq_test_result = ZOS_IST_RESULT_ARMED;
-		zos_irq_test_delivered = 0;
-		zos_irq_test_evidence = 0;
-		zos_irq_selftest_run(bank);
-		if (zos_irq_test_result != ZOS_IST_OK) {
-			irq_selftest_report_fail(zos_irq_test_result);
+		kos_ctc0_test_start();
+		kos_irq_test_result = KOS_IST_RESULT_ARMED;
+		kos_irq_test_delivered = 0;
+		kos_irq_test_evidence = 0;
+		kos_irq_selftest_run(bank);
+		if (kos_irq_test_result != KOS_IST_OK) {
+			irq_selftest_report_fail(kos_irq_test_result);
 			return;
 		}
-		if (zos_irq_test_delivered < 3) {
-			irq_selftest_report_fail(ZOS_IST_FAIL_REPEAT);
+		if (kos_irq_test_delivered < 3) {
+			irq_selftest_report_fail(KOS_IST_FAIL_REPEAT);
 			return;
 		}
-		if (zos_irq_test_evidence != 0x03) {
-			irq_selftest_report_fail(ZOS_IST_FAIL_EVIDENCE);
+		if (kos_irq_test_evidence != 0x03) {
+			irq_selftest_report_fail(KOS_IST_FAIL_EVIDENCE);
 			return;
 		}
 		if (irq_last_source() != IRQ_CTC0 ||
 		    irq_unexpected_count() != 0 ||
 		    irq_unclaimed_count() != 0) {
-			irq_selftest_report_fail(ZOS_IST_FAIL_COUNTERS);
+			irq_selftest_report_fail(KOS_IST_FAIL_COUNTERS);
 			return;
 		}
 	}
-	zos_ctc0_test_stop();
+	kos_ctc0_test_stop();
 
 	/* --- mode-11 delivery + the unclaimed-source path --- */
 	if (irq_release(IRQ_CTC0) != IRQ_OK)
 		goto fail_registry;
-	zos_ctc0_test_start();
-	zos_irq_test_result = ZOS_IST_RESULT_ARMED;
-	zos_irq_test_mode11();
-	if (zos_irq_test_result != ZOS_IST_OK) {
-		irq_selftest_report_fail(zos_irq_test_result);
+	kos_ctc0_test_start();
+	kos_irq_test_result = KOS_IST_RESULT_ARMED;
+	kos_irq_test_mode11();
+	if (kos_irq_test_result != KOS_IST_OK) {
+		irq_selftest_report_fail(kos_irq_test_result);
 		return;
 	}
 	if (irq_unclaimed_count() != 1) {
-		irq_selftest_report_fail(ZOS_IST_FAIL_UNCLAIMED);
+		irq_selftest_report_fail(KOS_IST_FAIL_UNCLAIMED);
 		return;
 	}
 	if (irq_last_source() != IRQ_CTC0 || irq_unexpected_count() != 0) {
-		irq_selftest_report_fail(ZOS_IST_FAIL_COUNTERS);
+		irq_selftest_report_fail(KOS_IST_FAIL_COUNTERS);
 		return;
 	}
-	zos_ctc0_test_stop();
+	kos_ctc0_test_stop();
 
 	/* --- clean teardown: no source may remain claimed --- */
 	if (irq_release(IRQ_CTC0) != IRQ_ENOENT)
@@ -138,5 +138,5 @@ void zos_run_irq_selftest(void)
 	return;
 
 fail_registry:
-	irq_selftest_report_fail(ZOS_IST_FAIL_REGISTRY);
+	irq_selftest_report_fail(KOS_IST_FAIL_REGISTRY);
 }

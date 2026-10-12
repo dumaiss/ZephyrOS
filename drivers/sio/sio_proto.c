@@ -1,9 +1,9 @@
-/* ZephyrOS SIO0/B resident driver (work package 41).
+/* KonaOS SIO0/B resident driver (work package 41).
  *
  * The M8 `sio` driver as a bank-6 driver image: the SIO0/B channel
  * (115200 8N1, the same physical channel as the early console) behind the
- * serial protocol of abi/zos/protocol.h (class ZOS_CLASS_SERIAL,
- * instance 0, version ZOS_PROTOCOL_VERSION).
+ * serial protocol of abi/kos/protocol.h (class KOS_CLASS_SERIAL,
+ * instance 0, version KOS_PROTOCOL_VERSION).
  *
  * Segments (architecture 36.6):
  *   hot  this file: the protocol dispatch and the bounded operation
@@ -23,9 +23,9 @@
  * never names a caller address.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "driver.h"
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 #include "sio.h"
 
@@ -38,7 +38,7 @@ static const struct driver_api *sio_api;
 static uint8_t sio_batch[SIO_DRIVER_BATCH];
 static uint16_t sio_batch_address;
 
-static int16_t sio_write_buffer(struct zos_ipc_frame *frame)
+static int16_t sio_write_buffer(struct kos_ipc_frame *frame)
 {
 	uint16_t offset = frame->arg0;
 	uint16_t length = frame->arg1;
@@ -60,14 +60,14 @@ static int16_t sio_write_buffer(struct zos_ipc_frame *frame)
 		if (sio0b_write(&sio0b_state, (const char *)sio_batch,
 				chunk) != (int)chunk) {
 			return done != 0u ? (int16_t)done
-					  : (int16_t)-ZOS_ETIMEDOUT;
+					  : (int16_t)-KOS_ETIMEDOUT;
 		}
 		done = (uint16_t)(done + chunk);
 	}
 	return (int16_t)done;
 }
 
-static int16_t sio_read_buffer(struct zos_ipc_frame *frame)
+static int16_t sio_read_buffer(struct kos_ipc_frame *frame)
 {
 	uint16_t offset = frame->arg0;
 	uint16_t length = frame->arg1;
@@ -95,27 +95,27 @@ static int16_t sio_read_buffer(struct zos_ipc_frame *frame)
 		if (sio_api->copy_out(frame->desc, (uint16_t)(offset + done -
 							      chunk),
 				      sio_batch_address, chunk) < 0) {
-			return (int16_t)-ZOS_EINVAL;
+			return (int16_t)-KOS_EINVAL;
 		}
 	}
 	return (int16_t)done;
 }
 
-int16_t sio_driver_dispatch(struct zos_ipc_frame *frame)
+int16_t sio_driver_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
-	case ZSIO_OP_PUTC:
+	case KSIO_OP_PUTC:
 		return (int16_t)sio0b_putc(&sio0b_state, (char)frame->arg0);
-	case ZSIO_OP_WRITE:
+	case KSIO_OP_WRITE:
 		return sio_write_buffer(frame);
-	case ZSIO_OP_POLL:
+	case KSIO_OP_POLL:
 		return (int16_t)sio0b_poll(&sio0b_state);
-	case ZSIO_OP_GETC:
+	case KSIO_OP_GETC:
 		return (int16_t)sio0b_getc(&sio0b_state);
-	case ZSIO_OP_READ:
+	case KSIO_OP_READ:
 		return sio_read_buffer(frame);
 	default:
-		return (int16_t)-ZOS_EINVAL;
+		return (int16_t)-KOS_EINVAL;
 	}
 }
 

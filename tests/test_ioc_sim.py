@@ -2,8 +2,8 @@
 """Host-side IOC resident-driver acceptance replay (work package 41).
 
 The IOC command/reply and bulk transport live in a bank-6 *resident
-driver* driven by the versioned IOC protocol (`abi/zos/protocol.h`,
-class `ZOS_CLASS_IOC`) over the IPC substrate.  Work package 42d merged
+driver* driven by the versioned IOC protocol (`abi/kos/protocol.h`,
+class `KOS_CLASS_IOC`) over the IPC substrate.  Work package 42d merged
 the per-device images: this module replays the IOC diagnostic inside
 `build-console-integration-selftest` (the `sio ioc hid v9958
 console-v9958-hid` set) against the emulated MCU IOC peer and asserts,
@@ -54,7 +54,7 @@ OK_LINE = b"ioc selftest: OK\r\n"
 FAIL_LINE = b"ioc selftest: FAIL"
 
 # Protocol vocabulary the replay decodes out of the peer (the wire the
-# driver owns; abi/zos/protocol.h and drivers/ioc/ioc_proto.h).
+# driver owns; abi/kos/protocol.h and drivers/ioc/ioc_proto.h).
 CMD_LINK_SYNC = 0x0C
 CMD_PING = 0x01
 RSP_PING = 0x81
@@ -101,7 +101,7 @@ class IocSimBase(Replay, unittest.TestCase):
     """One boot of the integration image serves every assertion."""
 
     IMAGE_SUBDIR = "build-console-integration-selftest"
-    IMAGE_NAME = "zephyros-console-integration-selftest.bin"
+    IMAGE_NAME = "konaos-console-integration-selftest.bin"
 
     def setUp(self):
         self.load_image()
@@ -159,7 +159,7 @@ class TestIocDriverBoot(IocSimBase):
         self.run_until(z, [OK_LINE],
                        on_step=IntegrationInputs(z.ioc_peer))
         tx = bytes(z.sio_tx)
-        self.assertIn(b"ZephyrOS 0.0\r\n", tx)
+        self.assertIn(b"KonaOS 0.0\r\n", tx)
         self.assertFalse(z.sio_rx, "host sync sequence not consumed")
 
     def test_driver_boot_transcript_and_protocol_facts(self):
@@ -168,15 +168,15 @@ class TestIocDriverBoot(IocSimBase):
         tx = self.boot(z)
 
         # --- boot transcript: banner, driver evidence, diagnostic ---
-        self.assertIn(b"ZephyrOS 0.0\r\n", tx)
+        self.assertIn(b"KonaOS 0.0\r\n", tx)
         for marker in MARKERS:
             self.assertIn(marker, tx)
         self.assertNotIn(FAIL_LINE, tx)
         self.assertNotIn(b"PANIC", tx)
         # The loader's observable evidence lines name the configured
         # driver set in order; the ledger tail counts what it placed.
-        manifest = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
-                    "console-v9958-hid.zmod"]
+        manifest = ["sio.mod", "ioc.mod", "hid.mod", "v9958.mod",
+                    "console-v9958-hid.mod"]
         evidence = self.driver_evidence(tx)
         self.assertEqual([name for name, _ in evidence], manifest)
         self.assertIn(("driver loader: %d images in bank 6\r\n"

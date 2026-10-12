@@ -1,4 +1,4 @@
-#include "zlibc/string.h"
+#include "klibc/string.h"
 
 char *strchr(const char *s, int c)
 {

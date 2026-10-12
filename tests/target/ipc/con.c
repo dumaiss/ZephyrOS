@@ -1,4 +1,4 @@
-/* ZephyrOS IPC acceptance: the `con` console-like synthetic driver (test
+/* KonaOS IPC acceptance: the `con` console-like synthetic driver (test
  * artifact).
  *
  * WRITE(offset, length) copies a slice of the caller descriptor into the
@@ -18,7 +18,7 @@
  * hot-segment buffer lives in con_slow.c, compiled into the _HOT area.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "driver.h"
 
 #include "ipc_test.h"
@@ -31,7 +31,7 @@ static const struct driver_api *api;
 static uint8_t con_buffer[CON_BUFFER_BYTES];
 static uint16_t con_slow_address;
 
-static int16_t con_write(struct zos_ipc_frame *frame)
+static int16_t con_write(struct kos_ipc_frame *frame)
 {
 	uint16_t length = frame->arg1;
 	uint16_t index;
@@ -39,7 +39,7 @@ static int16_t con_write(struct zos_ipc_frame *frame)
 
 	if (length == 0u || length > CON_BUFFER_BYTES ||
 	    (uint16_t)frame->arg0 > (uint16_t)(CON_BUFFER_BYTES - length)) {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	if ((frame->flags & IPC_FRAME_SLOW_IO) != 0u) {
 		result = api->copy_in(frame->desc, frame->arg0,
@@ -66,7 +66,7 @@ static int16_t con_write(struct zos_ipc_frame *frame)
 
 /* The endpoint dispatch entry the manifest names: a module-global
  * symbol so the packer can resolve its hot-image offset. */
-int16_t con_dispatch(struct zos_ipc_frame *frame)
+int16_t con_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
 	case IPC_OP_CON_WRITE:
@@ -84,7 +84,7 @@ int16_t con_dispatch(struct zos_ipc_frame *frame)
 				    (uint16_t)con_buffer, 4u);
 	}
 	default:
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 }
 

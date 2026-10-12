@@ -40,7 +40,7 @@ STEP_LIMIT = 60000000
 MARKER_SETTLE_STEPS = 64  # steps of quiet after a matched marker
 
 # The monitor's visible lane, shared by every console replay.
-BANNER = "ZephyrOS 0.0"
+BANNER = "KonaOS 0.0"
 PROMPT = "Z80>"
 MONITOR_EXIT = "monitor: exit"
 
@@ -73,7 +73,7 @@ class Replay:
     input_driver = None
 
     @classmethod
-    def open(cls, subdir, image_name, map_name="zephyros.map", root=ROOT):
+    def open(cls, subdir, image_name, map_name="konaos.map", root=ROOT):
         """Load `<root>/<subdir>/<image_name>` and its map; a missing
         image skips the test (acceptance images build in their own
         targets only)."""
@@ -85,7 +85,7 @@ class Replay:
         return instance
 
     def load_image(self, subdir=None, image_name=None,
-                   map_name="zephyros.map"):
+                   map_name="konaos.map"):
         """In-place `open` for a test base that declares IMAGE_SUBDIR
         and IMAGE_NAME.  Returns self."""
         self.subdir = subdir or self.IMAGE_SUBDIR
@@ -117,9 +117,9 @@ class Replay:
             z, self.syms["_kernel_serial_connect_delay"])
 
     def crt0(self, z, limit=CRT0_STEP_LIMIT):
-        """Call `__zos_crt0_init` and run until it returns."""
+        """Call `__kos_crt0_init` and run until it returns."""
         z.push16(RET)
-        z.pc = self.syms["__zos_crt0_init"]
+        z.pc = self.syms["__kos_crt0_init"]
         for _ in range(limit):
             z.step()
             if z.pc == RET:
@@ -239,13 +239,13 @@ class Replay:
         return bytes(page1[address:address + length])
 
     def geometry(self):
-        """The build's generated memory geometry (ZOS_* constants)."""
+        """The build's generated memory geometry (KOS_* constants)."""
         values = {}
         with open(os.path.join(self.root, self.subdir, "geometry",
                                "memory.inc")) as handle:
             for line in handle:
                 match = re.match(
-                    r"^(ZOS_[A-Z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)", line)
+                    r"^(KOS_[A-Z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)", line)
                 if match:
                     values[match.group(1)] = int(match.group(2), 0)
         return values
@@ -254,12 +254,12 @@ class Replay:
         """The kernel's reserved stack regions as named half-open byte
         ranges: the driver stack ends where the ISR stack starts."""
         return (
-            ("driver", self.syms["zos_driver_stack"],
-             self.syms["zos_driver_stack_top"] - 1),
+            ("driver", self.syms["kos_driver_stack"],
+             self.syms["kos_driver_stack_top"] - 1),
             ("isr", self.syms["irq_isr_stack"] + 1,
              self.syms["irq_isr_stack_top"] - 1),
-            ("gate", self.syms["zos_gate_stack"],
-             self.syms["zos_gate_stack_top"] - 1),
+            ("gate", self.syms["kos_gate_stack"],
+             self.syms["kos_gate_stack_top"] - 1),
         )
 
     def romfs_entries(self):

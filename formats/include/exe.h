@@ -1,14 +1,14 @@
-/* ZephyrOS M10 ZEX v2 native executable container.
+/* KonaOS M10 EXE v2 native executable container.
  *
- * ZEX v2 is the only executable container (architecture 36.18): a primary
+ * EXE v2 is the only executable container (architecture 36.18): a primary
  * image loaded at logical 0100h plus zero or more auxiliary segments.
- * It is packed by tools/zexpack.py and loaded from the namespace by
- * kernel/process/exec.c; see docs/zex-format.md.
+ * It is packed by tools/exepack.py and loaded from the namespace by
+ * kernel/process/exec.c; see docs/exe-format.md.
  *
  * Packed little-endian 36-byte header, then the primary payload, the
  * segment table and the segment payloads:
  *
- *   00 magic[4]                "ZEX2"
+ *   00 magic[4]                "KEX2"
  *   04 format_version          2
  *   05 abi_version             1
  *   06 flags                   0
@@ -28,7 +28,7 @@
  * Segment table row (16 bytes):
  *
  *   00 id             1..segment_count, ascending
- *   01 kind           ZEX_SEG_KIND_*
+ *   01 kind           EXE_SEG_KIND_*
  *   02 image_size     bytes copied into the segment's memory
  *   04 bss_size       bytes zeroed after the segment image
  *   06 reserved0      0
@@ -45,40 +45,40 @@
  * The header and row structs may be overlaid on container bytes; SDCC
  * z80 does not insert padding and the compile-time assertions pin every
  * field offset.  The result codes below are produced by this reader and
- * mirrored by tools/zexpack.py (the host parity test cross-checks them).
+ * mirrored by tools/exepack.py (the host parity test cross-checks them).
  */
 
-#ifndef ZEPHYROS_ZEX_H
-#define ZEPHYROS_ZEX_H
+#ifndef KONAOS_EXE_H
+#define KONAOS_EXE_H
 
-#include "zos/types.h"
-#include "zos/errno.h"
+#include "kos/types.h"
+#include "kos/errno.h"
 
 /* --- format constants ------------------------------------------------- */
 
-#define ZEX_MAGIC_0 'Z' /* 0x5A */
-#define ZEX_MAGIC_1 'E' /* 0x45 */
-#define ZEX_MAGIC_2 'X' /* 0x58 */
-#define ZEX_MAGIC_3 '2' /* 0x32 */
+#define EXE_MAGIC_0 'K' /* 0x4B */
+#define EXE_MAGIC_1 'E' /* 0x45 */
+#define EXE_MAGIC_2 'X' /* 0x58 */
+#define EXE_MAGIC_3 '2' /* 0x32 */
 
-#define ZEX_FORMAT_VERSION 2u
-#define ZEX_ABI_VERSION    1u
-#define ZEX_FLAG_NONE      0u
+#define EXE_FORMAT_VERSION 2u
+#define EXE_ABI_VERSION    1u
+#define EXE_FLAG_NONE      0u
 
-#define ZEX_HEADER_SIZE        36u
-#define ZEX_SEGMENT_ENTRY_SIZE 16u
+#define EXE_HEADER_SIZE        36u
+#define EXE_SEGMENT_ENTRY_SIZE 16u
 
-#define ZEX_LOAD_BASE   0x0100u /* logical load address           */
-#define ZEX_STACK_TOP   0xE000u /* initial SP; stack grows down   */
-#define ZEX_MIN_STACK_SIZE 0x0002u
+#define EXE_LOAD_BASE   0x0100u /* logical load address           */
+#define EXE_STACK_TOP   0xE000u /* initial SP; stack grows down   */
+#define EXE_MIN_STACK_SIZE 0x0002u
 
 /* Segment kinds.  `DATA` segments become extended-memory objects owned by
  * the process (architecture 36.16/36.18); `FAR_CODE` segments are linked
  * at 8000h and loaded into the aperture slice of an auxiliary bank, one
  * per bank, and executed in place through the mode-10 aperture (36.17):
  * the largest far-code segment is the 16 KiB aperture. */
-#define ZEX_SEG_KIND_FAR_CODE 1u
-#define ZEX_SEG_KIND_DATA     2u
+#define EXE_SEG_KIND_FAR_CODE 1u
+#define EXE_SEG_KIND_DATA     2u
 
 /* Container limits.  The feasibility check uses the slot total: an
  * auxiliary object is contiguous in one bank, a data segment occupies at
@@ -86,14 +86,14 @@
  * most the two aperture slots of its bank, and the child's primary bank
  * can never hold auxiliary slots, so a container is bounded by five
  * banks' worth; the packer enforces the same ceiling on the host. */
-#define ZEX_MAX_SEGMENTS    8u
-#define ZEX_MAX_TOTAL_SLOTS 20u
-#define ZEX_SEG_SLOT_SIZE   0x2000u /* one auxiliary slot          */
-#define ZEX_SEG_MAX_SIZE    0x8000u /* image + BSS, the largest object */
-#define ZEX_SEG_MAX_FAR_SIZE 0x4000u /* image + BSS, the aperture slice */
+#define EXE_MAX_SEGMENTS    8u
+#define EXE_MAX_TOTAL_SLOTS 20u
+#define EXE_SEG_SLOT_SIZE   0x2000u /* one auxiliary slot          */
+#define EXE_SEG_MAX_SIZE    0x8000u /* image + BSS, the largest object */
+#define EXE_SEG_MAX_FAR_SIZE 0x4000u /* image + BSS, the aperture slice */
 
 /* On-disk header, little-endian, packed. */
-struct zex_header {
+struct exe_header {
 	uint8_t  magic[4];
 	uint8_t  format_version;
 	uint8_t  abi_version;
@@ -113,7 +113,7 @@ struct zex_header {
 };
 
 /* One segment-table row, little-endian, packed. */
-struct zex_segment {
+struct exe_segment {
 	uint8_t  id;
 	uint8_t  kind;
 	uint16_t image_size;
@@ -124,112 +124,112 @@ struct zex_segment {
 };
 
 #if defined(__SDCC)
-_Static_assert(sizeof(struct zex_header) == ZEX_HEADER_SIZE,
-	       "ZEX header must be 36 bytes");
-_Static_assert(sizeof(struct zex_segment) == ZEX_SEGMENT_ENTRY_SIZE,
-	       "ZEX segment row must be 16 bytes");
-_Static_assert(__builtin_offsetof(struct zex_header, magic) == 0x00,
-	       "ZEX magic offset");
-_Static_assert(__builtin_offsetof(struct zex_header, format_version) == 0x04,
-	       "ZEX format_version offset");
-_Static_assert(__builtin_offsetof(struct zex_header, abi_version) == 0x05,
-	       "ZEX abi_version offset");
-_Static_assert(__builtin_offsetof(struct zex_header, flags) == 0x06,
-	       "ZEX flags offset");
-_Static_assert(__builtin_offsetof(struct zex_header, reserved0) == 0x07,
-	       "ZEX reserved0 offset");
-_Static_assert(__builtin_offsetof(struct zex_header, header_size) == 0x08,
-	       "ZEX header_size offset");
-_Static_assert(__builtin_offsetof(struct zex_header, segment_count) == 0x0A,
-	       "ZEX segment_count offset");
-_Static_assert(__builtin_offsetof(struct zex_header,
+_Static_assert(sizeof(struct exe_header) == EXE_HEADER_SIZE,
+	       "EXE header must be 36 bytes");
+_Static_assert(sizeof(struct exe_segment) == EXE_SEGMENT_ENTRY_SIZE,
+	       "EXE segment row must be 16 bytes");
+_Static_assert(__builtin_offsetof(struct exe_header, magic) == 0x00,
+	       "EXE magic offset");
+_Static_assert(__builtin_offsetof(struct exe_header, format_version) == 0x04,
+	       "EXE format_version offset");
+_Static_assert(__builtin_offsetof(struct exe_header, abi_version) == 0x05,
+	       "EXE abi_version offset");
+_Static_assert(__builtin_offsetof(struct exe_header, flags) == 0x06,
+	       "EXE flags offset");
+_Static_assert(__builtin_offsetof(struct exe_header, reserved0) == 0x07,
+	       "EXE reserved0 offset");
+_Static_assert(__builtin_offsetof(struct exe_header, header_size) == 0x08,
+	       "EXE header_size offset");
+_Static_assert(__builtin_offsetof(struct exe_header, segment_count) == 0x0A,
+	       "EXE segment_count offset");
+_Static_assert(__builtin_offsetof(struct exe_header,
 				   total_segment_slots) == 0x0B,
-	       "ZEX total_segment_slots offset");
-_Static_assert(__builtin_offsetof(struct zex_header, image_size) == 0x0C,
-	       "ZEX image_size offset");
-_Static_assert(__builtin_offsetof(struct zex_header, bss_size) == 0x0E,
-	       "ZEX bss_size offset");
-_Static_assert(__builtin_offsetof(struct zex_header, entry_offset) == 0x10,
-	       "ZEX entry_offset offset");
-_Static_assert(__builtin_offsetof(struct zex_header, stack_size) == 0x12,
-	       "ZEX stack_size offset");
-_Static_assert(__builtin_offsetof(struct zex_header,
+	       "EXE total_segment_slots offset");
+_Static_assert(__builtin_offsetof(struct exe_header, image_size) == 0x0C,
+	       "EXE image_size offset");
+_Static_assert(__builtin_offsetof(struct exe_header, bss_size) == 0x0E,
+	       "EXE bss_size offset");
+_Static_assert(__builtin_offsetof(struct exe_header, entry_offset) == 0x10,
+	       "EXE entry_offset offset");
+_Static_assert(__builtin_offsetof(struct exe_header, stack_size) == 0x12,
+	       "EXE stack_size offset");
+_Static_assert(__builtin_offsetof(struct exe_header,
 				   segment_table_offset) == 0x14,
-	       "ZEX segment_table_offset offset");
-_Static_assert(__builtin_offsetof(struct zex_header,
+	       "EXE segment_table_offset offset");
+_Static_assert(__builtin_offsetof(struct exe_header,
 				   primary_payload_offset) == 0x18,
-	       "ZEX primary_payload_offset offset");
-_Static_assert(__builtin_offsetof(struct zex_header, file_size) == 0x1C,
-	       "ZEX file_size offset");
-_Static_assert(__builtin_offsetof(struct zex_header, reserved1) == 0x20,
-	       "ZEX reserved1 offset");
-_Static_assert(__builtin_offsetof(struct zex_segment, id) == 0x00,
-	       "ZEX segment id offset");
-_Static_assert(__builtin_offsetof(struct zex_segment, kind) == 0x01,
-	       "ZEX segment kind offset");
-_Static_assert(__builtin_offsetof(struct zex_segment, image_size) == 0x02,
-	       "ZEX segment image_size offset");
-_Static_assert(__builtin_offsetof(struct zex_segment, bss_size) == 0x04,
-	       "ZEX segment bss_size offset");
-_Static_assert(__builtin_offsetof(struct zex_segment, payload_offset) == 0x08,
-	       "ZEX segment payload_offset offset");
+	       "EXE primary_payload_offset offset");
+_Static_assert(__builtin_offsetof(struct exe_header, file_size) == 0x1C,
+	       "EXE file_size offset");
+_Static_assert(__builtin_offsetof(struct exe_header, reserved1) == 0x20,
+	       "EXE reserved1 offset");
+_Static_assert(__builtin_offsetof(struct exe_segment, id) == 0x00,
+	       "EXE segment id offset");
+_Static_assert(__builtin_offsetof(struct exe_segment, kind) == 0x01,
+	       "EXE segment kind offset");
+_Static_assert(__builtin_offsetof(struct exe_segment, image_size) == 0x02,
+	       "EXE segment image_size offset");
+_Static_assert(__builtin_offsetof(struct exe_segment, bss_size) == 0x04,
+	       "EXE segment bss_size offset");
+_Static_assert(__builtin_offsetof(struct exe_segment, payload_offset) == 0x08,
+	       "EXE segment payload_offset offset");
 #endif /* __SDCC */
 
 /* --- load result codes ------------------------------------------------ */
 
-/* process_exec() returns ZEX_EXEC_OK after the child ran and exited (the
+/* process_exec() returns EXE_EXEC_OK after the child ran and exited (the
  * child's status is delivered through the out parameter), or one of the
  * negative codes below.  Every format boundary has a distinct code so
  * target acceptance can assert the exact rejection without inspecting
  * console text; the numeric values are internal and mirrored by
- * tools/zexpack.py. */
-#define ZEX_EXEC_OK            0
-#define ZEX_EXEC_ERR_ARG       (-0x21) /* invalid API argument         */
-#define ZEX_EXEC_ERR_ROMFS     (-0x22) /* lookup/read failed           */
-#define ZEX_EXEC_ERR_TYPE      (-0x23) /* entry is not a ZEX           */
-#define ZEX_EXEC_ERR_NOSPACE   (-0x24) /* no free slot/bank/aux space  */
-#define ZEX_EXEC_ERR_READ      (-0x25) /* payload read/copy failed     */
-#define ZEX_EXEC_ERR_MAGIC     (-0x31)
-#define ZEX_EXEC_ERR_FORMAT    (-0x32) /* format_version field         */
-#define ZEX_EXEC_ERR_ABI       (-0x33) /* abi_version field            */
-#define ZEX_EXEC_ERR_FLAGS     (-0x34) /* flags field                  */
-#define ZEX_EXEC_ERR_RESERVED0 (-0x35)
-#define ZEX_EXEC_ERR_HEADER    (-0x36) /* header_size field            */
-#define ZEX_EXEC_ERR_RESERVED1 (-0x37)
-#define ZEX_EXEC_ERR_IMAGE     (-0x38) /* zero image                   */
-#define ZEX_EXEC_ERR_FILESIZE  (-0x39) /* file_size field mismatch     */
-#define ZEX_EXEC_ERR_ENTRY     (-0x3A) /* entry outside the image      */
-#define ZEX_EXEC_ERR_STACK     (-0x3B) /* stack_size < 2               */
-#define ZEX_EXEC_ERR_IMAGE_END (-0x3C) /* image reaches E000h/overflows */
-#define ZEX_EXEC_ERR_BSS_END   (-0x3D) /* BSS reaches E000h/overflows  */
-#define ZEX_EXEC_ERR_COLLISION (-0x3E) /* BSS/image overlaps the stack */
-#define ZEX_EXEC_ERR_SEG_SLOTS (-0x3F) /* segment count/slot total     */
-#define ZEX_EXEC_ERR_SEG_TABLE (-0x40) /* table outside the file       */
-#define ZEX_EXEC_ERR_SEGMENT   (-0x41) /* invalid segment row          */
-#define ZEX_EXEC_ERR_SEG_KIND  (-0x42) /* unknown/unsupported kind     */
+ * tools/exepack.py. */
+#define EXE_EXEC_OK            0
+#define EXE_EXEC_ERR_ARG       (-0x21) /* invalid API argument         */
+#define EXE_EXEC_ERR_ROMFS     (-0x22) /* lookup/read failed           */
+#define EXE_EXEC_ERR_TYPE      (-0x23) /* entry is not a EXE           */
+#define EXE_EXEC_ERR_NOSPACE   (-0x24) /* no free slot/bank/aux space  */
+#define EXE_EXEC_ERR_READ      (-0x25) /* payload read/copy failed     */
+#define EXE_EXEC_ERR_MAGIC     (-0x31)
+#define EXE_EXEC_ERR_FORMAT    (-0x32) /* format_version field         */
+#define EXE_EXEC_ERR_ABI       (-0x33) /* abi_version field            */
+#define EXE_EXEC_ERR_FLAGS     (-0x34) /* flags field                  */
+#define EXE_EXEC_ERR_RESERVED0 (-0x35)
+#define EXE_EXEC_ERR_HEADER    (-0x36) /* header_size field            */
+#define EXE_EXEC_ERR_RESERVED1 (-0x37)
+#define EXE_EXEC_ERR_IMAGE     (-0x38) /* zero image                   */
+#define EXE_EXEC_ERR_FILESIZE  (-0x39) /* file_size field mismatch     */
+#define EXE_EXEC_ERR_ENTRY     (-0x3A) /* entry outside the image      */
+#define EXE_EXEC_ERR_STACK     (-0x3B) /* stack_size < 2               */
+#define EXE_EXEC_ERR_IMAGE_END (-0x3C) /* image reaches E000h/overflows */
+#define EXE_EXEC_ERR_BSS_END   (-0x3D) /* BSS reaches E000h/overflows  */
+#define EXE_EXEC_ERR_COLLISION (-0x3E) /* BSS/image overlaps the stack */
+#define EXE_EXEC_ERR_SEG_SLOTS (-0x3F) /* segment count/slot total     */
+#define EXE_EXEC_ERR_SEG_TABLE (-0x40) /* table outside the file       */
+#define EXE_EXEC_ERR_SEGMENT   (-0x41) /* invalid segment row          */
+#define EXE_EXEC_ERR_SEG_KIND  (-0x42) /* unknown/unsupported kind     */
 
-/* Validated primary geometry of one ZEX file (absolute logical
+/* Validated primary geometry of one EXE file (absolute logical
  * addresses). */
-struct zex_geometry {
-	uint16_t image_size; /* bytes copied to ZEX_LOAD_BASE      */
+struct exe_geometry {
+	uint16_t image_size; /* bytes copied to EXE_LOAD_BASE      */
 	uint16_t bss_size;   /* zero bytes after the image         */
-	uint16_t entry;      /* ZEX_LOAD_BASE + entry_offset       */
+	uint16_t entry;      /* EXE_LOAD_BASE + entry_offset       */
 	uint16_t stack_size;
-	uint16_t stack_base; /* ZEX_STACK_TOP - stack_size         */
+	uint16_t stack_base; /* EXE_STACK_TOP - stack_size         */
 };
 
 /* The one up-front feasibility check: validate the header against the
- * complete file size.  Returns 0 or one of the ZEX_EXEC_ERR_* codes
+ * complete file size.  Returns 0 or one of the EXE_EXEC_ERR_* codes
  * above.  `file_size` is the source FILE's size; the header must describe
  * the file exactly, and the segment table and primary payload must lie
  * inside it.  No global state is touched on failure. */
-int zex_validate_header(const struct zex_header *header, uint32_t file_size,
-			struct zex_geometry *out);
+int exe_validate_header(const struct exe_header *header, uint32_t file_size,
+			struct exe_geometry *out);
 
 /* Protective bounds for one segment-table row, checked before it is
  * allocated or copied (the packer proves the same geometry on the host).
- * Returns 0 or ZEX_EXEC_ERR_SEGMENT / ZEX_EXEC_ERR_SEG_KIND. */
-int zex_validate_segment(const struct zex_segment *segment,
+ * Returns 0 or EXE_EXEC_ERR_SEGMENT / EXE_EXEC_ERR_SEG_KIND. */
+int exe_validate_segment(const struct exe_segment *segment,
 			 uint32_t file_size);
 
-#endif /* ZEPHYROS_ZEX_H */
+#endif /* KONAOS_EXE_H */

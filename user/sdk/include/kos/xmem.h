@@ -1,8 +1,8 @@
-/* ZephyrOS SDK: extended-memory objects and the far aperture (package 43).
+/* KonaOS SDK: extended-memory objects and the far aperture (package 43).
  *
- * The native family is abi/zos/xmem.h (SYS_XMEM_ALLOC / _FREE / _READ /
+ * The native family is abi/kos/xmem.h (SYS_XMEM_ALLOC / _FREE / _READ /
  * _WRITE / _INFO / _MAP).  These wrappers return a non-negative result or
- * the negated native error code, exactly like the other libzos clients.
+ * the negated native error code, exactly like the other libkos clients.
  *
  * A mappable object can be opened through the mode-10 aperture:
  * `xmap` returns the token and the object's address, and
@@ -17,18 +17,18 @@
  * need none of this.
  */
 
-#ifndef ZOS_SDK_XMEM_H
-#define ZOS_SDK_XMEM_H
+#ifndef KOS_SDK_XMEM_H
+#define KOS_SDK_XMEM_H
 
-#include "zos/types.h"
-#include "zos/xmem.h"
+#include "kos/types.h"
+#include "kos/xmem.h"
 
-/* Reserve `size` bytes (ZOS_XMEM_FLAG_*).  Returns the object handle
- * (>= 1) or -errno (ZOS_EINVAL for a bad size or flag, ZOS_ENOSPC when no
+/* Reserve `size` bytes (KOS_XMEM_FLAG_*).  Returns the object handle
+ * (>= 1) or -errno (KOS_EINVAL for a bad size or flag, KOS_ENOSPC when no
  * bank has room).  Contents are undefined. */
 int xalloc(unsigned int size, unsigned int flags);
 
-/* Release an object.  Returns 0 or -ZOS_EINVAL (stale, foreign or
+/* Release an object.  Returns 0 or -KOS_EINVAL (stale, foreign or
  * unknown handle). */
 int xfree(unsigned int handle);
 
@@ -41,7 +41,7 @@ int xwrite(unsigned int handle, unsigned int offset,
 		   const void *buffer, unsigned int length);
 
 /* The object's logical description into `out`.  Returns 0 or -errno. */
-int xinfo(unsigned int handle, struct zos_xmem_info *out);
+int xinfo(unsigned int handle, struct kos_xmem_info *out);
 
 /* Map a mappable object: returns the aperture token or -errno, and
  * `*address` receives the object's address in the aperture. */
@@ -52,4 +52,4 @@ int xmap(unsigned int handle, unsigned int *address);
 unsigned char aperture_open(unsigned char token);
 void aperture_close(unsigned char previous);
 
-#endif /* ZOS_SDK_XMEM_H */
+#endif /* KOS_SDK_XMEM_H */

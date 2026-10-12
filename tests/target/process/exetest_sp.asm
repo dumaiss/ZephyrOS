@@ -1,11 +1,11 @@
 ; -----------------------------------------------------------------------------
-; zextest stack-pointer probe (test artifact, package 28c).
+; exetest stack-pointer probe (test artifact, package 28c).
 ;
-; A ZEX program cannot read SP from C, and programs no longer carry entry
+; A EXE program cannot read SP from C, and programs no longer carry entry
 ; assembly, so this single helper stays beside the test it serves.
 ; -----------------------------------------------------------------------------
 
-	.module zextest_sp
+	.module exetest_sp
 
 	.globl _zt_get_sp
 

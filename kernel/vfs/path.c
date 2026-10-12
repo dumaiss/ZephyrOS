@@ -1,5 +1,5 @@
-/* ZephyrOS VFS part: path normalization. */
-/* ZephyrOS M9 VFS path normalization.
+/* KonaOS VFS part: path normalization. */
+/* KonaOS M9 VFS path normalization.
  *
  * Absolute/relative paths, `.`, `..`, repeated slashes and traversal above
  * `/` are handled here.  No state is kept: the caller provides the output
@@ -19,10 +19,10 @@ int vfs_path_normalize_at(const char *base, const char *path, char *out,
 
 	if (base == (const char *)0 || path == (const char *)0 ||
 	    out == (char *)0 || out_size < 2u) {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	if (base[0] != '/') {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	/* A relative path resolves against `base`; an absolute one ignores
 	 * it, exactly like a filesystem root. */
@@ -34,19 +34,19 @@ int vfs_path_normalize_at(const char *base, const char *path, char *out,
 		olen = 0;
 		while (base[olen] != '\0') {
 			if (olen + 1u >= out_size) {
-				return -ZOS_EINVAL;
+				return -KOS_EINVAL;
 			}
 			out[olen] = base[olen];
 			++olen;
 		}
 		out[olen] = '\0';
 	}
-	/* ZOS_PATH_MAX counts the terminating NUL: 127 usable bytes. */
-	while (n < ZOS_PATH_MAX && path[n] != '\0') {
+	/* KOS_PATH_MAX counts the terminating NUL: 127 usable bytes. */
+	while (n < KOS_PATH_MAX && path[n] != '\0') {
 		++n;
 	}
-	if (n >= ZOS_PATH_MAX) {
-		return -ZOS_EINVAL;
+	if (n >= KOS_PATH_MAX) {
+		return -KOS_EINVAL;
 	}
 	if (n == 0) {
 		return 0; /* empty relative path is the base itself */
@@ -67,8 +67,8 @@ int vfs_path_normalize_at(const char *base, const char *path, char *out,
 			++i;
 		}
 		clen = (uint16_t)(i - start);
-		if (clen >= ZFS_NAME_MAX) {
-			return -ZOS_EINVAL; /* component over the limit */
+		if (clen >= KFS_NAME_MAX) {
+			return -KOS_EINVAL; /* component over the limit */
 		}
 		if (clen == 1u && path[start] == '.') {
 			continue;
@@ -87,7 +87,7 @@ int vfs_path_normalize_at(const char *base, const char *path, char *out,
 			continue; /* at the root, `..` clamps to `/` */
 		}
 		if ((uint32_t)olen + (uint32_t)clen + 1u > (uint32_t)out_size) {
-			return -ZOS_EINVAL;
+			return -KOS_EINVAL;
 		}
 		if (olen > 1u) {
 			out[olen++] = '/';

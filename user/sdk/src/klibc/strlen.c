@@ -1,4 +1,4 @@
-#include "zlibc/string.h"
+#include "klibc/string.h"
 
 unsigned int strlen(const char *s)
 {

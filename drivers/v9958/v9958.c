@@ -1,4 +1,4 @@
-/* ZephyrOS V9958 video driver implementation (drivers/v9958/).
+/* KonaOS V9958 video driver implementation (drivers/v9958/).
  *
  * The M8 `v9958` driver as a bank-6 driver image.  This is the
  * direct-hardware core ported from the pinned Zephyr-80 reference
@@ -13,7 +13,7 @@
  * Driver layout (work package 41, architecture 36.6):
  *   hot  this file and v9958_proto.c: the terminal renderer, the
  *        native operations, and the whole display bring-up chain - the
- *        ZVIDEO_RESET path is reachable after boot and re-runs the same
+ *        KVIDEO_RESET path is reachable after boot and re-runs the same
  *        chain, so none of it is boot-only;
  *   boot v9958_boot.c: the boot-once marker and the direct font source
  *        of the initial upload (the boot-tier mapping shows the bulk
@@ -48,12 +48,12 @@
  * are relocated with the image.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "driver.h"
 
 #include "hardware.h"
 
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 #include "v9958_driver.h"
 
@@ -100,7 +100,7 @@ void v9958_set_api(const struct driver_api *api)
  * foreground/background in the pair table. */
 static uint8_t v9958_font_group[V9958_FONT_CHUNK];
 static uint8_t v9958_atlas_row[V9958_ATLAS_SEG_BYTES];
-static uint8_t v9958_cmd[ZOS_V9958_CMD_REGISTER_COUNT];
+static uint8_t v9958_cmd[KOS_V9958_CMD_REGISTER_COUNT];
 static uint8_t v9958_atlas_reverse;
 
 /* Print-run buffer (module BSS, relocated with the module image): the
@@ -108,7 +108,7 @@ static uint8_t v9958_atlas_reverse;
  * SAT write and the present until a control operation, a flush point or
  * the right margin.  The base is addressed through a runtime pointer:
  * SDCC otherwise folds variable indexing into `add a,#<sym` /
- * `adc a,#>sym` byte-fragmented address arithmetic, which the ZMOD v1
+ * `adc a,#>sym` byte-fragmented address arithmetic, which the MOD v1
  * relocator cannot express.  The pointer is established by the terminal
  * defaults (cold init and every reset). */
 static uint8_t v9958_out_run[V9958_OUT_RUN_SIZE];
@@ -117,18 +117,18 @@ static uint8_t *v9958_run_ptr;
 /* Real-card G6 baseline from the verified bring-up sequence (R#0..R#11);
  * R#1 deliberately keeps the display disabled until VRAM setup ends. */
 static const uint8_t v9958_g6_registers[12] = {
-	ZOS_V9958_R0_G6,             /* R#0: M5+M3 -> GRAPHIC 6          */
-	ZOS_V9958_R1_DISPLAY_OFF,    /* R#1: display off during setup   */
-	ZOS_V9958_R2_G6,             /* R#2: page-zero baseline         */
+	KOS_V9958_R0_G6,             /* R#0: M5+M3 -> GRAPHIC 6          */
+	KOS_V9958_R1_DISPLAY_OFF,    /* R#1: display off during setup   */
+	KOS_V9958_R2_G6,             /* R#2: page-zero baseline         */
 	0x00u,                       /* R#3                             */
 	0x00u,                       /* R#4                             */
-	ZOS_V9958_R5_SPRITE_BASE,    /* R#5/R#11 -> color/SAT bases     */
-	ZOS_V9958_R6_SPRITE_PATTERN, /* R#6: sprite pattern table       */
-	ZOS_V9958_R7_BORDER,         /* R#7: text/backdrop color        */
-	ZOS_V9958_R8_64K_DRAM,       /* R#8: VR=1, 64Kx4 DRAMs          */
-	ZOS_V9958_R9_212_INTERLACE,  /* R#9: 212 lines, interlace       */
+	KOS_V9958_R5_SPRITE_BASE,    /* R#5/R#11 -> color/SAT bases     */
+	KOS_V9958_R6_SPRITE_PATTERN, /* R#6: sprite pattern table       */
+	KOS_V9958_R7_BORDER,         /* R#7: text/backdrop color        */
+	KOS_V9958_R8_64K_DRAM,       /* R#8: VR=1, 64Kx4 DRAMs          */
+	KOS_V9958_R9_212_INTERLACE,  /* R#9: 212 lines, interlace       */
 	0x00u,                       /* R#10                            */
-	ZOS_V9958_R11_SPRITE_ATTR    /* R#11                            */
+	KOS_V9958_R11_SPRITE_ATTR    /* R#11                            */
 };
 
 /* Palette entries 0..15, encoded as (R<<4)|B then G.  Index 0 black,
@@ -174,8 +174,8 @@ static void v9958_write_palette_byte(uint8_t value)
 static void v9958_porch_off(void)
 {
 	uint8_t value = (uint8_t)((v9958_state.config_shadow &
-				   ZOS_V9958_CONFIG_INT_ROUTE) |
-				  ZOS_V9958_CONFIG_PORCH_OFF);
+				   KOS_V9958_CONFIG_INT_ROUTE) |
+				  KOS_V9958_CONFIG_PORCH_OFF);
 
 	v9958_state.config_shadow = value;
 	v9958_io_latch_write(value);
@@ -185,7 +185,7 @@ static void v9958_porch_off(void)
 static void v9958_porch_on(void)
 {
 	uint8_t value = (uint8_t)(v9958_state.config_shadow &
-				  ZOS_V9958_CONFIG_INT_ROUTE);
+				  KOS_V9958_CONFIG_INT_ROUTE);
 
 	v9958_state.config_shadow = value;
 	v9958_io_latch_write(value);
@@ -205,7 +205,7 @@ static void v9958_write_vram(const uint8_t *src, uint16_t addr, uint8_t a16,
 	struct v9958_block block;
 
 	v9958_io_wait_command();
-	v9958_io_reg(r14, ZOS_V9958_REG_R14);
+	v9958_io_reg(r14, KOS_V9958_REG_R14);
 	block.src = &lo;
 	block.length = 1u;
 	v9958_io_stream_ctrl(&block);
@@ -223,9 +223,9 @@ static void v9958_start_command(const uint8_t *cmd)
 	struct v9958_block block;
 
 	v9958_io_wait_command();
-	v9958_io_reg(ZOS_V9958_CMD_REGISTER_BASE, ZOS_V9958_REG_R17);
+	v9958_io_reg(KOS_V9958_CMD_REGISTER_BASE, KOS_V9958_REG_R17);
 	block.src = cmd;
-	block.length = ZOS_V9958_CMD_REGISTER_COUNT;
+	block.length = KOS_V9958_CMD_REGISTER_COUNT;
 	v9958_io_stream_indirect(&block);
 }
 
@@ -234,7 +234,7 @@ static void v9958_cmd_reset(void)
 {
 	uint8_t i;
 
-	for (i = 0u; i < ZOS_V9958_CMD_REGISTER_COUNT; ++i) {
+	for (i = 0u; i < KOS_V9958_CMD_REGISTER_COUNT; ++i) {
 		v9958_cmd[i] = 0x00u;
 	}
 }
@@ -297,11 +297,11 @@ static void v9958_init_g6(void)
 	v9958_porch_off();
 	v9958_state.scroll_origin = 0u;
 
-	v9958_io_reg_paced(ZOS_V9958_R25_WAIT_OFF, ZOS_V9958_REG_R25);
-	v9958_io_reg_paced(ZOS_V9958_R8_64K_DRAM, ZOS_V9958_REG_R8);
+	v9958_io_reg_paced(KOS_V9958_R25_WAIT_OFF, KOS_V9958_REG_R25);
+	v9958_io_reg_paced(KOS_V9958_R8_64K_DRAM, KOS_V9958_REG_R8);
 
 	/* A warm boot may follow a program that left a command active. */
-	v9958_io_reg_paced(0x00u, ZOS_V9958_REG_R46);
+	v9958_io_reg_paced(0x00u, KOS_V9958_REG_R46);
 
 	for (i = 0u; i < 12u; ++i) {
 		v9958_io_reg_paced(v9958_g6_registers[i], i);
@@ -310,21 +310,21 @@ static void v9958_init_g6(void)
 	/* Explicitly establish every selector/latch used by later
 	 * helpers; R#26/R#27 are horizontal-scroll state that survives a
 	 * warm boot. */
-	v9958_io_reg_paced(0x00u, ZOS_V9958_REG_R14);
-	v9958_io_reg_paced(ZOS_V9958_R15_STATUS2, ZOS_V9958_REG_R15);
-	v9958_io_reg_paced(0x00u, ZOS_V9958_REG_R16);
-	v9958_io_reg_paced(0x00u, ZOS_V9958_REG_R17);
-	v9958_io_reg_paced(0x00u, ZOS_V9958_REG_R18);
-	v9958_io_reg_paced(ZOS_V9958_R23_TEXT_BASE, ZOS_V9958_REG_R23);
-	v9958_io_reg_paced(0x00u, ZOS_V9958_REG_R26);
-	v9958_io_reg_paced(0x00u, ZOS_V9958_REG_R27);
+	v9958_io_reg_paced(0x00u, KOS_V9958_REG_R14);
+	v9958_io_reg_paced(KOS_V9958_R15_STATUS2, KOS_V9958_REG_R15);
+	v9958_io_reg_paced(0x00u, KOS_V9958_REG_R16);
+	v9958_io_reg_paced(0x00u, KOS_V9958_REG_R17);
+	v9958_io_reg_paced(0x00u, KOS_V9958_REG_R18);
+	v9958_io_reg_paced(KOS_V9958_R23_TEXT_BASE, KOS_V9958_REG_R23);
+	v9958_io_reg_paced(0x00u, KOS_V9958_REG_R26);
+	v9958_io_reg_paced(0x00u, KOS_V9958_REG_R27);
 }
 
 /* Step 3: enable native WAIT first (WTE=1, VDS stays 0 so pin 8 keeps
  * supplying CPUCLK), then enable the U11 front porch. */
 static void v9958_enable_hardware_wait(void)
 {
-	v9958_io_reg_paced(ZOS_V9958_R25_WAIT_ON, ZOS_V9958_REG_R25);
+	v9958_io_reg_paced(KOS_V9958_R25_WAIT_ON, KOS_V9958_REG_R25);
 	v9958_porch_on();
 }
 
@@ -336,7 +336,7 @@ static void v9958_init_palette(void)
 	uint8_t i;
 
 	for (i = 0u; i < 16u; ++i) {
-		v9958_io_reg_paced(i, ZOS_V9958_REG_R16);
+		v9958_io_reg_paced(i, KOS_V9958_REG_R16);
 		v9958_write_palette_byte(v9958_palette[(uint16_t)i * 2u]);
 		v9958_io_bootstrap_delay();
 		v9958_write_palette_byte(
@@ -376,7 +376,7 @@ static int v9958_upload_atlas_chunk(uint8_t chunk, uint8_t reverse)
 		for (glyph = 0u; glyph < V9958_ATLAS_GLYPHS; ++glyph) {
 			/* Address the chunk through a 16-bit base: an 8-bit
 			 * `symbol + offset` makes the size optimizer emit
-			 * byte-fragmented address relocations ZMOD v1
+			 * byte-fragmented address relocations MOD v1
 			 * cannot express. */
 			uint8_t bits = *(const uint8_t *)(uint16_t)
 				((uint16_t)v9958_font_group +
@@ -434,8 +434,8 @@ static void v9958_clear_screen(void)
 	uint8_t i;
 
 	v9958_state.scroll_origin = 0u;
-	v9958_io_reg(ZOS_V9958_R23_TEXT_BASE, ZOS_V9958_REG_R23);
-	for (i = 0u; i < ZOS_V9958_CMD_REGISTER_COUNT; ++i) {
+	v9958_io_reg(KOS_V9958_R23_TEXT_BASE, KOS_V9958_REG_R23);
+	for (i = 0u; i < KOS_V9958_CMD_REGISTER_COUNT; ++i) {
 		v9958_cmd[i] = 0x00u;
 	}
 	v9958_cmd[V9958_CMD_NX_LO] = V9958_CLEAR_WIDTH_LO;
@@ -463,7 +463,7 @@ static void v9958_cursor_init(void)
 }
 
 /* The complete bring-up in the proven order.  Re-establishing this on
- * the ZVIDEO_RESET operation is exactly the reference reset path: every
+ * the KVIDEO_RESET operation is exactly the reference reset path: every
  * owned register, selector, palette entry and VRAM asset is rewritten,
  * the latch shadow (and therefore D0) is preserved, and the display is
  * left enabled. */
@@ -478,7 +478,7 @@ static int v9958_init_display(void)
 	v9958_clear_screen();
 	v9958_cursor_init();
 	v9958_io_wait_command(); /* present */
-	v9958_io_reg(ZOS_V9958_R1_DISPLAY_ON, ZOS_V9958_REG_R1);
+	v9958_io_reg(KOS_V9958_R1_DISPLAY_ON, KOS_V9958_REG_R1);
 	return V9958_OK;
 }
 
@@ -668,7 +668,7 @@ static void v9958_scroll_up(void)
 	v9958_io_wait_command();
 
 	v9958_io_reg((uint8_t)(origin - V9958_DISPLAY_OFFSET),
-		     ZOS_V9958_REG_R23);
+		     KOS_V9958_REG_R23);
 }
 
 /* Terminal-level scroll: flush, scroll the bitmap, park the cursor at
@@ -1406,7 +1406,7 @@ static void v9958_term_feed(uint8_t byte)
 }
 
 /* Parser/cursor/rendition defaults shared by cold init and every reset
- * (ZVIDEO_RESET, ESC c, triple-ESC): normal video, auto-wrap on, cursor
+ * (KVIDEO_RESET, ESC c, triple-ESC): normal video, auto-wrap on, cursor
  * visible at the home cell, no saved state. */
 static void v9958_term_set_defaults(void)
 {
@@ -1442,7 +1442,7 @@ static void v9958_term_set_defaults(void)
 int v9958_char_putc_worker(void *vstate, char ch)
 {
 	if (vstate == (void *)0) {
-		return (-ZOS_ENODEV);
+		return (-KOS_ENODEV);
 	}
 	/* A standalone byte has no later flush opportunity in the console
 	 * driver, so putc completes with a visible update. */
@@ -1456,13 +1456,13 @@ int v9958_char_write_worker(void *vstate, const char *buf, uint16_t len)
 	uint16_t i;
 
 	if (vstate == (void *)0) {
-		return (-ZOS_ENODEV);
+		return (-KOS_ENODEV);
 	}
 	if (len == 0u) {
 		return 0;
 	}
 	if (buf == (const char *)0) {
-		return (-ZOS_EINVAL);
+		return (-KOS_EINVAL);
 	}
 	/* The whole 16-bit transfer is processed; the print run batches up
 	 * to 64 glyphs internally and one final sync makes it visible. */
@@ -1482,31 +1482,31 @@ int v9958_send(void *vstate, uint8_t operation, const void *payload,
 	struct v9958_block block;
 
 	if (state == (struct v9958_state *)0) {
-		return (-ZOS_ENODEV);
+		return (-KOS_ENODEV);
 	}
 
 	switch (operation) {
-	case ZVIDEO_CTRL_WRITE:
-	case ZVIDEO_DATA_WRITE:
-	case ZVIDEO_DATA_BLOCK:
-	case ZVIDEO_PALETTE_WRITE:
-	case ZVIDEO_INDIRECT_WRITE:
+	case KVIDEO_CTRL_WRITE:
+	case KVIDEO_DATA_WRITE:
+	case KVIDEO_DATA_BLOCK:
+	case KVIDEO_PALETTE_WRITE:
+	case KVIDEO_INDIRECT_WRITE:
 		/* Validate before any I/O: a malformed request must cause
 		 * no port writes.  The full 16-bit length is streamed. */
 		if (payload == (const void *)0 || length == 0u) {
-			return (-ZOS_EINVAL);
+			return (-KOS_EINVAL);
 		}
 		block.src = (const uint8_t *)payload;
 		block.length = length;
 		switch (operation) {
-		case ZVIDEO_CTRL_WRITE:
+		case KVIDEO_CTRL_WRITE:
 			v9958_io_stream_ctrl(&block);
 			break;
-		case ZVIDEO_DATA_WRITE:
-		case ZVIDEO_DATA_BLOCK:
+		case KVIDEO_DATA_WRITE:
+		case KVIDEO_DATA_BLOCK:
 			v9958_io_stream_data(&block);
 			break;
-		case ZVIDEO_PALETTE_WRITE:
+		case KVIDEO_PALETTE_WRITE:
 			v9958_io_stream_palette(&block);
 			break;
 		default:
@@ -1514,9 +1514,9 @@ int v9958_send(void *vstate, uint8_t operation, const void *payload,
 			break;
 		}
 		return 0;
-	case ZVIDEO_PRESENT:
+	case KVIDEO_PRESENT:
 		if (length != 0u) {
-			return (-ZOS_EINVAL);
+			return (-KOS_EINVAL);
 		}
 		/* Flush pending terminal output first: PRESENT is a blocking
 		 * point, so nothing of the console stream may stay queued
@@ -1524,25 +1524,25 @@ int v9958_send(void *vstate, uint8_t operation, const void *payload,
 		v9958_out_flush();
 		v9958_io_wait_command();
 		return 0;
-	case ZVIDEO_RESET:
+	case KVIDEO_RESET:
 		if (length != 0u) {
-			return (-ZOS_EINVAL);
+			return (-KOS_EINVAL);
 		}
 		/* Full reset: parser/cursor/rendition defaults, both font
 		 * atlases reloaded from ROMFS, circular bitmap cleared,
 		 * cursor re-initialized, present, display enabled. */
 		v9958_term_set_defaults();
 		if (v9958_init_display() != V9958_OK) {
-			return (-ZOS_ENODEV);
+			return (-KOS_ENODEV);
 		}
 		return 0;
 	default:
-		return (-ZOS_ENOTSUP);
+		return (-KOS_ENOTSUP);
 	}
 }
 
 /* The cold display bring-up, shared by the boot segment's initial upload
- * and the run-time ZVIDEO_RESET: D0 uses the reset/default interrupt
+ * and the run-time KVIDEO_RESET: D0 uses the reset/default interrupt
  * route and every latch write preserves it in the shadow; the terminal
  * defaults are established before the display init so the first clear
  * uses the normal-video background and the cursor SAT matches the home

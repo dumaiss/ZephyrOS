@@ -1,4 +1,4 @@
-#include "zlibc/string.h"
+#include "klibc/string.h"
 
 unsigned int strlcat(char *dst, const char *src, unsigned int size)
 {

@@ -1,6 +1,6 @@
-/* ZephyrOS native monitor: the X (execute) command (work package 45b).
+/* KonaOS native monitor: the X (execute) command (work package 45b).
  *
- * X <path> [tail] runs an ordinary ZEX from the recovery store through
+ * X <path> [tail] runs an ordinary EXE from the recovery store through
  * the SDK's synchronous SYS_EXEC wrapper, prints the child's exit status
  * and returns to the prompt.  This is the launcher's own execution path:
  * no new privilege, no kernel or driver state, and the monitor's
@@ -15,7 +15,7 @@
  * `docs/validation/2026-10-11-m10-hardware-acceptance-correction-01.md`.
  *
  * The tail travels to the child byte-exact (the child splits it; see
- * docs/zex-format.md section 6.1), which is how the `stage` option reaches
+ * docs/exe-format.md section 6.1), which is how the `stage` option reaches
  * the outcome programs the exerciser starts.
  *
  * Argument problems report the monitor's ERR: ARG, a failed exec reports
@@ -24,7 +24,7 @@
  */
 
 #include "monitor.h"
-#include "zos.h"
+#include "kos.h"
 #include "hexfmt.h"
 #include "status.h"
 
@@ -51,7 +51,7 @@ void mon_cmd_exec(char *cursor)
 		++cursor;
 	}
 	length = (unsigned int)(cursor - path);
-	if (length == 0u || length > (unsigned int)(ZOS_PATH_MAX - 1u)) {
+	if (length == 0u || length > (unsigned int)(KOS_PATH_MAX - 1u)) {
 		zrt_status_err_arg();
 		return;
 	}
@@ -61,7 +61,7 @@ void mon_cmd_exec(char *cursor)
 	}
 	zrt_skip_spaces(&cursor);
 	tail = cursor;
-	if (mon_count(tail) > (unsigned int)ZOS_STARTUP_TAIL_MAX) {
+	if (mon_count(tail) > (unsigned int)KOS_STARTUP_TAIL_MAX) {
 		zrt_status_err_arg();
 		return;
 	}

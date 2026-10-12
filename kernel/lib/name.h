@@ -1,16 +1,16 @@
-/* ZephyrOS kernel name-comparison interface (kernel/lib).
+/* KonaOS kernel name-comparison interface (kernel/lib).
  *
  * One comparison for every kernel-side ASCII name: VFS mount/provider
  * names, ROMFS names and device instance names.  It is kernel-private and
- * never module-facing: a ZMOD may not import kernel symbols, so the
+ * never module-facing: a MOD may not import kernel symbols, so the
  * resident modules keep their own copies by isolation (work package 30c,
  * finding F3).
  */
 
-#ifndef ZEPHYROS_KERNEL_LIB_NAME_H
-#define ZEPHYROS_KERNEL_LIB_NAME_H
+#ifndef KONAOS_KERNEL_LIB_NAME_H
+#define KONAOS_KERNEL_LIB_NAME_H
 
-#include "zos/types.h"
+#include "kos/types.h"
 
 /* Return nonzero when `stored` and `wanted` are the same ASCII name.
  *
@@ -25,7 +25,7 @@
  * VFS and ROMFS fold, the device registry does not.
  *
  * A null argument is never equal. */
-uint8_t zos_ascii_equal(const char *stored, const char *wanted,
+uint8_t kos_ascii_equal(const char *stored, const char *wanted,
 			uint16_t field_size, uint8_t fold);
 
-#endif /* ZEPHYROS_KERNEL_LIB_NAME_H */
+#endif /* KONAOS_KERNEL_LIB_NAME_H */

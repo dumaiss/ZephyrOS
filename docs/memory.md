@@ -1,4 +1,4 @@
-# ZephyrOS Memory Model (M9/M10, implemented)
+# KonaOS Memory Model (M9/M10, implemented)
 
 This is the implemented, linker-enforced memory ownership table for the
 mode `10`/`11` Zephyr-80 architecture.  The contract is in
@@ -36,13 +36,13 @@ E000h +-------------------------------+
 
 | Region | View | Content |
 | --- | --- | --- |
-| `0000h-00FFh` | caller window | ZephyrOS-owned native page zero: reset copier (`0000h-0026h`) and the three-byte `RST 30h` vector (`JP zos_syscall_entry`) at `0030h-0032h`; the rest is reserved |
+| `0000h-00FFh` | caller window | KonaOS-owned native page zero: reset copier (`0000h-0026h`) and the three-byte `RST 30h` vector (`JP kos_syscall_entry`) at `0030h-0032h`; the rest is reserved |
 | `0100h-1FFFh` | caller window | unused (FF-filled in the image); at M1, native syscall argument blocks must lie here |
-| `2000h-fixed code end` | bank 7 in mode 11 | **fixed core**: loadable nucleus code (`_CODE`, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`) that must stay reachable whatever the window shows; ends at the derived fixed code end (`ZOS_FIXED_CODE_END`) |
-| `fixed code end-5D00h` | bank 7 in mode 11 | fixed-core zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded; the base is derived per image (`align_down(ZOS_DRIVER_STACK_BASE - data size, 512)`) so the area ends directly below the stacks |
-| `5D00h-5EFFh` | bank 7 in mode 11 | 512-byte **driver stack** (architecture 36.9); the IPC substrate switches to it for every driver call (stage 3).  It is a fixed assembly reservation, exported as the ABS symbol `zos_driver_stack`/`_top` (`kernel/ipc/ipc_asm.asm`), so no ordinary allocation can enter it.  The acceptance replay measures its high-water mark: 256 of 512 bytes in the package-39 correction-01 image.  Grows down from `ZOS_DRIVER_STACK_TOP` |
+| `2000h-fixed code end` | bank 7 in mode 11 | **fixed core**: loadable nucleus code (`_CODE`, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`) that must stay reachable whatever the window shows; ends at the derived fixed code end (`KOS_FIXED_CODE_END`) |
+| `fixed code end-5D00h` | bank 7 in mode 11 | fixed-core zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded; the base is derived per image (`align_down(KOS_DRIVER_STACK_BASE - data size, 512)`) so the area ends directly below the stacks |
+| `5D00h-5EFFh` | bank 7 in mode 11 | 512-byte **driver stack** (architecture 36.9); the IPC substrate switches to it for every driver call (stage 3).  It is a fixed assembly reservation, exported as the ABS symbol `kos_driver_stack`/`_top` (`kernel/ipc/ipc_asm.asm`), so no ordinary allocation can enter it.  The acceptance replay measures its high-water mark: 256 of 512 bytes in the package-39 correction-01 image.  Grows down from `KOS_DRIVER_STACK_TOP` |
 | `5F00h-5FFFh` | bank 7 in mode 11 | 256-byte **ISR stack** (`_IRQ_ISR_STACK`); the IRQ gate switches to it in `irq_common_entry` |
-| `6000h-cold code end` | bank 7 while the window shows bank 7 (P = 0) | **cold half**: nucleus code that only ever runs with the window on bank 7 (the syscall dispatcher and bodies, boot/idle, process management, the VFS core and the resident-driver loader); ends at the derived `ZOS_KERNEL_CODE_END` |
+| `6000h-cold code end` | bank 7 while the window shows bank 7 (P = 0) | **cold half**: nucleus code that only ever runs with the window on bank 7 (the syscall dispatcher and bodies, boot/idle, process management, the VFS core and the resident-driver loader); ends at the derived `KOS_KERNEL_CODE_END` |
 | `cold code end-cold data base` | bank 7 while P = 0 | the cold half's slack, straight from the aligned cold code end to the derived cold data base.  The driver arena that used to fill it is deleted (work package 42c): there is no granule accounting and no floor |
 | `cold data base-E000h` | bank 7 while P = 0 | cold-half zero-initialized runtime area (`_WINDOW_DATA`), never ROM-loaded; the base is derived per image from the linked cold code end (`data_base = align_up(code_end, 512)`) |
 | `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`), including the M5 ROM-access staging buffer, the package-28 exec continuation state and the package-39 correction-01 aperture copy primitive (`ipc_common.asm`: the mode-10 stub, its request block, its saved latch/SP and its 4-byte interrupt-push reservation); `EEFEh-EF07h` is the fixed ROM-access transition block (trampoline + mirrored stub) |
@@ -54,7 +54,7 @@ E000h +-------------------------------+
 
 Mode `10` maps the selected application bank at `0000h-DFFFh`; mode `11`
 keeps the caller bank at `0000h-1FFFh` and maps bank 7 at `2000h-DFFFh`.
-Bank 7 is reserved to ZephyrOS and is never an application bank, and from
+Bank 7 is reserved to KonaOS and is never an application bank, and from
 M10 on bank 6 is the **resident driver domain** (architecture 36.6): the
 process bank allocator hands out banks 0-5 only
 (`PROCESS_BANK_COUNT`).  Bank 6 stays addressable - the mode-11 window
@@ -79,7 +79,7 @@ The board modification for revision 13 routes D5-D7 to three spare
 decoder inputs (GAL pins 18/19/20, inputs only: the latch drives them and
 the GAL never drives them).  Pin 21 (`!CART_CS`, no equation) is
 unchanged.  **Revision 13 is programmed on the board** (2026-10-07); CP/M
-and the production ZephyrOS ROM both boot on it unchanged.  The decoder
+and the production KonaOS ROM both boot on it unchanged.  The decoder
 PLD and its WinCUPL simulation vectors live in the hardware project, not
 in the OS tree; the OS keeps only the decoder model, which the simulator
 uses as its default, and `tests/test_decoder_rev13.py` pins that model's
@@ -118,9 +118,9 @@ write targets the selected SRAM bank — so the ROM-access transition is a
 stackless mirrored stub (`EEFEh-EF07h`: trampoline `OUT` plus `LDIR` and
 the latch-restoring `OUT`), byte-identical in common SRAM and in every
 recovery page.  Each recovery page therefore contributes a 48-KiB
-logical window (`ZOS_ROMFS_WINDOW_SIZE`) at `0000h-BFFFh`; the
+logical window (`KOS_ROMFS_WINDOW_SIZE`) at `0000h-BFFFh`; the
 `C000h-FFFFh` half carries only the stub mirror and is never file data.
-Six windows total (`ZOS_ROMFS_CAPACITY` = 288 KiB).  The geometry is
+Six windows total (`KOS_ROMFS_CAPACITY` = 288 KiB).  The geometry is
 declared in `platform/zephyr80/private/memory.h/.inc`, mirrored into the image by
 `tools/pack_image.py`, and recorded in `docs/romfs-format.md`.
 
@@ -138,7 +138,7 @@ _COMMON      = E000h            permanent common code/data
 ```
 
 Both data bases are derived, not fixed: the two-pass build computes
-`data_base = align_down(ZOS_DRIVER_STACK_BASE - (l__DATA + l__INITIALIZED),
+`data_base = align_down(KOS_DRIVER_STACK_BASE - (l__DATA + l__INITIALIZED),
 512)` and `window_data_base = align_up(code_end, 512)` (work package 42c:
 the cold base follows the linked cold code, so no reservation sits between
 them), so runtime data sits directly below the fixed-core stacks and
@@ -158,20 +158,20 @@ Every owned region exports `s__<area>`/`l__<area>` start/size symbols
 (linker-synthesized); the startup initializer/BSS operations consume
 `s__INITIALIZER`/`l__INITIALIZER`, `s__INITIALIZED`, `s__DATA`/`l__DATA`,
 and `s__WINDOW_DATA`/`l__WINDOW_DATA` (`boot/start.asm`'s
-`__zos_crt0_init` zeroes both runtime areas: `_DATA` for the fixed core and
+`__kos_crt0_init` zeroes both runtime areas: `_DATA` for the fixed core and
 `_WINDOW_DATA` for the cold half).
 
 | Area | Region | Holds |
 | --- | --- | --- |
 | `_RESET` | `0000h-0026h` | stackless reset copier (`.org 0`, ABS) |
-| `_PAGE_ZERO` | `0030h-0032h` | `RST 30h` vector: `JP zos_syscall_entry` (ABS) |
+| `_PAGE_ZERO` | `0030h-0032h` | `RST 30h` vector: `JP kos_syscall_entry` (ABS) |
 | `_CODE` | `2000h-fixed code end` | fixed-core kernel C code, string literals, the copy gates' dispatch boundary, the IRQ executive and the upcall shim |
 | `_HOME` | `2000h-fixed code end` | fixed-core static helpers |
 | `_INITIALIZER` | `2000h-fixed code end` | ROM image of initialized data |
 | `_GSINIT`/`_GSFINAL` | `2000h-fixed code end` | static initializers + terminator |
 | `_DATA` | `derived base-5D00h` | fixed-core zeroed globals/statics (IRQ registry, shim state) |
 | `_INITIALIZED` | `derived base-5D00h` | RAM image of initialized data (fixed-core ops/descriptor tables) |
-| `_WINDOW` | `6000h-cold code end` | cold-half kernel code: syscall dispatcher and bodies, boot/idle, process/ZEX, loader, device registry, FS front end (`--codeseg WINDOW`) |
+| `_WINDOW` | `6000h-cold code end` | cold-half kernel code: syscall dispatcher and bodies, boot/idle, process/EXE, loader, device registry, FS front end (`--codeseg WINDOW`) |
 | `_WINDOW_DATA` | `cold data base-E000h` | cold-half zeroed globals (`--dataseg WINDOW_DATA`) |
 | `_COMMON` | `E000h-FCFFh` | boot entry, gates, IRQ stubs, console, panic, copy primitives |
 | `_COMMON_DATA` | `E000h-FCFFh` | transition-critical state |
@@ -197,12 +197,12 @@ Cold-half code that has to call a driver (the stage 3 loader streaming an
 executable object, the process-exit notification) goes through the fixed
 **upcall shim** (`kernel/memory/upcall.asm`, architecture 36.5): a request
 block (`page`, `entry`, `args`, `result`) is validated (page 0-1, entry at
-or above `ZOS_REV13_WINDOW_BASE`), the latch is saved, the requested page
+or above `KOS_REV13_WINDOW_BASE`), the latch is saved, the requested page
 selected, the entry called and the latch restored exactly.  The shim links
 in the fixed core (`_CODE`/`_DATA`) and nothing in production calls it yet;
 for production images `tools/pack_image.py --production` allows the only
 banked latch writes inside the fixed core within the shim's own
-`_zos_upcall`..`zos_upcall_end` extent (the self-test caller blob, which
+`_kos_upcall`..`kos_upcall_end` extent (the self-test caller blob, which
 runs in an application bank, is the one further allowance), and
 `tests/test_nucleus_sim.py` exercises the shim against a fixed-core test
 routine.
@@ -228,7 +228,7 @@ package 25b:
 
    ```text
    fixed_code_end    = max end of the fixed loadable areas
-   data_base         = align_down(ZOS_DRIVER_STACK_BASE - data_size, 512)
+   data_base         = align_down(KOS_DRIVER_STACK_BASE - data_size, 512)
    __kernel_code_end = end of _WINDOW (the cold code end)
    window_data_base  = align_up(__kernel_code_end, 512)
    ```
@@ -268,7 +268,7 @@ it is packed into the recovery store and placed by the cold nucleus loader
 
 ### 2.2.1 The nucleus budget ledgers
 
-`tools/pack_image.py` and `tools/zmodpack.py drivers` print the same five
+`tools/pack_image.py` and `tools/modpack.py drivers` print the same five
 ledger lines (architecture 36.20) and emit them as matching JSON
 (`manifest["nucleus"]` and `modules/drivers.plan.json["nucleus"]`,
 sharing one format definition); host tests check every figure against the
@@ -298,7 +298,7 @@ common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>
   same figures (32 KiB hot tier, 24 KiB boot/bulk tier).
 - **`common:`** the permanently mapped common window, which the nucleus
   lines cannot see.  `used` is the packed `_COMMON` + `_COMMON_DATA` run
-  and `capacity` is `ZOS_COMMON_CODE_END - ZOS_COMMON_BASE` (7424 bytes);
+  and `capacity` is `KOS_COMMON_CODE_END - KOS_COMMON_BASE` (7424 bytes);
   `code`/`data` are the two area sizes.
 
 The fixed absolute reservations in the window (IM2 vector page, IRQ
@@ -308,7 +308,7 @@ the packed run is what must be watched: it may not reach the lowest
 reservation.
 
 The `common:` figures are the pinned common-memory budget (work package
-30c, from the 30b audit): `ceiling` is `ZOS_COMMON_CEILING` (3072) and
+30c, from the 30b audit): `ceiling` is `KOS_COMMON_CEILING` (3072) and
 `used` may not exceed it.  The 512-byte reservation the M9 ledger held
 back for M10's far-call state is released (work package 43, architecture
 36.20): M10 builds no far-call gate, and the region's tenants are the
@@ -415,12 +415,12 @@ section 2.2) holds:
 | VFS path scratch and the kernel file table | (see the map) | `kernel/vfs/*.c`, `kernel/main.c` |
 
 The exec continuation state is **common**, not bank-7 data, because it is
-touched only while the gate runs in mode 11: `zos_proc_frames` is
-`ZOS_EXEC_MAX_DEPTH - 1 = 3` save areas of `ZOS_EXEC_FRAME_SAVE` (48)
+touched only while the gate runs in mode 11: `kos_proc_frames` is
+`KOS_EXEC_MAX_DEPTH - 1 = 3` save areas of `KOS_EXEC_FRAME_SAVE` (48)
 bytes, i.e. 144 bytes, plus the single-depth gate shadow bytes
 (`kernel/include/process.h`, `docs/abi.md` section 11).
 
-The IOC-FAT provider is a resident ZMOD, so its state is that module's own
+The IOC-FAT provider is a resident MOD, so its state is that module's own
 BSS, not kernel data: a 637-byte BSS of which the one 512-byte file-data
 cache slot is the largest member (`drivers/iocfat/iocfat.c`,
 `IOCFAT_CACHE_SLOTS`).
@@ -461,11 +461,11 @@ function declares an automatic object larger than 32 bytes, so no path
 ever needs the common gate stack.  The ROM-access primitive
 (`_rom_access_copy`) is common code, and its staging buffer and saved
 latch/IFF/request state are common data: they must all sit in
-`E000h-FEFFh` and the staging size must equal `ZOS_ROMFS_STAGING_SIZE`
+`E000h-FEFFh` and the staging size must equal `KOS_ROMFS_STAGING_SIZE`
 (128).  The fixed transition block is pinned too: `rom_access_trampoline`
-at `ZOS_ROM_ACCESS_BASE - 2` (`EEFEh`), `rom_access_sync` at
-`ZOS_ROM_ACCESS_BASE` (`EF00h`), and `rom_access_sync_end`
-`ZOS_ROM_ACCESS_SIZE` (8) bytes later; the `_ROM_ACCESS_STUB` area must
+at `KOS_ROM_ACCESS_BASE - 2` (`EEFEh`), `rom_access_sync` at
+`KOS_ROM_ACCESS_BASE` (`EF00h`), and `rom_access_sync_end`
+`KOS_ROM_ACCESS_SIZE` (8) bytes later; the `_ROM_ACCESS_STUB` area must
 match that extent and nothing else may overlap it.  The busy flag is
 initialized by a `.db 0` byte because `.ds` reservations are `FFh` in
 the ROM image.  The embedded boot catalog is retired (work package 25a):
@@ -480,12 +480,12 @@ after a mapping change, is linked into `_COMMON`:
 
 ```text
 _boot_common_entry     mode 10 -> 11 boot entry
-__zos_crt0_init        C runtime zero/copy/GSINIT
-__zos_mode_fault       latch assertion failure path
-zos_enter_os_mode      mode 10 -> 11 gate (common continuation)
-zos_leave_os_mode      mode 11 -> 10 gate
-zos_os_continuation    post-transition common continuation
-zos_syscall_entry      RST 30h syscall gate
+__kos_crt0_init        C runtime zero/copy/GSINIT
+__kos_mode_fault       latch assertion failure path
+kos_enter_os_mode      mode 10 -> 11 gate (common continuation)
+kos_leave_os_mode      mode 11 -> 10 gate
+kos_os_continuation    post-transition common continuation
+kos_syscall_entry      RST 30h syscall gate
 irq_ctc0_stub          IM2 source stub (CTC0 vector 00h)
 irq_ff_unexpected      IM2 vector FFh / default vector target
 irq_common_entry       generic common IRQ gate (full context + mode cross)
@@ -497,13 +497,13 @@ _platform_bank_get/set selected-bank primitives
 _early_console_*       early serial console
 _panic                 fatal path
 _rom_access_copy       M5 ROMFS access primitive (mode-00 window)
-_zos_process_launch    process entry gate (depth-indexed continuation)
-_zos_process_resume    parent resume gate (never returns to its caller)
-_zos_process_continuation_size  gate-stack bytes in use (SYS_EXEC preflight)
-zos_process_return_trap  raw entry RET -> ZOS_EFAULT teardown
+_kos_process_launch    process entry gate (depth-indexed continuation)
+_kos_process_resume    parent resume gate (never returns to its caller)
+_kos_process_continuation_size  gate-stack bytes in use (SYS_EXEC preflight)
+kos_process_return_trap  raw entry RET -> KOS_EFAULT teardown
 ```
 
-The bank-7 syscall boundary (`zos_syscall_dispatch`) and the C dispatcher
+The bank-7 syscall boundary (`kos_syscall_dispatch`) and the C dispatcher
 stay in the loadable kernel region; only the three-byte jump stub lives in
 page zero.
 
@@ -516,12 +516,12 @@ Single-depth by design (interrupts and nesting were out of scope at M1; a
 package-28 exec shadows the process side per depth, below):
 
 ```text
-zos_gate_saved_sp      2 bytes   caller SP (RST-pushed PC just below it)
-zos_gate_saved_latch   1 byte    full caller latch (page/mode/bank)
-zos_gate_result_hl     2 bytes   dispatcher result staging
-zos_gate_result_a      1 byte    error code staging
-zos_gate_result_c      1 byte    carry staging (0/1)
-zos_gate_stack       384 bytes   common gate stack used while crossing modes
+kos_gate_saved_sp      2 bytes   caller SP (RST-pushed PC just below it)
+kos_gate_saved_latch   1 byte    full caller latch (page/mode/bank)
+kos_gate_result_hl     2 bytes   dispatcher result staging
+kos_gate_result_a      1 byte    error code staging
+kos_gate_result_c      1 byte    carry staging (0/1)
+kos_gate_stack       384 bytes   common gate stack used while crossing modes
 ```
 
 The gate stack carries the complete syscall handler chain.  It must fit
@@ -534,18 +534,18 @@ Package 28 makes the *process* side of that state depth-indexed, because
 a nested `SYS_EXEC` runs its child on the same single gate stack:
 
 ```text
-zos_proc_cont          8 bytes   launcher SP per depth (2 bytes x 4)
-zos_proc_ix            8 bytes   launcher IX (SDCC frame pointer) per depth
-zos_proc_latch         4 bytes   launcher latch per depth
-zos_proc_iff           4 bytes   launcher IFF2 per depth
-zos_proc_gate_sp       8 bytes   shadowed gate caller SP per depth
-zos_proc_gate_latch    4 bytes   shadowed gate caller latch per depth
-zos_proc_gate_iff      4 bytes   shadowed gate caller IFF per depth
-zos_proc_frames      144 bytes   3 x 48-byte saved gate frames
+kos_proc_cont          8 bytes   launcher SP per depth (2 bytes x 4)
+kos_proc_ix            8 bytes   launcher IX (SDCC frame pointer) per depth
+kos_proc_latch         4 bytes   launcher latch per depth
+kos_proc_iff           4 bytes   launcher IFF2 per depth
+kos_proc_gate_sp       8 bytes   shadowed gate caller SP per depth
+kos_proc_gate_latch    4 bytes   shadowed gate caller latch per depth
+kos_proc_gate_iff      4 bytes   shadowed gate caller IFF per depth
+kos_proc_frames      144 bytes   3 x 48-byte saved gate frames
 ```
 
 The `SYS_EXEC` path buffer used to be ordinary bank-7 `_DATA`
-(`_zos_process_path_scratch` in `kernel/process/process.c`, ZOS_PATH_MAX
+(`_kos_process_path_scratch` in `kernel/process/process.c`, KOS_PATH_MAX
 bytes, added by package 28 correction 01 because nothing touched it across
 a mode change).  Work package 45b correction 01 **retired it**: the exec
 bind hands the path to whichever provider owns it, and a bank-6 provider
@@ -553,14 +553,14 @@ cannot see the cold half (the buffer rule, architecture 36.5), so
 `SYS_EXEC` stages the caller's path in the VFS workspace's path view like
 every other syscall (`kernel/syscall.c`, `kernel/process/exec.c`).
 
-`zos_gate_saved_sp/latch/iff` stay single-depth (they are what the gate
-saves and restores for one syscall); the `zos_proc_gate_*` copies are the
+`kos_gate_saved_sp/latch/iff` stay single-depth (they are what the gate
+saves and restores for one syscall); the `kos_proc_gate_*` copies are the
 per-depth shadow that lets a resumed parent return through the gate with
 *its* stack pointer, bank and interrupt state instead of its child's.
-`ZOS_EXEC_FRAME_SAVE` is 48 bytes: the measured copied frame is 32 bytes
+`KOS_EXEC_FRAME_SAVE` is 48 bytes: the measured copied frame is 32 bytes
 at every depth in the acceptance image (recorded beside the constant in
 `kernel/include/process.h`), and the preflight rejects a shallower
-handler frame above `ZOS_EXEC_FRAME_SAVE - ZOS_EXEC_FRAME_SLACK` before
+handler frame above `KOS_EXEC_FRAME_SAVE - KOS_EXEC_FRAME_SLACK` before
 anything is allocated.
 
 Everything above is common-resident because the resume gate *restores* it
@@ -594,13 +594,13 @@ rom_access_sync        EF00h     LDIR (ROM -> bank-0 staging); EX AF,AF';
 rom_access_sync_end    EF08h     stub extent mirrored into pages 2-7
 ```
 
-The gate stack size is validated exactly (`zos_gate_stack_top - zos_gate_stack
-== ZOS_GATE_STACK_SIZE`, 384 bytes from the platform constant) and the whole block must sit inside
+The gate stack size is validated exactly (`kos_gate_stack_top - kos_gate_stack
+== KOS_GATE_STACK_SIZE`, 384 bytes from the platform constant) and the whole block must sit inside
 `E000h-FEFFh`.
 
 Self-test builds only (`make subsystem-selftest` links
-`ZOS_SUBSYS_SELFTEST`) add a second small block
-(`zos_selftest_kernel_sp`, `_zos_selftest_bank`, `_zos_selftest_result`)
+`KOS_SUBSYS_SELFTEST`) add a second small block
+(`kos_selftest_kernel_sp`, `_kos_selftest_bank`, `_kos_selftest_result`)
 in the same common data area.
 
 ## 4.1 M2 IRQ state, stacks, and vector page
@@ -622,7 +622,7 @@ _IRQ_ISR_STACK    5F00h-5FFFh   fixed-core handler stack; initial SP=6000h
 The IM2 page is initialized at runtime by `irq_arch_init()` (every vector
 targets `irq_ff_unexpected`, vector `00h` targets `irq_ctc0_stub`); the
 linked image carries the guard identity for build-time verification.
-`_DATA`/`_INITIALIZED` must end below `ZOS_DRIVER_STACK_BASE` (5D00h)
+`_DATA`/`_INITIALIZED` must end below `KOS_DRIVER_STACK_BASE` (5D00h)
 and `_COMMON`/`_COMMON_DATA` below `FD00h`.
 
 ## 5. Banking primitives
@@ -652,7 +652,7 @@ in `2000h-DFFFh` would disappear when the mode changes.
 - `tools/mapcheck.py` — map-level checks: area ownership per this table,
   both derived bases and the derived geometry, the residency classification
   (`--residency config/residency.json`: every production object classified,
-  every `fixed-required` object below `ZOS_REV13_WINDOW_BASE`, the boot set
+  every `fixed-required` object below `KOS_REV13_WINDOW_BASE`, the boot set
   fitting the derived arena), common-resident gate/console/panic/IRQ
   placement, gate-stack and both stack sizes, ROM-access staging size plus
   trampoline/sync placement and stub-area extent, the IM2 page/guard/state
@@ -668,7 +668,7 @@ in `2000h-DFFFh` would disappear when the mode changes.
   does not list yet, whose placement is nevertheless enforced exactly as
   production will compile them in the stage that adopts them.  A
   test-linked `cold` object is expected in the cold areas; a test-linked
-  `fixed-required` object is held below `ZOS_REV13_WINDOW_BASE` like any
+  `fixed-required` object is held below `KOS_REV13_WINDOW_BASE` like any
   other.  `cold_half` may not name a `fixed-required` object, because the
   list drives the image's cold codegen flags.  Package 41 linked the IPC
   substrate, so since then the list names the namespace objects
@@ -695,7 +695,7 @@ in `2000h-DFFFh` would disappear when the mode changes.
   an exec'd child) with the packed store.
 - `tests/test_subsys_sim.py` — boot of the subsystem acceptance image on
   the current path: the syscall gate and interrupt-executive groups (with
-  injected CTC0 deliveries), the ROMFS reader and the process/ZEX
+  injected CTC0 deliveries), the ROMFS reader and the process/EXE
   lifecycle groups, every target status word, and the monitor session with
   its relaunch.  The image is also the store `tests/test_romfs_sim.py`
   patches in place to prove the corrupt-store panic (work package 42d

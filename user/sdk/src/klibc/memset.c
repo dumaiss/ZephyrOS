@@ -1,4 +1,4 @@
-#include "zlibc/string.h"
+#include "klibc/string.h"
 
 void *memset(void *dst, int c, unsigned int n)
 {

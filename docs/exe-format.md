@@ -1,21 +1,21 @@
-# ZEX v2 executable format
+# EXE v2 executable format
 
-ZEX ("Zephyr EXecutable") is the native, single-application-bank program
-format introduced by M6 and replaced by ZEX v2 in M10.  A ZEX v2 file
+EXE ("Zephyr EXecutable") is the native, single-application-bank program
+format introduced by M6 and replaced by EXE v2 in M10.  A EXE v2 file
 carries a primary image plus zero or more auxiliary segments, is stored
 in the ROMFS recovery store (see `docs/romfs-format.md`), is loaded by
 the kernel into one application bank `0-5` (plus auxiliary banks for its
 segments), and is entered in mode `10`.  The loader's authoritative
 implementation is `kernel/process/exec.c`; the host-side packer
-(`tools/zexpack.py`) mirrors every validation boundary so a bad link
+(`tools/exepack.py`) mirrors every validation boundary so a bad link
 cannot reach the ROMFS.
 
-There is no compatibility path: ZEX v2 is the only executable format
+There is no compatibility path: EXE v2 is the only executable format
 (architecture 36.18).
 
 ## 1. Logical load address
 
-Every ZEX v2 primary image is linked as a flat image whose first byte
+Every EXE v2 primary image is linked as a flat image whose first byte
 executes at logical address `0100h`:
 
 ```text
@@ -36,7 +36,7 @@ The header is 36 bytes, little-endian for every field:
 
 | Offset | Size | Field | Value / meaning |
 | --- | --- | --- | --- |
-| `00h` | 4 | `magic` | ASCII `ZEX2` (`5A 45 58 32`) |
+| `00h` | 4 | `magic` | ASCII `KEX2` (`4B 45 58 32`) |
 | `04h` | 1 | `format_version` | `2` |
 | `05h` | 1 | `abi_version` | `1` |
 | `06h` | 1 | `flags` | `0` (no flags defined) |
@@ -65,7 +65,7 @@ One 16-byte row per segment, in ascending id order from 1:
 | Offset | Size | Field | Value / meaning |
 | --- | --- | --- | --- |
 | `00h` | 1 | `id` | `1..segment_count`, ascending |
-| `01h` | 1 | `kind` | `ZEX_SEG_KIND_*` (`1` far code, `2` data) |
+| `01h` | 1 | `kind` | `EXE_SEG_KIND_*` (`1` far code, `2` data) |
 | `02h` | 2 | `image_size` | bytes copied into the segment's memory |
 | `04h` | 2 | `bss_size` | zero-initialized bytes after the image |
 | `06h` | 2 | `reserved0` | `0` |
@@ -86,31 +86,31 @@ One 16-byte row per segment, in ascending id order from 1:
 ## 4. Geometry rules
 
 Validated in this order (first violation wins); the codes are also the
-`process_exec()` result values (`formats/include/zex.h`):
+`process_exec()` result values (`formats/include/exe.h`):
 
 | Order | Check | Failure code |
 | --- | --- | --- |
-| 1 | magic is `ZEX2` | `ZEX_EXEC_ERR_MAGIC` |
-| 2 | `format_version == 2` | `ZEX_EXEC_ERR_FORMAT` |
-| 3 | `abi_version == 1` | `ZEX_EXEC_ERR_ABI` |
-| 4 | `flags == 0` | `ZEX_EXEC_ERR_FLAGS` |
-| 5 | `reserved0 == 0` | `ZEX_EXEC_ERR_RESERVED0` |
-| 6 | `header_size == 36` | `ZEX_EXEC_ERR_HEADER` |
-| 7 | `reserved1 == 0` | `ZEX_EXEC_ERR_RESERVED1` |
-| 8 | `image_size > 0` | `ZEX_EXEC_ERR_IMAGE` |
-| 9 | file size == `file_size` | `ZEX_EXEC_ERR_FILESIZE` |
-| 10 | `entry_offset < image_size` | `ZEX_EXEC_ERR_ENTRY` |
-| 11 | `stack_size >= 2` | `ZEX_EXEC_ERR_STACK` |
-| 12 | `segment_count <= 8` and `total_segment_slots <= 20` | `ZEX_EXEC_ERR_SEG_SLOTS` |
-| 13 | table inside the file | `ZEX_EXEC_ERR_SEG_TABLE` |
-| 14 | primary payload inside the file | `ZEX_EXEC_ERR_FILESIZE` |
-| 15 | `0100h + image_size <= E000h` | `ZEX_EXEC_ERR_IMAGE_END` |
-| 16 | `image_end + bss_size <= E000h` | `ZEX_EXEC_ERR_BSS_END` |
-| 17 | `stack_base >= 0100h` and `stack_base >= bss_end` | `ZEX_EXEC_ERR_COLLISION` |
-| 18 | row kind is `DATA` or `FAR_CODE` | `ZEX_EXEC_ERR_SEG_KIND` |
-| 19 | row geometry: non-empty, `image + bss` within its kind's limit (`DATA` 32 KiB, `FAR_CODE` 16 KiB), reserved zero, payload inside the file | `ZEX_EXEC_ERR_SEGMENT` |
-| 20 | row ids are `1..segment_count` in order | `ZEX_EXEC_ERR_SEGMENT` |
-| 21 | row slot sums equal `total_segment_slots` | `ZEX_EXEC_ERR_SEG_SLOTS` |
+| 1 | magic is `KEX2` | `EXE_EXEC_ERR_MAGIC` |
+| 2 | `format_version == 2` | `EXE_EXEC_ERR_FORMAT` |
+| 3 | `abi_version == 1` | `EXE_EXEC_ERR_ABI` |
+| 4 | `flags == 0` | `EXE_EXEC_ERR_FLAGS` |
+| 5 | `reserved0 == 0` | `EXE_EXEC_ERR_RESERVED0` |
+| 6 | `header_size == 36` | `EXE_EXEC_ERR_HEADER` |
+| 7 | `reserved1 == 0` | `EXE_EXEC_ERR_RESERVED1` |
+| 8 | `image_size > 0` | `EXE_EXEC_ERR_IMAGE` |
+| 9 | file size == `file_size` | `EXE_EXEC_ERR_FILESIZE` |
+| 10 | `entry_offset < image_size` | `EXE_EXEC_ERR_ENTRY` |
+| 11 | `stack_size >= 2` | `EXE_EXEC_ERR_STACK` |
+| 12 | `segment_count <= 8` and `total_segment_slots <= 20` | `EXE_EXEC_ERR_SEG_SLOTS` |
+| 13 | table inside the file | `EXE_EXEC_ERR_SEG_TABLE` |
+| 14 | primary payload inside the file | `EXE_EXEC_ERR_FILESIZE` |
+| 15 | `0100h + image_size <= E000h` | `EXE_EXEC_ERR_IMAGE_END` |
+| 16 | `image_end + bss_size <= E000h` | `EXE_EXEC_ERR_BSS_END` |
+| 17 | `stack_base >= 0100h` and `stack_base >= bss_end` | `EXE_EXEC_ERR_COLLISION` |
+| 18 | row kind is `DATA` or `FAR_CODE` | `EXE_EXEC_ERR_SEG_KIND` |
+| 19 | row geometry: non-empty, `image + bss` within its kind's limit (`DATA` 32 KiB, `FAR_CODE` 16 KiB), reserved zero, payload inside the file | `EXE_EXEC_ERR_SEGMENT` |
+| 20 | row ids are `1..segment_count` in order | `EXE_EXEC_ERR_SEGMENT` |
+| 21 | row slot sums equal `total_segment_slots` | `EXE_EXEC_ERR_SEG_SLOTS` |
 
 Checks 1-14 and 12-13 are the loader's **one up-front feasibility check**
 from the header alone (36.18): every count and size the load needs, read
@@ -127,16 +127,16 @@ segment per bank, at most two slots) and the packer sums every row's
 slots into this one field.
 
 The loader adds these result codes around the geometry checks:
-`ZEX_EXEC_ERR_ARG` (null argument / invalid request),
-`ZEX_EXEC_ERR_ROMFS` (name not found), `ZEX_EXEC_ERR_TYPE` (entry is not
-a ZEX), `ZEX_EXEC_ERR_NOSPACE` (no free process slot, bank, auxiliary
-run or object-table entry), `ZEX_EXEC_ERR_READ` (payload read or copy
+`EXE_EXEC_ERR_ARG` (null argument / invalid request),
+`EXE_EXEC_ERR_ROMFS` (name not found), `EXE_EXEC_ERR_TYPE` (entry is not
+a EXE), `EXE_EXEC_ERR_NOSPACE` (no free process slot, bank, auxiliary
+run or object-table entry), `EXE_EXEC_ERR_READ` (payload read or copy
 failed).  All arithmetic is done in 32 bits so 16-bit wrap can never mark
 an out-of-range geometry valid.
 
 ## 5. Link layout contract
 
-Every ZEX is linked by the SDK's generic rule (`user/sdk/zex.mk`, section
+Every EXE is linked by the SDK's generic rule (`user/sdk/exe.mk`, section
 8 of `docs/sdk.md`), which derives the manifest from the link map; the
 linker script and the packer must both agree with the resulting map:
 
@@ -145,25 +145,25 @@ linker script and the packer must both agree with the resulting map:
 - `_DATA` is linked at `0100h + image_size` and must satisfy
   `s__DATA == 0100h + image_size` (`s__DATA` proves where BSS starts) and
   `l__DATA <= bss_size`;
-- initialized writable data is not supported by ZEX v2:
+- initialized writable data is not supported by EXE v2:
   `l__INITIALIZER` and `l__INITIALIZED` must be zero, so every static
   starts zeroed;
 - the declared entry symbol must resolve to exactly
   `0100h + entry_offset`;
-- the runtime scratch symbol (`zos_scratch`) must lie inside the
+- the runtime scratch symbol (`kos_scratch`) must lie inside the
   syscall argument window `0100h-1FFFh`, so it remains accessible in
   mode `10` and in mode `11`.
 
 The SDK links crt0 and the shared runtime object first (`crt0.rel
-runtime.rel <program>`, then `libzos`), so the scratch block always sits
+runtime.rel <program>`, then `libkos`), so the scratch block always sits
 at the start of `_DATA`, ahead of the program's own statics: the whole
 program, its statics and the scratch stay below `2000h` even when the
-program's BSS is large (`fstest.zex` is the worst case).  The manifest
+program's BSS is large (`fstest.exe` is the worst case).  The manifest
 `scratch` field names that one symbol per program; a program linked
 without crt0 (the raw-return test child) declares no scratch at all.
 
 A `DATA` segment is declared in the manifest with a raw payload file and
-a BSS size (`SEGMENTS=` on the `zex_program` line); the packer derives
+a BSS size (`SEGMENTS=` on the `exe_program` line); the packer derives
 its `image_size` from the payload file and lays out the table.
 
 A **`FAR_CODE` segment** is declared with a linker `area` instead
@@ -182,27 +182,27 @@ Every declaration is checked against the **36.17 link rule**: a program
 with far code must keep its primary image and BSS below `8000h` and its
 stack base at or above `C000h`, so the aperture `8000h-BFFFh` belongs to
 far code alone; a far area's `image + bss` is at most 16 KiB and each
-auxiliary bank holds at most one far segment.  `tools/zexpack.py` rejects
+auxiliary bank holds at most one far segment.  `tools/exepack.py` rejects
 any violation, so the generic rule cannot pack a program that the kernel
 would later refuse.
 
 ## 6. Load sequence
 
-`process_exec("name.zex")` (the kernel launcher) and `SYS_EXEC`
+`process_exec("name.exe")` (the kernel launcher) and `SYS_EXEC`
 (`docs/abi.md` section 11, an ordinary process) both run the same two
 steps: `process_prepare()` loads, then `process_launch()` enters.
 
 `process_prepare()` performs:
 
 1. bind the path through the namespace and require a FILE object (the
-   media gate: a `/system` entry must carry `ROMFS_FLAG_ZEX`);
+   media gate: a `/system` entry must carry `ROMFS_FLAG_EXE`);
 2. read the file size and the header;
 3. run the one up-front feasibility check from the header;
 4. read the segment table and validate every row;
-5. allocate a process slot (fails with `ZEX_EXEC_ERR_NOSPACE` if none is
+5. allocate a process slot (fails with `EXE_EXEC_ERR_NOSPACE` if none is
    free), the child's VFS state and the lowest free application bank
    `0-5`;
-6. place the container's segments (fails with `ZEX_EXEC_ERR_NOSPACE`,
+6. place the container's segments (fails with `EXE_EXEC_ERR_NOSPACE`,
    rolled back completely): a `DATA` segment becomes an extended-memory
    object owned by the child, a `FAR_CODE` segment takes the aperture
    slice of its own auxiliary bank (one far segment per bank, token from
@@ -210,7 +210,7 @@ steps: `process_prepare()` loads, then `process_launch()` enters.
 7. write the native page-zero vector at `0030h`: `C3` followed by the
    entry address (the `RST 30h` gateway from `docs/abi.md`);
 8. copy the primary payload in 64-byte chunks from the source through the
-   common `zos_user_copy_staging` block into the bank at `0100h`;
+   common `kos_user_copy_staging` block into the bank at `0100h`;
 9. zero the primary BSS region `[0100h + image_size, + bss_size)`;
 10. copy each segment payload into its object and zero the segment BSS;
 11. close the executable source, then build startup block v1 (below) and
@@ -250,7 +250,7 @@ but it is *below* the `0100h` syscall buffer window, so a program must
 copy the tail into its own data before handing it to a syscall.
 
 `user/sdk/` is the first-party user-space runtime for it: crt0
-(`user/sdk/src/crt0.asm`, entry symbol `zos_entry`) receives the block in
+(`user/sdk/src/crt0.asm`, entry symbol `kos_entry`) receives the block in
 `HL`, stores the pointer for `startup()` before anything clobbers `HL`,
 runs `splitargs()` over the raw tail, calls `int main(int argc, char
 **argv)` and exits through `SYS_EXIT` with the returned status.  A
@@ -285,10 +285,10 @@ The transport is proven end to end by the M9 exec acceptance: `fstest`
 runs `fschild` with no arguments, one word, several words with a quoted
 space, and a trailing separator, and the simulator replay asserts the
 exact echoed `argv`; the kernel preflight refuses a 126-byte tail and a
-tail pointer outside the window with `ZOS_EINVAL` before allocating.
+tail pointer outside the window with `KOS_EINVAL` before allocating.
 
 A raw `RET` from the entry point lands in a common trap and exits the
-process with `ZOS_EFAULT`; programs leave through `SYS_EXIT` only.
+process with `KOS_EFAULT`; programs leave through `SYS_EXIT` only.
 
 Failure inside `process_prepare()` releases the slot, the bank
 reservation, the child's CWD slot, every descriptor it opened and every
@@ -303,14 +303,14 @@ A child started by `SYS_EXEC` is a full ordinary process: a fresh
 application bank, its own page zero, its own extended-memory segments,
 its own VFS process state (it *inherits* the parent's CWD and *not* the
 parent's descriptors), and its exit status handed back as the `SYS_EXEC`
-result.  Up to `ZOS_EXEC_MAX_DEPTH` (4) user processes may be suspended
+result.  Up to `KOS_EXEC_MAX_DEPTH` (4) user processes may be suspended
 in one chain; the suspension cost is the gate-stack frame described in
 `docs/memory.md` and `docs/abi.md`.
 
 ## 7. Runtime
 
-`user/sdk/` (libzos: `zos/console.h` with the gate stubs in
-`user/sdk/src/console.asm`) is the first-party C runtime for ZEX programs
+`user/sdk/` (libkos: `kos/console.h` with the gate stubs in
+`user/sdk/src/console.asm`) is the first-party C runtime for EXE programs
 (SDCC `sdcccall(1)` wrappers around `RST 30h`):
 
 ```c
@@ -318,18 +318,18 @@ void exit(unsigned int status);      /* SYS_EXIT, does not return */
 int  console_write(const char *buf, unsigned int len);  /* console client */
 int  console_read(char *buf, unsigned int len);         /* console client */
 int  console_poll(void);                     /* console client */
-int  getinfo(struct zex_info *info); /* SYS_GETINFO */
+int  getinfo(struct exe_info *info); /* SYS_GETINFO */
 ```
 
 Negative returns are `-errno`.  The wrappers share one argument scratch
-(`zos_scratch`, in `user/sdk/src/runtime.asm`) inside the linked image,
+(`kos_scratch`, in `user/sdk/src/runtime.asm`) inside the linked image,
 which is why the scratch symbol must satisfy the window rule above; the
 SDK links the runtime object first so the scratch always lands at the
 start of BSS, ahead of a program's own data.
 
-`user/sdk/include/zos/fs.h` adds the M9 filesystem wrappers
+`user/sdk/include/kos/fs.h` adds the M9 filesystem wrappers
 (`open`, `read`, ...; gate stub `user/sdk/src/fsgate.asm`) and
-`user/sdk/include/zos/process.h` adds
+`user/sdk/include/kos/process.h` adds
 `run(const char *path, const char *args)` on top of them: the same
 low-window argument block and gate stub, the same 127-byte local path
 check plus a 125-byte tail check, returning the child's exit status or
@@ -337,7 +337,7 @@ the negated native error code (`docs/abi.md` section 11).  A NULL or
 empty `args` is "no arguments"; the raw tail reaches the child byte-exact
 through the startup block (`startup`/`splitargs` above).
 
-`user/sdk/include/zos/seg.h` adds `seginfo(segment, &info)`: the
+`user/sdk/include/kos/seg.h` adds `seginfo(segment, &info)`: the
 `SYS_SEG_INFO` wrapper that describes a container segment and hands out
 the `DATA` segment's extended-memory handle, and `segmap(segment)`:
 the `SYS_SEG_MAP` wrapper (`docs/abi.md` section 15) that returns the
@@ -351,17 +351,17 @@ taking the far function's address in the program's own link (see
 ## 8. Tooling
 
 ```sh
-python3 tools/zexmanifest.py build/user/zextest/zextest.map \
-        build/user/zextest/zextest.json --name zextest.zex \
-        --entry zos_entry --stack 256 --scratch zos_scratch:16
-python3 tools/zexpack.py get      build/user/zextest/zextest.json image_size
-python3 tools/zexpack.py pack     build/user/zextest/zextest.json out.zex \
-        --objdir build/user/zextest --report out.report.json
-python3 tools/zexpack.py validate out.zex
-python3 tools/zexpack.py dump     out.zex
+python3 tools/exemanifest.py build/user/exetest/exetest.map \
+        build/user/exetest/exetest.json --name exetest.exe \
+        --entry kos_entry --stack 256 --scratch kos_scratch:16
+python3 tools/exepack.py get      build/user/exetest/exetest.json image_size
+python3 tools/exepack.py pack     build/user/exetest/exetest.json out.exe \
+        --objdir build/user/exetest --report out.report.json
+python3 tools/exepack.py validate out.exe
+python3 tools/exepack.py dump     out.exe
 ```
 
-`tools/zexmanifest.py` derives `image_size`, `bss_size` and
+`tools/exemanifest.py` derives `image_size`, `bss_size` and
 `entry_offset` from the link map, so no size is ever hand-entered, and
 `--segments FILE` merges a JSON list of `DATA` segment declarations
 (`id`, `kind`, `input`, `bss_size`); the packer resolves `input` against
@@ -369,6 +369,6 @@ python3 tools/zexpack.py dump     out.zex
 lays out the table.  The packer output (image bytes, report JSON) is
 byte-deterministic; the report carries the header fields, image/BSS/stack
 geometry, entry symbol resolution, the segment table and sha256 digests.
-`make zex-test` packs, validates, dumps, and runs the host suite that
-pins `zexpack.py` constants and result codes to
-`formats/include/zex.h` value-for-value.
+`make exe-test` packs, validates, dumps, and runs the host suite that
+pins `exepack.py` constants and result codes to
+`formats/include/exe.h` value-for-value.

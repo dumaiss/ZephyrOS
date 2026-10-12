@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; ZephyrOS M1 platform banking primitives and mode gates.
+; KonaOS M1 platform banking primitives and mode gates.
 ;
 ; Everything here is resident in the permanent common region (physical bank
 ; 0, E000h-FEFFh):
@@ -17,7 +17,7 @@
 ;                   D7:D5 selected ROM page.
 ;
 ; Register clobbers are documented per routine.  These helpers are internal
-; ZephyrOS platform mechanisms, not a stable ABI.
+; KonaOS platform mechanisms, not a stable ABI.
 ; -----------------------------------------------------------------------------
 
 	.module banking
@@ -28,19 +28,19 @@
 	.globl _platform_memctl_write
 	.globl _platform_bank_get
 	.globl _platform_bank_set
-	.globl zos_enter_os_mode
-	.globl zos_leave_os_mode
-	.globl zos_os_continuation
-	.globl __zos_mode_fault
-	.globl zos_gate_saved_sp
-	.globl zos_gate_saved_latch
-	.globl zos_gate_result_hl
-	.globl zos_gate_result_a
-	.globl zos_gate_result_c
-	.globl zos_gate_saved_iff
-	.globl zos_gate_saved_a
-	.globl zos_gate_stack
-	.globl zos_gate_stack_top
+	.globl kos_enter_os_mode
+	.globl kos_leave_os_mode
+	.globl kos_os_continuation
+	.globl __kos_mode_fault
+	.globl kos_gate_saved_sp
+	.globl kos_gate_saved_latch
+	.globl kos_gate_result_hl
+	.globl kos_gate_result_a
+	.globl kos_gate_result_c
+	.globl kos_gate_saved_iff
+	.globl kos_gate_saved_a
+	.globl kos_gate_stack
+	.globl kos_gate_stack_top
 	; External (kernel/boot) entry points used by the gates.
 	.globl _kernel_main
 	.globl _early_console_init
@@ -56,7 +56,7 @@
 
 ; uint8_t platform_memctl_read(void);  clobbers A, L
 _platform_memctl_read::
-	in	a,(ZOS_MEMCTL_PORT)
+	in	a,(KOS_MEMCTL_PORT)
 	ld	l,a
 	ret
 
@@ -64,29 +64,29 @@ _platform_memctl_read::
 ; WARNING: may change the mapping and hide the caller.  Only common-resident
 ; code (the gates below) may use this to alter mode bits.
 _platform_memctl_write::
-	out	(ZOS_MEMCTL_PORT),a
+	out	(KOS_MEMCTL_PORT),a
 	ret
 
 ; uint8_t platform_bank_get(void);  clobbers A, L
 _platform_bank_get::
-	in	a,(ZOS_MEMCTL_PORT)
-	and	#ZOS_BANK_MASK
+	in	a,(KOS_MEMCTL_PORT)
+	and	#KOS_BANK_MASK
 	ld	l,a
 	ret
 
 ; void platform_bank_set(uint8_t bank);  A = bank; clobbers AF, C
 ; Preserves ROM-page and mode bits; rejects bank 7 (application banks are
-; 0-6; bank 7 is reserved to ZephyrOS).  A rejected value leaves the latch
+; 0-6; bank 7 is reserved to KonaOS).  A rejected value leaves the latch
 ; untouched.
 _platform_bank_set::
-	and	#ZOS_BANK_MASK
-	cp	#ZOS_BANK_MASK		; 7 -> reject
+	and	#KOS_BANK_MASK
+	cp	#KOS_BANK_MASK		; 7 -> reject
 	ret	z
 	ld	c,a
-	in	a,(ZOS_MEMCTL_PORT)
-	and	#ZOS_LATCH_NON_BANK_MASK
+	in	a,(KOS_MEMCTL_PORT)
+	and	#KOS_LATCH_NON_BANK_MASK
 	or	c
-	out	(ZOS_MEMCTL_PORT),a
+	out	(KOS_MEMCTL_PORT),a
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -105,28 +105,28 @@ _platform_bank_set::
 ;        kernel body through the common continuation.
 ; Clobbers: AF, HL; SP is switched to the gate stack.  Does not return.
 ; ---------------------------------------------------------------------------
-zos_enter_os_mode::
+kos_enter_os_mode::
 	; Save caller SP without using the stack.
 	ld	hl,#0x0000
 	add	hl,sp
-	ld	(zos_gate_saved_sp),hl
+	ld	(kos_gate_saved_sp),hl
 	; Capture and validate the caller latch.
-	in	a,(ZOS_MEMCTL_PORT)
-	ld	(zos_gate_saved_latch),a
-	and	#ZOS_MODE_MASK
-	cp	#ZOS_MODE_APPLICATION
-	jp	nz,__zos_mode_fault	; fault path is common-resident
-	ld	a,(zos_gate_saved_latch)
-	and	#ZOS_BANK_MASK
-	cp	#ZOS_BANK_MASK		; bank 7 is not an application bank
-	jp	z,__zos_mode_fault
+	in	a,(KOS_MEMCTL_PORT)
+	ld	(kos_gate_saved_latch),a
+	and	#KOS_MODE_MASK
+	cp	#KOS_MODE_APPLICATION
+	jp	nz,__kos_mode_fault	; fault path is common-resident
+	ld	a,(kos_gate_saved_latch)
+	and	#KOS_BANK_MASK
+	cp	#KOS_BANK_MASK		; bank 7 is not an application bank
+	jp	z,__kos_mode_fault
 	; Switch to the common gate stack BEFORE the mode changes.
-	ld	sp,#zos_gate_stack_top
+	ld	sp,#kos_gate_stack_top
 	; Enter OS mode over the caller bank.  The next instructions are
 	; fetched from common memory, which is mapped in both modes.
-	or	#ZOS_MODE_OS
-	out	(ZOS_MEMCTL_PORT),a
-zos_os_continuation::
+	or	#KOS_MODE_OS
+	out	(KOS_MEMCTL_PORT),a
+kos_os_continuation::
 	jp	_kernel_main		; M1: no dispatcher yet; stage 03 replaces
 					; this jump with the syscall dispatch
 
@@ -140,29 +140,29 @@ zos_os_continuation::
 ;        Abandons its own return address; does not return to its caller.
 ; Clobbers: AF, HL; SP restored to the caller SP.
 ; ---------------------------------------------------------------------------
-zos_leave_os_mode::
-	ld	a,(zos_gate_saved_latch)
-	and	#ZOS_BANK_MASK
-	or	#ZOS_MODE_APPLICATION
-	out	(ZOS_MEMCTL_PORT),a	; mode 10 over caller bank; next is common
-	ld	hl,(zos_gate_saved_sp)
+kos_leave_os_mode::
+	ld	a,(kos_gate_saved_latch)
+	and	#KOS_BANK_MASK
+	or	#KOS_MODE_APPLICATION
+	out	(KOS_MEMCTL_PORT),a	; mode 10 over caller bank; next is common
+	ld	hl,(kos_gate_saved_sp)
 	ld	sp,hl			; caller stack is visible again in mode 10
 	ret				; pop the caller's saved PC
 
 ; ---------------------------------------------------------------------------
-; __zos_mode_fault - latch assertion failure path.
+; __kos_mode_fault - latch assertion failure path.
 ;
 ; Reached when the boot-time latch assertion fails or a gate receives an
 ; invalid bank.  Runs entirely from common memory: re-establishes the boot
 ; stack, initializes the early console, and enters the panic path.
 ; ---------------------------------------------------------------------------
-__zos_mode_fault::
-	ld	sp,#ZOS_STACK_INIT_SP
+__kos_mode_fault::
+	ld	sp,#KOS_STACK_INIT_SP
 	call	_early_console_init
-	ld	hl,#_zos_str_mode_fault
+	ld	hl,#_kos_str_mode_fault
 	jp	_panic
 
-_zos_str_mode_fault:
+_kos_str_mode_fault:
 	.asciz	"banking latch assertion failed"
 
 ; ---------------------------------------------------------------------------
@@ -171,20 +171,20 @@ _zos_str_mode_fault:
 ; ---------------------------------------------------------------------------
 	.area _COMMON_DATA
 
-zos_gate_saved_sp::
+kos_gate_saved_sp::
 	.ds	2
-zos_gate_saved_latch::
+kos_gate_saved_latch::
 	.ds	1
-zos_gate_result_hl::
+kos_gate_result_hl::
 	.ds	2
-zos_gate_result_a::
+kos_gate_result_a::
 	.ds	1
-zos_gate_result_c::
+kos_gate_result_c::
 	.ds	1
-zos_gate_saved_iff::
+kos_gate_saved_iff::
 	.ds	1
-zos_gate_saved_a::
+kos_gate_saved_a::
 	.ds	1
-zos_gate_stack::
-	.ds	ZOS_GATE_STACK_SIZE
-zos_gate_stack_top::
+kos_gate_stack::
+	.ds	KOS_GATE_STACK_SIZE
+kos_gate_stack_top::

@@ -1,4 +1,4 @@
-/* ZephyrOS user runtime: hexadecimal parsing and formatting.
+/* KonaOS user runtime: hexadecimal parsing and formatting.
  *
  * See hexfmt.h for the contract.  No standard library is linked: the
  * conversions are plain shifts, masks, and digit-table lookups.

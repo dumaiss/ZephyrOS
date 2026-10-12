@@ -14,12 +14,12 @@ Enforces docs/architecture.md section 3.1 and the current layout:
 - the driver drivers' manifests have one owner (drivers/<name>/)
   and the shared SDCC runtime support another (drivers/runtime);
 - the process lifecycle (kernel/process), the common transition gates
-  (kernel/memory), the public native ABI (abi/zos) and the user SDK
-  (user/sdk) have explicit owners, with the ZEX program sources under
+  (kernel/memory), the public native ABI (abi/kos) and the user SDK
+  (user/sdk) have explicit owners, with the EXE program sources under
   tests/target/process, the demos under user/helloworld, and the
-  ZEX tooling/fixtures under tests/subsys;
+  EXE tooling/fixtures under tests/subsys;
 - all milestone acceptance code lives under tests/target/, behind the
-  single ZOS_TARGET_TEST_BUILD seam; production sources contain no
+  single KOS_TARGET_TEST_BUILD seam; production sources contain no
   self-test implementations (the module fixtures under tests/modules/
   went with the module form, work package 42c);
 - the retired M3 static-driver mechanism, driver-private SDCC glue, and
@@ -103,8 +103,8 @@ OWNER_FILES = (
     "tests/fs/manifest.json",
     "tests/test_fs_selftest_sim.py",
     "formats/include/romfs.h",
-    "formats/include/zex.h",
-    "formats/include/zmod.h",
+    "formats/include/exe.h",
+    "formats/include/mod.h",
     "kernel/include/kernel.h",
     "kernel/include/process.h",
     "kernel/include/platform.h",
@@ -118,21 +118,21 @@ OWNER_FILES = (
     "platform/zephyr80/private/memory.inc",
     "platform/zephyr80/private/irq.h",
     "platform/zephyr80/private/irq.inc",
-    "abi/zos/types.h",
-    "abi/zos/errno.h",
-    "abi/zos/syscall.h",
-    "abi/zos/fs.h",
-    "abi/zos/process.h",
-    "abi/zos/diag.h",
-    "user/sdk/zex.mk",
-    "user/sdk/include/zos.h",
-    "user/sdk/include/zos/console.h",
-    "user/sdk/include/zos/fs.h",
-    "user/sdk/include/zos/process.h",
-    "user/sdk/include/zos/diag.h",
-    "user/sdk/include/zlibc/string.h",
-    "user/sdk/include/zlibc/fmt.h",
-    "user/sdk/include/zlibc/stdarg.h",
+    "abi/kos/types.h",
+    "abi/kos/errno.h",
+    "abi/kos/syscall.h",
+    "abi/kos/fs.h",
+    "abi/kos/process.h",
+    "abi/kos/diag.h",
+    "user/sdk/exe.mk",
+    "user/sdk/include/kos.h",
+    "user/sdk/include/kos/console.h",
+    "user/sdk/include/kos/fs.h",
+    "user/sdk/include/kos/process.h",
+    "user/sdk/include/kos/diag.h",
+    "user/sdk/include/klibc/string.h",
+    "user/sdk/include/klibc/fmt.h",
+    "user/sdk/include/klibc/stdarg.h",
     "user/sdk/src/crt0.asm",
     "user/sdk/src/runtime.asm",
     "user/sdk/src/console_proto.c",
@@ -142,27 +142,27 @@ OWNER_FILES = (
     "user/sdk/src/fs.c",
     "user/sdk/src/exec.c",
     "user/sdk/src/console_io.c",
-    "user/sdk/src/zos_internal.h",
-    "user/sdk/src/zlibc/strlen.c",
-    "user/sdk/src/zlibc/strcmp.c",
-    "user/sdk/src/zlibc/strncmp.c",
-    "user/sdk/src/zlibc/strchr.c",
-    "user/sdk/src/zlibc/strrchr.c",
-    "user/sdk/src/zlibc/memcpy.c",
-    "user/sdk/src/zlibc/memmove.c",
-    "user/sdk/src/zlibc/memset.c",
-    "user/sdk/src/zlibc/memcmp.c",
-    "user/sdk/src/zlibc/strlcpy.c",
-    "user/sdk/src/zlibc/strlcat.c",
-    "user/sdk/src/zlibc/utoa.c",
-    "user/sdk/src/zlibc/ultoa.c",
-    "user/sdk/src/zlibc/itoa.c",
-    "user/sdk/src/zlibc/ltoa.c",
-    "user/sdk/src/zlibc/printf.c",
-    "user/sdk/src/zlibc/sdcc_arith.c",
-    "user/sdk/src/zlibc/sdcc_arith_signed.c",
-    "user/sdk/src/zlibc/sdcc_arith_entries.asm",
-    "user/sdk/src/zlibc/sdcc_arith_signed_entries.asm",
+    "user/sdk/src/kos_internal.h",
+    "user/sdk/src/klibc/strlen.c",
+    "user/sdk/src/klibc/strcmp.c",
+    "user/sdk/src/klibc/strncmp.c",
+    "user/sdk/src/klibc/strchr.c",
+    "user/sdk/src/klibc/strrchr.c",
+    "user/sdk/src/klibc/memcpy.c",
+    "user/sdk/src/klibc/memmove.c",
+    "user/sdk/src/klibc/memset.c",
+    "user/sdk/src/klibc/memcmp.c",
+    "user/sdk/src/klibc/strlcpy.c",
+    "user/sdk/src/klibc/strlcat.c",
+    "user/sdk/src/klibc/utoa.c",
+    "user/sdk/src/klibc/ultoa.c",
+    "user/sdk/src/klibc/itoa.c",
+    "user/sdk/src/klibc/ltoa.c",
+    "user/sdk/src/klibc/printf.c",
+    "user/sdk/src/klibc/sdcc_arith.c",
+    "user/sdk/src/klibc/sdcc_arith_signed.c",
+    "user/sdk/src/klibc/sdcc_arith_entries.asm",
+    "user/sdk/src/klibc/sdcc_arith_signed_entries.asm",
     "user/sdk/template/hello.c",
     "user/helloworld/hello.c",
     "user/helloworld/Makefile",
@@ -177,19 +177,19 @@ OWNER_FILES = (
     "user/monitor/hexdump.h",
     "user/monitor/status.c",
     "user/monitor/status.h",
-    "tools/zexpack.py",
+    "tools/exepack.py",
     "recovery/manifest.json",
     "tests/subsys/manifest.json",
     "tests/subsys/gen_crosspage.py",
     "tests/subsys/gen_romfs_expect.py",
-    "tests/subsys/gen_zex_fixtures.py",
+    "tests/subsys/gen_exe_fixtures.py",
     "tests/subsys/gen_process_expect.py",
-    "tests/target/process/zextest_sp.asm",
+    "tests/target/process/exetest_sp.asm",
     "tests/test_sdk.py",
-    "tools/zexmanifest.py",
+    "tools/exemanifest.py",
     "tests/target/romfs/romfs_test.c",
     "tests/target/process/process_test.c",
-    "tests/target/process/zextest.c",
+    "tests/target/process/exetest.c",
     "kernel/irq/ctc.c",
     "drivers/sio/sio.c",
     "drivers/sio/sio.h",
@@ -262,15 +262,15 @@ REMOVED_PATHS = (
     "drivers/test/irq_probe.c",
     "drivers/test/fixtures.c",
     "drivers/test/irq_probe_io.asm",
-    "include/zephyros/selftest.h",
-    "include/zephyros/irq_selftest.h",
+    "include/konaos/selftest.h",
+    "include/konaos/irq_selftest.h",
     "tests/target/zephyr80/selftest.asm",
     "tests/target/zephyr80/irq_selftest.asm",
     "user/runtime",
     "user/monitor/monitor_entry.asm",
     "user/monitor/monitor.json",
-    "tests/subsys/zextest.json",
-    "tests/target/process/zextest_entry.asm",
+    "tests/subsys/exetest.json",
+    "tests/target/process/exetest_entry.asm",
     # Package 46 T1 moved the driver tree: the CTC nucleus source, the
     # driver manifests and the shared SDCC runtime support may not come
     # back to their pre-46 owners.
@@ -286,9 +286,9 @@ REMOVED_PATHS = (
     "kernel/vfs/ns_file.c",
     "kernel/vfs/process.c",
     # Package 46 T3 deleted the flat include/ tree: the audience headers
-    # live under their owners and no `zephyros/` spelling may return.
-    "include/zephyros",
-    "zephyros/",
+    # live under their owners and no `konaos/` spelling may return.
+    "include/konaos",
+    "konaos/",
     # Correction 01 to work package 42b deleted the whole M9 acceptance
     # surface: its subjects are gone from M10, so the images, programs,
     # manifests and host modules may not come back.
@@ -336,7 +336,7 @@ REQUIRED_DIRS = (
     "drivers/v9958", "drivers/console", "drivers/runtime",
     "drivers/include", "kernel/include", "formats/include",
     "platform/zephyr80/public", "platform/zephyr80/private",
-    "abi", "abi/zos",
+    "abi", "abi/kos",
     "user/sdk", "user/sdk/include", "user/sdk/src",
     "user/helloworld", "user/monitor",
     "recovery",
@@ -361,29 +361,29 @@ RETIRED_SOURCE_PATTERNS = (
 # Test-only SIO build variants must be confined to tests/ (the production
 # module entry has no conditional test branches).
 TEST_ONLY_SIO_MACROS = (
-    "ZOS_SIO_MODULE_IRQ_SELFTEST",
-    "ZOS_SIO_MODULE_INIT_FAIL",
+    "KOS_SIO_MODULE_IRQ_SELFTEST",
+    "KOS_SIO_MODULE_INIT_FAIL",
 )
 
 # Milestone self-test implementations live only under tests/.  Production
-# files may reference ZOS_M4_SIO_IRQ solely through the labeled boot-phase
-# TEST-ONLY HOOK in kernel/main.c and the shared ZOS_TARGET_TEST_BUILD seam.
+# files may reference KOS_M4_SIO_IRQ solely through the labeled boot-phase
+# TEST-ONLY HOOK in kernel/main.c and the shared KOS_TARGET_TEST_BUILD seam.
 PRODUCTION_SELFTEST_MACROS = (
-    "ZOS_SUBSYS_SELFTEST",
-    "ZOS_ROMFS_CORRUPT_SELFTEST",
-    "ZOS_IOC_SELFTEST",
-    "ZOS_HID_SELFTEST",
-    "ZOS_VIDEO_SELFTEST",
-    "ZOS_CONSOLE_SELFTEST",
-    "ZOS_CONSOLE_INTEGRATION_SELFTEST",
-    "ZOS_CONSOLE_SERIAL_SELFTEST",
-    "ZOS_CONSOLE_SERIAL_FAIL_SELFTEST",
-    "ZOS_M9_VFS_SELFTEST",
-    "ZOS_M9_PROVIDER_SELFTEST",
+    "KOS_SUBSYS_SELFTEST",
+    "KOS_ROMFS_CORRUPT_SELFTEST",
+    "KOS_IOC_SELFTEST",
+    "KOS_HID_SELFTEST",
+    "KOS_VIDEO_SELFTEST",
+    "KOS_CONSOLE_SELFTEST",
+    "KOS_CONSOLE_INTEGRATION_SELFTEST",
+    "KOS_CONSOLE_SERIAL_SELFTEST",
+    "KOS_CONSOLE_SERIAL_FAIL_SELFTEST",
+    "KOS_M9_VFS_SELFTEST",
+    "KOS_M9_PROVIDER_SELFTEST",
 )
 
 # Generated-output names that must be ignored and cleaned.  build-modules is
-# the shared module directory used by the ZMOD targets.
+# the shared module directory used by the MOD targets.
 BUILD_VARIANTS = (
     "build",
     "build-selftest",
@@ -428,11 +428,11 @@ SCAN_ROOTS = (
 )
 SCAN_TOP_FILES = ("Makefile", "README.md")
 
-# ZEX v1 code tokens (work package 44a): v2 replaced v1 outright, so the
+# EXE v1 code tokens (work package 44a): v2 replaced v1 outright, so the
 # old magic, manifest format and header size cannot reappear.  Prose that
-# names the historical format ("ZEX v1") is not a code token and stays
+# names the historical format ("EXE v1") is not a code token and stays
 # allowed.
-ZEX_V1_TOKENS = ("ZEX1", "zex-v1", "ZEX_HEADER_SIZE 20")
+EXE_V1_TOKENS = ("EXE1", "exe-v1", "EXE_HEADER_SIZE 20")
 
 # Historical/worker records and this test's own data are exempt.
 SCAN_EXCLUDED_DIRS = {
@@ -585,18 +585,18 @@ def _tab_recipe_lines(text):
 # a hardware-owning driver includes.  (kernel/... is deliberately not
 # reachable from the driver build.)
 DRIVER_FACING_HEADERS = (
-    "formats/include/zmod.h",
+    "formats/include/mod.h",
     "kernel/include/irq_types.h",
     "drivers/include/ioc.h",
     "drivers/include/ioc_protocol.h",
     "drivers/include/driver.h",
-    "abi/zos/errno.h",
+    "abi/kos/errno.h",
     "formats/include/romfs.h",
-    "abi/zos/fs.h",
-    "abi/zos/ipc.h",
-    "abi/zos/object.h",
-    "abi/zos/protocol.h",
-    "abi/zos/types.h",
+    "abi/kos/fs.h",
+    "abi/kos/ipc.h",
+    "abi/kos/object.h",
+    "abi/kos/protocol.h",
+    "abi/kos/types.h",
     "platform/zephyr80/public/hardware.h",
 )
 
@@ -646,7 +646,7 @@ _MODULE_PROBE_SOURCE = """\
 static const struct driver_api *probe_api;
 
 int16_t probe_dispatch(uint8_t handle, uint8_t op,
-		       struct zos_ipc_frame *frame)
+		       struct kos_ipc_frame *frame)
 {
 	(void)handle;
 	frame->status = 0;
@@ -657,10 +657,10 @@ void probe_init(const struct driver_boot *boot)
 {
 	probe_api = boot->api;
 	(void)probe_api->irq_claim(1u, 0x6000u, 0u);
-	probe_api->console_putc((uint8_t)ZIOC_MAX_DATA);
+	probe_api->console_putc((uint8_t)KIOC_MAX_DATA);
 }
 
-uint8_t probe_frame(const struct zioc_frame *frame)
+uint8_t probe_frame(const struct kioc_frame *frame)
 {
 	return frame->data[IOC_OFF_HID_INPUT_MAX];
 }
@@ -716,13 +716,13 @@ class TestOwnerLayout(unittest.TestCase):
     def test_retired_owners_are_gone(self):
         # Package 42c: the module/arena form is deleted outright, so no
         # source, header or fixture of it may come back.  (Package 46 T2
-        # named the driver ABI header formats/include/zmod.h, which is
-        # live until T3 moves it to formats/include/zmod.h.)
+        # named the driver ABI header formats/include/mod.h, which is
+        # live until T3 moves it to formats/include/mod.h.)
         for rel in ("kernel/module", "kernel/module/arena.asm",
-                    "tests/modules", "include/zephyros/module.h",
-                    "include/zephyros/device.h",
-                    "include/zephyros/vfs.h", "include/zephyros/hid.h",
-                    "include/zephyros/video.h", "include/zephyros/block.h",
+                    "tests/modules", "include/konaos/module.h",
+                    "include/konaos/device.h",
+                    "include/konaos/vfs.h", "include/konaos/hid.h",
+                    "include/konaos/video.h", "include/konaos/block.h",
                     "tools/mountgen.py", "config/mounts.json"):
             self.assertFalse(os.path.exists(os.path.join(ROOT, rel)),
                              "%s must stay deleted (work package 42c)" % rel)
@@ -740,7 +740,7 @@ class TestOwnerLayout(unittest.TestCase):
 
 class TestProductionTestSeparation(unittest.TestCase):
     """Production trees contain implementation only; acceptance code,
-    test ZMOD entries, manifests and glue live under their explicit
+    test MOD entries, manifests and glue live under their explicit
     non-production owners, behind the single test-build seam."""
 
     def test_driver_directories_contain_device_implementation_only(self):
@@ -824,8 +824,8 @@ class TestProductionTestSeparation(unittest.TestCase):
                         "mechanism: %r"
                         % (os.path.relpath(path, ROOT), pattern.pattern))
         makefile = _read(os.path.join(ROOT, "Makefile"))
-        self.assertNotIn("ZOS_M3_NO_STATIC_DRIVERS", makefile)
-        self.assertNotIn("ZOS_M3_NO_CONSOLE_BIND", makefile)
+        self.assertNotIn("KOS_M3_NO_STATIC_DRIVERS", makefile)
+        self.assertNotIn("KOS_M3_NO_CONSOLE_BIND", makefile)
         self.assertNotIn("m3-fallback", makefile)
 
     def test_test_only_sio_macros_confined_to_tests(self):
@@ -854,10 +854,10 @@ class TestProductionTestSeparation(unittest.TestCase):
 
     def test_main_keeps_only_labeled_test_hooks(self):
         main = _read(os.path.join(ROOT, "kernel", "main.c"))
-        self.assertIn("ZOS_TARGET_TEST_BUILD", main)
+        self.assertIn("KOS_TARGET_TEST_BUILD", main)
         self.assertIn("tests/target/support/target_test.c", main)
         self.assertIn("TEST-ONLY HOOK", main)
-        self.assertNotIn("zos_target_test_irq_hold", main)
+        self.assertNotIn("kos_target_test_irq_hold", main)
 
     def test_production_sources_have_no_ctc_acceptance_helpers(self):
         # The CTC0 programming is test-owned; no production source may
@@ -868,7 +868,7 @@ class TestProductionTestSeparation(unittest.TestCase):
                 body = _code_only(path)
                 for token in ("platform_ctc0_test_start",
                               "platform_ctc0_stop", "platform_irq_vector",
-                              "zos_ctc0_test_start", "zos_ctc0_test_stop"):
+                              "kos_ctc0_test_start", "kos_ctc0_test_stop"):
                     self.assertNotIn(
                         token, body,
                         "%s contains acceptance-only CTC code %r"
@@ -878,15 +878,15 @@ class TestProductionTestSeparation(unittest.TestCase):
         # Package 46 T3: the audience headers live under their owners.
         for name in ("kernel/include/irq_types.h",
                      "kernel/include/platform.h", "kernel/include/kernel.h",
-                     "drivers/include/driver.h", "formats/include/zmod.h",
+                     "drivers/include/driver.h", "formats/include/mod.h",
                      "kernel/include/process.h", "formats/include/romfs.h"):
             body = _code_only(os.path.join(ROOT, name))
-            self.assertNotIn("zos_run_", body,
+            self.assertNotIn("kos_run_", body,
                              "%s declares a target-test runner" % name)
 
     def test_makefile_has_single_test_seam(self):
         text = _read(os.path.join(ROOT, "Makefile"))
-        self.assertIn("ZOS_TARGET_TEST_BUILD=1", text)
+        self.assertIn("KOS_TARGET_TEST_BUILD=1", text)
         self.assertIn("tests/target/include", text)
         self.assertIn("target_test.rel", text)
         self.assertNotIn("SELFTEST_OBJS", text)
@@ -939,7 +939,7 @@ class TestCrossDriverIncludeBoundary(unittest.TestCase):
         # bug) and accept the public contract and same-directory headers.
         owners = {"ioc_proto.h": "drivers/ioc",
                   "hid_driver.h": "drivers/hid"}
-        leaked = ('#include "zephyros/device.h"\n'
+        leaked = ('#include "konaos/device.h"\n'
                   '#include "ioc_proto.h"\n')
         self.assertTrue(_sibling_private_includes(
             "drivers/hid/hid.c", leaked, owners))
@@ -976,16 +976,16 @@ class TestDriverFacingHeaderBoundary(unittest.TestCase):
         headers = _header_closure(DRIVER_FACING_HEADERS)
         text = "".join(_read(os.path.join(ROOT, rel)) for rel in headers)
         # A resident driver builds against the M10 driver ABI
-        # (abi/zos + include/zephyros): the flat plan, the call frame, the
+        # (abi/kos + include/konaos): the flat plan, the call frame, the
         # boot bundle and the client-visible namespace vocabulary.
-        for needle in ("struct zmod_header", "struct zmod_segment",
-                       "struct zmod_endpoint", "struct zmod_dependency",
-                       "struct zmod_publication", "struct driver_api",
-                       "struct driver_boot", "struct zos_ipc_frame",
-                       "struct zos_ipc_call_args", "struct zos_ns_entry",
-                       "ZOS_TYPE_FILE", "ZOS_TYPE_FS", "ZOS_CLASS_FILE",
-                       "struct zfs_stat", "ZFILE_OP_READ", "ZFS_OP_MKDIR",
-                       "struct zioc_frame", "irq_source_t",
+        for needle in ("struct mod_header", "struct mod_segment",
+                       "struct mod_endpoint", "struct mod_dependency",
+                       "struct mod_publication", "struct driver_api",
+                       "struct driver_boot", "struct kos_ipc_frame",
+                       "struct kos_ipc_call_args", "struct kos_ns_entry",
+                       "KOS_TYPE_FILE", "KOS_TYPE_FS", "KOS_CLASS_FILE",
+                       "struct kfs_stat", "KFILE_OP_READ", "KFS_OP_MKDIR",
+                       "struct kioc_frame", "irq_source_t",
                        "irq_handler_t"):
             self.assertIn(needle, text)
         # The device model is gone: nothing may bring its vocabulary back.
@@ -1098,12 +1098,12 @@ class TestIncludeRootAllowLists(unittest.TestCase):
     DRIVER_ROOTS = ["abi", "drivers/include", "platform/zephyr80/public",
                     "$(BUILD)"]
     # The SDK and its programs are unchanged.
-    SDK_ROOTS = ["abi", "$(ZOS_SDK_INCLUDE)"]
+    SDK_ROOTS = ["abi", "$(KOS_SDK_INCLUDE)"]
 
     def _config_variables(self):
         config = _read(os.path.join(ROOT, "platform", "zephyr80", "config.mk"))
-        return {"ZOS_PLATFORM_CFLAGS": _make_variable(config,
-                                                      "ZOS_PLATFORM_CFLAGS")}
+        return {"KOS_PLATFORM_CFLAGS": _make_variable(config,
+                                                      "KOS_PLATFORM_CFLAGS")}
 
     def test_nucleus_include_roots_are_exact(self):
         makefile = _read(os.path.join(ROOT, "Makefile"))
@@ -1122,15 +1122,15 @@ class TestIncludeRootAllowLists(unittest.TestCase):
                                  "%s must not offer the kernel tree" % name)
 
     def test_sdk_include_roots_are_exact(self):
-        zex_mk = _read(os.path.join(ROOT, "user", "sdk", "zex.mk"))
-        roots = _include_roots(_make_variable(zex_mk, "ZEX_CFLAGS"), {})
+        exe_mk = _read(os.path.join(ROOT, "user", "sdk", "exe.mk"))
+        roots = _include_roots(_make_variable(exe_mk, "EXE_CFLAGS"), {})
         self.assertEqual(roots, self.SDK_ROOTS)
 
 
 class TestNoResidentBlockDriver(unittest.TestCase):
     """M9 defined a block class but keeps no resident block driver
     (architecture 32.15/32.39: a feature with no consumer is not made
-    resident, for example `sd-ioc.zmod`).  This keeps the deferred-driver
+    resident, for example `sd-ioc.mod`).  This keeps the deferred-driver
     decision mechanical instead of a convention."""
 
     # A production ROMFS/module entry that names a block driver.
@@ -1180,8 +1180,8 @@ class TestNoResidentBlockDriver(unittest.TestCase):
 
     def test_makefile_builds_no_block_driver(self):
         text = _read(os.path.join(ROOT, "Makefile"))
-        for needle in ("sd-ioc.zmod", "/sd.zmod", "BOOT_SD_ZMOD",
-                       "ZOS_BLOCK"):
+        for needle in ("sd-ioc.mod", "/sd.mod", "BOOT_SD_MOD",
+                       "KOS_BLOCK"):
             self.assertNotIn(
                 needle, text,
                 "the Makefile still builds or boots a block driver: %s"
@@ -1289,8 +1289,8 @@ class TestNoStaleRemovedPaths(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(ROOT, removed)),
                              "removed path still exists: %s" % removed)
 
-    def test_no_zex_v1_format_code_remains(self):
-        """ZEX v2 replaced ZEX v1 with no compatibility path (36.18):
+    def test_no_exe_v1_format_code_remains(self):
+        """EXE v2 replaced EXE v1 with no compatibility path (36.18):
         the v1 magic, its manifest format string and its fixed header
         size are code tokens that must not survive in any live file.
         docs/architecture.md is the normative document (its M6 sections
@@ -1304,12 +1304,12 @@ class TestNoStaleRemovedPaths(unittest.TestCase):
                 text = _read(path)
             except (IOError, OSError):
                 continue
-            for token in ZEX_V1_TOKENS:
+            for token in EXE_V1_TOKENS:
                 if token in text:
                     stale.append("%s: %s"
                                  % (os.path.relpath(path, ROOT), token))
         self.assertEqual(stale, [],
-                         "ZEX v1 code tokens survived in live files:\n%s"
+                         "EXE v1 code tokens survived in live files:\n%s"
                          % "\n".join(stale))
 
 
@@ -1350,8 +1350,8 @@ RETIRED_ACCEPTANCE_TARGETS = (
 # Retired boot modes and boot-phase hooks.  Production keeps exactly one
 # boot path (VFS/ROMFS boot with the derived arena) and one test seam.
 RETIRED_BOOT_MODES = (
-    "ZOS_ROMFS_BOOT", "ZOS_MONITOR_BOOT", "ZOS_M4_SIO_IRQ",
-    "ZOS_M4_ARENA_BASE", "ZOS_M4_ARENA_END", "ZOS_M4_PLACEMENT",
+    "KOS_ROMFS_BOOT", "KOS_MONITOR_BOOT", "KOS_M4_SIO_IRQ",
+    "KOS_M4_ARENA_BASE", "KOS_M4_ARENA_END", "KOS_M4_PLACEMENT",
 )
 
 # Live files that may not name any of the retired names above.
@@ -1440,8 +1440,8 @@ class TestMilestoneRetentionWindow(unittest.TestCase):
             os.path.exists(os.path.join(ROOT, "kernel", "module",
                                         "embedded.c")),
             "the embedded-catalog boot path is retired")
-        for token in ("module_catalog_load_all", "zmod_catalog",
-                      "zmod_catalog_entry"):
+        for token in ("module_catalog_load_all", "mod_catalog",
+                      "mod_catalog_entry"):
             for root_name in ("kernel", "formats", "boot"):
                 for path in _walk(root_name, SOURCE_SUFFIXES):
                     self.assertNotIn(
@@ -1509,13 +1509,13 @@ class TestConstantParity(unittest.TestCase):
 
     def test_errno_codes_match_the_assembly_view(self):
         errno_c = parse_c_header(
-            os.path.join(ROOT, "abi", "zos", "errno.h"))
-        pairs = (("tests/target/include/syscall_entry.inc", "ZOS_ENOSYS"),
-                 ("tests/target/include/irq_entry.inc", "ZOS_IST_ENOSYS"))
+            os.path.join(ROOT, "abi", "kos", "errno.h"))
+        pairs = (("tests/target/include/syscall_entry.inc", "KOS_ENOSYS"),
+                 ("tests/target/include/irq_entry.inc", "KOS_IST_ENOSYS"))
         for asm_rel, name in pairs:
             asm = parse_asm_inc(os.path.join(ROOT, asm_rel))
             self.assertIn(name, asm, "%s missing %s" % (asm_rel, name))
-            self.assertEqual(evaluate(errno_c["ZOS_ENOSYS"], errno_c),
+            self.assertEqual(evaluate(errno_c["KOS_ENOSYS"], errno_c),
                              evaluate(asm[name], asm),
                              "%s differs from errno.h" % name)
 
@@ -1539,7 +1539,7 @@ class TestKernelNameComparison(unittest.TestCase):
         helper = _code_only(os.path.join(ROOT, "kernel", "lib", "name.c"))
         self.assertRegex(
             helper,
-            r"\buint8_t\s+zos_ascii_equal\s*\(\s*const\s+char\s*\*",
+            r"\buint8_t\s+kos_ascii_equal\s*\(\s*const\s+char\s*\*",
             "kernel/lib/name.c must define the one shared comparison")
         for legacy in self.LEGACY:
             self.assertNotIn(legacy, helper)
@@ -1567,7 +1567,7 @@ class TestKernelNameComparison(unittest.TestCase):
         }
         for rel, selector in expected.items():
             body = _code_only(os.path.join(ROOT, rel))
-            calls = re.findall(r"zos_ascii_equal\(.{0,120}", body, re.S)
+            calls = re.findall(r"kos_ascii_equal\(.{0,120}", body, re.S)
             self.assertTrue(calls, "%s does not call the shared helper" % rel)
             for call in calls:
                 flat = " ".join(call.split())
@@ -1584,18 +1584,18 @@ class TestKernelNameComparison(unittest.TestCase):
 
 
 class TestUserSdkBoundary(unittest.TestCase):
-    """User-space sources and ZEX programs reach only the public ABI
-    (abi/zos) and the SDK (user/sdk); they never see include/zephyros/,
+    """User-space sources and EXE programs reach only the public ABI
+    (abi/kos) and the SDK (user/sdk); they never see include/konaos/,
     kernel/ or platform/ (work package 28c)."""
 
-    ZEX_FILES = (
-        "tests/target/process/zextest.c",
-        "tests/target/process/zextest_sp.asm",
+    EXE_FILES = (
+        "tests/target/process/exetest.c",
+        "tests/target/process/exetest_sp.asm",
         "tests/fs/fs_selftest.c",
         "tests/fs/fs_child.c",
     )
     FORBIDDEN = (
-        re.compile(r'#\s*include\s+"zephyros/'),
+        re.compile(r'#\s*include\s+"konaos/'),
         re.compile(r'#\s*include\s+"kernel/'),
         re.compile(r'#\s*include\s+"platform/'),
         re.compile(r'#\s*include\s+"include/'),
@@ -1607,7 +1607,7 @@ class TestUserSdkBoundary(unittest.TestCase):
     def _user_files(self):
         for path in _walk("user", SOURCE_SUFFIXES):
             yield path, os.path.relpath(path, ROOT).replace(os.sep, "/")
-        for rel in self.ZEX_FILES:
+        for rel in self.EXE_FILES:
             yield os.path.join(ROOT, rel), rel
 
     def test_user_sources_stay_on_the_public_boundary(self):
@@ -1625,22 +1625,22 @@ class TestUserSdkBoundary(unittest.TestCase):
             % "\n".join(violations))
 
     def test_user_build_rule_offers_only_abi_and_sdk(self):
-        zex_mk = _read(os.path.join(ROOT, "user", "sdk", "zex.mk"))
-        self.assertIn("-I abi -I $(ZOS_SDK_INCLUDE)", zex_mk)
+        exe_mk = _read(os.path.join(ROOT, "user", "sdk", "exe.mk"))
+        self.assertIn("-I abi -I $(KOS_SDK_INCLUDE)", exe_mk)
         for token in ("-I include", "-Iinclude", "-I platform",
                       "-Iplatform", "-I kernel", "-Ikernel",
                       "drivers/"):
             self.assertNotIn(
-                token, zex_mk,
+                token, exe_mk,
                 "the SDK build rule offers a non-public path: %r" % token)
-        # The zex_program declarations name no include/ or platform/ rule.
+        # The exe_program declarations name no include/ or platform/ rule.
         makefile = _read(os.path.join(ROOT, "Makefile"))
         for line in makefile.splitlines():
-            if "zex_program" in line:
+            if "exe_program" in line:
                 for token in ("include/", "platform/"):
                     self.assertNotIn(
                         token, line,
-                        "a zex_program line names %r" % token)
+                        "a exe_program line names %r" % token)
 
     def test_sdk_headers_do_not_include_kernel_paths(self):
         for path in _walk("user/sdk/include", (".h",)):

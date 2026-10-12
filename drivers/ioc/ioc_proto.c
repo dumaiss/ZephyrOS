@@ -1,9 +1,9 @@
-/* ZephyrOS IOC resident driver (work package 41).
+/* KonaOS IOC resident driver (work package 41).
  *
  * The M8 `ioc` transport as a bank-6 driver image: the command/reply
  * lane (SIO1/B) and the bulk lane (SIO1/A) behind the IOC protocol of
- * abi/zos/protocol.h (class ZOS_CLASS_IOC, instance 0, version
- * ZOS_PROTOCOL_VERSION).
+ * abi/kos/protocol.h (class KOS_CLASS_IOC, instance 0, version
+ * KOS_PROTOCOL_VERSION).
  *
  * Segments (architecture 36.6):
  *   hot  this file: the protocol dispatch; ioc.c keeps the transport,
@@ -24,37 +24,37 @@
  * and the temporary arena-module path reach the same buffers.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "ioc.h"
 #include "driver.h"
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 #include "ioc_driver.h"
 
 /* The staged reply frame: TYPE, STATUS, LENGTH, DATA[26]. */
-static uint8_t ioc_reply_frame[ZIOC_PROTOCOL_FRAME_SIZE];
+static uint8_t ioc_reply_frame[KIOC_PROTOCOL_FRAME_SIZE];
 /* The bulk transfer block: one admitted lane transfer, 1..512 bytes. */
-static uint8_t ioc_bulk_buffer[ZIOC_BULK_MAX];
+static uint8_t ioc_bulk_buffer[KIOC_BULK_MAX];
 
 static const struct driver_api *ioc_api;
 static uint16_t ioc_reply_address;
 static uint16_t ioc_bulk_address;
 /* 1 once the bounded LINK_SYNC bring-up succeeded and no recovery is
- * pending; ZIOC_OP_READY is the console-side composition probe. */
+ * pending; KIOC_OP_READY is the console-side composition probe. */
 static uint8_t ioc_link_ready;
 
-static int16_t ioc_driver_command(struct zos_ipc_frame *frame)
+static int16_t ioc_driver_command(struct kos_ipc_frame *frame)
 {
-	struct zioc_frame request;
-	struct zioc_frame reply;
+	struct kioc_frame request;
+	struct kioc_frame reply;
 	uint16_t target;
 	uint8_t index;
 	int result;
 
 	/* Own-array bound: the copy below indexes request.data and
 	 * frame->payload with arg1 as the count. */
-	if (frame->arg1 > ZIOC_PROTOCOL_REQUEST_MAX) {
-		return (int16_t)-ZOS_EINVAL;
+	if (frame->arg1 > KIOC_PROTOCOL_REQUEST_MAX) {
+		return (int16_t)-KOS_EINVAL;
 	}
 	request.type = frame->arg0;
 	request.status = 0u;
@@ -63,7 +63,7 @@ static int16_t ioc_driver_command(struct zos_ipc_frame *frame)
 		request.data[index] = frame->payload[index];
 	}
 	result = ioc_command((void *)&ioc_state, &request, &reply);
-	if (result != ZIOC_OK) {
+	if (result != KIOC_OK) {
 		return (int16_t)result;
 	}
 	/* Stage the whole native reply frame for the descriptor and staged
@@ -73,7 +73,7 @@ static int16_t ioc_driver_command(struct zos_ipc_frame *frame)
 	ioc_reply_frame[2] = reply.length;
 	/* The DATA copy runs through a word cursor: an index of its own
 	 * keeps the staging store out of the container's rejected
-	 * byte-fragmented address form (tools/zmodpack.py). */
+	 * byte-fragmented address form (tools/modpack.py). */
 	target = 3u;
 	for (index = 0u; index < reply.length; ++index) {
 		ioc_reply_frame[target] = reply.data[index];
@@ -92,38 +92,38 @@ static int16_t ioc_driver_command(struct zos_ipc_frame *frame)
 	return 0;
 }
 
-static int16_t ioc_driver_reply(struct zos_ipc_frame *frame)
+static int16_t ioc_driver_reply(struct kos_ipc_frame *frame)
 {
 	uint16_t offset = frame->arg0;
 	uint16_t length = frame->arg1;
 
 	/* Own-array bound: the staged reply frame is this driver's array
 	 * and the nucleus copy below names it as the source. */
-	if (length == 0u || offset > ZIOC_PROTOCOL_FRAME_SIZE ||
-	    length > (uint16_t)(ZIOC_PROTOCOL_FRAME_SIZE - offset)) {
-		return (int16_t)-ZOS_EINVAL;
+	if (length == 0u || offset > KIOC_PROTOCOL_FRAME_SIZE ||
+	    length > (uint16_t)(KIOC_PROTOCOL_FRAME_SIZE - offset)) {
+		return (int16_t)-KOS_EINVAL;
 	}
 	return ioc_api->copy_out(frame->desc, offset,
 				 (uint16_t)(ioc_reply_address + offset),
 				 length);
 }
 
-static int16_t ioc_driver_bulk_read(struct zos_ipc_frame *frame)
+static int16_t ioc_driver_bulk_read(struct kos_ipc_frame *frame)
 {
 	uint16_t length = frame->arg1;
 	int result;
 
 	/* The transfer length is not re-validated here: ioc_bulk_read()
-	 * refuses 0 and anything above ZIOC_BULK_MAX before any I/O, and
+	 * refuses 0 and anything above KIOC_BULK_MAX before any I/O, and
 	 * the copy below runs only on its success. */
 	result = ioc_bulk_read((void *)&ioc_state, ioc_bulk_buffer, length);
-	if (result != ZIOC_OK) {
+	if (result != KIOC_OK) {
 		return (int16_t)result;
 	}
-	if (frame->desc != ZOS_IPC_DESC_NONE) {
+	if (frame->desc != KOS_IPC_DESC_NONE) {
 		if (ioc_api->copy_out(frame->desc, frame->arg0,
 				      ioc_bulk_address, length) < 0) {
-			return (int16_t)-ZOS_EINVAL;
+			return (int16_t)-KOS_EINVAL;
 		}
 	}
 	frame->payload[0] = (uint8_t)ioc_bulk_address;
@@ -131,47 +131,47 @@ static int16_t ioc_driver_bulk_read(struct zos_ipc_frame *frame)
 	return (int16_t)length;
 }
 
-static int16_t ioc_driver_bulk_write(struct zos_ipc_frame *frame)
+static int16_t ioc_driver_bulk_write(struct kos_ipc_frame *frame)
 {
 	uint16_t length = frame->arg1;
 	int result;
 
 	/* The transfer length is not re-validated here: ioc_bulk_write()
-	 * refuses 0 and anything above ZIOC_BULK_MAX before any I/O. */
-	if (frame->desc != ZOS_IPC_DESC_NONE) {
+	 * refuses 0 and anything above KIOC_BULK_MAX before any I/O. */
+	if (frame->desc != KOS_IPC_DESC_NONE) {
 		/* The descriptor form stages the caller's bytes into the
 		 * driver block first (the LOADER-mediated equivalent of
 		 * the staged form's `move`). */
 		if (ioc_api->copy_in(frame->desc, frame->arg0,
 				     ioc_bulk_address, length) < 0) {
-			return (int16_t)-ZOS_EINVAL;
+			return (int16_t)-KOS_EINVAL;
 		}
 	}
 	result = ioc_bulk_write((void *)&ioc_state, ioc_bulk_buffer,
 				length);
-	if (result != ZIOC_OK) {
+	if (result != KIOC_OK) {
 		return (int16_t)result;
 	}
 	return (int16_t)length;
 }
 
-int16_t ioc_driver_dispatch(struct zos_ipc_frame *frame)
+int16_t ioc_driver_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
-	case ZIOC_OP_COMMAND:
+	case KIOC_OP_COMMAND:
 		return ioc_driver_command(frame);
-	case ZIOC_OP_REPLY:
+	case KIOC_OP_REPLY:
 		return ioc_driver_reply(frame);
-	case ZIOC_OP_BULK_READ:
+	case KIOC_OP_BULK_READ:
 		return ioc_driver_bulk_read(frame);
-	case ZIOC_OP_BULK_WRITE:
+	case KIOC_OP_BULK_WRITE:
 		return ioc_driver_bulk_write(frame);
-	case ZIOC_OP_STATUS:
+	case KIOC_OP_STATUS:
 		return (int16_t)ioc_status((void *)&ioc_state);
-	case ZIOC_OP_READY:
+	case KIOC_OP_READY:
 		return (int16_t)(ioc_link_ready != 0u ? 1 : 0);
 	default:
-		return (int16_t)-ZOS_EINVAL;
+		return (int16_t)-KOS_EINVAL;
 	}
 }
 
@@ -182,10 +182,10 @@ uint8_t ioc_driver_init(const struct driver_boot *boot)
 	ioc_bulk_address = (uint16_t)ioc_bulk_buffer;
 	/* The one bounded LINK_SYNC bring-up, here in the mode-11 window
 	 * where the bootstrap interface is visible.  A down link is not a
-	 * load refusal: the driver initializes, ZIOC_OP_READY reports 0,
+	 * load refusal: the driver initializes, KIOC_OP_READY reports 0,
 	 * and the first ordinary operation attempts the whole-link
 	 * recovery.  A build whose own dependencies need the link fails
 	 * its boot through those drivers (42e). */
-	ioc_link_ready = (uint8_t)(ioc_link_bringup() == ZIOC_OK ? 1u : 0u);
+	ioc_link_ready = (uint8_t)(ioc_link_bringup() == KIOC_OK ? 1u : 0u);
 	return 0u;
 }

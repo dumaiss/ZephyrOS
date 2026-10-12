@@ -2,14 +2,14 @@
   "format": "romfs-v1",
   "files": [
     {
-      "name": "sio.zmod",
-      "type": "ZMOD",
-      "path": "sio.zmod"
+      "name": "sio.mod",
+      "type": "MOD",
+      "path": "sio.mod"
     },
     {
-      "name": "console-serial.zmod",
-      "type": "ZMOD",
-      "path": "console-serial.zmod"
+      "name": "console-serial.mod",
+      "type": "MOD",
+      "path": "console-serial.mod"
     },
     {
       "name": "drivers.man",
@@ -22,159 +22,159 @@
       "path": "romfs_crosspage.bin"
     },
     {
-      "name": "monitor.zex",
-      "type": "ZEX",
-      "path": "monitor.zex"
+      "name": "monitor.exe",
+      "type": "EXE",
+      "path": "monitor.exe"
     },
     {
-      "name": "zextest.zex",
-      "type": "ZEX",
-      "path": "zextest.zex"
+      "name": "exetest.exe",
+      "type": "EXE",
+      "path": "exetest.exe"
     },
     {
-      "name": "zex2probe.zex",
-      "type": "ZEX",
-      "path": "zex2probe.zex"
+      "name": "exe2probe.exe",
+      "type": "EXE",
+      "path": "exe2probe.exe"
     },
     {
-      "name": "zex2seg.zex",
-      "type": "ZEX",
-      "path": "zex2seg.zex"
+      "name": "exe2seg.exe",
+      "type": "EXE",
+      "path": "exe2seg.exe"
     },
     {
-      "name": "zex2big.zex",
-      "type": "ZEX",
-      "path": "zex2big.zex"
+      "name": "exe2big.exe",
+      "type": "EXE",
+      "path": "exe2big.exe"
     },
     {
-      "name": "zex-return.zex",
-      "type": "ZEX",
-      "path": "zex-return.zex"
+      "name": "exe-return.exe",
+      "type": "EXE",
+      "path": "exe-return.exe"
     },
     {
-      "name": "zex-bad-magic.zex",
-      "type": "ZEX",
-      "path": "zex-bad-magic.zex"
+      "name": "exe-bad-magic.exe",
+      "type": "EXE",
+      "path": "exe-bad-magic.exe"
     },
     {
-      "name": "zex-bad-format.zex",
-      "type": "ZEX",
-      "path": "zex-bad-format.zex"
+      "name": "exe-bad-format.exe",
+      "type": "EXE",
+      "path": "exe-bad-format.exe"
     },
     {
-      "name": "zex-bad-abi.zex",
-      "type": "ZEX",
-      "path": "zex-bad-abi.zex"
+      "name": "exe-bad-abi.exe",
+      "type": "EXE",
+      "path": "exe-bad-abi.exe"
     },
     {
-      "name": "zex-bad-flags.zex",
-      "type": "ZEX",
-      "path": "zex-bad-flags.zex"
+      "name": "exe-bad-flags.exe",
+      "type": "EXE",
+      "path": "exe-bad-flags.exe"
     },
     {
-      "name": "zex-bad-reserved0.zex",
-      "type": "ZEX",
-      "path": "zex-bad-reserved0.zex"
+      "name": "exe-bad-reserved0.exe",
+      "type": "EXE",
+      "path": "exe-bad-reserved0.exe"
     },
     {
-      "name": "zex-bad-header-size.zex",
-      "type": "ZEX",
-      "path": "zex-bad-header-size.zex"
+      "name": "exe-bad-header-size.exe",
+      "type": "EXE",
+      "path": "exe-bad-header-size.exe"
     },
     {
-      "name": "zex-bad-reserved1.zex",
-      "type": "ZEX",
-      "path": "zex-bad-reserved1.zex"
+      "name": "exe-bad-reserved1.exe",
+      "type": "EXE",
+      "path": "exe-bad-reserved1.exe"
     },
     {
-      "name": "zex-zero-image.zex",
-      "type": "ZEX",
-      "path": "zex-zero-image.zex"
+      "name": "exe-zero-image.exe",
+      "type": "EXE",
+      "path": "exe-zero-image.exe"
     },
     {
-      "name": "zex-truncated.zex",
-      "type": "ZEX",
-      "path": "zex-truncated.zex"
+      "name": "exe-truncated.exe",
+      "type": "EXE",
+      "path": "exe-truncated.exe"
     },
     {
-      "name": "zex-padded.zex",
-      "type": "ZEX",
-      "path": "zex-padded.zex"
+      "name": "exe-padded.exe",
+      "type": "EXE",
+      "path": "exe-padded.exe"
     },
     {
-      "name": "zex-bad-entry.zex",
-      "type": "ZEX",
-      "path": "zex-bad-entry.zex"
+      "name": "exe-bad-entry.exe",
+      "type": "EXE",
+      "path": "exe-bad-entry.exe"
     },
     {
-      "name": "zex-small-stack.zex",
-      "type": "ZEX",
-      "path": "zex-small-stack.zex"
+      "name": "exe-small-stack.exe",
+      "type": "EXE",
+      "path": "exe-small-stack.exe"
     },
     {
-      "name": "zex-image-end.zex",
-      "type": "ZEX",
-      "path": "zex-image-end.zex"
+      "name": "exe-image-end.exe",
+      "type": "EXE",
+      "path": "exe-image-end.exe"
     },
     {
-      "name": "zex-bss-end.zex",
-      "type": "ZEX",
-      "path": "zex-bss-end.zex"
+      "name": "exe-bss-end.exe",
+      "type": "EXE",
+      "path": "exe-bss-end.exe"
     },
     {
-      "name": "zex-stack-collision.zex",
-      "type": "ZEX",
-      "path": "zex-stack-collision.zex"
+      "name": "exe-stack-collision.exe",
+      "type": "EXE",
+      "path": "exe-stack-collision.exe"
     },
     {
-      "name": "zex-wrong-type.dat",
+      "name": "exe-wrong-type.dat",
       "type": "DATA",
-      "path": "zex-wrong-type.dat"
+      "path": "exe-wrong-type.dat"
     },
     {
-      "name": "zex-seg-count.zex",
-      "type": "ZEX",
-      "path": "zex-seg-count.zex"
+      "name": "exe-seg-count.exe",
+      "type": "EXE",
+      "path": "exe-seg-count.exe"
     },
     {
-      "name": "zex-seg-slots.zex",
-      "type": "ZEX",
-      "path": "zex-seg-slots.zex"
+      "name": "exe-seg-slots.exe",
+      "type": "EXE",
+      "path": "exe-seg-slots.exe"
     },
     {
-      "name": "zex-seg-total.zex",
-      "type": "ZEX",
-      "path": "zex-seg-total.zex"
+      "name": "exe-seg-total.exe",
+      "type": "EXE",
+      "path": "exe-seg-total.exe"
     },
     {
-      "name": "zex-seg-table.zex",
-      "type": "ZEX",
-      "path": "zex-seg-table.zex"
+      "name": "exe-seg-table.exe",
+      "type": "EXE",
+      "path": "exe-seg-table.exe"
     },
     {
-      "name": "zex-seg-kind.zex",
-      "type": "ZEX",
-      "path": "zex-seg-kind.zex"
+      "name": "exe-seg-kind.exe",
+      "type": "EXE",
+      "path": "exe-seg-kind.exe"
     },
     {
-      "name": "zex-far-oversize.zex",
-      "type": "ZEX",
-      "path": "zex-far-oversize.zex"
+      "name": "exe-far-oversize.exe",
+      "type": "EXE",
+      "path": "exe-far-oversize.exe"
     },
     {
-      "name": "zex-seg-payload.zex",
-      "type": "ZEX",
-      "path": "zex-seg-payload.zex"
+      "name": "exe-seg-payload.exe",
+      "type": "EXE",
+      "path": "exe-seg-payload.exe"
     },
     {
-      "name": "zex-seg-id.zex",
-      "type": "ZEX",
-      "path": "zex-seg-id.zex"
+      "name": "exe-seg-id.exe",
+      "type": "EXE",
+      "path": "exe-seg-id.exe"
     },
     {
-      "name": "zex-seg-reserved.zex",
-      "type": "ZEX",
-      "path": "zex-seg-reserved.zex"
+      "name": "exe-seg-reserved.exe",
+      "type": "EXE",
+      "path": "exe-seg-reserved.exe"
     }
   ]
 }

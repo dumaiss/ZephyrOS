@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """Namespace acceptance replay (work package 42a, correction 01).
 
-Boots build-ns-selftest/zephyros-ns-selftest.bin -- the production boot
+Boots build-ns-selftest/konaos-ns-selftest.bin -- the production boot
 path with the namespace objects linked in at the placement production will
 use, the DEVICE publication table built by the host from the three driver
-containers, and the SDK client booting as /system/ns.zex -- and checks the
+containers, and the SDK client booting as /system/ns.exe -- and checks the
 recorded transcript:
 
 * the standard handles exist before any bind and the console driver is
   reachable through the handle `/dev/console` publishes;
 * `bind` on the host-built table reports the protocol type the manifest
   declares (SERIAL, INPUT, VIDEO, CONSOLE), a grouping name refuses with
-  ZOS_EISDIR and a call on the bound handle reaches the publishing
+  KOS_EISDIR and a call on the bound handle reaches the publishing
   endpoint (the synthetic publisher's deterministic answers);
 * the `/system` FILE provider reads, seeks and reports metadata, refuses a
-  write with ZOS_EROFS, and a root-level name has no provider owner;
-* the handle table fills to VFS_HANDLE_MAX, reports -ZOS_EMFILE and
+  write with KOS_EROFS, and a root-level name has no provider owner;
+* the handle table fills to VFS_HANDLE_MAX, reports -KOS_EMFILE and
 * releases
   every entry the client unbinds;
 * `ns_enum` pages `/`, `/dev` and `/system` with its cookie, and the
@@ -47,7 +47,7 @@ from replay import STEP_LIMIT, Replay  # noqa: E402
 import romfspack  # noqa: E402
 
 IMAGE_SUBDIR = "build-ns-selftest"
-IMAGE_NAME = "zephyros-ns-selftest.bin"
+IMAGE_NAME = "konaos-ns-selftest.bin"
 
 SELFTEST_OK = "ns selftest: OK\r\n"
 SELFTEST_FAIL = "ns selftest: FAIL\r\n"
@@ -57,7 +57,7 @@ PANIC = "PANIC"
 # numbers are the handles `bind` returns: the standard handles are 1 and 2,
 # and the DEVICE table's bounds hand out 3 and up in call order.
 TRANSCRIPT = [
-    "ZephyrOS 0.0\r\n",
+    "KonaOS 0.0\r\n",
     "platform: Zephyr-80\r\n",
     "kernel entry: OK\r\n",
     "serial: OK\r\n",
@@ -70,18 +70,18 @@ TRANSCRIPT = [
     "ns: call ping -> 4E53 1234\r\n",
     "ns: /dev/serial/0 -> 1\r\n",
     "ns: handle table 10 bound, refuse -23\r\n",
-    "ns: file read 24, first sio.zmod\r\n",
+    "ns: file read 24, first sio.mod\r\n",
     "ns: file size 72\r\n",
     "ns: /dev entry serial type 0 container\r\n",
     "ns: /dev entry console type 6\r\n",
     "ns: /dev entry input type 0 container\r\n",
     "ns: /dev entry video type 2\r\n",
-    "ns: /system entry sio.zmod\r\n",
-    "ns: /system entry console-serial.zmod\r\n",
-    "ns: /system entry nsdev.zmod\r\n",
+    "ns: /system entry sio.mod\r\n",
+    "ns: /system entry console-serial.mod\r\n",
+    "ns: /system entry nsdev.mod\r\n",
     "ns: /system entry drivers.man\r\n",
-    "ns: /system entry ns.zex\r\n",
-    "ns: /system entry nschild.zex\r\n",
+    "ns: /system entry ns.exe\r\n",
+    "ns: /system entry nschild.exe\r\n",
     "ns: /system 6 entries\r\n",
     "ns: cwd /system\r\n",
     "ns: cwd /dev\r\n",
@@ -91,7 +91,7 @@ TRANSCRIPT = [
     "nschild: /dev/console -> 6 handle 3\r\n",
     "nschild: unbind 3 -> 0\r\n",
     "nschild: OK\r\n",
-    "ns: exec /system/nschild.zex -> 0\r\n",
+    "ns: exec /system/nschild.exe -> 0\r\n",
 ]
 
 # The M9 mount pass is gone with the M9 VFS it belonged to (package 42b):
@@ -164,16 +164,16 @@ class NsSelftestReplay(Replay, unittest.TestCase):
         manifest = next(e for e in entries if e["name"] == "drivers.man")
         self.assertEqual(len(manifest["payload"]), MAN_SIZE)
         first = manifest["payload"][:MAN_RECORD].split(b"\x00")[0]
-        self.assertEqual(first, b"sio.zmod")
+        self.assertEqual(first, b"sio.mod")
 
         sio = self.boot().sio_tx.decode("ascii", "replace")
-        self.assertIn("ns: file read %d, first sio.zmod\r\n" % MAN_RECORD, sio)
+        self.assertIn("ns: file read %d, first sio.mod\r\n" % MAN_RECORD, sio)
         self.assertIn("ns: file size %d\r\n" % MAN_SIZE, sio)
 
     def test_the_image_carries_the_namespace_routed_family(self):
         self.assertIn("_vfs_ns_bind", self.syms)
         self.assertIn("_vfs_ns_file_bind", self.syms)
-        self.assertIn("_zos_object_dispatch", self.syms)
+        self.assertIn("_kos_object_dispatch", self.syms)
         self.assertIn("_ipc_syscall_call_object", self.syms)
         # Cold half, the placement production will use.
         self.assertGreaterEqual(self.syms["_vfs_ns_bind"], 0x6000)

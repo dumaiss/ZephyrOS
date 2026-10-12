@@ -1,7 +1,7 @@
-/* ZephyrOS console integration acceptance (work package 41).
+/* KonaOS console integration acceptance (work package 41).
  *
  * The package-20 integration diagnostic, re-pointed at the resident
- * drivers.  The kernel calls zos_run_console_integration_selftest()
+ * drivers.  The kernel calls kos_run_console_integration_selftest()
  * from the late boot hook, after the resident driver loader has placed
  * and started the store's drivers and after the nucleus console probe
  * bound the console endpoint; the unchanged M7 monitor launcher runs
@@ -23,7 +23,7 @@
  * Coverage:
  *
  *   - every class the production store carries answers an endpoint
- *     lookup at ZOS_PROTOCOL_VERSION;
+ *     lookup at KOS_PROTOCOL_VERSION;
  *   - the console endpoint speaks the console protocol, and the
  *     composition the build selected (`console-v9958-hid`: video output,
  *     HID input) is what this image's manifest implies;
@@ -35,9 +35,9 @@
  *     still works afterwards.
  */
 
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "ioc.h"
 #include "kernel.h"
 
@@ -98,7 +98,7 @@ static void integration_probe(uint8_t class_id, const char *name)
 	driver_cli_puts(name);
 	driver_cli_puts(present != 0u ? "=01" : "=00");
 	if (present == 0u) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_BOOT, "drivers");
+		integration_fail(KOS_CONSOLE_INTEGRATION_FAIL_BOOT, "drivers");
 	}
 }
 
@@ -107,7 +107,7 @@ static void integration_probe(uint8_t class_id, const char *name)
 static int integration_write(const char *text)
 {
 	while (*text != '\0') {
-		if (driver_cli_putc(integration_console, ZCONSOLE_OP_PUTC,
+		if (driver_cli_putc(integration_console, KCONSOLE_OP_PUTC,
 				     (uint8_t)*text) < 0) {
 			return 0;
 		}
@@ -128,7 +128,7 @@ static uint8_t integration_read(uint8_t *out)
 	while (attempts < INTEGRATION_POLL_BUDGET &&
 	       count < INTEGRATION_READ_MAX) {
 		int16_t byte = driver_cli_getc(integration_console,
-						ZCONSOLE_OP_GETC);
+						KCONSOLE_OP_GETC);
 
 		if (byte < 0) {
 			++attempts;
@@ -148,12 +148,12 @@ static uint8_t integration_read(uint8_t *out)
  * reply is the pinned one and fills in the controller level. */
 static uint8_t integration_ping(uint8_t *level)
 {
-	struct zos_ipc_frame frame;
-	uint8_t reply[ZIOC_FRAME_SIZE];
+	struct kos_ipc_frame frame;
+	uint8_t reply[KIOC_FRAME_SIZE];
 	uint16_t address;
 	uint8_t index;
 
-	driver_cli_frame(&frame, ZIOC_OP_COMMAND, 0x01u,
+	driver_cli_frame(&frame, KIOC_OP_COMMAND, 0x01u,
 			  INTEGRATION_PING_DATA_LEN);
 	for (index = 0u; index < INTEGRATION_PING_DATA_LEN; ++index) {
 		frame.payload[index] = (uint8_t)(0x40u + index);
@@ -167,7 +167,7 @@ static uint8_t integration_ping(uint8_t *level)
 	}
 	address = (uint16_t)((uint16_t)frame.payload[0] |
 			     ((uint16_t)frame.payload[1] << 8));
-	if (driver_cli_stage_read(address, ZIOC_FRAME_SIZE, reply) == 0) {
+	if (driver_cli_stage_read(address, KIOC_FRAME_SIZE, reply) == 0) {
 		return 0u;
 	}
 	if (reply[0] != INTEGRATION_PING_RESPONSE || reply[1] != 0u) {
@@ -189,38 +189,38 @@ static uint8_t integration_ping(uint8_t *level)
  * the nucleus never issued is refused before any driver runs. */
 static uint8_t integration_rejects(void)
 {
-	struct zos_ipc_frame frame;
+	struct kos_ipc_frame frame;
 	uint8_t video = 0u;
 	uint8_t hid = 0u;
 
 	driver_cli_frame(&frame, 0x7Fu, 0u, 0u);
-	if (driver_cli_call(integration_console, &frame) != -ZOS_EINVAL) {
+	if (driver_cli_call(integration_console, &frame) != -KOS_EINVAL) {
 		return 0u;
 	}
 	driver_cli_frame(&frame, 0x7Fu, 0u, 0u);
-	if (driver_cli_call(integration_ioc, &frame) != -ZOS_EINVAL) {
+	if (driver_cli_call(integration_ioc, &frame) != -KOS_EINVAL) {
 		return 0u;
 	}
-	if (driver_cli_endpoint(ZOS_CLASS_VIDEO, &video) != 0u) {
+	if (driver_cli_endpoint(KOS_CLASS_VIDEO, &video) != 0u) {
 		driver_cli_frame(&frame, 0x7Fu, 0u, 0u);
-		if (driver_cli_call(video, &frame) != -ZOS_EINVAL) {
+		if (driver_cli_call(video, &frame) != -KOS_EINVAL) {
 			return 0u;
 		}
 	}
-	if (driver_cli_endpoint(ZOS_CLASS_HID, &hid) != 0u) {
+	if (driver_cli_endpoint(KOS_CLASS_HID, &hid) != 0u) {
 		driver_cli_frame(&frame, 0x7Fu, 0u, 0u);
-		if (driver_cli_call(hid, &frame) != -ZOS_EINVAL) {
+		if (driver_cli_call(hid, &frame) != -KOS_EINVAL) {
 			return 0u;
 		}
 	}
-	driver_cli_frame(&frame, ZCONSOLE_OP_PUTC, (uint8_t)'x', 0u);
+	driver_cli_frame(&frame, KCONSOLE_OP_PUTC, (uint8_t)'x', 0u);
 	if (driver_cli_call((uint8_t)0xFEu, &frame) >= 0) {
 		return 0u;
 	}
 	return 1u;
 }
 
-void zos_run_console_integration_selftest(void)
+void kos_run_console_integration_selftest(void)
 {
 	uint8_t video = 0u;
 	uint8_t hid = 0u;
@@ -229,19 +229,19 @@ void zos_run_console_integration_selftest(void)
 	uint8_t level = 0u;
 	uint8_t index;
 
-	ace_integration_result = ZOS_CONSOLE_INTEGRATION_OK;
+	ace_integration_result = KOS_CONSOLE_INTEGRATION_OK;
 	integration_failed = 0u;
 
 	driver_cli_puts(INTEGRATION_TAG "drivers");
-	integration_probe(ZOS_CLASS_SERIAL, "sio");
-	integration_probe(ZOS_CLASS_IOC, "ioc");
-	integration_probe(ZOS_CLASS_HID, "hid");
-	integration_probe(ZOS_CLASS_VIDEO, "video");
-	integration_probe(ZOS_CLASS_CONSOLE, "console");
+	integration_probe(KOS_CLASS_SERIAL, "sio");
+	integration_probe(KOS_CLASS_IOC, "ioc");
+	integration_probe(KOS_CLASS_HID, "hid");
+	integration_probe(KOS_CLASS_VIDEO, "video");
+	integration_probe(KOS_CLASS_CONSOLE, "console");
 	driver_cli_puts("\r\n");
-	if (driver_cli_endpoint(ZOS_CLASS_CONSOLE, &integration_console) ==
+	if (driver_cli_endpoint(KOS_CLASS_CONSOLE, &integration_console) ==
 	    0u || integration_failed != 0u) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_SHAPE, "console");
+		integration_fail(KOS_CONSOLE_INTEGRATION_FAIL_SHAPE, "console");
 		return;
 	}
 
@@ -250,13 +250,13 @@ void zos_run_console_integration_selftest(void)
 	 * store carries.  The replay proves the choice from the visible
 	 * side; these lines record what the diagnostic observed. */
 	integration_puts("console v01");
-	if (driver_cli_endpoint(ZOS_CLASS_VIDEO, &video) != 0u) {
+	if (driver_cli_endpoint(KOS_CLASS_VIDEO, &video) != 0u) {
 		integration_puts("output video");
 	} else {
 		integration_puts("output serial");
 	}
-	if (driver_cli_endpoint(ZOS_CLASS_HID, &hid) != 0u &&
-	    driver_cli_getc(hid, ZHID_OP_READY) == 1) {
+	if (driver_cli_endpoint(KOS_CLASS_HID, &hid) != 0u &&
+	    driver_cli_getc(hid, KHID_OP_READY) == 1) {
 		integration_puts("input hid");
 	} else {
 		integration_puts("input serial");
@@ -264,46 +264,46 @@ void zos_run_console_integration_selftest(void)
 
 	/* The visible marker: characters written through the console. */
 	if (integration_write("C41\r\n") == 0) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE, "write");
+		integration_fail(KOS_CONSOLE_INTEGRATION_FAIL_CONSOLE, "write");
 		return;
 	}
 	/* The typed line, queued for HID by the replay. */
 	typed_count = integration_read(typed);
 	if (typed_count != (uint8_t)(sizeof(INTEGRATION_TYPED) - 1u)) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE, "read");
+		integration_fail(KOS_CONSOLE_INTEGRATION_FAIL_CONSOLE, "read");
 		return;
 	}
 	driver_cli_puts(INTEGRATION_TAG "echo ");
 	for (index = 0u; index < typed_count; ++index) {
 		if (typed[index] != (uint8_t)INTEGRATION_TYPED[index]) {
-			integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE,
+			integration_fail(KOS_CONSOLE_INTEGRATION_FAIL_CONSOLE,
 					 "typed");
 			return;
 		}
-		driver_cli_putc(integration_console, ZCONSOLE_OP_PUTC,
+		driver_cli_putc(integration_console, KCONSOLE_OP_PUTC,
 				 typed[index]);
 	}
 	driver_cli_puts("\r\n");
 	/* Drained: the poll row the console protocol exposes. */
-	if (driver_cli_poll(integration_console, ZCONSOLE_OP_POLL) != 0) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE, "poll");
+	if (driver_cli_poll(integration_console, KCONSOLE_OP_POLL) != 0) {
+		integration_fail(KOS_CONSOLE_INTEGRATION_FAIL_CONSOLE, "poll");
 		return;
 	}
 
-	if (driver_cli_endpoint(ZOS_CLASS_IOC, &integration_ioc) != 0u) {
+	if (driver_cli_endpoint(KOS_CLASS_IOC, &integration_ioc) != 0u) {
 		uint8_t synced = integration_ping(&level);
 
 		driver_cli_puts(INTEGRATION_TAG "ioc level ");
 		driver_cli_hex8(level);
 		driver_cli_puts("\r\n");
 		if (synced == 0u || level != INTEGRATION_LEVEL_PINNED) {
-			integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_IOC, "ioc");
+			integration_fail(KOS_CONSOLE_INTEGRATION_FAIL_IOC, "ioc");
 			return;
 		}
 	}
 
 	if (integration_rejects() == 0u) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_MALFORMED,
+		integration_fail(KOS_CONSOLE_INTEGRATION_FAIL_MALFORMED,
 				 "rejects");
 		return;
 	}
@@ -311,7 +311,7 @@ void zos_run_console_integration_selftest(void)
 
 	/* The console still works after the rejected calls. */
 	if (integration_write("integration done\r\n") == 0) {
-		integration_fail(ZOS_CONSOLE_INTEGRATION_FAIL_CONSOLE,
+		integration_fail(KOS_CONSOLE_INTEGRATION_FAIL_CONSOLE,
 				 "recovery");
 		return;
 	}

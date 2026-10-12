@@ -1,4 +1,4 @@
-/* ZephyrOS platform interface.
+/* KonaOS platform interface.
  *
  * This header is the single platform entry point kernel code needs: public
  * fixed-width types plus the Zephyr-80 constant headers that belong under
@@ -7,10 +7,10 @@
  * it includes this header instead.
  */
 
-#ifndef ZEPHYROS_PLATFORM_H
-#define ZEPHYROS_PLATFORM_H
+#ifndef KONAOS_PLATFORM_H
+#define KONAOS_PLATFORM_H
 
-#include "zos/types.h"
+#include "kos/types.h"
 #include "hardware.h"
 #include "memory.h"
 #include "irq.h"
@@ -21,4 +21,4 @@
  * board constant include the narrow header under platform/zephyr80/
  * directly. */
 
-#endif /* ZEPHYROS_PLATFORM_H */
+#endif /* KONAOS_PLATFORM_H */

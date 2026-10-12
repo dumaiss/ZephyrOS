@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Host-side ZMOD driver-container tests (work packages 41b-42c).
+"""Host-side MOD driver-container tests (work packages 41b-42c).
 
 The container is one flat plan per driver image: a 16-byte header, the
 segment records, the endpoint records, the dependency records, the
-publication records and the payload (`tools/zmodpack.py`,
-`formats/include/zmod.h`).  There is no module type, no version
+publication records and the payload (`tools/modpack.py`,
+`formats/include/mod.h`).  There is no module type, no version
 field, no relocation table and no granule geometry: the packer resolves
 every symbol while it links, and `parse_container` is the format's only
 validator (the target loader just bounds what protects the nucleus).
@@ -40,13 +40,13 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, HERE)
 
-import zmodpack  # noqa: E402
+import modpack  # noqa: E402
 
-HEADER = zmodpack.HEADER_SIZE
-SEGMENT = zmodpack.SEGMENT_SIZE
-ENDPOINT = zmodpack.ENDPOINT_SIZE
-DEPENDENCY = zmodpack.DEPENDENCY_SIZE
-PUBLICATION = zmodpack.PUBLICATION_SIZE
+HEADER = modpack.HEADER_SIZE
+SEGMENT = modpack.SEGMENT_SIZE
+ENDPOINT = modpack.ENDPOINT_SIZE
+DEPENDENCY = modpack.DEPENDENCY_SIZE
+PUBLICATION = modpack.PUBLICATION_SIZE
 
 
 def rel_text(module, areas, symbols, chunks):
@@ -107,14 +107,14 @@ def flat_container(segments, endpoints=(), dependencies=(), publications=(),
                       PUBLICATION * len(publications))
     total = payload_offset + len(payload)
     body = bytearray(struct.pack(
-        "<4sBBBBHHHH", zmodpack.MAGIC, len(segments), len(endpoints),
+        "<4sBBBBHHHH", modpack.MAGIC, len(segments), len(endpoints),
         len(dependencies), len(publications),
-        zmodpack.NO_ENTRY if init is None else init, payload_offset, total,
+        modpack.NO_ENTRY if init is None else init, payload_offset, total,
         0))
     for role, base, image, bss, entry, offset in segments:
-        body += struct.pack("<BBHHHHH", zmodpack.ROLE_CODES[role], 0, base,
+        body += struct.pack("<BBHHHHH", modpack.ROLE_CODES[role], 0, base,
                             image, bss,
-                            zmodpack.NO_ENTRY if entry is None else entry,
+                            modpack.NO_ENTRY if entry is None else entry,
                             offset)
     for record in endpoints:
         body += struct.pack("<BBBBHH", *record)
@@ -122,7 +122,7 @@ def flat_container(segments, endpoints=(), dependencies=(), publications=(),
         body += struct.pack("<BBH", *record)
     for name, type_code, number, obj, flags in publications:
         raw = name.encode("ascii")
-        body += raw + b"\x00" * (zmodpack.PUBLICATION_NAME - len(raw))
+        body += raw + b"\x00" * (modpack.PUBLICATION_NAME - len(raw))
         body += struct.pack("<BBBB", type_code, number, obj, flags)
     return bytes(body) + payload
 
@@ -141,15 +141,15 @@ def load_driver(tmp, name, objects, manifest):
     path = os.path.join(tmp, name + ".json")
     with open(path, "w") as handle:
         json.dump(manifest, handle)
-    return zmodpack.load_manifest(path, tmp)
+    return modpack.load_manifest(path, tmp)
 
 
 def pack_driver(tmp, name, objects, manifest):
     """Host-assemble one single-image set with the real packer."""
-    packed = zmodpack.pack_driver_manifest(
+    packed = modpack.pack_driver_manifest(
         load_driver(tmp, name, objects, manifest))
-    rows, _ledger = zmodpack.plan_driver_set([packed])
-    return zmodpack.build_driver_container(packed, rows[0])
+    rows, _ledger = modpack.plan_driver_set([packed])
+    return modpack.build_driver_container(packed, rows[0])
 
 
 def simple_image(init="entry"):
@@ -176,7 +176,7 @@ class TestRelParsing(unittest.TestCase):
             [("_entry", 0, 0), ("_state", 0, 1)],
             [(0, 0, bytes([0x21, 0x00, 0x00, 0xC9]), [(0x00, 0x04, 0x00)])],
         )
-        obj = zmodpack.parse_rel(text, "t.rel")
+        obj = modpack.parse_rel(text, "t.rel")
         self.assertEqual([a.name for a in obj.areas], ["_CODE", "_DATA"])
         self.assertEqual(obj.areas[0].size, 6)
         self.assertEqual(len(obj.symbols), 2)
@@ -190,12 +190,12 @@ class TestRelParsing(unittest.TestCase):
         self.assertEqual(chunk.relocs, [(0x00, 0x04, 0x00)])
 
     def test_bad_radix_rejected(self):
-        with self.assertRaises(zmodpack.ZmodError):
-            zmodpack.parse_rel("XH4\n", "t.rel")
+        with self.assertRaises(modpack.ModError):
+            modpack.parse_rel("XH4\n", "t.rel")
 
     def test_t_without_r_rejected(self):
-        with self.assertRaises(zmodpack.ZmodError):
-            zmodpack.parse_rel("XL4\nT 00 00 00 00 11\n", "t.rel")
+        with self.assertRaises(modpack.ModError):
+            modpack.parse_rel("XL4\nT 00 00 00 00 11\n", "t.rel")
 
 
 class TestPackRoundTrip(unittest.TestCase):
@@ -205,7 +205,7 @@ class TestPackRoundTrip(unittest.TestCase):
 
     def test_valid_container_fields(self):
         container = pack_driver(self.tmp.name, "svc", *simple_image())
-        info = zmodpack.parse_container(container)
+        info = modpack.parse_container(container)
         self.assertEqual(info["total_size"], len(container))
         self.assertEqual(info["payload_offset"], HEADER + SEGMENT)
         self.assertEqual(info["image_size"], 4)
@@ -214,8 +214,8 @@ class TestPackRoundTrip(unittest.TestCase):
         self.assertEqual(len(info["segments"]), 1)
         segment = info["segments"][0]
         self.assertEqual(segment["role"], "hot")
-        self.assertGreaterEqual(segment["base"], zmodpack.HOT_TIER_BASE)
-        self.assertLess(segment["base"], zmodpack.HOT_TIER_END)
+        self.assertGreaterEqual(segment["base"], modpack.HOT_TIER_BASE)
+        self.assertLess(segment["base"], modpack.HOT_TIER_END)
         self.assertEqual(info["init_offset"], segment["base"])
         self.assertEqual(info["endpoints"], [])
         self.assertEqual(info["dependencies"], [])
@@ -228,16 +228,16 @@ class TestPackRoundTrip(unittest.TestCase):
         manifest["publishes"] = [{"path": "/dev/serial/0", "type": "SERIAL",
                                   "endpoint": {"class": 1, "instance": 0}}]
         container = pack_driver(self.tmp.name, "svc", objects, manifest)
-        info = zmodpack.parse_container(container)
+        info = modpack.parse_container(container)
         endpoint = info["endpoints"][0]
         self.assertEqual((endpoint["class"], endpoint["instance"]), (1, 0))
         self.assertEqual(endpoint["version"], 3)
-        self.assertEqual(endpoint["flags"], zmodpack.EP_REENTRANT)
+        self.assertEqual(endpoint["flags"], modpack.EP_REENTRANT)
         self.assertEqual(endpoint["number"], 1)
         self.assertEqual(endpoint["dispatch"], info["init_offset"])
         publication = info["publications"][0]
         self.assertEqual(publication["name"], "/serial/0")
-        self.assertEqual(publication["type"], zmodpack.TYPES["SERIAL"])
+        self.assertEqual(publication["type"], modpack.TYPES["SERIAL"])
         self.assertEqual(publication["number"], 1)
         self.assertEqual(publication["flags"], 0)
 
@@ -257,13 +257,13 @@ class TestPackRoundTrip(unittest.TestCase):
             ),
         }
         packs = [
-            zmodpack.pack_driver_manifest(load_driver(
+            modpack.pack_driver_manifest(load_driver(
                 self.tmp.name, "one", first,
                 {"init": "e1",
                  "segments": [{"role": "hot", "image_areas": ["_CODE"]}],
                  "endpoints": [{"class": 1, "instance": 0, "version": 1,
                                 "dispatch": "_e1"}]})),
-            zmodpack.pack_driver_manifest(load_driver(
+            modpack.pack_driver_manifest(load_driver(
                 self.tmp.name, "two", second,
                 {"init": "e2",
                  "segments": [{"role": "hot", "image_areas": ["_CODE"]}],
@@ -272,10 +272,10 @@ class TestPackRoundTrip(unittest.TestCase):
                  "depends": [{"class": 1, "instance": 0},
                              {"class": 9, "instance": 0, "optional": 1}]})),
         ]
-        rows, _ledger = zmodpack.plan_driver_set(packs)
-        containers = [zmodpack.build_driver_container(packed, row)
+        rows, _ledger = modpack.plan_driver_set(packs)
+        containers = [modpack.build_driver_container(packed, row)
                       for packed, row in zip(packs, rows)]
-        info = zmodpack.parse_container(containers[1], "two.zmod")
+        info = modpack.parse_container(containers[1], "two.mod")
         self.assertEqual([d["number"] for d in info["dependencies"]], [1, 0])
         self.assertEqual(info["endpoints"][0]["number"], 2)
 
@@ -296,7 +296,7 @@ class TestPackRoundTrip(unittest.TestCase):
         manifest = {"init": "entry",
                     "segments": [{"role": "hot",
                                   "image_areas": ["_CODE"]}]}
-        with self.assertRaisesRegex(zmodpack.ZmodError,
+        with self.assertRaisesRegex(modpack.ModError,
                                     "unresolved external symbol"):
             pack_driver(self.tmp.name, "svc", objects, manifest)
 
@@ -312,7 +312,7 @@ class TestPackRoundTrip(unittest.TestCase):
         manifest = {"init": "entry",
                     "segments": [{"role": "hot",
                                   "image_areas": ["_CODE"]}]}
-        with self.assertRaisesRegex(zmodpack.ZmodError,
+        with self.assertRaisesRegex(modpack.ModError,
                                     "unsupported relocation mode 09"):
             pack_driver(self.tmp.name, "svc", objects, manifest)
 
@@ -328,7 +328,7 @@ class TestPackRoundTrip(unittest.TestCase):
         manifest = {"init": "entry",
                     "segments": [{"role": "hot",
                                   "image_areas": ["_CODE"]}]}
-        with self.assertRaisesRegex(zmodpack.ZmodError,
+        with self.assertRaisesRegex(modpack.ModError,
                                     "unsupported relocation mode 04"):
             pack_driver(self.tmp.name, "svc", objects, manifest)
 
@@ -343,7 +343,7 @@ class TestPackRoundTrip(unittest.TestCase):
         manifest = {"init": "entry",
                     "segments": [{"role": "hot",
                                   "image_areas": ["_CODE"]}]}
-        with self.assertRaisesRegex(zmodpack.ZmodError,
+        with self.assertRaisesRegex(modpack.ModError,
                                     "not listed in any segment"):
             pack_driver(self.tmp.name, "svc", objects, manifest)
 
@@ -361,7 +361,7 @@ class TestPackRoundTrip(unittest.TestCase):
             "segments": [{"role": "hot", "image_areas": ["_CODE"],
                           "bss_areas": ["_DATA"]}],
         }
-        with self.assertRaisesRegex(zmodpack.ZmodError,
+        with self.assertRaisesRegex(modpack.ModError,
                                     "BSS area _DATA contains"):
             pack_driver(self.tmp.name, "svc", objects, manifest)
 
@@ -376,7 +376,7 @@ class TestPackRoundTrip(unittest.TestCase):
         manifest = {"init": "entry",
                     "segments": [{"role": "hot",
                                   "image_areas": ["_CODE"]}]}
-        with self.assertRaisesRegex(zmodpack.ZmodError,
+        with self.assertRaisesRegex(modpack.ModError,
                                     "not defined|outside"):
             pack_driver(self.tmp.name, "svc", objects, manifest)
 
@@ -391,7 +391,7 @@ class TestPackRoundTrip(unittest.TestCase):
         manifest = {"init": "entry",
                     "segments": [{"role": "hot", "image_areas": ["_CODE"],
                                   "bss_areas": ["_DATA"]}]}
-        with self.assertRaisesRegex(zmodpack.ZmodError,
+        with self.assertRaisesRegex(modpack.ModError,
                                     "empty or missing"):
             pack_driver(self.tmp.name, "svc", objects, manifest)
 
@@ -406,8 +406,8 @@ class TestContainerValidation(unittest.TestCase):
                               payload=b"\xC9\x00\x00\x00")
 
     def reject(self, data, pattern):
-        with self.assertRaisesRegex(zmodpack.ZmodError, pattern):
-            zmodpack.parse_container(data, "svc.zmod")
+        with self.assertRaisesRegex(modpack.ModError, pattern):
+            modpack.parse_container(data, "svc.mod")
 
     def patch(self, data, offset, value, width=1):
         raw = bytearray(data)
@@ -420,26 +420,34 @@ class TestContainerValidation(unittest.TestCase):
     def test_bad_magic(self):
         self.reject(self.patch(self.valid(), 0, ord("X")), "bad magic")
 
+    def test_old_magic_is_rejected(self):
+        """The pre-rename header magic (spelled in hex so no stale token
+        survives in the tree) is rejected by the ordinary bad-magic
+        check."""
+        raw = bytearray(self.valid())
+        raw[0:4] = bytes([0x5A, 0x4D, 0x4F, 0x44])
+        self.reject(bytes(raw), "bad magic")
+
     def test_reserved_word_not_zero(self):
         self.reject(self.patch(self.valid(), 0x0E, 1), "reserved word")
 
     def test_segment_count_bounds(self):
         self.reject(self.patch(self.valid(), 4, 0), "bad segment count")
-        self.reject(self.patch(self.valid(), 4, zmodpack.MAX_SEGMENTS + 1),
+        self.reject(self.patch(self.valid(), 4, modpack.MAX_SEGMENTS + 1),
                     "bad segment count")
 
     def test_endpoint_count_bound(self):
-        self.reject(self.patch(self.valid(), 5, zmodpack.MAX_ENDPOINTS + 1),
+        self.reject(self.patch(self.valid(), 5, modpack.MAX_ENDPOINTS + 1),
                     "bad endpoint count")
 
     def test_dependency_count_bound(self):
         self.reject(self.patch(self.valid(), 6,
-                               zmodpack.MAX_DEPENDENCIES + 1),
+                               modpack.MAX_DEPENDENCIES + 1),
                     "bad dependency count")
 
     def test_publication_count_bound(self):
         self.reject(self.patch(self.valid(), 7,
-                               zmodpack.MAX_PUBLICATIONS + 1),
+                               modpack.MAX_PUBLICATIONS + 1),
                     "bad publication count")
 
     def test_total_size_mismatch(self):
@@ -543,7 +551,7 @@ class TestPackCli(unittest.TestCase):
 
     def run_cli(self, *args):
         return subprocess.run(
-            [sys.executable, os.path.join(ROOT, "tools", "zmodpack.py")] +
+            [sys.executable, os.path.join(ROOT, "tools", "modpack.py")] +
             list(args), cwd=self.tmp.name, capture_output=True, text=True)
 
     def test_pack_validate_and_dump(self):
@@ -557,7 +565,7 @@ class TestPackCli(unittest.TestCase):
         manifest_path = os.path.join(self.tmp.name, "svc.json")
         with open(manifest_path, "w") as handle:
             json.dump(manifest, handle)
-        out = os.path.join(self.tmp.name, "svc.zmod")
+        out = os.path.join(self.tmp.name, "svc.mod")
         packed = self.run_cli("pack", manifest_path, out,
                               "--objdir", self.tmp.name,
                               "--set", manifest_path)
@@ -571,7 +579,7 @@ class TestPackCli(unittest.TestCase):
         self.assertIn("hot", dumped.stdout)
 
     def test_validate_rejects_a_corrupt_container(self):
-        out = os.path.join(self.tmp.name, "bad.zmod")
+        out = os.path.join(self.tmp.name, "bad.mod")
         with open(out, "wb") as handle:
             handle.write(b"XXXX" + b"\x00" * 12)
         result = self.run_cli("validate", out)

@@ -1,4 +1,4 @@
-/* ZephyrOS IOC driver boot segment (work package 41).
+/* KonaOS IOC driver boot segment (work package 41).
  *
  * Runs once through the mode-10 gate with Q = 6 (architecture 36.6): the
  * whole resident bank is mapped, the fixed core is not, and the driver
@@ -25,27 +25,27 @@ void ioc_hw_init(void)
 {
 	/* The command lane's one and only channel reset: after this,
 	 * ordinary transactions never touch synchronisation state. */
-	ioc_io_ctrl_write(ZOS_IOC_WR0_RESET_CHANNEL);
+	ioc_io_ctrl_write(KOS_IOC_WR0_RESET_CHANNEL);
 
 	/* WR1: no interrupts, no WAIT/DMA. */
-	ioc_io_ctrl_write(ZOS_SIO_WR_SELECT_WR1);
-	ioc_io_ctrl_write(ZOS_IOC_WR1_INT_WAIT_OFF);
+	ioc_io_ctrl_write(KOS_SIO_WR_SELECT_WR1);
+	ioc_io_ctrl_write(KOS_IOC_WR1_INT_WAIT_OFF);
 
 	/* WR4: External Sync, x1 clock. */
-	ioc_io_ctrl_write(ZOS_SIO_WR_SELECT_WR4);
-	ioc_io_ctrl_write(ZOS_IOC_WR4_EXTSYNC_X1);
+	ioc_io_ctrl_write(KOS_SIO_WR_SELECT_WR4);
+	ioc_io_ctrl_write(KOS_IOC_WR4_EXTSYNC_X1);
 
 	/* WR7: FFh underrun fill (never the A5 packet marker). */
-	ioc_io_ctrl_write(ZOS_IOC_WR_SELECT_WR7);
-	ioc_io_ctrl_write(ZOS_IOC_WR7_UNDERRUN_FILL);
+	ioc_io_ctrl_write(KOS_IOC_WR_SELECT_WR7);
+	ioc_io_ctrl_write(KOS_IOC_WR7_UNDERRUN_FILL);
 
 	/* WR3: receiver disabled; no character boundary exists yet. */
-	ioc_io_ctrl_write(ZOS_SIO_WR_SELECT_WR3);
-	ioc_io_ctrl_write(ZOS_IOC_WR3_RX_OFF);
+	ioc_io_ctrl_write(KOS_SIO_WR_SELECT_WR3);
+	ioc_io_ctrl_write(KOS_IOC_WR3_RX_OFF);
 
 	/* WR5: 8-bit TX enabled, RTS inactive. */
-	ioc_io_ctrl_write(ZOS_SIO_WR_SELECT_WR5);
-	ioc_io_ctrl_write(ZOS_IOC_WR5_TX_RTS_OFF);
+	ioc_io_ctrl_write(KOS_SIO_WR_SELECT_WR5);
+	ioc_io_ctrl_write(KOS_IOC_WR5_TX_RTS_OFF);
 
 	/* The bulk lane is programmed once here too, in module-owned
 	 * assembly: channel reset, External Sync x1, AAh fill, receiver

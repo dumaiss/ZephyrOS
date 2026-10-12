@@ -1,4 +1,4 @@
-# ZephyrOS VFS Bootstrap and the ROMFS Provider
+# KonaOS VFS Bootstrap and the ROMFS Provider
 
 **Status:** package `25-m9-vfs-bootstrap-romfs` (2026-10-04, corrections
 01 and 02) implemented the VFS core, the generated mount table and the
@@ -9,11 +9,11 @@ transaction, and proved it with the test-only writable `ramfs` provider;
 package `27-m9-fs-syscalls` (2026-10-05) exposed the VFS to native
 programs: the global owner-tagged descriptor pool, per-process CWD, the
 pinned `FS_*` syscall family (`10h-1Fh`), the user runtime wrappers and
-the `fstest.zex` acceptance program.  Host-validated, simulator-accepted
+the `fstest.exe` acceptance program.  Host-validated, simulator-accepted
 and physically accepted 2026-10-05 (`make smoke-hardware-m9-fs` observed
 `fstest: PASS 9/9`, `fstest: launcher OK`, `m9 fs selftest: OK` on
 hardware; see `docs/validation/2026-10-05-m9-fs-syscalls.md`).  Package
-`28-m9-nested-exec` adds the `exec` case to `fstest.zex`; its acceptance
+`28-m9-nested-exec` adds the `exec` case to `fstest.exe`; its acceptance
 image was re-run on the bench the same day, where the extended suite printed
 `fstest: PASS 10/10` and the target hook printed `m9 exec selftest: OK`
 (`docs/validation/2026-10-05-m9-nested-exec.md`).  Bank-7 residency is reported against the architecture
@@ -26,8 +26,8 @@ of `work/M9-REFERENCE.md`; package 30c then reclaimed a bank-7 granule
 (dead-code removal, one shared ASCII name helper, the common-memory ceiling
 pin).  The milestone's end-to-end acceptance is the `m9-selftest` image
 (`make m9-selftest`): the production boot path with `/` on the card,
-running `fstest.zex` (which exec's the deep-matrix program `fsfat.zex`),
-the `fsdeep.zex` depth probe and the two fault windows, then the ordinary
+running `fstest.exe` (which exec's the deep-matrix program `fsfat.exe`),
+the `fsdeep.exe` depth probe and the two fault windows, then the ordinary
 monitor launcher.  The final ledger and the acceptance matrix are in
 `docs/validation/2026-10-05-m9-filesystem.md`; the section 32.39 targets are
 met (`bank7: code 27990 bytes end 8D56h | arena 36 granules (33 boot, 3
@@ -60,7 +60,7 @@ Implemented here:
 
 ```text
 vfs_init()            register the built-in provider set, mount /system
-module phase          boot ZMODs and the monitor load by VFS path
+module phase          boot MODs and the monitor load by VFS path
 vfs_mount_all()       instantiate the remaining configured mounts
 VFS_PHASE_READY       namespace fixed; kernel file/dir API available
 ```
@@ -72,7 +72,7 @@ Deliberately **not** implemented here (later packages):
 | data cache and generation keys (provider-local: IOC-FAT) | 30 |
 | writable providers, IOC-FAT at `/`, block class, ZDEV ABI v3 | 26, 29, 30 |
 | `/` filesystem merge into root enumeration | 26 |
-| cross-filesystem move/rename semantics | implemented by 27 (rename across mounts is `ZOS_EXDEV`; VFS never copies) |
+| cross-filesystem move/rename semantics | implemented by 27 (rename across mounts is `KOS_EXDEV`; VFS never copies) |
 
 Package 27 implemented the previously deferred rows "syscalls,
 per-process descriptors, `SYS_FS_*`" and "current working directory
@@ -87,7 +87,7 @@ Three headers, with a deliberate visibility split:
 
 | Header | Audience | Content |
 | --- | --- | --- |
-| `abi/zos/fs.h` | native applications and syscalls | `ZOS_PATH_MAX` (128), `ZFS_NAME_MAX` (64), `ZFS_TYPE_*`, `ZFS_ATTR_*`, `ZFS_TIME_UNKNOWN`, `struct zfs_stat` (16 bytes), `struct zfs_dirent` (80 bytes), `ZFS_O_*`, `ZFS_SEEK_*`.  There is no `zfs_statfs`. |
+| `abi/kos/fs.h` | native applications and syscalls | `KOS_PATH_MAX` (128), `KFS_NAME_MAX` (64), `KFS_TYPE_*`, `KFS_ATTR_*`, `KFS_TIME_UNKNOWN`, `struct kfs_stat` (16 bytes), `struct kfs_dirent` (80 bytes), `KFS_O_*`, `KFS_SEEK_*`.  There is no `kfs_statfs`. |
 | `kernel/vfs/vfs.h` | kernel only | the three static roots, path helpers, the handle table, the CWD/workspace state, `VFS_O_EXEC` |
 
 The M9 module-facing provider ABI (`vfs.h`) was **deleted in M10**: no
@@ -105,12 +105,12 @@ mountpoint: VFS passes a provider-relative path that always begins with
 Every path argument obeys one contract: absolute inside the provider
 (`/` is its root), already normalized by VFS (no `.`, `..`, empty or
 repeated components, no trailing `/`), NUL-terminated and at most
-`ZOS_PATH_MAX - 1` bytes, and matched by the provider with ASCII
+`KOS_PATH_MAX - 1` bytes, and matched by the provider with ASCII
 case-insensitive semantics.  VFS folds only the first component.
 
 A read-only provider leaves the mutation pointers null (`write`, `sync`,
 `mkdir`, `rmdir`, `unlink`, `rename`) and VFS turns a null mutation
-operation into `ZOS_EROFS` in one place.
+operation into `KOS_EROFS` in one place.
 
 ## 3. Source layout
 
@@ -144,17 +144,17 @@ registry and its capacity-4 table, and `tools/mountgen.py` with
 writes an absolute canonical path: repeated and trailing slashes are collapsed,
 `.` is dropped, `..` pops the last component and traversal above `/` is
 clamped to `/`.  Case is preserved (the provider folds names; the native
-namespace preserves what the user typed).  `ZOS_PATH_MAX` and
-`ZFS_NAME_MAX` include the terminating NUL, so the longest usable path is
+namespace preserves what the user typed).  `KOS_PATH_MAX` and
+`KFS_NAME_MAX` include the terminating NUL, so the longest usable path is
 127 bytes and the longest component is 63; both over-length forms and a
-too-small output buffer return `ZOS_EINVAL`.  Paths resolve against the
+too-small output buffer return `KOS_EINVAL`.  Paths resolve against the
 `/` base for the kernel launcher; package 27 resolves a relative path
 against the calling process' CWD instead.
 
-Name comparison is one shared kernel helper (`zos_ascii_equal()`,
+Name comparison is one shared kernel helper (`kos_ascii_equal()`,
 `kernel/lib/name.c`), used here and by ROMFS and the device registry.
 VFS passes the ASCII case-folding form (`A-Z` == `a-z`, every other byte
-exact); ZephyrOS performs no Unicode folding.
+exact); KonaOS performs no Unicode folding.
 
 Selection is **flat** (architecture section 32.8) and uses only `MOUNTED`
 entries.  The first path component is compared case-insensitively with
@@ -162,16 +162,16 @@ the mounted root-level mountpoints (a configured path is `/` or one
 component, section 32.6), so `/SYSTEMX` does **not** select `/system`.
 When no root-level mountpoint matches, the filesystem attached at `/`
 owns the path.  With neither, the path is unowned and resolution reports
-`ZOS_ENODEV`.
+`KOS_ENODEV`.
 
 The result is the mount index plus the provider-relative path, which
 always begins with `/` (a mountpoint itself resolves to `"/"`).  There is
 no longest-match search and no per-component walk: `VFS` hands
-`/system/sio.zmod` to the provider as the single path `/sio.zmod`.
+`/system/sio.mod` to the provider as the single path `/sio.mod`.
 
 `vfs_is_mountpoint()` reports whether a normalized path is a configured,
 mounted mountpoint (or `/` itself).  VFS answers `stat()` for those paths
-itself, as directories, and rejects `open()` on them with `ZOS_EISDIR`.
+itself, as directories, and rejects `open()` on them with `KOS_EISDIR`.
 
 VFS owns exactly one shared 128-byte pathname scratch buffer
 (`kernel/vfs/mount.c`); `vfs_rename()` adds a second because it holds two
@@ -182,7 +182,7 @@ discipline).
 ## 5. Lifecycle and boot integration
 
 > **Retired (M10, work packages 42b/42c).**  The M9 lifecycle - four VFS
-> phases, a provider lookup by name, one `vfs_open("/system/<name>.zmod")`
+> phases, a provider lookup by name, one `vfs_open("/system/<name>.mod")`
 > per boot module through the VFS and a mount pass at the end - is
 > deleted.  The current order is the boot path of architecture 36.12:
 >
@@ -195,7 +195,7 @@ discipline).
 >                                    images, installs the publications,
 >                                    runs the boot and init entries
 >   console_bind_defaults()
->   process_exec("/system/monitor.zex")
+>   process_exec("/system/monitor.exe")
 > ```
 >
 > The loader reads the store with the fixed-core ROMFS reader, so the
@@ -215,10 +215,10 @@ kernel_main()
       register built-ins (romfs)
       find the unique system mount entry (panic if not exactly one)
       provider lookup by name, ops->mount(source = "recovery")
-  load the boot images from /system/<name>.zmod through the VFS
+  load the boot images from /system/<name>.mod through the VFS
   the mount pass            the remaining configured mounts
   console_bind_defaults()
-  process_exec("/system/monitor.zex")
+  process_exec("/system/monitor.exe")
 ```
 
 ## 6. Kernel file and directory API
@@ -231,16 +231,16 @@ mount and calls the provider with the provider-relative path.  Reads are
 clamped to EOF by VFS, so a provider only ever sees an in-range request.
 
 `vfs_open()` rejects unknown flag bits, `TRUNC`/`CREATE`/`EXCL` without
-`WRITE`, and `EXCL` without `CREATE` with `ZOS_EINVAL`; opening a
-directory is `ZOS_EISDIR`, `opendir` on a file is `ZOS_ENOTDIR`, and a
-create of an existing name with `CREATE|EXCL` is `ZOS_EEXIST`.  The
+`WRITE`, and `EXCL` without `CREATE` with `KOS_EINVAL`; opening a
+directory is `KOS_EISDIR`, `opendir` on a file is `KOS_ENOTDIR`, and a
+create of an existing name with `CREATE|EXCL` is `KOS_EEXIST`.  The
 position is 0 on open.
 
 `vfs_read()`/`vfs_write()` act at the stored position.  A write advances
 the position and grows the cached size only after the provider reports
 success (architecture section 32.28); a failed confirmed write leaves both
 unchanged.  `vfs_seek()` takes a signed 32-bit `offset` with
-`ZFS_SEEK_SET`/`CUR`/`END`, rejects a negative result with `ZOS_EINVAL`
+`KFS_SEEK_SET`/`CUR`/`END`, rejects a negative result with `KOS_EINVAL`
 and permits seeking past EOF.  `vfs_close()` flushes through the
 provider's `sync` (when present) and then releases the handle.
 
@@ -250,8 +250,8 @@ itself as directories, without consulting a provider.  There is no
 
 `VFS_O_EXEC` (0x8000) is a kernel-only open hint, not a native flag: the
 executable loader sets it, and a provider that distinguishes executable
-media (ROMFS) refuses a non-`ZEX` entry opened with it.  That preserves
-the M6 `ZEX_EXEC_ERR_TYPE` rejection now that the native type set is
+media (ROMFS) refuses a non-`EXE` entry opened with it.  That preserves
+the M6 `EXE_EXEC_ERR_TYPE` rejection now that the native type set is
 only `FILE`/`DIR`.
 
 `readdir("/")` is a VFS operation: it first yields every mounted
@@ -266,17 +266,17 @@ successfully.  The merge cursor is a small VFS-owned field of the
 Mutation entry points (`vfs_mkdir`, `vfs_rmdir`, `vfs_unlink`,
 `vfs_rename`) live in `kernel/vfs/mutate.c` and are the kernel half of the
 `SYS_FS_*` family that package 27 wires up.  A provider that leaves a
-mutation pointer null gets `ZOS_EROFS` from VFS, and a cross-mount rename
-is refused with `ZOS_EXDEV` rather than turned into a copy.  Mutating a
+mutation pointer null gets `KOS_EROFS` from VFS, and a cross-mount rename
+is refused with `KOS_EXDEV` rather than turned into a copy.  Mutating a
 mounted mountpoint (or the VFS root) is answered by VFS before any
-provider is consulted: `ZOS_EBUSY` for `rmdir`/`unlink`/`rename`,
-`ZOS_EEXIST` for `mkdir`; `rename` is the only operation that needs two
+provider is consulted: `KOS_EBUSY` for `rmdir`/`unlink`/`rename`,
+`KOS_EEXIST` for `mkdir`; `rename` is the only operation that needs two
 pathnames and owns the second 128-byte scratch buffer.
 
 The deleted M9 source adapter bounded a byte source to an open file so the M4
-loader and ZEX validation read through the kernel file API without
+loader and EXE validation read through the kernel file API without
 knowing where the bytes live.  A file larger than 64 KiB is rejected
-with `ZOS_ENOSPC` because the source interface is 16-bit.
+with `KOS_ENOSPC` because the source interface is 16-bit.
 
 ## 7. ROMFS provider
 
@@ -292,21 +292,21 @@ path-based operations table, and the on-ROM format, the ROM-access
 primitive and the module-facing resource imports were untouched.
 
 ```text
-mount      source must be "recovery", else ZOS_EINVAL; calls romfs_init()
+mount      source must be "recovery", else KOS_EINVAL; calls romfs_init()
            (a corrupt image returns the reader's error unchanged) and
            resets the handle pool, so the instance never depends on the
            C runtime having zeroed _DATA
 tree       `/` is the only directory; `/<name>` is a file
 lookup     one ASCII case-folded name match (romfs_lookup_ci)
-stat       ZFS_TYPE_FILE, ZFS_ATTR_READONLY, ZFS_TIME_UNKNOWN; `/` is a
+stat       KFS_TYPE_FILE, KFS_ATTR_READONLY, KFS_TIME_UNKNOWN; `/` is a
            read-only directory
-open       resolves `/<name>`; write flags are ZOS_EROFS before the path
-           is even resolved, `/` is ZOS_EISDIR, a missing name is
-           ZOS_ENOENT, VFS_O_EXEC on a non-ZEX entry is ZOS_EINVAL
-deeper     `/<file>/x` is ZOS_ENOTDIR; `/<unknown>/x` is ZOS_ENOENT
+open       resolves `/<name>`; write flags are KOS_EROFS before the path
+           is even resolved, `/` is KOS_EISDIR, a missing name is
+           KOS_ENOENT, VFS_O_EXEC on a non-EXE entry is KOS_EINVAL
+deeper     `/<file>/x` is KOS_ENOTDIR; `/<unknown>/x` is KOS_ENOENT
 readdir    entries in image order through the reader's indexed access;
-           2 static handle slots, ZOS_EMFILE when exhausted
-mutations  all null: VFS answers ZOS_EROFS
+           2 static handle slots, KOS_EMFILE when exhausted
+mutations  all null: VFS answers KOS_EROFS
 ```
 
 Everything the provider defines is either the exported `romfs_provider`
@@ -320,7 +320,7 @@ node handle and no `statfs`.
 ## 8. Static mount table
 
 Mount policy lives in exactly one place: the JSON manifest selected by
-the `ZOS_MOUNTS` Makefile variable.  VFS source contains no paths,
+the `KOS_MOUNTS` Makefile variable.  VFS source contains no paths,
 provider names or source strings.
 
 ```text
@@ -355,7 +355,7 @@ The table links into the ROM-loaded bank-7 kernel image as `const`
 data; VFS keeps the parallel `_DATA` array `vfs_mount_state[4]` (state,
 provider, `fs_state`, last error) and never writes the configuration.
 There is no generation counter: VFS holds no object identity and no cache
-key (architecture section 32.12).  `ZOS_VFS_BUILTIN` names the providers linked into the
+key (architecture section 32.12).  `KOS_VFS_BUILTIN` names the providers linked into the
 kernel and must match the kernel's built-in registration table; a host
 test keeps the two in sync.
 
@@ -386,7 +386,7 @@ The M9 32-granule production floor applied at that time (correction-02
 raised production from exactly 32 granules to 34 by removing the
 superseded machinery).  Package 38 retired the floor: the arena now lives
 in the bank-7 cold half and only has to hold the declared boot set, which
-`tools/zmodpack.py plan` and `tools/pack_image.py` check - see
+`tools/modpack.py plan` and `tools/pack_image.py` check - see
 `docs/memory.md` sections 2.2 and 2.2.1.
 
 ### 9.1 Per-object bank-7 sizes
@@ -460,15 +460,15 @@ derived data base; the current production row is recorded in
 | m9-required-mount-selftest | `7BEEh` | `7C00h-C000h` | 34 |
 
 Acceptance and variant images that link a target test hook check 16
-granules as their *minimum* (`ZOS_ARENA_MIN_GRANULES`), because a test
+granules as their *minimum* (`KOS_ARENA_MIN_GRANULES`), because a test
 hook cannot hold 32 granules on top of a 21-granule boot set.  Their
-safety net is unchanged: `tools/zmodpack.py plan` must fit the whole boot
+safety net is unchanged: `tools/modpack.py plan` must fit the whole boot
 set into the derived arena and `tools/pack_image.py` reconciles the
 manifest against it, so an image whose modules do not fit still fails the
 build.  Production keeps the 32-granule gate and now clears it by two
 granules.
 
-### 9.4 Embedded-catalog images (`ZOS_ROMFS_BOOT=0`)
+### 9.4 Embedded-catalog images (`KOS_ROMFS_BOOT=0`)
 
 These images carry no VFS object at all (correction-01), so their `_CODE`
 end is set purely by the M6/M5 code they always had.  Measured against
@@ -496,19 +496,19 @@ machinery they covered; the current coverage is section 13's and
 | Property | Evidence |
 | --- | --- |
 | ABI sizes and layouts | `tests/test_m9_vfs.py` (`_Static_assert` mirrors, header boundary) |
-| the provider ABI is exactly the 14 path-based operations of section 32.12, in order, with no node/`object_id`/`statfs`/`unmount` remnant | `tests/test_m9_vfs.py` (`TestProviderAbiShape`: operation list, signatures, absence checks, `ZFS_OPS_COUNT`) |
+| the provider ABI is exactly the 14 path-based operations of section 32.12, in order, with no node/`object_id`/`statfs`/`unmount` remnant | `tests/test_m9_vfs.py` (`TestProviderAbiShape`: operation list, signatures, absence checks, `KFS_OPS_COUNT`) |
 | generator rules, determinism, every rejection | `tests/test_m9_vfs.py` (`test_mountgen.py` cases), all `tests/m9` manifests |
-| built-in list == `ZOS_VFS_BUILTIN` | `tests/test_m9_vfs.py` |
-| `/system` mounted before any module loads; every boot ZMOD and the monitor loaded by VFS path | `tests/test_m9_vfs_sim.py` (real linked bytes, boot transcript + monitor handoff) |
+| built-in list == `KOS_VFS_BUILTIN` | `tests/test_m9_vfs.py` |
+| `/system` mounted before any module loads; every boot MOD and the monitor loaded by VFS path | `tests/test_m9_vfs_sim.py` (real linked bytes, boot transcript + monitor handoff) |
 | flat mount selection: `/SYSTEMX` must not match `/system` | `tests/test_m9_vfs_sim.py` (`test_flat_mount_selection_in_the_linked_kernel`, direct kernel-API call on linked bytes) + the target selftest's FLAT case |
 | normalization, case-insensitive resolution, per-entry stat/read byte-compared with the packed files, `/system` directory enumeration, `stat("/")`, `stat("/system")`, ENOENT, ENOTDIR below a file, deeper-path ENOENT, `VFS_O_EXEC` gate | `tests/test_romfs_sim.py` (ROMFS resolution) + `tests/test_fs_selftest_sim.py` (`/system` stat/open/read/close outcomes, `make fs-selftest`) |
 | EROFS from the null mutation operations (write flags at open, `vfs_mkdir`/`rmdir`/`unlink`/`rename`, and the provider's null pointers) | target selftest EROFS/MUTATE cases; `kernel/vfs/{file,mutate}.c` |
 | one ROMFS lookup, ASCII case-folded, serving the provider and the resource imports | `tests/test_romfs_sim.py` (case-folded spellings), `tools/mapcheck.py` `ROMFS_BANK7_ROUTINES` |
 | optional-mount failure line `vfs: /DATA unavailable 0x03` and tolerant boot | `tests/test_m9_vfs_sim.py` (`tests/m9/mounts-optional-fail.json`, `m9-vfs-selftest`) |
-| required non-system mount failure: `vfs: required mount /DATA failed 0x03` + `PANIC:` of the same line before the monitor, system entry still `MOUNTED`, failed entry records `-ZOS_ENODEV` | `tests/test_m9_vfs_sim.py` (`tests/m9/mounts-required-fail.json`, `make m9-required-mount-selftest`) |
-| ZEX/ZMOD loading through VFS, M8 transcripts unchanged | `tests/test_m3_sim.py` (production boot replay), `tests/test_m8*.py`, `tests/test_romfs*.py` |
+| required non-system mount failure: `vfs: required mount /DATA failed 0x03` + `PANIC:` of the same line before the monitor, system entry still `MOUNTED`, failed entry records `-KOS_ENODEV` | `tests/test_m9_vfs_sim.py` (`tests/m9/mounts-required-fail.json`, `make m9-required-mount-selftest`) |
+| EXE/MOD loading through VFS, M8 transcripts unchanged | `tests/test_m3_sim.py` (production boot replay), `tests/test_m8*.py`, `tests/test_romfs*.py` |
 | ROMFS name validation | `tests/test_romfs.py` (slash and case-collision negatives) |
-| production arena gate, `ZOS_ARENA_MIN_GRANULES` | `tools/mapcheck.py`, `tools/pack_image.py`, `make check` |
+| production arena gate, `KOS_ARENA_MIN_GRANULES` | `tools/mapcheck.py`, `tools/pack_image.py`, `make check` |
 | embedded-catalog images link no VFS byte | `tools/mapcheck.py` (`VFS_FORBIDDEN_PREFIXES`) and `tests/test_romfs.py` (`TestRomfsMapcheck`) |
 | physical boot | `docs/validation/2026-10-04-m9-vfs-bootstrap.md` (**PENDING**) |
 
@@ -516,15 +516,15 @@ machinery they covered; the current coverage is section 13's and
 
 The M9 driver ABI (deleted in M10, package 42c) added a provider
 registration call to the kernel import block
-(`formats/include/zmod.h`), so a loadable module can register a
+(`formats/include/mod.h`), so a loadable module can register a
 a path-based provider descriptor.  The loader wrapped it: the registration call
 succeeds only during the module-loading phase, and the VFS provider
 registry takes a checkpoint before every module init and rolls back the
 providers registered after it when the init fails, exactly like the
 device and IRQ checkpoints.  The registry has capacity 4; registration
-rejects a null/malformed provider (`ZOS_EINVAL`), a duplicate name
-compared case-insensitively (`ZOS_EEXIST`) and a full registry
-(`ZOS_ENOSPC`).
+rejects a null/malformed provider (`KOS_EINVAL`), a duplicate name
+compared case-insensitively (`KOS_EEXIST`) and a full registry
+(`KOS_ENOSPC`).
 
 The package-26 acceptance used a bounded RAM provider registered by a
 test-only module plus three registration fixtures, driven by its own M9
@@ -536,7 +536,7 @@ driver (`drivers/iocfat/`) through the nucleus provider, and the outcome image
 
 ### Physical acceptance
 
-The production image (`build/zephyros.bin`, sha256
+The production image (`build/konaos.bin`, sha256
 `03f776a9...95cec`) boots to the monitor with HID and V9958 bound; the
 run, transcript and photograph are recorded in
 `docs/validation/2026-10-05-m9-provider-abi-hardware.md`.  Note that
@@ -552,14 +552,14 @@ current transcripts; the per-mode table is in `docs/boot.md`).
 
 Package 27 makes the VFS reachable from native programs through the pinned
 `FS_*` family (`10h-1Fh`; the register ABI and every block are documented
-in `docs/abi.md` section 10 and declared in `abi/zos/fs.h`).
+in `docs/abi.md` section 10 and declared in `abi/kos/fs.h`).
 Nothing in provider semantics changed; the new layers are:
 
 ```text
 kernel/vfs/handles.c   global owner-tagged descriptor pool + per-process CWD
 kernel/syscall/fs.c    the FS_* driver bodies (argument + window validation)
 user/sdk/src/fsgate.asm + fs.c       native gate stub + C wrappers
-tests/fs/                fs_selftest.zex (outcomes) and fs_child.zex (nested exec)
+tests/fs/                fs_selftest.exe (outcomes) and fs_child.exe (nested exec)
 ```
 
 **Descriptor pool.** One global `_DATA` array of 8 `struct
@@ -567,17 +567,17 @@ vfs_descriptor` entries; a file and a directory iterator share it.  Each
 entry holds the owner pid, `FREE`/`FILE`/`DIRECTORY`, and the mount,
 provider handle, size, offset and access flags of the object.  The fd an
 application names is the pool index; `vfs_fd_check()` verifies range, type
-and owner, and any mismatch is `ZOS_EINVAL`.  Allocation takes the lowest
-free entry and a full pool is `ZOS_EMFILE`.  Provider handles never leave
+and owner, and any mismatch is `KOS_EINVAL`.  Allocation takes the lowest
+free entry and a full pool is `KOS_EMFILE`.  Provider handles never leave
 the kernel.  Descriptors are not `stdin`/`stdout`, are not inherited, and
 have no dup.
 
-**CWD.** A static pool of `ZOS_EXEC_MAX_DEPTH` (4) canonical 128-byte
+**CWD.** A static pool of `KOS_EXEC_MAX_DEPTH` (4) canonical 128-byte
 slots, allocated by `vfs_process_start(pid, parent_pid)` (which gives the
 child the parent's CWD, or `/` under the launcher) and released by
 `vfs_process_exit(pid)`, which is idempotent and also closes every
 descriptor owned by the pid with `close` semantics.  Exit runs on every
-path: `SYS_EXIT`, the raw-return `ZOS_EFAULT` trap, and the failed-launch
+path: `SYS_EXIT`, the raw-return `KOS_EFAULT` trap, and the failed-launch
 rollback (through `process_slot_release`).  Relative paths resolve against
 `vfs_cwd_for(pid)`, so `chdir` crosses mounts transparently.
 
@@ -587,7 +587,7 @@ CWD; `buffer`/`out` pointers are validated against `0100h-DFFFh` and move
 only through the checked bank-copy gates.  File data is chunked through the
 workspace staging view, bridging to the caller bank through the 64-byte
 common gate.  Every driver validates its complete block before any state
-change, and every `FS_*` call is refused with `ZOS_EBUSY` before the VFS
+change, and every `FS_*` call is refused with `KOS_EBUSY` before the VFS
 READY phase.
 
 **Workspace (correction-01).** All pathname and transfer scratch is one
@@ -608,7 +608,7 @@ streams the bound FILE through descriptors and the common staging block,
 so no view is held across it.  Single-tasking execution, the
 non-re-entrant gate and the absence of VFS use in an ISR mean the two views
 are never live at once; `kernel/vfs/workspace.c` asserts that invariant at
-run time when `ZOS_VFS_WS_GUARD=1` (the acceptance/simulator builds) and
+run time when `KOS_VFS_WS_GUARD=1` (the acceptance/simulator builds) and
 compiles it out of production.  Every claim site brackets its use of the
 workspace with `vfs_ws_enter()`/`vfs_ws_leave()`, including the module-phase
 boot loader in `kernel/main.c`, so a guarded image panics
@@ -619,7 +619,7 @@ PANIC", and every claim is balanced.
 
 **Acceptance (package 42b correction 01).** `make fs-selftest` builds
 the image with the IOC-FAT driver serving `/fs` and ROMFS at `/system`,
-boots `/system/fs_selftest.zex` and replays it with the host FS2 peer
+boots `/system/fs_selftest.exe` and replays it with the host FS2 peer
 serving the card (`tests/test_fs_selftest_sim.py`): card
 create/write/stat/read/seek/enumerate/mkdir/rename/unlink/rmdir, `/system`
 read, the absent-card branch, the nested exec with its exit status and the
@@ -676,12 +676,12 @@ case-insensitively, to one of
 
 | root | provider | owner of |
 | --- | --- | --- |
-| `/fs` | the build's filesystem driver, over IPC | everything below `/fs`; `bind` returns `-ZOS_ENODEV` in 42a |
+| `/fs` | the build's filesystem driver, over IPC | everything below `/fs`; `bind` returns `-KOS_ENODEV` in 42a |
 | `/system` | ROMFS, in-process, usable before any driver | everything below `/system` |
 | `/dev` | the host-built publication table | everything below `/dev` |
 
 `/` is a directory of those three roots, not a provider: a root-level name
-(such as `/ns.zex`) has no owner and is refused with `-ZOS_ENOENT`.  A
+(such as `/ns.exe`) has no owner and is refused with `-KOS_ENOENT`.  A
 provider owns the whole subtree: the router hands it the remaining path
 and never interprets it.  There is no mount table, no provider
 registration, no root merge and no flat-prefix matching anywhere in the
@@ -699,8 +699,8 @@ kernel/ipc/ipc.c       nucleus endpoints: provider objects are reached
 kernel/vfs/handles.c   the handle table: the M9 descriptor pool, extended
 ```
 
-**The handle table.**  `bind` returns a handle `>= ZOS_HANDLE_FIRST_BOUND`
-(3) plus an 8-bit protocol type (`ZOS_TYPE_*`).  Handles 1 and 2 are the
+**The handle table.**  `bind` returns a handle `>= KOS_HANDLE_FIRST_BOUND`
+(3) plus an 8-bit protocol type (`KOS_TYPE_*`).  Handles 1 and 2 are the
 standard handles - `/dev/console` bound at process start to stdout and
 stdin - and `bind` never returns them.  The table is the M9 descriptor
 pool (one global owner-tagged array, `VFS_FD_MAX` entries in the
@@ -715,17 +715,17 @@ handles only.
 manifest may declare `publishes` rows (name below `/dev`, 8-bit type,
 serving endpoint, provider object), the packer resolves them against the
 build's load order and writes a publication table into the container
-(ABI 4, `formats/include/zmod.h`), and the loader installs the table
+(ABI 4, `formats/include/mod.h`), and the loader installs the table
 into the provider, synthesizing the grouping rows (`/dev/input`,
 `/dev/serial`) from the names themselves.  A grouping row is a
-`container` entry: enumerating it works, binding it is `-ZOS_EISDIR`.
+`container` entry: enumerating it works, binding it is `-KOS_EISDIR`.
 Drivers never look each other up at run time (docs/devices.md).
 
 **The ROMFS provider.**  A `/system` bind returns a `FILE` handle served
 *in-process* by a nucleus endpoint through the same call path as a bank-6
 endpoint; the one ROMFS reader serves it, chunked through the common copy
-gate.  `ZFILE_OP_READ`, `ZFILE_OP_SEEK` and `ZFILE_OP_META` are supported
-and `ZFILE_OP_WRITE` is `-ZOS_EROFS` (ROMFS is read-only), with the bind
+gate.  `KFILE_OP_READ`, `KFILE_OP_SEEK` and `KFILE_OP_META` are supported
+and `KFILE_OP_WRITE` is `-KOS_EROFS` (ROMFS is read-only), with the bind
 flags checked first.
 
 **What the new code reuses.**  Package 42b deletes the M9 machinery; these
@@ -737,7 +737,7 @@ objects stay because the router and its providers call them:
 | `kernel/vfs/handles.c` | `vfs_cwd_for()` and the per-process CWD slots, `vfs_handle_alloc()` and the handle pool, `vfs_fd_check()` for file handles |
 | `romfs.rel` | the ROMFS reader: `romfs_lookup_ci()`, `romfs_entry_at()`, `romfs_copy_logical()` |
 | `kernel/ipc/ipc.c` | the endpoint table, the frame/descriptor resolver and the restricted copy calls (`ipc_call_object`, `ipc_nucleus_copy_out`) |
-| `kernel/syscall/fs.c` | `zos_fs_copy_path()` for the caller path and the block/window validation helpers |
+| `kernel/syscall/fs.c` | `kos_fs_copy_path()` for the caller path and the block/window validation helpers |
 
 **What 42b deletes.**  Everything the M9 path owns once the router and
 its providers serve the same callers: the mount table and the mount pass
@@ -756,9 +756,9 @@ per-object bytes are itemized in
 (the production boot path with a small driver set: SIO, the console
 driver and a synthetic publisher whose manifest declares
 `/dev/input/keyboard` and `/dev/video`), boots an ordinary SDK client as
-`/system/ns.zex`, and replays it: the standard handles, the publication
+`/system/ns.exe`, and replays it: the standard handles, the publication
 types, grouping-name refusals, a call through a handle, a `/system` FILE
-read/seek/metadata, `ZOS_EROFS`, table exhaustion and release, paged
+read/seek/metadata, `KOS_EROFS`, table exhaustion and release, paged
 `ns_enum` over `/`, `/dev` and `/system`, and a child that proves the
 inherited standard handles.  `tests/test_ns_selftest.py` pins the ABI, the
 packed publication tables and the residency classification;

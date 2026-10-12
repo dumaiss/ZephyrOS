@@ -11,7 +11,7 @@ without executing target code:
   - drivers/include/ioc.h: native frame layout, operation order,
     capability limits, semantic status and the transport error set;
   - the internal transport-class error codes added to errno.h;
-  - the packed ioc.zmod container, manifest, ROMFS entry and boot order
+  - the packed ioc.mod container, manifest, ROMFS entry and boot order
     (SIO first, then IOC, with a failed IOC not invalidating SIO);
   - mapcheck rejects linked IOC driver symbols (module-only) and the
     acceptance symbols in production images;
@@ -38,16 +38,16 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, HERE)
 
 import mapcheck  # noqa: E402
-import zmodpack  # noqa: E402
+import modpack  # noqa: E402
 from z80sim import ioc_crc16  # noqa: E402
 from maptools import (  # noqa: E402
     HARDWARE_H, HARDWARE_INC, evaluate, parse_asm_inc, parse_c_header)
 
 IOC_H = os.path.join(ROOT, "drivers", "include", "ioc.h")
-# The public ABI errno values (abi/zos/errno.h) plus the IOC
+# The public ABI errno values (abi/kos/errno.h) plus the IOC
 # transport-class codes, which live in the IOC header itself (T3 moved
 # them out of drivers/include/ioc.h when the private errno.h was deleted).
-ERRNO_H = os.path.join(ROOT, "abi", "zos", "errno.h")
+ERRNO_H = os.path.join(ROOT, "abi", "kos", "errno.h")
 PROTO_H = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.h")
 IOC_PROTOCOL_H = os.path.join(ROOT, "drivers", "include", "ioc_protocol.h")
 DRIVER_H = os.path.join(ROOT, "drivers", "ioc", "ioc_driver.h")
@@ -62,8 +62,8 @@ MANIFEST = os.path.join(ROOT, "drivers", "ioc", "ioc.json")
 RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
 MAIN_C = os.path.join(ROOT, "kernel", "main.c")
 MAKEFILE = os.path.join(ROOT, "Makefile")
-ZMOD = os.path.join(ROOT, "build", "modules", "ioc.zmod")
-MAP = os.path.join(ROOT, "build", "zephyros.map")
+MOD = os.path.join(ROOT, "build", "modules", "ioc.mod")
+MAP = os.path.join(ROOT, "build", "konaos.map")
 
 
 def _read(path, mode="r"):
@@ -80,62 +80,62 @@ def _load_json(path):
 # The verified command-lane and bulk-lane constants (deployed host
 # contract level 08h, bulk DATA CRC bypassed on both ends).
 IOC_CONSTANTS = {
-    "ZOS_SIO1A_DATA": 0x30,
-    "ZOS_SIO1A_CTRL": 0x31,
-    "ZOS_SIO1B_DATA": 0x32,
-    "ZOS_SIO1B_CTRL": 0x33,
-    "ZOS_SIO_RR0_DCD": 0x08,
-    "ZOS_SIO_RR0_TX_UNDERRUN": 0x40,
-    "ZOS_IOC_CMD_READY_MASK": 0x08,
-    "ZOS_IOC_HID_DOORBELL_MASK": 0x20,
-    "ZOS_IOC_WR0_RESET_CHANNEL": 0x18,
-    "ZOS_IOC_WR0_RESET_EXT_STATUS": 0x10,
-    "ZOS_IOC_WR0_RESET_ERROR": 0x30,
-    "ZOS_IOC_WR0_RESET_EOM": 0xC0,
-    "ZOS_IOC_WR0_RESET_RX_CRC": 0x40,
-    "ZOS_IOC_WR0_RESET_TX_CRC": 0x80,
-    "ZOS_IOC_WR_SELECT_WR7": 0x07,
-    "ZOS_IOC_WR_SELECT_WR6": 0x06,
-    "ZOS_IOC_WR1_INT_WAIT_OFF": 0x00,
-    "ZOS_IOC_WR3_RX_OFF": 0xC0,
-    "ZOS_IOC_WR3_RX_HUNT": 0xD1,
-    "ZOS_IOC_WR3_RX_NO_HUNT": 0xC1,
-    "ZOS_IOC_WR3_BULK_RX_HUNT": 0xD9,
-    "ZOS_IOC_WR3_BULK_RX_NO_HUNT": 0xC9,
-    "ZOS_IOC_WR3_BULK_TX": 0xC1,
-    "ZOS_IOC_WR4_EXTSYNC_X1": 0x30,
-    "ZOS_IOC_WR5_TX_RTS_OFF": 0x68,
-    "ZOS_IOC_WR5_TX_RTS_ON": 0x6A,
-    "ZOS_IOC_WR5_IDLE": 0x00,
-    "ZOS_IOC_WR5_BULK_RTS_ON": 0xEB,
-    "ZOS_IOC_WR5_BULK_RTS_OFF": 0xE9,
-    "ZOS_IOC_WR5_BULK_IDLE": 0xE0,
-    "ZOS_IOC_WR7_UNDERRUN_FILL": 0xFF,
-    "ZOS_IOC_BULK_SYNC_FILL": 0xAA,
-    "ZOS_IOC_BULK_LEADIN": 0x00,
-    "ZOS_IOC_BULK_SCAN_LIMIT": 0x08,
-    "ZOS_IOC_BULK_MAX_LEN": 512,
-    "ZOS_IOC_BULK_UNDERRUN_GUARD": 128,
-    "ZOS_IOC_BULK_CRC_BYPASS": 1,
-    "ZOS_IOC_PACKET_SYNC0": 0xA5,
-    "ZOS_IOC_PACKET_SYNC1": 0x5A,
-    "ZOS_IOC_PACKET_FIXED_LEN": 0x03,
-    "ZOS_IOC_PACKET_CRC_BYTES": 0x02,
-    "ZOS_IOC_CMD_MAX_DATA": 0x1A,
-    "ZOS_IOC_SEND_TRAILER_BYTES": 0x02,
-    "ZOS_IOC_SEND_TRAILER_FILL": 0xFF,
-    "ZOS_IOC_CMD_READY_TIMEOUT": 0xFFFF,
-    "ZOS_IOC_CMD_READY_OUTER": 0x08,
-    "ZOS_IOC_CMD_BYTE_TIMEOUT": 0xFFFF,
-    "ZOS_IOC_CMD_BYTE_OUTER": 0x08,
-    "ZOS_IOC_CMD_REPLY_SCAN_LIMIT": 0xA0,
-    "ZOS_IOC_RX_FIFO_DEPTH": 0x03,
-    "ZOS_IOC_RX_DRAIN_LIMIT": 0x04,
-    "ZOS_IOC_CMD_LINK_SYNC": 0x0C,
-    "ZOS_IOC_RSP_LINK_SYNC": 0x8C,
-    "ZOS_IOC_LINK_BRINGUP_TRIES": 0x04,
-    "ZOS_SMOKE_HOST_SYNC_FIRST": 0xAA,
-    "ZOS_SMOKE_HOST_SYNC_SECOND": 0x55,
+    "KOS_SIO1A_DATA": 0x30,
+    "KOS_SIO1A_CTRL": 0x31,
+    "KOS_SIO1B_DATA": 0x32,
+    "KOS_SIO1B_CTRL": 0x33,
+    "KOS_SIO_RR0_DCD": 0x08,
+    "KOS_SIO_RR0_TX_UNDERRUN": 0x40,
+    "KOS_IOC_CMD_READY_MASK": 0x08,
+    "KOS_IOC_HID_DOORBELL_MASK": 0x20,
+    "KOS_IOC_WR0_RESET_CHANNEL": 0x18,
+    "KOS_IOC_WR0_RESET_EXT_STATUS": 0x10,
+    "KOS_IOC_WR0_RESET_ERROR": 0x30,
+    "KOS_IOC_WR0_RESET_EOM": 0xC0,
+    "KOS_IOC_WR0_RESET_RX_CRC": 0x40,
+    "KOS_IOC_WR0_RESET_TX_CRC": 0x80,
+    "KOS_IOC_WR_SELECT_WR7": 0x07,
+    "KOS_IOC_WR_SELECT_WR6": 0x06,
+    "KOS_IOC_WR1_INT_WAIT_OFF": 0x00,
+    "KOS_IOC_WR3_RX_OFF": 0xC0,
+    "KOS_IOC_WR3_RX_HUNT": 0xD1,
+    "KOS_IOC_WR3_RX_NO_HUNT": 0xC1,
+    "KOS_IOC_WR3_BULK_RX_HUNT": 0xD9,
+    "KOS_IOC_WR3_BULK_RX_NO_HUNT": 0xC9,
+    "KOS_IOC_WR3_BULK_TX": 0xC1,
+    "KOS_IOC_WR4_EXTSYNC_X1": 0x30,
+    "KOS_IOC_WR5_TX_RTS_OFF": 0x68,
+    "KOS_IOC_WR5_TX_RTS_ON": 0x6A,
+    "KOS_IOC_WR5_IDLE": 0x00,
+    "KOS_IOC_WR5_BULK_RTS_ON": 0xEB,
+    "KOS_IOC_WR5_BULK_RTS_OFF": 0xE9,
+    "KOS_IOC_WR5_BULK_IDLE": 0xE0,
+    "KOS_IOC_WR7_UNDERRUN_FILL": 0xFF,
+    "KOS_IOC_BULK_SYNC_FILL": 0xAA,
+    "KOS_IOC_BULK_LEADIN": 0x00,
+    "KOS_IOC_BULK_SCAN_LIMIT": 0x08,
+    "KOS_IOC_BULK_MAX_LEN": 512,
+    "KOS_IOC_BULK_UNDERRUN_GUARD": 128,
+    "KOS_IOC_BULK_CRC_BYPASS": 1,
+    "KOS_IOC_PACKET_SYNC0": 0xA5,
+    "KOS_IOC_PACKET_SYNC1": 0x5A,
+    "KOS_IOC_PACKET_FIXED_LEN": 0x03,
+    "KOS_IOC_PACKET_CRC_BYTES": 0x02,
+    "KOS_IOC_CMD_MAX_DATA": 0x1A,
+    "KOS_IOC_SEND_TRAILER_BYTES": 0x02,
+    "KOS_IOC_SEND_TRAILER_FILL": 0xFF,
+    "KOS_IOC_CMD_READY_TIMEOUT": 0xFFFF,
+    "KOS_IOC_CMD_READY_OUTER": 0x08,
+    "KOS_IOC_CMD_BYTE_TIMEOUT": 0xFFFF,
+    "KOS_IOC_CMD_BYTE_OUTER": 0x08,
+    "KOS_IOC_CMD_REPLY_SCAN_LIMIT": 0xA0,
+    "KOS_IOC_RX_FIFO_DEPTH": 0x03,
+    "KOS_IOC_RX_DRAIN_LIMIT": 0x04,
+    "KOS_IOC_CMD_LINK_SYNC": 0x0C,
+    "KOS_IOC_RSP_LINK_SYNC": 0x8C,
+    "KOS_IOC_LINK_BRINGUP_TRIES": 0x04,
+    "KOS_SMOKE_HOST_SYNC_FIRST": 0xAA,
+    "KOS_SMOKE_HOST_SYNC_SECOND": 0x55,
 }
 
 
@@ -172,32 +172,32 @@ class TestIocPlatformConstants(unittest.TestCase):
         env = dict(self.c)
         # RTS on is RTS off with the RTS bit; hunt is no-hunt plus bit 4;
         # RX off is RX enabled with the enable bit clear; idle disables TX.
-        self.assertEqual(evaluate("ZOS_IOC_WR5_TX_RTS_ON", env),
-                         evaluate("ZOS_IOC_WR5_TX_RTS_OFF", env) | 0x02)
-        self.assertEqual(evaluate("ZOS_IOC_WR3_RX_HUNT", env),
-                         evaluate("ZOS_IOC_WR3_RX_NO_HUNT", env) | 0x10)
-        self.assertEqual(evaluate("ZOS_IOC_WR3_RX_OFF", env),
-                         evaluate("ZOS_IOC_WR3_RX_NO_HUNT", env) & ~0x01)
-        self.assertEqual(evaluate("ZOS_IOC_WR5_IDLE", env), 0)
-        self.assertEqual(evaluate("ZOS_IOC_WR5_TX_RTS_OFF", env) & 0x08,
+        self.assertEqual(evaluate("KOS_IOC_WR5_TX_RTS_ON", env),
+                         evaluate("KOS_IOC_WR5_TX_RTS_OFF", env) | 0x02)
+        self.assertEqual(evaluate("KOS_IOC_WR3_RX_HUNT", env),
+                         evaluate("KOS_IOC_WR3_RX_NO_HUNT", env) | 0x10)
+        self.assertEqual(evaluate("KOS_IOC_WR3_RX_OFF", env),
+                         evaluate("KOS_IOC_WR3_RX_NO_HUNT", env) & ~0x01)
+        self.assertEqual(evaluate("KOS_IOC_WR5_IDLE", env), 0)
+        self.assertEqual(evaluate("KOS_IOC_WR5_TX_RTS_OFF", env) & 0x08,
                          0x08)  # TX enabled at idle entry
-        self.assertEqual(evaluate("ZOS_IOC_RX_DRAIN_LIMIT", env),
-                         evaluate("ZOS_IOC_RX_FIFO_DEPTH", env) + 1)
+        self.assertEqual(evaluate("KOS_IOC_RX_DRAIN_LIMIT", env),
+                         evaluate("KOS_IOC_RX_FIFO_DEPTH", env) + 1)
 
         # Bulk-lane register relations: hunt differs from no-hunt by bit
         # 4; the write-direction value keeps the receiver enabled; RTS on
         # is RTS off with the RTS bit; idle disables the transmitter.
-        self.assertEqual(evaluate("ZOS_IOC_WR3_BULK_RX_HUNT", env),
-                         evaluate("ZOS_IOC_WR3_BULK_RX_NO_HUNT", env) | 0x10)
-        self.assertEqual(evaluate("ZOS_IOC_WR3_BULK_RX_NO_HUNT", env) & 0x01,
+        self.assertEqual(evaluate("KOS_IOC_WR3_BULK_RX_HUNT", env),
+                         evaluate("KOS_IOC_WR3_BULK_RX_NO_HUNT", env) | 0x10)
+        self.assertEqual(evaluate("KOS_IOC_WR3_BULK_RX_NO_HUNT", env) & 0x01,
                          0x01)
-        self.assertEqual(evaluate("ZOS_IOC_WR3_BULK_TX", env) & 0x11, 0x01)
-        self.assertEqual(evaluate("ZOS_IOC_WR5_BULK_RTS_ON", env),
-                         evaluate("ZOS_IOC_WR5_BULK_RTS_OFF", env) | 0x02)
-        self.assertEqual(evaluate("ZOS_IOC_WR5_BULK_IDLE", env),
-                         evaluate("ZOS_IOC_WR5_BULK_RTS_OFF", env) & ~0x09)
-        self.assertEqual(evaluate("ZOS_IOC_BULK_MAX_LEN", env), 512)
-        self.assertEqual(evaluate("ZOS_IOC_BULK_UNDERRUN_GUARD", env), 128)
+        self.assertEqual(evaluate("KOS_IOC_WR3_BULK_TX", env) & 0x11, 0x01)
+        self.assertEqual(evaluate("KOS_IOC_WR5_BULK_RTS_ON", env),
+                         evaluate("KOS_IOC_WR5_BULK_RTS_OFF", env) | 0x02)
+        self.assertEqual(evaluate("KOS_IOC_WR5_BULK_IDLE", env),
+                         evaluate("KOS_IOC_WR5_BULK_RTS_OFF", env) & ~0x09)
+        self.assertEqual(evaluate("KOS_IOC_BULK_MAX_LEN", env), 512)
+        self.assertEqual(evaluate("KOS_IOC_BULK_UNDERRUN_GUARD", env), 128)
 
     def test_bulk_crc_bypass_is_paired_and_explicit(self):
         # The deployed pair bypasses bulk DATA CRC on both ends.  Both
@@ -205,10 +205,10 @@ class TestIocPlatformConstants(unittest.TestCase):
         # fails the shared-name parity test), and the driver must guard
         # against the platform default differing from the deployed mode
         # instead of defining a private default of its own.
-        self.assertEqual(evaluate("ZOS_IOC_BULK_CRC_BYPASS", self.c), 1)
-        self.assertEqual(evaluate("ZOS_IOC_BULK_CRC_BYPASS", self.asm), 1)
+        self.assertEqual(evaluate("KOS_IOC_BULK_CRC_BYPASS", self.c), 1)
+        self.assertEqual(evaluate("KOS_IOC_BULK_CRC_BYPASS", self.asm), 1)
         driver = _read(DRIVER_C)
-        self.assertIn("#if ZOS_IOC_BULK_CRC_BYPASS != 1", driver)
+        self.assertIn("#if KOS_IOC_BULK_CRC_BYPASS != 1", driver)
         for source in (driver, _read(DRIVER_ASM)):
             self.assertNotIn("#define IOC_BULK_CRC_BYPASS", source)
             self.assertNotIn("CRC_BYPASS     =", source)
@@ -221,19 +221,19 @@ class TestIocPlatformConstants(unittest.TestCase):
         # image, and the smoke tool sends exactly that sequence.
         import serial_smoke
 
-        first = evaluate("ZOS_SMOKE_HOST_SYNC_FIRST", self.c)
-        second = evaluate("ZOS_SMOKE_HOST_SYNC_SECOND", self.c)
+        first = evaluate("KOS_SMOKE_HOST_SYNC_FIRST", self.c)
+        second = evaluate("KOS_SMOKE_HOST_SYNC_SECOND", self.c)
         self.assertNotEqual(first, second)
         self.assertEqual(serial_smoke.IOC_HOST_SYNC,
                          bytes((first, second)))
         main = _read(MAIN_C)
-        self.assertIn("#if ZOS_SMOKE_HOST_SYNC", main)
-        self.assertIn("ZOS_SMOKE_HOST_SYNC_FIRST", main)
-        self.assertIn("ZOS_SMOKE_HOST_SYNC_SECOND", main)
+        self.assertIn("#if KOS_SMOKE_HOST_SYNC", main)
+        self.assertIn("KOS_SMOKE_HOST_SYNC_FIRST", main)
+        self.assertIn("KOS_SMOKE_HOST_SYNC_SECOND", main)
         self.assertLess(main.index("kernel_host_sync_wait();"),
-                        main.index('early_console_puts("ZephyrOS 0.0'))
+                        main.index('early_console_puts("KonaOS 0.0'))
         makefile = _read(MAKEFILE)
-        self.assertIn("ZOS_SMOKE_HOST_SYNC=1", makefile)
+        self.assertIn("KOS_SMOKE_HOST_SYNC=1", makefile)
 
     def test_bulk_arming_classes_and_unknown_status_are_pinned(self):
         # The complete frozen set of request classes that can arm the
@@ -276,43 +276,43 @@ class TestIocClassContract(unittest.TestCase):
         self.env = parse_c_header(IOC_H)
 
     def test_maximum_data_and_bulk_limits(self):
-        self.assertEqual(evaluate("ZIOC_MAX_DATA", self.env), 26)
-        self.assertEqual(evaluate("ZIOC_BULK_MAX", self.env), 512)
-        self.assertEqual(evaluate("ZIOC_FRAME_SIZE", self.env), 29)
+        self.assertEqual(evaluate("KIOC_MAX_DATA", self.env), 26)
+        self.assertEqual(evaluate("KIOC_BULK_MAX", self.env), 512)
+        self.assertEqual(evaluate("KIOC_FRAME_SIZE", self.env), 29)
 
     def test_semantic_status_bit(self):
-        self.assertEqual(evaluate("ZIOC_STATUS_HID_PENDING", self.env), 1)
+        self.assertEqual(evaluate("KIOC_STATUS_HID_PENDING", self.env), 1)
 
     def test_transport_errors_are_distinct_negative_codes(self):
         env = dict(self.env)
         env.update(parse_c_header(ERRNO_H))
         codes = {
             name: evaluate(name, env) for name in (
-                "ZIOC_EINVAL", "ZIOC_EBUSY", "ZIOC_ETIMEDOUT",
-                "ZIOC_EBADFRAME", "ZIOC_EBADCRC", "ZIOC_EBADSEQ",
-                "ZIOC_EIO")
+                "KIOC_EINVAL", "KIOC_EBUSY", "KIOC_ETIMEDOUT",
+                "KIOC_EBADFRAME", "KIOC_EBADCRC", "KIOC_EBADSEQ",
+                "KIOC_EIO")
         }
         for name, value in codes.items():
             self.assertLess(value, 0, "%s must be negative" % name)
         self.assertEqual(len(set(codes.values())), len(codes),
                          "transport error codes must be distinct: %r" % codes)
-        self.assertEqual(codes["ZIOC_EINVAL"], -evaluate("ZOS_EINVAL", env))
-        self.assertEqual(codes["ZIOC_EBUSY"], -evaluate("ZOS_EBUSY", env))
-        self.assertEqual(codes["ZIOC_EBADFRAME"],
-                         -evaluate("ZOS_EPROTO", env))
-        self.assertEqual(codes["ZIOC_EBADCRC"], -evaluate("ZOS_ECRC", env))
-        self.assertEqual(codes["ZIOC_EBADSEQ"],
-                         -evaluate("ZOS_EBADSEQ", env))
-        self.assertEqual(codes["ZIOC_EIO"], -evaluate("ZOS_EIO", env))
+        self.assertEqual(codes["KIOC_EINVAL"], -evaluate("KOS_EINVAL", env))
+        self.assertEqual(codes["KIOC_EBUSY"], -evaluate("KOS_EBUSY", env))
+        self.assertEqual(codes["KIOC_EBADFRAME"],
+                         -evaluate("KOS_EPROTO", env))
+        self.assertEqual(codes["KIOC_EBADCRC"], -evaluate("KOS_ECRC", env))
+        self.assertEqual(codes["KIOC_EBADSEQ"],
+                         -evaluate("KOS_EBADSEQ", env))
+        self.assertEqual(codes["KIOC_EIO"], -evaluate("KOS_EIO", env))
 
     def test_frame_member_order(self):
-        self.assertEqual(struct_member_order(self.text, "zioc_frame"),
+        self.assertEqual(struct_member_order(self.text, "kioc_frame"),
                          ["type", "status", "length", "data"])
 
     def test_layout_assertions_present(self):
-        for needle in ("sizeof(struct zioc_frame) == ZIOC_FRAME_SIZE",
-                       "__builtin_offsetof(struct zioc_frame, length) == 2",
-                       "__builtin_offsetof(struct zioc_frame, data) == 3"):
+        for needle in ("sizeof(struct kioc_frame) == KIOC_FRAME_SIZE",
+                       "__builtin_offsetof(struct kioc_frame, length) == 2",
+                       "__builtin_offsetof(struct kioc_frame, data) == 3"):
             self.assertIn(needle, self.text)
 
     def test_general_api_keeps_mcu_command_numbers_private(self):
@@ -341,11 +341,11 @@ class TestIocErrorCodes(unittest.TestCase):
     def test_errno_transport_codes(self):
         env = parse_c_header(ERRNO_H)
         env.update(parse_c_header(IOC_H))
-        self.assertEqual(evaluate("ZOS_EPROTO", env), 0x0D)
-        self.assertEqual(evaluate("ZOS_ECRC", env), 0x0E)
-        self.assertEqual(evaluate("ZOS_EBADSEQ", env), 0x0F)
+        self.assertEqual(evaluate("KOS_EPROTO", env), 0x0D)
+        self.assertEqual(evaluate("KOS_ECRC", env), 0x0E)
+        self.assertEqual(evaluate("KOS_EBADSEQ", env), 0x0F)
         # Distinct from every earlier code.
-        earlier = [evaluate("ZOS_E" + name, env) for name in
+        earlier = [evaluate("KOS_E" + name, env) for name in
                    ("NOSYS", "INVAL", "NODEV", "BUSY", "NOENT", "NOSPC",
                     "NOTSUP", "TIMEDOUT", "AGAIN", "IO", "INIT", "FAULT")]
         self.assertEqual(len(set(earlier + [0x0D, 0x0E, 0x0F])),
@@ -375,14 +375,14 @@ class TestIocDriverArtifact(unittest.TestCase):
     def test_romfs_entry_and_boot_order(self):
         manifest = _load_json(RECOVERY_MANIFEST)
         names = [entry["name"] for entry in manifest["files"]]
-        self.assertIn("ioc.zmod", names)
+        self.assertIn("ioc.mod", names)
         self.assertIn("drivers.man", names)
         # The boot manifest orders the drivers: HID declares the IOC
         # dependency, so IOC must be listed (and therefore placed) first.
-        order = _read(os.path.join(ROOT, "tools", "zmodpack.py"))
+        order = _read(os.path.join(ROOT, "tools", "modpack.py"))
         self.assertIn("def cmd_drivers", order)
         main = _read(MAIN_C)
-        self.assertIn("driver_load_all(ZOS_DRIVER_MANIFEST_NAME)", main)
+        self.assertIn("driver_load_all(KOS_DRIVER_MANIFEST_NAME)", main)
         # Package 42b retired the arena module pass and the IOC class
         # shim with it: every image is a driver now, so HID resolves its
         # IOC dependency from the publication the driver declares.
@@ -395,27 +395,27 @@ class TestIocDriverArtifact(unittest.TestCase):
         makefile = _read(MAKEFILE)
         self.assertIn("ioc-test:", makefile)
         self.assertIn("$(call DRV_MANIFEST,$(1))", makefile)
-        self.assertIn("$(MODULES)/$(1).zmod: $(call DRV_MANIFEST,$(1))",
+        self.assertIn("$(MODULES)/$(1).mod: $(call DRV_MANIFEST,$(1))",
                       makefile)
         self.assertIn("ioc_driver.rel", makefile)
         # The IOC diagnostic runs in the console-integration image (work
         # package 42d merged the per-device images); the table row links
         # it and defines the group's guard.
-        self.assertIn("ZOS_IOC_SELFTEST", makefile)
-        index = makefile.index("ifeq ($(ZOS_CONSOLE_INTEGRATION_SELFTEST),1)")
+        self.assertIn("KOS_IOC_SELFTEST", makefile)
+        index = makefile.index("ifeq ($(KOS_CONSOLE_INTEGRATION_SELFTEST),1)")
         self.assertIn("$(BUILD)/ioc_test.rel",
                       makefile[index:index + 400])
         self.assertIn("ioc_test", makefile)
         # The declared driver set is the manifest's business: an image
         # boots the drivers its driver set lists.
         self.assertRegex(makefile,
-                         r"ZOS_DRIVERS \?= .*\bioc\b")
-        self.assertNotIn("BOOT_ZMODS", makefile)
+                         r"KOS_DRIVERS \?= .*\bioc\b")
+        self.assertNotIn("BOOT_MODS", makefile)
 
     def test_production_map_has_no_linked_ioc_symbols(self):
         if not os.path.exists(MAP):
-            self.skipTest("build/zephyros.map missing; build first")
-        syms = zmodpack_symbols(MAP)
+            self.skipTest("build/konaos.map missing; build first")
+        syms = modpack_symbols(MAP)
         # The one `_ioc_`-prefixed family the nucleus owns is the class
         # shim that publishes the driver to a bank-7 module; the driver
         # itself is a bank-6 image.
@@ -427,7 +427,7 @@ class TestIocDriverArtifact(unittest.TestCase):
                          "the kernel image: %s" % linked)
 
 
-def zmodpack_symbols(map_path):
+def modpack_symbols(map_path):
     import re as _re
     syms = {}
     with open(map_path) as handle:
@@ -472,21 +472,21 @@ class TestIocSourceDiscipline(unittest.TestCase):
         # Command lane: exactly one reset, in the boot tier's ioc_hw_init
         # (package 41 moved it there: the boot segment is where the
         # one-shot lane programming runs, through the mode-10 gate).
-        self.assertEqual(self.boot.count("ZOS_IOC_WR0_RESET_CHANNEL"), 1)
+        self.assertEqual(self.boot.count("KOS_IOC_WR0_RESET_CHANNEL"), 1)
         hw_init = self.boot.split("void ioc_hw_init")[1].split(
             "void ioc_boot_entry")[0]
-        self.assertIn("ZOS_IOC_WR0_RESET_CHANNEL", hw_init)
+        self.assertIn("KOS_IOC_WR0_RESET_CHANNEL", hw_init)
         # Bulk lane: exactly one reset, in the module-owned init routine.
-        self.assertEqual(self.asm.count("ZOS_IOC_WR0_RESET_CHANNEL"), 1)
-        self.assertIn("ZOS_IOC_WR0_RESET_CHANNEL", self.bulk_init)
+        self.assertEqual(self.asm.count("KOS_IOC_WR0_RESET_CHANNEL"), 1)
+        self.assertIn("KOS_IOC_WR0_RESET_CHANNEL", self.bulk_init)
 
     def test_command_tx_ordering_is_preload_then_grant(self):
         first_put = self.cmd_tx.index("call\tioc_put_byte")
-        eom = self.cmd_tx.index("ZOS_IOC_WR0_RESET_EOM")
-        rts_on = self.cmd_tx.index("ZOS_IOC_WR5_TX_RTS_ON")
-        trailers = self.cmd_tx.index("ZOS_IOC_SEND_TRAILER_BYTES")
-        idle = self.cmd_tx.index("ZOS_IOC_WR5_IDLE")
-        wr3 = self.cmd_tx.index("ZOS_IOC_WR3_RX_HUNT")
+        eom = self.cmd_tx.index("KOS_IOC_WR0_RESET_EOM")
+        rts_on = self.cmd_tx.index("KOS_IOC_WR5_TX_RTS_ON")
+        trailers = self.cmd_tx.index("KOS_IOC_SEND_TRAILER_BYTES")
+        idle = self.cmd_tx.index("KOS_IOC_WR5_IDLE")
+        wr3 = self.cmd_tx.index("KOS_IOC_WR3_RX_HUNT")
         self.assertLess(first_put, eom, "EOM reset must follow the preload")
         self.assertLess(eom, rts_on, "RTS must be granted after the EOM reset")
         self.assertLess(rts_on, trailers)
@@ -494,10 +494,10 @@ class TestIocSourceDiscipline(unittest.TestCase):
         self.assertLess(idle, wr3, "RX is armed after the RTS release")
 
     def test_command_receive_is_bounded_and_hunts_once(self):
-        self.assertIn("ZOS_IOC_RX_DRAIN_LIMIT", self.asm)
-        self.assertIn("ZOS_IOC_CMD_REPLY_SCAN_LIMIT", self.asm)
+        self.assertIn("KOS_IOC_RX_DRAIN_LIMIT", self.asm)
+        self.assertIn("KOS_IOC_CMD_REPLY_SCAN_LIMIT", self.asm)
         # Enter Hunt is selected from the io block, never unconditional.
-        self.assertIn("ZOS_IOC_WR3_RX_NO_HUNT", self.asm)
+        self.assertIn("KOS_IOC_WR3_RX_NO_HUNT", self.asm)
 
     def test_bulk_read_discipline(self):
         r = self.bulk_read
@@ -505,14 +505,14 @@ class TestIocSourceDiscipline(unittest.TestCase):
         # DCD admission, bounded scan, wire-speed header capture, INI
         # payload, the two bypassed trailer bytes, RTS release and the
         # CTS deassertion confirmation - in that order.
-        order = ["ZOS_IOC_WR3_BULK_RX_HUNT",
-                 "ZOS_IOC_RX_DRAIN_LIMIT",
-                 "ZOS_IOC_WR5_BULK_RTS_ON",
-                 "ZOS_IOC_WR0_RESET_EXT_STATUS",
-                 "ZOS_IOC_BULK_SCAN_LIMIT",
+        order = ["KOS_IOC_WR3_BULK_RX_HUNT",
+                 "KOS_IOC_RX_DRAIN_LIMIT",
+                 "KOS_IOC_WR5_BULK_RTS_ON",
+                 "KOS_IOC_WR0_RESET_EXT_STATUS",
+                 "KOS_IOC_BULK_SCAN_LIMIT",
                  "ini",
                  "call\tioc_bulk_rts_off",
-                 "ZOS_SIO_RR0_CTS"]
+                 "KOS_SIO_RR0_CTS"]
         positions = []
         for needle in order:
             self.assertIn(needle, r, "bulk read missing %r" % needle)
@@ -522,22 +522,22 @@ class TestIocSourceDiscipline(unittest.TestCase):
         # The deployed pair consumes but never compares the trailer, and
         # the admitted length (not the wire length) drives the INI loop
         # (a completed payload loop reaches the trailer block).
-        self.assertNotIn("ZOS_IOC_BULK_CRC_BYPASS", r)
+        self.assertNotIn("KOS_IOC_BULK_CRC_BYPASS", r)
         self.assertIn("ioc_br_trailer", r)
 
     def test_bulk_write_discipline(self):
         w = self.bulk_write
-        order = ["ZOS_IOC_WR_SELECT_WR6",
-                 "ZOS_IOC_BULK_SYNC_FILL",
-                 "ZOS_IOC_WR0_RESET_TX_CRC",
-                 "ZOS_IOC_BULK_LEADIN",
-                 "ZOS_IOC_WR5_BULK_RTS_ON",
-                 "ZOS_SIO_RR0_CTS",
-                 "ZOS_IOC_PACKET_SYNC0",
+        order = ["KOS_IOC_WR_SELECT_WR6",
+                 "KOS_IOC_BULK_SYNC_FILL",
+                 "KOS_IOC_WR0_RESET_TX_CRC",
+                 "KOS_IOC_BULK_LEADIN",
+                 "KOS_IOC_WR5_BULK_RTS_ON",
+                 "KOS_SIO_RR0_CTS",
+                 "KOS_IOC_PACKET_SYNC0",
                  "outi",
-                 "ZOS_IOC_WR0_RESET_EOM",
-                 "ZOS_SIO_RR0_TX_UNDERRUN",
-                 "ZOS_IOC_BULK_UNDERRUN_GUARD",
+                 "KOS_IOC_WR0_RESET_EOM",
+                 "KOS_SIO_RR0_TX_UNDERRUN",
+                 "KOS_IOC_BULK_UNDERRUN_GUARD",
                  "call\tioc_bulk_rts_off",
                  "ioc_bw_cts_out:"]
         positions = []
@@ -549,21 +549,21 @@ class TestIocSourceDiscipline(unittest.TestCase):
         # The EOM reset comes after the final payload byte, interrupts
         # return before the commit wait (which polls /CTSA again), and
         # the shared release helper disables the transmitter.
-        self.assertLess(w.index("outi"), w.index("ZOS_IOC_WR0_RESET_EOM"))
+        self.assertLess(w.index("outi"), w.index("KOS_IOC_WR0_RESET_EOM"))
         self.assertLess(w.index("call\tioc_bulk_irq_restore"),
                         w.index("ioc_bw_cts_out:"))
-        self.assertIn("ZOS_SIO_RR0_CTS", w[w.index("ioc_bw_cts_out:"):])
+        self.assertIn("KOS_SIO_RR0_CTS", w[w.index("ioc_bw_cts_out:"):])
         helper = self.asm.split("ioc_bulk_rts_off:")[1]
-        self.assertIn("ZOS_IOC_WR5_BULK_IDLE", helper)
+        self.assertIn("KOS_IOC_WR5_BULK_IDLE", helper)
 
     def test_no_sio0_or_kernel_symbol_use(self):
         for body in (self.c, self.asm, self.proto, self.boot):
-            self.assertNotIn("ZOS_SIO0", body)
+            self.assertNotIn("KOS_SIO0", body)
             self.assertNotIn("SIO0B", body)
-            self.assertNotIn("ZOS_CTC0", body)
+            self.assertNotIn("KOS_CTC0", body)
         # Every SIO1/A access lives in the driver's own assembly.
-        self.assertIn("ZOS_SIO1A_CTRL", self.asm)
-        self.assertNotIn("ZOS_SIO1A", self.c)
+        self.assertIn("KOS_SIO1A_CTRL", self.asm)
+        self.assertNotIn("KOS_SIO1A", self.c)
         # The endpoint is declared by the image metadata; the host packer
         # assigns its number and the resident loader installs the record
         # (architecture 36.11), so no driver code registers anything.
@@ -571,23 +571,23 @@ class TestIocSourceDiscipline(unittest.TestCase):
                       open(os.path.join(ROOT, "kernel", "driver",
                                         "driver_loader.c")).read())
         self.assertNotIn("register_ep", self.proto)
-        self.assertIn("ZOS_CLASS_IOC", self.proto)
-        self.assertIn("ZOS_PROTOCOL_VERSION", self.proto)
-        for op in ("ZIOC_OP_COMMAND", "ZIOC_OP_BULK_READ",
-                   "ZIOC_OP_BULK_WRITE", "ZIOC_OP_STATUS",
-                   "ZIOC_OP_READY"):
+        self.assertIn("KOS_CLASS_IOC", self.proto)
+        self.assertIn("KOS_PROTOCOL_VERSION", self.proto)
+        for op in ("KIOC_OP_COMMAND", "KIOC_OP_BULK_READ",
+                   "KIOC_OP_BULK_WRITE", "KIOC_OP_STATUS",
+                   "KIOC_OP_READY"):
             self.assertIn(op, self.proto)
 
     def test_status_exposes_only_semantic_bits(self):
         body = self.c.split("uint16_t ioc_status")[1].split(
             "int ioc_link_bringup")[0]
-        self.assertIn("ZIOC_STATUS_HID_PENDING", body)
+        self.assertIn("KIOC_STATUS_HID_PENDING", body)
         # No raw RR0 mask or SIO status bit leaks through the result.
-        self.assertNotIn("ZOS_IOC_HID_DOORBELL_MASK", body)
-        self.assertNotIn("ZOS_SIO_RR0", body)
+        self.assertNotIn("KOS_IOC_HID_DOORBELL_MASK", body)
+        self.assertNotIn("KOS_SIO_RR0", body)
 
     def test_busy_guard_covers_every_exec_pathed_exit(self):
-        self.assertIn("ZIOC_EBUSY", self.c)
+        self.assertIn("KIOC_EBUSY", self.c)
         # One guard acquisition per command exchange and per bulk phase;
         # every one of those paths releases it exactly once.
         self.assertEqual(self.c.count("state->busy = 1u;"), 3)
@@ -607,8 +607,8 @@ class TestIocSourceDiscipline(unittest.TestCase):
 
     def test_bulk_limits_and_errors_stay_in_the_transport_vocabulary(self):
         header = _read(IOC_H)
-        self.assertIn("ZIOC_BULK_MAX 512u", header)
-        self.assertIn("ZIOC_EIO", header)
+        self.assertIn("KIOC_BULK_MAX 512u", header)
+        self.assertIn("KIOC_EIO", header)
         # The bulk phases stay private to the driver (ioc_protocol.h is
         # the client-visible vocabulary: commands and payload offsets).
         self.assertIn("READY/DONE bulk admission state",

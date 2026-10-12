@@ -10,7 +10,7 @@ Coverage (all executing the real linked bytes, on the current boot path):
   acceptance hooks run;
 * the early hook runs the syscall gate and the interrupt executive
   selftests: `syscall selftest: OK` and `irq selftest: OK`;
-* the late hook runs the ROMFS-reader and process/ZEX selftests:
+* the late hook runs the ROMFS-reader and process/EXE selftests:
   `romfs selftest: OK` and `process selftest: OK`;
 * every target result word is zero (no FAIL marker): the assembly-owned
   status words live in the common window, the C-owned ones in bank-7
@@ -50,7 +50,7 @@ IRQ_OK = "irq selftest: OK"
 ROMFS_OK = "romfs selftest: OK"
 PROCESS_OK = "process selftest: OK"
 MONITOR_EXIT = "monitor: exit status 0x"
-MONITOR_BANNER = "ZephyrOS native monitor"
+MONITOR_BANNER = "KonaOS native monitor"
 MONITOR_PROMPT = "Z80> "
 CONSOLE_BOUND = "console: driver OK"
 
@@ -59,16 +59,16 @@ FAIL_MARKER = b"FAIL"
 # Target result words: the acceptance tests publish one byte each; a
 # non-zero value is a precise failure code.
 RESULT_SYMBOLS = (
-    "_zos_selftest_result",       # syscall gate (common window)
-    "_zos_irq_test_result",       # interrupt executive (common window)
+    "_kos_selftest_result",       # syscall gate (common window)
+    "_kos_irq_test_result",       # interrupt executive (common window)
     "_romfs_selftest_result",     # ROMFS reader (bank-7 data)
-    "_process_selftest_result",   # process/ZEX lifecycle (bank-7 data)
+    "_process_selftest_result",   # process/EXE lifecycle (bank-7 data)
 )
 
 
 class SubsystemSimBase(Replay, unittest.TestCase):
     IMAGE_SUBDIR = "build-subsys-selftest"
-    IMAGE_NAME = "zephyros-subsys-selftest.bin"
+    IMAGE_NAME = "konaos-subsys-selftest.bin"
 
     def setUp(self):
         self.load_image()
@@ -146,11 +146,11 @@ class TestSubsystemBoot(SubsystemSimBase):
 
 class TestSubsystemManifest(SubsystemSimBase):
     def test_manifest_carries_the_current_boot_set_and_fixtures(self):
-        for name in ("sio.zmod", "console-serial.zmod", "drivers.man",
-                     "monitor.zex", "crosspage.bin",
-                     "zextest.zex", "zex-return.zex", "zex-truncated.zex",
-                     "zex-wrong-type.dat",
-                     "zex2probe.zex", "zex2seg.zex", "zex2big.zex"):
+        for name in ("sio.mod", "console-serial.mod", "drivers.man",
+                     "monitor.exe", "crosspage.bin",
+                     "exetest.exe", "exe-return.exe", "exe-truncated.exe",
+                     "exe-wrong-type.dat",
+                     "exe2probe.exe", "exe2seg.exe", "exe2big.exe"):
             self.assertIn(name, self.entries)
 
 

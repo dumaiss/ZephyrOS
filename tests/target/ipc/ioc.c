@@ -1,4 +1,4 @@
-/* ZephyrOS IPC acceptance: the `ioc` synthetic block driver (test
+/* KonaOS IPC acceptance: the `ioc` synthetic block driver (test
  * artifact).
  *
  * Bottom of the vfs -> fat -> ioc chain.  READ fills a 512-byte block in
@@ -14,7 +14,7 @@
  * payload[0..1] and its length in payload[2..3].
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "driver.h"
 
 #include "ipc_test.h"
@@ -23,7 +23,7 @@ static const struct driver_api *api;
 static uint8_t ioc_block[IPC_BLOCK_BYTES];
 static uint16_t ioc_block_address;
 
-static int16_t ioc_read(struct zos_ipc_frame *frame)
+static int16_t ioc_read(struct kos_ipc_frame *frame)
 {
 	uint8_t seed = frame->arg0;
 	uint16_t offset = frame->arg1;
@@ -44,14 +44,14 @@ static int16_t ioc_read(struct zos_ipc_frame *frame)
 	}
 	if (offset > IPC_BLOCK_BYTES ||
 	    length > (uint16_t)(IPC_BLOCK_BYTES - offset)) {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	frame->payload[0] = IPC_WORD_LO(ioc_block_address);
 	frame->payload[1] = IPC_WORD_HI(ioc_block_address);
 	frame->payload[2] = IPC_WORD_LO(IPC_BLOCK_BYTES);
 	frame->payload[3] = IPC_WORD_HI(IPC_BLOCK_BYTES);
 	if ((frame->flags & IPC_FRAME_STAGED) == 0u &&
-	    frame->desc != ZOS_IPC_DESC_NONE) {
+	    frame->desc != KOS_IPC_DESC_NONE) {
 		/* A caller-supplied buffer gets the slice directly; without
 		 * one (the loader's object stream) the block stays here. */
 		int16_t result = api->copy_out(frame->desc, offset,
@@ -68,10 +68,10 @@ static int16_t ioc_read(struct zos_ipc_frame *frame)
 
 /* The endpoint dispatch entry the manifest names: a module-global
  * symbol so the packer can resolve its hot-image offset. */
-int16_t ioc_dispatch(struct zos_ipc_frame *frame)
+int16_t ioc_dispatch(struct kos_ipc_frame *frame)
 {
 	if (frame->op != IPC_OP_IOC_READ) {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	return ioc_read(frame);
 }

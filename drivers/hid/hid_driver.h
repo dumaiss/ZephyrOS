@@ -2,7 +2,7 @@
  *
  * hid.c owns the local ring, the fetch-on-doorbell engine, the
  * stuck-doorbell penalty and the resident-driver protocol dispatch
- * (abi/zos/protocol.h).  The engine discovers the IOC driver through the
+ * (abi/kos/protocol.h).  The engine discovers the IOC driver through the
  * bootstrap interface only -- never an imported symbol and never a
  * registry lookup by name -- and declares that dependency in its image
  * metadata.  The whole driver is hot (no boot segment): its bring-up is
@@ -10,37 +10,37 @@
  * Not a kernel ABI.
  */
 
-#ifndef ZEPHYROS_DRIVERS_HID_DRIVER_H
-#define ZEPHYROS_DRIVERS_HID_DRIVER_H
+#ifndef KONAOS_DRIVERS_HID_DRIVER_H
+#define KONAOS_DRIVERS_HID_DRIVER_H
 
 #include "driver.h"
 #include "ioc.h"
-#include "zos/types.h"
+#include "kos/types.h"
 
 /* Local translated-input ring: power-of-two size so the wraparound is a
  * mask, matching the proven MCU-side queue discipline. */
-#define ZHID_RING_SIZE 16u
+#define KHID_RING_SIZE 16u
 
 /* Console driver calls to ignore the semantic doorbell after a fetch
  * that produced no data (the proven stuck-doorbell guard). */
-#define ZHID_STUCK_PENALTY 64u
+#define KHID_STUCK_PENALTY 64u
 
 /* Bounded READ_TEXT staging: the driver I/O block the drained bytes are
  * copied out from (DRIVER_IO, the one fast copy range). */
-#define ZHID_READ_BATCH 24u
+#define KHID_READ_BATCH 24u
 
 /* Manifest dependency order (drivers/hid/hid.json): position 0 is
  * the IOC transport the host resolved and wired. */
 #define HID_DEP_IOC 0u
 
-struct zhid_state {
+struct khid_state {
 	uint8_t ioc_handle; /* the IOC endpoint, 0 = absent/unready  */
 	uint8_t head;       /* ring produce index                    */
 	uint8_t tail;       /* ring consume index                    */
 	uint8_t count;      /* bytes currently buffered              */
 	uint8_t penalty;    /* stuck-doorbell countdown              */
-	uint8_t ring[ZHID_RING_SIZE];
-	uint8_t read_buffer[ZHID_READ_BATCH];
+	uint8_t ring[KHID_RING_SIZE];
+	uint8_t read_buffer[KHID_READ_BATCH];
 	uint16_t read_buffer_address;
 };
 
@@ -51,9 +51,9 @@ int hid_getc(void *state);
 
 /* Hot segment: the endpoint dispatch and the init entry the loader calls
  * with the driver bootstrap table. */
-int16_t hid_driver_dispatch(struct zos_ipc_frame *frame);
+int16_t hid_driver_dispatch(struct kos_ipc_frame *frame);
 uint8_t hid_driver_init(const struct driver_boot *boot);
 
-extern struct zhid_state hid_state;
+extern struct khid_state hid_state;
 
-#endif /* ZEPHYROS_DRIVERS_HID_DRIVER_H */
+#endif /* KONAOS_DRIVERS_HID_DRIVER_H */

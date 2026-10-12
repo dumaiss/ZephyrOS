@@ -1,6 +1,6 @@
-/* ZephyrOS filesystem outcome acceptance (work package 42b, correction 01).
+/* KonaOS filesystem outcome acceptance (work package 42b, correction 01).
  *
- * The ZEX primary the `fs-selftest` image boots: an ordinary SDK program
+ * The EXE primary the `fs-selftest` image boots: an ordinary SDK program
  * that drives the whole card surface through `fs.h` and prints one line per
  * outcome.  It is new code for the M10 model - one small outcome image,
  * no fault-injection matrix and no kernel-side test hook - and it replaces
@@ -22,7 +22,7 @@
  *   * directory ops: mkdir, the DIR stat, rename, the renamed stat, the
  *     vanished old name, unlink and rmdir;
  *   * `/system`: open, stat and read a recovery-store file;
- *   * nested exec: `/system/fs_child.zex` gets the tail, writes through
+ *   * nested exec: `/system/fs_child.exe` gets the tail, writes through
  *     its own stdout, leaks every handle it opened and reports the exit
  *     status this program compares - the card slots the child leaked must
  *     be reusable immediately, which proves the kernel released them;
@@ -44,14 +44,14 @@
  * the fs image's transcript is exactly what it was.
  */
 
-#include "zos.h"
+#include "kos.h"
 
 #define FS_DIR   "/fs"
 #define FS_FILE  "/fs/SELFTEST.TMP"
 #define FS_RENAMED "/fs/RENAMED.TMP"
 #define FS_SUBDIR "/fs/SELFTEST.D"
 #define SYS_FILE "/system/drivers.man"
-#define CHILD    "/system/fs_child.zex"
+#define CHILD    "/system/fs_child.exe"
 
 /* The stage tail and the scratch paths it selects (45b). */
 #define FS_STAGE_TAIL "stage"
@@ -63,8 +63,8 @@
 /* The child's copy on the card (correction 01): the program this file
  * copies and then execs *from `/fs`*, which is the one way a card
  * executable is proven on the real machine. */
-#define FS_CHILD_PROGRAM "/fs/CHILD.ZEX"
-#define HW_CHILD_PROGRAM "/fs/HWTEST/CHILD.ZEX"
+#define FS_CHILD_PROGRAM "/fs/CHILD.EXE"
+#define HW_CHILD_PROGRAM "/fs/HWTEST/CHILD.EXE"
 
 #define FS_BLOCK 512u
 #define FS_SIZE  1200u
@@ -76,12 +76,12 @@
 
 static unsigned char pattern[FS_BLOCK];
 static unsigned char buf[FS_BLOCK];
-static struct zfs_stat st;
-static struct zos_ns_entry entries[ENUM_PAGE];
+static struct kfs_stat st;
+static struct kos_ns_entry entries[ENUM_PAGE];
 
 static unsigned int checks;
 static unsigned int failures;
-/* ZEX v2 has no initialized writable data: every static starts zeroed. */
+/* EXE v2 has no initialized writable data: every static starts zeroed. */
 static int card;
 /* 1: the exerciser's files stage (45b): scratch paths, no handover. */
 static int stage;
@@ -141,7 +141,7 @@ static int enum_has(const char *path, const char *name, int container)
 		for (index = 0; index < count; ++index) {
 			int is_container =
 				(entries[index].flags &
-				 ZOS_NS_ENTRY_CONTAINER) != 0u;
+				 KOS_NS_ENTRY_CONTAINER) != 0u;
 
 			if (strcmp(entries[index].name, name) == 0 &&
 			    is_container == (container != 0)) {
@@ -195,8 +195,8 @@ static void card_case(void)
 	int handle;
 
 	/* create + truncate */
-	handle = card_write(file, (unsigned char)(ZFS_O_WRITE | ZFS_O_CREATE |
-						  ZFS_O_TRUNC));
+	handle = card_write(file, (unsigned char)(KFS_O_WRITE | KFS_O_CREATE |
+						  KFS_O_TRUNC));
 	check("fs-open-create", handle >= 0);
 	check("fs-write-blocks", handle >= 0);
 	if (handle < 0) {
@@ -205,11 +205,11 @@ static void card_case(void)
 	check("fs-close-write", close((unsigned int)handle) == 0);
 
 	check("fs-stat-type",
-	      stat(file, &st) == 0 && st.type == ZFS_TYPE_FILE);
+	      stat(file, &st) == 0 && st.type == KFS_TYPE_FILE);
 	check("fs-stat-size", st.size == FS_SIZE);
 
 	/* read back */
-	handle = open(file, ZFS_O_READ);
+	handle = open(file, KFS_O_READ);
 	check("fs-open-read", handle >= 0);
 	if (handle < 0) {
 		return;
@@ -218,17 +218,17 @@ static void card_case(void)
 	      read((unsigned int)handle, buf, 128u) == 128 &&
 	      slice_matches(0u, 128u));
 	check("fs-seek-set",
-	      seek((unsigned int)handle, 400, ZFS_SEEK_SET) == 400);
+	      seek((unsigned int)handle, 400, KFS_SEEK_SET) == 400);
 	check("fs-read-cross-block",
 	      read((unsigned int)handle, buf, 300u) == 300 &&
 	      slice_matches(400u, 300u));
 	check("fs-seek-end",
-	      seek((unsigned int)handle, 0, ZFS_SEEK_END) ==
+	      seek((unsigned int)handle, 0, KFS_SEEK_END) ==
 	      (long)FS_SIZE);
 	check("fs-read-eof",
 	      read((unsigned int)handle, buf, 64u) == 0);
 	check("fs-seek-cur",
-	      seek((unsigned int)handle, -100, ZFS_SEEK_CUR) ==
+	      seek((unsigned int)handle, -100, KFS_SEEK_CUR) ==
 	      (long)(FS_SIZE - 100u));
 	check("fs-read-tail",
 	      read((unsigned int)handle, buf, 100u) == 100 &&
@@ -243,15 +243,15 @@ static void card_case(void)
 	/* directory ops */
 	check("fs-mkdir", mkdir(subdir) == 0);
 	check("fs-mkdir-stat",
-	      stat(subdir, &st) == 0 && st.type == ZFS_TYPE_DIR);
+	      stat(subdir, &st) == 0 && st.type == KFS_TYPE_DIR);
 	check("enum-card-subdir", enum_has(dir, "SELFTEST.D", 1));
 	check("fs-rename", rename(file, renamed) == 0);
 	check("fs-rename-stat",
 	      stat(renamed, &st) == 0 && st.size == FS_SIZE);
-	check("fs-rename-old-gone", stat(file, &st) == -ZOS_ENOENT);
+	check("fs-rename-old-gone", stat(file, &st) == -KOS_ENOENT);
 	check("fs-unlink", unlink(renamed) == 0);
 	check("fs-rmdir", rmdir(subdir) == 0);
-	check("fs-unlink-gone", stat(renamed, &st) == -ZOS_ENOENT);
+	check("fs-unlink-gone", stat(renamed, &st) == -KOS_ENOENT);
 }
 
 /* --- the recovery store and the nested exec ------------------------------ */
@@ -262,9 +262,9 @@ static void system_case(void)
 	unsigned char head[16];
 
 	check("system-stat",
-	      stat(SYS_FILE, &st) == 0 && st.type == ZFS_TYPE_FILE &&
+	      stat(SYS_FILE, &st) == 0 && st.type == KFS_TYPE_FILE &&
 	      st.size != 0u);
-	handle = open(SYS_FILE, ZFS_O_READ);
+	handle = open(SYS_FILE, KFS_O_READ);
 	check("system-open", handle >= 0);
 	if (handle < 0) {
 		return;
@@ -281,15 +281,15 @@ static void system_case(void)
 static int copy_child_to_card(const char *dest)
 {
 	unsigned int done = 0u;
-	int source = open(CHILD, ZFS_O_READ);
+	int source = open(CHILD, KFS_O_READ);
 	int target;
 	int ok = 1;
 
 	if (source < 0) {
 		return 0;
 	}
-	target = open(dest, (unsigned char)(ZFS_O_WRITE | ZFS_O_CREATE |
-						ZFS_O_TRUNC));
+	target = open(dest, (unsigned char)(KFS_O_WRITE | KFS_O_CREATE |
+						KFS_O_TRUNC));
 	if (target < 0) {
 		(void)close((unsigned int)source);
 		return 0;
@@ -342,11 +342,11 @@ static void exec_case(void)
 	}
 
 	/* The child leaked a card file and a bound `/fs`: if the kernel had
-	 * not released them, this open would report -ZOS_EMFILE. */
+	 * not released them, this open would report -KOS_EMFILE. */
 	if (card != 0) {
 		int handle = open(stage ? HW_FILE : FS_FILE,
-				      (unsigned char)(ZFS_O_WRITE |
-						      ZFS_O_CREATE));
+				      (unsigned char)(KFS_O_WRITE |
+						      KFS_O_CREATE));
 
 		check("exec-child-handles-released", handle >= 0);
 		if (handle >= 0) {
@@ -380,7 +380,7 @@ static unsigned int length_of(const char *text)
 
 int main(int argc, char **argv)
 {
-	struct zos_startup *boot = startup();
+	struct kos_startup *boot = startup();
 	const char *tail = (const char *)0;
 	int probe;
 
@@ -402,9 +402,9 @@ int main(int argc, char **argv)
 	 * the exerciser's stage, the same line proves the option tail
 	 * arrived byte-exact instead. */
 	check("startup-version",
-	      boot != (struct zos_startup *)0 && boot->version == 1u);
+	      boot != (struct kos_startup *)0 && boot->version == 1u);
 	check("startup-tail",
-	      boot != (struct zos_startup *)0 &&
+	      boot != (struct kos_startup *)0 &&
 	      (tail == (const char *)0
 		       ? boot->length == 0u
 		       : (boot->length == (unsigned char)length_of(tail) &&
@@ -418,18 +418,18 @@ int main(int argc, char **argv)
 
 	/* A card that is absent or write-protected must leave `/system`
 	 * usable and the verdict honest: probe with a read-only open, which
-	 * reports -ZOS_ENODEV when no card answers and -ZOS_EROFS for a
+	 * reports -KOS_ENODEV when no card answers and -KOS_EROFS for a
 	 * write-protected one. */
-	probe = open(stage ? HW_FILE : FS_FILE, ZFS_O_READ);
-	if (probe == -ZOS_ENODEV) {
+	probe = open(stage ? HW_FILE : FS_FILE, KFS_O_READ);
+	if (probe == -KOS_ENODEV) {
 		card = 0;
 		console_puts("fs-selftest: card absent: /fs not served\r\n");
-	} else if (probe == -ZOS_EROFS || probe == -ZOS_EINVAL) {
+	} else if (probe == -KOS_EROFS || probe == -KOS_EINVAL) {
 		card = 0;
 		console_puts("fs-selftest: card not writable\r\n");
 	} else if (probe >= 0) {
 		(void)close((unsigned int)probe);
-	} else if (probe != -ZOS_ENOENT) {
+	} else if (probe != -KOS_ENOENT) {
 		card = 0;
 		console_puts("fs-selftest: /fs not served\r\n");
 	}
@@ -451,7 +451,7 @@ int main(int argc, char **argv)
 	/* Production-like boot: hand the console to the monitor.  A stage
 	 * run returns to the runner that started it. */
 	if (stage == 0) {
-		(void)run("/system/monitor.zex", "");
+		(void)run("/system/monitor.exe", "");
 	}
 	return (failures == 0u) ? 0 : 1;
 }

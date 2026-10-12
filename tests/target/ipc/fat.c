@@ -1,4 +1,4 @@
-/* ZephyrOS IPC acceptance: the `fat` synthetic provider (test artifact).
+/* KonaOS IPC acceptance: the `fat` synthetic provider (test artifact).
  *
  * Middle of the vfs -> fat -> ioc chain.  It discovers the IOC endpoint at
  * init, forwards the read, and in the staged variant moves the 512-byte
@@ -8,7 +8,7 @@
  * cross-domain pointer.
  */
 
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "driver.h"
 
 #include "ipc_test.h"
@@ -18,9 +18,9 @@ static uint8_t ioc_handle;
 static uint8_t fat_block[IPC_BLOCK_BYTES];
 static uint16_t fat_block_address;
 
-static int16_t fat_read(struct zos_ipc_frame *frame)
+static int16_t fat_read(struct kos_ipc_frame *frame)
 {
-	struct zos_ipc_frame inner = *frame;
+	struct kos_ipc_frame inner = *frame;
 	int16_t result;
 
 	result = api->call(ioc_handle, IPC_OP_IOC_READ, &inner);
@@ -46,10 +46,10 @@ static int16_t fat_read(struct zos_ipc_frame *frame)
 
 /* The endpoint dispatch entry the manifest names: a module-global
  * symbol so the packer can resolve its hot-image offset. */
-int16_t fat_dispatch(struct zos_ipc_frame *frame)
+int16_t fat_dispatch(struct kos_ipc_frame *frame)
 {
 	if (frame->op != IPC_OP_FAT_READ) {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	return fat_read(frame);
 }

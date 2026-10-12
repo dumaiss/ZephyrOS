@@ -1,5 +1,5 @@
-/* ZephyrOS VFS part: the root router. */
-/* ZephyrOS M10 VFS root router and static namespace providers (package 42a).
+/* KonaOS VFS part: the root router. */
+/* KonaOS M10 VFS root router and static namespace providers (package 42a).
  *
  * Architecture 36.13: the VFS owns `/` and routes a normalized global
  * path, ASCII case-insensitively, by its first component to the three
@@ -10,7 +10,7 @@
  *   FS provider      nucleus routing: it forwards the remainder below
  *                    `/fs` to the filesystem driver over IPC, whose
  *                    endpoint comes from the host-built `/fs` publication
- *                    (a build with no filesystem driver is ZOS_ENODEV).
+ *                    (a build with no filesystem driver is KOS_ENODEV).
  *                    It holds no FAT/FS2 semantics: paths, name
  *                    operations and enumeration are the driver's.
  *   ROMFS provider   kernel/vfs/system.c over the one ROMFS reader: binds
@@ -37,11 +37,11 @@
 #include "kernel/syscall/diag.h"
 
 #include "kernel.h"
-#include "zos/errno.h"
+#include "kos/errno.h"
 #include "process.h"
 #include "romfs.h"
 
-#include "zos/protocol.h"
+#include "kos/protocol.h"
 
 /* Route one normalized absolute path and bind it. */
 int vfs_ns_bind(uint8_t pid, const char *norm, uint16_t flags, uint8_t *type)
@@ -52,21 +52,21 @@ int vfs_ns_bind(uint8_t pid, const char *norm, uint16_t flags, uint8_t *type)
 
 	if (norm == (const char *)0 || norm[0] != '/' ||
 	    type == (uint8_t *)0) {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	length = vfs_component_length(norm + 1);
 	rest = &norm[1u + length];
 	if (vfs_component_eq(norm + 1, length, "fs")) {
 		if (vfs_ns_fs_endpoint == 0u) {
-			return -ZOS_ENODEV; /* no filesystem driver in this build */
+			return -KOS_ENODEV; /* no filesystem driver in this build */
 		}
 		if (rest[0] == '\0') {
 			/* The filesystem-namespace handle: `fs.h` binds the
 			 * root and sends its name operations with the path
 			 * remainder. */
-			result = vfs_fs_alloc(pid, ZOS_TYPE_FS, 0u, 0u);
+			result = vfs_fs_alloc(pid, KOS_TYPE_FS, 0u, 0u);
 			if (result >= 0) {
-				*type = ZOS_TYPE_FS;
+				*type = KOS_TYPE_FS;
 			}
 			return result;
 		}
@@ -78,7 +78,7 @@ int vfs_ns_bind(uint8_t pid, const char *norm, uint16_t flags, uint8_t *type)
 	if (vfs_component_eq(norm + 1, length, "dev")) {
 		return vfs_device_bind(pid, rest, flags, type);
 	}
-	return -ZOS_ENOENT;
+	return -KOS_ENOENT;
 }
 
 int vfs_ns_unbind(uint8_t pid, uint8_t handle)
@@ -89,12 +89,12 @@ int vfs_ns_unbind(uint8_t pid, uint8_t handle)
 	 * returns their numbers and a program that dropped its console
 	 * could not report why (architecture 36.13).  Process teardown is
 	 * the one caller that releases them (vfs_process_exit). */
-	if (handle < ZOS_HANDLE_FIRST_BOUND) {
-		return -ZOS_EINVAL;
+	if (handle < KOS_HANDLE_FIRST_BOUND) {
+		return -KOS_EINVAL;
 	}
 	entry = vfs_handle_find(pid, handle);
 	if (entry == (struct vfs_handle_entry *)0) {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	vfs_ns_release_entry(entry);
 	return 0;
@@ -106,7 +106,7 @@ int vfs_ns_resolve(uint8_t pid, uint8_t handle, uint8_t *endpoint,
 	struct vfs_handle_entry *entry = vfs_handle_find(pid, handle);
 
 	if (entry == (struct vfs_handle_entry *)0) {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	*endpoint = entry->endpoint;
 	*object = entry->object;
@@ -122,47 +122,47 @@ int vfs_emit(uint8_t bank, uint16_t out, uint16_t slot,
 		   const char *name, uint16_t name_length, uint8_t type,
 		   uint8_t flags)
 {
-	struct zos_bank_copy_req req;
-	struct zos_ns_entry entry;
+	struct kos_bank_copy_req req;
+	struct kos_ns_entry entry;
 	uint8_t i;
 
-	if (name_length == 0u || name_length + 1u > ZOS_NS_NAME_MAX) {
-		return -ZOS_EINVAL;
+	if (name_length == 0u || name_length + 1u > KOS_NS_NAME_MAX) {
+		return -KOS_EINVAL;
 	}
 	entry.type = type;
 	entry.flags = flags;
 	entry.name_length = (uint8_t)(name_length + 1u);
 	entry.reserved = 0u;
-	for (i = 0; i < ZOS_NS_NAME_MAX; ++i) {
+	for (i = 0; i < KOS_NS_NAME_MAX; ++i) {
 		entry.name[i] = (i < name_length) ? name[i] : '\0';
 	}
-	for (i = 0; i < ZOS_NS_ENTRY_SIZE; ++i) {
-		zos_user_copy_staging[i] = ((const uint8_t *)&entry)[i];
+	for (i = 0; i < KOS_NS_ENTRY_SIZE; ++i) {
+		kos_user_copy_staging[i] = ((const uint8_t *)&entry)[i];
 	}
 	req.bank = bank;
-	req.op = ZOS_BANK_OP_WRITE;
-	req.addr = (uint16_t)(out + slot * ZOS_NS_ENTRY_SIZE);
-	req.buffer = zos_user_copy_staging;
-	req.length = ZOS_NS_ENTRY_SIZE;
-	if (zos_bank_copy(&req) != 0u) {
-		return -ZOS_EFAULT;
+	req.op = KOS_BANK_OP_WRITE;
+	req.addr = (uint16_t)(out + slot * KOS_NS_ENTRY_SIZE);
+	req.buffer = kos_user_copy_staging;
+	req.length = KOS_NS_ENTRY_SIZE;
+	if (kos_bank_copy(&req) != 0u) {
+		return -KOS_EFAULT;
 	}
 	return 0;
 }
 
 /* Room for one more entry in this batch?  The kernel links no arithmetic
  * helpers, so the comparison walks the entry size instead of multiplying:
- * a page holds at most ZOS_NS_BATCH_MAX entries. */
+ * a page holds at most KOS_NS_BATCH_MAX entries. */
 uint8_t vfs_room(uint16_t slot, uint16_t out_size)
 {
 	uint16_t needed = 0u;
 	uint16_t index;
 
 	for (index = 0u; index <= slot; ++index) {
-		if (needed > (uint16_t)(out_size - ZOS_NS_ENTRY_SIZE)) {
+		if (needed > (uint16_t)(out_size - KOS_NS_ENTRY_SIZE)) {
 			return 0u;
 		}
-		needed = (uint16_t)(needed + ZOS_NS_ENTRY_SIZE);
+		needed = (uint16_t)(needed + KOS_NS_ENTRY_SIZE);
 	}
 	return 1u;
 }
@@ -180,8 +180,8 @@ static int ns_enum_root(uint8_t bank, uint16_t *cookie, uint16_t out,
 		/* All three root entries are containers; their provider
 		 * protocols are not bindable objects in M10. */
 		if (vfs_emit(bank, out, slot, name, length, 0u,
-			    ZOS_NS_ENTRY_CONTAINER) != 0) {
-			return -ZOS_EFAULT;
+			    KOS_NS_ENTRY_CONTAINER) != 0) {
+			return -KOS_EFAULT;
 		}
 		++*cookie;
 		++slot;
@@ -198,8 +198,8 @@ int vfs_ns_enum(uint8_t bank, const char *norm, uint16_t *cookie,
 
 	if (norm == (const char *)0 || norm[0] != '/' ||
 	    cookie == (uint16_t *)0 || count == (uint16_t *)0 ||
-	    out_size < ZOS_NS_ENTRY_SIZE) {
-		return -ZOS_EINVAL;
+	    out_size < KOS_NS_ENTRY_SIZE) {
+		return -KOS_EINVAL;
 	}
 	*count = 0;
 	if (norm[1] == '\0') {
@@ -209,7 +209,7 @@ int vfs_ns_enum(uint8_t bank, const char *norm, uint16_t *cookie,
 	rest = &norm[1u + length];
 	if (vfs_component_eq(norm + 1, length, "fs")) {
 		if (vfs_ns_fs_endpoint == 0u) {
-			return -ZOS_ENODEV;
+			return -KOS_ENODEV;
 		}
 		return vfs_enum_fs(rest, cookie, out, out_size, count);
 	}
@@ -218,7 +218,7 @@ int vfs_ns_enum(uint8_t bank, const char *norm, uint16_t *cookie,
 			return vfs_enum_romfs(bank, cookie, out, out_size,
 					     count);
 		}
-		return -ZOS_ENOTDIR;
+		return -KOS_ENOTDIR;
 	}
 	if (vfs_component_eq(norm + 1, length, "dev")) {
 		const struct vfs_ns_publication *pub;
@@ -229,49 +229,49 @@ int vfs_ns_enum(uint8_t bank, const char *norm, uint16_t *cookie,
 		}
 		pub = vfs_pub_find(rest);
 		if (pub == (const struct vfs_ns_publication *)0) {
-			return -ZOS_ENOENT;
+			return -KOS_ENOENT;
 		}
 		if (pub->flags == 0u) {
-			return -ZOS_ENOTDIR; /* a bindable object */
+			return -KOS_ENOTDIR; /* a bindable object */
 		}
 		return vfs_enum_device(bank, rest, cookie, out, out_size,
 				      count);
 	}
-	return -ZOS_ENOENT;
+	return -KOS_ENOENT;
 }
 
 /* One filesystem-namespace operation (`STAT`, `MKDIR`, `RMDIR`, `UNLINK`,
  * `RENAME`) on `norm` (RENAME adds `norm_b`): route it to the owning
  * provider and write the reply into the caller's frame. */
 int vfs_fs_namespace_op(uint8_t op, const char *norm,
-			      const char *norm_b, struct zos_ipc_frame *frame)
+			      const char *norm_b, struct kos_ipc_frame *frame)
 {
 	int result;
 
 	frame->op = op;
 	frame->flags = 0u;
-	frame->desc = ZOS_IPC_DESC_NONE;
+	frame->desc = KOS_IPC_DESC_NONE;
 	frame->arg0 = 0u;
 	frame->arg1 = 0u;
 	if (vfs_path_under(norm, "/system")) {
 		/* ROMFS is read-only: only metadata has an answer. */
-		if (op == ZFS_OP_STAT) {
+		if (op == KFS_OP_STAT) {
 			frame->payload[0] = norm[7];
 			return vfs_ns_file_meta(norm + 7, frame);
 		}
-		return -ZOS_EROFS;
+		return -KOS_EROFS;
 	}
 	if (!vfs_path_under(norm, VFS_NS_FS_ROOT)) {
-		return -ZOS_ENOENT;
+		return -KOS_ENOENT;
 	}
 	if (vfs_ns_fs_endpoint == 0u) {
-		return -ZOS_ENODEV;
+		return -KOS_ENODEV;
 	}
 	vfs_fs_put_path(frame->payload, vfs_fs_rel(norm));
-	if (op == ZFS_OP_RENAME) {
+	if (op == KFS_OP_RENAME) {
 		if (norm_b == (const char *)0 ||
 		    !vfs_path_under(norm_b, VFS_NS_FS_ROOT)) {
-			return -ZOS_EXDEV;
+			return -KOS_EXDEV;
 		}
 		vfs_fs_put_path(&frame->payload[2], vfs_fs_rel(norm_b));
 	}
@@ -281,7 +281,7 @@ int vfs_fs_namespace_op(uint8_t op, const char *norm,
 
 /* One nucleus-side FILE call on a bound handle (the cold loader). */
 int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
-			 struct zos_ipc_frame *frame, uint16_t length,
+			 struct kos_ipc_frame *frame, uint16_t length,
 			 uint8_t dir)
 {
 	struct vfs_handle_entry *entry;
@@ -289,11 +289,11 @@ int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
 	entry = vfs_handle_find(vfs_owner_current(), handle);
 
 	if (entry == (struct vfs_handle_entry *)0) {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	if (entry->endpoint == VFS_NS_FS_ENDPOINT) {
 		if (vfs_ns_fs_endpoint == 0u) {
-			return -ZOS_ENODEV;
+			return -KOS_ENODEV;
 		}
 		if (length == 0u) {
 			frame->payload[0] = object;
@@ -313,12 +313,12 @@ int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
 /* `chdir` asks the owning provider whether `norm` is traversable. */
 int vfs_ns_dir_check(const char *norm, uint8_t *ok)
 {
-	struct zos_ipc_frame frame;
+	struct kos_ipc_frame frame;
 	uint16_t length;
 
 	*ok = 0u;
 	if (norm == (const char *)0 || norm[0] != '/') {
-		return -ZOS_EINVAL;
+		return -KOS_EINVAL;
 	}
 	if (norm[1] == '\0') {
 		*ok = 1u; /* the VFS owns `/`; it is traversable */
@@ -329,11 +329,11 @@ int vfs_ns_dir_check(const char *norm, uint8_t *ok)
 		int result;
 
 		if (vfs_ns_fs_endpoint == 0u) {
-			return -ZOS_ENODEV;
+			return -KOS_ENODEV;
 		}
-		frame.op = ZFS_OP_STAT;
+		frame.op = KFS_OP_STAT;
 		frame.flags = 0u;
-		frame.desc = ZOS_IPC_DESC_NONE;
+		frame.desc = KOS_IPC_DESC_NONE;
 		frame.arg0 = 0u;
 		frame.arg1 = 0u;
 		vfs_fs_put_path(frame.payload, vfs_fs_rel(norm));
@@ -341,7 +341,7 @@ int vfs_ns_dir_check(const char *norm, uint8_t *ok)
 		if (result < 0) {
 			return result;
 		}
-		*ok = (uint8_t)((frame.payload[0] == ZFS_TYPE_DIR) ? 1u : 0u);
+		*ok = (uint8_t)((frame.payload[0] == KFS_TYPE_DIR) ? 1u : 0u);
 		return 0;
 	}
 	if (vfs_component_eq(norm + 1, length, "system")) {
@@ -349,7 +349,7 @@ int vfs_ns_dir_check(const char *norm, uint8_t *ok)
 			*ok = 1u;
 			return 0;
 		}
-		return -ZOS_ENOTDIR; /* ROMFS is flat */
+		return -KOS_ENOTDIR; /* ROMFS is flat */
 	}
 	if (vfs_component_eq(norm + 1, length, "dev")) {
 		const char *rel = &norm[1u + length];
@@ -362,16 +362,16 @@ int vfs_ns_dir_check(const char *norm, uint8_t *ok)
 			const struct vfs_ns_publication *pub = vfs_pub_find(rel);
 
 			if (pub == (const struct vfs_ns_publication *)0) {
-				return -ZOS_ENOENT;
+				return -KOS_ENOENT;
 			}
 			if (pub->flags == 0u) {
-				return -ZOS_ENOTDIR; /* a bindable object */
+				return -KOS_ENOTDIR; /* a bindable object */
 			}
 			*ok = 1u;
 		}
 		return 0;
 	}
-	return -ZOS_ENOENT;
+	return -KOS_ENOENT;
 }
 
 /* --- nucleus setup -------------------------------------------------------- */
@@ -414,7 +414,7 @@ int vfs_ns_init(void)
 {
 	if (ipc_install_nucleus_endpoint(VFS_NS_FILE_ENDPOINT, 0u,
 					 vfs_ns_file_dispatch) < 0) {
-		return -ZOS_ENOSPC;
+		return -KOS_ENOSPC;
 	}
 	return 0;
 }
