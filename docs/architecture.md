@@ -5495,6 +5495,13 @@ aperture, common) stays mapped.
 - **Tokens:** the nucleus issues tokens only for the calling process's own
   objects and segments, and only for application banks 0-5 (P = 2-7). It
   never issues a token for bank 6 or bank 7.
+- **Banked calls.**  A far-code module built with bank n makes every
+  `__banked` function in it callable as plain C: SDCC emits the segment id
+  (`b_<fn>` = n), the entry's linked address and a call to
+  `___sdcc_bcall_ehl`, and the SDK's trampoline maps segment n through a
+  per-program token cache, opens the aperture, transfers and restores the
+  caller's latch.  The far code may make banked calls of its own; a call
+  that names no far segment reports the SDK's `KOS_RT_EFARMAP`.
 - **Linker rule for far-using programs:**
   - code, stack and data used while the aperture is open live outside
     `8000h-BFFFh` of the primary image;

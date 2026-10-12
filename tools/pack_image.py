@@ -252,12 +252,18 @@ class LayoutError(Exception):
     """The linked image violates the KonaOS memory-layout contract."""
 
 
-def parse_ihx(text):
+def parse_ihx(text, multi=False):
     """Parse Intel HEX text into a dict of address -> byte.
 
     Raises LayoutError for records outside 0000h-FFFFh, bad checksums, and
     conflicting writes to the same address (bytes the packer would
     otherwise silently discard or place ambiguously).
+
+    With `multi`, a second write to an address is kept instead of being
+    rejected and every value becomes a list of bytes in record order: a
+    program with several far-code areas linked at 8000h emits one record
+    stream per area (`_FAR1`, `_FAR2`, ... in link order), so the n-th
+    value of an address is the n-th area's byte (work package 49b).
     """
     mem = {}
     upper = 0
@@ -288,6 +294,9 @@ def parse_ihx(text):
                         "IHX line %d: address %04X outside the 16-bit space"
                         % (lineno, addr)
                     )
+                if multi:
+                    mem.setdefault(addr, []).append(byte)
+                    continue
                 if addr in mem and mem[addr] != byte:
                     raise LayoutError(
                         "IHX line %d: conflicting content for %04Xh "

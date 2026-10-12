@@ -64,13 +64,14 @@ NOTE_ABSENT = b" (card absent)"
 MONITOR_STATUS = "exec: exit status 0x0000"
 
 # The stage programs report their own verdicts through the console the
-# owner watches; the counts are the ones the standalone replays pin.
+# owner watches; the counts are the ones the standalone replays pin (the
+# far program's includes the banked-call checks, package 49b).
 CONSOLE_EVIDENCE = ("xmem-selftest: 61 checks, 0 failures",
-                    "xmem-far: 19 checks, 0 failures",
+                    "xmem-far: 37 checks, 0 failures",
                     "fs-selftest: 37 checks, 0 failures",
                     "fs-child: PASS")
 CONSOLE_ABSENT_EVIDENCE = ("xmem-selftest: 61 checks, 0 failures",
-                           "xmem-far: 19 checks, 0 failures",
+                           "xmem-far: 37 checks, 0 failures",
                            "fs-selftest: 8 checks, 0 failures",
                            "fs-child: card absent")
 

@@ -45,6 +45,7 @@ user/sdk/
   src/exec.c              run()
   src/xmem.c              extended-memory and aperture wrappers
   src/seg.c               EXE v2 segment wrappers, farcall
+  src/bcall.asm           ___sdcc_bcall_ehl, the banked-call trampoline
   src/console_proto.c   console-driver client (write/read/poll/putc)
   src/console_io.c        putchar/console_puts/getchar/console_readline
   src/klibc/              one archive member per function
@@ -114,7 +115,7 @@ manifest from the link map, packs and validates
 | `STAGE=1` | off | copy the packed program into `$(MODULES)` so a recovery manifest can name it |
 | `INCLUDES=a:b` | empty | extra include roots (colon separated), for test-owned headers only |
 | `SEGMENTS=FILE` | none | a JSON list of EXE v2 segment declarations: `DATA` rows (`id`, `kind`, `input`, `bss_size`) and `FAR_CODE` rows (`id`, `kind`, `area`, `bss_size`); `FILE` is a build prerequisite and each payload `input` resolves against the program's object directory |
-| `FAR=SRC:SRC` | none | far-code sources (relative to `DIR`) placed in `_FAR_CODE`, which the link bases at `8000h`; a `.c` source is compiled with `--codeseg FAR_CODE` and an `.asm` source opens `.area _FAR_CODE` itself.  Without `SEGMENTS=` the rule declares the one `FAR_CODE` segment (id 1) for it |
+| `FAR1=SRC:SRC` … `FAR4=SRC:SRC` | none | far-code sources (relative to `DIR`) of far segment n (n = 1..4), placed in `_FAR<n>`, which the link bases at `8000h`; a `.c` source is compiled with bank n and `--codeseg FAR<n>`, so every `__banked` definition in it emits `b_<fn> = n`, and an `.asm` source opens `.area _FAR<n>` itself.  Without `SEGMENTS=` the rule declares one `FAR_CODE` segment per option used, id n, area `_FAR<n>` |
 
 The rule file is a prerequisite of the archive and of every link script,
 so editing it (a new source, a changed flag) re-archives `libkos` from
@@ -129,13 +130,23 @@ window rule).  `SEGMENTS=FILE` merges auxiliary segment declarations;
 the packer derives each `DATA` segment's `image_size` from its payload
 file and each `FAR_CODE` segment's from the map's `l__<area>` (whose
 `s__<area>` must be `8000h`), then lays out the 36-byte v2 header, the
-table and the payloads (`docs/exe-format.md`).
+table and the payloads (`docs/exe-format.md`).  The far code segments
+(`FAR1=`..`FAR4=`) are the container's first segments, ids 1..k in
+option order, and the `SEGMENTS=` `DATA` rows follow them (ids k+1..N).
+The loader numbers rows `1..N` in order, and a far segment's id is the
+number its `__banked` definitions name (package 49b), so a program with
+far code declares its `FAR_CODE` rows first.
 
-A rule line with `FAR=` also switches on the **36.17 link rule**: the
-packer proves the primary image and BSS end below `8000h` and the stack
-base sits at or above `C000h`, so a program that uses far code keeps
-`8000h-BFFFh` for the aperture alone.  `fardemo` (section 10) is the
-smallest program that links that way.
+A rule line with `FAR1=`..`FAR4=` also switches on the **36.17 link
+rule**: the packer proves the primary image and BSS end below `8000h` and
+the stack base sits at or above `C000h`, so a program that uses far code
+keeps `8000h-BFFFh` for the aperture alone.  `fardemo` (section 10) is
+the smallest program that links that way, and its far half is called as
+plain C: the far source's `__banked` definition makes SDCC emit
+`ld e,#b_<fn>` / `ld hl,#_<fn>` / `call ___sdcc_bcall_ehl`, and the SDK's
+trampoline (`src/bcall.asm`) maps segment `E`, opens the aperture onto
+it, transfers to `HL` and restores the caller's latch.  `farcall` stays
+as the primitive that takes an explicit segment and entry address.
 
 ## 4. crt0, argv and exit
 
@@ -404,6 +415,7 @@ register-only aperture helpers `aperture_open(token)` /
 ```c
 int seginfo(unsigned int segment, struct kos_seg_info *out);
 int segmap(unsigned int segment);   /* FAR_CODE token, >= 1      */
+#define KOS_RT_EFARMAP 0x30         /* a banked call named no far segment */
 typedef int (*kos_far_fn)(int, int);
 int farcall(unsigned int segment, kos_far_fn entry, int a, int b);
 ```
@@ -419,6 +431,28 @@ the buffer-identity rule while the aperture is open.  An SDCC indirect
 call to an address the compiler cannot see needs the trampolines in
 `sdcc_calls.asm` (`___sdcc_call_iy`/`___sdcc_call_hl`), which is why the
 archive carries that one assembly member.
+
+`__banked` is the same mechanism as plain C (package 49b).  A program
+built with `FAR1=`..`FAR4=` calls a far function whose definition is
+`__banked` like any other function:
+
+```c
+extern int far_main(int a, int b) __banked;  /* built with FAR1= */
+result = far_main(a, b);
+```
+
+`bcall.asm`'s `___sdcc_bcall_ehl` is the trampoline SDCC's calling
+convention names.  Arguments travel on the stack exactly as SDCC pushed
+them, the result comes back in `A` (8 bits), `DE` (16) or `DEHL` (32),
+and everything else the caller needs is spilled before the call.  The
+trampoline keeps one aperture token per segment id, so only the first
+call of a segment spends a `SYS_SEG_MAP`; a far function may make banked
+calls of its own, into its own or another segment, and each one restores
+its caller's mapping on return.  A banked call that names no far segment
+- an id the container does not have, or a `__banked` definition in the
+primary bank (`b_` = 0) - reports `KOS_RT_EFARMAP` (an SDK-level code,
+outside the syscall-visible `KOS_E*` range) through `exe_runtime_error`
+and does not run the function.
 
 ## 7. Memory layout
 
@@ -456,25 +490,26 @@ pin.  The IPC caller-buffer probe sets `LOWBASE=0x0300` and
 window itself as a copy destination, and the only program in the
 tree that links that way.
 
-A program built with `FAR=` moves its far code out of this map entirely:
-the `_FAR_CODE` area is linked at `8000h` and becomes a `FAR_CODE`
-segment, so the primary image, its BSS and the whole stack stay inside
+A program built with `FAR1=` (up to `FAR4=`) moves its far code out of
+this map entirely: the `_FAR1` area is linked at `8000h` and becomes the
+`FAR_CODE` segment 1, so the primary image, its BSS and the whole stack
+stay inside
 `0100h-7FFFh`/`C000h-DFFFh` and the aperture `8000h-BFFFh` is free for
 the far bank.  `fardemo` (section 10) is the demo; the far code is
 executed in place through the mode-10 aperture, so it costs no primary
 bank space at all.
 
-**One `_FAR_CODE` area per program link.**  The rule creates exactly one
-far area, and two areas at the same base in one link emit overlapping IHX
-records, which no loader can use.  Several far *segments* are several
-`FAR_CODE` rows that name that one area (each row is placed in its own
-bank; `tests/xmem/xmem_far.segments.json` declares the area twice to
-prove two far segments in two banks).  A program that builds its own far
-areas declares each one under its own name and based at `8000h`: the
-manifest's `SEGMENTS=` rows name the areas, and the packer resolves
-`s__<area>`/`l__<area>` and refuses an area based anywhere else.  The
-name is what tells the areas apart in the manifest; all of them load at
-`8000h` of their own far bank.
+**One far area per segment, all at `8000h`.**  The rule creates one area
+per `FAR<n>=` option used, `_FAR<n>`, each based at `8000h`.  The linker
+writes one record stream per area, in link order (ascending id), so the
+n-th byte of an address is the n-th area covering it and the packer takes
+each area's payload from its own stream (package 49b).  A program that
+builds its own far areas declares each one under its own name and based at
+`8000h`: the manifest's `SEGMENTS=` rows name the areas, the packer
+resolves `s__<area>`/`l__<area>` and refuses an area based anywhere else,
+and a `FAR_CODE` row's id is the number in its area name (`_FAR<n>` is
+segment n, and the far rows are the container's first).  All of the areas
+load at `8000h` of their own far bank.
 
 ## 8. Which member pulls in what
 
@@ -512,11 +547,11 @@ above:
 - every declared program's first source includes `kos.h`, every quoted
   include resolves inside `{program dir, user/sdk/include, abi,
   INCLUDES=...}` and none resolves into `include/`, `kernel/`, `drivers/`,
-  `platform/`, `fs/` or `drivers/` - `FAR=` sources exactly as the
-  ordinary ones;
+  `platform/`, `fs/` or `drivers/` - far sources (`FAR1=`..`FAR4=`)
+  exactly as the ordinary ones;
 - `exe.mk` compiles with `-I abi -I $(KOS_SDK_INCLUDE)` and nothing else,
-  compiles far sources with `--codeseg FAR_CODE` and bases `_FAR_CODE` at
-  `8000h`;
+  compiles each far source with bank n and `--codeseg FAR<n>` and bases
+  `_FAR<n>` at `8000h`;
 - `exepack` refuses a `FAR_CODE` row that is not based at `8000h`, over
   16 KiB, overlapping another far area, or whose program's primary image,
   BSS or stack reaches into `8000h-BFFFh`;
@@ -564,12 +599,13 @@ single, non-repeating line would mean the program never exited.
 
 The same image also carries **`fardemo.exe`** (`user/helloworld/fardemo.c`
 and its far half `fardemo_far.c`, declared with
-`FAR=fardemo_far.c,STACK=256,STAGE=1`): the smallest complete far-code
-program.  Its primary half maps its own `FAR_CODE` segment with
-`segmap`, calls the far entry through `farcall` and compares the
-returned latch with the token; the far half writes its line from a
-literal inside the aperture, calls back into primary code and returns
-`(latch << 8) | value`.  Booting an image whose boot program is
+`FAR1=fardemo_far.c,STACK=256,STAGE=1`): the smallest complete far-code
+program, and since package 49b the smallest **banked call**.  Its primary
+half maps its own `FAR_CODE` segment with `segmap` and calls the
+`__banked` far entry as plain C, whose trampoline maps the segment and
+restores the latch; it compares the returned latch with `segmap`'s token.
+The far half writes its line from a literal inside the aperture, calls
+back into primary code and returns `(latch << 8) | value`.  Booting an image whose boot program is
 `/system/fardemo.exe` (a system file whose driver set and store are the
 helloworld image's and whose `boot` names `fardemo.exe`; `make
 BUILD=build-fardemo SYSTEM=<that system>` builds it) prints

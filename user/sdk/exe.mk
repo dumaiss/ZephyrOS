@@ -24,15 +24,23 @@
 #                       is a prerequisite and its payload `input` names
 #                       resolve against the program's object directory
 #                       (package 44a)
-#   FAR=SRC:SRC ...     far-code sources (relative to DIR) compiled into the
-#                       _FAR_CODE area and linked at 8000h, executed in
-#                       place through the aperture; a .c source is compiled
-#                       with --codeseg FAR_CODE, a .asm source opens
-#                       `.area _FAR_CODE` itself.  Without SEGMENTS= the
-#                       rule declares one FAR_CODE segment (id 1) for the
-#                       area, and the packer checks the 36.17 link rule
+#   FAR1..FAR4=SRC:SRC .. far-code sources (relative to DIR) compiled as far
+#                       segment n (n = 1..4): each is compiled with bank n
+#                       and --codeseg FAR<n>, so a `__banked` definition in
+#                       it emits `b_<fn> = <n>` (the id the caller's
+#                       `ld e,#b_<fn>` names) and its code lands in the
+#                       `_FAR<n>` area, linked at 8000h; the sources
+#                       themselves carry no bank pragma (package 49b).
+#                       Without SEGMENTS= the rule declares one FAR_CODE
+#                       segment per option used, id n, area `_FAR<n>`; the
+#                       ids are the numbers a `__banked` definition emits
+#                       (`b_<fn>` = n), so the far segments are the
+#                       container's first rows (ids 1..k) and a program
+#                       that also declares DATA segments lists those after
+#                       them.  The packer checks the 36.17 link rule
 #                       (primary image, BSS and stack outside 8000h-BFFFh)
-#                       (package 44b)
+#                       and the 16 KiB aperture limit, naming the
+#                       segment.
 # -----------------------------------------------------------------------------
 
 EXE_USER_ROOT   := $(BUILD)/user
@@ -71,7 +79,7 @@ KOS_SDK_C_SRC := args.c fs.c ipc.c exec.c console_io.c \
     klibc/utoa.c klibc/ultoa.c klibc/itoa.c klibc/ltoa.c \
     klibc/printf.c klibc/sdcc_arith.c klibc/sdcc_arith_signed.c
 KOS_SDK_ASM_SRC := gate.asm ipcgate.asm diaggate.asm nsgate.asm \
-    xmemgate.asm sdcc_calls.asm \
+    xmemgate.asm bcall.asm sdcc_calls.asm \
     klibc/sdcc_arith_entries.asm klibc/sdcc_arith_signed_entries.asm
 
 KOS_SDK_C_OBJS   := $(addprefix $(EXE_SDK_BUILD)/,$(patsubst %.c,%.rel,$(KOS_SDK_C_SRC)))
@@ -123,15 +131,19 @@ $(1)_STACK  := $$(if $$(filter STACK=%,$$($(1)_OPTS)),$$(patsubst STACK=%,%,$$(f
 $(1)_SCRATCH:= $$(if $$(filter SCRATCH=%,$$($(1)_OPTS)),$$(patsubst SCRATCH=%,%,$$(filter SCRATCH=%,$$($(1)_OPTS))),kos_scratch:16)
 $(1)_SCRATCHARG := $$(if $$($(1)_SCRATCH), --scratch $$($(1)_SCRATCH),)
 $(1)_SEGMENTS := $$(if $$(filter SEGMENTS=%,$$($(1)_OPTS)),$$(patsubst SEGMENTS=%,%,$$(filter SEGMENTS=%,$$($(1)_OPTS))),)
-$(1)_FAR    := $$(if $$(filter FAR=%,$$($(1)_OPTS)),$$(patsubst FAR=%,%,$$(filter FAR=%,$$($(1)_OPTS))),)
-$(1)_FARSRC := $$(subst :, ,$$($(1)_FAR))
-$(1)_FARCOBJS := $$(addprefix $$($(1)_OBJDIR)/,$$(patsubst %.c,%.rel,$$(notdir $$(filter %.c,$$($(1)_FARSRC)))))
-$(1)_FARAOBJS := $$(addprefix $$($(1)_OBJDIR)/,$$(patsubst %.asm,%.rel,$$(notdir $$(filter %.asm,$$($(1)_FARSRC)))))
-$(1)_FAROBJS  := $$($(1)_FARCOBJS) $$($(1)_FARAOBJS)
-# Without SEGMENTS= the rule declares the one far-code segment the linked
-# _FAR_CODE area becomes; a program with several far segments (or a far
-# BSS) declares them itself through SEGMENTS=.
-$(1)_FARDECL := $$(if $$($(1)_FAR),$$(if $$($(1)_SEGMENTS),,$$($(1)_OBJDIR)/$(1).far.json),)
+# The far code segments this program declares: one per FAR<n>= option
+# used, ascending, so segment n is always the `_FAR<n>` area (package
+# 49b).  A program with a far BSS, or with an id/area layout of its own,
+# declares its segments through SEGMENTS= instead.
+$(1)_FARIDS := $$(strip $$(foreach n,1 2 3 4,$$(if $$(filter FAR$$(n)=%,$$($(1)_OPTS)),$$(n),)))
+# One "id:source" spec per far source, in option order, and the object each
+# compiles to: $(OBJDIR)/far<id>/<base>.rel, so a far source can never
+# collide with a primary object and each id owns its own flags.
+$(1)_FARSPECS := $$(foreach n,$$($(1)_FARIDS),$$(foreach s,$$(subst :, ,$$(patsubst FAR$$(n)=%,%,$$(filter FAR$$(n)=%,$$($(1)_OPTS)))),$$(n):$$(s)))
+$(1)_FARSRC := $$(foreach spec,$$($(1)_FARSPECS),$$(word 2,$$(subst :, ,$$(spec))))
+$(1)_FAROBJS := $$(foreach spec,$$($(1)_FARSPECS),$$($(1)_OBJDIR)/far$$(word 1,$$(subst :, ,$$(spec)))/$$(patsubst %.c,%.rel,$$(patsubst %.asm,%.rel,$$(notdir $$(word 2,$$(subst :, ,$$(spec)))))))
+$(1)_FARSTAMP := $$($(1)_OBJDIR)/far.stamp
+$(1)_FARDECL := $$(if $$($(1)_FARIDS),$$(if $$($(1)_SEGMENTS),,$$($(1)_OBJDIR)/$(1).far.json),)
 $(1)_SEGARGSRC := $$(if $$($(1)_SEGMENTS),$$($(1)_SEGMENTS),$$($(1)_FARDECL))
 $(1)_SEGMENTSARG := $$(if $$($(1)_SEGARGSRC), --segments $$($(1)_SEGARGSRC),)
 $(1)_SEGMENTSDEP := $$(if $$($(1)_SEGARGSRC), $$($(1)_SEGARGSRC),)
@@ -158,21 +170,47 @@ $$($(1)_COBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.c $$($(1)_HEADERS) \
 $$($(1)_AOBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.asm | $$($(1)_OBJDIR)
 	$(SDASZ80) $(EXE_ASFLAGS) $$($(1)_INCFLAGS) -I$(2) -o $$@ $$<
 
-# Far-code objects (package 44b): the same compile with --codeseg
-# FAR_CODE, so their _FAR_CODE area is based at 8000h by the link script.
-$$($(1)_FARCOBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.c $$($(1)_HEADERS) \
-		| $$($(1)_OBJDIR)
-	$(SDCC) $(EXE_CFLAGS) --codeseg FAR_CODE $$($(1)_INCFLAGS) -I $(2) -c $$< -o $$@
+# Far-code objects (package 49b): one recipe compiles every FAR<n>=
+# source with its own segment's flags - bank n first, then the area, so
+# the module lands in `_FAR<n>` and every `__banked` definition in it
+# emits `b_<fn> = n`.  A far .asm source opens `.area _FAR<n>` itself
+# (and sets its own `b_<fn>` when it defines a banked entry).
+# The stamp is the one target make knows: the objects below hang off it
+# order-only, so a source edit recompiles the program's far code and
+# nothing else.
+$$($(1)_FARSTAMP): $$(addprefix $(2)/,$$($(1)_FARSRC)) $$($(1)_HEADERS) \
+		$(KOS_SDK_ROOT)/exe.mk | $$($(1)_OBJDIR)
+	@for spec in $$($(1)_FARSPECS); do \
+	  n=$$$${spec%%:*}; src=$$$${spec#*:}; \
+	  mkdir -p $$($(1)_OBJDIR)/far$$$$n; \
+	  base=$$$${src##*/}; base=$$$${base%.*}; \
+	  obj=$$($(1)_OBJDIR)/far$$$$n/$$$$base; \
+	  case $$$$src in \
+	    *.c) $(SDCC) $(EXE_CFLAGS) -bo $$$$n --codeseg FAR$$$$n \
+			$$($(1)_INCFLAGS) -I $(2) -c $(2)/$$$$src -o $$$$obj.rel || exit 1 ;; \
+	    *.asm) $(SDASZ80) $(EXE_ASFLAGS) $$($(1)_INCFLAGS) -I$(2) \
+			-o $$$$obj.rel $(2)/$$$$src || exit 1 ;; \
+	    *) echo "unknown far source $$$$src" >&2; exit 1 ;; \
+	  esac; \
+	done
+	touch $$@
 
-$$($(1)_FARAOBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.asm | $$($(1)_OBJDIR)
-	$(SDASZ80) $(EXE_ASFLAGS) $$($(1)_INCFLAGS) -I$(2) -o $$@ $$<
+ifneq ($$($(1)_FAROBJS),)
+$$($(1)_FAROBJS): | $$($(1)_FARSTAMP)
+endif
 
 ifneq ($$($(1)_FARDECL),)
-# The default far-segment declaration: the linked _FAR_CODE area becomes
-# segment id 1 (regenerated when the rule changes, so an id/bss edit is
-# never masked by a stale file).
+# The default far-segment declaration: one FAR_CODE segment per FAR<n>=
+# option used, the area that option compiled its sources into
+# (regenerated when the rule changes, so a segment edit is never masked
+# by a stale file).
 $$($(1)_FARDECL): $(KOS_SDK_ROOT)/exe.mk | $$($(1)_OBJDIR)
-	@printf '%s\n' '[{"id": 1, "kind": "FAR_CODE", "area": "_FAR_CODE", "bss_size": 0}]' > $$@
+	@printf '%s' '[' > $$@
+	@sep=''; for n in $$($(1)_FARIDS); do \
+	  printf '%s' "$$$$sep{\"id\": $$$$n, \"kind\": \"FAR_CODE\", \"area\": \"_FAR$$$$n\", \"bss_size\": 0}" >> $$@; \
+	  sep=,; \
+	done
+	@printf '%s\n' ']' >> $$@
 endif
 
 $$($(1)_OBJDIR)/$(1).lk: $$($(1)_LINKOBJS) $$(EXE_LIBKOS) $(KOS_SDK_ROOT)/exe.mk | $$($(1)_OBJDIR)
@@ -181,7 +219,7 @@ $$($(1)_OBJDIR)/$(1).lk: $$($(1)_LINKOBJS) $$(EXE_LIBKOS) $(KOS_SDK_ROOT)/exe.mk
 	  printf '%s\n' '-i $$($(1)_OBJDIR)/$(1).ihx'; \
 	  printf '%s\n' '-b _KOS_SDK_DATA = $$($(1)_LOWBASE)'; \
 	  printf '%s\n' '-b _CODE = $$($(1)_CODEBASE)'; \
-	  $$(if $$($(1)_FAR),printf '%s\n' '-b _FAR_CODE = 0x8000';,) \
+	  $$(if $$($(1)_FARIDS),for n in $$($(1)_FARIDS); do printf '%s\n' "-b _FAR$$$$n = 0x8000"; done;,) \
 	  printf '%s\n' $$($(1)_LINKOBJS); \
 	  printf '%s\n' '-l $$(EXE_LIBKOS)'; \
 	  printf '%s\n' '-e'; \

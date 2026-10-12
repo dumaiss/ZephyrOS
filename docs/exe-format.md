@@ -167,16 +167,20 @@ a BSS size (`SEGMENTS=` on the `exe_program` line); the packer derives
 its `image_size` from the payload file and lays out the table.
 
 A **`FAR_CODE` segment** is declared with a linker `area` instead
-(`{"id": 1, "kind": "FAR_CODE", "area": "_FAR_CODE", "bss_size": 0}`):
-the rule compiles the program's `FAR=` sources with `--codeseg FAR_CODE`
-and the link bases `_FAR_CODE` at `8000h` (`-b _FAR_CODE = 0x8000`), so
-the area is resolved by the program's own link and the packer takes its
-bytes from the program's IHX (holes zero-filled) using the map's
-`s__FAR_CODE`/`l__FAR_CODE` symbols.  One linked area is therefore one
-segment (id order is manifest order); a program that wants several
-declares several far areas, each based at `8000h` in its own link.  With
-no `SEGMENTS=` the rule generates the one-segment declaration for
-`_FAR_CODE` itself.
+(`{"id": 1, "kind": "FAR_CODE", "area": "_FAR1", "bss_size": 0}`): the
+rule compiles the program's `FAR<n>=` sources with bank n and
+`--codeseg FAR<n>` and the link bases `_FAR<n>` at `8000h`
+(`-b _FAR<n> = 0x8000`), so the area is resolved by the program's own
+link and the packer takes its bytes from the program's IHX (holes
+zero-filled) using the map's `s__FAR<n>`/`l__FAR<n>` symbols.  A
+`FAR_CODE` row's id is the number in its area name - `_FAR<n>` is segment
+n, the number the module's `__banked` definitions emit as `b_<fn>`
+(package 49b) - and the far rows are the container's first segments, ids
+`1..k` for the `FAR1=`..`FARK=` options used, with the `DATA` rows after
+them.  Every far area is its own IHX record stream in link order, all of
+them at `8000h`: the packer reads each area's payload from its own
+stream.  With no `SEGMENTS=` the rule generates the declaration itself,
+one `FAR_CODE` row per option used.
 
 Every declaration is checked against the **36.17 link rule**: a program
 with far code must keep its primary image and BSS below `8000h` and its

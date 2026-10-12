@@ -867,7 +867,9 @@ offset 6  u16  reserved  0
   linked at `8000h`, the loader places it in the aperture slice of its own
   auxiliary bank (one far-code segment per bank) and it executes in place
   there.  `SYS_SEG_MAP` returns the token that opens it.  The SDK's
-  `farcall` is the far-call helper on top of it.
+  `farcall` is the far-call helper on top of it, and its
+  `___sdcc_bcall_ehl` trampoline makes a `__banked` far function a plain
+  C call (package 49b; `docs/sdk.md`).
 - Every segment of a loaded container is placed by the loader or the exec
   fails and rolls back, so a live segment always reports `LOADED`.
 - The ids are the calling process's own container: another process's

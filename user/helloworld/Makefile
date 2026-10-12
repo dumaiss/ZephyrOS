@@ -16,4 +16,4 @@ $(eval $(call exe_program,hello,user/helloworld,hello.c,STACK=256,STAGE=1))
 # _FAR_CODE area and linked at 8000h; the rule declares one FAR_CODE
 # segment for it.
 $(eval $(call exe_program,fardemo,user/helloworld,fardemo.c,\
-	FAR=fardemo_far.c,STACK=256,STAGE=1))
+	FAR1=fardemo_far.c,STACK=256,STAGE=1))

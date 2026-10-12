@@ -180,8 +180,11 @@ class SyntheticProgram:
                        **manifest_overrides):
         mem = dict(self.mem if mem is None else mem)
         symbols = dict(self.symbols if symbols is None else symbols)
-        ihx_lines = [ihx_record(addr, [byte])
-                     for addr, byte in sorted(mem.items())]
+        ihx_lines = []
+        for addr, value in sorted(mem.items()):
+            values = value if isinstance(value, (list, tuple)) else [value]
+            for byte in values:
+                ihx_lines.append(ihx_record(addr, [byte]))
         ihx_lines.append(":00000001FF")
         with open(os.path.join(self.tmp, "prog.ihx"), "w") as fh:
             fh.write("\n".join(ihx_lines) + "\n")
@@ -485,22 +488,24 @@ class TestSegmentPacking(unittest.TestCase):
 
 
 class TestFarCodePacking(unittest.TestCase):
-    """The EXE v2 FAR_CODE path (package 44b): the SDK links one
-    `_FAR_CODE` area at 8000h, the packer takes its bytes out of the
-    program's IHX and enforces the 36.17 aperture link rule."""
+    """The EXE v2 FAR_CODE path (packages 44b/49b): the SDK links one
+    `_FAR<n>` area per `FAR<n>=` option, all at 8000h, the packer takes
+    each segment's bytes out of its own IHX record stream and enforces the
+    36.17 aperture link rule."""
 
     def setUp(self):
         self.program = SyntheticProgram()
         self.far = bytes([0x3E, 0x5A, 0xC9])  # LD A,5Ah / RET
+        self.far2 = bytes([0x3E, 0x3C])       # LD A,3Ch
 
     def _declaration(self, **overrides):
-        far = {"id": 1, "kind": "FAR_CODE", "area": "_FAR_CODE",
+        far = {"id": 1, "kind": "FAR_CODE", "area": "_FAR1",
                "bss_size": 0}
         far.update(overrides)
         return [far]
 
     def _inputs(self, far_bytes=None, far_base=exepack.FAR_BASE,
-                area="_FAR_CODE"):
+                area="_FAR1"):
         far_bytes = self.far if far_bytes is None else far_bytes
         mem = dict(self.program.mem)
         for index, byte in enumerate(far_bytes):
@@ -529,9 +534,23 @@ class TestFarCodePacking(unittest.TestCase):
         self.assertEqual(result["segments"][0]["sha256"],
                          hashlib.sha256(self.far).hexdigest())
 
-    def test_several_far_segments_from_one_area(self):
+    def _two_areas(self):
+        """Two far areas at 8000h, one record stream each: the n-th value
+        of an address belongs to the n-th area in link order."""
         mem, symbols = self._inputs()
-        segments = self._declaration() + self._declaration(id=2)
+        symbols["s__FAR2"] = exepack.FAR_BASE
+        symbols["l__FAR2"] = len(self.far2)
+        for index, byte in enumerate(self.far2):
+            addr = exepack.FAR_BASE + index
+            mem[addr] = [mem[addr], byte]
+        segments = self._declaration() + self._declaration(
+            id=2, area="_FAR2")
+        return mem, symbols, segments
+
+    def test_several_far_areas_are_split_by_stream(self):
+        """Each FAR_CODE row's payload is its own area's bytes: 8000h holds
+        one byte per area at that address, in ascending id."""
+        mem, symbols, segments = self._two_areas()
         out_path, _result = self.program.pack(mem=mem, symbols=symbols,
                                               segments=segments)
         data = open(out_path, "rb").read()
@@ -542,10 +561,41 @@ class TestFarCodePacking(unittest.TestCase):
             data, fields["segment_table_offset"] + i * 16) for i in range(2)]
         self.assertEqual([row["kind"] for row in rows],
                          [exepack.KIND_FAR_CODE, exepack.KIND_FAR_CODE])
-        for row in rows:
+        for row, payload in zip(rows, (self.far, self.far2)):
             self.assertEqual(
                 data[row["payload_offset"]:
-                     row["payload_offset"] + len(self.far)], self.far)
+                     row["payload_offset"] + len(payload)], payload)
+
+    def test_a_far_area_must_match_its_id(self):
+        with self.assertRaises(exepack.ExeError) as caught:
+            self.program.pack(segments=self._declaration(area="_FAR2"))
+        self.assertEqual(caught.exception.code, "EXE_EXEC_ERR_ARG")
+        self.assertIn("_FAR1", str(caught.exception))
+
+    def test_far_ids_are_the_first_segments_in_order(self):
+        """The far code segments are ids 1..k in declaration order (a
+        FAR2= without FAR1= is segment 2 of a container that has no
+        segment 1)."""
+        mem, symbols = self._inputs()
+        symbols["s__FAR2"] = exepack.FAR_BASE
+        symbols["l__FAR2"] = len(self.far2)
+        with self.assertRaises(exepack.ExeError) as caught:
+            self.program.pack(mem=mem, symbols=symbols,
+                              segments=self._declaration(id=2, area="_FAR2"))
+        self.assertEqual(caught.exception.code, "EXE_EXEC_ERR_ARG")
+        self.assertIn("declared first", str(caught.exception))
+
+    def test_a_far_byte_stream_must_match_the_area_count(self):
+        """A hole in one area's stream would make the n-th byte of an
+        address ambiguous, so it is refused."""
+        mem, symbols, segments = self._two_areas()
+        # Drop one record of the second stream: the address now carries one
+        # value where two areas cover it.
+        mem[exepack.FAR_BASE + 1] = self.far[1]
+        with self.assertRaises(exepack.ExeError) as caught:
+            self.program.pack(mem=mem, symbols=symbols, segments=segments)
+        self.assertEqual(caught.exception.code, "EXE_EXEC_ERR_ARG")
+        self.assertIn("record stream", str(caught.exception))
 
     def test_far_area_must_be_linked_at_8000h(self):
         mem, symbols = self._inputs(far_base=0x8100)

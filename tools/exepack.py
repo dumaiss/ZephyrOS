@@ -105,6 +105,7 @@ SEG_SLOT_SIZE = 0x2000
 SEG_MAX_SIZE = 0x8000
 SEG_MAX_FAR_SIZE = 0x4000
 FAR_BASE = 0x8000
+FAR_ID_MAX = 4
 # The 36.17 link rule for a program with far-code segments: the primary
 # image, its BSS and the whole stack stay outside the aperture.
 FAR_IMAGE_END = 0x8000
@@ -504,6 +505,20 @@ def _validate_segment_manifest(segments):
                            "segment %d bss_size must be non-negative"
                            % (index + 1))
         if segment["kind"] == "FAR_CODE":
+            if segment["id"] > FAR_ID_MAX:
+                raise ExeError("EXE_EXEC_ERR_ARG",
+                               "segment %d: FAR_CODE id %d is over the %d "
+                               "far code segments FAR1=..FAR%d= (package "
+                               "49b)"
+                               % (index + 1, segment["id"], FAR_ID_MAX,
+                                  FAR_ID_MAX))
+            if segment["id"] != index + 1:
+                raise ExeError("EXE_EXEC_ERR_ARG",
+                               "segment %d: FAR_CODE id %d is not id %d; "
+                               "the far code segments are declared first, "
+                               "ids 1..k for the FAR1=..FARK= options used "
+                               "(package 49b), and the DATA segments follow"
+                               % (index + 1, segment["id"], index + 1))
             # Far code is linked at 8000h: the payload comes from the
             # program's own IHX far area, named through `area`, not from a
             # raw payload file.
@@ -554,7 +569,10 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
         raise ExeError("EXE_EXEC_ERR_ARG", "map not found: %s" % map_path)
 
     try:
-        mem = pack_image.parse_ihx(ihx_path.read_text())
+        # Several far areas share 8000h, one per auxiliary bank, and the
+        # linker emits one record stream per area, so a linked address can
+        # carry one byte per area at that address (work package 49b).
+        mem = pack_image.parse_ihx(ihx_path.read_text(), multi=True)
     except pack_image.LayoutError as exc:
         raise ExeError("EXE_EXEC_ERR_ARG", "IHX rejected: %s" % exc)
     symbols = parse_symbols(map_path.read_text())
@@ -570,12 +588,22 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
     # bytes are linked above the image and are not part of it.  Holes in a
     # linked area are zero-filled.
     declared = manifest.get("segments") or []
-    far_ranges = []
-    far_payloads = {}
+    # The far areas in link order: ascending segment id, which is the
+    # order the FAR1=..FAR4= sources are linked and the order sdldz80
+    # writes their record streams.  They all sit at 8000h - one aperture
+    # and one auxiliary bank per segment - so a linked address inside them
+    # carries one byte per covering area, in that same order.
+    far_entries = []
     for index, segment in enumerate(declared):
         if segment["kind"] != "FAR_CODE":
             continue
         area = segment["area"]
+        if area != "_FAR%d" % segment["id"]:
+            raise ExeError("EXE_EXEC_ERR_ARG",
+                           "segment %d: FAR_CODE id %d is the far area "
+                           "`_FAR%d`, not %r (package 49b: ids 1-4 are "
+                           "the far code segments)"
+                           % (index + 1, segment["id"], segment["id"], area))
         start = symbols.get("s_" + area)
         length = symbols.get("l_" + area)
         if start is None or length is None:
@@ -592,19 +620,35 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                            "segment %d: far area %s is %d bytes, over the "
                            "%d-byte aperture"
                            % (index + 1, area, length, SEG_MAX_FAR_SIZE))
-        for other in far_ranges:
-            if other == (start, length):
-                continue
-            if not (start + length <= other[0] or other[0] + other[1] <= start):
-                raise ExeError("EXE_EXEC_ERR_ARG",
-                               "segment %d: far area %s at %04Xh overlaps "
-                               "the area at %04Xh" % (index + 1, area, start,
-                                                      other[0]))
-        far_ranges.append((start, length))
+        far_entries.append((segment["id"], index, area, start, length))
+    far_entries.sort()
+    far_ranges = [(entry[3], entry[4]) for entry in far_entries]
+
+    # Which far areas cover each linked address, in link order: the
+    # position of an area here is the index of its byte in the address's
+    # value list.
+    far_owners = {}
+    for position, entry in enumerate(far_entries):
+        for addr in range(entry[3], entry[3] + entry[4]):
+            far_owners.setdefault(addr, []).append(position)
+
+    far_payloads = {}
+    for position, entry in enumerate(far_entries):
+        seg_id, index, area, start, length = entry
         payload = bytearray(length)
         for addr in range(start, start + length):
-            if addr in mem:
-                payload[addr - start] = mem[addr]
+            values = mem.get(addr)
+            owners = far_owners[addr]
+            if values is None:
+                continue  # a hole in this area's stream: zero-filled
+            if len(values) != len(owners):
+                raise ExeError(
+                    "EXE_EXEC_ERR_ARG",
+                    "segment %d: the link wrote %d byte stream(s) at %04Xh, "
+                    "but %d far area(s) cover it; far areas are one record "
+                    "stream per segment, in ascending id"
+                    % (index + 1, len(values), addr, len(owners)))
+            payload[addr - start] = values[owners.index(position)]
         far_payloads[index] = bytes(payload)
 
     def in_far(addr):
@@ -688,10 +732,15 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                 "%04Xh" % (image_end, bss_end, stack_base))
 
     image = bytearray((IMAGE_FILL,) * image_size)
-    for addr, byte in mem.items():
+    for addr, values in mem.items():
         if in_far(addr):
             continue
-        image[addr - LOAD_BASE] = byte
+        if len(values) != 1:
+            raise ExeError("EXE_EXEC_ERR_ARG",
+                           "linked content at %04Xh has %d definitions "
+                           "outside the declared far areas"
+                           % (addr, len(values)))
+        image[addr - LOAD_BASE] = values[0]
     image = bytes(image)
 
     # --- container layout -------------------------------------------------
@@ -704,7 +753,9 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
         if declared["id"] != index + 1:
             raise ExeError("EXE_EXEC_ERR_SEGMENT",
                            "segment %d declares id %d; ids must be 1..N in "
-                           "order" % (index + 1, declared["id"]))
+                           "order - the far code segments (FAR1=..FAR4=) "
+                           "first, then the DATA segments (package 49b)"
+                           % (index + 1, declared["id"]))
         kind = KIND_BY_NAME[declared["kind"]]
         if kind == KIND_FAR_CODE:
             payload = far_payloads[index]

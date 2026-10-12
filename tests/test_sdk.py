@@ -192,6 +192,16 @@ def _program_options(options, key):
             if option.startswith(key + "=")]
 
 
+def _far_sources(options):
+    """Every far source of a program: the FAR1=..FAR4= lists (package
+    49b; FAR= is gone), colon-separated like the rule's specs."""
+    sources = []
+    for n in ("1", "2", "3", "4"):
+        for value in _program_options(options, "FAR" + n):
+            sources += [source for source in value.split(":") if source]
+    return sources
+
+
 def _program_include_roots(options):
     roots = []
     for value in _program_options(options, "INCLUDES"):
@@ -409,12 +419,12 @@ class TestSdkBoundary(unittest.TestCase):
             roots = [os.path.join(ROOT, directory)]
             roots += [os.path.join(ROOT, r) for r in PROGRAM_INCLUDE_ROOTS]
             roots += [os.path.join(ROOT, r) for r in extra]
-            # The far-code sources (FAR=, package 44b) are program
-            # sources too and see exactly the same include surface.
-            for far in _program_options(options, "FAR"):
-                for source in far.split(":"):
-                    if source and source not in sources:
-                        sources = sources + [source]
+            # The far-code sources (FAR1=..FAR4=, package 49b) are
+            # program sources too and see exactly the same include
+            # surface.
+            for source in _far_sources(options):
+                if source not in sources:
+                    sources = sources + [source]
             for path in _program_files(directory, sources, extra):
                 for include in _quoted_includes(os.path.join(ROOT, path)):
                     found = [r for r in roots
@@ -456,35 +466,55 @@ class TestSdkBoundary(unittest.TestCase):
                                 "%s owns an entry" % name)
 
     def test_far_programs_declare_their_sources_and_areas(self):
-        """The FAR= option (package 44b) names the far sources; the rule
-        compiles them with --codeseg FAR_CODE and bases _FAR_CODE at
-        8000h, and without SEGMENTS= it declares the one far segment."""
+        """The FAR1=..FAR4= options (package 49b) name the far sources of
+        segment n; the rule compiles each with bank n and --codeseg FAR<n>
+        (bank first, so the module lands in `_FAR<n>` and every `__banked`
+        definition emits `b_<fn> = n`), bases every `_FAR<n>` at 8000h, and
+        without SEGMENTS= declares one FAR_CODE segment per option used,
+        id n, area `_FAR<n>`.  FAR= is gone."""
         rule = _read(EXE_MK)
-        self.assertIn("--codeseg FAR_CODE", rule)
-        self.assertIn("-b _FAR_CODE = 0x8000", rule)
-        far_programs = [(name, options) for name, _d, _s, options
-                        in _declared_programs()
-                        if _program_options(options, "FAR")]
-        self.assertEqual(sorted(name for name, _o in far_programs),
+        self.assertIn("--codeseg FAR$$$$n", rule)
+        self.assertIn("-b _FAR$$$$n = 0x8000", rule)
+        self.assertIn("-bo $$$$n --codeseg FAR$$$$n", rule)
+        self.assertNotIn("filter FAR=%", rule)
+        self.assertIsNone(re.search(r"FAR=SRC", rule))
+        far_programs = [(name, directory, options) for name, directory, _s,
+                        options in _declared_programs()
+                        if _far_sources(options)]
+        self.assertEqual(sorted(name for name, _d, _o in far_programs),
                          ["fardemo", "xmem_far"])
-        for name, options in far_programs:
-            for far in _program_options(options, "FAR"):
-                for source in far.split(":"):
-                    self.assertTrue(
-                        source.endswith(".c") or source.endswith(".asm"),
-                        "%s FAR source %s" % (name, source))
+        for name, directory, options in far_programs:
+            for source in _far_sources(options):
+                self.assertTrue(
+                    source.endswith(".c") or source.endswith(".asm"),
+                    "%s far source %s" % (name, source))
+                self.assertTrue(
+                    os.path.isfile(os.path.join(ROOT, directory, source)),
+                    "%s far source %s is missing" % (name, source))
+        # The far sources themselves carry no bank pragma: the segment id
+        # and the area come from the build rule alone.
+        self.assertNotIn("#pragma bank", rule)
+        for name, directory, options in far_programs:
+            for source in _far_sources(options):
+                self.assertNotIn(
+                    "#pragma bank",
+                    _read(os.path.join(directory, source)),
+                    "%s must take its bank from the rule" % source)
         # The far segments each program declares exist where the packer
-        # resolves them: the rule's generated declaration for fardemo,
-        # and the checked-in list for the two-segment xmem program.
+        # resolves them: the rule's generated declaration (one segment per
+        # option used) for fardemo, and the checked-in list for the
+        # two-segment xmem program.
         self.assertIn("$(1).far.json", rule)
-        self.assertIn("--codeseg FAR_CODE", rule)
+        self.assertIn(r'\"kind\": \"FAR_CODE\"', rule)
+        self.assertIn(r'\"area\": \"_FAR$$$$n\"', rule)
         segments = json.loads(
             _read(os.path.join("tests", "xmem",
                                "xmem_far.segments.json")))
         self.assertEqual([segment["kind"] for segment in segments],
                          ["FAR_CODE", "FAR_CODE"])
+        self.assertEqual([segment["id"] for segment in segments], [1, 2])
         self.assertEqual([segment["area"] for segment in segments],
-                         ["_FAR_CODE", "_FAR_CODE"])
+                         ["_FAR1", "_FAR2"])
 
     def test_the_moved_headers_have_one_owner(self):
         for name in ("types.h", "errno.h", "syscall.h", "fs.h", "process.h",

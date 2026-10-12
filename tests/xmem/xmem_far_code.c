@@ -1,11 +1,14 @@
-/* KonaOS far-code outcome program (work package 44b): the far half.
+/* KonaOS far-code outcome program (work packages 44b/49b): the far half
+ * of segment 1.
  *
- * Built with `--codeseg FAR_CODE` through the SDK's FAR= option and
- * linked at 8000h, so this module - its code and its string literals -
- * becomes the `_FAR_CODE` area the container loads into the aperture
- * slice of an auxiliary bank.  The primary half maps a segment and calls
- * this entry with `farcall`, which is an OUT (the aperture token)
- * followed by a plain CALL to the entry's linked address.
+ * Built with bank 1 and `--codeseg FAR1` through the SDK's FAR1= option
+ * and linked at 8000h, so this module - its code and its string literals -
+ * becomes the `_FAR1` area the container loads into the aperture slice of
+ * an auxiliary bank.  The primary half maps the segment and calls
+ * `xmem_far_entry` with `farcall` (the 44b primitive: an OUT with the
+ * aperture token, then a plain CALL to the entry's linked address), and
+ * calls the `__banked` entries below as plain C, through the SDK's
+ * trampoline (work package 49b).
  *
  * The entry proves the far-code rules of architecture 36.17 from inside:
  *
@@ -79,4 +82,93 @@ int xmem_far_exit(int status, int unused)
 	(void)unused;
 	exit((unsigned int)status); /* does not return */
 	return -1;
+}
+
+/* The banked entries (package 49b).  Each is `__banked`, so this module -
+ * compiled with bank 1 - emits `b_xmem_bk_* = 1` and the caller's plain C
+ * call goes through ___sdcc_bcall_ehl, which maps segment 1 and restores
+ * the caller's latch.  Together they pin the calling convention: 0, 1, 2
+ * and 3 arguments of 8, 16 and 32 bits, all on the stack, with the result
+ * in A (8 bits), DE (16) or DEHL (32). */
+
+unsigned char xmem_bk_c(void) __banked
+{
+	return 0xC5u;
+}
+
+unsigned int xmem_bk_c16(void) __banked
+{
+	return 0x1234u;
+}
+
+unsigned long xmem_bk_c32(void) __banked
+{
+	return 0x12345678ul;
+}
+
+unsigned char xmem_bk_8(unsigned char a) __banked
+{
+	return (unsigned char)(a + 1u);
+}
+
+unsigned char xmem_bk_88(unsigned char a, unsigned char b) __banked
+{
+	return (unsigned char)(a + b + 1u);
+}
+
+unsigned char xmem_bk_888(unsigned char a, unsigned char b,
+			 unsigned char c) __banked
+{
+	return (unsigned char)(a + b + c);
+}
+
+unsigned int xmem_bk_16(unsigned int a) __banked
+{
+	return (unsigned int)(a + 2u);
+}
+
+unsigned int xmem_bk_1616(unsigned int a, unsigned int b) __banked
+{
+	return (unsigned int)(a + a + a + b);
+}
+
+unsigned int xmem_bk_161616(unsigned int a, unsigned int b,
+			    unsigned int c) __banked
+{
+	return (unsigned int)(a + b + c);
+}
+
+unsigned long xmem_bk_32(unsigned long a) __banked
+{
+	return a + 3ul;
+}
+
+unsigned long xmem_bk_3232(unsigned long a, unsigned long b) __banked
+{
+	return a + b;
+}
+
+unsigned long xmem_bk_323232(unsigned long a, unsigned long b,
+			     unsigned long c) __banked
+{
+	return a + b + c;
+}
+
+/* A mixed call: 7 bytes of arguments, more than the three register pairs,
+ * so the whole list is on the stack and the result comes back in DEHL. */
+unsigned long xmem_bk_mix(unsigned char a, unsigned int b,
+			  unsigned long c) __banked
+{
+	return c + (unsigned long)b + (unsigned long)a;
+}
+
+/* A banked call from far code: the trampoline runs with the aperture
+ * already open onto segment 1, so every level maps and restores the same
+ * segment (the cached token, no syscall). */
+unsigned int xmem_bk_rec(unsigned int n) __banked
+{
+	if (n == 0u) {
+		return 0u;
+	}
+	return (unsigned int)(n + xmem_bk_rec(n - 1u));
 }

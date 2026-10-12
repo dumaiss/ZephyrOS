@@ -27,6 +27,14 @@ transcript:
   child starts with P = 0 and refuses the parent's handle and segment id)
   and exit from far context (the parent's capacity check and the
   launcher's `free-banks 6` report prove the release);
+* banked calls (package 49b): the far module's `__banked` entries called
+  as plain C through the SDK's `___sdcc_bcall_ehl` trampoline - 0-3
+  arguments of 8, 16 and 32 bits, a mixed call and a recursion - and the
+  segment 2 entry calling back into segment 1, which has to restore its
+  caller's bank.  A `__banked` definition in the primary bank names no
+  far segment, so it reports KOS_RT_EFARMAP.  The replay also counts
+  SYS_SEG_MAP: the trampoline spends exactly one per segment id (the
+  token cache), however many banked calls the program makes;
 * the launcher's report: exit status 0, no active process and six free
   banks - every object, every segment and every bank slot was released by
   exit.
@@ -62,17 +70,14 @@ PANIC = "PANIC"
 # again (a bank with a live auxiliary slot can never be one).
 REPORT = "monitor: exit status 0x0000 active 0 free-banks 6\r\n"
 
-# The child's report, asserted in order.  It runs three times: from the
-# parent (whose own bank is 1) and once per far call of the far-code
-# program (whose child gets the lowest free bank, 2).  Every run proves
-# the child starts with P = 0 (its own words, mode 10 over its bank) and
-# that a child inherits no handle and no segment id.
+# The child's report, asserted in order.  It runs twice: from the parent
+# (whose own bank is 1) and once from the far-code program's segment 1
+# entry, whose child gets the lowest free bank, 2.  Every run proves the
+# child starts with P = 0 (its own words, mode 10 over its bank) and that
+# a child inherits no handle and no segment id.
 CHILD_LINES = [
     "xmem-child: begin\r\n",
     "xmem-child: latch 11\r\n",
-    "xmem-child: PASS\r\n",
-    "xmem-child: begin\r\n",
-    "xmem-child: latch 12\r\n",
     "xmem-child: PASS\r\n",
     "xmem-child: begin\r\n",
     "xmem-child: latch 12\r\n",
@@ -121,6 +126,13 @@ FAR_OUTCOMES = [
     "far-call-2", "far-latch-2", "far-banks-differ",
     "far-aperture-closed", "far-marker", "far-buffer",
     "far-mappable-alloc", "far-mappable-same-bank",
+    "bk-0-8", "bk-0-16", "bk-0-32",
+    "bk-1-8", "bk-1-16", "bk-1-32",
+    "bk-2-8", "bk-2-16", "bk-2-32",
+    "bk-3-8", "bk-3-16", "bk-3-32",
+    "bk-3-mix", "bk-recursion",
+    "bk-2-bank", "bk-2-value",
+    "bk-invalid-segment", "bk-aperture-closed",
 ]
 
 FAR_CHECKS = len(FAR_OUTCOMES)
@@ -128,8 +140,36 @@ FAR_PASS = "xmem-far: PASS\r\n"
 FAR_FAIL = "xmem-far: FAIL"
 
 # The far code's own console line: a syscall from the far bank whose
-# buffer is an aperture literal, printed once per far call.
+# buffer is an aperture literal.  Segment 1's plain entry runs the console
+# write, the exec and the object write; segment 2's plain entry and the
+# banked entries do not.
 FAR_CONSOLE = "xmem-far: far code says hello\r\n"
+
+# SYS_SEG_MAP (abi/kos/seg.h): the RST 30h the syscall gate uses, the
+# number in A and the two-byte argument block in HL, whose first byte is
+# the segment id.
+SYS_SEG_MAP = 0x27
+RST_30H = 0xF7
+
+
+class SegMapCallCounter:
+    """Counts every SYS_SEG_MAP the image issues, by segment id.
+
+    The far-code program's own checks map segment 1, segment 2 and two
+    ids its container does not have, and segment 1's and segment 2's
+    banked calls each spend one more: the token cache.  Any other call
+    would be a hit that went to the kernel again.
+    """
+
+    def __init__(self):
+        self.calls = {}
+
+    def __call__(self, cpu):
+        if cpu.rd(cpu.pc) != RST_30H or cpu.a != SYS_SEG_MAP:
+            return
+        segment = cpu.rd(cpu.hl)
+        self.calls[segment] = self.calls.get(segment, 0) + 1
+
 
 # The boot lanes every image prints before the boot program runs.
 BOOT_LINES = [
@@ -232,10 +272,12 @@ class TestXmemSelftest(XmemSelftestReplay):
             position = found + len(line)
 
     def test_far_code_syscall_buffer_is_the_far_bank(self):
-        """The far code prints its far-area literal once per far call: a
-        console syscall from the far bank with an aperture buffer."""
+        """The far code prints its far-area literal once: segment 1's
+        entry makes a console syscall from the far bank with an aperture
+        buffer, and the fixture here pins which segments make it - the
+        banked entries must not."""
         _z, sio = self.boot()
-        self.assertEqual(sio.count(FAR_CONSOLE), 2)
+        self.assertEqual(sio.count(FAR_CONSOLE), 1)
 
     def test_exit_released_the_parents_objects(self):
         """The launcher's report is the end-to-end release proof: the
@@ -243,6 +285,19 @@ class TestXmemSelftest(XmemSelftestReplay):
         all released (six free banks)."""
         _z, sio = self.boot_to_report()
         self.assertIn(REPORT, sio)
+
+    def test_the_token_cache_costs_one_segmap_per_segment(self):
+        """The trampoline maps a segment once (SYS_SEG_MAP) and reuses the
+        token: the program's own checks spend one call each on segments 1
+        and 2, the two refused ids spend one each, and the many banked
+        calls - including the recursion and segment 2's call back into
+        segment 1 - spend exactly one more per segment."""
+        counter = SegMapCallCounter()
+        z = self.make_cpu()
+        self.start_kernel(z)
+        self.run_until(z, [PASS, FAIL, REPORT, PANIC], limit=STEP_LIMIT,
+                       halt_ok=True, panic=None, on_step=counter)
+        self.assertEqual(counter.calls, {0: 1, 1: 2, 2: 2, 3: 1})
 
     def test_uncertainty_guard(self):
         """The aperture outcomes depend on the hardware latch, so the

@@ -124,7 +124,7 @@ int main(void)
 	if (xfree(info.handle) >= 0) {
 		z2_fail(KOS_PCST_Z2_FAIL_FREE);
 	}
-	/* No second segment in this container. */
+	/* No second DATA segment in this container. */
 	if (seginfo(2u, &info) >= 0) {
 		z2_fail(KOS_PCST_Z2_FAIL_SEGINFO);
 	}

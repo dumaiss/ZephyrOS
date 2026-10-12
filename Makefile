@@ -982,12 +982,14 @@ $(eval $(call exe_program,fs_child,tests/fs,\
 $(eval $(call exe_program,hwtest,tests/hwtest,\
 	hwtest.c,STACK=256,STAGE=1))
 
-# Extended-memory outcome programs (work package 43, far code package 44b):
-# the checks the image boots (`KOS_BOOT_PROGRAM=/system/xmem_selftest.exe`),
-# the child it SYS_EXECs while its aperture is open, and the far-code
-# program it SYS_EXECs last.  All are ordinary SDK programs; xmem_far
-# links the far half into the _FAR_CODE area at 8000h (FAR=) and its
-# container declares two FAR_CODE segments (SEGMENTS=).
+# Extended-memory outcome programs (work package 43, far code packages
+# 44b/49b): the checks the image boots
+# (`KOS_BOOT_PROGRAM=/system/xmem_selftest.exe`), the child it SYS_EXECs
+# while its aperture is open, and the far-code program it SYS_EXECs last.
+# All are ordinary SDK programs; xmem_far links two far halves into the
+# _FAR1/_FAR2 areas at 8000h (FAR1=/FAR2=, package 49b: one far segment
+# per bank, ids 1 and 2) and its container declares the two FAR_CODE
+# segments (SEGMENTS=).
 $(eval $(call exe_program,xmem_selftest,tests/xmem,\
 	xmem_selftest.c,STACK=512,STAGE=1))
 
@@ -996,7 +998,8 @@ $(eval $(call exe_program,xmem_child,tests/xmem,\
 
 $(eval $(call exe_program,xmem_far,tests/xmem,\
 	xmem_far.c,STACK=384,STAGE=1,\
-	FAR=xmem_far_code.c,\
+	FAR1=xmem_far_code.c,\
+	FAR2=xmem_far_code2.c,\
 	SEGMENTS=tests/xmem/xmem_far.segments.json))
 
 $(eval $(call exe_program,ipc,tests/target/ipc,\

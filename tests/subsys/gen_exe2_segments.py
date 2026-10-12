@@ -11,6 +11,9 @@ loader-outcome programs the subsystem process selftest runs:
                     two segments: 32760-byte images, 8-byte BSS each, so
                     the container exceeds 64 KiB
 
+A program that also builds far code declares its far segments first:
+ids 1-4 are the `FAR1=`..`FAR4=` segments (package 49b), in order.
+
 The payload pattern is `(i * MUL + ADD) & 0xFF` with one multiplier/addend
 per segment; the C programs (tests/target/process/) compute the same
 bytes, and tests/target/include/process_selftest.h pins the sizes both

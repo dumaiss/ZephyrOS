@@ -1,10 +1,12 @@
-/* KonaOS far-code SDK demo (work package 44b): the primary half.
+/* KonaOS far-code SDK demo (work packages 44b/49b): the primary half.
  *
  * The simplest complete far-code program: `fardemo_far.c` is compiled
- * into the `_FAR_CODE` area and linked at 8000h through the exe_program
- * FAR= option, the packer proves the 36.17 link rule (this image, its BSS
- * and the whole stack stay outside 8000h-BFFFh), and `farcall` maps
- * the segment, makes the plain CALL and restores the previous latch.
+ * into the `_FAR1` area and linked at 8000h through the exe_program
+ * FAR1= option, so it is segment 1, the packer proves the 36.17 link rule
+ * (this image, its BSS and the whole stack stay outside 8000h-BFFFh), and
+ * the far entry is called as plain C: it is `__banked`, so SDCC emits the
+ * banked call and the SDK's trampoline maps the segment and restores the
+ * previous latch (work package 49b).
  *
  * The far code prints its own line from a far-area buffer (a console
  * syscall whose buffer is the aperture) and calls back into primary code
@@ -25,8 +27,10 @@ int fardemo_add(int value)
 	return value + 1;
 }
 
-/* The far entry (fardemo_far.c, --codeseg FAR_CODE, linked at 8000h). */
-extern int fardemo_far_main(int seed, int unused);
+/* The far entry (fardemo_far.c, linked at 8000h as segment 1):
+ * `__banked`, so a plain C call goes through the SDK trampoline, which
+ * maps the segment the definition declared (FAR1=, id 1). */
+extern int fardemo_far_main(int seed, int unused) __banked;
 
 int main(void)
 {
@@ -45,9 +49,10 @@ int main(void)
 	}
 	printf("fardemo: token %02x\r\n", (unsigned int)token);
 
-	/* Map, a plain CALL and restore.  The far entry prints its line,
+	/* The banked call: a plain C call, mapped by the trampoline from
+	 * the id the definition declared.  The far entry prints its line,
 	 * calls primary code and returns (latch << 8) | (seed + 1). */
-	result = farcall(SEGMENT, fardemo_far_main, SEED, 0);
+	result = fardemo_far_main(SEED, 0);
 	expected = ((unsigned int)token << 8) | (unsigned int)(SEED + 1);
 	if ((unsigned int)result != expected) {
 		printf("fardemo: FAIL call %04x\r\n",
