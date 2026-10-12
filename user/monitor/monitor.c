@@ -1,16 +1,20 @@
-/* ZephyrOS M7 native monitor: startup, info/help commands, dispatch loop.
+/* ZephyrOS M7 native monitor: startup, command input, info/help
+ * commands, dispatch loop.
  *
  * See monitor.h for the command surface.  The monitor resolves its own
  * bank and the platform bank mask once at startup (SYS_DIAG_BANK_INFO),
  * prints a banner that includes a safe operator scratch address, then
  * dispatches edited 80-character command lines until Q exits through
- * SYS_EXIT.
+ * SYS_EXIT.  Commands come from the console and, when the store
+ * publishes a serial object at the lane name monitor.h documents, from
+ * that lane as well; the reader and its echo routing are below.
  */
 
 #include "monitor.h"
 #include "zos.h"
 #include "hexfmt.h"
 #include "status.h"
+#include "zos/protocol.h"
 
 unsigned char mon_bank;
 unsigned char mon_mask;
@@ -38,8 +42,198 @@ static const char mon_help[] =
 	"MB bank addr value set byte in bank 0-6\r\n"
 	"I port         input port (10-FF)\r\n"
 	"O port value   output port (10-FF)\r\n"
+	"X path [tail]  run a ZEX from /SYSTEM\r\n"
 	"Q              quit\r\n"
 	"H or ?         help\r\n";
+
+/* --- command input: the console plus the optional secondary lane --------
+ *
+ * The secondary lane is the namespace name a resident serial service
+ * publishes.  The monitor binds it through the ordinary typed protocol -
+ * no port I/O and no driver symbol - and reads and echoes it only when
+ * the store actually publishes that object.  Production's console input
+ * is the HID build, so the lane is the machine-readable command path
+ * there (the smoke tool, or a terminal on the lane) while the console
+ * keeps working unchanged.  With no such object the monitor is
+ * console-only, exactly as monitor.h documents.
+ *
+ * The console is polled first: in the serial-console build both sources
+ * show the same stream, so the first poll consumes each byte and the lane
+ * path stays idle.  Each byte is echoed to the source it came from, so
+ * that build still renders every typed byte exactly once.
+ */
+#define MON_BS  0x08
+#define MON_DEL 0x7F
+#define MON_CR  0x0D
+#define MON_LF  0x0A
+#define MON_BEL 0x07
+#define MON_CTRL_TOP 0x1F /* last non-printable byte */
+
+static const char mon_lane_name[] = "/dev/serial/0";
+static const char mon_erase_echo[] = "\b \b";
+
+static unsigned char mon_lane;      /* lane handle, 0 when absent        */
+static unsigned char mon_lane_byte; /* 1: the current byte came from it  */
+
+/* One descriptor-free call on the lane. */
+static int mon_lane_call(unsigned char op, unsigned int arg0)
+{
+	struct zos_ipc_request req;
+
+	req.frame.op = op;
+	req.frame.flags = 0u;
+	req.frame.arg0 = arg0;
+	req.frame.arg1 = 0u;
+	req.buffer = (void *)0;
+	req.length = 0u;
+	req.direction = ZOS_IPC_DESC_IN;
+	return zos_ipc_call(mon_lane, &req);
+}
+
+/* Bind the lane when the store publishes a SERIAL object under that name. */
+static void mon_lane_open(void)
+{
+	unsigned char type = 0u;
+	int handle = zos_ipc_bind(mon_lane_name, 0u, &type);
+
+	if (handle >= 1 && type == ZOS_TYPE_SERIAL) {
+		mon_lane = (unsigned char)handle;
+	}
+}
+
+/* One pending lane byte, or -ZOS_EAGAIN.  A lane that fails is dropped
+ * for the rest of the session: the console remains. */
+static int mon_lane_getc(void)
+{
+	int result;
+
+	if (mon_lane == 0u) {
+		return -ZOS_EAGAIN;
+	}
+	result = mon_lane_call(ZSIO_OP_POLL, 0u);
+	if (result != 1) {
+		if (result < 0) {
+			mon_lane = 0u;
+		}
+		return -ZOS_EAGAIN;
+	}
+	result = mon_lane_call(ZSIO_OP_GETC, 0u);
+	if (result < 0) {
+		if (result != -ZOS_EAGAIN) {
+			mon_lane = 0u;
+		}
+		return -ZOS_EAGAIN;
+	}
+	return result;
+}
+
+static void mon_lane_putc(unsigned int byte)
+{
+	if (mon_lane != 0u && mon_lane_call(ZSIO_OP_PUTC, byte) < 0) {
+		mon_lane = 0u;
+	}
+}
+
+/* Write one byte / a short buffer back to the source of the line. */
+static void mon_echo_putc(unsigned int byte)
+{
+	if (mon_lane_byte != 0u) {
+		mon_lane_putc(byte);
+		return;
+	}
+	(void)zos_putc((char)byte);
+}
+
+static void mon_echo_write(const char *text, unsigned int length)
+{
+	unsigned int i;
+
+	if (mon_lane_byte == 0u) {
+		(void)zos_console_write(text, length);
+		return;
+	}
+	for (i = 0u; i < length; ++i) {
+		mon_lane_putc((unsigned char)text[i]);
+	}
+}
+
+/* Blocking byte read over both sources: the console read is the
+ * non-blocking drain, so the lane is polled on every turn and a waiting
+ * command on either source is served. */
+static int mon_getc(void)
+{
+	for (;;) {
+		char ch;
+		int result = zex_read(&ch, 1);
+
+		if (result == 1) {
+			mon_lane_byte = 0u;
+			return (int)(unsigned char)ch;
+		}
+		if (result < 0 && result != -ZOS_EAGAIN) {
+			return result;
+		}
+		result = mon_lane_getc();
+		if (result >= 0) {
+			mon_lane_byte = 1u;
+			return result;
+		}
+	}
+}
+
+/* The edited line reader: the rules of the SDK's zos_read_line (BS/DEL
+ * erase echo, CR/LF termination with CRLF suppression, bell instead of
+ * overflow, other control bytes ignored, capacity-1 characters), with
+ * the two sources above and the echo routed to the source. */
+static int mon_read_line(char *buffer, unsigned int capacity)
+{
+	static unsigned char cr_pending;
+	unsigned int length = 0;
+
+	for (;;) {
+		int ch = mon_getc();
+		unsigned char byte;
+
+		if (ch < 0) {
+			return ch;
+		}
+		byte = (unsigned char)ch;
+		if (byte == MON_LF && cr_pending != 0 && length == 0) {
+			cr_pending = 0; /* second half of the previous CRLF */
+			continue;
+		}
+		cr_pending = 0;
+		if (byte == MON_CR) {
+			cr_pending = 1;
+			break;
+		}
+		if (byte == MON_LF) {
+			break;
+		}
+		if (byte == MON_BS || byte == MON_DEL) {
+			if (length != 0) {
+				--length;
+				mon_echo_write(mon_erase_echo,
+					(unsigned int)(sizeof(mon_erase_echo) - 1u));
+			}
+			continue;
+		}
+		if (byte <= MON_CTRL_TOP) {
+			continue; /* other control bytes are ignored */
+		}
+		if (length >= (capacity - 1u)) {
+			mon_echo_putc(MON_BEL);
+			continue;
+		}
+		buffer[length] = (char)byte;
+		++length;
+		mon_echo_putc(byte);
+	}
+	buffer[length] = '\0';
+	mon_echo_write(mon_line_end,
+		(unsigned int)(sizeof(mon_line_end) - 1u));
+	return (int)length;
+}
 
 void mon_put_hex8(unsigned int value)
 {
@@ -216,6 +410,9 @@ static void mon_dispatch(char *cursor)
 	case 'O':
 		mon_cmd_io_out(cursor);
 		break;
+	case 'X':
+		mon_cmd_exec(cursor);
+		break;
 	case 'Q':
 		if (!zrt_line_end(&cursor)) {
 			zrt_status_err_arg();
@@ -240,12 +437,13 @@ int main(void)
 	mon_bank = bank_info.bank;
 	mon_mask = bank_info.mask;
 
+	mon_lane_open();
 	mon_print_banner();
 	for (;;) {
 		int length;
 
 		zos_puts(mon_prompt);
-		length = zos_read_line(mon_line, sizeof(mon_line));
+		length = mon_read_line(mon_line, sizeof(mon_line));
 		if (length < 0) {
 			zex_exit(MON_EXIT_CONSOLE);
 		}

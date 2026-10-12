@@ -597,7 +597,13 @@ by `rename`).  `OPEN`, `OPENDIR`, `STAT`, `MKDIR`, `RMDIR`, `UNLINK`,
 `CHDIR` use the path view; `RENAME` uses both path pairs; `READ`, `WRITE`,
 `READDIR` use the staging view; `GETCWD` uses the path view and then the
 staging view.  Boot-time kernel callers (the loader and exec, through the
-kernel file API) use the path view only.  Single-tasking execution, the
+kernel file API) use the path view only: `SYS_EXEC` stages the caller's
+path in the copy-in A slot and holds the path view for the bind that hands
+it to the owning provider - a bank-6 provider dereferences that address
+while its own window is open, so it can only name fixed core (36.5's
+buffer rule, work package 45b correction 01).  The loader that follows
+streams the bound FILE through descriptors and the common staging block,
+so no view is held across it.  Single-tasking execution, the
 non-re-entrant gate and the absence of VFS use in an ISR mean the two views
 are never live at once; `kernel/vfs/workspace.c` asserts that invariant at
 run time when `ZOS_VFS_WS_GUARD=1` (the acceptance/simulator builds) and
@@ -648,8 +654,12 @@ D600h | isr 256 | slack 191`: `+400` `_CODE`, `+0` bank-7 `_DATA`, arena
 unchanged, because the whole continuation mechanism (per-depth records,
 three 48-byte frame saves, the gate-state shadows and the `SYS_EXEC` path
 scratch) is common-resident because the resume gate restores it across the
-mode change, while the `SYS_EXEC` path buffer is bank-7 `_DATA`
-(`docs/validation/2026-10-05-m9-nested-exec.md`).  The `fstest` suite runs
+mode change, while the `SYS_EXEC` path buffer was bank-7
+`_DATA` (`docs/validation/2026-10-05-m9-nested-exec.md`) - since work
+package 45b correction 01 the caller's path is staged in the VFS
+workspace's path view in the fixed core instead, because the exec bind
+hands it to a bank-6 provider
+(`docs/validation/2026-10-11-m10-hardware-acceptance-correction-01.md`).  The `fstest` suite runs
 one more case (`exec`, `PASS 10/10`, confirmed on hardware on 2026-10-05; that M9
 suite was retired by package 42b correction 01) and the nested `exec`
 acceptance is replayed now by `tests/test_fs_selftest_sim.py`.

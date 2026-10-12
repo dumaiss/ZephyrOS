@@ -1132,6 +1132,12 @@ REV13_FIXED_SYMBOLS = (
     "_irq_arch_unlock",
     "zos_syscall_entry",
     "zos_syscall_dispatch",
+    # Correction 01 (45b): the VFS workspace's path view.  A bind or exec
+    # frame names the caller's path by address and a bank-6 provider
+    # dereferences it while its own window is open, so the block must
+    # never link where that window replaces it (36.5's buffer rule).  The
+    # same rule retires the cold-half SYS_EXEC scratch this replaced.
+    "_vfs_workspace",
     "_irq_dispatch",
     "_irq_active_source",
     "_boot_common_entry",
@@ -1441,20 +1447,12 @@ def check_symbols(areas, symbols, production=False):
         raise MapError("user copy stack is %d bytes, expected %d"
                        % (stack_delta, USER_COPY_STACK_SIZE))
 
-    # Package 28: the SYS_EXEC path buffer is ordinary bank-7 runtime
-    # data.  It is written by the handler and read by process_prepare(),
-    # both in mode 11, so it has no reason to occupy the permanently
-    # mapped common window (which is reserved for state that must stay
-    # reachable across a mapping change).
-    scratch = symbols.get("_zos_process_path_scratch")
-    if scratch is None:
-        raise MapError("map has no SYS_EXEC path buffer")
-    scratch_low = DATA_BASE if WINDOW_BASE is None else WINDOW_DATA_BASE
-    if not (scratch_low <= scratch < BANK7_TOP):
-        raise MapError(
-            "_zos_process_path_scratch at %04Xh is not in the bank-7 "
-            "runtime data region %04Xh-%04Xh"
-            % (scratch, scratch_low, BANK7_TOP - 1))
+    # Correction 01 (45b): the SYS_EXEC caller path is staged in the VFS
+    # workspace's path view, exactly as `bind` stages its own, so the
+    # block the check above used to reserve here is gone.  The buffer
+    # rule it must satisfy - a bank-6 provider dereferences that address
+    # while its own window is open - is enforced symbol by symbol in
+    # check_rev13_window() through REV13_FIXED_SYMBOLS (`_vfs_workspace`).
 
     # Package 28: the continuation stack must be sized for the pinned
     # depth and frame save, not truncated by a stale assembly .ds.

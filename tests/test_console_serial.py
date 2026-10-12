@@ -18,6 +18,12 @@ by tests/test_console_acceptance.py.
   required driver cannot be loaded, so the loader names it on the early
   console and the nucleus stops the boot there - an explicit boot failure
   (36.11), never a fallback - and the launcher is never reached.
+* `build-service-init-fail-selftest` (work package 45) boots the one
+  test-only service image whose init returns non-zero: the loader's
+  init-status branch refuses the image, names it on the early console and
+  the nucleus stops the boot the same way.  This is the initialization
+  half of the required-driver failure row; the missing-image store above
+  is the load half.
 
 The runtime-fallback images and their composition tests are retired with
 the fallback they covered; the serial configuration is a build selection
@@ -56,6 +62,10 @@ SERIAL_SYSINFO = \
 LOADER_NO_IMAGE = b"service loader: console-serial.zmod: no image\r\n"
 MANIFEST_UNAVAILABLE = b"services: unavailable 0x05\r\n"
 CONSOLE_SERVICE_FAILED = b"console: service failed\r\n"
+
+# The init-status refusal (work package 45): the image loaded, its init
+# returned non-zero, and the loader's failure line names it.
+LOADER_INVALID = b"service loader: init_fail.zmod: invalid\r\n"
 
 
 class SerialBase(ConsoleReplayBase):
@@ -249,6 +259,73 @@ class TestRequiredConsoleFailure(SerialBase):
         listed = [data[i:i + 24].split(b"\0")[0].decode()
                   for i in range(0, len(data), 24)]
         self.assertEqual(listed, [name for name, _cls in SERVICE_SET])
+
+
+class TestRequiredConsoleInitFailure(SerialBase):
+    """`build-service-init-fail-selftest` (work package 45): the one
+    required service image's init refuses, so the boot must fail explicitly
+    on the early console through the loader's init-status branch."""
+
+    IMAGE_SUBDIR = "build-service-init-fail-selftest"
+    IMAGE_NAME = "zephyros-service-init-fail-selftest.bin"
+
+    def run_to_halt(self, z, limit=STEP_LIMIT):
+        for step in range(limit):
+            self.skip_delay(z)
+            z.step()
+            if z.halted:
+                return
+            if step % 0x1FFF == 0:
+                self.pump(z)
+        raise AssertionError("the kernel never halted (PC=%04X)" % z.pc)
+
+    def test_boot_fails_on_the_refusing_driver(self):
+        z = self.start()
+        self.run_to_halt(z)
+        sio = bytes(z.sio_tx)
+
+        # The image was read (the manifest named it), then its init
+        # refused: the loader's failure line names it and the nucleus
+        # stops the boot before the launcher (36.11).
+        self.assertIn(LOADER_INVALID, sio)
+        self.assertIn(CONSOLE_SERVICE_FAILED, sio)
+
+        # No console service and no launcher: nothing follows the failure.
+        self.assertNotIn(CONSOLE_SERVICE_OK, sio)
+        self.assertNotIn(b"console: unbound", sio)
+        self.assertNotIn(b"service loader: 1 images", sio)
+        self.assertNotIn(BANNER.encode("ascii"), sio)
+        self.assertNotIn(b"monitor: exit status", sio)
+
+        after = len(sio)
+        for _ in range(20000):
+            z.step()
+        self.assertEqual(len(bytes(z.sio_tx)), after)
+
+    def test_store_and_manifest_carry_the_refusing_service(self):
+        entries = self.store_entries()
+        manifest = os.path.join(ROOT, "tests", "console",
+                                "manifest-init-fail.json")
+        with open(manifest) as handle:
+            names = [entry["name"] for entry in json.load(handle)["files"]]
+        self.assertEqual(sorted(entries), sorted(names))
+        self.assertIn("init_fail.zmod", entries)
+
+        # The boot manifest lists exactly the refusing image, and the
+        # packed container refuses through its init symbol.
+        with open(os.path.join(ROOT, self.IMAGE_SUBDIR, "modules",
+                               "services.man"), "rb") as handle:
+            data = handle.read()
+        listed = [data[i:i + 24].split(b"\0")[0].decode()
+                  for i in range(0, len(data), 24)]
+        self.assertEqual(listed, ["init_fail.zmod"])
+        # The packed container carries no endpoint and no publication:
+        # the failure is the init status alone.
+        report_path = os.path.join(ROOT, self.IMAGE_SUBDIR, "modules",
+                                   "init_fail.report.json")
+        with open(report_path) as handle:
+            report = json.load(handle)
+        self.assertEqual(report["endpoints"], [])
 
 
 if __name__ == "__main__":

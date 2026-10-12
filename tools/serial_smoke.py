@@ -38,6 +38,15 @@ captures output with a bounded timeout, and verifies the expected output:
                      line per outcome, the child's `fs-child: PASS`, the
                      `fs-selftest: PASS` verdict with its check count and
                      then the monitor prompt on the same SIO console.
+    --mode hwtest    the production image's feature exerciser (work
+                     package 45b): the boot banner, then the tool types
+                     `X /SYSTEM/hwtest.zex` at the monitor over this lane
+                     - production's console input is the HID build, so
+                     the monitor reads commands from the lane the runner
+                     mirrors its lines to - and checks the three stage
+                     lines and the verdict, with the card state the
+                     transcript reports (insert a card for the card run,
+                     remove it for the absent-card run).
 All new subsystem modes send the host sync sequence while the banner is
 pending, because the acceptance builds hold the first byte until the
 host is listening (the bench reset also resets the USB bridge).
@@ -55,7 +64,7 @@ before they print anything, so those modes send that sequence once the
 port is open and repeat it until the first byte arrives.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|ioc|hid|video|console|console-integration|console-serial|fs]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|ioc|hid|video|console|console-integration|console-serial|fs|hwtest]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -244,6 +253,155 @@ def _fs_image_result(data):
             FS_IMAGE_MONITOR in data)
 
 
+# --- package 45b: the production hardware exerciser --------------------------
+# `X /SYSTEM/hwtest.zex` on the production image.  The console is the
+# V9958/HID build there, so this lane is where the monitor takes its
+# commands (it polls the SERIAL object beside the console) and where the
+# runner mirrors every line - the tool therefore reads its own command
+# echoed back byte by byte and then the stage lines and the verdict.
+HW_COMMAND = b"X /SYSTEM/hwtest.zex\r"
+HW_TIMEOUT = 120.0
+HW_BEGIN = b"hwtest: begin\r\n"
+HW_STAGES = (b"hwtest: xmem+far PASS\r\n",
+             b"hwtest: namespace+handles PASS\r\n")
+HW_FILES_PASS = b"hwtest: files PASS\r\n"
+HW_FILES_ABSENT = b"hwtest: files card absent\r\n"
+HW_FILES_READONLY = b"hwtest: files card not writable\r\n"
+HW_SUMMARY = b"hwtest: 3/3 PASS"
+# The card state each line pair reports: the files stage and the note the
+# verdict carries.
+HW_CARD_STATES = (
+    ("present", HW_FILES_PASS, b""),
+    ("absent", HW_FILES_ABSENT, b" (card absent)"),
+    ("not writable", HW_FILES_READONLY, b" (card not writable)"),
+)
+HW_FAIL = b"hwtest: 3/3 FAIL"
+
+# The quiet window after the boot banner before the command goes in: the
+# monitor's launcher, console service and poll loop all run behind the
+# banner, which the early console prints first.
+HW_SETTLE = 1.5
+
+
+def _hwtest_card(data):
+    """The card state the exerciser's transcript reports, or None while it
+    is incomplete.  A state counts only when the begin line, both program
+    stages, the files line and the matching verdict are all present, so a
+    partial or inconsistent transcript never reads as a pass."""
+    if HW_BEGIN not in data:
+        return None
+    for state, files_line, note in HW_CARD_STATES:
+        if (files_line in data and
+                HW_SUMMARY + note + b"\r\n" in data and
+                all(marker in data for marker in HW_STAGES)):
+            return state
+    return None
+
+
+def _hwtest_result(data):
+    """True when the exerciser completed on this lane: the three stage
+    lines and the verdict, with no FAIL/PANIC marker."""
+    if HW_FAIL in data or b"PANIC" in data or b" FAIL" in data:
+        return False
+    return _hwtest_card(data) is not None
+
+
+class HwtestCommand:
+    """The exerciser command's typed-speed handshake.
+
+    The monitor echoes every byte it takes from this lane back on the same
+    lane (the input path of work package 45b), which turns the send into a
+    checked one: each byte of `HW_COMMAND` goes out only after the previous
+    byte's echo arrived, so the polled receiver's single-byte register
+    never sees a burst, and a byte whose echo does not arrive inside the
+    deadline is sent again - it replaces the pending byte rather than
+    duplicating it.  A line that was acknowledged but produced no `hwtest:`
+    line (the monitor may have executed a garbled one) is restarted behind
+    a flush CR, so a partial line can never join the new one.
+    """
+
+    ECHO_DEADLINE = 1.0
+    PACE = 0.02
+    BEGIN_DEADLINE = 8.0
+    RESTARTS = 4
+
+    def __init__(self):
+        self.next = 0          # index of the byte to send next
+        self.outstanding = -1  # index that is waiting for its echo
+        self.mark = 0          # `data` offset when it was written
+        self.deadline = 0.0
+        self.ack_at = 0.0
+        self.restarts = 0
+        self.done = False
+        self.gave_up = False
+
+    def _write(self, link, payload, data_len, now):
+        try:
+            link.write(payload)
+            link.flush()
+        except Exception:
+            return
+        self.outstanding = self.next
+        self.mark = data_len
+        self.deadline = now + self.ECHO_DEADLINE
+
+    def _restart(self):
+        self.next = 0
+        self.outstanding = -1
+        self.done = False
+        self.deadline = 0.0
+        self.ack_at = 0.0
+        self.restarts += 1
+
+    def step(self, link, data, now):
+        """Advance the handshake; returns a note string when it acts."""
+        if self.gave_up:
+            return None
+        if self.done:
+            if HW_BEGIN in data or now < self.ack_at + self.BEGIN_DEADLINE:
+                return None
+            if self.restarts >= self.RESTARTS:
+                self.gave_up = True
+                return ("the command was echoed %d times but no stage line "
+                        "followed" % self.restarts)
+            self._restart()
+            return ("no stage line followed the acknowledged command: "
+                    "restarting it")
+        if self.outstanding < 0:
+            if now < self.deadline:
+                return None  # pacing (or the flush CR before a restart)
+            if self.next == 0 and self.restarts != 0:
+                self._write(link, b"\r", len(data), now)
+                self.outstanding = -1
+                self.deadline = now + self.PACE
+                return "flushed a partial line before restarting"
+            self._write(link, HW_COMMAND[self.next:self.next + 1], len(data),
+                        now)
+            if self.next == 0:
+                return "typed %r at the monitor prompt" % HW_COMMAND
+            return None
+        if HW_COMMAND[self.outstanding] in data[self.mark:]:
+            self.next = self.outstanding + 1
+            self.outstanding = -1
+            self.deadline = now + self.PACE
+            if self.next >= len(HW_COMMAND):
+                self.done = True
+                self.ack_at = now
+                return "the monitor acknowledged the command"
+            return None
+        if now >= self.deadline:
+            self.outstanding = -1
+            self.deadline = now + self.PACE
+            return "byte %d was not echoed: sending it again" % self.next
+        return None
+
+
+def _hwtest_complete(data):
+    """True once the exerciser's verdict arrived (or it failed) on the
+    lane."""
+    return _hwtest_card(data) is not None or HW_FAIL in data
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="ZephyrOS serial smoke check")
     parser.add_argument("--port", default=os.environ.get("ZOS_SERIAL_PORT", ""))
@@ -253,10 +411,13 @@ def main(argv):
     parser.add_argument("--mode", choices=("normal", "subsystem",
                                            "console-integration",
                                            "console-serial",
-                                           "fs"),
+                                           "fs", "hwtest"),
                         default="normal")
     parser.add_argument(
-        "--timeout", type=float, default=float(os.environ.get("ZOS_SERIAL_TIMEOUT", "15"))
+        "--timeout", type=float, default=None,
+        help="capture window in seconds (default: ZOS_SERIAL_TIMEOUT, else "
+             "15, or %g for hwtest, which runs the whole exerciser)"
+             % HW_TIMEOUT
     )
     parser.add_argument(
         "--quiet", type=float,
@@ -264,6 +425,13 @@ def main(argv):
         help="normal mode: quiet window after the banner before a "
              "banner-only PASS (default 5s)")
     args = parser.parse_args(argv)
+
+    if args.timeout is None:
+        env_timeout = os.environ.get("ZOS_SERIAL_TIMEOUT", "")
+        if env_timeout:
+            args.timeout = float(env_timeout)
+        else:
+            args.timeout = HW_TIMEOUT if args.mode == "hwtest" else 15.0
 
     if not args.port:
         print(
@@ -331,12 +499,26 @@ def main(argv):
               "log; power-cycle the board or press RESET now so the boot "
               "is captured; with a writable card every outcome line and "
               "the fs-selftest: PASS verdict must appear")
+    if args.mode == "hwtest":
+        print("serial_smoke: mode hwtest checks the production image's "
+              "feature exerciser; power-cycle the board or press RESET "
+              "now so the boot is captured; the tool then types "
+              "'X /SYSTEM/hwtest.zex' at the monitor over this lane (the "
+              "production console input is the HID build, so the monitor "
+              "reads its commands here) and reads the stage lines and the "
+              "verdict")
+        print("serial_smoke: operator step: run this twice - once with a "
+              "FAT card inserted and once without it; the files line and "
+              "the verdict carry the card state, and with no card the "
+              "expected result is 'card absent'")
     deadline = time.monotonic() + args.timeout
     data = b""
     bridge_drops = 0
     host_sync_at = 0.0
     rx_byte_sent = False
     normal_banner_at = 0.0
+    hwtest_cmd = HwtestCommand()
+    hwtest_idle_at = 0.0
     try:
         while time.monotonic() < deadline:
             if link is None:
@@ -417,6 +599,23 @@ def main(argv):
                         print("serial_smoke: sent 'r' at the monitor prompt")
                     if _serial_result(data):
                         break
+                elif args.mode == "hwtest":
+                    if _hwtest_complete(data):
+                        break
+            if args.mode == "hwtest" and link is not None:
+                # The exerciser's command handshake starts once the boot
+                # banner is complete and the lane has been quiet: the
+                # monitor reaches its command loop right behind the banner.
+                if BANNER in data:
+                    now = time.monotonic()
+                    if hwtest_idle_at == 0.0:
+                        hwtest_idle_at = now + HW_SETTLE
+                        print("serial_smoke: boot captured; typing the "
+                              "command in over the lane once it is quiet")
+                    if now >= hwtest_idle_at:
+                        note = hwtest_cmd.step(link, data, now)
+                        if note:
+                            print("serial_smoke: " + note)
             if args.mode == "normal":
                 # Banner-only contract: the V9958-bound production console
                 # sends only the early banner on serial.  PASS once the
@@ -490,6 +689,15 @@ def main(argv):
                     "and the 'Z80> ' prompt, and the monitor's system row "
                     "for the typed 'r' - all on the serial lane (the "
                     "console-serial variant routes /dev/console to SERIAL)")
+    elif args.mode == "hwtest":
+        ok = _hwtest_result(data)
+        expected = ("the boot banner, the echoed command, and the "
+                    "exerciser's transcript on this lane: 'hwtest: begin', "
+                    "'hwtest: xmem+far PASS', the files stage line (PASS, "
+                    "'card absent' or 'card not writable'), "
+                    "'hwtest: namespace+handles PASS' and "
+                    "'hwtest: 3/3 PASS' with the card note that matches the "
+                    "files line - run it once with a card and once without")
 
     _root_observation(args.mode, data)
     if not ok:
@@ -516,6 +724,10 @@ def _root_observation(mode, data):
         print("serial_smoke: note: /FS is not served (no card, or a "
               "write-protected one); this image reports that as an "
               "expected outcome")
+    state = _hwtest_card(data) if mode == "hwtest" else None
+    if state is not None:
+        print("serial_smoke: note: the exerciser reports card state '%s'"
+              % state)
 
 
 
@@ -608,6 +820,32 @@ def _explain_wrong_image(mode, data):
                   "boot got.  The dynamic console must answer on this "
                   "lane: check the console-service line and the monitor "
                   "prompt above", file=sys.stderr)
+    elif mode == "hwtest":
+        if b"PANIC" in data or b"console: unbound" in data:
+            print("serial_smoke: hint: the production boot reported a "
+                  "panic or an unbound console (see the marker above)",
+                  file=sys.stderr)
+        elif HW_FAIL in data or b" FAIL" in data:
+            print("serial_smoke: hint: an exerciser stage failed; the "
+                  "stage line above names it (a stage program reports its "
+                  "own FAIL lines on the console, i.e. the V9958 "
+                  "display)", file=sys.stderr)
+        elif BANNER not in data:
+            print("serial_smoke: hint: no boot log was captured.  Start "
+                  "this tool first, then power-cycle the board or press "
+                  "RESET while it waits, and rerun", file=sys.stderr)
+        elif HW_BEGIN not in data:
+            print("serial_smoke: hint: the monitor did not run the "
+                  "command.  The production console input is the HID "
+                  "build, so the monitor takes it from this lane; confirm "
+                  "the flashed image is the package-45b production image "
+                  "(its monitor polls /dev/serial/0) and that the store "
+                  "carries /SYSTEM/hwtest.zex", file=sys.stderr)
+        else:
+            print("serial_smoke: hint: the exerciser started but its "
+                  "verdict did not arrive inside the window; raise "
+                  "--timeout, and check the console (V9958) for the stage "
+                  "programs' own outcome lines", file=sys.stderr)
 
 
 if __name__ == "__main__":

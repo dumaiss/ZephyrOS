@@ -37,7 +37,11 @@
  * receives the caller's entry array as the call descriptor.  A card that is
  * absent or unreadable does not fail the driver's init (a required driver
  * that cannot initialize is a boot failure, and `/SYSTEM` must stay
- * usable): every operation then answers (-ZOS_ENODEV).
+ * usable): every operation then answers (-ZOS_ENODEV), the one documented
+ * error for "`/FS` has no media" (docs/devices.md) - `bind`, `stat`,
+ * `ns_enum`, `chdir` below `/FS` and the FILE protocol alike, whatever
+ * status the real IOC returns for a command it can answer from cache
+ * (`iocfat_media_readable`, iocfat_init and the root `ZFS_OP_STAT`).
  *
  * All protocol constants are private to this file.
  */
@@ -225,6 +229,7 @@ static int iocfat_dir_open(const char *path, uint8_t count,
 			   struct iocfat_dir **out);
 static int iocfat_dir_read(struct iocfat_dir *dir, struct zfs_dirent *out);
 static int iocfat_dir_close(struct iocfat_dir *dir);
+static int iocfat_media_readable(void);
 static int iocfat_file_open(const char *path, uint16_t flags, uint8_t *object,
 			    uint32_t *size);
 static int iocfat_file_close(uint8_t object);
@@ -1000,6 +1005,18 @@ static int iocfat_stat_path(const char *path, struct zfs_stat *out)
 	if (result != 0) {
 		return result;
 	}
+	if (count == 0u) {
+		/* The root is answered from the driver's own knowledge, so
+		 * prove the medium first: with no card `stat("/FS")` and
+		 * `chdir("/FS")` must report the same documented error as
+		 * every other operation (-ZOS_ENODEV, iocfat_dispatch).  A
+		 * busy directory slot means an enumeration is reading the
+		 * medium, which proves it just as well. */
+		result = iocfat_media_readable();
+		if (result < 0 && result != -ZOS_EMFILE) {
+			return result;
+		}
+	}
 	size = 0u;
 	out->type = ZFS_TYPE_DIR; /* `/` is the filesystem root */
 	if (count != 0u) {
@@ -1125,6 +1142,28 @@ static int iocfat_dir_read(struct iocfat_dir *dir, struct zfs_dirent *out)
 		return (-ZOS_EIO);
 	}
 	return 1;
+}
+
+/* Prove the medium with the one command that reads it: open the root and
+ * read one entry.  OPENDIR alone proves nothing - the deployed firmware
+ * answers it for "/" from its mount context without touching the card, so
+ * a volume whose card is gone still opens a root and fails only at the
+ * first directory read.  Returns 0 when the volume answered (an entry or
+ * the end), else the mapped error. */
+static int iocfat_media_readable(void)
+{
+	struct iocfat_dir *dir;
+	struct zfs_dirent entry;
+	int result = iocfat_dir_open("/", 0u, &dir);
+
+	if (result != 0) {
+		return result;
+	}
+	result = iocfat_dir_read(dir, &entry);
+	(void)iocfat_dir_close(dir);
+	/* One entry and the end are both proof; only a negative code is a
+	 * failure (NO_MEDIA for the absent card). */
+	return (result < 0) ? result : 0;
 }
 
 static int iocfat_dir_close(struct iocfat_dir *dir)
@@ -1687,17 +1726,14 @@ uint8_t iocfat_init(const struct ipc_service_boot *boot)
 	iocfat.generation =
 		iocfat_get32(&iocfat_reply.data[FS2_OFF_CAP_GENERATION]);
 
-	/* Probe the root: it must be openable on mounted media.  An absent
-	 * or FAT-less card stops here, and every operation then reports
-	 * (-ZOS_ENODEV) while `/SYSTEM` and the console stay usable. */
-	{
-		struct iocfat_dir *dir;
-
-		result = iocfat_dir_open("/", 0u, &dir);
-		if (result != 0) {
-			return 0u;
-		}
-		(void)iocfat_dir_close(dir);
+	/* Probe the media with the read that proves it (iocfat_media_readable).
+	 * A card that is absent or was pulled still answers OPENDIR for the
+	 * root, so without the read "no media" would mean different things on
+	 * the bench and in the simulator.  Every operation then reports the
+	 * one documented error, -ZOS_ENODEV (iocfat_dispatch), while
+	 * `/SYSTEM` and the console stay usable. */
+	if (iocfat_media_readable() != 0) {
+		return 0u;
 	}
 	iocfat.mounted = 1u;
 	iocfat_ready = 1u;

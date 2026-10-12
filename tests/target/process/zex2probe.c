@@ -11,6 +11,9 @@
  *   - the image arrived intact (a constant sentinel);
  *   - the bank was NOT cleared (the marker outside image/BSS/stack is
  *     still there);
+ *   - an ordinary (zero-segment) program runs with its full bank: the
+ *     latch is mode 10 with P = 0, so nothing in 0000h-DFFFh is an
+ *     aperture (36.17);
  *   - the startup block is present (GETINFO reports the identity).
  *
  * The console lines are for hardware transcripts; the exit status
@@ -19,6 +22,10 @@
 
 #include "zos.h"
 #include "process_selftest.h"
+
+/* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
+ * D7-D5 (platform/zephyr80/hardware.inc). */
+__sfr __at 0x00 latch_port;
 
 /* Uninitialized: the loader must zero this whole region. */
 static unsigned char bss_probe[64];
@@ -51,6 +58,11 @@ int main(void)
 	if (ro_sentinel[0] != 0xDEu || ro_sentinel[1] != 0xADu ||
 	    ro_sentinel[2] != 0xBEu || ro_sentinel[3] != 0xEFu) {
 		z2_fail(ZOS_PCST_Z2_FAIL_IMAGE);
+	}
+	/* An ordinary ZEX v2 program runs in the application mode over its
+	 * own bank with P = 0: every address in the bank is primary. */
+	if ((latch_port & 0x18u) != 0x10u || (latch_port & 0xE0u) != 0u) {
+		z2_fail(ZOS_PCST_Z2_FAIL_LATCH);
 	}
 	if (mark[0] != ZOS_PCST_ZEX2_MARK_0 || mark[1] != ZOS_PCST_ZEX2_MARK_1 ||
 	    mark[2] != ZOS_PCST_ZEX2_MARK_2 ||

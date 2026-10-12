@@ -196,6 +196,18 @@ PK_SUFFIX := -console-serial-fail-selftest
 ZOS_SERVICES := sio ioc hid v9958 $(ZOS_CONSOLE) iocfat
 endif
 
+# Required-driver init-failure variant (work package 45): the boot set is
+# the one test-only service image `init_fail` (tests/target/console/,
+# tests/console/manifests/), whose init returns a non-zero status.  The
+# loader refuses the image and the boot must stop explicitly on the early
+# console (36.11) - the init-status half of the required-driver failure
+# row, which the missing-image store of 42e does not exercise.
+ifeq ($(ZOS_SERVICE_INIT_FAIL_SELFTEST),1)
+PK_SUFFIX := -service-init-fail-selftest
+ZOS_SERVICES := init_fail
+SVC_MANIFEST_DIR := tests/console/manifests
+endif
+
 # Filesystem outcome image (work package 42b, correction 01).  The
 # production boot set (SIO and IOC, so the FS2 transport is the real one)
 # plus `iocfat.zmod` as a bank-6 service publishing `/FS`, the monitor and
@@ -487,6 +499,7 @@ $(BUILD)/zephyros.probe.ihx $(BUILD)/zephyros.probe.map: \
 	fs-selftest ns-selftest ipc-selftest xmem-selftest helloworld-image \
 	hardware-images \
 	smoke-hardware \
+	smoke-hardware-hwtest \
 	smoke-hardware-subsystem \
 	smoke-hardware-console-integration smoke-hardware-console-serial \
 	smoke-hardware-fs
@@ -1077,7 +1090,8 @@ include user/sdk/zex.mk
 include user/helloworld/Makefile
 
 $(eval $(call zex_program,monitor,user/monitor,\
-	monitor.c monitor_mem.c monitor_io.c hexfmt.c hexdump.c status.c,\
+	monitor.c monitor_exec.c monitor_mem.c monitor_io.c hexfmt.c \
+	hexdump.c status.c,\
 	STACK=512,STAGE=1))
 
 $(eval $(call zex_program,zextest,tests/target/process,\
@@ -1121,6 +1135,13 @@ $(eval $(call zex_program,fs_selftest,tests/fs,\
 
 $(eval $(call zex_program,fs_child,tests/fs,\
 	fs_child.c,STACK=192,STAGE=1))
+
+# The hardware exerciser (work package 45b): the production store's
+# `/SYSTEM/hwtest.zex` runner, started from the monitor's X command.  It
+# drives the programs above and the xmem family below from the store, so
+# it carries no checks of its own beyond the namespace stage.
+$(eval $(call zex_program,hwtest,tests/hwtest,\
+	hwtest.c,STACK=256,STAGE=1))
 
 # Extended-memory outcome programs (work package 43, far code package 44b):
 # the checks the image boots (`ZOS_BOOT_PROGRAM=/SYSTEM/xmem_selftest.zex`),
@@ -1225,6 +1246,13 @@ else ifeq ($(ZOS_CONSOLE_SERIAL_FAIL_SELFTEST),1)
 # console (36.11) - no fallback and no launcher.
 ROMFS_MANIFEST := tests/console/manifest-serial-missing.json
 ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+else ifeq ($(ZOS_SERVICE_INIT_FAIL_SELFTEST),1)
+# Required-driver init-failure store (work package 45): the one test-only
+# service image the boot manifest lists, whose init refuses; the loader
+# fails the boot explicitly on the early console (36.11) before the
+# launcher.  The monitor is in the store but never runs.
+ROMFS_MANIFEST := tests/console/manifest-init-fail.json
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
 else ifeq ($(ZOS_FS_SELFTEST),1)
 # Filesystem outcome store (work package 42b, correction 01): the SIO/IOC/
 # console services the production boot set loads, the IOC-FAT service
@@ -1280,7 +1308,14 @@ ROMFS_EXTRA_DEPS = $(MODULES)/ns.zex $(MODULES)/nschild.zex \
 	$(MODULES)/nsdev.zmod $(MODULES)/services.man
 else
 ROMFS_MANIFEST := recovery/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex
+# The exerciser's programs (work package 45b) join the monitor the store
+# already carried: the runner plus the outcome programs it runs, all under
+# /SYSTEM, so `X /SYSTEM/hwtest.zex` works on the production image with no
+# extra image or flash.
+ROMFS_EXTRA_DEPS := $(MODULES)/monitor.zex $(MODULES)/hwtest.zex \
+	$(MODULES)/xmem_selftest.zex $(MODULES)/xmem_child.zex \
+	$(MODULES)/xmem_far.zex $(MODULES)/fs_selftest.zex \
+	$(MODULES)/fs_child.zex
 endif
 
 # --- resident service images (work packages 39-40) ---------------------------
@@ -1358,6 +1393,24 @@ $(MODULES)/nsdev.zmod: $(SVC_MANIFEST_DIR)/nsdev.json $(SVC_SET_OBJS) \
 		--set $(SVC_PACK_IMAGES) \
 		--report $(MODULES)/nsdev.report.json
 
+endif
+
+# Required-driver init-failure acceptance service (work package 45): the
+# test-only image whose init returns non-zero.  Its own explicit rule
+# keyed on the test manifest directory, so the production static pattern
+# rule above (services/manifests/) does not apply; the loader refuses the
+# image and the boot stops (36.11).
+ifeq ($(ZOS_SERVICE_INIT_FAIL_SELFTEST),1)
+$(MODULES)/init_fail.zmod: tests/console/manifests/init_fail.json \
+		$(MODULES)/init_fail.rel $(SVC_SET_OBJS) $(SVC_PACK_SET) \
+		tools/zmodpack.py | $(MODULES)
+	$(PYTHON) tools/zmodpack.py pack $< $@ --objdir $(MODULES) \
+		--set $(SVC_PACK_IMAGES) \
+		--report $(MODULES)/init_fail.report.json
+
+$(MODULES)/init_fail.rel: tests/target/console/init_fail.c \
+		include/zephyros/ipc.h | $(MODULES)
+	$(SDCC) $(SVC_HOT) $< -o $@
 endif
 # The boot manifest: the flat ROMFS names in dependency (load) order,
 # validated as a set - unique endpoints, resolvable dependencies and a
@@ -1634,7 +1687,9 @@ console-integration-selftest: all
 # serial lane (the runtime-fallback images' replacement outcome); the
 # second omits the console image from its ROMFS manifest, so the required
 # driver cannot be loaded and the boot must stop explicitly on the early
-# console.  tests/test_console_serial.py replays both.
+# console; the third (work package 45) boots a test-only required service
+# whose init refuses, the same stop for the init-status branch.
+# tests/test_console_serial.py replays all three.
 
 console-serial-selftest:
 	$(MAKE) BUILD=build-console-serial-selftest \
@@ -1646,6 +1701,10 @@ console-serial-selftest:
 		ZOS_CONSOLE_SERIAL_FAIL_SELFTEST=1 ZOS_CONSOLE=console-serial \
 		ZOS_SMOKE_HOST_SYNC=1 \
 		build-console-serial-fail-selftest/zephyros-console-serial-fail-selftest.bin
+	$(MAKE) BUILD=build-service-init-fail-selftest \
+		ZOS_SERVICE_INIT_FAIL_SELFTEST=1 \
+		ZOS_SMOKE_HOST_SYNC=1 \
+		build-service-init-fail-selftest/zephyros-service-init-fail-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-console-serial-selftest/zephyros.map \
 		build-console-serial-selftest/geometry/memory.inc \
@@ -1653,6 +1712,7 @@ console-serial-selftest:
 	$(PYTHON) -m unittest discover -s tests -p 'test_console_serial.py' -v
 	@echo "console serial image: build-console-serial-selftest/zephyros-console-serial-selftest.bin"
 	@echo "console serial failure image: build-console-serial-fail-selftest/zephyros-console-serial-fail-selftest.bin"
+	@echo "service init-failure image: build-service-init-fail-selftest/zephyros-service-init-fail-selftest.bin"
 
 # Filesystem outcome image (work package 42b, correction 01): the
 # production boot path with the IOC-FAT service publishing `/FS` and the SDK
@@ -1768,11 +1828,17 @@ helloworld-image: all
 #
 #   mode                          image to flash                              build with
 #   smoke-hardware                build/zephyros.bin                          make
+#   smoke-hardware-hwtest         build/zephyros.bin                          make
 #   smoke-hardware-subsystem      build-subsys-selftest/zephyros-subsys-selftest.bin
 #                                                                             make subsystem-selftest
 #   smoke-hardware-console-integration             build-console-integration-selftest/zephyros-console-integration-selftest.bin  make console-integration-selftest
 #   smoke-hardware-console-serial      build-console-serial-selftest/zephyros-console-serial-selftest.bin  make console-serial-selftest
 #   smoke-hardware-fs             build-fs-selftest/zephyros-fs-selftest.bin  make fs-selftest
+#
+# `smoke-hardware-hwtest` drives the production image's feature exerciser
+# (work package 45b): the tool types `X /SYSTEM/hwtest.zex` over this lane
+# - the production monitor polls the serial object for commands - and reads
+# the stage lines and the verdict, run once with a card and once without.
 #
 # `make hardware-images` builds every image the smoke modes need.  The
 # images wait for the tool's host-sync sequence, so start the smoke tool and
@@ -1793,6 +1859,10 @@ hardware-images: all subsystem-selftest \
 smoke-hardware:
 	@$(call smoke_preflight,build/zephyros.bin,all)
 	$(PYTHON) tools/serial_smoke.py --mode normal --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
+
+smoke-hardware-hwtest:
+	@$(call smoke_preflight,build/zephyros.bin,all)
+	$(PYTHON) tools/serial_smoke.py --mode hwtest --port $(or $(SERIAL_PORT),$(ZOS_SERIAL_PORT))
 
 smoke-hardware-subsystem:
 	@$(call smoke_preflight,build-subsys-selftest/zephyros-subsys-selftest.bin,subsystem-selftest)

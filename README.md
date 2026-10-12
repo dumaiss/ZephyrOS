@@ -133,6 +133,24 @@ current boot).
   **Status: see the M9 acceptance matrix in
   `docs/validation/2026-10-05-m9-filesystem.md`** (the milestone closes only
   when every required row has passed).
+- **M10 — Resident-driver nucleus, extended memory, far code/data, ZEX
+  v2**: the two-bank operating system (bank-7 nucleus plus bank-6 resident
+  drivers), the typed namespace rooted at `/` with the static `/FS`,
+  `/SYSTEM` and `/dev` providers, the IPC substrate with 32-byte frames
+  and host-assembled driver endpoints, extended-memory objects with the
+  mode-10 far aperture and far code, and ZEX v2 as the only executable
+  format (architecture section 36).  **Status: COMPLETE pending the
+  owner's hardware sign-off** — the coverage map, the final ledgers and
+  the hardware checklist are in
+  `docs/validation/2026-10-11-m10-acceptance.md`.  The production store
+  carries the feature exerciser the checklist's automated rows run on the
+  flashed system - `/SYSTEM/hwtest.zex`, started with the monitor's
+  `X /SYSTEM/hwtest.zex` - so no acceptance image has to be programmed for
+  them: program the ordinary `build/zephyros.bin` once and run the line
+  (nothing is loaded from the SD card, which is only the FAT medium the
+  files stage writes to).  The exerciser, its smoke mode, its replay and
+  the owner steps are in
+  `docs/validation/2026-10-11-m10-hardware-acceptance.md`.
 
 ## Prerequisites
 
@@ -233,6 +251,11 @@ make smoke-hardware-console-serial SERIAL_PORT=/dev/ttyUSB0
                    # (make console-serial-selftest): the whole dynamic
                    # console is the serial lane; the tool types 'r' at the
                    # prompt and checks the monitor's answer
+make smoke-hardware-hwtest SERIAL_PORT=/dev/ttyUSB0
+                   # flash build/zephyros.bin (make): the tool types
+                   # 'X /SYSTEM/hwtest.zex' on the serial command lane and
+                   # checks the feature exerciser's stage lines and verdict;
+                   # run it once with a card fitted and once without
 make hardware-images
                    # build every image the smoke modes need
 make clean         # remove generated files under build*/

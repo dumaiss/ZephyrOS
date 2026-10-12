@@ -321,7 +321,9 @@ mapped.  `mapcheck.py` and the packer both fail the
 build over the ceiling, and it may not be raised to make a package fit
 (target architecture section 2.18).  Common memory is the scarcest
 region: package 28 added 167 bytes of continuation state and correction-01
-moved 128 bytes of path buffer back out to bank 7.
+moved 128 bytes of path buffer back out to bank 7 - and work package 45b
+correction-01 moved that staging into the VFS workspace in the fixed core,
+where the exec bind's bank-6 provider can read it (section 2.3).
 
 ### 2.2.2 M9-era measurements (packages 25b-31)
 
@@ -410,7 +412,7 @@ section 2.2) holds:
 | global descriptor pool, 8 entries x 17 (`owner`, `type`, file/dir union) | 136 | `kernel/vfs/process.c` |
 | CWD pool: 4 chain levels x (1 owner byte + 128-byte canonical path) | 516 | `kernel/vfs/process.c` |
 | VFS workspace: two 256-byte path views and the 512-byte transfer staging view, exactly tiling one buffer | 512 | `kernel/vfs/workspace.c` |
-| VFS path scratch, kernel file table and the SYS_EXEC path buffer | (see the map) | `kernel/vfs/*.c`, `kernel/main.c` |
+| VFS path scratch and the kernel file table | (see the map) | `kernel/vfs/*.c`, `kernel/main.c` |
 
 The exec continuation state is **common**, not bank-7 data, because it is
 touched only while the gate runs in mode 11: `zos_proc_frames` is
@@ -456,7 +458,7 @@ the boot, module-loader and (later) syscall paths all reach it from
 bank 7.  VFS path, component and directory scratch is static bank-7
 `_DATA` (`kernel/vfs/*.c`, `fs/romfs/romfs_provider.c`); no VFS
 function declares an automatic object larger than 32 bytes, so no path
-ever needs the 256-byte common gate stack.  The ROM-access primitive
+ever needs the common gate stack.  The ROM-access primitive
 (`_rom_access_copy`) is common code, and its staging buffer and saved
 latch/IFF/request state are common data: they must all sit in
 `E000h-FEFFh` and the staging size must equal `ZOS_ROMFS_STAGING_SIZE`
@@ -519,14 +521,14 @@ zos_gate_saved_latch   1 byte    full caller latch (page/mode/bank)
 zos_gate_result_hl     2 bytes   dispatcher result staging
 zos_gate_result_a      1 byte    error code staging
 zos_gate_result_c      1 byte    carry staging (0/1)
-zos_gate_stack       256 bytes   common gate stack used while crossing modes
+zos_gate_stack       384 bytes   common gate stack used while crossing modes
 ```
 
 The gate stack carries the complete syscall handler chain.  It must fit
-one module class operation that runs a full device transaction: the M8
-console read path (`console_getc` -> HID character input -> IOC command
--> SIO transport) reaches roughly 180 bytes below the top, so the size
-is held at 256 bytes.
+the deepest chain that can run on it: the nested exec measured 287 bytes
+(`SYS_EXEC` -> ROMFS read -> provider and driver transaction, package
+42b), so the size is held at 384 bytes (raised from 256 when that chain
+overran; `platform/zephyr80/memory.inc`).
 
 Package 28 makes the *process* side of that state depth-indexed, because
 a nested `SYS_EXEC` runs its child on the same single gate stack:
@@ -542,9 +544,14 @@ zos_proc_gate_iff      4 bytes   shadowed gate caller IFF per depth
 zos_proc_frames      144 bytes   3 x 48-byte saved gate frames
 ```
 
-The `SYS_EXEC` path buffer is *not* here: it is ordinary bank-7 `_DATA`
+The `SYS_EXEC` path buffer used to be ordinary bank-7 `_DATA`
 (`_zos_process_path_scratch` in `kernel/process/process.c`, ZOS_PATH_MAX
-bytes), because nothing touches it across a mode change.
+bytes, added by package 28 correction 01 because nothing touched it across
+a mode change).  Work package 45b correction 01 **retired it**: the exec
+bind hands the path to whichever provider owns it, and a bank-6 provider
+cannot see the cold half (the buffer rule, architecture 36.5), so
+`SYS_EXEC` stages the caller's path in the VFS workspace's path view like
+every other syscall (`kernel/syscall.c`, `kernel/process/exec.c`).
 
 `zos_gate_saved_sp/latch/iff` stay single-depth (they are what the gate
 saves and restores for one syscall); the `zos_proc_gate_*` copies are the
@@ -588,7 +595,7 @@ rom_access_sync_end    EF08h     stub extent mirrored into pages 2-7
 ```
 
 The gate stack size is validated exactly (`zos_gate_stack_top - zos_gate_stack
-== 256`, from the platform constant) and the whole block must sit inside
+== ZOS_GATE_STACK_SIZE`, 384 bytes from the platform constant) and the whole block must sit inside
 `E000h-FEFFh`.
 
 Self-test builds only (`make subsystem-selftest` links

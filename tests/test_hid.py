@@ -158,7 +158,12 @@ class TestHidServiceArtifact(unittest.TestCase):
         self.assertEqual(names, ["sio.zmod", "ioc.zmod", "hid.zmod",
                                  "v9958.zmod", "console-v9958-hid.zmod",
                                  "services.man", "iocfat.zmod",
-                                 "monitor.zex"])
+                                 "monitor.zex",
+                                 # The production feature exerciser and the
+                                 # outcome programs it runs (45b).
+                                 "hwtest.zex", "xmem_selftest.zex",
+                                 "xmem_child.zex", "xmem_far.zex",
+                                 "fs_selftest.zex", "fs_child.zex"])
         # The boot manifest orders the services; HID's declared dependency
         # on the IOC class is what makes the loader place IOC first.
         manifest_name = _read(os.path.join(ROOT, "abi", "zos",

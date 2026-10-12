@@ -23,8 +23,14 @@
  *     -ZOS_EMFILE, and releases every entry `unbind` returns;
  *   * `ns_enum` lists `/`, `/dev`, `/dev/input` and `/SYSTEM`, paged with
  *     its cookie;
- *   * a child started with SYS_EXEC gets its own two standard handles and
- *     none of the parent's bound handles.
+ *   * `chdir`/`getcwd` traverse the namespace through provider validation:
+ *     the VFS root, `/SYSTEM`, a grouping container and `..` are
+ *     traversable, a bindable object and an absent name are refused, a
+ *     refused `chdir` leaves the CWD untouched, and a relative `bind`
+ *     resolves against the stored CWD;
+ *   * a child started with SYS_EXEC gets its own two standard handles,
+ *     none of the parent's bound handles and the parent's CWD, and its own
+ *     `chdir` cannot move the parent's CWD.
  *
  * The simulator replay reads the lines below; the final line is the
  * verdict.  Every write to the console also exercises the standard
@@ -399,12 +405,66 @@ static void test_enum(void)
 			       == -ZOS_EINVAL);
 }
 
+/* --- CWD traversal and inheritance --------------------------------------- */
+
+static void test_cwd(void)
+{
+	char cwd[16];
+	unsigned char type = 0u;
+	int result;
+	int handle;
+
+	/* The initial CWD is the VFS root, and the root itself stays
+	 * traversable: `chdir` asks the owning provider (the VFS owns `/`)
+	 * whether the target is a traversable location. */
+	result = zos_getcwd(cwd, sizeof(cwd));
+	check("cwd-initial", result == 1 && cwd[0] == '/' && cwd[1] == '\0');
+
+	check("chdir-system", zos_chdir("/SYSTEM") == 0);
+	result = zos_getcwd(cwd, sizeof(cwd));
+	check("cwd-system", result == 7 && strcmp(cwd, "/SYSTEM") == 0);
+	zos_printf("ns: cwd %s\r\n", cwd);
+
+	/* A relative path resolves against the stored CWD. */
+	handle = zos_ipc_bind("services.man", ZFS_O_READ, &type);
+	check("cwd-relative-bind", handle >= 3 && type == ZOS_TYPE_FILE);
+	if (handle >= 3) {
+		check("cwd-relative-unbind",
+		      zos_ipc_unbind((unsigned char)handle) == 0);
+	}
+
+	/* Provider validation folds case, `..` walks up to the root, and a
+	 * refused `chdir` leaves the CWD untouched. */
+	check("chdir-case", zos_chdir("/system") == 0);
+	check("chdir-parent", zos_chdir("..") == 0);
+	result = zos_getcwd(cwd, sizeof(cwd));
+	check("cwd-root", result == 1 && cwd[0] == '/' && cwd[1] == '\0');
+	check("chdir-dev-input", zos_chdir("/dev/input") == 0);
+	result = zos_getcwd(cwd, sizeof(cwd));
+	check("cwd-dev-input",
+	      result == 10 && strcmp(cwd, "/dev/input") == 0);
+	check("chdir-object-refused",
+	      zos_chdir("/dev/console") == -ZOS_ENOTDIR);
+	check("chdir-absent", zos_chdir("/dev/nosuch") == -ZOS_ENOENT);
+	check("chdir-no-provider", zos_chdir("/FS") == -ZOS_ENODEV);
+	result = zos_getcwd(cwd, sizeof(cwd));
+	check("cwd-survives-refusal",
+	      result == 10 && strcmp(cwd, "/dev/input") == 0);
+
+	/* The CWD the inheritance child starts from. */
+	check("chdir-dev", zos_chdir("..") == 0);
+	result = zos_getcwd(cwd, sizeof(cwd));
+	check("cwd-dev", result == 4 && strcmp(cwd, "/dev") == 0);
+	zos_printf("ns: cwd %s\r\n", cwd);
+}
+
 /* --- the child ------------------------------------------------------------ */
 
 #define NS_CHILD "/SYSTEM/nschild.zex"
 
 static void test_child(void)
 {
+	char cwd[16];
 	int result;
 
 	/* SYS_EXEC resolves the executable through the namespace, gives the
@@ -413,6 +473,11 @@ static void test_child(void)
 	result = zos_exec(NS_CHILD, "");
 	check("child-status", result == 0);
 	zos_printf("ns: exec %s -> %d\r\n", NS_CHILD, result);
+
+	/* The child's `chdir` went to its own CWD slot: the parent's CWD is
+	 * exactly the one it set before the exec. */
+	result = zos_getcwd(cwd, sizeof(cwd));
+	check("cwd-after-child", result == 4 && strcmp(cwd, "/dev") == 0);
 
 	/* The parent's table is its own: the child's binds and unbinds did
 	 * not touch it, so a fresh bind still succeeds. */
@@ -430,6 +495,7 @@ int main(int argc, char **argv)
 	test_handle_table();
 	test_file();
 	test_enum();
+	test_cwd();
 	test_child();
 
 	zos_printf("ns: %u/%u checks\r\n", checks - failures, checks);

@@ -13,7 +13,12 @@ through `SYS_CONSOLE_*` (the bound normal console service) and every
 memory/port/system operation crosses the M7 `SYS_DIAG_*` boundary
 (`docs/abi.md` section 9).  It contains no SIO/V9958/HID knowledge, no
 CP/M dependency, and no private kernel symbols, so the identical binary
-keeps working when the console device is rebound in M8.
+keeps working when the console device is rebound in M8.  Command input
+has one optional second source: the monitor binds the namespace name
+`/dev/serial/0` (a serial object a resident driver publishes) and polls
+it beside the console, so the same binary is drivable from the serial
+lane on a build whose console is the V9958/HID one - see "Serial command
+lane" below.
 
 ## Boot and launch policy
 
@@ -65,7 +70,36 @@ answered with `ERR: ARG`.
 | `MB bank addr value` | modify one byte in application bank 0-6 |
 | `I port` | read I/O port `10h-FFh` |
 | `O port value` | write I/O port `10h-FFh` |
+| `X path [tail]` | run a ZEX from `/SYSTEM` or `/FS`, print its exit status |
 | `Q` | exit to the launcher |
+
+`X` runs the named program through the launcher's own `SYS_EXEC` path -
+no new privilege and no kernel or driver state - waits for it, prints
+`exec: exit status 0xssss` (or `ERR: <code>` when the exec itself fails)
+and prompts again.  The optional tail travels to the child byte-exact,
+which is how the `stage` option reaches the outcome programs the
+exerciser starts.
+
+> **A card executable is runnable again (45b correction 01).**  Work
+> package 45b found that `X /FS/<name>.zex` failed with `ERR: 02`
+> (`ZOS_EINVAL`) before the filesystem provider was called at all:
+> `SYS_EXEC` staged the caller's path in bank-7 `_DATA` (`0xC0DD` in
+> that build), which lies in the `6000h-DFFFh` region a bank-6
+> provider's window replaces, so the `/FS` provider could not read it
+> (`/SYSTEM` worked because the ROMFS reader is in-process).  Correction
+> 01 stages the path the way `SYS_BIND` does, in the VFS workspace in
+> the fixed core, so the program on the card loads, runs and reports its
+> exit status like any store program; everything the exerciser needs is
+> still in the store, so no acceptance row depends on card execution.
+> The fix, the guard and the replay are in
+> `docs/validation/2026-10-11-m10-hardware-acceptance-correction-01.md`.
+
+```text
+Z80> X /SYSTEM/hwtest.zex
+... the exerciser's own lines (see "Serial command lane") ...
+exec: exit status 0x0000
+Z80>
+```
 
 Restrictions enforced by the monitor and re-checked by the kernel:
 writes require `0100h-DFFFh` (native page zero protected), reads allow
@@ -105,9 +139,65 @@ variable in the monitor's BSS: `M <scratch> vv` and `D <scratch> 1`
 exercise the memory write/readback path without touching live monitor
 state (the physical smoke parses this address from the banner).
 
-Deliberately deferred, not emulated: Intel HEX load/export (`L`/`X`),
+Deliberately deferred, not emulated: Intel HEX load/export (`L`),
 `G`, `APP`, and CP/M register-snapshot semantics.  `R` reports native
-system/bank/process identity instead.
+system/bank/process identity instead, and `X` runs a ZEX from the store
+or a card.
+
+## Serial command lane
+
+When the store publishes a serial object at `/dev/serial/0`, the monitor
+binds that name through the ordinary typed protocol - no port I/O, no
+driver symbol, and no fallback: an image without the object is
+console-only, exactly as before - and polls it beside the console.  A
+command line can then be typed from either source; the console is polled
+first, and every byte is echoed back to the source it came from, so
+
+- the serial-console build (both sources are the same stream) renders
+  each typed byte exactly once, and
+- on the production image - whose console input is HID and whose console
+  output is the V9958 - the lane carries a complete command path: a
+  terminal or a host tool types the command, the monitor echoes it on the
+  same lane, and the output appears on the V9958 display.  The monitor
+  writes nothing to the lane on its own.
+
+The line-editing rules are the SDK's `zos_read_line` semantics: BS/DEL
+erase the last character, CR or LF ends the line (a CRLF's LF is
+swallowed), an overflow rings the bell instead of entering the byte, and
+other control bytes are ignored.
+
+The production store carries the exerciser this lane exists for:
+`/SYSTEM/hwtest.zex` (work package 45b) runs, in order, the extended
+memory and far-code suite, the filesystem suite with every write confined
+to `/FS/HWTEST` (created and removed by the runner, also after a
+failure), and a namespace/handle stage against the real publications -
+one line per stage and a verdict:
+
+```text
+Z80> X /SYSTEM/hwtest.zex
+hwtest: begin
+hwtest: xmem+far PASS
+hwtest: files PASS                 # or: card absent / card not writable
+hwtest: namespace+handles PASS
+hwtest: 3/3 PASS                   # + " (card absent)" when no card is fitted
+exec: exit status 0x0000
+```
+
+Nothing has to be copied to the card for this: the exerciser and the
+outcome programs its stages run are part of the recovery store, so they
+arrive with the ROM image.  The card is only the medium the files stage
+writes to - and running without one is a supported outcome (the absent
+branch above), not a failure.
+
+Every `hwtest:` line goes to the console and to the lane, so
+`make smoke-hardware-hwtest SERIAL_PORT=/dev/ttyUSBx` (or
+`tools/serial_smoke.py --mode hwtest`) can type the command at the
+monitor over the lane and check the stages and the verdict; run it once
+with a card and once without.  The stage programs' own outcome lines
+(`xmem-selftest: 61 checks, 0 failures`, `xmem-far: 19 checks,
+0 failures`, `fs-selftest: 37 checks, 0 failures` - or 8 without a card -
+and the nested execs' `xmem-child`/`fs-child` rows) appear on the
+console, i.e. on the V9958 display.
 
 ## Program support (the user SDK)
 

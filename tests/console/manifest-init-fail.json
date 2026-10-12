@@ -1,0 +1,20 @@
+{
+  "format": "romfs-v1",
+  "files": [
+    {
+      "name": "init_fail.zmod",
+      "type": "ZMOD",
+      "path": "init_fail.zmod"
+    },
+    {
+      "name": "services.man",
+      "type": "DATA",
+      "path": "services.man"
+    },
+    {
+      "name": "monitor.zex",
+      "type": "ZEX",
+      "path": "monitor.zex"
+    }
+  ]
+}

@@ -68,6 +68,7 @@
 #define ZOS_PCST_Z2_FAIL_FREE    0x07u /* SYS_XMEM_FREE accepted a segment*/
 #define ZOS_PCST_Z2_FAIL_WRITE   0x08u /* segment write-back failed       */
 #define ZOS_PCST_Z2_FAIL_GETINFO 0x09u /* GETINFO failed                  */
+#define ZOS_PCST_Z2_FAIL_LATCH   0x0Au /* not mode 10 with P = 0          */
 
 /* The pattern the kernel test writes into the child's bank outside its
  * image, BSS and stack.  The loader must leave it alone (36.19). */

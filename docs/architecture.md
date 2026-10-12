@@ -963,18 +963,22 @@ Two clarifications, both learned by having to fix them:
 - "Permanent" is about *reachability across a mapping change*, not about
   isolation.  Mode 10 maps this region as readily as mode 11 does; there
   is no protection anywhere in the machine, and an application can read
-  and write it.  Anything whose whole lifetime is mode 11 (for example the
-  `SYS_EXEC` path buffer, package 28 correction-01) belongs in bank 7.
+  and write it.  State whose whole lifetime is mode 11 and that nothing
+  outside the nucleus reads belongs in bank 7; anything a bank-6 provider
+  or driver reads lives in the fixed core instead (section 36.5, the
+  buffer rule - package 28 correction 01 put the `SYS_EXEC` path buffer
+  in bank 7 for budget reasons, and work package 45b correction 01 moved
+  that staging into the VFS workspace because the exec bind hands the
+  path to a provider).
 - Because it is the scarcest region, its use is measured.  The budget
   ledger carries a `common: used <n> of <n> bytes (code <n>, data <n>) |
-  ceiling <n>, m10 <n>, limit <n>` line beside the `bank7:` line
-  (docs/memory.md section 2.2.1).  The architectural ceiling on the packed
-  `_COMMON` + `_COMMON_DATA` run is `ZOS_COMMON_CEILING` (3072 bytes), with
-  `ZOS_COMMON_M10_RESERVATION` (512 bytes) held back for M10 (released
-  to M10's transitions and IPC, section 36.20); M9
-  enforces `used <= ceiling - reservation` (2560 bytes).  `mapcheck.py`
-  fails the build when common use exceeds it.  Neither value may be raised
-  to make a package fit.
+  ceiling <n>` line with the region ledgers (docs/memory.md section
+  2.2.1).  The architectural ceiling on the packed
+  `_COMMON` + `_COMMON_DATA` run is `ZOS_COMMON_CEILING` (3072 bytes).
+  The M9-era 512-byte reservation (`ZOS_COMMON_M10_RESERVATION`) was
+  released to M10's transitions and IPC (work package 43, section 36.20);
+  `mapcheck.py` fails the build when common use exceeds the ceiling.  The
+  ceiling may not be raised to make a package fit.
 
 M1 should preserve this mapping rather than introduce a new generic kernel memory model.
 
@@ -4374,7 +4378,7 @@ Suspension and resume:
 - The gate saves the launcher's SP/IX/latch/IFF per depth and copies the
   gate frame `[saved_sp, zos_gate_stack_top)` into that depth's save area
   (48 bytes, measured 32 + margin). The child's own syscalls reuse the
-  same 256-byte common gate stack, clobbering the suspended frame; the
+  same common gate stack, clobbering the suspended frame; the
   resume copies it back and restores SP, IX, latch and IFF before the
   parent's `SYS_EXEC` returns.
 - From the start of the resume's `LDIR` until SP is restored there is no
@@ -4385,11 +4389,14 @@ Suspension and resume:
   parent would return through the gate into its child's bank.
 - The continuation state is common-resident because the resume gate
   reads it while it changes the mapping and switches stacks.  The
-  `SYS_EXEC` path buffer is bank-7 `_DATA` (it is only touched in mode
-  11), and common-memory usage is reported on its own `common:` ledger
-  line beside the `bank7:` line, because common memory is the scarcest
-  region in the machine.  Nothing is placed there for isolation: mode 10
-  maps common memory exactly as mode 11 does.
+  `SYS_EXEC` path is staged in the VFS workspace's path view in the fixed
+  core (work package 45b correction 01), because the bind inside
+  `process_prepare` hands it to whichever provider owns the path - the
+  `/FS` provider runs in a bank-6 window, where bank-7 `_DATA` is not
+  visible (section 36.5), and common-memory usage is reported on its own
+  `common:` ledger line beside the `bank7:` line, because common memory
+  is the scarcest region in the machine.  Nothing is placed there for
+  isolation: mode 10 maps common memory exactly as mode 11 does.
 
 Failure mapping is pinned in `docs/abi.md` section 11 (`ENOENT`,
 `EISDIR`, `EINVAL`, `ENOSPC`, `EBUSY`, provider errors passed through),
@@ -4406,10 +4413,11 @@ Startup block (package 28b):
   splitting (`user/sdk/include/zos/process.h`, docs/zex-format.md section 5.1).
   A tail over 125 bytes or outside `0100h-DFFFh` is `ZOS_EINVAL` in the
   preflight, and the copy is made at the end of `process_prepare()` once
-  the executable source is closed and the VFS workspace is free, through
-  the existing checked bank-copy gate into the VFS staging view.  No tail
-  is ever stored: there is no persistent kernel argument buffer, in bank 7
-  or common memory.
+  the executable source is closed and the VFS workspace is free again
+  (correction 01 holds the workspace's path view only around the bind,
+  kernel/process/exec.c), through the existing checked bank-copy gate
+  into the VFS staging view.  No tail is ever stored: there is no
+  persistent kernel argument buffer, in bank 7 or common memory.
 - The boot program is a build setting, `ZOS_BOOT_PROGRAM`
   (`config/system.mk`), validated against the recovery manifest and
   compiled into the kernel as a constant string.  Switching to the M10
@@ -4556,8 +4564,12 @@ M9  COMPLETE (host + simulator; physical by byte identity + owner acceptance)
 └── budgeted bank-7 residency
     │
     ▼
-M10 resident-driver nucleus (two-bank OS)
-    + extended memory / far code+data + ZEX v2      (see section 36)
+M10 COMPLETE (host + simulator + physical acceptance passed)
+│
+├── resident-driver nucleus (two-bank OS)
+└── extended memory / far code+data + ZEX v2      (see section 36)
+    │
+    ▼
 M11 complete native diagnostic suite                (see section 38)
 M12 native shell and core built-in userland         (see section 40)
     │
@@ -4571,6 +4583,45 @@ compatibility/personality architecture              (deferred)
 The end-of-M9 bank-7 ledger is in section 32.39. The residency decision
 taken for M10 (a nucleus in bank 7 and resident drivers in bank 6) is
 recorded in section 35.
+
+**M10** (resident-driver nucleus, extended memory, far code and data,
+ZEX v2) is **COMPLETE** (work package 45, 2026-10-11; the hardware
+sign-off is complete as of 2026-10-12: production `hwtest` with and without
+a card, `ipc-selftest`, `subsystem-selftest` and both console builds pass
+on the board). Implementation and the host/simulator acceptance
+are in the packages from 37 on; the coverage map, the final ledgers and
+the hardware checklist are in
+[`docs/validation/2026-10-11-m10-acceptance.md`](./validation/2026-10-11-m10-acceptance.md).
+M10 built:
+
+- the two-bank operating system: the bank-7 nucleus split into a fixed
+  core and a cold half with upcall shims, and the bank-6 resident driver
+  domain;
+- the typed namespace: the VFS root with the three static providers
+  (`/FS`, `/SYSTEM`, `/dev`), host-built `/dev` publications and the
+  global owner-tagged handle table (`bind`/`call`/`unbind`, `ns_enum`,
+  `chdir`/`getcwd`);
+- the IPC substrate: 32-byte frames, direct descriptor copies, nesting,
+  re-entrancy, driver-owned IRQs and the per-build console selection;
+- host assembly: every resident driver linked at its final bank-6 address,
+  with endpoint numbers, inter-driver dependencies and publications
+  resolved at build time;
+- extended-memory objects, the mode-10 far aperture (`SYS_XMEM_MAP`,
+  `SYS_SEG_MAP`) and far code through a plain `CALL`;
+- ZEX v2 as the only executable format (segment table, containers over
+  64 KiB, no v1 path).
+
+Final production ledgers against section 36.20 (measured on the closing
+tree; the headroom targets are met):
+
+```text
+nucleus fixed: required 8335 bytes | overflow 2 bytes | stacks 768 | room 7279 bytes    (target >= 2048)
+nucleus cold: code 23352 bytes end BB38h | data 1655 bytes at BC00h | room 7561 bytes  (target >= 4096)
+driver hot: 21846 bytes of 32768                                                       (target >= 4096 room)
+driver boot/bulk: 2170 bytes of 24576
+common: used 2358 of 7424 bytes (code 1511, data 847) | ceiling 3072
+gate stack: 384 bytes reserved; 275-byte worst case measured (target <= 360)
+```
 
 ---
 
@@ -4831,7 +4882,13 @@ window, makes the call and restores the latch. The cold caller is not
 executing while the window shows bank 6, so it does not have to be fixed.
 
 **Buffer rule:** memory that a driver reaches through a buffer descriptor
-must never be in bank 7's cold half.
+must never be in bank 7's cold half.  The rule is about *any* buffer a
+bank-6 provider reads, a path included: work package 45b correction 01
+found `SYS_EXEC` staging the caller's path in cold-half `_DATA`, so a
+`/FS` executable could not be resolved (`ERR: 02`) while every syscall
+that passed a workspace path worked.  The kernel's provider-facing
+buffers live in the fixed core: the VFS workspace's path views at
+`5800h-5FFFh` (`vfs_workspace`, `mapcheck`'s `fixed-required` list).
 
 ---
 
@@ -5394,6 +5451,13 @@ slot  6     C000h-DFFFh   data; window-speed copies
   - The size is rounded up to whole slots.
   - An object is contiguous inside one bank.
   - Placement is never visible through the API.
+  - **Derived per-object limits:** one plain (non-mappable) object is at
+    most **32 KiB** (slots 0-3; slots 4-5 are the aperture slice, which a
+    plain object never uses), and one `MAPPABLE` object is at most
+    **16 KiB** (the aperture). Both are per-object limits, not
+    application limits: a program has its 56 KiB primary bank plus any
+    number of far blocks and far-code segments, bounded only by the free
+    slots of banks 0-5.
 - **Contents are undefined.** Nothing pre-zeroes an object; a program
   that needs zeroes writes them (section 36.19).
 - The `MAPPABLE` flag places the object in the aperture slice (at most

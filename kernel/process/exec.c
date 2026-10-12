@@ -612,9 +612,19 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	/* The path resolves through the namespace like any other name; exec
 	 * requires a FILE (architecture 36.13).  The handle belongs to the
 	 * running process - the launcher's or the parent's - and is
-	 * released before the child is entered. */
+	 * released before the child is entered.
+	 *
+	 * The caller's copy lives in the VFS workspace's path view
+	 * (SYS_EXEC stages it there, kernel/syscall.c), so the view is held
+	 * for exactly the call that hands its address to a provider: a
+	 * `/FS` provider reads that path while the window shows its own
+	 * bank, which is why a cold-half buffer could never work.  Nothing
+	 * after the bind reads the path - the loader streams the bound FILE
+	 * through descriptors and the common staging block. */
+	vfs_ws_enter(VFS_WS_VIEW_PATH);
 	result = vfs_ns_bind(vfs_owner_current(), path,
 			     (uint16_t)ZFS_O_READ, &type);
+	vfs_ws_leave(VFS_WS_VIEW_PATH);
 	if (result < 0) {
 		return result;
 	}

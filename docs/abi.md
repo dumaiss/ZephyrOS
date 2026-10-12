@@ -394,8 +394,14 @@ passed.  A raw command tail is transported for the child.
 Rules:
 
 - `path` follows the namespace rules verbatim: 1..127 non-NUL bytes in
-  the caller buffer window `0100h-DFFFh`, copied in through the same
-  shared pathname scratch and resolved against the calling process' CWD.
+  the caller buffer window `0100h-DFFFh`, copied into the VFS workspace's
+  path view in the fixed core and resolved against the calling process'
+  CWD.  The bind hands that address to whichever provider owns the name,
+  so the staging is provider-facing memory: a bank-6 provider (the `/FS`
+  driver) dereferences it while its own window is open and could not see
+  the cold half (architecture 36.5's buffer rule).  Work package 45b
+  correction 01 moved it here from a bank-7 `_DATA` buffer; the card
+  executable it repaired is replayed by `tests/test_hwtest_sim.py`.
 - `args` addresses `args_length` raw bytes in the caller buffer window
   `0100h-DFFFh` (no wrap).  The kernel copies them byte-exact into the
   child's startup block and never splits, quotes or interprets them;
@@ -418,7 +424,7 @@ Rules:
   synchronous chain; the kernel launcher is not one of them.  A
   suspension needs at most `ZOS_EXEC_FRAME_SAVE` gate-stack bytes
   (`include/zephyros/process.h`), which the launch gate copies out of the
-  single 256-byte common gate stack and restores before the parent's
+  single common gate stack and restores before the parent's
   `SYS_EXEC` returns.
 - Past the suspension point nothing can fail: every allocating or
   fallible step (path copy-in, tail copy, slot/bank allocation, CWD start,
@@ -484,10 +490,12 @@ Implementation notes:
   outermost process is launched by the kernel from the boot stack and
   needs no copy.  All of it is common-resident
   (`kernel/process/launch.asm`) because the resume gate reads it *while*
-  it changes the mapping and switches stacks; the `SYS_EXEC` path buffer
-  is bank-7 `_DATA` instead, since it is only ever touched in mode 11.
-  Common memory is not an isolated region - mode 10 maps it just as
-  mode 11 does - so nothing is placed there for safety.
+  it changes the mapping and switches stacks.  The caller's path is not
+  here: it is staged in the VFS workspace in the fixed core, because the
+  bind inside the launch preparation hands it to the owning provider
+  (work package 45b correction 01), and common memory is not an isolated
+  region either - mode 10 maps it just as mode 11 does - so nothing is
+  placed there for safety.
 
 Validation: the geometry is pinned by `include/zephyros/process.h`
 (`ZOS_EXEC_MAX_DEPTH`, `ZOS_EXEC_FRAME_SAVE` with its static asserts) and

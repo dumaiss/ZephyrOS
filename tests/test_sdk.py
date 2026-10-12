@@ -375,11 +375,13 @@ class TestSdkBoundary(unittest.TestCase):
         # (work package 42e); `zex2probe`, `zex2seg` and `zex2big` are the
         # ZEX v2 loader-outcome programs the subsystem process selftest
         # runs (work package 44a); `fardemo` is the SDK far-code demo and
-        # `xmem_far` the far-code outcome program (work package 44b).
+        # `xmem_far` the far-code outcome program (work package 44b);
+        # `hwtest` is the production store's feature exerciser and the
+        # runner of those outcome programs (work package 45b).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["escc", "fardemo", "fs_child", "fs_selftest",
-                          "hello", "ipc", "ipccopy", "monitor", "ns",
-                          "nschild", "xmem_child", "xmem_far",
+                          "hello", "hwtest", "ipc", "ipccopy", "monitor",
+                          "ns", "nschild", "xmem_child", "xmem_far",
                           "xmem_selftest", "zex2big", "zex2probe",
                           "zex2seg", "zextest"])
         for name, directory, _sources, _options in programs:

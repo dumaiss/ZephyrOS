@@ -99,6 +99,22 @@ publishes `/FS`; `drivers/ioc/` was never changed for it.  Its acceptance
 image is `make fs-selftest` (see
 [`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md)).
 
+**One error means "`/FS` has no media": `ZOS_ENODEV` (`03h`).**  A card
+that is absent, removed or unreadable is not a driver-init failure (a
+required driver that cannot initialize is a boot failure, and `/SYSTEM`
+must stay usable): the provider publishes, reports the card state once
+and then answers `(-ZOS_ENODEV)` to *every* operation - `bind`, `stat`,
+`ns_enum`, `chdir` below `/FS` and the FILE protocol alike.  The card
+state is decided by the one command that reads the medium, the root
+directory open *and* its first read: the deployed firmware answers
+`OPENDIR` for the root from its mount context without touching the card
+and fails only at the first `READDIR` (`FR_NOT_READY` -> `FS2` `NO_MEDIA`
+-> `ENODEV`), so a volume whose card was pulled opens a root and proves
+nothing (work package 45b correction 01; the simulator's IOC model
+answers the same pair).  `ZFS_OP_STAT` on the root proves it the same way
+before answering "directory", because the driver otherwise answers the
+root from its own knowledge.
+
 Two endpoints may serve the same role (a V9958 video endpoint; an HID
 input endpoint), so the console service composes input and output
 independently.
@@ -967,17 +983,19 @@ transcript on the early console.
 
 ### 12.6 Placement, IRQs and ledgers
 
-The five images own bank 6's two resident tiers (architecture 36.6,
-36.20): the host packer links each segment at its final address, and the
-hot segments (`_CODE` + `_SERVICE_IO`, the one bank-6 range the mode-11
-window and the mode-10 aperture both show) total 12,930 bytes of the
-32,768-byte hot tier; the boot segments plus the V9958 font bulk segment
-total 2,170 bytes of the 24,576-byte boot/bulk tier.  No driver image owns
-an IRQ in this package: SIO0/B is polled, the IOC and HID paths are polled
-through the same lane, and the V9958 is register-driven.  The arena holds
-the IOC-FAT provider alone (13 granules), and the ledger lines the build
-prints are
-`zmodpack: driver hot: ...` / `driver boot/bulk: ...` with one row per
+The six images of the production store own bank 6's two resident tiers
+(architecture 36.6, 36.20): the host packer links each segment at its
+final address, and the hot segments (`_CODE` + `_SERVICE_IO`, the one
+bank-6 range the mode-11 window and the mode-10 aperture both show) total
+21,846 bytes of the 32,768-byte hot tier; the boot segments plus the
+V9958 font bulk segment total 2,170 bytes of the 24,576-byte boot/bulk
+tier.  The bank-7 driver arena is deleted (work package 42c): the IOC-FAT
+provider is the last image of the bank-6 set, not an arena occupant.
+No production driver image owns an IRQ: SIO0/B is polled, the IOC and HID
+paths are polled through the same lane, and the V9958 is register-driven.
+The driver-owned IRQ path itself is covered by the acceptance image's
+synthetic `irqx` service (work package 39).  The ledger lines the build
+prints are `driver hot: ...` / `driver boot/bulk: ...` with one row per
 image (see `docs/memory.md`).
 
 ### 12.7 The `/dev` publication table (package 42a)

@@ -13,6 +13,12 @@
  *     exits.
  *
  * Its exit status is the value the parent compares (ZOS_EXIT_STATUS).
+ *
+ * Two tails are accepted (work package 45b).  `tail-42` is the fs image's
+ * contract: the card file is /FS/CHILD.TMP.  `stage` runs it as the
+ * hardware exerciser's nested exec, where every write stays inside the
+ * /FS/HWTEST scratch directory the runner owns.  Both are checked
+ * byte-exact, and everything else about the program is unchanged.
  */
 
 #include "zos.h"
@@ -20,6 +26,9 @@
 #define ZOS_EXIT_STATUS 42
 
 #define CHILD_TAIL "tail-42"
+#define CHILD_STAGE "stage"
+#define CHILD_FILE "/FS/CHILD.TMP"
+#define CHILD_STAGE_FILE "/FS/HWTEST/CHILD.TMP"
 
 static int same(const char *a, const char *b)
 {
@@ -33,9 +42,21 @@ static int same(const char *a, const char *b)
 	return 0;
 }
 
+static unsigned int tail_length(const char *text)
+{
+	unsigned int length = 0u;
+
+	while (text[length] != '\0') {
+		++length;
+	}
+	return length;
+}
+
 int main(int argc, char **argv)
 {
 	struct zos_startup *boot = zos_args();
+	const char *tail = CHILD_TAIL;
+	const char *card_path = CHILD_FILE;
 	unsigned char type = 0u;
 	int card_file;
 	int system_file;
@@ -43,15 +64,22 @@ int main(int argc, char **argv)
 	unsigned int leaked = 0u;
 	int ok = 1;
 
+	/* The stage tail moves the card file into the exerciser's scratch
+	 * directory; nothing else differs. */
+	if (argc == 1 && argv != (char **)0 && same(argv[0], CHILD_STAGE)) {
+		tail = CHILD_STAGE;
+		card_path = CHILD_STAGE_FILE;
+	}
+
 	zos_puts("fs-child: stdout ok\r\n");
 
 	if (boot == (struct zos_startup *)0 || boot->version != 1u ||
-	    boot->length != (unsigned char)(sizeof(CHILD_TAIL) - 1u) ||
-	    !same(boot->tail, CHILD_TAIL)) {
+	    boot->length != (unsigned char)tail_length(tail) ||
+	    !same(boot->tail, tail)) {
 		zos_puts("fs-child: FAIL startup\r\n");
 		ok = 0;
 	}
-	if (argc != 1 || argv == (char **)0 || !same(argv[0], CHILD_TAIL)) {
+	if (argc != 1 || argv == (char **)0 || !same(argv[0], tail)) {
 		zos_puts("fs-child: FAIL argv\r\n");
 		ok = 0;
 	}
@@ -68,7 +96,7 @@ int main(int argc, char **argv)
 		zos_printf("fs-child: FAIL bind %d\r\n", bound);
 		ok = 0;
 	}
-	card_file = zos_open("/FS/CHILD.TMP",
+	card_file = zos_open(card_path,
 			     (unsigned char)(ZFS_O_WRITE | ZFS_O_CREATE |
 					     ZFS_O_TRUNC));
 	if (card_file >= (int)ZOS_HANDLE_FIRST_BOUND) {

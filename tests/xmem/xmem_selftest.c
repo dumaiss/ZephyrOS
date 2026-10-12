@@ -33,6 +33,17 @@
  * The far-code program's own outcomes are
  * tests/xmem/xmem_far.c.  The replay asserts the lines below; the final
  * line is the verdict.
+ *
+ * Work package 45b adds one tail option, `stage`: the production
+ * exerciser runs this program beside the monitor and the runner, so two
+ * application banks are held by their live processes and only the others
+ * are open to auxiliary placement (36.15).  The pool-wide rows are then
+ * stated against the number of banks this process can actually open
+ * (measured by filling whole banks), and the far sub-exec stays with the
+ * runner: this program already sits at the third level of the four-deep
+ * exec chain, and nesting xmem_far's own exec below it would be the
+ * fifth.  The boot path - the acceptance image's own rows and the far
+ * sub-exec - is unchanged.
  */
 
 #include "zos.h"
@@ -42,6 +53,9 @@
 #define APERTURE_BASE 0x8000u
 #define APERTURE_END  0xC000u
 #define BLK           512u
+
+/* The stage tail (work package 45b). */
+#define XMEM_STAGE_TAIL "stage"
 
 #define CHILD_PATH   "/SYSTEM/xmem_child.zex"
 #define CHILD_STATUS 42
@@ -60,6 +74,12 @@ static unsigned int held[20];
 
 static unsigned int checks;
 static unsigned int failures;
+/* 1: the exerciser's stage run (45b): pool rows scale with the open
+ * banks and the far sub-exec belongs to the runner. */
+static int stage;
+/* Whole banks this process can open: 5 in the acceptance image (set in
+ * main; ZEX v2 has no initialized writable data). */
+static unsigned int banks;
 
 static void check(const char *label, int ok)
 {
@@ -216,9 +236,22 @@ static void child_tail(char *out, unsigned int handle)
 	*out = '\0';
 }
 
-int main(void)
+static int same(const char *a, const char *b)
+{
+	while (*a == *b) {
+		if (*a == '\0') {
+			return 1;
+		}
+		++a;
+		++b;
+	}
+	return 0;
+}
+
+int main(int argc, char **argv)
 {
 	struct zos_startup *boot = zos_args();
+	const char *tail = (const char *)0;
 	struct zos_xmem_info info;
 	unsigned int anchor;
 	unsigned int second;
@@ -232,12 +265,37 @@ int main(void)
 	int handle;
 	int status;
 
+	/* The stage tail (45b) is the only accepted option. */
+	if (argc == 1 && argv != (char **)0 && same(argv[0], XMEM_STAGE_TAIL)) {
+		stage = 1;
+		tail = XMEM_STAGE_TAIL;
+	} else if (argc != 0) {
+		zos_puts("xmem-selftest: FAIL options\r\n");
+		return 2;
+	}
+
 	zos_puts("xmem-selftest: begin\r\n");
+	/* Boot contract: version 1 with the empty tail; a stage run proves
+	 * the option tail arrived byte-exact instead. */
 	check("startup-version",
 	      boot != (struct zos_startup *)0 && boot->version == 1u);
 	check("startup-tail",
-	      boot != (struct zos_startup *)0 && boot->length == 0u);
+	      boot != (struct zos_startup *)0 &&
+	      (tail == (const char *)0
+		       ? boot->length == 0u
+		       : (boot->length == 5u && same(boot->tail, tail))));
 	check("console-write", zos_console_write("=", 1u) == 1);
+
+	/* The pool this run may use: five banks when this image is the whole
+	 * machine (the acceptance image), the measured count when the
+	 * exerciser runs it beside the monitor and the runner.  A whole-bank
+	 * (32 KiB) object needs slots 0-3 of one bank, so the count of them
+	 * is the number of open banks. */
+	banks = 5u;
+	if (stage != 0) {
+		banks = fill_until_full(32768u, 0u);
+		release_held(banks);
+	}
 
 	/* The two anchors are the first objects this image allocates: the
 	 * first gets handle 1 and the lower aperture slot, the second the
@@ -414,7 +472,7 @@ int main(void)
 		unsigned int big[5];
 		int ok = 1;
 
-		for (i = 0u; i < 5u; ++i) {
+		for (i = 0u; i < banks; ++i) {
 			handle = zos_xmem_alloc(32768u, 0u);
 			if (handle < 1) {
 				ok = 0;
@@ -429,7 +487,7 @@ int main(void)
 		      zos_xmem_alloc(16384u, 0u) == -ZOS_ENOSPC);
 		handle = zos_xmem_alloc(8192u, 0u);
 		check("fragmentation-hole", handle >= 1);
-		(void)zos_xmem_free(big[4]);
+		(void)zos_xmem_free(big[banks - 1u]);
 		{
 			int again = zos_xmem_alloc(32768u, 0u);
 
@@ -437,7 +495,7 @@ int main(void)
 			(void)zos_xmem_free((unsigned int)again);
 		}
 		(void)zos_xmem_free((unsigned int)handle);
-		for (i = 0u; i < 4u; ++i) {
+		for (i = 0u; i + 1u < banks; ++i) {
 			(void)zos_xmem_free(big[i]);
 		}
 	}
@@ -445,7 +503,7 @@ int main(void)
 	/* Exhaustion: 16 KiB objects fill every two-slot run, the kernel
 	 * refuses while they are held, and release returns the capacity. */
 	count = fill_until_full(16384u, 0u);
-	check("exhaustion-16k-count", count == 10u);
+	check("exhaustion-16k-count", count == 2u * banks);
 	check("exhaustion-16k",
 	      zos_xmem_alloc(16384u, 0u) == -ZOS_ENOSPC);
 	release_held(count);
@@ -454,7 +512,7 @@ int main(void)
 	(void)zos_xmem_free((unsigned int)handle);
 	/* Every aperture slot except the two the anchors hold. */
 	count = fill_until_full(8192u, MAPPABLE);
-	check("exhaustion-mappable-count", count == 8u);
+	check("exhaustion-mappable-count", count == 2u * banks - 2u);
 	check("exhaustion-mappable",
 	      zos_xmem_alloc(8192u, MAPPABLE) == -ZOS_ENOSPC);
 	release_held(count);
@@ -543,8 +601,15 @@ int main(void)
 	 * buffer, and an exec from far context whose child refuses this
 	 * process's handle and segment id.  It exits from far context; this
 	 * process's aperture capacity before and after proves the exit
-	 * released its segments, objects and bank slots. */
-	{
+	 * released its segments, objects and bank slots.
+	 *
+	 * In a stage run the runner invokes the same program itself, one
+	 * exec level shallower (45b): this program is already the third of
+	 * the four-deep chain, so the far program's own nested exec would be
+	 * the fifth and the kernel refuses it before any bank is used.  The
+	 * runner checks the far program's exit status and that its exit
+	 * returned every bank, so no row of the far program is lost. */
+	if (stage == 0) {
 		unsigned int before = fill_until_full(8192u, MAPPABLE);
 
 		release_held(before);

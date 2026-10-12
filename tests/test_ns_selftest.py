@@ -330,6 +330,56 @@ class TestNsResidency(unittest.TestCase):
             self.assertNotIn(name, found, name)
 
 
+class TestExecStagesItsPathInFixedCore(unittest.TestCase):
+    """Correction 01 (45b): `SYS_EXEC`'s path is provider-facing memory.
+
+    The exec bind hands the path to whichever provider owns the name, and
+    a bank-6 provider dereferences that address while its own window is
+    open, so the staging must be the VFS workspace's path view in the
+    fixed core - not the cold-half `_DATA` buffer package 28 put there
+    (36.5's buffer rule).  `tests/test_hwtest_sim.py` holds the other
+    half: the production replay runs a card program through the monitor.
+    """
+
+    def test_exec_stages_the_path_in_the_workspace_path_view(self):
+        source = read(os.path.join(ROOT, "kernel", "syscall.c"))
+        call = source[source.index("static void syscall_exec"):]
+        call = call[:call.index("\n}\n")]
+        self.assertIn("vfs_ws_enter(VFS_WS_VIEW_PATH)", call)
+        self.assertIn("VFS_WS_IN_A", call)
+        self.assertLess(call.index("vfs_ws_enter(VFS_WS_VIEW_PATH)"),
+                        call.index("process_prepare("))
+        self.assertLess(call.index("process_prepare("),
+                        call.index("vfs_ws_leave(VFS_WS_VIEW_PATH)"))
+        # Nothing stages a second path buffer beside the workspace.
+        self.assertNotIn("zos_process_path_scratch", source)
+
+    def test_the_bind_holds_the_path_view_and_nothing_else_does(self):
+        source = read(os.path.join(ROOT, "kernel", "process", "exec.c"))
+        bind = source[source.index("int process_prepare"):]
+        bind = bind[:bind.index("vfs_handle_find(")]
+        self.assertLess(bind.index("vfs_ws_enter(VFS_WS_VIEW_PATH)"),
+                        bind.index("vfs_ns_bind("))
+        self.assertLess(bind.index("vfs_ns_bind("),
+                        bind.index("vfs_ws_leave(VFS_WS_VIEW_PATH)"))
+
+    def test_the_retired_scratch_leaves_no_declaration_behind(self):
+        for rel in ("kernel/process/process.c",
+                    "include/zephyros/process.h",
+                    "kernel/process/launch.asm"):
+            self.assertNotIn("zos_process_path_scratch",
+                             read(os.path.join(ROOT, rel)), rel)
+
+    def test_mapcheck_rejects_the_workspace_in_the_cold_half(self):
+        # The cheap guard requirement 3 asks for: the block is a named
+        # symbol in the window check, so a link into 6000h-DFFFh fails
+        # the build instead of a bind at run time.
+        source = read(os.path.join(ROOT, "tools", "mapcheck.py"))
+        table = source[source.index("REV13_FIXED_SYMBOLS = ("):]
+        table = table[:table.index("\n)")]
+        self.assertIn('"_vfs_workspace"', table)
+
+
 class TestNsClient(unittest.TestCase):
     def test_client_checks_the_documented_paths(self):
         text = read(CLIENT)
@@ -346,12 +396,25 @@ class TestNsClient(unittest.TestCase):
         self.assertIn("ZFILE_OP_READ", text)
         self.assertIn("ZFILE_OP_SEEK", text)
         self.assertIn("ZFILE_OP_META", text)
+        # CWD traversal through provider validation (architecture 37
+        # namespace/process-lifetime rows), including the root itself.
+        for token in ('zos_chdir("/SYSTEM")', 'zos_chdir("..")',
+                      'zos_chdir("/dev/input")',
+                      'zos_chdir("/dev/console") == -ZOS_ENOTDIR',
+                      'zos_chdir("/FS") == -ZOS_ENODEV',
+                      'zos_getcwd(', 'check("cwd-after-child"'):
+            self.assertIn(token, text, token)
+        # A refused chdir leaves the stored CWD untouched.
+        self.assertIn('check("cwd-survives-refusal"', text)
 
     def test_child_program_uses_the_standard_handles(self):
         text = read(CHILD)
         self.assertIn("ZOS_HANDLE_STDOUT", text)
         self.assertIn("zos_ipc_bind(\"/dev/console\"", text)
         self.assertIn("nschild: OK", text)
+        # The child checks the CWD inheritance rule from its own side.
+        self.assertIn('zos_chdir("/SYSTEM")', text)
+        self.assertIn("zos_getcwd(cwd", text)
 
     def test_sdk_variant_exposes_the_family(self):
         header = read(SDK_HEADER)

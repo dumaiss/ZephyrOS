@@ -904,11 +904,13 @@ int vfs_ns_dir_check(const char *norm, uint8_t *ok)
 	uint16_t length;
 
 	*ok = 0u;
-	if (norm == (const char *)0 || norm[0] != '/' || norm[1] == '\0') {
-		return (norm != (const char *)0 && norm[0] == '/') ? 0
-								  : -ZOS_EINVAL;
+	if (norm == (const char *)0 || norm[0] != '/') {
+		return -ZOS_EINVAL;
 	}
-	*ok = 0u;
+	if (norm[1] == '\0') {
+		*ok = 1u; /* the VFS owns `/`; it is traversable */
+		return 0;
+	}
 	length = ns_component_length(norm + 1);
 	if (ns_component_eq(norm + 1, length, "FS")) {
 		int result;

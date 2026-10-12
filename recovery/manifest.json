@@ -40,6 +40,36 @@
       "name": "monitor.zex",
       "type": "ZEX",
       "path": "monitor.zex"
+    },
+    {
+      "name": "hwtest.zex",
+      "type": "ZEX",
+      "path": "hwtest.zex"
+    },
+    {
+      "name": "xmem_selftest.zex",
+      "type": "ZEX",
+      "path": "xmem_selftest.zex"
+    },
+    {
+      "name": "xmem_child.zex",
+      "type": "ZEX",
+      "path": "xmem_child.zex"
+    },
+    {
+      "name": "xmem_far.zex",
+      "type": "ZEX",
+      "path": "xmem_far.zex"
+    },
+    {
+      "name": "fs_selftest.zex",
+      "type": "ZEX",
+      "path": "fs_selftest.zex"
+    },
+    {
+      "name": "fs_child.zex",
+      "type": "ZEX",
+      "path": "fs_child.zex"
     }
   ]
 }

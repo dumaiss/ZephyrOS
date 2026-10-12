@@ -7,7 +7,9 @@ outcome program the image boots (`/SYSTEM/fs_selftest.zex`):
 
 - with a writable card, every outcome line reports OK, the verdict carries
   the pinned check count, the nested-exec child reports its own stdout and
-  the image hands the console to the monitor;
+  the image hands the console to the monitor; the child also runs once
+  copied onto the card itself, so an exec whose path only the bank-6
+  filesystem provider can read stays covered (correction 01);
 - with no card, the program takes its card-absent branch, `/SYSTEM` stays
   usable and the verdict carries the reduced count;
 - the handles the child leaked are gone once it exits: the driver's card
@@ -46,7 +48,7 @@ CHILD_ABSENT = "fs-child: card absent\r\n"
 EXEC_STATUS = "fs-selftest: exec-status OK\r\n"
 
 # The outcome suite's size: every `check()` the program reaches.
-CARD_CHECKS = 35
+CARD_CHECKS = 37
 ABSENT_CHECKS = 8
 
 # kernel/vfs/vfs.h: 12 descriptors, `owner` is 0xFF when the slot is free,
@@ -67,7 +69,8 @@ CARD_OUTCOMES = (
     "fs-mkdir", "fs-mkdir-stat", "fs-rename", "fs-rename-stat",
     "fs-rename-old-gone", "fs-unlink", "fs-rmdir", "fs-unlink-gone",
     "system-stat", "system-open", "system-read", "system-close",
-    "exec-status", "exec-child-handles-released",
+    "exec-status", "exec-card-copy", "exec-card-status",
+    "exec-child-handles-released",
 )
 
 # The outcomes a run without a card still reaches.

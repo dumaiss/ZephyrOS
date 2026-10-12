@@ -63,9 +63,9 @@ SMOKE_HOST_SYNC = b"\xaa\x55"
 
 # The packed monitor artifact (pinned by user/monitor/ and the tooling
 # tests; the store must deliver these exact bytes).
-MONITOR_SIZE = 4977
+MONITOR_SIZE = 6053
 MONITOR_SHA256 = (
-    "6676ba211e3cc343b2d75d926aa1965d265440030d3a46f694a0a3651e266da5")
+    "5f6a0d355c47d441bd12d9a36da6ba7cc43bbe791a3399acbbb8b670b12134ae")
 
 # The monitor's visible rows, decoded from the V9958 trace.
 PROMPT = "Z80> "
@@ -191,6 +191,11 @@ class TestProductionImage(ConsoleReplayBase):
         z = self.start()
         self.boot_to_prompt(z)
         self.type_line(z, b"r\r", SYSINFO)
+        # `X` is the launcher's own exec path in the monitor (work package
+        # 45b): a missing argument reports the monitor's ARG error and an
+        # absent program the native code, both back at the prompt.
+        self.type_line(z, b"X\r", "ERR: ARG")
+        self.type_line(z, b"X /SYSTEM/nosuch.zex\r", "ERR: 05")
         self.type_line(z, b"q\r", MONITOR_EXIT)
         self.wait_for_count(z, BANNER, 2)  # launcher relaunch
         trace = self.read_trace(z)

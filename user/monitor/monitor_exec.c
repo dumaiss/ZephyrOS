@@ -1,0 +1,77 @@
+/* ZephyrOS native monitor: the X (execute) command (work package 45b).
+ *
+ * X <path> [tail] runs an ordinary ZEX from the recovery store through
+ * the SDK's synchronous SYS_EXEC wrapper, prints the child's exit status
+ * and returns to the prompt.  This is the launcher's own execution path:
+ * no new privilege, no kernel or driver state, and the monitor's
+ * standard console handles pass to the child unchanged.
+ *
+ * A card executable works because SYS_EXEC stages the caller's path in
+ * the VFS workspace's path view in the fixed core (work package 45b
+ * correction 01): before that fix the path sat in bank-7 `_DATA`
+ * (`0xC0DD`), inside the `6000h-DFFFh` region a bank-6 provider's window
+ * replaces, so the `/FS` provider read the wrong bytes and the bind
+ * failed with EINVAL before any FS2 command.  See
+ * `docs/validation/2026-10-11-m10-hardware-acceptance-correction-01.md`.
+ *
+ * The tail travels to the child byte-exact (the child splits it; see
+ * docs/zex-format.md section 6.1), which is how the `stage` option reaches
+ * the outcome programs the exerciser starts.
+ *
+ * Argument problems report the monitor's ERR: ARG, a failed exec reports
+ * the native code (e.g. ERR: 05 for an absent object), and a normal exit
+ * prints the child's u16 status.
+ */
+
+#include "monitor.h"
+#include "zos.h"
+#include "hexfmt.h"
+#include "status.h"
+
+static unsigned int mon_count(const char *text)
+{
+	unsigned int length = 0u;
+
+	while (text[length] != '\0') {
+		++length;
+	}
+	return length;
+}
+
+void mon_cmd_exec(char *cursor)
+{
+	char *path;
+	char *tail;
+	unsigned int length;
+	int status;
+
+	zrt_skip_spaces(&cursor);
+	path = cursor;
+	while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t') {
+		++cursor;
+	}
+	length = (unsigned int)(cursor - path);
+	if (length == 0u || length > (unsigned int)(ZOS_PATH_MAX - 1u)) {
+		zrt_status_err_arg();
+		return;
+	}
+	if (*cursor != '\0') {
+		*cursor = '\0';
+		++cursor;
+	}
+	zrt_skip_spaces(&cursor);
+	tail = cursor;
+	if (mon_count(tail) > (unsigned int)ZOS_STARTUP_TAIL_MAX) {
+		zrt_status_err_arg();
+		return;
+	}
+
+	status = zos_exec(path, tail);
+	if (status < 0) {
+		zrt_status_err_code(status);
+		return;
+	}
+	zos_puts("exec: exit status 0x");
+	mon_put_hex16((unsigned int)status);
+	zos_puts("\r\n");
+}

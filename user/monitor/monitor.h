@@ -7,6 +7,14 @@
  * knowledge, no CP/M dependency, and no private kernel symbols, so the
  * same binary keeps working when the console device is rebound.
  *
+ * Command lines arrive on the console and, when the store publishes a
+ * SERIAL object at `/dev/serial/0`, on that lane as well (work package
+ * 45b): the monitor binds the name through the ordinary typed protocol
+ * and polls it beside the console, so production - whose console input
+ * is the HID build - can still be driven by a terminal or a host tool on
+ * the lane, and a build without that object behaves exactly as before.
+ * Each byte is echoed to the source it came from.
+ *
  * Command surface (case-insensitive hex, 80-character lines):
  *
  *   H / ?             help
@@ -17,6 +25,7 @@
  *   MB bank addr value modify one byte in application bank 0-6
  *   I port            read I/O port 10h-FFh
  *   O port value      write I/O port 10h-FFh
+ *   X path [tail]     run a ZEX from /SYSTEM, print its status
  *   Q                 exit (resumes the kernel launcher)
  *
  * Intel HEX load/export, GO, APP, and CP/M register-snapshot semantics
@@ -51,6 +60,7 @@ void mon_cmd_mem(char *cursor, unsigned char with_bank,
 		 unsigned char modify);
 void mon_cmd_io_in(char *cursor);
 void mon_cmd_io_out(char *cursor);
+void mon_cmd_exec(char *cursor);
 
 /* Parse a bank byte and validate it against the kernel-reported mask. */
 unsigned char mon_scan_bank(char **cursor, unsigned char *bank);

@@ -725,11 +725,23 @@ class IocCommandPeer:
         if rtype == self.CMD_FS2_GENERATION:
             return self._fs2_reply(rtype, seq, self.ST_FS2_OK,
                                    self.fs2_generation.to_bytes(4, "little"))
-        if not self.fs2_media:
-            return self._fs2_reply(rtype, seq, self.ST_FS2_NO_MEDIA)
         if rtype == self.CMD_FS2_ROOT:
+            # The resolver reset the deployed firmware answers without
+            # touching the card (MCU `handler_fs2_root`).
             self.fs2_resolver = []
             return self._fs2_reply(rtype, seq, self.ST_FS2_OK)
+        if not self.fs2_media:
+            # An absent card, as the deployed firmware answers it.  A
+            # root *open* still succeeds there - the mount context is
+            # cached and FatFs' `f_opendir("/")` reads no directory data -
+            # and every operation that reaches the volume fails, starting
+            # with the first directory *read* (correction 01, 45b: the
+            # driver's media probe reads one entry for exactly that
+            # reason, so bench and simulator agree on what "no media"
+            # means).
+            if rtype == self.CMD_FS2_OPENDIR:
+                return self._fs2_opendir(seq)
+            return self._fs2_reply(rtype, seq, self.ST_FS2_NO_MEDIA)
         if rtype == self.CMD_FS2_PUSH:
             if len(self.fs2_resolver) >= 16:
                 return self._fs2_reply(rtype, seq, self.ST_FS2_RANGE)

@@ -256,13 +256,23 @@ static void syscall_exec(uint16_t block)
 		syscall_error(ZOS_EINVAL);
 		return;
 	}
+	/* The caller's path is staged in the VFS workspace's path view,
+	 * exactly as `bind` stages its own (SYS_BIND, kernel/syscall/
+	 * object.c): the address travels to a bank-6 provider in the bind
+	 * frame, and a provider reads it while the window shows its own
+	 * bank, so it must name fixed core - never the cold half (36.5's
+	 * buffer rule).  No other buffer is involved: the loader that
+	 * follows reads the bound FILE through descriptors and the common
+	 * staging block, and never touches the workspace. */
+	vfs_ws_enter(VFS_WS_VIEW_PATH);
 	result = zos_object_copy_path(read_le16((const uint8_t *)block),
 				      read_le16((const uint8_t *)(block + 2)),
-				      zos_process_path_scratch);
+				      VFS_WS_IN_A);
 	if (result == 0) {
-		result = process_prepare(zos_process_path_scratch, pid, args,
+		result = process_prepare(VFS_WS_IN_A, pid, args,
 					 args_length, &child);
 	}
+	vfs_ws_leave(VFS_WS_VIEW_PATH);
 	if (result != 0) {
 		/* Malformed containers (ZEX_EXEC_ERR_* <= -0x20) are EINVAL;
 		 * every other code is a native -ZOS_E* passed through. */

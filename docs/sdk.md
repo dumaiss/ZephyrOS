@@ -461,6 +461,18 @@ the far bank.  `fardemo` (section 10) is the demo; the far code is
 executed in place through the mode-10 aperture, so it costs no primary
 bank space at all.
 
+**One `_FAR_CODE` area per program link.**  The rule creates exactly one
+far area, and two areas at the same base in one link emit overlapping IHX
+records, which no loader can use.  Several far *segments* are several
+`FAR_CODE` rows that name that one area (each row is placed in its own
+bank; `tests/xmem/xmem_far.segments.json` declares the area twice to
+prove two far segments in two banks).  A program that builds its own far
+areas declares each one under its own name and based at `8000h`: the
+manifest's `SEGMENTS=` rows name the areas, and the packer resolves
+`s__<area>`/`l__<area>` and refuses an area based anywhere else.  The
+name is what tells the areas apart in the manifest; all of them load at
+`8000h` of their own far bank.
+
 ## 8. Which member pulls in what
 
 `libzos` is an archive: a member is only linked when a symbol it defines is

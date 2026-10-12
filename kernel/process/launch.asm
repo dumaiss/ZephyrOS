@@ -11,8 +11,9 @@
 ; state from whatever mapping is live at each step.  Common memory is not
 ; isolated from mode 10 (there is no protection; an application bank sees
 ; it), so this is reachability, not safety: state that is only touched in
-; mode 11 belongs in bank 7 (`_zos_process_path_scratch` is in
-; kernel/process/process.c for exactly that reason).
+; mode 11 belongs in bank 7 (the SYS_EXEC path now travels in the VFS
+; workspace's fixed-core path view, so the cold half holds no buffer a
+; bank-6 provider could be handed).
 ;
 ; Package 28 generalizes the M6 single-depth launcher into a bounded
 ; continuation stack indexed by nesting depth (ZOS_EXEC_MAX_DEPTH levels):

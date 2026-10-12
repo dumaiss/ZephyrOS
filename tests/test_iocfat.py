@@ -12,7 +12,9 @@ source-layout facts that run depends on:
 - the module keeps exactly one cache slot and carries no test-only counter;
 - production loads it as one of the services the boot manifest lists, and
   it publishes `/FS`;
-- the acceptance image, its store manifest and the SDK programs are wired.
+- the acceptance image, its store manifest and the SDK programs are wired;
+- the one documented "no media" answer: the driver decides the card state
+  from the command that reads the medium (work package 45b correction 01).
 
 Run with: `python3 -m unittest tests.test_iocfat`.
 """
@@ -260,6 +262,60 @@ class TestFsAcceptancePrograms(unittest.TestCase):
         self.assertIn('FS_IMAGE_MONITOR = b"Z80> "', text)
         makefile = read(MAKEFILE)
         self.assertIn("smoke-hardware-fs", makefile)
+
+
+class TestNoMediaContract(unittest.TestCase):
+    """`/FS` with no media answers `ZOS_ENODEV` for every operation.
+
+    The deployed firmware answers some commands (CAPS, GENERATION, ROOT,
+    and OPENDIR for the root) from a cached mount context after the card
+    is gone, so the driver must decide the card state from the one command
+    that reads the medium: the root directory open *and* its first read.
+    Otherwise `chdir("/FS")` succeeds on the bench where the simulator's
+    replay expects the refusal (the 2026-10-11 hardware failure).
+    """
+
+    def test_the_media_probe_reads_the_directory(self):
+        text = read(MODULE_SRC)
+        init = text[text.index("uint8_t iocfat_init("):]
+        probe = init[:init.index("iocfat_ready = 1u;")]
+        self.assertIn("iocfat_media_readable()", probe)
+        self.assertIn("return 0u;", probe)
+        # The probe itself: open the root and read one entry, both of them.
+        helper = text[text.index("static int iocfat_media_readable(void)\n{"):]
+        helper = helper[:helper.index("\n}\n")]
+        self.assertIn('iocfat_dir_open("/"', helper)
+        self.assertIn("iocfat_dir_read(", helper)
+        # One entry and the end are both proof; only a code is a refusal.
+        self.assertIn("(result < 0) ? result : 0", helper)
+
+    def test_the_root_stat_proves_the_media_before_answering(self):
+        text = read(MODULE_SRC)
+        stat = text[text.index("static int iocfat_stat_path"):]
+        stat = stat[:stat.index("\n}\n")]
+        self.assertIn("iocfat_media_readable()", stat)
+        # A busy directory slot means an enumeration was reading it.
+        self.assertIn("-ZOS_EMFILE", stat)
+
+    def test_every_operation_reports_the_documented_error(self):
+        text = read(MODULE_SRC)
+        dispatch = text[text.index("int16_t iocfat_dispatch"):]
+        dispatch = dispatch[:dispatch.index("\n}\n")]
+        self.assertIn("iocfat_ready == 0u", dispatch)
+        self.assertIn("-ZOS_ENODEV", dispatch)
+        # NO_MEDIA from a live card (removed mid-run) maps to the same code.
+        table = text[text.index("FS2_STATUS_NO_MEDIA"):]
+        self.assertIn("0x03u, /* NO_MEDIA  -> ENODEV */",
+                      text)
+
+    def test_the_residency_and_the_documentation_name_the_buffers(self):
+        text = read(MODULE_SRC)
+        # The provider never names a caller buffer of its own: the path
+        # arrives in the fixed-core workspace (architecture 36.5).
+        self.assertIn("workspace", text)
+        device_doc = read(os.path.join(ROOT, "docs", "devices.md"))
+        self.assertIn("One error means", device_doc)
+        self.assertIn("`ZOS_ENODEV` (`03h`)", device_doc)
 
 
 if __name__ == "__main__":

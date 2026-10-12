@@ -52,6 +52,7 @@ PROD_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
 MONITOR_SOURCES = (
     os.path.join(ROOT, "user", "monitor", "monitor.c"),
     os.path.join(ROOT, "user", "monitor", "monitor.h"),
+    os.path.join(ROOT, "user", "monitor", "monitor_exec.c"),
     os.path.join(ROOT, "user", "monitor", "monitor_mem.c"),
     os.path.join(ROOT, "user", "monitor", "monitor_io.c"),
     os.path.join(ROOT, "user", "monitor", "hexfmt.c"),
@@ -64,8 +65,8 @@ MONITOR_SOURCES = (
 MONITOR_MODULES = {
     "zos_crt0", "zos_runtime", "zos_gate", "zos_diaggate",
     "zos_ipcgate", "nsgate", "args", "console_io", "console_service",
-    "ipc", "monitor", "monitor_mem", "monitor_io",
-    "hexfmt", "hexdump", "status",
+    "ipc", "monitor", "monitor_exec", "monitor_mem", "monitor_io",
+    "hexfmt", "hexdump", "status", "exec",
 }
 
 # Private kernel symbols that must never appear in a user ZEX.  The
@@ -255,6 +256,8 @@ class TestMonitorArtifacts(unittest.TestCase):
                        b"system: abi ",
                        b"ERR: ARG\r\n",
                        b"ERR: COMMAND\r\n",
+                       b"X path [tail]  run a ZEX from /SYSTEM\r\n",
+                       b"exec: exit status 0x",
                        b"monitor: exit status 0x"):
             self.assertIn(marker, image,
                           "marker %r missing from the subsystem image"

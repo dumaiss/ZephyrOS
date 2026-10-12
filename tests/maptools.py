@@ -380,9 +380,9 @@ def make_map(overrides=None, **kw):
         "_zex_validate_header": 0x2D40,
         "_process_table": 0xD900, "_process_running_pid": 0xDD00,
         "_process_last_status": 0xDD01,
-        # Bank-7 runtime data: the SYS_EXEC path buffer is not
-        # transition-critical, so it lives with the rest of `_DATA`.
-        "_zos_process_path_scratch": 0xDD02,
+        # Bank-7 runtime data.  `_zos_process_path_scratch` used to sit
+        # here; work package 45b correction 01 retired it, because a
+        # bank-6 provider cannot see this half of bank 7.
         # M7 diagnostic services and shared dispatcher helpers (bank-7
         # kernel code; no new common state).
         "_zos_diag_mem_read": 0x2E00, "_zos_diag_mem_write": 0x2E40,

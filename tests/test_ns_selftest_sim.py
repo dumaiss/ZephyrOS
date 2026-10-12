@@ -19,8 +19,13 @@ recorded transcript:
   every entry the client unbinds;
 * `ns_enum` pages `/`, `/dev` and `/SYSTEM` with its cookie, and the
   `/SYSTEM` names and sizes match the packed image;
-* the child the client execs gets its own two standard handles and none of
-  the parent's bound handles;
+* `chdir`/`getcwd` traverse the namespace through provider validation (the
+  VFS root, `/SYSTEM`, a grouping container and `..`) and refuse a
+  bindable object, an absent name and a provider the image does not carry,
+  with the CWD untouched by a refusal;
+* the child the client execs gets its own two standard handles, inherits
+  the parent's CWD and cannot move the parent's CWD with its own `chdir`,
+  and none of the parent's bound handles;
 * the client's own verdict line reports every check, and the monitor
   reports a zero exit status.
 
@@ -77,7 +82,11 @@ TRANSCRIPT = [
     "ns: /SYSTEM entry ns.zex\r\n",
     "ns: /SYSTEM entry nschild.zex\r\n",
     "ns: /SYSTEM 6 entries\r\n",
+    "ns: cwd /SYSTEM\r\n",
+    "ns: cwd /dev\r\n",
     "nschild: stdout ok\r\n",
+    "nschild: cwd /dev\r\n",
+    "nschild: cwd /SYSTEM\r\n",
     "nschild: /dev/console -> 6 handle 3\r\n",
     "nschild: unbind 3 -> 0\r\n",
     "nschild: OK\r\n",
@@ -139,7 +148,8 @@ class NsSelftestReplay(Replay, unittest.TestCase):
         self.assertIsNotNone(match, sio)
         passed, total = int(match.group(1)), int(match.group(2))
         self.assertEqual(passed, total)
-        self.assertGreaterEqual(total, 60)
+        # 75 checks at 42a plus the 18 CWD/inheritance outcomes (45).
+        self.assertGreaterEqual(total, 90)
         self.assertIn("monitor: exit status 0x0000", sio)
 
     def test_boot_manifest_matches_the_read(self):
