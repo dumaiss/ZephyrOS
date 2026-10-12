@@ -9,17 +9,17 @@
 
 void zrt_status_ok(void)
 {
-	zos_puts("OK\r\n");
+	console_puts("OK\r\n");
 }
 
 void zrt_status_err_arg(void)
 {
-	zos_puts("ERR: ARG\r\n");
+	console_puts("ERR: ARG\r\n");
 }
 
 void zrt_status_err_command(void)
 {
-	zos_puts("ERR: COMMAND\r\n");
+	console_puts("ERR: COMMAND\r\n");
 }
 
 void zrt_status_err_code(int status)
@@ -32,8 +32,8 @@ void zrt_status_err_code(int status)
 	} else {
 		code = (unsigned int)status;
 	}
-	zos_puts("ERR: ");
+	console_puts("ERR: ");
 	zrt_fmt_hex8(digits, code & 0xFFu);
-	zos_puts(digits);
-	zos_puts("\r\n");
+	console_puts(digits);
+	console_puts("\r\n");
 }

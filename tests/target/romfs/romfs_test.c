@@ -14,13 +14,13 @@
  *   5. first, last, and cross-48-KiB-window reads of the deterministic
  *      pattern asset return the exact expected bytes.
  *
- * Prints "romfs selftest: OK" through the normal console service on
+ * Prints "romfs selftest: OK" through the normal console driver on
  * success; a precise FAIL marker with the result code otherwise.
  */
 
-#include "zephyros/romfs.h"
-#include "service_client.h"
-#include "zephyros/kernel.h"
+#include "romfs.h"
+#include "driver_client.h"
+#include "kernel.h"
 
 #include "romfs_selftest.h"
 
@@ -42,8 +42,8 @@ static void romfs_put_hex8(uint8_t value)
 {
 	static const char digits[] = "0123456789ABCDEF";
 
-	service_cli_write(digits + ((value >> 4) & 0x0Fu), 1);
-	service_cli_write(digits + (value & 0x0Fu), 1);
+	driver_cli_write(digits + ((value >> 4) & 0x0Fu), 1);
+	driver_cli_write(digits + (value & 0x0Fu), 1);
 }
 
 static void romfs_fail(uint8_t code)
@@ -51,9 +51,9 @@ static void romfs_fail(uint8_t code)
 	static const char prefix[] = "romfs selftest: FAIL 0x";
 
 	romfs_selftest_result = code;
-	service_cli_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
+	driver_cli_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
 	romfs_put_hex8(code);
-	service_cli_write("\r\n", 2);
+	driver_cli_write("\r\n", 2);
 }
 
 /* Read `length` bytes at file-relative `start` and compare them against
@@ -84,9 +84,9 @@ void zos_run_romfs_selftest(void)
 
 	romfs_selftest_result = ZOS_RFST_FAIL_BOOT;
 
-	/* The resident service boot must have left a bound console;
+	/* The resident driver boot must have left a bound console;
 	 * everything below is relative to that baseline. */
-	if (service_cli_console_handle() == 0) {
+	if (driver_cli_console_handle() == 0) {
 		romfs_fail(ZOS_RFST_FAIL_BOOT);
 		return;
 	}
@@ -165,7 +165,7 @@ void zos_run_romfs_selftest(void)
 	{
 		static const char ok[] = "romfs selftest: OK\r\n";
 
-		if (service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u)) !=
+		if (driver_cli_write(ok, (uint16_t)(sizeof(ok) - 1u)) !=
 		    (int)(sizeof(ok) - 1u)) {
 			romfs_selftest_result = ZOS_RFST_FAIL_CONSOLE;
 		}

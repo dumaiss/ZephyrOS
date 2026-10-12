@@ -1,9 +1,9 @@
 ; M2 common IM2 source stubs and non-nested mode-crossing, P-normalizing
 ; gate (revision 13).
 	.module irq_entry
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
-	.include "zephyr80/irq.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
+	.include "irq.inc"
 
 	.globl _irq_dispatch
 	.globl _irq_active_source

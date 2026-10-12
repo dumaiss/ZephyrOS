@@ -1,19 +1,19 @@
-/* ZephyrOS HID acceptance diagnostic, resident-service edition (work
+/* ZephyrOS HID acceptance diagnostic, resident-driver edition (work
  * package 41).
  *
  * The kernel calls zos_run_hid_selftest() from the late boot hook, after
- * the service loader placed and started the console-integration image's
+ * the driver loader placed and started the console-integration image's
  * `sio ioc hid v9958 console-v9958-hid` set (work package 42d merged the
  * per-device images; the console composes HID input with the V9958
  * output), and the nucleus console line completed.
- * The diagnostic is itself a bank-7 client of the resident services (see
- * tests/target/include/service_client.h): it holds no descriptor, so it
+ * The diagnostic is itself a bank-7 client of the resident drivers (see
+ * tests/target/include/driver_client.h): it holds no descriptor, so it
  * drives the HID protocol through the descriptor-less byte forms -
  * ZHID_OP_READY, ZHID_OP_POLL and ZHID_OP_GETC - exactly the calls the
  * console driver forwards when a program reads its input.
  *
  * The transcript goes through the direct early SIO, so it is the
- * pass/fail record independent of the console service it exercises; the
+ * pass/fail record independent of the console driver it exercises; the
  * simulator replay pins it and cross-checks the peer side (the emulated
  * MCU's terminal queue, the fetch-on-doorbell requests and the drain).
  *
@@ -25,7 +25,7 @@
  *   - the scripted typed pass the replay queues in the MCU's terminal
  *     queue ('a', 'B', '3', Enter, Backspace, Ctrl-X, Arrow-Up): POLL
  *     reports pending, repeated GETC returns the queued bytes exactly in
- *     FIFO order, and the drained service answers -ZOS_EAGAIN;
+ *     FIFO order, and the drained driver answers -ZOS_EAGAIN;
  *   - the console endpoint's GETC delivers the pair the replay queues
  *     for the MCU: the production console's input is this same HID
  *     engine, so the console read drives the engine the diagnostic
@@ -36,7 +36,7 @@
  *     penalty), which is what the replay asserts byte-for-byte;
  *   - an unknown HID operation answers -ZOS_EINVAL, and a handle the
  *     nucleus never issued (0 or out of range) is refused before any
- *     service runs.
+ *     driver runs.
  *
  * Final line: "hid selftest: OK", or "hid selftest: FAIL <phase>" with
  * the offending byte on the preceding "hid: detail XX" line.
@@ -46,7 +46,7 @@
 #include "zos/protocol.h"
 
 #include "hid_selftest.h"
-#include "service_client.h"
+#include "driver_client.h"
 
 #if ZOS_HID_SELFTEST
 
@@ -63,11 +63,11 @@ uint8_t ace_hid_selftest_result;
 static void hid_fail(const char *phase, uint8_t code, uint8_t detail)
 {
 	ace_hid_selftest_result = code;
-	service_cli_puts("hid: detail ");
-	service_cli_hex8(detail);
-	service_cli_puts("\r\nhid selftest: FAIL ");
-	service_cli_puts(phase);
-	service_cli_puts("\r\n");
+	driver_cli_puts("hid: detail ");
+	driver_cli_hex8(detail);
+	driver_cli_puts("\r\nhid selftest: FAIL ");
+	driver_cli_puts(phase);
+	driver_cli_puts("\r\n");
 }
 
 #define HID_TYPED_LEN   9u
@@ -97,10 +97,10 @@ static const uint8_t hid_fault[HID_PAIR_LEN] = { 0x71u, 0x72u };
 /* One `<tag> <hex>` transcript line. */
 static void hid_rx(const char *tag, uint8_t byte)
 {
-	service_cli_puts("hid: ");
-	service_cli_puts(tag);
-	service_cli_hex8(byte);
-	service_cli_puts("\r\n");
+	driver_cli_puts("hid: ");
+	driver_cli_puts(tag);
+	driver_cli_hex8(byte);
+	driver_cli_puts("\r\n");
 }
 
 /* One byte through `op`, bounded: 1 when it is exactly `expected`, 0
@@ -109,7 +109,7 @@ static uint8_t hid_wait_byte(uint8_t handle, uint8_t op, uint8_t expected,
 			     uint16_t spins)
 {
 	while (spins != 0u) {
-		int16_t byte = service_cli_getc(handle, op);
+		int16_t byte = driver_cli_getc(handle, op);
 
 		if (byte >= 0) {
 			return (uint8_t)((uint8_t)byte == expected);
@@ -131,40 +131,40 @@ void zos_run_hid_selftest(void)
 
 	/* Endpoint discovery: a lookup succeeds only when the endpoint is
 	 * registered at ZOS_PROTOCOL_VERSION, which is what v01 records. */
-	if (service_cli_endpoint(ZOS_CLASS_HID, &hid_endpoint) == 0u) {
+	if (driver_cli_endpoint(ZOS_CLASS_HID, &hid_endpoint) == 0u) {
 		hid_fail("boot", HID_FAIL_BOOT, 0x01u);
 		return;
 	}
-	service_cli_puts("hid: class 04 v01 handle ");
-	service_cli_hex8(hid_endpoint);
-	service_cli_puts("\r\n");
-	if (service_cli_endpoint(ZOS_CLASS_IOC, &ioc_endpoint) == 0u) {
+	driver_cli_puts("hid: class 04 v01 handle ");
+	driver_cli_hex8(hid_endpoint);
+	driver_cli_puts("\r\n");
+	if (driver_cli_endpoint(ZOS_CLASS_IOC, &ioc_endpoint) == 0u) {
 		hid_fail("boot", HID_FAIL_BOOT, 0x02u);
 		return;
 	}
-	service_cli_puts("hid: ioc class 05 v01 handle ");
-	service_cli_hex8(ioc_endpoint);
-	service_cli_puts("\r\n");
+	driver_cli_puts("hid: ioc class 05 v01 handle ");
+	driver_cli_hex8(ioc_endpoint);
+	driver_cli_puts("\r\n");
 
 	/* The console input row: the console's GETC reaches this engine
 	 * selected its input from at boot. */
-	if (service_cli_getc(hid_endpoint, ZHID_OP_READY) != 1) {
+	if (driver_cli_getc(hid_endpoint, ZHID_OP_READY) != 1) {
 		hid_fail("ready", HID_FAIL_READY, 0x01u);
 		return;
 	}
-	service_cli_puts("hid: ready 1\r\n");
+	driver_cli_puts("hid: ready 1\r\n");
 
 	/* Typed pass: the replay queued the scripted pass in the MCU's
 	 * terminal queue before boot; the doorbell fetch delivers it to the
-	 * service ring, and the byte forms drain it in FIFO order. */
+	 * driver ring, and the byte forms drain it in FIFO order. */
 	ace_hid_selftest_result = HID_FAIL_TYPED;
-	if (service_cli_poll(hid_endpoint, ZHID_OP_POLL) != 1) {
+	if (driver_cli_poll(hid_endpoint, ZHID_OP_POLL) != 1) {
 		hid_fail("typed", HID_FAIL_TYPED, 0x01u);
 		return;
 	}
-	service_cli_puts("hid: poll 1\r\n");
+	driver_cli_puts("hid: poll 1\r\n");
 	for (index = 0u; index < HID_TYPED_LEN; ++index) {
-		int16_t byte = service_cli_getc(hid_endpoint, ZHID_OP_GETC);
+		int16_t byte = driver_cli_getc(hid_endpoint, ZHID_OP_GETC);
 
 		if (byte < 0 || (uint8_t)byte != hid_typed[index]) {
 			hid_fail("typed", HID_FAIL_TYPED, (uint8_t)byte);
@@ -172,22 +172,22 @@ void zos_run_hid_selftest(void)
 		}
 		hid_rx("rx ", (uint8_t)byte);
 	}
-	if (service_cli_getc(hid_endpoint, ZHID_OP_GETC) != -ZOS_EAGAIN ||
-	    service_cli_poll(hid_endpoint, ZHID_OP_POLL) != 0) {
+	if (driver_cli_getc(hid_endpoint, ZHID_OP_GETC) != -ZOS_EAGAIN ||
+	    driver_cli_poll(hid_endpoint, ZHID_OP_POLL) != 0) {
 		hid_fail("typed", HID_FAIL_TYPED, 0x02u);
 		return;
 	}
-	service_cli_puts("hid: typed 09\r\n");
+	driver_cli_puts("hid: typed 09\r\n");
 
-	/* Console pass: this image's declared service set includes the
+	/* Console pass: this image's declared driver set includes the
 	 * console endpoint.  The replay queues the pair for the MCU when
 	 * this row prints, so the console read drives the HID engine. */
 	ace_hid_selftest_result = HID_FAIL_CONSOLE;
-	if (service_cli_endpoint(ZOS_CLASS_CONSOLE, &console_endpoint) == 0u) {
+	if (driver_cli_endpoint(ZOS_CLASS_CONSOLE, &console_endpoint) == 0u) {
 		hid_fail("console", HID_FAIL_CONSOLE, 0x01u);
 		return;
 	}
-	service_cli_puts("hid: console input\r\n");
+	driver_cli_puts("hid: console input\r\n");
 	for (index = 0u; index < HID_PAIR_LEN; ++index) {
 		if (hid_wait_byte(console_endpoint, ZCONSOLE_OP_GETC,
 				  hid_console[index], HID_CONSOLE_SPINS) == 0u) {
@@ -197,15 +197,15 @@ void zos_run_hid_selftest(void)
 		}
 		hid_rx("con rx ", hid_console[index]);
 	}
-	service_cli_puts("hid: console OK\r\n");
+	driver_cli_puts("hid: console OK\r\n");
 
 	/* Fault pass: the replay queues the clean pair behind one short
-	 * CMD_HID_INPUT reply.  The service must deliver nothing from the
+	 * CMD_HID_INPUT reply.  The driver must deliver nothing from the
 	 * malformed reply; after the bounded penalty the unchanged pair
 	 * arrives in FIFO order, which is the byte-for-byte atomicity the
 	 * replay pins. */
 	ace_hid_selftest_result = HID_FAIL_FAULT;
-	service_cli_puts("hid: fault pass\r\n");
+	driver_cli_puts("hid: fault pass\r\n");
 	for (index = 0u; index < HID_PAIR_LEN; ++index) {
 		if (hid_wait_byte(hid_endpoint, ZHID_OP_GETC,
 				  hid_fault[index], HID_FAULT_SPINS) == 0u) {
@@ -214,33 +214,33 @@ void zos_run_hid_selftest(void)
 		}
 		hid_rx("rx ", hid_fault[index]);
 	}
-	if (service_cli_getc(hid_endpoint, ZHID_OP_GETC) != -ZOS_EAGAIN) {
+	if (driver_cli_getc(hid_endpoint, ZHID_OP_GETC) != -ZOS_EAGAIN) {
 		hid_fail("fault", HID_FAIL_FAULT, 0x01u);
 		return;
 	}
-	service_cli_puts("hid: fault OK\r\n");
+	driver_cli_puts("hid: fault OK\r\n");
 
-	/* Malformed calls: the unknown operation is refused by the service,
+	/* Malformed calls: the unknown operation is refused by the driver,
 	 * the unissued handles by the nucleus before any dispatch. */
 	ace_hid_selftest_result = HID_FAIL_REJECTS;
-	service_cli_frame(&frame, 0x7Fu, 0u, 0u);
-	if (service_cli_call(hid_endpoint, &frame) != -ZOS_EINVAL) {
+	driver_cli_frame(&frame, 0x7Fu, 0u, 0u);
+	if (driver_cli_call(hid_endpoint, &frame) != -ZOS_EINVAL) {
 		hid_fail("rejects", HID_FAIL_REJECTS, 0x01u);
 		return;
 	}
-	service_cli_frame(&frame, ZHID_OP_GETC, 0u, 0u);
-	if (service_cli_call(0u, &frame) != -ZOS_EINVAL) {
+	driver_cli_frame(&frame, ZHID_OP_GETC, 0u, 0u);
+	if (driver_cli_call(0u, &frame) != -ZOS_EINVAL) {
 		hid_fail("rejects", HID_FAIL_REJECTS, 0x02u);
 		return;
 	}
-	if (service_cli_call((uint8_t)(hid_endpoint + 0x80u), &frame) !=
+	if (driver_cli_call((uint8_t)(hid_endpoint + 0x80u), &frame) !=
 	    -ZOS_EINVAL) {
 		hid_fail("rejects", HID_FAIL_REJECTS, 0x03u);
 		return;
 	}
-	service_cli_puts("hid: rejected calls OK\r\n");
+	driver_cli_puts("hid: rejected calls OK\r\n");
 
 	ace_hid_selftest_result = 0x00u;
-	service_cli_puts("hid selftest: OK\r\n");
+	driver_cli_puts("hid selftest: OK\r\n");
 }
 #endif /* ZOS_HID_SELFTEST */

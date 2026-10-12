@@ -11,8 +11,8 @@
  *     preserved: BC, DE, IX, IY; SP and the selected bank are restored
  *     unspecified: other flags; alternate registers are not part of M1
  *
- * M6 implements five services: exit, console write/read/poll, getinfo.
- * M7 adds six recovery/diagnostic services behind the same gate; their
+ * M6 implements five drivers: exit, console write/read/poll, getinfo.
+ * M7 adds six recovery/diagnostic drivers behind the same gate; their
  * blocks are declared in abi/zos/diag.h.  Argument blocks must lie in the
  * caller window 0100h-1FFFh; console buffers may occupy 0100h-DFFFh and
  * are transferred through checked common-resident copy gates.  C names,
@@ -35,7 +35,7 @@
 #define ZOS_SYSCALL_EXIT          0x00u
 /* 01h-03h were SYS_CONSOLE_WRITE / SYS_CONSOLE_READ / SYS_CONSOLE_POLL.
  * Package 41 removed them: a program's console I/O goes to the console
- * service through the IPC pair below (user/sdk/src/console*.{c,asm}), so
+ * driver through the IPC pair below (user/sdk/src/console*.{c,asm}), so
  * the numbers stay reserved rather than reused - a stale caller fails
  * with ZOS_ENOSYS instead of writing somewhere unexpected. */
 #define ZOS_SYSCALL_GETINFO       0x04u

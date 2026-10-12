@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""IOC-FAT service structural acceptance (work package 42b).
+"""IOC-FAT driver structural acceptance (work package 42b).
 
 The behavioural acceptance is the simulator replay of the outcome image
 (`tests/test_fs_selftest_sim.py`); this module pins the build, manifest and
 source-layout facts that run depends on:
 
-- `fs/iocfat/` reaches the MCU FatFs service only through the IOC class
+- `drivers/iocfat/` reaches the MCU FatFs driver only through the IOC class
   interface: no SIO port access, no raw I/O and no `drivers/ioc` include;
-- the service image packs inside the 13-granule ceiling and keeps the hot
+- the driver image packs inside the 13-granule ceiling and keeps the hot
   tier's 4,096-byte reserve;
 - the module keeps exactly one cache slot and carries no test-only counter;
-- production loads it as one of the services the boot manifest lists, and
-  it publishes `/FS`;
+- production loads it as one of the drivers the boot manifest lists, and
+  it publishes `/fs`;
 - the acceptance image, its store manifest and the SDK programs are wired;
 - the one documented "no media" answer: the driver decides the card state
   from the command that reads the medium (work package 45b correction 01).
@@ -32,11 +32,11 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import zmodpack  # noqa: E402
 
-MODULE_DIR = os.path.join(ROOT, "fs", "iocfat")
+MODULE_DIR = os.path.join(ROOT, "drivers", "iocfat")
 MODULE_SRC = os.path.join(MODULE_DIR, "iocfat.c")
-MANIFEST = os.path.join(ROOT, "services", "manifests", "iocfat.json")
+MANIFEST = os.path.join(ROOT, "drivers", "iocfat", "iocfat.json")
 BUILT_ZMOD = os.path.join(ROOT, "build", "modules", "iocfat.zmod")
-SERVICE_PLAN = os.path.join(ROOT, "build", "modules", "services.plan.json")
+DRIVER_PLAN = os.path.join(ROOT, "build", "modules", "drivers.plan.json")
 RECOVERY = os.path.join(ROOT, "recovery", "manifest.json")
 IMAGE_MANIFEST = os.path.join(ROOT, "tests", "fs", "manifest.json")
 MAKEFILE = os.path.join(ROOT, "Makefile")
@@ -59,7 +59,7 @@ class IocFatStaticBase(unittest.TestCase):
     def module_sources(self):
         names = sorted(n for n in os.listdir(MODULE_DIR)
                        if n.endswith((".c", ".h", ".asm", ".inc")))
-        self.assertTrue(names, "fs/iocfat carries no source")
+        self.assertTrue(names, "drivers/iocfat carries no source")
         return [(n, read(os.path.join(MODULE_DIR, n))) for n in names]
 
 
@@ -81,7 +81,7 @@ class TestIocFatSourceLayout(IocFatStaticBase):
 
     def test_no_driver_private_include(self):
         # A module may reach the IOC driver only through its class interface
-        # (zephyros/ioc.h), never through the driver's private header.
+        # (drivers/include/ioc.h), never through the driver's private header.
         for name, text in self.module_sources():
             self.assertIsNone(
                 re.search(r'#include\s*[<"]drivers/', text),
@@ -90,18 +90,18 @@ class TestIocFatSourceLayout(IocFatStaticBase):
                 re.search(r'#include\s*[<"]kernel/', text),
                 "%s reaches a kernel-private header" % name)
 
-    def test_only_the_service_interface_is_used(self):
+    def test_only_the_driver_interface_is_used(self):
         # Package 42b: the driver calls its host-resolved IOC dependency
-        # through the service API, never through a class shim.
+        # through the driver API, never through a class shim.
         text = read(MODULE_SRC)
-        self.assertIn("ipc_service_api", text)
+        self.assertIn("driver_api", text)
         self.assertIn("ZIOC_OP_COMMAND", text)
         self.assertNotIn("zioc" + "_ops", text)
         self.assertNotIn("ZCAP_IOC_COMMAND", text)
 
     def test_single_cache_slot_is_pinned(self):
         text = read(MODULE_SRC)
-        # One cache slot in SERVICE_IO, one handle pool: the instance is a
+        # One cache slot in DRIVER_IO, one handle pool: the instance is a
         # single static object with `cache[1]`.
         self.assertIn("iocfat_cache_slot cache[1]", text)
 
@@ -132,18 +132,18 @@ class TestIocFatManifest(IocFatStaticBase):
                          ["hot"])
         hot = manifest["segments"][0]
         self.assertIn("_CODE", hot["image_areas"])
-        self.assertIn("_SERVICE_IO", hot["bss_areas"])
+        self.assertIn("_DRIVER_IO", hot["bss_areas"])
         self.assertEqual([(ep["class"], ep["instance"])
                           for ep in manifest["endpoints"]], [(7, 0)])
         # The filesystem-namespace publication: the nucleus FS provider
         # learns the driver's endpoint from it.
-        self.assertEqual(manifest["publishes"][0]["path"], "/FS")
-        self.assertEqual(manifest["publishes"][0]["type"], "FS")
+        self.assertEqual(manifest["publishes"][0]["path"], "/fs")
+        self.assertEqual(manifest["publishes"][0]["type"], "fs")
         self.assertEqual(
             [(d["class"], d["instance"]) for d in manifest["depends"]],
             [(5, 0)])
 
-    def test_packed_service_keeps_the_hot_tier_room(self):
+    def test_packed_driver_keeps_the_hot_tier_room(self):
         if not os.path.exists(BUILT_ZMOD):
             self.skipTest("build/modules/iocfat.zmod missing; run make")
         with open(BUILT_ZMOD, "rb") as handle:
@@ -154,26 +154,26 @@ class TestIocFatManifest(IocFatStaticBase):
                          ["hot"])
         # Requirement 10: the driver hot tier keeps at least 4,096 bytes
         # free after every image is placed.
-        plan = json.loads(read(SERVICE_PLAN))
+        plan = json.loads(read(DRIVER_PLAN))
         hot = plan["nucleus"]
-        free = int(hot["service_hot_capacity_bytes"]) - \
-            int(hot["service_hot_bytes"])
+        free = int(hot["driver_hot_capacity_bytes"]) - \
+            int(hot["driver_hot_bytes"])
         self.assertGreaterEqual(free, 4096,
                                 "driver hot tier has only %d bytes free"
                                 % free)
 
 
 class TestIocFatIntegration(IocFatStaticBase):
-    def test_production_boots_it_as_a_service(self):
-        # The production service set names the driver, so the nucleus
-        # loads it and installs its /FS publication at boot.
+    def test_production_boots_it_as_a_driver(self):
+        # The production driver set names the driver, so the nucleus
+        # loads it and installs its /fs publication at boot.
         text = read(MAKEFILE)
-        self.assertRegex(text, r"ZOS_SERVICES \?= .*iocfat")
+        self.assertRegex(text, r"ZOS_DRIVERS \?= .*iocfat")
         entries = [f["name"] for f in
                    json.loads(read(RECOVERY))["files"]]
         providers = [n for n in entries if n.endswith(".zmod")]
         self.assertEqual(providers[-1], "iocfat.zmod",
-                         "the provider must be the last service image")
+                         "the provider must be the last driver image")
 
     def test_recovery_manifest_loads_it_last(self):
         entries = [f["name"] for f in
@@ -187,11 +187,11 @@ class TestIocFatIntegration(IocFatStaticBase):
         self.assertLess(entries.index("iocfat.zmod"),
                         entries.index("monitor.zex"))
 
-    def test_kernel_boots_it_from_the_service_manifest(self):
+    def test_kernel_boots_it_from_the_driver_manifest(self):
         text = read(MAIN_C)
-        # The driver is one of the services the boot manifest lists: there
+        # The driver is one of the drivers the boot manifest lists: there
         # is no arena module pass and no per-driver boot gate any more.
-        self.assertIn("service_load_all(ZOS_SERVICE_MANIFEST_NAME)", text)
+        self.assertIn("driver_load_all(ZOS_DRIVER_MANIFEST_NAME)", text)
         self.assertNotIn("ZOS_IOCFAT_BOOT", text)
         self.assertNotIn("kernel_load_vfs_module", text)
         store = read(os.path.join(ROOT, "recovery", "manifest.json"))
@@ -199,17 +199,17 @@ class TestIocFatIntegration(IocFatStaticBase):
 
     def test_makefile_wiring(self):
         text = read(MAKEFILE)
-        # Package 42b: the driver is a service image of the production and
-        # acceptance boot sets, packed like the other services.
-        self.assertIn("SVC_MANIFEST_DIR ?= services/manifests", text)
-        self.assertRegex(text, r"ZOS_SERVICES \?= .*\biocfat\b")
+        # Package 42b: the driver is a driver image of the production and
+        # acceptance boot sets, packed like the other drivers.
+        self.assertIn("$(call DRV_MANIFEST,$(1))", text)
+        self.assertRegex(text, r"ZOS_DRIVERS \?= .*\biocfat\b")
         self.assertIn("tools/zmodpack.py pack $< $@ --objdir $(MODULES)",
                       text)
         self.assertIn("ZOS_FS_SELFTEST", text)
         self.assertIn("build-fs-selftest", text)
         self.assertIn("tests/fs/manifest.json", text)
         self.assertIn("test_fs_selftest", text)
-        self.assertIn("fs/iocfat/iocfat.c", text)
+        self.assertIn("drivers/iocfat/iocfat.c", text)
         # The acceptance image must not carry modules it does not boot.
         index = text.index("ROMFS_MANIFEST := tests/fs/manifest.json")
         self.assertIn("ZOS_FS_SELFTEST", text[index - 400:index])
@@ -218,7 +218,7 @@ class TestIocFatIntegration(IocFatStaticBase):
         entries = [f["name"] for f in
                    json.loads(read(IMAGE_MANIFEST))["files"]]
         self.assertEqual(entries, ["sio.zmod", "ioc.zmod", "console-serial.zmod",
-                                   "services.man", "iocfat.zmod",
+                                   "drivers.man", "iocfat.zmod",
                                    "monitor.zex", "fs_selftest.zex",
                                    "fs_child.zex"])
 
@@ -237,20 +237,20 @@ class TestFsAcceptancePrograms(unittest.TestCase):
         text = read(SELFTEST)
         for name in ("card_case", "system_case", "exec_case"):
             self.assertIn(name, text)
-        for what in ("FS_SIZE", "ZOS_ENOENT", "zos_ns_enum", "zos_mkdir",
-                     "zos_rename", "zos_unlink", "zos_rmdir"):
+        for what in ("FS_SIZE", "ZOS_ENOENT", "list", "mkdir",
+                     "rename", "unlink", "rmdir"):
             self.assertIn(what, text, "%s is not exercised" % what)
         self.assertIn('#include "zos.h"', text)
         self.assertNotIn("vfs_", text)
         # The image hands the console to the monitor as its last act.
-        self.assertIn('zos_exec("/SYSTEM/monitor.zex"', text)
+        self.assertIn('run("/system/monitor.zex"', text)
 
     def test_child_reports_its_tail_and_leaks_its_handles(self):
         text = read(CHILD)
         self.assertIn("ZOS_EXIT_STATUS", text)
-        self.assertIn("zos_args()", text)
-        self.assertIn('zos_ipc_bind(FS_DIR', text.replace('"/FS"', "FS_DIR"))
-        self.assertNotIn("zos_close", text)
+        self.assertIn("startup()", text)
+        self.assertIn('bind(FS_DIR', text.replace('"/fs"', "FS_DIR"))
+        self.assertNotRegex(text, r"\bclose\b")
 
     def test_serial_smoke_has_the_mode(self):
         # Hardware smoke runs `make smoke-hardware-fs`, so the mode and its
@@ -265,13 +265,13 @@ class TestFsAcceptancePrograms(unittest.TestCase):
 
 
 class TestNoMediaContract(unittest.TestCase):
-    """`/FS` with no media answers `ZOS_ENODEV` for every operation.
+    """`/fs` with no media answers `ZOS_ENODEV` for every operation.
 
     The deployed firmware answers some commands (CAPS, GENERATION, ROOT,
     and OPENDIR for the root) from a cached mount context after the card
     is gone, so the driver must decide the card state from the one command
     that reads the medium: the root directory open *and* its first read.
-    Otherwise `chdir("/FS")` succeeds on the bench where the simulator's
+    Otherwise `chdir("/fs")` succeeds on the bench where the simulator's
     replay expects the refusal (the 2026-10-11 hardware failure).
     """
 

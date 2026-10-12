@@ -1,10 +1,10 @@
 /* ZephyrOS kernel-private interrupt-registry interface (kernel/irq).
  *
- * The driver-facing interrupt contract is include/zephyros/irq.h: the
+ * The driver-facing interrupt contract is kernel/include/irq_types.h: the
  * `irq_source_t`/`irq_handler_t` types, the logical source enum, and the
- * result codes.  A resident service claims and releases sources only
+ * result codes.  A resident driver claims and releases sources only
  * through the bootstrap interface's `irq_claim`/`irq_release`
- * (include/zephyros/ipc.h).
+ * (drivers/include/driver.h).
  *
  * This header owns the executive lifecycle, the claim
  * checkpoint/rollback transaction and owner token, the dispatch
@@ -16,7 +16,7 @@
 #ifndef ZEPHYROS_KERNEL_IRQ_PRIVATE_H
 #define ZEPHYROS_KERNEL_IRQ_PRIVATE_H
 
-#include "zephyros/irq.h"
+#include "irq_types.h"
 
 /* Executive lifecycle. */
 void irq_init(void);

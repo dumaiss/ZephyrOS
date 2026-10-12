@@ -3,24 +3,25 @@
 
 Boots build-ns-selftest/zephyros-ns-selftest.bin -- the production boot
 path with the namespace objects linked in at the placement production will
-use, the DEVICE publication table built by the host from the three service
-containers, and the SDK client booting as /SYSTEM/ns.zex -- and checks the
+use, the DEVICE publication table built by the host from the three driver
+containers, and the SDK client booting as /system/ns.zex -- and checks the
 recorded transcript:
 
-* the standard handles exist before any bind and the console service is
+* the standard handles exist before any bind and the console driver is
   reachable through the handle `/dev/console` publishes;
 * `bind` on the host-built table reports the protocol type the manifest
   declares (SERIAL, INPUT, VIDEO, CONSOLE), a grouping name refuses with
   ZOS_EISDIR and a call on the bound handle reaches the publishing
   endpoint (the synthetic publisher's deterministic answers);
-* the `/SYSTEM` FILE provider reads, seeks and reports metadata, refuses a
+* the `/system` FILE provider reads, seeks and reports metadata, refuses a
   write with ZOS_EROFS, and a root-level name has no provider owner;
-* the handle table fills to VFS_FD_MAX, reports -ZOS_EMFILE and releases
+* the handle table fills to VFS_HANDLE_MAX, reports -ZOS_EMFILE and
+* releases
   every entry the client unbinds;
-* `ns_enum` pages `/`, `/dev` and `/SYSTEM` with its cookie, and the
-  `/SYSTEM` names and sizes match the packed image;
+* `ns_enum` pages `/`, `/dev` and `/system` with its cookie, and the
+  `/system` names and sizes match the packed image;
 * `chdir`/`getcwd` traverse the namespace through provider validation (the
-  VFS root, `/SYSTEM`, a grouping container and `..`) and refuse a
+  VFS root, `/system`, a grouping container and `..`) and refuse a
   bindable object, an absent name and a provider the image does not carry,
   with the CWD untouched by a refusal;
 * the child the client execs gets its own two standard handles, inherits
@@ -60,7 +61,7 @@ TRANSCRIPT = [
     "platform: Zephyr-80\r\n",
     "kernel entry: OK\r\n",
     "serial: OK\r\n",
-    "console: service OK\r\n",
+    "console: driver OK\r\n",
     "ns: probe\r\n",
     "ns: /dev/console -> 6 handle 3\r\n",
     "ns: /dev/input/keyboard -> 4\r\n",
@@ -75,22 +76,22 @@ TRANSCRIPT = [
     "ns: /dev entry console type 6\r\n",
     "ns: /dev entry input type 0 container\r\n",
     "ns: /dev entry video type 2\r\n",
-    "ns: /SYSTEM entry sio.zmod\r\n",
-    "ns: /SYSTEM entry console-serial.zmod\r\n",
-    "ns: /SYSTEM entry nsdev.zmod\r\n",
-    "ns: /SYSTEM entry services.man\r\n",
-    "ns: /SYSTEM entry ns.zex\r\n",
-    "ns: /SYSTEM entry nschild.zex\r\n",
-    "ns: /SYSTEM 6 entries\r\n",
-    "ns: cwd /SYSTEM\r\n",
+    "ns: /system entry sio.zmod\r\n",
+    "ns: /system entry console-serial.zmod\r\n",
+    "ns: /system entry nsdev.zmod\r\n",
+    "ns: /system entry drivers.man\r\n",
+    "ns: /system entry ns.zex\r\n",
+    "ns: /system entry nschild.zex\r\n",
+    "ns: /system 6 entries\r\n",
+    "ns: cwd /system\r\n",
     "ns: cwd /dev\r\n",
     "nschild: stdout ok\r\n",
     "nschild: cwd /dev\r\n",
-    "nschild: cwd /SYSTEM\r\n",
+    "nschild: cwd /system\r\n",
     "nschild: /dev/console -> 6 handle 3\r\n",
     "nschild: unbind 3 -> 0\r\n",
     "nschild: OK\r\n",
-    "ns: exec /SYSTEM/nschild.zex -> 0\r\n",
+    "ns: exec /system/nschild.zex -> 0\r\n",
 ]
 
 # The M9 mount pass is gone with the M9 VFS it belonged to (package 42b):
@@ -98,7 +99,7 @@ TRANSCRIPT = [
 # reports a mount outcome any more.  The image must not grow one back.
 MOUNT_LINE = "vfs: "
 
-# /SYSTEM/services.man: one 24-byte record per loaded image, load order.
+# /system/drivers.man: one 24-byte record per loaded image, load order.
 MAN_RECORD = 24
 MAN_SIZE = MAN_RECORD * 3
 
@@ -153,14 +154,14 @@ class NsSelftestReplay(Replay, unittest.TestCase):
         self.assertIn("monitor: exit status 0x0000", sio)
 
     def test_boot_manifest_matches_the_read(self):
-        """The client read /SYSTEM/services.man; compare what it saw with
+        """The client read /system/drivers.man; compare what it saw with
         the packed image: the name, the size and the first record."""
         romfs = os.path.join(ROOT, IMAGE_SUBDIR, "recovery.romfs")
         if not os.path.exists(romfs):
             self.skipTest("%s missing; build the image first" % romfs)
         with open(romfs, "rb") as handle:
             _header, entries = romfspack.parse_image(handle.read())
-        manifest = next(e for e in entries if e["name"] == "services.man")
+        manifest = next(e for e in entries if e["name"] == "drivers.man")
         self.assertEqual(len(manifest["payload"]), MAN_SIZE)
         first = manifest["payload"][:MAN_RECORD].split(b"\x00")[0]
         self.assertEqual(first, b"sio.zmod")

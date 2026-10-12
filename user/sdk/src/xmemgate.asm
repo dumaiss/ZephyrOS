@@ -13,16 +13,16 @@
 
 	.module zos_xmemgate
 
-	.globl _zos_aperture_open
-	.globl _zos_aperture_close
+	.globl _aperture_open
+	.globl _aperture_close
 
 ZOS_MEMCTL_PORT = 0x00
 
 	.area _CODE
 
-; unsigned char zos_aperture_open(unsigned char token);  A = token.
+; unsigned char aperture_open(unsigned char token);  A = token.
 ; Writes the token and returns the previous latch in A.
-_zos_aperture_open::
+_aperture_open::
 	ld	c,a
 	in	a,(ZOS_MEMCTL_PORT)
 	ld	b,a
@@ -31,7 +31,7 @@ _zos_aperture_open::
 	ld	a,b
 	ret
 
-; void zos_aperture_close(unsigned char previous);  A = the latch to restore.
-_zos_aperture_close::
+; void aperture_close(unsigned char previous);  A = the latch to restore.
+_aperture_close::
 	out	(ZOS_MEMCTL_PORT),a
 	ret

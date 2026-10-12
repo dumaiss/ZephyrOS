@@ -369,36 +369,36 @@ class TestRealArtifacts(unittest.TestCase):
 class TestNucleusLedgers(unittest.TestCase):
     """The five architecture-36.20 ledger lines, and the driver ledger fix
     package 42c made: `driver hot`/`driver boot/bulk` come from the packed
-    service set's plan instead of being hard-zeroed."""
+    driver set's plan instead of being hard-zeroed."""
 
-    def test_ledger_lines_carry_the_service_plan(self):
+    def test_ledger_lines_carry_the_driver_plan(self):
         plan = {
             "nucleus": {
-                "service_hot_bytes": 22013,
-                "service_hot_capacity_bytes": 0x8000,
-                "service_boot_bytes": 2170,
-                "service_boot_capacity_bytes": 0x6000,
+                "driver_hot_bytes": 22013,
+                "driver_hot_capacity_bytes": 0x8000,
+                "driver_boot_bytes": 2170,
+                "driver_boot_capacity_bytes": 0x6000,
             },
         }
         symbols = {"__kernel_code_end": 0xA570, "s__WINDOW_DATA": 0xA600,
                    "l__WINDOW_DATA": 0x6D9, "s__DATA": 0x5A00,
                    "l__DATA": 0x40}
         ledger = pack_image.nucleus_ledger(symbols, plan)
-        self.assertEqual(ledger["service_hot_bytes"], 22013)
-        self.assertEqual(ledger["service_boot_bytes"], 2170)
+        self.assertEqual(ledger["driver_hot_bytes"], 22013)
+        self.assertEqual(ledger["driver_boot_bytes"], 2170)
         self.assertEqual(ledger["cold_code_bytes"], 0xA570 - 0x6000)
         self.assertEqual(ledger["cold_data_bytes"], 0x6D9)
         self.assertEqual(ledger["cold_data_base"], 0xA600)
         self.assertEqual(ledger["cold_room_bytes"], 0xE000 - 0xA600 - 0x6D9)
 
-    def test_ledger_without_a_service_plan_reports_zeros(self):
-        # A synthetic host map has no packed service set: the two bank-6
+    def test_ledger_without_a_driver_plan_reports_zeros(self):
+        # A synthetic host map has no packed driver set: the two bank-6
         # ledgers stay zero rather than being invented.
         symbols = {"__kernel_code_end": 0xA570, "s__WINDOW_DATA": 0xA600,
                    "l__WINDOW_DATA": 0x6D9, "s__DATA": 0x5A00}
         ledger = pack_image.nucleus_ledger(symbols, None)
-        self.assertEqual(ledger["service_hot_bytes"], 0)
-        self.assertEqual(ledger["service_boot_bytes"], 0)
+        self.assertEqual(ledger["driver_hot_bytes"], 0)
+        self.assertEqual(ledger["driver_boot_bytes"], 0)
 
     def test_ledger_without_derived_symbols_is_none(self):
         self.assertIsNone(pack_image.nucleus_ledger({}, None))
@@ -407,7 +407,7 @@ class TestNucleusLedgers(unittest.TestCase):
         manifest_path = os.path.join(ROOT, "build",
                                      "zephyros.manifest.json")
         plan_path = os.path.join(ROOT, "build", "modules",
-                                 "services.plan.json")
+                                 "drivers.plan.json")
         if not all(os.path.exists(p) for p in (manifest_path, plan_path)):
             self.skipTest("derived production build missing; run make")
         ledger = json.load(open(manifest_path))["nucleus"]
@@ -415,34 +415,34 @@ class TestNucleusLedgers(unittest.TestCase):
         hot = plan["nucleus"]
         # The production ledger and the packer's plan agree: this is what
         # the mis-reported driver line looked like before package 42c.
-        self.assertGreater(hot["service_hot_bytes"], 0)
-        self.assertEqual(ledger["service_hot_bytes"],
-                         hot["service_hot_bytes"])
-        self.assertEqual(ledger["service_boot_bytes"],
-                         hot["service_boot_bytes"])
-        self.assertEqual(ledger["service_hot_capacity_bytes"],
-                         hot["service_hot_capacity_bytes"])
+        self.assertGreater(hot["driver_hot_bytes"], 0)
+        self.assertEqual(ledger["driver_hot_bytes"],
+                         hot["driver_hot_bytes"])
+        self.assertEqual(ledger["driver_boot_bytes"],
+                         hot["driver_boot_bytes"])
+        self.assertEqual(ledger["driver_hot_capacity_bytes"],
+                         hot["driver_hot_capacity_bytes"])
         self.assertGreaterEqual(
-            hot["service_hot_capacity_bytes"] - hot["service_hot_bytes"],
+            hot["driver_hot_capacity_bytes"] - hot["driver_hot_bytes"],
             4096, "driver hot tier room")
         text = pack_image.format_nucleus_ledger(ledger)
         self.assertIn("driver hot: %d bytes of %d"
-                      % (hot["service_hot_bytes"],
-                         hot["service_hot_capacity_bytes"]), text)
+                      % (hot["driver_hot_bytes"],
+                         hot["driver_hot_capacity_bytes"]), text)
         self.assertIn("driver boot/bulk: %d bytes of %d"
-                      % (hot["service_boot_bytes"],
-                         hot["service_boot_capacity_bytes"]), text)
+                      % (hot["driver_boot_bytes"],
+                         hot["driver_boot_capacity_bytes"]), text)
         self.assertIn("nucleus cold: code %d bytes end %04Xh" % (
             ledger["cold_code_bytes"], ledger["cold_code_end"]), text)
 
-    def test_service_plan_loader_reads_the_build_directory(self):
+    def test_driver_plan_loader_reads_the_build_directory(self):
         plan_path = os.path.join(ROOT, "build", "modules",
-                                 "services.plan.json")
+                                 "drivers.plan.json")
         if not os.path.exists(plan_path):
             self.skipTest("derived production build missing; run make")
-        plan = pack_image.load_service_plan(os.path.join(ROOT, "build"))
+        plan = pack_image.load_driver_plan(os.path.join(ROOT, "build"))
         self.assertIn("iocfat.zmod", plan["order"])
-        self.assertIsNone(pack_image.load_service_plan(None))
+        self.assertIsNone(pack_image.load_driver_plan(None))
 
 
 class TestCommonCeiling(unittest.TestCase):

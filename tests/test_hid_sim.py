@@ -4,7 +4,7 @@ console-integration image (work package 42d merged the per-device
 images); this module replays that image in the Z80 simulator against the
 emulated IOC peer.
 
-The image boots the production-derived nucleus and the service loader
+The image boots the production-derived nucleus and the driver loader
 brings up the `sio ioc hid v9958 console-v9958-hid` bank-6 set from the
 recovery store; the console composes the HID input with the V9958 output
 (the production selection), and the HID diagnostic
@@ -15,12 +15,12 @@ Coverage:
 
 * the early-SIO boot transcript: the kernel banner, the loader's
   `driver <name>: hot <addr> ...` evidence lines in manifest order for
-  the image's services, and the diagnostic's markers through the final
+  the image's drivers, and the diagnostic's markers through the final
   `hid selftest: OK`, with no `FAIL`;
 * the scripted typed pass: the replay queues a, B, 3, Enter, Backspace,
   Ctrl-X, Arrow-Up for the MCU, the engine fetches on the doorbell and
   the diagnostic echoes every byte in FIFO order;
-* the console phase: the console endpoint's input is the HID service in
+* the console phase: the console endpoint's input is the HID driver in
   this build, so the pair the replay queues for the MCU arrives through
   the console's GETC;
 * malformed-reply atomicity and the doorbell release after the drain.
@@ -104,7 +104,7 @@ class HidSimBase(Replay, unittest.TestCase):
                                 % marker)
             at = found + len(marker)
 
-    def service_lines(self, sio):
+    def driver_lines(self, sio):
         # The loader names each image by its ROMFS entry (`sio.zmod`).
         return re.findall(
             rb"driver ([a-z0-9-]+)\.zmod: hot [0-9A-F]{4}h"
@@ -126,16 +126,16 @@ class TestHidBootTranscript(HidSimBase):
             b"serial: OK\r\n",
         ))
         names = [b"sio", b"ioc", b"hid", b"v9958", b"console-v9958-hid"]
-        self.assertEqual(self.service_lines(sio), names)
-        self.assertIn(b"service loader: %d images in bank 6\r\n"
+        self.assertEqual(self.driver_lines(sio), names)
+        self.assertIn(b"driver loader: %d images in bank 6\r\n"
                       % len(names), sio)
         self.assertIn(b"driver hot: ", sio)
         self.assertIn(b"driver boot/bulk: ", sio)
         # The production console routes its boot line to the V9958 lane,
         # not this early-SIO transcript.
-        self.assertNotIn(b"console: service OK\r\n", sio)
+        self.assertNotIn(b"console: driver OK\r\n", sio)
         self.assertNotIn(b"console: unbound", sio)
-        self.assertNotIn(b"console: service failed", sio)
+        self.assertNotIn(b"console: driver failed", sio)
         self.assertNotIn(b"console: unavailable", sio)
 
         # The diagnostic's protocol rows, in order.
@@ -162,7 +162,7 @@ class TestHidBootTranscript(HidSimBase):
                             "HID and IOC answered the same endpoint handle")
 
         # The typed pass echoes exactly the scripted FIFO bytes; the
-        # console service reads the same engine when it is in the store.
+        # console driver reads the same engine when it is in the store.
         typed_block = b"".join(b"hid: rx %02X\r\n" % byte
                                for byte in HID_TYPED)
         self.assertIn(typed_block, sio)
@@ -207,7 +207,7 @@ class TestHidPeerFacts(HidSimBase):
         self.assertEqual(len(hid_requests), fetches)
         for request in hid_requests:
             self.assertEqual(request[3], bytes([HID_FETCH_SIZE]))
-        # The non-HID traffic is the IOC service's own bring-up plus the
+        # The non-HID traffic is the IOC driver's own bring-up plus the
         # IOC diagnostic's exchanges (the group that runs before HID in
         # this image).
         non_hid = [req[0] for req in peer.requests

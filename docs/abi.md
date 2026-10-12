@@ -8,7 +8,7 @@ adds the M2 interrupt-delivery contract, and section 8 adds the M6
 native syscall set; section 10 is the M9 native filesystem family
 (`SYS_FS_*`, `10h-1Fh`) together with the M9 error values it introduces,
 and section 11 is the M9 `SYS_EXEC` with the startup block v1 argument
-contract; section 12 is the M10 resident-service IPC pair, and section
+contract; section 12 is the M10 resident-driver IPC pair, and section
 12.1 the M10 object and namespace family that replaces it - the
 `namespace-selftest` acceptance image builds that family now (work
 package 42a) and production switches over in 42b; section 14 is the M10
@@ -157,7 +157,7 @@ boundary once the foreground enables maskable interrupts:
 
 ## 8. M6 native syscalls
 
-M6 implements the first real services behind the unchanged gate.  The
+M6 implements the first real drivers behind the unchanged gate.  The
 entry/return contract of sections 1-3 applies verbatim; only the set of
 syscall numbers and their argument blocks is added.  Package 41 retired
 the three console numbers (see below); `SYS_EXIT` and `SYS_GETINFO`
@@ -177,7 +177,7 @@ All argument blocks must lie inside the caller window `0100h-1FFFh`
 carry set.
 
 Work package 41 removed the three console syscalls: a program's console
-I/O is a client of the console service now (section 13 below), and the
+I/O is a client of the console driver now (section 13 below), and the
 numbers stay reserved - a stale caller gets `ZOS_ENOSYS` instead of
 writing somewhere unexpected.
 
@@ -207,9 +207,9 @@ Errors use the shared errno values in `abi/zos/errno.h`
 words in `HL`; a bad pointer range is `ZOS_EFAULT`, a bad argument block
 or length is `ZOS_EINVAL`.
 
-Native programs use `user/sdk/include/zos/console.h` (`zex_exit`,
-`zex_getinfo` and the console functions), which wraps these numbers and
-the console service protocol with the private SDCC convention; programs
+Native programs use `user/sdk/include/zos/console.h` (`exit`,
+`getinfo` and the console functions), which wraps these numbers and
+the console driver protocol with the private SDCC convention; programs
 never call `RST 30h` directly unless they re-implement that convention.
 
 Validation: `make subsystem-selftest` runs `zextest.zex` from ROMFS in two
@@ -219,11 +219,11 @@ the raw-return fault path and the malformed-ZEX matrix.  The physical
 gate is `make smoke-hardware-m6 SERIAL_PORT=/dev/ttyUSB0` with the
 transcript expectations pinned in `tools/serial_smoke.py`.
 
-## 9. M7 diagnostic services
+## 9. M7 diagnostic drivers
 
-M7 adds six recovery/diagnostic services behind the unchanged gate.
+M7 adds six recovery/diagnostic drivers behind the unchanged gate.
 They exist for the native monitor (and, later, the M11 diagnostic
-suite); ordinary programs keep to the ordinary services and never gain
+suite); ordinary programs keep to the ordinary drivers and never gain
 bank-7 access through them.  The boundary is architectural, not
 hardware-enforced (the Z80 has no privilege mode).
 
@@ -241,7 +241,7 @@ hardware-enforced (the Z80 has no privilege mode).
 Argument blocks observe the section 8 window rule (`0100h-1FFFh`); the
 load/validation sequence is the same.  Every failure is side-effect
 free (no bank content, latch, or process bookkeeping changes) and every
-service restores the exact active latch: memory transfers reuse the
+driver restores the exact active latch: memory transfers reuse the
 checked M6 bank-copy gate, and the port helpers never touch the latch.
 
 Memory access rules:
@@ -285,7 +285,7 @@ in `HL`:
 
 The packed numbers and block layouts are declared in
 `abi/zos/diag.h` (the single public source) and mirrored by the SDK's
-`user/sdk/include/zos/diag.h` (`zex_diag_*` gate wrappers in
+`user/sdk/include/zos/diag.h` (`diag_*` gate wrappers in
 `user/sdk/src/diaggate.asm`); host tests pin the two headers
 and the assembly wrapper constants together.
 
@@ -298,7 +298,7 @@ layout and its source/map freedom from kernel/serial dependencies.  The
 physical gate is `make smoke-hardware-m7 SERIAL_PORT=/dev/ttyUSB0` (see
 `docs/monitor.md`).
 
-## 10. M9 native filesystem services
+## 10. M9 native filesystem drivers
 
 M9 (package 27) exposes the VFS to native programs behind the unchanged
 gate.  The family is `10h-1Fh`; argument blocks are declared in
@@ -350,7 +350,7 @@ Rules:
 - M9 has no `SYS_FS_STATFS` and no truncate-to-arbitrary-size; truncation to
   zero is `SYS_FS_OPEN` with `ZFS_O_TRUNC`.
 - Before the VFS READY phase every `FS_*` call returns `ZOS_EBUSY`; every
-  service validates its complete block before any state change.
+  driver validates its complete block before any state change.
 
 Errors use the shared values in `abi/zos/errno.h`; M9 adds
 `ZOS_EEXIST (10h)`, `ZOS_ENOTDIR (11h)`, `ZOS_EISDIR (12h)`,
@@ -360,15 +360,15 @@ descriptor-pool or provider open-handle exhaustion, distinct from
 `ZOS_ENOSPC` (storage full).
 
 Native programs use the wrappers in `user/sdk/include/zos/fs.h`
-(`zos_open`, `zos_close`, `zos_read`, `zos_write`, `zos_seek`, `zos_stat`,
-`zos_opendir`, `zos_readdir`, `zos_closedir`, `zos_mkdir`, `zos_rmdir`,
-`zos_unlink`, `zos_rename`, `zos_chdir`, `zos_getcwd`, `zos_sync`).  They
+(`open`, `close`, `read`, `write`, `seek`, `stat`,
+`zos_opendir`, `zos_readdir`, `zos_closedir`, `mkdir`, `rmdir`,
+`unlink`, `rename`, `chdir`, `getcwd`, `sync`).  They
 take NUL-terminated strings, reject a string over 127 bytes (or an
 empty/null one) locally with `-ZOS_EINVAL`, and return the negated native
 error code on failure.
 
 Validation: `make fs-selftest` builds the M10 outcome image (the
-filesystem driver serving `/FS`, ROMFS at `/SYSTEM`) and replays it in the
+filesystem driver serving `/fs`, ROMFS at `/system`) and replays it in the
 Z80 simulator with the host FS2 peer serving the card
 (`tests/test_fs_selftest_sim.py`): every outcome line, the pinned check
 count, the card-absent run and the handle-release run.  The physical gate
@@ -397,7 +397,7 @@ Rules:
   the caller buffer window `0100h-DFFFh`, copied into the VFS workspace's
   path view in the fixed core and resolved against the calling process'
   CWD.  The bind hands that address to whichever provider owns the name,
-  so the staging is provider-facing memory: a bank-6 provider (the `/FS`
+  so the staging is provider-facing memory: a bank-6 provider (the `/fs`
   driver) dereferences it while its own window is open and could not see
   the cold half (architecture 36.5's buffer rule).  Work package 45b
   correction 01 moved it here from a bank-7 `_DATA` buffer; the card
@@ -423,7 +423,7 @@ Rules:
 - Nesting is bounded by `ZOS_EXEC_MAX_DEPTH` (4) user processes in one
   synchronous chain; the kernel launcher is not one of them.  A
   suspension needs at most `ZOS_EXEC_FRAME_SAVE` gate-stack bytes
-  (`include/zephyros/process.h`), which the launch gate copies out of the
+  (`kernel/include/process.h`), which the launch gate copies out of the
   single common gate stack and restores before the parent's
   `SYS_EXEC` returns.
 - Past the suspension point nothing can fail: every allocating or
@@ -449,11 +449,11 @@ Every program - including the kernel-launched one - gets a valid block;
 a program with no arguments sees version 1 and `tail_length` 0.  The
 kernel never parses the tail.  The block lives below the `0100h` syscall
 buffer window, so a program must copy the tail into its own data before
-passing it to a syscall (the runtime `zos_args()` accessor returns the
-block, and `zos_split()` parses a copy).  Programs that ignore `HL` are
+passing it to a syscall (the runtime `startup()` accessor returns the
+block, and `splitargs()` parses a copy).  Programs that ignore `HL` are
 unaffected.  The entry glue that preserves `HL` is the SDK's crt0
 (`user/sdk/src/crt0.asm`, entry symbol `zos_entry`): it stores the block
-for `zos_args()` and never modifies it, so the kernel's copy stays valid.
+for `startup()` and never modifies it, so the kernel's copy stays valid.
 
 Error mapping (carry set, `A` = `ZOS_E*`, nothing allocated):
 
@@ -471,7 +471,7 @@ On success carry is clear and `HL` holds the child's exit status; the
 result is not a file descriptor and there is no result block.
 
 Native programs use `user/sdk/include/zos/process.h`
-(`zos_exec(const char *path, const char *args)`), which takes the
+(`run(const char *path, const char *args)`), which takes the
 NUL-terminated path and raw tail, rejects a path over 127 bytes or a tail
 over 125 bytes (or an empty/null path) locally with `-ZOS_EINVAL`, and
 returns the child's status or the negated native error code.  A NULL or
@@ -497,11 +497,11 @@ Implementation notes:
   region either - mode 10 maps it just as mode 11 does - so nothing is
   placed there for safety.
 
-Validation: the geometry is pinned by `include/zephyros/process.h`
+Validation: the geometry is pinned by `kernel/include/process.h`
 (`ZOS_EXEC_MAX_DEPTH`, `ZOS_EXEC_FRAME_SAVE` with its static asserts) and
 by `kernel/process/launch.asm`; the nested exec runs in the M10 outcome
 image (`make fs-selftest`), where the boot program `SYS_EXEC`s
-`/SYSTEM/fs_child.zex` and checks the child's tail, stdout, exit status
+`/system/fs_child.zex` and checks the child's tail, stdout, exit status
 and the release of the handles it leaked
 (`tests/test_fs_selftest_sim.py`).  The physical gate is
 `make smoke-hardware-fs SERIAL_PORT=/dev/ttyUSB0`.
@@ -518,8 +518,8 @@ and the release of the handles it leaked
                      -> HL = the IPC status (the same value as `status`)
 ```
 
-The resident-service substrate (architecture sections 36.7-36.12) is the
-nucleus mechanism behind these two numbers: services export *endpoints*
+The resident-driver substrate (architecture sections 36.7-36.12) is the
+nucleus mechanism behind these two numbers: drivers export *endpoints*
 identified by a (class, instance) pair, a client holds an opaque handle
 returned by the lookup, and a call is one bounded 32-byte frame copied in
 at entry and back on reply.  The numbers, the frame layout, the argument
@@ -540,7 +540,7 @@ Result conventions:
   means "not registered" and `args->version` is filled on success.
   A block outside the window is a carried `ZOS_EINVAL`.
 - `SYS_IPC_CALL` returns the IPC *status* in `HL` with carry clear.  The
-  status is the service's own result (0 or positive), or a negated
+  status is the driver's own result (0 or positive), or a negated
   `ZOS_E*` for an IPC-layer refusal: unknown or stale handle
   (`ZOS_EINVAL`), forged or released descriptor id (`ZOS_EINVAL`),
   `offset + length` past the captured descriptor (`ZOS_EINVAL`),
@@ -551,9 +551,9 @@ Result conventions:
   too.  A carried `ZOS_EINVAL` means the request never reached the IPC
   layer: block outside the window, `frame_length` 0 or above 32, or a
   non-zero `reserved` byte.
-- The IPC status is a *protocol* result, not a syscall result: a service
+- The IPC status is a *protocol* result, not a syscall result: a driver
   returning a negative value is a normal reply, exactly like a diagnostic
-  or filesystem service error, and carry stays clear.
+  or filesystem driver error, and carry stays clear.
 
 Descriptor convention (one optional caller buffer per call, named by
 `buffer`/`length`/`direction`):
@@ -566,12 +566,12 @@ Descriptor convention (one optional caller buffer per call, named by
   `ZOS_USER_BUFFER_BASE`/`ZOS_USER_BUFFER_END` (the caller's own bank,
   `0100h-DFFFh`), the common window (`E000h-FFFFh`, which every mapping
   shows at the same address) and `ZOS_IPC_DESC_MAX` (4096), and hands the
-  service a small id.  The caller's *raw address is never visible to a
-  service*: services reach the buffer only through the restricted copy
+  driver a small id.  The caller's *raw address is never visible to a
+  driver*: drivers reach the buffer only through the restricted copy
   calls (`copy_in`/`copy_out`/`move`), and every use re-checks
   `offset + length` against the captured length.
 - A descriptor id is valid only for calls deeper than its capture level,
-  so a caller's ids stay live down the call chain while a service can
+  so a caller's ids stay live down the call chain while a driver can
   never name its own level, another level's id, or a forged one.
 - With a non-zero saved page, a buffer wholly inside the mode-10 aperture
   (`8000h-BFFFh`) names the far bank `7 - P` (architecture 36.17); a
@@ -584,13 +584,13 @@ three paths, and only the first two are fast:
 | Path | Condition | Mechanism |
 |------|-----------|-----------|
 | A | caller buffer in `0000h-1FFFh` or in the common window | one `LDIR` in mode 11 |
-| B | caller buffer in the caller's bank, clear of `8000h-BFFFh`, service buffer in bank 6's `8000h-BFFFh` | one `LDIR` in mode 10 over the caller's bank with page 1: the aperture shows bank 6 at the service's own address. Exact latch restore, interruptible (a delivery inside the window pushes onto a common reservation, and the IRQ gate restores the interrupted mode-10 latch) |
-| C | everything else, including a service buffer outside `8000h-BFFFh` | chunked through the common application-bank copy gate; counted as slow |
+| B | caller buffer in the caller's bank, clear of `8000h-BFFFh`, driver buffer in bank 6's `8000h-BFFFh` | one `LDIR` in mode 10 over the caller's bank with page 1: the aperture shows bank 6 at the driver's own address. Exact latch restore, interruptible (a delivery inside the window pushes onto a common reservation, and the IRQ gate restores the interrupted mode-10 latch) |
+| C | everything else, including a driver buffer outside `8000h-BFFFh` | chunked through the common application-bank copy gate; counted as slow |
 
 Path B's page 1 is nucleus-internal: an application never receives a
 latch for bank 6, and the primitive's request block, saved latch/SP and
 interrupt-push reservation are all common-resident, because mode 10 does
-not map bank 7.  A service that is the source or target of
+not map bank 7.  A driver that is the source or target of
 `copy_in`/`copy_out` should therefore place its I/O buffer, cache or
 staging block in bank 6's `8000h-BFFFh`; one that does not still works,
 on path C, and the nucleus counts it (the three path counters are read
@@ -599,19 +599,20 @@ out of the image by the acceptance replay).
 Nesting and re-entrancy: `ZOS_IPC_MAX_NESTING` is 4 (the outermost call
 plus three nested levels).  An endpoint registered with
 `ZOS_IPC_EP_REENTRANT` may be re-entered; every other endpoint refuses a
-call that arrives while it is active with `ZOS_EBUSY`.  A service executes
-on the fixed service stack (`ZOS_SERVICE_STACK_BASE`, 512 bytes) with the
-service page mapped, so its code, its data and its stack are all fixed or
+call that arrives while it is active with `ZOS_EBUSY`.  A driver executes
+on the fixed driver stack (`ZOS_DRIVER_STACK_BASE`, 512 bytes) with the
+driver page mapped, so its code, its data and its stack are all fixed or
 bank 6; the nucleus keeps its own stack, the common gate stack and the
 IRQ vectoring.  An IRQ delivered while a call is in progress runs the
-service handler through the restricted API (`ipc_irq_active`; no register,
+driver handler through the restricted API (`ipc_irq_active`; no register,
 lookup, call or copy) on the ISR stack and restores the interrupted latch
 exactly, so the call's frame and mapping survive.
 
 Native programs use the wrappers in `user/sdk/include/zos/ipc.h`:
-`zos_ipc_lookup(class, instance)`, `zos_ipc_lookup_version(...)`,
-`zos_ipc_call(handle, struct zos_ipc_request *)` and the raw
-`zos_ipc_raw_call(struct zos_ipc_call_req *)` the tests drive directly.
+`zos_ipc_lookup(class, instance)`, `zos_ipc_lookup_version(...)` and
+`call(handle, struct zos_ipc_request *)`; the raw
+`zos_ipc_raw_call(struct zos_ipc_call_req *)` the tests drive directly is
+SDK-private (`user/sdk/src/zos_internal.h`, package 46 T6).
 The lookup wrapper caches up to `ZOS_IPC_CACHE_ENTRIES` (8) (class,
 instance, handle) triples, so a repeated discovery costs no syscall; the
 cache is an optimisation only, never a correctness dependency (the kernel
@@ -619,25 +620,25 @@ owns the endpoint table and handles are permanent).
 
 Package 41 moved the substrate from `test_link` into production: the
 fixed core links it (2,562 bytes of code and data), the cold half links
-the syscall bodies and the resident service loader, and every production
-image boots its service set from the store's `services.man`.  The
+the syscall bodies and the resident driver loader, and every production
+image boots its driver set from the store's `drivers.man`.  The
 `ZOS_TARGET_TEST_BUILD` routing seam in `kernel/syscall.c` is gone - the
 IPC pair is dispatched like the filesystem family, in
 `kernel/syscall/ipc.c`.
 
 Validation: `make ipc-selftest` builds the production boot path with the
-substrate linked into the fixed core, the six synthetic bank-6 services
+substrate linked into the fixed core, the six synthetic bank-6 drivers
 placed by the cold loader and the SDK *probe* program booting as
-`/SYSTEM/ipccopy.zex`.  The probe names five caller-buffer addresses
+`/system/ipccopy.zex`.  The probe names five caller-buffer addresses
 (`0100h`, `3000h`, `7000h`, `C000h`, `9000h`) in the chained 512-byte read
-and a single `copy_out`, runs the service-side slow case and a path-B copy
+and a single `copy_out`, runs the driver-side slow case and a path-B copy
 with the timer armed, then starts the conformance client
-(`/SYSTEM/ipc.zex`) and folds its 55-check verdict into its own line
+(`/system/ipc.zex`) and folds its 55-check verdict into its own line
 (`ipccopy: PASS`).  `tests/test_ipc_selftest_sim.py` boots the image once
 and asserts the outcomes: both verdicts and their check counts, every
 phase marker on the wire, the resolver's copy-path counters (one per
 outcome, so every path provably carried bytes), the reserved-stack
-high-water marks, the console bytes of the service-side slow case, the
+high-water marks, the console bytes of the driver-side slow case, the
 loader's placement report against the packer's plan, the one-shot boot
 segments, and the caller's mapping restored at the end of the run.
 Work package 42d replaced the per-instruction tracer that measured
@@ -646,7 +647,7 @@ those figures are in the package-42b and package-42e records, and the
 client and the probe verify every path from the inside before printing
 their verdicts.  `tests/test_ipc_selftest.py` pins the ABI numbers, the
 residency classification, the client- and probe-window layouts and the
-service I/O area rule.  The production image links none of
+driver I/O area rule.  The production image links none of
 it before package 41, so it stayed byte-identical until then
 (`config/residency.json` classified the objects as `test_link`).
 
@@ -680,7 +681,7 @@ apply to a handle exactly as they did to a looked-up endpoint.  What
 changes is only what a handle *is*: one global, owner-tagged table (the
 extended M9 descriptor pool, `VFS_FD_MAX` entries), where each entry
 records the owner PID, the 8-bit protocol type, the endpoint (a bank-6
-service endpoint or a nucleus one) and the provider's own object identity.
+driver endpoint or a nucleus one) and the provider's own object identity.
 `bind` never returns `ZOS_HANDLE_STDOUT` (1) or `ZOS_HANDLE_STDIN` (2);
 those two are the *standard handles*, bound at process start to the
 `/dev/console` publication when the build has one, and re-created for a
@@ -690,8 +691,8 @@ every handle the process owns.
 Paths are resolved by the root router: `bind`/`ns_enum` normalize the
 caller's path (`vfs_path_normalize_at`, relative to the process CWD) and
 route the first component, case-insensitively, to one of the three static
-nucleus providers - `/FS` (the filesystem driver; `bind` below it returns
-`-ZOS_ENODEV` until package 42b), `/SYSTEM` (ROMFS, usable before any
+nucleus providers - `/fs` (the filesystem driver; `bind` below it returns
+`-ZOS_ENODEV` until package 42b), `/system` (ROMFS, usable before any
 driver) and `/dev` (the host-built publication table).  A provider owns
 everything below its root and the VFS does not interpret it.  `/` is a
 directory of those three roots, not a provider: a root-level name has no
@@ -709,7 +710,7 @@ A ROMFS bind returns the type `ZOS_TYPE_FILE` and an in-process FILE
 handle served by a nucleus endpoint through the same call path as a bank-6
 endpoint, with the one ROMFS reader (`ZFILE_OP_READ`, `ZFILE_OP_SEEK`,
 `ZFILE_OP_META`; `ZFILE_OP_WRITE` is `-ZOS_EROFS`).  `/dev` names come from
-the publications the packer resolves into each service container and the
+the publications the packer resolves into each driver container and the
 loader installs (docs/devices.md, docs/module-format.md).
 
 **Build selection.**  `abi/zos/object.h` defaults `ZOS_NS_HANDLES` to 0:
@@ -719,18 +720,18 @@ is 1 in the `namespace-selftest` acceptance image (`make ns-selftest`,
 work package 42a correction 01), where `kernel/syscall.c` routes 06h-09h
 to the object dispatcher, the SDK is built with the bind/unbind/ns_enum
 wrappers and the standard handles, and the M9 `FS_*` front end still
-served `/SYSTEM` for the legacy path.  Packages 42b/42c then turned the
+served `/system` for the legacy path.  Packages 42b/42c then turned the
 default over and deleted the M9 machinery: the mount table, the provider
 ABI, the `FS_*` front end, the arena and the driver ABI are gone
 (`docs/validation/2026-10-09-m10-namespace-handles.md`,
 `docs/validation/2026-10-09-m10-prune-nucleus.md`), and SIO plus the
-console service are the image's service set.
+console driver are the image's driver set.
 
-Validation: the `namespace-selftest` image boots SIO, the console service
+Validation: the `namespace-selftest` image boots SIO, the console driver
 and a synthetic publisher whose manifest declares `/dev/input/keyboard`
-and `/dev/video`, then an ordinary SDK client (`/SYSTEM/ns.zex`) that
+and `/dev/video`, then an ordinary SDK client (`/system/ns.zex`) that
 binds `/dev` objects and their grouping names, calls the publisher through
-the handle, reads and seeks `/SYSTEM/services.man`, exhausts and releases
+the handle, reads and seeks `/system/drivers.man`, exhausts and releases
 the handle table, pages the three namespaces and `SYS_EXEC`s a child that
 proves the inherited standard handles.  `tests/test_ns_selftest.py` pins
 the ABI, the container publication tables and the residency
@@ -740,22 +741,22 @@ compares the transcript with the packed store.
 ## 13. M10 console client (no syscall)
 
 
-A program's console I/O is not a syscall any more: `user/sdk/src/console_service.c`
+A program's console I/O is not a syscall any more: `user/sdk/src/console_proto.c`
 speaks the protocol in `abi/zos/protocol.h` through the standard handles
 every process starts with (work packages 41-42b).
 
-| SDK function | console service operation | descriptor |
+| SDK function | console driver operation | descriptor |
 | --- | --- | --- |
-| `zex_write(buf, len)` | `ZCONSOLE_OP_WRITE` | IN: the caller's buffer |
-| `zex_read(buf, len)` | `ZCONSOLE_OP_READ` (non-blocking drain) | OUT: the caller's buffer |
-| `zex_poll()` | `ZCONSOLE_OP_POLL` | none |
-| `zex_putc(ch)` (used by `zos_putc`) | `ZCONSOLE_OP_PUTC` | none |
+| `console_write(buf, len)` | `ZCONSOLE_OP_WRITE` | IN: the caller's buffer |
+| `console_read(buf, len)` | `ZCONSOLE_OP_READ` (non-blocking drain) | OUT: the caller's buffer |
+| `console_poll()` | `ZCONSOLE_OP_POLL` | none |
+| `putchar(ch)` | `ZCONSOLE_OP_PUTC` | none |
 
 The handle is looked up once and cached; a program whose store lists no
-console service sees `-ZOS_ENOENT` from every one of them.  `zos_puts`,
-`zos_console_write`, `zos_getc` and `zos_read_line` are unchanged on top
+console driver sees `-ZOS_ENOENT` from every one of them.  `console_puts`,
+`console_write`, `getchar` and `console_readline` are unchanged on top
 of these four.  The early console and the panic path remain nucleus-only
-and syscall-free: a boot with no service at all still reports.
+and syscall-free: a boot with no driver at all still reports.
 
 The nucleus binds `/dev/console` to handle 1 (stdout) and
 handle 2 (stdin) at process start, an exec'd child receives its own pair,
@@ -815,8 +816,8 @@ only at exit.
 *execution-latch value* that opens that aperture onto the object together
 with the object's aperture address (`8000h` in the lower slice, `A000h` in
 the upper one).  The SDK helpers are register-only and take no syscall:
-`zos_aperture_open(token)` writes the token to the memory-control port and
-returns the previous latch, `zos_aperture_close(saved)` writes that latch
+`aperture_open(token)` writes the token to the memory-control port and
+returns the previous latch, `aperture_close(saved)` writes that latch
 back.  Only the caller's own mappable objects can be mapped - a stale,
 foreign or non-mappable handle is `-ZOS_EINVAL` - and every object bank
 maps to a page field of 2..7, so no token ever names bank 6 or bank 7.
@@ -866,7 +867,7 @@ offset 6  u16  reserved  0
   linked at `8000h`, the loader places it in the aperture slice of its own
   auxiliary bank (one far-code segment per bank) and it executes in place
   there.  `SYS_SEG_MAP` returns the token that opens it.  The SDK's
-  `zos_far_call` is the far-call helper on top of it.
+  `farcall` is the far-call helper on top of it.
 - Every segment of a loaded container is placed by the loader or the exec
   fails and rolls back, so a live segment always reports `LOADED`.
 - The ids are the calling process's own container: another process's
@@ -890,9 +891,9 @@ mapped) or a bad argument block is `-ZOS_EINVAL`.  A caller address in
 `8000h-BFFFh` while the aperture is open names the far bank by the buffer
 identity rule (section 14), so a syscall issued from far code may name a
 buffer inside the aperture.  The SDK opens and restores the aperture for
-one call: `zos_far_call(segment, entry, a, b)`
+one call: `farcall(segment, entry, a, b)`
 (`user/sdk/include/zos/seg.h`).
 
-The SDK wrappers are `zos_seg_info(segment, &info)` and
-`zos_seg_map(segment)`, which return 0 or `-errno` (the token for
-`zos_seg_map`).
+The SDK wrappers are `seginfo(segment, &info)` and
+`segmap(segment)`, which return 0 or `-errno` (the token for
+`segmap`).

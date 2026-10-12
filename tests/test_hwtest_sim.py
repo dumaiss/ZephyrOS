@@ -1,7 +1,7 @@
 """Hardware exerciser acceptance replay (work package 45b): the
 production image, with a card and without one.
 
-Both replays type the owner's line - `X /SYSTEM/hwtest.zex` - into the
+Both replays type the owner's line - `X /system/hwtest.zex` - into the
 running production system, once over the serial command lane
 (`/dev/serial/0`, the lane `tools/serial_smoke.py --mode hwtest` drives)
 and once over the HID keyboard lane the V9958 console reads (work
@@ -11,7 +11,7 @@ reported through it, that the monitor came back to the prompt, and that
 the card is exactly as the run found it.
 
 A third replay copies one of the store's programs onto the card and runs
-it from there through the monitor (`X /FS/FS_CHILD.ZEX tail-42`).  That
+it from there through the monitor (`X /fs/FS_CHILD.ZEX tail-42`).  That
 is the path correction 01 repaired: `SYS_EXEC` used to stage the caller's
 path in bank-7 `_DATA`, inside the window the bank-6 filesystem provider
 replaces, so the provider never resolved it and the monitor answered
@@ -40,7 +40,7 @@ from replay import ConsoleReplay  # noqa: E402
 from z80sim import IocCommandPeer  # noqa: E402
 
 # The FS2 requests the card program's load must produce: the open, its
-# reads and the close (see tools/z80sim.py's service constants).
+# reads and the close (see tools/z80sim.py's driver constants).
 CMD_FS2_OPEN_RO = 0x35
 CMD_FS2_READ = 0x36
 CMD_FS2_CLOSE = 0x37
@@ -49,8 +49,8 @@ IMAGE_SUBDIR = "build"
 IMAGE_NAME = "zephyros.bin"
 
 # The line the owner types and the lane echo it produces.
-COMMAND = b"X /SYSTEM/hwtest.zex\r"
-ECHO = b"X /SYSTEM/hwtest.zex\r\n"
+COMMAND = b"X /system/hwtest.zex\r"
+ECHO = b"X /system/hwtest.zex\r\n"
 
 # The runner's own contract, on the lane it mirrors to.  The summary is
 # the stop marker in either verdict.
@@ -76,7 +76,7 @@ CONSOLE_ABSENT_EVIDENCE = ("xmem-selftest: 61 checks, 0 failures",
 
 # The card the replays load: one file outside the scratch directory,
 # which the exerciser must find untouched.  Everything the stages write
-# lives below `/FS/HWTEST` and is removed again.
+# lives below `/fs/HWTEST` and is removed again.
 KEEP_NAME = ("KEEP.TXT",)
 KEEP_CONTENT = b"keep me on the card"
 
@@ -132,7 +132,7 @@ class HwtestReplay(ConsoleReplay, unittest.TestCase):
 
 
 class TestExerciserWithACard(HwtestReplay):
-    """`X /SYSTEM/hwtest.zex` typed on the serial command lane."""
+    """`X /system/hwtest.zex` typed on the serial command lane."""
 
     def test_it_passes_and_leaves_the_card_as_it_found_it(self):
         z = self.start(card=True)
@@ -213,7 +213,7 @@ class TestMonitorRunsAStoreProgram(HwtestReplay):
         # A stored program with a tail: the child reports the tail it
         # received and exits 42, which the monitor must print as its
         # u16 status before prompting again.
-        self.send_line(z, "X /SYSTEM/fs_child.zex tail-42", "fs-child: PASS")
+        self.send_line(z, "X /system/fs_child.zex tail-42", "fs-child: PASS")
         self.run_to(z, "exec: exit status 0x002A")
         trace = self.trace(z)
         self.assertIn('fs-child: tail "tail-42" argc 1', trace)
@@ -230,7 +230,7 @@ class TestMonitorRunsAProgramFromTheCard(HwtestReplay):
         z = self.start(card=True, extra_files={"FS_CHILD.ZEX": payload})
         peer = z.ioc_peer
 
-        self.send_line(z, "X /FS/FS_CHILD.ZEX tail-42", "fs-child: PASS")
+        self.send_line(z, "X /fs/FS_CHILD.ZEX tail-42", "fs-child: PASS")
         self.run_to(z, "exec: exit status 0x002A")
         trace = self.trace(z)
         self.assertIn('fs-child: tail "tail-42" argc 1', trace)

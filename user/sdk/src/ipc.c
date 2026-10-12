@@ -9,6 +9,8 @@
 
 #include "zos.h"
 
+#include "zos_internal.h"
+
 /* The syscall argument blocks live in the fixed _ZOS_SDK_DATA area
  * (runtime.asm and nsgate.asm).  They are declared here with their ABI
  * types so the C marshalling stays checked, while the explicitly linked
@@ -51,7 +53,7 @@ static unsigned int src_path_len(const char *path)
 	return n;
 }
 
-int zos_ipc_bind(const char *path, unsigned int flags, unsigned char *type)
+int bind(const char *path, unsigned int flags, unsigned char *type)
 {
 	unsigned int length = src_path_len(path);
 	int result;
@@ -74,7 +76,7 @@ int zos_ipc_bind(const char *path, unsigned int flags, unsigned char *type)
 	return result;
 }
 
-int zos_ipc_unbind(unsigned char handle)
+int unbind(unsigned char handle)
 {
 	int result;
 
@@ -86,7 +88,7 @@ int zos_ipc_unbind(unsigned char handle)
 	return 0;
 }
 
-int zos_ns_enum(const char *path, unsigned int *cookie,
+int list(const char *path, unsigned int *cookie,
 		struct zos_ns_entry *out, unsigned int max_entries)
 {
 	unsigned int length = src_path_len(path);
@@ -112,7 +114,7 @@ int zos_ns_enum(const char *path, unsigned int *cookie,
 	return (int)zos_ns_enum_block.count;
 }
 
-int zos_chdir(const char *path)
+int chdir(const char *path)
 {
 	unsigned int length = src_path_len(path);
 	int result;
@@ -129,7 +131,7 @@ int zos_chdir(const char *path)
 	return 0;
 }
 
-int zos_getcwd(char *buffer, unsigned int length)
+int getcwd(char *buffer, unsigned int length)
 {
 	int result;
 
@@ -145,7 +147,7 @@ int zos_getcwd(char *buffer, unsigned int length)
 	return result;
 }
 
-int zos_ipc_call(unsigned char handle, struct zos_ipc_request *req)
+int call(unsigned char handle, struct zos_ipc_request *req)
 {
 	int result;
 

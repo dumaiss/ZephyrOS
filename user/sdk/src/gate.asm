@@ -2,8 +2,8 @@
 ; ZephyrOS libzos: exit and getinfo gate wrappers.
 ;
 ; These two are the syscalls the SDK still marshals itself (the console ones
-; were removed in package 41 - user/sdk/src/console_service.c speaks the
-; console service protocol instead).  Converts the private SDCC Z80 calling
+; were removed in package 41 - user/sdk/src/console_proto.c speaks the
+; console driver protocol instead).  Converts the private SDCC Z80 calling
 ; convention (first 16-bit argument in HL, second in DE; 16-bit return in
 ; DE) to the native register ABI: A = syscall number, HL = argument block,
 ; carry clear with HL = result or carry set with A = errno.  The argument
@@ -16,8 +16,8 @@
 
 	.module zos_gate
 
-	.globl _zex_exit
-	.globl _zex_getinfo
+	.globl _exit
+	.globl _getinfo
 	.globl _zex_runtime_error
 	.globl _zos_scratch
 
@@ -26,8 +26,8 @@ SYS_GETINFO = 0x04
 
 	.area _CODE
 
-; void zex_exit(unsigned int status);  HL = status; does not return.
-_zex_exit::
+; void exit(unsigned int status);  HL = status; does not return.
+_exit::
 	ld	(_zos_scratch),hl
 	ld	a,#SYS_EXIT
 	ld	hl,#_zos_scratch
@@ -38,8 +38,8 @@ _zex_exit::
 	halt
 	jr	001$
 
-; int zex_getinfo(struct zos_info_record *record);  HL = record.
-_zex_getinfo::
+; int getinfo(struct zos_info_record *record);  HL = record.
+_getinfo::
 	ld	(_zos_scratch+8),hl
 	ld	a,#SYS_GETINFO
 	ld	hl,#_zos_scratch

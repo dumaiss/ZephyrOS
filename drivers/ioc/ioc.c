@@ -1,6 +1,6 @@
 /* ZephyrOS IOC command + bulk transport driver implementation (drivers/ioc/).
  *
- * The class surface lives in include/zephyros/ioc.h.  This file owns the
+ * The class surface lives in drivers/include/ioc.h.  This file owns the
  * command exchange (sequence stamping, exact common-packet construction
  * and CRC, reply capture/validation) and the READY/DONE bulk admission
  * state.  All SIO1 port I/O and the timing-critical streaming loops live
@@ -34,14 +34,14 @@
  *     bounded LINK_SYNC sequence before normal traffic.
  *
  * Every wait is bounded and every exit restores the exact entry interrupt
- * state.  This source is compiled into the IOC service image; the state
- * below lives in its SERVICE_IO area.  The driver reaches the nucleus
- * only through the service bootstrap interface.
+ * state.  This source is compiled into the IOC driver image; the state
+ * below lives in its DRIVER_IO area.  The driver reaches the nucleus
+ * only through the driver bootstrap interface.
  */
 
-#include "zephyros/ioc.h"
+#include "ioc.h"
 
-#include "zephyr80/hardware.h"
+#include "hardware.h"
 
 #include "ioc_driver.h"
 #include "ioc_proto.h"

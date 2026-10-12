@@ -6,7 +6,7 @@
  * production dispatcher (kernel/syscall.c) contains none of this.
  */
 
-#include "zephyros/kernel.h"
+#include "kernel.h"
 
 #include "syscall_selftest.h"
 

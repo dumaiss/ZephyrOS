@@ -2,7 +2,7 @@
 
 This directory holds the ZephyrOS *demo* programs: small, complete SDK
 programs that are written against `user/sdk/` alone and are **not** part of
-the production `/SYSTEM` set (architecture 32.14 keeps the shipped system
+the production `/system` set (architecture 32.14 keeps the shipped system
 image minimal).
 
 Every demo is one `zex_program` line in [Makefile](./Makefile):
@@ -20,7 +20,7 @@ $(eval $(call zex_program,fardemo,user/helloworld,fardemo.c,\
 * `fardemo.c` + `fardemo_far.c` — the far-code demo (work package 44b).
   `fardemo_far.c` is compiled with `--codeseg FAR_CODE` through `FAR=` and
   linked at `8000h`, so it becomes the program's `FAR_CODE` segment;
-  `fardemo.c` maps it with `zos_seg_map`, calls it through `zos_far_call`
+  `fardemo.c` maps it with `segmap`, calls it through `farcall`
   and prints the token, the far line, the returned latch/value and `PASS`.
   The far half prints from a literal inside the aperture, calls back into
   primary code and issues its own console syscall, so the demo covers the
@@ -36,17 +36,17 @@ make helloworld-image         # separate build dir, boots it end to end
 
 The manifest [manifest.json](./manifest.json) is the production recovery
 manifest plus `hello.zex` and `fardemo.zex`, and `make helloworld-image`
-builds in `build-helloworld/` with `ZOS_BOOT_PROGRAM=/SYSTEM/hello.zex`.
+builds in `build-helloworld/` with `ZOS_BOOT_PROGRAM=/system/hello.zex`.
 Booting the demo therefore needs **no kernel change**: the program is
 stored in the recovery store, the launcher starts it like any other ZEX,
 and the console shows its output followed by the launcher's exit report.
 
 Booting `fardemo.zex` instead is one override (the `helloworld-image`
-recipe hardcodes `/SYSTEM/hello.zex`):
+recipe hardcodes `/system/hello.zex`):
 
 ```sh
 make BUILD=build-fardemo ZOS_HELLOWORLD_IMAGE=1 \
-	ZOS_BOOT_PROGRAM=/SYSTEM/fardemo.zex \
+	ZOS_BOOT_PROGRAM=/system/fardemo.zex \
 	build-fardemo/zephyros-helloworld.bin
 ```
 

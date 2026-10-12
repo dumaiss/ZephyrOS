@@ -1,6 +1,6 @@
 /* ZephyrOS HID keyboard/text driver implementation (drivers/hid/).
  *
- * The M8 `hid` driver as a bank-6 service image: the 16-byte local ring,
+ * The M8 `hid` driver as a bank-6 driver image: the 16-byte local ring,
  * the fetch-on-doorbell engine, and the stuck-doorbell penalty behind the
  * HID protocol of abi/zos/protocol.h (class ZOS_CLASS_HID, instance 0,
  * version ZOS_PROTOCOL_VERSION).
@@ -44,24 +44,24 @@
  * The whole driver is hot: the engine is reachable after boot and its
  * bring-up is dependency discovery, which needs the bootstrap interface
  * (mode-11 window) and therefore cannot live in the boot tier.  The
- * service declares its IOC dependency in the image metadata, so a
+ * driver declares its IOC dependency in the image metadata, so a
  * missing IOC image is a loader boot error before any HID byte runs.
  */
 
-#include "zephyros/errno.h"
-#include "zephyros/ipc.h"
+#include "zos/errno.h"
+#include "driver.h"
 
 #include "zos/protocol.h"
 
-#include "zephyros/ioc_protocol.h"
+#include "ioc_protocol.h"
 
 #include "hid_driver.h"
 
 struct zhid_state hid_state;
 
-static const struct ipc_service_api *hid_api;
+static const struct driver_api *hid_api;
 
-/* One command exchange and one reply, through the IOC service endpoint.
+/* One command exchange and one reply, through the IOC driver endpoint.
  * The transport owns framing, CRC and the rolling sequence. */
 static uint8_t hid_fetch(struct zhid_state *state)
 {
@@ -115,7 +115,7 @@ static uint8_t hid_fetch(struct zhid_state *state)
 		return 0u;
 	}
 	/* The translated bytes follow the two DATA head bytes in the reply
-	 * frame the IOC service staged for this call, so the commit is one
+	 * frame the IOC driver staged for this call, so the commit is one
 	 * same-domain copy per ring run - no intermediate frame, and no
 	 * byte-at-a-time index (the container format rejects the
 	 * byte-fragmented address form a byte cursor compiles to). */
@@ -155,7 +155,7 @@ static uint8_t hid_fetch(struct zhid_state *state)
  * when a byte is buffered after the call, 0 otherwise.  Only here (and
  * only while the semantic doorbell is asserted) is any IOC command
  * issued. */
-static uint8_t hid_service(struct zhid_state *state)
+static uint8_t hid_driver(struct zhid_state *state)
 {
 	struct zos_ipc_frame frame;
 	int16_t status;
@@ -209,7 +209,7 @@ int hid_read_text(void *vstate, uint8_t *dst, uint16_t max_len)
 		return (-ZOS_EINVAL);
 	}
 	if (state->count == 0u) {
-		(void)hid_service(state);
+		(void)hid_driver(state);
 	}
 	while (done < max_len && state->count != 0u) {
 		uint16_t tail = state->tail;
@@ -229,7 +229,7 @@ int hid_poll(void *vstate)
 	if (state == (struct zhid_state *)0) {
 		return (-ZOS_ENODEV);
 	}
-	return hid_service(state) != 0u ? 1 : 0;
+	return hid_driver(state) != 0u ? 1 : 0;
 }
 
 int hid_getc(void *vstate)
@@ -242,7 +242,7 @@ int hid_getc(void *vstate)
 		return (-ZOS_ENODEV);
 	}
 	if (state->count == 0u) {
-		(void)hid_service(state);
+		(void)hid_driver(state);
 	}
 	if (state->count == 0u) {
 		return (-ZOS_EAGAIN);
@@ -255,8 +255,8 @@ int hid_getc(void *vstate)
 }
 
 /* READ_TEXT: drain the ring into the caller's descriptor in bounded
- * chunks through the service I/O staging block. */
-static int16_t hid_service_read(struct zos_ipc_frame *frame)
+ * chunks through the driver I/O staging block. */
+static int16_t hid_driver_read(struct zos_ipc_frame *frame)
 {
 	uint16_t offset = frame->arg0;
 	uint16_t length = frame->arg1;
@@ -287,11 +287,11 @@ static int16_t hid_service_read(struct zos_ipc_frame *frame)
 	return (int16_t)done;
 }
 
-int16_t hid_service_dispatch(struct zos_ipc_frame *frame)
+int16_t hid_driver_dispatch(struct zos_ipc_frame *frame)
 {
 	switch (frame->op) {
 	case ZHID_OP_READ_TEXT:
-		return hid_service_read(frame);
+		return hid_driver_read(frame);
 	case ZHID_OP_POLL:
 		return (int16_t)hid_poll(&hid_state);
 	case ZHID_OP_GETC:
@@ -305,7 +305,7 @@ int16_t hid_service_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-uint8_t hid_service_init(const struct ipc_service_boot *boot)
+uint8_t hid_driver_init(const struct driver_boot *boot)
 {
 	uint8_t handle;
 	struct zos_ipc_frame frame;

@@ -51,7 +51,7 @@ static unsigned int zexec_path_len(const char *path)
 	return n;
 }
 
-int zos_exec(const char *path, const char *args)
+int run(const char *path, const char *args)
 {
 	unsigned int n = zexec_path_len(path);
 	unsigned int an = zexec_tail_len(args);

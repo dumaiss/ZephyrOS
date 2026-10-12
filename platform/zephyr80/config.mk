@@ -21,10 +21,16 @@ ZOS_SDCC_OPT := --opt-code-size --max-allocs-per-node 50000
 # including Makefile (the generated catalog headers live there).  abi/
 # holds the public native ABI headers (abi/zos/...) shared by the kernel,
 # modules and native user programs; kernel and module code includes them
-# as "zos/..." (work/28c-m9-user-sdk/WORK.md).
-ZOS_PLATFORM_CFLAGS  = -I abi -I include -I platform -I $(BUILD)
-ZOS_PLATFORM_ASFLAGS = -Iabi -Iplatform
+# as "zos/..." (work/28c-m9-user-sdk/WORK.md).  Package 46 T3 split the
+# audience roots: the nucleus set below plus `-I .` for the kernel/<part>
+# private interfaces (the top-level Makefile's CFLAGS), and the driver
+# set of DRV_CFLAGS/MOD_CFLAGS, which never gets `.`.
+ZOS_PLATFORM_CFLAGS  = -I abi -I kernel/include -I drivers/include \
+                       -I formats/include -I platform/zephyr80/public \
+                       -I platform/zephyr80/private -I $(BUILD)
+ZOS_PLATFORM_ASFLAGS = -Iabi -Iplatform/zephyr80/public \
+                       -Iplatform/zephyr80/private
 
 # Declarative constant files (C / assembly pairs, parity-tested).
-ZOS_PLATFORM_MEMORY_INC := $(ZOS_PLATFORM_DIR)/memory.inc
-ZOS_PLATFORM_IRQ_INC    := $(ZOS_PLATFORM_DIR)/irq.inc
+ZOS_PLATFORM_MEMORY_INC := $(ZOS_PLATFORM_DIR)/private/memory.inc
+ZOS_PLATFORM_IRQ_INC    := $(ZOS_PLATFORM_DIR)/private/irq.inc

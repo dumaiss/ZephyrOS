@@ -18,12 +18,12 @@
  * loaded from the recovery store through VFS, normal console bound).
  */
 
-#include "zephyros/process.h"
+#include "process.h"
 #include "zos/syscall.h"
-#include "service_client.h"
-#include "zephyros/kernel.h"
-#include "zephyros/romfs.h"
-#include "zephyros/errno.h"
+#include "driver_client.h"
+#include "kernel.h"
+#include "romfs.h"
+#include "zos/errno.h"
 #include "kernel/vfs/vfs.h"
 
 #include "process_selftest.h"
@@ -36,7 +36,7 @@
 
 uint8_t process_selftest_result;
 
-/* M9 mounts the recovery store at /SYSTEM.  The acceptance names stay
+/* M9 mounts the recovery store at /system.  The acceptance names stay
  * ROMFS-relative and are prefixed with the mountpoint here. */
 static char process_path[ZOS_PATH_MAX];
 
@@ -111,7 +111,7 @@ static uint8_t zex2_marker_check(uint8_t bank)
 
 static const char *process_vfs_path(const char *name)
 {
-	static const char prefix[] = "/SYSTEM/";
+	static const char prefix[] = "/system/";
 	char *out = process_path;
 	const char *scan;
 
@@ -134,8 +134,8 @@ static void process_put_hex8(uint8_t value)
 {
 	static const char digits[] = "0123456789ABCDEF";
 
-	service_cli_write(digits + ((value >> 4) & 0x0Fu), 1);
-	service_cli_write(digits + (value & 0x0Fu), 1);
+	driver_cli_write(digits + ((value >> 4) & 0x0Fu), 1);
+	driver_cli_write(digits + (value & 0x0Fu), 1);
 }
 
 static void process_put_hex16(uint16_t value)
@@ -149,11 +149,11 @@ static void process_fail(uint8_t code, uint16_t detail)
 	static const char prefix[] = "process selftest: FAIL 0x";
 
 	process_selftest_result = code;
-	service_cli_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
+	driver_cli_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
 	process_put_hex8(code);
-	service_cli_write(" detail 0x", 10);
+	driver_cli_write(" detail 0x", 10);
 	process_put_hex16(detail);
-	service_cli_write("\r\n", 2);
+	driver_cli_write("\r\n", 2);
 }
 
 /* The table must return to all-FREE after every lifecycle test. */
@@ -168,9 +168,9 @@ static void process_status_line(uint16_t status)
 {
 	static const char prefix[] = "process selftest: zextest status 0x";
 
-	service_cli_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
+	driver_cli_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
 	process_put_hex16(status);
-	service_cli_write("\r\n", 2);
+	driver_cli_write("\r\n", 2);
 }
 
 /* Run one known program and require an exact exit status plus a clean
@@ -207,9 +207,9 @@ void zos_run_process_selftest(void)
 
 	process_selftest_result = ZOS_PCST_FAIL_BOOT;
 
-	/* The resident service boot must have left a bound normal
+	/* The resident driver boot must have left a bound normal
 	 * console; the process table starts empty. */
-	if (service_cli_console_handle() == 0 || !process_idle_ok()) {
+	if (driver_cli_console_handle() == 0 || !process_idle_ok()) {
 		process_fail(ZOS_PCST_FAIL_BOOT, 0);
 		return;
 	}
@@ -225,9 +225,9 @@ void zos_run_process_selftest(void)
 	{
 		static const char prefix[] = "process selftest: zextest status 0x";
 
-		service_cli_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
+		driver_cli_write(prefix, (uint16_t)(sizeof(prefix) - 1u));
 		process_put_hex16((uint16_t)ZOS_PCST_ZEXTEST_PASS);
-		service_cli_write("\r\n", 2);
+		driver_cli_write("\r\n", 2);
 	}
 
 	/* 2. Repeated exec/exit cycles: no slot or bank leaks. */
@@ -242,7 +242,7 @@ void zos_run_process_selftest(void)
 	{
 		static const char ok[] = "process selftest: repeated cycles OK\r\n";
 
-		service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		driver_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 	}
 
 	/* 3. Two-bank run: reserve the allocator's lowest bank, then the
@@ -262,14 +262,14 @@ void zos_run_process_selftest(void)
 	{
 		static const char second[] = "process selftest: zextest status 0x";
 
-		service_cli_write(second, (uint16_t)(sizeof(second) - 1u));
+		driver_cli_write(second, (uint16_t)(sizeof(second) - 1u));
 		process_put_hex16((uint16_t)(ZOS_PCST_ZEXTEST_PASS | 1u));
-		service_cli_write("\r\n", 2);
+		driver_cli_write("\r\n", 2);
 	}
 	{
 		static const char ok[] = "process selftest: two-bank OK\r\n";
 
-		service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		driver_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 	}
 
 	/* 4. Raw entry return: the common trap exits with ZOS_EFAULT. */
@@ -284,7 +284,7 @@ void zos_run_process_selftest(void)
 	{
 		static const char ok[] = "process selftest: raw return EFAULT\r\n";
 
-		service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		driver_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 	}
 
 	/* 5. Every malformed fixture is rejected with its exact code and
@@ -303,7 +303,7 @@ void zos_run_process_selftest(void)
 	{
 		static const char ok[] = "process selftest: malformed rejected\r\n";
 
-		service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		driver_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 	}
 
 	/* 5b. A corrupted entry in the recovery store is rejected by geometry
@@ -328,7 +328,7 @@ void zos_run_process_selftest(void)
 	{
 		static const char ok[] = "process selftest: corrupt entry rolled back\r\n";
 
-		service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+		driver_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 	}
 
 	/* 6. Allocator exhaustion and argument validation. */
@@ -467,7 +467,7 @@ void zos_run_process_selftest(void)
 			static const char ok[] =
 				"process selftest: zex2 BSS/bank OK\r\n";
 
-			service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+			driver_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 		}
 
 		/* 8b. DATA segment: dirty the auxiliary bank's segment-BSS
@@ -490,7 +490,7 @@ void zos_run_process_selftest(void)
 			static const char ok[] =
 				"process selftest: zex2 segment OK\r\n";
 
-			service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+			driver_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 		}
 
 		/* 8c. A container over 64 KiB: two 32-KiB DATA segments,
@@ -506,7 +506,7 @@ void zos_run_process_selftest(void)
 			static const char ok[] =
 				"process selftest: zex2 big container OK\r\n";
 
-			service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+			driver_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 		}
 
 		/* 8d. Segment-allocation rollback: with banks 0-4 reserved
@@ -546,7 +546,7 @@ void zos_run_process_selftest(void)
 			static const char ok[] =
 				"process selftest: zex2 rollback OK\r\n";
 
-			service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+			driver_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 		}
 
 		/* 8e. The rejected program still runs once the release
@@ -568,7 +568,7 @@ void zos_run_process_selftest(void)
 			static const char ok[] =
 				"process selftest: zex v2 outcomes OK\r\n";
 
-			service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
+			driver_cli_write(ok, (uint16_t)(sizeof(ok) - 1u));
 		}
 	}
 
@@ -576,7 +576,7 @@ void zos_run_process_selftest(void)
 	{
 		static const char ok[] = "process selftest: OK\r\n";
 
-		if (service_cli_write(ok, (uint16_t)(sizeof(ok) - 1u)) !=
+		if (driver_cli_write(ok, (uint16_t)(sizeof(ok) - 1u)) !=
 		    (int)(sizeof(ok) - 1u)) {
 			process_selftest_result = ZOS_PCST_FAIL_CONSOLE;
 		}

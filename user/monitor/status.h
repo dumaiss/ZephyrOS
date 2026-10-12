@@ -18,7 +18,7 @@ void zrt_status_err_arg(void);
 /* "ERR: COMMAND\r\n" - unknown command letter. */
 void zrt_status_err_command(void);
 
-/* "ERR: <code>\r\n" - unexpected service failure, where <code> is the
+/* "ERR: <code>\r\n" - unexpected driver failure, where <code> is the
  * magnitude of the negated native error (two uppercase hex digits). */
 void zrt_status_err_code(int status);
 

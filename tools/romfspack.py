@@ -34,7 +34,7 @@ Usage:
     romfspack.py validate <recovery.romfs> [--memory-inc PATH]
     romfspack.py dump <recovery.romfs> [--memory-inc PATH]
 
-The default geometry comes from platform/zephyr80/memory.inc so the host
+The default geometry comes from platform/zephyr80/private/memory.inc so the host
 tools and the target cannot drift.  Exit status: 0 success, 1 rejected
 image/manifest, 2 usage error.
 """
@@ -61,11 +61,12 @@ TYPE_FLAGS = {"ZMOD": FLAG_ZMOD, "ZEX": FLAG_ZEX, "DATA": FLAG_DATA}
 U32_MAX = 0xFFFFFFFF
 
 DEFAULT_MEMORY_INC = (
-    Path(__file__).resolve().parent.parent / "platform" / "zephyr80" / "memory.inc"
+    Path(__file__).resolve().parent.parent / "platform" / "zephyr80" /
+    "private" / "memory.inc"
 )
 
 # Geometry defaults; overridden from the platform declarations.  The
-# values are declarative and must match platform/zephyr80/memory.h.
+# values are declarative and must match platform/zephyr80/private/memory.h.
 DEFAULT_GEOMETRY = {
     "page_size": 0x10000,
     "first_page": 2,
@@ -80,7 +81,7 @@ class RomfsError(Exception):
 
 
 def load_geometry(path=None):
-    """Read the ROMFS page geometry from platform/zephyr80/memory.inc."""
+    """Read the ROMFS page geometry from platform/zephyr80/private/memory.inc."""
     geom = dict(DEFAULT_GEOMETRY)
     path = Path(path) if path else DEFAULT_MEMORY_INC
     if not path.exists():

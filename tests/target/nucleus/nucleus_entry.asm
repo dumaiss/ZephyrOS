@@ -5,12 +5,12 @@
 ; package changes under revision 13:
 ;
 ;   - the syscall gate with P != 0 on entry: the smoke caller selects the
-;     service page in mode 10 and issues SYS_DIAG_SYSTEM_INFO, whose body
+;     driver page in mode 10 and issues SYS_DIAG_SYSTEM_INFO, whose body
 ;     is cold-half code.  Only a gate that clears P can dispatch it; the
 ;     caller then verifies the deterministic record and the exact restore
 ;     of the latch it selected (page field included);
 ;   - the IRQ gate with P != 0: the caller enables interrupts with the
-;     service page selected.  The cold-half handler reads the latch itself
+;     driver page selected.  The cold-half handler reads the latch itself
 ;     and records what it saw (P = 0, mode 11, the interrupted bank) and
 ;     where it ran (the fixed-core ISR stack); after RETI the caller's
 ;     latch is exactly the one it selected;
@@ -32,8 +32,8 @@
 ; -----------------------------------------------------------------------------
 
 	.module nucleus_selftest
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 	.include "nucleus_entry.inc"
 
 	.globl _zos_nucleus_selftest_run
@@ -102,10 +102,10 @@ _zos_nucleus_selftest_run::
 	ld	de,#ZOS_NS_CALLER_BASE
 	ld	bc,#(zos_nucleus_blob_end - zos_nucleus_blob_start)
 	ldir
-	; Application mode over the test bank with the service page selected;
+	; Application mode over the test bank with the driver page selected;
 	; the next instructions are common code, and the jump target below is
 	; visible in mode 10 (the far aperture 8000h-BFFFh stays unused).
-	ld	a,#(ZOS_MODE_APPLICATION | ZOS_NS_PAGE_SERVICE << ZOS_ROM_PAGE_SHIFT)
+	ld	a,#(ZOS_MODE_APPLICATION | ZOS_NS_PAGE_DRIVER << ZOS_ROM_PAGE_SHIFT)
 	ld	b,a
 	ld	a,(_zos_nucleus_bank)
 	or	b
@@ -164,7 +164,7 @@ _zos_nucleus_irq_evidence::
 _zos_nucleus_irq_latch::
 	.ds	1
 ; The delivery phase the handler reports on: 1 = the smoke caller's own
-; window (mode 10 with the service page selected), 2 = the upcall shim call
+; window (mode 10 with the driver page selected), 2 = the upcall shim call
 ; (mode 11 with the window on bank 6).
 _zos_nucleus_phase::
 	.ds	1
@@ -193,7 +193,7 @@ zos_nucleus_rst30_stub_bytes::
 ; ---------------------------------------------------------------------------
 ; Smoke caller blob (copied to ZOS_NS_CALLER_BASE in the test bank).
 ;
-; Runs in mode 10 over the test bank with the service page selected.  Only
+; Runs in mode 10 over the test bank with the driver page selected.  Only
 ; jr is used for control flow: the blob is position independent.
 ; ---------------------------------------------------------------------------
 zos_nucleus_blob_start::
@@ -204,7 +204,7 @@ zos_nucleus_blob_start::
 	ld	(_zos_nucleus_irq_evidence),a
 	ld	(_zos_nucleus_irq_latch),a
 	; ================= phase S: syscall with P != 0 =================
-	ld	a,#(ZOS_MODE_APPLICATION | ZOS_NS_APP_BANK | ZOS_NS_PAGE_SERVICE << ZOS_ROM_PAGE_SHIFT)
+	ld	a,#(ZOS_MODE_APPLICATION | ZOS_NS_APP_BANK | ZOS_NS_PAGE_DRIVER << ZOS_ROM_PAGE_SHIFT)
 	ld	(zos_nucleus_p_latch),a
 	out	(ZOS_MEMCTL_PORT),a
 	ld	a,#ZOS_NS_SYSCALL_NUM
@@ -356,7 +356,7 @@ zos_nucleus_stub_end::
 
 ; ---------------------------------------------------------------------------
 ; _zos_nucleus_stub_install - uint8_t result in A (always 0).  Selects the
-; service page from the fixed core, copies the stub above into bank 6
+; driver page from the fixed core, copies the stub above into bank 6
 ; through the window, and restores the caller's exact latch.  Records that
 ; latch so the caller can prove the restore.
 ; Clobbers: AF, BC, DE, HL.
@@ -365,7 +365,7 @@ _zos_nucleus_stub_install::
 	in	a,(ZOS_MEMCTL_PORT)
 	ld	(zos_nucleus_upcall_latch0),a
 	and	#(ZOS_MODE_MASK | ZOS_BANK_MASK)
-	or	#(ZOS_NS_PAGE_SERVICE << ZOS_ROM_PAGE_SHIFT)
+	or	#(ZOS_NS_PAGE_DRIVER << ZOS_ROM_PAGE_SHIFT)
 	out	(ZOS_MEMCTL_PORT),a
 	ld	hl,#zos_nucleus_stub_start
 	ld	de,#ZOS_NS_STUB_BASE

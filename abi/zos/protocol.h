@@ -1,11 +1,11 @@
-/* ZephyrOS versioned service protocols (public native ABI, M10 stage 4).
+/* ZephyrOS versioned driver protocols (public native ABI, M10 stage 4).
  *
- * A resident service exports endpoints; a client reaches one with the IPC
+ * A resident driver exports endpoints; a client reaches one with the IPC
  * envelope of abi/zos/ipc.h (lookup, call, the fixed 32-byte frame and
  * one optional buffer descriptor per call).  This header is layer 3 of
  * the M10 ABI (architecture 36.14): the operation numbers, the frame
  * word and payload layouts and the descriptor conventions of the five
- * device-facing services that package 41 moves into bank 6:
+ * device-facing drivers that package 41 moves into bank 6:
  *
  *   console   class 6, instance 0: buffered WRITE, READ, GETC, POLL
  *   HID       class 4, instance 0: translated text input
@@ -17,27 +17,27 @@
  *
  * The FILE protocol (type ZOS_TYPE_FILE) and the filesystem-namespace
  * protocol (type ZOS_TYPE_FS) are the file language of M10: the ROMFS
- * provider serves `/SYSTEM`, the build's filesystem driver (IOC-FAT)
- * serves `/FS`, and both answer through the same operation numbers
+ * provider serves `/system`, the build's filesystem driver (IOC-FAT)
+ * serves `/fs`, and both answer through the same operation numbers
  * (package 42b).
  *
- * Every service carries protocol version ZOS_PROTOCOL_VERSION (the
+ * Every driver carries protocol version ZOS_PROTOCOL_VERSION (the
  * endpoint's registered version).  Classes keep the numeric slots the
- * M8 device contracts pinned (1-5); class 6 is the console service,
+ * M8 device contracts pinned (1-5); class 6 is the console driver,
  * which is not a device class.
  *
  * Frame conventions (struct zos_ipc_frame, abi/zos/ipc.h):
  *
  *   op      the operation number below.
  *   flags   protocol flags; the operations here define none, and a
- *           service refuses nonzero flags it does not define.
+ *           driver refuses nonzero flags it does not define.
  *   desc    the nucleus-issued buffer descriptor id, or ZOS_IPC_DESC_NONE
  *           when the call named no caller buffer.
  *   arg0    protocol word 0 (an offset, byte value, operation or length,
  *           per operation).
  *   arg1    protocol word 1 (a length, limit or count, per operation).
  *   payload up to 24 inline protocol bytes.
- *   status  filled by the nucleus with the service's result.
+ *   status  filled by the nucleus with the driver's result.
  *
  * Buffer convention: WRITE-style operations take the caller's buffer as
  * a descriptor (captured at syscall entry) with `arg0` the byte offset
@@ -45,17 +45,17 @@
  * the same fields with the buffer as the destination.  A descriptor
  * belongs to the call that captured it and may be passed down a call
  * chain (36.8); the operations that copy are bounds-checked by the
- * nucleus on every use, so a service never names a caller address.
+ * nucleus on every use, so a driver never names a caller address.
  *
  * Hot paths are batched by design (36.7): one WRITE moves a whole
- * transfer through the console and its output service in one call, and
+ * transfer through the console and its output driver in one call, and
  * the IOC command exchange carries a whole request and returns the whole
  * reply in one call.
  *
- * Service-to-service data movement: services pass the *service-domain*
- * address of a buffer they own in a reply, and the receiving service
+ * Driver-to-driver data movement: drivers pass the *driver-domain*
+ * address of a buffer they own in a reply, and the receiving driver
  * stages the bytes with the nucleus `move` primitive (36.8).  This is
- * the documented convention of the resident service domain; application
+ * the documented convention of the resident driver domain; application
  * buffers are never named this way.
  */
 
@@ -64,25 +64,25 @@
 
 #include "zos/types.h"
 
-/* The one protocol version every service in this header registers. */
+/* The one protocol version every driver in this header registers. */
 #define ZOS_PROTOCOL_VERSION 1u
 
-/* Service classes (endpoint lookup key; see the header comment). */
+/* Driver classes (endpoint lookup key; see the header comment). */
 #define ZOS_CLASS_SERIAL  1u
 #define ZOS_CLASS_VIDEO   2u
-#define ZOS_CLASS_BLOCK   3u /* reserved: the future block service */
+#define ZOS_CLASS_BLOCK   3u /* reserved: the future block driver */
 #define ZOS_CLASS_HID     4u
 #define ZOS_CLASS_IOC     5u
 #define ZOS_CLASS_CONSOLE 6u
-#define ZOS_CLASS_FILE    7u /* the file service: FILE objects and the
-                              * filesystem-namespace provider behind /FS */
+#define ZOS_CLASS_FILE    7u /* the file driver: FILE objects and the
+                              * filesystem-namespace provider behind /fs */
 
-/* The instance every device-facing service registers (one instance). */
+/* The instance every device-facing driver registers (one instance). */
 #define ZOS_CLASS_INSTANCE 0u
 
-/* --- console service (class ZOS_CLASS_CONSOLE) ---------------------------
+/* --- console driver (class ZOS_CLASS_CONSOLE) ---------------------------
  *
- * The console composes the boot's input and output services (HID or SIO
+ * The console composes the boot's input and output drivers (HID or SIO
  * input, V9958 or SIO output) behind one endpoint, exactly as the M8
  * console binding did.  It is the endpoint the SDK console stubs and the
  * monitor use; the early console and the panic path do not depend on it.
@@ -97,8 +97,8 @@
  *   ZCONSOLE_OP_PUTC  (4)  arg0 = byte: one output byte, no descriptor;
  *                          returns the count (1) or a negative error.
  *                          The single-byte form the SDK uses for
- *                          zos_putc and the nucleus uses to prove the
- *                          service from a call with no caller buffer.
+ *                          putchar and the nucleus uses to prove the
+ *                          driver from a call with no caller buffer.
  */
 #define ZCONSOLE_OP_WRITE 0u
 #define ZCONSOLE_OP_READ  1u
@@ -106,11 +106,11 @@
 #define ZCONSOLE_OP_POLL  3u
 #define ZCONSOLE_OP_PUTC  4u
 
-/* --- HID input service (class ZOS_CLASS_HID) -----------------------------
+/* --- HID input driver (class ZOS_CLASS_HID) -----------------------------
  *
  * Translated text input from the IOC-attached keyboard: the fetch-on-
  * doorbell engine and its local ring, with the SIO fallback supplied by
- * the console composition, not by this service.
+ * the console composition, not by this driver.
  *
  *   ZHID_OP_READ_TEXT (0)  desc OUT: arg0 = offset, arg1 = maximum bytes.
  *                          Returns the bytes transferred (0 when the
@@ -129,7 +129,7 @@
 #define ZHID_OP_GETC      2u
 #define ZHID_OP_READY     3u
 
-/* --- video service (class ZOS_CLASS_VIDEO) -------------------------------
+/* --- video driver (class ZOS_CLASS_VIDEO) -------------------------------
  *
  * The V9958 driver: the seven native VIDEO operations (ZVIDEO_CTRL_WRITE
  * .. ZVIDEO_RESET) and the character-output path the console composes.
@@ -149,9 +149,9 @@
  *   ZVIDEO_OP_PUTC  (2)  arg0 = byte: one terminal byte; returns 0.
  *
  * ZVIDEO_RESET re-establishes every driver-owned state, including the
- * font and atlas upload; the service reads the font from its own bulk
+ * font and atlas upload; the driver reads the font from its own bulk
  * data through the nucleus bulk copy (the boot/bulk tier is not mapped
- * in the service window).
+ * in the driver window).
  */
 #define ZVIDEO_OP_SEND  0u
 #define ZVIDEO_OP_WRITE 1u
@@ -167,10 +167,10 @@
 #define ZVIDEO_PRESENT        6u
 #define ZVIDEO_RESET          7u
 
-/* --- serial service (class ZOS_CLASS_SERIAL) -----------------------------
+/* --- serial driver (class ZOS_CLASS_SERIAL) -----------------------------
  *
- * SIO0/B, the same channel as the early console, as a resident service.
- * Polling-only: the SIO interrupt mode stays disabled, so this service
+ * SIO0/B, the same channel as the early console, as a resident driver.
+ * Polling-only: the SIO interrupt mode stays disabled, so this driver
  * owns no IRQ.
  *
  *   ZSIO_OP_PUTC  (0)  arg0 = byte; returns 0 or -ZOS_ETIMEDOUT.
@@ -187,12 +187,12 @@
 #define ZSIO_OP_GETC  3u
 #define ZSIO_OP_READ  4u
 
-/* --- IOC transport service (class ZOS_CLASS_IOC) -------------------------
+/* --- IOC transport driver (class ZOS_CLASS_IOC) -------------------------
  *
  * The command/reply lane and the bulk lanes of the Z80-to-MCU transport
- * (include/zephyros/ioc.h owns the transport surface and its error
- * codes; include/zephyros/ioc_protocol.h owns the command
- * vocabulary).  The service owns the wire framing, sequence, CRC, lane
+ * (drivers/include/ioc.h owns the transport surface and its error
+ * codes; drivers/include/ioc_protocol.h owns the command
+ * vocabulary).  The driver owns the wire framing, sequence, CRC, lane
  * setup and the READY/DONE bulk admission; a client sees native frames.
  *
  *   ZIOC_OP_COMMAND     (0)  arg0 = request type, arg1 = request DATA
@@ -202,9 +202,9 @@
  *                              arg0 = reply type
  *                              arg1 = reply DATA length (0..26)
  *                              payload[0..1] = the 29-byte reply frame's
- *                                              service-domain address
+ *                                              driver-domain address
  *                              payload[2] = reply STATUS
- *                              payload[3..4] = this service's bulk buffer
+ *                              payload[3..4] = this driver's bulk buffer
  *                                              address (the staging
  *                                              handshake for a caller
  *                                              that cannot hold a
@@ -221,15 +221,15 @@
  *                            reply frame slice ZIOC_OP_COMMAND stored to
  *                            the caller's buffer; returns the count.
  *   ZIOC_OP_BULK_READ   (2)  arg1 = length (1..512).  Completes the
- *                            admitted bulk read into the service buffer.
- *                            With a desc OUT the service also copies the
+ *                            admitted bulk read into the driver buffer.
+ *                            With a desc OUT the driver also copies the
  *                            bytes to the caller (arg0 = offset);
  *                            without one the reply carries the buffer
  *                            address in payload[0..1], for the staged
  *                            form.  Returns the length or a negative
  *                            ZIOC_E*.
  *   ZIOC_OP_BULK_WRITE  (3)  arg1 = length (1..512).  With a desc IN the
- *                            service first stages the caller's bytes
+ *                            driver first stages the caller's bytes
  *                            (arg0 = offset) into its buffer, then writes
  *                            them to the lane; without one it writes what
  *                            the staged form left in the buffer.  Returns
@@ -238,15 +238,15 @@
  *                            (ZIOC_STATUS_*).
  *   ZIOC_OP_READY       (5)  returns 1 when the link is brought up and
  *                            no recovery is pending, else 0.  The
- *                            service's init runs the bounded LINK_SYNC
- *                            bring-up once; the HID service probes this
+ *                            driver's init runs the bounded LINK_SYNC
+ *                            bring-up once; the HID driver probes this
  *                            to decide whether its engine is usable (and
  *                            the console then falls back to SIO), which
  *                            is the role the IOC device registration
  *                            presence played before M10.
  *
  * The staged form (no descriptor) is the resident-domain convention:
- * the reply's payload names the service buffer, and a service client
+ * the reply's payload names the driver buffer, and a driver client
  * stages with `move`.  The module path (the arena IOC-FAT provider
  * until package 42) reaches the same buffers through the nucleus copy
  * gate because a bank-7 caller cannot hold a descriptor: it reads the
@@ -261,7 +261,7 @@
 #define ZIOC_OP_STATUS     4u
 #define ZIOC_OP_READY      5u
 
-/* The native frame geometry the IOC protocol moves (include/zephyros/
+/* The native frame geometry the IOC protocol moves (drivers/include/
  * ioc.h): TYPE, STATUS, LENGTH, DATA[26]. */
 #define ZIOC_PROTOCOL_FRAME_SIZE 29u
 #define ZIOC_PROTOCOL_FRAME_DATA 26u
@@ -274,7 +274,7 @@
  * The filesystem object protocol (architecture 36.13-36.14, the file
  * language): `bind(path, flags)` yields a FILE handle and the operations
  * below act on the bound instance - the ROMFS provider in process for
- * `/SYSTEM`, the selected filesystem driver for `/FS`.
+ * `/system`, the selected filesystem driver for `/fs`.
  *
  * Instance identity: `payload[0]` of every operation names the bound
  * instance (the provider's object identity).  The FS provider stamps it
@@ -307,15 +307,15 @@
 
 /* --- filesystem-namespace protocol (type ZOS_TYPE_FS) -------------------
  *
- * `bind(path, 0)` on a provider root - `bind("/FS", 0)` or
- * `bind("/SYSTEM", 0)` - yields a filesystem-namespace handle: the
+ * `bind(path, 0)` on a provider root - `bind("/fs", 0)` or
+ * `bind("/system", 0)` - yields a filesystem-namespace handle: the
  * caller's key to the name operations that act on paths rather than on an
  * open file (architecture 36.13).  `mkdir`, `rmdir`, `unlink`, `rename`
  * and `stat` in `fs.h` build on it; there is no DIRECTORY handle and no
  * universal directory protocol.
  *
  * The application passes the **path remainder** - the target path with
- * the bound provider root removed, e.g. `/GAMES` for `/FS/GAMES` - in the
+ * the bound provider root removed, e.g. `/GAMES` for `/fs/GAMES` - in the
  * call's one descriptor.  `stat` replies the packed `struct zfs_stat` in
  * the payload; every other operation replies only its status.  The
  * operation numbers start at 08h so a dispatch shared with the FILE
@@ -332,7 +332,7 @@
  * A provider refuses a name operation it cannot serve (ROMFS answers
  * ZOS_EROFS for every mutation) and owns the meaning of the path below
  * its root: the FS provider forwards the remainder to the filesystem
- * driver (kernel/vfs/ns.c), which performs it.
+ * driver (kernel/vfs/fs.c), which performs it.
  *
  * **Nucleus transport.**  Between the nucleus provider and a bank-6
  * filesystem driver the same operations travel with the path staged in a
@@ -349,7 +349,7 @@
  *                      up to that many `struct zos_ns_entry` records,
  *                      replies the next cookie in payload[2..3], returns
  *                      the entry count, and is what `ns_enum` below
- *                      `/FS` runs (architecture 36.13).
+ *                      `/fs` runs (architecture 36.13).
  */
 #define ZFS_OP_MKDIR  8u
 #define ZFS_OP_RMDIR  9u

@@ -15,10 +15,10 @@ ownership contract (see docs/memory.md):
 The two bank-7 runtime data bases are derived, not fixed: the probe link
 measures the runtime-data size (`l__DATA + l__INITIALIZED`) and the
 exclusive end of the linked cold code (`_WINDOW`); the fixed data base is
-`align_down(ZOS_SERVICE_STACK_BASE - data_size, 512)` and the cold data
+`align_down(ZOS_DRIVER_STACK_BASE - data_size, 512)` and the cold data
 base is `align_up(window_code_end, 512)`, straight after the code.
 
-M3 adds placement checks for the device registry, console service, static
+M3 adds placement checks for the device registry, console driver, static
 driver descriptors/ops, and driver-private state: all of it must live in
 bank 7 (loadable or runtime area, below the ISR stack) and none of it may
 enter permanent common memory.
@@ -36,8 +36,8 @@ lies inside the expected region.
 
 Usage:
     mapcheck.py [--production] <zephyros.map>
-                [platform/zephyr80/memory.inc
-                 [platform/zephyr80/irq.inc]]
+                [platform/zephyr80/private/memory.inc
+                 [platform/zephyr80/private/irq.inc]]
 
     mapcheck.py geometry probe <memory.inc> <out_bank7_end.inc>
     mapcheck.py geometry derive <probe.map> <memory.inc>
@@ -54,7 +54,7 @@ The `geometry` commands implement the two-pass bank-7 build.  The
 boundary is placed; a fixed placeholder could constrain kernel growth).
 The `derive` mode measures the exclusive end of the fixed loadable areas
 and of `_WINDOW` in the probe-link map, derives the fixed data base as
-`align_down(ZOS_SERVICE_STACK_BASE - data_size, 512)` and the cold data
+`align_down(ZOS_DRIVER_STACK_BASE - data_size, 512)` and the cold data
 base as `align_up(window_code_end, 512)`, and writes both the small
 include consumed by kernel/memory/bank7_end.asm and (when requested) a
 full memory.inc variant for the layout tools.  The derived values are
@@ -67,7 +67,7 @@ import os
 import re
 import sys
 
-# Defaults; overridden from platform/zephyr80/memory.inc and irq.inc when
+# Defaults; overridden from platform/zephyr80/private/memory.inc and irq.inc when
 # those paths are given on the command line, so the checker derives its
 # facts from the actual layout declarations rather than a second copy of
 # the memory map.
@@ -76,13 +76,13 @@ RESET_TOP = 0x0030
 BANK7_BASE = 0x2000
 # Revision-13 mode-11 bank-7 split (architecture 36.2, 36.5): the fixed
 # core is 2000h-5FFFh, the cold half (the window) is 6000h-DFFFh.  The
-# ISR stack and the service stack are reserved at the top of the fixed
+# ISR stack and the driver stack are reserved at the top of the fixed
 # core, so the fixed core's runtime data stops below 5D00h.
 BANK7_RUNTIME_END = 0xE000
 REV13_WINDOW_SPLIT = 0x6000
-SERVICE_STACK_BASE = 0x5D00
-SERVICE_STACK_TOP = 0x5F00
-SERVICE_STACK_SIZE = 0x0200
+DRIVER_STACK_BASE = 0x5D00
+DRIVER_STACK_TOP = 0x5F00
+DRIVER_STACK_SIZE = 0x0200
 IRQ_ISR_STACK_BASE = 0x5F00
 IRQ_ISR_STACK_TOP = 0x6000
 IRQ_ISR_STACK_SIZE = 0x0100
@@ -102,14 +102,14 @@ DATA_BASE = 0x5A00
 FIXED_CODE_END = 0x5200
 FIXED_REQUIRED_BYTES = FIXED_CODE_END - BANK7_BASE
 FIXED_OVERFLOW_BYTES = 0
-FIXED_STACKS_BYTES = IRQ_ISR_STACK_SIZE + SERVICE_STACK_SIZE
+FIXED_STACKS_BYTES = IRQ_ISR_STACK_SIZE + DRIVER_STACK_SIZE
 FIXED_ROOM_BYTES = (REV13_WINDOW_SPLIT - BANK7_BASE
                     - FIXED_REQUIRED_BYTES - FIXED_OVERFLOW_BYTES
                     - FIXED_STACKS_BYTES)
 COMMON_BASE = 0xE000
 COMMON_CODE_END = 0xFD00
 # Architectural ceiling on the packed `_COMMON` + `_COMMON_DATA` run
-# (platform/zephyr80/memory.inc; work package 30c).  The 512-byte M9
+# (platform/zephyr80/private/memory.inc; work package 30c).  The 512-byte M9
 # reservation was released to M10's transitions and IPC (work package 43,
 # architecture 36.20), so `used <= COMMON_CEILING` is the rule.
 COMMON_CEILING = 0x0C00
@@ -124,7 +124,7 @@ BANK7_TOP = BANK7_RUNTIME_END
 STACK_BASE = 0xFF00
 MEM_TOP = 0x10000
 # Default when the caller passes no generated include; the build's
-# include carries ZOS_GATE_STACK_SIZE (platform/zephyr80/memory.inc).
+# include carries ZOS_GATE_STACK_SIZE (platform/zephyr80/private/memory.inc).
 GATE_STACK_SIZE = 384
 ROMFS_STAGING_SIZE = 0x80
 ROM_ACCESS_BASE = 0xEF00
@@ -143,7 +143,7 @@ def parse_inc(path):
 
 
 def parse_memory_inc(path):
-    """Parse the layout declarations in platform/zephyr80/memory.inc."""
+    """Parse the layout declarations in platform/zephyr80/private/memory.inc."""
     return parse_inc(path)
 
 
@@ -329,7 +329,7 @@ def apply_layout(values, source=None):
     global PAGE_ZERO_END, RESET_TOP, BANK7_BASE
     global BANK7_RUNTIME_END, BANK7_TOP, COMMON_BASE, COMMON_CODE_END
     global STACK_BASE, WINDOW_BASE, WINDOW_DATA_BASE
-    global SERVICE_STACK_BASE, SERVICE_STACK_TOP, SERVICE_STACK_SIZE
+    global DRIVER_STACK_BASE, DRIVER_STACK_TOP, DRIVER_STACK_SIZE
     global IRQ_ISR_STACK_BASE, IRQ_ISR_STACK_TOP, IRQ_ISR_STACK_SIZE
     global GATE_STACK_SIZE, OWNED_AREAS
     global BANK7_DATA_ALIGN, DATA_BASE
@@ -349,21 +349,21 @@ def apply_layout(values, source=None):
     # geometry are build-time architecture constants; the generated include
     # always carries them.
     require_key(values, "ZOS_REV13_WINDOW_BASE", source)
-    require_key(values, "ZOS_SERVICE_STACK_BASE", source)
-    require_key(values, "ZOS_SERVICE_STACK_TOP", source)
-    require_key(values, "ZOS_SERVICE_STACK_SIZE", source)
+    require_key(values, "ZOS_DRIVER_STACK_BASE", source)
+    require_key(values, "ZOS_DRIVER_STACK_TOP", source)
+    require_key(values, "ZOS_DRIVER_STACK_SIZE", source)
     WINDOW_BASE = values["ZOS_REV13_WINDOW_BASE"]
-    SERVICE_STACK_BASE = values["ZOS_SERVICE_STACK_BASE"]
-    SERVICE_STACK_TOP = values["ZOS_SERVICE_STACK_TOP"]
-    SERVICE_STACK_SIZE = values["ZOS_SERVICE_STACK_SIZE"]
+    DRIVER_STACK_BASE = values["ZOS_DRIVER_STACK_BASE"]
+    DRIVER_STACK_TOP = values["ZOS_DRIVER_STACK_TOP"]
+    DRIVER_STACK_SIZE = values["ZOS_DRIVER_STACK_SIZE"]
     if WINDOW_BASE != REV13_WINDOW_SPLIT:
         raise MapError("the mode-11 window base is %04Xh, expected %04Xh"
                        % (WINDOW_BASE, REV13_WINDOW_SPLIT))
-    if not (BANK7_BASE < SERVICE_STACK_BASE <= SERVICE_STACK_TOP
+    if not (BANK7_BASE < DRIVER_STACK_BASE <= DRIVER_STACK_TOP
             <= WINDOW_BASE <= BANK7_RUNTIME_END):
         raise MapError("the fixed-core stacks %04Xh-%04Xh do not sit below "
                        "the window base %04Xh"
-                       % (SERVICE_STACK_BASE, SERVICE_STACK_TOP,
+                       % (DRIVER_STACK_BASE, DRIVER_STACK_TOP,
                           WINDOW_BASE))
     # The common ceiling is a build-time architecture constant; the
     # generated include always carries it.
@@ -402,7 +402,7 @@ def apply_layout(values, source=None):
     # The fixed core's data starts at the derived base; the cold half's
     # data starts at the derived window data base.
     DATA_BASE = values["ZOS_DATA_BASE"]
-    if not (BANK7_BASE < DATA_BASE <= SERVICE_STACK_BASE):
+    if not (BANK7_BASE < DATA_BASE <= DRIVER_STACK_BASE):
         raise MapError("fixed data base %04Xh is outside the fixed core"
                        % DATA_BASE)
     ROMFS_STAGING_SIZE = values["ZOS_ROMFS_STAGING_SIZE"]
@@ -414,8 +414,8 @@ def apply_layout(values, source=None):
         "_INITIALIZER": (BANK7_BASE, WINDOW_BASE),
         "_GSINIT": (BANK7_BASE, WINDOW_BASE),
         "_GSFINAL": (BANK7_BASE, WINDOW_BASE),
-        "_DATA": (DATA_BASE, SERVICE_STACK_BASE),
-        "_INITIALIZED": (DATA_BASE, SERVICE_STACK_BASE),
+        "_DATA": (DATA_BASE, DRIVER_STACK_BASE),
+        "_INITIALIZED": (DATA_BASE, DRIVER_STACK_BASE),
         "_WINDOW": (WINDOW_BASE, WINDOW_DATA_BASE),
         "_WINDOW_DATA": (WINDOW_DATA_BASE, BANK7_RUNTIME_END),
         "_COMMON": (COMMON_BASE, COMMON_CODE_END),
@@ -502,7 +502,7 @@ def derive_geometry(map_text, values,
     Fixed core (2000h-5FFFh): `fixed_code_end` is the exclusive end of the
     fixed loadable areas (`_CODE`/`_HOME`/`_INITIALIZER`/`_GSINIT`/
     `_GSFINAL`); the fixed runtime data base is
-    `align_down(service_stack_base - data_size, 512)`.
+    `align_down(driver_stack_base - data_size, 512)`.
 
     Cold half (6000h-DFFFh): `window_code_end` is the exclusive end of
     `_WINDOW` and the window data base is
@@ -510,7 +510,7 @@ def derive_geometry(map_text, values,
     Raises MapError when either region's content does not fit."""
     areas, symbols = parse_map(map_text)
     granule = values["ZOS_BANK7_DATA_ALIGN"]
-    fixed_top = values["ZOS_SERVICE_STACK_BASE"]
+    fixed_top = values["ZOS_DRIVER_STACK_BASE"]
     data_size = runtime_data_size(areas, symbols)
     fixed_code_end = loadable_end(areas, symbols, FIXED_LOADABLE_AREAS)
     if data_size > fixed_top - BANK7_BASE:
@@ -535,7 +535,7 @@ def derive_geometry(map_text, values,
             "%04Xh-%04Xh" % (window_code_end, window_data_size,
                              REV13_WINDOW_SPLIT, top - 1))
     common = area_sizes(areas, symbols, COMMON_AREAS)
-    stacks = values["ZOS_SERVICE_STACK_SIZE"] + values["ZOS_IRQ_ISR_STACK_SIZE"]
+    stacks = values["ZOS_DRIVER_STACK_SIZE"] + values["ZOS_IRQ_ISR_STACK_SIZE"]
     if fixed_required_bytes is None:
         fixed_required_bytes = fixed_code_end - BANK7_BASE
     if fixed_overflow_bytes is None:
@@ -644,8 +644,8 @@ OWNED_AREAS = {
     "_INITIALIZER": (BANK7_BASE, WINDOW_BASE),
     "_GSINIT": (BANK7_BASE, WINDOW_BASE),
     "_GSFINAL": (BANK7_BASE, WINDOW_BASE),
-    "_DATA": (DATA_BASE, SERVICE_STACK_BASE),
-    "_INITIALIZED": (DATA_BASE, SERVICE_STACK_BASE),
+    "_DATA": (DATA_BASE, DRIVER_STACK_BASE),
+    "_INITIALIZED": (DATA_BASE, DRIVER_STACK_BASE),
     "_WINDOW": (WINDOW_BASE, WINDOW_DATA_BASE),
     "_WINDOW_DATA": (WINDOW_DATA_BASE, BANK7_RUNTIME_END),
     "_COMMON": (COMMON_BASE, COMMON_CODE_END),
@@ -702,15 +702,15 @@ COMMON_ONLY_SYMBOLS = (
     "_ipc_ap_saved_sp",
     "_ipc_ap_stack",
     "_ipc_ap_stack_top",
-    # M10 stage 4: the service boot gate calls a bank-6 boot segment with
+    # M10 stage 4: the driver boot gate calls a bank-6 boot segment with
     # mode 10 selected over bank 6, where bank 7 is unmapped; its code,
     # transition state and the loader's upcall request block must live in
     # common memory.
-    "_zos_service_run_boot",
-    "zos_service_boot_entry",
-    "zos_service_boot_saved_latch",
-    "zos_service_boot_saved_iff",
-    "_zos_service_upcall_block",
+    "_zos_driver_run_boot",
+    "zos_driver_boot_entry",
+    "zos_driver_boot_saved_latch",
+    "zos_driver_boot_saved_iff",
+    "_zos_driver_upcall_block",
 )
 
 # Bank-7 internal routines (visible only while mode 11 is active).
@@ -719,7 +719,7 @@ BANK7_ROUTINES = ("zos_syscall_dispatch", "_irq_dispatch")
 # M3-era device registry: retired in package 42b.  The registry, the
 # module loader that answered class queries from it and the IOC class shim
 # are gone: device discovery is the host-built `/dev` publication table
-# plus the service API, and the drivers are bank-6 service images.  The
+# plus the driver API, and the drivers are bank-6 driver images.  The
 # sweep below stays as a tripwire for a static driver or a resurrected
 # registry row.
 M3_BANK7_PREFIXES = (
@@ -765,7 +765,7 @@ PRODUCTION_FORBIDDEN = (
 # kernel image.
 STATIC_SIO_PREFIXES = ("_sio_", "_sio0b_", "_sio_driver")
 
-# The IOC driver is a bank-6 service image too (work package 42c deleted
+# The IOC driver is a bank-6 driver image too (work package 42c deleted
 # the class shim that used to publish it to bank-7 code): any linked
 # `_ioc_` symbol means a static copy crept back into the kernel image.
 STATIC_IOC_PREFIXES = ("_ioc_",)
@@ -779,7 +779,7 @@ STATIC_HID_PREFIXES = ("_hid_",)
 STATIC_V9958_PREFIXES = ("_v9958_",)
 
 # M4 module-loader routines: retired in package 42b - the load-time boot
-# set is empty and the drivers are bank-6 services, so the loader, the
+# set is empty and the drivers are bank-6 drivers, so the loader, the
 # relocator and the IRQ-claim rollback that belonged to it emit no bytes.
 # The sweep stays as a tripwire: any linked module-loader symbol means the
 # retired module path crept back into the nucleus.
@@ -829,7 +829,7 @@ VFS_BANK7_ROUTINES = (
     "_vfs_process_start",
     "_vfs_process_exit",
     # The M10 namespace family (package 42a, production since 42b): the
-    # root router and its publication table, the `/SYSTEM` FILE provider
+    # root router and its publication table, the `/system` FILE provider
     # and the object syscall bodies.
     "_vfs_ns_init",
     "_vfs_ns_reset",
@@ -869,8 +869,8 @@ M6_BANK7_ROUTINES = (
 
 M6_BANK7_PREFIXES = ("_process_", "_zex_")
 
-# M7 diagnostic services and the shared dispatcher helpers: bank-7
-# kernel code only.  The services reuse the M6 common copy gate, so no
+# M7 diagnostic drivers and the shared dispatcher helpers: bank-7
+# kernel code only.  The drivers reuse the M6 common copy gate, so no
 # new permanent-common symbol is introduced.
 M7_BANK7_ROUTINES = (
     "_zos_diag_mem_read",
@@ -921,7 +921,7 @@ USER_COPY_STACK_SIZE = 16
 
 # Package 28 continuation state: ZOS_EXEC_MAX_DEPTH levels, with
 # ZOS_EXEC_MAX_DEPTH - 1 gate-frame save areas of ZOS_EXEC_FRAME_SAVE
-# bytes (include/zephyros/process.h; pinned here so a mismatch fails the
+# bytes (kernel/include/process.h; pinned here so a mismatch fails the
 # production map rather than silently truncating a saved frame).
 ZOS_EXEC_MAX_DEPTH = 4
 ZOS_EXEC_FRAME_SAVE = 48
@@ -1076,18 +1076,18 @@ def check_areas(areas, symbols):
             raise MapError("%s is missing from the area table but l__%s != 0"
                            % (name, base))
 
-    # The fixed core's stack reservation 5D00h-6000h (service stack, then
+    # The fixed core's stack reservation 5D00h-6000h (driver stack, then
     # ISR stack) is reserved by declaration: only the ABS areas that
     # declare the two stacks may occupy it.
     for name, (addr, size) in sorted(areas.items()):
         if size == 0 or name.startswith(("_IRQ_ISR_STACK",
-                                         "_IPC_SERVICE_STACK")):
+                                         "_IPC_DRIVER_STACK")):
             continue
-        if addr < WINDOW_BASE and addr + size > SERVICE_STACK_BASE:
+        if addr < WINDOW_BASE and addr + size > DRIVER_STACK_BASE:
             raise MapError(
                 "%s at %04Xh (size %d) overlaps the fixed-core stack "
                 "reservation %04Xh-%04Xh"
-                % (name, addr, size, SERVICE_STACK_BASE, WINDOW_BASE - 1)
+                % (name, addr, size, DRIVER_STACK_BASE, WINDOW_BASE - 1)
             )
 
     # Ordinary bank-7 data stops below the fixed-core stacks, and
@@ -1095,10 +1095,10 @@ def check_areas(areas, symbols):
     for name in ("_DATA", "_INITIALIZED"):
         if name in areas:
             addr, size = areas[name]
-            if addr + size > SERVICE_STACK_BASE:
+            if addr + size > DRIVER_STACK_BASE:
                 raise MapError(
-                    "%s overlaps the fixed-core service stack at %04Xh"
-                    % (name, SERVICE_STACK_BASE))
+                    "%s overlaps the fixed-core driver stack at %04Xh"
+                    % (name, DRIVER_STACK_BASE))
     for name in ("_COMMON", "_COMMON_DATA"):
         if name in areas:
             addr, size = areas[name]
@@ -1147,7 +1147,7 @@ REV13_FIXED_SYMBOLS = (
     "_platform_memctl_write",
     "_zos_upcall",
     # M10 stage 3: the IPC substrate executes while the window shows the
-    # resident service domain, so its dispatcher, its frame and descriptor
+    # resident driver domain, so its dispatcher, its frame and descriptor
     # tables and its fixed transition primitives stay in the fixed core.
     "_ipc_lookup",
     "_ipc_syscall_call",
@@ -1200,8 +1200,8 @@ def check_rev13_window(symbols):
                 % (name, addr, WINDOW_BASE, BANK7_TOP - 1))
     for name, base in (("irq_isr_stack", IRQ_ISR_STACK_BASE),
                        ("irq_isr_stack_top", IRQ_ISR_STACK_TOP),
-                       ("zos_service_stack", SERVICE_STACK_BASE),
-                       ("zos_service_stack_top", SERVICE_STACK_TOP)):
+                       ("zos_driver_stack", DRIVER_STACK_BASE),
+                       ("zos_driver_stack_top", DRIVER_STACK_TOP)):
         if name not in symbols:
             continue
         # The top labels are exclusive (a stack top is the first byte above
@@ -1271,7 +1271,7 @@ def check_symbols(areas, symbols, production=False):
                 % (name, addr, WINDOW_BASE - 1)
             )
 
-    # M3-era registry state and the console service live in bank 7 (code
+    # M3-era registry state and the console driver live in bank 7 (code
     # or runtime data), never in the permanently mapped common region.
     # Since package 42b the registry itself is gone, so only the sweep
     # remains (see M3_BANK7_PREFIXES).
@@ -1279,11 +1279,11 @@ def check_symbols(areas, symbols, production=False):
         if addr != 0 and name.startswith(M3_BANK7_PREFIXES):
             if not (BANK7_BASE <= addr < BANK7_TOP):
                 raise MapError(
-                    "driver/service symbol %s at %04Xh is not bank-7 "
+                    "driver/driver symbol %s at %04Xh is not bank-7 "
                     "resident" % (name, addr)
                 )
 
-    # Package 41/42c: the four drivers are bank-6 service images; the
+    # Package 41/42c: the four drivers are bank-6 driver images; the
     # nucleus links no driver symbol at all.
     for name, addr in symbols.items():
         if addr == 0:
@@ -1296,7 +1296,7 @@ def check_symbols(areas, symbols, production=False):
             if name.startswith(prefixes):
                 raise MapError(
                     "static %s symbol %s at %04Xh must not be linked; the "
-                    "driver is a bank-6 service image"
+                    "driver is a bank-6 driver image"
                     % (what, name, addr))
     # M4: loader/relocator code and catalog/fixture data must stay in the
     # bank-7 window below the ISR stack.
@@ -1409,7 +1409,7 @@ def check_symbols(areas, symbols, production=False):
                     "process symbol %s at %04Xh is not bank-7 resident"
                     % (name, addr))
 
-    # M7: diagnostic services and shared dispatcher helpers are bank-7
+    # M7: diagnostic drivers and shared dispatcher helpers are bank-7
     # kernel code; they add no permanent-common state.
     for name in M7_BANK7_ROUTINES:
         if name not in symbols:
@@ -1516,10 +1516,10 @@ def check_symbols(areas, symbols, production=False):
                        + symbols.get("l__INITIALIZED", 0))
     for label, end in (("_DATA", data_end),
                        ("_INITIALIZED", initialized_end)):
-        if end > SERVICE_STACK_BASE:
+        if end > DRIVER_STACK_BASE:
             raise MapError("%s ends at %04Xh, overlapping the fixed-core "
-                           "service stack reservation at %04Xh"
-                           % (label, end, SERVICE_STACK_BASE))
+                           "driver stack reservation at %04Xh"
+                           % (label, end, DRIVER_STACK_BASE))
     if WINDOW_DATA_BASE + symbols.get("l__WINDOW_DATA", 0) > BANK7_RUNTIME_END:
         raise MapError("cold runtime data leaves the cold half at %04Xh"
                        % (WINDOW_DATA_BASE +

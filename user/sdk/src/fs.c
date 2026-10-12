@@ -54,7 +54,7 @@ static int zfs_call(unsigned char handle, unsigned char op, void *buffer,
 	req.buffer = buffer;
 	req.length = length;
 	req.direction = direction;
-	return zos_ipc_call(handle, &req);
+	return call(handle, &req);
 }
 
 /* The provider root of `path`: its first component for an absolute path,
@@ -82,7 +82,7 @@ static unsigned int zfs_root_of(const char *path, char *root,
 		return n;
 	}
 	/* A relative operation belongs to whichever provider owns the CWD. */
-	if (zos_getcwd(root, root_size) < 0) {
+	if (getcwd(root, root_size) < 0) {
 		return 0xFFFFu;
 	}
 	n = 1u;
@@ -105,12 +105,12 @@ static int zfs_bind_root(const char *path)
 	if (length == 0xFFFFu) {
 		return -ZOS_EINVAL;
 	}
-	handle = zos_ipc_bind(root, 0u, &type);
+	handle = bind(root, 0u, &type);
 	if (handle < 0) {
 		return handle;
 	}
 	if (type != ZOS_TYPE_FS) {
-		(void)zos_ipc_unbind((unsigned char)handle);
+		(void)unbind((unsigned char)handle);
 		return -ZOS_EINVAL;
 	}
 	return handle;
@@ -132,34 +132,34 @@ static int zfs_path_op(const char *path, unsigned char op)
 	}
 	result = zfs_call((unsigned char)handle, op, (void *)path, length,
 			  ZOS_IPC_DESC_IN);
-	(void)zos_ipc_unbind((unsigned char)handle);
+	(void)unbind((unsigned char)handle);
 	return result;
 }
 
-int zos_open(const char *path, unsigned char flags)
+int open(const char *path, unsigned char flags)
 {
 	unsigned char type = 0u;
-	int handle = zos_ipc_bind(path, (unsigned int)flags, &type);
+	int handle = bind(path, (unsigned int)flags, &type);
 
 	if (handle < 0) {
 		return handle;
 	}
 	if (type != ZOS_TYPE_FILE) {
-		(void)zos_ipc_unbind((unsigned char)handle);
+		(void)unbind((unsigned char)handle);
 		return -ZOS_EINVAL;
 	}
 	return handle;
 }
 
-int zos_close(unsigned int handle)
+int close(unsigned int handle)
 {
 	if (handle < ZOS_HANDLE_FIRST_BOUND) {
 		return -ZOS_EINVAL;
 	}
-	return zos_ipc_unbind((unsigned char)handle);
+	return unbind((unsigned char)handle);
 }
 
-int zos_read(unsigned int handle, void *buffer, unsigned int length)
+int read(unsigned int handle, void *buffer, unsigned int length)
 {
 	if (buffer == (void *)0 || length == 0u) {
 		return -ZOS_EINVAL;
@@ -168,7 +168,7 @@ int zos_read(unsigned int handle, void *buffer, unsigned int length)
 			ZOS_IPC_DESC_OUT);
 }
 
-int zos_write(unsigned int handle, const void *buffer, unsigned int length)
+int write(unsigned int handle, const void *buffer, unsigned int length)
 {
 	if (buffer == (const void *)0 || length == 0u) {
 		return -ZOS_EINVAL;
@@ -177,7 +177,7 @@ int zos_write(unsigned int handle, const void *buffer, unsigned int length)
 			length, ZOS_IPC_DESC_IN);
 }
 
-long zos_seek(unsigned int handle, long offset, unsigned char whence)
+long seek(unsigned int handle, long offset, unsigned char whence)
 {
 	struct zos_ipc_request req;
 	int result;
@@ -194,7 +194,7 @@ long zos_seek(unsigned int handle, long offset, unsigned char whence)
 	req.buffer = (void *)0;
 	req.length = 0u;
 	req.direction = ZOS_IPC_DESC_IN;
-	result = zos_ipc_call((unsigned char)handle, &req);
+	result = call((unsigned char)handle, &req);
 	if (result < 0) {
 		return (long)result;
 	}
@@ -204,7 +204,7 @@ long zos_seek(unsigned int handle, long offset, unsigned char whence)
 		      ((unsigned long)req.frame.payload[4] << 24));
 }
 
-int zos_sync(unsigned int handle)
+int sync(unsigned int handle)
 {
 	struct zos_ipc_request req;
 
@@ -216,10 +216,10 @@ int zos_sync(unsigned int handle)
 	req.buffer = (void *)0;
 	req.length = 0u;
 	req.direction = ZOS_IPC_DESC_IN;
-	return zos_ipc_call((unsigned char)handle, &req);
+	return call((unsigned char)handle, &req);
 }
 
-int zos_stat(const char *path, struct zfs_stat *out)
+int stat(const char *path, struct zfs_stat *out)
 {
 	unsigned int length = zfs_len(path);
 	struct zos_ipc_request req;
@@ -247,8 +247,8 @@ int zos_stat(const char *path, struct zfs_stat *out)
 	req.buffer = (void *)path;
 	req.length = length;
 	req.direction = ZOS_IPC_DESC_IN;
-	result = zos_ipc_call((unsigned char)handle, &req);
-	(void)zos_ipc_unbind((unsigned char)handle);
+	result = call((unsigned char)handle, &req);
+	(void)unbind((unsigned char)handle);
 	if (result < 0) {
 		return result;
 	}
@@ -259,22 +259,22 @@ int zos_stat(const char *path, struct zfs_stat *out)
 	return 0;
 }
 
-int zos_mkdir(const char *path)
+int mkdir(const char *path)
 {
 	return zfs_path_op(path, ZFS_OP_MKDIR);
 }
 
-int zos_rmdir(const char *path)
+int rmdir(const char *path)
 {
 	return zfs_path_op(path, ZFS_OP_RMDIR);
 }
 
-int zos_unlink(const char *path)
+int unlink(const char *path)
 {
 	return zfs_path_op(path, ZFS_OP_UNLINK);
 }
 
-int zos_rename(const char *oldpath, const char *newpath)
+int rename(const char *oldpath, const char *newpath)
 {
 	unsigned int from_len = zfs_len(oldpath);
 	unsigned int to_len = zfs_len(newpath);
@@ -299,6 +299,6 @@ int zos_rename(const char *oldpath, const char *newpath)
 	result = zfs_call((unsigned char)handle, ZFS_OP_RENAME, zos_rename_paths,
 			  (unsigned int)(from_len + 1u + to_len),
 			  ZOS_IPC_DESC_IN);
-	(void)zos_ipc_unbind((unsigned char)handle);
+	(void)unbind((unsigned char)handle);
 	return result;
 }

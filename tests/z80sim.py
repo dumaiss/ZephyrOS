@@ -78,7 +78,7 @@ class IocCommandPeer:
     ST_FS_ERROR = 0x38
     ST_UNKNOWN_CMD = 0x02   # IOC_STATUS_UNKNOWN_CMD (unknown-class reply)
 
-    # --- FS2 filesystem service (M9, package 30) ----------------------
+    # --- FS2 filesystem driver (M9, package 30) ----------------------
     CMD_FS2_CAPS = 0x30
     CMD_FS2_GENERATION = 0x31
     CMD_FS2_ROOT = 0x33
@@ -209,7 +209,7 @@ class IocCommandPeer:
         self.fs_delete_reopen_fault = fs_delete_reopen_fault
         self.arbitrary_ready = arbitrary_ready
         self.custom_replies = dict(custom_replies or {})
-        # --- FS2 filesystem service model (M9, package 30) ------------
+        # --- FS2 filesystem driver model (M9, package 30) ------------
         # A small root-relative FAT-like namespace served with the real
         # FS2 command/reply and READY/DONE bulk semantics.  `fs2_counts`
         # records every FS2 command class so tests can prove the
@@ -647,7 +647,7 @@ class IocCommandPeer:
         out[1] = status
         return self._wrap(self.RSP_XFER_STATUS, seq, self.ST_OK, out)
 
-    # -- FS2 filesystem service (M9, package 30) -----------------------
+    # -- FS2 filesystem driver (M9, package 30) -----------------------
 
     def fs2_add(self, path, content=b"", directory=False):
         """Install a file or directory.  `path` is a '/'-separated name
@@ -2581,10 +2581,10 @@ def skip_serial_connect_delay(cpu, delay_address):
     replay returns from it instead of burning the wall-clock delay.  The
     address is only that spin while the nucleus is mapped: latch 18h is
     mode 11 with the page field at zero, which puts bank 7 in the
-    6000h-DFFFh window.  With bank 6 in the window - the mode-10 service
-    boot gate and the mode-11 service calls - the same PC is
-    mid-instruction of a resident-service image, so the skip must not
-    fire there; popping the stack in the middle of service code corrupts
+    6000h-DFFFh window.  With bank 6 in the window - the mode-10 driver
+    boot gate and the mode-11 driver calls - the same PC is
+    mid-instruction of a resident-driver image, so the skip must not
+    fire there; popping the stack in the middle of driver code corrupts
     the loader.
     """
     if cpu.latch == SERIAL_CONNECT_DELAY_LATCH and cpu.pc == delay_address:

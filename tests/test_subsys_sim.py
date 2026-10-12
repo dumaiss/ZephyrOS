@@ -5,8 +5,8 @@ simulator.
 Coverage (all executing the real linked bytes, on the current boot path):
 
 * the machine boots the production path -- `vfs_init()`, the SIO and
-  console service images placed from the ROMFS recovery store by
-  `service_load_all` -- and the console service binds before the
+  console driver images placed from the ROMFS recovery store by
+  `driver_load_all` -- and the console driver binds before the
   acceptance hooks run;
 * the early hook runs the syscall gate and the interrupt executive
   selftests: `syscall selftest: OK` and `irq selftest: OK`;
@@ -52,7 +52,7 @@ PROCESS_OK = "process selftest: OK"
 MONITOR_EXIT = "monitor: exit status 0x"
 MONITOR_BANNER = "ZephyrOS native monitor"
 MONITOR_PROMPT = "Z80> "
-CONSOLE_BOUND = "console: service OK"
+CONSOLE_BOUND = "console: driver OK"
 
 FAIL_MARKER = b"FAIL"
 
@@ -146,7 +146,7 @@ class TestSubsystemBoot(SubsystemSimBase):
 
 class TestSubsystemManifest(SubsystemSimBase):
     def test_manifest_carries_the_current_boot_set_and_fixtures(self):
-        for name in ("sio.zmod", "console-serial.zmod", "services.man",
+        for name in ("sio.zmod", "console-serial.zmod", "drivers.man",
                      "monitor.zex", "crosspage.bin",
                      "zextest.zex", "zex-return.zex", "zex-truncated.zex",
                      "zex-wrong-type.dat",

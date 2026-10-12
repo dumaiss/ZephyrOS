@@ -3,17 +3,17 @@
 
 Boots `build-fs-selftest/zephyros-fs-selftest.bin` in the Z80 simulator with
 the host FS2 peer serving the card, and reads the transcript of the one SDK
-outcome program the image boots (`/SYSTEM/fs_selftest.zex`):
+outcome program the image boots (`/system/fs_selftest.zex`):
 
 - with a writable card, every outcome line reports OK, the verdict carries
   the pinned check count, the nested-exec child reports its own stdout and
   the image hands the console to the monitor; the child also runs once
   copied onto the card itself, so an exec whose path only the bank-6
   filesystem provider can read stays covered (correction 01);
-- with no card, the program takes its card-absent branch, `/SYSTEM` stays
+- with no card, the program takes its card-absent branch, `/system` stays
   usable and the verdict carries the reduced count;
 - the handles the child leaked are gone once it exits: the driver's card
-  slots and the kernel's descriptor table are read straight out of the
+  slots and the kernel's handle table are read straight out of the
   machine at the moment the parent proves the slots are reusable.
 
 Production is not touched by this image: it only adds a boot configuration,
@@ -41,7 +41,7 @@ ZMOD = os.path.join("build-fs-selftest", "modules", "iocfat.zmod")
 PASS = "fs-selftest: PASS\r\n"
 FAIL = "fs-selftest: FAIL"
 PROMPT = "Z80> "
-ABSENT = "fs-selftest: card absent: /FS not served\r\n"
+ABSENT = "fs-selftest: card absent: /fs not served\r\n"
 READONLY = "fs-selftest: card not writable\r\n"
 CHILD_PASS = "fs-child: PASS\r\n"
 CHILD_ABSENT = "fs-child: card absent\r\n"
@@ -51,9 +51,9 @@ EXEC_STATUS = "fs-selftest: exec-status OK\r\n"
 CARD_CHECKS = 37
 ABSENT_CHECKS = 8
 
-# kernel/vfs/vfs.h: 12 descriptors, `owner` is 0xFF when the slot is free,
-# and the kernel pins sizeof(struct vfs_descriptor) at 21 bytes.
-VFS_FD_MAX = 12
+# kernel/vfs/vfs.h: 12 handles, `owner` is 0xFF when the slot is free,
+# and the kernel pins sizeof(struct vfs_handle_entry) at 21 bytes.
+VFS_HANDLE_MAX = 12
 VFS_DESC_FREE = 0xFF
 VFS_DESC_STRIDE = 21
 
@@ -127,7 +127,7 @@ class TestFsSelftestWritableCard(FsSelftestSimBase):
 
         for line in ("ZephyrOS 0.0", "platform: Zephyr-80",
                      "kernel entry: OK", "serial: OK",
-                     "console: service OK"):
+                     "console: driver OK"):
             self.assertIn(line + "\r\n", sio)
         self.assertNotIn("PANIC", sio)
         self.assertNotIn(READONLY, sio)
@@ -171,13 +171,13 @@ class TestFsSelftestWritableCard(FsSelftestSimBase):
         self.assertEqual(bank[base + 32], 0,
                          "the driver's directory slot is still in use")
 
-        # The kernel's descriptor table: only the two standard handles the
+        # The kernel's handle table: only the two standard handles the
         # running parent owns may be live.
-        table = self.syms["_vfs_descriptors"]
-        live = [index for index in range(VFS_FD_MAX)
+        table = self.syms["_vfs_handles"]
+        live = [index for index in range(VFS_HANDLE_MAX)
                 if z.bank7[table + VFS_DESC_STRIDE * index] != VFS_DESC_FREE]
         self.assertEqual(len(live), 2,
-                         "descriptor table holds %r live entries" % live)
+                         "handle table holds %r live entries" % live)
 
 
 class TestFsSelftestAbsentCard(FsSelftestSimBase):
@@ -195,7 +195,7 @@ class TestFsSelftestAbsentCard(FsSelftestSimBase):
 
         # The child still ran, still reported through its own stdout and
         # still handed back its exit status; only the card file was
-        # refused (the `/FS` namespace bind needs no card).
+        # refused (the `/fs` namespace bind needs no card).
         self.assertIn(CHILD_PASS, sio)
         self.assertIn(CHILD_ABSENT, sio)
         self.assertIn("fs-child: leaked 2 handles\r\n", sio)

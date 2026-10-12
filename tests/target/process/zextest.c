@@ -49,18 +49,18 @@ static void zt_fail(unsigned char code)
 {
 	/* The console may already be broken; the exit status still reports
 	 * the failure, so this write result is deliberately ignored. */
-	zex_write(fail_prefix, sizeof(fail_prefix) - 1);
+	console_write(fail_prefix, sizeof(fail_prefix) - 1);
 	scratch_char = hex_digits[(code >> 4) & 0x0Fu];
-	zex_write(&scratch_char, 1);
+	console_write(&scratch_char, 1);
 	scratch_char = hex_digits[code & 0x0Fu];
-	zex_write(&scratch_char, 1);
-	zex_write(line_end, sizeof(line_end) - 1);
-	zex_exit(ZOS_PCST_ZEXTEST_FAIL | code);
+	console_write(&scratch_char, 1);
+	console_write(line_end, sizeof(line_end) - 1);
+	exit(ZOS_PCST_ZEXTEST_FAIL | code);
 }
 
 static void zt_write_str(const char *text, unsigned int len)
 {
-	if (zex_write(text, len) != (int)len) {
+	if (console_write(text, len) != (int)len) {
 		zt_fail(ZOS_PCST_ZT_FAIL_WRITE);
 	}
 }
@@ -93,7 +93,7 @@ int main(void)
 	}
 
 	/* 4. GETINFO record. */
-	if (zex_getinfo(&info) != ZOS_GETINFO_SIZE) {
+	if (getinfo(&info) != ZOS_GETINFO_SIZE) {
 		zt_fail(ZOS_PCST_ZT_FAIL_GETINFO);
 	}
 	if (info.size != ZOS_GETINFO_SIZE || info.abi != ZOS_GETINFO_ABI ||
@@ -113,6 +113,6 @@ int main(void)
 	zt_write_str(ok_line, sizeof(ok_line) - 1);
 
 	/* 6. Known exit status carrying the bank that executed this image. */
-	zex_exit(ZOS_PCST_ZEXTEST_PASS | info.bank);
+	exit(ZOS_PCST_ZEXTEST_PASS | info.bank);
 	return 0; /* unreachable */
 }

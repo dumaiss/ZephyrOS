@@ -25,7 +25,7 @@
  *   * exit releases the process's own objects: the program leaves the two
  *     anchor objects live, and the launcher's `free-banks 6` report
  *     proves the release (their bank is free again);
- *   * far code (package 44b): it SYS_EXECs /SYSTEM/xmem_far.zex, whose
+ *   * far code (package 44b): it SYS_EXECs /system/xmem_far.zex, whose
  *     two FAR_CODE segments run through the aperture, and its own
  *     capacity check around that exec proves the far program's exit
  *     released its segments, objects and bank slots.
@@ -57,9 +57,9 @@
 /* The stage tail (work package 45b). */
 #define XMEM_STAGE_TAIL "stage"
 
-#define CHILD_PATH   "/SYSTEM/xmem_child.zex"
+#define CHILD_PATH   "/system/xmem_child.zex"
 #define CHILD_STATUS 42
-#define FAR_PATH     "/SYSTEM/xmem_far.zex"
+#define FAR_PATH     "/system/xmem_far.zex"
 #define FAR_STATUS   43
 
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
@@ -86,10 +86,10 @@ static void check(const char *label, int ok)
 	++checks;
 	if (!ok) {
 		++failures;
-		zos_printf("xmem-selftest: FAIL %s\r\n", label);
+		printf("xmem-selftest: FAIL %s\r\n", label);
 		return;
 	}
-	zos_printf("xmem-selftest: %s OK\r\n", label);
+	printf("xmem-selftest: %s OK\r\n", label);
 }
 
 /* The object byte at offset `o` is (unsigned char)o, written and checked
@@ -109,7 +109,7 @@ static int fill_range(unsigned int handle, unsigned int base,
 		for (i = 0u; i < chunk; ++i) {
 			pattern[i] = (unsigned char)(base + done + i);
 		}
-		if (zos_xmem_write(handle, base + done, pattern, chunk) !=
+		if (xwrite(handle, base + done, pattern, chunk) !=
 		    (int)chunk) {
 			return 0;
 		}
@@ -130,7 +130,7 @@ static int check_range(unsigned int handle, unsigned int base,
 		if (chunk > BLK) {
 			chunk = BLK;
 		}
-		if (zos_xmem_read(handle, base + done, buf, chunk) !=
+		if (xread(handle, base + done, buf, chunk) !=
 		    (int)chunk) {
 			return 0;
 		}
@@ -152,14 +152,14 @@ static int fill_byte(unsigned int handle, unsigned int offset,
 	for (i = 0u; i < length; ++i) {
 		pattern[i] = value;
 	}
-	return zos_xmem_write(handle, offset, pattern, length) ==
+	return xwrite(handle, offset, pattern, length) ==
 	       (int)length;
 }
 
 static int check_byte(unsigned int handle, unsigned int offset,
 		      unsigned char value)
 {
-	return zos_xmem_read(handle, offset, buf, 1u) == 1 &&
+	return xread(handle, offset, buf, 1u) == 1 &&
 	       buf[0] == value;
 }
 
@@ -172,7 +172,7 @@ static unsigned int fill_until_full(unsigned int size, unsigned int flags)
 	int handle;
 
 	while (count < 20u) {
-		handle = zos_xmem_alloc(size, flags);
+		handle = xalloc(size, flags);
 		if (handle < 1) {
 			break;
 		}
@@ -186,7 +186,7 @@ static void release_held(unsigned int count)
 	unsigned int i;
 
 	for (i = 0u; i < count; ++i) {
-		(void)zos_xmem_free(held[i]);
+		(void)xfree(held[i]);
 	}
 }
 
@@ -250,7 +250,7 @@ static int same(const char *a, const char *b)
 
 int main(int argc, char **argv)
 {
-	struct zos_startup *boot = zos_args();
+	struct zos_startup *boot = startup();
 	const char *tail = (const char *)0;
 	struct zos_xmem_info info;
 	unsigned int anchor;
@@ -270,11 +270,11 @@ int main(int argc, char **argv)
 		stage = 1;
 		tail = XMEM_STAGE_TAIL;
 	} else if (argc != 0) {
-		zos_puts("xmem-selftest: FAIL options\r\n");
+		console_puts("xmem-selftest: FAIL options\r\n");
 		return 2;
 	}
 
-	zos_puts("xmem-selftest: begin\r\n");
+	console_puts("xmem-selftest: begin\r\n");
 	/* Boot contract: version 1 with the empty tail; a stage run proves
 	 * the option tail arrived byte-exact instead. */
 	check("startup-version",
@@ -284,7 +284,7 @@ int main(int argc, char **argv)
 	      (tail == (const char *)0
 		       ? boot->length == 0u
 		       : (boot->length == 5u && same(boot->tail, tail))));
-	check("console-write", zos_console_write("=", 1u) == 1);
+	check("console-write", console_write("=", 1u) == 1);
 
 	/* The pool this run may use: five banks when this image is the whole
 	 * machine (the acceptance image), the measured count when the
@@ -300,9 +300,9 @@ int main(int argc, char **argv)
 	/* The two anchors are the first objects this image allocates: the
 	 * first gets handle 1 and the lower aperture slot, the second the
 	 * upper slot.  They stay live until the program exits. */
-	handle = zos_xmem_alloc(8192u, MAPPABLE);
+	handle = xalloc(8192u, MAPPABLE);
 	anchor = (unsigned int)handle;
-	handle = zos_xmem_alloc(8192u, MAPPABLE);
+	handle = xalloc(8192u, MAPPABLE);
 	second = (unsigned int)handle;
 	check("anchor-alloc", anchor >= 1u && second >= 1u);
 
@@ -312,39 +312,39 @@ int main(int argc, char **argv)
 	info.type = 0u;
 	info.reserved = 0u;
 	check("anchor-info",
-	      zos_xmem_info(anchor, &info) == 0 && info.requested == 8192u &&
+	      xinfo(anchor, &info) == 0 && info.requested == 8192u &&
 	      info.allocated == 8192u && info.flags == MAPPABLE &&
 	      info.type == ZOS_XMEM_TYPE_RUNTIME);
 
 	/* Sizes and rounding. */
-	check("alloc-zero-rejected", zos_xmem_alloc(0u, 0u) == -ZOS_EINVAL);
-	check("alloc-flags-rejected", zos_xmem_alloc(64u, 2u) == -ZOS_EINVAL);
-	check("alloc-oversized", zos_xmem_alloc(32769u, 0u) == -ZOS_ENOSPC);
+	check("alloc-zero-rejected", xalloc(0u, 0u) == -ZOS_EINVAL);
+	check("alloc-flags-rejected", xalloc(64u, 2u) == -ZOS_EINVAL);
+	check("alloc-oversized", xalloc(32769u, 0u) == -ZOS_ENOSPC);
 	check("alloc-mappable-oversized",
-	      zos_xmem_alloc(16385u, MAPPABLE) == -ZOS_EINVAL);
+	      xalloc(16385u, MAPPABLE) == -ZOS_EINVAL);
 
-	handle = zos_xmem_alloc(1u, 0u);
+	handle = xalloc(1u, 0u);
 	check("size-1",
 	      handle >= 1 &&
-	      zos_xmem_info((unsigned int)handle, &info) == 0 &&
+	      xinfo((unsigned int)handle, &info) == 0 &&
 	      info.requested == 1u && info.allocated == 8192u);
-	(void)zos_xmem_free((unsigned int)handle);
-	handle = zos_xmem_alloc(8191u, 0u);
+	(void)xfree((unsigned int)handle);
+	handle = xalloc(8191u, 0u);
 	check("size-8191",
 	      handle >= 1 &&
-	      zos_xmem_info((unsigned int)handle, &info) == 0 &&
+	      xinfo((unsigned int)handle, &info) == 0 &&
 	      info.allocated == 8192u);
-	(void)zos_xmem_free((unsigned int)handle);
-	handle = zos_xmem_alloc(8192u, 0u);
+	(void)xfree((unsigned int)handle);
+	handle = xalloc(8192u, 0u);
 	check("size-8192",
 	      handle >= 1 &&
-	      zos_xmem_info((unsigned int)handle, &info) == 0 &&
+	      xinfo((unsigned int)handle, &info) == 0 &&
 	      info.allocated == 8192u);
-	(void)zos_xmem_free((unsigned int)handle);
-	handle = zos_xmem_alloc(8193u, 0u);
+	(void)xfree((unsigned int)handle);
+	handle = xalloc(8193u, 0u);
 	check("size-8193",
 	      handle >= 1 &&
-	      zos_xmem_info((unsigned int)handle, &info) == 0 &&
+	      xinfo((unsigned int)handle, &info) == 0 &&
 	      info.requested == 8193u && info.allocated == 16384u);
 
 	/* One object, every boundary: first byte, last byte, the slot
@@ -363,40 +363,40 @@ int main(int argc, char **argv)
 	      fill_range((unsigned int)handle, 0u, 16384u) &&
 	      check_range((unsigned int)handle, 0u, 16384u));
 	check("range-read-end",
-	      zos_xmem_read((unsigned int)handle, 16384u, buf, 1u) ==
+	      xread((unsigned int)handle, 16384u, buf, 1u) ==
 	      -ZOS_EINVAL);
 	check("range-read-straddle",
-	      zos_xmem_read((unsigned int)handle, 16383u, buf, 2u) ==
+	      xread((unsigned int)handle, 16383u, buf, 2u) ==
 	      -ZOS_EINVAL);
 	check("range-write-end",
-	      zos_xmem_write((unsigned int)handle, 16384u, pattern, 1u) ==
+	      xwrite((unsigned int)handle, 16384u, pattern, 1u) ==
 	      -ZOS_EINVAL);
 	check("range-offset",
-	      zos_xmem_read((unsigned int)handle, 0xF000u, buf, 1u) ==
+	      xread((unsigned int)handle, 0xF000u, buf, 1u) ==
 	      -ZOS_EINVAL);
 	check("range-buffer",
-	      zos_xmem_read((unsigned int)handle, 0u, (void *)0xE000u, 1u) ==
+	      xread((unsigned int)handle, 0u, (void *)0xE000u, 1u) ==
 	      -ZOS_EINVAL);
 	{
 		unsigned int old = (unsigned int)handle;
 
-		(void)zos_xmem_free(old);
-		check("stale-free", zos_xmem_free(old) == -ZOS_EINVAL);
-		handle = zos_xmem_alloc(8193u, 0u);
+		(void)xfree(old);
+		check("stale-free", xfree(old) == -ZOS_EINVAL);
+		handle = xalloc(8193u, 0u);
 		check("stale-reused",
 		      handle >= 1 && (unsigned int)handle != old);
 		check("stale-read-live",
-		      zos_xmem_read(old, 0u, buf, 1u) == -ZOS_EINVAL);
+		      xread(old, 0u, buf, 1u) == -ZOS_EINVAL);
 		check("stale-info-live",
-		      zos_xmem_info(old, &info) == -ZOS_EINVAL);
-		(void)zos_xmem_free((unsigned int)handle);
+		      xinfo(old, &info) == -ZOS_EINVAL);
+		(void)xfree((unsigned int)handle);
 	}
 
 	/* The largest object (32 KiB) and no pre-zeroing. */
-	handle = zos_xmem_alloc(32768u, 0u);
+	handle = xalloc(32768u, 0u);
 	check("largest-alloc",
 	      handle >= 1 &&
-	      zos_xmem_info((unsigned int)handle, &info) == 0 &&
+	      xinfo((unsigned int)handle, &info) == 0 &&
 	      info.allocated == 32768u);
 	check("largest-head",
 	      fill_byte((unsigned int)handle, 0u, 0x44u, 1u) &&
@@ -409,13 +409,13 @@ int main(int argc, char **argv)
 	      check_range((unsigned int)handle, 0u, 32768u));
 	(void)fill_byte((unsigned int)handle, 0u, 0x66u, 1u);
 	(void)fill_byte((unsigned int)handle, 32767u, 0x67u, 1u);
-	(void)zos_xmem_free((unsigned int)handle);
-	handle = zos_xmem_alloc(32768u, 0u);
+	(void)xfree((unsigned int)handle);
+	handle = xalloc(32768u, 0u);
 	check("no-zeroing",
 	      handle >= 1 &&
 	      check_byte((unsigned int)handle, 0u, 0x66u) &&
 	      check_byte((unsigned int)handle, 32767u, 0x67u));
-	(void)zos_xmem_free((unsigned int)handle);
+	(void)xfree((unsigned int)handle);
 
 	/* Multiple objects in one bank, independent contents. */
 	{
@@ -424,7 +424,7 @@ int main(int argc, char **argv)
 		int j;
 
 		for (i = 0u; i < 5u; ++i) {
-			handle = zos_xmem_alloc(8192u, 0u);
+			handle = xalloc(8192u, 0u);
 			if (handle < 1) {
 				ok = 0;
 				handle = 0;
@@ -461,7 +461,7 @@ int main(int argc, char **argv)
 			}
 			check("multi-distinct", ok);
 			for (i = 0u; i < 5u; ++i) {
-				(void)zos_xmem_free(multi[i]);
+				(void)xfree(multi[i]);
 			}
 		}
 	}
@@ -473,7 +473,7 @@ int main(int argc, char **argv)
 		int ok = 1;
 
 		for (i = 0u; i < banks; ++i) {
-			handle = zos_xmem_alloc(32768u, 0u);
+			handle = xalloc(32768u, 0u);
 			if (handle < 1) {
 				ok = 0;
 				handle = 0;
@@ -482,21 +482,21 @@ int main(int argc, char **argv)
 		}
 		check("fill-banks", ok);
 		check("fragmentation-32k",
-		      zos_xmem_alloc(32768u, 0u) == -ZOS_ENOSPC);
+		      xalloc(32768u, 0u) == -ZOS_ENOSPC);
 		check("fragmentation-16k",
-		      zos_xmem_alloc(16384u, 0u) == -ZOS_ENOSPC);
-		handle = zos_xmem_alloc(8192u, 0u);
+		      xalloc(16384u, 0u) == -ZOS_ENOSPC);
+		handle = xalloc(8192u, 0u);
 		check("fragmentation-hole", handle >= 1);
-		(void)zos_xmem_free(big[banks - 1u]);
+		(void)xfree(big[banks - 1u]);
 		{
-			int again = zos_xmem_alloc(32768u, 0u);
+			int again = xalloc(32768u, 0u);
 
 			check("fragmentation-refill", again >= 1);
-			(void)zos_xmem_free((unsigned int)again);
+			(void)xfree((unsigned int)again);
 		}
-		(void)zos_xmem_free((unsigned int)handle);
+		(void)xfree((unsigned int)handle);
 		for (i = 0u; i + 1u < banks; ++i) {
-			(void)zos_xmem_free(big[i]);
+			(void)xfree(big[i]);
 		}
 	}
 
@@ -505,27 +505,27 @@ int main(int argc, char **argv)
 	count = fill_until_full(16384u, 0u);
 	check("exhaustion-16k-count", count == 2u * banks);
 	check("exhaustion-16k",
-	      zos_xmem_alloc(16384u, 0u) == -ZOS_ENOSPC);
+	      xalloc(16384u, 0u) == -ZOS_ENOSPC);
 	release_held(count);
-	handle = zos_xmem_alloc(16384u, 0u);
+	handle = xalloc(16384u, 0u);
 	check("exhaustion-16k-refill", handle >= 1);
-	(void)zos_xmem_free((unsigned int)handle);
+	(void)xfree((unsigned int)handle);
 	/* Every aperture slot except the two the anchors hold. */
 	count = fill_until_full(8192u, MAPPABLE);
 	check("exhaustion-mappable-count", count == 2u * banks - 2u);
 	check("exhaustion-mappable",
-	      zos_xmem_alloc(8192u, MAPPABLE) == -ZOS_ENOSPC);
+	      xalloc(8192u, MAPPABLE) == -ZOS_ENOSPC);
 	release_held(count);
-	handle = zos_xmem_alloc(8192u, MAPPABLE);
+	handle = xalloc(8192u, MAPPABLE);
 	check("exhaustion-mappable-refill", handle >= 1);
-	(void)zos_xmem_free((unsigned int)handle);
+	(void)xfree((unsigned int)handle);
 
 	/* The aperture: token, address, direct access and buffer identity. */
-	handle = zos_xmem_map(anchor, &address_a);
+	handle = xmap(anchor, &address_a);
 	token_a = (unsigned int)handle;
 	check("map-token", token_a >= 1u);
 	check("map-address-low", token_a >= 1u && address_a == APERTURE_BASE);
-	handle = zos_xmem_map(second, &address_b);
+	handle = xmap(second, &address_b);
 	token_b = (unsigned int)handle;
 	check("map-address-high",
 	      token_b >= 1u && address_b == APERTURE_BASE + 0x2000u);
@@ -535,13 +535,13 @@ int main(int argc, char **argv)
 	      ((token_a >> 5) & 7u) >= 2u &&
 	      (token_a & 7u) == ((unsigned int)latch_port & 7u) &&
 	      (token_b & 7u) == ((unsigned int)latch_port & 7u));
-	handle = zos_xmem_alloc(64u, 0u);
+	handle = xalloc(64u, 0u);
 	check("map-non-mappable",
 	      handle >= 1 &&
-	      zos_xmem_map((unsigned int)handle, &address_a) == -ZOS_EINVAL);
-	(void)zos_xmem_free((unsigned int)handle);
+	      xmap((unsigned int)handle, &address_a) == -ZOS_EINVAL);
+	(void)xfree((unsigned int)handle);
 
-	saved = (unsigned int)zos_aperture_open((unsigned char)token_a);
+	saved = (unsigned int)aperture_open((unsigned char)token_a);
 	check("aperture-open", (saved & 0xE0u) == 0u);
 	fill_aperture(APERTURE_BASE, APERTURE_END - APERTURE_BASE, 0x77u);
 	check("aperture-direct",
@@ -550,18 +550,18 @@ int main(int argc, char **argv)
 	      read_aperture(0xA000u) == 0x77u &&
 	      read_aperture(APERTURE_END - 1u) == 0x77u);
 	check("aperture-xmem-read",
-	      zos_xmem_read(anchor, 0x0F00u, buf, BLK) == (int)BLK &&
+	      xread(anchor, 0x0F00u, buf, BLK) == (int)BLK &&
 	      buf[0] == 0x77u && buf[BLK - 1u] == 0x77u);
 
 	/* Buffer identity: a syscall buffer behind the aperture is the far
 	 * bank, never the program's own memory at that address. */
 	fill_aperture(0x9800u, 64u, 0x91u);
 	check("identity-write",
-	      zos_xmem_write(anchor, 0x1000u, (void *)0x9800u, 64u) == 64 &&
-	      zos_xmem_read(anchor, 0x1000u, buf, 64u) == 64 &&
+	      xwrite(anchor, 0x1000u, (void *)0x9800u, 64u) == 64 &&
+	      xread(anchor, 0x1000u, buf, 64u) == 64 &&
 	      buf[0] == 0x91u && buf[63] == 0x91u);
 	check("identity-read",
-	      zos_xmem_read(anchor, 0x1000u, (void *)0x9900u, 64u) == 64 &&
+	      xread(anchor, 0x1000u, (void *)0x9900u, 64u) == 64 &&
 	      read_aperture(0x9900u) == 0x91u &&
 	      read_aperture(0x993Fu) == 0x91u &&
 	      check_byte(anchor, 0x1900u, 0x91u));
@@ -578,7 +578,7 @@ int main(int argc, char **argv)
 		write_aperture_string(0x8100u, CHILD_PATH);
 		count = fill_until_full(8192u, 0u);
 		release_held(count);
-		status = zos_exec((const char *)0x8100u, tail);
+		status = run((const char *)0x8100u, tail);
 		check("exec-status", status == CHILD_STATUS);
 		check("exec-latch-restored",
 		      (unsigned int)latch_port == token_a);
@@ -592,10 +592,10 @@ int main(int argc, char **argv)
 		release_held(after);
 	}
 
-	zos_aperture_close((unsigned char)saved);
+	aperture_close((unsigned char)saved);
 	check("aperture-close", ((unsigned int)latch_port & 0xE0u) == 0u);
 
-	/* Far code (package 44b): /SYSTEM/xmem_far.zex runs its own
+	/* Far code (package 44b): /system/xmem_far.zex runs its own
 	 * FAR_CODE segments through the aperture - map, plain CALL and
 	 * return, far code calling primary code, syscalls with an aperture
 	 * buffer, and an exec from far context whose child refuses this
@@ -613,7 +613,7 @@ int main(int argc, char **argv)
 		unsigned int before = fill_until_full(8192u, MAPPABLE);
 
 		release_held(before);
-		status = zos_exec(FAR_PATH, "");
+		status = run(FAR_PATH, "");
 		check("far-program-status", status == FAR_STATUS);
 		count = fill_until_full(8192u, MAPPABLE);
 		check("far-program-released", count == before);
@@ -623,15 +623,15 @@ int main(int argc, char **argv)
 	/* The anchors stay live: exit must release them, which the
 	 * launcher's `free-banks 6` report proves. */
 	check("hold-anchors",
-	      zos_xmem_info(anchor, &info) == 0 &&
-	      zos_xmem_info(second, &info) == 0);
+	      xinfo(anchor, &info) == 0 &&
+	      xinfo(second, &info) == 0);
 
-	zos_printf("xmem-selftest: %u checks, %u failures\r\n", checks,
+	printf("xmem-selftest: %u checks, %u failures\r\n", checks,
 		   failures);
 	if (failures == 0u) {
-		zos_puts("xmem-selftest: PASS\r\n");
+		console_puts("xmem-selftest: PASS\r\n");
 	} else {
-		zos_puts("xmem-selftest: FAIL\r\n");
+		console_puts("xmem-selftest: FAIL\r\n");
 	}
 	return (failures == 0u) ? 0 : 1;
 }

@@ -1,8 +1,8 @@
-/* ZephyrOS V9958 service boot segment (work package 41).
+/* ZephyrOS V9958 driver boot segment (work package 41).
  *
  * Runs once through the mode-10 gate with Q = 6 (architecture 36.6): the
  * whole resident bank is mapped - including this image's bulk segment,
- * the 2048-byte font - the fixed core is not, and the service bootstrap
+ * the 2048-byte font - the fixed core is not, and the driver bootstrap
  * interface is unavailable.  Nothing here executes after boot.
  *
  * The boot segment performs the initial display bring-up: it hands the

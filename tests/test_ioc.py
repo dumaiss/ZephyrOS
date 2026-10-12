@@ -8,7 +8,7 @@ without executing target code:
     bulk-lane ports, register/status values, packet constants, polling
     budgets, scan/FIFO bounds, the deployed CRC-bypass mode, and the HID
     doorbell, value-identical between hardware.h and hardware.inc;
-  - include/zephyros/ioc.h: native frame layout, operation order,
+  - drivers/include/ioc.h: native frame layout, operation order,
     capability limits, semantic status and the transport error set;
   - the internal transport-class error codes added to errno.h;
   - the packed ioc.zmod container, manifest, ROMFS entry and boot order
@@ -43,22 +43,22 @@ from z80sim import ioc_crc16  # noqa: E402
 from maptools import (  # noqa: E402
     HARDWARE_H, HARDWARE_INC, evaluate, parse_asm_inc, parse_c_header)
 
-IOC_H = os.path.join(ROOT, "include", "zephyros", "ioc.h")
-# The public ABI errno values (abi/) plus the IOC/boot-internal ones the
-# kernel header keeps (include/zephyros/errno.h re-exports the public set).
+IOC_H = os.path.join(ROOT, "drivers", "include", "ioc.h")
+# The public ABI errno values (abi/zos/errno.h) plus the IOC
+# transport-class codes, which live in the IOC header itself (T3 moved
+# them out of drivers/include/ioc.h when the private errno.h was deleted).
 ERRNO_H = os.path.join(ROOT, "abi", "zos", "errno.h")
-INTERNAL_ERRNO_H = os.path.join(ROOT, "include", "zephyros", "errno.h")
 PROTO_H = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.h")
-IOC_PROTOCOL_H = os.path.join(ROOT, "include", "zephyros", "ioc_protocol.h")
+IOC_PROTOCOL_H = os.path.join(ROOT, "drivers", "include", "ioc_protocol.h")
 DRIVER_H = os.path.join(ROOT, "drivers", "ioc", "ioc_driver.h")
 DRIVER_C = os.path.join(ROOT, "drivers", "ioc", "ioc.c")
 DRIVER_ASM = os.path.join(ROOT, "drivers", "ioc", "ioc_io.asm")
-# Package 41: the driver is a bank-6 service image.  The service half owns
+# Package 41: the driver is a bank-6 driver image.  The driver half owns
 # the protocol dispatch and the init entry, the boot half the lane
-# programming, and the image description lives under services/manifests.
-SERVICE_C = os.path.join(ROOT, "drivers", "ioc", "ioc_service.c")
+# programming, and the image description lives in the driver directory.
+PROTO_C = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.c")
 BOOT_C = os.path.join(ROOT, "drivers", "ioc", "ioc_boot.c")
-MANIFEST = os.path.join(ROOT, "services", "manifests", "ioc.json")
+MANIFEST = os.path.join(ROOT, "drivers", "ioc", "ioc.json")
 RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
 MAIN_C = os.path.join(ROOT, "kernel", "main.c")
 MAKEFILE = os.path.join(ROOT, "Makefile")
@@ -238,7 +238,7 @@ class TestIocPlatformConstants(unittest.TestCase):
     def test_bulk_arming_classes_and_unknown_status_are_pinned(self):
         # The complete frozen set of request classes that can arm the
         # bulk lane, and the unknown-command status that uniquely proves
-        # a service is absent.  The driver must gate READY recognition on
+        # a driver is absent.  The driver must gate READY recognition on
         # this set, not on the eight-byte shape alone.
         env = parse_c_header(PROTO_H)
         for name, value in (("IOC_CMD_BULK_TEST", 0x04),
@@ -286,7 +286,6 @@ class TestIocClassContract(unittest.TestCase):
     def test_transport_errors_are_distinct_negative_codes(self):
         env = dict(self.env)
         env.update(parse_c_header(ERRNO_H))
-        env.update(parse_c_header(INTERNAL_ERRNO_H))
         codes = {
             name: evaluate(name, env) for name in (
                 "ZIOC_EINVAL", "ZIOC_EBUSY", "ZIOC_ETIMEDOUT",
@@ -318,7 +317,7 @@ class TestIocClassContract(unittest.TestCase):
 
     def test_general_api_keeps_mcu_command_numbers_private(self):
         # The class ABI (ioc.h) never names MCU commands.  The
-        # client-visible service vocabulary lives in the owning public
+        # client-visible driver vocabulary lives in the owning public
         # header and is not duplicated in the transport-private header.
         self.assertNotIn("CMD_PING", self.text)
         self.assertNotIn("CMD_HID", self.text)
@@ -341,7 +340,7 @@ class TestIocErrorCodes(unittest.TestCase):
 
     def test_errno_transport_codes(self):
         env = parse_c_header(ERRNO_H)
-        env.update(parse_c_header(INTERNAL_ERRNO_H))
+        env.update(parse_c_header(IOC_H))
         self.assertEqual(evaluate("ZOS_EPROTO", env), 0x0D)
         self.assertEqual(evaluate("ZOS_ECRC", env), 0x0E)
         self.assertEqual(evaluate("ZOS_EBADSEQ", env), 0x0F)
@@ -353,40 +352,40 @@ class TestIocErrorCodes(unittest.TestCase):
                          len(earlier) + 3)
 
 
-class TestIocServiceArtifact(unittest.TestCase):
+class TestIocDriverArtifact(unittest.TestCase):
     def test_manifest_shape(self):
         manifest = _load_json(MANIFEST)
         self.assertEqual(manifest["name"], "ioc")
-        self.assertEqual(manifest["init"], "ioc_service_init")
+        self.assertEqual(manifest["init"], "ioc_driver_init")
         roles = [segment["role"] for segment in manifest["segments"]]
         self.assertEqual(roles, ["hot", "boot"])
         hot, boot = manifest["segments"]
         self.assertEqual(hot["image_areas"], ["_CODE"])
-        self.assertEqual(hot["bss_areas"], ["_SERVICE_IO"])
+        self.assertEqual(hot["bss_areas"], ["_DRIVER_IO"])
         self.assertEqual(boot["image_areas"], ["_BOOT"])
         self.assertEqual(boot["entry"], "ioc_boot_entry")
         self.assertEqual(manifest["objects"],
-                         ["ioc.rel", "ioc_io.rel", "ioc_service.rel",
+                         ["ioc.rel", "ioc_io.rel", "ioc_driver.rel",
                           "ioc_boot.rel", "sdcc_indirect_calls.rel"])
         self.assertEqual(manifest["endpoints"],
                          [{"class": 5, "instance": 0, "version": 1,
-                           "dispatch": "ioc_service_dispatch", "flags": 0}])
+                           "dispatch": "ioc_driver_dispatch", "flags": 0}])
         self.assertEqual(manifest["depends"], [])
 
     def test_romfs_entry_and_boot_order(self):
         manifest = _load_json(RECOVERY_MANIFEST)
         names = [entry["name"] for entry in manifest["files"]]
         self.assertIn("ioc.zmod", names)
-        self.assertIn("services.man", names)
-        # The boot manifest orders the services: HID declares the IOC
+        self.assertIn("drivers.man", names)
+        # The boot manifest orders the drivers: HID declares the IOC
         # dependency, so IOC must be listed (and therefore placed) first.
         order = _read(os.path.join(ROOT, "tools", "zmodpack.py"))
-        self.assertIn("def cmd_services", order)
+        self.assertIn("def cmd_drivers", order)
         main = _read(MAIN_C)
-        self.assertIn("service_load_all(ZOS_SERVICE_MANIFEST_NAME)", main)
+        self.assertIn("driver_load_all(ZOS_DRIVER_MANIFEST_NAME)", main)
         # Package 42b retired the arena module pass and the IOC class
-        # shim with it: every image is a service now, so HID resolves its
-        # IOC dependency from the publication the service declares.
+        # shim with it: every image is a driver now, so HID resolves its
+        # IOC dependency from the publication the driver declares.
         self.assertNotIn("ioc" + "_shim_find", main)
         self.assertFalse(os.path.exists(os.path.join(ROOT, "kernel",
                                                      "module", "loader.c")),
@@ -395,9 +394,10 @@ class TestIocServiceArtifact(unittest.TestCase):
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
         self.assertIn("ioc-test:", makefile)
-        self.assertIn("services/manifests/%.json", makefile)
-        self.assertIn("$(SVC_ZMODS): $(MODULES)/%.zmod", makefile)
-        self.assertIn("ioc_service.rel", makefile)
+        self.assertIn("$(call DRV_MANIFEST,$(1))", makefile)
+        self.assertIn("$(MODULES)/$(1).zmod: $(call DRV_MANIFEST,$(1))",
+                      makefile)
+        self.assertIn("ioc_driver.rel", makefile)
         # The IOC diagnostic runs in the console-integration image (work
         # package 42d merged the per-device images); the table row links
         # it and defines the group's guard.
@@ -406,10 +406,10 @@ class TestIocServiceArtifact(unittest.TestCase):
         self.assertIn("$(BUILD)/ioc_test.rel",
                       makefile[index:index + 400])
         self.assertIn("ioc_test", makefile)
-        # The declared service set is the manifest's business: an image
-        # boots the services its service set lists.
+        # The declared driver set is the manifest's business: an image
+        # boots the drivers its driver set lists.
         self.assertRegex(makefile,
-                         r"ZOS_SERVICES \?= .*\bioc\b")
+                         r"ZOS_DRIVERS \?= .*\bioc\b")
         self.assertNotIn("BOOT_ZMODS", makefile)
 
     def test_production_map_has_no_linked_ioc_symbols(self):
@@ -417,7 +417,7 @@ class TestIocServiceArtifact(unittest.TestCase):
             self.skipTest("build/zephyros.map missing; build first")
         syms = zmodpack_symbols(MAP)
         # The one `_ioc_`-prefixed family the nucleus owns is the class
-        # shim that publishes the service to a bank-7 module; the driver
+        # shim that publishes the driver to a bank-7 module; the driver
         # itself is a bank-6 image.
         linked = [name for name in syms
                   if name.startswith("_ioc_") and
@@ -455,7 +455,7 @@ class TestIocSourceDiscipline(unittest.TestCase):
     def setUp(self):
         self.c = _read(DRIVER_C)
         self.asm = _read(DRIVER_ASM)
-        self.service = _read(SERVICE_C)
+        self.proto = _read(PROTO_C)
         self.boot = _read(BOOT_C)
         # Lane regions so a check cannot be satisfied by the other lane's
         # routine appearing earlier in the file.
@@ -557,7 +557,7 @@ class TestIocSourceDiscipline(unittest.TestCase):
         self.assertIn("ZOS_IOC_WR5_BULK_IDLE", helper)
 
     def test_no_sio0_or_kernel_symbol_use(self):
-        for body in (self.c, self.asm, self.service, self.boot):
+        for body in (self.c, self.asm, self.proto, self.boot):
             self.assertNotIn("ZOS_SIO0", body)
             self.assertNotIn("SIO0B", body)
             self.assertNotIn("ZOS_CTC0", body)
@@ -568,15 +568,15 @@ class TestIocSourceDiscipline(unittest.TestCase):
         # assigns its number and the resident loader installs the record
         # (architecture 36.11), so no driver code registers anything.
         self.assertIn("ipc_install_endpoint",
-                      open(os.path.join(ROOT, "kernel", "service",
-                                        "service_loader.c")).read())
-        self.assertNotIn("register_ep", self.service)
-        self.assertIn("ZOS_CLASS_IOC", self.service)
-        self.assertIn("ZOS_PROTOCOL_VERSION", self.service)
+                      open(os.path.join(ROOT, "kernel", "driver",
+                                        "driver_loader.c")).read())
+        self.assertNotIn("register_ep", self.proto)
+        self.assertIn("ZOS_CLASS_IOC", self.proto)
+        self.assertIn("ZOS_PROTOCOL_VERSION", self.proto)
         for op in ("ZIOC_OP_COMMAND", "ZIOC_OP_BULK_READ",
                    "ZIOC_OP_BULK_WRITE", "ZIOC_OP_STATUS",
                    "ZIOC_OP_READY"):
-            self.assertIn(op, self.service)
+            self.assertIn(op, self.proto)
 
     def test_status_exposes_only_semantic_bits(self):
         body = self.c.split("uint16_t ioc_status")[1].split(

@@ -14,7 +14,7 @@ Region contract (see docs/architecture.md sections 36.2/36.5, docs/boot.md):
     0100h-1FFFh   page-1 caller-window gap (must stay empty)
     2000h-5FFFh   bank-7 fixed core: linked code up to the fixed code end,
                   the fixed runtime data at the derived data base (never
-                  ROM-loaded), then the service stack (5D00h-5F00h) and the
+                  ROM-loaded), then the driver stack (5D00h-5F00h) and the
                   ISR stack (5F00h-6000h); the code is ROM-loaded
     6000h-DFFFh   bank-7 cold half (the mode-11 window): linked cold code
                   up to the cold code end and the cold runtime data at
@@ -48,7 +48,7 @@ declare the derived data bases and the fixed-core ledger fields (a missing
 key is a hard error, never a fall back to a retired default).  With no
 include the synthetic host defaults are used.  When <build_dir> is given,
 <build_dir>/recovery.romfs must exist and is placed into pages 2-7, and
-<build_dir>/modules/services.plan.json supplies the bank-6 driver ledger;
+<build_dir>/modules/drivers.plan.json supplies the bank-6 driver ledger;
 when it is None (host unit tests) an all-FF recovery store is emitted
 unless `romfs` is passed explicitly.
 """
@@ -82,21 +82,21 @@ RESET_TOP = 0x0030          # M1 installs RST 30h at 0030h
 PAGE_ZERO_END = 0x0100
 # Revision-13 mode-11 bank-7 split (architecture 36.2, 36.5): the fixed
 # core is 2000h-5FFFh, the cold half (the window) is 6000h-DFFFh.  The
-# fixed core's runtime data stops below the reserved service stack, which
+# fixed core's runtime data stops below the reserved driver stack, which
 # sits below the ISR stack at the top of the fixed core.
 BANK7_BASE = 0x2000
 WINDOW_BASE = 0x6000
 BANK7_RUNTIME_END = 0xE000
-SERVICE_STACK_BASE = 0x5D00
-SERVICE_STACK_TOP = 0x5F00
-SERVICE_STACK_SIZE = 0x0200
+DRIVER_STACK_BASE = 0x5D00
+DRIVER_STACK_TOP = 0x5F00
+DRIVER_STACK_SIZE = 0x0200
 IRQ_ISR_STACK_BASE = 0x5F00
 IRQ_ISR_STACK_TOP = 0x6000
 IRQ_ISR_STACK_SIZE = 0x0100
-# Bank-6 service tiers (architecture 36.6): nothing is placed there until
+# Bank-6 driver tiers (architecture 36.6): nothing is placed there until
 # stage 4, so every image reports zero bytes against these capacities.
-SERVICE_HOT_CAPACITY = 0x8000      # 6000h-DFFFh of bank 6
-SERVICE_BOOT_CAPACITY = 0x6000     # 0000h-5FFFh of bank 6
+DRIVER_HOT_CAPACITY = 0x8000      # 6000h-DFFFh of bank 6
+DRIVER_BOOT_CAPACITY = 0x6000     # 0000h-5FFFh of bank 6
 # Host-synthetic geometry defaults.  A real build always passes its
 # generated build/geometry/memory.inc, which must carry every derived
 # value; these literals only seed the synthetic path where no include is
@@ -109,7 +109,7 @@ WINDOW_DATA_BASE = 0xD800
 FIXED_CODE_END = 0x5200
 FIXED_REQUIRED_BYTES = FIXED_CODE_END - BANK7_BASE
 FIXED_OVERFLOW_BYTES = 0
-FIXED_STACKS_BYTES = SERVICE_STACK_SIZE + IRQ_ISR_STACK_SIZE
+FIXED_STACKS_BYTES = DRIVER_STACK_SIZE + IRQ_ISR_STACK_SIZE
 FIXED_ROOM_BYTES = (WINDOW_BASE - BANK7_BASE - FIXED_REQUIRED_BYTES
                     - FIXED_OVERFLOW_BYTES - FIXED_STACKS_BYTES)
 COMMON_BASE = 0xE000
@@ -132,10 +132,10 @@ def make_regions():
         (RESET_TOP, PAGE_ZERO_END, "page-zero reservation", False),
         (PAGE_ZERO_END, BANK7_BASE, "page-1 caller-window gap", False),
         (BANK7_BASE, DATA_BASE, "bank-7 fixed core code", True),
-        (DATA_BASE, SERVICE_STACK_BASE,
+        (DATA_BASE, DRIVER_STACK_BASE,
          "bank-7 fixed core runtime data (never ROM-loaded)", False),
-        (SERVICE_STACK_BASE, WINDOW_BASE,
-         "fixed-core service and ISR stacks", False),
+        (DRIVER_STACK_BASE, WINDOW_BASE,
+         "fixed-core driver and ISR stacks", False),
         (WINDOW_BASE, WINDOW_DATA_BASE, "bank-7 cold half code", True),
         (WINDOW_DATA_BASE, BANK7_RUNTIME_END,
          "bank-7 cold half runtime data (never ROM-loaded)", False),
@@ -166,7 +166,7 @@ def apply_memory_inc(path):
     global REGIONS, FIXED_CODE_END, FIXED_REQUIRED_BYTES
     global FIXED_OVERFLOW_BYTES, FIXED_STACKS_BYTES, FIXED_ROOM_BYTES
     global BANK7_RUNTIME_END, IRQ_ISR_STACK_SIZE
-    global SERVICE_STACK_BASE, SERVICE_STACK_TOP, SERVICE_STACK_SIZE
+    global DRIVER_STACK_BASE, DRIVER_STACK_TOP, DRIVER_STACK_SIZE
     global WINDOW_BASE, WINDOW_DATA_BASE
     global ROMFS_FIRST_PAGE, ROMFS_PAGE_COUNT, ROMFS_WINDOW_SIZE
     global ROMFS_CAPACITY, ROM_ACCESS_BASE, ROM_ACCESS_SIZE
@@ -181,17 +181,17 @@ def apply_memory_inc(path):
     # fixed-core ledger fields) is derived per image and carried by the
     # generated memory include.  It is required: a missing key must fail
     # loudly rather than validate against a retired boundary.
-    for name in ("ZOS_REV13_WINDOW_BASE", "ZOS_SERVICE_STACK_BASE",
-                 "ZOS_SERVICE_STACK_TOP", "ZOS_SERVICE_STACK_SIZE",
+    for name in ("ZOS_REV13_WINDOW_BASE", "ZOS_DRIVER_STACK_BASE",
+                 "ZOS_DRIVER_STACK_TOP", "ZOS_DRIVER_STACK_SIZE",
                  "ZOS_BANK7_DATA_ALIGN", "ZOS_DATA_BASE",
                  "ZOS_WINDOW_DATA_BASE", "ZOS_FIXED_CODE_END",
                  "ZOS_FIXED_REQUIRED_BYTES", "ZOS_FIXED_OVERFLOW_BYTES",
                  "ZOS_FIXED_STACKS_BYTES", "ZOS_FIXED_ROOM_BYTES"):
         require_value(values, name, path)
     WINDOW_BASE = values["ZOS_REV13_WINDOW_BASE"]
-    SERVICE_STACK_BASE = values["ZOS_SERVICE_STACK_BASE"]
-    SERVICE_STACK_TOP = values["ZOS_SERVICE_STACK_TOP"]
-    SERVICE_STACK_SIZE = values["ZOS_SERVICE_STACK_SIZE"]
+    DRIVER_STACK_BASE = values["ZOS_DRIVER_STACK_BASE"]
+    DRIVER_STACK_TOP = values["ZOS_DRIVER_STACK_TOP"]
+    DRIVER_STACK_SIZE = values["ZOS_DRIVER_STACK_SIZE"]
     BANK7_DATA_ALIGN = values["ZOS_BANK7_DATA_ALIGN"]
     DATA_BASE = values["ZOS_DATA_BASE"]
     WINDOW_DATA_BASE = values["ZOS_WINDOW_DATA_BASE"]
@@ -233,7 +233,7 @@ RST30_VECTOR = 0x0030
 # Budget ledger formats (tools/zmodpack.py prints the identical lines; a
 # host test pins the two against each other and against the linked map).
 # Architecture 36.20: nucleus fixed (required, overflow, stacks, room),
-# nucleus cold, the two bank-6 service tiers (zero until stage 4) and the
+# nucleus cold, the two bank-6 driver tiers (zero until stage 4) and the
 # common line for the permanently mapped window.
 NUCLEUS_FIXED_LEDGER_LINE = (
     "nucleus fixed: required %d bytes | overflow %d bytes | stacks %d | "
@@ -241,8 +241,8 @@ NUCLEUS_FIXED_LEDGER_LINE = (
 NUCLEUS_COLD_LEDGER_LINE = (
     "nucleus cold: code %d bytes end %04Xh | data %d bytes at %04Xh | "
     "room %d bytes")
-SERVICE_HOT_LEDGER_LINE = "driver hot: %d bytes of %d"
-SERVICE_BOOT_LEDGER_LINE = "driver boot/bulk: %d bytes of %d"
+DRIVER_HOT_LEDGER_LINE = "driver hot: %d bytes of %d"
+DRIVER_BOOT_LEDGER_LINE = "driver boot/bulk: %d bytes of %d"
 COMMON_LEDGER_LINE = ("common: used %d of %d bytes (code %d, data %d) | "
                       "ceiling %d")
 
@@ -578,11 +578,11 @@ def check_symbol_regions(symbols):
                 % (data_base if data_base is not None else -1, DATA_BASE))
         data_size = (symbols.get("l__DATA", 0)
                      + symbols.get("l__INITIALIZED", 0))
-        if DATA_BASE + data_size > SERVICE_STACK_BASE:
+        if DATA_BASE + data_size > DRIVER_STACK_BASE:
             raise LayoutError(
                 "fixed-core runtime data ends at %04Xh, overlapping the "
-                "service stack reservation at %04Xh"
-                % (DATA_BASE + data_size, SERVICE_STACK_BASE))
+                "driver stack reservation at %04Xh"
+                % (DATA_BASE + data_size, DRIVER_STACK_BASE))
         window_data_base = symbols.get("s__WINDOW_DATA")
         if window_data_base != WINDOW_DATA_BASE:
             raise LayoutError(
@@ -621,26 +621,26 @@ def common_usage(symbols):
     return code, data, code + data, capacity
 
 
-def load_service_plan(build_dir):
-    """The bank-6 service set's ledger from <build_dir>/modules/
-    services.plan.json (tools/zmodpack.py services), or None for a
+def load_driver_plan(build_dir):
+    """The bank-6 driver set's ledger from <build_dir>/modules/
+    drivers.plan.json (tools/zmodpack.py drivers), or None for a
     synthetic build without one (the driver ledger then reports zeros)."""
     if build_dir is None:
         return None
-    path = Path(build_dir) / "modules" / "services.plan.json"
+    path = Path(build_dir) / "modules" / "drivers.plan.json"
     if not path.exists():
         return None
     with open(path) as handle:
         plan = json.load(handle)
     nucleus = plan.get("nucleus", {})
-    for field in ("service_hot_bytes", "service_hot_capacity_bytes",
-                  "service_boot_bytes", "service_boot_capacity_bytes"):
+    for field in ("driver_hot_bytes", "driver_hot_capacity_bytes",
+                  "driver_boot_bytes", "driver_boot_capacity_bytes"):
         if field not in nucleus:
             raise LayoutError("%s is missing %s" % (path, field))
     return plan
 
 
-def nucleus_ledger(symbols, service_plan=None):
+def nucleus_ledger(symbols, driver_plan=None):
     """The five ledger lines of architecture 36.20 from a linked map.
 
     Returns None for synthetic host maps without the derived symbols.
@@ -649,7 +649,7 @@ def nucleus_ledger(symbols, service_plan=None):
     The fixed-core `required`/`overflow` split is attributed per object by
     the derive step (tools/mapcheck.py geometry derive --residency) and
     carried in the generated memory include; the map checks the extents.
-    The two bank-6 driver ledgers come from the packed service set's plan
+    The two bank-6 driver ledgers come from the packed driver set's plan
     (work package 42c; before that they were hard-zeroed and mis-reported
     production as 0)."""
     kernel_end = symbols.get("__kernel_code_end")
@@ -670,12 +670,12 @@ def nucleus_ledger(symbols, service_plan=None):
             "common_capacity_bytes": common[3],
             "common_ceiling_bytes": COMMON_CEILING,
         }
-    driver = {"service_hot_bytes": 0,
-              "service_hot_capacity_bytes": SERVICE_HOT_CAPACITY,
-              "service_boot_bytes": 0,
-              "service_boot_capacity_bytes": SERVICE_BOOT_CAPACITY}
-    if service_plan is not None:
-        driver.update(service_plan["nucleus"])
+    driver = {"driver_hot_bytes": 0,
+              "driver_hot_capacity_bytes": DRIVER_HOT_CAPACITY,
+              "driver_boot_bytes": 0,
+              "driver_boot_capacity_bytes": DRIVER_BOOT_CAPACITY}
+    if driver_plan is not None:
+        driver.update(driver_plan["nucleus"])
     return dict(common_fields, **{
         "fixed_code_end": FIXED_CODE_END,
         "fixed_required_bytes": FIXED_REQUIRED_BYTES,
@@ -705,12 +705,12 @@ def format_nucleus_ledger(ledger):
             ledger["cold_code_bytes"], ledger["cold_code_end"],
             ledger["cold_data_bytes"], ledger["cold_data_base"],
             ledger["cold_room_bytes"]),
-        SERVICE_HOT_LEDGER_LINE % (
-            ledger["service_hot_bytes"],
-            ledger["service_hot_capacity_bytes"]),
-        SERVICE_BOOT_LEDGER_LINE % (
-            ledger["service_boot_bytes"],
-            ledger["service_boot_capacity_bytes"]),
+        DRIVER_HOT_LEDGER_LINE % (
+            ledger["driver_hot_bytes"],
+            ledger["driver_hot_capacity_bytes"]),
+        DRIVER_BOOT_LEDGER_LINE % (
+            ledger["driver_boot_bytes"],
+            ledger["driver_boot_capacity_bytes"]),
         COMMON_LEDGER_LINE % (
             ledger["common_used_bytes"], ledger["common_capacity_bytes"],
             ledger["common_code_bytes"], ledger["common_data_bytes"],
@@ -739,7 +739,7 @@ def romfs_placement(size):
 
 
 def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
-                   service_plan=None):
+                   driver_plan=None):
     """Emit a small machine-readable manifest for debugging/reproducibility."""
     entries = {
         name: symbols.get(name) for name in (
@@ -756,7 +756,7 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
         )
     }
     stub = rom_access_stub_bytes(mem)
-    ledger = nucleus_ledger(symbols, service_plan)
+    ledger = nucleus_ledger(symbols, driver_plan)
     manifest = {
         "tool": "pack_image.py",
         "layout": {
@@ -765,8 +765,8 @@ def write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
             "bank7_base": BANK7_BASE,
             "window_base": WINDOW_BASE,
             "bank7_runtime_end": BANK7_RUNTIME_END,
-            "service_stack_base": SERVICE_STACK_BASE,
-            "service_stack_size": SERVICE_STACK_SIZE,
+            "driver_stack_base": DRIVER_STACK_BASE,
+            "driver_stack_size": DRIVER_STACK_SIZE,
             "isr_stack_base": IRQ_ISR_STACK_BASE,
             "isr_stack_size": IRQ_ISR_STACK_SIZE,
             "fixed_code_end": FIXED_CODE_END,
@@ -1014,9 +1014,9 @@ def pack(ihx_text, map_text, build_dir, suffix="", romfs=None,
             (build / ("page%d%s.bin" % (index, suffix))).write_bytes(bytes(page))
         (build / ("zephyros%s.bin" % suffix)).write_bytes(image)
         (build / ("zephyr80%s.bin" % suffix)).write_bytes(image)
-        service_plan = load_service_plan(build_dir)
+        driver_plan = load_driver_plan(build_dir)
         write_manifest(build_dir, suffix, image, pages, symbols, romfs, mem,
-                       service_plan)
+                       driver_plan)
     return image
 
 
@@ -1041,8 +1041,8 @@ def main(argv):
     symbols = parse_map_symbols(map_text)
     digest = hashlib.sha256(image).hexdigest()
     print("pack_image.py: %d bytes, sha256 %s" % (len(image), digest))
-    service_plan = load_service_plan(build_dir)
-    ledger = nucleus_ledger(symbols, service_plan)
+    driver_plan = load_driver_plan(build_dir)
+    ledger = nucleus_ledger(symbols, driver_plan)
     if ledger is not None:
         print(format_nucleus_ledger(ledger))
     print("pack_image.py: rom-access stub %d bytes at %04Xh mirrored into "

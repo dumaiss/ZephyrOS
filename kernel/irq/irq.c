@@ -1,6 +1,6 @@
 /* M2 fixed-source, one-owner IRQ registry and revision-13 dispatcher. */
-#include "zephyros/irq.h"
-#include "zephyros/platform.h"
+#include "irq_types.h"
+#include "platform.h"
 
 #include "irq_private.h"
 
@@ -24,10 +24,10 @@ static irq_source_t last_source;
  * Nucleus code is the fixed core (2000h up to the linked fixed code end)
  * plus the cold-half code area (6000h up to the linked cold code end,
  * below the driver arena); the IRQ gate dispatches with P = 0, so both
- * are addressable.  A bank-6 resident service never registers its own
+ * are addressable.  A bank-6 resident driver never registers its own
  * address here: it hands the nucleus an in-image handler through the
- * service API, and the nucleus's trampoline (fixed core) is what this
- * registry holds (architecture 36.6, service IRQ upcall). */
+ * driver API, and the nucleus's trampoline (fixed core) is what this
+ * registry holds (architecture 36.6, driver IRQ upcall). */
 static uint8_t handler_is_valid(irq_handler_t handler)
 {
 	uint16_t address = (uint16_t)handler;

@@ -12,12 +12,12 @@
 ; All of _HOME/_INITIALIZER/_GSINIT/_GSFINAL therefore land inside the
 ; fixed core (2000h-5FFFh), and _DATA/_INITIALIZED land in the
 ; zero-initialized fixed runtime region below the stacks.  The _DATA base is
-; derived per image (align_down(ZOS_SERVICE_STACK_BASE - data_size, 512)) and
+; derived per image (align_down(ZOS_DRIVER_STACK_BASE - data_size, 512)) and
 ; substituted by the build; the startup code below uses the linked s__/l__
 ; symbols, never a fixed address.  _WINDOW/_WINDOW_DATA are the cold half
 ; (6000h-DFFFh): _WINDOW holds the cold code, _WINDOW_DATA its uninitialized
 ; data and its base is derived (align_down(ZOS_BANK7_RUNTIME_END - size,
-; 512)).  The cold code runs only through the window services, so it is
+; 512)).  The cold code runs only through the window drivers, so it is
 ; neither copied nor executed at boot; _WINDOW_DATA must be zeroed by the
 ; startup path below just like _DATA.
 ;
@@ -39,8 +39,8 @@
 ; -----------------------------------------------------------------------------
 
 	.module start
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 
 	; Area declaration order = linker allocation order for unbased areas.
 	.area _CODE

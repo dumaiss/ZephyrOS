@@ -1,6 +1,6 @@
-/* ZephyrOS M7 diagnostic syscall service bodies (bank-7 kernel code).
+/* ZephyrOS M7 diagnostic syscall driver bodies (bank-7 kernel code).
  *
- * Six recovery/diagnostic services behind the unchanged M6 gate:
+ * Six recovery/diagnostic drivers behind the unchanged M6 gate:
  *
  *   28h SYS_DIAG_MEM_READ    {bank, reserved, address}  -> byte in HL
  *   29h SYS_DIAG_MEM_WRITE   {bank, value, address}
@@ -9,7 +9,7 @@
  *   2Ch SYS_DIAG_BANK_INFO   (no block)                 -> mask:bank in HL
  *   2Dh SYS_DIAG_SYSTEM_INFO (record at block)          -> 8 in HL
  *
- * The services are explicitly recovery facilities: they validate the
+ * The drivers are explicitly recovery facilities: they validate the
  * complete request before any state changes, reject bank 7 for both
  * memory directions, protect the native page zero for writes, reject
  * the latch-aliased ports 00h-0Fh, and transfer through the M6 checked
@@ -18,8 +18,8 @@
  * untouched.
  */
 
-#include "zephyros/kernel.h"
-#include "zephyros/process.h"
+#include "kernel.h"
+#include "process.h"
 
 #include "kernel/memory/banking.h"
 

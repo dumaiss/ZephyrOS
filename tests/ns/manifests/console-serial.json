@@ -4,7 +4,7 @@
     "console-serial.rel",
     "sdcc_indirect_calls.rel"
   ],
-  "init": "console_service_init",
+  "init": "console_driver_init",
   "segments": [
     {
       "role": "hot",
@@ -12,7 +12,7 @@
         "_CODE"
       ],
       "bss_areas": [
-        "_SERVICE_IO"
+        "_DRIVER_IO"
       ]
     }
   ],
@@ -21,7 +21,7 @@
       "class": 6,
       "instance": 0,
       "version": 1,
-      "dispatch": "console_service_dispatch",
+      "dispatch": "console_driver_dispatch",
       "flags": 0
     }
   ],

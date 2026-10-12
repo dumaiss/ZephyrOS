@@ -28,7 +28,7 @@ E000h +-------------------------------+
 6000h +-------------------------------+
       | bank 7 fixed core    16 KiB    |  mode 11 view, always mapped:
       |   _CODE .. _DATA, stacks       |  fixed code, runtime data, the
-      |                                |  service stack and the ISR stack
+      |                                |  driver stack and the ISR stack
 2000h +-------------------------------+
       | bank 0 (caller)       8 KiB    |
 0000h +-------------------------------+
@@ -39,10 +39,10 @@ E000h +-------------------------------+
 | `0000h-00FFh` | caller window | ZephyrOS-owned native page zero: reset copier (`0000h-0026h`) and the three-byte `RST 30h` vector (`JP zos_syscall_entry`) at `0030h-0032h`; the rest is reserved |
 | `0100h-1FFFh` | caller window | unused (FF-filled in the image); at M1, native syscall argument blocks must lie here |
 | `2000h-fixed code end` | bank 7 in mode 11 | **fixed core**: loadable nucleus code (`_CODE`, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`) that must stay reachable whatever the window shows; ends at the derived fixed code end (`ZOS_FIXED_CODE_END`) |
-| `fixed code end-5D00h` | bank 7 in mode 11 | fixed-core zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded; the base is derived per image (`align_down(ZOS_SERVICE_STACK_BASE - data size, 512)`) so the area ends directly below the stacks |
-| `5D00h-5EFFh` | bank 7 in mode 11 | 512-byte **service stack** (architecture 36.9); the IPC substrate switches to it for every service call (stage 3).  It is a fixed assembly reservation, exported as the ABS symbol `zos_service_stack`/`_top` (`kernel/ipc/ipc_asm.asm`), so no ordinary allocation can enter it.  The acceptance replay measures its high-water mark: 256 of 512 bytes in the package-39 correction-01 image.  Grows down from `ZOS_SERVICE_STACK_TOP` |
+| `fixed code end-5D00h` | bank 7 in mode 11 | fixed-core zero-initialized runtime area (`_DATA`, `_INITIALIZED`), never ROM-loaded; the base is derived per image (`align_down(ZOS_DRIVER_STACK_BASE - data size, 512)`) so the area ends directly below the stacks |
+| `5D00h-5EFFh` | bank 7 in mode 11 | 512-byte **driver stack** (architecture 36.9); the IPC substrate switches to it for every driver call (stage 3).  It is a fixed assembly reservation, exported as the ABS symbol `zos_driver_stack`/`_top` (`kernel/ipc/ipc_asm.asm`), so no ordinary allocation can enter it.  The acceptance replay measures its high-water mark: 256 of 512 bytes in the package-39 correction-01 image.  Grows down from `ZOS_DRIVER_STACK_TOP` |
 | `5F00h-5FFFh` | bank 7 in mode 11 | 256-byte **ISR stack** (`_IRQ_ISR_STACK`); the IRQ gate switches to it in `irq_common_entry` |
-| `6000h-cold code end` | bank 7 while the window shows bank 7 (P = 0) | **cold half**: nucleus code that only ever runs with the window on bank 7 (the syscall dispatcher and bodies, boot/idle, process management, the VFS core and the resident-service loader); ends at the derived `ZOS_KERNEL_CODE_END` |
+| `6000h-cold code end` | bank 7 while the window shows bank 7 (P = 0) | **cold half**: nucleus code that only ever runs with the window on bank 7 (the syscall dispatcher and bodies, boot/idle, process management, the VFS core and the resident-driver loader); ends at the derived `ZOS_KERNEL_CODE_END` |
 | `cold code end-cold data base` | bank 7 while P = 0 | the cold half's slack, straight from the aligned cold code end to the derived cold data base.  The driver arena that used to fill it is deleted (work package 42c): there is no granule accounting and no floor |
 | `cold data base-E000h` | bank 7 while P = 0 | cold-half zero-initialized runtime area (`_WINDOW_DATA`), never ROM-loaded; the base is derived per image from the linked cold code end (`data_base = align_up(code_end, 512)`) |
 | `E000h-FCFFh` | physical bank 0 | ordinary permanent common code/data (`_COMMON`, `_COMMON_DATA`), including the M5 ROM-access staging buffer, the package-28 exec continuation state and the package-39 correction-01 aperture copy primitive (`ipc_common.asm`: the mode-10 stub, its request block, its saved latch/SP and its 4-byte interrupt-push reservation); `EEFEh-EF07h` is the fixed ROM-access transition block (trampoline + mirrored stub) |
@@ -55,7 +55,7 @@ E000h +-------------------------------+
 Mode `10` maps the selected application bank at `0000h-DFFFh`; mode `11`
 keeps the caller bank at `0000h-1FFFh` and maps bank 7 at `2000h-DFFFh`.
 Bank 7 is reserved to ZephyrOS and is never an application bank, and from
-M10 on bank 6 is the **resident service domain** (architecture 36.6): the
+M10 on bank 6 is the **resident driver domain** (architecture 36.6): the
 process bank allocator hands out banks 0-5 only
 (`PROCESS_BANK_COUNT`).  Bank 6 stays addressable - the mode-11 window
 shows it at P = 1 and the diagnostic family reaches it - it is simply
@@ -105,7 +105,7 @@ Revision-13 mappings per mode:
   visible fixed nucleus.  The mode-10 far aperture `8000h-BFFFh` opens
   only when P ≠ 0.
 
-The target use of the page field -- the bank-6 service window, map tokens
+The target use of the page field -- the bank-6 driver window, map tokens
 and the far aperture -- is architecture section 36.2.
 
 ### 1.2 ROM side: the 512 KiB programmed image
@@ -121,7 +121,7 @@ recovery page.  Each recovery page therefore contributes a 48-KiB
 logical window (`ZOS_ROMFS_WINDOW_SIZE`) at `0000h-BFFFh`; the
 `C000h-FFFFh` half carries only the stub mirror and is never file data.
 Six windows total (`ZOS_ROMFS_CAPACITY` = 288 KiB).  The geometry is
-declared in `platform/zephyr80/memory.h/.inc`, mirrored into the image by
+declared in `platform/zephyr80/private/memory.h/.inc`, mirrored into the image by
 `tools/pack_image.py`, and recorded in `docs/romfs-format.md`.
 
 ## 2. Linker area ownership
@@ -138,7 +138,7 @@ _COMMON      = E000h            permanent common code/data
 ```
 
 Both data bases are derived, not fixed: the two-pass build computes
-`data_base = align_down(ZOS_SERVICE_STACK_BASE - (l__DATA + l__INITIALIZED),
+`data_base = align_down(ZOS_DRIVER_STACK_BASE - (l__DATA + l__INITIALIZED),
 512)` and `window_data_base = align_up(code_end, 512)` (work package 42c:
 the cold base follows the linked cold code, so no reservation sits between
 them), so runtime data sits directly below the fixed-core stacks and
@@ -182,7 +182,7 @@ and `s__WINDOW_DATA`/`l__WINDOW_DATA` (`boot/start.asm`'s
 
 ## 2.1 M3 device-layer placement
 
-The M3 device registry, console service, static driver descriptors, ops
+The M3 device registry, console driver, static driver descriptors, ops
 tables, and driver-private state are all bank-7 residents: code in `_CODE`
 or `_WINDOW`, state in `_DATA`/`_INITIALIZED` or `_WINDOW_DATA`, and never
 above the fixed-core stacks.
@@ -193,7 +193,7 @@ this both by explicit symbol list and by a prefix sweep over
 `_device_`, `_console_`, `_sio0b_`, `_sio_`, `_driver_`,
 `_boot_drivers`, and `_m3_` symbols.  See `docs/devices.md`.
 
-Cold-half code that has to call a service (the stage 3 loader streaming an
+Cold-half code that has to call a driver (the stage 3 loader streaming an
 executable object, the process-exit notification) goes through the fixed
 **upcall shim** (`kernel/memory/upcall.asm`, architecture 36.5): a request
 block (`page`, `entry`, `args`, `result`) is validated (page 0-1, entry at
@@ -228,7 +228,7 @@ package 25b:
 
    ```text
    fixed_code_end    = max end of the fixed loadable areas
-   data_base         = align_down(ZOS_SERVICE_STACK_BASE - data_size, 512)
+   data_base         = align_down(ZOS_DRIVER_STACK_BASE - data_size, 512)
    __kernel_code_end = end of _WINDOW (the cold code end)
    window_data_base  = align_up(__kernel_code_end, 512)
    ```
@@ -261,16 +261,16 @@ the fixed ledger's `overflow`, never as an error.
 `tools/mapcheck.py` pins `__kernel_code_end ==` the linked cold code end
 and `window_data_base == align_up(__kernel_code_end, 512)`, checks that
 `_DATA` and `_WINDOW_DATA` start at their derived bases, that fixed
-runtime data stops below the service stack and that the fixed core holds
-its two stacks.  The bank-6 service set is not linked into bank 7 at all:
+runtime data stops below the driver stack and that the fixed core holds
+its two stacks.  The bank-6 driver set is not linked into bank 7 at all:
 it is packed into the recovery store and placed by the cold nucleus loader
 (`docs/module-format.md`), so no bank-7 geometry depends on it.
 
 ### 2.2.1 The nucleus budget ledgers
 
-`tools/pack_image.py` and `tools/zmodpack.py services` print the same five
+`tools/pack_image.py` and `tools/zmodpack.py drivers` print the same five
 ledger lines (architecture 36.20) and emit them as matching JSON
-(`manifest["nucleus"]` and `modules/services.plan.json["nucleus"]`,
+(`manifest["nucleus"]` and `modules/drivers.plan.json["nucleus"]`,
 sharing one format definition); host tests check every figure against the
 linked map:
 
@@ -285,7 +285,7 @@ common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>
 - **`nucleus fixed:`** the fixed core's 16 KiB.  `required` is the linked
   fixed-area content of the `fixed-required` objects, `overflow` is
   everything else that links there (the objects that do not fit in the cold
-  half), `stacks` is the two reservations (512-byte service stack plus
+  half), `stacks` is the two reservations (512-byte driver stack plus
   256-byte ISR stack = 768) and `room` is what is left:
   `16384 - required - overflow - stacks`.
 - **`nucleus cold:`** the cold half's 32 KiB.  `code`/`end` are the linked
@@ -293,8 +293,8 @@ common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>
   `room` is what is left (`32768 - code - data bytes`, the alignment gap
   included in the room).
 - **`driver hot:`/`driver boot/bulk:`** the bank-6 tiers of architecture
-  36.6.  `tools/pack_image.py` prints them from the services plan
-  (`services.plan.json`), and the loader's own acceptance line prints the
+  36.6.  `tools/pack_image.py` prints them from the drivers plan
+  (`drivers.plan.json`), and the loader's own acceptance line prints the
   same figures (32 KiB hot tier, 24 KiB boot/bulk tier).
 - **`common:`** the permanently mapped common window, which the nucleus
   lines cannot see.  `used` is the packed `_COMMON` + `_COMMON_DATA` run
@@ -303,7 +303,7 @@ common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>
 
 The fixed absolute reservations in the window (IM2 vector page, IRQ
 transition state and stacks) are declared separately in
-`platform/zephyr80/irq.inc` and are not part of the packed run, so growth of
+`platform/zephyr80/private/irq.inc` and are not part of the packed run, so growth of
 the packed run is what must be watched: it may not reach the lowest
 reservation.
 
@@ -409,8 +409,8 @@ section 2.2) holds:
 
 | item | bytes | owner |
 | --- | ---: | --- |
-| global descriptor pool, 8 entries x 17 (`owner`, `type`, file/dir union) | 136 | `kernel/vfs/process.c` |
-| CWD pool: 4 chain levels x (1 owner byte + 128-byte canonical path) | 516 | `kernel/vfs/process.c` |
+| global descriptor pool, 8 entries x 17 (`owner`, `type`, file/dir union) | 136 | `kernel/vfs/handles.c` |
+| CWD pool: 4 chain levels x (1 owner byte + 128-byte canonical path) | 516 | `kernel/vfs/handles.c` |
 | VFS workspace: two 256-byte path views and the 512-byte transfer staging view, exactly tiling one buffer | 512 | `kernel/vfs/workspace.c` |
 | VFS path scratch and the kernel file table | (see the map) | `kernel/vfs/*.c`, `kernel/main.c` |
 
@@ -418,11 +418,11 @@ The exec continuation state is **common**, not bank-7 data, because it is
 touched only while the gate runs in mode 11: `zos_proc_frames` is
 `ZOS_EXEC_MAX_DEPTH - 1 = 3` save areas of `ZOS_EXEC_FRAME_SAVE` (48)
 bytes, i.e. 144 bytes, plus the single-depth gate shadow bytes
-(`include/zephyros/process.h`, `docs/abi.md` section 11).
+(`kernel/include/process.h`, `docs/abi.md` section 11).
 
 The IOC-FAT provider is a resident ZMOD, so its state is that module's own
 BSS, not kernel data: a 637-byte BSS of which the one 512-byte file-data
-cache slot is the largest member (`fs/iocfat/iocfat.c`,
+cache slot is the largest member (`drivers/iocfat/iocfat.c`,
 `IOCFAT_CACHE_SLOTS`).
 
 Final ledger (end of M9, packages 30c and 31; production image, M9 wording -
@@ -528,7 +528,7 @@ The gate stack carries the complete syscall handler chain.  It must fit
 the deepest chain that can run on it: the nested exec measured 287 bytes
 (`SYS_EXEC` -> ROMFS read -> provider and driver transaction, package
 42b), so the size is held at 384 bytes (raised from 256 when that chain
-overran; `platform/zephyr80/memory.inc`).
+overran; `platform/zephyr80/private/memory.inc`).
 
 Package 28 makes the *process* side of that state depth-indexed, because
 a nested `SYS_EXEC` runs its child on the same single gate stack:
@@ -559,7 +559,7 @@ per-depth shadow that lets a resumed parent return through the gate with
 *its* stack pointer, bank and interrupt state instead of its child's.
 `ZOS_EXEC_FRAME_SAVE` is 48 bytes: the measured copied frame is 32 bytes
 at every depth in the acceptance image (recorded beside the constant in
-`include/zephyros/process.h`), and the preflight rejects a shallower
+`kernel/include/process.h`), and the preflight rejects a shallower
 handler frame above `ZOS_EXEC_FRAME_SAVE - ZOS_EXEC_FRAME_SLACK` before
 anything is allocated.
 
@@ -607,7 +607,7 @@ in the same common data area.
 
 Fixed absolute reservations (validated by `mapcheck.py` and the packer);
 the vector-page, transition-state, and transition-stack bounds are
-declared in `platform/zephyr80/irq.inc`:
+declared in `platform/zephyr80/private/irq.inc`:
 
 ```text
 _IRQ_VECTOR       FD00h-FE00h   IM2 page plus the FFh-vector guard byte;
@@ -622,7 +622,7 @@ _IRQ_ISR_STACK    5F00h-5FFFh   fixed-core handler stack; initial SP=6000h
 The IM2 page is initialized at runtime by `irq_arch_init()` (every vector
 targets `irq_ff_unexpected`, vector `00h` targets `irq_ctc0_stub`); the
 linked image carries the guard identity for build-time verification.
-`_DATA`/`_INITIALIZED` must end below `ZOS_SERVICE_STACK_BASE` (5D00h)
+`_DATA`/`_INITIALIZED` must end below `ZOS_DRIVER_STACK_BASE` (5D00h)
 and `_COMMON`/`_COMMON_DATA` below `FD00h`.
 
 ## 5. Banking primitives
@@ -638,7 +638,7 @@ void    platform_bank_set(uint8_t bank);     /* keep D7..D3; reject bank 7 */
 
 `platform_bank_set()` preserves ROM-page and mode bits and rejects bank 7
 (application banks are `0-6`; `PROCESS_BANK_COUNT` hands the process
-allocator banks 0-5, since bank 6 is the resident service domain from M10
+allocator banks 0-5, since bank 6 is the resident driver domain from M10
 on).  Mode transitions are assembly gates with
 explicit common-memory continuations, not C functions: a C return address
 in `2000h-DFFFh` would disappear when the mode changes.
@@ -689,9 +689,9 @@ in `2000h-DFFFh` would disappear when the mode changes.
 - `tests/test_ns_selftest.py` / `tests/test_ns_selftest_sim.py` — the
   namespace acceptance image (work package 42a): the pinned ABI, the
   packed publication tables, the residency classification and the
-  service-manifest wiring on the host, and a replay that compares the
+  driver-manifest wiring on the host, and a replay that compares the
   client's transcript (standard handles, `/dev` binds and calls, a
-  `/SYSTEM` FILE read/seek/metadata, table exhaustion, paged `ns_enum`,
+  `/system` FILE read/seek/metadata, table exhaustion, paged `ns_enum`,
   an exec'd child) with the packed store.
 - `tests/test_subsys_sim.py` — boot of the subsystem acceptance image on
   the current path: the syscall gate and interrupt-executive groups (with
@@ -712,7 +712,7 @@ in `2000h-DFFFh` would disappear when the mode changes.
 - `tools/mapcheck.py` enforces the two-tier residency classification and
   the derived geometry (fixed core, cold code end, cold data base), and
   `tools/pack_image.py` reports the two bank-6 ledgers from
-  `services.plan.json` instead of an arena plan (there is no granule
+  `drivers.plan.json` instead of an arena plan (there is no granule
   floor any more: the packer places and the loader bounds).
 - Runtime: boot asserts mode `11` over bank 0 (assembly latch read-back and
   a C re-check in `kernel_main()`), then exercises the bank primitives; any
@@ -721,11 +721,11 @@ in `2000h-DFFFh` would disappear when the mode changes.
 ## 7. Constants are single-sourced
 
 Every memory boundary and latch bit is defined once for C
-(`platform/zephyr80/hardware.h`, `memory.h`, `irq.h`) and once for assembly
+(`platform/zephyr80/public/hardware.h`, `memory.h`, `irq.h`) and once for assembly
 (`hardware.inc`, `memory.inc`, `irq.inc`), with explicit parity checks in
 `tests/test_m1.py` so the representations cannot silently drift.  Hardware
 ports and register constants stay in `hardware.h/.inc`; general region
-geometry (including the fixed-core ISR and service stacks) stays in
+geometry (including the fixed-core ISR and driver stacks) stays in
 `memory.h/.inc`; IM2
 vector-page and IRQ transition wiring stays in `irq.h/.inc`.  The Zephyr-80
 build include paths and the declarative file names live in

@@ -64,7 +64,7 @@ MONITOR_SOURCES = (
 # kernel was dragged into the ZEX link).
 MONITOR_MODULES = {
     "zos_crt0", "zos_runtime", "zos_gate", "zos_diaggate",
-    "zos_ipcgate", "nsgate", "args", "console_io", "console_service",
+    "zos_ipcgate", "nsgate", "args", "console_io", "console_proto",
     "ipc", "monitor", "monitor_exec", "monitor_mem", "monitor_io",
     "hexfmt", "hexdump", "status", "exec",
 }
@@ -74,7 +74,8 @@ MONITOR_MODULES = {
 # sweep names the kernel families instead of the bare `_zos_` prefix.
 KERNEL_PREFIXES = (
     "_zos_syscall", "_zos_diag", "_zos_bank", "_zos_user", "_zos_process",
-    "_process_", "_kernel", "_irq_", "_console_", "_device_",
+    "_process_", "_kernel", "_irq_", "_console_driver", "_console_forward",
+    "_console_api", "_console_in", "_console_out", "_device_",
     "_romfs_", "_module_", "_zmod_", "_zex_validate", "_early_console",
     "_panic", "_platform_", "_rom_access", "irq_", "romfs_",
 )
@@ -256,7 +257,7 @@ class TestMonitorArtifacts(unittest.TestCase):
                        b"system: abi ",
                        b"ERR: ARG\r\n",
                        b"ERR: COMMAND\r\n",
-                       b"X path [tail]  run a ZEX from /SYSTEM\r\n",
+                       b"X path [tail]  run a ZEX from /system\r\n",
                        b"exec: exit status 0x",
                        b"monitor: exit status 0x"):
             self.assertIn(marker, image,
@@ -326,13 +327,13 @@ class TestM7MapcheckRules(unittest.TestCase):
     def test_synthetic_map_with_m7_symbols_passes(self):
         mapcheck.check_map(make_map())
 
-    def test_diag_service_must_be_bank7(self):
+    def test_diag_driver_must_be_bank7(self):
         text = make_map(symbols={"_zos_diag_mem_read": 0xE100})
         with self.assertRaisesRegex(mapcheck.MapError, "bank-7"):
             mapcheck.check_map(text)
 
     def test_diag_prefix_sweep(self):
-        text = make_map(symbols={"_zos_diag_future_service": 0xE140})
+        text = make_map(symbols={"_zos_diag_future_driver": 0xE140})
         with self.assertRaisesRegex(mapcheck.MapError, "bank-7"):
             mapcheck.check_map(text)
 
@@ -396,7 +397,7 @@ class TestSubsystemSmokeMode(unittest.TestCase):
         import serial_smoke
         return (
             serial_smoke.BANNER
-            + serial_smoke.CONSOLE_SERVICE_OK
+            + serial_smoke.CONSOLE_DRIVER_OK
             + serial_smoke.SUBSYS_SYSCALL_OK
             + serial_smoke.SUBSYS_IRQ_OK
             + serial_smoke.SUBSYS_ROMFS_OK
@@ -444,7 +445,7 @@ class TestSubsystemSmokeMode(unittest.TestCase):
         import serial_smoke
 
         payload = (serial_smoke.BANNER
-                   + serial_smoke.CONSOLE_SERVICE_OK
+                   + serial_smoke.CONSOLE_DRIVER_OK
                    + serial_smoke.SUBSYS_SYSCALL_OK)
         code, _out, err, link = self.run_main(payload)
         self.assertEqual(code, 1)
@@ -469,7 +470,7 @@ class TestProductionSmokeMode(unittest.TestCase):
         import serial_smoke
         return (serial_smoke.BANNER
                 + diagnostics
-                + serial_smoke.CONSOLE_SERVICE_OK
+                + serial_smoke.CONSOLE_DRIVER_OK
                 + serial_smoke.MONITOR_BANNER
                 + serial_smoke.SUBSYS_PROMPT)
 
@@ -575,7 +576,7 @@ class TestProductionSmokeMode(unittest.TestCase):
         import serial_smoke
 
         code, _out, err = self.run_main(
-            serial_smoke.BANNER + b"console: service failed\r\n")
+            serial_smoke.BANNER + b"console: driver failed\r\n")
         self.assertEqual(code, 1)
         self.assertIn("was not observed", err)
 

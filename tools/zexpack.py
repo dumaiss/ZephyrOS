@@ -4,7 +4,7 @@
 ZEX v2 is the only native executable container (architecture 36.18): a
 primary image loaded at logical 0100h plus zero or more auxiliary
 segments, all described by one up-front feasibility-checked header (see
-docs/zex-format.md and include/zephyros/zex.h):
+docs/zex-format.md and formats/include/zex.h):
 
     00 magic[4]="ZEX2"   04 format_version=2   05 abi_version=1
     06 flags=0           07 reserved0=0
@@ -40,7 +40,7 @@ here: with any far-code segment the primary image, its BSS and the stack
 must stay outside `8000h-BFFFh`.
 
 Packing validates every geometry boundary before emitting a byte; the
-result codes match the kernel reader exactly (include/zephyros/zex.h).
+result codes match the kernel reader exactly (formats/include/zex.h).
 
 Usage:
     zexpack.py pack <manifest.json> <out.zex> [--objdir DIR]
@@ -118,7 +118,7 @@ KIND_FAR_CODE = 1
 KIND_DATA = 2
 KIND_BY_NAME = {"FAR_CODE": KIND_FAR_CODE, "DATA": KIND_DATA}
 
-# Result codes: kept value-identical with include/zephyros/zex.h; the
+# Result codes: kept value-identical with formats/include/zex.h; the
 # host parity test cross-checks the two so they cannot drift.
 RESULT_CODES = (
     ("ZEX_EXEC_OK", 0),

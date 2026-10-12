@@ -19,7 +19,7 @@
 #include "zos/object.h"
 #include "zos/types.h"
 
-#include "zephyros/ipc.h"
+#include "driver.h"
 
 /* The syscall gate's saved caller latch (bank, mode and page), read from
  * common state (kernel/ipc/ipc_asm.asm).  The copy resolver and the
@@ -52,10 +52,10 @@ int8_t ipc_install_endpoint(const struct ipc_endpoint_record *record);
  * about to run, one byte per declared dependency in manifest order, and
  * zeros the unused tail (architecture 36.11).  Fixed data, so the driver's
  * window always shows it. */
-extern uint8_t zos_service_deps[ZOS_IPC_SERVICE_MAX_DEPS];
+extern uint8_t zos_driver_deps[ZOS_IPC_DRIVER_MAX_DEPS];
 
 /* The boot bundle the loader hands a driver's init entry in HL. */
-const struct ipc_service_boot *ipc_service_boot(void);
+const struct driver_boot *driver_boot(void);
 
 /* --- in-process (nucleus) endpoints ------------------------------------
  *
@@ -86,7 +86,8 @@ int16_t ipc_call_object(uint8_t endpoint, uint8_t object, uint8_t handle,
  * in the caller window (visible while the gate dispatches with P = 0);
  * the reply frame, status and descriptor capture land back in it, and the
  * caller's bound handle resolved to `endpoint`/`object` by the syscall
- * body first (kernel/vfs/ns.c).  The return value is the IPC status (the
+ * body first (kernel/vfs/router.c).  The return value is the IPC status
+ * (the
  * syscall publishes it in HL with carry clear). */
 int16_t ipc_syscall_call_object(struct zos_ipc_call_args *args,
 				uint8_t endpoint, uint8_t object);
@@ -104,7 +105,7 @@ void ipc_desc_release(void);
 
 /* --- nucleus-side calls -------------------------------------------------- */
 
-/* Synchronous call into a service from nucleus code (bank 7, no process
+/* Synchronous call into a driver from nucleus code (bank 7, no process
  * and no syscall gate): the boot console probe.  No descriptor is issued -
  * only the syscall gate's latch names a caller buffer - so a caller that
  * has to move bytes uses ipc_nucleus_call_common() or the staged form
@@ -138,7 +139,7 @@ int16_t ipc_nucleus_call_object_common(uint8_t endpoint, uint8_t object,
 /* Descriptor copy for an in-process provider: `length` requested bytes
  * move between the caller buffer of descriptor `desc` (at `offset`) and
  * the common staging block, through the same checked copy resolver a
- * bank-6 service uses. */
+ * bank-6 driver uses. */
 int16_t ipc_nucleus_copy_out(uint8_t desc, uint16_t offset, uint16_t length);
 int16_t ipc_nucleus_copy_in(uint8_t desc, uint16_t offset, uint16_t length);
 

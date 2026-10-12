@@ -15,8 +15,8 @@
  *   - the one path normalizer.
  *
  * The mount table, the provider registry, the path/mount resolver and the
- * M9 file/directory API are gone: the root router (kernel/vfs/ns.c) routes
- * to three static providers and the providers answer with handles.
+ * M9 file/directory API are gone: the root router (kernel/vfs/router.c)
+ * routes to three static providers and the providers answer with handles.
  *
  * Gate-stack discipline (work/M10-REFERENCE.md): syscall paths run on the
  * 256-byte common gate stack, so no function here declares an automatic
@@ -30,7 +30,9 @@
 #include "zos/types.h"
 #include "zos/fs.h"
 #include "zos/object.h"
-#include "zephyros/romfs.h"
+#include "romfs.h"
+#include "driver.h"
+#include "kernel/ipc/ipc.h"
 
 /* --- lifecycle -------------------------------------------------------- */
 
@@ -127,7 +129,7 @@ int vfs_path_normalize_at(const char *base, const char *path, char *out,
 
 /* --- the global handle table ------------------------------------------
  *
- * One global fixed-core pool of VFS_FD_MAX entries; every entry is owner
+ * One global fixed-core pool of VFS_HANDLE_MAX entries; every entry is owner
  * tagged, and the handle a process names is the per-process number `bind`
  * handed out (1 and 2 are the standard console handles).  A suspended
  * parent keeps its handles while a child runs (single-tasking), so the
@@ -137,7 +139,7 @@ int vfs_path_normalize_at(const char *base, const char *path, char *out,
  * A bound FILE instance keeps its immutable metadata (the file size the
  * provider's bind reported, and - for the in-process ROMFS provider - the
  * source metadata and the read position) inline in the entry. */
-#define VFS_FD_MAX 12u
+#define VFS_HANDLE_MAX 12u
 #define VFS_FD_NONE 0xFFu
 
 /* The owner id nucleus-internal instances belong to (the boot launcher's
@@ -154,7 +156,7 @@ struct vfs_ns_file {
 	uint8_t flags;      /* ZFS_O_* subset of the bind flags       */
 };
 
-struct vfs_descriptor {
+struct vfs_handle_entry {
 	uint8_t owner;    /* pid, or VFS_FD_NONE when FREE       */
 	uint8_t type;     /* ZOS_TYPE_*, 0 when FREE             */
 	uint8_t number;   /* per-process handle number           */
@@ -166,17 +168,17 @@ struct vfs_descriptor {
 	} u;
 };
 
-extern struct vfs_descriptor vfs_descriptors[VFS_FD_MAX];
+extern struct vfs_handle_entry vfs_handles[VFS_HANDLE_MAX];
 
 #if defined(__SDCC)
 _Static_assert(sizeof(struct vfs_ns_file) == 15,
 	       "vfs_ns_file must be 15 packed bytes");
-_Static_assert(sizeof(struct vfs_descriptor) == 21,
-	       "vfs_descriptor must be 21 packed bytes");
-_Static_assert(__builtin_offsetof(struct vfs_descriptor, endpoint) == 3,
-	       "vfs_descriptor endpoint offset");
-_Static_assert(__builtin_offsetof(struct vfs_descriptor, u) == 6,
-	       "vfs_descriptor union offset");
+_Static_assert(sizeof(struct vfs_handle_entry) == 21,
+	       "vfs_handle_entry must be 21 packed bytes");
+_Static_assert(__builtin_offsetof(struct vfs_handle_entry, endpoint) == 3,
+	       "vfs_handle_entry endpoint offset");
+_Static_assert(__builtin_offsetof(struct vfs_handle_entry, u) == 6,
+	       "vfs_handle_entry union offset");
 #endif
 
 /* Discard every handle and CWD slot; called once at VFS bootstrap so the
@@ -187,11 +189,11 @@ void vfs_fs_state_init(void);
  * number >= `first`, and return the entry (owner/number set) or null when
  * the pool is full.  Type, endpoint, object, flags and the union payload
  * are the caller's to fill. */
-struct vfs_descriptor *vfs_handle_alloc(uint8_t pid, uint8_t first);
+struct vfs_handle_entry *vfs_handle_alloc(uint8_t pid, uint8_t first);
 
 /* The bound entry the process `pid` names with handle `number`, or null
  * for a free/stale/foreign handle. */
-struct vfs_descriptor *vfs_handle_find(uint8_t pid, uint8_t number);
+struct vfs_handle_entry *vfs_handle_find(uint8_t pid, uint8_t number);
 
 /* The owner id a call site resolving "the current process's" instances
  * must use: the running process's pid, or VFS_OWNER_KERNEL while the
@@ -199,10 +201,10 @@ struct vfs_descriptor *vfs_handle_find(uint8_t pid, uint8_t number);
 uint8_t vfs_owner_current(void);
 
 /* Return a bound entry to the pool.  No provider call. */
-void vfs_handle_release(struct vfs_descriptor *desc);
+void vfs_handle_release(struct vfs_handle_entry *entry);
 
 /* Number of allocated handles (acceptance/leak queries). */
-uint8_t vfs_fd_active_count(void);
+uint8_t vfs_handle_active_count(void);
 
 /* CWD lifecycle.  vfs_process_start() gives the child the parent's CWD
  * (or the constant `/` when `parent_pid` is PROCESS_KERNEL_PARENT / an
@@ -219,5 +221,218 @@ const char *vfs_cwd_for(uint8_t pid);
  * after the owning provider accepted it).  Returns 0 or -ZOS_EINVAL when
  * the caller owns no CWD slot. */
 int vfs_cwd_store(const char *norm);
+
+/* ZephyrOS M10 VFS root router and static namespace providers (kernel-private).
+ *
+ * Package 42a (architecture 36.7 and 36.13): the VFS owns the global root
+ * `/` and routes a normalized global path, ASCII case-insensitively, by
+ * its first component to exactly three static providers:
+ *
+ *   /fs       -> the FS provider: nucleus routing code that forwards the
+ *                remainder to the build's filesystem driver over IPC
+ *                (the driver's endpoint comes from the host-built `/fs`
+ *                publication; a build with no filesystem driver is
+ *                ENODEV)
+ *   /system   -> the ROMFS provider over kernel/romfs (available before
+ *                any resident driver)
+ *   /dev      -> the DEVICE provider over the host-built publication
+ *                table the resident loader installs
+ *
+ * There is no mount table, no provider registration and no root merge; a
+ * provider owns everything below its root.
+ *
+ * The handle side lives in kernel/vfs/handles.c (the extended M9 pool);
+ * this module resolves names to objects and fills or releases the pool
+ * entries.  Two objects are nucleus-served: `vfs_ns_file_dispatch()` is
+ * the in-process FILE endpoint the ROMFS provider binds (installed as a
+ * nucleus endpoint, reached through the same handle-call path as a bank-6
+ * endpoint), and the FS provider's own operations are C entry points the
+ * SYS_CALL/SYS_UNBIND/SYS_NS_ENUM bodies call at the outermost call level
+ * (`vfs_ns_fs_call`, `vfs_ns_release`, `vfs_ns_enum`), so a driver they
+ * forward to runs on the driver stack.
+ */
+
+/* Publication table capacity: the production build declares five roles
+ * (console, input/keyboard, video, serial/0, ioc), which expand to seven
+ * rows with the grouping entries; an acceptance set adds its synthetic
+ * names.  The loader refuses a set that overflows the table. */
+#define VFS_NS_PUB_MAX 12u
+
+/* Publication name field: "/input/keyboard" is the longest role above, so
+ * the table stores the flat provider-relative names in 16 bytes. */
+#define VFS_NS_NAME_MAX 16u
+
+/* The in-process FILE endpoint's number: nucleus endpoints live above the
+ * host-assigned driver numbers (1..N), which the packer bounds by the
+ * nucleus table size.  Endpoint numbers stay nucleus-internal. */
+#define VFS_NS_FILE_ENDPOINT ((uint8_t)(IPC_EP_NUCLEUS_BASE + 1u))
+
+/* The FS provider's marker: a bound `/fs` object (the filesystem-namespace
+ * handle and every `/fs` FILE instance) records it as its endpoint, and
+ * the syscall bodies route such calls into this module instead of the IPC
+ * endpoint table.  It is never an installed endpoint. */
+#define VFS_NS_FS_ENDPOINT   ((uint8_t)(IPC_EP_NUCLEUS_BASE + 2u))
+
+/* The `/fs` provider root and its length. */
+#define VFS_NS_FS_ROOT "/fs"
+
+struct vfs_ns_publication {
+	char    name[VFS_NS_NAME_MAX]; /* provider-relative, e.g. "/console" */
+	uint8_t type;                  /* ZOS_TYPE_*, 0 on a container       */
+	uint8_t number;                /* endpoint number, 0 on a container  */
+	uint8_t object;                /* provider object identity           */
+	uint8_t flags;                 /* ZOS_NS_ENTRY_CONTAINER on a grouping row */
+};
+
+/* One-time nucleus setup (the in-process FILE endpoint) plus the empty
+ * start for the provider tables; called from vfs_init().  Returns 0 or a
+ * negative ZOS_E* value. */
+int vfs_ns_init(void);
+
+/* Discard every host-built publication (vfs_init(), and the acceptance
+ * replays that re-initialize the nucleus). */
+void vfs_ns_reset(void);
+
+/* Install one host-built publication (the resident loader, before any
+ * driver code runs): a `/dev` object into the DEVICE table, or the `/fs`
+ * root, which records the filesystem driver's endpoint.  The loader
+ * already checked the record against the container; the checks here
+ * protect the nucleus table: capacity, a bounded printable name beginning
+ * with '/', a legal protocol type and a nonzero endpoint.  Returns 0 or
+ * -ZOS_EINVAL/-ZOS_ENOSPC. */
+int vfs_ns_install_publication(const char *name, uint8_t type, uint8_t number,
+			       uint8_t object);
+
+/* The endpoint one installed `/dev` publication names (`rel` is the
+ * provider-relative name, e.g. "/console"), or 0 when no such object was
+ * published.  The nucleus's own boot console output uses it (there is no
+ * runtime class lookup). */
+uint8_t vfs_ns_publication_endpoint(const char *rel);
+
+/* Resolve the normalized absolute path `norm` and bind an instance for
+ * `pid`, storing the 8-bit protocol type in *type and returning the handle
+ * number (>= 1) or a negative ZOS_E* value.  `flags` is the caller's
+ * 16-bit bind flags, interpreted by the selected provider. */
+int vfs_ns_bind(uint8_t pid, const char *norm, uint16_t flags, uint8_t *type);
+
+/* Release the instance the handle names for `pid`.  Returns 0 or
+ * -ZOS_EINVAL.  The standard handles (1, 2) are refused. */
+int vfs_ns_unbind(uint8_t pid, uint8_t handle);
+
+/* Release one bound object: the provider's release, then the entry.
+ * Process teardown uses this for every descriptor the pid owns, the
+ * standard handles included (vfs_process_exit); a live caller goes
+ * through vfs_ns_unbind above. */
+void vfs_ns_release_entry(struct vfs_handle_entry *entry);
+
+/* The handle's endpoint and object identity for SYS_CALL, or a negative
+ * ZOS_E* value when the handle is not a bound object. */
+int vfs_ns_resolve(uint8_t pid, uint8_t handle, uint8_t *endpoint,
+		   uint8_t *object);
+
+/* Bind the process `pid`'s two standard handles to `/dev/console` (absent
+ * when the build publishes none).  Called once at process start. */
+void vfs_ns_standard_handles(uint8_t pid);
+
+/* Namespace enumeration for SYS_NS_ENUM: write as many `struct
+ * zos_ns_entry` records as fit `out_size` bytes to the caller buffer
+ * (bank `bank`, address `out`) starting at `*cookie`, returning the count
+ * written and updating `*cookie`, or a negative ZOS_E* value.  Below
+ * `/fs` the provider forwards to the filesystem driver, whose entries
+ * land in the caller's buffer through the descriptor copy gate. */
+int vfs_ns_enum(uint8_t bank, const char *norm, uint16_t *cookie,
+		uint16_t out, uint16_t out_size, uint16_t *count);
+
+/* --- the FS provider's dispatch (kernel/vfs/fs.c) --------------------- */
+
+/* One SYS_CALL on a bound `/fs` object, run at the outermost call level by
+ * the syscall body: FILE operations go to the filesystem driver with the
+ * provider instance stamped into the frame, filesystem-namespace
+ * operations carry the path (already copied and normalized by this
+ * module) to the driver.  `object` is the instance the handle resolved
+ * to. */
+int16_t vfs_ns_fs_call(uint8_t handle, uint8_t object,
+		       struct zos_ipc_call_args *args);
+
+/* One SYS_UNBIND of a bound `/fs` object: release the driver's instance
+ * (a filesystem-namespace handle has none). */
+void vfs_ns_fs_release(uint8_t type, uint8_t object);
+
+/* The provider the normalized path `norm` belongs to is asked whether it
+ * names a traversable directory (SYS_CHDIR): 0 with *ok set, or a
+ * negative ZOS_E* value. */
+int vfs_ns_dir_check(const char *norm, uint8_t *ok);
+
+/* One nucleus-side FILE call on a bound FILE handle (the cold loader):
+ * `frame` carries the operation, `object` the instance the handle
+ * resolved to.  A nonzero `length` moves `length` bytes through the common
+ * staging block in direction `dir` (FILE data); length 0 is the
+ * descriptor-less form (metadata, seek, sync).  Returns the call status. */
+int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
+			 struct zos_ipc_frame *frame, uint16_t length,
+			 uint8_t dir);
+
+/* --- the ROMFS FILE provider (kernel/vfs/system.c) ------------------- */
+
+/* Bind the ROMFS entry `name` (provider-relative, e.g. "/MONITOR.ZEX") as
+ * a FILE instance for `pid`, or the `/system` root (`name` empty) as the
+ * filesystem-namespace handle.  Returns the handle or a negative ZOS_E*
+ * value; `flags` carries the ZFS_O_* open flags. */
+int vfs_ns_file_bind(uint8_t pid, const char *name, uint16_t flags,
+		     uint8_t *type);
+
+/* `ZFS_OP_STAT` for one `/system` path: `rel` is the provider-relative
+ * remainder ("" for the ROMFS root) and the reply payload receives the
+ * packed `struct zfs_stat`.  Returns 0 or a negative ZOS_E* value. */
+int vfs_ns_file_meta(const char *rel, struct zos_ipc_frame *frame);
+
+/* The in-process FILE endpoint's dispatch (installed by vfs_ns_init());
+ * the nucleus calls it through the ordinary handle-call path.  `handle`
+ * is the caller's handle number, `object` the publication identity (unused
+ * by ROMFS: the instance is the handle entry). */
+int16_t vfs_ns_file_dispatch(uint8_t handle, uint8_t object,
+			     struct zos_ipc_frame *frame);
+
+/* --- cross-file helpers (package 46 T4) --------------------------------
+ *
+ * Statics another part now calls: each definition is extern in the part
+ * that owns it, every caller sees the declaration here.  Names keep the
+ * VFS spelling the split gives them (`ns_*` helpers became `vfs_*`). */
+
+/* path.c */
+uint8_t vfs_fold(uint8_t c);
+uint8_t vfs_component_eq(const char *p, uint16_t length, const char *word);
+uint16_t vfs_component_length(const char *p);
+uint8_t vfs_path_under(const char *norm, const char *root);
+
+/* dev.c */
+const struct vfs_ns_publication *vfs_pub_find(const char *rel);
+int vfs_device_bind(uint8_t pid, const char *rel, uint16_t flags,
+		    uint8_t *type);
+int vfs_enum_device(uint8_t bank, const char *rel, uint16_t *cookie,
+		    uint16_t out, uint16_t out_size, uint16_t *count);
+extern uint8_t vfs_ns_pub_count;
+
+/* fs.c */
+extern uint8_t vfs_ns_fs_endpoint;
+int vfs_fs_alloc(uint8_t pid, uint8_t type, uint8_t object, uint16_t flags);
+int vfs_fs_bind_file(uint8_t pid, const char *rel, uint16_t flags,
+		     uint8_t *type);
+void vfs_fs_put_path(uint8_t *payload, const char *path);
+const char *vfs_fs_rel(const char *norm);
+int vfs_fs_read_path(const struct zos_ipc_call_args *args);
+int vfs_enum_fs(const char *rel, uint16_t *cookie, uint16_t out,
+		uint16_t out_size, uint16_t *count);
+
+/* system.c */
+int vfs_enum_romfs(uint8_t bank, uint16_t *cookie, uint16_t out,
+		   uint16_t out_size, uint16_t *count);
+
+/* router.c */
+int vfs_fs_namespace_op(uint8_t op, const char *norm, const char *norm_b,
+			struct zos_ipc_frame *frame);
+uint8_t vfs_room(uint16_t slot, uint16_t out_size);
+int vfs_emit(uint8_t bank, uint16_t out, uint16_t slot, const char *name,
+	     uint16_t name_length, uint8_t type, uint8_t flags);
 
 #endif /* ZEPHYROS_KERNEL_VFS_H */

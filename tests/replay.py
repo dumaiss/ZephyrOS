@@ -98,7 +98,7 @@ class Replay:
     def make_cpu(self, latch=LATCH_MODE11, sp=STACK):
         """The machine at reset: the image's pages in the ROM map, the
         boot stack in common memory, and the V9958 peer every image that
-        boots the video service needs (its boot tier drives the display
+        boots the video driver needs (its boot tier drives the display
         bring-up through the peer before any diagnostic runs)."""
         pages = {n: self.image[n * 0x10000:(n + 1) * 0x10000]
                  for n in range(8)}
@@ -252,10 +252,10 @@ class Replay:
 
     def reserved_stacks(self):
         """The kernel's reserved stack regions as named half-open byte
-        ranges: the service stack ends where the ISR stack starts."""
+        ranges: the driver stack ends where the ISR stack starts."""
         return (
-            ("service", self.syms["zos_service_stack"],
-             self.syms["zos_service_stack_top"] - 1),
+            ("driver", self.syms["zos_driver_stack"],
+             self.syms["zos_driver_stack_top"] - 1),
             ("isr", self.syms["irq_isr_stack"] + 1,
              self.syms["irq_isr_stack_top"] - 1),
             ("gate", self.syms["zos_gate_stack"],

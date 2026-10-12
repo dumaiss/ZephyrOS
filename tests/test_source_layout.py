@@ -4,11 +4,15 @@
 Enforces docs/architecture.md section 3.1 and the current layout:
 
 - implemented sources live under their owning boot/kernel/driver/test
-  directories, and driver directories contain device implementation only;
+  directories, and driver directories contain device implementation and
+  the driver's own manifest only (package 46 T1); the audience headers
+  live under drivers/include, kernel/include and formats/include, the
+  platform constants under platform/zephyr80/{public,private}
+  (package 46 T3);
 - platform/zephyr80/ contains declarative constants/configuration only,
   with no executable content or instruction-emitting macros;
-- the driver services' manifests have one owner (services/manifests/)
-  and the shared SDCC runtime support another (modules/runtime);
+- the driver drivers' manifests have one owner (drivers/<name>/)
+  and the shared SDCC runtime support another (drivers/runtime);
 - the process lifecycle (kernel/process), the common transition gates
   (kernel/memory), the public native ABI (abi/zos) and the user SDK
   (user/sdk) have explicit owners, with the ZEX program sources under
@@ -52,13 +56,12 @@ from maptools import evaluate, parse_asm_inc, parse_c_header  # noqa: E402
 PLATFORM_DIR = os.path.join(ROOT, "platform", "zephyr80")
 
 # The complete, exact platform file set: constants (.h/.inc) and build
-# configuration (.mk) only.
-PLATFORM_FILES = {
-    "hardware.h", "hardware.inc",
-    "memory.h", "memory.inc",
-    "irq.h", "irq.inc",
-    "config.mk",
-}
+# configuration (.mk) only, split by audience (package 46 T3):
+# config.mk plus the public/ board constants and the private/ memory and
+# interrupt declarations.
+PLATFORM_FILES = {"config.mk"}
+PLATFORM_PUBLIC_FILES = {"hardware.h", "hardware.inc"}
+PLATFORM_PRIVATE_FILES = {"memory.h", "memory.inc", "irq.h", "irq.inc"}
 
 # Implementation files that must exist under their owning directories.
 OWNER_FILES = (
@@ -84,23 +87,37 @@ OWNER_FILES = (
     "kernel/memory/user_copy.asm",
     "kernel/vfs/vfs.h",
     "kernel/vfs/path.c",
-    "kernel/vfs/ns.h",
-    "kernel/vfs/ns.c",
-    "kernel/vfs/ns_file.c",
+    "kernel/vfs/router.c",
+    "kernel/vfs/dev.c",
+    "kernel/vfs/fs.c",
+    "kernel/vfs/system.c",
     "kernel/syscall/object.c",
     "kernel/syscall/object.h",
-    "fs/iocfat/iocfat.c",
-    "services/manifests/iocfat.json",
-    "kernel/vfs/process.c",
+    "drivers/iocfat/iocfat.c",
+    "drivers/iocfat/iocfat.json",
+    "kernel/vfs/handles.c",
     "kernel/vfs/workspace.c",
     "tools/romfspack.py",
     "tests/fs/fs_selftest.c",
     "tests/fs/fs_child.c",
     "tests/fs/manifest.json",
     "tests/test_fs_selftest_sim.py",
-    "include/zephyros/romfs.h",
-    "include/zephyros/process.h",
-    "include/zephyros/zex.h",
+    "formats/include/romfs.h",
+    "formats/include/zex.h",
+    "formats/include/zmod.h",
+    "kernel/include/kernel.h",
+    "kernel/include/process.h",
+    "kernel/include/platform.h",
+    "kernel/include/irq_types.h",
+    "drivers/include/driver.h",
+    "drivers/include/ioc.h",
+    "drivers/include/ioc_protocol.h",
+    "platform/zephyr80/public/hardware.h",
+    "platform/zephyr80/public/hardware.inc",
+    "platform/zephyr80/private/memory.h",
+    "platform/zephyr80/private/memory.inc",
+    "platform/zephyr80/private/irq.h",
+    "platform/zephyr80/private/irq.inc",
     "abi/zos/types.h",
     "abi/zos/errno.h",
     "abi/zos/syscall.h",
@@ -118,7 +135,7 @@ OWNER_FILES = (
     "user/sdk/include/zlibc/stdarg.h",
     "user/sdk/src/crt0.asm",
     "user/sdk/src/runtime.asm",
-    "user/sdk/src/console_service.c",
+    "user/sdk/src/console_proto.c",
     "user/sdk/src/gate.asm",
     "user/sdk/src/diaggate.asm",
     "user/sdk/src/args.c",
@@ -173,18 +190,18 @@ OWNER_FILES = (
     "tests/target/romfs/romfs_test.c",
     "tests/target/process/process_test.c",
     "tests/target/process/zextest.c",
-    "drivers/ctc/ctc.c",
+    "kernel/irq/ctc.c",
     "drivers/sio/sio.c",
     "drivers/sio/sio.h",
-    "drivers/sio/sio_service.c",
+    "drivers/sio/sio_proto.c",
     "drivers/sio/sio_boot.c",
     "drivers/sio/sio_io.asm",
     "drivers/ioc/ioc.c",
     "drivers/ioc/ioc_driver.h",
     "drivers/ioc/ioc_io.asm",
     "drivers/ioc/ioc_proto.h",
-    "include/zephyros/ioc.h",
-    "include/zephyros/ioc_protocol.h",
+    "drivers/include/ioc.h",
+    "drivers/include/ioc_protocol.h",
     "drivers/hid/hid.c",
     "drivers/hid/hid_driver.h",
     "drivers/v9958/v9958.c",
@@ -201,7 +218,7 @@ OWNER_FILES = (
     "tests/target/include/console_integration_selftest.h",
     "tests/console/manifest-serial.json",
     "tests/console/manifest-serial-missing.json",
-    "modules/runtime/sdcc_indirect_calls.asm",
+    "drivers/runtime/sdcc_indirect_calls.asm",
     "tests/target/syscall/syscall_entry.asm",
     "tests/target/syscall/syscall_test.c",
     "tests/target/irq/irq_entry.asm",
@@ -254,6 +271,24 @@ REMOVED_PATHS = (
     "user/monitor/monitor.json",
     "tests/subsys/zextest.json",
     "tests/target/process/zextest_entry.asm",
+    # Package 46 T1 moved the driver tree: the CTC nucleus source, the
+    # driver manifests and the shared SDCC runtime support may not come
+    # back to their pre-46 owners.
+    "drivers/ctc",
+    "drivers/ctc/ctc.c",
+    "fs/iocfat",
+    "modules/runtime",
+    "services/manifests",
+    # Package 46 T4 split the VFS by surface: the monolithic ns.c/ns.h
+    # and the M9-era process.c/ns_file.c names are retired.
+    "kernel/vfs/ns.c",
+    "kernel/vfs/ns.h",
+    "kernel/vfs/ns_file.c",
+    "kernel/vfs/process.c",
+    # Package 46 T3 deleted the flat include/ tree: the audience headers
+    # live under their owners and no `zephyros/` spelling may return.
+    "include/zephyros",
+    "zephyros/",
     # Correction 01 to work package 42b deleted the whole M9 acceptance
     # surface: its subjects are gone from M10, so the images, programs,
     # manifests and host modules may not come back.
@@ -296,9 +331,11 @@ REQUIRED_DIRS = (
     "boot",
     "kernel/memory", "kernel/syscall", "kernel/irq", "kernel/runtime",
     "kernel/romfs", "kernel/process",
-    "kernel/vfs", "fs/iocfat", "services/manifests", "config",
-    "drivers/sio", "drivers/ctc", "drivers/ioc", "drivers/hid",
-    "drivers/v9958", "modules/runtime",
+    "kernel/vfs", "drivers/iocfat", "config",
+    "drivers/sio", "drivers/ioc", "drivers/hid",
+    "drivers/v9958", "drivers/console", "drivers/runtime",
+    "drivers/include", "kernel/include", "formats/include",
+    "platform/zephyr80/public", "platform/zephyr80/private",
     "abi", "abi/zos",
     "user/sdk", "user/sdk/include", "user/sdk/src",
     "user/helloworld", "user/monitor",
@@ -386,8 +423,8 @@ EMITTER_PATTERNS = (
 
 # Live documentation/build files that must never name the removed paths.
 SCAN_ROOTS = (
-    "boot", "docs", "drivers", "fs", "include", "kernel", "libk",
-    "linker", "platform", "services", "tests", "tools",
+    "boot", "docs", "drivers", "formats", "kernel", "libk",
+    "linker", "platform", "tests", "tools",
 )
 SCAN_TOP_FILES = ("Makefile", "README.md")
 
@@ -422,6 +459,17 @@ def _code_only(path):
     return _strip_comments(path, _read(path))
 
 
+def _platform_files():
+    """Every platform file: the top-level build configuration plus the
+    public/ and private/ constant pairs (package 46 T3)."""
+    for root in (PLATFORM_DIR,
+                 os.path.join(PLATFORM_DIR, "public"),
+                 os.path.join(PLATFORM_DIR, "private")):
+        for name in sorted(os.listdir(root)):
+            if os.path.isfile(os.path.join(root, name)):
+                yield root, name
+
+
 def _walk(root_name, suffixes=None):
     root = os.path.join(ROOT, root_name)
     for dirpath, _, filenames in os.walk(root):
@@ -434,17 +482,24 @@ def _walk(root_name, suffixes=None):
 # Production source roots scanned for cross-driver private includes.  Test
 # trees are excluded: a test-only IOC diagnostic may use the private
 # include path when it exercises transport-private behavior.
-PRODUCTION_SOURCE_ROOTS = ("boot", "drivers", "include", "kernel",
-                           "modules", "user")
+PRODUCTION_SOURCE_ROOTS = ("boot", "drivers", "formats", "kernel",
+                           "user")
 SOURCE_SUFFIXES = (".c", ".h", ".asm", ".inc")
 
 DRIVERS_DIR = os.path.join(ROOT, "drivers")
+
+
+# Directories under drivers/ that are not driver owners: the shared
+# driver-facing headers and the module-local SDCC glue.
+DRIVER_SUPPORT_DIRS = ("include", "runtime")
 
 
 def _driver_private_headers():
     """Map every driver-private header basename to its owning driver dir."""
     owners = {}
     for name in sorted(os.listdir(DRIVERS_DIR)):
+        if name in DRIVER_SUPPORT_DIRS:
+            continue
         directory = os.path.join(DRIVERS_DIR, name)
         if not os.path.isdir(directory):
             continue
@@ -525,29 +580,29 @@ def _tab_recipe_lines(text):
             header = ""
 
 
-# The headers a service image author may read: the M10 service ABI, the
+# The headers a driver image author may read: the M10 driver ABI, the
 # client-visible protocol vocabulary, and the narrow board-constant header
 # a hardware-owning driver includes.  (kernel/... is deliberately not
-# reachable from the service build.)
-SERVICE_FACING_HEADERS = (
-    "include/zephyros/service.h",
-    "include/zephyros/irq.h",
-    "include/zephyros/ioc.h",
-    "include/zephyros/ioc_protocol.h",
-    "include/zephyros/ipc.h",
-    "include/zephyros/errno.h",
-    "include/zephyros/romfs.h",
+# reachable from the driver build.)
+DRIVER_FACING_HEADERS = (
+    "formats/include/zmod.h",
+    "kernel/include/irq_types.h",
+    "drivers/include/ioc.h",
+    "drivers/include/ioc_protocol.h",
+    "drivers/include/driver.h",
+    "abi/zos/errno.h",
+    "formats/include/romfs.h",
     "abi/zos/fs.h",
     "abi/zos/ipc.h",
     "abi/zos/object.h",
     "abi/zos/protocol.h",
     "abi/zos/types.h",
-    "platform/zephyr80/hardware.h",
+    "platform/zephyr80/public/hardware.h",
 )
 
 # Declarations that must not appear anywhere in the module-facing include
 # closure.  ABI field names (`irq_claim`, `irq_release`) are
-# intentionally absent: they are the service surface.  These are the kernel registry transaction/owner/storage,
+# intentionally absent: they are the driver surface.  These are the kernel registry transaction/owner/storage,
 # executive lifecycle, diagnostics, platform hooks, and raw memory
 # primitives (work package 22).
 KERNEL_ONLY_IDENTIFIERS = (
@@ -573,24 +628,22 @@ KERNEL_ONLY_IDENTIFIERS = (
     "VFS_O_EXEC", "VFS_MOUNT_SYSTEM",
 )
 
-# The include paths a representative module is compiled with: only the
-# shared include/ and platform/ surfaces plus its own driver directory.
+# The include paths a representative driver image is compiled with: only
+# the driver-facing roots plus its own driver directory, never `.`
+# (package 46 T3).
 MODULE_PROBE_FLAGS = ("-mz80", "-c", "--nostdinc", "--Werror",
-                      "-I", "abi", "-I", "include", "-I", "platform",
-                      "-I", "drivers/sio")
+                      "-I", "abi", "-I", "drivers/include",
+                      "-I", "platform/zephyr80/public", "-I", "drivers/sio")
 
 _MODULE_PROBE_SOURCE = """\
-#include "zephyros/service.h"
-#include "zephyros/irq.h"
-#include "zephyros/ioc.h"
-#include "zephyros/ioc_protocol.h"
-#include "zephyros/ipc.h"
-#include "zephyr80/hardware.h"
+#include "driver.h"
+#include "ioc.h"
+#include "ioc_protocol.h"
+#include "hardware.h"
 
-/* A representative service image: it reads the flat plan, answers a
- * protocol frame, and its init takes the boot bundle the loader passes
- * in HL. */
-static const struct ipc_service_api *probe_api;
+/* A representative driver image: it answers a protocol frame and its
+ * init takes the boot bundle the loader passes in HL. */
+static const struct driver_api *probe_api;
 
 int16_t probe_dispatch(uint8_t handle, uint8_t op,
 		       struct zos_ipc_frame *frame)
@@ -600,16 +653,11 @@ int16_t probe_dispatch(uint8_t handle, uint8_t op,
 	return (int16_t)(frame->op + (uint8_t)op);
 }
 
-void probe_init(const struct ipc_service_boot *boot)
+void probe_init(const struct driver_boot *boot)
 {
 	probe_api = boot->api;
 	(void)probe_api->irq_claim(1u, 0x6000u, 0u);
 	probe_api->console_putc((uint8_t)ZIOC_MAX_DATA);
-}
-
-uint8_t probe_plan(const struct zmod_header *header)
-{
-	return header->segment_count;
 }
 
 uint8_t probe_frame(const struct zioc_frame *frame)
@@ -619,14 +667,19 @@ uint8_t probe_frame(const struct zioc_frame *frame)
 """
 
 
+# The driver-facing include roots (package 46 T3): a quoted include
+# resolves against the including file's directory first, then these.
+DRIVER_INCLUDE_ROOTS = (
+    os.path.join(ROOT, "abi"),
+    os.path.join(ROOT, "drivers", "include"),
+    os.path.join(ROOT, "platform", "zephyr80", "public"),
+)
+
+
 def _resolve_quoted_include(name, origin_dir):
-    """Resolve a quoted include the way the module build does."""
+    """Resolve a quoted include the way the driver build does."""
     candidates = [os.path.join(origin_dir, name)]
-    if name.startswith("zephyr80/"):
-        candidates.append(os.path.join(ROOT, "platform", name))
-    else:
-        candidates.append(os.path.join(ROOT, "include", name))
-        candidates.append(os.path.join(ROOT, "platform", name))
+    candidates += [os.path.join(root, name) for root in DRIVER_INCLUDE_ROOTS]
     for candidate in candidates:
         if os.path.isfile(candidate):
             return candidate
@@ -662,10 +715,12 @@ class TestOwnerLayout(unittest.TestCase):
 
     def test_retired_owners_are_gone(self):
         # Package 42c: the module/arena form is deleted outright, so no
-        # source, header or fixture of it may come back.
+        # source, header or fixture of it may come back.  (Package 46 T2
+        # named the driver ABI header formats/include/zmod.h, which is
+        # live until T3 moves it to formats/include/zmod.h.)
         for rel in ("kernel/module", "kernel/module/arena.asm",
                     "tests/modules", "include/zephyros/module.h",
-                    "include/zephyros/driver.h", "include/zephyros/device.h",
+                    "include/zephyros/device.h",
                     "include/zephyros/vfs.h", "include/zephyros/hid.h",
                     "include/zephyros/video.h", "include/zephyros/block.h",
                     "tools/mountgen.py", "config/mounts.json"):
@@ -690,40 +745,69 @@ class TestProductionTestSeparation(unittest.TestCase):
 
     def test_driver_directories_contain_device_implementation_only(self):
         # Package 41: each driver directory holds the device implementation
-        # (`*_service.c` protocol/init half and, where the driver has one,
+        # (`*_driver.c` protocol/init half and, where the driver has one,
         # the `*_boot.c` boot tier) plus its private headers and assembly.
         # The M8/M9 `*_module.c` registration adapters were retired with
-        # the module form of the four drivers.
+        # the module form of the four drivers.  Package 46 T1 added each
+        # driver's manifest and the CONSOLE/IOC-FAT/RUNTIME owners.
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "sio"))),
-                         ["sio.c", "sio.h", "sio_boot.c", "sio_io.asm",
-                          "sio_service.c"])
-        self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "ctc"))),
-                         ["ctc.c"])
+                         ["sio.c", "sio.h", "sio.json", "sio_boot.c",
+                          "sio_io.asm", "sio_proto.c"])
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "ioc"))),
-                         ["ioc.c", "ioc_boot.c", "ioc_driver.h", "ioc_io.asm",
-                          "ioc_proto.h", "ioc_service.c"])
+                         ["ioc.c", "ioc.json", "ioc_boot.c", "ioc_driver.h",
+                          "ioc_io.asm", "ioc_proto.c", "ioc_proto.h"])
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "hid"))),
-                         ["hid.c", "hid_driver.h"])
+                         ["hid.c", "hid.json", "hid_driver.h"])
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "v9958"))),
-                         ["assets", "v9958.c", "v9958_boot.c",
+                         ["assets", "v9958.c", "v9958.json", "v9958_boot.c",
                           "v9958_driver.h", "v9958_font.asm", "v9958_io.asm",
-                          "v9958_service.c"])
+                          "v9958_proto.c"])
+        self.assertEqual(
+            sorted(os.listdir(os.path.join(ROOT, "drivers", "console"))),
+            ["console-serial.json", "console-v9958-hid.json",
+             "console_proto.c"])
+        self.assertEqual(
+            sorted(os.listdir(os.path.join(ROOT, "drivers", "iocfat"))),
+            ["iocfat.c", "iocfat.json"])
+        self.assertEqual(
+            sorted(os.listdir(os.path.join(ROOT, "drivers", "runtime"))),
+            ["sdcc_indirect_calls.asm"])
 
-    def test_no_json_manifests_under_drivers(self):
-        for path in _walk("drivers"):
-            self.assertFalse(
-                path.endswith(".json"),
-                "a service manifest belongs under services/manifests/: %s"
-                % os.path.relpath(path, ROOT))
+    def test_driver_manifests_live_with_their_driver(self):
+        # Package 46 T1: a driver owns its manifest in its own directory
+        # (drivers/<name>/<name>.json; the two console drivers share
+        # drivers/console/), and the flat drivers/manifests/ directory
+        # is gone.
+        shipped = []
+        for path in _walk("drivers", (".json",)):
+            shipped.append(os.path.relpath(path, ROOT).replace(os.sep, "/"))
+        self.assertEqual(sorted(shipped), [
+            "drivers/console/console-serial.json",
+            "drivers/console/console-v9958-hid.json",
+            "drivers/hid/hid.json",
+            "drivers/ioc/ioc.json",
+            "drivers/iocfat/iocfat.json",
+            "drivers/sio/sio.json",
+            "drivers/v9958/v9958.json",
+        ])
+        self.assertFalse(os.path.exists(
+            os.path.join(ROOT, "drivers", "manifests")),
+            "the flat drivers/manifests/ directory must stay gone")
 
     def test_no_driver_private_sdcc_glue(self):
+        # Package 46 T1 moved the shared source to drivers/runtime/; the
+        # one copy every driver image packs is that file itself.
+        shared = os.path.join(ROOT, "drivers", "runtime",
+                              "sdcc_indirect_calls.asm")
         for path in _walk("drivers", (".c", ".h", ".asm", ".inc")):
+            if os.path.abspath(path) == shared:
+                continue
             body = _code_only(path)
             for symbol in ("___sdcc_call_iy", "___sdcc_call_hl"):
                 self.assertNotIn(
                     symbol, body,
                     "%s defines module-local SDCC glue; the shared source is "
-                    "modules/runtime/sdcc_indirect_calls.asm"
+                    "drivers/runtime/sdcc_indirect_calls.asm"
                     % os.path.relpath(path, ROOT))
 
     def test_retired_static_driver_symbols_absent(self):
@@ -791,9 +875,12 @@ class TestProductionTestSeparation(unittest.TestCase):
                         % (os.path.relpath(path, ROOT), token))
 
     def test_production_headers_declare_no_test_runners(self):
-        for name in ("irq.h", "platform.h", "kernel.h", "ipc.h",
-                     "service.h", "process.h", "romfs.h"):
-            body = _code_only(os.path.join(ROOT, "include", "zephyros", name))
+        # Package 46 T3: the audience headers live under their owners.
+        for name in ("kernel/include/irq_types.h",
+                     "kernel/include/platform.h", "kernel/include/kernel.h",
+                     "drivers/include/driver.h", "formats/include/zmod.h",
+                     "kernel/include/process.h", "formats/include/romfs.h"):
+            body = _code_only(os.path.join(ROOT, name))
             self.assertNotIn("zos_run_", body,
                              "%s declares a target-test runner" % name)
 
@@ -859,21 +946,21 @@ class TestCrossDriverIncludeBoundary(unittest.TestCase):
         relative = '#include "../ioc/ioc_proto.h"\n'
         self.assertTrue(_sibling_private_includes(
             "drivers/hid/hid.c", relative, owners))
-        allowed = ('#include "zephyros/ioc_protocol.h"\n'
+        allowed = ('#include "ioc_protocol.h"\n'
                    '#include "hid_driver.h"\n')
         self.assertEqual(_sibling_private_includes(
             "drivers/hid/hid.c", allowed, owners), [])
 
 
-class TestServiceFacingHeaderBoundary(unittest.TestCase):
-    """A service image reads the M10 service ABI, the client-visible
+class TestDriverFacingHeaderBoundary(unittest.TestCase):
+    """A driver image reads the M10 driver ABI, the client-visible
     protocol vocabulary and the board constants, but not kernel registry
     transactions, executive lifecycle controls, platform hooks, or raw
     memory primitives (work package 22; the M8 module form that defined
     this boundary is retired, work package 42c)."""
 
-    def test_service_facing_closure_has_no_kernel_only_declarations(self):
-        closure = _header_closure(SERVICE_FACING_HEADERS)
+    def test_driver_facing_closure_has_no_kernel_only_declarations(self):
+        closure = _header_closure(DRIVER_FACING_HEADERS)
         offenders = []
         for rel in closure:
             text = _strip_comments(rel, _read(os.path.join(ROOT, rel)))
@@ -882,19 +969,19 @@ class TestServiceFacingHeaderBoundary(unittest.TestCase):
                     offenders.append("%s declares %s" % (rel, ident))
         self.assertEqual(
             offenders, [],
-            "kernel-only declarations leak into the service-facing header "
+            "kernel-only declarations leak into the driver-facing header "
             "closure:\n%s" % "\n".join(offenders))
 
-    def test_service_facing_closure_keeps_the_abi_surface(self):
-        headers = _header_closure(SERVICE_FACING_HEADERS)
+    def test_driver_facing_closure_keeps_the_abi_surface(self):
+        headers = _header_closure(DRIVER_FACING_HEADERS)
         text = "".join(_read(os.path.join(ROOT, rel)) for rel in headers)
-        # A resident service builds against the M10 service ABI
+        # A resident driver builds against the M10 driver ABI
         # (abi/zos + include/zephyros): the flat plan, the call frame, the
         # boot bundle and the client-visible namespace vocabulary.
         for needle in ("struct zmod_header", "struct zmod_segment",
                        "struct zmod_endpoint", "struct zmod_dependency",
-                       "struct zmod_publication", "struct ipc_service_api",
-                       "struct ipc_service_boot", "struct zos_ipc_frame",
+                       "struct zmod_publication", "struct driver_api",
+                       "struct driver_boot", "struct zos_ipc_frame",
                        "struct zos_ipc_call_args", "struct zos_ns_entry",
                        "ZOS_TYPE_FILE", "ZOS_TYPE_FS", "ZOS_CLASS_FILE",
                        "struct zfs_stat", "ZFILE_OP_READ", "ZFS_OP_MKDIR",
@@ -912,7 +999,7 @@ class TestServiceFacingHeaderBoundary(unittest.TestCase):
             self.assertNotIn(retired, text)
 
     @unittest.skipUnless(shutil.which("sdcc"), "sdcc not available")
-    def test_representative_service_compiles_against_service_headers_only(self):
+    def test_representative_driver_compiles_against_driver_headers_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = os.path.join(tmp, "probe.c")
             with open(source, "w") as handle:
@@ -924,13 +1011,13 @@ class TestServiceFacingHeaderBoundary(unittest.TestCase):
                 text=True)
             self.assertEqual(
                 result.returncode, 0,
-                "a representative service image failed to compile against "
-                "the service-facing headers alone:\n%s" % result.stdout)
+                "a representative driver image failed to compile against "
+                "the driver-facing headers alone:\n%s" % result.stdout)
             # A kernel-only reference must not resolve against these
             # headers alone; this is the negative half of the boundary.
             leak = os.path.join(tmp, "leak.c")
             with open(leak, "w") as handle:
-                handle.write('#include "zephyros/service.h"\n'
+                handle.write('#include "driver.h"\n'
                              "int probe_leak(void) {\n"
                              "\tvfs_mount_table[0] = 0;\n"
                              "\treturn 0;\n}\n")
@@ -941,8 +1028,103 @@ class TestServiceFacingHeaderBoundary(unittest.TestCase):
                 text=True)
             self.assertNotEqual(
                 result.returncode, 0,
-                "a kernel-only symbol resolved from the service-facing "
+                "a kernel-only symbol resolved from the driver-facing "
                 "headers:\n%s" % result.stdout)
+
+    @unittest.skipUnless(shutil.which("sdcc"), "sdcc not available")
+    def test_driver_roots_cannot_reach_kernel_h(self):
+        # Package 46 T3's negative include test: the driver include roots
+        # carry no kernel-private header, so a one-line source including
+        # "kernel.h" must fail to compile against them.
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "kernel_h.c")
+            with open(source, "w") as handle:
+                handle.write('#include "kernel.h"\n')
+            result = subprocess.run(
+                ["sdcc"] + list(MODULE_PROBE_FLAGS) +
+                ["-o", os.path.join(tmp, "kernel_h.rel"), source],
+                cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True)
+            self.assertNotEqual(
+                result.returncode, 0,
+                "kernel.h resolved through the driver include roots, so the "
+                "audience split leaks:\n%s" % result.stdout)
+
+
+def _make_variable(text, name):
+    """The backslash-joined value of one Makefile assignment (first match)."""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r"^%s\s*:?=\s*(.*)$" % re.escape(name), line)
+        if not match:
+            continue
+        value = match.group(1)
+        while value.rstrip().endswith("\\"):
+            index += 1
+            value = value.rstrip()[:-1] + " " + lines[index].strip()
+        return " ".join(value.split())
+    return None
+
+
+def _include_roots(value, variables):
+    """The `-I` roots of a flags value with one expansion pass."""
+    expanded = re.sub(r"\$\((\w+)\)",
+                      lambda match: variables.get(match.group(1), match.group(0)),
+                      value or "")
+    tokens = expanded.split()
+    roots = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-I":
+            roots.append(tokens[index + 1])
+            index += 2
+            continue
+        if token.startswith("-I") and len(token) > 2:
+            roots.append(token[2:])
+        index += 1
+    return roots
+
+
+class TestIncludeRootAllowLists(unittest.TestCase):
+    """Package 46 T3: each build class offers its exact `-I` set."""
+
+    # Nucleus and kernel-linked tests: `.` plus the audience roots.
+    NUCLEUS_ROOTS = [".", "abi", "kernel/include", "drivers/include",
+                     "formats/include", "platform/zephyr80/public",
+                     "platform/zephyr80/private", "$(BUILD)"]
+    # Drivers (DRV_CFLAGS, MOD_CFLAGS): no `.`; MOD_CFLAGS also carries the
+    # representative driver's own directory.
+    DRIVER_ROOTS = ["abi", "drivers/include", "platform/zephyr80/public",
+                    "$(BUILD)"]
+    # The SDK and its programs are unchanged.
+    SDK_ROOTS = ["abi", "$(ZOS_SDK_INCLUDE)"]
+
+    def _config_variables(self):
+        config = _read(os.path.join(ROOT, "platform", "zephyr80", "config.mk"))
+        return {"ZOS_PLATFORM_CFLAGS": _make_variable(config,
+                                                      "ZOS_PLATFORM_CFLAGS")}
+
+    def test_nucleus_include_roots_are_exact(self):
+        makefile = _read(os.path.join(ROOT, "Makefile"))
+        roots = _include_roots(_make_variable(makefile, "CFLAGS"),
+                               self._config_variables())
+        self.assertEqual(roots, self.NUCLEUS_ROOTS)
+
+    def test_driver_include_roots_are_exact(self):
+        makefile = _read(os.path.join(ROOT, "Makefile"))
+        for name, extra in (("DRV_CFLAGS", []),
+                            ("MOD_CFLAGS", ["drivers/sio"])):
+            with self.subTest(variable=name):
+                roots = _include_roots(_make_variable(makefile, name), {})
+                self.assertEqual(roots, self.DRIVER_ROOTS + extra, name)
+                self.assertNotIn(".", roots,
+                                 "%s must not offer the kernel tree" % name)
+
+    def test_sdk_include_roots_are_exact(self):
+        zex_mk = _read(os.path.join(ROOT, "user", "sdk", "zex.mk"))
+        roots = _include_roots(_make_variable(zex_mk, "ZEX_CFLAGS"), {})
+        self.assertEqual(roots, self.SDK_ROOTS)
 
 
 class TestNoResidentBlockDriver(unittest.TestCase):
@@ -975,12 +1157,15 @@ class TestNoResidentBlockDriver(unittest.TestCase):
             % ", ".join(offenders))
 
     def test_no_production_block_module_manifest(self):
-        manifests = os.path.join(ROOT, "services", "manifests")
-        offenders = [name for name in sorted(os.listdir(manifests))
-                     if self.BLOCK_NAME_RE.search(name)]
+        # Package 46 T1: each driver carries its manifest in its own
+        # directory; the flat drivers/manifests/ owner is gone.
+        offenders = []
+        for path in _walk("drivers", (".json",)):
+            if self.BLOCK_NAME_RE.search(os.path.basename(path)):
+                offenders.append(os.path.relpath(path, ROOT))
         self.assertEqual(
             offenders, [],
-            "a production service manifest names a block driver: %s"
+            "a production driver manifest names a block driver: %s"
             % ", ".join(offenders))
 
     def test_production_romfs_packs_no_block_driver(self):
@@ -1006,37 +1191,42 @@ class TestNoResidentBlockDriver(unittest.TestCase):
 class TestPlatformBoundary(unittest.TestCase):
     def test_platform_contains_only_constant_configuration_files(self):
         actual = set(os.listdir(PLATFORM_DIR))
-        allowed = PLATFORM_FILES
+        allowed = PLATFORM_FILES | {"public", "private"}
         self.assertEqual(actual, allowed,
                          "platform/zephyr80/ must contain constants and "
                          "configuration only (unexpected: %s, missing: %s)"
                          % (sorted(actual - allowed),
                             sorted(allowed - actual)))
+        self.assertEqual(
+            set(os.listdir(os.path.join(PLATFORM_DIR, "public"))),
+            PLATFORM_PUBLIC_FILES,
+            "platform/zephyr80/public/ must hold the board constants")
+        self.assertEqual(
+            set(os.listdir(os.path.join(PLATFORM_DIR, "private"))),
+            PLATFORM_PRIVATE_FILES,
+            "platform/zephyr80/private/ must hold the memory/IRQ constants")
 
     def test_no_target_code_suffixes(self):
-        for name in sorted(os.listdir(PLATFORM_DIR)):
+        for directory, name in _platform_files():
             self.assertIn(os.path.splitext(name)[1], (".h", ".inc", ".mk"),
                           "platform file %s has a target-code suffix" % name)
 
     def test_no_executable_content(self):
-        for directory, names in ((PLATFORM_DIR, sorted(os.listdir(PLATFORM_DIR))),):
-            for name in names:
-                path = os.path.join(directory, name)
-                if os.path.isdir(path):
-                    continue
-                body = _strip_comments(path, _read(path))
-                for lineno, line in enumerate(body.splitlines(), start=1):
-                    for pattern in EMITTER_PATTERNS:
-                        self.assertIsNone(
-                            pattern.match(line),
-                            "%s:%d looks like target-emitting content: %r"
-                            % (name, lineno, line.strip()))
+        for directory, name in _platform_files():
+            path = os.path.join(directory, name)
+            body = _strip_comments(path, _read(path))
+            for lineno, line in enumerate(body.splitlines(), start=1):
+                for pattern in EMITTER_PATTERNS:
+                    self.assertIsNone(
+                        pattern.match(line),
+                        "%s:%d looks like target-emitting content: %r"
+                        % (name, lineno, line.strip()))
 
     def test_no_function_like_macros(self):
-        for name in sorted(os.listdir(PLATFORM_DIR)):
+        for directory, name in _platform_files():
             if not name.endswith(".h"):
                 continue
-            path = os.path.join(PLATFORM_DIR, name)
+            path = os.path.join(directory, name)
             for lineno, line in enumerate(_read(path).splitlines(), start=1):
                 self.assertIsNone(
                     re.match(r"\s*#\s*define\s+[A-Za-z_]\w*\(", line),
@@ -1052,9 +1242,8 @@ class TestPlatformBoundary(unittest.TestCase):
                 "config.mk names an implementation source: %r" % line.strip())
 
     def test_platform_h_includes_constant_headers(self):
-        text = _read(os.path.join(ROOT, "include", "zephyros", "platform.h"))
-        for header in ("zephyr80/hardware.h", "zephyr80/memory.h",
-                       "zephyr80/irq.h"):
+        text = _read(os.path.join(ROOT, "kernel", "include", "platform.h"))
+        for header in ("hardware.h", "memory.h", "irq.h"):
             self.assertIn('#include "%s"' % header, text)
 
 
@@ -1166,8 +1355,8 @@ RETIRED_BOOT_MODES = (
 )
 
 # Live files that may not name any of the retired names above.
-RETENTION_SCAN_ROOTS = ("boot", "drivers", "fs", "include", "kernel",
-                        "modules", "platform", "tools", "user")
+RETENTION_SCAN_ROOTS = ("boot", "drivers", "include", "kernel",
+                        "platform", "tools", "user")
 
 
 class TestMilestoneRetentionWindow(unittest.TestCase):
@@ -1253,7 +1442,7 @@ class TestMilestoneRetentionWindow(unittest.TestCase):
             "the embedded-catalog boot path is retired")
         for token in ("module_catalog_load_all", "zmod_catalog",
                       "zmod_catalog_entry"):
-            for root_name in ("kernel", "include", "boot"):
+            for root_name in ("kernel", "formats", "boot"):
                 for path in _walk(root_name, SOURCE_SUFFIXES):
                     self.assertNotIn(
                         token, _code_only(path),
@@ -1277,9 +1466,9 @@ ACCEPTANCE_CONSTANT_PAIRS = (
 # declarations, the interrupt-executive vectors, and the acceptance pairs
 # above.
 CONSTANT_PARITY_PAIRS = (
-    ("platform/zephyr80/hardware.h", "platform/zephyr80/hardware.inc"),
-    ("platform/zephyr80/memory.h", "platform/zephyr80/memory.inc"),
-    ("platform/zephyr80/irq.h", "platform/zephyr80/irq.inc"),
+    ("platform/zephyr80/public/hardware.h", "platform/zephyr80/public/hardware.inc"),
+    ("platform/zephyr80/private/memory.h", "platform/zephyr80/private/memory.inc"),
+    ("platform/zephyr80/private/irq.h", "platform/zephyr80/private/irq.inc"),
 ) + ACCEPTANCE_CONSTANT_PAIRS
 
 
@@ -1373,7 +1562,7 @@ class TestKernelNameComparison(unittest.TestCase):
         expected = {
             # Package 42b: the namespace router's publication table is the
             # only other caller; the M9 dir/mount/registry callers are gone.
-            "kernel/vfs/ns.c": "0u, 1u",
+            "kernel/vfs/dev.c": "0u, 1u",
             "kernel/romfs/romfs.c": "ROMFS_NAME_SIZE, 1u",
         }
         for rel, selector in expected.items():

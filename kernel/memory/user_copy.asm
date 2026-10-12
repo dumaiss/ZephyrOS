@@ -20,7 +20,7 @@
 ;       uint16_t length; 0 is a validated no-op
 ;   };
 ;   uint8_t zos_bank_copy(const struct zos_bank_copy_req *req);
-;       returns 0 or ZOS_EINVAL (see zephyros/errno.h)
+;       returns 0 or ZOS_EINVAL (see zos/errno.h)
 ;
 ; SDCC sdcccall(1): a single 16-bit pointer argument arrives in HL; the
 ; 8-bit result is returned in A.
@@ -31,8 +31,8 @@
 ; -----------------------------------------------------------------------------
 
 	.module user_copy
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 
 	.globl _zos_bank_copy
 	.globl _zos_user_copy_staging
@@ -49,7 +49,7 @@
 
 	.area _COMMON
 
-; Operation codes (mirror zephyros/process.h).
+; Operation codes (mirror process.h).
 ZOS_COPY_OP_READ  = 1
 ZOS_COPY_OP_WRITE = 2
 ZOS_COPY_OP_ZERO  = 3
@@ -170,7 +170,7 @@ _zos_bank_copy::
 
 ; Bounded staging buffer owned by the copy contract: syscall buffers are
 ; transferred through this common block, never through a banked pointer.
-; 64 bytes keeps the gate cheap while the syscall service owns the
+; 64 bytes keeps the gate cheap while the syscall driver owns the
 ; chunking.  (C name zos_user_copy_staging.)
 _zos_user_copy_staging::
 	.ds	64

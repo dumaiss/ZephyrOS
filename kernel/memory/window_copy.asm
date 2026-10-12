@@ -21,10 +21,10 @@
 ; pay for it.
 ;
 ; Interface (kernel-internal, not a native ABI).  The request has the same
-; layout as `struct zos_bank_copy_req` (include/zephyros/process.h); it is
+; layout as `struct zos_bank_copy_req` (kernel/include/process.h); it is
 ; read in mode 11 with the caller's latch still in force, so it may live on
 ; the caller's stack.  `bank` is the auxiliary bank (0-5; bank 6 would
-; select the operating system's own service window), `addr` the object
+; select the operating system's own driver window), `addr` the object
 ; address in the window and `buffer` the common staging address:
 ;
 ;   uint8_t zos_window_copy(const struct zos_bank_copy_req *req);
@@ -36,8 +36,8 @@
 ; -----------------------------------------------------------------------------
 
 	.module window_copy
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 
 	.globl _zos_window_copy
 	.globl zos_window_copy_end
@@ -51,7 +51,7 @@
 
 	.area _CODE
 
-; Operation codes (mirror zephyros/process.h).
+; Operation codes (mirror process.h).
 ZOS_COPY_OP_READ  = 1
 ZOS_COPY_OP_WRITE = 2
 

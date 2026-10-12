@@ -24,8 +24,8 @@
 ; -----------------------------------------------------------------------------
 
 	.module irq_selftest
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 	.include "irq_entry.inc"
 
 	.globl _zos_irq_selftest_run

@@ -3,11 +3,11 @@
  * The M7 recovery facilities behind the native syscall gate.  They exist
  * for the native monitor and the diagnostic suite, are documented as
  * recovery-only in docs/abi.md, and are not a driver bypass: normal
- * programs keep to the ordinary services.  The numbers and packed blocks
+ * programs keep to the ordinary drivers.  The numbers and packed blocks
  * here are the syscall-visible contract; the kernel bodies live in
  * kernel/syscall/diag.c.
  *
- * Every service validates its complete argument block before touching
+ * Every driver validates its complete argument block before touching
  * caller memory or device state and leaves a rejected request
  * side-effect free.
  *
@@ -30,7 +30,7 @@
  *
  * Ports 00h-0Fh are rejected with ZOS_EINVAL because the memory latch is
  * a bank/mode operation in disguise.  Every rejection is side-effect free
- * and every service restores the exact active latch.
+ * and every driver restores the exact active latch.
  */
 
 #ifndef ZOS_DIAG_H

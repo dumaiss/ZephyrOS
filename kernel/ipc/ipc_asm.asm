@@ -2,12 +2,12 @@
 ; ZephyrOS fixed-core IPC primitives (kernel/ipc, architecture 36.5-36.9).
 ;
 ; Every symbol here is fixed-core by construction: it must stay visible in
-; 2000h-5FFFh while the resident service domain (bank 6) is mapped into
+; 2000h-5FFFh while the resident driver domain (bank 6) is mapped into
 ; the mode-11 window 6000h-DFFFh.  Nothing here touches cold code or cold
 ; data while a domain is open.
 ;
 ; The primitives are deliberately dumb: save/select/restore the mapping, a
-; plain LDIR copy, the service-stack switch around one CALL, and the CALL
+; plain LDIR copy, the driver-stack switch around one CALL, and the CALL
 ; itself.  All validation, tables, frames and descriptors live in the
 ; nucleus C object (kernel/ipc/ipc.c); this file must not grow policy.
 ;
@@ -15,14 +15,14 @@
 ;   16-bit return in DE, 8-bit return in A, first 16-bit argument in HL,
 ;   second 16-bit argument in DE, first 8-bit argument in A.
 ;
-; The service stack is the 512-byte reservation of architecture 36.9 at
-; ZOS_SERVICE_STACK_BASE, below the relocated ISR stack; like the ISR
+; The driver stack is the 512-byte reservation of architecture 36.9 at
+; ZOS_DRIVER_STACK_BASE, below the relocated ISR stack; like the ISR
 ; stack it is declared ABS so no ordinary allocation can enter it.
 ; -----------------------------------------------------------------------------
 
 	.module ipc_asm
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 
 	.globl _ipc_latch
 	.globl _ipc_gate_latch
@@ -31,7 +31,7 @@
 	.globl _ipc_invoke, _ipc_invoke_here
 	.globl _ipc_saved_latch
 	.globl zos_gate_saved_latch
-	.globl zos_service_stack, zos_service_stack_top
+	.globl zos_driver_stack, zos_driver_stack_top
 	.globl ipc_asm_begin, ipc_asm_end
 	.globl ipc_domain_switch_end
 
@@ -63,7 +63,7 @@ _ipc_gate_latch::
 ; Saves the full current latch in fixed state and writes
 ; (latch & bank field) | mode 11 | page_bits.  The bank field is
 ; preserved, so the caller's low window (0000h-1FFFh) keeps showing the
-; caller's bank while the service domain is mapped.  Register-only: safe
+; caller's bank while the driver domain is mapped.  Register-only: safe
 ; to call with any visible stack.
 ; ---------------------------------------------------------------------------
 _ipc_domain_enter::
@@ -115,7 +115,7 @@ ipc_domain_switch_end::
 ;
 ; Returns the length in DE.  The request block is fixed memory and the
 ; primitive is not re-entrant: the nucleus serialises copies.  Runs while
-; the window shows the service domain; both addresses must be visible in
+; the window shows the driver domain; both addresses must be visible in
 ; that mapping (the copy resolvers in ipc.c guarantee it).
 ; ---------------------------------------------------------------------------
 _ipc_copy_run::
@@ -147,26 +147,26 @@ _ipc_copy_run::
 ;   DE = frame (nucleus-owned copy).
 ;
 ; The outermost call: saves the nucleus stack, switches to the fixed
-; service stack, CALLs the service dispatch entry with HL = frame,
-; restores the nucleus stack and returns the service's result in DE.
+; driver stack, CALLs the driver dispatch entry with HL = frame,
+; restores the nucleus stack and returns the driver's result in DE.
 ; The domain must already be open.
 ;
 ; The two entry points keep separate return paths on purpose: an outermost
 ; call can be interrupted by any number of nested calls, so a shared
 ; "which mode am I in" cell would let the inner call decide the outer
-; call's epilogue (and strand the nucleus on the service stack once that
+; call's epilogue (and strand the nucleus on the driver stack once that
 ; stack runs out).
 ; ---------------------------------------------------------------------------
 _ipc_invoke::
 	ld	(_ipc_saved_sp),sp
-	ld	sp,#zos_service_stack_top
+	ld	sp,#zos_driver_stack_top
 	ex	de,hl			; DE = entry, HL = frame
 	ld	(_ipc_entry),de
 	ld	de,#001$
 	push	de			; return address for the dispatch entry
 	ld	de,(_ipc_entry)
 	push	de
-	ret				; enter the service dispatch
+	ret				; enter the driver dispatch
 001$:
 	ld	(_ipc_result),de
 	ld	sp,(_ipc_saved_sp)
@@ -176,7 +176,7 @@ _ipc_invoke::
 ; ---------------------------------------------------------------------------
 ; int16_t ipc_invoke_here(uint16_t entry, struct zos_ipc_frame *frame);
 ;
-; A nested call: the service stack is already active, so only the CALL
+; A nested call: the driver stack is already active, so only the CALL
 ; happens.  Same result convention.  This is the same-domain fast path:
 ; the window already shows the target's bank, so the mapping is untouched.
 ; ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ _ipc_invoke_here::
 	push	de			; return address for the dispatch entry
 	ld	de,(_ipc_entry)
 	push	de
-	ret				; enter the service dispatch
+	ret				; enter the driver dispatch
 002$:
 	ld	(_ipc_result),de
 	ld	de,(_ipc_result)
@@ -218,12 +218,12 @@ _ipc_copy_req::
 	.ds	6
 
 ; ---------------------------------------------------------------------------
-; The service-domain stack (architecture 36.9): 512 bytes in the fixed
-; core, shared by the whole service-call chain.  ABS so no ordinary
+; The driver-domain stack (architecture 36.9): 512 bytes in the fixed
+; core, shared by the whole driver-call chain.  ABS so no ordinary
 ; allocation can enter the reservation.
 ; ---------------------------------------------------------------------------
-	.area _IPC_SERVICE_STACK (ABS)
-	.org ZOS_SERVICE_STACK_BASE
-zos_service_stack::
-	.ds	ZOS_SERVICE_STACK_SIZE
-zos_service_stack_top::
+	.area _IPC_DRIVER_STACK (ABS)
+	.org ZOS_DRIVER_STACK_BASE
+zos_driver_stack::
+	.ds	ZOS_DRIVER_STACK_SIZE
+zos_driver_stack_top::

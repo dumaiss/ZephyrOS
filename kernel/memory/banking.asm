@@ -21,8 +21,8 @@
 ; -----------------------------------------------------------------------------
 
 	.module banking
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 
 	.globl _platform_memctl_read
 	.globl _platform_memctl_write

@@ -4,9 +4,9 @@
  * by the assembly boundary zos_syscall_dispatch (kernel/syscall/entry.asm);
  * SDCC calling conventions never cross the syscall boundary.
  *
- * M6 services: SYS_EXIT and SYS_GETINFO.  The console bytes a program
+ * M6 drivers: SYS_EXIT and SYS_GETINFO.  The console bytes a program
  * writes and reads are no longer syscalls: the SDK's console functions
- * are clients of the console service (abi/zos/protocol.h, class
+ * are clients of the console driver (abi/zos/protocol.h, class
  * ZOS_CLASS_CONSOLE) through the IPC pair below, so the nucleus keeps no
  * console binding at all.  Every caller byte is still validated against
  * the documented windows before it is touched:
@@ -28,11 +28,11 @@
  * damaged by a failed operation.
  */
 
-#include "zephyros/kernel.h"
+#include "kernel.h"
 #include "zos/syscall.h"
 #include "zos/ipc.h"
 #include "zos/seg.h"
-#include "zephyros/process.h"
+#include "process.h"
 
 #include "kernel/ipc/ipc.h"
 #include "kernel/vfs/vfs.h"
@@ -88,7 +88,7 @@ static uint16_t read_le16(const uint8_t *p)
 }
 
 /* The result publication and argument-window helpers are shared with
- * kernel/syscall/diag.c (declared in diag.h); the M6 service bodies
+ * kernel/syscall/diag.c (declared in diag.h); the M6 driver bodies
  * below keep their short local names. */
 void zos_syscall_success(uint16_t result)
 {
@@ -152,7 +152,7 @@ uint8_t zos_syscall_buffer_ok(uint16_t addr, uint16_t len)
  * buffer identity): inside the mode-10 far aperture under a nonzero saved
  * page it is the far bank 7 - P, everywhere else the running process's
  * primary bank.  Descriptor capture (kernel/ipc) applies the same rule to
- * the buffers a service names. */
+ * the buffers a driver names. */
 uint8_t zos_syscall_buffer_bank(uint16_t addr)
 {
 	uint8_t latch = ipc_gate_latch();

@@ -19,7 +19,7 @@
 
 /* Window page the interrupted/calling context has selected (revision 13:
  * 6000h-DFFFh answers bank 7 - P, so P = 1 opens bank 6). */
-#define ZOS_NS_PAGE_SERVICE  0x01u
+#define ZOS_NS_PAGE_DRIVER  0x01u
 
 /* SYS_DIAG_SYSTEM_INFO: deterministic, context-free, implemented in the
  * cold half (kernel/syscall/diag.c).  Its 8-byte record is the proof that

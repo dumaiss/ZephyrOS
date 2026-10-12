@@ -4,7 +4,7 @@
 Coverage:
 
 * constant parity: tools/zexpack.py format constants, segment constants
-  and result codes are value-identical with include/zephyros/zex.h;
+  and result codes are value-identical with formats/include/zex.h;
 * one malformed fixture per validation boundary rejects with the exact
   boundary code, and the fixture set matches the subsystem ROMFS
   acceptance manifest (names, media types, control files);
@@ -48,7 +48,7 @@ import mapcheck  # noqa: E402
 import romfspack  # noqa: E402
 from maptools import evaluate, make_map, parse_c_header  # noqa: E402
 
-ZEX_H = os.path.join(ROOT, "include", "zephyros", "zex.h")
+ZEX_H = os.path.join(ROOT, "formats", "include", "zex.h")
 ZEXTEST_JSON = os.path.join(ROOT, "build", "user", "zextest",
                              "zextest.json")
 SUBSYS_ZEXTEST_JSON = os.path.join(ROOT, "build-subsys-selftest", "user",
@@ -800,7 +800,7 @@ class TestSubsystemArtifacts(unittest.TestCase):
                                "zephyros-subsys-selftest.bin")
         for const in (b"ZephyrOS 0.0\r\n", b"platform: Zephyr-80\r\n",
                       b"kernel entry: OK\r\n", b"serial: OK\r\n",
-                      serial_smoke.CONSOLE_SERVICE_OK,
+                      serial_smoke.CONSOLE_DRIVER_OK,
                       serial_smoke.SUBSYS_SYSCALL_OK,
                       serial_smoke.SUBSYS_IRQ_OK,
                       serial_smoke.SUBSYS_ROMFS_OK,

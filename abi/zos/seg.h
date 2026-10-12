@@ -79,7 +79,7 @@ struct zos_seg_info_args {
  * address is returned; the token keeps the caller's own bank field and
  * selects P = 7 - bank with the segment's application bank 0-5, so a
  * token never names bank 6 or bank 7.  The SDK opens the aperture with
- * it (`zos_far_call`) and restores the previous latch. */
+ * it (`farcall`) and restores the previous latch. */
 struct zos_seg_map_args {
 	uint8_t segment;
 	uint8_t reserved;

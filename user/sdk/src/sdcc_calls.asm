@@ -2,10 +2,10 @@
 ; ZephyrOS libzos: SDCC z80 runtime helpers for indirect calls (package 44b).
 ;
 ; The SDK is freestanding (no libsdcc is linked), so the trampolines the
-; z80 code generator emits for an indirect call - `zos_far_call`'s plain
+; z80 code generator emits for an indirect call - `farcall`'s plain
 ; CALL through the far entry pointer is one - must be provided here, as
 ; the kernel (kernel/runtime/sdcc_helpers.asm) and every module
-; (modules/runtime/sdcc_indirect_calls.asm) provide their own copy.  All
+; (drivers/runtime/sdcc_indirect_calls.asm) provide their own copy.  All
 ; three helpers are position independent, so any program that references
 ; one pulls this single archive member; a program that makes no indirect
 ; call never links it.

@@ -5,7 +5,7 @@
 smoke transcripts (success and corrupt) are recorded in
 `docs/validation/2026-10-03-m5-romfs.md`.  Wrapped by work package
 `25-m9-vfs-bootstrap-romfs` (2026-10-04, corrections 01-02): ROMFS is now
-a statically linked, path-based VFS provider mounted at `/SYSTEM`
+a statically linked, path-based VFS provider mounted at `/system`
 (`docs/vfs.md`), it has exactly one lookup and that lookup folds case
 (the case-sensitive `romfs_lookup` and the second folded variant were
 merged), and `romfs_load_zmod()` is gone.  The on-ROM format, the
@@ -55,7 +55,7 @@ address that half.  Pages 0/1 are never modified by ROMFS placement
 (`tools/pack_image.py` enforces this; the acceptance tests compare the
 boot pages with and without a recovery stream).
 
-The geometry is single-sourced in `platform/zephyr80/memory.h` /
+The geometry is single-sourced in `platform/zephyr80/private/memory.h` /
 `memory.inc` (`ZOS_ROM_*`, `ZOS_ROMFS_*`); the host tools and mapcheck
 read those declarations, and `tests/test_romfs.py` pins the values.
 
@@ -165,7 +165,7 @@ capacity, and emits per-page hashes plus the ROMFS placement in
 
 ## 4. Kernel interface
 
-`include/zephyros/romfs.h` defines the small allocation-free API:
+`formats/include/romfs.h` defines the small allocation-free API:
 
 ```c
 int romfs_init(void);
@@ -214,7 +214,7 @@ data; none of it is read while ROM is visible.
 mapping for ROMFS.  Its fixed transition block is linked in the
 permanent common region (`_COMMON` at `EEFEh-EF07h`), as are its staging
 buffer and saved transition state (`_COMMON_DATA`; sizes are declared in
-`platform/zephyr80/memory.h/.inc` and enforced by `tools/mapcheck.py`).
+`platform/zephyr80/private/memory.h/.inc` and enforced by `tools/mapcheck.py`).
 There is deliberately no transition stack: the mode-00 window is
 stackless by construction.
 
@@ -267,30 +267,30 @@ executed, returned into, or stacked on.
 ## 6. Reader integration
 
 The reader is **fixed core** (package 38) and serves two callers, both
-compiled against `include/zephyros/romfs.h`:
+compiled against `formats/include/romfs.h`:
 
-* `kernel/vfs/ns_file.c` - the `/SYSTEM` provider: `romfs_lookup_ci()`,
+* `kernel/vfs/system.c` - the `/system` provider: `romfs_lookup_ci()`,
   `romfs_entry_at()` and `romfs_copy_logical()` behind an in-process
-  `FILE` endpoint, so a bound `/SYSTEM` handle is served without a bank-6
+  `FILE` endpoint, so a bound `/system` handle is served without a bank-6
   driver;
-* `kernel/service/service_loader.c` - the resident loader: it reads
-  `services.man`, then each container's header, tables and segment images
+* `kernel/driver/driver_loader.c` - the resident loader: it reads
+  `drivers.man`, then each container's header, tables and segment images
   through `romfs_read()`, staging every copy in chunks through the common
   application-bank copy gate.  There is no abstract byte source any more:
   the arena loader that needed one is deleted (work packages 42b/42c), and
-  a service image is the only container form.
+  a driver image is the only container form.
 
 The reader's own access primitive is unchanged: every read goes through
 the mode-00 ROM window (`kernel/romfs/rom_access.asm`), which restores the
 exact latch, interrupt state and stack of its caller, so a corrupt
-recovery image fails through the early console before any service code
+recovery image fails through the early console before any driver code
 runs:
 
 ```text
 vfs_init()                   fail -> romfs_diagnose() +
                                     panic("romfs: corrupt recovery image")
-service_load_all("services.man")
-                             fail -> "service loader: <name>: <what>"
+driver_load_all("drivers.man")
+                             fail -> "driver loader: <name>: <what>"
 ```
 
 `tools/mapcheck.py --production` rejects the retired embedded-catalog
@@ -306,7 +306,7 @@ production carries no boot blob, only the packed recovery store.
 | valid kernel reader, EOF/bound semantics, corrupt-metadata rejection | `tests/test_romfs_sim.py` (mutated header/table replays) |
 | exact latch/IFF restoration, stackless mode-00 window pinned to the mirrored stub, reentry and bounds rejection | `tests/test_romfs_sim.py` (ROM-access primitive replays + `RomWindowWatcher`) |
 | source-backed loading, reject-before-allocate, byte-identity with `sio.zmod` | `tests/test_romfs_sim.py`, `tests/test_romfs.py` |
-| ROMFS as the `/SYSTEM` root (in-process `FILE` endpoint, nucleus): one case-folded lookup, `/` the only directory, read-only semantics, `ZOS_ENOTDIR`/`ZOS_ENOENT` for deeper paths, `ZOS_EROFS` for writes | `tests/test_fs_selftest_sim.py` (`make fs-selftest`: the `/SYSTEM` stat/open/read/close outcomes) |
+| ROMFS as the `/system` root (in-process `FILE` endpoint, nucleus): one case-folded lookup, `/` the only directory, read-only semantics, `ZOS_ENOTDIR`/`ZOS_ENOENT` for deeper paths, `ZOS_EROFS` for writes | `tests/test_fs_selftest_sim.py` (`make fs-selftest`: the `/system` stat/open/read/close outcomes) |
 | the single case-folded lookup resolves every spelling | `tests/test_romfs_sim.py` (case variants of `sio.zmod`) |
 | production has no embedded boot blob/catalog | `tools/mapcheck.py --production` |
 | corrupt image panics before module execution | `tests/test_romfs_sim.py`, image marker tests |

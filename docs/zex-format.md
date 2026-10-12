@@ -86,7 +86,7 @@ One 16-byte row per segment, in ascending id order from 1:
 ## 4. Geometry rules
 
 Validated in this order (first violation wins); the codes are also the
-`process_exec()` result values (`include/zephyros/zex.h`):
+`process_exec()` result values (`formats/include/zex.h`):
 
 | Order | Check | Failure code |
 | --- | --- | --- |
@@ -195,7 +195,7 @@ steps: `process_prepare()` loads, then `process_launch()` enters.
 `process_prepare()` performs:
 
 1. bind the path through the namespace and require a FILE object (the
-   media gate: a `/SYSTEM` entry must carry `ROMFS_FLAG_ZEX`);
+   media gate: a `/system` entry must carry `ROMFS_FLAG_ZEX`);
 2. read the file size and the header;
 3. run the one up-front feasibility check from the header;
 4. read the segment table and validate every row;
@@ -251,18 +251,18 @@ copy the tail into its own data before handing it to a syscall.
 
 `user/sdk/` is the first-party user-space runtime for it: crt0
 (`user/sdk/src/crt0.asm`, entry symbol `zos_entry`) receives the block in
-`HL`, stores the pointer for `zos_args()` before anything clobbers `HL`,
-runs `zos_split()` over the raw tail, calls `int main(int argc, char
+`HL`, stores the pointer for `startup()` before anything clobbers `HL`,
+runs `splitargs()` over the raw tail, calls `int main(int argc, char
 **argv)` and exits through `SYS_EXIT` with the returned status.  A
-program writes no entry assembly; `zos_args()` returns the kernel's
+program writes no entry assembly; `startup()` returns the kernel's
 page-zero block for programs that inspect it at entry, and crt0 copies
-the tail into the SDK's own buffer before `zos_split()` parses it *in
+the tail into the SDK's own buffer before `splitargs()` parses it *in
 place* there, so `argv` points into program data rather than at a
 delivery the syscall path is free to reuse.
 
 #### Tail splitting (runtime policy)
 
-`zos_split(char *tail, char **argv, int max)` splits the NUL-terminated
+`splitargs(char *tail, char **argv, int max)` splits the NUL-terminated
 tail in place and returns the total word count, storing at most `max`
 pointers.  The rules are runtime policy, not an ABI, and may change
 without any kernel work:
@@ -314,11 +314,11 @@ in one chain; the suspension cost is the gate-stack frame described in
 (SDCC `sdcccall(1)` wrappers around `RST 30h`):
 
 ```c
-void zex_exit(unsigned int status);      /* SYS_EXIT, does not return */
-int  zex_write(const char *buf, unsigned int len);  /* console client */
-int  zex_read(char *buf, unsigned int len);         /* console client */
-int  zex_poll(void);                     /* console client */
-int  zex_getinfo(struct zex_info *info); /* SYS_GETINFO */
+void exit(unsigned int status);      /* SYS_EXIT, does not return */
+int  console_write(const char *buf, unsigned int len);  /* console client */
+int  console_read(char *buf, unsigned int len);         /* console client */
+int  console_poll(void);                     /* console client */
+int  getinfo(struct zex_info *info); /* SYS_GETINFO */
 ```
 
 Negative returns are `-errno`.  The wrappers share one argument scratch
@@ -328,21 +328,21 @@ SDK links the runtime object first so the scratch always lands at the
 start of BSS, ahead of a program's own data.
 
 `user/sdk/include/zos/fs.h` adds the M9 filesystem wrappers
-(`zos_open`, `zos_read`, ...; gate stub `user/sdk/src/fsgate.asm`) and
+(`open`, `read`, ...; gate stub `user/sdk/src/fsgate.asm`) and
 `user/sdk/include/zos/process.h` adds
-`zos_exec(const char *path, const char *args)` on top of them: the same
+`run(const char *path, const char *args)` on top of them: the same
 low-window argument block and gate stub, the same 127-byte local path
 check plus a 125-byte tail check, returning the child's exit status or
 the negated native error code (`docs/abi.md` section 11).  A NULL or
 empty `args` is "no arguments"; the raw tail reaches the child byte-exact
-through the startup block (`zos_args`/`zos_split` above).
+through the startup block (`startup`/`splitargs` above).
 
-`user/sdk/include/zos/seg.h` adds `zos_seg_info(segment, &info)`: the
+`user/sdk/include/zos/seg.h` adds `seginfo(segment, &info)`: the
 `SYS_SEG_INFO` wrapper that describes a container segment and hands out
-the `DATA` segment's extended-memory handle, and `zos_seg_map(segment)`:
+the `DATA` segment's extended-memory handle, and `segmap(segment)`:
 the `SYS_SEG_MAP` wrapper (`docs/abi.md` section 15) that returns the
 aperture token for one of the caller's own `FAR_CODE` segments.  On top
-of it the SDK offers `zos_far_call(segment, entry, a, b)`: it maps the
+of it the SDK offers `farcall(segment, entry, a, b)`: it maps the
 segment, calls the linked far entry `entry(a, b)` in place at `8000h` and
 restores the caller's aperture latch, so primary code reaches far code by
 taking the far function's address in the program's own link (see
@@ -371,4 +371,4 @@ byte-deterministic; the report carries the header fields, image/BSS/stack
 geometry, entry symbol resolution, the segment table and sha256 digests.
 `make zex-test` packs, validates, dumps, and runs the host suite that
 pins `zexpack.py` constants and result codes to
-`include/zephyros/zex.h` value-for-value.
+`formats/include/zex.h` value-for-value.

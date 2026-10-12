@@ -15,7 +15,7 @@ its replay depend on, without booting anything:
     every libzos marshalling block (the SDK's lookup/call blocks);
   - the SDK surface and the six container manifests the loader validates;
   - correction 01: the caller-buffer probe's window layout (code above the
-    0100h-02FFh buffer it names), the service I/O buffer rule in the
+    0100h-02FFh buffer it names), the driver I/O buffer rule in the
     container manifests and the loader's range check, the aperture
     primitive's common placement and the three path counters.
 
@@ -37,6 +37,7 @@ import mapcheck  # noqa: E402
 MAKEFILE = os.path.join(ROOT, "Makefile")
 ABI = os.path.join(ROOT, "abi", "zos", "ipc.h")
 SDK_HEADER = os.path.join(ROOT, "user", "sdk", "include", "zos", "ipc.h")
+SDK_INTERNAL = os.path.join(ROOT, "user", "sdk", "src", "zos_internal.h")
 SDK_SOURCE = os.path.join(ROOT, "user", "sdk", "src", "ipc.c")
 SDK_GATE = os.path.join(ROOT, "user", "sdk", "src", "ipcgate.asm")
 ZEX_MK = os.path.join(ROOT, "user", "sdk", "zex.mk")
@@ -44,14 +45,14 @@ RESIDENCY = os.path.join(ROOT, "config", "residency.json")
 LINKER = os.path.join(ROOT, "linker", "zephyr80.lk")
 MANIFEST = os.path.join(ROOT, "tests", "ipc", "manifest.json")
 CLIENT_DIR = os.path.join(ROOT, "tests", "target", "ipc")
-SERVICE_MANIFESTS = os.path.join(CLIENT_DIR, "manifests")
+DRIVER_MANIFESTS = os.path.join(CLIENT_DIR, "manifests")
 
 IMAGE_SUBDIR = os.path.join(ROOT, "build-ipc-selftest")
 PROD_SUBDIR = os.path.join(ROOT, "build")
-# The service images, reports and boot manifest belong to the IPC image's
+# The driver images, reports and boot manifest belong to the IPC image's
 # own module directory.
 MODULE_DIR = os.path.join(IMAGE_SUBDIR, "modules", "ipc-modules")
-SERVICE_DIR = os.path.join(IMAGE_SUBDIR, "modules")
+DRIVER_DIR = os.path.join(IMAGE_SUBDIR, "modules")
 
 SYSCALL_WINDOW_BASE = 0x0100
 SYSCALL_WINDOW_END = 0x2000
@@ -117,18 +118,18 @@ class TestIpcBuildWiring(unittest.TestCase):
 
     def test_container_data_area_is_named_for_the_rule(self):
         text = read(MAKEFILE)
-        self.assertIn("--dataseg SERVICE_IO", text)
+        self.assertIn("--dataseg DRIVER_IO", text)
 
-    def test_loader_and_packer_enforce_the_service_tiers(self):
-        text = read(os.path.join(ROOT, "kernel", "service",
-                                "service_loader.c"))
+    def test_loader_and_packer_enforce_the_driver_tiers(self):
+        text = read(os.path.join(ROOT, "kernel", "driver",
+                                "driver_loader.c"))
         # The nucleus loader refuses a segment whose allocation leaves its
         # tier (the hot tier 6000h-DFFFh, which contains the io role's
-        # 8000h-BFFFh service I/O window, and the boot/bulk tier
+        # 8000h-BFFFh driver I/O window, and the boot/bulk tier
         # 0000h-5FFFh); the packer refuses the same set at build time.
-        self.assertIn("SERVICE_HOT_BASE", text)
-        self.assertIn("SERVICE_HOT_END", text)
-        self.assertIn("SERVICE_BOOT_END", text)
+        self.assertIn("DRIVER_HOT_BASE", text)
+        self.assertIn("DRIVER_HOT_END", text)
+        self.assertIn("DRIVER_BOOT_END", text)
         packer = read(os.path.join(ROOT, "tools", "zmodpack.py"))
         self.assertIn('"io": (0x8000, 0xC000)', packer)
         self.assertIn('"hot": (0x6000, 0xE000)', packer)
@@ -137,23 +138,23 @@ class TestIpcBuildWiring(unittest.TestCase):
     def test_makefile_builds_the_substrate_and_the_loader(self):
         text = read(MAKEFILE)
         for token in ("kernel/ipc/ipc.c", "kernel/ipc/ipc_asm.asm",
-                      "kernel/service/service_loader.c",
-                      "kernel/service/service_boot.asm",
-                      "kernel/vfs/ns.c", "kernel/syscall/object.c"):
+                      "kernel/driver/driver_loader.c",
+                      "kernel/driver/driver_boot.asm",
+                      "kernel/vfs/router.c", "kernel/syscall/object.c"):
             self.assertIn(token, text, token)
         # The image links the substrate into the fixed core, the loader and
-        # its cold body into the cold half, and packs the six service
+        # its cold body into the cold half, and packs the six driver
         # images with the boot manifest.  It uses production placement;
         # an image-specific cold-extra set would overflow its cold half.
         # The image uses production placement: its row sets
         # COLD_EXTRA_CSV empty and names no image-specific cold set.
         self.assertIn("COLD_EXTRA_CSV :=", text)
-        self.assertIn("$(MODULES)/services.man", text)
-        self.assertIn("zmodpack.py services", text)
-        self.assertIn("IPC_SERVICE_NAMES := ioc fat vfs echo con irqx", text)
+        self.assertIn("$(MODULES)/drivers.man", text)
+        self.assertIn("zmodpack.py drivers", text)
+        self.assertIn("IPC_DRIVER_NAMES := ioc fat vfs echo con irqx", text)
         self.assertIn("$(IPC_MODDIR)/ipc-%.zmod:", text)
         for token in ("--codeseg BOOT --dataseg BOOT_DATA",
-                      "--dataseg HOT", "--dataseg SERVICE_IO"):
+                      "--dataseg HOT", "--dataseg DRIVER_IO"):
             self.assertIn(token, text, token)
 
     def test_client_program_is_an_ordinary_sdk_program(self):
@@ -209,8 +210,8 @@ class TestIpcAbi(unittest.TestCase):
                       "C  everything else"):
             self.assertIn(token, text, token)
 
-    def test_the_service_io_rule_is_documented(self):
-        text = read(os.path.join(ROOT, "include", "zephyros", "ipc.h"))
+    def test_the_driver_io_rule_is_documented(self):
+        text = read(os.path.join(ROOT, "drivers", "include", "driver.h"))
         self.assertIn("8000h-BFFFh", text)
         self.assertIn("counted as slow", text)
         abi = read(ABI)
@@ -225,13 +226,13 @@ class TestIpcResidency(unittest.TestCase):
         # The aperture primitive is common, not fixed-core: it runs with
         # mode 10 and page 1 in force, where bank 7 is not mapped at all.
         self.assertEqual(tiers["ipc_common"], "fixed-required")
-        self.assertEqual(tiers["service_loader"], "cold")
-        self.assertEqual(tiers["service_boot"], "fixed-required")
+        self.assertEqual(tiers["driver_loader"], "cold")
+        self.assertEqual(tiers["driver_boot"], "fixed-required")
         # Package 41 linked the substrate into production, and package 42b
         # switched the namespace family over too, so nothing is test-linked
         # and the retired rows are gone.
         self.assertEqual(sorted(test_link), [])
-        self.assertIn("service_loader", cold_half)
+        self.assertIn("driver_loader", cold_half)
         # The retired object names, assembled from parts so this file
         # does not itself carry the tokens the grep gate keeps out.
         for gone in ("ipc" + "_syscall", "ioc" + "_shim", "fs", "registry",
@@ -239,13 +240,14 @@ class TestIpcResidency(unittest.TestCase):
             self.assertNotIn(gone, tiers, gone)
 
     def test_production_linker_script_lists_the_substrate(self):
-        # Package 41 linked the substrate and the resident service loader;
+        # Package 41 linked the substrate and the resident driver loader;
         # package 42b also links the namespace family and drops the retired
         # syscall front end and class shim.
         text = read(LINKER)
         for name in ("ipc.rel", "ipc_asm.rel", "ipc_common.rel",
-                     "service_loader.rel", "service_boot.rel",
-                     "vfs_ns.rel", "vfs_ns_file.rel", "object.rel"):
+                     "driver_loader.rel", "driver_boot.rel",
+                     "vfs_router.rel", "vfs_dev.rel", "vfs_fs.rel",
+                     "vfs_system.rel", "object.rel"):
             self.assertIn(name, text, name)
         for gone in ("ipc" + "_syscall.rel", "ioc" + "_shim.rel",
                      "vfs_mount.rel", "vfs_file.rel", "vfs_dir.rel",
@@ -259,15 +261,15 @@ class TestIpcResidency(unittest.TestCase):
             self.skipTest("build/zephyros.map missing; run make all")
         found = symbols(map_path)
         for name in ("_ipc_install_endpoint", "_ipc_copy_run",
-                     "_ipc_gate_latch", "_service_load_all",
-                     "_ipc_nucleus_call", "zos_service_stack"):
+                     "_ipc_gate_latch", "_driver_load_all",
+                     "_ipc_nucleus_call", "zos_driver_stack"):
             self.assertIn(name, found, name)
         # The substrate's fixed core is where the call machinery runs, and
         # the loader's bodies are cold-half code.  The stage-3 lookup is
         # gone (package 42b).
         self.assertLess(found["_ipc_install_endpoint"], 0x6000)
         self.assertNotIn("_ipc_lookup", found)
-        self.assertGreaterEqual(found["_service_load_all"], 0x6000)
+        self.assertGreaterEqual(found["_driver_load_all"], 0x6000)
 
 
 class TestIpcImageLayout(unittest.TestCase):
@@ -278,7 +280,7 @@ class TestIpcImageLayout(unittest.TestCase):
         self.syms = symbols(self.map_path)
 
     def test_substrate_is_fixed_and_the_bodies_are_cold(self):
-        for name in ("_ipc_install_endpoint", "_ipc_service_boot",
+        for name in ("_ipc_install_endpoint", "_driver_boot",
                      "_ipc_copy_run", "_ipc_invoke", "_ipc_gate_latch"):
             address = self.syms[name]
             self.assertGreaterEqual(address, 0x2000, name)
@@ -286,44 +288,44 @@ class TestIpcImageLayout(unittest.TestCase):
         # The IPC dispatch body lives with the syscall gates?  No: the
         # object family's dispatcher is cold code (package 42b).
         self.assertGreaterEqual(self.syms["_zos_object_dispatch"], SPLIT)
-        # The service loader is cold code too, and the boot gate it calls
+        # The driver loader is cold code too, and the boot gate it calls
         # is common-resident (bank 7 is unmapped while a boot segment runs).
-        self.assertGreaterEqual(self.syms["_service_load_all"], SPLIT)
-        self.assertLess(self.syms["_service_load_all"], 0xDFFF)
-        self.assertGreaterEqual(self.syms["_zos_service_run_boot"], 0xE000)
-        self.assertLess(self.syms["_zos_service_run_boot"], 0xFD00)
-        self.assertEqual(self.syms["zos_service_stack"], 0x5D00)
-        self.assertEqual(self.syms["zos_service_stack_top"], 0x5F00)
+        self.assertGreaterEqual(self.syms["_driver_load_all"], SPLIT)
+        self.assertLess(self.syms["_driver_load_all"], 0xDFFF)
+        self.assertGreaterEqual(self.syms["_zos_driver_run_boot"], 0xE000)
+        self.assertLess(self.syms["_zos_driver_run_boot"], 0xFD00)
+        self.assertEqual(self.syms["zos_driver_stack"], 0x5D00)
+        self.assertEqual(self.syms["zos_driver_stack_top"], 0x5F00)
 
-    def test_six_service_containers_are_packed_and_manifested(self):
+    def test_six_driver_containers_are_packed_and_manifested(self):
         if not os.path.exists(os.path.join(MODULE_DIR, "ipc-echo.zmod")):
-            self.skipTest("the IPC image's service images are not packed; "
+            self.skipTest("the IPC image's driver images are not packed; "
                           "run make ipc-selftest")
-        # The services are no longer linked into the kernel: they are
+        # The drivers are no longer linked into the kernel: they are
         # containers in the recovery store, named by the boot manifest the
         # loader reads.  The image carries no blob symbol.
         for name in ("echo", "con", "ioc", "fat", "vfs", "irqx"):
             self.assertNotIn("_ipc_%s_zmod" % name, self.syms, name)
 
-        # Package 41: the image also boots the SIO and console services
+        # Package 41: the image also boots the SIO and console drivers
         # its SDK programs print through, ahead of the synthetic set.
         order = ["sio.zmod", "console-serial.zmod",
                  "ipc-ioc.zmod", "ipc-fat.zmod", "ipc-vfs.zmod",
                  "ipc-echo.zmod", "ipc-con.zmod", "ipc-irqx.zmod"]
-        with open(os.path.join(SERVICE_DIR, "services.man"), "rb") as handle:
+        with open(os.path.join(DRIVER_DIR, "drivers.man"), "rb") as handle:
             data = handle.read()
         self.assertEqual(len(data), 24 * len(order))
         names = [data[i * 24:(i + 1) * 24].split(b"\0")[0].decode()
                  for i in range(len(order))]
         self.assertEqual(names, order)
 
-        # Every named container is a service image whose io segment fits
+        # Every named container is a driver image whose io segment fits
         # bank 6's 8000h-BFFFh and whose hot segment fits the hot tier.
-        with open(os.path.join(SERVICE_DIR, "services.plan.json"),
+        with open(os.path.join(DRIVER_DIR, "drivers.plan.json"),
                   encoding="utf-8") as handle:
             report = json.load(handle)
         self.assertEqual(report["order"], order)
-        for entry in report["services"]:
+        for entry in report["drivers"]:
             self.assertGreaterEqual(entry["hot_base"], 0x6000, entry)
             self.assertLess(entry["hot_base"], 0xE000, entry)
             if entry["io_base"] is not None:
@@ -333,10 +335,10 @@ class TestIpcImageLayout(unittest.TestCase):
                 self.assertGreaterEqual(entry["boot_base"], 0, entry)
                 self.assertLess(entry["boot_base"], 0x6000, entry)
         nucleus = report["nucleus"]
-        self.assertLessEqual(nucleus["service_hot_bytes"],
-                             nucleus["service_hot_capacity_bytes"])
-        self.assertLessEqual(nucleus["service_boot_bytes"],
-                             nucleus["service_boot_capacity_bytes"])
+        self.assertLessEqual(nucleus["driver_hot_bytes"],
+                             nucleus["driver_hot_capacity_bytes"])
+        self.assertLessEqual(nucleus["driver_boot_bytes"],
+                             nucleus["driver_boot_capacity_bytes"])
 
 
 class TestIpcClientWindow(unittest.TestCase):
@@ -416,9 +418,9 @@ class TestIpcCorrection01Layout(unittest.TestCase):
         self.assertIn("ipc_copy_entry::", entry)
         self.assertIn("jp\t_ipc_copy_entry", entry)
 
-    def test_every_container_data_area_is_a_service_io_area(self):
+    def test_every_container_data_area_is_a_driver_io_area(self):
         for name in ("echo", "con", "ioc", "fat", "vfs", "irqx"):
-            manifest = json.loads(read(os.path.join(SERVICE_MANIFESTS,
+            manifest = json.loads(read(os.path.join(DRIVER_MANIFESTS,
                                                     name + ".json")))
             roles = [segment["role"] for segment in manifest["segments"]]
             self.assertIn("hot", roles, name)
@@ -431,7 +433,7 @@ class TestIpcCorrection01Layout(unittest.TestCase):
             self.assertEqual(hot["image_areas"], ["_CODE"], name)
             self.assertEqual(
                 manifest["segments"][roles.index("io")]["bss_areas"],
-                ["_SERVICE_IO"], name)
+                ["_DRIVER_IO"], name)
             for areas in payload:
                 self.assertTrue(areas, name)
 
@@ -477,27 +479,27 @@ class TestIpcCorrection01Layout(unittest.TestCase):
         # included, and the resolver keeps the three paths.
         self.assertIn("(uint32_t)addr + length > 0x10000u", text)
         self.assertIn("in_common(caller_addr, length)", text)
-        self.assertIn("in_service_io(service_addr, length)", text)
+        self.assertIn("in_driver_io(driver_addr, length)", text)
         self.assertIn("crosses_aperture(caller_addr, length)", text)
         self.assertIn("++ipc_copy_window;", text)
         self.assertIn("++ipc_copy_aperture;", text)
         self.assertIn("++ipc_copy_slow;", text)
 
-    def test_irqx_service_arms_the_correction_profile(self):
-        service = read(os.path.join(CLIENT_DIR, "irqx.c"))
+    def test_irqx_driver_arms_the_correction_profile(self):
+        driver = read(os.path.join(CLIENT_DIR, "irqx.c"))
         header = read(os.path.join(CLIENT_DIR, "..", "include",
                                    "ipc_test.h"))
-        self.assertIn("IPC_IRQX_TC_APERTURE", service)
+        self.assertIn("IPC_IRQX_TC_APERTURE", driver)
         self.assertIn("IRQX_COPY_BYTES", header)
         self.assertIn("IPC_FRAME_SLOW_IO", header)
         self.assertIn("IPC_CON_SLOW_BYTES", header)
-        # The con service's deliberate slow buffer lives in its own hot
+        # The con driver's deliberate slow buffer lives in its own hot
         # segment (con_slow.c, a _HOT area), so it is never inside bank 6's
         # 8000h-BFFFh and the copy takes path C.
         slow = read(os.path.join(CLIENT_DIR, "con_slow.c"))
         self.assertIn("ipc_con_slow_buffer", slow)
         self.assertIn("--dataseg HOT", read(MAKEFILE))
-        manifest = json.loads(read(os.path.join(SERVICE_MANIFESTS,
+        manifest = json.loads(read(os.path.join(DRIVER_MANIFESTS,
                                                 "con.json")))
         hot = [segment for segment in manifest["segments"]
                if segment["role"] == "hot"][0]
@@ -507,14 +509,19 @@ class TestIpcCorrection01Layout(unittest.TestCase):
 class TestIpcSdkSurface(unittest.TestCase):
     def test_client_wrappers_are_declared(self):
         text = read(SDK_HEADER)
-        for token in ("int zos_ipc_bind(const char *path",
-                      "int zos_ipc_unbind(unsigned char handle)",
-                      "int zos_chdir(const char *path)",
-                      "int zos_getcwd(char *buffer",
-                      "int zos_ns_enum(const char *path",
-                      "int zos_ipc_call(",
-                      "int zos_ipc_raw_call(struct zos_ipc_call_req *req)"):
+        for token in ("int bind(const char *path",
+                      "int unbind(unsigned char handle)",
+                      "int chdir(const char *path)",
+                      "int getcwd(char *buffer",
+                      "int list(const char *path",
+                      "int call("):
             self.assertIn(token, text, token)
+        # Package 46 T6: the raw gate stub is SDK-private, so the public
+        # header no longer names it and zos_internal.h declares it.
+        internal = read(SDK_INTERNAL)
+        self.assertIn("int zos_ipc_raw_call(struct zos_ipc_call_req *req)",
+                      internal)
+        self.assertNotIn("zos_ipc_raw_call", text)
 
     def test_sdk_owns_the_gate_and_the_cache(self):
         text = read(SDK_SOURCE)
@@ -532,12 +539,12 @@ class TestIpcSdkSurface(unittest.TestCase):
         self.assertIn("_zex_runtime_error", gate)
         self.assertIn("ipcgate.asm", read(ZEX_MK))
 
-    def test_container_manifests_are_service_manifests(self):
+    def test_container_manifests_are_driver_manifests(self):
         for name in ("echo", "con", "ioc", "fat", "vfs", "irqx"):
-            path = os.path.join(SERVICE_MANIFESTS, "%s.json" % name)
+            path = os.path.join(DRIVER_MANIFESTS, "%s.json" % name)
             self.assertTrue(os.path.exists(path), path)
             manifest = json.loads(read(path))
-            # A service manifest carries no module type and no version
+            # A driver manifest carries no module type and no version
             # field (work package 42c): the packer validates the shape.
             self.assertNotIn("type", manifest, name)
             self.assertNotIn("abi", manifest, name)
@@ -554,7 +561,7 @@ class TestIpcSdkSurface(unittest.TestCase):
             exports = set((endpoint["class"], endpoint["instance"])
                           for endpoint in manifest["endpoints"])
             for earlier in LOADS_BEFORE[name]:
-                other = json.loads(read(os.path.join(SERVICE_MANIFESTS,
+                other = json.loads(read(os.path.join(DRIVER_MANIFESTS,
                                                      earlier + ".json")))
                 exports.update((endpoint["class"], endpoint["instance"])
                                for endpoint in other["endpoints"])

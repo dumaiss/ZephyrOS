@@ -15,8 +15,8 @@
  * suspended at once (package 28).
  */
 
-#include "zephyros/process.h"
-#include "zephyros/kernel.h"
+#include "process.h"
+#include "kernel.h"
 #include "kernel/vfs/vfs.h"
 #include "kernel/syscall/xmem.h"
 

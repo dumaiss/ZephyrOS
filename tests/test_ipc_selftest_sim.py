@@ -3,8 +3,8 @@
 
 Boots build-ipc-selftest/zephyros-ipc-selftest.bin -- the production boot
 path with the fixed-core IPC substrate linked in, the six synthetic
-resident services placed in bank 6 by the cold loader, and the SDK client
-program booting as /SYSTEM/ipc.zex -- once, and asserts the outcomes of
+resident drivers placed in bank 6 by the cold loader, and the SDK client
+program booting as /system/ipc.zex -- once, and asserts the outcomes of
 that one run:
 
 * the promoted package-35 conformance suite runs from the client and
@@ -16,12 +16,12 @@ that one run:
 * the copy-path counters the resolver keeps for exactly this purpose each
   moved: the window path, the aperture path and the chunked slow path all
   carried bytes;
-* the reserved stacks (service 5D00h-5F00h, ISR 5F00h-6000h, gate stack)
+* the reserved stacks (driver 5D00h-5F00h, ISR 5F00h-6000h, gate stack)
   stay inside their regions: the replay watches SP and records each
   high-water mark;
-* the probe's service-side slow case put its 16-byte pattern on the
+* the probe's driver-side slow case put its 16-byte pattern on the
   console wire;
-* the loader's placement report matches the packer's plan, each service
+* the loader's placement report matches the packer's plan, each driver
   boot segment ran exactly once, and `con`'s slow buffer sits in the hot
   tier;
 * the run ends with the caller's own mapping restored (mode 10, page bits
@@ -65,7 +65,7 @@ FAIL = b"ipc: FAIL\r\n"
 # The caller-buffer probe's own verdict, printed after the client exits.
 APERTURE_PASS = b"ipccopy: PASS\r\n"
 APERTURE_FAIL = b"ipccopy: FAIL\r\n"
-LOADER_OK = b"service loader: 8 images in bank 6\r\n"
+LOADER_OK = b"driver loader: 8 images in bank 6\r\n"
 
 MODE_MASK = 0x18
 PAGE_MASK = 0xE0
@@ -83,17 +83,17 @@ CTC0_APERTURE_TIME_CONSTANT = 0x08
 
 PAGE_ONE = 0x20
 
-# The resident service domain: bank 6 in the mode-11 window, with the hot
-# tier (6000h-DFFFh) and the SERVICE_IO blocks (8000h-BFFFh) inside it
+# The resident driver domain: bank 6 in the mode-11 window, with the hot
+# tier (6000h-DFFFh) and the DRIVER_IO blocks (8000h-BFFFh) inside it
 # (architecture 36.6, correction 01 to 36.8).
 DOMAIN_BASE = 0x6000
 DOMAIN_END = 0xE000
 
-# The packed service images, their per-image reports and the plan the
+# The packed driver images, their per-image reports and the plan the
 # loader's own report is pinned to (Makefile: IPC_MODDIR).
 MODULE_DIR = os.path.join(ROOT, IMAGE_SUBDIR, "modules", "ipc-modules")
-SERVICE_DIR = os.path.join(ROOT, IMAGE_SUBDIR, "modules")
-SERVICE_ORDER = ["ioc", "fat", "vfs", "echo", "con", "irqx"]
+DRIVER_DIR = os.path.join(ROOT, IMAGE_SUBDIR, "modules")
+DRIVER_ORDER = ["ioc", "fat", "vfs", "echo", "con", "irqx"]
 IPC_BOOT_MAGIC = 0xA7
 
 # The client's measurement phases (its one-letter marker codes); 8 warm-up
@@ -125,7 +125,7 @@ PROBE_PHASES = {
     "S": ("high3-single", 0xC000, "aperture"),
     "E": ("behind-read", 0x9000, "slow"),
     "T": ("behind-single", 0x9000, "slow"),
-    "U": ("service-slow", 0x0100, "slow"),
+    "U": ("driver-slow", 0x0100, "slow"),
     "V": ("irq-aperture", 0x3000, "aperture"),
 }
 
@@ -146,7 +146,7 @@ COUNT_RE = re.compile(rb"ipc: (\d+)/(\d+) checks\r\n")
 MARK_RE = re.compile(rb"ipc: ([A-Za-z])([abc])\r\n")
 
 # The reserved stacks, named (base, top) from the linked map.
-STACK_NAMES = ("service", "isr", "gate")
+STACK_NAMES = ("driver", "isr", "gate")
 
 
 class IpcCtc0:
@@ -154,7 +154,7 @@ class IpcCtc0:
 
     The kernel programs the channel through port 40h; the stand-in
     delivers vector 00h where each profile expects it.  The standard
-    period lands while the service domain is resident (the delivery an
+    period lands while the driver domain is resident (the delivery an
     in-progress call must survive); correction 01's short period lands
     inside the next mode-10 aperture window the copy gate opens, which is
     the interrupted-copy case.  The deliveries are inputs - the client
@@ -239,12 +239,12 @@ class IpcSim(Replay, unittest.TestCase):
         self.load_image()
 
     def reserved_stacks(self):
-        # Half-open byte ranges: the service stack ends where the ISR
+        # Half-open byte ranges: the driver stack ends where the ISR
         # stack starts (5F00h), and a push reaching the region's top is
         # still inside it.
         return (
-            ("service", self.syms["zos_service_stack"],
-             self.syms["zos_service_stack_top"] - 1),
+            ("driver", self.syms["zos_driver_stack"],
+             self.syms["zos_driver_stack_top"] - 1),
             ("isr", self.syms["irq_isr_stack"] + 1,
              self.syms["irq_isr_stack_top"] - 1),
             ("gate", self.syms["zos_gate_stack"],
@@ -300,17 +300,17 @@ class IpcSim(Replay, unittest.TestCase):
 
     def plan(self):
         if getattr(self, "_plan", None) is None:
-            path = os.path.join(SERVICE_DIR, "services.plan.json")
+            path = os.path.join(DRIVER_DIR, "drivers.plan.json")
             if not os.path.exists(path):
-                self.skipTest("the service images have not been packed")
+                self.skipTest("the driver images have not been packed")
             with open(path, encoding="utf-8") as handle:
                 self._plan = json.load(handle)
         return self._plan
 
     def symbol_address(self, name, symbol):
-        """The bank-6 address of a service image symbol: the packer's
+        """The bank-6 address of a driver image symbol: the packer's
         segment-relative offset in the segment the report names."""
-        entry = [item for item in self.plan()["services"]
+        entry = [item for item in self.plan()["drivers"]
                  if item["name"] == "ipc-%s.zmod" % name][0]
         report = self.report(name)
         role = report["symbol_segments"][symbol]
@@ -339,7 +339,7 @@ class TestIpcAcceptance(IpcSim):
         self.assertGreaterEqual(total, 49,
                                 "the suite must carry >= 49 checks")
         self.assertEqual(passed, total)
-        print("ipc: %d/%d checks, six services in bank 6" % (passed, total))
+        print("ipc: %d/%d checks, six drivers in bank 6" % (passed, total))
 
     def test_every_phase_boundary_is_marked(self):
         """Each phase of both programs marks its boundary a, b, c on the
@@ -378,10 +378,10 @@ class TestIpcOutcomes(IpcSim):
               % [line for line in tx.decode("latin1").split("\r\n")
                  if line.startswith("ipccopy: ")][-1:])
 
-    def test_service_io_rule_counts_the_out_of_range_case_slow(self):
-        """The probe's service-side slow case (``U``) writes its pattern
+    def test_driver_io_rule_counts_the_out_of_range_case_slow(self):
+        """The probe's driver-side slow case (``U``) writes its pattern
         through the console, so the bytes are on the wire sixteen per
-        call: the only case whose slow path comes from the service's own
+        call: the only case whose slow path comes from the driver's own
         buffer sitting outside 8000h-BFFFh."""
         marker = b"".join(bytes([PROBE_PATTERN_BASE + (index & 0x3F)])
                           for index in range(PROBE_SLOW_BYTES))
@@ -411,13 +411,13 @@ class TestIpcOutcomes(IpcSim):
         self.assertEqual(z.latch & PAGE_MASK, 0)
 
 
-class TestIpcServiceImages(IpcSim):
-    """The resident service images (work package 40).
+class TestIpcDriverImages(IpcSim):
+    """The resident driver images (work package 40).
 
     The loader's own report is pinned against the packer's plan: the same
     tier policy, the same bases, the two architecture-36.20 ledgers and
     the boot tier's one-shot evidence, read back out of bank 6.  The
-    service images cover their own copy internals; other images never
+    driver images cover their own copy internals; other images never
     load six like this.
     """
 
@@ -425,7 +425,7 @@ class TestIpcServiceImages(IpcSim):
         """Every image's placement line and both ledgers match the plan."""
         tx = self.transcript()
         plan = self.plan()
-        for entry in plan["services"]:
+        for entry in plan["drivers"]:
             line = "driver %s: hot %04Xh" % (entry["name"],
                                              entry["hot_base"])
             if entry["io_base"] is not None:
@@ -437,25 +437,25 @@ class TestIpcServiceImages(IpcSim):
             self.assertIn(line.encode() + b"\r\n", tx, line)
         nucleus = plan["nucleus"]
         self.assertIn(("driver hot: %d bytes of %d\r\n"
-                       % (nucleus["service_hot_bytes"],
-                          nucleus["service_hot_capacity_bytes"])).encode(),
+                       % (nucleus["driver_hot_bytes"],
+                          nucleus["driver_hot_capacity_bytes"])).encode(),
                       tx)
         self.assertIn(("driver boot/bulk: %d bytes of %d\r\n"
-                       % (nucleus["service_boot_bytes"],
-                          nucleus["service_boot_capacity_bytes"])).encode(),
+                       % (nucleus["driver_boot_bytes"],
+                          nucleus["driver_boot_capacity_bytes"])).encode(),
                       tx)
-        print("ipc: six service images placed from the manifest, "
+        print("ipc: six driver images placed from the manifest, "
               "driver hot %d/%d, driver boot/bulk %d/%d"
-              % (nucleus["service_hot_bytes"],
-                 nucleus["service_hot_capacity_bytes"],
-                 nucleus["service_boot_bytes"],
-                 nucleus["service_boot_capacity_bytes"]))
+              % (nucleus["driver_hot_bytes"],
+                 nucleus["driver_hot_capacity_bytes"],
+                 nucleus["driver_boot_bytes"],
+                 nucleus["driver_boot_capacity_bytes"]))
 
     def test_every_boot_segment_ran_exactly_once(self):
         """Each boot segment recorded one run in its own bank-6 BSS."""
         z = self.boot()
         bank = z.banks[6]
-        for name in SERVICE_ORDER:
+        for name in DRIVER_ORDER:
             runs = self.symbol_address(name, "_ipc_%s_boot_runs" % name)
             magic = self.symbol_address(name, "_ipc_%s_boot_magic" % name)
             self.assertEqual(bank[runs], 1,
@@ -464,10 +464,10 @@ class TestIpcServiceImages(IpcSim):
             self.assertEqual(bank[magic], IPC_BOOT_MAGIC, name)
         print("ipc: six boot segments, each a single execution")
 
-    def test_con_slow_buffer_is_outside_the_service_io_range(self):
+    def test_con_slow_buffer_is_outside_the_driver_io_range(self):
         """`con`'s slow buffer sits in the hot tier, not in 8000h-BFFFh."""
         plan = self.plan()
-        entry = [item for item in plan["services"]
+        entry = [item for item in plan["drivers"]
                  if item["name"] == "ipc-con.zmod"][0]
         address = entry["hot_base"] + \
             self.report("con")["symbols"]["_ipc_con_slow_buffer"]
@@ -490,8 +490,8 @@ class TestIpcPlacement(IpcSim):
                 continue
             self.assertGreaterEqual(address, 0x2000, name)
             self.assertLess(address, 0x6000, name)
-        self.assertEqual(self.syms["zos_service_stack"], 0x5D00)
-        self.assertEqual(self.syms["zos_service_stack_top"], 0x5F00)
+        self.assertEqual(self.syms["zos_driver_stack"], 0x5D00)
+        self.assertEqual(self.syms["zos_driver_stack_top"], 0x5F00)
         self.assertEqual(self.syms["irq_isr_stack"], 0x5F00)
         self.assertEqual(self.syms["irq_isr_stack_top"], 0x6000)
         for name in ("zos_syscall_entry", "zos_gate_stack",
@@ -506,12 +506,12 @@ class TestIpcPlacement(IpcSim):
                          self.syms["__kernel_code_end"])
         self.assertLessEqual(geometry["DATA_BASE"], 0x6000)
         print("ipc: substrate %04Xh-%04Xh, fixed code end %04Xh, cold "
-              "end %04Xh, service stack %04Xh-%04Xh"
+              "end %04Xh, driver stack %04Xh-%04Xh"
               % (self.syms["ipc_asm_begin"],
                  self.syms["ipc_asm_end"], geometry["FIXED_CODE_END"],
                  self.syms["__kernel_code_end"],
-                 self.syms["zos_service_stack"],
-                 self.syms["zos_service_stack_top"]))
+                 self.syms["zos_driver_stack"],
+                 self.syms["zos_driver_stack_top"]))
 
     def geometry(self):
         """The build's generated memory geometry (ZOS_* constants)."""

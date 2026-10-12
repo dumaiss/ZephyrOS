@@ -1,8 +1,8 @@
-/* ZephyrOS IPC acceptance: the `con` console-like synthetic service (test
+/* ZephyrOS IPC acceptance: the `con` console-like synthetic driver (test
  * artifact).
  *
  * WRITE(offset, length) copies a slice of the caller descriptor into the
- * service's own bank-6 buffer through the nucleus copy primitive and
+ * driver's own bank-6 buffer through the nucleus copy primitive and
  * forwards every byte through the nucleus-owned early console; the client
  * checks the bytes on the wire, which proves the descriptor offset
  * convention end to end.  POLL/GETC expose the input side.  PROBE
@@ -10,16 +10,16 @@
  * caller, which is how the suite proves forged-id refusal.
  *
  * The ordinary buffer sits in this image's io segment, which the loader
- * places inside bank 6's 8000h-BFFFh, so it follows the service I/O buffer
+ * places inside bank 6's 8000h-BFFFh, so it follows the driver I/O buffer
  * rule (correction 01 to architecture 36.8).  The IPC_FRAME_SLOW_IO
  * variant targets the buffer of this image's hot segment instead - the
- * deliberate violation that proves a service buffer outside that range
+ * deliberate violation that proves a driver buffer outside that range
  * still copies, through the chunked path, and is counted as slow.  The
  * hot-segment buffer lives in con_slow.c, compiled into the _HOT area.
  */
 
-#include "zephyros/errno.h"
-#include "zephyros/ipc.h"
+#include "zos/errno.h"
+#include "driver.h"
 
 #include "ipc_test.h"
 
@@ -27,7 +27,7 @@
 
 extern uint8_t ipc_con_slow_buffer[IPC_CON_SLOW_BYTES];
 
-static const struct ipc_service_api *api;
+static const struct driver_api *api;
 static uint8_t con_buffer[CON_BUFFER_BYTES];
 static uint16_t con_slow_address;
 
@@ -88,7 +88,7 @@ int16_t con_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-uint8_t ipc_con_init(const struct ipc_service_boot *boot)
+uint8_t ipc_con_init(const struct driver_boot *boot)
 {
 	api = boot->api;
 	con_slow_address = (uint16_t)ipc_con_slow_buffer;

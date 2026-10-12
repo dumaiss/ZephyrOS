@@ -2,11 +2,11 @@
 """Validate the ZOS_BOOT_PROGRAM build setting (package 28b).
 
 The kernel launcher (kernel/main.c) starts `ZOS_BOOT_PROGRAM` through its
-`/SYSTEM` VFS path.  Because that path is compiled into the kernel as a
+`/system` VFS path.  Because that path is compiled into the kernel as a
 constant string and must work without SD, the build rejects a setting that
 could not boot:
 
-  - not an absolute path under `/SYSTEM`;
+  - not an absolute path under `/system`;
   - longer than `ZOS_PATH_MAX - 1` bytes;
   - naming a file that is not a ZEX in the selected recovery manifest.
 
@@ -19,10 +19,10 @@ import argparse
 import json
 import sys
 
-# include/zephyros/fs.h: ZOS_PATH_MAX counts the terminating NUL.
+# abi/zos/fs.h: ZOS_PATH_MAX counts the terminating NUL.
 ZOS_PATH_MAX = 128
 BOOT_PATH_MAX = ZOS_PATH_MAX - 1  # 127
-SYSTEM_PREFIX = "/SYSTEM/"
+SYSTEM_PREFIX = "/system/"
 PRINTABLE_MIN = 0x21  # '!' - no spaces, controls, DEL or non-ASCII
 PRINTABLE_MAX = 0x7E  # '~'
 
@@ -35,7 +35,7 @@ def _basename(program):
     name = program[len(SYSTEM_PREFIX):]
     if name == "" or "/" in name:
         raise BootProgramError(
-            "boot program must name one file directly under /SYSTEM: %r"
+            "boot program must name one file directly under /system: %r"
             % program)
     return name
 
@@ -63,7 +63,7 @@ def validate(program, manifest):
                 % program)
     if not program.startswith(SYSTEM_PREFIX):
         raise BootProgramError(
-            "boot program must be an absolute path under /SYSTEM: %r"
+            "boot program must be an absolute path under /system: %r"
             % program)
     name = _basename(program)
 

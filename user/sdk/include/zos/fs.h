@@ -2,8 +2,8 @@
  * protocols on typed handles).
  *
  * `open`/`close` are the familiar FILE words built on `bind`/`unbind`
- * (architecture 36.13): `zos_open` binds the path, requires the FILE type
- * and returns a process-owned handle; `zos_close` unbinds it.  The other
+ * (architecture 36.13): `open` binds the path, requires the FILE type
+ * and returns a process-owned handle; `close` unbinds it.  The other
  * FILE operations are protocol calls on that handle.
  *
  * `stat`, `mkdir`, `rmdir`, `unlink` and `rename` are filesystem-namespace
@@ -30,18 +30,18 @@
 /* Resolve `path` (flags = ZFS_O_*) and bind a FILE instance.  Returns the
  * handle (>= 1) or the negated error; a path that resolves to something
  * other than a FILE is released and reported as -ZOS_EINVAL. */
-int zos_open(const char *path, unsigned char flags);
-int zos_close(unsigned int handle);
-int zos_read(unsigned int handle, void *buffer, unsigned int length);
-int zos_write(unsigned int handle, const void *buffer, unsigned int length);
+int open(const char *path, unsigned char flags);
+int close(unsigned int handle);
+int read(unsigned int handle, void *buffer, unsigned int length);
+int write(unsigned int handle, const void *buffer, unsigned int length);
 /* Returns the resulting 32-bit position (as a long) or -errno. */
-long zos_seek(unsigned int handle, long offset, unsigned char whence);
-int zos_sync(unsigned int handle);
+long seek(unsigned int handle, long offset, unsigned char whence);
+int sync(unsigned int handle);
 /* Path metadata; `out` receives a `struct zfs_stat`. */
-int zos_stat(const char *path, struct zfs_stat *out);
-int zos_mkdir(const char *path);
-int zos_rmdir(const char *path);
-int zos_unlink(const char *path);
-int zos_rename(const char *oldpath, const char *newpath);
+int stat(const char *path, struct zfs_stat *out);
+int mkdir(const char *path);
+int rmdir(const char *path);
+int unlink(const char *path);
+int rename(const char *oldpath, const char *newpath);
 
 #endif /* ZOS_SDK_FS_H */

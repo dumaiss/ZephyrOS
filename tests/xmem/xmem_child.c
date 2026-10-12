@@ -1,9 +1,9 @@
 /* ZephyrOS extended-memory outcome acceptance (work packages 43/44b): the
  * nested-exec child.
  *
- * SYS_EXEC starts it twice: from /SYSTEM/xmem_selftest.zex while that
+ * SYS_EXEC starts it twice: from /system/xmem_selftest.zex while that
  * program's (object) aperture is open, and from the far code of
- * /SYSTEM/xmem_far.zex while a FAR_CODE segment's aperture is open.  It
+ * /system/xmem_far.zex while a FAR_CODE segment's aperture is open.  It
  * proves what the exec'ing process cannot, from its own side:
  *
  *   * the child starts in mode 10 with page 0 (exec starts every child
@@ -70,7 +70,7 @@ static int matches_pattern(void)
  * 1 when the tail was parsed, 0 otherwise. */
 static int tail_numbers(unsigned int *handle, unsigned int *segment)
 {
-	struct zos_startup *boot = zos_args();
+	struct zos_startup *boot = startup();
 	unsigned int value = 0u;
 	unsigned int i = 0u;
 
@@ -116,16 +116,16 @@ int main(int argc, char **argv)
 	(void)argc;
 	(void)argv;
 
-	zos_puts("xmem-child: begin\r\n");
-	zos_printf("xmem-child: latch %02x\r\n", (unsigned int)latch);
+	console_puts("xmem-child: begin\r\n");
+	printf("xmem-child: latch %02x\r\n", (unsigned int)latch);
 	/* The page field must be zero: a child that inherited the parent's
 	 * aperture would sabotage everything it writes above 8000h. */
 	if ((latch & 0xE0u) != 0u) {
-		zos_puts("xmem-child: FAIL latch-page\r\n");
+		console_puts("xmem-child: FAIL latch-page\r\n");
 		ok = 0;
 	}
 	if (!tail_numbers(&foreign, &foreign_seg)) {
-		zos_puts("xmem-child: FAIL foreign-handle\r\n");
+		console_puts("xmem-child: FAIL foreign-handle\r\n");
 		ok = 0;
 	}
 
@@ -138,30 +138,30 @@ int main(int argc, char **argv)
 	*(volatile unsigned char *)(APERTURE_END - 1u) = 0x5Au;
 	if (*(volatile unsigned char *)APERTURE_BASE != 0x5Au ||
 	    *(volatile unsigned char *)(APERTURE_END - 1u) != 0x5Au) {
-		zos_puts("xmem-child: FAIL own-bank\r\n");
+		console_puts("xmem-child: FAIL own-bank\r\n");
 		ok = 0;
 	}
 
 	/* The parent's live object (its handle arrives in the tail): a child
 	 * inherits no objects, so every operation must be refused. */
 	if (foreign == 0u) {
-		zos_puts("xmem-child: FAIL foreign-handle\r\n");
+		console_puts("xmem-child: FAIL foreign-handle\r\n");
 		ok = 0;
 	} else {
-		if (zos_xmem_free(foreign) != -ZOS_EINVAL) {
-			zos_puts("xmem-child: FAIL foreign-free\r\n");
+		if (xfree(foreign) != -ZOS_EINVAL) {
+			console_puts("xmem-child: FAIL foreign-free\r\n");
 			ok = 0;
 		}
-		if (zos_xmem_read(foreign, 0u, buf, 1u) != -ZOS_EINVAL) {
-			zos_puts("xmem-child: FAIL foreign-read\r\n");
+		if (xread(foreign, 0u, buf, 1u) != -ZOS_EINVAL) {
+			console_puts("xmem-child: FAIL foreign-read\r\n");
 			ok = 0;
 		}
-		if (zos_xmem_write(foreign, 0u, pattern, 1u) != -ZOS_EINVAL) {
-			zos_puts("xmem-child: FAIL foreign-write\r\n");
+		if (xwrite(foreign, 0u, pattern, 1u) != -ZOS_EINVAL) {
+			console_puts("xmem-child: FAIL foreign-write\r\n");
 			ok = 0;
 		}
-		if (zos_xmem_map(foreign, &address) != -ZOS_EINVAL) {
-			zos_puts("xmem-child: FAIL foreign-map\r\n");
+		if (xmap(foreign, &address) != -ZOS_EINVAL) {
+			console_puts("xmem-child: FAIL foreign-map\r\n");
 			ok = 0;
 		}
 	}
@@ -177,55 +177,55 @@ int main(int argc, char **argv)
 		info.state = 0u;
 		info.handle = 0u;
 		info.reserved = 0u;
-		if (zos_seg_info(foreign_seg, &info) != -ZOS_EINVAL) {
-			zos_puts("xmem-child: FAIL foreign-seg-info\r\n");
+		if (seginfo(foreign_seg, &info) != -ZOS_EINVAL) {
+			console_puts("xmem-child: FAIL foreign-seg-info\r\n");
 			ok = 0;
 		}
-		if (zos_seg_map(foreign_seg) != -ZOS_EINVAL) {
-			zos_puts("xmem-child: FAIL foreign-seg-map\r\n");
+		if (segmap(foreign_seg) != -ZOS_EINVAL) {
+			console_puts("xmem-child: FAIL foreign-seg-map\r\n");
 			ok = 0;
 		}
 	}
 
 	/* Its own objects work. */
-	h1 = zos_xmem_alloc(32768u, ZOS_XMEM_FLAG_NONE);
+	h1 = xalloc(32768u, ZOS_XMEM_FLAG_NONE);
 	if (h1 < 1) {
-		zos_puts("xmem-child: FAIL own-alloc\r\n");
+		console_puts("xmem-child: FAIL own-alloc\r\n");
 		ok = 0;
 	} else {
 		make_pattern(0x11u);
-		if (zos_xmem_write((unsigned int)h1, 0u, pattern,
+		if (xwrite((unsigned int)h1, 0u, pattern,
 				   sizeof(pattern)) != (int)sizeof(pattern) ||
-		    zos_xmem_read((unsigned int)h1, 0u, buf,
+		    xread((unsigned int)h1, 0u, buf,
 				  sizeof(buf)) != (int)sizeof(buf) ||
 		    !matches_pattern()) {
-			zos_puts("xmem-child: FAIL own-io\r\n");
+			console_puts("xmem-child: FAIL own-io\r\n");
 			ok = 0;
 		}
 	}
 
-	h2 = zos_xmem_alloc(8192u, ZOS_XMEM_FLAG_MAPPABLE);
+	h2 = xalloc(8192u, ZOS_XMEM_FLAG_MAPPABLE);
 	if (h2 < 1) {
-		zos_puts("xmem-child: FAIL own-mappable\r\n");
+		console_puts("xmem-child: FAIL own-mappable\r\n");
 		ok = 0;
 	} else {
-		int mapped = zos_xmem_map((unsigned int)h2, &address);
+		int mapped = xmap((unsigned int)h2, &address);
 
 		if (mapped < 1 || address < APERTURE_BASE ||
 		    address >= APERTURE_END) {
-			zos_puts("xmem-child: FAIL own-map\r\n");
+			console_puts("xmem-child: FAIL own-map\r\n");
 			ok = 0;
 		} else {
 			token = (unsigned int)mapped;
-			saved = (unsigned int)zos_aperture_open(
+			saved = (unsigned int)aperture_open(
 				(unsigned char)token);
 			*(volatile unsigned char *)address = 0x3Cu;
 			*(volatile unsigned char *)(address + 0x7FFu) =
 				0x3Cu;
-			zos_aperture_close((unsigned char)saved);
-			(void)zos_xmem_read((unsigned int)h2, 0u, buf, 1u);
+			aperture_close((unsigned char)saved);
+			(void)xread((unsigned int)h2, 0u, buf, 1u);
 			if (buf[0] != 0x3Cu) {
-				zos_puts("xmem-child: FAIL own-aperture\r\n");
+				console_puts("xmem-child: FAIL own-aperture\r\n");
 				ok = 0;
 			}
 		}
@@ -236,16 +236,16 @@ int main(int argc, char **argv)
 	if (h1 >= 1) {
 		int again;
 
-		if (zos_xmem_free((unsigned int)h1) != 0) {
-			zos_puts("xmem-child: FAIL own-free\r\n");
+		if (xfree((unsigned int)h1) != 0) {
+			console_puts("xmem-child: FAIL own-free\r\n");
 			ok = 0;
 		}
-		again = zos_xmem_alloc(32768u, ZOS_XMEM_FLAG_NONE);
+		again = xalloc(32768u, ZOS_XMEM_FLAG_NONE);
 		if (again < 1 || again == h1) {
-			zos_puts("xmem-child: FAIL stale-handle\r\n");
+			console_puts("xmem-child: FAIL stale-handle\r\n");
 			ok = 0;
-		} else if (zos_xmem_free((unsigned int)h1) != -ZOS_EINVAL) {
-			zos_puts("xmem-child: FAIL stale-free\r\n");
+		} else if (xfree((unsigned int)h1) != -ZOS_EINVAL) {
+			console_puts("xmem-child: FAIL stale-free\r\n");
 			ok = 0;
 		} else {
 			h1 = again; /* leaked on purpose, like h2 */
@@ -255,13 +255,13 @@ int main(int argc, char **argv)
 	/* Exit from far context, with both objects leaked: the aperture is
 	 * left open so the exit path runs with P != 0. */
 	if (token != 0u) {
-		saved = (unsigned int)zos_aperture_open((unsigned char)token);
+		saved = (unsigned int)aperture_open((unsigned char)token);
 		(void)saved;
 	}
 	if (ok) {
-		zos_puts("xmem-child: PASS\r\n");
+		console_puts("xmem-child: PASS\r\n");
 		return CHILD_STATUS;
 	}
-	zos_puts("xmem-child: FAIL\r\n");
+	console_puts("xmem-child: FAIL\r\n");
 	return 1;
 }

@@ -3,11 +3,11 @@
   "objects": [
     "sio.rel",
     "sio_io.rel",
-    "sio_service.rel",
+    "sio_driver.rel",
     "sio_boot.rel",
     "sdcc_indirect_calls.rel"
   ],
-  "init": "sio_service_init",
+  "init": "sio_driver_init",
   "segments": [
     {
       "role": "hot",
@@ -15,7 +15,7 @@
         "_CODE"
       ],
       "bss_areas": [
-        "_SERVICE_IO"
+        "_DRIVER_IO"
       ]
     },
     {
@@ -31,7 +31,7 @@
       "class": 1,
       "instance": 0,
       "version": 1,
-      "dispatch": "sio_service_dispatch",
+      "dispatch": "sio_driver_dispatch",
       "flags": 0
     }
   ],

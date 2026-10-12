@@ -1,3 +1,4 @@
+/* ZephyrOS VFS part: the staging buffer. */
 /* ZephyrOS M9 bank-7 VFS workspace (package 27, correction-01).
  *
  * Owns the single 512-byte VFS workspace and, in debug/acceptance builds,
@@ -12,7 +13,7 @@
  */
 
 #include "kernel/vfs/vfs.h"
-#include "zephyros/kernel.h"
+#include "kernel.h"
 
 uint8_t vfs_workspace[VFS_WORKSPACE_SIZE];
 

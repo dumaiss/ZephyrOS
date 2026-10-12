@@ -2,7 +2,7 @@
 """Deterministic malformed-ZEX-v2 fixture generator (subsystem test artifact).
 
 Builds one fixture per ZEX v2 validation boundary in
-include/zephyros/zex.h plus two well-formed control files:
+formats/include/zex.h plus two well-formed control files:
 
     zex-bad-magic.zex          ZEX_EXEC_ERR_MAGIC
     zex-bad-format.zex         ZEX_EXEC_ERR_FORMAT

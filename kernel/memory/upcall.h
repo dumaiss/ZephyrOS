@@ -1,6 +1,6 @@
 /* ZephyrOS kernel-private upcall shim (architecture 36.5).
  *
- * Cold-half nucleus code that has to call a resident service does so
+ * Cold-half nucleus code that has to call a resident driver does so
  * through this fixed primitive: it saves the exact banking latch, selects
  * the window page, makes one call into the window, and restores the saved
  * latch.  The caller is not executing while the window shows another bank
@@ -32,15 +32,15 @@
 #ifndef ZEPHYROS_KERNEL_MEMORY_UPCALL_H
 #define ZEPHYROS_KERNEL_MEMORY_UPCALL_H
 
-#include "zephyros/errno.h"
+#include "zos/errno.h"
 #include "zos/types.h"
 
 /* Window pages the operating system uses (architecture 36.2): the decoder
  * answers 6000h-DFFFh from bank 7 - P, so page 0 is the nucleus's own cold
- * half and page 1 is the resident service domain in bank 6. */
+ * half and page 1 is the resident driver domain in bank 6. */
 #define ZOS_UPCALL_PAGE_NUCLEUS 0u
-#define ZOS_UPCALL_PAGE_SERVICE 1u
-#define ZOS_UPCALL_PAGE_MAX ZOS_UPCALL_PAGE_SERVICE
+#define ZOS_UPCALL_PAGE_DRIVER 1u
+#define ZOS_UPCALL_PAGE_MAX ZOS_UPCALL_PAGE_DRIVER
 
 struct zos_upcall_req {
 	uint8_t page;   /* ZOS_UPCALL_PAGE_*                        */
@@ -68,7 +68,7 @@ _Static_assert(__builtin_offsetof(struct zos_upcall_req, result) == 5,
 uint8_t zos_upcall(const struct zos_upcall_req *req);
 
 /* The target's A register at return (upcall.asm): a `uint8_t`-returning
- * entry publishes its sdcccall(1) result here.  The service loader reads
+ * entry publishes its sdcccall(1) result here.  The driver loader reads
  * it back as the init status. */
 extern uint8_t zos_upcall_ret_a;
 

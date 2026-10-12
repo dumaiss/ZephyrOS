@@ -6,7 +6,7 @@ production boot path with the revision-13 gate and upcall-shim acceptance
 surface linked in -- and checks the recorded evidence, not just the
 transcript:
 
-* the smoke caller runs in application bank 0 with the service page
+* the smoke caller runs in application bank 0 with the driver page
   selected (mode 10 with P = 1) and issues SYS_DIAG_SYSTEM_INFO, whose
   body is cold-half code: only a gate that clears P can dispatch it, and
   only the cold half carries the deterministic record the caller compares
@@ -49,7 +49,7 @@ FAIL_MARKER = "nucleus selftest: FAIL"
 
 # Recorded evidence (mirrors tests/target/include/nucleus_selftest.h).
 APP_BANK = 0x00
-PAGE_SERVICE = 0x01
+PAGE_DRIVER = 0x01
 MODE_APPLICATION = 0x10
 MODE_OS = 0x18
 EV_ALL = 0x0F
@@ -57,7 +57,7 @@ STUB_MAGIC = 0xA55A
 STUB_WITNESS = 0x3C
 STUB_STATUS_DELIVERED = 0x01
 STUB_BASE = 0x7800
-SERVICE_BANK = 6
+DRIVER_BANK = 6
 
 
 class NucleusCtc0Injector:
@@ -162,7 +162,7 @@ class TestNucleusLayout(NucleusSimBase):
         # The caller's latch (mode 10, bank 0, page 1) came back exactly.
         self.assertEqual(self.reg("zos_nucleus_p_latch"),
                          MODE_APPLICATION | APP_BANK |
-                         (PAGE_SERVICE << 5))
+                         (PAGE_DRIVER << 5))
         # The mode-10 delivery: the handler is cold-half code, so this can
         # only pass with P = 0; it recorded the latch it observed.
         self.assertEqual(self.reg("_zos_nucleus_irq_evidence"), EV_ALL)
@@ -181,9 +181,9 @@ class TestNucleusLayout(NucleusSimBase):
         self.assertEqual(self.reg("_zos_nucleus_stub_status"),
                          STUB_STATUS_DELIVERED)
         self.assertEqual(self.reg("_zos_nucleus_stub_latch"),
-                         MODE_OS | APP_BANK | (PAGE_SERVICE << 5))
+                         MODE_OS | APP_BANK | (PAGE_DRIVER << 5))
         self.assertEqual(self.reg("_zos_nucleus_stub_latch_after"),
-                         MODE_OS | APP_BANK | (PAGE_SERVICE << 5))
+                         MODE_OS | APP_BANK | (PAGE_DRIVER << 5))
 
     def test_upcall_shim_selects_the_page_and_publishes_the_result(self):
         self.boot_once()
@@ -199,7 +199,7 @@ class TestNucleusLayout(NucleusSimBase):
         want = self.linked_bank7(self.syms["zos_nucleus_stub_start"],
                                   stub_size)
         self.assertEqual(
-            bytes(self._z.banks[SERVICE_BANK][STUB_BASE:STUB_BASE +
+            bytes(self._z.banks[DRIVER_BANK][STUB_BASE:STUB_BASE +
                                                stub_size]),
             want, "the bank-6 stub is not the linked stub image")
 

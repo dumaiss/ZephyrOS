@@ -2,8 +2,8 @@
 """Extended-memory outcome acceptance replay (work packages 43/44b).
 
 Boots `build-xmem-selftest/zephyros-xmem-selftest.bin` -- the production
-boot path with the SIO/console service set and the SDK outcome program
-booting as `/SYSTEM/xmem_selftest.zex` -- and asserts the recorded
+boot path with the SIO/console driver set and the SDK outcome program
+booting as `/system/xmem_selftest.zex` -- and asserts the recorded
 transcript:
 
 * the boot lanes and the program's verdict line (every check passed, the
@@ -112,7 +112,7 @@ OUTCOMES = [
 CHECKS = len(OUTCOMES)
 
 # The far-code program's outcomes (package 44b), in order; it is
-# /SYSTEM/xmem_far.zex, SYS_EXECed by the parent above.
+# /system/xmem_far.zex, SYS_EXECed by the parent above.
 FAR_OUTCOMES = [
     "seg-info-1", "seg-info-2", "seg-info-unknown",
     "seg-map-token", "seg-map-page", "seg-map-several", "seg-map-refused",
@@ -137,7 +137,7 @@ BOOT_LINES = [
     "platform: Zephyr-80\r\n",
     "kernel entry: OK\r\n",
     "serial: OK\r\n",
-    "console: service OK\r\n",
+    "console: driver OK\r\n",
     "xmem-selftest: begin\r\n",
 ]
 

@@ -10,6 +10,7 @@
 
 #include "monitor.h"
 #include "zos.h"
+#include "diag.h" /* the SDK diag wrappers */
 #include "hexfmt.h"
 #include "hexdump.h"
 #include "status.h"
@@ -42,7 +43,7 @@ static void mon_dump(unsigned char bank, unsigned int addr,
 			req.bank = bank;
 			req.reserved = 0;
 			req.address = (unsigned int)(addr + i);
-			value = zex_diag_mem_read(&req);
+			value = diag_mem_read(&req);
 			if (value < 0) {
 				mon_mem_error(value);
 				return;
@@ -50,8 +51,8 @@ static void mon_dump(unsigned char bank, unsigned int addr,
 			row[i] = (unsigned char)value;
 		}
 		zrt_hexdump_row(text, addr, row, count);
-		zos_puts(text);
-		zos_puts("\r\n");
+		console_puts(text);
+		console_puts("\r\n");
 		addr = (unsigned int)(addr + count);
 		len -= count;
 	}
@@ -90,7 +91,7 @@ void mon_cmd_mem(char *cursor, unsigned char with_bank,
 		req.bank = bank;
 		req.value = (unsigned char)value;
 		req.address = addr;
-		result = zex_diag_mem_write(&req);
+		result = diag_mem_write(&req);
 		if (result < 0) {
 			mon_mem_error(result);
 			return;

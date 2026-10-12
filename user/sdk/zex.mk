@@ -64,7 +64,7 @@ ZEX_ASFLAGS := -Iabi
 
 ZOS_SDK_C_SRC := args.c fs.c ipc.c exec.c console_io.c \
     xmem.c seg.c \
-    console_service.c \
+    console_proto.c \
     zlibc/strlen.c zlibc/strcmp.c zlibc/strncmp.c zlibc/strchr.c \
     zlibc/strrchr.c zlibc/memcpy.c zlibc/memmove.c zlibc/memset.c \
     zlibc/memcmp.c zlibc/strlcpy.c zlibc/strlcat.c \
@@ -144,7 +144,7 @@ $(1)_CODEBASE := $$(if $$(filter CODEBASE=%,$$($(1)_OPTS)),$$(patsubst CODEBASE=
 $(1)_NOCRT0 := $$(if $$(filter NO_CRT0=1,$$($(1)_OPTS)),1,)
 $(1)_STAGE  := $$(if $$(filter STAGE=1,$$($(1)_OPTS)),1,)
 $(1)_INC    := $$(if $$(filter INCLUDES=%,$$($(1)_OPTS)),$$(patsubst INCLUDES=%,%,$$(filter INCLUDES=%,$$($(1)_OPTS))),)
-$(1)_INCFLAGS := $$(patsubst %, -I%,$(subst :, ,$$($(1)_INC)))
+$(1)_INCFLAGS := $$(patsubst %, -I%,$$(subst :, ,$$($(1)_INC)))
 $(1)_LINKOBJS := $$(if $$($(1)_NOCRT0),,$$(ZEX_CRT0)) $$(ZEX_RUNTIME) $$($(1)_OBJS) $$($(1)_FAROBJS)
 $(1)_ZEX    := $$(ZEX_USER_ROOT)/$(1).zex
 

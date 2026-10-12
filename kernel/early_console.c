@@ -19,7 +19,7 @@
  * No printf(), no input API, no drivers, no interrupts.
  */
 
-#include "zephyros/kernel.h"
+#include "kernel.h"
 
 static __sfr __at ZOS_SIO0B_CTRL zos_sio_b_ctrl;
 static __sfr __at ZOS_SIO0B_DATA zos_sio_b_data;

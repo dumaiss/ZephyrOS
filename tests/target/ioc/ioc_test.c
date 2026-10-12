@@ -1,16 +1,16 @@
-/* ZephyrOS IOC resident-service acceptance diagnostic (work package 41).
+/* ZephyrOS IOC resident-driver acceptance diagnostic (work package 41).
  *
- * Runs from the late boot hook, after the service loader brought the
- * image's service set (sio, ioc, console) up in bank 6 and after the
- * nucleus console probe: the IOC service's init has run the bounded
+ * Runs from the late boot hook, after the driver loader brought the
+ * image's driver set (sio, ioc, console) up in bank 6 and after the
+ * nucleus console probe: the IOC driver's init has run the bounded
  * LINK_SYNC bring-up and its endpoint (class ZOS_CLASS_IOC, instance 0,
  * protocol version ZOS_PROTOCOL_VERSION) answers.
  *
- * The diagnostic is a *bank-7 client* of that service, exactly like
+ * The diagnostic is a *bank-7 client* of that driver, exactly like
  * the retired class shim: it holds no buffer descriptor and cannot use
  * `move`, so it drives the IOC protocol (abi/zos/protocol.h) through the
  * descriptor-less operations and the staged buffers the replies name, with
- * the shared acceptance client (tests/target/support/service_client.c) for
+ * the shared acceptance client (tests/target/support/driver_client.c) for
  * the calls, the copy-gate moves and the early-SIO transcript.  It sees
  * native `struct zioc_frame` records; framing, CRC, sequence and lane setup
  * never surface.
@@ -20,7 +20,7 @@
  * and checked for type, echo pattern, controller level 4Ah and the
  * link-synced snapshot; ZIOC_OP_STATUS with no bit outside
  * ZIOC_STATUS_HID_PENDING; the staged bulk lane over the frozen /SHARED
- * file service (FS_WRITE arms a Z80->MCU phase, the pattern is placed at
+ * file driver (FS_WRITE arms a Z80->MCU phase, the pattern is placed at
  * the published bulk address and committed descriptor-less with
  * ZIOC_OP_BULK_WRITE, the DONE record confirms it, FS_READ arms the reverse
  * direction, ZIOC_OP_BULK_READ completes it, the staged bytes are read back
@@ -29,23 +29,23 @@
  * descriptor-less REPLY, handle 0 and a bogus handle).
  *
  * If the deployed firmware answers the writable /SHARED open with the
- * unknown-command class it has no writable service: the bulk criterion is
+ * unknown-command class it has no writable driver: the bulk criterion is
  * PENDING - never the OK marker, never acceptance evidence.  The last line
  * is "ioc selftest: OK" or "ioc selftest: FAIL <phase>", with the matching
  * ZOS_IOCSELFTEST_* code in ace_ioc_selftest_result.
  */
 
-#include "zephyros/errno.h"
-#include "zephyros/ioc.h"
+#include "zos/errno.h"
+#include "ioc.h"
 #include "zos/protocol.h"
 
 #include "ioc_proto.h"
 #include "ioc_selftest.h"
-#include "service_client.h"
+#include "driver_client.h"
 
 #if ZOS_IOC_SELFTEST
 
-/* Frozen /SHARED file-service classes (mirrored from the pinned MCU
+/* Frozen /SHARED file-driver classes (mirrored from the pinned MCU
  * ioc_frame.h for this fixture only, as the M8 diagnostic did) and the
  * dedicated acceptance file the controller builds from the packed 8.3
  * basename.  FS_WRITE/FS_READ are also two of the request classes the
@@ -78,25 +78,25 @@ static uint8_t ioc_xfer_id;
 static void ioc_fail(const char *phase, uint8_t code)
 {
 	ace_ioc_selftest_result = code;
-	service_cli_puts("ioc selftest: FAIL ");
-	service_cli_puts(phase);
-	service_cli_puts("\r\n");
+	driver_cli_puts("ioc selftest: FAIL ");
+	driver_cli_puts(phase);
+	driver_cli_puts("\r\n");
 }
 
 /* Transcript line "<label><hex>\r\n"; hex only, because the nucleus links
- * no SDCC division helpers (service_client.h). */
+ * no SDCC division helpers (driver_client.h). */
 static void ioc_show8(const char *label, uint8_t value)
 {
-	service_cli_puts(label);
-	service_cli_hex8(value);
-	service_cli_puts("\r\n");
+	driver_cli_puts(label);
+	driver_cli_hex8(value);
+	driver_cli_puts("\r\n");
 }
 
 static void ioc_show16(const char *label, uint16_t value)
 {
-	service_cli_puts(label);
-	service_cli_hex16(value);
-	service_cli_puts("\r\n");
+	driver_cli_puts(label);
+	driver_cli_hex16(value);
+	driver_cli_puts("\r\n");
 }
 
 /* The deterministic byte the PING echo and the bulk section carry. */
@@ -130,7 +130,7 @@ static uint8_t ioc_pattern_ok(void)
  * caller fills the request DATA) and clear the staged reply. */
 static void ioc_prepare(uint8_t type, uint8_t length)
 {
-	service_cli_frame(&ioc_frame, ZIOC_OP_COMMAND, type, length);
+	driver_cli_frame(&ioc_frame, ZIOC_OP_COMMAND, type, length);
 	ioc_reply.type = 0u;
 	ioc_reply.status = 0u;
 	ioc_reply.length = 0u;
@@ -142,13 +142,13 @@ static int16_t ioc_exchange(uint8_t handle)
 {
 	uint16_t address;
 
-	if (service_cli_call(handle, &ioc_frame) != 0) {
+	if (driver_cli_call(handle, &ioc_frame) != 0) {
 		return -1;
 	}
 	address = (uint16_t)((uint16_t)ioc_frame.payload[0] |
 			     ((uint16_t)ioc_frame.payload[1] << 8));
 	if (address == 0u ||
-	    service_cli_stage_read(address, ZIOC_FRAME_SIZE,
+	    driver_cli_stage_read(address, ZIOC_FRAME_SIZE,
 				   (uint8_t *)&ioc_reply) == 0) {
 		return -1;
 	}
@@ -198,20 +198,20 @@ static uint8_t ioc_ping(uint8_t handle)
 	    (ioc_reply.data[IOC_PING_DATA_POWER] & IOC_PING_LINK_SYNCED) == 0u) {
 		return 0u;
 	}
-	service_cli_puts("ioc: reply ");
-	service_cli_hex8(ioc_reply.type);
-	service_cli_puts(" status ");
-	service_cli_hex8(ioc_reply.status);
-	service_cli_puts(" length ");
-	service_cli_hex8(ioc_reply.length);
-	service_cli_puts("\r\n");
-	service_cli_puts("ioc: echo ");
-	service_cli_hex8(echoed);
-	service_cli_puts(" level ");
-	service_cli_hex8(ioc_reply.data[IOC_PING_DATA_LEVEL]);
-	service_cli_puts(" power ");
-	service_cli_hex8(ioc_reply.data[IOC_PING_DATA_POWER]);
-	service_cli_puts("\r\n");
+	driver_cli_puts("ioc: reply ");
+	driver_cli_hex8(ioc_reply.type);
+	driver_cli_puts(" status ");
+	driver_cli_hex8(ioc_reply.status);
+	driver_cli_puts(" length ");
+	driver_cli_hex8(ioc_reply.length);
+	driver_cli_puts("\r\n");
+	driver_cli_puts("ioc: echo ");
+	driver_cli_hex8(echoed);
+	driver_cli_puts(" level ");
+	driver_cli_hex8(ioc_reply.data[IOC_PING_DATA_LEVEL]);
+	driver_cli_puts(" power ");
+	driver_cli_hex8(ioc_reply.data[IOC_PING_DATA_POWER]);
+	driver_cli_puts("\r\n");
 	return 1u;
 }
 
@@ -240,11 +240,11 @@ static uint8_t ioc_bulk_write(uint8_t handle)
 	address = (uint16_t)((uint16_t)ioc_frame.payload[3] |
 			     ((uint16_t)ioc_frame.payload[4] << 8));
 	if (address == 0u ||
-	    service_cli_stage_write(address, IOC_BULK_BYTES, ioc_pattern) == 0) {
+	    driver_cli_stage_write(address, IOC_BULK_BYTES, ioc_pattern) == 0) {
 		return 0u;
 	}
-	service_cli_frame(&ioc_frame, ZIOC_OP_BULK_WRITE, 0u, IOC_BULK_BYTES);
-	if (service_cli_call(handle, &ioc_frame) != (int16_t)IOC_BULK_BYTES) {
+	driver_cli_frame(&ioc_frame, ZIOC_OP_BULK_WRITE, 0u, IOC_BULK_BYTES);
+	if (driver_cli_call(handle, &ioc_frame) != (int16_t)IOC_BULK_BYTES) {
 		return 0u;
 	}
 	ioc_prepare(IOC_CMD_XFER_STATUS, 0u);
@@ -257,7 +257,7 @@ static uint8_t ioc_bulk_write(uint8_t handle)
 }
 
 /* The staged bulk read: complete the admitted MCU->Z80 phase into the
- * service buffer, then read that buffer back through the copy gate. */
+ * driver buffer, then read that buffer back through the copy gate. */
 static uint8_t ioc_bulk_read(uint8_t handle)
 {
 	uint16_t address;
@@ -269,14 +269,14 @@ static uint8_t ioc_bulk_read(uint8_t handle)
 			  IOC_BULK_BYTES)) {
 		return 0u;
 	}
-	service_cli_frame(&ioc_frame, ZIOC_OP_BULK_READ, 0u, IOC_BULK_BYTES);
-	if (service_cli_call(handle, &ioc_frame) != (int16_t)IOC_BULK_BYTES) {
+	driver_cli_frame(&ioc_frame, ZIOC_OP_BULK_READ, 0u, IOC_BULK_BYTES);
+	if (driver_cli_call(handle, &ioc_frame) != (int16_t)IOC_BULK_BYTES) {
 		return 0u;
 	}
 	address = (uint16_t)((uint16_t)ioc_frame.payload[0] |
 			     ((uint16_t)ioc_frame.payload[1] << 8));
 	if (address == 0u ||
-	    service_cli_stage_read(address, IOC_BULK_BYTES, ioc_pattern) == 0) {
+	    driver_cli_stage_read(address, IOC_BULK_BYTES, ioc_pattern) == 0) {
 		return 0u;
 	}
 	return ioc_pattern_ok();
@@ -321,15 +321,15 @@ void zos_run_ioc_selftest(void)
 	ace_ioc_selftest_result = ZOS_IOCSELFTEST_FAIL_ENDPOINT;
 	ioc_fill_pattern();
 
-	if (service_cli_endpoint(ZOS_CLASS_IOC, &handle) == 0u) {
+	if (driver_cli_endpoint(ZOS_CLASS_IOC, &handle) == 0u) {
 		ioc_fail("endpoint", ZOS_IOCSELFTEST_FAIL_ENDPOINT);
 		return;
 	}
-	service_cli_puts("ioc: endpoint class ");
-	service_cli_hex8(ZOS_CLASS_IOC);
+	driver_cli_puts("ioc: endpoint class ");
+	driver_cli_hex8(ZOS_CLASS_IOC);
 	ioc_show8(" version ", ZOS_PROTOCOL_VERSION);
 
-	result = service_cli_getc(handle, ZIOC_OP_READY);
+	result = driver_cli_getc(handle, ZIOC_OP_READY);
 	if (result != 1) {
 		ioc_fail("ready", ZOS_IOCSELFTEST_FAIL_READY);
 		return;
@@ -343,7 +343,7 @@ void zos_run_ioc_selftest(void)
 
 	/* Semantic status only: the word may carry nothing but the HID
 	 * doorbell bit, which varies with what the peer has queued. */
-	result = service_cli_getc(handle, ZIOC_OP_STATUS);
+	result = driver_cli_getc(handle, ZIOC_OP_STATUS);
 	word = (uint16_t)result;
 	if (result < 0 || (word & (uint16_t)~ZIOC_STATUS_HID_PENDING) != 0u) {
 		ioc_fail("status", ZOS_IOCSELFTEST_FAIL_STATUS);
@@ -379,37 +379,37 @@ void zos_run_ioc_selftest(void)
 		ioc_fail("bulk", ZOS_IOCSELFTEST_FAIL_BULK);
 		return;
 	}
-	service_cli_puts("ioc: bulk write ");
-	service_cli_hex16(IOC_BULK_BYTES);
-	service_cli_puts(" OK\r\n");
+	driver_cli_puts("ioc: bulk write ");
+	driver_cli_hex16(IOC_BULK_BYTES);
+	driver_cli_puts(" OK\r\n");
 	if (!ioc_bulk_read(handle)) {
 		ioc_fail("bulk", ZOS_IOCSELFTEST_FAIL_BULK);
 		return;
 	}
-	service_cli_puts("ioc: bulk read ");
-	service_cli_hex16(IOC_BULK_BYTES);
-	service_cli_puts(" OK\r\n");
+	driver_cli_puts("ioc: bulk read ");
+	driver_cli_hex16(IOC_BULK_BYTES);
+	driver_cli_puts(" OK\r\n");
 	if (!ioc_cleanup(handle)) {
 		ioc_fail("bulk", ZOS_IOCSELFTEST_FAIL_BULK);
 		return;
 	}
-	service_cli_puts("ioc: cleanup OK\r\n");
+	driver_cli_puts("ioc: cleanup OK\r\n");
 
 	/* Malformed calls are refused with -ZOS_EINVAL before any wire
 	 * traffic, including the invalid handles. */
 	for (index = 0u; index < 3u; ++index) {
-		service_cli_frame(&ioc_frame, bad_op[index], 0u,
+		driver_cli_frame(&ioc_frame, bad_op[index], 0u,
 				  (uint16_t)((index == 1u) ? 25u :
 					     (index == 2u) ? 29u : 0u));
 		refused = (uint8_t)(refused +
-				    (service_cli_call(handle, &ioc_frame) ==
+				    (driver_cli_call(handle, &ioc_frame) ==
 				     -ZOS_EINVAL));
 	}
-	service_cli_frame(&ioc_frame, ZIOC_OP_STATUS, 0u, 0u);
+	driver_cli_frame(&ioc_frame, ZIOC_OP_STATUS, 0u, 0u);
 	refused = (uint8_t)(refused +
-			    (service_cli_call(0u, &ioc_frame) == -ZOS_EINVAL));
+			    (driver_cli_call(0u, &ioc_frame) == -ZOS_EINVAL));
 	refused = (uint8_t)(refused +
-			    (service_cli_call((uint8_t)0x7Fu, &ioc_frame) ==
+			    (driver_cli_call((uint8_t)0x7Fu, &ioc_frame) ==
 			     -ZOS_EINVAL));
 	if (refused != 5u) {
 		ioc_fail("refused", ZOS_IOCSELFTEST_FAIL_REFUSED);
@@ -418,7 +418,7 @@ void zos_run_ioc_selftest(void)
 	ioc_show8("ioc: malformed refused ", refused);
 
 	ace_ioc_selftest_result = ZOS_IOCSELFTEST_OK;
-	service_cli_puts("ioc selftest: OK\r\n");
+	driver_cli_puts("ioc selftest: OK\r\n");
 }
 
 #endif /* ZOS_IOC_SELFTEST */

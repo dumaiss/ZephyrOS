@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
-"""Host-side IOC resident-service acceptance replay (work package 41).
+"""Host-side IOC resident-driver acceptance replay (work package 41).
 
 The IOC command/reply and bulk transport live in a bank-6 *resident
-service* driven by the versioned IOC protocol (`abi/zos/protocol.h`,
+driver* driven by the versioned IOC protocol (`abi/zos/protocol.h`,
 class `ZOS_CLASS_IOC`) over the IPC substrate.  Work package 42d merged
 the per-device images: this module replays the IOC diagnostic inside
 `build-console-integration-selftest` (the `sio ioc hid v9958
 console-v9958-hid` set) against the emulated MCU IOC peer and asserts,
 from the outside:
 
-* the early-SIO boot transcript: the kernel banner, the resident service
-  loader's per-image evidence lines for the image's service set in the
-  `services.man` order plus its bank-6 ledger tail, and the IOC
+* the early-SIO boot transcript: the kernel banner, the resident driver
+  loader's per-image evidence lines for the image's driver set in the
+  `drivers.man` order plus its bank-6 ledger tail, and the IOC
   diagnostic's phase lines ending in `ioc selftest: OK`;
-* the peer-observable protocol facts: the IOC *service boot* runs the
+* the peer-observable protocol facts: the IOC *driver boot* runs the
   bounded LINK_SYNC bring-up on its own, the diagnostic's CMD_PING and the
-  frozen /SHARED bulk acceptance follow it (the image's HID service may
+  frozen /SHARED bulk acceptance follow it (the image's HID driver may
   interleave its own fetch requests), exactly one command-lane channel
   reset and one Enter Hunt for the whole boot, RTS asserted once and
   released once per exchange, one verified bulk phase in each direction,
   and the fixture file deleted at the end of the bulk acceptance.
 
-The diagnostic is a bank-7 client of the service: descriptor-less calls
+The diagnostic is a bank-7 client of the driver: descriptor-less calls
 plus staged moves through the common copy gate, so the wire framing, CRC,
-sequence and lane admission stay inside the service - this module only
+sequence and lane admission stay inside the driver - this module only
 asserts what the peer can see.
 
 Skipped when the image has not been built
@@ -54,7 +54,7 @@ OK_LINE = b"ioc selftest: OK\r\n"
 FAIL_LINE = b"ioc selftest: FAIL"
 
 # Protocol vocabulary the replay decodes out of the peer (the wire the
-# service owns; abi/zos/protocol.h and drivers/ioc/ioc_proto.h).
+# driver owns; abi/zos/protocol.h and drivers/ioc/ioc_proto.h).
 CMD_LINK_SYNC = 0x0C
 CMD_PING = 0x01
 RSP_PING = 0x81
@@ -119,7 +119,7 @@ class IocSimBase(Replay, unittest.TestCase):
                        on_step=IntegrationInputs(z.ioc_peer))
         return bytes(z.sio_tx)
 
-    def service_evidence(self, tx):
+    def driver_evidence(self, tx):
         """The loader's per-image evidence lines, in transcript order."""
         rows = []
         for line in tx.split(b"\r\n"):
@@ -133,7 +133,7 @@ class IocSimBase(Replay, unittest.TestCase):
         return rows
 
 
-class TestIocServiceBoot(IocSimBase):
+class TestIocDriverBoot(IocSimBase):
     def test_host_sync_gate_holds_banner_until_sequence(self):
         # The first bytes exist only after the two-byte host sync sequence
         # completes and is fully consumed.
@@ -162,33 +162,33 @@ class TestIocServiceBoot(IocSimBase):
         self.assertIn(b"ZephyrOS 0.0\r\n", tx)
         self.assertFalse(z.sio_rx, "host sync sequence not consumed")
 
-    def test_service_boot_transcript_and_protocol_facts(self):
+    def test_driver_boot_transcript_and_protocol_facts(self):
         peer = integration_peer()
         z = self.make_cpu(peer)
         tx = self.boot(z)
 
-        # --- boot transcript: banner, service evidence, diagnostic ---
+        # --- boot transcript: banner, driver evidence, diagnostic ---
         self.assertIn(b"ZephyrOS 0.0\r\n", tx)
         for marker in MARKERS:
             self.assertIn(marker, tx)
         self.assertNotIn(FAIL_LINE, tx)
         self.assertNotIn(b"PANIC", tx)
         # The loader's observable evidence lines name the configured
-        # service set in order; the ledger tail counts what it placed.
+        # driver set in order; the ledger tail counts what it placed.
         manifest = ["sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
                     "console-v9958-hid.zmod"]
-        evidence = self.service_evidence(tx)
+        evidence = self.driver_evidence(tx)
         self.assertEqual([name for name, _ in evidence], manifest)
-        self.assertIn(("service loader: %d images in bank 6\r\n"
+        self.assertIn(("driver loader: %d images in bank 6\r\n"
                        % len(manifest)).encode("ascii"), tx)
         self.assertRegex(tx, rb"driver hot: \d+ bytes of 32768\r\n")
         self.assertRegex(tx, rb"driver boot/bulk: \d+ bytes of 24576\r\n")
 
         # --- peer-observable protocol facts -------------------------
-        # The service's own init ran the bounded LINK_SYNC bring-up, then
+        # The driver's own init ran the bounded LINK_SYNC bring-up, then
         # the diagnostic's PING and the staged /SHARED bulk acceptance
         # followed on the same command lane, in that order.  The image's
-        # HID service interleaves its own fetch requests, so the check is
+        # HID driver interleaves its own fetch requests, so the check is
         # the diagnostic's ordered subsequence.
         kinds = [request[0] for request in peer.requests]
         wanted = [CMD_LINK_SYNC, CMD_PING,
@@ -199,11 +199,11 @@ class TestIocServiceBoot(IocSimBase):
             self.assertIn(kind, kinds[start:],
                           "request 0x%02X missing or out of order" % kind)
             start = kinds.index(kind, start) + 1
-        # Sequence numbers are the service's own, strictly increasing.
+        # Sequence numbers are the driver's own, strictly increasing.
         self.assertEqual([request[1] for request in peer.requests],
                          list(range(1, len(peer.requests) + 1)))
 
-        # Admission setup is the service's, once for the whole boot: one
+        # Admission setup is the driver's, once for the whole boot: one
         # command-lane channel reset and one Enter Hunt, one RTS assert
         # and release per exchange; the bulk lane resets once, hunts once
         # (the first verified read) and carries exactly two phases.

@@ -11,7 +11,7 @@
 #include "zos.h"
 #include "zos_internal.h"
 
-int zos_xmem_alloc(unsigned int size, unsigned int flags)
+int xalloc(unsigned int size, unsigned int flags)
 {
 	zos_scratch.xmem_alloc.size = size;
 	zos_scratch.xmem_alloc.flags = flags;
@@ -19,7 +19,7 @@ int zos_xmem_alloc(unsigned int size, unsigned int flags)
 			   &zos_scratch.xmem_alloc);
 }
 
-int zos_xmem_free(unsigned int handle)
+int xfree(unsigned int handle)
 {
 	zos_scratch.xmem_free.handle = handle;
 	return zos_ipc_raw(ZOS_SYSCALL_XMEM_FREE, &zos_scratch.xmem_free);
@@ -36,21 +36,21 @@ static int zxmem_io(unsigned char number, unsigned int handle,
 	return zos_ipc_raw(number, &zos_scratch.xmem_io);
 }
 
-int zos_xmem_read(unsigned int handle, unsigned int offset, void *buffer,
+int xread(unsigned int handle, unsigned int offset, void *buffer,
 		  unsigned int length)
 {
 	return zxmem_io(ZOS_SYSCALL_XMEM_READ, handle, offset, buffer,
 			length);
 }
 
-int zos_xmem_write(unsigned int handle, unsigned int offset,
+int xwrite(unsigned int handle, unsigned int offset,
 		   const void *buffer, unsigned int length)
 {
 	return zxmem_io(ZOS_SYSCALL_XMEM_WRITE, handle, offset, buffer,
 			length);
 }
 
-int zos_xmem_info(unsigned int handle, struct zos_xmem_info *out)
+int xinfo(unsigned int handle, struct zos_xmem_info *out)
 {
 	if (out == (struct zos_xmem_info *)0) {
 		return -ZOS_EINVAL;
@@ -60,7 +60,7 @@ int zos_xmem_info(unsigned int handle, struct zos_xmem_info *out)
 	return zos_ipc_raw(ZOS_SYSCALL_XMEM_INFO, &zos_scratch.xmem_info);
 }
 
-int zos_xmem_map(unsigned int handle, unsigned int *address)
+int xmap(unsigned int handle, unsigned int *address)
 {
 	int token;
 

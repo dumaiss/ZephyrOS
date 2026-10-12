@@ -16,9 +16,9 @@
  * evidence in common memory.
  */
 
-#include "zephyros/irq.h"
-#include "zephyros/kernel.h"
-#include "zephyros/platform.h"
+#include "irq_types.h"
+#include "kernel.h"
+#include "platform.h"
 
 #include "kernel/irq/irq_private.h"
 #include "kernel/memory/banking.h"

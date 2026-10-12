@@ -27,9 +27,9 @@
       "path": "console-v9958-hid.zmod"
     },
     {
-      "name": "services.man",
+      "name": "drivers.man",
       "type": "DATA",
-      "path": "services.man"
+      "path": "drivers.man"
     },
     {
       "name": "iocfat.zmod",

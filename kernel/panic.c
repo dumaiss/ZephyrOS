@@ -9,7 +9,7 @@
  * depending on any banked memory.
  */
 
-#include "zephyros/kernel.h"
+#include "kernel.h"
 
 void panic(const char *message)
 {

@@ -4,7 +4,7 @@
 # here with one zex_program line from user/sdk/zex.mk:
 #
 #   make build/user/hello.zex     build the demo in the production tree
-#   make helloworld-image         boot it as /SYSTEM/hello.zex
+#   make helloworld-image         boot it as /system/hello.zex
 #
 # STAGE=1 copies the packed program into $(MODULES) so the selected
 # recovery manifest can name it.  Add a demo by dropping a .c file next to

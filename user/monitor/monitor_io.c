@@ -8,6 +8,7 @@
 
 #include "monitor.h"
 #include "zos.h"
+#include "diag.h" /* the SDK diag wrappers */
 #include "hexfmt.h"
 #include "status.h"
 
@@ -26,14 +27,14 @@ void mon_cmd_io_in(char *cursor)
 		return;
 	}
 	req.port = (unsigned char)port;
-	value = zex_diag_io_in(&req);
+	value = diag_io_in(&req);
 	if (value < 0) {
 		zrt_status_err_code(value);
 		return;
 	}
-	zos_puts("IN=");
+	console_puts("IN=");
 	mon_put_hex8((unsigned int)value);
-	zos_puts("\r\n");
+	console_puts("\r\n");
 }
 
 void mon_cmd_io_out(char *cursor)
@@ -55,7 +56,7 @@ void mon_cmd_io_out(char *cursor)
 	}
 	req.port = (unsigned char)port;
 	req.value = (unsigned char)value;
-	result = zex_diag_io_out(&req);
+	result = diag_io_out(&req);
 	if (result < 0) {
 		zrt_status_err_code(result);
 		return;

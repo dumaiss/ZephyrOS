@@ -25,7 +25,7 @@
  *   MB bank addr value modify one byte in application bank 0-6
  *   I port            read I/O port 10h-FFh
  *   O port value      write I/O port 10h-FFh
- *   X path [tail]     run a ZEX from /SYSTEM, print its status
+ *   X path [tail]     run a ZEX from /system, print its status
  *   Q                 exit (resumes the kernel launcher)
  *
  * Intel HEX load/export, GO, APP, and CP/M register-snapshot semantics
@@ -43,7 +43,7 @@
 /* Monitor exit statuses; Q uses 0 and the launcher reports the rest. */
 #define MON_EXIT_QUIT    0x0000
 #define MON_EXIT_DIAG    0x0201 /* BANK_INFO/GETINFO unavailable         */
-#define MON_EXIT_CONSOLE 0x0202 /* console service failed                */
+#define MON_EXIT_CONSOLE 0x0202 /* console driver failed                */
 #define MON_EXIT_INTERNAL 0x0203 /* mon_main returned unexpectedly       */
 #define MON_EXIT_LAUNCH  0x0204 /* launch contract violation (HL != 0)   */
 

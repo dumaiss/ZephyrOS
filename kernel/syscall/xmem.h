@@ -1,8 +1,8 @@
-/* ZephyrOS extended-memory syscall services (kernel-private interface).
+/* ZephyrOS extended-memory syscall drivers (kernel-private interface).
  *
  * The stable numbers and packed argument blocks are the public native ABI
  * (abi/zos/xmem.h, abi/zos/seg.h); this header is the private seam between
- * the syscall dispatcher (kernel/syscall.c), the service bodies
+ * the syscall dispatcher (kernel/syscall.c), the driver bodies
  * (kernel/syscall/xmem.c) and the process teardown that releases a pid's
  * objects (kernel/process/process.c).
  */

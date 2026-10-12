@@ -8,7 +8,7 @@
 ; between cold code and cold data).
 ;
 ; The generated file lives under the build directory and is included via
-; the per-build include path; platform/zephyr80/memory.inc stays
+; the per-build include path; platform/zephyr80/private/memory.inc stays
 ; declarative.  The probe link sets ZOS_KERNEL_CODE_END = 0, so kernel
 ; growth can never collide with a placeholder.
 ;

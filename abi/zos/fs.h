@@ -8,7 +8,7 @@
  * numbers and frame layouts.  The M9 syscall argument blocks are gone:
  * files are typed handles, and the `FS_*` family is retired (package 42b).
  *
- * A path or component over a limit is ZOS_EINVAL; see zephyros/errno.h.
+ * A path or component over a limit is ZOS_EINVAL; see zos/errno.h.
  */
 
 #ifndef ZEPHYROS_FS_H

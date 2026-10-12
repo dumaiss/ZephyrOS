@@ -14,19 +14,18 @@
  * banner remains byte-identical to M0.  It does not return.
  */
 
-#include "zephyros/kernel.h"
-#include "zephyros/irq.h"
-#include "zephyros/romfs.h"
-#include "zephyros/process.h"
-#include "zephyros/service.h"
+#include "kernel.h"
+#include "irq_types.h"
+#include "romfs.h"
+#include "process.h"
+#include "zmod.h"
 
 #include "zos/protocol.h"
 
 #include "kernel/ipc/ipc.h"
-#include "kernel/vfs/ns.h"
+#include "kernel/vfs/vfs.h"
 #include "kernel/irq/irq_private.h"
 #include "kernel/memory/banking.h"
-#include "kernel/vfs/vfs.h"
 
 /* Single integration seam for target acceptance builds; the runner and
  * the acceptance-group selection live in tests/target/support/target_test.c. */
@@ -100,12 +99,12 @@ static void romfs_diagnose(int result)
 	early_console_puts("\r\n");
 }
 
-static void kernel_service_manifest_failed(int result)
+static void kernel_driver_manifest_failed(int result)
 {
 	static const char hex[] = "0123456789ABCDEF";
 	unsigned code = (unsigned)(-result) & 0xFFu;
 
-	early_console_puts("services: unavailable 0x");
+	early_console_puts("drivers: unavailable 0x");
 	early_console_putc(hex[(code >> 4) & 0x0Fu]);
 	early_console_putc(hex[code & 0x0Fu]);
 	early_console_puts("\r\n");
@@ -118,15 +117,15 @@ static void kernel_service_manifest_failed(int result)
  * Production boot order is explicit and deterministic (no general
  * dependency resolver).  The nucleus initializes the namespace (the ROMFS
  * reader, the handle table and the in-process FILE endpoint), reads the
- * boot manifest and hands it to the resident service loader, which places
- * every service the manifest lists into bank 6 and runs their boot tiers
+ * boot manifest and hands it to the resident driver loader, which places
+ * every driver the manifest lists into bank 6 and runs their boot tiers
  * and inits in dependency order (architecture 36.4).  The store's manifest
- * is what the image boots: production lists the five driver services (the
- * selected filesystem driver among them, publishing `/FS`), and an image
- * that needs the serial-only fallback lists a subset.  The services are
+ * is what the image boots: production lists the five driver drivers (the
+ * selected filesystem driver among them, publishing `/fs`), and an image
+ * that needs the serial-only fallback lists a subset.  The drivers are
  * the whole bank-6 population: there is no separate module pass.
  */
-static uint8_t kernel_boot_services(void)
+static uint8_t kernel_boot_drivers(void)
 {
 	int result = vfs_init();
 
@@ -134,9 +133,9 @@ static uint8_t kernel_boot_services(void)
 		romfs_diagnose(result);
 		panic("romfs: corrupt recovery image");
 	}
-	result = service_load_all(ZOS_SERVICE_MANIFEST_NAME);
+	result = driver_load_all(ZOS_DRIVER_MANIFEST_NAME);
 	if (result != 0) {
-		kernel_service_manifest_failed(result);
+		kernel_driver_manifest_failed(result);
 		return 1u;
 	}
 	return 0;
@@ -201,7 +200,7 @@ static void kernel_exercise_banking(void)
 /* --- native boot launcher (M9 shell readiness, package 28b) ------------
  *
  * The launcher starts the configured boot program - the ROMFS
- * `monitor.zex` by default - through its `/SYSTEM` VFS path via the
+ * `monitor.zex` by default - through its `/system` VFS path via the
  * unchanged `process_exec()` path, and re-execs it after every normal
  * exit.  `ZOS_BOOT_PROGRAM` (config/system.mk) selects the program: M10's
  * shell is one build setting plus its ZEX in the recovery manifest, with
@@ -249,7 +248,7 @@ static char *kernel_boot_put_dec(char *out, uint8_t value)
 	return out;
 }
 
-/* The console service endpoint, resolved once from the host-built
+/* The console driver endpoint, resolved once from the host-built
  * publication the resident loader installed (0 while the store provided
  * none).  There is no runtime class lookup (architecture 36.11). */
 static uint8_t kernel_console_endpoint;
@@ -277,7 +276,7 @@ static int kernel_console_putc(uint8_t handle, uint8_t ch)
 	return ipc_nucleus_call(handle, &frame);
 }
 
-/* A boot line through the console service: 0 when every byte was accepted,
+/* A boot line through the console driver: 0 when every byte was accepted,
  * the negated error otherwise (the caller then stays on the early
  * console). */
 static int kernel_console_write(const char *line, uint16_t length)
@@ -299,9 +298,9 @@ static int kernel_console_write(const char *line, uint16_t length)
 	return 0;
 }
 
-/* The boot path's own output: the console service composes the same
+/* The boot path's own output: the console driver composes the same
  * input/output pair the M8 console device did, and the early console is
- * what remains when the store provided no console service (the fallback
+ * what remains when the store provided no console driver (the fallback
  * rule the panic path also depends on). */
 static void kernel_boot_emit(const char *line, uint16_t length)
 {
@@ -440,18 +439,18 @@ void kernel_main(void)
 #endif
 
 	/* The early console above stays authoritative: it, and the panic
-	 * path, work with no service at all.  The resident service set loads
-	 * from the recovery store, and the console service - if the store
+	 * path, work with no driver at all.  The resident driver set loads
+	 * from the recovery store, and the console driver - if the store
 	 * booted one - becomes what the boot path prints through.  Load
-	 * diagnostics go to the early console before any service output. */
+	 * diagnostics go to the early console before any driver output. */
 	{
-		uint8_t service_failures = kernel_boot_services();
+		uint8_t driver_failures = kernel_boot_drivers();
 
-		if (service_failures != 0) {
+		if (driver_failures != 0) {
 			/* A required driver failed to initialize: the loader
 			 * named it on the early console.  The boot fails
 			 * here, before the launcher (36.11). */
-			early_console_puts("console: service failed\r\n");
+			early_console_puts("console: driver failed\r\n");
 			__asm__("di");
 			for (;;) {
 				__asm__("halt");
@@ -460,7 +459,7 @@ void kernel_main(void)
 			early_console_puts("console: unbound\r\n");
 		} else {
 			static const char console_ok[] =
-				"console: service OK\r\n";
+				"console: driver OK\r\n";
 
 			if (kernel_console_write(console_ok,
 						 (uint16_t)(sizeof(console_ok) -

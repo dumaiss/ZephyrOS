@@ -1,7 +1,7 @@
 ; ZephyrOS M1 syscall-gate acceptance constants (assembly visible).
 ; Value-identical with tests/target/include/selftest.h (parity-tested).
 
-; Error code from include/zephyros/errno.h (kept in sync by the host test).
+; Error code from abi/zos/errno.h (kept in sync by the host test).
 ZOS_ENOSYS              = 0x01
 
 ZOS_ST_CALLER_BASE      = 0x1000

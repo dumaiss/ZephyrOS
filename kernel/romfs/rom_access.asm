@@ -32,11 +32,11 @@
 ; -----------------------------------------------------------------------------
 
 	.module rom_access
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 
 ; Status codes returned in A.  They are the positive ZOS_* values from
-; include/zephyros/errno.h; tests/test_romfs.py enforces the parity so
+; abi/zos/errno.h; tests/test_romfs.py enforces the parity so
 ; the two representations cannot drift.
 RAX_EINVAL = 0x02		; ZOS_EINVAL
 RAX_EBUSY  = 0x04		; ZOS_EBUSY

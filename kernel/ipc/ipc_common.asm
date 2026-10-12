@@ -3,11 +3,11 @@
 ; architecture 36.8).
 ;
 ; Path B of the copy resolver.  The caller buffer lies in the caller's own
-; bank (P = 0 when the descriptor was captured) and the service buffer lies
+; bank (P = 0 when the descriptor was captured) and the driver buffer lies
 ; in bank 6's 8000h-BFFFh.  Neither the mode-11 window nor the mode-10
 ; primary decode shows both, so the primitive runs in mode 10 with
 ; Q = the caller's bank and P = 1: the aperture 8000h-BFFFh then shows
-; bank 6 at the address the service itself names, and everything else
+; bank 6 at the address the driver itself names, and everything else
 ; shows the caller.  One LDIR moves the run.
 ;
 ; Everything executed while that latch is in force must be fetched from
@@ -15,11 +15,11 @@
 ; file is therefore entirely common, and the primitive is register-only -
 ; no CALL, no push, no banked operand - so the only memory it touches
 ; open is the request/state block below.  It never reads or writes the
-; service stack either: SP is moved to the small common reservation here
+; driver stack either: SP is moved to the small common reservation here
 ; for the length of the window.
 ;
 ; The copy is interruptible on purpose.  A CTC0 interrupt taken inside the
-; window pushes onto that common reservation, never onto the service stack
+; window pushes onto that common reservation, never onto the driver stack
 ; (fixed core, unmapped in mode 10), and the IRQ gate restores the
 ; interrupted latch exactly - mode, Q and P included - before its RETI
 ; (kernel/irq/entry.asm saves the full latch and normalizes only for
@@ -40,8 +40,8 @@
 ; -----------------------------------------------------------------------------
 
 	.module ipc_common
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 
 	.globl _ipc_ap_copy
 	.globl _ipc_ap_req, _ipc_ap_saved_latch, _ipc_ap_saved_sp
@@ -54,8 +54,8 @@ ipc_common_begin::
 ; ---------------------------------------------------------------------------
 ; uint16_t ipc_ap_copy(void);
 ;
-; Entry: SP on the service stack (mode 11), the request filled.  Exit: the
-; caller's latch restored, SP back on the service stack, length in DE.
+; Entry: SP on the driver stack (mode 11), the request filled.  Exit: the
+; caller's latch restored, SP back on the driver stack, length in DE.
 ; ---------------------------------------------------------------------------
 _ipc_ap_copy::
 	in	a,(ZOS_MEMCTL_PORT)	; the latch to come back to

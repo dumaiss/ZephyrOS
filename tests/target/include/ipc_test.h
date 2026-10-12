@@ -1,19 +1,19 @@
 /* ZephyrOS IPC acceptance test contract (test artifact).
  *
- * Shared by the six synthetic bank-6 services (tests/target/ipc), the
- * service images' boot manifests (tests/target/ipc/manifests) and the
+ * Shared by the six synthetic bank-6 drivers (tests/target/ipc), the
+ * driver images' boot manifests (tests/target/ipc/manifests) and the
  * client program (ipc.c).  It is the package-39 conformance protocol,
  * never the native ABI: the frame layout, syscall numbers and descriptor
- * conventions come from abi/zos/ipc.h and include/zephyros/ipc.h, and
- * every constant here belongs to the synthetic service set.
+ * conventions come from abi/zos/ipc.h and drivers/include/driver.h, and
+ * every constant here belongs to the synthetic driver set.
  *
  * The synthetic set is the spike's (work package 35): `echo` (the null
  * call), `con` (console-like), the `vfs -> fat -> ioc` chain (512-byte
- * chained reads, direct and staged) and `irqx` (the IRQ-owning service).
- * Since package 40 each one is a real service image: a hot segment
- * (_CODE), a boot segment (_BOOT/_BOOT_DATA) and its SERVICE_IO data
- * (_SERVICE_IO), packed by tools/zmodpack.py, listed in the boot manifest
- * and loaded by the nucleus service loader.
+ * chained reads, direct and staged) and `irqx` (the IRQ-owning driver).
+ * Since package 40 each one is a real driver image: a hot segment
+ * (_CODE), a boot segment (_BOOT/_BOOT_DATA) and its DRIVER_IO data
+ * (_DRIVER_IO), packed by tools/zmodpack.py, listed in the boot manifest
+ * and loaded by the nucleus driver loader.
  */
 
 #ifndef ZEPHYROS_TARGET_IPC_TEST_H
@@ -23,9 +23,9 @@
 #include "zos/types.h"
 
 /* --- endpoint classes --------------------------------------------------- */
-/* Test-only class range: 1-6 are the production service classes
+/* Test-only class range: 1-6 are the production driver classes
  * (abi/zos/protocol.h), and the IPC image boots the real SIO and console
- * services beside this synthetic set. */
+ * drivers beside this synthetic set. */
 
 #define IPC_CLASS_ECHO 16u
 #define IPC_CLASS_CON  17u
@@ -63,10 +63,10 @@
 #define IPC_OP_IRQX_COPY    3u /* arg1 = iterations; see the note below    */
 
 /* IRQX_COPY (correction 01): runs `arg1` descriptor copies (direction
- * IN, IRQX_COPY_BYTES long) into the service's own I/O buffer with the
+ * IN, IRQX_COPY_BYTES long) into the driver's own I/O buffer with the
  * timer armed on a short time constant, so a delivery lands inside a
  * path-B aperture window.  The reply is payload[0..1] = 16-bit sum of the
- * service buffer, payload[2] = deliveries, payload[3] = copies; returns 0
+ * driver buffer, payload[2] = deliveries, payload[3] = copies; returns 0
  * or a negated errno.  Clears the delivery counter, so the client's
  * absolute-count checks start from zero afterwards. */
 #define IRQX_COPY_BYTES 512u
@@ -75,7 +75,7 @@
 /* --- frame flags -------------------------------------------------------- */
 
 #define IPC_FRAME_STAGED 0x01u /* stage the block through the provider    */
-#define IPC_FRAME_SLOW_IO 0x02u /* service I/O buffer outside 8000h-BFFFh */
+#define IPC_FRAME_SLOW_IO 0x02u /* driver I/O buffer outside 8000h-BFFFh */
 #define IPC_FRAME_STREAM 0x04u /* the object is an executable stream      */
 
 /* --- block geometry ----------------------------------------------------- */
@@ -92,26 +92,26 @@
 
 /* --- placement ---------------------------------------------------------- */
 
-/* Service images are placed by the real loader (kernel/service/
- * service_loader.c) from the boot manifest: the hot segment in bank 6's
- * hot tier (6000h-DFFFh), the io segment in 8000h-BFFFh (the SERVICE_IO
+/* Driver images are placed by the real loader (kernel/driver/
+ * driver_loader.c) from the boot manifest: the hot segment in bank 6's
+ * hot tier (6000h-DFFFh), the io segment in 8000h-BFFFh (the DRIVER_IO
  * rule of 36.8), the boot segment in 0000h-5FFFh.  The loader reports each
  * placement on the early console; the replay pins the reported addresses
  * against the plan the packer prints. */
-#define IPC_SERVICE_IO_BASE 0x8000u
-#define IPC_SERVICE_IO_END 0xC000u
+#define IPC_DRIVER_IO_BASE 0x8000u
+#define IPC_DRIVER_IO_END 0xC000u
 
-/* The `con` service's deliberate out-of-range copy target: a buffer in its
+/* The `con` driver's deliberate out-of-range copy target: a buffer in its
  * own hot segment, which is outside 8000h-BFFFh, so the copy takes path C
  * and is counted as slow (correction 01 to architecture 36.8). */
 #define IPC_CON_SLOW_BYTES 256u
 
-/* The boot-segment run marker every synthetic service records in its own
+/* The boot-segment run marker every synthetic driver records in its own
  * boot-segment BSS: the replay reads it back to prove exactly one
  * execution. */
 #define IPC_BOOT_MAGIC 0xA7u
 
-/* The IRQ source the `irqx` service owns (enum irq_source_t: IRQ_CTC0). */
+/* The IRQ source the `irqx` driver owns (enum irq_source_t: IRQ_CTC0). */
 #define IPC_IRQ_CTC0 0u
 
 /* --- small helpers ------------------------------------------------------ */

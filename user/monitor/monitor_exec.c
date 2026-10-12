@@ -10,7 +10,7 @@
  * the VFS workspace's path view in the fixed core (work package 45b
  * correction 01): before that fix the path sat in bank-7 `_DATA`
  * (`0xC0DD`), inside the `6000h-DFFFh` region a bank-6 provider's window
- * replaces, so the `/FS` provider read the wrong bytes and the bind
+ * replaces, so the `/fs` provider read the wrong bytes and the bind
  * failed with EINVAL before any FS2 command.  See
  * `docs/validation/2026-10-11-m10-hardware-acceptance-correction-01.md`.
  *
@@ -66,12 +66,12 @@ void mon_cmd_exec(char *cursor)
 		return;
 	}
 
-	status = zos_exec(path, tail);
+	status = run(path, tail);
 	if (status < 0) {
 		zrt_status_err_code(status);
 		return;
 	}
-	zos_puts("exec: exit status 0x");
+	console_puts("exec: exit status 0x");
 	mon_put_hex16((unsigned int)status);
-	zos_puts("\r\n");
+	console_puts("\r\n");
 }

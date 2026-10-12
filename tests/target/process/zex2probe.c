@@ -24,7 +24,7 @@
 #include "process_selftest.h"
 
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
- * D7-D5 (platform/zephyr80/hardware.inc). */
+ * D7-D5 (platform/zephyr80/public/hardware.inc). */
 __sfr __at 0x00 latch_port;
 
 /* Uninitialized: the loader must zero this whole region. */
@@ -37,7 +37,7 @@ static const char ok_line[] = "zex2probe: OK\r\n";
 
 static void z2_fail(unsigned char code)
 {
-	zex_exit(ZOS_PCST_ZEX2_FAIL | code);
+	exit(ZOS_PCST_ZEX2_FAIL | code);
 }
 
 int main(void)
@@ -47,7 +47,7 @@ int main(void)
 	struct zos_info_record info;
 	unsigned char i;
 
-	if (zex_getinfo(&info) != ZOS_GETINFO_SIZE) {
+	if (getinfo(&info) != ZOS_GETINFO_SIZE) {
 		z2_fail(ZOS_PCST_Z2_FAIL_GETINFO);
 	}
 	for (i = 0; i < (unsigned char)sizeof(bss_probe); ++i) {
@@ -69,7 +69,7 @@ int main(void)
 	    mark[3] != ZOS_PCST_ZEX2_MARK_3) {
 		z2_fail(ZOS_PCST_Z2_FAIL_MARK);
 	}
-	(void)zex_write(ok_line, (unsigned int)(sizeof(ok_line) - 1u));
-	zex_exit(ZOS_PCST_ZEX2_PASS | info.bank);
+	(void)console_write(ok_line, (unsigned int)(sizeof(ok_line) - 1u));
+	exit(ZOS_PCST_ZEX2_PASS | info.bank);
 	return 0; /* unreachable */
 }

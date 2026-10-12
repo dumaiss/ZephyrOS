@@ -1,8 +1,8 @@
 /* ZephyrOS fixed-core IPC substrate (kernel/ipc, architecture 36.5-36.10).
  *
- * Promoted from the package-35 resident-service spike (work package 39).
+ * Promoted from the package-35 resident-driver spike (work package 39).
  * Everything here is compiled into the fixed core and executes, or is
- * touched, while the mode-11 window shows bank 6 (the resident service
+ * touched, while the mode-11 window shows bank 6 (the resident driver
  * domain):
  *
  *   - the endpoint table: the host-assigned number, class/instance,
@@ -21,21 +21,21 @@
  *     bounds checked on every use.  The resolver picks one of three
  *     paths per request (correction 01 to architecture 36.8):
  *     A - caller window or common: one LDIR in mode 11, as promoted;
- *     B - the service buffer is in bank 6's 8000h-BFFFh and the caller
+ *     B - the driver buffer is in bank 6's 8000h-BFFFh and the caller
  *         buffer is in the caller's own bank outside that range: one
  *         LDIR in mode 10 with P = 1 over the caller's bank, run from
  *         common memory (kernel/ipc/ipc_common.asm), aperture up;
- *     C - everything else, including a service buffer outside
+ *     C - everything else, including a driver buffer outside
  *         8000h-BFFFh: chunked through the common-resident zos_bank_copy
  *         gate, counted as slow;
  *   - the nesting limit, re-entrancy refusal and the same-domain fast
  *     path;
  *   - the IRQ trampoline: the nucleus keeps the IM2 vectoring, the ISR
- *     stack and the final RETI; the service handler runs in the owner's
+ *     stack and the final RETI; the driver handler runs in the owner's
  *     window on the nucleus ISR stack with the restricted API (no IPC).
  *
- * The loader that places service images is not here: it is the cold
- * nucleus loader (kernel/service/service_loader.c), which reaches bank 6
+ * The loader that places driver images is not here: it is the cold
+ * nucleus loader (kernel/driver/driver_loader.c), which reaches bank 6
  * through the upcall shim and the copy primitives, so no loader stays in
  * the fixed core.
  *
@@ -46,11 +46,11 @@
 
 #include "zos/ipc.h"
 #include "zos/syscall.h"
-#include "zephyros/errno.h"
-#include "zephyros/irq.h"
-#include "zephyros/kernel.h"
-#include "zephyros/platform.h"
-#include "zephyros/process.h"
+#include "zos/errno.h"
+#include "irq_types.h"
+#include "kernel.h"
+#include "platform.h"
+#include "process.h"
 
 #include "kernel/ipc/ipc.h"
 
@@ -77,13 +77,13 @@ uint8_t zos_bank_copy(const struct zos_bank_copy_req *req);
 extern uint8_t zos_user_copy_staging[];
 
 /* Revision-13 page values (architecture 36.2): page 1 shows bank 6, the
- * resident service domain; page 0 is the nucleus's own cold half.  The
+ * resident driver domain; page 0 is the nucleus's own cold half.  The
  * upcall header owns these constants and ipc_asm.asm reads the same
  * platform constants. */
-#define IPC_SERVICE_PAGE_BITS \
-	(uint8_t)(ZOS_UPCALL_PAGE_SERVICE << ZOS_ROM_PAGE_SHIFT)
+#define IPC_DRIVER_PAGE_BITS \
+	(uint8_t)(ZOS_UPCALL_PAGE_DRIVER << ZOS_ROM_PAGE_SHIFT)
 #define IPC_NUCLEUS_PAGE_BITS 0u
-#define IPC_SERVICE_BANK (ZOS_BANK_MASK - ZOS_UPCALL_PAGE_SERVICE)
+#define IPC_DRIVER_BANK (ZOS_BANK_MASK - ZOS_UPCALL_PAGE_DRIVER)
 
 /* The mode-10 far aperture (architecture 36.17): with a nonzero page the
  * caller's 8000h-BFFFh names bank 7 - P, not the primary bank. */
@@ -93,20 +93,20 @@ extern uint8_t zos_user_copy_staging[];
 /* Path B installs mode 10 with the caller's bank and page 1 (architecture
  * 36.2: page 1 shows bank 6).  Applications never receive a token for
  * that page; the aperture is nucleus-internal. */
-#define IPC_APERTURE_PAGE_BITS IPC_SERVICE_PAGE_BITS
+#define IPC_APERTURE_PAGE_BITS IPC_DRIVER_PAGE_BITS
 
-/* Service I/O buffers (correction 01 to architecture 36.8): the sources
- * and targets a service names in copy_in/copy_out - I/O buffers, caches,
+/* Driver I/O buffers (correction 01 to architecture 36.8): the sources
+ * and targets a driver names in copy_in/copy_out - I/O buffers, caches,
  * staging - live in bank 6's 8000h-BFFFh, the one bank-6 range the
  * mode-11 window and the mode-10 aperture both show at the same address.
- * A service address outside it is still copied, through the chunked
+ * A driver address outside it is still copied, through the chunked
  * path, and counted as slow. */
-#define IPC_SERVICE_IO_BASE IPC_APERTURE_BASE
-#define IPC_SERVICE_IO_END  IPC_APERTURE_END
+#define IPC_DRIVER_IO_BASE IPC_APERTURE_BASE
+#define IPC_DRIVER_IO_END  IPC_APERTURE_END
 
 /* Frames and descriptors are bounded tables in fixed data.  The endpoint
  * table holds one record per endpoint of the image's whole boot set plus
- * the nucleus FILE provider: production declares six services and the IPC
+ * the nucleus FILE provider: production declares six drivers and the IPC
  * acceptance image declares eight, so the capacity keeps headroom over
  * the largest set an image builds. */
 #define IPC_ENDPOINT_MAX 12u
@@ -130,10 +130,10 @@ static uint8_t endpoint_count;
 /* The boot bundle the loader hands a driver's init (fixed core, so the
  * driver's window always shows it): the API table and the resolved
  * dependency numbers of the image being brought up. */
-uint8_t zos_service_deps[ZOS_IPC_SERVICE_MAX_DEPS];
+uint8_t zos_driver_deps[ZOS_IPC_DRIVER_MAX_DEPS];
 
 /* The endpoint being dispatched at each call level: api_bulk_read resolves
- * the calling service from the innermost entry (services register one
+ * the calling driver from the innermost entry (drivers register one
  * bulk extent each). */
 static const struct ipc_endpoint *call_owner[ZOS_IPC_MAX_NESTING];
 
@@ -163,7 +163,7 @@ uint16_t ipc_copy_window;
 uint16_t ipc_copy_aperture;
 uint16_t ipc_copy_slow;
 
-/* IRQ ownership state (one service handler per source in M10). */
+/* IRQ ownership state (one driver handler per source in M10). */
 static uint16_t irq_handler_entry;
 static uint16_t irq_handler_context;
 static uint8_t irq_handler_page;
@@ -171,7 +171,7 @@ static uint8_t ipc_irq_active;
 
 /* --- copy path helpers -------------------------------------------------- */
 
-static uint8_t in_service_window(uint16_t addr, uint16_t length)
+static uint8_t in_driver_window(uint16_t addr, uint16_t length)
 {
 	return (uint8_t)(length != 0u && addr >= ZOS_REV13_WINDOW_BASE &&
 			 (uint16_t)(addr + length) <= ZOS_BANK7_RUNTIME_END);
@@ -193,11 +193,11 @@ static uint8_t in_common(uint16_t addr, uint16_t length)
 			 (uint32_t)addr + length <= 0x10000u);
 }
 
-/* The service's own I/O range: bank 6's 8000h-BFFFh. */
-static uint8_t in_service_io(uint16_t addr, uint16_t length)
+/* The driver's own I/O range: bank 6's 8000h-BFFFh. */
+static uint8_t in_driver_io(uint16_t addr, uint16_t length)
 {
-	return (uint8_t)(length != 0u && addr >= IPC_SERVICE_IO_BASE &&
-			 (uint16_t)(addr + length) <= IPC_SERVICE_IO_END);
+	return (uint8_t)(length != 0u && addr >= IPC_DRIVER_IO_BASE &&
+			 (uint16_t)(addr + length) <= IPC_DRIVER_IO_END);
 }
 
 /* A caller range that overlaps the aperture block cannot be shown while
@@ -251,12 +251,12 @@ static uint8_t bank_transfer(uint8_t bank, uint8_t op, uint16_t addr,
 
 /* Chunked transfer through the common staging buffer, used by path C -
  * a caller buffer behind the aperture, an aperture-resolved far bank, or
- * a service buffer outside 8000h-BFFFh.  The caller's bank is read and
- * written through zos_bank_copy; the service side goes through the
+ * a driver buffer outside 8000h-BFFFh.  The caller's bank is read and
+ * written through zos_bank_copy; the driver side goes through the
  * window LDIR when it lies inside the mode-11 bank-6 range and through
  * zos_bank_copy(bank 6) otherwise. */
 static int16_t copy_staged(uint8_t bank, uint16_t caller_addr,
-			   uint16_t service_addr, uint16_t length,
+			   uint16_t driver_addr, uint16_t length,
 			   uint8_t dir)
 {
 	uint16_t done = 0u;
@@ -264,7 +264,7 @@ static int16_t copy_staged(uint8_t bank, uint16_t caller_addr,
 	while (done < length) {
 		uint16_t chunk = (uint16_t)(length - done);
 		uint16_t caller = (uint16_t)(caller_addr + done);
-		uint16_t service = (uint16_t)(service_addr + done);
+		uint16_t driver = (uint16_t)(driver_addr + done);
 
 		if (chunk > ZOS_SYSCALL_STAGE_SIZE) {
 			chunk = ZOS_SYSCALL_STAGE_SIZE;
@@ -274,24 +274,24 @@ static int16_t copy_staged(uint8_t bank, uint16_t caller_addr,
 					  chunk) != 0u) {
 				return -ZOS_EINVAL;
 			}
-			if (in_service_window(service, chunk)) {
+			if (in_driver_window(driver, chunk)) {
 				ipc_copy_req[0] = (uint16_t)zos_user_copy_staging;
-				ipc_copy_req[1] = service;
+				ipc_copy_req[1] = driver;
 				ipc_copy_req[2] = chunk;
 				(void)ipc_copy_run();
-			} else if (bank_transfer(IPC_SERVICE_BANK,
-						 ZOS_BANK_OP_WRITE, service,
+			} else if (bank_transfer(IPC_DRIVER_BANK,
+						 ZOS_BANK_OP_WRITE, driver,
 						 chunk) != 0u) {
 				return -ZOS_EINVAL;
 			}
 		} else {
-			if (in_service_window(service, chunk)) {
-				ipc_copy_req[0] = service;
+			if (in_driver_window(driver, chunk)) {
+				ipc_copy_req[0] = driver;
 				ipc_copy_req[1] = (uint16_t)zos_user_copy_staging;
 				ipc_copy_req[2] = chunk;
 				(void)ipc_copy_run();
-			} else if (bank_transfer(IPC_SERVICE_BANK,
-						 ZOS_BANK_OP_READ, service,
+			} else if (bank_transfer(IPC_DRIVER_BANK,
+						 ZOS_BANK_OP_READ, driver,
 						 chunk) != 0u) {
 				return -ZOS_EINVAL;
 			}
@@ -306,13 +306,13 @@ static int16_t copy_staged(uint8_t bank, uint16_t caller_addr,
 }
 
 /* One checked descriptor copy: the offset and length against the captured
- * descriptor, the direction against the capture, and the service address
- * against the service window (or the owner's bank through the copy gate).
+ * descriptor, the direction against the capture, and the driver address
+ * against the driver window (or the owner's bank through the copy gate).
  *
  * Correction 01 to architecture 36.8: the promoted single LDIR was only
  * valid for a caller buffer in the mode-11 caller window.  The resolver
  * now selects one of three paths per request (see the module header). */
-static int16_t copy_move(const struct ipc_desc *desc, uint16_t service_addr,
+static int16_t copy_move(const struct ipc_desc *desc, uint16_t driver_addr,
 			 uint16_t offset, uint16_t length, uint8_t dir)
 {
 	uint16_t caller_addr;
@@ -324,16 +324,16 @@ static int16_t copy_move(const struct ipc_desc *desc, uint16_t service_addr,
 	}
 	caller_addr = (uint16_t)(desc->addr + offset);
 	caller_bank = desc_bank(desc);
-	if (in_service_io(service_addr, length)) {
+	if (in_driver_io(driver_addr, length)) {
 		if (in_caller_window(caller_addr, length) ||
 		    in_common(caller_addr, length)) {
-			/* Path A: both sides visible in the service
+			/* Path A: both sides visible in the driver
 			 * mapping, which is mode 11 (one LDIR). */
 			if (dir == ZOS_IPC_DESC_IN) {
 				ipc_copy_req[0] = caller_addr;
-				ipc_copy_req[1] = service_addr;
+				ipc_copy_req[1] = driver_addr;
 			} else {
-				ipc_copy_req[0] = service_addr;
+				ipc_copy_req[0] = driver_addr;
 				ipc_copy_req[1] = caller_addr;
 			}
 			ipc_copy_req[2] = length;
@@ -348,18 +348,18 @@ static int16_t copy_move(const struct ipc_desc *desc, uint16_t service_addr,
 			 * bank and clear of the aperture block, so mode 10
 			 * over that bank with P = 1 shows the caller
 			 * everywhere but 8000h-BFFFh, where it shows the
-			 * service's bank 6 - one LDIR, exactly restored. */
+			 * driver's bank 6 - one LDIR, exactly restored. */
 			ipc_ap_req[0] = (uint8_t)(ZOS_MODE_APPLICATION |
 						  IPC_APERTURE_PAGE_BITS |
 						  caller_bank);
 			if (dir == ZOS_IPC_DESC_IN) {
 				ipc_ap_req[1] = (uint8_t)caller_addr;
 				ipc_ap_req[2] = (uint8_t)(caller_addr >> 8);
-				ipc_ap_req[3] = (uint8_t)service_addr;
-				ipc_ap_req[4] = (uint8_t)(service_addr >> 8);
+				ipc_ap_req[3] = (uint8_t)driver_addr;
+				ipc_ap_req[4] = (uint8_t)(driver_addr >> 8);
 			} else {
-				ipc_ap_req[1] = (uint8_t)service_addr;
-				ipc_ap_req[2] = (uint8_t)(service_addr >> 8);
+				ipc_ap_req[1] = (uint8_t)driver_addr;
+				ipc_ap_req[2] = (uint8_t)(driver_addr >> 8);
 				ipc_ap_req[3] = (uint8_t)caller_addr;
 				ipc_ap_req[4] = (uint8_t)(caller_addr >> 8);
 			}
@@ -371,11 +371,11 @@ static int16_t copy_move(const struct ipc_desc *desc, uint16_t service_addr,
 	}
 	/* Path C: a caller buffer behind the aperture or outside the
 	 * primary bank, an aperture-resolved far bank (P != 0 at capture,
-	 * the package-43 resolution hook), or a service buffer outside
+	 * the package-43 resolution hook), or a driver buffer outside
 	 * 8000h-BFFFh.  Chunked through the common-resident bank copy
 	 * gate; counted as slow. */
 	++ipc_copy_slow;
-	return copy_staged(caller_bank, caller_addr, service_addr, length,
+	return copy_staged(caller_bank, caller_addr, driver_addr, length,
 			   dir);
 }
 
@@ -437,7 +437,7 @@ static int8_t desc_capture(uint8_t latch, uint16_t addr, uint16_t length,
 }
 
 /* A descriptor id is valid only for calls deeper than its capture level:
- * the caller's ids stay live down the chain, and no service can name a
+ * the caller's ids stay live down the chain, and no driver can name a
  * descriptor of its own level or a forged id. */
 static struct ipc_desc *desc_lookup(uint8_t id)
 {
@@ -516,7 +516,7 @@ static uint8_t nucleus_call_handle;
 static uint8_t nucleus_call_object;
 
 static int16_t ipc_call_endpoint(uint8_t number, struct zos_ipc_frame *frame);
-static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t service_addr,
+static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t driver_addr,
 			uint16_t length, uint8_t dir);
 
 /* Invoke one driver dispatch entry: open the owner's domain when crossing
@@ -527,7 +527,7 @@ static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t service_addr,
 static int16_t invoke_endpoint(const struct ipc_endpoint *ep,
 			       struct zos_ipc_frame *frame, uint8_t nested)
 {
-	uint8_t page = IPC_SERVICE_PAGE_BITS;
+	uint8_t page = IPC_DRIVER_PAGE_BITS;
 	int16_t result;
 
 	/* An in-process endpoint: the dispatch entry is a bank-7 function
@@ -656,7 +656,7 @@ int16_t ipc_call_object(uint8_t endpoint, uint8_t object, uint8_t handle,
 
 /* Descriptor copy for a nucleus endpoint: the staged bytes in the common
  * staging block land in the caller buffer through the same checked copy
- * resolver a bank-6 service uses. */
+ * resolver a bank-6 driver uses. */
 int16_t ipc_nucleus_copy_out(uint8_t desc, uint16_t offset, uint16_t length)
 {
 	return api_copy(desc, offset, (uint16_t)zos_user_copy_staging, length,
@@ -786,9 +786,9 @@ int16_t ipc_nucleus_call_common(uint8_t handle, struct zos_ipc_frame *frame,
 				     dir);
 }
 
-/* --- the service bootstrap interface ------------------------------------ */
+/* --- the driver bootstrap interface ------------------------------------ */
 
-static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t service_addr,
+static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t driver_addr,
 			uint16_t length, uint8_t dir)
 {
 	struct ipc_desc *desc;
@@ -800,17 +800,17 @@ static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t service_addr,
 	if (desc == (struct ipc_desc *)0 || desc->dir != dir) {
 		return -ZOS_EINVAL;
 	}
-	return copy_move(desc, service_addr, offset, length, dir);
+	return copy_move(desc, driver_addr, offset, length, dir);
 }
 
-static int16_t api_call(uint8_t handle, uint8_t op,
+static int16_t api_call(uint8_t dependency_ref, uint8_t op,
 			struct zos_ipc_frame *frame)
 {
 	if (ipc_irq_active) {
 		return -ZOS_EBUSY;
 	}
 	frame->op = op;
-	return ipc_call_endpoint(handle, frame);
+	return ipc_call_endpoint(dependency_ref, frame);
 }
 
 static int16_t api_copy_in(uint8_t desc, uint16_t offset, uint16_t dst,
@@ -830,7 +830,7 @@ static int16_t api_move(uint16_t src, uint16_t dst, uint16_t length)
 	if (ipc_irq_active) {
 		return -ZOS_EBUSY;
 	}
-	if (!in_service_window(src, length) || !in_service_window(dst, length)) {
+	if (!in_driver_window(src, length) || !in_driver_window(dst, length)) {
 		return -ZOS_EINVAL;
 	}
 	ipc_copy_req[0] = src;
@@ -839,11 +839,11 @@ static int16_t api_move(uint16_t src, uint16_t dst, uint16_t length)
 	return (int16_t)ipc_copy_run();
 }
 
-/* Architecture 36.6: a service's bulk data lives in bank 6's boot/bulk
+/* Architecture 36.6: a driver's bulk data lives in bank 6's boot/bulk
  * tier (0000h-5FFFh), which the mode-11 window never shows; it is reached
  * only through a nucleus copy.  `base`/`size` were registered with the
- * calling service's endpoints by the loader, so the copy is bound to the
- * service that owns the current dispatch.  The transfer installs the
+ * calling driver's endpoints by the loader, so the copy is bound to the
+ * driver that owns the current dispatch.  The transfer installs the
  * mode-10 mapping over bank 6 (P = 0, so 0000h-DFFFh all show bank 6) and
  * runs one LDIR from the bulk extent into the caller's own window buffer,
  * through the same common-resident primitive path B uses. */
@@ -862,14 +862,14 @@ static int16_t api_bulk_read(uint16_t offset, uint16_t dst, uint16_t length)
 	if (owner->bulk_size == 0u || length == 0u ||
 	    offset > owner->bulk_size ||
 	    length > (uint16_t)(owner->bulk_size - offset) ||
-	    !in_service_window(dst, length)) {
+	    !in_driver_window(dst, length)) {
 		return -ZOS_EINVAL;
 	}
 	src = (uint16_t)(owner->bulk_base + offset);
 	if ((uint32_t)src + length > ZOS_REV13_WINDOW_BASE) {
 		return -ZOS_EINVAL;
 	}
-	ipc_ap_req[0] = (uint8_t)(ZOS_MODE_APPLICATION | IPC_SERVICE_BANK);
+	ipc_ap_req[0] = (uint8_t)(ZOS_MODE_APPLICATION | IPC_DRIVER_BANK);
 	ipc_ap_req[1] = (uint8_t)src;
 	ipc_ap_req[2] = (uint8_t)(src >> 8);
 	ipc_ap_req[3] = (uint8_t)dst;
@@ -899,14 +899,14 @@ static int8_t api_console_getc(void)
 	return (int8_t)ipc_sio_data;
 }
 
-/* --- IRQ ownership: nucleus vectoring, service handler ------------------- */
+/* --- IRQ ownership: nucleus vectoring, driver handler ------------------- */
 
 /* Fixed trampoline: entered from the IRQ executive on the ISR stack with
  * the interrupted latch saved in the IRQ gate's own slot.  It opens the
- * owner's window, runs the service handler there (restricted API: no IPC),
+ * owner's window, runs the driver handler there (restricted API: no IPC),
  * and re-selects the nucleus page; the executive restores the interrupted
  * latch exactly and executes the final RETI.  The call's own saved latch
- * (ipc_domain_enter/exit) is never touched, so an IRQ during a service
+ * (ipc_domain_enter/exit) is never touched, so an IRQ during a driver
  * call cannot corrupt the call's epilogue. */
 static void ipc_irq_trampoline(void *context)
 {
@@ -933,7 +933,7 @@ static int8_t api_irq_claim(uint8_t source, uint16_t handler,
 	}
 	irq_handler_entry = handler;
 	irq_handler_context = context;
-	irq_handler_page = IPC_SERVICE_PAGE_BITS;
+	irq_handler_page = IPC_DRIVER_PAGE_BITS;
 	if (irq_claim((irq_source_t)source, ipc_irq_trampoline,
 		      (void *)0) != IRQ_OK) {
 		irq_handler_entry = 0u;
@@ -952,7 +952,7 @@ static int8_t api_irq_release(uint8_t source)
 	return 0;
 }
 
-static const struct ipc_service_api ipc_api = {
+static const struct driver_api ipc_api = {
 	api_call,
 	api_copy_in,
 	api_copy_out,
@@ -969,17 +969,17 @@ static const struct ipc_service_api ipc_api = {
  * the fixed core, which stays visible while the driver's window shows
  * bank 6; the loader reads the pointer here before it hands it to the
  * upcall shim, so it crosses no bank by itself. */
-static struct ipc_service_boot service_boot = {
+static struct driver_boot driver_boot_bundle = {
 	&ipc_api,
-	zos_service_deps,
+	zos_driver_deps,
 };
 
 /* The boot bundle a driver init entry receives in HL; the loader installs
- * the resolved dependency numbers into zos_service_deps before each init
+ * the resolved dependency numbers into zos_driver_deps before each init
  * (architecture 36.11). */
-const struct ipc_service_boot *ipc_service_boot(void)
+const struct driver_boot *driver_boot(void)
 {
-	return &service_boot;
+	return &driver_boot_bundle;
 }
 
 /* --- syscall entry ------------------------------------------------------- */

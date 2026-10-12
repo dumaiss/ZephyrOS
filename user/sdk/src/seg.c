@@ -3,7 +3,7 @@
  * The argument blocks are marshalled through the shared low-window
  * scratch union (zos_internal.h) and the raw gate stub
  * (user/sdk/src/ipcgate.asm), exactly like the extended-memory family.
- * `zos_far_call` is the far-call helper (architecture 36.17): map the
+ * `farcall` is the far-call helper (architecture 36.17): map the
  * segment, write the token to the memory-control port, make the plain
  * CALL and restore the previous latch.
  */
@@ -11,7 +11,7 @@
 #include "zos.h"
 #include "zos_internal.h"
 
-int zos_seg_info(unsigned int segment, struct zos_seg_info *out)
+int seginfo(unsigned int segment, struct zos_seg_info *out)
 {
 	if (segment > 0xFFu || out == (struct zos_seg_info *)0) {
 		return -ZOS_EINVAL;
@@ -22,7 +22,7 @@ int zos_seg_info(unsigned int segment, struct zos_seg_info *out)
 	return zos_ipc_raw(ZOS_SYSCALL_SEG_INFO, &zos_scratch.seg_info);
 }
 
-int zos_seg_map(unsigned int segment)
+int segmap(unsigned int segment)
 {
 	if (segment > 0xFFu) {
 		return -ZOS_EINVAL;
@@ -32,7 +32,7 @@ int zos_seg_map(unsigned int segment)
 	return zos_ipc_raw(ZOS_SYSCALL_SEG_MAP, &zos_scratch.seg_map);
 }
 
-int zos_far_call(unsigned int segment, zos_far_fn entry, int a, int b)
+int farcall(unsigned int segment, zos_far_fn entry, int a, int b)
 {
 	int token;
 	unsigned char saved;
@@ -40,12 +40,12 @@ int zos_far_call(unsigned int segment, zos_far_fn entry, int a, int b)
 	if (entry == (zos_far_fn)0) {
 		return -ZOS_EINVAL;
 	}
-	token = zos_seg_map(segment);
+	token = segmap(segment);
 	if (token < 0) {
 		return token;
 	}
-	saved = zos_aperture_open((unsigned char)token);
+	saved = aperture_open((unsigned char)token);
 	a = entry(a, b);
-	zos_aperture_close(saved);
+	aperture_close(saved);
 	return a;
 }

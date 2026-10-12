@@ -20,7 +20,7 @@ image was re-run on the bench the same day, where the extended suite printed
 section 32.39 ledger.
 
 **M9 close (work package 31, 2026-10-05).** Package 30 added the resident
-IOC-FAT provider (`fs/iocfat/`) mounted at `/` from `ioc.0`, with its
+IOC-FAT provider (`drivers/iocfat/`) mounted at `/` from `ioc.0`, with its
 one-slot write-through 512-byte file-data cache and the FS2 status mapping
 of `work/M9-REFERENCE.md`; package 30c then reclaimed a bank-7 granule
 (dead-code removal, one shared ASCII name helper, the common-memory ceiling
@@ -38,8 +38,8 @@ bytes of total slack against the 1 KiB floor).
 records - the generated mount table, the provider ABI with its
 registration path, the VFS file/directory/mutation API and the `FS_*`
 syscall front end - is **deleted**.  Section 13 is the current model: VFS
-owns three static roots (`/FS`, `/SYSTEM`, `/dev`), the filesystem driver
-is a resident service image publishing `/FS`, and there is no mount table
+owns three static roots (`/fs`, `/system`, `/dev`), the filesystem driver
+is a resident driver image publishing `/fs`, and there is no mount table
 and no registry.  Package 42c then removed the driver ABI and the
 provider ops-table interface, so nothing provider-facing is exported to
 an image any more.  Sections 1-12 are kept as the M9 implementation
@@ -47,7 +47,7 @@ record; section 13 is normative together with architecture 36.13.
 
 This document records the implementation of the M9 bootstrap slice:
 the kernel VFS core, the generated static mount table, and the ROMFS
-filesystem provider mounted at `/SYSTEM` before any module loads.
+filesystem provider mounted at `/system` before any module loads.
 Architecture sections 32.1-32.14, 32.32 and 32.33 are the normative
 description; `docs/filesystem.md` is the M9 filesystem design and
 `work/M9-REFERENCE.md` pins the ABI values.  This document adds only the
@@ -59,7 +59,7 @@ leaves to later packages.
 Implemented here:
 
 ```text
-vfs_init()            register the built-in provider set, mount /SYSTEM
+vfs_init()            register the built-in provider set, mount /system
 module phase          boot ZMODs and the monitor load by VFS path
 vfs_mount_all()       instantiate the remaining configured mounts
 VFS_PHASE_READY       namespace fixed; kernel file/dir API available
@@ -90,9 +90,9 @@ Three headers, with a deliberate visibility split:
 | `abi/zos/fs.h` | native applications and syscalls | `ZOS_PATH_MAX` (128), `ZFS_NAME_MAX` (64), `ZFS_TYPE_*`, `ZFS_ATTR_*`, `ZFS_TIME_UNKNOWN`, `struct zfs_stat` (16 bytes), `struct zfs_dirent` (80 bytes), `ZFS_O_*`, `ZFS_SEEK_*`.  There is no `zfs_statfs`. |
 | `kernel/vfs/vfs.h` | kernel only | the three static roots, path helpers, the handle table, the CWD/workspace state, `VFS_O_EXEC` |
 
-The M9 `include/zephyros/vfs.h` (a module-facing provider ABI) was
-**deleted in M10**: no image exports provider operations, because a
-filesystem driver is reached as a service endpoint instead.  What remains
+The M9 module-facing provider ABI (`vfs.h`) was **deleted in M10**: no
+image exports provider operations, because a
+filesystem driver is reached as a driver endpoint instead.  What remains
 is pinned by `_Static_assert` and by host tests.
 
 Providers are **path-based**.  Handles (`fs`, `file`, `dir`) are opaque
@@ -117,16 +117,18 @@ operation into `ZOS_EROFS` in one place.
 Current layout (M10, work packages 42b/42c):
 
 ```text
-kernel/vfs/ns.c              the root router, the DEVICE provider over the
-                             publication table, enumeration
-kernel/vfs/ns_file.c         the ROMFS FILE provider (`/SYSTEM`)
+kernel/vfs/router.c          the root router, enumeration
+kernel/vfs/dev.c             the DEVICE provider over the publication
+                             table
+kernel/vfs/fs.c              the `/fs` forwarding provider
+kernel/vfs/system.c          the ROMFS FILE provider (`/system`)
 kernel/vfs/path.c            normalization + case-insensitive compare
-kernel/vfs/process.c         the handle table, per-process CWD slots
+kernel/vfs/handles.c         the handle table, per-process CWD slots
 kernel/vfs/workspace.c       the per-process workspace/copy state
 kernel/romfs/romfs.c         the one ROMFS reader (fixed core)
-fs/iocfat/iocfat.c           the FS service image's provider body
-kernel/service/service_loader.c  places the images and installs the
-                             publications (`/FS`, `/dev` names)
+drivers/iocfat/iocfat.c           the FS driver image's provider body
+kernel/driver/driver_loader.c  places the images and installs the
+                             publications (`/fs`, `/dev` names)
 ```
 
 Deleted in M10 (42b/42c): `kernel/vfs/mount_config.h`,
@@ -157,7 +159,7 @@ exact); ZephyrOS performs no Unicode folding.
 Selection is **flat** (architecture section 32.8) and uses only `MOUNTED`
 entries.  The first path component is compared case-insensitively with
 the mounted root-level mountpoints (a configured path is `/` or one
-component, section 32.6), so `/SYSTEMX` does **not** select `/SYSTEM`.
+component, section 32.6), so `/SYSTEMX` does **not** select `/system`.
 When no root-level mountpoint matches, the filesystem attached at `/`
 owns the path.  With neither, the path is unowned and resolution reports
 `ZOS_ENODEV`.
@@ -165,7 +167,7 @@ owns the path.  With neither, the path is unowned and resolution reports
 The result is the mount index plus the provider-relative path, which
 always begins with `/` (a mountpoint itself resolves to `"/"`).  There is
 no longest-match search and no per-component walk: `VFS` hands
-`/SYSTEM/sio.zmod` to the provider as the single path `/sio.zmod`.
+`/system/sio.zmod` to the provider as the single path `/sio.zmod`.
 
 `vfs_is_mountpoint()` reports whether a normalized path is a configured,
 mounted mountpoint (or `/` itself).  VFS answers `stat()` for those paths
@@ -180,7 +182,7 @@ discipline).
 ## 5. Lifecycle and boot integration
 
 > **Retired (M10, work packages 42b/42c).**  The M9 lifecycle - four VFS
-> phases, a provider lookup by name, one `vfs_open("/SYSTEM/<name>.zmod")`
+> phases, a provider lookup by name, one `vfs_open("/system/<name>.zmod")`
 > per boot module through the VFS and a mount pass at the end - is
 > deleted.  The current order is the boot path of architecture 36.12:
 >
@@ -189,11 +191,11 @@ discipline).
 >   irq_init()
 >   vfs_init()                       the three static roots, the ROMFS
 >                                    reader and the handle table
->   service_load_all("services.man") the service loader places the
+>   driver_load_all("drivers.man") the driver loader places the
 >                                    images, installs the publications,
 >                                    runs the boot and init entries
 >   console_bind_defaults()
->   process_exec("/SYSTEM/monitor.zex")
+>   process_exec("/system/monitor.zex")
 > ```
 >
 > The loader reads the store with the fixed-core ROMFS reader, so the
@@ -213,10 +215,10 @@ kernel_main()
       register built-ins (romfs)
       find the unique system mount entry (panic if not exactly one)
       provider lookup by name, ops->mount(source = "recovery")
-  load the boot images from /SYSTEM/<name>.zmod through the VFS
+  load the boot images from /system/<name>.zmod through the VFS
   the mount pass            the remaining configured mounts
   console_bind_defaults()
-  process_exec("/SYSTEM/monitor.zex")
+  process_exec("/system/monitor.zex")
 ```
 
 ## 6. Kernel file and directory API
@@ -281,9 +283,9 @@ with `ZOS_ENOSPC` because the source interface is 16-bit.
 > **Retired (M10, work packages 42b/42c).**  The M9 path-based ROMFS
 > *provider* is deleted; the reader itself stays.  Today `kernel/romfs/
 > romfs.c` is the one reader, it is **fixed core** (package 38) and it
-> serves two callers: `/SYSTEM` reads through `kernel/vfs/ns_file.c` as an
-> in-process `FILE` endpoint, and the service loader reads
-> `services.man` and the image containers through it.
+> serves two callers: `/system` reads through `kernel/vfs/system.c` as an
+> in-process `FILE` endpoint, and the driver loader reads
+> `drivers.man` and the image containers through it.
 
 The M9 record: the provider exposed the unchanged M5 reader through the
 path-based operations table, and the on-ROM format, the ROM-access
@@ -339,14 +341,14 @@ committed.
 
 ```c
 const struct vfs_mount_config vfs_mount_table[] = {
-    { "/SYSTEM", 7u, "romfs", "recovery", VFS_MOUNT_SYSTEM   },
+    { "/system", 7u, "romfs", "recovery", VFS_MOUNT_SYSTEM   },
     { "/",       1u, "iocfat", "ioc.0",   VFS_MOUNT_OPTIONAL },
 };
 const uint8_t vfs_mount_count = 2u;
 ```
 
 The production `/` is optional: an absent or unreadable SD card makes only
-that mount fail, `vfs: / unavailable 0xNN` is reported, and `/SYSTEM` plus
+that mount fail, `vfs: / unavailable 0xNN` is reported, and `/system` plus
 the console keep working (architecture sections 32.34 and 32.39).
 
 The table links into the ROM-loaded bank-7 kernel image as `const`
@@ -497,9 +499,9 @@ machinery they covered; the current coverage is section 13's and
 | the provider ABI is exactly the 14 path-based operations of section 32.12, in order, with no node/`object_id`/`statfs`/`unmount` remnant | `tests/test_m9_vfs.py` (`TestProviderAbiShape`: operation list, signatures, absence checks, `ZFS_OPS_COUNT`) |
 | generator rules, determinism, every rejection | `tests/test_m9_vfs.py` (`test_mountgen.py` cases), all `tests/m9` manifests |
 | built-in list == `ZOS_VFS_BUILTIN` | `tests/test_m9_vfs.py` |
-| `/SYSTEM` mounted before any module loads; every boot ZMOD and the monitor loaded by VFS path | `tests/test_m9_vfs_sim.py` (real linked bytes, boot transcript + monitor handoff) |
-| flat mount selection: `/SYSTEMX` must not match `/SYSTEM` | `tests/test_m9_vfs_sim.py` (`test_flat_mount_selection_in_the_linked_kernel`, direct kernel-API call on linked bytes) + the target selftest's FLAT case |
-| normalization, case-insensitive resolution, per-entry stat/read byte-compared with the packed files, `/SYSTEM` directory enumeration, `stat("/")`, `stat("/SYSTEM")`, ENOENT, ENOTDIR below a file, deeper-path ENOENT, `VFS_O_EXEC` gate | `tests/test_romfs_sim.py` (ROMFS resolution) + `tests/test_fs_selftest_sim.py` (`/SYSTEM` stat/open/read/close outcomes, `make fs-selftest`) |
+| `/system` mounted before any module loads; every boot ZMOD and the monitor loaded by VFS path | `tests/test_m9_vfs_sim.py` (real linked bytes, boot transcript + monitor handoff) |
+| flat mount selection: `/SYSTEMX` must not match `/system` | `tests/test_m9_vfs_sim.py` (`test_flat_mount_selection_in_the_linked_kernel`, direct kernel-API call on linked bytes) + the target selftest's FLAT case |
+| normalization, case-insensitive resolution, per-entry stat/read byte-compared with the packed files, `/system` directory enumeration, `stat("/")`, `stat("/system")`, ENOENT, ENOTDIR below a file, deeper-path ENOENT, `VFS_O_EXEC` gate | `tests/test_romfs_sim.py` (ROMFS resolution) + `tests/test_fs_selftest_sim.py` (`/system` stat/open/read/close outcomes, `make fs-selftest`) |
 | EROFS from the null mutation operations (write flags at open, `vfs_mkdir`/`rmdir`/`unlink`/`rename`, and the provider's null pointers) | target selftest EROFS/MUTATE cases; `kernel/vfs/{file,mutate}.c` |
 | one ROMFS lookup, ASCII case-folded, serving the provider and the resource imports | `tests/test_romfs_sim.py` (case-folded spellings), `tools/mapcheck.py` `ROMFS_BANK7_ROUTINES` |
 | optional-mount failure line `vfs: /DATA unavailable 0x03` and tolerant boot | `tests/test_m9_vfs_sim.py` (`tests/m9/mounts-optional-fail.json`, `m9-vfs-selftest`) |
@@ -514,7 +516,7 @@ machinery they covered; the current coverage is section 13's and
 
 The M9 driver ABI (deleted in M10, package 42c) added a provider
 registration call to the kernel import block
-(`include/zephyros/driver.h`), so a loadable module can register a
+(`formats/include/zmod.h`), so a loadable module can register a
 a path-based provider descriptor.  The loader wrapped it: the registration call
 succeeds only during the module-loading phase, and the VFS provider
 registry takes a checkpoint before every module init and rolls back the
@@ -527,8 +529,8 @@ compared case-insensitively (`ZOS_EEXIST`) and a full registry
 The package-26 acceptance used a bounded RAM provider registered by a
 test-only module plus three registration fixtures, driven by its own M9
 acceptance image.  Package 42b correction 01 retired that acceptance
-with the M9 machinery: the M10 namespace routes `/FS` to the IOC-FAT
-driver (`fs/iocfat/`) through the nucleus provider, and the outcome image
+with the M9 machinery: the M10 namespace routes `/fs` to the IOC-FAT
+driver (`drivers/iocfat/`) through the nucleus provider, and the outcome image
 `make fs-selftest` is the writable-provider acceptance now (see section
 13 and `docs/validation/*-m10-files-on-handles-c01.md`).
 
@@ -540,7 +542,7 @@ run, transcript and photograph are recorded in
 `docs/validation/2026-10-05-m9-provider-abi-hardware.md`.  Note that
 `tools/serial_smoke.py --mode normal` accepts either transcript: the
 full boot contract, or (on the console-serial variant) the console
-service line, monitor banner and prompt on the serial lane.  On a bench
+driver line, monitor banner and prompt on the serial lane.  On a bench
 whose console is `console-v9958-hid` the monitor text is on the display,
 so the operator confirms it there while the tool validates the banner
 (work package 42d brought the tool's expectations in line with the
@@ -554,8 +556,8 @@ in `docs/abi.md` section 10 and declared in `abi/zos/fs.h`).
 Nothing in provider semantics changed; the new layers are:
 
 ```text
-kernel/vfs/process.c   global owner-tagged descriptor pool + per-process CWD
-kernel/syscall/fs.c    the FS_* service bodies (argument + window validation)
+kernel/vfs/handles.c   global owner-tagged descriptor pool + per-process CWD
+kernel/syscall/fs.c    the FS_* driver bodies (argument + window validation)
 user/sdk/src/fsgate.asm + fs.c       native gate stub + C wrappers
 tests/fs/                fs_selftest.zex (outcomes) and fs_child.zex (nested exec)
 ```
@@ -579,12 +581,12 @@ path: `SYS_EXIT`, the raw-return `ZOS_EFAULT` trap, and the failed-launch
 rollback (through `process_slot_release`).  Relative paths resolve against
 `vfs_cwd_for(pid)`, so `chdir` crosses mounts transparently.
 
-**Services.** Argument blocks live in the caller window `0100h-1FFFh`;
+**Drivers.** Argument blocks live in the caller window `0100h-1FFFh`;
 paths are copied into the shared VFS workspace and normalized against the
 CWD; `buffer`/`out` pointers are validated against `0100h-DFFFh` and move
 only through the checked bank-copy gates.  File data is chunked through the
 workspace staging view, bridging to the caller bank through the 64-byte
-common gate.  Every service validates its complete block before any state
+common gate.  Every driver validates its complete block before any state
 change, and every `FS_*` call is refused with `ZOS_EBUSY` before the VFS
 READY phase.
 
@@ -616,10 +618,10 @@ production, on for the `m9-fs-selftest` image whose replay asserts "no
 PANIC", and every claim is balanced.
 
 **Acceptance (package 42b correction 01).** `make fs-selftest` builds
-the image with the IOC-FAT driver serving `/FS` and ROMFS at `/SYSTEM`,
-boots `/SYSTEM/fs_selftest.zex` and replays it with the host FS2 peer
+the image with the IOC-FAT driver serving `/fs` and ROMFS at `/system`,
+boots `/system/fs_selftest.zex` and replays it with the host FS2 peer
 serving the card (`tests/test_fs_selftest_sim.py`): card
-create/write/stat/read/seek/enumerate/mkdir/rename/unlink/rmdir, `/SYSTEM`
+create/write/stat/read/seek/enumerate/mkdir/rename/unlink/rmdir, `/system`
 read, the absent-card branch, the nested exec with its exit status and the
 release of the child's leaked handles (driver slots and the 12-entry
 descriptor pool are read straight out of the machine).  The replay also
@@ -674,8 +676,8 @@ case-insensitively, to one of
 
 | root | provider | owner of |
 | --- | --- | --- |
-| `/FS` | the build's filesystem driver, over IPC | everything below `/FS`; `bind` returns `-ZOS_ENODEV` in 42a |
-| `/SYSTEM` | ROMFS, in-process, usable before any driver | everything below `/SYSTEM` |
+| `/fs` | the build's filesystem driver, over IPC | everything below `/fs`; `bind` returns `-ZOS_ENODEV` in 42a |
+| `/system` | ROMFS, in-process, usable before any driver | everything below `/system` |
 | `/dev` | the host-built publication table | everything below `/dev` |
 
 `/` is a directory of those three roots, not a provider: a root-level name
@@ -688,13 +690,13 @@ new path.
 **Source layout (all of it `cold`, `config/residency.json`).**
 
 ```text
-kernel/vfs/ns.c        the router, the DEVICE provider over the publication
-                       table, enumeration and the standard handles
-kernel/vfs/ns_file.c   the ROMFS FILE provider (bind, read, seek, metadata)
+kernel/vfs/router.c    the router, the DEVICE provider over the
+                       publication table and enumeration
+kernel/vfs/system.c    the ROMFS FILE provider (bind, read, seek, metadata)
 kernel/syscall/object.c  the syscall bodies: bind, call, unbind, ns_enum
 kernel/ipc/ipc.c       nucleus endpoints: provider objects are reached
                        through the same handle-call path as bank-6 ones
-kernel/vfs/process.c   the handle table: the M9 descriptor pool, extended
+kernel/vfs/handles.c   the handle table: the M9 descriptor pool, extended
 ```
 
 **The handle table.**  `bind` returns a handle `>= ZOS_HANDLE_FIRST_BOUND`
@@ -709,17 +711,17 @@ the only thing a `call`/`unbind` accepts.  Exit unbinds every handle the
 process owns, and `SYS_EXEC` gives a child entries for the standard
 handles only.
 
-**The DEVICE provider.**  `/dev` names come from the *host*: each service
+**The DEVICE provider.**  `/dev` names come from the *host*: each driver
 manifest may declare `publishes` rows (name below `/dev`, 8-bit type,
 serving endpoint, provider object), the packer resolves them against the
 build's load order and writes a publication table into the container
-(ABI 4, `include/zephyros/service.h`), and the loader installs the table
+(ABI 4, `formats/include/zmod.h`), and the loader installs the table
 into the provider, synthesizing the grouping rows (`/dev/input`,
 `/dev/serial`) from the names themselves.  A grouping row is a
 `container` entry: enumerating it works, binding it is `-ZOS_EISDIR`.
 Drivers never look each other up at run time (docs/devices.md).
 
-**The ROMFS provider.**  A `/SYSTEM` bind returns a `FILE` handle served
+**The ROMFS provider.**  A `/system` bind returns a `FILE` handle served
 *in-process* by a nucleus endpoint through the same call path as a bank-6
 endpoint; the one ROMFS reader serves it, chunked through the common copy
 gate.  `ZFILE_OP_READ`, `ZFILE_OP_SEEK` and `ZFILE_OP_META` are supported
@@ -732,7 +734,7 @@ objects stay because the router and its providers call them:
 | kept | what the namespace uses |
 | --- | --- |
 | `kernel/vfs/path.c` | `vfs_path_normalize_at()` - the one path normalizer (CWD-relative, `.`/`..`, repeated slashes) |
-| `kernel/vfs/process.c` | `vfs_cwd_for()` and the per-process CWD slots, `vfs_handle_alloc()` and the descriptor pool, `vfs_fd_check()` for file handles |
+| `kernel/vfs/handles.c` | `vfs_cwd_for()` and the per-process CWD slots, `vfs_handle_alloc()` and the handle pool, `vfs_fd_check()` for file handles |
 | `romfs.rel` | the ROMFS reader: `romfs_lookup_ci()`, `romfs_entry_at()`, `romfs_copy_logical()` |
 | `kernel/ipc/ipc.c` | the endpoint table, the frame/descriptor resolver and the restricted copy calls (`ipc_call_object`, `ipc_nucleus_copy_out`) |
 | `kernel/syscall/fs.c` | `zos_fs_copy_path()` for the caller path and the block/window validation helpers |
@@ -751,13 +753,13 @@ per-object bytes are itemized in
 [`docs/validation/2026-10-09-m10-namespace-handles.md`](./validation/2026-10-09-m10-namespace-handles.md).
 
 **Acceptance.**  `make ns-selftest` builds the `namespace-selftest` image
-(the production boot path with a small service set: SIO, the console
-service and a synthetic publisher whose manifest declares
+(the production boot path with a small driver set: SIO, the console
+driver and a synthetic publisher whose manifest declares
 `/dev/input/keyboard` and `/dev/video`), boots an ordinary SDK client as
-`/SYSTEM/ns.zex`, and replays it: the standard handles, the publication
-types, grouping-name refusals, a call through a handle, a `/SYSTEM` FILE
+`/system/ns.zex`, and replays it: the standard handles, the publication
+types, grouping-name refusals, a call through a handle, a `/system` FILE
 read/seek/metadata, `ZOS_EROFS`, table exhaustion and release, paged
-`ns_enum` over `/`, `/dev` and `/SYSTEM`, and a child that proves the
+`ns_enum` over `/`, `/dev` and `/system`, and a child that proves the
 inherited standard handles.  `tests/test_ns_selftest.py` pins the ABI, the
 packed publication tables and the residency classification;
 `tests/test_ns_selftest_sim.py` compares the transcript with the packed

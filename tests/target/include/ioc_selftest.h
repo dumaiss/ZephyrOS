@@ -2,8 +2,8 @@
  *
  * The nucleus-side acceptance runner (tests/target/support/target_test.c,
  * called from kernel/main.c's late boot hook) calls
- * zos_run_ioc_selftest() once the service loader has brought the image's
- * service set (sio, ioc, console) up in bank 6.  The diagnostic itself
+ * zos_run_ioc_selftest() once the driver loader has brought the image's
+ * driver set (sio, ioc, console) up in bank 6.  The diagnostic itself
  * lives in tests/target/ioc/ioc_test.c and reports through the early SIO;
  * its header comment is the authoritative description of what it proves.
  */
@@ -20,7 +20,7 @@
 #define ZOS_IOCSELFTEST_FAIL_BULK     0x05u /* staged bulk phase failure     */
 #define ZOS_IOCSELFTEST_FAIL_REFUSED  0x06u /* a malformed call was served   */
 #define ZOS_IOCSELFTEST_PENDING       0x0Eu /* firmware has no writable
-					      * /SHARED service: not a pass
+					      * /SHARED driver: not a pass
 					      * and not a failure - never
 					      * acceptance evidence */
 

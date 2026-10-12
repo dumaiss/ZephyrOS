@@ -1,12 +1,12 @@
-/* ZephyrOS M7 diagnostic syscall services (kernel-internal interface).
+/* ZephyrOS M7 diagnostic syscall drivers (kernel-internal interface).
  *
- * The stable numbers and packed argument blocks are declared in
- * include/zephyros/syscall.h; this header is the private contract between
- * the M7 dispatcher (kernel/syscall.c), the diagnostic service bodies
+ * The stable syscall numbers are declared in abi/zos/syscall.h; this
+ * header is the private contract between
+ * the M7 dispatcher (kernel/syscall.c), the diagnostic driver bodies
  * (kernel/syscall/diag.c), and the bank-7 port helpers
  * (kernel/syscall/diag_io.asm).  It is not part of the native ABI.
  *
- * Every service validates its complete argument block before touching
+ * Every driver validates its complete argument block before touching
  * caller memory or device state, publishes its result through the common
  * dispatcher result state, and leaves failures side-effect free.  Memory
  * transfers reuse the M6 checked copy gate (kernel/memory/user_copy.asm),
@@ -27,7 +27,7 @@ void zos_syscall_error(uint8_t err);
 
 /* Copy-gate helpers shared with every syscall body that moves caller
  * bytes.  They move one bounded chunk between the caller buffer and the
- * common-resident staging buffer; the service owns the chunking.  The
+ * common-resident staging buffer; the driver owns the chunking.  The
  * buffer's bank follows the buffer-identity rule (kernel/syscall.c
  * `zos_syscall_buffer_bank`), so an address behind the mode-10 aperture
  * reads or writes the far bank.  `zos_syscall_buffer_ok` checks the
@@ -40,7 +40,7 @@ uint8_t zos_syscall_bank_write(uint16_t user_dst, uint16_t length);
 uint8_t zos_syscall_buffer_ok(uint16_t addr, uint16_t len);
 uint8_t zos_syscall_buffer_bank(uint16_t addr);
 
-/* Service bodies; each takes the raw argument-block pointer from the
+/* Driver bodies; each takes the raw argument-block pointer from the
  * register ABI (already range-checked only by the window rule inside). */
 void zos_diag_mem_read(uint16_t block);
 void zos_diag_mem_write(uint16_t block);

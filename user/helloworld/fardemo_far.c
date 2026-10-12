@@ -31,7 +31,7 @@ int fardemo_far_main(int seed, int unused)
 
 	/* A console syscall from the far bank, its buffer in the
 	 * aperture. */
-	(void)zos_console_write(far_line,
+	(void)console_write(far_line,
 				(unsigned int)(sizeof(far_line) - 1u));
 
 	/* Primary code: a plain call out of the aperture. */

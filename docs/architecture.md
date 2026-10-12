@@ -26,7 +26,7 @@ The milestones covered by this document are:
 - **M8 — Native device stack completion:** provide the normal V9958/HID console and IOC transport through class-aware dynamically loaded drivers. **Complete.**
 - **M9 — Native VFS and filesystem framework:** establish the native namespace, filesystem-provider model, bootstrap/system filesystem, IOC-FAT provider (with its own file-data cache), block-device class, and native file/directory syscall ABI.
 
-The native shell and full userland, complete diagnostic suite, and extended/far-memory services remain later native ZephyrOS milestones. Compatibility personalities begin only after those native facilities are complete.
+The native shell and full userland, complete diagnostic suite, and extended/far-memory drivers remain later native ZephyrOS milestones. Compatibility personalities begin only after those native facilities are complete.
 
 ---
 
@@ -44,7 +44,7 @@ Once control enters ZephyrOS, the kernel owns:
 - stack placement
 - interrupt mode and interrupt ownership
 - kernel-reserved memory
-- entry points into kernel services
+- entry points into kernel drivers
 
 Applications and drivers added later will use kernel-defined interfaces rather than relying directly on kernel layout.
 
@@ -130,18 +130,11 @@ ZephyrOS/
 │   ├── architecture.md
 │   └── boot.md
 │
-├── include/
-│   └── zephyros/
-│       ├── types.h
-│       ├── platform.h
-│       ├── irq.h
-│       ├── device.h
-│       ├── driver.h
-│       ├── module.h
-│       ├── romfs.h
-│       ├── process.h
-│       ├── zex.h
-│       └── syscall.h
+├── kernel/include/       kernel.h, process.h, platform.h,
+│                         irq_types.h
+├── drivers/include/      driver.h, ioc.h, ioc_protocol.h
+├── formats/include/      romfs.h, zex.h, zmod.h
+├── platform/zephyr80/    config.mk, public/, private/
 │
 ├── boot/
 │   ├── start.asm
@@ -317,7 +310,7 @@ Owns operating-system mechanisms:
 - syscall entry/return;
 - IRQ entry/return and dispatch;
 - device registry;
-- service binding;
+- driver binding;
 - module loading;
 - ROM recovery-store access;
 - process lifecycle and native executable loading;
@@ -334,7 +327,7 @@ Owns active device behavior:
 - register programming;
 - initialization sequences;
 - polling;
-- interrupt service logic after kernel IRQ dispatch;
+- interrupt driver logic after kernel IRQ dispatch;
 - device operations;
 - driver-private state.
 
@@ -346,8 +339,9 @@ Owns the public native ABI: the one copy of every header a native program
 or module may compile against (`types.h`, `errno.h`, `syscall.h`, `fs.h`,
 `process.h`, `diag.h`).
 
-Headers under `include/zephyros/` that used to carry those declarations
-now include the `abi/zos/` header and add only kernel-internal detail, so
+Headers under the audience roots (`drivers/include/`, `kernel/include/`
+and `formats/include/`) that used to carry those declarations now include
+the `abi/zos/` header and add only kernel-internal detail, so
 there is exactly one definition of every packed block, constant and
 equate.  The kernel build, the module build and the user build all get
 `-I abi`; nothing else is shared.
@@ -365,7 +359,7 @@ Owns the user SDK: the only supported way to build a native program.
 
 - `user/sdk/include/` - `zos.h` (the umbrella a program includes) and
   the `zos/` and `zlibc/` headers;
-- `user/sdk/src/` - crt0, libzos (console/diag/FS/exec gate stubs and
+- `user/sdk/src/` - crt0, libzos (console/diag/fs/exec gate stubs and
   wrappers) and `zlibc/`;
 - `user/sdk/zex.mk` - the generic `zex_program` rule: one line per
   program, manifest generated from the link map, `zexpack` validation;
@@ -742,7 +736,7 @@ M0 explicitly does **not** include:
 - process management
 - memory allocation
 - filesystem support
-- IOC services
+- IOC drivers
 - CP/M compatibility
 - `.COM` loading
 - `.ZEX` loading
@@ -1019,7 +1013,7 @@ The actual syscall dispatcher must not live in page zero.
 
 # 9. Native syscall ABI scaffold
 
-M1 reserves the mechanism but does not require useful services.
+M1 reserves the mechanism but does not require useful drivers.
 
 Provisional native ABI:
 
@@ -1164,7 +1158,7 @@ tools/mapcheck.py
 
 Implemented (M1, fixed): `tools/mapcheck.py` is the authoritative post-link
 layout check.  It derives every boundary from the declarations in
-`platform/zephyr80/memory.inc` (never a second copy of the map), is invoked
+`platform/zephyr80/private/memory.inc` (never a second copy of the map), is invoked
 automatically by the default build after linking and before the ROM is
 considered complete, and fails with precise symbol/region diagnostics for
 each condition above.  `tools/pack_image.py` independently enforces the
@@ -1234,7 +1228,7 @@ driver
    │
 device instance
    │
-capabilities / service binding
+capabilities / driver binding
 ```
 
 The early serial console remains outside that mechanism permanently as a panic and bring-up path.
@@ -1485,7 +1479,7 @@ M2 need not enable the V9958 interrupt yet; it must make the `FFh` path safe bef
 
 ## 18.4 Platform IRQ sources
 
-The executive uses logical source IDs. Hardware vector values, port numbers, and board channel mappings are declared as constants in `platform/zephyr80/irq.h` / `irq.inc`. Active mapping and dispatch logic remains in `kernel/irq/`.
+The executive uses logical source IDs. Hardware vector values, port numbers, and board channel mappings are declared as constants in `platform/zephyr80/private/irq.h` / `irq.inc`. Active mapping and dispatch logic remains in `kernel/irq/`.
 
 The initial source namespace should reserve at least:
 
@@ -1723,7 +1717,7 @@ The first migrated device is SIO0/B, because it is already known-good hardware a
 
 ---
 
-## 20.2 Driver, device, capability, and service
+## 20.2 Driver, device, capability, and driver
 
 ZephyrOS distinguishes four concepts.
 
@@ -1737,7 +1731,7 @@ device
 capability
     operation(s) that device can provide
 
-service
+driver
     OS-level binding that chooses device(s) to satisfy a role
 ```
 
@@ -1780,7 +1774,7 @@ transport and "other" class.
 > **Retired (M10, work package 42c).** The M3 device class and
 > capability model -- the class identifiers, the capability bitmask, the
 > device handles and the class registration calls -- is **deleted**.  A
-> driver is a bank-6 service image (section 36.4) and what a client binds
+> driver is a bank-6 driver image (section 36.4) and what a client binds
 > is a *protocol class*: the class numbers now live in
 > `abi/zos/protocol.h` (`ZOS_CLASS_*`) and describe protocols, not
 > device kinds, so no registry, no handles and no capability bits remain.
@@ -1812,7 +1806,7 @@ Clients should prefer capability queries over testing a specific driver name.
 > capability query anywhere in the tree.  The M4-M8 record of the M3
 > registry is kept in sections 30.3 and 32; what replaced it is the
 > namespace of section 36.13: a driver *publishes* a named protocol
-> object (`/dev/console`, `/dev/serial/0`, `/FS`) and a client binds the
+> object (`/dev/console`, `/dev/serial/0`, `/fs`) and a client binds the
 > name through the VFS namespace, which routes the call to the serving
 > endpoint of that object's protocol class.
 
@@ -1824,19 +1818,19 @@ Clients should prefer capability queries over testing a specific driver name.
 > table described in sections 20.5-20.7 (the driver descriptor,
 > `boot_drivers[]`, `driver_init_static()`), and the driver-entry-table
 > contract the loader used to hand a loaded module, are **deleted**.
-> Since M4 the kernel boots only embedded service images, and since M10 a
-> driver receives the M10 service ABI instead: the loader runs the
+> Since M4 the kernel boots only embedded driver images, and since M10 a
+> driver receives the M10 driver ABI instead: the loader runs the
 > image's boot entry and its init with the boot bundle (the nucleus call
 > table plus the resolved dependency array, section 36.11).  These
 > sections are retained as M3 milestone history.
 
-A service image carries its own entry points in its flat plan.
+A driver image carries its own entry points in its flat plan.
 
 Driver initialization failure is reported to the kernel (the loader
 prints it on the early console) and does not corrupt already installed
 endpoints or publications.
 
-M10 does not require driver unload: services are permanent for the boot.
+M10 does not require driver unload: drivers are permanent for the boot.
 
 ---
 
@@ -1862,7 +1856,7 @@ kernel
   ├── device_registry_init()
   ├── driver_init_static()
   │      └── each driver registers device instance(s)
-  ├── service_bind_defaults()
+  ├── driver_bind_defaults()
   └── continue boot
 ```
 
@@ -1910,7 +1904,7 @@ panic / very early boot
     -> SIO0/B directly
 
 normal kernel console
-    -> console service
+    -> console driver
     -> registered sio0.b device
     -> SIO driver
 ```
@@ -1919,9 +1913,9 @@ The driver initialization should be idempotent with respect to the known SIO con
 
 ---
 
-## 20.9 Console service binding
+## 20.9 Console driver binding
 
-M3 introduces a minimal console service above devices.
+M3 introduces a minimal console driver above devices.
 
 It stores:
 
@@ -1937,7 +1931,7 @@ console input  -> sio0.b
 console output -> sio0.b
 ```
 
-The service exposes kernel-internal operations equivalent to:
+The driver exposes kernel-internal operations equivalent to:
 
 ```c
 int console_putc(char ch);
@@ -1946,7 +1940,7 @@ int console_poll(void);
 int console_getc(void);
 ```
 
-The normal console service must fail cleanly if no suitable device is registered.
+The normal console driver must fail cleanly if no suitable device is registered.
 
 Kernel panic continues to bypass it.
 
@@ -1961,7 +1955,7 @@ M3 is accepted when:
 - the registered device advertises serial/character/console capabilities appropriate to its implementation;
 - capability lookup locates SIO0/B without comparing its driver name;
 - default console input/output bindings select that device;
-- normal kernel output can be sent through the console service and appears correctly at 115200 8N1;
+- normal kernel output can be sent through the console driver and appears correctly at 115200 8N1;
 - the early console still works when the registry or normal console binding is deliberately disabled;
 - invalid handles and duplicate registrations fail predictably;
 - registry exhaustion is detected rather than overwriting memory;
@@ -2032,7 +2026,7 @@ __driver_arena_end
 
 The build must report arena usage.
 
-Implemented geometry (stage `07-m4-module-loader`): the initial arena is `A000h-BFFFh` (8192 bytes, 16 granules) between the loadable kernel image and the `C000h-DFFFh` runtime area, declared in `platform/zephyr80/memory.inc`, exported by `kernel/module/arena.asm`, and enforced by `tools/mapcheck.py` / `tools/pack_image.py` (no kernel section, stack, or ROM payload may occupy it). The build prints arena geometry plus free granules, and `zephyros.manifest.json` carries an `arena` object. Concrete loader behavior, error codes, and tooling were documented in `docs/module-format.md`, which now describes the M10 service image instead.
+Implemented geometry (stage `07-m4-module-loader`): the initial arena is `A000h-BFFFh` (8192 bytes, 16 granules) between the loadable kernel image and the `C000h-DFFFh` runtime area, declared in `platform/zephyr80/private/memory.inc`, exported by `kernel/module/arena.asm`, and enforced by `tools/mapcheck.py` / `tools/pack_image.py` (no kernel section, stack, or ROM payload may occupy it). The build prints arena geometry plus free granules, and `zephyros.manifest.json` carries an `arena` object. Concrete loader behavior, error codes, and tooling were documented in `docs/module-format.md`, which now describes the M10 driver image instead.
 
 This `A000h-BFFFh` geometry is the historical M4 acceptance geometry, not the long-term production budget. M8 supersedes it with a linker-derived arena sized from the end of the linked kernel to `C000h`; see section 30.2.
 
@@ -2066,7 +2060,7 @@ reloc_offset
 reloc_count
 ```
 
-Implemented header (stage 07): a packed little-endian 28-byte structure with `payload_offset`, `total_size`, and a `reserved` word, pinned by `include/zephyros/module.h` compile-time assertions. `docs/module-format.md` then recorded the byte table and the manifest/packer contract (it now describes the M10 service image).
+Implemented header (stage 07): a packed little-endian 28-byte structure with `payload_offset`, `total_size`, and a `reserved` word, pinned by `formats/include/zmod.h` compile-time assertions. `docs/module-format.md` then recorded the byte table and the manifest/packer contract (it now describes the M10 driver image).
 
 All addresses stored in the module are offsets relative to the module load base unless explicitly defined otherwise by a relocation record.
 
@@ -2109,7 +2103,7 @@ No relocation is permitted to patch arbitrary kernel memory.
 A dynamic driver must not link directly against arbitrary private kernel symbols.
 
 At initialization the loader passes the image the M10 boot bundle
-(`struct ipc_service_boot`, section 36.11): the nucleus call table and
+(`struct driver_boot`, section 36.11): the nucleus call table and
 the resolved dependency numbers.  The table provides the operations a
 driver needs:
 
@@ -2222,7 +2216,7 @@ For the M4 acceptance build:
 - relocate it;
 - run its init function;
 - register `sio0.b`;
-- bind the console service;
+- bind the console driver;
 - print through the dynamically loaded driver.
 
 The early console remains available throughout the experiment.
@@ -2299,7 +2293,7 @@ Numbers above are illustrative; the build reports the real values.
 The loader half of M4 is implemented as:
 
 ```text
-include/zephyros/module.h       ZMOD v1 definitions, errors, catalog,
+formats/include/zmod.h          ZMOD v1 definitions, errors, catalog,
                                 descriptors, loader API, size asserts
 kernel/module/arena.asm         __driver_arena_start/__driver_arena_end
 kernel/module/relocate.c        container validation, copy, BSS,
@@ -2320,18 +2314,18 @@ drivers/sio/sio.c               SIO implementation (packed into the module)
 drivers/sio/sio_io.asm          SIO port I/O
 drivers/sio/sio_module.c        production module entry (descriptor + init)
 modules/manifests/sio.json      production module manifest
-modules/runtime/sdcc_indirect_calls.asm  shared module-local SDCC glue
+drivers/runtime/sdcc_indirect_calls.asm  shared module-local SDCC glue
 tests/modules/sio_irq_module.c  IRQ self-test variant entry
 tests/modules/sio_fail_module.c init-failure variant entry
 ```
 
 * the M3 static driver table is retired: no `boot_drivers[]`, `driver_init_static()`, or `_driver_static_*` symbol is linked, and `tools/mapcheck.py --production` rejects any acceptance symbol;
 * every M4 image embeds a boot module through the generated catalog: `sio.zmod` (production, loader image, placement image), `sio-irq.zmod` (`make m4-selftest`), or `sio-fail.zmod` (`make m4-failure-selftest`).  **The M1-M7 acceptance images, the embedded boot catalog and the legacy fixed-arena geometry were retired under the Mn-1 retention rule at the start of M9 (work package 25a); the loader mechanisms this section proves are now exercised on the current boot path by the loader group of the subsystem acceptance image -- `tests/target/loader/` replayed by `tests/test_subsys_sim.py` -- with container validation and two-base relocation proven on host by `tests/test_zmod.py` and arena exhaustion by the `console-fb-arena` image;**
-* the (retired) placement image regenerated `platform/zephyr80/memory.inc` with the arena shifted to 9E00h-BE00h and embedded byte-identical module files;
+* the (retired) placement image regenerated `platform/zephyr80/private/memory.inc` with the arena shifted to 9E00h-BE00h and embedded byte-identical module files;
 * `kernel_main()` prints `console: dynamic sio0.b OK` through the bound module (or `console: dynamic driver failed` on load failure);
 * `tools/mapcheck.py` rejects any linked `_sio_`/`_sio0b_`/`_sio_driver` symbol, so the static driver cannot return unnoticed.
 
-See `docs/devices.md` for the resulting driver-layer behavior (the M4 container pipeline that followed is deleted; `docs/module-format.md` describes the service image).
+See `docs/devices.md` for the resulting driver-layer behavior (the M4 container pipeline that followed is deleted; `docs/module-format.md` describes the driver image).
 
 ---
 
@@ -2348,7 +2342,7 @@ M4 is accepted when:
 - relocation is applied successfully;
 - BSS/private state is zeroed;
 - module initialization registers `sio0.b` through the same M3 device registry used by static drivers;
-- the console service binds to the dynamically registered device;
+- the console driver binds to the dynamically registered device;
 - serial output succeeds through the dynamic driver on physical hardware;
 - the early console remains functional if dynamic loading fails;
 - at least one test build deliberately changes the module's arena placement and the same module binary continues to work;
@@ -2716,7 +2710,7 @@ SYS_CONSOLE_POLL
 SYS_GETINFO
 ```
 
-M9 extends the same native syscall mechanism with filesystem services.
+M9 extends the same native syscall mechanism with filesystem drivers.
 Package 28 adds `SYS_EXEC` (a synchronous child through the same process
 machinery); package 28b extends its block with a raw command tail that
 reaches the child's startup block and enters every program with
@@ -2765,11 +2759,11 @@ M7 ports the Zephyr-80 monitor concept into a native ZephyrOS ZEX program and es
 
 ## 28.2 Port, do not transplant
 
-The monitor preserves useful operator behavior while using native ZephyrOS services rather than old monitor-ROM or CP/M assumptions.
+The monitor preserves useful operator behavior while using native ZephyrOS drivers rather than old monitor-ROM or CP/M assumptions.
 
 ---
 
-## 28.3 Monitor uses native console services
+## 28.3 Monitor uses native console drivers
 
 `monitor.zex` performs normal input/output only through native console syscalls and therefore runs unchanged through the M8 HID/V9958 console or SIO fallback.
 
@@ -2789,7 +2783,7 @@ Reusable line editing, the diagnostic runtime wrappers and the string/format hel
 
 ## 28.6 Monitor packaging and launch
 
-`monitor.zex` is an ordinary ZEX. Under M9 the boot/recovery launcher should obtain it through `/SYSTEM` and VFS rather than direct ROMFS lookup.
+`monitor.zex` is an ordinary ZEX. Under M9 the boot/recovery launcher should obtain it through `/system` and VFS rather than direct ROMFS lookup.
 
 ---
 
@@ -2805,7 +2799,7 @@ M7 is implemented, host-validated and physically accepted. Details and transcrip
 
 # 29. M7 acceptance criteria
 
-M7 is complete and physically accepted. Its monitor remains device-independent and uses only the native syscall/service boundary.
+M7 is complete and physically accepted. Its monitor remains device-independent and uses only the native syscall/driver boundary.
 
 ---
 
@@ -2818,7 +2812,7 @@ M8 establishes the normal native ZephyrOS device environment:
 ```text
 normal console input   -> HID keyboard
 normal console output  -> V9958
-IOC transport          -> command + bulk services for HID and later FAT/storage
+IOC transport          -> command + bulk drivers for HID and later FAT/storage
 serial fallback        -> SIO0/B registered driver
 early/panic console    -> direct SIO0/B, permanently independent
 ```
@@ -2830,9 +2824,9 @@ The V9958, HID and IOC drivers are ordinary resident ZMOD modules sourced from R
 ### M8 source-tree additions
 
 ```text
-include/zephyros/video.h
-include/zephyros/hid.h
-include/zephyros/ioc.h
+drivers/v9958/v9958_driver.h
+drivers/hid/hid_driver.h
+drivers/include/ioc.h
 
 drivers/v9958/
 drivers/hid/
@@ -2872,7 +2866,7 @@ section 32.39 requires.
 
 > **Superseded (M10, work package 42c).**  The v2 driver ABI -- 32-bit
 > capability masks, the optional generic character interface and the
-> per-class operations tables -- is deleted.  A driver is a service
+> per-class operations tables -- is deleted.  A driver is a driver
 > image; its class-visible surface is a *protocol* (section 36.11), and
 > the class numbers in `abi/zos/protocol.h` name protocols, not device
 > kinds.  The M9 milestone record of the v2 classes and of the block
@@ -2886,7 +2880,7 @@ section 32.39 requires.
 
 The V9958 driver serves the video protocol class: the
 `ZVIDEO_*` operations now live in `abi/zos/protocol.h` and reach the
-driver through its service dispatch.  It provides the 85x26 6x8
+driver through its driver dispatch.  It provides the 85x26 6x8
 terminal/VT-style console renderer and remains independent of IOC.
 
 ---
@@ -2895,7 +2889,7 @@ terminal/VT-style console renderer and remains independent of IOC.
 
 HID serves the input protocol class above IOC, translating the MCU's
 terminal bytes.  It resolves its IOC dependency from the endpoint the
-IOC service exports (declared in its manifest and resolved by the packer
+IOC driver exports (declared in its manifest and resolved by the packer
 into the flat plan) rather than by name or symbols.
 
 ---
@@ -2910,23 +2904,23 @@ never see raw SIO/CTS/CRC details.
 
 ## 30.7 Driver-to-driver discovery
 
-A service image declares its dependencies in its manifest (class plus
+A driver image declares its dependencies in its manifest (class plus
 instance); the packer resolves them to the endpoint numbers of images
 earlier in the load order and the loader installs those numbers in the
-dependency array the init reads.  Services are permanent for the boot,
+dependency array the init reads.  Drivers are permanent for the boot,
 so no lifetime reference counting is required.
 
 ---
 
 ## 30.8 Boot order
 
-M8 production boot loads `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod` from the recovery store, then binds the normal console and launches the monitor. M9 supersedes the direct ROMFS aspect of that sequence by bringing VFS up before dynamic module loading and reading those module files through `/SYSTEM`.
+M8 production boot loads `sio.zmod`, `ioc.zmod`, `hid.zmod`, `v9958.zmod` from the recovery store, then binds the normal console and launches the monitor. M9 supersedes the direct ROMFS aspect of that sequence by bringing VFS up before dynamic module loading and reading those module files through `/system`.
 
 ---
 
 ## 30.9 Console binding policy
 
-The console service composes its two lanes from the published objects:
+The console driver composes its two lanes from the published objects:
 input from the keyboard publication, output from the video publication.
 A store without a video image falls back to the serial publication, and
 a store without HID keeps the serial input lane; panic and early boot
@@ -2936,7 +2930,7 @@ stay on the direct SIO early console.
 
 ## 30.10 M8 non-goals
 
-M8 did not implement the native filesystem, shell, complete diagnostic suite, module unload, far-memory services or compatibility personalities.
+M8 did not implement the native filesystem, shell, complete diagnostic suite, module unload, far-memory drivers or compatibility personalities.
 
 ---
 
@@ -2981,7 +2975,7 @@ The architecture must support:
 - multiple filesystem implementations;
 - static boot-time mount configuration;
 - ROMFS as a normal filesystem implementation;
-- the current MCU/FatFs service as one filesystem provider;
+- the current MCU/FatFs driver as one filesystem provider;
 - raw SD access through a generic block-device abstraction;
 - future filesystems implemented directly on the Z80, such as VFAT or a Fuzix filesystem;
 - path-, handle-, and byte-oriented native APIs;
@@ -3043,7 +3037,7 @@ Ownership is deliberately separated:
 - **Block devices** expose raw sector/block storage.
 - **IOC** owns only the Z80-to-MCU transport.
 
-The MCU currently provides both raw SD primitives and a FatFs-based filesystem service. ZephyrOS exposes both without making either one the architectural foundation of the other.
+The MCU currently provides both raw SD primitives and a FatFs-based filesystem driver. ZephyrOS exposes both without making either one the architectural foundation of the other.
 
 ---
 
@@ -3061,7 +3055,7 @@ The initial system layout is:
 
 ```text
 /           -> writable SD FAT filesystem
-/SYSTEM     -> internal ROMFS
+/system     -> internal ROMFS
 ```
 
 Future devices may be attached at additional root-level mountpoints such as `/CF`, `/SD2`, `/EXTERNAL`, or `/BACKUP`. No drive-selection state exists in native ZephyrOS.
@@ -3070,19 +3064,19 @@ Future devices may be attached at additional root-level mountpoints such as `/CF
 
 ## 32.4 VFS owns `/`
 
-The root namespace exists independently of any mounted filesystem. `/SYSTEM` must remain accessible even if the SD card is absent, corrupt, or unavailable.
+The root namespace exists independently of any mounted filesystem. `/system` must remain accessible even if the SD card is absent, corrupt, or unavailable.
 
 Conceptually:
 
 ```text
 VFS namespace
 /
-|-- SYSTEM     -> ROMFS
+|-- system     -> ROMFS
 |-- CF         -> future external filesystem
 `-- default tree supplied by filesystem attached at /
 ```
 
-The filesystem attached at `/` is the normal writable filesystem, but it does not own the namespace. If the root filesystem is unavailable, `/SYSTEM` remains present and usable.
+The filesystem attached at `/` is the normal writable filesystem, but it does not own the namespace. If the root filesystem is unavailable, `/system` remains present and usable.
 
 ---
 
@@ -3092,8 +3086,8 @@ The filesystem attached at `/` is the normal writable filesystem, but it does no
 > in build-time JSON configuration (`config/mounts.json`, translated by
 > `tools/mountgen.py`) and established it at boot.  M10 deletes the mount
 > table, the configuration, the generator and the mount phase: VFS owns
-> three static roots -- `/FS`, `/SYSTEM` and `/dev` (36.13) -- and the
-> chosen filesystem driver publishes `/FS` itself.  The M9 description
+> three static roots -- `/fs`, `/system` and `/dev` (36.13) -- and the
+> chosen filesystem driver publishes `/fs` itself.  The M9 description
 > below is kept as the design record of what the table meant; nothing in
 > it is current.
 
@@ -3114,7 +3108,7 @@ Schema:
   "format": "vfs-mounts-v1",
   "mounts": [
     {
-      "path": "/SYSTEM",
+      "path": "/system",
       "filesystem": "romfs",
       "source": "recovery",
       "system": true
@@ -3177,7 +3171,7 @@ A future manifest may look like:
   "format": "vfs-mounts-v1",
   "mounts": [
     {
-      "path": "/SYSTEM",
+      "path": "/system",
       "filesystem": "romfs",
       "source": "recovery",
       "system": true
@@ -3204,7 +3198,7 @@ A future manifest may look like:
 }
 ```
 
-The `source` field is provider-specific. For example, ROMFS may interpret `recovery` as the built-in recovery ROM source, IOC-FAT may interpret `ioc.0` as the MCU filesystem service, while a future native provider may interpret `cf.0` or `sd.1` as a block object it serves. VFS does not interpret those strings.
+The `source` field is provider-specific. For example, ROMFS may interpret `recovery` as the built-in recovery ROM source, IOC-FAT may interpret `ioc.0` as the MCU filesystem driver, while a future native provider may interpret `cf.0` or `sd.1` as a block object it serves. VFS does not interpret those strings.
 
 ### 32.5.1 Manifest validation
 
@@ -3231,13 +3225,13 @@ more entries than the kernel mount-table capacity
 
 The build tool is told which providers are built into the kernel image. A system entry naming any other provider would have to be loaded from a module, which the system filesystem must never require (section 32.32.2). Such a manifest is therefore rejected at build time.
 
-Because native VFS pathname matching is case-insensitive, `/SYSTEM`, `/system`, and `/System` collide. Configured mount paths must use a canonical spelling: absolute, upper-case ASCII, no trailing or repeated `/`. The tool rejects non-canonical paths; it never rewrites them. The table in ROM is therefore exactly what the reviewed manifest says.
+Because native VFS pathname matching is case-insensitive, `/system`, `/system`, and `/System` collide. Configured mount paths must use a canonical spelling: absolute, upper-case ASCII, no trailing or repeated `/`. The tool rejects non-canonical paths; it never rewrites them. The table in ROM is therefore exactly what the reviewed manifest says.
 
 ---
 
 ## 32.6 Initial mount restrictions
 
-M9 limits configured mountpoints to `/` or one root component such as `/SYSTEM`, `/CF`, or `/SD2`. Arbitrary nested mountpoints may be added later if a real use case appears.
+M9 limits configured mountpoints to `/` or one root component such as `/system`, `/CF`, or `/SD2`. Arbitrary nested mountpoints may be added later if a real use case appears.
 
 ---
 
@@ -3245,7 +3239,7 @@ M9 limits configured mountpoints to `/` or one root component such as `/SYSTEM`,
 
 `readdir("/")` is a VFS operation. The visible root merges entries from the filesystem attached at `/` with configured root-level mountpoints.
 
-If the SD root contains `GAMES`, `TOOLS`, and `README.TXT`, while VFS has `/SYSTEM` and `/CF`, then `ls /` exposes all five entries. If the backing root also contains a real entry named `SYSTEM`, the VFS mountpoint wins and shadows it while mounted.
+If the SD root contains `GAMES`, `TOOLS`, and `README.TXT`, while VFS has `/system` and `/CF`, then `ls /` exposes all five entries. If the backing root also contains a real entry named `SYSTEM`, the VFS mountpoint wins and shadows it while mounted.
 
 ---
 
@@ -3259,7 +3253,7 @@ Native pathname comparison is ASCII case-insensitive:
 
 ```text
 /system/monitor.zex
-/SYSTEM/MONITOR.ZEX
+/system/MONITOR.ZEX
 /System/Monitor.Zex
 ```
 
@@ -3273,8 +3267,8 @@ The rule is split between VFS and providers:
 VFS selects the owning mount before calling a provider. M9 mount selection is flat (section 32.6): if the first component matches a mounted root-level mountpoint, that mount owns the path; otherwise the filesystem attached at `/` owns it. For example:
 
 ```text
-/SYSTEM/monitor.zex
-    mount       = /SYSTEM
+/system/monitor.zex
+    mount       = /system
     FS-relative = /monitor.zex
     provider    = ROMFS
 
@@ -3332,8 +3326,8 @@ VFS must not contain FAT parsing, FS2 command numbers, IOC READY/DONE handling, 
 > path-based table, provider-private state) and the separate "filesystem
 > providers" table -- is **deleted**.  There are two providers and both
 > are nucleus code: the ROMFS reader in the recovery store and the FS
-> publication below `/FS` (section 36.13).  A filesystem *driver* is an
-> ordinary service image that publishes `/FS`; the nucleus FS provider
+> publication below `/fs` (section 36.13).  A filesystem *driver* is an
+> ordinary driver image that publishes `/fs`; the nucleus FS provider
 > routes the call to that publication's endpoint, so no registration table
 > and no `ZFS_OP_*` dispatch vocabulary remain.
 
@@ -3347,7 +3341,7 @@ VFS must not contain FAT parsing, FS2 command numbers, IOC READY/DONE handling, 
 > the provider registry above.  What a filesystem client uses today is
 > the FILE protocol of `abi/zos/protocol.h` (`ZFILE_OP_*`) through the
 > namespace, and what a filesystem driver implements is the FS protocol
-> (`ZFS_OP_*`) below its `/FS` publication; both are IPC protocols, not
+> (`ZFS_OP_*`) below its `/fs` publication; both are IPC protocols, not
 > C operation tables.  The contract text below is the M9 record.
 
 Contract for every path argument:
@@ -3385,15 +3379,15 @@ There is exactly one ROMFS lookup: the provider's ASCII-folded name match over t
 
 The current ROMFS format may remain flat; there is no M9 requirement to add on-ROM subdirectories.
 
-VFS initializes before dynamic module loading. The ROMFS provider is statically available, registers with VFS during bootstrap, and is instantiated as the configured system filesystem at `/SYSTEM`.
+VFS initializes before dynamic module loading. The ROMFS provider is statically available, registers with VFS during bootstrap, and is instantiated as the configured system filesystem at `/system`.
 
-Normal boot must therefore not require a separate `romfs_load_zmod()`-style path once VFS bootstrap is complete. After `/SYSTEM` is mounted, module and executable loading consume files through generic VFS-backed source adapters. A tiny direct ROM access primitive remains underneath the ROMFS provider, but it is not a parallel filesystem API.
+Normal boot must therefore not require a separate `romfs_load_zmod()`-style path once VFS bootstrap is complete. After `/system` is mounted, module and executable loading consume files through generic VFS-backed source adapters. A tiny direct ROM access primitive remains underneath the ROMFS provider, but it is not a parallel filesystem API.
 
 ---
 
-## 32.14 `/SYSTEM` policy
+## 32.14 `/system` policy
 
-`/SYSTEM` contains the minimum ROM-resident material required to boot ZephyrOS, recover from external-storage failure, and meaningfully diagnose the machine.
+`/system` contains the minimum ROM-resident material required to boot ZephyrOS, recover from external-storage failure, and meaningfully diagnose the machine.
 
 The exact contents are build-time configuration, not VFS policy. Typical contents include essential ZMODs, the monitor, possibly the recovery shell, diagnostic assets, and fonts/resources required by the boot environment.
 
@@ -3402,8 +3396,9 @@ The exact contents are build-time configuration, not VFS policy. Typical content
 ## 32.15 Generic block devices
 
 > **Deleted (M10, work package 42c).**  The block class, its geometry
-> record, its raw-block operations table and `include/zephyros/block.h`
-> are **gone**, together with the deferred SD-over-IOC driver plan.  No
+> record, its raw-block operations table and the deleted module-facing
+> `block.h` are **gone**, together with the deferred SD-over-IOC driver
+> plan.  No
 > driver serves a block protocol today: a future native filesystem
 > introduces the block protocol it needs as an IPC protocol (the same
 > way FILE and FS are protocols), not as a C operations table.  The M9
@@ -3417,7 +3412,7 @@ The exact contents are build-time configuration, not VFS policy. Typical content
 
 This is an architectural invariant. `drivers/ioc/` owns SIO1 framing, command and bulk lanes, READY/DONE lifecycle, sequencing, timeouts/recovery and semantic IOC status. It does not own namespace, FAT semantics, file handles, directory traversal, caching policy or native path syntax.
 
-A raw-block driver and IOC-FAT would consume the same IOC service:
+A raw-block driver and IOC-FAT would consume the same IOC driver:
 
 ```text
                  the IOC protocol
@@ -3426,14 +3421,14 @@ A raw-block driver and IOC-FAT would consume the same IOC service:
                   v            v
           a future block   IOC-FAT filesystem
           driver (deferred)  (the FS protocol
-                              below /FS)
+                              below /fs)
 ```
 
 ---
 
 ## 32.17 IOC-FAT filesystem provider
 
-The MCU FatFs service is exposed as a resident ZMOD filesystem provider:
+The MCU FatFs driver is exposed as a resident ZMOD filesystem provider:
 
 ```text
 iocfat.zmod
@@ -3442,14 +3437,14 @@ iocfat.zmod
 Stack:
 
 ```text
-VFS (the FS provider below /FS)
+VFS (the FS provider below /fs)
  |
  v
-IOC-FAT service image (iocfat.zmod)
+IOC-FAT driver image (iocfat.zmod)
  |
  | FS2 filesystem protocol
  v
-the IOC service image (ioc.zmod)
+the IOC driver image (ioc.zmod)
  |
  v
 MCU FatFs
@@ -3459,7 +3454,7 @@ SD
 ```
 
 `iocfat.zmod` declares its IOC dependency in its manifest, publishes
-`/FS`, and serves the FS protocol from its service dispatch.
+`/fs`, and serves the FS protocol from its driver dispatch.
 
 IOC-FAT owns FS2 commands, file/directory tokens, generation/cookie handling, MCU/FatFs error translation, filesystem-specific command/bulk sequencing, and its file-data cache (section 32.19). FS2 tokens never escape into the native application ABI.
 
@@ -3472,9 +3467,9 @@ The current backend may retain FAT 8.3 limitations if required by deployed firmw
 The block-device layer deliberately enables Z80-side filesystems:
 
 ```text
-the FS provider below /FS
+the FS provider below /fs
  |
- +--> IOC-FAT service image (today)
+ +--> IOC-FAT driver image (today)
  |
  +--> a future native filesystem
           |
@@ -3570,7 +3565,7 @@ These are VFS descriptors, not Unix `stdin/stdout/stderr`; console I/O remains i
 
 ## 32.23 Current working directory
 
-CWD is a VFS namespace concept, not a provider token exposed to applications. Applications see canonical paths such as `/`, `/SYSTEM`, `/GAMES` and `/CF/WORK`. Internally VFS may cache private node handles, but `chdir()` crosses mounts transparently.
+CWD is a VFS namespace concept, not a provider token exposed to applications. Applications see canonical paths such as `/`, `/system`, `/GAMES` and `/CF/WORK`. Internally VFS may cache private node handles, but `chdir()` crosses mounts transparently.
 
 ---
 
@@ -3657,7 +3652,7 @@ The ABI does not expose inode numbers, FAT clusters, sectors, FS2 tokens, ROMFS 
 
 ## 32.26 Native filesystem syscall family
 
-M9 exposes native services semantically equivalent to:
+M9 exposes native drivers semantically equivalent to:
 
 ```text
 FS_OPEN      (flags include CREATE, EXCL, TRUNC)
@@ -3783,7 +3778,7 @@ VFS does not silently turn rename into copy. M10 userland may implement `mv` as 
 
 ## 32.32 Boot lifecycle and system filesystem
 
-VFS is a foundational kernel service and initializes immediately after the minimal kernel environment is established.
+VFS is a foundational kernel driver and initializes immediately after the minimal kernel environment is established.
 
 ### 32.32.1 Minimal kernel establishment
 
@@ -3821,7 +3816,7 @@ find the unique system=true entry
 instantiate system filesystem
     |
     v
-publish /SYSTEM
+publish /system
 ```
 
 For the initial system:
@@ -3829,7 +3824,7 @@ For the initial system:
 ```text
 provider   = romfs
 source     = recovery
-mountpoint = /SYSTEM
+mountpoint = /system
 system     = true
 ```
 
@@ -3837,14 +3832,14 @@ The system provider must be statically available, have no dependency on ZMODs, d
 
 ### 32.32.3 Module-loading phase
 
-Once `/SYSTEM` exists, boot assets are loaded through VFS:
+Once `/system` exists, boot assets are loaded through VFS:
 
 ```text
-/SYSTEM/sio.zmod
-/SYSTEM/ioc.zmod
-/SYSTEM/hid.zmod
-/SYSTEM/v9958.zmod
-/SYSTEM/iocfat.zmod
+/system/sio.zmod
+/system/ioc.zmod
+/system/hid.zmod
+/system/v9958.zmod
+/system/iocfat.zmod
 ...
 ```
 
@@ -3862,7 +3857,7 @@ module loader
 
 The same source-neutral approach should later be used for ZEX loading.
 
-Loadable modules may register devices, filesystem providers, and other resident services. `iocfat.zmod`, for example, discovers IOC and registers the `iocfat` provider with VFS.
+Loadable modules may register devices, filesystem providers, and other resident drivers. `iocfat.zmod`, for example, discovers IOC and registers the `iocfat` provider with VFS.
 
 ### 32.32.4 Normal mount phase
 
@@ -3874,7 +3869,7 @@ After resident modules and their providers are loaded, VFS instantiates the rema
 /SD2    -> future provider
 ```
 
-For non-system mounts, `required=true` makes failure a boot/configuration failure; `required=false` tolerates failure. The optional root filesystem can therefore fail while `/SYSTEM` remains available for recovery.
+For non-system mounts, `required=true` makes failure a boot/configuration failure; `required=false` tolerates failure. The optional root filesystem can therefore fail while `/system` remains available for recovery.
 
 ### 32.32.5 VFS ready phase
 
@@ -3889,16 +3884,16 @@ VFS_PHASE_BOOTSTRAP
     and the in-process FILE endpoint
 
 VFS_PHASE_READY
-    the boot manifest's services have been placed
-    (service_load_all), their publications installed
+    the boot manifest's drivers have been placed
+    (driver_load_all), their publications installed
     and their inits run: normal process filesystem
-    services are available
+    drivers are available
 ```
 
 > **M10 (work package 42c).**  The phase that loaded resident modules
 > through VFS and let them register devices and providers is **deleted**,
 > as is the configuration-selected mount phase: there is no mount table
-> and no registry.  A service image brings its own object up by publishing its
+> and no registry.  A driver image brings its own object up by publishing its
 > name (section 36.13); the phase the client sees is only
 > "bootstrap" then "ready".
 
@@ -3909,7 +3904,7 @@ A literal phase enum is not required, but this lifecycle and dependency order ar
 System filesystem failure:
 
 ```text
-/SYSTEM unavailable
+/system unavailable
     |
     v
 cannot load required modules
@@ -3924,7 +3919,7 @@ Normal root failure:
 / fails to mount
     |
     v
-/SYSTEM remains available
+/system remains available
     |
     v
 recovery monitor / diagnostics remain usable
@@ -3966,7 +3961,7 @@ The tool emits a single generated C source containing a constant array, one reco
 
 ```c
 const struct vfs_mount_config vfs_mount_table[] = {
-    { "/SYSTEM", 7u, "romfs",  "recovery", VFS_MOUNT_SYSTEM   },
+    { "/system", 7u, "romfs",  "recovery", VFS_MOUNT_SYSTEM   },
     { "/",       1u, "iocfat", "ioc.0",    VFS_MOUNT_OPTIONAL }
 };
 const uint8_t vfs_mount_count = 2u;
@@ -4011,7 +4006,7 @@ Path resolution (32.8) considers only `MOUNTED` entries. Selection is flat: the 
 
 Root enumeration (32.7) lists the `MOUNTED` entries whose path has exactly one component, plus the entries of the filesystem mounted at `/`.
 
-A `FAILED` or never-mounted entry contributes nothing to the namespace. In particular, a failed optional `/` leaves only the root-level mountpoints, such as `/SYSTEM`, visible.
+A `FAILED` or never-mounted entry contributes nothing to the namespace. In particular, a failed optional `/` leaves only the root-level mountpoints, such as `/system`, visible.
 
 ### 32.33.6 Invariants
 
@@ -4074,7 +4069,7 @@ M9 preserves these rules:
 9. **Native path comparison is ASCII case-insensitive.**
 10. **`ZOS_PATH_MAX = 128`.**
 11. **`ZFS_NAME_MAX = 64`.**
-12. **ROMFS is a filesystem provider mounted at `/SYSTEM`.**
+12. **ROMFS is a filesystem provider mounted at `/system`.**
 13. **The normal writable SD FAT filesystem is mounted at `/`.**
 14. **Filesystem providers do not know their external mountpoint.**
 15. **IOC is transport, not a filesystem or block-device API.**
@@ -4093,7 +4088,7 @@ M9 preserves these rules:
 28. **IOC-FAT keeps a write-through 512-byte-slot Z80 file-data cache; ROMFS keeps none.**
 29. **The IOC-FAT cache slot count is build-time configurable and reported in the bank-7 ledger.**
 30. **CP/M semantics remain confined to a later personality layer.**
-31. **Failure of external storage must not remove `/SYSTEM` recovery access.**
+31. **Failure of external storage must not remove `/system` recovery access.**
 32. **Providers are path-based; VFS keeps no node objects and matches only root-level mountpoints itself.**
 33. **Bank-7 residency is budgeted (section 32.39); each package reports against the ledger.**
 
@@ -4131,10 +4126,11 @@ drivers/
     sd/              # future: first block driver, with its first consumer
         ...
 
-include/zephyros/
-    vfs.h
+abi/zos/
     fs.h
-    block.h
+
+kernel/vfs/
+    vfs.h
 
 config/
     mounts.json
@@ -4157,7 +4153,7 @@ This is architectural guidance, not a requirement to create every file immediate
                      system=true mount
                                 |
                                 v
-                            /SYSTEM
+                            /system
                               ROMFS
                                 |
                       load resident ZMODs
@@ -4169,7 +4165,7 @@ This is architectural guidance, not a requirement to create every file immediate
           +---------------------+---------------------+
           |                                           |
           v                                           v
-      /SYSTEM                                      /
+      /system                                      /
        ROMFS                                    IOC-FAT
       (no cache)                           (file-data cache)
           |                                           |
@@ -4199,7 +4195,7 @@ This is architectural guidance, not a requirement to create every file immediate
                              the IOC protocol
 ```
 
-The system-filesystem rule makes VFS part of the boot foundation rather than a service layered on top of module loading: the kernel mounts one dependency-free built-in filesystem first, then uses it to obtain the modules and providers required to construct the rest of the machine.
+The system-filesystem rule makes VFS part of the boot foundation rather than a driver layered on top of module loading: the kernel mounts one dependency-free built-in filesystem first, then uses it to obtain the modules and providers required to construct the rest of the machine.
 
 ### 32.38.1 Implementation notes (stage 25)
 
@@ -4209,22 +4205,20 @@ the implementation record.
 
 ```text
 abi/zos/fs.h             native metadata/limit ABI (stat, dirent, flags;
-                         no statfs) -- syscall blocks arrive in pkg 27;
-                         include/zephyros/fs.h re-exports it
-include/zephyros/vfs.h   (deleted in M10: the FS provider lives
-                         in kernel/vfs/, the protocol in abi/zos/)
-kernel/vfs/              ns.c (the three static roots), path.c,
-                         ns_file.c, process.c, workspace.c
+                         no statfs) -- syscall blocks arrive in pkg 27
+kernel/vfs/              router.c (the three static roots), dev.c,
+                         fs.c, system.c, handles.c, path.c,
+                         workspace.c
 kernel/romfs/romfs.c     the nucleus ROMFS reader (fixed core)
 tools/mountgen.py        (deleted in M10) manifest -> a mount table
 ```
 
 Implemented (M9): normalization; flat first-component root selection
-(section 32.8, so `/SYSTEMX` does not select `/SYSTEM`); the kernel file
+(section 32.8, so `/SYSTEMX` does not select `/system`); the kernel file
 API on caller-provided `vfs_file` storage (deleted in M10 with the M9 VFS);
 the mutation entry points that turn a null provider operation into
 `ZOS_EROFS`; one ASCII case-folded ROMFS lookup (section 32.13) serving
-the reader, the ZEX launcher and the boot assets; `/SYSTEM` available from
+the reader, the ZEX launcher and the boot assets; `/system` available from
 `vfs_init()` before any image is placed; every boot ZMOD and `monitor.zex`
 opened by VFS path.
 
@@ -4272,9 +4266,9 @@ docs/vfs.md            VFS core, provider ABI, descriptor/CWD model,
                        syscalls, ROMFS and IOC-FAT providers
 docs/abi.md            native syscall ABI: FS_* family, SYS_EXEC and the
                        startup block v1 argument contract, error values
-docs/devices.md        the service model, the protocol classes and the
+docs/devices.md        the driver model, the protocol classes and the
                        resident IOC-FAT provider
-docs/module-format.md  the ZMOD service image and the resident loader
+docs/module-format.md  the ZMOD driver image and the resident loader
 docs/memory.md         bank-7 geometry, the M9 runtime-data inventory, the
                        common-memory budget and the final ledger
 docs/boot.md           the boot path and the VFS lifecycle
@@ -4392,7 +4386,7 @@ Suspension and resume:
   `SYS_EXEC` path is staged in the VFS workspace's path view in the fixed
   core (work package 45b correction 01), because the bind inside
   `process_prepare` hands it to whichever provider owns the path - the
-  `/FS` provider runs in a bank-6 window, where bank-7 `_DATA` is not
+  `/fs` provider runs in a bank-6 window, where bank-7 `_DATA` is not
   visible (section 36.5), and common-memory usage is reported on its own
   `common:` ledger line beside the `bank7:` line, because common memory
   is the scarcest region in the machine.  Nothing is placed there for
@@ -4428,7 +4422,7 @@ Acceptance: the nested exec in the M10 outcome image
 (`make fs-selftest`, replayed by `tests/test_fs_selftest_sim.py`), which
 checks the child's tail and exit status and that the parent resumes over
 its own bank with its gate state intact; the ABI, the geometry and the
-launch primitive's structure are pinned by `include/zephyros/process.h`'s
+launch primitive's structure are pinned by `kernel/include/process.h`'s
 static asserts and by `kernel/process/launch.asm`'s shift-chain comments.
 
 ---
@@ -4441,14 +4435,14 @@ M9 acceptance uses an ordinary native program such as:
 fstest.zex
 ```
 
-loaded from `/SYSTEM`. It exercises the public native filesystem ABI, not IOC or FS2 directly.
+loaded from `/system`. It exercises the public native filesystem ABI, not IOC or FS2 directly.
 
 Acceptance covers at least:
 
 ```text
 namespace:
     /
-    /SYSTEM
+    /system
     root mountpoint visibility
     mountpoint shadowing
     case-insensitive lookup
@@ -4456,7 +4450,7 @@ namespace:
     relative paths
     .
     ..
-    CWD crossing between / and /SYSTEM
+    CWD crossing between / and /system
 
 ROMFS:
     open/read/stat
@@ -4527,7 +4521,7 @@ physical rows were accepted as follows, as recorded in
 [`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md)
 section 8:
 - production with and without a FAT card, and the monitor launching from
-  `/SYSTEM`, **passed on byte-identical production bytes** (ROM `f4da0496…`,
+  `/system`, **passed on byte-identical production bytes** (ROM `f4da0496…`,
   physically run in package 30c);
 - the `m9-selftest` integration image and the console fallback rows were
   **accepted by the project owner without a fresh bench run**. No code
@@ -4554,7 +4548,7 @@ M8  COMPLETE (host + physical acceptance passed)
 M9  COMPLETE (host + simulator; physical by byte identity + owner acceptance)
 │
 ├── VFS owns one namespace rooted at /
-├── early system filesystem mounted at /SYSTEM
+├── early system filesystem mounted at /system
 ├── VFS-backed boot module loading
 ├── filesystem-provider registration API
 ├── path-based provider ABI
@@ -4598,7 +4592,7 @@ M10 built:
   core and a cold half with upcall shims, and the bank-6 resident driver
   domain;
 - the typed namespace: the VFS root with the three static providers
-  (`/FS`, `/SYSTEM`, `/dev`), host-built `/dev` publications and the
+  (`/fs`, `/system`, `/dev`), host-built `/dev` publications and the
   global owner-tagged handle table (`bind`/`call`/`unbind`, `ns_enum`,
   `chdir`/`getcwd`);
 - the IPC substrate: 32-byte frames, direct descriptor copies, nesting,
@@ -4841,7 +4835,7 @@ the filesystem syscall front end (FS_*)      replaced by typed object protocols
 the console syscall family                   replaced by the CONSOLE protocol
 the device/class/capability registry          replaced by /dev host publications + endpoint table
 the filesystem-provider registry/mount model replaced by the three static root namespace providers
-the driver-entry-table kernel import table    replaced by the service boot bundle
+the driver-entry-table kernel import table    replaced by the driver boot bundle
 the bank-7 driver arena                       resident drivers live at host-linked addresses in bank 6
 runtime device-name registration/probing      the selected image defines the machine
 ```
@@ -4885,7 +4879,7 @@ executing while the window shows bank 6, so it does not have to be fixed.
 must never be in bank 7's cold half.  The rule is about *any* buffer a
 bank-6 provider reads, a path included: work package 45b correction 01
 found `SYS_EXEC` staging the caller's path in cold-half `_DATA`, so a
-`/FS` executable could not be resolved (`ERR: 02`) while every syscall
+`/fs` executable could not be resolved (`ERR: 02`) while every syscall
 that passed a workspace path worked.  The kernel's provider-facing
 buffers live in the fixed core: the VFS workspace's path views at
 `5800h-5FFFh` (`vfs_workspace`, `mapcheck`'s `fixed-required` list).
@@ -4942,7 +4936,7 @@ The public object lifecycle is deliberately small:
 
 ```text
 bind(path, flags) -> handle, type   resolve a namespace name and bind an instance
-call(handle, op, frame)             synchronous protocol operation on that instance
+call(dependency_ref, op, frame)     synchronous protocol operation on that instance
 unbind(handle)                      release the bound instance
 ```
 
@@ -5034,8 +5028,8 @@ There are no raw cross-domain pointers.
   M9 `FS_READ`. The path-B stub costs 58 bytes of common memory.
 - **Driver I/O rule.** Driver buffers that are the source or target of
   `copy_in`/`copy_out` (I/O buffers, caches, staging) live in bank 6's
-  `8000h-BFFFh`, the `SERVICE_IO` data area. The loader refuses an image
-  whose `SERVICE_IO` data falls outside that range.
+  `8000h-BFFFh`, the `DRIVER_IO` data area. The loader refuses an image
+  whose `DRIVER_IO` data falls outside that range.
 
 ---
 
@@ -5111,7 +5105,7 @@ layout.
 A driver image declares:
 
 - its hot segment, linked for the hot tier;
-- its `SERVICE_IO` data, linked in `8000h-BFFFh`;
+- its `DRIVER_IO` data, linked in `8000h-BFFFh`;
 - its boot segment and bulk data, linked for the boot/bulk tier;
 - the protocol type(s) and endpoint(s) it implements;
 - any `/dev` objects it publishes: namespace name, 8-bit type, endpoint and
@@ -5157,8 +5151,8 @@ reset
 nucleus initialization (fixed core and cold half)
   v
 VFS root + three static nucleus namespace providers
-  |-- /SYSTEM -> ROMFS provider (immediately usable)
-  |-- /FS     -> FS provider
+  |-- /system -> ROMFS provider (immediately usable)
+  |-- /fs     -> FS provider
   `-- /dev    -> DEVICE provider
   v
 copy the host-selected resident driver images into bank 6
@@ -5168,13 +5162,13 @@ pre-resolved inter-driver dependency references
 run each driver's boot segment              mode-10 gate, Q = 6
   +--> IOC, HID, video, serial, sound ...    protocol implementations
   +--> selected console driver                publishes /dev/console
-  +--> IOC-FAT driver                         filesystem implementation behind /FS
+  +--> IOC-FAT driver                         filesystem implementation behind /fs
   v
 resolve the configured boot program through the namespace and execute it
 ```
 
 There is a single ROMFS reader in the system, used by the static ROMFS
-namespace provider for `/SYSTEM`. The early console and panic path stay in
+namespace provider for `/system`. The early console and panic path stay in
 the nucleus and are usable before any `CONSOLE` driver exists.
 
 There is no runtime mount pass, device registration pass, class discovery
@@ -5191,8 +5185,8 @@ namespace providers:
 
 ```text
 /
-|-- FS        -> FS namespace provider
-|-- SYSTEM    -> ROMFS namespace provider
+|-- fs        -> FS namespace provider
+|-- system    -> ROMFS namespace provider
 `-- dev       -> DEVICE namespace provider
 ```
 
@@ -5206,26 +5200,26 @@ There is no M10 runtime mount table, provider registration, root-filesystem
 merge or shadowing rule. The older M9 mount/provider machinery is retired
 rather than carried beside the new model.
 
-### FS namespace provider — `/FS`
+### FS namespace provider — `/fs`
 
-The static FS provider is nucleus routing code. It owns the `/FS` root and
+The static FS provider is nucleus routing code. It owns the `/fs` root and
 forwards the remainder to the filesystem driver selected by the host build,
 initially IOC-FAT:
 
 ```text
-bind("/FS/GAMES/ZAXXON.ROM", READ)
+bind("/fs/GAMES/ZAXXON.ROM", READ)
     VFS -> FS provider -> IOC-FAT driver
     -> FILE instance
 ```
 
 The FS provider contains no FAT/FS2 semantics. The selected filesystem
 driver owns pathname meaning, file creation, mutation, enumeration and
-backend state below `/FS`.
+backend state below `/fs`.
 
-### ROMFS namespace provider — `/SYSTEM`
+### ROMFS namespace provider — `/system`
 
 The static ROMFS provider is nucleus code over the one built-in ROMFS
-reader. It owns `/SYSTEM`, needs no bank-6 driver and produces ordinary
+reader. It owns `/system`, needs no bank-6 driver and produces ordinary
 `FILE` instances for ROM-resident objects. It is the recovery namespace and
 is available before resident drivers are initialized.
 
@@ -5254,7 +5248,7 @@ driver may implement several types.
 
 ### Provider-owned hierarchy; no universal DIRECTORY protocol
 
-A slash below a root provider is syntax owned by that provider. `/FS/GAMES`
+A slash below a root provider is syntax owned by that provider. `/fs/GAMES`
 may mean a filesystem directory; `/dev/input` may simply be a grouping in a
 static device table; ROMFS may remain flat internally. ZephyrOS therefore
 defines **no universal `DIRECTORY` object protocol** and creates no generic
@@ -5313,10 +5307,10 @@ Operations on a bound object are IPC messages to the handle's endpoint.
 VFS is not in the data path:
 
 ```text
-bind("/FS/data/log.txt", READ) -> FILE handle backed by IOC-FAT
+bind("/fs/data/log.txt", READ) -> FILE handle backed by IOC-FAT
 call(file, FILE_READ, frame, descriptor) -> IOC-FAT copies to the caller
 
-bind("/SYSTEM/diag.zex", READ) -> FILE handle backed by ROMFS
+bind("/system/diag.zex", READ) -> FILE handle backed by ROMFS
 
 bind("/dev/video", 0) -> VIDEO handle
 call(video, VIDEO_INFO, frame)
@@ -5352,7 +5346,7 @@ Syscalls are the **nucleus ABI**, and they are few:
 
 ```text
 objects      bind(path, u16 flags) -> handle + u8 type
-             call(handle, op, 32-byte frame, descriptors)
+             call(dependency_ref, op, 32-byte frame, descriptors)
              unbind(handle)
 
 namespace    enum(path, cookie, output)
@@ -5553,8 +5547,8 @@ payloads
   geometry, overlap and bounds and pre-encodes the container, so the loader
   only reads descriptors, checks bounds that protect the kernel, copies
   payloads and zeroes BSS.
-- **Media gate:** an executable under `/SYSTEM` must be a ZEX entry
-  (`ROMFS_FLAG_ZEX`); a `DATA` or service-image entry is refused with the
+- **Media gate:** an executable under `/system` must be a ZEX entry
+  (`ROMFS_FLAG_ZEX`); a `DATA` or driver-image entry is refused with the
   ZEX type error, and a filesystem driver's `FILE` has no entry kind and is
   judged by the header alone (work package 42c restored the rule when exec
   moved onto the namespace bind).
@@ -5681,8 +5675,8 @@ The Z80 remains a cooperative, single-running-process machine.
    and ROMFS namespace providers; host-build `/dev` publications; implement
    `bind`, `call`, `unbind`, 8-bit types, global owner-tagged handles,
    namespace enumeration and standard console handles.
-7. **Files on typed handles:** FS provider routes `/FS` to IOC-FAT; ROMFS
-   serves `/SYSTEM`; FILE `open/close/read/write/...` live in `fs.h` over
+7. **Files on typed handles:** FS provider routes `/fs` to IOC-FAT; ROMFS
+   serves `/system`; FILE `open/close/read/write/...` live in `fs.h` over
    bind/call/unbind; remove generic DIRECTORY handles and retire `FS_*`.
 8. **Pruning:** delete the arena/module relocator path, the driver ABI, the
    device/class/capability registry, filesystem-provider registration,
@@ -5726,8 +5720,8 @@ host assembly / drivers:
 
 namespace:
     VFS owns exactly the global root routing
-    /FS -> static FS provider
-    /SYSTEM -> static ROMFS provider and works before bank-6 drivers
+    /fs -> static FS provider
+    /system -> static ROMFS provider and works before bank-6 drivers
     /dev -> static DEVICE provider over the host-built publication table
     provider owns every hierarchy component below its root
     root and provider enumeration work without a DIRECTORY protocol/handle
@@ -5745,8 +5739,8 @@ device publication and composition:
 files:
     fs_open(path, flags) is bind + FILE-type check
     fs_close is unbind
-    /FS file operations use the selected filesystem driver
-    /SYSTEM produces ordinary read-only FILE handles through ROMFS
+    /fs file operations use the selected filesystem driver
+    /system produces ordinary read-only FILE handles through ROMFS
     namespace/path operations (enumeration, mkdir, unlink, rename) require no DIRECTORY handle
     old FS_* syscall front end absent
 
@@ -5830,7 +5824,7 @@ The suite does not acquire arbitrary bank-7 read/write access.
 The primary diagnostic program is:
 
 ```text
-/SYSTEM/diag.zex
+/system/diag.zex
 ```
 
 `diag.zex` is an ordinary ZEX v2 executable.
@@ -5889,7 +5883,7 @@ free primary banks
 auxiliary-memory state
 loaded resident drivers and endpoints
 root namespace providers and /dev publications
-selected filesystem driver behind /FS
+selected filesystem driver behind /fs
 selected CONSOLE driver and its host-wired dependencies
 ```
 
@@ -6186,7 +6180,7 @@ If a fundamental kernel facility is found missing, the omission is treated as an
 The native shell is:
 
 ```text
-/SYSTEM/shell.zex
+/system/shell.zex
 ```
 
 and is an ordinary ZEX v2 application.
@@ -6237,15 +6231,15 @@ resident drivers and host-selected /dev publications
     ->
 standard handles bound to /dev/console
     ->
-launch /SYSTEM/shell.zex
+launch /system/shell.zex
 ```
 
-`/SYSTEM/shell.zex` is part of the recovery filesystem so the native environment remains available without writable SD media.
+`/system/shell.zex` is part of the recovery filesystem so the native environment remains available without writable SD media.
 
 If the shell cannot be loaded or launched, ZephyrOS falls back to:
 
 ```text
-/SYSTEM/monitor.zex
+/system/monitor.zex
 ```
 
 through the established recovery path.
@@ -6263,7 +6257,7 @@ and, on a normal exit, re-executes; switching native ZephyrOS to the shell is
 that one setting plus a `shell.zex` entry in the selected recovery manifest.
 What is **new in M12, not M9**, is the failure policy above: the M9 launcher
 reports and re-executes its configured program, whereas M12 adds the
-`/SYSTEM/monitor.zex` fallback for a shell that cannot be loaded or launched
+`/system/monitor.zex` fallback for a shell that cannot be loaded or launched
 and stops an abnormally failing shell from being relaunched indefinitely.
 That fallback is implemented and tested in M12; M9 leaves the launcher
 unchanged.
@@ -6344,7 +6338,7 @@ Commands such as `cd`, `pwd`, `path` and `exit` necessarily operate on shell-own
 
 For architectural simplicity and compactness, M12 applies the same model to the remaining core commands.
 
-This packaging choice is deliberate but does not make the commands kernel services. They remain ordinary userland logic inside `shell.zex`.
+This packaging choice is deliberate but does not make the commands kernel drivers. They remain ordinary userland logic inside `shell.zex`.
 
 ---
 
@@ -6353,27 +6347,27 @@ This packaging choice is deliberate but does not make the commands kernel servic
 The kernel/VFS namespace is explicit:
 
 ```text
-/FS/...       normal writable filesystem namespace
-/SYSTEM/...   recovery ROMFS namespace
+/fs/...       normal writable filesystem namespace
+/system/...   recovery ROMFS namespace
 /dev/...      device namespace
 ```
 
-For interactive UX the shell presents `/FS` as the ordinary filesystem
+For interactive UX the shell presents `/fs` as the ordinary filesystem
 root. This is **userland syntax only**; VFS itself never aliases paths.
 
 Rules:
 
 ```text
-internal CWD /FS/GAMES        displayed by the shell as /GAMES
-user /GAMES/ZAXXON.ROM        translated by the shell to /FS/GAMES/ZAXXON.ROM
+internal CWD /fs/GAMES        displayed by the shell as /GAMES
+user /GAMES/ZAXXON.ROM        translated by the shell to /fs/GAMES/ZAXXON.ROM
 user /dev/video               kept as /dev/video
-user /SYSTEM/diag.zex         kept as /SYSTEM/diag.zex
-user /FS/dev                  explicitly names the filesystem entry /dev below /FS
+user /system/diag.zex         kept as /system/diag.zex
+user /fs/dev                  explicitly names the filesystem entry /dev below /fs
 ```
 
-`/FS`, `/SYSTEM` and `/dev` are the reserved global-root spellings. Any
+`/fs`, `/system` and `/dev` are the reserved global-root spellings. Any
 other absolute path entered at the shell is filesystem shorthand and gains
-the `/FS` prefix. Relative paths are resolved against the shell's actual
+the `/fs` prefix. Relative paths are resolved against the shell's actual
 VFS CWD.
 
 This presentation rule lets normal filesystem use look conventional without
@@ -6393,8 +6387,8 @@ A suitable initial internal default is:
 
 ```text
 .
-/FS/BIN
-/SYSTEM
+/fs/BIN
+/system
 ```
 
 Missing path components are skipped.
@@ -6479,7 +6473,7 @@ fs_sync      -> FILE protocol call
 fs_close     -> unbind
 ```
 
-The same API works for `/FS/...` and read-only `/SYSTEM/...` FILE objects.
+The same API works for `/fs/...` and read-only `/system/...` FILE objects.
 
 ### `mv`
 
@@ -6494,7 +6488,7 @@ sync/close
 unlink source through the source filesystem namespace protocol
 ```
 
-with appropriate failure handling. A read-only provider such as `/SYSTEM`
+with appropriate failure handling. A read-only provider such as `/system`
 may of course reject the unlink.
 
 The nucleus does not acquire a hidden cross-provider move implementation for
@@ -6532,9 +6526,9 @@ exists:
     `-- objects published by the selected resident drivers
 ```
 
-The shell starts normally from `/SYSTEM/shell.zex` and may still present
-`/FS` as `/` for interactive filesystem syntax. Read-only commands against
-`/SYSTEM` continue to work. Mutation attempts there report the normal
+The shell starts normally from `/system/shell.zex` and may still present
+`/fs` as `/` for interactive filesystem syntax. Read-only commands against
+`/system` continue to work. Mutation attempts there report the normal
 read-only error.
 
 Absence of writable storage is not fatal to the native recovery environment.
@@ -6601,10 +6595,10 @@ Acceptance covers at least:
 
 ```text
 boot:
-    shell launched from /SYSTEM
+    shell launched from /system
     build with V9958+HID CONSOLE driver
     build with SERIAL-based CONSOLE driver
-    shell available with /FS backing storage unavailable
+    shell available with /fs backing storage unavailable
     monitor fallback when shell is missing/rejected
 
 parser:
@@ -6616,8 +6610,8 @@ parser:
     tail-limit rejection/recovery
 
 built-ins:
-    cd / pwd with /FS display alias and explicit /SYSTEM,/dev paths
-    ls across VFS root, /FS, /SYSTEM and /dev
+    cd / pwd with /fs display alias and explicit /system,/dev paths
+    ls across VFS root, /fs, /system and /dev
     cp
     mv
     rm
@@ -6648,9 +6642,9 @@ CWD:
     child chdir does not alter shell CWD
 
 filesystem policy:
-    mv within /FS through native rename
+    mv within /fs through native rename
     mv across namespace providers through copy/sync/unlink where legal
-    writes to /SYSTEM fail cleanly with EROFS
+    writes to /system fail cleanly with EROFS
 
 native tools:
     launch monitor
@@ -6658,7 +6652,7 @@ native tools:
     return cleanly to shell
 
 recovery:
-    /SYSTEM visible with SD absent
+    /system visible with SD absent
     read-only built-ins work
     mutation failure is clean and non-fatal
 
@@ -6687,7 +6681,7 @@ typed bind/call/unbind object model
 native CONSOLE / VIDEO / INPUT / SERIAL / IOC / optional SOUND protocols
 process lifecycle
 ZEX v2 native executable format
-/FS writable filesystem namespace and /SYSTEM recovery namespace
+/fs writable filesystem namespace and /system recovery namespace
 extended/far memory
 far code/data
 complete diagnostics

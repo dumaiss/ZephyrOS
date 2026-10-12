@@ -5,11 +5,12 @@
  * SYS_GETCWD.  Each body validates its complete argument block, copies the
  * caller path into the shared bank-7 VFS workspace path view, normalizes it
  * against the caller's CWD and hands the canonical absolute path to the VFS
- * root router (kernel/vfs/ns.c).  The namespace enumeration writes entries
+ * root router (kernel/vfs/router.c).  The namespace enumeration writes
+ * entries
  * into the caller buffer window through the checked bank copy gate.
  *
  * The object family runs at the outermost call level: when the resolved
- * handle names a `/FS` object, the FS provider is entered as plain C
+ * handle names a `/fs` object, the FS provider is entered as plain C
  * (`vfs_ns_fs_call`), so the driver the provider forwards to is dispatched
  * by the IPC layer as an outermost call and runs on the driver stack
  * (architecture 36.5, 36.9).  Every other handle - a device object, the
@@ -25,11 +26,10 @@
 #include "zos/ipc.h"
 #include "zos/object.h"
 #include "zos/syscall.h"
-#include "zephyros/errno.h"
-#include "zephyros/process.h"
+#include "zos/errno.h"
+#include "process.h"
 
 #include "kernel/vfs/vfs.h"
-#include "kernel/vfs/ns.h"
 
 #include "diag.h"
 #include "object.h"

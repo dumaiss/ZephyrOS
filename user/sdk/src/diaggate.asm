@@ -14,12 +14,12 @@
 
 	.module zos_diaggate
 
-	.globl _zex_diag_mem_read
-	.globl _zex_diag_mem_write
-	.globl _zex_diag_io_in
-	.globl _zex_diag_io_out
-	.globl _zex_diag_bank_info
-	.globl _zex_diag_system_info
+	.globl _diag_mem_read
+	.globl _diag_mem_write
+	.globl _diag_io_in
+	.globl _diag_io_out
+	.globl _diag_bank_info
+	.globl _diag_system_info
 	.globl _zex_runtime_error
 	.globl _zos_scratch
 
@@ -32,8 +32,8 @@ SYS_DIAG_SYSTEM_INFO = 0x2D
 
 	.area _CODE
 
-; int zex_diag_mem_read(struct zos_diag_mem_read_args *req);  HL = req.
-_zex_diag_mem_read::
+; int diag_mem_read(struct zos_diag_mem_read_args *req);  HL = req.
+_diag_mem_read::
 	ld	de,#_zos_scratch
 	ld	bc,#4
 	ldir
@@ -44,8 +44,8 @@ _zex_diag_mem_read::
 	ex	de,hl
 	ret
 
-; int zex_diag_mem_write(struct zos_diag_mem_write_args *req);  HL = req.
-_zex_diag_mem_write::
+; int diag_mem_write(struct zos_diag_mem_write_args *req);  HL = req.
+_diag_mem_write::
 	ld	de,#_zos_scratch
 	ld	bc,#4
 	ldir
@@ -56,8 +56,8 @@ _zex_diag_mem_write::
 	ex	de,hl
 	ret
 
-; int zex_diag_io_in(struct zos_diag_io_in_args *req);  HL = req.
-_zex_diag_io_in::
+; int diag_io_in(struct zos_diag_io_in_args *req);  HL = req.
+_diag_io_in::
 	ld	a,(hl)
 	ld	(_zos_scratch),a
 	ld	a,#SYS_DIAG_IO_IN
@@ -67,8 +67,8 @@ _zex_diag_io_in::
 	ex	de,hl
 	ret
 
-; int zex_diag_io_out(struct zos_diag_io_out_args *req);  HL = req.
-_zex_diag_io_out::
+; int diag_io_out(struct zos_diag_io_out_args *req);  HL = req.
+_diag_io_out::
 	ld	a,(hl)
 	ld	(_zos_scratch),a
 	inc	hl
@@ -81,8 +81,8 @@ _zex_diag_io_out::
 	ex	de,hl
 	ret
 
-; int zex_diag_bank_info(struct zos_bank_info *out);  HL = out.
-_zex_diag_bank_info::
+; int diag_bank_info(struct zos_bank_info *out);  HL = out.
+_diag_bank_info::
 	ld	(_zos_scratch+8),hl
 	ld	a,#SYS_DIAG_BANK_INFO
 	ld	hl,#0x0000
@@ -97,8 +97,8 @@ _zex_diag_bank_info::
 	ld	de,#2
 	ret
 
-; int zex_diag_system_info(struct zos_diag_system_info *out);  HL = out.
-_zex_diag_system_info::
+; int diag_system_info(struct zos_diag_system_info *out);  HL = out.
+_diag_system_info::
 	ld	(_zos_scratch+8),hl
 	ld	a,#SYS_DIAG_SYSTEM_INFO
 	ld	hl,#_zos_scratch

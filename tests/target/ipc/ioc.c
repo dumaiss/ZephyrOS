@@ -1,11 +1,11 @@
-/* ZephyrOS IPC acceptance: the `ioc` synthetic block service (test
+/* ZephyrOS IPC acceptance: the `ioc` synthetic block driver (test
  * artifact).
  *
  * Bottom of the vfs -> fat -> ioc chain.  READ fills a 512-byte block in
  * bank 6, deterministic in the object handle, and either copies the
  * requested slice straight out through the caller descriptor (the
  * "direct" variant: the descriptor id travels down the chain and the
- * service holding the data copies it straight to the caller) or leaves
+ * driver holding the data copies it straight to the caller) or leaves
  * the block in its own buffer for `fat` to stage up the chain (the
  * "staged" variant).
  *
@@ -14,12 +14,12 @@
  * payload[0..1] and its length in payload[2..3].
  */
 
-#include "zephyros/errno.h"
-#include "zephyros/ipc.h"
+#include "zos/errno.h"
+#include "driver.h"
 
 #include "ipc_test.h"
 
-static const struct ipc_service_api *api;
+static const struct driver_api *api;
 static uint8_t ioc_block[IPC_BLOCK_BYTES];
 static uint16_t ioc_block_address;
 
@@ -76,7 +76,7 @@ int16_t ioc_dispatch(struct zos_ipc_frame *frame)
 	return ioc_read(frame);
 }
 
-uint8_t ipc_ioc_init(const struct ipc_service_boot *boot)
+uint8_t ipc_ioc_init(const struct driver_boot *boot)
 {
 	api = boot->api;
 	ioc_block_address = (uint16_t)ioc_block;

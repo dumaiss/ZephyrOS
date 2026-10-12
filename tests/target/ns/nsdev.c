@@ -1,24 +1,24 @@
 /* ZephyrOS namespace acceptance: the `nsdev` synthetic publisher (test
  * artifact).
  *
- * One resident bank-6 service whose publications give the DEVICE provider
+ * One resident bank-6 driver whose publications give the DEVICE provider
  * a second and third protocol type and a second grouping container
  * (tests/target/include/ns_test.h).  The image boots the real SIO and
- * console services beside it, so the table it installs is the production
+ * console drivers beside it, so the table it installs is the production
  * one plus these two test-only names.
  *
- * The service is a test double: its jobs are to be reachable through a
+ * The driver is a test double: its jobs are to be reachable through a
  * bound handle - `call` must arrive at this dispatch with the caller's
  * frame - and to answer deterministically.  It keeps no state and needs
  * no dependency.
  */
 
-#include "zephyros/errno.h"
-#include "zephyros/ipc.h"
+#include "zos/errno.h"
+#include "driver.h"
 
 #include "ns_test.h"
 
-/* Calls served, in the service's own SERVICE_IO area (bank 6's
+/* Calls served, in the driver's own DRIVER_IO area (bank 6's
  * 8000h-BFFFh, where a nucleus copy can reach it): the replay reads it
  * back to prove the bound-handle calls really arrived here. */
 uint16_t nsdev_calls;
@@ -44,7 +44,7 @@ int16_t nsdev_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-uint8_t nsdev_init(const struct ipc_service_boot *boot)
+uint8_t nsdev_init(const struct driver_boot *boot)
 {
 	(void)boot;
 	return 0u;

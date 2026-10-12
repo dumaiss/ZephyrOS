@@ -1,7 +1,7 @@
 /* ZephyrOS SIO0/B driver implementation (drivers/sio/).
  *
  * Wraps the same physical channel as the early console (data 22h,
- * control 23h, 115200 8N1) as a resident-service operation set with
+ * control 23h, 115200 8N1) as a resident-driver operation set with
  * bounded polling operations.  It is polling-only: no interrupts are
  * used and the SIO interrupt mode stays disabled (WR1 = 00h), which also
  * keeps it independent of the M2 executive.
@@ -9,15 +9,15 @@
  * The early console and panic paths keep their direct common-resident
  * access to the hardware and do not depend on this driver.
  *
- * This source is compiled into the `sio` service image (hot segment); the
- * driver-private state below lives in the service's SERVICE_IO data and
- * is relocated with the image.  The service entry points live in
- * sio_service.c (hot) and sio_boot.c (boot).
+ * This source is compiled into the `sio` driver image (hot segment); the
+ * driver-private state below lives in the driver's DRIVER_IO data and
+ * is relocated with the image.  The driver entry points live in
+ * sio_proto.c (hot) and sio_boot.c (boot).
  */
 
-#include "zephyros/errno.h"
+#include "zos/errno.h"
 
-#include "zephyr80/hardware.h"
+#include "hardware.h"
 
 #include "sio.h"
 

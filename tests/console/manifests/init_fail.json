@@ -11,7 +11,7 @@
         "_CODE"
       ],
       "bss_areas": [
-        "_SERVICE_IO"
+        "_DRIVER_IO"
       ]
     }
   ],

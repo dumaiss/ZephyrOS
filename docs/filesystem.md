@@ -2,7 +2,7 @@
 
 **Status:** historical.  This was the M9 *proposal*; it is superseded by
 `docs/architecture.md` section 32, which is the normative record of what M9
-built (the VFS, the path-based provider ABI, ROMFS at `/SYSTEM`, IOC-FAT at
+built (the VFS, the path-based provider ABI, ROMFS at `/system`, IOC-FAT at
 `/`, the descriptor/CWD model, the `FS_*` syscall family and the bank-7
 budget).  The implementation record is `docs/vfs.md`.  Nothing here is
 normative: where this document and architecture section 32 differ, section 32
@@ -11,9 +11,9 @@ wins.  It is kept only as the design history of the M9 decisions.
 **M10 (work packages 42b/42c) supersedes the mechanism this document
 proposes.**  The configured mount table, the provider registration path,
 the module-loading VFS phase and the generic block class are deleted:
-VFS owns three static nucleus providers (`/FS`, `/SYSTEM`, `/dev`), the
-selected filesystem driver is a resident service image that publishes the
-`/FS` root, and a future filesystem defines the storage protocol it
+VFS owns three static nucleus providers (`/fs`, `/system`, `/dev`), the
+selected filesystem driver is a resident driver image that publishes the
+`/fs` root, and a future filesystem defines the storage protocol it
 consumes (architecture 36.13).  What this document says about *mounts*,
 *provider registration* and *block devices* is M9 design history;
 `docs/vfs.md` and `docs/module-format.md` describe what runs today.
@@ -23,7 +23,7 @@ consumes (architecture 36.13).  What this document says about *mounts*,
 **Purpose:** Define the native ZephyrOS filesystem framework before implementation. This document intentionally excludes CP/M filesystem semantics.
 
 The bootstrap slice (VFS core, the generated mount table, the ROMFS root
-at `/SYSTEM`, VFS-path boot loading) was implemented by work package
+at `/system`, VFS-path boot loading) was implemented by work package
 `25-m9-vfs-bootstrap-romfs`; the writable provider and provider caching by
 packages 26 and 30; the syscall family by package 27.  See `docs/vfs.md`.
 
@@ -41,7 +41,7 @@ The architecture must support:
 - multiple filesystem implementations;
 - static boot-time mount configuration;
 - ROMFS as a normal filesystem implementation;
-- the current MCU/FatFs service as one filesystem provider;
+- the current MCU/FatFs driver as one filesystem provider;
 - raw SD access through a generic block-device abstraction;
 - future filesystems implemented directly on the Z80, such as VFAT or a Fuzix filesystem;
 - path-, handle-, and byte-oriented native APIs;
@@ -105,7 +105,7 @@ Ownership is deliberately separated:
 - **Block devices** expose raw sector/block storage.
 - **IOC** owns only the Z80-to-MCU transport.
 
-The MCU currently provides both raw SD primitives and a FatFs-based filesystem service. ZephyrOS exposes both without making either one the architectural foundation of the other.
+The MCU currently provides both raw SD primitives and a FatFs-based filesystem driver. ZephyrOS exposes both without making either one the architectural foundation of the other.
 
 ---
 
@@ -133,7 +133,7 @@ The initial system layout is:
 
 ```text
 /           -> writable SD FAT filesystem
-/SYSTEM     -> internal ROMFS
+/system     -> internal ROMFS
 ```
 
 Typical visible contents might be:
@@ -168,7 +168,7 @@ No drive-selection state exists in native ZephyrOS.
 
 The root namespace exists independently of any mounted filesystem.
 
-This matters because `/SYSTEM` must remain accessible even if the SD card is absent, corrupt, or unavailable.
+This matters because `/system` must remain accessible even if the SD card is absent, corrupt, or unavailable.
 
 Conceptually:
 
@@ -215,7 +215,7 @@ Suggested schema:
   "format": "vfs-mounts-v1",
   "mounts": [
     {
-      "path": "/SYSTEM",
+      "path": "/system",
       "filesystem": "romfs",
       "source": "recovery",
       "system": true
@@ -278,7 +278,7 @@ Future example:
   "format": "vfs-mounts-v1",
   "mounts": [
     {
-      "path": "/SYSTEM",
+      "path": "/system",
       "filesystem": "romfs",
       "source": "recovery",
       "system": true
@@ -314,7 +314,7 @@ romfs:
 
 iocfat:
     "ioc.0"
-        -> MCU filesystem service
+        -> MCU filesystem driver
 
 vfat:
     "cf.0"
@@ -350,7 +350,7 @@ unsupported nested mountpoints in M9
 Because native VFS pathname matching is case-insensitive, these collide:
 
 ```text
-/SYSTEM
+/system
 /system
 /System
 ```
@@ -374,7 +374,7 @@ or
 Examples:
 
 ```text
-/SYSTEM
+/system
 /CF
 /SD2
 ```
@@ -405,7 +405,7 @@ README.TXT
 and VFS has:
 
 ```text
-/SYSTEM
+/system
 /CF
 ```
 
@@ -442,7 +442,7 @@ M9 supports:
 
 ```text
 /
-/SYSTEM
+/system
 /GAMES/FOO.ZEX
 .
 ..
@@ -473,7 +473,7 @@ Thus:
 
 ```text
 /system/monitor.zex
-/SYSTEM/MONITOR.ZEX
+/system/MONITOR.ZEX
 /System/Monitor.Zex
 ```
 
@@ -497,9 +497,9 @@ VFS resolves the owning mount before calling a filesystem implementation.
 Example:
 
 ```text
-/SYSTEM/monitor.zex
+/system/monitor.zex
 
-VFS mount      = /SYSTEM
+VFS mount      = /system
 FS-relative    = /monitor.zex
 filesystem     = ROMFS
 ```
@@ -514,7 +514,7 @@ FS-relative    = /GAMES/DOOM.ZEX
 filesystem     = IOC-FAT
 ```
 
-A filesystem implementation never needs to know that its own root appears as `/SYSTEM`, `/CF`, or `/`.
+A filesystem implementation never needs to know that its own root appears as `/system`, `/CF`, or `/`.
 
 ---
 
@@ -592,7 +592,7 @@ never by pathname.
 
 **M10 (work package 42b) deletes the registration path, the provider
 descriptor and the mount table it fed.**  A filesystem driver is a
-resident service image that publishes the `/FS` root (architecture 36.13);
+resident driver image that publishes the `/fs` root (architecture 36.13);
 VFS reaches the selected driver through its one in-kernel FS path and
 there is no registry to consult.  What the M9 design kept distinct:
 
@@ -629,7 +629,7 @@ lookup, stat, open, close, read, write and sync, the read-only directory
 pair, and the mutation calls a read-only provider leaves null.
 
 **M10 (work packages 42b/42c) deletes the interface itself.**  It was
-never a module-facing ABI: the filesystem driver publishes the `/FS` root
+never a module-facing ABI: the filesystem driver publishes the `/fs` root
 and the nucleus FS path calls it through the IPC endpoint protocol
 (`FILE` objects), so no provider operations table exists to be exported.
 
@@ -667,7 +667,7 @@ existing ROMFS format reader
 the nucleus ROMFS provider
       |
       v
-the /SYSTEM root
+the /system root
 ```
 
 ROMFS remains:
@@ -681,26 +681,26 @@ boot/recovery authoritative
 
 Mutation operations return `EROFS`.
 
-The current ROMFS format may remain flat. Mounted at `/SYSTEM`, its files simply appear directly in that directory.
+The current ROMFS format may remain flat. Mounted at `/system`, its files simply appear directly in that directory.
 
 There is no requirement in M9 to redesign the ROMFS format to add subdirectories.
 
-VFS initializes before the resident images are placed. The ROMFS reader is statically available and serves the `/SYSTEM` root from `vfs_init()` on (architecture 36.13).
+VFS initializes before the resident images are placed. The ROMFS reader is statically available and serves the `/system` root from `vfs_init()` on (architecture 36.13).
 
 **M10 (work packages 42b/42c):** the M9 boot path opened every image
-through the VFS (`vfs_file_source()` over `/SYSTEM/<name>.zmod`) and the
-M9 `/SYSTEM` *provider* object is deleted; the reader itself stayed.  The
-service loader reads `services.man` and the containers through it
-directly, and a ZEX program is still loaded through the `/SYSTEM` FILE
+through the VFS (`vfs_file_source()` over `/system/<name>.zmod`) and the
+M9 `/system` *provider* object is deleted; the reader itself stayed.  The
+driver loader reads `drivers.man` and the containers through it
+directly, and a ZEX program is still loaded through the `/system` FILE
 endpoint.
 
 A tiny direct ROM access primitive may still exist underneath the ROMFS provider, but it is not a parallel filesystem API.
 
 ---
 
-## 14. `/SYSTEM` policy
+## 14. `/system` policy
 
-`/SYSTEM` contains the minimum ROM-resident material required to:
+`/system` contains the minimum ROM-resident material required to:
 
 ```text
 boot ZephyrOS
@@ -720,9 +720,9 @@ diagnostic/recovery assets
 fonts/resources required by the boot environment
 ```
 
-Whether a particular utility belongs in `/SYSTEM` is a build/product decision.
+Whether a particular utility belongs in `/system` is a build/product decision.
 
-VFS only knows that `/SYSTEM` is a configured mountpoint.
+VFS only knows that `/system` is a configured mountpoint.
 
 ---
 
@@ -731,7 +731,7 @@ VFS only knows that `/SYSTEM` is a configured mountpoint.
 M9 proposed renaming the never-driven storage class to a **block class** -
 a raw block device exposing geometry plus read, write, flush and media
 status - so that a future native filesystem could sit on raw sectors
-instead of the MCU's FatFs service.
+instead of the MCU's FatFs driver.
 
 **M10 (work packages 42b/42c) deletes the class, its geometry record, its
 operations table and its capability bits.**  No resident driver implements
@@ -782,7 +782,7 @@ Conceptually:
                   v           v
           SD block driver   IOC-FAT filesystem
                |                  |
-     the block protocol        /FS publication
+     the block protocol        /fs publication
      it will define
 ```
 
@@ -824,7 +824,7 @@ SD
 ```text
 receives the resolved IOC endpoint in its boot bundle
 initializes private provider state
-publishes the /FS root
+publishes the /fs root
 ```
 
 IOC-FAT owns:
@@ -869,7 +869,7 @@ errors     FS2 status is mapped once (ENOENT/EEXIST/EINVAL/EROFS/ENOSPC/
 
 `rename` is same-directory only, so a cross-directory rename is `EXDEV`
 rather than a copy.  Absent media surfaces as `ZOS_ENODEV` at mount time,
-which leaves `/SYSTEM` and the console usable.
+which leaves `/system` and the console usable.
 
 ---
 
@@ -1114,7 +1114,7 @@ Applications see canonical namespace paths such as:
 
 ```text
 /
-/SYSTEM
+/system
 /GAMES
 /CF/WORK
 ```
@@ -1126,7 +1126,7 @@ This lets `cd` cross filesystem boundaries without special shell behavior.
 Example:
 
 ```text
-cd /SYSTEM
+cd /system
 cd /
 cd /CF
 ```
@@ -1460,7 +1460,7 @@ This keeps policy in userland.
 
 ## 32. Boot sequence
 
-VFS is a foundational kernel service and initializes immediately after the minimal kernel environment is established.
+VFS is a foundational kernel driver and initializes immediately after the minimal kernel environment is established.
 
 The boot sequence is intentionally split into phases.
 
@@ -1500,7 +1500,7 @@ find the unique system=true entry
 instantiate system filesystem
     |
     v
-publish /SYSTEM
+publish /system
 ```
 
 The system filesystem is the filesystem that makes the remainder of module-based boot possible.
@@ -1510,7 +1510,7 @@ For the initial Zephyr-80 system:
 ```text
 provider   = romfs
 source     = recovery
-mountpoint = /SYSTEM
+mountpoint = /system
 system     = true
 ```
 
@@ -1528,14 +1528,14 @@ Failure to instantiate the system filesystem is fatal and is reported through th
 
 ### 32.3 Module-loading phase
 
-Once `/SYSTEM` exists, boot assets are loaded through VFS:
+Once `/system` exists, boot assets are loaded through VFS:
 
 ```text
-/SYSTEM/sio.zmod
-/SYSTEM/ioc.zmod
-/SYSTEM/hid.zmod
-/SYSTEM/v9958.zmod
-/SYSTEM/iocfat.zmod
+/system/sio.zmod
+/system/ioc.zmod
+/system/hid.zmod
+/system/v9958.zmod
+/system/iocfat.zmod
 ...
 ```
 
@@ -1548,7 +1548,7 @@ VFS file
 the fixed ROMFS reader
    |
    v
-service loader
+driver loader
 ```
 
 The same source-neutral approach carries ZEX loading.
@@ -1557,13 +1557,13 @@ A resident image registers nothing at run time: it declares the namespace
 names it serves and the host build resolves the table.  For example:
 
 ```text
-iocfat.zmod (the FS service image)
+iocfat.zmod (the FS driver image)
     |
     +--> receives the resolved IOC endpoint in its boot bundle
     |
     +--> initializes private provider state
     |
-    `--> publishes the /FS root
+    `--> publishes the /fs root
 ```
 
 ### 32.4 Normal mount phase (M9; deleted in M10)
@@ -1572,18 +1572,18 @@ M9 let resident providers register and then instantiated the remaining
 configured mounts - `/` from IOC-FAT when it was available, `/CF` and
 `/SD2` for future providers.  A mount was `required` (failure is a boot
 error) or `optional` (failure is tolerated, which is how the deployment
-without a FAT card keeps `/SYSTEM` and the console).
+without a FAT card keeps `/system` and the console).
 
 **M10 (work packages 42b/42c) deletes the phase, the mount table and the
-required/optional rule**: `/FS`, `/SYSTEM` and `/dev` are the three static
+required/optional rule**: `/fs`, `/system` and `/dev` are the three static
 nucleus roots (architecture 36.13) and the filesystem driver selected by
-the host build serves `/FS`.
+the host build serves `/fs`.
 
 ### 32.5 VFS ready phase
 
-Normal user filesystem syscalls become available only after every service
+Normal user filesystem syscalls become available only after every driver
 image the boot manifest names has been placed, its publications installed
-and its init run - the service loader's order (architecture 36.12).  This
+and its init run - the driver loader's order (architecture 36.12).  This
 prevents applications from observing a partially constructed namespace
 during boot.
 
@@ -1594,26 +1594,26 @@ VFS_PHASE_BOOTSTRAP
     vfs_init()
     register built-in providers
     instantiate system filesystem
-    publish /SYSTEM
+    publish /system
 
 the module-loading phase (deleted in M10; the resident images are placed
-by the service loader, and nothing registers a device or a provider)
+by the driver loader, and nothing registers a device or a provider)
 
 the mount phase (deleted in M10; the roots are static)
 
 VFS_PHASE_READY
-    expose normal process filesystem services
+    expose normal process filesystem drivers
 ```
 
 M10 keeps the ordering rule and drops the phases: bootstrap, then the
-service loader, then ready.
+driver loader, then ready.
 
 ### 32.6 Failure behavior
 
 System filesystem failure:
 
 ```text
-/SYSTEM unavailable
+/system unavailable
     |
     v
 cannot load required modules
@@ -1628,7 +1628,7 @@ Normal root filesystem failure:
 / fails to mount
     |
     v
-/SYSTEM remains available
+/system remains available
     |
     v
 recovery monitor / diagnostics remain usable
@@ -1641,14 +1641,14 @@ recovery monitor / diagnostics remain usable
 M9's build consumed `config/mounts.json` and generated a compact mount
 table for the target.  **Both the configuration and the generator
 (`tools/mountgen.py`) are deleted in M10 (work package 42c)**; the host
-build instead selects one filesystem driver, which publishes the `/FS`
+build instead selects one filesystem driver, which publishes the `/fs`
 root, and VFS owns the root set statically.
 
 Conceptually, the retired table was:
 
 ```c
 static const struct vfs_mount_config system_mounts[] = {
-    { "/SYSTEM", "romfs",  "recovery", VFS_MOUNT_SYSTEM   },
+    { "/system", "romfs",  "recovery", VFS_MOUNT_SYSTEM   },
     { "/",       "iocfat", "ioc.0",    VFS_MOUNT_OPTIONAL }
 };
 ```
@@ -1673,7 +1673,7 @@ M9 should use an ordinary native test program such as:
 fstest.zex
 ```
 
-loaded from `/SYSTEM`.
+loaded from `/system`.
 
 It exercises the public native filesystem ABI, not IOC or FS2 directly.
 
@@ -1682,7 +1682,7 @@ Acceptance covers at least:
 ```text
 namespace:
     /
-    /SYSTEM
+    /system
     root mountpoint visibility
     mountpoint shadowing
     case-insensitive lookup
@@ -1690,7 +1690,7 @@ namespace:
     relative paths
     .
     ..
-    CWD crossing between / and /SYSTEM
+    CWD crossing between / and /system
 
 ROMFS:
     open/read/stat
@@ -1800,7 +1800,7 @@ native VFS
 A personality might map:
 
 ```text
-A: -> /SYSTEM/CPM
+A: -> /system/CPM
 B: -> current native directory
 C: -> /CF
 ```
@@ -1824,7 +1824,7 @@ with no drive letters.
 M9 preserves these rules:
 
 1. **VFS owns the global namespace.**
-2. **VFS initializes before the resident service images are placed.**
+2. **VFS initializes before the resident driver images are placed.**
 3. **M9 derived the mount topology from JSON build configuration; M10 has no mount table.**
 4. **Exactly one configured mount was the system filesystem.**
 5. **The system filesystem provider is statically available and has no dependency on resident images or dynamically registered devices.**
@@ -1834,13 +1834,13 @@ M9 preserves these rules:
 9. **Native path comparison is ASCII case-insensitive.**
 10. **`ZOS_PATH_MAX = 128`.**
 11. **`ZFS_NAME_MAX = 64`.**
-12. **ROMFS serves the `/SYSTEM` root.**
-13. **The normal writable SD FAT filesystem serves `/FS`.**
+12. **ROMFS serves the `/system` root.**
+13. **The normal writable SD FAT filesystem serves `/fs`.**
 14. **A filesystem provider does not know its external root name.**
 15. **IOC is transport, not a filesystem or block-device API.**
 16. **M9 renamed the never-driven storage class to a block class; M10 deletes it.**
 17. **Raw SD access is not exposed; the first consumer defines the protocol it needs.**
-18. **The FS driver is a resident service image that publishes `/FS`.**
+18. **The FS driver is a resident driver image that publishes `/fs`.**
 19. **MCU FatFs support is one filesystem backend, not the VFS architecture.**
 20. **Future VFAT/Fuzix-style filesystems define the block protocol they consume.**
 21. **Native I/O is path-, descriptor-, and byte-oriented.**
@@ -1853,7 +1853,7 @@ M9 preserves these rules:
 28. **The file-data cache is initially write-through.**
 29. **The number of file-data cache slots is build-time configurable and reported by tooling.**
 30. **CP/M semantics remain confined to a later personality layer.**
-31. **Failure of external storage must not remove `/SYSTEM` recovery access.**
+31. **Failure of external storage must not remove `/system` recovery access.**
 ---
 
 ## 38. Suggested source ownership
@@ -1895,10 +1895,11 @@ drivers/
     sd/
         ...
 
-include/zephyros/
-    vfs.h
+abi/zos/
     fs.h
-    block.h
+
+kernel/vfs/
+    vfs.h
 
 config/
     mounts.json
@@ -1925,11 +1926,11 @@ The resulting architecture is:
                        the three static roots
                                 |
                                 v
-                            /SYSTEM
+                            /system
                               ROMFS
                                 |
                     place the resident images
-                       (the service loader)
+                       (the driver loader)
                                 |
                                 v
                   install the publications
@@ -1939,9 +1940,9 @@ The resulting architecture is:
           +---------------------+---------------------+
           |                                           |
           v                                           v
-      /SYSTEM                                      the FS
+      /system                                      the FS
        ROMFS                                     image at
-          |                                         /FS
+          |                                         /fs
           |                                           |
           |                                           v
           |                                      IOC protocol
@@ -1972,7 +1973,7 @@ The resulting architecture is:
 This gives ZephyrOS a small but real filesystem framework without importing Unix complexity or CP/M drive semantics, while preserving room for new storage hardware, new filesystem implementations, future personalities, and more sophisticated caching later.
 
 The built-in-filesystem rule also makes VFS part of the boot foundation
-rather than a service layered on top of resident images: the nucleus
+rather than a driver layered on top of resident images: the nucleus
 brings up the dependency-free ROMFS reader first, then places the resident
 images the boot manifest names and installs the publications the host build
-resolved, and only then exposes normal filesystem services.
+resolved, and only then exposes normal filesystem drivers.

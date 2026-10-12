@@ -7,8 +7,8 @@
  * acceptance-only CTC code is linked into production.
  */
 
-#include "zephyr80/hardware.h"
-#include "zephyr80/irq.h"
+#include "hardware.h"
+#include "irq.h"
 
 #include "ctc_test.h"
 

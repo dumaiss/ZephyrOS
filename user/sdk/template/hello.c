@@ -13,8 +13,8 @@
 
 int main(int argc, char **argv)
 {
-	zos_printf("hello from a ZephyrOS program\r\n");
-	zos_printf("argc=%u argv0=%s\r\n",
+	printf("hello from a ZephyrOS program\r\n");
+	printf("argc=%u argv0=%s\r\n",
 		   (unsigned int)argc,
 		   argc > 0 ? argv[0] : "(none)");
 	return 0;

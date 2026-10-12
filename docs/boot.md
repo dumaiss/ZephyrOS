@@ -119,20 +119,20 @@ After the four banner lines, `kernel_main()` continues:
 1. `irq_init()` establishes the M2 IM2 executive (kernel-owned vectors,
    IRQ stacks, and source registry).
 2. `vfs_init()` brings up the three static roots: the ROMFS reader (the
-   `/SYSTEM` FILE endpoint and the store), the handle table and the
+   `/system` FILE endpoint and the store), the handle table and the
    in-process FILE endpoint; a corrupt store produces the
    `romfs_diagnose()` lines and the panic.  Work package 42d folded that
    outcome into `tests/test_romfs_sim.py`, which patches the header of a
    freshly packed store image in place and replays the panic; the
    corrupt-store image and its target are gone.
-3. `service_load_all(ZOS_SERVICE_MANIFEST_NAME)` reads `services.man`
+3. `driver_load_all(ZOS_DRIVER_MANIFEST_NAME)` reads `drivers.man`
    with the bootstrap ROMFS reader and, in load order, copies each
-   service image's segments to their host-assigned bank-6 addresses,
+   driver image's segments to their host-assigned bank-6 addresses,
    installs the endpoint and publication records and the resolved
    dependency numbers, runs the boot entry once and the hot init once
-   (the SIO serial service loads first, so a later failure still leaves
+   (the SIO serial driver loads first, so a later failure still leaves
    the recovery console).
-4. the monitor launcher `process_exec("/SYSTEM/monitor.zex")` starts the
+4. the monitor launcher `process_exec("/system/monitor.zex")` starts the
    native monitor and re-executes it after every normal exit; that launch
    is where interrupts are first enabled.
 
@@ -161,7 +161,7 @@ E000h +-------------------------------+
 
 - `0000h-1FFFh`: physical SRAM bank 0 (caller window).
 - `2000h-5FFFh`: physical SRAM bank 7, the fixed core (code that runs
-  while the window shows another bank, its data, the service stack and the
+  while the window shows another bank, its data, the driver stack and the
   ISR stack).
 - `6000h-DFFFh`: physical SRAM bank 7, the cold half (visible while the
   window shows bank 7): the linked cold code, then the cold runtime data. The driver arena M9 reserved between them is deleted (work package 42c).
@@ -169,7 +169,7 @@ E000h +-------------------------------+
 
 The linker control file fixes `_CODE` at `2000h` and `_WINDOW` at
 `6000h`, and derives the two zero-initialized runtime areas: `_DATA` at
-`align_down(ZOS_SERVICE_STACK_BASE - runtime_data_size, 512)` and
+`align_down(ZOS_DRIVER_STACK_BASE - runtime_data_size, 512)` and
 `_WINDOW_DATA` at `align_up(cold_code_end, 512)`; the common segment
 stays at `E000h`.  The loadable bank-7 image (fixed code, `_HOME`,
 `_INITIALIZER`, `_GSINIT`, `_GSFINAL`, then the cold `_WINDOW` code) must
@@ -257,7 +257,7 @@ exactly three bytes at `0030h`), rejects conflicting/ambiguous IHX
 records and any latch-write encoding in bank 7, and emits
 `build/zephyros.manifest.json`.  `tools/mapcheck.py` runs automatically on
 every build as the authoritative post-link layout check, deriving all
-boundaries from `platform/zephyr80/memory.inc`; `make check` proves a
+boundaries from `platform/zephyr80/private/memory.inc`; `make check` proves a
 clean rebuild reproduces the identical binary.
 
 ### Syscall self-test image
@@ -345,7 +345,7 @@ compatible with the Zephyr-80 ROM socket.
 2. Program `build/zephyros.bin` into the ROM device.
 3. Connect a 115200 8N1 serial terminal to SIO0/B (data `22h`).
 4. Apply power / assert reset.
-5. Expected: the four-line banner, then the console-service line
+5. Expected: the four-line banner, then the console-driver line
    `console: dynamic sio0.b OK` (the SIO driver is loaded from the ROMFS
    recovery store through the VFS), and then the monitor launch.
 6. Record: image SHA-256, programmer used, serial adapter used, and the

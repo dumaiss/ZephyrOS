@@ -29,21 +29,20 @@
  * The FILE calls are nucleus calls whose caller buffer is the common
  * staging block: the cold loader holds no descriptor and names no bank-7
  * buffer to a driver (the call machinery stages the frame in the fixed
- * boundary buffer), so a `/FS` executable living behind a bank-6 driver
- * streams exactly like a `/SYSTEM` one.
+ * boundary buffer), so a `/fs` executable living behind a bank-6 driver
+ * streams exactly like a `/system` one.
  */
 
-#include "zephyros/process.h"
+#include "process.h"
 #include "zos/syscall.h"
 #include "zos/object.h"
 #include "zos/protocol.h"
-#include "zephyros/romfs.h"
+#include "romfs.h"
 #include "kernel/ipc/ipc.h"
 #include "kernel/syscall/diag.h"
 #include "kernel/syscall/xmem.h"
-#include "zephyros/kernel.h"
+#include "kernel.h"
 #include "kernel/vfs/vfs.h"
-#include "kernel/vfs/ns.h"
 
 /* Common-resident copy gate and the deterministic page-zero vector. */
 extern const uint8_t zos_process_page_zero_vector[];
@@ -323,7 +322,7 @@ int zex_validate_segment(const struct zex_segment *segment,
  * bytes into the common staging block and returns the count (the caller
  * copies them where they belong); zero is the descriptor-less form
  * (metadata, seek, sync).  Returns the call status. */
-static int exec_file_call(const struct vfs_descriptor *file, uint8_t op,
+static int exec_file_call(const struct vfs_handle_entry *file, uint8_t op,
 			  uint8_t arg0, uint16_t arg1, uint16_t length,
 			  uint8_t dir, struct zos_ipc_frame *reply)
 {
@@ -345,7 +344,7 @@ static int exec_file_call(const struct vfs_descriptor *file, uint8_t op,
 }
 
 /* The file's size, from the FILE metadata operation. */
-static int exec_file_size(const struct vfs_descriptor *file,
+static int exec_file_size(const struct vfs_handle_entry *file,
 			  uint32_t *size)
 {
 	struct zos_ipc_frame frame;
@@ -363,7 +362,7 @@ static int exec_file_size(const struct vfs_descriptor *file,
 	return 0;
 }
 
-static int exec_seek(const struct vfs_descriptor *file, uint32_t offset)
+static int exec_seek(const struct vfs_handle_entry *file, uint32_t offset)
 {
 	struct zos_ipc_frame frame;
 	int result;
@@ -385,7 +384,7 @@ static int exec_seek(const struct vfs_descriptor *file, uint32_t offset)
 
 /* Read the ZEX header into the loader's bank-7 storage through the common
  * staging block. */
-static int exec_read_header(const struct vfs_descriptor *file)
+static int exec_read_header(const struct vfs_handle_entry *file)
 {
 	uint16_t i;
 	int result;
@@ -412,7 +411,7 @@ static int exec_read_header(const struct vfs_descriptor *file)
 /* Stream `length` bytes at `file_offset` into `dst` through the staging
  * block, `chunk` at a time.  Returns a native provider error (negative) or
  * a ZEX_EXEC_ERR_* code. */
-static int exec_stream(const struct vfs_descriptor *file, uint32_t offset,
+static int exec_stream(const struct vfs_handle_entry *file, uint32_t offset,
 		       uint8_t *dst, uint16_t length)
 {
 	while (length != 0u) {
@@ -452,7 +451,7 @@ static int exec_stream(const struct vfs_descriptor *file, uint32_t offset,
 /* Read the segment table into the loader's own storage and validate every
  * row against the header before anything is allocated: the row's bounds,
  * its ascending container id and the slot total the header promised. */
-static int exec_read_segments(const struct vfs_descriptor *file,
+static int exec_read_segments(const struct vfs_handle_entry *file,
 			      const struct zex_header *header)
 {
 	uint16_t rows_size =
@@ -494,7 +493,7 @@ static int exec_read_segments(const struct vfs_descriptor *file,
 
 /* Stream the primary payload (the header payload) into the child bank at
  * 0100h. */
-static int exec_load_image(const struct vfs_descriptor *file,
+static int exec_load_image(const struct vfs_handle_entry *file,
 			   const struct zex_header *header, uint8_t bank)
 {
 	uint16_t offset = 0;
@@ -534,7 +533,7 @@ static int exec_load_image(const struct vfs_descriptor *file,
 /* Stream one segment's payload into its bank slots (a `DATA` object or a
  * `FAR_CODE` aperture slice; both start at their slot base) and zero its
  * BSS. */
-static int exec_load_segment(const struct vfs_descriptor *file,
+static int exec_load_segment(const struct vfs_handle_entry *file,
 			     const struct zex_segment *segment, uint8_t bank,
 			     uint8_t slot)
 {
@@ -581,8 +580,8 @@ static int exec_load_segment(const struct vfs_descriptor *file,
  * position, so no ZFILE_OP_SEEK/CUR/END use exists. */
 
 /* Release the bound executable: the provider's release runs (a driver's
- * CLOSE for `/FS`, the entry itself for ROMFS), then the entry. */
-static void exec_close(const struct vfs_descriptor *file, uint8_t pid)
+ * CLOSE for `/fs`, the entry itself for ROMFS), then the entry. */
+static void exec_close(const struct vfs_handle_entry *file, uint8_t pid)
 {
 	(void)vfs_ns_unbind(pid, file->number);
 }
@@ -595,7 +594,7 @@ static void exec_close(const struct vfs_descriptor *file, uint8_t pid)
 int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 		    uint16_t args_length, struct process_child *child)
 {
-	struct vfs_descriptor *file;
+	struct vfs_handle_entry *file;
 	struct zex_geometry geo;
 	uint8_t type = 0u;
 	uint8_t pid;
@@ -617,7 +616,7 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	 * The caller's copy lives in the VFS workspace's path view
 	 * (SYS_EXEC stages it there, kernel/syscall.c), so the view is held
 	 * for exactly the call that hands its address to a provider: a
-	 * `/FS` provider reads that path while the window shows its own
+	 * `/fs` provider reads that path while the window shows its own
 	 * bank, which is why a cold-half buffer could never work.  Nothing
 	 * after the bind reads the path - the loader streams the bound FILE
 	 * through descriptors and the common staging block. */
@@ -633,11 +632,11 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 		return -ZOS_EISDIR;
 	}
 	file = vfs_handle_find(vfs_owner_current(), (uint8_t)result);
-	if (file == (struct vfs_descriptor *)0) {
+	if (file == (struct vfs_handle_entry *)0) {
 		return -ZOS_EINVAL;
 	}
-	/* The M6 media gate: an executable under `/SYSTEM` must be a ZEX
-	 * entry, not DATA or a service image (the M9 provider enforced this
+	/* The M6 media gate: an executable under `/system` must be a ZEX
+	 * entry, not DATA or a driver image (the M9 provider enforced this
 	 * through its exec flag, which the namespace bind does not carry).
 	 * A filesystem driver's FILE has no such kind and is validated by
 	 * its header alone, exactly like a card executable in M9. */

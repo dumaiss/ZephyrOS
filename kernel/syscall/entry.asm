@@ -26,8 +26,8 @@
 ; -----------------------------------------------------------------------------
 
 	.module syscall_entry
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 
 	.globl zos_syscall_entry
 	.globl zos_syscall_dispatch

@@ -2,7 +2,7 @@
 ; irq_arch_init before IM2 is enabled; this word makes the final image's
 ; FDFFh/FE00h relationship independently checkable.
 	.module irq_vectors
-	.include "zephyr80/irq.inc"
+	.include "irq.inc"
 	.globl irq_vector_page, irq_vector_guard, irq_ff_unexpected
 
 	.area _IRQ_VECTOR (ABS)

@@ -22,7 +22,7 @@
 /* The startup block delivered at entry, or NULL before crt0 initializes
  * it.  Provided for programs that inspect the raw block (e.g. the
  * filesystem acceptance program checks version 1 and an empty tail). */
-struct zos_startup *zos_args(void);
+struct zos_startup *startup(void);
 
 /* Split `tail` in place into whitespace-separated words and store up to
  * `max` pointers in `argv`; returns the total word count.  Spaces/tabs
@@ -30,11 +30,11 @@ struct zos_startup *zos_args(void);
  * are literal and whose quotes are removed; adjacent runs join; an
  * unterminated quote runs to the end; an empty quoted word is an empty
  * argument.  See docs/zex-format.md section 5. */
-int zos_split(char *tail, char **argv, int max);
+int splitargs(char *tail, char **argv, int max);
 
 /* Run `path` synchronously with the raw argument tail `args` (NULL or ""
  * for none; over 125 bytes is refused locally with -ZOS_EINVAL).
  * Returns the child's u16 exit status or -errno (docs/abi.md). */
-int zos_exec(const char *path, const char *args);
+int run(const char *path, const char *args);
 
 #endif /* ZOS_SDK_PROCESS_H */

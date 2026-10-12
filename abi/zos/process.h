@@ -4,7 +4,7 @@
  * native user programs: the startup block every native process receives,
  * the getinfo record, the descriptor flags the kernel publishes, and the
  * exec nesting limit.  The kernel's private process lifecycle interface
- * (process table, prepare/launch) stays in include/zephyros/process.h,
+ * (process table, prepare/launch) stays in kernel/include/process.h,
  * which includes this header.
  *
  * Startup block v1 (package 28b) lives in the process's own page zero,
@@ -54,7 +54,7 @@ struct zos_info_record {
 /* Nesting geometry (package 28).  ZOS_EXEC_MAX_DEPTH user processes may
  * form one synchronous exec chain; the kernel launcher sits at depth 0.
  * The private frame-save geometry derived from this value lives in
- * include/zephyros/process.h. */
+ * kernel/include/process.h. */
 #define ZOS_EXEC_MAX_DEPTH 4u
 
 #if defined(__SDCC)

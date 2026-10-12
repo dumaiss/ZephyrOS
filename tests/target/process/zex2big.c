@@ -30,7 +30,7 @@ static unsigned char expect2(unsigned int index)
 
 static void z2_fail(unsigned char code)
 {
-	zex_exit(ZOS_PCST_ZEX2_FAIL | code);
+	exit(ZOS_PCST_ZEX2_FAIL | code);
 }
 
 /* Check one byte of a segment through the extended-memory handle. */
@@ -39,7 +39,7 @@ static void check_byte(unsigned int handle, unsigned int offset,
 {
 	unsigned char got;
 
-	if (zos_xmem_read(handle, offset, &got, 1u) != 1) {
+	if (xread(handle, offset, &got, 1u) != 1) {
 		z2_fail(ZOS_PCST_Z2_FAIL_SEGDATA);
 	}
 	if (got != wanted) {
@@ -54,7 +54,7 @@ int main(void)
 	struct zos_info_record pinfo;
 	unsigned char i;
 
-	if (zex_getinfo(&pinfo) != ZOS_GETINFO_SIZE) {
+	if (getinfo(&pinfo) != ZOS_GETINFO_SIZE) {
 		z2_fail(ZOS_PCST_Z2_FAIL_GETINFO);
 	}
 	for (i = 0; i < (unsigned char)sizeof(bss_probe); ++i) {
@@ -62,7 +62,7 @@ int main(void)
 			z2_fail(ZOS_PCST_Z2_FAIL_BSS);
 		}
 	}
-	if (zos_seg_info(1u, &info1) != 0 || zos_seg_info(2u, &info2) != 0) {
+	if (seginfo(1u, &info1) != 0 || seginfo(2u, &info2) != 0) {
 		z2_fail(ZOS_PCST_Z2_FAIL_SEGINFO);
 	}
 	if (info1.size != (unsigned int)(ZOS_PCST_BIG1_IMAGE + ZOS_PCST_BIG1_BSS) ||
@@ -96,7 +96,7 @@ int main(void)
 		check_byte(info2.handle, ZOS_PCST_BIG2_IMAGE + i, 0u);
 	}
 
-	(void)zex_write(ok_line, (unsigned int)(sizeof(ok_line) - 1u));
-	zex_exit(ZOS_PCST_ZEX2_PASS | pinfo.bank);
+	(void)console_write(ok_line, (unsigned int)(sizeof(ok_line) - 1u));
+	exit(ZOS_PCST_ZEX2_PASS | pinfo.bank);
 	return 0; /* unreachable */
 }

@@ -2,7 +2,7 @@
 ; ZephyrOS libzos: C runtime startup (work/28c-m9-user-sdk).
 ;
 ; The launch gate enters here in mode 10 with HL = ZOS_STARTUP_BASE, the
-; startup block v1.  crt0 saves the block for zos_args(), copies the raw
+; startup block v1.  crt0 saves the block for startup(), copies the raw
 ; tail into program data (the kernel's page-zero copy is not preserved
 ; across a syscall), runs the documented whitespace/double-quote splitter
 ; over that copy into a bounded argv (ZOS_ARGV_MAX entries in BSS), calls
@@ -17,8 +17,8 @@
 
 	.globl zos_entry
 	.globl _main
-	.globl _zos_split
-	.globl _zex_exit
+	.globl _splitargs
+	.globl _exit
 	.globl _zos_startup_block
 
 	.area _CODE
@@ -60,13 +60,13 @@ zos_entry::
 004$:
 	ld	hl,#_zos_tail_buffer
 	ld	(_zos_tail),hl
-	; zos_split(tail, argv, ZOS_ARGV_MAX): the third argument is a stack
+	; splitargs(tail, argv, ZOS_ARGV_MAX): the third argument is a stack
 	; argument on the SDCC Z80 and the callee pops it.
 	ld	hl,#16
 	push	hl
 	ld	hl,#_zos_tail_buffer
 	ld	de,#_zos_argv
-	call	_zos_split
+	call	_splitargs
 	; DE = total word count; clamp argc to the stored capacity.
 	ex	de,hl
 	ld	a,h
@@ -82,7 +82,7 @@ zos_entry::
 	call	_main
 	; int main(...) returns the status in DE; SYS_EXIT takes HL.
 	ex	de,hl
-	call	_zex_exit
+	call	_exit
 	di
 007$:
 	halt

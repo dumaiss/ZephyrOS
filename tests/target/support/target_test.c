@@ -15,7 +15,7 @@
  * or the M9 VFS images.
  */
 
-#include "zephyros/kernel.h"
+#include "kernel.h"
 
 #if ZOS_SUBSYS_SELFTEST
 #include "syscall_selftest.h"
@@ -39,7 +39,7 @@
 #include "nucleus_selftest.h"
 #endif
 #if ZOS_IPC_SELFTEST
-#include "zephyros/service.h"
+#include "zmod.h"
 #include "zos/ipc.h"
 #endif
 
@@ -65,7 +65,7 @@ void zos_target_test_late(void)
 	/* The console-integration image carries the device diagnostics
 	 * (work package 42d): IOC transport, HID input, V9958 video, then
 	 * the integration pass itself.  Each is a bank-7 client of the
-	 * resident services; the transcript runs on the early SIO. */
+	 * resident drivers; the transcript runs on the early SIO. */
 	zos_run_ioc_selftest();
 #endif
 #if ZOS_HID_SELFTEST
@@ -78,13 +78,13 @@ void zos_target_test_late(void)
 	zos_run_console_integration_selftest();
 #endif
 #if ZOS_IPC_SELFTEST
-	/* The six synthetic resident services are real service images in
-	 * the recovery store; the nucleus service loader reads the boot
+	/* The six synthetic resident drivers are real driver images in
+	 * the recovery store; the nucleus driver loader reads the boot
 	 * manifest and brings them up in bank 6 before the boot launcher
-	 * starts the client program (/SYSTEM/ipccopy.zex).  A load failure
+	 * starts the client program (/system/ipccopy.zex).  A load failure
 	 * is a boot error: the loader reported it on the early console. */
-	if (service_load_all(ZOS_SERVICE_MANIFEST_NAME) != 0) {
-		panic("service loader failed");
+	if (driver_load_all(ZOS_DRIVER_MANIFEST_NAME) != 0) {
+		panic("driver loader failed");
 	}
 #endif
 }

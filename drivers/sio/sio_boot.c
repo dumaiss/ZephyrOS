@@ -1,7 +1,7 @@
-/* ZephyrOS SIO0/B service boot segment (work package 41).
+/* ZephyrOS SIO0/B driver boot segment (work package 41).
  *
  * Runs once through the mode-10 gate with Q = 6 (architecture 36.6): the
- * whole resident bank is mapped, the fixed core is not, and the service
+ * whole resident bank is mapped, the fixed core is not, and the driver
  * bootstrap interface is unavailable.  Nothing here executes after boot.
  *
  * The boot segment's whole job is the documented 115200 8N1 programming
@@ -10,7 +10,7 @@
  * segment, sio.c + sio_io.asm, which this mapping sees).
  */
 
-#include "zephyr80/hardware.h"
+#include "hardware.h"
 
 #include "sio.h"
 

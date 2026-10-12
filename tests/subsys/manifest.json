@@ -12,9 +12,9 @@
       "path": "console-serial.zmod"
     },
     {
-      "name": "services.man",
+      "name": "drivers.man",
       "type": "DATA",
-      "path": "services.man"
+      "path": "drivers.man"
     },
     {
       "name": "crosspage.bin",

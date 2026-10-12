@@ -1,3 +1,4 @@
+/* ZephyrOS VFS part: path normalization. */
 /* ZephyrOS M9 VFS path normalization.
  *
  * Absolute/relative paths, `.`, `..`, repeated slashes and traversal above
@@ -101,4 +102,54 @@ int vfs_path_normalize_at(const char *base, const char *path, char *out,
 		out[olen] = '\0';
 	}
 	return 0;
+}
+
+/* --- ASCII helpers ------------------------------------------------------ */
+
+uint8_t vfs_fold(uint8_t c)
+{
+	return (uint8_t)((c >= 'a' && c <= 'z') ? (c - 32u) : c);
+}
+
+/* Case-insensitive equality of a `length`-byte span against the
+ * NUL-terminated `word`, which must be exactly `length` bytes long. */
+uint8_t vfs_component_eq(const char *p, uint16_t length,
+			       const char *word)
+{
+	uint16_t i;
+
+	for (i = 0; i < length; ++i) {
+		if (word[i] == '\0' ||
+		    vfs_fold((uint8_t)p[i]) != vfs_fold((uint8_t)word[i])) {
+			return 0u;
+		}
+	}
+	return (uint8_t)(word[length] == '\0');
+}
+
+/* Length of the first path component of a normalized path fragment that
+ * does not begin with '/'. */
+uint16_t vfs_component_length(const char *p)
+{
+	uint16_t length = 0;
+
+	while (p[length] != '\0' && p[length] != '/') {
+		++length;
+	}
+	return length;
+}
+
+/* The normalized path names the `root` provider (and no other)? */
+uint8_t vfs_path_under(const char *norm, const char *root)
+{
+	uint8_t length = 0;
+
+	while (root[length] != '\0') {
+		if (vfs_fold((uint8_t)norm[length]) !=
+		    vfs_fold((uint8_t)root[length])) {
+			return 0u;
+		}
+		++length;
+	}
+	return (uint8_t)(norm[length] == '\0' || norm[length] == '/');
 }

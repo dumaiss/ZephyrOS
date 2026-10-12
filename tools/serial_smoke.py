@@ -5,10 +5,10 @@ Opens the SIO0/B serial link (115200 8N1, raw) on the given device,
 captures output with a bounded timeout, and verifies the expected output:
 
     --mode normal    the production boot contract: the banner, the
-                     console-service line, the monitor banner and its
+                     console-driver line, the monitor banner and its
                      prompt (optional-module diagnostics tolerated)
     --mode subsystem  the subsystem acceptance image: the banner, the
-                     console-service line, the four mechanism groups
+                     console-driver line, the four mechanism groups
                      (`syscall selftest: OK`, `irq selftest: OK`,
                      `romfs selftest: OK`, `process selftest: OK`) and
                      no FAIL/PANIC marker, then the interactive monitor
@@ -17,7 +17,7 @@ captures output with a bounded timeout, and verifies the expected output:
                      status 0x`.  The boot log is printed once, so start
                      this tool first and reset the board.
     --mode console-integration  the console integration acceptance image:
-                     banner, the service report, the console version,
+                     banner, the driver report, the console version,
                      the selected output/input lanes, the IOC PING
                      controller level, the rejected-call invariants and
                      "console integration: OK" over the direct early SIO,
@@ -27,9 +27,9 @@ captures output with a bounded timeout, and verifies the expected output:
                      output and is the human gate; the image waits for
                      the host sync sequence.
     --mode console-serial  the console-serial variant image (work package
-                     42e): the production service set with the SERIAL
+                     42e): the production driver set with the SERIAL
                      console, so the whole dynamic transcript - banner,
-                     `console: service OK`, the monitor banner and prompt -
+                     `console: driver OK`, the monitor banner and prompt -
                      is on the serial lane.  The tool types `r` at the
                      prompt and checks the monitor's system row comes back
                      on the same lane.  The image waits for the host sync
@@ -40,7 +40,7 @@ captures output with a bounded timeout, and verifies the expected output:
                      then the monitor prompt on the same SIO console.
     --mode hwtest    the production image's feature exerciser (work
                      package 45b): the boot banner, then the tool types
-                     `X /SYSTEM/hwtest.zex` at the monitor over this lane
+                     `X /system/hwtest.zex` at the monitor over this lane
                      - production's console input is the HID build, so
                      the monitor reads commands from the lane the runner
                      mirrors its lines to - and checks the three stage
@@ -82,7 +82,7 @@ BANNER = (
     b"kernel entry: OK\r\n"
     b"serial: OK\r\n"
 )
-CONSOLE_SERVICE_OK = b"console: service OK\r\n"
+CONSOLE_DRIVER_OK = b"console: driver OK\r\n"
 
 # --- subsystem acceptance image ---------------------------------------------
 # The subsystem image exercises every retained mechanism group on the
@@ -98,13 +98,13 @@ SUBSYS_FAIL = b"selftest: FAIL"
 SUBSYS_PROMPT = b"Z80> "
 MONITOR_BANNER = b"ZephyrOS native monitor"
 
-# Production boot contract: the console service must bind and the monitor
+# Production boot contract: the console driver must bind and the monitor
 # must reach its prompt.  Optional boot-module diagnostics ("<name>:
 # unavailable 0x..") are tolerated -- a bench without the IOC/HID/V9958
 # hardware legitimately falls back to SIO -- but a failed console bind or
 # an unbound console is a failure.
 PRODUCTION_CONSOLE_FAIL = (b"console: unbound\r\n",
-                           b"console: service failed\r\n")
+                           b"console: driver failed\r\n")
 # A failed optional boot module prints "<name>: unavailable 0x<code>"; the
 # production boot set must be complete, so this is a failure in the
 # banner-only contract too.
@@ -115,7 +115,7 @@ MODULE_UNAVAILABLE = b": unavailable 0x"
 SUBSYS_EXIT = b"monitor: exit status 0x"
 
 # --- corrupt-store image -----------------------------------------------------
-INTEGRATION_SERVICES_PREFIX = b"console integration: services "
+INTEGRATION_DRIVERS_PREFIX = b"console integration: drivers "
 INTEGRATION_LANES_RE = re.compile(
     rb"console integration: (output (video|serial)|input (hid|serial))\r\n")
 INTEGRATION_IOC_LEVEL_OK = b"console integration: ioc level 4A\r\n"
@@ -136,12 +136,12 @@ CONSOLE_SERIAL_SYSINFO = \
 
 def _serial_result(data):
     """True when the console-serial variant's transcript is complete: the
-    boot banner, the console-service line, the monitor banner and prompt,
+    boot banner, the console-driver line, the monitor banner and prompt,
     and the system row the mode typed `r` for - all on the serial lane."""
     if b"PANIC" in data or any(marker in data
                                for marker in PRODUCTION_CONSOLE_FAIL):
         return False
-    return (BANNER in data and CONSOLE_SERVICE_OK in data and
+    return (BANNER in data and CONSOLE_DRIVER_OK in data and
             MONITOR_BANNER in data and SUBSYS_PROMPT in data and
             CONSOLE_SERIAL_SYSINFO in data)
 
@@ -157,10 +157,10 @@ def _production_strong(data):
     """True when the serial console printed the console/monitor lines.
 
     This is the stronger contract: the console-serial variant routes the
-    dynamic console to this lane, so it prints the console-service line,
+    dynamic console to this lane, so it prints the console-driver line,
     the monitor banner and the prompt."""
     return all(needle in data for needle in
-               (BANNER, CONSOLE_SERVICE_OK, MONITOR_BANNER, SUBSYS_PROMPT))
+               (BANNER, CONSOLE_DRIVER_OK, MONITOR_BANNER, SUBSYS_PROMPT))
 
 
 def _production_result(data, quiet_elapsed):
@@ -180,13 +180,13 @@ def _production_result(data, quiet_elapsed):
 
 def _integration_result(data):
     """True when the integration image's serial portion completed: the
-    service report, the console composition, the PING level, the
+    driver report, the console composition, the PING level, the
     rejected-call invariants and the three device diagnostics, with no
     optional-module diagnostic and no failure marker."""
     if (INTEGRATION_FAIL in data or b"PANIC" in data or
             any(marker in data for marker in DEVICE_FAIL_ANY)):
         return False
-    if (BANNER not in data or INTEGRATION_SERVICES_PREFIX not in data or
+    if (BANNER not in data or INTEGRATION_DRIVERS_PREFIX not in data or
             INTEGRATION_IOC_LEVEL_OK not in data or
             INTEGRATION_REJECTED_OK not in data or
             INTEGRATION_SELFTEST_OK not in data):
@@ -201,7 +201,8 @@ def _integration_result(data):
 # Host sync the smoke image waits for before the banner (bench quirk: the
 # board's reset line also resets the USB bridge, so the board must not
 # print until the host has reopened its port).  Mirrors
-# ZOS_SMOKE_HOST_SYNC_FIRST/SECOND in platform/zephyr80/hardware.{h,inc};
+# ZOS_SMOKE_HOST_SYNC_FIRST/SECOND in platform/zephyr80/public/
+# hardware.{h,inc};
 # modes ioc and hid send it on every open and repeat it until the
 # first byte.
 IOC_HOST_SYNC = b"\xaa\x55"
@@ -209,11 +210,11 @@ IOC_HOST_SYNC = b"\xaa\x55"
 
 def _subsys_result(data):
     """True when the subsystem image's serial sections completed: the
-    banner, the console-service line and the four mechanism-group
+    banner, the console-driver line and the four mechanism-group
     markers, with no FAIL/PANIC marker anywhere in the transcript."""
     if SUBSYS_FAIL in data or b"PANIC" in data:
         return False
-    for needle in (BANNER, CONSOLE_SERVICE_OK, SUBSYS_SYSCALL_OK,
+    for needle in (BANNER, CONSOLE_DRIVER_OK, SUBSYS_SYSCALL_OK,
                    SUBSYS_IRQ_OK, SUBSYS_ROMFS_OK, SUBSYS_PROCESS_OK):
         if needle not in data:
             return False
@@ -230,13 +231,13 @@ def _subsys_complete(data):
 
 
 # Package 42b (correction 01): the filesystem outcome image.  Production
-# boot path with `/FS` served by the IOC-FAT service, one SDK outcome
+# boot path with `/fs` served by the IOC-FAT driver, one SDK outcome
 # program and the monitor it hands the console to.  A writable card must
 # pass every outcome; a missing or write-protected card must take the
-# card-absent branch, keep `/SYSTEM` usable and still reach the verdict.
+# card-absent branch, keep `/system` usable and still reach the verdict.
 FS_IMAGE_PASS = b"fs-selftest: PASS\r\n"
 FS_IMAGE_FAIL = b"fs-selftest: FAIL"
-FS_IMAGE_ABSENT = b"fs-selftest: card absent: /FS not served"
+FS_IMAGE_ABSENT = b"fs-selftest: card absent: /fs not served"
 FS_IMAGE_READONLY = b"fs-selftest: card not writable"
 FS_IMAGE_MONITOR = b"Z80> "
 FS_CHILD_PASS = b"fs-child: PASS\r\n"
@@ -254,12 +255,12 @@ def _fs_image_result(data):
 
 
 # --- package 45b: the production hardware exerciser --------------------------
-# `X /SYSTEM/hwtest.zex` on the production image.  The console is the
+# `X /system/hwtest.zex` on the production image.  The console is the
 # V9958/HID build there, so this lane is where the monitor takes its
 # commands (it polls the SERIAL object beside the console) and where the
 # runner mirrors every line - the tool therefore reads its own command
 # echoed back byte by byte and then the stage lines and the verdict.
-HW_COMMAND = b"X /SYSTEM/hwtest.zex\r"
+HW_COMMAND = b"X /system/hwtest.zex\r"
 HW_TIMEOUT = 120.0
 HW_BEGIN = b"hwtest: begin\r\n"
 HW_STAGES = (b"hwtest: xmem+far PASS\r\n",
@@ -278,7 +279,7 @@ HW_CARD_STATES = (
 HW_FAIL = b"hwtest: 3/3 FAIL"
 
 # The quiet window after the boot banner before the command goes in: the
-# monitor's launcher, console service and poll loop all run behind the
+# monitor's launcher, console driver and poll loop all run behind the
 # banner, which the early console prints first.
 HW_SETTLE = 1.5
 
@@ -473,7 +474,7 @@ def main(argv):
               "line")
     if args.mode == "console-integration":
         print("serial_smoke: mode console-integration checks the integration image's "
-              "serial portion (service report, composition lanes, PING "
+              "serial portion (driver report, composition lanes, PING "
               "level, rejected-call invariants, the IOC/HID/V9958 "
               "diagnostics); power-cycle the board or press RESET now so "
               "the boot is captured; the image waits for the host sync "
@@ -503,7 +504,7 @@ def main(argv):
         print("serial_smoke: mode hwtest checks the production image's "
               "feature exerciser; power-cycle the board or press RESET "
               "now so the boot is captured; the tool then types "
-              "'X /SYSTEM/hwtest.zex' at the monitor over this lane (the "
+              "'X /system/hwtest.zex' at the monitor over this lane (the "
               "production console input is the HID build, so the monitor "
               "reads its commands here) and reads the stage lines and the "
               "verdict")
@@ -649,7 +650,7 @@ def main(argv):
         expected = ("the four banner lines in order and a quiet %gs window "
                     "with no PANIC, no failed console bind and no "
                     "'<module>: unavailable' line; or, on the console-serial "
-                    "variant, 'console: service OK', the monitor "
+                    "variant, 'console: driver OK', the monitor "
                     "banner and the 'Z80> ' prompt" % args.quiet)
         if ok and not _production_strong(data):
             print("serial_smoke: banner-only PASS - the production console "
@@ -659,14 +660,14 @@ def main(argv):
                   "then type a key")
     elif args.mode == "subsystem":
         ok = _subsys_complete(data)
-        expected = ("the banner, the console-service line, the four "
+        expected = ("the banner, the console-driver line, the four "
                     "mechanism groups (syscall/irq/romfs/process "
                     "selftest: OK) with no FAIL/PANIC marker, and one "
                     "interactive monitor step ending on 'monitor: exit "
                     "status 0x'")
     elif args.mode == "console-integration":
         ok = _integration_result(data)
-        expected = ("the banner, the service report, the console "
+        expected = ("the banner, the driver report, the console "
                     "composition lanes, the typed 'K41' line, the IOC "
                     "PING level, the rejected-call invariants, the "
                     "IOC/HID/V9958 device diagnostics and "
@@ -675,9 +676,9 @@ def main(argv):
                     "display with the USB keyboard")
     elif args.mode == "fs":
         ok = _fs_image_result(data)
-        expected = ("the banner, one OK line per outcome (the /FS create, "
+        expected = ("the banner, one OK line per outcome (the /fs create, "
                     "write, read, seek, enumerate, mkdir, unlink and rename "
-                    "checks, the /SYSTEM read and the nested exec), the "
+                    "checks, the /system read and the nested exec), the "
                     "child's 'fs-child: PASS' with its leaked handles "
                     "released, 'fs-selftest: PASS' with the exact check "
                     "count, and then the monitor prompt 'Z80> ' on the same "
@@ -685,7 +686,7 @@ def main(argv):
                     "card-absent diagnostic")
     elif args.mode == "console-serial":
         ok = _serial_result(data)
-        expected = ("the banner, 'console: service OK', the monitor banner "
+        expected = ("the banner, 'console: driver OK', the monitor banner "
                     "and the 'Z80> ' prompt, and the monitor's system row "
                     "for the typed 'r' - all on the serial lane (the "
                     "console-serial variant routes /dev/console to SERIAL)")
@@ -721,7 +722,7 @@ def _root_observation(mode, data):
     two card states are indistinguishable from the transcript alone.
     """
     if FS_IMAGE_ABSENT in data or FS_IMAGE_READONLY in data:
-        print("serial_smoke: note: /FS is not served (no card, or a "
+        print("serial_smoke: note: /fs is not served (no card, or a "
               "write-protected one); this image reports that as an "
               "expected outcome")
     state = _hwtest_card(data) if mode == "hwtest" else None
@@ -761,10 +762,10 @@ def _explain_wrong_image(mode, data):
             print("serial_smoke: hint: the production boot reported a "
                   "panic or a console failure (see the marker in the "
                   "transcript above)", file=sys.stderr)
-        elif BANNER in data and CONSOLE_SERVICE_OK not in data:
+        elif BANNER in data and CONSOLE_DRIVER_OK not in data:
             print("serial_smoke: hint: only the early serial banner was "
                   "captured.  The production image binds its console to "
-                  "the V9958 output, so 'console: service OK', the "
+                  "the V9958 output, so 'console: driver OK', the "
                   "monitor banner and the 'Z80> ' prompt are rendered on "
                   "the V9958 display and never reach the SIO port; "
                   "confirm the monitor prompt and HID input on the V9958 "
@@ -779,7 +780,7 @@ def _explain_wrong_image(mode, data):
                   "record the FAIL label and the card state in the "
                   "package record", file=sys.stderr)
         elif FS_IMAGE_ABSENT in data or FS_IMAGE_READONLY in data:
-            print("serial_smoke: hint: /FS is not served, so this image took "
+            print("serial_smoke: hint: /fs is not served, so this image took "
                   "its card-absent branch; the mounted-card gate needs a "
                   "writable FAT card inserted", file=sys.stderr)
         elif b"fs-child: FAIL" in data:
@@ -818,7 +819,7 @@ def _explain_wrong_image(mode, data):
             print("serial_smoke: hint: the serial-console transcript is "
                   "incomplete; the last marker above shows how far the "
                   "boot got.  The dynamic console must answer on this "
-                  "lane: check the console-service line and the monitor "
+                  "lane: check the console-driver line and the monitor "
                   "prompt above", file=sys.stderr)
     elif mode == "hwtest":
         if b"PANIC" in data or b"console: unbound" in data:
@@ -840,7 +841,7 @@ def _explain_wrong_image(mode, data):
                   "build, so the monitor takes it from this lane; confirm "
                   "the flashed image is the package-45b production image "
                   "(its monitor polls /dev/serial/0) and that the store "
-                  "carries /SYSTEM/hwtest.zex", file=sys.stderr)
+                  "carries /system/hwtest.zex", file=sys.stderr)
         else:
             print("serial_smoke: hint: the exerciser started but its "
                   "verdict did not arrive inside the window; raise "

@@ -1,7 +1,7 @@
-/* ZephyrOS IOC service boot segment (work package 41).
+/* ZephyrOS IOC driver boot segment (work package 41).
  *
  * Runs once through the mode-10 gate with Q = 6 (architecture 36.6): the
- * whole resident bank is mapped, the fixed core is not, and the service
+ * whole resident bank is mapped, the fixed core is not, and the driver
  * bootstrap interface is unavailable.  Nothing here executes after boot.
  *
  * The boot segment programs both lanes once (SIO1/B external sync with
@@ -11,7 +11,7 @@
  * hot segment with the rest of the transport.
  */
 
-#include "zephyr80/hardware.h"
+#include "hardware.h"
 
 #include "ioc_driver.h"
 

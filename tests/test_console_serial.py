@@ -9,17 +9,17 @@ by tests/test_console_acceptance.py.
 
 * `build-console-serial-selftest` is the production image set with
   `console-serial` in the CONSOLE slot: the loader places the same six
-  driver images, and every dynamic console byte - `console: service OK`,
+  driver images, and every dynamic console byte - `console: driver OK`,
   the monitor banner and prompt, and the monitor's answer to a typed `r` -
   arrives on the serial lane, while the V9958 trace carries no monitor
   text at all (the console never routes there).
 * `build-console-serial-fail-selftest` boots the same set and
-  `services.man` from a store that omits `console-serial.zmod`: the
+  `drivers.man` from a store that omits `console-serial.zmod`: the
   required driver cannot be loaded, so the loader names it on the early
   console and the nucleus stops the boot there - an explicit boot failure
   (36.11), never a fallback - and the launcher is never reached.
-* `build-service-init-fail-selftest` (work package 45) boots the one
-  test-only service image whose init returns non-zero: the loader's
+* `build-driver-init-fail-selftest` (work package 45) boots the one
+  test-only driver image whose init returns non-zero: the loader's
   init-status branch refuses the image, names it on the early console and
   the nucleus stops the boot the same way.  This is the initialization
   half of the required-driver failure row; the missing-image store above
@@ -49,23 +49,23 @@ from test_console_acceptance import (  # noqa: E402
 
 # The production set with the serial console, in manifest (load) order,
 # with the endpoint class each image registers.
-SERVICE_SET = (("sio.zmod", 1), ("ioc.zmod", 5), ("hid.zmod", 4),
+DRIVER_SET = (("sio.zmod", 1), ("ioc.zmod", 5), ("hid.zmod", 4),
                ("v9958.zmod", 2), ("console-serial.zmod", 6),
                ("iocfat.zmod", 7))
 
-CONSOLE_SERVICE_OK = b"console: service OK\r\n"
+CONSOLE_DRIVER_OK = b"console: driver OK\r\n"
 SERIAL_SYSINFO = \
     b"system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02\r\n"
 
 # The required driver's failure: the loader names the image it could not
 # find, the nucleus reports the manifest failure and stops.
-LOADER_NO_IMAGE = b"service loader: console-serial.zmod: no image\r\n"
-MANIFEST_UNAVAILABLE = b"services: unavailable 0x05\r\n"
-CONSOLE_SERVICE_FAILED = b"console: service failed\r\n"
+LOADER_NO_IMAGE = b"driver loader: console-serial.zmod: no image\r\n"
+MANIFEST_UNAVAILABLE = b"drivers: unavailable 0x05\r\n"
+CONSOLE_DRIVER_FAILED = b"console: driver failed\r\n"
 
 # The init-status refusal (work package 45): the image loaded, its init
 # returned non-zero, and the loader's failure line names it.
-LOADER_INVALID = b"service loader: init_fail.zmod: invalid\r\n"
+LOADER_INVALID = b"driver loader: init_fail.zmod: invalid\r\n"
 
 
 class SerialBase(ConsoleReplayBase):
@@ -82,11 +82,11 @@ class SerialBase(ConsoleReplayBase):
             self.skipTest("abstract serial harness")
         super().setUp()
 
-    def service_plan(self):
+    def driver_plan(self):
         """The nucleus ledger the packer's set report carries for this
-        image (tools/zmodpack.py services --report services.plan.json)."""
+        image (tools/zmodpack.py drivers --report drivers.plan.json)."""
         path = os.path.join(ROOT, self.IMAGE_SUBDIR, "modules",
-                            "services.plan.json")
+                            "drivers.plan.json")
         with open(path, "r") as handle:
             return json.load(handle)["nucleus"]
 
@@ -112,7 +112,7 @@ class SerialBase(ConsoleReplayBase):
     def type_serial(self, z, text, expect, limit=STEP_LIMIT):
         """Queue a line on the serial input lane and wait for its output.
 
-        The console-serial variant's input is the SERIAL service, so the
+        The console-serial variant's input is the SERIAL driver, so the
         bytes travel on SIO0/B (z.sio_rx), not the HID queue."""
         start = len(z.sio_tx)
         z.sio_rx.extend(text)
@@ -156,21 +156,21 @@ class TestSerialVariant(SerialBase):
         for name in ("sio.zmod", "ioc.zmod", "hid.zmod", "v9958.zmod",
                      "console-serial.zmod", "iocfat.zmod"):
             self.assertIn(("driver %s: hot " % name).encode("ascii"), sio)
-        self.assertIn(b"service loader: 6 images in bank 6\r\n", sio)
-        plan = self.service_plan()
+        self.assertIn(b"driver loader: 6 images in bank 6\r\n", sio)
+        plan = self.driver_plan()
         self.assertIn(b"driver hot: %d bytes of 32768\r\n"
-                      % plan["service_hot_bytes"], sio)
+                      % plan["driver_hot_bytes"], sio)
         self.assertIn(b"driver boot/bulk: %d bytes of 24576\r\n"
-                      % plan["service_boot_bytes"], sio)
+                      % plan["driver_boot_bytes"], sio)
         self.assertNotIn(b": unavailable 0x", sio)
 
         # The whole dynamic console is this lane: the boot line, the
         # monitor banner and prompt.
-        self.assertIn(CONSOLE_SERVICE_OK, sio)
+        self.assertIn(CONSOLE_DRIVER_OK, sio)
         self.assertIn(BANNER.encode("ascii"), sio)
         self.assertIn(PROMPT.encode("ascii"), sio)
         self.assertNotIn(b"console: unbound", sio)
-        self.assertNotIn(CONSOLE_SERVICE_FAILED, sio)
+        self.assertNotIn(CONSOLE_DRIVER_FAILED, sio)
 
         # The V9958 driver is loaded but the console never routes to it:
         # no monitor text may appear in the glyph trace.
@@ -228,11 +228,11 @@ class TestRequiredConsoleFailure(SerialBase):
         self.assertNotIn(b"driver iocfat.zmod:", sio)
         self.assertIn(LOADER_NO_IMAGE, sio)
         self.assertIn(MANIFEST_UNAVAILABLE, sio)
-        self.assertIn(CONSOLE_SERVICE_FAILED, sio)
+        self.assertIn(CONSOLE_DRIVER_FAILED, sio)
 
         # No fallback and no launcher: the console is not up, the monitor
         # never runs, and nothing follows the failure line.
-        self.assertNotIn(CONSOLE_SERVICE_OK, sio)
+        self.assertNotIn(CONSOLE_DRIVER_OK, sio)
         self.assertNotIn(BANNER.encode("ascii"), sio)
         self.assertNotIn(PROMPT.encode("ascii"), sio)
         self.assertNotIn(b"monitor: exit status", sio)
@@ -254,20 +254,20 @@ class TestRequiredConsoleFailure(SerialBase):
         # The boot manifest still lists the console: the store is what is
         # incomplete, which is the failure this image exercises.
         with open(os.path.join(ROOT, self.IMAGE_SUBDIR, "modules",
-                               "services.man"), "rb") as handle:
+                               "drivers.man"), "rb") as handle:
             data = handle.read()
         listed = [data[i:i + 24].split(b"\0")[0].decode()
                   for i in range(0, len(data), 24)]
-        self.assertEqual(listed, [name for name, _cls in SERVICE_SET])
+        self.assertEqual(listed, [name for name, _cls in DRIVER_SET])
 
 
 class TestRequiredConsoleInitFailure(SerialBase):
-    """`build-service-init-fail-selftest` (work package 45): the one
-    required service image's init refuses, so the boot must fail explicitly
+    """`build-driver-init-fail-selftest` (work package 45): the one
+    required driver image's init refuses, so the boot must fail explicitly
     on the early console through the loader's init-status branch."""
 
-    IMAGE_SUBDIR = "build-service-init-fail-selftest"
-    IMAGE_NAME = "zephyros-service-init-fail-selftest.bin"
+    IMAGE_SUBDIR = "build-driver-init-fail-selftest"
+    IMAGE_NAME = "zephyros-driver-init-fail-selftest.bin"
 
     def run_to_halt(self, z, limit=STEP_LIMIT):
         for step in range(limit):
@@ -288,12 +288,12 @@ class TestRequiredConsoleInitFailure(SerialBase):
         # refused: the loader's failure line names it and the nucleus
         # stops the boot before the launcher (36.11).
         self.assertIn(LOADER_INVALID, sio)
-        self.assertIn(CONSOLE_SERVICE_FAILED, sio)
+        self.assertIn(CONSOLE_DRIVER_FAILED, sio)
 
-        # No console service and no launcher: nothing follows the failure.
-        self.assertNotIn(CONSOLE_SERVICE_OK, sio)
+        # No console driver and no launcher: nothing follows the failure.
+        self.assertNotIn(CONSOLE_DRIVER_OK, sio)
         self.assertNotIn(b"console: unbound", sio)
-        self.assertNotIn(b"service loader: 1 images", sio)
+        self.assertNotIn(b"driver loader: 1 images", sio)
         self.assertNotIn(BANNER.encode("ascii"), sio)
         self.assertNotIn(b"monitor: exit status", sio)
 
@@ -302,7 +302,7 @@ class TestRequiredConsoleInitFailure(SerialBase):
             z.step()
         self.assertEqual(len(bytes(z.sio_tx)), after)
 
-    def test_store_and_manifest_carry_the_refusing_service(self):
+    def test_store_and_manifest_carry_the_refusing_driver(self):
         entries = self.store_entries()
         manifest = os.path.join(ROOT, "tests", "console",
                                 "manifest-init-fail.json")
@@ -314,7 +314,7 @@ class TestRequiredConsoleInitFailure(SerialBase):
         # The boot manifest lists exactly the refusing image, and the
         # packed container refuses through its init symbol.
         with open(os.path.join(ROOT, self.IMAGE_SUBDIR, "modules",
-                               "services.man"), "rb") as handle:
+                               "drivers.man"), "rb") as handle:
             data = handle.read()
         listed = [data[i:i + 24].split(b"\0")[0].decode()
                   for i in range(0, len(data), 24)]

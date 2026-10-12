@@ -55,8 +55,8 @@
 ; -----------------------------------------------------------------------------
 
 	.module process_launch
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 
 	.globl _zos_process_launch
 	.globl _zos_process_resume
@@ -228,8 +228,8 @@ _zos_process_launch::
 	dec	a			; frame area 0..ZOS_EXEC_MAX_DEPTH - 2
 	; HL = a * ZOS_EXEC_FRAME_SAVE.  The factor is a shift chain
 	; (a + 2a = 3a, then four doublings = 48a) because the Z80 has no
-	; multiply; ZOS_EXEC_FRAME_SAVE in include/zephyros/process.h is
-	; pinned against this chain by include/zephyros/process.h.
+	; multiply; ZOS_EXEC_FRAME_SAVE in kernel/include/process.h is
+	; pinned against this chain by kernel/include/process.h.
 	ld	l,a
 	ld	h,#0
 	ld	d,h
@@ -342,8 +342,8 @@ _zos_process_resume::
 	dec	a			; frame area 0..ZOS_EXEC_MAX_DEPTH - 2
 	; HL = a * ZOS_EXEC_FRAME_SAVE.  The factor is a shift chain
 	; (a + 2a = 3a, then four doublings = 48a) because the Z80 has no
-	; multiply; ZOS_EXEC_FRAME_SAVE in include/zephyros/process.h is
-	; pinned against this chain by include/zephyros/process.h.
+	; multiply; ZOS_EXEC_FRAME_SAVE in kernel/include/process.h is
+	; pinned against this chain by kernel/include/process.h.
 	ld	l,a
 	ld	h,#0
 	ld	d,h
@@ -523,7 +523,7 @@ zos_proc_entry::
 ; ZOS_EXEC_MAX_DEPTH - 1 gate-frame save areas of ZOS_EXEC_FRAME_SAVE
 ; bytes each (index i + 1 uses area i).  zos_proc_frames_end pins the
 ; exact size for mapcheck; ZOS_EXEC_FRAME_SAVE is owned by
-; include/zephyros/process.h.
+; kernel/include/process.h.
 zos_proc_frames::
 	.ds	144
 zos_proc_frames_end::

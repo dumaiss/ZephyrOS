@@ -3,7 +3,7 @@
  * The ipc-selftest image boots this program; it measures the chained
  * 512-byte read and a single descriptor copy_out for every caller-buffer
  * location the correction-01 copy paths cover, then starts the promoted
- * conformance client (/SYSTEM/ipc.zex) and folds its verdict into its own
+ * conformance client (/system/ipc.zex) and folds its verdict into its own
  * line.
  *
  * The five addresses are the correction's matrix:
@@ -56,16 +56,16 @@ static uint8_t irqx_handle;
 static unsigned int checks;
 static unsigned int failures;
 
-static const char client_path[] = "/SYSTEM/ipc.zex";
+static const char client_path[] = "/system/ipc.zex";
 
 static void check(const char *label, int ok)
 {
 	++checks;
 	if (!ok) {
 		++failures;
-		zos_puts("ipccopy: FAIL ");
-		zos_puts(label);
-		zos_puts("\r\n");
+		console_puts("ipccopy: FAIL ");
+		console_puts(label);
+		console_puts("\r\n");
 	}
 }
 
@@ -74,13 +74,13 @@ static void report_u16(const char *label, unsigned int value)
 	char digits[6];
 	unsigned int count = 0u;
 
-	zos_puts(label);
+	console_puts(label);
 	do {
 		digits[count++] = (char)('0' + (value % 10u));
 		value /= 10u;
 	} while (value != 0u && count < 5u);
 	while (count != 0u) {
-		zos_putc(digits[--count]);
+		putchar(digits[--count]);
 	}
 }
 
@@ -100,14 +100,14 @@ static void frame_prepare(uint8_t op, uint8_t flags)
 	req.direction = ZOS_IPC_DESC_IN;
 }
 
-static int call(uint8_t handle, uint8_t op, uint8_t flags, void *buffer,
+static int ipccopy_call(uint8_t handle, uint8_t op, uint8_t flags, void *buffer,
 		unsigned int length, unsigned char direction)
 {
 	frame_prepare(op, flags);
 	req.buffer = buffer;
 	req.length = length;
 	req.direction = direction;
-	return zos_ipc_call(handle, &req);
+	return call(handle, &req);
 }
 
 /* The chained read: vfs -> fat -> ioc, with the caller descriptor
@@ -122,7 +122,7 @@ static int read_chain(void *buffer)
 	req.buffer = buffer;
 	req.length = IPC_BLOCK_BYTES;
 	req.direction = ZOS_IPC_DESC_OUT;
-	return zos_ipc_call(vfs_handle, &req);
+	return call(vfs_handle, &req);
 }
 
 /* The single copy_out: ioc alone, one descriptor copy and nothing else. */
@@ -136,7 +136,7 @@ static int read_single(void *buffer)
 	req.buffer = buffer;
 	req.length = IPC_BLOCK_BYTES;
 	req.direction = ZOS_IPC_DESC_OUT;
-	return zos_ipc_call(ioc_handle, &req);
+	return call(ioc_handle, &req);
 }
 
 /* A forged descriptor id, captured at the case's own address: the copy is
@@ -149,11 +149,11 @@ static int forged_at(void *buffer)
 	req.buffer = buffer;
 	req.length = 16u;
 	req.direction = ZOS_IPC_DESC_IN;
-	return zos_ipc_call(con_handle, &req);
+	return call(con_handle, &req);
 }
 
-/* One con.WRITE whose target is the service's deliberate out-of-range
- * buffer: the only case that selects path C for a reason on the service
+/* One con.WRITE whose target is the driver's deliberate out-of-range
+ * buffer: the only case that selects path C for a reason on the driver
  * side.  The console bytes are checked by the replay. */
 static int con_slow_one(void)
 {
@@ -163,12 +163,12 @@ static int con_slow_one(void)
 	req.buffer = (void *)PROBE_CALLER_WINDOW;
 	req.length = 16u;
 	req.direction = ZOS_IPC_DESC_IN;
-	return zos_ipc_call(con_handle, &req);
+	return call(con_handle, &req);
 }
 
 /* Path B with the timer armed: the delivery has to land inside the copy
  * primitive's aperture window, and the reply says how many copies ran and
- * what the service's buffer summed to. */
+ * what the driver's buffer summed to. */
 static int irqx_copies(void *buffer)
 {
 	frame_prepare(IPC_OP_IRQX_COPY, 0u);
@@ -176,7 +176,7 @@ static int irqx_copies(void *buffer)
 	req.buffer = buffer;
 	req.length = IRQX_COPY_BYTES;
 	req.direction = ZOS_IPC_DESC_IN;
-	return zos_ipc_call(irqx_handle, &req);
+	return call(irqx_handle, &req);
 }
 
 /* --- pattern helpers ---------------------------------------------------- */
@@ -206,7 +206,7 @@ static void fill_probe_pattern(unsigned int address)
 	}
 }
 
-/* The 16-bit sum of one buffer, matching the irqx service's own sum over
+/* The 16-bit sum of one buffer, matching the irqx driver's own sum over
  * what landed in its buffer. */
 static uint16_t probe_pattern_sum(unsigned int address)
 {
@@ -223,14 +223,14 @@ static uint16_t probe_pattern_sum(unsigned int address)
 
 /* One marker per phase boundary, the client's wire format ("ipc: Xs").
  * The codes are the test's PHASE_NAMES table: A-E are the chained reads,
- * P-T the single copy_outs, U the service-side slow case and V the
+ * P-T the single copy_outs, U the driver-side slow case and V the
  * IRQ-during-path-B case, in this order. */
 static void phase_mark(char code, char suffix)
 {
-	zos_puts("ipc: ");
-	zos_putc(code);
-	zos_putc(suffix);
-	zos_puts("\r\n");
+	console_puts("ipc: ");
+	putchar(code);
+	putchar(suffix);
+	console_puts("\r\n");
 }
 
 #define MEASURE(name, body) \
@@ -275,15 +275,15 @@ void ipc_copy_entry(void)
 	uint16_t expect;
 	unsigned char type = 0u;
 
-	zos_puts("ipccopy: probe OK\r\n");
+	console_puts("ipccopy: probe OK\r\n");
 
 	/* Package 42b: a client reaches a provider through a bound
 	 * namespace handle, never by class/instance. */
-	echo_handle = (uint8_t)zos_ipc_bind("/dev/ipc/echo", 0u, &type);
-	vfs_handle = (uint8_t)zos_ipc_bind("/dev/ipc/vfs", 0u, &type);
-	ioc_handle = (uint8_t)zos_ipc_bind("/dev/ipc/ioc", 0u, &type);
-	con_handle = (uint8_t)zos_ipc_bind("/dev/ipc/con", 0u, &type);
-	irqx_handle = (uint8_t)zos_ipc_bind("/dev/ipc/irqx", 0u, &type);
+	echo_handle = (uint8_t)bind("/dev/ipc/echo", 0u, &type);
+	vfs_handle = (uint8_t)bind("/dev/ipc/vfs", 0u, &type);
+	ioc_handle = (uint8_t)bind("/dev/ipc/ioc", 0u, &type);
+	con_handle = (uint8_t)bind("/dev/ipc/con", 0u, &type);
+	irqx_handle = (uint8_t)bind("/dev/ipc/irqx", 0u, &type);
 	check("bind", vfs_handle != 0u && ioc_handle != 0u &&
 			con_handle != 0u && irqx_handle != 0u);
 
@@ -297,12 +297,12 @@ void ipc_copy_entry(void)
 	 * covers the common page (E000h-FFFFh), which every mapping shows at
 	 * the same address.  ECHO_DESC only reports the captured id, so no
 	 * kernel byte is read or written by this check. */
-	rc = call(echo_handle, IPC_OP_ECHO_DESC, 0u, (void *)0xE100u, 16u,
+	rc = ipccopy_call(echo_handle, IPC_OP_ECHO_DESC, 0u, (void *)0xE100u, 16u,
 		  ZOS_IPC_DESC_IN);
 	check("common-accepted", rc >= 0 && rc != (int)ZOS_IPC_DESC_NONE);
 
-	/* The service-side slow case: the caller buffer is in the window
-	 * (path A as an address), so only the service's out-of-range target
+	/* The driver-side slow case: the caller buffer is in the window
+	 * (path A as an address), so only the driver's out-of-range target
 	 * can select path C. */
 	fill_probe_pattern(PROBE_CALLER_WINDOW);
 	MEASURE('U', rc = con_slow_one());
@@ -323,23 +323,23 @@ void ipc_copy_entry(void)
 	 * parent keeps its handles while the child runs, so the probe hands
 	 * its five back before starting the client: the client binds six of
 	 * its own plus the two standard handles every process owns. */
-	(void)zos_ipc_unbind(echo_handle);
-	(void)zos_ipc_unbind(vfs_handle);
-	(void)zos_ipc_unbind(ioc_handle);
-	(void)zos_ipc_unbind(con_handle);
-	(void)zos_ipc_unbind(irqx_handle);
+	(void)unbind(echo_handle);
+	(void)unbind(vfs_handle);
+	(void)unbind(ioc_handle);
+	(void)unbind(con_handle);
+	(void)unbind(irqx_handle);
 
 	/* The full promoted conformance suite, as a child process. */
-	rc = zos_exec(client_path, (const char *)0);
+	rc = run(client_path, (const char *)0);
 	check("client-status", rc == 0);
 
 	report_u16("ipccopy: ", checks - failures);
 	report_u16("/", checks);
-	zos_puts(" checks\r\n");
+	console_puts(" checks\r\n");
 	if (failures == 0u) {
-		zos_puts("ipccopy: PASS\r\n");
+		console_puts("ipccopy: PASS\r\n");
 	} else {
-		zos_puts("ipccopy: FAIL\r\n");
+		console_puts("ipccopy: FAIL\r\n");
 	}
-	zex_exit(failures == 0u ? 0u : 1u);
+	exit(failures == 0u ? 0u : 1u);
 }

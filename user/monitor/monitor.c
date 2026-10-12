@@ -12,6 +12,7 @@
 
 #include "monitor.h"
 #include "zos.h"
+#include "diag.h" /* the SDK diag wrappers */
 #include "hexfmt.h"
 #include "status.h"
 #include "zos/protocol.h"
@@ -32,7 +33,7 @@ static const char mon_pid_label[] = " pid=";
 static const char mon_scratch_label[] = " scratch=";
 static const char mon_line_end[] = "\r\n";
 static const char mon_fail_diag[] =
-	"monitor: diagnostic services unavailable\r\n";
+	"monitor: diagnostic drivers unavailable\r\n";
 
 static const char mon_help[] =
 	"R              system/bank information\r\n"
@@ -42,13 +43,13 @@ static const char mon_help[] =
 	"MB bank addr value set byte in bank 0-6\r\n"
 	"I port         input port (10-FF)\r\n"
 	"O port value   output port (10-FF)\r\n"
-	"X path [tail]  run a ZEX from /SYSTEM\r\n"
+	"X path [tail]  run a ZEX from /system\r\n"
 	"Q              quit\r\n"
 	"H or ?         help\r\n";
 
 /* --- command input: the console plus the optional secondary lane --------
  *
- * The secondary lane is the namespace name a resident serial service
+ * The secondary lane is the namespace name a resident serial driver
  * publishes.  The monitor binds it through the ordinary typed protocol -
  * no port I/O and no driver symbol - and reads and echoes it only when
  * the store actually publishes that object.  Production's console input
@@ -87,14 +88,14 @@ static int mon_lane_call(unsigned char op, unsigned int arg0)
 	req.buffer = (void *)0;
 	req.length = 0u;
 	req.direction = ZOS_IPC_DESC_IN;
-	return zos_ipc_call(mon_lane, &req);
+	return call(mon_lane, &req);
 }
 
 /* Bind the lane when the store publishes a SERIAL object under that name. */
 static void mon_lane_open(void)
 {
 	unsigned char type = 0u;
-	int handle = zos_ipc_bind(mon_lane_name, 0u, &type);
+	int handle = bind(mon_lane_name, 0u, &type);
 
 	if (handle >= 1 && type == ZOS_TYPE_SERIAL) {
 		mon_lane = (unsigned char)handle;
@@ -141,7 +142,7 @@ static void mon_echo_putc(unsigned int byte)
 		mon_lane_putc(byte);
 		return;
 	}
-	(void)zos_putc((char)byte);
+	(void)putchar((char)byte);
 }
 
 static void mon_echo_write(const char *text, unsigned int length)
@@ -149,7 +150,7 @@ static void mon_echo_write(const char *text, unsigned int length)
 	unsigned int i;
 
 	if (mon_lane_byte == 0u) {
-		(void)zos_console_write(text, length);
+		(void)console_write(text, length);
 		return;
 	}
 	for (i = 0u; i < length; ++i) {
@@ -164,7 +165,7 @@ static int mon_getc(void)
 {
 	for (;;) {
 		char ch;
-		int result = zex_read(&ch, 1);
+		int result = console_read(&ch, 1);
 
 		if (result == 1) {
 			mon_lane_byte = 0u;
@@ -181,7 +182,7 @@ static int mon_getc(void)
 	}
 }
 
-/* The edited line reader: the rules of the SDK's zos_read_line (BS/DEL
+/* The edited line reader: the rules of the SDK's console_readline (BS/DEL
  * erase echo, CR/LF termination with CRLF suppression, bell instead of
  * overflow, other control bytes ignored, capacity-1 characters), with
  * the two sources above and the echo routed to the source. */
@@ -240,7 +241,7 @@ void mon_put_hex8(unsigned int value)
 	char digits[3];
 
 	zrt_fmt_hex8(digits, value);
-	zos_puts(digits);
+	console_puts(digits);
 }
 
 void mon_put_hex16(unsigned int value)
@@ -248,7 +249,7 @@ void mon_put_hex16(unsigned int value)
 	char digits[5];
 
 	zrt_fmt_hex16(digits, value);
-	zos_puts(digits);
+	console_puts(digits);
 }
 
 unsigned char mon_scan_bank(char **cursor, unsigned char *bank)
@@ -288,11 +289,11 @@ static void mon_put_u8_dec(unsigned int value)
 	digits[2] = (char)('0' + (unsigned char)value);
 	digits[3] = '\0';
 	if (digits[0] != '0') {
-		zos_puts(digits);
+		console_puts(digits);
 	} else if (digits[1] != '0') {
-		zos_puts(digits + 1);
+		console_puts(digits + 1);
 	} else {
-		zos_puts(digits + 2);
+		console_puts(digits + 2);
 	}
 }
 
@@ -302,7 +303,7 @@ void mon_cmd_help(char *cursor)
 		zrt_status_err_arg();
 		return;
 	}
-	zos_puts(mon_help);
+	console_puts(mon_help);
 }
 
 void mon_cmd_info(char *cursor)
@@ -314,41 +315,41 @@ void mon_cmd_info(char *cursor)
 		zrt_status_err_arg();
 		return;
 	}
-	if (zex_diag_system_info(&sysinfo) != ZOS_DIAG_SYSTEM_INFO_SIZE) {
+	if (diag_system_info(&sysinfo) != ZOS_DIAG_SYSTEM_INFO_SIZE) {
 		zrt_status_err_code(-ZOS_EINVAL);
 		return;
 	}
-	zos_puts("system: abi ");
+	console_puts("system: abi ");
 	mon_put_hex8(sysinfo.abi);
-	zos_puts(" app ");
+	console_puts(" app ");
 	mon_put_hex8(sysinfo.app_mode);
-	zos_puts(" os ");
+	console_puts(" os ");
 	mon_put_hex8(sysinfo.os_mode);
-	zos_puts(" common ");
+	console_puts(" common ");
 	mon_put_hex16(sysinfo.common_base);
-	zos_puts(" kernel-bank ");
+	console_puts(" kernel-bank ");
 	mon_put_hex8(sysinfo.kernel_bank);
-	zos_puts(" romfs ");
+	console_puts(" romfs ");
 	mon_put_hex8(sysinfo.romfs_first_page);
-	zos_puts(mon_line_end);
+	console_puts(mon_line_end);
 
-	if (zex_getinfo(&info) != ZOS_GETINFO_SIZE) {
+	if (getinfo(&info) != ZOS_GETINFO_SIZE) {
 		zrt_status_err_code(-ZOS_EINVAL);
 		return;
 	}
-	zos_puts("process: pid ");
+	console_puts("process: pid ");
 	mon_put_u8_dec(info.pid);
-	zos_puts(" bank ");
+	console_puts(" bank ");
 	mon_put_u8_dec(info.bank);
-	zos_puts(" flags ");
+	console_puts(" flags ");
 	mon_put_hex16(info.flags);
-	zos_puts(mon_line_end);
+	console_puts(mon_line_end);
 
-	zos_puts("bank: current ");
+	console_puts("bank: current ");
 	mon_put_hex8(mon_bank);
-	zos_puts(" mask ");
+	console_puts(" mask ");
 	mon_put_hex8(mon_mask);
-	zos_puts(mon_line_end);
+	console_puts(mon_line_end);
 }
 
 /* Print the banner once: identity, then the operator scratch address
@@ -357,16 +358,16 @@ static void mon_print_banner(void)
 {
 	struct zos_info_record info;
 
-	zos_puts(mon_banner);
-	zos_puts(mon_bank_label);
+	console_puts(mon_banner);
+	console_puts(mon_bank_label);
 	mon_put_hex8(mon_bank);
-	if (zex_getinfo(&info) == ZOS_GETINFO_SIZE) {
-		zos_puts(mon_pid_label);
+	if (getinfo(&info) == ZOS_GETINFO_SIZE) {
+		console_puts(mon_pid_label);
 		mon_put_u8_dec(info.pid);
 	}
-	zos_puts(mon_scratch_label);
+	console_puts(mon_scratch_label);
 	mon_put_hex16((unsigned int)&mon_scratch);
-	zos_puts(mon_line_end);
+	console_puts(mon_line_end);
 }
 
 static void mon_dispatch(char *cursor)
@@ -418,7 +419,7 @@ static void mon_dispatch(char *cursor)
 			zrt_status_err_arg();
 			break;
 		}
-		zex_exit(MON_EXIT_QUIT);
+		exit(MON_EXIT_QUIT);
 		break;
 	default:
 		zrt_status_err_command();
@@ -430,9 +431,9 @@ int main(void)
 {
 	struct zos_bank_info bank_info;
 
-	if (zex_diag_bank_info(&bank_info) != 2) {
-		zos_puts(mon_fail_diag);
-		zex_exit(MON_EXIT_DIAG);
+	if (diag_bank_info(&bank_info) != 2) {
+		console_puts(mon_fail_diag);
+		exit(MON_EXIT_DIAG);
 	}
 	mon_bank = bank_info.bank;
 	mon_mask = bank_info.mask;
@@ -442,10 +443,10 @@ int main(void)
 	for (;;) {
 		int length;
 
-		zos_puts(mon_prompt);
+		console_puts(mon_prompt);
 		length = mon_read_line(mon_line, sizeof(mon_line));
 		if (length < 0) {
-			zex_exit(MON_EXIT_CONSOLE);
+			exit(MON_EXIT_CONSOLE);
 		}
 		mon_dispatch(mon_line);
 	}

@@ -4,9 +4,9 @@
  * and command sequencing, the font-atlas upload, and the output-only
  * 85x26 text terminal renderer; v9958_io.asm owns every port access and
  * the timing-critical streaming loops; v9958_boot.c owns the boot-tier
- * bring-up and v9958_service.c the resident-service protocol dispatch.
- * The driver reaches the nucleus only through the service bootstrap
- * interface (include/zephyros/ipc.h); its bulk font lives in bank 6's
+ * bring-up and v9958_proto.c the resident-driver protocol dispatch.
+ * The driver reaches the nucleus only through the driver bootstrap
+ * interface (drivers/include/driver.h); its bulk font lives in bank 6's
  * boot/bulk tier and is re-read through the nucleus bulk copy.  Not a
  * kernel ABI.
  *
@@ -30,7 +30,7 @@
 #ifndef ZEPHYROS_DRIVERS_V9958_DRIVER_H
 #define ZEPHYROS_DRIVERS_V9958_DRIVER_H
 
-#include "zephyros/ipc.h"
+#include "driver.h"
 #include "zos/protocol.h"
 
 /* --- GRAPHIC 6 layout (hardware-proven 85x26 console baseline) ---------
@@ -165,9 +165,9 @@ void v9958_io_stream_palette(struct v9958_block *block);
 void v9958_io_stream_indirect(struct v9958_block *block);
 
 /* Terminal byte entries: assembly wrappers that run the C renderer
- * workers on a private service stack (the kernel syscall gate stack is
+ * workers on a private driver stack (the kernel syscall gate stack is
  * too small for the renderer's call chain).  Prototypes are the exact
- * sdcccall(1) shapes the service dispatch calls. */
+ * sdcccall(1) shapes the driver dispatch calls. */
 int v9958_char_putc(void *state, char ch);
 int v9958_char_write(void *state, const char *buf, uint16_t len);
 
@@ -212,18 +212,18 @@ struct v9958_state {
 int v9958_display_bringup(void);
 
 /* The boot-tier direct font source: the boot entry leaves the font's
- * bank-6 address here for the initial upload; the service init clears it
+ * bank-6 address here for the initial upload; the driver init clears it
  * so every later read goes through the nucleus bulk copy. */
 void v9958_set_font_base(uint16_t base);
-void v9958_set_api(const struct ipc_service_api *api);
+void v9958_set_api(const struct driver_api *api);
 
 /* Boot segment: the initial bring-up, run once through the mode-10 gate. */
 void v9958_boot_entry(void);
 
 /* Hot segment: the endpoint dispatch and the init entry the loader calls
- * with the service bootstrap table. */
-int16_t v9958_service_dispatch(struct zos_ipc_frame *frame);
-uint8_t v9958_service_init(const struct ipc_service_boot *boot);
+ * with the driver bootstrap table. */
+int16_t v9958_driver_dispatch(struct zos_ipc_frame *frame);
+uint8_t v9958_driver_init(const struct driver_boot *boot);
 
 /* The class operation implementation (exposed for the descriptor).  A
  * ZVIDEO_RESET reinitializes the terminal parser, cursor/rendition

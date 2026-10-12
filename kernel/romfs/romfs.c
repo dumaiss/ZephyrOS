@@ -22,7 +22,7 @@
  * subtraction) so the freestanding build needs no runtime library.
  */
 
-#include "zephyros/romfs.h"
+#include "romfs.h"
 
 #include "kernel/lib/name.h"
 

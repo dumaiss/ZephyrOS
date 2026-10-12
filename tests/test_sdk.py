@@ -13,9 +13,9 @@ that contract:
   neither the filesystem nor the diagnostic library members;
 * every ZEX program source compiles against the ABI and the SDK include
   root alone -- never a kernel header;
-* the Z80 simulator executes the SDK startup path: `_zos_split` turns the
+* the Z80 simulator executes the SDK startup path: `_splitargs` turns the
   kernel's raw command tail into argv with the documented quoting, and the
-  `helloworld` image boots `hello.zex` as `/SYSTEM/hello.zex` through the
+  `helloworld` image boots `hello.zex` as `/system/hello.zex` through the
   unmodified production launcher, prints the greeting and is re-executed
   after a clean exit 0.
 
@@ -60,28 +60,28 @@ HELLO_ZEX = os.path.join("build", "user", "hello.zex")
 
 IMAGE_SUBDIR = "build-helloworld"
 IMAGE_NAME = "zephyros-helloworld.bin"
-BOOT_PROGRAM = "/SYSTEM/hello.zex"
+BOOT_PROGRAM = "/system/hello.zex"
 
 # The include roots a ZEX program may resolve a quoted include against: its
 # own directory, the public ABI, the SDK, and the SDK rule's INCLUDES=.
 PROGRAM_INCLUDE_ROOTS = (SDK_INCLUDE, "abi")
 
 # Kernel/production include roots a program header must never resolve into.
-KERNEL_INCLUDE_ROOTS = ("include", "kernel", "platform", "drivers", "fs",
-                        "services", "boot", "modules", "config", "linker")
+KERNEL_INCLUDE_ROOTS = ("kernel", "drivers", "formats", "platform", "boot",
+                        "config", "linker")
 
 
 # What `hello` links: crt0, the shared runtime, the program, the console
 # protocol client with its IPC gate, the argv members, and the
 # printf/string helpers it actually calls.
 HELLO_LIBRARY_MODULES = {
-    "zos_crt0", "zos_runtime", "hello", "args", "console_service", "ipc",
+    "zos_crt0", "zos_runtime", "hello", "args", "console_proto", "ipc",
     "zos_gate", "zos_ipcgate", "nsgate", "printf",
     "strlen", "utoa", "ultoa", "itoa", "ltoa", "sdcc_arith",
     "zos_sdcc_arith_entries",
 }
 
-# Kernel services a program must not link: the filesystem, the diagnostic
+# Kernel drivers a program must not link: the filesystem, the diagnostic
 # and the exec wrappers are archive members that stay out unless called.
 FORBIDDEN_HELLO_MODULES = ("fs", "fsgate", "diaggate", "exec", "console_io")
 
@@ -363,7 +363,7 @@ class TestSdkBoundary(unittest.TestCase):
 
     def test_every_program_is_declared_once_by_the_generic_rule(self):
         programs = _declared_programs()
-        # `ipc` and `ipccopy` are the resident-service acceptance client
+        # `ipc` and `ipccopy` are the resident-driver acceptance client
         # and its caller-buffer probe: declared by the same generic rule,
         # but only the ZOS_IPC_SELFTEST configuration builds them.  `ns`
         # and `nschild` are the namespace acceptance client and the child
@@ -438,7 +438,7 @@ class TestSdkBoundary(unittest.TestCase):
         for root in KERNEL_INCLUDE_ROOTS:
             self.assertNotIn("-I %s" % root, flags,
                              "the program rule adds -I %s" % root)
-        self.assertNotIn("include/zephyros", rule)
+        self.assertNotIn("zephyros" + "/", rule)
         # ASM sources see the ABI only (the SDK's asm uses no C header).
         self.assertIn("ZEX_ASFLAGS := -Iabi", rule)
 
@@ -493,10 +493,11 @@ class TestSdkBoundary(unittest.TestCase):
                 os.path.join(ROOT, "abi", "zos", name)),
                 "abi/zos/%s is missing" % name)
         for name in ("fs.h", "syscall.h"):
-            self.assertFalse(
-                os.path.isfile(os.path.join(ROOT, "include", "zephyros",
-                                            name)),
-                "include/zephyros/%s mirrors a public ABI header" % name)
+            for owner in ("drivers/include", "kernel/include",
+                          "formats/include"):
+                self.assertFalse(
+                    os.path.isfile(os.path.join(ROOT, owner, name)),
+                    "%s/%s mirrors a public ABI header" % (owner, name))
 
     def test_sdk_headers_are_the_only_user_headers(self):
         self.assertTrue(os.path.isfile(
@@ -507,7 +508,7 @@ class TestSdkBoundary(unittest.TestCase):
 
 
 class TestSdkSplitterInSimulator(unittest.TestCase):
-    """crt0's argv comes from `zos_split`; run the linked bytes.
+    """crt0's argv comes from `splitargs`; run the linked bytes.
 
     The program's own image is loaded into the application bank exactly as
     the loader places it, and the splitter is called the way crt0 calls it
@@ -546,13 +547,13 @@ class TestSdkSplitterInSimulator(unittest.TestCase):
         z.de = self.ARGV
         z.push16(self.CAPACITY)
         z.push16(RET)
-        z.pc = self.symbols["_zos_split"]
+        z.pc = self.symbols["_splitargs"]
         for _ in range(200000):
             z.step()
             if z.pc == RET:
                 break
         else:
-            raise AssertionError("_zos_split did not return")
+            raise AssertionError("_splitargs did not return")
         argc = z.de
         words = []
         for index in range(min(argc, self.CAPACITY)):
@@ -664,7 +665,7 @@ class TestHelloWorldImage(ConsoleReplay, unittest.TestCase):
     IMAGE_NAME = IMAGE_NAME
     GREETING = "Hello, ZephyrOS!"
     REPORT = "monitor: exit status 0x0000 active 0 free-banks 6"
-    CONSOLE_BOUND = "console: service OK"
+    CONSOLE_BOUND = "console: driver OK"
 
     @classmethod
     def setUpClass(cls):
@@ -679,7 +680,7 @@ class TestHelloWorldImage(ConsoleReplay, unittest.TestCase):
 
     def test_kernel_carries_the_demo_as_its_boot_program(self):
         self.assertIn(BOOT_PROGRAM.encode("ascii"), self.replay.image)
-        self.assertNotIn(b"/SYSTEM/monitor.zex", self.replay.image)
+        self.assertNotIn(b"/system/monitor.zex", self.replay.image)
 
     def test_demo_prints_the_greeting_on_the_bound_console(self):
         self.assertIn(self.CONSOLE_BOUND, self.transcript)

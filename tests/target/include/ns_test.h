@@ -1,20 +1,20 @@
 /* ZephyrOS namespace acceptance test contract (test artifact).
  *
  * Shared by the `nsdev` synthetic publisher (tests/target/ns/nsdev.c), its
- * service manifest (tests/ns/manifests/nsdev.json), the client program
+ * driver manifest (tests/ns/manifests/nsdev.json), the client program
  * (tests/ns/ns.c) and the simulator replay.  It is the package-42a
  * conformance protocol, never the native ABI: the object lifecycle, the
  * argument blocks and the FILE protocol come from abi/zos/object.h,
  * abi/zos/ipc.h and abi/zos/protocol.h, and every constant here belongs to
  * the acceptance set.
  *
- * The image boots the real SIO and console services plus this one
+ * The image boots the real SIO and console drivers plus this one
  * synthetic publisher, so the DEVICE provider's table carries production
  * metadata (`/dev/serial/0`, `/dev/console`) beside two test-only names
  * that give the rehearsal a second and third protocol type and a second
  * grouping container:
  *
- *   /dev/input/keyboard  INPUT  -> one endpoint of the synthetic service
+ *   /dev/input/keyboard  INPUT  -> one endpoint of the synthetic driver
  *   /dev/video           VIDEO  -> the same endpoint, another name
  *
  * The endpoint's dispatch answers three operations, so a call that
@@ -33,7 +33,7 @@
 #include "zos/object.h"
 #include "zos/types.h"
 
-/* Test-only service class: 1-8 are the production service classes
+/* Test-only driver class: 1-8 are the production driver classes
  * (abi/zos/protocol.h), 16+ is the IPC image's synthetic set. */
 #define NS_CLASS_DEV 30u
 

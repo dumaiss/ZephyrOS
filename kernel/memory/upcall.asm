@@ -2,7 +2,7 @@
 ; ZephyrOS revision-13 upcall shim (architecture 36.5).
 ;
 ; The fixed primitive that lets cold-half nucleus code call a resident
-; service: it validates the request, saves the exact banking latch,
+; driver: it validates the request, saves the exact banking latch,
 ; selects the window page (P), makes one call into the window
 ; 6000h-DFFFh, restores the saved latch, and publishes the target's HL
 ; result and its A register at return.
@@ -32,8 +32,8 @@
 ; -----------------------------------------------------------------------------
 
 	.module upcall
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 
 	.globl _zos_upcall
 	.globl zos_upcall_end
@@ -47,7 +47,7 @@
 
 ; Window pages the operating system uses (mirror kernel/memory/upcall.h).
 ZOS_UPCALL_PAGE_NUCLEUS = 0
-ZOS_UPCALL_PAGE_SERVICE = 1
+ZOS_UPCALL_PAGE_DRIVER = 1
 
 	.area _CODE
 
@@ -60,7 +60,7 @@ ZOS_UPCALL_PAGE_SERVICE = 1
 ; ---------------------------------------------------------------------------
 _zos_upcall::
 	ld	a,(hl)			; page
-	cp	#(ZOS_UPCALL_PAGE_SERVICE + 1)
+	cp	#(ZOS_UPCALL_PAGE_DRIVER + 1)
 	jr	c,001$
 	ld	a,#0x02			; ZOS_EINVAL
 	ret

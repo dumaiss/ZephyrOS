@@ -1,0 +1,60 @@
+{
+  "name": "v9958",
+  "objects": [
+    "v9958.rel",
+    "v9958_io.rel",
+    "v9958_driver.rel",
+    "v9958_font.rel",
+    "v9958_boot.rel",
+    "sdcc_indirect_calls.rel"
+  ],
+  "init": "v9958_driver_init",
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ],
+      "bss_areas": [
+        "_DRIVER_IO"
+      ]
+    },
+    {
+      "role": "boot",
+      "image_areas": [
+        "_BOOT"
+      ],
+      "bss_areas": [
+        "_BOOT_DATA"
+      ],
+      "entry": "v9958_boot_entry"
+    },
+    {
+      "role": "bulk",
+      "image_areas": [
+        "_BULK"
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 2,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "v9958_driver_dispatch",
+      "flags": 0
+    }
+  ],
+  "publishes": [
+    {
+      "path": "/dev/video",
+      "type": "VIDEO",
+      "endpoint": {
+        "class": 2,
+        "instance": 0
+      },
+      "object": 0
+    }
+  ],
+  "depends": []
+}

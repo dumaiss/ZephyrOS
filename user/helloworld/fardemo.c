@@ -3,7 +3,7 @@
  * The simplest complete far-code program: `fardemo_far.c` is compiled
  * into the `_FAR_CODE` area and linked at 8000h through the zex_program
  * FAR= option, the packer proves the 36.17 link rule (this image, its BSS
- * and the whole stack stay outside 8000h-BFFFh), and `zos_far_call` maps
+ * and the whole stack stay outside 8000h-BFFFh), and `farcall` maps
  * the segment, makes the plain CALL and restores the previous latch.
  *
  * The far code prints its own line from a far-area buffer (a console
@@ -34,29 +34,29 @@ int main(void)
 	int result;
 	unsigned int expected;
 
-	zos_puts("fardemo: begin\r\n");
+	console_puts("fardemo: begin\r\n");
 
 	/* The aperture token of this program's own FAR_CODE segment.  The
 	 * page field P = 7 - bank is 2..7: it never names bank 6 or 7. */
-	token = zos_seg_map(SEGMENT);
+	token = segmap(SEGMENT);
 	if (token < 1) {
-		zos_printf("fardemo: FAIL map %d\r\n", (unsigned int)token);
+		printf("fardemo: FAIL map %d\r\n", (unsigned int)token);
 		return 1;
 	}
-	zos_printf("fardemo: token %02x\r\n", (unsigned int)token);
+	printf("fardemo: token %02x\r\n", (unsigned int)token);
 
 	/* Map, a plain CALL and restore.  The far entry prints its line,
 	 * calls primary code and returns (latch << 8) | (seed + 1). */
-	result = zos_far_call(SEGMENT, fardemo_far_main, SEED, 0);
+	result = farcall(SEGMENT, fardemo_far_main, SEED, 0);
 	expected = ((unsigned int)token << 8) | (unsigned int)(SEED + 1);
 	if ((unsigned int)result != expected) {
-		zos_printf("fardemo: FAIL call %04x\r\n",
+		printf("fardemo: FAIL call %04x\r\n",
 			   (unsigned int)result);
 		return 1;
 	}
-	zos_printf("fardemo: far result %04x\r\n", (unsigned int)result);
+	printf("fardemo: far result %04x\r\n", (unsigned int)result);
 
 	/* The helper restored the latch: the aperture is closed again. */
-	zos_puts("fardemo: PASS\r\n");
+	console_puts("fardemo: PASS\r\n");
 	return 0;
 }

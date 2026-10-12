@@ -2,7 +2,7 @@
 ; Kernel-owned IRQ executive initialization; the platform declares the
 ; vector-page geometry and the I-register value in irq.inc.
 	.module platform_irq
-	.include "zephyr80/irq.inc"
+	.include "irq.inc"
 	.globl _irq_arch_init, irq_ctc0_stub, irq_ff_unexpected
 
 	.area _COMMON

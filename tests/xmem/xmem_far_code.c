@@ -4,7 +4,7 @@
  * linked at 8000h, so this module - its code and its string literals -
  * becomes the `_FAR_CODE` area the container loads into the aperture
  * slice of an auxiliary bank.  The primary half maps a segment and calls
- * this entry with `zos_far_call`, which is an OUT (the aperture token)
+ * this entry with `farcall`, which is an OUT (the aperture token)
  * followed by a plain CALL to the entry's linked address.
  *
  * The entry proves the far-code rules of architecture 36.17 from inside:
@@ -17,7 +17,7 @@
  *   * it runs syscalls whose buffers lie in the far bank: a console write
  *     of the far-area literal and an xmem write of the same bytes (the
  *     buffer-identity rule, 36.8);
- *   * it execs /SYSTEM/xmem_child.zex from far context, with both the
+ *   * it execs /system/xmem_child.zex from far context, with both the
  *     path and the command tail in the far area - the child starts with
  *     P = 0 and this process's latch comes back exactly;
  *   * it returns (latch << 8) | child status, so the primary half proves
@@ -30,7 +30,7 @@
 
 #include "zos.h"
 
-#define CHILD_PATH "/SYSTEM/xmem_child.zex"
+#define CHILD_PATH "/system/xmem_child.zex"
 
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
  * D7-D5.  Read directly. */
@@ -58,18 +58,18 @@ int xmem_far_entry(int handle, int arg)
 	if (xmem_far_primary(arg) != arg + 1) {
 		return -1;
 	}
-	/* A service call whose buffer is the far bank. */
-	if (zos_console_write(far_text, text) != (int)text) {
+	/* A driver call whose buffer is the far bank. */
+	if (console_write(far_text, text) != (int)text) {
 		return -1;
 	}
 	/* A syscall whose buffer is the far bank. */
-	if (zos_xmem_write((unsigned int)handle, 0u, far_text, text) !=
+	if (xwrite((unsigned int)handle, 0u, far_text, text) !=
 	    (int)text) {
 		return -1;
 	}
 	/* Exec from far context: the child starts with P = 0, and this
 	 * process's latch is restored exactly when it exits. */
-	status = zos_exec(CHILD_PATH, (const char *)arg);
+	status = run(CHILD_PATH, (const char *)arg);
 	return (int)(((unsigned int)latch << 8) |
 		     (unsigned int)(status & 0xFF));
 }
@@ -77,6 +77,6 @@ int xmem_far_entry(int handle, int arg)
 int xmem_far_exit(int status, int unused)
 {
 	(void)unused;
-	zex_exit((unsigned int)status); /* does not return */
+	exit((unsigned int)status); /* does not return */
 	return -1;
 }

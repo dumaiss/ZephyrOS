@@ -56,7 +56,7 @@
 ; -----------------------------------------------------------------------------
 
 	.module ioc_io
-	.include "zephyr80/hardware.inc"
+	.include "hardware.inc"
 
 	.globl _ioc_io_ctrl_write
 	.globl _ioc_io_ctrl_read
@@ -1008,7 +1008,7 @@ ioc_bulk_irq_restore:
 ; transfer, so these are not re-entrant by design (the C busy guard and the
 ; admission state serialize every operation).
 ; ---------------------------------------------------------------------------
-	.area _SERVICE_IO
+	.area _DRIVER_IO
 _ioc_bulk_block:	.ds 2
 _ioc_bulk_buf:		.ds 2
 _ioc_bulk_len:		.ds 2

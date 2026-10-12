@@ -32,7 +32,7 @@ _LAYOUT_GLOBALS = (
     "PAGE_ZERO_END", "RESET_TOP", "BANK7_BASE", "BANK7_RUNTIME_END",
     "BANK7_TOP", "COMMON_BASE", "COMMON_CODE_END", "STACK_BASE",
     "WINDOW_BASE", "WINDOW_DATA_BASE",
-    "SERVICE_STACK_BASE", "SERVICE_STACK_TOP", "SERVICE_STACK_SIZE",
+    "DRIVER_STACK_BASE", "DRIVER_STACK_TOP", "DRIVER_STACK_SIZE",
     "IRQ_ISR_STACK_BASE", "IRQ_ISR_STACK_TOP", "IRQ_ISR_STACK_SIZE",
     "GATE_STACK_SIZE", "OWNED_AREAS", "DRIVER_ARENA_BASE",
     "DRIVER_ARENA_END", "DRIVER_GRANULE_SIZE", "DRIVER_GRANULES",
@@ -59,12 +59,12 @@ def layout_context(layout_inc, irq_inc):
 
 PLATFORM_DIR = os.path.join(ROOT, "platform", "zephyr80")
 TARGET_TEST_INC = os.path.join(ROOT, "tests", "target", "include")
-HARDWARE_H = os.path.join(PLATFORM_DIR, "hardware.h")
-HARDWARE_INC = os.path.join(PLATFORM_DIR, "hardware.inc")
-MEMORY_H = os.path.join(PLATFORM_DIR, "memory.h")
-MEMORY_INC = os.path.join(PLATFORM_DIR, "memory.inc")
-IRQ_H = os.path.join(PLATFORM_DIR, "irq.h")
-IRQ_INC = os.path.join(PLATFORM_DIR, "irq.inc")
+HARDWARE_H = os.path.join(PLATFORM_DIR, "public", "hardware.h")
+HARDWARE_INC = os.path.join(PLATFORM_DIR, "public", "hardware.inc")
+MEMORY_H = os.path.join(PLATFORM_DIR, "private", "memory.h")
+MEMORY_INC = os.path.join(PLATFORM_DIR, "private", "memory.inc")
+IRQ_H = os.path.join(PLATFORM_DIR, "private", "irq.h")
+IRQ_INC = os.path.join(PLATFORM_DIR, "private", "irq.inc")
 SELFTEST_H = os.path.join(TARGET_TEST_INC, "selftest.h")
 SELFTEST_INC = os.path.join(TARGET_TEST_INC, "selftest.inc")
 IRQ_SELFTEST_H = os.path.join(TARGET_TEST_INC, "irq_selftest.h")
@@ -93,8 +93,8 @@ REQUIRED_MEMORY_CONSTANTS = (
     "ZOS_BANK7_BASE", "ZOS_REV13_WINDOW_BASE", "ZOS_BANK7_RUNTIME_END",
     "ZOS_IRQ_ISR_STACK_BASE", "ZOS_IRQ_ISR_STACK_TOP",
     "ZOS_IRQ_ISR_STACK_SIZE",
-    "ZOS_SERVICE_STACK_BASE", "ZOS_SERVICE_STACK_TOP",
-    "ZOS_SERVICE_STACK_SIZE",
+    "ZOS_DRIVER_STACK_BASE", "ZOS_DRIVER_STACK_TOP",
+    "ZOS_DRIVER_STACK_SIZE",
     "ZOS_DRIVER_GRANULE_SIZE",
     "ZOS_COMMON_BASE", "ZOS_COMMON_CODE_END", "ZOS_COMMON_STACK_BASE",
     "ZOS_COMMON_CEILING",
@@ -303,7 +303,7 @@ def make_map(overrides=None, **kw):
         "_irq_arch_unlock": 0xE198, "_irq_arch_init": 0xE1A0,
         "_irq_dispatch": 0x2200, "_irq_kernel_code_end": 0x206E,
         "_zos_upcall": 0x2400,
-        "zos_service_stack": 0x5D00, "zos_service_stack_top": 0x5F00,
+        "zos_driver_stack": 0x5D00, "zos_driver_stack_top": 0x5F00,
         "_device_registry_init": 0x2300, "_device" + "_register": 0x2320,
         "_device_get": 0x2340, "_device_find": 0x2360,
         "_device_interface": 0x2370,
@@ -383,7 +383,7 @@ def make_map(overrides=None, **kw):
         # Bank-7 runtime data.  `_zos_process_path_scratch` used to sit
         # here; work package 45b correction 01 retired it, because a
         # bank-6 provider cannot see this half of bank 7.
-        # M7 diagnostic services and shared dispatcher helpers (bank-7
+        # M7 diagnostic drivers and shared dispatcher helpers (bank-7
         # kernel code; no new common state).
         "_zos_diag_mem_read": 0x2E00, "_zos_diag_mem_write": 0x2E40,
         "_zos_diag_io_in": 0x2E80, "_zos_diag_io_out": 0x2EA0,
@@ -392,7 +392,7 @@ def make_map(overrides=None, **kw):
         "_zos_syscall_success": 0x2632, "_zos_syscall_error": 0x263D,
         "_zos_syscall_block_ok": 0x264C,
         # VFS handles, paths and the namespace family (package 42b): the
-        # reused M9 helpers plus the M10 router, the `/SYSTEM` FILE
+        # reused M9 helpers plus the M10 router, the `/system` FILE
         # provider and the object syscall bodies.  The mount table, the
         # provider registry and the `FS_*` front end are retired.
         "_vfs_init": 0x3000,

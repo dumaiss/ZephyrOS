@@ -3,7 +3,7 @@
 Pins the structural facts the `ns-selftest` image, its client program and
 its replay depend on, without booting anything:
 
-  - the build wiring (target, image names, the service set and its
+  - the build wiring (target, image names, the driver set and its
     manifest directory, the boot program);
   - the pinned ABI: the four syscall numbers, the argument blocks and the
     namespace entry in abi/zos/object.h, the 8-bit protocol types, the two
@@ -14,7 +14,7 @@ its replay depend on, without booting anything:
     rule, the 20-byte record, the packer's parse/plan/emit and the three
     packed containers of the image (ABI byte, names, protocol types and
     host-resolved endpoint numbers);
-  - the image's service manifests and store, and `services.man` holding
+  - the image's driver manifests and store, and `drivers.man` holding
     one 24-byte record per loaded image in load order;
   - the residency classification: the three new objects are production
     `cold` code (package 42b), so every image links them;
@@ -45,7 +45,7 @@ ABI_SYSCALL = os.path.join(ROOT, "abi", "zos", "syscall.h")
 SDK_IPC = os.path.join(ROOT, "user", "sdk", "include", "zos", "ipc.h")
 SDK_IPC_SOURCE = os.path.join(ROOT, "user", "sdk", "src", "ipc.c")
 NUCLEUS_IPC_C = os.path.join(ROOT, "kernel", "ipc", "ipc.c")
-SERVICE_HEADER = os.path.join(ROOT, "include", "zephyros", "service.h")
+DRIVER_HEADER = os.path.join(ROOT, "formats", "include", "zmod.h")
 PACKER = os.path.join(ROOT, "tools", "zmodpack.py")
 RESIDENCY = os.path.join(ROOT, "config", "residency.json")
 LINKER = os.path.join(ROOT, "linker", "zephyr80.lk")
@@ -56,7 +56,7 @@ ZEX_MK = os.path.join(ROOT, "user", "sdk", "zex.mk")
 CLIENT = os.path.join(ROOT, "tests", "ns", "ns.c")
 CHILD = os.path.join(ROOT, "tests", "ns", "nschild.c")
 MANIFEST = os.path.join(ROOT, "tests", "ns", "manifest.json")
-SERVICE_MANIFESTS = os.path.join(ROOT, "tests", "ns", "manifests")
+DRIVER_MANIFESTS = os.path.join(ROOT, "tests", "ns", "manifests")
 NSDEV = os.path.join(ROOT, "tests", "target", "ns", "nsdev.c")
 
 IMAGE_SUBDIR = os.path.join(ROOT, "build-ns-selftest")
@@ -82,11 +82,11 @@ PUBLICATIONS = {
     "console-serial": [("/console", 6, 2, 0)],
     "nsdev": [("/input/keyboard", 4, 3, 1), ("/video", 2, 3, 2)],
 }
-SERVICE_ORDER = ["sio", "console-serial", "nsdev"]
+DRIVER_ORDER = ["sio", "console-serial", "nsdev"]
 
-# The store the image boots from, in manifest order; `services.man` is the
+# The store the image boots from, in manifest order; `drivers.man` is the
 # loader's own boot manifest, one 24-byte record per loaded image.
-STORE = ["sio.zmod", "console-serial.zmod", "nsdev.zmod", "services.man",
+STORE = ["sio.zmod", "console-serial.zmod", "nsdev.zmod", "drivers.man",
          "ns.zex", "nschild.zex"]
 MAN_RECORD = 24
 # The namespace leaves the M9 mount pass without a `/` mount to check.
@@ -121,15 +121,16 @@ class TestNsBuildWiring(unittest.TestCase):
 
     def test_makefile_selects_the_image_configuration(self):
         text = read(MAKEFILE)
-        for token in ("ZOS_SERVICES := sio console-serial nsdev",
-                      "SVC_MANIFEST_DIR := tests/ns/manifests",
-                      "ZOS_BOOT_PROGRAM := /SYSTEM/ns.zex",
-                                "$(BUILD)/vfs_ns.rel $(BUILD)/vfs_ns_file.rel "
+        for token in ("ZOS_DRIVERS := sio console-serial nsdev",
+                      "DRV_MANIFEST_DIR := tests/ns/manifests",
+                      "ZOS_BOOT_PROGRAM := /system/ns.zex",
+                      "$(BUILD)/vfs_router.rel $(BUILD)/vfs_dev.rel",
+                      "$(BUILD)/vfs_fs.rel $(BUILD)/vfs_system.rel",
                       "$(BUILD)/object.rel"):
             self.assertIn(token, text, token)
         # The image links the namespace objects cold, in the placement
         # production will use (config/residency.json tier `cold`).
-        self.assertIn("COLD_EXTRA_CSV := vfs_ns,vfs_ns_file,object,vfs_file",
+        self.assertIn("COLD_EXTRA_CSV := vfs_router,vfs_system,object,vfs_file",
                       text)
 
     def test_client_programs_exist_and_are_wired(self):
@@ -187,10 +188,10 @@ class TestNsAbi(unittest.TestCase):
 
 
 class TestNsContainers(unittest.TestCase):
-    def test_service_header_declares_the_flat_plan(self):
-        text = read(SERVICE_HEADER)
-        # Work package 42c: one flat plan per service image, no ABI
-        # version field and no separate service section.
+    def test_driver_header_declares_the_flat_plan(self):
+        text = read(DRIVER_HEADER)
+        # Work package 42c: one flat plan per driver image, no ABI
+        # version field and no separate driver section.
         self.assertRegex(text, r"#define ZMOD_HEADER_SIZE\s+16u")
         self.assertRegex(text, r"#define ZMOD_SEGMENT_SIZE\s+12u")
         self.assertRegex(text, r"#define ZMOD_ENDPOINT_SIZE\s+8u")
@@ -200,7 +201,7 @@ class TestNsContainers(unittest.TestCase):
         self.assertRegex(text,
                          r"#define ZMOD_MAX_PUBLICATIONS\s+12u")
         self.assertIn("payload_offset", text)
-        self.assertNotIn("ZMOD_SERVICE_ABI_VERSION", text)
+        self.assertNotIn("ZMOD_DRIVER_ABI_VERSION", text)
 
     def test_packer_emits_and_validates_the_table(self):
         text = read(PACKER)
@@ -219,7 +220,7 @@ class TestNsContainers(unittest.TestCase):
             "nsdev": ("/dev/input/keyboard", "INPUT", 30, 1),
         }
         for name, (path, kind, cls, obj) in expected.items():
-            data = json.loads(read(os.path.join(SERVICE_MANIFESTS,
+            data = json.loads(read(os.path.join(DRIVER_MANIFESTS,
                                                 "%s.json" % name)))
             self.assertEqual(data["name"], name)
             self.assertEqual(len(data["publishes"]), len(PUBLICATIONS[name]))
@@ -237,7 +238,7 @@ class TestNsContainers(unittest.TestCase):
         """Decode the image's own containers: the flat header, the four
         tables in canonical order and every publication row with its
         host-resolved endpoint number."""
-        for name in SERVICE_ORDER:
+        for name in DRIVER_ORDER:
             path = os.path.join(MODULE_DIR, "%s.zmod" % name)
             if not os.path.exists(path):
                 self.skipTest("build-ns-selftest missing; run make "
@@ -269,7 +270,7 @@ class TestNsContainers(unittest.TestCase):
             self.assertEqual(rows, PUBLICATIONS[name], name)
 
     def test_boot_manifest_matches_the_containers(self):
-        """`services.man` is the loader's own boot manifest: one 24-byte
+        """`drivers.man` is the loader's own boot manifest: one 24-byte
         record per image, in load order."""
         path = os.path.join(IMAGE_SUBDIR, "recovery.romfs")
         if not os.path.exists(path):
@@ -278,10 +279,10 @@ class TestNsContainers(unittest.TestCase):
             _header, entries = romfspack.parse_image(handle.read())
         names = [entry["name"] for entry in entries]
         self.assertEqual(names, STORE)
-        manifest = next(e for e in entries if e["name"] == "services.man")
+        manifest = next(e for e in entries if e["name"] == "drivers.man")
         data = manifest["payload"]
-        self.assertEqual(len(data), MAN_RECORD * len(SERVICE_ORDER))
-        for index, name in enumerate(STORE[:len(SERVICE_ORDER)]):
+        self.assertEqual(len(data), MAN_RECORD * len(DRIVER_ORDER))
+        for index, name in enumerate(STORE[:len(DRIVER_ORDER)]):
             record = data[index * MAN_RECORD:(index + 1) * MAN_RECORD]
             self.assertEqual(record.split(b"\x00")[0],
                              name.encode("ascii"))
@@ -292,7 +293,8 @@ class TestNsResidency(unittest.TestCase):
         # Package 42b: the family is production cold code, so residency.json
         # classifies it and nothing is test-linked any more.
         tiers, cold_half, test_link = mapcheck.load_residency(RESIDENCY)
-        for name in ("vfs_ns", "vfs_ns_file", "object"):
+        for name in ("vfs_router", "vfs_dev", "vfs_fs", "vfs_system",
+                     "object"):
             self.assertEqual(tiers[name], "cold", name)
             self.assertIn(name, cold_half)
         self.assertEqual(sorted(test_link), [])
@@ -301,7 +303,8 @@ class TestNsResidency(unittest.TestCase):
         # Package 42b: the family is production, and the M9 machinery it
         # replaces is gone from the link.
         text = read(LINKER)
-        for name in ("vfs_ns.rel", "vfs_ns_file.rel", "object.rel"):
+        for name in ("vfs_router.rel", "vfs_dev.rel", "vfs_fs.rel",
+                     "vfs_system.rel", "object.rel"):
             self.assertIn(name, text, name)
         for name in ("build/fs.rel", "build/vfs_file.rel",
                      "build/vfs_mount.rel", "build/vfs_dir.rel",
@@ -311,7 +314,7 @@ class TestNsResidency(unittest.TestCase):
                      "build/ioc" + "_shim.rel"):
             self.assertNotIn(name, text, name)
         # The reused M9 helpers stay linked.
-        for name in ("vfs_path.rel", "vfs_process.rel", "vfs_workspace.rel"):
+        for name in ("vfs_path.rel", "vfs_handles.rel", "vfs_workspace.rel"):
             self.assertIn(name, text, name)
 
     def test_production_image_carries_no_namespace_symbol(self):
@@ -365,7 +368,7 @@ class TestExecStagesItsPathInFixedCore(unittest.TestCase):
 
     def test_the_retired_scratch_leaves_no_declaration_behind(self):
         for rel in ("kernel/process/process.c",
-                    "include/zephyros/process.h",
+                    "kernel/include/process.h",
                     "kernel/process/launch.asm"):
             self.assertNotIn("zos_process_path_scratch",
                              read(os.path.join(ROOT, rel)), rel)
@@ -383,10 +386,10 @@ class TestExecStagesItsPathInFixedCore(unittest.TestCase):
 class TestNsClient(unittest.TestCase):
     def test_client_checks_the_documented_paths(self):
         text = read(CLIENT)
-        for token in ('zos_ipc_bind("/SYSTEM/services.man"',
-                      'zos_ipc_bind("/dev/console"',
-                      'zos_ipc_bind("/dev/input/keyboard"',
-                      'zos_ns_enum("/SYSTEM"',
+        for token in ('bind("/system/drivers.man"',
+                      'bind("/dev/console"',
+                      'bind("/dev/input/keyboard"',
+                      'list("/system"',
                       "ns selftest: OK"):
             self.assertIn(token, text, token)
         # A root-level name has no provider owner: the router refuses it
@@ -398,11 +401,11 @@ class TestNsClient(unittest.TestCase):
         self.assertIn("ZFILE_OP_META", text)
         # CWD traversal through provider validation (architecture 37
         # namespace/process-lifetime rows), including the root itself.
-        for token in ('zos_chdir("/SYSTEM")', 'zos_chdir("..")',
-                      'zos_chdir("/dev/input")',
-                      'zos_chdir("/dev/console") == -ZOS_ENOTDIR',
-                      'zos_chdir("/FS") == -ZOS_ENODEV',
-                      'zos_getcwd(', 'check("cwd-after-child"'):
+        for token in ('chdir("/system")', 'chdir("..")',
+                      'chdir("/dev/input")',
+                      'chdir("/dev/console") == -ZOS_ENOTDIR',
+                      'chdir("/fs") == -ZOS_ENODEV',
+                      'getcwd(', 'check("cwd-after-child"'):
             self.assertIn(token, text, token)
         # A refused chdir leaves the stored CWD untouched.
         self.assertIn('check("cwd-survives-refusal"', text)
@@ -410,18 +413,18 @@ class TestNsClient(unittest.TestCase):
     def test_child_program_uses_the_standard_handles(self):
         text = read(CHILD)
         self.assertIn("ZOS_HANDLE_STDOUT", text)
-        self.assertIn("zos_ipc_bind(\"/dev/console\"", text)
+        self.assertIn("bind(\"/dev/console\"", text)
         self.assertIn("nschild: OK", text)
         # The child checks the CWD inheritance rule from its own side.
-        self.assertIn('zos_chdir("/SYSTEM")', text)
-        self.assertIn("zos_getcwd(cwd", text)
+        self.assertIn('chdir("/system")', text)
+        self.assertIn("getcwd(cwd", text)
 
     def test_sdk_variant_exposes_the_family(self):
         header = read(SDK_HEADER)
-        for token in ("int zos_ipc_bind(const char *path, unsigned int flags,"
+        for token in ("int bind(const char *path, unsigned int flags,"
                       " unsigned char *type);",
-                      "int zos_ipc_unbind(unsigned char handle);",
-                      "int zos_ns_enum(const char *path, unsigned int "
+                      "int unbind(unsigned char handle);",
+                      "int list(const char *path, unsigned int "
                       "*cookie,"):
             self.assertIn(token, header, token)
         source = read(SDK_SOURCE)

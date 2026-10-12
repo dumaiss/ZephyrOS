@@ -15,6 +15,8 @@
 
 #include "zos.h"
 
+#include "zos_internal.h"
+
 #include "ipc_test.h"
 
 #define MEASURE_N1 8u
@@ -40,16 +42,16 @@ static uint8_t irqx_handle;
 static unsigned int checks;
 static unsigned int failures;
 
-static const char fs_path[] = "/SYSTEM/ipc.zex";
+static const char fs_path[] = "/system/ipc.zex";
 
 static void check(const char *label, int ok)
 {
 	++checks;
 	if (!ok) {
 		++failures;
-		zos_puts("ipc: FAIL ");
-		zos_puts(label);
-		zos_puts("\r\n");
+		console_puts("ipc: FAIL ");
+		console_puts(label);
+		console_puts("\r\n");
 	}
 }
 
@@ -71,10 +73,10 @@ static void frame_prepare(uint8_t op, uint8_t flags)
 
 static int dispatch(uint8_t handle)
 {
-	return zos_ipc_call(handle, &req);
+	return call(handle, &req);
 }
 
-static int call(uint8_t handle, uint8_t op, uint8_t flags, void *buffer,
+static int ipc_call(uint8_t handle, uint8_t op, uint8_t flags, void *buffer,
 		unsigned int length, unsigned char direction)
 {
 	frame_prepare(op, flags);
@@ -145,7 +147,7 @@ static int op_echo_exchange(void)
 
 static int op_echo_null(void)
 {
-	return call(echo_handle, IPC_OP_ECHO_NULL, 0u, (void *)0, 0u, 0u);
+	return ipc_call(echo_handle, IPC_OP_ECHO_NULL, 0u, (void *)0, 0u, 0u);
 }
 
 static int con_write(unsigned int offset, unsigned int length)
@@ -160,7 +162,7 @@ static int con_write(unsigned int offset, unsigned int length)
 }
 
 /* One con.WRITE with an explicit descriptor length: the check that a
- * slice past the captured descriptor, and a slice past the service's own
+ * slice past the captured descriptor, and a slice past the driver's own
  * buffer, are both refused with -ZOS_EINVAL. */
 static int con_slice(unsigned int descriptor, unsigned int offset)
 {
@@ -181,12 +183,12 @@ static int op_conoffset(void) { return con_write(8u, 4u); }
 
 static int op_console1(void)
 {
-	return zos_console_write((char *)source, 1u);
+	return console_write((char *)source, 1u);
 }
 
 static int op_console256(void)
 {
-	return zos_console_write((char *)source, 256u);
+	return console_write((char *)source, 256u);
 }
 
 static int vfs_read(unsigned int offset, unsigned int length, uint8_t flags)
@@ -220,17 +222,17 @@ static int op_fs_read(void)
 	long rc;
 
 	if (!fd_valid) {
-		fd = zos_open(fs_path, ZFS_O_READ);
+		fd = open(fs_path, ZFS_O_READ);
 		if (fd < 0) {
 			return fd;
 		}
 		fd_valid = 1u;
 	}
-	rc = zos_seek((unsigned int)fd, 0, ZFS_SEEK_SET);
+	rc = seek((unsigned int)fd, 0, ZFS_SEEK_SET);
 	if (rc < 0) {
 		return (int)rc;
 	}
-	return zos_read((unsigned int)fd, target, IPC_BLOCK_BYTES);
+	return read((unsigned int)fd, target, IPC_BLOCK_BYTES);
 }
 
 static int irq_op(uint8_t op, unsigned int iterations)
@@ -248,10 +250,10 @@ static int irq_op(uint8_t op, unsigned int iterations)
  * test's PHASE_NAMES table is the authoritative decoding. */
 static void phase_mark(char code, char suffix)
 {
-	zos_puts("ipc: ");
-	zos_putc(code);
-	zos_putc(suffix);
-	zos_puts("\r\n");
+	console_puts("ipc: ");
+	putchar(code);
+	putchar(suffix);
+	console_puts("\r\n");
 }
 
 static void report_u16(const char *label, unsigned int value)
@@ -259,13 +261,13 @@ static void report_u16(const char *label, unsigned int value)
 	char digits[6];
 	unsigned int count = 0u;
 
-	zos_puts(label);
+	console_puts(label);
 	do {
 		digits[count++] = (char)('0' + (value % 10u));
 		value /= 10u;
 	} while (value != 0u && count < 5u);
 	while (count != 0u) {
-		zos_putc(digits[--count]);
+		putchar(digits[--count]);
 	}
 }
 
@@ -297,28 +299,28 @@ int main(int argc, char **argv)
 
 	(void)argc;
 	(void)argv;
-	zos_puts("ipc selftest: client OK\r\n");
+	console_puts("ipc selftest: client OK\r\n");
 
 	/* Package 42b: every provider is reached through a bound namespace
 	 * handle; the three host-built publications of the production
-	 * services would resolve here too (the image's own set is below
+	 * drivers would resolve here too (the image's own set is below
 	 * /dev/ipc). */
-	echo_handle = (uint8_t)zos_ipc_bind("/dev/ipc/echo", 0u, &type);
+	echo_handle = (uint8_t)bind("/dev/ipc/echo", 0u, &type);
 	check("bind-echo", echo_handle != 0u && type == ZOS_TYPE_SERIAL);
-	con_handle = (uint8_t)zos_ipc_bind("/dev/ipc/con", 0u, &con_type);
-	vfs_handle = (uint8_t)zos_ipc_bind("/dev/ipc/vfs", 0u, &vfs_type);
-	fat_handle = (uint8_t)zos_ipc_bind("/dev/ipc/fat", 0u, &fat_type);
-	ioc_handle = (uint8_t)zos_ipc_bind("/dev/ipc/ioc", 0u, &ioc_type);
-	irqx_handle = (uint8_t)zos_ipc_bind("/dev/ipc/irqx", 0u, &type);
+	con_handle = (uint8_t)bind("/dev/ipc/con", 0u, &con_type);
+	vfs_handle = (uint8_t)bind("/dev/ipc/vfs", 0u, &vfs_type);
+	fat_handle = (uint8_t)bind("/dev/ipc/fat", 0u, &fat_type);
+	ioc_handle = (uint8_t)bind("/dev/ipc/ioc", 0u, &ioc_type);
+	irqx_handle = (uint8_t)bind("/dev/ipc/irqx", 0u, &type);
 	check("bind-con", con_handle != 0u && con_type == ZOS_TYPE_CONSOLE);
 	check("bind-vfs", vfs_handle != 0u && vfs_type != 0u);
 	check("bind-fat", fat_handle != 0u && fat_type != 0u);
 	check("bind-ioc", ioc_handle != 0u && ioc_type == ZOS_TYPE_IOC);
 	check("bind-irqx", irqx_handle != 0u);
 	check("bind-missing",
-	      zos_ipc_bind("/dev/ipc/nosuch", 0u, &type) == -ZOS_ENOENT);
+	      bind("/dev/ipc/nosuch", 0u, &type) == -ZOS_ENOENT);
 	check("bind-group",
-	      zos_ipc_bind("/dev/ipc", 0u, &type) == -ZOS_EISDIR);
+	      bind("/dev/ipc", 0u, &type) == -ZOS_EISDIR);
 
 	fill_console_pattern();
 
@@ -330,15 +332,15 @@ int main(int argc, char **argv)
 
 	/* The descriptor id the nucleus issued: none without a buffer, the
 	 * captured id with one. */
-	check("desc-none", call(echo_handle, IPC_OP_ECHO_DESC, 0u, (void *)0,
+	check("desc-none", ipc_call(echo_handle, IPC_OP_ECHO_DESC, 0u, (void *)0,
 				0u, 0u) == ZOS_IPC_DESC_NONE);
-	check("desc-in", call(echo_handle, IPC_OP_ECHO_DESC, 0u, source, 16u,
+	check("desc-in", ipc_call(echo_handle, IPC_OP_ECHO_DESC, 0u, source, 16u,
 			      ZOS_IPC_DESC_IN) == 0);
-	check("desc-out", call(echo_handle, IPC_OP_ECHO_DESC, 0u, source, 16u,
+	check("desc-out", ipc_call(echo_handle, IPC_OP_ECHO_DESC, 0u, source, 16u,
 			       ZOS_IPC_DESC_OUT) == 0);
-	check("status-negative", call(echo_handle, 0x7Fu, 0u, (void *)0, 0u,
+	check("status-negative", ipc_call(echo_handle, 0x7Fu, 0u, (void *)0, 0u,
 				      0u) == -ZOS_EINVAL);
-	check("handle-refused", call(0u, IPC_OP_ECHO_NULL, 0u, (void *)0, 0u,
+	check("handle-refused", ipc_call(0u, IPC_OP_ECHO_NULL, 0u, (void *)0, 0u,
 				     0u) == -ZOS_EINVAL);
 
 	/* Structural refusals: the request never reaches the IPC layer. */
@@ -374,10 +376,10 @@ int main(int argc, char **argv)
 	check("conoffset-refused", con_slice(256u, 254u) == -ZOS_EINVAL);
 	check("conbound-refused", con_slice(IPC_BLOCK_BYTES, 254u) ==
 			  -ZOS_EINVAL);
-	check("dir-refused", call(con_handle, IPC_OP_CON_WRITE, 0u,
+	check("dir-refused", ipc_call(con_handle, IPC_OP_CON_WRITE, 0u,
 				  source, 16u, ZOS_IPC_DESC_OUT) ==
 			     -ZOS_EINVAL);
-	check("con-poll", call(con_handle, IPC_OP_CON_POLL, 0u, (void *)0, 0u,
+	check("con-poll", ipc_call(con_handle, IPC_OP_CON_POLL, 0u, (void *)0, 0u,
 			       0u) >= 0);
 
 	rc = op_console1();
@@ -409,7 +411,7 @@ int main(int argc, char **argv)
 
 	/* C7: re-entrancy is refused unless the endpoint declares it, and
 	 * the depth limit is four. */
-	check("reent-refused", call(echo_handle, IPC_OP_ECHO_SELF, 0u,
+	check("reent-refused", ipc_call(echo_handle, IPC_OP_ECHO_SELF, 0u,
 				    (void *)0, 0u, 0u) == -ZOS_EBUSY);
 	frame_prepare(IPC_OP_VFS_SELF, 0u);
 	req.frame.arg0 = 3u;
@@ -419,7 +421,7 @@ int main(int argc, char **argv)
 	check("depth-refused", dispatch(vfs_handle) == -ZOS_ENOSPC);
 
 	/* C2: forged descriptor ids and out-of-window buffers are refused. */
-	check("capture-low-refused", call(con_handle, IPC_OP_CON_WRITE, 0u,
+	check("capture-low-refused", ipc_call(con_handle, IPC_OP_CON_WRITE, 0u,
 					  (void *)0x0040u, 16u,
 					  ZOS_IPC_DESC_IN) == -ZOS_EINVAL);
 	frame_prepare(IPC_OP_CON_WRITE, 0u);
@@ -433,7 +435,7 @@ int main(int argc, char **argv)
 	req.frame.payload[1] = 0u;
 	check("forged-refused", dispatch(con_handle) == -ZOS_EINVAL);
 
-	/* Nucleus -> service upcalls: the exit notification and the
+	/* Nucleus -> driver upcalls: the exit notification and the
 	 * executable-object stream (a nucleus-held object handle, no
 	 * pathname and no raw caller address). */
 	frame_prepare(IPC_OP_VFS_ON_EXIT, 0u);
@@ -444,10 +446,10 @@ int main(int argc, char **argv)
 	rc = dispatch(vfs_handle);
 	check("upcall-exec", rc == IPC_STREAM_BYTES);
 
-	/* C6: an IRQ owned by a service.  The claim is released first, so
+	/* C6: an IRQ owned by a driver.  The claim is released first, so
 	 * the same timer delivery is seen unclaimed (the executive quiesces
 	 * it), then re-claimed, so two deliveries exercise claim, release
-	 * and the delivered-handler path while a service call is in
+	 * and the delivered-handler path while a driver call is in
 	 * progress. */
 	check("irq-release", irq_op(IPC_OP_IRQX_RELEASE, 0u) == 0);
 	check("irq-unclaimed",
@@ -455,7 +457,7 @@ int main(int argc, char **argv)
 	check("irq-release-again",
 	      irq_op(IPC_OP_IRQX_RELEASE, 0u) == -ZOS_ENOENT);
 	check("irq-reclaim", irq_op(IPC_OP_IRQX_CLAIM, 0u) == 0);
-	check("irq-service", irq_op(IPC_OP_IRQX_SPIN, 0x0800u) == 1);
+	check("irq-driver", irq_op(IPC_OP_IRQX_SPIN, 0x0800u) == 1);
 	check("irq-count", irq_op(IPC_OP_IRQX_SPIN, 0x0800u) == 2);
 
 	/* The client survived the IRQ-during-call, so the interrupted
@@ -465,11 +467,11 @@ int main(int argc, char **argv)
 
 	report_u16("ipc: ", checks - failures);
 	report_u16("/", checks);
-	zos_puts(" checks\r\n");
+	console_puts(" checks\r\n");
 	if (failures == 0u) {
-		zos_puts("ipc: PASS\r\n");
+		console_puts("ipc: PASS\r\n");
 	} else {
-		zos_puts("ipc: FAIL\r\n");
+		console_puts("ipc: FAIL\r\n");
 	}
 	/* The status is the verdict: the probe program that starts this one
 	 * reads it back through SYS_EXEC and folds it into its own line. */

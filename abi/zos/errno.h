@@ -4,7 +4,8 @@
  * return in A.  The kernel includes it as "zos/errno.h"; user programs
  * include it through the SDK (docs/sdk.md).  Errors that are never
  * syscall-visible (the IOC transport-class codes) live in the
- * kernel/module header include/zephyros/errno.h, which includes this one.
+ * syscall-visible (the IOC transport-class codes) live in the IOC class
+ * header drivers/include/ioc.h.
  *
  * M1 defines a single deterministic error: ZOS_ENOSYS, returned by the
  * native syscall dispatcher for every syscall number.  Later milestones

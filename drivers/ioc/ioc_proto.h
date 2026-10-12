@@ -1,8 +1,8 @@
 /* Private IOC transport constants (drivers/ioc).
  *
- * This is NOT part of the public device API (include/zephyros/ioc.h) and
- * NOT a client contract.  It extends the client-visible service
- * vocabulary in include/zephyros/ioc_protocol.h with the constants only
+ * This is NOT part of the public device API (drivers/include/ioc.h) and
+ * NOT a client contract.  It extends the client-visible driver
+ * vocabulary in drivers/include/ioc_protocol.h with the constants only
  * the IOC driver (and the test-only IOC transport diagnostic) may see:
  * the explicit unknown-class reply, the bulk READY/DONE vocabulary and
  * directions, the frozen set of request classes the pinned firmware can
@@ -16,7 +16,7 @@
 #ifndef ZEPHYROS_DRIVERS_IOC_PROTO_H
 #define ZEPHYROS_DRIVERS_IOC_PROTO_H
 
-#include "zephyros/ioc_protocol.h"
+#include "ioc_protocol.h"
 
 /* The deployed firmware answers `type | 80h`; RSP_UNKNOWN_COMMAND is the
  * explicit unknown-class reply and the only response outside that rule.
@@ -68,7 +68,7 @@
 
 /* Status byte of the explicit unknown-class reply (RSP_UNKNOWN_COMMAND,
  * 0xFE): the deployed firmware's only documented "class not served"
- * answer, and the only wire evidence that uniquely proves a service is
+ * answer, and the only wire evidence that uniquely proves a driver is
  * absent.  A filesystem/media status never proves that. */
 #define IOC_STATUS_UNKNOWN_CMD  0x02u
 

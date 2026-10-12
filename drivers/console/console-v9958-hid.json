@@ -1,0 +1,49 @@
+{
+  "name": "console-v9958-hid",
+  "objects": [
+    "console-v9958-hid.rel",
+    "sdcc_indirect_calls.rel"
+  ],
+  "init": "console_driver_init",
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ],
+      "bss_areas": [
+        "_DRIVER_IO"
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 6,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "console_driver_dispatch",
+      "flags": 0
+    }
+  ],
+  "publishes": [
+    {
+      "path": "/dev/console",
+      "type": "CONSOLE",
+      "endpoint": {
+        "class": 6,
+        "instance": 0
+      },
+      "object": 0
+    }
+  ],
+  "depends": [
+    {
+      "class": 4,
+      "instance": 0
+    },
+    {
+      "class": 2,
+      "instance": 0
+    }
+  ]
+}

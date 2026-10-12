@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Host-side ZMOD service-container tests (work packages 41b-42c).
+"""Host-side ZMOD driver-container tests (work packages 41b-42c).
 
-The container is one flat plan per service image: a 16-byte header, the
+The container is one flat plan per driver image: a 16-byte header, the
 segment records, the endpoint records, the dependency records, the
 publication records and the payload (`tools/zmodpack.py`,
-`include/zephyros/service.h`).  There is no module type, no version
+`formats/include/zmod.h`).  There is no module type, no version
 field, no relocation table and no granule geometry: the packer resolves
 every symbol while it links, and `parse_container` is the format's only
 validator (the target loader just bounds what protects the nucleus).
@@ -15,7 +15,7 @@ The tests whose subject package 42c removed are deleted with it:
     and the granule geometry, including the arena reservation;
   - the pack round trips that asserted granule rounding, the relocation
     table and the two-base load relocation (the host assembly of the same
-    arithmetic is covered by `tests/test_service_images.py`);
+    arithmetic is covered by `tests/test_driver_images.py`);
   - the fixture artifacts (the `tests/modules` arena fixtures, the
     mini-linker/sdldz80 comparison and the catalog assembly round trip);
   - the SIO module artifacts (container geometry, symbol offsets, the IRQ
@@ -127,8 +127,8 @@ def flat_container(segments, endpoints=(), dependencies=(), publications=(),
     return bytes(body) + payload
 
 
-def load_service(tmp, name, objects, manifest):
-    """Write one synthetic service's objects and manifest; return the
+def load_driver(tmp, name, objects, manifest):
+    """Write one synthetic driver's objects and manifest; return the
     loaded manifest dict."""
     for file_name, (areas, symbols, chunks) in objects.items():
         text, _ = rel_text(file_name.replace(".rel", ""), areas, symbols,
@@ -144,12 +144,12 @@ def load_service(tmp, name, objects, manifest):
     return zmodpack.load_manifest(path, tmp)
 
 
-def pack_service(tmp, name, objects, manifest):
+def pack_driver(tmp, name, objects, manifest):
     """Host-assemble one single-image set with the real packer."""
-    packed = zmodpack.pack_service_manifest(
-        load_service(tmp, name, objects, manifest))
-    rows, _ledger = zmodpack.plan_service_set([packed])
-    return zmodpack.build_service_container(packed, rows[0])
+    packed = zmodpack.pack_driver_manifest(
+        load_driver(tmp, name, objects, manifest))
+    rows, _ledger = zmodpack.plan_driver_set([packed])
+    return zmodpack.build_driver_container(packed, rows[0])
 
 
 def simple_image(init="entry"):
@@ -204,7 +204,7 @@ class TestPackRoundTrip(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def test_valid_container_fields(self):
-        container = pack_service(self.tmp.name, "svc", *simple_image())
+        container = pack_driver(self.tmp.name, "svc", *simple_image())
         info = zmodpack.parse_container(container)
         self.assertEqual(info["total_size"], len(container))
         self.assertEqual(info["payload_offset"], HEADER + SEGMENT)
@@ -227,7 +227,7 @@ class TestPackRoundTrip(unittest.TestCase):
                                   "dispatch": "_entry", "flags": 1}]
         manifest["publishes"] = [{"path": "/dev/serial/0", "type": "SERIAL",
                                   "endpoint": {"class": 1, "instance": 0}}]
-        container = pack_service(self.tmp.name, "svc", objects, manifest)
+        container = pack_driver(self.tmp.name, "svc", objects, manifest)
         info = zmodpack.parse_container(container)
         endpoint = info["endpoints"][0]
         self.assertEqual((endpoint["class"], endpoint["instance"]), (1, 0))
@@ -257,13 +257,13 @@ class TestPackRoundTrip(unittest.TestCase):
             ),
         }
         packs = [
-            zmodpack.pack_service_manifest(load_service(
+            zmodpack.pack_driver_manifest(load_driver(
                 self.tmp.name, "one", first,
                 {"init": "e1",
                  "segments": [{"role": "hot", "image_areas": ["_CODE"]}],
                  "endpoints": [{"class": 1, "instance": 0, "version": 1,
                                 "dispatch": "_e1"}]})),
-            zmodpack.pack_service_manifest(load_service(
+            zmodpack.pack_driver_manifest(load_driver(
                 self.tmp.name, "two", second,
                 {"init": "e2",
                  "segments": [{"role": "hot", "image_areas": ["_CODE"]}],
@@ -272,16 +272,16 @@ class TestPackRoundTrip(unittest.TestCase):
                  "depends": [{"class": 1, "instance": 0},
                              {"class": 9, "instance": 0, "optional": 1}]})),
         ]
-        rows, _ledger = zmodpack.plan_service_set(packs)
-        containers = [zmodpack.build_service_container(packed, row)
+        rows, _ledger = zmodpack.plan_driver_set(packs)
+        containers = [zmodpack.build_driver_container(packed, row)
                       for packed, row in zip(packs, rows)]
         info = zmodpack.parse_container(containers[1], "two.zmod")
         self.assertEqual([d["number"] for d in info["dependencies"]], [1, 0])
         self.assertEqual(info["endpoints"][0]["number"], 2)
 
     def test_deterministic_output(self):
-        first = pack_service(self.tmp.name, "svc", *simple_image())
-        second = pack_service(self.tmp.name, "svc", *simple_image())
+        first = pack_driver(self.tmp.name, "svc", *simple_image())
+        second = pack_driver(self.tmp.name, "svc", *simple_image())
         self.assertEqual(first, second)
 
     def test_unresolved_external_rejected(self):
@@ -298,7 +298,7 @@ class TestPackRoundTrip(unittest.TestCase):
                                   "image_areas": ["_CODE"]}]}
         with self.assertRaisesRegex(zmodpack.ZmodError,
                                     "unresolved external symbol"):
-            pack_service(self.tmp.name, "svc", objects, manifest)
+            pack_driver(self.tmp.name, "svc", objects, manifest)
 
     def test_byte_fragmented_mode_rejected(self):
         objects = {
@@ -314,7 +314,7 @@ class TestPackRoundTrip(unittest.TestCase):
                                   "image_areas": ["_CODE"]}]}
         with self.assertRaisesRegex(zmodpack.ZmodError,
                                     "unsupported relocation mode 09"):
-            pack_service(self.tmp.name, "svc", objects, manifest)
+            pack_driver(self.tmp.name, "svc", objects, manifest)
 
     def test_pc_relative_mode_rejected(self):
         objects = {
@@ -330,7 +330,7 @@ class TestPackRoundTrip(unittest.TestCase):
                                   "image_areas": ["_CODE"]}]}
         with self.assertRaisesRegex(zmodpack.ZmodError,
                                     "unsupported relocation mode 04"):
-            pack_service(self.tmp.name, "svc", objects, manifest)
+            pack_driver(self.tmp.name, "svc", objects, manifest)
 
     def test_unlisted_area_rejected(self):
         objects = {
@@ -345,7 +345,7 @@ class TestPackRoundTrip(unittest.TestCase):
                                   "image_areas": ["_CODE"]}]}
         with self.assertRaisesRegex(zmodpack.ZmodError,
                                     "not listed in any segment"):
-            pack_service(self.tmp.name, "svc", objects, manifest)
+            pack_driver(self.tmp.name, "svc", objects, manifest)
 
     def test_bss_with_initialized_data_rejected(self):
         objects = {
@@ -363,7 +363,7 @@ class TestPackRoundTrip(unittest.TestCase):
         }
         with self.assertRaisesRegex(zmodpack.ZmodError,
                                     "BSS area _DATA contains"):
-            pack_service(self.tmp.name, "svc", objects, manifest)
+            pack_driver(self.tmp.name, "svc", objects, manifest)
 
     def test_bad_init_entry_rejected(self):
         objects = {
@@ -378,7 +378,7 @@ class TestPackRoundTrip(unittest.TestCase):
                                   "image_areas": ["_CODE"]}]}
         with self.assertRaisesRegex(zmodpack.ZmodError,
                                     "not defined|outside"):
-            pack_service(self.tmp.name, "svc", objects, manifest)
+            pack_driver(self.tmp.name, "svc", objects, manifest)
 
     def test_empty_image_area_rejected(self):
         objects = {
@@ -393,7 +393,7 @@ class TestPackRoundTrip(unittest.TestCase):
                                   "bss_areas": ["_DATA"]}]}
         with self.assertRaisesRegex(zmodpack.ZmodError,
                                     "empty or missing"):
-            pack_service(self.tmp.name, "svc", objects, manifest)
+            pack_driver(self.tmp.name, "svc", objects, manifest)
 
 
 class TestContainerValidation(unittest.TestCase):

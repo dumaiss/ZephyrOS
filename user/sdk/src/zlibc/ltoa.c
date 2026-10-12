@@ -1,6 +1,6 @@
 #include "zlibc/fmt.h"
 
-void zos_ltoa(char *dst, long value, unsigned char base,
+void ltoa(char *dst, long value, unsigned char base,
 	      unsigned char width, char pad)
 {
 	static const char digits[] = "0123456789ABCDEF";

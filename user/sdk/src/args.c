@@ -1,8 +1,8 @@
 /* ZephyrOS libzos: startup-block accessor and command-tail splitter.
  *
  * crt0 stores HL (the startup block) into zos_startup_block before it
- * calls main(), so zos_args() can hand programs the raw block and
- * zos_split() can be exercised independently.  docs/zex-format.md
+ * calls main(), so startup() can hand programs the raw block and
+ * splitargs() can be exercised independently.  docs/zex-format.md
  * section 5 is the normative splitting description.
  */
 
@@ -10,12 +10,12 @@
 
 struct zos_startup *zos_startup_block;
 
-struct zos_startup *zos_args(void)
+struct zos_startup *startup(void)
 {
 	return zos_startup_block;
 }
 
-int zos_split(char *tail, char **argv, int max)
+int splitargs(char *tail, char **argv, int max)
 {
 	char *src;
 	char *dst;

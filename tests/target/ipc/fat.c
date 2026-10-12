@@ -8,12 +8,12 @@
  * cross-domain pointer.
  */
 
-#include "zephyros/errno.h"
-#include "zephyros/ipc.h"
+#include "zos/errno.h"
+#include "driver.h"
 
 #include "ipc_test.h"
 
-static const struct ipc_service_api *api;
+static const struct driver_api *api;
 static uint8_t ioc_handle;
 static uint8_t fat_block[IPC_BLOCK_BYTES];
 static uint16_t fat_block_address;
@@ -54,7 +54,7 @@ int16_t fat_dispatch(struct zos_ipc_frame *frame)
 	return fat_read(frame);
 }
 
-uint8_t ipc_fat_init(const struct ipc_service_boot *boot)
+uint8_t ipc_fat_init(const struct driver_boot *boot)
 {
 	api = boot->api;
 	fat_block_address = (uint16_t)fat_block;

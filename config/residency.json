@@ -1,10 +1,10 @@
 {
   "format": "zos-residency/1",
   "split": "0x6000",
-  "note": "Nucleus residency under the resident-service model (architecture 36.5, 36.24; two-tier classification from package 42c). One entry per kernel object linked into the production image (the objects of linker/zephyr80.lk); tools/mapcheck.py fails the build when an object is missing or when a fixed-required object is compiled into the cold areas. Tiers: fixed-required = code that executes, or data that is touched, while the window shows another bank (36.5) - it must link inside 2000h-5FFFh; cold = everything else that belongs to bank 7 (the syscall side, boot, the VFS core, process management and the resident-service loader). There are only these two tiers: every object is placed, and the cold data base follows the linked cold code (no arena, no moves).",
+  "note": "Nucleus residency under the resident-driver model (architecture 36.5, 36.24; two-tier classification from package 42c). One entry per kernel object linked into the production image (the objects of linker/zephyr80.lk); tools/mapcheck.py fails the build when an object is missing or when a fixed-required object is compiled into the cold areas. Tiers: fixed-required = code that executes, or data that is touched, while the window shows another bank (36.5) - it must link inside 2000h-5FFFh; cold = everything else that belongs to bank 7 (the syscall side, boot, the VFS core, process management and the resident-driver loader). There are only these two tiers: every object is placed, and the cold data base follows the linked cold code (no arena, no moves).",
   "tiers": {
     "fixed-required": "Must be visible in the 2000h-5FFFh fixed core: the gates and transition code, the copy primitives, the IRQ executive, the ROMFS bootstrap reader, the processes' raw entry, common-resident boot/panic code and the stacks. mapcheck rejects a fixed-required object whose bytes link at or above 6000h.",
-    "cold": "Belongs to bank 7's cold half (6000h-DFFFh), reached only while the window shows bank 7 (P = 0): the syscall dispatcher and bodies, boot and idle, process management, the VFS core, the resident-service loader and the diagnostics."
+    "cold": "Belongs to bank 7's cold half (6000h-DFFFh), reached only while the window shows bank 7 (P = 0): the syscall dispatcher and bodies, boot and idle, process management, the VFS core, the resident-driver loader and the diagnostics."
   },
   "objects": [
     {
@@ -18,14 +18,24 @@
       "reason": "zero-byte ABS label exporting __kernel_code_end, the exclusive end of the linked cold code; the object emits no linked bytes and carries the derived build/geometry/bank7_end.inc, so it stays out of cold_half (the residency-driven codegen flags cannot propagate down its dependency on the generated include)"
     },
     {
-      "object": "vfs_ns",
+      "object": "vfs_router",
       "tier": "cold",
-      "reason": "namespace root router, FS provider and publication table: reached only through the syscall dispatcher or the service loader, both with P = 0 (production switch-over, package 42b)"
+      "reason": "the VFS root router (bind/unbind/resolve, ns_enum and the FS namespace op): reached only through the syscall dispatcher or the driver loader, both with P = 0 (package 42b; split into parts by package 46 T4)"
     },
     {
-      "object": "vfs_ns_file",
+      "object": "vfs_dev",
       "tier": "cold",
-      "reason": "the ROMFS FILE provider behind /SYSTEM and its metadata reader, called from the router with P = 0 (package 42b)"
+      "reason": "the /dev DEVICE provider table (package 46 T4): called from the router with P = 0"
+    },
+    {
+      "object": "vfs_fs",
+      "tier": "cold",
+      "reason": "the /fs forwarding provider (package 46 T4): called from the router with P = 0"
+    },
+    {
+      "object": "vfs_system",
+      "tier": "cold",
+      "reason": "the /system ROMFS FILE provider and its metadata reader (package 42b; split into parts by package 46 T4), called from the router with P = 0"
     },
     {
       "object": "object",
@@ -55,7 +65,7 @@
     {
       "object": "irq",
       "tier": "fixed-required",
-      "reason": "IRQ registry and dispatch: the executive runs while the window shows the owner's bank (service-owned IRQs), so its code and data stay visible"
+      "reason": "IRQ registry and dispatch: the executive runs while the window shows the owner's bank (driver-owned IRQs), so its code and data stay visible"
     },
     {
       "object": "irq_code_end",
@@ -80,7 +90,7 @@
     {
       "object": "main",
       "tier": "cold",
-      "reason": "kernel boot and idle path: every service-facing call returns with the caller's latch restored, so it only ever runs with P = 0"
+      "reason": "kernel boot and idle path: every driver-facing call returns with the caller's latch restored, so it only ever runs with P = 0"
     },
     {
       "object": "name",
@@ -165,22 +175,22 @@
     {
       "object": "upcall",
       "tier": "fixed-required",
-      "reason": "revision-13 upcall shim: cold code that calls a resident service saves the latch, selects the window page, calls and restores; its code, its continuation and its request state must stay visible while the window shows another bank (36.5)"
+      "reason": "revision-13 upcall shim: cold code that calls a resident driver saves the latch, selects the window page, calls and restores; its code, its continuation and its request state must stay visible while the window shows another bank (36.5)"
     },
     {
       "object": "vfs_path",
       "tier": "cold",
-      "reason": "VFS core: path walking is production cold code beside the syscall dispatcher and the service loader (the retired stage-5 move left it in bank 7; package 42c placed every object)"
+      "reason": "VFS core: path walking is production cold code beside the syscall dispatcher and the driver loader (the retired stage-5 move left it in bank 7; package 42c placed every object)"
     },
     {
-      "object": "vfs_process",
+      "object": "vfs_handles",
       "tier": "cold",
-      "reason": "VFS core: per-process handles and workspace is production cold code beside the syscall dispatcher and the service loader (the retired stage-5 move left it in bank 7; package 42c placed every object)"
+      "reason": "VFS core: the handle table and the per-process CWD pool, production cold code beside the syscall dispatcher and the driver loader (package 42c placed every object; package 46 T4 renamed the part)"
     },
     {
       "object": "vfs_workspace",
       "tier": "fixed-required",
-      "reason": "The path view a resident service reads: the frame handed to a bank-6 dispatch names the path by address, so the workspace is touched while the window shows bank 6 (36.5's fixed rule)"
+      "reason": "The path view a resident driver reads: the frame handed to a bank-6 dispatch names the path by address, so the workspace is touched while the window shows bank 6 (36.5's fixed rule)"
     },
     {
       "object": "ipc",
@@ -190,7 +200,7 @@
     {
       "object": "ipc_asm",
       "tier": "fixed-required",
-      "reason": "M10 stage 3 fixed-core IPC primitives (kernel/ipc/ipc_asm.asm): the latch save/select/restore, the window LDIR and the service-stack switch, plus the ABS declaration of the 512-byte service stack at ZOS_SERVICE_STACK_BASE.  Same stage as `ipc`: test images only until package 41."
+      "reason": "M10 stage 3 fixed-core IPC primitives (kernel/ipc/ipc_asm.asm): the latch save/select/restore, the window LDIR and the driver-stack switch, plus the ABS declaration of the 512-byte driver stack at ZOS_DRIVER_STACK_BASE.  Same stage as `ipc`: test images only until package 41."
     },
     {
       "object": "ipc_common",
@@ -198,21 +208,23 @@
       "reason": "M10 stage 3 common-resident aperture copy (kernel/ipc/ipc_common.asm, work package 39 correction 01): the path-B primitive runs with mode 10 and page 1 in force, where bank 7 is not mapped, so its code, its request block, its saved latch/SP and its interrupt-push stack must all be common.  The fixed-core reservoir the M9 ledger held back (ZOS_COMMON_M10_RESERVATION) was released to M10 by work package 43 (architecture 36.20), so this primitive and package 43's mode-11 window copy share the whole ceiling.  Same stage as `ipc`: test images only until package 41."
     },
     {
-      "object": "service_loader",
+      "object": "driver_loader",
       "tier": "cold",
-      "reason": "M10 stage 4 resident-service loader (kernel/service/service_loader.c, architecture 36.11/36.12): reads the boot manifest through the fixed ROMFS reader, validates and places every service image through the common application-bank copy gate, and runs the boot segments and hot inits.  It runs with P = 0 only (the syscall gate normalizes before any syscall, and the boot path is mode 11), so the body is cold code; the acceptance image links it now, production adopts it in package 41."
+      "reason": "M10 stage 4 resident-driver loader (kernel/driver/driver_loader.c, architecture 36.11/36.12): reads the boot manifest through the fixed ROMFS reader, validates and places every driver image through the common application-bank copy gate, and runs the boot segments and hot inits.  It runs with P = 0 only (the syscall gate normalizes before any syscall, and the boot path is mode 11), so the body is cold code; the acceptance image links it now, production adopts it in package 41."
     },
     {
-      "object": "service_boot",
+      "object": "driver_boot",
       "tier": "fixed-required",
-      "reason": "M10 stage 4 service boot gate (kernel/service/service_boot.asm): switches mode 10 over bank 6 (Q = 6) and calls a boot segment.  Its code and continuation execute with bank 7 unmapped, so the gate is common-resident; its request/transition state is fixed-core data because the upcall shim reads the loader's request block with bank 7 mapped.  Same stage as the loader: test images only until package 41."
+      "reason": "M10 stage 4 driver boot gate (kernel/driver/driver_boot.asm): switches mode 10 over bank 6 (Q = 6) and calls a boot segment.  Its code and continuation execute with bank 7 unmapped, so the gate is common-resident; its request/transition state is fixed-core data because the upcall shim reads the loader's request block with bank 7 mapped.  Same stage as the loader: test images only until package 41."
     }
   ],
   "cold_half": [
     "vfs_path",
-    "vfs_process",
-    "vfs_ns",
-    "vfs_ns_file",
+    "vfs_handles",
+    "vfs_router",
+    "vfs_dev",
+    "vfs_fs",
+    "vfs_system",
     "object",
     "diag",
     "xmem",
@@ -221,7 +233,7 @@
     "process",
     "process_exec",
     "syscall",
-    "service_loader"
+    "driver_loader"
   ],
-  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): the syscall dispatcher and its bodies (including the extended-memory family, package 43), the boot path, the process lifecycle, the VFS core and the resident-service loader (package 42c placed every object; the cold data base follows the linked cold code). tools/mapcheck.py fails the build when the linked cold code or data overruns the derived bases, and the fixed ledger reports the remaining fixed-core bytes."
+  "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): the syscall dispatcher and its bodies (including the extended-memory family, package 43), the boot path, the process lifecycle, the VFS core and the resident-driver loader (package 42c placed every object; the cold data base follows the linked cold code). tools/mapcheck.py fails the build when the linked cold code or data overruns the derived bases, and the fixed ledger reports the remaining fixed-core bytes."
 }

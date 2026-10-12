@@ -1,4 +1,4 @@
-/* ZephyrOS zlibc: zos_printf / zos_snprintf.
+/* ZephyrOS zlibc: printf / snprintf.
  *
  * A small output sink backs both entry points: snprintf appends to a
  * bounded caller buffer; printf flushes through the console wrapper in
@@ -22,7 +22,7 @@ struct zout {
 static void zout_flush(struct zout *o)
 {
 	if (o->buf == (char *)0 && o->clen != 0u) {
-		(void)zex_write(o->cbuf, (unsigned int)o->clen);
+		(void)console_write(o->cbuf, (unsigned int)o->clen);
 		o->clen = 0;
 	}
 }
@@ -104,29 +104,29 @@ static int zfmt(struct zout *o, const char *fmt, va_list ap)
 				}
 				zout_putc(o, c);
 			} else if (*fmt == 'd') {
-				zos_itoa(tmp, va_arg(ap, int), 10, width, pad);
+				itoa(tmp, va_arg(ap, int), 10, width, pad);
 				zout_str(o, tmp);
 			} else if (*fmt == 'u') {
-				zos_utoa(tmp, va_arg(ap, unsigned int), 10,
+				utoa(tmp, va_arg(ap, unsigned int), 10,
 					 width, pad);
 				zout_str(o, tmp);
 			} else if (*fmt == 'x') {
-				zos_utoa(tmp, va_arg(ap, unsigned int), 16,
+				utoa(tmp, va_arg(ap, unsigned int), 16,
 					 width, pad);
 				zout_str(o, tmp);
 			} else if (*fmt == 'l') {
 				++fmt;
 				if (*fmt == 'd') {
-					zos_ltoa(tmp, va_arg(ap, long), 10,
+					ltoa(tmp, va_arg(ap, long), 10,
 						 width, pad);
 					zout_str(o, tmp);
 				} else if (*fmt == 'u') {
-					zos_ultoa(tmp,
+					ultoa(tmp,
 						  va_arg(ap, unsigned long), 10,
 						  width, pad);
 					zout_str(o, tmp);
 				} else if (*fmt == 'x') {
-					zos_ultoa(tmp,
+					ultoa(tmp,
 						  va_arg(ap, unsigned long), 16,
 						  width, pad);
 					zout_str(o, tmp);
@@ -148,7 +148,7 @@ static int zfmt(struct zout *o, const char *fmt, va_list ap)
 	return (int)o->count;
 }
 
-int zos_snprintf(char *dst, unsigned int size, const char *fmt, ...)
+int snprintf(char *dst, unsigned int size, const char *fmt, ...)
 {
 	struct zout o;
 	va_list ap;
@@ -171,7 +171,7 @@ int zos_snprintf(char *dst, unsigned int size, const char *fmt, ...)
 	return r;
 }
 
-int zos_printf(const char *fmt, ...)
+int printf(const char *fmt, ...)
 {
 	struct zout o;
 	va_list ap;

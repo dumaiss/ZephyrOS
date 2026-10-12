@@ -15,8 +15,8 @@
 ; -----------------------------------------------------------------------------
 
 	.module selftest
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 	.include "syscall_entry.inc"
 
 	.globl _zos_selftest_run

@@ -32,7 +32,7 @@ current boot).
   device registry with capability lookup and registration
   checkpoint/rollback, versioned driver ABI with an explicit static driver
   table, polling SIO0/B driver (`sio0.b`), capability-bound console
-  service, and a test-only bank-7 IRQ probe claiming CTC0 through the M2
+  driver, and a test-only bank-7 IRQ probe claiming CTC0 through the M2
   executive (`docs/devices.md`).  Accepted on physical hardware
   2026-10-02 (`console: sio0.b OK`, `m3 selftest: OK`, console RX round
   trip; see `docs/validation/2026-10-02-m3-acceptance.md`).  Later images
@@ -51,7 +51,7 @@ current boot).
   longer linked into the kernel.  It is packed as a ZMOD module
   (`build/modules/sio.zmod`, plus IRQ and init-failure container
   variants), loaded through the generic loader at boot, and bound by the
-  console service (`console: dynamic sio0.b OK`).  A placement image at a
+  console driver (`console: dynamic sio0.b OK`).  A placement image at a
   shifted arena base (9E00h-BE00h) used the identical module bytes, and a
   failure image proves exact rollback.  Hardware-validated on the physical
   Zephyr-80 2026-10-02 after fixing a CTC0 start/claim race
@@ -113,7 +113,7 @@ current boot).
   2026-10-04.**
 - **M9 — Native VFS and filesystem framework**: the kernel VFS core (path
   normalization, root selection, the kernel file API), ROMFS serving
-  `/SYSTEM`, the global owner-tagged descriptor pool and per-process CWD,
+  `/system`, the global owner-tagged descriptor pool and per-process CWD,
   the native `FS_*` syscall family (`10h-1Fh`), the user SDK and its
   `fstest.zex` acceptance program, `SYS_EXEC` nesting with the startup
   block v1 argument contract, and the resident IOC-FAT provider
@@ -122,9 +122,9 @@ current boot).
   ledger of the time are in `docs/validation/2026-10-05-m9-filesystem.md`;
   the implementation record is `docs/vfs.md`.
   **M10 (work packages 42a-42c) then replaced the M9 mount table, the
-  provider ABI and the driver ABI**: VFS owns three static roots (`/FS`,
-  `/SYSTEM`, `/dev`), the filesystem driver is a bank-6 service image that
-  publishes `/FS`, and its outcome image is `make fs-selftest`
+  provider ABI and the driver ABI**: VFS owns three static roots (`/fs`,
+  `/system`, `/dev`), the filesystem driver is a bank-6 driver image that
+  publishes `/fs`, and its outcome image is `make fs-selftest`
   (`docs/validation/2026-10-09-m10-prune-nucleus.md`).  **ZEX v2 (package
   44a) then replaced ZEX v1 as the only executable format**: a 36-byte
   header with 32-bit geometry, a segment table, `DATA` segments as
@@ -135,8 +135,8 @@ current boot).
   when every required row has passed).
 - **M10 — Resident-driver nucleus, extended memory, far code/data, ZEX
   v2**: the two-bank operating system (bank-7 nucleus plus bank-6 resident
-  drivers), the typed namespace rooted at `/` with the static `/FS`,
-  `/SYSTEM` and `/dev` providers, the IPC substrate with 32-byte frames
+  drivers), the typed namespace rooted at `/` with the static `/fs`,
+  `/system` and `/dev` providers, the IPC substrate with 32-byte frames
   and host-assembled driver endpoints, extended-memory objects with the
   mode-10 far aperture and far code, and ZEX v2 as the only executable
   format (architecture section 36).  **Status: COMPLETE pending the
@@ -144,8 +144,8 @@ current boot).
   the hardware checklist are in
   `docs/validation/2026-10-11-m10-acceptance.md`.  The production store
   carries the feature exerciser the checklist's automated rows run on the
-  flashed system - `/SYSTEM/hwtest.zex`, started with the monitor's
-  `X /SYSTEM/hwtest.zex` - so no acceptance image has to be programmed for
+  flashed system - `/system/hwtest.zex`, started with the monitor's
+  `X /system/hwtest.zex` - so no acceptance image has to be programmed for
   them: program the ordinary `build/zephyros.bin` once and run the line
   (nothing is loaded from the SD card, which is only the FAT medium the
   files stage writes to).  The exerciser, its smoke mode, its replay and
@@ -169,11 +169,11 @@ make test          # host image/layout/ABI tests + artifact integrity checks
 make check         # reproducible-rebuild proof + full validation stack
 make subsystem-selftest
                    # subsystem acceptance: the current boot path with an
-                   # SIO + console service set, replaying the syscall,
+                   # SIO + console driver set, replaying the syscall,
                    # IRQ, ROMFS-reader and process/ZEX mechanism groups
                    # and the monitor session (build-subsys-selftest/)
 make zmod-test
-                   # build/pack/validate the service images; host packer
+                   # build/pack/validate the driver images; host packer
                    # and container tests (build/modules/)
 make romfs-test
                    # validate/dump the ROMFS recovery store; host format
@@ -190,7 +190,7 @@ make v9958-test
                    # pack/validate v9958.zmod + font pipeline + renderer
                    # model suites
 make console-integration-selftest
-                   # console integration acceptance: full five-service image +
+                   # console integration acceptance: full five-driver image +
                    # target diagnostic + the merged IOC/HID/V9958 device
                    # diagnostics + ESC c display-reset program + monitor
                    # launcher, and the production-byte simulator replay
@@ -198,7 +198,7 @@ make console-integration-selftest
                    # ESC c reset, scripted monitor session)
                    # (build-console-integration-selftest/)
 make console-serial-selftest
-                   # the console-serial production variant (the same service
+                   # the console-serial production variant (the same driver
                    # set with the other CONSOLE driver): monitor prompt,
                    # typed line and relaunch on the serial lane; plus the
                    # required-console boot-failure image
@@ -206,7 +206,7 @@ make console-serial-selftest
 make fs-selftest
                    # filesystem outcome image: writes, reads, seeks,
                    # renames, unlinks and enumerates through FILE handles
-                   # on `/FS` and `/SYSTEM` (build-fs-selftest/)
+                   # on `/fs` and `/system` (build-fs-selftest/)
 make ns-selftest
                    # namespace/handle outcome image: the three static
                    # roots, the standard handles, publications and
@@ -219,7 +219,7 @@ make nucleus-selftest
                    # (build-nucleus-selftest/)
 make helloworld-image
                    # SDK demo image: the production boot path with
-                   # /SYSTEM/hello.zex as the boot program (build-helloworld/)
+                   # /system/hello.zex as the boot program (build-helloworld/)
 # Hardware smoke checks: each mode verifies ONE specific image, and the
 # production image and the acceptance images have different serial
 # transcripts.  Build the image (`make hardware-images` builds them all),
@@ -229,7 +229,7 @@ make smoke-hardware SERIAL_PORT=/dev/ttyUSB0
                    # flash build/zephyros.bin (make)
                    # capture + verify the production boot contract from
                    # physical hardware: the exact banner, the
-                   # 'console: dynamic sio0.b OK' service line and the
+                   # 'console: dynamic sio0.b OK' driver line and the
                    # monitor banner + 'Z80> ' prompt (optional boot-module
                    # diagnostics are tolerated; a panic or an unbound
                    # console fails)
@@ -253,7 +253,7 @@ make smoke-hardware-console-serial SERIAL_PORT=/dev/ttyUSB0
                    # prompt and checks the monitor's answer
 make smoke-hardware-hwtest SERIAL_PORT=/dev/ttyUSB0
                    # flash build/zephyros.bin (make): the tool types
-                   # 'X /SYSTEM/hwtest.zex' on the serial command lane and
+                   # 'X /system/hwtest.zex' on the serial command lane and
                    # checks the feature exerciser's stage lines and verdict;
                    # run it once with a card fitted and once without
 make hardware-images
@@ -279,7 +279,7 @@ banner).  The `subsystem`, `console-integration`, `console-serial` and
 the exact acceptance transcript, binding and diagnostics, scripting the
 serial input where the console routes there; V9958-bound output is
 confirmed on the display by the operator.  Note: `smoke-hardware` (mode
-`normal`) reads the console-service line and the monitor prompt from the
+`normal`) reads the console-driver line and the monitor prompt from the
 serial link, which only happens with the console-serial variant.  On a
 full bench the console is `console-v9958-hid`, so those appear on the
 display and only the banner is on the serial link -- use
@@ -316,7 +316,7 @@ documented in `docs/memory.md`.
 
 See `docs/boot.md` for the MAME invocation and the physical-ROM test
 checklist.  Expected output (the current boot then adds the dynamic
-console-service line):
+console-driver line):
 
 ```text
 ZephyrOS 0.0
@@ -326,7 +326,7 @@ serial: OK
 console: dynamic sio0.b OK
 ```
 
-On the production stack the console-service line is written through
+On the production stack the console-driver line is written through
 the *bound* console (HID input / V9958 output), so it appears on the
 V9958 display rather than the serial link; the serial transcript keeps
 the early-SIO banner and any `<name>: unavailable 0x<ZOS_E*>`
@@ -342,28 +342,28 @@ ZephyrOS/
 │                          devices.md, module-format.md,
 │                          romfs-format.md, zex-format.md, monitor.md,
 │                          sdk.md, vfs.md
-├── include/zephyros/      kernel.h, errno.h, irq.h, ipc.h, service.h,
-│                          romfs.h, process.h, zex.h, ioc.h,
-│                          ioc_protocol.h, platform.h
-├── services/              console/ (the console service image),
-│                          manifests/ (one service manifest per image)
-├── fs/iocfat/             the FS service image's provider body
+├── kernel/include/        kernel.h, process.h, platform.h,
+│                          irq_types.h
+├── drivers/include/       driver.h, ioc.h, ioc_protocol.h
+├── formats/include/       romfs.h, zex.h, zmod.h
+├── platform/zephyr80/     config.mk, public/ and private/ constants
+├── drivers/               sio/, ioc/, hid/, v9958/ (driver images and
+│                          their manifests), console/ (the console driver
+│                          image and its two manifests), iocfat/ (the FS
+│                          driver image), runtime/ (shared module-local
+│                          SDCC glue)
 ├── boot/start.asm         common boot entry + C runtime initialization
 ├── boot/shadow_copy.asm   reset/ROM-to-SRAM copier
 ├── kernel/                main.c, panic.c, early_console.c, syscall.c,
 │                          memory/ (banking.asm, user_copy.asm),
 │                          syscall/ (entry.asm, page_zero.asm, diag.c,
 │                          diag_io.asm), runtime/ (sdcc_helpers.asm),
-│                          irq/, service/ (service_loader.c,
-│                          service_boot.asm),
+│                          irq/ (irq.c, ctc.c), driver/ (driver_loader.c,
+│                          driver_boot.asm),
 │                          romfs/ (romfs.c, rom_access.asm),
 │                          vfs/ (ns.c, ns_file.c, path.c, process.c,
 │                          workspace.c),
 │                          process/ (process.c, exec.c, launch.asm)
-├── drivers/               sio/, ioc/, hid/, v9958/ (service images),
-│                          ctc/ (ctc.c)
-├── modules/               manifests/ (production ZMOD metadata),
-│                          runtime/ (shared module-local SDCC glue)
 ├── platform/zephyr80/     constants/configuration only: hardware.h/.inc,
 │                          memory.h/.inc, irq.h/.inc, config.mk
 ├── linker/zephyr80.lk     sdldz80 control template (derived _DATA base
@@ -375,8 +375,8 @@ ZephyrOS/
 │                          monitor/ (native monitor.zex sources + its
 │                          hex/dump/status helpers),
 │                          helloworld/ (bootable SDK demo)
-├── recovery/manifest.json production ROMFS contents (the five service
-│                          images, services.man and monitor.zex)
+├── recovery/manifest.json production ROMFS contents (the five driver
+│                          images, drivers.man and monitor.zex)
 ├── tools/                 pack_image.py, mapcheck.py, zmodpack.py,
 │                          romfspack.py, zexpack.py, fontpack.py,
 │                          serial_smoke.py

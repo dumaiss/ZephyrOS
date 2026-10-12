@@ -10,7 +10,7 @@ architecture it used to hold is sections 35-42 of
 | Former section | Now |
 | --- | --- |
 | 1. Native completion sequence after M9 | architecture 35 |
-| 2. Milestone M10 (subsections 2.1-2.19) | architecture 36, rewritten 2026-10-07 for the resident-service nucleus (36.1-36.24; old numbering no longer applies) |
+| 2. Milestone M10 (subsections 2.1-2.19) | architecture 36, rewritten 2026-10-07 for the resident-driver nucleus (36.1-36.24; old numbering no longer applies) |
 | 3. M10 acceptance criteria | architecture 37 |
 | 4. Milestone M11 (subsections 4.1-4.9) | architecture 38 (38.1-38.9) |
 | 5. M11 acceptance criteria | architecture 39 |

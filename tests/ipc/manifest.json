@@ -22,9 +22,9 @@
       "path": "ipc.zex"
     },
     {
-      "name": "services.man",
+      "name": "drivers.man",
       "type": "DATA",
-      "path": "services.man"
+      "path": "drivers.man"
     },
     {
       "name": "ipc-ioc.zmod",

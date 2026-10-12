@@ -7,9 +7,9 @@
       "path": "init_fail.zmod"
     },
     {
-      "name": "services.man",
+      "name": "drivers.man",
       "type": "DATA",
-      "path": "services.man"
+      "path": "drivers.man"
     },
     {
       "name": "monitor.zex",

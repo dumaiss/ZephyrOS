@@ -1,0 +1,50 @@
+{
+  "name": "ioc",
+  "objects": [
+    "ioc.rel",
+    "ioc_io.rel",
+    "ioc_driver.rel",
+    "ioc_boot.rel",
+    "sdcc_indirect_calls.rel"
+  ],
+  "init": "ioc_driver_init",
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ],
+      "bss_areas": [
+        "_DRIVER_IO"
+      ]
+    },
+    {
+      "role": "boot",
+      "image_areas": [
+        "_BOOT"
+      ],
+      "entry": "ioc_boot_entry"
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 5,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "ioc_driver_dispatch",
+      "flags": 0
+    }
+  ],
+  "publishes": [
+    {
+      "path": "/dev/ioc",
+      "type": "IOC",
+      "endpoint": {
+        "class": 5,
+        "instance": 0
+      },
+      "object": 0
+    }
+  ],
+  "depends": []
+}

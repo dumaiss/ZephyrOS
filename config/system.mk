@@ -7,9 +7,9 @@
 # kernel edit.  tools/bootprogram.py enforces the rules and fails the
 # build otherwise:
 #
-#   - an absolute path under /SYSTEM, so the program boots without SD;
+#   - an absolute path under /system, so the program boots without SD;
 #   - at most 127 bytes (ZOS_PATH_MAX - 1);
 #   - the named file is a ZEX present in the selected recovery manifest.
 #
 # The production default is the monitor; M10 sets it to the shell.
-ZOS_BOOT_PROGRAM ?= /SYSTEM/monitor.zex
+ZOS_BOOT_PROGRAM ?= /system/monitor.zex

@@ -37,7 +37,7 @@ static unsigned char expect(unsigned int index)
 
 static void z2_fail(unsigned char code)
 {
-	zex_exit(ZOS_PCST_ZEX2_FAIL | code);
+	exit(ZOS_PCST_ZEX2_FAIL | code);
 }
 
 int main(void)
@@ -49,7 +49,7 @@ int main(void)
 	unsigned char buf[4];
 	unsigned char i;
 
-	if (zex_getinfo(&pinfo) != ZOS_GETINFO_SIZE) {
+	if (getinfo(&pinfo) != ZOS_GETINFO_SIZE) {
 		z2_fail(ZOS_PCST_Z2_FAIL_GETINFO);
 	}
 	for (i = 0; i < (unsigned char)sizeof(bss_probe); ++i) {
@@ -68,7 +68,7 @@ int main(void)
 	}
 
 	/* The container declares exactly one DATA segment. */
-	if (zos_seg_info(1u, &info) != 0) {
+	if (seginfo(1u, &info) != 0) {
 		z2_fail(ZOS_PCST_Z2_FAIL_SEGINFO);
 	}
 	if (info.size != (unsigned int)(ZOS_PCST_SEG_IMAGE + ZOS_PCST_SEG_BSS) ||
@@ -78,7 +78,7 @@ int main(void)
 	}
 
 	/* Payload integrity: the first and last four image bytes. */
-	if (zos_xmem_read(info.handle, 0u, buf, 4u) != 4) {
+	if (xread(info.handle, 0u, buf, 4u) != 4) {
 		z2_fail(ZOS_PCST_Z2_FAIL_SEGDATA);
 	}
 	for (i = 0; i < 4u; ++i) {
@@ -86,7 +86,7 @@ int main(void)
 			z2_fail(ZOS_PCST_Z2_FAIL_SEGDATA);
 		}
 	}
-	if (zos_xmem_read(info.handle,
+	if (xread(info.handle,
 			  (unsigned int)(ZOS_PCST_SEG_IMAGE - 4u), buf, 4u) != 4) {
 		z2_fail(ZOS_PCST_Z2_FAIL_SEGDATA);
 	}
@@ -97,7 +97,7 @@ int main(void)
 	}
 
 	/* The BSS the kernel test dirtied must read back zero. */
-	if (zos_xmem_read(info.handle, ZOS_PCST_SEG_IMAGE, buf, 4u) != 4) {
+	if (xread(info.handle, ZOS_PCST_SEG_IMAGE, buf, 4u) != 4) {
 		z2_fail(ZOS_PCST_Z2_FAIL_SEGBSS);
 	}
 	for (i = 0; i < 4u; ++i) {
@@ -111,8 +111,8 @@ int main(void)
 	buf[1] = 0x22u;
 	buf[2] = 0x33u;
 	buf[3] = 0x44u;
-	if (zos_xmem_write(info.handle, 0u, buf, 4u) != 4 ||
-	    zos_xmem_read(info.handle, 0u, buf, 4u) != 4) {
+	if (xwrite(info.handle, 0u, buf, 4u) != 4 ||
+	    xread(info.handle, 0u, buf, 4u) != 4) {
 		z2_fail(ZOS_PCST_Z2_FAIL_WRITE);
 	}
 	if (buf[0] != 0x11u || buf[1] != 0x22u ||
@@ -121,15 +121,15 @@ int main(void)
 	}
 
 	/* A loader-created segment is released only at exit. */
-	if (zos_xmem_free(info.handle) >= 0) {
+	if (xfree(info.handle) >= 0) {
 		z2_fail(ZOS_PCST_Z2_FAIL_FREE);
 	}
 	/* No second segment in this container. */
-	if (zos_seg_info(2u, &info) >= 0) {
+	if (seginfo(2u, &info) >= 0) {
 		z2_fail(ZOS_PCST_Z2_FAIL_SEGINFO);
 	}
 
-	(void)zex_write(ok_line, (unsigned int)(sizeof(ok_line) - 1u));
-	zex_exit(ZOS_PCST_ZEX2_PASS | pinfo.bank);
+	(void)console_write(ok_line, (unsigned int)(sizeof(ok_line) - 1u));
+	exit(ZOS_PCST_ZEX2_PASS | pinfo.bank);
 	return 0; /* unreachable */
 }

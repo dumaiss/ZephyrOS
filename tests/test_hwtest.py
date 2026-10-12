@@ -1,6 +1,6 @@
 """Hardware exerciser static contract (work package 45b).
 
-The production store carries a feature exerciser (`/SYSTEM/hwtest.zex`)
+The production store carries a feature exerciser (`/system/hwtest.zex`)
 and the outcome programs it runs, and the monitor gains the command that
 starts it.  `test_hwtest_sim.py` replays the outcomes in the simulator;
 this module pins what a replay cannot see: the runner's source surface,
@@ -30,7 +30,8 @@ MONITOR_HDR = os.path.join(ROOT, "user", "monitor", "monitor.h")
 MAKEFILE = os.path.join(ROOT, "Makefile")
 MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
 SMOKE = os.path.join(ROOT, "tools", "serial_smoke.py")
-MEMORY_INC = os.path.join(ROOT, "platform", "zephyr80", "memory.inc")
+MEMORY_INC = os.path.join(ROOT, "platform", "zephyr80", "private",
+                          "memory.inc")
 STORE = os.path.join(ROOT, "build", "recovery.romfs")
 
 # The store's program set: the launcher plus the exerciser and the six
@@ -54,17 +55,17 @@ class TestExerciserProgram(unittest.TestCase):
 
     def test_the_runner_removes_the_card_program_it_staged(self):
         text = read(RUNNER)
-        self.assertIn('#define HW_PROGRAM "/FS/HWTEST/CHILD.ZEX"', text)
+        self.assertIn('#define HW_PROGRAM "/fs/HWTEST/CHILD.ZEX"', text)
         remove = text[text.index("static void hw_scratch_remove"):]
         remove = remove[:remove.index("\n}\n")]
-        self.assertIn("zos_unlink(HW_PROGRAM)", remove)
+        self.assertIn("unlink(HW_PROGRAM)", remove)
 
     def test_it_runs_the_three_stage_programs_from_the_store(self):
         text = read(RUNNER)
-        for path in ('"/SYSTEM/xmem_selftest.zex"', '"/SYSTEM/xmem_far.zex"',
-                     '"/SYSTEM/fs_selftest.zex"'):
+        for path in ('"/system/xmem_selftest.zex"', '"/system/xmem_far.zex"',
+                     '"/system/fs_selftest.zex"'):
             self.assertIn(path, text)
-        self.assertIn("zos_exec(", text)
+        self.assertIn("run(", text)
         self.assertIn('#include "zos.h"', text)
 
     def test_the_stage_option_is_a_tail_not_a_copy(self):
@@ -74,21 +75,21 @@ class TestExerciserProgram(unittest.TestCase):
 
     def test_every_card_write_stays_inside_the_scratch_directory(self):
         text = read(RUNNER)
-        self.assertIn('HW_DIR    "/FS/HWTEST"', text)
+        self.assertIn('HW_DIR    "/fs/HWTEST"', text)
         for name in ("HW_FILE", "HW_RENAMED", "HW_SUBDIR", "HW_CHILD"):
             self.assertIn(name, text)
         # The stage removes the whole footprint and proves the directory
         # it made is gone again, so a failing run leaves no trace either.
-        self.assertIn("zos_rmdir(HW_DIR)", text)
-        self.assertIn("zos_stat(HW_DIR", text)
+        self.assertIn("rmdir(HW_DIR)", text)
+        self.assertIn("stat(HW_DIR", text)
         self.assertIn("-ZOS_ENOENT", text)
         # Every card path the runner names is one of the scratch names;
-        # `/FS/nosuch` is the deliberate absent-path row and `/FS` itself
+        # `/fs/nosuch` is the deliberate absent-path row and `/fs` itself
         # the card root the namespace stage enumerates.
-        for literal in text.split("/FS/")[1:]:
+        for literal in text.split("/fs/")[1:]:
             name = literal.split('"')[0]
             self.assertTrue(name.startswith("HWTEST") or name == "nosuch",
-                            "/FS/%s is outside the scratch directory" % name)
+                            "/fs/%s is outside the scratch directory" % name)
 
     def test_it_reports_on_the_console_and_the_serial_lane(self):
         text = read(RUNNER)
@@ -97,7 +98,7 @@ class TestExerciserProgram(unittest.TestCase):
         self.assertIn("ZSIO_OP_WRITE", text)
         # The console comes first, so a lane that fails cannot cost the
         # owner the visible transcript.
-        self.assertLess(text.index("zos_console_write(text, length)"),
+        self.assertLess(text.index("console_write(text, length)"),
                         text.index("hw_lane_write(text, length)"))
 
     def test_every_program_runs_with_no_handle_held(self):
@@ -105,8 +106,8 @@ class TestExerciserProgram(unittest.TestCase):
         # A nested exec must not start against this runner's lane handle.
         run = text[text.index("static int hw_run"):]
         run = run[:run.index("\n}")]
-        self.assertLess(run.index("hw_lane_close()"), run.index("zos_exec("))
-        self.assertLess(run.index("zos_exec("), run.index("hw_lane_open()"))
+        self.assertLess(run.index("hw_lane_close()"), run.index("= run("))
+        self.assertLess(run.index("= run("), run.index("hw_lane_open()"))
 
     def test_the_summary_and_the_card_note_are_the_contract(self):
         text = read(RUNNER)
@@ -150,7 +151,7 @@ class TestReusedProgramOptions(unittest.TestCase):
     def test_the_filesystem_program_confines_its_writes(self):
         text = read(FS_PROGRAM)
         self.assertIn('FS_STAGE_TAIL "stage"', text)
-        self.assertIn('HW_DIR    "/FS/HWTEST"', text)
+        self.assertIn('HW_DIR    "/fs/HWTEST"', text)
         for name in ("HW_FILE", "HW_RENAMED", "HW_SUBDIR"):
             self.assertIn(name, text)
         # Both the paths and the monitor handover follow the option; the
@@ -158,26 +159,26 @@ class TestReusedProgramOptions(unittest.TestCase):
         self.assertIn("stage ? HW_FILE : FS_FILE", text)
         self.assertIn("stage ? HW_DIR : FS_DIR", text)
         self.assertIn("if (stage == 0) {", text)
-        self.assertIn('zos_exec(CHILD, stage ? FS_STAGE_TAIL : "tail-42")',
+        self.assertIn('run(CHILD, stage ? FS_STAGE_TAIL : "tail-42")',
                       text)
 
     def test_the_filesystem_program_execs_the_child_from_the_card(self):
         # Correction 01's regression row: the same child, copied onto the
-        # card, run from `/FS` - the bind path a bank-6 provider has to
+        # card, run from `/fs` - the bind path a bank-6 provider has to
         # read.  Both images' paths, one row pair.
         text = read(FS_PROGRAM)
-        self.assertIn('#define FS_CHILD_PROGRAM "/FS/CHILD.ZEX"', text)
-        self.assertIn('#define HW_CHILD_PROGRAM "/FS/HWTEST/CHILD.ZEX"', text)
+        self.assertIn('#define FS_CHILD_PROGRAM "/fs/CHILD.ZEX"', text)
+        self.assertIn('#define HW_CHILD_PROGRAM "/fs/HWTEST/CHILD.ZEX"', text)
         self.assertIn("copy_child_to_card(", text)
         self.assertIn('check("exec-card-copy", copy_child_to_card(copy))', text)
         self.assertIn('check("exec-card-status", status == CHILD_STATUS)',
                       text)
-        self.assertIn("zos_exec(copy, stage ? FS_STAGE_TAIL : \"tail-42\")",
+        self.assertIn("run(copy, stage ? FS_STAGE_TAIL : \"tail-42\")",
                       text)
 
     def test_the_child_takes_the_same_option(self):
         text = read(FS_CHILD)
-        self.assertIn('#define CHILD_STAGE_FILE "/FS/HWTEST/CHILD.TMP"', text)
+        self.assertIn('#define CHILD_STAGE_FILE "/fs/HWTEST/CHILD.TMP"', text)
         self.assertIn('same(argv[0], CHILD_STAGE)', text)
 
     def test_the_extended_memory_program_states_its_rows_against_the_pool(self):
@@ -188,7 +189,7 @@ class TestReusedProgramOptions(unittest.TestCase):
         self.assertIn("banks = fill_until_full(", text)
         self.assertIn('check("exhaustion-16k-count", count == 2u * banks)',
                       text)
-        self.assertIn("(void)zos_xmem_free(big[banks - 1u])", text)
+        self.assertIn("(void)xfree(big[banks - 1u])", text)
         # In a stage run the runner owns the far program: one exec level
         # shallower, because the chain already sits at the kernel limit.
         self.assertIn("if (stage == 0) {", text)
@@ -200,11 +201,11 @@ class TestMonitorExecCommand(unittest.TestCase):
     def test_the_command_runs_a_program_and_prints_its_status(self):
         text = read(MONITOR_EXEC)
         self.assertIn("void mon_cmd_exec(char *cursor)", text)
-        self.assertIn("zos_exec(path, tail)", text)
+        self.assertIn("run(path, tail)", text)
         # A failed exec reports the native code, a normal exit the u16
         # status the runner's verdict travels in.
         self.assertIn("zrt_status_err_code(status)", text)
-        self.assertIn('zos_puts("exec: exit status 0x")', text)
+        self.assertIn('console_puts("exec: exit status 0x")', text)
         self.assertIn("mon_put_hex16(", text)
         # The help row and the dispatch are part of the command surface.
         self.assertIn("X path [tail]", read(MONITOR))
@@ -218,7 +219,7 @@ class TestMonitorExecCommand(unittest.TestCase):
         self.assertIn("ZSIO_OP_GETC", text)
         # The console is polled first, so the serial-console build keeps
         # one stream and echoes every byte exactly once.
-        self.assertLess(text.index("zex_read(&ch, 1)"),
+        self.assertLess(text.index("console_read(&ch, 1)"),
                         text.index("mon_lane_getc()"))
         self.assertIn('mon_lane_name[] = "/dev/serial/0"', text)
 
@@ -257,7 +258,7 @@ class TestBuildWiring(unittest.TestCase):
         # Production packs it and the programs its stages run.
         for name in STORE_PROGRAMS:
             self.assertIn("$(MODULES)/%s" % name, makefile)
-        # `X /SYSTEM/hwtest.zex` needs the ZEX on the store, not a boot
+        # `X /system/hwtest.zex` needs the ZEX on the store, not a boot
         # program: production still boots straight to the monitor.
         self.assertIn("ROMFS_MANIFEST := recovery/manifest.json", makefile)
 
@@ -268,7 +269,7 @@ class TestSmokeMode(unittest.TestCase):
     def test_the_mode_sends_the_command_and_checks_the_transcript(self):
         text = read(SMOKE)
         self.assertIn('"hwtest"', text)
-        self.assertIn('HW_COMMAND = b"X /SYSTEM/hwtest.zex\\r"', text)
+        self.assertIn('HW_COMMAND = b"X /system/hwtest.zex\\r"', text)
         for marker in ("hwtest: begin", "hwtest: xmem+far PASS",
                        "hwtest: namespace+handles PASS", "hwtest: files PASS",
                        "hwtest: files card absent",

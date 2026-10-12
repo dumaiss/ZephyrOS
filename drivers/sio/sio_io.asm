@@ -11,7 +11,7 @@
 ; -----------------------------------------------------------------------------
 
 	.module sio_io
-	.include "zephyr80/hardware.inc"
+	.include "hardware.inc"
 
 	.globl _sio0b_status
 	.globl _sio0b_write_ctrl

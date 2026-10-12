@@ -1,4 +1,4 @@
-/* ZephyrOS IPC acceptance: the `echo` synthetic service (test artifact).
+/* ZephyrOS IPC acceptance: the `echo` synthetic driver (test artifact).
  *
  * The null call: the cheapest possible protocol on the IPC substrate, used
  * to measure the raw crossing and dispatch cost, to prove re-entrancy
@@ -13,12 +13,12 @@
  * same discovery a peer uses.
  */
 
-#include "zephyros/errno.h"
-#include "zephyros/ipc.h"
+#include "zos/errno.h"
+#include "driver.h"
 
 #include "ipc_test.h"
 
-static const struct ipc_service_api *api;
+static const struct driver_api *api;
 static uint8_t self_handle;
 
 /* The endpoint dispatch entry the manifest names: a module-global
@@ -45,7 +45,7 @@ int16_t echo_dispatch(struct zos_ipc_frame *frame)
 	}
 }
 
-uint8_t ipc_echo_init(const struct ipc_service_boot *boot)
+uint8_t ipc_echo_init(const struct driver_boot *boot)
 {
 	api = boot->api;
 	/* Manifest dependency 0: this image's own endpoint, resolved on the

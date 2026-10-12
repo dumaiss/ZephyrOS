@@ -37,6 +37,10 @@ union zos_syscall_block {
 
 extern union zos_syscall_block zos_scratch;
 
+/* Low-level gate stub (ipcgate.asm): one RST 30h with the request's
+ * number and block.  Carry-set nucleus errors map to -errno. */
+int zos_ipc_raw_call(struct zos_ipc_call_req *req);
+
 /* One raw syscall through the shared gate stub: `number` with `block` as
  * the packed argument block.  Returns the syscall result or the negated
  * error code; the block is always this program's low-window scratch. */

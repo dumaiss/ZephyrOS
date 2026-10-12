@@ -1,6 +1,6 @@
 /* ZephyrOS V9958 video driver implementation (drivers/v9958/).
  *
- * The M8 `v9958` driver as a bank-6 service image.  This is the
+ * The M8 `v9958` driver as a bank-6 driver image.  This is the
  * direct-hardware core ported from the pinned Zephyr-80 reference
  * (LunchCrema V9958, commit 2c6b9650): the exact GRAPHIC 6
  * initialization discipline, the native VIDEO operation surface, the
@@ -10,14 +10,14 @@
  * drops the reference's CP/M dispatch table, BIOS addressing, HID entry
  * points, VIDEO_SEND payload ceiling and CP/M build layout.
  *
- * Service layout (work package 41, architecture 36.6):
- *   hot  this file and v9958_service.c: the terminal renderer, the
+ * Driver layout (work package 41, architecture 36.6):
+ *   hot  this file and v9958_proto.c: the terminal renderer, the
  *        native operations, and the whole display bring-up chain - the
  *        ZVIDEO_RESET path is reachable after boot and re-runs the same
  *        chain, so none of it is boot-only;
  *   boot v9958_boot.c: the boot-once marker and the direct font source
  *        of the initial upload (the boot-tier mapping shows the bulk
- *        data, the service window does not);
+ *        data, the driver window does not);
  *   bulk the 2048-byte font itself, reached at run time through the
  *        nucleus bulk copy (api->bulk_read).
  *
@@ -39,19 +39,19 @@
  * pinned asset): the initial upload reads it directly in the boot
  * tier's mode-10 mapping, and the run-time display reset re-reads it in
  * bounded 64-byte chunks through the nucleus bulk copy, because the
- * mode-11 service window cannot show the boot/bulk tier.
+ * mode-11 driver window cannot show the boot/bulk tier.
  *
  * VDP interrupts stay disabled: nothing here selects an interrupt
  * enable, so the M2 IRQ_VDP_FF path is not claimed.
  *
- * The buffers and state below live in the service's SERVICE_IO data and
+ * The buffers and state below live in the driver's DRIVER_IO data and
  * are relocated with the image.
  */
 
-#include "zephyros/errno.h"
-#include "zephyros/ipc.h"
+#include "zos/errno.h"
+#include "driver.h"
 
-#include "zephyr80/hardware.h"
+#include "hardware.h"
 
 #include "zos/protocol.h"
 
@@ -59,11 +59,11 @@
 
 struct v9958_state v9958_state;
 
-/* The service bootstrap table (set by the init entry) and the boot-tier
+/* The driver bootstrap table (set by the init entry) and the boot-tier
  * font source: the boot entry leaves the font's bank-6 address here for
  * the initial upload; the init clears it so every later (run-time) read
  * goes through the nucleus bulk copy. */
-static const struct ipc_service_api *v9958_api;
+static const struct driver_api *v9958_api;
 static uint16_t v9958_font_base;
 
 /* Copy `length` font bytes at `offset` into `dst`. */
@@ -89,7 +89,7 @@ void v9958_set_font_base(uint16_t base)
 	v9958_font_base = base;
 }
 
-void v9958_set_api(const struct ipc_service_api *api)
+void v9958_set_api(const struct driver_api *api)
 {
 	v9958_api = api;
 }
@@ -1445,7 +1445,7 @@ int v9958_char_putc_worker(void *vstate, char ch)
 		return (-ZOS_ENODEV);
 	}
 	/* A standalone byte has no later flush opportunity in the console
-	 * service, so putc completes with a visible update. */
+	 * driver, so putc completes with a visible update. */
 	v9958_term_feed((uint8_t)ch);
 	v9958_term_sync();
 	return 0;

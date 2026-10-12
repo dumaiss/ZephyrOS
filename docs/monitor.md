@@ -9,7 +9,7 @@ the shell arrives, the same monitor remains available as a diagnostic
 program.
 
 The monitor is deliberately device-agnostic: ordinary input/output goes
-through `SYS_CONSOLE_*` (the bound normal console service) and every
+through `SYS_CONSOLE_*` (the bound normal console driver) and every
 memory/port/system operation crosses the M7 `SYS_DIAG_*` boundary
 (`docs/abi.md` section 9).  It contains no SIO/V9958/HID knowledge, no
 CP/M dependency, and no private kernel symbols, so the identical binary
@@ -29,7 +29,7 @@ reset
   -> normal console bound ("console: dynamic sio0.b OK")
   -> optional milestone acceptance hook (acceptance images)
   -> native boot launcher (ZOS_BOOT_PROGRAM, production default
-     /SYSTEM/monitor.zex)
+     /system/monitor.zex)
        -> process_exec(kernel_boot_program, &status)
        -> monitor runs interactively in its application bank
        -> Q -> SYS_EXIT -> launcher resumes
@@ -42,13 +42,13 @@ A launch failure (for example a missing or rejected boot program) is
 reported on the early console as `<configured path>: launch failed 0xNN`
 and takes the controlled halt path.  The boot program is the
 `ZOS_BOOT_PROGRAM` build setting (`config/system.mk`); the default is
-`/SYSTEM/monitor.zex`, and M10 points it at the shell.
+`/system/monitor.zex`, and M10 points it at the shell.
 
 Because every cycle is an ordinary exec/exit, the launcher's repeated
 exit line is a live proof that no process slot or bank leaked: after a
 normal `Q` the line reads `active 0 free-banks 6` (bank 6 left the
 application pool in M10; the process allocator hands out banks 0-5,
-`PROCESS_BANK_COUNT` in `include/zephyros/process.h`).
+`PROCESS_BANK_COUNT` in `kernel/include/process.h`).
 
 ## Command surface
 
@@ -70,7 +70,7 @@ answered with `ERR: ARG`.
 | `MB bank addr value` | modify one byte in application bank 0-6 |
 | `I port` | read I/O port `10h-FFh` |
 | `O port value` | write I/O port `10h-FFh` |
-| `X path [tail]` | run a ZEX from `/SYSTEM` or `/FS`, print its exit status |
+| `X path [tail]` | run a ZEX from `/system` or `/fs`, print its exit status |
 | `Q` | exit to the launcher |
 
 `X` runs the named program through the launcher's own `SYS_EXEC` path -
@@ -81,12 +81,12 @@ which is how the `stage` option reaches the outcome programs the
 exerciser starts.
 
 > **A card executable is runnable again (45b correction 01).**  Work
-> package 45b found that `X /FS/<name>.zex` failed with `ERR: 02`
+> package 45b found that `X /fs/<name>.zex` failed with `ERR: 02`
 > (`ZOS_EINVAL`) before the filesystem provider was called at all:
 > `SYS_EXEC` staged the caller's path in bank-7 `_DATA` (`0xC0DD` in
 > that build), which lies in the `6000h-DFFFh` region a bank-6
-> provider's window replaces, so the `/FS` provider could not read it
-> (`/SYSTEM` worked because the ROMFS reader is in-process).  Correction
+> provider's window replaces, so the `/fs` provider could not read it
+> (`/system` worked because the ROMFS reader is in-process).  Correction
 > 01 stages the path the way `SYS_BIND` does, in the VFS workspace in
 > the fixed core, so the program on the card loads, runs and reports its
 > exit status like any store program; everything the exerciser needs is
@@ -95,7 +95,7 @@ exerciser starts.
 > `docs/validation/2026-10-11-m10-hardware-acceptance-correction-01.md`.
 
 ```text
-Z80> X /SYSTEM/hwtest.zex
+Z80> X /system/hwtest.zex
 ... the exerciser's own lines (see "Serial command lane") ...
 exec: exit status 0x0000
 Z80>
@@ -161,20 +161,20 @@ first, and every byte is echoed back to the source it came from, so
   same lane, and the output appears on the V9958 display.  The monitor
   writes nothing to the lane on its own.
 
-The line-editing rules are the SDK's `zos_read_line` semantics: BS/DEL
+The line-editing rules are the SDK's `console_readline` semantics: BS/DEL
 erase the last character, CR or LF ends the line (a CRLF's LF is
 swallowed), an overflow rings the bell instead of entering the byte, and
 other control bytes are ignored.
 
 The production store carries the exerciser this lane exists for:
-`/SYSTEM/hwtest.zex` (work package 45b) runs, in order, the extended
+`/system/hwtest.zex` (work package 45b) runs, in order, the extended
 memory and far-code suite, the filesystem suite with every write confined
-to `/FS/HWTEST` (created and removed by the runner, also after a
+to `/fs/HWTEST` (created and removed by the runner, also after a
 failure), and a namespace/handle stage against the real publications -
 one line per stage and a verdict:
 
 ```text
-Z80> X /SYSTEM/hwtest.zex
+Z80> X /system/hwtest.zex
 hwtest: begin
 hwtest: xmem+far PASS
 hwtest: files PASS                 # or: card absent / card not writable
@@ -208,8 +208,8 @@ assembly and no hand-written manifest.  Later diagnostic programs reuse
 the same layers (`docs/sdk.md` is canonical):
 
 - libzos (`user/sdk/`) - crt0 (startup block, `argv`, `SYS_EXIT`), the
-  console wrappers (`zex_write`, `zex_read`, `zex_poll`, `zex_getinfo`,
-  `zex_exit`) and the M7 diagnostic wrappers (`zex_diag_mem_read`,
+  console wrappers (`console_write`, `console_read`, `console_poll`, `getinfo`,
+  `exit`) and the M7 diagnostic wrappers (`diag_mem_read`,
   `_write`, `_io_in`, `_io_out`, `_bank_info`, `_system_info`) in
   `user/sdk/include/zos/{console,diag}.h` with their gate stubs in
   `user/sdk/src/{console,diaggate}.asm`; one shared low-window scratch;

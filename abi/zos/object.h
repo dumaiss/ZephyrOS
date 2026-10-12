@@ -3,7 +3,7 @@
  * The public object lifecycle of architecture 36.7 and 36.13:
  *
  *   bind(path, flags) -> handle, type   resolve a namespace name, bind an instance
- *   call(handle, op, frame)             synchronous protocol operation
+ *   call(dependency_ref, op, frame)     synchronous protocol operation
  *   unbind(handle)                      release the bound instance
  *
  * A bound handle carries one 8-bit **protocol type** (the numbers below);
@@ -85,7 +85,7 @@
 /* --- 8-bit protocol types ------------------------------------------------ */
 
 /* The device families keep the pinned M8 class slots (the numbers are
- * part of the deployed ABI), so a protocol type and a service class
+ * part of the deployed ABI), so a protocol type and a driver class
  * coincide for them; FILE and the filesystem-namespace protocol are not
  * device classes and continue the sequence. */
 #define ZOS_TYPE_SERIAL  1u
@@ -113,7 +113,7 @@
 /* --- namespace enumeration ---------------------------------------------- */
 
 /* Entry name field: 24 bytes carries any ROMFS name (ROMFS_NAME_SIZE,
- * include/zephyros/romfs.h) and every `/dev` role name.  `name_length`
+ * formats/include/romfs.h) and every `/dev` role name.  `name_length`
  * counts the terminating NUL. */
 #define ZOS_NS_NAME_MAX   24u
 #define ZOS_NS_ENTRY_SIZE 28u

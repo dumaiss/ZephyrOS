@@ -4,8 +4,8 @@
 Covers the declarative and structural surface that can be checked
 without executing target code:
 
-  - the client-visible MCU HID service vocabulary shared through the
-    public IOC protocol contract (include/zephyros/ioc_protocol.h):
+  - the client-visible MCU HID driver vocabulary shared through the
+    public IOC protocol contract (drivers/include/ioc_protocol.h):
     CMD_HID_INPUT 0Eh, RSP_HID_INPUT 8Eh, 2 metadata bytes and a 24-byte
     reply maximum (26 with metadata), never the IOC driver's private
     transport header;
@@ -42,13 +42,13 @@ import mapcheck  # noqa: E402
 import zmodpack  # noqa: E402
 from maptools import evaluate, parse_c_header  # noqa: E402
 
-PROTO_H = os.path.join(ROOT, "include", "zephyros", "ioc_protocol.h")
+PROTO_H = os.path.join(ROOT, "drivers", "include", "ioc_protocol.h")
 IOC_PRIVATE_H = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.h")
 DRIVER_H = os.path.join(ROOT, "drivers", "hid", "hid_driver.h")
 DRIVER_C = os.path.join(ROOT, "drivers", "hid", "hid.c")
-# Package 41: HID is a bank-6 service image - one hot segment (the whole
+# Package 41: HID is a bank-6 driver image - one hot segment (the whole
 # driver, as before, plus the protocol dispatch) and no boot segment.
-MANIFEST = os.path.join(ROOT, "services", "manifests", "hid.json")
+MANIFEST = os.path.join(ROOT, "drivers", "hid", "hid.json")
 RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
 TARGET_TEST_C = os.path.join(ROOT, "tests", "target", "hid",
                              "hid_test.c")
@@ -93,7 +93,7 @@ class TestHidProtocolConstants(unittest.TestCase):
                          evaluate("IOC_HID_INPUT_MAX_DATA", self.env), 26)
 
     def test_hid_vocabulary_is_not_duplicated_in_the_private_header(self):
-        # The HID service vocabulary has exactly one owner: the public
+        # The HID driver vocabulary has exactly one owner: the public
         # client-visible contract.  The IOC driver's private header may
         # extend it but must not redeclare it.
         private = parse_c_header(IOC_PRIVATE_H)
@@ -104,21 +104,21 @@ class TestHidProtocolConstants(unittest.TestCase):
                              "IOC private header duplicates %s" % name)
 
 
-class TestHidServiceArtifact(unittest.TestCase):
+class TestHidDriverArtifact(unittest.TestCase):
     def test_manifest_shape(self):
         manifest = _load_json(MANIFEST)
         self.assertEqual(manifest["name"], "hid")
-        self.assertEqual(manifest["init"], "hid_service_init")
+        self.assertEqual(manifest["init"], "hid_driver_init")
         self.assertEqual(manifest["objects"],
                          ["hid.rel", "sdcc_indirect_calls.rel"])
         self.assertEqual([segment["role"] for segment in manifest["segments"]],
                          ["hot"])
         hot = manifest["segments"][0]
         self.assertEqual(hot["image_areas"], ["_CODE"])
-        self.assertEqual(hot["bss_areas"], ["_SERVICE_IO"])
+        self.assertEqual(hot["bss_areas"], ["_DRIVER_IO"])
         self.assertEqual(manifest["endpoints"],
                          [{"class": 4, "instance": 0, "version": 1,
-                           "dispatch": "hid_service_dispatch", "flags": 0}])
+                           "dispatch": "hid_driver_dispatch", "flags": 0}])
         # The IOC dependency is image metadata: a store that places HID
         # without IOC is a loader error before any HID byte runs.
         self.assertEqual(manifest["depends"],
@@ -138,11 +138,11 @@ class TestHidServiceArtifact(unittest.TestCase):
         self.assertGreater(info["bss_size"], 0)
         self.assertNotEqual(info["init_offset"], 0xFFFF)
         # One hot segment: the ring and state are its only BSS, and the
-        # image stays inside the service I/O window 8000h-BFFFh.
+        # image stays inside the driver I/O window 8000h-BFFFh.
         self.assertEqual([segment["role"] for segment in info["segments"]],
                          ["hot"])
         hot = info["segments"][0]
-        # The loader places the segment inside the service I/O window
+        # The loader places the segment inside the driver I/O window
         # 8000h-BFFFh, so the resident footprint must fit in it.
         self.assertLess(hot["image_size"] + hot["bss_size"], 0x4000)
         # Host-linked: the dispatch entry lies inside the hot image (the
@@ -157,26 +157,26 @@ class TestHidServiceArtifact(unittest.TestCase):
         names = [entry["name"] for entry in manifest["files"]]
         self.assertEqual(names, ["sio.zmod", "ioc.zmod", "hid.zmod",
                                  "v9958.zmod", "console-v9958-hid.zmod",
-                                 "services.man", "iocfat.zmod",
+                                 "drivers.man", "iocfat.zmod",
                                  "monitor.zex",
                                  # The production feature exerciser and the
                                  # outcome programs it runs (45b).
                                  "hwtest.zex", "xmem_selftest.zex",
                                  "xmem_child.zex", "xmem_far.zex",
                                  "fs_selftest.zex", "fs_child.zex"])
-        # The boot manifest orders the services; HID's declared dependency
+        # The boot manifest orders the drivers; HID's declared dependency
         # on the IOC class is what makes the loader place IOC first.
         manifest_name = _read(os.path.join(ROOT, "abi", "zos",
                                            "protocol.h"))
         self.assertIn("ZOS_CLASS_HID", manifest_name)
         main = _read(MAIN_C)
-        self.assertIn("service_load_all(ZOS_SERVICE_MANIFEST_NAME)", main)
+        self.assertIn("driver_load_all(ZOS_DRIVER_MANIFEST_NAME)", main)
         self.assertIn("console: unbound", main)
 
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
         self.assertIn("hid-test:", makefile)
-        self.assertIn("services/manifests/%.json", makefile)
+        self.assertIn("$(call DRV_MANIFEST,$(1))", makefile)
         self.assertIn("hid.rel", makefile)
         # The HID diagnostic runs in the console-integration image (work
         # package 42d merged the per-device images); the table row links
@@ -186,7 +186,7 @@ class TestHidServiceArtifact(unittest.TestCase):
         self.assertIn("$(BUILD)/hid_test.rel",
                       makefile[index:index + 400])
         self.assertIn("hid_test", makefile)
-        # Which services an image boots is its manifest's service set.
+        # Which drivers an image boots is its manifest's driver set.
         image_manifest = os.path.join(ROOT, "tests", "console",
                                       "manifest-integration.json")
         self.assertIn('"name": "hid.zmod"', _read(image_manifest))
@@ -231,12 +231,12 @@ class TestHidSourceDiscipline(unittest.TestCase):
         self.c = _read(DRIVER_C)
         self.header = _read(DRIVER_H)
         self.sources = (self.c, self.header)
-        self.service = self.c.split("static uint8_t hid_service")[1].split(
+        self.driver = self.c.split("static uint8_t hid_driver")[1].split(
             "int hid_read_text")[0]
         self.fetch = self.c.split("static uint8_t hid_fetch")[1].split(
-            "static uint8_t hid_service")[0]
-        self.init = self.c.split("uint8_t hid_service_init")[1].split(
-            "int16_t hid_service_dispatch")[0]
+            "static uint8_t hid_driver")[0]
+        self.init = self.c.split("uint8_t hid_driver_init")[1].split(
+            "int16_t hid_driver_dispatch")[0]
 
     def test_no_sio1_rr0_or_port_constants_anywhere(self):
         forbidden = ("ZOS_SIO1", "ZOS_SIO_RR0", "ZOS_IOC_HID_DOORBELL",
@@ -276,7 +276,7 @@ class TestHidSourceDiscipline(unittest.TestCase):
             self.assertIn(op, self.c, op)
 
     def test_dispatch_serves_the_hid_protocol_only(self):
-        self.assertIn("hid_service_dispatch", self.c)
+        self.assertIn("hid_driver_dispatch", self.c)
         for op in ("ZHID_OP_READ_TEXT", "ZHID_OP_POLL", "ZHID_OP_GETC",
                    "ZHID_OP_READY"):
             self.assertIn(op, self.c, op)
@@ -294,18 +294,18 @@ class TestHidSourceDiscipline(unittest.TestCase):
         # Power-of-two ring: wraparound is the mask expression.
         self.assertIn("ZHID_RING_SIZE - 1u", self.c)
 
-    def test_fetch_on_doorbell_only_and_service_order(self):
+    def test_fetch_on_doorbell_only_and_driver_order(self):
         # The semantic status sample comes before any fetch, and the
         # fetch is gated on ZIOC_STATUS_HID_PENDING.
-        status = self.service.index("ZIOC_OP_STATUS")
-        pending = self.service.index("ZIOC_STATUS_HID_PENDING")
-        penalty = self.service.index("state->penalty != 0u")
-        fetch = self.service.index("hid_fetch(state)")
+        status = self.driver.index("ZIOC_OP_STATUS")
+        pending = self.driver.index("ZIOC_STATUS_HID_PENDING")
+        penalty = self.driver.index("state->penalty != 0u")
+        fetch = self.driver.index("hid_fetch(state)")
         self.assertLess(status, pending)
         self.assertLess(pending, penalty)
         self.assertLess(penalty, fetch)
         # Idle (doorbell released): clear the penalty, no command.
-        self.assertIn("state->penalty = 0u;", self.service)
+        self.assertIn("state->penalty = 0u;", self.driver)
 
     def test_exact_request_sizing(self):
         self.assertIn("IOC_HID_INPUT_MAX_DATA", self.fetch)
@@ -315,7 +315,7 @@ class TestHidSourceDiscipline(unittest.TestCase):
         self.assertIn("free_space", self.fetch)
 
     def test_reply_validation_precedes_commit(self):
-        # The reply frame arrives staged in this service's own buffer, so
+        # The reply frame arrives staged in this driver's own buffer, so
         # every check reads the frame words before a single byte moves.
         for needle in ("IOC_RSP_HID_INPUT", "frame.payload[2] != 0u",
                        "frame.arg1 < IOC_HID_INPUT_META_LEN",
@@ -328,7 +328,7 @@ class TestHidSourceDiscipline(unittest.TestCase):
                           "fetch missing validation %r" % needle)
         # The commit (the head update) is the last thing: after every
         # check and after the one same-domain copy out of the reply frame
-        # the IOC service staged (split at the ring wrap when it needs to
+        # the IOC driver staged (split at the ring wrap when it needs to
         # be).
         commit = self.fetch.index("state->head = (uint8_t)((state->head")
         for check in ("payload > free_space",
@@ -339,10 +339,10 @@ class TestHidSourceDiscipline(unittest.TestCase):
             self.assertLess(self.fetch.index(check), commit)
 
     def test_stuck_penalty_applied_and_cleared(self):
-        self.assertIn("state->penalty = ZHID_STUCK_PENALTY", self.service)
-        self.assertIn("--state->penalty", self.service)
+        self.assertIn("state->penalty = ZHID_STUCK_PENALTY", self.driver)
+        self.assertIn("--state->penalty", self.driver)
         # Successful data clears it.
-        self.assertIn("state->penalty = 0u;", self.service)
+        self.assertIn("state->penalty = 0u;", self.driver)
 
     def test_getc_and_read_text_are_nonblocking(self):
         self.assertIn("return (-ZOS_EAGAIN);", self.c)

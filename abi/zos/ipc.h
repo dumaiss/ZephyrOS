@@ -1,7 +1,7 @@
 /* ZephyrOS native IPC syscall interface (public native ABI, M10 stage 3).
  *
  * The IPC substrate is the nucleus mechanism behind architecture sections
- * 36.7-36.9: services export endpoints, clients hold opaque handles, and a
+ * 36.7-36.9: drivers export endpoints, clients hold opaque handles, and a
  * call is one bounded 32-byte frame copied in at entry and back on reply.
  * Large payloads move through nucleus-issued buffer descriptors, never
  * through caller addresses: the ABI has no raw cross-domain pointer.
@@ -20,7 +20,7 @@
  *
  *   RST 30h, A = ZOS_SYSCALL_CALL, HL = &struct zos_ipc_call_args
  *       carry clear: the call was dispatched (or refused by the IPC
- *       layer); HL = the IPC status: 0 or positive from the service,
+ *       layer); HL = the IPC status: 0 or positive from the driver,
  *       negative -ZOS_E* for a refusal (unknown handle or descriptor,
  *       forged descriptor id, copy bounds, nesting depth, re-entrancy).
  *       The reply frame and the status are written back into the block.
@@ -31,15 +31,15 @@
  * Descriptor convention: one optional caller buffer per call, named by
  * `buffer`/`length`/`direction` in the call block.  The nucleus captures
  * it at entry from the caller's saved execution latch (bank and page) as
- * a small id, hands the id to the service in the frame's `desc` field,
+ * a small id, hands the id to the driver in the frame's `desc` field,
  * and refuses (ZOS_EINVAL) any address outside the caller buffer window
  * 0100h-DFFFh (the caller's own bank) plus the common window
  * E000h-FFFFh, which every mapping shows at the same address, or any
- * length above ZOS_IPC_DESC_MAX.  Services reach the buffer only through
+ * length above ZOS_IPC_DESC_MAX.  Drivers reach the buffer only through
  * the nucleus copies, with bounds checked on every use:
  *
- *   copy_in (id, offset, service_buffer, length)   caller -> service
- *   copy_out(id, offset, service_buffer, length)   service -> caller
+ *   copy_in (id, offset, driver_buffer, length)   caller -> driver
+ *   copy_out(id, offset, driver_buffer, length)   driver -> caller
  *
  * `offset + length` may never exceed the captured descriptor length.
  * A caller address in 8000h-BFFFh with a nonzero saved page names the
@@ -51,26 +51,26 @@
  * every accepted descriptor; only the first two are fast:
  *
  *   A  the caller buffer is in 0000h-1FFFh (the caller window mode 11
- *      shows) or in the common window: one LDIR in the service mapping.
+ *      shows) or in the common window: one LDIR in the driver mapping.
  *   B  the caller buffer is in the caller's bank clear of 8000h-BFFFh
- *      and the service buffer lies in bank 6's 8000h-BFFFh: one LDIR
+ *      and the driver buffer lies in bank 6's 8000h-BFFFh: one LDIR
  *      with mode 10 selected over the caller's bank and page 1, so the
- *      aperture shows bank 6 at the address the service named.  The
+ *      aperture shows bank 6 at the address the driver named.  The
  *      primitive restores the latch exactly and is interruptible; page 1
  *      is nucleus-internal and never appears in a caller's latch.
- *   C  everything else, including a service buffer outside
+ *   C  everything else, including a driver buffer outside
  *      8000h-BFFFh: chunked through the nucleus's application-bank copy
  *      gate, and counted as slow.
  *
- * A service buffer that is the source or target of copy_in/copy_out
+ * A driver buffer that is the source or target of copy_in/copy_out
  * therefore belongs in bank 6's 8000h-BFFFh: that is the one bank-6
  * range the mode-11 window and the mode-10 aperture both show at the
- * same address.  A service that places one elsewhere still works, on
+ * same address.  A driver that places one elsewhere still works, on
  * path C.
  *
  * The frame is fixed at 32 bytes and is the only request/reply envelope:
  * 8-byte header plus 24 payload bytes.  Operation numbers, flags and
- * payload encodings belong to the versioned service protocols, never to
+ * payload encodings belong to the versioned driver protocols, never to
  * this header.
  */
 
@@ -100,10 +100,10 @@
 #define ZOS_IPC_DESC_MAX 4096u
 
 /* Buffer descriptor directions. */
-#define ZOS_IPC_DESC_IN  0u /* caller writes, service reads (copy_in)  */
-#define ZOS_IPC_DESC_OUT 1u /* service writes, caller reads (copy_out) */
+#define ZOS_IPC_DESC_IN  0u /* caller writes, driver reads (copy_in)  */
+#define ZOS_IPC_DESC_OUT 1u /* driver writes, caller reads (copy_out) */
 
-/* Endpoint registration flags (service bootstrap interface). */
+/* Endpoint registration flags (driver bootstrap interface). */
 #define ZOS_IPC_EP_REENTRANT 0x01u /* a call into an active endpoint runs */
 
 struct zos_ipc_frame {
@@ -120,7 +120,7 @@ struct zos_ipc_frame {
  * reserved, frame, status}.  `frame_length` is the protocol frame size
  * (1..32); `buffer`/`length`/`direction` name the one optional caller
  * buffer (length 0 means no descriptor and `buffer` is ignored), and
- * `reserved` must be zero.  The service's reply frame and status land
+ * `reserved` must be zero.  The driver's reply frame and status land
  * back in the block. */
 struct zos_ipc_call_args {
 	uint8_t handle;

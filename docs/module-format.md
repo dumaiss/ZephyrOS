@@ -1,28 +1,28 @@
-# ZMOD service image format and the resident loader
+# ZMOD driver image format and the resident loader
 
 **Status: M10, work package 42c.**  There is exactly one ZMOD form: the
-**service image**, a flat load plan the host packer links and the nucleus
+**driver image**, a flat load plan the host packer links and the nucleus
 loader copies.  The arena module loader (`kernel/module/loader.c`,
 `relocate.c`, `arena.asm`), the relocation-record container, the module
 types, the import tables and the host `emit-asm` test fixtures are
 **deleted**; the record of that model is the M4-M9 history in
 `docs/architecture.md` (sections 22-31) and `docs/validation/`.  The file
 keeps its historical name because the container is still the ZMOD
-container; the format it describes is now the service form only.
+container; the format it describes is now the driver form only.
 
 The split of work is the M10 rule (M10-REFERENCE decision 2): **the host
 computes everything.**  `tools/zmodpack.py` mini-links the declared
 objects, links every segment at its final bank-6 address, applies the
 `ZREL_ABS16` records on the host, assigns endpoint numbers, resolves
 inter-driver dependencies and validates the whole container; the nucleus
-loader (`kernel/service/service_loader.c`) copies the finished images and
+loader (`kernel/driver/driver_loader.c`) copies the finished images and
 checks only the bounds that protect the nucleus and the fixed driver-bank
 layout.  Nothing is linked, patched or version-checked at boot.
 
 The architectural contract is `docs/architecture.md` sections 36.6
 (driver bank), 36.11 (resident images and host assembly), 36.12 (boot),
 36.13 (namespace providers) and 36.20 (ledgers).  The concrete layout is
-pinned by `include/zephyros/service.h` and by the compile-time assertions
+pinned by `formats/include/zmod.h` and by the compile-time assertions
 the target build enforces.
 
 ---
@@ -49,7 +49,7 @@ tables and payload do not end at those bytes.  The mandatory payload order
 is what lets the loader read the container once, front to back, without a
 record index.
 
-Header (16 bytes; `include/zephyros/service.h` `struct zmod_header`):
+Header (16 bytes; `formats/include/zmod.h` `struct zmod_header`):
 
 | Offset | Field | Meaning |
 | --- | --- | --- |
@@ -64,7 +64,7 @@ Header (16 bytes; `include/zephyros/service.h` `struct zmod_header`):
 | 0E | `reserved` | 0 |
 
 There is no version field, no module type, no import table, no `fini`
-entry and no relocation record.  A service image has no runtime format
+entry and no relocation record.  A driver image has no runtime format
 negotiation: an image that does not match this layout is a pack-time
 error, not a boot error.
 
@@ -83,7 +83,7 @@ segment  role:u8 0:u8 base:u16 image_size:u16 bss_size:u16
 | Role | Destination | Visibility, and what runs there |
 | --- | --- | --- |
 | `hot` | bank 6 `6000h-DFFFh` | the mode-11 window (P = 1): all run-time code and data, plus the init entry |
-| `io` | bank 6 `8000h-BFFFh` | `SERVICE_IO` buffers, the sources and targets of `copy_in`/`copy_out` |
+| `io` | bank 6 `8000h-BFFFh` | `DRIVER_IO` buffers, the sources and targets of `copy_in`/`copy_out` |
 | `boot` | bank 6 `0000h-5FFFh` | boot-only code, run once through the mode-10 gate with Q = 6, never again |
 | `bulk` | bank 6 `0000h-5FFFh` | bulk data, reached only by nucleus copies |
 
@@ -134,8 +134,8 @@ build selected no such peer" (optional dependencies survive only in
 acceptance doubles; the production console drivers declare every
 dependency required).  The resolved numbers are installed into the
 fixed-core array
-the boot bundle names (`struct ipc_service_boot`, `include/zephyros/
-ipc.h`), one byte per declaration in manifest order; no driver looks a
+the boot bundle names (`struct driver_boot`, `drivers/include/
+driver.h`), one byte per declaration in manifest order; no driver looks a
 peer up at run time.
 
 ## 5. Placement and the two ledgers
@@ -168,17 +168,17 @@ driver boot/bulk: <bytes> of 24576    boot + bulk bytes of the 0000h-5FFFh tier
 ```
 
 The loader prints them in acceptance builds; production takes them from
-the packer's report (`services.plan.json`), which is what
+the packer's report (`drivers.plan.json`), which is what
 `tools/pack_image.py` folds into the bank-6 part of the image manifest.
 Each placed image is reported as `driver <name>: hot <addr> [io <addr>]
-[boot <addr>] [bulk <addr>]` - the same line `zmodpack.py services`
+[boot <addr>] [bulk <addr>]` - the same line `zmodpack.py drivers`
 prints - and the run ends with
-`service loader: <n> images in bank 6`.
+`driver loader: <n> images in bank 6`.
 
 ## 6. Publications
 
 A publication is a namespace name below the **DEVICE provider's** `/dev`
-root, or the `/FS` root of a filesystem provider, that the image serves
+root, or the `/fs` root of a filesystem provider, that the image serves
 (architecture 36.13):
 
 ```text
@@ -206,14 +206,14 @@ whole set are installed before the first driver's boot entry runs.
 
 ## 7. Boot manifest and the boot path
 
-`services.man` (`ZOS_SERVICE_MANIFEST_NAME`) is a flat ROMFS `DATA` file
+`drivers.man` (`ZOS_DRIVER_MANIFEST_NAME`) is a flat ROMFS `DATA` file
 of 24-byte records - the ROMFS name field exactly, NUL-terminated and
 zero-padded - naming the packed containers in load order.  The loader
 reads it with the bootstrap ROMFS reader (`kernel/romfs`, fixed-core
 since package 38) and requires the file size to be a multiple of the
 record size.  At most `ZMOD_MAX_IMAGES` (8) images are placed.
 
-Per image, in manifest order (`kernel/service/service_loader.c`):
+Per image, in manifest order (`kernel/driver/driver_loader.c`):
 
 1. copy the segment images to their host-assigned bases and zero their
    BSS through the common application-bank copy gate;
@@ -231,21 +231,21 @@ The hot init runs with the window open and has the interface table and
 its resolved dependency numbers.
 
 A failure is a boot error and prints one line on the early console:
-`service loader: <name>: <what>`, where `<what>` is `no image` (the
+`driver loader: <name>: <what>`, where `<what>` is `no image` (the
 manifest named a file the store does not hold), `copy` (a segment that
 does not fit its tier or a copy the gate rejected), `endpoint` (the
 endpoint table is full), `publication` (the namespace refused the row),
 or `invalid` (corrupt or truncated container, or an init status that is
 not 0 - the same word for a
 manifest whose size is not a multiple of the record size).  The nucleus
-then prints `services: unavailable 0x<code>` and stops the boot on the
+then prints `drivers: unavailable 0x<code>` and stops the boot on the
 early console: a required driver that fails to load or initialize is an
 explicit boot failure, never a fallback (36.11, work package 42e).  The
 words are
 short because the loader's byte budget is an architectural resource
-(section 8).  Services are permanent (M10
+(section 8).  Drivers are permanent (M10
 decision 11): no unload, no restart, no fini entry, and a second
-`service_load_all` call is a no-op.
+`driver_load_all` call is a no-op.
 
 ## 8. Loader size
 
@@ -264,11 +264,11 @@ python3 tools/zmodpack.py pack <manifest.json> <out.zmod> \
     --objdir DIR --set MANIFEST [...] --report FILE
 python3 tools/zmodpack.py validate <container.zmod> [...]
 python3 tools/zmodpack.py dump <container.zmod> [...]
-python3 tools/zmodpack.py services <out.man> <container.zmod> [...] \
-    --report services.plan.json
+python3 tools/zmodpack.py drivers <out.man> <container.zmod> [...] \
+    --report drivers.plan.json
 ```
 
-`pack` for a service manifest requires `--set`, the whole load order
+`pack` for a driver manifest requires `--set`, the whole load order
 including this image: the packer links this image against the set (one
 plan, one endpoint numbering, one dependency resolution), so an image
 rebuilt alone still matches its siblings.  `validate` and `dump` both run
@@ -284,16 +284,16 @@ optional `optional`):
 {
   "name": "ioc",
   "objects": ["ioc.rel", "ioc_boot.rel", "sdcc_indirect_calls.rel"],
-  "init": "ioc_service_init",
+  "init": "ioc_driver_init",
   "segments": [
     {"role": "hot",  "image_areas": ["_CODE"],
-     "bss_areas": ["_SERVICE_IO"]},
+     "bss_areas": ["_DRIVER_IO"]},
     {"role": "boot", "image_areas": ["_BOOT"],
      "entry": "ioc_boot_entry"}
   ],
   "endpoints": [
     {"class": 5, "instance": 0, "version": 1,
-     "dispatch": "ioc_service_dispatch", "flags": 0}
+     "dispatch": "ioc_driver_dispatch", "flags": 0}
   ],
   "publishes": [],
   "depends": []
@@ -304,7 +304,7 @@ The per-image report carries each segment's role, final base, image and
 BSS sizes and payload offset, every symbol's segment-relative offset with
 its segment (`symbols`, `symbol_segments`), the endpoint numbers with
 their absolute dispatch entries, and the resolved dependency numbers.
-The set report (`services.plan.json`) carries the load order, the bases
+The set report (`drivers.plan.json`) carries the load order, the bases
 per image and the two tier ledgers; `tools/pack_image.py` reads it for the
 bank-6 ledger of the image manifest.
 

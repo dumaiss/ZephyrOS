@@ -1,4 +1,4 @@
-/* ZephyrOS extended-memory syscall services (architecture 36.15-36.18,
+/* ZephyrOS extended-memory syscall drivers (architecture 36.15-36.18,
  * work packages 43, 44a and 44b).
  *
  * Implements SYS_XMEM_ALLOC / _FREE / _READ / _WRITE / _INFO / _MAP,
@@ -33,10 +33,10 @@
 #include "zos/syscall.h"
 #include "zos/xmem.h"
 #include "zos/seg.h"
-#include "zephyros/errno.h"
-#include "zephyros/platform.h"
-#include "zephyros/process.h"
-#include "zephyros/zex.h"
+#include "zos/errno.h"
+#include "platform.h"
+#include "process.h"
+#include "zex.h"
 
 #include "kernel/ipc/ipc.h"
 

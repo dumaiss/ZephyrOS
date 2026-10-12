@@ -28,7 +28,7 @@
 ; -----------------------------------------------------------------------------
 
 	.module v9958_io
-	.include "zephyr80/hardware.inc"
+	.include "hardware.inc"
 
 	.globl _v9958_io_bootstrap_delay
 	.globl _v9958_io_reg_paced
@@ -204,7 +204,7 @@ v9958_indirect_loop:
 ; and the SIO console path was designed to fit in that budget.  The
 ; ported text renderer's call chain (parser -> control action -> flush ->
 ; glyph HMMM -> command start) is deeper than that budget, so both
-; The terminal entries run the C worker on a private service stack instead:
+; The terminal entries run the C worker on a private driver stack instead:
 ; the caller's SP, return address and arguments are parked in module BSS,
 ; SP moves to _v9958_alt_stack_top, the worker runs there, and SP plus
 ; the return path are restored exactly.  The renderer is single-depth by
@@ -216,7 +216,7 @@ v9958_indirect_loop:
 ;   int (*write)(void *state, const char *buf, u16) state HL, buf DE,
 ;                                                   len stack, result DE
 
-	.area _SERVICE_IO
+	.area _DRIVER_IO
 _v9958_alt_saved_sp::
 	.ds	2
 _v9958_alt_ret::

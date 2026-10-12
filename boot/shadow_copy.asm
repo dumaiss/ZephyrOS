@@ -20,8 +20,8 @@
 ; -----------------------------------------------------------------------------
 
 	.module reset
-	.include "zephyr80/hardware.inc"
-	.include "zephyr80/memory.inc"
+	.include "hardware.inc"
+	.include "memory.inc"
 
 	.globl _boot_common_entry
 

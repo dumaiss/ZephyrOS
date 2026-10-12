@@ -24,10 +24,10 @@ import romfspack  # noqa: E402
 from z80sim import read_symbols  # noqa: E402
 from maptools import evaluate, make_map, parse_c_header, parse_asm_inc  # noqa: E402
 
-ROMFS_H = os.path.join(ROOT, "include", "zephyros", "romfs.h")
+ROMFS_H = os.path.join(ROOT, "formats", "include", "romfs.h")
 ERRNO_H = os.path.join(ROOT, "abi", "zos", "errno.h")
-MEMORY_H = os.path.join(ROOT, "platform", "zephyr80", "memory.h")
-MEMORY_INC = os.path.join(ROOT, "platform", "zephyr80", "memory.inc")
+MEMORY_H = os.path.join(ROOT, "platform", "zephyr80", "private", "memory.h")
+MEMORY_INC = os.path.join(ROOT, "platform", "zephyr80", "private", "memory.inc")
 ROM_ACCESS_ASM = os.path.join(ROOT, "kernel", "romfs", "rom_access.asm")
 ROMFS_SELFTEST_H = os.path.join(ROOT, "tests", "target", "include",
                                 "romfs_selftest.h")
@@ -450,7 +450,7 @@ class TestBuiltArtifacts(unittest.TestCase):
         _p, stream = self._read("build-subsys-selftest/recovery.romfs")
         _header, entries = romfspack.parse_image(stream)
         names = {entry["name"]: entry for entry in entries}
-        # The store belongs to the image's own build: its service set
+        # The store belongs to the image's own build: its driver set
         # (SIO + the serial console) is what the packer links each
         # container against, so the canonical build's bytes differ.
         _p, zmod = self._read("build-subsys-selftest/modules/sio.zmod")
@@ -484,7 +484,7 @@ class TestBuiltArtifacts(unittest.TestCase):
         _p, image = self._read("build-subsys-selftest/"
                                "zephyros-subsys-selftest.bin")
         for marker in (b"romfs selftest: OK\r\n",
-                       b"console: service OK\r\n",
+                       b"console: driver OK\r\n",
                        b"romfs: corrupt recovery image"):
             self.assertIn(marker, image)
         syms = read_symbols(os.path.join(ROOT, "build-subsys-selftest",
@@ -526,7 +526,7 @@ class TestBuiltArtifacts(unittest.TestCase):
                                  "zephyros-subsys-selftest.bin")
         _p, corrupt = self._read("build-romfs-corrupt/"
                                  "zephyros-romfs-corrupt.bin")
-        for const in (serial_smoke.CONSOLE_SERVICE_OK,
+        for const in (serial_smoke.CONSOLE_DRIVER_OK,
                       serial_smoke.SUBSYS_ROMFS_OK):
             self.assertIn(const, success)
         # panic() writes "PANIC: " and the message as separate literals;

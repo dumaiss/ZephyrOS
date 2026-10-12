@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Host-side V9958 video service acceptance: the video diagnostic runs in
+"""Host-side V9958 video driver acceptance: the video diagnostic runs in
 the console-integration image (work package 42d merged the per-device
 images); this module replays that image's `sio ioc hid v9958
-console-v9958-hid` service set, production geometry, against the V9958
+console-v9958-hid` driver set, production geometry, against the V9958
 peer.
 
 Coverage (all executing the real linked bytes):
 
-* the boot transcript: the nucleaus banner, the resident service loader's
+* the boot transcript: the nucleaus banner, the resident driver loader's
   evidence rows for the image's set, and the video diagnostic's early-SIO
   transcript (endpoint discovery, argument-free PRESENT, the display
   reset, the `V41` terminal marker, the malformed refusals and the pinned
@@ -16,7 +16,7 @@ Coverage (all executing the real linked bytes):
   bring-up - the 24-write GRAPHIC 6 register sequence appears exactly
   twice (the boot segment and the reset), both 6-KiB font atlas windows
   are written exactly twice (12,288 bytes per bring-up, the run-time one
-  fed by the service's bulk segment), the full-page clear-screen HMMV
+  fed by the driver's bulk segment), the full-page clear-screen HMMV
   runs once per bring-up with its CE-busy handshake, and the
   malformed-call phase performs no VDP access at all;
 * the marker glyphs `V41` reach the decoded glyph trace through the
@@ -58,7 +58,7 @@ VIDEO_OK = "video selftest: OK"
 # Visible side.  This image selects the production HID/V9958 console, so
 # the nucleus console line and the video diagnostic's marker share the
 # V9958 lane with the monitor.
-PROBE_LINE = "console: service OK"
+PROBE_LINE = "console: driver OK"
 MARKER_GLYPHS = "V41"
 SMOKE_HOST_SYNC = b"\xaa\x55"
 
@@ -148,8 +148,8 @@ class VideoSimBase(ConsoleReplay, unittest.TestCase):
         return self.trace(z)
 
 
-class TestVideoServiceBoot(VideoSimBase):
-    """The image boots the service set, the console probe renders through
+class TestVideoDriverBoot(VideoSimBase):
+    """The image boots the driver set, the console probe renders through
     it, and the diagnostic's transcript is the pass/fail record."""
 
     def test_boot_transcript_and_loader_evidence(self):
@@ -158,7 +158,7 @@ class TestVideoServiceBoot(VideoSimBase):
         self.boot_to_video_ok(z)
         sio = bytes(z.sio_tx).decode("ascii", "replace")
 
-        # Kernel banner before any service exists.
+        # Kernel banner before any driver exists.
         for line in (BANNER, PLATFORM, KERNEL_OK, SERIAL_OK):
             self.assertIn(line, sio)
 
@@ -219,7 +219,7 @@ class TestVideoServiceBoot(VideoSimBase):
         self.assertIn(VIDEO_MARKER, sio)
 
 
-class TestVideoServicePeerEvidence(VideoSimBase):
+class TestVideoDriverPeerEvidence(VideoSimBase):
     """The peer's register/command trace proves what the protocol did."""
 
     def test_reset_reruns_the_full_bringup(self):

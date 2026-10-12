@@ -5,10 +5,10 @@
  * 38 and reports the outcome on the early console:
  *
  *   1. the smoke caller runs in application bank 0 in mode 10 with the
- *      service page selected.  It issues SYS_DIAG_SYSTEM_INFO (a cold-half
+ *      driver page selected.  It issues SYS_DIAG_SYSTEM_INFO (a cold-half
  *      body), checks the deterministic record it must have written into
  *      the caller's window and the exact restore of the selected latch;
- *   2. still with the service page selected, it enables interrupts and the
+ *   2. still with the driver page selected, it enables interrupts and the
  *      CTC0 delivery is injected.  The cold-half handler records the latch
  *      it observed (P = 0, mode 11, the interrupted bank) and the stack it
  *      ran on (the fixed-core ISR stack); the caller then checks that the
@@ -22,10 +22,10 @@
  * Prints `nucleus selftest: OK` only after every check passes.
  */
 
-#include "zephyros/irq.h"
-#include "zephyros/kernel.h"
-#include "zephyros/platform.h"
-#include "zephyros/process.h"
+#include "irq_types.h"
+#include "kernel.h"
+#include "platform.h"
+#include "process.h"
 
 #include "kernel/irq/irq_private.h"
 #include "kernel/memory/banking.h"
@@ -54,8 +54,8 @@ _Static_assert(ZOS_NS_KERNEL_BANK == PROCESS_KERNEL_BANK,
 	       "nucleus selftest kernel bank differs from the process model");
 _Static_assert(ZOS_NS_ROMFS_PAGE == ZOS_ROMFS_FIRST_PAGE,
 	       "nucleus selftest ROMFS page differs from the platform");
-_Static_assert(ZOS_NS_PAGE_SERVICE == 1u && ZOS_UPCALL_PAGE_SERVICE == 1u,
-	       "nucleus selftest service page differs from the upcall shim");
+_Static_assert(ZOS_NS_PAGE_DRIVER == 1u && ZOS_UPCALL_PAGE_DRIVER == 1u,
+	       "nucleus selftest driver page differs from the upcall shim");
 
 /* Common test state owned by tests/target/nucleus/nucleus_entry.asm. */
 extern volatile uint8_t zos_nucleus_result;
@@ -140,17 +140,17 @@ static uint8_t nucleus_selftest_upcall(void)
 	}
 	before = platform_memctl_read();
 	expected = (uint8_t)((before & (ZOS_MODE_MASK | ZOS_BANK_MASK)) |
-			     (ZOS_NS_PAGE_SERVICE << ZOS_ROM_PAGE_SHIFT));
+			     (ZOS_NS_PAGE_DRIVER << ZOS_ROM_PAGE_SHIFT));
 
 	/* Rejected requests must not touch the latch. */
-	req.page = ZOS_NS_PAGE_SERVICE + 1u;
+	req.page = ZOS_NS_PAGE_DRIVER + 1u;
 	req.entry = ZOS_NS_STUB_BASE;
 	req.args = (void *)0;
 	req.result = 0;
 	if (zos_upcall(&req) != ZOS_NS_EINVAL) {
 		return ZOS_NS_FAIL_UPCALL_EINVAL;
 	}
-	req.page = ZOS_NS_PAGE_SERVICE;
+	req.page = ZOS_NS_PAGE_DRIVER;
 	req.entry = 0x5000u; /* the fixed core: outside the window */
 	if (zos_upcall(&req) != ZOS_NS_EINVAL) {
 		return ZOS_NS_FAIL_UPCALL_EINVAL;
@@ -196,7 +196,7 @@ static uint8_t nucleus_selftest_upcall(void)
 }
 
 /* Runs the smoke caller in application bank 0 (syscall and IRQ gates with
- * the service page selected), then the upcall shim from the cold half,
+ * the driver page selected), then the upcall shim from the cold half,
  * including the CTC0 delivery that arrives while bank 6 is mapped. */
 void zos_run_nucleus_selftest(void)
 {
