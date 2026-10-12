@@ -1,4 +1,5 @@
 {
+  "schema": "kos-driver-1",
   "name": "console-serial",
   "objects": [
     "console-serial.rel",
@@ -37,9 +38,6 @@
     }
   ],
   "depends": [
-    {
-      "class": 1,
-      "instance": 0
-    }
+    "SERIAL"
   ]
 }

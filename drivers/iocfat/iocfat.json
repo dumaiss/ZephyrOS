@@ -1,4 +1,5 @@
 {
+  "schema": "kos-driver-1",
   "name": "iocfat",
   "objects": [
     "iocfat.rel",
@@ -28,7 +29,7 @@
   "publishes": [
     {
       "path": "/fs",
-      "type": "fs",
+      "type": "FS",
       "endpoint": {
         "class": 7,
         "instance": 0
@@ -37,9 +38,6 @@
     }
   ],
   "depends": [
-    {
-      "class": 5,
-      "instance": 0
-    }
+    "IOC"
   ]
 }

@@ -55,8 +55,15 @@ SDK_GATE = os.path.join(ROOT, "user", "sdk", "src", "nsgate.asm")
 EXE_MK = os.path.join(ROOT, "user", "sdk", "exe.mk")
 CLIENT = os.path.join(ROOT, "tests", "ns", "ns.c")
 CHILD = os.path.join(ROOT, "tests", "ns", "nschild.c")
-MANIFEST = os.path.join(ROOT, "tests", "ns", "manifest.json")
-DRIVER_MANIFESTS = os.path.join(ROOT, "tests", "ns", "manifests")
+SYSTEM_JSON = os.path.join(ROOT, "systems", "ns.json")
+# The selected drivers' manifests: the production SIO and serial console
+# drivers plus the image's own synthetic publisher.
+DRIVER_MANIFESTS = {
+    "sio": os.path.join(ROOT, "drivers", "sio", "sio.json"),
+    "console-serial": os.path.join(ROOT, "drivers", "console",
+                                   "console-serial.json"),
+    "nsdev": os.path.join(ROOT, "tests", "ns", "manifests", "nsdev.json"),
+}
 NSDEV = os.path.join(ROOT, "tests", "target", "ns", "nsdev.c")
 
 IMAGE_SUBDIR = os.path.join(ROOT, "build-ns-selftest")
@@ -112,8 +119,8 @@ def symbols(map_path):
 class TestNsBuildWiring(unittest.TestCase):
     def test_makefile_has_the_acceptance_image(self):
         text = read(MAKEFILE)
-        for token in ("ifeq ($(KOS_NS_SELFTEST),1)",
-                      "PK_SUFFIX := -ns-selftest",
+        for token in ("SYSTEM=ns",
+                      "SYSTEM_SUFFIX.ns := -ns-selftest",
                       "test_ns_selftest*.py"):
             self.assertIn(token, text, token)
         self.assertIn("ns-selftest:", text)
@@ -121,20 +128,26 @@ class TestNsBuildWiring(unittest.TestCase):
 
     def test_makefile_selects_the_image_configuration(self):
         text = read(MAKEFILE)
-        for token in ("KOS_DRIVERS := sio console-serial nsdev",
-                      "DRV_MANIFEST_DIR := tests/ns/manifests",
-                      "KOS_BOOT_PROGRAM := /system/ns.exe",
-                      "$(BUILD)/vfs_router.rel $(BUILD)/vfs_dev.rel",
+        # Package 49a: the image's drivers, boot program and flags are the
+        # system file's, and the Makefile carries the one row that wires
+        # this image.
+        self.assertIn("SYSTEM_COLD_EXTRA.ns := vfs_router,vfs_system,"
+                      "object,vfs_file", text)
+        self.assertIn("SYSTEM=ns", text)
+        for token in ("$(BUILD)/vfs_router.rel $(BUILD)/vfs_dev.rel",
                       "$(BUILD)/vfs_fs.rel $(BUILD)/vfs_system.rel",
                       "$(BUILD)/object.rel"):
             self.assertIn(token, text, token)
+        system = json.loads(read(SYSTEM_JSON))
+        self.assertEqual(system["drivers"],
+                         ["sio", "console-serial", "tests/ns/manifests/nsdev"])
+        self.assertEqual(system["boot"], "/system/ns.exe")
+        self.assertIn("-Itests/target/include", system["cflags"])
         # The image links the namespace objects cold, in the placement
         # production will use (config/residency.json tier `cold`).
-        self.assertIn("COLD_EXTRA_CSV := vfs_router,vfs_system,object,vfs_file",
-                      text)
 
     def test_client_programs_exist_and_are_wired(self):
-        for path in (CLIENT, CHILD, NSDEV, MANIFEST):
+        for path in (CLIENT, CHILD, NSDEV, SYSTEM_JSON):
             self.assertTrue(os.path.exists(path), path)
         text = read(MAKEFILE)
         self.assertIn("$(call exe_program,ns,", text)
@@ -220,8 +233,7 @@ class TestNsContainers(unittest.TestCase):
             "nsdev": ("/dev/input/keyboard", "INPUT", 30, 1),
         }
         for name, (path, kind, cls, obj) in expected.items():
-            data = json.loads(read(os.path.join(DRIVER_MANIFESTS,
-                                                "%s.json" % name)))
+            data = json.loads(read(DRIVER_MANIFESTS[name]))
             self.assertEqual(data["name"], name)
             self.assertEqual(len(data["publishes"]), len(PUBLICATIONS[name]))
             first = data["publishes"][0]
@@ -230,9 +242,12 @@ class TestNsContainers(unittest.TestCase):
             self.assertEqual(first["endpoint"]["class"], cls)
             self.assertEqual(first["object"], obj)
 
-    def test_store_lists_the_six_images(self):
-        data = json.loads(read(MANIFEST))
-        self.assertEqual([entry["name"] for entry in data["files"]], STORE)
+    def test_the_system_file_lists_the_six_images(self):
+        data = json.loads(read(SYSTEM_JSON))
+        self.assertEqual(data["drivers"],
+                         ["sio", "console-serial",
+                          "tests/ns/manifests/nsdev"])
+        self.assertEqual(data["store"], STORE[4:])
 
     def test_packed_containers_carry_the_table(self):
         """Decode the image's own containers: the flat header, the four

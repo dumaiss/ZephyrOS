@@ -23,8 +23,9 @@ Region contract (see docs/architecture.md sections 36.2/36.5, docs/boot.md):
     E000h-FEFFh   permanent common code/data (physical bank 0)
     FF00h-FFFFh   common boot/runtime stack (must stay empty in the image)
 
-Pages 2-7 carry the logical ROMFS stream (build/recovery.romfs, produced
-from recovery/manifest.json by tools/romfspack.py): logical byte L is
+Pages 2-7 carry the logical ROMFS stream (build/recovery.romfs, packed
+by tools/romfspack.py from the store manifest tools/systemgen.py writes
+for the image's system file): logical byte L is
 placed at offset L % C000h of page (KOS_ROMFS_FIRST_PAGE + L / C000h);
 the C000h-FFFFh half of every recovery page and every unused byte are
 FFh, except the fixed ROM-access stub mirror at KOS_ROM_ACCESS_BASE

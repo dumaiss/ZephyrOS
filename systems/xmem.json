@@ -1,0 +1,15 @@
+{
+  "schema": "kos-system-1",
+  "name": "xmem",
+  "drivers": [
+    "sio",
+    "console-serial"
+  ],
+  "boot": "/system/xmem_selftest.exe",
+  "store": [
+    "xmem_selftest.exe",
+    "xmem_child.exe",
+    "xmem_far.exe"
+  ],
+  "cflags": []
+}

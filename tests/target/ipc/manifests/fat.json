@@ -1,8 +1,9 @@
 {
+  "schema": "kos-driver-1",
   "name": "fat",
   "objects": [
-    "fat.rel",
-    "fat_boot.rel",
+    "ipc_fat.rel",
+    "ipc_fat_boot.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "ipc_fat_init",
@@ -51,9 +52,6 @@
     }
   ],
   "depends": [
-    {
-      "class": 20,
-      "instance": 0
-    }
+    "#20"
   ]
 }

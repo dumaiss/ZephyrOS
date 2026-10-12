@@ -59,7 +59,7 @@ void kos_target_test_late(void);
 /* Failure-only hardware bring-up aid (never runs on a healthy image):
  * report the raw init status, the live latch value, and the first eight
  * bytes of recovery page 2 offset 0 staged by the ROM-access primitive.
- * A genuinely corrupt image shows the real "ZRFS" magic here; a wrong
+ * A genuinely corrupt image shows the real "KRFS" magic here; a wrong
  * mapping or page selection shows different bytes instead of costing a
  * flash cycle.  The success transcript never sees these lines. */
 static void romfs_diagnose(int result)
@@ -203,18 +203,18 @@ static void kernel_exercise_banking(void)
  * The launcher starts the configured boot program - the ROMFS
  * `monitor.exe` by default - through its `/system` VFS path via the
  * unchanged `process_exec()` path, and re-execs it after every normal
- * exit.  `KOS_BOOT_PROGRAM` (config/system.mk) selects the program: M10's
- * shell is one build setting plus its EXE in the recovery manifest, with
- * no kernel edit.
+ * exit.  `KOS_BOOT_PROGRAM` (the selected system file, systems/<name>.json)
+ * selects the program: M10's shell is one build setting plus its EXE in
+ * the system's store, with no kernel edit.
  *
  * The child's exit status and the recovered process/bank counts are
  * printed after each cycle (normal console when bound, early console
  * otherwise); a launch failure names the configured path on the early
  * console and takes the controlled halt path. */
 
-/* Configured boot program: tools/bootprogram.py validates it and the
- * build writes it into boot_program.h (the SDCC 4.5.0 driver cannot take
- * the ".exe" path through -D). */
+/* Configured boot program: tools/systemgen.py validates it against the
+ * store it wrote and the build writes it into boot_program.h (the SDCC
+ * 4.5.0 driver cannot take the ".exe" path through -D). */
 static const char kernel_boot_program[] = KOS_BOOT_PROGRAM;
 
 static char *kernel_boot_put_hex16(char *out, uint16_t value)

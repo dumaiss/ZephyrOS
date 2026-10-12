@@ -1,8 +1,9 @@
 {
+  "schema": "kos-driver-1",
   "name": "echo",
   "objects": [
-    "echo.rel",
-    "echo_boot.rel",
+    "ipc_echo.rel",
+    "ipc_echo_boot.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "ipc_echo_init",
@@ -51,9 +52,6 @@
     }
   ],
   "depends": [
-    {
-      "class": 16,
-      "instance": 0
-    }
+    "#16"
   ]
 }

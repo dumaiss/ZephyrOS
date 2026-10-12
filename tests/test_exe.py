@@ -46,6 +46,7 @@ import exepack  # noqa: E402
 import gen_exe_fixtures as gen_fixtures  # noqa: E402
 import mapcheck  # noqa: E402
 import romfspack  # noqa: E402
+import systemgen  # noqa: E402
 from maptools import evaluate, make_map, parse_c_header  # noqa: E402
 
 EXE_H = os.path.join(ROOT, "formats", "include", "exe.h")
@@ -53,7 +54,7 @@ EXETEST_JSON = os.path.join(ROOT, "build", "user", "exetest",
                              "exetest.json")
 SUBSYS_EXETEST_JSON = os.path.join(ROOT, "build-subsys-selftest", "user",
                                     "exetest", "exetest.json")
-SUBSYS_MANIFEST = os.path.join(ROOT, "tests", "subsys", "manifest.json")
+SUBSYS_SYSTEM = os.path.join(ROOT, "systems", "subsystem.json")
 EXEPACK = os.path.join(ROOT, "tools", "exepack.py")
 
 
@@ -125,27 +126,29 @@ class TestFixtureBoundaries(unittest.TestCase):
             exepack.validate_image(gen_fixtures.old_magic_container())
         self.assertEqual(caught.exception.code, "EXE_EXEC_ERR_MAGIC")
 
-    def test_fixture_set_matches_acceptance_manifest(self):
-        manifest = json.loads(open(SUBSYS_MANIFEST).read())
-        entries = {entry["name"]: entry for entry in manifest["files"]}
+    def test_fixture_set_matches_the_system_file(self):
+        system = json.loads(open(SUBSYS_SYSTEM).read())
+        store = system["store"]
         for fixture in gen_fixtures.build_fixtures():
-            self.assertIn(fixture["name"], entries,
-                          "%s missing from tests/subsys/manifest.json"
+            self.assertIn(fixture["name"], store,
+                          "%s missing from systems/subsystem.json"
                           % fixture["name"])
-        # Media types: the malformed/return EXE files are EXE, the
+        # Media types follow from the names (tools/systemgen.py's
+        # store_type): the malformed/return EXE files are EXE, the
         # wrong-type control is packed as DATA.
-        self.assertEqual(entries["exe-wrong-type.dat"]["type"], "DATA")
+        self.assertEqual(systemgen.store_type("exe-wrong-type.dat"), "DATA")
         for name in ("exetest.exe", "exe-return.exe", "exe-bad-magic.exe",
                      "exe-seg-kind.exe", "exe2probe.exe", "exe2seg.exe",
                      "exe2big.exe"):
-            self.assertEqual(entries[name]["type"], "EXE")
-        self.assertIn("sio.mod", entries)
+            self.assertEqual(systemgen.store_type(name), "EXE", name)
+            self.assertIn(name, store, name)
+        self.assertIn("sio", system["drivers"])
         # The corrupt-entry rollback is no longer a separate failure
-        # image: the subsystem manifest carries the truncated fixture
+        # image: the subsystem store carries the truncated fixture
         # next to the valid exetest.exe, so the process selftest rolls
         # the bad load back and still runs the valid copy in one boot.
-        self.assertEqual(entries["exe-truncated.exe"]["type"], "EXE")
-        self.assertIn("exetest.exe", entries)
+        self.assertEqual(systemgen.store_type("exe-truncated.exe"), "EXE")
+        self.assertIn("exe-truncated.exe", store)
 
 
 def ihx_record(addr, data):

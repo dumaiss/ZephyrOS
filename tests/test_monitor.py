@@ -46,8 +46,8 @@ RUNTIME_ASM = os.path.join(ROOT, "user", "sdk", "src", "diaggate.asm")
 CONSOLE_H = os.path.join(ROOT, "user", "sdk", "include", "kos", "console.h")
 MONITOR_JSON = os.path.join(ROOT, "build", "user", "monitor", "monitor.json")
 MONITOR_MAP = os.path.join(ROOT, "build", "user", "monitor", "monitor.map")
-SUBSYS_MANIFEST = os.path.join(ROOT, "tests", "subsys", "manifest.json")
-PROD_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
+SUBSYS_SYSTEM = os.path.join(ROOT, "systems", "subsystem.json")
+PROD_SYSTEM = os.path.join(ROOT, "systems", "production.json")
 
 MONITOR_SOURCES = (
     os.path.join(ROOT, "user", "monitor", "monitor.c"),
@@ -240,15 +240,16 @@ class TestMonitorArtifacts(unittest.TestCase):
                              "%s monitor.exe payload differs from the "
                              "packed artifact" % rel)
 
-    def test_manifests_name_monitor_as_a_exe(self):
-        accepted = json.loads(read_text(SUBSYS_MANIFEST))
-        entries = {entry["name"]: entry for entry in accepted["files"]}
-        self.assertEqual(entries["monitor.exe"]["type"], "EXE")
-        self.assertIn("sio.mod", entries)
-        production = json.loads(read_text(PROD_MANIFEST))
-        pentries = {entry["name"]: entry for entry in production["files"]}
-        self.assertEqual(pentries["monitor.exe"]["type"], "EXE")
-        self.assertIn("sio.mod", pentries)
+    def test_the_system_files_carry_the_monitor(self):
+        # The packed entry's media type follows from the name
+        # (tools/systemgen.py's store_type: `.exe` is EXE), pinned by
+        # tests/test_systemgen.py.
+        accepted = json.loads(read_text(SUBSYS_SYSTEM))
+        self.assertIn("monitor.exe", accepted["store"])
+        self.assertIn("sio", accepted["drivers"])
+        production = json.loads(read_text(PROD_SYSTEM))
+        self.assertIn("monitor.exe", production["store"])
+        self.assertIn("sio", production["drivers"])
 
     def test_image_contains_the_monitor_command_surface(self):
         _p, image = self._read("build-subsys-selftest/"

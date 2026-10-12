@@ -59,7 +59,7 @@ DRIVER_ASM = os.path.join(ROOT, "drivers", "ioc", "ioc_io.asm")
 PROTO_C = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.c")
 BOOT_C = os.path.join(ROOT, "drivers", "ioc", "ioc_boot.c")
 MANIFEST = os.path.join(ROOT, "drivers", "ioc", "ioc.json")
-RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
+PRODUCTION_SYSTEM = os.path.join(ROOT, "systems", "production.json")
 MAIN_C = os.path.join(ROOT, "kernel", "main.c")
 MAKEFILE = os.path.join(ROOT, "Makefile")
 MOD = os.path.join(ROOT, "build", "modules", "ioc.mod")
@@ -232,8 +232,13 @@ class TestIocPlatformConstants(unittest.TestCase):
         self.assertIn("KOS_SMOKE_HOST_SYNC_SECOND", main)
         self.assertLess(main.index("kernel_host_sync_wait();"),
                         main.index('early_console_puts("KonaOS 0.0'))
-        makefile = _read(MAKEFILE)
-        self.assertIn("KOS_SMOKE_HOST_SYNC=1", makefile)
+        # Work package 49a moved the flag out of the Makefile: the four
+        # images the smoke targets drive carry it in their cflags.
+        for name in ("console-integration", "console-serial",
+                     "console-serial-missing", "console-init-fail"):
+            system = _load_json(os.path.join(ROOT, "systems",
+                                             "%s.json" % name))
+            self.assertIn("-DKOS_SMOKE_HOST_SYNC=1", system["cflags"], name)
 
     def test_bulk_arming_classes_and_unknown_status_are_pinned(self):
         # The complete frozen set of request classes that can arm the
@@ -372,15 +377,16 @@ class TestIocDriverArtifact(unittest.TestCase):
                            "dispatch": "ioc_driver_dispatch", "flags": 0}])
         self.assertEqual(manifest["depends"], [])
 
-    def test_romfs_entry_and_boot_order(self):
-        manifest = _load_json(RECOVERY_MANIFEST)
-        names = [entry["name"] for entry in manifest["files"]]
-        self.assertIn("ioc.mod", names)
-        self.assertIn("drivers.man", names)
+    def test_system_file_and_boot_order(self):
+        system = _load_json(PRODUCTION_SYSTEM)
+        self.assertIn("ioc", system["drivers"])
+        self.assertIn("monitor.exe", system["store"])
         # The boot manifest orders the drivers: HID declares the IOC
         # dependency, so IOC must be listed (and therefore placed) first.
+        self.assertLess(system["drivers"].index("ioc"),
+                        system["drivers"].index("hid"))
         order = _read(os.path.join(ROOT, "tools", "modpack.py"))
-        self.assertIn("def cmd_drivers", order)
+        self.assertIn("def cmd_plan", order)
         main = _read(MAIN_C)
         self.assertIn("driver_load_all(KOS_DRIVER_MANIFEST_NAME)", main)
         # Package 42b retired the arena module pass and the IOC class
@@ -394,22 +400,29 @@ class TestIocDriverArtifact(unittest.TestCase):
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
         self.assertIn("ioc-test:", makefile)
-        self.assertIn("$(call DRV_MANIFEST,$(1))", makefile)
-        self.assertIn("$(MODULES)/$(1).mod: $(call DRV_MANIFEST,$(1))",
+        # Package 49a: the driver set and the resolved manifests are the
+        # system file's, and one foreach emits the pack rule per driver.
+        self.assertIn("$(BUILD)/drivers/$(1).json", makefile)
+        self.assertIn("$(MODULES)/$(1).mod: $(BUILD)/drivers/$(1).json",
                       makefile)
         self.assertIn("ioc_driver.rel", makefile)
         # The IOC diagnostic runs in the console-integration image (work
         # package 42d merged the per-device images); the table row links
-        # it and defines the group's guard.
-        self.assertIn("KOS_IOC_SELFTEST", makefile)
-        index = makefile.index("ifeq ($(KOS_CONSOLE_INTEGRATION_SELFTEST),1)")
+        # it and the system file carries the group's flags.
+        index = makefile.index("SYSTEM_TEST_OBJS.console-integration :=")
         self.assertIn("$(BUILD)/ioc_test.rel",
                       makefile[index:index + 400])
         self.assertIn("ioc_test", makefile)
+        system = _load_json(os.path.join(ROOT, "systems",
+                                         "console-integration.json"))
+        for flag in ("-DKOS_IOC_SELFTEST=1", "-DKOS_HID_SELFTEST=1",
+                     "-DKOS_VIDEO_SELFTEST=1"):
+            self.assertIn(flag, system["cflags"])
         # The declared driver set is the manifest's business: an image
         # boots the drivers its driver set lists.
-        self.assertRegex(makefile,
-                         r"KOS_DRIVERS \?= .*\bioc\b")
+        system = _load_json(PRODUCTION_SYSTEM)
+        self.assertIn("ioc", system["drivers"])
+        self.assertNotIn("KOS_DRIVERS ?=", makefile)
         self.assertNotIn("BOOT_MODS", makefile)
 
     def test_production_map_has_no_linked_ioc_symbols(self):

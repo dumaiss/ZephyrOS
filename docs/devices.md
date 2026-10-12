@@ -385,8 +385,8 @@ produced a CRC-verified matching reply.
   PENDING markers print exactly `0xFE` - and a PENDING run ends with its
   own explicit marker (never the OK marker, and the smoke tool exits
   nonzero without printing its OK result).  A real filesystem/media
-  status is a failure.  The smoke image is built
-  with `KOS_SMOKE_HOST_SYNC=1`: instead of the blind connect delay it
+  status is a failure.  The smoke image's system file carries
+  `-DKOS_SMOKE_HOST_SYNC=1`: instead of the blind connect delay it
   holds the banner until the host sends the two-byte sync sequence on
   SIO0/B (`KOS_SMOKE_HOST_SYNC_FIRST/SECOND`), because this bench's
   reset line also resets the USB bridge, so the capture can only start

@@ -41,8 +41,8 @@ reset
 A launch failure (for example a missing or rejected boot program) is
 reported on the early console as `<configured path>: launch failed 0xNN`
 and takes the controlled halt path.  The boot program is the
-`KOS_BOOT_PROGRAM` build setting (`config/system.mk`); the default is
-`/system/monitor.exe`, and M10 points it at the shell.
+`KOS_BOOT_PROGRAM` build setting (the image's system file); the default
+is `/system/monitor.exe`, and M10 points it at the shell.
 
 Because every cycle is an ordinary exec/exit, the launcher's repeated
 exit line is a live proof that no process slot or bank leaked: after a

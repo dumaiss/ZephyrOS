@@ -1,0 +1,23 @@
+{
+  "schema": "kos-system-1",
+  "name": "console-integration",
+  "drivers": [
+    "sio",
+    "ioc",
+    "hid",
+    "v9958",
+    "console-v9958-hid"
+  ],
+  "boot": "/system/escc.exe",
+  "store": [
+    "monitor.exe",
+    "escc.exe"
+  ],
+  "cflags": [
+    "-DKOS_CONSOLE_INTEGRATION_SELFTEST=1",
+    "-DKOS_IOC_SELFTEST=1",
+    "-DKOS_HID_SELFTEST=1",
+    "-DKOS_VIDEO_SELFTEST=1",
+    "-DKOS_SMOKE_HOST_SYNC=1"
+  ]
+}

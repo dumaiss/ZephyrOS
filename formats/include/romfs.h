@@ -2,11 +2,13 @@
  *
  * ROMFS v1 is the tiny, allocation-free boot/recovery store placed in the
  * platform's recovery ROM pages (platform/zephyr80/private/memory.h).  The image
- * is built by tools/romfspack.py from recovery/manifest.json; the kernel
- * reader here only looks up and reads complete, validated files.
+ * is built by tools/romfspack.py from the store manifest
+ * tools/systemgen.py generates for the image's system file
+ * (systems/<name>.json); the kernel reader here only looks up and reads
+ * complete, validated files.
  *
  * On-disk format (little-endian, see docs/romfs-format.md):
- *   16-byte header   magic[4]="ZRFS", version:u8=1, entry_size:u8=36,
+ *   16-byte header   magic[4]="KRFS", version:u8=1, entry_size:u8=36,
  *                    file_count:u16, directory_size:u16, reserved:u16=0,
  *                    image_size:u32
  *   36-byte entries  name[24] (NUL-terminated, zero-padded),
@@ -31,7 +33,7 @@
 #include "kos/errno.h"
 
 /* ROMFS v1 format constants. */
-#define ROMFS_MAGIC_0 'Z'
+#define ROMFS_MAGIC_0 'K'
 #define ROMFS_MAGIC_1 'R'
 #define ROMFS_MAGIC_2 'F'
 #define ROMFS_MAGIC_3 'S'

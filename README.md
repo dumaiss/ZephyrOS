@@ -375,11 +375,14 @@ KonaOS/
 │                          monitor/ (native monitor.exe sources + its
 │                          hex/dump/status helpers),
 │                          helloworld/ (bootable SDK demo)
-├── recovery/manifest.json production ROMFS contents (the five driver
-│                          images, drivers.man and monitor.exe)
-├── tools/                 pack_image.py, mapcheck.py, modpack.py,
-│                          romfspack.py, exepack.py, fontpack.py,
-│                          serial_smoke.py
+├── systems/               one build description per image: drivers in
+│                          load order, boot program, store files, cflags
+│                          (tools/systemgen.py turns it into the store
+│                          manifest, drivers.man, system.mk and the
+│                          resolved driver manifests)
+├── tools/                 pack_image.py, mapcheck.py, systemgen.py,
+│                          modpack.py, romfspack.py, exepack.py,
+│                          fontpack.py, serial_smoke.py
 ├── tests/                 host-side image/layout/ABI tests + Z80 replays;
 │                          hid/, video/, console/, ipc/, ns/, fs/, subsys/
 │                          (manifests and generators); target/ (acceptance

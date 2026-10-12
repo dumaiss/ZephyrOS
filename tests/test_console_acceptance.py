@@ -224,7 +224,9 @@ class TestProductionImage(ConsoleReplayBase):
     def test_store_payload_identity(self):
         store = os.path.join(ROOT, PRODUCTION_DIR, "recovery.romfs")
         entries = self.load_store(store)
-        manifest = os.path.join(ROOT, "recovery", "manifest.json")
+        # The packed payloads are exactly the store manifest
+        # tools/systemgen.py generated from systems/production.json.
+        manifest = os.path.join(ROOT, PRODUCTION_DIR, "store.json")
         self.assertEqual(sorted(entries), sorted(self.manifest_names(
             manifest)))
         monitor = entries["monitor.exe"]["payload"]
@@ -261,10 +263,12 @@ class TestProductionImage(ConsoleReplayBase):
 
     def test_console_manifests_select_the_build(self):
         """The two CONSOLE manifests differ only in what the build
-        selects (work package 42e), and both require it."""
+        selects (work package 42e), both require it, and the dependency
+        is named symbolically: tools/systemgen.py resolves it against the
+        selected set (tests/test_systemgen.py)."""
         expected = {
-            "console-v9958-hid": [(4, 0), (2, 0)],   # HID, VIDEO
-            "console-serial": [(1, 0)],              # SERIAL
+            "console-v9958-hid": ["INPUT", "VIDEO"],
+            "console-serial": ["SERIAL"],
         }
         for name, deps in expected.items():
             path = os.path.join(ROOT, "drivers", "console",
@@ -272,10 +276,9 @@ class TestProductionImage(ConsoleReplayBase):
             with open(path) as handle:
                 document = json.load(handle)
             self.assertEqual(document["name"], name)
-            self.assertEqual([(dep["class"], dep["instance"])
-                              for dep in document["depends"]], deps, name)
+            self.assertEqual(document["depends"], deps, name)
             for dep in document["depends"]:
-                self.assertNotIn("optional", dep, name)
+                self.assertFalse(dep.endswith("?"), name)
 
     @staticmethod
     def manifest_names(path):
@@ -309,7 +312,7 @@ class TestIntegrationImage(ConsoleReplayBase):
 
     def driver_plan(self):
         """The nucleus ledger the packer's set report carries for this
-        image (tools/modpack.py drivers --report drivers.plan.json)."""
+        image (tools/modpack.py plan drivers.plan.json)."""
         path = os.path.join(ROOT, INTEGRATION_DIR, "modules",
                             "drivers.plan.json")
         with open(path, "r") as handle:

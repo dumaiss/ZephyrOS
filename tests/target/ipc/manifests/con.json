@@ -1,9 +1,10 @@
 {
+  "schema": "kos-driver-1",
   "name": "con",
   "objects": [
-    "con.rel",
-    "con_slow.rel",
-    "con_boot.rel",
+    "ipc_con.rel",
+    "ipc_con_slow.rel",
+    "ipc_con_boot.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "ipc_con_init",

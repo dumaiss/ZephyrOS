@@ -73,7 +73,7 @@ payloads                       (manifest order, no alignment gaps)
 
 | Offset | Size | Field | Value |
 | ---: | ---: | --- | --- |
-| `00h` | 4 | `magic[4]` | `"ZRFS"` |
+| `00h` | 4 | `magic[4]` | `"KRFS"` |
 | `04h` | 1 | `version` | `1` |
 | `05h` | 1 | `entry_size` | `36` |
 | `06h` | 2 | `file_count` | number of entries |
@@ -129,15 +129,15 @@ The manifest is JSON:
 ```
 
 Input paths resolve against `--objdir` (default: the manifest directory).
-The production manifest is `recovery/manifest.json`, which carries the
-boot SIO module (`sio.mod`) and the native monitor (`monitor.exe`) in
-every image; the M7 acceptance image uses `tests/m7/manifest.json` with
-the same two entries, and the M6 acceptance images use
-`tests/m6/manifest.json` / `manifest-failure.json` (exetest plus the
-malformed-EXE fixture matrix).  The M5 acceptance image uses
-`tests/m5/manifest.json`, which adds the deterministic cross-page
-pattern asset `m5-crosspage.bin` (byte `i` is
-`(i & 0xFF) ^ ((i >> 8) & 0xFF)`; it is 0xC040 bytes and spans the
+The manifest is generated: `tools/systemgen.py` writes `build/store.json`
+from the image's `systems/<name>.json`, in one canonical order - the
+selected driver images in load order, `drivers.man`, then the store's own
+files.  The production store therefore carries the five driver images,
+`drivers.man`, `monitor.exe` and the exerciser's programs, and an
+acceptance image's store adds its fixtures.  The retired M5-M7 acceptance
+manifests are historical; their cross-page
+pattern asset lives on as the subsystem store's `crosspage.bin` (byte `i`
+is `(i & 0xFF) ^ ((i >> 8) & 0xFF)`; it is 0xC040 bytes and spans the
 48-KiB window boundary).
 
 `pack` produces deterministic output and prints a human-readable map with

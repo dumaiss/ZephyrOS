@@ -90,8 +90,8 @@ DOMAIN_BASE = 0x6000
 DOMAIN_END = 0xE000
 
 # The packed driver images, their per-image reports and the plan the
-# loader's own report is pinned to (Makefile: IPC_MODDIR).
-MODULE_DIR = os.path.join(ROOT, IMAGE_SUBDIR, "modules", "ipc-modules")
+# loader's own report is pinned to (the image's own $(MODULES)).
+MODULE_DIR = os.path.join(ROOT, IMAGE_SUBDIR, "modules")
 DRIVER_DIR = os.path.join(ROOT, IMAGE_SUBDIR, "modules")
 DRIVER_ORDER = ["ioc", "fat", "vfs", "echo", "con", "irqx"]
 IPC_BOOT_MAGIC = 0xA7
@@ -311,7 +311,7 @@ class IpcSim(Replay, unittest.TestCase):
         """The bank-6 address of a driver image symbol: the packer's
         segment-relative offset in the segment the report names."""
         entry = [item for item in self.plan()["drivers"]
-                 if item["name"] == "ipc-%s.mod" % name][0]
+                 if item["name"] == "%s.mod" % name][0]
         report = self.report(name)
         role = report["symbol_segments"][symbol]
         base = {"hot": entry["hot_base"], "boot": entry["boot_base"],
@@ -468,7 +468,7 @@ class TestIpcDriverImages(IpcSim):
         """`con`'s slow buffer sits in the hot tier, not in 8000h-BFFFh."""
         plan = self.plan()
         entry = [item for item in plan["drivers"]
-                 if item["name"] == "ipc-con.mod"][0]
+                 if item["name"] == "con.mod"][0]
         address = entry["hot_base"] + \
             self.report("con")["symbols"]["_ipc_con_slow_buffer"]
         self.assertFalse(0x8000 <= address < 0xC000,

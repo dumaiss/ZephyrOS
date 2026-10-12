@@ -2506,11 +2506,12 @@ M5 does not expose this API as the future native filesystem ABI. M9 supersedes t
 Conceptually:
 
 ```text
-recovery/manifest.json
+systems/<name>.json ── tools/systemgen.py ── build/store.json
     │
-    ├── sio.mod
-    ├── monitor.exe        (added by M7)
-    └── recovery assets
+    ├── sio.mod            (the selected driver images, load order)
+    ├── drivers.man
+    ├── monitor.exe
+    └── the image's store files
     │
     ▼
 romfspack.py
@@ -4412,11 +4413,11 @@ Startup block (package 28b):
   kernel/process/exec.c), through the existing checked bank-copy gate
   into the VFS staging view.  No tail is ever stored: there is no
   persistent kernel argument buffer, in bank 7 or common memory.
-- The boot program is a build setting, `KOS_BOOT_PROGRAM`
-  (`config/system.mk`), validated against the recovery manifest and
-  compiled into the kernel as a constant string.  Switching to the M10
-  shell is that one line plus the EXE in the manifest, with no kernel
-  edit.
+- The boot program is a build setting, `KOS_BOOT_PROGRAM` (the `boot`
+  field of the image's system file), validated against the store manifest
+  the build generates and compiled into the kernel as a constant string.
+  Switching to the M10 shell is that one line plus the EXE in the store,
+  with no kernel edit.
 
 Acceptance: the nested exec in the M10 outcome image
 (`make fs-selftest`, replayed by `tests/test_fs_selftest_sim.py`), which
@@ -4651,7 +4652,8 @@ M9 facts the target relies on, all unchanged by M10-M12:
 ```text
 startup block v1 at 0080h, and the raw-tail argument contract of SYS_EXEC
   (package 28/28b; user-space splitting only, kernel never parses)
-KOS_BOOT_PROGRAM (config/system.mk) as the single boot-program selector
+KOS_BOOT_PROGRAM (the system file's `boot`) as the single boot-program
+  selector
 the native user SDK (user/sdk, docs/sdk.md): a program includes only "kos.h"
   and links crt0 plus libkos; it never includes a kernel header
 the common-memory ceiling KOS_COMMON_CEILING (3072 bytes)
@@ -6251,8 +6253,9 @@ An abnormal shell failure is reported and may enter the monitor rather than endl
 The exact exit-status policy is pinned during implementation and tested.
 
 **Reconciliation with the M9 launcher (stated M12 change).** M9's
-`KOS_BOOT_PROGRAM` (`config/system.mk`, compiled into the kernel as a
-constant string) already selects the single program the boot launcher starts
+`KOS_BOOT_PROGRAM` (the image's system file, compiled into the kernel as
+a constant string) already selects the single program the boot launcher
+starts
 and, on a normal exit, re-executes; switching native KonaOS to the shell is
 that one setting plus a `shell.exe` entry in the selected recovery manifest.
 What is **new in M12, not M9**, is the failure policy above: the M9 launcher

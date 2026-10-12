@@ -1,4 +1,5 @@
 {
+  "schema": "kos-driver-1",
   "name": "sio",
   "objects": [
     "sio.rel",

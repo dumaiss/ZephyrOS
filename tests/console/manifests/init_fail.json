@@ -1,4 +1,5 @@
 {
+  "schema": "kos-driver-1",
   "name": "init_fail",
   "objects": [
     "init_fail.rel"

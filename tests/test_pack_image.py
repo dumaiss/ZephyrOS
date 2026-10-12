@@ -207,7 +207,7 @@ class TestRecoveryPlacement(unittest.TestCase):
 
     def make_stream(self, size, fill=0x5A):
         header = bytearray(16)
-        header[0:4] = b"ZRFS"
+        header[0:4] = b"KRFS"
         header[4] = 1
         header[5] = 36
         header[12:16] = size.to_bytes(4, "little")
@@ -248,7 +248,7 @@ class TestRecoveryPlacement(unittest.TestCase):
         with self.assertRaisesRegex(pack_image.LayoutError, "empty"):
             pack_image.pack(case.ihx, case.map_text, None, romfs=b"")
         with self.assertRaisesRegex(pack_image.LayoutError, "shorter"):
-            pack_image.pack(case.ihx, case.map_text, None, romfs=b"ZRFS")
+            pack_image.pack(case.ihx, case.map_text, None, romfs=b"KRFS")
 
     def test_capacity_excess_rejected(self):
         case = MinimalImageCase()
@@ -266,7 +266,7 @@ class TestRecoveryPlacement(unittest.TestCase):
                 fh.write(self.make_stream(0x100))
             image = pack_image.pack(case.ihx, case.map_text, tmp)
             self.assertEqual(len(image), 0x80000)
-            self.assertEqual(image[2 * 0x10000], ord("Z"))
+            self.assertEqual(image[2 * 0x10000], ord("K"))
 
 
 class TestOutOfRegionContent(unittest.TestCase):
@@ -350,7 +350,7 @@ class TestRealArtifacts(unittest.TestCase):
         self.assertTrue(any(b != 0xFF for b in page0[0xE000:0xFF00]))
         # Recovery pages carry the ROMFS header at their window base and
         # only the ROM-access stub mirror in the C000h-FFFFh half.
-        self.assertEqual(image[2 * 0x10000:2 * 0x10000 + 4], b"ZRFS")
+        self.assertEqual(image[2 * 0x10000:2 * 0x10000 + 4], b"KRFS")
         stub = page0[0xEF00:0xEF08]
         self.assertNotEqual(stub, b"\xFF" * 8)
         expected_tail = bytearray(b"\xFF" * 0x4000)

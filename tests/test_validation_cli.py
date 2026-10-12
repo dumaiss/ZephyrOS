@@ -31,7 +31,7 @@ def minimal_romfs(size=16):
     """A structurally plausible recovery stream (the packer only checks
     the size; romfspack owns content validation)."""
     header = bytearray(16)
-    header[0:4] = b"ZRFS"
+    header[0:4] = b"KRFS"
     header[4] = 1
     header[5] = 36
     header[12:16] = size.to_bytes(4, "little")

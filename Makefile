@@ -17,7 +17,8 @@
 # recovery store, and residency has exactly two tiers (config/
 # residency.json).
 #
-#   make          build the ROM images under build/
+#   make          build the production ROM images under build/
+#   make SYSTEM=<name>  build that image in place (systems/<name>.json)
 #   make test     run host-side image/layout tests and integrity checks
 #   make check    reproducible rebuild + full host validation stack
 #   make romfs-test           ROMFS image + host ROMFS tool tests
@@ -52,11 +53,40 @@ MAKEFLAGS += -j$(KOS_JOBS)
 BUILD     := build
 .DEFAULT_GOAL := all
 
-# System build configuration (work/28b-m9-shell-readiness/WORK.md):
-# KOS_BOOT_PROGRAM selects the program the kernel launcher starts.  The
-# value is validated against the image's recovery manifest below, before
-# kernel/main.c is compiled.
-include config/system.mk
+# --- system selection (work package 49a) -------------------------------------
+# One systems/<name>.json describes the image this makefile builds: its
+# drivers in load order, the program the launcher starts, the store's files
+# and the image's C flags.  tools/systemgen.py turns that description into
+# the generated inputs under $(BUILD) - system.mk, the ROMFS store manifest,
+# the boot manifest drivers.man and one resolved driver manifest per
+# selected driver - and validates the schemas, the drivers, the symbolic
+# dependencies and the boot setting.
+#
+# `include` builds the generated file first and restarts make, so every rule
+# below sees KOS_DRIVERS, KOS_BOOT_PROGRAM and the object lists it carries.
+# Every image is a system file, so `make SYSTEM=fs` builds the filesystem
+# image in place and the image targets at the bottom are one line each.
+SYSTEM       ?= production
+SYSTEM_JSON  := systems/$(SYSTEM).json
+SYSTEM_MK    := $(BUILD)/system.mk
+SYSTEM_STAMP := $(BUILD)/system.stamp
+
+# Every driver manifest is an input: the resolved copies, the boot manifest
+# and the store manifest all derive from them.
+DRIVER_MANIFESTS := $(wildcard drivers/*/*.json) \
+	$(wildcard tests/*/manifests/*.json) \
+	$(wildcard tests/target/*/manifests/*.json)
+
+$(SYSTEM_STAMP): $(SYSTEM_JSON) tools/systemgen.py $(DRIVER_MANIFESTS) \
+		| $(BUILD)
+	$(PYTHON) tools/systemgen.py $(SYSTEM_JSON) $(BUILD) $(SYSTEM_GEN_FLAGS)
+	touch $@
+
+# The generated file the build includes: the empty recipe makes make restart
+# after the generator ran, which is what brings KOS_DRIVERS into this make.
+$(SYSTEM_MK): $(SYSTEM_STAMP) ;
+
+include $(SYSTEM_MK)
 
 # Zephyr-80 platform build configuration (include paths and the
 # declarative constant files consumed by the build and layout tools).
@@ -69,6 +99,8 @@ ASFLAGS   := $(KOS_PLATFORM_ASFLAGS) -Itests/target/include
 # does not get this path, so a MOD cannot reach a kernel-private header.
 CFLAGS    := -mz80 -c --nostdinc --Werror $(KOS_SDCC_OPT) \
              -I . $(KOS_PLATFORM_CFLAGS)
+# The image's own flags, straight from its system file's `cflags` field.
+CFLAGS    += $(KOS_SYSTEM_CFLAGS)
 
 ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/page_zero.rel $(BUILD)/syscall_entry.rel \
@@ -107,244 +139,95 @@ END_OBJ   := $(BUILD)/irq_code_end.rel
 # OBJS is assigned after the acceptance/catalog selection below, once
 # every conditional object append has been decided.
 
-# --- resident-driver IPC selection -------------------------------------
-# The M10 resident-driver nucleus is the only memory model: revision 13
-# at the 6000h split (the 32 KiB mode-11 window with the 16 KiB fixed core
-# at 2000h-5FFFh).  KOS_IPC_SELFTEST builds the IPC acceptance image that
-# links the fixed-core substrate of work package 39.
-KOS_IPC_SELFTEST    ?= 0
-# The namespace acceptance image (work package 42a, correction 01) links
-# the object/namespace family the production switch-over adopts in 42b.
-KOS_NS_SELFTEST     ?= 0
-# The revision-13 mode-11 window is 6000h-DFFFh (architecture section
-# 36.2); the fixed core is 2000h-5FFFh.  Every image links that way.
+# --- image acceptance wiring -------------------------------------------------
+# The image's composition - its drivers, its boot program, its store and its
+# C flags - is systems/<name>.json, and $(SYSTEM_MK) carries it into the
+# build.  What stays here is the build-side wiring of the acceptance images:
+# the objects they link beyond the kernel, their image-name suffix, the
+# mapcheck cold override and the toolchain flags only they need.  Every
+# entry is keyed on the system name, so no per-image `ifeq` block selects a
+# build any more.
+#
+# The revision-13 mode-11 window is 6000h-DFFFh (architecture section 36.2);
+# the fixed core is 2000h-5FFFh.  Every image links that way.
 KOS_REV13_WINDOW_BASE := 0x6000
 
-# --- console selection (work package 42e) -------------------------------
-# Consoles are selected per build (architecture 36.11, decision 12):
-# `console-v9958-hid` is the production CONSOLE (HID input, VIDEO output);
-# `console-serial` is the variant with the SERIAL driver in both
-# directions.  The two drivers are one shared source compiled into two
-# images; an image set that has no HID+VIDEO pair (the subsystem, IOC,
-# HID, video and IPC images) selects `console-serial` explicitly.
-KOS_CONSOLE ?= console-v9958-hid
-
-# --- target acceptance build selection ---------------------------------
-# Acceptance images link the shared runner (tests/target/support/) plus
-# the per-milestone test code under tests/target/; production images link
-# none of it.  KOS_TARGET_TEST_BUILD is the single production-side guard
+# Acceptance images link the shared runner (tests/target/support/) plus the
+# per-milestone test code under tests/target/; production images link none
+# of it.  KOS_TARGET_TEST_BUILD is the single production-side guard
 # (kernel/main.c holds only the two TEST-ONLY HOOKs).
 TARGET_TEST_OBJS :=
-PK_SUFFIX :=
-# Subsystem acceptance image: the current production boot path (VFS plus
-# the ROMFS recovery store, the SIO and console driver images placed by
-# the driver loader) with the mechanism selftests linked in.  One image
-# carries the syscall, IRQ, ROMFS-reader and process/EXE acceptance
-# surfaces, so no per-milestone acceptance image and no per-milestone
-# build exists (work/00-SUPERVISOR.md retention rule).
-ifeq ($(KOS_SUBSYS_SELFTEST),1)
-CFLAGS    += -DKOS_SUBSYS_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/syscall_test.rel $(BUILD)/syscall_selftest_asm.rel \
+SYSTEM_ACCEPTANCE := subsystem console-integration fs ipc nucleus
+
+# The image-name suffix of each system: the image targets keep their names
+# and build into their own directory, build-<image>/konaos<PK_SUFFIX>.bin.
+SYSTEM_SUFFIX.subsystem := -subsys-selftest
+SYSTEM_SUFFIX.console-integration := -console-integration-selftest
+SYSTEM_SUFFIX.console-serial := -console-serial-selftest
+SYSTEM_SUFFIX.console-serial-missing := -console-serial-fail-selftest
+SYSTEM_SUFFIX.console-init-fail := -driver-init-fail-selftest
+SYSTEM_SUFFIX.fs := -fs-selftest
+SYSTEM_SUFFIX.ipc := -ipc-selftest
+SYSTEM_SUFFIX.nucleus := -nucleus-selftest
+SYSTEM_SUFFIX.ns := -ns-selftest
+SYSTEM_SUFFIX.xmem := -xmem-selftest
+SYSTEM_SUFFIX.helloworld := -helloworld
+# The image-name suffix, after the table above: an immediate assignment
+# cannot see the rows that follow it.
+PK_SUFFIX := $(SYSTEM_SUFFIX.$(SYSTEM))
+
+# The mechanism-selftest images (work packages 20, 38, 42d): the subsystem
+# image carries the syscall gate, the IRQ executive, the ROMFS reader and
+# the process/EXE lifecycle; the console-integration image carries the IOC,
+# HID, V9958 and console diagnostics; the nucleus image carries the
+# revision-13 gate and upcall-shim surface.  One image per surface group, so
+# no per-milestone image and no per-milestone build exists
+# (work/00-SUPERVISOR.md retention rule).
+SYSTEM_TEST_OBJS.subsystem := $(BUILD)/syscall_test.rel \
+                    $(BUILD)/syscall_selftest_asm.rel \
                     $(BUILD)/irq_test.rel $(BUILD)/irq_selftest_asm.rel \
                     $(BUILD)/ctc_test.rel \
                     $(BUILD)/romfs_test.rel \
                     $(BUILD)/process_test.rel
-PK_SUFFIX := -subsys-selftest
-KOS_DRIVERS := sio console-serial
-endif
-
-# console integration acceptance image (package 20, work package 42e):
-# the full production stack (SIO + IOC + HID + V9958 + the selected
-# CONSOLE driver) from ROMFS, the integration target diagnostic reported
-# over the direct early SIO, then the ESC c check program, which resets
-# the V9958 display, prints its line and hands the console to the
-# unchanged M7 `monitor.exe` for the human HID/V9958 session.  This is
-# the image the final physical acceptance gate builds and flashes.
-# Work package 42d merged the IOC, HID, V9958 and console acceptance
-# images into it: the three device diagnostics and the console session
-# run in this one image, and tests/test_console_acceptance.py,
-# test_ioc_sim.py, test_hid_sim.py and test_v9958_sim.py replay it
-# (plus the production image, which no acceptance image may replace).
-ifeq ($(KOS_CONSOLE_INTEGRATION_SELFTEST),1)
-CFLAGS    += -DKOS_CONSOLE_INTEGRATION_SELFTEST=1
-CFLAGS    += -DKOS_IOC_SELFTEST=1 -DKOS_HID_SELFTEST=1 -DKOS_VIDEO_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/console_integration_test.rel \
+SYSTEM_TEST_OBJS.console-integration := $(BUILD)/console_integration_test.rel \
                     $(BUILD)/ioc_test.rel $(BUILD)/hid_test.rel \
                     $(BUILD)/video_test.rel
-PK_SUFFIX := -console-integration-selftest
-KOS_BOOT_PROGRAM := /system/escc.exe
-KOS_DRIVERS := sio ioc hid v9958 $(KOS_CONSOLE)
-endif
-
-# console-serial variant (work package 42e): the production image set with
-# `console-serial` in place of the production `console-v9958-hid`, built in
-# its own directory.  It boots the production-like store and the monitor;
-# the replay proves the monitor works on the serial lane.  The driver
-# loader's evidence rows are linked so the transcript pins the loaded set.
-ifeq ($(KOS_CONSOLE_SERIAL_SELFTEST),1)
-CFLAGS    += -DKOS_DRIVER_TEST_EVIDENCE=1
-PK_SUFFIX := -console-serial-selftest
-KOS_DRIVERS := sio ioc hid v9958 $(KOS_CONSOLE) iocfat
-endif
-
-# Required-console boot-failure variant (work package 42e): the same set and
-# drivers.man as the serial variant, but the ROMFS manifest omits the
-# console image.  The loader's lookup fails, and the boot must stop
-# explicitly on the early console (36.11) instead of falling back.
-ifeq ($(KOS_CONSOLE_SERIAL_FAIL_SELFTEST),1)
-CFLAGS    += -DKOS_DRIVER_TEST_EVIDENCE=1
-PK_SUFFIX := -console-serial-fail-selftest
-KOS_DRIVERS := sio ioc hid v9958 $(KOS_CONSOLE) iocfat
-endif
-
-# Required-driver init-failure variant (work package 45): the boot set is
-# the one test-only driver image `init_fail` (tests/target/console/,
-# tests/console/manifests/), whose init returns a non-zero status.  The
-# loader refuses the image and the boot must stop explicitly on the early
-# console (36.11) - the init-status half of the required-driver failure
-# row, which the missing-image store of 42e does not exercise.
-ifeq ($(KOS_DRIVER_INIT_FAIL_SELFTEST),1)
-PK_SUFFIX := -driver-init-fail-selftest
-KOS_DRIVERS := init_fail
-DRV_MANIFEST_DIR := tests/console/manifests
-endif
-
-# Filesystem outcome image (work package 42b, correction 01).  The
-# production boot set (SIO and IOC, so the FS2 transport is the real one)
-# plus `iocfat.mod` as a bank-6 driver publishing `/fs`, the monitor and
-# two SDK programs: the checks run in `/system/fs_selftest.exe`, which
-# SYS_EXECs `/system/fs_child.exe` for the nested-exec and handle-release
-# outcomes.  The simulator's FS2 peer serves the MCU side, so the same
-# image runs on hardware against a real SD card.
-ifeq ($(KOS_FS_SELFTEST),1)
-PK_SUFFIX := -fs-selftest
-KOS_BOOT_PROGRAM := /system/fs_selftest.exe
-KOS_DRIVERS := sio ioc console-serial iocfat
-endif
-
-# Extended-memory outcome image (work package 43): the production boot
-# path with the SIO/console driver set and the SDK outcome program
-# booting as /system/xmem_selftest.exe, which SYS_EXECs
-# /system/xmem_child.exe from a path in its own far aperture.  The
-# aperture is hardware-authoritative: the owner runs this image on the
-# board (architecture 37, far code and data rows without EXE v2).
-ifeq ($(KOS_XMEM_SELFTEST),1)
-PK_SUFFIX := -xmem-selftest
-KOS_BOOT_PROGRAM := /system/xmem_selftest.exe
-KOS_DRIVERS := sio console-serial
-endif
-
-# Nucleus-layout acceptance image (work package 38): the production boot
-# path with the revision-13 gate and upcall-shim acceptance surface linked
-# in.  The smoke caller runs in application bank 0 with the driver page
-# selected, and a cold-half caller exercises the fixed upcall shim against
-# a stub installed in bank 6.  SIO-only boot set, like the subsystem
-# image: the test objects own the cold half's slack.
-ifeq ($(KOS_NUCLEUS_SELFTEST),1)
-CFLAGS    += -DKOS_NUCLEUS_SELFTEST=1
-TARGET_TEST_OBJS += $(BUILD)/nucleus_test.rel \
+SYSTEM_TEST_OBJS.nucleus := $(BUILD)/nucleus_test.rel \
                     $(BUILD)/nucleus_selftest_asm.rel \
                     $(BUILD)/ctc_test.rel
-PK_SUFFIX := -nucleus-selftest
-KOS_DRIVERS := sio console-serial
-endif
 
-# IPC substrate acceptance image (work package 39, M10 stage 3; driver
-# images from package 40).  The production boot path with the fixed-core
-# IPC substrate and the resident driver loader linked in, the six
-# synthetic drivers packed as real driver images in the recovery store
-# and loaded from the boot manifest, and the SDK client program booting as
-# /system/ipc.exe.  The substrate and the boot gate are fixed-required
-# (config/residency.json), the loader is cold code, and the stage-4/5
-# `moves` objects fill what the loader leaves: the cold half is nearly
-# full, so vfs_path and vfs_workspace overflow into the fixed core's
-# leftover space, which is the moves tier's documented fallback
-# (see config/residency.json).
-IPC_DIR   := tests/target/ipc
-# The IPC image uses production's placement: its cold override is empty
-# (the ipc selection block sets it, and the target passes it to mapcheck),
-# and the two-tier classification of config/residency.json decides every
-# object.
-IPC_COLD_EXTRA_CSV :=
+# The IPC acceptance image (work packages 39-40): the gate object needs the
+# generated build include, and the substrate and the loader are
+# production-linked objects now (OBJS carries them), so this image adds
+# nothing to the fixed/cold kernel sets - listing them again duplicated
+# every symbol in the probe link.
+SYSTEM_ASFLAGS.ipc := -I$(BUILD)
+SYSTEM_FIXED_OBJS.ipc := $(IPC_SUBSTRATE_OBJS)
 
-ifeq ($(KOS_IPC_SELFTEST),1)
-CFLAGS    += -DKOS_IPC_SELFTEST=1 -Itests/target/include
-ASFLAGS   += -I$(BUILD)
-PK_SUFFIX := -ipc-selftest
-# The substrate and the loader are production-linked objects now (OBJS
-# carries them), so this image adds nothing to the fixed/cold kernel sets:
-# listing them again duplicated every symbol in the probe link.
-IPC_FIXED_OBJS := $(IPC_SUBSTRATE_OBJS)
-# No image-specific placement override: use the production cold set.
-COLD_EXTRA_CSV :=
-KOS_DRIVERS := sio console-serial
-endif
+# The namespace image links the namespace family cold, where production
+# links it (the family compiles cold, and so do the `moves` objects that
+# still hold the handle pool and the path/CWD machinery it calls: this
+# image's cold half has the room, and it is the moves tier's documented
+# fallback, architecture 36.20).
+SYSTEM_COLD_EXTRA.ns := vfs_router,vfs_system,object,vfs_file
 
-# Namespace and handle acceptance image (work package 42a, correction 01).
-# The object/namespace family is production cold code since 42b; this image
-# builds it on top of a small boot set (no filesystem driver) so the
-# namespace surfaces can be replayed: the placement config/residency.json
-# names is production's, and the image's ledgers are production's.
-#   * SIO and the console driver: the DEVICE provider's real publications
-#     and the standard handles need a live `/dev/console`;
-#   * no filesystem driver: the `/fs` path is not exercised here;
-#   * the client program is an ordinary SDK program that checks its own
-#     results and prints them (`tests/target/ns`).
-NS_DIR   := tests/target/ns
-ifeq ($(KOS_NS_SELFTEST),1)
-CFLAGS    += -Itests/target/include
-PK_SUFFIX := -ns-selftest
-# sio and console are the real drivers whose publications the DEVICE
-# table carries (`/dev/serial/0`, `/dev/console`); `nsdev` is the test
-# double that adds a third type and a second grouping container
-# (tests/target/ns/nsdev.c).
-KOS_DRIVERS := sio console-serial nsdev
-DRV_MANIFEST_DIR := tests/ns/manifests
-KOS_BOOT_PROGRAM := /system/ns.exe
-# The object family links where production links it (config/residency.json
-# carries vfs_router, vfs_dev, vfs_fs, vfs_system and object as `cold`);
-# the shared runner and the guard the other acceptance images use come
-# with it.
-KOS_VFS_WS_GUARD := 1
-# The family itself compiles cold (its production tier), and so do the
-# `moves` objects that still hold the handle pool and the path/CWD
-# machinery it calls: this image's cold half has the room, and it is the
-# moves tier's documented fallback (architecture 36.20).
-COLD_EXTRA := vfs_router vfs_system object vfs_file
-COLD_EXTRA_CSV := vfs_router,vfs_system,object,vfs_file
-endif
+# The namespace image sets the guard variable its selection block always
+# set; the acceptance images below compile the guard in as a flag.
+SYSTEM_VFS_WS_GUARD.ns := 1
 
-# SDK helloworld demo image (work/28c-m9-user-sdk): the production boot path
-# in its own build directory, booting the SDK hello demo.  There is no
-# kernel define and no target test object -- the image differs from
-# production only in the boot-program constant and in the recovery
-# manifest, which is the point of the demo.
-ifeq ($(KOS_HELLOWORLD_IMAGE),1)
-PK_SUFFIX := -helloworld
-# The demo's store carries the production console stack and no filesystem
-# driver, so the boot manifest must list exactly that set: inheriting the
-# production default made the loader fail on the `iocfat.mod` its
-# manifest does not pack (work package 42d).
-KOS_DRIVERS := sio ioc hid v9958 $(KOS_CONSOLE)
-endif
+# The required-console failure store (work package 42e): the serial
+# variant's set and boot manifest, with the console image left out of the
+# store.  The name stays in drivers.man, so the loader's lookup fails and
+# the boot must stop explicitly on the early console (36.11) instead of
+# falling back.
+SYSTEM_OMIT.console-serial-missing := --omit-image console-serial
+# The generator's own flags, after the table above.
+SYSTEM_GEN_FLAGS := $(SYSTEM_OMIT.$(SYSTEM))
 
-# Hardware-smoke host sync (kernel/main.c): the IOC smoke image waits
-# for the host's two-byte sync sequence on SIO0/B before the banner,
-# because this bench's reset line also resets the USB bridge.  Only
-# diagnostic images enable it; production and every other acceptance
-# image compile the gate out byte-identically.
-ifeq ($(KOS_SMOKE_HOST_SYNC),1)
-CFLAGS    += -DKOS_SMOKE_HOST_SYNC=1
-endif
+TARGET_TEST_OBJS += $(SYSTEM_TEST_OBJS.$(SYSTEM))
+ASFLAGS += $(SYSTEM_ASFLAGS.$(SYSTEM))
+KOS_VFS_WS_GUARD := $(SYSTEM_VFS_WS_GUARD.$(SYSTEM))
 
-# The resident driver set the nucleus boots (kernel/main.c).  Production
-# loads them from the recovery store's `drivers.man` in the order the
-# manifest lists; an acceptance image that needs the serial-only fallback
-# or leaves out the filesystem driver lists its own set (see the per-image
-# blocks below), which is the M8 `KOS_*_BOOT` gate's replacement.  The
-# filesystem driver is one of them since 42b: IOC-FAT is a bank-6 driver
-# publishing `/fs`.
-KOS_DRIVERS ?= sio ioc hid v9958 $(KOS_CONSOLE) iocfat
 
 OBJS      := $(ASM_OBJS) $(C_OBJS) $(BUILD)/ipc.rel $(IPC_COLD_OBJS) \
              $(BUILD)/vfs_router.rel $(BUILD)/vfs_dev.rel \
@@ -372,8 +255,8 @@ RESIDENCY  := config/residency.json
 # production cold code (the syscall dispatcher and the driver loader run
 # with P = 0); an acceptance image with its own cold set passes it here
 # (the IPC acceptance image does).
-COLD_EXTRA ?=
-COLD_EXTRA_CSV ?= $(COLD_EXTRA)
+COLD_EXTRA := $(SYSTEM_COLD_EXTRA.$(SYSTEM))
+COLD_EXTRA_CSV := $(COLD_EXTRA)
 ifeq ($(COLD_EXTRA_CSV),)
 COLD_STEMS := $(shell $(PYTHON) tools/mapcheck.py residency \
 		--cold-stems $(RESIDENCY))
@@ -389,14 +272,11 @@ endif
 
 
 # Common acceptance wiring: the single guard plus the shared runner.
-ifneq ($(filter 1,$(KOS_SUBSYS_SELFTEST) \
-	$(KOS_CONSOLE_INTEGRATION_SELFTEST) \
-	$(KOS_FS_SELFTEST) $(KOS_NUCLEUS_SELFTEST) \
-	$(KOS_IPC_SELFTEST)),)
+ifneq ($(filter $(SYSTEM),$(SYSTEM_ACCEPTANCE)),)
 CFLAGS    += -DKOS_TARGET_TEST_BUILD=1 -DKOS_VFS_WS_GUARD=1 \
 		-Itests/target/include
 TARGET_TEST_OBJS := $(BUILD)/target_test.rel \
-		$(if $(filter 1,$(KOS_FS_SELFTEST)),,$(BUILD)/driver_client.rel) \
+		$(if $(filter $(SYSTEM),fs),,$(BUILD)/driver_client.rel) \
 		$(TARGET_TEST_OBJS)
 endif
 
@@ -414,7 +294,7 @@ $(C_OBJS) $(COLD_OBJS): $(RESIDENCY)
 # filters.
 COLD_OBJS  := $(addprefix $(BUILD)/,$(addsuffix .rel,$(COLD_STEMS)))
 ifneq ($(TARGET_TEST_OBJS),)
-COLD_OBJS  += $(filter-out $(IPC_FIXED_OBJS) $(TEST_FIXED_OBJS),$(TARGET_TEST_OBJS))
+COLD_OBJS  += $(filter-out $(SYSTEM_FIXED_OBJS.$(SYSTEM)) $(TEST_FIXED_OBJS),$(TARGET_TEST_OBJS))
 endif
 $(COLD_OBJS): CFLAGS += --codeseg WINDOW --dataseg WINDOW_DATA
 $(TEST_FIXED_OBJS): CFLAGS += --dataseg WINDOW_DATA
@@ -744,13 +624,6 @@ DRV_CFLAGS := -mz80 -c --nostdinc --Werror $(KOS_SDCC_OPT) \
 DRV_HOT    := $(DRV_CFLAGS) --codeseg CODE --dataseg DRIVER_IO
 DRV_BOOT   := $(DRV_CFLAGS) --codeseg BOOT --dataseg BOOT_DATA
 
-# The declared production boot set, in load order: IOC before HID (HID's
-# image declares the dependency), the selected CONSOLE driver after the
-# drivers it composes (work package 42e: HID and VIDEO for the production
-# build, SERIAL for `console-serial`), and the filesystem driver last.
-DRV_NAMES := sio ioc hid v9958 console-v9958-hid console-serial iocfat
-DRV_MODS := $(addprefix $(MODULES)/,$(addsuffix .mod,$(DRV_NAMES)))
-
 $(MODULES)/sio.rel: drivers/sio/sio.c drivers/sio/sio.h \
 		drivers/include/driver.h kernel/include/platform.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) $< -o $@
@@ -847,73 +720,28 @@ $(MODULES)/sdcc_indirect_calls.rel: drivers/runtime/sdcc_indirect_calls.asm \
 		| $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
-# Synthetic IPC driver set (work packages 39-40): six images packed as
-# real driver images with the driver section, loaded by the acceptance
-# image's `drivers.man`.  Defined here because the production pack rule
-# below links against the whole load-order set and needs their objects.
-IPC_MODDIR := $(MODULES)/ipc-modules
-IPC_DRIVER_NAMES := ioc fat vfs echo con irqx
-IPC_HOT_OBJS := $(addprefix $(IPC_MODDIR)/,$(addsuffix .rel,$(IPC_DRIVER_NAMES)))
-IPC_BOOT_OBJS := $(addprefix $(IPC_MODDIR)/,$(addsuffix _boot.rel,$(IPC_DRIVER_NAMES)))
-IPC_MODS := $(addprefix $(IPC_MODDIR)/ipc-,$(addsuffix .mod,$(IPC_DRIVER_NAMES)))
+# The image's driver set: the load order the system file declares.  Every
+# driver's image is <id>.mod in this build's module directory, packed from
+# the resolved manifest tools/systemgen.py wrote for it.  The packer links
+# each image at its final bank-6 address against the whole set it is loaded
+# with (--set, in load order): the tier plan, the endpoint numbers and the
+# inter-driver dependencies are all host-computed, so every image of one
+# build must see the same set, and every pack reads the whole set's objects
+# ($(KOS_DRIVER_OBJECTS), from the system file).
+DRV_SET_MODS := $(addprefix $(MODULES)/,$(addsuffix .mod,$(KOS_DRIVERS)))
+DRV_PACK_SET := $(addprefix $(BUILD)/drivers/,$(addsuffix .json,$(KOS_DRIVERS)))
 
-DRV_OBJS := $(MODULES)/sdcc_indirect_calls.rel \
-	$(MODULES)/sio.rel $(MODULES)/sio_io.rel $(MODULES)/sio_driver.rel \
-	$(MODULES)/sio_boot.rel \
-	$(MODULES)/ioc.rel $(MODULES)/ioc_io.rel $(MODULES)/ioc_driver.rel \
-	$(MODULES)/ioc_boot.rel \
-	$(MODULES)/hid.rel \
-	$(MODULES)/v9958.rel $(MODULES)/v9958_io.rel \
-	$(MODULES)/v9958_driver.rel $(MODULES)/v9958_font.rel \
-	$(MODULES)/v9958_boot.rel \
-	$(MODULES)/console-v9958-hid.rel $(MODULES)/console-serial.rel \
-	$(MODULES)/iocfat.rel
-
-# The packer links every image against the whole load-order set (--set):
-# the tier plan, the endpoint numbers and the inter-driver dependencies
-# are all host-computed, so one pack reads every member's objects.  Both
-# pack rules below wait for the whole set, or a parallel build could link
-# an image against a half-built one.
-DRV_SET_OBJS = $(DRV_OBJS) $(if $(filter 1,$(KOS_NS_SELFTEST)),\
-	$(MODULES)/nsdev.rel $(MODULES)/nsdev_boot.rel) \
-	$(if $(filter 1,$(KOS_IPC_SELFTEST)),\
-	$(IPC_HOT_OBJS) $(IPC_BOOT_OBJS) \
-	$(IPC_MODDIR)/con_slow.rel $(IPC_MODDIR)/sdcc_indirect_calls.rel)
-
-# One image per driver manifest; the report carries the symbol offsets the
-# replays read the boot markers and the placements through.  The packer
-# links each image at its final bank-6 address against the whole set it is
-# loaded with (--set, in load order): the tier plan, the endpoint numbers
-# and the inter-driver dependencies are all host-computed, so every image
-# of one build must see the same set.
-# The manifests an image packs its boot set from.  Package 46 T1 moved
-# each production manifest into its driver's own directory
-# (drivers/<name>/<name>.json; the two console drivers share
-# drivers/console/); an acceptance image that packs its own copies sets
-# DRV_MANIFEST_DIR to its flat test directory instead (the namespace
-# acceptance image does, work package 42a).  The production manifests and
-# containers stay byte for byte what they were.
-DRV_MANIFEST_DIR ?=
-# One line: a `\` continuation would fold a space into every expansion.
-DRV_MANIFEST = $(if $(DRV_MANIFEST_DIR),$(DRV_MANIFEST_DIR)/$1.json,$(if $(filter console-%,$1),drivers/console/$1.json,drivers/$1/$1.json))
-DRV_PACK_SET = $(foreach drv,$(KOS_DRIVERS),$(call DRV_MANIFEST,$(drv))) \
-	$(if $(filter 1,$(KOS_IPC_SELFTEST)),$(addprefix $(IPC_DIR)/manifests/,$(addsuffix .json,$(IPC_DRIVER_NAMES))))
-DRV_PACK_IMAGES = $(foreach drv,$(KOS_DRIVERS),$(MODULES):$(call DRV_MANIFEST,$(drv))) \
-	$(if $(filter 1,$(KOS_IPC_SELFTEST)),$(addprefix $(IPC_MODDIR):,$(addprefix $(IPC_DIR)/manifests/,$(addsuffix .json,$(IPC_DRIVER_NAMES)))))
-
-# One rule per driver container, keyed on the manifest the driver owns.
-define mod_pack_rule
-$(MODULES)/$(1).mod: $(call DRV_MANIFEST,$(1)) $(DRV_SET_OBJS) \
+# One image per selected driver; the report carries the symbol offsets the
+# replays read the boot markers and the placements through.
+define drv_pack_rule
+$(MODULES)/$(1).mod: $(BUILD)/drivers/$(1).json $(KOS_DRIVER_OBJECTS) \
 		$(DRV_PACK_SET) tools/modpack.py | $(MODULES)
-	$(PYTHON) tools/modpack.py pack $$< $$@ --objdir $(MODULES) \
-		--set $(DRV_PACK_IMAGES) \
+	$(PYTHON) tools/modpack.py pack $(BUILD)/drivers/$(1).json $$@ \
+		--objdir $(MODULES) --set $(DRV_PACK_SET) \
 		--report $(MODULES)/$(1).report.json
 
 endef
-$(foreach drv,$(DRV_NAMES),$(eval $(call mod_pack_rule,$(drv))))
-
-# The driver set an image boots, resolved to its packed images.
-DRV_SET_MODS = $(foreach drv,$(KOS_DRIVERS),$(MODULES)/$(drv).mod)
+$(foreach drv,$(KOS_DRIVERS),$(eval $(call drv_pack_rule,$(drv))))
 
 # ROMFS font asset (DATA): the reviewable .inc source is the pinned
 # reference font; fontpack.py verifies the exact 2048 bytes and the
@@ -1215,182 +1043,62 @@ $(MODULES)/exe-fixtures.stamp: tests/subsys/gen_exe_fixtures.py \
 	touch $@
 
 # --- ROMFS recovery store (ROM pages 2-7) ------------------------------------
-# Every image packs a manifest; the subsystem acceptance image adds the
-# loader/ROMFS/EXE fixtures, and tests/test_romfs_sim.py patches the packed
-# subsystem image in place to exercise the kernel's validation (work
-# package 42d: the corrupt-store image is gone, its outcome is that test).
-ifeq ($(KOS_CONSOLE_INTEGRATION_SELFTEST),1)
-# Console integration acceptance store: the full device driver set (the
-# filesystem driver is compiled out of this image, so its entry is
-# absent), the monitor launcher and the ESC c check program the image
-# boots (KOS_BOOT_PROGRAM=/system/escc.exe, package 42e).  Work package
-# 42d merged the IOC, HID, video and console acceptance stores into it.
-ROMFS_MANIFEST := tests/console/manifest-integration.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe $(MODULES)/escc.exe
-else ifeq ($(KOS_SUBSYS_SELFTEST),1)
-ROMFS_MANIFEST := tests/subsys/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe $(MODULES)/romfs_crosspage.bin \
-		$(MODULES)/exetest.exe $(MODULES)/exe2probe.exe \
-		$(MODULES)/exe2seg.exe $(MODULES)/exe2big.exe \
-		$(MODULES)/exe-fixtures.stamp
-else ifeq ($(KOS_NUCLEUS_SELFTEST),1)
-# Nucleus-layout acceptance store (work package 42d): the same SIO-only
-# boot set and fixtures as the subsystem image, which is the store its
-# boot path loads.  Before 42d the row fell through to the production
-# manifest while packing only this set, so the pack could not find the
-# driver images it did not select.
-ROMFS_MANIFEST := tests/subsys/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe $(MODULES)/romfs_crosspage.bin \
-		$(MODULES)/exetest.exe $(MODULES)/exe2probe.exe \
-		$(MODULES)/exe2seg.exe $(MODULES)/exe2big.exe \
-		$(MODULES)/exe-fixtures.stamp
-else ifeq ($(KOS_CONSOLE_SERIAL_SELFTEST),1)
-# Console-serial variant store (work package 42e): the production driver
-# set with `console-serial` in the CONSOLE slot; the image boots the
-# monitor on the serial lane.
-ROMFS_MANIFEST := tests/console/manifest-serial.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe
-else ifeq ($(KOS_CONSOLE_SERIAL_FAIL_SELFTEST),1)
-# Required-console boot-failure store (work package 42e): the same set and
-# drivers.man, but the ROMFS manifest omits `console-serial.mod`, so the
-# loader's lookup fails and the boot must stop explicitly on the early
-# console (36.11) - no fallback and no launcher.
-ROMFS_MANIFEST := tests/console/manifest-serial-missing.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe
-else ifeq ($(KOS_DRIVER_INIT_FAIL_SELFTEST),1)
-# Required-driver init-failure store (work package 45): the one test-only
-# driver image the boot manifest lists, whose init refuses; the loader
-# fails the boot explicitly on the early console (36.11) before the
-# launcher.  The monitor is in the store but never runs.
-ROMFS_MANIFEST := tests/console/manifest-init-fail.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe
-else ifeq ($(KOS_FS_SELFTEST),1)
-# Filesystem outcome store (work package 42b, correction 01): the SIO/IOC/
-# console drivers the production boot set loads, the IOC-FAT driver
-# publishing `/fs`, the monitor the boot program hands the console to, and
-# the two SDK programs - the checks in /system/fs_selftest.exe and the
-# child it SYS_EXECs.
-ROMFS_MANIFEST := tests/fs/manifest.json
-# Recursive: the module variables are defined below this chain.
-ROMFS_EXTRA_DEPS = $(MODULES)/fs_selftest.exe $(MODULES)/fs_child.exe \
-	$(MODULES)/monitor.exe $(MODULES)/drivers.man
-else ifeq ($(KOS_XMEM_SELFTEST),1)
-# Extended-memory outcome store (work package 43, far code package 44b):
-# the SIO and console drivers the production boot path loads, and the
-# three SDK programs - the checks in /system/xmem_selftest.exe, the child
-# it SYS_EXECs, and the far-code program (two FAR_CODE segments) it
-# SYS_EXECs last.  No monitor: the launcher's exit report is the last line
-# the replay needs.
-ROMFS_MANIFEST := tests/xmem/manifest.json
-# Recursive: the module variables are defined below this chain.
-ROMFS_EXTRA_DEPS = $(MODULES)/xmem_selftest.exe \
-	$(MODULES)/xmem_child.exe $(MODULES)/xmem_far.exe \
-	$(MODULES)/drivers.man
-else ifeq ($(KOS_HELLOWORLD_IMAGE),1)
-# SDK demo image (work/28c-m9-user-sdk): the production boot set and store
-# plus the hello demo, which the launcher starts instead of the monitor
-# (KOS_BOOT_PROGRAM=/system/hello.exe).  Booting a user program needs no
-# kernel change, which is exactly what this image demonstrates.
-ROMFS_MANIFEST := user/helloworld/manifest.json
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe $(MODULES)/hello.exe \
-	$(MODULES)/fardemo.exe
-else ifeq ($(KOS_IPC_SELFTEST),1)
-# IPC acceptance image (work packages 39-40): the SIO fallback plus the two
-# SDK programs the launcher boots and the probe starts
-# (KOS_BOOT_PROGRAM=/system/ipccopy.exe).  The probe
-# (tests/target/ipc/ipccopy.c) measures the caller-buffer copy paths and
-# SYS_EXECs the conformance client (/system/ipc.exe), which is where the
-# promoted suite lives.  The six synthetic drivers are real driver
-# images in the recovery store, listed by the boot manifest
-# (drivers.man) and placed in bank 6 by the nucleus driver loader.
-ROMFS_MANIFEST := tests/ipc/manifest.json
-# Recursive: the driver-image variables are defined below this chain.
-ROMFS_EXTRA_DEPS = $(MODULES)/ipc.exe $(MODULES)/ipccopy.exe \
-	$(IPC_MODS) $(MODULES)/drivers.man
-else ifeq ($(KOS_NS_SELFTEST),1)
-# Namespace acceptance store (work package 42a): the SIO and console
-# drivers whose publications the DEVICE table carries, the synthetic
-# publisher that adds a second grouping container and a third protocol
-# type, and the two SDK programs - the checks run in /system/ns.exe, which
-# SYS_EXECs /system/nschild.exe for the inheritance rule.
-ROMFS_MANIFEST := tests/ns/manifest.json
-# Recursive: the module variables are defined below this chain.
-ROMFS_EXTRA_DEPS = $(MODULES)/ns.exe $(MODULES)/nschild.exe \
-	$(MODULES)/nsdev.mod $(MODULES)/drivers.man
-else
-ROMFS_MANIFEST := recovery/manifest.json
-# The exerciser's programs (work package 45b) join the monitor the store
-# already carried: the runner plus the outcome programs it runs, all under
-# /system, so `X /system/hwtest.exe` works on the production image with no
-# extra image or flash.
-ROMFS_EXTRA_DEPS := $(MODULES)/monitor.exe $(MODULES)/hwtest.exe \
-	$(MODULES)/xmem_selftest.exe $(MODULES)/xmem_child.exe \
-	$(MODULES)/xmem_far.exe $(MODULES)/fs_selftest.exe \
-	$(MODULES)/fs_child.exe
+# Every image packs the store tools/systemgen.py wrote for its system file:
+# the driver images in load order, drivers.man, then the image's own files.
+# The subsystem and nucleus acceptance images carry the loader/ROMFS/EXE
+# fixtures, and tests/test_romfs_sim.py patches the packed subsystem image in
+# place to exercise the kernel's validation (work package 42d: the
+# corrupt-store image is gone, its outcome is that test).
+#
+# The store's programs arrive through their own rules (one exe_program line
+# each); the malformed EXE containers arrive together from one generator run,
+# so a store that lists one of them waits for that run's stamp.
+EXE_FIXTURES := $(filter $(MODULES)/exe-%,$(KOS_STORE_FILES))
+ifneq ($(EXE_FIXTURES),)
+$(EXE_FIXTURES): $(MODULES)/exe-fixtures.stamp
 endif
 
-# --- resident driver images (work packages 39-40) ---------------------------
-# Six synthetic drivers packed as real driver images into the recovery
-# store, listed by the boot manifest `drivers.man` and loaded by the
-# nucleus driver loader (kernel/driver/driver_loader.c).
-# Acceptance-only; nothing here is built for any other configuration.
-# The images live under the shared build/modules/ipc-modules/ so a --set
-# token can name their own objdir.  The set's object variables are
-# defined with the production driver objects above, because the pack
-# rules there link every image against the whole set (--set) and have to
-# see them before those rules are read.
+$(BUILD)/recovery.romfs: $(BUILD)/store.json $(DRV_SET_MODS) \
+		$(MODULES)/drivers.man $(MODULES)/drivers.plan.json \
+		$(KOS_STORE_FILES) $(EXE_FIXTURES) tools/romfspack.py \
+		$(KOS_PLATFORM_MEMORY_INC) | $(BUILD)
+	$(PYTHON) tools/romfspack.py --memory-inc $(KOS_PLATFORM_MEMORY_INC) pack \
+		$(BUILD)/store.json $@ --objdir $(MODULES)
 
-ifeq ($(KOS_IPC_SELFTEST),1)
-$(IPC_MODDIR):
-	mkdir -p $@
+# --- acceptance-only driver objects (tests/) --------------------------------
+# The test-only drivers are ordinary driver images: their objects build like
+# a production driver's (hot code with its DRIVER_IO data, a boot segment
+# that records its single run, a bulk asset where the manifest names one) and
+# their packs use the same rule as every other selected driver.  They build
+# only when a system file selects them.  Their object names carry a prefix so
+# they can never collide with a production driver's objects in one module
+# directory.
 
-# Hot-segment objects: dispatch entries and the init entry.  --dataseg
-# DRIVER_IO names the data area after the rule it has to satisfy: the
-# loader places it inside bank 6's 8000h-BFFFh (correction 01 to
-# architecture 36.8), where both the window and the aperture show it.
-# These test drivers also get the platform-private IRQ constants
+# The six synthetic IPC drivers (work packages 39-40): hot and boot objects,
+# and `con`'s hot-segment slow buffer (area _HOT), the deliberate driver-side
+# buffer outside 8000h-BFFFh the path-C copy case needs.  --dataseg DRIVER_IO
+# names the data area after the rule it has to satisfy: the loader places it
+# inside bank 6's 8000h-BFFFh (correction 01 to architecture 36.8).  These
+# test drivers also get the platform-private IRQ constants
 # (platform/zephyr80/private/irq.h) that the `irqx` driver programs CTC0
 # with; the production driver roots stay public-only (package 46 T3).
-$(IPC_HOT_OBJS): $(IPC_MODDIR)/%.rel: $(IPC_DIR)/%.c \
-		tests/target/include/ipc_test.h | $(IPC_MODDIR)
+$(MODULES)/ipc_%.rel: tests/target/ipc/%.c tests/target/include/ipc_test.h \
+		| $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) --dataseg DRIVER_IO -Itests/target/include \
 		-Iplatform/zephyr80/private $< -o $@
 
-# Boot-segment objects: boot-only code (_BOOT) and its BSS (_BOOT_DATA),
-# run once through the mode-10 gate with Q = 6.
-$(IPC_BOOT_OBJS): $(IPC_MODDIR)/%_boot.rel: $(IPC_DIR)/%_boot.c \
-		tests/target/include/ipc_test.h | $(IPC_MODDIR)
+$(MODULES)/ipc_%_boot.rel: tests/target/ipc/%_boot.c \
+		tests/target/include/ipc_test.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) --codeseg BOOT --dataseg BOOT_DATA \
 		-Itests/target/include $< -o $@
 
-# `con`'s hot-segment slow buffer (area _HOT): the deliberate driver-side
-# buffer outside 8000h-BFFFh the path-C copy case needs.
-$(IPC_MODDIR)/con_slow.rel: $(IPC_DIR)/con_slow.c \
-		tests/target/include/ipc_test.h | $(IPC_MODDIR)
+$(MODULES)/ipc_con_slow.rel: tests/target/ipc/con_slow.c \
+		tests/target/include/ipc_test.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) --dataseg HOT -Itests/target/include $< -o $@
 
-$(IPC_MODDIR)/sdcc_indirect_calls.rel: \
-		drivers/runtime/sdcc_indirect_calls.asm | $(IPC_MODDIR)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-# One driver image per manifest; the report carries the symbol offsets
-# the replay reads the boot-segment markers and placements through.  The
-# whole set's objects are prerequisites because each pack links the set.
-$(IPC_MODS): $(IPC_MODDIR)/ipc-%.mod: $(IPC_DIR)/manifests/%.json \
-		$(DRV_SET_OBJS) $(DRV_PACK_SET) tools/modpack.py | $(IPC_MODDIR)
-	$(PYTHON) tools/modpack.py pack $< $@ --objdir $(IPC_MODDIR) \
-		--set $(DRV_PACK_IMAGES) \
-		--report $(IPC_MODDIR)/$*.report.json
-
-endif
-
-ifeq ($(KOS_NS_SELFTEST),1)
-# Namespace acceptance synthetic publisher (work package 42a): one real
-# driver image in the recovery store, packed from the image's own
-# manifest (tests/ns/manifests/nsdev.json) so its /dev publications travel
-# in the container the loader reads.  The objects build exactly like
-# production driver objects: hot code with its DRIVER_IO data, and a
-# boot segment that records its single run.
+# The namespace acceptance synthetic publisher (work package 42a): one real
+# driver image whose /dev publications travel in the container the loader
+# reads.
 $(MODULES)/nsdev.rel: tests/target/ns/nsdev.c \
 		tests/target/include/ns_test.h drivers/include/driver.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) -Itests/target/include $< -o $@
@@ -1399,85 +1107,48 @@ $(MODULES)/nsdev_boot.rel: tests/target/ns/nsdev_boot.c \
 		tests/target/include/ns_test.h | $(MODULES)
 	$(SDCC) $(DRV_BOOT) -Itests/target/include $< -o $@
 
-# The container: one pack against the image's whole load-order set, from
-# the image's own manifest, so the /dev publications are host-resolved
-# beside the endpoint numbers.
-$(MODULES)/nsdev.mod: $(DRV_MANIFEST_DIR)/nsdev.json $(DRV_SET_OBJS) \
-		$(DRV_PACK_SET) tools/modpack.py | $(MODULES)
-	$(PYTHON) tools/modpack.py pack $< $@ --objdir $(MODULES) \
-		--set $(DRV_PACK_IMAGES) \
-		--report $(MODULES)/nsdev.report.json
-
-endif
-
-# Required-driver init-failure acceptance driver (work package 45): the
-# test-only image whose init returns non-zero.  Its own explicit rule
-# keyed on the test manifest directory, so the production static pattern
-# rule above (the driver-tree manifests) does not apply; the loader refuses the
-# image and the boot stops (36.11).
-ifeq ($(KOS_DRIVER_INIT_FAIL_SELFTEST),1)
-$(MODULES)/init_fail.mod: tests/console/manifests/init_fail.json \
-		$(MODULES)/init_fail.rel $(DRV_SET_OBJS) $(DRV_PACK_SET) \
-		tools/modpack.py | $(MODULES)
-	$(PYTHON) tools/modpack.py pack $< $@ --objdir $(MODULES) \
-		--set $(DRV_PACK_IMAGES) \
-		--report $(MODULES)/init_fail.report.json
-
+# The required-driver init-failure acceptance driver (work package 45): the
+# test-only image whose init returns non-zero, so the loader's status branch
+# refuses it and the boot stops on the early console (36.11).
 $(MODULES)/init_fail.rel: tests/target/console/init_fail.c \
 		drivers/include/driver.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) $< -o $@
-endif
-# The boot manifest: the flat ROMFS names in dependency (load) order,
-# validated as a set - unique endpoints, resolvable dependencies and a
-# tier allocation that fits - and reported with the two driver ledgers.
-# An image boots what its manifest lists: the production store lists the
-# five driver drivers, the IPC image lists the SIO and console drivers
-# its SDK programs print through ahead of the synthetic set.
-DRV_MAN_INPUTS = $(DRV_SET_MODS) \
-	$(if $(filter 1,$(KOS_IPC_SELFTEST)),$(IPC_MODS))
-$(MODULES)/drivers.man: $(DRV_MAN_INPUTS) tools/modpack.py | $(MODULES)
-	$(PYTHON) tools/modpack.py drivers $@ $(DRV_MAN_INPUTS) \
-		--report $(MODULES)/drivers.plan.json
+# The boot manifest `drivers.man` is generated by tools/systemgen.py: the
+# flat ROMFS names in load order, one 24-byte record each, and the packer's
+# `plan` command validates the packed set the manifest lists (unique
+# endpoints, resolvable dependencies, a tier allocation that fits) and
+# writes the two driver ledgers.
 
-# --- boot-program setting (package 28b) --------------------------------------
-# Validate KOS_BOOT_PROGRAM against the manifest this image packs, then
-# write it into the generated header main.c includes.  The stamp makes the
-# check a prerequisite of main.rel, so parallel builds cannot link a
-# kernel whose boot path was never validated; the manifest dependency
-# re-validates for every image.  The setting travels as a header, not as a
-# -D value: SDCC 4.5.0's driver aborts when any argument contains ".exe"
-# (SDCCutil.c's setPrefixSuffix asserts the preprocessor command line free
-# of the extension) and every boot program is an EXE.
-BOOT_PROGRAM_STAMP := $(BUILD)/generated/boot_program.stamp
-BOOT_PROGRAM_H     := $(BUILD)/boot_program.h
+# --- boot-program setting (package 49a) --------------------------------------
+# tools/systemgen.py validated KOS_BOOT_PROGRAM against the store it wrote -
+# an absolute path to one file directly under /system, at most
+# KOS_PATH_MAX - 1 bytes, naming an EXE the store carries - and the setting
+# travels as a header, never as a -D value: SDCC 4.5.0's driver aborts when
+# any argument contains ".exe" (SDCCutil.c's setPrefixSuffix asserts the
+# preprocessor command line free of the extension) and every boot program is
+# an EXE.  The header depends on the generated system file, so a parallel
+# build cannot link a kernel whose boot path was never validated.
+BOOT_PROGRAM_H := $(BUILD)/boot_program.h
 
-$(BOOT_PROGRAM_STAMP): config/system.mk $(ROMFS_MANIFEST) \
-		tools/bootprogram.py | $(BUILD)
-	mkdir -p $(BUILD)/generated
-	$(PYTHON) tools/bootprogram.py check "$(KOS_BOOT_PROGRAM)" \
-		$(ROMFS_MANIFEST)
-	touch $@
-
-$(BOOT_PROGRAM_H): $(BOOT_PROGRAM_STAMP)
+$(BOOT_PROGRAM_H): $(SYSTEM_STAMP)
 	printf '%s\n' '#define KOS_BOOT_PROGRAM "$(KOS_BOOT_PROGRAM)"' > $@
 
-$(BUILD)/main.rel: $(BOOT_PROGRAM_STAMP) $(BOOT_PROGRAM_H)
+$(BUILD)/main.rel: $(BOOT_PROGRAM_H)
 
-$(BUILD)/recovery.romfs: $(ROMFS_MANIFEST) $(DRV_SET_MODS) \
-		$(MODULES)/drivers.man $(ROMFS_EXTRA_DEPS) \
-		tools/romfspack.py $(KOS_PLATFORM_MEMORY_INC) | $(BUILD)
-	$(PYTHON) tools/romfspack.py --memory-inc $(KOS_PLATFORM_MEMORY_INC) pack \
-		$(ROMFS_MANIFEST) $@ --objdir $(MODULES)
+# The plan report: the packed set's tier bases and the two bank-6 ledgers,
+# which tools/pack_image.py reads for its driver ledger lines.
+$(MODULES)/drivers.plan.json: $(DRV_SET_MODS) tools/modpack.py | $(MODULES)
+	$(PYTHON) tools/modpack.py plan $@ $(DRV_SET_MODS)
 
-# Deterministic cross-page pattern asset for the subsystem manifest.
-$(MODULES)/romfs_crosspage.bin: tests/subsys/gen_crosspage.py | $(MODULES)
+# Deterministic cross-page pattern asset for the subsystem store.
+$(MODULES)/crosspage.bin: tests/subsys/gen_crosspage.py | $(MODULES)
 	$(PYTHON) tests/subsys/gen_crosspage.py $@
 
 # Expected-container constants for the ROMFS-reader target selftest: the
-# packed size/sum plus the manifest-derived first-payload offset.
-$(BUILD)/romfs_expect.inc: tests/subsys/manifest.json $(MODULES)/sio.mod \
+# packed size/sum plus the store-manifest-derived first-payload offset.
+$(BUILD)/romfs_expect.inc: $(BUILD)/store.json $(MODULES)/sio.mod \
 		tests/subsys/gen_romfs_expect.py | $(BUILD)
-	$(PYTHON) tests/subsys/gen_romfs_expect.py tests/subsys/manifest.json \
+	$(PYTHON) tests/subsys/gen_romfs_expect.py $(BUILD)/store.json \
 		$(MODULES)/sio.mod $@ SIO_MOD
 
 # --- link --------------------------------------------------------------------
@@ -1486,10 +1157,7 @@ $(BUILD)/romfs_expect.inc: tests/subsys/manifest.json $(MODULES)/sio.mod \
 # objects) generates its linker file from the same object list the link
 # step depends on, so the lists cannot drift apart.
 
-KOS_TEST_LINK := $(filter 1,$(KOS_SUBSYS_SELFTEST) \
-		$(KOS_NUCLEUS_SELFTEST) \
-		$(KOS_CONSOLE_INTEGRATION_SELFTEST) \
-		$(KOS_FS_SELFTEST))
+KOS_TEST_LINK := $(filter $(SYSTEM),subsystem nucleus console-integration fs)
 ifeq ($(BUILD),build)
 ifneq ($(KOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -1590,7 +1258,7 @@ check:
 # (work package 42c deleted the arena loader the loader group exercised).
 
 subsystem-selftest:
-	$(MAKE) BUILD=build-subsys-selftest KOS_SUBSYS_SELFTEST=1 \
+	$(MAKE) BUILD=build-subsys-selftest SYSTEM=subsystem \
 		build-subsys-selftest/konaos-subsys-selftest.bin \
 		build-subsys-selftest/zephyr80-subsys-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
@@ -1688,7 +1356,8 @@ v9958-test: $(MODULES)/v9958.mod $(MODULES)/v9958-6x8.font
 # session the retired console-selftest image carried).
 
 console-integration-selftest: all
-	$(MAKE) BUILD=build-console-integration-selftest KOS_CONSOLE_INTEGRATION_SELFTEST=1 KOS_SMOKE_HOST_SYNC=1 \
+	$(MAKE) BUILD=build-console-integration-selftest \
+		SYSTEM=console-integration \
 		build-console-integration-selftest/konaos-console-integration-selftest.bin \
 		build-console-integration-selftest/zephyr80-console-integration-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
@@ -1711,18 +1380,13 @@ console-integration-selftest: all
 # tests/test_console_serial.py replays all three.
 
 console-serial-selftest:
-	$(MAKE) BUILD=build-console-serial-selftest \
-		KOS_CONSOLE_SERIAL_SELFTEST=1 KOS_CONSOLE=console-serial \
-		KOS_SMOKE_HOST_SYNC=1 \
+	$(MAKE) BUILD=build-console-serial-selftest SYSTEM=console-serial \
 		build-console-serial-selftest/konaos-console-serial-selftest.bin \
 		build-console-serial-selftest/zephyr80-console-serial-selftest.bin
 	$(MAKE) BUILD=build-console-serial-fail-selftest \
-		KOS_CONSOLE_SERIAL_FAIL_SELFTEST=1 KOS_CONSOLE=console-serial \
-		KOS_SMOKE_HOST_SYNC=1 \
+		SYSTEM=console-serial-missing \
 		build-console-serial-fail-selftest/konaos-console-serial-fail-selftest.bin
-	$(MAKE) BUILD=build-driver-init-fail-selftest \
-		KOS_DRIVER_INIT_FAIL_SELFTEST=1 \
-		KOS_SMOKE_HOST_SYNC=1 \
+	$(MAKE) BUILD=build-driver-init-fail-selftest SYSTEM=console-init-fail \
 		build-driver-init-fail-selftest/konaos-driver-init-fail-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
 		build-console-serial-selftest/konaos.map \
@@ -1740,7 +1404,7 @@ console-serial-selftest:
 # real card; the checks and their counts are pinned by
 # tests/test_fs_selftest_sim.py.
 fs-selftest: all
-	$(MAKE) BUILD=build-fs-selftest KOS_FS_SELFTEST=1 \
+	$(MAKE) BUILD=build-fs-selftest SYSTEM=fs \
 		build-fs-selftest/konaos-fs-selftest.bin \
 		build-fs-selftest/zephyr80-fs-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
@@ -1757,12 +1421,10 @@ fs-selftest: all
 # checks its own results; the simulator replay measures the spans, the
 # stack high-water marks, the latch intervals and the IRQ delivery.
 ipc-selftest: all
-	$(MAKE) BUILD=build-ipc-selftest KOS_IPC_SELFTEST=1 \
-		KOS_BOOT_PROGRAM=/system/ipccopy.exe \
+	$(MAKE) BUILD=build-ipc-selftest SYSTEM=ipc \
 		build-ipc-selftest/konaos-ipc-selftest.bin \
 		build-ipc-selftest/zephyr80-ipc-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		$(if $(IPC_COLD_EXTRA_CSV),--cold-extra $(IPC_COLD_EXTRA_CSV),) \
 		build-ipc-selftest/konaos.map \
 		build-ipc-selftest/geometry/memory.inc \
 		$(KOS_PLATFORM_IRQ_INC)
@@ -1778,7 +1440,7 @@ ipc-selftest: all
 # (tests/test_xmem_selftest_sim.py).  The aperture itself is
 # hardware-authoritative: the owner runs this image on the board.
 xmem-selftest: all
-	$(MAKE) BUILD=build-xmem-selftest KOS_XMEM_SELFTEST=1 \
+	$(MAKE) BUILD=build-xmem-selftest SYSTEM=xmem \
 		build-xmem-selftest/konaos-xmem-selftest.bin \
 		build-xmem-selftest/zephyr80-xmem-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
@@ -1796,7 +1458,7 @@ xmem-selftest: all
 # prints them; the simulator replay compares the transcript.  Production
 # is not touched by this image: it reproduces its own image hash.
 ns-selftest: all
-	$(MAKE) BUILD=build-ns-selftest KOS_NS_SELFTEST=1 \
+	$(MAKE) BUILD=build-ns-selftest SYSTEM=ns \
 		build-ns-selftest/konaos-ns-selftest.bin \
 		build-ns-selftest/zephyr80-ns-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
@@ -1812,7 +1474,7 @@ ns-selftest: all
 # the fixed upcall shim against a stub in bank 6.  SIO-only boot set, so
 # the cold half's slack belongs to the test objects.
 nucleus-selftest: all
-	$(MAKE) BUILD=build-nucleus-selftest KOS_NUCLEUS_SELFTEST=1 \
+	$(MAKE) BUILD=build-nucleus-selftest SYSTEM=nucleus \
 		build-nucleus-selftest/konaos-nucleus-selftest.bin \
 		build-nucleus-selftest/zephyr80-nucleus-selftest.bin
 	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
@@ -1830,8 +1492,7 @@ nucleus-selftest: all
 # the manifest.  The simulator replay checks the transcript.
 
 helloworld-image: all
-	$(MAKE) BUILD=build-helloworld KOS_HELLOWORLD_IMAGE=1 \
-		KOS_BOOT_PROGRAM=/system/hello.exe \
+	$(MAKE) BUILD=build-helloworld SYSTEM=helloworld \
 		build-helloworld/konaos-helloworld.bin \
 		build-helloworld/zephyr80-helloworld.bin
 	$(PYTHON) -m unittest discover -s tests -p 'test_sdk.py' -v

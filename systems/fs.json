@@ -1,0 +1,17 @@
+{
+  "schema": "kos-system-1",
+  "name": "fs",
+  "drivers": [
+    "sio",
+    "ioc",
+    "console-serial",
+    "iocfat"
+  ],
+  "boot": "/system/fs_selftest.exe",
+  "store": [
+    "monitor.exe",
+    "fs_selftest.exe",
+    "fs_child.exe"
+  ],
+  "cflags": []
+}

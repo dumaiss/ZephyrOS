@@ -1,4 +1,5 @@
 {
+  "schema": "kos-driver-1",
   "name": "console-v9958-hid",
   "objects": [
     "console-v9958-hid.rel",
@@ -37,13 +38,7 @@
     }
   ],
   "depends": [
-    {
-      "class": 4,
-      "instance": 0
-    },
-    {
-      "class": 2,
-      "instance": 0
-    }
+    "INPUT",
+    "VIDEO"
   ]
 }

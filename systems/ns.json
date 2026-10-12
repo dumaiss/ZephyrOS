@@ -1,0 +1,17 @@
+{
+  "schema": "kos-system-1",
+  "name": "ns",
+  "drivers": [
+    "sio",
+    "console-serial",
+    "tests/ns/manifests/nsdev"
+  ],
+  "boot": "/system/ns.exe",
+  "store": [
+    "ns.exe",
+    "nschild.exe"
+  ],
+  "cflags": [
+    "-Itests/target/include"
+  ]
+}

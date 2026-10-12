@@ -116,7 +116,7 @@ class TestRomfspack(unittest.TestCase):
             self.assertEqual(header["directory_size"], 72)
             self.assertEqual(header["image_size"], len(stream))
             self.assertEqual(header["payload_start"], 16 + 72)
-            self.assertEqual(stream[0:4], b"ZRFS")
+            self.assertEqual(stream[0:4], b"KRFS")
             self.assertEqual(entries[0]["name"], "a.bin")
             self.assertEqual(entries[0]["offset"], 16 + 72)
             self.assertEqual(entries[1]["offset"], 16 + 72 + 768)
@@ -473,12 +473,12 @@ class TestBuiltArtifacts(unittest.TestCase):
                          cross["size"])
         self.assertEqual(evaluate("KOS_RFST_WINDOW", env), 0xC000)
         self.assertIn('"crosspage.bin"', open(ROMFS_SELFTEST_H).read())
-        # The acceptance manifest is a test artifact: the production
-        # manifest must not carry the pattern asset.
+        # The acceptance store is a test artifact: the production image's
+        # description must not carry the pattern asset.
         production = json.loads(
-            open(os.path.join(ROOT, "recovery", "manifest.json")).read())
-        self.assertNotIn("crosspage.bin",
-                         {e["name"] for e in production["files"]})
+            open(os.path.join(ROOT, "systems", "production.json")).read())
+        self.assertNotIn("crosspage.bin", production["store"])
+        self.assertNotIn("crosspage.bin", production["drivers"])
 
     def test_image_markers_and_no_embedded_catalog(self):
         _p, image = self._read("build-subsys-selftest/"

@@ -1,4 +1,5 @@
 {
+  "schema": "kos-driver-1",
   "name": "ioc",
   "objects": [
     "ioc.rel",

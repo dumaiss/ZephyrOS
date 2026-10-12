@@ -1,8 +1,9 @@
 {
+  "schema": "kos-driver-1",
   "name": "vfs",
   "objects": [
-    "vfs.rel",
-    "vfs_boot.rel",
+    "ipc_vfs.rel",
+    "ipc_vfs_boot.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "ipc_vfs_init",
@@ -51,13 +52,7 @@
     }
   ],
   "depends": [
-    {
-      "class": 18,
-      "instance": 0
-    },
-    {
-      "class": 19,
-      "instance": 0
-    }
+    "#18",
+    "#19"
   ]
 }

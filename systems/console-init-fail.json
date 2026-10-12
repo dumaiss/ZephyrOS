@@ -1,0 +1,14 @@
+{
+  "schema": "kos-system-1",
+  "name": "console-init-fail",
+  "drivers": [
+    "tests/console/manifests/init_fail"
+  ],
+  "boot": "/system/monitor.exe",
+  "store": [
+    "monitor.exe"
+  ],
+  "cflags": [
+    "-DKOS_SMOKE_HOST_SYNC=1"
+  ]
+}

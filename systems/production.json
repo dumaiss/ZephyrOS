@@ -1,0 +1,23 @@
+{
+  "schema": "kos-system-1",
+  "name": "production",
+  "drivers": [
+    "sio",
+    "ioc",
+    "hid",
+    "v9958",
+    "console-v9958-hid",
+    "iocfat"
+  ],
+  "boot": "/system/monitor.exe",
+  "store": [
+    "monitor.exe",
+    "hwtest.exe",
+    "xmem_selftest.exe",
+    "xmem_child.exe",
+    "xmem_far.exe",
+    "fs_selftest.exe",
+    "fs_child.exe"
+  ],
+  "cflags": []
+}

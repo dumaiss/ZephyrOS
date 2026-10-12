@@ -43,15 +43,15 @@ SDK_GATE = os.path.join(ROOT, "user", "sdk", "src", "ipcgate.asm")
 EXE_MK = os.path.join(ROOT, "user", "sdk", "exe.mk")
 RESIDENCY = os.path.join(ROOT, "config", "residency.json")
 LINKER = os.path.join(ROOT, "linker", "zephyr80.lk")
-MANIFEST = os.path.join(ROOT, "tests", "ipc", "manifest.json")
+SYSTEM_JSON = os.path.join(ROOT, "systems", "ipc.json")
 CLIENT_DIR = os.path.join(ROOT, "tests", "target", "ipc")
 DRIVER_MANIFESTS = os.path.join(CLIENT_DIR, "manifests")
 
 IMAGE_SUBDIR = os.path.join(ROOT, "build-ipc-selftest")
 PROD_SUBDIR = os.path.join(ROOT, "build")
 # The driver images, reports and boot manifest belong to the IPC image's
-# own module directory.
-MODULE_DIR = os.path.join(IMAGE_SUBDIR, "modules", "ipc-modules")
+# own module directory (one `$(MODULES)` per build, no subdirectory).
+MODULE_DIR = os.path.join(IMAGE_SUBDIR, "modules")
 DRIVER_DIR = os.path.join(IMAGE_SUBDIR, "modules")
 
 SYSCALL_WINDOW_BASE = 0x0100
@@ -90,18 +90,19 @@ def symbols(map_path):
 class TestIpcBuildWiring(unittest.TestCase):
     def test_makefile_has_the_acceptance_image(self):
         text = read(MAKEFILE)
-        for token in ("ifeq ($(KOS_IPC_SELFTEST),1)",
-                      "PK_SUFFIX := -ipc-selftest",
-                      "-DKOS_IPC_SELFTEST=1",
-                      "ROMFS_MANIFEST := tests/ipc/manifest.json"):
+        for token in ("SYSTEM=ipc",
+                      "SYSTEM_SUFFIX.ipc := -ipc-selftest",
+                      "systems/$(SYSTEM).json"):
             self.assertIn(token, text, token)
         # The image's own target builds it, replays it and prints the
         # packed path.
         self.assertIn("ipc-selftest:", text)
         self.assertIn("build-ipc-selftest/konaos-ipc-selftest.bin", text)
         self.assertIn("test_ipc_selftest*.py", text)
-        self.assertIn("$(MODULES)/ipccopy.exe", text)
-        self.assertIn('"name": "ipccopy.exe"', read(MANIFEST))
+        self.assertIn("exe_program,ipccopy", text)
+        system = json.loads(read(SYSTEM_JSON))
+        self.assertIn("ipccopy.exe", system["store"])
+        self.assertEqual(system["boot"], "/system/ipccopy.exe")
 
     def test_makefile_builds_the_probe_above_its_caller_buffer(self):
         text = read(MAKEFILE)
@@ -149,10 +150,22 @@ class TestIpcBuildWiring(unittest.TestCase):
         # The image uses production placement: its row sets
         # COLD_EXTRA_CSV empty and names no image-specific cold set.
         self.assertIn("COLD_EXTRA_CSV :=", text)
-        self.assertIn("$(MODULES)/drivers.man", text)
-        self.assertIn("modpack.py drivers", text)
-        self.assertIn("IPC_DRIVER_NAMES := ioc fat vfs echo con irqx", text)
-        self.assertIn("$(IPC_MODDIR)/ipc-%.mod:", text)
+        # Package 49a: the store manifest, the boot manifest and the
+        # resolved driver manifests are generated inputs, and every
+        # selected driver packs to <id>.mod in the image's own
+        # $(MODULES).
+        self.assertIn("$(BUILD)/store.json", text)
+        self.assertIn("tools/systemgen.py", text)
+        self.assertIn("modpack.py plan", text)
+        self.assertIn("$(MODULES)/ipc_%.rel:", text)
+        system = json.loads(read(SYSTEM_JSON))
+        self.assertEqual(system["drivers"][2:],
+                         ["tests/target/ipc/manifests/ioc",
+                          "tests/target/ipc/manifests/fat",
+                          "tests/target/ipc/manifests/vfs",
+                          "tests/target/ipc/manifests/echo",
+                          "tests/target/ipc/manifests/con",
+                          "tests/target/ipc/manifests/irqx"])
         for token in ("--codeseg BOOT --dataseg BOOT_DATA",
                       "--dataseg HOT", "--dataseg DRIVER_IO"):
             self.assertIn(token, text, token)
@@ -160,7 +173,7 @@ class TestIpcBuildWiring(unittest.TestCase):
     def test_client_program_is_an_ordinary_sdk_program(self):
         text = read(MAKEFILE)
         self.assertIn("exe_program,ipc,tests/target/ipc", text)
-        self.assertIn("tests/ipc/manifest.json", text)
+        self.assertIn("SYSTEM=ipc", text)
 
     def test_dispatch_is_routed_in_the_dispatcher_proper(self):
         # Package 41 removed the KOS_TARGET_TEST_BUILD routing seam and
@@ -298,7 +311,7 @@ class TestIpcImageLayout(unittest.TestCase):
         self.assertEqual(self.syms["kos_driver_stack_top"], 0x5F00)
 
     def test_six_driver_containers_are_packed_and_manifested(self):
-        if not os.path.exists(os.path.join(MODULE_DIR, "ipc-echo.mod")):
+        if not os.path.exists(os.path.join(MODULE_DIR, "echo.mod")):
             self.skipTest("the IPC image's driver images are not packed; "
                           "run make ipc-selftest")
         # The drivers are no longer linked into the kernel: they are
@@ -310,8 +323,8 @@ class TestIpcImageLayout(unittest.TestCase):
         # Package 41: the image also boots the SIO and console drivers
         # its SDK programs print through, ahead of the synthetic set.
         order = ["sio.mod", "console-serial.mod",
-                 "ipc-ioc.mod", "ipc-fat.mod", "ipc-vfs.mod",
-                 "ipc-echo.mod", "ipc-con.mod", "ipc-irqx.mod"]
+                 "ioc.mod", "fat.mod", "vfs.mod",
+                 "echo.mod", "con.mod", "irqx.mod"]
         with open(os.path.join(DRIVER_DIR, "drivers.man"), "rb") as handle:
             data = handle.read()
         self.assertEqual(len(data), 24 * len(order))
@@ -554,26 +567,21 @@ class TestIpcSdkSurface(unittest.TestCase):
                 self.assertIn("dispatch", endpoint, name)
                 self.assertEqual(endpoint["version"],
                                  IPC_ENDPOINT_VERSION, name)
-            # The manifest order is the load order, so a dependency must
-            # name an endpoint this image or an earlier one exports (the
-            # loop probes re-enter their own endpoints): the packer
-            # refuses anything else at build time.
-            exports = set((endpoint["class"], endpoint["instance"])
-                          for endpoint in manifest["endpoints"])
-            for earlier in LOADS_BEFORE[name]:
-                other = json.loads(read(os.path.join(DRIVER_MANIFESTS,
-                                                     earlier + ".json")))
-                exports.update((endpoint["class"], endpoint["instance"])
-                               for endpoint in other["endpoints"])
+            # The source manifest names its dependencies symbolically: a
+            # protocol type, `TYPE:instance` or a raw `#class`, with a
+            # trailing `?` for the optional one.  tools/systemgen.py
+            # resolves every entry against the selected set and refuses a
+            # name that is missing or ambiguous (tests/test_systemgen.py);
+            # the packer then refuses a resolved set it cannot place.
             for dependency in manifest.get("depends") or []:
-                self.assertIn((dependency["class"], dependency["instance"]),
-                              exports, name)
+                self.assertRegex(dependency,
+                                 r"^(#[0-9]+|[A-Z]+(:[0-9]+)?)\??$",
+                                 "%s: %s" % (name, dependency))
 
-    def test_recovery_manifest_carries_the_client_program(self):
-        manifest = json.loads(read(MANIFEST))
-        names = json.dumps(manifest)
-        self.assertIn("sio.mod", names)
-        self.assertIn("ipc.exe", names)
+    def test_the_system_file_carries_the_client_program(self):
+        system = json.loads(read(SYSTEM_JSON))
+        self.assertIn("sio", system["drivers"])
+        self.assertIn("ipc.exe", system["store"])
 
 
 if __name__ == "__main__":

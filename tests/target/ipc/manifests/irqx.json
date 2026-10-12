@@ -1,8 +1,9 @@
 {
+  "schema": "kos-driver-1",
   "name": "irqx",
   "objects": [
-    "irqx.rel",
-    "irqx_boot.rel",
+    "ipc_irqx.rel",
+    "ipc_irqx_boot.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "ipc_irqx_init",

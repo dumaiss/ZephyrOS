@@ -28,7 +28,7 @@ MONITOR = os.path.join(ROOT, "user", "monitor", "monitor.c")
 MONITOR_EXEC = os.path.join(ROOT, "user", "monitor", "monitor_exec.c")
 MONITOR_HDR = os.path.join(ROOT, "user", "monitor", "monitor.h")
 MAKEFILE = os.path.join(ROOT, "Makefile")
-MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
+SYSTEM = os.path.join(ROOT, "systems", "production.json")
 SMOKE = os.path.join(ROOT, "tools", "serial_smoke.py")
 MEMORY_INC = os.path.join(ROOT, "platform", "zephyr80", "private",
                           "memory.inc")
@@ -227,18 +227,18 @@ class TestMonitorExecCommand(unittest.TestCase):
 class TestProductionStore(unittest.TestCase):
     """The exerciser ships in the production store (no special flash)."""
 
-    def manifest(self):
-        return json.loads(read(MANIFEST))["files"]
+    def store(self):
+        return json.loads(read(SYSTEM))["store"]
 
-    def test_the_manifest_carries_the_exerciser_and_its_programs(self):
+    def test_the_system_file_carries_the_exerciser_and_its_programs(self):
         # The store's full order is pinned where the store is read (the
         # HID and V9958 artifact tests); here every program the exerciser
-        # needs must be present, as a program.
-        entries = {entry["name"]: entry for entry in self.manifest()}
+        # needs must be present.  The packed entry's media type follows
+        # from the name (tools/systemgen.py's store_type: `.exe` is EXE),
+        # pinned by tests/test_systemgen.py.
+        store = self.store()
         for name in STORE_PROGRAMS:
-            self.assertIn(name, entries, "%s is not in the store" % name)
-            self.assertEqual(entries[name]["type"], "EXE", name)
-            self.assertEqual(entries[name]["path"], name, name)
+            self.assertIn(name, store, "%s is not in the store" % name)
 
     def test_the_store_fits_its_capacity(self):
         if not os.path.exists(STORE):
@@ -255,12 +255,16 @@ class TestBuildWiring(unittest.TestCase):
         makefile = read(MAKEFILE)
         self.assertIn("exe_program,hwtest,tests/hwtest", makefile)
         self.assertIn("hwtest.c,STACK=256,STAGE=1", makefile)
-        # Production packs it and the programs its stages run.
+        # Production packs it and the programs its stages run: each is
+        # one exe_program line and one store entry.
+        system = json.loads(read(SYSTEM))
         for name in STORE_PROGRAMS:
-            self.assertIn("$(MODULES)/%s" % name, makefile)
+            self.assertIn(name, system["store"])
         # `X /system/hwtest.exe` needs the EXE on the store, not a boot
         # program: production still boots straight to the monitor.
-        self.assertIn("ROMFS_MANIFEST := recovery/manifest.json", makefile)
+        system = json.loads(read(SYSTEM))
+        self.assertEqual(system["boot"], "/system/monitor.exe")
+        self.assertIn("hwtest.exe", system["store"])
 
 
 class TestSmokeMode(unittest.TestCase):

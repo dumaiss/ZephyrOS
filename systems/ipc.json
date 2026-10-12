@@ -1,0 +1,23 @@
+{
+  "schema": "kos-system-1",
+  "name": "ipc",
+  "drivers": [
+    "sio",
+    "console-serial",
+    "tests/target/ipc/manifests/ioc",
+    "tests/target/ipc/manifests/fat",
+    "tests/target/ipc/manifests/vfs",
+    "tests/target/ipc/manifests/echo",
+    "tests/target/ipc/manifests/con",
+    "tests/target/ipc/manifests/irqx"
+  ],
+  "boot": "/system/ipccopy.exe",
+  "store": [
+    "ipccopy.exe",
+    "ipc.exe"
+  ],
+  "cflags": [
+    "-DKOS_IPC_SELFTEST=1",
+    "-Itests/target/include"
+  ]
+}

@@ -20,7 +20,7 @@
 #define KOS_RFST_FAIL_CROSS    0x08u
 #define KOS_RFST_FAIL_CONSOLE  0x09u
 
-/* Acceptance-manifest geometry (tests/subsys/manifest.json, packed by
+/* Acceptance-store geometry (systems/subsystem.json, packed by
  * tools/romfspack.py into the same logical stream as production).  The
  * first entry's payload offset -- the file-relative position of the
  * 48-KiB logical window boundary -- is emitted as CROSSPAGE_OFFSET into

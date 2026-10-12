@@ -49,7 +49,7 @@ DRIVER_C = os.path.join(ROOT, "drivers", "hid", "hid.c")
 # Package 41: HID is a bank-6 driver image - one hot segment (the whole
 # driver, as before, plus the protocol dispatch) and no boot segment.
 MANIFEST = os.path.join(ROOT, "drivers", "hid", "hid.json")
-RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
+PRODUCTION_SYSTEM = os.path.join(ROOT, "systems", "production.json")
 TARGET_TEST_C = os.path.join(ROOT, "tests", "target", "hid",
                              "hid_test.c")
 TARGET_RUNNER = os.path.join(ROOT, "tests", "target", "support",
@@ -119,10 +119,11 @@ class TestHidDriverArtifact(unittest.TestCase):
         self.assertEqual(manifest["endpoints"],
                          [{"class": 4, "instance": 0, "version": 1,
                            "dispatch": "hid_driver_dispatch", "flags": 0}])
-        # The IOC dependency is image metadata: a store that places HID
-        # without IOC is a loader error before any HID byte runs.
-        self.assertEqual(manifest["depends"],
-                         [{"class": 5, "instance": 0}])
+        # The IOC dependency is image metadata, named symbolically in the
+        # source: a store that places HID without IOC is a loader error
+        # before any HID byte runs, and tools/systemgen.py resolves the
+        # name against the selected set (tests/test_systemgen.py).
+        self.assertEqual(manifest["depends"], ["IOC"])
 
     def test_packed_container(self):
         if not os.path.exists(MOD):
@@ -152,18 +153,22 @@ class TestHidDriverArtifact(unittest.TestCase):
         self.assertLess(endpoint["dispatch"],
                         hot["base"] + hot["image_size"])
 
-    def test_romfs_entry_and_boot_order(self):
-        manifest = _load_json(RECOVERY_MANIFEST)
-        names = [entry["name"] for entry in manifest["files"]]
-        self.assertEqual(names, ["sio.mod", "ioc.mod", "hid.mod",
-                                 "v9958.mod", "console-v9958-hid.mod",
-                                 "drivers.man", "iocfat.mod",
-                                 "monitor.exe",
-                                 # The production feature exerciser and the
-                                 # outcome programs it runs (45b).
-                                 "hwtest.exe", "xmem_selftest.exe",
-                                 "xmem_child.exe", "xmem_far.exe",
-                                 "fs_selftest.exe", "fs_child.exe"])
+    def test_system_file_and_boot_order(self):
+        # Package 49a: the system file names the driver load order and the
+        # store's own files; the generated store manifest (the driver
+        # images, drivers.man, then those files) is
+        # tests/test_systemgen.py's business.
+        system = _load_json(PRODUCTION_SYSTEM)
+        self.assertEqual(system["drivers"],
+                         ["sio", "ioc", "hid", "v9958", "console-v9958-hid",
+                          "iocfat"])
+        self.assertEqual(system["store"],
+                         ["monitor.exe",
+                          # The production feature exerciser and the
+                          # outcome programs it runs (45b).
+                          "hwtest.exe", "xmem_selftest.exe",
+                          "xmem_child.exe", "xmem_far.exe",
+                          "fs_selftest.exe", "fs_child.exe"])
         # The boot manifest orders the drivers; HID's declared dependency
         # on the IOC class is what makes the loader place IOC first.
         manifest_name = _read(os.path.join(ROOT, "abi", "kos",
@@ -176,20 +181,22 @@ class TestHidDriverArtifact(unittest.TestCase):
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
         self.assertIn("hid-test:", makefile)
-        self.assertIn("$(call DRV_MANIFEST,$(1))", makefile)
+        # Package 49a: the driver set and the resolved manifests are the
+        # system file's, and one foreach emits the pack rule per driver.
+        self.assertIn("$(BUILD)/drivers/$(1).json", makefile)
         self.assertIn("hid.rel", makefile)
         # The HID diagnostic runs in the console-integration image (work
         # package 42d merged the per-device images); the table row links
-        # it and defines the group's guard.
-        self.assertIn("KOS_HID_SELFTEST", makefile)
-        index = makefile.index("ifeq ($(KOS_CONSOLE_INTEGRATION_SELFTEST),1)")
+        # it and the system file carries the group's flags.
+        index = makefile.index("SYSTEM_TEST_OBJS.console-integration :=")
         self.assertIn("$(BUILD)/hid_test.rel",
                       makefile[index:index + 400])
         self.assertIn("hid_test", makefile)
-        # Which drivers an image boots is its manifest's driver set.
-        image_manifest = os.path.join(ROOT, "tests", "console",
-                                      "manifest-integration.json")
-        self.assertIn('"name": "hid.mod"', _read(image_manifest))
+        # Which drivers an image boots is its system file's driver set.
+        system = _load_json(os.path.join(ROOT, "systems",
+                                         "console-integration.json"))
+        self.assertIn("hid", system["drivers"])
+        self.assertIn("-DKOS_HID_SELFTEST=1", system["cflags"])
 
     def test_production_map_has_no_linked_hid_symbols(self):
         if not os.path.exists(MAP):

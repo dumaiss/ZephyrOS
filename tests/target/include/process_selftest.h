@@ -101,7 +101,7 @@
 #define KOS_PCST_BIG2_MUL   13u
 #define KOS_PCST_BIG2_ADD   0x5Bu
 
-/* Acceptance-manifest names (tests/subsys/manifest.json). */
+/* Acceptance-store names (systems/subsystem.json). */
 #define KOS_PCST_EXETEST_NAME "exetest.exe"
 #define KOS_PCST_RETURN_NAME  "exe-return.exe"
 /* A deliberately corrupted container and the untouched valid copy:

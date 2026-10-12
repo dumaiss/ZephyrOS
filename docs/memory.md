@@ -598,8 +598,9 @@ The gate stack size is validated exactly (`kos_gate_stack_top - kos_gate_stack
 == KOS_GATE_STACK_SIZE`, 384 bytes from the platform constant) and the whole block must sit inside
 `E000h-FEFFh`.
 
-Self-test builds only (`make subsystem-selftest` links
-`KOS_SUBSYS_SELFTEST`) add a second small block
+Self-test builds only (`make subsystem-selftest` builds
+`systems/subsystem.json`, whose cflags carry `-DKOS_SUBSYS_SELFTEST=1`)
+add a second small block
 (`kos_selftest_kernel_sp`, `_kos_selftest_bank`, `_kos_selftest_result`)
 in the same common data area.
 

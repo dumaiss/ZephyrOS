@@ -473,14 +473,11 @@ class TestDriverSet(unittest.TestCase):
             handle.write(container)
         return path
 
-    def drivers(self, paths):
-        out = os.path.join(self.tmp.name, "drivers.man")
+    def plan(self, paths):
         report = os.path.join(self.tmp.name, "plan.json")
-        modpack.cmd_drivers([out] + paths + ["--report", report])
-        with open(out, "rb") as handle:
-            manifest = handle.read()
+        modpack.cmd_plan([report] + paths)
         with open(report, encoding="utf-8") as handle:
-            return manifest, json.load(handle)
+            return json.load(handle)
 
     def size_of(self, container, role):
         info = modpack.parse_container(container)
@@ -489,14 +486,12 @@ class TestDriverSet(unittest.TestCase):
                 return segment["image_size"] + segment["bss_size"]
         return None
 
-    def test_manifest_names_the_images_in_load_order(self):
+    def test_the_plan_names_the_images_in_load_order(self):
         containers, _ = self.pack(self.image("one", export=(10, 0)),
                                   self.image("two", export=(11, 0)))
-        manifest, report = self.drivers([self.write("one.mod", containers[0]),
-                                          self.write("two.mod", containers[1])])
-        entries = [manifest[i:i + 24].split(b"\0")[0]
-                   for i in range(0, len(manifest), 24)]
-        self.assertEqual(entries, [b"one.mod", b"two.mod"])
+        report = self.plan([self.write("one.mod", containers[0]),
+                            self.write("two.mod", containers[1])])
+        self.assertEqual(report["order"], ["one.mod", "two.mod"])
         self.assertEqual([entry["name"] for entry in report["drivers"]],
                          ["one.mod", "two.mod"])
 
@@ -591,12 +586,12 @@ class TestDriverSet(unittest.TestCase):
             for segment in info["segments"]:
                 self.assertEqual(segment["base"], rows[name][segment["role"]])
 
-    def test_the_drivers_command_accepts_the_linked_containers(self):
+    def test_the_plan_command_accepts_the_linked_containers(self):
         containers, ledger = self.pack(
             self.image("ioc", export=(5, 0)),
             self.image("hid", export=(4, 0),
                        depends=[{"class": 5, "instance": 0}]))
-        _manifest, report = self.drivers(
+        report = self.plan(
             [self.write("ioc.mod", containers[0]),
              self.write("hid.mod", containers[1])])
         self.assertEqual(report["nucleus"], ledger)
@@ -606,15 +601,15 @@ class TestDriverSet(unittest.TestCase):
                          modpack.parse_container(
                              containers[1])["segments"][0]["base"])
 
-    def test_the_drivers_command_reports_the_driver_ledgers(self):
+    def test_the_plan_command_reports_the_driver_ledgers(self):
         containers, _ = self.pack(self.image("one", export=(10, 0)))
         import contextlib
         import io
-        out = os.path.join(self.tmp.name, "drivers.man")
+        out = os.path.join(self.tmp.name, "plan.json")
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
-            modpack.cmd_drivers([out,
-                                   self.write("one.mod", containers[0])])
+            modpack.cmd_plan([out,
+                              self.write("one.mod", containers[0])])
         text = buffer.getvalue()
         self.assertIn("driver one.mod: hot ", text)
         self.assertIn("driver hot: ", text)

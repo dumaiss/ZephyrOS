@@ -84,11 +84,17 @@ class SerialBase(ConsoleReplayBase):
 
     def driver_plan(self):
         """The nucleus ledger the packer's set report carries for this
-        image (tools/modpack.py drivers --report drivers.plan.json)."""
+        image (tools/modpack.py plan drivers.plan.json)."""
         path = os.path.join(ROOT, self.IMAGE_SUBDIR, "modules",
                             "drivers.plan.json")
         with open(path, "r") as handle:
             return json.load(handle)["nucleus"]
+
+    def manifest_names(self):
+        """The store manifest tools/systemgen.py wrote for this image."""
+        path = os.path.join(ROOT, self.IMAGE_SUBDIR, "store.json")
+        with open(path) as handle:
+            return [entry["name"] for entry in json.load(handle)["files"]]
 
     def store_entries(self):
         path = os.path.join(ROOT, self.IMAGE_SUBDIR, "recovery.romfs")
@@ -189,11 +195,7 @@ class TestSerialVariant(SerialBase):
 
     def test_store_carries_the_serial_console(self):
         entries = self.store_entries()
-        manifest = os.path.join(ROOT, "tests", "console",
-                                "manifest-serial.json")
-        with open(manifest) as handle:
-            names = [entry["name"] for entry in json.load(handle)["files"]]
-        self.assertEqual(sorted(entries), sorted(names))
+        self.assertEqual(sorted(entries), sorted(self.manifest_names()))
         self.assertIn("console-serial.mod", entries)
         self.assertIn("monitor.exe", entries)
 
@@ -244,11 +246,7 @@ class TestRequiredConsoleFailure(SerialBase):
 
     def test_store_omits_only_the_console_image(self):
         entries = self.store_entries()
-        manifest = os.path.join(ROOT, "tests", "console",
-                                "manifest-serial-missing.json")
-        with open(manifest) as handle:
-            names = [entry["name"] for entry in json.load(handle)["files"]]
-        self.assertEqual(sorted(entries), sorted(names))
+        self.assertEqual(sorted(entries), sorted(self.manifest_names()))
         self.assertNotIn("console-serial.mod", entries)
 
         # The boot manifest still lists the console: the store is what is
@@ -304,11 +302,7 @@ class TestRequiredConsoleInitFailure(SerialBase):
 
     def test_store_and_manifest_carry_the_refusing_driver(self):
         entries = self.store_entries()
-        manifest = os.path.join(ROOT, "tests", "console",
-                                "manifest-init-fail.json")
-        with open(manifest) as handle:
-            names = [entry["name"] for entry in json.load(handle)["files"]]
-        self.assertEqual(sorted(entries), sorted(names))
+        self.assertEqual(sorted(entries), sorted(self.manifest_names()))
         self.assertIn("init_fail.mod", entries)
 
         # The boot manifest lists exactly the refusing image, and the

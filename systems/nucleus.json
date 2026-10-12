@@ -1,0 +1,46 @@
+{
+  "schema": "kos-system-1",
+  "name": "nucleus",
+  "drivers": [
+    "sio",
+    "console-serial"
+  ],
+  "boot": "/system/monitor.exe",
+  "store": [
+    "crosspage.bin",
+    "monitor.exe",
+    "exetest.exe",
+    "exe2probe.exe",
+    "exe2seg.exe",
+    "exe2big.exe",
+    "exe-return.exe",
+    "exe-bad-magic.exe",
+    "exe-bad-format.exe",
+    "exe-bad-abi.exe",
+    "exe-bad-flags.exe",
+    "exe-bad-reserved0.exe",
+    "exe-bad-header-size.exe",
+    "exe-bad-reserved1.exe",
+    "exe-zero-image.exe",
+    "exe-truncated.exe",
+    "exe-padded.exe",
+    "exe-bad-entry.exe",
+    "exe-small-stack.exe",
+    "exe-image-end.exe",
+    "exe-bss-end.exe",
+    "exe-stack-collision.exe",
+    "exe-wrong-type.dat",
+    "exe-seg-count.exe",
+    "exe-seg-slots.exe",
+    "exe-seg-total.exe",
+    "exe-seg-table.exe",
+    "exe-seg-kind.exe",
+    "exe-far-oversize.exe",
+    "exe-seg-payload.exe",
+    "exe-seg-id.exe",
+    "exe-seg-reserved.exe"
+  ],
+  "cflags": [
+    "-DKOS_NUCLEUS_SELFTEST=1"
+  ]
+}

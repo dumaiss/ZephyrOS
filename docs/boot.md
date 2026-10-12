@@ -246,7 +246,8 @@ build/konaos.manifest.json  sizes, per-page hashes, ROMFS placement
 ```
 
 `tools/romfspack.py` builds and validates `build/recovery.romfs` from
-`recovery/manifest.json` (see `docs/romfs-format.md`).
+`build/store.json`, the store manifest `tools/systemgen.py` generates for
+the image's system file (see `docs/romfs-format.md`).
 `tools/pack_image.py` validates the layout, places the recovery stream at
 logical offset `L` into offset `L % C000h` of page `2 + L / C000h`, keeps
 the boot pages untouched, and fails the build if any byte is linked

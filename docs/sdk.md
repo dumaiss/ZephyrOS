@@ -542,10 +542,10 @@ host check; the image test is added by `make helloworld-image`.
 make helloworld-image
 ```
 
-builds a separate tree (`build-helloworld/`) with
-`KOS_BOOT_PROGRAM=/system/hello.exe` and a recovery manifest that adds
-`hello.exe` to the production file set.  Nothing else differs from
-production: no kernel edit, no new syscall, no new module.  Booting that
+builds a separate tree (`build-helloworld/`) from
+`systems/helloworld.json`, whose `boot` is `/system/hello.exe` and whose
+store adds `hello.exe` to the production file set.  Nothing else differs
+from production: no kernel edit, no new syscall, no new module.  Booting that
 image is the end-to-end proof that a user program inherits the boot path,
 and it doubles as the transcript `tests/test_sdk.py` replays.
 
@@ -570,9 +570,9 @@ program.  Its primary half maps its own `FAR_CODE` segment with
 returned latch with the token; the far half writes its line from a
 literal inside the aperture, calls back into primary code and returns
 `(latch << 8) | value`.  Booting an image whose boot program is
-`/system/fardemo.exe` (`make BUILD=build-fardemo KOS_HELLOWORLD_IMAGE=1
-KOS_BOOT_PROGRAM=/system/fardemo.exe
-build-fardemo/konaos-helloworld.bin`) prints
+`/system/fardemo.exe` (a system file whose driver set and store are the
+helloworld image's and whose `boot` names `fardemo.exe`; `make
+BUILD=build-fardemo SYSTEM=<that system>` builds it) prints
 
 ```text
 fardemo: begin
@@ -596,5 +596,5 @@ per program, no entry assembly, no kernel header.  It is the reference
 implementation for a large SDK program (line editing, filesystem use,
 `run` for its commands), so anything it cannot express is an SDK gap
 to fix in `user/sdk/` rather than a reason to bypass it.  M10 then sets
-`KOS_BOOT_PROGRAM=/system/zshell.exe` in `config/system.mk`; the shell
-needs no other kernel change.
+`"boot": "/system/zshell.exe"` in the shell image's system file; the
+shell needs no other kernel change.

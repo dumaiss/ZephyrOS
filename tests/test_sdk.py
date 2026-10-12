@@ -336,8 +336,9 @@ class TestHelloExe(unittest.TestCase):
                     "hello.exe links kernel/FS/diag symbol %s" % symbol)
 
     def test_no_exe_manifest_is_checked_in(self):
-        """Every EXE manifest is generated; only the helloworld ROMFS
-        manifest (not a EXE container manifest) is a source file."""
+        """Every EXE manifest is generated, and so is the ROMFS store
+        manifest (work package 49a): an image's store is described by its
+        systems/<name>.json and nothing else."""
         checked_in = []
         for base in ("tests/target", "user/monitor", "user/helloworld"):
             for dirpath, _dirnames, filenames in os.walk(
@@ -347,15 +348,14 @@ class TestHelloExe(unittest.TestCase):
                         checked_in.append(
                             os.path.join(dirpath, filename)
                             .replace(ROOT + os.sep, "").replace(os.sep, "/"))
-        # tests/target/ipc/manifests/*.json are the work-package-39 MOD
-        # container pack inputs (acceptance images only), not EXE
-        # manifests.
+        # tests/target/ipc/manifests/*.json are the work-package-39 driver
+        # manifests (acceptance images only), not EXE manifests.
         checked_in = [path for path in checked_in
                       if not path.startswith(
                           "tests/target/ipc/manifests/")]
-        self.assertEqual(checked_in, ["user/helloworld/manifest.json"])
-        manifest = json.loads(_read("user/helloworld/manifest.json"))
-        self.assertEqual(manifest["format"], "romfs-v1")
+        self.assertEqual(checked_in, [])
+        system = json.loads(_read("systems/helloworld.json"))
+        self.assertIn("hello.exe", system["store"])
 
 
 class TestSdkBoundary(unittest.TestCase):

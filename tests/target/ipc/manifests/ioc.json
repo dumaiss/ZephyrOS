@@ -1,8 +1,9 @@
 {
+  "schema": "kos-driver-1",
   "name": "ioc",
   "objects": [
-    "ioc.rel",
-    "ioc_boot.rel",
+    "ipc_ioc.rel",
+    "ipc_ioc_boot.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "ipc_ioc_init",

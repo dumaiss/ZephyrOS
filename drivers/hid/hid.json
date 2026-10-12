@@ -1,4 +1,5 @@
 {
+  "schema": "kos-driver-1",
   "name": "hid",
   "objects": [
     "hid.rel",
@@ -37,9 +38,6 @@
     }
   ],
   "depends": [
-    {
-      "class": 5,
-      "instance": 0
-    }
+    "IOC"
   ]
 }

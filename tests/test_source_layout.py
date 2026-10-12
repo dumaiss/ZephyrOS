@@ -100,7 +100,7 @@ OWNER_FILES = (
     "tools/romfspack.py",
     "tests/fs/fs_selftest.c",
     "tests/fs/fs_child.c",
-    "tests/fs/manifest.json",
+    "systems/fs.json",
     "tests/test_fs_selftest_sim.py",
     "formats/include/romfs.h",
     "formats/include/exe.h",
@@ -178,8 +178,8 @@ OWNER_FILES = (
     "user/monitor/status.c",
     "user/monitor/status.h",
     "tools/exepack.py",
-    "recovery/manifest.json",
-    "tests/subsys/manifest.json",
+    "systems/production.json",
+    "systems/subsystem.json",
     "tests/subsys/gen_crosspage.py",
     "tests/subsys/gen_romfs_expect.py",
     "tests/subsys/gen_exe_fixtures.py",
@@ -216,8 +216,10 @@ OWNER_FILES = (
     "tests/target/include/hid_selftest.h",
     "tests/target/console/integration_test.c",
     "tests/target/include/console_integration_selftest.h",
-    "tests/console/manifest-serial.json",
-    "tests/console/manifest-serial-missing.json",
+    "systems/console-serial.json",
+    "systems/console-serial-missing.json",
+    "systems/console-integration.json",
+    "systems/console-init-fail.json",
     "drivers/runtime/sdcc_indirect_calls.asm",
     "tests/target/syscall/syscall_entry.asm",
     "tests/target/syscall/syscall_test.c",
@@ -235,11 +237,36 @@ OWNER_FILES = (
     "tests/target/include/nucleus_entry.inc",
     "tests/target/support/target_test.c",
     "tests/target/support/ctc_test.c",
+    "systems/nucleus.json",
+    "systems/ipc.json",
+    "systems/ns.json",
+    "systems/xmem.json",
+    "systems/helloworld.json",
+    "tools/systemgen.py",
+    "tests/test_systemgen.py",
 )
 
 # Implementation paths removed by the ownership refactors.  None of these
 # may be referenced by live build/source files.
+# Work package 49a replaced the per-image build composition with one
+# systems/<name>.json per image, so the Makefile conditionals, the boot
+# setting's validator and every hand-written store manifest are gone.
 REMOVED_PATHS = (
+    "config/system.mk",
+    "tools/bootprogram.py",
+    "recovery/manifest.json",
+    "tests/subsys/manifest.json",
+    "tests/console/manifest-integration.json",
+    "tests/console/manifest-serial.json",
+    "tests/console/manifest-serial-missing.json",
+    "tests/console/manifest-init-fail.json",
+    "tests/fs/manifest.json",
+    "tests/ipc/manifest.json",
+    "tests/ns/manifest.json",
+    "tests/xmem/manifest.json",
+    "tests/ns/manifests/sio.json",
+    "tests/ns/manifests/console-serial.json",
+    "user/helloworld/manifest.json",
     "platform/zephyr80/reset.asm",
     "platform/zephyr80/banking.asm",
     "platform/zephyr80/page_zero.asm",
@@ -422,11 +449,13 @@ EMITTER_PATTERNS = (
 )
 
 # Live documentation/build files that must never name the removed paths.
+# Code only: the test suite never tests documentation (owner rule,
+# 2026-10-12), so docs/ and README.md are not scanned.
 SCAN_ROOTS = (
-    "boot", "docs", "drivers", "formats", "kernel", "libk",
+    "boot", "drivers", "formats", "kernel", "libk",
     "linker", "platform", "tests", "tools",
 )
-SCAN_TOP_FILES = ("Makefile", "README.md")
+SCAN_TOP_FILES = ("Makefile",)
 
 # EXE v1 code tokens (work package 44a): v2 replaced v1 outright, so the
 # old magic, manifest format and header size cannot reappear.  Prose that
@@ -1169,10 +1198,10 @@ class TestNoResidentBlockDriver(unittest.TestCase):
             % ", ".join(offenders))
 
     def test_production_romfs_packs_no_block_driver(self):
-        manifest = json.loads(
-            _read(os.path.join(ROOT, "recovery", "manifest.json")))
-        offenders = [entry["name"] for entry in manifest["files"]
-                     if self.BLOCK_NAME_RE.search(entry["name"])]
+        system = json.loads(
+            _read(os.path.join(ROOT, "systems", "production.json")))
+        offenders = [name for name in system["drivers"] + system["store"]
+                     if self.BLOCK_NAME_RE.search(name)]
         self.assertEqual(
             offenders, [],
             "the production ROMFS packs a block driver: %s"
@@ -1311,6 +1340,22 @@ class TestNoStaleRemovedPaths(unittest.TestCase):
         self.assertEqual(stale, [],
                          "EXE v1 code tokens survived in live files:\n%s"
                          % "\n".join(stale))
+
+    def test_no_live_file_carries_the_retired_romfs_magic(self):
+        """The ROMFS magic the format retracted (work package 49a renamed
+        it to KRFS): the header constants, the packer and every fixture
+        carry the new four-byte token and never the old one."""
+        stale = []
+        for path in self._live_files():
+            try:
+                text = _read(path)
+            except (IOError, OSError):
+                continue
+            if RETIRED_ROMFS_MAGIC in text:
+                stale.append(os.path.relpath(path, ROOT))
+        self.assertEqual(stale, [],
+                         "the retired ROMFS magic survived in: %s"
+                         % ", ".join(stale))
 
 
 # The milestone acceptance window (work/00-SUPERVISOR.md, "Milestone
@@ -1711,6 +1756,111 @@ class TestBuildOutputHygiene(unittest.TestCase):
         self.assertEqual(tracked, [],
                          "generated build directories contain tracked "
                          "files: %s" % tracked)
+
+
+# Work package 49a: the per-image build composition is one system file per
+# image.  The Makefile selects a system and wires it; no image is composed
+# by conditionals, and no hand-written store manifest or boot-setting
+# validator survives.
+SYSTEM_COMPOSITION_TOKENS = (
+    "KOS_DRIVERS :=",
+    "KOS_BOOT_PROGRAM :=",
+    "KOS_BOOT_PROGRAM ?=",
+    "ROMFS_MANIFEST",
+    "DRV_MANIFEST_DIR",
+    "KOS_CONSOLE ?=",
+    "KOS_SMOKE_HOST_SYNC=1",
+    "IPC_DRIVER_NAMES",
+    "IPC_MODDIR",
+    "include config/system.mk",
+    "KOS_SUBSYS_SELFTEST",
+    "KOS_NUCLEUS_SELFTEST",
+    "KOS_CONSOLE_INTEGRATION_SELFTEST",
+    "KOS_CONSOLE_SERIAL_SELFTEST",
+    "KOS_CONSOLE_SERIAL_FAIL_SELFTEST",
+    "KOS_DRIVER_INIT_FAIL_SELFTEST",
+    "KOS_IOC_SELFTEST",
+    "KOS_HID_SELFTEST",
+    "KOS_VIDEO_SELFTEST",
+    "KOS_FS_SELFTEST",
+    "KOS_XMEM_SELFTEST",
+    "KOS_NS_SELFTEST",
+    "KOS_IPC_SELFTEST",
+    "KOS_HELLOWORLD_IMAGE",
+)
+
+# The ROMFS magic the format retracted in the same pass (work package 49a
+# renamed it to KRFS).  The header constants live in formats/include/romfs.h
+# and the packer in tools/romfspack.py; no live file may carry the old
+# four-byte token.
+RETIRED_ROMFS_MAGIC = "ZRFS"
+
+
+class TestSystemComposition(unittest.TestCase):
+    def _image_systems(self):
+        """The system each image target selects, as target -> name."""
+        text = _read(os.path.join(ROOT, "Makefile"))
+        pairs = {}
+        target = None
+        for line in text.splitlines():
+            if line and not line.startswith(("\t", " ")):
+                match = re.match(r"^([A-Za-z][A-Za-z0-9-]*):", line)
+                target = match.group(1) if match else None
+            elif line.startswith("\t") and target is not None:
+                for name in re.findall(r"SYSTEM=([a-z0-9-]+)", line):
+                    pairs.setdefault(name, set()).add(target)
+        return pairs
+
+    def test_every_system_file_is_selected_by_an_image_target(self):
+        systems = sorted(name[:-5] for name in os.listdir(
+            os.path.join(ROOT, "systems")) if name.endswith(".json"))
+        selected = set(self._image_systems())
+        # The default build is a system too (SYSTEM ?= production).
+        text = _read(os.path.join(ROOT, "Makefile"))
+        match = re.search(r"^SYSTEM\s*\?=\s*([a-z0-9-]+)", text, re.M)
+        self.assertIsNotNone(match, "no SYSTEM default in the Makefile")
+        selected.add(match.group(1))
+        self.assertEqual(sorted(selected), systems,
+                         "image targets and systems/ disagree")
+
+    def test_every_selected_system_has_a_description(self):
+        systems = set(name[:-5] for name in os.listdir(
+            os.path.join(ROOT, "systems")) if name.endswith(".json"))
+        for name in self._image_systems():
+            self.assertIn(name, systems,
+                          "SYSTEM=%s has no systems/%s.json" % (name, name))
+
+    def test_makefile_composes_no_image_by_conditional(self):
+        text = _read(os.path.join(ROOT, "Makefile"))
+        offenders = [token for token in SYSTEM_COMPOSITION_TOKENS
+                     if token in text]
+        self.assertEqual(
+            offenders, [],
+            "the Makefile still composes images: %s" % ", ".join(offenders))
+
+    def test_the_suffix_table_precedes_the_immediate_assignment(self):
+        """The image-name suffix is read by an immediate assignment: it
+        must follow the rows it reads, or every image target resolves to
+        the unsuffixed production image name (the image matrix catches
+        it, this names it)."""
+        text = _read(os.path.join(ROOT, "Makefile"))
+        rows = [index for index, line in enumerate(text.splitlines())
+                if line.startswith("SYSTEM_SUFFIX.")]
+        uses = [index for index, line in enumerate(text.splitlines())
+                if line.startswith("PK_SUFFIX :=")]
+        self.assertTrue(rows, "no SYSTEM_SUFFIX rows in the Makefile")
+        self.assertTrue(uses, "no PK_SUFFIX assignment in the Makefile")
+        self.assertGreater(min(uses), max(rows),
+                           "PK_SUFFIX is assigned before the suffix table")
+
+    def test_the_store_is_built_from_the_system_file(self):
+        # The store manifest, the boot manifest and the resolved driver
+        # manifests are generated inputs: the Makefile builds them with
+        # tools/systemgen.py and the packer reads the generated store.
+        text = _read(os.path.join(ROOT, "Makefile"))
+        self.assertIn("tools/systemgen.py $(SYSTEM_JSON)", text)
+        self.assertIn("$(BUILD)/store.json", text)
+        self.assertIn("$(BUILD)/drivers/", text)
 
 
 if __name__ == "__main__":

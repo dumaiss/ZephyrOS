@@ -1,0 +1,18 @@
+{
+  "schema": "kos-system-1",
+  "name": "helloworld",
+  "drivers": [
+    "sio",
+    "ioc",
+    "hid",
+    "v9958",
+    "console-v9958-hid"
+  ],
+  "boot": "/system/hello.exe",
+  "store": [
+    "monitor.exe",
+    "hello.exe",
+    "fardemo.exe"
+  ],
+  "cflags": []
+}

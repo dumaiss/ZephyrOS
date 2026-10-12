@@ -14,7 +14,7 @@ manifest:
 Input paths resolve against --objdir (default: the manifest directory).
 The on-disk layout is little-endian:
 
-    16-byte header   magic[4]="ZRFS", version:u8=1, entry_size:u8=36,
+    16-byte header   magic[4]="KRFS", version:u8=1, entry_size:u8=36,
                      file_count:u16, directory_size:u16, reserved:u16=0,
                      image_size:u32
     36-byte entries  name[24] (NUL-terminated, zero-padded),
@@ -46,7 +46,7 @@ import re
 import sys
 from pathlib import Path
 
-MAGIC = b"ZRFS"
+MAGIC = b"KRFS"
 VERSION = 1
 HEADER_SIZE = 16
 ENTRY_SIZE = 36
@@ -300,7 +300,7 @@ def parse_image(data, geom=None):
     if len(data) < HEADER_SIZE:
         raise RomfsError("image is shorter than the %d-byte header" % HEADER_SIZE)
     if data[0:4] != MAGIC:
-        raise RomfsError("bad magic %r (expected ZRFS)" % bytes(data[0:4]))
+        raise RomfsError("bad magic %r (expected KRFS)" % bytes(data[0:4]))
     version = data[4]
     if version != VERSION:
         raise RomfsError("unsupported version %d" % version)

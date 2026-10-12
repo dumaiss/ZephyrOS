@@ -78,14 +78,16 @@ Usage:
                      [--set MANIFEST ...] [--report FILE]
     modpack.py validate <container.mod> [...]
     modpack.py dump <container.mod> [...]
-    modpack.py drivers <out.man> <container.mod> [...] [--report FILE]
+    modpack.py plan <out.plan.json> <container.mod> [...]
 
-The `drivers` command validates a whole set in load order (unique
+The `plan` command validates a set of packed images in load order (unique
 endpoints, resolvable dependencies, publications, a tier allocation that
-fits) and writes the flat boot manifest: a sequence of 24-byte name
-records, the ROMFS name field exactly.  The set's plan is reported as
-`drivers.plan.json`, which supplies the bank-6 driver ledger
-(tools/pack_image.py reads it).
+fits) and writes the plan report `drivers.plan.json`: one row per image and
+the bank-6 driver ledger tools/pack_image.py reads.  The boot manifest
+`drivers.man` and the images' names are no longer written here: they come
+from tools/systemgen.py, which resolves the image's system file and hands
+this packer one resolved manifest per selected driver (--set points at
+those copies).
 """
 
 import hashlib
@@ -148,7 +150,7 @@ FS_ROOT = "/fs"
 # The 8-bit protocol types a publication may name (abi/kos/object.h).
 TYPES = {
     "SERIAL": 1, "VIDEO": 2, "BLOCK": 3, "INPUT": 4, "IOC": 5,
-    "CONSOLE": 6, "FILE": 7, "fs": 8, "SOUND": 9, "TIMER": 10,
+    "CONSOLE": 6, "FILE": 7, "FS": 8, "SOUND": 9, "TIMER": 10,
 }
 # The boot manifest entry is the ROMFS name field exactly (romfs-format.md,
 # formats/include/mod.h).
@@ -515,13 +517,13 @@ def load_driver_manifest(manifest, path, objdir):
         if full == FS_ROOT:
             # The filesystem-namespace root: the whole volume is one
             # instance, so it names no object.
-            if publish.get("type") != "fs":
+            if publish.get("type") != "FS":
                 raise ModError("%s: %s must be published with type FS"
                                 % (where, FS_ROOT))
             if int(publish.get("object", 0)) != 0:
                 raise ModError("%s: %s is the provider root and names no "
                                 "object" % (where, FS_ROOT))
-            publish["type_code"] = TYPES["fs"]
+            publish["type_code"] = TYPES["FS"]
             name = FS_ROOT
         elif full.startswith(DEVICE_ROOT + "/"):
             name = full[len(DEVICE_ROOT):]
@@ -1763,22 +1765,12 @@ def format_driver_row(row):
     return "driver %s: %s" % (row["name"], " ".join(parts))
 
 
-def cmd_drivers(args):
+def cmd_plan(args):
     if len(args) < 2:
-        raise ModError("usage: modpack.py drivers <out.man> "
-                        "<container.mod> [...] [--report FILE]")
+        raise ModError("usage: modpack.py plan <out.plan.json> "
+                        "<container.mod> [...]")
     out_path = args[0]
-    report_path = None
-    containers = []
-    rest = list(args[1:])
-    while rest:
-        item = rest.pop(0)
-        if item == "--report" and rest:
-            report_path = rest.pop(0)
-        else:
-            containers.append(item)
-    if not containers:
-        raise ModError("drivers: no containers given")
+    containers = list(args[1:])
 
     infos = []
     names = []
@@ -1792,12 +1784,6 @@ def cmd_drivers(args):
         if info.get("module_type") != "driver":
             raise ModError("%s: not a driver image" % path)
         name = os.path.basename(path)
-        encoded = name.encode("ascii")
-        if (len(encoded) > MANIFEST_ENTRY_SIZE - 1 or "/" in name or
-                not all(0x20 <= byte <= 0x7E for byte in encoded)):
-            raise ModError("%s: the ROMFS name %r is not a flat name of at "
-                            "most %d characters"
-                            % (path, name, MANIFEST_ENTRY_SIZE - 1))
         if name.lower() in [existing.lower() for existing in names]:
             raise ModError("%s: duplicate image name %r" % (path, name))
         row = {"name": name}
@@ -1839,20 +1825,13 @@ def cmd_drivers(args):
         names.append(name)
         rows.append(row)
     if len(infos) > MAX_IMAGES:
-        raise ModError("drivers: %d images; the loader holds %d"
+        raise ModError("plan: %d images; the loader holds %d"
                         % (len(infos), MAX_IMAGES))
 
     placed = [{"name": name, "segments": info["segments"]}
               for name, info in zip(names, infos)]
     check_tier_overlap(rows, placed)
     ledger = driver_ledger(placed, rows)
-
-    manifest = bytearray()
-    for name in names:
-        encoded = name.encode("ascii")
-        manifest += encoded + bytes(MANIFEST_ENTRY_SIZE - len(encoded))
-    with open(out_path, "wb") as handle:
-        handle.write(bytes(manifest))
 
     for row in rows:
         print("modpack: %s" % format_driver_row(row))
@@ -1863,30 +1842,27 @@ def cmd_drivers(args):
     print("modpack: %s: %d driver images, load order as listed"
           % (out_path, len(infos)))
 
-    if report_path:
-        report = {
-            "format": "kos-drivers/1",
-            "manifest": out_path,
-            "order": names,
-            "drivers": [
-                {
-                    "name": name,
-                    "container": path,
-                    "hot_base": row.get("hot"),
-                    "io_base": row.get("io"),
-                    "boot_base": row.get("boot"),
-                    "bulk_base": row.get("bulk"),
-                    "endpoints": info["endpoints"],
-                    "dependencies": info["dependencies"],
-                }
-                for name, path, row, info in zip(names, containers, rows,
-                                                 infos)
-            ],
-            "nucleus": ledger,
-        }
-        with open(report_path, "w") as handle:
-            json.dump(report, handle, indent=2, sort_keys=True)
-            handle.write("\n")
+    report = {
+        "format": "kos-drivers/1",
+        "order": names,
+        "drivers": [
+            {
+                "name": name,
+                "container": path,
+                "hot_base": row.get("hot"),
+                "io_base": row.get("io"),
+                "boot_base": row.get("boot"),
+                "bulk_base": row.get("bulk"),
+                "endpoints": info["endpoints"],
+                "dependencies": info["dependencies"],
+            }
+            for name, path, row, info in zip(names, containers, rows, infos)
+        ],
+        "nucleus": ledger,
+    }
+    with open(out_path, "w") as handle:
+        json.dump(report, handle, indent=2, sort_keys=True)
+        handle.write("\n")
     return 0
 
 
@@ -1902,8 +1878,8 @@ def main(argv):
             return cmd_validate(argv[2:])
         if command == "dump":
             return cmd_dump(argv[2:])
-        if command == "drivers":
-            return cmd_drivers(argv[2:])
+        if command == "plan":
+            return cmd_plan(argv[2:])
         raise ModError("unknown command %r" % command)
     except ModError as exc:
         print("modpack: error: %s" % exc, file=sys.stderr)

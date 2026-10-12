@@ -46,6 +46,7 @@ sys.path.insert(0, HERE)
 
 import mapcheck  # noqa: E402
 import modpack  # noqa: E402
+import systemgen  # noqa: E402
 import fontpack  # noqa: E402
 from test_ioc import struct_member_order  # noqa: E402
 from maptools import (  # noqa: E402
@@ -63,7 +64,7 @@ FONT_ASM = os.path.join(ROOT, "drivers", "v9958", "v9958_font.asm")
 FONT_INC = os.path.join(ROOT, "drivers", "v9958", "assets",
                         "font_cp850_6x8.inc")
 MANIFEST = os.path.join(ROOT, "drivers", "v9958", "v9958.json")
-RECOVERY_MANIFEST = os.path.join(ROOT, "recovery", "manifest.json")
+PRODUCTION_SYSTEM = os.path.join(ROOT, "systems", "production.json")
 MAIN_C = os.path.join(ROOT, "kernel", "main.c")
 MAKEFILE = os.path.join(ROOT, "Makefile")
 MOD = os.path.join(ROOT, "build", "modules", "v9958.mod")
@@ -283,24 +284,27 @@ class TestDriverArtifact(unittest.TestCase):
         self.assertGreaterEqual(boot["entry"], boot["base"])
         self.assertLess(boot["entry"], boot["base"] + boot["image_size"])
 
-    def test_romfs_entry_and_boot_order(self):
-        manifest = _load_json(RECOVERY_MANIFEST)
-        names = [entry["name"] for entry in manifest["files"]]
-        self.assertEqual(names, ["sio.mod", "ioc.mod", "hid.mod",
-                                 "v9958.mod", "console-v9958-hid.mod",
-                                 "drivers.man", "iocfat.mod",
-                                 "monitor.exe",
-                                 # The production feature exerciser and the
-                                 # outcome programs it runs (45b).
-                                 "hwtest.exe", "xmem_selftest.exe",
-                                 "xmem_child.exe", "xmem_far.exe",
-                                 "fs_selftest.exe", "fs_child.exe"])
-        types = {entry["name"]: entry["type"]
-                 for entry in manifest["files"]}
-        self.assertEqual(types["v9958.mod"], "MOD")
+    def test_system_file_and_boot_order(self):
+        # Package 49a: the system file names the driver load order and the
+        # store's own files; the generated store manifest (whose media
+        # type follows from each name) is tests/test_systemgen.py's
+        # business.
+        system = _load_json(PRODUCTION_SYSTEM)
+        self.assertEqual(system["drivers"],
+                         ["sio", "ioc", "hid", "v9958", "console-v9958-hid",
+                          "iocfat"])
+        self.assertEqual(system["store"],
+                         ["monitor.exe",
+                          # The production feature exerciser and the
+                          # outcome programs it runs (45b).
+                          "hwtest.exe", "xmem_selftest.exe",
+                          "xmem_child.exe", "xmem_far.exe",
+                          "fs_selftest.exe", "fs_child.exe"])
+        self.assertEqual(systemgen.store_type("v9958.mod"), "MOD")
         # The font is the video image's bulk segment now; the recovery
         # store carries no separate copy of it.
-        self.assertNotIn("v9958-6x8.font", names)
+        self.assertNotIn("v9958-6x8.font", system["store"])
+        self.assertNotIn("v9958-6x8.font", system["drivers"])
         main = _read(MAIN_C)
         self.assertIn("driver_load_all(KOS_DRIVER_MANIFEST_NAME)", main)
         # The image's own boot tier runs the bring-up (the endpoint and
@@ -317,19 +321,22 @@ class TestDriverArtifact(unittest.TestCase):
         makefile = _read(MAKEFILE)
         for target in ("v9958-test:", "console-integration-selftest"):
             self.assertIn(target, makefile)
-        self.assertIn("$(call DRV_MANIFEST,$(1))", makefile)
+        # Package 49a: one generated pack rule per selected driver.
+        self.assertIn("$(BUILD)/drivers/$(1).json", makefile)
         self.assertIn("v9958_driver.rel", makefile)
         self.assertIn("v9958_font.rel", makefile)
         self.assertIn("$(MODULES)/v9958-6x8.font", makefile)
         # The video diagnostic runs in the console-integration image (work
         # package 42d merged the per-device images).
-        self.assertIn("KOS_VIDEO_SELFTEST", makefile)
-        index = makefile.index("ifeq ($(KOS_CONSOLE_INTEGRATION_SELFTEST),1)")
+        index = makefile.index("SYSTEM_TEST_OBJS.console-integration :=")
         self.assertIn("$(BUILD)/video_test.rel", makefile[index:index + 400])
         self.assertIn("video_test", makefile)
-        self.assertRegex(
-            makefile,
-            r"KOS_DRIVERS := sio ioc hid v9958 \$\(KOS_CONSOLE\)")
+        system = _load_json(os.path.join(ROOT, "systems",
+                                         "console-integration.json"))
+        self.assertIn("-DKOS_VIDEO_SELFTEST=1", system["cflags"])
+        self.assertEqual(system["drivers"],
+                         ["sio", "ioc", "hid", "v9958",
+                          "console-v9958-hid"])
         # The terminal renderer's own model suite (the M8 device-model
         # entry points it drove) is retired with the device model (work
         # package 42c); the renderer runs in the video/console images.

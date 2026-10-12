@@ -1,0 +1,20 @@
+{
+  "schema": "kos-system-1",
+  "name": "console-serial",
+  "drivers": [
+    "sio",
+    "ioc",
+    "hid",
+    "v9958",
+    "console-serial",
+    "iocfat"
+  ],
+  "boot": "/system/monitor.exe",
+  "store": [
+    "monitor.exe"
+  ],
+  "cflags": [
+    "-DKOS_DRIVER_TEST_EVIDENCE=1",
+    "-DKOS_SMOKE_HOST_SYNC=1"
+  ]
+}

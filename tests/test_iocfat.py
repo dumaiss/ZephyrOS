@@ -37,8 +37,8 @@ MODULE_SRC = os.path.join(MODULE_DIR, "iocfat.c")
 MANIFEST = os.path.join(ROOT, "drivers", "iocfat", "iocfat.json")
 BUILT_MOD = os.path.join(ROOT, "build", "modules", "iocfat.mod")
 DRIVER_PLAN = os.path.join(ROOT, "build", "modules", "drivers.plan.json")
-RECOVERY = os.path.join(ROOT, "recovery", "manifest.json")
-IMAGE_MANIFEST = os.path.join(ROOT, "tests", "fs", "manifest.json")
+PRODUCTION = os.path.join(ROOT, "systems", "production.json")
+IMAGE_SYSTEM = os.path.join(ROOT, "systems", "fs.json")
 MAKEFILE = os.path.join(ROOT, "Makefile")
 MAIN_C = os.path.join(ROOT, "kernel", "main.c")
 SELFTEST = os.path.join(ROOT, "tests", "fs", "fs_selftest.c")
@@ -138,10 +138,11 @@ class TestIocFatManifest(IocFatStaticBase):
         # The filesystem-namespace publication: the nucleus FS provider
         # learns the driver's endpoint from it.
         self.assertEqual(manifest["publishes"][0]["path"], "/fs")
-        self.assertEqual(manifest["publishes"][0]["type"], "fs")
-        self.assertEqual(
-            [(d["class"], d["instance"]) for d in manifest["depends"]],
-            [(5, 0)])
+        self.assertEqual(manifest["publishes"][0]["type"], "FS")
+        # The dependency is named symbolically in the source (the IOC
+        # protocol type); tools/systemgen.py resolves it against the
+        # selected set (tests/test_systemgen.py).
+        self.assertEqual(manifest["depends"], ["IOC"])
 
     def test_packed_driver_keeps_the_hot_tier_room(self):
         if not os.path.exists(BUILT_MOD):
@@ -167,25 +168,19 @@ class TestIocFatIntegration(IocFatStaticBase):
     def test_production_boots_it_as_a_driver(self):
         # The production driver set names the driver, so the nucleus
         # loads it and installs its /fs publication at boot.
-        text = read(MAKEFILE)
-        self.assertRegex(text, r"KOS_DRIVERS \?= .*iocfat")
-        entries = [f["name"] for f in
-                   json.loads(read(RECOVERY))["files"]]
-        providers = [n for n in entries if n.endswith(".mod")]
-        self.assertEqual(providers[-1], "iocfat.mod",
+        system = json.loads(read(PRODUCTION))
+        self.assertEqual(system["drivers"][-1], "iocfat",
                          "the provider must be the last driver image")
+        self.assertIn("iocfat", system["drivers"])
 
-    def test_recovery_manifest_loads_it_last(self):
-        entries = [f["name"] for f in
-                   json.loads(read(RECOVERY))["files"]]
-        self.assertIn("iocfat.mod", entries)
-        self.assertEqual(entries[-2:], ["v9958-6x8.font", "monitor.exe"]
-                         if "v9958-6x8.font" in entries else entries[-2:])
-        # Last module: nothing loads after it but data and programs.
-        modules = [n for n in entries if n.endswith(".mod")]
-        self.assertEqual(modules[-1], "iocfat.mod")
-        self.assertLess(entries.index("iocfat.mod"),
-                        entries.index("monitor.exe"))
+    def test_the_system_file_loads_it_last(self):
+        system = json.loads(read(PRODUCTION))
+        # Last module: nothing loads after it but data and programs, and
+        # the store order (drivers, the boot manifest, then the store's
+        # own files) always puts every driver image first.
+        self.assertEqual(system["drivers"][-1], "iocfat")
+        self.assertNotIn("iocfat.mod", system["store"])
+        self.assertIn("monitor.exe", system["store"])
 
     def test_kernel_boots_it_from_the_driver_manifest(self):
         text = read(MAIN_C)
@@ -194,33 +189,34 @@ class TestIocFatIntegration(IocFatStaticBase):
         self.assertIn("driver_load_all(KOS_DRIVER_MANIFEST_NAME)", text)
         self.assertNotIn("KOS_IOCFAT_BOOT", text)
         self.assertNotIn("kernel_load_vfs_module", text)
-        store = read(os.path.join(ROOT, "recovery", "manifest.json"))
-        self.assertIn("iocfat.mod", store)
+        store = read(os.path.join(ROOT, "systems", "production.json"))
+        self.assertIn("iocfat", store)
 
     def test_makefile_wiring(self):
         text = read(MAKEFILE)
         # Package 42b: the driver is a driver image of the production and
-        # acceptance boot sets, packed like the other drivers.
-        self.assertIn("$(call DRV_MANIFEST,$(1))", text)
-        self.assertRegex(text, r"KOS_DRIVERS \?= .*\biocfat\b")
-        self.assertIn("tools/modpack.py pack $< $@ --objdir $(MODULES)",
-                      text)
-        self.assertIn("KOS_FS_SELFTEST", text)
+        # acceptance boot sets, packed like the other drivers.  Package
+        # 49a (re)wires the set from the system file's driver list.
+        self.assertIn("$(BUILD)/drivers/$(1).json", text)
+        self.assertIn("tools/modpack.py pack", text)
+        self.assertIn("SYSTEM=fs", text)
         self.assertIn("build-fs-selftest", text)
-        self.assertIn("tests/fs/manifest.json", text)
+        self.assertIn("SYSTEM_SUFFIX.fs := -fs-selftest", text)
         self.assertIn("test_fs_selftest", text)
         self.assertIn("drivers/iocfat/iocfat.c", text)
         # The acceptance image must not carry modules it does not boot.
-        index = text.index("ROMFS_MANIFEST := tests/fs/manifest.json")
-        self.assertIn("KOS_FS_SELFTEST", text[index - 400:index])
+        system = json.loads(read(IMAGE_SYSTEM))
+        for name in ("sio", "ioc", "console-serial", "iocfat"):
+            self.assertIn(name, system["drivers"])
+        self.assertNotIn("hid", system["drivers"])
 
-    def test_acceptance_image_manifest(self):
-        entries = [f["name"] for f in
-                   json.loads(read(IMAGE_MANIFEST))["files"]]
-        self.assertEqual(entries, ["sio.mod", "ioc.mod", "console-serial.mod",
-                                   "drivers.man", "iocfat.mod",
-                                   "monitor.exe", "fs_selftest.exe",
-                                   "fs_child.exe"])
+    def test_acceptance_image_system_file(self):
+        system = json.loads(read(IMAGE_SYSTEM))
+        self.assertEqual(system["drivers"],
+                         ["sio", "ioc", "console-serial", "iocfat"])
+        self.assertEqual(system["store"],
+                         ["monitor.exe", "fs_selftest.exe", "fs_child.exe"])
+        self.assertEqual(system["boot"], "/system/fs_selftest.exe")
 
     def test_the_acceptance_seam_is_not_extended(self):
         text = read(MAIN_C)
