@@ -1,6 +1,8 @@
 # The KonaOS user SDK
 
-`user/sdk/` is the only supported way to build a native KonaOS program.
+`user/sdk/` is the only supported way to build a native KonaOS program --
+the tree's own copy of it here, or the packaged standalone SDK (`make sdk`,
+section 11), which builds a program with no OS source.
 A program is a C file with `int main(int argc, char **argv)`, one line in a
 Makefile, and nothing else: no entry assembly, no hand-written manifest, no
 kernel header, no hosted C library.
@@ -16,7 +18,7 @@ int main(int argc, char **argv)
 ```
 
 ```make
-$(eval $(call exe_program,hello,user/helloworld,hello.c,STACK=256))
+$(eval $(call exe_program,hello,user/sdk/examples,hello.c,STACK=256,STAGE=1))
 ```
 
 Package 28c introduced this layout; the public ABI it compiles against
@@ -50,11 +52,18 @@ user/sdk/
   src/console_io.c        putchar/console_puts/getchar/console_readline
   src/klibc/              one archive member per function
   src/kos_internal.h      SDK-private glue (not for programs)
-  exe.mk                  the generic exe_program build rule
-  template/hello.c        the copyable minimal program
+  exe.mk                  the in-tree wrapper: sets the in-tree roots,
+                          builds libkos from src/, includes mk/kos.mk
+  template/               Makefile + hello.c: the copyable minimal program
+  examples/               hello, fardemo (__banked) and files (open/read/
+                          list), each with the same standalone Makefile
+
+mk/kos.mk                 the generic exe_program build rule (work package
+                          49c); the SDK ships it and user/sdk/exe.mk wraps it
 
 user/monitor/             monitor program + monitor-private helpers
-user/helloworld/          demos (hello.c, fardemo.c) and their Makefile fragment
+user/helloworld/          the demo image's Makefile and README; its programs
+                          are the SDK's examples/ above
 ```
 
 `user/monitor/` keeps only what is specific to the monitor: its command
@@ -93,9 +102,14 @@ sdcc -mz80 -c --nostdinc --Werror -I abi -I user/sdk/include -I <program dir>
 ## 3. Build rule: `exe_program`
 
 ```make
-include user/sdk/exe.mk
+include user/sdk/exe.mk          # in the OS tree; the packaged SDK uses
 $(eval $(call exe_program,NAME,DIR,SOURCES[,OPTION=VALUE ...]))
 ```
+
+The generic rule lives in `mk/kos.mk`, the file the standalone SDK ships
+(work package 49c); `user/sdk/exe.mk` is the in-tree wrapper that sets the
+in-tree roots and builds `libkos` from `src/`, so both ways run the same
+rule:
 
 `SOURCES` are relative to `DIR`; `.c` files go through SDCC, `.asm` files
 through `sdasz80`.  The rule compiles them, links crt0 and the shared
@@ -111,7 +125,7 @@ manifest from the link map, packs and validates
 | `ENTRY=SYM` | `kos_entry` | entry symbol (crt0's entry) |
 | `NO_CRT0=1` | off | link no crt0; `ENTRY` names the program's own entry (the fixed SDK low-data/runtime object remains) |
 | `LOWBASE=ADDR` | `0x0100` | base of the SDK's fixed gate-visible data area (93 bytes: the object/namespace enumeration and exec blocks are part of it) |
-| `CODEBASE=ADDR` | `0x0144` | base of executable code, immediately after the ordinary low-data area (`0x0159` in the `KOS_NS_HANDLES` variant) |
+| `CODEBASE=ADDR` | `0x015D` | base of executable code, immediately after the ordinary low-data area (93 bytes at `LOWBASE`) |
 | `STAGE=1` | off | copy the packed program into `$(MODULES)` so a recovery manifest can name it |
 | `INCLUDES=a:b` | empty | extra include roots (colon separated), for test-owned headers only |
 | `SEGMENTS=FILE` | none | a JSON list of EXE v2 segment declarations: `DATA` rows (`id`, `kind`, `input`, `bss_size`) and `FAR_CODE` rows (`id`, `kind`, `area`, `bss_size`); `FILE` is a build prerequisite and each payload `input` resolves against the program's object directory |
@@ -571,7 +585,8 @@ host check; the image test is added by `make helloworld-image`.
 
 ## 10. Bootable demo image
 
-`user/helloworld/` builds `hello.exe`, and
+`user/helloworld/Makefile` declares the SDK's own examples
+(`user/sdk/examples/hello.c`, staged as `/system/hello.exe`), and
 
 ```sh
 make helloworld-image
@@ -597,7 +612,7 @@ loaded from the recovery store, run, exited and torn down by the
 unmodified 28b launcher, with the counters constant every cycle.  A
 single, non-repeating line would mean the program never exited.
 
-The same image also carries **`fardemo.exe`** (`user/helloworld/fardemo.c`
+The same image also carries **`fardemo.exe`** (`user/sdk/examples/fardemo.c`
 and its far half `fardemo_far.c`, declared with
 `FAR1=fardemo_far.c,STACK=256,STAGE=1`): the smallest complete far-code
 program, and since package 49b the smallest **banked call**.  Its primary
@@ -625,7 +640,65 @@ the aperture, so none of it is in the primary image, and the packer proved
 before the link that this program's image, BSS and stack stay outside
 `8000h-BFFFh`.
 
-## 11. M10 and later
+## 11. Using the standalone SDK
+
+```sh
+make sdk        # in the OS tree: build/kos-sdk-<version>/ + .tar.gz
+```
+
+packages the SDK for a developer who has no OS source.  Repacking
+unchanged sources reproduces the package byte for byte: the shipped
+`lib/libkos.lib` is archived with zeroed member dates and ids (`sdar
+-rcD`) and the tarball pins its member order, mtimes and ownership.  The
+tree holds everything a program needs and nothing from the tree it was
+built in:
+
+```text
+kos-sdk-<version>/
+  VERSION          "<version> abi <n>", n = the loader's EXE_ABI_VERSION
+  include/         kos.h, kos/*.h, klibc/*.h, include/abi/kos/*.h
+  lib/             libkos.lib (the runtime object folded in), crt0.rel
+  tools/           exepack.py, exemanifest.py, ihx.py (standalone)
+  mk/kos.mk        the standalone exe_program rules
+  template/        Makefile + hello.c: the smallest program
+  examples/        hello, fardemo (__banked), files (open/read/list)
+  docs/            sdk.md, exe-format.md
+```
+
+Every header keeps the path its includes name: the SDK's own sit at
+`include/kos/…` and `include/klibc/…`, and the ABI headers they include
+are copied to `include/abi/kos/…`, the first include root (`-I
+include/abi -I include`), exactly the order the in-tree build uses.
+
+The four steps from unpacking to running the program:
+
+1. **unpack** the tarball, then `cd` into `template/` (or any directory
+   holding a `Makefile` that includes the SDK's `mk/kos.mk`; `examples/`
+   has one);
+2. **`make`** — `exe_program` compiles the sources, links `crt0.rel` and
+   `libkos.lib` from `lib/`, and packs `build/user/<name>.exe`.  A
+   program Makefile names the SDK with `KOS_SDK_ROOT` (default `..`) and
+   needs nothing else;
+3. **copy the `.exe` to the card** (the FAT filesystem the iocfat driver
+   serves, `/fs`);
+4. **run it** from the monitor with `X /fs/<name>.exe`, or from the
+   shell as `<name>`.
+
+A new program is a copy of `template/` (Makefile + `hello.c`) with its
+name in the `exe_program` line.  The examples show the rest of the
+surface: `examples/hello.c` prints its arguments, `examples/fardemo.c`
+plus `examples/fardemo_far.c` call a `__banked` function across the far
+aperture, and `examples/files.c` opens, reads and lists the store.
+
+`tests/test_sdk_package.py` is the package's acceptance: it builds the
+tarball, unpacks it outside the repository, checks the file list, the
+header closure, the ABI number and the archive's pinned metadata, builds
+template/ and examples/ with the tree's own include and library paths
+absent from the environment, runs the result in the simulator through
+the production image's monitor, and proves a copy with a changed ABI
+byte is refused.
+
+## 12. M10 and later
 
 `user/ZShell/` (M10) is built only from this SDK: one `exe_program` line
 per program, no entry assembly, no kernel header.  It is the reference

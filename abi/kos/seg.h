@@ -5,7 +5,7 @@
  * extended-memory object owned by the process (36.16): the loader places
  * it before the program runs, `SYS_SEG_INFO` names it and returns the
  * object handle, and the contents are read and written with the
- * abi/kos/xmem.h calls.  A `FAR_CODE` segment (36.17) is linked at
+ * ABI's kos/xmem.h calls.  A `FAR_CODE` segment (36.17) is linked at
  * `8000h`, loaded into the aperture slice of an auxiliary bank and
  * executed in place through the mode-10 aperture: the loader places one
  * far-code segment per auxiliary bank, the code is `8000h` when the

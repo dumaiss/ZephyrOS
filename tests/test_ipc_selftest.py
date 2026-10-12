@@ -41,6 +41,8 @@ SDK_INTERNAL = os.path.join(ROOT, "user", "sdk", "src", "kos_internal.h")
 SDK_SOURCE = os.path.join(ROOT, "user", "sdk", "src", "ipc.c")
 SDK_GATE = os.path.join(ROOT, "user", "sdk", "src", "ipcgate.asm")
 EXE_MK = os.path.join(ROOT, "user", "sdk", "exe.mk")
+# The generic exe_program rule (work package 49c).
+RULE_MK = os.path.join(ROOT, "mk", "kos.mk")
 RESIDENCY = os.path.join(ROOT, "config", "residency.json")
 LINKER = os.path.join(ROOT, "linker", "zephyr80.lk")
 SYSTEM_JSON = os.path.join(ROOT, "systems", "ipc.json")
@@ -111,7 +113,7 @@ class TestIpcBuildWiring(unittest.TestCase):
         self.assertIn("LOWBASE=0x0300,CODEBASE=0x0344", text)
 
     def test_exe_rule_owns_the_code_base_option(self):
-        text = read(EXE_MK)
+        text = read(RULE_MK)
         self.assertIn("CODEBASE=", text)
         self.assertIn("LOWBASE=", text)
         self.assertIn("'-b _KOS_SDK_DATA = $$($(1)_LOWBASE)'", text)

@@ -81,7 +81,7 @@
 
 /* Native syscall numbers.  Package 42b retired the stage-3
  * KOS_SYSCALL_IPC_LOOKUP (06h): a client reaches a provider through a
- * bound namespace handle (abi/kos/object.h), never by class/instance. */
+ * bound namespace handle (the ABI's kos/object.h), never by class/instance. */
 #define KOS_SYSCALL_CALL   0x07u
 
 /* The request/reply frame: fixed size, copied at every crossing. */

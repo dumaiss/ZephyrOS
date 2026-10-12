@@ -180,6 +180,11 @@ make romfs-test
                    # and reader tests
 make exe-test
                    # pack/validate exetest.exe + the EXE malformed matrix
+make sdk
+                   # standalone SDK: build/kos-sdk-<version>/ + tarball
+                   # (headers, libkos.lib, crt0.rel, tools, mk/kos.mk,
+                   # template, examples, docs) for building a program
+                   # with no OS source
 make monitor-test
                    # pack/validate monitor.exe + ABI/layout/dependency tests
 make ioc-test
@@ -370,11 +375,16 @@ KonaOS/
 │                          substituted into build/zephyr80.lk)
 ├── abi/kos/               the public native ABI (types, errno, syscall,
 │                          fs, process, diag) -- one copy, all builds
-├── user/                  sdk/ (crt0, libkos, klibc, exe.mk -- the only
-│                          way a native program is built),
+├── user/                  sdk/ (crt0, libkos, klibc, exe.mk, template/,
+│                          examples/ -- the only way a native program is
+│                          built),
 │                          monitor/ (native monitor.exe sources + its
 │                          hex/dump/status helpers),
-│                          helloworld/ (bootable SDK demo)
+│                          helloworld/ (bootable SDK demo image)
+├── mk/kos.mk              the generic exe_program rule; `make sdk`
+│                          packages it with the headers, lib, tools,
+│                          template, examples and docs as kos-sdk-<ver>/
+│                          (plus its tarball) under build/
 ├── systems/               one build description per image: drivers in
 │                          load order, boot program, store files, cflags
 │                          (tools/systemgen.py turns it into the store
@@ -382,6 +392,7 @@ KonaOS/
 │                          resolved driver manifests)
 ├── tools/                 pack_image.py, mapcheck.py, systemgen.py,
 │                          modpack.py, romfspack.py, exepack.py,
+│                          exemanifest.py, ihx.py, sdkpack.py,
 │                          fontpack.py, serial_smoke.py
 ├── tests/                 host-side image/layout/ABI tests + Z80 replays;
 │                          hid/, video/, console/, ipc/, ns/, fs/, subsys/

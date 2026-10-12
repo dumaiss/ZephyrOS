@@ -3,7 +3,7 @@
  * The line helpers (getchar/console_readline/...) are the reusable console
  * front end the monitor and ZShell share, and they sit on the four
  * driver operations below.  Package 41 removed the SYS_CONSOLE_* syscalls:
- * the console is the resident console driver (abi/kos/protocol.h, class
+ * the console is the resident console driver (the ABI's kos/protocol.h, class
  * KOS_CLASS_CONSOLE), so every function here resolves that endpoint and
  * speaks its protocol.  A program with no console driver (an acceptance
  * image whose store lists none) sees -KOS_ENOENT.

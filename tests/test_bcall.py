@@ -37,8 +37,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
+import ihx  # noqa: E402
 import pack_image  # noqa: E402
-from exepack import parse_symbols  # noqa: E402
 from z80sim import Z80  # noqa: E402
 
 SDCC = "sdcc"
@@ -236,14 +236,14 @@ class BankedCallProbe:
         ]))
         _run([SDLDZ80, "-f", "probe.lk"], cwd=self.tmp)
         with open(self.path("probe.map")) as fh:
-            self.syms = parse_symbols(fh.read())
+            self.syms = ihx.parse_map_symbols(fh.read())
         return self
 
     def run(self):
         """The machine after the probe ran: registers and the result
         words, read back from the bank the program's writes landed in."""
         with open(self.path("probe.ihx")) as fh:
-            image = pack_image.parse_ihx(fh.read())
+            image = ihx.parse_ihx(fh.read())
         mem = bytearray(0x10000)
         for addr, byte in image.items():
             mem[addr] = byte
@@ -348,13 +348,13 @@ class TestBankedCallConvention(BcallTestBase):
         ]))
         _run([SDLDZ80, "-f", "two.lk"], cwd=self.probe.tmp)
         with open(self.probe.path("two.map")) as fh:
-            syms = parse_symbols(fh.read())
+            syms = ihx.parse_map_symbols(fh.read())
         self.assertEqual(syms["s__FAR1"], 0x8000)
         self.assertEqual(syms["s__FAR2"], 0x8000)
         self.assertGreater(syms["l__FAR1"], 0)
         self.assertGreater(syms["l__FAR2"], 0)
         with open(self.probe.path("two.ihx")) as fh:
-            mem = pack_image.parse_ihx(fh.read(), multi=True)
+            mem = ihx.parse_ihx(fh.read(), multi=True)
         # Both areas wrote 8000h: the first value is `_FAR1`'s entry
         # (`far_c`: LD A,0C5h = 3E C5) and the second `_FAR2`'s
         # (`far2_c`: LD A,3Ch = 3E 3C).

@@ -2,7 +2,7 @@
  *
  * A native program includes only "kos.h"; it never includes a kernel
  * header and never writes entry assembly.  The SDK re-exports the public
- * native ABI types (via the abi/kos headers) and declares the libkos
+ * native ABI types (via the ABI's kos headers) and declares the libkos
  * wrappers and the klibc subset.  See docs/sdk.md.
  */
 

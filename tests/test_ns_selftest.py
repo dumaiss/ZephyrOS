@@ -53,6 +53,8 @@ SDK_HEADER = os.path.join(ROOT, "user", "sdk", "include", "kos", "ipc.h")
 SDK_SOURCE = os.path.join(ROOT, "user", "sdk", "src", "ipc.c")
 SDK_GATE = os.path.join(ROOT, "user", "sdk", "src", "nsgate.asm")
 EXE_MK = os.path.join(ROOT, "user", "sdk", "exe.mk")
+# The generic exe_program rule (work package 49c).
+RULE_MK = os.path.join(ROOT, "mk", "kos.mk")
 CLIENT = os.path.join(ROOT, "tests", "ns", "ns.c")
 CHILD = os.path.join(ROOT, "tests", "ns", "nschild.c")
 SYSTEM_JSON = os.path.join(ROOT, "systems", "ns.json")
@@ -461,9 +463,8 @@ class TestNsClient(unittest.TestCase):
         self.assertIn("_kos_ns_enum_block::\n\t.ds\t12", gate)
         self.assertIn("_kos_chdir_block::\n\t.ds\t4", gate)
         self.assertIn("_kos_getcwd_block::\n\t.ds\t4", gate)
-        exe_mk = read(EXE_MK)
-        self.assertIn("EXE_DEFAULT_CODEBASE", exe_mk)
-        self.assertIn("nsgate", exe_mk)
+        self.assertIn("EXE_DEFAULT_CODEBASE", read(RULE_MK))
+        self.assertIn("nsgate", read(EXE_MK))
 
 
 class TestNsImageLayout(unittest.TestCase):

@@ -209,12 +209,12 @@ KonaOS/
 │   ├── sdk/
 │   │   ├── include/ (kos.h, kos/, klibc/)
 │   │   ├── src/ (crt0.asm, runtime.asm, gates, args/fs/exec, klibc/)
-│   │   ├── exe.mk
-│   │   └── template/hello.c
+│   │   ├── exe.mk (the in-tree wrapper over mk/kos.mk)
+│   │   ├── template/ (Makefile, hello.c)
+│   │   └── examples/ (hello, fardemo, files)
 │   ├── helloworld/
-│   │   ├── hello.c
 │   │   ├── Makefile
-│   │   └── manifest.json
+│   │   └── README.md
 │   └── monitor/
 │       ├── monitor.c/.h
 │       ├── monitor_mem.c
@@ -361,9 +361,17 @@ Owns the user SDK: the only supported way to build a native program.
   the `kos/` and `klibc/` headers;
 - `user/sdk/src/` - crt0, libkos (console/diag/fs/exec gate stubs and
   wrappers) and `klibc/`;
-- `user/sdk/exe.mk` - the generic `exe_program` rule: one line per
-  program, manifest generated from the link map, `exepack` validation;
-- `user/sdk/template/` - the copyable minimal program.
+- `user/sdk/exe.mk` - the in-tree wrapper over `mk/kos.mk`, the generic
+  `exe_program` rule: one line per program, manifest generated from the
+  link map, `exepack` validation.  `make sdk` packages the same rule with
+  the headers, the built `libkos.lib`/`crt0.rel`, the standalone tools,
+  the template, the examples and the docs into
+  `build/kos-sdk-<version>/` (and its tarball), so a program can be built
+  with no OS source (work package 49c);
+- `user/sdk/template/` - the copyable minimal program (Makefile +
+  `hello.c`);
+- `user/sdk/examples/` - the example programs the SDK ships (and the
+  `user/helloworld/` demo image boots).
 
 A program or sub-project (`user/helloworld/`, `user/ZShell/`) is built
 only from this directory plus `abi/`; it never includes a kernel header

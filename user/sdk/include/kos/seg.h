@@ -1,9 +1,9 @@
 /* KonaOS SDK: EXE v2 segments (packages 44a/44b).
  *
- * The native calls are abi/kos/seg.h (SYS_SEG_INFO, SYS_SEG_MAP).  A EXE
+ * The native calls are the ABI's kos/seg.h (SYS_SEG_INFO, SYS_SEG_MAP).  A EXE
  * v2 `DATA` segment is a loader-created extended-memory object owned by
  * the program: `seginfo` returns its logical size, kind, load state
- * and the handle that abi/kos/xmem.h's read/write calls use.  A loader
+ * and the handle that the ABI's kos/xmem.h read/write calls use.  A loader
  * segment is released only at exit, so `xfree` refuses it.
  *
  * A `FAR_CODE` segment is linked at `8000h`, placed in the aperture slice
@@ -71,7 +71,7 @@ int segmap(unsigned int segment);
 /* The runtime code a banked call reports when the segment it names
  * cannot be mapped: an id that is not one of the program's `FAR_CODE`
  * segments (ids 1-4) or a refused SYS_SEG_MAP.  It is an SDK-level code
- * (the syscall-visible KOS_E* range is abi/kos/errno.h) and travels the
+ * (the syscall-visible KOS_E* range is the ABI's kos/errno.h) and travels the
  * shared carrying-error path, so a banked function reads it as
  * -KOS_RT_EFARMAP (8-bit callers see the low byte). */
 #define KOS_RT_EFARMAP 0x30

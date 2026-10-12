@@ -32,9 +32,12 @@ transcript:
   arguments of 8, 16 and 32 bits, a mixed call and a recursion - and the
   segment 2 entry calling back into segment 1, which has to restore its
   caller's bank.  A `__banked` definition in the primary bank names no
-  far segment, so it reports KOS_RT_EFARMAP.  The replay also counts
-  SYS_SEG_MAP: the trampoline spends exactly one per segment id (the
-  token cache), however many banked calls the program makes;
+  far segment, so it reports KOS_RT_EFARMAP.  The replay also attributes
+  every SYS_SEG_MAP to the program and the frame that made it: the
+  trampoline spends exactly one per far segment (the token cache),
+  `farcall` maps on every call, the far program's own code runs its four
+  explicit `segmap` calls, and the child it execs from far context probes
+  its parent's segment id once;
 * the launcher's report: exit status 0, no active process and six free
   banks - every object, every segment and every bank slot was released by
   exit.
@@ -44,6 +47,7 @@ Skipped when the image has not been built.
 Run with: `python3 -m unittest tests.test_xmem_selftest_sim`.
 """
 
+import bisect
 import os
 import re
 import sys
@@ -54,6 +58,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
+from ihx import parse_map_symbols  # noqa: E402
 from replay import STEP_LIMIT, Replay  # noqa: E402
 
 IMAGE_SUBDIR = "build-xmem-selftest"
@@ -151,24 +156,90 @@ FAR_CONSOLE = "xmem-far: far code says hello\r\n"
 SYS_SEG_MAP = 0x27
 RST_30H = 0xF7
 
+# The image's three programs, each with the sdldz80 map its build leaves
+# beside it (`build-xmem-selftest/user/<name>/<name>.map`): the RST sits
+# in the program's own gate stub, so its address names the program that
+# made the call, and every frame is read through that program's own map.
+PROGRAMS = ("xmem_selftest", "xmem_far", "xmem_child")
+STUB_WINDOW = 16
+
+# The SDK's marshalling chain between the RST and whoever asked for the
+# map (`segmap` -> `kos_ipc_raw` -> the gate stub).  Today the two C
+# wrappers tail into the stub, so the chain collapses into one frame and
+# the first frame that is not one of these three is the caller.
+GATE_FRAMES = ("_segmap", "_kos_ipc_raw", "_kos_ipc_raw_call")
+
+
+class ProgramMap:
+    """One program's symbols: its gate stub and its symbol extents."""
+
+    def __init__(self, name, symbols):
+        self.name = name
+        self.stub = symbols["_kos_ipc_raw_call"]
+        self._addresses = sorted(set(symbols.values()))
+        self._names = {}
+        for symbol, address in symbols.items():
+            self._names.setdefault(address, symbol)
+
+    def owns_stub(self, pc):
+        """True when `pc` is inside this program's gate stub, where the
+        RST of a SYS_SEG_MAP sits."""
+        return self.stub <= pc < self.stub + STUB_WINDOW
+
+    def symbol_at(self, address):
+        """The symbol an address falls in: the map carries no sizes, so
+        the nearest symbol at or below it names the code."""
+        index = bisect.bisect_right(self._addresses, address) - 1
+        if index < 0:
+            return None
+        return self._names[self._addresses[index]]
+
 
 class SegMapCallCounter:
-    """Counts every SYS_SEG_MAP the image issues, by segment id.
+    """Attributes every SYS_SEG_MAP the image issues.
 
-    The far-code program's own checks map segment 1, segment 2 and two
-    ids its container does not have, and segment 1's and segment 2's
-    banked calls each spend one more: the token cache.  Any other call
-    would be a hit that went to the kernel again.
+    `by_class` keys are (program, caller symbol): `xmem_far` with
+    `___sdcc_bcall_ehl` is the trampoline filling its token cache,
+    `xmem_far` with `_farcall` the primitive (no cache: a map per call),
+    `xmem_far` with `_main` the program's own `segmap` calls, and
+    `xmem_child` with `_main` the child's foreign-segment probe.  A call
+    no program claims, or one whose caller is still the marshalling
+    chain, lands in `unattributed` instead of being counted.
     """
 
-    def __init__(self):
-        self.calls = {}
+    def __init__(self, programs):
+        self.programs = programs
+        self.by_class = {}
+        self.unattributed = []
 
     def __call__(self, cpu):
         if cpu.rd(cpu.pc) != RST_30H or cpu.a != SYS_SEG_MAP:
             return
         segment = cpu.rd(cpu.hl)
-        self.calls[segment] = self.calls.get(segment, 0) + 1
+        program = next((p for p in self.programs
+                        if p.owns_stub(cpu.pc)), None)
+        if program is None:
+            self.unattributed.append("seg %d: no program owns pc %04X"
+                                     % (segment, cpu.pc))
+            return
+        caller = self._caller(cpu, program)
+        if caller is None:
+            self.unattributed.append("seg %d: only marshalling frames in %s"
+                                     % (segment, program.name))
+            return
+        by_id = self.by_class.setdefault((program.name, caller), {})
+        by_id[segment] = by_id.get(segment, 0) + 1
+
+    def _caller(self, cpu, program):
+        """The frame that asked for the map: SP+2 is the return address
+        of the call to `segmap`, and the first frame above the marshalling
+        chain is the caller."""
+        for offset in range(0, 8, 2):
+            caller = program.symbol_at(cpu.rd16((cpu.sp + 2 + offset)
+                                                & 0xFFFF))
+            if caller not in GATE_FRAMES:
+                return caller
+        return None
 
 
 # The boot lanes every image prints before the boot program runs.
@@ -206,6 +277,19 @@ class XmemSelftestReplay(Replay, unittest.TestCase):
         self.run_until(z, [REPORT, PANIC], limit=limit, halt_ok=True,
                        panic=None)
         return z, z.sio_tx.decode("ascii", "replace")
+
+    def program_maps(self):
+        """The image's programs' symbol maps, read from its build tree."""
+        programs = []
+        for name in PROGRAMS:
+            path = os.path.join(self.root, self.subdir, "user", name,
+                                "%s.map" % name)
+            if not os.path.exists(path):
+                self.skipTest("%s missing; run make xmem-selftest" % path)
+            with open(path) as handle:
+                symbols = parse_map_symbols(handle.read())
+            programs.append(ProgramMap(name, symbols))
+        return programs
 
 
 class TestXmemSelftest(XmemSelftestReplay):
@@ -287,17 +371,38 @@ class TestXmemSelftest(XmemSelftestReplay):
         self.assertIn(REPORT, sio)
 
     def test_the_token_cache_costs_one_segmap_per_segment(self):
-        """The trampoline maps a segment once (SYS_SEG_MAP) and reuses the
-        token: the program's own checks spend one call each on segments 1
-        and 2, the two refused ids spend one each, and the many banked
-        calls - including the recursion and segment 2's call back into
-        segment 1 - spend exactly one more per segment."""
-        counter = SegMapCallCounter()
+        """Every SYS_SEG_MAP the image issues, attributed to the program
+        and the frame that made it.
+
+        The banked calls run through the trampoline, and the trampoline
+        fills its token cache exactly once per far segment the banked
+        calls use - the many calls, the recursion and segment 2's call
+        back into segment 1 all reuse the cached token.  `farcall` has no
+        cache: it maps segment and entry on every call, and the far
+        program's own code runs the four explicit `segmap` calls its
+        source has, the two refusals (ids 0 and 3) included.  The one
+        remaining call is the child exec'd from far context probing the
+        parent's segment id (xmem_child.c), which is why the image-wide
+        count of segment 1 is not the far program's own count.
+        """
+        counter = SegMapCallCounter(self.program_maps())
         z = self.make_cpu()
         self.start_kernel(z)
         self.run_until(z, [PASS, FAIL, REPORT, PANIC], limit=STEP_LIMIT,
                        halt_ok=True, panic=None, on_step=counter)
-        self.assertEqual(counter.calls, {0: 1, 1: 2, 2: 2, 3: 1})
+        self.assertEqual(counter.by_class, {
+            # The token cache: one SYS_SEG_MAP per far segment used.
+            ("xmem_far", "___sdcc_bcall_ehl"): {1: 1, 2: 1},
+            # The primitive: segment 1's entry, its exit from far context
+            # and segment 2's entry.
+            ("xmem_far", "_farcall"): {1: 2, 2: 1},
+            # The program's own calls: segmap(1), segmap(2) and the two
+            # refused ids.
+            ("xmem_far", "_main"): {0: 1, 1: 1, 2: 1, 3: 1},
+            # The child's foreign-segment probe (the tail names segment 1).
+            ("xmem_child", "_main"): {1: 1},
+        })
+        self.assertEqual(counter.unattributed, [])
 
     def test_uncertainty_guard(self):
         """The aperture outcomes depend on the hardware latch, so the

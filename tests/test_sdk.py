@@ -34,6 +34,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
+import ihx  # noqa: E402
 import pack_image  # noqa: E402
 import exepack  # noqa: E402
 import exemanifest  # noqa: E402
@@ -51,6 +52,9 @@ SDK_DIR = "user/sdk"
 SDK_SRC = os.path.join(SDK_DIR, "src")
 SDK_INCLUDE = os.path.join(SDK_DIR, "include")
 EXE_MK = os.path.join(SDK_DIR, "exe.mk")
+# The generic exe_program rule (work package 49c): the in-tree exe.mk is
+# a thin wrapper that sets the in-tree roots and includes this file.
+RULE_MK = os.path.join("mk", "kos.mk")
 
 LIBKOS = os.path.join("build", "user", "sdk", "libkos.lib")
 HELLO_OBJDIR = os.path.join("build", "user", "hello")
@@ -438,19 +442,24 @@ class TestSdkBoundary(unittest.TestCase):
                         "%s reaches %s" % (path, resolved))
 
     def test_rule_compiles_with_the_abi_and_sdk_include_roots_only(self):
-        rule = _read(EXE_MK)
+        rule = _read(RULE_MK)
         match = re.search(r"^EXE_CFLAGS\s*:=\s*(.+)$", rule, re.M)
-        self.assertIsNotNone(match, "exe.mk defines no EXE_CFLAGS")
+        self.assertIsNotNone(match, "mk/kos.mk defines no EXE_CFLAGS")
         flags = match.group(1)
         self.assertIn("--nostdinc", flags)
-        self.assertIn("-I abi", flags)
-        self.assertIn("-I $(KOS_SDK_INCLUDE)", flags)
+        # The ABI root first, exactly as the OS tree has always compiled:
+        # the in-tree wrapper supplies its values.
+        self.assertIn("-I$(EXE_ABI_ROOT) -I$(KOS_INCLUDE)", flags)
         for root in KERNEL_INCLUDE_ROOTS:
             self.assertNotIn("-I %s" % root, flags,
                              "the program rule adds -I %s" % root)
         self.assertNotIn("konaos" + "/", rule)
+        wrapper = _read(EXE_MK)
+        self.assertIn("EXE_ABI_ROOT := abi", wrapper)
+        self.assertIn("KOS_INCLUDE  := $(KOS_SDK_ROOT)/include", wrapper)
+        self.assertIn("KOS_SDK_ROOT := user/sdk", wrapper)
         # ASM sources see the ABI only (the SDK's asm uses no C header).
-        self.assertIn("EXE_ASFLAGS := -Iabi", rule)
+        self.assertIn("EXE_ASFLAGS := -I$(EXE_ABI_ROOT)", rule)
 
     def test_the_one_no_crt0_program_is_the_caller_buffer_probe(self):
         no_crt0 = [name for name, _d, _s, options in _declared_programs()
@@ -472,7 +481,7 @@ class TestSdkBoundary(unittest.TestCase):
         definition emits `b_<fn> = n`), bases every `_FAR<n>` at 8000h, and
         without SEGMENTS= declares one FAR_CODE segment per option used,
         id n, area `_FAR<n>`.  FAR= is gone."""
-        rule = _read(EXE_MK)
+        rule = _read(RULE_MK)
         self.assertIn("--codeseg FAR$$$$n", rule)
         self.assertIn("-b _FAR$$$$n = 0x8000", rule)
         self.assertIn("-bo $$$$n --codeseg FAR$$$$n", rule)
@@ -557,8 +566,8 @@ class TestSdkSplitterInSimulator(unittest.TestCase):
         if not os.path.exists(os.path.join(ROOT, HELLO_JSON)):
             raise unittest.SkipTest("hello.exe has not been built")
         manifest = exepack.load_manifest(os.path.join(ROOT, HELLO_JSON))
-        ihx = os.path.join(ROOT, HELLO_OBJDIR, manifest["input"])
-        cls.image = pack_image.parse_ihx(Path(ihx).read_text())
+        ihx_path = os.path.join(ROOT, HELLO_OBJDIR, manifest["input"])
+        cls.image = ihx.parse_ihx(Path(ihx_path).read_text())
         cls.manifest = manifest
         cls.symbols = read_symbols(os.path.join(ROOT, HELLO_MAP))
 

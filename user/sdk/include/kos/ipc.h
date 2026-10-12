@@ -32,7 +32,7 @@
 #include "kos/types.h"
 #include "kos/object.h"
 /* The frame and descriptor definitions live in the native ABI header of
- * the same name (abi/kos/ipc.h): this SDK header only adds the client
+ * the same name (the ABI's kos/ipc.h): this SDK header only adds the client
  * wrappers, so it includes it. */
 #include "kos/ipc.h"
 

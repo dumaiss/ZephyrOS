@@ -13,7 +13,7 @@
  *
  * M6 implements five drivers: exit, console write/read/poll, getinfo.
  * M7 adds six recovery/diagnostic drivers behind the same gate; their
- * blocks are declared in abi/kos/diag.h.  Argument blocks must lie in the
+ * blocks are declared in the ABI's kos/diag.h.  Argument blocks must lie in the
  * caller window 0100h-1FFFh; console buffers may occupy 0100h-DFFFh and
  * are transferred through checked common-resident copy gates.  C names,
  * argument layouts, and SDCC calling conventions are private and must not
@@ -21,7 +21,8 @@
  *
  * This header owns the syscall numbers, the address windows and the
  * M6/M9 argument blocks.  The process startup block and getinfo record
- * are in abi/kos/process.h; the diagnostic blocks are in abi/kos/diag.h.
+ * are in the ABI's kos/process.h; the diagnostic blocks are in the ABI's
+ * kos/diag.h.
  */
 
 #ifndef KOS_SYSCALL_H
@@ -35,7 +36,7 @@
 #define KOS_SYSCALL_EXIT          0x00u
 /* 01h-03h were SYS_CONSOLE_WRITE / SYS_CONSOLE_READ / SYS_CONSOLE_POLL.
  * Package 41 removed them: a program's console I/O goes to the console
- * driver through the IPC pair below (user/sdk/src/console*.{c,asm}), so
+ * driver through the IPC pair below (the SDK's console clients), so
  * the numbers stay reserved rather than reused - a stale caller fails
  * with KOS_ENOSYS instead of writing somewhere unexpected. */
 #define KOS_SYSCALL_GETINFO       0x04u
@@ -43,7 +44,7 @@
 
 /* The M9 native filesystem family (10h-1Fh, `SYS_FS_*`) is retired
  * (package 42b): files are typed handles behind `bind`/`call`/`unbind`
- * (abi/kos/object.h), the SDK `fs.h` builds `open`/`close` on them, and
+ * (the ABI's kos/object.h), the SDK `fs.h` builds `open`/`close` on them, and
  * `chdir`/`getcwd` are the namespace syscalls 0Ah/0Bh.  The numbers stay
  * reserved so a stale caller fails with KOS_ENOSYS instead of reaching
  * something unexpected. */

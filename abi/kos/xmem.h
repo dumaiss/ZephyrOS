@@ -38,7 +38,8 @@
  * object - and the object's address in the aperture (`8000h` for an object
  * in the lower aperture slot, `A000h` in the upper).  The SDK opens the
  * aperture by writing the token to the memory-control port and closes it
- * by restoring the previous latch (user/sdk).  Tokens exist only for the
+ * by restoring the previous latch (the SDK's aperture wrapper).  Tokens
+ * exist only for the
  * calling process's own objects, and every object bank maps to a page
  * field of 2..7, so no token ever exposes bank 6 or bank 7.
  *

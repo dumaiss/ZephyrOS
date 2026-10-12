@@ -164,7 +164,17 @@ OWNER_FILES = (
     "user/sdk/src/klibc/sdcc_arith_entries.asm",
     "user/sdk/src/klibc/sdcc_arith_signed_entries.asm",
     "user/sdk/template/hello.c",
-    "user/helloworld/hello.c",
+    "user/sdk/template/Makefile",
+    "user/sdk/examples/Makefile",
+    "user/sdk/examples/hello.c",
+    "user/sdk/examples/fardemo.c",
+    "user/sdk/examples/fardemo_far.c",
+    "user/sdk/examples/files.c",
+    "mk/kos.mk",
+    "config/sdk.mk",
+    "tools/ihx.py",
+    "tools/sdkpack.py",
+    "tests/test_sdk_package.py",
     "user/helloworld/Makefile",
     "user/helloworld/README.md",
     "user/monitor/monitor.c",
@@ -1126,8 +1136,9 @@ class TestIncludeRootAllowLists(unittest.TestCase):
     # representative driver's own directory.
     DRIVER_ROOTS = ["abi", "drivers/include", "platform/zephyr80/public",
                     "$(BUILD)"]
-    # The SDK and its programs are unchanged.
-    SDK_ROOTS = ["abi", "$(KOS_SDK_INCLUDE)"]
+    # The SDK and its programs are unchanged: the ABI root first, then
+    # the SDK include root.
+    SDK_ROOTS = ["abi", "user/sdk/include"]
 
     def _config_variables(self):
         config = _read(os.path.join(ROOT, "platform", "zephyr80", "config.mk"))
@@ -1151,9 +1162,15 @@ class TestIncludeRootAllowLists(unittest.TestCase):
                                  "%s must not offer the kernel tree" % name)
 
     def test_sdk_include_roots_are_exact(self):
-        exe_mk = _read(os.path.join(ROOT, "user", "sdk", "exe.mk"))
-        roots = _include_roots(_make_variable(exe_mk, "EXE_CFLAGS"), {})
+        kos_mk = _read(os.path.join(ROOT, "mk", "kos.mk"))
+        roots = _include_roots(
+            _make_variable(kos_mk, "EXE_CFLAGS"),
+            {"EXE_ABI_ROOT": "abi", "KOS_INCLUDE": "user/sdk/include"})
         self.assertEqual(roots, self.SDK_ROOTS)
+        # The in-tree values the expansion used come from the wrapper.
+        exe_mk = _read(os.path.join(ROOT, "user", "sdk", "exe.mk"))
+        self.assertIn("EXE_ABI_ROOT := abi", exe_mk)
+        self.assertIn("KOS_INCLUDE  := $(KOS_SDK_ROOT)/include", exe_mk)
 
 
 class TestNoResidentBlockDriver(unittest.TestCase):
@@ -1670,14 +1687,16 @@ class TestUserSdkBoundary(unittest.TestCase):
             % "\n".join(violations))
 
     def test_user_build_rule_offers_only_abi_and_sdk(self):
-        exe_mk = _read(os.path.join(ROOT, "user", "sdk", "exe.mk"))
-        self.assertIn("-I abi -I $(KOS_SDK_INCLUDE)", exe_mk)
-        for token in ("-I include", "-Iinclude", "-I platform",
-                      "-Iplatform", "-I kernel", "-Ikernel",
-                      "drivers/"):
-            self.assertNotIn(
-                token, exe_mk,
-                "the SDK build rule offers a non-public path: %r" % token)
+        kos_mk = _read(os.path.join(ROOT, "mk", "kos.mk"))
+        self.assertIn("-I$(EXE_ABI_ROOT) -I$(KOS_INCLUDE)", kos_mk)
+        for name in ("mk/kos.mk", "user/sdk/exe.mk"):
+            rule = _read(os.path.join(ROOT, name))
+            for token in ("-I include", "-Iinclude", "-I platform",
+                          "-Iplatform", "-I kernel", "-Ikernel",
+                          "drivers/"):
+                self.assertNotIn(
+                    token, rule,
+                    "%s offers a non-public path: %r" % (name, token))
         # The exe_program declarations name no include/ or platform/ rule.
         makefile = _read(os.path.join(ROOT, "Makefile"))
         for line in makefile.splitlines():

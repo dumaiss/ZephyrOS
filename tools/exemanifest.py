@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Generate a EXE v2 manifest from an sdldz80 link map (work package 28c).
 
-The generic `exe_program` rule in user/sdk/exe.mk links a program, then
-calls this tool to derive `image_size` and `bss_size` from the map.  No
-size is ever hand-entered:
+The generic `exe_program` rule (the SDK's mk/kos.mk) links a program,
+then calls this tool to derive `image_size` and `bss_size` from the map.
+No size is ever hand-entered:
 
     image_size = s__DATA - LOAD_BASE     (the image ends where BSS begins)
     bss_size   = l__DATA                 (the linker's zero-fill length)
@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from exepack import parse_symbols  # noqa: E402
+import ihx  # noqa: E402
 
 LOAD_BASE = 0x0100
 STACK_TOP = 0xE000
@@ -43,7 +43,7 @@ class ManifestError(Exception):
 def build_manifest(map_path, name, entry, stack_size, scratch, input_name=None,
                    segments_path=None):
     text = Path(map_path).read_text()
-    symbols = parse_symbols(text)
+    symbols = ihx.parse_map_symbols(text)
     for key in ("s__DATA", "l__DATA", "l__CODE"):
         if key not in symbols:
             raise ManifestError("%s: map has no %s symbol" % (map_path, key))

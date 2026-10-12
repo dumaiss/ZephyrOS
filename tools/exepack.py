@@ -82,13 +82,12 @@ Exit status: 0 success, 1 rejected geometry/manifest, 2 usage error.
 import argparse
 import hashlib
 import json
-import re
 import sys
 from pathlib import Path
 
 TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
-import pack_image  # noqa: E402  (parse_ihx, parse_map_symbols)
+import ihx  # noqa: E402  (parse_ihx, parse_map_symbols)
 
 MAGIC = b"KEX2"
 FORMAT_VERSION = 2
@@ -154,24 +153,6 @@ MANIFEST_KEYS = {
     "image_size", "bss_size", "stack_size", "scratch", "segments",
 }
 SEGMENT_MANIFEST_KEYS = {"id", "kind", "input", "area", "bss_size"}
-
-SYMBOL_RE = re.compile(r"\s*([0-9A-Fa-f]{8})\s+(\S+)(?:\s+\S+)?\s*$")
-
-
-def parse_symbols(map_text):
-    """Collect {name: address} from an sdldz80 map.
-
-    Like tools/pack_image.py, but tolerates symbol lines without the
-    trailing defining-module column: the linker leaves that column
-    empty for its synthesized s__/l__ area symbols, which this tool
-    needs for the BSS geometry checks.
-    """
-    symbols = {}
-    for line in map_text.splitlines():
-        match = SYMBOL_RE.match(line)
-        if match:
-            symbols[match.group(2)] = int(match.group(1), 16)
-    return symbols
 
 
 class ExeError(Exception):
@@ -572,10 +553,10 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
         # Several far areas share 8000h, one per auxiliary bank, and the
         # linker emits one record stream per area, so a linked address can
         # carry one byte per area at that address (work package 49b).
-        mem = pack_image.parse_ihx(ihx_path.read_text(), multi=True)
-    except pack_image.LayoutError as exc:
+        mem = ihx.parse_ihx(ihx_path.read_text(), multi=True)
+    except ihx.LayoutError as exc:
         raise ExeError("EXE_EXEC_ERR_ARG", "IHX rejected: %s" % exc)
-    symbols = parse_symbols(map_path.read_text())
+    symbols = ihx.parse_map_symbols(map_path.read_text())
 
     image_size = manifest["image_size"]
     bss_size = manifest["bss_size"]

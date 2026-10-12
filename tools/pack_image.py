@@ -60,6 +60,11 @@ import sys
 import hashlib
 from pathlib import Path
 
+TOOLS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(TOOLS_DIR))
+from ihx import (LayoutError, MEM_TOP, parse_ihx,  # noqa: E402
+                 parse_map_symbols)
+
 FILL = 0xFF
 PAGE_SIZE = 0x10000
 PAGE_COUNT = 8
@@ -124,7 +129,6 @@ IRQ_VECTOR_BASE = 0xFD00
 IRQ_VECTOR_END = 0xFE01
 IRQ_STATE_BASE = 0xFE01
 STACK_BASE = 0xFF00
-MEM_TOP = 0x10000
 
 # (start, end, description, expected)
 def make_regions():
@@ -246,71 +250,6 @@ DRIVER_HOT_LEDGER_LINE = "driver hot: %d bytes of %d"
 DRIVER_BOOT_LEDGER_LINE = "driver boot/bulk: %d bytes of %d"
 COMMON_LEDGER_LINE = ("common: used %d of %d bytes (code %d, data %d) | "
                       "ceiling %d")
-
-
-class LayoutError(Exception):
-    """The linked image violates the KonaOS memory-layout contract."""
-
-
-def parse_ihx(text, multi=False):
-    """Parse Intel HEX text into a dict of address -> byte.
-
-    Raises LayoutError for records outside 0000h-FFFFh, bad checksums, and
-    conflicting writes to the same address (bytes the packer would
-    otherwise silently discard or place ambiguously).
-
-    With `multi`, a second write to an address is kept instead of being
-    rejected and every value becomes a list of bytes in record order: a
-    program with several far-code areas linked at 8000h emits one record
-    stream per area (`_FAR1`, `_FAR2`, ... in link order), so the n-th
-    value of an address is the n-th area's byte (work package 49b).
-    """
-    mem = {}
-    upper = 0
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        if not line.startswith(":"):
-            raise LayoutError("IHX line %d: not an Intel HEX record" % lineno)
-        try:
-            raw = bytes.fromhex(line[1:])
-        except ValueError:
-            raise LayoutError("IHX line %d: malformed record" % lineno)
-        length = raw[0]
-        if length + 5 != len(raw):
-            raise LayoutError("IHX line %d: bad record length" % lineno)
-        offset = (raw[1] << 8) | raw[2]
-        rectype = raw[3]
-        data = raw[4 : 4 + length]
-        check = raw[4 + length]
-        if (sum(raw[:-1]) + check) & 0xFF != 0:
-            raise LayoutError("IHX line %d: checksum mismatch" % lineno)
-        if rectype == 0x00:
-            for i, byte in enumerate(data):
-                addr = upper + offset + i
-                if addr >= MEM_TOP:
-                    raise LayoutError(
-                        "IHX line %d: address %04X outside the 16-bit space"
-                        % (lineno, addr)
-                    )
-                if multi:
-                    mem.setdefault(addr, []).append(byte)
-                    continue
-                if addr in mem and mem[addr] != byte:
-                    raise LayoutError(
-                        "IHX line %d: conflicting content for %04Xh "
-                        "(%02Xh vs %02Xh)" % (lineno, addr, mem[addr], byte)
-                    )
-                mem[addr] = byte
-        elif rectype == 0x01:
-            break
-        elif rectype == 0x04:
-            upper = ((data[0] << 8) | data[1]) << 16
-        else:
-            raise LayoutError("IHX line %d: unsupported record type %02X"
-                              % (lineno, rectype))
-    return mem
 
 
 def validate_layout(mem):
@@ -514,19 +453,6 @@ def build_image(pages):
             "image size is %d bytes, expected exactly %d" % (len(image), IMAGE_SIZE)
         )
     return image
-
-
-def parse_map_symbols(text):
-    """Extract {name: address} from an sdldz80 wide map file.
-
-    The trailing module column is optional: linker-synthesized symbols
-    (`s__DATA`, `l__DATA`, ...) carry no defining module."""
-    symbols = {}
-    for line in text.splitlines():
-        match = re.match(r"\s*([0-9A-Fa-f]{8})\s+(\S+)", line)
-        if match:
-            symbols[match.group(2)] = int(match.group(1), 16)
-    return symbols
 
 
 def check_symbol_regions(symbols):

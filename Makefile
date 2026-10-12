@@ -24,6 +24,7 @@
 #   make romfs-test           ROMFS image + host ROMFS tool tests
 #   make mod-test            packed-module tooling tests
 #   make exe-test             packed-program tooling tests
+#   make sdk                  standalone SDK tree + tarball (build/kos-sdk-*)
 #   make subsystem-selftest        current-path and ROMFS acceptance image
 #   make nucleus-selftest          revision-13 window/nucleus acceptance image
 #   make console-integration-selftest  console + IOC/HID/V9958 diagnostics
@@ -91,6 +92,9 @@ include $(SYSTEM_MK)
 # Zephyr-80 platform build configuration (include paths and the
 # declarative constant files consumed by the build and layout tools).
 include platform/zephyr80/config.mk
+
+# The standalone SDK release version (`make sdk`, work package 49c).
+include config/sdk.mk
 
 ASFLAGS   := $(KOS_PLATFORM_ASFLAGS) -Itests/target/include
 # Kernel and acceptance sources include their private interfaces by
@@ -377,7 +381,7 @@ $(BUILD)/konaos.probe.ihx $(BUILD)/konaos.probe.map: \
 	$(SDLDZ80) -f $(BUILD)/konaos.probe.lk
 
 .PHONY: all test check check-fast clean mod-test romfs-test exe-test \
-	monitor-test ioc-test hid-test v9958-test \
+	monitor-test ioc-test hid-test v9958-test sdk \
 	subsystem-selftest nucleus-selftest \
 	console-integration-selftest console-serial-selftest \
 	fs-selftest ns-selftest ipc-selftest xmem-selftest helloworld-image \
@@ -1044,6 +1048,34 @@ $(MODULES)/exe-fixtures.stamp: tests/subsys/gen_exe_fixtures.py \
 		tools/exepack.py | $(MODULES)
 	$(PYTHON) tests/subsys/gen_exe_fixtures.py $(MODULES)
 	touch $@
+
+# --- standalone SDK package (work package 49c) --------------------------------
+# `make sdk` assembles build/kos-sdk-<version>/ and its tarball: the SDK
+# headers (with the ABI closure they include), the prebuilt libkos.lib and
+# crt0.rel, the standalone tools (exepack, exemanifest, ihx), the program
+# rules, the template, the examples and the docs.  A developer unpacks the
+# tarball and builds a program with no OS source (docs/sdk.md, "Using the
+# standalone SDK"); tests/test_sdk_package.py builds the tarball
+# out-of-tree and runs the result.
+
+KOS_SDK_DIR     := $(BUILD)/kos-sdk-$(KOS_SDK_VERSION)
+KOS_SDK_TARBALL := $(BUILD)/kos-sdk-$(KOS_SDK_VERSION).tar.gz
+
+SDK_INPUTS := $(wildcard abi/kos/*.h) \
+	$(wildcard user/sdk/include/*.h) $(wildcard user/sdk/include/kos/*.h) \
+	$(wildcard user/sdk/include/klibc/*.h) \
+	$(wildcard user/sdk/template/*) $(wildcard user/sdk/examples/*) \
+	docs/sdk.md docs/exe-format.md mk/kos.mk formats/include/exe.h \
+	tools/exepack.py tools/exemanifest.py tools/ihx.py tools/sdkpack.py
+
+sdk: $(KOS_SDK_TARBALL)
+	@echo "sdk: $(KOS_SDK_DIR)"
+	@echo "sdk: $(KOS_SDK_TARBALL)"
+
+$(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_CRT0) $(SDK_INPUTS)
+	$(PYTHON) tools/sdkpack.py --version $(KOS_SDK_VERSION) \
+		--libkos $(EXE_SDK_RELEASE_LIB) --crt0 $(EXE_CRT0) \
+		--out $(KOS_SDK_DIR) --tar $@
 
 # --- ROMFS recovery store (ROM pages 2-7) ------------------------------------
 # Every image packs the store tools/systemgen.py wrote for its system file:

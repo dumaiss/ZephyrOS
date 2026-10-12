@@ -16,6 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
+import ihx  # noqa: E402
 import pack_image  # noqa: E402
 
 
@@ -132,17 +133,17 @@ class TestSyntheticPacking(unittest.TestCase):
                          b"\xFF" * 8)
 
     def test_rom_access_stub_missing_rejected(self):
-        ihx = self.case.ihx.replace(
+        ihx_text = self.case.ihx.replace(
             ihx_record(0xEF00, list(self.case.rom_stub)), "")
-        with self.assertRaisesRegex(pack_image.LayoutError,
+        with self.assertRaisesRegex(ihx.LayoutError,
                                     "ROM-access stub byte"):
-            pack_image.pack(ihx, self.case.map_text, None)
+            pack_image.pack(ihx_text, self.case.map_text, None)
 
     def test_rom_access_trampoline_missing_rejected(self):
-        ihx = self.case.ihx.replace(ihx_record(0xEEFE, [0xD3, 0x00]), "")
-        with self.assertRaisesRegex(pack_image.LayoutError,
+        ihx_text = self.case.ihx.replace(ihx_record(0xEEFE, [0xD3, 0x00]), "")
+        with self.assertRaisesRegex(ihx.LayoutError,
                                     "trampoline"):
-            pack_image.pack(ihx, self.case.map_text, None)
+            pack_image.pack(ihx_text, self.case.map_text, None)
 
     def test_copier_mirroring(self):
         image = self.case.pack()
@@ -152,7 +153,7 @@ class TestSyntheticPacking(unittest.TestCase):
         self.assertNotEqual(page0[0], 0xFF)  # reset vector present
 
     def test_map_symbols_parsed(self):
-        symbols = pack_image.parse_map_symbols(self.case.map_text)
+        symbols = ihx.parse_map_symbols(self.case.map_text)
         self.assertEqual(symbols["_reset"], 0x0000)
         self.assertEqual(symbols["_kernel_main"], 0x6000)
         pack_image.check_symbol_regions(symbols)  # must not raise
@@ -169,14 +170,14 @@ class TestSyntheticPacking(unittest.TestCase):
     def test_rst30_stub_bad_target_rejected(self):
         case = MinimalImageCase(rst30_target=0xE0F1)
         # Image stub still encodes the old target; map symbol moved -> mismatch.
-        with self.assertRaises(pack_image.LayoutError):
+        with self.assertRaises(ihx.LayoutError):
             pack_image.pack(case.ihx, case.map_text, None)
 
     def test_rst30_stub_wrong_vector_rejected(self):
         bad_map = self.case.map_text.replace(
             "     00000030  _kos_rst30_vector", "     00000040  _kos_rst30_vector"
         )
-        with self.assertRaises(pack_image.LayoutError):
+        with self.assertRaises(ihx.LayoutError):
             pack_image.pack(self.case.ihx, bad_map, None)
 
     def test_broken_ff_guard_rejected(self):
@@ -184,22 +185,22 @@ class TestSyntheticPacking(unittest.TestCase):
             ihx_record(0xFDFF, [0x30, 0xE1]),
             ihx_record(0xFDFF, [0x31, 0xE1]),
         )
-        with self.assertRaises(pack_image.LayoutError):
+        with self.assertRaises(ihx.LayoutError):
             pack_image.pack(bad, self.case.map_text, None)
 
     def test_symbol_out_of_region_rejected(self):
         bad_map = self.case.map_text.replace(
             "     00006000  _kernel_main", "     0000E000  _kernel_main"
         )
-        with self.assertRaises(pack_image.LayoutError):
-            pack_image.check_symbol_regions(pack_image.parse_map_symbols(bad_map))
+        with self.assertRaises(ihx.LayoutError):
+            pack_image.check_symbol_regions(ihx.parse_map_symbols(bad_map))
 
     def test_common_symbol_out_of_region_rejected(self):
         bad_map = self.case.map_text.replace(
             "     0000E040  _panic", "     00002040  _panic"
         )
-        with self.assertRaises(pack_image.LayoutError):
-            pack_image.check_symbol_regions(pack_image.parse_map_symbols(bad_map))
+        with self.assertRaises(ihx.LayoutError):
+            pack_image.check_symbol_regions(ihx.parse_map_symbols(bad_map))
 
 
 class TestRecoveryPlacement(unittest.TestCase):
@@ -245,21 +246,21 @@ class TestRecoveryPlacement(unittest.TestCase):
 
     def test_empty_or_short_stream_rejected(self):
         case = MinimalImageCase()
-        with self.assertRaisesRegex(pack_image.LayoutError, "empty"):
+        with self.assertRaisesRegex(ihx.LayoutError, "empty"):
             pack_image.pack(case.ihx, case.map_text, None, romfs=b"")
-        with self.assertRaisesRegex(pack_image.LayoutError, "shorter"):
+        with self.assertRaisesRegex(ihx.LayoutError, "shorter"):
             pack_image.pack(case.ihx, case.map_text, None, romfs=b"KRFS")
 
     def test_capacity_excess_rejected(self):
         case = MinimalImageCase()
         too_big = self.make_stream(0x10) + b"\x00" * pack_image.ROMFS_CAPACITY
-        with self.assertRaisesRegex(pack_image.LayoutError, "capacity"):
+        with self.assertRaisesRegex(ihx.LayoutError, "capacity"):
             pack_image.pack(case.ihx, case.map_text, None, romfs=too_big)
 
     def test_build_dir_requires_recovery_romfs(self):
         case = MinimalImageCase()
         with tempfile.TemporaryDirectory(prefix="kosimg-") as tmp:
-            with self.assertRaisesRegex(pack_image.LayoutError,
+            with self.assertRaisesRegex(ihx.LayoutError,
                                         "recovery.romfs missing"):
                 pack_image.pack(case.ihx, case.map_text, tmp)
             with open(os.path.join(tmp, "recovery.romfs"), "wb") as fh:
@@ -272,7 +273,7 @@ class TestRecoveryPlacement(unittest.TestCase):
 class TestOutOfRegionContent(unittest.TestCase):
     def pack_extra(self, addr, data):
         case = MinimalImageCase()
-        ihx = make_ihx(
+        ihx_text = make_ihx(
             [
                 (0x0000, [0xF3, 0x00, 0xC3, 0x00, 0xE0]),
                 (0x0030, [0xC3, 0xF0, 0xE0]),
@@ -281,34 +282,34 @@ class TestOutOfRegionContent(unittest.TestCase):
                 (addr, data),
             ]
         )
-        pack_image.pack(ihx, case.map_text, None)
+        pack_image.pack(ihx_text, case.map_text, None)
 
     def test_page_zero_reservation_rejected(self):
-        with self.assertRaises(pack_image.LayoutError):
+        with self.assertRaises(ihx.LayoutError):
             self.pack_extra(0x0033, [0x00])
 
     def test_bank7_gap_rejected(self):
-        with self.assertRaises(pack_image.LayoutError):
+        with self.assertRaises(ihx.LayoutError):
             self.pack_extra(0x0100, [0x00])
 
     def test_bank7_runtime_area_rejected(self):
-        with self.assertRaises(pack_image.LayoutError):
+        with self.assertRaises(ihx.LayoutError):
             self.pack_extra(0xC000, [0x00])
 
     def test_stack_region_rejected(self):
-        with self.assertRaises(pack_image.LayoutError):
+        with self.assertRaises(ihx.LayoutError):
             self.pack_extra(0xFF00, [0x00])
 
     def test_missing_reset_vector_rejected(self):
         case = MinimalImageCase()
-        ihx = make_ihx(
+        ihx_text = make_ihx(
             [
                 (0x2000, [0xC3, 0x30, 0x20]),
                 (0xE000, [0xC9]),
             ]
         )
-        with self.assertRaises(pack_image.LayoutError):
-            pack_image.pack(ihx, case.map_text, None)
+        with self.assertRaises(ihx.LayoutError):
+            pack_image.pack(ihx_text, case.map_text, None)
 
 
 class TestRealArtifacts(unittest.TestCase):
@@ -455,7 +456,7 @@ class TestCommonCeiling(unittest.TestCase):
         # 0x700 + 0x600 = 3328 bytes of packed common.
         symbols = {"s__COMMON": 0xE000, "l__COMMON": 0x700,
                    "s__COMMON_DATA": 0xE700, "l__COMMON_DATA": 0x600}
-        with self.assertRaisesRegex(pack_image.LayoutError, "ceiling"):
+        with self.assertRaisesRegex(ihx.LayoutError, "ceiling"):
             pack_image.common_usage(symbols)
 
     def test_common_usage_accepts_at_the_ceiling(self):

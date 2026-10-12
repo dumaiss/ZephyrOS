@@ -4,7 +4,7 @@
  * filesystem-namespace protocol share (architecture 36.13, 36.14): the
  * kernel router and providers, the filesystem driver, the SDK `fs.h`
  * wrappers and native programs.  `fs.h` (the SDK header of the same name)
- * adds the wrapper prototypes; `abi/kos/protocol.h` owns the operation
+ * adds the wrapper prototypes; the ABI's `kos/protocol.h` owns the operation
  * numbers and frame layouts.  The M9 syscall argument blocks are gone:
  * files are typed handles, and the `FS_*` family is retired (package 42b).
  *
