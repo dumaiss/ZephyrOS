@@ -36,15 +36,15 @@
 
 uint8_t process_selftest_result;
 
-/* M9 mounts the recovery store at /system.  The acceptance names stay
+/* The recovery store is mounted at /system.  The acceptance names stay
  * ROMFS-relative and are prefixed with the mountpoint here. */
 static char process_path[KOS_PATH_MAX];
 
-/* --- EXE v2 loader-outcome helpers (work package 44a) -----------------
+/* --- EXE v2 loader-outcome helpers -----------------
  *
  * The loader-outcome tests write into a free application bank through
  * the common copy gate before an exec, so the child can prove from
- * inside what the v2 loader did or did not clear (36.19).  The common
+ * inside what the v2 loader did or did not clear (4.8).  The common
  * staging block is one 64-byte chunk; longer runs are chunked here. */
 #define PROCESS_Z2_CHUNK 64u
 
@@ -385,7 +385,7 @@ void kos_run_process_selftest(void)
 		return;
 	}
 
-	/* 7. M8 ROMFS resource imports (driver ABI v2): name-resolved,
+	/* 7. ROMFS resource imports: name-resolved,
 	 *    DATA-only, and bounded; byte-identical to the internal reader. */
 	{
 		romfs_file_t file;
@@ -435,8 +435,8 @@ void kos_run_process_selftest(void)
 		}
 	}
 
-	/* 8. EXE v2 loader outcomes (work package 44a).  The v2 loader
-	 *    zeroes only BSS and the startup block (36.19), places DATA
+	/* 8. EXE v2 loader outcomes.  The v2 loader
+	 *    zeroes only BSS and the startup block (4.8), places DATA
 	 *    segments as process-owned extended-memory objects and handles
 	 *    a container over 64 KiB.  The kernel side dirties the child's
 	 *    bank through the copy gate first, so the values the programs

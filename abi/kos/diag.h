@@ -1,6 +1,6 @@
 /* KonaOS native diagnostic ABI (recovery-only syscall family).
  *
- * The M7 recovery facilities behind the native syscall gate.  They exist
+ * The recovery facilities behind the native syscall gate.  They exist
  * for the native monitor and the diagnostic suite, are documented as
  * recovery-only in docs/abi.md, and are not a driver bypass: normal
  * programs keep to the ordinary drivers.  The numbers and packed blocks
@@ -38,7 +38,7 @@
 
 #include "kos/types.h"
 
-/* Diagnostic syscall numbers (native ABI, fixed by M7). */
+/* Diagnostic syscall numbers (native ABI). */
 #define KOS_SYSCALL_DIAG_MEM_READ    0x28u /* 40 */
 #define KOS_SYSCALL_DIAG_MEM_WRITE   0x29u /* 41 */
 #define KOS_SYSCALL_DIAG_IO_IN       0x2Au /* 42 */

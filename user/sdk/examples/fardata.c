@@ -1,4 +1,4 @@
-/* KonaOS far-data SDK demo (work package 49d): the primary half.
+/* KonaOS far-data SDK demo: the primary half.
  *
  * The smallest complete far-data program: `levels.c` is compiled through
  * the exe_program `DATA1=` option (its `const` table in the area
@@ -10,7 +10,7 @@
  * pointers while the window is open, writes the zeroed half, copies two
  * values out of the table, restores the caller's mapping, and only then
  * makes the banked call - one far window serves far code or far data,
- * never both (package 49d, architecture 36.17).
+ * never both (architecture 7.2).
  */
 
 #include "kos.h"

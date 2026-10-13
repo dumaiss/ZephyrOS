@@ -102,7 +102,7 @@ kos_syscall_entry::
 
 	; Enter OS mode over the caller bank: bank and mode only, so the
 	; revision-13 page field is cleared and the whole bank-7 decode is
-	; visible (architecture 36.5: the syscall gate is P-normalizing).
+	; visible (architecture 4.2: the syscall gate is P-normalizing).
 	ld	a,(kos_gate_saved_latch)
 	and	#KOS_BANK_MASK
 	or	#KOS_MODE_OS

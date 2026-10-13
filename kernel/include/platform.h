@@ -15,7 +15,7 @@
 #include "memory.h"
 #include "irq.h"
 
-/* The raw memory-latch and bank primitives are kernel-private M1 memory
+/* The raw memory-latch and bank primitives are kernel-private memory
  * mechanisms and live in kernel/memory/banking.h.  This header stays a
  * declarative constant aggregator; hardware-owning drivers that need a
  * board constant include the narrow header under platform/zephyr80/

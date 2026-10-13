@@ -1,9 +1,8 @@
-/* KonaOS required-driver init-failure acceptance driver (work package
- * 45, test artifact).
+/* KonaOS required-driver init-failure acceptance driver (test artifact).
  *
  * The one job of this resident bank-6 image is to refuse: its init
  * returns a non-zero status, so the loader must fail the boot explicitly
- * on the early console instead of falling back (architecture 36.11,
+ * on the early console instead of falling back (architecture 5.3,
  * section 37 "required-driver initialization failure is explicit
  * boot/configuration failure").  It is packed into its own failure store
  * beside `drivers.man`; nothing else in the tree loads it.

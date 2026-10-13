@@ -7,19 +7,12 @@
  * syscall-visible (the IOC transport-class codes) live in the IOC class
  * header drivers/include/ioc.h.
  *
- * M1 defines a single deterministic error: KOS_ENOSYS, returned by the
- * native syscall dispatcher for every syscall number.  Later milestones
- * extend this file; the M1 value must stay stable.
- *
- * M3 adds generic subsystem error numbers.  They are plain int values so
- * that internal int-returning APIs can signal failure as the negated
- * code (e.g. -KOS_EINVAL).  None of the M3
- * values are syscall-visible and the numeric values are internal.
- *
- * M6 makes a subset of these syscall-visible: the native syscall
- * dispatcher returns the raw KOS_E* value in A with carry set, and
- * KOS_EFAULT is the status the kernel synthesizes when a process entry
- * returns through the common trap instead of calling SYS_EXIT.
+ * KOS_ENOSYS is what the dispatcher returns for an unassigned syscall
+ * number.  The values are plain ints, so internal int-returning APIs
+ * signal failure as the negated code (e.g. -KOS_EINVAL).  A syscall
+ * returns the raw KOS_E* value in A with carry set; KOS_EFAULT is the
+ * status the kernel synthesizes when a process entry returns through the
+ * common trap instead of calling SYS_EXIT.
  */
 
 #ifndef KOS_ERRNO_H
@@ -37,13 +30,12 @@
 #define KOS_EAGAIN    0x09 /* no data available right now */
 #define KOS_EIO       0x0A /* corrupt/truncated/overlapping data */
 #define KOS_EINIT     0x0B /* module/driver initialization refused */
-#define KOS_EFAULT    0x0C /* invalid process entry/exit fault (M6) */
+#define KOS_EFAULT    0x0C /* invalid process entry/exit fault */
 
-/* M9 makes the filesystem family syscall-visible (architecture section
- * 32.30, work/M9-REFERENCE.md).  KOS_EMFILE reports descriptor-table and
- * provider open-handle exhaustion so it is never confused with
- * KOS_ENOSPC (storage full).  KOS_ENODEV (0x03) is reused for "a
- * filesystem at / is required but none is mounted". */
+/* Filesystem conditions (architecture 6.6).  KOS_EMFILE reports
+ * handle-table and provider open-handle exhaustion, so it is never
+ * confused with KOS_ENOSPC (storage full).  KOS_ENODEV (0x03) also means
+ * "/fs has no media". */
 #define KOS_EEXIST    0x10 /* object already exists               */
 #define KOS_ENOTDIR   0x11 /* path component is not a directory   */
 #define KOS_EISDIR    0x12 /* object is a directory               */

@@ -1,6 +1,5 @@
-/* KonaOS fixed-core IPC substrate (kernel/ipc, architecture 36.5-36.10).
+/* KonaOS fixed-core IPC substrate (kernel/ipc, architecture 4.9).
  *
- * Promoted from the package-35 resident-driver spike (work package 39).
  * Everything here is compiled into the fixed core and executes, or is
  * touched, while the mode-11 window shows bank 6 (the resident driver
  * domain):
@@ -15,11 +14,11 @@
  *     caller frame in the cold half); a call from one resident driver to
  *     another is near-direct - the frame is passed by reference and the
  *     target's window is already open, so no copy and no bank switch
- *     happen (architecture 36.7, work package 41b);
+ *     happen (architecture 4.9);
  *   - nucleus-issued buffer descriptors captured at call entry from the
  *     syscall gate's saved execution latch, and the copy resolvers with
  *     bounds checked on every use.  The resolver picks one of three
- *     paths per request (correction 01 to architecture 36.8):
+ *     paths per request (architecture 4.9):
  *     A - caller window or common: one LDIR in mode 11, as promoted;
  *     B - the driver buffer is in bank 6's 8000h-BFFFh and the caller
  *         buffer is in the caller's own bank outside that range: one
@@ -76,7 +75,7 @@ extern int16_t ipc_invoke_here(uint16_t entry, struct kos_ipc_frame *frame);
 uint8_t kos_bank_copy(const struct kos_bank_copy_req *req);
 extern uint8_t kos_user_copy_staging[];
 
-/* Revision-13 page values (architecture 36.2): page 1 shows bank 6, the
+/* Revision-13 page values (architecture 2.2): page 1 shows bank 6, the
  * resident driver domain; page 0 is the nucleus's own cold half.  The
  * upcall header owns these constants and ipc_asm.asm reads the same
  * platform constants. */
@@ -85,17 +84,17 @@ extern uint8_t kos_user_copy_staging[];
 #define IPC_NUCLEUS_PAGE_BITS 0u
 #define IPC_DRIVER_BANK (KOS_BANK_MASK - KOS_UPCALL_PAGE_DRIVER)
 
-/* The mode-10 far aperture (architecture 36.17): with a nonzero page the
+/* The mode-10 far aperture (architecture 7.2): with a nonzero page the
  * caller's 8000h-BFFFh names bank 7 - P, not the primary bank. */
 #define IPC_APERTURE_BASE 0x8000u
 #define IPC_APERTURE_END  0xC000u
 
 /* Path B installs mode 10 with the caller's bank and page 1 (architecture
- * 36.2: page 1 shows bank 6).  Applications never receive a token for
+ * 2.2: page 1 shows bank 6).  Applications never receive a token for
  * that page; the aperture is nucleus-internal. */
 #define IPC_APERTURE_PAGE_BITS IPC_DRIVER_PAGE_BITS
 
-/* Driver I/O buffers (correction 01 to architecture 36.8): the sources
+/* Driver I/O buffers (architecture 4.9): the sources
  * and targets a driver names in copy_in/copy_out - I/O buffers, caches,
  * staging - live in bank 6's 8000h-BFFFh, the one bank-6 range the
  * mode-11 window and the mode-10 aperture both show at the same address.
@@ -120,7 +119,7 @@ struct ipc_endpoint {
 	uint8_t version;
 	uint8_t number;    /* host-assigned endpoint number (1..N) */
 	uint8_t busy;
-	uint16_t bulk_base; /* the owner's bulk extent in bank 6 (36.6) */
+	uint16_t bulk_base; /* the owner's bulk extent in bank 6 (5.2) */
 	uint16_t bulk_size;
 };
 
@@ -156,14 +155,14 @@ static struct kos_ipc_frame call_frame;
 
 static uint8_t call_depth;
 
-/* Copy-path counters (correction 01): one per resolver outcome, so the
+/* Copy-path counters: one per resolver outcome, so the
  * acceptance replay can attribute every transfer to a path from the
  * outside.  Free-running 16-bit fixed data. */
 uint16_t ipc_copy_window;
 uint16_t ipc_copy_aperture;
 uint16_t ipc_copy_slow;
 
-/* IRQ ownership state (one driver handler per source in M10). */
+/* IRQ ownership state (one driver handler per source). */
 static uint16_t irq_handler_entry;
 static uint16_t irq_handler_context;
 static uint8_t irq_handler_page;
@@ -214,7 +213,7 @@ static uint8_t crosses_aperture(uint16_t addr, uint16_t length)
 /* The bank a descriptor's address resolves to.  The caller window and
  * everything outside the aperture stays in the caller's bank; inside the
  * mode-10 aperture with a nonzero page the far bank 7 - P is named
- * (architecture 36.8/36.17).  Descriptor capture refuses a buffer that
+ * (architecture 4.9/7.2).  Descriptor capture refuses a buffer that
  * would cross the aperture boundary, so the whole descriptor resolves to
  * one bank.
  *
@@ -309,9 +308,9 @@ static int16_t copy_staged(uint8_t bank, uint16_t caller_addr,
  * descriptor, the direction against the capture, and the driver address
  * against the driver window (or the owner's bank through the copy gate).
  *
- * Correction 01 to architecture 36.8: the promoted single LDIR was only
- * valid for a caller buffer in the mode-11 caller window.  The resolver
- * now selects one of three paths per request (see the module header). */
+ * A single LDIR is only valid for a caller buffer in the mode-11 caller
+ * window, so the resolver selects one of three paths per request
+ * (architecture 4.9; see the module header). */
 static int16_t copy_move(const struct ipc_desc *desc, uint16_t driver_addr,
 			 uint16_t offset, uint16_t length, uint8_t dir)
 {
@@ -371,7 +370,7 @@ static int16_t copy_move(const struct ipc_desc *desc, uint16_t driver_addr,
 	}
 	/* Path C: a caller buffer behind the aperture or outside the
 	 * primary bank, an aperture-resolved far bank (P != 0 at capture,
-	 * the package-43 resolution hook), or a driver buffer outside
+	 * the far-bank resolution hook), or a driver buffer outside
 	 * 8000h-BFFFh.  Chunked through the common-resident bank copy
 	 * gate; counted as slow. */
 	++ipc_copy_slow;
@@ -393,7 +392,7 @@ static void desc_release_all(void)
 /* Capture one caller buffer from the saved execution latch.  The buffer
  * window is 0100h-DFFFh (KOS_USER_BUFFER_BASE/END), the caller's own
  * bank, plus the common window E000h-FFFFh, which every mapping shows at
- * the same address (correction 01 to architecture 36.8); bank 7 can
+ * the same address (architecture 4.9); bank 7 can
  * never be a caller bank through the gate.  With a nonzero page, a
  * buffer may lie wholly inside the mode-10 aperture (the far bank) or
  * wholly outside it, never across its boundary. */
@@ -453,7 +452,7 @@ static struct ipc_desc *desc_lookup(uint8_t id)
 /* --- endpoint registration, lookup and dispatch -------------------------- */
 
 /* The endpoint a handle names.  The handle is the host-assigned endpoint
- * number (architecture 36.11): the loader installs the records in number
+ * number (architecture 5.3): the loader installs the records in number
  * order, so the slot is the number's index and the stored number confirms
  * the record. */
 static struct ipc_endpoint *endpoint_for(uint8_t handle)
@@ -475,7 +474,7 @@ static struct ipc_endpoint *endpoint_for(uint8_t handle)
 	return (struct ipc_endpoint *)0;
 }
 
-/* Install one host-built endpoint record (architecture 36.11).  Only the
+/* Install one host-built endpoint record (architecture 5.3).  Only the
  * loader calls this, before any driver code runs; the checks protect the
  * nucleus table and the fixed driver window. */
 int8_t ipc_install_endpoint(const struct ipc_endpoint_record *record)
@@ -575,7 +574,7 @@ static int16_t invoke_endpoint(const struct ipc_endpoint *ep,
  * may be an application or cold nucleus code whose frame is outside the
  * driver window, so it works on the fixed boundary buffer the callers
  * stage into.  Every nested call - a resident driver calling a resolved
- * peer - is near-direct (architecture 36.7): the caller's own frame is
+ * peer - is near-direct (architecture 4.9): the caller's own frame is
  * passed by reference, the window already shows bank 6, and neither a
  * frame copy nor a bank switch happens. */
 static int16_t ipc_call_endpoint(uint8_t handle, struct kos_ipc_frame *frame)
@@ -839,7 +838,7 @@ static int16_t api_move(uint16_t src, uint16_t dst, uint16_t length)
 	return (int16_t)ipc_copy_run();
 }
 
-/* Architecture 36.6: a driver's bulk data lives in bank 6's boot/bulk
+/* Architecture 5.2: a driver's bulk data lives in bank 6's boot/bulk
  * tier (0000h-5FFFh), which the mode-11 window never shows; it is reached
  * only through a nucleus copy.  `base`/`size` were registered with the
  * calling driver's endpoints by the loader, so the copy is bound to the
@@ -976,7 +975,7 @@ static struct driver_boot driver_boot_bundle = {
 
 /* The boot bundle a driver init entry receives in HL; the loader installs
  * the resolved dependency numbers into kos_driver_deps before each init
- * (architecture 36.11). */
+ * (architecture 5.3). */
 const struct driver_boot *driver_boot(void)
 {
 	return &driver_boot_bundle;

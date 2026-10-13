@@ -1,910 +1,419 @@
-# KonaOS Native Syscall ABI (M2-M6)
+# KonaOS Native Syscall ABI
 
-This document defines the only stable interface between native KonaOS
-callers and the kernel.  C names, argument layouts, and SDCC calling
-conventions are private implementation details and must never appear in
-this interface.  Section 1-6 describe the M1/M2 gate contract; section 7
-adds the M2 interrupt-delivery contract, and section 8 adds the M6
-native syscall set; section 10 is the M9 native filesystem family
-(`SYS_FS_*`, `10h-1Fh`) together with the M9 error values it introduces,
-and section 11 is the M9 `SYS_EXEC` with the startup block v1 argument
-contract; section 12 is the M10 resident-driver IPC pair, and section
-12.1 the M10 object and namespace family that replaces it - the
-`namespace-selftest` acceptance image builds that family now (work
-package 42a) and production switches over in 42b; section 14 is the M10
-extended-memory family (`SYS_XMEM_*`, `20h-25h`), its map tokens and the
-buffer-identity rule (work package 43).
-M9's end-to-end acceptance (the `m9-selftest` image and the
-full matrix) is recorded in
-[`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md).
+The interface between native programs and the nucleus. C names, layouts
+inside the kernel and SDCC calling conventions are not part of it. Every
+argument block below is declared in `abi/kos/` and pinned there with
+static assertions; programs normally use the SDK wrappers (`docs/sdk.md`)
+instead of calling the gate directly.
 
-## 1. Entry
-
-Native entry is the `RST 30h` instruction.  The page-zero vector at
-`0030h` is exactly `JP kos_syscall_entry`; `kos_syscall_entry` is the
-common-memory gate and the dispatcher lives in bank 7.
+## 1. Entry and return
 
 ```text
-RST 30h
+entry   RST 30h        (page-zero vector at 0030h: JP kos_syscall_entry)
+        A  = syscall number
+        HL = argument block
+
+return  carry clear: success, HL = result
+        carry set:   failure, A = KOS_E* error code
 ```
 
-Entry state:
-
-```text
-A  = syscall number
-HL = pointer to a syscall-specific argument block
-```
-
-M1 restriction: until later staging/copy APIs exist, the argument block
-must lie in the preserved caller window `0000h-1FFFh`.  The gate never
-reads caller memory above `1FFFh` after entering mode `11`.
-
-## 2. Return
-
-```text
-Carry clear = success
-Carry set   = error
-HL          = primary result
-A           = error code when carry is set
-```
-
-At M1 the dispatcher returns `A = KOS_ENOSYS (01h)`, `HL = 0000h`, carry
-set for every syscall number.
-
-## 3. Register contract
-
-| Register | Contract |
-| --- | --- |
-| `A` | error code on error; unspecified on success |
-| `HL` | primary result |
+| register | contract |
+|---|---|
+| `A` | the error code on failure; unspecified on success |
+| `HL` | the result |
 | `BC`, `DE`, `IX`, `IY` | preserved |
-| `SP` | restored to the caller value |
-| Selected bank | restored (bank identity unchanged across the call) |
-| Mode | restored to mode `10` |
-| Other flags | unspecified |
-| Alternate registers | not part of the M1 contract |
+| `SP` | restored |
+| the latch | restored exactly, bank and page included |
+| other flags, alternate registers | unspecified |
 
-## 4. Reentrancy and interrupts
+**Argument blocks** must lie in the caller window `0100h-1FFFh`, which
+stays visible while the nucleus runs; a block anywhere else is refused with
+carry set and `KOS_EINVAL` before any of it is read. **Data buffers** named
+inside a block may lie anywhere in `0100h-DFFFh` of the caller's bank.
+Unassigned numbers return `KOS_ENOSYS`.
 
-- The syscall gate remains single-entry and non-reentrant; its common
-  transition state is single-depth.
-- On entry the common gate snapshots IFF2 with `LD A,I` and executes `DI`
-  before changing stack or mapping state.  It performs the entire mode
-  crossing with maskable interrupts disabled, then restores the caller's
-  prior enabled/disabled state immediately before `RET`.
-- The M2 IRQ executive uses separate common transition state and separate
-  common/bank-7 stacks, so it can never observe a partially changed syscall
-  transition.
-
-## 5. How the crossing works
+## 2. How the gate crosses
 
 ```text
-application, mode 10 over bank N
-    │ RST 30h        (return PC pushed on the caller stack)
-    ▼
-0030h: JP kos_syscall_entry        page zero
-    ▼
-common memory, still mode 10
-    ├── save A, snapshot IFF2, and DI
-    ├── save caller SP without a push   (the stack may live in 2000h-DFFFh
-    │                                   and disappears above 1FFFh in mode 11)
-    ├── validate mode 10 and bank 0-6; anything else -> fatal path
-    ├── save the full caller latch
-    ├── switch SP to the common gate stack
-    ├── push BC, DE, IX, IY
-    ├── write (N & 07h) | 18h to port 00h   (bank and mode bits only, so
-    │                                       the revision-13 page field is 0)
-    ▼
-mode 11, bank 7 visible at 2000h-DFFFh
-    └── kos_syscall_dispatch (bank-7 boundary -> internal C dispatcher)
-    ▼
-return path (common memory):
-    ├── stash HL/A/carry in common state
-    ├── pop BC, DE, IX, IY
-    ├── write 10h|N to port 00h
-    ├── restore the exact caller SP
-    ├── rebuild A, HL, carry
-    ├── restore the caller's prior IFF state
-    └── RET                             (pops the caller's RST-pushed PC)
+program, mode 10 over bank N
+  RST 30h                        the return address is pushed on the caller's stack
+  JP kos_syscall_entry           page zero
+common memory, still mode 10:
+  save A, snapshot IFF2, DI
+  save the caller SP without a push   (the caller's stack may be in 2000h-DFFFh,
+                                       which disappears in mode 11)
+  check mode 10 and a bank 0-6; anything else is fatal
+  save the whole caller latch
+  switch SP to the common gate stack; push BC, DE, IX, IY
+  write (N & 07h) | 18h              mode 11, page field cleared
+mode 11: kos_syscall_dispatch
+return, in common memory:
+  stage HL, A and carry; pop BC, DE, IX, IY
+  write the saved latch back         (bank and page restored exactly)
+  restore the caller SP; rebuild A, HL, carry
+  restore the caller's interrupt state
+  RET
 ```
 
-## 6. Validation
+The gate is single-entry: one syscall is in flight at a time, and the
+whole crossing runs with interrupts masked. The IRQ executive uses its own
+state and stacks, so it never sees a half-made crossing.
 
-- Host: vector bytes/address/target checks, common placement of the full
-  gate path, bank-7 placement of the dispatcher, absence of direct
-  C-symbol addresses in the vector (`make test`, `make check`), plus a
-  Z80 simulation that replays the real image bytes for banks 0 and 6.
-- Target: `make subsystem-selftest` builds the current boot path with the
-  smoke caller linked in; it runs in application banks 0 and 6, exercises
-  the whole contract from a stack above `2000h`, and prints
-  `syscall selftest: OK` (or a precise failure).  Capture and verify it on
-  hardware with `make smoke-hardware-subsystem SERIAL_PORT=/dev/ttyUSB0`
-  (the per-milestone `syscall-selftest` image was retired).
-- The dated acceptance record is `docs/validation/`.
+## 3. Interrupt delivery
 
-## 7. M2 interrupt delivery contract
+Interrupts are not a syscall interface, but they can arrive at any
+instruction boundary once a program enables them, so their contract is
+part of the ABI:
 
-M2 adds a kernel-owned IM2 interrupt executive that is transparent to
-interrupted code.  This is not a syscall interface, but it is a documented
-kernel contract because an interrupt may be delivered at any instruction
-boundary once the foreground enables maskable interrupts:
+- IM2 with `I = FDh`; vector page `FD00h-FDFFh` plus the guard byte at
+  `FE00h`; vector `FFh` resolves to `irq_ff_unexpected`.
+- Preserved across delivery: `AF BC DE HL IX IY`, the alternate set, `SP`,
+  the exact latch (bank, mode and page) and `PC` (through `RETI`). `I`
+  stays `FDh`.
+- Delivery from mode 10 enters mode 11 over the interrupted bank; from mode
+  11 it keeps that mode. Either way it restores the saved latch exactly on
+  exit, so an interrupted aperture or window is unchanged.
+- Handlers run on the ISR stack with interrupts masked; there is no
+  nesting. The executive executes the final `RETI`.
 
-- Entry: IM2 vector `I=FDh`, vector page `FD00h-FDFFh` plus the `FE00h`
-  guard byte.  Every enabled vector resolves to common-memory entry code;
-  vector `FFh` resolves to `irq_ff_unexpected` (build-verified identity
-  `word_at(FDFFh) == address_of(irq_ff_unexpected)`).
-- Preserved across delivery: `AF BC DE HL IX IY`, alternate
-  `AF' BC' DE' HL'`, `SP`, the selected bank and mode (exact port-`00h`
-  latch restored), and `PC` (via `RETI`).  The `I` register stays `FDh`.
-- Entry from mode `10` crosses to `18h|saved_bank`; entry from mode `11`
-  keeps the interrupted bank and mode.  Either way the gate normalizes the
-  revision-13 page field: it dispatches with `P = 0` (the full bank-7
-  decode) and restores the saved latch exactly on exit, so an interrupted
-  window call (architecture 36.10) keeps its page selection.  The
-  executive runs handlers on the bank-7 ISR stack (`5F00h-5FFFh`, in the
-  fixed core) in mode `11`, with maskable interrupts disabled for the
-  entire delivery; there is no nesting.  The executive owns the final
-  `RETI`.
-- Handlers are bank-7 code registered per logical source
-  (`irq_claim`/`irq_release`); unexpected or unclaimed interrupts take a
-  compact counter/source record and, for CTC0, a safe quiesce.
-- The subsystem acceptance image exercises mode-10 delivery (banks 0 and
-  6, stack above `2000h`), mode-11 delivery, repeated delivery, exact `AF`
-  restoration, the unclaimed path, and the syscall gate's IFF restore
-  (`make subsystem-selftest`, then
-  `make smoke-hardware-subsystem SERIAL_PORT=...`; the per-milestone
-  `irq-selftest` image was retired).
+## 4. Syscalls
 
-## 8. M6 native syscalls
+| number | name | block (in) | result |
+|---|---|---|---|
+| `00h` | `EXIT` | `{status:u16}` | does not return |
+| `04h` | `GETINFO` | record at the block | `HL` = 6 |
+| `05h` | `EXEC` | `{path:u16, length:u16, args:u16, args_length:u16}` | `HL` = the child's exit status |
+| `06h` | `BIND` | `{path:u16, length:u16, flags:u16, type:u8 out, reserved:u8}` | `HL` = handle; `type` written |
+| `07h` | `CALL` | `{handle:u8, op:u8, flags:u8, frame_length:u8, buffer:u16, length:u16, direction:u8, reserved:u8, frame:32, status:i16}` | `HL` = the protocol status |
+| `08h` | `UNBIND` | `{handle:u8}` | `HL` = 0 |
+| `09h` | `NS_ENUM` | `{path:u16, length:u16, cookie:u16 in/out, out:u16, out_size:u16, count:u16 out}` | `HL` = entries written |
+| `0Ah` | `CHDIR` | `{path:u16, length:u16}` | `HL` = 0 |
+| `0Bh` | `GETCWD` | `{buffer:u16, length:u16}` | `HL` = length without the NUL |
+| `20h` | `XMEM_ALLOC` | `{size:u16, flags:u16}` | `HL` = object handle |
+| `21h` | `XMEM_FREE` | `{handle:u16}` | `HL` = 0 |
+| `22h` | `XMEM_READ` | `{handle:u16, offset:u16, buffer:u16, length:u16}` | `HL` = bytes moved |
+| `23h` | `XMEM_WRITE` | as `XMEM_READ` | `HL` = bytes moved |
+| `24h` | `XMEM_INFO` | `{handle:u16, buffer:u16}` | 8-byte record at `buffer` |
+| `25h` | `XMEM_MAP` | `{handle:u16, address:u16 out}` | `HL` = map token |
+| `26h` | `SEG_INFO` | `{segment:u8, reserved:u8, buffer:u16}` | 8-byte record at `buffer` |
+| `27h` | `SEG_MAP` | `{segment:u8, reserved:u8}` | `HL` = map token |
+| `28h`-`2Dh` | `DIAG_*` | section 9 | |
 
-M6 implements the first real drivers behind the unchanged gate.  The
-entry/return contract of sections 1-3 applies verbatim; only the set of
-syscall numbers and their argument blocks is added.  Package 41 retired
-the three console numbers (see below); `SYS_EXIT` and `SYS_GETINFO`
-remain as they shipped.
+Paths in every block are 1..127 bytes with no NUL, in `0100h-DFFFh`,
+resolved against the process's CWD. A zero length, an over-long path, an
+embedded NUL or a buffer outside the window is `KOS_EINVAL`.
 
-```text
-00h  SYS_EXIT            args {status:u16}
-01h  reserved  (was SYS_CONSOLE_WRITE)
-02h  reserved  (was SYS_CONSOLE_READ)
-03h  reserved  (was SYS_CONSOLE_POLL)
-04h  SYS_GETINFO         result block written at the argument pointer
-```
+## 5. Processes
 
-All argument blocks must lie inside the caller window `0100h-1FFFh`
-(checked before any caller byte is read); data buffers may span
-`0100h-DFFFh`.  Unimplemented numbers return `KOS_ENOSYS (01h)` with
-carry set.
+### 5.1 `EXIT`
 
-Work package 41 removed the three console syscalls: a program's console
-I/O is a client of the console driver now (section 13 below), and the
-numbers stay reserved - a stale caller gets `KOS_ENOSYS` instead of
-writing somewhere unexpected.
+Records the status, unbinds every handle the process owns, frees its
+extended-memory objects, its segments and its bank, and resumes the parent
+after its `EXEC`. A block outside the window ends the process with status
+`KOS_EFAULT`. A program that returns from its entry with `RET` instead of
+exiting is caught by a common trap and ends the same way: a process never
+unwinds into the kernel or into another process.
 
-Per-syscall behavior:
+### 5.2 `GETINFO`
 
-- `SYS_EXIT` does not return.  The kernel records the u16 status,
-  releases the process's bank and slot, and resumes the suspended parent
-  (initially the kernel launcher) after its `exec` call.  An argument
-  block outside the caller window is treated as a fatal user fault:
-  the process exits with status `KOS_EFAULT`.  A raw `RET` from a
-  program entry behaves the same way - the common return trap turns it
-  into an exit with `KOS_EFAULT`, so a process can never unwind into
-  the kernel or a previous process.
-- `SYS_GETINFO` writes a six-byte versioned record at the argument
-  pointer and returns `6` in `HL`:
+Writes a six-byte record and returns 6:
 
-  | Offset | Size | Field |
-  | --- | --- | --- |
-  | `0` | 1 | `size` = 6 |
-  | `1` | 1 | `abi` = 1 |
-  | `2` | 1 | `pid` (process slot `0-6`) |
-  | `3` | 1 | `bank` (application bank `0-6`) |
-  | `4` | 2 | `flags`: bit 0 `PROCESS_INFO_FLAG_KERNEL_PARENT` |
+| offset | size | field |
+|---|---|---|
+| 0 | 1 | `size` = 6 |
+| 1 | 1 | `abi` = 1 |
+| 2 | 1 | `pid`, the process slot 0-6 |
+| 3 | 1 | `bank`, the primary bank |
+| 4 | 2 | `flags`: bit 0 = the parent is the kernel launcher |
 
-Errors use the shared errno values in `abi/kos/errno.h`
-(`KOS_EINVAL`, `KOS_EFAULT`, `KOS_ENOSPC`, `KOS_EBUSY`, ...) as negated
-words in `HL`; a bad pointer range is `KOS_EFAULT`, a bad argument block
-or length is `KOS_EINVAL`.
+### 5.3 `EXEC`
 
-Native programs use `user/sdk/include/kos/console.h` (`exit`,
-`getinfo` and the console functions), which wraps these numbers and
-the console driver protocol with the private SDCC convention; programs
-never call `RST 30h` directly unless they re-implement that convention.
+Runs a child to completion and returns its exit status. It is synchronous:
+there is no `wait` and no asynchronous spawn.
 
-Validation: `make subsystem-selftest` runs `exetest.exe` from ROMFS in two
-application banks and checks the exact exit statuses; the simulator
-replays the full image transcript (`tests/test_m6_sim.py`), including
-the raw-return fault path and the malformed-EXE matrix.  The physical
-gate is `make smoke-hardware-m6 SERIAL_PORT=/dev/ttyUSB0` with the
-transcript expectations pinned in `tools/serial_smoke.py`.
+- `path` is resolved through the namespace. It is staged in the fixed-core
+  VFS workspace, because the owning provider (possibly a bank-6 driver)
+  reads it.
+- `args` is a raw tail of `args_length` bytes (0..125) in `0100h-DFFFh`,
+  copied byte-exact into the child's startup block. The kernel never
+  splits or interprets it. Length 0 means no arguments.
+- The child gets a fresh primary bank, its own page zero, standard handles
+  1 and 2, a copy of the parent's CWD, and nothing else. Its `chdir` never
+  affects the parent. It starts with P = 0, and the parent's latch,
+  including P, is restored when it exits.
+- At most 4 user processes form one chain; the next `EXEC` is refused.
+- Every fallible step happens before the child is entered; a failure frees
+  everything allocated for it.
 
-## 9. M7 diagnostic drivers
+| condition | error (carry set) |
+|---|---|
+| missing file | `KOS_ENOENT` |
+| a directory | `KOS_EISDIR` |
+| no card behind `/fs` | `KOS_ENODEV` |
+| malformed, oversize or wrong-ABI EXE, or not an EXE entry in `/system` | `KOS_EINVAL` |
+| bad block, tail over 125 bytes, tail outside the window | `KOS_EINVAL` |
+| no free slot, bank or auxiliary space | `KOS_ENOSPC` |
+| depth limit reached, or the gate frame too large | `KOS_EBUSY` |
+| a provider read error | passed through |
 
-M7 adds six recovery/diagnostic drivers behind the unchanged gate.
-They exist for the native monitor (and, later, the M11 diagnostic
-suite); ordinary programs keep to the ordinary drivers and never gain
-bank-7 access through them.  The boundary is architectural, not
-hardware-enforced (the Z80 has no privilege mode).
+### 5.4 The startup block
 
-```text
-28h  SYS_DIAG_MEM_READ     args {bank:u8, reserved:u8, address:u16}
-                           -> byte in HL
-29h  SYS_DIAG_MEM_WRITE    args {bank:u8, value:u8, address:u16}
-2Ah  SYS_DIAG_IO_IN        args {port:u8}        -> byte in HL
-2Bh  SYS_DIAG_IO_OUT       args {port:u8, value:u8}
-2Ch  SYS_DIAG_BANK_INFO    no args               -> mask:bank in HL
-2Dh  SYS_DIAG_SYSTEM_INFO  record written at the argument pointer
-                           -> size in HL
-```
-
-Argument blocks observe the section 8 window rule (`0100h-1FFFh`); the
-load/validation sequence is the same.  Every failure is side-effect
-free (no bank content, latch, or process bookkeeping changes) and every
-driver restores the exact active latch: memory transfers reuse the
-checked M6 bank-copy gate, and the port helpers never touch the latch.
-
-Memory access rules:
-
-- `SYS_DIAG_MEM_READ` accepts banks `0-6` and addresses `0000h-DFFFh`
-  (page-zero inspection is allowed); `reserved` must be zero.
-- `SYS_DIAG_MEM_WRITE` accepts banks `0-6` and addresses
-  `0100h-DFFFh`.  The native page zero `0000h-00FFh` and common memory
-  are protected.
-- Bank `7`, out-of-range addresses, arithmetic wrap, and a nonzero
-  reserved field are rejected with `KOS_EINVAL`.
-
-Port rules:
-
-- `SYS_DIAG_IO_IN` / `SYS_DIAG_IO_OUT` accept ports `10h-FFh` only.
-  Ports `00h-0Fh` alias the memory-control latch; an access there would
-  be a bank/mode operation in disguise, so `KOS_EINVAL` is returned
-  before anything is executed.
-
-`SYS_DIAG_BANK_INFO` returns `HL = (mask << 8) | bank`:
-
-- `bank` (L) is the calling process' application bank `0-6`; in kernel
-  context (no running process) it is the selected latch bank clamped to
-  `0-6`;
-- `mask` (H) is `7Fh`: bit N set means bank N is a valid application
-  bank.  Bit 7 is always clear - bank 7 is kernel-only - so callers
-  validate "bank usable" with `(mask >> bank) & 1`.
-
-`SYS_DIAG_SYSTEM_INFO` writes the eight-byte v1 record and returns `8`
-in `HL`:
-
-| Offset | Size | Field | Value |
-| --- | --- | --- | --- |
-| `0` | 1 | `size` | 8 |
-| `1` | 1 | `abi` | 1 |
-| `2` | 1 | `app_mode` | application mapping mode (`10h`) |
-| `3` | 1 | `os_mode` | OS mapping mode (`18h`) |
-| `4` | 2 | `common_base` | `E000h` |
-| `6` | 1 | `kernel_bank` | 7 |
-| `7` | 1 | `romfs_first_page` | 2 |
-
-The packed numbers and block layouts are declared in
-`abi/kos/diag.h` (the single public source) and mirrored by the SDK's
-`user/sdk/include/kos/diag.h` (`diag_*` gate wrappers in
-`user/sdk/src/diaggate.asm`); host tests pin the two headers
-and the assembly wrapper constants together.
-
-Validation: `make subsystem-selftest` boots the monitor image, runs the
-kernel-side diagnostic selftest (`tests/target/m7/m7_test.c`) and
-replays the scripted interactive session (`tests/test_m7_sim.py`),
-including per-class rejections, canary/table stability, and exact
-latch/SP/IFF restoration; `make monitor-test` checks the monitor EXE
-layout and its source/map freedom from kernel/serial dependencies.  The
-physical gate is `make smoke-hardware-m7 SERIAL_PORT=/dev/ttyUSB0` (see
-`docs/monitor.md`).
-
-## 10. M9 native filesystem drivers
-
-M9 (package 27) exposes the VFS to native programs behind the unchanged
-gate.  The family is `10h-1Fh`; argument blocks are declared in
-`abi/kos/fs.h` and are packed on the Z80 (every field is pinned
-by `_Static_assert` and by host tests).
-
-```text
-10h  SYS_FS_OPEN      {path:u16, length:u16, flags:u8}        -> fd in HL
-11h  SYS_FS_CLOSE     {fd:u8}
-12h  SYS_FS_READ      {fd:u8, buffer:u16, length:u16}         -> count in HL
-13h  SYS_FS_WRITE     {fd:u8, buffer:u16, length:u16}         -> count in HL
-14h  SYS_FS_SEEK      {fd:u8, whence:u8, offset:i32}          -> position written back
-15h  SYS_FS_STAT      {path:u16, length:u16, out:u16}         -> struct kfs_stat out
-16h  SYS_FS_OPENDIR   {path:u16, length:u16}                  -> fd in HL
-17h  SYS_FS_READDIR   {fd:u8, out:u16}                        -> 1 entry / 0 end
-18h  SYS_FS_CLOSEDIR  {fd:u8}
-19h  SYS_FS_MKDIR     {path:u16, length:u16}
-1Ah  SYS_FS_RMDIR     {path:u16, length:u16}
-1Bh  SYS_FS_UNLINK    {path:u16, length:u16}
-1Ch  SYS_FS_RENAME    {from:u16, from_length:u16, to:u16, to_length:u16}
-1Dh  SYS_FS_CHDIR     {path:u16, length:u16}
-1Eh  SYS_FS_GETCWD    {buffer:u16, length:u16}                -> length in HL
-1Fh  SYS_FS_SYNC      {fd:u8}
-```
-
-Rules:
-
-- Path fields address 1..127 non-NUL bytes in the caller buffer window
-  `0100h-DFFFh`; they are copied into a shared static pathname scratch and
-  resolved against the calling process' CWD.  A zero length, an over-long
-  path, an embedded NUL or a window violation is `KOS_EINVAL`.
-- `buffer`/`out` fields address the user-buffer window `0100h-DFFFh` and
-  move only through the checked bank-copy gates.  File data is transferred
-  in bounded chunks through the single 512-byte bank-7 staging buffer.
-- The descriptor an application names is the global 8-entry VFS pool index
-  (`kernel/vfs/`, owner-tagged).  Every fd-taking call verifies range, type
-  (`FILE` vs `DIRECTORY`) and owner; a mismatch is `KOS_EINVAL`, a full pool
-  is `KOS_EMFILE`.  Provider handles are never exposed.  Descriptors are not
-  `stdin`/`stdout`, are not inherited across `exec`, and there is no dup.
-- CWD is a VFS concept; `CHDIR` stores the canonical path and crosses mounts
-  transparently, and `GETCWD` writes the NUL-terminated canonical path and
-  returns its length excluding the NUL.  A too-small buffer is `KOS_EINVAL`.
-- `READ`/`WRITE` return the confirmed byte count in `HL`; a failure after at
-  least one confirmed chunk returns the confirmed count, otherwise the
-  error.  `SEEK` writes the resulting 32-bit position back into the
-  `offset` field of the block and returns `0` in `HL`.
-- `READDIR` returns `HL = 1` with a `kfs_dirent` at `out`, or `HL = 0` at
-  end of stream.
-- M9 has no `SYS_FS_STATFS` and no truncate-to-arbitrary-size; truncation to
-  zero is `SYS_FS_OPEN` with `KFS_O_TRUNC`.
-- Before the VFS READY phase every `FS_*` call returns `KOS_EBUSY`; every
-  driver validates its complete block before any state change.
-
-Errors use the shared values in `abi/kos/errno.h`; M9 adds
-`KOS_EEXIST (10h)`, `KOS_ENOTDIR (11h)`, `KOS_EISDIR (12h)`,
-`KOS_ENOTEMPTY (13h)`, `KOS_EROFS (14h)`, `KOS_ESTALE (15h)`,
-`KOS_EXDEV (16h)` and `KOS_EMFILE (17h)`.  `KOS_EMFILE` reports
-descriptor-pool or provider open-handle exhaustion, distinct from
-`KOS_ENOSPC` (storage full).
-
-Native programs use the wrappers in `user/sdk/include/kos/fs.h`
-(`open`, `close`, `read`, `write`, `seek`, `stat`,
-`kos_opendir`, `kos_readdir`, `kos_closedir`, `mkdir`, `rmdir`,
-`unlink`, `rename`, `chdir`, `getcwd`, `sync`).  They
-take NUL-terminated strings, reject a string over 127 bytes (or an
-empty/null one) locally with `-KOS_EINVAL`, and return the negated native
-error code on failure.
-
-Validation: `make fs-selftest` builds the M10 outcome image (the
-filesystem driver serving `/fs`, ROMFS at `/system`) and replays it in the
-Z80 simulator with the host FS2 peer serving the card
-(`tests/test_fs_selftest_sim.py`): every outcome line, the pinned check
-count, the card-absent run and the handle-release run.  The physical gate
-is `make smoke-hardware-fs SERIAL_PORT=/dev/ttyUSB0`, which expects
-`fs-selftest: PASS` and the monitor's `Z80> ` prompt.
-
-## 11. M9 native process exec (SYS_EXEC)
-
-```text
-05h  SYS_EXEC   args {path:u16, length:u16, args:u16, args_length:u16}
-                -> child exit status in HL
-```
-
-`SYS_EXEC` (package 28, extended by package 28b) runs a child program to
-completion and returns the child's u16 exit status.  It is a thin
-composition of the existing process machinery - the same slot, bank, EXE
-loader, page-zero, VFS-hook and exit path the kernel launcher uses - plus
-a bounded continuation stack for the shared syscall gate.  There is no
-second process manager and no asynchronous spawn: the call is
-synchronous, there is no `wait`, and no descriptor or environment is
-passed.  A raw command tail is transported for the child.
-
-Rules:
-
-- `path` follows the namespace rules verbatim: 1..127 non-NUL bytes in
-  the caller buffer window `0100h-DFFFh`, copied into the VFS workspace's
-  path view in the fixed core and resolved against the calling process'
-  CWD.  The bind hands that address to whichever provider owns the name,
-  so the staging is provider-facing memory: a bank-6 provider (the `/fs`
-  driver) dereferences it while its own window is open and could not see
-  the cold half (architecture 36.5's buffer rule).  Work package 45b
-  correction 01 moved it here from a bank-7 `_DATA` buffer; the card
-  executable it repaired is replayed by `tests/test_hwtest_sim.py`.
-- `args` addresses `args_length` raw bytes in the caller buffer window
-  `0100h-DFFFh` (no wrap).  The kernel copies them byte-exact into the
-  child's startup block and never splits, quotes or interprets them;
-  user space owns parsing (`user/sdk/include/kos/process.h`).  `args_length` 0
-  means no arguments and `args` is ignored; a length above 125 or a
-  pointer outside the window is `KOS_EINVAL`, checked in the preflight
-  before anything is allocated.  An argument block outside `0100h-1FFFh`,
-  like a path one, is also `KOS_EINVAL`.
-- The child inherits the parent's CWD and nothing else: the descriptor
-  pool is not inherited (a child's fd numbers belong to the child), and
-  the parent's open files keep their own offsets and data.  The child's
-  `chdir` never affects the parent.
-- The child is an ordinary process in a fresh application bank: it is
-  never bank 7, it gets its own page zero, and a raw `RET` from its entry
-  is a fault reported as an exit status of `KOS_EFAULT`, exactly like a
-  program launched by the kernel.  The v2 loader zeroes only the child's
-  BSS (primary and per segment), its startup block and the page-zero
-  vector (36.19); nothing else in the bank is cleared.
-- Nesting is bounded by `KOS_EXEC_MAX_DEPTH` (4) user processes in one
-  synchronous chain; the kernel launcher is not one of them.  A
-  suspension needs at most `KOS_EXEC_FRAME_SAVE` gate-stack bytes
-  (`kernel/include/process.h`), which the launch gate copies out of the
-  single common gate stack and restores before the parent's
-  `SYS_EXEC` returns.
-- Past the suspension point nothing can fail: every allocating or
-  fallible step (path copy-in, tail copy, slot/bank allocation, CWD start,
-  the EXE v2 header check, segment allocation and load, page zero, startup
-  block) happens in `process_prepare()` before the child is entered, with
-  the executable source closed before it returns.  `process_launch()` only
-  performs the transition.  A failed load releases the child's slot, bank,
-  CWD state and segment objects before it returns.
-
-## 11.1 Startup block v1 and HL
-
-The launch gate enters every native program with `HL = 0080h`, pointing
-at its own page zero's startup block v1 (architecture section 26.3):
+Every program is entered with `HL = 0080h`, its startup block v1:
 
 ```text
 0080h  u8   version = 1
-0081h  u8   tail_length  0..125
-0082h  u8   tail[126]    tail_length raw bytes, then one NUL
+0081h  u8   tail_length (0..125)
+0082h  u8   tail[126]: tail_length bytes, then one NUL
 ```
 
-Every program - including the kernel-launched one - gets a valid block;
-a program with no arguments sees version 1 and `tail_length` 0.  The
-kernel never parses the tail.  The block lives below the `0100h` syscall
-buffer window, so a program must copy the tail into its own data before
-passing it to a syscall (the runtime `startup()` accessor returns the
-block, and `splitargs()` parses a copy).  Programs that ignore `HL` are
-unaffected.  The entry glue that preserves `HL` is the SDK's crt0
-(`user/sdk/src/crt0.asm`, entry symbol `kos_entry`): it stores the block
-for `startup()` and never modifies it, so the kernel's copy stays valid.
+Every program gets a valid block; with no arguments `tail_length` is 0.
+The block is below `0100h`, so a program copies the tail into its own data
+before passing it to a syscall. The SDK's startup code stores the block for
+`startup()` and never modifies it; `splitargs()` parses a copy.
 
-Error mapping (carry set, `A` = `KOS_E*`, nothing allocated):
+## 6. Objects and the namespace
 
-| Condition | Error |
-| --- | --- |
-| missing file | `KOS_ENOENT` |
-| directory | `KOS_EISDIR` |
-| malformed or oversize EXE | `KOS_EINVAL` |
-| bad argument block, tail over 125 bytes, or tail pointer outside the window | `KOS_EINVAL` |
-| no free slot or bank | `KOS_ENOSPC` |
-| depth limit or frame too large | `KOS_EBUSY` |
-| provider read error | passed through unchanged |
+### 6.1 `BIND`
 
-On success carry is clear and `HL` holds the child's exit status; the
-result is not a file descriptor and there is no result block.
+Resolves a name and binds an instance: `HL` is the handle (3 or more),
+`type` is the 8-bit protocol type actually resolved (`KOS_TYPE_*` in
+`abi/kos/object.h`). The caller passes no expected type. `flags` is
+interpreted by the provider: open flags for files (`KFS_O_READ`, `WRITE`,
+`CREATE`, `EXCL`, `TRUNC`), zero for most devices. Failure is `-KOS_E*`
+in `HL`: `KOS_ENOENT` for an unknown name, `KOS_EMFILE` when the 12-entry
+handle table is full, `KOS_ENODEV` for `/fs` without a card.
 
-Native programs use `user/sdk/include/kos/process.h`
-(`run(const char *path, const char *args)`), which takes the
-NUL-terminated path and raw tail, rejects a path over 127 bytes or a tail
-over 125 bytes (or an empty/null path) locally with `-KOS_EINVAL`, and
-returns the child's status or the negated native error code.  A NULL or
-empty `args` means no arguments.
+Paths are routed by the first component, case-insensitively, to the three
+roots: `/fs` (the filesystem driver), `/system` (ROMFS) and `/dev` (the
+publication table). `/` itself lists the three roots and is not bindable.
 
-Implementation notes:
+### 6.2 `CALL`
 
-- The syscall gate's transition state (`kos_gate_saved_sp/latch/iff`) is
-  single-depth in common RAM, so every syscall of the running process
-  overwrites it.  The launch gate therefore shadows the launcher's copy
-  per depth and the resume puts it back, which is what lets a *resumed*
-  parent return through the gate with its own stack pointer, bank and
-  interrupt state rather than the child's.
-- One continuation record (`saved_sp`, `saved_latch`, `saved_iff`) exists
-  per depth, plus `KOS_EXEC_MAX_DEPTH - 1` gate-frame save areas: the
-  outermost process is launched by the kernel from the boot stack and
-  needs no copy.  All of it is common-resident
-  (`kernel/process/launch.asm`) because the resume gate reads it *while*
-  it changes the mapping and switches stacks.  The caller's path is not
-  here: it is staged in the VFS workspace in the fixed core, because the
-  bind inside the launch preparation hands it to the owning provider
-  (work package 45b correction 01), and common memory is not an isolated
-  region either - mode 10 maps it just as mode 11 does - so nothing is
-  placed there for safety.
+One protocol operation on a handle. The frame is 32 bytes; its meaning is
+the handle's protocol (`abi/kos/protocol.h`).
 
-Validation: the geometry is pinned by `kernel/include/process.h`
-(`KOS_EXEC_MAX_DEPTH`, `KOS_EXEC_FRAME_SAVE` with its static asserts) and
-by `kernel/process/launch.asm`; the nested exec runs in the M10 outcome
-image (`make fs-selftest`), where the boot program `SYS_EXEC`s
-`/system/fs_child.exe` and checks the child's tail, stdout, exit status
-and the release of the handles it leaked
-(`tests/test_fs_selftest_sim.py`).  The physical gate is
-`make smoke-hardware-fs SERIAL_PORT=/dev/ttyUSB0`.
+**Two result channels.**
 
-## 12. M10 native IPC (SYS_IPC_LOOKUP, SYS_IPC_CALL)
+- **Carry set, `A` = `KOS_EINVAL`:** the request never reached the IPC
+  layer: the block was outside the window, `frame_length` was 0 or above
+  32, or a reserved byte was not zero.
+- **Carry clear, `HL` = the status** (also written to `status`, and the
+  reply frame written back into the block): 0 or positive is the driver's
+  result. Negative is `-KOS_E*`, either a driver's protocol error or a
+  refusal by the IPC layer:
+
+  | refusal | error |
+  |---|---|
+  | unknown, stale or foreign handle | `KOS_EINVAL` |
+  | forged or released descriptor id | `KOS_EINVAL` |
+  | `offset + length` past the descriptor | `KOS_EINVAL` |
+  | re-entry into a non-re-entrant endpoint | `KOS_EBUSY` |
+  | nesting deeper than 4 | `KOS_ENOSPC` |
+
+A negative status with carry clear is a normal reply, not a syscall
+failure.
+
+**The descriptor.** One optional caller buffer per call, named by `buffer`,
+`length` and `direction` (`KOS_IPC_DESC_IN` = 0, the caller supplies data;
+`KOS_IPC_DESC_OUT` = 1, the caller receives it). `length` 0 means no buffer,
+and the frame's `desc` is `KOS_IPC_DESC_NONE` (`FFh`). Otherwise:
+
+- the buffer must lie in `0100h-DFFFh` of the caller's bank or in common
+  memory, and be at most `KOS_IPC_DESC_MAX` (4,096) bytes;
+- the nucleus captures it at entry from the caller's saved latch and hands
+  the driver a small id; the driver never sees the address;
+- drivers reach it only through `copy_in`/`copy_out`, which check
+  `offset + length` on every use;
+- an id is valid only below the level that captured it, so ids flow down a
+  call chain and a driver can never forge one;
+- with a non-zero saved page, a buffer wholly inside `8000h-BFFFh` names the
+  far bank in the aperture; a buffer that crosses the aperture's edge is
+  refused.
+
+**Copy paths.** The nucleus picks one per request; all are correct:
+
+| path | when | how |
+|---|---|---|
+| A | caller buffer in `0000h-1FFFh` or in common | one `LDIR` in mode 11 |
+| B | caller buffer in its bank clear of `8000h-BFFFh`, driver buffer in bank 6 `8000h-BFFFh` | one `LDIR` in mode 10 over the caller's bank with page 1; the latch is restored exactly; interruptible |
+| C | anything else | chunked through the common bank-copy gate (slow) |
+
+Page 1 is internal: no program ever receives a bank-6 latch.
+
+**Nesting.** At most 4 levels. An endpoint marked `KOS_IPC_EP_REENTRANT` may
+be re-entered; any other refuses a call while it is active. A driver runs on
+the fixed driver stack with its page mapped. An interrupt during a call
+runs the owning driver's handler with a restricted API (no calls, no
+copies) on the ISR stack and restores the latch exactly.
+
+### 6.3 `UNBIND`
+
+Releases a handle the caller owns. A foreign handle, an unbound number or
+a standard handle (1 or 2) is `-KOS_EINVAL`.
+
+### 6.4 Standard handles
+
+`KOS_HANDLE_STDOUT` (1) and `KOS_HANDLE_STDIN` (2) are bound to
+`/dev/console` when each process starts, if the build has a console
+driver. `BIND` never returns them. A child gets its own pair; no other
+handle passes to a child. Process exit unbinds every handle.
+
+### 6.5 `NS_ENUM`
+
+Writes up to `out_size / 28` entries of `KOS_NS_ENTRY_SIZE` (28) bytes,
+starting at the index in `cookie`, and writes the next index back:
 
 ```text
-06h  SYS_IPC_LOOKUP  args {class:u8, instance:u8, version:u8, reserved:u8}
-                     -> HL = handle (1..N) with version filled,
-                        HL = 0 when no endpoint is registered
-07h  SYS_IPC_CALL    args {handle:u8, op:u8, flags:u8, frame_length:u8,
-                           buffer:u16, length:u16, direction:u8,
-                           reserved:u8, frame:32, status:i16}
-                     -> HL = the IPC status (the same value as `status`)
+u8   type          the protocol type, or 0 for a container
+u8   flags         KOS_NS_ENTRY_CONTAINER: further components may follow
+u8   name_length
+u8   reserved
+char name[24]      NUL-terminated, zero-padded
 ```
 
-The resident-driver substrate (architecture sections 36.7-36.12) is the
-nucleus mechanism behind these two numbers: drivers export *endpoints*
-identified by a (class, instance) pair, a client holds an opaque handle
-returned by the lookup, and a call is one bounded 32-byte frame copied in
-at entry and back on reply.  The numbers, the frame layout, the argument
-blocks and the descriptor conventions are pinned in `abi/kos/ipc.h`, which
-static-asserts every offset.
+Below `/fs` the filesystem driver supplies the entries. `/dev/input` and
+`/dev/serial` are containers.
 
-Both blocks live in the caller *window*, `0100h-1FFFh`: the P-normalizing
-gate leaves only that part of the caller's bank visible while the nucleus
-runs, so a block anywhere else (including the caller's own data above
-`2000h`) is refused with carry set and `A = KOS_EINVAL` before the IPC
-layer is entered.  A program marshals through a low-window scratch; libkos
-exports `kos_scratch` plus its own `kos_ipc_lookup_block`,
-`kos_ipc_call_block` and `kos_ipc_raw_req` (docs/sdk.md).
+### 6.6 `CHDIR`, `GETCWD`
 
-Result conventions:
+`CHDIR` asks the owning provider whether the path is a traversable
+location and stores the canonical path; it binds nothing. `GETCWD` writes
+the NUL-terminated path and returns its length; a buffer too small is
+`KOS_EINVAL`.
 
-- `SYS_IPC_LOOKUP` returns the handle in `HL` with carry clear; `HL = 0`
-  means "not registered" and `args->version` is filled on success.
-  A block outside the window is a carried `KOS_EINVAL`.
-- `SYS_IPC_CALL` returns the IPC *status* in `HL` with carry clear.  The
-  status is the driver's own result (0 or positive), or a negated
-  `KOS_E*` for an IPC-layer refusal: unknown or stale handle
-  (`KOS_EINVAL`), forged or released descriptor id (`KOS_EINVAL`),
-  `offset + length` past the captured descriptor (`KOS_EINVAL`),
-  re-entrant call into a non-re-entrant endpoint (`KOS_EBUSY`), nesting
-  deeper than `KOS_IPC_MAX_NESTING` (`KOS_ENOSPC`).  The reply frame, the
-  captured descriptor id in `frame.desc` and `status` are written back
-  into the block, so a caller that only reads `status` sees the refusal
-  too.  A carried `KOS_EINVAL` means the request never reached the IPC
-  layer: block outside the window, `frame_length` 0 or above 32, or a
-  non-zero `reserved` byte.
-- The IPC status is a *protocol* result, not a syscall result: a driver
-  returning a negative value is a normal reply, exactly like a diagnostic
-  or filesystem driver error, and carry stays clear.
+## 7. Console
 
-Descriptor convention (one optional caller buffer per call, named by
-`buffer`/`length`/`direction`):
+Console I/O is not a syscall: the SDK speaks the `CONSOLE` protocol
+through the standard handles.
 
-- `direction` is `KOS_IPC_DESC_IN` (caller supplies, 0) or
-  `KOS_IPC_DESC_OUT` (caller receives, 1).  A zero `length` means "no
-  buffer" and `frame.desc` is `KOS_IPC_DESC_NONE` (`FFh`).
-- The nucleus captures the buffer at entry from the gate's saved caller
-  latch (bank and page), bounds-checks it against
-  `KOS_USER_BUFFER_BASE`/`KOS_USER_BUFFER_END` (the caller's own bank,
-  `0100h-DFFFh`), the common window (`E000h-FFFFh`, which every mapping
-  shows at the same address) and `KOS_IPC_DESC_MAX` (4096), and hands the
-  driver a small id.  The caller's *raw address is never visible to a
-  driver*: drivers reach the buffer only through the restricted copy
-  calls (`copy_in`/`copy_out`/`move`), and every use re-checks
-  `offset + length` against the captured length.
-- A descriptor id is valid only for calls deeper than its capture level,
-  so a caller's ids stay live down the call chain while a driver can
-  never name its own level, another level's id, or a forged one.
-- With a non-zero saved page, a buffer wholly inside the mode-10 aperture
-  (`8000h-BFFFh`) names the far bank `7 - P` (architecture 36.17); a
-  buffer that would cross the aperture boundary is refused at capture.
-
-Copy paths (correction 01 to architecture 36.8).  The nucleus picks the
-mapping per request; every accepted descriptor is copied correctly on all
-three paths, and only the first two are fast:
-
-| Path | Condition | Mechanism |
-|------|-----------|-----------|
-| A | caller buffer in `0000h-1FFFh` or in the common window | one `LDIR` in mode 11 |
-| B | caller buffer in the caller's bank, clear of `8000h-BFFFh`, driver buffer in bank 6's `8000h-BFFFh` | one `LDIR` in mode 10 over the caller's bank with page 1: the aperture shows bank 6 at the driver's own address. Exact latch restore, interruptible (a delivery inside the window pushes onto a common reservation, and the IRQ gate restores the interrupted mode-10 latch) |
-| C | everything else, including a driver buffer outside `8000h-BFFFh` | chunked through the common application-bank copy gate; counted as slow |
-
-Path B's page 1 is nucleus-internal: an application never receives a
-latch for bank 6, and the primitive's request block, saved latch/SP and
-interrupt-push reservation are all common-resident, because mode 10 does
-not map bank 7.  A driver that is the source or target of
-`copy_in`/`copy_out` should therefore place its I/O buffer, cache or
-staging block in bank 6's `8000h-BFFFh`; one that does not still works,
-on path C, and the nucleus counts it (the three path counters are read
-out of the image by the acceptance replay).
-
-Nesting and re-entrancy: `KOS_IPC_MAX_NESTING` is 4 (the outermost call
-plus three nested levels).  An endpoint registered with
-`KOS_IPC_EP_REENTRANT` may be re-entered; every other endpoint refuses a
-call that arrives while it is active with `KOS_EBUSY`.  A driver executes
-on the fixed driver stack (`KOS_DRIVER_STACK_BASE`, 512 bytes) with the
-driver page mapped, so its code, its data and its stack are all fixed or
-bank 6; the nucleus keeps its own stack, the common gate stack and the
-IRQ vectoring.  An IRQ delivered while a call is in progress runs the
-driver handler through the restricted API (`ipc_irq_active`; no register,
-lookup, call or copy) on the ISR stack and restores the interrupted latch
-exactly, so the call's frame and mapping survive.
-
-Native programs use the wrappers in `user/sdk/include/kos/ipc.h`:
-`kos_ipc_lookup(class, instance)`, `kos_ipc_lookup_version(...)` and
-`call(handle, struct kos_ipc_request *)`; the raw
-`kos_ipc_raw_call(struct kos_ipc_call_req *)` the tests drive directly is
-SDK-private (`user/sdk/src/kos_internal.h`, package 46 T6).
-The lookup wrapper caches up to `KOS_IPC_CACHE_ENTRIES` (8) (class,
-instance, handle) triples, so a repeated discovery costs no syscall; the
-cache is an optimisation only, never a correctness dependency (the kernel
-owns the endpoint table and handles are permanent).
-
-Package 41 moved the substrate from `test_link` into production: the
-fixed core links it (2,562 bytes of code and data), the cold half links
-the syscall bodies and the resident driver loader, and every production
-image boots its driver set from the store's `drivers.man`.  The
-`KOS_TARGET_TEST_BUILD` routing seam in `kernel/syscall.c` is gone - the
-IPC pair is dispatched like the filesystem family, in
-`kernel/syscall/ipc.c`.
-
-Validation: `make ipc-selftest` builds the production boot path with the
-substrate linked into the fixed core, the six synthetic bank-6 drivers
-placed by the cold loader and the SDK *probe* program booting as
-`/system/ipccopy.exe`.  The probe names five caller-buffer addresses
-(`0100h`, `3000h`, `7000h`, `C000h`, `9000h`) in the chained 512-byte read
-and a single `copy_out`, runs the driver-side slow case and a path-B copy
-with the timer armed, then starts the conformance client
-(`/system/ipc.exe`) and folds its 55-check verdict into its own line
-(`ipccopy: PASS`).  `tests/test_ipc_selftest_sim.py` boots the image once
-and asserts the outcomes: both verdicts and their check counts, every
-phase marker on the wire, the resolver's copy-path counters (one per
-outcome, so every path provably carried bytes), the reserved-stack
-high-water marks, the console bytes of the driver-side slow case, the
-loader's placement report against the packer's plan, the one-shot boot
-segments, and the caller's mapping restored at the end of the run.
-Work package 42d replaced the per-instruction tracer that measured
-per-case T-states, latch installs and the CTC0 injection framing this way:
-those figures are in the package-42b and package-42e records, and the
-client and the probe verify every path from the inside before printing
-their verdicts.  `tests/test_ipc_selftest.py` pins the ABI numbers, the
-residency classification, the client- and probe-window layouts and the
-driver I/O area rule.  The production image links none of
-it before package 41, so it stayed byte-identical until then
-(`config/residency.json` classified the objects as `test_link`).
-
-## 12.1 M10 objects and the namespace (package 42a)
-
-The stage-3 lookup disappears with the milestone's typed-namespace model
-(architecture 36.13/36.14): a program names what it wants, `bind` returns
-a *typed handle*, and endpoint numbers stay private to the nucleus.  The
-family is pinned in `abi/kos/object.h` (every offset static-asserted):
-
-```text
-06h  SYS_BIND     args {path:u16, length:u16, flags:u16,
-                         type:u8 out, reserved:u8 out}
-                  -> HL = handle (>= 3) with the 8-bit protocol type
-                     written to `type`; negative -KOS_E* on refusal
-07h  SYS_CALL     args {handle:u8, op:u8, flags:u8, frame_length:u8,
-                         buffer:u16, length:u16, direction:u8,
-                         reserved:u8, frame:32, status:i16}
-                  -> HL = the protocol status (the same value as `status`)
-08h  SYS_UNBIND   args {handle:u8}
-                  -> HL = 0, or -KOS_EINVAL for a handle the caller
-                     does not own, a standard handle or an unbound number
-09h  SYS_NS_ENUM  args {path:u16, length:u16, cookie:u16 in/out, out:u16,
-                         out_size:u16, count:u16 out}
-                  -> HL = entries written; `cookie` is the next start index
-```
-
-`07h` is the stage-3 call block, unchanged: the frame, the descriptor
-conventions, the copy paths and the nesting rules of section 12 above
-apply to a handle exactly as they did to a looked-up endpoint.  What
-changes is only what a handle *is*: one global, owner-tagged table (the
-extended M9 descriptor pool, `VFS_FD_MAX` entries), where each entry
-records the owner PID, the 8-bit protocol type, the endpoint (a bank-6
-driver endpoint or a nucleus one) and the provider's own object identity.
-`bind` never returns `KOS_HANDLE_STDOUT` (1) or `KOS_HANDLE_STDIN` (2);
-those two are the *standard handles*, bound at process start to the
-`/dev/console` publication when the build has one, and re-created for a
-child by `SYS_EXEC`, which inherits no bound handle.  Process exit unbinds
-every handle the process owns.
-
-Paths are resolved by the root router: `bind`/`ns_enum` normalize the
-caller's path (`vfs_path_normalize_at`, relative to the process CWD) and
-route the first component, case-insensitively, to one of the three static
-nucleus providers - `/fs` (the filesystem driver; `bind` below it returns
-`-KOS_ENODEV` until package 42b), `/system` (ROMFS, usable before any
-driver) and `/dev` (the host-built publication table).  A provider owns
-everything below its root and the VFS does not interpret it.  `/` is a
-directory of those three roots, not a provider: a root-level name has no
-owner and is refused with `-KOS_ENOENT`.  There is no mount table, no
-provider registration and no root merge.
-
-`ns_enum` returns `KOS_NS_ENTRY_SIZE` (28) bytes per entry - `type`,
-`flags`, `name_length`, `reserved` and a NUL-terminated, zero-padded
-24-byte `name` - starting at the index in `cookie`; the cookie is written
-back so a caller pages with one entry at a time, and the container flag
-`KOS_NS_ENTRY_CONTAINER` marks a name that is a grouping level, not a
-bindable object (`/dev/input`, `/dev/serial`).
-
-A ROMFS bind returns the type `KOS_TYPE_FILE` and an in-process FILE
-handle served by a nucleus endpoint through the same call path as a bank-6
-endpoint, with the one ROMFS reader (`KFILE_OP_READ`, `KFILE_OP_SEEK`,
-`KFILE_OP_META`; `KFILE_OP_WRITE` is `-KOS_EROFS`).  `/dev` names come from
-the publications the packer resolves into each driver container and the
-loader installs (docs/devices.md, docs/module-format.md).
-
-**Build selection.**  `abi/kos/object.h` defaults `KOS_NS_HANDLES` to 0:
-production keeps `SYS_IPC_LOOKUP`/`SYS_IPC_CALL` on 06h/07h, links none of
-the namespace objects, and is byte-for-byte the stage-3 image.  The macro
-is 1 in the `namespace-selftest` acceptance image (`make ns-selftest`,
-work package 42a correction 01), where `kernel/syscall.c` routes 06h-09h
-to the object dispatcher, the SDK is built with the bind/unbind/ns_enum
-wrappers and the standard handles, and the M9 `FS_*` front end still
-served `/system` for the legacy path.  Packages 42b/42c then turned the
-default over and deleted the M9 machinery: the mount table, the provider
-ABI, the `FS_*` front end, the arena and the driver ABI are gone
-(`docs/validation/2026-10-09-m10-namespace-handles.md`,
-`docs/validation/2026-10-09-m10-prune-nucleus.md`), and SIO plus the
-console driver are the image's driver set.
-
-Validation: the `namespace-selftest` image boots SIO, the console driver
-and a synthetic publisher whose manifest declares `/dev/input/keyboard`
-and `/dev/video`, then an ordinary SDK client (`/system/ns.exe`) that
-binds `/dev` objects and their grouping names, calls the publisher through
-the handle, reads and seeks `/system/drivers.man`, exhausts and releases
-the handle table, pages the three namespaces and `SYS_EXEC`s a child that
-proves the inherited standard handles.  `tests/test_ns_selftest.py` pins
-the ABI, the container publication tables and the residency
-classification; `tests/test_ns_selftest_sim.py` replays the boot and
-compares the transcript with the packed store.
-
-## 13. M10 console client (no syscall)
-
-
-A program's console I/O is not a syscall any more: `user/sdk/src/console_proto.c`
-speaks the protocol in `abi/kos/protocol.h` through the standard handles
-every process starts with (work packages 41-42b).
-
-| SDK function | console driver operation | descriptor |
-| --- | --- | --- |
-| `console_write(buf, len)` | `KCONSOLE_OP_WRITE` | IN: the caller's buffer |
-| `console_read(buf, len)` | `KCONSOLE_OP_READ` (non-blocking drain) | OUT: the caller's buffer |
+| SDK function | operation | descriptor |
+|---|---|---|
+| `console_write(buf, len)` | `KCONSOLE_OP_WRITE` | in: the caller's buffer |
+| `console_read(buf, len)` | `KCONSOLE_OP_READ` (returns what is pending) | out: the caller's buffer |
 | `console_poll()` | `KCONSOLE_OP_POLL` | none |
 | `putchar(ch)` | `KCONSOLE_OP_PUTC` | none |
 
-The handle is looked up once and cached; a program whose store lists no
-console driver sees `-KOS_ENOENT` from every one of them.  `console_puts`,
-`console_write`, `getchar` and `console_readline` are unchanged on top
-of these four.  The early console and the panic path remain nucleus-only
-and syscall-free: a boot with no driver at all still reports.
+`getchar`, `console_puts` and `console_readline` are built on these. A
+process without standard handles gets `-KOS_EINVAL`. The build decides which
+console driver answers; the program cannot tell. The early console and the
+panic path are nucleus code and need no driver.
 
-The nucleus binds `/dev/console` to handle 1 (stdout) and
-handle 2 (stdin) at process start, an exec'd child receives its own pair,
-and the console client needs no lookup at all.  Which console driver
-answers the handle is the build's selection (work package 42e:
-`console-v9958-hid` in production, `console-serial` in the serial
-variant); the program cannot tell the difference.
+## 8. Extended memory and segments
 
----
+### 8.1 `XMEM_*`
 
-## 14. M10 extended memory and the far aperture (package 43)
+- `ALLOC`: `flags` is `KOS_XMEM_FLAG_NONE` or `KOS_XMEM_FLAG_MAPPABLE` (at
+  most 16 KiB, placed in the aperture slice). Any other bit, a zero size or
+  a mappable size over 16 KiB is `-KOS_EINVAL`. A size over 32 KiB, a full
+  object table or no fitting run is `-KOS_ENOSPC`. The size rounds up to
+  whole 8 KiB slots; placement is never visible.
+- **Contents are undefined.** Nothing is pre-zeroed.
+- `READ`, `WRITE`: every range is checked before a byte moves; a copy-gate
+  failure is `-KOS_EFAULT`.
+- `INFO` writes `requested`, `allocated`, `flags` and `type`
+  (`KOS_XMEM_TYPE_RUNTIME`, or `KOS_XMEM_TYPE_SEGMENT` for a data segment),
+  never a bank or slot.
+- `FREE` refuses a segment's handle: segments are released at exit.
+- `MAP` returns the token that opens the aperture onto a mappable object,
+  and the object's address there (`8000h` or `A000h`). A stale, foreign or
+  non-mappable handle is `-KOS_EINVAL`. Tokens name only banks 0-5
+  (P = 2-7).
+- Handles are owner-tagged and generation-counted: a freed and reused entry
+  yields a different handle. A child inherits no object.
 
-The application bank map (architecture 36.15) turns the six application
-banks into free, primary (one process's bank) or auxiliary memory; an
-auxiliary bank carries seven 8 KiB slots at `0000h-DFFFh`.  A process
-allocates *extended-memory objects* out of the auxiliary slots and reaches
-them by copy or through the mode-10 far aperture (36.16/36.17).  The
-family is pinned in `abi/kos/xmem.h` (every offset static-asserted):
+The SDK opens and closes the aperture without a syscall:
+`aperture_open(token)` writes the token and returns the previous latch;
+`aperture_close(previous)` writes it back.
 
-```text
-20h  SYS_XMEM_ALLOC  args {size:u16, flags:u16}       -> HL = handle (>= 1)
-21h  SYS_XMEM_FREE   args {handle:u16}                -> HL = 0
-22h  SYS_XMEM_READ   args {handle:u16, offset:u16,
-                           buffer:u16, length:u16}    -> HL = bytes moved
-23h  SYS_XMEM_WRITE  (same block as read)             -> HL = bytes moved
-24h  SYS_XMEM_INFO   args {handle:u16, buffer:u16 out}-> 8-byte record
-25h  SYS_XMEM_MAP    args {handle:u16, address:u16 out}
-                      -> HL = the aperture token, `address` = the object's
-                         address in the aperture
-26h  SYS_SEG_INFO    args {segment:u8, reserved:u8,
-                           buffer:u16 out}            -> 8-byte record
-                         (section 15; a EXE v2 segment)
-27h  SYS_SEG_MAP     args {segment:u8, reserved:u8}   -> HL = the aperture
-                         token of a FAR_CODE segment (section 15)
-```
+### 8.2 `SEG_INFO`, `SEG_MAP`
 
-`flags` is `KOS_XMEM_FLAG_MAPPABLE` (at most 16 KiB, placed in the
-aperture slice so `SYS_XMEM_MAP` can open it) or `KOS_XMEM_FLAG_NONE`;
-any other bit is `-KOS_EINVAL`, as are a zero size and a mappable size over
-the limit.  A size over the 32 KiB maximum object, an exhausted object
-table or a free region without a fitting run is `-KOS_ENOSPC`.  The size
-rounds up to whole 8 KiB slots and one object is contiguous inside one
-bank; placement is never visible through the API.
-
-**Contents are undefined**: nothing pre-zeroes an object (36.19), so a
-program that needs zeroes writes them.  Every range - `offset + length`
-against the allocated size, the buffer against the caller window - is
-checked before any byte moves, and a copy-gate failure is `-KOS_EFAULT`.
-`SYS_XMEM_INFO` returns `requested`, `allocated`, `flags` and `type`
-(`KOS_XMEM_TYPE_RUNTIME`, or `KOS_XMEM_TYPE_SEGMENT` for a loader-created
-EXE v2 `DATA` segment - section 15), never a bank or slot.  `SYS_XMEM_FREE`
-refuses a segment object with `-KOS_EINVAL`: a loader segment is released
-only at exit.
-
-**Map tokens.**  In mode 10 with a nonzero page field P, the caller's
-`8000h-BFFFh` names bank 7 - P (36.17).  `SYS_XMEM_MAP` returns the
-*execution-latch value* that opens that aperture onto the object together
-with the object's aperture address (`8000h` in the lower slice, `A000h` in
-the upper one).  The SDK helpers are register-only and take no syscall:
-`aperture_open(token)` writes the token to the memory-control port and
-returns the previous latch, `aperture_close(saved)` writes that latch
-back.  Only the caller's own mappable objects can be mapped - a stale,
-foreign or non-mappable handle is `-KOS_EINVAL` - and every object bank
-maps to a page field of 2..7, so no token ever names bank 6 or bank 7.
-
-**Buffer identity** (36.8).  A caller address in `8000h-BFFFh` while the
-caller's saved latch has a nonzero page field names the far bank, not the
-primary bank: `read`/`write` buffers resolve that way, and every other
-syscall that moves caller bytes - descriptor capture included - applies
-the same rule.  A buffer that would cross the aperture boundary is refused
-with `-KOS_EINVAL` before anything is copied.
-
-**Handles and lifetime.**  A handle is opaque, owner-tagged and
-generation-counted: a freed and reused entry hands out a different
-handle, so a stale or foreign handle is refused before any state changes.
-A process owns its objects; a child inherits none of them, and `SYS_EXIT`
-releases every object of the exiting process after its handles are
-unbound (36.13).  Objects are read/write and non-executable.
-
-## 15. M10 EXE v2 segments (SYS_SEG_INFO, SYS_SEG_MAP, packages 44a/44b)
+Segments are the program's own container segments, ids `1..segment_count`
+in table order (far-code segments first). `SEG_INFO` writes:
 
 ```text
-26h  SYS_SEG_INFO  args {segment:u8, reserved:u8, buffer:u16}
-                   -> 8-byte record at `buffer`, HL = 0
-27h  SYS_SEG_MAP   args {segment:u8, reserved:u8}
-                   -> HL = the aperture token of a FAR_CODE segment
+offset 0  u16  size     image + BSS
+offset 2  u8   kind     KOS_SEG_KIND_FAR_CODE (1) or KOS_SEG_KIND_DATA (2)
+offset 3  u8   state    KOS_SEG_STATE_LOADED
+offset 4  u16  handle   a data segment's object handle; 0 for far code
+offset 6  u16  flags    KOS_XMEM_FLAG_MAPPABLE for a mappable data segment
 ```
 
-A EXE v2 container declares zero or more auxiliary segments
-(`docs/exe-format.md` section 3).  `SYS_SEG_INFO` describes one of the
-calling process's own segments, named by its container id
-(`1..segment_count`, in table order), and returns:
+- A data segment is an extended-memory object of type `SEGMENT`; `XMEM_READ`
+  and `XMEM_WRITE` take its handle, and a mappable one is opened with
+  `XMEM_MAP`.
+- `SEG_MAP` returns the token of a far-code segment, which is always at
+  `8000h`. A data segment's id, an unknown id or a bad block is
+  `-KOS_EINVAL`.
+- A syscall made from far code may name a buffer inside the open aperture
+  (the buffer identity rule).
+- Every segment is placed at load or the exec fails, so a live segment is
+  always `LOADED`.
+
+The SDK wrappers are `seginfo`, `segmap`, `farcall`, the `__banked`
+trampoline and `farmap`/`farunmap` (`docs/sdk.md`).
+
+## 9. Diagnostics
+
+For the monitor and the diagnostic tools; ordinary programs use drivers.
+Every failure changes nothing, and every call restores the exact latch.
 
 ```text
-offset 0  u16  size    image + BSS, the segment's logical size
-offset 2  u8   kind    KOS_SEG_KIND_DATA (2) or KOS_SEG_KIND_FAR_CODE (1)
-offset 3  u8   state   KOS_SEG_STATE_LOADED
-offset 4  u16  handle  DATA: the extended-memory object handle; else 0
-offset 6  u16  flags   KOS_XMEM_FLAG_* of the segment, 0 when none
+28h  DIAG_MEM_READ     {bank:u8, reserved:u8, address:u16}  -> byte in HL
+29h  DIAG_MEM_WRITE    {bank:u8, value:u8, address:u16}
+2Ah  DIAG_IO_IN        {port:u8}                            -> byte in HL
+2Bh  DIAG_IO_OUT       {port:u8, value:u8}
+2Ch  DIAG_BANK_INFO    no block                             -> HL = mask << 8 | bank
+2Dh  DIAG_SYSTEM_INFO  record at the block                  -> HL = 8
 ```
 
-- A `DATA` segment is a loader-created extended-memory object of type
-  `KOS_XMEM_TYPE_SEGMENT` owned by the process: `handle` is what
-  `SYS_XMEM_READ`/`SYS_XMEM_WRITE` take.  The segment is released only at
-  exit, so `SYS_XMEM_FREE` refuses its handle with `-KOS_EINVAL`, and
-  `SYS_XMEM_INFO` reports type `KOS_XMEM_TYPE_SEGMENT`.
-- A `DATA` segment that asked for `EXE_SEG_FLAG_MAPPABLE` (far data,
-  package 49d) reports `KOS_XMEM_FLAG_MAPPABLE` in `flags` and is placed
-  in the aperture slice of an auxiliary bank, so its image is at `8000h`
-  where the link put it and its BSS is zeroed right after - one
-  auxiliary bank per mappable segment, as for far code.  `SYS_XMEM_MAP`
-  returns the token that opens the aperture onto it, which is how the
-  SDK's `farmap` reaches the segment's C symbols (package 49d,
-  `docs/sdk.md` section 12).  An unplaced segment cannot be reported: the
-  loader places every segment or the exec fails.
-- A `FAR_CODE` segment (package 44b) has no handle and reports 0: it is
-  linked at `8000h`, the loader places it in the aperture slice of its own
-  auxiliary bank (one far-code segment per bank) and it executes in place
-  there.  `SYS_SEG_MAP` returns the token that opens it.  The SDK's
-  `farcall` is the far-call helper on top of it, and its
-  `___sdcc_bcall_ehl` trampoline makes a `__banked` far function a plain
-  C call (package 49b; `docs/sdk.md`).
-- Every segment of a loaded container is placed by the loader or the exec
-  fails and rolls back, so a live segment always reports `LOADED`.
-- The ids are the calling process's own container: another process's
-  segment does not exist for it, and an id outside `1..segment_count` is
-  `-KOS_EINVAL`, as is a bad argument block or a record buffer outside
-  the caller buffer window `0100h-DFFFh`.
+- `MEM_READ`: banks 0-6, `0000h-DFFFh`; `reserved` must be 0.
+- `MEM_WRITE`: banks 0-6, `0100h-DFFFh` (page zero and common memory are
+  protected).
+- Bank 7, out-of-range addresses and wrap-around are `KOS_EINVAL`.
+- `IO_IN`, `IO_OUT`: ports `10h-FFh` only. Ports `00h-0Fh` alias the latch,
+  so they are refused before anything runs.
+- `BANK_INFO`: `L` is the caller's bank; `H` is `7Fh` (bit n set means bank
+  n is reachable by these calls; bit 7, the nucleus bank, is always clear).
+- `SYSTEM_INFO`, the eight-byte v1 record:
 
-```text
-27h  SYS_SEG_MAP  args {segment:u8, reserved:u8}  -> HL = token (>= 1)
-```
+  | offset | size | field | value |
+  |---|---|---|---|
+  | 0 | 1 | `size` | 8 |
+  | 1 | 1 | `abi` | 1 |
+  | 2 | 1 | `app_mode` | `10h` |
+  | 3 | 1 | `os_mode` | `18h` |
+  | 4 | 2 | `common_base` | `E000h` |
+  | 6 | 1 | `kernel_bank` | 7 |
+  | 7 | 1 | `romfs_first_page` | 2 |
 
-`SYS_SEG_MAP` returns the execution-latch token that opens the mode-10
-aperture onto one of the caller's own `FAR_CODE` segments; the token is
-the same shape `SYS_XMEM_MAP` returns (section 14) with the segment's
-application bank `0-5` selecting `P = 7 - bank`, so it never names bank 6
-or bank 7.  The segment is always at `8000h`, so no address is returned:
-with the aperture open, `8000h` names the far segment and a `CALL` to an
-address in `8000h-BFFFh` runs the far code.  Only `FAR_CODE` segments have
-a token - an unknown id, a `DATA` segment's id (reached by handle, not
-mapped) or a bad argument block is `-KOS_EINVAL`.  A caller address in
-`8000h-BFFFh` while the aperture is open names the far bank by the buffer
-identity rule (section 14), so a syscall issued from far code may name a
-buffer inside the aperture.  The SDK opens and restores the aperture for
-one call: `farcall(segment, entry, a, b)`
-(`user/sdk/include/kos/seg.h`).
+The SDK wrappers are in `kos/diag.h`, which `kos.h` does not include.
 
-The SDK wrappers are `seginfo(segment, &info)` and
-`segmap(segment)`, which return 0 or `-errno` (the token for
-`segmap`).
+## 10. Errors
+
+One numbering for the whole system (`abi/kos/errno.h`):
+
+| value | name | meaning |
+|---|---|---|
+| `01h` | `KOS_ENOSYS` | no such syscall |
+| `02h` | `KOS_EINVAL` | invalid argument, handle or descriptor |
+| `03h` | `KOS_ENODEV` | no device, or no media |
+| `04h` | `KOS_EBUSY` | busy, owned, or a limit on nesting |
+| `05h` | `KOS_ENOENT` | not found |
+| `06h` | `KOS_ENOSPC` | out of space, memory or table entries |
+| `07h` | `KOS_ENOTSUP` | not supported by this object |
+| `08h` | `KOS_ETIMEDOUT` | a bounded wait expired |
+| `09h` | `KOS_EAGAIN` | nothing available yet |
+| `0Ah` | `KOS_EIO` | corrupt, truncated or failed I/O |
+| `0Bh` | `KOS_EINIT` | initialization refused |
+| `0Ch` | `KOS_EFAULT` | a process fault (bad block at exit, raw return) |
+| `10h` | `KOS_EEXIST` | already exists |
+| `11h` | `KOS_ENOTDIR` | not a directory |
+| `12h` | `KOS_EISDIR` | is a directory |
+| `13h` | `KOS_ENOTEMPTY` | directory not empty |
+| `14h` | `KOS_EROFS` | read-only |
+| `15h` | `KOS_ESTALE` | stale object identity |
+| `16h` | `KOS_EXDEV` | across providers |
+| `17h` | `KOS_EMFILE` | handle table or open-file limit reached |
+
+Syscalls return the code in `A` with carry set; `CALL` statuses and SDK
+wrappers return it negated.

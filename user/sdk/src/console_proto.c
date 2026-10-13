@@ -1,4 +1,4 @@
-/* KonaOS libkos: console client over the console driver (package 41).
+/* KonaOS libkos: console client over the console driver.
  *
  * The console is a bank-6 driver now (abi/kos/protocol.h, class
  * KOS_CLASS_CONSOLE) and the three SYS_CONSOLE_* syscalls are gone, so the
@@ -8,13 +8,13 @@
  *                           one descriptor-bearing WRITE/READ call, with
  *                           the caller's buffer named by the request's
  *                           descriptor (the nucleus captures it from the
- *                           syscall gate's latch, architecture 36.8);
+ *                           syscall gate's latch, architecture 4.9);
  *   console_poll()          the descriptor-less POLL operation;
  *   putchar()               the descriptor-less one-byte PUTC operation:
  *                           no descriptor capture, no copy, one call.
  *
  * The console is the `/dev/console` object and the two standard handles
- * every process starts with (architecture 36.13): KOS_HANDLE_STDOUT for
+ * every process starts with (architecture 4.10): KOS_HANDLE_STDOUT for
  * output, KOS_HANDLE_STDIN for input, bound at process start and inherited
  * across SYS_EXEC.  There is no lookup and no cache; a program whose build
  * published no console gets -KOS_EINVAL from the call, because the standard

@@ -1,4 +1,4 @@
-/* KonaOS M5 ROMFS read-only recovery filesystem.
+/* KonaOS ROMFS read-only recovery filesystem.
  *
  * ROMFS v1 is the tiny, allocation-free boot/recovery store placed in the
  * platform's recovery ROM pages (platform/zephyr80/private/memory.h).  The image
@@ -20,10 +20,10 @@
  * the common ROM-access primitive (rom_access_copy); no ROM byte is ever
  * mapped into the bank-7 address space.
  *
- * The API is deliberately small and is not the future native filesystem
- * ABI (M9 defines that separately).  M9 keeps exactly one lookup
- * (`romfs_lookup_ci`, ASCII case-folded) and one bounded read; the VFS
- * ROMFS provider in fs/romfs/ is the only caller that enumerates.
+ * The API is deliberately small and is not the native filesystem ABI.
+ * There is exactly one lookup (`romfs_lookup_ci`, ASCII case-folded) and
+ * one bounded read; the /system provider (kernel/vfs/system.c) is the
+ * only caller that enumerates.
  */
 
 #ifndef KONAOS_ROMFS_H
@@ -66,7 +66,7 @@ typedef struct romfs_file {
 int romfs_init(void);
 
 /* The one ROMFS lookup: resolve a native name with ASCII case-folded
- * comparison (architecture sections 32.8 and 32.13).  It serves the VFS
+ * comparison (architecture sections 4.10 and 4.6).  It serves the VFS
  * ROMFS provider, the EXE launcher and the module resource imports; there
  * is no case-sensitive variant beside it.  Returns 0 on success, or
  * -KOS_ENOENT / a negative error. */

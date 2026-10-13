@@ -1,6 +1,6 @@
-/* KonaOS native extended-memory ABI (public native ABI, package 43).
+/* KonaOS native extended-memory ABI (public native ABI).
  *
- * Architecture 36.15-36.17: a process allocates process-owned
+ * Architecture 4.8-7.2: a process allocates process-owned
  * extended-memory objects and reaches their contents three ways: through
  * `read`/`write` copies, through the mode-10 far aperture (mappable
  * objects only), or by never mapping anything and keeping its whole
@@ -25,18 +25,18 @@
  * A EXE v2 `DATA` segment is one of these objects with type
  * `KOS_XMEM_TYPE_SEGMENT` (SYS_SEG_INFO names it); it is read and written
  * with this family's calls and released only at exit.  A DATA segment
- * whose container row carried `EXE_SEG_FLAG_MAPPABLE` (work package 49d)
+ * whose container row carried `EXE_SEG_FLAG_MAPPABLE`
  * is mappable: its image was linked at `8000h` and the loader places it
  * in the aperture slice, so a program opens the aperture onto it with
  * `SYS_XMEM_MAP` and uses the C symbols directly.
  *
  * **Contents are undefined.**  Nothing pre-zeroes an object (architecture
- * 36.19): a program that needs zeroes writes them.  Every range
+ * 4.8): a program that needs zeroes writes them.  Every range
  * (`offset + length` against the allocated size, the caller buffer against
  * its window) is checked before any byte moves; invalid, stale or foreign
  * handles are refused.
  *
- * The aperture (36.17): in mode 10 with a nonzero page field P, the
+ * The aperture (7.2): in mode 10 with a nonzero page field P, the
  * caller's `8000h-BFFFh` names bank 7 - P.  `SYS_XMEM_MAP` returns the
  * **token** - the execution-latch value that opens the aperture onto the
  * object - and the object's address in the aperture (`8000h` for an object
@@ -47,7 +47,7 @@
  * calling process's own objects, and every object bank maps to a page
  * field of 2..7, so no token ever exposes bank 6 or bank 7.
  *
- * Buffer identity (36.8): a caller address in `8000h-BFFFh` while the
+ * Buffer identity (4.9): a caller address in `8000h-BFFFh` while the
  * caller's saved latch has a nonzero page field names the far bank, not
  * the primary bank - in `read`/`write` copies and in every other syscall
  * that moves caller bytes.  A buffer that would cross the aperture
@@ -64,7 +64,7 @@
 #include "kos/types.h"
 #include "kos/errno.h"
 
-/* --- native syscall numbers (docs/abi.md section 14) -------------------- */
+/* --- native syscall numbers (docs/abi.md section 8.1) -------------------- */
 
 #define KOS_SYSCALL_XMEM_ALLOC 0x20u
 #define KOS_SYSCALL_XMEM_FREE  0x21u
@@ -106,7 +106,7 @@ struct kos_xmem_alloc_args {
 /* SYS_XMEM_FREE 21h {handle:u16} -> HL = 0.  A handle that is not live,
  * not this process's, or stale (a reused entry) is KOS_EINVAL, and so is
  * a loader-created `KOS_XMEM_TYPE_SEGMENT` object: a EXE data segment is
- * released only at exit (architecture 36.16). */
+ * released only at exit (architecture 4.8). */
 struct kos_xmem_free_args {
 	uint16_t handle;
 };

@@ -11,8 +11,8 @@
  *   late   after console binding (ROMFS reader, process/EXE, loader)
  *
  * Each acceptance image selects exactly one group: the subsystem image
- * (relocated subsystem mechanism selftests), the device/console subsystem images,
- * or the M9 VFS images.
+ * (subsystem mechanism selftests), the device/console images, or the
+ * namespace, IPC, filesystem and extended-memory images.
  */
 
 #include "kernel.h"
@@ -63,7 +63,7 @@ void kos_target_test_late(void)
 #endif
 #if KOS_IOC_SELFTEST
 	/* The console-integration image carries the device diagnostics
-	 * (work package 42d): IOC transport, HID input, V9958 video, then
+	 *: IOC transport, HID input, V9958 video, then
 	 * the integration pass itself.  Each is a bank-7 client of the
 	 * resident drivers; the transcript runs on the early SIO. */
 	kos_run_ioc_selftest();
@@ -90,9 +90,9 @@ void kos_target_test_late(void)
 }
 
 /* TEST-ONLY HOOK: routes acceptance-only syscall numbers to their bodies.
- * Production links neither these bodies nor this hook (package 42b: the
- * object family is production code, so only an acceptance-only number
- * reaches this hook).  Returns non-zero when handled. */
+ * Production links neither these bodies nor this hook (the object
+ * family is production code, so only an acceptance-only number reaches
+ * this hook).  Returns non-zero when handled. */
 uint8_t kos_target_test_syscall(uint8_t number, uint8_t bank, uint16_t block)
 {
 	(void)number;

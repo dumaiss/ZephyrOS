@@ -42,7 +42,7 @@ KOS_MODE_FLAT           = 0x08
 KOS_MODE_APPLICATION    = 0x10
 KOS_MODE_OS             = 0x18
 
-; M0 boot-ROM page assignment
+; Boot-ROM page assignment
 KOS_BOOT_OS_ROM_PAGE    = 1
 KOS_BOOT_OS_BANK        = 7
 
@@ -221,7 +221,7 @@ KOS_SMOKE_HOST_SYNC_SECOND  = 0x55
 
 KOS_SIO_TX_TIMEOUT      = 0xFFFF
 
-; --- M2 CTC0 interrupt bring-up (vector mapping lives in irq.inc) ---
+; --- CTC0 interrupt test programming (vector mapping lives in irq.inc) ---
 KOS_CTC0_CONTROL_TEST   = 0xA7
 KOS_CTC0_TIME_CONSTANT  = 0x00
 KOS_CTC0_RESET          = 0x03

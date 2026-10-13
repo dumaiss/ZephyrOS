@@ -1,7 +1,7 @@
-/* KonaOS M2 IRQ acceptance constants (test only).
+/* KonaOS IRQ acceptance constants (test only).
  *
- * Values mirror tests/target/include/irq_selftest.inc (the assembly view
- * used by tests/target/m2/irq_selftest.asm); the host parity test verifies
+ * Values mirror tests/target/include/irq_entry.inc (the assembly view
+ * used by tests/target/irq/irq_entry.asm); the host parity test verifies
  * they cannot drift.  Not part of the native ABI.
  */
 
@@ -55,7 +55,7 @@
 #define KOS_IST_FAIL_REGISTRY   0x15u
 
 #if KOS_SUBSYS_SELFTEST
-/* M2 acceptance entry (tests/target/m2/irq_test.c). */
+/* IRQ acceptance entry (tests/target/irq/irq_test.c). */
 void kos_run_irq_selftest(void);
 #endif
 

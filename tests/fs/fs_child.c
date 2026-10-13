@@ -14,7 +14,7 @@
  *
  * Its exit status is the value the parent compares (KOS_EXIT_STATUS).
  *
- * Two tails are accepted (work package 45b).  `tail-42` is the fs image's
+ * Two tails are accepted.  `tail-42` is the fs image's
  * contract: the card file is /fs/CHILD.TMP.  `stage` runs it as the
  * hardware exerciser's nested exec, where every write stays inside the
  * /fs/HWTEST scratch directory the runner owns.  Both are checked

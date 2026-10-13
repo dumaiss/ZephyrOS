@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS fixed-core IPC primitives (kernel/ipc, architecture 36.5-36.9).
+; KonaOS fixed-core IPC primitives (kernel/ipc, architecture 4.9).
 ;
 ; Every symbol here is fixed-core by construction: it must stay visible in
 ; 2000h-5FFFh while the resident driver domain (bank 6) is mapped into
@@ -15,7 +15,7 @@
 ;   16-bit return in DE, 8-bit return in A, first 16-bit argument in HL,
 ;   second 16-bit argument in DE, first 8-bit argument in A.
 ;
-; The driver stack is the 512-byte reservation of architecture 36.9 at
+; The driver stack is the 512-byte reservation of architecture 4.9 at
 ; KOS_DRIVER_STACK_BASE, below the relocated ISR stack; like the ISR
 ; stack it is declared ABS so no ordinary allocation can enter it.
 ; -----------------------------------------------------------------------------
@@ -82,7 +82,7 @@ _ipc_domain_enter::
 ; Same mapping change as ipc_domain_enter but without touching the saved
 ; latch cell: the IRQ trampoline and a cross-domain nested call re-select
 ; a window page inside a call whose own enter/exit pair must stay intact
-; (architecture 36.10: the IRQ entry owns its own latch slot).
+; (architecture 4.5: the IRQ entry owns its own latch slot).
 ; ---------------------------------------------------------------------------
 _ipc_domain_set::
 	ld	b,a			; B = page bits
@@ -218,7 +218,7 @@ _ipc_copy_req::
 	.ds	6
 
 ; ---------------------------------------------------------------------------
-; The driver-domain stack (architecture 36.9): 512 bytes in the fixed
+; The driver-domain stack (architecture 4.9): 512 bytes in the fixed
 ; core, shared by the whole driver-call chain.  ABS so no ordinary
 ; allocation can enter the reservation.
 ; ---------------------------------------------------------------------------

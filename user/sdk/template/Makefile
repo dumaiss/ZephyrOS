@@ -1,4 +1,4 @@
-# KonaOS program Makefile (work package 49c): the SDK's smallest program.
+# KonaOS program Makefile: the SDK's smallest program.
 #
 # Build with `make` where this directory sits next to the unpacked SDK
 # (KOS_SDK_ROOT names the SDK).  The packed program lands in

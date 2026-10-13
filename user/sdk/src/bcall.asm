@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS libkos: the banked-call trampoline (work package 49b).
+; KonaOS libkos: the banked-call trampoline.
 ;
 ; A program marks a far function `__banked` and calls it like any other
 ; function.  SDCC then emits

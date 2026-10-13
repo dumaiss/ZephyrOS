@@ -1,15 +1,15 @@
-/* KonaOS M7 diagnostic syscall drivers (kernel-internal interface).
+/* KonaOS diagnostic syscalls (kernel-internal interface).
  *
  * The stable syscall numbers are declared in abi/kos/syscall.h; this
  * header is the private contract between
- * the M7 dispatcher (kernel/syscall.c), the diagnostic driver bodies
+ * the dispatcher (kernel/syscall.c), the diagnostic bodies
  * (kernel/syscall/diag.c), and the bank-7 port helpers
  * (kernel/syscall/diag_io.asm).  It is not part of the native ABI.
  *
  * Every driver validates its complete argument block before touching
  * caller memory or device state, publishes its result through the common
  * dispatcher result state, and leaves failures side-effect free.  Memory
- * transfers reuse the M6 checked copy gate (kernel/memory/user_copy.asm),
+ * transfers reuse the checked copy gate (kernel/memory/user_copy.asm),
  * which restores the exact active latch, SP, and IFF state; the port
  * helpers do not modify the latch at all.
  */

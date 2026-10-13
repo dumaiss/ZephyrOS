@@ -1,6 +1,6 @@
-/* KonaOS native object and namespace ABI (public native ABI, package 42a).
+/* KonaOS native object and namespace ABI (public native ABI).
  *
- * The public object lifecycle of architecture 36.7 and 36.13:
+ * The public object lifecycle of architecture 4.9 and 4.10:
  *
  *   bind(path, flags) -> handle, type   resolve a namespace name, bind an instance
  *   call(dependency_ref, op, frame)     synchronous protocol operation
@@ -18,7 +18,7 @@
  * across SYS_EXEC; `bind` never returns either number, and the standard
  * numbers are absent when the build selected no console driver.
  *
- * Namespace enumeration (architecture 36.13) is a batched VFS operation
+ * Namespace enumeration (architecture 4.10) is a batched VFS operation
  * routed to the owning namespace provider.  `ns_enum` writes as many
  * `struct kos_ns_entry` records as fit the caller's buffer and returns the
  * next cookie, so a caller pages with `cookie` until zero entries arrive.
@@ -33,7 +33,7 @@
  * caller's CWD; `out` is a caller-bank address in the same window,
  * written only through the checked bank-copy gate.
  *
- * Native syscalls (docs/abi.md section 12):
+ * Native syscalls (docs/abi.md section 6):
  *
  *   RST 30h, A = KOS_SYSCALL_BIND, HL = &struct kos_bind_args
  *       carry clear: HL = handle (>= 1), args->type filled with the 8-bit
@@ -69,10 +69,10 @@
 
 #include "kos/types.h"
 
-/* --- native syscall numbers (docs/abi.md section 12) -------------------- */
+/* --- native syscall numbers (docs/abi.md section 6) -------------------- */
 
 /* 06h and 07h reuse the two numbers the stage-3 IPC ABI pinned; the
- * lookup syscall and its SDK cache are gone (package 42b), so 06h is
+ * lookup syscall and its SDK cache are gone, so 06h is
  * `bind` and 07h is `call` on an object handle.  08h/09h are the rest of
  * the object family and 0Ah/0Bh the namespace family. */
 #define KOS_SYSCALL_BIND    0x06u
@@ -84,10 +84,11 @@
 
 /* --- 8-bit protocol types ------------------------------------------------ */
 
-/* The device families keep the pinned M8 class slots (the numbers are
- * part of the deployed ABI), so a protocol type and a driver class
- * coincide for them; FILE and the filesystem-namespace protocol are not
- * device classes and continue the sequence. */
+/* For the device families a protocol type and the driver class share a
+ * number; FILE and the filesystem-namespace protocol are not device
+ * classes and continue the sequence.  The two numberings are still
+ * separate: class HID serves type INPUT, and the FILE class serves both
+ * FILE and FS. */
 #define KOS_TYPE_SERIAL  1u
 #define KOS_TYPE_VIDEO   2u
 #define KOS_TYPE_BLOCK   3u

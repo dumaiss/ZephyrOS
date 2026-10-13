@@ -1,17 +1,16 @@
-/* KonaOS resident-driver acceptance client (work package 41).
+/* KonaOS resident-driver acceptance client.
  *
- * The M10 driver acceptance images run their diagnostic inside the
+ * The driver acceptance images run their diagnostic inside the
  * nucleus (kernel/main.c calls kos_target_test_early/late), which makes
  * that diagnostic a *bank-7 client* of the resident drivers: it holds no
  * descriptor and cannot use `move`, so it drives each protocol through
  * the descriptor-less forms plus the staged buffers that drivers name in
- * their replies (architecture 36.8, docs/devices.md section 12).
+ * their replies (architecture 4.9, docs/devices.md section 12).
  *
  * This helper is the one place that knows those gymnastics:
  *
  *   driver_cli_endpoint()   endpoint resolution through the host-built
- *                            `/dev` publication the class names (package
- *                            42b retired the class/instance lookup), 0
+ *                            `/dev` publication the class names, 0
  *                            when the image serves no such provider;
  *   driver_cli_call()       one ipc_nucleus_call with a caller-owned
  *                            frame, returning the frame status;
@@ -35,7 +34,7 @@
 #include "driver.h"
 
 /* The resident driver bank: bank 7 is the nucleus, so bank 6 is the last
- * application bank (architecture 36.2).  The copy gate takes it directly. */
+ * application bank (architecture 2.2).  The copy gate takes it directly. */
 #define DRIVER_CLI_BANK 6u
 
 /* Bytes per gate transfer (the gate's common staging block is 64 bytes,
@@ -72,8 +71,7 @@ int driver_cli_write(const uint8_t *data, uint16_t length);
 void driver_cli_hex8(uint8_t value);
 void driver_cli_hex16(uint16_t value);
 
-/* The console driver endpoint handle, 0 when the store booted none: the
- * readiness check the retired `console_output_handle()` performed. */
+/* The console driver endpoint handle, 0 when the store booted none. */
 uint8_t driver_cli_console_handle(void);
 
 #endif /* KOS_TARGET_DRIVER_CLIENT_H */

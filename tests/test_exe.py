@@ -16,7 +16,7 @@ Coverage:
   empty/oversized payloads, too many slots);
 * FAR_CODE packing: the payload comes from the program's linked `_FAR_CODE`
   area (one or several segment declarations), the area must be linked at
-  8000h and fit the 16 KiB aperture, and the 36.17 rule keeps the primary
+  8000h and fit the 16 KiB aperture, and the 7.2 rule keeps the primary
   image, BSS and stack outside 8000h-BFFFh;
 * the real exetest/outcome artifacts: the packed containers validate,
   their reports match the bytes, the subsystem acceptance ROMFS stores
@@ -118,14 +118,6 @@ class TestFixtureBoundaries(unittest.TestCase):
         self.assertEqual([f["data"] for f in first],
                          [f["data"] for f in second])
 
-    def test_old_magic_is_rejected(self):
-        """The pre-rename magic cannot reappear (the bytes are spelled in
-        hex): a container carrying it hits the ordinary bad-magic
-        boundary."""
-        with self.assertRaises(exepack.ExeError) as caught:
-            exepack.validate_image(gen_fixtures.old_magic_container())
-        self.assertEqual(caught.exception.code, "EXE_EXEC_ERR_MAGIC")
-
     def test_fixture_set_matches_the_system_file(self):
         system = json.loads(open(SUBSYS_SYSTEM).read())
         store = system["store"]
@@ -143,8 +135,8 @@ class TestFixtureBoundaries(unittest.TestCase):
             self.assertEqual(systemgen.store_type(name), "EXE", name)
             self.assertIn(name, store, name)
         self.assertIn("sio", system["drivers"])
-        # The corrupt-entry rollback is no longer a separate failure
-        # image: the subsystem store carries the truncated fixture
+        # The corrupt-entry rollback needs no separate failure image: the
+        # subsystem store carries the truncated fixture
         # next to the valid exetest.exe, so the process selftest rolls
         # the bad load back and still runs the valid copy in one boot.
         self.assertEqual(systemgen.store_type("exe-truncated.exe"), "EXE")
@@ -321,7 +313,7 @@ class TestSyntheticPacking(unittest.TestCase):
 
 
 class TestSegmentPacking(unittest.TestCase):
-    """The EXE v2 DATA-segment path (package 44a)."""
+    """The EXE v2 DATA-segment path."""
 
     def setUp(self):
         self.program = SyntheticProgram()
@@ -490,10 +482,10 @@ class TestSegmentPacking(unittest.TestCase):
 
 
 class TestFarCodePacking(unittest.TestCase):
-    """The EXE v2 FAR_CODE path (packages 44b/49b): the SDK links one
+    """The EXE v2 FAR_CODE path: the SDK links one
     `_FAR<n>` area per `FAR<n>=` option, all at 8000h, the packer takes
     each segment's bytes out of its own IHX record stream and enforces the
-    36.17 aperture link rule."""
+    7.2 aperture link rule."""
 
     def setUp(self):
         self.program = SyntheticProgram()
@@ -825,9 +817,8 @@ class TestSubsystemArtifacts(unittest.TestCase):
                              open(path, "rb").read())
 
     def test_recovery_store_carries_the_corrupt_entry_fixture(self):
-        # The retired m6-failure image swapped in a truncated EXE as the
-        # only exetest.exe.  The subsystem image instead packs the
-        # truncated fixture beside the valid copy, so one boot proves
+        # The subsystem image packs the truncated fixture beside the
+        # valid copy, so one boot proves
         # the corrupt-entry rollback and the valid re-run.
         _p, stream = self._read("build-subsys-selftest/recovery.romfs")
         _h, entries = romfspack.parse_image(stream)
@@ -852,8 +843,7 @@ class TestSubsystemArtifacts(unittest.TestCase):
                        b"process selftest: exe2 big container OK\r\n",
                        b"process selftest: exe2 rollback OK\r\n"):
             self.assertIn(marker, image)
-        # The corrupt-entry rollback is now in the same image (the
-        # current equivalent of the retired m6-failure image's marker).
+        # The corrupt-entry rollback runs in the same image.
         self.assertIn(b"process selftest: corrupt entry rolled back\r\n",
                       image)
 

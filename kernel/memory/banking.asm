@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS M1 platform banking primitives and mode gates.
+; KonaOS platform banking primitives and mode gates.
 ;
 ; Everything here is resident in the permanent common region (physical bank
 ; 0, E000h-FEFFh):
@@ -127,8 +127,8 @@ kos_enter_os_mode::
 	or	#KOS_MODE_OS
 	out	(KOS_MEMCTL_PORT),a
 kos_os_continuation::
-	jp	_kernel_main		; M1: no dispatcher yet; stage 03 replaces
-					; this jump with the syscall dispatch
+	jp	_kernel_main		; the boot path continues into the
+					; kernel in mode 11
 
 ; ---------------------------------------------------------------------------
 ; Mode 11 -> mode 10 gate.
@@ -166,8 +166,9 @@ _kos_str_mode_fault:
 	.asciz	"banking latch assertion failed"
 
 ; ---------------------------------------------------------------------------
-; Transition-critical M1 state (common RAM, no ROM image).
-; Single-depth: interrupts and nesting are out of scope at M1.
+; Transition-critical state (common RAM, no ROM image).
+; Single-depth: the gate runs with interrupts masked and never nests; the
+; process side is shadowed per depth by the launch gate.
 ; ---------------------------------------------------------------------------
 	.area _COMMON_DATA
 

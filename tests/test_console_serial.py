@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Console-serial variant acceptance (work package 42e): replay the two
+"""Console-serial variant acceptance: replay the two
 build-selection images in the Z80 simulator.
 
-The console implementation is selected per build (architecture 36.11,
-M10-REFERENCE decision 12).  These two images cover the `console-serial`
+The console implementation is selected per build (architecture 5.3).  These two images cover the `console-serial`
 half of the selection; the production `console-v9958-hid` half is replayed
 by tests/test_console_acceptance.py.
 
@@ -17,17 +16,15 @@ by tests/test_console_acceptance.py.
   `drivers.man` from a store that omits `console-serial.mod`: the
   required driver cannot be loaded, so the loader names it on the early
   console and the nucleus stops the boot there - an explicit boot failure
-  (36.11), never a fallback - and the launcher is never reached.
-* `build-driver-init-fail-selftest` (work package 45) boots the one
+  (5.3), never a fallback - and the launcher is never reached.
+* `build-driver-init-fail-selftest` boots the one
   test-only driver image whose init returns non-zero: the loader's
   init-status branch refuses the image, names it on the early console and
   the nucleus stops the boot the same way.  This is the initialization
   half of the required-driver failure row; the missing-image store above
   is the load half.
 
-The runtime-fallback images and their composition tests are retired with
-the fallback they covered; the serial configuration is a build selection
-now, and its outcome is the monitor prompt on the serial lane.
+The serial configuration is a build selection, and its outcome is the monitor prompt on the serial lane.
 
 Skipped when the images have not been built.
 """
@@ -63,7 +60,7 @@ LOADER_NO_IMAGE = b"driver loader: console-serial.mod: no image\r\n"
 MANIFEST_UNAVAILABLE = b"drivers: unavailable 0x05\r\n"
 CONSOLE_DRIVER_FAILED = b"console: driver failed\r\n"
 
-# The init-status refusal (work package 45): the image loaded, its init
+# The init-status refusal: the image loaded, its init
 # returned non-zero, and the loader's failure line names it.
 LOADER_INVALID = b"driver loader: init_fail.mod: invalid\r\n"
 
@@ -260,7 +257,7 @@ class TestRequiredConsoleFailure(SerialBase):
 
 
 class TestRequiredConsoleInitFailure(SerialBase):
-    """`build-driver-init-fail-selftest` (work package 45): the one
+    """`build-driver-init-fail-selftest`: the one
     required driver image's init refuses, so the boot must fail explicitly
     on the early console through the loader's init-status branch."""
 
@@ -284,7 +281,7 @@ class TestRequiredConsoleInitFailure(SerialBase):
 
         # The image was read (the manifest named it), then its init
         # refused: the loader's failure line names it and the nucleus
-        # stops the boot before the launcher (36.11).
+        # stops the boot before the launcher (5.3).
         self.assertIn(LOADER_INVALID, sio)
         self.assertIn(CONSOLE_DRIVER_FAILED, sio)
 

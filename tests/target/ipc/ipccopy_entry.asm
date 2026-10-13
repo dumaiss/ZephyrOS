@@ -1,9 +1,9 @@
 ; KonaOS IPC acceptance: the caller-buffer probe's entry stub (test
-; artifact, work package 39 correction 01).
+; artifact).
 ;
 ; The probe links with NO_CRT0, LOWBASE=0x0300 and CODEBASE=0x0344, so the
-; SDK startup is absent and the program owns its entry.  Like the M9 fsraw
-; fixture this is an assembly label without the C underscore prefix, which is what the
+; SDK startup is absent and the program owns its entry.  This is an
+; assembly label without the C underscore prefix, which is what the
 ; exe_program rule's ENTRY= option names in the link map.
 
 	.module ipccopy_entry

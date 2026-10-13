@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Namespace acceptance replay (work package 42a, correction 01).
+"""Namespace acceptance replay.
 
 Boots build-ns-selftest/konaos-ns-selftest.bin -- the production boot
 path with the namespace objects linked in at the placement production will
@@ -94,9 +94,8 @@ TRANSCRIPT = [
     "ns: exec /system/nschild.exe -> 0\r\n",
 ]
 
-# The M9 mount pass is gone with the M9 VFS it belonged to (package 42b):
-# the namespace owns `/` from the first instruction, so no boot line
-# reports a mount outcome any more.  The image must not grow one back.
+# The namespace owns `/` from the first instruction, so no boot line
+# reports a mount outcome.
 MOUNT_LINE = "vfs: "
 
 # /system/drivers.man: one 24-byte record per loaded image, load order.
@@ -149,7 +148,7 @@ class NsSelftestReplay(Replay, unittest.TestCase):
         self.assertIsNotNone(match, sio)
         passed, total = int(match.group(1)), int(match.group(2))
         self.assertEqual(passed, total)
-        # 75 checks at 42a plus the 18 CWD/inheritance outcomes (45).
+        # The namespace checks plus the CWD/inheritance outcomes.
         self.assertGreaterEqual(total, 90)
         self.assertIn("monitor: exit status 0x0000", sio)
 

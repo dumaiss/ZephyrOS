@@ -16,17 +16,15 @@ Coverage (all executing the real linked bytes, on the current boot path):
   status words live in the common window, the C-owned ones in bank-7
   data;
 * the interrupt-executive replay injects one CTC0 interrupt (IM2 vector
-  00h) per arming window the smoke caller opens - the same injection the
-  standalone M2 replay used - so the IRQ group is exercised rather than
+  00h) per arming window the smoke caller opens, so the IRQ group is exercised rather than
   merely linked;
 * the monitor launcher then execs the recovery-store monitor through the
   same process path; the scripted session ends with
   `monitor: exit status 0x` and the launcher re-execs the monitor (a
   second banner and prompt), exactly as the subsystem acceptance records.
 
-The nucleus-layout group (work package 38) stays its own image: its
-common-memory state cannot fit the subsystem image's ledger (work
-package 42d tried the merge and reverted it; see the package record).
+The nucleus-layout group stays its own image: its
+common-memory state cannot fit the subsystem image's ledger.
 
 Skipped when the subsystem image has not been built.
 """

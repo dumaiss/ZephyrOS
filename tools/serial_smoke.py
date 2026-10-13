@@ -26,8 +26,8 @@ captures output with a bounded timeout, and verifies the expected output:
                      session runs over the HID input and the V9958
                      output and is the human gate; the image waits for
                      the host sync sequence.
-    --mode console-serial  the console-serial variant image (work package
-                     42e): the production driver set with the SERIAL
+    --mode console-serial  the console-serial variant image: the
+                     production driver set with the SERIAL
                      console, so the whole dynamic transcript - banner,
                      `console: driver OK`, the monitor banner and prompt -
                      is on the serial lane.  The tool types `r` at the
@@ -38,8 +38,8 @@ captures output with a bounded timeout, and verifies the expected output:
                      line per outcome, the child's `fs-child: PASS`, the
                      `fs-selftest: PASS` verdict with its check count and
                      then the monitor prompt on the same SIO console.
-    --mode hwtest    the production image's feature exerciser (work
-                     package 45b): the boot banner, then the tool types
+    --mode hwtest    the production image's feature exerciser: the boot
+                     banner, then the tool types
                      `X /system/hwtest.exe` at the monitor over this lane
                      - production's console input is the HID build, so
                      the monitor reads commands from the lane the runner
@@ -122,9 +122,8 @@ INTEGRATION_IOC_LEVEL_OK = b"console integration: ioc level 4A\r\n"
 INTEGRATION_REJECTED_OK = b"console integration: rejected calls OK\r\n"
 INTEGRATION_SELFTEST_OK = b"console integration: OK\r\n"
 INTEGRATION_FAIL = b"console integration: FAIL"
-# The three device diagnostics the integration image carries (the same
-# checks the retired ioc/hid/video images ran; their transcripts follow
-# the integration one on the same early-SIO lane).
+# The three device diagnostics the integration image carries (their
+# transcripts follow the integration one on the same early-SIO lane).
 IOC_SELFTEST_OK = b"ioc selftest: OK\r\n"
 HID_SELFTEST_OK = b"hid selftest: OK\r\n"
 VIDEO_SELFTEST_OK = b"video selftest: OK\r\n"
@@ -230,7 +229,7 @@ def _subsys_complete(data):
 
 
 
-# Package 42b (correction 01): the filesystem outcome image.  Production
+# The filesystem outcome image: the production
 # boot path with `/fs` served by the IOC-FAT driver, one SDK outcome
 # program and the monitor it hands the console to.  A writable card must
 # pass every outcome; a missing or write-protected card must take the
@@ -254,7 +253,7 @@ def _fs_image_result(data):
             FS_IMAGE_MONITOR in data)
 
 
-# --- package 45b: the production hardware exerciser --------------------------
+# --- the production hardware exerciser -----------------------------------------
 # `X /system/hwtest.exe` on the production image.  The console is the
 # V9958/HID build there, so this lane is where the monitor takes its
 # commands (it polls the SERIAL object beside the console) and where the
@@ -311,7 +310,7 @@ class HwtestCommand:
     """The exerciser command's typed-speed handshake.
 
     The monitor echoes every byte it takes from this lane back on the same
-    lane (the input path of work package 45b), which turns the send into a
+    lane (the monitor's serial input path), which turns the send into a
     checked one: each byte of `HW_COMMAND` goes out only after the previous
     byte's echo arrived, so the polled receiver's single-byte register
     never sees a burst, and a byte whose echo does not arrive inside the
@@ -839,7 +838,7 @@ def _explain_wrong_image(mode, data):
             print("serial_smoke: hint: the monitor did not run the "
                   "command.  The production console input is the HID "
                   "build, so the monitor takes it from this lane; confirm "
-                  "the flashed image is the package-45b production image "
+                  "the flashed image is the current production image "
                   "(its monitor polls /dev/serial/0) and that the store "
                   "carries /system/hwtest.exe", file=sys.stderr)
         else:

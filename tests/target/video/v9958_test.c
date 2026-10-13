@@ -1,5 +1,4 @@
-/* KonaOS V9958 video driver acceptance selftest (test artifact,
- * work package 41).
+/* KonaOS V9958 video driver acceptance selftest (test artifact).
  *
  * The kernel calls kos_run_video_selftest() from the late boot hook,
  * after the resident driver loader has placed and started the

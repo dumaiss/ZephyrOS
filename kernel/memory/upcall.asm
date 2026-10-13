@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS revision-13 upcall shim (architecture 36.5).
+; KonaOS revision-13 upcall shim (architecture 4.2).
 ;
 ; The fixed primitive that lets cold-half nucleus code call a resident
 ; driver: it validates the request, saves the exact banking latch,

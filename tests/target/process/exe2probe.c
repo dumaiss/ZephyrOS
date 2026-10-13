@@ -1,8 +1,8 @@
-/* KonaOS EXE v2 loader-outcome probe (package 44a, test only).
+/* KonaOS EXE v2 loader-outcome probe (test only).
  *
  * Run by the subsystem process selftest after it has written a marker
  * into this program's bank outside its image, BSS and stack, and after it
- * has dirtied the whole BSS range.  The program proves the 36.19 rule
+ * has dirtied the whole BSS range.  The program proves the 4.8 rule
  * from inside the child:
  *
  *   - the loader zeroed its BSS (the kernel test wrote 0x5A over the
@@ -13,7 +13,7 @@
  *     still there);
  *   - an ordinary (zero-segment) program runs with its full bank: the
  *     latch is mode 10 with P = 0, so nothing in 0000h-DFFFh is an
- *     aperture (36.17);
+ *     aperture (7.2);
  *   - the startup block is present (GETINFO reports the identity).
  *
  * The console lines are for hardware transcripts; the exit status

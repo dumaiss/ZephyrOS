@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """KonaOS EXE v2 native-executable packer, validator, and inspector.
 
-EXE v2 is the only native executable container (architecture 36.18): a
+EXE v2 is the only native executable container (architecture 6.7): a
 primary image loaded at logical 0100h plus zero or more auxiliary
 segments, all described by one up-front feasibility-checked header (see
 docs/exe-format.md and formats/include/exe.h):
@@ -30,12 +30,12 @@ initialized-data areas, keeping the load image deterministic.
 
 A `DATA` segment is emitted from a raw payload file; the loader copies it
 into a process-owned extended-memory object and zeroes its BSS
-(architecture 36.16/36.18).  A `FAR_CODE` segment is linked at `8000h`
+(architecture 4.8/6.7).  A `FAR_CODE` segment is linked at `8000h`
 inside the program's own link (`--codeseg FAR_CODE` in the SDK rule) and
 becomes a bank slice executed in place through the aperture; its
 declaration names the linker `area` (for example `_FAR_CODE`) and this
 tool resolves `s__<area>`/`l__<area>` from the program's map and takes
-those IHX bytes (holes zero-filled).  The 36.17 link rule is enforced
+those IHX bytes (holes zero-filled).  The 7.2 link rule is enforced
 here: with any far-code segment the primary image, its BSS and the stack
 must stay outside `8000h-BFFFh`.
 
@@ -111,7 +111,7 @@ SEG_MAX_SIZE = 0x8000
 SEG_MAX_FAR_SIZE = 0x4000
 FAR_BASE = 0x8000
 FAR_ID_MAX = 4
-# The 36.17 link rule for a program with far-code segments: the primary
+# The 7.2 link rule for a program with far-code segments: the primary
 # image, its BSS and the whole stack stay outside the aperture.
 FAR_IMAGE_END = 0x8000
 FAR_STACK_MIN = 0xC000
@@ -126,7 +126,7 @@ KIND_BY_NAME = {"FAR_CODE": KIND_FAR_CODE, "DATA": KIND_DATA}
 
 # Segment-row flags (formats/include/exe.h): a DATA row of at most 16 KiB may
 # ask for the aperture, and the loader then places it at 8000h where its
-# `DATAn=` source was linked (work package 49d).
+# `DATAn=` source was linked.
 SEG_FLAG_MAPPABLE = 0x0001
 
 # Result codes: kept value-identical with formats/include/exe.h; the
@@ -384,7 +384,7 @@ def initialized_symbols(symbols, limit=4):
     support for either, so any content there is refused.  The names come
     out of the map so the refusal points at the object to fix - a
     far-data source must hold `const` tables and zeroed objects only
-    (work package 49d).
+   .
     """
     names = []
     start = symbols.get("s__INITIALIZED")
@@ -526,8 +526,7 @@ def _validate_segment_manifest(segments):
             if segment["id"] > FAR_ID_MAX:
                 raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d: FAR_CODE id %d is over the %d "
-                               "far code segments FAR1=..FAR%d= (package "
-                               "49b)"
+                               "far code segments FAR1=..FAR%d="
                                % (index + 1, segment["id"], FAR_ID_MAX,
                                   FAR_ID_MAX))
             if segment["id"] != index + 1:
@@ -535,7 +534,7 @@ def _validate_segment_manifest(segments):
                                "segment %d: FAR_CODE id %d is not id %d; "
                                "the far code segments are declared first, "
                                "ids 1..k for the FAR1=..FARK= options used "
-                               "(package 49b), and the DATA segments follow"
+                               ", and the DATA segments follow"
                                % (index + 1, segment["id"], index + 1))
             # Far code is linked at 8000h: the payload comes from the
             # program's own IHX far area, named through `area`, not from a
@@ -550,7 +549,7 @@ def _validate_segment_manifest(segments):
                                "'input'/'bss_area'" % (index + 1))
         elif segment["kind"] == "DATA":
             if linked:
-                # A linked far-data row (package 49d): the `DATAn=` areas.
+                # A linked far-data row: the `DATAn=` areas.
                 if not isinstance(segment["area"], str) or not segment["area"]:
                     raise ExeError("EXE_EXEC_ERR_ARG",
                                    "segment %d DATA area must be a name"
@@ -624,7 +623,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
     try:
         # Several far areas share 8000h, one per auxiliary bank, and the
         # linker emits one record stream per area, so a linked address can
-        # carry one byte per area at that address (work package 49b).
+        # carry one byte per area at that address.
         mem = ihx.parse_ihx(ihx_path.read_text(), multi=True)
     except ihx.LayoutError as exc:
         raise ExeError("EXE_EXEC_ERR_ARG", "IHX rejected: %s" % exc)
@@ -656,7 +655,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
             if area != "_FAR%d" % segment["id"]:
                 raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d: FAR_CODE id %d is the far area "
-                               "`_FAR%d`, not %r (package 49b: ids 1-4 are "
+                               "`_FAR%d`, not %r (ids 1-4 are "
                                "the far code segments)"
                                % (index + 1, segment["id"], segment["id"],
                                   area))
@@ -810,7 +809,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                            "syscall argument window 0100h-1FFFh"
                            % (scratch["symbol"], address, scratch["size"]))
 
-    # The 36.17 link rule for far-using programs: code, stack and data
+    # The 7.2 link rule for far-using programs: code, stack and data
     # used while the aperture is open live outside 8000h-BFFFh of the
     # primary image, so the whole primary image and BSS end at 8000h and
     # the stack begins at C000h or above.
@@ -848,7 +847,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
             raise ExeError("EXE_EXEC_ERR_SEGMENT",
                            "segment %d declares id %d; ids must be 1..N in "
                            "order - the far code segments (FAR1=..FAR4=) "
-                           "first, then the DATA segments (package 49b)"
+                           "first, then the DATA segments"
                            % (index + 1, declared["id"]))
         kind = KIND_BY_NAME[declared["kind"]]
         linked_area = ("area" in declared
@@ -858,7 +857,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
             row_bss = declared["bss_size"]
         elif linked_area:
             # A far-data row: the image is the linked `area`, the zeroed
-            # objects are the `bss_area` right after it (package 49d).
+            # objects are the `bss_area` right after it.
             payload = far_payloads[index]
             row_bss = symbols.get("l_" + declared["bss_area"], 0)
         else:

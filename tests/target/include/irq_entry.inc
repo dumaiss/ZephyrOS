@@ -1,4 +1,4 @@
-; KonaOS M2 IRQ acceptance constants (assembly visible).
+; KonaOS IRQ acceptance constants (assembly visible).
 ; Value-identical with tests/target/include/irq_selftest.h (parity-tested).
 
 ; Error code from abi/kos/errno.h (kept in sync by the host test).

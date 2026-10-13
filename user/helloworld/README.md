@@ -24,8 +24,7 @@ recovery manifest can name it.
   argument, and exits 0.  It reads no filesystem and calls no diagnostic
   syscall, so it is also the smallest possible proof that the SDK
   toolchain produces a loadable EXE.
-* `fardemo.c` + `fardemo_far.c` — the far-code demo (work packages
-  44b/49b).  `fardemo_far.c` is compiled into the `_FAR1` area and linked
+* `fardemo.c` + `fardemo_far.c` — the far-code demo.  `fardemo_far.c` is compiled into the `_FAR1` area and linked
   at `8000h` through `FAR1=`, so it is segment 1; the far entry is
   `__banked`, so the primary half calls it as plain C and the SDK's
   trampoline maps the segment and restores the previous latch.  The demo

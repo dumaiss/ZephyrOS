@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""tools/systemgen.py: the image build description (work package 49a).
+"""tools/systemgen.py: the image build description.
 
 One `systems/<name>.json` describes an image, and the generator writes the
 build inputs derived from it: `system.mk`, the ROMFS store manifest, the
 boot manifest `drivers.man` and one resolved driver manifest per selected
 driver.  These tests pin the schema rejections, the symbolic dependency
-resolution, the boot-setting rules (absorbed from the retired boot-setting
-validator and the per-image make fragment) and the two generated
+resolution, the boot-setting rules and the two generated
 manifests' shape.  The golden test reproduces the
 production boot manifest byte for byte.
 """

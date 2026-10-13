@@ -5,11 +5,9 @@
  * filesystem is published; a malformed image is rejected as a whole and
  * no read can then be driven by unvalidated metadata.
  *
- * M8 adds the narrow module-facing resource imports
- * (`romfs_resource_size` / `romfs_resource_read`): name-resolved,
- * DATA-flag-only, 16-bit-bounded access that never exposes
- * `romfs_file_t` or the mutable filesystem state.  These are the only
- * filesystem-like callbacks in the driver ABI.
+ * `romfs_resource_size` / `romfs_resource_read` are name-resolved,
+ * DATA-flag-only, 16-bit-bounded reads that never expose `romfs_file_t`
+ * or the mutable filesystem state.
  *
  * Reads are staged in bounded chunks through the common ROM-access
  * primitive (`kernel/romfs/rom_access.asm`), which enters the mode-00
@@ -263,7 +261,7 @@ int romfs_lookup_ci(const char *name, romfs_file_t *out)
 		}
 		/* The one and only ROMFS name comparison: ASCII case-folded
 		 * and bounded to the 24-byte entry name field (architecture
-		 * sections 32.8 and 32.13).  VFS, the provider and the module
+		 * sections 4.10 and 4.6).  VFS, the provider and the module
 		 * resource imports all arrive here. */
 		if (kos_ascii_equal((const char *)rom_access_staging, name,
 				   ROMFS_NAME_SIZE, 1u)) {

@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# KonaOS EXE program rules (work packages 28c/49c).
+# KonaOS EXE program rules.
 #
 # The generic rule for native KonaOS programs, shared by two users:
 #
@@ -35,22 +35,21 @@
 #   SEGMENTS=FILE       JSON list of EXE v2 auxiliary segment
 #                       declarations (id/kind/input or area/bss_size); FILE
 #                       is a prerequisite and its payload `input` names
-#                       resolve against the program's object directory
-#                       (package 44a)
+#                       resolve against the program's object directory.
 #   FAR1..FAR4=SRC:SRC .. far-code sources (relative to DIR) compiled as far
 #                       segment n (n = 1..4): each is compiled with bank n
 #                       and --codeseg FAR<n>, so a `__banked` definition in
 #                       it emits `b_<fn> = <n>` (the id the caller's
 #                       `ld e,#b_<fn>` names) and its code lands in the
 #                       `_FAR<n>` area, linked at 8000h; the sources
-#                       themselves carry no bank pragma (package 49b).
+#                       themselves carry no bank pragma.
 #                       Without SEGMENTS= the rule declares one FAR_CODE
 #                       segment per option used, id n, area `_FAR<n>`; the
 #                       ids are the numbers a `__banked` definition emits
 #                       (`b_<fn>` = n), so the far segments are the
 #                       container's first rows (ids 1..k) and a program
 #                       that also declares DATA segments lists those after
-#                       them.  The packer checks the 36.17 link rule
+#                       them.  The packer checks the 7.2 link rule
 #                       (primary image, BSS and stack outside 8000h-BFFFh)
 #                       and the 16 KiB aperture limit, naming the
 #                       segment.
@@ -58,7 +57,7 @@
 #                       the areas `_DATA<n>` (their `const` objects) and
 #                       `_DATA<n>B` (their zeroed objects), the pair linked
 #                       at 8000h - image first, then BSS - as one mappable
-#                       DATA segment (package 49d).  The program reaches it
+#                       DATA segment.  The program reaches it
 #                       with `farmap(n, &saved)`/`farunmap(saved)` while
 #                       the aperture is open, or by handle with
 #                       `xread`/`xwrite`.  The options are numbered 1..m
@@ -70,7 +69,7 @@
 #                       32 KiB each) copied into the object directory and
 #                       declared as plain DATA rows after the `DATAn=`
 #                       rows, in the order given.  `blob(n)` returns the
-#                       n-th handle for `xread` (package 49d).
+#                       n-th handle for `xread`.
 #   STAGE=1             copy the packed program into $(KOS_MODULES)
 #                       (default: $(KOS_BUILD)/modules)
 #   INCLUDES=a:b        extra include roots (colon separated), for
@@ -110,7 +109,7 @@ EXE_LIBKOS ?= $(KOS_LIB)/libkos.lib
 EXE_RUNTIME ?=
 
 EXE_CFLAGS  := -mz80 -c --nostdinc --Werror -I$(EXE_ABI_ROOT) -I$(KOS_INCLUDE)
-# Header prerequisites (work packages 37/38).  SDCC emits no dependency
+# Header prerequisites.  SDCC emits no dependency
 # files through this rule, and the SDK's include surface is exactly the
 # public ABI plus the SDK include root, so every program object depends on
 # that whole set (and on its own directory's headers): a stale program
@@ -140,8 +139,7 @@ $(1)_SCRATCH:= $$(if $$(filter SCRATCH=%,$$($(1)_OPTS)),$$(patsubst SCRATCH=%,%,
 $(1)_SCRATCHARG := $$(if $$($(1)_SCRATCH), --scratch $$($(1)_SCRATCH),)
 $(1)_SEGMENTS := $$(if $$(filter SEGMENTS=%,$$($(1)_OPTS)),$$(patsubst SEGMENTS=%,%,$$(filter SEGMENTS=%,$$($(1)_OPTS))),)
 # The far code segments this program declares: one per FAR<n>= option
-# used, ascending, so segment n is always the `_FAR<n>` area (package
-# 49b).  A program with a far BSS, or with an id/area layout of its own,
+# used, ascending, so segment n is always the `_FAR<n>` area.  A program with a far BSS, or with an id/area layout of its own,
 # declares its segments through SEGMENTS= instead.
 $(1)_FARIDS := $$(strip $$(foreach n,1 2 3 4,$$(if $$(filter FAR$$(n)=%,$$($(1)_OPTS)),$$(n),)))
 # One "id:source" spec per far source, in option order, and the object each
@@ -154,7 +152,7 @@ $(1)_FARSTAMP := $$($(1)_OBJDIR)/far.stamp
 # The far-data segments this program declares: one per DATA<n>= option
 # used, and they are numbered 1..m without gaps - `farmap(n)` and `blob(n)`
 # count the container's DATA rows in id order, so a gap would rename a
-# segment (package 49d).
+# segment.
 $(1)_DATAIDS := $$(strip $$(foreach n,1 2 3 4,$$(if $$(filter DATA$$(n)=%,$$($(1)_OPTS)),$$(n),)))
 $$(if $$(and $$($(1)_DATAIDS),$$(filter-out $$(wordlist 1,$$(words $$($(1)_DATAIDS)),1 2 3 4),$$($(1)_DATAIDS))),$$(error $(1): DATA<n>= sources are numbered 1..m without gaps, got '$$($(1)_DATAIDS)'))
 # One "id:source" spec per far-data source and the object each compiles to:
@@ -211,7 +209,7 @@ $$($(1)_COBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.c $$($(1)_HEADERS) \
 $$($(1)_AOBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.asm | $$($(1)_OBJDIR)
 	$(SDASZ80) $(EXE_ASFLAGS) $$($(1)_INCFLAGS) -I$(2) -o $$@ $$<
 
-# Far-code objects (package 49b): one recipe compiles every FAR<n>=
+# Far-code objects: one recipe compiles every FAR<n>=
 # source with its own segment's flags - bank n first, then the area, so
 # the module lands in `_FAR<n>` and every `__banked` definition in it
 # emits `b_<fn> = n`.  A far .asm source opens `.area _FAR<n>` itself
@@ -240,7 +238,7 @@ ifneq ($$($(1)_FAROBJS),)
 $$($(1)_FAROBJS): | $$($(1)_FARSTAMP)
 endif
 
-# Far-data objects (package 49d): every DATA<n>= source is compiled with
+# Far-data objects: every DATA<n>= source is compiled with
 # its own pair of areas - `--constseg DATA<n>` for the `const` objects and
 # `--dataseg DATA<n>B` for the zeroed ones - so one segment holds the
 # table followed by its zeroed variables.  C only: the areas are named by
@@ -298,7 +296,7 @@ ifneq ($$($(1)_SEGDECL),)
 # the loader expects - the far-code segments first (ids 1..k, the numbers
 # `b_<fn>` emits), then one mappable DATA row per DATA<n>= option
 # (ascending n), then one plain DATA row per BLOBS file (in the order
-# given) (packages 44a/49b/49d).  Regenerated when the rule changes, so a
+# given).  Regenerated when the rule changes, so a
 # layout edit is never masked by a stale file.
 $$($(1)_SEGDECL): $$(KOS_RULES) | $$($(1)_OBJDIR)
 	@printf '%s' '[' > $$@
@@ -347,7 +345,7 @@ $$($(1)_EXE): $$($(1)_OBJDIR)/$(1).json $$($(1)_BLOBCOPIES) \
 
 ifneq ($$($(1)_STAGE),)
 # Recovery images consume their programs from $(KOS_MODULES); stage the
-# SDK output there without a second build (work/28c-m9-user-sdk).
+# SDK output there without a second build.
 $$(KOS_MODULES)/$(1).exe: $$($(1)_EXE)
 	@mkdir -p $$(dir $$@)
 	cp $$< $$@

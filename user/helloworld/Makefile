@@ -1,5 +1,4 @@
-# KonaOS helloworld demo image (work/28c-m9-user-sdk; sources moved to
-# the SDK's examples by work/49c).
+# KonaOS helloworld demo image.
 #
 # The top-level Makefile includes this fragment, so the demos are
 # declared here with one exe_program line from the SDK rules.  Their
@@ -16,7 +15,7 @@
 
 $(eval $(call exe_program,hello,user/sdk/examples,hello.c,STACK=256,STAGE=1))
 
-# Far-code demo (work packages 44b/49b): fardemo_far.c is compiled into
+# Far-code demo: fardemo_far.c is compiled into
 # the _FAR1 area and linked at 8000h; the rule declares one FAR_CODE
 # segment for it.
 $(eval $(call exe_program,fardemo,user/sdk/examples,fardemo.c,\

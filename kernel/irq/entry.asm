@@ -1,4 +1,4 @@
-; M2 common IM2 source stubs and non-nested mode-crossing, P-normalizing
+; Common IM2 source stubs and the non-nested mode-crossing, P-normalizing
 ; gate (revision 13).
 	.module irq_entry
 	.include "hardware.inc"
@@ -75,7 +75,7 @@ irq_common_entry::
 	; nucleus-owned handlers -- including drivers still linked into the
 	; arena in the cold half -- see the fixed core and the whole bank-7
 	; decode.  The exit path below restores the saved latch exactly, so
-	; an interrupted window call (36.10) finds its page selection
+	; an interrupted window call (4.5) finds its page selection
 	; untouched.
 	and	#(KOS_MODE_MASK | KOS_BANK_MASK)
 	or	#KOS_MODE_OS
@@ -106,8 +106,8 @@ irq_common_entry::
 
 ; Capture IFF2 through LD A,I, then mask.  SDCC consumes a uint8_t return
 ; in A; provide the state in both A and L so every caller convention sees
-; the same value.  (The pre-M3 comment claiming "result in L" was wrong:
-; callers read A, which previously leaked I=FDh into the unlock state.)
+; the same value: returning it only in L would leak I = FDh (left in A by
+; LD A,I) into the unlock state of callers that read A.
 _irq_arch_lock::
 	ld	a,i
 	di

@@ -1,11 +1,9 @@
-/* KonaOS M10 kernel VFS internal interface (kernel-private).
+/* KonaOS kernel VFS internal interface (kernel-private).
  *
- * This header is never visible to modules or applications.  It owns the
- * pieces of the M9 VFS the namespace model keeps (architecture 36.13,
- * package 42b):
+ * This header is never visible to drivers or applications.  It owns
+ * (architecture 4.10):
  *
- *   - the global owner-tagged handle table (the extended M9 descriptor
- *     pool): a bound object records its owner, its 8-bit protocol type,
+ *   - the global owner-tagged handle table: a bound object records its owner, its 8-bit protocol type,
  *     the endpoint that serves it, the provider-private object identity,
  *     the bind flags and the per-process handle number.  The two standard
  *     handles sit at the fixed numbers 1 and 2 of every process;
@@ -14,13 +12,12 @@
  *     result staging;
  *   - the one path normalizer.
  *
- * The mount table, the provider registry, the path/mount resolver and the
- * M9 file/directory API are gone: the root router (kernel/vfs/router.c)
- * routes to three static providers and the providers answer with handles.
+ * The root router (kernel/vfs/router.c) routes to three static
+ * providers, and the providers answer with handles.
  *
- * Gate-stack discipline (work/M10-REFERENCE.md): syscall paths run on the
- * 256-byte common gate stack, so no function here declares an automatic
- * object larger than 32 bytes.  Pathname scratch space is the static
+ * Gate-stack discipline: syscall paths run on the shared common gate
+ * stack, so no function here declares an automatic object larger than
+ * 32 bytes.  Pathname scratch space is the static
  * fixed-core workspace owned by kernel/vfs.
  */
 
@@ -41,7 +38,7 @@
 
 /* One-time nucleus setup: the ROMFS reader, the handle table, the CWD
  * pool, the provider tables and the in-process FILE endpoint.  There is
- * no mount phase (architecture 36.13).  Returns 0 or a negative KOS_E*
+ * no mount phase (architecture 4.10).  Returns 0 or a negative KOS_E*
  * value. */
 int vfs_init(void);
 uint8_t vfs_phase(void);
@@ -222,9 +219,9 @@ const char *vfs_cwd_for(uint8_t pid);
  * the caller owns no CWD slot. */
 int vfs_cwd_store(const char *norm);
 
-/* KonaOS M10 VFS root router and static namespace providers (kernel-private).
+/* The VFS root router and the static namespace providers (kernel-private).
  *
- * Package 42a (architecture 36.7 and 36.13): the VFS owns the global root
+ * Architecture 4.9 and 4.10: the VFS owns the global root
  * `/` and routes a normalized global path, ASCII case-insensitively, by
  * its first component to exactly three static providers:
  *
@@ -241,7 +238,7 @@ int vfs_cwd_store(const char *norm);
  * There is no mount table, no provider registration and no root merge; a
  * provider owns everything below its root.
  *
- * The handle side lives in kernel/vfs/handles.c (the extended M9 pool);
+ * The handle side lives in kernel/vfs/handles.c;
  * this module resolves names to objects and fills or releases the pool
  * entries.  Two objects are nucleus-served: `vfs_ns_file_dispatch()` is
  * the in-process FILE endpoint the ROMFS provider binds (installed as a
@@ -393,7 +390,7 @@ int vfs_ns_file_meta(const char *rel, struct kos_ipc_frame *frame);
 int16_t vfs_ns_file_dispatch(uint8_t handle, uint8_t object,
 			     struct kos_ipc_frame *frame);
 
-/* --- cross-file helpers (package 46 T4) --------------------------------
+/* --- cross-file helpers --------------------------------
  *
  * Statics another part now calls: each definition is extern in the part
  * that owns it, every caller sees the declaration here.  Names keep the

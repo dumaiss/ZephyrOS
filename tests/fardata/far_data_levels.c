@@ -1,4 +1,4 @@
-/* KonaOS far-data replay fixtures (work package 49d): the DATA1 source.
+/* KonaOS far-data replay fixtures: the DATA1 source.
  *
  * Compiled through the exe_program `DATA1=` option, so SDCC puts the
  * `const` table in the area `_DATA1` (linked at 8000h, image first) and

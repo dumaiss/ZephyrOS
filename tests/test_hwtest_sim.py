@@ -1,23 +1,20 @@
-"""Hardware exerciser acceptance replay (work package 45b): the
+"""Hardware exerciser acceptance replay: the
 production image, with a card and without one.
 
 Both replays type the owner's line - `X /system/hwtest.exe` - into the
 running production system, once over the serial command lane
 (`/dev/serial/0`, the lane `tools/serial_smoke.py --mode hwtest` drives)
-and once over the HID keyboard lane the V9958 console reads (work
-package 42e).  Each then asserts, from the transcripts alone, that the
+and once over the HID keyboard lane the V9958 console reads.  Each then asserts, from the transcripts alone, that the
 store's exerciser reached its verdict, that the programs its stages run
 reported through it, that the monitor came back to the prompt, and that
 the card is exactly as the run found it.
 
 A third replay copies one of the store's programs onto the card and runs
-it from there through the monitor (`X /fs/FS_CHILD.EXE tail-42`).  That
-is the path correction 01 repaired: `SYS_EXEC` used to stage the caller's
-path in bank-7 `_DATA`, inside the window the bank-6 filesystem provider
-replaces, so the provider never resolved it and the monitor answered
-`ERR: 02` without touching the card.  The replay holds the fixed
-behaviour: the program loads and reports from the card medium, and the
-FS2 request log proves the provider read it there.
+it from there through the monitor (`X /fs/FS_CHILD.EXE tail-42`).
+`SYS_EXEC` stages the caller's path in the fixed core, outside the window
+the bank-6 filesystem provider replaces, so the provider can resolve it.
+The replay holds that behaviour: the program loads and reports from the
+card medium, and the FS2 request log proves the provider read it there.
 
 The programs' individual checks are pinned by the xmem, filesystem,
 namespace and exerciser suites; this module is the production outcome
@@ -65,7 +62,7 @@ MONITOR_STATUS = "exec: exit status 0x0000"
 
 # The stage programs report their own verdicts through the console the
 # owner watches; the counts are the ones the standalone replays pin (the
-# far program's includes the banked-call checks, package 49b).
+# far program's includes the banked-call checks).
 CONSOLE_EVIDENCE = ("xmem-selftest: 61 checks, 0 failures",
                     "xmem-far: 37 checks, 0 failures",
                     "fs-selftest: 37 checks, 0 failures",

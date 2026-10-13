@@ -1,6 +1,6 @@
 /* KonaOS V9958 video driver implementation (drivers/v9958/).
  *
- * The M8 `v9958` driver as a bank-6 driver image.  This is the
+ * The V9958 driver as a bank-6 driver image.  This is the
  * direct-hardware core ported from the pinned Zephyr-80 reference
  * (LunchCrema V9958, commit 2c6b9650): the exact GRAPHIC 6
  * initialization discipline, the native VIDEO operation surface, the
@@ -10,7 +10,7 @@
  * drops the reference's CP/M dispatch table, BIOS addressing, HID entry
  * points, VIDEO_SEND payload ceiling and CP/M build layout.
  *
- * Driver layout (work package 41, architecture 36.6):
+ * Driver layout (architecture 5.2):
  *   hot  this file and v9958_proto.c: the terminal renderer, the
  *        native operations, and the whole display bring-up chain - the
  *        KVIDEO_RESET path is reachable after boot and re-runs the same
@@ -42,7 +42,7 @@
  * mode-11 driver window cannot show the boot/bulk tier.
  *
  * VDP interrupts stay disabled: nothing here selects an interrupt
- * enable, so the M2 IRQ_VDP_FF path is not claimed.
+ * enable, so the IRQ_VDP_FF source is not claimed.
  *
  * The buffers and state below live in the driver's DRIVER_IO data and
  * are relocated with the image.

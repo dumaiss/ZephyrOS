@@ -1,10 +1,9 @@
-/* KonaOS console integration acceptance (work package 41).
+/* KonaOS console integration acceptance.
  *
- * The package-20 integration diagnostic, re-pointed at the resident
- * drivers.  The kernel calls kos_run_console_integration_selftest()
+ * The integration diagnostic of the resident drivers.  The kernel calls kos_run_console_integration_selftest()
  * from the late boot hook, after the resident driver loader has placed
  * and started the store's drivers and after the nucleus console probe
- * bound the console endpoint; the unchanged M7 monitor launcher runs
+ * bound the console endpoint; the unchanged monitor launcher runs
  * afterwards on the same image, so the human HID/V9958 session is this
  * test's visible continuation.
  *

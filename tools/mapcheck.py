@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""KonaOS map/layout checker (through M10).
+"""KonaOS map/layout checker.
 
 Validates the sdldz80 map against the implemented mode 10/11 memory
 ownership contract (see docs/memory.md):
@@ -18,16 +18,11 @@ exclusive end of the linked cold code (`_WINDOW`); the fixed data base is
 `align_down(KOS_DRIVER_STACK_BASE - data_size, 512)` and the cold data
 base is `align_up(window_code_end, 512)`, straight after the code.
 
-M3 adds placement checks for the device registry, console driver, static
-driver descriptors/ops, and driver-private state: all of it must live in
-bank 7 (loadable or runtime area, below the ISR stack) and none of it may
-enter permanent common memory.
-
-M10 (work package 42c) retires the bank-7 driver arena: there is no
-load-time module allocator, no reserved granule block and no
-`__driver_arena_*` symbols.  `__kernel_code_end` (the linked cold code
-end, kernel/memory/bank7_end.asm) stays as the IRQ handler bound and the
-cold data base anchor, and the relation is re-verified in the final map.
+Drivers are bank-6 images: the nucleus map must not link a driver symbol,
+and nothing driver-like may enter permanent common memory.  There is no
+reserved block inside bank 7: `__kernel_code_end` (the linked cold code
+end, kernel/memory/bank7_end.asm) is the IRQ handler bound and the cold
+data base anchor, and the relation is re-verified in the final map.
 
 Empty areas do not get an area-table entry in sdldz80 maps; they still get
 s__<area>/l__<area> symbols, so ownership is checked through the symbol
@@ -43,9 +38,9 @@ Usage:
     mapcheck.py geometry derive <probe.map> <memory.inc>
                 <out_bank7_end.inc> [<out_memory_variant.inc>]
 
---production additionally rejects every acceptance symbol (retired static
+--production additionally rejects every acceptance symbol (static
 driver symbols, target-test runners/results and their generic seam hooks,
-CTC0 acceptance helpers, the obsolete IRQ vector lookup, fixture catalogs,
+CTC0 acceptance helpers, an IRQ vector lookup, fixture catalogs,
 and test SIO module entries) so acceptance code cannot leak into
 production images.
 
@@ -74,7 +69,7 @@ import sys
 PAGE_ZERO_END = 0x0100
 RESET_TOP = 0x0030
 BANK7_BASE = 0x2000
-# Revision-13 mode-11 bank-7 split (architecture 36.2, 36.5): the fixed
+# Revision-13 mode-11 bank-7 split (architecture 2.2, 4.2): the fixed
 # core is 2000h-5FFFh, the cold half (the window) is 6000h-DFFFh.  The
 # ISR stack and the driver stack are reserved at the top of the fixed
 # core, so the fixed core's runtime data stops below 5D00h.
@@ -109,9 +104,8 @@ FIXED_ROOM_BYTES = (REV13_WINDOW_SPLIT - BANK7_BASE
 COMMON_BASE = 0xE000
 COMMON_CODE_END = 0xFD00
 # Architectural ceiling on the packed `_COMMON` + `_COMMON_DATA` run
-# (platform/zephyr80/private/memory.inc; work package 30c).  The 512-byte M9
-# reservation was released to M10's transitions and IPC (work package 43,
-# architecture 36.20), so `used <= COMMON_CEILING` is the rule.
+# (platform/zephyr80/private/memory.inc, architecture 9):
+# `used <= COMMON_CEILING` is the rule.
 COMMON_CEILING = 0x0C00
 IRQ_VECTOR_BASE = 0xFD00
 IRQ_VECTOR_SIZE = 0x0101
@@ -151,7 +145,7 @@ def require_key(values, name, source):
     """Fetch a required declaration, naming the key and its include.
 
     The derived build must generate every bank-7 geometry value; a missing
-    key is a hard error, never a silent fall back to a retired default."""
+    key is a hard error, never a silent fall back to a default."""
     if name not in values:
         raise MapError(
             "%s is missing from %s; the derived build must generate it"
@@ -258,7 +252,7 @@ def fixed_core_bytes(objdir, tiers):
 
 def check_residency(objdir, tiers, cold_half, linker_path, test_link=(),
                     cold_extra=()):
-    """Residency enforcement (architecture 36.5, package 38).
+    """Residency enforcement (architecture 4.2).
 
     Fails when the classification does not cover the production object
     list exactly (objects only acceptance images link are exempt through
@@ -269,8 +263,8 @@ def check_residency(objdir, tiers, cold_half, linker_path, test_link=(),
     `cold_extra` names objects that this image compiles into the cold
     areas on top of the residency file's `cold_half`: an acceptance image
     whose target-test objects must consume the cold half's space rather
-    than the fixed core's (package 42c made the classification two-tier:
-    fixed-required and cold, with every object placed).
+    than the fixed core's (the classification has two tiers,
+    fixed-required and cold, and every object is placed).
 
     `test_link` objects are linked only by acceptance images, so their
     placement is not named by `cold_half` (production's cold set): a
@@ -321,7 +315,7 @@ def apply_layout(values, source=None):
     """Apply memory-region declarations from a generated memory include.
 
     Every production image is a revision-13 two-region build (architecture
-    36.5): the fixed areas (`_CODE`/`_HOME`/`_INITIALIZER`/`_GSINIT`/
+    4.2): the fixed areas (`_CODE`/`_HOME`/`_INITIALIZER`/`_GSINIT`/
     `_GSFINAL`, `_DATA`/`_INITIALIZED`) must link inside 2000h-5FFFh, and
     the cold areas (`_WINDOW`, `_WINDOW_DATA`) inside 6000h-DFFFh.  The
     generated include carries both data bases, the
@@ -376,7 +370,7 @@ def apply_layout(values, source=None):
     # The bank-7 geometry (fixed data base, cold data base) is derived per
     # image and carried by the generated memory include.  It is required:
     # a missing key must fail loudly rather than validate against a
-    # retired boundary.
+    # stale boundary.
     require_key(values, "KOS_WINDOW_DATA_BASE", source)
     require_key(values, "KOS_DATA_BASE", source)
     WINDOW_DATA_BASE = values["KOS_WINDOW_DATA_BASE"]
@@ -677,7 +671,7 @@ COMMON_ROUTINES = (
     "_irq_arch_unlock",
     "_irq_arch_init",
     "_rom_access_copy",
-    # M6: process launch/resume/trap and the application-bank copy gate
+    # Process launch/resume/trap and the application-bank copy gate
     # all switch the memory mapping; the page-zero vector is copied into
     # process banks from common data.
     "_kos_process_launch",
@@ -688,11 +682,11 @@ COMMON_ROUTINES = (
 )
 
 # Common-resident only if the image links them.  Same reason as above, but
-# the object is acceptance-only until package 41, so its absence is not an
-# error: an image that does link it must place it in common memory, never
-# in the fixed core or the cold half.
+# not every image links these objects, so their absence is not an error:
+# an image that does link them must place them in common memory, never in
+# the fixed core or the cold half.
 COMMON_ONLY_SYMBOLS = (
-    # M10 stage 3 correction 01: the path-B aperture copy runs with mode
+    # The path-B aperture copy runs with mode
     # 10 and page 1 in force, where bank 7 is not mapped at all, so the
     # stub, its request block and its interrupt-push reservation must all
     # live in common memory.
@@ -702,7 +696,7 @@ COMMON_ONLY_SYMBOLS = (
     "_ipc_ap_saved_sp",
     "_ipc_ap_stack",
     "_ipc_ap_stack_top",
-    # M10 stage 4: the driver boot gate calls a bank-6 boot segment with
+    # The driver boot gate calls a bank-6 boot segment with
     # mode 10 selected over bank 6, where bank 7 is unmapped; its code,
     # transition state and the loader's upcall request block must live in
     # common memory.
@@ -716,25 +710,23 @@ COMMON_ONLY_SYMBOLS = (
 # Bank-7 internal routines (visible only while mode 11 is active).
 BANK7_ROUTINES = ("kos_syscall_dispatch", "_irq_dispatch")
 
-# M3-era device registry: retired in package 42b.  The registry, the
-# module loader that answered class queries from it and the IOC class shim
-# are gone: device discovery is the host-built `/dev` publication table
-# plus the driver API, and the drivers are bank-6 driver images.  The
-# sweep below stays as a tripwire for a static driver or a resurrected
-# registry row.
-M3_BANK7_PREFIXES = (
+# The nucleus has no device registry: discovery is the host-built `/dev`
+# publication table plus the driver API, and the drivers are bank-6
+# images.  Any symbol with these prefixes must at least stay in bank 7,
+# never in common memory.
+REGISTRY_BANK7_PREFIXES = (
     "_device_registry_",
     "_device_table",
     "_console_",
     "_m3_",
 )
 
-# Production images must not link any acceptance artifact: retired static
-# driver symbols, target-test runners/results and their generic seam hooks,
-# CTC0 acceptance helpers, the obsolete IRQ vector lookup, fixture
-# catalogs, embedded boot catalogs (M5 boots from ROMFS), or test SIO
-# module entries.  Enabled with --production (the Makefile passes it for
-# non-acceptance images).
+# Production images must not link any acceptance artifact: static driver
+# symbols, target-test runners/results and their generic seam hooks, CTC0
+# acceptance helpers, an IRQ vector lookup, fixture catalogs, embedded boot
+# catalogs (the boot reads the store), or test SIO module entries.
+# Enabled with --production (the Makefile passes it for non-acceptance
+# images).
 PRODUCTION_FORBIDDEN = (
     "_driver_init_static",
     "_boot_drivers",
@@ -760,41 +752,32 @@ PRODUCTION_FORBIDDEN = (
     "_sio_fail_module",
 )
 
-# M4 acceptance: the SIO driver must exist only as a dynamically loaded
-# module.  Any linked SIO symbol means a static copy crept back into the
-# kernel image.
+# The SIO driver exists only as a bank-6 image.  Any linked SIO symbol
+# means a static copy is in the kernel image.
 STATIC_SIO_PREFIXES = ("_sio_", "_sio0b_", "_sio_driver")
 
-# The IOC driver is a bank-6 driver image too (work package 42c deleted
-# the class shim that used to publish it to bank-7 code): any linked
-# `_ioc_` symbol means a static copy crept back into the kernel image.
+# The IOC driver is a bank-6 image too: any linked `_ioc_` symbol means a
+# static copy is in the kernel image.
 STATIC_IOC_PREFIXES = ("_ioc_",)
 
-# M8: the HID driver is module-only as well; any linked `_hid_` symbol
-# means a static copy crept back into the kernel image.
+# The HID driver is a bank-6 image as well; any linked `_hid_` symbol
+# means a static copy is in the kernel image.
 STATIC_HID_PREFIXES = ("_hid_",)
 
-# M8: the V9958 video driver is module-only too; any linked `_v9958_`
-# symbol means a static copy crept back into the kernel image.
+# The V9958 video driver is a bank-6 image too; any linked `_v9958_`
+# symbol means a static copy is in the kernel image.
 STATIC_V9958_PREFIXES = ("_v9958_",)
 
-# M4 module-loader routines: retired in package 42b - the load-time boot
-# set is empty and the drivers are bank-6 drivers, so the loader, the
-# relocator and the IRQ-claim rollback that belonged to it emit no bytes.
-# The sweep stays as a tripwire: any linked module-loader symbol means the
-# retired module path crept back into the nucleus.
-M4_BANK7_ROUTINES = ()
+# The nucleus has no relocating module loader: drivers are host-linked
+# bank-6 images.  Any symbol with these prefixes must stay in bank 7.
+LOADER_BANK7_ROUTINES = ()
 
-M4_BANK7_PREFIXES = ("_module_", "_mod_", "_z4_", "_m4_",
+LOADER_BANK7_PREFIXES = ("_module_", "_mod_", "_z4_", "_m4_",
                     "_irq_registry_")
 
-# M5 ROMFS reader routines: bank-7 code only.  The embedded boot catalog
-# (kernel/module/embedded.c) is fully retired and its return is prevented
-# by the source-layout retention test; `_z4_module_boot`/`_mod_catalog`
-# remain rejected above as extra defence.
-# `_romfs_lookup_ci` is M9's single ASCII-folded lookup (architecture
-# section 32.13): the removed case-sensitive `_romfs_lookup` has no
-# replacement beside it, so every image links this one name.
+# ROMFS reader routines: bank-7 code only.  `_romfs_lookup_ci` is the
+# single ASCII-folded lookup (architecture 4.6), so every image links this
+# one name.
 ROMFS_BANK7_ROUTINES = (
     "_romfs_init",
     "_romfs_lookup_ci",
@@ -805,19 +788,17 @@ ROMFS_BANK7_ROUTINES = (
 
 ROMFS_BANK7_PREFIXES = ("_romfs_",)
 
-# The directory accessor the ROMFS VFS provider's `readdir` needs
+# The directory accessor the /system provider's enumeration needs
 # (kernel/romfs/romfs.c).  Every image links it.
-ROMFS_M9_ROUTINES = (
+ROMFS_ENUM_ROUTINES = (
     "_romfs_entry_at",
 )
 
-# M9 VFS core machinery was replaced by the M10 namespace family (package
-# 42b): what remains of the M9 core is the handle pool, the path helpers
-# and the workspace, which keep their place below the ISR stack.  The
-# mount table, the provider registry and the `FS_*` front end are gone.
+# The VFS: the router, the providers, the handle pool, the path helpers
+# and the workspace, all below the ISR stack.
 VFS_BANK7_ROUTINES = (
-    # The reused M9 machinery: the handle pool, the path helpers and the
-    # fixed-core workspace the namespace bodies marshal through.
+    # The handle pool, the path helpers and the fixed-core workspace the
+    # namespace bodies marshal through.
     "_vfs_init",
     "_vfs_phase",
     "_vfs_path_normalize_at",
@@ -828,9 +809,8 @@ VFS_BANK7_ROUTINES = (
     "_vfs_cwd_store",
     "_vfs_process_start",
     "_vfs_process_exit",
-    # The M10 namespace family (package 42a, production since 42b): the
-    # root router and its publication table, the `/system` FILE provider
-    # and the object syscall bodies.
+    # The root router and its publication table, the `/system` FILE
+    # provider and the object syscall bodies.
     "_vfs_ns_init",
     "_vfs_ns_reset",
     "_vfs_ns_install_publication",
@@ -853,9 +833,9 @@ VFS_BANK7_ROUTINES = (
 
 VFS_BANK7_PREFIXES = ("_vfs_",)
 
-# M6 process/EXE code and state: bank 7 only, below the ISR stack (the
+# Process/EXE code and state: bank 7 only, below the ISR stack (the
 # common-resident gates are listed in COMMON_ROUTINES instead).
-M6_BANK7_ROUTINES = (
+PROCESS_BANK7_ROUTINES = (
     "_process_exec",
     "_process_prepare",
     "_process_launch",
@@ -867,12 +847,12 @@ M6_BANK7_ROUTINES = (
     "_exe_validate_header",
 )
 
-M6_BANK7_PREFIXES = ("_process_", "_exe_")
+PROCESS_BANK7_PREFIXES = ("_process_", "_exe_")
 
-# M7 diagnostic drivers and the shared dispatcher helpers: bank-7
-# kernel code only.  The drivers reuse the M6 common copy gate, so no
-# new permanent-common symbol is introduced.
-M7_BANK7_ROUTINES = (
+# Diagnostic syscall bodies and the shared dispatcher helpers: bank-7
+# kernel code only.  They reuse the common copy gate, so they add no
+# permanent-common symbol.
+DIAG_BANK7_ROUTINES = (
     "_kos_diag_mem_read",
     "_kos_diag_mem_write",
     "_kos_diag_io_in",
@@ -886,10 +866,10 @@ M7_BANK7_ROUTINES = (
     "_kos_syscall_block_ok",
 )
 
-M7_BANK7_PREFIXES = ("_kos_diag_",)
+DIAG_BANK7_PREFIXES = ("_kos_diag_",)
 
-# M6 transition state and the syscall copy staging block (common RAM).
-M6_COMMON_STATE = (
+# Process transition state and the syscall copy staging block (common RAM).
+PROCESS_COMMON_STATE = (
     "_kos_user_copy_staging",
     "kos_copy_op",
     "kos_copy_bank",
@@ -919,14 +899,14 @@ M6_COMMON_STATE = (
 USER_COPY_STAGING_SIZE = 64
 USER_COPY_STACK_SIZE = 16
 
-# Package 28 continuation state: KOS_EXEC_MAX_DEPTH levels, with
+# Exec continuation state: KOS_EXEC_MAX_DEPTH levels, with
 # KOS_EXEC_MAX_DEPTH - 1 gate-frame save areas of KOS_EXEC_FRAME_SAVE
 # bytes (kernel/include/process.h; pinned here so a mismatch fails the
 # production map rather than silently truncating a saved frame).
 KOS_EXEC_MAX_DEPTH = 4
 KOS_EXEC_FRAME_SAVE = 48
 
-# M5 ROM-access transition state: permanent common memory only.  The
+# ROM-access transition state: permanent common memory only.  The
 # staging buffer and saved latch/IFF/request state are what the
 # mode-00 window depends on; the transition itself is a mirrored,
 # stackless stub, so there is deliberately no transition stack.
@@ -1012,13 +992,13 @@ def check_areas(areas, symbols):
                 "reservation FF00h-FFFFh" % (name, addr, size)
             )
 
-    # M10 (package 42c): the cold half has no reserved block between the
+    # The cold half has no reserved block between the
     # linked cold code and the cold runtime data.  The area ownership
     # table bounds `_WINDOW` at the derived data base and the dedicated
     # checks below pin `_WINDOW`'s end to `__kernel_code_end` and the
     # data base to `align_up` of it.
 
-    # M5: the ROM-access transition block is a fixed reservation.  Only
+    # The ROM-access transition block is a fixed reservation.  Only
     # the _ROM_ACCESS_STUB area itself may occupy it.  sdld lists ABS
     # areas as <name>0 with address 0 (only the size is meaningful); the
     # exported trampoline/sync labels above pin the real placement.
@@ -1105,8 +1085,8 @@ def check_areas(areas, symbols):
             if addr + size > IRQ_VECTOR_BASE:
                 raise MapError("%s overlaps the IM2 reservation at FD00h" % name)
 
-    # The packed common window has an architectural ceiling (work package
-    # 30c; target architecture 36.20, reservation released by package 43).
+    # The packed common window has an architectural ceiling
+    # (architecture 9).
     # Growth past the ceiling fails the build here.
     common_used = sum(areas[name][1] for name in ("_COMMON", "_COMMON_DATA")
                       if name in areas)
@@ -1132,11 +1112,10 @@ REV13_FIXED_SYMBOLS = (
     "_irq_arch_unlock",
     "kos_syscall_entry",
     "kos_syscall_dispatch",
-    # Correction 01 (45b): the VFS workspace's path view.  A bind or exec
-    # frame names the caller's path by address and a bank-6 provider
-    # dereferences it while its own window is open, so the block must
-    # never link where that window replaces it (36.5's buffer rule).  The
-    # same rule retires the cold-half SYS_EXEC scratch this replaced.
+    # The VFS workspace's path view.  A bind or exec frame names the
+    # caller's path by address and a bank-6 provider dereferences it while
+    # its own window is open, so the block must never link where that
+    # window replaces it (4.2's buffer rule).
     "_vfs_workspace",
     "_irq_dispatch",
     "_irq_active_source",
@@ -1146,7 +1125,7 @@ REV13_FIXED_SYMBOLS = (
     "_platform_memctl_read",
     "_platform_memctl_write",
     "_kos_upcall",
-    # M10 stage 3: the IPC substrate executes while the window shows the
+    # The IPC substrate executes while the window shows the
     # resident driver domain, so its dispatcher, its frame and descriptor
     # tables and its fixed transition primitives stay in the fixed core.
     "_ipc_lookup",
@@ -1157,7 +1136,7 @@ REV13_FIXED_SYMBOLS = (
     "_ipc_copy_run",
     "_ipc_invoke",
     "_ipc_invoke_here",
-    # Correction 01: the aperture primitive, its common request block, and
+    # The aperture primitive, its common request block, and
     # the three path counters the acceptance replay reads out of the image.
     "_ipc_ap_copy",
     "_ipc_ap_req",
@@ -1271,20 +1250,19 @@ def check_symbols(areas, symbols, production=False):
                 % (name, addr, WINDOW_BASE - 1)
             )
 
-    # M3-era registry state and the console driver live in bank 7 (code
-    # or runtime data), never in the permanently mapped common region.
-    # Since package 42b the registry itself is gone, so only the sweep
-    # remains (see M3_BANK7_PREFIXES).
+    # Registry-like and console symbols, if any, live in bank 7 (code or
+    # runtime data), never in the permanently mapped common region (see
+    # REGISTRY_BANK7_PREFIXES).
     for name, addr in symbols.items():
-        if addr != 0 and name.startswith(M3_BANK7_PREFIXES):
+        if addr != 0 and name.startswith(REGISTRY_BANK7_PREFIXES):
             if not (BANK7_BASE <= addr < BANK7_TOP):
                 raise MapError(
-                    "driver/driver symbol %s at %04Xh is not bank-7 "
+                    "registry/console symbol %s at %04Xh is not bank-7 "
                     "resident" % (name, addr)
                 )
 
-    # Package 41/42c: the four drivers are bank-6 driver images; the
-    # nucleus links no driver symbol at all.
+    # The drivers are bank-6 images; the nucleus links no driver symbol
+    # at all.
     for name, addr in symbols.items():
         if addr == 0:
             continue
@@ -1298,11 +1276,11 @@ def check_symbols(areas, symbols, production=False):
                     "static %s symbol %s at %04Xh must not be linked; the "
                     "driver is a bank-6 driver image"
                     % (what, name, addr))
-    # M4: loader/relocator code and catalog/fixture data must stay in the
+    # Loader-like code and catalog/fixture data, if any, stay in the
     # bank-7 window below the ISR stack.
-    for name in M4_BANK7_ROUTINES:
+    for name in LOADER_BANK7_ROUTINES:
         if name not in symbols:
-            raise MapError("map has no M4 symbol %s" % name)
+            raise MapError("map has no loader symbol %s" % name)
         addr = symbols[name]
         if not (BANK7_BASE <= addr < BANK7_TOP):
             raise MapError(
@@ -1310,14 +1288,14 @@ def check_symbols(areas, symbols, production=False):
                 % (name, addr)
             )
     for name, addr in symbols.items():
-        if addr != 0 and name.startswith(M4_BANK7_PREFIXES):
+        if addr != 0 and name.startswith(LOADER_BANK7_PREFIXES):
             if not (BANK7_BASE <= addr < BANK7_TOP):
                 raise MapError(
                     "module symbol %s at %04Xh is not bank-7 resident"
                     % (name, addr)
                 )
 
-    # M5 ROMFS: the allocation-free reader is bank-7 code; the ROM-access
+    # ROMFS: the allocation-free reader is bank-7 code; the ROM-access
     # primitive, its staging buffer, and the saved transition state are
     # permanent common memory.
     for name in ROMFS_BANK7_ROUTINES:
@@ -1347,7 +1325,7 @@ def check_symbols(areas, symbols, production=False):
         raise MapError("ROM-access staging buffer is %d bytes, expected %d"
                        % (staging, ROMFS_STAGING_SIZE))
 
-    # M5 ROM-access transition block: the trampoline lands exactly two
+    # ROM-access transition block: the trampoline lands exactly two
     # bytes before the mirrored stub at KOS_ROM_ACCESS_BASE, the stub is
     # ROM_ACCESS_SIZE bytes, and the whole block is common-resident.
     expected_block = {
@@ -1367,9 +1345,8 @@ def check_symbols(areas, symbols, production=False):
             "ROM-access transition block %04Xh-%04Xh leaves common memory"
             % (ROM_ACCESS_BASE - 2, ROM_ACCESS_BASE + ROM_ACCESS_SIZE - 1))
 
-    # M9: the VFS core and the statically linked ROMFS provider are bank-7
-    # residents below the ISR stack; the generated mount table is const
-    # ROM data in the bank-7 loadable image.
+    # The VFS core and the /system provider are bank-7 residents below
+    # the ISR stack.
     for name in VFS_BANK7_ROUTINES:
         if name not in symbols:
             raise MapError("map has no VFS symbol %s" % name)
@@ -1378,7 +1355,7 @@ def check_symbols(areas, symbols, production=False):
             raise MapError(
                 "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
                 % (name, addr))
-    for name in ROMFS_M9_ROUTINES:
+    for name in ROMFS_ENUM_ROUTINES:
         if name not in symbols:
             raise MapError("map has no ROMFS symbol %s" % name)
         addr = symbols[name]
@@ -1393,44 +1370,44 @@ def check_symbols(areas, symbols, production=False):
                     "VFS symbol %s at %04Xh is not bank-7 resident"
                     % (name, addr))
 
-    # M6: process/EXE code and the process table stay bank-7 resident.
-    for name in M6_BANK7_ROUTINES:
+    # Process/EXE code and the process table stay bank-7 resident.
+    for name in PROCESS_BANK7_ROUTINES:
         if name not in symbols:
-            raise MapError("map has no M6 symbol %s" % name)
+            raise MapError("map has no process symbol %s" % name)
         addr = symbols[name]
         if not (BANK7_BASE <= addr < BANK7_TOP):
             raise MapError(
                 "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
                 % (name, addr))
     for name, addr in symbols.items():
-        if addr != 0 and name.startswith(M6_BANK7_PREFIXES):
+        if addr != 0 and name.startswith(PROCESS_BANK7_PREFIXES):
             if not (BANK7_BASE <= addr < BANK7_TOP):
                 raise MapError(
                     "process symbol %s at %04Xh is not bank-7 resident"
                     % (name, addr))
 
-    # M7: diagnostic drivers and shared dispatcher helpers are bank-7
+    # Diagnostic bodies and shared dispatcher helpers are bank-7
     # kernel code; they add no permanent-common state.
-    for name in M7_BANK7_ROUTINES:
+    for name in DIAG_BANK7_ROUTINES:
         if name not in symbols:
-            raise MapError("map has no M7 symbol %s" % name)
+            raise MapError("map has no diagnostic symbol %s" % name)
         addr = symbols[name]
         if not (BANK7_BASE <= addr < BANK7_TOP):
             raise MapError(
                 "%s at %04Xh is not in the bank-7 region 2000h-DEFFh"
                 % (name, addr))
     for name, addr in symbols.items():
-        if addr != 0 and name.startswith(M7_BANK7_PREFIXES):
+        if addr != 0 and name.startswith(DIAG_BANK7_PREFIXES):
             if not (BANK7_BASE <= addr < BANK7_TOP):
                 raise MapError(
                     "diagnostic symbol %s at %04Xh is not bank-7 "
                     "resident" % (name, addr))
 
-    # M6: the copy staging block and process transition state are common;
+    # The copy staging block and process transition state are common;
     # the staging size and copy stack sizes are part of the contract.
-    for name in M6_COMMON_STATE:
+    for name in PROCESS_COMMON_STATE:
         if name not in symbols:
-            raise MapError("map has no M6 common-state symbol %s" % name)
+            raise MapError("map has no process common-state symbol %s" % name)
         addr = symbols[name]
         if not (COMMON_BASE <= addr < STACK_BASE):
             raise MapError(
@@ -1447,14 +1424,13 @@ def check_symbols(areas, symbols, production=False):
         raise MapError("user copy stack is %d bytes, expected %d"
                        % (stack_delta, USER_COPY_STACK_SIZE))
 
-    # Correction 01 (45b): the SYS_EXEC caller path is staged in the VFS
-    # workspace's path view, exactly as `bind` stages its own, so the
-    # block the check above used to reserve here is gone.  The buffer
-    # rule it must satisfy - a bank-6 provider dereferences that address
-    # while its own window is open - is enforced symbol by symbol in
-    # check_rev13_window() through REV13_FIXED_SYMBOLS (`_vfs_workspace`).
+    # The SYS_EXEC caller path is staged in the VFS workspace's path view,
+    # exactly as `bind` stages its own.  The buffer rule it must satisfy
+    # (a bank-6 provider dereferences that address while its own window
+    # is open) is enforced symbol by symbol in check_rev13_window()
+    # through REV13_FIXED_SYMBOLS (`_vfs_workspace`).
 
-    # Package 28: the continuation stack must be sized for the pinned
+    # The continuation stack must be sized for the pinned
     # depth and frame save, not truncated by a stale assembly .ds.
     frames_delta = (symbols["kos_proc_frames_end"]
                     - symbols["kos_proc_frames"])
@@ -1465,7 +1441,7 @@ def check_symbols(areas, symbols, production=False):
                                       KOS_EXEC_MAX_DEPTH - 1,
                                       KOS_EXEC_FRAME_SAVE))
 
-    # M10 (package 42c): the cold half has no driver arena; the linked
+    # The cold half has no reserved block; the linked
     # cold code ends at __kernel_code_end and the cold runtime data base
     # is align_up of it.
     fixed_end = loadable_end(areas, symbols, FIXED_LOADABLE_AREAS)
@@ -1538,7 +1514,7 @@ def check_symbols(areas, symbols, production=False):
     if stack_size != GATE_STACK_SIZE:
         raise MapError("gate stack is %d bytes, expected %d" % (stack_size, GATE_STACK_SIZE))
 
-    # M2 fixed absolute reservations.  ABS area start symbols are not
+    # Fixed absolute IRQ reservations.  ABS area start symbols are not
     # useful in sdld maps, so validate their exported boundary labels.
     required = {
         "irq_vector_page": IRQ_VECTOR_BASE,

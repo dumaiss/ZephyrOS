@@ -1,4 +1,4 @@
-/* KonaOS far-code outcome program (work packages 44b/49b): the far half
+/* KonaOS far-code outcome program: the far half
  * of segment 2.
  *
  * Built with bank 2 and `--codeseg FAR2` through the SDK's FAR2= option
@@ -7,12 +7,12 @@
  * primary half maps it and calls `xmem_far_entry2` with `farcall`, and
  * calls `xmem_bk2` as plain C through the SDK's trampoline.
  *
- * `xmem_far_entry2` is the 44b arm of segment 2: it reads its own latch
+ * `xmem_far_entry2` is the `farcall` arm of segment 2: it reads its own latch
  * (the aperture is open, so the low byte is segment 2's token), touches
  * primary data through `xmem_far_primary` and returns
  * (latch << 8) | (value & 0xFF), so the caller proves which bank ran.
  *
- * `xmem_bk2` is the 49b arm: reached as plain C, it calls back into
+ * `xmem_bk2` is the `__banked` arm: reached as plain C, it calls back into
  * segment 1's `__banked` function.  That inner call maps segment 1 and
  * must restore *this* caller's mapping on its way back, or the code after
  * it would run in the wrong bank - so it reads the latch and its own

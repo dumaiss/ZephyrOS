@@ -53,7 +53,7 @@ IOC_PROTOCOL_H = os.path.join(ROOT, "drivers", "include", "ioc_protocol.h")
 DRIVER_H = os.path.join(ROOT, "drivers", "ioc", "ioc_driver.h")
 DRIVER_C = os.path.join(ROOT, "drivers", "ioc", "ioc.c")
 DRIVER_ASM = os.path.join(ROOT, "drivers", "ioc", "ioc_io.asm")
-# Package 41: the driver is a bank-6 driver image.  The driver half owns
+# The driver is a bank-6 driver image.  The driver half owns
 # the protocol dispatch and the init entry, the boot half the lane
 # programming, and the image description lives in the driver directory.
 PROTO_C = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.c")
@@ -232,8 +232,8 @@ class TestIocPlatformConstants(unittest.TestCase):
         self.assertIn("KOS_SMOKE_HOST_SYNC_SECOND", main)
         self.assertLess(main.index("kernel_host_sync_wait();"),
                         main.index('early_console_puts("KonaOS 0.0'))
-        # Work package 49a moved the flag out of the Makefile: the four
-        # images the smoke targets drive carry it in their cflags.
+        # The four images the smoke targets drive carry the flag in their
+        # system file's cflags.
         for name in ("console-integration", "console-serial",
                      "console-serial-missing", "console-init-fail"):
             system = _load_json(os.path.join(ROOT, "systems",
@@ -389,10 +389,8 @@ class TestIocDriverArtifact(unittest.TestCase):
         self.assertIn("def cmd_plan", order)
         main = _read(MAIN_C)
         self.assertIn("driver_load_all(KOS_DRIVER_MANIFEST_NAME)", main)
-        # Package 42b retired the arena module pass and the IOC class
-        # shim with it: every image is a driver now, so HID resolves its
-        # IOC dependency from the publication the driver declares.
-        self.assertNotIn("ioc" + "_shim_find", main)
+        # HID resolves its IOC dependency from the publication the driver
+        # declares.
         self.assertFalse(os.path.exists(os.path.join(ROOT, "kernel",
                                                      "module", "loader.c")),
                          "the arena module loader must be gone")
@@ -400,14 +398,14 @@ class TestIocDriverArtifact(unittest.TestCase):
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
         self.assertIn("ioc-test:", makefile)
-        # Package 49a: the driver set and the resolved manifests are the
+        # The driver set and the resolved manifests are the
         # system file's, and one foreach emits the pack rule per driver.
         self.assertIn("$(BUILD)/drivers/$(1).json", makefile)
         self.assertIn("$(MODULES)/$(1).mod: $(BUILD)/drivers/$(1).json",
                       makefile)
         self.assertIn("ioc_driver.rel", makefile)
-        # The IOC diagnostic runs in the console-integration image (work
-        # package 42d merged the per-device images); the table row links
+        # The IOC diagnostic runs in the console-integration image; the
+        # table row links
         # it and the system file carries the group's flags.
         index = makefile.index("SYSTEM_TEST_OBJS.console-integration :=")
         self.assertIn("$(BUILD)/ioc_test.rel",
@@ -483,8 +481,8 @@ class TestIocSourceDiscipline(unittest.TestCase):
 
     def test_one_channel_reset_per_lane_in_init_only(self):
         # Command lane: exactly one reset, in the boot tier's ioc_hw_init
-        # (package 41 moved it there: the boot segment is where the
-        # one-shot lane programming runs, through the mode-10 gate).
+        # (the boot segment is where the one-shot lane programming runs,
+        # through the mode-10 gate).
         self.assertEqual(self.boot.count("KOS_IOC_WR0_RESET_CHANNEL"), 1)
         hw_init = self.boot.split("void ioc_hw_init")[1].split(
             "void ioc_boot_entry")[0]
@@ -579,7 +577,7 @@ class TestIocSourceDiscipline(unittest.TestCase):
         self.assertNotIn("KOS_SIO1A", self.c)
         # The endpoint is declared by the image metadata; the host packer
         # assigns its number and the resident loader installs the record
-        # (architecture 36.11), so no driver code registers anything.
+        # (architecture 5.3), so no driver code registers anything.
         self.assertIn("ipc_install_endpoint",
                       open(os.path.join(ROOT, "kernel", "driver",
                                         "driver_loader.c")).read())

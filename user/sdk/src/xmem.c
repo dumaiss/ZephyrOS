@@ -1,4 +1,4 @@
-/* KonaOS libkos: extended-memory wrappers (package 43).
+/* KonaOS libkos: extended-memory wrappers.
  *
  * Every argument block is marshalled through the shared low-window
  * scratch union (kos_internal.h, the 16 bytes exe.mk places at 0100h), so

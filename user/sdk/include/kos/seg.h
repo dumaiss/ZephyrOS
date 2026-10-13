@@ -1,4 +1,4 @@
-/* KonaOS SDK: EXE v2 segments (packages 44a/44b).
+/* KonaOS SDK: EXE v2 segments.
  *
  * The native calls are the ABI's kos/seg.h (SYS_SEG_INFO, SYS_SEG_MAP).  A EXE
  * v2 `DATA` segment is a loader-created extended-memory object owned by
@@ -19,7 +19,7 @@
  *                                           at 8000h as segment 1)
  *     result = farcall(1u, far_main, a, b);
  *
- * `__banked` is the same mechanism as plain C (package 49b).  A program
+ * `__banked` is the same mechanism as plain C.  A program
  * built with `FAR1=`..`FAR4=` compiles each far source with bank n and
  * the `_FAR<n>` area, so every `__banked` function it defines emits
  * `b_<fn> = <n>`; SDCC then turns a call to it into
@@ -84,7 +84,7 @@ typedef int (*kos_far_fn)(int, int);
  * when the segment cannot be mapped. */
 int farcall(unsigned int segment, kos_far_fn entry, int a, int b);
 
-/* --- far data (work package 49d) ----------------------------------------
+/* --- far data ----------------------------------------
  *
  * A program writes far data in C: the sources of one `DATAn=` option are
  * compiled into the areas `_DATA<n>` (its `const` objects) and `_DATA<n>B`
@@ -97,7 +97,7 @@ int farcall(unsigned int segment, kos_far_fn entry, int a, int b);
  *   - `farmap(n, &saved)` opens the aperture onto the n-th `DATAn`
  *     segment and returns `8000h`, so the C symbols of its sources are
  *     plain pointers for as long as it stays open; `farunmap(saved)`
- *     restores the caller's mapping.  One far window (36.17) serves both,
+ *     restores the caller's mapping.  One far window (7.2) serves both,
  *     so a mapped data segment and a `__banked` call cannot be open at the
  *     same time: copy out of the table first, then make the call;
  *   - `xread`/`xwrite` copy through the segment's handle like any other
@@ -117,7 +117,7 @@ int farcall(unsigned int segment, kos_far_fn entry, int a, int b);
  * `-KOS_ENOSPC`, and a program that must have one streams it with
  * `open`/`read`/`xwrite` instead of loading it whole.  A mappable object
  * is filled by reading the file straight into the open window (the
- * buffer-identity rule, 36.8), a plain one through an SDK-internal
+ * buffer-identity rule, 4.9), a plain one through an SDK-internal
  * 512-byte buffer.
  */
 

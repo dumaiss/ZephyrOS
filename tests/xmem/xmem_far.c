@@ -1,4 +1,4 @@
-/* KonaOS far-code outcome program (work package 44b): the primary half.
+/* KonaOS far-code outcome program: the primary half.
  *
  * The third program of the xmem-selftest image: `xmem_selftest.exe` execs
  * it, it drives the far-code path and it SYS_EXECs `xmem_child.exe` from
@@ -7,7 +7,7 @@
  * exercises the loader's one-far-segment-per-auxiliary-bank placement:
  * the two segments land in two banks, `SYS_SEG_MAP` returns a distinct
  * token for each, and the far code returns its own latch so the calls
- * prove which bank each ran.  The 36.17 link rule holds for this program:
+ * prove which bank each ran.  The 7.2 link rule holds for this program:
  * its image, BSS and whole stack lie outside 8000h-BFFFh (the packer
  * checks it).
  *
@@ -28,7 +28,7 @@
  *     handle and far-segment id (a child inherits neither);
  *   * `far-mappable-same-bank`: the free aperture slot of a far segment's
  *     bank holds a mappable object - same token, address A000h;
- *   * `bk-*` (package 49b): the far module's `__banked` entries called as
+ *   * `bk-*`: the far module's `__banked` entries called as
  *     plain C - 0-3 arguments of 8, 16 and 32 bits, a mixed call and a
  *     recursion inside segment 1 - through the SDK's
  *     `___sdcc_bcall_ehl` trampoline, which maps the segment the
@@ -49,7 +49,7 @@
 #define CHILD_STATUS 42
 #define APERTURE_BASE 0x8000u
 
-/* The banked-call arguments and constants (package 49b): wide enough to
+/* The banked-call arguments and constants: wide enough to
  * fill the stack slots the far module's `__banked` entries read. */
 #define BK_8_A   0x11u
 #define BK_8_B   0x22u
@@ -64,8 +64,8 @@ __sfr __at 0x00 latch_port;
 
 /* The far halves: tests/xmem/xmem_far_code.c (linked at 8000h as segment
  * 1) and tests/xmem/xmem_far_code2.c (segment 2).  The plain entries are
- * the 44b arm, called through `farcall` - the primitive stays covered
- * here.  The `xmem_bk_*` and `xmem_far_entry2` entries are the 49b arm:
+ * the `farcall` arm - the primitive stays covered here.  The `xmem_bk_*`
+ * and `xmem_far_entry2` entries are the `__banked` arm:
  * `__banked` ones are called as plain C through the trampoline, the
  * others through `farcall` like segment 1's entry. */
 extern int xmem_far_entry(int handle, int arg);
@@ -267,7 +267,7 @@ int main(void)
 		(void)xfree(handle);
 	}
 
-	/* Banked calls (package 49b): plain C on the far module's
+	/* Banked calls: plain C on the far module's
 	 * `__banked` entries, 0-3 arguments of 8, 16 and 32 bits, a mixed
 	 * call and a recursion.  Every one goes through the SDK's
 	 * ___sdcc_bcall_ehl trampoline, which maps the segment the

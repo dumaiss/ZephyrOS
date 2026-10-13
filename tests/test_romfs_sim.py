@@ -151,8 +151,8 @@ class RomfsSimBase(Replay, unittest.TestCase):
         raise AssertionError("romfs_init did not return")
 
     def lookup(self, z, name, out_addr):
-        # M9 has exactly one ROMFS lookup and it is ASCII case-folded
-        # (architecture section 32.13).
+        # There is exactly one ROMFS lookup and it is ASCII case-folded
+        # (architecture section 4.6).
         name_at = self.scratch + 0x100
         z.bank7[name_at:name_at + len(name) + 1] = name + b"\x00"
         return call2(z, self.syms["_romfs_lookup_ci"], name_at, out_addr)

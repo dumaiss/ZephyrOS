@@ -1,11 +1,11 @@
-/* KonaOS SIO0/B resident driver (work package 41).
+/* KonaOS SIO0/B resident driver.
  *
- * The M8 `sio` driver as a bank-6 driver image: the SIO0/B channel
+ * The SIO driver as a bank-6 driver image: the SIO0/B channel
  * (115200 8N1, the same physical channel as the early console) behind the
  * serial protocol of abi/kos/protocol.h (class KOS_CLASS_SERIAL,
  * instance 0, version KOS_PROTOCOL_VERSION).
  *
- * Segments (architecture 36.6):
+ * Segments (architecture 5.2):
  *   hot  this file: the protocol dispatch and the bounded operation
  *        bodies; the driver's raw port I/O helpers (sio_io.asm) and
  *        private state;
@@ -19,7 +19,7 @@
  *
  * Data movement: WRITE copies the caller's buffer into this driver's
  * DRIVER_IO staging block in bounded chunks; READ drains the receiver
- * into the same block.  Both are descriptor copies (36.8) - the driver
+ * into the same block.  Both are descriptor copies (4.9) - the driver
  * never names a caller address.
  */
 

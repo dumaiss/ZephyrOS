@@ -2,12 +2,12 @@
  * protocols on typed handles).
  *
  * `open`/`close` are the familiar FILE words built on `bind`/`unbind`
- * (architecture 36.13): `open` binds the path, requires the FILE type
+ * (architecture 4.10): `open` binds the path, requires the FILE type
  * and returns a process-owned handle; `close` unbinds it.  The other
  * FILE operations are protocol calls on that handle.
  *
  * `stat`, `mkdir`, `rmdir`, `unlink` and `rename` are filesystem-namespace
- * operations (36.13, 36.14): they bind the owning provider root and send
+ * operations (4.10, 6.2): they bind the owning provider root and send
  * the operation with the path; they act on names, not on an open file, and
  * there is no DIRECTORY handle.  A read-only provider answers `KOS_EROFS`.
  *

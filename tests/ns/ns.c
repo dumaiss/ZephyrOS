@@ -1,4 +1,4 @@
-/* KonaOS namespace acceptance client (work package 42a, test artifact).
+/* KonaOS namespace acceptance client (test artifact).
  *
  * The EXE primary the namespace-selftest image boots.  It is an ordinary
  * SDK program: the kernel links the object family into the image, the SDK
@@ -6,7 +6,7 @@
  * write below goes through the two standard handles an ordinary program
  * starts with.
  *
- * The checks cover the contract of 42a:
+ * The checks cover the namespace contract:
  *
  *   * the standard handles work and console output is one of them;
  *   * `bind` resolves the host-built `/dev` publications and reports the
@@ -17,7 +17,7 @@
  *     cannot look like a pass;
  *   * a `/system` FILE handle reads, seeks and reports metadata, and reads
  *     0 bytes at end of file;
- *   * unknown names, `/fs` (42b), foreign/stale handles and a malformed
+ *   * unknown names, `/fs`, foreign/stale handles and a malformed
  *     path are refused with the documented KOS_E* values;
  *   * the handle table fills to exactly VFS_HANDLE_MAX entries, reports
  *     -KOS_EMFILE, and releases every entry `unbind` returns;
@@ -135,7 +135,7 @@ static void test_devices(void)
 	check("bind-unknown-device", result == -KOS_ENOENT);
 	result = bind("/system/nosuch.exe", 0u, &type);
 	check("bind-unknown-file", result == -KOS_ENOENT);
-	/* /fs is package 42b's provider: this build refuses it cleanly. */
+	/* This build serves no /fs provider: it refuses the name cleanly. */
 	result = bind("/fs/data", 0u, &type);
 	check("bind-fs-enodev", result == -KOS_ENODEV);
 	result = bind("", 0u, &type);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extended-memory outcome acceptance replay (work packages 43/44b).
+"""Extended-memory outcome acceptance replay.
 
 Boots `build-xmem-selftest/konaos-xmem-selftest.bin` -- the production
 boot path with the SIO/console driver set and the SDK outcome program
@@ -19,7 +19,7 @@ transcript:
   (P = 0), the parent's latch comes back exactly, the parent's mapped
   objects are untouched, and the child's leaked objects are released at
   exit (capacity before == capacity after);
-* far code (package 44b): the far-code program the parent SYS_EXECs runs
+* far code: the far-code program the parent SYS_EXECs runs
   its own two FAR_CODE segments through the aperture - map, plain CALL
   and return, far code calling primary code, syscalls with an aperture
   buffer, distinct banks per segment (the latch each call returns), the
@@ -27,7 +27,7 @@ transcript:
   child starts with P = 0 and refuses the parent's handle and segment id)
   and exit from far context (the parent's capacity check and the
   launcher's `free-banks 6` report prove the release);
-* banked calls (package 49b): the far module's `__banked` entries called
+* banked calls: the far module's `__banked` entries called
   as plain C through the SDK's `___sdcc_bcall_ehl` trampoline - 0-3
   arguments of 8, 16 and 32 bits, a mixed call and a recursion - and the
   segment 2 entry calling back into segment 1, which has to restore its
@@ -121,7 +121,7 @@ OUTCOMES = [
 
 CHECKS = len(OUTCOMES)
 
-# The far-code program's outcomes (package 44b), in order; it is
+# The far-code program's outcomes, in order; it is
 # /system/xmem_far.exe, SYS_EXECed by the parent above.
 FAR_OUTCOMES = [
     "seg-info-1", "seg-info-2", "seg-info-unknown",

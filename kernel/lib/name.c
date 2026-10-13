@@ -1,10 +1,9 @@
-/* KonaOS kernel ASCII name comparison (work package 30c, finding F3).
+/* KonaOS kernel ASCII name comparison.
  *
- * Replaces the three independent copies the kernel used to carry:
- * `vfs_name_equal` (VFS mount and provider names), `romfs_name_match`
- * (bounded ROMFS directory-entry names) and `device_name_equal` (device
- * instance names).  All three keep their exact semantics through the
- * `field_size` and `fold` selectors; see kernel/lib/name.h.
+ * The one comparison every kernel caller uses: namespace publication
+ * names and bounded ROMFS directory-entry names.  Each caller selects its
+ * semantics through the `field_size` and `fold` selectors; see
+ * kernel/lib/name.h.
  */
 
 #include "kernel/lib/name.h"

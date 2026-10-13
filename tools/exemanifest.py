@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a EXE v2 manifest from an sdldz80 link map (work package 28c).
+"""Generate a EXE v2 manifest from an sdldz80 link map.
 
 The generic `exe_program` rule (the SDK's mk/kos.mk) links a program,
 then calls this tool to derive `image_size` and `bss_size` from the map.
@@ -14,7 +14,7 @@ SDK defaults.  The output JSON uses the exact key set tools/exepack.py
 accepts.  `--segments FILE` merges a JSON list of auxiliary segment
 declarations (id/kind/input or area/bss_size; the packer resolves a DATA
 payload against the same objdir and reads a FAR_CODE segment out of the
-program's own linked IHX far area, package 44b).
+program's own linked IHX far area).
 
 Usage:
     exemanifest.py MAP OUT --name NAME [--entry SYM] [--stack N]

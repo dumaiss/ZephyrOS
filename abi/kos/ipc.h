@@ -1,7 +1,7 @@
-/* KonaOS native IPC syscall interface (public native ABI, M10 stage 3).
+/* KonaOS native IPC syscall interface (public native ABI).
  *
  * The IPC substrate is the nucleus mechanism behind architecture sections
- * 36.7-36.9: drivers export endpoints, clients hold opaque handles, and a
+ * 4.9: drivers export endpoints, clients hold opaque handles, and a
  * call is one bounded 32-byte frame copied in at entry and back on reply.
  * Large payloads move through nucleus-issued buffer descriptors, never
  * through caller addresses: the ABI has no raw cross-domain pointer.
@@ -14,9 +14,9 @@
  * is entered.  A caller therefore marshals through a low-window scratch:
  * libkos exports `kos_scratch` (shared, 16 bytes, pinned by the program
  * manifest) and its own `kos_ipc_call_block` / `kos_ipc_raw_req` for the
- * two IPC numbers (docs/sdk.md).
+ * IPC calls (docs/sdk.md).
  *
- * Native syscalls (docs/abi.md section 12):
+ * Native syscalls (docs/abi.md section 6):
  *
  *   RST 30h, A = KOS_SYSCALL_CALL, HL = &struct kos_ipc_call_args
  *       carry clear: the call was dispatched (or refused by the IPC
@@ -43,10 +43,10 @@
  *
  * `offset + length` may never exceed the captured descriptor length.
  * A caller address in 8000h-BFFFh with a nonzero saved page names the
- * far bank shown by the mode-10 aperture (architecture 36.17); the copy
+ * far bank shown by the mode-10 aperture (architecture 7.2); the copy
  * resolvers use the resolved bank, not the primary one.
  *
- * Copy paths (correction 01 to architecture 36.8).  Which mapping moves
+ * Copy paths (architecture 4.9).  Which mapping moves
  * the bytes is picked per request, and all three paths are correct for
  * every accepted descriptor; only the first two are fast:
  *
@@ -79,9 +79,8 @@
 
 #include "kos/types.h"
 
-/* Native syscall numbers.  Package 42b retired the stage-3
- * KOS_SYSCALL_IPC_LOOKUP (06h): a client reaches a provider through a
- * bound namespace handle (the ABI's kos/object.h), never by class/instance. */
+/* Native syscall numbers.  A client reaches a provider through a bound
+ * namespace handle (the ABI's kos/object.h), never by class/instance. */
 #define KOS_SYSCALL_CALL   0x07u
 
 /* The request/reply frame: fixed size, copied at every crossing. */

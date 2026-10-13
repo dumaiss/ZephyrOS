@@ -1,4 +1,4 @@
-/* KonaOS resident driver images (architecture 36.11, work package 42c).
+/* KonaOS resident driver images (architecture 5.3).
  *
  * A resident driver is a MOD driver image: a flat, host-linked load
  * plan the nucleus loader iterates with protective bounds only.  The host
@@ -18,17 +18,17 @@
  *
  * There is no version field, no module type, no import table, no fini
  * entry and no relocation record: the packer validates all of it on the
- * host (M10-REFERENCE decision 2), so the loader checks only the bounds
+ * host, so the loader checks only the bounds
  * that protect the nucleus and the fixed driver-bank layout.
  *
- * Segments and destination tiers (architecture 36.6):
+ * Segments and destination tiers (architecture 5.2):
  *
  *   hot    6000h-DFFFh of bank 6   run-time code and data, reached
  *                                  through the mode-11 window (P = 1)
  *   boot   0000h-5FFFh of bank 6   boot-only code, run once through the
  *                                  mode-10 gate with Q = 6
  *   io     8000h-BFFFh of bank 6   DRIVER_IO buffers: the sources and
- *                                  targets of copy_in/copy_out (36.8)
+ *                                  targets of copy_in/copy_out (4.9)
  *   bulk   0000h-5FFFh of bank 6   bulk data, reached only by nucleus
  *                                  copies
  *
@@ -211,7 +211,7 @@ _Static_assert(sizeof(struct mod_publication) == MOD_PUBLICATION_SIZE,
  * Cold nucleus code: read the boot manifest and bring up every driver
  * image it names, in load order.  Returns 0 or a negative MOD/KOS error;
  * a failure is a boot error and is reported on the early console.
- * Drivers are permanent (M10-REFERENCE decision 11), so a second call is
+ * Drivers are permanent, so a second call is
  * a no-op. */
 int driver_load_all(const char *manifest_name);
 

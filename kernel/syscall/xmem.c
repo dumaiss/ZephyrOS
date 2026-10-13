@@ -1,5 +1,5 @@
-/* KonaOS extended-memory syscall drivers (architecture 36.15-36.18,
- * work packages 43, 44a and 44b).
+/* KonaOS extended-memory and segment syscalls (architecture 4.8 and
+ * 6.7).
  *
  * Implements SYS_XMEM_ALLOC / _FREE / _READ / _WRITE / _INFO / _MAP,
  * SYS_SEG_INFO and SYS_SEG_MAP.  A runtime object is process-owned,
@@ -9,7 +9,7 @@
  * through the aperture and its map token comes from SYS_SEG_MAP.  The
  * size is rounded up to whole 8-KiB auxiliary slots and the object is
  * contiguous inside one bank (kernel/process/process.c owns the slot map).
- * **Contents are undefined**: nothing here clears a slot (36.19) - a
+ * **Contents are undefined**: nothing here clears a slot (4.8) - a
  * previous object's bytes are what a new one starts with.
  *
  * Handles are opaque and owner-tagged: `(index << 4) | generation`, so a
@@ -58,7 +58,7 @@ _Static_assert(EXE_SEG_KIND_DATA == KOS_SEG_KIND_DATA,
 #define XMEM_MAX_OBJECTS 16u
 #define XMEM_GENERATIONS 16u /* generations 1..15 cycle per entry */
 
-/* The split between the two copy paths (architecture 36.16): slots 0-2
+/* The split between the two copy paths (architecture 4.8): slots 0-2
  * live at 0000h-5FFFh and use the mode-10 gate, slots 3-6 at
  * 6000h-DFFFh and use the mode-11 window. */
 #define XMEM_WINDOW_BASE 0x6000u
@@ -226,7 +226,7 @@ void kos_xmem_alloc(uint16_t block)
  * at.  A `FAR_CODE` segment is linked at 8000h, so it is placed in slot 4
  * (slots 4-5 when it is over 8 KiB): one far-code segment per auxiliary
  * bank, and it has no handle (SYS_SEG_MAP returns its aperture token).  A
- * `DATA` segment that asked for `EXE_SEG_FLAG_MAPPABLE` (package 49d) is
+ * `DATA` segment that asked for `EXE_SEG_FLAG_MAPPABLE` is
  * placed exactly the same way - its image is at 8000h where the link put
  * it - and its object carries `KOS_XMEM_FLAG_MAPPABLE`, so the program
  * opens the aperture onto it with SYS_XMEM_MAP; it keeps its handle. */

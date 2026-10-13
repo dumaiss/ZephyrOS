@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Banked-call trampoline tests (work package 49b).
+"""Banked-call trampoline tests.
 
-The spike (work/49b-banked-calls/progress.md) measured what SDCC 4.5.0
+The spike measured what SDCC 4.5.0
 emits for a `__banked` call and what the far definition expects, and these
 tests pin both against the real tools:
 
@@ -12,7 +12,7 @@ tests pin both against the real tools:
   `SP+5`, so the trampoline spends exactly three bytes between entry and
   transfer; results in A (8 bits), DE (16) and DEHL (32);
 * the link: two far areas linked at `8000h` in one link are two IHX record
-  streams, which is what `tools/exepack.py` splits by area (package 49b).
+  streams, which is what `tools/exepack.py` splits by area.
 
 `user/sdk/src/bcall.asm` is then assembled as it is in the SDK and run in
 the host Z80 with the other SDK members stubbed: a program calls far

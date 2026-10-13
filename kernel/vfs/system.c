@@ -1,5 +1,5 @@
 /* KonaOS VFS part: /system, the ROMFS provider. */
-/* KonaOS M10 ROMFS FILE provider (package 42a, architecture 36.13).
+/* The ROMFS FILE provider (architecture 4.10).
  *
  * The static `/system` namespace provider: nucleus code over the one
  * ROMFS reader (kernel/romfs), usable before any resident driver exists.
@@ -18,8 +18,8 @@
  * The dispatch serves the FILE protocol's read, seek and metadata
  * operations (abi/kos/protocol.h KFILE_OP_*).  Data moves from ROM to the
  * caller's buffer through the ROMFS reader's staging and the checked
- * descriptor copy, one bounded chunk at a time; write is the filesystem
- * driver's operation and arrives with IOC-FAT in package 42b.
+ * descriptor copy, one bounded chunk at a time.  The store is read-only,
+ * so write is KOS_EROFS.
  */
 
 #include "kernel/vfs/vfs.h"

@@ -1,8 +1,8 @@
 ; -----------------------------------------------------------------------------
-; KonaOS mode-11 window copy (kernel/memory, work package 43).
+; KonaOS mode-11 window copy (kernel/memory).
 ;
 ; The object-side copy for extended-memory objects in auxiliary slots 3-6
-; (architecture 36.16): the transfer runs with the memory mode and bank
+; (architecture 4.8): the transfer runs with the memory mode and bank
 ; field preserved and the page field set to 7 - bank, so the window
 ; 6000h-DFFFh shows that auxiliary bank at the object's own addresses.
 ; Everything else the primitive touches stays mapped: 2000h-5FFFh shows
@@ -15,7 +15,7 @@
 ; the mode-10 application-bank copy gate (kernel/memory/user_copy.asm)
 ; instead.
 ;
-; Fixed rule (architecture 36.5): code that executes while the window
+; Fixed rule (architecture 4.2): code that executes while the window
 ; shows another bank lives in the fixed core, so this file links into
 ; _CODE at 2000h-5FFFh.  Common memory is the scarcest region and does not
 ; pay for it.

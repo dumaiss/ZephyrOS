@@ -1,7 +1,7 @@
 ; -----------------------------------------------------------------------------
-; exetest stack-pointer probe (test artifact, package 28c).
+; exetest stack-pointer probe (test artifact).
 ;
-; A EXE program cannot read SP from C, and programs no longer carry entry
+; An EXE program cannot read SP from C, and programs carry no entry
 ; assembly, so this single helper stays beside the test it serves.
 ; -----------------------------------------------------------------------------
 

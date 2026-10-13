@@ -2,15 +2,15 @@
  *
  * Shared by the six synthetic bank-6 drivers (tests/target/ipc), the
  * driver images' boot manifests (tests/target/ipc/manifests) and the
- * client program (ipc.c).  It is the package-39 conformance protocol,
+ * client program (ipc.c).  It is the IPC conformance protocol,
  * never the native ABI: the frame layout, syscall numbers and descriptor
  * conventions come from abi/kos/ipc.h and drivers/include/driver.h, and
  * every constant here belongs to the synthetic driver set.
  *
- * The synthetic set is the spike's (work package 35): `echo` (the null
+ * The synthetic set is the spike's: `echo` (the null
  * call), `con` (console-like), the `vfs -> fat -> ioc` chain (512-byte
  * chained reads, direct and staged) and `irqx` (the IRQ-owning driver).
- * Since package 40 each one is a real driver image: a hot segment
+ * Each one is a real driver image: a hot segment
  * (_CODE), a boot segment (_BOOT/_BOOT_DATA) and its DRIVER_IO data
  * (_DRIVER_IO), packed by tools/modpack.py, listed in the boot manifest
  * and loaded by the nucleus driver loader.
@@ -62,7 +62,7 @@
 #define IPC_OP_IRQX_RELEASE 2u
 #define IPC_OP_IRQX_COPY    3u /* arg1 = iterations; see the note below    */
 
-/* IRQX_COPY (correction 01): runs `arg1` descriptor copies (direction
+/* IRQX_COPY: runs `arg1` descriptor copies (direction
  * IN, IRQX_COPY_BYTES long) into the driver's own I/O buffer with the
  * timer armed on a short time constant, so a delivery lands inside a
  * path-B aperture window.  The reply is payload[0..1] = 16-bit sum of the
@@ -95,7 +95,7 @@
 /* Driver images are placed by the real loader (kernel/driver/
  * driver_loader.c) from the boot manifest: the hot segment in bank 6's
  * hot tier (6000h-DFFFh), the io segment in 8000h-BFFFh (the DRIVER_IO
- * rule of 36.8), the boot segment in 0000h-5FFFh.  The loader reports each
+ * rule of 4.9), the boot segment in 0000h-5FFFh.  The loader reports each
  * placement on the early console; the replay pins the reported addresses
  * against the plan the packer prints. */
 #define IPC_DRIVER_IO_BASE 0x8000u
@@ -103,7 +103,7 @@
 
 /* The `con` driver's deliberate out-of-range copy target: a buffer in its
  * own hot segment, which is outside 8000h-BFFFh, so the copy takes path C
- * and is counted as slow (correction 01 to architecture 36.8). */
+ * and is counted as slow (architecture 4.9). */
 #define IPC_CON_SLOW_BYTES 256u
 
 /* The boot-segment run marker every synthetic driver records in its own

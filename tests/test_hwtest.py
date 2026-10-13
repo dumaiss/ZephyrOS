@@ -1,4 +1,4 @@
-"""Hardware exerciser static contract (work package 45b).
+"""Hardware exerciser static contract.
 
 The production store carries a feature exerciser (`/system/hwtest.exe`)
 and the outcome programs it runs, and the monitor gains the command that
@@ -120,7 +120,7 @@ class TestExerciserProgram(unittest.TestCase):
 
 
 class TestTheExerciserReportsTheCodeItSaw(unittest.TestCase):
-    """Correction 01: a failed row carries the answer, not just its name."""
+    """A failed row carries the answer, not just its name."""
 
     def test_every_code_row_prints_the_observed_code(self):
         text = read(RUNNER)
@@ -146,7 +146,7 @@ class TestTheExerciserReportsTheCodeItSaw(unittest.TestCase):
 
 
 class TestReusedProgramOptions(unittest.TestCase):
-    """`stage` is the one option the reused programs gained (45b)."""
+    """`stage` is the one option the reused programs take."""
 
     def test_the_filesystem_program_confines_its_writes(self):
         text = read(FS_PROGRAM)
@@ -163,7 +163,7 @@ class TestReusedProgramOptions(unittest.TestCase):
                       text)
 
     def test_the_filesystem_program_execs_the_child_from_the_card(self):
-        # Correction 01's regression row: the same child, copied onto the
+        # The card-exec row: the same child, copied onto the
         # card, run from `/fs` - the bind path a bank-6 provider has to
         # read.  Both images' paths, one row pair.
         text = read(FS_PROGRAM)

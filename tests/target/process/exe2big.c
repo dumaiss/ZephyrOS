@@ -1,4 +1,4 @@
-/* KonaOS EXE v2 large-container outcome program (package 44a, test only).
+/* KonaOS EXE v2 large-container outcome program (test only).
  *
  * A v2 container may exceed 64 KiB (32-bit file geometry).  This program
  * carries two 32-KiB DATA segments; its container is over 64 KiB, and the

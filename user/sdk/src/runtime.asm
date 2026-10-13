@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS libkos: shared runtime state (work/28c-m9-user-sdk).
+; KonaOS libkos: shared runtime state.
 ;
 ; Owns the fixed low-window data area every wrapper marshals through and
 ; the carry-to-errno mapper the gates share.  exe.mk links _KOS_SDK_DATA

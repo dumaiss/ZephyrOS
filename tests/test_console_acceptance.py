@@ -1,6 +1,5 @@
-"""Console integration acceptance tests (work package 41, consolidated by
-package 42d): replay the real production bytes and the integration
-acceptance image in the Z80 simulator.
+"""Console integration acceptance tests: replay the real production bytes
+and the integration acceptance image in the Z80 simulator.
 
 Both images boot the resident-driver model: the recovery store lists the
 SIO, IOC, HID, V9958 and CONSOLE drivers in the manifest order, the
@@ -11,8 +10,7 @@ input/output drivers its manifest names.  The production image is the
 same source and store the physical acceptance image is built from minus
 the target-test objects; the integration image adds the target
 diagnostics - the integration pass plus the IOC, HID and V9958 device
-diagnostics (work package 42d merged the per-device images into this
-one) - behind the early-SIO driver transcript, and the unchanged M7
+diagnostics - behind the early-SIO driver transcript, and the unchanged
 `monitor.exe` launcher.
 
 Coverage, all against those linked bytes:
@@ -33,7 +31,7 @@ Coverage, all against those linked bytes:
   ledger, the target diagnostics' endpoint/composition/marker/typed-line
   /PING/rejection transcript (and the IOC/HID/V9958 diagnostics the same
   image carries), the same bytes on the visible lane, the ESC c display
-  reset the boot program runs (work package 42e), and the monitor session
+  reset the boot program runs, and the monitor session
   that follows it;
 * ROMFS payload identity: the packed monitor artifact is stored
   byte-for-byte and the store's directory matches the image's manifest.
@@ -62,10 +60,7 @@ from test_v9958_sim import bringup_starts  # noqa: E402
 SMOKE_HOST_SYNC = b"\xaa\x55"
 
 # The packed monitor artifact (pinned by user/monitor/ and the tooling
-# tests; the store must deliver these exact bytes).  Re-pinned by package
-# 48 (the KonaOS rename): the banner reads "KonaOS native monitor" (two
-# bytes shorter) and the renamed SDK symbols change the linker's library
-# pull order, so the linked layout differs from package 46's.
+# tests; the store must deliver these exact bytes).
 MONITOR_SIZE = 6066
 MONITOR_SHA256 = (
     "4d27328bd1ca820f156594ef47b5691e0c69369cc33f7da06cbf1772ccca7d18")
@@ -85,7 +80,7 @@ INTEGRATION_IMAGE = "konaos-console-integration-selftest.bin"
 
 # The five driver images the production store carries, in manifest order,
 # with the endpoint class each registers.  The production CONSOLE driver
-# is `console-v9958-hid` (work package 42e); the serial variant selects
+# is `console-v9958-hid`; the serial variant selects
 # `console-serial` from the same shared source.
 DRIVER_SET = (("sio.mod", 1), ("ioc.mod", 5), ("hid.mod", 4),
                ("v9958.mod", 2), ("console-v9958-hid.mod", 6),
@@ -194,8 +189,8 @@ class TestProductionImage(ConsoleReplayBase):
         z = self.start()
         self.boot_to_prompt(z)
         self.type_line(z, b"r\r", SYSINFO)
-        # `X` is the launcher's own exec path in the monitor (work package
-        # 45b): a missing argument reports the monitor's ARG error and an
+        # `X` is the launcher's own exec path in the monitor: a missing
+        # argument reports the monitor's ARG error and an
         # absent program the native code, both back at the prompt.
         self.type_line(z, b"X\r", "ERR: ARG")
         self.type_line(z, b"X /system/nosuch.exe\r", "ERR: 05")
@@ -213,7 +208,7 @@ class TestProductionImage(ConsoleReplayBase):
         requests = [entry[0] for entry in peer.requests]
         # The IOC driver's one bounded LINK_SYNC bring-up, then the
         # IOC-FAT driver's FS2 commands (the driver calls its
-        # dependency directly; there is no class shim since 42b).
+        # dependency directly; there is no class shim).
         self.assertEqual(requests[0], LINK_SYNC_REQUEST)
         self.assertIn(0x30, requests)  # CMD_FS2_CAPS
         self.assertEqual(peer.channel_resets, 1)
@@ -244,15 +239,15 @@ class TestProductionImage(ConsoleReplayBase):
             with open(path, "rb") as handle:
                 info = modpack.parse_container(handle.read(), name)
             # The flat plan: one endpoint per image, and every
-            # production image carries its publication (work package 42c).
+            # production image carries its publication.
             self.assertEqual([(ep["class"], ep["instance"], ep["version"])
                               for ep in info["endpoints"]],
                              [(klass, 0, 1)], name)
             self.assertEqual(len(info["publications"]), 1, name)
             self.assertEqual(info["publications"][0]["number"],
                              info["endpoints"][0]["number"], name)
-            # The console image's required dependencies (work package
-            # 42e: no optional dependency and no runtime fallback).  The
+            # The console image's required dependencies (no optional
+            # dependency and no runtime fallback).  The
             # other images' dependencies are pinned by their own tests.
             if name in CONSOLE_DEPS:
                 self.assertEqual([(dep["class"], dep["instance"])
@@ -263,7 +258,7 @@ class TestProductionImage(ConsoleReplayBase):
 
     def test_console_manifests_select_the_build(self):
         """The two CONSOLE manifests differ only in what the build
-        selects (work package 42e), both require it, and the dependency
+        selects, both require it, and the dependency
         is named symbolically: tools/systemgen.py resolves it against the
         selected set (tests/test_systemgen.py)."""
         expected = {
@@ -351,11 +346,11 @@ class TestIntegrationImage(ConsoleReplayBase):
         self.assertIn("K41", trace)          # the typed echo
         self.assertIn("integration done", trace)
 
-        # The image boot program is the ESC c check (work package 42e):
+        # The image boot program is the ESC c check:
         # it reset the display and printed its line before handing the
-        # console to the monitor.  The V9958 bring-up sequence ran three
-        # times now that the video diagnostic lives in this image (work
-        # package 42d): the driver's boot segment, the diagnostic's
+        # console to the monitor.  The V9958 bring-up sequence runs three
+        # times because the video diagnostic lives in this image: the
+        # driver's boot segment, the diagnostic's
         # KVIDEO_RESET, and the ESC c display reset.
         self.assertIn("escc: display reset", trace)
         self.assertEqual(len(bringup_starts(z.vdp)), 3)

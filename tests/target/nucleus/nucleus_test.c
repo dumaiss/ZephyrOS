@@ -1,8 +1,7 @@
 /* KonaOS nucleus-layout acceptance test (test artifact; linked only in
  * acceptance image builds).
  *
- * Runs the revision-13 gate and upcall acceptance surface of work package
- * 38 and reports the outcome on the early console:
+ * Runs the revision-13 gate and upcall acceptance surface and reports the outcome on the early console:
  *
  *   1. the smoke caller runs in application bank 0 in mode 10 with the
  *      driver page selected.  It issues SYS_DIAG_SYSTEM_INFO (a cold-half
@@ -15,7 +14,7 @@
  *      interrupted latch came back byte-exactly;
  *   3. the upcall shim: the fixed-core install helper writes the target
  *      stub into bank 6 through the window page, and this cold-half test
- *      code - the cold-caller case of architecture 36.5 - calls kos_upcall
+ *      code - the cold-caller case of architecture 4.2 - calls kos_upcall
  *      and checks the selected page, the target's result and argument, and
  *      the exact restore of the latch.
  *
@@ -118,7 +117,7 @@ static void nucleus_selftest_handler(void *context)
 	}
 }
 
-/* The cold-caller case of architecture 36.5: this code runs in the cold
+/* The cold-caller case of architecture 4.2: this code runs in the cold
  * half, so it cannot execute while the window shows bank 6 - the fixed
  * shim makes the call instead. */
 static uint8_t nucleus_selftest_upcall(void)

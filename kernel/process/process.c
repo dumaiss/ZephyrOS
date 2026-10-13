@@ -1,4 +1,4 @@
-/* KonaOS M6 process lifecycle (bank-7 kernel code).
+/* KonaOS process lifecycle (bank-7 kernel code).
  *
  * Owns the fixed seven-entry process table, the deterministic
  * lowest-free-bank allocator (including test/acceptance reservations),
@@ -12,7 +12,7 @@
  *
  * Single-tasking contract: at most one process is RUNNING, and one
  * synchronous exec chain of at most KOS_EXEC_MAX_DEPTH processes may be
- * suspended at once (package 28).
+ * suspended at once.
  */
 
 #include "process.h"
@@ -43,9 +43,9 @@ static int process_bank_in_use(uint8_t bank)
 	return 0;
 }
 
-/* --- auxiliary bank slots (architecture 36.15/36.16, package 43) -------
+/* --- auxiliary bank slots (architecture 4.8) -------
  *
- * One owner byte per slot (pid + 1, 0 = free); the bank states of 36.15
+ * One owner byte per slot (pid + 1, 0 = free); the bank states of 4.8
  * are derived: PRIMARY while a table entry owns the bank, AUXILIARY while
  * any slot is owned, FREE otherwise.  A bank reservation also excludes
  * auxiliary use: it is held for a primary allocation. */
@@ -102,8 +102,8 @@ static void aux_run_take(uint8_t pid, uint8_t bank, uint8_t first,
 }
 
 /* The candidate runs for one allocation, as first-slot values in
- * preference order (architecture 36.16): a far-code segment - or a
- * mappable DATA segment (49d) - is linked at 8000h so it takes slot 4
+ * preference order (architecture 4.8): a far-code segment - or a
+ * mappable DATA segment - is linked at 8000h so it takes slot 4
  * (slots 4-5 when it is over 8 KiB), which is what keeps one of them per
  * auxiliary bank; a mappable object lives in the aperture slice, slots
  * 4-5; a non-mappable object prefers the window-speed slots 3 and 6, then
@@ -186,7 +186,7 @@ int process_aux_alloc(uint8_t pid, uint8_t slots, uint8_t place,
 	    place > KOS_AUX_PLACE_FAR) {
 		return -KOS_EINVAL;
 	}
-	/* Pack an existing auxiliary bank first (36.15), highest first. */
+	/* Pack an existing auxiliary bank first (4.8), highest first. */
 	for (b = PROCESS_BANK_COUNT; b-- > 0;) {
 		if (!aux_bank_open(b) || !process_aux_live(b)) {
 			continue;
@@ -231,7 +231,7 @@ void process_aux_free(uint8_t pid, uint8_t bank, uint8_t slot, uint8_t slots)
 }
 
 /* Lowest bank 0-5 that is neither reserved, held by a table entry, nor
- * auxiliary (architecture 36.15: a bank with any live slot cannot become
+ * auxiliary (architecture 4.8: a bank with any live slot cannot become
  * a primary bank). */
 int process_alloc_bank(void)
 {
@@ -320,7 +320,7 @@ uint8_t process_active_count(void)
 	return count;
 }
 
-/* Banks in the FREE state of architecture 36.15: neither held by a table
+/* Banks in the FREE state of architecture 4.8: neither held by a table
  * entry (primary) nor carrying a live auxiliary slot.  A reservation
  * (`process_bank_reserve`) is a hold for a future primary allocation, not
  * a bank state, so it does not subtract here.  Reported at boot. */
@@ -387,9 +387,9 @@ void process_launch(const struct process_child *child)
 
 /* Kernel-launcher convenience wrapper: prepare a depth-0 child, then run
  * it.  The child/parent linkage, the loader path and the exit path are
- * shared with SYS_EXEC; only the returned error space differs (the M6
- * EXE_EXEC_ERR_* codes are preserved for the boot launcher and its
- * acceptance tests). */
+ * shared with SYS_EXEC; only the returned error space differs (the
+ * EXE_EXEC_ERR_* codes, which the boot launcher and its acceptance tests
+ * report). */
 int process_exec(const char *path, uint16_t *status)
 {
 	struct process_child child;
@@ -441,7 +441,7 @@ void process_exit(uint16_t status)
 	process_running_pid = PROCESS_NO_PROCESS;
 	/* Close every descriptor the pid owned (with close semantics) and
 	 * release its CWD slot before the parent resumes; then release its
-	 * extended-memory objects (36.13/36.15: exit frees every object
+	 * extended-memory objects (4.10/4.8: exit frees every object
 	 * after the handles are unbound). */
 	vfs_process_exit(pid);
 	kos_xmem_release_process(pid);

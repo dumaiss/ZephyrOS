@@ -11,7 +11,7 @@
  *
  * The ordinary buffer sits in this image's io segment, which the loader
  * places inside bank 6's 8000h-BFFFh, so it follows the driver I/O buffer
- * rule (correction 01 to architecture 36.8).  The IPC_FRAME_SLOW_IO
+ * rule (architecture 4.9).  The IPC_FRAME_SLOW_IO
  * variant targets the buffer of this image's hot segment instead - the
  * deliberate violation that proves a driver buffer outside that range
  * still copies, through the chunked path, and is counted as slow.  The

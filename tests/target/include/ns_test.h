@@ -2,7 +2,7 @@
  *
  * Shared by the `nsdev` synthetic publisher (tests/target/ns/nsdev.c), its
  * driver manifest (tests/ns/manifests/nsdev.json), the client program
- * (tests/ns/ns.c) and the simulator replay.  It is the package-42a
+ * (tests/ns/ns.c) and the simulator replay.  It is the namespace
  * conformance protocol, never the native ABI: the object lifecycle, the
  * argument blocks and the FILE protocol come from abi/kos/object.h,
  * abi/kos/ipc.h and abi/kos/protocol.h, and every constant here belongs to

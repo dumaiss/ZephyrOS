@@ -2,7 +2,7 @@
  *
  * The ipc-selftest image boots this program; it measures the chained
  * 512-byte read and a single descriptor copy_out for every caller-buffer
- * location the correction-01 copy paths cover, then starts the promoted
+ * location the copy paths cover, then starts the promoted
  * conformance client (/system/ipc.exe) and folds its verdict into its own
  * line.
  *
@@ -277,7 +277,7 @@ void ipc_copy_entry(void)
 
 	console_puts("ipccopy: probe OK\r\n");
 
-	/* Package 42b: a client reaches a provider through a bound
+	/* A client reaches a provider through a bound
 	 * namespace handle, never by class/instance. */
 	echo_handle = (uint8_t)bind("/dev/ipc/echo", 0u, &type);
 	vfs_handle = (uint8_t)bind("/dev/ipc/vfs", 0u, &type);
@@ -293,7 +293,7 @@ void ipc_copy_entry(void)
 	case_at(PROBE_CALLER_HIGH3, 'D', 'S', "high3-bytes");
 	case_at(PROBE_CALLER_BEHIND, 'E', 'T', "behind-bytes");
 
-	/* Correction 01 to architecture 36.8: the caller buffer window also
+	/* Architecture 4.9: the caller buffer window also
 	 * covers the common page (E000h-FFFFh), which every mapping shows at
 	 * the same address.  ECHO_DESC only reports the captured id, so no
 	 * kernel byte is read or written by this check. */

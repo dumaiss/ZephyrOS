@@ -1,12 +1,12 @@
 /* KonaOS SDK: console entry points as console-driver clients.
  *
  * The line helpers (getchar/console_readline/...) are the reusable console
- * front end the monitor and ZShell share, and they sit on the four
- * driver operations below.  Package 41 removed the SYS_CONSOLE_* syscalls:
- * the console is the resident console driver (the ABI's kos/protocol.h, class
- * KOS_CLASS_CONSOLE), so every function here resolves that endpoint and
- * speaks its protocol.  A program with no console driver (an acceptance
- * image whose store lists none) sees -KOS_ENOENT.
+ * front end of the monitor and any line-oriented program, and they sit
+ * on the four driver operations below.  The console is the resident
+ * console driver (the ABI's kos/protocol.h, class KOS_CLASS_CONSOLE),
+ * reached through the standard handles; there are no console syscalls.
+ * A process without standard handles (a build with no console driver)
+ * sees -KOS_EINVAL.
  *
  * Return convention: a non-negative result, or the negated native error
  * code.

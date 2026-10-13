@@ -1,11 +1,9 @@
-/* KonaOS HID acceptance diagnostic, resident-driver edition (work
- * package 41).
+/* KonaOS HID acceptance diagnostic.
  *
  * The kernel calls kos_run_hid_selftest() from the late boot hook, after
  * the driver loader placed and started the console-integration image's
- * `sio ioc hid v9958 console-v9958-hid` set (work package 42d merged the
- * per-device images; the console composes HID input with the V9958
- * output), and the nucleus console line completed.
+ * `sio ioc hid v9958 console-v9958-hid` set (the console composes HID
+ * input with the V9958 output), and the nucleus console line completed.
  * The diagnostic is itself a bank-7 client of the resident drivers (see
  * tests/target/include/driver_client.h): it holds no descriptor, so it
  * drives the HID protocol through the descriptor-less byte forms -

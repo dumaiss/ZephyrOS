@@ -1,20 +1,18 @@
-"""Host checks for the IPC substrate acceptance package (39).
+"""Host checks for the IPC substrate acceptance image.
 
 Pins the structural facts the `ipc-selftest` image, its client program and
 its replay depend on, without booting anything:
 
-  - the build wiring (target, guard define, image names, manifest);
-  - the pinned ABI: the two syscall numbers, the frame and argument-block
+  - the build wiring (target, system file, image names, manifests);
+  - the pinned ABI: the CALL syscall number, the frame and argument-block
     layouts and the descriptor conventions in abi/kos/ipc.h;
-  - the residency classification: the substrate is `fixed-required`, its
-    cold syscall body is `cold`, and all three are `test_link` objects the
-    production linker script does not list (production stays byte-identical
-    until package 41 adopts them);
-  - the production image really carries no substrate symbol;
+  - the residency classification: the substrate is `fixed-required`, the
+    driver loader is `cold`, and production links all of them, so no
+    object is test-linked;
   - the client program's data fits the syscall argument window, including
-    every libkos marshalling block (the SDK's lookup/call blocks);
-  - the SDK surface and the six container manifests the loader validates;
-  - correction 01: the caller-buffer probe's window layout (code above the
+    every libkos marshalling block;
+  - the SDK surface and the container manifests the loader validates;
+  - the copy paths: the caller-buffer probe's window layout (code above the
     0100h-02FFh buffer it names), the driver I/O buffer rule in the
     container manifests and the loader's range check, the aperture
     primitive's common placement and the three path counters.
@@ -41,7 +39,7 @@ SDK_INTERNAL = os.path.join(ROOT, "user", "sdk", "src", "kos_internal.h")
 SDK_SOURCE = os.path.join(ROOT, "user", "sdk", "src", "ipc.c")
 SDK_GATE = os.path.join(ROOT, "user", "sdk", "src", "ipcgate.asm")
 EXE_MK = os.path.join(ROOT, "user", "sdk", "exe.mk")
-# The generic exe_program rule (work package 49c).
+# The generic exe_program rule.
 RULE_MK = os.path.join(ROOT, "mk", "kos.mk")
 RESIDENCY = os.path.join(ROOT, "config", "residency.json")
 LINKER = os.path.join(ROOT, "linker", "zephyr80.lk")
@@ -152,7 +150,7 @@ class TestIpcBuildWiring(unittest.TestCase):
         # The image uses production placement: its row sets
         # COLD_EXTRA_CSV empty and names no image-specific cold set.
         self.assertIn("COLD_EXTRA_CSV :=", text)
-        # Package 49a: the store manifest, the boot manifest and the
+        # The store manifest, the boot manifest and the
         # resolved driver manifests are generated inputs, and every
         # selected driver packs to <id>.mod in the image's own
         # $(MODULES).
@@ -178,10 +176,8 @@ class TestIpcBuildWiring(unittest.TestCase):
         self.assertIn("SYSTEM=ipc", text)
 
     def test_dispatch_is_routed_in_the_dispatcher_proper(self):
-        # Package 41 removed the KOS_TARGET_TEST_BUILD routing seam and
-        # package 42b retired the stage-3 lookup: 06h-0Bh reach the object
-        # family from the production switch, and no acceptance hook
-        # remains.
+        # 06h-0Bh reach the object family from the production switch, and
+        # no acceptance hook routes a syscall.
         text = read(os.path.join(ROOT, "kernel", "syscall.c"))
         self.assertIn("KOS_SYSCALL_BIND", text)
         self.assertIn("kos_object_dispatch", text)
@@ -216,11 +212,11 @@ class TestIpcAbi(unittest.TestCase):
         # The argument block lives in the caller window: the gate leaves
         # only 0100h-1FFFh of the caller bank visible while the nucleus
         # runs.  Descriptor buffers may go further (the patch below in
-        # this file and correction 01 in docs/abi.md section 12).
+        # this file and the copy paths in abi/kos/ipc.h).
         self.assertIn("0100h-1FFFh", text)
         self.assertIn("KOS_USER_BUFFER_BASE", text)
         self.assertIn("E000h-FFFFh", text)
-        self.assertIn("Copy paths (correction 01", text)
+        self.assertIn("Copy paths (architecture 4.9)", text)
         for token in ("A  the caller buffer", "B  the caller buffer",
                       "C  everything else"):
             self.assertIn(token, text, token)
@@ -243,21 +239,19 @@ class TestIpcResidency(unittest.TestCase):
         self.assertEqual(tiers["ipc_common"], "fixed-required")
         self.assertEqual(tiers["driver_loader"], "cold")
         self.assertEqual(tiers["driver_boot"], "fixed-required")
-        # Package 41 linked the substrate into production, and package 42b
-        # switched the namespace family over too, so nothing is test-linked
-        # and the retired rows are gone.
+        # Production links the substrate and the namespace family, so
+        # nothing is test-linked.
         self.assertEqual(sorted(test_link), [])
         self.assertIn("driver_loader", cold_half)
-        # The retired object names, assembled from parts so this file
-        # does not itself carry the tokens the grep gate keeps out.
+        # Object names the classification does not carry, assembled from
+        # parts so this file does not itself carry the tokens.
         for gone in ("ipc" + "_syscall", "ioc" + "_shim", "fs", "registry",
                      "module" + "_loader"):
             self.assertNotIn(gone, tiers, gone)
 
     def test_production_linker_script_lists_the_substrate(self):
-        # Package 41 linked the substrate and the resident driver loader;
-        # package 42b also links the namespace family and drops the retired
-        # syscall front end and class shim.
+        # Production links the substrate, the resident driver loader and
+        # the namespace family.
         text = read(LINKER)
         for name in ("ipc.rel", "ipc_asm.rel", "ipc_common.rel",
                      "driver_loader.rel", "driver_boot.rel",
@@ -281,7 +275,7 @@ class TestIpcResidency(unittest.TestCase):
             self.assertIn(name, found, name)
         # The substrate's fixed core is where the call machinery runs, and
         # the loader's bodies are cold-half code.  The stage-3 lookup is
-        # gone (package 42b).
+        # gone.
         self.assertLess(found["_ipc_install_endpoint"], 0x6000)
         self.assertNotIn("_ipc_lookup", found)
         self.assertGreaterEqual(found["_driver_load_all"], 0x6000)
@@ -301,7 +295,7 @@ class TestIpcImageLayout(unittest.TestCase):
             self.assertGreaterEqual(address, 0x2000, name)
             self.assertLess(address, SPLIT, name)
         # The IPC dispatch body lives with the syscall gates?  No: the
-        # object family's dispatcher is cold code (package 42b).
+        # object family's dispatcher is cold code.
         self.assertGreaterEqual(self.syms["_kos_object_dispatch"], SPLIT)
         # The driver loader is cold code too, and the boot gate it calls
         # is common-resident (bank 7 is unmapped while a boot segment runs).
@@ -316,13 +310,13 @@ class TestIpcImageLayout(unittest.TestCase):
         if not os.path.exists(os.path.join(MODULE_DIR, "echo.mod")):
             self.skipTest("the IPC image's driver images are not packed; "
                           "run make ipc-selftest")
-        # The drivers are no longer linked into the kernel: they are
+        # The drivers are not linked into the kernel: they are
         # containers in the recovery store, named by the boot manifest the
         # loader reads.  The image carries no blob symbol.
         for name in ("echo", "con", "ioc", "fat", "vfs", "irqx"):
             self.assertNotIn("_ipc_%s_mod" % name, self.syms, name)
 
-        # Package 41: the image also boots the SIO and console drivers
+        # The image also boots the SIO and console drivers
         # its SDK programs print through, ahead of the synthetic set.
         order = ["sio.mod", "console-serial.mod",
                  "ioc.mod", "fat.mod", "vfs.mod",
@@ -385,8 +379,8 @@ class TestIpcClientWindow(unittest.TestCase):
         self.assertEqual(self.report["entry"]["symbol"], "kos_entry")
 
 
-class TestIpcCorrection01Layout(unittest.TestCase):
-    """Correction 01: the probe's window layout and the common aperture.
+class TestIpcCopyPathLayout(unittest.TestCase):
+    """The probe's window layout and the common aperture.
 
     The probe is the only EXE that can name the caller window as a copy
     destination, which it does by linking its own code above the buffer;
@@ -531,8 +525,8 @@ class TestIpcSdkSurface(unittest.TestCase):
                       "int list(const char *path",
                       "int call("):
             self.assertIn(token, text, token)
-        # Package 46 T6: the raw gate stub is SDK-private, so the public
-        # header no longer names it and kos_internal.h declares it.
+        # The raw gate stub is SDK-private: the public header does not
+        # name it and kos_internal.h declares it.
         internal = read(SDK_INTERNAL)
         self.assertIn("int kos_ipc_raw_call(struct kos_ipc_call_req *req)",
                       internal)
@@ -540,7 +534,7 @@ class TestIpcSdkSurface(unittest.TestCase):
 
     def test_sdk_owns_the_gate_and_the_cache(self):
         text = read(SDK_SOURCE)
-        # Package 42b: no lookup and no cache - a client binds a name and
+        # No lookup and no cache: a client binds a name and
         # the kernel resolves it, so the SDK holds only the marshalling
         # blocks.
         self.assertIn("kos_ipc_call_block", text)
@@ -560,7 +554,7 @@ class TestIpcSdkSurface(unittest.TestCase):
             self.assertTrue(os.path.exists(path), path)
             manifest = json.loads(read(path))
             # A driver manifest carries no module type and no version
-            # field (work package 42c): the packer validates the shape.
+            # field: the packer validates the shape.
             self.assertNotIn("type", manifest, name)
             self.assertNotIn("abi", manifest, name)
             self.assertIn("ipc_%s_init" % name,

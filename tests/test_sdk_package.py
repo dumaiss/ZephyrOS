@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone SDK package tests (work package 49c-sdk-package).
+"""Standalone SDK package tests.
 
 `make sdk` assembles build/kos-sdk-<version>/ (and a tarball of it) from
 the SDK sources, the public ABI headers and the built library.  These
@@ -65,7 +65,7 @@ GREETING = "Hello, KonaOS!"
 ABI_REFUSAL = "ERR: 02"
 BAD_ABI_NAME = "abi-probe.exe"
 
-# The pinned layout: the SDK tree is exactly these files (work/49c).  The
+# The pinned layout: the SDK tree is exactly these files.  The
 # include/ entries are the SDK headers at the paths their includes name
 # ("kos/…", "klibc/…") plus the public ABI headers they include, copied
 # under include/abi/ where "kos/…" resolves to them (the SDK's first
@@ -114,7 +114,7 @@ SDK_FILES = {
 }
 
 # Paths a copied file may not name; the docs describe the OS tree too and
-# are the tree's documentation, so they are exempt (work/49c).
+# are the tree's documentation, so they are exempt.
 FORBIDDEN_TOKENS = ("abi/", "user/sdk")
 
 

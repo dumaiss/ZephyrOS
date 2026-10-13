@@ -1,6 +1,6 @@
 /* KonaOS SDK: recovery/diagnostic wrappers (SYS_DIAG_*).
  *
- * The M7 recovery facilities behind the native syscall gate.  The kernel
+ * The recovery facilities behind the native syscall gate.  The kernel
  * validates bank/range/port and rejects bank 7, addresses outside the
  * documented windows, the reserved field, and the latch-aliased ports
  * 00h-0Fh; rejected requests are side-effect free.  Results follow the

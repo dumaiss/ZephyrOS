@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS process launch/resume gates (common-resident, package 28).
+; KonaOS process launch/resume gates (common-resident).
 ;
 ; The kernel-side lifecycle (kernel/process/process.c, exec.c) runs in mode
 ; 11; entering the child and coming back both change the memory mapping, so
@@ -15,8 +15,8 @@
 ; workspace's fixed-core path view, so the cold half holds no buffer a
 ; bank-6 provider could be handed).
 ;
-; Package 28 generalizes the M6 single-depth launcher into a bounded
-; continuation stack indexed by nesting depth (KOS_EXEC_MAX_DEPTH levels):
+; The launcher keeps a bounded continuation stack indexed by nesting
+; depth (KOS_EXEC_MAX_DEPTH levels):
 ;
 ;   index 0        kernel launcher on the boot stack (no gate frame)
 ;   index 1..3     a user parent suspended in its SYS_EXEC handler; the

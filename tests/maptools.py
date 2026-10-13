@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """Shared host-test helpers for synthetic linker maps and constant parsing.
 
-Extracted from tests/test_m1.py so kept test modules no longer depend on
-the retired M1 acceptance module.
-
   * evaluate/parse_c_header/parse_asm_inc: tiny C and assembly constant
     readers used against include/ and platform/ headers.
   * make_map: builder for a synthetic ROMFS-boot linker map that mapcheck
@@ -245,12 +242,9 @@ def parse_asm_inc(path):
 def make_map(overrides=None, **kw):
     """Build a synthetic map resembling the real layout, then apply edits.
 
-    The fixture is a *ROMFS-boot* image (KOS_ROMFS_BOOT=1): the M9 VFS
-    symbols are present and the embedded boot catalog is not, which is the
-    only combination mapcheck accepts.  Tests that need the
-    embedded-catalog variant pass the catalog symbols explicitly, and the
-    two boot modes are mutually exclusive (see
-    work/25-m9-vfs-bootstrap-romfs/correction-01).
+    The fixture is a production-shaped image: the VFS symbols are present
+    and no embedded boot catalog is, which is the only combination
+    mapcheck accepts.
     """
     areas = {
         "_RESET0": (0x0000, 0x26),
@@ -352,7 +346,7 @@ def make_map(overrides=None, **kw):
         "kos_gate_result_hl": 0xE103, "kos_gate_result_a": 0xE105,
         "kos_gate_result_c": 0xE106,
         "kos_gate_stack": 0xE107, "kos_gate_stack_top": 0xE287,
-        # M6 process gates (common), copy state (common), and bank-7
+        # Process gates (common), copy state (common), and bank-7
         # process/EXE code and data.
         "_kos_process_launch": 0xE300, "_kos_process_resume": 0xE310,
         "kos_process_return_trap": 0xE320,
@@ -380,10 +374,7 @@ def make_map(overrides=None, **kw):
         "_exe_validate_header": 0x2D40,
         "_process_table": 0xD900, "_process_running_pid": 0xDD00,
         "_process_last_status": 0xDD01,
-        # Bank-7 runtime data.  `_kos_process_path_scratch` used to sit
-        # here; work package 45b correction 01 retired it, because a
-        # bank-6 provider cannot see this half of bank 7.
-        # M7 diagnostic drivers and shared dispatcher helpers (bank-7
+        # Diagnostic drivers and shared dispatcher helpers (bank-7
         # kernel code; no new common state).
         "_kos_diag_mem_read": 0x2E00, "_kos_diag_mem_write": 0x2E40,
         "_kos_diag_io_in": 0x2E80, "_kos_diag_io_out": 0x2EA0,
@@ -391,10 +382,9 @@ def make_map(overrides=None, **kw):
         "_kos_diag_hw_in": 0x2010, "_kos_diag_hw_out": 0x2016,
         "_kos_syscall_success": 0x2632, "_kos_syscall_error": 0x263D,
         "_kos_syscall_block_ok": 0x264C,
-        # VFS handles, paths and the namespace family (package 42b): the
-        # reused M9 helpers plus the M10 router, the `/system` FILE
-        # provider and the object syscall bodies.  The mount table, the
-        # provider registry and the `FS_*` front end are retired.
+        # VFS handles, paths and the namespace family: the handle and
+        # path helpers plus the router, the `/system` FILE provider and
+        # the object syscall bodies.
         "_vfs_init": 0x3000,
         "_vfs_phase": 0x3040,
         "_vfs_path_normalize_at": 0x3060,

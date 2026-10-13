@@ -1,8 +1,7 @@
-/* KonaOS M0 fatal-error path.
+/* KonaOS fatal-error path.
  *
  * Prints the clearest available diagnostic through the early console,
- * disables interrupts, and enters the controlled halt loop.  There is no
- * recovery infrastructure at M0.
+ * disables interrupts, and enters the controlled halt loop.
  *
  * Compiled into the _COMMON code segment: panic and its string literals are
  * resident in the permanent common region, so the path can execute without

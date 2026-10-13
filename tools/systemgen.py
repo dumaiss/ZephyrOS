@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""KonaOS image generator (work package 49a).
+"""KonaOS image generator.
 
 One `systems/<name>.json` describes one image: the driver set in load
 order, the program the launcher starts, the store's non-driver files and
@@ -58,7 +58,7 @@ Usage:
 
 `--omit-image` leaves one selected driver's image out of the store while
 its name stays in the boot manifest: the required-driver failure store
-(work package 42e).  Exit status: 0 success, 1 rejected input, 2 usage.
+.  Exit status: 0 success, 1 rejected input, 2 usage.
 """
 
 import argparse

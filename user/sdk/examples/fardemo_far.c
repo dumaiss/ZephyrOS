@@ -1,4 +1,4 @@
-/* KonaOS far-code SDK demo (work packages 44b/49b): the far half.
+/* KonaOS far-code SDK demo: the far half.
  *
  * Compiled with `--codeseg FAR1` and bank 1 through the exe_program
  * FAR1= option and linked at 8000h, so this whole module becomes the

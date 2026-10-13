@@ -1,12 +1,13 @@
-; CP850 6x8 bitmap font (KonaOS V9958 video asset, work package 18).
+; CP850 6x8 bitmap font (KonaOS V9958 video asset).
 ;
 ; Imported byte-for-byte from the pinned Zephyr-80 reference,
 ; Code/HOST/CPM2.2/src/assets/font_cp850_6x8.inc at commit 2c6b9650.
 ; This file is the reviewable source asset only: tools/fontpack.py
 ; parses the .db bytes, verifies the exact 2048-byte payload and the
 ; SHA-256 below, and emits build/modules/v9958-6x8.font as ROMFS DATA.
-; The font is the V9958 driver image's bulk segment from package 41;
-; tools/fontpack.py still emits this exact payload for the ROMFS copy the
+; The V9958 driver image carries the font in its bulk segment;
+; tools/fontpack.py emits this exact payload as the ROMFS DATA copy the
+; tests use.
 ;
 ; Layout:
 ;   256 glyphs indexed directly by CP850 byte value

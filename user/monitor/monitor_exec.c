@@ -1,4 +1,4 @@
-/* KonaOS native monitor: the X (execute) command (work package 45b).
+/* KonaOS native monitor: the X (execute) command.
  *
  * X <path> [tail] runs an ordinary EXE from the recovery store through
  * the SDK's synchronous SYS_EXEC wrapper, prints the child's exit status
@@ -7,12 +7,9 @@
  * standard console handles pass to the child unchanged.
  *
  * A card executable works because SYS_EXEC stages the caller's path in
- * the VFS workspace's path view in the fixed core (work package 45b
- * correction 01): before that fix the path sat in bank-7 `_DATA`
- * (`0xC0DD`), inside the `6000h-DFFFh` region a bank-6 provider's window
- * replaces, so the `/fs` provider read the wrong bytes and the bind
- * failed with EINVAL before any FS2 command.  See
- * `docs/validation/2026-10-11-m10-hardware-acceptance-correction-01.md`.
+ * the VFS workspace's path view in the fixed core: a path in the cold
+ * half would be hidden behind the bank-6 window the `/fs` provider runs
+ * in (the buffer rule, architecture 4.2).
  *
  * The tail travels to the child byte-exact (the child splits it; see
  * docs/exe-format.md section 6.1), which is how the `stage` option reaches

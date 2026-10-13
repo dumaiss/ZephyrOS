@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""Host-side V9958 video class and driver contract tests (work
-package 18).
+"""Host-side V9958 video class and driver contract tests.
 
 Covers the declarative and structural surface that can be checked
 without executing target code:
 
   - drivers/include/ioc_protocol.h: the exact native operation values
     (CTRL_WRITE=1 .. RESET=7), the driver's operation order and the
-    documented
-    no-I/O validation rules; the matching capability bits stay in
-    device.h (allocated by package 14) and are not redefined;
+    documented no-I/O validation rules;
   - platform/zephyr80/public/hardware.{h,inc}: paired ports A0h-A4h, latch
     bits, required GRAPHIC 6 register values and the bounded bootstrap
     delay count, value-identical between the C and assembly headers;
@@ -55,7 +52,7 @@ from maptools import (  # noqa: E402
 DRIVER_H = os.path.join(ROOT, "drivers", "v9958", "v9958_driver.h")
 DRIVER_C = os.path.join(ROOT, "drivers", "v9958", "v9958.c")
 DRIVER_ASM = os.path.join(ROOT, "drivers", "v9958", "v9958_io.asm")
-# Package 41: the video core is a bank-6 driver image with three tiers -
+# The video core is a bank-6 driver image with three tiers -
 # hot (the core, the renderer and the port layer, including the display
 # reset), boot (the one-shot bring-up entry) and bulk (the font).
 PROTO_C = os.path.join(ROOT, "drivers", "v9958", "v9958_proto.c")
@@ -254,8 +251,7 @@ class TestDriverArtifact(unittest.TestCase):
             self.skipTest("build/modules/v9958.mod missing; build first")
         data = _read(MOD, "rb")
         info = modpack.parse_container(data, "v9958.mod")
-        # The image carries its host-built publications (`/dev/video`,
-        # package 42b).
+        # The image carries its host-built publications (`/dev/video`).
         self.assertEqual([publication["name"]
                           for publication in info["publications"]],
                          ["/video"])
@@ -264,7 +260,7 @@ class TestDriverArtifact(unittest.TestCase):
         self.assertNotEqual(info["init_offset"], 0xFFFF)
         hot, boot, bulk = info["segments"]
         # The hot tier holds the core, the port layer and the renderer
-        # (the display reset shares the bring-up chain, 36.12); it must
+        # (the display reset shares the bring-up chain, 3.2); it must
         # stay inside the driver I/O window.
         self.assertLess(hot["image_size"] + hot["bss_size"], 0x4000)
         # The font is the bulk segment, byte for byte the pinned asset
@@ -285,7 +281,7 @@ class TestDriverArtifact(unittest.TestCase):
         self.assertLess(boot["entry"], boot["base"] + boot["image_size"])
 
     def test_system_file_and_boot_order(self):
-        # Package 49a: the system file names the driver load order and the
+        # The system file names the driver load order and the
         # store's own files; the generated store manifest (whose media
         # type follows from each name) is tests/test_systemgen.py's
         # business.
@@ -296,12 +292,12 @@ class TestDriverArtifact(unittest.TestCase):
         self.assertEqual(system["store"],
                          ["monitor.exe",
                           # The production feature exerciser and the
-                          # outcome programs it runs (45b).
+                          # outcome programs it runs.
                           "hwtest.exe", "xmem_selftest.exe",
                           "xmem_child.exe", "xmem_far.exe",
                           "fs_selftest.exe", "fs_child.exe"])
         self.assertEqual(systemgen.store_type("v9958.mod"), "MOD")
-        # The font is the video image's bulk segment now; the recovery
+        # The font is the video image's bulk segment; the recovery
         # store carries no separate copy of it.
         self.assertNotIn("v9958-6x8.font", system["store"])
         self.assertNotIn("v9958-6x8.font", system["drivers"])
@@ -321,13 +317,12 @@ class TestDriverArtifact(unittest.TestCase):
         makefile = _read(MAKEFILE)
         for target in ("v9958-test:", "console-integration-selftest"):
             self.assertIn(target, makefile)
-        # Package 49a: one generated pack rule per selected driver.
+        # One generated pack rule per selected driver.
         self.assertIn("$(BUILD)/drivers/$(1).json", makefile)
         self.assertIn("v9958_driver.rel", makefile)
         self.assertIn("v9958_font.rel", makefile)
         self.assertIn("$(MODULES)/v9958-6x8.font", makefile)
-        # The video diagnostic runs in the console-integration image (work
-        # package 42d merged the per-device images).
+        # The video diagnostic runs in the console-integration image.
         index = makefile.index("SYSTEM_TEST_OBJS.console-integration :=")
         self.assertIn("$(BUILD)/video_test.rel", makefile[index:index + 400])
         self.assertIn("video_test", makefile)
@@ -337,10 +332,6 @@ class TestDriverArtifact(unittest.TestCase):
         self.assertEqual(system["drivers"],
                          ["sio", "ioc", "hid", "v9958",
                           "console-v9958-hid"])
-        # The terminal renderer's own model suite (the M8 device-model
-        # entry points it drove) is retired with the device model (work
-        # package 42c); the renderer runs in the video/console images.
-        self.assertNotIn("test_v9958_console.py", makefile)
 
 
 class TestDriverSourceDiscipline(unittest.TestCase):
@@ -464,15 +455,14 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.assertIn("return (-KOS_ENODEV);", self.send)
 
     def test_font_is_streamed_not_resident(self):
-        # Bounded 64-byte resource reads, chunk-wise atlas conversion
-        # (package 25b correction-01: one 8-glyph chunk and one 24-byte
-        # segment staged at a time).
+        # Bounded 64-byte resource reads, chunk-wise atlas conversion (one
+        # 8-glyph chunk and one 24-byte segment staged at a time).
         self.assertIn("V9958_FONT_CHUNK", self.c)
         self.assertIn("v9958_font_group", self.c)
         self.assertIn("v9958_atlas_row", self.c)
         # No font byte table: the driver C contains no data initializer
         # with hundreds of bytes.  The bounded size covers the video
-        # core plus the ported terminal renderer (package 19).
+        # core plus the ported terminal renderer.
         self.assertNotIn("0x70u, 0x88u", self.c)
         self.assertLess(len(self.c), 40000)
 

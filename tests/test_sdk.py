@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""User SDK acceptance tests (work package 28c-m9-user-sdk).
+"""User SDK acceptance tests.
 
 The SDK is the only way a native EXE is built: `user/sdk/` provides crt0,
 libkos and klibc, `user/sdk/exe.mk` provides the one-line `exe_program`
@@ -52,7 +52,7 @@ SDK_DIR = "user/sdk"
 SDK_SRC = os.path.join(SDK_DIR, "src")
 SDK_INCLUDE = os.path.join(SDK_DIR, "include")
 EXE_MK = os.path.join(SDK_DIR, "exe.mk")
-# The generic exe_program rule (work package 49c): the in-tree exe.mk is
+# The generic exe_program rule: the in-tree exe.mk is
 # a thin wrapper that sets the in-tree roots and includes this file.
 RULE_MK = os.path.join("mk", "kos.mk")
 
@@ -197,8 +197,8 @@ def _program_options(options, key):
 
 
 def _far_sources(options):
-    """Every far source of a program: the FAR1=..FAR4= lists (package
-    49b; FAR= is gone), colon-separated like the rule's specs."""
+    """Every far source of a program: the FAR1=..FAR4= lists,
+    colon-separated like the rule's specs."""
     sources = []
     for n in ("1", "2", "3", "4"):
         for value in _program_options(options, "FAR" + n):
@@ -351,7 +351,7 @@ class TestHelloExe(unittest.TestCase):
 
     def test_no_exe_manifest_is_checked_in(self):
         """Every EXE manifest is generated, and so is the ROMFS store
-        manifest (work package 49a): an image's store is described by its
+        manifest: an image's store is described by its
         systems/<name>.json and nothing else."""
         checked_in = []
         for base in ("tests/target", "user/monitor", "user/helloworld"):
@@ -362,7 +362,7 @@ class TestHelloExe(unittest.TestCase):
                         checked_in.append(
                             os.path.join(dirpath, filename)
                             .replace(ROOT + os.sep, "").replace(os.sep, "/"))
-        # tests/target/ipc/manifests/*.json are the work-package-39 driver
+        # tests/target/ipc/manifests/*.json are the synthetic driver
         # manifests (acceptance images only), not EXE manifests.
         checked_in = [path for path in checked_in
                       if not path.startswith(
@@ -386,12 +386,12 @@ class TestSdkBoundary(unittest.TestCase):
         # and `xmem_child` are the extended-memory outcome programs
         # (KOS_XMEM_SELFTEST); `escc` is the
         # ESC c display-reset check the console integration image boots
-        # (work package 42e); `exe2probe`, `exe2seg` and `exe2big` are the
+        #; `exe2probe`, `exe2seg` and `exe2big` are the
         # EXE v2 loader-outcome programs the subsystem process selftest
-        # runs (work package 44a); `fardemo` is the SDK far-code demo and
-        # `xmem_far` the far-code outcome program (work package 44b);
+        # runs; `fardemo` is the SDK far-code demo and
+        # `xmem_far` the far-code outcome program;
         # `hwtest` is the production store's feature exerciser and the
-        # runner of those outcome programs (work package 45b).
+        # runner of those outcome programs.
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "escc", "exe2big", "exe2probe",
                           "exe2seg", "exetest", "far_data", "fardemo",
@@ -423,7 +423,7 @@ class TestSdkBoundary(unittest.TestCase):
             roots = [os.path.join(ROOT, directory)]
             roots += [os.path.join(ROOT, r) for r in PROGRAM_INCLUDE_ROOTS]
             roots += [os.path.join(ROOT, r) for r in extra]
-            # The far-code sources (FAR1=..FAR4=, package 49b) are
+            # The far-code sources (FAR1=..FAR4=) are
             # program sources too and see exactly the same include
             # surface.
             for source in _far_sources(options):
@@ -466,8 +466,7 @@ class TestSdkBoundary(unittest.TestCase):
                    if _program_options(options, "NO_CRT0")]
         # `ipccopy` is the caller-buffer probe, which links without the C
         # startup so that CODEBASE= can lift its code above the
-        # 0100h-02FFh buffer it names as a caller buffer (work package 39
-        # correction 01).
+        # 0100h-02FFh buffer it names as a caller buffer.
         self.assertEqual(sorted(no_crt0), ["ipccopy"])
         for name, _d, _s, options in _declared_programs():
             if _program_options(options, "NO_CRT0"):
@@ -475,7 +474,7 @@ class TestSdkBoundary(unittest.TestCase):
                                 "%s owns an entry" % name)
 
     def test_far_programs_declare_their_sources_and_areas(self):
-        """The FAR1=..FAR4= options (package 49b) name the far sources of
+        """The FAR1=..FAR4= options name the far sources of
         segment n; the rule compiles each with bank n and --codeseg FAR<n>
         (bank first, so the module lands in `_FAR<n>` and every `__banked`
         definition emits `b_<fn> = n`), bases every `_FAR<n>` at 8000h, and
@@ -511,7 +510,7 @@ class TestSdkBoundary(unittest.TestCase):
                     "%s must take its bank from the rule" % source)
         # The segment rows each program declares exist where the packer
         # resolves them: the rule's generated declaration (one row per
-        # option used, packages 44b/49d) for fardemo, fardata and the
+        # option used) for fardemo, fardata and the
         # far-data outcome program, and the checked-in lists for the
         # xmem program's two far segments and the bank-exhaustion
         # container.

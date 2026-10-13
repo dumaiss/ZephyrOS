@@ -1,4 +1,4 @@
-/* KonaOS M7 native monitor: I/O port commands (I/O).
+/* KonaOS native monitor: I/O port commands (I/O).
  *
  * Ports 00h-0Fh alias the banking latch on Zephyr-80 and are rejected by
  * both this program and SYS_DIAG_IO_IN/OUT; the monitor reports them as

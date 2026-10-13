@@ -1,11 +1,11 @@
-/* KonaOS versioned driver protocols (public native ABI, M10 stage 4).
+/* KonaOS versioned driver protocols (public native ABI).
  *
  * A resident driver exports endpoints; a client reaches one with the IPC
- * envelope of abi/kos/ipc.h (lookup, call, the fixed 32-byte frame and
- * one optional buffer descriptor per call).  This header is layer 3 of
- * the M10 ABI (architecture 36.14): the operation numbers, the frame
- * word and payload layouts and the descriptor conventions of the five
- * device-facing drivers that package 41 moves into bank 6:
+ * envelope of abi/kos/ipc.h (a bound handle, call, the fixed 32-byte
+ * frame and one optional buffer descriptor per call).  This header is
+ * layer 3 of the ABI (architecture 6.1): the operation numbers, the frame
+ * word and payload layouts and the descriptor conventions of the
+ * device-facing drivers:
  *
  *   console   class 6, instance 0: buffered WRITE, READ, GETC, POLL
  *   HID       class 4, instance 0: translated text input
@@ -16,15 +16,14 @@
  *                                  lanes and the semantic status word
  *
  * The FILE protocol (type KOS_TYPE_FILE) and the filesystem-namespace
- * protocol (type KOS_TYPE_FS) are the file language of M10: the ROMFS
+ * protocol (type KOS_TYPE_FS) are the file language: the ROMFS
  * provider serves `/system`, the build's filesystem driver (IOC-FAT)
  * serves `/fs`, and both answer through the same operation numbers
- * (package 42b).
+ *.
  *
  * Every driver carries protocol version KOS_PROTOCOL_VERSION (the
- * endpoint's registered version).  Classes keep the numeric slots the
- * M8 device contracts pinned (1-5); class 6 is the console driver,
- * which is not a device class.
+ * endpoint's registered version).  Classes 1-5 are the device classes;
+ * class 6 is the console driver, which is not a device class.
  *
  * Frame conventions (struct kos_ipc_frame, abi/kos/ipc.h):
  *
@@ -44,17 +43,17 @@
  * inside it and `arg1` the transfer length; READ-style operations name
  * the same fields with the buffer as the destination.  A descriptor
  * belongs to the call that captured it and may be passed down a call
- * chain (36.8); the operations that copy are bounds-checked by the
+ * chain (4.9); the operations that copy are bounds-checked by the
  * nucleus on every use, so a driver never names a caller address.
  *
- * Hot paths are batched by design (36.7): one WRITE moves a whole
+ * Hot paths are batched by design (4.9): one WRITE moves a whole
  * transfer through the console and its output driver in one call, and
  * the IOC command exchange carries a whole request and returns the whole
  * reply in one call.
  *
  * Driver-to-driver data movement: drivers pass the *driver-domain*
  * address of a buffer they own in a reply, and the receiving driver
- * stages the bytes with the nucleus `move` primitive (36.8).  This is
+ * stages the bytes with the nucleus `move` primitive (4.9).  This is
  * the documented convention of the resident driver domain; application
  * buffers are never named this way.
  */
@@ -83,8 +82,8 @@
 /* --- console driver (class KOS_CLASS_CONSOLE) ---------------------------
  *
  * The console composes the boot's input and output drivers (HID or SIO
- * input, V9958 or SIO output) behind one endpoint, exactly as the M8
- * console binding did.  It is the endpoint the SDK console stubs and the
+ * input, V9958 or SIO output, chosen by the build) behind one endpoint.
+ * It is the endpoint the SDK console stubs and the
  * monitor use; the early console and the panic path do not depend on it.
  *
  *   KCONSOLE_OP_WRITE (0)  desc IN: arg0 = offset, arg1 = length.
@@ -119,10 +118,9 @@
  *                          delivered one, else 0.
  *   KHID_OP_GETC      (2)  returns one byte (0..255) or -KOS_EAGAIN.
  *   KHID_OP_READY     (3)  returns 1 when the engine's IOC dependency is
- *                          present and its link is up, else 0.  The
- *                          console composes its input at boot from this
- *                          probe, the role the device registry's
- *                          registration presence played before M10.
+ *                          present and its link is up, else 0.  It is a
+ *                          status report: the console is chosen by the
+ *                          build and does not probe it.
  */
 #define KHID_OP_READ_TEXT 0u
 #define KHID_OP_POLL      1u
@@ -239,17 +237,14 @@
  *   KIOC_OP_READY       (5)  returns 1 when the link is brought up and
  *                            no recovery is pending, else 0.  The
  *                            driver's init runs the bounded LINK_SYNC
- *                            bring-up once; the HID driver probes this
- *                            to decide whether its engine is usable (and
- *                            the console then falls back to SIO), which
- *                            is the role the IOC device registration
- *                            presence played before M10.
+ *                            bring-up once; the HID driver reports this
+ *                            through KHID_OP_READY.
  *
  * The staged form (no descriptor) is the resident-domain convention:
  * the reply's payload names the driver buffer, and a driver client
- * stages with `move`.  The module path (the arena IOC-FAT provider
- * until package 42) reaches the same buffers through the nucleus copy
- * gate because a bank-7 caller cannot hold a descriptor: it reads the
+ * stages with `move`.  A nucleus (bank-7) caller reaches the same
+ * buffers through the nucleus copy gate because it cannot hold a
+ * descriptor: it reads the
  * reply frame and the bulk payload out of the addresses the replies
  * name, places bulk-write bytes there, and then commits them with the
  * descriptor-less KIOC_OP_BULK_WRITE.
@@ -271,7 +266,7 @@
 
 /* --- FILE protocol (type KOS_TYPE_FILE) --------------------------------
  *
- * The filesystem object protocol (architecture 36.13-36.14, the file
+ * The filesystem object protocol (architecture 4.10 and 6.2, the file
  * language): `bind(path, flags)` yields a FILE handle and the operations
  * below act on the bound instance - the ROMFS provider in process for
  * `/system`, the selected filesystem driver for `/fs`.
@@ -310,7 +305,7 @@
  * `bind(path, 0)` on a provider root - `bind("/fs", 0)` or
  * `bind("/system", 0)` - yields a filesystem-namespace handle: the
  * caller's key to the name operations that act on paths rather than on an
- * open file (architecture 36.13).  `mkdir`, `rmdir`, `unlink`, `rename`
+ * open file (architecture 4.10).  `mkdir`, `rmdir`, `unlink`, `rename`
  * and `stat` in `fs.h` build on it; there is no DIRECTORY handle and no
  * universal directory protocol.
  *
@@ -349,7 +344,7 @@
  *                      up to that many `struct kos_ns_entry` records,
  *                      replies the next cookie in payload[2..3], returns
  *                      the entry count, and is what `ns_enum` below
- *                      `/fs` runs (architecture 36.13).
+ *                      `/fs` runs (architecture 4.10).
  */
 #define KFS_OP_MKDIR  8u
 #define KFS_OP_RMDIR  9u

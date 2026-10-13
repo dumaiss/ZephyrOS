@@ -1,4 +1,4 @@
-/* KonaOS M7 native monitor: startup, command input, info/help
+/* KonaOS native monitor: startup, command input, info/help
  * commands, dispatch loop.
  *
  * See monitor.h for the command surface.  The monitor resolves its own

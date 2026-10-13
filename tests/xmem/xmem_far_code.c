@@ -1,16 +1,16 @@
-/* KonaOS far-code outcome program (work packages 44b/49b): the far half
+/* KonaOS far-code outcome program: the far half
  * of segment 1.
  *
  * Built with bank 1 and `--codeseg FAR1` through the SDK's FAR1= option
  * and linked at 8000h, so this module - its code and its string literals -
  * becomes the `_FAR1` area the container loads into the aperture slice of
  * an auxiliary bank.  The primary half maps the segment and calls
- * `xmem_far_entry` with `farcall` (the 44b primitive: an OUT with the
+ * `xmem_far_entry` with `farcall` (the primitive: an OUT with the
  * aperture token, then a plain CALL to the entry's linked address), and
  * calls the `__banked` entries below as plain C, through the SDK's
- * trampoline (work package 49b).
+ * trampoline.
  *
- * The entry proves the far-code rules of architecture 36.17 from inside:
+ * The entry proves the far-code rules of architecture 7.2 from inside:
  *
  *   * it reads its own banking latch - the aperture is open, so P is the
  *     segment's page (7 - bank);
@@ -19,7 +19,7 @@
  *   * it calls primary code directly (the linker resolves the call);
  *   * it runs syscalls whose buffers lie in the far bank: a console write
  *     of the far-area literal and an xmem write of the same bytes (the
- *     buffer-identity rule, 36.8);
+ *     buffer-identity rule, 4.9);
  *   * it execs /system/xmem_child.exe from far context, with both the
  *     path and the command tail in the far area - the child starts with
  *     P = 0 and this process's latch comes back exactly;
@@ -84,7 +84,7 @@ int xmem_far_exit(int status, int unused)
 	return -1;
 }
 
-/* The banked entries (package 49b).  Each is `__banked`, so this module -
+/* The banked entries.  Each is `__banked`, so this module -
  * compiled with bank 1 - emits `b_xmem_bk_* = 1` and the caller's plain C
  * call goes through ___sdcc_bcall_ehl, which maps segment 1 and restores
  * the caller's latch.  Together they pin the calling convention: 0, 1, 2

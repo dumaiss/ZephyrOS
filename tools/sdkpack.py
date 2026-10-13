@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble the standalone KonaOS SDK tree (work package 49c).
+"""Assemble the standalone KonaOS SDK tree.
 
 `make sdk` runs this tool; it lays out
 

@@ -1,7 +1,7 @@
 /* KonaOS namespace acceptance: the nested-exec child (test artifact).
  *
  * SYS_EXEC starts it from /system/nschild.exe while the parent holds bound
- * handles.  Its job is the inheritance rule of architecture 36.13: a child
+ * handles.  Its job is the inheritance rule of architecture 4.10: a child
  * gets *new* entries for the two standard handles and nothing else, so its
  * own numbering starts at KOS_HANDLE_FIRST_BOUND and a handle number the
  * parent still uses is meaningless here.  It also checks the CWD half of
@@ -29,7 +29,7 @@ int main(int argc, char **argv)
 
 	console_puts("nschild: stdout ok\r\n");
 
-	/* The child inherits the parent's CWD (36.13), and its own `chdir`
+	/* The child inherits the parent's CWD (4.10), and its own `chdir`
 	 * goes to its own CWD slot. */
 	result = getcwd(cwd, sizeof(cwd));
 	if (result != 4 || strcmp(cwd, "/dev") != 0) {

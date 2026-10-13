@@ -3,7 +3,7 @@
  * The substrate itself is fixed-core code: the endpoint table, the call
  * machinery, the descriptor table, the copy resolvers and the IRQ
  * trampoline all execute, and are touched, while the window shows bank 6
- * (architecture 36.5).  This header declares only what the cold side
+ * (architecture 4.2).  This header declares only what the cold side
  * (the syscall bodies) and the fixed assembly primitives expose.
  *
  * Cold callers run with the P-normalizing syscall gate's saved latch in
@@ -27,7 +27,7 @@
  * resolve caller addresses against it. */
 uint8_t ipc_gate_latch(void);
 
-/* One host-built endpoint record (architecture 36.11), read from a
+/* One host-built endpoint record (architecture 5.3), read from a
  * resident driver container by the loader and installed verbatim.  The
  * nucleus validates the entry against the driver window and the number
  * against its table. */
@@ -50,7 +50,7 @@ int8_t ipc_install_endpoint(const struct ipc_endpoint_record *record);
 /* The fixed-core dependency array the boot bundle names: the loader
  * installs the resolved endpoint numbers of the image whose init it is
  * about to run, one byte per declared dependency in manifest order, and
- * zeros the unused tail (architecture 36.11).  Fixed data, so the driver's
+ * zeros the unused tail (architecture 5.3).  Fixed data, so the driver's
  * window always shows it. */
 extern uint8_t kos_driver_deps[KOS_IPC_DRIVER_MAX_DEPS];
 
@@ -59,7 +59,7 @@ const struct driver_boot *driver_boot(void);
 
 /* --- in-process (nucleus) endpoints ------------------------------------
  *
- * Architecture 36.13: a namespace provider the nucleus serves itself -
+ * Architecture 4.10: a namespace provider the nucleus serves itself -
  * the ROMFS FILE provider - exports an endpoint like any other; its
  * dispatch entry is a bank-7 function address and the call runs in place.
  * The flag bit is nucleus-internal and never comes from a host record. */
@@ -109,7 +109,7 @@ void ipc_desc_release(void);
  * and no syscall gate): the boot console probe.  No descriptor is issued -
  * only the syscall gate's latch names a caller buffer - so a caller that
  * has to move bytes uses ipc_nucleus_call_common() or the staged form
- * plus the common copy gate (architecture 36.8).  `frame` is the caller's
+ * plus the common copy gate (architecture 4.9).  `frame` is the caller's
  * own 32-byte copy; the reply lands back in it. */
 int16_t ipc_nucleus_call(uint8_t handle, struct kos_ipc_frame *frame);
 

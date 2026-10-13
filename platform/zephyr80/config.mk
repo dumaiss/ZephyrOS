@@ -10,7 +10,7 @@
 KOS_PLATFORM     := zephyr80
 KOS_PLATFORM_DIR := platform/zephyr80
 
-# Bank-7 residency budget (work package 25b).  Kernel and resident-module
+# Bank-7 residency budget.  Kernel and resident-module
 # C code is compiled for size: the kernel executive, the ROMFS/VFS core and
 # every boot MOD share the single 2000h-DEFFh bank, so the size preference
 # and a raised register-allocation budget buy back bytes.  User programs and
@@ -21,8 +21,7 @@ KOS_SDCC_OPT := --opt-code-size --max-allocs-per-node 50000
 # including Makefile (the generated catalog headers live there).  abi/
 # holds the public native ABI headers (abi/kos/...) shared by the kernel,
 # modules and native user programs; kernel and module code includes them
-# as "kos/..." (work/28c-m9-user-sdk/WORK.md).  Package 46 T3 split the
-# audience roots: the nucleus set below plus `-I .` for the kernel/<part>
+# as "kos/...".  Each audience has its own roots: the nucleus set below plus `-I .` for the kernel/<part>
 # private interfaces (the top-level Makefile's CFLAGS), and the driver
 # set of DRV_CFLAGS/MOD_CFLAGS, which never gets `.`.
 KOS_PLATFORM_CFLAGS  = -I abi -I kernel/include -I drivers/include \

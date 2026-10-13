@@ -52,7 +52,7 @@
 
 /* The complete frozen set of request classes that can arm the bulk lane.
  * Six arm a MCU-to-Z80 transfer (CMD_BULK_TEST is the diagnostic loopback
- * pattern, read only); four arm a Z80-to-MCU transfer.  M8 acceptance must
+ * pattern, read only); four arm a Z80-to-MCU transfer.  Acceptance must
  * not invoke the diagnostic classes' raw/destructive paths; the classes
  * stay recognized because the pinned firmware can arm the lane with them. */
 #define IOC_CMD_BULK_TEST       0x04u

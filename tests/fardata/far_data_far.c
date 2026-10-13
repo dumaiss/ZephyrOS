@@ -1,4 +1,4 @@
-/* KonaOS far-data replay fixtures (work package 49d): the FAR1 source.
+/* KonaOS far-data replay fixtures: the FAR1 source.
  *
  * Compiled through the exe_program `FAR1=` option (bank 1, area `_FAR1`,
  * linked at 8000h), so this module is the container's first row, a

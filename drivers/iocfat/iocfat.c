@@ -1,21 +1,21 @@
-/* KonaOS IOC-FAT resident filesystem driver (packages 30, 42b).
+/* KonaOS IOC-FAT resident filesystem driver.
  *
- * The deployed MCU FatFs FS2 driver behind the M10 file language
- * (architecture 36.13): this driver implements the FILE protocol
+ * The deployed MCU FatFs FS2 driver behind the file language
+ * (architecture 4.10): this driver implements the FILE protocol
  * (`bind`/`call`/`unbind` on `/fs/...`) and the filesystem-namespace
  * protocol (`stat`, `mkdir`, `rmdir`, `unlink`, `rename`, enumeration) of
  * the `/fs` root.  The nucleus FS provider routes and forwards; it holds no
  * FAT/FS2 semantics, and this driver owns pathname meaning, file creation,
  * mutation, enumeration and backend state below `/fs`.
  *
- * Placement (architecture 36.6, 36.11): the driver is host-linked at its
+ * Placement (architecture 5.2, 5.3): the driver is host-linked at its
  * final bank-6 addresses and its IOC transport dependency is host-resolved
  * (`depends: [{class: 5, instance: 0}]`), so it never looks a peer up at
  * run time.  Every buffer it names in a copy is `DRIVER_IO`
  * (8000h-BFFFh), and the FS2 cache and the transfer staging live there.
  * Driver-to-driver data movement is direct: the IOC driver's staged reply
  * frame and bulk buffer are bank-6 memory, so one same-domain copy reaches
- * them (36.8).
+ * them (4.9).
  *
  * Ownership and limits:
  *   - two file handles and one directory handle, matching the CAPS v1 slot
@@ -144,7 +144,7 @@
 #define FS2_OFF_DONE_STATUS 1u
 #define FS2_DONE_MIN_DATA   2u
 
-/* CAPS v1 required values (work/M9-REFERENCE.md). */
+/* CAPS v1 required values. */
 #define FS2_CAP_VERSION        1u
 #define FS2_CAP_STATUS_VERSION 1u
 #define FS2_CAP_TOKEN_BYTES    2u
@@ -295,7 +295,7 @@ static uint16_t iocfat_addr(const uint8_t *payload)
 
 /* One command exchange with the resident IOC driver.  The request travels
  * in the 32-byte protocol frame; the reply frame the driver staged is
- * bank-6 memory this driver reaches directly (one same-domain copy, 36.8).
+ * bank-6 memory this driver reaches directly (one same-domain copy, 4.9).
  * Returns 0 or a negative transport error; the reply is left in
  * `iocfat_reply`. */
 static int iocfat_exchange(uint8_t type, uint8_t length)
@@ -1698,7 +1698,7 @@ uint8_t iocfat_init(const struct driver_boot *boot)
 	if (iocfat_ioc == 0u) {
 		/* A malformed bundle: the required IOC dependency is
 		 * missing, so the driver cannot serve even an absent card
-		 * (the loader fails the boot, 36.11). */
+		 * (the loader fails the boot, 5.3). */
 		return 1u;
 	}
 

@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS resident-driver boot gate (architecture 36.6, work package 40).
+; KonaOS resident-driver boot gate (architecture 5.2).
 ;
 ; A driver's boot segment lives in bank 6's boot/bulk tier
 ; (0000h-5FFFh), which the mode-11 window can never show, so the nucleus

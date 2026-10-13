@@ -1,4 +1,4 @@
-/* KonaOS IOC acceptance selftest contract (test artifact, package 41).
+/* KonaOS IOC acceptance selftest contract (test artifact).
  *
  * The nucleus-side acceptance runner (tests/target/support/target_test.c,
  * called from kernel/main.c's late boot hook) calls

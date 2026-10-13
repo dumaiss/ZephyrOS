@@ -1,4 +1,4 @@
-/* KonaOS nucleus-layout acceptance constants (work package 38, test only).
+/* KonaOS nucleus-layout acceptance constants (test only).
  *
  * Values mirror tests/target/include/nucleus_entry.inc (the assembly view
  * used by tests/target/nucleus/nucleus_entry.asm); the host parity test

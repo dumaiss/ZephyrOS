@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""IPC substrate acceptance replay (work packages 39 and 42d).
+"""IPC substrate acceptance replay.
 
 Boots build-ipc-selftest/konaos-ipc-selftest.bin -- the production boot
 path with the fixed-core IPC substrate linked in, the six synthetic
@@ -7,9 +7,9 @@ resident drivers placed in bank 6 by the cold loader, and the SDK client
 program booting as /system/ipc.exe -- once, and asserts the outcomes of
 that one run:
 
-* the promoted package-35 conformance suite runs from the client and
+* the IPC conformance suite runs from the client and
   reports PASS (>= 49 checks), and the caller-buffer probe that boots the
-  client reports PASS for its twelve-case matrix (correction 01);
+  client reports PASS for its twelve-case matrix;
 * every phase of both programs marks its boundary on the wire in a/b/c
   order: the lower-case codes are the client's measurement phases, the
   upper-case ones the probe's copy cases;
@@ -28,17 +28,13 @@ that one run:
   clear), so the copy gate's aperture window was closed by the code that
   opened it.
 
-Work package 42d: this replay used to carry a per-instruction tracer
-(T-state spans, the latch-write save/restore tree, LDIR and syscall
-censuses, injection framing) and ran for about 17 minutes.  Every path it
-attributed from the outside is checked from the inside by the two
-programs the image runs - the client and the probe each verify the paths
-they take and print one verdict - so the replay now asserts those
-verdicts, the phase markers, the resolver's own counters and the machine
-state the run leaves behind; it boots the image once and finishes in
-seconds.  The per-case T-state baselines and the latch/IRQ analyses live
-in the package-42b and package-42e records; regenerate them with a tracer
-if the copy paths themselves change.
+Every copy path is checked from the inside by the two programs the image
+runs - the client and the probe each verify the paths they take and print
+one verdict - so the replay asserts those verdicts, the phase markers,
+the resolver's own counters and the machine state the run leaves behind;
+it boots the image once and finishes in seconds.  Per-case T-state
+baselines need a per-instruction tracer; regenerate them with one if the
+copy paths themselves change.
 
 Skipped when the image has not been built.
 """
@@ -75,7 +71,7 @@ CTC0_PORT = 0x40
 CTC0_CONTROL = 0xA7
 CTC0_TIME_CONSTANT = 0x00
 CTC0_VECTOR = 0x00
-# Correction 01: the irqx copy op arms the same channel on a short time
+# The irqx copy op arms the same channel on a short time
 # constant, so the modelled delivery lands inside the path-B aperture
 # window instead of between copies.  The stand-in keys on the constant,
 # which is the one writable value that separates the two profiles.
@@ -85,7 +81,7 @@ PAGE_ONE = 0x20
 
 # The resident driver domain: bank 6 in the mode-11 window, with the hot
 # tier (6000h-DFFFh) and the DRIVER_IO blocks (8000h-BFFFh) inside it
-# (architecture 36.6, correction 01 to 36.8).
+# (architecture 5.2 and 4.9).
 DOMAIN_BASE = 0x6000
 DOMAIN_END = 0xE000
 
@@ -109,7 +105,7 @@ PHASES = {
     "f": "fsread-baseline",
 }
 
-# The caller-buffer probe's phases (correction 01): code, case name, the
+# The caller-buffer probe's phases: code, case name, the
 # caller buffer it names, and the copy path the correction requires.
 # "window" is path A (one mode-11 LDIR), "aperture" is path B (one LDIR
 # with the mode-10 aperture open), "slow" is path C (the chunked copy
@@ -135,13 +131,13 @@ PROBE_SLOW_BYTES = 16
 
 # Counter symbols the probe's cases are attributed by (kernel/ipc/ipc.c,
 # linked with the compiler's underscore): one per resolver outcome, so the
-# attribution survives as an outcome even though the replay no longer
-# follows every instruction.
+# attribution survives as an outcome even though the replay does not
+# follow every instruction.
 COPY_COUNTERS = ("_ipc_copy_window", "_ipc_copy_aperture", "_ipc_copy_slow")
 
 COUNT_RE = re.compile(rb"ipc: (\d+)/(\d+) checks\r\n")
 # The client marks its phases with lower-case codes; the caller-buffer
-# probe (correction 01) marks its cases with upper-case ones, so one
+# probe marks its cases with upper-case ones, so one
 # expression reads both transcripts.
 MARK_RE = re.compile(rb"ipc: ([A-Za-z])([abc])\r\n")
 
@@ -155,7 +151,7 @@ class IpcCtc0:
     The kernel programs the channel through port 40h; the stand-in
     delivers vector 00h where each profile expects it.  The standard
     period lands while the driver domain is resident (the delivery an
-    in-progress call must survive); correction 01's short period lands
+    in-progress call must survive); the copy op's short period lands
     inside the next mode-10 aperture window the copy gate opens, which is
     the interrupted-copy case.  The deliveries are inputs - the client
     and the probe assert their effects - so they stay in the replay.
@@ -412,10 +408,10 @@ class TestIpcOutcomes(IpcSim):
 
 
 class TestIpcDriverImages(IpcSim):
-    """The resident driver images (work package 40).
+    """The resident driver images.
 
     The loader's own report is pinned against the packer's plan: the same
-    tier policy, the same bases, the two architecture-36.20 ledgers and
+    tier policy, the same bases, the two architecture-9 ledgers and
     the boot tier's one-shot evidence, read back out of bank 6.  The
     driver images cover their own copy internals; other images never
     load six like this.

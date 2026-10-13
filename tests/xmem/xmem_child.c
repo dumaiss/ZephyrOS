@@ -1,4 +1,4 @@
-/* KonaOS extended-memory outcome acceptance (work packages 43/44b): the
+/* KonaOS extended-memory outcome acceptance: the
  * nested-exec child.
  *
  * SYS_EXEC starts it twice: from /system/xmem_selftest.exe while that
@@ -7,14 +7,14 @@
  * proves what the exec'ing process cannot, from its own side:
  *
  *   * the child starts in mode 10 with page 0 (exec starts every child
- *     with P = 0, architecture 36.17) - it reads the banking latch itself,
+ *     with P = 0, architecture 7.2) - it reads the banking latch itself,
  *     and the simulator and the hardware are the authority;
  *   * `8000h-BFFFh` is its own bank, not the parent's aperture: it writes
  *     markers there, and the parent checks afterwards that its mapped
  *     objects still hold their own bytes;
  *   * a child inherits none of the parent's objects: every use of the
  *     parent's live handle (passed in the command tail) is refused
- *     (architecture 36.15: a foreign handle is KOS_EINVAL);
+ *     (architecture 4.8: a foreign handle is KOS_EINVAL);
  *   * a child inherits none of the parent's segments either: the
  *     parent's live FAR_CODE segment id (also in the tail) has no
  *     description and no token here, even though the id namespace is

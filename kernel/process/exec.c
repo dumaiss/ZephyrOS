@@ -1,7 +1,7 @@
-/* KonaOS M6/M10 EXE v2 validation and process loading.
+/* KonaOS EXE v2 validation and process loading.
  *
  * process_prepare() is the one loader path: it binds the executable as a
- * FILE object (architecture 36.13: exec binds the path, requires FILE and
+ * FILE object (architecture 4.10: exec binds the path, requires FILE and
  * streams the image through FILE calls), makes one up-front feasibility
  * check from the v2 header (geometry, segment count and slot total,
  * table/payload placement), allocates the lowest free process slot,
@@ -10,7 +10,7 @@
  * of their own auxiliary banks (one far-code segment per bank) - and only
  * then constructs the child's bank: the page-zero RST 30h vector at
  * 0030h, the primary image at 0100h, zero BSS, each segment's payload and
- * zero BSS.  Nothing else is pre-zeroed (36.19): there is no whole-bank
+ * zero BSS.  Nothing else is pre-zeroed (4.8): there is no whole-bank
  * clear and no zeroing of xmem objects.  The kernel launcher and SYS_EXEC
  * both use it; the common launch gate (kernel/process/launch.asm) then
  * enters the child and restores the launcher on exit.
@@ -305,7 +305,7 @@ int exe_validate_segment(const struct exe_segment *segment,
 	    segment->reserved1 != 0u) {
 		return EXE_EXEC_ERR_SEGMENT;
 	}
-	/* Only a DATA row may ask for the aperture (36.20). */
+	/* Only a DATA row may ask for the aperture (9). */
 	if (segment->flags != 0u && segment->kind != EXE_SEG_KIND_DATA) {
 		return EXE_EXEC_ERR_SEGMENT;
 	}
@@ -616,7 +616,7 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	}
 
 	/* The path resolves through the namespace like any other name; exec
-	 * requires a FILE (architecture 36.13).  The handle belongs to the
+	 * requires a FILE (architecture 4.10).  The handle belongs to the
 	 * running process - the launcher's or the parent's - and is
 	 * released before the child is entered.
 	 *
@@ -642,11 +642,11 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	if (file == (struct vfs_handle_entry *)0) {
 		return -KOS_EINVAL;
 	}
-	/* The M6 media gate: an executable under `/system` must be a EXE
-	 * entry, not DATA or a driver image (the M9 provider enforced this
-	 * through its exec flag, which the namespace bind does not carry).
-	 * A filesystem driver's FILE has no such kind and is validated by
-	 * its header alone, exactly like a card executable in M9. */
+	/* The media gate: an executable under `/system` must be an EXE
+	 * entry, not DATA or a driver image.  The namespace bind carries no
+	 * exec flag, so the store's entry kind is checked here.  A
+	 * filesystem driver's FILE has no such kind and is validated by its
+	 * header alone. */
 	if (file->endpoint == VFS_NS_FILE_ENDPOINT &&
 	    file->u.ns.romfs.flags != ROMFS_FLAG_EXE) {
 		exec_close(file, vfs_owner_current());
@@ -664,7 +664,7 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 		exec_close(file, vfs_owner_current());
 		return error;
 	}
-	/* The one up-front feasibility check (36.18): every count and size
+	/* The one up-front feasibility check (6.7): every count and size
 	 * the load needs, before a slot, a bank or a byte changes. */
 	result = exe_validate_header(&exe_pending_header, file_size, &geo);
 	if (result != EXE_EXEC_OK) {
@@ -709,11 +709,11 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	process_table[pid].exit_status = 0;
 
 	/* Place the container's segments before the bank is touched
-	 * (36.18): a refusal is a clean NOSPACE rollback, and a later copy
+	 * (6.7): a refusal is a clean NOSPACE rollback, and a later copy
 	 * failure releases them through process_slot_release() ->
 	 * kos_xmem_release_process().  A DATA segment becomes the child's
 	 * extended-memory object (mappable when the row asks for the
-	 * aperture, 49d); a FAR_CODE segment takes the aperture slice of an
+	 * aperture); a FAR_CODE segment takes the aperture slice of an
 	 * auxiliary bank (its handle stays 0). */
 	error = EXE_EXEC_OK;
 	for (i = 0u; i < exe_pending_header.segment_count; ++i) {
@@ -731,7 +731,7 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 		}
 	}
 
-	/* Construct the child's bank (36.19: only what the ABI requires -
+	/* Construct the child's bank (4.8: only what the ABI requires -
 	 * the page-zero vector, the image, BSS and the startup block; no
 	 * whole-bank clear). */
 	if (error == EXE_EXEC_OK &&

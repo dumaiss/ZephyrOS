@@ -1,6 +1,6 @@
-/* KonaOS M7 diagnostic syscall driver bodies (bank-7 kernel code).
+/* KonaOS diagnostic syscall bodies (bank-7 kernel code).
  *
- * Six recovery/diagnostic drivers behind the unchanged M6 gate:
+ * Six recovery/diagnostic syscalls behind the syscall gate:
  *
  *   28h SYS_DIAG_MEM_READ    {bank, reserved, address}  -> byte in HL
  *   29h SYS_DIAG_MEM_WRITE   {bank, value, address}
@@ -12,7 +12,7 @@
  * The drivers are explicitly recovery facilities: they validate the
  * complete request before any state changes, reject bank 7 for both
  * memory directions, protect the native page zero for writes, reject
- * the latch-aliased ports 00h-0Fh, and transfer through the M6 checked
+ * the latch-aliased ports 00h-0Fh, and transfer through the checked
  * bank-copy gate (exact latch/IFF/SP restoration).  A rejected request
  * leaves the process table, the selected bank, and every device
  * untouched.

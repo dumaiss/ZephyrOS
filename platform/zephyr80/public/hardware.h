@@ -23,7 +23,7 @@
 /* Z80 SIO channel 0, port B: early console */
 #define KOS_SIO0B_DATA              0x22u
 #define KOS_SIO0B_CTRL              0x23u
-/* SIO channel 1: the IOC two-lane transport (M8).  Lane A is the bulk
+/* SIO channel 1: the IOC two-lane transport.  Lane A is the bulk
  * lane; lane B is the command lane. */
 #define KOS_SIO1A_DATA              0x30u
 #define KOS_SIO1A_CTRL              0x31u
@@ -51,7 +51,7 @@
 #define KOS_MODE_APPLICATION        0x10u
 #define KOS_MODE_OS                 0x18u
 
-/* M0 boot-ROM page assignment */
+/* Boot-ROM page assignment */
 #define KOS_BOOT_OS_ROM_PAGE        1
 #define KOS_BOOT_OS_BANK            7
 
@@ -298,7 +298,7 @@
  * disconnected terminal must not hang the kernel forever. */
 #define KOS_SIO_TX_TIMEOUT          0xFFFFu
 
-/* M2 CTC0 interrupt bring-up (physical channel 0 only).  The CTC0 vector
+/* CTC0 interrupt test programming (physical channel 0 only).  The CTC0 vector
  * mapping is declared in irq.h; the bank-7 ISR stack bounds in memory.h. */
 #define KOS_CTC0_CONTROL_TEST       0xA7u
 #define KOS_CTC0_TIME_CONSTANT      0x00u

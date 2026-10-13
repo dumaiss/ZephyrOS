@@ -1,4 +1,4 @@
-/* KonaOS libkos: `xload`, the whole-file loader (work package 49d).
+/* KonaOS libkos: `xload`, the whole-file loader.
  *
  * A program picks a file at run time and wants its bytes as an object it
  * can copy from, or map.  The size comes from `stat` (nothing is guessed
@@ -6,7 +6,7 @@
  *
  *   - a mappable object is read straight into the open aperture: the
  *     provider writes the file into the far bank (the buffer-identity
- *     rule, 36.8), so no byte lands in the program's own window;
+ *     rule, 4.9), so no byte lands in the program's own window;
  *   - a plain object has no address, so it is filled through the 512-byte
  *     SDK buffer and `xwrite`.
  *

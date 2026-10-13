@@ -17,7 +17,7 @@
  * after the porch is enabled, both precolored font atlases uploaded
  * from the reference font, circular page-zero bitmap cleared, sprite
  * cursor initialized, then the display enabled.  The VDP interrupt is
- * never enabled in M8.
+ * never enabled.
  *
  * The terminal is a straight port of the reference's ANSI/VT100-light
  * CONOUT parser and drawing algorithms with the CP/M dispatch table,
@@ -201,8 +201,7 @@ struct v9958_state {
 	uint8_t out_run_row;
 };
 
-/* Internal result convention of the bring-up chain (the value pair the
- * retired module ABI used). */
+/* Internal result convention of the bring-up chain. */
 #define V9958_OK   0
 #define V9958_FAIL (-1)
 

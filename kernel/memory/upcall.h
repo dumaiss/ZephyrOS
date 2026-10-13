@@ -1,4 +1,4 @@
-/* KonaOS kernel-private upcall shim (architecture 36.5).
+/* KonaOS kernel-private upcall shim (architecture 4.2).
  *
  * Cold-half nucleus code that has to call a resident driver does so
  * through this fixed primitive: it saves the exact banking latch, selects
@@ -35,7 +35,7 @@
 #include "kos/errno.h"
 #include "kos/types.h"
 
-/* Window pages the operating system uses (architecture 36.2): the decoder
+/* Window pages the operating system uses (architecture 2.2): the decoder
  * answers 6000h-DFFFh from bank 7 - P, so page 0 is the nucleus's own cold
  * half and page 1 is the resident driver domain in bank 6. */
 #define KOS_UPCALL_PAGE_NUCLEUS 0u

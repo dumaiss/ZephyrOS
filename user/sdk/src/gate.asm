@@ -1,9 +1,8 @@
 ; -----------------------------------------------------------------------------
 ; KonaOS libkos: exit and getinfo gate wrappers.
 ;
-; These two are the syscalls the SDK still marshals itself (the console ones
-; were removed in package 41 - user/sdk/src/console_proto.c speaks the
-; console driver protocol instead).  Converts the private SDCC Z80 calling
+; These two syscalls are marshalled here; console I/O is not a syscall
+; (user/sdk/src/console_proto.c speaks the console driver protocol).  Converts the private SDCC Z80 calling
 ; convention (first 16-bit argument in HL, second in DE; 16-bit return in
 ; DE) to the native register ABI: A = syscall number, HL = argument block,
 ; carry clear with HL = result or carry set with A = errno.  The argument

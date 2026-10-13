@@ -3,7 +3,7 @@
 ;
 ; KonaOS is freestanding (no libsdcc is linked).  The canonical
 ; ___sdcc_call_iy trampoline already lives at the end of _CODE in
-; kernel/irq/code_end.asm (M2 needs it for the IRQ handler table); this
+; kernel/irq/code_end.asm (the IRQ handler table needs it); this
 ; file adds the matching ___sdcc_call_hl variant in case the code
 ; generator selects it for a call pattern, plus the ___sdcc_enter_ix
 ; frame-setup helper the z80 code generator factors out when compiling

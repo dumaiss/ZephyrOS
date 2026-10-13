@@ -1,11 +1,11 @@
-/* KonaOS IOC resident driver (work package 41).
+/* KonaOS IOC resident driver.
  *
- * The M8 `ioc` transport as a bank-6 driver image: the command/reply
+ * The IOC transport as a bank-6 driver image: the command/reply
  * lane (SIO1/B) and the bulk lane (SIO1/A) behind the IOC protocol of
  * abi/kos/protocol.h (class KOS_CLASS_IOC, instance 0, version
  * KOS_PROTOCOL_VERSION).
  *
- * Segments (architecture 36.6):
+ * Segments (architecture 5.2):
  *   hot  this file: the protocol dispatch; ioc.c keeps the transport,
  *        the framing, CRC and the READY/DONE admission; ioc_io.asm keeps
  *        the port I/O and the timing-critical streaming loops.  The
@@ -14,10 +14,9 @@
  *   boot ioc_boot.c: the one-time SIO1/B and SIO1/A programming.
  *
  * The driver owns no IRQ: the transport is polled with bounded waits,
- * and the command lane is programmed with interrupts off (WR1), exactly
- * as the M8 driver ran.
+ * and the command lane is programmed with interrupts off (WR1).
  *
- * Data movement (36.8): the reply frame and the bulk block live in the
+ * Data movement (4.9): the reply frame and the bulk block live in the
  * driver's DRIVER_IO area.  The staged form returns the driver-domain
  * address so a driver client can stage with `move`; the descriptor form
  * copies in/out through the nucleus, which is how application clients
@@ -185,7 +184,7 @@ uint8_t ioc_driver_init(const struct driver_boot *boot)
 	 * load refusal: the driver initializes, KIOC_OP_READY reports 0,
 	 * and the first ordinary operation attempts the whole-link
 	 * recovery.  A build whose own dependencies need the link fails
-	 * its boot through those drivers (42e). */
+	 * its boot through those drivers. */
 	ioc_link_ready = (uint8_t)(ioc_link_bringup() == KIOC_OK ? 1u : 0u);
 	return 0u;
 }

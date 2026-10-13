@@ -1,4 +1,4 @@
-/* M2 fixed-source, one-owner IRQ registry and revision-13 dispatcher. */
+/* Fixed-source, one-owner IRQ registry and revision-13 dispatcher. */
 #include "irq_types.h"
 #include "platform.h"
 
@@ -27,7 +27,7 @@ static irq_source_t last_source;
  * are addressable.  A bank-6 resident driver never registers its own
  * address here: it hands the nucleus an in-image handler through the
  * driver API, and the nucleus's trampoline (fixed core) is what this
- * registry holds (architecture 36.6, driver IRQ upcall). */
+ * registry holds (architecture 5.2, driver IRQ upcall). */
 static uint8_t handler_is_valid(irq_handler_t handler)
 {
 	uint16_t address = (uint16_t)handler;

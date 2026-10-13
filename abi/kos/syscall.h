@@ -9,18 +9,17 @@
  *             HL = primary result
  *             A  = error code when carry is set
  *     preserved: BC, DE, IX, IY; SP and the selected bank are restored
- *     unspecified: other flags; alternate registers are not part of M1
+ *     unspecified: other flags and the alternate registers
  *
- * M6 implements five drivers: exit, console write/read/poll, getinfo.
- * M7 adds six recovery/diagnostic drivers behind the same gate; their
- * blocks are declared in the ABI's kos/diag.h.  Argument blocks must lie in the
- * caller window 0100h-1FFFh; console buffers may occupy 0100h-DFFFh and
- * are transferred through checked common-resident copy gates.  C names,
+ * The recovery/diagnostic syscalls declare their blocks in the ABI's
+ * kos/diag.h.  Argument blocks must lie in the caller window
+ * 0100h-1FFFh; data buffers may occupy 0100h-DFFFh and are transferred
+ * through checked copy gates.  C names,
  * argument layouts, and SDCC calling conventions are private and must not
  * be exposed to syscall callers (user programs use the SDK, docs/sdk.md).
  *
  * This header owns the syscall numbers, the address windows and the
- * M6/M9 argument blocks.  The process startup block and getinfo record
+ * process argument blocks.  The process startup block and getinfo record
  * are in the ABI's kos/process.h; the diagnostic blocks are in the ABI's
  * kos/diag.h.
  */
@@ -32,22 +31,13 @@
 #include "kos/errno.h"
 #include "kos/process.h"
 
-/* Native syscall numbers (stable from M6; object set from M10). */
+/* Native syscall numbers.  01h-03h and 10h-1Fh are unassigned and return
+ * KOS_ENOSYS.  Console I/O is the CONSOLE protocol on the standard
+ * handles, and files are typed handles behind `bind`/`call`/`unbind`
+ * (the ABI's kos/object.h); the SDK builds `open`/`close` on them. */
 #define KOS_SYSCALL_EXIT          0x00u
-/* 01h-03h were SYS_CONSOLE_WRITE / SYS_CONSOLE_READ / SYS_CONSOLE_POLL.
- * Package 41 removed them: a program's console I/O goes to the console
- * driver through the IPC pair below (the SDK's console clients), so
- * the numbers stay reserved rather than reused - a stale caller fails
- * with KOS_ENOSYS instead of writing somewhere unexpected. */
 #define KOS_SYSCALL_GETINFO       0x04u
-#define KOS_SYSCALL_EXEC          0x05u /* package 28 */
-
-/* The M9 native filesystem family (10h-1Fh, `SYS_FS_*`) is retired
- * (package 42b): files are typed handles behind `bind`/`call`/`unbind`
- * (the ABI's kos/object.h), the SDK `fs.h` builds `open`/`close` on them, and
- * `chdir`/`getcwd` are the namespace syscalls 0Ah/0Bh.  The numbers stay
- * reserved so a stale caller fails with KOS_ENOSYS instead of reaching
- * something unexpected. */
+#define KOS_SYSCALL_EXEC          0x05u
 
 /* Address windows enforced before any caller byte is touched. */
 #define KOS_SYSCALL_WINDOW_BASE 0x0100u /* argument blocks begin here */
@@ -63,7 +53,7 @@ struct kos_exit_args {
 };
 
 /* SYS_EXEC 05h {path:u16, length:u16, args:u16, args_length:u16} - run a
- * child synchronously (packages 28/28b, docs/abi.md section 11).  `path`
+ * child synchronously (docs/abi.md section 5.3).  `path`
  * addresses 1..127 non-NUL caller-window bytes resolved against the
  * caller's CWD; the rules are those of the namespace family.  `args`
  * addresses `args_length` raw bytes in the caller buffer window
@@ -107,7 +97,7 @@ _Static_assert(__builtin_offsetof(struct kos_exec_args, args_length) == 6,
 	       "exec args length must be the last argument-block word");
 #endif
 
-/* The M1 target self-test runner is declared by the test-owned seam
+/* The target self-test runner is declared by the test-owned seam
  * header tests/target/include/selftest.h, not by this ABI header. */
 
 #endif /* KOS_SYSCALL_H */

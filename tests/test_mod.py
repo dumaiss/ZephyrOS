@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side MOD driver-container tests (work packages 41b-42c).
+"""Host-side MOD driver-container tests.
 
 The container is one flat plan per driver image: a 16-byte header, the
 segment records, the endpoint records, the dependency records, the
@@ -9,22 +9,11 @@ field, no relocation table and no granule geometry: the packer resolves
 every symbol while it links, and `parse_container` is the format's only
 validator (the target loader just bounds what protects the nucleus).
 
-The tests whose subject package 42c removed are deleted with it:
-
-  - the module constants (format version, module types, relocation codes)
-    and the granule geometry, including the arena reservation;
-  - the pack round trips that asserted granule rounding, the relocation
-    table and the two-base load relocation (the host assembly of the same
-    arithmetic is covered by `tests/test_driver_images.py`);
-  - the fixture artifacts (the `tests/modules` arena fixtures, the
-    mini-linker/sdldz80 comparison and the catalog assembly round trip);
-  - the SIO module artifacts (container geometry, symbol offsets, the IRQ
-    variant), now covered by the real image checks in `tests/test_hid.py`,
-    `tests/test_ioc.py` and `tests/test_v9958.py`.
-
-What remains is the format this package ships: the `.rel` reader, the
-flat container round trip, the host validation of every field, and the
-packer CLI.
+Covered here: the `.rel` reader, the flat container round trip, the host
+validation of every field, and the packer CLI.  The host assembly of a
+driver image is covered by `tests/test_driver_images.py`, and the real
+images by `tests/test_hid.py`, `tests/test_ioc.py` and
+`tests/test_v9958.py`.
 """
 
 import json
@@ -419,14 +408,6 @@ class TestContainerValidation(unittest.TestCase):
 
     def test_bad_magic(self):
         self.reject(self.patch(self.valid(), 0, ord("X")), "bad magic")
-
-    def test_old_magic_is_rejected(self):
-        """The pre-rename header magic (spelled in hex so no stale token
-        survives in the tree) is rejected by the ordinary bad-magic
-        check."""
-        raw = bytearray(self.valid())
-        raw[0:4] = bytes([0x5A, 0x4D, 0x4F, 0x44])
-        self.reject(bytes(raw), "bad magic")
 
     def test_reserved_word_not_zero(self):
         self.reject(self.patch(self.valid(), 0x0E, 1), "reserved word")

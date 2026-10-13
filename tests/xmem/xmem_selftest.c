@@ -1,10 +1,10 @@
-/* KonaOS extended-memory outcome acceptance (work package 43).
+/* KonaOS extended-memory outcome acceptance.
  *
  * The EXE primary the `xmem-selftest` image boots: an ordinary SDK
  * program that drives the extended-memory family and the mode-10 far
  * aperture through `kos/xmem.h` and prints one line per outcome.  It
- * covers the architecture-37 `xmem` rows and the far-data rows that need
- * no EXE v2 (far-code segments are package 44):
+ * covers the `xmem` rows (architecture 4.8) and the far-data rows that need
+ * no far-code segment:
  *
  *   * sizes and slot rounding (1 / 8191 / 8192 / 8193 bytes), the largest
  *     object, oversized rejection, exhaustion and fragmentation;
@@ -25,7 +25,7 @@
  *   * exit releases the process's own objects: the program leaves the two
  *     anchor objects live, and the launcher's `free-banks 6` report
  *     proves the release (their bank is free again);
- *   * far code (package 44b): it SYS_EXECs /system/xmem_far.exe, whose
+ *   * far code: it SYS_EXECs /system/xmem_far.exe, whose
  *     two FAR_CODE segments run through the aperture, and its own
  *     capacity check around that exec proves the far program's exit
  *     released its segments, objects and bank slots.
@@ -34,10 +34,10 @@
  * tests/xmem/xmem_far.c.  The replay asserts the lines below; the final
  * line is the verdict.
  *
- * Work package 45b adds one tail option, `stage`: the production
+ * One tail option, `stage`: the production
  * exerciser runs this program beside the monitor and the runner, so two
  * application banks are held by their live processes and only the others
- * are open to auxiliary placement (36.15).  The pool-wide rows are then
+ * are open to auxiliary placement (4.8).  The pool-wide rows are then
  * stated against the number of banks this process can actually open
  * (measured by filling whole banks), and the far sub-exec stays with the
  * runner: this program already sits at the third level of the four-deep
@@ -54,7 +54,7 @@
 #define APERTURE_END  0xC000u
 #define BLK           512u
 
-/* The stage tail (work package 45b). */
+/* The stage tail. */
 #define XMEM_STAGE_TAIL "stage"
 
 #define CHILD_PATH   "/system/xmem_child.exe"
@@ -74,7 +74,7 @@ static unsigned int held[20];
 
 static unsigned int checks;
 static unsigned int failures;
-/* 1: the exerciser's stage run (45b): pool rows scale with the open
+/* 1: the exerciser's stage run: pool rows scale with the open
  * banks and the far sub-exec belongs to the runner. */
 static int stage;
 /* Whole banks this process can open: 5 in the acceptance image (set in
@@ -265,7 +265,7 @@ int main(int argc, char **argv)
 	int handle;
 	int status;
 
-	/* The stage tail (45b) is the only accepted option. */
+	/* The stage tail is the only accepted option. */
 	if (argc == 1 && argv != (char **)0 && same(argv[0], XMEM_STAGE_TAIL)) {
 		stage = 1;
 		tail = XMEM_STAGE_TAIL;
@@ -595,7 +595,7 @@ int main(int argc, char **argv)
 	aperture_close((unsigned char)saved);
 	check("aperture-close", ((unsigned int)latch_port & 0xE0u) == 0u);
 
-	/* Far code (package 44b): /system/xmem_far.exe runs its own
+	/* Far code: /system/xmem_far.exe runs its own
 	 * FAR_CODE segments through the aperture - map, plain CALL and
 	 * return, far code calling primary code, syscalls with an aperture
 	 * buffer, and an exec from far context whose child refuses this
@@ -604,7 +604,7 @@ int main(int argc, char **argv)
 	 * released its segments, objects and bank slots.
 	 *
 	 * In a stage run the runner invokes the same program itself, one
-	 * exec level shallower (45b): this program is already the third of
+	 * exec level shallower: this program is already the third of
 	 * the four-deep chain, so the far program's own nested exec would be
 	 * the fifth and the kernel refuses it before any bank is used.  The
 	 * runner checks the far program's exit status and that its exit

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Filesystem outcome acceptance replay (work package 42b, correction 01).
+"""Filesystem outcome acceptance replay.
 
 Boots `build-fs-selftest/konaos-fs-selftest.bin` in the Z80 simulator with
 the host FS2 peer serving the card, and reads the transcript of the one SDK
@@ -9,7 +9,7 @@ outcome program the image boots (`/system/fs_selftest.exe`):
   the pinned check count, the nested-exec child reports its own stdout and
   the image hands the console to the monitor; the child also runs once
   copied onto the card itself, so an exec whose path only the bank-6
-  filesystem provider can read stays covered (correction 01);
+  filesystem provider can read stays covered;
 - with no card, the program takes its card-absent branch, `/system` stays
   usable and the verdict carries the reduced count;
 - the handles the child leaked are gone once it exits: the driver's card

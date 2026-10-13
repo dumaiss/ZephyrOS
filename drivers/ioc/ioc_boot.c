@@ -1,6 +1,6 @@
-/* KonaOS IOC driver boot segment (work package 41).
+/* KonaOS IOC driver boot segment.
  *
- * Runs once through the mode-10 gate with Q = 6 (architecture 36.6): the
+ * Runs once through the mode-10 gate with Q = 6 (architecture 5.2): the
  * whole resident bank is mapped, the fixed core is not, and the driver
  * bootstrap interface is unavailable.  Nothing here executes after boot.
  *

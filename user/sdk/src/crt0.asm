@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS libkos: C runtime startup (work/28c-m9-user-sdk).
+; KonaOS libkos: C runtime startup.
 ;
 ; The launch gate enters here in mode 10 with HL = KOS_STARTUP_BASE, the
 ; startup block v1.  crt0 saves the block for startup(), copies the raw

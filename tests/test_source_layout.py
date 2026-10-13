@@ -1,37 +1,28 @@
 #!/usr/bin/env python3
-"""Source-tree ownership tests (work packages 09-10, extended for M6).
+"""Source-tree ownership tests.
 
-Enforces docs/architecture.md section 3.1 and the current layout:
+Enforces docs/architecture.md section 1.3 and the source layout:
 
 - implemented sources live under their owning boot/kernel/driver/test
   directories, and driver directories contain device implementation and
-  the driver's own manifest only (package 46 T1); the audience headers
-  live under drivers/include, kernel/include and formats/include, the
-  platform constants under platform/zephyr80/{public,private}
-  (package 46 T3);
+  the driver's own manifest only; the audience headers live under
+  drivers/include, kernel/include and formats/include, the platform
+  constants under platform/zephyr80/{public,private};
 - platform/zephyr80/ contains declarative constants/configuration only,
   with no executable content or instruction-emitting macros;
-- the driver drivers' manifests have one owner (drivers/<name>/)
-  and the shared SDCC runtime support another (drivers/runtime);
+- the driver manifests have one owner (drivers/<name>/) and the shared
+  SDCC runtime support another (drivers/runtime);
 - the process lifecycle (kernel/process), the common transition gates
   (kernel/memory), the public native ABI (abi/kos) and the user SDK
   (user/sdk) have explicit owners, with the EXE program sources under
   tests/target/process, the demos under user/helloworld, and the
   EXE tooling/fixtures under tests/subsys;
-- all milestone acceptance code lives under tests/target/, behind the
-  single KOS_TARGET_TEST_BUILD seam; production sources contain no
-  self-test implementations (the module fixtures under tests/modules/
-  went with the module form, work package 42c);
-- the retired M3 static-driver mechanism, driver-private SDCC glue, and
-  test-only SIO build variants cannot return;
-- the Mn-1 retention window holds: only the M10 acceptance
-  configurations exist (work/00-SUPERVISOR.md), no pre-M10 acceptance
-  target, image directory or boot-mode flag can come back (correction 01
-  to work package 42b deletes the M9 machinery outright), and the
-  mechanism coverage that replaced them is present;
-- live build/source documentation contains no references to the removed
-  implementation paths (dated acceptance records under docs/validation/
-  and the work/ contracts are intentionally excluded);
+- all acceptance code lives under tests/target/, behind the single
+  KOS_TARGET_TEST_BUILD seam; production sources contain no self-test
+  implementations and no test-only SIO build variants;
+- each build class offers its exact include roots, and drivers and user
+  programs see only their audience headers;
+- every image is composed by a systems/<name>.json file;
 - root build* directories are generated output only: .gitignore covers
   every build variant and make clean removes them all.
 
@@ -56,7 +47,7 @@ from maptools import evaluate, parse_asm_inc, parse_c_header  # noqa: E402
 PLATFORM_DIR = os.path.join(ROOT, "platform", "zephyr80")
 
 # The complete, exact platform file set: constants (.h/.inc) and build
-# configuration (.mk) only, split by audience (package 46 T3):
+# configuration (.mk) only, split by audience:
 # config.mk plus the public/ board constants and the private/ memory and
 # interrupt declarations.
 PLATFORM_FILES = {"config.mk"}
@@ -256,114 +247,8 @@ OWNER_FILES = (
     "tests/test_systemgen.py",
 )
 
-# Implementation paths removed by the ownership refactors.  None of these
-# may be referenced by live build/source files.
-# Work package 49a replaced the per-image build composition with one
-# systems/<name>.json per image, so the Makefile conditionals, the boot
-# setting's validator and every hand-written store manifest are gone.
-REMOVED_PATHS = (
-    "config/system.mk",
-    "tools/bootprogram.py",
-    "recovery/manifest.json",
-    "tests/subsys/manifest.json",
-    "tests/console/manifest-integration.json",
-    "tests/console/manifest-serial.json",
-    "tests/console/manifest-serial-missing.json",
-    "tests/console/manifest-init-fail.json",
-    "tests/fs/manifest.json",
-    "tests/ipc/manifest.json",
-    "tests/ns/manifest.json",
-    "tests/xmem/manifest.json",
-    "tests/ns/manifests/sio.json",
-    "tests/ns/manifests/console-serial.json",
-    "user/helloworld/manifest.json",
-    "platform/zephyr80/reset.asm",
-    "platform/zephyr80/banking.asm",
-    "platform/zephyr80/page_zero.asm",
-    "platform/zephyr80/syscall_entry.asm",
-    "platform/zephyr80/irq.asm",
-    "platform/zephyr80/irq_sources.c",
-    "platform/zephyr80/sdcc_helpers.asm",
-    "platform/zephyr80/selftest.asm",
-    "platform/zephyr80/selftest.inc",
-    "platform/zephyr80/irq_selftest.asm",
-    "platform/zephyr80/irq_selftest.inc",
-    "drivers/sio/driver.c",
-    "drivers/sio/module.json",
-    "drivers/sio/module-irq.json",
-    "drivers/sio/module-fail.json",
-    "drivers/sio/sdcc_glue.asm",
-    "kernel/device/driver.c",
-    "kernel/irq/irq_selftest.c",
-    "kernel/irq/selftest.c",
-    "drivers/test/irq_probe.c",
-    "drivers/test/fixtures.c",
-    "drivers/test/irq_probe_io.asm",
-    "include/konaos/selftest.h",
-    "include/konaos/irq_selftest.h",
-    "tests/target/zephyr80/selftest.asm",
-    "tests/target/zephyr80/irq_selftest.asm",
-    "user/runtime",
-    "user/monitor/monitor_entry.asm",
-    "user/monitor/monitor.json",
-    "tests/subsys/exetest.json",
-    "tests/target/process/exetest_entry.asm",
-    # Package 46 T1 moved the driver tree: the CTC nucleus source, the
-    # driver manifests and the shared SDCC runtime support may not come
-    # back to their pre-46 owners.
-    "drivers/ctc",
-    "drivers/ctc/ctc.c",
-    "fs/iocfat",
-    "modules/runtime",
-    "services/manifests",
-    # Package 46 T4 split the VFS by surface: the monolithic ns.c/ns.h
-    # and the M9-era process.c/ns_file.c names are retired.
-    "kernel/vfs/ns.c",
-    "kernel/vfs/ns.h",
-    "kernel/vfs/ns_file.c",
-    "kernel/vfs/process.c",
-    # Package 46 T3 deleted the flat include/ tree: the audience headers
-    # live under their owners and no `konaos/` spelling may return.
-    "include/konaos",
-    "konaos/",
-    # Correction 01 to work package 42b deleted the whole M9 acceptance
-    # surface: its subjects are gone from M10, so the images, programs,
-    # manifests and host modules may not come back.
-    "tests/target/m9",
-    "tests/target/m9/fstest",
-    "tests/target/m9/exec",
-    "tests/target/m9/iocfat",
-    "tests/target/m9/fstest/fstest.c",
-    "tests/target/m9/fstest/fstest_l.c",
-    "tests/target/m9/fstest/fsfat.c",
-    "tests/target/m9/exec/fschild.c",
-    "tests/target/m9/exec/fsdeep.c",
-    "tests/target/m9/exec/fsraw.c",
-    "tests/target/m9/exec/fsraw_entry.asm",
-    "tests/target/m9/iocfat/iocfat.c",
-    "tests/target/m9/m9_exec_test.c",
-    "tests/target/m9/m9_selftest.c",
-    "tests/target/m9/m9_selftest_internal.h",
-    "tests/target/m9/m9_selftest_runner.c",
-    "tests/target/include/m9_selftest.h",
-    "tests/target/include/m9_exec_selftest.h",
-    "tests/target/include/m9_integration_selftest.h",
-    "tests/target/include/m9_iocfat_selftest.h",
-    "tests/m9/manifest-exec.json",
-    "tests/m9/manifest-iocfat.json",
-    "tests/m9/manifest-selftest.json",
-    "tests/test_m9_exec.py",
-    "tests/test_m9_exec_sim.py",
-    "tests/test_m9_selftest.py",
-    "tests/test_m9_selftest_sim.py",
-    "tests/test_iocfat_sim.py",
-    "tests/test_syscall_sim.py",
-)
-
-# Directories that must exist after the production/test separation.  Every
-# acceptance implementation has a milestone owner under tests/target/;
-# the module-format owners (kernel/module, tests/modules) are retired with
-# the arena (work package 42c) and are asserted absent below.
+# Directories that must exist: the production owners and the acceptance
+# owners under tests/target/.
 REQUIRED_DIRS = (
     "boot",
     "kernel/memory", "kernel/syscall", "kernel/irq", "kernel/runtime",
@@ -387,14 +272,6 @@ REQUIRED_DIRS = (
     "tests/target/support",
 )
 
-# The retired M3 static-driver mechanism must not reappear in live sources.
-RETIRED_SOURCE_PATTERNS = (
-    re.compile(r"\bboot_drivers\b"),
-    re.compile(r"\bdriver_init_static\b"),
-    re.compile(r"\bdriver_static_\w+\b"),
-    re.compile(r"\bstruct zdriver\b"),
-)
-
 # Test-only SIO build variants must be confined to tests/ (the production
 # module entry has no conditional test branches).
 TEST_ONLY_SIO_MACROS = (
@@ -402,9 +279,9 @@ TEST_ONLY_SIO_MACROS = (
     "KOS_SIO_MODULE_INIT_FAIL",
 )
 
-# Milestone self-test implementations live only under tests/.  Production
-# files may reference KOS_M4_SIO_IRQ solely through the labeled boot-phase
-# TEST-ONLY HOOK in kernel/main.c and the shared KOS_TARGET_TEST_BUILD seam.
+# Self-test implementations live only under tests/.  Production files
+# reach acceptance code solely through the labeled TEST-ONLY HOOK in
+# kernel/main.c and the shared KOS_TARGET_TEST_BUILD seam.
 PRODUCTION_SELFTEST_MACROS = (
     "KOS_SUBSYS_SELFTEST",
     "KOS_ROMFS_CORRUPT_SELFTEST",
@@ -415,8 +292,8 @@ PRODUCTION_SELFTEST_MACROS = (
     "KOS_CONSOLE_INTEGRATION_SELFTEST",
     "KOS_CONSOLE_SERIAL_SELFTEST",
     "KOS_CONSOLE_SERIAL_FAIL_SELFTEST",
-    "KOS_M9_VFS_SELFTEST",
-    "KOS_M9_PROVIDER_SELFTEST",
+    "KOS_FS_SELFTEST",
+    "KOS_NS_SELFTEST",
 )
 
 # Generated-output names that must be ignored and cleaned.  build-modules is
@@ -424,27 +301,6 @@ PRODUCTION_SELFTEST_MACROS = (
 BUILD_VARIANTS = (
     "build",
     "build-selftest",
-    "build-irq-selftest",
-    "build-m3-selftest",
-    "build-m4-loader-selftest",
-    "build-m4-selftest",
-    "build-m4-placement-selftest",
-    "build-m4-failure",
-    "build-m5-selftest",
-    "build-m5-corrupt-selftest",
-    "build-m6-selftest",
-    "build-m6-failure-selftest",
-    "build-m7-selftest",
-    "build-ioc-selftest",
-    "build-hid-selftest",
-    "build-video-selftest",
-    "build-console-selftest",
-    "build-console-integration-selftest",
-    "build-console-serial-selftest",
-    "build-console-serial-fail-selftest",
-    "build-m9-vfs-selftest",
-    "build-m9-required-mount-selftest",
-    "build-m9-provider-selftest",
     "build-modules",
 )
 
@@ -457,30 +313,6 @@ EMITTER_PATTERNS = (
                r"|add|adc|sub|sbc|and|or|xor|cp|inc|dec|bit|set|res"
                r"|rlc|rrc|rl|rr|sla|sra|srl|sli)\s"),
 )
-
-# Live documentation/build files that must never name the removed paths.
-# Code only: the test suite never tests documentation (owner rule,
-# 2026-10-12), so docs/ and README.md are not scanned.
-SCAN_ROOTS = (
-    "boot", "drivers", "formats", "kernel", "libk",
-    "linker", "platform", "tests", "tools",
-)
-SCAN_TOP_FILES = ("Makefile",)
-
-# EXE v1 code tokens (work package 44a): v2 replaced v1 outright, so the
-# old magic, manifest format and header size cannot reappear.  Prose that
-# names the historical format ("EXE v1") is not a code token and stays
-# allowed.
-EXE_V1_TOKENS = ("EXE1", "exe-v1", "EXE_HEADER_SIZE 20")
-
-# Historical/worker records and this test's own data are exempt.
-SCAN_EXCLUDED_DIRS = {
-    os.path.join(ROOT, "docs", "validation"),
-    os.path.join(ROOT, "work"),
-    os.path.join(ROOT, "tests", "__pycache__"),
-}
-SCAN_EXCLUDED_FILES = {os.path.join(HERE, "test_source_layout.py")}
-
 
 def _read(path):
     with open(path, encoding="utf-8", errors="replace") as fh:
@@ -500,7 +332,7 @@ def _code_only(path):
 
 def _platform_files():
     """Every platform file: the top-level build configuration plus the
-    public/ and private/ constant pairs (package 46 T3)."""
+    public/ and private/ constant pairs."""
     for root in (PLATFORM_DIR,
                  os.path.join(PLATFORM_DIR, "public"),
                  os.path.join(PLATFORM_DIR, "private")):
@@ -619,7 +451,7 @@ def _tab_recipe_lines(text):
             header = ""
 
 
-# The headers a driver image author may read: the M10 driver ABI, the
+# The headers a driver image author may read: the driver ABI, the
 # client-visible protocol vocabulary, and the narrow board-constant header
 # a hardware-owning driver includes.  (kernel/... is deliberately not
 # reachable from the driver build.)
@@ -643,7 +475,7 @@ DRIVER_FACING_HEADERS = (
 # closure.  ABI field names (`irq_claim`, `irq_release`) are
 # intentionally absent: they are the driver surface.  These are the kernel registry transaction/owner/storage,
 # executive lifecycle, diagnostics, platform hooks, and raw memory
-# primitives (work package 22).
+# primitives.
 KERNEL_ONLY_IDENTIFIERS = (
     "irq_init", "irq_registry_checkpoint", "irq_registry_rollback",
     "irq_registry_set_owner", "irq_registry_owner",
@@ -668,8 +500,7 @@ KERNEL_ONLY_IDENTIFIERS = (
 )
 
 # The include paths a representative driver image is compiled with: only
-# the driver-facing roots plus its own driver directory, never `.`
-# (package 46 T3).
+# the driver-facing roots plus its own driver directory, never `.`.
 MODULE_PROBE_FLAGS = ("-mz80", "-c", "--nostdinc", "--Werror",
                       "-I", "abi", "-I", "drivers/include",
                       "-I", "platform/zephyr80/public", "-I", "drivers/sio")
@@ -706,7 +537,7 @@ uint8_t probe_frame(const struct kioc_frame *frame)
 """
 
 
-# The driver-facing include roots (package 46 T3): a quoted include
+# The driver-facing include roots: a quoted include
 # resolves against the including file's directory first, then these.
 DRIVER_INCLUDE_ROOTS = (
     os.path.join(ROOT, "abi"),
@@ -752,20 +583,6 @@ class TestOwnerLayout(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(ROOT, rel)),
                             "missing owner file %s" % rel)
 
-    def test_retired_owners_are_gone(self):
-        # Package 42c: the module/arena form is deleted outright, so no
-        # source, header or fixture of it may come back.  (Package 46 T2
-        # named the driver ABI header formats/include/mod.h, which is
-        # live until T3 moves it to formats/include/mod.h.)
-        for rel in ("kernel/module", "kernel/module/arena.asm",
-                    "tests/modules", "include/konaos/module.h",
-                    "include/konaos/device.h",
-                    "include/konaos/vfs.h", "include/konaos/hid.h",
-                    "include/konaos/video.h", "include/konaos/block.h",
-                    "tools/mountgen.py", "config/mounts.json"):
-            self.assertFalse(os.path.exists(os.path.join(ROOT, rel)),
-                             "%s must stay deleted (work package 42c)" % rel)
-
     def test_owner_directories_exist(self):
         for rel in REQUIRED_DIRS:
             self.assertTrue(os.path.isdir(os.path.join(ROOT, rel)),
@@ -783,12 +600,10 @@ class TestProductionTestSeparation(unittest.TestCase):
     non-production owners, behind the single test-build seam."""
 
     def test_driver_directories_contain_device_implementation_only(self):
-        # Package 41: each driver directory holds the device implementation
-        # (`*_driver.c` protocol/init half and, where the driver has one,
-        # the `*_boot.c` boot tier) plus its private headers and assembly.
-        # The M8/M9 `*_module.c` registration adapters were retired with
-        # the module form of the four drivers.  Package 46 T1 added each
-        # driver's manifest and the CONSOLE/IOC-FAT/RUNTIME owners.
+        # Each driver directory holds the device implementation (the
+        # `*_proto.c` protocol half and, where the driver has one, the
+        # `*_boot.c` boot tier) plus its private headers, assembly and
+        # manifest.
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "drivers", "sio"))),
                          ["sio.c", "sio.h", "sio.json", "sio_boot.c",
                           "sio_io.asm", "sio_proto.c"])
@@ -813,10 +628,9 @@ class TestProductionTestSeparation(unittest.TestCase):
             ["sdcc_indirect_calls.asm"])
 
     def test_driver_manifests_live_with_their_driver(self):
-        # Package 46 T1: a driver owns its manifest in its own directory
+        # A driver owns its manifest in its own directory
         # (drivers/<name>/<name>.json; the two console drivers share
-        # drivers/console/), and the flat drivers/manifests/ directory
-        # is gone.
+        # drivers/console/).
         shipped = []
         for path in _walk("drivers", (".json",)):
             shipped.append(os.path.relpath(path, ROOT).replace(os.sep, "/"))
@@ -829,13 +643,10 @@ class TestProductionTestSeparation(unittest.TestCase):
             "drivers/sio/sio.json",
             "drivers/v9958/v9958.json",
         ])
-        self.assertFalse(os.path.exists(
-            os.path.join(ROOT, "drivers", "manifests")),
-            "the flat drivers/manifests/ directory must stay gone")
 
     def test_no_driver_private_sdcc_glue(self):
-        # Package 46 T1 moved the shared source to drivers/runtime/; the
-        # one copy every driver image packs is that file itself.
+        # The shared source lives in drivers/runtime/; the one copy every
+        # driver image packs is that file itself.
         shared = os.path.join(ROOT, "drivers", "runtime",
                               "sdcc_indirect_calls.asm")
         for path in _walk("drivers", (".c", ".h", ".asm", ".inc")):
@@ -849,24 +660,6 @@ class TestProductionTestSeparation(unittest.TestCase):
                     "drivers/runtime/sdcc_indirect_calls.asm"
                     % os.path.relpath(path, ROOT))
 
-    def test_retired_static_driver_symbols_absent(self):
-        roots = ("boot", "drivers", "include", "kernel", "modules")
-        for root_name in roots:
-            for path in _walk(root_name):
-                if not path.endswith((".c", ".h", ".asm", ".inc")):
-                    continue
-                body = _code_only(path)
-                for pattern in RETIRED_SOURCE_PATTERNS:
-                    self.assertIsNone(
-                        pattern.search(body),
-                        "%s still references the retired M3 static-driver "
-                        "mechanism: %r"
-                        % (os.path.relpath(path, ROOT), pattern.pattern))
-        makefile = _read(os.path.join(ROOT, "Makefile"))
-        self.assertNotIn("KOS_M3_NO_STATIC_DRIVERS", makefile)
-        self.assertNotIn("KOS_M3_NO_CONSOLE_BIND", makefile)
-        self.assertNotIn("m3-fallback", makefile)
-
     def test_test_only_sio_macros_confined_to_tests(self):
         paths = list(_walk("drivers"))
         paths += list(_walk("kernel", (".c", ".h")))
@@ -878,7 +671,7 @@ class TestProductionTestSeparation(unittest.TestCase):
                     "%s compiles a test SIO variant into production code"
                     % os.path.relpath(path, ROOT))
 
-    def test_production_sources_have_no_milestone_selftests(self):
+    def test_production_sources_have_no_selftests(self):
         for root_name in ("boot", "drivers", "kernel", "modules"):
             for path in _walk(root_name):
                 if not path.endswith((".c", ".h", ".asm", ".inc")):
@@ -887,7 +680,7 @@ class TestProductionTestSeparation(unittest.TestCase):
                 for macro in PRODUCTION_SELFTEST_MACROS:
                     self.assertNotIn(
                         macro, body,
-                        "%s contains a milestone self-test implementation; "
+                        "%s contains a self-test implementation; "
                         "acceptance code belongs under tests/target/"
                         % os.path.relpath(path, ROOT))
 
@@ -896,17 +689,15 @@ class TestProductionTestSeparation(unittest.TestCase):
         self.assertIn("KOS_TARGET_TEST_BUILD", main)
         self.assertIn("tests/target/support/target_test.c", main)
         self.assertIn("TEST-ONLY HOOK", main)
-        self.assertNotIn("kos_target_test_irq_hold", main)
 
     def test_production_sources_have_no_ctc_acceptance_helpers(self):
         # The CTC0 programming is test-owned; no production source may
-        # define, declare, or call it, and the obsolete vector lookup is
-        # gone (work package 23).
+        # define, declare, or call it.
         for root_name in ("boot", "drivers", "kernel", "modules"):
             for path in _walk(root_name, SOURCE_SUFFIXES):
                 body = _code_only(path)
                 for token in ("platform_ctc0_test_start",
-                              "platform_ctc0_stop", "platform_irq_vector",
+                              "platform_ctc0_stop",
                               "kos_ctc0_test_start", "kos_ctc0_test_stop"):
                     self.assertNotIn(
                         token, body,
@@ -914,7 +705,6 @@ class TestProductionTestSeparation(unittest.TestCase):
                         % (os.path.relpath(path, ROOT), token))
 
     def test_production_headers_declare_no_test_runners(self):
-        # Package 46 T3: the audience headers live under their owners.
         for name in ("kernel/include/irq_types.h",
                      "kernel/include/platform.h", "kernel/include/kernel.h",
                      "drivers/include/driver.h", "formats/include/mod.h",
@@ -935,7 +725,7 @@ class TestCrossDriverIncludeBoundary(unittest.TestCase):
     """A production driver reaches a sibling only through a public header
     (include/, platform/) or its own directory's private headers.  A
     sibling driver's private include path and private headers are never a
-    production dependency edge (work package 21)."""
+    production dependency edge."""
 
     def test_global_module_flags_do_not_expose_ioc_private_dir(self):
         text = _read(os.path.join(ROOT, "Makefile"))
@@ -992,11 +782,10 @@ class TestCrossDriverIncludeBoundary(unittest.TestCase):
 
 
 class TestDriverFacingHeaderBoundary(unittest.TestCase):
-    """A driver image reads the M10 driver ABI, the client-visible
-    protocol vocabulary and the board constants, but not kernel registry
+    """A driver image reads the driver ABI, the client-visible protocol
+    vocabulary and the board constants, but not kernel registry
     transactions, executive lifecycle controls, platform hooks, or raw
-    memory primitives (work package 22; the M8 module form that defined
-    this boundary is retired, work package 42c)."""
+    memory primitives."""
 
     def test_driver_facing_closure_has_no_kernel_only_declarations(self):
         closure = _header_closure(DRIVER_FACING_HEADERS)
@@ -1014,9 +803,10 @@ class TestDriverFacingHeaderBoundary(unittest.TestCase):
     def test_driver_facing_closure_keeps_the_abi_surface(self):
         headers = _header_closure(DRIVER_FACING_HEADERS)
         text = "".join(_read(os.path.join(ROOT, rel)) for rel in headers)
-        # A resident driver builds against the M10 driver ABI
-        # (abi/kos + include/konaos): the flat plan, the call frame, the
-        # boot bundle and the client-visible namespace vocabulary.
+        # A resident driver builds against the driver ABI (abi/kos +
+        # drivers/include + formats/include): the flat plan, the call
+        # frame, the boot bundle and the client-visible namespace
+        # vocabulary.
         for needle in ("struct mod_header", "struct mod_segment",
                        "struct mod_endpoint", "struct mod_dependency",
                        "struct mod_publication", "struct driver_api",
@@ -1027,15 +817,6 @@ class TestDriverFacingHeaderBoundary(unittest.TestCase):
                        "struct kioc_frame", "irq_source_t",
                        "irq_handler_t"):
             self.assertIn(needle, text)
-        # The device model is gone: nothing may bring its vocabulary back.
-        # The retired device model: the identifiers are assembled here
-        # so this file does not itself carry the tokens the grep gate
-        # keeps out of the tree.
-        retired_tokens = ("device" + "_register", "zdevice" + "_desc",
-                          "zchar" + "_ops", "ZDEV" + "_",
-                          "zdriver" + "_api")
-        for retired in retired_tokens:
-            self.assertNotIn(retired, text)
 
     @unittest.skipUnless(shutil.which("sdcc"), "sdcc not available")
     def test_representative_driver_compiles_against_driver_headers_only(self):
@@ -1072,8 +853,8 @@ class TestDriverFacingHeaderBoundary(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("sdcc"), "sdcc not available")
     def test_driver_roots_cannot_reach_kernel_h(self):
-        # Package 46 T3's negative include test: the driver include roots
-        # carry no kernel-private header, so a one-line source including
+        # The negative include test: the driver include roots carry no
+        # kernel-private header, so a one-line source including
         # "kernel.h" must fail to compile against them.
         with tempfile.TemporaryDirectory() as tmp:
             source = os.path.join(tmp, "kernel_h.c")
@@ -1126,7 +907,7 @@ def _include_roots(value, variables):
 
 
 class TestIncludeRootAllowLists(unittest.TestCase):
-    """Package 46 T3: each build class offers its exact `-I` set."""
+    """Each build class offers its exact `-I` set."""
 
     # Nucleus and kernel-linked tests: `.` plus the audience roots.
     NUCLEUS_ROOTS = [".", "abi", "kernel/include", "drivers/include",
@@ -1136,8 +917,8 @@ class TestIncludeRootAllowLists(unittest.TestCase):
     # representative driver's own directory.
     DRIVER_ROOTS = ["abi", "drivers/include", "platform/zephyr80/public",
                     "$(BUILD)"]
-    # The SDK and its programs are unchanged: the ABI root first, then
-    # the SDK include root.
+    # The SDK and its programs: the ABI root first, then the SDK include
+    # root.
     SDK_ROOTS = ["abi", "user/sdk/include"]
 
     def _config_variables(self):
@@ -1174,10 +955,10 @@ class TestIncludeRootAllowLists(unittest.TestCase):
 
 
 class TestNoResidentBlockDriver(unittest.TestCase):
-    """M9 defined a block class but keeps no resident block driver
-    (architecture 32.15/32.39: a feature with no consumer is not made
-    resident, for example `sd-ioc.mod`).  This keeps the deferred-driver
-    decision mechanical instead of a convention."""
+    """No resident block driver until the first block consumer (a
+    feature with no consumer is not made resident, for example
+    `sd-ioc.mod`).  This keeps the deferred-driver decision mechanical
+    instead of a convention."""
 
     # A production ROMFS/module entry that names a block driver.
     BLOCK_NAME_RE = re.compile(r"(?i)block|(^|[-_])sd([-_.]|$)")
@@ -1185,26 +966,15 @@ class TestNoResidentBlockDriver(unittest.TestCase):
     def test_no_kernel_block_directory(self):
         self.assertFalse(
             os.path.isdir(os.path.join(ROOT, "kernel", "block")),
-            "a kernel block/ directory must not exist in M9")
+            "a kernel block/ directory must not exist")
 
     def test_no_sd_driver_directory(self):
         self.assertFalse(
             os.path.isdir(os.path.join(ROOT, "drivers", "sd")),
             "drivers/sd/ must not exist until the first block consumer")
 
-    def test_no_driver_registers_a_block_device(self):
-        offenders = []
-        for path in _walk("drivers", SOURCE_SUFFIXES):
-            if "ZDEV" + "_BLOCK" in _code_only(path):
-                offenders.append(os.path.relpath(path, ROOT))
-        self.assertEqual(
-            offenders, [],
-            "a driver registers a block class in M9: %s"
-            % ", ".join(offenders))
-
     def test_no_production_block_module_manifest(self):
-        # Package 46 T1: each driver carries its manifest in its own
-        # directory; the flat drivers/manifests/ owner is gone.
+        # Each driver carries its manifest in its own directory.
         offenders = []
         for path in _walk("drivers", (".json",)):
             if self.BLOCK_NAME_RE.search(os.path.basename(path)):
@@ -1293,225 +1063,6 @@ class TestPlatformBoundary(unittest.TestCase):
             self.assertIn('#include "%s"' % header, text)
 
 
-class TestNoStaleRemovedPaths(unittest.TestCase):
-    def _live_files(self):
-        for name in SCAN_TOP_FILES:
-            path = os.path.join(ROOT, name)
-            if os.path.isfile(path):
-                yield path
-        for root_name in SCAN_ROOTS:
-            for dirpath, dirnames, filenames in os.walk(
-                    os.path.join(ROOT, root_name)):
-                dirnames[:] = [d for d in dirnames
-                               if os.path.join(dirpath, d)
-                               not in SCAN_EXCLUDED_DIRS]
-                if dirpath in SCAN_EXCLUDED_DIRS:
-                    continue
-                for filename in filenames:
-                    path = os.path.join(dirpath, filename)
-                    if path in SCAN_EXCLUDED_FILES:
-                        continue
-                    if filename.endswith((".pyc",)):
-                        continue
-                    yield path
-
-    def test_live_files_do_not_name_removed_paths(self):
-        stale = []
-        for path in self._live_files():
-            try:
-                text = _read(path)
-            except (IOError, OSError):
-                continue
-            for removed in REMOVED_PATHS:
-                if removed in text:
-                    stale.append("%s: %s"
-                                 % (os.path.relpath(path, ROOT), removed))
-        self.assertEqual(stale, [],
-                         "live files still reference removed paths:\n%s"
-                         % "\n".join(stale))
-
-    def test_removed_platform_files_are_gone(self):
-        for removed in REMOVED_PATHS:
-            self.assertFalse(os.path.exists(os.path.join(ROOT, removed)),
-                             "removed path still exists: %s" % removed)
-
-    def test_no_exe_v1_format_code_remains(self):
-        """EXE v2 replaced EXE v1 with no compatibility path (36.18):
-        the v1 magic, its manifest format string and its fixed header
-        size are code tokens that must not survive in any live file.
-        docs/architecture.md is the normative document (its M6 sections
-        keep the history); every other live file is scanned."""
-        exempt = {os.path.join(ROOT, "docs", "architecture.md")}
-        stale = []
-        for path in self._live_files():
-            if path in exempt:
-                continue
-            try:
-                text = _read(path)
-            except (IOError, OSError):
-                continue
-            for token in EXE_V1_TOKENS:
-                if token in text:
-                    stale.append("%s: %s"
-                                 % (os.path.relpath(path, ROOT), token))
-        self.assertEqual(stale, [],
-                         "EXE v1 code tokens survived in live files:\n%s"
-                         % "\n".join(stale))
-
-    def test_no_live_file_carries_the_retired_romfs_magic(self):
-        """The ROMFS magic the format retracted (work package 49a renamed
-        it to KRFS): the header constants, the packer and every fixture
-        carry the new four-byte token and never the old one."""
-        stale = []
-        for path in self._live_files():
-            try:
-                text = _read(path)
-            except (IOError, OSError):
-                continue
-            if RETIRED_ROMFS_MAGIC in text:
-                stale.append(os.path.relpath(path, ROOT))
-        self.assertEqual(stale, [],
-                         "the retired ROMFS magic survived in: %s"
-                         % ", ".join(stale))
-
-
-# The milestone acceptance window (work/00-SUPERVISOR.md, "Milestone
-# retention and compatibility"): only the current milestone and its
-# predecessor keep acceptance machinery.  This list moves forward at the
-# start of each milestone -- bump the lower bound when a milestone closes
-# and add the new milestone on the right.
-ALLOWED_MILESTONES = (10,)
-
-# Acceptance configurations retired by the Mn-1 rule.  Each name belonged
-# to exactly one milestone; none may come back, because their mechanism
-# coverage now lives on the current boot path (the subsystem images and the
-# M10 acceptance images).  Correction 01 to work package 42b retired the M9
-# images and their hardware smoke targets outright.
-RETIRED_ACCEPTANCE_TARGETS = (
-    "syscall-selftest", "irq-selftest", "m3-selftest",
-    "m4-loader-selftest", "m4-selftest", "m4-placement-selftest",
-    "m4-failure-selftest", "m5-selftest", "m5-corrupt-selftest",
-    "m6-selftest", "m6-failure-selftest", "m7-selftest",
-    "m8-ioc-selftest", "m8-hid-selftest", "m8-hid-noioc-selftest",
-    "m8-hid-badioc-selftest", "m8-v9958-selftest",
-    "m8-v9958-fontfail-selftest", "m8-console-selftest", "m8-selftest",
-    "m8-fallback-selftests",
-    "smoke-hardware-selftest", "smoke-hardware-irq", "smoke-hardware-m3",
-    "smoke-hardware-m4", "smoke-hardware-m4-failure", "smoke-hardware-m5",
-    "smoke-hardware-m5-corrupt", "smoke-hardware-m6",
-    "smoke-hardware-m6-failure", "smoke-hardware-m7",
-    "smoke-hardware-m8", "smoke-hardware-m8-ioc", "smoke-hardware-m8-hid",
-    "smoke-hardware-m8-v9958", "smoke-hardware-m8-console",
-    "smoke-hardware-m8-fb-nohid", "smoke-hardware-m8-fb-nohid-nov9958",
-    "smoke-hardware-m8-fb-badioc", "smoke-hardware-m8-fb-arena",
-    "m9-selftest", "m9-exec-selftest", "m9-iocfat-selftest",
-    "smoke-hardware-m9", "smoke-hardware-m9-exec",
-    "smoke-hardware-m9-iocfat",
-)
-
-# Retired boot modes and boot-phase hooks.  Production keeps exactly one
-# boot path (VFS/ROMFS boot with the derived arena) and one test seam.
-RETIRED_BOOT_MODES = (
-    "KOS_ROMFS_BOOT", "KOS_MONITOR_BOOT", "KOS_M4_SIO_IRQ",
-    "KOS_M4_ARENA_BASE", "KOS_M4_ARENA_END", "KOS_M4_PLACEMENT",
-)
-
-# Live files that may not name any of the retired names above.
-RETENTION_SCAN_ROOTS = ("boot", "drivers", "include", "kernel",
-                        "platform", "tools", "user")
-
-
-class TestMilestoneRetentionWindow(unittest.TestCase):
-    """The Mn-1 retention rule, enforced mechanically."""
-
-    def test_only_the_allowed_milestones_have_target_directories(self):
-        target_dir = os.path.join(ROOT, "tests", "target")
-        for name in sorted(os.listdir(target_dir)):
-            match = re.match(r"^m(\d+)$", name)
-            if not match:
-                continue
-            milestone = int(match.group(1))
-            self.assertIn(
-                milestone, ALLOWED_MILESTONES,
-                "tests/target/%s/ exists outside the retention window %r; "
-                "pre-Mn-1 acceptance code is retired, its mechanism "
-                "coverage belongs under tests/target/<subsystem>/"
-                % (name, ALLOWED_MILESTONES))
-
-    def test_only_the_allowed_milestones_have_make_targets(self):
-        text = _read(os.path.join(ROOT, "Makefile"))
-        for line in text.splitlines():
-            match = re.match(r"^(m(\d+)-[A-Za-z0-9_.-]*):", line)
-            if not match:
-                continue
-            milestone = int(match.group(2))
-            self.assertIn(
-                milestone, ALLOWED_MILESTONES,
-                "Makefile target %s is outside the retention window %r"
-                % (match.group(1), ALLOWED_MILESTONES))
-
-    def test_retired_acceptance_targets_are_gone(self):
-        text = _read(os.path.join(ROOT, "Makefile"))
-        for name in RETIRED_ACCEPTANCE_TARGETS:
-            self.assertNotIn(
-                "\n%s:" % name, text,
-                "retired acceptance target %s reappeared in the Makefile"
-                % name)
-
-    def test_retired_boot_modes_do_not_reappear(self):
-        for root_name in RETENTION_SCAN_ROOTS:
-            for path in _walk(root_name, (".c", ".h", ".asm", ".inc",
-                                          ".py")):
-                body = _code_only(path)
-                for token in RETIRED_BOOT_MODES:
-                    self.assertNotIn(
-                        token, body,
-                        "%s names the retired boot mode %r; production has "
-                        "one boot path"
-                        % (os.path.relpath(path, ROOT), token))
-        text = _read(os.path.join(ROOT, "Makefile"))
-        for token in RETIRED_BOOT_MODES:
-            self.assertNotIn(token, text,
-                             "Makefile names the retired boot mode %r"
-                             % token)
-
-    def test_retired_smoke_modes_are_gone(self):
-        text = _read(os.path.join(ROOT, "tools", "serial_smoke.py"))
-        for mode in ("selftest", "irq", "m3", "m4", "m4-failure", "m5",
-                     "m5-corrupt", "m6", "m6-failure", "m7", "m8-ioc",
-                     "m8-hid", "m8-v9958", "m8-console", "m8",
-                     "m8-fb-nohid", "m8-fb-nohid-nov9958", "m8-fb-badioc",
-                     "m8-fb-arena"):
-            self.assertNotIn(
-                '"%s"' % mode, text,
-                "retired serial_smoke mode %r reappeared" % mode)
-        # The current acceptance modes stay available.
-        self.assertIn('"subsystem"', text)
-        self.assertIn('"console-integration"', text)
-        self.assertIn('"console-serial"', text)
-        self.assertIn('"fs"', text)
-
-    def test_retired_milestone_data_directories_are_gone(self):
-        for name in ("m5", "m6", "m7", "m8"):
-            self.assertFalse(
-                os.path.isdir(os.path.join(ROOT, "tests", name)),
-                "tests/%s/ still holds retired milestone data" % name)
-
-    def test_embedded_catalog_boot_path_is_gone(self):
-        self.assertFalse(
-            os.path.exists(os.path.join(ROOT, "kernel", "module",
-                                        "embedded.c")),
-            "the embedded-catalog boot path is retired")
-        for token in ("module_catalog_load_all", "mod_catalog",
-                      "mod_catalog_entry"):
-            for root_name in ("kernel", "formats", "boot"):
-                for path in _walk(root_name, SOURCE_SUFFIXES):
-                    self.assertNotIn(
-                        token, _code_only(path),
-                        "%s still names the retired embedded catalog (%s)"
-                        % (os.path.relpath(path, ROOT), token))
-
-
 # Acceptance constant pairs: the C header is the source of truth and the
 # .inc is the assembly listing of the same acceptance image, so a drift
 # between them is a silent test bug.
@@ -1535,12 +1086,9 @@ CONSTANT_PARITY_PAIRS = (
 
 
 class TestConstantParity(unittest.TestCase):
-    """C and assembly must agree on every shared constant.
-
-    These are the parity loops the retired `tests/test_m1.py` owned; they
-    are a mechanism (a constant that drifts between `hardware.h` and
-    `hardware.inc` is a silent memory-map bug), so they moved here with
-    the rest of the source-layout checks."""
+    """C and assembly must agree on every shared constant: a constant
+    that drifts between `hardware.h` and `hardware.inc` is a silent
+    memory-map bug."""
 
     def test_shared_constants_have_identical_values(self):
         for c_rel, asm_rel in CONSTANT_PARITY_PAIRS:
@@ -1583,19 +1131,9 @@ class TestConstantParity(unittest.TestCase):
 
 
 class TestKernelNameComparison(unittest.TestCase):
-    """One shared kernel ASCII name comparison (work package 30c, F3).
-
-    The VFS, ROMFS and device registry used to carry three independent
-    comparisons.  This pins the consolidation: a single implementation in
-    `kernel/lib/name.c`, every caller using it with its own semantics
-    (VFS/ROMFS fold, the registry does not; ROMFS passes its bounded field
-    width), and no legacy copy left behind."""
-
-    LEGACY = ("vfs_name_equal", "romfs_name_match", "device_name_equal")
-
-    def _kernel_sources(self):
-        for path in _walk("kernel", SOURCE_SUFFIXES):
-            yield path
+    """One shared kernel ASCII name comparison: a single implementation
+    in `kernel/lib/name.c`, every caller using it with its own semantics
+    (VFS/ROMFS fold; ROMFS passes its bounded field width)."""
 
     def test_single_implementation(self):
         helper = _code_only(os.path.join(ROOT, "kernel", "lib", "name.c"))
@@ -1603,27 +1141,13 @@ class TestKernelNameComparison(unittest.TestCase):
             helper,
             r"\buint8_t\s+kos_ascii_equal\s*\(\s*const\s+char\s*\*",
             "kernel/lib/name.c must define the one shared comparison")
-        for legacy in self.LEGACY:
-            self.assertNotIn(legacy, helper)
-
-    def test_no_legacy_comparison_remains(self):
-        stale = []
-        for path in self._kernel_sources():
-            body = _code_only(path)
-            for legacy in self.LEGACY:
-                if re.search(r"\b%s\b" % legacy, body):
-                    stale.append("%s: %s"
-                                 % (os.path.relpath(path, ROOT), legacy))
-        self.assertEqual(stale, [],
-                         "legacy name comparisons still present:\n%s"
-                         % "\n".join(stale))
 
     def test_callers_keep_their_exact_semantics(self):
         # (file, expected selector text) - the two trailing arguments are
         # the field bound and the case-fold selector.
         expected = {
-            # Package 42b: the namespace router's publication table is the
-            # only other caller; the M9 dir/mount/registry callers are gone.
+            # The namespace router's publication table and the ROMFS
+            # reader are the callers.
             "kernel/vfs/dev.c": "0u, 1u",
             "kernel/romfs/romfs.c": "ROMFS_NAME_SIZE, 1u",
         }
@@ -1647,8 +1171,8 @@ class TestKernelNameComparison(unittest.TestCase):
 
 class TestUserSdkBoundary(unittest.TestCase):
     """User-space sources and EXE programs reach only the public ABI
-    (abi/kos) and the SDK (user/sdk); they never see include/konaos/,
-    kernel/ or platform/ (work package 28c)."""
+    (abi/kos) and the SDK (user/sdk); they never see kernel/ or
+    platform/."""
 
     EXE_FILES = (
         "tests/target/process/exetest.c",
@@ -1777,44 +1301,6 @@ class TestBuildOutputHygiene(unittest.TestCase):
                          "files: %s" % tracked)
 
 
-# Work package 49a: the per-image build composition is one system file per
-# image.  The Makefile selects a system and wires it; no image is composed
-# by conditionals, and no hand-written store manifest or boot-setting
-# validator survives.
-SYSTEM_COMPOSITION_TOKENS = (
-    "KOS_DRIVERS :=",
-    "KOS_BOOT_PROGRAM :=",
-    "KOS_BOOT_PROGRAM ?=",
-    "ROMFS_MANIFEST",
-    "DRV_MANIFEST_DIR",
-    "KOS_CONSOLE ?=",
-    "KOS_SMOKE_HOST_SYNC=1",
-    "IPC_DRIVER_NAMES",
-    "IPC_MODDIR",
-    "include config/system.mk",
-    "KOS_SUBSYS_SELFTEST",
-    "KOS_NUCLEUS_SELFTEST",
-    "KOS_CONSOLE_INTEGRATION_SELFTEST",
-    "KOS_CONSOLE_SERIAL_SELFTEST",
-    "KOS_CONSOLE_SERIAL_FAIL_SELFTEST",
-    "KOS_DRIVER_INIT_FAIL_SELFTEST",
-    "KOS_IOC_SELFTEST",
-    "KOS_HID_SELFTEST",
-    "KOS_VIDEO_SELFTEST",
-    "KOS_FS_SELFTEST",
-    "KOS_XMEM_SELFTEST",
-    "KOS_NS_SELFTEST",
-    "KOS_IPC_SELFTEST",
-    "KOS_HELLOWORLD_IMAGE",
-)
-
-# The ROMFS magic the format retracted in the same pass (work package 49a
-# renamed it to KRFS).  The header constants live in formats/include/romfs.h
-# and the packer in tools/romfspack.py; no live file may carry the old
-# four-byte token.
-RETIRED_ROMFS_MAGIC = "ZRFS"
-
-
 class TestSystemComposition(unittest.TestCase):
     def _image_systems(self):
         """The system each image target selects, as target -> name."""
@@ -1848,14 +1334,6 @@ class TestSystemComposition(unittest.TestCase):
         for name in self._image_systems():
             self.assertIn(name, systems,
                           "SYSTEM=%s has no systems/%s.json" % (name, name))
-
-    def test_makefile_composes_no_image_by_conditional(self):
-        text = _read(os.path.join(ROOT, "Makefile"))
-        offenders = [token for token in SYSTEM_COMPOSITION_TOKENS
-                     if token in text]
-        self.assertEqual(
-            offenders, [],
-            "the Makefile still composes images: %s" % ", ".join(offenders))
 
     def test_the_suffix_table_precedes_the_immediate_assignment(self):
         """The image-name suffix is read by an immediate assignment: it

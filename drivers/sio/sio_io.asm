@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; SIO0/B low-level port primitives for the static M3 driver.
+; SIO0/B low-level port primitives for the SIO driver.
 ;
 ; These are deliberately trivial: raw Zephyr-80 port access only, no
 ; policy.  They live in the bank-7 loadable region with the rest of the

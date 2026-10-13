@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic EXE v2 DATA-segment payloads (package 44a test artifact).
+"""Deterministic EXE v2 DATA-segment payloads.
 
 Writes the payload files and the segment declaration list for the
 loader-outcome programs the subsystem process selftest runs:
@@ -12,7 +12,7 @@ loader-outcome programs the subsystem process selftest runs:
                     the container exceeds 64 KiB
 
 A program that also builds far code declares its far segments first:
-ids 1-4 are the `FAR1=`..`FAR4=` segments (package 49b), in order.
+ids 1-4 are the `FAR1=`..`FAR4=` segments, in order.
 
 The payload pattern is `(i * MUL + ADD) & 0xFF` with one multiplier/addend
 per segment; the C programs (tests/target/process/) compute the same

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Host-side tests for the host-assembled driver images (packages 41b-42c).
+"""Host-side tests for the host-assembled driver images.
 
 Pure tests build synthetic SDCC .rel text, pack driver containers with
 `tools/modpack.py` and check the host assembly: the linked segment bases,
 the relocation arithmetic the packer applies, the host-assigned endpoint
 numbers, the dependency resolution (including the optional and missing
 cases), the load-order validation and the tier plan.  The flat container
-carries no relocation records or version field (work package 42c), so the
+carries no relocation records or version field, so the
 tests that read them are gone with them.
 
 Run with: `python3 -m unittest tests.test_driver_images`.
@@ -160,7 +160,7 @@ class TestDriverFormat(unittest.TestCase):
         self.assertEqual(info["image_size"], 16)
         self.assertEqual(info["bss_size"], 2 + 2 + 28)
         # Every address the container carries is final and inside the
-        # tier of its role (architecture 36.6, 36.11).
+        # tier of its role (architecture 5.2, 5.3).
         for segment in info["segments"]:
             base, end = {"hot": HOT_TIER, "io": IO_TIER,
                          "boot": BOOT_TIER, "bulk": BOOT_TIER}[
@@ -265,7 +265,7 @@ class TestDriverFormat(unittest.TestCase):
 
 class TestHostLinking(unittest.TestCase):
     """The host applies each ZREL record against the final segment bases
-    (architecture 36.11): the container carries linked bytes only."""
+    (architecture 5.3): the container carries linked bytes only."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -374,8 +374,8 @@ class TestHostLinking(unittest.TestCase):
         self.assertIn("bulk", str(caught.exception))
 
     def test_a_bulk_segment_can_carry_a_binary_asset(self):
-        """A segment may take its image from a binary asset (work package
-        41: the V9958 font is bulk data): the file's bytes are the segment
+        """A segment may take its image from a binary asset (the V9958
+        font is bulk data): the file's bytes are the segment
         image, linked verbatim (they carry no records)."""
         payload = bytes((i * 7 + 3) & 0xFF for i in range(2048))
         with open(os.path.join(self.tmp.name, "font.bin"), "wb") as handle:

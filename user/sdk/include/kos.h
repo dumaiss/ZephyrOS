@@ -1,4 +1,4 @@
-/* KonaOS user SDK umbrella header (work/28c-m9-user-sdk).
+/* KonaOS user SDK umbrella header.
  *
  * A native program includes only "kos.h"; it never includes a kernel
  * header and never writes entry assembly.  The SDK re-exports the public

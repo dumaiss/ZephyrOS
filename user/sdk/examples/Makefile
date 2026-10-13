@@ -1,4 +1,4 @@
-# KonaOS SDK examples (work package 49c).
+# KonaOS SDK examples.
 #
 # Build with `make` where this directory sits next to the unpacked SDK
 # (KOS_SDK_ROOT names the SDK): every example is one exe_program line
@@ -14,13 +14,13 @@ $(eval $(call exe_program,hello,.,hello.c,STACK=256))
 
 # The far-code example: fardemo_far.c is compiled into `_FAR1` at 8000h
 # with its own bank, so the `__banked` entry is called as plain C
-# through the SDK's trampoline (work package 49b).
+# through the SDK's trampoline.
 $(eval $(call exe_program,fardemo,.,fardemo.c,\
 	FAR1=fardemo_far.c,STACK=256))
 
 $(eval $(call exe_program,files,.,files.c,STACK=256))
 
-# The far-data example (work package 49d): levels.c is compiled into the
+# The far-data example: levels.c is compiled into the
 # `_DATA1`/`_DATA1B` pair linked at 8000h as one mappable DATA segment and
 # mapped by the program itself, while fardata_far.c is the container's
 # FAR1 row - one window, used by the data first and the banked call after.

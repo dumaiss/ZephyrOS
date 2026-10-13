@@ -1,7 +1,7 @@
-/* KonaOS CONSOLE drivers (work package 42e).
+/* KonaOS CONSOLE drivers.
  *
  * One source, two build-selected CONSOLE implementations (architecture
- * 36.11, M10-REFERENCE decision 12):
+ * 5.5):
  *
  *   console-v9958-hid   input HID, output VIDEO  (the production build)
  *   console-serial      input and output SERIAL  (-DKOS_CONSOLE_SERIAL=1)
@@ -12,10 +12,10 @@
  * required dependencies (the order below).  There is no runtime probing
  * and no fallback: the driver forwards each console operation to the
  * endpoint its build selected, and a missing required number fails its
- * init (the loader then fails the boot on the early console, 36.11).
+ * init (the loader then fails the boot on the early console, 5.3).
  *
  * Every operation is one forwarded call: the caller's descriptor travels
- * down the chain (36.8), so a WRITE moves the whole transfer through the
+ * down the chain (4.9), so a WRITE moves the whole transfer through the
  * console and its output driver without a staging copy here.  The
  * console owns no buffer, no IRQ and no state beyond the two handles.
  */
@@ -81,7 +81,7 @@ int16_t console_driver_dispatch(struct kos_ipc_frame *frame)
 
 /* The host resolved every required dependency before the image was
  * packed, so a zero here is a malformed bundle: refuse to initialize and
- * the loader fails the boot (36.11). */
+ * the loader fails the boot (5.3). */
 uint8_t console_driver_init(const struct driver_boot *boot)
 {
 	console_api = boot->api;

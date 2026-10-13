@@ -1,4 +1,4 @@
-/* KonaOS far-data outcome acceptance (work package 49d).
+/* KonaOS far-data outcome acceptance.
  *
  * The production store's `/system/far_data.exe` runner: an ordinary SDK
  * program that drives the far-data surface and prints one line per
@@ -19,7 +19,7 @@
  *   * `seginfo` describes the segment as a mappable DATA object of the
  *     linked size, which is how a program finds its far data;
  *   * a mappable object is filled by `read` straight into the open
- *     window (the buffer-identity rule, 36.8): the bytes land in the
+ *     window (the buffer-identity rule, 4.9): the bytes land in the
  *     object, the blob payload beside it and the DATA1 segment keep
  *     their contents (the caller's own window memory is untouched);
  *   * `read` from `/system` into the same mapped object returns the
@@ -194,7 +194,7 @@ int main(void)
 		int card = open(CARD_PATH, KFS_O_READ);
 
 		if (card >= 0) {
-			/* Straight into the open window (36.8): the
+			/* Straight into the open window (4.9): the
 			 * buffer names the mapped object. */
 			status = read((unsigned int)card, (void *)address,
 				      KNOWN_SIZE);

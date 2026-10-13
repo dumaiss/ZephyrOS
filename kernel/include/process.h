@@ -1,6 +1,6 @@
-/* KonaOS M6 process lifecycle contract (internal kernel interface).
+/* KonaOS process lifecycle contract (internal kernel interface).
  *
- * M6 is single-tasking with a fixed seven-entry process table, one
+ * The machine is single-tasking, with a fixed seven-entry process table, one
  * application bank per process, and synchronous parent/child execution:
  *
  *     parent runs
@@ -9,8 +9,8 @@
  *             child runs alone until SYS_EXIT (or a raw entry return)
  *         parent resumed exactly where it called exec
  *
- * Package 28 extends the same machinery to a bounded chain of ordinary
- * processes (KOS_EXEC_MAX_DEPTH deep): a child run by SYS_EXEC is an
+ * The same machinery runs a bounded chain of ordinary processes
+ * (KOS_EXEC_MAX_DEPTH deep): a child run by SYS_EXEC is an
  * ordinary process, and on exit its suspended parent is marked RUNNING
  * and resumed with the child's status as the SYS_EXEC result.  There is
  * one loader path (process_prepare), one launch/resume gate
@@ -36,7 +36,7 @@
 #include "exe.h"
 
 /* Table geometry: one slot per application bank.  Bank 6 is the resident
- * driver domain from M10 on (architecture 36.6), so the allocator hands
+ * driver domain (architecture 5.2), so the allocator hands
  * out banks 0-5 only; PROCESS_MAX_BANK stays 6 because the bank is still
  * addressable - the diagnostic family reaches it - it is just never a
  * process bank. */
@@ -45,7 +45,7 @@
 #define PROCESS_MAX_BANK   6u
 #define PROCESS_KERNEL_BANK 7u
 
-/* Nesting geometry (package 28).  KOS_EXEC_MAX_DEPTH user processes may
+/* Nesting geometry.  KOS_EXEC_MAX_DEPTH user processes may
  * form one synchronous exec chain; the kernel launcher sits at depth 0:
  *
  *   kernel launcher (boot stack)
@@ -67,8 +67,7 @@
  * registers, the SYS_EXEC frame and the process_launch() frame), so
  * 32 + 25% = 40 rounds up to 16-byte units as KOS_EXEC_FRAME_SAVE = 48.
  * The save areas live in permanent common memory beside the gate stack
- * they copy, so their size is not part of the bank-7 arena budget; the
- * package-28 validation record carries the measured depth. */
+ * they copy, so their size is not part of the bank-7 arena budget. */
 #define KOS_EXEC_FRAME_SAVE 48u
 
 /* Headroom between the frame the preflight measures and the frame the
@@ -281,7 +280,7 @@ uint8_t kos_bank_copy(const struct kos_bank_copy_req *req);
 /* Common staging buffer the syscall driver transfers through. */
 extern uint8_t kos_user_copy_staging[];
 
-/* --- mode-11 window copy (kernel/memory/user_copy.asm, package 43) ----
+/* --- mode-11 window copy (kernel/memory/user_copy.asm) ----
  *
  * The copy primitive for auxiliary slots 3-6: mode 11 keeps the fixed
  * core and picks P = 7 - bank, so 6000h-DFFFh shows bank F at the object's
@@ -300,7 +299,7 @@ uint8_t kos_window_copy(const struct kos_bank_copy_req *req);
 int process_bank_reserve(void);
 void process_bank_release(uint8_t bank);
 
-/* --- auxiliary bank slots (architecture 36.15/36.16, package 43) ------
+/* --- auxiliary bank slots (architecture 4.8) ------
  *
  * An auxiliary bank is divided into seven 8-KiB slots covering
  * 0000h-DFFFh.  The slot map is one owner byte per slot (pid + 1, 0 =
@@ -316,10 +315,10 @@ void process_bank_release(uint8_t bank);
 #define KOS_AUX_SLOT_BASE(slot) \
 	((uint16_t)((uint16_t)(slot) * KOS_AUX_SLOT_SIZE))
 
-/* What an allocation is for (package 44b): a data object prefers the
+/* What an allocation is for: a data object prefers the
  * window-speed slots, a mappable object lives in the aperture slice, and
  * a far-code segment - or a mappable DATA segment, whose image was linked
- * at 8000h (49d) - takes slot 4 (slots 4-5 when it is over 8 KiB), which
+ * at 8000h - takes slot 4 (slots 4-5 when it is over 8 KiB), which
  * is what keeps one of them per auxiliary bank. */
 #define KOS_AUX_PLACE_DATA     0u
 #define KOS_AUX_PLACE_MAPPABLE 1u

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Host-side V9958 video driver acceptance: the video diagnostic runs in
-the console-integration image (work package 42d merged the per-device
-images); this module replays that image's `sio ioc hid v9958
+the console-integration image; this module replays that image's `sio ioc hid v9958
 console-v9958-hid` driver set, production geometry, against the V9958
 peer.
 

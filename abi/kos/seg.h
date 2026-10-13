@@ -1,11 +1,11 @@
-/* KonaOS native segment ABI (public native ABI, packages 44a/44b).
+/* KonaOS native segment ABI (public native ABI).
  *
  * A EXE v2 container declares zero or more auxiliary segments in its
- * segment table (architecture 36.18).  A `DATA` segment becomes an
- * extended-memory object owned by the process (36.16): the loader places
+ * segment table (architecture 6.7).  A `DATA` segment becomes an
+ * extended-memory object owned by the process (4.8): the loader places
  * it before the program runs, `SYS_SEG_INFO` names it and returns the
  * object handle, and the contents are read and written with the
- * ABI's kos/xmem.h calls.  A `FAR_CODE` segment (36.17) is linked at
+ * ABI's kos/xmem.h calls.  A `FAR_CODE` segment (7.2) is linked at
  * `8000h`, loaded into the aperture slice of an auxiliary bank and
  * executed in place through the mode-10 aperture: the loader places one
  * far-code segment per auxiliary bank, the code is `8000h` when the
@@ -27,7 +27,7 @@
 #include "kos/types.h"
 #include "kos/errno.h"
 
-/* --- native syscall numbers (docs/abi.md section 15) -------------------- */
+/* --- native syscall numbers (docs/abi.md section 8.2) -------------------- */
 
 #define KOS_SYSCALL_SEG_INFO 0x26u
 #define KOS_SYSCALL_SEG_MAP  0x27u
@@ -53,8 +53,7 @@
  * extended-memory handle of a `DATA` segment, for SYS_XMEM_READ /
  * SYS_XMEM_WRITE; a `FAR_CODE` segment has none and reports 0.  `flags`
  * is the segment's KOS_XMEM_FLAG_* set: a `DATA` segment that asked for
- * the aperture (the container row's `EXE_SEG_FLAG_MAPPABLE`, work package
- * 49d) reports `KOS_XMEM_FLAG_MAPPABLE` and its handle can be mapped with
+ * the aperture (the container row's `EXE_SEG_FLAG_MAPPABLE`) reports `KOS_XMEM_FLAG_MAPPABLE` and its handle can be mapped with
  * SYS_XMEM_MAP.  An unknown id, a bad block or a buffer outside the
  * caller window is KOS_EINVAL, and `SYS_XMEM_FREE` refuses the handle (a
  * loader segment is released only at exit). */

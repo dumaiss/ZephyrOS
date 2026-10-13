@@ -1,10 +1,9 @@
-/* KonaOS filesystem outcome acceptance (work package 42b, correction 01).
+/* KonaOS filesystem outcome acceptance.
  *
  * The EXE primary the `fs-selftest` image boots: an ordinary SDK program
  * that drives the whole card surface through `fs.h` and prints one line per
- * outcome.  It is new code for the M10 model - one small outcome image,
- * no fault-injection matrix and no kernel-side test hook - and it replaces
- * every M9 acceptance program and image.
+ * outcome: one small outcome image, no fault-injection matrix and no
+ * kernel-side test hook.
  *
  * Outcomes:
  *
@@ -26,7 +25,7 @@
  *     its own stdout, leaks every handle it opened and reports the exit
  *     status this program compares - the card slots the child leaked must
  *     be reusable immediately, which proves the kernel released them;
- *     correction 01 adds the same child copied to the card and executed
+ *     the same child is also copied to the card and executed
  *     *from* `/fs`, so a card executable's path is read by a bank-6
  *     provider on the real machine;
  *   * a card that is absent or read-only skips the card outcomes, keeps
@@ -36,7 +35,7 @@
  * image then execs the monitor, so the transcript reaches the production
  * prompt.
  *
- * Work package 45b adds one tail option, `stage`: the same program then
+ * One tail option, `stage`: the same program then
  * runs as the hardware exerciser's files stage - every write confined to
  * the /fs/HWTEST scratch directory the runner creates and removes, the
  * nested exec tagging its child the same way, and a return to the caller
@@ -53,14 +52,14 @@
 #define SYS_FILE "/system/drivers.man"
 #define CHILD    "/system/fs_child.exe"
 
-/* The stage tail and the scratch paths it selects (45b). */
+/* The stage tail and the scratch paths it selects. */
 #define FS_STAGE_TAIL "stage"
 #define HW_DIR    "/fs/HWTEST"
 #define HW_FILE   "/fs/HWTEST/SELFTEST.TMP"
 #define HW_RENAMED "/fs/HWTEST/RENAMED.TMP"
 #define HW_SUBDIR "/fs/HWTEST/SELFTEST.D"
 
-/* The child's copy on the card (correction 01): the program this file
+/* The child's copy on the card: the program this file
  * copies and then execs *from `/fs`*, which is the one way a card
  * executable is proven on the real machine. */
 #define FS_CHILD_PROGRAM "/fs/CHILD.EXE"
@@ -83,7 +82,7 @@ static unsigned int checks;
 static unsigned int failures;
 /* EXE v2 has no initialized writable data: every static starts zeroed. */
 static int card;
-/* 1: the exerciser's files stage (45b): scratch paths, no handover. */
+/* 1: the exerciser's files stage: scratch paths, no handover. */
 static int stage;
 
 static void check(const char *label, int ok)
@@ -328,7 +327,7 @@ static void exec_case(void)
 
 	/* The same child, run from the card: the exec bind hands the path to
 	 * the bank-6 filesystem provider, so this row fails if exec stages it
-	 * anywhere the provider's window cannot see (correction 01). */
+	 * anywhere the provider's window cannot see. */
 	if (card != 0) {
 		const char *copy = stage ? HW_CHILD_PROGRAM
 					 : FS_CHILD_PROGRAM;
@@ -384,7 +383,7 @@ int main(int argc, char **argv)
 	const char *tail = (const char *)0;
 	int probe;
 
-	/* The stage tail (45b) selects the scratch paths and suppresses the
+	/* The stage tail selects the scratch paths and suppresses the
 	 * monitor handover; anything else is refused before a check runs. */
 	if (argc == 1 && argv != (char **)0 && same(argv[0], FS_STAGE_TAIL)) {
 		stage = 1;
@@ -398,7 +397,7 @@ int main(int argc, char **argv)
 	make_pattern();
 	card = 1;
 
-	/* Boot contract (42b): version 1 with the empty boot tail.  Run as
+	/* Boot contract: version 1 with the empty boot tail.  Run as
 	 * the exerciser's stage, the same line proves the option tail
 	 * arrived byte-exact instead. */
 	check("startup-version",
@@ -411,9 +410,8 @@ int main(int argc, char **argv)
 			  same(boot->tail, tail))));
 	/* The single `=` is the whole test: one byte through the standard
 	 * handle must come back as 1.  The byte itself is therefore the
-	 * glyph that appears on the display immediately before this row -
-	 * correction 01 confirmed on the bench that the stray `=` is this
-	 * check, not a console fault. */
+	 * glyph that appears on the display immediately before this row:
+	 * the stray `=` is this check, not a console fault. */
 	check("console-write", console_write("=", 1u) == 1);
 
 	/* A card that is absent or write-protected must leave `/system`

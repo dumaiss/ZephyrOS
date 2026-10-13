@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Host-side IOC resident-driver acceptance replay (work package 41).
+"""Host-side IOC resident-driver acceptance replay.
 
 The IOC command/reply and bulk transport live in a bank-6 *resident
 driver* driven by the versioned IOC protocol (`abi/kos/protocol.h`,
-class `KOS_CLASS_IOC`) over the IPC substrate.  Work package 42d merged
-the per-device images: this module replays the IOC diagnostic inside
+class `KOS_CLASS_IOC`) over the IPC substrate.  This module replays the IOC diagnostic inside
 `build-console-integration-selftest` (the `sio ioc hid v9958
 console-v9958-hid` set) against the emulated MCU IOC peer and asserts,
 from the outside:

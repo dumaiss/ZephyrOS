@@ -3,7 +3,7 @@
  * sio.c owns the bounded polling operations and the private state;
  * sio_boot.c owns the one-time 115200 8N1 programming sequence;
  * sio_proto.c owns the serial-protocol dispatch (abi/kos/protocol.h).
- * The image is packed as the `sio` resident driver (work package 41).
+ * The image is packed as the `sio` resident driver.
  * Not a kernel ABI.
  */
 

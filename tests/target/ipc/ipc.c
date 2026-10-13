@@ -1,9 +1,9 @@
 /* KonaOS IPC acceptance: the client program (test artifact).
  *
  * The EXE primary the ipc-selftest image boots.  It is an ordinary SDK
- * program: it discovers the synthetic endpoints through the SDK's cached
- * lookup, marshals frames and one buffer descriptor per call through the
- * SDK's call wrapper, runs the promoted package-35 conformance checks,
+ * program: it binds the synthetic endpoints by name, marshals frames and
+ * one buffer descriptor per call through the SDK's call wrapper, runs the
+ * IPC conformance checks,
  * and prints one marker line per measured phase so the simulator replay
  * can measure the spans between them.
  *
@@ -213,8 +213,8 @@ static int op_vfs_offset(void) { return vfs_read(448u, 64u, 0u); }
 
 /* The filesystem baseline on the same 512-byte chunk: the file is
  * reached through a bound handle and its protocol calls, so this is what
- * the resident chain is compared against (package 42b: there is no
- * special-cased direct path left - the M9 front end it named is gone). */
+ * the resident chain is compared against (there is no special-cased
+ * direct path). */
 static int op_fs_read(void)
 {
 	static int fd;
@@ -301,7 +301,7 @@ int main(int argc, char **argv)
 	(void)argv;
 	console_puts("ipc selftest: client OK\r\n");
 
-	/* Package 42b: every provider is reached through a bound namespace
+	/* Every provider is reached through a bound namespace
 	 * handle; the three host-built publications of the production
 	 * drivers would resolve here too (the image's own set is below
 	 * /dev/ipc). */

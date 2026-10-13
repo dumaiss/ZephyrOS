@@ -1,4 +1,4 @@
-/* KonaOS IOC resident-driver acceptance diagnostic (work package 41).
+/* KonaOS IOC resident-driver acceptance diagnostic.
  *
  * Runs from the late boot hook, after the driver loader brought the
  * image's driver set (sio, ioc, console) up in bank 6 and after the
@@ -6,8 +6,7 @@
  * LINK_SYNC bring-up and its endpoint (class KOS_CLASS_IOC, instance 0,
  * protocol version KOS_PROTOCOL_VERSION) answers.
  *
- * The diagnostic is a *bank-7 client* of that driver, exactly like
- * the retired class shim: it holds no buffer descriptor and cannot use
+ * The diagnostic is a *bank-7 client* of that driver: it holds no buffer descriptor and cannot use
  * `move`, so it drives the IOC protocol (abi/kos/protocol.h) through the
  * descriptor-less operations and the staged buffers the replies name, with
  * the shared acceptance client (tests/target/support/driver_client.c) for
@@ -46,7 +45,7 @@
 #if KOS_IOC_SELFTEST
 
 /* Frozen /SHARED file-driver classes (mirrored from the pinned MCU
- * ioc_frame.h for this fixture only, as the M8 diagnostic did) and the
+ * ioc_frame.h for this fixture only) and the
  * dedicated acceptance file the controller builds from the packed 8.3
  * basename.  FS_WRITE/FS_READ are also two of the request classes the
  * transport admits a bulk phase for. */

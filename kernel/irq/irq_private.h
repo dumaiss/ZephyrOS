@@ -40,8 +40,8 @@ uint16_t irq_unclaimed_count(void);
 irq_source_t irq_last_source(void);
 
 /* Production platform quiesce hook, implemented by the owning CTC
- * driver.  The CTC0 start/stop programming and the obsolete vector
- * lookup are acceptance-only and live under tests/target/. */
+ * driver.  The CTC0 start/stop programming is acceptance-only and lives
+ * under tests/target/. */
 void platform_irq_quiesce(irq_source_t source);
 
 /* Common-resident interrupt-state lock used by kernel subsystems that

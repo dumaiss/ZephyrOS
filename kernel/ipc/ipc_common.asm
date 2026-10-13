@@ -1,6 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS common-resident IPC aperture copy (kernel/ipc, correction 01 to
-; architecture 36.8).
+; KonaOS common-resident IPC aperture copy (kernel/ipc, architecture 4.9).
 ;
 ; Path B of the copy resolver.  The caller buffer lies in the caller's own
 ; bank (P = 0 when the descriptor was captured) and the driver buffer lies

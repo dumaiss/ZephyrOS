@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""KonaOS M10 MOD driver-image packer/validator.
+"""KonaOS MOD driver-image packer/validator.
 
 Consumes SDCC/sdasz80 relocatable (.rel) output plus a small JSON driver
 manifest and produces a deterministic, host-linked **driver image** -
-the only MOD form from work package 42c on.  The packer mini-links the
+the only MOD form.  The packer mini-links the
 listed objects into each declared segment's coordinate space
 (segment-relative 16-bit absolute references only), links every segment
 at its host-planned bank-6 address, resolves the inter-driver
 dependencies and endpoint numbers, and emits the flat load plan the
 nucleus loader iterates (kernel/driver/driver_loader.c).
 
-The host computes everything (M10-REFERENCE decision 2): the container is
+The host computes everything: the container is
 already relocated, its tables are final, and the loader checks only the
 bounds that protect the nucleus and the fixed driver-bank layout.  There
 is no version field, no module type, no fini/relocation target and no
@@ -41,7 +41,7 @@ Container layout (all little-endian):
     payload_offset          segment images, concatenated and linked
     total_size = payload_offset + sum(image_size)
 
-Segment roles keep the architecture-36.6 tiers: `hot` and `io` link
+Segment roles keep the architecture-5.2 tiers: `hot` and `io` link
 inside bank 6's 6000h-DFFFh (io inside 8000h-BFFFh), `boot` and `bulk`
 inside 0000h-5FFFh.  `entry` is the absolute boot entry (only the boot
 role may carry one) or FFFFh; the init entry lives in the header.
@@ -84,7 +84,7 @@ The `plan` command validates a set of packed images in load order (unique
 endpoints, resolvable dependencies, publications, a tier allocation that
 fits) and writes the plan report `drivers.plan.json`: one row per image and
 the bank-6 driver ledger tools/pack_image.py reads.  The boot manifest
-`drivers.man` and the images' names are no longer written here: they come
+`drivers.man` and the images' names are not written here: they come
 from tools/systemgen.py, which resolves the image's system file and hands
 this packer one resolved manifest per selected driver (--set points at
 those copies).
@@ -130,7 +130,7 @@ TIERS = {
     "boot": (0x0000, 0x6000),
     "bulk": (0x0000, 0x6000),
 }
-# Bank-6 destination geometry (architecture 36.6), mirrored by
+# Bank-6 destination geometry (architecture 5.2), mirrored by
 # kernel/driver/driver_loader.c: the hot tier 6000h-DFFFh (driver I/O
 # buffers first, inside 8000h-BFFFh), the boot/bulk tier 0000h-5FFFh.
 HOT_TIER_BASE = 0x6000
@@ -139,11 +139,11 @@ IO_BASE = 0x8000
 IO_END = 0xC000
 BOOT_TIER_BASE = 0x0000
 BOOT_TIER_END = 0x6000
-# The DEVICE provider's root (architecture 36.13): a manifest declares the
+# The DEVICE provider's root (architecture 4.10): a manifest declares the
 # full namespace path and the container carries the provider-relative
 # remainder, which is what the provider resolves.
 DEVICE_ROOT = "/dev"
-# The filesystem-namespace root (work package 42b): a filesystem driver
+# The filesystem-namespace root: a filesystem driver
 # publishes `/fs` itself, so its publication path is the provider root
 # rather than a name below DEVICE_ROOT.
 FS_ROOT = "/fs"
@@ -420,7 +420,7 @@ def read_manifest_objects(manifest, path, objdir):
 def read_manifest_asset(segment, path, objdir):
     """Load one segment's raw image asset (a bulk-data payload).
 
-    The asset is a binary file (the pinned V9958 font, work package 41):
+    The asset is a binary file (the pinned V9958 font):
     the segment's image bytes are exactly the file, there are no
     relocations, and the loader places it verbatim.  Paths resolve like
     object names (objdir first, manifest directory otherwise)."""
@@ -858,7 +858,7 @@ def pack_driver_manifest(manifest):
                 reloc_sites[start + index] = True
                 records[segment].append((target_segment, patch))
 
-    # Segment assets (bulk data, work package 41): the file's bytes are
+    # Segment assets (bulk data): the file's bytes are
     # the segment image, copied verbatim, with no relocation records.
     for index, segment in enumerate(layout["segments"]):
         if segment["asset"] is None:
@@ -958,7 +958,7 @@ def pack_driver_manifest(manifest):
 
 def link_driver_image(packed, row):
     """Link one image at the host-planned segment bases (architecture
-    36.11): every KREL_ABS16 record is applied here as
+    5.3): every KREL_ABS16 record is applied here as
     `word += target segment base`, exactly the arithmetic the loader used
     to perform, so the container carries final addresses and no relocation
     records.  Returns the linked payload."""
@@ -984,7 +984,7 @@ def build_driver_container(packed, row):
     the segment/endpoint/dependency/publication tables and the
     concatenated linked segment images.  `row` carries the host-planned
     absolute base of each segment role; every address field in the
-    container is final (architecture 36.11) and no version is stored: the
+    container is final (architecture 5.3) and no version is stored: the
     packer validates, the loader only checks bounds."""
     publications = list(getattr(packed, "publications", []))
     if len(publications) > MAX_PUBLICATIONS:
@@ -1389,7 +1389,7 @@ def set_member_location(spec, objdir):
 
 
 def pack_driver_set_member(manifest_path, manifest, set_paths, objdir):
-    """Link one driver image against its whole set (architecture 36.11).
+    """Link one driver image against its whole set (architecture 5.3).
 
     The set is the load order: every manifest listed by `--set`, this one
     included.  The packer plans the bank-6 tiers, assigns endpoint numbers,
@@ -1492,7 +1492,7 @@ def align2_down(value):
 
 
 class DriverTierPlan:
-    """The bank-6 tier allocation the loader performs (architecture 36.6).
+    """The bank-6 tier allocation the loader performs (architecture 5.2).
 
     Pass one reserves the driver I/O buffers first: every image's io
     segment gets a slot inside 8000h-BFFFh, packed contiguously from C000h
@@ -1572,7 +1572,7 @@ def segment_size(segment):
 
 
 def plan_driver_set(packs):
-    """Host assembly for one image's driver set (architecture 36.11).
+    """Host assembly for one image's driver set (architecture 5.3).
 
     Places every image's segments with the existing tier plan, assigns the
     host endpoint numbers in load order and table order, and resolves each
@@ -1638,7 +1638,7 @@ def plan_driver_set(packs):
     # Symbolic dependencies: resolved to the typed endpoint reference of
     # an export by this image or an earlier one in the load order.  An
     # optional dependency that no image exports resolves to 0; a missing
-    # required one is a build error (architecture 36.11: no fallback).
+    # required one is a build error (architecture 5.3: no fallback).
     for index, pack in enumerate(packs):
         for dependency in pack.dependencies:
             key = (dependency["class"], dependency["instance"])
@@ -1657,7 +1657,7 @@ def plan_driver_set(packs):
                     % (pack.name, key[0], key[1]))
             dependency["number"] = resolved
 
-    # Publications (work package 42a): every image's declared namespace
+    # Publications: every image's declared namespace
     # names, with the serving endpoint resolved the same way a dependency
     # is - to an export by this image or an earlier one in the load order.
     seen_paths = {}
@@ -1713,7 +1713,7 @@ def _entry_segments(entry):
 
 def check_tier_overlap(rows, entries):
     """Every placed block must lie inside its tier and no two blocks may
-    overlap (architecture 36.6, fixed driver-bank layout)."""
+    overlap (architecture 5.2, fixed driver-bank layout)."""
     for role in ("hot", "io", "boot", "bulk"):
         tier_base, tier_end = TIERS[role]
         blocks = []
@@ -1738,7 +1738,7 @@ def check_tier_overlap(rows, entries):
 
 
 def driver_ledger(entries, rows):
-    """The architecture-36.20 `driver hot` and `driver boot/bulk` ledgers:
+    """The architecture-9 `driver hot` and `driver boot/bulk` ledgers:
     the placed bytes of each tier, taken from the plan rows."""
     hot_used = 0
     boot_used = 0
@@ -1808,7 +1808,7 @@ def cmd_plan(args):
             number = dependency["number"]
             if number == 0:
                 # An optional dependency no image exports: the driver's
-                # host-configured fallback (architecture 36.11).
+                # host-configured fallback (architecture 5.3).
                 continue
             if number not in number_key:
                 raise ModError(

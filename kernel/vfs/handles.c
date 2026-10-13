@@ -1,8 +1,8 @@
 /* KonaOS VFS part: the handle table. */
-/* KonaOS M10 process filesystem state (packages 27, 42a, 42b).
+/* Process filesystem state.
  *
  * Owns the single global handle table and the per-process CWD pool that
- * expose the namespace to native programs (architecture 36.13).  Both are
+ * expose the namespace to native programs (architecture 4.10).  Both are
  * `_DATA` state; the provider handles they hold never leave the kernel,
  * and the handle a process names is its own per-process number.
  *
@@ -16,7 +16,7 @@
  * has no slot and its CWD is the constant `/`.
  *
  * Everything here runs in bank 7; no function declares an automatic object
- * larger than 32 bytes (work/M10-REFERENCE.md gate-stack discipline).
+ * larger than 32 bytes (the gate stack is shared and small).
  */
 
 #include "kernel/vfs/vfs.h"
@@ -214,7 +214,7 @@ int vfs_process_start(uint8_t pid, uint8_t parent_pid)
 	}
 	vfs_path_copy(vfs_cwd_path[slot], vfs_cwd_for(parent_pid));
 	/* Every process starts with the two console handles already bound
-	 * (architecture 36.13): the standard numbers are never returned by
+	 * (architecture 4.10): the standard numbers are never returned by
 	 * `bind` and no program has to discover the console. */
 	vfs_ns_standard_handles(pid);
 	return 0;
@@ -259,7 +259,7 @@ void vfs_ns_release_entry(struct vfs_handle_entry *entry)
 {
 	/* The provider release: a bound ROMFS FILE instance is the entry
 	 * itself, a `/fs` FILE instance is the driver's and device
-	 * instances are permanent (36.7). */
+	 * instances are permanent (4.9). */
 	if (entry->endpoint == VFS_NS_FS_ENDPOINT) {
 		vfs_ns_fs_release(entry->type, entry->object);
 	}

@@ -2,7 +2,7 @@
  *
  * The declarative board constants (latch fields, mode values, memory
  * geometry) stay in platform/zephyr80/.  These are the internal,
- * assembly-backed latch/bank primitives of the M1 memory subsystem: a
+ * assembly-backed latch/bank primitives of the memory subsystem: a
  * kernel mechanism, not a stable ABI and not part of the module-facing
  * surface.  Kernel subsystems and acceptance code include it from this
  * explicit owning path.

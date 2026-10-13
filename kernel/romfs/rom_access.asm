@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS M5 common ROM-access primitive.
+; KonaOS common ROM-access primitive.
 ;
 ; Reads a bounded window (offset/length inside 0000h-BFFFh) of one
 ; configured recovery ROM page into the common staging buffer and restores

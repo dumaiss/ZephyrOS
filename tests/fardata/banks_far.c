@@ -1,4 +1,4 @@
-/* KonaOS far-data replay fixtures (work package 49d): the bank-exhaustion
+/* KonaOS far-data replay fixtures: the bank-exhaustion
  * container's far source.
  *
  * Compiled through the `FAR1=` option, so its code is the `_FAR1` area,

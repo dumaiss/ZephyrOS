@@ -1,7 +1,7 @@
-/* KonaOS native object and namespace syscall bodies (package 42b).
+/* KonaOS native object and namespace syscall bodies.
  *
- * The cold half of the object lifecycle (architecture 36.7, 36.13 and
- * 36.14): SYS_BIND, SYS_CALL, SYS_UNBIND, SYS_NS_ENUM, SYS_CHDIR and
+ * The cold half of the object lifecycle (architecture 4.9, 4.10 and
+ * 6.2): SYS_BIND, SYS_CALL, SYS_UNBIND, SYS_NS_ENUM, SYS_CHDIR and
  * SYS_GETCWD.  Each body validates its complete argument block, copies the
  * caller path into the shared bank-7 VFS workspace path view, normalizes it
  * against the caller's CWD and hands the canonical absolute path to the VFS
@@ -13,11 +13,11 @@
  * handle names a `/fs` object, the FS provider is entered as plain C
  * (`vfs_ns_fs_call`), so the driver the provider forwards to is dispatched
  * by the IPC layer as an outermost call and runs on the driver stack
- * (architecture 36.5, 36.9).  Every other handle - a device object, the
+ * (architecture 4.2, 4.9).  Every other handle - a device object, the
  * in-process ROMFS FILE provider - takes the ordinary IPC path
  * (kernel/ipc/ipc.c ipc_syscall_call_object).
  *
- * Result conventions (docs/abi.md section 12): a successful number is
+ * Result conventions (docs/abi.md section 6): a successful number is
  * published in HL with carry clear; every refusal is a carried KOS_E* in
  * A.  The shared path rules are 1..127 non-NUL caller-window bytes for the
  * block's path fields and the 0100h-DFFFh buffer window for `out`.
@@ -212,7 +212,7 @@ static void object_call(uint16_t block)
 
 /* SYS_CHDIR: normalize against the caller's CWD, ask the owning provider
  * whether the path is a traversable location, and only then store the
- * canonical global path (architecture 36.13: chdir does not bind a
+ * canonical global path (architecture 4.10: chdir does not bind a
  * directory object). */
 static void object_chdir(uint16_t block)
 {

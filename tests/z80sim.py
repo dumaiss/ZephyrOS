@@ -9,7 +9,7 @@ Models the banking latch (MEM_DECODER rev 12):
   mode 10: 0000-DFFF = bankN, E000+ = bank0 (application);
   mode 11: 0000-1FFF = bankN, 2000-DFFF = bank7, E000+ = bank0 (OS).
 
-Boot pages 0/1 come from the provided images; the M5 recovery pages 2-7
+Boot pages 0/1 come from the provided images; the recovery pages 2-7
 are supplied separately (rom_pages) when a replay exercises ROMFS boot.
 
 Usage: sim.py <selftest-image> [start-pc] [trace]
@@ -78,7 +78,7 @@ class IocCommandPeer:
     ST_FS_ERROR = 0x38
     ST_UNKNOWN_CMD = 0x02   # IOC_STATUS_UNKNOWN_CMD (unknown-class reply)
 
-    # --- FS2 filesystem driver (M9, package 30) ----------------------
+    # --- FS2 filesystem driver ----------------------
     CMD_FS2_CAPS = 0x30
     CMD_FS2_GENERATION = 0x31
     CMD_FS2_ROOT = 0x33
@@ -209,7 +209,7 @@ class IocCommandPeer:
         self.fs_delete_reopen_fault = fs_delete_reopen_fault
         self.arbitrary_ready = arbitrary_ready
         self.custom_replies = dict(custom_replies or {})
-        # --- FS2 filesystem driver model (M9, package 30) ------------
+        # --- FS2 filesystem driver model ------------
         # A small root-relative FAT-like namespace served with the real
         # FS2 command/reply and READY/DONE bulk semantics.  `fs2_counts`
         # records every FS2 command class so tests can prove the
@@ -647,7 +647,7 @@ class IocCommandPeer:
         out[1] = status
         return self._wrap(self.RSP_XFER_STATUS, seq, self.ST_OK, out)
 
-    # -- FS2 filesystem driver (M9, package 30) -----------------------
+    # -- FS2 filesystem driver -----------------------
 
     def fs2_add(self, path, content=b"", directory=False):
         """Install a file or directory.  `path` is a '/'-separated name
@@ -735,7 +735,7 @@ class IocCommandPeer:
             # root *open* still succeeds there - the mount context is
             # cached and FatFs' `f_opendir("/")` reads no directory data -
             # and every operation that reaches the volume fails, starting
-            # with the first directory *read* (correction 01, 45b: the
+            # with the first directory *read* (the
             # driver's media probe reads one entry for exactly that
             # reason, so bench and simulator agree on what "no media"
             # means).
@@ -1452,7 +1452,7 @@ class MemoryDecoder:
     Revision 12: mode 11 shows bank 7 at 2000h-DFFFh.  The latch page
     field D7-D5 only selects the ROM page in mode 00.
 
-    Revision 13 (the programmed baseline, architecture section 36.2): the
+    Revision 13 (the programmed baseline, architecture section 2.2): the
     board bodge wires the same D7-D5 bits to the PLD's PAGE0-PAGE2 inputs.
     In mode 11 the 6000h-DFFFh window shows the bank selected by the
     *inverted* page field (page 0 -> bank 7, page 1 -> bank 6, ... page 7

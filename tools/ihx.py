@@ -4,7 +4,7 @@
 The ROM image packer (`tools/pack_image.py`) and the EXE tools
 (`tools/exepack.py`, `tools/exemanifest.py`) read the same two linker
 outputs: the Intel HEX image and the wide map.  This module owns that
-parsing once, so the standalone SDK can ship it (work package 49c) and
+parsing once, so the standalone SDK can ship it and
 there is no second implementation to drift.  Python 3 standard library
 only: `exepack.py` ships inside the SDK, where the OS tools are absent.
 
@@ -43,7 +43,7 @@ def parse_ihx(text, multi=False):
     rejected and every value becomes a list of bytes in record order: a
     program with several far-code areas linked at 8000h emits one record
     stream per area (`_FAR1`, `_FAR2`, ... in link order), so the n-th
-    value of an address is the n-th area's byte (work package 49b).
+    value of an address is the n-th area's byte.
     """
     mem = {}
     upper = 0

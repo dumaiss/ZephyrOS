@@ -1,18 +1,18 @@
-/* KonaOS M7 native monitor (user/monitor).
+/* KonaOS native monitor (user/monitor).
  *
  * Ordinary EXE v2 program linked into the user bank by the unchanged
- * loader.  All ordinary input/output goes through the SYS_CONSOLE_*
- * runtime wrappers; every memory, port, and system operation goes
- * through SYS_DIAG_* wrappers.  The monitor has no SIO/V9958/HID
- * knowledge, no CP/M dependency, and no private kernel symbols, so the
- * same binary keeps working when the console device is rebound.
+ * loader.  All ordinary input/output goes through the SDK's console
+ * functions (the CONSOLE protocol on the standard handles); every
+ * memory, port, and system operation goes through the diagnostic
+ * wrappers.  The monitor has no SIO/V9958/HID knowledge, no CP/M
+ * dependency, and no private kernel symbols, so the same binary works
+ * with either console driver.
  *
  * Command lines arrive on the console and, when the store publishes a
- * SERIAL object at `/dev/serial/0`, on that lane as well (work package
- * 45b): the monitor binds the name through the ordinary typed protocol
+ * SERIAL object at `/dev/serial/0`, on that lane as well: the monitor binds the name through the ordinary typed protocol
  * and polls it beside the console, so production - whose console input
  * is the HID build - can still be driven by a terminal or a host tool on
- * the lane, and a build without that object behaves exactly as before.
+ * the lane, and a build without that object is console-only.
  * Each byte is echoed to the source it came from.
  *
  * Command surface (case-insensitive hex, 80-character lines):

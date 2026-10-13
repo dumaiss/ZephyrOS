@@ -1,4 +1,4 @@
-/* KonaOS M0 early serial console (Z80 SIO channel B).
+/* KonaOS early serial console (Z80 SIO channel B).
  *
  * This is the permanent low-level diagnostic path, not the future console
  * subsystem.  It is compiled into the _COMMON code segment so the whole

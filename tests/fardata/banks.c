@@ -1,4 +1,4 @@
-/* KonaOS far-data replay fixtures (work package 49d): the bank-exhaustion
+/* KonaOS far-data replay fixtures: the bank-exhaustion
  * container's primary.
  *
  * The program itself never runs: its container declares six FAR_CODE rows

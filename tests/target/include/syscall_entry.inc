@@ -1,5 +1,5 @@
-; KonaOS M1 syscall-gate acceptance constants (assembly visible).
-; Value-identical with tests/target/include/selftest.h (parity-tested).
+; KonaOS syscall-gate acceptance constants (assembly visible).
+; Value-identical with tests/target/include/syscall_selftest.h (parity-tested).
 
 ; Error code from abi/kos/errno.h (kept in sync by the host test).
 KOS_ENOSYS              = 0x01

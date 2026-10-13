@@ -1,4 +1,4 @@
-# The standalone SDK release version (work package 49c).
+# The standalone SDK release version.
 #
 # `make sdk` names its tree and tarball build/kos-sdk-$(KOS_SDK_VERSION).
 # The ABI number written into the SDK's VERSION file is read from

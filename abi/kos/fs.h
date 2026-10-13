@@ -1,12 +1,12 @@
 /* KonaOS native filesystem ABI (application-visible types).
  *
  * The metadata and limit vocabulary the FILE protocol and the
- * filesystem-namespace protocol share (architecture 36.13, 36.14): the
+ * filesystem-namespace protocol share (architecture 4.10, 6.2): the
  * kernel router and providers, the filesystem driver, the SDK `fs.h`
  * wrappers and native programs.  `fs.h` (the SDK header of the same name)
  * adds the wrapper prototypes; the ABI's `kos/protocol.h` owns the operation
- * numbers and frame layouts.  The M9 syscall argument blocks are gone:
- * files are typed handles, and the `FS_*` family is retired (package 42b).
+ * numbers and frame layouts.  Files are typed handles; there are no
+ * file syscalls.
  *
  * A path or component over a limit is KOS_EINVAL; see kos/errno.h.
  */
@@ -31,14 +31,14 @@
 #define KFS_ATTR_SYSTEM   0x04u
 
 /* Zephyr-80 has no RTC; zero means unknown/unavailable.  The fields stay
- * 32-bit so a future time source does not change the layout.  M9 exposes
- * ctime and mtime, not atime. */
+ * 32-bit so a future time source does not change the layout.  ctime and
+ * mtime are exposed, not atime. */
 #define KFS_TIME_UNKNOWN 0u
 
 /* stat() result: 16 bytes, packed on the Z80 (SDCC inserts no padding for
  * these fields).  No inode numbers, clusters, sectors or modes are exposed.
- * M9 has no statfs/df: architecture section 32.12 keeps filesystem-wide
- * accounting out of the native ABI until a consumer exists. */
+ * There is no statfs/df: filesystem-wide accounting stays out of the
+ * native ABI until a consumer exists. */
 struct kfs_stat {
 	uint8_t  type;        /* KFS_TYPE_*                    */
 	uint8_t  attributes;  /* KFS_ATTR_*                    */
@@ -61,7 +61,7 @@ struct kfs_dirent {
 };
 
 /* open() flags: the bind flags `fs_open` passes to `bind` and the selected
- * filesystem provider interprets (architecture 36.7 "FILE uses it for
+ * filesystem provider interprets (architecture 4.9 "FILE uses it for
  * read/write/create/truncate style open flags"). */
 #define KFS_O_READ   0x01u
 #define KFS_O_WRITE  0x02u

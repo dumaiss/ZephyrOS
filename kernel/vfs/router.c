@@ -1,7 +1,7 @@
 /* KonaOS VFS part: the root router. */
-/* KonaOS M10 VFS root router and static namespace providers (package 42a).
+/* The VFS root router and the static namespace providers.
  *
- * Architecture 36.13: the VFS owns `/` and routes a normalized global
+ * Architecture 4.10: the VFS owns `/` and routes a normalized global
  * path, ASCII case-insensitively, by its first component to the three
  * static providers - `/fs`, `/system` and `/dev`.  The selected provider
  * owns everything below its root; this module never interprets a
@@ -87,7 +87,7 @@ int vfs_ns_unbind(uint8_t pid, uint8_t handle)
 
 	/* The standard handles are not a caller's to release: `bind` never
 	 * returns their numbers and a program that dropped its console
-	 * could not report why (architecture 36.13).  Process teardown is
+	 * could not report why (architecture 4.10).  Process teardown is
 	 * the one caller that releases them (vfs_process_exit). */
 	if (handle < KOS_HANDLE_FIRST_BOUND) {
 		return -KOS_EINVAL;
@@ -177,8 +177,8 @@ static int ns_enum_root(uint8_t bank, uint16_t *cookie, uint16_t out,
 		const char *name = names[*cookie];
 		uint16_t length = vfs_component_length(name);
 
-		/* All three root entries are containers; their provider
-		 * protocols are not bindable objects in M10. */
+		/* All three root entries are containers; a root itself is not
+		 * a bindable object. */
 		if (vfs_emit(bank, out, slot, name, length, 0u,
 			    KOS_NS_ENTRY_CONTAINER) != 0) {
 			return -KOS_EFAULT;
@@ -379,7 +379,7 @@ int vfs_ns_dir_check(const char *norm, uint8_t *ok)
 /* The VFS bootstrap (kernel/main.c): the ROMFS reader first, so `/system`
  * is usable before any resident driver exists, then the handle/CWD state,
  * the empty provider tables and the in-process FILE endpoint.  There is no
- * mount phase: the three providers are static (architecture 36.13). */
+ * mount phase: the three providers are static (architecture 4.10). */
 static uint8_t vfs_ready;
 
 int vfs_init(void)

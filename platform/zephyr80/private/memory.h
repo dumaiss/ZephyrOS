@@ -15,7 +15,7 @@
 #define ZEPHYR80_MEMORY_H
 
 /* Page-zero/reset reservation in ROM page 0.  The stackless reset copier
- * must stay below KOS_RESET_TOP so that M1 can install RST 30h there. */
+ * must stay below KOS_RESET_TOP so that the kernel can install RST 30h there. */
 #define KOS_RESET_TOP               0x0030u
 #define KOS_PAGE_ZERO_END           0x0100u
 
@@ -32,8 +32,8 @@
 #define KOS_IRQ_ISR_STACK_TOP       0x6000u
 #define KOS_IRQ_ISR_STACK_SIZE      0x0100u
 
-/* Driver stack: 512 bytes in the fixed core, reserved now and used by the
- * IPC substrate from stage 3 (architecture 36.9, 36.20).  It grows down
+/* Driver stack: 512 bytes in the fixed core, used by the
+ * IPC substrate (architecture 4.9).  It grows down
  * from KOS_DRIVER_STACK_TOP, below the relocated ISR stack. */
 #define KOS_DRIVER_STACK_BASE      0x5D00u
 #define KOS_DRIVER_STACK_TOP       0x5F00u
@@ -50,11 +50,8 @@
  * IRQ transition state reservations (FD00h-FEFFh) are declared in irq.h.
  *
  * KOS_COMMON_CEILING is the architectural ceiling on the packed
- * `_COMMON` + `_COMMON_DATA` run (work package 30c, from the 30b audit):
- * common memory is the scarcest region.  The M9 reservation held back for
- * M10's far-call state was released to M10's transitions and IPC by work
- * package 43 (architecture 36.20), so the whole ceiling is the limit.
- * It may not be raised to make a package fit. */
+ * `_COMMON` + `_COMMON_DATA` run: common memory is the scarcest region
+ * (architecture 9).  It may not be raised to make something fit. */
 #define KOS_COMMON_BASE             0xE000u
 #define KOS_COMMON_CODE_END         0xFD00u
 #define KOS_COMMON_STACK_BASE       0xFF00u
@@ -67,10 +64,10 @@
 /* Common gate stack used only while crossing between mode 10 and
  * mode 11.  Lives in the common data area, below the boot stack.  It
  * carries the whole syscall handler chain, including a module class op
- * that runs a full device transaction (M8 console read: HID -> IOC -> SIO
+ * that runs a full device transaction (a console read: HID -> IOC -> SIO
  * needs about 180 bytes) and the nested exec (SYS_EXEC -> ROMFS read ->
- * provider and driver transaction, measured at 287 bytes with the M10
- * filesystem driver), so it is sized well above the M1 dispatch set.
+ * provider and driver transaction, measured at 287 bytes with the filesystem driver),
+ * so it is sized well above a plain syscall.
  * The transition state cells sit directly below the stack base: a chain
  * that overruns the reservation overwrites them, so the size must stay
  * above the deepest measured chain. */

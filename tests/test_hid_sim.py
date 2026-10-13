@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Host-side HID acceptance replay: the HID diagnostic runs in the
-console-integration image (work package 42d merged the per-device
-images); this module replays that image in the Z80 simulator against the
+console-integration image; this module replays that image in the Z80 simulator against the
 emulated IOC peer.
 
 The image boots the production-derived nucleus and the driver loader

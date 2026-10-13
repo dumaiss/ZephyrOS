@@ -1,5 +1,5 @@
 /* KonaOS VFS part: path normalization. */
-/* KonaOS M9 VFS path normalization.
+/* VFS path normalization.
  *
  * Absolute/relative paths, `.`, `..`, repeated slashes and traversal above
  * `/` are handled here.  No state is kept: the caller provides the output

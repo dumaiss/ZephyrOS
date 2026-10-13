@@ -1,6 +1,6 @@
-/* KonaOS kernel interface for M0.
+/* KonaOS kernel interface.
  *
- * Declares the M0 kernel entry, the fatal-error path, and the early serial
+ * Declares the kernel entry, the fatal-error path, and the early serial
  * console.  These are internal implementation details of the KonaOS
  * bring-up; they are not a stable KonaOS ABI.
  */

@@ -16,7 +16,7 @@
 #include "kos/process.h"
 #include "kos/syscall.h"
 
-/* Largest argv crt0 stores (work/28c-m9-user-sdk). */
+/* Largest argv crt0 stores. */
 #define KOS_ARGV_MAX 16
 
 /* The startup block delivered at entry, or NULL before crt0 initializes

@@ -1,4 +1,4 @@
-/* KonaOS SDK example: the canonical minimal program (work package 49c).
+/* KonaOS SDK example: the canonical minimal program.
  *
  * Built by one exe_program line (this directory's Makefile) with the SDK
  * alone, packed to build/user/hello.exe and booted as /system/hello.exe

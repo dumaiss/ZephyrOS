@@ -34,7 +34,7 @@ int kos_xmem_segment_alloc(uint8_t pid, uint8_t id, uint8_t kind,
 			   uint8_t *bank, uint8_t *slot);
 
 /* Release every object `pid` owns.  Called by process teardown after the
- * process's handles are unbound (architecture 36.13/36.15): exit releases
+ * process's handles are unbound (architecture 4.10/4.8): exit releases
  * everything, and a suspended parent's objects stay untouched. */
 void kos_xmem_release_process(uint8_t pid);
 

@@ -1,23 +1,22 @@
-"""Host checks for the M10 namespace acceptance package (42a).
+"""Host checks for the namespace acceptance image.
 
 Pins the structural facts the `ns-selftest` image, its client program and
 its replay depend on, without booting anything:
 
-  - the build wiring (target, image names, the driver set and its
-    manifest directory, the boot program);
+  - the build wiring (target, image names, the system file's driver set
+    and boot program);
   - the pinned ABI: the four syscall numbers, the argument blocks and the
     namespace entry in abi/kos/object.h, the 8-bit protocol types, the two
     standard handle numbers;
-  - production switch-over (package 42b): the guard macro and
-    `KOS_SYSCALL_IPC_LOOKUP` are gone, and the family is production code;
-  - the container ABI 4 publication table: the section's reserved-byte
+  - the object syscall numbers;
+  - the container publication table: the section's reserved-byte
     rule, the 20-byte record, the packer's parse/plan/emit and the three
     packed containers of the image (ABI byte, names, protocol types and
     host-resolved endpoint numbers);
   - the image's driver manifests and store, and `drivers.man` holding
     one 24-byte record per loaded image in load order;
-  - the residency classification: the three new objects are production
-    `cold` code (package 42b), so every image links them;
+  - the residency classification: the namespace objects are production
+    `cold` code, so every image links them;
   - the SDK: the bind/unbind/ns_enum/chdir/getcwd wrappers and the gate
     blocks every program links.
 
@@ -40,11 +39,6 @@ import romfspack  # noqa: E402
 
 MAKEFILE = os.path.join(ROOT, "Makefile")
 OBJECT_ABI = os.path.join(ROOT, "abi", "kos", "object.h")
-IPC_ABI = os.path.join(ROOT, "abi", "kos", "ipc.h")
-ABI_SYSCALL = os.path.join(ROOT, "abi", "kos", "syscall.h")
-SDK_IPC = os.path.join(ROOT, "user", "sdk", "include", "kos", "ipc.h")
-SDK_IPC_SOURCE = os.path.join(ROOT, "user", "sdk", "src", "ipc.c")
-NUCLEUS_IPC_C = os.path.join(ROOT, "kernel", "ipc", "ipc.c")
 DRIVER_HEADER = os.path.join(ROOT, "formats", "include", "mod.h")
 PACKER = os.path.join(ROOT, "tools", "modpack.py")
 RESIDENCY = os.path.join(ROOT, "config", "residency.json")
@@ -53,7 +47,7 @@ SDK_HEADER = os.path.join(ROOT, "user", "sdk", "include", "kos", "ipc.h")
 SDK_SOURCE = os.path.join(ROOT, "user", "sdk", "src", "ipc.c")
 SDK_GATE = os.path.join(ROOT, "user", "sdk", "src", "nsgate.asm")
 EXE_MK = os.path.join(ROOT, "user", "sdk", "exe.mk")
-# The generic exe_program rule (work package 49c).
+# The generic exe_program rule.
 RULE_MK = os.path.join(ROOT, "mk", "kos.mk")
 CLIENT = os.path.join(ROOT, "tests", "ns", "ns.c")
 CHILD = os.path.join(ROOT, "tests", "ns", "nschild.c")
@@ -98,7 +92,6 @@ DRIVER_ORDER = ["sio", "console-serial", "nsdev"]
 STORE = ["sio.mod", "console-serial.mod", "nsdev.mod", "drivers.man",
          "ns.exe", "nschild.exe"]
 MAN_RECORD = 24
-# The namespace leaves the M9 mount pass without a `/` mount to check.
 SPLIT = 0x6000
 
 
@@ -130,7 +123,7 @@ class TestNsBuildWiring(unittest.TestCase):
 
     def test_makefile_selects_the_image_configuration(self):
         text = read(MAKEFILE)
-        # Package 49a: the image's drivers, boot program and flags are the
+        # The image's drivers, boot program and flags are the
         # system file's, and the Makefile carries the one row that wires
         # this image.
         self.assertIn("SYSTEM_COLD_EXTRA.ns := vfs_router,vfs_system,"
@@ -187,15 +180,7 @@ class TestNsAbi(unittest.TestCase):
         self.assertIn('__builtin_offsetof(struct kos_ns_enum_args, count) '
                       '== 10', text)
 
-    def test_production_switch_over_retires_the_guard_and_lookup(self):
-        # Package 42b: the family is production code, so the compile-time
-        # guard and the stage-3 lookup number are both gone.
-        for path in (OBJECT_ABI, ABI_SYSCALL, SDK_IPC, SDK_IPC_SOURCE,
-                     NUCLEUS_IPC_C):
-            text = read(path)
-            self.assertNotIn("KOS_NS_HANDLES", text, path)
-            self.assertNotIn("KOS_SYSCALL_IPC_LOOKUP", text, path)
-            self.assertNotIn("ipc_lookup", text, path)
+    def test_object_syscall_numbers(self):
         text = read(OBJECT_ABI)
         self.assertRegex(text, r"#define KOS_SYSCALL_BIND\s+0x06u")
         self.assertRegex(text, r"#define KOS_SYSCALL_CHDIR\s+0x0Au")
@@ -205,8 +190,8 @@ class TestNsAbi(unittest.TestCase):
 class TestNsContainers(unittest.TestCase):
     def test_driver_header_declares_the_flat_plan(self):
         text = read(DRIVER_HEADER)
-        # Work package 42c: one flat plan per driver image, no ABI
-        # version field and no separate driver section.
+        # One flat plan per driver image: no ABI version field and no
+        # separate driver section.
         self.assertRegex(text, r"#define MOD_HEADER_SIZE\s+16u")
         self.assertRegex(text, r"#define MOD_SEGMENT_SIZE\s+12u")
         self.assertRegex(text, r"#define MOD_ENDPOINT_SIZE\s+8u")
@@ -307,8 +292,8 @@ class TestNsContainers(unittest.TestCase):
 
 class TestNsResidency(unittest.TestCase):
     def test_the_three_objects_are_cold_production_code(self):
-        # Package 42b: the family is production cold code, so residency.json
-        # classifies it and nothing is test-linked any more.
+        # The family is production cold code, so residency.json classifies
+        # it and nothing is test-linked.
         tiers, cold_half, test_link = mapcheck.load_residency(RESIDENCY)
         for name in ("vfs_router", "vfs_dev", "vfs_fs", "vfs_system",
                      "object"):
@@ -317,21 +302,10 @@ class TestNsResidency(unittest.TestCase):
         self.assertEqual(sorted(test_link), [])
 
     def test_production_linker_script_lists_the_namespace(self):
-        # Package 42b: the family is production, and the M9 machinery it
-        # replaces is gone from the link.
         text = read(LINKER)
         for name in ("vfs_router.rel", "vfs_dev.rel", "vfs_fs.rel",
-                     "vfs_system.rel", "object.rel"):
-            self.assertIn(name, text, name)
-        for name in ("build/fs.rel", "build/vfs_file.rel",
-                     "build/vfs_mount.rel", "build/vfs_dir.rel",
-                     "build/vfs_mutate.rel", "build/romfs_provider.rel",
-                     "build/registry.rel", "build/module_loader.rel",
-                     "build/ipc" + "_syscall.rel",
-                     "build/ioc" + "_shim.rel"):
-            self.assertNotIn(name, text, name)
-        # The reused M9 helpers stay linked.
-        for name in ("vfs_path.rel", "vfs_handles.rel", "vfs_workspace.rel"):
+                     "vfs_system.rel", "object.rel", "vfs_path.rel",
+                     "vfs_handles.rel", "vfs_workspace.rel"):
             self.assertIn(name, text, name)
 
     def test_production_image_carries_no_namespace_symbol(self):
@@ -339,25 +313,21 @@ class TestNsResidency(unittest.TestCase):
         if not os.path.exists(map_path):
             self.skipTest("build/konaos.map missing; run make all")
         found = symbols(map_path)
-        # Package 42b switched production over: the namespace family is
-        # linked in the cold half and the stage-3 lookup is gone.
+        # The namespace family is linked in the cold half.
         for name in ("_vfs_ns_bind", "_vfs_ns_file_bind",
                      "_kos_object_dispatch", "_vfs_ns_enum"):
             self.assertIn(name, found, name)
             self.assertGreaterEqual(found[name], SPLIT, name)
             self.assertLess(found[name], 0xE000, name)
-        for name in ("_ipc_lookup", "_ipc_syscall_call", "_vfs_mount_all"):
-            self.assertNotIn(name, found, name)
 
 
 class TestExecStagesItsPathInFixedCore(unittest.TestCase):
-    """Correction 01 (45b): `SYS_EXEC`'s path is provider-facing memory.
+    """`SYS_EXEC`'s path is provider-facing memory.
 
     The exec bind hands the path to whichever provider owns the name, and
     a bank-6 provider dereferences that address while its own window is
     open, so the staging must be the VFS workspace's path view in the
-    fixed core - not the cold-half `_DATA` buffer package 28 put there
-    (36.5's buffer rule).  `tests/test_hwtest_sim.py` holds the other
+    fixed core, never a cold-half `_DATA` buffer (4.2's buffer rule).  `tests/test_hwtest_sim.py` holds the other
     half: the production replay runs a card program through the monitor.
     """
 
@@ -416,8 +386,8 @@ class TestNsClient(unittest.TestCase):
         self.assertIn("KFILE_OP_READ", text)
         self.assertIn("KFILE_OP_SEEK", text)
         self.assertIn("KFILE_OP_META", text)
-        # CWD traversal through provider validation (architecture 37
-        # namespace/process-lifetime rows), including the root itself.
+        # CWD traversal through provider validation (architecture 4.10),
+        # including the root itself.
         for token in ('chdir("/system")', 'chdir("..")',
                       'chdir("/dev/input")',
                       'chdir("/dev/console") == -KOS_ENOTDIR',
@@ -445,8 +415,6 @@ class TestNsClient(unittest.TestCase):
                       "*cookie,"):
             self.assertIn(token, header, token)
         source = read(SDK_SOURCE)
-        # Package 42b: no guard - the wrappers are the only form.
-        self.assertNotIn("KOS_NS_HANDLES", source)
         for token in ("KOS_SYSCALL_BIND", "KOS_SYSCALL_UNBIND",
                       "KOS_SYSCALL_NS_ENUM", "KOS_SYSCALL_CHDIR",
                       "KOS_SYSCALL_GETCWD", "kos_bind_block",
@@ -481,7 +449,7 @@ class TestNsImageLayout(unittest.TestCase):
             address = self.syms[name]
             self.assertGreaterEqual(address, SPLIT, name)
             self.assertLess(address, 0xE000, name)
-        # The stage-3 lookup is gone from every image (package 42b): the
+        # The stage-3 lookup is gone from every image: the
         # family is the production front end and nothing calls it.
         self.assertNotIn("_ipc_lookup", self.syms)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One replay helper for the Z80 image replays (work package 42d).
+"""One replay helper for the Z80 image replays.
 
 Every image replay repeats the same scaffolding: split the 512 KiB image
 into its eight pages, build the Z80 with the ROM pages, call the C
@@ -397,8 +397,8 @@ class IntegrationInputs:
     """The input streams the console-integration image's diagnostics
     expect, queued into the emulated MCU at their transcript markers.
 
-    Work package 42d merged the IOC, HID, V9958 and console-integration
-    diagnostics into one image, so every replay of that image drives the
+    The IOC, HID, V9958 and console-integration diagnostics share one
+    image, so every replay of that image drives the
     same four streams:
 
     * the HID diagnostic's scripted typed pass (preloaded through the

@@ -1,4 +1,4 @@
-/* KonaOS ESC c display-reset check (work package 42e, test-only).
+/* KonaOS ESC c display-reset check (test-only).
  *
  * The console integration image boots this tiny program before the
  * monitor (KOS_BOOT_PROGRAM=/system/escc.exe).  It writes ESC `c` - the

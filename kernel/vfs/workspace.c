@@ -1,14 +1,12 @@
 /* KonaOS VFS part: the staging buffer. */
-/* KonaOS M9 bank-7 VFS workspace (package 27, correction-01).
+/* The VFS workspace (fixed core).
  *
  * Owns the single 512-byte VFS workspace and, in debug/acceptance builds,
  * the guard that asserts its two views are never used together.  See
  * kernel/vfs/vfs.h for the view layout and the per-operation mapping.
  *
- * The workspace replaces the six separate pathname buffers and the staging
- * buffer package 27 first carried (about 0.94 KB of bank-7 runtime data,
- * two module-arena granules under the derived data base).  It is kernel
- * state: it holds caller path copies, normalized paths and file-transfer
+ * One buffer serves every pathname and staging need, so the VFS needs
+ * no other buffers.  It is kernel state: it holds caller path copies, normalized paths and file-transfer
  * chunks, and is never part of the native ABI.
  */
 

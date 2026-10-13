@@ -1,4 +1,4 @@
-/* KonaOS M7 native monitor: memory commands (D/DB/M/MB).
+/* KonaOS native monitor: memory commands (D/DB/M/MB).
  *
  * Every access crosses SYS_DIAG_MEM_READ / SYS_DIAG_MEM_WRITE, so the
  * kernel re-validates the bank (0-6), the read range 0000h-DFFFh, the

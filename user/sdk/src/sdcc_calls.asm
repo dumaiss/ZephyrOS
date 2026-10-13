@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS libkos: SDCC z80 runtime helpers for indirect calls (package 44b).
+; KonaOS libkos: SDCC z80 runtime helpers for indirect calls.
 ;
 ; The SDK is freestanding (no libsdcc is linked), so the trampolines the
 ; z80 code generator emits for an indirect call - `farcall`'s plain

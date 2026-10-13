@@ -1,4 +1,4 @@
-/* KonaOS M10 feature exerciser (work package 45b).
+/* KonaOS feature exerciser.
  *
  * `/system/hwtest.exe` is the production store's runner: the owner starts
  * it from the monitor (`X /system/hwtest.exe`) on the real machine and
@@ -37,7 +37,7 @@
  * row prints the observed code next to the label - `FAIL bind-container
  * got 02` for a wrong status, `FAIL cwd-root type 02 want 04` for a
  * wrong object type - so the owner reads which side answered what
- * without a second run (correction-01).  Each
+ * without a second run.  Each
  * line goes to the console (the V9958 in production) and, when the store
  * publishes a SERIAL object at `/dev/serial/0`, to that lane too, so a
  * terminal or `tools/serial_smoke.py --mode hwtest` reads the same
@@ -102,7 +102,7 @@ static const char hw_name[] = "hwtest";
  * line, whose detail is the first failing row - with the number the
  * system actually answered when the row compares codes, so a device that
  * reports a different error is diagnosable from the transcript alone
- * (correction 01). */
+ *. */
 #define NS_DETAIL_MAX 72
 static unsigned int ns_failures;
 static char ns_fail_detail[NS_DETAIL_MAX];
@@ -203,7 +203,7 @@ static int hw_run(const char *path, const char *tail)
 
 /* How many whole application banks this process can open right now: a
  * 32 KiB object needs one bank's plain slots, so counting them counts the
- * banks the monitor's and the runner's live processes leave free (36.15:
+ * banks the monitor's and the runner's live processes leave free (4.8:
  * a bank with a live process is closed to auxiliary placement). */
 static unsigned int hw_pool_banks(void)
 {
@@ -226,8 +226,8 @@ static unsigned int hw_pool_banks(void)
 }
 
 /* The extended-memory rows run in `/system/xmem_selftest.exe`; the far
- * rows run in `/system/xmem_far.exe` directly rather than nested below it
- * (45b): the chain is already monitor -> runner -> stage and the kernel
+ * rows run in `/system/xmem_far.exe` directly rather than nested below it:
+ * the chain is already monitor -> runner -> stage and the kernel
  * allows four, so the far program's own nested exec would be the fifth.
  * The two pool counts around each run are this runner's own evidence that
  * a child's exit returns everything it held - banks, objects and

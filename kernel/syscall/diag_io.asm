@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS M7 diagnostic port helpers (cold-half code).
+; KonaOS diagnostic port helpers (cold-half code).
 ;
 ; The diagnostic I/O drivers in kernel/syscall/diag.c validate the port
 ; (10h-FFh; 00h-0Fh alias the memory latch and are rejected before this

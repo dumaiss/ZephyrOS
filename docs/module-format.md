@@ -1,29 +1,17 @@
-# MOD driver image format and the resident loader
+# The MOD driver image and the driver loader
 
-**Status: M10, work package 42c.**  There is exactly one MOD form: the
-**driver image**, a flat load plan the host packer links and the nucleus
-loader copies.  The arena module loader (`kernel/module/loader.c`,
-`relocate.c`, `arena.asm`), the relocation-record container, the module
-types, the import tables and the host `emit-asm` test fixtures are
-**deleted**; the record of that model is the M4-M9 history in
-`docs/architecture.md` (sections 22-31) and `docs/validation/`.  The file
-keeps its historical name because the container is still the MOD
-container; the format it describes is now the driver form only.
+A MOD file is a **driver image**: a flat load plan that the host packer
+links and the nucleus loader copies into bank 6. The rules are in
+`docs/architecture.md` sections 3.2 and 5.
 
-The split of work is the M10 rule (M10-REFERENCE decision 2): **the host
-computes everything.**  `tools/modpack.py` mini-links the declared
-objects, links every segment at its final bank-6 address, applies the
-`KREL_ABS16` records on the host, assigns endpoint numbers, resolves
-inter-driver dependencies and validates the whole container; the nucleus
-loader (`kernel/driver/driver_loader.c`) copies the finished images and
-checks only the bounds that protect the nucleus and the fixed driver-bank
-layout.  Nothing is linked, patched or version-checked at boot.
-
-The architectural contract is `docs/architecture.md` sections 36.6
-(driver bank), 36.11 (resident images and host assembly), 36.12 (boot),
-36.13 (namespace providers) and 36.20 (ledgers).  The concrete layout is
-pinned by `formats/include/mod.h` and by the compile-time assertions
-the target build enforces.
+**The host computes everything.** `tools/modpack.py` links each driver's
+objects at their final bank-6 addresses, resolves every address on the
+host, assigns endpoint numbers, resolves dependencies and validates the
+whole container. The loader (`kernel/driver/driver_loader.c`) copies the
+finished images and checks only the bounds that protect the nucleus and
+the fixed driver-bank layout. Nothing is linked, patched or version-checked
+at boot. The layout is pinned by `formats/include/mod.h` and its
+compile-time assertions.
 
 ---
 
@@ -63,10 +51,9 @@ Header (16 bytes; `formats/include/mod.h` `struct mod_header`):
 | 0C | `total_size` | exact container length |
 | 0E | `reserved` | 0 |
 
-There is no version field, no module type, no import table, no `fini`
-entry and no relocation record.  A driver image has no runtime format
-negotiation: an image that does not match this layout is a pack-time
-error, not a boot error.
+There is no version field, no import table, no `fini` entry and no
+relocation record. An image that does not match this layout is a
+pack-time error, not a boot error.
 
 ## 2. Segments and the bank-6 tiers
 
@@ -106,8 +93,9 @@ endpoint  class:u8 instance:u8 version:u8 flags:u8
           number:u16 dispatch:u16
 ```
 
-`(class, instance)` is the protocol identity (the classes of
-`abi/kos/object.h`); `version` is the image's own protocol version, kept
+`(class, instance)` is the endpoint key (the classes of
+`abi/kos/protocol.h`; a different numbering from the protocol types a
+`bind` returns); `version` is the image's own protocol version, kept
 in the record but never checked at boot; `flags` bit 0 is the
 re-entrancy declaration (`KOS_IPC_EP_REENTRANT`); `number` is the
 host-assigned endpoint number (`1..N` across the load order) and
@@ -126,13 +114,16 @@ unregistration path.
 dependency  class:u8 instance:u8 number:u16
 ```
 
-A manifest declares dependencies symbolically; the packer resolves each
-one to the endpoint number of an export in an earlier image or in the
-image itself.  A missing *required* dependency is a pack error.  A
-missing *optional* one resolves to `0`, which a driver reads as "this
-build selected no such peer" (optional dependencies survive only in
-acceptance doubles; the production console drivers declare every
-dependency required).  The resolved numbers are installed into the
+A source manifest declares dependencies by protocol type (`"IOC"`,
+`"VIDEO:1"`, `"#16"` for a test class with no type name, a trailing `?`
+for optional). `tools/systemgen.py` resolves each against the image's
+selected drivers and writes a resolved copy of the manifest with
+`{class, instance}` rows; the packer then resolves each row to the
+endpoint number of an export in an earlier image or in the image itself.
+None, or more than one, matching driver is a build error. An optional
+dependency with no match resolves to `0`, which a driver reads as "this
+build selected no such peer"; the production drivers declare every
+dependency required.  The resolved numbers are installed into the
 fixed-core array
 the boot bundle names (`struct driver_boot`, `drivers/include/
 driver.h`), one byte per declaration in manifest order; no driver looks a
@@ -160,7 +151,7 @@ segment's `base` and size must leave the tier of its role, `entry` and
 inside the hot image and each dependency number inside what the nucleus
 has installed.
 
-Both sides report the same two architecture-36.20 ledgers:
+Both sides report the same two ledgers:
 
 ```text
 driver hot: <bytes> of 32768          hot + io bytes of the 6000h-DFFFh tier
@@ -171,15 +162,14 @@ The loader prints them in acceptance builds; production takes them from
 the packer's report (`drivers.plan.json`), which is what
 `tools/pack_image.py` folds into the bank-6 part of the image manifest.
 Each placed image is reported as `driver <name>: hot <addr> [io <addr>]
-[boot <addr>] [bulk <addr>]` - the same line `modpack.py drivers`
-prints - and the run ends with
+[boot <addr>] [bulk <addr>]`, the same line `modpack.py plan` prints, and
+the run ends with
 `driver loader: <n> images in bank 6`.
 
 ## 6. Publications
 
 A publication is a namespace name below the **DEVICE provider's** `/dev`
-root, or the `/fs` root of a filesystem provider, that the image serves
-(architecture 36.13):
+root, or the `/fs` root of a filesystem driver, that the image serves:
 
 ```text
 publication  name[16] type:u8 number:u8 object:u8 flags:u8
@@ -200,17 +190,16 @@ more than `MOD_MAX_PUBLICATIONS` (12) rows per manifest, an unknown type
 name, a type outside 1..255, an object above 255, or a set whose rows
 plus the derived grouping rows overflow the nucleus publication table.
 
-An image with no publications carries ABI 3 byte for byte (count 0, empty
-table); one with publications carries ABI 4.  The publications of the
-whole set are installed before the first driver's boot entry runs.
+The publications of the whole set are installed before the first
+driver's boot entry runs.
 
 ## 7. Boot manifest and the boot path
 
 `drivers.man` (`KOS_DRIVER_MANIFEST_NAME`) is a flat ROMFS `DATA` file
 of 24-byte records - the ROMFS name field exactly, NUL-terminated and
 zero-padded - naming the packed containers in load order.  The loader
-reads it with the bootstrap ROMFS reader (`kernel/romfs`, fixed-core
-since package 38) and requires the file size to be a multiple of the
+reads it with the ROMFS reader (`kernel/romfs`, in the fixed core) and
+requires the file size to be a multiple of the
 record size.  At most `MOD_MAX_IMAGES` (8) images are placed.
 
 Per image, in manifest order (`kernel/driver/driver_loader.c`):
@@ -223,7 +212,7 @@ Per image, in manifest order (`kernel/driver/driver_loader.c`):
 4. run the hot init entry once through the fixed upcall shim with the
    boot bundle in `HL`; the init's `uint8_t` return is its status (the
    shim publishes it), and a non-zero status refuses the image - a
-   required driver that fails to initialize is a boot failure (36.11).
+   required driver that fails to initialize is a boot failure.
 
 Boot entry code runs with bank 7 unmapped: it may touch bank 6, the
 common region and I/O ports, and must not call the bootstrap interface.
@@ -240,22 +229,18 @@ not 0 - the same word for a
 manifest whose size is not a multiple of the record size).  The nucleus
 then prints `drivers: unavailable 0x<code>` and stops the boot on the
 early console: a required driver that fails to load or initialize is an
-explicit boot failure, never a fallback (36.11, work package 42e).  The
-words are
-short because the loader's byte budget is an architectural resource
-(section 8).  Drivers are permanent (M10
-decision 11): no unload, no restart, no fini entry, and a second
-`driver_load_all` call is a no-op.
+explicit boot failure, never a fallback. The words are short because the
+loader's bytes are a budgeted resource (section 8). Drivers are permanent:
+no unload, no restart, no fini entry, and a second `driver_load_all` call
+is a no-op.
 
 ## 8. Loader size
 
-The loader's byte cost is an architectural resource (36.3): it shares the
-fixed core with the ABI, the copy primitives and the IRQ executive.  The
-42c loader measures **1,970 bytes** (1,969 code + 1 data) against the
-2,000-byte target of the 41b review, down from 5,122 bytes at the M9
-source - it no longer parses or re-validates container tables the packer
-already validated.  The evidence lines (`driver <name>:`, the two
-ledgers) are acceptance-only; production links the error lines only.
+The loader shares the cold half's budget with the rest of the nucleus,
+so it stays small (about 2 KB): it does not parse or re-validate what the
+packer already validated. The evidence lines (`driver <name>:`, the two
+ledgers) are compiled into acceptance images only; production links only
+the error lines.
 
 ## 9. Packer commands, manifest and reports
 
@@ -264,9 +249,12 @@ python3 tools/modpack.py pack <manifest.json> <out.mod> \
     --objdir DIR --set MANIFEST [...] --report FILE
 python3 tools/modpack.py validate <container.mod> [...]
 python3 tools/modpack.py dump <container.mod> [...]
-python3 tools/modpack.py drivers <out.man> <container.mod> [...] \
-    --report drivers.plan.json
+python3 tools/modpack.py plan <drivers.plan.json> <container.mod> [...]
+python3 tools/systemgen.py systems/<image>.json <build-dir>
 ```
+
+`systemgen` writes `drivers.man` and the resolved manifest copies the
+packer reads (`docs/architecture.md` section 8.1).
 
 `pack` for a driver manifest requires `--set`, the whole load order
 including this image: the packer links this image against the set (one
@@ -277,11 +265,11 @@ rebuilt alone still matches its siblings.  `validate` and `dump` both run
 A manifest names its objects, its `init` entry, its `segments` (role,
 `image_areas`, `bss_areas`, optional boot `entry`), its `endpoints`
 (`class`, `instance`, `version`, `dispatch` symbol, `flags`), its
-`publishes` rows and its `depends` records (`class`, `instance`,
-optional `optional`):
+`publishes` rows and its symbolic `depends`:
 
 ```json
 {
+  "schema": "kos-driver-1",
   "name": "ioc",
   "objects": ["ioc.rel", "ioc_boot.rel", "sdcc_indirect_calls.rel"],
   "init": "ioc_driver_init",
@@ -307,18 +295,3 @@ their absolute dispatch entries, and the resolved dependency numbers.
 The set report (`drivers.plan.json`) carries the load order, the bases
 per image and the two tier ledgers; `tools/pack_image.py` reads it for the
 bank-6 ledger of the image manifest.
-
-## 10. Retired with the arena loader
-
-Work package 42c removed, with the format that used them: the relocation
-records and every runtime relocation target; the header's format-version
-byte, module type, fini entry and granule requirement; the driver arena,
-its linker symbols and its granule plan; the import and resource-import
-tables; the kernel driver-entry import table; every driver ops table; the
-device class/capability model with its registration call; the filesystem
-provider ops-table interface and its registration path; and the arena
-loader's self-test fixtures (the packer's fixture emitter,
-`tests/modules/`).  Bytes removed per item and the before/after ledgers
-are recorded in `docs/validation/2026-10-09-m10-prune-nucleus.md`; the
-history of the delete-and-reconcile pass is in
-`work/42c-m10-prune-nucleus/progress.md`.

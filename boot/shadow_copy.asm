@@ -12,7 +12,7 @@
 ; addresses (enforced by tools/pack_image.py).  The final latch change to
 ; 10h continues execution from the identical copy in SRAM bank 0.
 ;
-; The whole copier must remain below 0030h so that M1 can install RST 30h
+; The whole copier must remain below 0030h so that the kernel can install RST 30h
 ; in page zero.  Interrupts stay disabled; EI is never executed.
 ;
 ; Output state: mode 10 over bank 0, interrupts disabled, no stack, jumping

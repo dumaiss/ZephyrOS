@@ -1,7 +1,7 @@
 /* KonaOS libkos internal: the shared argument-block overlay.
  *
- * The FS/exec wrappers and the extended-memory wrappers (packages 43,
- * 44a and 44b) build every packed block here and marshal it through the
+ * The FS/exec wrappers and the extended-memory wrappers build every
+ * packed block here and marshal it through the
  * shared low-window scratch defined in runtime.asm.  This header is
  * private to user/sdk/src and is never installed.
  */

@@ -14,9 +14,9 @@
  * caller's interrupt state on return), waits for the handler's flag and
  * masks them again.  The delivery therefore happens while a driver call
  * is in progress, which is the case that must not disturb the call's saved
- * latch (architecture 36.10).
+ * latch (architecture 4.5).
  *
- * COPY (correction 01 to architecture 36.8) is the same idea one step
+ * COPY (architecture 4.9) is the same idea one step
  * further in: it repeats a descriptor copy into this driver's own I/O
  * buffer with the timer armed on a short time constant, so the delivery
  * arrives while the copy primitive holds its mode-10 aperture window open
@@ -37,8 +37,8 @@ static volatile uint16_t irq_runs;
 static volatile uint8_t irq_flag;
 
 /* The copy target: an ordinary container static, so the loader places it
- * inside bank 6's 8000h-BFFFh (the driver I/O buffer rule, correction 01
- * to architecture 36.8). */
+ * inside bank 6's 8000h-BFFFh (the driver I/O buffer rule, architecture
+ * 4.9). */
 static uint8_t irqx_buffer[IRQX_COPY_BYTES];
 static uint16_t irqx_buffer_address;
 

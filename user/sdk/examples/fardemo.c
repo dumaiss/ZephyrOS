@@ -1,12 +1,12 @@
-/* KonaOS far-code SDK demo (work packages 44b/49b): the primary half.
+/* KonaOS far-code SDK demo: the primary half.
  *
  * The simplest complete far-code program: `fardemo_far.c` is compiled
  * into the `_FAR1` area and linked at 8000h through the exe_program
- * FAR1= option, so it is segment 1, the packer proves the 36.17 link rule
+ * FAR1= option, so it is segment 1, the packer proves the 7.2 link rule
  * (this image, its BSS and the whole stack stay outside 8000h-BFFFh), and
  * the far entry is called as plain C: it is `__banked`, so SDCC emits the
  * banked call and the SDK's trampoline maps the segment and restores the
- * previous latch (work package 49b).
+ * previous latch.
  *
  * The far code prints its own line from a far-area buffer (a console
  * syscall whose buffer is the aperture) and calls back into primary code

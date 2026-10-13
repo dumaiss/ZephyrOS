@@ -1,770 +1,156 @@
-# KonaOS VFS Bootstrap and the ROMFS Provider
+# KonaOS Namespace (VFS)
 
-**Status:** package `25-m9-vfs-bootstrap-romfs` (2026-10-04, corrections
-01 and 02) implemented the VFS core, the generated mount table and the
-ROMFS provider; package `26-m9-provider-abi-cache` (2026-10-04) completed
-the kernel file/directory API (32-bit seek, root merge, mountpoint
-errors), added driver ABI v3 `fs_register` with the loader registration
-transaction, and proved it with the test-only writable `ramfs` provider;
-package `27-m9-fs-syscalls` (2026-10-05) exposed the VFS to native
-programs: the global owner-tagged descriptor pool, per-process CWD, the
-pinned `FS_*` syscall family (`10h-1Fh`), the user runtime wrappers and
-the `fstest.exe` acceptance program.  Host-validated, simulator-accepted
-and physically accepted 2026-10-05 (`make smoke-hardware-m9-fs` observed
-`fstest: PASS 9/9`, `fstest: launcher OK`, `m9 fs selftest: OK` on
-hardware; see `docs/validation/2026-10-05-m9-fs-syscalls.md`).  Package
-`28-m9-nested-exec` adds the `exec` case to `fstest.exe`; its acceptance
-image was re-run on the bench the same day, where the extended suite printed
-`fstest: PASS 10/10` and the target hook printed `m9 exec selftest: OK`
-(`docs/validation/2026-10-05-m9-nested-exec.md`).  Bank-7 residency is reported against the architecture
-section 32.39 ledger.
+How the nucleus implements the namespace: the root router, the three
+providers, the handle table, the CWD and the workspace. The rules are in
+`docs/architecture.md` section 4.10; the syscalls are in `docs/abi.md`
+section 6.
 
-**M9 close (work package 31, 2026-10-05).** Package 30 added the resident
-IOC-FAT provider (`drivers/iocfat/`) mounted at `/` from `ioc.0`, with its
-one-slot write-through 512-byte file-data cache and the FS2 status mapping
-of `work/M9-REFERENCE.md`; package 30c then reclaimed a bank-7 granule
-(dead-code removal, one shared ASCII name helper, the common-memory ceiling
-pin).  The milestone's end-to-end acceptance is the `m9-selftest` image
-(`make m9-selftest`): the production boot path with `/` on the card,
-running `fstest.exe` (which exec's the deep-matrix program `fsfat.exe`),
-the `fsdeep.exe` depth probe and the two fault windows, then the ordinary
-monitor launcher.  The final ledger and the acceptance matrix are in
-`docs/validation/2026-10-05-m9-filesystem.md`; the section 32.39 targets are
-met (`bank7: code 27990 bytes end 8D56h | arena 36 granules (33 boot, 3
-free) | data 2241 bytes at D600h | isr 256 | slack 63 bytes`, i.e. 1599
-bytes of total slack against the 1 KiB floor).
+## 1. Source layout
 
-**M10 (work packages 42a/42b/42c).**  The M9 machinery this document
-records - the generated mount table, the provider ABI with its
-registration path, the VFS file/directory/mutation API and the `FS_*`
-syscall front end - is **deleted**.  Section 13 is the current model: VFS
-owns three static roots (`/fs`, `/system`, `/dev`), the filesystem driver
-is a resident driver image publishing `/fs`, and there is no mount table
-and no registry.  Package 42c then removed the driver ABI and the
-provider ops-table interface, so nothing provider-facing is exported to
-an image any more.  Sections 1-12 are kept as the M9 implementation
-record; section 13 is normative together with architecture 36.13.
+All of it is nucleus code in the cold half, except the workspace:
 
-This document records the implementation of the M9 bootstrap slice:
-the kernel VFS core, the generated static mount table, and the ROMFS
-filesystem provider mounted at `/system` before any module loads.
-Architecture sections 32.1-32.14, 32.32 and 32.33 are the normative
-description; `docs/filesystem.md` is the M9 filesystem design and
-`work/M9-REFERENCE.md` pins the ABI values.  This document adds only the
-implementation facts of package 25, plus what package 25 deliberately
-leaves to later packages.
+| file | part |
+|---|---|
+| `kernel/vfs/router.c` | the root router: bind, unbind and call dispatch, namespace operations, enumeration of `/`, `chdir`, init |
+| `kernel/vfs/path.c` | path normalization and the shared component compare |
+| `kernel/vfs/handles.c` | the handle table, the standard handles, process start and exit, the CWD slots |
+| `kernel/vfs/workspace.c` | the 512-byte workspace (fixed core) |
+| `kernel/vfs/dev.c` | `/dev`: the DEVICE provider over the publication table |
+| `kernel/vfs/fs.c` | `/fs`: the provider that forwards to the filesystem driver |
+| `kernel/vfs/system.c` | `/system`: the ROMFS provider |
+| `kernel/vfs/vfs.h` | the one private interface |
+| `kernel/syscall/object.c` | the syscall bodies: bind, call, unbind, ns_enum, chdir, getcwd |
 
-## 1. Scope of this package
+Name comparison is one shared helper (`kos_ascii_equal()`,
+`kernel/lib/name.c`) used by the VFS and ROMFS: `A-Z == a-z`, every other
+byte exact, no Unicode folding.
 
-Implemented here:
+## 2. Paths
 
-```text
-vfs_init()            register the built-in provider set, mount /system
-module phase          boot MODs and the monitor load by VFS path
-vfs_mount_all()       instantiate the remaining configured mounts
-VFS_PHASE_READY       namespace fixed; kernel file/dir API available
-```
+`vfs_path_normalize_at(base, path, out)` turns a path into an absolute
+canonical one: relative paths join the base (the process's CWD), repeated
+and trailing slashes collapse, `.` is dropped, `..` removes the last
+component, and `..` above `/` stays at `/`. Case is preserved: the user's
+spelling is kept, and comparisons fold. `KOS_PATH_MAX` (128) and
+`KFS_NAME_MAX` (64) include the NUL, so the longest path is 127 bytes and
+the longest component 63; an over-long path or a too-small buffer is
+`KOS_EINVAL`. The function keeps no state, so it is safe on any stack.
 
-Deliberately **not** implemented here (later packages):
+## 3. The root router
 
-| Deferred | Package |
-| --- | --- |
-| data cache and generation keys (provider-local: IOC-FAT) | 30 |
-| writable providers, IOC-FAT at `/`, block class, ZDEV ABI v3 | 26, 29, 30 |
-| `/` filesystem merge into root enumeration | 26 |
-| cross-filesystem move/rename semantics | implemented by 27 (rename across mounts is `KOS_EXDEV`; VFS never copies) |
+`bind`, `ns_enum`, `chdir` and the namespace operations normalize the path
+and route by the first component, case-insensitively:
 
-Package 27 implemented the previously deferred rows "syscalls,
-per-process descriptors, `SYS_FS_*`" and "current working directory
-(`chdir`/`getcwd`)"; see section 12 below.
+| root | provider | owns |
+|---|---|---|
+| `/fs` | `fs.c`, forwarding over IPC to the filesystem driver the build selected | everything below `/fs` |
+| `/system` | `system.c`, ROMFS, in-process, usable before any driver | everything below `/system` |
+| `/dev` | `dev.c`, the publication table | everything below `/dev` |
 
-VFS is kernel mechanism: no executable code exists under `platform/` or
-`config/`, and `fs/romfs` includes no driver header.
+The provider receives the rest of the path and the router never interprets
+it. `/` lists the three roots and is not bindable; any other root-level
+name has no owner and is `-KOS_ENOENT`. A name that only starts like a root
+(`/systemx`) is not that root.
 
-## 2. Interfaces
+## 4. The providers
 
-Three headers, with a deliberate visibility split:
+**`/fs`.** The provider forwards to the filesystem driver's endpoint, taken
+from the host-built `/fs` publication. A `bind` below `/fs` becomes the
+driver's open; `stat`, `mkdir`, `rmdir`, `unlink` and `rename` become `FS`
+protocol calls; enumeration and `chdir` validation are forwarded too. The
+provider has no filesystem knowledge of its own. Paths reach the driver
+through the workspace, which is in the fixed core because the driver reads
+it with its own window open. With no card, the driver answers
+`-KOS_ENODEV` (`docs/devices.md` section 8).
 
-| Header | Audience | Content |
-| --- | --- | --- |
-| `abi/kos/fs.h` | native applications and syscalls | `KOS_PATH_MAX` (128), `KFS_NAME_MAX` (64), `KFS_TYPE_*`, `KFS_ATTR_*`, `KFS_TIME_UNKNOWN`, `struct kfs_stat` (16 bytes), `struct kfs_dirent` (80 bytes), `KFS_O_*`, `KFS_SEEK_*`.  There is no `kfs_statfs`. |
-| `kernel/vfs/vfs.h` | kernel only | the three static roots, path helpers, the handle table, the CWD/workspace state, `VFS_O_EXEC` |
+**`/system`.** `bind("/system/name", flags)` finds the flat name with
+`romfs_lookup_ci()` and keeps the file instance inline in the handle entry,
+so no second table is needed. The FILE operations are served in-process by
+a nucleus endpoint through the same call path as a bank-6 endpoint, reading
+through the common copy gate in chunks: `KFILE_OP_READ`, `KFILE_OP_SEEK` and
+`KFILE_OP_META` work, and `KFILE_OP_WRITE` is `-KOS_EROFS` (the bind's write
+flags are refused first). `bind("/system", 0)` yields the namespace handle
+the name operations use: `stat` works and every mutation is `-KOS_EROFS`.
 
-The M9 module-facing provider ABI (`vfs.h`) was **deleted in M10**: no
-image exports provider operations, because a
-filesystem driver is reached as a driver endpoint instead.  What remains
-is pinned by `_Static_assert` and by host tests.
+**`/dev`.** Names come from the publication table the loader installs
+(`docs/devices.md` section 9). The provider derives the grouping names
+(`/dev/input`, `/dev/serial`) from the names it holds; they enumerate as
+containers and refuse to bind with `-KOS_EISDIR`. Lookup is a table scan.
 
-Providers are **path-based**.  Handles (`fs`, `file`, `dir`) are opaque
-to VFS and carry no object identity: VFS keeps no node objects, no node
-lifetimes and no per-component traversal state, and there is no
-`object_id` and no cache key.  Providers never learn their external
-mountpoint: VFS passes a provider-relative path that always begins with
-`/`.
+## 5. The handle table
 
-Every path argument obeys one contract: absolute inside the provider
-(`/` is its root), already normalized by VFS (no `.`, `..`, empty or
-repeated components, no trailing `/`), NUL-terminated and at most
-`KOS_PATH_MAX - 1` bytes, and matched by the provider with ASCII
-case-insensitive semantics.  VFS folds only the first component.
-
-A read-only provider leaves the mutation pointers null (`write`, `sync`,
-`mkdir`, `rmdir`, `unlink`, `rename`) and VFS turns a null mutation
-operation into `KOS_EROFS` in one place.
-
-## 3. Source layout
-
-Current layout (M10, work packages 42b/42c):
+One global table of `VFS_HANDLE_MAX` (12) entries in the cold half. Each
+entry records:
 
 ```text
-kernel/vfs/router.c          the root router, enumeration
-kernel/vfs/dev.c             the DEVICE provider over the publication
-                             table
-kernel/vfs/fs.c              the `/fs` forwarding provider
-kernel/vfs/system.c          the ROMFS FILE provider (`/system`)
-kernel/vfs/path.c            normalization + case-insensitive compare
-kernel/vfs/handles.c         the handle table, per-process CWD slots
-kernel/vfs/workspace.c       the per-process workspace/copy state
-kernel/romfs/romfs.c         the one ROMFS reader (fixed core)
-drivers/iocfat/iocfat.c           the FS driver image's provider body
-kernel/driver/driver_loader.c  places the images and installs the
-                             publications (`/fs`, `/dev` names)
+owner PID
+8-bit protocol type
+endpoint (a bank-6 driver endpoint or a nucleus one)
+the provider's object identity (or, for /system, the file instance itself)
+the bound mark and the bind flags
 ```
 
-Deleted in M10 (42b/42c): `kernel/vfs/mount_config.h`,
-`kernel/vfs/mount.c`, `kernel/vfs/file.c`, `kernel/vfs/dir.c`,
-`kernel/vfs/mutate.c`, `fs/romfs/romfs_provider.c`, the `FS_*` syscall
-front end in `kernel/syscall/fs.c`, the device registry, the provider
-registry and its capacity-4 table, and `tools/mountgen.py` with
-`config/mounts.json`.
+- `bind` returns a handle of `KOS_HANDLE_FIRST_BOUND` (3) or more. A full
+  table is `KOS_EMFILE`.
+- `call` and `unbind` accept only a bound handle the calling process owns;
+  anything else is `KOS_EINVAL`.
+- Handles 1 and 2 are the standard handles, bound to `/dev/console` for
+  each process at start (`vfs_ns_standard_handles()`), when the build
+  publishes a console. `bind` never returns them, and `unbind` refuses them.
+- The table is global because the machine is single-tasking: a suspended
+  parent's handles stay allocated while its child runs.
+- Process exit (`vfs_process_exit()`) unbinds every handle the process
+  owns; a file's unbind lets the filesystem driver close and flush it.
 
-## 4. Path rules and mount selection
+## 6. The CWD
 
-`vfs_path_normalize_at()` resolves a path against a canonical base and
-writes an absolute canonical path: repeated and trailing slashes are collapsed,
-`.` is dropped, `..` pops the last component and traversal above `/` is
-clamped to `/`.  Case is preserved (the provider folds names; the native
-namespace preserves what the user typed).  `KOS_PATH_MAX` and
-`KFS_NAME_MAX` include the terminating NUL, so the longest usable path is
-127 bytes and the longest component is 63; both over-length forms and a
-too-small output buffer return `KOS_EINVAL`.  Paths resolve against the
-`/` base for the kernel launcher; package 27 resolves a relative path
-against the calling process' CWD instead.
+Each active process has one CWD slot (`KOS_EXEC_MAX_DEPTH` slots of one
+owner byte and a 128-byte canonical path). `vfs_process_start()` gives a
+new process a copy of its parent's CWD and its standard handles; it is
+idempotent. `chdir` normalizes the path, asks the owning provider whether
+it is a traversable location (`vfs_ns_dir_check()`), and stores the
+canonical path; it binds nothing. A child's `chdir` never changes the
+parent's slot.
 
-Name comparison is one shared kernel helper (`kos_ascii_equal()`,
-`kernel/lib/name.c`), used here and by ROMFS and the device registry.
-VFS passes the ASCII case-folding form (`A-Z` == `a-z`, every other byte
-exact); KonaOS performs no Unicode folding.
+## 7. The workspace
 
-Selection is **flat** (architecture section 32.8) and uses only `MOUNTED`
-entries.  The first path component is compared case-insensitively with
-the mounted root-level mountpoints (a configured path is `/` or one
-component, section 32.6), so `/SYSTEMX` does **not** select `/system`.
-When no root-level mountpoint matches, the filesystem attached at `/`
-owns the path.  With neither, the path is unowned and resolution reports
-`KOS_ENODEV`.
-
-The result is the mount index plus the provider-relative path, which
-always begins with `/` (a mountpoint itself resolves to `"/"`).  There is
-no longest-match search and no per-component walk: `VFS` hands
-`/system/sio.mod` to the provider as the single path `/sio.mod`.
-
-`vfs_is_mountpoint()` reports whether a normalized path is a configured,
-mounted mountpoint (or `/` itself).  VFS answers `stat()` for those paths
-itself, as directories, and rejects `open()` on them with `KOS_EISDIR`.
-
-VFS owns exactly one shared 128-byte pathname scratch buffer
-(`kernel/vfs/mount.c`); `vfs_rename()` adds a second because it holds two
-paths at once.  Nothing in VFS declares an automatic object large enough
-to matter on the 256-byte gate stack (work/M9-REFERENCE.md gate-stack
-discipline).
-
-## 5. Lifecycle and boot integration
-
-> **Retired (M10, work packages 42b/42c).**  The M9 lifecycle - four VFS
-> phases, a provider lookup by name, one `vfs_open("/system/<name>.mod")`
-> per boot module through the VFS and a mount pass at the end - is
-> deleted.  The current order is the boot path of architecture 36.12:
->
-> ```text
-> kernel_main()
->   irq_init()
->   vfs_init()                       the three static roots, the ROMFS
->                                    reader and the handle table
->   driver_load_all("drivers.man") the driver loader places the
->                                    images, installs the publications,
->                                    runs the boot and init entries
->   console_bind_defaults()
->   process_exec("/system/monitor.exe")
-> ```
->
-> The loader reads the store with the fixed-core ROMFS reader, so the
-> boot assets no longer travel through the VFS file API.  A failed
-> manifest or image is a boot error with the loader's own console line
-> (`docs/module-format.md` section 7); there is no mount failure path
-> because there is no mount.
-
-The M9 record of that lifecycle follows.
+`vfs_workspace` is one 512-byte buffer in the fixed core with two views
+that are never live at once:
 
 ```text
-kernel_main()
-  irq_init()
-  device_registry_init()
-  module_loader_init()
-  vfs_init()                       bootstrap, then the module phase
-      register built-ins (romfs)
-      find the unique system mount entry (panic if not exactly one)
-      provider lookup by name, ops->mount(source = "recovery")
-  load the boot images from /system/<name>.mod through the VFS
-  the mount pass            the remaining configured mounts
-  console_bind_defaults()
-  process_exec("/system/monitor.exe")
+path view      four 128-byte slots: IN_A, NORM_A, IN_B, NORM_B
+               (the caller's path and its normalized form; B for a second path)
+staging view   all 512 bytes: result assembly for the gate
 ```
 
-## 6. Kernel file and directory API
-
-`vfs_open()`/`vfs_read()`/`vfs_write()`/`vfs_seek()`/`vfs_sync()`/
-`vfs_close()`/`vfs_stat()` operate on caller-provided `struct vfs_file`
-storage; package 27 adds the process-visible pool (`vfs_fd_open`, section
-12) on top of them.  Every one of them resolves the path, selects the
-mount and calls the provider with the provider-relative path.  Reads are
-clamped to EOF by VFS, so a provider only ever sees an in-range request.
-
-`vfs_open()` rejects unknown flag bits, `TRUNC`/`CREATE`/`EXCL` without
-`WRITE`, and `EXCL` without `CREATE` with `KOS_EINVAL`; opening a
-directory is `KOS_EISDIR`, `opendir` on a file is `KOS_ENOTDIR`, and a
-create of an existing name with `CREATE|EXCL` is `KOS_EEXIST`.  The
-position is 0 on open.
-
-`vfs_read()`/`vfs_write()` act at the stored position.  A write advances
-the position and grows the cached size only after the provider reports
-success (architecture section 32.28); a failed confirmed write leaves both
-unchanged.  `vfs_seek()` takes a signed 32-bit `offset` with
-`KFS_SEEK_SET`/`CUR`/`END`, rejects a negative result with `KOS_EINVAL`
-and permits seeking past EOF.  `vfs_close()` flushes through the
-provider's `sync` (when present) and then releases the handle.
-
-`stat("/")` and `stat(path)` for a mounted mountpoint are answered by VFS
-itself as directories, without consulting a provider.  There is no
-`statfs` in M9.
-
-`VFS_O_EXEC` (0x8000) is a kernel-only open hint, not a native flag: the
-executable loader sets it, and a provider that distinguishes executable
-media (ROMFS) refuses a non-`EXE` entry opened with it.  That preserves
-the M6 `EXE_EXEC_ERR_TYPE` rejection now that the native type set is
-only `FILE`/`DIR`.
-
-`readdir("/")` is a VFS operation: it first yields every mounted
-root-level mountpoint (exactly one component) as a `DIR` entry, then the
-entries of the filesystem attached at `/`, skipping any whose name equals
-a mountpoint (case-insensitive) so the mountpoint shadows it
-(architecture section 32.7).  With no filesystem at `/` — the production
-M9 namespace — the root lists only the mountpoints and still enumerates
-successfully.  The merge cursor is a small VFS-owned field of the
-`struct vfs_dir` handle; VFS keeps no extra table.
-
-Mutation entry points (`vfs_mkdir`, `vfs_rmdir`, `vfs_unlink`,
-`vfs_rename`) live in `kernel/vfs/mutate.c` and are the kernel half of the
-`SYS_FS_*` family that package 27 wires up.  A provider that leaves a
-mutation pointer null gets `KOS_EROFS` from VFS, and a cross-mount rename
-is refused with `KOS_EXDEV` rather than turned into a copy.  Mutating a
-mounted mountpoint (or the VFS root) is answered by VFS before any
-provider is consulted: `KOS_EBUSY` for `rmdir`/`unlink`/`rename`,
-`KOS_EEXIST` for `mkdir`; `rename` is the only operation that needs two
-pathnames and owns the second 128-byte scratch buffer.
-
-The deleted M9 source adapter bounded a byte source to an open file so the M4
-loader and EXE validation read through the kernel file API without
-knowing where the bytes live.  A file larger than 64 KiB is rejected
-with `KOS_ENOSPC` because the source interface is 16-bit.
-
-## 7. ROMFS provider
-
-> **Retired (M10, work packages 42b/42c).**  The M9 path-based ROMFS
-> *provider* is deleted; the reader itself stays.  Today `kernel/romfs/
-> romfs.c` is the one reader, it is **fixed core** (package 38) and it
-> serves two callers: `/system` reads through `kernel/vfs/system.c` as an
-> in-process `FILE` endpoint, and the driver loader reads
-> `drivers.man` and the image containers through it.
-
-The M9 record: the provider exposed the unchanged M5 reader through the
-path-based operations table, and the on-ROM format, the ROM-access
-primitive and the module-facing resource imports were untouched.
-
-```text
-mount      source must be "recovery", else KOS_EINVAL; calls romfs_init()
-           (a corrupt image returns the reader's error unchanged) and
-           resets the handle pool, so the instance never depends on the
-           C runtime having zeroed _DATA
-tree       `/` is the only directory; `/<name>` is a file
-lookup     one ASCII case-folded name match (romfs_lookup_ci)
-stat       KFS_TYPE_FILE, KFS_ATTR_READONLY, KFS_TIME_UNKNOWN; `/` is a
-           read-only directory
-open       resolves `/<name>`; write flags are KOS_EROFS before the path
-           is even resolved, `/` is KOS_EISDIR, a missing name is
-           KOS_ENOENT, VFS_O_EXEC on a non-EXE entry is KOS_EINVAL
-deeper     `/<file>/x` is KOS_ENOTDIR; `/<unknown>/x` is KOS_ENOENT
-readdir    entries in image order through the reader's indexed access;
-           2 static handle slots, KOS_EMFILE when exhausted
-mutations  all null: VFS answers KOS_EROFS
-```
-
-Everything the provider defines is either the exported `romfs_provider`
-record or a `romfs_pv_*` private, so a build can be checked for "no ROMFS
-provider symbol" with one prefix (`tools/mapcheck.py`).
-
-The provider holds no on-ROM layout knowledge beyond what the reader
-exposes, and no Zephyr-80 mount policy.  It contains no `object_id`, no
-node handle and no `statfs`.
-
-## 8. Static mount table
-
-Mount policy lives in exactly one place: the JSON manifest selected by
-the `KOS_MOUNTS` Makefile variable.  VFS source contains no paths,
-provider names or source strings.
-
-```text
-tools/mountgen.py <manifest> --builtin <names> \
-    --out build/generated/vfs_mounts.c \
-    --report build/generated/vfs_mounts.json
-```
-
-The generator validates the section 32.5.1 rules and the extra
-rejections of the M9 reference (more than 4 entries; a mount path that
-is not upper-case ASCII or has a trailing slash; a `system` entry whose
-filesystem is not linked in; `required` on the system entry), emits
-entries in manifest order with `VFS_MOUNT_SYSTEM 0x01`,
-`VFS_MOUNT_REQUIRED 0x02`, `VFS_MOUNT_OPTIONAL 0x00`, and is
-deterministic (no timestamps, no host paths) so `make check`
-reproducibility holds.  The output lives under `build/` and is never
-committed.
-
-```c
-const struct vfs_mount_config vfs_mount_table[] = {
-    { "/system", 7u, "romfs", "recovery", VFS_MOUNT_SYSTEM   },
-    { "/",       1u, "iocfat", "ioc.0",   VFS_MOUNT_OPTIONAL },
-};
-const uint8_t vfs_mount_count = 2u;
-```
-
-The production `/` is optional: an absent or unreadable SD card makes only
-that mount fail, `vfs: / unavailable 0xNN` is reported, and `/system` plus
-the console keep working (architecture sections 32.34 and 32.39).
-
-The table links into the ROM-loaded bank-7 kernel image as `const`
-data; VFS keeps the parallel `_DATA` array `vfs_mount_state[4]` (state,
-provider, `fs_state`, last error) and never writes the configuration.
-There is no generation counter: VFS holds no object identity and no cache
-key (architecture section 32.12).  `KOS_VFS_BUILTIN` names the providers linked into the
-kernel and must match the kernel's built-in registration table; a host
-test keeps the two in sync.
-
-`tools/romfspack.py` additionally rejects names containing `/` and
-names that collide case-insensitively, because ROMFS lookup is now
-case-insensitive.
-
-## 9. Budget, per-object sizes and geometry
-
-Bank-7 residency is reported against the architecture section 32.39
-ledger.  Production after correction-02:
-
-```text
-bank7: code 23490 end 7BC5h | arena 34 granules (21 boot, 13 free)
-       | data 1294 at C000h | isr 256 | slack 14362
-```
-
-These are the package-25 numbers.  Package 25b then added the
-size-optimized compile and the derived data base and moved the runtime
-data above `C000h`; package 26 added driver ABI v3, the provider
-registration transaction, the completed kernel file API (seek, root
-merge, mountpoint errors) for `+1837` `_CODE` and `+192` `_DATA` bytes.
-`docs/memory.md` section 2.2.2 records that ledger
-(`code 23526 end 7BE6h | arena 46 granules (20 boot, 26 free) | data 1501
-at D800h | slack 291`) with the per-object package-26 deltas.
-
-The M9 32-granule production floor applied at that time (correction-02
-raised production from exactly 32 granules to 34 by removing the
-superseded machinery).  Package 38 retired the floor: the arena now lives
-in the bank-7 cold half and only has to hold the declared boot set, which
-`tools/modpack.py plan` and `tools/pack_image.py` check - see
-`docs/memory.md` sections 2.2 and 2.2.1.
-
-### 9.1 Per-object bank-7 sizes
-
-Measured by linking each object alone (SDCC emits the whole `_CODE` area
-for the object, so the figures are exact, not spans):
-
-| Object | `_CODE` | `_DATA` |
-| --- | --- | --- |
-| `kernel/vfs/path.c` | 826 | 0 |
-| `kernel/vfs/mount.c` | 1975 | 170 |
-| `kernel/vfs/file.c` | 1549 | 0 |
-| `kernel/vfs/dir.c` | 991 | 0 |
-| `kernel/vfs/mutate.c` | 525 | 128 |
-| `fs/romfs/romfs_provider.c` | 1644 | 50 |
-| `kernel/romfs/romfs.c` | 3119 | 7 |
-| generated mount table | 32 | 0 |
-| **total** | **10661** | **355** |
-
-### 9.2 What correction-02 removed and added
-
-Removed outright (the numbers are the correction contract's own
-measurements of the superseded functions):
-
-```text
-vfs_lookup_rel            544   per-component node walk
-vfs_release_node          512   node lifetime
-vfs_resolve_node          115   node-producing resolver
-vfs_statfs                284   statfs entry point
-romfs_lookup              312   the case-sensitive duplicate lookup
-romfs_lookup_ci (old)     395   the folded lookup with an index out-param
-                         ----
-                         2162   deleted
-```
-
-Added or enlarged by the required rework (measured above):
-
-```text
-vfs_write / vfs_sync                      264   write paths (EROFS/consumer)
-vfs_mkdir/rmdir/unlink/rename             ~390  the null-mutation EROFS rule
-vfs_mount_is_root_level/is_root/
-  is_mountpoint/first_component_equal    ~245  flat selection
-vfs_resolve_path + vfs_mount_resolve     ~1013 path resolution + selection
-ROMFS provider path handling,
-  handle pool and deeper-path rule       ~1644 (whole object, incl. ops table)
-romfs_lookup_ci (single, folded)          312  one lookup instead of two
-```
-
-Net effect on the linked image: `_CODE` 24291 -> 23490 bytes (**-801**)
-and `_DATA` 1210 -> 1294 (+84: the provider's 26-byte handle pool, the
-64-byte component buffer and `vfs_rename_target`).  That is below the
-2-3 KB the correction projected, because the rework also *added* the
-flat-selection helpers and the mutation entry points that the superseded
-design either already had in another form or did not have at all.
-
-### 9.3 Arena geometries (package-25 snapshot)
-
-The geometries below predate package 25b's size-optimized compile and
-derived data base; the current production row is recorded in
-`docs/memory.md` section 2.2.1.
-
-| Image | Kernel end | Arena | Granules |
-| --- | --- | --- | --- |
-| production | `7BC5h` | `7C00h-C000h` | 34 |
-| m8-selftest | `8871h` | `8A00h-C000h` | 27 |
-| m9-vfs-selftest | `86E2h` | `8800h-C000h` | 28 |
-| m8-v9958-selftest | `86CBh` | `8800h-C000h` | 28 |
-| m8-console-selftest | `849Dh` | `8600h-C000h` | 29 |
-| m8-hid-selftest | `83C4h` | `8400h-C000h` | 30 |
-| m8-fallback variants | `82A7h` | `8400h-C000h` | 30 |
-| m9-required-mount-selftest | `7BEEh` | `7C00h-C000h` | 34 |
-
-Acceptance and variant images that link a target test hook check 16
-granules as their *minimum* (`KOS_ARENA_MIN_GRANULES`), because a test
-hook cannot hold 32 granules on top of a 21-granule boot set.  Their
-safety net is unchanged: `tools/modpack.py plan` must fit the whole boot
-set into the derived arena and `tools/pack_image.py` reconciles the
-manifest against it, so an image whose modules do not fit still fails the
-build.  Production keeps the 32-granule gate and now clears it by two
-granules.
-
-### 9.4 Embedded-catalog images (`KOS_ROMFS_BOOT=0`)
-
-These images carry no VFS object at all (correction-01), so their `_CODE`
-end is set purely by the M6/M5 code they always had.  Measured against
-the pre-package-25 baseline `3dedd09`:
-
-| Image | `_CODE` end | Baseline | Delta | Fixed arena |
-| --- | --- | --- | --- | --- |
-| m1 (`build-selftest`) | `5BE0h` | `5CA4h` | -196 | legacy |
-| irq (`build-irq-selftest`) | `60F6h` | `61BAh` | -196 | legacy |
-| m3-selftest | `6AC3h` | `6B87h` | -196 | `A000h-BFFFh` |
-| m4-loader-selftest | `6E9Bh` | `6F5Fh` | -196 | `A000h-BFFFh` |
-| m4-selftest | `701Dh` | `70E1h` | -196 | `A000h-BFFFh` |
-| m4-placement-selftest | `6E9Bh` | `6F5Fh` | -196 | `9E00h-BDFFh` |
-| m4-failure | `5B82h` | `5C46h` | -196 | `A000h-BFFFh` |
-
-(The measurements are from correction-01; package 25a retires these
-images.)
-
-## 10. Acceptance evidence
-
-The M9 package's table (the suite names are the M9 files, deleted with the
-machinery they covered; the current coverage is section 13's and
-`docs/devices.md` section 10):
-
-| Property | Evidence |
-| --- | --- |
-| ABI sizes and layouts | `tests/test_m9_vfs.py` (`_Static_assert` mirrors, header boundary) |
-| the provider ABI is exactly the 14 path-based operations of section 32.12, in order, with no node/`object_id`/`statfs`/`unmount` remnant | `tests/test_m9_vfs.py` (`TestProviderAbiShape`: operation list, signatures, absence checks, `KFS_OPS_COUNT`) |
-| generator rules, determinism, every rejection | `tests/test_m9_vfs.py` (`test_mountgen.py` cases), all `tests/m9` manifests |
-| built-in list == `KOS_VFS_BUILTIN` | `tests/test_m9_vfs.py` |
-| `/system` mounted before any module loads; every boot MOD and the monitor loaded by VFS path | `tests/test_m9_vfs_sim.py` (real linked bytes, boot transcript + monitor handoff) |
-| flat mount selection: `/SYSTEMX` must not match `/system` | `tests/test_m9_vfs_sim.py` (`test_flat_mount_selection_in_the_linked_kernel`, direct kernel-API call on linked bytes) + the target selftest's FLAT case |
-| normalization, case-insensitive resolution, per-entry stat/read byte-compared with the packed files, `/system` directory enumeration, `stat("/")`, `stat("/system")`, ENOENT, ENOTDIR below a file, deeper-path ENOENT, `VFS_O_EXEC` gate | `tests/test_romfs_sim.py` (ROMFS resolution) + `tests/test_fs_selftest_sim.py` (`/system` stat/open/read/close outcomes, `make fs-selftest`) |
-| EROFS from the null mutation operations (write flags at open, `vfs_mkdir`/`rmdir`/`unlink`/`rename`, and the provider's null pointers) | target selftest EROFS/MUTATE cases; `kernel/vfs/{file,mutate}.c` |
-| one ROMFS lookup, ASCII case-folded, serving the provider and the resource imports | `tests/test_romfs_sim.py` (case-folded spellings), `tools/mapcheck.py` `ROMFS_BANK7_ROUTINES` |
-| optional-mount failure line `vfs: /DATA unavailable 0x03` and tolerant boot | `tests/test_m9_vfs_sim.py` (`tests/m9/mounts-optional-fail.json`, `m9-vfs-selftest`) |
-| required non-system mount failure: `vfs: required mount /DATA failed 0x03` + `PANIC:` of the same line before the monitor, system entry still `MOUNTED`, failed entry records `-KOS_ENODEV` | `tests/test_m9_vfs_sim.py` (`tests/m9/mounts-required-fail.json`, `make m9-required-mount-selftest`) |
-| EXE/MOD loading through VFS, M8 transcripts unchanged | `tests/test_m3_sim.py` (production boot replay), `tests/test_m8*.py`, `tests/test_romfs*.py` |
-| ROMFS name validation | `tests/test_romfs.py` (slash and case-collision negatives) |
-| production arena gate, `KOS_ARENA_MIN_GRANULES` | `tools/mapcheck.py`, `tools/pack_image.py`, `make check` |
-| embedded-catalog images link no VFS byte | `tools/mapcheck.py` (`VFS_FORBIDDEN_PREFIXES`) and `tests/test_romfs.py` (`TestRomfsMapcheck`) |
-| physical boot | `docs/validation/2026-10-04-m9-vfs-bootstrap.md` (**PENDING**) |
-
-## 11. Writable-provider acceptance (package 26)
-
-The M9 driver ABI (deleted in M10, package 42c) added a provider
-registration call to the kernel import block
-(`formats/include/mod.h`), so a loadable module can register a
-a path-based provider descriptor.  The loader wrapped it: the registration call
-succeeds only during the module-loading phase, and the VFS provider
-registry takes a checkpoint before every module init and rolls back the
-providers registered after it when the init fails, exactly like the
-device and IRQ checkpoints.  The registry has capacity 4; registration
-rejects a null/malformed provider (`KOS_EINVAL`), a duplicate name
-compared case-insensitively (`KOS_EEXIST`) and a full registry
-(`KOS_ENOSPC`).
-
-The package-26 acceptance used a bounded RAM provider registered by a
-test-only module plus three registration fixtures, driven by its own M9
-acceptance image.  Package 42b correction 01 retired that acceptance
-with the M9 machinery: the M10 namespace routes `/fs` to the IOC-FAT
-driver (`drivers/iocfat/`) through the nucleus provider, and the outcome image
-`make fs-selftest` is the writable-provider acceptance now (see section
-13 and `docs/validation/*-m10-files-on-handles-c01.md`).
-
-### Physical acceptance
-
-The production image (`build/konaos.bin`, sha256
-`03f776a9...95cec`) boots to the monitor with HID and V9958 bound; the
-run, transcript and photograph are recorded in
-`docs/validation/2026-10-05-m9-provider-abi-hardware.md`.  Note that
-`tools/serial_smoke.py --mode normal` accepts either transcript: the
-full boot contract, or (on the console-serial variant) the console
-driver line, monitor banner and prompt on the serial lane.  On a bench
-whose console is `console-v9958-hid` the monitor text is on the display,
-so the operator confirms it there while the tool validates the banner
-(work package 42d brought the tool's expectations in line with the
-current transcripts; the per-mode table is in `docs/boot.md`).
-
-## 12. Native filesystem syscalls (package 27)
-
-Package 27 makes the VFS reachable from native programs through the pinned
-`FS_*` family (`10h-1Fh`; the register ABI and every block are documented
-in `docs/abi.md` section 10 and declared in `abi/kos/fs.h`).
-Nothing in provider semantics changed; the new layers are:
-
-```text
-kernel/vfs/handles.c   global owner-tagged descriptor pool + per-process CWD
-kernel/syscall/fs.c    the FS_* driver bodies (argument + window validation)
-user/sdk/src/fsgate.asm + fs.c       native gate stub + C wrappers
-tests/fs/                fs_selftest.exe (outcomes) and fs_child.exe (nested exec)
-```
-
-**Descriptor pool.** One global `_DATA` array of 8 `struct
-vfs_descriptor` entries; a file and a directory iterator share it.  Each
-entry holds the owner pid, `FREE`/`FILE`/`DIRECTORY`, and the mount,
-provider handle, size, offset and access flags of the object.  The fd an
-application names is the pool index; `vfs_fd_check()` verifies range, type
-and owner, and any mismatch is `KOS_EINVAL`.  Allocation takes the lowest
-free entry and a full pool is `KOS_EMFILE`.  Provider handles never leave
-the kernel.  Descriptors are not `stdin`/`stdout`, are not inherited, and
-have no dup.
-
-**CWD.** A static pool of `KOS_EXEC_MAX_DEPTH` (4) canonical 128-byte
-slots, allocated by `vfs_process_start(pid, parent_pid)` (which gives the
-child the parent's CWD, or `/` under the launcher) and released by
-`vfs_process_exit(pid)`, which is idempotent and also closes every
-descriptor owned by the pid with `close` semantics.  Exit runs on every
-path: `SYS_EXIT`, the raw-return `KOS_EFAULT` trap, and the failed-launch
-rollback (through `process_slot_release`).  Relative paths resolve against
-`vfs_cwd_for(pid)`, so `chdir` crosses mounts transparently.
-
-**Drivers.** Argument blocks live in the caller window `0100h-1FFFh`;
-paths are copied into the shared VFS workspace and normalized against the
-CWD; `buffer`/`out` pointers are validated against `0100h-DFFFh` and move
-only through the checked bank-copy gates.  File data is chunked through the
-workspace staging view, bridging to the caller bank through the 64-byte
-common gate.  Every driver validates its complete block before any state
-change, and every `FS_*` call is refused with `KOS_EBUSY` before the VFS
-READY phase.
-
-**Workspace (correction-01).** All pathname and transfer scratch is one
-512-byte bank-7 workspace, `vfs_workspace`, owned by `kernel/vfs/` and
-declared kernel-only in `kernel/vfs/vfs.h`.  It has two mutually exclusive
-views: the staging view (all 512 bytes) and four 128-byte path slots
-(copy-in A, normalized A, copy-in B, normalized B; the B pair is used only
-by `rename`).  `OPEN`, `OPENDIR`, `STAT`, `MKDIR`, `RMDIR`, `UNLINK`,
-`CHDIR` use the path view; `RENAME` uses both path pairs; `READ`, `WRITE`,
-`READDIR` use the staging view; `GETCWD` uses the path view and then the
-staging view.  Boot-time kernel callers (the loader and exec, through the
-kernel file API) use the path view only: `SYS_EXEC` stages the caller's
-path in the copy-in A slot and holds the path view for the bind that hands
-it to the owning provider - a bank-6 provider dereferences that address
-while its own window is open, so it can only name fixed core (36.5's
-buffer rule, work package 45b correction 01).  The loader that follows
-streams the bound FILE through descriptors and the common staging block,
-so no view is held across it.  Single-tasking execution, the
-non-re-entrant gate and the absence of VFS use in an ISR mean the two views
-are never live at once; `kernel/vfs/workspace.c` asserts that invariant at
-run time when `KOS_VFS_WS_GUARD=1` (the acceptance/simulator builds) and
-compiles it out of production.  Every claim site brackets its use of the
-workspace with `vfs_ws_enter()`/`vfs_ws_leave()`, including the module-phase
-boot loader in `kernel/main.c`, so a guarded image panics
-(`vfs: workspace view overlap`) if a live path pointer is ever overwritten
-by staging data.  A host test pins the guard wiring: it is off in
-production, on for the `m9-fs-selftest` image whose replay asserts "no
-PANIC", and every claim is balanced.
-
-**Acceptance (package 42b correction 01).** `make fs-selftest` builds
-the image with the IOC-FAT driver serving `/fs` and ROMFS at `/system`,
-boots `/system/fs_selftest.exe` and replays it with the host FS2 peer
-serving the card (`tests/test_fs_selftest_sim.py`): card
-create/write/stat/read/seek/enumerate/mkdir/rename/unlink/rmdir, `/system`
-read, the absent-card branch, the nested exec with its exit status and the
-release of the child's leaked handles (driver slots and the 12-entry
-descriptor pool are read straight out of the machine).  The replay also
-pins the worst-case kernel gate-stack depth (287 bytes, inside the
-384-byte reservation).  The physical gate is
-`make smoke-hardware-fs SERIAL_PORT=/dev/ttyUSB0`.
-
-**Budget (section 32.39).** The production ledger moved from package 26
-(`code 23526 end 7BE6h`, `arena 46 granules`, `data 1501`) to package 27
-(`code 27636 end 8BF4h`, `arena 35 granules (20 boot, 15 free)`,
-`data 3049 at D200h`, `isr 256`, `slack 279`): `+4110` `_CODE` and
-`+1548` `_DATA` (the 512-byte staging buffer, the 4x128-byte CWD pool, the
-descriptor pool and the syscall path scratch).  The production arena clears
-the 32-granule floor and holds the 20-granule production boot set; the slack
-target is re-checked by the supervisor after package 28.
-
-Correction-01 then consolidated the six pathname buffers and the staging
-buffer into the single workspace, taking the production ledger to
-`code 27759 end 8C6Fh | arena 36 granules (20 boot, 16 free) | data 2113 at
-D600h | isr 256 | slack 191`: `_DATA` drops by 936 bytes (`+56` `_CODE` for
-the non-normalizing resolve/stat split and the piecewise panic line) and the
-arena gains a granule.  The worst-case kernel gate-stack depth improved from
-151 to 147 of 256 bytes, because the `READ`/`WRITE` and `READDIR` handlers
-release the workspace view at a single `out:` exit instead of through a
-bracketing wrapper call.  The corrected production image boots on hardware
-to the V9958 monitor prompt with the same `scratch=0F19` figure as before
-the correction (2026-10-05; `docs/validation/2026-10-05-m9-fs-syscalls.md`).
-
-Package 28 (`SYS_EXEC`) then takes the production ledger to
-`code 28159 end 8DFFh | arena 36 granules (20 boot, 16 free) | data 2113 at
-D600h | isr 256 | slack 191`: `+400` `_CODE`, `+0` bank-7 `_DATA`, arena
-unchanged, because the whole continuation mechanism (per-depth records,
-three 48-byte frame saves, the gate-state shadows and the `SYS_EXEC` path
-scratch) is common-resident because the resume gate restores it across the
-mode change, while the `SYS_EXEC` path buffer was bank-7
-`_DATA` (`docs/validation/2026-10-05-m9-nested-exec.md`) - since work
-package 45b correction 01 the caller's path is staged in the VFS
-workspace's path view in the fixed core instead, because the exec bind
-hands it to a bank-6 provider
-(`docs/validation/2026-10-11-m10-hardware-acceptance-correction-01.md`).  The `fstest` suite runs
-one more case (`exec`, `PASS 10/10`, confirmed on hardware on 2026-10-05; that M9
-suite was retired by package 42b correction 01) and the nested `exec`
-acceptance is replayed now by `tests/test_fs_selftest_sim.py`.
-
-## 13. M10 namespace: the root router and the static providers (package 42a)
-
-M10 replaces the M9 mount table with a *root router* over exactly three
-static nucleus providers (architecture 36.13, 36.14).  The VFS still owns
-`/`, but a path is no longer matched against a mount table: `bind` and
-`ns_enum` normalize the caller's path and route its first component,
-case-insensitively, to one of
-
-| root | provider | owner of |
-| --- | --- | --- |
-| `/fs` | the build's filesystem driver, over IPC | everything below `/fs`; `bind` returns `-KOS_ENODEV` in 42a |
-| `/system` | ROMFS, in-process, usable before any driver | everything below `/system` |
-| `/dev` | the host-built publication table | everything below `/dev` |
-
-`/` is a directory of those three roots, not a provider: a root-level name
-(such as `/ns.exe`) has no owner and is refused with `-KOS_ENOENT`.  A
-provider owns the whole subtree: the router hands it the remaining path
-and never interprets it.  There is no mount table, no provider
-registration, no root merge and no flat-prefix matching anywhere in the
-new path.
-
-**Source layout (all of it `cold`, `config/residency.json`).**
-
-```text
-kernel/vfs/router.c    the router, the DEVICE provider over the
-                       publication table and enumeration
-kernel/vfs/system.c    the ROMFS FILE provider (bind, read, seek, metadata)
-kernel/syscall/object.c  the syscall bodies: bind, call, unbind, ns_enum
-kernel/ipc/ipc.c       nucleus endpoints: provider objects are reached
-                       through the same handle-call path as bank-6 ones
-kernel/vfs/handles.c   the handle table: the M9 descriptor pool, extended
-```
-
-**The handle table.**  `bind` returns a handle `>= KOS_HANDLE_FIRST_BOUND`
-(3) plus an 8-bit protocol type (`KOS_TYPE_*`).  Handles 1 and 2 are the
-standard handles - `/dev/console` bound at process start to stdout and
-stdin - and `bind` never returns them.  The table is the M9 descriptor
-pool (one global owner-tagged array, `VFS_FD_MAX` entries in the
-`namespace-selftest` image), so an entry records the owner PID, the type,
-the endpoint and the provider's object identity beside the M9 file fields;
-a descriptor whose owner is the calling pid and whose number is bound is
-the only thing a `call`/`unbind` accepts.  Exit unbinds every handle the
-process owns, and `SYS_EXEC` gives a child entries for the standard
-handles only.
-
-**The DEVICE provider.**  `/dev` names come from the *host*: each driver
-manifest may declare `publishes` rows (name below `/dev`, 8-bit type,
-serving endpoint, provider object), the packer resolves them against the
-build's load order and writes a publication table into the container
-(ABI 4, `formats/include/mod.h`), and the loader installs the table
-into the provider, synthesizing the grouping rows (`/dev/input`,
-`/dev/serial`) from the names themselves.  A grouping row is a
-`container` entry: enumerating it works, binding it is `-KOS_EISDIR`.
-Drivers never look each other up at run time (docs/devices.md).
-
-**The ROMFS provider.**  A `/system` bind returns a `FILE` handle served
-*in-process* by a nucleus endpoint through the same call path as a bank-6
-endpoint; the one ROMFS reader serves it, chunked through the common copy
-gate.  `KFILE_OP_READ`, `KFILE_OP_SEEK` and `KFILE_OP_META` are supported
-and `KFILE_OP_WRITE` is `-KOS_EROFS` (ROMFS is read-only), with the bind
-flags checked first.
-
-**What the new code reuses.**  Package 42b deletes the M9 machinery; these
-objects stay because the router and its providers call them:
-
-| kept | what the namespace uses |
-| --- | --- |
-| `kernel/vfs/path.c` | `vfs_path_normalize_at()` - the one path normalizer (CWD-relative, `.`/`..`, repeated slashes) |
-| `kernel/vfs/handles.c` | `vfs_cwd_for()` and the per-process CWD slots, `vfs_handle_alloc()` and the handle pool, `vfs_fd_check()` for file handles |
-| `romfs.rel` | the ROMFS reader: `romfs_lookup_ci()`, `romfs_entry_at()`, `romfs_copy_logical()` |
-| `kernel/ipc/ipc.c` | the endpoint table, the frame/descriptor resolver and the restricted copy calls (`ipc_call_object`, `ipc_nucleus_copy_out`) |
-| `kernel/syscall/fs.c` | `kos_fs_copy_path()` for the caller path and the block/window validation helpers |
-
-**What 42b deletes.**  Everything the M9 path owns once the router and
-its providers serve the same callers: the mount table and the mount pass
-(`kernel/vfs/mount.c`, the generated mount table `vfs_mounts`,
-`config/mounts.json`), the M9 provider ABI and the VFS
-file/directory/mutation API (`kernel/vfs/file.c`, `kernel/vfs/dir.c`,
-`kernel/vfs/mutate.c`, `fs/romfs/romfs_provider.c`), the M9 `FS_*` syscall
-front end (`kernel/syscall/fs.c`), the
-device registry (`kernel/device/registry.c`, dead in production since the
-endpoint table replaced it) and the IOC-FAT provider in bank 7's arena
-with the granules it occupies (13 of the 16 the cold arena holds).  The
-per-object bytes are itemized in
-[`docs/validation/2026-10-09-m10-namespace-handles.md`](./validation/2026-10-09-m10-namespace-handles.md).
-
-**Acceptance.**  `make ns-selftest` builds the `namespace-selftest` image
-(the production boot path with a small driver set: SIO, the console
-driver and a synthetic publisher whose manifest declares
-`/dev/input/keyboard` and `/dev/video`), boots an ordinary SDK client as
-`/system/ns.exe`, and replays it: the standard handles, the publication
-types, grouping-name refusals, a call through a handle, a `/system` FILE
-read/seek/metadata, `KOS_EROFS`, table exhaustion and release, paged
-`ns_enum` over `/`, `/dev` and `/system`, and a child that proves the
-inherited standard handles.  `tests/test_ns_selftest.py` pins the ABI, the
-packed publication tables and the residency classification;
-`tests/test_ns_selftest_sim.py` compares the transcript with the packed
-store.  Production links none of it in this package, so its image stays
-byte-identical (`config/residency.json` classifies `vfs_ns`, `vfs_ns_file`
-and `object` as `cold` + `test_link`); the measurement and the projected
-production ledger after 42b are in
-[`docs/validation/2026-10-09-m10-namespace-handles.md`](./validation/2026-10-09-m10-namespace-handles.md).
+| operation | view |
+|---|---|
+| `BIND`, `NS_ENUM`, `CHDIR`, namespace `CALL`s, `EXEC`'s path | path view |
+| `GETCWD` | path view (one slot), then staging |
+| a `CALL` carrying file data | neither: the data moves by descriptor copies |
+
+Acceptance builds (`KOS_VFS_WS_GUARD=1`) fault if the two views overlap in
+use; production compiles the guard out.
+
+## 8. Boot
+
+`vfs_init()` runs before any driver is placed: it validates the store
+through the ROMFS reader, clears the handle table and the CWD slots, and
+sets up the in-process FILE endpoint. From then on `/system` works. `/dev`
+and `/fs` answer once the driver loader has installed the publications.
+`vfs_phase()` reports `READY` from the end of `vfs_init()`; `EXEC` refuses
+with `KOS_EBUSY` before that.
+
+## 9. Tests
+
+- `tests/test_ns_selftest.py`, `tests/test_ns_selftest_sim.py`: the
+  `ns-selftest` image boots SIO, the console and a synthetic driver that
+  publishes `/dev/input/keyboard` and `/dev/video`, then a client
+  (`/system/ns.exe`) that checks the standard handles, the publication
+  types, grouping-name refusals, a call through a handle, a `/system` read,
+  seek and metadata, `KOS_EROFS`, table exhaustion and release, paged
+  enumeration of `/`, `/dev` and `/system`, and a child's standard handles.
+- `tests/test_fs_selftest_sim.py`: files on `/fs` and nested exec, with and
+  without a card.
+- `tests/test_hwtest_sim.py`: the namespace stage of the production
+  exerciser against the real driver set.

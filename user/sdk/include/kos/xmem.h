@@ -1,4 +1,4 @@
-/* KonaOS SDK: extended-memory objects and the far aperture (package 43).
+/* KonaOS SDK: extended-memory objects and the far aperture.
  *
  * The native family is the ABI's kos/xmem.h (SYS_XMEM_ALLOC / _FREE / _READ /
  * _WRITE / _INFO / _MAP).  These wrappers return a non-negative result or

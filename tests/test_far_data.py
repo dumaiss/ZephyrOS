@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Far-data outcome acceptance (work package 49d).
+"""Far-data outcome acceptance.
 
 Two halves:
 

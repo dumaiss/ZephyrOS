@@ -58,14 +58,6 @@ def _image(size=4, fill=0x00):
     return bytes([0xC9] + [fill] * (size - 1))
 
 
-def old_magic_container():
-    """A well-formed container carrying the pre-rename magic bytes.  The
-    bytes are spelled in hex so the retired token cannot reappear in the
-    tree; the format tests assert the bad-magic boundary rejects them."""
-    return _container(_fields(magic=bytes([0x5A, 0x45, 0x58, 0x32])),
-                      _image(4))
-
-
 def _container(fields, image, segments=(), payloads=(), table_bias=0):
     """Lay out header + image + table + payloads like the packer.
 

@@ -1,4 +1,4 @@
-/* KonaOS SDK example: open, read, list (work package 49c).
+/* KonaOS SDK example: open, read, list.
  *
  * The filesystem half of the SDK against the store: `open` binds a
  * program from `/system`, `read` streams bytes out of it, `list` pages a

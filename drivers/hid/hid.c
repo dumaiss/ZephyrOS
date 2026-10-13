@@ -1,6 +1,6 @@
 /* KonaOS HID keyboard/text driver implementation (drivers/hid/).
  *
- * The M8 `hid` driver as a bank-6 driver image: the 16-byte local ring,
+ * The HID driver as a bank-6 driver image: the 16-byte local ring,
  * the fetch-on-doorbell engine, and the stuck-doorbell penalty behind the
  * HID protocol of abi/kos/protocol.h (class KOS_CLASS_HID, instance 0,
  * version KOS_PROTOCOL_VERSION).
@@ -34,9 +34,9 @@
  *   - transport failures are reported as "no input" (0 / EAGAIN), never
  *     as a poll error, and a link that is down at init keeps the engine
  *     registered: the first ordinary operation retries the whole-link
- *     recovery.  The console no longer composes itself from
- *     KHID_OP_READY (package 42e made the console build-selected), so a
- *     down link is a recoverable condition, not a boot decision.
+ *     recovery.  The console is chosen by the build and does not probe
+ *     KHID_OP_READY, so a down link is a recoverable condition, not a
+ *     boot decision.
  *
  * Translation is the MCU's: this driver copies bytes verbatim, including
  * NUL, control bytes and multi-byte VT100 key sequences.
@@ -321,7 +321,7 @@ uint8_t hid_driver_init(const struct driver_boot *boot)
 	 * host resolved it to the endpoint number; the driver never looks a
 	 * peer up at run time.  The manifest declares it required, so the
 	 * packer refused a build without it; a zero here is a malformed
-	 * bundle and fails the init (the loader fails the boot, 36.11). */
+	 * bundle and fails the init (the loader fails the boot, 5.3). */
 	handle = boot->deps[HID_DEP_IOC];
 	hid_state.ioc_handle = handle;
 	if (handle == 0u) {

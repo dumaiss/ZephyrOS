@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS libkos: IPC gate stub (work package 39).
+; KonaOS libkos: IPC gate stub.
 ;
 ; Sibling of console.asm, fsgate.asm and diaggate.asm.  The IPC wrappers
 ; build their packed argument block (and the caller's frame) in the

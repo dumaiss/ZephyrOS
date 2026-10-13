@@ -46,8 +46,8 @@ PROTO_H = os.path.join(ROOT, "drivers", "include", "ioc_protocol.h")
 IOC_PRIVATE_H = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.h")
 DRIVER_H = os.path.join(ROOT, "drivers", "hid", "hid_driver.h")
 DRIVER_C = os.path.join(ROOT, "drivers", "hid", "hid.c")
-# Package 41: HID is a bank-6 driver image - one hot segment (the whole
-# driver, as before, plus the protocol dispatch) and no boot segment.
+# HID is a bank-6 driver image - one hot segment (the whole driver plus
+# the protocol dispatch) and no boot segment.
 MANIFEST = os.path.join(ROOT, "drivers", "hid", "hid.json")
 PRODUCTION_SYSTEM = os.path.join(ROOT, "systems", "production.json")
 TARGET_TEST_C = os.path.join(ROOT, "tests", "target", "hid",
@@ -131,7 +131,7 @@ class TestHidDriverArtifact(unittest.TestCase):
         data = _read(MOD, "rb")
         info = modpack.parse_container(data, "hid.mod")
         # The image carries its host-built publications
-        # (`/dev/input/keyboard`, package 42b).
+        # (`/dev/input/keyboard`).
         self.assertEqual([publication["name"]
                           for publication in info["publications"]],
                          ["/input/keyboard"])
@@ -154,7 +154,7 @@ class TestHidDriverArtifact(unittest.TestCase):
                         hot["base"] + hot["image_size"])
 
     def test_system_file_and_boot_order(self):
-        # Package 49a: the system file names the driver load order and the
+        # The system file names the driver load order and the
         # store's own files; the generated store manifest (the driver
         # images, drivers.man, then those files) is
         # tests/test_systemgen.py's business.
@@ -165,7 +165,7 @@ class TestHidDriverArtifact(unittest.TestCase):
         self.assertEqual(system["store"],
                          ["monitor.exe",
                           # The production feature exerciser and the
-                          # outcome programs it runs (45b).
+                          # outcome programs it runs.
                           "hwtest.exe", "xmem_selftest.exe",
                           "xmem_child.exe", "xmem_far.exe",
                           "fs_selftest.exe", "fs_child.exe"])
@@ -181,12 +181,12 @@ class TestHidDriverArtifact(unittest.TestCase):
     def test_makefile_targets_and_module_rule(self):
         makefile = _read(MAKEFILE)
         self.assertIn("hid-test:", makefile)
-        # Package 49a: the driver set and the resolved manifests are the
+        # The driver set and the resolved manifests are the
         # system file's, and one foreach emits the pack rule per driver.
         self.assertIn("$(BUILD)/drivers/$(1).json", makefile)
         self.assertIn("hid.rel", makefile)
-        # The HID diagnostic runs in the console-integration image (work
-        # package 42d merged the per-device images); the table row links
+        # The HID diagnostic runs in the console-integration image; the
+        # table row links
         # it and the system file carries the group's flags.
         index = makefile.index("SYSTEM_TEST_OBJS.console-integration :=")
         self.assertIn("$(BUILD)/hid_test.rel",
@@ -271,7 +271,7 @@ class TestHidSourceDiscipline(unittest.TestCase):
                                  "HID must not reference %r" % needle)
 
     def test_discovery_is_host_resolved_only(self):
-        # The M8 device query is a host-resolved dependency now: the image
+        # Discovery is a host-resolved dependency: the image
         # metadata declares the IOC dependency, the packer resolves it to
         # the endpoint number and the init reads it from the boot bundle -
         # no run-time lookup at all.
@@ -290,8 +290,7 @@ class TestHidSourceDiscipline(unittest.TestCase):
         # Input-only: the driver exposes no output path at all.
         self.assertNotIn("KCAP_CHAR_OUT", self.c)
         self.assertNotIn("putc", self.header)
-        # The ready probe reports the link state; no console driver
-        # probes it any more (work package 42e).
+        # The ready probe reports the link state.
         self.assertIn("hid_state.ioc_handle", self.c)
 
     def test_ring_and_penalty_constants(self):

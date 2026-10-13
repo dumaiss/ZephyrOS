@@ -1,6 +1,6 @@
-/* KonaOS M10 EXE v2 native executable container.
+/* KonaOS EXE v2 native executable container.
  *
- * EXE v2 is the only executable container (architecture 36.18): a primary
+ * EXE v2 is the only executable container (architecture 6.7): a primary
  * image loaded at logical 0100h plus zero or more auxiliary segments.
  * It is packed by tools/exepack.py and loaded from the namespace by
  * kernel/process/exec.c; see docs/exe-format.md.
@@ -73,9 +73,9 @@
 #define EXE_MIN_STACK_SIZE 0x0002u
 
 /* Segment kinds.  `DATA` segments become extended-memory objects owned by
- * the process (architecture 36.16/36.18); `FAR_CODE` segments are linked
+ * the process (architecture 4.8/6.7); `FAR_CODE` segments are linked
  * at 8000h and loaded into the aperture slice of an auxiliary bank, one
- * per bank, and executed in place through the mode-10 aperture (36.17):
+ * per bank, and executed in place through the mode-10 aperture (7.2):
  * the largest far-code segment is the 16 KiB aperture. */
 #define EXE_SEG_KIND_FAR_CODE 1u
 #define EXE_SEG_KIND_DATA     2u
@@ -83,7 +83,7 @@
 /* Segment-row flags (row offset 06).  A `DATA` row at most 16 KiB (image
  * + BSS) may be `MAPPABLE`: the loader places it in the aperture slice of
  * an auxiliary bank, so its image is at 8000h exactly where a `DATAn=`
- * source linked it (work package 49d), and the object it creates is
+ * source linked it, and the object it creates is
  * mappable - the caller reaches the data with plain pointers while the
  * aperture is open, and by handle otherwise.  A mappable segment occupies
  * a whole auxiliary bank's aperture like a far-code segment, so the two

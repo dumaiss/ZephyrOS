@@ -4,7 +4,7 @@
  * control 23h, 115200 8N1) as a resident-driver operation set with
  * bounded polling operations.  It is polling-only: no interrupts are
  * used and the SIO interrupt mode stays disabled (WR1 = 00h), which also
- * keeps it independent of the M2 executive.
+ * keeps it independent of the IRQ executive.
  *
  * The early console and panic paths keep their direct common-resident
  * access to the hardware and do not depend on this driver.

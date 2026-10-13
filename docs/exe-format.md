@@ -1,21 +1,16 @@
-# EXE v2 executable format
+# The EXE executable format
 
-EXE ("Zephyr EXecutable") is the native, single-application-bank program
-format introduced by M6 and replaced by EXE v2 in M10.  A EXE v2 file
-carries a primary image plus zero or more auxiliary segments, is stored
-in the ROMFS recovery store (see `docs/romfs-format.md`), is loaded by
-the kernel into one application bank `0-5` (plus auxiliary banks for its
-segments), and is entered in mode `10`.  The loader's authoritative
-implementation is `kernel/process/exec.c`; the host-side packer
-(`tools/exepack.py`) mirrors every validation boundary so a bad link
-cannot reach the ROMFS.
-
-There is no compatibility path: EXE v2 is the only executable format
-(architecture 36.18).
+An EXE file is a native KonaOS program: a primary image plus zero or more
+auxiliary segments. It is stored in the ROM store (`docs/romfs-format.md`)
+or on the card, loaded into one primary bank `0-5` (plus auxiliary banks
+for its segments), and entered in mode 10. The loader is
+`kernel/process/exec.c`; the host packer (`tools/exepack.py`) applies every
+check the loader applies, so a bad link never reaches a store. The rules
+are in `docs/architecture.md` section 6.7.
 
 ## 1. Logical load address
 
-Every EXE v2 primary image is linked as a flat image whose first byte
+Every primary image is linked as a flat image whose first byte
 executes at logical address `0100h`:
 
 ```text
@@ -68,16 +63,16 @@ One 16-byte row per segment, in ascending id order from 1:
 | `01h` | 1 | `kind` | `EXE_SEG_KIND_*` (`1` far code, `2` data) |
 | `02h` | 2 | `image_size` | bytes copied into the segment's memory |
 | `04h` | 2 | `bss_size` | zero-initialized bytes after the image |
-| `06h` | 2 | `flags` | `EXE_SEG_FLAG_*` (`1` mappable `DATA`, package 49d); `0` otherwise |
+| `06h` | 2 | `flags` | `EXE_SEG_FLAG_*` (`1` mappable `DATA`); `0` otherwise |
 | `08h` | 4 | `payload_offset` | file offset of the segment payload |
 | `0Ch` | 4 | `reserved1` | `0` |
 
 - **`DATA` segments** become extended-memory objects owned by the process
-  (architecture 36.16): the loader places them before the program runs,
+  (architecture 4.8): the loader places them before the program runs,
   and `SYS_SEG_INFO` names each one and returns the handle that
   `SYS_XMEM_READ`/`SYS_XMEM_WRITE` use.  A loader segment is
   released only at exit; `SYS_XMEM_FREE` refuses it.
-- **`flags` bit 0 (`EXE_SEG_FLAG_MAPPABLE`, package 49d)** is valid on a
+- **`flags` bit 0 (`EXE_SEG_FLAG_MAPPABLE`)** is valid on a
   `DATA` row and nowhere else: the loader places such a segment in the
   aperture slice of an auxiliary bank, so its image is at `8000h` where
   the link put it, the loader zeroes its BSS right after, and the object
@@ -87,9 +82,9 @@ One 16-byte row per segment, in ascending id order from 1:
   The row is limited to the 16 KiB aperture, exactly as a far-code row is,
   and one mappable row costs one auxiliary bank, as a far-code row does.
 - **`FAR_CODE` segments** are linked at `8000h` and executed in place
-  through the aperture (package 44b): the loader places each one in the
-  aperture slice of its own auxiliary bank - one far-code segment per
-  bank (36.17) - and `SYS_SEG_MAP` returns the token that opens it.  A
+  through the aperture: the loader places each one in the aperture slice
+  of its own auxiliary bank (one far-code segment per bank), and
+  `SYS_SEG_MAP` returns the token that opens it.  A
   far-code segment has no handle: `SYS_SEG_INFO` reports `0`.
 
 ## 4. Geometry rules
@@ -122,7 +117,7 @@ Validated in this order (first violation wins); the codes are also the
 | 21 | row slot sums equal `total_segment_slots` | `EXE_EXEC_ERR_SEG_SLOTS` |
 
 Checks 1-14 and 12-13 are the loader's **one up-front feasibility check**
-from the header alone (36.18): every count and size the load needs, read
+from the header alone: every count and size the load needs, read
 before a slot, a bank or a byte changes.  Checks 15-17 are part of that
 same header validation; checks 18-21 are the protective bounds applied to
 the table as it is read, before anything is allocated.
@@ -138,15 +133,15 @@ slots into this one field.
 The loader adds these result codes around the geometry checks:
 `EXE_EXEC_ERR_ARG` (null argument / invalid request),
 `EXE_EXEC_ERR_ROMFS` (name not found), `EXE_EXEC_ERR_TYPE` (entry is not
-a EXE), `EXE_EXEC_ERR_NOSPACE` (no free process slot, bank, auxiliary
+an EXE), `EXE_EXEC_ERR_NOSPACE` (no free process slot, bank, auxiliary
 run or object-table entry), `EXE_EXEC_ERR_READ` (payload read or copy
 failed).  All arithmetic is done in 32 bits so 16-bit wrap can never mark
 an out-of-range geometry valid.
 
 ## 5. Link layout contract
 
-Every EXE is linked by the SDK's generic rule (`user/sdk/exe.mk`, section
-8 of `docs/sdk.md`), which derives the manifest from the link map; the
+Every EXE is linked by the SDK's program rule (`mk/kos.mk`,
+`docs/sdk.md`), which derives the manifest from the link map; the
 linker script and the packer must both agree with the resulting map:
 
 - `_CODE` is linked at `0100h`; the linked bytes must be entirely inside
@@ -154,7 +149,7 @@ linker script and the packer must both agree with the resulting map:
 - `_DATA` is linked at `0100h + image_size` and must satisfy
   `s__DATA == 0100h + image_size` (`s__DATA` proves where BSS starts) and
   `l__DATA <= bss_size`;
-- initialized writable data is not supported by EXE v2:
+- initialized writable data is not supported:
   `l__INITIALIZER` and `l__INITIALIZED` must be zero, so every static
   starts zeroed;
 - the declared entry symbol must resolve to exactly
@@ -167,7 +162,7 @@ The SDK links crt0 and the shared runtime object first (`crt0.rel
 runtime.rel <program>`, then `libkos`), so the scratch block always sits
 at the start of `_DATA`, ahead of the program's own statics: the whole
 program, its statics and the scratch stay below `2000h` even when the
-program's BSS is large (`fstest.exe` is the worst case).  The manifest
+program's BSS is large.  The manifest
 `scratch` field names that one symbol per program; a program linked
 without crt0 (the raw-return test child) declares no scratch at all.
 
@@ -175,7 +170,7 @@ A `DATA` segment is declared in the manifest with a raw payload file and
 a BSS size (`SEGMENTS=` on the `exe_program` line); the packer derives
 its `image_size` from the payload file and lays out the table.
 
-A **mappable `DATA` segment** (far data, package 49d) is declared the same
+A **mappable `DATA` segment** (far data) is declared the same
 way plus `"flags": 1`, or with a linker `area`/`bss_area` pair instead of
 a payload file: the SDK rule compiles a `DATA<n>=` source with
 `--constseg DATA<n> --dataseg DATA<n>B` and the link bases both areas at
@@ -184,8 +179,8 @@ a payload file: the SDK rule compiles a `DATA<n>=` source with
 exactly where the image ends (`s__<bss_area> == s__<area> + l__<area>`) -
 the loader zeroes it there.  A `DATAn=` source may hold `const` objects
 and zeroed ones only: an initialized writable object would need the
-`_INITIALIZED`/`_INITIALIZER` areas, which EXE v2 has no startup support
-for, and the packer refuses it by name.
+`_INITIALIZED`/`_INITIALIZER` areas, which the format has no startup
+support for, and the packer refuses it by name.
 
 A **`FAR_CODE` segment** is declared with a linker `area` instead
 (`{"id": 1, "kind": "FAR_CODE", "area": "_FAR1", "bss_size": 0}`): the
@@ -195,15 +190,15 @@ rule compiles the program's `FAR<n>=` sources with bank n and
 link and the packer takes its bytes from the program's IHX (holes
 zero-filled) using the map's `s__FAR<n>`/`l__FAR<n>` symbols.  A
 `FAR_CODE` row's id is the number in its area name - `_FAR<n>` is segment
-n, the number the module's `__banked` definitions emit as `b_<fn>`
-(package 49b) - and the far rows are the container's first segments, ids
+n, the number the module's `__banked` definitions emit as `b_<fn>` - and
+the far rows are the container's first segments, ids
 `1..k` for the `FAR1=`..`FARK=` options used, with the `DATA` rows after
 them.  Every far area is its own IHX record stream in link order, all of
 them at `8000h`: the packer reads each area's payload from its own
 stream.  With no `SEGMENTS=` the rule generates the declaration itself,
 one `FAR_CODE` row per option used.
 
-Every declaration is checked against the **36.17 link rule**: a program
+Every declaration is checked against the **far link rule**: a program
 with far code or far data must keep its primary image and BSS below
 `8000h` and its stack base at or above `C000h`, so the aperture
 `8000h-BFFFh` belongs to segments alone; a far area's `image + bss` is at most 16 KiB and each
@@ -213,8 +208,8 @@ would later refuse.
 
 ## 6. Load sequence
 
-`process_exec("name.exe")` (the kernel launcher) and `SYS_EXEC`
-(`docs/abi.md` section 11, an ordinary process) both run the same two
+`process_exec(path)` (the boot launcher) and `SYS_EXEC` (`docs/abi.md`
+section 5.3, an ordinary process) both run the same two
 steps: `process_prepare()` loads, then `process_launch()` enters.
 
 `process_prepare()` performs:
@@ -242,7 +237,7 @@ steps: `process_prepare()` loads, then `process_launch()` enters.
     write it into the child's page zero at `0080h`;
 12. return the prepared child.
 
-**Memory initialization (architecture 36.19):** the loader zeroes only
+**Memory initialization:** the loader zeroes only
 the primary BSS, each segment's BSS, the startup block and the page-zero
 vector.  There is **no whole-bank clear**: the rest of the child's bank
 and every extended-memory object keep whatever the previous process left
@@ -306,11 +301,9 @@ without any kernel work:
 - `argv[0]` is the first argument: the kernel does not pass a program
   name, so there is no `argv[0]` convention for it.
 
-The transport is proven end to end by the M9 exec acceptance: `fstest`
-runs `fschild` with no arguments, one word, several words with a quoted
-space, and a trailing separator, and the simulator replay asserts the
-exact echoed `argv`; the kernel preflight refuses a 126-byte tail and a
-tail pointer outside the window with `KOS_EINVAL` before allocating.
+The kernel preflight refuses a 126-byte tail and a tail pointer outside
+the window with `KOS_EINVAL` before allocating. `tests/test_fs_selftest_sim.py`
+checks a child's exact `argv` across these cases.
 
 A raw `RET` from the entry point lands in a common trap and exits the
 process with `KOS_EFAULT`; programs leave through `SYS_EXIT` only.
@@ -320,9 +313,8 @@ reservation, the child's CWD slot, every descriptor it opened and every
 segment object it created, and closes the source before returning the
 result code, so a rejected program leaves the process table, the bank
 allocator, the object table, the caller bank, and the parent context
-bit-identical to their pre-call state (verified by the M6 failure image,
-the M9 exec failure modes, the M10 subsystem loader-outcome programs and
-the simulator tests).
+unchanged (the subsystem image's loader-outcome programs and the
+simulator tests check this).
 
 A child started by `SYS_EXEC` is a full ordinary process: a fresh
 application bank, its own page zero, its own extended-memory segments,
@@ -334,44 +326,14 @@ in one chain; the suspension cost is the gate-stack frame described in
 
 ## 7. Runtime
 
-`user/sdk/` (libkos: `kos/console.h` with the gate stubs in
-`user/sdk/src/console.asm`) is the first-party C runtime for EXE programs
-(SDCC `sdcccall(1)` wrappers around `RST 30h`):
-
-```c
-void exit(unsigned int status);      /* SYS_EXIT, does not return */
-int  console_write(const char *buf, unsigned int len);  /* console client */
-int  console_read(char *buf, unsigned int len);         /* console client */
-int  console_poll(void);                     /* console client */
-int  getinfo(struct exe_info *info); /* SYS_GETINFO */
-```
-
-Negative returns are `-errno`.  The wrappers share one argument scratch
-(`kos_scratch`, in `user/sdk/src/runtime.asm`) inside the linked image,
-which is why the scratch symbol must satisfy the window rule above; the
-SDK links the runtime object first so the scratch always lands at the
-start of BSS, ahead of a program's own data.
-
-`user/sdk/include/kos/fs.h` adds the M9 filesystem wrappers
-(`open`, `read`, ...; gate stub `user/sdk/src/fsgate.asm`) and
-`user/sdk/include/kos/process.h` adds
-`run(const char *path, const char *args)` on top of them: the same
-low-window argument block and gate stub, the same 127-byte local path
-check plus a 125-byte tail check, returning the child's exit status or
-the negated native error code (`docs/abi.md` section 11).  A NULL or
-empty `args` is "no arguments"; the raw tail reaches the child byte-exact
-through the startup block (`startup`/`splitargs` above).
-
-`user/sdk/include/kos/seg.h` adds `seginfo(segment, &info)`: the
-`SYS_SEG_INFO` wrapper that describes a container segment and hands out
-the `DATA` segment's extended-memory handle, and `segmap(segment)`:
-the `SYS_SEG_MAP` wrapper (`docs/abi.md` section 15) that returns the
-aperture token for one of the caller's own `FAR_CODE` segments.  On top
-of it the SDK offers `farcall(segment, entry, a, b)`: it maps the
-segment, calls the linked far entry `entry(a, b)` in place at `8000h` and
-restores the caller's aperture latch, so primary code reaches far code by
-taking the far function's address in the program's own link (see
-`docs/sdk.md`).
+The SDK (`docs/sdk.md`) is the C runtime for EXE programs: `crt0` and
+`libkos`, wrappers around `RST 30h` with SDCC's `sdcccall(1)` convention.
+Negative returns are `-errno`. The wrappers share one argument scratch
+(`kos_scratch`, in `user/sdk/src/runtime.asm`), which is why the scratch
+symbol must satisfy the window rule above. The process wrappers are
+`exit(int)`, `getinfo()`, `run(path, args)`, `startup()` and `splitargs()`
+(`kos/process.h`, `kos/console.h`); segments are reached with `seginfo`,
+`segmap`, `farcall`, `__banked` calls and `farmap` (`kos/seg.h`).
 
 ## 8. Tooling
 
@@ -394,6 +356,6 @@ python3 tools/exepack.py dump     out.exe
 lays out the table.  The packer output (image bytes, report JSON) is
 byte-deterministic; the report carries the header fields, image/BSS/stack
 geometry, entry symbol resolution, the segment table and sha256 digests.
-`make exe-test` packs, validates, dumps, and runs the host suite that
-pins `exepack.py` constants and result codes to
-`formats/include/exe.h` value-for-value.
+`make exe-test` packs, validates and dumps a test program and runs the
+host suite (`tests/test_exe.py`) that pins `exepack.py`'s constants and
+result codes to `formats/include/exe.h`.

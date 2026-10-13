@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side tests for the M0 ROM image packer and layout contract.
+"""Host-side tests for the ROM image packer and layout contract.
 
 Unit tests build synthetic Intel HEX / map inputs; integration tests check
 the real build artifacts under build/ when present (created by `make`).
@@ -368,9 +368,8 @@ class TestRealArtifacts(unittest.TestCase):
 
 
 class TestNucleusLedgers(unittest.TestCase):
-    """The five architecture-36.20 ledger lines, and the driver ledger fix
-    package 42c made: `driver hot`/`driver boot/bulk` come from the packed
-    driver set's plan instead of being hard-zeroed."""
+    """The five architecture-9 ledger lines: `driver hot`/`driver
+    boot/bulk` come from the packed driver set's plan."""
 
     def test_ledger_lines_carry_the_driver_plan(self):
         plan = {
@@ -414,8 +413,7 @@ class TestNucleusLedgers(unittest.TestCase):
         ledger = json.load(open(manifest_path))["nucleus"]
         plan = json.load(open(plan_path))
         hot = plan["nucleus"]
-        # The production ledger and the packer's plan agree: this is what
-        # the mis-reported driver line looked like before package 42c.
+        # The production ledger and the packer's plan agree.
         self.assertGreater(hot["driver_hot_bytes"], 0)
         self.assertEqual(ledger["driver_hot_bytes"],
                          hot["driver_hot_bytes"])
@@ -447,7 +445,7 @@ class TestNucleusLedgers(unittest.TestCase):
 
 
 class TestCommonCeiling(unittest.TestCase):
-    """The pinned common-memory ceiling (the M10 reservation is released)."""
+    """The pinned common-memory ceiling."""
 
     def test_pinned_values(self):
         self.assertEqual(pack_image.COMMON_CEILING, 3072)

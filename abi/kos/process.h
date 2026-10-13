@@ -7,7 +7,7 @@
  * (process table, prepare/launch) stays in kernel/include/process.h,
  * which includes this header.
  *
- * Startup block v1 (package 28b) lives in the process's own page zero,
+ * Startup block v1 lives in the process's own page zero,
  * inside the caller-visible low window that stays mapped in both mode 10
  * and mode 11:
  *
@@ -51,7 +51,7 @@ struct kos_info_record {
 	uint16_t flags; /* KOS_PROCESS_FLAG_*  */
 };
 
-/* Nesting geometry (package 28).  KOS_EXEC_MAX_DEPTH user processes may
+/* Nesting geometry.  KOS_EXEC_MAX_DEPTH user processes may
  * form one synchronous exec chain; the kernel launcher sits at depth 0.
  * The private frame-save geometry derived from this value lives in
  * kernel/include/process.h. */

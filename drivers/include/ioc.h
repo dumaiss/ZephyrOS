@@ -1,4 +1,4 @@
-/* KonaOS IOC transport vocabulary (driver-facing, M10).
+/* KonaOS IOC transport vocabulary (driver-facing).
  *
  * The IOC driver (drivers/ioc/) implements the Z80-to-MCU two-lane
  * transport: the command/reply lane (SIO1/B) and the bulk lane (SIO1/A).
@@ -16,8 +16,7 @@
  *     operation (KIOC_STATUS_HID_PENDING).
  *
  * The operation sequence, the bulk phases and the MCU packet vocabulary
- * live in drivers/include/ioc_protocol.h; the class contract text is
- * retired with the M8 device model (work package 42c).
+ * live in drivers/include/ioc_protocol.h.
  */
 
 #ifndef KONAOS_IOC_H

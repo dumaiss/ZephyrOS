@@ -1,4 +1,4 @@
-/* KonaOS M2 interrupt contract (module-facing types and result codes).
+/* KonaOS interrupt contract (types and result codes).
  *
  * This header is what a MOD module and the driver ABI need: the
  * `irq_source_t`/`irq_handler_t` types, the logical source enum, and the

@@ -1,4 +1,4 @@
-/* KonaOS M1 kernel entry.
+/* KonaOS kernel entry.
  *
  * Preconditions established by boot/start.asm:
  *   - interrupts disabled,
@@ -9,9 +9,9 @@
  *   - boot-time latch assertion passed.
  *
  * kernel_main() first re-validates the latch state that the bank-7 body
- * depends on, exercises the banking primitives, prints the M0 banner, and
- * enters the controlled halt loop.  Successful validation is silent: the
- * banner remains byte-identical to M0.  It does not return.
+ * depends on, exercises the banking primitives and prints the banner
+ * (validation itself is silent), then brings up the IRQ executive, the
+ * VFS and the drivers and runs the boot launcher.  It does not return.
  */
 
 #include "kernel.h"
@@ -35,7 +35,7 @@
 #endif
 
 #if KOS_TARGET_TEST_BUILD
-/* TEST-ONLY HOOK: target acceptance runner; implementation and milestone
+/* TEST-ONLY HOOK: target acceptance runner; implementation and group
  * selection live in tests/target/support/target_test.c (acceptance images
  * only).  The early hook runs before the boot program load; the late hook
  * runs after console binding. */
@@ -44,7 +44,7 @@ void kos_target_test_late(void);
 #endif
 
 /* Hardware-smoke host sync.  Diagnostic images built with
- * KOS_SMOKE_HOST_SYNC=1 (the M8 IOC smoke image) replace the blind
+ * KOS_SMOKE_HOST_SYNC=1 (the smoke-tested images) replace the blind
  * one-second connect delay with a wait for the host's two-byte sync
  * sequence on SIO0/B before the banner.  On this bench the board's reset
  * line also resets the USB bridge, so the boot log is only capturable if
@@ -120,7 +120,7 @@ static void kernel_driver_manifest_failed(int result)
  * reader, the handle table and the in-process FILE endpoint), reads the
  * boot manifest and hands it to the resident driver loader, which places
  * every driver the manifest lists into bank 6 and runs their boot tiers
- * and inits in dependency order (architecture 36.4).  The store's manifest
+ * and inits in dependency order (architecture 4.1).  The store's manifest
  * is what the image boots: production lists the five driver drivers (the
  * selected filesystem driver among them, publishing `/fs`), and an image
  * that needs the serial-only fallback lists a subset.  The drivers are
@@ -198,14 +198,14 @@ static void kernel_exercise_banking(void)
 	}
 }
 
-/* --- native boot launcher (M9 shell readiness, package 28b) ------------
+/* --- native boot launcher -------------------------------------------
  *
  * The launcher starts the configured boot program - the ROMFS
  * `monitor.exe` by default - through its `/system` VFS path via the
  * unchanged `process_exec()` path, and re-execs it after every normal
  * exit.  `KOS_BOOT_PROGRAM` (the selected system file, systems/<name>.json)
- * selects the program: M10's shell is one build setting plus its EXE in
- * the system's store, with no kernel edit.
+ * selects the program: changing it (for example to a shell) is one build
+ * setting plus the EXE in the system's store, with no kernel edit.
  *
  * The child's exit status and the recovered process/bank counts are
  * printed after each cycle (normal console when bound, early console
@@ -253,7 +253,7 @@ static char *kernel_boot_put_dec(char *out, uint8_t value)
 
 /* The console driver endpoint, resolved once from the host-built
  * publication the resident loader installed (0 while the store provided
- * none).  There is no runtime class lookup (architecture 36.11). */
+ * none).  There is no runtime class lookup (architecture 5.3). */
 static uint8_t kernel_console_endpoint;
 
 static uint8_t kernel_console_handle(void)
@@ -266,7 +266,7 @@ static uint8_t kernel_console_handle(void)
 }
 
 /* One console byte from the nucleus: the console protocol's PUTC form, the
- * one operation a caller without a descriptor can drive (36.7). */
+ * one operation a caller without a descriptor can drive (4.9). */
 static int kernel_console_putc(uint8_t handle, uint8_t ch)
 {
 	struct kos_ipc_frame frame;
@@ -301,10 +301,9 @@ static int kernel_console_write(const char *line, uint16_t length)
 	return 0;
 }
 
-/* The boot path's own output: the console driver composes the same
- * input/output pair the M8 console device did, and the early console is
- * what remains when the store provided no console driver (the fallback
- * rule the panic path also depends on). */
+/* The boot path's own output: through the console driver when the build
+ * has one, and on the early console otherwise (the same path the panic
+ * handler depends on). */
 static void kernel_boot_emit(const char *line, uint16_t length)
 {
 	uint8_t handle = kernel_console_handle();
@@ -452,7 +451,7 @@ void kernel_main(void)
 		if (driver_failures != 0) {
 			/* A required driver failed to initialize: the loader
 			 * named it on the early console.  The boot fails
-			 * here, before the launcher (36.11). */
+			 * here, before the launcher (5.3). */
 			early_console_puts("console: driver failed\r\n");
 			__asm__("di");
 			for (;;) {
@@ -473,7 +472,7 @@ void kernel_main(void)
 	}
 
 #if KOS_TARGET_TEST_BUILD
-	/* TEST-ONLY HOOK: subsystem/M8/M9 acceptance phases (target_test.c). */
+	/* TEST-ONLY HOOK: the acceptance images' late phases (target_test.c). */
 	kos_target_test_late();
 #endif
 

@@ -1,4 +1,4 @@
-; KonaOS M2 IM2 page initialization and interrupt-mode selection.
+; KonaOS IM2 page initialization and interrupt-mode selection.
 ; Kernel-owned IRQ executive initialization; the platform declares the
 ; vector-page geometry and the I-register value in irq.inc.
 	.module platform_irq
@@ -21,7 +21,7 @@ _irq_arch_init::
 	ld	(hl),c
 	inc	hl
 	djnz	100$
-	; Enabled M2 source: CTC0 vector base 00h -> vector byte 00h.
+	; CTC0 source: vector base 00h -> vector byte 00h.
 	ld	hl,#irq_ctc0_stub
 	ld	(KOS_IRQ_VECTOR_BASE),hl
 	; The final fill store overlaps the linked FF vector word at FDFF/FE00.

@@ -1,9 +1,8 @@
 /* KonaOS CTC0 acceptance helper implementation (test only).
  *
- * The exact programming sequence the M2/M3/M4 acceptance images require:
- * vector base, then control word, then time constant to start counting;
- * a control-word reset stops it.  This is the same sequence the retired
- * production helper used, moved verbatim into the test tree so no
+ * The exact programming sequence the IRQ acceptance needs: vector base,
+ * then control word, then time constant to start counting; a
+ * control-word reset stops it.  It lives in the test tree so no
  * acceptance-only CTC code is linked into production.
  */
 

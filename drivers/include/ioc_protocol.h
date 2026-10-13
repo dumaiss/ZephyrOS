@@ -1,4 +1,4 @@
-/* KonaOS IOC client-visible driver vocabulary (M8).
+/* KonaOS IOC client-visible driver vocabulary.
  *
  * The IOC transport surface lives in drivers/include/ioc.h: the native
  * `struct kioc_frame`, the semantic status bits and the transport error
@@ -42,7 +42,7 @@
 #define IOC_PING_LINK_SYNCED  0x40u
 
 /* Pinned deployment: controller firmware level 74 (4Ah).  Reported by
- * PING; recorded and validated by the M8 target diagnostic.  A driver
+ * PING; recorded and validated by the IOC target diagnostic.  A driver
  * never *requires* this value, it reports what the controller returns. */
 #define IOC_FW_LEVEL_PINNED   74u
 

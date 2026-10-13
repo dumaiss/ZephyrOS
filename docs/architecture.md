@@ -1,6767 +1,1307 @@
 # KonaOS Architecture
 
-**Status:** M0-M9 complete; M10 architecture defined and under implementation; M11-M12 defined for native completion
-**Scope:** Milestones M0 through M12
-**Target:** Zephyr-80  
-**Language/toolchain:** SDCC + sdasz80/sdldz80, GNU Make, Python host tools
-
----
-
-## 1. Purpose
-
-KonaOS is the native operating system for the Zephyr-80.
-
-The initial milestones intentionally build the native operating system from the machine outward. CP/M compatibility is not part of native bring-up; it is a later compatibility personality layered over a complete and useful native KonaOS environment.
-
-The milestones covered by this document are:
-
-- **M0 — Kernel bring-up:** boot KonaOS, initialize the early serial console, print a banner, and halt. **Complete.**
-- **M1 — Kernel foundation:** establish the kernel memory model, page-zero ownership, common kernel entry points, and the initial native ABI scaffolding. **Complete.**
-- **M2 — Interrupt executive:** establish kernel-owned IM2, safe mode-crossing IRQ entry/return, source ownership, and the first hardware interrupt. **Complete.**
-- **M3 — Device registry and static drivers:** establish the driver/device model and prove it with statically linked hardware drivers. **Complete.**
-- **M4 — Dynamic driver/module loading:** load relocatable driver modules into a managed bank-7 driver arena and register their devices at boot. **Complete.**
-- **M5 — ROM recovery filesystem:** provide a tiny read-only ROM-backed recovery store for boot modules and native recovery programs. **Complete.**
-- **M6 — Native process and EXE execution:** establish single-tasking native process lifecycle and execute a single-bank native program from ROMFS. **Complete.**
-- **M7 — Native monitor / diagnostic foundation:** port the Zephyr monitor as the first useful native EXE and establish the foundation for the later diagnostic suite. **Complete.**
-- **M8 — Native device stack completion:** provide the normal V9958/HID console and IOC transport through class-aware dynamically loaded drivers. **Complete.**
-- **M9 — Native VFS and filesystem framework:** establish the native namespace, filesystem-provider model, bootstrap/system filesystem, IOC-FAT provider (with its own file-data cache), block-device class, and native file/directory syscall ABI.
-
-The native shell and full userland, complete diagnostic suite, and extended/far-memory drivers remain later native KonaOS milestones. Compatibility personalities begin only after those native facilities are complete.
-
----
-
-## 2. Architectural principles
-
-Even at M0/M1, several rules are considered architectural invariants.
-
-### 2.1 KonaOS owns the machine
-
-Once control enters KonaOS, the kernel owns:
-
-- CPU operating state
-- memory banking state
-- page zero
-- stack placement
-- interrupt mode and interrupt ownership
-- kernel-reserved memory
-- entry points into kernel drivers
-
-Applications and drivers added later will use kernel-defined interfaces rather than relying directly on kernel layout.
-
-### 2.2 Platform is description, not implementation
-
-Kernel and driver code should not scatter Zephyr-80 I/O port values, memory addresses, wiring facts, or board-specific constants throughout the source tree.
-
-Machine-description constants belong under:
-
-```text
-platform/zephyr80/
-```
-
-This directory is **declarative only**. It describes what the Zephyr-80 machine is:
-
-- I/O port numbers;
-- register-bit constants;
-- memory-mode constants;
-- physical bank ownership;
-- fixed memory-layout constants;
-- IRQ/vector wiring facts;
-- board-specific channel mappings;
-- build-time configuration values.
-
-It must not contain executable implementation.
-
-In particular, `platform/zephyr80/` must contain **no `.c` or `.asm` translation units**, and its include files must not define instruction-emitting routines or executable macros.
-
-Active code belongs to the subsystem that owns the behavior:
-
-```text
-boot/       reset, ROM-to-RAM copy, initial kernel handoff
-kernel/     banking, syscall crossing, IRQ executive, registries, loaders
-drivers/    SIO, CTC, V9958, IOC, storage and other device behavior
-user/       native user programs and diagnostics
-```
-
-Those implementations consume constants from `platform/zephyr80/`.
-
-The rule is:
-
-> **Platform describes the machine; boot, kernel, drivers, and user programs operate the machine.**
-
-### 2.3 Early debug output is special
-
-The early serial console is not the future KonaOS console subsystem.
-
-It is a permanently available low-level diagnostic path intended for:
-
-- early boot messages
-- fatal kernel errors
-- panic output
-- debugging failures in the future device or console infrastructure
-
-It may access the SIO hardware directly.
-
-### 2.4 Native ABI is separate from compiler ABI
-
-SDCC calling conventions are an implementation detail.
-
-Any stable KonaOS ABI — including later system calls, driver interfaces, executable entry conventions, or module interfaces — must be explicitly defined by KonaOS and accessed through assembly glue where necessary.
-
-### 2.5 No compatibility constraints in the native kernel
-
-CP/M compatibility will later be implemented as a compatibility personality.
-
-Native KonaOS does not reserve kernel architecture around CP/M concepts such as BDOS, FCBs, 128-byte records, USER areas, or `CALL 0005h`.
-
-The native system must be complete and useful before the compatibility layers are introduced.
-
----
-
-# 3. Source tree through M7
-
-The tree should grow only as each milestone requires it.
-
-```text
-KonaOS/
-├── README.md
-├── Makefile
-│
-├── docs/
-│   ├── architecture.md
-│   └── boot.md
-│
-├── kernel/include/       kernel.h, process.h, platform.h,
-│                         irq_types.h
-├── drivers/include/      driver.h, ioc.h, ioc_protocol.h
-├── formats/include/      romfs.h, exe.h, mod.h
-├── platform/zephyr80/    config.mk, public/, private/
-│
-├── boot/
-│   ├── start.asm
-│   └── shadow_copy.asm
-│
-├── kernel/
-│   ├── main.c
-│   ├── panic.c
-│   ├── early_console.c
-│   ├── early_console_io.asm
-│   │
-│   ├── memory/
-│   │   └── banking.asm
-│   │
-│   ├── syscall/
-│   │   ├── entry.asm
-│   │   ├── page_zero.asm
-│   │   ├── diag.c
-│   │   ├── diag.h
-│   │   └── diag_io.asm
-│   │
-│   ├── irq/
-│   │   ├── irq.c
-│   │   ├── entry.asm
-│   │   └── vectors.asm
-│   │
-│   ├── device/
-│   │   ├── registry.c
-│   │   └── console.c
-│   │
-│   ├── module/
-│   │   ├── loader.c
-│   │   ├── relocate.c
-│   │   └── arena.asm
-│   │
-│   ├── romfs/
-│   │   ├── romfs.c
-│   │   └── rom_access.asm
-│   │
-│   └── process/
-│       ├── process.c
-│       ├── exec.c
-│       └── launch.asm
-│
-├── drivers/
-│   ├── sio/
-│   │   ├── sio.c
-│   │   ├── sio.h
-│   │   ├── sio_io.asm
-│   │   └── sio_module.c
-│   └── ctc/
-│       └── ctc.c
-│
-├── modules/
-│   ├── manifests/
-│   │   └── sio.json
-│   └── runtime/
-│       └── sdcc_indirect_calls.asm
-│
-├── recovery/
-│   ├── manifest.json
-│   └── files/
-│       ├── sio.mod
-│       └── monitor.exe
-│
-├── abi/
-│   └── kos/
-│       ├── types.h, errno.h, syscall.h
-│       └── fs.h, process.h, diag.h
-│
-├── user/
-│   ├── sdk/
-│   │   ├── include/ (kos.h, kos/, klibc/)
-│   │   ├── src/ (crt0.asm, runtime.asm, gates, args/fs/exec, klibc/)
-│   │   ├── exe.mk (the in-tree wrapper over mk/kos.mk)
-│   │   ├── template/ (Makefile, hello.c)
-│   │   └── examples/ (hello, fardemo, files)
-│   ├── helloworld/
-│   │   ├── Makefile
-│   │   └── README.md
-│   └── monitor/
-│       ├── monitor.c/.h
-│       ├── monitor_mem.c
-│       ├── monitor_io.c
-│       └── hexfmt/hexdump/status
-│
-├── tests/
-│   ├── modules/
-│   │   └── sio_irq_module.c, sio_fail_module.c, *.json
-│   └── target/
-│       ├── m1/ .. m7/
-│       ├── include/
-│       └── support/
-│
-├── platform/
-│   └── zephyr80/
-│       ├── hardware.h
-│       ├── hardware.inc
-│       ├── memory.h
-│       ├── memory.inc
-│       ├── irq.h
-│       ├── irq.inc
-│       └── config.mk
-│
-├── linker/
-│   └── zephyr80.lk
-│
-└── tools/
-    ├── mapcheck.py
-    ├── modpack.py
-    ├── romfspack.py
-    └── exepack.py
-```
-
-Directories for later facilities are added only as each milestone requires them.
-
-## 3.1 Directory ownership rules
-
-The source tree is an architectural boundary, not merely an organizational preference.
-
-### `platform/zephyr80/`
-
-**Configuration and constants only.**
-
-Allowed content includes:
-
-```text
-#define / enum constants
-.equ constants
-port numbers
-register masks
-memory addresses and region bounds
-memory-mode values
-IRQ source/vector/channel mappings
-board wiring facts
-Makefile configuration variables
-```
-
-Disallowed content includes:
-
-```text
-C functions
-assembly routines
-ISR bodies
-bank-switch routines
-reset code
-device initialization sequences
-polling loops
-driver operations
-instruction-emitting assembly macros
-```
-
-A useful test is:
-
-> If the file emits executable bytes or contains a function/routine that runs on the Z80, it does not belong in `platform/zephyr80/`.
-
-### `boot/`
-
-Owns executable code that runs before the normal kernel environment exists:
-
-- reset/start entry;
-- ROM-to-RAM installation;
-- initial memory-mode transition;
-- handoff to the kernel.
-
-It may include platform constants, but the implementation remains under `boot/`.
-
-### `kernel/`
-
-Owns operating-system mechanisms:
-
-- mode/bank transition routines;
-- syscall entry/return;
-- IRQ entry/return and dispatch;
-- device registry;
-- driver binding;
-- module loading;
-- ROM recovery-store access;
-- process lifecycle and native executable loading;
-- panic and early diagnostic policy.
-
-A mechanism remains kernel code even when its implementation is Zephyr-specific.
-
-For example, the fact that bank switching uses I/O port `00h` is platform configuration; the routine that safely changes modes and preserves caller state is kernel implementation.
-
-### `drivers/`
-
-Owns active device behavior:
-
-- register programming;
-- initialization sequences;
-- polling;
-- interrupt driver logic after kernel IRQ dispatch;
-- device operations;
-- driver-private state.
-
-For example, SIO ports `22h/23h` are declared by the platform description; the code that writes WR3/WR4/WR5 or polls RR0 belongs to the SIO driver, except for the deliberately separate early-console implementation in `kernel/`.
-
-### `abi/kos/`
-
-Owns the public native ABI: the one copy of every header a native program
-or module may compile against (`types.h`, `errno.h`, `syscall.h`, `fs.h`,
-`process.h`, `diag.h`).
-
-Headers under the audience roots (`drivers/include/`, `kernel/include/`
-and `formats/include/`) that used to carry those declarations now include
-the `abi/kos/` header and add only kernel-internal detail, so
-there is exactly one definition of every packed block, constant and
-equate.  The kernel build, the module build and the user build all get
-`-I abi`; nothing else is shared.
-
-### `user/`
-
-Owns native KonaOS programs: the monitor (`user/monitor/`), the demos
-(`user/helloworld/`) and, from M10, the shell (`user/ZShell/`).  User
-programs consume the public ABI through the SDK and never reach into
-private kernel symbols or driver internals.
-
-### `user/sdk/`
-
-Owns the user SDK: the only supported way to build a native program.
-
-- `user/sdk/include/` - `kos.h` (the umbrella a program includes) and
-  the `kos/` and `klibc/` headers;
-- `user/sdk/src/` - crt0, libkos (console/diag/fs/exec gate stubs and
-  wrappers) and `klibc/`;
-- `user/sdk/exe.mk` - the in-tree wrapper over `mk/kos.mk`, the generic
-  `exe_program` rule: one line per program, manifest generated from the
-  link map, `exepack` validation.  `make sdk` packages the same rule with
-  the headers, the built `libkos.lib`/`crt0.rel`, the standalone tools,
-  the template, the examples and the docs into
-  `build/kos-sdk-<version>/` (and its tarball), so a program can be built
-  with no OS source (work package 49c);
-- `user/sdk/template/` - the copyable minimal program (Makefile +
-  `hello.c`);
-- `user/sdk/examples/` - the example programs the SDK ships (and the
-  `user/helloworld/` demo image boots).
-
-A program or sub-project (`user/helloworld/`, `user/ZShell/`) is built
-only from this directory plus `abi/`; it never includes a kernel header
-and never writes entry assembly (`docs/sdk.md`).
-
-### `linker/`
-
-Owns link placement and section layout.
-
-The linker may consume values derived from the platform description, but linker scripts are not executable target code.
-
-### `tools/`
-
-Owns host-side build, validation, packing, and inspection tools.
-
-These rules apply equally to the early milestones and later native KonaOS work.
-
----
-
-# 4. Toolchain
-
-The initial kernel uses the SDCC Z80 toolchain directly.
-
-```text
-C source
-   │
-   ▼
-  SDCC
-   │
-   ▼
- .rel
-   │
-   ├──────────────┐
-   │              │
-ASM source        │
-   │              │
-sdasz80           │
-   │              │
-   └──── .rel ────┤
-                  ▼
-               sdldz80
-                  │
-                  ▼
-             konaos.bin
-```
-
-Initial tools:
-
-- **SDCC** — C compiler
-- **sdasz80** — Z80 assembler
-- **sdldz80** — linker
-- **GNU Make** — build orchestration
-- **Python** — host-side image, map, validation, module, ROMFS, and executable tooling
-
-The kernel is freestanding. It must not depend on the hosted SDCC C runtime or standard I/O facilities.
-
-A tiny private kernel runtime may later provide functions such as `memcpy`, `memset`, and `strlen` as required.
-
----
-
-# 5. Milestone M0 — Kernel bring-up
-
-## 5.1 Objective
-
-M0 is complete when the physical Zephyr-80 and the emulator can:
-
-1. enter KonaOS from reset/boot,
-2. establish a valid stack,
-3. initialize the early serial console,
-4. call C code successfully,
-5. print a KonaOS banner,
-6. enter a controlled halt loop.
-
-Example output:
-
-```text
-KonaOS 0.0
-platform: Zephyr-80
-kernel entry: OK
-serial: OK
-HALT
-```
-
-No other functionality is required.
-
----
-
-## 5.2 M0 boot flow
-
-M0 assumes the current Zephyr-80 memory hardware and memory-decoder revision that implements modes `00`, `01`, `10`, and `11`.
-
-### 5.2.1 Hardware required by M0/M1
-
-Only two hardware blocks are required to complete M0 and M1:
-
-1. the memory/banking latch and decoder;
-2. Z80 SIO channel B for the early serial console.
-
-No CTC, V9958, IOC, SD-card, HID, sound, or other device initialization is required for M0/M1.
-
-The minimum I/O map is:
-
-| Port | Device | Use in M0/M1 |
-| ---: | --- | --- |
-| `00h` | memory/banking latch | bank selection, ROM page selection, memory mode |
-| `20h` | SIO A data | defined for completeness; unused |
-| `21h` | SIO A control | defined for completeness; unused |
-| `22h` | SIO B data | early console TX |
-| `23h` | SIO B control | early console init/status |
-
-The banking latch is decoded by hardware across `00h-0Fh`; KonaOS software must use canonical port `00h`.
-
-### 5.2.2 Reset and memory-latch state
-
-At hardware reset the banking latch is expected to be `00h`:
-
-```text
-D7..D5 = ROM page 0
-D4     = 0  ROM enabled
-D3     = 0  normal/boot mapping
-D2..D0 = SRAM bank 0
-```
-
-The latch layout is:
-
-| Bits | Meaning |
-| --- | --- |
-| `D0-D2` | selected SRAM bank, `0-7` |
-| `D3` | `MEM_MODE0`; memory-mode bit 0 |
-| `D4` | `MEM_MODE1`; memory-mode bit 1 |
-| `D5-D7` | selected ROM page, `0-7` |
-
-For ROM page `p`, SRAM bank `b`, and mode value `m`:
-
-```text
-latch = ((p & 7) << 5) | m | (b & 7)
-```
-
-The four hardware modes select complete memory mappings; no single bit
-is a feature flag ("decoder revision 12" semantics, matching the
-Zephyr-80 machine reference "Memory Management":
-
-```text
-D4 D3   value   meaning
- 0  0    00h    mode 00: ROM access / RAM destination
-                (reads: selected ROM page everywhere;
-                 writes: selected SRAM bank everywhere)
- 0  1    08h    mode 01: flat selected SRAM bank
-                (no ROM, no forced bank, no common region)
- 1  0    10h    mode 10: application + common
- 1  1    18h    mode 11: application low + bank-7 OS + common
-```
-
-Only mode 00 selects ROM, and it selects ROM for **every** read; a
-stack cannot survive it, because a `PUSH` writes SRAM while the matching
-`POP` would read ROM.  08h does **not** expose ROM (earlier revisions of
-this document called it "shadow/copy" and claimed a ROM window; that was
-wrong — see 24.2 for the ROM-access pattern this actually requires).
-
-Runtime mode values for application bank `N` are therefore:
-
-```text
-mode 10: 10h | N
-mode 11: 18h | N
-```
-
-Reads from port `00h` return the current latch value and may be used by the kernel banking implementation when preserving or validating the active bank. The port number itself comes from the platform description.
-
-### 5.2.3 Initial ROM-to-RAM handoff
-
-M0 should reuse the proven Zephyr-80 ROM-to-RAM boot mechanism rather than invent a second bootstrap architecture.
-
-The minimal required sequence is:
-
-```text
-RESET
-  │ latch = 00h (mode 00: ROM page 0 everywhere on reads)
-  ▼
-ROM page 0 bootstrap (stackless between latch changes)
-  │
-  ├── DI
-  ├── one full-page LDIR: ROM page 0 -> SRAM bank 0      (latch 00h)
-  ├── latch 27h: ROM page 1, mode 00, SRAM bank 7
-  ├── one full-page LDIR: ROM page 1 -> SRAM bank 7
-  ├── latch 10h: mode 10 over bank 0
-  │      (both boot pages carry byte-identical bootstrap bytes at the
-  │       switch address, so the fetch after each OUT is identical)
-  │
-  ▼
-common transition code in E000h-FFFFh
-  │
-  ├── write 18h to port 00h
-  │      mode 11 over caller bank 0
-  │
-  ▼
-bank 7 visible at 2000h-DFFFh
-  │
-  ▼
-kernel entry
-```
-
-Mode 00 answers every read (including instruction fetch) from the
-selected ROM page, so the copy loops must be stackless and may only
-change the latch into an address whose ROM bytes are identical to the
-running code.  The two boot pages satisfy that by sharing a
-byte-identical low bootstrap region.
-
-For M0/M1:
-
-```text
-bank 7:
-    2000h-BFFFh   loadable kernel image
-    C000h-DFFFh   zero-initialized runtime area / stacks / scratch
-
-bank 0:
-    E000h-FFFFh   permanent common code/state
-```
-
-The exact amount of `C000h-DFFFh` used at M0/M1 is linker-defined; the
-region is zero-initialized at boot and holds runtime state, so it must
-not depend on ROM-initialized content.
-
-The transition from mode 10 to mode 11 must execute from the permanent common range `E000h-FFFFh`. Code executing in `2000h-DFFFh` would change underneath the CPU when `D3` is changed.
-
-### 5.2.4 M0 execution path
-
-After the image is resident in SRAM:
-
-```text
-mode 11
-  │
-  ▼
-kernel entry in bank 7
-  │
-  ├── establish kernel stack
-  ├── call early_console_init()
-  ├── call kernel_main()
-  │
-  ▼
-controlled HALT loop
-```
-
-The boot path must be deterministic and must not depend on state left by CP/M, ZSDOS, ZCPR, or the existing BIOS.
-
-## 5.3 Kernel entry contract
-
-`start.asm` owns the transition from firmware/boot state into the C kernel.
-
-Before calling `kernel_main()` it must guarantee:
-
-- interrupts are disabled,
-- the CPU is in a documented memory mode,
-- the kernel image is visible at its linked addresses,
-- the stack pointer is valid,
-- any C runtime state required by SDCC has been initialized,
-- no assumptions are made about previous firmware register contents.
-
-The kernel entry function is:
-
-```c
-void kernel_main(void);
-```
-
-It does not return.
-
-Returning from `kernel_main()` is considered a kernel fault and should eventually invoke `panic()`.
-
----
-
-## 5.4 Early serial console
-
-The M0 serial implementation directly uses Z80 SIO channel B.
-
-Hardware configuration:
-
-```text
-SIO channel B data       22h
-SIO channel B control    23h
-SIO clock                1.8432 MHz
-mode                     asynchronous x16
-line format              115200 baud, 8 data bits, 1 stop bit, no parity
-flow control             none required
-interrupts               disabled
-I/O method               polling
-```
-
-Channel B is the only console device required by M0/M1.
-
-The known-good initialization sequence is:
-
-```text
-OUT (23h),18h            ; WR0: channel reset
-
-OUT (23h),04h            ; select WR4
-OUT (23h),44h            ; x16, 1 stop bit, no parity
-
-OUT (23h),03h            ; select WR3
-OUT (23h),C1h            ; RX enable, 8-bit RX, auto-enables disabled
-
-OUT (23h),05h            ; select WR5
-OUT (23h),EAh            ; DTR, TX 8-bit, TX enable, RTS
-
-OUT (23h),01h            ; select WR1
-OUT (23h),00h            ; interrupts disabled
-```
-
-Although M0 only requires output, receive is initialized to the current known-good console configuration so M0 and later diagnostic code share one hardware setup.
-
-SIO RR0 status bits required by the early console are:
-
-```text
-01h   RX character available
-04h   TX buffer empty
-```
-
-Transmit operation:
-
-```text
-poll IN (23h) until RR0 & 04h != 0
-OUT  (22h),character
-```
-
-The initial interface is:
-
-```c
-void early_console_init(void);
-void early_console_putc(char ch);
-void early_console_puts(const char *s);
-```
-
-No input API is required by M0, although a private polling receive routine may exist for hardware bring-up.
-
-No formatting library is required.
-
-No `printf()` dependency is permitted.
-
-The early-console implementation should live in, or be callable entirely through, the permanent common region so that diagnostic output remains available during mode/bank transitions and kernel failures.
-
-The early console remains available after later console/device subsystems are introduced.
-
-## 5.5 M0 failure behavior
-
-At M0 there is no recovery infrastructure.
-
-A fatal error should:
-
-1. print the clearest available diagnostic through the early console,
-2. disable interrupts,
-3. enter a halt loop.
-
-Conceptually:
-
-```c
-void panic(const char *message);
-```
-
-The initial implementation may be extremely small.
-
----
-
-## 5.6 M0 non-goals
-
-M0 explicitly does **not** include:
-
-- interrupt handling
-- IM2 setup
-- syscall implementation
-- device registry
-- dynamic drivers
-- process management
-- memory allocation
-- filesystem support
-- IOC drivers
-- CP/M compatibility
-- `.COM` loading
-- `.EXE` loading
-- shell or userland
-- keyboard input
-
-M0 should stay small enough that a failure can be debugged from the generated map file, disassembly, and serial output alone.
-
-For automated validation before hardware execution, the build may use host-side checks such as:
-
-- linker/map validation;
-- binary-layout checks;
-- disassembly inspection;
-- unit tests for host-side tooling;
-- a CPU-level Z80 simulator for isolated code where useful.
-
-These checks are supplementary. They do not replace hardware validation of the memory-mode transitions or SIO console.
-
----
-
-# 6. Milestone M1 — Kernel foundation
-
-## 6.1 Objective
-
-M1 establishes the execution environment that future kernel subsystems can rely on.
-
-M1 is complete when KonaOS has:
-
-- a documented kernel memory map,
-- a deterministic bank/memory mode at kernel entry,
-- explicit ownership of page zero,
-- a permanent kernel/common region,
-- defined stack regions,
-- a reserved native syscall gateway,
-- basic platform banking primitives,
-- build-time validation that kernel regions do not overlap.
-
-M1 still does not need a useful syscall implementation.
-
----
-
-# 7. M1 memory model
-
-## 7.1 Physical banks versus kernel abstractions
-
-The hardware bank/mode register is I/O port `00h`.
-
-The M1 kernel banking implementation owns all direct access to this latch. Other kernel subsystems must not issue raw `IN` or `OUT` instructions to port `00h`; they call the banking mechanism instead. The latch address and bit definitions come from `platform/zephyr80/`.
-
-Required constants:
-
-```text
-MEMCTL_PORT       = 00h
-
-BANK_MASK         = 07h
-RAM_SHADOW        = 08h
-ROM_DIS           = 10h
-ROM_PAGE_MASK     = E0h
-
-MODE_BOOT         = 00h
-MODE_SHADOW       = 08h
-MODE_APPLICATION  = 10h
-MODE_OS           = 18h
-```
-
-For runtime application bank `N`, where `N = 0..6` (from M10, `0..5`:
-bank 6 becomes the resident driver bank, section 36.3):
-
-```text
-application mapping = MODE_APPLICATION | N
-OS mapping          = MODE_OS          | N
-```
-
-Bank `7` is reserved to KonaOS and must not be exposed as an ordinary application bank.
-
-The minimum platform API for M1 should provide semantics equivalent to:
-
-```c
-uint8_t memctl_read(void);
-void memctl_write(uint8_t value);
-
-uint8_t bank_get(void);
-void enter_application_mode(uint8_t bank);
-void enter_os_mode(uint8_t bank);
-```
-
-The exact C/assembly signatures are not yet ABI and may be adjusted during implementation.
-
-`enter_os_mode()` and `enter_application_mode()` must preserve the selected application-bank identity in `D0-D2`. Entering or leaving the OS changes the mode bit, not the identity of the suspended caller.
-
-For example:
-
-```text
-application bank 3     13h
-OS over bank 3         1Bh
-application bank 3     13h
-```
-
-Mode-changing primitives must execute from an address that remains mapped before and after the transition. For M1 this means the permanent common range `E000h-FFFFh`.
-
-M1 does **not** yet define the later application memory allocator or far-memory API.
-
-## 7.2 Kernel-visible regions
-
-KonaOS carries forward the proven **mode 10 / mode 11** execution model from the current Zephyr-80 OS.
-
-The model reserves:
-
-- SRAM banks `0-6` for application/process banks,
-- SRAM bank `7` for the OS body,
-- the top 8 KiB of physical SRAM bank `0` as permanently visible common memory.
-
-### Mode 10 — application execution
-
-Mode `10` is the normal application execution view.
-
-```text
-FFFFh  ┌────────────────────────────────────┐
-       │ bank 0 common             8 KiB    │
-E000h  ├────────────────────────────────────┤
-       │                                    │
-       │ selected application bank N        │
-       │                                    │
-0000h  └────────────────────────────────────┘
-```
-
-Mapping:
-
-```text
-0000h-DFFFh  selected application bank N
-E000h-FFFFh  physical SRAM bank 0
-```
-
-The selected bank number remains the identity of the running application/process.
-
-This mode gives the application a contiguous 56 KiB private view while keeping the permanent KonaOS common region visible.
-
-### Mode 11 — OS execution
-
-Mode `11` is entered when the kernel needs access to the main OS body.
-
-```text
-FFFFh  ┌────────────────────────────────────┐
-       │ bank 0 common             8 KiB    │
-E000h  ├────────────────────────────────────┤
-       │                                    │
-       │ bank 7 OS body            48 KiB   │
-       │                                    │
-2000h  ├────────────────────────────────────┤
-       │ caller bank N              8 KiB   │
-0000h  └────────────────────────────────────┘
-```
-
-Mapping:
-
-```text
-0000h-1FFFh  selected application bank N
-2000h-DFFFh  physical SRAM bank 7
-E000h-FFFFh  physical SRAM bank 0
-```
-
-Mode `11` therefore exposes the kernel while preserving the low 8 KiB of the caller's address space.
-
-### Bank-7 layout inside mode 11
-
-(Through M9. From M10, mode 11 splits bank 7 into a 16 KiB fixed core and
-a 32 KiB cold half behind the `6000h` window, and there is no driver arena;
-see sections 36.2 and 36.5.)
-
-The 48 KiB `2000h-DFFFh` window is not fixed internally.  The build
-derives the boundary between the loadable kernel, the driver arena and
-the runtime data (package 25b):
-
-```text
-2000h                     kernel code, then __kernel_code_end
-__driver_arena_start      loaded MOD modules (derived, >= 32 granules)
-data_base = arena end     _DATA / _INITIALIZED (derived base)
-DF00h                     fixed 256-byte ISR stack
-E000h                     end of bank 7 in mode 11
-```
-
-`data_base = align_down(DF00h - (l__DATA + l__INITIALIZED), 512)` and the
-arena runs from the aligned linked-kernel end up to that base, so kernel
-and module growth consumes arena space rather than a fixed `C000h`
-reservation.  `pack_image.py` and the arena plan report the single
-bank-7 budget ledger (section 32.39).
-
-The bank selector continues to identify the suspended/running application bank while mode `11` is active; switching to OS mode must not destroy that identity.
-
-### Architectural consequences
-
-This memory model is a deliberate KonaOS invariant.
-
-The three important regions are:
-
-```text
-0000h-1FFFh  caller-visible low-memory window
-2000h-DFFFh  application memory in mode 10 / OS bank 7 in mode 11
-E000h-FFFFh  permanent common region in physical bank 0
-```
-
-The low 8 KiB window allows the kernel to inspect and operate on process-local low memory without copying or remapping it separately. This is particularly useful for page zero, syscall arguments, command/process state, and later CP/M compatibility structures.
-
-The permanent `E000h-FFFFh` region contains only code and state that must remain reachable across both modes, such as:
-
-- mode/bank transition code,
-- kernel entry and return gates,
-- critical runtime state,
-- future interrupt-entry infrastructure,
-- fatal diagnostic paths.
-
-The bulk of the OS should reside in bank 7 and become visible only in mode `11`.
-
-This avoids consuming a large permanent common-memory area while still allowing the kernel to enter and leave an application's context safely.
-
-Two clarifications, both learned by having to fix them:
-
-- "Permanent" is about *reachability across a mapping change*, not about
-  isolation.  Mode 10 maps this region as readily as mode 11 does; there
-  is no protection anywhere in the machine, and an application can read
-  and write it.  State whose whole lifetime is mode 11 and that nothing
-  outside the nucleus reads belongs in bank 7; anything a bank-6 provider
-  or driver reads lives in the fixed core instead (section 36.5, the
-  buffer rule - package 28 correction 01 put the `SYS_EXEC` path buffer
-  in bank 7 for budget reasons, and work package 45b correction 01 moved
-  that staging into the VFS workspace because the exec bind hands the
-  path to a provider).
-- Because it is the scarcest region, its use is measured.  The budget
-  ledger carries a `common: used <n> of <n> bytes (code <n>, data <n>) |
-  ceiling <n>` line with the region ledgers (docs/memory.md section
-  2.2.1).  The architectural ceiling on the packed
-  `_COMMON` + `_COMMON_DATA` run is `KOS_COMMON_CEILING` (3072 bytes).
-  The M9-era 512-byte reservation (`KOS_COMMON_M10_RESERVATION`) was
-  released to M10's transitions and IPC (work package 43, section 36.20);
-  `mapcheck.py` fails the build when common use exceeds the ceiling.  The
-  ceiling may not be raised to make a package fit.
-
-M1 should preserve this mapping rather than introduce a new generic kernel memory model.
-
----
-
-# 8. Page-zero ownership
-
-Page zero is part of the execution environment selected by KonaOS.
-
-For native KonaOS execution, KonaOS owns `0000h-00FFh`.
-
-M1 reserves a native syscall vector, tentatively:
-
-```text
-RST 30h
-```
-
-at address:
-
-```text
-0030h
-```
-
-The page-zero entry remains tiny:
-
-```asm
-.org 0x0030
-    jp kos_syscall_gate
-```
-
-`kos_syscall_gate` must be located in permanent common memory (`E000h-FFFFh`), not directly in the bank-7 kernel body.
-
-This is required because an `RST` occurs while mode `10` is active. The common gate is responsible for safely transitioning into mode `11` before dispatching into bank 7.
-
-The choice of `RST 30h` is provisional until debugger/monitor and other low-page requirements have been reviewed.
-
-The actual syscall dispatcher must not live in page zero.
-
-# 9. Native syscall ABI scaffold
-
-M1 reserves the mechanism but does not require useful drivers.
-
-Provisional native ABI:
-
-```text
-Entry:
-    RST 30h
-
-Input:
-    A  = syscall number
-    HL = pointer to syscall-specific argument block
-
-Return:
-    Carry clear = success
-    Carry set   = error
-
-    HL = primary result
-    A  = error code when Carry is set
-```
-
-The initial M1 dispatcher may simply report an unimplemented syscall through the early console and return an error or panic.
-
-The syscall mechanism is only for native KonaOS execution.
-
-Future CP/M `.COM` processes will receive a separate CP/M-compatible page-zero environment, including `CALL 0005h`, rather than being required to use the native `RST` ABI.
-
----
-
-# 10. Common kernel entry
-
-The native syscall vector enters a permanent common-memory gate.
-
-The critical constraint is that an application stack may live anywhere in `0000h-DFFFh`. If it lies in `2000h-DFFFh`, that memory becomes bank 7 as soon as mode `11` is entered.
-
-Therefore the syscall gate must not continue using the caller's stack after changing memory mode.
-
-Required entry sequence, conceptually:
-
-```text
-application, mode 10
-    │
-    │ RST 30h
-    │ CPU pushes return PC on caller stack
-    ▼
-0030h: JP kos_syscall_gate
-    │
-    ▼
-common memory, still mode 10
-    │
-    ├── save caller SP in common state
-    ├── switch SP to the common gate stack
-    ├── save registers required by the ABI
-    ├── preserve caller bank N
-    ├── write 18h|N to port 00h
-    │
-    ▼
-mode 11
-    │
-    ├── bank 7 visible at 2000h-DFFFh
-    └── dispatch to bank-7 kernel code
-```
-
-Return sequence:
-
-```text
-bank-7 kernel returns to common gate
-    │
-    ├── restore common-saved state as required
-    ├── write 10h|N to port 00h
-    │
-    ▼
-mode 10
-    │
-    ├── caller memory is visible again
-    ├── restore caller SP
-    └── RET
-```
-
-The return address pushed by `RST` may remain on the caller's original stack while the kernel runs. The kernel need not access it while in mode `11`; it becomes visible again before the caller SP is restored.
-
-M1 does not yet require a complete syscall dispatcher. It does require this transition path to be demonstrably safe.
-
-# 11. Kernel stacks
-
-M0/M1 require two conceptually distinct stacks.
-
-### Kernel stack
-
-The normal kernel stack is private to bank 7 and is used only after mode `11` has been established.
-
-It should be allocated from zero-initialized/runtime memory in bank 7, preferably within:
-
-```text
-C000h-DFFFh
-```
-
-This region is not required to be loaded from ROM.
-
-### Common gate stack
-
-M1 also reserves a small stack in physical bank 0 common memory:
-
-```text
-E000h-FFFFh
-```
-
-This stack exists specifically for operations that cross between mode `10` and mode `11`.
-
-The common gate stack must remain mapped in both modes.
-
-The syscall/mode-transition gate must switch from the caller stack to this stack **before** changing the memory mode.
-
-Exact stack addresses and sizes are linker-defined in M1 and must be exported in the generated map.
-
-Later milestones may introduce separate interrupt, process, or driver stacks. Those are not part of M1.
-
-# 12. Linker and memory-map validation
-
-The linker configuration is part of the architecture.
-
-The M1 build must generate a map file.
-
-A host-side validation tool should fail the build if:
-
-- `platform/zephyr80/` contains target executable `.c` or `.asm` translation units;
-- platform include files contain instruction-emitting routines rather than constants/configuration;
-- page-zero content exceeds `0000h-00FFh`,
-- the native RST stub is not at its required page-zero vector,
-- common transition code is placed outside `E000h-FFFFh`,
-- the early serial/panic path cannot execute entirely from permanently mapped memory,
-- the common gate stack overlaps common code or state,
-- the bank-7 loadable image extends to or beyond `C000h`,
-- bank-7 runtime stacks/state overlap loaded code/data,
-- kernel entry is outside the bank-7 OS-visible region,
-- banked sections exceed their assigned region,
-- entry points fall outside their expected regions.
-
-Initial host tool:
-
-```text
-tools/mapcheck.py
-```
-
-Implemented (M1, fixed): `tools/mapcheck.py` is the authoritative post-link
-layout check.  It derives every boundary from the declarations in
-`platform/zephyr80/private/memory.inc` (never a second copy of the map), is invoked
-automatically by the default build after linking and before the ROM is
-considered complete, and fails with precise symbol/region diagnostics for
-each condition above.  `tools/pack_image.py` independently enforces the
-byte-level image contract (exact size, FF fill, reset-copier mirroring,
-page ownership, the three-byte `RST 30h` stub, no mapping-changing code in
-bank 7, no conflicting/ambiguous IHX input) and emits
-`build/konaos.manifest.json` with sizes, hashes, fill counts, and entry
-addresses.  `make check` additionally proves a clean rebuild reproduces
-the identical binary and runs the whole host validation stack;
-`tools/serial_smoke.py` (`make smoke-hardware`) captures and verifies the
-physical serial output.  The acceptance record lives in
-`docs/validation/`.
-
-The purpose is to turn memory-layout violations into build errors rather than hardware debugging sessions.
-
----
-
-# 13. Assembly/C boundary
-
-Assembly is expected for code that directly depends on Z80 machine state:
-
-- reset/startup
-- port I/O primitives
-- banking primitives
-- page-zero gates
-- future syscall entry/exit
-- future interrupt entry/exit
-- future far-call support
-
-C is preferred for policy and higher-level kernel logic.
-
-M0/M1 C code includes:
-
-- `kernel_main()`
-- panic handling
-- simple initialization logic
-- later syscall dispatch policy
-
-Stable KonaOS interfaces must not expose SDCC's internal calling convention.
-
-Assembly wrappers should isolate compiler conventions from KonaOS-defined ABIs.
-
----
-
-# 14. Interrupt state at the M1 boundary
-
-M0 and M1 complete with maskable interrupts disabled.
-
-M2 takes ownership of interrupt mode, the IM2 vector page, IRQ entry/return, source registration, and ISR stack policy.
-
-No M0/M1 component establishes its own permanent interrupt environment.
-
----
-
-# 15. Driver state at the M1 boundary
-
-M0's serial support is an **early console**, not a registered driver.
-
-M1 has no device registry and no driver ABI.
-
-M3 introduces:
-
-```text
-hardware
-   │
-driver
-   │
-device instance
-   │
-capabilities / driver binding
-```
-
-The early serial console remains outside that mechanism permanently as a panic and bring-up path.
-
----
-
-# 16. Relationship to future CP/M compatibility
-
-M0 and M1 are native KonaOS only.
-
-Later, launching a CP/M `.COM` executable will construct a CP/M-compatible execution environment with its own page zero, including entries such as:
-
-```text
-0000h   warm-boot/process-exit gate
-0005h   BDOS compatibility gate
-005Ch   default FCB
-006Ch   second default FCB
-0080h   command tail / default DMA area
-0100h   COM program
-```
-
-That compatibility environment must not determine the native KonaOS ABI.
-
----
-
-# 16.1 Emulator validation
-
-KonaOS must not assume that a complete Zephyr-80 emulator exists.
-
-M0/M1 correctness depends on platform-specific behavior, especially:
-
-- the port-`00h` banking latch;
-- the mode `10` / mode `11` memory mapping;
-- bank-7 substitution over `2000h-DFFFh`;
-- permanent bank-0 common memory at `E000h-FFFFh`;
-- SIO channel-B register and polling behavior.
-
-An emulator is only a valid milestone test target when those behaviors are implemented accurately enough to exercise the same boot and transition paths as hardware.
-
-Until then:
-
-```text
-authoritative target     physical Zephyr-80
-required static checks   build, link map, binary layout
-optional dynamic checks  CPU simulator / partial emulator where applicable
-future integration test  MAME once the Zephyr machine model is complete
-```
-
-MAME support is therefore a useful later integration target, not a prerequisite for M0 or M1 completion.
-
----
-
-# 17. M0/M1 acceptance criteria
-
-## M0
-
-M0 is accepted when:
-
-- the kernel links reproducibly,
-- the ROM/bootstrap reaches the KonaOS bank-7 image using the documented port-`00h` memory-control sequence,
-- the kernel executes in mode `11`,
-- the generated image boots on physical Zephyr-80 hardware,
-- SIOB is initialized on ports `22h/23h` as 115200 8N1 polling I/O,
-- the expected serial banner appears without requiring interrupts,
-- the kernel enters a controlled halt loop,
-- no external runtime library is required.
-
-MAME is **not** an M0 acceptance dependency. Emulator validation may be used when the Zephyr-80 MAME machine/device implementation models the memory decoder, banking latch, and SIO behavior required by this milestone closely enough to be meaningful.
-
-## M1
-
-M1 is accepted when:
-
-- the memory map is documented,
-- the linker enforces the intended memory placement,
-- the kernel banking implementation can read/write the memory latch at the platform-declared canonical port `00h`,
-- application banks `0-6` can enter mode `10` as `10h|N`,
-- mode `11` can be entered as `18h|N` without losing caller-bank identity,
-- a mapping test demonstrates that:
-  - `0000h-1FFFh` remains the selected caller bank in both modes,
-  - `2000h-DFFFh` changes between caller bank and bank 7,
-  - `E000h-FFFFh` remains physical bank 0,
-- bank 7 cannot be selected as a normal application bank,
-- page zero is under KonaOS control,
-- the native syscall vector is installed,
-- syscall entry moves to the common gate stack before entering mode `11`,
-- the syscall gate can enter bank 7 and return safely to the original caller stack in mode `10`,
-- invalid/unimplemented syscalls fail predictably,
-- the early serial console remains usable before, during, and after mode transitions and from kernel fault paths,
-- map validation catches region overlap and invalid-placement errors during the build.
-
----
-
-# 17.1 M0/M1 hardware reference
-
-This table is the implementation reference for hardware constants required before M2.
-
-```text
-Memory control
---------------
-Port 00h       banking/memory latch (canonical address; hardware decodes 00h-0Fh)
-
-D0-D2          SRAM bank
-D3             memory-mode bit 0 (MEM_MODE0)
-D4             memory-mode bit 1 (MEM_MODE1)
-D5-D7          ROM page
-
-00h            mode 00: ROM reads everywhere / writes to the selected
-               SRAM bank (stackless-only; used by the reset copier and
-               the ROM-access stub)
-08h            mode 01: flat selected SRAM bank (no ROM)
-10h|N          application mode, bank N
-18h|N          OS mode over caller bank N
-
-Valid application N: 0..6
-Bank 7:        reserved to KonaOS
-
-
-Early serial console
---------------------
-20h            SIO A data       (unused M0/M1)
-21h            SIO A control    (unused M0/M1)
-22h            SIO B data
-23h            SIO B control
-
-Clock           1.8432 MHz
-Async mode      x16
-Format          115200 8N1
-RR0 bit 0       RX available
-RR0 bit 2       TX buffer empty
-
-Init:
-23h <- 18h
-23h <- 04h, 44h
-23h <- 03h, C1h
-23h <- 05h, EAh
-23h <- 01h, 00h
-```
-
-No other hardware interface is required for M0/M1 completion.
-
----
-
-# 18. Milestone M2 — Interrupt executive
-
-## 18.1 Objective
-
-M2 establishes a single interrupt architecture owned by KonaOS.
-
-M2 is complete when:
-
-- KonaOS owns the Z80 `I` register and interrupt mode;
-- a common-memory IM2 table is installed;
-- an interrupt can arrive while either mode `10` or mode `11` is active;
-- the IRQ entry path preserves the interrupted context;
-- the executive can enter bank 7 safely, invoke a registered handler, restore the previous mapping and stack, and return with `RETI`;
-- a real CTC0 interrupt is demonstrated on physical hardware.
-
-M2 does not introduce nested interrupts, preemption, scheduling, or application-owned vector tables.
-
----
-
-## 18.2 Interrupt ownership
-
-The interrupt architecture belongs to the kernel.
-
-Drivers may own an **interrupt source**, but they do not own:
-
-- the `I` register;
-- the IM2 vector page;
-- the global interrupt mode;
-- the common IRQ entry path;
-- the ISR transition stack;
-- the final `RETI`.
-
-A driver requests a source through the IRQ executive and provides a bank-7 handler.
-
-Conceptually:
-
-```c
-typedef uint8_t irq_source_t;
-
-int irq_claim(
-    irq_source_t source,
-    void (*handler)(void *context),
-    void *context
-);
-
-int irq_release(irq_source_t source);
-```
-
-These signatures are internal kernel interfaces, not a frozen public ABI.
-
-Only one owner may claim a source at a time.
-
-Registry mutation occurs with maskable interrupts disabled.
-
----
-
-## 18.3 IM2 vector page
-
-M2 uses Z80 IM2.
-
-The vector page must:
-
-- live in permanent common memory;
-- be 256-byte aligned;
-- reserve **257 bytes**, because vector `FFh` reads one byte beyond the nominal 256-byte page;
-- remain visible in both mode `10` and mode `11`.
-
-The initial KonaOS placement is:
-
-```text
-FD00h-FDFFh   IM2 vector page
-FE00h         FFh-vector guard byte
-
-I = FDh
-```
-
-The linker and `mapcheck.py` must treat the page plus guard as one constrained object.
-
-Every vector used by KonaOS must resolve to common-memory IRQ entry code.
-
-### FFh vector invariant
-
-The Zephyr expansion hardware includes sources that may present `FFh` on the data bus when interrupting. The V9958 path is the important example.
-
-For IM2 vector `FFh`, the CPU fetches the handler pointer from:
-
-```text
-FDFFh   low byte of target pointer
-FE00h   high byte of target pointer
-```
-
-The build must therefore verify the actual linked image identity:
-
-```text
-word_at(FDFFh) == address_of(irq_ff_unexpected)
-```
-
-The guard byte must be derived from the linked target, not maintained as an unrelated literal.
-
-This invariant is a build-time error if it is violated.
-
-M2 need not enable the V9958 interrupt yet; it must make the `FFh` path safe before interrupts are globally enabled.
-
----
-
-## 18.4 Platform IRQ sources
-
-The executive uses logical source IDs. Hardware vector values, port numbers, and board channel mappings are declared as constants in `platform/zephyr80/private/irq.h` / `irq.inc`. Active mapping and dispatch logic remains in `kernel/irq/`.
-
-The initial source namespace should reserve at least:
-
-```text
-IRQ_CTC0
-IRQ_CTC1
-IRQ_CTC2
-IRQ_CTC3
-IRQ_SIO0
-IRQ_SIO1
-IRQ_VDP_FF
-```
-
-Not all sources need to be enabled in M2.
-
-The source ID is not required to equal an IM2 vector byte.
-
-This distinction is important because physical port numbering and logical channel numbering are not guaranteed to be identical on the Zephyr I/O board.
-
----
-
-## 18.5 CTC bring-up source
-
-M2 uses **CTC physical channel 0 only** as its first real interrupt source.
-
-Known hardware:
-
-```text
-CTC channel 0 port       40h
-Z80 CPU/system clock     10.000 MHz
-CTC daisy-chain order    CTC -> SIO0 -> SIO1
-```
-
-The other CTC channel ports must not be inferred as `40h + logical_channel` until the board mapping has been explicitly validated. The current board wiring may exchange physical channels 1 and 2 at ports `41h` and `42h`.
-
-For M2 acceptance, this ambiguity is avoided by using port `40h`, which is physical CTC channel 0.
-
-A simple test configuration may use:
-
-```text
-vector base     00h
-control word    A7h
-time constant   00h   ; interpreted by the CTC as 256
-```
-
-At 10 MHz in timer mode with prescaler 256:
-
-```text
-interrupt_rate = 10,000,000 / (256 * 256)
-               ≈ 152.59 Hz
-```
-
-The acceptance test need only prove repeated, stable interrupts and correct context restoration. It does not establish a permanent system tick rate.
-
-Writing `03h` to the CTC channel resets it with interrupts disabled and is suitable for test teardown.
-
----
-
-## 18.6 Common IRQ entry
-
-An interrupt may occur while an application is executing in mode `10`.
-
-At that instant the CPU pushes the interrupted PC onto the application's current stack. That stack may be in `2000h-DFFFh`, which will cease to be application memory when mode `11` is entered.
-
-Therefore the IRQ entry path follows the same fundamental crossing rule as the syscall gate:
-
-> The caller stack must be abandoned before changing the memory mapping.
-
-Conceptual entry:
-
-```text
-interrupt accepted
-    │
-    │ CPU pushes PC on interrupted stack
-    ▼
-IM2 common source stub
-    │
-    ├── capture source identity without losing caller context
-    ├── save interrupted SP in common state
-    ├── switch SP to common IRQ transition stack
-    ├── save full required CPU context
-    ├── read and save port-00h latch value
-    │
-    ├── if saved mode is 10:
-    │       write MODE_OS | saved_bank
-    │
-    ▼
-mode 11 active
-    │
-    ├── switch to bank-7 ISR stack
-    ├── dispatch registered source handler
-    └── return to common IRQ gate
-```
-
-Return:
-
-```text
-common IRQ gate
-    │
-    ├── return to common transition stack
-    ├── restore the exact saved port-00h mapping
-    ├── restore CPU context
-    ├── restore interrupted SP
-    └── RETI
-```
-
-If the interrupt arrived while mode `11` was already active, the saved mapping is still restored exactly; the gate does not blindly force mode `10`.
-
----
-
-## 18.7 Context preservation
-
-M2 IRQ delivery is transparent to interrupted code.
-
-The common IRQ wrapper must preserve all programmer-visible register state that a normal foreground program may depend upon, including:
-
-```text
-AF BC DE HL
-IX IY
-alternate AF'
-alternate BC' DE' HL'
-```
-
-The `I` register is kernel-owned and remains set to the KonaOS IM2 page.
-
-The `R` register is not treated as application state.
-
-Individual bank-7 handlers follow a normal kernel-internal calling convention because the assembly wrapper owns full-context preservation.
-
----
-
-## 18.8 IRQ stacks
-
-M2 introduces two IRQ stack roles.
-
-### Common IRQ transition stack
-
-A small stack in physical bank 0 common memory.
-
-It is used only while:
-
-- leaving the interrupted address space;
-- saving/restoring the architectural register frame;
-- changing the memory mapping;
-- transferring to/from the bank-7 ISR stack.
-
-It must remain mapped in both modes.
-
-### Bank-7 ISR stack
-
-A larger private stack in bank 7.
-
-Device handlers execute on this stack after mode `11` is active.
-
-This is deliberate: driver handlers added by M3/M4 may be ordinary bank-7 code and should not consume scarce common memory.
-
-M2 does not allow nested maskable interrupts. Handlers run with maskable interrupts disabled until the executive executes `RETI`.
-
----
-
-## 18.9 Source stubs and handler location
-
-The finite platform IRQ sources have small source-identifying stubs in common memory.
-
-These stubs are part of the **interrupt executive**, not part of individual drivers.
-
-They transfer control to the generic common IRQ gate with a logical `irq_source_t`.
-
-The registered handler itself normally resides in bank 7:
-
-```text
-IM2 vector
-    │
-common source stub
-    │
-common IRQ gate
-    │ mode 11
-    ▼
-bank-7 registered handler
-```
-
-This rule prevents a driver's ISR-reachable implementation from being accidentally executed out of an application bank.
-
-A driver may not install arbitrary code directly into the IM2 page.
-
----
-
-## 18.10 Handler contract
-
-An IRQ handler:
-
-- owns servicing/clearing its device-specific interrupt condition;
-- must be bounded;
-- must not busy-wait for long operations;
-- must not call interfaces that can sleep or recursively depend on the same interrupt source;
-- returns normally to the IRQ executive rather than executing `RETI`.
-
-The executive owns the final `RETI` so the Z80 daisy chain is released correctly.
-
-Unexpected or unclaimed interrupts must not print large diagnostics from interrupt context. The executive records a compact diagnostic counter/source record and, where a safe platform quiesce operation exists, disables the offending source.
-
----
-
-# 19. M2 acceptance criteria
-
-M2 is accepted when all of the following pass on physical Zephyr-80 hardware:
-
-- `I = FDh` and IM2 is active after IRQ initialization;
-- `FD00h-FE00h` is validated as the IM2 page plus guard;
-- the `FFh` vector resolves to `irq_ff_unexpected` in the final linked image;
-- CTC0 at port `40h` repeatedly interrupts through the KonaOS executive;
-- a handler registered for `IRQ_CTC0` receives the interrupts;
-- the handler executes in mode `11`;
-- the interrupted bank identity is preserved;
-- interrupts arriving from mode `10` return to the same mode, bank, SP, PC, and register state;
-- interrupts arriving from mode `11` return to the prior mode-`11` context;
-- CTC0 can be disabled cleanly after the test;
-- the early serial console still works before and after the interrupt test;
-- deliberately unclaimed test interrupts take the unexpected-source path without jumping into arbitrary memory;
-- linker/map validation rejects a misaligned vector page or broken `FFh` guard relationship.
-
-CPU-level emulation may exercise context save/restore logic, but physical hardware remains authoritative for interrupt acknowledgement, daisy-chain behavior, and CTC timing.
-
----
-
-# 20. Milestone M3 — Device registry and static drivers
-
-## 20.1 Objective
-
-M3 introduces the KonaOS device/driver model while keeping every driver statically linked into the kernel image.
-
-M3 proves the architecture without yet introducing module relocation or runtime loading.
-
-The first migrated device is SIO0/B, because it is already known-good hardware and can demonstrate normal console output without making the kernel dependent on a more complex device.
-
----
-
-## 20.2 Driver, device, capability, and driver
-
-KonaOS distinguishes four concepts.
-
-```text
-driver
-    implementation code for a hardware family
-
-device
-    one registered hardware instance
-
-capability
-    operation(s) that device can provide
-
-driver
-    OS-level binding that chooses device(s) to satisfy a role
-```
-
-For example:
-
-```text
-SIO driver
-    │
-    └── sio0.b
-          ├── SERIAL
-          ├── CONSOLE_IN
-          └── CONSOLE_OUT
-```
-
-A future V9958 device may provide:
-
-```text
-VIDEO
-CONSOLE_OUT
-```
-
-while a future HID device may provide:
-
-```text
-HID
-CONSOLE_IN
-```
-
-Therefore a console is not assumed to be one physical device. Input and output may bind to different devices.
-
----
-
-## 20.3 Device classes and capabilities
-
-The registry uses a small class identifier plus a capability bitmask.
-
-Initial classes were to include a serial, video, storage, input,
-transport and "other" class.
-
-> **Retired (M10, work package 42c).** The M3 device class and
-> capability model -- the class identifiers, the capability bitmask, the
-> device handles and the class registration calls -- is **deleted**.  A
-> driver is a bank-6 driver image (section 36.4) and what a client binds
-> is a *protocol class*: the class numbers now live in
-> `abi/kos/protocol.h` (`KOS_CLASS_*`) and describe protocols, not
-> device kinds, so no registry, no handles and no capability bits remain.
-> The M8 and M9 refinements of this list are history; see sections 30.3
-> and 32 for the milestone record.
-
-Initial capability bits should include only what is needed by real drivers, beginning with:
-
-```text
-KCAP_CHAR_IN
-KCAP_CHAR_OUT
-KCAP_CONSOLE_IN
-KCAP_CONSOLE_OUT
-```
-
-Later milestones may add block I/O, graphics, event, or transport-specific capabilities without changing the basic registry model.
-
-Clients should prefer capability queries over testing a specific driver name.
-
----
-
-## 20.4 Device registry
-
-> **Retired (M10, work package 42c).**  M3's fixed-size device registry
-> -- the device entries (handle, class, capability mask, name, the
-> optional generic character interface, the per-class operations pointer,
-> driver-private state), its initialization, its registration entry and
-> its lookup calls -- is **deleted**.  There is no device handle and no
-> capability query anywhere in the tree.  The M4-M8 record of the M3
-> registry is kept in sections 30.3 and 32; what replaced it is the
-> namespace of section 36.13: a driver *publishes* a named protocol
-> object (`/dev/console`, `/dev/serial/0`, `/fs`) and a client binds the
-> name through the VFS namespace, which routes the call to the serving
-> endpoint of that object's protocol class.
-
----
-
-## 20.5 Driver descriptor
-
-> **Retirement notice (stage 10, work package 42c).** The static driver
-> table described in sections 20.5-20.7 (the driver descriptor,
-> `boot_drivers[]`, `driver_init_static()`), and the driver-entry-table
-> contract the loader used to hand a loaded module, are **deleted**.
-> Since M4 the kernel boots only embedded driver images, and since M10 a
-> driver receives the M10 driver ABI instead: the loader runs the
-> image's boot entry and its init with the boot bundle (the nucleus call
-> table plus the resolved dependency array, section 36.11).  These
-> sections are retained as M3 milestone history.
-
-A driver image carries its own entry points in its flat plan.
-
-Driver initialization failure is reported to the kernel (the loader
-prints it on the early console) and does not corrupt already installed
-endpoints or publications.
-
-M10 does not require driver unload: drivers are permanent for the boot.
-
----
-
-## 20.6 Static driver table
-
-M3 uses an explicit compile-time driver table rather than linker discovery magic.
-
-For example:
-
-```c
-static const struct zdriver *const boot_drivers[] = {
-    &sio_driver,
-    0
-};
-```
-
-Boot order:
-
-```text
-kernel
-  │
-  ├── irq_init()
-  ├── device_registry_init()
-  ├── driver_init_static()
-  │      └── each driver registers device instance(s)
-  ├── driver_bind_defaults()
-  └── continue boot
-```
-
-This table is intentionally simple. M4 replaces the source of driver code, not the registry model.
-
----
-
-## 20.7 Driver placement and private state
-
-Static M3 driver code and private state live in bank 7.
-
-Driver implementation files live under `drivers/`, never under `platform/zephyr80/`. The platform tree supplies only the register addresses, bit definitions, and wiring constants consumed by those drivers.
-
-A driver's private state belongs to that driver and should be colocated conceptually with it rather than scattered through common memory.
-
-Only platform IRQ source stubs and the generic IRQ crossing machinery belong in common.
-
-If a static driver claims an IRQ source, its handler may remain in bank 7 because the M2 IRQ executive maps bank 7 before dispatching it.
-
----
-
-## 20.8 SIO0/B static driver
-
-*(M3 history: since M4 stage 08 this driver is loaded as a MOD module instead of being linked; see sections 22.9 and 22.13. The registry, capability, and console contracts below are unchanged.)*
-
-The first M3 driver wraps the same physical channel used by the early console:
-
-```text
-SIO0/B data       22h
-SIO0/B control    23h
-115200 8N1
-```
-
-The early console remains direct and independent.
-
-The static SIO driver may initially use polling for both TX and RX.
-
-It must not make kernel panic output dependent on the registry.
-
-The same hardware may therefore have two software access paths:
-
-```text
-panic / very early boot
-    -> early_console_*()
-    -> SIO0/B directly
-
-normal kernel console
-    -> console driver
-    -> registered sio0.b device
-    -> SIO driver
-```
-
-The driver initialization should be idempotent with respect to the known SIO configuration or explicitly reinitialize the channel to the documented state.
-
----
-
-## 20.9 Console driver binding
-
-M3 introduces a minimal console driver above devices.
-
-It stores:
-
-```text
-console input device handle
-console output device handle
-```
-
-Default boot binding:
-
-```text
-console input  -> sio0.b
-console output -> sio0.b
-```
-
-The driver exposes kernel-internal operations equivalent to:
-
-```c
-int console_putc(char ch);
-int console_write(const void *buf, uint16_t len);
-int console_poll(void);
-int console_getc(void);
-```
-
-The normal console driver must fail cleanly if no suitable device is registered.
-
-Kernel panic continues to bypass it.
-
----
-
-# 21. M3 acceptance criteria
-
-M3 is accepted when:
-
-- the kernel initializes an empty fixed-size device registry;
-- the static SIO driver initializes and registers one SIO0/B device;
-- the registered device advertises serial/character/console capabilities appropriate to its implementation;
-- capability lookup locates SIO0/B without comparing its driver name;
-- default console input/output bindings select that device;
-- normal kernel output can be sent through the console driver and appears correctly at 115200 8N1;
-- the early console still works when the registry or normal console binding is deliberately disabled;
-- invalid handles and duplicate registrations fail predictably;
-- registry exhaustion is detected rather than overwriting memory;
-- a static driver may claim an M2 IRQ source and have a bank-7 handler invoked correctly, even if the initial SIO driver remains polling-only;
-- driver code/state is linked in bank 7, not common memory.
-
----
-
-# 22. Milestone M4 — Dynamic driver/module loading
-
-## 22.1 Objective
-
-M4 changes drivers from being compiled into the kernel to being **boot-loadable resident modules**.
-
-The device registry and driver contracts from M3 remain unchanged.
-
-M4 proves:
-
-- module allocation in bank 7;
-- relocation;
-- BSS/private-state allocation;
-- driver initialization;
-- device registration;
-- optional IRQ-source ownership from dynamically loaded code.
-
-M4 does **not** require runtime unload or hot-plug.
-
-Once loaded successfully, a driver remains resident until reboot.
-
----
-
-## 22.2 Fixed-granule driver arena
-
-M4 carries forward the proven fixed-slot idea, but makes placement a loader decision.
-
-A linker-defined region of bank 7 is reserved as the **driver arena**.
-
-The arena:
-
-- lies entirely within `2000h-DFFFh`;
-- is visible only while mode `11` is active;
-- is not used by the kernel image, stacks, or other persistent state;
-- begins and ends on the allocation granule boundary.
-
-Initial allocation granule:
-
-```text
-512 bytes
-```
-
-A module receives a contiguous whole number of granules.
-
-Examples:
-
-```text
-620-byte module + state   -> 2 granules = 1024 bytes
-2100-byte module + state  -> 5 granules = 2560 bytes
-```
-
-Slack inside an allocation belongs to the module. It is reserved headroom, not free space available to the next driver.
-
-The exact arena base and size are linker symbols, not hard-coded module ABI addresses:
-
-```text
-__driver_arena_start
-__driver_arena_end
-```
-
-The build must report arena usage.
-
-Implemented geometry (stage `07-m4-module-loader`): the initial arena is `A000h-BFFFh` (8192 bytes, 16 granules) between the loadable kernel image and the `C000h-DFFFh` runtime area, declared in `platform/zephyr80/private/memory.inc`, exported by `kernel/module/arena.asm`, and enforced by `tools/mapcheck.py` / `tools/pack_image.py` (no kernel section, stack, or ROM payload may occupy it). The build prints arena geometry plus free granules, and `konaos.manifest.json` carries an `arena` object. Concrete loader behavior, error codes, and tooling were documented in `docs/module-format.md`, which now describes the M10 driver image instead.
-
-This `A000h-BFFFh` geometry is the historical M4 acceptance geometry, not the long-term production budget. M8 supersedes it with a linker-derived arena sized from the end of the linked kernel to `C000h`; see section 30.2.
-
----
-
-## 22.3 Module format
-
-M4 introduces **Zephyr Module Format v1 (MOD)**.
-
-MOD is a generic relocatable container. M4 supports only module type `DRIVER`.
-
-Later executable milestones may reuse its relocation machinery where useful, but native program execution has its own EXE contract.
-
-A MOD v1 header contains, at minimum:
-
-```text
-magic               "KMOD"
-format_version      1
-module_type         DRIVER
-driver_abi_version
-flags
-
-image_size
-bss_size
-required_granules
-
-init_offset
-fini_offset         optional / may be zero
-
-reloc_offset
-reloc_count
-```
-
-Implemented header (stage 07): a packed little-endian 28-byte structure with `payload_offset`, `total_size`, and a `reserved` word, pinned by `formats/include/mod.h` compile-time assertions. `docs/module-format.md` then recorded the byte table and the manifest/packer contract (it now describes the M10 driver image).
-
-All addresses stored in the module are offsets relative to the module load base unless explicitly defined otherwise by a relocation record.
-
-The loader validates all sizes and offsets before modifying the driver arena.
-
----
-
-## 22.4 Relocation model
-
-M4 modules are not linked to a fixed slot address.
-
-The initial required relocation type is:
-
-```text
-KREL_ABS16
-```
-
-Meaning:
-
-```text
-word_at(module_base + patch_offset) += module_base
-```
-
-The host packer/link step derives patch locations from the SDCC/ASxxxx relocation records. Symbol information is used to resolve addresses; the loader does not scan opcodes or infer relocation sites from symbols alone.
-
-The host tool resolves the module at virtual base `0000h`, emits a complete payload, and converts surviving module-base-dependent absolute references into the compact MOD patch table. The target-side loader therefore needs no object-file parser or symbol table.
-
-The host packer must reject object constructs that require relocation types the M4 loader does not understand.
-
-Additional relocation types may be added only when a real driver/toolchain output requires them.
-
-The loader must validate that every relocation patch address lies entirely inside the loaded image before applying it.
-
-No relocation is permitted to patch arbitrary kernel memory.
-
----
-
-## 22.5 Kernel imports
-
-A dynamic driver must not link directly against arbitrary private kernel symbols.
-
-At initialization the loader passes the image the M10 boot bundle
-(`struct driver_boot`, section 36.11): the nucleus call table and
-the resolved dependency numbers.  The table provides the operations a
-driver needs:
-
-```text
-call / copy_in / copy_out / move    the IPC protocol boundary
-bulk_read                           this image's bulk segment
-console_putc / console_poll / console_getc
-irq_claim / irq_release             IRQ ownership in this image
-```
-
-The driver ABI version in the module header must match a supported kernel ABI.
-
-M4 may use the SDCC calling convention internally, but the versioned driver ABI boundary must be isolated so it can be replaced by explicit assembly thunks later without changing the module/registry architecture.
-
----
-
-## 22.6 BSS and private state
-
-The allocation size covers:
-
-```text
-loaded image
-+ zero-initialized BSS/private state
-+ alignment
-```
-
-After relocation:
-
-```text
-[module image][BSS/private state][reserved slack]
-```
-
-The loader zeros BSS before calling the module's init entry.
-
-A driver's persistent private state remains inside its allocation.
-
-The registry stores pointers to that state but does not own it.
-
----
-
-## 22.7 Module load sequence
-
-Conceptual loader sequence:
-
-```text
-locate module source
-    │
-    ▼
-read and validate header
-    │
-    ├── verify magic/version/type
-    ├── verify driver ABI compatibility
-    ├── validate sizes/offsets/relocations
-    │
-    ▼
-allocate contiguous driver-arena granules
-    │
-    ▼
-copy image
-    │
-    ├── zero BSS
-    ├── apply relocation table
-    └── construct module descriptor
-    │
-    ▼
-call module init(driver_api)
-    │
-    ├── module registers device(s)
-    └── module may claim IRQ source(s)
-    │
-    ▼
-mark module RESIDENT
-```
-
-If any step before successful initialization fails, the allocation is reclaimed and no partially registered devices may remain.
-
-M4 needs rollback for **failed load**, not general runtime unload.
-
----
-
-## 22.8 Initial module source
-
-M4 occurs before any filesystem milestone.
-
-Therefore the M4 loader source abstraction does not depend on a filesystem.
-
-The implemented M4 path uses an **embedded module catalog** generated at build time.
-
-For example:
-
-```text
-embedded_modules[]
-    "sio" -> byte blob / size
-```
-
-M5 replaces this production source with the ROM recovery filesystem. The MOD allocator, relocation, driver initialization, device registration, and IRQ ownership machinery remain unchanged; only the byte source changes.
-
----
-
-## 22.9 Dynamic SIO driver experiment
-
-The M3 SIO driver is the first M4 module.
-
-For the M4 acceptance build:
-
-- remove the normal SIO driver from the static boot-driver table;
-- package it as a MOD driver;
-- load it from the embedded module catalog;
-- allocate it at a loader-selected driver-arena address;
-- relocate it;
-- run its init function;
-- register `sio0.b`;
-- bind the console driver;
-- print through the dynamically loaded driver.
-
-The early console remains available throughout the experiment.
-
-This makes failure diagnosable even when the dynamic driver cannot initialize.
-
----
-
-## 22.10 Dynamic IRQ handlers
-
-A loaded driver may claim an M2 logical IRQ source.
-
-Its registered IRQ handler lives inside the module allocation in bank 7.
-
-The M2 common IRQ gate maps mode `11` before dispatch, so no dynamically loaded ISR implementation is required in common memory.
-
-The IRQ registry must reject handler addresses outside valid resident kernel/module memory.
-
-Because M4 has no unload, a successfully registered handler cannot become dangling during normal operation.
-
----
-
-## 22.11 No runtime unload in M4
-
-M4 explicitly excludes:
-
-- hot unplug;
-- arbitrary driver unload;
-- module replacement in place;
-- reference counting;
-- rebinding live devices while clients are using them.
-
-A reboot is the unload mechanism.
-
-This keeps module lifetime simple:
-
-```text
-load -> initialize -> resident until reboot
-```
-
-An optional `fini_offset` exists only for failed-initialization cleanup or future expansion; M4 does not expose a user-visible unload operation.
-
----
-
-## 22.12 Host-side module tooling
-
-`tools/modpack.py` produces and validates MOD files.
-
-It must:
-
-- consume the supported SDCC/assembler build outputs and their relocation information;
-- resolve module-local symbols;
-- generate the runtime relocation table;
-- reject unsupported relocation records;
-- emit module size and granule requirements;
-- provide a dump/validation mode suitable for automated tests.
-
-The build should be able to produce a human-readable report similar to:
-
-```text
-sio.mod
-  image:        734 bytes
-  bss:           82 bytes
-  relocations:   19
-  allocation:     2 x 512-byte granules
-```
-
-Numbers above are illustrative; the build reports the real values.
-
----
-
-## 22.13 M4 implementation notes (stages 07-08)
-
-The loader half of M4 is implemented as:
-
-```text
-formats/include/mod.h          MOD v1 definitions, errors, catalog,
-                                descriptors, loader API, size asserts
-kernel/module/arena.asm         __driver_arena_start/__driver_arena_end
-kernel/module/relocate.c        container validation, copy, BSS,
-                                KREL_ABS16 application
-kernel/module/loader.c          first-fit granule allocator, descriptors,
-                                transactional module_load_source,
-                                module_code_allowed (IRQ validation hook)
-tests/target/m4/m4_test.c       loader/dynamic-driver acceptance test
-tools/modpack.py               pack/validate/dump/emit-asm
-```
-
-M2's registry gained claim serials, owner tokens, and checkpoint/rollback (`irq_registry_checkpoint/rollback/set_owner`) so a failed module init rolls back its IRQ claims exactly like its device registrations. `irq_claim` now accepts handler addresses that are linked bank-7 code or lie inside the active/committed module images; see the M4 record in `docs/validation/2026-10-02-m4-acceptance.md` (the container's IRQ-handler validation is deleted with the arena loader).
-
-Stage 08 (`08-m4-dynamic-driver-acceptance`) then removed the static SIO driver from the kernel entirely; stage 10 separated production drivers, module packaging/runtime support, and acceptance code:
-
-```text
-drivers/sio/sio.c               SIO implementation (packed into the module)
-drivers/sio/sio_io.asm          SIO port I/O
-drivers/sio/sio_module.c        production module entry (descriptor + init)
-modules/manifests/sio.json      production module manifest
-drivers/runtime/sdcc_indirect_calls.asm  shared module-local SDCC glue
-tests/modules/sio_irq_module.c  IRQ self-test variant entry
-tests/modules/sio_fail_module.c init-failure variant entry
-```
-
-* the M3 static driver table is retired: no `boot_drivers[]`, `driver_init_static()`, or `_driver_static_*` symbol is linked, and `tools/mapcheck.py --production` rejects any acceptance symbol;
-* every M4 image embeds a boot module through the generated catalog: `sio.mod` (production, loader image, placement image), `sio-irq.mod` (`make m4-selftest`), or `sio-fail.mod` (`make m4-failure-selftest`).  **The M1-M7 acceptance images, the embedded boot catalog and the legacy fixed-arena geometry were retired under the Mn-1 retention rule at the start of M9 (work package 25a); the loader mechanisms this section proves are now exercised on the current boot path by the loader group of the subsystem acceptance image -- `tests/target/loader/` replayed by `tests/test_subsys_sim.py` -- with container validation and two-base relocation proven on host by `tests/test_mod.py` and arena exhaustion by the `console-fb-arena` image;**
-* the (retired) placement image regenerated `platform/zephyr80/private/memory.inc` with the arena shifted to 9E00h-BE00h and embedded byte-identical module files;
-* `kernel_main()` prints `console: dynamic sio0.b OK` through the bound module (or `console: dynamic driver failed` on load failure);
-* `tools/mapcheck.py` rejects any linked `_sio_`/`_sio0b_`/`_sio_driver` symbol, so the static driver cannot return unnoticed.
-
-See `docs/devices.md` for the resulting driver-layer behavior (the M4 container pipeline that followed is deleted; `docs/module-format.md` describes the driver image).
-
----
-
-# 23. M4 acceptance criteria
-
-M4 is accepted when:
-
-- the driver arena is linker-reserved and excluded from kernel/static state;
-- the granule allocator detects full/exhausted conditions safely;
-- a MOD header with bad magic, bad version, invalid size, invalid relocation, or unsupported ABI is rejected without corrupting the arena;
-- the SIO driver is absent from the static driver table;
-- the SIO MOD is loaded from the embedded module catalog;
-- its actual load address is chosen by the allocator rather than compiled into the driver;
-- relocation is applied successfully;
-- BSS/private state is zeroed;
-- module initialization registers `sio0.b` through the same M3 device registry used by static drivers;
-- the console driver binds to the dynamically registered device;
-- serial output succeeds through the dynamic driver on physical hardware;
-- the early console remains functional if dynamic loading fails;
-- at least one test build deliberately changes the module's arena placement and the same module binary continues to work;
-- a dynamically loaded handler can claim an M2 IRQ source and execute correctly from its relocated bank-7 address;
-- failed module initialization rolls back its arena allocation and registry changes;
-- no runtime unload capability is required.
-
-Evidence mapping (as of M4): `tests/test_m4.py`/`tests/test_m4_sim.py` and `tests/test_mod.py` proved every criterion on host (including the shifted placement and the failure rollback); `make m4-selftest`, `make m4-placement-selftest`, `make m4-failure-selftest` and the corresponding `smoke-hardware-*` captures provided the physical-hardware record (`docs/validation/2026-10-02-m4-acceptance.md`).  Those images and tests were retired under the Mn-1 retention rule (work package 25a); the criteria are now carried by `tests/test_mod.py`, the loader group of `tests/target/loader/` replayed by `tests/test_subsys_sim.py`, and the `console-fb-arena` image.
-
----
-
-# 24. Milestone M5 — ROM recovery filesystem
-
-## 24.1 Objective
-
-M5 adds a deliberately small read-only filesystem backed by ROM.
-
-Its job is not to define the general KonaOS filesystem architecture. It is the **boot and recovery store** that exists even when the IOC, SD card, FAT filesystem, or later shell are unavailable.
-
-M5 provides a dependable source for:
-
-- boot-time MOD drivers;
-- the first native EXE programs;
-- recovery and diagnostic programs;
-- small immutable configuration or recovery assets where useful.
-
-The M4 module loader does not change. M5 replaces the embedded-module byte source with ROMFS.
-
----
-
-## 24.2 ROM access under the Zephyr memory model
-
-Normal runtime modes `10` and `11` have ROM disabled. Runtime ROM reads therefore require a controlled mapping transition through **mode 00**, the only mode that selects ROM — and it selects ROM for every read (including instruction fetch), while every write still targets the selected SRAM bank. There is no mode that exposes ROM together with a SRAM common region; `08h` is a flat view of one SRAM bank.
-
-The transition therefore follows the same pattern as this machine's drive-A ROM primitive: a small stub is mirrored into every recovery ROM page at the same address as its common-SRAM copy; a two-byte trampoline `OUT` switches to mode 00; the stub runs stackless (`LDIR`, then the latch-restoring `OUT`); ordinary common code resumes in mode 11:
-
-```text
-mode 00 window (one bounded copy)
-0000h-FFFFh   reads: selected ROM page
-              writes: selected SRAM bank (bank 0 for staging)
-```
-
-This has three consequences:
-
-1. the code executing between the two `OUT`s must be byte-identical in common SRAM and in every selected ROM page, must not touch the stack, and must not read any SRAM variable (registers only);
-2. the logical ROMFS payload uses only `0000h-BFFFh` of each allocated ROM page; the `C000h-FFFFh` half is never file data (it carries the fixed stub mirror at `KOS_ROM_ACCESS_BASE` and `FFh` elsewhere);
-3. the common staging destination is reached correctly because the mode-00 latch selects SRAM bank 0, and mode-00 writes land in bank 0 across the whole address space.
-
-The logical ROMFS page payload is therefore:
-
-```text
-ROMFS_PAGE_BYTES = C000h = 48 KiB
-```
-
-The `C000h-FFFFh` ROM bytes are not part of the runtime recovery filesystem because that window is reserved for the stub mirror.
-
-The exact ROM pages assigned to ROMFS are build/platform configuration. M5 must not hard-code assumptions that collide with page 0 boot contents, page 1's kernel image, or any ROM-backed assets retained elsewhere.
-
----
-
-## 24.3 Common ROM-access primitive
-
-A ROM read temporarily hides all runtime mappings, so the actual mapping transition and copy loop execute from code that exists in both worlds: the mirrored stub in the ROM page and its byte-identical copy in common SRAM.
-
-Conceptually:
-
-```text
-kernel in mode 11
-    │
-    ├── validate ROM page / offset / length
-    ├── save the exact latch; lock interrupts; claim the busy flag
-    ├── arm registers: HL=source, DE=staging, BC=length,
-    │       A=mode-00 latch, A'=exact caller latch
-    │
-    ├── trampoline OUT (00h): mode 00, page p, bank 0
-    │
-    ▼
-mirrored stub in the selected ROM page (stackless)
-    │
-    ├── LDIR: ROM (HL) -> SRAM bank 0 staging (DE), BC bytes
-    ├── OUT (00h): restore the exact caller latch
-    │
-    ▼
-common epilogue, mode 11 restored
-    │
-    ├── release the busy flag; restore IFF; return
-```
-
-The ROM-access routine must never execute, return into, or stack on `2000h-DFFFh` while mode 00 is active, and it must not use the stack at all between the two `OUT`s; the simulator pins the executed window to the mirrored stub and rejects any stack movement.
-
-The initial implementation may stage small chunks rather than trying to map an entire file at once.
-
----
-
-## 24.4 Recovery filesystem format
-
-ROMFS v1 is intentionally simple and read-only.
-
-It uses a flat native namespace. Directories, permissions, timestamps, allocation, deletion, and write support are unnecessary for recovery.
-
-A host-built image contains:
-
-```text
-ROMFS header
-file table
-file payloads
-```
-
-The header contains at minimum:
-
-```text
-magic
-format_version
-file_count
-directory_size
-image_size
-```
-
-Each file-table entry contains at minimum:
-
-```text
-name
-logical_offset
-size
-flags/type
-```
-
-A checksum/CRC may be added if it materially improves recovery diagnostics, but M5 does not require a general filesystem integrity subsystem.
-
-`logical_offset` is measured across the concatenated 48-KiB usable windows of the configured ROMFS pages; the reader translates it into `(ROM page, offset within 0000h-BFFFh)`.
-
-Names are native KonaOS recovery names, not CP/M 8.3 names.
-
----
-
-## 24.5 Kernel ROMFS interface
-
-The M5 API should remain small and allocation-free.
-
-Semantics equivalent to the following are sufficient:
-
-```c
-int romfs_init(void);
-int romfs_lookup_ci(const char *name, romfs_file_t *out);
-int romfs_read(const romfs_file_t *file,
-               uint32_t offset,
-               void *dst,
-               uint16_t length);
-```
-
-`romfs_file_t` is immutable metadata identifying one ROMFS entry.
-
-M5 does not expose this API as the future native filesystem ABI. M9 supersedes the application-facing part of this design by adapting the existing low-level ROMFS reader beneath the VFS provider interface; section 32.13 collapses the lookup to the single ASCII case-folded `romfs_lookup_ci`.
-
----
-
-## 24.6 Host-side ROMFS construction
-
-`tools/romfspack.py` builds and validates the recovery image from a manifest.
-
-Conceptually:
-
-```text
-systems/<name>.json ── tools/systemgen.py ── build/store.json
-    │
-    ├── sio.mod            (the selected driver images, load order)
-    ├── drivers.man
-    ├── monitor.exe
-    └── the image's store files
-    │
-    ▼
-romfspack.py
-    │
-    ▼
-recovery.romfs
-    │
-    ▼
-pack_image.py
-    │
-    └── configured ROM pages
-```
-
-The packer must reject duplicate names, capacity/window violations and nondeterministic output, and emit a human-readable placement report.
-
----
-
-## 24.7 Boot-module source transition
-
-M5 changed the normal production boot path from an embedded module catalog to direct ROMFS lookup. This remains historical M5 behavior; M9 replaces direct boot-time ROMFS lookup above the provider with an early VFS bootstrap and generic VFS-backed module source.
-
----
-
-## 24.8 M5 implementation notes (stage 11)
-
-M5 is implemented and physically accepted. The concrete ROMFS image, mirrored-stackless ROM access primitive, source-backed module loader, production corruption diagnostics, host tools and acceptance evidence are documented in `docs/romfs-format.md` and `docs/validation/2026-10-03-m5-romfs.md`.
-
----
-
-# 25. M5 acceptance criteria
-
-M5 is complete and physically accepted. Its recovery-store and ROM-access invariants remain binding under M9; M9 wraps them rather than replacing the low-level medium implementation.
-
----
-
-# 26. Milestone M6 — Native process and EXE execution
-
-## 26.1 Objective
-
-M6 introduces the first native KonaOS process lifecycle and the ability to execute a native program.
-
-M6 remains deliberately single-tasking:
-
-```text
-parent runs
-    -> exec child
-    -> parent suspended
-    -> child runs alone
-    -> child exits
-    -> parent resumes
-```
-
-There is no scheduler and no preemption requirement.
-
-The first acceptance parent may be the kernel launcher. The process model must nevertheless be structured so the later native shell can become an ordinary parent process without redesigning `exec`/`exit`.
-
----
-
-## 26.2 Process descriptor
-
-The kernel keeps process descriptors in bank 7.
-
-A descriptor contains at least the state needed to suspend and restore a process:
-
-```text
-process id / slot
-state: FREE, RUNNING, SUSPENDED
-application bank 0-6
-parent process id or kernel-parent marker
-saved application SP / return context as required
-exit status
-process flags
-```
-
-The table may be fixed-size; M6 does not require a heap.
-
-Bank 7 is never a process bank.
-
-Only one process is RUNNING at a time.
-
----
-
-## 26.3 Native page zero
-
-Every native process receives a KonaOS-owned page zero in its own application bank.
-
-At minimum it contains the native syscall gateway already reserved by M1:
-
-```text
-0030h   RST 30h entry / JP kos_syscall_gate
-```
-
-Other bytes are initialized by KonaOS rather than inherited from a previous program.
-
-```text
-0080h   startup block v1 (all 128 bytes at 0080h-00FFh)
-        0080h  u8  version = 1
-        0081h  u8  tail_length  0..125
-        0082h  ... tail bytes, then one NUL
-```
-
-Every native process receives this block, including the kernel-launched
-one; the launcher passes an empty tail.  The launch gate enters the
-program with `HL = 0080h`.  The kernel transports a `SYS_EXEC` caller's
-raw command tail into `tail` byte-exact and never parses it; user space
-owns splitting (`user/sdk/include/kos/process.h`, docs/exe-format.md section
-5.1).  The block is inside the caller-visible low window, so it is
-readable in both mode `10` and mode `11`; it sits below the `0100h`
-syscall buffer window, so a program copies the tail into its own data
-before a syscall.  A program that ignores `HL` is unaffected.
-
-This is a native page zero. It does not contain CP/M `CALL 0005h`, FCBs, command tail, or other compatibility structures.
-
-The versioned block is the single startup interface: a later version can
-carry more than a command tail (environment, handles) without changing
-the launch contract, because the program reads its shape from
-`version`.
-
----
-
-## 26.4 EXE v1: single-bank native executable
-
-M6 defines the first **EXE** executable contract.
-
-The M6 form is intentionally simpler than the later far-code/far-data format:
-
-- one application bank;
-- one main code/data image;
-- one zero-initialized BSS region;
-- one entry point;
-- one normal process stack;
-- no auxiliary-bank allocations;
-- no far-call or far-data segments.
-
-The executable's logical load address is fixed at:
-
-```text
-0100h
-```
-
-This is important: selecting a different physical application bank does **not** change the Z80 logical addresses seen by the program. A normal single-bank EXE linked at `0100h` therefore does not need M4-style base relocation merely because it is loaded into bank 0, 1, 2, etc.
-
-M12 may extend EXE with segment/relocation metadata for auxiliary far code/data without changing this simple primary-bank model.
-
----
-
-## 26.5 EXE v1 header
-
-A EXE v1 header contains at minimum:
-
-```text
-magic               "EXE1"
-format_version      1
-abi_version
-flags
-image_size
-bss_size
-entry_offset
-stack_size
-header_size
-```
-
-The effective entry address is `0100h + entry_offset`.
-
-The loader validates that the image and BSS fit below the reserved stack, the entry lies inside executable image space, arithmetic cannot wrap, and no payload overlaps page zero or common memory.
-
----
-
-## 26.6 Native process memory layout
-
-```text
-0000h-00FFh   KonaOS native page zero
-0100h-....    EXE image
-....          zero-initialized BSS
-....          free process memory
-....-DFFFh    process stack growing downward
-E000h-FFFFh   permanent physical bank-0 common memory
-```
-
----
-
-## 26.7 EXE load/launch sequence
-
-M6 loads programs from M5 ROMFS through the source-backed EXE/process loader. M9 will make that loader source-neutral with VFS-backed input without changing EXE validation or process-bank semantics.
-
----
-
-## 26.8 Minimal native syscall set
-
-M6 established:
-
-```text
-SYS_EXIT
-SYS_CONSOLE_WRITE
-SYS_CONSOLE_READ
-SYS_CONSOLE_POLL
-SYS_GETINFO
-```
-
-M9 extends the same native syscall mechanism with filesystem drivers.
-Package 28 adds `SYS_EXEC` (a synchronous child through the same process
-machinery); package 28b extends its block with a raw command tail that
-reaches the child's startup block and enters every program with
-`HL = 0080h`.
-
----
-
-## 26.9 Exit and parent restoration
-
-`SYS_EXIT` records status, releases the child bank/resources and restores the suspended parent/kernel launcher. This remains the native lifecycle used by later shell and personalities.
-
-M6 restored exactly one suspended launcher: the kernel launcher on the boot
-stack. Package 28 keeps that same lifecycle but generalizes "the suspended
-parent" to an ordinary process suspended in its own `SYS_EXEC`, up to
-`KOS_EXEC_MAX_DEPTH` (4) user processes deep (section 32.40). The process
-table's `parent` field is the only nesting state; there is no second
-process manager, no separate exec table and no new loader.
-
----
-
-## 26.10 M6 non-goals
-
-M6 excluded scheduling, signals, pipes/redirection, dynamic linking, writable filesystems, far allocations, CP/M `.COM` execution and a shell.
-
----
-
-## 26.11 M6 implementation notes (stage 12)
-
-M6 is implemented, host-validated and physically accepted. The concrete process table, launch/copy gates, syscall implementation, EXE runtime, acceptance programs and physical evidence are documented in `docs/exe-format.md`, `docs/abi.md` and `docs/validation/2026-10-03-m6-exe.md`.
-
----
-
-# 27. M6 acceptance criteria
-
-M6 is complete and physically accepted. Its application-bank, page-zero, EXE validation, syscall-crossing and parent-resume invariants remain binding for M9.
-
----
-
-# 28. Milestone M7 — Native monitor and diagnostic foundation
-
-## 28.1 Objective
-
-M7 ports the Zephyr-80 monitor concept into a native KonaOS EXE program and establishes the reusable diagnostic boundary. The monitor is the recovery environment used before the native shell exists.
-
----
-
-## 28.2 Port, do not transplant
-
-The monitor preserves useful operator behavior while using native KonaOS drivers rather than old monitor-ROM or CP/M assumptions.
-
----
-
-## 28.3 Monitor uses native console drivers
-
-`monitor.exe` performs normal input/output only through native console syscalls and therefore runs unchanged through the M8 HID/V9958 console or SIO fallback.
-
----
-
-## 28.4 Diagnostic syscall boundary
-
-M7 added diagnostic syscalls for memory, I/O-port, bank and system inspection/manipulation. These remain explicit recovery/diagnostic interfaces rather than normal driver bypasses.
-
----
-
-## 28.5 Diagnostic-suite foundation
-
-Reusable line editing, the diagnostic runtime wrappers and the string/format helpers live in the user SDK (`user/sdk/`) for reuse by M11; the monitor's own hex parsing/formatting, hexdump and status output live in `user/monitor/` (docs/sdk.md).
-
----
-
-## 28.6 Monitor packaging and launch
-
-`monitor.exe` is an ordinary EXE. Under M9 the boot/recovery launcher should obtain it through `/system` and VFS rather than direct ROMFS lookup.
-
----
-
-## 28.7 Relationship to the future native environment
-
-The monitor remains a permanent recovery/diagnostic asset after the shell arrives.
-
-### 28.8 M7 implementation notes (stage 13)
-
-M7 is implemented, host-validated and physically accepted. Details and transcripts are recorded in `docs/validation/2026-10-03-m7-monitor.md`.
-
----
-
-# 29. M7 acceptance criteria
-
-M7 is complete and physically accepted. Its monitor remains device-independent and uses only the native syscall/driver boundary.
-
----
-
-# 30. Milestone M8 — Native device stack completion
-
-## 30.1 Objective
-
-M8 establishes the normal native KonaOS device environment:
-
-```text
-normal console input   -> HID keyboard
-normal console output  -> V9958
-IOC transport          -> command + bulk drivers for HID and later FAT/storage
-serial fallback        -> SIO0/B registered driver
-early/panic console    -> direct SIO0/B, permanently independent
-```
-
-M8 turns the M3/M4 character-device proof into a class-aware device architecture. The registry remains the common discovery mechanism, but video, HID and IOC gain explicit class contracts rather than being forced through a single character-device operations shape.
-
-The V9958, HID and IOC drivers are ordinary resident MOD modules sourced from ROMFS and relocated by the M4 loader.
-
-### M8 source-tree additions
-
-```text
-drivers/v9958/v9958_driver.h
-drivers/hid/hid_driver.h
-drivers/include/ioc.h
-
-drivers/v9958/
-drivers/hid/
-drivers/ioc/
-
-modules/manifests/v9958.json
-modules/manifests/hid.json
-modules/manifests/ioc.json
-```
-
----
-
-## 30.2 Production driver-area sizing
-
-M9 (package 25b) removes every fixed boundary from the bank-7 layout.
-There is one geometry, derived by a two-pass build: a probe link places no
-arena, the build measures the exclusive end of the linked loadable kernel
-and the runtime-data size (`l__DATA + l__INITIALIZED`), and derives
-
-```text
-arena      = [align_up(__kernel_code_end, 512), data_base)
-data_base  = align_down(DF00h - data_size, 512)
-arena_end  = data_base
-```
-
-with a minimum production arena of 16 KiB (32 granules) and 512-byte
-allocation granularity.  The bank-7 layout is therefore kernel code, then
-the derived arena, then the derived runtime data, then the fixed 256-byte
-ISR stack at `DF00h-DFFFh`.  `KOS_BANK7_LOAD_END` (`C000h`) is only the
-architectural ceiling on the loadable kernel end, not a boundary.
-`pack_image.py` and the arena plan print the single bank-7 budget ledger
-section 32.39 requires.
-
----
-
-## 30.3 Driver ABI v2 and class-aware operations
-
-> **Superseded (M10, work package 42c).**  The v2 driver ABI -- 32-bit
-> capability masks, the optional generic character interface and the
-> per-class operations tables -- is deleted.  A driver is a driver
-> image; its class-visible surface is a *protocol* (section 36.11), and
-> the class numbers in `abi/kos/protocol.h` name protocols, not device
-> kinds.  The M9 milestone record of the v2 classes and of the block
-> class it defined follows as history: the class list was the serial,
-> video, storage, input, transport and "other" set, refined to the
-> class numbers that survive today as protocol numbers.
-
----
-
-## 30.4 VIDEO class and V9958
-
-The V9958 driver serves the video protocol class: the
-`KVIDEO_*` operations now live in `abi/kos/protocol.h` and reach the
-driver through its driver dispatch.  It provides the 85x26 6x8
-terminal/VT-style console renderer and remains independent of IOC.
-
----
-
-## 30.5 HID class
-
-HID serves the input protocol class above IOC, translating the MCU's
-terminal bytes.  It resolves its IOC dependency from the endpoint the
-IOC driver exports (declared in its manifest and resolved by the packer
-into the flat plan) rather than by name or symbols.
-
----
-
-## 30.6 IOC class
-
-IOC owns the SIO1 command/reply and bulk transport, READY/DONE
-lifecycle, sequencing, timeouts/recovery and semantic status. Consumers
-never see raw SIO/CTS/CRC details.
-
----
-
-## 30.7 Driver-to-driver discovery
-
-A driver image declares its dependencies in its manifest (class plus
-instance); the packer resolves them to the endpoint numbers of images
-earlier in the load order and the loader installs those numbers in the
-dependency array the init reads.  Drivers are permanent for the boot,
-so no lifetime reference counting is required.
-
----
-
-## 30.8 Boot order
-
-M8 production boot loads `sio.mod`, `ioc.mod`, `hid.mod`, `v9958.mod` from the recovery store, then binds the normal console and launches the monitor. M9 supersedes the direct ROMFS aspect of that sequence by bringing VFS up before dynamic module loading and reading those module files through `/system`.
-
----
-
-## 30.9 Console binding policy
-
-The console driver composes its two lanes from the published objects:
-input from the keyboard publication, output from the video publication.
-A store without a video image falls back to the serial publication, and
-a store without HID keeps the serial input lane; panic and early boot
-stay on the direct SIO early console.
-
----
-
-## 30.10 M8 non-goals
-
-M8 did not implement the native filesystem, shell, complete diagnostic suite, module unload, far-memory drivers or compatibility personalities.
-
----
-
-# 31. M8 acceptance criteria
-
-M8 is complete and physically accepted. `docs/validation/2026-10-03-m8-device-stack.md` records the integrated image, full test suite, fallback matrix and physical HID/V9958 console validation completed on 2026-10-04.
-
-The M8 acceptance images (`m8-ioc-selftest`, `m8-hid-selftest`,
-`m8-v9958-selftest`, `m8-console-selftest`, `m8-selftest` and the
-`m8-fallback-selftests` matrix) were retired at the start of M10 under the
-Mn-1 retention rule (work package 32). Their mechanism coverage now runs,
-on the current production boot path, in the subsystem-owned tests:
-`tests/target/ioc/ioc_test.c` with `tests/test_ioc_sim.py` (IOC command and
-bulk lanes), `tests/target/hid/hid_test.c` with `tests/test_hid_sim.py`
-(HID text input and the missing/malformed IOC rollback rows),
-`tests/target/video/v9958_test.c` with `tests/test_v9958_sim.py` (V9958
-init, renderer and the font-failure rollback), and
-`tests/target/console/integration_test.c` with
-`tests/test_console_acceptance.py` (integration, the ESC `c` display
-reset and the build-selected production console).  Work package 42d
-merged the four device acceptance images into that one integration image
-(`make console-integration-selftest`), which every one of those replays
-boots, and folded the console-binding diagnostic into the integration
-diagnostic.  The runtime-fallback
-console matrix and `tests/test_console_fallback.py` were retired by work
-package 42e, which made the console a build-selected driver with its own
-serial variant (`tests/test_console_serial.py`,
-`make console-serial-selftest`).
-
----
-
-# 32. Milestone M9 — Native VFS and filesystem framework
-
-## 32.1 Objective and goals
-
-M9 gives KonaOS a real native filesystem framework rather than hard-wiring the OS to the current MCU FAT implementation.
-
-The architecture must support:
-
-- one native hierarchical namespace rooted at `/`;
-- no native drive letters;
-- multiple filesystem implementations;
-- static boot-time mount configuration;
-- ROMFS as a normal filesystem implementation;
-- the current MCU/FatFs driver as one filesystem provider;
-- raw SD access through a generic block-device abstraction;
-- future filesystems implemented directly on the Z80, such as VFAT or a Fuzix filesystem;
-- path-, handle-, and byte-oriented native APIs;
-- provider-local caching where a backend needs it (IOC-FAT keeps a Z80-side file-data cache to avoid repeated transport traffic);
-- a clean boundary for later personalities such as CP/M.
-
-The central rules are:
-
-> **VFS owns the namespace. Filesystems provide trees attached to paths in that namespace.**
-
-> **IOC is transport only. Filesystem and block semantics live above it.**
-
-> **Caching is filesystem-provider policy. VFS owns no cache.**
-
-> **Resident bytes are an architectural resource (section 32.39).**
-
----
-
-## 32.2 High-level layering
-
-```text
-native applications
-        |
-        v
-+-----------------------+
-|         VFS           |
-| namespace / paths     |
-| mounts / CWD / fd     |
-+-----------------------+
-        |
-        +---------------------+----------------------+
-        |                     |                      |
-        v                     v                      v
-   ROMFS filesystem      IOC-FAT filesystem      future FS
-                         (file-data cache)    (optional block cache)
-                              |                      |
-                              |                      v
-                              |                block layer
-                              |                      |
-                              |             the block protocol
-                              |             (no driver is resident)
-                              |                      |
-                              +----------+-----------+
-                                         |
-                                         v
-                                  the IOC protocol
-                                         |
-                                         v
-                                        MCU
-                                         |
-                                         v
-                                         SD
-```
-
-Ownership is deliberately separated:
-
-- **VFS** owns the global namespace and process-visible filesystem semantics.
-- **Filesystem providers** own filesystem-specific behavior, including any caching.
-- **Block devices** expose raw sector/block storage.
-- **IOC** owns only the Z80-to-MCU transport.
-
-The MCU currently provides both raw SD primitives and a FatFs-based filesystem driver. KonaOS exposes both without making either one the architectural foundation of the other.
-
----
-
-## 32.3 Native namespace
-
-KonaOS has exactly one native namespace:
-
-```text
-/
-```
-
-There are no native equivalents of `A:`, `B:`, `C:` or CP/M USER areas. Those belong, if needed, to compatibility personalities.
-
-The initial system layout is:
-
-```text
-/           -> writable SD FAT filesystem
-/system     -> internal ROMFS
-```
-
-Future devices may be attached at additional root-level mountpoints such as `/CF`, `/SD2`, `/EXTERNAL`, or `/BACKUP`. No drive-selection state exists in native KonaOS.
-
----
-
-## 32.4 VFS owns `/`
-
-The root namespace exists independently of any mounted filesystem. `/system` must remain accessible even if the SD card is absent, corrupt, or unavailable.
-
-Conceptually:
-
-```text
-VFS namespace
-/
-|-- system     -> ROMFS
-|-- CF         -> future external filesystem
-`-- default tree supplied by filesystem attached at /
-```
-
-The filesystem attached at `/` is the normal writable filesystem, but it does not own the namespace. If the root filesystem is unavailable, `/system` remains present and usable.
-
----
-
-## 32.5 Static mount configuration
-
-> **Retired (M10, work packages 42b/42c).**  M9 defined the mount topology
-> in build-time JSON configuration (`config/mounts.json`, translated by
-> `tools/mountgen.py`) and established it at boot.  M10 deletes the mount
-> table, the configuration, the generator and the mount phase: VFS owns
-> three static roots -- `/fs`, `/system` and `/dev` (36.13) -- and the
-> chosen filesystem driver publishes `/fs` itself.  The M9 description
-> below is kept as the design record of what the table meant; nothing in
-> it is current.
-
-M9 does not provide runtime `mount` or `umount` commands. Mount topology was defined by build-time JSON configuration and established during boot.
-
-The production manifest was:
-
-```text
-config/mounts.json
-```
-
-This manifest is the only place where mount policy (paths, providers, sources, system/required flags) exists. The build translates it into an immutable table compiled into the kernel image, and VFS executes that table at boot. Section 32.33 defines the translation and how VFS consumes the result.
-
-Schema:
-
-```json
-{
-  "format": "vfs-mounts-v1",
-  "mounts": [
-    {
-      "path": "/system",
-      "filesystem": "romfs",
-      "source": "recovery",
-      "system": true
-    },
-    {
-      "path": "/",
-      "filesystem": "iocfat",
-      "source": "ioc.0",
-      "required": false
-    }
-  ]
-}
-```
-
-Exactly one configured mount must be marked:
-
-```text
-system = true
-```
-
-The system filesystem is instantiated during early VFS bootstrap, before any loadable modules are required. Its provider must therefore be statically available and must have no dependency on loadable modules or dynamically registered devices.
-
-Field semantics:
-
-```text
-path
-    Absolute VFS mountpoint.
-
-filesystem
-    Name of a filesystem provider registered with VFS.
-
-source
-    Opaque provider-specific source identifier.
-    VFS stores/passes it but does not interpret it.
-
-system
-    true:
-        this is the unique bootstrap filesystem.
-        it is instantiated immediately after VFS core initialization.
-        its provider must already be available in the kernel image.
-        it may not depend on loadable modules or dynamically registered devices.
-        failure to instantiate it is fatal.
-
-required
-    true:
-        for non-system mounts, failure to instantiate the mount is a
-        boot/configuration failure.
-
-    false:
-        for non-system mounts, mount failure is tolerated and the remaining
-        namespace stays usable.
-```
-
-`system: true` is stronger than `required: true`; the system entry does not need a separate `required` field.
-
-A future manifest may look like:
-
-```json
-{
-  "format": "vfs-mounts-v1",
-  "mounts": [
-    {
-      "path": "/system",
-      "filesystem": "romfs",
-      "source": "recovery",
-      "system": true
-    },
-    {
-      "path": "/",
-      "filesystem": "iocfat",
-      "source": "ioc.0",
-      "required": false
-    },
-    {
-      "path": "/CF",
-      "filesystem": "vfat",
-      "source": "cf.0",
-      "required": false
-    },
-    {
-      "path": "/SD2",
-      "filesystem": "fuzixfs",
-      "source": "sd.1",
-      "required": false
-    }
-  ]
-}
-```
-
-The `source` field is provider-specific. For example, ROMFS may interpret `recovery` as the built-in recovery ROM source, IOC-FAT may interpret `ioc.0` as the MCU filesystem driver, while a future native provider may interpret `cf.0` or `sd.1` as a block object it serves. VFS does not interpret those strings.
-
-### 32.5.1 Manifest validation
-
-The host-side build tool must reject at least:
-
-```text
-unknown format/version
-missing required fields
-empty filesystem/source names
-zero system filesystems
-more than one system filesystem
-system filesystem naming a provider that is not built into the kernel
-`required` present on the system entry
-relative mount paths
-paths longer than KOS_PATH_MAX
-'.' or '..' in configured mountpoints
-non-canonical mount paths (lowercase letters, trailing '/', repeated '/')
-duplicate mountpoints
-case-only duplicate mountpoints
-duplicate '/'
-unsupported nested mountpoints in M9
-more entries than the kernel mount-table capacity
-```
-
-The build tool is told which providers are built into the kernel image. A system entry naming any other provider would have to be loaded from a module, which the system filesystem must never require (section 32.32.2). Such a manifest is therefore rejected at build time.
-
-Because native VFS pathname matching is case-insensitive, `/system`, `/system`, and `/System` collide. Configured mount paths must use a canonical spelling: absolute, upper-case ASCII, no trailing or repeated `/`. The tool rejects non-canonical paths; it never rewrites them. The table in ROM is therefore exactly what the reviewed manifest says.
-
----
-
-## 32.6 Initial mount restrictions
-
-M9 limits configured mountpoints to `/` or one root component such as `/system`, `/CF`, or `/SD2`. Arbitrary nested mountpoints may be added later if a real use case appears.
-
----
-
-## 32.7 Root directory enumeration
-
-`readdir("/")` is a VFS operation. The visible root merges entries from the filesystem attached at `/` with configured root-level mountpoints.
-
-If the SD root contains `GAMES`, `TOOLS`, and `README.TXT`, while VFS has `/system` and `/CF`, then `ls /` exposes all five entries. If the backing root also contains a real entry named `SYSTEM`, the VFS mountpoint wins and shadows it while mounted.
-
----
-
-## 32.8 Path resolution and case folding
-
-VFS owns absolute/relative paths, CWD, normalization, case-insensitive comparison, mount selection and filesystem-relative path construction.
-
-M9 supports `/`, `.`, `..`, repeated slash normalization, absolute paths and relative paths. Traversal above `/` remains at `/`.
-
-Native pathname comparison is ASCII case-insensitive:
-
-```text
-/system/monitor.exe
-/system/MONITOR.EXE
-/System/Monitor.Exe
-```
-
-refer to the same namespace object. The comparison rule is simply `A-Z == a-z`; all other bytes compare exactly. KonaOS does not attempt Unicode case folding.
-
-The rule is split between VFS and providers:
-
-- VFS normalizes the path (absolute against CWD; `.`, `..`, repeated `/` resolved) and compares only the **first component** case-insensitively against the root-level mountpoints. It does not walk or fold the remaining components.
-- Every provider is required to implement ASCII case-insensitive semantics for the provider-relative paths it receives. IOC-FAT inherits this from FAT; ROMFS uses a small ASCII-folded compare.
-
-VFS selects the owning mount before calling a provider. M9 mount selection is flat (section 32.6): if the first component matches a mounted root-level mountpoint, that mount owns the path; otherwise the filesystem attached at `/` owns it. For example:
-
-```text
-/system/monitor.exe
-    mount       = /system
-    FS-relative = /monitor.exe
-    provider    = ROMFS
-
-/GAMES/DOOM.EXE
-    mount       = /
-    FS-relative = /GAMES/DOOM.EXE
-    provider    = IOC-FAT
-```
-
-A provider never needs to know its external mountpoint.
-
----
-
-## 32.9 Path and component limits
-
-M9 pins:
-
-```text
-KOS_PATH_MAX = 128
-KFS_NAME_MAX = 64
-```
-
-`KOS_PATH_MAX` includes the terminating NUL for user-facing C wrappers. The syscall ABI still uses explicit pointer/length fields rather than requiring unbounded kernel scans for NUL. `KFS_NAME_MAX = 64` deliberately avoids baking FAT 8.3 restrictions into the native ABI.
-
----
-
-## 32.10 VFS responsibilities
-
-`kernel/vfs/` owns:
-
-```text
-global namespace
-configured mount table
-path normalization
-case-insensitive mount/path comparison
-mountpoint resolution
-current working directory
-process-visible file descriptors
-directory handles
-file offsets
-filesystem syscall dispatch
-user-buffer validation and copying
-process cleanup
-cross-filesystem policy
-```
-
-VFS must not contain FAT parsing, FS2 command numbers, IOC READY/DONE handling, ROMFS on-ROM layout, SD-sector commands, caching policy, or CP/M FCB logic. VFS uses fixed tables only (no dynamic allocation) and one shared 128-byte pathname scratch buffer.
-
----
-
-## 32.11 Filesystem-provider registration
-
-> **Retired (M10, work package 42c).**  The M9 provider registry -- the
-> registration call, its provider record (name, the 14-operation
-> path-based table, provider-private state) and the separate "filesystem
-> providers" table -- is **deleted**.  There are two providers and both
-> are nucleus code: the ROMFS reader in the recovery store and the FS
-> publication below `/fs` (section 36.13).  A filesystem *driver* is an
-> ordinary driver image that publishes `/fs`; the nucleus FS provider
-> routes the call to that publication's endpoint, so no registration table
-> and no `KFS_OP_*` dispatch vocabulary remain.
-
----
-
-## 32.12 Filesystem-provider interface
-
-> **Retired (M10, work package 42c).**  The path-based provider
-> operations table (mount, open, close, read, write, sync, stat, the
-> directory operations, mkdir, rmdir, unlink, rename) is **deleted** with
-> the provider registry above.  What a filesystem client uses today is
-> the FILE protocol of `abi/kos/protocol.h` (`KFILE_OP_*`) through the
-> namespace, and what a filesystem driver implements is the FS protocol
-> (`KFS_OP_*`) below its `/fs` publication; both are IPC protocols, not
-> C operation tables.  The contract text below is the M9 record.
-
-Contract for every path argument:
-
-- absolute within the provider (begins with `/`; `/` is the provider root);
-- already normalized by VFS: no `.`, `..`, empty or repeated components, no trailing `/`;
-- NUL-terminated, at most `KOS_PATH_MAX - 1` bytes;
-- compared by the provider with ASCII case-insensitive semantics (section 32.8).
-
-`open` flags are the native `KFS_O_*` flags, including `KFS_O_TRUNC`; `open` reports the current file size. A read-only provider may leave mutation pointers null; VFS returns `EROFS` for a null mutation operation. `readdir` returns 1 with an entry, 0 at the end, or a negative error.
-
-Deliberately absent in M9: `unmount` (no runtime unmounting), filesystem-wide `syncfs`, a separate `truncate` operation (`KFS_O_TRUNC` covers M9), `statfs` (deferred until a consumer requires it, as sections 32.26 and 32.34 record), and any lookup/release/node operations. They are added when a real consumer appears. KonaOS is still being built and keeps no backward-compatibility obligation, so such additions may reshape the interface freely.
-
-Opaque provider handles remain private. Applications never see ROMFS entry indices, FatFs `FIL` objects, FS2 tokens, FAT clusters, or future filesystem-native inode structures.
-
----
-
-## 32.13 ROMFS becomes a filesystem provider
-
-M9 preserves the proven M5 low-level ROMFS reader but exposes it through the VFS framework:
-
-```text
-ROM page access
-      |
-      v
-existing ROMFS format reader
-      |
-      v
-the nucleus ROMFS reader (boot/recovery assets)
-```
-
-ROMFS remains read-only, resident in recovery ROM pages, available without SD, and authoritative for boot/recovery assets. Mutation operations return `EROFS`. ROMFS has no cache: its reads already come straight from ROM.
-
-There is exactly one ROMFS lookup: the provider's ASCII-folded name match over the validated directory. The M5 name-lookup and read helpers that the provider supersedes are removed, not kept beside it. The ABI-v2 module resource imports are served through the same lookup.
-
-The current ROMFS format may remain flat; there is no M9 requirement to add on-ROM subdirectories.
-
-VFS initializes before dynamic module loading. The ROMFS provider is statically available, registers with VFS during bootstrap, and is instantiated as the configured system filesystem at `/system`.
-
-Normal boot must therefore not require a separate `romfs_load_mod()`-style path once VFS bootstrap is complete. After `/system` is mounted, module and executable loading consume files through generic VFS-backed source adapters. A tiny direct ROM access primitive remains underneath the ROMFS provider, but it is not a parallel filesystem API.
-
----
-
-## 32.14 `/system` policy
-
-`/system` contains the minimum ROM-resident material required to boot KonaOS, recover from external-storage failure, and meaningfully diagnose the machine.
-
-The exact contents are build-time configuration, not VFS policy. Typical contents include essential MODs, the monitor, possibly the recovery shell, diagnostic assets, and fonts/resources required by the boot environment.
-
----
-
-## 32.15 Generic block devices
-
-> **Deleted (M10, work package 42c).**  The block class, its geometry
-> record, its raw-block operations table and the deleted module-facing
-> `block.h` are **gone**, together with the deferred SD-over-IOC driver
-> plan.  No
-> driver serves a block protocol today: a future native filesystem
-> introduces the block protocol it needs as an IPC protocol (the same
-> way FILE and FS are protocols), not as a C operations table.  The M9
-> record of the class (a block class, geometry plus read/write/
-> flush/media-status operations, no resident driver) is kept in the M9
-> milestone sections.
-
----
-
-## 32.16 IOC remains transport only
-
-This is an architectural invariant. `drivers/ioc/` owns SIO1 framing, command and bulk lanes, READY/DONE lifecycle, sequencing, timeouts/recovery and semantic IOC status. It does not own namespace, FAT semantics, file handles, directory traversal, caching policy or native path syntax.
-
-A raw-block driver and IOC-FAT would consume the same IOC driver:
-
-```text
-                 the IOC protocol
-                    /        \
-                   /          \
-                  v            v
-          a future block   IOC-FAT filesystem
-          driver (deferred)  (the FS protocol
-                              below /fs)
-```
-
----
-
-## 32.17 IOC-FAT filesystem provider
-
-The MCU FatFs driver is exposed as a resident MOD filesystem provider:
-
-```text
-iocfat.mod
-```
-
-Stack:
-
-```text
-VFS (the FS provider below /fs)
- |
- v
-IOC-FAT driver image (iocfat.mod)
- |
- | FS2 filesystem protocol
- v
-the IOC driver image (ioc.mod)
- |
- v
-MCU FatFs
- |
- v
-SD
-```
-
-`iocfat.mod` declares its IOC dependency in its manifest, publishes
-`/fs`, and serves the FS protocol from its driver dispatch.
-
-IOC-FAT owns FS2 commands, file/directory tokens, generation/cookie handling, MCU/FatFs error translation, filesystem-specific command/bulk sequencing, and its file-data cache (section 32.19). FS2 tokens never escape into the native application ABI.
-
-The current backend may retain FAT 8.3 limitations if required by deployed firmware. VFS itself must not inherit that limitation.
-
----
-
-## 32.18 Future native filesystems
-
-The block-device layer deliberately enables Z80-side filesystems:
-
-```text
-the FS provider below /fs
- |
- +--> IOC-FAT driver image (today)
- |
- +--> a future native filesystem
-          |
-          v
-      a block protocol it defines
-```
-
-Changing the filesystem provider must not require changes to the shell, native ABI, VFS namespace, CWD semantics or IOC transport.
-
----
-
-## 32.19 Caching is provider policy
-
-VFS defines no cache. There is no single useful cache key or invalidation model across backends:
-
-```text
-ROMFS              no cache (reads come straight from ROM)
-IOC-FAT            file-data cache: FS2 file + generation + aligned offset
-native VFAT/Fuzix  block cache below the filesystem, keyed by LBA
-```
-
-Each provider decides whether it caches and implements the policy that fits its backend. If two providers later need the same mechanism, a shared helper is extracted then, not before.
-
-### IOC-FAT file-data cache (required in M9)
-
-MCU FatFs buffering does not avoid repeated Z80-to-MCU transport transactions, so IOC-FAT keeps a local Z80-side cache in its own module state:
-
-```text
-slot:
-    owning open file (FS2 token)
-    FS2 generation at fill time
-    aligned file offset (512-byte block)
-    valid-byte count
-    data[512]
-```
-
-- Slot size is 512 bytes. The slot count is a build setting of the IOC-FAT module, default 1 under the bank-7 budget, raised only when the ledger shows room. It is reported in the bank-7 ledger (section 32.39).
-- Read hit returns locally; a miss reads the aligned block through FS2 and fills a slot. Reads crossing a block boundary are split.
-- Writes are **write-through**: FS2 write, then confirmed DONE, then update or invalidate overlapping slots. A failed or unconfirmed write changes no cached byte.
-- Because FS2 serves at most two open files, a confirmed write, a truncating open, `unlink`, or `rename` also invalidates every slot of the other open file. This is the whole coherence rule.
-- A generation change or `STALE` reply invalidates every slot.
-
-No write is committed merely because bytes reached the IOC bulk lane. Write-back may be added later only if measurement justifies its recovery complexity.
-
----
-
-## 32.20 Future raw block cache
-
-A future native VFAT/Fuzix implementation may cache raw FAT/directory/allocation/data sectors below the filesystem:
-
-```text
-native filesystem
-    |
-    v
-generic block cache
-    |
-    v
-the block protocol it defines
-```
-
-This is distinct from the IOC-FAT file-data cache. Block caching must not be buried inside IOC.
-
----
-
-## 32.21 Native process filesystem state
-
-Each process has at least:
-
-```text
-current working directory
-ownership of zero or more entries in the global descriptor pool
-```
-
-The initial native environment starts at `/`. A child inherits its parent's CWD. A child does not initially inherit open file or directory descriptors. On exit, all child descriptors close and child FS context is discarded without altering the parent's CWD/state.
-
----
-
-## 32.22 Descriptor table
-
-Files and directory iterators share one **global** VFS descriptor pool:
-
-```text
-8 descriptors total, each owner-tagged
-```
-
-Each entry is `FREE`, `FILE`, or `DIRECTORY` and records its owner PID, mount, provider handle, uint32 offset and access flags. KonaOS is single-tasking, so per-process reserved tables would mostly sit empty. A process may use any free entry; a suspended parent's open descriptors stay allocated to it while its child runs. Exhaustion returns `EMFILE`.
-
-The descriptor number a process sees is a small per-process index; one process can never name another process's descriptor.
-
-These are VFS descriptors, not Unix `stdin/stdout/stderr`; console I/O remains its own native syscall family in M9/M10. The pool may grow later without changing filesystem semantics.
-
----
-
-## 32.23 Current working directory
-
-CWD is a VFS namespace concept, not a provider token exposed to applications. Applications see canonical paths such as `/`, `/system`, `/GAMES` and `/CF/WORK`. Internally VFS may cache private node handles, but `chdir()` crosses mounts transparently.
-
----
-
-## 32.24 Native file handles
-
-Applications receive small KonaOS descriptors. Conceptually:
-
-```text
-application fd
-      |
-      v
-VFS descriptor
-      |-- owner PID
-      |-- type: file or directory
-      |-- mount
-      |-- filesystem-private handle
-      |-- access flags
-      `-- uint32 current offset
-```
-
-File size and position are 32-bit. Individual transfer lengths may remain 16-bit. There is no native 128-byte-record abstraction.
-
----
-
-## 32.25 Native metadata ABI v1
-
-The first metadata ABI exposes only broadly useful filesystem-neutral information.
-
-Types:
-
-```c
-#define KFS_TYPE_FILE 1u
-#define KFS_TYPE_DIR  2u
-```
-
-Attributes:
-
-```c
-#define KFS_ATTR_READONLY 0x01u
-#define KFS_ATTR_HIDDEN   0x02u
-#define KFS_ATTR_SYSTEM   0x04u
-```
-
-There is no native `ARCHIVE` attribute.
-
-Zephyr-80 has no RTC. M9 defines:
-
-```c
-#define KFS_TIME_UNKNOWN 0u
-```
-
-A zero timestamp means unknown/unavailable. The ABI still uses 32-bit fields so adding a time source later does not change structure layout. M9 exposes `ctime` and `mtime`, not `atime`.
-
-Conceptual `stat()` result:
-
-```c
-struct kfs_stat {
-    uint8_t  type;
-    uint8_t  attributes;
-    uint16_t reserved;
-    uint32_t size;
-    uint32_t ctime;
-    uint32_t mtime;
-};
-```
-
-Conceptual `readdir()` result:
-
-```c
-struct kfs_dirent {
-    uint8_t  type;
-    uint8_t  attributes;
-    uint16_t name_length;
-    uint32_t size;
-    uint32_t ctime;
-    uint32_t mtime;
-    char name[KFS_NAME_MAX];
-};
-```
-
-The ABI does not expose inode numbers, FAT clusters, sectors, FS2 tokens, ROMFS offsets, uid/gid, Unix modes, or access time.
-
----
-
-## 32.26 Native filesystem syscall family
-
-M9 exposes native drivers semantically equivalent to:
-
-```text
-FS_OPEN      (flags include CREATE, EXCL, TRUNC)
-FS_CLOSE
-FS_READ
-FS_WRITE
-FS_SEEK
-FS_STAT
-
-FS_OPENDIR
-FS_READDIR
-FS_CLOSEDIR
-
-FS_MKDIR
-FS_RMDIR
-FS_UNLINK
-FS_RENAME
-
-FS_CHDIR
-FS_GETCWD
-FS_SYNC
-```
-
-Syscall argument blocks use bounded pointer/length fields. User runtime wrappers may expose C strings.
-
-`FS_STATFS` and truncate-to-arbitrary-size are deferred until a consumer
-requires them - explicitly **not** scheduled for M10, whose shell and core
-commands do not need them (`df` is deferred with them). Truncation to zero
-is available in M9 through `FS_OPEN` with `TRUNC`.
-
----
-
-## 32.27 `CLOSE` and `SYNC`
-
-M9 requires both.
-
-`close(fd)` flushes pending file state as required, releases the provider handle and releases the VFS descriptor.
-
-`sync(fd)` flushes dirty cached/provider state associated with that file through the underlying provider/storage while keeping the descriptor open.
-
-M9 has no filesystem-wide sync operation and no Unix-style global sync command.
-
----
-
-## 32.28 Byte-oriented I/O
-
-Native KonaOS I/O is byte-oriented. EOF is a successful zero-byte read and short reads are valid.
-
-Read path:
-
-```text
-application
-    |
-    v
-SYS_FS_READ
-    |
-    v
-VFS descriptor + offset
-    |
-    v
-filesystem.read()
-    |
-    +--> ROMFS -> ROM access primitive
-    |
-    +--> IOC-FAT -> cache hit -> return locally
-    |              `-> miss -> IOC bulk -> fill slot
-    |
-    `--> future FS -> optional block cache -> block layer
-```
-
-A write advances the file offset only after confirmed successful completion. IOC-FAT retains the existing strict IOC DONE-confirmation semantics.
-
----
-
-## 32.29 Transfer staging
-
-M9 may reserve one bounded 512-byte bank-7 transfer buffer in runtime/system workspace:
-
-```text
-application bank
-      ^
-      | checked bank-copy gate
-      v
-512-byte staging buffer
-      |
-      v
-VFS/provider
-      |
-      v
-IOC bulk or block layer
-```
-
-It is persistent kernel workspace, not a large automatic stack object, and is not part of the public ABI.
-
----
-
-## 32.30 Filesystem errors
-
-M9 adds native equivalents of:
-
-```text
-EEXIST
-ENOTDIR
-EISDIR
-ENOTEMPTY
-EROFS
-ESTALE
-EXDEV
-EMFILE
-```
-
-`EMFILE` reports descriptor-pool or provider open-handle exhaustion, distinct from `ENOSPC` (storage full). `ESTALE` supports generation-aware FS2 handles. `EXDEV` is required for cross-mount rename. Numeric values are pinned when the syscall ABI is implemented.
-
----
-
-## 32.31 Cross-filesystem operations
-
-A same-filesystem rename calls the provider's native `rename()`. A cross-mount rename such as `/FOO.DAT -> /CF/FOO.DAT` returns `EXDEV`.
-
-VFS does not silently turn rename into copy. M10 userland may implement `mv` as copy + successful close/sync + unlink when appropriate.
-
----
-
-## 32.32 Boot lifecycle and system filesystem
-
-VFS is a foundational kernel driver and initializes immediately after the minimal kernel environment is established.
-
-### 32.32.1 Minimal kernel establishment
-
-Before VFS, the kernel establishes only what is required to run safely:
-
-```text
-memory mode / bank state
-kernel/common stacks
-early direct SIO diagnostics
-core interrupt state
-```
-
-No loadable module is required.
-
-### 32.32.2 VFS bootstrap phase
-
-```text
-kernel start
-    |
-    v
-vfs_init()
-    |
-    v
-register built-in filesystem providers
-    |
-    `--> ROMFS
-    |
-    v
-read generated mount configuration
-    |
-    v
-find the unique system=true entry
-    |
-    v
-instantiate system filesystem
-    |
-    v
-publish /system
-```
-
-For the initial system:
-
-```text
-provider   = romfs
-source     = recovery
-mountpoint = /system
-system     = true
-```
-
-The system provider must be statically available, have no dependency on MODs, dynamically registered devices, or non-system filesystems, and use only primitive facilities already available at bootstrap. Failure is fatal and reported through early direct SIO.
-
-### 32.32.3 Module-loading phase
-
-Once `/system` exists, boot assets are loaded through VFS:
-
-```text
-/system/sio.mod
-/system/ioc.mod
-/system/hid.mod
-/system/v9958.mod
-/system/iocfat.mod
-...
-```
-
-Conceptually:
-
-```text
-VFS file
-   |
-   v
-the fixed ROMFS reader
-   |
-   v
-module loader
-```
-
-The same source-neutral approach should later be used for EXE loading.
-
-Loadable modules may register devices, filesystem providers, and other resident drivers. `iocfat.mod`, for example, discovers IOC and registers the `iocfat` provider with VFS.
-
-### 32.32.4 Normal mount phase
-
-After resident modules and their providers are loaded, VFS instantiates the remaining configured mounts:
-
-```text
-/       -> IOC-FAT, if available
-/CF     -> future provider
-/SD2    -> future provider
-```
-
-For non-system mounts, `required=true` makes failure a boot/configuration failure; `required=false` tolerates failure. The optional root filesystem can therefore fail while `/system` remains available for recovery.
-
-### 32.32.5 VFS ready phase
-
-Normal user filesystem syscalls become available only after the configured normal mount pass completes, so applications never observe a partially constructed boot namespace.
-
-Conceptual lifecycle:
-
-```text
-VFS_PHASE_BOOTSTRAP
-    vfs_init()
-    initialize the ROMFS reader, the handle table
-    and the in-process FILE endpoint
-
-VFS_PHASE_READY
-    the boot manifest's drivers have been placed
-    (driver_load_all), their publications installed
-    and their inits run: normal process filesystem
-    drivers are available
-```
-
-> **M10 (work package 42c).**  The phase that loaded resident modules
-> through VFS and let them register devices and providers is **deleted**,
-> as is the configuration-selected mount phase: there is no mount table
-> and no registry.  A driver image brings its own object up by publishing its
-> name (section 36.13); the phase the client sees is only
-> "bootstrap" then "ready".
-
-A literal phase enum is not required, but this lifecycle and dependency order are architectural.
-
-### 32.32.6 Failure behavior
-
-System filesystem failure:
-
-```text
-/system unavailable
-    |
-    v
-cannot load required modules
-    |
-    v
-early-console fatal error
-```
-
-Normal root failure:
-
-```text
-/ fails to mount
-    |
-    v
-/system remains available
-    |
-    v
-recovery monitor / diagnostics remain usable
-```
-
----
-
-## 32.33 Build-time mount table generation
-
-> **Deleted (M10, work package 42c).**  The generator, the manifest and the
-> generated table are gone: no mount policy exists to translate, and the
-> root set is static (36.13).  The section below is the M9 design record.
-
-Mount policy flows in one direction, from a reviewed manifest to an immutable kernel table to runtime mount state. Nothing flows back, and nothing in the path re-decides policy.
-
-```text
-config/mounts.json            (or a test manifest selected by the build)
-        |
-        |  host build tool: validate (32.5.1), never rewrite
-        v
-generated C mount table       (build output only, never committed)
-        |
-        |  compiled and linked into the bank-7 kernel image as const data
-        v
-immutable mount configuration (ROM-loaded, read-only to VFS)
-        |
-        |  VFS bootstrap and mount phases (32.32)
-        v
-runtime mount state           (bank-7 RAM, owned by VFS)
-```
-
-### 32.33.1 Inputs
-
-The build selects exactly one manifest per image. Production images use `config/mounts.json`. Acceptance images may select a test manifest, which goes through the same tool and rules. The build also passes the tool the list of providers linked into the kernel image (M9: `romfs`). That list is what lets the tool enforce the system-filesystem rule in section 32.5.1.
-
-### 32.33.2 Generated table
-
-The tool emits a single generated C source containing a constant array, one record per manifest entry in manifest order, and an entry count. Conceptually:
-
-```c
-const struct vfs_mount_config vfs_mount_table[] = {
-    { "/system", 7u, "romfs",  "recovery", VFS_MOUNT_SYSTEM   },
-    { "/",       1u, "iocfat", "ioc.0",    VFS_MOUNT_OPTIONAL }
-};
-const uint8_t vfs_mount_count = 2u;
-```
-
-Each record carries the canonical mount path and its length, the provider name, the opaque source string, and flags:
-
-```text
-VFS_MOUNT_SYSTEM     the unique bootstrap filesystem (system = true)
-VFS_MOUNT_REQUIRED   non-system mount whose failure is a boot failure
-VFS_MOUNT_OPTIONAL   non-system mount whose failure is tolerated
-                     (required = false or absent)
-```
-
-The record layout is a kernel-private build contract between the tool and VFS. It is neither a native application ABI nor a module ABI, and may change with the kernel. The generator output is deterministic (stable order, no timestamps or host paths), so rebuilds stay byte-identical. It lives only in the build directory.
-
-### 32.33.3 Configuration versus runtime state
-
-The generated table is `const` data in the ROM-loaded kernel image. VFS reads it and never writes it.
-
-VFS keeps a separate runtime array in bank-7 RAM, indexed in parallel with the configuration table. Each runtime entry records:
-
-```text
-state         UNMOUNTED, MOUNTED or FAILED
-provider      the registered provider selected by name
-fs_state      the provider instance returned by mount()
-last error    the failure code, for diagnostics
-```
-
-Separating the two keeps policy auditable in ROM and keeps all mutable state with VFS.
-
-### 32.33.4 Consumption at boot
-
-1. **Bootstrap (32.32.2).** VFS registers the built-in providers and selects the single `VFS_MOUNT_SYSTEM` record. It re-checks that exactly one exists; the build already guarantees this, and a violation is fatal. VFS looks up the record's provider by name in the provider registry and calls `mount(provider_state, source, &fs_state)`. The source string is passed through unchanged as an opaque pointer into the table. On success the entry becomes `MOUNTED`; on failure boot stops through the early console.
-2. **Module phase (32.32.3).** No mount records are consumed. Modules may register additional providers.
-3. **Mount phase (32.32.4).** VFS walks the remaining records in table order, with the same lookup and `mount()` call. A missing provider counts as a mount failure. `REQUIRED` failures are fatal; `OPTIONAL` failures mark the entry `FAILED`, print a diagnostic, and leave the rest of the namespace usable.
-4. **Ready (32.32.5).** The runtime state is now fixed for the life of the boot.
-
-### 32.33.5 Use after boot
-
-Path resolution (32.8) considers only `MOUNTED` entries. Selection is flat: the first path component is compared case-insensitively with the mounted root-level mountpoints; a match selects that mount, otherwise the `/` mount is selected. The remainder becomes the provider-relative path, which always begins with `/`.
-
-Root enumeration (32.7) lists the `MOUNTED` entries whose path has exactly one component, plus the entries of the filesystem mounted at `/`.
-
-A `FAILED` or never-mounted entry contributes nothing to the namespace. In particular, a failed optional `/` leaves only the root-level mountpoints, such as `/system`, visible.
-
-### 32.33.6 Invariants
-
-- Changing mount topology means editing the manifest and rebuilding; no kernel source changes.
-- VFS source contains no Zephyr-80 paths, provider names, or source strings.
-- The ROM table is exactly what the reviewed manifest says. Invalid manifests fail the build rather than being corrected.
-- Built-in provider membership is enforced twice: by the tool at build time and by the provider lookup at bootstrap.
-
----
-
-## 32.34 M9 non-goals
-
-M9 does not implement:
-
-- runtime `mount` / `umount`;
-- drive letters;
-- CP/M USER areas;
-- FCBs;
-- CP/M extents;
-- 128-byte record I/O;
-- symbolic links;
-- permissions/users/groups;
-- pipes;
-- descriptor inheritance;
-- shell redirection;
-- automatic filesystem probing;
-- arbitrary nested mountpoints;
-- hot-plug policy beyond clean failure detection;
-- write-back file caching;
-- a VFS-level cache of any kind;
-- generic raw block caching unless a native filesystem actually requires it;
-- a resident block driver before a consumer exists;
-- `FS_STATFS` and truncate-to-arbitrary-size (deferred until a consumer
-  requires them, not M10);
-- provider `unmount`, `syncfs`, `truncate`, `statfs`, or node lookup operations;
-- dynamic allocation inside VFS.
-
----
-
-## 32.35 Personality boundary
-
-Later personalities consume the native VFS rather than redefine native storage.
-
-A CP/M personality may synthesize FCB, drive, USER and 128-byte-record semantics over native VFS paths/directories. Drive letters and USER areas therefore remain personality policy, not VFS concepts.
-
----
-
-## 32.36 Architectural invariants
-
-M9 preserves these rules:
-
-1. **VFS owns the global namespace.**
-2. **VFS initializes before dynamic module loading.**
-3. **Mount topology is static JSON build configuration in M9, compiled into an immutable kernel table that VFS executes at boot (section 32.33).**
-4. **Exactly one configured mount is the system filesystem.**
-5. **The system filesystem provider is statically available and has no dependency on loadable modules or dynamically registered devices.**
-6. **The system filesystem is instantiated before resident modules are loaded.**
-7. **After the system filesystem is mounted, subsequent boot assets are loaded through VFS.**
-8. **Native KonaOS has no drive letters.**
-9. **Native path comparison is ASCII case-insensitive.**
-10. **`KOS_PATH_MAX = 128`.**
-11. **`KFS_NAME_MAX = 64`.**
-12. **ROMFS is a filesystem provider mounted at `/system`.**
-13. **The normal writable SD FAT filesystem is mounted at `/`.**
-14. **Filesystem providers do not know their external mountpoint.**
-15. **IOC is transport, not a filesystem or block-device API.**
-16. **The M9 storage class was renamed to the block class; M10 deletes both.**
-17. **No block driver is resident; the first one arrives with its first consumer (native VFAT/Fuzix).**
-18. **IOC-FAT is a resident MOD filesystem provider registered with VFS.**
-19. **MCU FatFs support is one filesystem backend, not the VFS architecture.**
-20. **Future VFAT/Fuzix-style filesystems may define the block protocol they consume.**
-21. **Native I/O is path-, descriptor-, and byte-oriented.**
-22. **VFS has one global, owner-tagged pool of 8 descriptors shared by files and directories.**
-23. **M9 provides both `CLOSE` and `SYNC`.**
-24. **Timestamp value zero means unknown/unavailable.**
-25. **The native metadata ABI exposes file/dir type, readonly/hidden/system attributes, size, ctime, and mtime.**
-26. **The FAT archive bit is not exposed by native VFS.**
-27. **Caching is filesystem-provider policy; VFS defines and owns no cache.**
-28. **IOC-FAT keeps a write-through 512-byte-slot Z80 file-data cache; ROMFS keeps none.**
-29. **The IOC-FAT cache slot count is build-time configurable and reported in the bank-7 ledger.**
-30. **CP/M semantics remain confined to a later personality layer.**
-31. **Failure of external storage must not remove `/system` recovery access.**
-32. **Providers are path-based; VFS keeps no node objects and matches only root-level mountpoints itself.**
-33. **Bank-7 residency is budgeted (section 32.39); each package reports against the ledger.**
-
----
-
-## 32.37 Suggested source ownership
-
-```text
-kernel/
-    vfs/
-        namespace.c
-        path.c
-        mount.c
-        file.c
-        dir.c
-        syscall.c
-
-fs/
-    romfs/
-        ...
-
-    iocfat/          # includes the IOC-FAT file-data cache
-        ...
-
-    fat/                 # future
-        ...
-
-    fuzix/               # future
-        ...
-
-drivers/
-    ioc/
-        ...
-
-    sd/              # future: first block driver, with its first consumer
-        ...
-
-abi/kos/
-    fs.h
-
-kernel/vfs/
-    vfs.h
-
-config/
-    mounts.json
-```
-
-This is architectural guidance, not a requirement to create every file immediately. Executable behavior remains outside `platform/zephyr80/`; platform files contain hardware facts/configuration only.
-
----
-
-## 32.38 M9 architecture summary
-
-```text
-                         kernel bootstrap
-                                |
-                                v
-                              VFS
-                    owns one namespace: /
-                    paths / CWD / fd pool
-                                |
-                     system=true mount
-                                |
-                                v
-                            /system
-                              ROMFS
-                                |
-                      load resident MODs
-                                |
-                                v
-                    register normal providers
-                                |
-                                v
-          +---------------------+---------------------+
-          |                                           |
-          v                                           v
-      /system                                      /
-       ROMFS                                    IOC-FAT
-      (no cache)                           (file-data cache)
-          |                                           |
-          |                                           v
-          |                                        the IOC protocol
-          |                                           |
-          |                                           v
-          |                                          MCU
-          |                                           |
-          |                                           v
-          |                                          SD
-          |
-          +---------------- future -------------------+
-                                |
-                         native VFAT / Fuzix
-                                |
-                                v
-                           block cache
-                                |
-                                v
-                           a block protocol
-                                |
-                                v
-                           SD-over-IOC
-                                |
-                                v
-                             the IOC protocol
-```
-
-The system-filesystem rule makes VFS part of the boot foundation rather than a driver layered on top of module loading: the kernel mounts one dependency-free built-in filesystem first, then uses it to obtain the modules and providers required to construct the rest of the machine.
-
-### 32.38.1 Implementation notes (stage 25)
-
-The bootstrap slice above is implemented by work package
-`25-m9-vfs-bootstrap-romfs` (with corrections 01 and 02); `docs/vfs.md` is
-the implementation record.
-
-```text
-abi/kos/fs.h             native metadata/limit ABI (stat, dirent, flags;
-                         no statfs) -- syscall blocks arrive in pkg 27
-kernel/vfs/              router.c (the three static roots), dev.c,
-                         fs.c, system.c, handles.c, path.c,
-                         workspace.c
-kernel/romfs/romfs.c     the nucleus ROMFS reader (fixed core)
-tools/mountgen.py        (deleted in M10) manifest -> a mount table
-```
-
-Implemented (M9): normalization; flat first-component root selection
-(section 32.8, so `/SYSTEMX` does not select `/system`); the kernel file
-API on caller-provided `vfs_file` storage (deleted in M10 with the M9 VFS);
-the mutation entry points that turn a null provider operation into
-`KOS_EROFS`; one ASCII case-folded ROMFS lookup (section 32.13) serving
-the reader, the EXE launcher and the boot assets; `/system` available from
-`vfs_init()` before any image is placed; every boot MOD and `monitor.exe`
-opened by VFS path.
-
-**M10 (work packages 42b/42c)** then deleted the provider registry and its
-capacity-4 table, the four lifecycle phases, the generated mount table with
-its validation rules and the `vfs_mount_all()` mount pass.  What remains is
-`kernel/vfs/`: the three static roots of 36.13, the path/namespace code, the
-handle table, the process CWD/workspace state and the in-process FILE
-endpoint.
-
-VFS keeps no node objects, no object identity and no cache: providers are
-path-based, so there is no per-component walk and no `object_id`.  The
-`KOS_ROMFS_BOOT=0` embedded-catalog images link no VFS byte at all
-(correction-01): the object group is dropped and `kernel/process/exec.c`
-compiles its M6 ROMFS body instead of the VFS body.
-
-Deliberately deferred at stage 25 (all since implemented): descriptors and
-syscalls (package 27), provider-local caching (IOC-FAT, package 30), a
-writable provider and the `/` mount (packages 26/30).  Cross-filesystem move
-semantics are implemented by the VFS rename path (architecture 32.31): a
-rename across mounts returns `KOS_EXDEV` and VFS never copies.
-`romfs_load_mod()` no longer exists.
-
-Budget (section 32.39): package 25 measured production `_CODE` ending at
-`7BC5h` with a `7C00h-C000h` arena — 34 granules against the unchanged
-32-granule floor — and `_DATA` of 1294 bytes.  Package 25b then added the
-size-optimized compile and the derived data base: the current ledger is
-`code 21689 bytes end 74B9h | arena 49 granules | data 1309 bytes at
-D800h | isr 256 | slack 483`, recorded in `docs/memory.md` section 2.2.1.
-Correction-01 trimmed the V9958 font staging (`4008/724 -> 4038/460`
-image/BSS), so that module needs 9 granules and the boot set uses 20 of
-the 49 (`sio x1, ioc x8, hid x2, v9958 x9`), leaving 29 free.
-The per-object package-25 sizes and the correction-02 saving are in
-`docs/vfs.md` section 9.
-
----
-
-### 32.38.2 Implementation record (M9 close)
-
-The sections above are the architectural contract; these are the documents
-that record what was actually built, and the acceptance that proves it:
-
-```text
-docs/vfs.md            VFS core, provider ABI, descriptor/CWD model,
-                       syscalls, ROMFS and IOC-FAT providers
-docs/abi.md            native syscall ABI: FS_* family, SYS_EXEC and the
-                       startup block v1 argument contract, error values
-docs/devices.md        the driver model, the protocol classes and the
-                       resident IOC-FAT provider
-docs/module-format.md  the MOD driver image and the resident loader
-docs/memory.md         bank-7 geometry, the M9 runtime-data inventory, the
-                       common-memory budget and the final ledger
-docs/boot.md           the boot path and the VFS lifecycle
-docs/sdk.md            the native user SDK and its EXE programs
-docs/validation/2026-10-05-m9-filesystem.md
-                       the M9 acceptance matrix, transcripts and hashes
-```
-
-The milestone's own acceptance image is `make m9-selftest`: the production
-boot path with `/` served by IOC-FAT from the card, running the native
-`fstest.exe` (which exec's the deep-matrix program `fsfat.exe`), the
-`fsdeep.exe` depth probe and the two fault windows, then the unchanged
-monitor launcher.  The per-package images (`m9-vfs`, `m9-provider`,
-`m9-fs`, `m9-exec`, `m9-iocfat`) remain as their packages' evidence and as
-subsystem regression coverage.
-
-Deliberately deferred beyond M9: `FS_STATFS` and arbitrary-size truncate
-(no M9 consumer), runtime unmount, the first block driver (it
-arrives with the first native VFAT/Fuzix consumer), and every
-compatibility/personality layer.  Nothing in M9 is kept as a
-backward-compatibility path.
-
-## 32.39 Bank-7 residency budget
-
-(M9 budget. M10 replaces it with the two-bank ledgers of section 36.20;
-the arena floor below does not apply from M10.)
-
-Bank 7 holds everything resident in OS mode except common memory. The kernel executive, the resident driver/provider modules and the runtime data share one window:
-
-```text
-2000h ............ kernel executive (_CODE, linked)
-align 512 ........ resident MOD arena (derived)
-derived .......... runtime data (_DATA/_INITIALIZED, derived down from DF00h)
-DF00h-DFFFh ...... ISR stack
-```
-
-After the first M9 slice (package 25), the kernel executive was 24.3 KiB and the original M9 design projected about 48 KiB of resident code at SDCC density, beyond the window. M9 therefore treats resident bytes as an architectural resource. Because the arena start follows the kernel end and the arena end follows the data base, kernel code, module code and runtime data are interchangeable within the window. The budget is therefore one total, not separate per-kind limits:
-
-```text
-2000h-DEFFh  47.75 KiB  kernel + resident MODs + runtime data + ISR stack
--------------------------------------------------------------------------
-production arena floor   >= 32 granules, holding the production boot set
-slack                    >= 1 KiB at the end of M9
-```
-
-The end-of-M9 slack target was lowered from 2 KiB to 1 KiB by the project
-owner on 2026-10-05. The reason is measured, not projected: the finished
-IOC-FAT provider needed 15 granules (7441 bytes) as first written, which
-exactly consumed the production arena (35 granules, 0 free, 63 bytes of
-data slack). The correction trimmed it to 13 granules (6643 bytes) and kept
-the required one-slot write-through cache, leaving 2 free granules plus 63
-bytes of data slack: 1087 bytes, above the 1 KiB target but below 2 KiB.
-
-Rules:
-
-- Kernel and modules are compiled for size. User programs keep their own flags.
-- The runtime-data base is derived from the linked data size, so unused data space goes to the arena (no fixed `C000h` boundary).
-- Every package reports a one-line `bank7:` ledger before and after, and the bytes its own code and data add.
-- Reserved data is sized from measurement, not round numbers. For example, exec frame saves follow the measured worst-case gate-stack depth.
-- Provider caches are sized by budget. The IOC-FAT cache defaults to one 512-byte slot unless the ledger shows room for more (section 32.19).
-- A mechanism that M9 replaces is deleted, not kept as a compatibility path. KonaOS is still under construction: no interface, binary format, image or transcript carries a backward-compatibility obligation. Completed milestones prove mechanisms; they do not freeze them.
-- A feature with no consumer is not made resident (for example `sd-ioc.mod`, `FS_STATFS`).
-- Supervisor checkpoints compare the measured ledger with the remaining projection: after package 26 (passed 2026-10-05: 26 free granules, 291 bytes of slack, projected end-of-M9 slack 1.4-3.2 KiB before the measures above), and after package 28, before IOC-FAT is built.
-- Package 30 (passed 2026-10-05) is the last bank-7 consumer: `bank7: code 28476 bytes end 8F3Ch | arena 35 granules (33 boot, 2 free) | data 2241 bytes at D600h | isr 256 | slack 63 bytes`, i.e. 2 free granules and 1087 bytes of total slack against the 1 KiB target. `iocfat.mod` is 6006 image + 637 BSS = 6643 bytes, 13 granules, 13 bytes under the 6656-byte ceiling.
-- Package 30c (passed 2026-10-05) then removed dead kernel code and shared one ASCII name helper, moving the arena start one granule down.  Package 31 changes no kernel or module byte; it is the acceptance and documentation package.  The **final end-of-M9 ledger** is:
-
-```text
-bank7: code 27990 bytes end 8D56h | arena 36 granules (33 boot, 3 free) | data 2241 bytes at D600h | isr 256 | slack 63 bytes
-common: used 2104 of 7424 bytes (code 1410, data 694) | ceiling 3072, m10 512, limit 2560
-```
-
-  i.e. 3 free granules plus 63 bytes of runtime-data slack = **1599 bytes** of total slack, above the 1 KiB target, with the 32-granule arena floor and the common ceiling both held.  Boot set: `sio x1, ioc x8, hid x2, v9958 x9, iocfat x13` = 33 granules.
-- If the projection falls below the slack target, the choice between descoping and a second kernel bank goes back to the project owner. It is never made by raising a limit or lowering the arena floor.
-
----
-
-## 32.40 Native process exec (package 28)
-
-`SYS_EXEC 05h` (`docs/abi.md` section 11) turns the M6 launcher into a
-general parent/child mechanism: any ordinary process may run a child
-synchronously and receives its exit status, and a child may do the same.
-Everything is the existing machinery - one process table, one bank
-allocator, one EXE loader, one page-zero path, one VFS process hook, one
-exit path - plus a bounded continuation stack for the shared gate stack.
-
-Geometry:
-
-```text
-depth 0 (kernel launcher, boot stack)      no saved gate frame
-depth 1 (first user process)               kernel continuation
-depth 2..KOS_EXEC_MAX_DEPTH                frame save #depth-2
-the next exec at the limit                 KOS_EBUSY, nothing allocated
-```
-
-Suspension and resume:
-
-- `process_prepare()` does every fallible thing (path copy-in, slot, bank,
-  CWD start, load/validate, page zero, close) and returns; only then does
-  `process_launch()` enter the common gate. Nothing past the suspension
-  point can fail, so no rollback of suspended processes exists.
-- The gate saves the launcher's SP/IX/latch/IFF per depth and copies the
-  gate frame `[saved_sp, kos_gate_stack_top)` into that depth's save area
-  (48 bytes, measured 32 + margin). The child's own syscalls reuse the
-  same common gate stack, clobbering the suspended frame; the
-  resume copies it back and restores SP, IX, latch and IFF before the
-  parent's `SYS_EXEC` returns.
-- From the start of the resume's `LDIR` until SP is restored there is no
-  `CALL`, `PUSH`, `POP` or interrupt enable: the frame being restored is
-  the one the code is running on.
-- The syscall gate's own transition state is single-depth, so the gate
-  shadows the launcher's copy per depth as well; without it a resumed
-  parent would return through the gate into its child's bank.
-- The continuation state is common-resident because the resume gate
-  reads it while it changes the mapping and switches stacks.  The
-  `SYS_EXEC` path is staged in the VFS workspace's path view in the fixed
-  core (work package 45b correction 01), because the bind inside
-  `process_prepare` hands it to whichever provider owns the path - the
-  `/fs` provider runs in a bank-6 window, where bank-7 `_DATA` is not
-  visible (section 36.5), and common-memory usage is reported on its own
-  `common:` ledger line beside the `bank7:` line, because common memory
-  is the scarcest region in the machine.  Nothing is placed there for
-  isolation: mode 10 maps common memory exactly as mode 11 does.
-
-Failure mapping is pinned in `docs/abi.md` section 11 (`ENOENT`,
-`EISDIR`, `EINVAL`, `ENOSPC`, `EBUSY`, provider errors passed through),
-because user-visible error semantics matter more here than in the kernel
-launcher's internal `EXE_EXEC_ERR_*` space.
-
-Startup block (package 28b):
-
-- Every native process receives a versioned startup block v1 in its own
-  page zero at `0080h` (`version`, `tail_length`, raw `tail`, NUL), and the
-  launch gate enters it with `HL = 0080h` (section 26.3).
-- `SYS_EXEC`'s block gains `{args, args_length}`: the kernel copies the
-  caller's raw tail byte-exact and never parses it; user space owns
-  splitting (`user/sdk/include/kos/process.h`, docs/exe-format.md section 5.1).
-  A tail over 125 bytes or outside `0100h-DFFFh` is `KOS_EINVAL` in the
-  preflight, and the copy is made at the end of `process_prepare()` once
-  the executable source is closed and the VFS workspace is free again
-  (correction 01 holds the workspace's path view only around the bind,
-  kernel/process/exec.c), through the existing checked bank-copy gate
-  into the VFS staging view.  No tail is ever stored: there is no
-  persistent kernel argument buffer, in bank 7 or common memory.
-- The boot program is a build setting, `KOS_BOOT_PROGRAM` (the `boot`
-  field of the image's system file), validated against the store manifest
-  the build generates and compiled into the kernel as a constant string.
-  Switching to the M10 shell is that one line plus the EXE in the store,
-  with no kernel edit.
-
-Acceptance: the nested exec in the M10 outcome image
-(`make fs-selftest`, replayed by `tests/test_fs_selftest_sim.py`), which
-checks the child's tail and exit status and that the parent resumes over
-its own bank with its gate state intact; the ABI, the geometry and the
-launch primitive's structure are pinned by `kernel/include/process.h`'s
-static asserts and by `kernel/process/launch.asm`'s shift-chain comments.
-
----
-
-# 33. M9 acceptance criteria
-
-M9 acceptance uses an ordinary native program such as:
-
-```text
-fstest.exe
-```
-
-loaded from `/system`. It exercises the public native filesystem ABI, not IOC or FS2 directly.
-
-Acceptance covers at least:
-
-```text
-namespace:
-    /
-    /system
-    root mountpoint visibility
-    mountpoint shadowing
-    case-insensitive lookup
-    absolute paths
-    relative paths
-    .
-    ..
-    CWD crossing between / and /system
-
-ROMFS:
-    open/read/stat
-    directory enumeration
-    mutation returns EROFS
-
-IOC-FAT:
-    open/create/close
-    open with TRUNC
-    read/write
-    sync
-    seek
-    stat
-    mkdir/rmdir
-    rename
-    unlink
-
-sizes:
-    1
-    127
-    128
-    129
-    511
-    512
-    513
-    >64 KiB
-
-IOC-FAT cache:
-    repeated-read hit
-    miss/fill
-    cross-slot reads
-    write-through update/invalidate
-    no stale data after a write through the other open file
-    generation invalidation
-
-error paths:
-    missing file
-    wrong object type
-    descriptor-pool exhaustion (EMFILE)
-    stale backend handle
-    unavailable SD
-    failed confirmed write
-    cross-filesystem rename -> EXDEV
-
-process lifecycle:
-    child inherits CWD
-    child CWD changes do not alter parent
-    child descriptors close on exit
-    repeated exec/exit leaks no handles
-    nested exec chain reaches exactly KOS_EXEC_MAX_DEPTH levels
-    the level past the limit is refused with EBUSY and leaks nothing
-    exit-status round trip, including a raw-return KOS_EFAULT
-    the suspended gate frame is restored byte-for-byte at every depth
+**Target:** Zephyr-80 (Z80 at 10 MHz, banked SRAM, decoder revision 13)
+**Toolchain:** SDCC 4.5 (`sdcc`, `sdasz80`, `sdldz80`), GNU Make, Python 3
+
+This document is the architectural contract of KonaOS: what the system is,
+the rules every part of it follows, and how the parts fit together. The
+detailed references are:
+
+| document | subject |
+|---|---|
+| `docs/memory.md` | memory map, residency, ledgers |
+| `docs/boot.md` | reset, the boot image, the boot sequence |
+| `docs/abi.md` | the syscall ABI, every argument block and error code |
+| `docs/devices.md` | resident drivers, protocols, the driver bootstrap API |
+| `docs/vfs.md` | the namespace, the three providers, handles |
+| `docs/filesystem.md` | files and the filesystem driver |
+| `docs/exe-format.md` | the EXE executable container |
+| `docs/module-format.md` | the MOD driver image |
+| `docs/romfs-format.md` | the ROM store |
+| `docs/sdk.md` | building programs, the standalone SDK |
+| `docs/monitor.md` | the native monitor |
+
+Where this document and a reference disagree, this document wins and the
+reference is wrong.
+
+---
+
+## 1. Purpose and principles
+
+### 1.1 What KonaOS is
+
+KonaOS is the native operating system of the Zephyr-80. It is a
+**trusted, single-tasking** system: one process runs at a time, a parent
+waits while its child runs, and there is no protection between programs,
+drivers and the operating system.
+
+Compatibility environments such as CP/M are later **personalities** built
+on top of the native system. They do not shape the native kernel.
+
+### 1.2 Principles
+
+1. **KonaOS owns the machine.** Once control enters KonaOS, the nucleus owns
+   the CPU state, the banking latch, page zero, stack placement, the
+   interrupt mode, interrupt ownership and the entry points into resident
+   code. Programs and drivers use defined interfaces, never kernel layout.
+2. **If the host can precompute it, precompute it.** Driver placement,
+   endpoint numbers, dependencies, device publications, executable
+   geometry and store layout are computed and validated when the image is
+   built. The target only copies, checks the bounds that protect the
+   nucleus, and runs.
+3. **Build no machinery the machine does not need.** The machine is
+   trusted and single-tasking, so there is no isolation, discovery or
+   concurrency machinery. Endpoints and IPC exist for modularity and for
+   crossing banks, not for protection.
+4. **The operating system uses at most two banks plus common memory**
+   (bank 7 for the nucleus, bank 6 for resident drivers). When something
+   does not fit, it is slimmed or moved to a lower tier; a third bank is
+   never added.
+5. **A program that uses no far facilities pays nothing.** It keeps its
+   whole 56 KiB primary bank and never sees a far mechanism.
+6. **Platform describes the machine; boot, kernel, drivers and programs
+   operate it.** Machine constants live in `platform/zephyr80/` and
+   nowhere else.
+7. **The native ABI is separate from the compiler ABI.** Every stable
+   interface is defined by KonaOS and reached through explicit glue, never
+   through SDCC's calling convention.
+8. **The early serial console is permanent and special.** It is the
+   diagnostic path for boot, panics and failures of the normal console,
+   and it works before and without any driver.
+9. **A replaced mechanism is deleted.** No interface, format or image
+   carries a backward-compatibility obligation until the native ABI is
+   frozen.
+
+### 1.3 Source tree and ownership
+
+```text
+boot/                 reset, ROM-to-RAM copy, handoff to the kernel
+kernel/               the nucleus
+  include/            nucleus-private headers
+  driver/             the resident-driver loader and boot gate
+  ipc/                endpoints, frames, descriptors, copy paths
+  irq/                the interrupt executive and its platform quiesce
+  lib/                small shared helpers
+  memory/             banking, window and gate copies, upcall shims
+  process/            the process table, exec, launch
+  romfs/              the ROM store reader and the ROM-access stub
+  runtime/            compiler helper routines
+  syscall/            the syscall gate, dispatcher and bodies
+  vfs/                the namespace router, the providers, handles
+drivers/              resident drivers, one directory each
+  include/            the driver kit (bootstrap API, IOC vocabulary)
+  runtime/            the shared driver runtime object
+formats/include/      on-media formats: ROMFS, EXE, MOD
+abi/kos/              the public native ABI (one copy of every header)
+platform/zephyr80/    machine description: public/ (drivers may use),
+                      private/ (nucleus only), config.mk
+systems/              one system file per image
+config/               residency and SDK configuration
+linker/               the link script
+mk/kos.mk             the program build rules (shared with the SDK)
+user/
+  sdk/                the user SDK: headers, libkos, template, examples
+  monitor/            the native monitor
+  helloworld/         the demo image's build
+tools/                host tools: packers, validators, smoke capture
+tests/                host tests, simulator replays, target test code
 ```
-
-budget:
-    final bank-7 ledger meets section 32.39
-
-Physical hardware remains authoritative for SD media behavior, IOC bulk transfers, media/reset handling, confirmed writes and cache behavior under real transport timing.
-
----
-
-# 34. Milestone summary
-
-M9 closed on 2026-10-06 (project-owner acceptance). Package 31 completed the
-implementation, the host/simulator acceptance and the documentation. The
-physical rows were accepted as follows, as recorded in
-[`docs/validation/2026-10-05-m9-filesystem.md`](./validation/2026-10-05-m9-filesystem.md)
-section 8:
-- production with and without a FAT card, and the monitor launching from
-  `/system`, **passed on byte-identical production bytes** (ROM `f4da0496…`,
-  physically run in package 30c);
-- the `m9-selftest` integration image and the console fallback rows were
-  **accepted by the project owner without a fresh bench run**. No code
-  changed after the last physical validation, the same IOC-FAT paths passed
-  physically in package 30, and the fallback rows' simulator replays pass.
 
-```text
-M0  COMPLETE
-M1  COMPLETE
-M2  COMPLETE
-M3  COMPLETE
-M4  COMPLETE
-M5  COMPLETE
-M6  COMPLETE
-M7  COMPLETE (host + physical acceptance passed)
-M8  COMPLETE (host + physical acceptance passed)
-│
-├── dynamic class-aware device stack
-├── IOC transport
-├── HID/V9958 console
-└── serial recovery/fallback
-    │
-    ▼
-M9  COMPLETE (host + simulator; physical by byte identity + owner acceptance)
-│
-├── VFS owns one namespace rooted at /
-├── early system filesystem mounted at /system
-├── VFS-backed boot module loading
-├── filesystem-provider registration API
-├── path-based provider ABI
-├── IOC-FAT MOD provider mounted at /, with its own 512-byte file-data cache
-├── block class defined (first driver deferred to its first consumer)
-├── global descriptor pool, native path/descriptor/byte-oriented syscall ABI
-└── budgeted bank-7 residency
-    │
-    ▼
-M10 COMPLETE (host + simulator + physical acceptance passed)
-│
-├── resident-driver nucleus (two-bank OS)
-└── extended memory / far code+data + EXE v2      (see section 36)
-    │
-    ▼
-M11 complete native diagnostic suite                (see section 38)
-M12 native shell and core built-in userland         (see section 40)
-    │
-    ▼
----------------- native KonaOS complete ----------------
-    │
-    ▼
-compatibility/personality architecture              (deferred)
-```
+Ownership rules:
 
-The end-of-M9 bank-7 ledger is in section 32.39. The residency decision
-taken for M10 (a nucleus in bank 7 and resident drivers in bank 6) is
-recorded in section 35.
+- `platform/zephyr80/` holds **constants and configuration only**: port
+  numbers, register masks, memory regions, mode values, IRQ wiring, build
+  variables. It contains no `.c` or `.asm` file and no instruction-emitting
+  macro. A file that emits bytes that run on the Z80 does not belong there.
+- `boot/` owns the code that runs before the kernel environment exists.
+- `kernel/` owns operating-system mechanisms. A mechanism stays kernel code
+  even when it is Zephyr-specific: the fact that the latch is port `00h` is
+  platform data; the routine that changes it safely is kernel code.
+- `drivers/` owns active device behaviour: register programming,
+  initialization, polling, interrupt handling after dispatch, protocol
+  operations and driver-private state.
+- `abi/kos/` owns the public native ABI. The kernel, the drivers and the
+  SDK all compile against the same copy.
+- `user/` owns native programs. They use the public ABI through the SDK
+  and never include a kernel or driver header.
+- Each audience has its own include roots:
 
-**M10** (resident-driver nucleus, extended memory, far code and data,
-EXE v2) is **COMPLETE** (work package 45, 2026-10-11; the hardware
-sign-off is complete as of 2026-10-12: production `hwtest` with and without
-a card, `ipc-selftest`, `subsystem-selftest` and both console builds pass
-on the board). Implementation and the host/simulator acceptance
-are in the packages from 37 on; the coverage map, the final ledgers and
-the hardware checklist are in
-[`docs/validation/2026-10-11-m10-acceptance.md`](./validation/2026-10-11-m10-acceptance.md).
-M10 built:
+  | audience | include roots |
+  |---|---|
+  | nucleus | `abi`, `kernel/include`, `drivers/include`, `formats/include`, `platform/zephyr80/public`, `platform/zephyr80/private` |
+  | drivers | `abi`, `drivers/include`, `platform/zephyr80/public`, the driver's own directory |
+  | programs | `abi` and the SDK include root only |
 
-- the two-bank operating system: the bank-7 nucleus split into a fixed
-  core and a cold half with upcall shims, and the bank-6 resident driver
-  domain;
-- the typed namespace: the VFS root with the three static providers
-  (`/fs`, `/system`, `/dev`), host-built `/dev` publications and the
-  global owner-tagged handle table (`bind`/`call`/`unbind`, `ns_enum`,
-  `chdir`/`getcwd`);
-- the IPC substrate: 32-byte frames, direct descriptor copies, nesting,
-  re-entrancy, driver-owned IRQs and the per-build console selection;
-- host assembly: every resident driver linked at its final bank-6 address,
-  with endpoint numbers, inter-driver dependencies and publications
-  resolved at build time;
-- extended-memory objects, the mode-10 far aperture (`SYS_XMEM_MAP`,
-  `SYS_SEG_MAP`) and far code through a plain `CALL`;
-- EXE v2 as the only executable format (segment table, containers over
-  64 KiB, no v1 path).
+  A driver cannot include a nucleus header.
 
-Final production ledgers against section 36.20 (measured on the closing
-tree; the headroom targets are met):
+### 1.4 Toolchain
 
-```text
-nucleus fixed: required 8335 bytes | overflow 2 bytes | stacks 768 | room 7279 bytes    (target >= 2048)
-nucleus cold: code 23352 bytes end BB38h | data 1655 bytes at BC00h | room 7561 bytes  (target >= 4096)
-driver hot: 21846 bytes of 32768                                                       (target >= 4096 room)
-driver boot/bulk: 2170 bytes of 24576
-common: used 2358 of 7424 bytes (code 1511, data 847) | ceiling 3072
-gate stack: 384 bytes reserved; 275-byte worst case measured (target <= 360)
-```
+The nucleus, the drivers and the programs are built with SDCC for the Z80
+and linked with `sdldz80`. Everything is freestanding: no hosted C runtime
+and no standard I/O. The nucleus and the drivers are compiled for size.
+Host tools are Python 3 standard library only.
 
 ---
-
-# 35. Native completion sequence after M9
-
-The native sequence after M9 is:
-
-```text
-M10  Resident-driver nucleus (two-bank OS)
-     + extended memory / far code / far data
-     + EXE v2
 
-M11  Complete native diagnostic suite
-
-M12  Native shell and core built-in userland
-
----------------- native KonaOS complete ----------------
-
-Later compatibility/personality architecture
-```
-
-The ordering is deliberate:
-
-1. M10 completes the native kernel structure and executable mechanisms.
-2. M11 validates and exercises the completed native mechanisms and hardware.
-3. M12 builds the normal interactive environment entirely on those completed mechanisms.
-4. Compatibility personalities begin only after native KonaOS is complete.
-
-M9 already supplies the process-startup and argument-tail contract required by the later shell. Package 28b establishes startup block v1 and synchronous `SYS_EXEC` argument transport; M10 does not redesign that contract.
-
-M9 facts the target relies on, all unchanged by M10-M12:
-
-```text
-startup block v1 at 0080h, and the raw-tail argument contract of SYS_EXEC
-  (package 28/28b; user-space splitting only, kernel never parses)
-KOS_BOOT_PROGRAM (the system file's `boot`) as the single boot-program
-  selector
-the native user SDK (user/sdk, docs/sdk.md): a program includes only "kos.h"
-  and links crt0 plus libkos; it never includes a kernel header
-the common-memory ceiling KOS_COMMON_CEILING (3072 bytes)
-```
-
-**Residency decision (taken 2026-10-07).** The end-of-M9 bank-7 ledger
-(section 32.39) left 1,599 bytes of mixed room, and M10 does not fit in it
-(design spike, package 33). M10 therefore restructures the operating system
-into a **nucleus in bank 7 and resident drivers in bank 6**, on decoder
-revision 13 (section 36). Packages 34-36 measured this design and it was
-chosen over the alternatives they evaluated. The M9 bank-7 budget of section
-32.39, including the 32-granule arena floor, governs M9 only; M10 replaces
-it with the ledgers of section 36.20.
-
-# 36. Milestone M10 — Resident-driver nucleus, extended memory, far code/data and EXE v2
-
-## 36.1 Objective
-
-M10 completes the native kernel structure and the memory and executable
-mechanisms applications need before the diagnostic suite and the native
-shell are built.
-
-Its responsibilities are:
-
-```text
-two-bank operating system
-    bank 7: nucleus
-        machine authority, processes, memory, IRQs, IPC
-        VFS root namespace
-        three static namespace providers: FS, DEVICE and ROMFS
-    bank 6: resident driver domain
-        drivers implement typed protocols
-        drivers may represent hardware, policy, composition or filesystems
-    programs bind names in the namespace, receive typed handles, call the
-    handle's protocol and unbind the instance when finished
-
-extended/far memory
-    process-owned auxiliary memory objects
-    bounded copy access to far data
-    direct access to mappable far data through the mode-10 aperture
-
-extended native executables
-    EXE v2
-    far-code segments executed in place through the aperture
-```
-
-Process startup, argument-tail transfer, nested `SYS_EXEC`, CWD inheritance,
-handle cleanup and parent restoration are already established before M10
-and are preserved.
-
-After M10, later native milestones must not require another fundamental
-memory, executable-format, residency, namespace or process-lifecycle
-mechanism merely to implement diagnostics or the shell.
-
-The central rules are:
-
-> **The operating system occupies at most two banks (7 and 6) plus common memory.**
-
-> **Physical banks are a Zephyr-80 implementation detail. Applications consume names, typed handles, memory objects and segments; resident drivers consume pre-resolved endpoint/object references.**
-
-> **The VFS is a namespace router, not a filesystem facade. It owns `/`; the FS, DEVICE and ROMFS namespace providers own the meaning of names below their root entries.**
-
-> **A driver is any resident implementation of one or more protocol types. A driver need not correspond directly to hardware.**
-
-> **The primary application bank remains the ordinary execution environment. A program that uses no far facilities keeps its full 56 KiB and pays nothing.**
-
-> **If the host can precompute it, precompute it. The machine is trusted and single-tasking: build no machinery for isolation, discovery or concurrency it does not have.** Bank-6 drivers are trusted resident extensions, not isolated servers. Endpoints and IPC exist for modularity and for crossing banks, not for protection.
-
-This section is the single M10 target. The options evaluated on the way
-(the 8 KiB slot overlay, the `8000h` window split, the `SYS_FAR_CALL`
-gate with an auxiliary low window, a third OS bank, runtime device
-registration and a Unix-style universal file/directory object model) are
-rejected and are not part of it.
-
----
+## 2. Hardware and memory model
 
-## 36.2 Hardware basis: decoder revision 13
+### 2.1 The banking latch
 
-The banking latch at port `00h` gains a meaning for D5-D7 outside ROM mode.
-D5-D7 (field **P**, the page) are wired to GAL pins 18/19/20 as inputs
-(board modification made for revision 13).
+The memory latch is I/O port `00h` (the decoder answers `00h-0Fh`;
+software uses `00h`). Only the nucleus's banking code writes it, except
+that a program opens and closes the far aperture through the SDK
+(section 7).
 
 ```text
-D0-D2  bank field Q
-D3-D4  mode
-D5-D7  page field P (the ROM page in mode 00)
+D0-D2   Q   SRAM bank
+D3-D4       memory mode
+D5-D7   P   page: the ROM page in mode 00, the window/aperture page otherwise
 ```
 
-Mappings under revision 13:
+`latch = (P << 5) | mode | Q`. Reading port `00h` returns the latch.
 
-| mode | `0000h-1FFFh` | `2000h-5FFFh` | `6000h-7FFFh` | `8000h-BFFFh` | `C000h-DFFFh` | `E000h-FFFFh` |
-|---|---|---|---|---|---|---|
-| 00 ROM | reads ROM page P; writes SRAM bank Q | ← | ← | ← | ← | ← |
-| 01 flat | bank Q | bank Q | bank Q | bank Q | bank Q | bank Q |
-| 10 application, P = 0 | bank Q | bank Q | bank Q | bank Q | bank Q | bank 0 (common) |
-| 10 application, P ≠ 0 | bank Q | bank Q | bank Q | **bank 7 − P (far aperture)** | bank Q | bank 0 (common) |
-| 11 OS | bank Q (caller window) | bank 7 (fixed nucleus) | **bank 7 − P (window)** | **bank 7 − P** | **bank 7 − P** | bank 0 (common) |
+### 2.2 Modes (decoder revision 13)
 
-Rules:
+| mode | value | `0000h-1FFFh` | `2000h-5FFFh` | `6000h-7FFFh` | `8000h-BFFFh` | `C000h-DFFFh` | `E000h-FFFFh` |
+|---|---|---|---|---|---|---|---|
+| 00 ROM | `00h` | reads ROM page P; writes SRAM bank Q | ← | ← | ← | ← | ← |
+| 01 flat | `08h` | bank Q | bank Q | bank Q | bank Q | bank Q | bank Q |
+| 10 application, P = 0 | `10h` | bank Q | bank Q | bank Q | bank Q | bank Q | bank 0 (common) |
+| 10 application, P ≠ 0 | `10h` | bank Q | bank Q | bank Q | **bank 7 − P (aperture)** | bank Q | bank 0 (common) |
+| 11 OS | `18h` | bank Q (caller window) | bank 7 (fixed core) | **bank 7 − P (window)** | **bank 7 − P** | **bank 7 − P** | bank 0 (common) |
 
-- **P = 0 is revision 12 in every mode.** CP/M and any image that never sets
-  P run unchanged.
+- **P = 0 behaves exactly like the previous decoder revision** in every
+  mode, so CP/M and any image that never sets P run unchanged.
 - Mode 11's **window** `6000h-DFFFh` shows bank 7 when P = 0 and bank 6
-  when P = 1. Other P values are not used by the operating system.
-- Mode 10's **far aperture** `8000h-BFFFh` opens only when P ≠ 0
-  (section 36.17).
-- Mode 01 is reserved for later personalities (Coleco, CP/M flat 64 KiB).
-  It has no common region; KonaOS must not assume common memory is
-  mapped while a personality runs.
+  when P = 1. The operating system uses no other window page.
+- Mode 10's **far aperture** `8000h-BFFFh` opens only when P ≠ 0.
+- Mode 00 serves **every** read from ROM, including instruction fetch, while
+  writes go to SRAM. A stack cannot survive it: code that runs in mode 00
+  is stackless and byte-identical in ROM and RAM (sections 3.1 and 4.7).
+- Mode 01 has no common region. It is reserved for personalities; KonaOS
+  never assumes common memory is mapped while one runs.
+- The decoder only selects which bank answers an 8 KiB region, at the same
+  offset. There is no address translation. The decoder logic and its test
+  vectors belong to the Zephyr-80 hardware project; the OS keeps a
+  simulator model (`tests/z80sim.py`).
 
-The decoder only selects which bank answers an 8 KiB region, always at the
-same offset. There is no address translation. The PLD design and its
-vectors live in the Zephyr-80 hardware project, not in the OS tree. The OS
-keeps only the simulator model (`tests/z80sim.py`) and its equivalence tests.
-The `RAM_A16`-`RAM_A18`
-equations are written in inverted polarity, 9/9/9 product terms against the
-22V10's 10/12/14 budgets. No further decoder capacity is assumed.
-
-Revision 13 is programmed on the board (2026-10-07); CP/M and the
-production KonaOS image boot on it unchanged. The simulator's default decoder becomes revision 13 in
-stage 1 (section 36.24).
-
----
-
-## 36.3 Two-bank residency
+### 2.3 Bank roles
 
 ```text
-bank 7      nucleus
-bank 6      resident driver domain
-banks 0-5   applications and extended memory
-bank 0      also supplies common memory at E000h-FFFFh (as before)
+bank 7      the nucleus
+bank 6      the resident driver domain
+banks 0-5   application banks and extended memory
+bank 0      also provides common memory at E000h-FFFFh
 ```
 
-Bank 6 leaves the application pool. Bank 7 remains reserved to KonaOS.
+### 2.4 Common memory
 
-Owner rule: the operating system uses **at most two banks plus common**. A
-third OS bank is not a fallback. It would take a whole bank from
-applications, and with the window only part of a driver bank is hot. When
-the system does not fit, it is slimmed, or code moves to a lower tier
-(sections 36.5 and 36.6). A bank is never added.
+`E000h-FFFFh` of bank 0 is visible in modes 10 and 11. It holds what must
+stay reachable while the mapping changes:
+
+| range | contents |
+|---|---|
+| `E000h-FCFFh` | transition code, the syscall and IRQ gates, the copy stubs, the ROM-access stub (at `EF00h`), common state, the 384-byte gate stack |
+| `FD00h-FE00h` | the IM2 vector page and its `FFh`-vector guard byte |
+| `FE01h-FEFFh` | IRQ transition state and the 128-byte IRQ transition stack (`FE80h-FEFFh`) |
+| `FF00h-FFFFh` | the boot and common stack |
+
+Common memory is about **reachability, not isolation**: mode 10 maps it as
+readily as mode 11, and a program can read and write it. It is the scarcest
+region, so it is measured: the packed `_COMMON` + `_COMMON_DATA` run may
+not exceed `KOS_COMMON_CEILING` (3,072 bytes), and the ceiling is never
+raised to make something fit.
+
+### 2.5 The early serial console
+
+SIO channel B (data `22h`, control `23h`, 1.8432 MHz clock): asynchronous
+x16, 115,200 baud 8N1, polled, interrupts off. Initialization:
+
+```text
+23h <- 18h          channel reset
+23h <- 04h, 44h     WR4: x16, 1 stop bit, no parity
+23h <- 03h, C1h     WR3: receiver on, 8 bits
+23h <- 05h, EAh     WR5: DTR, transmitter on, 8 bits, RTS
+23h <- 01h, 00h     WR1: interrupts off
+```
+
+Transmit polls RR0 bit 2 (`04h`); receive polls RR0 bit 0 (`01h`). The
+early console is reachable from every mapping and needs no driver. It
+remains the panic path when a `CONSOLE` driver exists.
 
 ---
 
-## 36.4 Nucleus versus drivers
+## 3. Boot
 
-The nucleus is the core of the operating system. It owns everything that
-is global, permanent and not pluggable:
+### 3.1 Reset and the ROM-to-RAM copy
 
-- process identity, creation, image replacement, exit and execution context;
-- physical bank and extended-memory ownership;
+At reset the latch is `00h`: mode 00, ROM page 0 on every read. The
+bootstrap in ROM page 0 runs stackless:
+
+```text
+DI
+copy ROM page 0 -> SRAM bank 0         (one LDIR, latch 00h)
+latch 27h: ROM page 1, mode 00, bank 7
+copy ROM page 1 -> SRAM bank 7         (one LDIR)
+latch 10h: mode 10 over bank 0
+common code: latch 18h, mode 11 over bank 0
+kernel entry in bank 7
+```
+
+The two boot pages carry byte-identical bootstrap bytes at every address
+where the latch changes, so the instruction fetched after each `OUT` is the
+same in ROM and RAM. Mode changes that move `2000h-DFFFh` run from common
+memory. The boot path depends on no state left by firmware or CP/M.
+
+Kernel entry guarantees: interrupts disabled, mode 11, the kernel visible
+at its linked addresses, a valid stack, the C runtime state initialized,
+and no assumptions about previous register contents. `kernel_main()` does
+not return.
+
+### 3.2 Boot sequence
+
+```text
+reset and copy (3.1)
+  v
+nucleus initialization: early console, banner, IM2 executive
+  v
+VFS: the root and the three static providers
+  |-- /system  ROMFS provider (usable now)
+  |-- /fs      FS provider
+  `-- /dev     DEVICE provider
+  v
+driver loader: one pass over drivers.man, in load order
+  for each driver: copy its segments to their host-assigned bank-6
+  addresses, install its endpoint, publication and dependency records,
+  run its boot segment once, run its hot init once
+  v
+boot launcher: run the configured boot program
+```
+
+- The SIO driver loads first, so a later driver failure still leaves the
+  serial console.
+- A required driver that fails to initialize is a boot failure, reported on
+  the early console. The namespace is never rebuilt around a missing
+  driver.
+- There is no mount pass, no device registration, no class discovery and
+  no hardware probing at boot. The selected image defines the machine.
+
+### 3.3 The boot launcher
+
+The boot program is a build setting: the `boot` field of the image's
+system file (section 8.1), for example `/system/monitor.exe`. The launcher
+runs it, prints its exit status, and runs it again after every normal
+exit. If the boot program cannot be started, the launcher names the path
+on the early console and takes the controlled halt path. The boot path
+reaches the kernel through a generated header, never a compiler `-D` flag.
+
+### 3.4 Failure
+
+A fatal error prints the clearest available diagnostic on the early
+console, disables interrupts and halts (`panic()`).
+
+---
+
+## 4. The nucleus
+
+### 4.1 Responsibilities
+
+The nucleus owns everything global, permanent and not pluggable:
+
+- process identity, creation, image replacement, exit and context;
+- bank and extended-memory ownership;
 - execution-domain transitions and cross-bank copy primitives;
-- **the VFS root namespace** and the three static namespace providers
-  defined in section 36.13;
-- the global owner-tagged typed-handle table;
+- the VFS root and the three static namespace providers;
+- the global owner-tagged handle table;
 - the endpoint table and IPC dispatch;
 - IRQ ownership, dispatch and the final `RETI`;
-- loading and validating EXE images and resident driver images;
-- the ROMFS reader used by the static ROMFS namespace provider;
-- early bootstrap, the early console, failure handling and panic.
+- loading and validating executables and resident driver images;
+- the ROMFS reader;
+- boot, the early console, failure handling and panic.
 
-A **driver** is a resident implementation of one or more protocol types.
-The word does not imply a one-to-one relationship with physical hardware.
-A driver may be:
+Everything that implements a protocol is a driver (section 5).
 
-- a hardware-facing implementation such as IOC, HID, V9958 video or SIO;
-- a filesystem implementation such as IOC-FAT;
-- a composed implementation such as a `CONSOLE` driver built from
-  `VIDEO` + `INPUT`, from `SERIAL`, or from another implementation such as
-  VDrip;
-- any later resident implementation of a typed protocol.
+### 4.2 Fixed core and cold half
 
-One driver may implement several protocol types and may publish several
-objects. Drivers may consume other driver protocols. Their dependencies are
-resolved by the host to endpoint/object references; resident code does not
-perform VFS lookup or class discovery to find another resident driver.
-
-Retired by M10:
+In mode 11 the nucleus sees two parts of bank 7:
 
 ```text
-the filesystem syscall front end (FS_*)      replaced by typed object protocols
-the console syscall family                   replaced by the CONSOLE protocol
-the device/class/capability registry          replaced by /dev host publications + endpoint table
-the filesystem-provider registry/mount model replaced by the three static root namespace providers
-the driver-entry-table kernel import table    replaced by the driver boot bundle
-the bank-7 driver arena                       resident drivers live at host-linked addresses in bank 6
-runtime device-name registration/probing      the selected image defines the machine
+2000h-5FFFh   fixed core (16 KiB)   always visible
+6000h-DFFFh   cold half (32 KiB)    visible only while the window shows bank 7 (P = 0)
 ```
 
----
+- **Fixed rule.** Code that executes, and data that is touched, while the
+  window shows another bank lives in the fixed core: the IPC dispatcher,
+  the endpoint and descriptor tables, the copy primitives and transition
+  code, nucleus primitives callable by drivers (including the ROMFS
+  reader), the IRQ executive, the upcall shims, the driver stack
+  (`5D00h-5EFFh`, 512 bytes), the ISR stack (`5F00h-5FFFh`, 256 bytes)
+  and the data all of these use.
+- **Cold rule.** Everything else lives in the cold half: the syscall
+  dispatcher and bodies, process management and the EXE loader,
+  extended-memory allocation, the VFS router and providers, the driver
+  loader, boot setup, diagnostics and panic formatting. The syscall gate
+  clears P before dispatching, so syscall code always runs with the window
+  showing bank 7.
+- **Upcalls.** Cold code that calls a bank-6 driver (for example the loader
+  streaming an executable) goes through a small fixed **upcall shim** that
+  saves the latch, opens the driver window, calls and restores the latch.
+- **Buffer rule.** Memory a driver reaches through a buffer or a path must
+  never be in the cold half. The nucleus's provider-facing buffer, the VFS
+  workspace with its path views (`vfs_workspace`), lives in the fixed
+  core's runtime data. `config/residency.json` marks it `fixed-required`
+  and `tools/mapcheck.py` fails the build if it moves.
+- The fixed core's runtime data base and the cold half's data base are
+  derived from the linked code at build time; there is no fixed boundary
+  inside either region.
 
-## 36.5 Nucleus layout: fixed core and cold half
+### 4.3 Page zero and the syscall gate
 
-In mode 11 the nucleus sees two regions of bank 7:
+Every native process has a KonaOS-owned page zero in its own bank:
 
 ```text
-2000h-5FFFh   fixed core (16 KiB)    always visible, whatever the window shows
-6000h-DFFFh   cold half (32 KiB)     visible only while the window shows bank 7 (P = 0)
+0030h   RST 30h: JP kos_syscall_gate
+0080h   startup block v1 (section 6.8)
 ```
 
-**Fixed rule:** code that **executes**, and data that is **touched**, while
-the window shows another bank lives in the fixed core. That is:
-
-- the IPC dispatcher, the endpoint table and the descriptor table;
-- the copy primitives and transition code;
-- nucleus primitives callable by drivers, including the bootstrap ROMFS
-  reader;
-- the IRQ executive;
-- the upcall shims (below);
-- the ISR stack (256 bytes) and the driver stack (512 bytes);
-- the data all of these use.
-
-**Cold rule:** everything else lives in the cold half: the syscall
-dispatcher and syscall bodies, process management and the EXE loader,
-extended-memory allocation and the bank map, boot-only setup, diagnostics
-and panic formatting. The syscall gate clears P before dispatching, so
-syscall code always runs with the window showing bank 7.
-
-**Upcalls from cold code.** Nucleus code that calls a bank-6 driver (for
-example the loader streaming an executable FILE object) does so through a
-small fixed **upcall shim**. The shim saves the latch, opens the driver
-window, makes the call and restores the latch. The cold caller is not
-executing while the window shows bank 6, so it does not have to be fixed.
-
-**Buffer rule:** memory that a driver reaches through a buffer descriptor
-must never be in bank 7's cold half.  The rule is about *any* buffer a
-bank-6 provider reads, a path included: work package 45b correction 01
-found `SYS_EXEC` staging the caller's path in cold-half `_DATA`, so a
-`/fs` executable could not be resolved (`ERR: 02`) while every syscall
-that passed a workspace path worked.  The kernel's provider-facing
-buffers live in the fixed core: the VFS workspace's path views at
-`5800h-5FFFh` (`vfs_workspace`, `mapcheck`'s `fixed-required` list).
-
----
-
-## 36.6 Driver bank layout
+No CP/M structures are present. The gate is in common memory because an
+`RST` arrives in mode 10:
 
 ```text
-6000h-DFFFh of bank 6   hot tier (32 KiB)       driver code, data and BSS used at run time
-0000h-5FFFh of bank 6   boot/bulk tier (24 KiB) boot-only driver code and bulk driver data
-E000h-FFFFh of bank 6   not used                 hidden by common in modes 10 and 11
+RST 30h (mode 10, caller stack anywhere in 0000h-DFFFh)
+  -> common gate: save the caller SP, switch to the common gate stack,
+     save the registers the ABI needs, save the whole latch (Q and P),
+     enter mode 11 over the caller's bank with P = 0
+  -> dispatch in the cold half
+  -> return: restore the exact latch, the registers and the caller SP; RET
 ```
 
-- Within the hot tier, `8000h-BFFFh` is reserved first for driver I/O
-  buffers (36.8, path B); code and other data fill the rest of the tier.
-- The **hot tier** is reached through the window (P = 1). It holds
-  everything a driver runs after boot, including paths reachable at run
-  time from user requests (for example the V9958 display reset behind
-  ESC `c`/RIS/`KVIDEO_RESET`).
-- The **boot/bulk tier** holds driver code that runs only during bring-up
-  (initialization, font and atlas upload, filesystem setup). The nucleus
-  executes it at boot through the mode-10 gate with Q = 6. The tier also
-  holds bulk data that drivers read through nucleus copies (for example the
-  V9958 font). Nothing in this tier is executed after boot.
-- While a driver runs in mode 11, `0000h-1FFFh` shows the **caller's**
-  bank. Drivers never address it directly; they use descriptors (section
-  36.8).
+The gate never uses the caller's stack after the mapping changes, because
+a caller stack in `2000h-DFFFh` disappears in mode 11. Syscall argument
+blocks must lie in the caller window `0100h-1FFFh`, which stays visible in
+mode 11; a block elsewhere is refused before dispatch. The gate stack is
+384 bytes; the deepest measured chain (nested exec reading a driver-backed
+file) uses 275 bytes, and the worst case must stay at or below 360.
 
-Measured (package 41): SIO, IOC, HID, V9958 and the console driver use
-13,216 of 32,768 bytes of the hot tier, and 2,170 bytes of the boot/bulk
-tier (the font included). IOC-FAT (about 6.6 KB plus its resident wrapper)
-is the remaining planned bank-6 tenant. VFS plus the FS, DEVICE and ROMFS
-namespace providers stay in the nucleus.
-
----
-
-## 36.7 Endpoints, typed handles and IPC
-
-Resident drivers export **endpoints**. Each endpoint has an endpoint number
-assigned on the host when the image is assembled. The nucleus keeps a
-prebuilt endpoint table in fixed data:
+### 4.4 Syscall convention
 
 ```text
-endpoint number, owner driver, dispatch target
-flags: re-entrant
-state: busy (on the current call stack)
+entry   RST 30h, A = syscall number, HL = argument block
+return  carry clear: success, HL = result
+        carry set:   failure, A = KOS_E* error code
 ```
 
-The table is reportable through diagnostic introspection (M11). Endpoint
-numbers are not application ABI.
+The full table and every block are in `docs/abi.md`. Section 6.4 explains
+how `call` adds a second result channel.
 
-The public object lifecycle is deliberately small:
+### 4.5 The interrupt executive
+
+- The nucleus owns the `I` register, IM2, the vector page, the IRQ entry
+  path, the transition and ISR stacks, and the final `RETI`. A driver may
+  own an interrupt **source**, never the mechanism.
+- The **IM2 page** is `FD00h-FDFFh` with `I = FDh`, plus the guard byte at
+  `FE00h`, because vector `FFh` reads its pointer from `FDFFh-FE00h`. Some
+  expansion hardware presents `FFh` on the bus, so the build checks that
+  `word_at(FDFFh)` is the address of `irq_ff_unexpected`.
+- **Logical sources:** `IRQ_CTC0`-`IRQ_CTC3`, `IRQ_SIO0`, `IRQ_SIO1`,
+  `IRQ_VDP_FF`. A source id is not a vector byte; the wiring is platform
+  data.
+- **Entry:** a common stub identifies the source, saves the interrupted SP,
+  switches to the common IRQ transition stack, saves the whole register set
+  (`AF BC DE HL IX IY` and the alternates), saves the exact latch, selects
+  mode 11 and the owner's window, switches to the ISR stack and calls the
+  handler. **Return** restores the exact latch, registers and SP, then
+  `RETI`. An interrupt taken in mode 11 returns to mode 11.
+- IRQ delivery never disturbs a latch saved by the code it interrupts; the
+  executive keeps its own save slot.
+- **Handlers** are bounded, service their own device condition, never
+  busy-wait, never call IPC, and return to the executive. Nested maskable
+  interrupts are not allowed.
+- **Unexpected or unclaimed** interrupts are counted and, where a platform
+  quiesce exists, the source is disabled. Nothing large is printed from
+  interrupt context.
+- **Driver-owned IRQs:** a resident driver claims a source through the
+  bootstrap API (`irq_claim`, `irq_release`) and supplies a bank-6 handler.
+  The executive opens the driver's window around the call. Delivery to a
+  resident handler costs about 924 T-states.
+
+### 4.6 ROM access and the ROMFS reader
+
+The recovery store occupies ROM pages 2-7. Only `0000h-BFFFh` of each page
+is store data (48 KiB per page, 288 KiB in all); `C000h-FFFFh` carries the
+ROM-access stub's mirror. A ROM read uses mode 00, so it runs through a stub
+that is byte-identical in common SRAM and in every store page:
 
 ```text
-bind(path, flags) -> handle, type   resolve a namespace name and bind an instance
-call(dependency_ref, op, frame)     synchronous protocol operation on that instance
-unbind(handle)                      release the bound instance
+mode 11: validate page/offset/length, save the exact latch, mask
+         interrupts, set HL = source, DE = staging, BC = length
+trampoline OUT: mode 00, page p, bank 0
+mirrored stub: LDIR ROM -> bank-0 staging, OUT the saved latch
+common epilogue: mode 11 restored, interrupts restored
 ```
 
-A useful OOP analogy is: the namespace name identifies a **class/factory**;
-the returned handle identifies an **instance**. `bind` may simply acquire a
-permanent object (`/dev/video`) or may instantiate provider state (opening a
-file). `unbind` releases whatever instance state that bind created.
-
-- **Type:** every bound handle carries one **8-bit protocol type**. There is
-  no separate class/capability bitmap. `FILE`, `VIDEO`, `CONSOLE`, `INPUT`,
-  `SERIAL`, `IOC`, `SOUND`, `TIMER` and later protocols are simply type
-  numbers.
-- **No expected type:** `bind` returns the type it actually resolved. The
-  nucleus does not take an expected-type argument. A caller or typed SDK
-  wrapper checks the returned type when it cares.
-- **Flags:** `bind` carries one 16-bit flags field. VFS treats it as opaque;
-  the selected namespace provider/protocol defines the meaningful bits.
-  `FILE` uses it for read/write/create/truncate style open flags; most
-  device binds initially use zero.
-- **No generic handle-info operation:** protocol-specific information
-  belongs to that protocol (`video_info`, `sound_info`, file metadata, and
-  so on).
-- **Synchronous call/reply** is the only IPC model. There are no queues and
-  no asynchronous messages.
-- **Frame:** one standard **32-byte** request/reply frame for every call.
-  What the fields mean is decided by the handle's protocol. The SDK supplies
-  a client API per protocol that fills in and decodes the frame. Large
-  payloads move through descriptors, never through the frame.
-- **Handles** are process-owned, opaque and small. They are not bank
-  numbers, pointers or endpoint numbers. The handle table records the
-  owner, 8-bit type, endpoint and provider-private object identity.
-- **Drivers are permanent.** They are selected at build time, copied at boot
-  and never unloaded. There is no revocation, hot replacement or restart.
-- **Driver-to-driver calls are host-wired and near-direct.** Driver metadata
-  declares symbolic protocol dependencies. The host resolves them to typed
-  endpoint/object references. Both drivers are trusted and mapped at the
-  same time, so a resident call dispatches through the endpoint table with
-  the frame passed by reference and no bank switch. Drivers do not bind
-  `/dev` names at run time to discover each other.
-- **Protocols are coarse-grained.** A full application call costs about
-  15,500 T-states, so there are no per-byte or per-character operations:
-  writes are buffered, reads are read-N, files move in useful blocks.
-
-Measured cost: a null application call is about 15,500 T-states through the
-production-shaped path (package 39; the frame copies dominate), and one
-window crossing is 242 T-states. Resident driver-to-driver forwarding avoids
-the application boundary and frame copy.
-
----
-
-## 36.8 Buffer descriptors and data movement
-
-There are no raw cross-domain pointers.
-
-- At call entry the nucleus captures each caller buffer as a
-  **descriptor**: execution latch (bank Q and page P), address, length and
-  direction. Drivers receive a small descriptor id, valid for the duration
-  of the call. **At most two descriptors per call**, fixed in the frame
-  layout. There is no generic marshalling.
-- Drivers move data only through nucleus primitives
-  `copy_in(id, offset, buffer, length)` and
-  `copy_out(id, offset, buffer, length)`. Bounds are checked on every use.
-- **Validation lives in the nucleus only:** handle, endpoint, descriptor
-  and frame-bounds checks at the boundary. Drivers trust what the nucleus
-  hands them and do not re-validate (36.22).
-- **Direct copies.** A descriptor id may be passed down a call chain, and
-  the driver that holds the data copies it straight to the caller. Data is
-  not staged through intermediate drivers. "Direct" means no driver
-  staging; the nucleus copy primitive may still use a bounce or gate path
-  underneath (below).
-- **Buffer identity:** a caller address in `8000h-BFFFh` while the caller's
-  saved P ≠ 0 (mode 10) names the far bank shown by the aperture, not the
-  primary bank.
-- **Copy paths.** There is one window, so one `LDIR` cannot bridge bank 6
-  and another windowed bank. The primitive picks a path per request:
-
-  | path | when | how |
-  |---|---|---|
-  | **A** | caller buffer in the caller window `0000h-1FFFh` or in common | mode 11, one `LDIR` |
-  | **B** | driver buffer in bank 6 `8000h-BFFFh`, and caller buffer in the caller's bank outside `8000h-BFFFh` | a common-resident stub switches to mode 10 with Q = the caller's bank and P = 1 (the aperture shows bank 6), runs one `LDIR` and restores the latch |
-  | **C** | everything else: a caller buffer in `8000h-BFFFh` (including far-bank buffers), or a driver buffer outside `8000h-BFFFh` | chunked through the common `kos_bank_copy` gate; correct, but slow |
-
-  The P = 1 that path B uses is internal to the nucleus; applications
-  never get a bank-6 token. An interrupt taken inside path B restores the
-  latch exactly.
-
-  Measured (package 39), 512-byte read through a chained FILE -> IOC-FAT -> IOC path:
-  path A 180 T/B, path B 181 T/B, path C 237 T/B, against 588 T/B for the
-  M9 `FS_READ`. The path-B stub costs 58 bytes of common memory.
-- **Driver I/O rule.** Driver buffers that are the source or target of
-  `copy_in`/`copy_out` (I/O buffers, caches, staging) live in bank 6's
-  `8000h-BFFFh`, the `DRIVER_IO` data area. The loader refuses an image
-  whose `DRIVER_IO` data falls outside that range.
-
----
-
-## 36.9 Nesting, re-entrancy and stacks
-
-- **Nesting limit: 4** calls deep (application → IOC-FAT → IOC, a
-  composed driver such as the console, and the loader's read chain). Deeper
-  calls are refused.
-- **Re-entrancy:** the nucleus refuses, with `KOS_EBUSY`, a call into an
-  endpoint that is already on the call stack, unless that endpoint declares
-  itself re-entrant. Each driver states how it protects its state.
-- **Stacks:**
-  - **driver stack:** 512 bytes in the fixed core, shared by the resident
-    driver-call chain (measured high-water 278 bytes);
-  - **ISR stack:** 256 bytes in the fixed core;
-  - **gate stack:** 384 bytes in common (raised from 256 in package 42b:
-    nested exec → ROMFS read → driver transaction measured 287 bytes); the
-    worst case is measured for every syscall path and stays at or below
-    360.
-
----
-
-## 36.10 IRQs owned by drivers
-
-The nucleus keeps the interrupt mode and IM2 vectoring, the IRQ registry,
-the ISR stack and the final `RETI`. A driver may claim an IRQ and supply a
-handler:
-
-```text
-hardware IRQ
-    v
-nucleus IRQ executive    saves the latch, selects the owner's window, ISR stack
-    v
-driver handler           restricted nucleus API only: no IPC
-    v
-nucleus                  restores the interrupted latch exactly, RETI
-```
-
-IRQ delivery must not disturb a latch saved by the call it interrupts. The
-IRQ path saves and restores the latch in its own slot. Measured: about 924
-T-states to deliver an interrupt to a resident driver handler.
-
----
-
-## 36.11 Resident driver images and host assembly
-
-Resident drivers are **MOD images extended with driver metadata**. No
-separate resident-image format is introduced.
-
-**The host computes everything.** The host packer links every selected
-driver at its **final bank-6 addresses**. It assigns endpoint numbers,
-checks duplicate endpoint and namespace publications, resolves symbolic
-inter-driver dependencies to typed endpoint/object references, and emits:
-
-```text
-the bank-6 image layout
-the endpoint table
-the /dev publication table
-the resolved dependency references
-the boot manifest
-```
-
-Resident driver images carry no relocation records. The target loader only:
-
-- copies each image's segments to their fixed addresses;
-- installs the host-built endpoint/publication/dependency tables;
-- runs each boot segment once;
-- runs each hot init once.
-
-It checks only bounds that protect the nucleus and the fixed driver-bank
-layout.
-
-A driver image declares:
-
-- its hot segment, linked for the hot tier;
-- its `DRIVER_IO` data, linked in `8000h-BFFFh`;
-- its boot segment and bulk data, linked for the boot/bulk tier;
-- the protocol type(s) and endpoint(s) it implements;
-- any `/dev` objects it publishes: namespace name, 8-bit type, endpoint and
-  object/factory identity;
-- symbolic dependencies on other resident protocol objects.
-
-There is **no runtime device-name registration, class lookup or hardware
-probing framework**. The selected host image defines the machine. A required
-driver that cannot initialize is a boot/configuration failure; it does not
-cause the namespace to be dynamically rebuilt around a different driver.
-Separate builds may select different implementations of the same protocol
-and namespace name.
-
-For example, `/dev/console` is not special. A build may select:
-
-```text
-console-v9958-hid driver  implements CONSOLE; host-wired to VIDEO + INPUT
-console-serial driver     implements CONSOLE; host-wired to SERIAL
-console-vdrip driver      implements CONSOLE; host-wired to the VDrip dependencies
-```
-
-Whichever implementation is selected publishes the ordinary object
-`/dev/console -> CONSOLE`. User programs cannot tell which implementation
-is behind the protocol unless that protocol deliberately exposes such
-information.
-
-A resident driver sees the **driver bootstrap interface**, not a general
-kernel import table:
-
-- descriptor copy primitives;
-- near-direct calls to its host-resolved dependencies/endpoints;
-- IRQ claim and release;
-- the few other nucleus primitives a resident driver legitimately needs,
-  each named in that interface.
-
----
-
-## 36.12 Boot
-
-```text
-reset
-  v
-nucleus initialization (fixed core and cold half)
-  v
-VFS root + three static nucleus namespace providers
-  |-- /system -> ROMFS provider (immediately usable)
-  |-- /fs     -> FS provider
-  `-- /dev    -> DEVICE provider
-  v
-copy the host-selected resident driver images into bank 6
-install the host-built endpoint table, /dev publication table and
-pre-resolved inter-driver dependency references
-  v
-run each driver's boot segment              mode-10 gate, Q = 6
-  +--> IOC, HID, video, serial, sound ...    protocol implementations
-  +--> selected console driver                publishes /dev/console
-  +--> IOC-FAT driver                         filesystem implementation behind /fs
-  v
-resolve the configured boot program through the namespace and execute it
-```
-
-There is a single ROMFS reader in the system, used by the static ROMFS
-namespace provider for `/system`. The early console and panic path stay in
-the nucleus and are usable before any `CONSOLE` driver exists.
-
-There is no runtime mount pass, device registration pass, class discovery
-or hardware-probing pass in M10. Root routing, driver selection, device
-publications and resident dependencies are all host configuration.
-
----
-
-## 36.13 VFS root and the three static namespace providers
-
-The VFS is a **core nucleus component**, like IPC and the memory manager.
-It owns the global root `/` and routes names to exactly three static nucleus
-namespace providers:
-
-```text
-/
-|-- fs        -> FS namespace provider
-|-- system    -> ROMFS namespace provider
-`-- dev       -> DEVICE namespace provider
-```
-
-Root matching is ASCII case-insensitive; the spellings above are the
-canonical display names. VFS resolves and normalizes the global path and
-selects the provider from the first component. The selected provider owns
-everything below that point. VFS does **not** interpret that provider's
-internal hierarchy.
-
-There is no M10 runtime mount table, provider registration, root-filesystem
-merge or shadowing rule. The older M9 mount/provider machinery is retired
-rather than carried beside the new model.
-
-### FS namespace provider — `/fs`
-
-The static FS provider is nucleus routing code. It owns the `/fs` root and
-forwards the remainder to the filesystem driver selected by the host build,
-initially IOC-FAT:
-
-```text
-bind("/fs/GAMES/ZAXXON.ROM", READ)
-    VFS -> FS provider -> IOC-FAT driver
-    -> FILE instance
-```
-
-The FS provider contains no FAT/FS2 semantics. The selected filesystem
-driver owns pathname meaning, file creation, mutation, enumeration and
-backend state below `/fs`.
-
-### ROMFS namespace provider — `/system`
-
-The static ROMFS provider is nucleus code over the one built-in ROMFS
-reader. It owns `/system`, needs no bank-6 driver and produces ordinary
-`FILE` instances for ROM-resident objects. It is the recovery namespace and
-is available before resident drivers are initialized.
-
-### DEVICE namespace provider — `/dev`
-
-The static DEVICE provider resolves against a **host-built publication
-table**. Entries are declared by selected resident drivers; no driver
-registers a string at run time.
-
-Typical host publications are:
-
-```text
-/dev/console          CONSOLE
-/dev/input/keyboard   INPUT
-/dev/video            VIDEO
-/dev/serial/0         SERIAL
-/dev/ioc              IOC
-/dev/sound            SOUND        when that driver is selected
-/dev/timer            TIMER        when that driver is selected
-```
-
-Names describe roles, not implementation products: never `/dev/v9958`,
-`/dev/hid` or `/dev/sio` merely because those are the selected drivers.
-Several names may resolve to objects implemented by one driver, and one
-driver may implement several types.
-
-### Provider-owned hierarchy; no universal DIRECTORY protocol
-
-A slash below a root provider is syntax owned by that provider. `/fs/GAMES`
-may mean a filesystem directory; `/dev/input` may simply be a grouping in a
-static device table; ROMFS may remain flat internally. KonaOS therefore
-defines **no universal `DIRECTORY` object protocol** and creates no generic
-directory handles.
-
-Generic namespace enumeration is nevertheless required for tools such as
-`ls`. It is a VFS operation routed to the owning namespace provider and is
-batched/coarse-grained:
-
-```text
-ns_enum(path, cookie, output-buffer) -> entries, next-cookie
-```
-
-An enumeration entry contains at least a name, a `container` flag saying
-that further path components may be traversed below it, and (when the entry
-is bindable) its 8-bit protocol type. `container` is namespace metadata,
-not an object type or protocol.
-
-CWD remains a VFS/global-path concept. `chdir(path)` asks the selected
-namespace provider whether the path is a valid traversable location and,
-on success, stores the canonical global path. It does not bind a directory
-object.
-
-### Bind, instance and lifetime
-
-The VFS keeps **one small global handle table**, each entry tagged with its
-owning process. Conceptually an entry contains:
-
-```text
-owner PID
-8-bit type
-endpoint
-provider-private object / instance identity
-bind flags / small lifecycle state where required
-```
-
-A namespace name identifies a class/factory; `bind` creates or acquires an
-instance and returns the handle plus its type. The caller does not pass an
-expected type. `unbind` releases the instance.
-
-For files, the familiar words remain in `fs.h` rather than in the nucleus
-ABI:
-
-```text
-fs_open(path, flags) -> bind(path, flags), verify FILE, return file handle
-fs_close(file)       -> unbind(file)
-```
-
-Other FILE operations (`read`, `write`, `seek`, `sync`, metadata) are FILE
-protocol calls on that handle. Filesystem operations that act on names
-rather than an open file (`mkdir`, `rmdir`, `unlink`, `rename`) belong to
-the filesystem namespace protocol exposed through `fs.h`; they do not
-create `DIRECTORY` handles.
-
-Operations on a bound object are IPC messages to the handle's endpoint.
-VFS is not in the data path:
-
-```text
-bind("/fs/data/log.txt", READ) -> FILE handle backed by IOC-FAT
-call(file, FILE_READ, frame, descriptor) -> IOC-FAT copies to the caller
-
-bind("/system/diag.exe", READ) -> FILE handle backed by ROMFS
-
-bind("/dev/video", 0) -> VIDEO handle
-call(video, VIDEO_INFO, frame)
-
-bind("/dev/console", 0) -> CONSOLE handle
-call(console, CONSOLE_WRITE, frame, descriptor)
-```
-
-The built-in ROMFS endpoint dispatches in-process through the same
-handle-call path as a bank-6 endpoint.
-
-**Standard handles.** Every process starts with console input/output handles
-already bound to `/dev/console` and inherited from its parent according to
-the process-startup contract.
-
-**Execution.** `SYS_EXEC(path, tail)` resolves the path through VFS. The cold
-loader binds it as an object, requires a `FILE` result, streams the image
-through the FILE protocol and unbinds it before launch.
-
-**Exit unbinds every handle the process owns.** That gives each owning driver
-the normal release operation so FILE state is closed/flushed as specified,
-console/device instances are released, and leaked application bindings do
-not permanently exhaust the small table. Then the process's xmem objects,
-segments and bank are freed. There is no process-exit broadcast; add one
-only if some state genuinely cannot be represented by bound-instance
-ownership.
-
----
-
-## 36.14 Syscall ABI after M10
-
-Syscalls are the **nucleus ABI**, and they are few:
-
-```text
-objects      bind(path, u16 flags) -> handle + u8 type
-             call(dependency_ref, op, 32-byte frame, descriptors)
-             unbind(handle)
-
-namespace    enum(path, cookie, output)
-             chdir, getcwd
-
-process      exec(path, tail), exit
-xmem         alloc, free, read, write, info, map
-segments     segment info, segment map
-diagnostics  the M7 diagnostic family (reshaped for endpoints, drivers and namespace tables)
-```
-
-There is no nucleus `open`, `close`, generic `handle_info`, device lookup or
-class/capability query. `open`/`close` are FILE-language in `fs.h`, built on
-`bind`/`unbind`. VIDEO information belongs to `video.h`, CONSOLE operations
-to `console.h`, SOUND information to `sound.h`, and so on.
-
-The M9 `FS_*` family and the per-feature console syscalls are removed. The
-SDK supplies thin typed client APIs that bind names where appropriate,
-verify returned types when the API cares, and fill/decode the standard
-protocol frames. The native ABI is not frozen before M12, so no
-compatibility path is kept.
-
-ABI layers:
-
-1. **nucleus ABI:** bind/call/unbind, namespace, process and memory mechanisms;
-2. **IPC envelope:** handle, operation, 32-byte frame, status, at most two descriptors;
-3. **8-bit protocol types:** FILE, filesystem namespace, CONSOLE, VIDEO,
-   INPUT, SERIAL, IOC, SOUND, TIMER and later types; each defines its own
-   operation numbers and frame meanings;
-4. **SDK:** `fs.h`, `video.h`, `console.h`, `sound.h`, and other typed client
-   APIs that hide the generic envelope.
-
----
-
-## 36.15 Application banks and process ownership
-
-Every native process owns one **primary bank** and runs in mode 10 with
-P = 0:
+The stub uses no stack and reads no SRAM between the two `OUT`s. The
+**ROMFS reader** is a nucleus primitive in the fixed core, so drivers and
+the loader can use it while bank 6 is mapped. There is exactly one ROMFS
+lookup, an ASCII case-folded name match. The format is in
+`docs/romfs-format.md`.
+
+### 4.7 Processes
+
+- **Single-tasking.** A parent runs a child synchronously and is suspended
+  until the child exits. Only one process runs.
+- **Process table:** 7 entries in the cold half, each with its state
+  (`FREE`, `RUNNING`, `SUSPENDED`), primary bank, parent, saved context,
+  exit status and flags. Bank 7 is never a process bank.
+- **Nesting:** up to `KOS_EXEC_MAX_DEPTH` (4) user processes deep; the next
+  exec is refused with `KOS_EBUSY` and allocates nothing. The kernel
+  launcher is depth 0.
+- **Exec** (`SYS_EXEC(path, tail)`):
+  - every fallible step (path staging, slot, bank, CWD, load and
+    validation, page zero) happens before the parent is suspended, so
+    nothing past the suspension point can fail and no suspended process is
+    ever rolled back;
+  - the path is resolved through the namespace: the loader binds it,
+    requires a `FILE`, streams the image through the FILE protocol and
+    unbinds it;
+  - the path is staged in the fixed-core VFS workspace (the buffer rule);
+  - the caller's raw tail is copied byte-exact into the child's startup
+    block; the kernel never parses it;
+  - the child starts with P = 0;
+  - a failed load rolls back everything allocated for the child.
+- **Suspension:** the shared common gate stack is reused by the child, so
+  the gate saves the parent's gate frame (SP, IX, latch, IFF and the
+  frame bytes, 48 bytes) per depth and restores it before the parent's
+  `SYS_EXEC` returns. From the start of the restoring copy until SP is
+  restored there is no `CALL`, `PUSH`, `POP` or interrupt enable.
+- **Exit** (`SYS_EXIT`) records the status, unbinds every handle the
+  process owns (each owning provider closes or flushes its instance), frees
+  its extended-memory objects and segments and its bank, and resumes the
+  parent with its exact latch, including P.
+- A suspended parent keeps all its resources. A child inherits the parent's
+  CWD (a copy) and nothing else.
+
+### 4.8 Memory: application banks and extended memory
+
+**Primary bank.** Every process owns one primary bank and runs in mode 10
+with P = 0:
 
 ```text
 0000h-00FFh   native page zero
-0100h-....    primary EXE image/data
-....-DFFFh    primary stack (grows down from E000h)
-E000h-FFFFh   permanent common memory
+0100h-....    the program image, then its zeroed BSS
+....-DFFFh    free memory, then the stack, growing down from E000h
+E000h-FFFFh   common memory
 ```
 
-A program that uses no far facilities behaves exactly as before and has the
-whole `0000h-DFFFh`.
+**Bank states.** One allocator owns banks 0-5. Each bank is `FREE`,
+`PRIMARY` (the whole bank belongs to one process), or `AUXILIARY` (seven
+8 KiB slots, each owned by one process). Primary banks are taken lowest
+first; auxiliary slots highest bank first, filling existing auxiliary banks
+before opening a new one. A bank with a live auxiliary slot cannot become a
+primary bank, so `SYS_EXEC` can fail with `KOS_ENOSPC` while slots are
+free.
 
-The nucleus owns one allocator for application banks 0-5. Each bank is in
-one of three states:
-
-```text
-FREE
-PRIMARY(process)    the whole bank belongs to one process; no auxiliary allocations
-AUXILIARY           8 KiB slots, each owned by one process
-```
-
-Allocation policy:
-
-- primary banks are taken lowest free bank first;
-- auxiliary slots are taken highest bank first, packing existing auxiliary
-  banks before opening a new one.
-
-A bank with any live auxiliary slot cannot become a primary bank. `SYS_EXEC`
-may therefore fail with `KOS_ENOSPC` while auxiliary slots are still free.
-
-**Ownership and lifetime:**
-
-- every auxiliary allocation (runtime object, EXE segment) has exactly one
-  owning process;
-- exit releases all of a process's resources;
-- a suspended parent keeps its resources while a child runs;
-- a child inherits none of the parent's auxiliary resources;
-- a failed load, relocation, allocation or launch rolls back everything
-  allocated for the attempted child, and no partial process becomes
-  visible.
-
----
-
-## 36.16 Extended-memory objects
-
-An auxiliary bank is divided into seven 8 KiB slots covering `0000h-DFFFh`.
-There is no reserved low window.
+**Auxiliary slots.**
 
 ```text
-slots 0-2   0000h-5FFFh   data; copied through the mode-10 gate
+slots 0-2   0000h-5FFFh   data; copies go through the mode-10 gate (slow)
 slot  3     6000h-7FFFh   data; window-speed copies
-slots 4-5   8000h-BFFFh   the aperture slice: mappable objects, mappable data segments and far-code segments
+slots 4-5   8000h-BFFFh   the aperture slice: mappable objects, mappable data
+                          segments and far-code segments
 slot  6     C000h-DFFFh   data; window-speed copies
 ```
 
-- `SYS_XMEM_ALLOC(size, flags)` returns an opaque handle. Objects are
-  process-owned, read/write and non-executable. A zero-byte allocation is
-  invalid.
-  - The size is rounded up to whole slots.
-  - An object is contiguous inside one bank.
-  - Placement is never visible through the API.
-  - **Derived per-object limits:** one plain (non-mappable) object is at
-    most **32 KiB** (slots 0-3; slots 4-5 are the aperture slice, which a
-    plain object never uses), and one `MAPPABLE` object is at most
-    **16 KiB** (the aperture). Both are per-object limits, not
-    application limits: a program has its 56 KiB primary bank plus any
-    number of far blocks and far-code segments, bounded only by the free
-    slots of banks 0-5.
-- **Contents are undefined.** Nothing pre-zeroes an object; a program
-  that needs zeroes writes them (section 36.19).
-- The `MAPPABLE` flag places the object in the aperture slice (at most
-  16 KiB). Only mappable objects can be opened with `SYS_XMEM_MAP`, which
-  returns **the map token and the object's address in the aperture**: an
-  8 KiB object in slot 5 appears at `A000h`, not `8000h`.
-- **Far-code rule:** every far-code segment is linked at `8000h`, so an
-  auxiliary bank holds **at most one** far-code segment. The aperture slot
-  that segment leaves free (when it is 8 KiB or less) may hold mappable
-  data.
-- Non-mappable objects prefer the window-speed slots, then slots 0-2.
-- `SYS_XMEM_READ` / `SYS_XMEM_WRITE` copy between the caller's buffer and
-  an object (handle, object offset, buffer, length). All range arithmetic
-  is checked before any copy.
-- `SYS_XMEM_INFO` returns requested size, allocated size, flags and type,
-  never a bank or slot.
-- `SYS_XMEM_FREE` releases a runtime object. Loader-created segments are
-  released only at exit. Invalid, stale or foreign handles are rejected.
+**Extended-memory objects** (`SYS_XMEM_*`):
 
-The bank map fills the non-aperture slots of a far bank with data objects
-and other processes' slots, so the part of a bank the aperture cannot reach
-is not wasted.
+- `ALLOC(size, flags)` returns an opaque handle; the size rounds up to whole
+  slots; an object is contiguous in one bank; placement is never visible.
+- A plain object is at most 32 KiB; a `MAPPABLE` object at most 16 KiB and
+  always in the aperture slice. These are per-object limits. At most 16
+  objects exist system-wide.
+- Plain objects prefer the window-speed slots 3 and 6, then slots 0-2.
+- `READ`/`WRITE` copy between an object and the caller's buffer, with all
+  range arithmetic checked first. `INFO` reports sizes, flags and type,
+  never a bank or slot. `FREE` releases a runtime object; loader-created
+  segments are released at exit.
+- `MAP(handle)` (mappable objects only) returns a **map token** and the
+  object's address in the aperture (`8000h` or `A000h`).
+- A far-code or mappable data segment takes slot 4 of its bank (slots 4-5
+  when it is over 8 KiB). When it uses only slot 4, slot 5 may hold a
+  runtime mappable object.
+- **Contents are undefined.** Nothing pre-zeroes an object.
 
----
+**Map tokens.** A token is the latch value that opens the aperture onto an
+object or segment. The nucleus issues tokens only for the caller's own
+objects and segments in banks 0-5 (P = 2-7), never for bank 6 or 7. The
+SDK opens the aperture by writing the token and closes it by restoring the
+previous latch.
 
-## 36.17 Far code and far data: the mode-10 aperture
+**Memory initialization.** KonaOS zeroes only what the language or the ABI
+requires: the BSS of the primary image and of each segment at load, and the
+startup block and page zero at exec. Nothing else is cleared; a single-user,
+single-tasking machine gains nothing from clearing memory for isolation.
 
-In mode 10 with P ≠ 0, `8000h-BFFFh` shows bank 7 − P. Everything else in
-the program's view (page zero, low memory, stack, primary code outside the
-aperture, common) stays mapped.
+### 4.9 IPC
 
-- **Map tokens.** `SYS_XMEM_MAP(handle)` returns an opaque map token (the
-  latch value that opens the aperture onto that object) plus the object's
-  address in the aperture. `SYS_SEG_MAP(segment)` returns a token; a
-  far-code segment is always at `8000h`. The SDK opens the aperture by writing the token to the
-  latch and closes it by restoring the previous token (P = 0 for the
-  primary view). A far call is an `OUT` followed by a plain `CALL`:
-  measured in microseconds, with no syscall.
-- **Tokens:** the nucleus issues tokens only for the calling process's own
-  objects and segments, and only for application banks 0-5 (P = 2-7). It
-  never issues a token for bank 6 or bank 7.
-- **Banked calls.**  A far-code module built with bank n makes every
-  `__banked` function in it callable as plain C: SDCC emits the segment id
-  (`b_<fn>` = n), the entry's linked address and a call to
-  `___sdcc_bcall_ehl`, and the SDK's trampoline maps segment n through a
-  per-program token cache, opens the aperture, transfers and restores the
-  caller's latch.  The far code may make banked calls of its own; a call
-  that names no far segment reports the SDK's `KOS_RT_EFARMAP`.
-- **Linker rule for far-using programs:**
-  - code, stack and data used while the aperture is open live outside
-    `8000h-BFFFh` of the primary image;
-  - far segments are linked at `8000h` and are at most 16 KiB;
-  - far code may call primary code outside the aperture directly, and
-    pointers into primary memory outside the aperture are valid in far
-    code;
-  - a pointer into another far segment is not.
-- **Syscalls from far code** are ordinary `RST 30h` calls through the
-  primary bank's page zero. The gate saves the whole latch, including P,
-  and restores it exactly on return. There is no auxiliary page zero, no
-  low window and no far-call gate.
-- **Buffer identity** follows section 36.8: a buffer in `8000h-BFFFh` with
-  P ≠ 0 lives in the far bank.
-- **Process transitions:**
-  - exec starts the child with P = 0;
-  - the parent's latch, including P, is restored when the child exits;
-  - exit releases everything regardless of the P in effect.
+Resident drivers export **endpoints**. The host assigns endpoint numbers;
+the nucleus keeps a prebuilt endpoint table in fixed data (number, owner
+driver, dispatch target, a re-entrant flag, a busy state). Endpoint numbers
+are not application ABI.
 
-A program that never asks for a token never has P ≠ 0.
+- **Synchronous call and reply** is the only IPC model. There are no
+  queues and no asynchronous messages.
+- **Frame:** one 32-byte request/reply frame (24 bytes of payload) for every
+  call. The handle's protocol defines what the fields mean.
+- **Descriptor:** at most **one** caller buffer per call, named in the call
+  block. At entry the nucleus captures it from the caller's saved latch
+  (bank and page) as a small id and passes the id in the frame's `desc`
+  field. The buffer must lie in `0100h-DFFFh` of the caller's bank or in
+  common memory, and is at most 4,096 bytes. Drivers move data only with
+  `copy_in(id, offset, buffer, length)` and `copy_out(...)`, which check
+  bounds on every use. There are no raw cross-domain pointers.
+- **Buffer identity:** a caller address in `8000h-BFFFh` while the caller's
+  saved P ≠ 0 names the far bank in the aperture, not the primary bank.
+- **Direct copies:** a descriptor id can be passed down a call chain, and
+  the driver that holds the data copies straight to the caller. No driver
+  stages data for another.
+- **Copy paths** (chosen per request; all are correct, A and B are fast):
 
----
+  | path | when | how |
+  |---|---|---|
+  | A | caller buffer in `0000h-1FFFh` or in common | mode 11, one `LDIR` |
+  | B | driver buffer in bank 6 `8000h-BFFFh`, caller buffer in its bank outside `8000h-BFFFh` | a common stub selects mode 10 over the caller's bank with P = 1, one `LDIR`, latch restored; interruptible |
+  | C | everything else | chunked through the common bank-copy gate |
 
-## 36.18 EXE v2
+  P = 1 is internal to the nucleus; no program ever receives a bank-6
+  token.
+- **Driver I/O rule:** driver buffers used with `copy_in`/`copy_out` live in
+  bank 6 `8000h-BFFFh`, the `DRIVER_IO` area. The loader refuses an image
+  whose `DRIVER_IO` data falls outside it.
+- **Validation lives in the nucleus only:** handle, endpoint, descriptor and
+  frame bounds are checked once, at the boundary. Drivers trust what the
+  nucleus hands them.
+- **Nesting:** at most 4 calls deep (`KOS_IPC_MAX_NESTING`). A call into an
+  endpoint already on the call stack is refused with `KOS_EBUSY` unless the
+  endpoint declares itself re-entrant.
+- **Driver-to-driver calls** are host-wired and near-direct: both drivers
+  are mapped, so the call dispatches through the endpoint table with the
+  frame passed by reference and no bank switch.
+- **Cost:** a null application call costs about 15,500 T-states (the frame
+  copies dominate); one window crossing costs 242. Protocols are therefore
+  coarse-grained: no per-byte operations; writes are buffered, reads are
+  read-N.
 
-M10 replaces EXE v1 with EXE v2. There is no compatibility path. All
-first-party programs, tools and tests convert, and the v1 parser, packer
-path and format code are removed once v2 is accepted.
+### 4.10 The namespace and handles
 
-A EXE v2 file contains:
+The VFS is a **namespace router**. It owns `/` and routes the first path
+component to one of three static nucleus providers:
 
 ```text
-header           every count and size the loader needs for one up-front feasibility check
-primary image    loads at 0100h (unchanged)
-segment table    per segment: id, kind (FAR_CODE or DATA), image size, BSS size, payload offset
-payloads
+/
+|-- fs       FS provider: forwards to the filesystem driver the build selected
+|-- system   ROMFS provider: the recovery store, FILE instances, no driver needed
+`-- dev      DEVICE provider: the host-built publication table
 ```
 
-- **Far-code segments** are linked at `8000h`, at most 16 KiB, and loaded
-  into the aperture slice of an auxiliary bank, one far-code segment per
-  bank. They are linked at their
-  run address, so they need **no relocation**.
-- **Data segments** become extended-memory objects owned by the process and
-  are reached by handle. A data segment may declare itself **mappable**
-  (package 49d): it is then placed in the aperture slice of an auxiliary
-  bank, one mappable segment per bank, so its image is at `8000h` and its
-  BSS is zeroed right after, and `SYS_XMEM_MAP` opens the aperture onto
-  it - the program reaches its data through plain pointers instead of
-  through copies. Far code and mappable data share the one window
-  (section 36.17): a banked call and a mapped segment are never visible at
-  the same time.
-- Entry points are resolved by the linker. A far call is a plain `CALL`
-  after mapping (section 36.17), so the container carries no far-entry
-  table.
-- **32-bit file geometry:** file, payload and table offsets and the total
-  size are validated with 32-bit arithmetic. The container may exceed
-  64 KiB.
-- **The host computes everything it can.** `tools/exepack.py` validates
-  geometry, overlap and bounds and pre-encodes the container, so the loader
-  only reads descriptors, checks bounds that protect the kernel, copies
-  payloads and zeroes BSS.
-- **Media gate:** an executable under `/system` must be a EXE entry
-  (`ROMFS_FLAG_EXE`); a `DATA` or driver-image entry is refused with the
-  EXE type error, and a filesystem driver's `FILE` has no entry kind and is
-  judged by the header alone (work package 42c restored the rule when exec
-  moved onto the namespace bind).
-- `SYS_SEG_INFO(segment)` returns a segment's size, kind and load state.
+- Root matching is ASCII case-insensitive; `fs`, `system` and `dev` are the
+  canonical spellings. The provider owns every component below its root;
+  the VFS never interprets a provider's hierarchy.
+- **Paths:** absolute or relative to the CWD; `.`, `..` and repeated `/`
+  are resolved; `..` above `/` stays at `/`. Comparison is ASCII
+  case-insensitive (`A-Z == a-z`, every other byte exact); each provider
+  implements the same rule for the paths it receives.
+- **Limits:** `KOS_PATH_MAX` = 128 bytes including the NUL; `KFS_NAME_MAX`
+  = 64. The native ABI does not inherit FAT 8.3; the current filesystem
+  driver does (section 5.6).
+- **Device names** describe roles, never products: `/dev/console`,
+  `/dev/video`, `/dev/input/keyboard`, `/dev/serial/0`, `/dev/ioc`, and
+  later `/dev/sound` and `/dev/timer`. One driver may publish several names
+  and types.
+- **Handles:** one global table of 12 entries, each tagged with its owner
+  process, its 8-bit protocol type, its endpoint and the provider's object
+  identity. A handle is small and opaque: not a bank, pointer or endpoint
+  number.
+- **`bind(path, flags)`** resolves a name and returns a handle and the type
+  it actually resolved; the caller passes no expected type. A name is a
+  class or factory, the handle an instance: binding `/dev/video` acquires a
+  permanent object, binding a file opens one. The 16-bit flags are
+  interpreted by the provider (open flags for `FILE`, zero for most
+  devices).
+- **`call(handle, op, frame)`** sends one protocol operation to the
+  handle's endpoint. The VFS is not in the data path. The ROMFS provider
+  answers in-process through the same path.
+- **`unbind(handle)`** releases the instance.
+- **Standard handles:** every process starts with handles 1 (output) and 2
+  (input) bound to `/dev/console`, bound fresh for that process, never
+  inherited. `bind` never returns them. A build with no console driver
+  starts processes without them.
+- **No universal directory protocol.** A slash below a root is provider
+  syntax. Enumeration is `ns_enum(path, cookie, buffer)`: batched entries
+  with a name, a `container` flag (further components may follow) and, for
+  bindable entries, the type. `container` is metadata, not a type.
+- **CWD** is a global path per process. `chdir` asks the owning provider
+  whether the path is traversable and stores the canonical path; it binds
+  nothing. `getcwd` returns it.
+- **Files:** `open`/`close` are SDK words built on `bind`/`unbind` with a
+  `FILE` type check. Name operations (`stat`, `mkdir`, `rmdir`, `unlink`,
+  `rename`) are filesystem-namespace protocol calls through `/fs`. A write
+  under `/system` returns `KOS_EROFS`. A missing card makes `/fs` answer
+  with `KOS_ENODEV`; `/system` and `/dev` are unaffected, so a machine
+  without a card still boots and recovers.
+
+### 4.11 The loaders
+
+- **The driver loader** makes one pass over `drivers.man` in load order
+  (section 3.2). It checks only the bounds that protect the nucleus and the
+  fixed bank-6 layout. Driver images carry no relocations: the host linked
+  them at their final addresses.
+- **The EXE loader** reads the header, makes one up-front feasibility check
+  (sizes, segment count, slots, 32-bit offsets), places the primary image
+  at `0100h` and each segment, zeroes the BSS areas, and rolls everything
+  back on any failure. An executable under `/system` must be an EXE entry
+  in the store; a `/fs` file is judged by its header alone. A container
+  built for another `abi_version` is refused.
 
 ---
 
-## 36.19 Memory initialization
+## 5. Resident drivers
 
-KonaOS zeroes **only what the language or the ABI requires**:
+### 5.1 What a driver is
 
-- the BSS of the primary image and of each segment, at load;
-- the startup block and page zero, at exec.
+A **driver** is a resident implementation of one or more protocol types. It
+need not correspond to hardware: it may be hardware-facing (IOC, HID,
+V9958, SIO), a filesystem (IOC-FAT), or a composition (a `CONSOLE` built
+from `VIDEO` + `INPUT`, or from `SERIAL`). Drivers are selected when the
+image is built, copied at boot and never unloaded: no revocation, no
+restart, no hot replacement.
 
-Nothing else is pre-zeroed: not extended-memory objects, not whole banks,
-not windows. There is no
-whole-bank clear at exec and no per-call clear of any window. KonaOS is a
-single-user system that runs one process at a time, so clearing memory for
-isolation buys nothing. Clearing a whole bank costs about 120 ms per exec.
+### 5.2 The driver bank
+
+```text
+bank 6 6000h-DFFFh   hot tier (32 KiB): everything a driver runs after boot,
+                     and its run-time data; 8000h-BFFFh holds DRIVER_IO first
+bank 6 0000h-5FFFh   boot/bulk tier (24 KiB): boot-only code and bulk data
+bank 6 E000h-FFFFh   unused (common is mapped over it)
+```
+
+- The hot tier is reached through the mode-11 window with P = 1. It holds
+  every path a user request can reach, including rare ones (for example the
+  V9958 display reset behind `ESC c`).
+- The boot/bulk tier holds code that runs only during bring-up (font
+  upload, filesystem setup) and bulk data drivers read through nucleus
+  copies (for example the font). The loader runs boot code through the
+  mode-10 gate with Q = 6. Nothing there runs after boot.
+- While a driver runs in mode 11, `0000h-1FFFh` shows the caller's bank;
+  drivers reach caller memory only through descriptors.
+
+### 5.3 The driver image
+
+A resident driver is a **MOD image** (`docs/module-format.md`) built from
+its manifest (`drivers/<dir>/<id>.json`): its hot segment, its `DRIVER_IO`
+data, its boot segment and bulk data, its endpoints, its `/dev`
+publications (name, type, endpoint, object) and its dependencies. The host
+packer links every selected driver at its final bank-6 address, assigns
+endpoint numbers, rejects duplicate endpoints and publications, resolves
+dependencies and emits the bank-6 layout, the endpoint and publication
+tables, the resolved dependency references and the boot manifest
+`drivers.man`.
+
+Driver images are a **source and build contract** with the OS tree, not a
+binary module ABI: a driver is built together with the image that carries
+it.
+
+**Endpoint key versus protocol type.** An endpoint is keyed by
+`(class, instance)` (`KOS_CLASS_*` in `abi/kos/protocol.h`), which is how
+manifests declare and resolve dependencies. The 8-bit **protocol type** a
+`bind` returns (`KOS_TYPE_*` in `abi/kos/object.h`) is a separate
+numbering: class HID serves type `INPUT`, and the FILE class serves both
+`FILE` and `FS`.
+
+### 5.4 The bootstrap API
+
+A driver's init receives one pointer, its **boot bundle**: the nucleus
+table it may use and its resolved dependency array. The table holds:
+
+- `call(dependency_ref, op, frame)`: a near-direct call to a resolved
+  dependency;
+- `copy_in`, `copy_out` and the bulk-data reader;
+- `irq_claim`, `irq_release`;
+- the few other primitives a driver needs, each named in
+  `drivers/include/driver.h`.
+
+There is no general kernel import table. An IRQ handler sees a restricted
+subset with no IPC.
+
+### 5.5 Dependencies and composition
+
+A manifest declares dependencies **symbolically**, by protocol type with an
+optional instance (`"INPUT"`, `"VIDEO:1"`; a test-only class is written
+`"#16"`; a trailing `?` makes it optional). The build resolves each to the
+one selected driver that exports it; none or more than one is a build
+error. Drivers never bind `/dev` names at run time to find each other.
+
+`/dev/console` is not special. Each build selects one console driver:
+
+```text
+console-v9958-hid   CONSOLE over VIDEO (V9958) + INPUT (HID)
+console-serial      CONSOLE over SERIAL (SIO)
+```
+
+There is no run-time fallback between them: a build has exactly the
+console it selected. Programs cannot tell which implementation answers.
+
+### 5.6 The drivers
+
+| driver | protocols | notes |
+|---|---|---|
+| `sio` | `SERIAL` | SIO channels; publishes `/dev/serial/0` |
+| `ioc` | `IOC` | the Z80-to-MCU transport (below) |
+| `hid` | `INPUT` | keyboard input over IOC; `/dev/input/keyboard` |
+| `v9958` | `VIDEO` | 85×26 terminal renderer (6×8 font); `/dev/video` |
+| `console-v9958-hid`, `console-serial` | `CONSOLE` | the per-build console |
+| `iocfat` | `FILE`, `FS` | the filesystem behind `/fs` |
+
+- **IOC is transport only.** It owns SIO1 framing, the command and bulk
+  lanes, the READY/DONE lifecycle, sequencing, timeouts, recovery and the
+  semantic status. It knows nothing of names, FAT, handles, paths or
+  caching.
+- **IOC-FAT** owns the FS2 commands, file and directory tokens, MCU error
+  translation and a one-slot, 512-byte, write-through **file-data cache**
+  (keyed by FS2 file, generation and aligned offset). A write changes no
+  cached byte until the MCU confirms it. A confirmed write, a truncating
+  open, `unlink` or `rename` also invalidates the other open file's slot; a
+  generation change or `STALE` reply invalidates everything. FS2 tokens
+  never reach programs. The deployed firmware limits card names to **8.3**.
+- Caching is the provider's policy. The VFS has no cache, and ROMFS needs
+  none.
 
 ---
 
-## 36.20 Residency budget and ledgers
+## 6. The native ABI
 
-Resident bytes remain an architectural resource. Every M10 package reports
-these ledgers and the bytes it adds, attributed per object:
+### 6.1 Layers
 
-| ledger | region | capacity | headroom target at M10 close |
-|---|---|---:|---:|
-| `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR stack, driver stack) | 16,384 | ≥ 2,048 |
-| `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | ≥ 4,096 |
-| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | ≥ 4,096 |
+1. **The nucleus ABI:** objects, namespace, processes, memory, segments,
+   diagnostics (section 6.2).
+2. **The IPC envelope:** handle, operation, 32-byte frame, status, one
+   optional descriptor.
+3. **Protocol types:** `FILE`, `FS` (filesystem namespace), `CONSOLE`,
+   `VIDEO`, `INPUT`, `SERIAL`, `IOC`, and later `SOUND`, `TIMER`. Each
+   defines its operations and frame meanings in `abi/kos/protocol.h`.
+4. **The SDK:** typed client functions that bind names, check types and
+   fill and decode frames (`docs/sdk.md`).
+
+The native ABI is not frozen; until it is, a change carries no
+compatibility path.
+
+### 6.2 Syscalls
+
+| number | name | purpose |
+|---|---|---|
+| `00h` | `EXIT` | end the process with a status |
+| `04h` | `GETINFO` | process identity record |
+| `05h` | `EXEC` | run a child synchronously |
+| `06h` | `BIND` | resolve a name to a handle and type |
+| `07h` | `CALL` | one protocol operation |
+| `08h` | `UNBIND` | release a handle |
+| `09h` | `NS_ENUM` | enumerate a namespace location |
+| `0Ah` | `CHDIR` | change the CWD |
+| `0Bh` | `GETCWD` | read the CWD |
+| `20h`-`25h` | `XMEM_ALLOC`, `FREE`, `READ`, `WRITE`, `INFO`, `MAP` | extended memory |
+| `26h`, `27h` | `SEG_INFO`, `SEG_MAP` | the program's own segments |
+| `28h`-`2Dh` | `DIAG_*` | recovery and diagnostics (6.9) |
+
+There is no `open`, `close`, generic handle-information call, device lookup
+or class query in the nucleus. Unassigned numbers return `KOS_ENOSYS`.
+
+### 6.3 Objects and protocols
+
+Every bound handle carries one 8-bit type; there is no capability bitmap.
+Protocol-specific information belongs to the protocol (for example video
+information, file metadata). Operations are coarse: a file moves in useful
+blocks, a console writes a buffer.
+
+### 6.4 Two result channels
+
+`SYS_CALL` reports in two places, and they mean different things:
+
+- **The syscall result (carry and `A`):** carry set means the request never
+  reached the IPC layer: the block was outside the caller window, the frame
+  length was wrong, or a reserved byte was set. `A` is the error.
+- **The IPC status (`HL` with carry clear, also written into the block):**
+  0 or positive is the driver's result; negative is `-KOS_E*`, a refusal by
+  the IPC layer or the driver (unknown handle, forged descriptor, copy
+  bounds, nesting depth, re-entrancy, or a protocol error).
+
+The SDK folds both into one return value: non-negative on success, `-errno`
+on failure. Every other syscall has only the first channel.
+
+### 6.5 Files
+
+- The `FILE` protocol: read, write, seek, metadata, sync, on a bound file.
+  I/O is byte-oriented; a zero-byte read is end of file; short reads are
+  valid. Sizes and positions are 32-bit; one transfer is 16-bit. A write
+  advances the position only after confirmed completion.
+- `close` releases the instance and flushes it; `sync` flushes while the
+  file stays open. There is no filesystem-wide sync.
+- The filesystem-namespace protocol (`FS`): `stat`, `mkdir`, `rmdir`,
+  `unlink`, `rename` by name. A rename across providers returns
+  `KOS_EXDEV`; the system never turns a rename into a copy.
+- **Metadata** (`struct kfs_stat`): type (`KFS_TYPE_FILE`, `KFS_TYPE_DIR`),
+  attributes (`READONLY`, `HIDDEN`, `SYSTEM`; no archive bit), 32-bit size,
+  `ctime`, `mtime`. The machine has no clock, so times are
+  `KFS_TIME_UNKNOWN` (0). No inode numbers, clusters, tokens, owners or
+  modes are exposed.
+
+### 6.6 Errors
+
+Error codes are `KOS_E*` in `abi/kos/errno.h`, one numbering for the whole
+system. Filesystem conditions have their own codes: `EEXIST`, `ENOTDIR`,
+`EISDIR`, `ENOTEMPTY`, `EROFS`, `ESTALE`, `EXDEV`, `EMFILE` (handle-table
+or open-file exhaustion, distinct from `ENOSPC`, storage or memory full).
+The values and each call's failure list are in `docs/abi.md`.
+
+### 6.7 The executable format (EXE)
+
+An EXE file (`docs/exe-format.md`) holds a header, a primary image that
+loads at `0100h`, a segment table and payloads. The header carries magic
+`KEX2`, format version 2, `abi_version` and every size the loader needs.
+
+- **Far-code segments** (ids first, 1..k) are linked at `8000h`, at most
+  16 KiB, placed at slot 4 of an auxiliary bank (one per bank) and need no
+  relocation.
+- **Data segments** follow. A plain data segment becomes an
+  extended-memory object reached by handle, at most 32 KiB. A data segment
+  with the `MAPPABLE` row flag (at most 16 KiB) is placed at slot 4, so it
+  sits at `8000h` where it was linked, and can be mapped.
+- File geometry is 32-bit, so a container can exceed 64 KiB.
+- The host (`tools/exepack.py`) validates geometry, overlap and bounds and
+  pre-encodes the container. The loader only reads descriptors, checks the
+  bounds that protect the nucleus, copies payloads and zeroes BSS.
+
+### 6.8 Process startup
+
+At entry `HL = 0080h`, the **startup block v1**:
+
+```text
+0080h  u8  version = 1
+0081h  u8  tail_length (0..125)
+0082h  ... the raw tail, then one NUL
+```
+
+The block sits below `0100h`, so a program copies the tail before its
+first syscall (the SDK's startup code does). The kernel never parses the
+tail; the SDK splits it into `argc`/`argv`. A later version may add fields
+without changing the launch contract, because the program reads `version`.
+The process starts with standard handles 1 and 2 and its parent's CWD.
+
+### 6.9 Diagnostics
+
+`SYS_DIAG_*` reads and writes memory in banks 0-6, reads and writes I/O
+ports outside the latch-aliased `00h-0Fh`, and reports bank and system
+information. They are explicit recovery interfaces for the monitor and the
+diagnostics, not a way around drivers. They never reach bank 7.
+
+---
+
+## 7. Programs and far memory
+
+### 7.1 Ordinary programs
+
+A program is an EXE built from C with the SDK (`docs/sdk.md`). It
+includes only `kos.h`, links the startup code and `libkos`, and never
+writes entry assembly. A program that uses no far facility has
+`0000h-DFFFh` to itself and never sees P ≠ 0.
+
+### 7.2 Far code
+
+- A far-code source is built into segment n with `FARn=` (n = 1..4). Every
+  `__banked` function in it is called as plain C: SDCC emits the segment
+  id, the address and a call to `___sdcc_bcall_ehl`, and the SDK's
+  trampoline maps the segment (caching its token), opens the aperture,
+  calls, and restores the caller's latch. Far code may call other segments'
+  banked functions.
+- `farcall(segment, fn, a, b)` is the primitive under it, for code that
+  maps explicitly.
+- **Link rule:** code, stack and data used while the aperture is open live
+  outside `8000h-BFFFh` of the primary image. Far code may call primary
+  code and use pointers into primary memory outside the aperture. A
+  pointer into another far segment is not valid.
+- Syscalls from far code are ordinary: the gate saves and restores the
+  whole latch, P included.
+
+### 7.3 Far data
+
+| kind | build | access |
+|---|---|---|
+| `DATAn=` sources | `const` tables and zeroed variables, linked at `8000h`, mappable | `farmap(n)` opens it; plain C symbols and pointers until `farunmap` |
+| `BLOBS=` files | binary payloads bundled in the EXE | `blob(n)` gives the handle; `xread` copies |
+| runtime objects | `xalloc` | `xread`/`xwrite`, or `xmap` plus the aperture if mappable |
+| a file loaded at run time | `xload(path, flags)` | as a runtime object |
+
+A data source with an initialized writable object is refused at build time:
+far data is either constant or zeroed. A file larger than one object is
+streamed, not loaded.
+
+**The one-window rule.** There is one aperture, `8000h-BFFFh`. Far code and
+mapped far data cannot be visible at the same time. Primary-image code can
+map data and use pointers; far code reaches far data by copy. Each far-code
+segment and each mappable data segment occupies one auxiliary bank's
+aperture slice, so their number is bounded by the free banks (`run` returns
+`KOS_ENOSPC` when the banks run out).
+
+### 7.4 Native programs in the store
+
+- **`monitor.exe`** is the recovery tool and today's boot program: memory
+  and I/O inspection (`R`, `D`, `M`, `I`, `O`), running a program from
+  `/system` or `/fs` (`X path [tail]`), help and quit. It uses only the
+  console and the diagnostic syscalls, so it works with either console
+  driver, and it stays small and independent of everything it inspects
+  (`docs/monitor.md`).
+- **`hwtest.exe`** is the production feature exerciser, run with
+  `X /system/hwtest.exe`: extended memory and far code, files (writes
+  confined to `/fs/HWTEST`, which it removes), the namespace and handles
+  against the real devices, and nested exec. It reports one line per
+  stage and a final `n/m PASS`, with a card and without one.
+
+### 7.5 Costs
+
+At 10 MHz (1 T-state = 0.1 µs):
+
+| operation | cost |
+|---|---|
+| banked call, token cached | 310 T-states (31 µs) |
+| first banked call into a segment | + 85 T-states + one `SYS_SEG_MAP` |
+| access through an open aperture | none |
+| `xread`/`xwrite`, slots 3-6 | about 21 T-states per byte |
+| `xread`/`xwrite`, slots 0-2 | about 287 T-states per byte |
+| null IPC call | about 15,500 T-states |
+
+---
+
+## 8. The build
+
+### 8.1 One system file per image
+
+Each image is described by `systems/<image>.json`:
+
+```json
+{ "schema": "kos-system-1",
+  "name": "production",
+  "drivers": ["sio", "ioc", "hid", "v9958", "console-v9958-hid", "iocfat"],
+  "boot": "/system/monitor.exe",
+  "store": ["monitor.exe", "hwtest.exe", "..."],
+  "cflags": [] }
+```
+
+- `drivers` is the load order. A bare id is `drivers/<dir>/<id>.json`; a
+  test-only driver is named by its repository path without `.json`.
+- `boot` is the boot program; it must be an EXE in the store under
+  `/system`.
+- `store` lists the store's own files. The store order is always: the
+  driver images in load order, then `drivers.man`, then the `store` files.
+- `cflags` are the image's extra compiler flags. A path containing `.exe`
+  never goes in a flag, because SDCC rejects any argument that contains it.
+
+`tools/systemgen.py` validates the schemas, resolves every driver and
+dependency, checks the boot program and writes `system.mk`, the store
+manifest, `drivers.man` and a resolved copy of each driver manifest for the
+packer. `make SYSTEM=<name>` builds an image; the named targets
+(`fs-selftest` and so on) select their system file.
+
+### 8.2 Host validation
+
+- `tools/mapcheck.py` checks the linked map against the platform
+  description: page zero, common placement, the fixed/cold split, the
+  `fixed-required` objects, the common ceiling, the stacks, the IM2 page and
+  its guard.
+- `tools/pack_image.py` checks the byte-level image (size, fill, the reset
+  copier, page ownership, the `RST 30h` stub) and emits the image manifest
+  with the ledgers.
+- `make check` rebuilds from clean, proves the rebuild reproduces the same
+  image, and runs the host tests and the production replay.
+- The simulator (`tests/z80sim.py`) replays images on the host. Physical
+  hardware stays authoritative for banking, the aperture, interrupt
+  acknowledgement and timing, serial and IOC behaviour; `tools/serial_smoke.py`
+  captures and checks a board's serial output.
+
+### 8.3 The SDK
+
+The in-tree build and the standalone SDK share one rule file,
+`mk/kos.mk`. `make sdk` produces `kos-sdk-<version>/` and its tarball: the
+headers, `libkos.lib`, `crt0.rel`, the standalone tools, the rules, a
+template, examples and the SDK documents. A developer builds a program with
+no OS source and runs it from the card. `VERSION` carries the SDK version
+and the ABI number.
+
+---
+
+## 9. Budgets and ledgers
+
+Resident bytes are an architectural resource. Every change reports these
+ledgers (`docs/memory.md` has the current values):
+
+| ledger | region | capacity | rule |
+|---|---|---:|---|
+| `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR and driver stacks) | 16,384 | keep ≥ 2,048 free |
+| `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | keep ≥ 4,096 free |
+| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 4,096 free |
 | `driver boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
-| `common:` | `E000h-FFFFh` packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | — |
+| `common:` | packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | never raised |
 | gate stack | common | 384 | worst case ≤ 360 |
 
-- `KOS_COMMON_CEILING` stays at 3072 bytes and may not be raised. The
-  512-byte M10 reservation of section 7.2 is released to M10's transitions
-  and IPC; no far-call gate is built. Its first tenant is the path-B copy
-  stub (58 bytes, package 39).
-- When a ledger does not fit, the remedy is slimming or moving code to a
-  lower tier (fixed → cold through an upcall shim, driver hot → boot/bulk). It is
-  never a third bank (section 36.3).
+When a ledger does not fit, the remedy is slimming or moving code to a
+lower tier (fixed to cold through an upcall shim, driver hot to boot/bulk),
+never a third bank.
 
 ---
 
-## 36.21 M10 portability boundary
+## 10. Protection
 
-Zephyr-80 implementation details:
+The Zephyr-80 has no MMU, and KonaOS is trusted and single-tasking. The
+nucleus/driver split gives modularity, ownership rules, controlled bank
+crossing and ABI discipline, not protection:
 
-```text
-physical bank numbers, the page field P, map-token values
-8 KiB slots, the aperture address and size
-mode 10 / mode 11, the 6000h window, RST 30h
-the fixed/cold and hot/boot tier split
-```
+- a defect in resident code can corrupt any memory;
+- validation happens once, in the nucleus, at the boundary;
+- handles prevent accidental coupling to addresses, but they are not
+  enforced capabilities;
+- a program can write the latch.
 
-Native KonaOS concepts:
-
-```text
-process, primary address space
-endpoint, typed handle, protocol, descriptor, namespace provider
-extended-memory object, segment, map/unmap
-logical size
-```
-
-No public ABI requires a future port to emulate a Z80 bank, slot or
-aperture.
-
----
-
-## 36.22 Protection model
-
-Zephyr-80 has no MMU, and KonaOS is trusted and single-tasking. Bank-6
-drivers are trusted resident extensions. The nucleus/driver split gives
-modularity, ownership rules, controlled bank crossing and ABI discipline,
-not protection:
-
-- a defect in resident code can still corrupt any memory;
-- validation is done once, in the nucleus, at the boundary; drivers do
-  not repeat it, because there is no protection model for it to serve;
-- handles prevent accidental address coupling, but they are not
-  hardware-enforced capabilities;
-- an application can write the latch.
-
-Validation, bounds checks and copied metadata are kept anyway: they catch
+Validation, bounds checks and copied metadata stay anyway: they catch
 defects and keep the boundaries replaceable.
 
 ---
 
-## 36.23 M10 non-goals
+## 11. Portability
 
-M10 does not add:
+KonaOS is meant to run on more than one machine. The split is:
+
+**Zephyr-80 details** (a port reimplements them):
 
 ```text
-preemptive scheduling or multitasking
-asynchronous or queued IPC, revocation, driver restart or unloading
-generic marshaling layers
-shared writable memory between processes
-runtime-generated executable memory, dynamic libraries
-virtual memory, swap, memory protection
-a third operating-system bank
+physical bank numbers, the page field P, map-token values
+8 KiB slots, the aperture address and size
+modes 10 and 11, the 6000h window, RST 30h
+the fixed/cold and hot/boot tier split
+the IOC transport and the MCU filesystem
 ```
 
-The Z80 remains a cooperative, single-running-process machine.
+**Native concepts** (family-wide):
+
+```text
+process and primary address space
+endpoint, typed handle, protocol, descriptor, namespace provider
+extended-memory object, segment, map and unmap
+logical sizes
+```
+
+Far memory and the aperture are Zephyr-80 extensions: no public interface
+requires a port to emulate a Z80 bank, slot or aperture.
 
 ---
 
-## 36.24 Implementation order
+## 12. Boundaries
 
-1. **Baseline:** revision 13 is programmed (done); switch the simulator
-   default to it; remove the machinery of the rejected options.
-2. **Nucleus split:** link the nucleus as fixed core plus cold half with
-   upcall shims; the syscall gate clears P; establish the ledgers of 36.20.
-3. **IPC substrate:** host-built endpoint table, synchronous call/reply,
-   32-byte frames, two fixed descriptors, copy primitives, nesting,
-   re-entrancy and IRQ delivery to bank-6 drivers.
-4. **Resident drivers:** driver-image metadata and loader; move IOC, HID,
-   V9958, SIO and console implementations into the bank-6 driver domain.
-5. **Host assembly:** link resident drivers at final addresses; resolve
-   endpoint numbers and inter-driver protocol dependencies on the host;
-   near-direct driver-to-driver calls; no target relocation or discovery.
-6. **Namespace and typed handles:** VFS owns `/`; add the static FS, DEVICE
-   and ROMFS namespace providers; host-build `/dev` publications; implement
-   `bind`, `call`, `unbind`, 8-bit types, global owner-tagged handles,
-   namespace enumeration and standard console handles.
-7. **Files on typed handles:** FS provider routes `/fs` to IOC-FAT; ROMFS
-   serves `/system`; FILE `open/close/read/write/...` live in `fs.h` over
-   bind/call/unbind; remove generic DIRECTORY handles and retire `FS_*`.
-8. **Pruning:** delete the arena/module relocator path, the driver ABI, the
-   device/class/capability registry, filesystem-provider registration,
-   runtime mount machinery, old console binding policy and transitional
-   headers/tests. No compatibility copy survives construction.
-9. **Extended memory:** bank map, xmem objects, map tokens and aperture.
-10. **EXE v2:** v2 replaces v1; far code executes through the aperture.
-11. **Acceptance:** section 37.
+**Personalities.** A later personality (CP/M first) consumes native
+facilities: it may synthesize drive letters, USER areas, FCBs and 128-byte
+records over native paths, and it builds its own page zero (`0000h` warm
+boot, `0005h` BDOS, the default FCBs, `0080h` tail, a `0100h` program).
+None of that enters the native ABI. Mode 01 is reserved for personalities.
+
+**Not provided:** preemption or multitasking; asynchronous or queued IPC;
+driver unloading, restart or revocation; generic marshalling; shared
+writable memory between processes; run-time generated executable memory or
+dynamic libraries; virtual memory, swap or memory protection; a third OS
+bank; run-time mounting, device registration or hardware probing; drive
+letters, symbolic links, permissions, pipes or redirection in the native
+system.
 
 ---
 
-# 37. M10 acceptance criteria
+## 13. Glossary
 
-```text
-hardware:
-    revision 13 programmed; CP/M boots; the production image boots
-    P = 0 equivalence with revision 12 (vectors) and on hardware
+**aperture**: mode 10's `8000h-BFFFh` when P ≠ 0; shows bank 7 − P.
 
-residency:
-    nucleus fixed / nucleus cold / driver hot / driver boot-bulk / common
-    ledgers emitted and within section 36.20, headroom targets met
-    gate-stack worst case <= 360; driver-stack high-water reported
+**auxiliary bank**: an application bank divided into 8 KiB slots owned by
+processes as extended memory.
 
-IPC / typed object lifecycle:
-    bind -> handle + 8-bit type; no expected-type argument
-    call; 32-byte frame both ways; unbind releases the instance
-    no generic handle_info and no class/capability lookup
-    descriptors: copy in/out, bounds rejection, forged id rejection
-    no driver can name a caller address
-    chained FILE read: application -> IOC-FAT -> IOC with direct copy
-    nesting limit enforced; re-entrant call -> EBUSY unless declared
-    driver-to-driver near-direct path gives identical protocol results
-    driver-owned IRQ fires during a driver call; interrupted latch restored exactly
+**banked call**: a C call to a `__banked` far function through the SDK
+trampoline.
 
-host assembly / drivers:
-    resident drivers linked at final bank-6 addresses on the host
-    endpoint numbers and driver dependencies resolved by the host
-    no runtime relocation, device registration, class discovery or hardware probing
-    one driver may implement several protocol types and publish several objects
-    required-driver initialization failure is explicit boot/configuration failure
+**bind**: resolve a namespace name to a handle and its protocol type.
 
-namespace:
-    VFS owns exactly the global root routing
-    /fs -> static FS provider
-    /system -> static ROMFS provider and works before bank-6 drivers
-    /dev -> static DEVICE provider over the host-built publication table
-    provider owns every hierarchy component below its root
-    root and provider enumeration work without a DIRECTORY protocol/handle
-    CWD traversal works through provider validation
-    no M9 runtime mount/provider registry or root merge remains
+**boot bundle**: the one pointer a driver's init receives: the nucleus
+table and its resolved dependencies.
 
-device publication and composition:
-    /dev/video resolves to VIDEO without exposing V9958 by name
-    /dev/console resolves to CONSOLE and is otherwise ordinary
-    selected console driver uses host-resolved dependencies
-    V9958+HID console configuration works
-    serial console configuration works with a different CONSOLE driver
-    alternate implementations can publish the same protocol/name in another build
+**boot/bulk tier**: bank 6 `0000h-5FFFh`; driver code that runs only at
+boot and bulk driver data.
 
-files:
-    fs_open(path, flags) is bind + FILE-type check
-    fs_close is unbind
-    /fs file operations use the selected filesystem driver
-    /system produces ordinary read-only FILE handles through ROMFS
-    namespace/path operations (enumeration, mkdir, unlink, rename) require no DIRECTORY handle
-    old FS_* syscall front end absent
+**cold half**: bank 7 `6000h-DFFFh`; nucleus code and data used only while
+the window shows bank 7.
 
-process lifetime:
-    standard /dev/console handles present at process start and inherited
-    exec(path) resolves through VFS, requires FILE, streams it and unbinds it
-    exit force-unbinds leaked handles before releasing xmem/segments/bank
-    nested exec, startup-tail transport and CWD inheritance unchanged
+**common memory**: `E000h-FFFFh` of bank 0, visible in modes 10 and 11.
 
-ordinary EXE v2:
-    zero segments; normal exec/exit; nested parent/child exec
-    full 0000h-DFFFh available; P = 0 throughout
+**container** (namespace): an enumeration flag meaning further path
+components may follow.
 
-xmem:
-    1 / 8191 / 8192 / 8193 bytes; multiple objects per bank
-    largest object; oversized rejection; exhaustion; fragmentation
-    stale/foreign handle rejection; no pre-zeroing
-    first/last byte, slot boundary, whole object; range rejection
-    automatic cleanup on exit
+**copy path**: how a descriptor copy moves bytes (A, B or C).
 
-far code and data:
-    map a far-code segment; primary -> far -> primary by plain CALL
-    far code calls primary code; ordinary and FILE syscalls from far code
-    buffer in the aperture used as a syscall buffer (buffer identity)
-    mappable xmem object read/written directly through the aperture
-    no token for banks 6/7 or for another process's objects
-    exec from far context starts the child with P = 0; parent latch restored
-    exit from far context releases everything
+**descriptor**: a caller buffer captured by the nucleus at call entry and
+named to the driver by a small id.
 
-EXE v2:
-    one and several far-code segments; data segments; image + BSS
-    container larger than 64 KiB; malformed header/table rejection
-    segment allocation rollback
+**driver**: a resident implementation of one or more protocol types, in
+bank 6.
 
-lifetime:
-    suspended parent retains its objects and segments
-    child receives none of the parent's
-    repeated exec/exit and map/unmap leak nothing
-```
+**`DRIVER_IO`**: a driver's copy buffers, in bank 6 `8000h-BFFFh`.
 
-Physical hardware is authoritative for bank switching, the aperture,
-interrupt interaction and resident-driver IRQ delivery.
+**early console**: the polled SIO channel B path used before drivers and
+for panics.
+
+**endpoint**: a driver's IPC entry, keyed by `(class, instance)` and
+numbered by the host.
+
+**EXE**: the native executable container.
+
+**extended-memory object**: process-owned memory in auxiliary slots,
+reached by handle.
+
+**fixed core**: bank 7 `2000h-5FFFh`; nucleus code and data that must stay
+visible whatever the window shows.
+
+**frame**: the 32-byte request/reply block of one call.
+
+**handle**: a small process-owned reference to a bound instance.
+
+**hot tier**: bank 6 `6000h-DFFFh`; driver code and data used after boot.
+
+**latch**: the memory-control register at port `00h` (Q, mode, P).
+
+**map token**: the latch value that opens the aperture onto one object or
+segment.
+
+**MOD**: the resident driver image format.
+
+**namespace provider**: one of the three nucleus components that own
+`/fs`, `/system` and `/dev`.
+
+**nucleus**: the kernel: bank 7 plus its common-memory parts.
+
+**P (page)**: latch bits D5-D7: the ROM page in mode 00, the window or
+aperture page otherwise.
+
+**primary bank**: the bank a process runs in.
+
+**protocol type**: the 8-bit type of a bound handle (`FILE`, `CONSOLE`,
+...).
+
+**publication**: a host-built `/dev` entry: name, type, endpoint, object.
+
+**Q**: latch bits D0-D2, the SRAM bank.
+
+**segment**: an auxiliary part of an EXE: far code or data.
+
+**startup block**: the versioned block at `0080h` a process receives.
+
+**store**: the ROM recovery store, read by ROMFS and seen as `/system`.
+
+**system file**: `systems/<image>.json`, the description of one image.
+
+**upcall shim**: fixed-core code that lets cold code call a bank-6 driver.
+
+**window**: mode 11's `6000h-DFFFh`; bank 7 when P = 0, bank 6 when P = 1.
 
 ---
 
-# 38. Milestone M11 — Native diagnostic suite
+## 14. Roadmap
 
-## 38.1 Objective
+Planned work, in order. None of it changes the contracts above unless it
+says so.
 
-M11 builds the complete native KonaOS diagnostic environment on top of the now-complete kernel mechanisms.
-
-M11 is primarily userland.
-
-It does not move diagnostic implementations into the kernel merely because they inspect hardware.
-
-The existing M7 monitor remains the minimal recovery tool; M11 adds a broader diagnostic suite beside it.
-
----
-
-## 38.2 Diagnostic layering
-
-The diagnostic suite follows this order of preference:
-
-```text
-1. ordinary typed protocol through a bound object
-2. public namespace / FILE behavior
-3. M7 diagnostic syscall
-4. narrowly added read-only diagnostic introspection
-```
-
-A diagnostic must not link private kernel or driver symbols.
-
-Direct memory and I/O operations continue to cross the explicit M7 diagnostic boundary.
-
-The suite does not acquire arbitrary bank-7 read/write access.
-
----
-
-## 38.3 Diagnostic program organization
-
-The primary diagnostic program is:
-
-```text
-/system/diag.exe
-```
-
-`diag.exe` is an ordinary EXE v2 executable.
-
-It may use M10 auxiliary code segments to keep the primary image small and to make the diagnostic suite the first substantial production consumer of far-code support.
-
-Conceptually:
-
-```text
-primary segment:
-    command/menu
-    common formatting
-    result aggregation
-
-far segments:
-    memory/banking
-    IRQ/CTC
-    serial
-    video
-    HID
-    IOC
-    storage
-    sound
-```
-
-The exact segmentation is a build decision, not a user ABI.
+1. **The native shell.** `/system/shell.exe`, an ordinary program that
+   becomes the boot program:
+   - one argument splitter shared by the shell and every program's startup
+     (single and double quotes, backslash escapes), so arguments survive
+     into a child's tail;
+   - `/fs` is shown as `/`; any other absolute path gains `/fs` in front;
+     `//` names the real namespace root; `/system` and `/dev` stay as they
+     are;
+   - a command path (`.`, `/fs/BIN`, `/system`), with or without `.exe`;
+   - built-ins: `cd pwd echo path help exit ls cat stat cp mv rm mkdir
+     rmdir`; `mv` renames, or copies and unlinks across providers;
+   - the boot launcher gains a policy: a failed boot program falls back to
+     `/system/monitor.exe`, and `KOS_BOOT_AFTER_EXIT` chooses between
+     relaunching the boot program and ending at the monitor (test images
+     end at the monitor instead of looping).
+2. **Device state and warm reboot.**
+   - Drivers that ask for it are told when a handle on their object is
+     released (`KOS_OP_RELEASE`). A program takes a device over only
+     through an exclusive bind (`KOS_BIND_EXCLUSIVE`, `KOS_OP_ACQUIRE`):
+     it reprograms a device only while it holds that handle. The video
+     driver restores the text screen when the handle goes.
+   - The launcher resets the console before every start of the boot
+     program.
+   - Warm reboot (`SYS_REBOOT`, `reboot`, the monitor's `B`, Ctrl-Alt-Del):
+     latch `00h`, `JP 0`, and the ROM copy runs as at power-on. Every
+     driver init must program its device fully from any state, because no
+     device receives a hardware reset.
+3. **A timer driver.** CTC channel 2 at 156.25 Hz publishing `/dev/timer`;
+   time is read with 25.6 µs resolution by combining the tick count with
+   the channel's down-counter. The first production interrupt source.
+4. **The diagnostic suite.** `/system/diag.exe`, run from the shell, built
+   from far segments:
+   - every test reports `PASS`, `FAIL` or `SKIP`; `diag all` aggregates,
+     never destroys data and exits non-zero only on a failure;
+   - families: system, memory, timer, irq, serial, video, hid, ioc,
+     storage, sound;
+   - benchmarks of the SD card, the IOC bulk lane (the controller's ramp
+     test) and the command lane, with per-call minimum, mean, maximum and
+     a latency histogram;
+   - one read-only nucleus addition, `SYS_DIAG_ENUM`, returning value
+     records (banks, interrupt sources, drivers, interrupt totals) and no
+     pointers.
+5. **After that:** compatibility personalities, starting with CP/M.
 
 ---
 
-## 38.4 Diagnostic command families
-
-The complete suite covers at least:
-
-```text
-diag system
-diag memory
-diag irq
-diag serial
-diag video
-diag hid
-diag ioc
-diag storage
-diag sound
-diag all
-```
-
-### `system`
-
-Reports and validates:
-
-```text
-kernel/native ABI identity
-process identity
-memory geometry
-free primary banks
-auxiliary-memory state
-loaded resident drivers and endpoints
-root namespace providers and /dev publications
-selected filesystem driver behind /fs
-selected CONSOLE driver and its host-wired dependencies
-```
-
-### `memory`
-
-Tests:
-
-```text
-xmem allocation/free
-pattern write/readback
-slot-boundary transfers
-bank restoration
-allocator exhaustion/cleanup
-```
-
-Destructive arbitrary-bank testing is not the default.
-
-### `irq`
-
-Inspects or tests:
-
-```text
-IRQ executive state
-source ownership
-CTC delivery
-unexpected-source accounting
-interrupt enable/restore behavior
-```
-
-### `serial`
-
-Exercises the SERIAL object (`/dev/serial/0`) where practical without replacing the permanent panic/early-console path.
-
-### `video`
-
-Provides:
-
-```text
-console test
-character/font test
-VRAM/data-path test where exposed safely
-visual test patterns
-```
-
-### `hid`
-
-Provides an interactive keyboard/input test and reports translated events through the normal INPUT/CONSOLE protocols.
-
-### `ioc`
-
-Exercises:
-
-```text
-link status
-command/reply transactions
-bulk read/write path
-error/recovery counters where exposed
-```
-
-without bypassing the active IOC driver and corrupting its transport state.
-
-### `storage`
-
-Exercises the native filesystem and, where appropriate, block layer:
-
-```text
-sequential read/write
-seek
-metadata
-cache behavior
-throughput
-confirmed write
-media/reset behavior
-```
-
-A destructive raw-media test requires an explicit destructive mode and never runs under `diag all`.
-
-### `sound`
-
-Exercises the installed sound hardware/driver when present.
-
-Where no native SOUND driver exists yet, a board-level diagnostic may use the explicit diagnostic-I/O boundary rather than turning sound testing into a new kernel subsystem.
-
----
-
-## 38.5 Read-only diagnostic introspection
-
-M11 may add narrow read-only diagnostic introspection after the existing M7 diagnostic family when concrete tests need information that normal APIs cannot expose safely.
-
-Conceptually:
-
-```text
-SYS_DIAG_ENUM
-
-kind
-index
-output record
-output size
-```
-
-with versioned record kinds such as:
-
-```text
-memory
-irq source
-driver
-endpoint
-namespace provider
-namespace publication
-```
-
-The introspection path copies stable descriptive values.
-
-It does not expose:
-
-```text
-kernel pointers
-driver state pointers
-mutable endpoint or namespace tables
-bank-7 addresses usable as capabilities
-```
-
-End-of-list is distinct from failure.
-
-No generic "call arbitrary driver operation" diagnostic syscall is introduced.
-
-If a diagnostic cannot be expressed safely through normal typed protocols, existing diagnostic primitives or this read-only introspection model, that requirement returns to architecture review.
-
----
-
-## 38.6 Non-destructive by default
-
-Every M11 diagnostic is non-destructive by default.
-
-Potentially destructive operations require an explicit operator choice identifying the resource to modify.
-
-`diag all` must be safe to run on a normal booted system.
-
-Device absence is:
-
-```text
-SKIP
-```
-
-not failure.
-
-Unsupported optional functionality is also `SKIP`.
-
-A real test failure is `FAIL`.
-
----
-
-## 38.7 Stable result model
-
-Every diagnostic command produces a final status:
-
-```text
-PASS
-FAIL
-SKIP
-```
-
-and returns a process exit status consistent with that result.
-
-`diag all` aggregates the individual tests and exits successfully only when no required test failed.
-
-Human-readable detail may precede the summary, but automated acceptance must be able to identify the final result without screen scraping arbitrary prose.
-
----
-
-## 38.8 Monitor relationship
-
-`monitor.exe` remains small, independent and recovery-oriented.
-
-M11 does not absorb the full diagnostic suite into the monitor.
-
-The monitor remains usable if:
-
-```text
-diag.exe is missing
-an auxiliary allocation fails
-a diagnostic far segment is malformed
-external storage is absent
-```
-
-Before M12 supplies the normal shell, acceptance images may launch `diag.exe` directly.
-
-A minimal monitor command that executes a named native program through the ordinary `SYS_EXEC` path may be added for operator convenience, but it creates no new privileged execution path.
-
----
-
-## 38.9 M11 non-goals
-
-M11 does not add:
-
-```text
-a second driver stack
-private diagnostic driver entry points
-kernel-resident test suites
-automatic destructive media testing
-a shell
-CP/M diagnostics
-personality-specific diagnostics
-```
-
-It diagnoses native KonaOS and the physical Zephyr-80 platform.
-
----
-
-# 39. M11 acceptance criteria
-
-Acceptance includes:
-
-```text
-system:
-    coherent version/process/memory report
-    resident-driver / endpoint enumeration
-    root namespace-provider enumeration
-    /dev publication enumeration
-
-memory:
-    xmem pattern test
-    allocation exhaustion and recovery
-    no resource leakage
-
-irq/ctc:
-    known interrupt delivery
-    counters/state
-    exact return state
-
-serial:
-    /dev/serial/0 SERIAL protocol path
-    bounded failure behavior
-
-video:
-    console output
-    operator-visible test pattern
-
-hid:
-    interactive key/input validation
-
-ioc:
-    command exchange
-    bulk path
-    recovery/error handling
-
-storage:
-    filesystem read/write/seek
-    cache path
-    throughput reporting
-    safe failure with no media
-
-sound:
-    positive hardware test when installed
-    SKIP when absent
-
-aggregate:
-    diag all never performs destructive testing
-    PASS/FAIL/SKIP aggregation
-    meaningful exit status
-
-architecture:
-    no private kernel/driver links in diag.exe
-    diagnostic ABI exposes no kernel pointers
-    monitor still works independently
-    EXE far segments used successfully where configured
-
-budget:
-    production residency ledgers pass
-```
-
-Hardware-observable device tests require physical acceptance.
-
----
-
-# 40. Milestone M12 — Native shell and core userland
-
-## 40.1 Objective
-
-M12 provides the normal interactive native KonaOS environment.
-
-At the beginning of M12 the kernel, memory system, process model, filesystem, device stack, diagnostics and executable model are already complete.
-
-M12 is therefore a userland milestone.
-
-The shell must not require a new kernel mechanism merely to become usable.
-
-If a fundamental kernel facility is found missing, the omission is treated as an earlier architecture defect rather than hidden inside shell-specific kernel code.
-
----
-
-## 40.2 Shell is an ordinary process
-
-The native shell is:
-
-```text
-/system/shell.exe
-```
-
-and is an ordinary EXE v2 application.
-
-It has no private kernel imports.
-
-It uses only:
-
-```text
-CONSOLE through console.h and the inherited /dev/console handle
-FILE / filesystem namespace operations through fs.h
-VFS bind/call/unbind and namespace enumeration through the SDK
-SYS_EXEC / process ABI
-existing startup-tail contract
-```
-
-The shell becomes the normal parent process for launched native programs.
-
-The existing lifecycle remains:
-
-```text
-shell running
-    |
-    | SYS_EXEC
-    v
-shell suspended
-    |
-    v
-child running
-    |
-    | SYS_EXIT
-    v
-shell resumed with child status
-```
-
-No scheduler is required.
-
----
-
-## 40.3 Boot policy
-
-After normal boot:
-
-```text
-nucleus + root namespace providers
-    ->
-resident drivers and host-selected /dev publications
-    ->
-standard handles bound to /dev/console
-    ->
-launch /system/shell.exe
-```
-
-`/system/shell.exe` is part of the recovery filesystem so the native environment remains available without writable SD media.
-
-If the shell cannot be loaded or launched, KonaOS falls back to:
-
-```text
-/system/monitor.exe
-```
-
-through the established recovery path.
-
-A normal shell exit may be relaunched by the kernel supervisor.
-
-An abnormal shell failure is reported and may enter the monitor rather than endlessly relaunching a failing shell.
-
-The exact exit-status policy is pinned during implementation and tested.
-
-**Reconciliation with the M9 launcher (stated M12 change).** M9's
-`KOS_BOOT_PROGRAM` (the image's system file, compiled into the kernel as
-a constant string) already selects the single program the boot launcher
-starts
-and, on a normal exit, re-executes; switching native KonaOS to the shell is
-that one setting plus a `shell.exe` entry in the selected recovery manifest.
-What is **new in M12, not M9**, is the failure policy above: the M9 launcher
-reports and re-executes its configured program, whereas M12 adds the
-`/system/monitor.exe` fallback for a shell that cannot be loaded or launched
-and stops an abnormally failing shell from being relaunched indefinitely.
-That fallback is implemented and tested in M12; M9 leaves the launcher
-unchanged.
-
----
-
-## 40.4 Command parsing belongs entirely to userland
-
-The shell receives the existing raw startup tail and owns command-line parsing.
-
-The kernel never parses shell syntax.
-
-M12 supports at least:
-
-```text
-whitespace-separated words
-single-quoted strings
-double-quoted strings
-backslash escaping
-```
-
-For an external command, the shell serializes the resulting arguments into the existing bounded `SYS_EXEC` raw-tail contract used by startup block v1.
-
-M12 does not require:
-
-```text
-pipes
-I/O redirection
-background jobs
-job control
-shell scripting
-variable expansion
-command substitution
-filename glob expansion
-```
-
-Those can be added later without changing the kernel process model.
-
----
-
-## 40.5 Shell built-ins
-
-The native shell deliberately contains the core userland commands as built-ins.
-
-At minimum:
-
-```text
-cd
-pwd
-ls
-cp
-mv
-rm
-mkdir
-rmdir
-cat
-stat
-echo
-path
-help
-exit
-```
-
-These commands are part of the shell executable rather than separate EXE programs.
-
-This has several advantages on Zephyr-80:
-
-```text
-no repeated exec/exit overhead for simple filesystem operations
-no duplicated runtime/startup code across tiny utilities
-smaller recovery-store footprint
-shared parsing and formatting code
-shared filesystem buffers
-simpler recovery environment
-```
-
-Commands such as `cd`, `pwd`, `path` and `exit` necessarily operate on shell-owned state and therefore must be built-ins.
-
-For architectural simplicity and compactness, M12 applies the same model to the remaining core commands.
-
-This packaging choice is deliberate but does not make the commands kernel drivers. They remain ordinary userland logic inside `shell.exe`.
-
----
-
-## 40.6 Shell path presentation
-
-The kernel/VFS namespace is explicit:
-
-```text
-/fs/...       normal writable filesystem namespace
-/system/...   recovery ROMFS namespace
-/dev/...      device namespace
-```
-
-For interactive UX the shell presents `/fs` as the ordinary filesystem
-root. This is **userland syntax only**; VFS itself never aliases paths.
-
-Rules:
-
-```text
-internal CWD /fs/GAMES        displayed by the shell as /GAMES
-user /GAMES/ZAXXON.ROM        translated by the shell to /fs/GAMES/ZAXXON.ROM
-user /dev/video               kept as /dev/video
-user /system/diag.exe         kept as /system/diag.exe
-user /fs/dev                  explicitly names the filesystem entry /dev below /fs
-```
-
-`/fs`, `/system` and `/dev` are the reserved global-root spellings. Any
-other absolute path entered at the shell is filesystem shorthand and gains
-the `/fs` prefix. Relative paths are resolved against the shell's actual
-VFS CWD.
-
-This presentation rule lets normal filesystem use look conventional without
-making the filesystem own the global root namespace.
-
----
-
-## 40.7 External command lookup
-
-Commands not recognized as shell built-ins are treated as executable program names.
-
-An argument containing `/` is treated as an explicit path.
-
-A bare command name is resolved entirely by shell policy through a bounded shell-local command path.
-
-A suitable initial internal default is:
-
-```text
-.
-/fs/BIN
-/system
-```
-
-Missing path components are skipped.
-
-The shell may try the exact name and then the conventional `.exe` suffix.
-
-The kernel has no `PATH` concept and performs no command search.
-
-Changing the shell command path changes only shell state.
-
----
-
-## 40.8 Core native userland
-
-The core native userland is the shell itself.
-
-The following facilities are built into `shell.exe`:
-
-```text
-filesystem navigation
-    cd
-    pwd
-
-directory/file inspection
-    ls
-    stat
-    cat
-
-filesystem mutation
-    cp
-    mv
-    rm
-    mkdir
-    rmdir
-
-general shell utilities
-    echo
-    path
-    help
-    exit
-```
-
-Larger or specialized applications remain ordinary external EXE programs.
-
-Examples include:
-
-```text
-diag.exe
-monitor.exe
-editors
-compilers
-language runtimes
-games
-future personality launchers
-```
-
-Thus the distinction is:
-
-```text
-small universal operating commands     -> shell built-ins
-substantial applications/tools          -> external EXE programs
-```
-
-The exact internal organization of built-ins may use separate source modules, but they link into one `shell.exe`.
-
----
-
-## 40.9 Userland filesystem policy
-
-Shell built-ins use the M10 typed namespace/object SDK. They do not use the
-retired M9 `FS_*` syscall family.
-
-### `cp`
-
-Uses `fs.h` FILE operations with a bounded shell-owned buffer:
-
-```text
-fs_open      -> bind(path, flags), require FILE
-fs_read      -> FILE protocol call
-fs_write     -> FILE protocol call
-fs_sync      -> FILE protocol call
-fs_close     -> unbind
-```
-
-The same API works for `/fs/...` and read-only `/system/...` FILE objects.
-
-### `mv`
-
-Within one writable filesystem namespace the shell first attempts the
-filesystem protocol's native `rename`. If the source and destination belong
-to different namespace providers, or the filesystem reports `KOS_EXDEV`,
-the shell may implement:
-
-```text
-copy
-sync/close
-unlink source through the source filesystem namespace protocol
-```
-
-with appropriate failure handling. A read-only provider such as `/system`
-may of course reject the unlink.
-
-The nucleus does not acquire a hidden cross-provider move implementation for
-the benefit of the shell.
-
-### `ls`
-
-Uses generic **namespace enumeration** on the displayed path. There is no
-`opendir`/`readdir`/`closedir` DIRECTORY-handle lifecycle in M10. The owning
-namespace provider decides what hierarchy means and returns batched entries
-with name/container/type metadata.
-
-### `mkdir`, `rmdir`, `rm`, `stat`
-
-Filesystem-specific name mutations and metadata use `fs.h` against the
-owning filesystem namespace provider. They are not generic VFS operations
-and do not require a universal DIRECTORY protocol.
-
----
-
-## 40.10 Recovery operation without writable storage
-
-With the normal writable filesystem unavailable, the global namespace still
-exists:
-
-```text
-/
-|-- FS/          provider present; backing filesystem may report unavailable media
-|-- SYSTEM/
-|   |-- shell.exe
-|   |-- monitor.exe
-|   |-- diag.exe
-|   `-- essential recovery assets
-`-- dev/
-    `-- objects published by the selected resident drivers
-```
-
-The shell starts normally from `/system/shell.exe` and may still present
-`/fs` as `/` for interactive filesystem syntax. Read-only commands against
-`/system` continue to work. Mutation attempts there report the normal
-read-only error.
-
-Absence of writable storage is not fatal to the native recovery environment.
-
----
-
-## 40.11 Exit-status handling
-
-`SYS_EXEC` returns the child's native exit status to the shell.
-
-The shell stores the most recent status and reports nonzero failures in a consistent form.
-
-Built-ins and external native programs return meaningful native status values rather than always succeeding after printing an error.
-
-No POSIX-specific status encoding is implied.
-
----
-
-## 40.12 Shell memory rules
-
-The shell is not special with respect to memory.
-
-It may use:
-
-```text
-primary memory
-ordinary xmem
-far code
-```
-
-through exactly the M10 interfaces available to every other native EXE.
-
-Because the shell contains the complete core userland command set, M10 far-code support may be used to partition built-in command families into auxiliary executable segments if the primary image would otherwise become unnecessarily large.
-
-That is an implementation choice, not part of shell command semantics.
-
----
-
-## 40.13 M12 non-goals
-
-M12 does not require:
-
-```text
-multitasking
-preemption
-pipes
-redirection
-background jobs
-shell scripts
-environment variables
-dynamic linking
-networking
-CP/M execution
-other compatibility personalities
-```
-
-Those are later facilities or personality work.
-
----
-
-# 41. M12 acceptance criteria
-
-Acceptance covers at least:
-
-```text
-boot:
-    shell launched from /system
-    build with V9958+HID CONSOLE driver
-    build with SERIAL-based CONSOLE driver
-    shell available with /fs backing storage unavailable
-    monitor fallback when shell is missing/rejected
-
-parser:
-    empty line
-    multiple arguments
-    single quotes
-    double quotes
-    escaped characters
-    tail-limit rejection/recovery
-
-built-ins:
-    cd / pwd with /fs display alias and explicit /system,/dev paths
-    ls across VFS root, /fs, /system and /dev
-    cp
-    mv
-    rm
-    mkdir
-    rmdir
-    cat
-    stat
-    echo
-    path
-    help
-    exit
-
-execution:
-    bare-name command search
-    explicit absolute path
-    explicit relative path
-    .exe suffix handling
-    child exit 0
-    child nonzero exit
-    malformed executable
-    repeated child execution leaks no process/bank/xmem/handle state
-
-CWD:
-    cd absolute
-    cd relative
-    ..
-    child inherits shell CWD
-    child chdir does not alter shell CWD
-
-filesystem policy:
-    mv within /fs through native rename
-    mv across namespace providers through copy/sync/unlink where legal
-    writes to /system fail cleanly with EROFS
-
-native tools:
-    launch monitor
-    launch diag
-    return cleanly to shell
-
-recovery:
-    /system visible with SD absent
-    read-only built-ins work
-    mutation failure is clean and non-fatal
-
-budget:
-    final production residency ledgers pass
-    recovery ROMFS fits
-```
-
-Physical acceptance includes a complete interactive session with the V9958+HID CONSOLE-driver build and with the SERIAL-based CONSOLE-driver build.
-
----
-
-# 42. Native KonaOS completion boundary
-
-Completion of M12 marks the first complete native KonaOS environment.
-
-At that point the system has:
-
-```text
-boot/recovery
-memory ownership
-interrupt executive
-host-assembled resident drivers and typed protocol endpoints
-VFS root with static FS / ROMFS / DEVICE namespace providers
-typed bind/call/unbind object model
-native CONSOLE / VIDEO / INPUT / SERIAL / IOC / optional SOUND protocols
-process lifecycle
-EXE v2 native executable format
-/fs writable filesystem namespace and /system recovery namespace
-extended/far memory
-far code/data
-complete diagnostics
-native shell
-core built-in userland
-```
-
-Only after this boundary does detailed compatibility/personality architecture begin.
-
-Personality implementations consume native KonaOS mechanisms rather than forcing compatibility concepts into the native kernel.
-
-Initial Zephyr-80 personality candidates include:
-
-```text
-CP/M
-Coleco
-GameOS
-```
-
-Future KonaOS ports may define personalities appropriate to their processor/platform family.
-
-The native kernel itself remains free of:
-
-```text
-CP/M FCB semantics
-Coleco BIOS semantics
-foreign filesystem namespaces
-foreign process ABIs
-```
-
-except at explicit personality boundaries.
-
----
-
-## 42.1 Native ABI baseline
-
-During M0-M12 KonaOS deliberately carries no backward-compatibility obligation between development milestones.
-
-Completion of M12 ends that phase.
-
-The accepted:
-
-```text
-native syscall ABI
-VFS namespace + bind/call/unbind ABI
-8-bit protocol-type assignments and protocol frame ABIs
-EXE v2 format
-resident-driver image/bootstrap contract
-FILE/filesystem-namespace ABI
-process-startup ABI
-extended-memory ABI
-```
-
-form the first stable native KonaOS compatibility baseline.
-
-Subsequent incompatible changes require an explicit ABI or format version change rather than silently changing an established contract.
-
----
+## Appendix A. Far calls with another toolchain
+
+**What is independent of the toolchain.** Far code is an OS and
+executable-format contract: an EXE carries up to four far-code segments,
+each linked at `8000h` and at most 16 KiB; `SYS_SEG_MAP` returns a
+segment's token; the program opens the aperture with it and restores the
+previous latch afterwards; `farcall` is an ordinary C function built on
+these calls. The kernel, the loader and the format know nothing about
+SDCC, and existing programs keep working whatever builds new ones.
+
+**What is specific to SDCC.**
+
+1. The source syntax: `__banked`, and the bank given when the file is
+   compiled (`-bo <n>`).
+2. The call convention: for a banked call SDCC loads the segment id (the
+   `b_<fn>` symbol) into `E` and the address into `HL`, then calls
+   `___sdcc_bcall_ehl`. Arguments travel on the stack; the first argument
+   is found 5 bytes above the callee's `SP`, so the trampoline places
+   exactly three bytes between its entry and the call. Results come back in
+   `A`, `DE` and `DEHL`, which the trampoline preserves. The SDK's
+   `user/sdk/src/bcall.asm` implements it.
+3. The packer's input: `exepack` reads Intel HEX (common to most
+   toolchains) and SDCC's map file (specific) for symbol addresses and area
+   sizes.
+
+**Porting to another toolchain** needs three pieces of work and no OS
+change:
+
+- **An entry adapter:** the new toolchain's banked-call entry, with the
+  same four steps as `bcall.asm`: look up the token, open the aperture,
+  call, restore. About 30 to 60 bytes. A toolchain without banked calls
+  uses `farcall` explicitly.
+- **Source portability:** code meant for several compilers wraps `__banked`
+  in a project macro.
+- **A map reader:** a reader for the new linker's output that returns the
+  symbol addresses, the primary image range and each far segment's range
+  and size. The rest of the packer is unchanged.
+
+Any toolchain must be able to link a code section at a fixed address
+(`8000h`) separately per segment, produce Intel HEX or a raw image with
+known bases, and report symbol addresses.

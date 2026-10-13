@@ -1,35 +1,34 @@
-/* KonaOS resident-driver bootstrap interface (module-facing, M10).
+/* KonaOS resident-driver bootstrap interface (module-facing).
  *
  * A resident driver image receives exactly one pointer: the init entry
  * named by its container is called with a `const struct
  * driver_boot *` in HL, naming the nucleus table the driver may use
- * and the host-resolved dependency array (architecture 36.11).  There is
+ * and the host-resolved dependency array (architecture 5.3).  There is
  * no kernel import table: a driver is linked against its own image and
  * its host-resolved endpoints only.
  *
  * There is no version field: the host packer links the driver against
- * this one table (work package 42c removed the runtime ABI/version
- * checks; the packer validates on the host).
+ * this one table, and the packer validates on the host.
  *
- * Every entry, and why it is in the interface (36.11 asks for the list):
+ * Every entry, and why it is in the interface (5.3 asks for the list):
  *
  *   call            synchronous call/reply into a peer named by a
  *                   host-resolved dependency number or an application
- *                   handle; the only IPC model (36.7).  A call from one
+ *                   handle; the only IPC model (4.9).  A call from one
  *                   resident driver to another is near-direct: the frame
  *                   is passed by reference and the target's window is
  *                   already open, so no frame copy and no bank switch
  *                   happen.
  *   copy_in         caller descriptor -> driver buffer, bounds checked
  *   copy_out        driver buffer -> caller descriptor, bounds checked
- *                   on every use (36.8); a driver never names a caller
+ *                   on every use (4.9); a driver never names a caller
  *                   address itself.
  *   move            same-domain copy between two driver-domain addresses
  *                   (the staging step of chained providers), validated
  *                   against the driver window.
  *   bulk_read       the calling driver's own bulk data -> a buffer in its
  *                   own window, bounds checked against the registered
- *                   bulk extent.  Architecture 36.6 keeps bulk data
+ *                   bulk extent.  Architecture 5.2 keeps bulk data
  *                   (the V9958 font) in bank 6's boot/bulk tier
  *                   (0000h-5FFFh), which the mode-11 driver window never
  *                   shows; a run-time path that needs it - the V9958
@@ -40,15 +39,15 @@
  *                   read it.
  *   console_putc    the nucleus-owned early console, polled SIO0/B, which
  *   console_poll    is usable before the console driver exists and stays
- *   console_getc    for driver diagnostics and panic-time output (36.12).
+ *   console_getc    for driver diagnostics and panic-time output (3.2).
  *   irq_claim       hand the nucleus one hardware source and an in-image
  *   irq_release     handler; the nucleus keeps the IM2 vectoring, the ISR
- *                   stack and the final RETI (36.10).
+ *                   stack and the final RETI (4.5).
  *
  * There is no entry for paths, mounts, devices or file objects: those are
  * protocol payloads between drivers.
  *
- * Endpoint lifecycle (architecture 36.11): the host assembly resolves
+ * Endpoint lifecycle (architecture 5.3): the host assembly resolves
  * every endpoint number and every inter-driver dependency; the loader
  * installs the host-built tables before any driver code runs, and the
  * driver's init receives its resolved dependency numbers in
@@ -70,8 +69,7 @@
  * in bank 6's 8000h-BFFFh, the one bank-6 range the mode-11 window and
  * the mode-10 aperture both show at the same address, so the nucleus can
  * move the run in one LDIR.  A buffer outside that range is still copied,
- * through the chunked path, and counted as slow (correction 01 to
- * architecture 36.8).  move() is the same-domain primitive for
+ * through the chunked path, and counted as slow (architecture 4.9).  move() is the same-domain primitive for
  * driver-to-driver staging inside the resident bank; both addresses
  * must lie in the driver window and are validated against it.
  *
@@ -80,7 +78,7 @@
  * irq_release(source).  The handler lives in the driver image; the
  * nucleus keeps the IM2 vectoring, the ISR stack and the final RETI, and
  * enters the handler with the owner's window selected and the interrupted
- * latch saved in the IRQ gate's own slot (architecture 36.10).  A handler
+ * latch saved in the IRQ gate's own slot (architecture 4.5).  A handler
  * runs under the restricted API: call, copy_in, copy_out and move are
  * refused with -KOS_EBUSY while an interrupt is being delivered.  The
  * console primitives are the nucleus-owned early console (polled SIO0/B,
@@ -141,7 +139,7 @@ struct driver_boot {
 /* The container's init entry: `uint8_t init(const struct driver_boot
  * *)`, returning 0 when the driver is initialized.  A non-zero status is
  * an explicit boot failure: the loader refuses the image and the nucleus
- * stops on the early console (36.11, work package 42e). */
+ * stops on the early console (5.3). */
 typedef uint8_t (*driver_init_fn)(const struct driver_boot *boot);
 
 #endif /* KONAOS_IPC_H */

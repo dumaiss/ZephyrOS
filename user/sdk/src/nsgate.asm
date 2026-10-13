@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS libkos: object and namespace gate blocks (packages 42a, 42b).
+; KonaOS libkos: object and namespace gate blocks.
 ;
 ; The bind, unbind, ns_enum, chdir and getcwd wrappers marshal through
 ; these gate-visible blocks; every one lives in the single _KOS_SDK_DATA

@@ -7,7 +7,7 @@ Builds the 512 KiB programmed image from the linked Intel HEX output:
     page 1  (64 KiB, copied into SRAM bank 7 by the reset copier)
     pages 2-7  (384 KiB, read-only ROMFS recovery store)
 
-Region contract (see docs/architecture.md sections 36.2/36.5, docs/boot.md):
+Region contract (see docs/architecture.md sections 2.2/4.2, docs/boot.md):
 
     0000h-002Fh   reset copier (page zero, both boot pages, byte-identical)
     0030h-00FFh   page-zero reservation (must stay empty)
@@ -46,7 +46,7 @@ images pass no flag and keep their own placement.
 
 The optional memory.inc is the generated bank-7 geometry include; it must
 declare the derived data bases and the fixed-core ledger fields (a missing
-key is a hard error, never a fall back to a retired default).  With no
+key is a hard error, never a fall back to a default).  With no
 include the synthetic host defaults are used.  When <build_dir> is given,
 <build_dir>/recovery.romfs must exist and is placed into pages 2-7, and
 <build_dir>/modules/drivers.plan.json supplies the bank-6 driver ledger;
@@ -84,9 +84,9 @@ ROM_ACCESS_BASE = 0xEF00
 ROM_ACCESS_SIZE = 8
 
 RESET_BASE = 0x0000
-RESET_TOP = 0x0030          # M1 installs RST 30h at 0030h
+RESET_TOP = 0x0030          # the kernel installs RST 30h at 0030h
 PAGE_ZERO_END = 0x0100
-# Revision-13 mode-11 bank-7 split (architecture 36.2, 36.5): the fixed
+# Revision-13 mode-11 bank-7 split (architecture 2.2, 4.2): the fixed
 # core is 2000h-5FFFh, the cold half (the window) is 6000h-DFFFh.  The
 # fixed core's runtime data stops below the reserved driver stack, which
 # sits below the ISR stack at the top of the fixed core.
@@ -99,8 +99,8 @@ DRIVER_STACK_SIZE = 0x0200
 IRQ_ISR_STACK_BASE = 0x5F00
 IRQ_ISR_STACK_TOP = 0x6000
 IRQ_ISR_STACK_SIZE = 0x0100
-# Bank-6 driver tiers (architecture 36.6): nothing is placed there until
-# stage 4, so every image reports zero bytes against these capacities.
+# Bank-6 driver tiers (architecture 5.2).  An image without a driver plan
+# reports zero bytes against these capacities.
 DRIVER_HOT_CAPACITY = 0x8000      # 6000h-DFFFh of bank 6
 DRIVER_BOOT_CAPACITY = 0x6000     # 0000h-5FFFh of bank 6
 # Host-synthetic geometry defaults.  A real build always passes its
@@ -121,8 +121,7 @@ FIXED_ROOM_BYTES = (WINDOW_BASE - BANK7_BASE - FIXED_REQUIRED_BYTES
 COMMON_BASE = 0xE000
 COMMON_CODE_END = 0xFD00
 # Architectural ceiling on the packed `_COMMON` + `_COMMON_DATA` run
-# (work package 30c, from the 30b audit; the M9 reservation itself was
-# released by work package 43).  The generated memory include overrides
+# (architecture 9).  The generated memory include overrides
 # it; this literal only seeds the synthetic host path.
 COMMON_CEILING = 0x0C00
 IRQ_VECTOR_BASE = 0xFD00
@@ -158,7 +157,7 @@ def require_value(values, name, path):
     """Fetch a required declaration, naming the key and its include.
 
     The derived build must generate every bank-7 geometry value; a missing
-    key is a hard error, never a silent fall back to a retired default."""
+    key is a hard error, never a silent fall back to a default."""
     if name not in values:
         raise LayoutError(
             "%s is missing from %s; the derived build must generate it"
@@ -185,7 +184,7 @@ def apply_memory_inc(path):
     # The bank-7 geometry (fixed code end, the two data bases and the
     # fixed-core ledger fields) is derived per image and carried by the
     # generated memory include.  It is required: a missing key must fail
-    # loudly rather than validate against a retired boundary.
+    # loudly rather than validate against a stale boundary.
     for name in ("KOS_REV13_WINDOW_BASE", "KOS_DRIVER_STACK_BASE",
                  "KOS_DRIVER_STACK_TOP", "KOS_DRIVER_STACK_SIZE",
                  "KOS_BANK7_DATA_ALIGN", "KOS_DATA_BASE",
@@ -237,8 +236,8 @@ RST30_VECTOR = 0x0030
 
 # Budget ledger formats (tools/modpack.py prints the identical lines; a
 # host test pins the two against each other and against the linked map).
-# Architecture 36.20: nucleus fixed (required, overflow, stacks, room),
-# nucleus cold, the two bank-6 driver tiers (zero until stage 4) and the
+# Architecture 9: nucleus fixed (required, overflow, stacks, room),
+# nucleus cold, the two bank-6 driver tiers and the
 # common line for the permanently mapped window.
 NUCLEUS_FIXED_LEDGER_LINE = (
     "nucleus fixed: required %d bytes | overflow %d bytes | stacks %d | "
@@ -490,7 +489,7 @@ def check_symbol_regions(symbols):
         raise LayoutError("_reset is at %04Xh, expected 0000h"
                           % (reset if reset is not None else -1))
 
-    # M10 (package 42c): the cold half has no driver arena.  The linked
+    # The cold half has no reserved block.  The linked
     # __kernel_code_end must be the exclusive end of the cold code and the
     # cold data base must be align_up of it; the fixed data base is the
     # derived one and both runtime-data regions must stay below their
@@ -577,7 +576,7 @@ def load_driver_plan(build_dir):
 
 
 def nucleus_ledger(symbols, driver_plan=None):
-    """The five ledger lines of architecture 36.20 from a linked map.
+    """The five ledger lines of architecture 9 from a linked map.
 
     Returns None for synthetic host maps without the derived symbols.
     Every package reports these lines and its own bytes against them, so
@@ -585,9 +584,7 @@ def nucleus_ledger(symbols, driver_plan=None):
     The fixed-core `required`/`overflow` split is attributed per object by
     the derive step (tools/mapcheck.py geometry derive --residency) and
     carried in the generated memory include; the map checks the extents.
-    The two bank-6 driver ledgers come from the packed driver set's plan
-    (work package 42c; before that they were hard-zeroed and mis-reported
-    production as 0)."""
+    The two bank-6 driver ledgers come from the packed driver set's plan."""
     kernel_end = symbols.get("__kernel_code_end")
     data_base = symbols.get("s__DATA")
     window_data_base = symbols.get("s__WINDOW_DATA")
@@ -630,8 +627,8 @@ def nucleus_ledger(symbols, driver_plan=None):
 
 
 def format_nucleus_ledger(ledger):
-    """The five budget lines (architecture 36.20) in place of the M9
-    `bank7:` line, plus the common-memory line for the permanently mapped
+    """The budget lines (architecture 9): the four nucleus and driver
+    lines, plus the common-memory line for the permanently mapped
     window.  Byte-identical to tools/modpack.py (pinned by a host test)."""
     return "\n".join((
         NUCLEUS_FIXED_LEDGER_LINE % (
@@ -860,8 +857,8 @@ def verify_no_banked_latch_writes(mem, symbols=None, production=True):
     new page bits, which leaves the fixed core itself mapped, exactly as
     the shim does), and the nucleus self-test's caller blob, which the
     harness copies into an application bank and runs there, so its
-    caller-side selection happens in the caller window.  Work package 43
-    adds the mode-11 window copy (kernel/memory/window_copy.asm): it
+    caller-side selection happens in the caller window.  The fourth is the
+    mode-11 window copy (kernel/memory/window_copy.asm): it
     preserves the mode and the bank field and writes only the page field
     `7 - bank`, so the fixed core - including its own continuation - stays
     mapped, exactly like the shim.  Nothing else may.

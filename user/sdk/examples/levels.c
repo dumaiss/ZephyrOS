@@ -1,4 +1,4 @@
-/* KonaOS far-data SDK example (work package 49d): the data segment.
+/* KonaOS far-data SDK example: the data segment.
  *
  * Compiled through the exe_program `DATA1=` option, this module carries
  * the two kinds of object a far-data segment holds:

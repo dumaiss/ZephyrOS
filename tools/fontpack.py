@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V9958 CP850 6x8 font asset pipeline (work package 18).
+"""V9958 CP850 6x8 font asset pipeline.
 
 The reviewable source asset is drivers/v9958/assets/font_cp850_6x8.inc:
 the exact 2048-byte font imported from the pinned Zephyr-80 reference

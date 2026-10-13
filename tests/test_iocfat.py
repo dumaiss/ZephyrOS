@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""IOC-FAT driver structural acceptance (work package 42b).
+"""IOC-FAT driver structural acceptance.
 
 The behavioural acceptance is the simulator replay of the outcome image
 (`tests/test_fs_selftest_sim.py`); this module pins the build, manifest and
@@ -14,7 +14,7 @@ source-layout facts that run depends on:
   it publishes `/fs`;
 - the acceptance image, its store manifest and the SDK programs are wired;
 - the one documented "no media" answer: the driver decides the card state
-  from the command that reads the medium (work package 45b correction 01).
+  from the command that reads the medium.
 
 Run with: `python3 -m unittest tests.test_iocfat`.
 """
@@ -44,7 +44,7 @@ MAIN_C = os.path.join(ROOT, "kernel", "main.c")
 SELFTEST = os.path.join(ROOT, "tests", "fs", "fs_selftest.c")
 CHILD = os.path.join(ROOT, "tests", "fs", "fs_child.c")
 
-# Correction-01 budget: image + BSS at most 6656 bytes (13 granules).
+# Budget: image + BSS at most 6656 bytes (13 granules).
 GRANULE = 512
 MAX_TOTAL_BYTES = 6656
 MAX_GRANULES = 13
@@ -66,7 +66,7 @@ class IocFatStaticBase(unittest.TestCase):
 class TestIocFatSourceLayout(IocFatStaticBase):
     def test_no_sio_or_raw_io_in_the_provider(self):
         # The provider is a filesystem: it must reach the card only through
-        # the IOC class interface (architecture 32.17/32.19).
+        # the IOC class interface (architecture 5.6).
         forbidden = [
             (r"SIO[01]?_[A-Z]", "an SIO port constant"),
             (r"\b(?:in|outp|inp)\s*\(", "raw Z80 port I/O"),
@@ -91,7 +91,7 @@ class TestIocFatSourceLayout(IocFatStaticBase):
                 "%s reaches a kernel-private header" % name)
 
     def test_only_the_driver_interface_is_used(self):
-        # Package 42b: the driver calls its host-resolved IOC dependency
+        # The driver calls its host-resolved IOC dependency
         # through the driver API, never through a class shim.
         text = read(MODULE_SRC)
         self.assertIn("driver_api", text)
@@ -113,8 +113,8 @@ class TestIocFatSourceLayout(IocFatStaticBase):
                              "%s carries acceptance code" % name)
 
     def test_every_cache_rule_is_present(self):
-        # The accepted deviation replaced the module-side counters with host
-        # command counts, so the rules must be visible in the source.
+        # The cache is observed through host command counts, not
+        # driver-side counters, so the rules must be visible in the source.
         text = read(MODULE_SRC)
         for what in ("iocfat_cache_fill", "iocfat_cache_clear",
                      "iocfat_cache_invalidate_file",
@@ -185,7 +185,7 @@ class TestIocFatIntegration(IocFatStaticBase):
     def test_kernel_boots_it_from_the_driver_manifest(self):
         text = read(MAIN_C)
         # The driver is one of the drivers the boot manifest lists: there
-        # is no arena module pass and no per-driver boot gate any more.
+        # is no per-driver boot gate.
         self.assertIn("driver_load_all(KOS_DRIVER_MANIFEST_NAME)", text)
         self.assertNotIn("KOS_IOCFAT_BOOT", text)
         self.assertNotIn("kernel_load_vfs_module", text)
@@ -194,9 +194,9 @@ class TestIocFatIntegration(IocFatStaticBase):
 
     def test_makefile_wiring(self):
         text = read(MAKEFILE)
-        # Package 42b: the driver is a driver image of the production and
-        # acceptance boot sets, packed like the other drivers.  Package
-        # 49a (re)wires the set from the system file's driver list.
+        # The driver is a driver image of the production and acceptance
+        # boot sets, packed like the other drivers from the system file's
+        # driver list.
         self.assertIn("$(BUILD)/drivers/$(1).json", text)
         self.assertIn("tools/modpack.py pack", text)
         self.assertIn("SYSTEM=fs", text)
@@ -307,7 +307,7 @@ class TestNoMediaContract(unittest.TestCase):
     def test_the_residency_keeps_the_path_in_the_workspace(self):
         text = read(MODULE_SRC)
         # The provider never names a caller buffer of its own: the path
-        # arrives in the fixed-core workspace (architecture 36.5).
+        # arrives in the fixed-core workspace (architecture 4.2).
         self.assertIn("workspace", text)
 
 

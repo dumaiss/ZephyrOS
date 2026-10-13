@@ -1,6 +1,6 @@
 /* KonaOS HID acceptance diagnostic contract (test artifact).
  *
- * The package-41 diagnostic in tests/target/hid/hid_test.c is a bank-7
+ * The diagnostic in tests/target/hid/hid_test.c is a bank-7
  * client of the resident HID driver (see
  * tests/target/include/driver_client.h).  The kernel calls
  * kos_run_hid_selftest() from the late boot hook, after the driver

@@ -1,6 +1,6 @@
 # -----------------------------------------------------------------------------
 # user/sdk/exe.mk - the in-tree wrapper around the program rules
-# (work packages 28c/49c).
+#.
 #
 # The generic `exe_program` rule lives in mk/kos.mk, the file the packaged
 # SDK also ships, with no OS-tree paths of its own.  This wrapper points
@@ -78,7 +78,7 @@ $(EXE_LIBKOS): $(KOS_SDK_C_OBJS) $(KOS_SDK_ASM_OBJS) $(KOS_RULES)
 	rm -f $@
 	sdar -rc $@ $(KOS_SDK_C_OBJS) $(KOS_SDK_ASM_OBJS)
 
-# The archive the packaged SDK ships (work package 49c): the same members
+# The archive the packaged SDK ships: the same members
 # with the shared runtime appended, because the SDK's lib/ holds only
 # libkos.lib and crt0.rel and a program pulls the runtime through the
 # archive.  The members in front keep the archive's member order, so the

@@ -1,10 +1,9 @@
 /* KonaOS kernel name-comparison interface (kernel/lib).
  *
- * One comparison for every kernel-side ASCII name: VFS mount/provider
- * names, ROMFS names and device instance names.  It is kernel-private and
- * never module-facing: a MOD may not import kernel symbols, so the
- * resident modules keep their own copies by isolation (work package 30c,
- * finding F3).
+ * One comparison for every kernel-side ASCII name: namespace publication
+ * names and ROMFS names.  It is kernel-private and
+ * never driver-facing: a driver image may not import kernel symbols, so
+ * drivers keep their own copies.
  */
 
 #ifndef KONAOS_KERNEL_LIB_NAME_H
@@ -21,8 +20,7 @@
  * zero, `stored` and `wanted` are ordinary NUL-terminated strings.
  *
  * `fold` selects ASCII case folding (A-Z == a-z) when nonzero; zero
- * compares the bytes exactly.  Every caller's own semantics are kept:
- * VFS and ROMFS fold, the device registry does not.
+ * compares the bytes exactly.  Both callers fold.
  *
  * A null argument is never equal. */
 uint8_t kos_ascii_equal(const char *stored, const char *wanted,

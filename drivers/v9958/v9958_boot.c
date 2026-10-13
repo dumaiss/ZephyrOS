@@ -1,6 +1,6 @@
-/* KonaOS V9958 driver boot segment (work package 41).
+/* KonaOS V9958 driver boot segment.
  *
- * Runs once through the mode-10 gate with Q = 6 (architecture 36.6): the
+ * Runs once through the mode-10 gate with Q = 6 (architecture 5.2): the
  * whole resident bank is mapped - including this image's bulk segment,
  * the 2048-byte font - the fixed core is not, and the driver bootstrap
  * interface is unavailable.  Nothing here executes after boot.

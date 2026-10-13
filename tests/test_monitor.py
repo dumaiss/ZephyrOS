@@ -70,7 +70,7 @@ MONITOR_MODULES = {
 }
 
 # Private kernel symbols that must never appear in a user EXE.  The
-# runtime's own `kos_scratch` is a user-side object (M6), so the
+# runtime's own `kos_scratch` is a user-side object, so the
 # sweep names the kernel families instead of the bare `_kos_` prefix.
 KERNEL_PREFIXES = (
     "_kos_syscall", "_kos_diag", "_kos_bank", "_kos_user", "_kos_process",
@@ -174,7 +174,7 @@ class TestMonitorArtifacts(unittest.TestCase):
             self.skipTest("the monitor manifest has not been built")
         manifest = exepack.load_manifest(MONITOR_JSON)
         self.assertEqual(manifest["entry"], "kos_entry")
-        # The SDK's low-data area (package 42b) is 93 bytes: the scratch
+        # The SDK's low-data area is 93 bytes: the scratch
         # and raw request blocks, the call block and the nsgate blocks.
         self.assertEqual(manifest["entry_offset"], 93)
         self.assertEqual(manifest["scratch"]["symbol"], "kos_scratch")
@@ -281,7 +281,7 @@ class TestMonitorSourceDependencies(unittest.TestCase):
     FORBIDDEN_PATTERNS = (
         (re.compile(r"\bearly_console\w*"), "early-console dependency"),
         (re.compile(r"\bSIO\w*|\bsio0\w*"), "SIO dependency"),
-        # M8 device classes: the monitor must run unchanged over any
+        # Device classes: the monitor must run unchanged over any
         # console binding and therefore knows none of them.
         (re.compile(r"\bv9958\b", re.IGNORECASE), "V9958 dependency"),
         (re.compile(r"\bhid\b", re.IGNORECASE), "HID dependency"),
@@ -341,7 +341,7 @@ class TestM7MapcheckRules(unittest.TestCase):
     def test_missing_diag_symbol_rejected(self):
         text = make_map(symbols={"_kos_diag_io_out": None})
         with self.assertRaisesRegex(mapcheck.MapError,
-                                    "map has no M7 symbol"):
+                                    "map has no diagnostic symbol"):
             mapcheck.check_map(text)
 
     def test_production_rejects_m7_acceptance_symbols(self):
@@ -390,9 +390,7 @@ class _CapturedOutput:
 
 class TestSubsystemSmokeMode(unittest.TestCase):
     """--mode subsystem: the boot-log gate, the interactive Q step at the
-    monitor prompt, and the exit-line finish.  This is the current
-    replacement for the retired M7 monitor smoke session: the monitor
-    session itself is replayed end to end by tests/test_subsys_sim.py."""
+    monitor prompt, and the exit-line finish.  The monitor session itself is replayed end to end by tests/test_subsys_sim.py."""
 
     def transcript(self):
         import serial_smoke

@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS M0-M4 memory-map constants (assembly visible).
+; KonaOS memory-map constants (assembly visible).
 ;
 ; Region geometry invariants; see docs/architecture.md and docs/boot.md.
 ; The linker script and tools/pack_image.py enforce them.  IM2 vector-page
@@ -8,13 +8,13 @@
 ; -----------------------------------------------------------------------------
 
 ; Page-zero/reset reservation in ROM page 0.  The stackless reset copier
-; must stay below KOS_RESET_TOP so that M1 can install RST 30h there.
+; must stay below KOS_RESET_TOP so that the kernel can install RST 30h there.
 KOS_RESET_TOP           = 0x0030
 KOS_PAGE_ZERO_END       = 0x0100
 
 ; Bank-7 OS body, visible in mode 11 under decoder revision 13.  Mode 11
 ; splits bank 7 into a 16 KiB fixed core and a 32 KiB cold half behind
-; the 6000h window (architecture 36.2, 36.5):
+; the 6000h window (architecture 2.2, 4.2):
 ;
 ;   2000h-5FFFh  fixed core: code that executes, and data that is
 ;                touched, while the window shows another bank, plus the
@@ -38,15 +38,15 @@ KOS_IRQ_ISR_STACK_BASE  = 0x5F00
 KOS_IRQ_ISR_STACK_TOP   = 0x6000
 KOS_IRQ_ISR_STACK_SIZE  = 0x0100
 
-; Driver stack: 512 bytes in the fixed core, reserved now and used by
-; the IPC substrate from stage 3 (architecture 36.9, 36.20).  It grows
+; Driver stack: 512 bytes in the fixed core, used by
+; the IPC substrate (architecture 4.9).  It grows
 ; down from KOS_DRIVER_STACK_TOP, below the relocated ISR stack, so the
 ; fixed core's runtime data never reaches either stack.
 KOS_DRIVER_STACK_BASE  = 0x5D00
 KOS_DRIVER_STACK_TOP   = 0x5F00
 KOS_DRIVER_STACK_SIZE  = 0x0200
 
-; Aperture-copy stack reservation (work package 39, correction 01).  The
+; Aperture-copy stack reservation.  The
 ; path-B copy primitive runs its LDIR with the driver stack unmapped -
 ; mode 10 over the caller's bank does not show bank 7 - so it moves SP
 ; into common memory for the length of the window.  An interrupt taken in
@@ -64,9 +64,7 @@ KOS_BANK7_DATA_ALIGN = 0x0200
 ; is the exclusive end of ordinary common content; the IM2 vector page and
 ; IRQ transition state reservations (FD00h-FEFFh) are declared in irq.inc.
 ; KOS_COMMON_CEILING bounds the packed _COMMON + _COMMON_DATA run as the
-; architectural ceiling (architecture 36.20): the M9 reservation is
-; released to M10's transitions and IPC (work package 43), so the whole
-; ceiling is the limit and neither value may be raised.
+; architectural ceiling (architecture 9); neither value may be raised.
 KOS_COMMON_BASE         = 0xE000
 KOS_COMMON_CODE_END     = 0xFD00
 KOS_COMMON_STACK_BASE   = 0xFF00
@@ -79,10 +77,10 @@ KOS_STACK_INIT_SP       = 0x0000
 ; Common gate stack used only while crossing between mode 10 and
 ; mode 11.  Lives in the common data area, below the boot stack.  It
 ; carries the whole syscall handler chain, including a module class op
-; that runs a full device transaction (M8 console read: HID -> IOC -> SIO
+; that runs a full device transaction (a console read: HID -> IOC -> SIO
 ; needs about 180 bytes) and the nested exec (SYS_EXEC -> ROMFS read ->
-; provider and driver transaction, measured at 287 bytes with the M10
-; filesystem driver), so it is sized well above the M1 dispatch set.
+; provider and driver transaction, measured at 287 bytes with the filesystem driver),
+; so it is sized well above a plain syscall.
 ; The transition state cells sit directly below the stack base: a chain
 ; that overruns the reservation overwrites them, so the size must stay
 ; above the deepest measured chain.

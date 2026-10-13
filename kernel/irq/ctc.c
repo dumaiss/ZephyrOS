@@ -2,8 +2,7 @@
  * quiesce mapping.
  *
  * Only platform_irq_quiesce() is a production consumer.  The CTC0
- * start/stop programming and the obsolete vector lookup are
- * acceptance-only and live under tests/target/ (tests/target/include/
+ * start/stop programming is acceptance-only and live under tests/target/ (tests/target/include/
  * ctc_test.h, tests/target/support/ctc_test.c); no production image
  * declares or links them.
  */

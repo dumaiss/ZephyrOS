@@ -1,14 +1,13 @@
-/* KonaOS M6/M7 native syscall dispatcher (bank 7).
+/* KonaOS native syscall dispatcher (bank 7).
  *
  * The stable register ABI (docs/abi.md) is converted to internal C state
  * by the assembly boundary kos_syscall_dispatch (kernel/syscall/entry.asm);
  * SDCC calling conventions never cross the syscall boundary.
  *
- * M6 drivers: SYS_EXIT and SYS_GETINFO.  The console bytes a program
- * writes and reads are no longer syscalls: the SDK's console functions
- * are clients of the console driver (abi/kos/protocol.h, class
- * KOS_CLASS_CONSOLE) through the IPC pair below, so the nucleus keeps no
- * console binding at all.  Every caller byte is still validated against
+ * Process bodies here: SYS_EXIT, SYS_GETINFO and SYS_EXEC.  Console I/O is
+ * not a syscall: the SDK's console functions are clients of the console
+ * driver (abi/kos/protocol.h, class KOS_CLASS_CONSOLE) through SYS_CALL,
+ * so the nucleus keeps no console binding at all.  Every caller byte is still validated against
  * the documented windows before it is touched:
  *
  *   - argument blocks must lie in 0100h-1FFFh (read while mode 11 is
@@ -17,11 +16,11 @@
  *     through the common-resident copy gates;
  *   - bank 7 and arithmetic wrap are rejected.
  *
- * M7 adds the diagnostic set (SYS_DIAG_*) implemented in
- * kernel/syscall/diag.c; this file owns the dispatch switch and the
- * shared result/window helpers it uses.  The M9 filesystem family and the
- * M10 IPC pair dispatch to their own cold bodies (syscall/fs.h,
- * syscall/ipc.h) from the same switch.
+ * The diagnostic set (SYS_DIAG_*) is implemented in
+ * kernel/syscall/diag.c, the object and namespace family in
+ * kernel/syscall/object.c and extended memory in kernel/syscall/xmem.c;
+ * this file owns the dispatch switch and the shared result/window
+ * helpers.
  *
  * Failure returns A = KOS_E* with carry set and HL = 0; success returns
  * carry clear with HL = primary result.  Process bookkeeping is never
@@ -88,8 +87,8 @@ static uint16_t read_le16(const uint8_t *p)
 }
 
 /* The result publication and argument-window helpers are shared with
- * kernel/syscall/diag.c (declared in diag.h); the M6 driver bodies
- * below keep their short local names. */
+ * kernel/syscall/diag.c (declared in diag.h); the process bodies below
+ * keep their short local names. */
 void kos_syscall_success(uint16_t result)
 {
 	kos_syscall_result_hl = result;
@@ -148,7 +147,7 @@ uint8_t kos_syscall_buffer_ok(uint16_t addr, uint16_t len)
 	return 1;
 }
 
-/* The bank a caller buffer address resolves to (architecture 36.8/36.17,
+/* The bank a caller buffer address resolves to (architecture 4.9/7.2,
  * buffer identity): inside the mode-10 far aperture under a nonzero saved
  * page it is the far bank 7 - P, everywhere else the running process's
  * primary bank.  Descriptor capture (kernel/ipc) applies the same rule to
@@ -260,7 +259,7 @@ static void syscall_exec(uint16_t block)
 	 * exactly as `bind` stages its own (SYS_BIND, kernel/syscall/
 	 * object.c): the address travels to a bank-6 provider in the bind
 	 * frame, and a provider reads it while the window shows its own
-	 * bank, so it must name fixed core - never the cold half (36.5's
+	 * bank, so it must name fixed core - never the cold half (4.2's
 	 * buffer rule).  No other buffer is involved: the loader that
 	 * follows reads the bound FILE through descriptors and the common
 	 * staging block, and never touches the workspace. */
@@ -294,22 +293,20 @@ static void syscall_exec(uint16_t block)
 
 void kernel_syscall_dispatch(void)
 {
-	/* M1 default: unknown numbers stay deterministic. */
+	/* Default: an unassigned number returns KOS_ENOSYS. */
 	syscall_error(KOS_ENOSYS);
 
-	/* Object and namespace family (06h-0Bh, package 42b): bind, call,
-	 * unbind, ns_enum, chdir, getcwd.  The M9 `FS_*` family and the
-	 * stage-3 lookup/call pair are retired; their numbers route to the
-	 * M1 default above (KOS_ENOSYS). */
+	/* Object and namespace family (06h-0Bh): bind, call,
+	 * unbind, ns_enum, chdir, getcwd. */
 	if (kos_syscall_number >= KOS_SYSCALL_BIND &&
 	    kos_syscall_number <= KOS_SYSCALL_GETCWD) {
 		kos_object_dispatch(kos_syscall_number, kos_syscall_args);
 		return;
 	}
 
-	/* Extended-memory family (20h-27h, packages 43-44b): alloc, free,
+	/* Extended-memory family (20h-27h): alloc, free,
 	 * read, write, info, map, segment info and segment map (architecture
-	 * 36.15-36.18). */
+	 * 4.8-6.7). */
 	if (kos_syscall_number >= KOS_SYSCALL_XMEM_ALLOC &&
 	    kos_syscall_number <= KOS_SYSCALL_SEG_MAP) {
 		kos_xmem_dispatch(kos_syscall_number, kos_syscall_args);

@@ -1,5 +1,5 @@
 /* KonaOS V9958 video driver acceptance selftest contract (test
- * artifact, work package 41).
+ * artifact).
  *
  * The nucleus acceptance runner (tests/target/support/target_test.c)
  * calls kos_run_video_selftest() from the late boot hook, after the

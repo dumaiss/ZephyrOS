@@ -12,9 +12,8 @@
 
 extern uint8_t kos_user_copy_staging[];
 
-/* Class -> host-built publication name (architecture 36.13).  Package
- * 42b retired the class/instance lookup: a provider is named by its
- * publication, and the nucleus router answers the endpoint number the
+/* Class -> host-built publication name (architecture 4.10).  A provider
+ * is named by its publication, and the nucleus router answers the endpoint number the
  * packer resolved. */
 static const char *driver_cli_publication(uint8_t class_id)
 {

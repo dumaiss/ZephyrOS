@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Nucleus-layout acceptance replay (work package 38, requirements 5-6).
+"""Nucleus-layout acceptance replay (requirements 5-6).
 
 Boots build-nucleus-selftest/konaos-nucleus-selftest.bin -- the
 production boot path with the revision-13 gate and upcall-shim acceptance

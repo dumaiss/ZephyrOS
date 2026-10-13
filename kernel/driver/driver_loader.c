@@ -1,6 +1,6 @@
 /* KonaOS resident-driver loader and boot manifest reader.
  *
- * Architecture 36.6, 36.11 and 36.12 (work packages 40-42c).  This
+ * Architecture 5.2, 5.3 and 3.2.  This
  * cold-half nucleus loader turns the flat load plans the recovery store
  * carries into the bank-6 resident domain, in manifest order:
  *
@@ -17,12 +17,12 @@
  *      shim with the boot bundle (interface table and dependency array)
  *      in HL.  A non-zero init status (the entrant's uint8_t return,
  *      published by the shim) refuses the image: a required driver that
- *      fails to initialize is a boot failure (36.11);
- *   3. keep the two architecture-36.20 ledgers in acceptance builds,
+ *      fails to initialize is a boot failure (5.3);
+ *   3. keep the two architecture-9 ledgers in acceptance builds,
  *      `driver hot` (hot plus io bytes) and `driver boot/bulk` (boot plus
  *      bulk bytes); production takes them from the packer's report.
  *
- * The host computed everything (M10-REFERENCE decision 2): the container
+ * The host computed everything: the container
  * carries no version, no module type, no relocation records and no
  * placement policy, and there is no magic check - the ROMFS entry's MOD
  * flag (validated by romfs_init) is what proves the file is a driver
@@ -53,7 +53,7 @@
 
 /* The plan and ledger lines are acceptance evidence the replay pins
  * against the packer's report; production links only the error lines
- * (work package 41).  Target images normally inherit the shared
+ *.  Target images normally inherit the shared
  * KOS_TARGET_TEST_BUILD guard. */
 #ifndef KOS_TARGET_TEST_BUILD
 #define KOS_TARGET_TEST_BUILD 0
@@ -66,7 +66,7 @@
  * - window page; the same derivation kernel/ipc/ipc.c uses). */
 #define DRIVER_BANK (uint8_t)(KOS_BANK_MASK - 1u)
 
-/* Destination tiers (architecture 36.6): the hot tier 6000h-DFFFh (the io
+/* Destination tiers (architecture 5.2): the hot tier 6000h-DFFFh (the io
  * role lives inside 8000h-BFFFh, which the hot-tier bound already
  * contains), the boot/bulk tier 0000h-5FFFh.  The host computed each
  * address; these are the ranges the loader checks. */
@@ -117,8 +117,8 @@ static void driver_put_hex16(uint16_t value)
 #endif /* KOS_DRIVER_TEST_EVIDENCE */
 
 #if KOS_DRIVER_TEST_EVIDENCE
-/* Decimal without the SDCC division runtime (work/30b audit: the kernel
- * links no arithmetic helpers): repeated subtraction of the powers of
+/* Decimal without the SDCC division runtime (the kernel links no
+ * arithmetic helpers): repeated subtraction of the powers of
  * ten, which for a 16-bit value is at most 50 iterations. */
 static void driver_put_dec16(uint16_t value)
 {
@@ -144,7 +144,7 @@ static void driver_put_dec16(uint16_t value)
 /* One failure line: "driver loader: <name>: <what>", the boot error the
  * contract requires on the early console.  The class carries the text, so
  * every failing step only returns its code; the words are short because
- * the loader's byte budget is an architectural resource (36.3):
+ * the loader's byte budget is an architectural resource (2.3):
  * "no image" the store does not hold the manifest's file, "copy" a segment
  * that does not fit or a refused copy, "endpoint" the endpoint table is
  * full, "publication" the namespace refused the row, "invalid" a corrupt
@@ -448,7 +448,7 @@ static int driver_load_image(const romfs_file_t *file,
 		 * visible, so the driver reads its boot bundle and claims
 		 * its IRQs here.  The init's uint8_t return is published by
 		 * the upcall shim; a non-zero status fails the image and
-		 * the boot (36.11). */
+		 * the boot (5.3). */
 		kos_driver_upcall_block.page = KOS_UPCALL_PAGE_DRIVER;
 		kos_driver_upcall_block.entry = header->init_entry;
 		kos_driver_upcall_block.args = (void *)driver_boot();
@@ -517,7 +517,7 @@ int driver_load_all(const char *manifest_name)
 		return MOD_EFORMAT;
 	}
 	/* Entry count by repeated subtraction: the kernel links no SDCC
-	 * division helpers (work/30b audit), so the count is taken from the
+	 * division helpers, so the count is taken from the
 	 * size and the manifest must be whole records. */
 	entries = 0u;
 	{

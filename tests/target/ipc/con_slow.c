@@ -4,7 +4,7 @@
  * Its own compilation unit and data area (_HOT) put it in con's hot
  * segment, which the loader places outside bank 6's 8000h-BFFFh: that is
  * the deliberate driver-side violation the path-C copy case needs
- * (correction 01 to architecture 36.8).
+ * (architecture 4.9).
  */
 
 #include "ipc_test.h"

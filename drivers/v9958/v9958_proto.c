@@ -1,4 +1,4 @@
-/* KonaOS V9958 resident driver glue (work package 41).
+/* KonaOS V9958 resident driver glue.
  *
  * The video protocol of abi/kos/protocol.h (class KOS_CLASS_VIDEO,
  * instance 0, version KOS_PROTOCOL_VERSION) in front of the driver in

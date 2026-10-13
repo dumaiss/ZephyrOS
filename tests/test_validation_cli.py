@@ -237,7 +237,7 @@ class TestPackerRejections(ValidatorCLIBase):
     def test_fixed_core_latch_write_needs_the_production_placement(self):
         # The fixed-core rule is the production placement's invariant: the
         # evaluation images keep their own placement and pass no flag
-        # (work package 38).  The cold-half rule always holds.
+        #.  The cold-half rule always holds.
         bad = valid_ihx().replace(ihx_record(0x2000, [0xC3, 0x30, 0x20]),
                                   ihx_record(0x2000, [0xD3, 0x00, 0xC9]))
         self.write_ihx(bad)

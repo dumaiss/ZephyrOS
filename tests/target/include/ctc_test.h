@@ -1,6 +1,6 @@
 /* KonaOS CTC0 acceptance helper (test only).
  *
- * The M2/M3/M4 acceptance images arm CTC0 to exercise IRQ delivery and
+ * The subsystem acceptance image arms CTC0 to exercise IRQ delivery and
  * the pending-across-module-load window.  The programming sequence is
  * acceptance-only: it lives in tests/target/support/ctc_test.c and is
  * never linked into a production image.  The production CTC owner keeps

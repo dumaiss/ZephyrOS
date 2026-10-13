@@ -1,8 +1,7 @@
-/* KonaOS M6 process/EXE acceptance constants (test only).
+/* KonaOS process/EXE acceptance constants (test only).
  *
- * Shared by tests/target/m6/ (target), tests/m6/ (fixtures), and the
- * host replay in tests/test_m6_sim.py; the host tests parse this header
- * so the two cannot drift.  Not part of the native ABI.
+ * Shared by tests/target/process/ (target) and the tests/subsys/ fixture
+ * generators, which parse this header so the two cannot drift.  Not part of the native ABI.
  */
 
 #ifndef KONAOS_TARGET_PROCESS_SELFTEST_H
@@ -21,7 +20,7 @@
 #define KOS_PCST_FAIL_RESERVE  0x09u /* allocator reservation mismatch    */
 #define KOS_PCST_FAIL_ARG      0x0Au /* API argument handling mismatch    */
 #define KOS_PCST_FAIL_CONSOLE  0x0Bu /* acceptance console line failed    */
-#define KOS_PCST_FAIL_RESOURCE 0x0Cu /* M8 ROMFS resource import mismatch */
+#define KOS_PCST_FAIL_RESOURCE 0x0Cu /* ROMFS resource import mismatch    */
 
 /* exetest program exit status: pass = PASS | bank, fail = FAIL | code.
  * A bank in the low byte proves which application bank executed the
@@ -36,7 +35,7 @@
 #define KOS_PCST_ZT_FAIL_GETINFO 0x04u
 #define KOS_PCST_ZT_FAIL_WRITE   0x05u
 
-/* Package 44a loader-outcome selftest codes (0x0D-0x10 are the EXE v2
+/* Loader-outcome selftest codes (0x0D-0x10 are the EXE v2
  * group: BSS/bank zeroing, DATA segments, the >64-KiB container and the
  * segment-allocation rollback). */
 #define KOS_PCST_FAIL_EXE2_BSS  0x0Du /* BSS zeroed / bank not cleared   */
@@ -44,7 +43,7 @@
 #define KOS_PCST_FAIL_EXE2_BIG  0x0Fu /* container over 64 KiB           */
 #define KOS_PCST_FAIL_EXE2_ROLL 0x10u /* segment allocation rollback     */
 
-/* --- EXE v2 loader-outcome programs (work package 44a) ----------------
+/* --- EXE v2 loader-outcome programs ----------------
  *
  * Three SDK programs in the subsystem store that exercise the loader
  * outcomes the v2 contract names: the primary BSS is zeroed after the
@@ -71,7 +70,7 @@
 #define KOS_PCST_Z2_FAIL_LATCH   0x0Au /* not mode 10 with P = 0          */
 
 /* The pattern the kernel test writes into the child's bank outside its
- * image, BSS and stack.  The loader must leave it alone (36.19). */
+ * image, BSS and stack.  The loader must leave it alone (4.8). */
 #define KOS_PCST_EXE2_MARK_ADDR 0xD000u
 #define KOS_PCST_EXE2_MARK_SIZE 4u
 #define KOS_PCST_EXE2_MARK_0 0x5Au
@@ -88,7 +87,7 @@
 #define KOS_PCST_SEG_MUL    7u
 #define KOS_PCST_SEG_ADD    0x13u
 /* The first one-slot auxiliary object of a clean bank map lands in the
- * highest free bank's window-speed slot (36.16 placement policy); the
+ * highest free bank's window-speed slot (4.8 placement policy); the
  * test dirties exactly that slot's BSS to prove the loader zeroes it. */
 #define KOS_PCST_SEG_BANK   5u
 #define KOS_PCST_SEG_BASE   0x6000u
@@ -109,7 +108,7 @@
  * valid entry to run in the same boot. */
 #define KOS_PCST_TRUNCATED_NAME "exe-truncated.exe"
 #define KOS_PCST_VALID_NAME     "exetest.exe"
-/* DATA-flagged fixture used by the M8 resource-import checks. */
+/* DATA-flagged fixture used by the resource-import checks. */
 #define KOS_PCST_DATA_NAME    "exe-wrong-type.dat"
 
 /* Fixture descriptor emitted into the generated process_expect.inc table. */

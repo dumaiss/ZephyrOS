@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS M6 common-resident application-bank copy gate.
+; KonaOS common-resident application-bank copy gate.
 ;
 ; The syscall dispatcher and the EXE loader run in mode 11, where only the
 ; caller window 0000h-1FFFh of the application bank is visible.  This gate

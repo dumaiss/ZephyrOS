@@ -1,11 +1,11 @@
 ; -----------------------------------------------------------------------------
-; KonaOS libkos: aperture latch helpers (work package 43).
+; KonaOS libkos: aperture latch helpers.
 ;
 ; Opening the mode-10 far aperture is not a syscall: the program writes
 ; the token SYS_XMEM_MAP returned to the memory-control port and keeps the
 ; previous latch to restore.  These two entries are the register-only
 ; primitives; everything else about the aperture is ordinary code and
-; ordinary pointer accesses (architecture 36.17).
+; ordinary pointer accesses (architecture 7.2).
 ;
 ; Port 00h is the banking latch on the Zephyr-80 (the module build never
 ; sees platform headers, so the constant is local and pinned here).
