@@ -31,7 +31,7 @@
  *   01 kind           EXE_SEG_KIND_*
  *   02 image_size     bytes copied into the segment's memory
  *   04 bss_size       bytes zeroed after the segment image
- *   06 reserved0      0
+ *   06 flags          EXE_SEG_FLAG_*
  *   08 payload_offset u32 file offset of the segment payload
  *   0C reserved1      0
  *
@@ -80,6 +80,17 @@
 #define EXE_SEG_KIND_FAR_CODE 1u
 #define EXE_SEG_KIND_DATA     2u
 
+/* Segment-row flags (row offset 06).  A `DATA` row at most 16 KiB (image
+ * + BSS) may be `MAPPABLE`: the loader places it in the aperture slice of
+ * an auxiliary bank, so its image is at 8000h exactly where a `DATAn=`
+ * source linked it (work package 49d), and the object it creates is
+ * mappable - the caller reaches the data with plain pointers while the
+ * aperture is open, and by handle otherwise.  A mappable segment occupies
+ * a whole auxiliary bank's aperture like a far-code segment, so the two
+ * compete for the free banks.  Any other value, or the flag on any other
+ * row, is EXE_EXEC_ERR_SEGMENT (packer and loader). */
+#define EXE_SEG_FLAG_MAPPABLE 0x0001u
+
 /* Container limits.  The feasibility check uses the slot total: an
  * auxiliary object is contiguous in one bank, a data segment occupies at
  * most the four non-aperture slots of its bank, a far-code segment at
@@ -118,7 +129,7 @@ struct exe_segment {
 	uint8_t  kind;
 	uint16_t image_size;
 	uint16_t bss_size;
-	uint16_t reserved0;
+	uint16_t flags;
 	uint32_t payload_offset;
 	uint32_t reserved1;
 };
@@ -171,6 +182,8 @@ _Static_assert(__builtin_offsetof(struct exe_segment, image_size) == 0x02,
 	       "EXE segment image_size offset");
 _Static_assert(__builtin_offsetof(struct exe_segment, bss_size) == 0x04,
 	       "EXE segment bss_size offset");
+_Static_assert(__builtin_offsetof(struct exe_segment, flags) == 0x06,
+	       "EXE segment flags offset");
 _Static_assert(__builtin_offsetof(struct exe_segment, payload_offset) == 0x08,
 	       "EXE segment payload_offset offset");
 #endif /* __SDCC */

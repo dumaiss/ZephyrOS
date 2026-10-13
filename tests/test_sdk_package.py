@@ -106,6 +106,9 @@ SDK_FILES = {
     "examples/fardemo.c",
     "examples/fardemo_far.c",
     "examples/files.c",
+    "examples/fardata.c",
+    "examples/fardata_far.c",
+    "examples/levels.c",
     "docs/sdk.md",
     "docs/exe-format.md",
 }
@@ -275,7 +278,7 @@ class TestSdkPackage(unittest.TestCase):
             shutil.copytree(cls.tree, source)
             for directory, programs in (("template", ["hello"]),
                                         ("examples", ["hello", "fardemo",
-                                                      "files"])):
+                                                      "files", "fardata"])):
                 workdir = os.path.join(source, directory)
                 output = _run_make(workdir)
                 if ROOT in output:
@@ -431,7 +434,8 @@ class TestSdkPackage(unittest.TestCase):
     def test_template_and_examples_build_outside_the_tree(self):
         """`make` in template/ and examples/ packs every program with the
         SDK alone; no compile or link names the OS tree."""
-        self.assertEqual(sorted(self._build()), ["fardemo", "files", "hello"])
+        self.assertEqual(sorted(self._build()),
+                         ["fardata", "fardemo", "files", "hello"])
 
     def test_the_packed_program_runs_in_the_simulator(self):
         """The store carries the SDK-built hello.exe as /system/hello.exe;

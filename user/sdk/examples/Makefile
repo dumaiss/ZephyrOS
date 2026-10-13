@@ -20,7 +20,16 @@ $(eval $(call exe_program,fardemo,.,fardemo.c,\
 
 $(eval $(call exe_program,files,.,files.c,STACK=256))
 
+# The far-data example (work package 49d): levels.c is compiled into the
+# `_DATA1`/`_DATA1B` pair linked at 8000h as one mappable DATA segment and
+# mapped by the program itself, while fardata_far.c is the container's
+# FAR1 row - one window, used by the data first and the banked call after.
+$(eval $(call exe_program,fardata,.,fardata.c,\
+	DATA1=levels.c,\
+	FAR1=fardata_far.c,\
+	STACK=256))
+
 # `make` packs every program listed here; each declaration is a target of
 # its own name too (`make fardemo`).
 .DEFAULT_GOAL := all
-all: hello fardemo files
+all: hello fardemo files fardata

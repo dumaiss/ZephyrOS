@@ -855,7 +855,7 @@ offset 0  u16  size    image + BSS, the segment's logical size
 offset 2  u8   kind    KOS_SEG_KIND_DATA (2) or KOS_SEG_KIND_FAR_CODE (1)
 offset 3  u8   state   KOS_SEG_STATE_LOADED
 offset 4  u16  handle  DATA: the extended-memory object handle; else 0
-offset 6  u16  reserved  0
+offset 6  u16  flags   KOS_XMEM_FLAG_* of the segment, 0 when none
 ```
 
 - A `DATA` segment is a loader-created extended-memory object of type
@@ -863,6 +863,15 @@ offset 6  u16  reserved  0
   `SYS_XMEM_READ`/`SYS_XMEM_WRITE` take.  The segment is released only at
   exit, so `SYS_XMEM_FREE` refuses its handle with `-KOS_EINVAL`, and
   `SYS_XMEM_INFO` reports type `KOS_XMEM_TYPE_SEGMENT`.
+- A `DATA` segment that asked for `EXE_SEG_FLAG_MAPPABLE` (far data,
+  package 49d) reports `KOS_XMEM_FLAG_MAPPABLE` in `flags` and is placed
+  in the aperture slice of an auxiliary bank, so its image is at `8000h`
+  where the link put it and its BSS is zeroed right after - one
+  auxiliary bank per mappable segment, as for far code.  `SYS_XMEM_MAP`
+  returns the token that opens the aperture onto it, which is how the
+  SDK's `farmap` reaches the segment's C symbols (package 49d,
+  `docs/sdk.md` section 12).  An unplaced segment cannot be reported: the
+  loader places every segment or the exec fails.
 - A `FAR_CODE` segment (package 44b) has no handle and reports 0: it is
   linked at `8000h`, the loader places it in the aperture slice of its own
   auxiliary bank (one far-code segment per bank) and it executes in place

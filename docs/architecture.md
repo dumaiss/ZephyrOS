@@ -5445,7 +5445,7 @@ There is no reserved low window.
 ```text
 slots 0-2   0000h-5FFFh   data; copied through the mode-10 gate
 slot  3     6000h-7FFFh   data; window-speed copies
-slots 4-5   8000h-BFFFh   the aperture slice: mappable objects and far-code segments
+slots 4-5   8000h-BFFFh   the aperture slice: mappable objects, mappable data segments and far-code segments
 slot  6     C000h-DFFFh   data; window-speed copies
 ```
 
@@ -5553,7 +5553,14 @@ payloads
   bank. They are linked at their
   run address, so they need **no relocation**.
 - **Data segments** become extended-memory objects owned by the process and
-  are reached by handle.
+  are reached by handle. A data segment may declare itself **mappable**
+  (package 49d): it is then placed in the aperture slice of an auxiliary
+  bank, one mappable segment per bank, so its image is at `8000h` and its
+  BSS is zeroed right after, and `SYS_XMEM_MAP` opens the aperture onto
+  it - the program reaches its data through plain pointers instead of
+  through copies. Far code and mappable data share the one window
+  (section 36.17): a banked call and a mapped segment are never visible at
+  the same time.
 - Entry points are resolved by the linker. A far call is a plain `CALL`
   after mapping (section 36.17), so the container carries no far-entry
   table.

@@ -38,7 +38,7 @@
     "exe-far-oversize.exe",
     "exe-seg-payload.exe",
     "exe-seg-id.exe",
-    "exe-seg-reserved.exe"
+    "exe-seg-flags.exe"
   ],
   "cflags": [
     "-DKOS_SUBSYS_SELFTEST=1"

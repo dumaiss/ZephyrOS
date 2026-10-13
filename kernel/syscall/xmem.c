@@ -220,15 +220,19 @@ void kos_xmem_alloc(uint16_t block)
 
 /* One loader-created segment (kernel/process/exec.c): allocate its slots
  * and register the object before the child bank is touched, so a failure
- * is a clean rollback through process_slot_release().  A `DATA` segment
- * is non-mappable - it is reached by handle - and the caller receives the
- * placement it copies the payload into and zeroes the BSS at.  A
- * `FAR_CODE` segment is linked at 8000h, so it is placed in slot 4 (slots
- * 4-5 when it is over 8 KiB): one far-code segment per auxiliary bank,
- * and it has no handle (SYS_SEG_MAP returns its aperture token). */
+ * is a clean rollback through process_slot_release().  A plain `DATA`
+ * segment is non-mappable - it is reached by handle - and the caller
+ * receives the placement it copies the payload into and zeroes the BSS
+ * at.  A `FAR_CODE` segment is linked at 8000h, so it is placed in slot 4
+ * (slots 4-5 when it is over 8 KiB): one far-code segment per auxiliary
+ * bank, and it has no handle (SYS_SEG_MAP returns its aperture token).  A
+ * `DATA` segment that asked for `EXE_SEG_FLAG_MAPPABLE` (package 49d) is
+ * placed exactly the same way - its image is at 8000h where the link put
+ * it - and its object carries `KOS_XMEM_FLAG_MAPPABLE`, so the program
+ * opens the aperture onto it with SYS_XMEM_MAP; it keeps its handle. */
 int kos_xmem_segment_alloc(uint8_t pid, uint8_t id, uint8_t kind,
-			   uint16_t size, uint16_t *handle, uint8_t *bank,
-			   uint8_t *slot)
+			   uint16_t flags, uint16_t size, uint16_t *handle,
+			   uint8_t *bank, uint8_t *slot)
 {
 	struct xmem_object *obj;
 	uint8_t place;
@@ -237,16 +241,24 @@ int kos_xmem_segment_alloc(uint8_t pid, uint8_t id, uint8_t kind,
 
 	if (handle == (uint16_t *)0 || bank == (uint8_t *)0 ||
 	    slot == (uint8_t *)0 || pid >= PROCESS_TABLE_SIZE ||
-	    id == 0u || size == 0u) {
+	    id == 0u || size == 0u ||
+	    (flags & ~(uint16_t)EXE_SEG_FLAG_MAPPABLE) != 0u) {
 		return -KOS_EINVAL;
 	}
 	if (kind == EXE_SEG_KIND_DATA) {
-		if (size > EXE_SEG_MAX_SIZE) {
-			return -KOS_EINVAL;
+		if (flags != 0u) {
+			if (size > EXE_SEG_MAX_FAR_SIZE) {
+				return -KOS_EINVAL;
+			}
+			place = KOS_AUX_PLACE_FAR;
+		} else {
+			if (size > EXE_SEG_MAX_SIZE) {
+				return -KOS_EINVAL;
+			}
+			place = KOS_AUX_PLACE_DATA;
 		}
-		place = KOS_AUX_PLACE_DATA;
 	} else if (kind == EXE_SEG_KIND_FAR_CODE) {
-		if (size > EXE_SEG_MAX_FAR_SIZE) {
+		if (flags != 0u || size > EXE_SEG_MAX_FAR_SIZE) {
 			return -KOS_EINVAL;
 		}
 		place = KOS_AUX_PLACE_FAR;
@@ -276,7 +288,8 @@ int kos_xmem_segment_alloc(uint8_t pid, uint8_t id, uint8_t kind,
 	obj->bank = *bank;
 	obj->slot = *slot;
 	obj->slots = slots;
-	obj->flags = KOS_XMEM_FLAG_NONE;
+	obj->flags = (flags != 0u) ? KOS_XMEM_FLAG_MAPPABLE
+				   : KOS_XMEM_FLAG_NONE;
 	obj->type = KOS_XMEM_TYPE_SEGMENT;
 	obj->seg_id = id;
 	obj->seg_kind = kind;
@@ -499,8 +512,8 @@ void kos_seg_info(uint16_t block)
 	record[3] = KOS_SEG_STATE_LOADED;
 	record[4] = (uint8_t)handle;
 	record[5] = (uint8_t)(handle >> 8);
-	record[6] = 0u;
-	record[7] = 0u;
+	record[6] = obj->flags;
+	record[7] = 0u; /* the ABI flags word is 16 bits, the object's 8 */
 	if (kos_syscall_bank_write(args->buffer,
 				   (uint16_t)sizeof(struct kos_seg_info)) !=
 	    0u) {

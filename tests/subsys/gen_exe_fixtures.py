@@ -27,7 +27,7 @@ formats/include/exe.h plus two well-formed control files:
     exe-far-oversize.exe       EXE_EXEC_ERR_SEGMENT     (FAR_CODE over 16 KiB)
     exe-seg-payload.exe        EXE_EXEC_ERR_SEGMENT     (payload outside file)
     exe-seg-id.exe             EXE_EXEC_ERR_SEGMENT     (ids not 1..N)
-    exe-seg-reserved.exe       EXE_EXEC_ERR_SEGMENT     (row reserved set)
+    exe-seg-flags.exe          EXE_EXEC_ERR_SEGMENT     (row flag bit outside MAPPABLE)
     exe-wrong-type.dat         (valid bytes, packed as ROMFS DATA)
     exe-return.exe             (valid; entry executes a raw RET)
 
@@ -114,7 +114,7 @@ def _fields(**overrides):
 
 def _row(**overrides):
     row = exepack.base_segment_row()
-    row["reserved0"] = 0
+    row["flags"] = 0
     row["reserved1"] = 0
     row.update(overrides)
     return row
@@ -221,9 +221,9 @@ def build_fixtures():
          _container(_fields(), _image(4), [_valid_segment(id=2)],
                     [SEG_PAYLOAD]),
          "EXE_EXEC_ERR_SEGMENT"),
-        ("exe-seg-reserved.exe",
+        ("exe-seg-flags.exe",
          _container(_fields(), _image(4),
-                    [_valid_segment(reserved0=1)], [SEG_PAYLOAD]),
+                    [_valid_segment(flags=2)], [SEG_PAYLOAD]),
          "EXE_EXEC_ERR_SEGMENT"),
         ("exe-wrong-type.dat", _container(_fields(), _image(4)), None),
         ("exe-return.exe", _container(_fields(), _image(4)), None),

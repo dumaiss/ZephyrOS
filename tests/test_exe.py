@@ -291,7 +291,7 @@ class TestSyntheticPacking(unittest.TestCase):
         symbols["l__INITIALIZER"] = 4
         with self.assertRaises(exepack.ExeError) as caught:
             self.program.pack(symbols=symbols)
-        self.assertIn("initialized data", str(caught.exception))
+        self.assertIn("initialized writable data", str(caught.exception))
 
     def test_scratch_outside_window_rejected(self):
         symbols = dict(self.program.symbols)
@@ -412,7 +412,7 @@ class TestSegmentPacking(unittest.TestCase):
             self.program.pack(segments=[
                 {"id": 1, "kind": "DATA", "input": "seg1.bin",
                  "area": "_FAR_CODE", "bss_size": 0}])
-        self.assertIn("not 'area'", str(caught.exception))
+        self.assertIn("needs the 'bss_area'", str(caught.exception))
         self.assertEqual(caught.exception.code, "EXE_EXEC_ERR_ARG")
 
     def test_unknown_kind_refused(self):
@@ -483,8 +483,10 @@ class TestSegmentPacking(unittest.TestCase):
         exepack.validate_image(data)
         text = exepack.dump(out_path)
         self.assertIn("segments 2/2 slots", text)
-        self.assertIn("segment 1  kind DATA  image 64  bss 4", text)
-        self.assertIn("segment 2  kind DATA  image 96  bss 96", text)
+        self.assertIn("segment 1  kind DATA  flags 0  image 64  bss 4",
+                      text)
+        self.assertIn("segment 2  kind DATA  flags 0  image 96  bss 96",
+                      text)
 
 
 class TestFarCodePacking(unittest.TestCase):

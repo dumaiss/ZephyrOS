@@ -318,9 +318,9 @@ void process_bank_release(uint8_t bank);
 
 /* What an allocation is for (package 44b): a data object prefers the
  * window-speed slots, a mappable object lives in the aperture slice, and
- * a far-code segment is linked at 8000h so it takes slot 4 (slots 4-5
- * when it is over 8 KiB) - which is what keeps one far-code segment per
- * auxiliary bank. */
+ * a far-code segment - or a mappable DATA segment, whose image was linked
+ * at 8000h (49d) - takes slot 4 (slots 4-5 when it is over 8 KiB), which
+ * is what keeps one of them per auxiliary bank. */
 #define KOS_AUX_PLACE_DATA     0u
 #define KOS_AUX_PLACE_MAPPABLE 1u
 #define KOS_AUX_PLACE_FAR      2u

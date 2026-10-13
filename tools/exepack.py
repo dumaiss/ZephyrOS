@@ -14,8 +14,8 @@ docs/exe-format.md and formats/include/exe.h):
     18 primary_payload_offset (u32)  1C file_size (u32)  20 reserved1=0
 
 then the primary payload, the segment table (count * 16-byte rows: id,
-kind, image size, BSS size, reserved, u32 payload offset, u32 reserved)
-and the segment payloads.  Every file offset and the total size are
+kind, image size, BSS size, flags, u32 payload offset, u32 reserved) and
+the segment payloads.  Every file offset and the total size are
 32-bit, so a container may exceed 64 KiB.
 
 A program is linked as one contiguous primary image at 0100h:
@@ -64,7 +64,9 @@ Manifest (exe-v2):
       "scratch": {"symbol": "kos_scratch", "size": 16},
       "segments": [
         {"id": 1, "kind": "DATA", "input": "seg1.bin", "bss_size": 64},
-        {"id": 2, "kind": "FAR_CODE", "area": "_FAR_CODE", "bss_size": 0}
+        {"id": 2, "kind": "FAR_CODE", "area": "_FAR_CODE", "bss_size": 0},
+        {"id": 3, "kind": "DATA", "flags": 1, "area": "_DATA1",
+         "bss_area": "_DATA1B"}
       ]
     }
 
@@ -74,7 +76,11 @@ user runtime contract: it names the low-window syscall argument block and
 is rejected when it cannot fit in 0100h-1FFFh.  `segments` is optional; a
 DATA segment's `image_size` is the size of its payload file, a FAR_CODE
 segment's is the size of the linked area (`l__<area>`), whose `s__<area>`
-must be `8000h` and at most `SEG_MAX_FAR_SIZE`.
+must be `8000h` and at most `SEG_MAX_FAR_SIZE`.  A DATA segment whose
+`flags` ask for `MAPPABLE` names a linked area pair instead: `area` (the
+`const` image, based at `8000h`) and `bss_area` (the zeroed tail, which
+the link must place immediately after the image), both from the map;
+`bss_size` and `input` do not apply to it.
 
 Exit status: 0 success, 1 rejected geometry/manifest, 2 usage error.
 """
@@ -118,6 +124,11 @@ KIND_FAR_CODE = 1
 KIND_DATA = 2
 KIND_BY_NAME = {"FAR_CODE": KIND_FAR_CODE, "DATA": KIND_DATA}
 
+# Segment-row flags (formats/include/exe.h): a DATA row of at most 16 KiB may
+# ask for the aperture, and the loader then places it at 8000h where its
+# `DATAn=` source was linked (work package 49d).
+SEG_FLAG_MAPPABLE = 0x0001
+
 # Result codes: kept value-identical with formats/include/exe.h; the
 # host parity test cross-checks the two so they cannot drift.
 RESULT_CODES = (
@@ -152,7 +163,8 @@ MANIFEST_KEYS = {
     "format", "name", "input", "map", "entry", "entry_offset",
     "image_size", "bss_size", "stack_size", "scratch", "segments",
 }
-SEGMENT_MANIFEST_KEYS = {"id", "kind", "input", "area", "bss_size"}
+SEGMENT_MANIFEST_KEYS = {"id", "kind", "input", "area", "bss_area", "bss_size",
+                        "flags"}
 
 
 class ExeError(Exception):
@@ -210,7 +222,7 @@ def build_segment_row(row):
     data.append(row["kind"] & 0xFF)
     data += (row["image_size"] & 0xFFFF).to_bytes(2, "little")
     data += (row["bss_size"] & 0xFFFF).to_bytes(2, "little")
-    data += (row["reserved0"] & 0xFFFF).to_bytes(2, "little")
+    data += (row["flags"] & 0xFFFF).to_bytes(2, "little")
     data += (row["payload_offset"] & U32_MAX).to_bytes(4, "little")
     data += (row["reserved1"] & U32_MAX).to_bytes(4, "little")
     assert len(data) == SEGMENT_ENTRY_SIZE
@@ -246,7 +258,7 @@ def base_segment_row():
         "kind": KIND_DATA,
         "image_size": 1,
         "bss_size": 0,
-        "reserved0": 0,
+        "flags": 0,
         "payload_offset": 0,
         "reserved1": 0,
     }
@@ -288,7 +300,7 @@ def parse_segment_row(data, offset=0):
         "kind": raw[1],
         "image_size": raw[2] | (raw[3] << 8),
         "bss_size": raw[4] | (raw[5] << 8),
-        "reserved0": raw[6] | (raw[7] << 8),
+        "flags": raw[6] | (raw[7] << 8),
         "payload_offset": int.from_bytes(raw[8:12], "little"),
         "reserved1": int.from_bytes(raw[12:16], "little"),
     }
@@ -349,16 +361,41 @@ def validate_segment_row(row, file_size):
     """Mirror kernel/process/exec.c exe_validate_segment()."""
     if row["kind"] not in (KIND_DATA, KIND_FAR_CODE):
         return "EXE_EXEC_ERR_SEG_KIND"
-    if (row["image_size"] == 0 or row["reserved0"] != 0 or
+    if (row["image_size"] == 0 or row["flags"] & ~SEG_FLAG_MAPPABLE or
             row["reserved1"] != 0):
         return "EXE_EXEC_ERR_SEGMENT"
-    limit = (SEG_MAX_FAR_SIZE if row["kind"] == KIND_FAR_CODE
+    if row["flags"] != 0 and row["kind"] != KIND_DATA:
+        return "EXE_EXEC_ERR_SEGMENT"
+    limit = (SEG_MAX_FAR_SIZE
+             if row["kind"] == KIND_FAR_CODE or row["flags"] != 0
              else SEG_MAX_SIZE)
     if row["image_size"] + row["bss_size"] > limit:
         return "EXE_EXEC_ERR_SEGMENT"
     if row["payload_offset"] + row["image_size"] > file_size:
         return "EXE_EXEC_ERR_SEGMENT"
     return None
+
+
+def initialized_symbols(symbols, limit=4):
+    """The names of the writable objects EXE v2 cannot load.
+
+    SDCC puts the initial values of writable statics in the `_INITIALIZED`
+    area and a copy loop in `_INITIALIZER`: the program has no startup
+    support for either, so any content there is refused.  The names come
+    out of the map so the refusal points at the object to fix - a
+    far-data source must hold `const` tables and zeroed objects only
+    (work package 49d).
+    """
+    names = []
+    start = symbols.get("s__INITIALIZED")
+    length = symbols.get("l__INITIALIZED", 0)
+    if start is not None and length:
+        inside = sorted(name for name, address in symbols.items()
+                        if start <= address < start + length)
+        names = [name for name in inside if name.startswith("_")][:limit]
+        if len(inside) > len(names):
+            names.append("(+%d more)" % (len(inside) - len(names)))
+    return names
 
 
 def geometry(fields):
@@ -466,25 +503,25 @@ def _validate_segment_manifest(segments):
             raise ExeError("EXE_EXEC_ERR_ARG",
                            "unknown segment keys: %s"
                            % ", ".join(sorted(unknown)))
-        for key in ("id", "kind", "bss_size"):
+        for key in ("id", "kind"):
             if key not in segment:
                 raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d is missing '%s'"
                                % (index + 1, key))
-        if segment["kind"] == "DATA" and (
-                not isinstance(segment.get("input"), str)
-                or not segment["input"]):
-            raise ExeError("EXE_EXEC_ERR_ARG",
-                           "segment %d input must be a file name"
+        flags = segment.get("flags", 0)
+        if flags not in (0, SEG_FLAG_MAPPABLE):
+            raise ExeError("EXE_EXEC_ERR_SEGMENT",
+                           "segment %d flags %r is neither 0 nor MAPPABLE"
+                           % (index + 1, flags))
+        if flags != 0 and segment["kind"] != "DATA":
+            raise ExeError("EXE_EXEC_ERR_SEGMENT",
+                           "segment %d: only a DATA row may be MAPPABLE"
                            % (index + 1))
         if (not _non_negative_int(segment["id"]) or segment["id"] < 1 or
                 segment["id"] > 255):
             raise ExeError("EXE_EXEC_ERR_ARG",
                            "segment %d id must be 1..255" % (index + 1))
-        if not _non_negative_int(segment["bss_size"]):
-            raise ExeError("EXE_EXEC_ERR_ARG",
-                           "segment %d bss_size must be non-negative"
-                           % (index + 1))
+        linked = "area" in segment
         if segment["kind"] == "FAR_CODE":
             if segment["id"] > FAR_ID_MAX:
                 raise ExeError("EXE_EXEC_ERR_ARG",
@@ -503,24 +540,59 @@ def _validate_segment_manifest(segments):
             # Far code is linked at 8000h: the payload comes from the
             # program's own IHX far area, named through `area`, not from a
             # raw payload file.
-            area = segment.get("area")
-            if not isinstance(area, str) or not area:
+            if not isinstance(segment.get("area"), str) or not segment["area"]:
                 raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d kind FAR_CODE needs an 'area' "
                                "name" % (index + 1))
-            if "input" in segment:
+            if "input" in segment or "bss_area" in segment:
                 raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d kind FAR_CODE takes 'area', not "
-                               "'input'" % (index + 1))
+                               "'input'/'bss_area'" % (index + 1))
         elif segment["kind"] == "DATA":
-            if "area" in segment:
-                raise ExeError("EXE_EXEC_ERR_ARG",
-                               "segment %d kind DATA takes 'input', not "
-                               "'area'" % (index + 1))
+            if linked:
+                # A linked far-data row (package 49d): the `DATAn=` areas.
+                if not isinstance(segment["area"], str) or not segment["area"]:
+                    raise ExeError("EXE_EXEC_ERR_ARG",
+                                   "segment %d DATA area must be a name"
+                                   % (index + 1))
+                if (not isinstance(segment.get("bss_area"), str)
+                        or not segment["bss_area"]):
+                    raise ExeError("EXE_EXEC_ERR_ARG",
+                                   "segment %d kind DATA with an 'area' "
+                                   "needs the 'bss_area' of its zeroed "
+                                   "objects" % (index + 1))
+                if "input" in segment or "bss_size" in segment:
+                    raise ExeError("EXE_EXEC_ERR_ARG",
+                                   "segment %d: a linked DATA row takes "
+                                   "'area'/'bss_area'; the map supplies "
+                                   "its sizes" % (index + 1))
+            else:
+                if not isinstance(segment.get("input"), str) \
+                        or not segment["input"]:
+                    raise ExeError("EXE_EXEC_ERR_ARG",
+                                   "segment %d kind DATA needs 'input' (a "
+                                   "payload file) or an 'area' (a linked "
+                                   "DATAn= pair)" % (index + 1))
+                if "bss_area" in segment:
+                    raise ExeError("EXE_EXEC_ERR_ARG",
+                                   "segment %d kind DATA takes 'bss_area' "
+                                   "only with 'area'" % (index + 1))
         else:
             raise ExeError("EXE_EXEC_ERR_SEG_KIND",
                            "segment %d kind %r is unknown"
                            % (index + 1, segment["kind"]))
+        # `bss_size` is declared for the rows whose BSS is not linked: a
+        # FAR_CODE row (0 today) and a payload-file DATA row.  A linked
+        # DATA row takes both sizes from the map.
+        if not linked:
+            if "bss_size" not in segment:
+                raise ExeError("EXE_EXEC_ERR_ARG",
+                               "segment %d is missing 'bss_size'"
+                               % (index + 1))
+            if not _non_negative_int(segment["bss_size"]):
+                raise ExeError("EXE_EXEC_ERR_ARG",
+                               "segment %d bss_size must be non-negative"
+                               % (index + 1))
 
 
 def _resolve(raw, manifest_path, objdir):
@@ -569,38 +641,74 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
     # bytes are linked above the image and are not part of it.  Holes in a
     # linked area are zero-filled.
     declared = manifest.get("segments") or []
-    # The far areas in link order: ascending segment id, which is the
-    # order the FAR1=..FAR4= sources are linked and the order sdldz80
-    # writes their record streams.  They all sit at 8000h - one aperture
-    # and one auxiliary bank per segment - so a linked address inside them
-    # carries one byte per covering area, in that same order.
+    # The linked areas in link order: ascending segment id, which is the
+    # order the FAR1=..FAR4= and DATA1=..DATA4= sources are linked and the
+    # order sdldz80 writes their record streams.  They all sit at 8000h -
+    # one aperture and one auxiliary bank per segment - so a linked address
+    # inside them carries one byte per covering area, in that same order.
+    # A far-data row also names the BSS area its zeroed objects went into;
+    # its size is free (no linked bytes) but it must start exactly where
+    # the image ends, or the loader's zero-fill would miss it.
     far_entries = []
     for index, segment in enumerate(declared):
-        if segment["kind"] != "FAR_CODE":
+        if segment["kind"] == "FAR_CODE":
+            area = segment["area"]
+            if area != "_FAR%d" % segment["id"]:
+                raise ExeError("EXE_EXEC_ERR_ARG",
+                               "segment %d: FAR_CODE id %d is the far area "
+                               "`_FAR%d`, not %r (package 49b: ids 1-4 are "
+                               "the far code segments)"
+                               % (index + 1, segment["id"], segment["id"],
+                                  area))
+            bss_area = None
+        elif "area" in segment:
+            area = segment["area"]
+            bss_area = segment["bss_area"]
+        else:
             continue
-        area = segment["area"]
-        if area != "_FAR%d" % segment["id"]:
-            raise ExeError("EXE_EXEC_ERR_ARG",
-                           "segment %d: FAR_CODE id %d is the far area "
-                           "`_FAR%d`, not %r (package 49b: ids 1-4 are "
-                           "the far code segments)"
-                           % (index + 1, segment["id"], segment["id"], area))
         start = symbols.get("s_" + area)
         length = symbols.get("l_" + area)
         if start is None or length is None:
             raise ExeError("EXE_EXEC_ERR_ARG",
-                           "segment %d: map has no s_%s/l_%s far area"
+                           "segment %d: map has no s_%s/l_%s area"
                            % (index + 1, area, area))
         if start != FAR_BASE:
             raise ExeError("EXE_EXEC_ERR_ARG",
-                           "segment %d: far area %s is linked at %04Xh; "
-                           "far code is linked at %04Xh"
+                           "segment %d: area %s is linked at %04Xh; a "
+                           "far-code or far-data segment is linked at %04Xh"
                            % (index + 1, area, start, FAR_BASE))
-        if length <= 0 or length > SEG_MAX_FAR_SIZE:
+        if length > SEG_MAX_FAR_SIZE:
             raise ExeError("EXE_EXEC_ERR_SEGMENT",
-                           "segment %d: far area %s is %d bytes, over the "
+                           "segment %d: area %s is %d bytes, over the "
                            "%d-byte aperture"
                            % (index + 1, area, length, SEG_MAX_FAR_SIZE))
+        if length == 0:
+            raise ExeError("EXE_EXEC_ERR_SEGMENT",
+                           "segment %d: area %s carries no const object; a "
+                           "far-data segment needs an initialized table "
+                           "(a segment of only zeroed objects has no image)"
+                           % (index + 1, area))
+        if bss_area is not None:
+            bss_start = symbols.get("s_" + bss_area)
+            bss_length = symbols.get("l_" + bss_area)
+            if bss_start is None or bss_length is None:
+                raise ExeError("EXE_EXEC_ERR_ARG",
+                               "segment %d: map has no s_%s/l_%s BSS area"
+                               % (index + 1, bss_area, bss_area))
+            if bss_start != start + length:
+                raise ExeError("EXE_EXEC_ERR_SEGMENT",
+                               "segment %d: BSS area %s starts at %04Xh, "
+                               "not at the image end %04Xh; the loader "
+                               "zeroes the BSS right after the image "
+                               "(%04Xh + %d)"
+                               % (index + 1, bss_area, bss_start,
+                                  start + length, FAR_BASE, length))
+            if length + bss_length > SEG_MAX_FAR_SIZE:
+                raise ExeError("EXE_EXEC_ERR_SEGMENT",
+                               "segment %d: %s + %s is %d bytes, over the "
+                               "%d-byte aperture"
+                               % (index + 1, area, bss_area,
+                                  length + bss_length, SEG_MAX_FAR_SIZE))
         far_entries.append((segment["id"], index, area, start, length))
     far_entries.sort()
     far_ranges = [(entry[3], entry[4]) for entry in far_entries]
@@ -678,11 +786,16 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
         raise ExeError("EXE_EXEC_ERR_ARG",
                        "BSS is %d bytes, declared bss_size is %d"
                        % (symbols.get("l__DATA", 0), bss_size))
-    for area in ("INITIALIZER", "INITIALIZED"):
-        if symbols.get("l__" + area, 0) != 0:
-            raise ExeError("EXE_EXEC_ERR_ARG",
-                           "initialized data is not supported by EXE v2 "
-                           "(_%s is non-empty)" % area)
+    if (symbols.get("l__INITIALIZED", 0) != 0
+            or symbols.get("l__INITIALIZER", 0) != 0):
+        names = initialized_symbols(symbols)
+        raise ExeError(
+            "EXE_EXEC_ERR_ARG",
+            "initialized writable data is not supported by EXE v2%s; a "
+            "program holds `const` tables and zeroed objects only, and "
+            "initializes writable data at run time"
+            % (": %s" % ", ".join(names) if names else
+               " (_INITIALIZED/_INITIALIZER are non-empty)"))
 
     scratch = manifest.get("scratch")
     if scratch is not None:
@@ -738,8 +851,16 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                            "first, then the DATA segments (package 49b)"
                            % (index + 1, declared["id"]))
         kind = KIND_BY_NAME[declared["kind"]]
+        linked_area = ("area" in declared
+                       and declared["kind"] != "FAR_CODE")
         if kind == KIND_FAR_CODE:
             payload = far_payloads[index]
+            row_bss = declared["bss_size"]
+        elif linked_area:
+            # A far-data row: the image is the linked `area`, the zeroed
+            # objects are the `bss_area` right after it (package 49d).
+            payload = far_payloads[index]
+            row_bss = symbols.get("l_" + declared["bss_area"], 0)
         else:
             payload_path = _resolve(declared["input"], manifest_path, objdir)
             if not payload_path.is_file():
@@ -747,24 +868,26 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                                "segment %d payload not found: %s"
                                % (index + 1, payload_path))
             payload = payload_path.read_bytes()
+            row_bss = declared["bss_size"]
         if len(payload) == 0:
             raise ExeError("EXE_EXEC_ERR_SEGMENT",
                            "segment %d payload is empty" % (index + 1))
-        limit = SEG_MAX_FAR_SIZE if kind == KIND_FAR_CODE else SEG_MAX_SIZE
-        if len(payload) + declared["bss_size"] > limit:
+        flags = declared.get("flags", 0)
+        limit = (SEG_MAX_FAR_SIZE
+                 if kind == KIND_FAR_CODE or flags != 0 else SEG_MAX_SIZE)
+        if len(payload) + row_bss > limit:
             raise ExeError("EXE_EXEC_ERR_SEGMENT",
                            "segment %d image + BSS is %d bytes, over the %d "
-                           "limit" % (index + 1,
-                                      len(payload) + declared["bss_size"],
+                           "limit" % (index + 1, len(payload) + row_bss,
                                       limit))
-        total_slots += segment_slots(len(payload), declared["bss_size"])
+        total_slots += segment_slots(len(payload), row_bss)
         payloads.append(payload)
         segments.append({
             "id": declared["id"],
             "kind": kind,
             "image_size": len(payload),
-            "bss_size": declared["bss_size"],
-            "reserved0": 0,
+            "bss_size": row_bss,
+            "flags": flags,
             "payload_offset": 0,
             "reserved1": 0,
         })
@@ -842,6 +965,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                          else "DATA"),
                 "image_size": segment["image_size"],
                 "bss_size": segment["bss_size"],
+                "flags": segment["flags"],
                 "payload_offset": segment["payload_offset"],
                 "sha256": hashlib.sha256(payloads[index]).hexdigest(),
             }
@@ -889,10 +1013,11 @@ def dump(path):
         row = parse_segment_row(data, fields["segment_table_offset"] +
                                 index * SEGMENT_ENTRY_SIZE)
         lines.append(
-            "  segment %d  kind %s  image %d  bss %d  payload %08Xh"
+            "  segment %d  kind %s  flags %d  image %d  bss %d  payload %08Xh"
             % (row["id"],
                "FAR_CODE" if row["kind"] == KIND_FAR_CODE else "DATA",
-               row["image_size"], row["bss_size"], row["payload_offset"]))
+               row["flags"], row["image_size"], row["bss_size"],
+               row["payload_offset"]))
     return "\n".join(lines)
 
 

@@ -176,7 +176,7 @@ int main(int argc, char **argv)
 		info.kind = 0u;
 		info.state = 0u;
 		info.handle = 0u;
-		info.reserved = 0u;
+		info.flags = 0u;
 		if (seginfo(foreign_seg, &info) != -KOS_EINVAL) {
 			console_puts("xmem-child: FAIL foreign-seg-info\r\n");
 			ok = 0;

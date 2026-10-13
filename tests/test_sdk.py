@@ -393,11 +393,11 @@ class TestSdkBoundary(unittest.TestCase):
         # `hwtest` is the production store's feature exerciser and the
         # runner of those outcome programs (work package 45b).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
-                         ["escc", "exe2big", "exe2probe", "exe2seg",
-                          "exetest", "fardemo", "fs_child", "fs_selftest",
-                          "hello", "hwtest", "ipc", "ipccopy", "monitor",
-                          "ns", "nschild", "xmem_child", "xmem_far",
-                          "xmem_selftest"])
+                         ["banks", "escc", "exe2big", "exe2probe",
+                          "exe2seg", "exetest", "far_data", "fardemo",
+                          "fs_child", "fs_selftest", "hello", "hwtest",
+                          "ipc", "ipccopy", "monitor", "ns", "nschild",
+                          "xmem_child", "xmem_far", "xmem_selftest"])
         for name, directory, _sources, _options in programs:
             count = sum(_read(path).count("exe_program,%s," % name)
                         for path in ("Makefile",
@@ -491,7 +491,7 @@ class TestSdkBoundary(unittest.TestCase):
                         options in _declared_programs()
                         if _far_sources(options)]
         self.assertEqual(sorted(name for name, _d, _o in far_programs),
-                         ["fardemo", "xmem_far"])
+                         ["banks", "far_data", "fardemo", "xmem_far"])
         for name, directory, options in far_programs:
             for source in _far_sources(options):
                 self.assertTrue(
@@ -509,13 +509,17 @@ class TestSdkBoundary(unittest.TestCase):
                     "#pragma bank",
                     _read(os.path.join(directory, source)),
                     "%s must take its bank from the rule" % source)
-        # The far segments each program declares exist where the packer
-        # resolves them: the rule's generated declaration (one segment per
-        # option used) for fardemo, and the checked-in list for the
-        # two-segment xmem program.
-        self.assertIn("$(1).far.json", rule)
+        # The segment rows each program declares exist where the packer
+        # resolves them: the rule's generated declaration (one row per
+        # option used, packages 44b/49d) for fardemo, fardata and the
+        # far-data outcome program, and the checked-in lists for the
+        # xmem program's two far segments and the bank-exhaustion
+        # container.
+        self.assertIn("$(1).seg.json", rule)
         self.assertIn(r'\"kind\": \"FAR_CODE\"', rule)
-        self.assertIn(r'\"area\": \"_FAR$$$$n\"', rule)
+        self.assertIn(r'\"area\": \"_FAR$$$${n}\"', rule)
+        self.assertIn(r'\"kind\": \"DATA\", \"flags\": 1', rule)
+        self.assertIn(r'\"bss_area\": \"_DATA$$$${n}B\"', rule)
         segments = json.loads(
             _read(os.path.join("tests", "xmem",
                                "xmem_far.segments.json")))

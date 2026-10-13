@@ -13,7 +13,8 @@
       tools/           exepack.py, exemanifest.py, ihx.py
       mk/kos.mk        the standalone build rules
       template/        Makefile + hello.c
-      examples/        hello, fardemo (__banked), files (open/read/list)
+      examples/        hello, fardemo (__banked), files (open/read/list),
+                       fardata (DATA1= + FAR1=, far data and a banked call)
       docs/            sdk.md, exe-format.md
 
 Nothing in the tree names a path outside it: every copied file is checked
@@ -139,7 +140,8 @@ def tree_files(root, headers, abi, libkos, crt0):
               for name in ("Makefile", "hello.c")]
     files += [("examples/%s" % name, root / SDK_EXAMPLES / name)
               for name in ("Makefile", "hello.c", "fardemo.c",
-                           "fardemo_far.c", "files.c")]
+                           "fardemo_far.c", "files.c", "fardata.c",
+                           "fardata_far.c", "levels.c")]
     files += [("docs/%s" % name, root / "docs" / name)
               for name in DOC_FILES]
     return files

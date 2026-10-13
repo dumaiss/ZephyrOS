@@ -24,7 +24,11 @@
  *
  * A EXE v2 `DATA` segment is one of these objects with type
  * `KOS_XMEM_TYPE_SEGMENT` (SYS_SEG_INFO names it); it is read and written
- * with this family's calls and released only at exit.
+ * with this family's calls and released only at exit.  A DATA segment
+ * whose container row carried `EXE_SEG_FLAG_MAPPABLE` (work package 49d)
+ * is mappable: its image was linked at `8000h` and the loader places it
+ * in the aperture slice, so a program opens the aperture onto it with
+ * `SYS_XMEM_MAP` and uses the C symbols directly.
  *
  * **Contents are undefined.**  Nothing pre-zeroes an object (architecture
  * 36.19): a program that needs zeroes writes them.  Every range

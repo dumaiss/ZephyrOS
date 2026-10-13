@@ -1006,6 +1006,30 @@ $(eval $(call exe_program,xmem_far,tests/xmem,\
 	FAR2=xmem_far_code2.c,\
 	SEGMENTS=tests/xmem/xmem_far.segments.json))
 
+# Far-data outcome program (work package 49d): the production store's
+# `/system/far_data.exe` runner, an ordinary SDK program that maps its own
+# DATA1 segment, fills a mappable object straight through the window,
+# reads the blob row and the store's `known.bin`, loads files whole with
+# `xload` and proves the bank-exhaustion refusal.  Its DATA1 pair (a
+# `const` table in `_DATA1`, a zeroed array in `_DATA1B`) and its FAR1
+# half are the rule's own three rows; `banks.exe` is the hand-written
+# six-row container that cannot fit in a bank budget, and both the program
+# and the `known.bin` DATA file it reads are store files.
+$(eval $(call exe_program,far_data,tests/fardata,\
+	far_data.c,STACK=512,STAGE=1,\
+	DATA1=far_data_levels.c,\
+	FAR1=far_data_far.c,\
+	BLOBS=far_data_blob.bin))
+
+$(eval $(call exe_program,banks,tests/fardata,\
+	banks.c,STACK=256,STAGE=1,\
+	FAR1=banks_far.c,\
+	BLOBS=far_data_blob.bin,\
+	SEGMENTS=tests/fardata/banks.segments.json))
+
+$(MODULES)/known.bin: tests/fardata/known.bin | $(MODULES)
+	cp $< $@
+
 $(eval $(call exe_program,ipc,tests/target/ipc,\
 	ipc.c,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include:user/sdk/src))

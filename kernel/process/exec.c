@@ -284,13 +284,14 @@ int exe_validate_header(const struct exe_header *header, uint32_t file_size,
 /* Protective bounds for one segment row, checked before the row is
  * allocated or copied: a known kind, a non-empty image + BSS that fits its
  * placement (a DATA segment the four non-aperture slots of one bank, a
- * FAR_CODE segment the 16 KiB aperture slice), zero reserved fields and a
- * payload inside the file.  The packer proves the same geometry on the
- * host. */
+ * FAR_CODE segment or a mappable DATA segment the 16 KiB aperture slice),
+ * a known flag set and a payload inside the file.  The packer proves the
+ * same geometry on the host. */
 int exe_validate_segment(const struct exe_segment *segment,
 			 uint32_t file_size)
 {
 	uint32_t total;
+	uint16_t limit;
 
 	if (segment == (const struct exe_segment *)0) {
 		return EXE_EXEC_ERR_ARG;
@@ -299,14 +300,20 @@ int exe_validate_segment(const struct exe_segment *segment,
 	    segment->kind != EXE_SEG_KIND_FAR_CODE) {
 		return EXE_EXEC_ERR_SEG_KIND;
 	}
-	if (segment->image_size == 0 || segment->reserved0 != 0u ||
+	if (segment->image_size == 0 ||
+	    (segment->flags & ~EXE_SEG_FLAG_MAPPABLE) != 0u ||
 	    segment->reserved1 != 0u) {
 		return EXE_EXEC_ERR_SEGMENT;
 	}
+	/* Only a DATA row may ask for the aperture (36.20). */
+	if (segment->flags != 0u && segment->kind != EXE_SEG_KIND_DATA) {
+		return EXE_EXEC_ERR_SEGMENT;
+	}
+	limit = (segment->kind == EXE_SEG_KIND_FAR_CODE ||
+		 segment->flags != 0u)
+		? EXE_SEG_MAX_FAR_SIZE : EXE_SEG_MAX_SIZE;
 	total = (uint32_t)segment->image_size + segment->bss_size;
-	if (total > (segment->kind == EXE_SEG_KIND_FAR_CODE
-			     ? EXE_SEG_MAX_FAR_SIZE
-			     : EXE_SEG_MAX_SIZE)) {
+	if (total > limit) {
 		return EXE_EXEC_ERR_SEGMENT;
 	}
 	if ((uint32_t)segment->payload_offset + segment->image_size >
@@ -705,14 +712,16 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	 * (36.18): a refusal is a clean NOSPACE rollback, and a later copy
 	 * failure releases them through process_slot_release() ->
 	 * kos_xmem_release_process().  A DATA segment becomes the child's
-	 * extended-memory object; a FAR_CODE segment takes the aperture
-	 * slice of an auxiliary bank (its handle stays 0). */
+	 * extended-memory object (mappable when the row asks for the
+	 * aperture, 49d); a FAR_CODE segment takes the aperture slice of an
+	 * auxiliary bank (its handle stays 0). */
 	error = EXE_EXEC_OK;
 	for (i = 0u; i < exe_pending_header.segment_count; ++i) {
 		const struct exe_segment *segment = &exe_pending_segments[i];
 		uint16_t handle; /* SYS_SEG_INFO derives it again by id */
 
 		if (kos_xmem_segment_alloc(pid, segment->id, segment->kind,
+					   segment->flags,
 					   (uint16_t)(segment->image_size +
 						      segment->bss_size),
 					   &handle, &exe_segment_bank[i],

@@ -1,0 +1,26 @@
+/* KonaOS far-data replay fixtures (work package 49d): the DATA1 source.
+ *
+ * Compiled through the exe_program `DATA1=` option, so SDCC puts the
+ * `const` table in the area `_DATA1` (linked at 8000h, image first) and
+ * the uninitialized array in `_DATA1B` (concatenated right after it and
+ * zeroed by the loader).  The replay program maps the pair with
+ * `farmap(1, &saved)` and reaches both objects through these symbols,
+ * exactly as a user program would.
+ */
+
+/* The table the program reads through the open window: 64 bytes the
+ * program knows, so a wrong mapping or a wrong offset is visible. */
+const unsigned char far_table[64] = {
+	0xF0u, 0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0x66u, 0x77u,
+	0x88u, 0x99u, 0xAAu, 0xBBu, 0xCCu, 0xDDu, 0xEEu, 0x0Fu,
+	0x01u, 0x02u, 0x03u, 0x04u, 0x05u, 0x06u, 0x07u, 0x08u,
+	0x09u, 0x0Au, 0x0Bu, 0x0Cu, 0x0Du, 0x0Eu, 0x0Fu, 0x10u,
+	0x21u, 0x32u, 0x43u, 0x54u, 0x65u, 0x76u, 0x87u, 0x98u,
+	0xA9u, 0xBAu, 0xCBu, 0xDCu, 0xEDu, 0xFEu, 0x1Fu, 0x2Fu,
+	0x3Fu, 0x4Fu, 0x5Fu, 0x6Fu, 0x7Fu, 0x8Fu, 0x9Fu, 0xAFu,
+	0xBFu, 0xCFu, 0xDFu, 0xEFu, 0xFFu, 0x7Eu, 0x3Cu, 0x18u,
+};
+
+/* The zeroed half: `_DATA1B`, so the loader's BSS zeroing is what makes
+ * it read as zeroes before the program writes it. */
+unsigned char far_bss[256];

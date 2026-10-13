@@ -51,16 +51,19 @@
  *
  * `segment` is the container id (1..count).  `handle` is the
  * extended-memory handle of a `DATA` segment, for SYS_XMEM_READ /
- * SYS_XMEM_WRITE; a `FAR_CODE` segment has none and reports 0.  An
- * unknown id, a bad block or a buffer outside the caller window is
- * KOS_EINVAL, and `SYS_XMEM_FREE` refuses the handle (a loader segment is
- * released only at exit). */
+ * SYS_XMEM_WRITE; a `FAR_CODE` segment has none and reports 0.  `flags`
+ * is the segment's KOS_XMEM_FLAG_* set: a `DATA` segment that asked for
+ * the aperture (the container row's `EXE_SEG_FLAG_MAPPABLE`, work package
+ * 49d) reports `KOS_XMEM_FLAG_MAPPABLE` and its handle can be mapped with
+ * SYS_XMEM_MAP.  An unknown id, a bad block or a buffer outside the
+ * caller window is KOS_EINVAL, and `SYS_XMEM_FREE` refuses the handle (a
+ * loader segment is released only at exit). */
 struct kos_seg_info {
 	uint16_t size;   /* image + BSS, the segment's logical size */
 	uint8_t  kind;   /* KOS_SEG_KIND_*                          */
 	uint8_t  state;  /* KOS_SEG_STATE_*                         */
 	uint16_t handle; /* DATA: the xmem object handle; else 0    */
-	uint16_t reserved;
+	uint16_t flags;  /* KOS_XMEM_FLAG_* of the segment, 0 = none */
 };
 
 struct kos_seg_info_args {

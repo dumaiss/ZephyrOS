@@ -383,7 +383,8 @@ class TestTheRealSystems(unittest.TestCase):
                          [driver + ".mod" for driver in PRODUCTION_DRIVERS] +
                          ["drivers.man", "monitor.exe", "hwtest.exe",
                           "xmem_selftest.exe", "xmem_child.exe",
-                          "xmem_far.exe", "fs_selftest.exe", "fs_child.exe"])
+                          "xmem_far.exe", "fs_selftest.exe", "fs_child.exe",
+                          "far_data.exe", "banks.exe", "known.bin"])
 
     def test_production_resolves_the_console_dependencies(self):
         self.assertEqual(self.generate("production"), 0)

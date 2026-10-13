@@ -1,0 +1,43 @@
+[
+  {
+    "id": 1,
+    "kind": "FAR_CODE",
+    "area": "_FAR1",
+    "bss_size": 0
+  },
+  {
+    "id": 2,
+    "kind": "DATA",
+    "flags": 1,
+    "input": "blobs/far_data_blob.bin",
+    "bss_size": 0
+  },
+  {
+    "id": 3,
+    "kind": "DATA",
+    "flags": 1,
+    "input": "blobs/far_data_blob.bin",
+    "bss_size": 0
+  },
+  {
+    "id": 4,
+    "kind": "DATA",
+    "flags": 1,
+    "input": "blobs/far_data_blob.bin",
+    "bss_size": 0
+  },
+  {
+    "id": 5,
+    "kind": "DATA",
+    "flags": 1,
+    "input": "blobs/far_data_blob.bin",
+    "bss_size": 0
+  },
+  {
+    "id": 6,
+    "kind": "DATA",
+    "flags": 1,
+    "input": "blobs/far_data_blob.bin",
+    "bss_size": 0
+  }
+]

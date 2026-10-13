@@ -128,7 +128,9 @@ manifest from the link map, packs and validates
 | `CODEBASE=ADDR` | `0x015D` | base of executable code, immediately after the ordinary low-data area (93 bytes at `LOWBASE`) |
 | `STAGE=1` | off | copy the packed program into `$(MODULES)` so a recovery manifest can name it |
 | `INCLUDES=a:b` | empty | extra include roots (colon separated), for test-owned headers only |
-| `SEGMENTS=FILE` | none | a JSON list of EXE v2 segment declarations: `DATA` rows (`id`, `kind`, `input`, `bss_size`) and `FAR_CODE` rows (`id`, `kind`, `area`, `bss_size`); `FILE` is a build prerequisite and each payload `input` resolves against the program's object directory |
+| `SEGMENTS=FILE` | none | a JSON list of EXE v2 segment declarations, for hand-written layouts: `DATA` rows (`id`, `kind`, `input`, `bss_size`, and `flags: 1` for far data) and `FAR_CODE` rows (`id`, `kind`, `area`, `bss_size`); `FILE` is a build prerequisite and each payload `input` resolves against the program's object directory |
+| `DATA1=SRC:SRC` … `DATA4=SRC:SRC` | none | far-data sources (relative to `DIR`) of the `DATAn` segment n (n = 1..4): a `.c` source is compiled with `--constseg DATA<n> --dataseg DATA<n>B`, and the link bases `_DATA<n>` **and** its BSS area `_DATA<n>B` at `8000h`, image first (section 13).  The options are numbered `1..m` without gaps; without `SEGMENTS=` the rule declares one mappable `DATA` row per option used, after the far-code rows |
+| `BLOBS=a.bin:b.bin` | none | payload files (relative to `DIR`, at most 32 KiB each) the rule copies into the object directory and declares as plain `DATA` rows after the `DATAn` rows, in the order given; `blob(n)` returns the n-th one's handle (section 13) |
 | `FAR1=SRC:SRC` … `FAR4=SRC:SRC` | none | far-code sources (relative to `DIR`) of far segment n (n = 1..4), placed in `_FAR<n>`, which the link bases at `8000h`; a `.c` source is compiled with bank n and `--codeseg FAR<n>`, so every `__banked` definition in it emits `b_<fn> = n`, and an `.asm` source opens `.area _FAR<n>` itself.  Without `SEGMENTS=` the rule declares one `FAR_CODE` segment per option used, id n, area `_FAR<n>` |
 
 The rule file is a prerequisite of the archive and of every link script,
@@ -150,6 +152,21 @@ option order, and the `SEGMENTS=` `DATA` rows follow them (ids k+1..N).
 The loader numbers rows `1..N` in order, and a far segment's id is the
 number its `__banked` definitions name (package 49b), so a program with
 far code declares its `FAR_CODE` rows first.
+
+A rule line with `DATA1=`..`DATA4=` (far data) or `BLOBS=` (payload
+files) declares segment rows of its own: the far-code rows first, then
+one **mappable** `DATA` row per `DATAn=` option in ascending order, then
+one plain `DATA` row per `BLOBS=` file in the order given, so the ids a
+`farmap(n)`/`blob(n)` ordinal counts are the generator's.  A `DATAn`
+source holds `const` tables and zeroed objects only: SDCC puts the
+`const` objects in `_DATA<n>` (the row's image, linked at `8000h`) and
+the zeroed ones in `_DATA<n>B` (the row's BSS, the area the linker
+concatenates right after the image, which the loader zeroes).  An
+initialized **writable** object has no startup support in EXE v2 - SDCC
+would put its value in `_INITIALIZED` - so `exepack` refuses it and names
+the symbol; initialize such data at run time.  `DATAn=` and `FARn=`
+sources may share a program, and the pair is limited to the 16 KiB
+aperture exactly as a far-code area is.
 
 A rule line with `FAR1=`..`FAR4=` also switches on the **36.17 link
 rule**: the packer proves the primary image and BSS end below `8000h` and
@@ -640,6 +657,17 @@ the aperture, so none of it is in the primary image, and the packer proved
 before the link that this program's image, BSS and stack stay outside
 `8000h-BFFFh`.
 
+The examples also carry **`fardata.exe`** (`user/sdk/examples/fardata.c`
+with `levels.c` and `fardata_far.c`, declared with
+`DATA1=levels.c,FAR1=fardata_far.c,STACK=256`): the smallest complete
+far-data program (section 12).  Its primary half maps the `DATA1` segment
+with `farmap`, reads the 4 KiB table and writes the zeroed 2 KiB array
+through the window, restores the caller's latch, and only then makes the
+`__banked` call with two values copied out of the table - the one-window
+rule, both halves in one program.  `make` in `user/sdk/examples` builds
+it beside the other examples, so `make sdk` ships it and the SDK's own
+test run compiles it out of tree.
+
 ## 11. Using the standalone SDK
 
 ```sh
@@ -698,7 +726,75 @@ absent from the environment, runs the result in the simulator through
 the production image's monitor, and proves a copy with a changed ABI
 byte is refused.
 
-## 12. M10 and later
+## 12. Far data
+
+Far data is any table or buffer a program needs that does not fit in the
+56 KiB it owns - level maps, fonts, wave tables, whole files.  There are
+four ways in, and they differ in *when* the bytes arrive and *how* they
+are reached (work package 49d):
+
+| Kind | Declared | Reached | Costs |
+| --- | --- | --- | --- |
+| `DATAn=` sources | build time, in C | `farmap(n)` opens the window; the sources' C symbols are plain pointers while it is open | one auxiliary bank per `DATAn`; the bank is the program's for its whole life |
+| `BLOBS=` files | build time, raw files | `blob(n)` returns the handle; `xread`/`xwrite` copy through it | no bank of its own; a copy per access |
+| `xalloc` | run time | `xmap` + `aperture_open` for a mappable object, or `xread`/`xwrite` by handle | a bank for a mappable object, slots alone otherwise |
+| `xload` | run time, a file the program names | the returned handle, as `xalloc`'s | one copy of the whole file into an object |
+
+`farmap(n, &saved)`/`farunmap(saved)` are the pointer route:
+
+```c
+unsigned char saved;
+const unsigned char *table = farmap(1, &saved);   /* the DATA1 segment */
+
+if (table == (const unsigned char *)0) {
+	/* the refusal is in `saved` as a negated error code */
+	return 1;
+}
+level = table[level_index];      /* a plain array access */
+farunmap(saved);                 /* restore the caller's mapping */
+```
+
+A `const` table written this way costs the primary image nothing: it is
+linked at `8000h` and lives in its own bank, and the loader puts it
+exactly where the link placed it.  The zeroed half of the same source is
+reached through the same window (the loader zeroes the segment's BSS), so
+scratch buffers that would not fit in the primary bank work the same way.
+`xread`/`xwrite` reach the same segment by handle when copying suits
+better than mapping.
+
+**One window.**  The machine has a single far window, `8000h-BFFFh`, and
+far code shares it with mapped far data: a `__banked` function and a
+mapped `DATAn` segment cannot be visible at the same time.  Primary code
+may map data and use pointers; a `__banked` function reaches far data
+only by copy - `xread`, or a pointer the primary hands it **after**
+copying the bytes out.  `farunmap` before a banked call, `farmap` again
+after: each mapper restores exactly the latch it saved, so the window can
+be handed back and forth.
+
+**Bank budget.**  Every far-code segment and every mappable data segment
+(or mappable `xalloc` object) takes one auxiliary bank for its own
+aperture slice, and there are six application banks - the program's own
+primary bank is never available to them.  Five far or mappable segments
+is therefore the ceiling for one program, and a container that asks for
+more is refused when it is run: `run` returns `-KOS_ENOSPC`, nothing is
+allocated, and the program keeps the banks it had.
+
+**Costs.**  A banked call is a trampoline plus an `OUT` and a plain
+`CALL` - about 31 µs measured on the reference machine - and only the
+first call of a segment spends a `SYS_SEG_MAP`.  Access through an open
+window costs nothing extra: `table[i]` is one load, exactly as if the
+table were in the program's own bank.  `xread` costs 21 T-states per byte
+in the window-speed slots and 287 T-states per byte otherwise, so a
+program that walks a large table once should map it, and one that reads a
+few bytes from many places should copy.
+
+`user/sdk/examples/fardata.c` with `levels.c` (a 4 KiB `const` table and
+a zeroed 2 KiB array) is the smallest complete far-data program; section
+10 lists it beside the far-code demo.  A file that only arrives at run
+time is `xload`'d when it fits (32 KiB, or 16 KiB when the object must be
+mappable) and streamed with `open`/`read`/`xwrite` when it does not.
+
+## 13. M10 and later
 
 `user/ZShell/` (M10) is built only from this SDK: one `exe_program` line
 per program, no entry assembly, no kernel header.  It is the reference

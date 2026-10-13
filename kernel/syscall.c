@@ -274,12 +274,18 @@ static void syscall_exec(uint16_t block)
 	}
 	vfs_ws_leave(VFS_WS_VIEW_PATH);
 	if (result != 0) {
-		/* Malformed containers (EXE_EXEC_ERR_* <= -0x20) are EINVAL;
-		 * every other code is a native -KOS_E* passed through. */
-		syscall_error(result <= -0x20
-				      ? KOS_EINVAL
-				      : (uint8_t)(uint16_t)(0u -
-						(uint16_t)result));
+		/* Malformed containers (EXE_EXEC_ERR_* <= -0x20) are EINVAL
+		 * - except the one resource code: a container that is well
+		 * formed but needs more than the machine has (no free bank
+		 * for a far-code or mappable data segment, no free slot) is
+		 * KOS_ENOSPC, as abi/kos/syscall.h documents for SYS_EXEC.
+		 * Every other code is a native -KOS_E* passed through. */
+		syscall_error(result == EXE_EXEC_ERR_NOSPACE
+				      ? KOS_ENOSPC
+				      : (result <= -0x20
+						 ? KOS_EINVAL
+						 : (uint8_t)(uint16_t)(0u -
+							(uint16_t)result)));
 		return;
 	}
 	process_launch(&child);

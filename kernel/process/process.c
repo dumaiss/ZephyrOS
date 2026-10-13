@@ -102,12 +102,13 @@ static void aux_run_take(uint8_t pid, uint8_t bank, uint8_t first,
 }
 
 /* The candidate runs for one allocation, as first-slot values in
- * preference order (architecture 36.16): a far-code segment is linked at
- * 8000h so it takes slot 4 (slots 4-5 when it is over 8 KiB), which is
- * what keeps one far-code segment per auxiliary bank; a mappable object
- * lives in the aperture slice, slots 4-5; a non-mappable object prefers
- * the window-speed slots 3 and 6, then slots 0-2.  Returns the candidate
- * count, 0 when the size cannot be placed at all. */
+ * preference order (architecture 36.16): a far-code segment - or a
+ * mappable DATA segment (49d) - is linked at 8000h so it takes slot 4
+ * (slots 4-5 when it is over 8 KiB), which is what keeps one of them per
+ * auxiliary bank; a mappable object lives in the aperture slice, slots
+ * 4-5; a non-mappable object prefers the window-speed slots 3 and 6, then
+ * slots 0-2.  Returns the candidate count, 0 when the size cannot be
+ * placed at all. */
 static uint8_t aux_candidates(uint8_t place, uint8_t slots,
 			      uint8_t *firsts)
 {

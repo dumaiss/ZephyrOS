@@ -68,15 +68,24 @@ One 16-byte row per segment, in ascending id order from 1:
 | `01h` | 1 | `kind` | `EXE_SEG_KIND_*` (`1` far code, `2` data) |
 | `02h` | 2 | `image_size` | bytes copied into the segment's memory |
 | `04h` | 2 | `bss_size` | zero-initialized bytes after the image |
-| `06h` | 2 | `reserved0` | `0` |
+| `06h` | 2 | `flags` | `EXE_SEG_FLAG_*` (`1` mappable `DATA`, package 49d); `0` otherwise |
 | `08h` | 4 | `payload_offset` | file offset of the segment payload |
 | `0Ch` | 4 | `reserved1` | `0` |
 
 - **`DATA` segments** become extended-memory objects owned by the process
-  (architecture 36.16): the loader places them non-mappable before the
-  program runs, and `SYS_SEG_INFO` names each one and returns the handle
-  that `SYS_XMEM_READ`/`SYS_XMEM_WRITE` use.  A loader segment is
+  (architecture 36.16): the loader places them before the program runs,
+  and `SYS_SEG_INFO` names each one and returns the handle that
+  `SYS_XMEM_READ`/`SYS_XMEM_WRITE` use.  A loader segment is
   released only at exit; `SYS_XMEM_FREE` refuses it.
+- **`flags` bit 0 (`EXE_SEG_FLAG_MAPPABLE`, package 49d)** is valid on a
+  `DATA` row and nowhere else: the loader places such a segment in the
+  aperture slice of an auxiliary bank, so its image is at `8000h` where
+  the link put it, the loader zeroes its BSS right after, and the object
+  carries `KOS_XMEM_FLAG_MAPPABLE` - `SYS_XMEM_MAP` returns the token
+  that opens the aperture onto it.  `SYS_SEG_INFO` reports the row's
+  flags, so a program finds its far data by scanning its own segments.
+  The row is limited to the 16 KiB aperture, exactly as a far-code row is,
+  and one mappable row costs one auxiliary bank, as a far-code row does.
 - **`FAR_CODE` segments** are linked at `8000h` and executed in place
   through the aperture (package 44b): the loader places each one in the
   aperture slice of its own auxiliary bank - one far-code segment per
@@ -108,7 +117,7 @@ Validated in this order (first violation wins); the codes are also the
 | 16 | `image_end + bss_size <= E000h` | `EXE_EXEC_ERR_BSS_END` |
 | 17 | `stack_base >= 0100h` and `stack_base >= bss_end` | `EXE_EXEC_ERR_COLLISION` |
 | 18 | row kind is `DATA` or `FAR_CODE` | `EXE_EXEC_ERR_SEG_KIND` |
-| 19 | row geometry: non-empty, `image + bss` within its kind's limit (`DATA` 32 KiB, `FAR_CODE` 16 KiB), reserved zero, payload inside the file | `EXE_EXEC_ERR_SEGMENT` |
+| 19 | row geometry: non-empty, `image + bss` within its kind's limit (`DATA` 32 KiB, `FAR_CODE` 16 KiB, 16 KiB for a mappable `DATA` row), `flags` only `EXE_SEG_FLAG_MAPPABLE` and only on `DATA`, reserved zero, payload inside the file | `EXE_EXEC_ERR_SEGMENT` |
 | 20 | row ids are `1..segment_count` in order | `EXE_EXEC_ERR_SEGMENT` |
 | 21 | row slot sums equal `total_segment_slots` | `EXE_EXEC_ERR_SEG_SLOTS` |
 
@@ -166,6 +175,18 @@ A `DATA` segment is declared in the manifest with a raw payload file and
 a BSS size (`SEGMENTS=` on the `exe_program` line); the packer derives
 its `image_size` from the payload file and lays out the table.
 
+A **mappable `DATA` segment** (far data, package 49d) is declared the same
+way plus `"flags": 1`, or with a linker `area`/`bss_area` pair instead of
+a payload file: the SDK rule compiles a `DATA<n>=` source with
+`--constseg DATA<n> --dataseg DATA<n>B` and the link bases both areas at
+`8000h`, so the row's image is `l__DATA<n>` bytes of `const` objects at
+`8000h` and its BSS is the whole `_DATA<n>B` area, which must start
+exactly where the image ends (`s__<bss_area> == s__<area> + l__<area>`) -
+the loader zeroes it there.  A `DATAn=` source may hold `const` objects
+and zeroed ones only: an initialized writable object would need the
+`_INITIALIZED`/`_INITIALIZER` areas, which EXE v2 has no startup support
+for, and the packer refuses it by name.
+
 A **`FAR_CODE` segment** is declared with a linker `area` instead
 (`{"id": 1, "kind": "FAR_CODE", "area": "_FAR1", "bss_size": 0}`): the
 rule compiles the program's `FAR<n>=` sources with bank n and
@@ -183,9 +204,9 @@ stream.  With no `SEGMENTS=` the rule generates the declaration itself,
 one `FAR_CODE` row per option used.
 
 Every declaration is checked against the **36.17 link rule**: a program
-with far code must keep its primary image and BSS below `8000h` and its
-stack base at or above `C000h`, so the aperture `8000h-BFFFh` belongs to
-far code alone; a far area's `image + bss` is at most 16 KiB and each
+with far code or far data must keep its primary image and BSS below
+`8000h` and its stack base at or above `C000h`, so the aperture
+`8000h-BFFFh` belongs to segments alone; a far area's `image + bss` is at most 16 KiB and each
 auxiliary bank holds at most one far segment.  `tools/exepack.py` rejects
 any violation, so the generic rule cannot pack a program that the kernel
 would later refuse.

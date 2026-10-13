@@ -84,4 +84,64 @@ typedef int (*kos_far_fn)(int, int);
  * when the segment cannot be mapped. */
 int farcall(unsigned int segment, kos_far_fn entry, int a, int b);
 
+/* --- far data (work package 49d) ----------------------------------------
+ *
+ * A program writes far data in C: the sources of one `DATAn=` option are
+ * compiled into the areas `_DATA<n>` (its `const` objects) and `_DATA<n>B`
+ * (its zeroed objects), the link bases the pair at `8000h` - image first,
+ * then BSS - and the container carries it as one mappable `DATA` segment
+ * (row flag `EXE_SEG_FLAG_MAPPABLE`).  The loader places such a segment at
+ * `8000h` of an auxiliary bank, exactly where the link put it, and zeroes
+ * its BSS; a program reaches it two ways:
+ *
+ *   - `farmap(n, &saved)` opens the aperture onto the n-th `DATAn`
+ *     segment and returns `8000h`, so the C symbols of its sources are
+ *     plain pointers for as long as it stays open; `farunmap(saved)`
+ *     restores the caller's mapping.  One far window (36.17) serves both,
+ *     so a mapped data segment and a `__banked` call cannot be open at the
+ *     same time: copy out of the table first, then make the call;
+ *   - `xread`/`xwrite` copy through the segment's handle like any other
+ *     object.
+ *
+ * `blob(n)` is the handle of the n-th `BLOBS` file, a plain DATA segment
+ * that carries a payload file rather than C objects: read it with `xread`
+ * (there is no address to map, and no `const` in the program's image).
+ *
+ * Both ordinals are 1-based and count the container's DATA rows of their
+ * kind in id order, which is what `DATAn=` (ascending from 1) and
+ * `BLOBS=` (in the order given) generate.
+ *
+ * A file that only arrives at run time is not bundled: `xload` reads it
+ * into a fresh object and hands back its handle.  It is limited to 32 KiB,
+ * or 16 KiB when it asks for `KOS_XMEM_FLAG_MAPPABLE`; a larger file is
+ * `-KOS_ENOSPC`, and a program that must have one streams it with
+ * `open`/`read`/`xwrite` instead of loading it whole.  A mappable object
+ * is filled by reading the file straight into the open window (the
+ * buffer-identity rule, 36.8), a plain one through an SDK-internal
+ * 512-byte buffer.
+ */
+
+/* Open the aperture onto the n-th `DATAn` segment (1-based) and return its
+ * address, `8000h`, or NULL.  On success `*prev` holds the latch
+ * `farunmap` restores; on failure it holds the negated error code as a
+ * signed byte (`*(signed char *)prev`), the same 8-bit convention the
+ * runtime codes use.  A `DATAn` source linked by the SDK's rule is at most
+ * 16 KiB; the aperture shows the whole segment. */
+void *farmap(unsigned int n, unsigned char *prev);
+
+/* Restore the mapping `farmap` saved: pass what it wrote to `*prev`, and
+ * only on the success path. */
+void farunmap(unsigned char prev);
+
+/* The handle of the n-th `BLOBS` file (1-based), for `xread`/`xwrite`
+ * with offsets, or -errno (KOS_EINVAL for no such file). */
+int blob(unsigned int n);
+
+/* Load the whole file at `path` into a new object and return its handle,
+ * or -errno: KOS_EINVAL for a bad flag or an empty/unreadable file,
+ * KOS_ENOSPC when the file is over the limit above or no bank has room.
+ * `flags` is KOS_XMEM_FLAG_MAPPABLE for an object that can be mapped, or
+ * KOS_XMEM_FLAG_NONE.  Nothing is left behind on failure. */
+int xload(const char *path, unsigned int flags);
+
 #endif /* KOS_SDK_SEG_H */
