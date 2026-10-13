@@ -396,7 +396,7 @@ static void test_enum(void)
 		}
 		count += (unsigned int)result;
 	}
-	check("enum-system-count", count == 6u);
+	check("enum-system-count", count == 7u);
 	printf("ns: /system %u entries\r\n", count);
 
 	check("enum-unknown", list("/dev/nosuch", &cookie, entries,

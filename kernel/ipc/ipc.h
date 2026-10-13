@@ -47,6 +47,11 @@ struct ipc_endpoint_record {
  * before any driver code runs. */
 int8_t ipc_install_endpoint(const struct ipc_endpoint_record *record);
 
+/* The flags byte the endpoint `number` was installed with, or 0 when no
+ * such endpoint exists.  The VFS reads the release declaration from it
+ * before it tells an endpoint that one of its handles went away. */
+uint8_t ipc_endpoint_flags(uint8_t number);
+
 /* The fixed-core dependency array the boot bundle names: the loader
  * installs the resolved endpoint numbers of the image whose init it is
  * about to run, one byte per declared dependency in manifest order, and

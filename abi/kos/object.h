@@ -121,6 +121,12 @@
 
 #define KOS_NS_ENTRY_CONTAINER 0x01u /* further components may follow */
 
+/* DEVICE bind flag: the caller asks for the object exclusively, so it may
+ * reprogram the device beyond its protocol while it holds the handle.  The
+ * bind fails with KOS_EBUSY when another handle already holds it that way,
+ * and with KOS_ENOTSUP when the endpoint declares no exclusive support. */
+#define KOS_BIND_EXCLUSIVE 0x8000u
+
 struct kos_ns_entry {
 	uint8_t type;        /* protocol type, 0 when not bindable    */
 	uint8_t flags;       /* KOS_NS_ENTRY_*                        */
@@ -136,7 +142,8 @@ struct kos_ns_entry {
 struct kos_bind_args {
 	uint16_t path;
 	uint16_t length;
-	uint16_t flags;    /* provider-interpreted; KFS_O_* for FILE binds */
+	uint16_t flags;    /* provider-interpreted; KFS_O_* for FILE binds,
+			    * KOS_BIND_EXCLUSIVE for DEVICE binds      */
 	uint8_t  type;     /* out: the bound object's protocol type       */
 	uint8_t  reserved; /* out: 0                                      */
 };

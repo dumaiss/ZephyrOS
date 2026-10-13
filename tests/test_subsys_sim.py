@@ -18,10 +18,11 @@ Coverage (all executing the real linked bytes, on the current boot path):
 * the interrupt-executive replay injects one CTC0 interrupt (IM2 vector
   00h) per arming window the smoke caller opens, so the IRQ group is exercised rather than
   merely linked;
-* the monitor launcher then execs the recovery-store monitor through the
-  same process path; the scripted session ends with
-  `monitor: exit status 0x` and the launcher re-execs the monitor (a
-  second banner and prompt), exactly as the subsystem acceptance records.
+* the launcher then runs the recovery-store monitor as the boot program
+  through the same process path; the scripted session ends with the
+  launcher's `boot: /system/monitor.exe exit 0` line and the monitor
+  starts again (a second banner and prompt), exactly as the subsystem
+  acceptance records.
 
 The nucleus-layout group stays its own image: its
 common-memory state cannot fit the subsystem image's ledger.
@@ -47,7 +48,7 @@ SYSCALL_OK = "syscall selftest: OK"
 IRQ_OK = "irq selftest: OK"
 ROMFS_OK = "romfs selftest: OK"
 PROCESS_OK = "process selftest: OK"
-MONITOR_EXIT = "monitor: exit status 0x"
+BOOT_EXIT = "boot: /system/monitor.exe exit 0"
 MONITOR_BANNER = "KonaOS native monitor"
 MONITOR_PROMPT = "Z80> "
 CONSOLE_BOUND = "console: driver OK"
@@ -130,10 +131,16 @@ class TestSubsystemBoot(SubsystemSimBase):
                              % (symbol, value))
 
     def test_monitor_session_runs_and_relaunches_after_exit(self):
+        # The store's monitor is the boot program here, and the launcher
+        # resets the console before it starts: the session's input goes
+        # in once the monitor's prompt is up.
+        start = len(self.z.sio_tx)
+        self.boot_base.run_to(self.z, MONITOR_PROMPT, since=start)
+        self.assertIn(MONITOR_BANNER.encode("ascii"), bytes(self.z.sio_tx))
         start = len(self.z.sio_tx)
         self.z.sio_rx.extend(b"Q\r")
-        self.boot_base.run_to(self.z, MONITOR_EXIT, since=start)
-        self.assertIn(b"monitor: exit status 0x", bytes(self.z.sio_tx))
+        self.boot_base.run_to(self.z, BOOT_EXIT, since=start)
+        self.assertIn(BOOT_EXIT.encode("ascii"), bytes(self.z.sio_tx))
         # A normal exit is followed by one relaunch, not by an idle loop.
         start = len(self.z.sio_tx)
         self.boot_base.run_to(self.z, MONITOR_PROMPT, since=start)

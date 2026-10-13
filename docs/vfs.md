@@ -91,16 +91,24 @@ the bound mark and the bind flags
 ```
 
 - `bind` returns a handle of `KOS_HANDLE_FIRST_BOUND` (3) or more. A full
-  table is `KOS_EMFILE`.
+  table is `KOS_EMFILE`. `KOS_BIND_EXCLUSIVE` asks a DEVICE for a takeover
+  (`docs/devices.md` section 12): the flag is stored in the entry and the
+  provider is asked first, so a refused acquire leaves the table unchanged.
 - `call` and `unbind` accept only a bound handle the calling process owns;
   anything else is `KOS_EINVAL`.
+- Releasing a DEVICE handle is a notification, not a close: the entry goes
+  back to the pool and, when the publishing endpoint declared it, the
+  driver is told the handle is gone (`vfs_ns_release_entry`,
+  `vfs_device_notify_release`).
 - Handles 1 and 2 are the standard handles, bound to `/dev/console` for
   each process at start (`vfs_ns_standard_handles()`), when the build
   publishes a console. `bind` never returns them, and `unbind` refuses them.
 - The table is global because the machine is single-tasking: a suspended
   parent's handles stay allocated while its child runs.
 - Process exit (`vfs_process_exit()`) unbinds every handle the process
-  owns; a file's unbind lets the filesystem driver close and flush it.
+  owns; a file's unbind lets the filesystem driver close and flush it, and
+  a device's release notification reaches the driver on this path too,
+  which is what restores a device a program took over before it exited.
 
 ## 6. The CWD
 

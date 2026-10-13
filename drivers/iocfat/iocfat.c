@@ -58,6 +58,7 @@
 
 #define FS2_CMD_CAPS        0x30u
 #define FS2_CMD_GENERATION  0x31u
+#define FS2_CMD_RESET       0x32u
 #define FS2_CMD_ROOT        0x33u
 #define FS2_CMD_PUSH        0x34u
 #define FS2_CMD_OPEN_RO     0x35u
@@ -1701,6 +1702,13 @@ uint8_t iocfat_init(const struct driver_boot *boot)
 		 * (the loader fails the boot, 5.3). */
 		return 1u;
 	}
+
+	/* Drop whatever the controller kept from the previous session: an
+	 * open file slot outlives a Z80 restart, and a slot this driver
+	 * never closes would make the card look full after a reboot.  The
+	 * reset is the same command a media change answers, so the driver
+	 * starts from the state CAPS then describes. */
+	(void)iocfat_exchange(FS2_CMD_RESET, 0u);
 
 	/* CAPS v1: version, 2-byte tokens and a 512-byte chunk. */
 	result = iocfat_exchange(FS2_CMD_CAPS, 0u);

@@ -44,6 +44,7 @@ static const char mon_help[] =
 	"I port         input port (10-FF)\r\n"
 	"O port value   output port (10-FF)\r\n"
 	"X path [tail]  run a EXE from /system\r\n"
+	"B              warm reboot\r\n"
 	"Q              quit\r\n"
 	"H or ?         help\r\n";
 
@@ -297,6 +298,15 @@ static void mon_put_u8_dec(unsigned int value)
 	}
 }
 
+void mon_cmd_reboot(char *cursor)
+{
+	if (!zrt_line_end(&cursor)) {
+		zrt_status_err_arg();
+		return;
+	}
+	reboot();
+}
+
 void mon_cmd_help(char *cursor)
 {
 	if (!zrt_line_end(&cursor)) {
@@ -413,6 +423,9 @@ static void mon_dispatch(char *cursor)
 		break;
 	case 'X':
 		mon_cmd_exec(cursor);
+		break;
+	case 'B':
+		mon_cmd_reboot(cursor);
 		break;
 	case 'Q':
 		if (!zrt_line_end(&cursor)) {

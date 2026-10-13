@@ -105,6 +105,25 @@ static int16_t v9958_driver_write(struct kos_ipc_frame *frame)
 int16_t v9958_driver_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
+	case KOS_OP_ACQUIRE:
+		/* One object, one exclusive holder: the console's own
+		 * handles are ordinary binds, so the request only ever
+		 * meets another takeover. */
+		if (v9958_state.exclusive != 0u) {
+			return (int16_t)-KOS_EBUSY;
+		}
+		v9958_state.exclusive = 1u;
+		v9958_state.dropped = 0u;
+		return 0;
+	case KOS_OP_RELEASE:
+		if (frame->arg1 != 0u) {
+			/* The takeover ended: the program may have left the
+			 * VDP in any state, so the driver re-runs the whole
+			 * display init and the console draws again. */
+			v9958_state.exclusive = 0u;
+			return (int16_t)v9958_display_reset();
+		}
+		return 0;
 	case KVIDEO_OP_SEND:
 		if (frame->arg0 == KVIDEO_PRESENT ||
 		    frame->arg0 == KVIDEO_RESET) {
@@ -117,6 +136,8 @@ int16_t v9958_driver_dispatch(struct kos_ipc_frame *frame)
 	case KVIDEO_OP_PUTC:
 		return (int16_t)v9958_char_putc(&v9958_state,
 						(char)frame->arg0);
+	case KVIDEO_OP_RESET:
+		return (int16_t)v9958_display_reset();
 	default:
 		return (int16_t)-KOS_EINVAL;
 	}

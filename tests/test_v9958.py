@@ -244,7 +244,8 @@ class TestDriverArtifact(unittest.TestCase):
                           "sdcc_indirect_calls.rel"])
         self.assertEqual(manifest["endpoints"],
                          [{"class": 2, "instance": 0, "version": 1,
-                           "dispatch": "v9958_driver_dispatch", "flags": 0}])
+                           "dispatch": "v9958_driver_dispatch", "flags": 0,
+                           "release": True}])
 
     def test_packed_container_and_the_bulk_font(self):
         if not os.path.exists(MOD):

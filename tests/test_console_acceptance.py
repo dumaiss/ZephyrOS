@@ -11,7 +11,7 @@ same source and store the physical acceptance image is built from minus
 the target-test objects; the integration image adds the target
 diagnostics - the integration pass plus the IOC, HID and V9958 device
 diagnostics - behind the early-SIO driver transcript, and the unchanged
-`monitor.exe` launcher.
+`monitor.exe` program the boot program runs.
 
 Coverage, all against those linked bytes:
 
@@ -20,10 +20,12 @@ Coverage, all against those linked bytes:
   over the console driver, i.e. on the V9958 lane), the store's manifest
   lists the five drivers in load order and every image is a driver
   container exporting exactly one endpoint at version 1;
-* the scripted visible monitor session: the nucleus writes its boot line
-  through the console driver, the monitor runs its banner and prompt on
-  the V9958, a typed `r` returns the sysinfo/process/bank rows through
-  the HID-input path the build selected, and `q` exits and relaunches;
+* the shell boot and the scripted visible monitor session: the nucleus
+  writes its boot line through the console driver, the shell is the boot
+  program and prompts on the V9958, `monitor` starts the store's monitor
+  as the shell's child, a typed `r` returns the sysinfo/process/bank rows
+  through the HID-input path the build selected, and `q` returns to the
+  shell - the launcher is not involved, so no `boot:` line is written;
 * the IOC lane the store's filesystem driver (IOC-FAT) drives through the
   IOC endpoint: link bring-up plus the FS2 command exchange, seen from
   the emulated MCU peer;
@@ -50,7 +52,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from replay import (STEP_LIMIT, ConsoleReplay,  # noqa: E402
+from replay import (SHELL_PROMPT, STEP_LIMIT, ConsoleReplay,  # noqa: E402
                     IntegrationInputs, integration_peer)
 from z80sim import IocCommandPeer  # noqa: E402
 import modpack  # noqa: E402
@@ -60,18 +62,24 @@ from test_v9958_sim import bringup_starts  # noqa: E402
 SMOKE_HOST_SYNC = b"\xaa\x55"
 
 # The packed monitor artifact (pinned by user/monitor/ and the tooling
-# tests; the store must deliver these exact bytes).
-MONITOR_SIZE = 6066
+# tests; the store must deliver these exact bytes).  The monitor grew by
+# the B (reboot) command, so the pinned identity moved with the relink.
+MONITOR_SIZE = 6387
 MONITOR_SHA256 = (
-    "4d27328bd1ca820f156594ef47b5691e0c69369cc33f7da06cbf1772ccca7d18")
+    "baa05b71d665164d8fbd14a939f9438761bc1744fd2dc393e30932f903ffc27d")
 
 # The monitor's visible rows, decoded from the V9958 trace.
 PROMPT = "Z80> "
 BANNER = "KonaOS native monitor"
 SYSINFO = "system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02"
-PROCESS = "process: pid 0 bank 0 flags 0001"
-BANK_INFO = "bank: current 00 mask 7F"
-MONITOR_EXIT = "monitor: exit status 0x"
+# The monitor runs as the shell's child here, so its rows name the child's
+# slot and bank (and no kernel-parent flag).
+PROCESS = "process: pid 1 bank 1 flags 0000"
+BANK_INFO = "bank: current 01 mask 7F"
+# The integration image's boot program hands the console to a monitor of
+# its own; when that session ends the program returns and the launcher's
+# monitor policy starts the monitor again.
+ESCC_EXIT = "boot: /system/escc.exe exit 0"
 PRODUCTION_DIR = "build"
 PRODUCTION_IMAGE = "konaos.bin"
 
@@ -152,11 +160,11 @@ class ConsoleReplayBase(ConsoleReplay, unittest.TestCase):
 
 
 class TestProductionImage(ConsoleReplayBase):
-    """`build/konaos.bin`: the store's five drivers and the monitor."""
+    """`build/konaos.bin`: the store's five drivers and the shell."""
 
     def test_boot_lanes_and_driver_store(self):
         z = self.start()
-        self.boot_to_prompt(z)
+        self.boot_to_shell(z)
         sio = self.read_sio(z)
         trace = self.read_trace(z)
 
@@ -171,12 +179,15 @@ class TestProductionImage(ConsoleReplayBase):
         self.assertNotIn(b"FAIL", sio)
         self.assertNotIn(b"console integration", sio)
 
-        # The boot line the nucleus prints through the console driver.
+        # The boot line the nucleus prints through the console driver,
+        # and the shell it starts: the monitor is in the store but the
+        # launcher has not run it.
         self.assertIn("console: driver OK", trace)
         self.assertNotIn("console: driver OK", sio.decode("ascii",
                                                             "replace"))
-        self.assertIn(BANNER, trace)
-        self.assertIn(PROMPT, trace)
+        self.assertIn(SHELL_PROMPT, trace)
+        self.assertNotIn(BANNER, trace)
+        self.assertNotIn(PROMPT, trace)
 
         # The production image links no acceptance symbol at all.
         for name in ("_kos_run_console_integration_selftest",
@@ -185,25 +196,33 @@ class TestProductionImage(ConsoleReplayBase):
 
         self.assert_driver_store()
 
-    def test_monitor_session_reads_through_the_console(self):
+    def test_the_shell_runs_the_monitor_session(self):
         z = self.start()
-        self.boot_to_prompt(z)
+        self.boot_to_shell(z)
+        # The shell is the boot program: it prompts on the visible lane
+        # and the launcher writes no line until the run ends.
+        self.assertIn(SHELL_PROMPT, self.read_trace(z))
+
+        # `monitor` is found in the shell's path and runs as its child;
+        # `X` is the monitor's own exec path: a missing argument reports
+        # its ARG error and an absent program the native code.
+        self.type_line(z, b"monitor\r", PROMPT)
         self.type_line(z, b"r\r", SYSINFO)
-        # `X` is the launcher's own exec path in the monitor: a missing
-        # argument reports the monitor's ARG error and an
-        # absent program the native code, both back at the prompt.
         self.type_line(z, b"X\r", "ERR: ARG")
         self.type_line(z, b"X /system/nosuch.exe\r", "ERR: 05")
-        self.type_line(z, b"q\r", MONITOR_EXIT)
-        self.wait_for_count(z, BANNER, 2)  # launcher relaunch
+        self.type_line(z, b"q\r", SHELL_PROMPT)
         trace = self.read_trace(z)
         for line in (SYSINFO, PROCESS, BANK_INFO):
             self.assertIn(line, trace)
-        self.assertGreaterEqual(trace.count(BANNER), 2)
+        self.assertEqual(trace.count(BANNER), 1)
+        # The monitor was the shell's child: its exit is the shell's
+        # business, not a launcher event.
+        self.assertNotIn("boot: ", trace)
+        self.assertNotIn("monitor: exit status", trace)
 
     def test_ioc_lane_serves_the_filesystem_driver(self):
         z = self.start()
-        self.boot_to_prompt(z)
+        self.boot_to_shell(z)
         peer = z.ioc_peer
         requests = [entry[0] for entry in peer.requests]
         # The IOC driver's one bounded LINK_SYNC bring-up, then the
@@ -385,9 +404,13 @@ class TestIntegrationImage(ConsoleReplayBase):
     def test_monitor_runs_after_the_diagnostic(self):
         z = self.start()
         self.boot_to_prompt(z)
-        self.type_line(z, b"q\r", MONITOR_EXIT)
+        # The program hands the console to the monitor itself; `q` ends
+        # that session, the program returns, and the launcher's monitor
+        # policy starts the monitor again.
+        self.type_line(z, b"q\r", ESCC_EXIT)
         self.wait_for_count(z, BANNER, 2)
         trace = self.read_trace(z)
+        self.assertIn(ESCC_EXIT, trace)
         self.assertGreaterEqual(trace.count(BANNER), 2)
 
 

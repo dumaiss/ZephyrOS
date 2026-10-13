@@ -33,4 +33,11 @@ void platform_memctl_write(uint8_t value);
 uint8_t platform_bank_get(void);
 void platform_bank_set(uint8_t bank);
 
+/* Warm reboot.  Never returns: the caller has masked interrupts and
+ * quiesced the interrupt sources, and this writes the reset latch (mode 00
+ * over ROM page 0) and jumps to the ROM reset vector, which re-copies the
+ * OS exactly as at power-on.  Common-resident, because the instruction
+ * after the latch write is fetched from ROM. */
+void platform_reboot_now(void);
+
 #endif /* KONAOS_KERNEL_MEMORY_BANKING_H */

@@ -90,7 +90,7 @@ DRIVER_ORDER = ["sio", "console-serial", "nsdev"]
 # The store the image boots from, in manifest order; `drivers.man` is the
 # loader's own boot manifest, one 24-byte record per loaded image.
 STORE = ["sio.mod", "console-serial.mod", "nsdev.mod", "drivers.man",
-         "ns.exe", "nschild.exe"]
+         "monitor.exe", "ns.exe", "nschild.exe"]
 MAN_RECORD = 24
 SPLIT = 0x6000
 

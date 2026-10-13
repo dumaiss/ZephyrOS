@@ -260,10 +260,10 @@ class TestBuildWiring(unittest.TestCase):
         system = json.loads(read(SYSTEM))
         for name in STORE_PROGRAMS:
             self.assertIn(name, system["store"])
-        # `X /system/hwtest.exe` needs the EXE on the store, not a boot
-        # program: production still boots straight to the monitor.
+        # The `hwtest` line needs the EXE on the store, not a boot
+        # program: production boots the shell, which finds it in /system.
         system = json.loads(read(SYSTEM))
-        self.assertEqual(system["boot"], "/system/monitor.exe")
+        self.assertEqual(system["boot"], "/system/shell.exe")
         self.assertIn("hwtest.exe", system["store"])
 
 
@@ -273,7 +273,7 @@ class TestSmokeMode(unittest.TestCase):
     def test_the_mode_sends_the_command_and_checks_the_transcript(self):
         text = read(SMOKE)
         self.assertIn('"hwtest"', text)
-        self.assertIn('HW_COMMAND = b"X /system/hwtest.exe\\r"', text)
+        self.assertIn('HW_COMMAND = b"hwtest\\r"', text)
         for marker in ("hwtest: begin", "hwtest: xmem+far PASS",
                        "hwtest: namespace+handles PASS", "hwtest: files PASS",
                        "hwtest: files card absent",

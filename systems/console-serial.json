@@ -9,9 +9,20 @@
     "console-serial",
     "iocfat"
   ],
-  "boot": "/system/monitor.exe",
+  "boot": "/system/shell.exe",
+  "after_exit": "relaunch",
   "store": [
-    "monitor.exe"
+    "shell.exe",
+    "monitor.exe",
+    "hwtest.exe",
+    "xmem_selftest.exe",
+    "xmem_child.exe",
+    "xmem_far.exe",
+    "fs_selftest.exe",
+    "fs_child.exe",
+    "far_data.exe",
+    "banks.exe",
+    "known.bin"
   ],
   "cflags": [
     "-DKOS_DRIVER_TEST_EVIDENCE=1",

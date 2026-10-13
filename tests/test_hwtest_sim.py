@@ -1,20 +1,23 @@
 """Hardware exerciser acceptance replay: the
 production image, with a card and without one.
 
-Both replays type the owner's line - `X /system/hwtest.exe` - into the
-running production system, once over the serial command lane
-(`/dev/serial/0`, the lane `tools/serial_smoke.py --mode hwtest` drives)
-and once over the HID keyboard lane the V9958 console reads.  Each then asserts, from the transcripts alone, that the
-store's exerciser reached its verdict, that the programs its stages run
-reported through it, that the monitor came back to the prompt, and that
-the card is exactly as the run found it.
+Both replays type the owner's line - `hwtest` - at the shell, which is
+the boot program, once with a card and once with the drive empty.  Each
+then asserts, from the transcripts alone, that the store's exerciser
+reached its verdict, that the programs its stages run reported through
+it, that the shell came back to its prompt, and that the card is exactly
+as the run found it.  The runner mirrors its own lines to `/dev/serial/0`
+(the lane `tools/serial_smoke.py` watches), so the lane transcript is
+asserted beside the console one.
 
 A third replay copies one of the store's programs onto the card and runs
-it from there through the monitor (`X /fs/FS_CHILD.EXE tail-42`).
-`SYS_EXEC` stages the caller's path in the fixed core, outside the window
-the bank-6 filesystem provider replaces, so the provider can resolve it.
-The replay holds that behaviour: the program loads and reports from the
-card medium, and the FS2 request log proves the provider read it there.
+it from there as the shell's child (`FS_CHILD.EXE tail-42`: the shell's
+`path` starts with `.`, which is the card, so the bare name resolves
+through the card provider).  `SYS_EXEC` stages the caller's path in the
+fixed core, outside the window the bank-6 filesystem provider replaces,
+so the provider can resolve it.  The replay holds that behaviour: the
+program loads and reports from the card medium, and the FS2 request log
+proves the provider read it there.
 
 The programs' individual checks are pinned by the xmem, filesystem,
 namespace and exerciser suites; this module is the production outcome
@@ -33,7 +36,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from replay import ConsoleReplay  # noqa: E402
+from replay import SHELL_PROMPT, ConsoleReplay  # noqa: E402
+
+# The shell's prompt follows the root it started in: the card, or the
+# store when the drive is empty.
+SHELL_PROMPT_NO_CARD = "/system> "
 from z80sim import IocCommandPeer  # noqa: E402
 
 # The FS2 requests the card program's load must produce: the open, its
@@ -45,9 +52,9 @@ CMD_FS2_CLOSE = 0x37
 IMAGE_SUBDIR = "build"
 IMAGE_NAME = "konaos.bin"
 
-# The line the owner types and the lane echo it produces.
-COMMAND = b"X /system/hwtest.exe\r"
-ECHO = b"X /system/hwtest.exe\r\n"
+# The line the owner types at the shell.  The runner's own lines are
+# what reaches the serial lane; the shell's echo stays on the console.
+COMMAND = b"hwtest\r"
 
 # The runner's own contract, on the lane it mirrors to.  The summary is
 # the stop marker in either verdict.
@@ -58,7 +65,6 @@ SUMMARY = b"hwtest: 3/3 "
 PASS = b"hwtest: 3/3 PASS"
 FILE_ABSENT = b"hwtest: files card absent\r\n"
 NOTE_ABSENT = b" (card absent)"
-MONITOR_STATUS = "exec: exit status 0x0000"
 
 # The stage programs report their own verdicts through the console the
 # owner watches; the counts are the ones the standalone replays pin (the
@@ -97,14 +103,15 @@ class HwtestReplay(ConsoleReplay, unittest.TestCase):
         self.load_image()
 
     def start(self, card, extra_files=None):
-        """Boot to the monitor prompt with an IOC card present or not."""
+        """Boot to the shell's prompt with an IOC card present or not."""
         z = self.make_cpu()
         files = None
         if card:
             files = {"/".join(KEEP_NAME): KEEP_CONTENT}
             files.update(extra_files or {})
         z.hid = z.ioc_peer = IocCommandPeer(fs2_media=card, fs2_files=files)
-        self.boot_to_prompt(z)
+        self.boot_to_shell(z, prompt=(SHELL_PROMPT if card
+                                      else SHELL_PROMPT_NO_CARD))
         return z
 
     def run_exerciser(self, z, budget=STEP_BUDGET):
@@ -130,29 +137,28 @@ class HwtestReplay(ConsoleReplay, unittest.TestCase):
 
 
 class TestExerciserWithACard(HwtestReplay):
-    """`X /system/hwtest.exe` typed on the serial command lane."""
+    """`hwtest` typed at the shell with the card in the drive."""
 
     def test_it_passes_and_leaves_the_card_as_it_found_it(self):
         z = self.start(card=True)
         peer = z.ioc_peer
-        z.sio_rx.extend(COMMAND)
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(COMMAND)
 
         lane = self.run_exerciser(z)
 
-        # The monitor echoed the line on the lane it was typed on, and
-        # the store's runner reported every stage there too.
-        self.assertTrue(lane.startswith(ECHO), lane[:48])
+        # The store's runner reported every stage on its own lane.
+        self.assertTrue(lane.startswith(BEGIN), lane[:48])
         for line in LANE_LINES:
             self.assertIn(line, lane)
         self.assertIn(PASS, lane)
         self.assertNotIn(b"FAIL", lane)
         self.assertNotIn(NOTE_ABSENT, lane)
 
-        # Back at the prompt with the runner's status, then the console
-        # evidence: the stages' own transcripts and their nested execs.
-        self.run_to(z, MONITOR_STATUS)
+        # Back at the shell's prompt, with the stages' own console
+        # transcripts and their nested execs beside the runner's line.
+        self.run_to(z, SHELL_PROMPT, since=since)
         trace = self.trace(z)
-        self.assertIn(MONITOR_STATUS, trace)
         for marker in CONSOLE_EVIDENCE:
             self.assertIn(marker, trace)
         self.assertIn(PASS.decode("ascii"), trace)
@@ -169,13 +175,12 @@ class TestExerciserWithACard(HwtestReplay):
 
 
 class TestExerciserWithoutACard(HwtestReplay):
-    """The same command on the console lane: the HID keyboard."""
+    """The same line with the drive empty: the absent-card branch."""
 
     def test_it_passes_with_the_absent_card_branch(self):
         z = self.start(card=False)
         peer = z.ioc_peer
-        # The production console's own lane.  Nothing reaches the serial
-        # lane, so its transcript starts at the runner's first line.
+        since = len(z.glyphs)
         z.hid.hid_queue.extend(COMMAND)
 
         lane = self.run_exerciser(z)
@@ -185,11 +190,11 @@ class TestExerciserWithoutACard(HwtestReplay):
         self.assertIn(PASS + NOTE_ABSENT + b"\r\n", lane)
         self.assertNotIn(b"FAIL", lane)
 
-        self.run_to(z, MONITOR_STATUS)
+        self.run_to(z, SHELL_PROMPT_NO_CARD, since=since)
         trace = self.trace(z)
-        self.assertIn(MONITOR_STATUS, trace)
-        # The monitor echoed the HID line it read, so the owner sees the
-        # command as typed.
+        # The console echoed the line it read, so the owner sees the
+        # command as typed, and the runner's summary keeps the branch it
+        # took.
         self.assertIn(COMMAND.decode("ascii").rstrip("\r"), trace)
         self.assertIn("hwtest: files card absent", trace)
         self.assertIn("hwtest: 3/3 PASS (card absent)", trace)
@@ -204,13 +209,14 @@ class TestExerciserWithoutACard(HwtestReplay):
 
 
 class TestMonitorRunsAStoreProgram(HwtestReplay):
-    """`X` runs a stored program, waits for it and prints its status."""
+    """`X` in the store's monitor runs a program and prints its status."""
 
     def test_it_reports_the_childs_exit_status_and_tail(self):
         z = self.start(card=True)
-        # A stored program with a tail: the child reports the tail it
-        # received and exits 42, which the monitor must print as its
-        # u16 status before prompting again.
+        # The monitor is the shell's child here; a program with a tail:
+        # the child reports the tail it received and exits 42, which the
+        # monitor must print as its u16 status before prompting again.
+        self.send_line(z, "monitor", "Z80> ")
         self.send_line(z, "X /system/fs_child.exe tail-42", "fs-child: PASS")
         self.run_to(z, "exec: exit status 0x002A")
         trace = self.trace(z)
@@ -218,22 +224,24 @@ class TestMonitorRunsAStoreProgram(HwtestReplay):
         self.assertIn("exec: exit status 0x002A", trace)
 
 
-class TestMonitorRunsAProgramFromTheCard(HwtestReplay):
-    """`X` loads a program that lives on the card medium itself."""
+class TestTheShellRunsAProgramFromTheCard(HwtestReplay):
+    """The shell loads a program that lives on the card medium itself."""
 
     def test_it_reads_the_program_from_the_card(self):
         # The store's `fs_child.exe` payload, byte for byte, laid down on
-        # the emulated card: the image the monitor is asked to run.
+        # the emulated card: the image the shell is asked to run.
         payload = bytes(self.romfs_entries()["fs_child.exe"]["payload"])
         z = self.start(card=True, extra_files={"FS_CHILD.EXE": payload})
         peer = z.ioc_peer
 
-        self.send_line(z, "X /fs/FS_CHILD.EXE tail-42", "fs-child: PASS")
-        self.run_to(z, "exec: exit status 0x002A")
+        since = len(z.glyphs)
+        self.send_line(z, "FS_CHILD.EXE tail-42", "fs-child: PASS")
+        self.run_to(z, SHELL_PROMPT, since=since)
         trace = self.trace(z)
         self.assertIn('fs-child: tail "tail-42" argc 1', trace)
-        self.assertIn("exec: exit status 0x002A", trace)
-        self.assertNotIn("ERR: 02", trace)
+        # The shell reports a child that left a status.
+        self.assertIn("[exit 42]", trace)
+        self.assertNotIn("command not found", trace)
 
         # The provider answered the load from the card: before the fix
         # the request log held no FS2 traffic at all.

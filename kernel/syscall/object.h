@@ -23,4 +23,9 @@ void kos_object_dispatch(uint8_t number, uint16_t block);
  * exactly. */
 int kos_object_copy_path(uint16_t addr, uint16_t length, char *out);
 
+/* Copy the caller path and normalize it against the caller's CWD into
+ * the workspace's normalized slot (`VFS_WS_NORM_A`), with the workspace's
+ * path view held.  Returns 0 or a negative KOS_E* code. */
+int object_normalize_path(uint16_t addr, uint16_t length);
+
 #endif /* KONAOS_KERNEL_SYSCALL_OBJECT_H */

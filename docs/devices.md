@@ -229,6 +229,14 @@ than the gate stack.
 operations need a non-empty payload and stream the full 16-bit length;
 `PRESENT` and `RESET` need length 0; unknown operations are unsupported.
 
+The endpoint declares `"release": true`, so it also serves the common
+`KOS_OP_ACQUIRE` and `KOS_OP_RELEASE` (section 12). While an exclusive
+handle is held the console's output is dropped and counted instead of
+rendered (the caller still gets its whole length back), and the release
+re-runs the whole bring-up below. `KVIDEO_OP_RESET` (3) runs that same
+bring-up at any time, and `ESC c` and the triple-ESC reset reach it through
+the terminal parser.
+
 **Hardware** (ports `A0h-A4h`, constants in
 `platform/zephyr80/public/hardware.h`): the bring-up sets R#25 (WTE = 0,
 VDS = 0), R#8 = `08h` (64K×4 DRAM), stops any command, loads the GRAPHIC 6
@@ -251,6 +259,7 @@ its hot image. The driver converts it into the two atlases in VRAM.
 | `KVIDEO_OP_SEND` | 0 | `arg0` = native operation; desc in, offset, length for the streaming ones | 0 or negative |
 | `KVIDEO_OP_WRITE` | 1 | desc in, offset, length: bytes for the terminal | bytes consumed |
 | `KVIDEO_OP_PUTC` | 2 | `arg0` = byte | 0 |
+| `KVIDEO_OP_RESET` | 3 | — | 0, or `-KOS_ENODEV` |
 
 ## 7. Console (`drivers/console/`)
 
@@ -276,6 +285,14 @@ One source, two images, selected per build:
 | `KCONSOLE_OP_GETC` | 2 | — | byte, or `-KOS_EAGAIN` |
 | `KCONSOLE_OP_POLL` | 3 | — | 1 when input is pending |
 | `KCONSOLE_OP_PUTC` | 4 | `arg0` = byte | 1, or negative |
+| `KCONSOLE_OP_RESET` | 5 | — | 0 |
+
+`KCONSOLE_OP_RESET` is the console's reset: it drains the input driver's
+queue, so nothing typed for the program that is going away reaches the one
+that starts, and the V9958 build then forwards `KVIDEO_OP_RESET` to its
+output dependency (the serial build has no video to reset and answers 0).
+The boot launcher runs it before every start of the boot program
+(section 12).
 
 After the drivers load, the boot prints `console: driver OK` through it.
 
@@ -345,7 +362,53 @@ A driver's hot segment and `DRIVER_IO` data live in bank 6 `6000h-DFFFh`
 `tools/mapcheck.py` fails the build if a driver symbol links into the
 nucleus image, and `--production` rejects every acceptance-only symbol.
 
-## 12. Tests
+## 12. Device takeovers and state restoration
+
+The Z80 cannot stop a program from writing to ports, so a driver's protocol
+is not a fence: a program that wants to reprogram a device directly has to
+ask for it, and the driver has to be told when the program is gone. Three
+layers, in the order they catch a program:
+
+1. **Release notification.** A driver whose manifest declares
+   `"release": true` (`formats/include/mod.h`'s `MOD_EP_RELEASE`) is told
+   when a handle on one of its objects goes away, explicitly with
+   `unbind` or implicitly when the process exits: the nucleus calls the
+   endpoint with `KOS_OP_RELEASE`, `arg0` = the object and `arg1` = 1 when
+   the handle was the exclusive one. The result is ignored and an endpoint
+   without the declaration costs nothing.
+2. **The exclusive handle.** `KOS_BIND_EXCLUSIVE` asks for a takeover:
+   the nucleus calls `KOS_OP_ACQUIRE` first, and the driver answers 0 or
+   `-KOS_EBUSY` while another handle holds the object. **The contract:** a
+   program writes a device's ports, or reprograms it beyond its protocol,
+   only while it holds that device's exclusive handle — an ordinary bind
+   is not permission to touch the hardware behind the driver. A device
+   whose driver declares no release notification answers `-KOS_ENOTSUP`,
+   because such a driver has nothing to restore.
+3. **The console reset.** A program that wrote the ports with no handle at
+   all left the driver no way to know. The kernel's boot launcher runs
+   `KCONSOLE_OP_RESET` before every start of the boot program, so a
+   take-over that nothing else caught cannot reach the next program's
+   screen or input queue; and a warm reboot (`docs/abi.md` section 5.5)
+   re-runs every driver's bring-up from any device state.
+
+What each driver does with a release:
+
+| device | held | released |
+|---|---|---|
+| `/dev/video` (`v9958`) | the console's output is dropped and counted; the driver touches no VDP register | the full display init runs again: mode registers, wait, palette, both font atlases, clear, cursor home |
+| `/dev/console` (composition) | — (no exclusive form) | `KCONSOLE_OP_RESET`: terminal defaults, both font atlases, clear, cursor home, input queue drained |
+
+`KVIDEO_OP_RESET` (3) runs the same display init at any time, and
+`KCONSOLE_OP_RESET` (5) is the console's reset; the launcher uses the
+ordinary console path, and the serial console resets only its own parser
+because the video driver is not in its build.
+
+Because no peripheral receives a hardware reset on a warm reboot, every
+boot init programs its device from any state rather than from power-on
+defaults, and a device a program reconfigured is rebuilt from the driver's
+own constants.
+
+## 13. Tests
 
 | test | covers |
 |---|---|

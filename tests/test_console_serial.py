@@ -9,9 +9,10 @@ by tests/test_console_acceptance.py.
 * `build-console-serial-selftest` is the production image set with
   `console-serial` in the CONSOLE slot: the loader places the same six
   driver images, and every dynamic console byte - `console: driver OK`,
-  the monitor banner and prompt, and the monitor's answer to a typed `r` -
-  arrives on the serial lane, while the V9958 trace carries no monitor
-  text at all (the console never routes there).
+  the shell's prompt, a typed `pwd`, the store's monitor run as the
+  shell's child with its answer to a typed `r`, and the launcher's exit
+  line - arrives on the serial lane, while the V9958 trace carries no
+  console text at all (the console never routes there).
 * `build-console-serial-fail-selftest` boots the same set and
   `drivers.man` from a store that omits `console-serial.mod`: the
   required driver cannot be loaded, so the loader names it on the early
@@ -24,7 +25,8 @@ by tests/test_console_acceptance.py.
   half of the required-driver failure row; the missing-image store above
   is the load half.
 
-The serial configuration is a build selection, and its outcome is the monitor prompt on the serial lane.
+The serial configuration is a build selection, and its outcome is the
+shell's prompt on the serial lane.
 
 Skipped when the images have not been built.
 """
@@ -40,9 +42,13 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import romfspack  # noqa: E402
-from replay import STEP_LIMIT  # noqa: E402
+from replay import SHELL_PROMPT, STEP_LIMIT  # noqa: E402
 from test_console_acceptance import (  # noqa: E402
-    BANNER, MONITOR_EXIT, PROMPT, ConsoleReplayBase)
+    BANNER, PROMPT, ConsoleReplayBase)
+
+# The launcher's line when the boot program returns: the shell reports
+# its status and starts again (the production policy).
+SHELL_EXIT = b"boot: /system/shell.exe exit 0\r\n"
 
 # The production set with the serial console, in manifest (load) order,
 # with the endpoint class each image registers.
@@ -99,18 +105,19 @@ class SerialBase(ConsoleReplayBase):
             _header, entries = romfspack.parse_image(handle.read())
         return {entry["name"]: entry for entry in entries}
 
-    def boot_serial_to_prompt(self, z, limit=STEP_LIMIT):
-        """Step until the monitor prompt appears on the serial lane."""
+    def boot_serial_to_prompt(self, z, limit=STEP_LIMIT,
+                              prompt=SHELL_PROMPT):
+        """Step until `prompt` appears on the serial lane."""
         for step in range(limit):
             self.skip_delay(z)
             z.step()
             if step % 0x1FFF == 0:
                 self.pump(z)
-                if PROMPT.encode("ascii") in bytes(z.sio_tx):
+                if prompt.encode("ascii") in bytes(z.sio_tx):
                     return step
-        raise AssertionError("no monitor prompt on the serial lane "
+        raise AssertionError("no %r prompt on the serial lane "
                              "(PC=%04X, tail=%r)"
-                             % (z.pc, bytes(z.sio_tx)[-160:]))
+                             % (prompt, z.pc, bytes(z.sio_tx)[-160:]))
 
     def type_serial(self, z, text, expect, limit=STEP_LIMIT):
         """Queue a line on the serial input lane and wait for its output.
@@ -147,7 +154,7 @@ class TestSerialVariant(SerialBase):
     IMAGE_SUBDIR = "build-console-serial-selftest"
     IMAGE_NAME = "konaos-console-serial-selftest.bin"
 
-    def test_monitor_runs_on_the_serial_lane(self):
+    def test_the_shell_runs_on_the_serial_lane(self):
         z = self.start()
         self.boot_serial_to_prompt(z)
         sio = bytes(z.sio_tx)
@@ -167,33 +174,44 @@ class TestSerialVariant(SerialBase):
                       % plan["driver_boot_bytes"], sio)
         self.assertNotIn(b": unavailable 0x", sio)
 
-        # The whole dynamic console is this lane: the boot line, the
-        # monitor banner and prompt.
+        # The whole dynamic console is this lane: the boot line and the
+        # boot program's prompt.  The launcher writes nothing until the
+        # run ends.
         self.assertIn(CONSOLE_DRIVER_OK, sio)
-        self.assertIn(BANNER.encode("ascii"), sio)
-        self.assertIn(PROMPT.encode("ascii"), sio)
+        self.assertIn(SHELL_PROMPT.encode("ascii"), sio)
         self.assertNotIn(b"console: unbound", sio)
         self.assertNotIn(CONSOLE_DRIVER_FAILED, sio)
+        self.assertNotIn(b"boot: ", sio)
 
         # The V9958 driver is loaded but the console never routes to it:
-        # no monitor text may appear in the glyph trace.
+        # no console text may appear in the glyph trace.
+        self.assertNotIn(SHELL_PROMPT, trace)
         self.assertNotIn(BANNER, trace)
         self.assertNotIn(PROMPT, trace)
 
-        # Typing on the serial lane reaches the monitor through the
-        # console: the system row comes back on the same lane.
+        # Typing on the serial lane reaches the shell through the
+        # console: the CWD row comes back on the same lane.
+        self.type_serial(z, b"pwd\r", b"/\r\n")
+
+        # The store's monitor runs as the shell's child and answers its
+        # `r` on the same lane; `q` returns to the shell, not the
+        # launcher.
+        self.type_serial(z, b"monitor\r", PROMPT.encode("ascii"))
         self.type_serial(z, b"r\r", SERIAL_SYSINFO)
         self.assertIn(SERIAL_SYSINFO, bytes(z.sio_tx))
+        self.type_serial(z, b"q\r", SHELL_PROMPT.encode("ascii"))
+        self.assertNotIn(b"boot: ", bytes(z.sio_tx))
 
-        # `q` exits through the serial console and the launcher relaunches
-        # the monitor (the same contract as production).
-        self.type_serial(z, b"q\r", MONITOR_EXIT.encode("ascii"))
-        self.wait_serial_count(z, BANNER.encode("ascii"), 2)
+        # `exit` ends the run: the launcher reports the status and starts
+        # the shell again (the production policy).
+        self.type_serial(z, b"exit\r", SHELL_EXIT)
+        self.wait_serial_count(z, SHELL_PROMPT.encode("ascii"), 2)
 
     def test_store_carries_the_serial_console(self):
         entries = self.store_entries()
         self.assertEqual(sorted(entries), sorted(self.manifest_names()))
         self.assertIn("console-serial.mod", entries)
+        self.assertIn("shell.exe", entries)
         self.assertIn("monitor.exe", entries)
 
 
@@ -230,11 +248,9 @@ class TestRequiredConsoleFailure(SerialBase):
         self.assertIn(CONSOLE_DRIVER_FAILED, sio)
 
         # No fallback and no launcher: the console is not up, the monitor
-        # never runs, and nothing follows the failure line.
-        self.assertNotIn(CONSOLE_DRIVER_OK, sio)
         self.assertNotIn(BANNER.encode("ascii"), sio)
         self.assertNotIn(PROMPT.encode("ascii"), sio)
-        self.assertNotIn(b"monitor: exit status", sio)
+        self.assertNotIn(b"boot: ", sio)
 
         after = len(sio)
         for _ in range(20000):
@@ -290,7 +306,7 @@ class TestRequiredConsoleInitFailure(SerialBase):
         self.assertNotIn(b"console: unbound", sio)
         self.assertNotIn(b"driver loader: 1 images", sio)
         self.assertNotIn(BANNER.encode("ascii"), sio)
-        self.assertNotIn(b"monitor: exit status", sio)
+        self.assertNotIn(b"boot: ", sio)
 
         after = len(sio)
         for _ in range(20000):

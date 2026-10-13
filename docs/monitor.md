@@ -10,18 +10,30 @@ section 9), so the same binary works with either console driver.
 
 ```text
 reset -> kernel boot -> drivers loaded -> "console: driver OK"
-  -> boot launcher runs the boot program (default /system/monitor.exe)
-     -> the monitor runs in its own primary bank
-     -> Q -> SYS_EXIT -> the launcher resumes
-     -> "monitor: exit status 0xssss active A free-banks F"
-     -> the launcher runs it again
+  -> boot launcher runs the boot program (production: /system/shell.exe)
+     -> the shell prompts; `monitor` runs this program in its own bank
+        -> Q -> SYS_EXIT -> the shell prompts again
+     -> an acceptance image's monitor policy starts it after that program
+        -> the monitor runs in its own primary bank
+        -> Q -> SYS_EXIT -> "boot: /system/<program>.exe exit 0"
+        -> the launcher runs the boot program again
 ```
 
-The boot program is the `boot` field of the image's system file. A launch
-failure prints `<path>: launch failed 0xNN` on the early console and
-halts. Because every cycle is an ordinary exec and exit, the launcher's
-line proves nothing leaked: after a normal `Q` it reads
-`active 0 free-banks 6`.
+Every start begins on a console reset (`KCONSOLE_OP_RESET`): the terminal
+starts on a clean screen and no input the previous program never read
+reaches the new one. The same launcher starts the boot program again after
+a warm reboot (`B` above), so a reboot and a `Q`/restart look identical
+from the console.
+
+The boot program is the `boot` field of the image's system file and the
+system file's `after_exit` decides what follows a normal exit (`relaunch`
+keeps the program, `monitor` hands the machine to `/system/monitor.exe`,
+which an acceptance image uses to end at the monitor after one run).
+Whatever the setting, a run that cannot start prints
+`boot: <path> failed <n>` and falls back to the monitor; only a monitor
+that cannot start reaches the controlled halt. When the launcher started
+the monitor itself, its exit returns to the boot program; a monitor run as
+the shell's child (or `X`'s) is that program's business instead.
 
 ## 2. Commands
 
@@ -42,6 +54,7 @@ missing, malformed, out-of-range or extra argument is answered `ERR: ARG`.
 | `I port` | read I/O port `10h-FFh` |
 | `O port value` | write I/O port `10h-FFh` |
 | `X path [tail]` | run a program from `/system` or `/fs` and print its exit status |
+| `B` | reboot the machine (`SYS_REBOOT`, `docs/abi.md` section 5.5) |
 | `Q` | exit to the launcher |
 
 `X` runs the program through the ordinary `SYS_EXEC` path, waits for it,
@@ -76,8 +89,14 @@ ERR: ARG
 Z80> DB 7 0100 1
 ERR: ARG
 Z80> Q
-monitor: exit status 0x0000 active 0 free-banks 6
+/>
 ```
+
+(The last line is the shell's prompt: the monitor was found in `/system`,
+`Q` returned from it, and the shell prompted again. When the launcher
+started the monitor itself - an acceptance image, or the boot program
+being the monitor - the launcher prints `boot: /system/monitor.exe exit 0`
+instead and starts it again.)
 
 The banner's `scratch=` is the address of a one-byte scratch variable in
 the monitor's own data: `M` and `D` on it exercise the write and readback

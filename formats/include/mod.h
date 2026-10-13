@@ -90,8 +90,12 @@
 #define MOD_SEGMENT_BULK 4u
 
 /* Endpoint flags: bit 0 is the re-entrancy declaration, the same bit the
- * endpoint table keeps (KOS_IPC_EP_REENTRANT, abi/kos/ipc.h). */
+ * endpoint table keeps (KOS_IPC_EP_REENTRANT, abi/kos/ipc.h); bit 1 asks
+ * the nucleus to tell the endpoint when a handle on one of its objects is
+ * released (KOS_OP_RELEASE), so a driver that owns restoreable hardware
+ * state can take the device back. */
 #define MOD_EP_REENTRANT KOS_IPC_EP_REENTRANT
+#define MOD_EP_RELEASE   0x02u
 
 /* Container header, 16 bytes, little-endian.  `payload_offset` is the
  * first payload byte and equals the end of the tables; `total_size` is

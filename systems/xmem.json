@@ -6,7 +6,9 @@
     "console-serial"
   ],
   "boot": "/system/xmem_selftest.exe",
+  "after_exit": "monitor",
   "store": [
+    "monitor.exe",
     "xmem_selftest.exe",
     "xmem_child.exe",
     "xmem_far.exe"

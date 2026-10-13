@@ -9,6 +9,7 @@
     "console-v9958-hid"
   ],
   "boot": "/system/hello.exe",
+  "after_exit": "monitor",
   "store": [
     "monitor.exe",
     "hello.exe",

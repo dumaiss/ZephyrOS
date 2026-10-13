@@ -63,17 +63,20 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import exepack  # noqa: E402
 import ihx  # noqa: E402
-from replay import PROMPT, STEP_LIMIT, ConsoleReplay  # noqa: E402
+from replay import SHELL_PROMPT, STEP_LIMIT, ConsoleReplay  # noqa: E402
 from z80sim import IocCommandPeer  # noqa: E402
 
 IMAGE_SUBDIR = "build"
 IMAGE_NAME = "konaos.bin"
 
-RUN_LINE = "X /system/far_data.exe"
+RUN_LINE = "far_data"
 BEGIN = "far-data: begin\n"
 PASS = "far-data: PASS"
 FAIL = "far-data: FAIL"
-EXIT_OK = "exec: exit status 0x0000"
+# A status the shell must not report: it prints `[exit n]` only for a
+# child that left one, so the absence of the line is the zero-status
+# proof.
+NO_STATUS = "[exit "
 CHECKS = "far-data: 39 checks, 0 failures"
 
 # Every outcome line the program must report, in order.
@@ -305,7 +308,7 @@ class TestTheSpikeLayout(FarDataBuild):
 
 
 class FarDataSim(ConsoleReplay, unittest.TestCase):
-    """The production image, run through the monitor."""
+    """The production image, the program run from the shell."""
 
     IMAGE_SUBDIR = IMAGE_SUBDIR
     IMAGE_NAME = IMAGE_NAME
@@ -324,12 +327,12 @@ class FarDataSim(ConsoleReplay, unittest.TestCase):
         return z
 
     def test_the_far_data_outcomes_in_the_production_image(self):
-        """`X /system/far_data.exe` reports every far-data outcome, the
+        """`far_data` at the shell reports every far-data outcome, the
         pinned check count and the verdict, and exits 0."""
         z = self.make_cpu()
-        self.boot_to_prompt(z)
+        self.boot_to_shell(z)
         start = len(z.glyphs)
-        self.send_line(z, RUN_LINE, PROMPT, limit=STEP_LIMIT)
+        self.send_line(z, RUN_LINE, SHELL_PROMPT, limit=STEP_LIMIT)
         text = "".join(z.glyphs[start:])
 
         self.assertIn(BEGIN, text)
@@ -338,7 +341,7 @@ class FarDataSim(ConsoleReplay, unittest.TestCase):
         self.assertNotIn(FAIL, text)
         self.assertIn(CHECKS, text)
         self.assertIn(PASS, text)
-        self.assertIn(EXIT_OK, text)
+        self.assertNotIn(NO_STATUS, text)
 
 
 if __name__ == "__main__":

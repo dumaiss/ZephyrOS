@@ -91,8 +91,10 @@ int kos_object_copy_path(uint16_t addr, uint16_t length, char *out)
 }
 
 /* Copy the caller path and normalize it against the caller's CWD into the
- * workspace's normalized slot.  Returns 0 or -KOS_EINVAL. */
-static int object_normalize_path(uint16_t addr, uint16_t length)
+ * workspace's normalized slot.  The namespace family shares this gate:
+ * `bind` and `exec` both hand their provider a canonical absolute path.
+ * Returns 0 or -KOS_EINVAL. */
+int object_normalize_path(uint16_t addr, uint16_t length)
 {
 	int result;
 

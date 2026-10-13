@@ -26,7 +26,7 @@ transcript:
   free aperture slot holding mappable data, exec from far context (the
   child starts with P = 0 and refuses the parent's handle and segment id)
   and exit from far context (the parent's capacity check and the
-  launcher's `free-banks 6` report prove the release);
+  process table the launcher's exit line follows prove the release);
 * banked calls: the far module's `__banked` entries called
   as plain C through the SDK's `___sdcc_bcall_ehl` trampoline - 0-3
   arguments of 8, 16 and 32 bits, a mixed call and a recursion - and the
@@ -38,9 +38,11 @@ transcript:
   `farcall` maps on every call, the far program's own code runs its four
   explicit `segmap` calls, and the child it execs from far context probes
   its parent's segment id once;
-* the launcher's report: exit status 0, no active process and six free
-  banks - every object, every segment and every bank slot was released by
-  exit.
+* the launcher's exit line: status 0, and the kernel's process table
+  holds no live slot naming any primary bank afterwards - every object
+  the program left, every segment and every bank slot was released by
+  exit (the program's own `*-released` outcomes above are the object
+  half of the same proof).
 
 Skipped when the image has not been built.
 
@@ -69,11 +71,19 @@ FAIL = "xmem-selftest: FAIL"
 CHILD_PASS = "xmem-child: PASS\r\n"
 PANIC = "PANIC"
 
-# The launcher's exit report, printed after the program's exit.  It is
-# the exit-release proof: the program leaves its two anchor objects live
-# in bank 5, and `free-banks 6` says that bank is a free primary bank
-# again (a bank with a live auxiliary slot can never be one).
-REPORT = "monitor: exit status 0x0000 active 0 free-banks 6\r\n"
+# The launcher's exit line, written after the program's exit.  The
+# release proof reads the kernel's process table beside it: the program
+# leaves its two anchor objects live in bank 5 (and a far-code bank the
+# child ran from), so no live slot may still name a primary bank.
+REPORT = "boot: /system/xmem_selftest.exe exit 0\r\n"
+
+# struct process: state, pid, bank, parent, flags:u16, exit_status:u16.
+# The table is linked kernel state, read from the nucleus's bank (the
+# cold half the kernel keeps it in).
+PROCESS_STRUCT = 8
+PROCESS_TABLE = 7          # PROCESS_TABLE_SIZE
+PRIMARY_BANKS = 6          # PROCESS_BANK_COUNT
+PROCESS_FREE = 0           # PROCESS_FREE
 
 # The child's report, asserted in order.  It runs twice: from the parent
 # (whose own bank is 1) and once from the far-code program's segment 1
@@ -364,11 +374,21 @@ class TestXmemSelftest(XmemSelftestReplay):
         self.assertEqual(sio.count(FAR_CONSOLE), 1)
 
     def test_exit_released_the_parents_objects(self):
-        """The launcher's report is the end-to-end release proof: the
-        parent's anchors and the far program's segments and objects were
-        all released (six free banks)."""
-        _z, sio = self.boot_to_report()
+        """The launcher's exit line and the kernel's process table are the
+        end-to-end release proof: the parent's anchors and the far
+        program's segments and objects were released, so no live process
+        slot names a primary bank any more."""
+        z, sio = self.boot_to_report()
         self.assertIn(REPORT, sio)
+        table = self.syms["_process_table"]
+        live = {}
+        for slot in range(PROCESS_TABLE):
+            state = z.bank7[table + PROCESS_STRUCT * slot]
+            if state != PROCESS_FREE:
+                live[slot] = z.bank7[table + PROCESS_STRUCT * slot + 2]
+        self.assertEqual(live, {},
+                         "process slots stayed live: %r (banks: %r)"
+                         % (live, sorted(set(live.values()))))
 
     def test_the_token_cache_costs_one_segmap_per_segment(self):
         """Every SYS_SEG_MAP the image issues, attributed to the program

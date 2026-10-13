@@ -9,8 +9,10 @@
     "console-v9958-hid",
     "iocfat"
   ],
-  "boot": "/system/monitor.exe",
+  "boot": "/system/shell.exe",
+  "after_exit": "relaunch",
   "store": [
+    "shell.exe",
     "monitor.exe",
     "hwtest.exe",
     "xmem_selftest.exe",

@@ -39,10 +39,14 @@ CRT0_STEP_LIMIT = 2000000
 STEP_LIMIT = 60000000
 MARKER_SETTLE_STEPS = 64  # steps of quiet after a matched marker
 
-# The monitor's visible lane, shared by every console replay.
+# The monitor's visible lane, shared by every console replay.  The shell
+# is the boot program of every production system, so its prompt is what a
+# reboot lands on: the displayed CWD (the card's root reads as `/`) then
+# `> `.
 BANNER = "KonaOS 0.0"
 PROMPT = "Z80>"
 MONITOR_EXIT = "monitor: exit"
+SHELL_PROMPT = "/> "
 
 
 def _load_image(root, subdir, image_name, map_name):
@@ -390,6 +394,14 @@ class ConsoleReplay(Replay):
     def boot_to_prompt(self, z, limit=STEP_LIMIT):
         self.start_kernel(z)
         self.run_to(z, PROMPT, limit)
+        return self.trace(z)
+
+    def boot_to_shell(self, z, limit=STEP_LIMIT, prompt=SHELL_PROMPT):
+        """Boot to the shell's displayed prompt (the boot program of the
+        production systems).  `prompt` is the card-less `/system> ` where
+        a replay starts without one."""
+        self.start_kernel(z)
+        self.run_to(z, prompt, limit)
         return self.trace(z)
 
 

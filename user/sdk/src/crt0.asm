@@ -4,10 +4,11 @@
 ; The launch gate enters here in mode 10 with HL = KOS_STARTUP_BASE, the
 ; startup block v1.  crt0 saves the block for startup(), copies the raw
 ; tail into program data (the kernel's page-zero copy is not preserved
-; across a syscall), runs the documented whitespace/double-quote splitter
-; over that copy into a bounded argv (KOS_ARGV_MAX entries in BSS), calls
-; int main(int argc, char **argv), and exits with the low 16 bits of the
-; result.  A program never writes entry assembly.
+; across a syscall), runs the documented splitter (quotes and escapes,
+; docs/exe-format.md section 5) over that copy into a bounded argv
+; (KOS_ARGV_MAX entries in BSS), calls int main(int argc, char **argv),
+; and exits with the low 16 bits of the result.  A program never writes
+; entry assembly.
 ;
 ; crt0 is linked first so it lands at 0100h (entry_offset 0) and its BSS
 ; (tail copy, argv) sits at the start of the data area.

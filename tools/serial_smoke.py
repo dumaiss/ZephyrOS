@@ -39,14 +39,20 @@ captures output with a bounded timeout, and verifies the expected output:
                      `fs-selftest: PASS` verdict with its check count and
                      then the monitor prompt on the same SIO console.
     --mode hwtest    the production image's feature exerciser: the boot
-                     banner, then the tool types
-                     `X /system/hwtest.exe` at the monitor over this lane
-                     - production's console input is the HID build, so
-                     the monitor reads commands from the lane the runner
-                     mirrors its lines to - and checks the three stage
-                     lines and the verdict, with the card state the
-                     transcript reports (insert a card for the card run,
-                     remove it for the absent-card run).
+                     banner, then the tool types `hwtest` at the shell
+                     over this lane - the typed bytes reach the console
+                     through the MCU, and the runner mirrors its lines
+                     back here - and checks the three stage lines and the
+                     verdict, with the card state the transcript reports
+                     (insert a card for the card run, remove it for the
+                     absent-card run).
+    --mode shell     the serial production image's shell: the tool waits
+                     for the prompt, then types `pwd`, `ls /system`,
+                     `hwtest` and `exit`, checking the rows each one
+                     prints, the exerciser's verdict, the launcher's
+                     relaunch line and the prompt that follows it - run
+                     it once with a card and once without (the card state
+                     decides the prompt and `pwd`'s answer).
 All new subsystem modes send the host sync sequence while the banner is
 pending, because the acceptance builds hold the first byte until the
 host is listening (the bench reset also resets the USB bridge).
@@ -64,7 +70,7 @@ before they print anything, so those modes send that sequence once the
 port is open and repeat it until the first byte arrives.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|ioc|hid|video|console|console-integration|console-serial|fs|hwtest]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|ioc|hid|video|console|console-integration|console-serial|fs|hwtest|shell]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -112,7 +118,7 @@ MODULE_UNAVAILABLE = b": unavailable 0x"
 
 # The card was absent, write-protected or unreadable: the acceptance image
 # takes that as a documented outcome rather than a failure.
-SUBSYS_EXIT = b"monitor: exit status 0x"
+SUBSYS_EXIT = b"boot: /system/monitor.exe exit 0"
 
 # --- corrupt-store image -----------------------------------------------------
 INTEGRATION_DRIVERS_PREFIX = b"console integration: drivers "
@@ -222,7 +228,7 @@ def _subsys_result(data):
 
 def _subsys_complete(data):
     """The serial portion plus the interactive monitor step: the mode
-    sends `Q` at the prompt and waits for the monitor exit line."""
+    sends `Q` at the prompt and waits for the launcher's exit line."""
     return _subsys_result(data) and SUBSYS_EXIT in data
 
 
@@ -254,12 +260,11 @@ def _fs_image_result(data):
 
 
 # --- the production hardware exerciser -----------------------------------------
-# `X /system/hwtest.exe` on the production image.  The console is the
-# V9958/HID build there, so this lane is where the monitor takes its
-# commands (it polls the SERIAL object beside the console) and where the
-# runner mirrors every line - the tool therefore reads its own command
-# echoed back byte by byte and then the stage lines and the verdict.
-HW_COMMAND = b"X /system/hwtest.exe\r"
+# `hwtest` at the shell on the production image.  The console is the
+# V9958/HID build there, so the typed bytes reach the shell's console
+# through the MCU's input queue and the runner mirrors its lines to this
+# lane - the tool therefore reads the stage lines and the verdict here.
+HW_COMMAND = b"hwtest\r"
 HW_TIMEOUT = 120.0
 HW_BEGIN = b"hwtest: begin\r\n"
 HW_STAGES = (b"hwtest: xmem+far PASS\r\n",
@@ -306,18 +311,173 @@ def _hwtest_result(data):
     return _hwtest_card(data) is not None
 
 
+# --- the serial production image's shell ---------------------------------
+# `make console-serial-selftest` builds the production driver set with the
+# SERIAL console: the shell is the boot program there, so its prompt, the
+# typed lines and everything it prints are on this lane.  The session the
+# owner checklist uses is typed here; `hwtest` is the store's exerciser,
+# which mirrors its own lines to this lane too.
+SHELL_IMAGE = ("build-console-serial-selftest/"
+               "konaos-console-serial-selftest.bin")
+SHELL_PROMPTS = (b"\r\n/> ", b"\r\n/system> ")
+SHELL_PROMPT_MARK = b"> "
+SHELL_EXIT = b"boot: /system/shell.exe exit 0\r\n"
+SHELL_TIMEOUT = 120.0
+# One row per typed line: the line and the rows that answer it.  A card
+# decides the prompt (`/`) and `pwd`'s answer; no card keeps the shell in
+# `/system`, and the exerciser reports `(card absent)` beside `PASS`.
+SHELL_STEPS = (
+    ("pwd", (b"\r\n/\r\n", b"\r\n/system\r\n")),
+    ("ls /system", (b"drivers.man",)),
+    ("hwtest", (b"hwtest: 3/3 PASS", b"hwtest: 3/3 FAIL")),
+    ("exit", (SHELL_EXIT,)),
+)
+
+
+def _shell_result(data):
+    """True when the whole session completed on this lane: the banner, the
+    console-driver line, the prompt, every step's row, the launcher's
+    relaunch line and the prompt the restarted shell prints after it."""
+    if b"PANIC" in data or b"command not found" in data:
+        return False
+    if data.rfind(SHELL_EXIT) < 0:
+        return False
+    # The restarted shell prints a fresh prompt behind the relaunch line.
+    if data.rfind(SHELL_PROMPT_MARK) < data.rindex(SHELL_EXIT):
+        return False
+    return (BANNER in data and CONSOLE_DRIVER_OK in data and
+            all(any(row in data for row in rows)
+                for _line, rows in SHELL_STEPS))
+
+
+class ShellSession:
+    """Type the session's lines into the shell, one at a time.
+
+    The console is the serial lane here, so the shell's own read echoes
+    every byte back: each byte of a line goes out only after the previous
+    byte's echo arrived (the polled receiver's single-byte register never
+    sees a burst), and a byte whose echo misses its deadline is sent
+    again.  A line's turn comes only after the row its step waits for
+    arrived, so a garbled line cannot be swallowed silently; a row that
+    never arrives costs the line a flush and a retype, bounded.
+    """
+
+    ECHO_DEADLINE = 1.0
+    PACE = 0.02
+    ROW_DEADLINE = 90.0
+    RESTARTS = 3
+
+    WAIT_PROMPT = 0
+    TYPING = 1
+    WAIT_ROW = 2
+    DONE = 3
+
+    def __init__(self):
+        self.index = 0
+        self.state = self.WAIT_PROMPT if SHELL_STEPS else self.DONE
+        self.next = 0
+        self.outstanding = -1
+        self.mark = 0
+        self.deadline = 0.0
+        self.restarts = 0
+        self.row_at = 0.0
+
+    @property
+    def done(self):
+        return self.state == self.DONE
+
+    def _line(self):
+        return SHELL_STEPS[self.index][0]
+
+    def _write(self, link, payload, data, now):
+        try:
+            link.write(payload)
+            link.flush()
+        except Exception:
+            return
+        self.outstanding = self.next
+        self.mark = len(data)
+        self.deadline = now + self.ECHO_DEADLINE
+
+    def _begin(self, now, restarts):
+        self.next = 0
+        self.outstanding = -1
+        self.deadline = now + self.PACE
+        self.restarts = restarts
+        self.row_at = now + self.ROW_DEADLINE
+        self.state = self.TYPING
+
+    def step(self, link, data, now):
+        """Advance the session; returns a note string when it acts."""
+        if self.state == self.DONE:
+            return None
+        if self.state == self.WAIT_PROMPT:
+            if any(prompt in data for prompt in SHELL_PROMPTS):
+                self._begin(now, 0)
+                return "the prompt arrived; typing %r" % self._line()
+            return None
+        if self.state == self.WAIT_ROW:
+            if any(row in data[self.mark:]
+                   for row in SHELL_STEPS[self.index][1]):
+                self.index += 1
+                if self.index >= len(SHELL_STEPS):
+                    self.state = self.DONE
+                    return "the session completed"
+                self._begin(now, 0)
+                return None
+            if now >= self.row_at:
+                if self.restarts >= self.RESTARTS:
+                    self.state = self.DONE
+                    return ("%r was typed %d times and no row arrived"
+                            % (self._line(), self.restarts + 1))
+                self.row_at = now + self.ROW_DEADLINE
+                self.restarts += 1
+                self._begin(now, self.restarts)
+                self.deadline = now
+                return "no row followed %r: retyping the line" % self._line()
+            return None
+        line = self._line().encode("ascii")
+        if self.outstanding < 0:
+            if now < self.deadline:
+                return None
+            if self.next == 0 and self.restarts != 0:
+                self._write(link, b"\r", data, now)
+                self.state = self.WAIT_ROW
+                self.row_at = now + self.ROW_DEADLINE
+                return "flushed a partial line before retyping it"
+            self._write(link, line[self.next:self.next + 1], data, now)
+            if self.next == 0:
+                return "typed %r at the shell prompt" % self._line()
+            return None
+        if line[self.outstanding] in data[self.mark:]:
+            self.next = self.outstanding + 1
+            self.outstanding = -1
+            self.deadline = now + self.PACE
+            if self.next >= len(line):
+                self.state = self.WAIT_ROW
+                self.row_at = now + self.ROW_DEADLINE
+                self.mark = len(data)
+                return "the line was accepted"
+            return None
+        if now >= self.deadline:
+            self.outstanding = -1
+            self.deadline = now + self.PACE
+            return "byte %d was not echoed: sending it again" % self.next
+        return None
+
+
 class HwtestCommand:
     """The exerciser command's typed-speed handshake.
 
-    The monitor echoes every byte it takes from this lane back on the same
-    lane (the monitor's serial input path), which turns the send into a
-    checked one: each byte of `HW_COMMAND` goes out only after the previous
-    byte's echo arrived, so the polled receiver's single-byte register
-    never sees a burst, and a byte whose echo does not arrive inside the
-    deadline is sent again - it replaces the pending byte rather than
-    duplicating it.  A line that was acknowledged but produced no `hwtest:`
-    line (the monitor may have executed a garbled one) is restarted behind
-    a flush CR, so a partial line can never join the new one.
+    Every byte the shell's console read takes is echoed back on this lane,
+    which turns the send into a checked one: each byte of `HW_COMMAND` goes
+    out only after the previous byte's echo arrived, so the polled
+    receiver's single-byte register never sees a burst, and a byte whose
+    echo does not arrive inside the deadline is sent again - it replaces
+    the pending byte rather than duplicating it.  A line that was
+    acknowledged but produced no `hwtest:` line (the shell may have
+    executed a garbled one) is restarted behind a flush CR, so a partial
+    line can never join the new one.
     """
 
     ECHO_DEADLINE = 1.0
@@ -411,7 +571,7 @@ def main(argv):
     parser.add_argument("--mode", choices=("normal", "subsystem",
                                            "console-integration",
                                            "console-serial",
-                                           "fs", "hwtest"),
+                                           "fs", "hwtest", "shell"),
                         default="normal")
     parser.add_argument(
         "--timeout", type=float, default=None,
@@ -431,7 +591,9 @@ def main(argv):
         if env_timeout:
             args.timeout = float(env_timeout)
         else:
-            args.timeout = HW_TIMEOUT if args.mode == "hwtest" else 15.0
+            args.timeout = (HW_TIMEOUT if args.mode == "hwtest"
+                            else SHELL_TIMEOUT if args.mode == "shell"
+                            else 15.0)
 
     if not args.port:
         print(
@@ -469,8 +631,8 @@ def main(argv):
         print("serial_smoke: mode subsystem checks the boot log and the "
               "interactive monitor step; power-cycle the board or press "
               "RESET now so the boot is captured; the tool sends Q once "
-              "the Z80> prompt appears and finishes on the monitor exit "
-              "line")
+              "the Z80> prompt appears and finishes on the launcher's "
+              "exit line")
     if args.mode == "console-integration":
         print("serial_smoke: mode console-integration checks the integration image's "
               "serial portion (driver report, composition lanes, PING "
@@ -499,13 +661,23 @@ def main(argv):
               "log; power-cycle the board or press RESET now so the boot "
               "is captured; with a writable card every outcome line and "
               "the fs-selftest: PASS verdict must appear")
+    if args.mode == "shell":
+        print("serial_smoke: mode shell checks the serial production "
+              "image's shell (%s); power-cycle the board or press RESET "
+              "now so the boot is captured; the tool waits for the prompt "
+              "and then types 'pwd', 'ls /system', 'hwtest' and 'exit', "
+              "reading each row, the exerciser's verdict, the launcher's "
+              "relaunch line and the prompt that follows it" % SHELL_IMAGE)
+        print("serial_smoke: operator step: run this twice - once with a "
+              "FAT card inserted and once without it; the prompt and "
+              "`pwd` name the root in use, and the exerciser reports the "
+              "card state")
     if args.mode == "hwtest":
         print("serial_smoke: mode hwtest checks the production image's "
               "feature exerciser; power-cycle the board or press RESET "
-              "now so the boot is captured; the tool then types "
-              "'X /system/hwtest.exe' at the monitor over this lane (the "
-              "production console input is the HID build, so the monitor "
-              "reads its commands here) and reads the stage lines and the "
+              "now so the boot is captured; the tool then types 'hwtest' "
+              "at the shell over this lane (the typed bytes reach the "
+              "console through the MCU) and reads the stage lines and the "
               "verdict")
         print("serial_smoke: operator step: run this twice - once with a "
               "FAT card inserted and once without it; the files line and "
@@ -519,6 +691,8 @@ def main(argv):
     normal_banner_at = 0.0
     hwtest_cmd = HwtestCommand()
     hwtest_idle_at = 0.0
+    shell_session = ShellSession()
+    shell_idle_at = 0.0
     try:
         while time.monotonic() < deadline:
             if link is None:
@@ -602,6 +776,23 @@ def main(argv):
                 elif args.mode == "hwtest":
                     if _hwtest_complete(data):
                         break
+                elif args.mode == "shell":
+                    if shell_session.done and _shell_result(data):
+                        break
+            if args.mode == "shell" and link is not None:
+                # The shell starts printing behind the console-driver
+                # line; the prompt it prints is the session's gate.
+                if BANNER in data:
+                    now = time.monotonic()
+                    if shell_idle_at == 0.0:
+                        shell_idle_at = now + HW_SETTLE
+                        print("serial_smoke: boot captured; driving the "
+                              "shell session once the lane is quiet")
+                    if (now >= shell_idle_at and not shell_session.done and
+                            not _shell_result(data)):
+                        note = shell_session.step(link, data, now)
+                        if note:
+                            print("serial_smoke: " + note)
             if args.mode == "hwtest" and link is not None:
                 # The exerciser's command handshake starts once the boot
                 # banner is complete and the lane has been quiet: the
@@ -662,8 +853,8 @@ def main(argv):
         expected = ("the banner, the console-driver line, the four "
                     "mechanism groups (syscall/irq/romfs/process "
                     "selftest: OK) with no FAIL/PANIC marker, and one "
-                    "interactive monitor step ending on 'monitor: exit "
-                    "status 0x'")
+                    "interactive monitor step ending on the launcher's "
+                    "'boot: /system/monitor.exe exit 0' line")
     elif args.mode == "console-integration":
         ok = _integration_result(data)
         expected = ("the banner, the driver report, the console "
@@ -689,6 +880,14 @@ def main(argv):
                     "and the 'Z80> ' prompt, and the monitor's system row "
                     "for the typed 'r' - all on the serial lane (the "
                     "console-serial variant routes /dev/console to SERIAL)")
+    elif args.mode == "shell":
+        ok = _shell_result(data)
+        expected = ("the boot banner, 'console: driver OK', the shell's "
+                    "prompt, the 'pwd' row (the root in use), the "
+                    "'ls /system' listing, 'hwtest: 3/3 PASS' with the card "
+                    "note that matches the drive, 'boot: /system/shell.exe "
+                    "exit 0' and the prompt the restarted shell prints "
+                    "after it - run it once with a card and once without")
     elif args.mode == "hwtest":
         ok = _hwtest_result(data)
         expected = ("the boot banner, the echoed command, and the "

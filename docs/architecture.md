@@ -258,6 +258,15 @@ at its linked addresses, a valid stack, the C runtime state initialized,
 and no assumptions about previous register contents. `kernel_main()` does
 not return.
 
+`SYS_REBOOT` follows exactly this path again: the kernel masks interrupts,
+quiesces the interrupt sources it programmed, writes latch `00h` from
+common memory and jumps to `0000h`, so the copy above runs a second time
+on a machine whose RAM is still whatever the program left in it. Nothing
+is inherited across the jump: no driver keeps a handle, no process keeps
+a bank, and no peripheral receives a hardware reset. A driver's bring-up
+must therefore program its device fully from any state
+(`docs/devices.md` section 12).
+
 ### 3.2 Boot sequence
 
 ```text
@@ -288,12 +297,32 @@ boot launcher: run the configured boot program
 
 ### 3.3 The boot launcher
 
-The boot program is a build setting: the `boot` field of the image's
-system file (section 8.1), for example `/system/monitor.exe`. The launcher
-runs it, prints its exit status, and runs it again after every normal
-exit. If the boot program cannot be started, the launcher names the path
-on the early console and takes the controlled halt path. The boot path
-reaches the kernel through a generated header, never a compiler `-D` flag.
+The boot program and the policy that follows its exit are build settings:
+the `boot` and `after_exit` fields of the image's system file (section
+8.1), for example `/system/shell.exe` with `relaunch`. The launcher runs
+the program, prints one line per cycle, and applies the policy:
+
+| event | action |
+|---|---|
+| the boot program exits with a status | `boot: <path> exit <n>`; `relaunch` starts it again, `monitor` starts `/system/monitor.exe` |
+| the run cannot start (< 0: missing, rejected, fault) | `boot: <path> failed <code>` and `/system/monitor.exe` |
+| the monitor exits | the boot program again |
+| the monitor itself cannot start | the controlled halt |
+
+Production boots the shell and relaunches it; every acceptance image ends
+at the monitor after one run instead of looping. The boot path reaches the
+kernel through a generated header, never a compiler `-D` flag.
+
+Every start of the boot program begins on a console reset
+(`KCONSOLE_OP_RESET`, `docs/devices.md` section 12): the terminal goes
+back to its defaults on a clean screen and input the program that went
+away never read is dropped. The ordinary console path is used; the
+launcher has no second mechanism for display or input state.
+
+The launcher is also the only place a warm reboot is noticed: a program
+that calls `REBOOT` (section 6.2) re-enters the boot path of section 3.1
+exactly as a power-on does, and the launcher then starts the boot program
+again on that fresh console.
 
 ### 3.4 Failure
 
@@ -475,8 +504,10 @@ lookup, an ASCII case-folded name match. The format is in
   `SYS_EXEC` returns. From the start of the restoring copy until SP is
   restored there is no `CALL`, `PUSH`, `POP` or interrupt enable.
 - **Exit** (`SYS_EXIT`) records the status, unbinds every handle the
-  process owns (each owning provider closes or flushes its instance), frees
-  its extended-memory objects and segments and its bank, and resumes the
+  process owns (each owning provider closes or flushes its instance; a
+  device handle with the release notification tells its driver the handle
+  went away, and an exclusive one that the takeover ended), frees its
+  extended-memory objects and segments and its bank, and resumes the
   parent with its exact latch, including P.
 - A suspended parent keeps all its resources. A child inherits the parent's
   CWD (a copy) and nothing else.
@@ -630,7 +661,20 @@ component to one of three static nucleus providers:
 - **`call(handle, op, frame)`** sends one protocol operation to the
   handle's endpoint. The VFS is not in the data path. The ROMFS provider
   answers in-process through the same path.
-- **`unbind(handle)`** releases the instance.
+- **`unbind(handle)`** releases the instance. For a DEVICE handle the
+  release is a notification: the nucleus calls the endpoint with
+  `KOS_OP_RELEASE` (`arg0` = the object, `arg1` = 1 for an exclusive
+  handle) so the driver can restore what the program changed. Only an
+  endpoint whose image declared the release notification is called, and
+  its result is ignored.
+- **Exclusive handles.** `KOS_BIND_EXCLUSIVE` asks a device for a takeover:
+  the nucleus first calls the endpoint with `KOS_OP_ACQUIRE` (`arg0` = the
+  object), which the driver answers with 0 or `-KOS_EBUSY` while another
+  handle holds the object. A device whose endpoint declared no release
+  notification answers `-KOS_ENOTSUP` before any call is made. A program
+  writes a device's ports, or reprograms it beyond its protocol, only while
+  it holds that device's exclusive handle; the contract and what each
+  driver restores are `docs/devices.md` section 12.
 - **Standard handles:** every process starts with handles 1 (output) and 2
   (input) bound to `/dev/console`, bound fresh for that process, never
   inherited. `bind` never returns them. A build with no console driver
@@ -807,6 +851,7 @@ compatibility path.
 | `09h` | `NS_ENUM` | enumerate a namespace location |
 | `0Ah` | `CHDIR` | change the CWD |
 | `0Bh` | `GETCWD` | read the CWD |
+| `0Ch` | `REBOOT` | warm reboot into the reset path (3.1) |
 | `20h`-`25h` | `XMEM_ALLOC`, `FREE`, `READ`, `WRITE`, `INFO`, `MAP` | extended memory |
 | `26h`, `27h` | `SEG_INFO`, `SEG_MAP` | the program's own segments |
 | `28h`-`2Dh` | `DIAG_*` | recovery and diagnostics (6.9) |
@@ -952,14 +997,26 @@ aperture slice, so their number is bounded by the free banks (`run` returns
 
 ### 7.4 Native programs in the store
 
-- **`monitor.exe`** is the recovery tool and today's boot program: memory
+- **`shell.exe`** is the command interpreter and the production boot
+  program: a read-run loop that splits one line with the shared splitter,
+  resolves a built-in or a program through its command path (`.`, `/fs/BIN`,
+  `/system`), and reports the child's status. Its built-ins are `cd pwd
+  echo path help exit reboot` and the file commands `ls cat stat cp mv rm
+  mkdir rmdir`; `/fs` is shown as `/` and `//` names the real namespace
+  root. It is an ordinary program (`user/shell/`): the image's store
+  carries it, the launcher runs it, and the monitor it starts on request is
+  a child like any other - the acceptance images' launcher starts the
+  monitor instead, through `after_exit`.
+- **`monitor.exe`** is the recovery tool and the acceptance images'
+  fallback: memory
   and I/O inspection (`R`, `D`, `M`, `I`, `O`), running a program from
   `/system` or `/fs` (`X path [tail]`), help and quit. It uses only the
   console and the diagnostic syscalls, so it works with either console
   driver, and it stays small and independent of everything it inspects
   (`docs/monitor.md`).
-- **`hwtest.exe`** is the production feature exerciser, run with
-  `X /system/hwtest.exe`: extended memory and far code, files (writes
+- **`hwtest.exe`** is the production feature exerciser, run as `hwtest` at
+  the shell (or with `X /system/hwtest.exe` at the monitor): extended
+  memory and far code, files (writes
   confined to `/fs/HWTEST`, which it removes), the namespace and handles
   against the real devices, and nested exec. It reports one line per
   stage and a final `n/m PASS`, with a card and without one.
@@ -989,8 +1046,9 @@ Each image is described by `systems/<image>.json`:
 { "schema": "kos-system-1",
   "name": "production",
   "drivers": ["sio", "ioc", "hid", "v9958", "console-v9958-hid", "iocfat"],
-  "boot": "/system/monitor.exe",
-  "store": ["monitor.exe", "hwtest.exe", "..."],
+  "boot": "/system/shell.exe",
+  "after_exit": "relaunch",
+  "store": ["shell.exe", "monitor.exe", "hwtest.exe", "..."],
   "cflags": [] }
 ```
 
@@ -998,6 +1056,8 @@ Each image is described by `systems/<image>.json`:
   test-only driver is named by its repository path without `.json`.
 - `boot` is the boot program; it must be an EXE in the store under
   `/system`.
+- `after_exit` is `relaunch` or `monitor`, the launcher's policy for a
+  normal exit; a `monitor` image must carry `monitor.exe` in its store.
 - `store` lists the store's own files. The store order is always: the
   driver images in load order, then `drivers.man`, then the `store` files.
 - `cflags` are the image's extra compiler flags. A path containing `.exe`
@@ -1241,14 +1301,22 @@ says so.
      driver restores the text screen when the handle goes.
    - The launcher resets the console before every start of the boot
      program.
-   - Warm reboot (`SYS_REBOOT`, `reboot`, the monitor's `B`, Ctrl-Alt-Del):
+   - Warm reboot (`SYS_REBOOT`, `reboot`, the monitor's `B`):
      latch `00h`, `JP 0`, and the ROM copy runs as at power-on. Every
      driver init must program its device fully from any state, because no
      device receives a hardware reset.
 3. **A timer driver.** CTC channel 2 at 156.25 Hz publishing `/dev/timer`;
    time is read with 25.6 µs resolution by combining the tick count with
    the channel's down-counter. The first production interrupt source.
-4. **The diagnostic suite.** `/system/diag.exe`, run from the shell, built
+4. **Device events.** An application subscribes to events on a device
+   handle (`NOTIFY`); the driver keeps the interrupt and posts the event,
+   and the nucleus delivers it signal-style, only while the application is
+   running: on return from the interrupt when its own code was running,
+   at syscall return when it was inside a call, never nested, and dropped
+   (counted as `missed`) while a child runs. The handler receives `count`
+   and `missed`. First source: a channel-3 event timer with exact
+   deadlines (a music tracker's tick).
+5. **The diagnostic suite.** `/system/diag.exe`, run from the shell, built
    from far segments:
    - every test reports `PASS`, `FAIL` or `SKIP`; `diag all` aggregates,
      never destroys data and exits non-zero only on a failure;
@@ -1260,7 +1328,7 @@ says so.
    - one read-only nucleus addition, `SYS_DIAG_ENUM`, returning value
      records (banks, interrupt sources, drivers, interrupt totals) and no
      pointers.
-5. **After that:** compatibility personalities, starting with CP/M.
+6. **After that:** compatibility personalities, starting with CP/M.
 
 ---
 

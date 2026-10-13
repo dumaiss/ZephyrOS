@@ -12,7 +12,9 @@
     "tests/target/ipc/manifests/irqx"
   ],
   "boot": "/system/ipccopy.exe",
+  "after_exit": "monitor",
   "store": [
+    "monitor.exe",
     "ipccopy.exe",
     "ipc.exe"
   ],

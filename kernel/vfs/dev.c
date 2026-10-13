@@ -12,6 +12,8 @@
 
 #include "kos/protocol.h"
 
+#include "mod.h"
+
 static struct vfs_ns_publication
 	vfs_ns_publications[VFS_NS_PUB_MAX];
 uint8_t vfs_ns_pub_count;
@@ -177,15 +179,48 @@ int vfs_ns_install_publication(const char *name, uint8_t type, uint8_t number,
 
 /* --- bind and release ---------------------------------------------------- */
 
+/* The release notification: tell the endpoint that owns `object` that a
+ * handle went away, and whether it was the exclusive one.  The result is
+ * the driver's business and is ignored here; an endpoint without the
+ * release declaration is never called. */
+void vfs_device_notify_release(uint8_t endpoint, uint8_t object,
+			       uint8_t exclusive)
+{
+	struct kos_ipc_frame frame;
+
+	frame.op = KOS_OP_RELEASE;
+	frame.flags = 0u;
+	frame.desc = KOS_IPC_DESC_NONE;
+	frame.arg0 = object;
+	frame.arg1 = exclusive;
+	(void)ipc_nucleus_call(endpoint, &frame);
+}
+
+/* The exclusive request's own call: the driver answers 0, or refuses with
+ * -KOS_EBUSY while another handle holds the object. */
+static int vfs_device_acquire(uint8_t endpoint, uint8_t object)
+{
+	struct kos_ipc_frame frame;
+
+	frame.op = KOS_OP_ACQUIRE;
+	frame.flags = 0u;
+	frame.desc = KOS_IPC_DESC_NONE;
+	frame.arg0 = object;
+	frame.arg1 = 0u;
+	return ipc_nucleus_call(endpoint, &frame);
+}
+
 /* Bind one DEVICE publication.  `rel` is provider-relative ("/console"). */
 int vfs_device_bind(uint8_t pid, const char *rel, uint16_t flags,
 			  uint8_t *type)
 {
 	const struct vfs_ns_publication *pub = vfs_pub_find(rel);
 	struct vfs_handle_entry *entry;
+	const uint16_t defined = (uint16_t)KOS_BIND_EXCLUSIVE;
+	uint8_t exclusive = (uint8_t)((flags & defined) != 0u ? 1u : 0u);
 
-	if ((flags & (uint16_t)~0x00FFu) != 0u) {
-		return -KOS_EINVAL; /* the entry records one flag byte */
+	if ((flags & (uint16_t)~defined) != 0u) {
+		return -KOS_EINVAL; /* DEVICE binds define one flag */
 	}
 	if (pub == (const struct vfs_ns_publication *)0) {
 		if (rel[0] == '\0') {
@@ -196,14 +231,31 @@ int vfs_device_bind(uint8_t pid, const char *rel, uint16_t flags,
 	if (pub->flags != 0u) {
 		return -KOS_EISDIR; /* a grouping entry, not an object */
 	}
+	if (exclusive != 0u) {
+		if ((ipc_endpoint_flags(pub->number) & MOD_EP_RELEASE) ==
+		    0u) {
+			/* The endpoint declares no exclusive support: only
+			 * a driver that restores the device needs one. */
+			return -KOS_ENOTSUP;
+		}
+	}
 	entry = vfs_handle_alloc(pid, KOS_HANDLE_FIRST_BOUND);
 	if (entry == (struct vfs_handle_entry *)0) {
 		return -KOS_EMFILE;
 	}
+	if (exclusive != 0u) {
+		int result = vfs_device_acquire(pub->number, pub->object);
+
+		if (result < 0) {
+			vfs_handle_release(entry);
+			return result;
+		}
+	}
 	entry->type = pub->type;
 	entry->endpoint = pub->number;
 	entry->object = pub->object;
-	entry->flags = (uint8_t)flags;
+	entry->flags = (uint8_t)(exclusive != 0u ? VFS_HANDLE_EXCLUSIVE
+						 : 0u);
 	*type = pub->type;
 	return (int)entry->number;
 }

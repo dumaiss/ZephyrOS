@@ -6,6 +6,7 @@
     "console-serial"
   ],
   "boot": "/system/monitor.exe",
+  "after_exit": "monitor",
   "store": [
     "crosspage.bin",
     "monitor.exe",

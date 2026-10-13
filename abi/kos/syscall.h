@@ -31,13 +31,14 @@
 #include "kos/errno.h"
 #include "kos/process.h"
 
-/* Native syscall numbers.  01h-03h and 10h-1Fh are unassigned and return
+/* Native syscall numbers.  01h-03h and 0Dh-1Fh are unassigned and return
  * KOS_ENOSYS.  Console I/O is the CONSOLE protocol on the standard
  * handles, and files are typed handles behind `bind`/`call`/`unbind`
  * (the ABI's kos/object.h); the SDK builds `open`/`close` on them. */
 #define KOS_SYSCALL_EXIT          0x00u
 #define KOS_SYSCALL_GETINFO       0x04u
 #define KOS_SYSCALL_EXEC          0x05u
+#define KOS_SYSCALL_REBOOT        0x0Cu
 
 /* Address windows enforced before any caller byte is touched. */
 #define KOS_SYSCALL_WINDOW_BASE 0x0100u /* argument blocks begin here */
@@ -81,6 +82,14 @@ struct kos_exec_args {
 	uint16_t args;        /* raw tail bytes, or 0 when args_length is 0 */
 	uint16_t args_length; /* 0..KOS_STARTUP_TAIL_MAX                     */
 };
+
+/* SYS_REBOOT 0Ch - warm reboot; it does not return and takes no argument
+ * block.  The kernel masks interrupts, quiesces the interrupt sources, and
+ * writes the reset latch (`00h`: mode 00, ROM page 0, bank 0) before
+ * jumping to the ROM reset vector, so the reset copier re-copies the OS
+ * exactly as at power-on and trusts nothing in RAM.  No peripheral sees a
+ * hardware reset: every boot init programs its device from any state.
+ * The block argument is ignored. */
 
 #if defined(__SDCC)
 _Static_assert(sizeof(struct kos_exit_args) == 2,

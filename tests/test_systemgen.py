@@ -75,7 +75,8 @@ class TreeCase(unittest.TestCase):
     def system(self, name="probe", **overrides):
         document = {"schema": "kos-system-1", "name": name,
                     "drivers": [], "boot": "/system/monitor.exe",
-                    "store": ["monitor.exe"], "cflags": []}
+                    "after_exit": "monitor", "store": ["monitor.exe"],
+                    "cflags": []}
         document.update(overrides)
         path = os.path.join(self.tmp, "systems", "%s.json" % name)
         with open(path, "w") as handle:
@@ -251,6 +252,27 @@ class TestBootSetting(TreeCase):
         with self.assertRaisesRegex(systemgen.SystemError, "under /system"):
             self.run_generator(path)
 
+    def test_rejects_an_unknown_after_exit_policy(self):
+        self.driver("one")
+        path = self.system(drivers=["one"], after_exit="loop")
+        with self.assertRaisesRegex(systemgen.SystemError,
+                                    "after_exit must be one of"):
+            self.run_generator(path)
+
+    def test_rejects_a_monitor_image_the_store_cannot_serve(self):
+        self.driver("one")
+        path = self.system(drivers=["one"], boot="/system/shell.exe",
+                           store=["shell.exe"])
+        with self.assertRaisesRegex(systemgen.SystemError,
+                                    "monitor.exe is not in the system's "
+                                    "store"):
+            self.run_generator(path)
+
+    def test_accepts_a_monitor_image_that_carries_it(self):
+        self.driver("one")
+        path = self.system(drivers=["one"])
+        self.assertEqual(self.run_generator(path), 0)
+
     def test_rejects_a_boot_program_the_store_does_not_carry(self):
         self.driver("one")
         path = self.system(drivers=["one"], boot="/system/absent.exe")
@@ -380,8 +402,8 @@ class TestTheRealSystems(unittest.TestCase):
         self.assertEqual(self.generate("production"), 0)
         self.assertEqual([entry["name"] for entry in self.store()["files"]],
                          [driver + ".mod" for driver in PRODUCTION_DRIVERS] +
-                         ["drivers.man", "monitor.exe", "hwtest.exe",
-                          "xmem_selftest.exe", "xmem_child.exe",
+                         ["drivers.man", "shell.exe", "monitor.exe",
+                          "hwtest.exe", "xmem_selftest.exe", "xmem_child.exe",
                           "xmem_far.exe", "fs_selftest.exe", "fs_child.exe",
                           "far_data.exe", "banks.exe", "known.bin"])
 

@@ -34,7 +34,10 @@ from replay import RET, Replay, STACK  # noqa: E402
 import modpack  # noqa: E402
 
 STEP_LIMIT = 60000000
-SCRATCH_SIZE = 0x200      # host scratch is derived per image in setUp
+# The host scratch is the free window run above the linked image (derived
+# per image in setUp).  What the replays here put in it: a request
+# structure at +0, its result at +0x40, and a lookup name at +0x100.
+SCRATCH_USE = 0x100 + 0x20
 
 ROMFS_PAGE_WINDOW = 0xC000
 ROMFS_FIRST_PAGE = 2
@@ -93,16 +96,17 @@ class RomfsSimBase(Replay, unittest.TestCase):
         self.scratch = self._derive_scratch()
 
     def _derive_scratch(self):
-        """A free window address above the linked cold data.
+        """The first free window byte above the linked cold data.
 
         The host scratch cannot use a fixed address: the window is
-        derived.  It sits above the cold data run and below the common
-        region, inside the mode-11 window the cold code writes."""
+        derived, and the acceptance images fill it to within a few
+        hundred bytes of the common boundary.  Nothing here needs an
+        aligned scratch (every access is byte-wise), so it starts at the
+        first free byte and the check covers the replays' own uses."""
         geometry = self.geometry()
-        end = (geometry["KOS_WINDOW_DATA_BASE"] +
-               geometry["KOS_WINDOW_DATA_SIZE"])
-        scratch = (end + 0x1FF) & ~0x1FF
-        self.assertLessEqual(scratch + SCRATCH_SIZE, 0xE000,
+        scratch = (geometry["KOS_WINDOW_DATA_BASE"] +
+                   geometry["KOS_WINDOW_DATA_SIZE"])
+        self.assertLessEqual(scratch + SCRATCH_USE, 0xE000,
                              "scratch %04X does not fit the window"
                              % scratch)
         return scratch

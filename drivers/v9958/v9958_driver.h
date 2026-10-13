@@ -199,6 +199,10 @@ struct v9958_state {
 	uint8_t out_run_count;
 	uint8_t out_run_col;     /* origin cell of the pending run      */
 	uint8_t out_run_row;
+
+	/* --- exclusive handle (the console's restore contract) --- */
+	uint8_t exclusive;       /* a program holds the object      */
+	uint16_t dropped;        /* terminal bytes dropped while held */
 };
 
 /* Internal result convention of the bring-up chain. */
@@ -206,9 +210,14 @@ struct v9958_state {
 #define V9958_FAIL (-1)
 
 /* The shared display bring-up (full initialization incl. the font
- * upload), used by the boot segment's initial pass and by the run-time
- * KVIDEO_RESET.  Returns ZDRIVER_OK or ZDRIVER_FAIL. */
+ * upload), used by the boot segment's initial pass.  Returns ZDRIVER_OK
+ * or ZDRIVER_FAIL. */
 int v9958_display_bringup(void);
+
+/* The run-time display reset: the bring-up chain again, with the terminal
+ * defaults first.  KVIDEO_RESET, KVIDEO_OP_RESET and the exclusive
+ * handle's release all run it.  Returns 0 or -KOS_ENODEV. */
+int v9958_display_reset(void);
 
 /* The boot-tier direct font source: the boot entry leaves the font's
  * bank-6 address here for the initial upload; the driver init clears it

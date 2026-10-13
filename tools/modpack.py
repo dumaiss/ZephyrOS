@@ -115,8 +115,13 @@ MAX_ENDPOINTS = 8
 MAX_DEPENDENCIES = 8
 MAX_PUBLICATIONS = 12
 MAX_IMAGES = 8
-# Endpoint flags: bit 0 is the re-entrancy declaration (KOS_IPC_EP_REENTRANT).
+# Endpoint flags: bit 0 is the re-entrancy declaration (KOS_IPC_EP_REENTRANT)
+# and bit 1 the release declaration (MOD_EP_RELEASE): the manifest's
+# `"release": true` asks the nucleus to tell the endpoint when a handle on
+# one of its objects is released.
 EP_REENTRANT = 0x01
+EP_RELEASE = 0x02
+EP_FLAGS = EP_REENTRANT | EP_RELEASE
 # Dependency declaration flags (the manifest's `optional`): an optional
 # dependency that no image in the set exports resolves to endpoint 0.
 DEP_OPTIONAL = 0x01
@@ -503,6 +508,10 @@ def load_driver_manifest(manifest, path, objdir):
         flags = int(endpoint.get("flags", 0))
         if flags & ~EP_REENTRANT:
             raise ModError("%s: unknown flags %02Xh" % (where, flags))
+        release = endpoint.get("release", False)
+        if not isinstance(release, bool):
+            raise ModError("%s: release must be true or false" % where)
+        endpoint["release"] = release
 
     publishes = list(manifest.get("publishes", []))
     if len(publishes) > MAX_PUBLICATIONS:
@@ -931,7 +940,8 @@ def pack_driver_manifest(manifest):
             "class": int(endpoint["class"]),
             "instance": int(endpoint["instance"]),
             "version": int(endpoint["version"]),
-            "flags": int(endpoint.get("flags", 0)),
+            "flags": int(endpoint.get("flags", 0)) |
+                     (EP_RELEASE if endpoint.get("release", False) else 0),
             "dispatch_offset": dispatch,
         })
     for dependency in manifest["depends"]:
@@ -1237,7 +1247,7 @@ def parse_container(data, source="<container>"):
         if endpoint["number"] == 0:
             raise ModError("%s: endpoint %d has number 0"
                             % (source, index))
-        if endpoint["flags"] & ~EP_REENTRANT:
+        if endpoint["flags"] & ~EP_FLAGS:
             raise ModError("%s: endpoint %d carries unknown flags %02Xh"
                             % (source, index, endpoint["flags"]))
         if endpoint["dispatch"] < hot_base or \

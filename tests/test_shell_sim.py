@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""Native shell session replay: the production image and a card.
+
+The shell is an application, and it is the production image's boot
+program: the replays type their sessions at its prompt through the
+console lane, with a card in the drive.
+
+The first session (`test_one_scripted_session`) covers the loop and the
+shell's own built-ins:
+
+* an empty line, then quotes and escapes through `echo`;
+* `cd` absolute (`/system`, `/`), relative (`SUB` on the card) and `..`,
+  with the displayed CWD in the prompt, in `pwd` and after `cd //`;
+* the `path` edit (`path /system`, `path`, and the restore);
+* a bare name found in `/system` (`hwtest`);
+* an explicit path (`/system/fs_child.exe tail-42`), the child's non-zero
+  exit status, a missing command, a wrong argument count and a line over
+  the splitter's word budget;
+* `exit 3`, which the launcher reports as the boot program's status
+  before the shell starts again.
+
+The second (`test_file_commands`) covers the file built-ins
+(`ls cat stat cp mv rm mkdir rmdir`), every write inside `/fs/SHTEST`,
+which the session creates and removes again:
+
+* `ls` of `//`, `/`, `/system`, `/dev`, a file and two arguments;
+* `mkdir`, `cp` into a directory and `cp` to a name;
+* `cat` of the copy, read back byte for byte from the card;
+* `stat` of a file and of a directory;
+* `mv` inside `/fs` (a rename) and from `/system` (a copy whose unlink
+  fails `read-only`, so the copy stays);
+* `rm` of several files, one of them missing; `rmdir` of a non-empty and
+  of an empty directory;
+* `cp` onto `/system`, refused `read-only`.
+
+The `hwtest` row runs the store's exerciser as the shell's child: the
+shell boots, so the exerciser's own two nested-exec stages fit the
+kernel's four-deep exec limit and its verdict is asserted here too.
+
+The same sessions run without a card: tests/test_boot_policy.py replays
+the card-less boot (the startup CWD branch that keeps the machine in
+`/system`, the store's listing and the `no device` messages of `ls /` and
+`mkdir /X`), which the linked-image tests (tests/test_shell.py) pinned
+while the shell itself lived on the card.
+"""
+
+import os
+import sys
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+
+import romfspack  # noqa: E402
+from replay import STEP_LIMIT  # noqa: E402
+from test_hwtest_sim import (CHUNK, KEEP_CONTENT, KEEP_NAME,  # noqa: E402
+                             STEP_BUDGET, HwtestReplay)
+
+STORE_ROMFS = os.path.join(ROOT, "build", "recovery.romfs")
+
+# The launcher's line when the boot program exits with a status.
+SHELL_EXIT = "boot: /system/shell.exe exit %d\n"
+
+
+def store_entries():
+    """The packed store's entries, keyed by name (`ls /system` order)."""
+    with open(STORE_ROMFS, "rb") as handle:
+        _header, entries = romfspack.parse_image(handle.read())
+    return {entry["name"]: entry for entry in entries}
+
+
+def store_listing():
+    """What `ls /system` prints, name and size per entry."""
+    return "".join("%s  %u\n" % (entry["name"], entry["size"])
+                   for entry in store_entries().values())
+
+
+# The card this replay loads: one file outside the directory the session
+# enters, and the directory that file creates.
+SUB_NAME = "SUB/ORIG.TXT"
+SUB_CONTENT = b"card"
+
+# One row per session line: the line, the output that follows its echoed
+# line, the marker that says the shell is ready for the next line, and
+# `long` for the one child that runs for tens of millions of steps.  The
+# marker is the last thing the console writes for the row, so matching it
+# means the whole output has been decoded.
+SESSION = (
+    # An empty line does nothing: one line end and the prompt.
+    ("", "/> ", "/> ", False),
+    # Quotes, escapes and empty words: one literal, one escaped quote,
+    # one escaped space, two empty words and one escaped backslash.
+    ("echo 'a b' \"c\\\"d\" e\\ f '' \"\" x\\\\y",
+     "a b c\"d e f   x\\y\n/> ", "/> ", False),
+    ("cd /system", "/system> ", "/system> ", False),
+    ("cd ..", "//> ", "//> ", False),
+    ("cd //", "//> ", "//> ", False),
+    ("pwd", "//\n//> ", "//> ", False),
+    ("cd /", "/> ", "/> ", False),
+    ("cd SUB", "/SUB> ", "/SUB> ", False),
+    ("cd ..", "/> ", "/> ", False),
+    ("path /system", "/> ", "/> ", False),
+    ("path", "/system\n/> ", "/> ", False),
+    ("help",
+     "built-ins: cd pwd echo path help exit reboot ls cat stat cp mv rm "
+     "mkdir rmdir\n/> ", "/> ", False),
+    ("pwd x", "usage: pwd\n/> ", "/> ", False),
+    ("cd /nope", "cd: /nope: not found\n/> ", "/> ", False),
+    ("nosuchcmd", "nosuchcmd: command not found\n/> ", "/> ", False),
+    ("echo " + " ".join("w%u" % index for index in range(16)),
+     "shell: too many arguments\n/> ", "/> ", False),
+    # A bare name found in /system: the store's exerciser starts like any
+    # other child and reports its own transcript (the verdict is asserted
+    # after the session: the shell boots, so its nested stages fit the
+    # exec limit).
+    ("hwtest", "hwtest: begin\n", "/> ", True),
+    ("/system/fs_child.exe tail-42",
+     "fs-child: stdout ok\n"
+     "fs-child: tail \"tail-42\" argc 1\n"
+     "fs-child: leaked 3 handles\n"
+     "fs-child: PASS\n[exit 42]\n/> ", "/> ", False),
+    ("path . /BIN /system", "/> ", "/> ", False),
+    ("path", ".\n/BIN\n/system\n/> ", "/> ", False),
+    ("exit 3", "boot: /system/shell.exe exit 3\n/> ", "/> ", False),
+)
+
+# The file built-ins' session: one row per line.  Every write is under
+# `/fs/SHTEST`; the card ends the session exactly as it started it.
+def file_session():
+    return (
+        ("ls //", "fs/\nsystem/\ndev/\n/> ", "/> ", False),
+        ("ls /", "KEEP.TXT  19\nSUB/\n/> ", "/> ", False),
+        ("ls /system", store_listing() + "/> ", "/> ", False),
+        ("ls /dev", "serial/\nioc\ninput/\nvideo\nconsole\n/> ", "/> ",
+         False),
+        ("ls /dev/input", "keyboard\n/> ", "/> ", False),
+        ("ls /SUB/ORIG.TXT", "ORIG.TXT  4\n/> ", "/> ", False),
+        ("ls /SUB /system", "/SUB:\nORIG.TXT  4\n/system:\n"
+         + store_listing() + "/> ", "/> ", False),
+        ("cp /SUB/ORIG.TXT", "usage: cp src dst\n/> ", "/> ", False),
+        ("cat", "usage: cat file ...\n/> ", "/> ", False),
+        ("mkdir /SHTEST", "/> ", "/> ", False),
+        ("ls /SHTEST", "/> ", "/> ", False),
+        ("cp /SUB/ORIG.TXT /SHTEST", "/> ", "/> ", False),
+        ("cp /system/known.bin /SHTEST/KNOWN.BIN", "/> ", "/> ", False),
+        ("cat /SHTEST/ORIG.TXT", "card/> ", "/> ", False),
+        ("stat /SHTEST/ORIG.TXT",
+         "/SHTEST/ORIG.TXT:\ntype: file\nattributes: 00\nsize: 4\n"
+         "mtime: 00000000\n/> ", "/> ", False),
+        ("stat /SHTEST",
+         "/SHTEST:\ntype: dir\nattributes: 00\nsize: 0\n"
+         "mtime: 00000000\n/> ", "/> ", False),
+        ("mv /SHTEST/ORIG.TXT /SHTEST/MOVED.TXT", "/> ", "/> ", False),
+        ("mv /system/known.bin /SHTEST/STORE.BIN",
+         "mv: /system/known.bin: read-only\n/> ", "/> ", False),
+        ("rm /SHTEST/MOVED.TXT /SHTEST/KNOWN.BIN /SHTEST/MISSING.TXT",
+         "rm: /SHTEST/MISSING.TXT: not found\n/> ", "/> ", False),
+        ("rmdir /SHTEST", "rmdir: /SHTEST: not empty\n/> ", "/> ", False),
+        ("rm /SHTEST/STORE.BIN", "/> ", "/> ", False),
+        ("rmdir /SHTEST", "/> ", "/> ", False),
+        ("cp /SUB/ORIG.TXT /system/X.TXT",
+         "cp: /system/X.TXT: read-only\n/> ", "/> ", False),
+        ("exit 0", "boot: /system/shell.exe exit 0\n/> ", "/> ", False),
+    )
+
+
+class ShellSession(HwtestReplay):
+    """The production image, the shell at boot and the emulated card."""
+
+    def send(self, z, line, marker, limit=STEP_LIMIT):
+        """Type one line and return the fresh visible output.
+
+        The glyph model grows in console order, so matching `marker`
+        means everything the console wrote before it has been decoded."""
+        since = len(z.glyphs)
+        start = len("".join(z.glyphs))
+        z.hid.hid_queue.extend(line.encode("ascii") + b"\r")
+        self.run_to(z, marker, limit, since=since)
+        self.pump(z)
+        return "".join(z.glyphs)[start:]
+
+    def send_long(self, z, line, marker, budget=STEP_BUDGET):
+        """Type one line whose child runs for tens of millions of steps.
+
+        The model is decoded once per chunk (the replay helpers decode it
+        once per step, which costs more than the emulation itself at this
+        length), exactly as the exerciser replay does."""
+        start = len("".join(z.glyphs))
+        z.hid.hid_queue.extend(line.encode("ascii") + b"\r")
+        steps = 0
+        while steps < budget:
+            for _ in range(CHUNK):
+                self.skip_delay(z)
+                self.feed(z)
+                z.step()
+            steps += CHUNK
+            self.pump(z)
+            if marker in "".join(z.glyphs)[start:]:
+                return "".join(z.glyphs)[start:]
+        self.fail("%r reached no output in %u steps (PC=%04X)"
+                  % (line, budget, z.pc))
+
+    def test_one_scripted_session(self):
+        z = self.start(card=True, extra_files={SUB_NAME: SUB_CONTENT})
+        peer = z.ioc_peer
+
+        for line, output, marker, long in SESSION:
+            if long:
+                fresh = self.send_long(z, line, marker)
+            else:
+                fresh = self.send(z, line, marker)
+            self.assertIn(line + "\n" + output, fresh,
+                          "%r: %r" % (line, fresh[-160:]))
+
+        # The launcher reported the boot program's status and started it
+        # again (the production policy).
+        trace = self.trace(z)
+        self.assertIn(SHELL_EXIT % 3, trace)
+        self.assertEqual(trace.count("boot: "), 1)
+        # The exerciser reached its own verdict: every nested stage ran.
+        self.assertIn("hwtest: 3/3 PASS", trace)
+
+        # The card is exactly as the session found it, plus the empty
+        # scratch file the explicit-path child creates and leaves behind.
+        self.assertEqual({parts: bytes(content)
+                          for parts, content in peer.fs2_files.items()},
+                         {KEEP_NAME: KEEP_CONTENT,
+                          ("SUB", "ORIG.TXT"): SUB_CONTENT,
+                          ("CHILD.TMP",): b""})
+        self.assertEqual(peer.fs2_dirs, {(), ("SUB",)})
+
+    def test_file_commands(self):
+        """`ls cat stat cp mv rm mkdir rmdir` on a card.
+
+        The rows assert the console; the card is snapshotted after every
+        row, so the copy a `cat` read back, the rename inside `/fs` and
+        the copy `/system` cannot unlink are all asserted where they
+        happen, and the session's end proves the card unchanged.
+        """
+        if not os.path.exists(STORE_ROMFS):
+            raise unittest.SkipTest("recovery.romfs has not been built")
+        z = self.start(card=True, extra_files={SUB_NAME: SUB_CONTENT})
+        peer = z.ioc_peer
+
+        states = {}
+        for line, output, marker, long in file_session():
+            if long:
+                fresh = self.send_long(z, line, marker)
+            else:
+                fresh = self.send(z, line, marker)
+            self.assertIn(line + "\n" + output, fresh,
+                          "%r: %r" % (line, fresh[-200:]))
+            states[line] = ({parts: bytes(content)
+                             for parts, content in peer.fs2_files.items()},
+                            set(peer.fs2_dirs))
+
+        # The launcher reported the boot program's status and started it
+        # again (the production policy).
+        trace = self.trace(z)
+        self.assertIn(SHELL_EXIT % 0, trace)
+        self.assertEqual(trace.count("boot: "), 1)
+
+        # `cat` read the copy of the card's text file back, byte for
+        # byte (the row above holds its console output).
+        self.assertEqual(states["cat /SHTEST/ORIG.TXT"][0]
+                         [("SHTEST", "ORIG.TXT")], SUB_CONTENT)
+
+        # `cp` to a name copied the store's file whole: the `cat` above
+        # proves the text path, this proves the bytes.
+        known = store_entries()["known.bin"]["payload"]
+        self.assertEqual(
+            states["cp /system/known.bin /SHTEST/KNOWN.BIN"][0]
+            [("SHTEST", "KNOWN.BIN")], known)
+
+        # `mv` inside `/fs` renamed: one name gone, the other there.
+        renamed, _dirs = states["mv /SHTEST/ORIG.TXT /SHTEST/MOVED.TXT"]
+        self.assertIn(("SHTEST", "MOVED.TXT"), renamed)
+        self.assertNotIn(("SHTEST", "ORIG.TXT"), renamed)
+
+        # `mv` from `/system` copied (the store is read-only, so the
+        # source's unlink was refused) and kept the copy: same bytes, and
+        # the row above reported `read-only`.
+        moved, _dirs = states["mv /system/known.bin /SHTEST/STORE.BIN"]
+        self.assertEqual(moved[("SHTEST", "STORE.BIN")], known)
+
+        # The card is exactly as the session found it: `/SHTEST` and
+        # everything in it is gone, and the source is untouched.
+        self.assertEqual({parts: bytes(content)
+                          for parts, content in peer.fs2_files.items()},
+                         {KEEP_NAME: KEEP_CONTENT,
+                          ("SUB", "ORIG.TXT"): SUB_CONTENT})
+        self.assertEqual(peer.fs2_dirs, {(), ("SUB",)})
+
+
+if __name__ == "__main__":
+    unittest.main()

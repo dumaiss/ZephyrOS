@@ -323,7 +323,8 @@ uint8_t process_active_count(void)
 /* Banks in the FREE state of architecture 4.8: neither held by a table
  * entry (primary) nor carrying a live auxiliary slot.  A reservation
  * (`process_bank_reserve`) is a hold for a future primary allocation, not
- * a bank state, so it does not subtract here.  Reported at boot. */
+ * a bank state, so it does not subtract here.  The subsystem acceptance
+ * test reads it after every lifecycle case. */
 uint8_t process_free_banks(void)
 {
 	uint8_t bank;

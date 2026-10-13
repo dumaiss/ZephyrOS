@@ -122,11 +122,21 @@ meaning, creation, mutation, enumeration and the backend state below
   reopens the directory and skips to it.
 
 **FS2 commands** (private to the driver): `CAPS` 30h, `GENERATION` 31h,
-`ROOT` 33h, `PUSH` 34h, `OPEN_RO` 35h, `READ` 36h, `CLOSE` 37h, `OPENDIR`
+`RESET` 32h, `ROOT` 33h, `PUSH` 34h, `OPEN_RO` 35h, `READ` 36h, `CLOSE` 37h,
+`OPENDIR`
 38h, `READDIR` 39h, `CLOSEDIR` 3Ah, `STAT` 3Bh, `OPEN_RW` 3Dh, `WRITE` 3Eh,
 `SYNC` 3Fh, `TRUNCATE` 40h, `UNLINK` 41h, `RENAME` 42h, `MKDIR` 43h,
 `RMDIR` 44h, and `XFER_STATUS` 06h for bulk DONE. FS2 tokens never leave the
 driver: a bound file's identity is its slot index plus one.
+
+**Bring-up resets the controller's contexts.** The MCU owns its file and
+directory slots, and they outlive the Z80 side: a warm reboot (`docs/abi.md`
+section 5.5) leaves the controller holding every slot a program opened when
+the machine restarted. The driver's init therefore sends `RESET` — the same
+command a media change answers, which closes every context, advances the
+generation and resets the resolver — before it reads `CAPS`, so a boot
+starts from the state `CAPS` describes rather than from whatever the
+previous boot left open.
 
 **Status mapping.**
 

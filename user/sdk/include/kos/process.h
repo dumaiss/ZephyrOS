@@ -24,17 +24,23 @@
  * filesystem acceptance program checks version 1 and an empty tail). */
 struct kos_startup *startup(void);
 
-/* Split `tail` in place into whitespace-separated words and store up to
- * `max` pointers in `argv`; returns the total word count.  Spaces/tabs
- * separate words; a double quote toggles a quoted section whose spaces
- * are literal and whose quotes are removed; adjacent runs join; an
- * unterminated quote runs to the end; an empty quoted word is an empty
- * argument.  See docs/exe-format.md section 5. */
+/* Split `tail` in place into words and store up to `max` pointers in
+ * `argv`; returns the total word count.  Spaces and tabs separate words;
+ * a single quote makes everything up to the next one literal; a double
+ * quote does the same except that `\"` and `\\` are escapes; outside
+ * quotes `\x` is a literal `x`; adjacent runs join into one word, `''`
+ * and `""` are one empty word, and an unterminated quote runs to the end
+ * of the tail.  See docs/exe-format.md section 5. */
 int splitargs(char *tail, char **argv, int max);
 
 /* Run `path` synchronously with the raw argument tail `args` (NULL or ""
  * for none; over 125 bytes is refused locally with -KOS_EINVAL).
  * Returns the child's u16 exit status or -errno (docs/abi.md). */
 int run(const char *path, const char *args);
+
+/* Warm reboot: the kernel masks interrupts, quiesces the interrupt sources
+ * and writes the reset latch, so the ROM reset vector re-copies the OS
+ * exactly as at power-on.  Does not return. */
+void reboot(void);
 
 #endif /* KOS_SDK_PROCESS_H */

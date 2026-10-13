@@ -175,6 +175,8 @@ SYSTEM_SUFFIX.nucleus := -nucleus-selftest
 SYSTEM_SUFFIX.ns := -ns-selftest
 SYSTEM_SUFFIX.xmem := -xmem-selftest
 SYSTEM_SUFFIX.helloworld := -helloworld
+SYSTEM_SUFFIX.boot-missing := -boot-missing-selftest
+SYSTEM_SUFFIX.boot-corrupt := -boot-corrupt-selftest
 # The image-name suffix, after the table above: an immediate assignment
 # cannot see the rows that follow it.
 PK_SUFFIX := $(SYSTEM_SUFFIX.$(SYSTEM))
@@ -222,6 +224,10 @@ SYSTEM_VFS_WS_GUARD.ns := 1
 # the boot must stop explicitly on the early console (5.3) instead of
 # falling back.
 SYSTEM_OMIT.console-serial-missing := --omit-image console-serial
+# The missing-boot-program store: the boot setting names shell.exe and the
+# packed store does not carry it, so the launcher's failure path falls back
+# to the monitor.
+SYSTEM_OMIT.boot-missing := --omit-store shell.exe
 # The generator's own flags, after the table above.
 SYSTEM_GEN_FLAGS := $(SYSTEM_OMIT.$(SYSTEM))
 
@@ -387,7 +393,7 @@ $(BUILD)/konaos.probe.ihx $(BUILD)/konaos.probe.map: \
 	smoke-hardware-hwtest \
 	smoke-hardware-subsystem \
 	smoke-hardware-console-integration smoke-hardware-console-serial \
-	smoke-hardware-fs
+	smoke-hardware-fs smoke-hardware-shell
 
 all: $(IMAGE) $(MAME_IMAGE)
 
@@ -926,6 +932,20 @@ $(eval $(call exe_program,monitor,user/monitor,\
 	hexdump.c status.c,\
 	STACK=512,STAGE=1,INCLUDES=user/sdk/include/kos))
 
+# The native shell: `/system/shell.exe`, the production boot program and
+# an ordinary SDK program with no far code.  STAGE=1 puts the packed
+# program where a system file's store consumes it, beside its monitor.
+$(eval $(call exe_program,shell,user/shell,\
+	main.c parse.c path.c lookup.c builtin.c fscmd.c,STACK=512,STAGE=1))
+
+# The device-release outcome program: tests/test_device_release.py starts
+# it from the monitor or the shell with one mode tail.  It holds the card
+# copy, so it is named on the default target beside the shell.
+$(eval $(call exe_program,devtest,tests/device,\
+	devtest.c,STACK=256,INCLUDES=user/sdk/include/kos))
+
+all: $(EXE_USER_ROOT)/devtest.exe
+
 $(eval $(call exe_program,exetest,tests/target/process,\
 	exetest.c exetest_sp.asm,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include))
@@ -1177,7 +1197,10 @@ $(MODULES)/init_fail.rel: tests/target/console/init_fail.c \
 BOOT_PROGRAM_H := $(BUILD)/boot_program.h
 
 $(BOOT_PROGRAM_H): $(SYSTEM_STAMP)
-	printf '%s\n' '#define KOS_BOOT_PROGRAM "$(KOS_BOOT_PROGRAM)"' > $@
+	printf '%s\n' \
+	    '#define KOS_BOOT_PROGRAM "$(KOS_BOOT_PROGRAM)"' \
+	    '#define KOS_BOOT_AFTER_MONITOR $(if $(filter monitor,$(KOS_BOOT_AFTER_EXIT)),1,0)' \
+	    > $@
 
 $(BUILD)/main.rel: $(BOOT_PROGRAM_H)
 
@@ -1298,8 +1321,9 @@ check:
 # --- subsystem acceptance image ----------------------------------------------
 # One current-boot-path image carries the mechanism selftests: the syscall
 # gate and the IRQ executive (early hook), then the ROMFS reader and the
-# process/EXE lifecycle (late hook), and finally the monitor launcher's
-# scripted session.  The declared boot set is the SIO serial driver plus
+# process/EXE lifecycle (late hook), and finally the launcher's monitor,
+# started once the program's own session ends.  The declared boot set is
+# the SIO serial driver plus
 # the console driver that composes it, placed by the resident loader.
 
 subsystem-selftest:
@@ -1390,12 +1414,14 @@ v9958-test: $(MODULES)/v9958.mod $(MODULES)/v9958-6x8.font
 # --- console integration acceptance and fallback matrix --------------
 # console-integration-selftest is the final acceptance image: the full production stack
 # plus the integration target diagnostic, the IOC, HID and V9958 device
-# diagnostics and the unchanged monitor
-# launcher.  tests/test_console_acceptance.py replays the production bytes
+# diagnostics, the shell boot program and the launcher that starts the
+# monitor once that program's session ends.
+# tests/test_console_acceptance.py replays the production bytes
 # (build/konaos.bin) and these bytes: boot order, binding, IOC
 # command/status/bulk sequencing, HID queue traffic, the V9958 trace,
 # the split console, the ESC c display reset, the scripted monitor session
-# with two exit/relaunch cycles, post-fault recovery and the malformed-call
+# with the exit line and the launcher's own monitor, post-fault recovery
+# and the malformed-call
 # invariants; test_ioc_sim.py, test_hid_sim.py and test_v9958_sim.py
 # replay the same image for their device diagnostics and the console
 # session.
@@ -1529,6 +1555,19 @@ nucleus-selftest: all
 	$(PYTHON) -m unittest discover -s tests -p 'test_nucleus_sim.py' -v
 	@echo "nucleus image: build-nucleus-selftest/konaos-nucleus-selftest.bin"
 
+# Launcher-failure images: boot-missing names a store file it does not
+# carry, boot-corrupt names a malformed EXE container.  Both must report
+# the failed line and end at the monitor.
+
+boot-fallback-selftest:
+	$(MAKE) BUILD=build-boot-missing-selftest SYSTEM=boot-missing \
+		build-boot-missing-selftest/konaos-boot-missing-selftest.bin
+	$(MAKE) BUILD=build-boot-corrupt-selftest SYSTEM=boot-corrupt \
+		build-boot-corrupt-selftest/konaos-boot-corrupt-selftest.bin
+	$(PYTHON) -m unittest discover -s tests -p 'test_boot_policy.py' -v
+	@echo "missing-boot image: build-boot-missing-selftest/konaos-boot-missing-selftest.bin"
+	@echo "corrupt-boot image: build-boot-corrupt-selftest/konaos-boot-corrupt-selftest.bin"
+
 # SDK helloworld demo image: the production boot path
 # in its own build directory (build-helloworld) with the SDK hello demo
 # added to the recovery manifest, booted as /system/hello.exe.  This is the
@@ -1559,11 +1598,16 @@ helloworld-image: all
 #   smoke-hardware-console-integration             build-console-integration-selftest/konaos-console-integration-selftest.bin  make console-integration-selftest
 #   smoke-hardware-console-serial      build-console-serial-selftest/konaos-console-serial-selftest.bin  make console-serial-selftest
 #   smoke-hardware-fs             build-fs-selftest/konaos-fs-selftest.bin  make fs-selftest
+#   smoke-hardware-shell          build-console-serial-selftest/konaos-console-serial-selftest.bin  make console-serial-selftest
 #
-# `smoke-hardware-hwtest` drives the production image's feature exerciser
-#: the tool types `X /system/hwtest.exe` over this lane
-# - the production monitor polls the serial object for commands - and reads
-# the stage lines and the verdict, run once with a card and once without.
+# `smoke-hardware-hwtest` drives the production image's feature exerciser:
+# the tool types `hwtest` at the shell over this lane (the typed bytes reach
+# the console through the MCU) and reads the stage lines and the verdict,
+# run once with a card and once without.
+#
+# `smoke-hardware-shell` drives the whole session on the serial production
+# image: the prompt, `pwd`, `ls /system`, `hwtest` and `exit` with the
+# launcher's relaunch line and the prompt that follows it.
 #
 # `make hardware-images` builds every image the smoke modes need.  The
 # images wait for the tool's host-sync sequence, so start the smoke tool and
@@ -1611,3 +1655,7 @@ smoke-hardware-console-serial:
 smoke-hardware-fs:
 	@$(call smoke_preflight,build-fs-selftest/konaos-fs-selftest.bin,fs-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode fs --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))
+
+smoke-hardware-shell:
+	@$(call smoke_preflight,build-console-serial-selftest/konaos-console-serial-selftest.bin,console-serial-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode shell --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))

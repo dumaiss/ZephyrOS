@@ -79,6 +79,32 @@
 /* The instance every device-facing driver registers (one instance). */
 #define KOS_CLASS_INSTANCE 0u
 
+/* --- common operations --------------------------------------------------
+ *
+ * Every endpoint answers these two numbers, above every class operation
+ * number.  They carry the exclusive-handle contract of architecture 4.9:
+ *
+ *   KOS_OP_ACQUIRE (FEh)  the nucleus is about to bind one of the
+ *                         endpoint's objects exclusively.  arg0 = the
+ *                         object identity the bind named.  The driver
+ *                         reports 0, or -KOS_EBUSY when another handle
+ *                         already holds that object exclusively; any other
+ *                         negative answer fails the bind with that error.
+ *   KOS_OP_RELEASE (FFh)  a handle on one of the endpoint's objects went
+ *                         away - unbound by its owner or released by a
+ *                         process exit.  arg0 = the object, arg1 = 1 when
+ *                         that handle was the exclusive one.  The driver
+ *                         restores what the handle took over; the result
+ *                         is ignored.
+ *
+ * Only an endpoint whose image declared MOD_EP_RELEASE (the manifest's
+ * `"release": true`) is sent RELEASE, so a driver that owns no restoreable
+ * hardware state pays nothing for the contract.  ACQUIRE reaches every
+ * endpoint, because the exclusive answer is the driver's own.
+ */
+#define KOS_OP_ACQUIRE 0xFEu
+#define KOS_OP_RELEASE 0xFFu
+
 /* --- console driver (class KOS_CLASS_CONSOLE) ---------------------------
  *
  * The console composes the boot's input and output drivers (HID or SIO
@@ -98,12 +124,19 @@
  *                          The single-byte form the SDK uses for
  *                          putchar and the nucleus uses to prove the
  *                          driver from a call with no caller buffer.
+ *   KCONSOLE_OP_RESET (5)  no payload: reset the terminal to its start
+ *                          state - the output dependency's own reset
+ *                          (KVIDEO_OP_RESET) plus an empty input queue -
+ *                          so the next program starts on a clean screen
+ *                          with nothing typed for its predecessor left to
+ *                          read.  Returns 0 or a negative error.
  */
 #define KCONSOLE_OP_WRITE 0u
 #define KCONSOLE_OP_READ  1u
 #define KCONSOLE_OP_GETC  2u
 #define KCONSOLE_OP_POLL  3u
 #define KCONSOLE_OP_PUTC  4u
+#define KCONSOLE_OP_RESET 5u
 
 /* --- HID input driver (class KOS_CLASS_HID) -----------------------------
  *
@@ -145,15 +178,22 @@
  *                        the bytes to the terminal parser and returns
  *                        the bytes consumed.
  *   KVIDEO_OP_PUTC  (2)  arg0 = byte: one terminal byte; returns 0.
+ *   KVIDEO_OP_RESET (3)  the full display re-init as its own operation,
+ *                        so the console reset reaches it without the
+ *                        native-operation wrapper: every driver-owned
+ *                        register, selector, palette entry and VRAM asset
+ *                        is rewritten from any state.  No payload;
+ *                        returns 0 or a negative error.
  *
  * KVIDEO_RESET re-establishes every driver-owned state, including the
  * font and atlas upload; the driver reads the font from its own bulk
  * data through the nucleus bulk copy (the boot/bulk tier is not mapped
- * in the driver window).
+ * in the driver window).  It is the same chain KVIDEO_OP_RESET runs.
  */
 #define KVIDEO_OP_SEND  0u
 #define KVIDEO_OP_WRITE 1u
 #define KVIDEO_OP_PUTC  2u
+#define KVIDEO_OP_RESET 3u
 
 /* The native VIDEO operations (the KVIDEO_OP_SEND argument; exact values,
  * not Virtual Drip packet numbers). */

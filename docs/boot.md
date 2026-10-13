@@ -103,10 +103,22 @@ Each line ends with CRLF. Then `kernel_main()`:
    records, runs its boot entry once and its hot init once. The SIO driver
    loads first, so a later failure still has the serial console. A driver
    failure is a boot failure on the early console.
-4. **The boot launcher** runs the configured boot program (the system
-   file's `boot`, compiled in through the generated `boot_program.h`),
-   prints its exit status, and runs it again after every normal exit. A
-   launch failure names the path on the early console and halts.
+4. **The boot launcher** resets the console
+   (`KCONSOLE_OP_RESET`: terminal defaults, a clean screen, input dropped)
+   and runs the configured boot program (the system file's `boot`,
+   compiled in through the generated `boot_program.h`). The system file's
+   `after_exit` setting decides what follows a normal exit:
+
+   | event | action |
+   |---|---|
+   | the boot program exits with a status | print `boot: <path> exit <n>`; `relaunch` starts it again, `monitor` starts `/system/monitor.exe` |
+   | the run cannot start (missing, rejected, fault) | print `boot: <path> failed <code>` and start `/system/monitor.exe` |
+   | the monitor exits | start the boot program again |
+   | the monitor itself cannot start | the controlled halt |
+
+   Production boots the shell and relaunches it; the acceptance images run
+   their program once and end at the monitor. A warm reboot re-enters this
+   sequence at step 1 with the console reset.
 
 Acceptance images may add test code at a single marked seam in this
 sequence (`TEST-ONLY HOOK`); production compiles none of it.
@@ -191,12 +203,13 @@ timeout and checks the transcript of one image:
 
 | command | image | checks |
 |---|---|---|
-| `make smoke-hardware` | production `build/konaos.bin` | banner, drivers, monitor prompt |
-| `make smoke-hardware-hwtest` | production | runs `X /system/hwtest.exe`, checks every stage |
+| `make smoke-hardware` | production `build/konaos.bin` | banner, drivers, shell prompt |
+| `make smoke-hardware-hwtest` | production | types `hwtest` at the shell, checks every stage |
 | `make smoke-hardware-subsystem` | `subsystem-selftest` | the subsystem acceptance |
 | `make smoke-hardware-console-integration` | `console-integration-selftest` | the console integration acceptance |
 | `make smoke-hardware-console-serial` | `console-serial-selftest` | the serial console build |
 | `make smoke-hardware-fs` | `fs-selftest` | the file outcome image (needs a writable card) |
+| `make smoke-hardware-shell` | `console-serial-selftest` | `pwd`, `ls /system`, `hwtest`, `exit` at the shell |
 
 Each target prints the image path and its SHA-256: flash that image, start
 the tool, then press RESET (the acceptance images wait for the tool's
@@ -209,7 +222,7 @@ Manual check of a new ROM:
 1. `make clean && make check`; `build/konaos.bin` is 524,288 bytes.
 2. Program it into the ROM.
 3. Connect a 115,200 8N1 terminal to SIO channel B.
-4. Reset: the banner, the driver lines and the monitor prompt appear.
+4. Reset: the banner, the driver lines and the shell prompt appear.
 5. Record the image SHA-256, the programmer, the serial adapter and the
    transcript.
 

@@ -178,6 +178,13 @@ OWNER_FILES = (
     "user/monitor/hexdump.h",
     "user/monitor/status.c",
     "user/monitor/status.h",
+    "user/shell/main.c",
+    "user/shell/shell.h",
+    "user/shell/parse.c",
+    "user/shell/path.c",
+    "user/shell/lookup.c",
+    "user/shell/builtin.c",
+    "user/shell/fscmd.c",
     "tools/exepack.py",
     "systems/production.json",
     "systems/subsystem.json",
@@ -260,7 +267,7 @@ REQUIRED_DIRS = (
     "platform/zephyr80/public", "platform/zephyr80/private",
     "abi", "abi/kos",
     "user/sdk", "user/sdk/include", "user/sdk/src",
-    "user/helloworld", "user/monitor",
+    "user/helloworld", "user/monitor", "user/shell",
     "recovery",
     "tests/subsys", "tests/console",
     "tests/fs",
@@ -1179,6 +1186,7 @@ class TestUserSdkBoundary(unittest.TestCase):
         "tests/target/process/exetest_sp.asm",
         "tests/fs/fs_selftest.c",
         "tests/fs/fs_child.c",
+        "tests/device/devtest.c",
     )
     FORBIDDEN = (
         re.compile(r'#\s*include\s+"konaos/'),
@@ -1190,11 +1198,28 @@ class TestUserSdkBoundary(unittest.TestCase):
         re.compile(r'#\s*include\s+"vfs\.h"'),
     )
 
+    # The native shell is one of those user programs, but it sits beside
+    # the SDK, so it must also stay out of the SDK's own private header
+    # (user/sdk/src/kos_internal.h), which only the SDK sources use.
+    SHELL_DIR = "user/shell"
+    SHELL_FORBIDDEN = FORBIDDEN + (
+        re.compile(r'#\s*include\s+"kos_internal\.h"'),
+    )
+
     def _user_files(self):
         for path in _walk("user", SOURCE_SUFFIXES):
             yield path, os.path.relpath(path, ROOT).replace(os.sep, "/")
         for rel in self.EXE_FILES:
             yield os.path.join(ROOT, rel), rel
+
+    def test_shell_sources_reach_the_public_sdk_only(self):
+        for path in _walk(self.SHELL_DIR, SOURCE_SUFFIXES):
+            body = _strip_comments(path, _read(path))
+            for pattern in self.SHELL_FORBIDDEN:
+                self.assertIsNone(
+                    pattern.search(body),
+                    "%s reaches a non-public header"
+                    % os.path.relpath(path, ROOT))
 
     def test_user_sources_stay_on_the_public_boundary(self):
         violations = []

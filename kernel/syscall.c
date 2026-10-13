@@ -34,7 +34,10 @@
 #include "process.h"
 
 #include "kernel/ipc/ipc.h"
+#include "kernel/memory/banking.h"
 #include "kernel/vfs/vfs.h"
+
+#include "kernel/irq/irq_private.h"
 
 #include "syscall/diag.h"
 #include "syscall/object.h"
@@ -209,6 +212,16 @@ static void syscall_getinfo(uint16_t block)
 	syscall_success(KOS_GETINFO_SIZE);
 }
 
+/* SYS_REBOOT 0Ch.  Mask interrupts, quiesce the interrupt sources and write
+ * the reset latch; the common-resident primitive jumps to the ROM reset
+ * vector, so this body never returns and no caller block is read. */
+static void syscall_reboot(void)
+{
+	__asm__("di");
+	platform_irq_quiesce(IRQ_CTC0);
+	platform_reboot_now();
+}
+
 /* SYS_EXEC 05h.  Thin composition of the one process machinery: the
  * depth, frame-size and argument checks run before anything is allocated,
  * then process_prepare() does every fallible step with its own rollback
@@ -255,20 +268,19 @@ static void syscall_exec(uint16_t block)
 		syscall_error(KOS_EINVAL);
 		return;
 	}
-	/* The caller's path is staged in the VFS workspace's path view,
-	 * exactly as `bind` stages its own (SYS_BIND, kernel/syscall/
-	 * object.c): the address travels to a bank-6 provider in the bind
-	 * frame, and a provider reads it while the window shows its own
-	 * bank, so it must name fixed core - never the cold half (4.2's
-	 * buffer rule).  No other buffer is involved: the loader that
-	 * follows reads the bound FILE through descriptors and the common
-	 * staging block, and never touches the workspace. */
+	/* The caller's path is staged in the VFS workspace's path view by
+	 * the namespace family's own gate (`object_normalize_path`, exactly
+	 * what `bind` uses): the address travels to a bank-6 provider in
+	 * the bind frame, and a provider reads it while the window shows
+	 * its own bank, so it must name fixed core - never the cold half
+	 * (4.2's buffer rule).  No other buffer is involved: the loader
+	 * that follows reads the bound FILE through descriptors and the
+	 * common staging block, and never touches the workspace. */
 	vfs_ws_enter(VFS_WS_VIEW_PATH);
-	result = kos_object_copy_path(read_le16((const uint8_t *)block),
-				      read_le16((const uint8_t *)(block + 2)),
-				      VFS_WS_IN_A);
+	result = object_normalize_path(read_le16((const uint8_t *)block),
+				       read_le16((const uint8_t *)(block + 2)));
 	if (result == 0) {
-		result = process_prepare(VFS_WS_IN_A, pid, args,
+		result = process_prepare(VFS_WS_NORM_A, pid, args,
 					 args_length, &child);
 	}
 	vfs_ws_leave(VFS_WS_VIEW_PATH);
@@ -322,6 +334,9 @@ void kernel_syscall_dispatch(void)
 		break;
 	case KOS_SYSCALL_EXEC:
 		syscall_exec(kos_syscall_args);
+		break;
+	case KOS_SYSCALL_REBOOT:
+		syscall_reboot();
 		break;
 	case KOS_SYSCALL_DIAG_MEM_READ:
 		kos_diag_mem_read(kos_syscall_args);

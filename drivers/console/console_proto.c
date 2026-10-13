@@ -49,6 +49,34 @@ static const struct driver_api *console_api;
 static uint8_t console_in;
 static uint8_t console_out;
 
+/* Input already dequeued from the controller sits in the input driver's
+ * local ring.  The reset drains it so nothing typed for the program that
+ * is going away is read by the program that starts; the bound covers the
+ * controller's own queue plus the ring, and the first empty answer ends
+ * the drain earlier. */
+#define CONSOLE_RESET_DRAIN 160u
+
+static void console_flush_input(void)
+{
+	struct kos_ipc_frame frame;
+	uint16_t guard = CONSOLE_RESET_DRAIN;
+
+	if (console_in == 0u) {
+		return;
+	}
+	frame.flags = 0u;
+	frame.desc = KOS_IPC_DESC_NONE;
+	frame.arg0 = 0u;
+	frame.arg1 = 0u;
+	do {
+		frame.op = CONSOLE_IN_GETC;
+		if (console_api->call(console_in, CONSOLE_IN_GETC,
+				      &frame) < 0) {
+			break;
+		}
+	} while (--guard != 0u);
+}
+
 static int16_t console_forward(uint8_t handle, uint8_t op,
 			       const struct kos_ipc_frame *frame)
 {
@@ -74,6 +102,18 @@ int16_t console_driver_dispatch(struct kos_ipc_frame *frame)
 		return console_forward(console_in, CONSOLE_IN_POLL, frame);
 	case KCONSOLE_OP_PUTC:
 		return console_forward(console_out, CONSOLE_OUT_PUTC, frame);
+	case KCONSOLE_OP_RESET:
+		/* Input the program that is going away never read must not
+		 * reach the program that starts. */
+		console_flush_input();
+#if defined(KOS_CONSOLE_SERIAL)
+		/* This build has no video dependency and keeps no terminal
+		 * state of its own: the attributes, the escape parser and the
+		 * cursor belong to the video driver, which is not here. */
+		return 0;
+#else
+		return console_forward(console_out, KVIDEO_OP_RESET, frame);
+#endif
 	default:
 		return (int16_t)-KOS_EINVAL;
 	}

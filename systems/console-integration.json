@@ -9,6 +9,7 @@
     "console-v9958-hid"
   ],
   "boot": "/system/escc.exe",
+  "after_exit": "monitor",
   "store": [
     "monitor.exe",
     "escc.exe"

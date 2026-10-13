@@ -74,7 +74,14 @@ import modpack  # the protocol type names and the manifest geometry
 SYSTEM_SCHEMA = "kos-system-1"
 DRIVER_SCHEMA = "kos-driver-1"
 
-SYSTEM_FIELDS = ("schema", "name", "drivers", "boot", "store", "cflags")
+SYSTEM_FIELDS = ("schema", "name", "drivers", "boot", "after_exit",
+                 "store", "cflags")
+
+# What the launcher does after the boot program exits normally.  Every
+# image states it: `monitor` ends an acceptance image at the monitor after
+# one run, `relaunch` is the production contract.
+AFTER_EXIT_CHOICES = ("relaunch", "monitor")
+MONITOR_NAME = "monitor.exe"
 
 MANIFEST_ENTRY_SIZE = modpack.MANIFEST_ENTRY_SIZE
 
@@ -124,7 +131,8 @@ def load_system(path):
     if extra:
         raise SystemError("%s: unknown field(s): %s"
                           % (path, ", ".join(sorted(extra))))
-    for field in ("name", "drivers", "boot", "store", "cflags"):
+    for field in ("name", "drivers", "boot", "after_exit", "store",
+                  "cflags"):
         if field not in document:
             raise SystemError("%s: missing %r" % (path, field))
     name = document["name"]
@@ -147,6 +155,10 @@ def load_system(path):
         if not isinstance(entry, str) or not entry:
             raise SystemError("%s: store entries are non-empty strings"
                               % path)
+    if document["after_exit"] not in AFTER_EXIT_CHOICES:
+        raise SystemError("%s: after_exit must be one of %s, not %r"
+                          % (path, " or ".join(AFTER_EXIT_CHOICES),
+                             document["after_exit"]))
     if not isinstance(document["cflags"], list):
         raise SystemError("%s: cflags must be a list of flags" % path)
     for flag in document["cflags"]:
@@ -293,8 +305,12 @@ def resolve_set(system_name, drivers):
 # --------------------------------------------------------------------------
 
 
-def validate_boot(program, store_files, system_name):
-    """Return the validated boot program, or raise SystemError."""
+def validate_boot(program, store_files, system_name, missing=()):
+    """Return the validated boot program, or raise SystemError.
+
+    `missing` names store entries the caller deliberately left out
+    (`--omit-store`): a boot program naming one is accepted, because the
+    image exists to exercise the launcher's failure path."""
     where = "%s: boot %r" % (system_name, program)
     if not program:
         raise SystemError("%s: the boot program is empty" % system_name)
@@ -316,6 +332,8 @@ def validate_boot(program, store_files, system_name):
     if name == "" or "/" in name:
         raise SystemError("%s: must name one file directly under %s"
                           % (where, SYSTEM_ROOT))
+    if name in missing:
+        return program
     for entry in store_files:
         if entry["name"] != name:
             continue
@@ -325,6 +343,25 @@ def validate_boot(program, store_files, system_name):
         return program
     raise SystemError("%s: %s is not in the system's store"
                       % (where, name))
+
+
+def validate_after_exit(system, store_files, system_name):
+    """Check the after-exit policy against the store.
+
+    `monitor` ends the run at /system/monitor.exe, so the image must carry
+    it; `relaunch` needs nothing beyond the boot program itself."""
+    if system["after_exit"] != "monitor":
+        return
+    for entry in store_files:
+        if entry["name"] == MONITOR_NAME:
+            if entry["type"] != "EXE":
+                raise SystemError(
+                    "%s: after_exit monitor, but %s is a %s in the store"
+                    % (system_name, MONITOR_NAME, entry["type"]))
+            return
+    raise SystemError(
+        "%s: after_exit monitor, but %s is not in the system's store"
+        % (system_name, MONITOR_NAME))
 
 
 # --------------------------------------------------------------------------
@@ -351,7 +388,7 @@ def check_romfs_name(where, name):
             "characters" % (where, name, MANIFEST_ENTRY_SIZE - 1))
 
 
-def build_store(system_name, drivers, store, omit):
+def build_store(system_name, drivers, store, omit, omit_store=()):
     """The ROMFS manifest: the driver images, drivers.man, the store."""
     files = []
     seen = {}
@@ -363,6 +400,8 @@ def build_store(system_name, drivers, store, omit):
     files.append({"name": "drivers.man", "type": "DATA",
                   "path": "drivers.man"})
     for name in store:
+        if name in omit_store:
+            continue
         files.append({"name": name, "type": store_type(name), "path": name})
     for entry in files:
         folded = entry["name"].upper()
@@ -391,7 +430,7 @@ def write_resolved(build_dir, drivers):
             handle.write("\n")
 
 
-def write_system_mk(build_dir, system, drivers):
+def write_system_mk(build_dir, system, drivers, omit_store=()):
     modules = os.path.join(build_dir, "modules")
     objects = []
     for _driver_id, manifest in drivers:
@@ -406,10 +445,12 @@ def write_system_mk(build_dir, system, drivers):
         "KOS_DRIVERS := %s" % " ".join(driver_id for driver_id, _manifest
                                        in drivers),
         "KOS_BOOT_PROGRAM := %s" % system["boot"],
+        "KOS_BOOT_AFTER_EXIT := %s" % system["after_exit"],
         "KOS_SYSTEM_CFLAGS := %s" % " ".join(system["cflags"]),
         "KOS_DRIVER_OBJECTS := %s" % " ".join(objects),
         "KOS_STORE_FILES := %s" % " ".join(
-            os.path.join(modules, name) for name in system["store"]),
+            os.path.join(modules, name) for name in system["store"]
+            if name not in omit_store),
         "",
     ]
     with open(os.path.join(build_dir, "system.mk"), "w",
@@ -442,7 +483,7 @@ def write_store(build_dir, store):
 # --------------------------------------------------------------------------
 
 
-def generate(system_path, build_dir, omit=()):
+def generate(system_path, build_dir, omit=(), omit_store=()):
     system, system_name = load_system(system_path)
     root = os.path.dirname(os.path.dirname(os.path.abspath(system_path)))
     drivers = []
@@ -461,18 +502,25 @@ def generate(system_path, build_dir, omit=()):
         if driver_id not in ids:
             raise SystemError("%s: --omit-image %r names no selected driver"
                               % (system_name, driver_id))
+    for name in omit_store:
+        if name not in system["store"]:
+            raise SystemError("%s: --omit-store %r names no store entry"
+                              % (system_name, name))
     resolve_set(system_name, drivers)
-    store = build_store(system_name, drivers, system["store"], set(omit))
-    validate_boot(system["boot"], store["files"], system_name)
+    store = build_store(system_name, drivers, system["store"], set(omit),
+                        set(omit_store))
+    validate_boot(system["boot"], store["files"], system_name,
+                  missing=set(omit_store))
+    validate_after_exit(system, store["files"], system_name)
 
     os.makedirs(build_dir, exist_ok=True)
-    write_system_mk(build_dir, system, drivers)
+    write_system_mk(build_dir, system, drivers, set(omit_store))
     write_store(build_dir, store)
     write_boot_manifest(build_dir, drivers)
     write_resolved(build_dir, drivers)
-    print("systemgen: %s: %d drivers, %d store files, boot %s"
+    print("systemgen: %s: %d drivers, %d store files, boot %s after-exit %s"
           % (system_name, len(drivers), len(store["files"]),
-             system["boot"]))
+             system["boot"], system["after_exit"]))
     return 0
 
 
@@ -486,9 +534,15 @@ def main(argv=None):
                         help="leave this selected driver's image out of the "
                              "store while its name stays in the boot "
                              "manifest")
+    parser.add_argument("--omit-store", action="append", default=[],
+                        metavar="NAME",
+                        help="leave this store entry out of the packed "
+                             "store; a boot program naming it is accepted, "
+                             "so the launcher's failure path has a store")
     args = parser.parse_args(argv)
     try:
-        return generate(args.system, args.build, args.omit_image)
+        return generate(args.system, args.build, args.omit_image,
+                        args.omit_store)
     except SystemError as error:
         print("systemgen: error: %s" % error, file=sys.stderr)
         return 1

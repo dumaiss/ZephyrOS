@@ -82,7 +82,7 @@ TRANSCRIPT = [
     "ns: /system entry drivers.man\r\n",
     "ns: /system entry ns.exe\r\n",
     "ns: /system entry nschild.exe\r\n",
-    "ns: /system 6 entries\r\n",
+    "ns: /system 7 entries\r\n",
     "ns: cwd /system\r\n",
     "ns: cwd /dev\r\n",
     "nschild: stdout ok\r\n",
@@ -103,6 +103,11 @@ MAN_RECORD = 24
 MAN_SIZE = MAN_RECORD * 3
 
 
+# The launcher's line when the client - the image's boot program - exits
+# with its verdict: the monitor follows it (the acceptance policy).
+EXIT_LINE = b"boot: /system/ns.exe exit 0\r\n"
+
+
 class NsSelftestReplay(Replay, unittest.TestCase):
     IMAGE_SUBDIR = IMAGE_SUBDIR
     IMAGE_NAME = IMAGE_NAME
@@ -111,7 +116,7 @@ class NsSelftestReplay(Replay, unittest.TestCase):
         self.load_image()
 
     def boot(self, limit=STEP_LIMIT):
-        """Boot until the monitor reports the client's exit status (the
+        """Boot until the launcher reports the client's exit status (the
         verdict line arrives before it)."""
         z = self.make_cpu()
         self.start_kernel(z)
@@ -121,7 +126,7 @@ class NsSelftestReplay(Replay, unittest.TestCase):
             z.step()
             if z.halted:
                 return z
-            tail = bytes(z.sio_tx).split(b"monitor: exit status", 1)
+            tail = bytes(z.sio_tx).split(EXIT_LINE, 1)
             if len(tail) == 2 and b"\r\n" in tail[1]:
                 break
         return z
@@ -150,7 +155,7 @@ class NsSelftestReplay(Replay, unittest.TestCase):
         self.assertEqual(passed, total)
         # The namespace checks plus the CWD/inheritance outcomes.
         self.assertGreaterEqual(total, 90)
-        self.assertIn("monitor: exit status 0x0000", sio)
+        self.assertIn(EXIT_LINE.decode("ascii"), sio)
 
     def test_boot_manifest_matches_the_read(self):
         """The client read /system/drivers.man; compare what it saw with

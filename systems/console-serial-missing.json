@@ -10,6 +10,7 @@
     "iocfat"
   ],
   "boot": "/system/monitor.exe",
+  "after_exit": "monitor",
   "store": [
     "monitor.exe"
   ],

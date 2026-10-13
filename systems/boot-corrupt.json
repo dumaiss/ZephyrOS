@@ -1,0 +1,15 @@
+{
+  "schema": "kos-system-1",
+  "name": "boot-corrupt",
+  "drivers": [
+    "sio",
+    "console-serial"
+  ],
+  "boot": "/system/exe-bad-magic.exe",
+  "after_exit": "monitor",
+  "store": [
+    "monitor.exe",
+    "exe-bad-magic.exe"
+  ],
+  "cflags": []
+}

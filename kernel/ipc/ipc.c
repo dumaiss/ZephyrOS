@@ -474,6 +474,13 @@ static struct ipc_endpoint *endpoint_for(uint8_t handle)
 	return (struct ipc_endpoint *)0;
 }
 
+uint8_t ipc_endpoint_flags(uint8_t number)
+{
+	const struct ipc_endpoint *ep = endpoint_for(number);
+
+	return (ep != (const struct ipc_endpoint *)0) ? ep->flags : 0u;
+}
+
 /* Install one host-built endpoint record (architecture 5.3).  Only the
  * loader calls this, before any driver code runs; the checks protect the
  * nucleus table and the fixed driver window. */

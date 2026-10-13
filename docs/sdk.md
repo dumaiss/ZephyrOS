@@ -34,7 +34,7 @@ user/sdk/
   include/klibc/          string.h fmt.h stdarg.h
   src/crt0.asm            startup: the startup block, argv, main, exit
   src/runtime.asm         the fixed low-data area, the shared scratch, the error mapper
-  src/gate.asm            exit and getinfo gates
+  src/gate.asm            exit, getinfo and reboot gates
   src/ipcgate.asm         the call gate
   src/nsgate.asm          the bind, unbind, list and exec blocks
   src/diaggate.asm        the diagnostic gates
@@ -59,6 +59,8 @@ user/sdk/
 
 mk/kos.mk                 the program build rule (shipped in the SDK)
 user/monitor/             the monitor and its private helpers
+user/shell/               the native shell (main, parse, path, lookup,
+                          builtin)
 user/helloworld/          the demo image's Makefile and README
 ```
 
@@ -157,22 +159,25 @@ The kernel enters the program at `kos_entry` (crt0, linked first) with
 `int main(void)`.
 
 **Splitting rules** (runtime policy, not ABI): words are separated by
-spaces or tabs; a double quote toggles a quoted section whose separators
-are literal and whose quotes are removed; adjacent quoted and unquoted
-pieces join (`ab"c d"e` is one word, `abc de`); `""` is an empty argument;
-an unterminated quote runs to the end; there is no escape character.
+spaces or tabs; a single quote toggles a literal section; a double quote
+toggles a quoted section whose separators are literal and inside which
+`\"` and `\\` are escapes; outside both quotes `\x` is a literal `x`;
+adjacent pieces join (`ab"c d"e` is one word, `abc de`); `''` and `""`
+are empty arguments; an unterminated quote runs to the end.
 
-**The boot launcher runs its program again after every exit.** A program
-that is the image's boot program and exits normally is started again
-immediately, with the launcher's line between runs:
+**The boot launcher's policy follows the image's system file.** A program
+that is the image's boot program and exits normally gets one of two
+treatments, and the launcher's line precedes each:
 
 ```text
-monitor: exit status 0x0000 active 0 free-banks 6
+boot: /system/shell.exe exit 0        (production: started again)
+boot: /system/hello.exe exit 0        (an acceptance image: the monitor follows)
 ```
 
-(The label is fixed; it does not name the program.) A long run of
-identical lines is the evidence that every exit returned the process slot,
-the bank, the handles and the CWD.
+The line names the boot program and its status; a run that cannot start
+prints `boot: <path> failed <n>` and falls back to the monitor instead. In
+every case an exit returns the process slot, the bank, the handles and the
+CWD before the next program starts.
 
 ## 5. `klibc`
 
@@ -226,6 +231,7 @@ returns the result or `-errno`.
 
 ```c
 void exit(int status);                                  /* does not return */
+void reboot(void);                                      /* does not return */
 int  getinfo(struct kos_info_record *record);
 int  console_write(const char *buf, unsigned int len);  /* CONSOLE WRITE   */
 int  console_read(char *buf, unsigned int len);         /* READ, no wait   */
@@ -394,7 +400,7 @@ needed.
 | anything | `kos_crt0`, `kos_runtime`, `args` |
 | `console_write`, `console_read`, `console_poll`, `putchar` | `console_proto`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `console_puts`, `getchar`, `console_readline` | `console_io`, plus the above |
-| `exit`, `getinfo` | `kos_gate` |
+| `exit`, `getinfo`, `reboot` | `kos_gate` |
 | `open`, `read`, ... | `fs`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `bind`, `call`, `unbind`, `list`, `chdir`, `getcwd` | `ipc`, `kos_ipcgate`, `nsgate` |
 | `run` | `exec`, `ipc`, `kos_ipcgate`, `nsgate` |
@@ -446,14 +452,19 @@ make helloworld-image
 
 builds a separate tree (`build-helloworld/`) from `systems/helloworld.json`,
 whose boot program is `/system/hello.exe`. Nothing else differs from
-production. On a board the transcript is the repeating pair
+production. On a board the transcript is the demo's greeting once, the
+launcher's line and then the monitor the image's acceptance policy hands
+the machine to:
 
 ```text
 Hello, KonaOS!
-monitor: exit status 0x0000 active 0 free-banks 6
+boot: /system/hello.exe exit 0
+KonaOS native monitor
+Z80>
 ```
 
-because the launcher runs the program again after each exit (section 4).
+because an acceptance image's `after_exit` is `monitor` (section 4), while
+production's `relaunch` starts the shell again.
 
 The examples:
 

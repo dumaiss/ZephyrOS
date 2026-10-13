@@ -5,7 +5,7 @@
  * that diagnostic a *bank-7 client* of the resident drivers: it holds no
  * descriptor and cannot use `move`, so it drives each protocol through
  * the descriptor-less forms plus the staged buffers that drivers name in
- * their replies (architecture 4.9, docs/devices.md section 12).
+ * their replies (architecture 4.9, docs/devices.md section 13).
  *
  * This helper is the one place that knows those gymnastics:
  *

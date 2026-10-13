@@ -97,7 +97,10 @@ endpoint  class:u8 instance:u8 version:u8 flags:u8
 `abi/kos/protocol.h`; a different numbering from the protocol types a
 `bind` returns); `version` is the image's own protocol version, kept
 in the record but never checked at boot; `flags` bit 0 is the
-re-entrancy declaration (`KOS_IPC_EP_REENTRANT`); `number` is the
+re-entrancy declaration (`KOS_IPC_EP_REENTRANT`) and bit 1 the release
+declaration (`MOD_EP_RELEASE`, the manifest's `"release": true`, which
+makes the nucleus notify the endpoint when a handle on one of its objects
+is released); `number` is the
 host-assigned endpoint number (`1..N` across the load order) and
 `dispatch` the absolute hot-tier dispatch entry inside the hot image.
 
@@ -264,8 +267,8 @@ rebuilt alone still matches its siblings.  `validate` and `dump` both run
 
 A manifest names its objects, its `init` entry, its `segments` (role,
 `image_areas`, `bss_areas`, optional boot `entry`), its `endpoints`
-(`class`, `instance`, `version`, `dispatch` symbol, `flags`), its
-`publishes` rows and its symbolic `depends`:
+(`class`, `instance`, `version`, `dispatch` symbol, `flags` and the
+boolean `release`), its `publishes` rows and its symbolic `depends`:
 
 ```json
 {
@@ -281,7 +284,7 @@ A manifest names its objects, its `init` entry, its `segments` (role,
   ],
   "endpoints": [
     {"class": 5, "instance": 0, "version": 1,
-     "dispatch": "ioc_driver_dispatch", "flags": 0}
+     "dispatch": "ioc_driver_dispatch", "flags": 0, "release": false}
   ],
   "publishes": [],
   "depends": []

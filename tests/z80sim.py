@@ -81,6 +81,7 @@ class IocCommandPeer:
     # --- FS2 filesystem driver ----------------------
     CMD_FS2_CAPS = 0x30
     CMD_FS2_GENERATION = 0x31
+    CMD_FS2_RESET = 0x32
     CMD_FS2_ROOT = 0x33
     CMD_FS2_PUSH = 0x34
     CMD_FS2_OPEN_RO = 0x35
@@ -99,6 +100,7 @@ class IocCommandPeer:
     CMD_FS2_MKDIR = 0x43
     CMD_FS2_RMDIR = 0x44
     RSP_FS2_READ = 0xB6
+    RSP_FS2_RESET = 0xB2
     RSP_FS2_WRITE = 0xBE
     ST_FS2_OK = 0x00
     ST_FS2_NOT_FOUND = 0x40
@@ -723,6 +725,13 @@ class IocCommandPeer:
         if rtype == self.CMD_FS2_CAPS:
             return self._fs2_caps(seq)
         if rtype == self.CMD_FS2_GENERATION:
+            return self._fs2_reply(rtype, seq, self.ST_FS2_OK,
+                                   self.fs2_generation.to_bytes(4, "little"))
+        if rtype == self.CMD_FS2_RESET:
+            # The deployed firmware's handler_fs2_reset: drop every open
+            # context, advance the generation (a media change to every
+            # holder), reset the resolver and answer the new generation.
+            self.fs2_bump_generation()
             return self._fs2_reply(rtype, seq, self.ST_FS2_OK,
                                    self.fs2_generation.to_bytes(4, "little"))
         if rtype == self.CMD_FS2_ROOT:

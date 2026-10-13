@@ -200,54 +200,58 @@ static void kernel_exercise_banking(void)
 
 /* --- native boot launcher -------------------------------------------
  *
- * The launcher starts the configured boot program - the ROMFS
- * `monitor.exe` by default - through its `/system` VFS path via the
- * unchanged `process_exec()` path, and re-execs it after every normal
- * exit.  `KOS_BOOT_PROGRAM` (the selected system file, systems/<name>.json)
- * selects the program: changing it (for example to a shell) is one build
- * setting plus the EXE in the system's store, with no kernel edit.
+ * The launcher starts the configured boot program - the ROMFS shell in
+ * the production images - through its `/system` VFS path via the
+ * unchanged `process_exec()` path.  `KOS_BOOT_PROGRAM` (the selected
+ * system file, systems/<name>.json) selects the program, and
+ * `after_exit` selects what happens after a normal exit: `relaunch`
+ * starts the same program again, `monitor` ends the run at
+ * `/system/monitor.exe`, which is what every acceptance image wants - one
+ * run, then a prompt.  Changing either is one build setting plus the EXE
+ * in the system's store, with no kernel edit.
  *
- * The child's exit status and the recovered process/bank counts are
- * printed after each cycle (normal console when bound, early console
- * otherwise); a launch failure names the configured path on the early
- * console and takes the controlled halt path. */
+ * Every cycle is one line: `boot: <path> exit <n>` for a normal exit and
+ * `boot: <path> failed <n>` when the program could not be run at all
+ * (missing, refused or faulty).  A failed boot program falls back to the
+ * monitor, whose own failure is the controlled halt; a monitor that exits
+ * hands the machine back to the boot program.  Both lines go through the
+ * console driver when the build has one and on the early console
+ * otherwise, like the panic path. */
 
-/* Configured boot program: tools/systemgen.py validates it against the
- * store it wrote and the build writes it into boot_program.h (the SDCC
- * 4.5.0 driver cannot take the ".exe" path through -D). */
+/* Configured boot program and after-exit policy: tools/systemgen.py
+ * validates both against the store it wrote and the build writes them
+ * into boot_program.h (the SDCC 4.5.0 driver cannot take the ".exe"
+ * path through -D). */
 static const char kernel_boot_program[] = KOS_BOOT_PROGRAM;
 
-static char *kernel_boot_put_hex16(char *out, uint16_t value)
+/* The one fallback program, fixed by the launcher policy: an image that
+ * wants it in the store lists it (tools/systemgen.py checks). */
+static const char kernel_boot_monitor[] = "/system/monitor.exe";
+
+/* Powers of ten, high to low: the kernel links no arithmetic runtime, so
+ * decimal output subtracts instead of dividing. */
+static const uint16_t kernel_boot_dec_divisors[5] = {
+	10000u, 1000u, 100u, 10u, 1u
+};
+
+static char *kernel_boot_put_dec(char *out, uint16_t value)
 {
-	static const char digits[] = "0123456789ABCDEF";
-	uint8_t shift;
+	uint8_t started = 0u;
+	uint8_t index;
 
-	for (shift = 0; shift < 16; shift += 4) {
-		*out++ = digits[(value >> (12 - shift)) & 0x0Fu];
-	}
-	return out;
-}
+	for (index = 0u; index < 5u; ++index) {
+		uint16_t divisor = kernel_boot_dec_divisors[index];
+		uint8_t digit = 0u;
 
-static char *kernel_boot_put_dec(char *out, uint8_t value)
-{
-	uint8_t hundreds = 0;
-	uint8_t tens = 0;
-
-	while (value >= 100u) {
-		value = (uint8_t)(value - 100u);
-		++hundreds;
+		while (value >= divisor) {
+			value = (uint16_t)(value - divisor);
+			++digit;
+		}
+		if (digit != 0u || started != 0u || divisor == 1u) {
+			*out++ = (char)('0' + digit);
+			started = 1u;
+		}
 	}
-	while (value >= 10u) {
-		value = (uint8_t)(value - 10u);
-		++tens;
-	}
-	if (hundreds != 0) {
-		*out++ = (char)('0' + hundreds);
-	}
-	if (hundreds != 0 || tens != 0) {
-		*out++ = (char)('0' + tens);
-	}
-	*out++ = (char)('0' + value);
 	return out;
 }
 
@@ -275,6 +279,26 @@ static int kernel_console_putc(uint8_t handle, uint8_t ch)
 	frame.flags = 0u;
 	frame.desc = KOS_IPC_DESC_NONE;
 	frame.arg0 = ch;
+	frame.arg1 = 0u;
+	return ipc_nucleus_call(handle, &frame);
+}
+
+/* Reset the console to its start state before the boot program starts:
+ * the terminal goes back to its defaults on a clean screen and no input
+ * typed for the previous program is left for the next one.  A build
+ * without a console driver has nothing to reset and says so. */
+static int kernel_console_reset(void)
+{
+	struct kos_ipc_frame frame;
+	uint8_t handle = kernel_console_handle();
+
+	if (handle == 0u) {
+		return -KOS_ENODEV;
+	}
+	frame.op = KCONSOLE_OP_RESET;
+	frame.flags = 0u;
+	frame.desc = KOS_IPC_DESC_NONE;
+	frame.arg0 = 0u;
 	frame.arg1 = 0u;
 	return ipc_nucleus_call(handle, &frame);
 }
@@ -323,48 +347,37 @@ static void kernel_boot_emit(const char *line, uint16_t length)
 	early_console_puts(line); /* line is always NUL-terminated */
 }
 
-/* Report one normal exit with the recovered counts.  A repeated identical
- * line proves the exec/exit cycle leaked no process state. */
-static void kernel_boot_report(uint16_t status)
+/* One launcher line: `boot: <path> exit <n>` or `boot: <path> failed
+ * <n>`.  The path can be as long as the setting allows, so the line is
+ * built in one buffer and emitted through the console path (every emit
+ * falls back to the early console, which needs the terminator). */
+static void kernel_boot_line(const char *program, const char *event,
+			     uint16_t value)
 {
-	char line[64];
-	static const char prefix[] = "monitor: exit status 0x";
-	static const char active[] = " active ";
-	static const char free_banks[] = " free-banks ";
+	char line[KOS_PATH_MAX + 24];
 	char *out = line;
 	const char *scan;
 
-	for (scan = prefix; *scan != '\0'; ++scan) {
+	for (scan = "boot: "; *scan != '\0'; ++scan) {
 		*out++ = *scan;
 	}
-	out = kernel_boot_put_hex16(out, status);
-	for (scan = active; *scan != '\0'; ++scan) {
+	for (scan = program; *scan != '\0'; ++scan) {
 		*out++ = *scan;
 	}
-	out = kernel_boot_put_dec(out, process_active_count());
-	for (scan = free_banks; *scan != '\0'; ++scan) {
+	for (scan = event; *scan != '\0'; ++scan) {
 		*out++ = *scan;
 	}
-	out = kernel_boot_put_dec(out, process_free_banks());
+	out = kernel_boot_put_dec(out, value);
 	*out++ = '\r';
 	*out++ = '\n';
 	*out = '\0';
 	kernel_boot_emit(line, (uint16_t)(out - line));
 }
 
-/* Launch failure: name the configured program on the early console and
- * take the controlled halt loop.  Never returns.  The path is printed in
- * pieces so the diagnostic needs no buffer as long as the setting. */
-static void kernel_boot_fail(uint16_t code)
+/* The controlled halt: the monitor itself could not be started, so no
+ * program can report anything again.  Never returns. */
+static void kernel_boot_halt(void)
 {
-	char text[5];
-	char *out = kernel_boot_put_hex16(text, code);
-
-	*out = '\0';
-	early_console_puts(kernel_boot_program);
-	early_console_puts(": launch failed 0x");
-	early_console_puts(text);
-	early_console_puts("\r\n");
 	__asm__("di");
 	for (;;) {
 		__asm__("halt");
@@ -373,14 +386,45 @@ static void kernel_boot_fail(uint16_t code)
 
 static void kernel_boot_launcher(void)
 {
+	/* Which program the next cycle runs is the whole policy state: the
+	 * boot program, or the monitor the launcher itself fell back to. */
+	const char *program = kernel_boot_program;
+
 	for (;;) {
 		uint16_t status = 0;
-		int result = process_exec(kernel_boot_program, &status);
+		int result;
 
+		/* Every start begins on a console reset: a program that
+		 * left the display reprogrammed, or input it never read,
+		 * must not shape its successor's start.  A machine with no
+		 * console driver has nothing to reset and boots as
+		 * before. */
+		(void)kernel_console_reset();
+		result = process_exec(program, &status);
 		if (result != EXE_EXEC_OK) {
-			kernel_boot_fail((uint16_t)(0u - (uint16_t)result));
+			/* The program could not be run at all: name it and
+			 * fall back to the monitor, where an owner can look
+			 * at the store.  The monitor's own failure is the
+			 * end of the line. */
+			kernel_boot_line(program, " failed ",
+					 (uint16_t)(0u - (uint16_t)result));
+			if (program != kernel_boot_program) {
+				kernel_boot_halt();
+			}
+			program = kernel_boot_monitor;
+			continue;
 		}
-		kernel_boot_report(status);
+		kernel_boot_line(program, " exit ", status);
+		if (program != kernel_boot_program) {
+			/* The fallback ran: back to the boot program. */
+			program = kernel_boot_program;
+		}
+#if KOS_BOOT_AFTER_MONITOR
+		else {
+			/* An acceptance image: one run, then the monitor. */
+			program = kernel_boot_monitor;
+		}
+#endif
 	}
 }
 #if KOS_SMOKE_HOST_SYNC

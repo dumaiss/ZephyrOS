@@ -159,11 +159,17 @@ struct vfs_handle_entry {
 	uint8_t number;   /* per-process handle number           */
 	uint8_t endpoint; /* serving endpoint (provider marker)  */
 	uint8_t object;   /* provider-private instance identity  */
-	uint8_t flags;    /* low byte of the bind flags          */
+	uint8_t flags;    /* DEVICE: VFS_HANDLE_*; FILE: KFS_O_* */
 	union {
 		struct vfs_ns_file ns;
 	} u;
 };
+
+/* The one handle-entry flag a DEVICE bind records: the caller asked for
+ * the object exclusively (KOS_BIND_EXCLUSIVE), so the release
+ * notification tells the driver it may restore the device.  A FILE
+ * handle carries the provider's own KFS_O_* bits instead. */
+#define VFS_HANDLE_EXCLUSIVE 0x80u
 
 extern struct vfs_handle_entry vfs_handles[VFS_HANDLE_MAX];
 
@@ -406,6 +412,12 @@ uint8_t vfs_path_under(const char *norm, const char *root);
 const struct vfs_ns_publication *vfs_pub_find(const char *rel);
 int vfs_device_bind(uint8_t pid, const char *rel, uint16_t flags,
 		    uint8_t *type);
+/* Tell the endpoint that owns `object` that a handle went away
+ * (KOS_OP_RELEASE), with `exclusive` 1 when it was the exclusive one.
+ * The driver's answer is ignored; an endpoint that did not declare the
+ * release notification is never called. */
+void vfs_device_notify_release(uint8_t endpoint, uint8_t object,
+			       uint8_t exclusive);
 int vfs_enum_device(uint8_t bank, const char *rel, uint16_t *cookie,
 		    uint16_t out, uint16_t out_size, uint16_t *count);
 extern uint8_t vfs_ns_pub_count;

@@ -22,6 +22,8 @@
 #include "kernel/vfs/vfs.h"
 #include "process.h"
 
+#include "mod.h"
+
 struct vfs_handle_entry vfs_handles[VFS_HANDLE_MAX];
 
 /* CWD pool: owner pid (or VFS_FD_NONE when free) plus the canonical path. */
@@ -258,10 +260,19 @@ int vfs_cwd_store(const char *norm)
 void vfs_ns_release_entry(struct vfs_handle_entry *entry)
 {
 	/* The provider release: a bound ROMFS FILE instance is the entry
-	 * itself, a `/fs` FILE instance is the driver's and device
-	 * instances are permanent (4.9). */
+	 * itself, a `/fs` FILE instance is the driver's, and a DEVICE
+	 * handle is a notification - the driver keeps the object and
+	 * restores the device the handle took over.  An endpoint only
+	 * hears about the release when its image declared it
+	 * (MOD_EP_RELEASE), so an ordinary device bind costs no call. */
 	if (entry->endpoint == VFS_NS_FS_ENDPOINT) {
 		vfs_ns_fs_release(entry->type, entry->object);
+	} else if ((ipc_endpoint_flags(entry->endpoint) &
+		    MOD_EP_RELEASE) != 0u) {
+		vfs_device_notify_release(
+			entry->endpoint, entry->object,
+			(uint8_t)((entry->flags & VFS_HANDLE_EXCLUSIVE) != 0u
+					  ? 1u : 0u));
 	}
 	vfs_handle_release(entry);
 }

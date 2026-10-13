@@ -1439,10 +1439,32 @@ static void v9958_term_set_defaults(void)
  * (they are never re-entered).
  */
 
+/* 1 while a program holds the object exclusively.  The console must not
+ * draw over the screen the holder owns, so its terminal bytes are dropped
+ * and counted; the count is the takeover's evidence, not a protocol
+ * answer. */
+static uint8_t v9958_overtaken(struct v9958_state *state, uint16_t amount)
+{
+	if (state->exclusive == 0u) {
+		return 0u;
+	}
+	if (state->dropped > (uint16_t)(0xFFFFu - amount)) {
+		state->dropped = 0xFFFFu;
+	} else {
+		state->dropped = (uint16_t)(state->dropped + amount);
+	}
+	return 1u;
+}
+
 int v9958_char_putc_worker(void *vstate, char ch)
 {
-	if (vstate == (void *)0) {
+	struct v9958_state *state = (struct v9958_state *)vstate;
+
+	if (state == (struct v9958_state *)0) {
 		return (-KOS_ENODEV);
+	}
+	if (v9958_overtaken(state, 1u) != 0u) {
+		return 0;
 	}
 	/* A standalone byte has no later flush opportunity in the console
 	 * driver, so putc completes with a visible update. */
@@ -1453,10 +1475,14 @@ int v9958_char_putc_worker(void *vstate, char ch)
 
 int v9958_char_write_worker(void *vstate, const char *buf, uint16_t len)
 {
+	struct v9958_state *state = (struct v9958_state *)vstate;
 	uint16_t i;
 
-	if (vstate == (void *)0) {
+	if (state == (struct v9958_state *)0) {
 		return (-KOS_ENODEV);
+	}
+	if (v9958_overtaken(state, len) != 0u) {
+		return (int)len; /* dropped: the caller keeps its count */
 	}
 	if (len == 0u) {
 		return 0;
@@ -1528,17 +1554,23 @@ int v9958_send(void *vstate, uint8_t operation, const void *payload,
 		if (length != 0u) {
 			return (-KOS_EINVAL);
 		}
-		/* Full reset: parser/cursor/rendition defaults, both font
-		 * atlases reloaded from ROMFS, circular bitmap cleared,
-		 * cursor re-initialized, present, display enabled. */
-		v9958_term_set_defaults();
-		if (v9958_init_display() != V9958_OK) {
-			return (-KOS_ENODEV);
-		}
-		return 0;
+		return v9958_display_reset();
 	default:
 		return (-KOS_ENOTSUP);
 	}
+}
+
+/* The run-time display reset the native KVIDEO_RESET and the console's
+ * reset both run: parser/cursor/rendition defaults, both font atlases
+ * reloaded from ROMFS, circular bitmap cleared, cursor re-initialized,
+ * present, display enabled. */
+int v9958_display_reset(void)
+{
+	v9958_term_set_defaults();
+	if (v9958_init_display() != V9958_OK) {
+		return (-KOS_ENODEV);
+	}
+	return 0;
 }
 
 /* The cold display bring-up, shared by the boot segment's initial upload

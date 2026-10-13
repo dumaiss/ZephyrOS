@@ -284,20 +284,27 @@ delivery the syscall path is free to reuse.
 
 `splitargs(char *tail, char **argv, int max)` splits the NUL-terminated
 tail in place and returns the total word count, storing at most `max`
-pointers.  The rules are runtime policy, not an ABI, and may change
-without any kernel work:
+pointers.  It is the one parser the shell and every program's startup
+share, so a child's `argv` always agrees with the words the shell ran it
+with.  The rules are runtime policy, not an ABI, and may change without
+any kernel work:
 
 - words are separated by whitespace: one or more spaces (`0x20`) or
   tabs (`0x09`); leading and trailing separators are ignored;
-- a double quote (`"`) toggles a quoted section.  Separators inside a
-  quoted section are literal; the quote characters themselves are
-  removed;
+- a single quote (`'`) toggles a literal section: separators,
+  backslashes and double quotes inside it are ordinary characters, and
+  the quotes themselves are removed;
+- a double quote (`"`) toggles a quoted section whose separators are
+  literal and whose quotes are removed.  Inside it `\"` is a `"` and
+  `\\` is a `\`; every other backslash is an ordinary character;
+- outside both quotes `\x` is a literal `x` (so `a\ b` is one word
+  containing a space), and a backslash at the end of the tail stands for
+  itself;
 - adjacent quoted and unquoted runs join into one word (so `ab"c d"e`
   is the single word `abc de`);
-- an empty quoted word (`""`) is an empty argument;
+- an empty quoted word (`''` or `""`) is an empty argument;
 - an unterminated quote runs to the end of the tail;
-- a NUL byte ends the tail; there is no escape character and no other
-  metacharacter;
+- a NUL byte ends the tail; there is no other metacharacter;
 - `argv[0]` is the first argument: the kernel does not pass a program
   name, so there is no `argv[0]` convention for it.
 

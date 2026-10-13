@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; KonaOS libkos: exit and getinfo gate wrappers.
+; KonaOS libkos: exit, getinfo and reboot gate wrappers.
 ;
 ; These two syscalls are marshalled here; console I/O is not a syscall
 ; (user/sdk/src/console_proto.c speaks the console driver protocol).  Converts the private SDCC Z80 calling
@@ -17,11 +17,13 @@
 
 	.globl _exit
 	.globl _getinfo
+	.globl _reboot
 	.globl _exe_runtime_error
 	.globl _kos_scratch
 
 SYS_EXIT    = 0x00
 SYS_GETINFO = 0x04
+SYS_REBOOT  = 0x0C
 
 	.area _CODE
 
@@ -32,6 +34,17 @@ _exit::
 	ld	hl,#_kos_scratch
 	rst	0x30
 	; SYS_EXIT never returns; trap a kernel contract violation.
+	di
+001$:
+	halt
+	jr	001$
+
+; void reboot(void);  does not return.
+_reboot::
+	ld	hl,#_kos_scratch
+	ld	a,#SYS_REBOOT
+	rst	0x30
+	; SYS_REBOOT never returns; trap a kernel contract violation.
 	di
 001$:
 	halt

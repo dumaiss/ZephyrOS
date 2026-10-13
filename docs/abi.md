@@ -89,6 +89,7 @@ part of the ABI:
 | `09h` | `NS_ENUM` | `{path:u16, length:u16, cookie:u16 in/out, out:u16, out_size:u16, count:u16 out}` | `HL` = entries written |
 | `0Ah` | `CHDIR` | `{path:u16, length:u16}` | `HL` = 0 |
 | `0Bh` | `GETCWD` | `{buffer:u16, length:u16}` | `HL` = length without the NUL |
+| `0Ch` | `REBOOT` | none | does not return |
 | `20h` | `XMEM_ALLOC` | `{size:u16, flags:u16}` | `HL` = object handle |
 | `21h` | `XMEM_FREE` | `{handle:u16}` | `HL` = 0 |
 | `22h` | `XMEM_READ` | `{handle:u16, offset:u16, buffer:u16, length:u16}` | `HL` = bytes moved |
@@ -171,6 +172,25 @@ The block is below `0100h`, so a program copies the tail into its own data
 before passing it to a syscall. The SDK's startup code stores the block for
 `startup()` and never modifies it; `splitargs()` parses a copy.
 
+### 5.5 The warm reboot
+
+`REBOOT` (`0Ch`) restarts the machine from the beginning: the kernel masks
+interrupts, quiesces the interrupt sources it programmed, writes the
+banking latch for the reset mode and jumps to `0000h`. The ROM reset vector
+then re-copies the operating system from ROM exactly as at power-on, and
+the boot path runs from the first instruction. Nothing in RAM is trusted
+across the jump — every buffer, driver state and open object belongs to the
+machine that is going away.
+
+No peripheral gets a hardware reset: a warm reboot is invisible to the
+V9958, the SIO, the CTC, the IOC and the keyboard controller. Each driver's
+bring-up therefore programs its device fully from any state rather than
+from power-on defaults, which is what makes the reboot indistinguishable
+from a cold start (`docs/devices.md` section 12).
+
+The SDK wrapper is `void reboot(void)`; it does not return. The monitor's
+`B` command and the shell's `reboot` built-in call it.
+
 ## 6. Objects and the namespace
 
 ### 6.1 `BIND`
@@ -182,6 +202,15 @@ interpreted by the provider: open flags for files (`KFS_O_READ`, `WRITE`,
 `CREATE`, `EXCL`, `TRUNC`), zero for most devices. Failure is `-KOS_E*`
 in `HL`: `KOS_ENOENT` for an unknown name, `KOS_EMFILE` when the 12-entry
 handle table is full, `KOS_ENODEV` for `/fs` without a card.
+
+A DEVICE bind defines one flag: `KOS_BIND_EXCLUSIVE` (`8000h`,
+`abi/kos/object.h`). It asks the device for a takeover — the caller may
+then write the device's ports or reprogram it beyond the protocol — and
+two failures come with it: a device whose driver declares no release
+notification answers `-KOS_ENOTSUP`, and a device another handle already
+holds exclusively answers `-KOS_EBUSY`. The takeover contract is
+`docs/devices.md` section 2. Files and the other providers define no
+exclusive flag, so `KOS_BIND_EXCLUSIVE` there is `-KOS_EINVAL`.
 
 Paths are routed by the first component, case-insensitively, to the three
 roots: `/fs` (the filesystem driver), `/system` (ROMFS) and `/dev` (the
@@ -251,6 +280,11 @@ copies) on the ISR stack and restores the latch exactly.
 Releases a handle the caller owns. A foreign handle, an unbound number or
 a standard handle (1 or 2) is `-KOS_EINVAL`.
 
+A released DEVICE handle tells the driver its instance went away, and an
+exclusive one tells it that the takeover ended, so the driver can restore
+what the program changed. The notification is the driver's own business:
+its result is ignored and `UNBIND` still answers 0.
+
 ### 6.4 Standard handles
 
 `KOS_HANDLE_STDOUT` (1) and `KOS_HANDLE_STDIN` (2) are bound to
@@ -292,6 +326,13 @@ through the standard handles.
 | `console_read(buf, len)` | `KCONSOLE_OP_READ` (returns what is pending) | out: the caller's buffer |
 | `console_poll()` | `KCONSOLE_OP_POLL` | none |
 | `putchar(ch)` | `KCONSOLE_OP_PUTC` | none |
+| — | `KCONSOLE_OP_RESET` (5) | none |
+
+`KCONSOLE_OP_RESET` puts the terminal back to its start state and empties
+the input queue; a console whose output driver owns the display forwards
+the display reset to it. The kernel runs it before every start of the
+boot program, so no program inherits a terminal another program left
+behind (`docs/devices.md` section 12).
 
 `getchar`, `console_puts` and `console_readline` are built on these. A
 process without standard handles gets `-KOS_EINVAL`. The build decides which

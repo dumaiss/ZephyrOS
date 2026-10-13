@@ -259,8 +259,7 @@ class TestMonitorArtifacts(unittest.TestCase):
                        b"ERR: ARG\r\n",
                        b"ERR: COMMAND\r\n",
                        b"X path [tail]  run a EXE from /system\r\n",
-                       b"exec: exit status 0x",
-                       b"monitor: exit status 0x"):
+                       b"exec: exit status 0x"):
             self.assertIn(marker, image,
                           "marker %r missing from the subsystem image"
                           % marker)
@@ -269,7 +268,8 @@ class TestMonitorArtifacts(unittest.TestCase):
         # every fragment must be present in the image.
         for fragment in (b" app ", b" os ", b" common ", b" kernel-bank ",
                          b" romfs ", b"bank: current ", b" mask ",
-                         b" active ", b" free-banks "):
+                         b"boot: ", b" failed ", b" exit ",
+                         b"/system/monitor.exe"):
             self.assertIn(fragment, image,
                           "expected output fragment %r is not in the "
                           "image" % fragment)
@@ -404,7 +404,7 @@ class TestSubsystemSmokeMode(unittest.TestCase):
             + b"KonaOS native monitor\r\n"
             + serial_smoke.SUBSYS_PROMPT
             + serial_smoke.SUBSYS_EXIT
-            + b"0000 active 0 free-banks 6\r\n"
+            + b"\r\n"
         )
 
     def run_main(self, payload, timeout=0.05):

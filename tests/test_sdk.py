@@ -391,13 +391,15 @@ class TestSdkBoundary(unittest.TestCase):
         # runs; `fardemo` is the SDK far-code demo and
         # `xmem_far` the far-code outcome program;
         # `hwtest` is the production store's feature exerciser and the
-        # runner of those outcome programs.
+        # runner of those outcome programs; `shell` is the native shell,
+        # the store's boot program.
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
-                         ["banks", "escc", "exe2big", "exe2probe",
-                          "exe2seg", "exetest", "far_data", "fardemo",
-                          "fs_child", "fs_selftest", "hello", "hwtest",
-                          "ipc", "ipccopy", "monitor", "ns", "nschild",
-                          "xmem_child", "xmem_far", "xmem_selftest"])
+                         ["banks", "devtest", "escc", "exe2big",
+                          "exe2probe", "exe2seg", "exetest", "far_data",
+                          "fardemo", "fs_child", "fs_selftest", "hello",
+                          "hwtest", "ipc", "ipccopy", "monitor", "ns",
+                          "nschild", "shell", "xmem_child", "xmem_far",
+                          "xmem_selftest"])
         for name, directory, _sources, _options in programs:
             count = sum(_read(path).count("exe_program,%s," % name)
                         for path in ("Makefile",
@@ -554,9 +556,12 @@ class TestSdkSplitterInSimulator(unittest.TestCase):
 
     The program's own image is loaded into the application bank exactly as
     the loader places it, and the splitter is called the way crt0 calls it
-    (HL = tail, DE = argv, capacity on the stack).  This is the argv half
-    of the startup contract; the end-to-end transport from the kernel is
-    asserted by the exec acceptance replay (tests/test_fs_selftest_sim.py).
+    (HL = tail, DE = argv, capacity on the stack).  The cases are
+    docs/exe-format.md section 5: whitespace, both quote forms, the two
+    escapes, adjacent pieces, empty words, an unterminated quote and the
+    stored-capacity cap.  This is the argv half of the startup contract;
+    the end-to-end transport from the kernel is asserted by the exec
+    acceptance replay (tests/test_fs_selftest_sim.py).
     """
 
     TAIL = 0x1200
@@ -612,12 +617,38 @@ class TestSdkSplitterInSimulator(unittest.TestCase):
         self.assertEqual(self.split(""), (0, []))
         self.assertEqual(self.split("one"), (1, ["one"]))
         self.assertEqual(self.split("  spaced   out  "), (2, ["spaced", "out"]))
+        self.assertEqual(self.split("a\tb  c"), (3, ["a", "b", "c"]))
 
-    def test_double_quotes_group_words_and_are_removed(self):
+    def test_double_quotes_group_join_and_escape(self):
         self.assertEqual(self.split('two words "a b" tail'),
                          (4, ["two", "words", "a b", "tail"]))
         self.assertEqual(self.split('a b "c d" e '),
                          (4, ["a", "b", "c d", "e"]))
+        # Adjacent pieces join into one word; only \" and \\ escape.
+        self.assertEqual(self.split('ab"c d"e'), (1, ["abc de"]))
+        self.assertEqual(self.split(r'a "b\"c" d'), (3, ["a", 'b"c', "d"]))
+        self.assertEqual(self.split(r'a "b\\c" d'), (3, ["a", "b\\c", "d"]))
+        self.assertEqual(self.split(r'a "b\qc" d'), (3, ["a", "b\\qc", "d"]))
+
+    def test_single_quotes_are_literal(self):
+        self.assertEqual(self.split("a 'b c' d"), (3, ["a", "b c", "d"]))
+        self.assertEqual(self.split("'a\"b\\c'"), (1, ['a"b\\c']))
+        self.assertEqual(self.split("a'b'c"), (1, ["abc"]))
+
+    def test_backslash_escapes_outside_quotes(self):
+        self.assertEqual(self.split(r"a\ b"), (1, ["a b"]))
+        self.assertEqual(self.split(r"a\"b"), (1, ['a"b']))
+        self.assertEqual(self.split(r"a\\b"), (1, ["a\\b"]))
+        self.assertEqual(self.split("trailing\\"), (1, ["trailing\\"]))
+
+    def test_empty_words_and_an_unterminated_quote(self):
+        self.assertEqual(self.split("''"), (1, [""]))
+        self.assertEqual(self.split('""'), (1, [""]))
+        self.assertEqual(self.split("a '' b"), (3, ["a", "", "b"]))
+        self.assertEqual(self.split("a \"\" b"), (3, ["a", "", "b"]))
+        self.assertEqual(self.split("''\"\""), (1, [""]))
+        self.assertEqual(self.split('a "b c'), (2, ["a", "b c"]))
+        self.assertEqual(self.split("a 'b c"), (2, ["a", "b c"]))
 
     def machine(self):
         """A CPU with the linked program image in application bank 1."""
@@ -706,7 +737,8 @@ class TestHelloWorldImage(ConsoleReplay, unittest.TestCase):
     IMAGE_SUBDIR = IMAGE_SUBDIR
     IMAGE_NAME = IMAGE_NAME
     GREETING = "Hello, KonaOS!"
-    REPORT = "monitor: exit status 0x0000 active 0 free-banks 6"
+    REPORT = "boot: /system/hello.exe exit 0"
+    MONITOR = "KonaOS native monitor"
     CONSOLE_BOUND = "console: driver OK"
 
     @classmethod
@@ -714,27 +746,39 @@ class TestHelloWorldImage(ConsoleReplay, unittest.TestCase):
         cls.replay = cls.open(IMAGE_SUBDIR, IMAGE_NAME)
         cls.z = cls.replay.make_cpu()
         cls.replay.start_kernel(cls.z)
-        # The demo prints the greeting twice: once as the monitor's boot
-        # program and once relaunched by the monitor's prompt hook.
-        cls.replay.run_until_count(cls.z, cls.REPORT, 2)
+        # The demo is the boot program: it prints the greeting once, the
+        # launcher reports its exit, and the monitor has the machine.
+        cls.replay.run_until_count(cls.z, cls.REPORT, 1)
+        cls.replay.run_to(cls.z, "Z80> ")
         cls.serial = bytes(cls.z.sio_tx)
         cls.transcript = cls.replay.trace(cls.z)
 
     def test_kernel_carries_the_demo_as_its_boot_program(self):
         self.assertIn(BOOT_PROGRAM.encode("ascii"), self.replay.image)
-        self.assertNotIn(b"/system/monitor.exe", self.replay.image)
+        # The generated setting, not the kernel, names it: the image
+        # carries the string this System's boot header was written with.
+        with open(os.path.join(ROOT, IMAGE_SUBDIR, "boot_program.h"),
+                  encoding="utf-8") as handle:
+            header = handle.read()
+        self.assertIn('#define KOS_BOOT_PROGRAM "%s"\n' % BOOT_PROGRAM,
+                      header)
+        # The monitor is the fallback the policy names, not the boot
+        # program.
+        self.assertIn("#define KOS_BOOT_AFTER_MONITOR 1\n", header)
 
     def test_demo_prints_the_greeting_on_the_bound_console(self):
         self.assertIn(self.CONSOLE_BOUND, self.transcript)
         self.assertIn(self.GREETING, self.transcript)
 
-    def test_demo_exits_zero_and_the_launcher_reexecs_it(self):
+    def test_demo_exits_zero_and_the_monitor_follows(self):
         out = self.transcript.replace("\n", "")
         self.assertIn(self.GREETING + self.REPORT, out)
-        self.assertGreaterEqual(out.count(self.GREETING), 2,
-                                "the demo did not run twice")
-        self.assertGreaterEqual(out.count(self.REPORT), 2)
+        self.assertEqual(out.count(self.GREETING), 1,
+                         "the demo ran more than once")
+        self.assertEqual(out.count(self.REPORT), 1)
         self.assertNotIn("fail", self.transcript.lower())
+        # The image is an acceptance build: one run, then the monitor.
+        self.assertIn(self.MONITOR, out)
 
     def test_early_console_still_reports_the_machine(self):
         self.assertIn(b"kernel entry: OK", self.serial)

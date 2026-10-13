@@ -26,6 +26,7 @@
 
 	.globl _platform_memctl_read
 	.globl _platform_memctl_write
+	.globl _platform_reboot_now
 	.globl _platform_bank_get
 	.globl _platform_bank_set
 	.globl kos_enter_os_mode
@@ -148,6 +149,27 @@ kos_leave_os_mode::
 	ld	hl,(kos_gate_saved_sp)
 	ld	sp,hl			; caller stack is visible again in mode 10
 	ret				; pop the caller's saved PC
+
+; ---------------------------------------------------------------------------
+; platform_reboot_now - warm reboot.  Never returns: takes no argument and
+; leaves no state, and the ROM reset vector re-copies the OS exactly as at
+; power-on, so nothing in RAM is trusted afterwards.
+;
+; The caller has masked interrupts and quiesced the interrupt sources.  The
+; latch write selects mode 00 over ROM page 0, and from that instruction on
+; every fetch comes from the ROM page: execution continues here because the
+; common region is byte-identical in ROM page 0 and in the boot copy in
+; SRAM bank 0 (the kernel never writes it), so the instruction after the OUT
+; is the same byte either way.  The reset vector then re-runs the copier.
+;
+; Must stay in common memory; no stack is used after the latch write.
+; Clobbers: AF.
+; ---------------------------------------------------------------------------
+_platform_reboot_now::
+	di
+	ld	a,#KOS_MODE_BOOT
+	out	(KOS_MEMCTL_PORT),a
+	jp	0x0000
 
 ; ---------------------------------------------------------------------------
 ; __kos_mode_fault - latch assertion failure path.
