@@ -22,11 +22,15 @@
 #define KOS_NS_PAGE_DRIVER  0x01u
 
 /* SYS_DIAG_SYSTEM_INFO: deterministic, context-free, implemented in the
- * cold half (kernel/syscall/diag.c).  Its 8-byte record is the proof that
- * the syscall gate dispatched with P = 0 and the cold half was visible. */
+ * cold half (kernel/syscall/diag.c).  Its platform record - the leading
+ * eight bytes, which this check compares byte for byte - is the proof
+ * that the syscall gate dispatched with P = 0 and the cold half was
+ * visible.  The record's tail is the interrupt executive's dispatch
+ * counters; the monitor's `R` replay pins that part. */
 #define KOS_NS_SYSCALL_NUM      0x2Du
-#define KOS_NS_SYSCALL_RESULT   8u
-#define KOS_NS_SYSTEM_INFO_SIZE 8u
+#define KOS_NS_SYSCALL_RESULT   13u
+#define KOS_NS_SYSTEM_INFO_SIZE 13u
+#define KOS_NS_SYSTEM_INFO_PLATFORM 8u
 #define KOS_NS_SYSTEM_INFO_ABI  1u
 #define KOS_NS_MODE_APPLICATION 0x10u
 #define KOS_NS_MODE_OS          0x18u

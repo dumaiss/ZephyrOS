@@ -133,8 +133,8 @@ def file_session():
         ("ls //", "fs/\nsystem/\ndev/\n/> ", "/> ", False),
         ("ls /", "KEEP.TXT  19\nSUB/\n/> ", "/> ", False),
         ("ls /system", store_listing() + "/> ", "/> ", False),
-        ("ls /dev", "serial/\nioc\ninput/\nvideo\nconsole\n/> ", "/> ",
-         False),
+        ("ls /dev", "serial/\nioc\ninput/\nvideo\nconsole\ntimer\n/> ",
+         "/> ", False),
         ("ls /dev/input", "keyboard\n/> ", "/> ", False),
         ("ls /SUB/ORIG.TXT", "ORIG.TXT  4\n/> ", "/> ", False),
         ("ls /SUB /system", "/SUB:\nORIG.TXT  4\n/system:\n"
@@ -220,7 +220,7 @@ class ShellSession(HwtestReplay):
         self.assertIn(SHELL_EXIT % 3, trace)
         self.assertEqual(trace.count("boot: "), 1)
         # The exerciser reached its own verdict: every nested stage ran.
-        self.assertIn("hwtest: 3/3 PASS", trace)
+        self.assertIn("hwtest: 4/4 PASS", trace)
 
         # The card is exactly as the session found it, plus the empty
         # scratch file the explicit-path child creates and leaves behind.

@@ -54,11 +54,16 @@ SHELL_EXIT = b"boot: /system/shell.exe exit 0\r\n"
 # with the endpoint class each image registers.
 DRIVER_SET = (("sio.mod", 1), ("ioc.mod", 5), ("hid.mod", 4),
                ("v9958.mod", 2), ("console-serial.mod", 6),
-               ("iocfat.mod", 7))
+               ("timer.mod", 10), ("iocfat.mod", 7))
 
 CONSOLE_DRIVER_OK = b"console: driver OK\r\n"
 SERIAL_SYSINFO = \
     b"system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02\r\n"
+# The executive's dispatch counters, one line below the platform rows.
+# This replay leaves the CTC unmodelled, so no interrupt has been
+# dispatched and `last` is the executive's "nothing yet" source.
+SERIAL_IRQ_LINE = \
+    b"irq: unexpected 0000 unclaimed 0000 last 07\r\n"
 
 # The required driver's failure: the loader names the image it could not
 # find, the nucleus reports the manifest failure and stops.
@@ -164,9 +169,9 @@ class TestSerialVariant(SerialBase):
         # console, in manifest order, and the ledger matches the packer's
         # plan.  The evidence rows are linked for the variant image.
         for name in ("sio.mod", "ioc.mod", "hid.mod", "v9958.mod",
-                     "console-serial.mod", "iocfat.mod"):
+                     "console-serial.mod", "timer.mod", "iocfat.mod"):
             self.assertIn(("driver %s: hot " % name).encode("ascii"), sio)
-        self.assertIn(b"driver loader: 6 images in bank 6\r\n", sio)
+        self.assertIn(b"driver loader: 7 images in bank 6\r\n", sio)
         plan = self.driver_plan()
         self.assertIn(b"driver hot: %d bytes of 32768\r\n"
                       % plan["driver_hot_bytes"], sio)
@@ -195,10 +200,12 @@ class TestSerialVariant(SerialBase):
 
         # The store's monitor runs as the shell's child and answers its
         # `r` on the same lane; `q` returns to the shell, not the
-        # launcher.
+        # launcher.  The wait is on the row the `R` block ends with, so
+        # the whole block is on the lane when both are asserted.
         self.type_serial(z, b"monitor\r", PROMPT.encode("ascii"))
-        self.type_serial(z, b"r\r", SERIAL_SYSINFO)
+        self.type_serial(z, b"r\r", SERIAL_IRQ_LINE)
         self.assertIn(SERIAL_SYSINFO, bytes(z.sio_tx))
+        self.assertIn(SERIAL_IRQ_LINE, bytes(z.sio_tx))
         self.type_serial(z, b"q\r", SHELL_PROMPT.encode("ascii"))
         self.assertNotIn(b"boot: ", bytes(z.sio_tx))
 

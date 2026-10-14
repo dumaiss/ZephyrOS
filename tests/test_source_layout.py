@@ -121,6 +121,7 @@ OWNER_FILES = (
     "user/sdk/include/kos/fs.h",
     "user/sdk/include/kos/process.h",
     "user/sdk/include/kos/diag.h",
+    "user/sdk/include/kos/timer.h",
     "user/sdk/include/klibc/string.h",
     "user/sdk/include/klibc/fmt.h",
     "user/sdk/include/klibc/stdarg.h",
@@ -133,6 +134,7 @@ OWNER_FILES = (
     "user/sdk/src/fs.c",
     "user/sdk/src/exec.c",
     "user/sdk/src/console_io.c",
+    "user/sdk/src/timer.c",
     "user/sdk/src/kos_internal.h",
     "user/sdk/src/klibc/strlen.c",
     "user/sdk/src/klibc/strcmp.c",
@@ -199,6 +201,10 @@ OWNER_FILES = (
     "tests/target/process/process_test.c",
     "tests/target/process/exetest.c",
     "kernel/irq/ctc.c",
+    "drivers/timer/timer.c",
+    "drivers/timer/timer_proto.c",
+    "drivers/timer/timer_boot.c",
+    "tests/timer/timer.c",
     "drivers/sio/sio.c",
     "drivers/sio/sio.h",
     "drivers/sio/sio_proto.c",
@@ -263,7 +269,7 @@ REQUIRED_DIRS = (
     "kernel/vfs", "drivers/iocfat", "config",
     "drivers/sio", "drivers/ioc", "drivers/hid",
     "drivers/v9958", "drivers/console", "drivers/runtime",
-    "drivers/include", "kernel/include", "formats/include",
+    "drivers/timer", "drivers/include", "kernel/include", "formats/include",
     "platform/zephyr80/public", "platform/zephyr80/private",
     "abi", "abi/kos",
     "user/sdk", "user/sdk/include", "user/sdk/src",
@@ -628,6 +634,9 @@ class TestProductionTestSeparation(unittest.TestCase):
             ["console-serial.json", "console-v9958-hid.json",
              "console_proto.c"])
         self.assertEqual(
+            sorted(os.listdir(os.path.join(ROOT, "drivers", "timer"))),
+            ["timer.c", "timer.json", "timer_boot.c", "timer_proto.c"])
+        self.assertEqual(
             sorted(os.listdir(os.path.join(ROOT, "drivers", "iocfat"))),
             ["iocfat.c", "iocfat.json"])
         self.assertEqual(
@@ -648,6 +657,7 @@ class TestProductionTestSeparation(unittest.TestCase):
             "drivers/ioc/ioc.json",
             "drivers/iocfat/iocfat.json",
             "drivers/sio/sio.json",
+            "drivers/timer/timer.json",
             "drivers/v9958/v9958.json",
         ])
 

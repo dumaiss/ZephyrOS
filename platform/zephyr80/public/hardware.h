@@ -29,7 +29,19 @@
 #define KOS_SIO1A_CTRL              0x31u
 #define KOS_SIO1B_DATA              0x32u
 #define KOS_SIO1B_CTRL              0x33u
+/* Z80 CTC, one port per *physical* channel.  The board wires the CTC's
+ * CS0 (pin 18) to A1 and CS1 (pin 19) to A0 (the Zephyr-80 CP/M BIOS's
+ * "Measured again on 2026-09-15", ctc-and-real-time-programming.md),
+ * so the port address's A0 bit selects the chip's CS1 and its A1 bit
+ * CS0: the channel select is A0*2 + A1.  Channel 1 therefore answers
+ * 42h and channel 2 answers 41h, and a program that writes 42h meaning
+ * channel 2 starts channel 1 and vectors 02h instead of 04h.  The
+ * trigger inputs (physical channels 0/1/2/3) are 1.8432/3.6864/7.3728/
+ * 7.3728 MHz. */
 #define KOS_CTC0_PORT               0x40u
+#define KOS_CTC1_PORT               0x42u
+#define KOS_CTC2_PORT               0x41u
+#define KOS_CTC3_PORT               0x43u
 
 /* --- Memory/banking latch fields --- */
 
@@ -298,10 +310,55 @@
  * disconnected terminal must not hang the kernel forever. */
 #define KOS_SIO_TX_TIMEOUT          0xFFFFu
 
-/* CTC0 interrupt test programming (physical channel 0 only).  The CTC0 vector
- * mapping is declared in irq.h; the bank-7 ISR stack bounds in memory.h. */
-#define KOS_CTC0_CONTROL_TEST       0xA7u
+/* CTC control-word bits.  A channel write with D0 set is a control word;
+ * with D0 clear it is the shared IM2 vector base.  The mode bit is the
+ * board-critical one: timer mode (D6 clear) counts the 10 MHz system
+ * clock through the D5 prescaler, counter mode (D6 set) counts the
+ * channel's CLK/TRG input instead - 7.3728 MHz on channel 2 (see the
+ * board's Z80 Peripherals Controller document) - so the same time
+ * constant makes the tick 189x too fast and livelocks the CPU in its
+ * handler. */
+#define KOS_CTC_CTRL_INTERRUPT_ENABLE 0x80u /* D7: enable interrupts */
+#define KOS_CTC_CTRL_MODE_COUNTER     0x40u /* D6: 1 counter, 0 timer */
+#define KOS_CTC_CTRL_PRESCALER_256    0x20u /* D5: 1 divide by 256, else 16 */
+#define KOS_CTC_CTRL_EDGE_RISING      0x10u /* D4: 1 rising, 0 falling edge */
+#define KOS_CTC_CTRL_TRIGGER_EXTERNAL 0x08u /* D3: 1 CLK/TRG, else automatic
+                                             * trigger on the prescaler */
+#define KOS_CTC_CTRL_TIME_CONSTANT    0x04u /* D2: the next write to the
+                                             * channel is its time constant */
+#define KOS_CTC_CTRL_SOFT_RESET       0x02u /* D1: stop the channel and clear
+                                             * its interrupt enable now */
+#define KOS_CTC_CTRL_CONTROL_WORD     0x01u /* D0: 1 control word, 0 the IM2
+                                             * vector base */
+
+/* CTC programming values (the IM2 page mapping is declared in irq.h).
+ * KOS_CTC0_VECTOR_BASE is the CTC's IM2 vector base, written through
+ * physical channel 0's port: the base's channel N then vectors through
+ * entry 2*N of the page.  KOS_CTC_RESET is the software-reset control
+ * word, the same byte on every channel: it stops the channel and clears
+ * its interrupt enable.  The timer is *physical channel 2*, so it
+ * programs through KOS_CTC2_PORT (41h, not the 42h its address suggests)
+ * and vectors through entry 04h; it programs a 156.25 Hz tick from the
+ * 10 MHz system clock: interrupt enabled, timer mode (D6 clear),
+ * prescaler 256, falling edge, automatic trigger, time constant follows,
+ * then the constant. */
+#define KOS_CTC0_VECTOR_BASE        0x00u
+#define KOS_CTC_RESET               (KOS_CTC_CTRL_SOFT_RESET | \
+                                     KOS_CTC_CTRL_CONTROL_WORD)
+#define KOS_CTC2_CONTROL_TIMER      (KOS_CTC_CTRL_INTERRUPT_ENABLE | \
+                                     KOS_CTC_CTRL_PRESCALER_256 | \
+                                     KOS_CTC_CTRL_TIME_CONSTANT | \
+                                     KOS_CTC_CTRL_CONTROL_WORD)
+#define KOS_CTC2_TIME_CONSTANT      250u
+
+/* CTC0 interrupt test programming (physical channel 0 only): reset, then
+ * arm the constant.  The CTC0 vector mapping is declared in irq.h; the
+ * bank-7 ISR stack bounds in memory.h. */
+#define KOS_CTC0_CONTROL_TEST       (KOS_CTC_CTRL_INTERRUPT_ENABLE | \
+                                     KOS_CTC_CTRL_PRESCALER_256 | \
+                                     KOS_CTC_CTRL_TIME_CONSTANT | \
+                                     KOS_CTC_CTRL_SOFT_RESET | \
+                                     KOS_CTC_CTRL_CONTROL_WORD)
 #define KOS_CTC0_TIME_CONSTANT      0x00u
-#define KOS_CTC0_RESET              0x03u
 
 #endif /* ZEPHYR80_HARDWARE_H */

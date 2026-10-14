@@ -176,8 +176,9 @@ kos_nucleus_p_latch::
 	.ds	1
 kos_nucleus_timeout::
 	.ds	2
-; The record the successful diagnostic syscall must have left in the
-; caller's argument block.
+; The platform record the successful diagnostic syscall must have left in
+; the caller's argument block (its leading KOS_NS_SYSTEM_INFO_PLATFORM
+; bytes: the counters that follow are the executive's, not the gate's).
 kos_nucleus_expected_record::
 	.db	KOS_NS_SYSTEM_INFO_SIZE, KOS_NS_SYSTEM_INFO_ABI
 	.db	KOS_NS_MODE_APPLICATION, KOS_NS_MODE_OS
@@ -219,7 +220,7 @@ kos_nucleus_blob_start::
 	jr	nz,zn_fail_syscall_result
 	ld	hl,#KOS_NS_ARGBLOCK
 	ld	de,#kos_nucleus_expected_record
-	ld	b,#KOS_NS_SYSTEM_INFO_SIZE
+	ld	b,#KOS_NS_SYSTEM_INFO_PLATFORM
 zn_record:
 	ld	a,(de)
 	cp	(hl)

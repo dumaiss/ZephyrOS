@@ -22,7 +22,7 @@ them before any driver runs. A driver reaches a peer only by calling the
 endpoint number in its boot bundle, never by name. An unsupported operation
 fails with a negative error; nothing is inferred from a name.
 
-The production store carries six drivers, loaded in this order:
+The production store carries the drivers below, loaded in this order:
 
 | driver | class | serves | publishes |
 |---|---|---|---|
@@ -32,6 +32,7 @@ The production store carries six drivers, loaded in this order:
 | `v9958` | `VIDEO` (2) | the V9958, its terminal renderer | `/dev/video` |
 | `console-v9958-hid` | `CONSOLE` (6) | the console, over HID and V9958 | `/dev/console` |
 | `iocfat` | `FILE` (7), types `FILE` and `FS` | the filesystem over IOC | `/fs` |
+| `timer` | `TIMER` (10) | the monotonic clock, CTC physical channel 2 (port 41h) | `/dev/timer` |
 
 The serial build swaps `console-v9958-hid` for `console-serial`.
 
@@ -230,7 +231,7 @@ operations need a non-empty payload and stream the full 16-bit length;
 `PRESENT` and `RESET` need length 0; unknown operations are unsupported.
 
 The endpoint declares `"release": true`, so it also serves the common
-`KOS_OP_ACQUIRE` and `KOS_OP_RELEASE` (section 12). While an exclusive
+`KOS_OP_ACQUIRE` and `KOS_OP_RELEASE` (section 13). While an exclusive
 handle is held the console's output is dropped and counted instead of
 rendered (the caller still gets its whole length back), and the release
 re-runs the whole bring-up below. `KVIDEO_OP_RESET` (3) runs that same
@@ -292,7 +293,7 @@ queue, so nothing typed for the program that is going away reaches the one
 that starts, and the V9958 build then forwards `KVIDEO_OP_RESET` to its
 output dependency (the serial build has no video to reset and answers 0).
 The boot launcher runs it before every start of the boot program
-(section 12).
+(section 13).
 
 After the drivers load, the boot prints `console: driver OK` through it.
 
@@ -321,7 +322,52 @@ reading it**: the firmware answers the root open from its mount context
 without touching the card, so only the first read proves the card is there.
 `KFS_OP_STAT` on the root proves it the same way.
 
-## 9. The `/dev` publication table
+## 9. TIMER (`drivers/timer/`)
+
+The monotonic clock.  CTC physical channel 2 - the port the board's
+crossed select wiring answers at `41h`, its IM2 entry `04h`, its trigger
+input 7.3728 MHz - free-runs at 156.25 Hz (the 10 MHz system clock
+through the 256 prescaler, time constant 250) and the driver's interrupt
+handler counts the ticks; it is the first production interrupt source.  The driver publishes `/dev/timer` and serves the
+`TIMER` protocol (class 10):
+
+- `KTIMER_OP_NOW` (0), descriptor-less: `payload[0..3]` of the reply is
+  the current count in 25.6 µs units, little-endian.  The driver reads
+  the tick count, the channel's down-counter and the tick count again,
+  retrying when the tick moved in between, so readings are monotonic;
+  the count wraps after about 30.5 hours and elapsed times are unsigned
+  differences.
+- `KTIMER_OP_INFO` (1), descriptor-less: `payload[0..3]` is counts per
+  10 s (390,625) and `payload[4..7]` counts per tick (250), both
+  little-endian.
+
+The boot segment resets channel 2, writes the shared IM2 vector base
+(`00h`, so channel 2 vectors through page entry `04h`) and programs the
+control word and time constant, from any state (warm reboot).  The
+control word is composed in `hardware.h` from one named constant per
+bit (`KOS_CTC_CTRL_*`), and the mode bit is the one that matters:
+**timer mode** (D6 clear) counts the 10 MHz system clock through the 256
+prescaler, while counter mode (D6 set) counts the channel's CLK/TRG
+input - 7.3728 MHz on channel 2, from the board's 14.7456 MHz
+oscillator's divider.  A control word with D6 set is therefore not a
+slower or faster tick but a different clock: `E5h` with the same 250
+counts interrupts at ~29.5 kHz (189x), and at 1,343 T-states per
+delivery the CPU never leaves the handler.  The handler's whole body
+increments the u32 tick count.
+
+The reading runs with interrupts open - a syscall body gets the
+caller's interrupt state, so the driver saves that state, opens for the
+read and restores it (`timer_io.asm`) - so a rollover cannot put the
+fresh counter beside the stale tick count.  A tick is lost only if something masks for longer than
+two of them (12.8 ms, the CTC holds one request); the sections that do
+are named and measured in the timer package's validation record
+(`docs/validation/2026-10-13-m12-timer.md`).
+`platform_irq_quiesce` stops channel 2 if the source is ever seen
+unclaimed; channel 0 stays free for the SIO0/A baud clock and channel 3
+is untouched.  The SDK wraps the clock as `kos/timer.h` (`docs/sdk.md`
+section 6.8).
+
+## 10. The `/dev` publication table
 
 A driver manifest lists its publications: the name below `/dev`
 (`"/serial/0"`), the protocol type, the serving endpoint and the object
@@ -344,17 +390,20 @@ unbind(handle);
 A grouping name enumerates but refuses to bind (`-KOS_EISDIR`). Names are
 matched case-insensitively.
 
-## 10. Interrupts
+## 11. Interrupts
 
 A driver claims a logical source through `irq_claim` in its boot bundle
 and supplies a handler; the executive opens the driver's window around it
-and owns the final `RETI` (architecture 4.5). No production driver claims
-an IRQ today: SIO is polled, IOC and HID poll the same lanes, and the V9958
-is register-driven. The driver IRQ path is covered by the IPC acceptance
-image's `irqx` test driver, which programs CTC channel 0. The production
-CTC code (`kernel/irq/ctc.c`) is only `platform_irq_quiesce()`.
+and owns the final `RETI` (architecture 4.5). The timer driver is the one
+production driver-owned source: CTC channel 2's 156.25 Hz tick, claimed
+by the `timer` image's init, with the handler in its hot segment. SIO is
+polled, IOC and HID poll the same lanes, and the V9958 is register-driven.
+The IPC acceptance image's `irqx` test driver covers the development
+path against CTC channel 0. The production CTC code
+(`kernel/irq/ctc.c`) is `platform_irq_quiesce()`, which also stops
+channel 2.
 
-## 11. Placement
+## 12. Placement
 
 A driver's hot segment and `DRIVER_IO` data live in bank 6 `6000h-DFFFh`
 (the `DRIVER_IO` part in `8000h-BFFFh`), its boot code and bulk data in
@@ -362,7 +411,7 @@ A driver's hot segment and `DRIVER_IO` data live in bank 6 `6000h-DFFFh`
 `tools/mapcheck.py` fails the build if a driver symbol links into the
 nucleus image, and `--production` rejects every acceptance-only symbol.
 
-## 12. Device takeovers and state restoration
+## 13. Device takeovers and state restoration
 
 The Z80 cannot stop a program from writing to ports, so a driver's protocol
 is not a fence: a program that wants to reprogram a device directly has to
@@ -408,7 +457,7 @@ boot init programs its device from any state rather than from power-on
 defaults, and a device a program reconfigured is rebuilt from the driver's
 own constants.
 
-## 13. Tests
+## 14. Tests
 
 | test | covers |
 |---|---|
@@ -418,6 +467,7 @@ own constants.
 | `tests/test_v9958.py`, `tests/test_v9958_sim.py` | the VIDEO contract, the font pipeline, and a register/VRAM-level replay |
 | `tests/test_console_acceptance.py` | the integration image: load order, IOC, HID, the `ESC c` reset, a scripted monitor session |
 | `tests/test_console_serial.py` | the serial console build, and the missing-image boot failure |
+| `tests/test_timer.py` | the TIMER contract and the production replay: the tick stream with the emulated CTC, interrupt cost, and IOC transfers under the timer |
 
 The simulator covers control flow and register-level behaviour. Serial
 timing, IOC lane timing, interrupt acknowledgement and real USB keyboards

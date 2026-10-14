@@ -57,7 +57,7 @@ static void irqx_timer_start(void)
 
 static void irqx_timer_stop(void)
 {
-	ipc_ctc0 = KOS_CTC0_RESET;
+	ipc_ctc0 = KOS_CTC_RESET;
 }
 
 /* The correction profile: same vector and control word, short time

@@ -26,7 +26,7 @@
  *       bank.  Bit N of the mask is set when bank N is a valid
  *       application bank; bit 7 is always clear (bank 7 is kernel-only).
  *   SYS_DIAG_SYSTEM_INFO 2Dh result record at the argument pointer
- *       writes an eight-byte v1 record and returns 8 in HL.
+ *       writes the v1 record below and returns its size (13) in HL.
  *
  * Ports 00h-0Fh are rejected with KOS_EINVAL because the memory latch is
  * a bank/mode operation in disguise.  Every rejection is side-effect free
@@ -78,18 +78,31 @@ struct kos_diag_io_out_args {
 	uint8_t  value;    /* byte to write                        */
 };
 
-/* SYS_DIAG_SYSTEM_INFO v1 record. */
-#define KOS_DIAG_SYSTEM_INFO_SIZE 8u
+/* SYS_DIAG_SYSTEM_INFO v1 record.  The platform constants come first;
+ * the interrupt executive's dispatch counters follow them, because they
+ * are what a board run needs when a source's handler does not run: a
+ * driver that programs the wrong CTC port (the board's select wiring
+ * crosses A0 and A1, so channel 2 answers 41h) has its ticks vector
+ * through another channel's entry, which the executive counts as an
+ * unclaimed - or, for an entry it holds no stub for, an unexpected -
+ * dispatch while the driver's own count stays at zero.  The record grew
+ * from eight to thirteen bytes with them; `size` is the layout's tag,
+ * and the ABI number is unchanged. */
+#define KOS_DIAG_SYSTEM_INFO_SIZE 13u
 #define KOS_DIAG_SYSTEM_INFO_ABI  1u
 
 struct kos_diag_system_info {
-	uint8_t  size;        /* = 8                                 */
+	uint8_t  size;        /* = 13                                */
 	uint8_t  abi;         /* = 1                                 */
 	uint8_t  app_mode;    /* mode value of application mappings  */
 	uint8_t  os_mode;     /* mode value of the OS mapping        */
 	uint16_t common_base; /* first byte of permanent common RAM  */
 	uint8_t  kernel_bank; /* bank holding the kernel (7)         */
 	uint8_t  romfs_first_page; /* first ROMFS recovery page      */
+	uint16_t irq_unexpected;   /* dispatches with no source      */
+	uint16_t irq_unclaimed;    /* dispatches with no handler     */
+	uint8_t  irq_last_source;  /* last source the gate dispatched */
+	                           /* (IRQ_SOURCE_COUNT before any)  */
 };
 
 #if defined(__SDCC)
@@ -116,6 +129,15 @@ _Static_assert(__builtin_offsetof(struct kos_diag_system_info,
 _Static_assert(__builtin_offsetof(struct kos_diag_system_info,
 				  romfs_first_page) == 7,
 	       "diag system-info romfs_first_page offset");
+_Static_assert(__builtin_offsetof(struct kos_diag_system_info,
+				  irq_unexpected) == 8,
+	       "diag system-info irq_unexpected offset");
+_Static_assert(__builtin_offsetof(struct kos_diag_system_info,
+				  irq_unclaimed) == 10,
+	       "diag system-info irq_unclaimed offset");
+_Static_assert(__builtin_offsetof(struct kos_diag_system_info,
+				  irq_last_source) == 12,
+	       "diag system-info irq_last_source offset");
 #endif
 
 #endif /* KOS_DIAG_H */

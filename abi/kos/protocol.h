@@ -14,6 +14,7 @@
  *   serial    class 1, instance 0: SIO0/B character input and output
  *   IOC       class 5, instance 0: the command/reply lane, the bulk
  *                                  lanes and the semantic status word
+ *   timer     class 10, instance 0: the monotonic clock
  *
  * The FILE protocol (type KOS_TYPE_FILE) and the filesystem-namespace
  * protocol (type KOS_TYPE_FS) are the file language: the ROMFS
@@ -75,6 +76,8 @@
 #define KOS_CLASS_CONSOLE 6u
 #define KOS_CLASS_FILE    7u /* the file driver: FILE objects and the
                               * filesystem-namespace provider behind /fs */
+#define KOS_CLASS_TIMER   10u /* the timer: the monotonic clock (type
+                               * KOS_TYPE_TIMER) */
 
 /* The instance every device-facing driver registers (one instance). */
 #define KOS_CLASS_INSTANCE 0u
@@ -303,6 +306,33 @@
 /* The largest request DATA one KIOC_OP_COMMAND carries inline (the
  * frame's 24-byte payload). */
 #define KIOC_PROTOCOL_REQUEST_MAX 24u
+
+/* --- timer driver (class KOS_CLASS_TIMER, type KOS_TYPE_TIMER) ----------
+ *
+ * The monotonic clock: CTC channel 2 runs as a 156.25 Hz tick (250
+ * counts of 25.6 µs) and the driver's handler counts the ticks.  A bound
+ * handle is the clock; there is no per-instance state.  Both operations
+ * are descriptor-less: a clock reading is four bytes of protocol data,
+ * never a caller buffer.
+ *
+ *   KTIMER_OP_NOW  (0)  the reply payload holds the current count in
+ *                       payload[0..3], little-endian.  The count wraps
+ *                       after about 30.5 hours; elapsed values use
+ *                       unsigned subtraction.
+ *   KTIMER_OP_INFO (1)  the reply payload holds the clock constants:
+ *                       payload[0..3] = counts per 10 s and
+ *                       payload[4..7] = counts per tick, both
+ *                       little-endian.
+ *
+ * The two constants below are the clock's fixed values: the count rate is
+ * the 10 MHz system clock through the 256 prescaler (39,062.5 counts per
+ * second), the tick rate is 156.25 Hz.
+ */
+#define KTIMER_OP_NOW  0u
+#define KTIMER_OP_INFO 1u
+
+#define KOS_TIMER_COUNTS_PER_10S  390625u
+#define KOS_TIMER_COUNTS_PER_TICK 250u
 
 /* --- FILE protocol (type KOS_TYPE_FILE) --------------------------------
  *

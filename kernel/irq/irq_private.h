@@ -39,6 +39,12 @@ uint16_t irq_unexpected_count(void);
 uint16_t irq_unclaimed_count(void);
 irq_source_t irq_last_source(void);
 
+/* The same three counters as a five-byte record (unexpected, unclaimed
+ * little-endian, then the last source), for the diagnostic syscall that
+ * publishes them.  Runs in the fixed core: the cold-half body calls it
+ * rather than spending the cold half's bytes on the copy. */
+void irq_diag_counters(uint8_t *out);
+
 /* Production platform quiesce hook, implemented by the owning CTC
  * driver.  The CTC0 start/stop programming is acceptance-only and lives
  * under tests/target/. */

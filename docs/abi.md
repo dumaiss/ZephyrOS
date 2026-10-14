@@ -46,8 +46,10 @@ common memory, still mode 10:
   save the whole caller latch
   switch SP to the common gate stack; push BC, DE, IX, IY
   write (N & 07h) | 18h              mode 11, page field cleared
-mode 11: kos_syscall_dispatch
+  EI when the caller had interrupts on
+mode 11: kos_syscall_dispatch         the body runs with the caller's state
 return, in common memory:
+  DI                            masked again before the gate's own state
   stage HL, A and carry; pop BC, DE, IX, IY
   write the saved latch back         (bank and page restored exactly)
   restore the caller SP; rebuild A, HL, carry
@@ -55,9 +57,17 @@ return, in common memory:
   RET
 ```
 
-The gate is single-entry: one syscall is in flight at a time, and the
-whole crossing runs with interrupts masked. The IRQ executive uses its own
-state and stacks, so it never sees a half-made crossing.
+The gate is single-entry: one syscall is in flight at a time. Every step
+that touches the crossing's own state - the saved registers, the stack
+switch, the mapping, the result cells - runs masked; the **body** runs
+with the caller's interrupt state, because a masked body would hold the
+CTC's one pending request until its next tick was already lost. Masking
+inside a body is therefore explicit and bounded: the copy primitives, ROM
+access, the IOC frame exchange and bulk receive (architecture 4.5). The
+IRQ executive keeps its own state and stacks, so it never sees a
+half-made crossing, and a delivery taken anywhere in the body - on the
+gate stack, in nucleus code or in a driver call - saves into the IRQ
+transition reservation and restores the exact latch.
 
 ## 3. Interrupt delivery
 
@@ -75,6 +85,12 @@ part of the ABI:
   exit, so an interrupted aperture or window is unchanged.
 - Handlers run on the ISR stack with interrupts masked; there is no
   nesting. The executive executes the final `RETI`.
+- A syscall **body** runs with the caller's interrupt state (section 2),
+  so a handler can arrive inside one: it is reentrant with respect to the
+  gate because it keeps its own state and stacks and restores the exact
+  latch. The registry it dispatches through is mutated under
+  `irq_arch_lock`, so a claim or release from a body cannot be seen
+  half-made.
 
 ## 4. Syscalls
 

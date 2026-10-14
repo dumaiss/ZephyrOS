@@ -268,11 +268,12 @@ HW_COMMAND = b"hwtest\r"
 HW_TIMEOUT = 120.0
 HW_BEGIN = b"hwtest: begin\r\n"
 HW_STAGES = (b"hwtest: xmem+far PASS\r\n",
+             b"hwtest: timer PASS\r\n",
              b"hwtest: namespace+handles PASS\r\n")
 HW_FILES_PASS = b"hwtest: files PASS\r\n"
 HW_FILES_ABSENT = b"hwtest: files card absent\r\n"
 HW_FILES_READONLY = b"hwtest: files card not writable\r\n"
-HW_SUMMARY = b"hwtest: 3/3 PASS"
+HW_SUMMARY = b"hwtest: 4/4 PASS"
 # The card state each line pair reports: the files stage and the note the
 # verdict carries.
 HW_CARD_STATES = (
@@ -280,7 +281,7 @@ HW_CARD_STATES = (
     ("absent", HW_FILES_ABSENT, b" (card absent)"),
     ("not writable", HW_FILES_READONLY, b" (card not writable)"),
 )
-HW_FAIL = b"hwtest: 3/3 FAIL"
+HW_FAIL = b"hwtest: 4/4 FAIL"
 
 # The quiet window after the boot banner before the command goes in: the
 # monitor's launcher, console driver and poll loop all run behind the
@@ -290,8 +291,8 @@ HW_SETTLE = 1.5
 
 def _hwtest_card(data):
     """The card state the exerciser's transcript reports, or None while it
-    is incomplete.  A state counts only when the begin line, both program
-    stages, the files line and the matching verdict are all present, so a
+    is incomplete.  A state counts only when the begin line, every stage
+    line, the files line and the matching verdict are all present, so a
     partial or inconsistent transcript never reads as a pass."""
     if HW_BEGIN not in data:
         return None
@@ -304,8 +305,8 @@ def _hwtest_card(data):
 
 
 def _hwtest_result(data):
-    """True when the exerciser completed on this lane: the three stage
-    lines and the verdict, with no FAIL/PANIC marker."""
+    """True when the exerciser completed on this lane: every stage line
+    and the verdict, with no FAIL/PANIC marker."""
     if HW_FAIL in data or b"PANIC" in data or b" FAIL" in data:
         return False
     return _hwtest_card(data) is not None
@@ -329,7 +330,7 @@ SHELL_TIMEOUT = 120.0
 SHELL_STEPS = (
     ("pwd", (b"\r\n/\r\n", b"\r\n/system\r\n")),
     ("ls /system", (b"drivers.man",)),
-    ("hwtest", (b"hwtest: 3/3 PASS", b"hwtest: 3/3 FAIL")),
+    ("hwtest", (b"hwtest: 4/4 PASS", b"hwtest: 4/4 FAIL")),
     ("exit", (SHELL_EXIT,)),
 )
 
@@ -884,7 +885,7 @@ def main(argv):
         ok = _shell_result(data)
         expected = ("the boot banner, 'console: driver OK', the shell's "
                     "prompt, the 'pwd' row (the root in use), the "
-                    "'ls /system' listing, 'hwtest: 3/3 PASS' with the card "
+                    "'ls /system' listing, 'hwtest: 4/4 PASS' with the card "
                     "note that matches the drive, 'boot: /system/shell.exe "
                     "exit 0' and the prompt the restarted shell prints "
                     "after it - run it once with a card and once without")
@@ -894,9 +895,10 @@ def main(argv):
                     "exerciser's transcript on this lane: 'hwtest: begin', "
                     "'hwtest: xmem+far PASS', the files stage line (PASS, "
                     "'card absent' or 'card not writable'), "
-                    "'hwtest: namespace+handles PASS' and "
-                    "'hwtest: 3/3 PASS' with the card note that matches the "
-                    "files line - run it once with a card and once without")
+                    "'hwtest: timer PASS', 'hwtest: namespace+handles PASS' "
+                    "and 'hwtest: 4/4 PASS' with the card note that matches "
+                    "the files line - run it once with a card and once "
+                    "without")
 
     _root_observation(args.mode, data)
     if not ok:

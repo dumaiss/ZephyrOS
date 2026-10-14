@@ -36,12 +36,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
+from maptools import evaluate, parse_c_header  # noqa: E402
 from replay import SHELL_PROMPT, ConsoleReplay  # noqa: E402
 
 # The shell's prompt follows the root it started in: the card, or the
 # store when the drive is empty.
 SHELL_PROMPT_NO_CARD = "/system> "
-from z80sim import IocCommandPeer  # noqa: E402
+from z80sim import Ctc, IocCommandPeer  # noqa: E402
 
 # The FS2 requests the card program's load must produce: the open, its
 # reads and the close (see tools/z80sim.py's driver constants).
@@ -60,9 +61,10 @@ COMMAND = b"hwtest\r"
 # the stop marker in either verdict.
 BEGIN = b"hwtest: begin\r\n"
 LANE_LINES = (BEGIN, b"hwtest: xmem+far PASS\r\n", b"hwtest: files PASS\r\n",
+              b"hwtest: timer PASS\r\n",
               b"hwtest: namespace+handles PASS\r\n")
-SUMMARY = b"hwtest: 3/3 "
-PASS = b"hwtest: 3/3 PASS"
+SUMMARY = b"hwtest: 4/4 "
+PASS = b"hwtest: 4/4 PASS"
 FILE_ABSENT = b"hwtest: files card absent\r\n"
 NOTE_ABSENT = b" (card absent)"
 
@@ -92,6 +94,37 @@ CHUNK = 500000
 STEP_BUDGET = 100000000
 PANIC = b"PANIC"
 
+# The exerciser's rate probe (tests/hwtest/hwtest.c): the busy loop is
+# calibrated in T-states, and the replay below pins that constant against
+# the emulated clock's own measurement of the loop.
+RUNNER = os.path.join(ROOT, "tests", "hwtest", "hwtest.c")
+_RUNNER_CONSTANTS = parse_c_header(RUNNER)
+TIMER_RATE_TSTATES = evaluate(_RUNNER_CONSTANTS["TIMER_RATE_TSTATES"],
+                              _RUNNER_CONSTANTS)
+
+
+def _clock_reads(z):
+    """Timestamp every CTC port read (the driver's `now`).
+
+    The rate probe's busy loop is the only stretch of the timer stage
+    that reads no clock, so it is one gap between two consecutive reads -
+    and its cost is what `TIMER_RATE_TSTATES` has to name."""
+    reads = []
+    inner = z.ctc.read
+
+    def read(port):
+        reads.append(z.tstates)
+        return inner(port)
+
+    z.ctc.read = read
+    return reads
+
+
+def _busy_loop_tstates(reads, expected):
+    """The clock-read gap that is the rate probe's busy loop."""
+    gaps = [second - first for first, second in zip(reads, reads[1:])]
+    return min(gaps, key=lambda gap: abs(gap - expected))
+
 
 class HwtestReplay(ConsoleReplay, unittest.TestCase):
     """The production image and the emulated device peers it boots."""
@@ -103,8 +136,13 @@ class HwtestReplay(ConsoleReplay, unittest.TestCase):
         self.load_image()
 
     def start(self, card, extra_files=None):
-        """Boot to the shell's prompt with an IOC card present or not."""
+        """Boot to the shell's prompt with an IOC card present or not.
+
+        The emulated CTC delivers the timer driver's channel-2 interrupt,
+        so the production clock runs for real in every session; the
+        exerciser's timer stage and `timer.exe` read it."""
         z = self.make_cpu()
+        Ctc().attach(z)
         files = None
         if card:
             files = {"/".join(KEEP_NAME): KEEP_CONTENT}
@@ -143,6 +181,7 @@ class TestExerciserWithACard(HwtestReplay):
         z = self.start(card=True)
         peer = z.ioc_peer
         since = len(z.glyphs)
+        reads = _clock_reads(z)
         z.hid.hid_queue.extend(COMMAND)
 
         lane = self.run_exerciser(z)
@@ -173,6 +212,18 @@ class TestExerciserWithACard(HwtestReplay):
         self.assertEqual(peer.fs2_dirs, {()},
                          "the card carries directories the stages left")
 
+        # The timer stage's rate probe is calibrated, not guessed: the
+        # clock the replay advances over the busy loop - the one stretch
+        # of the stage that reads no clock, so it is a single gap between
+        # two reads - must be the cost `TIMER_RATE_TSTATES` names.  A
+        # constant that drifted from the compiled loop would make the
+        # stage's factor-2 window meaningless.
+        loop = _busy_loop_tstates(reads, TIMER_RATE_TSTATES)
+        print("hwtest: timer rate probe, busy loop %d T-states "
+              "(constant %d)" % (loop, TIMER_RATE_TSTATES))
+        self.assertLess(abs(loop - TIMER_RATE_TSTATES),
+                        TIMER_RATE_TSTATES // 10)
+
 
 class TestExerciserWithoutACard(HwtestReplay):
     """The same line with the drive empty: the absent-card branch."""
@@ -197,7 +248,7 @@ class TestExerciserWithoutACard(HwtestReplay):
         # took.
         self.assertIn(COMMAND.decode("ascii").rstrip("\r"), trace)
         self.assertIn("hwtest: files card absent", trace)
-        self.assertIn("hwtest: 3/3 PASS (card absent)", trace)
+        self.assertIn("hwtest: 4/4 PASS (card absent)", trace)
         for marker in CONSOLE_ABSENT_EVIDENCE:
             self.assertIn(marker, trace)
         self.assertNotIn("FAIL", trace)

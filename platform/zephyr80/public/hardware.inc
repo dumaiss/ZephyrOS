@@ -20,7 +20,12 @@ KOS_SIO1A_DATA          = 0x30
 KOS_SIO1A_CTRL          = 0x31
 KOS_SIO1B_DATA          = 0x32
 KOS_SIO1B_CTRL          = 0x33
+; --- CTC: one port per physical channel (see hardware.h for the board's
+;     CS0/CS1 wiring: channel 1 answers 42h, channel 2 answers 41h) ---
 KOS_CTC0_PORT           = 0x40
+KOS_CTC1_PORT           = 0x42
+KOS_CTC2_PORT           = 0x41
+KOS_CTC3_PORT           = 0x43
 
 ; --- Memory/banking latch fields ---
 
@@ -221,7 +226,22 @@ KOS_SMOKE_HOST_SYNC_SECOND  = 0x55
 
 KOS_SIO_TX_TIMEOUT      = 0xFFFF
 
-; --- CTC0 interrupt test programming (vector mapping lives in irq.inc) ---
-KOS_CTC0_CONTROL_TEST   = 0xA7
+; --- CTC control-word bits (see hardware.h) ---
+KOS_CTC_CTRL_INTERRUPT_ENABLE = 0x80
+KOS_CTC_CTRL_MODE_COUNTER     = 0x40
+KOS_CTC_CTRL_PRESCALER_256    = 0x20
+KOS_CTC_CTRL_EDGE_RISING      = 0x10
+KOS_CTC_CTRL_TRIGGER_EXTERNAL = 0x08
+KOS_CTC_CTRL_TIME_CONSTANT    = 0x04
+KOS_CTC_CTRL_SOFT_RESET       = 0x02
+KOS_CTC_CTRL_CONTROL_WORD     = 0x01
+
+; --- CTC programming values (IM2 page mapping lives in irq.inc) ---
+KOS_CTC0_VECTOR_BASE    = 0x00
+KOS_CTC_RESET           = KOS_CTC_CTRL_SOFT_RESET | KOS_CTC_CTRL_CONTROL_WORD
+KOS_CTC2_CONTROL_TIMER  = KOS_CTC_CTRL_INTERRUPT_ENABLE | KOS_CTC_CTRL_PRESCALER_256 | KOS_CTC_CTRL_TIME_CONSTANT | KOS_CTC_CTRL_CONTROL_WORD
+KOS_CTC2_TIME_CONSTANT  = 250
+
+; --- CTC0 interrupt test programming ---
+KOS_CTC0_CONTROL_TEST   = KOS_CTC_CTRL_INTERRUPT_ENABLE | KOS_CTC_CTRL_PRESCALER_256 | KOS_CTC_CTRL_TIME_CONSTANT | KOS_CTC_CTRL_SOFT_RESET | KOS_CTC_CTRL_CONTROL_WORD
 KOS_CTC0_TIME_CONSTANT  = 0x00
-KOS_CTC0_RESET          = 0x03

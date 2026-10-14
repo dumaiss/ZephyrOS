@@ -3,7 +3,7 @@
 ; vector-page geometry and the I-register value in irq.inc.
 	.module platform_irq
 	.include "irq.inc"
-	.globl _irq_arch_init, irq_ctc0_stub, irq_ff_unexpected
+	.globl _irq_arch_init, irq_ctc0_stub, irq_ctc2_stub, irq_ff_unexpected
 
 	.area _COMMON
 _irq_arch_init::
@@ -24,6 +24,10 @@ _irq_arch_init::
 	; CTC0 source: vector base 00h -> vector byte 00h.
 	ld	hl,#irq_ctc0_stub
 	ld	(KOS_IRQ_VECTOR_BASE),hl
+	; CTC2 source (the timer driver's tick): the base's channel 2
+	; contributes vector byte 04h.
+	ld	hl,#irq_ctc2_stub
+	ld	(KOS_IRQ_VECTOR_BASE + 0x0004),hl
 	; The final fill store overlaps the linked FF vector word at FDFF/FE00.
 	; Restore that mandatory fallback from its linked target address.
 	ld	hl,#irq_ff_unexpected

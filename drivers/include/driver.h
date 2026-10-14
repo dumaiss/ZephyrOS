@@ -95,6 +95,17 @@
  * (MOD_MAX_DEPENDENCIES, formats/include/mod.h). */
 #define KOS_IPC_DRIVER_MAX_DEPS 8u
 
+/* The logical IRQ sources a resident driver may claim with `irq_claim`
+ * (the executive's irq_source_t numbering, kernel/include/irq_types.h).
+ * A source id is not a vector byte: the platform wiring is kernel data. */
+#define KOS_IRQ_CTC0   0u
+#define KOS_IRQ_CTC1   1u
+#define KOS_IRQ_CTC2   2u
+#define KOS_IRQ_CTC3   3u
+#define KOS_IRQ_SIO0   4u
+#define KOS_IRQ_SIO1   5u
+#define KOS_IRQ_VDP_FF 6u
+
 struct driver_api {
 	/* Synchronous call/reply with a nucleus-owned frame copy. */
 	int16_t (*call)(uint8_t dependency_ref, uint8_t op,

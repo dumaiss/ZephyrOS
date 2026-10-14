@@ -398,7 +398,8 @@ class TestSdkBoundary(unittest.TestCase):
                           "exe2probe", "exe2seg", "exetest", "far_data",
                           "fardemo", "fs_child", "fs_selftest", "hello",
                           "hwtest", "ipc", "ipccopy", "monitor", "ns",
-                          "nschild", "shell", "xmem_child", "xmem_far",
+                          "nschild", "shell", "timer", "xmem_child",
+                          "xmem_far",
                           "xmem_selftest"])
         for name, directory, _sources, _options in programs:
             count = sum(_read(path).count("exe_program,%s," % name)

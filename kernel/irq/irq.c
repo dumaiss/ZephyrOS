@@ -168,3 +168,24 @@ void irq_dispatch(void)
 uint16_t irq_unexpected_count(void) { return unexpected; }
 uint16_t irq_unclaimed_count(void) { return unclaimed; }
 irq_source_t irq_last_source(void) { return last_source; }
+
+/* Copy the three dispatch counters into a five-byte record - unexpected,
+ * unclaimed (little-endian) and the last source - for the diagnostic
+ * syscall that publishes them.  The copy lives here, in the fixed core,
+ * so the cold-half syscall body only has to call it, and it snapshots
+ * with interrupts masked: the counters are written on the ISR stack, and
+ * a record must not carry a half-updated pair. */
+void irq_diag_counters(uint8_t *out)
+{
+	uint16_t snapshot;
+	uint8_t state = irq_arch_lock();
+
+	snapshot = unexpected;
+	out[0] = (uint8_t)(snapshot & 0xFFu);
+	out[1] = (uint8_t)(snapshot >> 8);
+	snapshot = unclaimed;
+	out[2] = (uint8_t)(snapshot & 0xFFu);
+	out[3] = (uint8_t)(snapshot >> 8);
+	out[4] = (uint8_t)last_source;
+	irq_arch_unlock(state);
+}

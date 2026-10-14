@@ -30,6 +30,12 @@ SYS_DIAG_IO_OUT      = 0x2B
 SYS_DIAG_BANK_INFO   = 0x2C
 SYS_DIAG_SYSTEM_INFO = 0x2D
 
+; The system-info record's size (abi/kos/diag.h's
+; KOS_DIAG_SYSTEM_INFO_SIZE): the platform constants plus the interrupt
+; executive's dispatch counters.  The scratch is 16 bytes, so the
+; record's 13 bytes leave room for the caller's pointer above them.
+DIAG_SYSTEM_INFO_SIZE = 13
+
 	.area _CODE
 
 ; int diag_mem_read(struct kos_diag_mem_read_args *req);  HL = req.
@@ -98,15 +104,17 @@ _diag_bank_info::
 	ret
 
 ; int diag_system_info(struct kos_diag_system_info *out);  HL = out.
+; The record fills scratch bytes 0..12, so the caller's pointer rides
+; above it at +14: the kernel writes the record over the whole request.
 _diag_system_info::
-	ld	(_kos_scratch+8),hl
+	ld	(_kos_scratch+14),hl
 	ld	a,#SYS_DIAG_SYSTEM_INFO
 	ld	hl,#_kos_scratch
 	rst	0x30
 	jp	c,_exe_runtime_error
-	ld	de,(_kos_scratch+8)
+	ld	de,(_kos_scratch+14)
 	ld	hl,#_kos_scratch
-	ld	bc,#8
+	ld	bc,#DIAG_SYSTEM_INFO_SIZE
 	ldir
-	ld	de,#8
+	ld	de,#DIAG_SYSTEM_INFO_SIZE
 	ret

@@ -336,7 +336,7 @@ class TestExecStagesItsPathInFixedCore(unittest.TestCase):
         call = source[source.index("static void syscall_exec"):]
         call = call[:call.index("\n}\n")]
         self.assertIn("vfs_ws_enter(VFS_WS_VIEW_PATH)", call)
-        self.assertIn("VFS_WS_IN_A", call)
+        self.assertIn("VFS_WS_NORM_A", call)
         self.assertLess(call.index("vfs_ws_enter(VFS_WS_VIEW_PATH)"),
                         call.index("process_prepare("))
         self.assertLess(call.index("process_prepare("),

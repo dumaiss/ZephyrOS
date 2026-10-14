@@ -7,7 +7,7 @@
  *   2Ah SYS_DIAG_IO_IN       {port}                     -> byte in HL
  *   2Bh SYS_DIAG_IO_OUT      {port, value}
  *   2Ch SYS_DIAG_BANK_INFO   (no block)                 -> mask:bank in HL
- *   2Dh SYS_DIAG_SYSTEM_INFO (record at block)          -> 8 in HL
+ *   2Dh SYS_DIAG_SYSTEM_INFO (record at block)          -> 13 in HL
  *
  * The drivers are explicitly recovery facilities: they validate the
  * complete request before any state changes, reject bank 7 for both
@@ -22,6 +22,7 @@
 #include "process.h"
 
 #include "kernel/memory/banking.h"
+#include "kernel/irq/irq_private.h"
 
 #include "diag.h"
 
@@ -205,5 +206,9 @@ void kos_diag_system_info(uint16_t block)
 	record[5] = (uint8_t)(KOS_COMMON_BASE >> 8);
 	record[6] = (uint8_t)PROCESS_KERNEL_BANK;
 	record[7] = (uint8_t)KOS_ROMFS_FIRST_PAGE;
+	/* The executive's dispatch counters, copied by the fixed-core helper:
+	 * this body is cold-half code and the image's cold half is the
+	 * loaded region, so only the call belongs here. */
+	irq_diag_counters(&record[8]);
 	kos_syscall_success(KOS_DIAG_SYSTEM_INFO_SIZE);
 }

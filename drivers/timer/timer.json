@@ -1,0 +1,51 @@
+{
+  "schema": "kos-driver-1",
+  "name": "timer",
+  "objects": [
+    "timer.rel",
+    "timer_io.rel",
+    "timer_driver.rel",
+    "timer_boot.rel",
+    "sdcc_indirect_calls.rel"
+  ],
+  "init": "timer_driver_init",
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ],
+      "bss_areas": [
+        "_DRIVER_IO"
+      ]
+    },
+    {
+      "role": "boot",
+      "image_areas": [
+        "_BOOT"
+      ],
+      "entry": "timer_boot_entry"
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 10,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "timer_driver_dispatch",
+      "flags": 0
+    }
+  ],
+  "publishes": [
+    {
+      "path": "/dev/timer",
+      "type": "TIMER",
+      "endpoint": {
+        "class": 10,
+        "instance": 0
+      },
+      "object": 0
+    }
+  ],
+  "depends": []
+}

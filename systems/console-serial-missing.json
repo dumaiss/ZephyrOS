@@ -7,6 +7,7 @@
     "hid",
     "v9958",
     "console-serial",
+    "timer",
     "iocfat"
   ],
   "boot": "/system/monitor.exe",

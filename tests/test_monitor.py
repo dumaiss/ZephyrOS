@@ -128,7 +128,7 @@ class TestDiagConstantParity(unittest.TestCase):
                             ("KOS_DIAG_IO_PORT_MIN", 0x10),
                             ("KOS_DIAG_IO_PORT_MAX", 0xFF),
                             ("KOS_DIAG_BANK_MASK", 0x7F),
-                            ("KOS_DIAG_SYSTEM_INFO_SIZE", 8),
+                            ("KOS_DIAG_SYSTEM_INFO_SIZE", 13),
                             ("KOS_DIAG_SYSTEM_INFO_ABI", 1)):
             self.assertEqual(self._diag(name), value,
                              "%s is mispinned" % name)
@@ -147,7 +147,13 @@ class TestDiagConstantParity(unittest.TestCase):
                 "__builtin_offsetof(struct kos_diag_system_info, "
                 "kernel_bank) == 6",
                 "__builtin_offsetof(struct kos_diag_system_info, "
-                "romfs_first_page) == 7"):
+                "romfs_first_page) == 7",
+                "__builtin_offsetof(struct kos_diag_system_info, "
+                "irq_unexpected) == 8",
+                "__builtin_offsetof(struct kos_diag_system_info, "
+                "irq_unclaimed) == 10",
+                "__builtin_offsetof(struct kos_diag_system_info, "
+                "irq_last_source) == 12"):
             self.assertIn(statement, text,
                           "packed-layout assertion missing: %s" % statement)
 
@@ -268,6 +274,7 @@ class TestMonitorArtifacts(unittest.TestCase):
         # every fragment must be present in the image.
         for fragment in (b" app ", b" os ", b" common ", b" kernel-bank ",
                          b" romfs ", b"bank: current ", b" mask ",
+                         b"irq: unexpected ", b" unclaimed ", b" last ",
                          b"boot: ", b" failed ", b" exit ",
                          b"/system/monitor.exe"):
             self.assertIn(fragment, image,

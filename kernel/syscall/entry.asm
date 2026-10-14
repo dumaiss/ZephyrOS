@@ -7,10 +7,14 @@
 ; bank 7.
 ;
 ; Entry state (documented ABI, docs/abi.md):
-;   mode 10 active, interrupts disabled
+;   mode 10 active
 ;   A  = syscall number
 ;   HL = pointer to the argument block (must lie in 0000h-1FFFh)
 ;   SP = caller stack, possibly in 2000h-DFFFh (hidden by mode 11)
+;
+; The caller's interrupt state is snapshotted at entry and restored for the
+; body (the crossing's own steps stay masked), then restored to the caller
+; on return; see the comments at both points.
 ;
 ; Return state:
 ;   carry set, A = error code, HL = primary result (carry clear: success)
@@ -108,6 +112,19 @@ kos_syscall_entry::
 	or	#KOS_MODE_OS
 	out	(KOS_MEMCTL_PORT),a
 
+	; The body runs under the caller's interrupt state: the CTC holds one
+	; interrupt, so a body that ran masked for longer than two ticks would
+	; lose timer ticks (and a benchmark would measure its own loss).  Every
+	; step above stays masked - it writes the common gate state, switches
+	; SP and changes the mapping - and the return path masks again before
+	; it touches any of it.  Delivery is safe here: the IRQ executive keeps
+	; its own state and stacks, and restores the exact latch.
+	ld	a,(kos_gate_saved_iff)
+	or	a
+	jr	z,003$
+	ei
+003$:
+
 	; Restore the syscall inputs; bank 7 is visible at 2000h-DFFFh.
 	pop	af
 	pop	hl
@@ -116,6 +133,11 @@ kos_syscall_entry::
 	; HL = arg block; returns HL = primary result, A = error code,
 	; carry set.
 	call	kos_syscall_dispatch
+
+	; Mask again before touching the gate's saved state: the body ran with
+	; the caller's interrupt state, so this is where the crossing takes
+	; interrupts away again (the caller gets them back at 002$).
+	di
 
 	; Stash the results in common state so the return path can rebuild
 	; registers exactly.

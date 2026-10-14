@@ -418,7 +418,7 @@ zt_fail_alt_hl:
 	jp	kos_irq_selftest_done
 zt_after_alts:
 	; ---- quiesce CTC0 before the IFF-restore probe ----
-	ld	a,#KOS_CTC0_RESET
+	ld	a,#KOS_CTC_RESET
 	out	(KOS_CTC0_PORT),a
 	; ---- syscall gate must restore the prior EI state ----
 	; No interrupt source is active now, so the EI window is race-free.

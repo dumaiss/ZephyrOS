@@ -21,7 +21,7 @@ Region contract (see docs/architecture.md sections 2.2/4.2, docs/boot.md):
                   the derived window data base (never ROM-loaded); no
                   reservation sits between them
     E000h-FEFFh   permanent common code/data (physical bank 0)
-    FF00h-FFFFh   common boot/runtime stack (must stay empty in the image)
+    FE88h-FFFFh   common boot/runtime stack (must stay empty in the image)
 
 Pages 2-7 carry the logical ROMFS stream (build/recovery.romfs, packed
 by tools/romfspack.py from the store manifest tools/systemgen.py writes
@@ -127,7 +127,7 @@ COMMON_CEILING = 0x0C00
 IRQ_VECTOR_BASE = 0xFD00
 IRQ_VECTOR_END = 0xFE01
 IRQ_STATE_BASE = 0xFE01
-STACK_BASE = 0xFF00
+STACK_BASE = 0xFE88
 
 # (start, end, description, expected)
 def make_regions():

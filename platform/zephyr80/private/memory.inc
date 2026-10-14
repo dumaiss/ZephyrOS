@@ -67,10 +67,12 @@ KOS_BANK7_DATA_ALIGN = 0x0200
 ; architectural ceiling (architecture 9); neither value may be raised.
 KOS_COMMON_BASE         = 0xE000
 KOS_COMMON_CODE_END     = 0xFD00
-KOS_COMMON_STACK_BASE   = 0xFF00
+KOS_COMMON_STACK_BASE   = 0xFE88
 KOS_COMMON_CEILING      = 0x0C00
 
-; Common boot/runtime stack: FF00h-FFFFh, grown down from FFFFh.
+; Common boot/runtime stack: FE88h-FFFFh, grown down from FFFFh.  It starts
+; above the IRQ transition stack reservation (irq.inc), so an interrupt
+; taken while a chain's frames sit below FF00h saves into the reservation.
 ; Initial SP = 0000h (top-exclusive at 10000h).
 KOS_STACK_INIT_SP       = 0x0000
 

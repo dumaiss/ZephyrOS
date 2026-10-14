@@ -54,11 +54,13 @@
  * (architecture 9).  It may not be raised to make something fit. */
 #define KOS_COMMON_BASE             0xE000u
 #define KOS_COMMON_CODE_END         0xFD00u
-#define KOS_COMMON_STACK_BASE       0xFF00u
+#define KOS_COMMON_STACK_BASE       0xFE88u
 #define KOS_COMMON_CEILING          0x0C00u
 
-/* Common boot/runtime stack: FF00h-FFFFh, grown down from FFFFh.
- * Initial SP = 0000h (top-exclusive at 10000h). */
+/* Common boot/runtime stack: FE88h-FFFFh, grown down from FFFFh.  It
+ * starts above the IRQ transition stack reservation (irq.h), so an
+ * interrupt taken while a chain's frames sit below FF00h saves into the
+ * reservation.  Initial SP = 0000h (top-exclusive at 10000h). */
 #define KOS_STACK_INIT_SP           0x0000u
 
 /* Common gate stack used only while crossing between mode 10 and

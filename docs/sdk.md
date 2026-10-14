@@ -30,7 +30,8 @@ abi/kos/                  the public ABI (one copy for every build)
 
 user/sdk/
   include/kos.h           the umbrella header a program includes
-  include/kos/            console.h fs.h ipc.h process.h diag.h seg.h xmem.h
+  include/kos/            console.h fs.h ipc.h process.h diag.h seg.h
+                          xmem.h timer.h
   include/klibc/          string.h fmt.h stdarg.h
   src/crt0.asm            startup: the startup block, argv, main, exit
   src/runtime.asm         the fixed low-data area, the shared scratch, the error mapper
@@ -50,6 +51,8 @@ user/sdk/
   src/xload.c             xload()
   src/console_proto.c     the CONSOLE protocol client
   src/console_io.c        console_puts, getchar, console_readline
+  src/timer.c             the TIMER protocol client: timer_open, timer_now,
+                          timer_us, timer_wait_us
   src/klibc/              one archive member per function
   src/kos_internal.h      SDK-private glue (not for programs)
   exe.mk                  the in-tree wrapper: sets the in-tree roots, builds
@@ -367,6 +370,25 @@ buffer-identity rule while the aperture is open.
 `diag_bank_info` and `diag_system_info`, with their blocks in
 `abi/kos/diag.h`. Recovery tools only; `kos.h` does not include them.
 
+### 6.8 The monotonic clock (`kos/timer.h`)
+
+```c
+int  timer_open(void);                       /* bind /dev/timer          */
+int  timer_now(int handle, uint32_t *now);   /* 25.6 µs counts           */
+uint32_t timer_us(uint32_t counts);          /* counts scaled to µs      */
+int  timer_wait_us(int handle, uint32_t us); /* polling wait, bounded    */
+```
+
+The clock wraps after about 30.5 hours; elapsed times are unsigned
+differences. `timer_us` is exact to the count and valid for elapsed times
+under about 71 minutes (its largest partial product is 32 bits).
+`timer_wait_us` polls `now`, so its resolution is one call. It returns 0
+when the wait was served, the negated error when a reading failed, and
+`-KOS_ETIMEDOUT` when the clock stops: a reading has to move by one tick
+(250 counts) within 100,000 consecutive readings, so a dead or frozen
+clock never hangs the caller. A build without the timer driver answers
+`-KOS_ENOENT` or `-KOS_ENODEV` from `timer_open`.
+
 ## 7. Memory layout
 
 ```text
@@ -404,6 +426,7 @@ needed.
 | `open`, `read`, ... | `fs`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `bind`, `call`, `unbind`, `list`, `chdir`, `getcwd` | `ipc`, `kos_ipcgate`, `nsgate` |
 | `run` | `exec`, `ipc`, `kos_ipcgate`, `nsgate` |
+| `timer_open`, `timer_now`, `timer_us`, `timer_wait_us` | `timer`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `xalloc` and friends | `xmem`, `kos_xmemgate` |
 | `seginfo`, `segmap`, `farcall`, `farmap`, `blob` | `seg` |
 | `xload` | `xload` |

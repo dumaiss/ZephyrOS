@@ -12,11 +12,11 @@ tests unpack the tarball outside the repository and pin the package:
   repository path): the SDK stands alone;
 * its template and examples build with the SDK alone, with the tree's
   own include and library paths absent from the environment;
-* the packed program runs in the simulator through the production image's
-  monitor (`X /system/hello.exe`), and a copy of it whose ABI byte is
-  changed is refused by the loader (the monitor reports ERR: 02, the
-  existing refusal for a malformed container) while the unchanged copy
-  runs.
+* the packed program runs in the simulator on the production image (the
+  shell is its boot program and runs `/system/hello.exe`), and a copy of
+  it whose ABI byte is changed is refused by the loader (the shell
+  reports `invalid argument`, the refusal SYS_EXEC maps for a malformed
+  container) while the unchanged copy runs.
 
 Skipped when the packed programs or the production image have not been
 built.
@@ -55,14 +55,15 @@ IMAGE_MAP = os.path.join(BUILD, "konaos.map")
 STORE_JSON = os.path.join(BUILD, "store.json")
 MODULES = os.path.join(BUILD, "modules")
 
-# The line the SDK's hello example prints, the refusal the monitor
+# The line the SDK's hello example prints, the refusal the shell
 # reports for a malformed container, and the doctor'd copy's store name.
 # SYS_EXEC maps every loader refusal (EXE_EXEC_ERR_* <= -20h, the ABI
-# check among them) to KOS_EINVAL for user space (kernel/syscall.c), so
-# the visible error is the monitor's ERR: 02 - the same one an absent or
+# check among them) to KOS_EINVAL for user space (kernel/syscall.c): the
+# monitor renders that as ERR: 02, the shell - the production image's
+# boot program - as `invalid argument`, the same refusal an absent or
 # malformed program has always produced.
 GREETING = "Hello, KonaOS!"
-ABI_REFUSAL = "ERR: 02"
+ABI_REFUSAL = "invalid argument"
 BAD_ABI_NAME = "abi-probe.exe"
 
 # The pinned layout: the SDK tree is exactly these files.  The
@@ -79,6 +80,7 @@ SDK_FILES = {
     "include/kos/ipc.h",
     "include/kos/process.h",
     "include/kos/seg.h",
+    "include/kos/timer.h",
     "include/kos/xmem.h",
     "include/klibc/fmt.h",
     "include/klibc/stdarg.h",
@@ -325,7 +327,7 @@ class TestSdkPackage(unittest.TestCase):
         replay = _PatchedReplay(_splice_store(Path(IMAGE).read_bytes(),
                                               stream))
         z = replay.make_cpu()
-        replay.boot_to_prompt(z)
+        replay.boot_to_shell(z)
         return replay, z
 
     # -- the pinned layout -------------------------------------------------
@@ -439,16 +441,16 @@ class TestSdkPackage(unittest.TestCase):
 
     def test_the_packed_program_runs_in_the_simulator(self):
         """The store carries the SDK-built hello.exe as /system/hello.exe;
-        the monitor's X runs it and the console shows its line."""
+        the shell runs it and the console shows its line."""
         self._require_image()
         hello = self._build()["hello"]
         stream = self._pack_test_store([("hello.exe", hello)])
         replay, z = self._boot(stream)
-        replay.send_line(z, "X /system/hello.exe", GREETING)
+        replay.send_line(z, "/system/hello.exe", GREETING)
 
     def test_a_changed_abi_byte_is_refused_with_the_existing_error(self):
         """The template program with its ABI byte changed (offset 05h)
-        must be refused by the loader: the monitor reports the refusal
+        must be refused by the loader: the shell reports the refusal
         and the program's line never appears, while the same store's
         unchanged copy (the other test) runs."""
         self._require_image()
@@ -463,7 +465,7 @@ class TestSdkPackage(unittest.TestCase):
                                         (BAD_ABI_NAME, path)])
         replay, z = self._boot(stream)
         start = len(z.glyphs)
-        replay.send_line(z, "X /system/%s" % BAD_ABI_NAME, ABI_REFUSAL)
+        replay.send_line(z, "/system/%s" % BAD_ABI_NAME, ABI_REFUSAL)
         refused = "".join(z.glyphs[start:])
         self.assertNotIn(GREETING, refused, "the refused EXE still ran")
 

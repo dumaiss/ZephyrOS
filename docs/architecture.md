@@ -203,8 +203,9 @@ stay reachable while the mapping changes:
 |---|---|
 | `E000h-FCFFh` | transition code, the syscall and IRQ gates, the copy stubs, the ROM-access stub (at `EF00h`), common state, the 384-byte gate stack |
 | `FD00h-FE00h` | the IM2 vector page and its `FFh`-vector guard byte |
-| `FE01h-FEFFh` | IRQ transition state and the 128-byte IRQ transition stack (`FE80h-FEFFh`) |
-| `FF00h-FFFFh` | the boot and common stack |
+| `FE01h-FE08h` | IRQ transition state (saved latch, saved SP, common SP, active source) |
+| `FE08h-FE88h` | the 128-byte IRQ transition stack, directly above the state cells |
+| `FE88h-FFFFh` | the boot and common stack |
 
 Common memory is about **reachability, not isolation**: mode 10 maps it as
 readily as mode 11, and a program can read and write it. It is the scarcest
@@ -212,7 +213,31 @@ region, so it is measured: the packed `_COMMON` + `_COMMON_DATA` run may
 not exceed `KOS_COMMON_CEILING` (3,072 bytes), and the ceiling is never
 raised to make something fit.
 
-### 2.5 The early serial console
+### 2.5 The CTC and its port map
+
+The Z80 CTC's channel select is **crossed** on this board: its `CS0`
+(pin 18) is the address bus's A1 and its `CS1` (pin 19) is A0, so the
+selected channel is `A0*2 + A1` and the port that answers a channel is
+not `40h + channel`:
+
+| physical channel | port | trigger input | typical owner |
+|---|---|---|---|
+| 0 | `40h` | 1.8432 MHz | the SIO0/A baud clock (application) |
+| 1 | `42h` | 3.6864 MHz | free |
+| 2 | `41h` | 7.3728 MHz | the resident timer driver (`docs/devices.md` 9) |
+| 3 | `43h` | 7.3728 MHz | free |
+
+`platform/zephyr80/public/hardware.h` names one port per physical
+channel (`KOS_CTC0_PORT`-`KOS_CTC3_PORT`) and no code computes a port
+from a channel number.  The channel a port selects also decides the IM2
+vector byte the CTC requests (entry `2*N` of the page), so programming
+the wrong port is not an addressing slip but a different interrupt: the
+timer's stub answers entry `04h`, and a tick programmed through `42h`
+would vector `02h` instead.  The board's CP/M BIOS documents the same
+fault and fixes it with a four-entry port table
+(`../Zephyr-80/Code/HOST/CPM2.2/docs/ctc-and-real-time-programming.md`).
+
+### 2.6 The early serial console
 
 SIO channel B (data `22h`, control `23h`, 1.8432 MHz clock): asynchronous
 x16, 115,200 baud 8N1, polled, interrupts off. Initialization:
@@ -398,11 +423,13 @@ No CP/M structures are present. The gate is in common memory because an
 
 ```text
 RST 30h (mode 10, caller stack anywhere in 0000h-DFFFh)
-  -> common gate: save the caller SP, switch to the common gate stack,
-     save the registers the ABI needs, save the whole latch (Q and P),
-     enter mode 11 over the caller's bank with P = 0
-  -> dispatch in the cold half
-  -> return: restore the exact latch, the registers and the caller SP; RET
+  -> common gate: save the caller SP and interrupt state, switch to the
+     common gate stack, save the registers the ABI needs, save the whole
+     latch (Q and P), enter mode 11 over the caller's bank with P = 0
+  -> restore the caller's interrupt state, then dispatch in the cold half
+     (the body runs with it)
+  -> return: mask again, restore the exact latch, the registers and the
+     caller SP; restore the caller's interrupt state; RET
 ```
 
 The gate never uses the caller's stack after the mapping changes, because
@@ -412,6 +439,16 @@ mode 11; a block elsewhere is refused before dispatch. The gate stack is
 384 bytes; the deepest measured chain (nested exec reading a driver-backed
 file) uses 275 bytes, and the worst case must stay at or below 360.
 
+Only the crossing itself is masked.  A syscall **body** runs with the
+caller's interrupt state, because the CTC (5.6) holds one pending
+interrupt: a body that ran masked for longer than two ticks would lose
+every expiry after the first, and the 54/55 diagnostics would time the
+loss as well as the call.  Masking inside a body is therefore explicit and
+bounded - the copy primitives, ROM access, the IOC frame exchange and
+bulk receive (4.5) - and an interrupt taken anywhere in the body is safe:
+the executive keeps its own state and stacks, saves into the reservation
+above the state cells, and restores the exact latch.
+
 ### 4.4 Syscall convention
 
 ```text
@@ -419,6 +456,10 @@ entry   RST 30h, A = syscall number, HL = argument block
 return  carry clear: success, HL = result
         carry set:   failure, A = KOS_E* error code
 ```
+
+Entry and return are masked; the body runs with the caller's interrupt
+state (4.3), so a call may be interrupted and a driver that must hold
+interrupts off masks explicitly and keeps the span bounded (4.5).
 
 The full table and every block are in `docs/abi.md`. Section 6.4 explains
 how `call` adds a second result channel.
@@ -440,7 +481,11 @@ how `call` adds a second result channel.
   (`AF BC DE HL IX IY` and the alternates), saves the exact latch, selects
   mode 11 and the owner's window, switches to the ISR stack and calls the
   handler. **Return** restores the exact latch, registers and SP, then
-  `RETI`. An interrupt taken in mode 11 returns to mode 11.
+  `RETI`. An interrupt taken in mode 11 returns to mode 11. The transition
+  reservation sits directly above the state cells and below the boot stack
+  (`FE08h-FE87h`), so an interrupt taken while the boot stack has grown
+  past its nominal base saves into the reservation and never into the
+  interrupted chain's frames.
 - IRQ delivery never disturbs a latch saved by the code it interrupts; the
   executive keeps its own save slot.
 - **Handlers** are bounded, service their own device condition, never
@@ -448,11 +493,25 @@ how `call` adds a second result channel.
   interrupts are not allowed.
 - **Unexpected or unclaimed** interrupts are counted and, where a platform
   quiesce exists, the source is disabled. Nothing large is printed from
-  interrupt context.
+  interrupt context: the counters are published with the platform
+  constants by `SYS_DIAG_SYSTEM_INFO` (a 13-byte record: `unexpected`,
+  `unclaimed`, then the last source id) and the monitor's `R` prints them
+  as its `irq:` line, which is what a board run reads when a handler that
+  should run does not.
 - **Driver-owned IRQs:** a resident driver claims a source through the
   bootstrap API (`irq_claim`, `irq_release`) and supplies a bank-6 handler.
   The executive opens the driver's window around the call. Delivery to a
-  resident handler costs about 924 T-states.
+  resident handler costs **1,343 T-states**, measured in the timer replay
+  - gate 303, dispatcher and trampoline 674, handler 103, return 263 -
+  which is 2.10 % of a tick at 156.25 Hz.  The timer driver's tick is the
+  first production source that uses this path.
+- **Masking is explicit and bounded.**  Nothing in the executive masks on
+  a caller's behalf: a body runs with the caller's state (4.3), and the
+  sections that hold interrupts off are the copy primitives and ROM
+  access (5.3) and a driver's own critical segments.  The IOC driver's
+  frame exchange and bulk receive are the longest of those; the
+  measurement and its model caveat are in the timer package's validation
+  record (`docs/validation/2026-10-13-m12-timer.md`).
 
 ### 4.6 ROM access and the ROMFS reader
 
@@ -645,9 +704,9 @@ component to one of three static nucleus providers:
   = 64. The native ABI does not inherit FAT 8.3; the current filesystem
   driver does (section 5.6).
 - **Device names** describe roles, never products: `/dev/console`,
-  `/dev/video`, `/dev/input/keyboard`, `/dev/serial/0`, `/dev/ioc`, and
-  later `/dev/sound` and `/dev/timer`. One driver may publish several names
-  and types.
+  `/dev/video`, `/dev/input/keyboard`, `/dev/serial/0`, `/dev/ioc` and
+  `/dev/timer`, and later `/dev/sound`. One driver may publish several
+  names and types.
 - **Handles:** one global table of 12 entries, each tagged with its owner
   process, its 8-bit protocol type, its endpoint and the provider's object
   identity. A handle is small and opaque: not a bank, pointer or endpoint
@@ -804,6 +863,7 @@ console it selected. Programs cannot tell which implementation answers.
 | `v9958` | `VIDEO` | 85×26 terminal renderer (6×8 font); `/dev/video` |
 | `console-v9958-hid`, `console-serial` | `CONSOLE` | the per-build console |
 | `iocfat` | `FILE`, `FS` | the filesystem behind `/fs` |
+| `timer` | `TIMER` | the monotonic clock: CTC physical channel 2 (port 41h), 156.25 Hz, `/dev/timer` |
 
 - **IOC is transport only.** It owns SIO1 framing, the command and bulk
   lanes, the READY/DONE lifecycle, sequencing, timeouts, recovery and the
@@ -830,7 +890,7 @@ console it selected. Programs cannot tell which implementation answers.
 2. **The IPC envelope:** handle, operation, 32-byte frame, status, one
    optional descriptor.
 3. **Protocol types:** `FILE`, `FS` (filesystem namespace), `CONSOLE`,
-   `VIDEO`, `INPUT`, `SERIAL`, `IOC`, and later `SOUND`, `TIMER`. Each
+   `VIDEO`, `INPUT`, `SERIAL`, `IOC`, `TIMER`, and later `SOUND`. Each
    defines its operations and frame meanings in `abi/kos/protocol.h`.
 4. **The SDK:** typed client functions that bind names, check types and
    fill and decode frames (`docs/sdk.md`).
@@ -1017,9 +1077,16 @@ aperture slice, so their number is bounded by the free banks (`run` returns
 - **`hwtest.exe`** is the production feature exerciser, run as `hwtest` at
   the shell (or with `X /system/hwtest.exe` at the monitor): extended
   memory and far code, files (writes
-  confined to `/fs/HWTEST`, which it removes), the namespace and handles
-  against the real devices, and nested exec. It reports one line per
-  stage and a final `n/m PASS`, with a card and without one.
+  confined to `/fs/HWTEST`, which it removes), the monotonic clock, the
+  namespace and handles against the real devices, and nested exec. It
+  reports one line per stage and a final `n/m PASS`, with a card and
+  without one.
+- **`timer.exe`** is the clock's stopwatch program (`tests/timer/`):
+  run bare it prints one elapsed second per second for a minute; the
+  `stage` tail runs the acceptance checks (INFO, 10,000 monotonic
+  readings, a 1 s advance); the `card` tail copies a card file to
+  `/fs/TIMERTMP.BIN` in 512-byte calls, deletes it and prints the elapsed
+  clock, so a card transfer can be held against a stopwatch.
 
 ### 7.5 Costs
 
@@ -1045,10 +1112,11 @@ Each image is described by `systems/<image>.json`:
 ```json
 { "schema": "kos-system-1",
   "name": "production",
-  "drivers": ["sio", "ioc", "hid", "v9958", "console-v9958-hid", "iocfat"],
+  "drivers": ["sio", "ioc", "hid", "v9958", "console-v9958-hid", "timer",
+              "iocfat"],
   "boot": "/system/shell.exe",
   "after_exit": "relaunch",
-  "store": ["shell.exe", "monitor.exe", "hwtest.exe", "..."],
+  "store": ["shell.exe", "monitor.exe", "hwtest.exe", "timer.exe", "..."],
   "cflags": [] }
 ```
 
@@ -1305,10 +1373,7 @@ says so.
      latch `00h`, `JP 0`, and the ROM copy runs as at power-on. Every
      driver init must program its device fully from any state, because no
      device receives a hardware reset.
-3. **A timer driver.** CTC channel 2 at 156.25 Hz publishing `/dev/timer`;
-   time is read with 25.6 µs resolution by combining the tick count with
-   the channel's down-counter. The first production interrupt source.
-4. **Device events.** An application subscribes to events on a device
+3. **Device events.** An application subscribes to events on a device
    handle (`NOTIFY`); the driver keeps the interrupt and posts the event,
    and the nucleus delivers it signal-style, only while the application is
    running: on return from the interrupt when its own code was running,
@@ -1316,7 +1381,7 @@ says so.
    (counted as `missed`) while a child runs. The handler receives `count`
    and `missed`. First source: a channel-3 event timer with exact
    deadlines (a music tracker's tick).
-5. **The diagnostic suite.** `/system/diag.exe`, run from the shell, built
+4. **The diagnostic suite.** `/system/diag.exe`, run from the shell, built
    from far segments:
    - every test reports `PASS`, `FAIL` or `SKIP`; `diag all` aggregates,
      never destroys data and exits non-zero only on a failure;
@@ -1328,7 +1393,7 @@ says so.
    - one read-only nucleus addition, `SYS_DIAG_ENUM`, returning value
      records (banks, interrupt sources, drivers, interrupt totals) and no
      pointers.
-6. **After that:** compatibility personalities, starting with CP/M.
+5. **After that:** compatibility personalities, starting with CP/M.
 
 ---
 

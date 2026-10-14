@@ -36,7 +36,7 @@ static const char mon_fail_diag[] =
 	"monitor: diagnostic drivers unavailable\r\n";
 
 static const char mon_help[] =
-	"R              system/bank information\r\n"
+	"R              system/bank/interrupt information\r\n"
 	"D addr len     dump monitor bank (16-byte rows)\r\n"
 	"DB bank addr len  dump bank 0-6\r\n"
 	"M addr value   set byte in monitor bank\r\n"
@@ -359,6 +359,18 @@ void mon_cmd_info(char *cursor)
 	mon_put_hex8(mon_bank);
 	console_puts(" mask ");
 	mon_put_hex8(mon_mask);
+	console_puts(mon_line_end);
+
+	/* The interrupt executive's dispatch counters: which source last
+	 * reached the gate, and how many dispatches found no stub or no
+	 * handler - the line a board run reads when a handler that should
+	 * run does not. */
+	console_puts("irq: unexpected ");
+	mon_put_hex16(sysinfo.irq_unexpected);
+	console_puts(" unclaimed ");
+	mon_put_hex16(sysinfo.irq_unclaimed);
+	console_puts(" last ");
+	mon_put_hex8(sysinfo.irq_last_source);
 	console_puts(mon_line_end);
 }
 

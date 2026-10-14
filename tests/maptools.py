@@ -81,8 +81,9 @@ REQUIRED_HARDWARE_CONSTANTS = (
     "KOS_SIO_WR0_CHANNEL_RESET", "KOS_SIO_WR4_X16_1STOP_NOPARITY",
     "KOS_SIO_WR3_RX8_NO_AUTO_ENABLES", "KOS_SIO_WR5_TX8_DTR_RTS_ASSERT",
     "KOS_SIO_WR1_INT_DISABLED", "KOS_SIO_TX_TIMEOUT",
-    "KOS_CTC0_PORT", "KOS_CTC0_CONTROL_TEST",
-    "KOS_CTC0_TIME_CONSTANT", "KOS_CTC0_RESET",
+    "KOS_CTC0_PORT", "KOS_CTC2_PORT", "KOS_CTC0_VECTOR_BASE",
+    "KOS_CTC_RESET", "KOS_CTC0_CONTROL_TEST", "KOS_CTC0_TIME_CONSTANT",
+    "KOS_CTC2_CONTROL_TIMER", "KOS_CTC2_TIME_CONSTANT",
 )
 
 REQUIRED_MEMORY_CONSTANTS = (
@@ -107,7 +108,7 @@ REQUIRED_IRQ_CONSTANTS = (
     "KOS_IRQ_VECTOR_BASE", "KOS_IRQ_VECTOR_SIZE",
     "KOS_IRQ_STATE_BASE", "KOS_IRQ_STATE_HEADER_SIZE",
     "KOS_IRQ_STACK_BASE", "KOS_IRQ_STACK_TOP", "KOS_IRQ_STACK_SIZE",
-    "KOS_IM2_I_VALUE", "KOS_CTC0_VECTOR_BASE",
+    "KOS_IM2_I_VALUE",
 )
 
 
@@ -220,12 +221,16 @@ def _strip_comment(text, marker):
 def parse_c_header(path):
     env = {}
     with open(path) as handle:
-        for line in handle:
-            line = _strip_comment(line, "//").strip()
-            match = re.match(r"#define\s+([A-Za-z_]\w*)\s+(.+)$", line)
-            if match:
-                env[match.group(1)] = _strip_comment(match.group(2),
-                                                     "/*").strip()
+        # A `#define` may be continued with a backslash (the platform
+        # headers compose mask values that way), so join continuations
+        # before matching: the host tools read what the compiler reads.
+        text = re.sub(r"\\\n", " ", handle.read())
+    for line in text.splitlines():
+        line = _strip_comment(line, "//").strip()
+        match = re.match(r"#define\s+([A-Za-z_]\w*)\s+(.+)$", line)
+        if match:
+            env[match.group(1)] = _strip_comment(match.group(2),
+                                                 "/*").strip()
     return env
 
 
@@ -340,7 +345,7 @@ def make_map(overrides=None, **kw):
         "irq_vector_page": 0xFD00, "irq_vector_guard": 0xFE00,
         "irq_saved_latch": 0xFE01, "irq_saved_sp": 0xFE02,
         "irq_common_sp": 0xFE04, "_irq_active_source": 0xFE06,
-        "irq_transition_stack": 0xFE80, "irq_transition_stack_top": 0xFF00,
+        "irq_transition_stack": 0xFE08, "irq_transition_stack_top": 0xFE88,
         "irq_isr_stack": 0x5F00, "irq_isr_stack_top": 0x6000,
         "kos_gate_saved_sp": 0xE100, "kos_gate_saved_latch": 0xE102,
         "kos_gate_result_hl": 0xE103, "kos_gate_result_a": 0xE105,

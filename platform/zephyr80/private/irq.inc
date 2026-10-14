@@ -19,13 +19,14 @@ KOS_IRQ_VECTOR_SIZE     = 0x0101
 KOS_IRQ_STATE_BASE      = 0xFE01
 KOS_IRQ_STATE_HEADER_SIZE = 0x0006
 
-; 128-byte common IRQ transition stack, above the state block.
-KOS_IRQ_STACK_BASE      = 0xFE80
-KOS_IRQ_STACK_TOP       = 0xFF00
+; 128-byte common IRQ transition stack, directly above the state block so
+; that an overrun of the reservation can only reach the state cells.  The
+; region above its top belongs to the common boot stack (memory.inc): a
+; nucleus chain may hold live frames below FF00h, and the gate must save
+; into the reservation, not into those frames.
+KOS_IRQ_STACK_BASE      = 0xFE08
+KOS_IRQ_STACK_TOP       = 0xFE88
 KOS_IRQ_STACK_SIZE      = 0x0080
 
 ; Kernel-owned IM2 vector page base (the value loaded into the I register).
 KOS_IM2_I_VALUE         = 0xFD
-
-; CTC0 (physical channel 0, port 40h) IM2 vector byte.
-KOS_CTC0_VECTOR_BASE    = 0x00

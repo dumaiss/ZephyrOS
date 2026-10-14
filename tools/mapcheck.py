@@ -10,7 +10,7 @@ ownership contract (see docs/memory.md):
     bank 7 kernel 6000h-DFFFh   cold half: _WINDOW/_WINDOW_DATA
     bank-7 ISR stack 5F00h-6000h  fixed 256-byte handler stack
     common         E000h-FEFFh  _COMMON/_COMMON_DATA, gates, console, panic
-    common stack   FF00h-FFFFh  reserved; nothing may be linked there
+    common stack   FE88h-FFFFh  reserved; nothing may be linked there
 
 The two bank-7 runtime data bases are derived, not fixed: the probe link
 measures the runtime-data size (`l__DATA + l__INITIALIZED`) and the
@@ -110,12 +110,12 @@ COMMON_CEILING = 0x0C00
 IRQ_VECTOR_BASE = 0xFD00
 IRQ_VECTOR_SIZE = 0x0101
 IRQ_STATE_BASE = 0xFE01
-IRQ_STACK_BASE = 0xFE80
-IRQ_STACK_TOP = 0xFF00
+IRQ_STACK_BASE = 0xFE08
+IRQ_STACK_TOP = 0xFE88
 IRQ_STACK_SIZE = 0x0080
 # The whole bank-7 space below common memory.
 BANK7_TOP = BANK7_RUNTIME_END
-STACK_BASE = 0xFF00
+STACK_BASE = 0xFE88
 MEM_TOP = 0x10000
 # Default when the caller passes no generated include; the build's
 # include carries KOS_GATE_STACK_SIZE (platform/zephyr80/private/memory.inc).
@@ -980,7 +980,7 @@ def check_areas(areas, symbols):
                 "reservation" % (name, addr, size, RESET_TOP)
             )
 
-    # Nothing may occupy the common stack reservation FF00h-FFFFh.
+    # Nothing may occupy the common stack reservation FE88h-FFFFh.
     for name, (addr, size) in sorted(areas.items()):
         if name in reset_areas:
             continue
@@ -989,7 +989,7 @@ def check_areas(areas, symbols):
         if addr >= COMMON_BASE and addr + size > STACK_BASE:
             raise MapError(
                 "%s at %04Xh (size %d) overlaps the common stack "
-                "reservation FF00h-FFFFh" % (name, addr, size)
+                "reservation %04Xh-FFFFh" % (name, addr, size, STACK_BASE)
             )
 
     # The cold half has no reserved block between the

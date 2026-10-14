@@ -102,6 +102,10 @@ irq_common_entry::
 	pop	bc
 	ld	sp,(irq_saved_sp)
 	pop	af
+	; Accepting the interrupt cleared IFF1 and IFF2, and RETI only copies
+	; IFF2 back into IFF1.  EI here restores maskable interrupts (it takes
+	; effect after RETI, so the exit is still one delivery deep).
+	ei
 	reti
 
 ; Capture IFF2 through LD A,I, then mask.  SDCC consumes a uint8_t return
@@ -126,6 +130,9 @@ _irq_arch_unlock::
 	ret
 
 ; Fixed transition state and stack; no ordinary allocation may enter here.
+; The state cells sit directly below the stack base and the region above
+; the stack top is the common boot stack: the gate's saves can only ever
+; reach the state cells, never the frames of the interrupted chain.
 	.area _IRQ_COMMON_STATE (ABS)
 	.org KOS_IRQ_STATE_BASE
 irq_saved_latch::

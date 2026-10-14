@@ -660,6 +660,23 @@ $(MODULES)/ioc_boot.rel: drivers/ioc/ioc_boot.c drivers/ioc/ioc_driver.h \
 		drivers/include/driver.h $(DRV_PROTOCOL_H) | $(MODULES)
 	$(SDCC) $(DRV_BOOT) $< -o $@
 
+$(MODULES)/timer.rel: drivers/timer/timer.c \
+		drivers/include/driver.h \
+		platform/zephyr80/public/hardware.h | $(MODULES)
+	$(SDCC) $(DRV_HOT) $< -o $@
+
+$(MODULES)/timer_io.rel: drivers/timer/timer_io.asm \
+		platform/zephyr80/public/hardware.inc | $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(MODULES)/timer_driver.rel: drivers/timer/timer_proto.c \
+		drivers/include/driver.h abi/kos/protocol.h | $(MODULES)
+	$(SDCC) $(DRV_HOT) $< -o $@
+
+$(MODULES)/timer_boot.rel: drivers/timer/timer_boot.c \
+		platform/zephyr80/public/hardware.h | $(MODULES)
+	$(SDCC) $(DRV_BOOT) $< -o $@
+
 $(MODULES)/hid.rel: drivers/hid/hid.c drivers/hid/hid_driver.h \
 		drivers/include/ioc_protocol.h \
 		drivers/include/ioc.h \
@@ -994,6 +1011,13 @@ $(eval $(call exe_program,fs_child,tests/fs,\
 # it carries no checks of its own beyond the namespace stage.
 $(eval $(call exe_program,hwtest,tests/hwtest,\
 	hwtest.c,STACK=256,STAGE=1))
+
+# The monotonic-clock outcome program: the production store's
+# `/system/timer.exe`.  Run bare it is the owner's stopwatch check (one
+# elapsed-second line per second); the `stage` tail runs the acceptance
+# replay's checks.
+$(eval $(call exe_program,timer,tests/timer,\
+	timer.c,STACK=256,STAGE=1))
 
 # Extended-memory outcome programs: the checks the image boots
 # (`KOS_BOOT_PROGRAM=/system/xmem_selftest.exe`), the child it SYS_EXECs

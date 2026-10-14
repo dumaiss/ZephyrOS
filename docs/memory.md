@@ -22,9 +22,9 @@ Mode 11 (the nucleus's view) with the window on bank 7:
 | `EEFEh-EF07h` | the ROM-access transition block, inside the common range |
 | `FD00h-FDFFh` | the IM2 vector page (`I = FDh`) |
 | `FE00h` | the vector-`FFh` guard byte |
-| `FE01h-FE7Fh` | IRQ transition state |
-| `FE80h-FEFFh` | the 128-byte IRQ transition stack |
-| `FF00h-FFFFh` | the common boot and runtime stack (initial `SP = 0000h`, grows down) |
+| `FE01h-FE07h` | IRQ transition state |
+| `FE08h-FE87h` | the 128-byte IRQ transition stack |
+| `FE88h-FFFFh` | the common boot and runtime stack (initial `SP = 0000h`, grows down) |
 
 Mode 10 (a program's view) maps the program's bank at `0000h-DFFFh` and
 common memory at `E000h-FFFFh`; with P ≠ 0, `8000h-BFFFh` shows bank 7 − P.
@@ -86,7 +86,7 @@ _COMMON -> _COMMON_DATA                                   common
 | `_ROM_ACCESS_STUB` | `EEFEh-EF07h` | the ROM-access trampoline and mirrored stub |
 | `_IRQ_ISR_STACK` | `5F00h-5FFFh` | the ISR stack |
 | `_IRQ_VECTOR` | `FD00h-FE00h` | the IM2 page and its guard |
-| `_IRQ_COMMON_STATE` | `FE01h-FEFFh` | IRQ state and the transition stack |
+| `_IRQ_COMMON_STATE` | `FE01h-FE87h` | IRQ state and the transition stack |
 
 Every area exports `s__<area>` and `l__<area>`. `__kos_crt0_init`
 (`boot/start.asm`) copies `_INITIALIZER` to `_INITIALIZED` and zeroes
@@ -175,16 +175,16 @@ common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>
 - **common:** the packed `_COMMON` + `_COMMON_DATA` run. `capacity` is
   `E000h-FCFFh` (7,424 bytes); `ceiling` is `KOS_COMMON_CEILING` (3,072),
   which `used` may not exceed and which is never raised. The absolute IRQ
-  reservations at `FD00h-FEFFh` are not part of the run.
+  reservations at `FD00h-FE87h` are not part of the run.
 
 Current production figures:
 
 ```text
-nucleus fixed: required 8335 bytes | overflow 2 bytes | stacks 768 | room 7279 bytes
-nucleus cold: code 23496 bytes end BBC8h | data 1527 bytes at BC00h | room 7689 bytes
-driver hot: 21910 bytes of 32768
-driver boot/bulk: 2170 bytes of 24576
-common: used 2358 of 7424 bytes (code 1511, data 847) | ceiling 3072
+nucleus fixed: required 8363 bytes | overflow 2 bytes | stacks 768 | room 7251 bytes
+nucleus cold: code 23861 bytes end BD35h | data 1527 bytes at BE00h | room 7177 bytes
+driver hot: 22578 bytes of 32768
+driver boot/bulk: 2186 bytes of 24576
+common: used 2373 of 7424 bytes (code 1526, data 847) | ceiling 3072
 ```
 
 The gate stack is 384 bytes; the deepest measured chain uses 275, and the
@@ -286,8 +286,8 @@ production carries none.
 ```text
 _IRQ_VECTOR        FD00h-FE00h   the IM2 page and the guard byte; the word at
                                  FDFFh-FE00h must equal irq_ff_unexpected
-_IRQ_COMMON_STATE  FE01h-FE7Fh   saved latch, saved SP, common SP, active source
-                   FE80h-FEFFh   the IRQ transition stack
+_IRQ_COMMON_STATE  FE01h-FE07h   saved latch, saved SP, common SP, active source
+                   FE08h-FE87h   the IRQ transition stack
 _IRQ_ISR_STACK     5F00h-5FFFh   the handler stack; initial SP = 6000h
 ```
 

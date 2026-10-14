@@ -18,7 +18,7 @@ Coverage, all against those linked bytes:
 * production boot: the early console prints its banner and nothing else
   (the driver transcript and the boot line `console: driver OK` travel
   over the console driver, i.e. on the V9958 lane), the store's manifest
-  lists the five drivers in load order and every image is a driver
+  lists the drivers in load order and every image is a driver
   container exporting exactly one endpoint at version 1;
 * the shell boot and the scripted visible monitor session: the nucleus
   writes its boot line through the console driver, the shell is the boot
@@ -63,10 +63,12 @@ SMOKE_HOST_SYNC = b"\xaa\x55"
 
 # The packed monitor artifact (pinned by user/monitor/ and the tooling
 # tests; the store must deliver these exact bytes).  The monitor grew by
-# the B (reboot) command, so the pinned identity moved with the relink.
-MONITOR_SIZE = 6387
+# the B (reboot) command and then by the `irq:` row's counters and the
+# SDK's longer system-info record, so the pinned identity moved with the
+# relink.
+MONITOR_SIZE = 6484
 MONITOR_SHA256 = (
-    "baa05b71d665164d8fbd14a939f9438761bc1744fd2dc393e30932f903ffc27d")
+    "f7e4e70fe054e41ee30e67aeae9f9b75ba209e02076c70fcadb976e08101c4cb")
 
 # The monitor's visible rows, decoded from the V9958 trace.
 PROMPT = "Z80> "
@@ -76,6 +78,13 @@ SYSINFO = "system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02"
 # slot and bank (and no kernel-parent flag).
 PROCESS = "process: pid 1 bank 1 flags 0000"
 BANK_INFO = "bank: current 01 mask 7F"
+# The executive's dispatch counters: nothing has been unexpected or
+# unclaimed, and no interrupt has been dispatched at all - this replay
+# leaves the CTC unmodelled, so the executive still reports its "nothing
+# yet" source (IRQ_SOURCE_COUNT, 7).  The counters are the row's point;
+# the timer replay is what proves dispatches happen at all, and the
+# board's own runs read this line when one stops happening.
+IRQ_LINE = "irq: unexpected 0000 unclaimed 0000 last 07"
 # The integration image's boot program hands the console to a monitor of
 # its own; when that session ends the program returns and the launcher's
 # monitor policy starts the monitor again.
@@ -86,13 +95,13 @@ PRODUCTION_IMAGE = "konaos.bin"
 INTEGRATION_DIR = "build-console-integration-selftest"
 INTEGRATION_IMAGE = "konaos-console-integration-selftest.bin"
 
-# The five driver images the production store carries, in manifest order,
-# with the endpoint class each registers.  The production CONSOLE driver
-# is `console-v9958-hid`; the serial variant selects
-# `console-serial` from the same shared source.
+# The driver images the production store carries, in manifest order, with
+# the endpoint class each registers.  The production CONSOLE driver is
+# `console-v9958-hid`; the serial variant selects `console-serial` from
+# the same shared source.
 DRIVER_SET = (("sio.mod", 1), ("ioc.mod", 5), ("hid.mod", 4),
                ("v9958.mod", 2), ("console-v9958-hid.mod", 6),
-               ("iocfat.mod", 7))
+               ("timer.mod", 10), ("iocfat.mod", 7))
 
 # The console image's required dependencies (class, instance), in
 # manifest order.  `console-serial` is exercised by test_console_serial.
@@ -160,7 +169,7 @@ class ConsoleReplayBase(ConsoleReplay, unittest.TestCase):
 
 
 class TestProductionImage(ConsoleReplayBase):
-    """`build/konaos.bin`: the store's five drivers and the shell."""
+    """`build/konaos.bin`: the store's drivers and the shell."""
 
     def test_boot_lanes_and_driver_store(self):
         z = self.start()
@@ -212,7 +221,7 @@ class TestProductionImage(ConsoleReplayBase):
         self.type_line(z, b"X /system/nosuch.exe\r", "ERR: 05")
         self.type_line(z, b"q\r", SHELL_PROMPT)
         trace = self.read_trace(z)
-        for line in (SYSINFO, PROCESS, BANK_INFO):
+        for line in (SYSINFO, PROCESS, BANK_INFO, IRQ_LINE):
             self.assertIn(line, trace)
         self.assertEqual(trace.count(BANNER), 1)
         # The monitor was the shell's child: its exit is the shell's

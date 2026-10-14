@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, HERE)
 
 import mapcheck  # noqa: E402
+from maptools import evaluate, parse_c_header  # noqa: E402
 
 RUNNER = os.path.join(ROOT, "tests", "hwtest", "hwtest.c")
 FS_PROGRAM = os.path.join(ROOT, "tests", "fs", "fs_selftest.c")
@@ -34,12 +35,12 @@ MEMORY_INC = os.path.join(ROOT, "platform", "zephyr80", "private",
                           "memory.inc")
 STORE = os.path.join(ROOT, "build", "recovery.romfs")
 
-# The store's program set: the launcher plus the exerciser and the six
-# images its three stages run (the xmem family, the far program and the
-# filesystem family).
-STORE_PROGRAMS = ("monitor.exe", "hwtest.exe", "xmem_selftest.exe",
-                  "xmem_child.exe", "xmem_far.exe", "fs_selftest.exe",
-                  "fs_child.exe")
+# The store's program set: the launcher plus the exerciser and the images
+# its stages run (the xmem family, the far program, the filesystem family
+# and the stopwatch program).
+STORE_PROGRAMS = ("monitor.exe", "hwtest.exe", "timer.exe",
+                  "xmem_selftest.exe", "xmem_child.exe", "xmem_far.exe",
+                  "fs_selftest.exe", "fs_child.exe")
 
 # The store the exerciser shares with everything else.
 STORE_CAPACITY = 0x48000
@@ -117,6 +118,66 @@ class TestExerciserProgram(unittest.TestCase):
         self.assertIn('"PASS" : "FAIL"', text)
         # PASS exits 0 and FAIL exits 1: the status the monitor prints.
         self.assertIn("(passed == STAGE_COUNT) ? 0 : 1", text)
+
+
+class TestTheTimerStageBoundsTheClock(unittest.TestCase):
+    """The exerciser's timer stage: a wait that cannot hang, and a rate
+    checked against CPU time of a calibrated length."""
+
+    def setUp(self):
+        self.env = parse_c_header(RUNNER)
+
+    def test_the_wait_is_bounded_and_reports_the_stop(self):
+        env = self.env
+        self.assertEqual(evaluate(env["TIMER_WAIT_US"], env), 100000)
+        text = read(RUNNER)
+        self.assertIn("timer_wait_us(handle, TIMER_WAIT_US)", text)
+        # The bounded poll's give-up is the row's reason, and the row
+        # returns then and there: a dead clock is never waited on again.
+        self.assertIn('"wait %d"', text)
+        stage = text[text.index("static int hw_stage_timer"):]
+        stage = stage[:stage.index("\n}")]
+        self.assertLess(stage.index("timer_wait_us("),
+                        stage.index("hw_timer_busy("))
+
+    def test_the_rate_window_is_a_factor_of_two_either_way(self):
+        env = self.env
+        tstates = evaluate(env["TIMER_RATE_TSTATES"], env)
+        counts = evaluate(env["TIMER_RATE_COUNTS"], env)
+        factor = evaluate(env["TIMER_RATE_FACTOR"], env)
+        # One count is 256 T-states, and the loop is about 100 ms of the
+        # 10 MHz clock - the same CPU time the wait's floor measures.
+        self.assertEqual(counts, tstates >> 8)
+        self.assertEqual(evaluate(env["TIMER_WAIT_COUNTS"], env), 3906)
+        self.assertLess(abs(tstates - 1000000), 100000)
+
+        def passes(observed):
+            # The stage's own comparison.
+            return counts // factor <= observed <= counts * factor
+
+        # The loop's own cost passes; the board's defect word (counter
+        # mode: 189x) and a clock half or twice as slow as the constant
+        # do not.
+        self.assertTrue(passes(counts))
+        self.assertFalse(passes(189 * counts))
+        self.assertFalse(passes(counts // 3))
+
+    def test_the_busy_loop_reads_no_clock(self):
+        text = read(RUNNER)
+        busy = text[text.index("static void hw_timer_busy"):]
+        busy = busy[:busy.index("\n}")]
+        self.assertNotIn("timer_now", busy)
+        self.assertNotIn("timer_wait_us", busy)
+        self.assertNotIn("call(", busy)
+        # The window is applied to the readings around it, with the
+        # observed counts printed when it fails.
+        stage = text[text.index("static int hw_stage_timer"):]
+        stage = stage[:stage.index("\n}")]
+        self.assertIn("counts < TIMER_RATE_COUNTS / TIMER_RATE_FACTOR",
+                      stage)
+        self.assertIn("counts > TIMER_RATE_COUNTS * TIMER_RATE_FACTOR",
+                      stage)
+        self.assertIn('"rate %lu"', stage)
 
 
 class TestTheExerciserReportsTheCodeItSaw(unittest.TestCase):
@@ -276,9 +337,10 @@ class TestSmokeMode(unittest.TestCase):
         self.assertIn('HW_COMMAND = b"hwtest\\r"', text)
         for marker in ("hwtest: begin", "hwtest: xmem+far PASS",
                        "hwtest: namespace+handles PASS", "hwtest: files PASS",
+                       "hwtest: timer PASS",
                        "hwtest: files card absent",
                        "hwtest: files card not writable",
-                       "hwtest: 3/3 PASS", "hwtest: 3/3 FAIL"):
+                       "hwtest: 4/4 PASS", "hwtest: 4/4 FAIL"):
             self.assertIn(marker, text)
         # The exerciser takes minutes on hardware: the mode carries its
         # own default timeout.

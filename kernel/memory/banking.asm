@@ -4,7 +4,7 @@
 ; Everything here is resident in the permanent common region (physical bank
 ; 0, E000h-FEFFh):
 ;   code  -> _COMMON        (placed at E000h by the linker script)
-;   state -> _COMMON_DATA   (immediately after _COMMON, below the FF00h stack)
+;   state -> _COMMON_DATA   (immediately after _COMMON, below the boot stack)
 ;
 ; Rules honored by every routine in this file:
 ;   - an instruction that changes the memory mapping, and everything

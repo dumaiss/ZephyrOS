@@ -22,5 +22,5 @@ void kos_ctc0_test_start(void)
 
 void kos_ctc0_test_stop(void)
 {
-	kos_ctc0_test_port = KOS_CTC0_RESET;
+	kos_ctc0_test_port = KOS_CTC_RESET;
 }

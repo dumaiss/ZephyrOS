@@ -24,7 +24,7 @@ ROM page 0:
     0000h-002Fh   the stackless reset copier (below the RST 30h vector)
     0030h-DFFFh   FFh
     E000h-FEFFh   common code and data (physical SRAM bank 0)
-    FF00h-FFFFh   FFh (the common stack, written only at run time)
+    FE88h-FFFFh   FFh (the common stack, written only at run time)
 
 ROM page 1:
     0000h-002Fh   a byte-identical copy of the reset copier
@@ -64,7 +64,7 @@ latch   meaning                     effect
 
 `_boot_common_entry` (common code):
 
-1. sets `SP = 0000h` (the stack grows down through `FF00h-FFFFh`);
+1. sets `SP = 0000h` (the stack grows down through `FE88h-FFFFh`);
 2. enters mode 11 over bank 0;
 3. reads the latch back and checks mode 11 over bank 0; on failure it
    prints `PANIC: banking latch assertion failed` and halts;
@@ -127,7 +127,7 @@ sequence (`TEST-ONLY HOOK`); production compiles none of it.
 
 ```text
 FFFFh +-------------------------------+
-      | bank 0 common                 |  FF00h-FFFFh: the common stack
+      | bank 0 common                 |  FE88h-FFFFh: the common stack
 E000h +-------------------------------+
       | bank 7 cold half    32 KiB    |  visible while the window shows bank 7
 6000h +-------------------------------+

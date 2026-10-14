@@ -289,14 +289,15 @@ class TestDriverArtifact(unittest.TestCase):
         system = _load_json(PRODUCTION_SYSTEM)
         self.assertEqual(system["drivers"],
                          ["sio", "ioc", "hid", "v9958", "console-v9958-hid",
-                          "iocfat"])
+                          "timer", "iocfat"])
         self.assertEqual(system["store"],
-                         ["monitor.exe",
+                         ["shell.exe", "monitor.exe",
                           # The production feature exerciser and the
                           # outcome programs it runs.
-                          "hwtest.exe", "xmem_selftest.exe",
+                          "hwtest.exe", "timer.exe", "xmem_selftest.exe",
                           "xmem_child.exe", "xmem_far.exe",
-                          "fs_selftest.exe", "fs_child.exe"])
+                          "fs_selftest.exe", "fs_child.exe",
+                          "far_data.exe", "banks.exe", "known.bin"])
         self.assertEqual(systemgen.store_type("v9958.mod"), "MOD")
         # The font is the video image's bulk segment; the recovery
         # store carries no separate copy of it.

@@ -29,7 +29,7 @@ SYSTEMS = os.path.join(ROOT, "systems")
 # manifest that follows from it for the production image: six 24-byte
 # ROMFS name records, the field formats/include/mod.h defines.
 PRODUCTION_DRIVERS = ["sio", "ioc", "hid", "v9958", "console-v9958-hid",
-                      "iocfat"]
+                      "timer", "iocfat"]
 PRODUCTION_MAN = b"".join(
     name.encode("ascii") + bytes(24 - len(name))
     for name in [driver + ".mod" for driver in PRODUCTION_DRIVERS])
@@ -403,7 +403,8 @@ class TestTheRealSystems(unittest.TestCase):
         self.assertEqual([entry["name"] for entry in self.store()["files"]],
                          [driver + ".mod" for driver in PRODUCTION_DRIVERS] +
                          ["drivers.man", "shell.exe", "monitor.exe",
-                          "hwtest.exe", "xmem_selftest.exe", "xmem_child.exe",
+                          "hwtest.exe", "timer.exe", "xmem_selftest.exe",
+                          "xmem_child.exe",
                           "xmem_far.exe", "fs_selftest.exe", "fs_child.exe",
                           "far_data.exe", "banks.exe", "known.bin"])
 

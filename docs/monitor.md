@@ -46,7 +46,7 @@ missing, malformed, out-of-range or extra argument is answered `ERR: ARG`.
 | command | action |
 |---|---|
 | `H`, `?` | help |
-| `R` | system, process and bank information |
+| `R` | system, process, bank and interrupt information |
 | `D addr len` | dump the monitor's own bank, 16 bytes per row |
 | `DB bank addr len` | dump bank 0-6 |
 | `M addr value` | set one byte in the monitor's own bank |
@@ -56,6 +56,15 @@ missing, malformed, out-of-range or extra argument is answered `ERR: ARG`.
 | `X path [tail]` | run a program from `/system` or `/fs` and print its exit status |
 | `B` | reboot the machine (`SYS_REBOOT`, `docs/abi.md` section 5.5) |
 | `Q` | exit to the launcher |
+
+The `R` line `irq:` is the interrupt executive's dispatch report:
+`unexpected` counts interrupts that reached the gate with no source the
+executive could name, `unclaimed` those whose source no driver had
+claimed (they are quiesced, `docs/devices.md`), and `last` is the source
+id of the most recent dispatch - `IRQ_CTC2` (`02`) when the clock is
+running, and the executive's "nothing yet" value `07` before any
+interrupt.  It is the line to read when a handler that should run does
+not.
 
 `X` runs the program through the ordinary `SYS_EXEC` path, waits for it,
 prints `exec: exit status 0xssss` (or `ERR: <code>` when the exec fails)
@@ -74,6 +83,7 @@ Z80> R
 system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02
 process: pid 0 bank 0 flags 0001
 bank: current 00 mask 7F
+irq: unexpected 0000 unclaimed 0000 last 02
 Z80> D 0100 10
 0100: 7C B5 20 0D CD 4D 06 21 03 02 CD E5 0D F3 76 18  |. ..M.!......v.
 Z80> DB 0 0030 1
@@ -124,15 +134,19 @@ An image without `/dev/serial/0` is console-only.
 
 `X /system/hwtest.exe` runs, in order: extended memory and far code; files
 (every write confined to `/fs/HWTEST`, which it creates and removes, even
-after a failure); the namespace and handles against the real devices.
+after a failure); the monotonic clock (its INFO constants, a 100 ms wait
+that is bounded against a stopped clock, and a rate check against CPU time
+of a calibrated length, so a wrong control word fails on the board too);
+the namespace and handles against the real devices.
 
 ```text
 Z80> X /system/hwtest.exe
 hwtest: begin
 hwtest: xmem+far PASS
 hwtest: files PASS                 # or: card absent / card not writable
+hwtest: timer PASS
 hwtest: namespace+handles PASS
-hwtest: 3/3 PASS                   # + " (card absent)" with no card
+hwtest: 4/4 PASS                   # + " (card absent)" with no card
 exec: exit status 0x0000
 ```
 

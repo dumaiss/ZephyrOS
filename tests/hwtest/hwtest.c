@@ -21,6 +21,12 @@
  *             card keeps no trace.  With no card (or a read-only one) the
  *             absent-card branch is the expected result and the line
  *             says so;
+ *   timer     `/dev/timer`: the INFO constants, a 100 ms wait that
+ *             must move the clock, and a busy loop of calibrated length
+ *             that bounds the rate to within a factor of two either way
+ *             - a wrong control word (counter mode instead of timer
+ *             mode) runs the clock 189x fast and fails here even when
+ *             the emulated CTC agrees with the driver;
  *   namespace the checks of `tests/ns/ns.c` that apply to the real
  *   +handles  publications: the five `/dev` objects with their types,
  *             enumeration of `/`, `/dev`, `/system` and the card root,
@@ -32,7 +38,7 @@
  *
  * Output contract: every line is `hwtest: ...`, the stage lines carry
  * PASS, `FAIL <label>`, `card absent` or `card not writable`, and the
- * last line is `hwtest: <passed>/3 PASS|FAIL` with ` (card absent)` or
+ * last line is `hwtest: <passed>/4 PASS|FAIL` with ` (card absent)` or
  * ` (card not writable)` appended when that is the card state.  A failed
  * row prints the observed code next to the label - `FAIL bind-container
  * got 02` for a wrong status, `FAIL cwd-root type 02 want 04` for a
@@ -52,6 +58,7 @@
 #include "klibc/fmt.h"
 #include "klibc/string.h"
 #include "kos/protocol.h"
+#include "kos/timer.h"
 
 #define LINE_MAX 96
 
@@ -82,7 +89,28 @@
 /* Four entries per page: 112 bytes of caller buffer. */
 #define ENUM_PAGE 4u
 
-#define STAGE_COUNT 3u
+#define STAGE_COUNT 4u
+
+/* The timer stage's wait and its floor in counts: 100 ms is 3906.25
+ * counts, so a wait that really served its time advances at least 3906;
+ * the ceiling allows one poll period's overshoot (the 1 s bound's 250
+ * counts, 0.64 %). */
+#define TIMER_WAIT_US     100000u
+#define TIMER_WAIT_COUNTS 3906u
+#define TIMER_WAIT_SLACK  250u
+
+/* The stage's rate probe: TIMER_RATE_LOOPS iterations of the busy loop
+ * below.  The loop is TIMER_RATE_TSTATES T-states of compiled code -
+ * 99.9 ms of the 10 MHz system clock (the emulated clock measures
+ * 998,705, and tests/test_hwtest_sim.py pins the two together) - so the
+ * constant is calibrated rather than guessed.  The clock must advance by
+ * the loop's counts (one count is 256 T-states, 25.6 us) to within a
+ * factor of two either way: a clock wrong in kind or by a wrong constant
+ * fails here whatever the emulated model says. */
+#define TIMER_RATE_LOOPS   32000u
+#define TIMER_RATE_TSTATES 1000000u
+#define TIMER_RATE_COUNTS  (TIMER_RATE_TSTATES >> 8)
+#define TIMER_RATE_FACTOR  2u
 
 /* Card states the stage lines and the summary carry. */
 #define CARD_PRESENT  0
@@ -330,7 +358,146 @@ static int hw_stage_files(int *card)
 	return 1;
 }
 
-/* --- stage 3: namespace and handles ------------------------------------ */
+/* --- stage 3: the monotonic clock -------------------------------------- */
+
+/* The rate probe's busy loop: a compiled sequence of a length the
+ * replay measures (tests/test_hwtest_sim.py pins the T-states against
+ * TIMER_RATE_TSTATES).  It reads no clock itself - the CPU time it takes
+ * is the independent base the clock is checked against. */
+static void hw_timer_busy(void)
+{
+	unsigned int i;
+
+	for (i = 0u; i < TIMER_RATE_LOOPS; ++i) {
+		__asm
+		nop
+		__endasm;
+	}
+}
+
+/* Bind the timer, check the INFO constants, and prove the clock really
+ * advances: a 100 ms wait must move `now` by at least its counts, and by
+ * no more than one poll period's overshoot, and the busier the CPU is
+ * the less a stopped clock could hide - the busy loop bounds the rate in
+ * both directions. */
+static int hw_stage_timer(void)
+{
+	uint32_t per_10s = 0u;
+	uint32_t per_tick = 0u;
+	uint32_t before = 0u;
+	uint32_t after = 0u;
+	uint32_t counts = 0u;
+	unsigned char type = 0u;
+	int status;
+	int handle = bind("/dev/timer", 0u, &type);
+
+	if (handle < (int)KOS_HANDLE_FIRST_BOUND) {
+		hw_stage_status("timer", handle);
+		return 0;
+	}
+	if (type != KOS_TYPE_TIMER) {
+		char detail[24];
+
+		(void)snprintf(detail, sizeof(detail), "type %02x want %02x",
+				   (unsigned int)type,
+				   (unsigned int)KOS_TYPE_TIMER);
+		hw_stage_verdict("timer", "FAIL", detail);
+		(void)unbind((unsigned char)handle);
+		return 0;
+	}
+
+	req.frame.op = KTIMER_OP_INFO;
+	req.frame.flags = 0u;
+	req.frame.desc = KOS_IPC_DESC_NONE;
+	req.frame.arg0 = 0u;
+	req.frame.arg1 = 0u;
+	req.buffer = (void *)0;
+	req.length = 0u;
+	req.direction = KOS_IPC_DESC_IN;
+	if (call((unsigned char)handle, &req) < 0) {
+		hw_stage_verdict("timer", "FAIL", "info-call");
+		(void)unbind((unsigned char)handle);
+		return 0;
+	}
+	per_10s = (uint32_t)req.frame.payload[0] |
+		  ((uint32_t)req.frame.payload[1] << 8) |
+		  ((uint32_t)req.frame.payload[2] << 16) |
+		  ((uint32_t)req.frame.payload[3] << 24);
+	per_tick = (uint32_t)req.frame.payload[4] |
+		   ((uint32_t)req.frame.payload[5] << 8) |
+		   ((uint32_t)req.frame.payload[6] << 16) |
+		   ((uint32_t)req.frame.payload[7] << 24);
+	if (per_10s != KOS_TIMER_COUNTS_PER_10S ||
+	    per_tick != KOS_TIMER_COUNTS_PER_TICK) {
+		char detail[32];
+
+		(void)snprintf(detail, sizeof(detail), "info %lu %lu",
+				   (unsigned long)per_10s,
+				   (unsigned long)per_tick);
+		hw_stage_verdict("timer", "FAIL", detail);
+		(void)unbind((unsigned char)handle);
+		return 0;
+	}
+
+	if (timer_now(handle, &before) < 0) {
+		hw_stage_verdict("timer", "FAIL", "now-before");
+		(void)unbind((unsigned char)handle);
+		return 0;
+	}
+	status = timer_wait_us(handle, TIMER_WAIT_US);
+	if (status < 0) {
+		char detail[24];
+
+		/* The wait gave up on a clock that stopped advancing. */
+		(void)snprintf(detail, sizeof(detail), "wait %d", -status);
+		hw_stage_verdict("timer", "FAIL", detail);
+		(void)unbind((unsigned char)handle);
+		return 0;
+	}
+	if (timer_now(handle, &after) < 0) {
+		hw_stage_verdict("timer", "FAIL", "now-after");
+		(void)unbind((unsigned char)handle);
+		return 0;
+	}
+	if ((after - before) < TIMER_WAIT_COUNTS ||
+	    (after - before) > TIMER_WAIT_COUNTS + TIMER_WAIT_SLACK) {
+		char detail[32];
+
+		(void)snprintf(detail, sizeof(detail), "advance %lu",
+				   (unsigned long)(after - before));
+		hw_stage_verdict("timer", "FAIL", detail);
+		(void)unbind((unsigned char)handle);
+		return 0;
+	}
+
+	/* The rate probe: the clock over CPU time of a known length. */
+	if (timer_now(handle, &before) < 0) {
+		hw_stage_verdict("timer", "FAIL", "now-rate");
+		(void)unbind((unsigned char)handle);
+		return 0;
+	}
+	hw_timer_busy();
+	if (timer_now(handle, &after) < 0) {
+		hw_stage_verdict("timer", "FAIL", "now-rate-after");
+		(void)unbind((unsigned char)handle);
+		return 0;
+	}
+	counts = after - before;
+	(void)unbind((unsigned char)handle);
+	if (counts < TIMER_RATE_COUNTS / TIMER_RATE_FACTOR ||
+	    counts > TIMER_RATE_COUNTS * TIMER_RATE_FACTOR) {
+		char detail[32];
+
+		(void)snprintf(detail, sizeof(detail), "rate %lu",
+				   (unsigned long)counts);
+		hw_stage_verdict("timer", "FAIL", detail);
+		return 0;
+	}
+	hw_stage_verdict("timer", "PASS", (const char *)0);
+	return 1;
+}
+
+/* --- stage 4: namespace and handles ------------------------------------ */
 
 /* Record one failure; only the first reaches the verdict line. */
 static void hw_fail(const char *label, const char *detail)
@@ -672,6 +839,9 @@ int main(int argc, char **argv)
 		++passed;
 	}
 	if (hw_stage_files(&card) != 0) {
+		++passed;
+	}
+	if (hw_stage_timer() != 0) {
 		++passed;
 	}
 	hw_stage_namespace(card);
