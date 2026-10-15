@@ -390,12 +390,17 @@ class TestSdkBoundary(unittest.TestCase):
         # EXE v2 loader-outcome programs the subsystem process selftest
         # runs; `fardemo` is the SDK far-code demo and
         # `xmem_far` the far-code outcome program;
+        # `events` is the device-event acceptance program the
+        # KOS_EVENTS_SELFTEST configuration builds;
+        # `beat` is the device-event board check the production store
+        # carries;
         # `hwtest` is the production store's feature exerciser and the
         # runner of those outcome programs; `shell` is the native shell,
         # the store's boot program.
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
-                         ["banks", "devtest", "escc", "exe2big",
-                          "exe2probe", "exe2seg", "exetest", "far_data",
+                         ["banks", "beat", "devtest", "escc", "events",
+                          "exe2big", "exe2probe", "exe2seg", "exetest",
+                          "far_data",
                           "fardemo", "fs_child", "fs_selftest", "hello",
                           "hwtest", "ipc", "ipccopy", "monitor", "ns",
                           "nschild", "shell", "timer", "xmem_child",

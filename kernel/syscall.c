@@ -33,6 +33,7 @@
 #include "kos/seg.h"
 #include "process.h"
 
+#include "kernel/event/event.h"
 #include "kernel/ipc/ipc.h"
 #include "kernel/memory/banking.h"
 #include "kernel/vfs/vfs.h"
@@ -212,13 +213,16 @@ static void syscall_getinfo(uint16_t block)
 	syscall_success(KOS_GETINFO_SIZE);
 }
 
-/* SYS_REBOOT 0Ch.  Mask interrupts, quiesce the interrupt sources and write
- * the reset latch; the common-resident primitive jumps to the ROM reset
- * vector, so this body never returns and no caller block is read. */
+/* SYS_REBOOT 0Ch.  Mask interrupts, stop every CTC channel this kernel may
+ * have left programmed - the CTC is not reset by the reset vector, so the
+ * tick (channel 2) and the event timer (channel 3) would otherwise keep
+ * requesting into the next boot - and write the reset latch; the
+ * common-resident primitive jumps to the ROM reset vector, so this body
+ * never returns and no caller block is read. */
 static void syscall_reboot(void)
 {
 	__asm__("di");
-	platform_irq_quiesce(IRQ_CTC0);
+	platform_ctc_quiesce_all();
 	platform_reboot_now();
 }
 
@@ -337,6 +341,12 @@ void kernel_syscall_dispatch(void)
 		break;
 	case KOS_SYSCALL_REBOOT:
 		syscall_reboot();
+		break;
+	case KOS_SYSCALL_NOTIFY:
+		kos_event_notify(kos_syscall_args);
+		break;
+	case KOS_SYSCALL_EVENT_RETURN:
+		kos_event_return();
 		break;
 	case KOS_SYSCALL_DIAG_MEM_READ:
 		kos_diag_mem_read(kos_syscall_args);

@@ -705,10 +705,52 @@ COMMON_ONLY_SYMBOLS = (
     "kos_driver_boot_saved_latch",
     "kos_driver_boot_saved_iff",
     "_kos_driver_upcall_block",
+    # The device-event table and the delivery state are read from the
+    # delivery (application latch) and from driver-interrupt context
+    # (driver window) alike, so they are common memory or nothing.
+    "_kos_event_table",
+    "_kos_event_in_handler",
+    "_kos_event_frame",
+    "_kos_event_frame_latch",
+    "_kos_event_row",
+    "_kos_event_latch",
+    # Device-event delivery: the two return-path checks and the frame
+    # primitives run with the application's own latch in force (mode 10 over
+    # its bank), where bank 7 is mapped only by accident.
+    "_kos_event_irq_exit",
+    "_kos_event_syscall_exit",
+    "_kos_event_post_bank",
+    "_kos_event_return_frame",
+    "_kos_event_pick",
+    "_kos_event_enter",
+    "_kos_event_unwind",
 )
 
 # Bank-7 internal routines (visible only while mode 11 is active).
 BANK7_ROUTINES = ("kos_syscall_dispatch", "_irq_dispatch")
+
+# The entries of the driver bootstrap interface (`struct driver_api`,
+# drivers/include/driver.h; the table is kernel/ipc/ipc.c's `ipc_api`).
+# A resident driver calls every one of them from its own window - mode 10
+# over bank 6 - where bank 7 shows only the fixed core 2000h-5FFFh and the
+# common region E000h-FCFFh.  An entry that links into the 6000h window is
+# not visible there at all, so the driver's call would execute whatever
+# the window shows.  The kernel exports the entries as globals so their
+# addresses travel in the map; an image without the IPC substrate links
+# none of them and skips the check.
+DRIVER_API_ENTRIES = (
+    "_api_call",
+    "_api_copy_in",
+    "_api_copy_out",
+    "_api_move",
+    "_api_bulk_read",
+    "_api_console_putc",
+    "_api_console_poll",
+    "_api_console_getc",
+    "_api_irq_claim",
+    "_api_irq_release",
+    "_api_event_post",
+)
 
 # The nucleus has no device registry: discovery is the host-built `/dev`
 # publication table plus the driver API, and the drivers are bank-6
@@ -1248,6 +1290,22 @@ def check_symbols(areas, symbols, production=False):
             raise MapError(
                 "%s at %04Xh is outside the fixed core 2000h-%04Xh"
                 % (name, addr, WINDOW_BASE - 1)
+            )
+
+    # Driver bootstrap interface entries: visible from the driver's own
+    # window (fixed core or common memory), never in the 6000h window.
+    for name in DRIVER_API_ENTRIES:
+        if name not in symbols:
+            continue
+        addr = symbols[name]
+        if not (BANK7_BASE <= addr < WINDOW_BASE or
+                COMMON_BASE <= addr < COMMON_CODE_END):
+            raise MapError(
+                "the driver API entry %s at %04Xh is not visible from "
+                "driver context: it must sit in the fixed core 2000h-%04Xh "
+                "or in common memory %04Xh-%04Xh"
+                % (name, addr, WINDOW_BASE - 1, COMMON_BASE,
+                   COMMON_CODE_END - 1)
             )
 
     # Registry-like and console symbols, if any, live in bank 7 (code or

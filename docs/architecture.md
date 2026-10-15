@@ -284,7 +284,10 @@ and no assumptions about previous register contents. `kernel_main()` does
 not return.
 
 `SYS_REBOOT` follows exactly this path again: the kernel masks interrupts,
-quiesces the interrupt sources it programmed, writes latch `00h` from
+stops every CTC channel it may have left programmed
+(`platform_ctc_quiesce_all()`; the CTC is not reset by the ROM reset
+vector, so a running tick or event timer would otherwise keep requesting
+into the next boot), writes latch `00h` from
 common memory and jumps to `0000h`, so the copy above runs a second time
 on a machine whose RAM is still whatever the program left in it. Nothing
 is inherited across the jump: no driver keeps a handle, no process keeps
@@ -312,6 +315,11 @@ driver loader: one pass over drivers.man, in load order
 boot launcher: run the configured boot program
 ```
 
+- The device-event table and its per-process flags are cleared before
+  `irq_init()` enables interrupts (the common region arrives as `FFh`, so
+  the table is invalid until the boot clears it; the two delivery checks
+  in `kernel/irq/entry.asm` and `kernel/syscall/entry.asm` read it on
+  every return).
 - The SIO driver loads first, so a later driver failure still leaves the
   serial console.
 - A required driver that fails to initialize is a boot failure, reported on
@@ -491,6 +499,13 @@ how `call` adds a second result channel.
 - **Handlers** are bounded, service their own device condition, never
   busy-wait, never call IPC, and return to the executive. Nested maskable
   interrupts are not allowed.
+- **Reading the interrupt state:** every place that captures it (the
+  syscall gate, the copy primitives, ROM access, `irq_arch_lock`, the
+  driver helpers) reads IFF2 with `LD A,I` up to three times and takes any
+  "enabled". An interrupt accepted right after `LD A,I` makes that one
+  read report "disabled" (the documented `LD A,I` behaviour, seen on the
+  board's Z84C0020); a gate that trusted it would hand a program back
+  masked, and no event could then reach it.
 - **Unexpected or unclaimed** interrupts are counted and, where a platform
   quiesce exists, the source is disabled. Nothing large is printed from
   interrupt context: the counters are published with the platform
@@ -505,13 +520,37 @@ how `call` adds a second result channel.
   - gate 303, dispatcher and trampoline 674, handler 103, return 263 -
   which is 2.10 % of a tick at 156.25 Hz.  The timer driver's tick is the
   first production source that uses this path.
+- **Device events** (`NOTIFY`, `EVENT_RETURN`, section 6.7 of
+  `docs/abi.md`) ride the same two return paths.  A driver keeps its own
+  interrupt and only calls `event_post`, so the delivery never runs in
+  driver or interrupt context: the IRQ exit and the syscall exit each ask
+  the event core whether the process they are about to return to has a
+  deliverable subscription, and only deliver when that process's own code
+  was interrupted - mode 10 over that process's bank, no handler of it
+  running, and `pending > 0`.  A post for a process that is not the one
+  running is dropped into `missed` rather than queued, which is what makes
+  a child's run and another process's execution safe.
+
+  | the process ... | delivery |
+  |---|---|
+  | is running its own code (an interrupt ends) | the frame is built below the interrupted SP from the transition stack, and the interrupt's `RETI` becomes a `RETI` into the libkos trampoline |
+  | is inside its own syscall or `CALL` | the frame is built below the caller's return PC with the syscall's result registers in it, so the handler returns into the instruction after the call |
+  | is inside its own handler | held, counted: the core refuses while that process's handler runs |
+  | has a child running | dropped, counted in `missed` |
+  | has exited or unbound the handle | the row is cleared with the handle |
+
+  The frame is 24 bytes on the program's own stack - latch, the alternate
+  set, IY/IX/HL/DE/BC/AF, PC - and `EVENT_RETURN` unwinds it to the exact
+  interrupted latch, registers and SP.  Events coalesce: the handler gets
+  `count` and `missed`, nothing queues.  The core is common memory
+  (`kernel/event`), because both checks run with the application's latch in
+  force, where bank 7 is mapped only by accident.
 - **Masking is explicit and bounded.**  Nothing in the executive masks on
   a caller's behalf: a body runs with the caller's state (4.3), and the
   sections that hold interrupts off are the copy primitives and ROM
   access (5.3) and a driver's own critical segments.  The IOC driver's
-  frame exchange and bulk receive are the longest of those; the
-  measurement and its model caveat are in the timer package's validation
-  record (`docs/validation/2026-10-13-m12-timer.md`).
+  frame exchange and bulk receive are the longest of those, and a timed
+  copy of a large card file matches a stopwatch on the board.
 
 ### 4.6 ROM access and the ROMFS reader
 
@@ -745,6 +784,12 @@ component to one of three static nucleus providers:
 - **CWD** is a global path per process. `chdir` asks the owning provider
   whether the path is traversable and stores the canonical path; it binds
   nothing. `getcwd` returns it.
+- **Device-events subscriptions** live on the handle they were made
+  with: `UNBIND` releases the rows of that (process, handle) pair and tells
+  the driver through the same `KOS_OP_SUBSCRIBE` call it was told about the
+  subscription (the id 0), and process exit drops every row of it.  A
+  device whose handle goes away therefore stops its source, and the next
+  program can subscribe.
 - **Files:** `open`/`close` are SDK words built on `bind`/`unbind` with a
   `FILE` type check. Name operations (`stat`, `mkdir`, `rmdir`, `unlink`,
   `rename`) are filesystem-namespace protocol calls through `/fs`. A write
@@ -1373,15 +1418,7 @@ says so.
      latch `00h`, `JP 0`, and the ROM copy runs as at power-on. Every
      driver init must program its device fully from any state, because no
      device receives a hardware reset.
-3. **Device events.** An application subscribes to events on a device
-   handle (`NOTIFY`); the driver keeps the interrupt and posts the event,
-   and the nucleus delivers it signal-style, only while the application is
-   running: on return from the interrupt when its own code was running,
-   at syscall return when it was inside a call, never nested, and dropped
-   (counted as `missed`) while a child runs. The handler receives `count`
-   and `missed`. First source: a channel-3 event timer with exact
-   deadlines (a music tracker's tick).
-4. **The diagnostic suite.** `/system/diag.exe`, run from the shell, built
+3. **The diagnostic suite.** `/system/diag.exe`, run from the shell, built
    from far segments:
    - every test reports `PASS`, `FAIL` or `SKIP`; `diag all` aggregates,
      never destroys data and exits non-zero only on a failure;
@@ -1393,7 +1430,7 @@ says so.
    - one read-only nucleus addition, `SYS_DIAG_ENUM`, returning value
      records (banks, interrupt sources, drivers, interrupt totals) and no
      pointers.
-5. **After that:** compatibility personalities, starting with CP/M.
+4. **After that:** compatibility personalities, starting with CP/M.
 
 ---
 

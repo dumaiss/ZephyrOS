@@ -33,7 +33,9 @@
       "instance": 0,
       "version": 1,
       "dispatch": "timer_driver_dispatch",
-      "flags": 0
+      "flags": 0,
+      "release": true,
+      "events": true
     }
   ],
   "publishes": [

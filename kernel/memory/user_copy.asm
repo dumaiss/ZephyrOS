@@ -109,7 +109,16 @@ _kos_bank_copy::
 	ret
 
 003$:
+	; IFF2 is read up to three times: on the board an interrupt
+	; accepted right after LD A,I makes that read report 0 (the
+	; documented LD A,I behaviour), and the interrupt's own EI/RETI
+	; makes the next read true.
 	ld	a,i			; snapshot IFF2 before DI clears it
+	jp	pe,user_copy_iff1
+	ld	a,i
+	jp	pe,user_copy_iff1
+	ld	a,i
+user_copy_iff1:
 	di
 	ld	(kos_copy_saved_sp),sp
 	ld	sp,#kos_copy_stack_top

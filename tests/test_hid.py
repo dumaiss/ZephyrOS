@@ -166,7 +166,8 @@ class TestHidDriverArtifact(unittest.TestCase):
                          ["shell.exe", "monitor.exe",
                           # The production feature exerciser and the
                           # outcome programs it runs.
-                          "hwtest.exe", "timer.exe", "xmem_selftest.exe",
+                          "hwtest.exe", "timer.exe", "beat.exe",
+                          "xmem_selftest.exe",
                           "xmem_child.exe", "xmem_far.exe",
                           "fs_selftest.exe", "fs_child.exe",
                           "far_data.exe", "banks.exe", "known.bin"])

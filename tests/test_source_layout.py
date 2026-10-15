@@ -635,7 +635,8 @@ class TestProductionTestSeparation(unittest.TestCase):
              "console_proto.c"])
         self.assertEqual(
             sorted(os.listdir(os.path.join(ROOT, "drivers", "timer"))),
-            ["timer.c", "timer.json", "timer_boot.c", "timer_proto.c"])
+            ["timer.c", "timer.json", "timer_boot.c", "timer_io.asm",
+             "timer_proto.c"])
         self.assertEqual(
             sorted(os.listdir(os.path.join(ROOT, "drivers", "iocfat"))),
             ["iocfat.c", "iocfat.json"])

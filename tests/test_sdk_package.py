@@ -76,6 +76,7 @@ SDK_FILES = {
     "include/kos.h",
     "include/kos/console.h",
     "include/kos/diag.h",
+    "include/kos/event.h",
     "include/kos/fs.h",
     "include/kos/ipc.h",
     "include/kos/process.h",

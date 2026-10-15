@@ -340,6 +340,18 @@ handler counts the ticks; it is the first production interrupt source.  The driv
 - `KTIMER_OP_INFO` (1), descriptor-less: `payload[0..3]` is counts per
   10 s (390,625) and `payload[4..7]` counts per tick (250), both
   little-endian.
+- `KTIMER_OP_EVENT` (2), descriptor-less: `payload[0..3]` is an event
+  period in counts, little-endian; 0 stops the channel.  `arg0` >= 1
+  arms it, `-KOS_EINVAL` without a subscription.  One subscriber at a
+  time (`-KOS_EBUSY`), taken through `KOS_OP_SUBSCRIBE` (which the
+  nucleus issues from `NOTIFY`, `docs/abi.md` section 6.7); the release
+  stops the channel with it.  A stop (period 0) is valid whenever it
+  comes, subscription or not: the unsubscribe and the release both drop
+  the subscription before stopping the channel, so the stop cannot be
+  behind the check for one being in place.  The driver claims `IRQ_CTC3`
+  beside the tick's source, so both handlers live in this driver's
+  window, and its channel-3 event timer is the first device-event
+  source.
 
 The boot segment resets channel 2, writes the shared IM2 vector base
 (`00h`, so channel 2 vectors through page entry `04h`) and programs the
@@ -358,14 +370,77 @@ increments the u32 tick count.
 The reading runs with interrupts open - a syscall body gets the
 caller's interrupt state, so the driver saves that state, opens for the
 read and restores it (`timer_io.asm`) - so a rollover cannot put the
-fresh counter beside the stale tick count.  A tick is lost only if something masks for longer than
-two of them (12.8 ms, the CTC holds one request); the sections that do
-are named and measured in the timer package's validation record
-(`docs/validation/2026-10-13-m12-timer.md`).
+fresh counter beside the stale tick count.  The CTC holds one request,
+so a masked stretch that spans two tick expiries loses one tick (any
+mask longer than 6.4 ms can, depending on where it falls; one longer than
+12.8 ms always does); the longest sections that mask are the IOC
+driver's frame exchange and bulk receive, and a timed copy of a large
+card file matches a stopwatch on the board.
 `platform_irq_quiesce` stops channel 2 if the source is ever seen
-unclaimed; channel 0 stays free for the SIO0/A baud clock and channel 3
-is untouched.  The SDK wraps the clock as `kos/timer.h` (`docs/sdk.md`
-section 6.8).
+unclaimed, and channel 3 too (a stopped event timer must not keep
+interrupting); `platform_ctc_quiesce_all` stops all four physical
+channels and is what `SYS_REBOOT` uses, because the CTC - not the reset
+vector - remembers a channel that was programmed before the reboot.
+Channel 0 stays free for the SIO0/A baud clock.  The SDK
+wraps the clock as `kos/timer.h` (`docs/sdk.md` section 6.8) and the
+event timer as `kos/event.h` (section 6.9).
+
+**The event timer (channel 3).**  The clock above is its only time
+reference.  The driver keeps an absolute deadline in clock counts and
+adds the period at each one, so deadlines never drift.  Channel 3 covers
+only the final stretch of each period: the tick handler reads the clock
+exactly (the tick count was just incremented and the counter just
+reloaded), and when the next deadline is within 256 counts it loads
+channel 3 once with the counts left - reset, control word and constant,
+so a load starts the channel from any state, the power-on one included.
+Channel 3's handler stops the channel, reads the clock, posts every
+deadline reached and adds the period; for a period shorter than 256
+counts it loads the next stretch itself.  Its clock reading is one tick
+low when a tick expired while it was being entered (the tick's own
+handler has not run yet); channel 3 only expires at or after the
+deadline, so a reading below the deadline is that stale one and is
+lifted by a tick.  Nothing is counted on channel 3: a masked stretch
+makes the post inside it late, never lost, doubled or early, and the next
+deadline is exact again.  The posting (`event_post`) is the last thing
+the handler does, so the delivery that follows it at the interrupt's exit
+is as close to the deadline as the interrupt path allows.
+
+The replay measures it (`tests/test_events.py`): in the run without the
+emulated card peer the driver's own posts sit on the grid - median error
+at or below 1 count, worst 16 - the handler's readings average out to an
+interval sum within 2 counts over 49 periods, and the nucleus's delivery
+costs 7,459 T-states per event, 3.7% of the CPU at 50 Hz, with the
+trampoline's argument-block snapshot included (the restore half is
+another ~1,970 T-states, putting the whole round trip near 4.7%).  The
+card peer's emulated lane is paced per byte, so on that machine a masked
+stretch can outlast a period and move a delivery's own reading without
+the driver's deadlines moving; the peer harness therefore asserts only
+what survives any masking - no lost or doubled event, every period
+accounted for in `count`/`missed`, deadlines monotonic - and the
+exact-deadline bounds are asserted in the replay without the peer and on
+the board with `beat.exe` and a stopwatch.
+
+The board check is the production store's `/system/beat.exe`
+(`tests/beat/beat.c`): it subscribes at 500 ms, toggles a 440 Hz tone on
+PSG0 at every delivery for ten seconds, prints `count/missed` once a
+second, and silences the tone before it exits.  A steady
+two-steps-per-second beat, a stopwatch on the ten seconds and a `missed`
+of 0 are the check; the PSG is written through `diag_io_out` on port
+`E0h` in conventional SN76489 byte order (the board's card reverses the
+data bits, not the software).  Each line also carries the tick clock's own
+reading (`clock <counts>`), and a second with no delivery at all is marked
+` gap`: a stall then says which half stopped - a running clock under a
+frozen count column is the delivery side, a frozen clock is the tick's.
+`beat run <seconds>` is the same check for
+another length, `beat reboot` warm-reboots after the fifth delivery while
+still subscribed (channel 3 armed, channel 2 ticking; the machine must
+come back to the shell), and `beat ls <dir> <seconds>` runs it while
+enumerating a
+directory - the card traffic the checklist asks for, which the monitor
+cannot supply itself because its `X` run is synchronous, so the program
+generates it.  The simulator cannot stand in for any of this: a
+production replay never shows the program's console output, so the beat
+is the board's to confirm.
 
 ## 10. The `/dev` publication table
 
@@ -401,7 +476,7 @@ polled, IOC and HID poll the same lanes, and the V9958 is register-driven.
 The IPC acceptance image's `irqx` test driver covers the development
 path against CTC channel 0. The production CTC code
 (`kernel/irq/ctc.c`) is `platform_irq_quiesce()`, which also stops
-channel 2.
+channel 2, plus `platform_ctc_quiesce_all()` for the reboot path.
 
 ## 12. Placement
 

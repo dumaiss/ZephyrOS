@@ -106,6 +106,8 @@ part of the ABI:
 | `0Ah` | `CHDIR` | `{path:u16, length:u16}` | `HL` = 0 |
 | `0Bh` | `GETCWD` | `{buffer:u16, length:u16}` | `HL` = length without the NUL |
 | `0Ch` | `REBOOT` | none | does not return |
+| `0Dh` | `NOTIFY` | `{handle:u8, reserved:u8, handler:u16, trampoline:u16}` | `HL` = 0 |
+| `0Eh` | `EVENT_RETURN` | none | does not return |
 | `20h` | `XMEM_ALLOC` | `{size:u16, flags:u16}` | `HL` = object handle |
 | `21h` | `XMEM_FREE` | `{handle:u16}` | `HL` = 0 |
 | `22h` | `XMEM_READ` | `{handle:u16, offset:u16, buffer:u16, length:u16}` | `HL` = bytes moved |
@@ -191,8 +193,10 @@ before passing it to a syscall. The SDK's startup code stores the block for
 ### 5.5 The warm reboot
 
 `REBOOT` (`0Ch`) restarts the machine from the beginning: the kernel masks
-interrupts, quiesces the interrupt sources it programmed, writes the
-banking latch for the reset mode and jumps to `0000h`. The ROM reset vector
+interrupts, stops every CTC channel it may have left programmed
+(`platform_ctc_quiesce_all`: the tick, the event timer, and the two
+channels no image programs), writes the banking latch for the reset mode
+and jumps to `0000h`. The ROM reset vector
 then re-copies the operating system from ROM exactly as at power-on, and
 the boot path runs from the first instruction. Nothing in RAM is trusted
 across the jump — every buffer, driver state and open object belongs to the
@@ -330,6 +334,49 @@ Below `/fs` the filesystem driver supplies the entries. `/dev/input` and
 location and stores the canonical path; it binds nothing. `GETCWD` writes
 the NUL-terminated path and returns its length; a buffer too small is
 `KOS_EINVAL`.
+
+### 6.7 `NOTIFY` and `EVENT_RETURN`
+
+A program subscribes to events on a device handle it holds (`NOTIFY`), and
+the nucleus delivers them when it is the program's turn to run again.
+
+**`NOTIFY`.** One subscription per (process, handle) pair. `handle` is a
+bound device handle, `handler` the signal handler and `trampoline` the
+libkos entry the nucleus `RETI`s to (`kos/event.h`'s `notify()` fills it
+in; a program never writes them itself). A second `NOTIFY` on the same
+handle replaces the handler; `trampoline` 0 or a `reserved` byte that is
+not zero is `-KOS_EINVAL`. `-KOS_ENOSPC` when the four subscription slots
+are taken, `-KOS_ENOTSUP` when the endpoint does not serve events. The
+nucleus tells the driver through `KOS_OP_SUBSCRIBE` on the same handle,
+with the subscription id in `arg0` (0 unsubscribes); a driver that refuses
+makes `NOTIFY` fail.
+
+**Delivery.** The nucleus checks for a deliverable subscription at exactly
+two points, and only for the process the check is returning to:
+
+| the process ... | delivery |
+|---|---|
+| is running its own code (an interrupt ends) | now, before the interrupted instruction |
+| is inside its own syscall or `CALL` (the call ends) | now, before the result registers are rebuilt |
+| is inside its own handler | held: never nested |
+| has a child running | dropped, counted in `missed` |
+| has exited or unbound the handle | the subscription is gone |
+
+Events coalesce: the handler receives `count` (the events that arrived
+since the last delivery, saturating at `FFFFh`) and `missed` (the events
+dropped while it was not running). Nothing is queued, and the handler
+returns through `EVENT_RETURN`, which is the trampoline's job.
+
+**`EVENT_RETURN`.** Its own number, in `A`, with no argument block, called
+by the libkos trampoline after the handler returns - not by programs. The
+nucleus either hands out the next pending event through the same frame or
+restores the exact interrupted state (latch, registers, PC, SP) and returns
+to it. Calling it without a delivery in progress is `-KOS_EINVAL`.
+
+Because the delivery frame is built on the program's own stack and the
+handler runs below it, the frame and the handler's own use must both fit in
+the stack the program reserved (`docs/sdk.md`); the reserved stack never
+sits in the `8000h-BFFFh` aperture, which the frame may not either.
 
 ## 7. Console
 

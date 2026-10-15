@@ -17,6 +17,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import ihx  # noqa: E402
+import mapcheck  # noqa: E402
 import pack_image  # noqa: E402
 
 
@@ -329,6 +330,14 @@ class TestRealArtifacts(unittest.TestCase):
         self.assertEqual(len(primary), 0x80000)
         self.assertEqual(primary, mame_copy)
 
+    def _geometry(self):
+        """The build's generated bank-7 geometry (`make` writes it)."""
+        path = os.path.join(os.path.dirname(self.build), "geometry",
+                            "memory.inc")
+        if not os.path.exists(path):
+            self.skipTest("build geometry missing; run `make` first")
+        return mapcheck.parse_memory_inc(path)
+
     def test_real_image_regions(self):
         if not os.path.exists(self.build):
             self.skipTest("build artifacts missing; run `make` first")
@@ -343,10 +352,22 @@ class TestRealArtifacts(unittest.TestCase):
         # Forbidden regions stay FF-filled (0030h-0032h holds the RST 30h stub).
         for addr in (0x0033, 0x00FF, 0x0100, 0x1FFF, 0xC000, 0xDFFF, 0xFF00, 0xFFFF):
             self.assertEqual(page0[addr], 0xFF, "byte at page0+%04X" % addr)
-        for addr in (0x0100, 0x1FFF, 0xC000, 0xDFFF, 0xE000, 0xFFFF):
+        for addr in (0x0100, 0x1FFF, 0xE000, 0xFFFF):
             self.assertEqual(page1[addr], 0xFF, "byte at page1+%04X" % addr)
-        # Bank-7 kernel content is present.
-        self.assertTrue(any(b != 0xFF for b in page1[0x2000:0xC000]))
+        # Page 1 carries the bank-7 loadable content - the fixed core's
+        # code and the cold half's - up to the derived cold data base.
+        # Both runtime-data regions and the two stack reservations are
+        # never ROM-loaded, so the page is FF from that base to the top
+        # of the runtime region.  The boundary is derived per build: a
+        # probe at a literal address goes stale as the kernel grows.
+        geometry = self._geometry()
+        data_base = geometry["KOS_WINDOW_DATA_BASE"]
+        self.assertLess(data_base, 0xE000)
+        self.assertTrue(any(b != 0xFF for b in page1[0x2000:data_base]))
+        self.assertEqual(page1[data_base:0xE000],
+                         b"\xFF" * (0xE000 - data_base),
+                         "page 1 is not FF from the cold data base %04X"
+                         % data_base)
         # Common region content is present.
         self.assertTrue(any(b != 0xFF for b in page0[0xE000:0xFF00]))
         # Recovery pages carry the ROMFS header at their window base and

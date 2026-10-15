@@ -153,6 +153,16 @@
       "reason": "common-resident boot entry and C runtime init: runs before the window exists"
     },
     {
+      "object": "event_common",
+      "tier": "fixed-required",
+      "reason": "the device-event delivery core (kernel/event/event_common.asm): the two return-path checks and the frame primitives run under the application's own latch (mode 10 over its bank), where bank 7 - fixed core and cold half alike - is mapped only by accident. Code in _COMMON, table and delivery state in _COMMON_DATA, both pinned by tools/mapcheck.py"
+    },
+    {
+      "object": "event",
+      "tier": "fixed-required",
+      "reason": "the device-event post path (kernel/event/event.c): a driver's interrupt handler calls it through the bootstrap interface while the driver's window is mapped, where the bank-7 cold half is not visible. Its state is common memory (kernel/event/event_common.asm)"
+    },
+    {
       "object": "syscall",
       "tier": "cold",
       "reason": "syscall dispatcher and its bodies: the syscall gate clears the page field before dispatching, so this object only ever runs with P = 0"
@@ -216,6 +226,11 @@
       "object": "driver_boot",
       "tier": "fixed-required",
       "reason": "the driver boot gate (kernel/driver/driver_boot.asm): switches mode 10 over bank 6 (Q = 6) and calls a boot segment. Its code and continuation execute with bank 7 unmapped, so the gate is common-resident; its request and transition state is fixed-core data because the upcall shim reads the loader's request block with bank 7 mapped"
+    },
+    {
+      "object": "event_syscall",
+      "tier": "cold",
+      "reason": "the device-event syscall and teardown bodies (NOTIFY, EVENT_RETURN, the handle-release and process-exit hooks). Every caller runs with bank 7 mapped (a syscall entry, the handle release path or the process-exit hook), and none is on the driver-context path that pins the two event objects above it"
     }
   ],
   "cold_half": [
@@ -233,6 +248,7 @@
     "process",
     "process_exec",
     "syscall",
+    "event_syscall",
     "driver_loader"
   ],
   "cold_half_note": "The production build compiles these objects into the cold areas (_WINDOW / _WINDOW_DATA at 6000h-DFFFh): the syscall dispatcher and its bodies (including the extended-memory family), the boot path, the process lifecycle, the VFS core and the resident-driver loader (the cold data base follows the linked cold code). tools/mapcheck.py fails the build when the linked cold code or data overruns the derived bases, and the fixed ledger reports the remaining fixed-core bytes."

@@ -31,7 +31,7 @@
 #include "kos/errno.h"
 #include "kos/process.h"
 
-/* Native syscall numbers.  01h-03h and 0Dh-1Fh are unassigned and return
+/* Native syscall numbers.  01h-03h and 0Fh-1Fh are unassigned and return
  * KOS_ENOSYS.  Console I/O is the CONSOLE protocol on the standard
  * handles, and files are typed handles behind `bind`/`call`/`unbind`
  * (the ABI's kos/object.h); the SDK builds `open`/`close` on them. */
@@ -39,6 +39,8 @@
 #define KOS_SYSCALL_GETINFO       0x04u
 #define KOS_SYSCALL_EXEC          0x05u
 #define KOS_SYSCALL_REBOOT        0x0Cu
+#define KOS_SYSCALL_NOTIFY        0x0Du
+#define KOS_SYSCALL_EVENT_RETURN  0x0Eu
 
 /* Address windows enforced before any caller byte is touched. */
 #define KOS_SYSCALL_WINDOW_BASE 0x0100u /* argument blocks begin here */
@@ -91,11 +93,55 @@ struct kos_exec_args {
  * hardware reset: every boot init programs its device from any state.
  * The block argument is ignored. */
 
+/* SYS_NOTIFY 0Dh {handle:u8, reserved:u8, handler:u16, trampoline:u16} -
+ * subscribe the calling process to the events of the device handle, or
+ * unsubscribe when `handler` is 0.  `handle` names a bound handle whose
+ * endpoint declared MOD_EP_EVENTS (`"events": true` in the driver's
+ * manifest); any other handle is KOS_ENOTSUP.  The handler and the
+ * trampoline are 16-bit addresses in the caller's own image (0100h up to
+ * common memory), because both run as ordinary application code; the SDK's
+ * `notify` passes its own libkos trampoline.  The nucleus assigns one
+ * subscription per (process, handle) pair, tells the driver
+ * KOS_OP_SUBSCRIBE with that id, and charges no table slot for a repeat
+ * NOTIFY on a subscribed handle, which only replaces the handler.  On
+ * success HL = 0 and the events arrive as described in docs/sdk.md;
+ * failures are
+ *
+ *   bad block, reserved set, handler/trampoline outside the image  KOS_EINVAL
+ *   not a bound handle of the calling process                       KOS_EINVAL
+ *   the endpoint has no event support                               KOS_ENOTSUP
+ *   no free subscription slot                                       KOS_ENOSPC
+ *   the driver refused (its one source is taken)                    -its status
+ *
+ * and an unsubscribe of a handle that is not subscribed is KOS_ENOENT.
+ * The subscription dies with the last handle bound to the object (unbind
+ * or process exit); the driver hears KOS_OP_RELEASE for the handle as any
+ * other release, which is what stops a running event source. */
+struct kos_notify_args {
+	uint8_t handle;
+	uint8_t reserved; /* 0 */
+	uint16_t handler; /* void (*)(unsigned count, unsigned missed) */
+	uint16_t trampoline; /* the libkos entry the nucleus returns to */
+};
+
+/* SYS_EVENT_RETURN 0Eh - return from an event handler; takes no argument
+ * block and does not return.  The libkos trampoline issues it after the
+ * handler returned: the nucleus clears the "handler running" flag, hands
+ * the next pending event to the same frame when there is one, and
+ * otherwise unwinds the frame to the interrupted code.  Calling it without
+ * a handler running is KOS_EINVAL. */
+
 #if defined(__SDCC)
 _Static_assert(sizeof(struct kos_exit_args) == 2,
 	       "exit argument block must be 2 packed bytes");
 _Static_assert(sizeof(struct kos_exec_args) == 8,
 	       "exec argument block must be 8 packed bytes");
+_Static_assert(sizeof(struct kos_notify_args) == 6,
+	       "notify argument block must be 6 packed bytes");
+_Static_assert(__builtin_offsetof(struct kos_notify_args, handler) == 2,
+	       "notify handler must follow the two byte header");
+_Static_assert(__builtin_offsetof(struct kos_notify_args, trampoline) == 4,
+	       "notify trampoline must be the last word");
 _Static_assert(__builtin_offsetof(struct kos_exec_args, path) == 0,
 	       "exec path must be the first argument-block word");
 _Static_assert(__builtin_offsetof(struct kos_exec_args, length) == 2,

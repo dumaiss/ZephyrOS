@@ -351,6 +351,16 @@
                                      KOS_CTC_CTRL_CONTROL_WORD)
 #define KOS_CTC2_TIME_CONSTANT      250u
 
+/* CTC3 event-timer programming (physical channel 3, port 43h): the timer
+ * driver's second channel, timer mode on the same 10 MHz clock and 256
+ * prescaler, loaded once per deadline for the final stretch.  Every load
+ * is reset, control word and constant (the software-reset bit restarts
+ * the channel from any state, including the power-on one); a constant of
+ * 0 means 256 counts, the longest single load (KOS_CTC3_REACH). */
+#define KOS_CTC3_CONTROL_LOAD       (KOS_CTC2_CONTROL_TIMER | \
+                                     KOS_CTC_CTRL_SOFT_RESET)
+#define KOS_CTC3_REACH              256u
+
 /* CTC0 interrupt test programming (physical channel 0 only): reset, then
  * arm the constant.  The CTC0 vector mapping is declared in irq.h; the
  * bank-7 ISR stack bounds in memory.h. */

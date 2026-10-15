@@ -403,7 +403,8 @@ class TestTheRealSystems(unittest.TestCase):
         self.assertEqual([entry["name"] for entry in self.store()["files"]],
                          [driver + ".mod" for driver in PRODUCTION_DRIVERS] +
                          ["drivers.man", "shell.exe", "monitor.exe",
-                          "hwtest.exe", "timer.exe", "xmem_selftest.exe",
+                          "hwtest.exe", "timer.exe", "beat.exe",
+                          "xmem_selftest.exe",
                           "xmem_child.exe",
                           "xmem_far.exe", "fs_selftest.exe", "fs_child.exe",
                           "far_data.exe", "banks.exe", "known.bin"])

@@ -46,9 +46,14 @@ irq_source_t irq_last_source(void);
 void irq_diag_counters(uint8_t *out);
 
 /* Production platform quiesce hook, implemented by the owning CTC
- * driver.  The CTC0 start/stop programming is acceptance-only and lives
+ * driver.  `platform_irq_quiesce` stops one channel (the one an unclaimed
+ * interrupt arrived on); `platform_ctc_quiesce_all` stops every physical
+ * channel and is what the warm reboot's path uses, because the CTC - not
+ * the reset vector - remembers a channel that was programmed before the
+ * reboot.  The CTC0 start/stop programming is acceptance-only and lives
  * under tests/target/. */
 void platform_irq_quiesce(irq_source_t source);
+void platform_ctc_quiesce_all(void);
 
 /* Common-resident interrupt-state lock used by kernel subsystems that
  * mutate shared state (registry, drivers).  irq_arch_lock() disables

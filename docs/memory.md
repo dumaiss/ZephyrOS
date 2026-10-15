@@ -180,12 +180,20 @@ common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>
 Current production figures:
 
 ```text
-nucleus fixed: required 8363 bytes | overflow 2 bytes | stacks 768 | room 7251 bytes
-nucleus cold: code 23861 bytes end BD35h | data 1527 bytes at BE00h | room 7177 bytes
-driver hot: 22578 bytes of 32768
+nucleus fixed: required 8760 bytes | overflow 2 bytes | stacks 768 | room 6854 bytes
+nucleus cold: code 24984 bytes end C198h | data 1527 bytes at C200h | room 6153 bytes
+driver hot: 23944 bytes of 32768
 driver boot/bulk: 2186 bytes of 24576
-common: used 2373 of 7424 bytes (code 1526, data 847) | ceiling 3072
+common: used 2893 of 7424 bytes (code 1967, data 926) | ceiling 3072
 ```
+
+The device-event mechanism places the table, the two return-path checks
+and their frame primitives in common memory, the post path and the
+driver-API exports in the fixed core, and the syscall and teardown bodies
+in the cold half; `_WINDOW_DATA` starts at `C200h` because the linked
+cold code ends at `C198h` (the window-data base follows the code end,
+architecture 4.2).  One delivery costs 7,459 T-states, 3.7% of the CPU at
+50 Hz.
 
 The gate stack is 384 bytes; the deepest measured chain uses 275, and the
 worst case must stay at or below 360. The driver stack's measured
@@ -220,8 +228,22 @@ _kos_process_launch       process entry (depth-indexed continuation)
 _kos_process_resume       parent resume
 _kos_process_continuation_size   gate-stack bytes in use (exec preflight)
 kos_process_return_trap   a program that returns instead of exiting
+_kos_event_irq_exit       the IRQ return path's delivery check
+_kos_event_syscall_exit   the syscall return path's delivery check
+_kos_event_enter          the hand-off to a handler (frame -> RETI)
+_kos_event_unwind         the frame's reverse and the interrupted RET
+_kos_event_pick/_pick_keep  the deliverable subscription scan
+_kos_event_post_bank      the bank a post counts for
+_kos_event_return_frame   the frame EVENT_RETURN unwinds
 the copy primitives       the path-B aperture stub and the window copy
 ```
+
+The device-event core is common for the same reason the gates are: the
+delivery runs with the *application's* latch in force (mode 10 over its
+own bank), where bank 7 - cold half, driver tiers and all - is mapped
+only by accident, and `event_post` reads the same state from a driver's
+interrupt, where the window shows bank 6.  Everything it touches is in
+`_COMMON_DATA` below.
 
 The syscall dispatcher (`kos_syscall_dispatch`) is cold code; only the
 three-byte vector is in page zero. The early console and panic path,
@@ -258,6 +280,20 @@ kos_proc_frames      144 bytes    3 x 48-byte saved gate frames
 exec preflight refuses a deeper frame before anything is allocated. This
 state is common because the resume gate restores it while it changes the
 mapping and switches stacks.
+
+The device-event state (common data, and zeroed by `kos_event_init`
+because `_COMMON_DATA` is not part of the boot's zeroed areas):
+
+```text
+kos_event_table        48 bytes  4 rows x 12 bytes (owner, bank, pending u16,
+                                 missed u16, trampoline u16, handler u16,
+                                 handle)
+kos_event_in_handler    7 bytes  one flag per process slot
+kos_event_frame        14 bytes  one u16 frame pointer per process slot
+kos_event_frame_latch   7 bytes  the exact latch each frame was built under
+kos_event_row           2 bytes  the subscription being delivered
+kos_event_latch         1 byte   the latch the current delivery runs under
+```
 
 The ROM-access block:
 

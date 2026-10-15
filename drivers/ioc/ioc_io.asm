@@ -452,7 +452,16 @@ ioc_gb_ready:
 
 ; uint8_t ioc_io_irq_save_disable(void);  A = L = 1 if IFF2 was set.
 _ioc_io_irq_save_disable::
+	; IFF2 is read up to three times: on the board an interrupt
+	; accepted right after LD A,I makes that read report 0 (the
+	; documented LD A,I behaviour), and the interrupt's own EI/RETI
+	; makes the next read true.
 	ld	a,i
+	jp	pe,ioc_io_iff1
+	ld	a,i
+	jp	pe,ioc_io_iff1
+	ld	a,i
+ioc_io_iff1:
 	di
 	ld	l,#0
 	jp	po,ioc_irq_was_off

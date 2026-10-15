@@ -9,6 +9,7 @@
 #ifndef KOS_SRC_INTERNAL_H
 #define KOS_SRC_INTERNAL_H
 
+#include "kos/event.h"
 #include "kos/fs.h"
 #include "kos/ipc.h"
 #include "kos/syscall.h"
@@ -26,6 +27,7 @@ union kos_syscall_block {
 	struct kfs_rename_args  rename;
 	struct kfs_fd_args      fd;
 	struct kos_exec_args    exec;
+	struct kos_notify_args  notify;
 	struct kos_xmem_alloc_args xmem_alloc;
 	struct kos_xmem_free_args  xmem_free;
 	struct kos_xmem_io_args    xmem_io;

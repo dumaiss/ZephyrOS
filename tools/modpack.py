@@ -115,13 +115,17 @@ MAX_ENDPOINTS = 8
 MAX_DEPENDENCIES = 8
 MAX_PUBLICATIONS = 12
 MAX_IMAGES = 8
-# Endpoint flags: bit 0 is the re-entrancy declaration (KOS_IPC_EP_REENTRANT)
-# and bit 1 the release declaration (MOD_EP_RELEASE): the manifest's
+# Endpoint flags: bit 0 is the re-entrancy declaration (KOS_IPC_EP_REENTRANT),
+# bit 1 the release declaration (MOD_EP_RELEASE): the manifest's
 # `"release": true` asks the nucleus to tell the endpoint when a handle on
-# one of its objects is released.
+# one of its objects is released; bit 2 the event declaration
+# (MOD_EP_EVENTS): the manifest's `"events": true` lets applications
+# subscribe to the endpoint's events (SYS_NOTIFY -> KOS_OP_SUBSCRIBE) and
+# the driver post them through the bootstrap interface's event_post.
 EP_REENTRANT = 0x01
 EP_RELEASE = 0x02
-EP_FLAGS = EP_REENTRANT | EP_RELEASE
+EP_EVENTS = 0x04
+EP_FLAGS = EP_REENTRANT | EP_RELEASE | EP_EVENTS
 # Dependency declaration flags (the manifest's `optional`): an optional
 # dependency that no image in the set exports resolves to endpoint 0.
 DEP_OPTIONAL = 0x01
@@ -512,6 +516,10 @@ def load_driver_manifest(manifest, path, objdir):
         if not isinstance(release, bool):
             raise ModError("%s: release must be true or false" % where)
         endpoint["release"] = release
+        events = endpoint.get("events", False)
+        if not isinstance(events, bool):
+            raise ModError("%s: events must be true or false" % where)
+        endpoint["events"] = events
 
     publishes = list(manifest.get("publishes", []))
     if len(publishes) > MAX_PUBLICATIONS:
@@ -941,7 +949,8 @@ def pack_driver_manifest(manifest):
             "instance": int(endpoint["instance"]),
             "version": int(endpoint["version"]),
             "flags": int(endpoint.get("flags", 0)) |
-                     (EP_RELEASE if endpoint.get("release", False) else 0),
+                     (EP_RELEASE if endpoint.get("release", False) else 0) |
+                     (EP_EVENTS if endpoint.get("events", False) else 0),
             "dispatch_offset": dispatch,
         })
     for dependency in manifest["depends"]:

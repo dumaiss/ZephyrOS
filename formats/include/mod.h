@@ -93,9 +93,13 @@
  * endpoint table keeps (KOS_IPC_EP_REENTRANT, abi/kos/ipc.h); bit 1 asks
  * the nucleus to tell the endpoint when a handle on one of its objects is
  * released (KOS_OP_RELEASE), so a driver that owns restoreable hardware
- * state can take the device back. */
+ * state can take the device back; bit 2 declares device events (the
+ * manifest's `"events": true`): SYS_NOTIFY may subscribe to the endpoint's
+ * events, which arrive as KOS_OP_SUBSCRIBE, and the driver posts them with
+ * the bootstrap interface's event_post (architecture 4.5/4.10). */
 #define MOD_EP_REENTRANT KOS_IPC_EP_REENTRANT
 #define MOD_EP_RELEASE   0x02u
+#define MOD_EP_EVENTS    0x04u
 
 /* Container header, 16 bytes, little-endian.  `payload_offset` is the
  * first payload byte and equals the end of the tables; `total_size` is

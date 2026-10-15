@@ -108,7 +108,16 @@ _kos_process_launch::
 	ld	(kos_proc_index),a
 
 	; Snapshot IFF2 before DI clears it, then mask IRQs.
+	; IFF2 is read up to three times: on the board an interrupt
+	; accepted right after LD A,I makes that read report 0 (the
+	; documented LD A,I behaviour), and the interrupt's own EI/RETI
+	; makes the next read true.
 	ld	a,i
+	jp	pe,launch_iff1
+	ld	a,i
+	jp	pe,launch_iff1
+	ld	a,i
+launch_iff1:
 	di
 	ld	a,#0
 	jp	po,001$

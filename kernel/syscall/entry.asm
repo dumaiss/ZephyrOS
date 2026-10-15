@@ -45,6 +45,7 @@
 	.globl kos_gate_saved_a
 	.globl kos_gate_stack_top
 	.globl _kernel_syscall_dispatch
+	.globl _kos_event_syscall_exit
 	.globl _kos_syscall_number
 	.globl _kos_syscall_args
 	.globl _kos_syscall_result_a
@@ -68,7 +69,16 @@ kos_syscall_entry::
 	; An IRQ between the first store and DI cannot observe transition state:
 	; no mapping or stack state has changed yet, and IRQ state is disjoint.
 	ld	(kos_gate_saved_a),a
+	; IFF2 is read up to three times: on the board an interrupt
+	; accepted right after LD A,I makes that read report 0 (the
+	; documented LD A,I behaviour), and the interrupt's own EI/RETI
+	; makes the next read true.
 	ld	a,i
+	jp	pe,entry_iff1
+	ld	a,i
+	jp	pe,entry_iff1
+	ld	a,i
+entry_iff1:
 	di
 	ld	a,#0
 	jp	po,001$
@@ -161,6 +171,14 @@ kos_syscall_entry::
 	; Restore the exact caller SP; the caller stack is visible again.
 	ld	hl,(kos_gate_saved_sp)
 	ld	sp,hl
+
+	; Device events (architecture 4.10): the caller is about to become the
+	; running code again, so a pending event of its own is delivered now,
+	; before the result registers are rebuilt.  The check either returns
+	; here - nothing deliverable - or never returns: it builds the frame
+	; below the caller's RST return address, puts the syscall's result in
+	; it and hands off through RETI to the libkos trampoline.
+	call	_kos_event_syscall_exit
 
 	; Restore the prior interrupt state immediately before returning.  The
 	; result setup is duplicated so testing saved IFF cannot alter carry.

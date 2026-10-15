@@ -115,6 +115,7 @@ ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/window_copy.rel \
              $(BUILD)/upcall.rel $(BUILD)/diag_io.rel \
              $(BUILD)/ipc_asm.rel $(BUILD)/ipc_common.rel \
+             $(BUILD)/event_common.rel \
              $(BUILD)/driver_boot.rel
 # Handle-pool, path and CWD machinery plus the ROMFS
 # reader behind `/system`.
@@ -122,6 +123,7 @@ VFS_OBJS := $(BUILD)/vfs_path.rel \
                $(BUILD)/vfs_handles.rel $(BUILD)/vfs_workspace.rel
 C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
              $(BUILD)/syscall.rel $(BUILD)/diag.rel \
+             $(BUILD)/event.rel $(BUILD)/event_syscall.rel \
              $(BUILD)/xmem.rel \
              $(BUILD)/irq.rel \
              $(BUILD)/irq_sources.rel \
@@ -343,7 +345,7 @@ MEMORY_INC         := $(GEOMETRY_MEMORY)
 
 GEOMETRY_INC       := $(GEOMETRY_DIR)/bank7_end.inc
 
-$(GEOMETRY_INC) $(GEOMETRY_MEMORY): $(BUILD)/konaos.probe.map \
+$(GEOMETRY_INC) $(GEOMETRY_MEMORY) &: $(BUILD)/konaos.probe.map \
 		tools/mapcheck.py $(ASM_MEMORY_INC) $(RESIDENCY) | $(BUILD)
 	mkdir -p $(GEOMETRY_DIR)
 	$(PYTHON) tools/mapcheck.py geometry derive $(BUILD)/konaos.probe.map \
@@ -462,6 +464,11 @@ $(BUILD)/upcall.rel: kernel/memory/upcall.asm \
 $(BUILD)/diag_io.rel: kernel/syscall/diag_io.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
+$(BUILD)/event_common.rel: kernel/event/event_common.asm \
+		platform/zephyr80/public/hardware.inc \
+		$(ASM_MEMORY_INC) kernel/event/event.h | $(BUILD)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
 $(BUILD)/irq_code_end.rel: kernel/irq/code_end.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
@@ -483,6 +490,21 @@ $(BUILD)/panic.rel: kernel/panic.c \
 $(BUILD)/main.rel: kernel/main.c kernel/include/kernel.h \
 		kernel/include/irq_types.h \
  kernel/include/process.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+# Device events (architecture 4.10).  The post path is fixed-core code: the
+# driver interrupt that calls it runs with the driver's window mapped, where
+# the cold half is not visible.  The syscall and teardown bodies are cold like
+# the rest of the dispatcher.
+$(BUILD)/event.rel: kernel/event/event.c kernel/event/event.h \
+		abi/kos/types.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
+
+$(BUILD)/event_syscall.rel: kernel/event/event_syscall.c kernel/event/event.h \
+		abi/kos/syscall.h abi/kos/errno.h abi/kos/ipc.h \
+		abi/kos/protocol.h formats/include/mod.h \
+		kernel/ipc/ipc.h kernel/vfs/vfs.h kernel/syscall/diag.h \
+		kernel/include/process.h kernel/include/platform.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/irq.rel: kernel/irq/irq.c kernel/include/irq_types.h \
@@ -1005,6 +1027,13 @@ $(eval $(call exe_program,fs_selftest,tests/fs,\
 $(eval $(call exe_program,fs_child,tests/fs,\
 	fs_child.c,STACK=192,STAGE=1))
 
+# Device-event outcome program: the `fs` image's `/system/events.exe`,
+# run from the monitor's X.  It is the event mechanism's replay window
+# (watch / loop / run / exit modes), so it lives in the filesystem image,
+# which has the console, the card and now the timer driver.
+$(eval $(call exe_program,events,tests/events,\
+	events.c,STACK=384,STAGE=1))
+
 # The hardware exerciser: the production store's
 # `/system/hwtest.exe` runner, started from the monitor's X command.  It
 # drives the programs above and the xmem family below from the store, so
@@ -1018,6 +1047,15 @@ $(eval $(call exe_program,hwtest,tests/hwtest,\
 # replay's checks.
 $(eval $(call exe_program,timer,tests/timer,\
 	timer.c,STACK=256,STAGE=1))
+
+# The device-event board check: the production store's
+# `/system/beat.exe`.  Run bare it subscribes to the timer's event source
+# at 500 ms, toggles a 440 Hz PSG0 tone at every delivery for ten seconds
+# and prints `count/missed` per second - the ear-and-stopwatch check of
+# the event mechanism's deadlines on a board.
+$(eval $(call exe_program,beat,tests/beat,\
+	beat.c,STACK=384,STAGE=1,\
+	INCLUDES=user/sdk/include/kos))
 
 # Extended-memory outcome programs: the checks the image boots
 # (`KOS_BOOT_PROGRAM=/system/xmem_selftest.exe`), the child it SYS_EXECs
@@ -1507,6 +1545,7 @@ fs-selftest: all
 		build-fs-selftest/geometry/memory.inc \
 		$(KOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_fs_selftest*.py' -v
+	$(PYTHON) -m unittest tests.test_events -v
 	@echo "filesystem image: build-fs-selftest/konaos-fs-selftest.bin"
 
 # IPC acceptance image: the production boot path with

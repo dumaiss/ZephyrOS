@@ -100,7 +100,10 @@ in the record but never checked at boot; `flags` bit 0 is the
 re-entrancy declaration (`KOS_IPC_EP_REENTRANT`) and bit 1 the release
 declaration (`MOD_EP_RELEASE`, the manifest's `"release": true`, which
 makes the nucleus notify the endpoint when a handle on one of its objects
-is released); `number` is the
+is released); bit 2 is the events declaration (`MOD_EP_EVENTS`, the
+manifest's `"events": true`), without which the nucleus refuses
+`NOTIFY` on the endpoint's objects with `-KOS_ENOTSUP` and never issues
+`KOS_OP_SUBSCRIBE`; `number` is the
 host-assigned endpoint number (`1..N` across the load order) and
 `dispatch` the absolute hot-tier dispatch entry inside the hot image.
 
@@ -268,7 +271,8 @@ rebuilt alone still matches its siblings.  `validate` and `dump` both run
 A manifest names its objects, its `init` entry, its `segments` (role,
 `image_areas`, `bss_areas`, optional boot `entry`), its `endpoints`
 (`class`, `instance`, `version`, `dispatch` symbol, `flags` and the
-boolean `release`), its `publishes` rows and its symbolic `depends`:
+boolean `release` and `events`), its `publishes` rows and its symbolic
+`depends`:
 
 ```json
 {

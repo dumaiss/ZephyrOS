@@ -118,7 +118,16 @@ rax_window_ok:
 	ld	(rom_access_length),hl
 
 	; ---- save exact IFF state, then lock interrupts ----
+	; IFF2 is read up to three times: on the board an interrupt
+	; accepted right after LD A,I makes that read report 0 (the
+	; documented LD A,I behaviour), and the interrupt's own EI/RETI
+	; makes the next read true.
 	ld	a,i			; P/V = IFF2
+	jp	pe,rom_access_iff1
+	ld	a,i
+	jp	pe,rom_access_iff1
+	ld	a,i
+rom_access_iff1:
 	di
 	ld	l,#0
 	jp	po, rax_iff_captured

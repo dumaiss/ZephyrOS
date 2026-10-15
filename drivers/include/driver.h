@@ -43,6 +43,10 @@
  *   irq_claim       hand the nucleus one hardware source and an in-image
  *   irq_release     handler; the nucleus keeps the IM2 vectoring, the ISR
  *                   stack and the final RETI (4.5).
+ *   event_post      post one device event for the subscription id the
+ *                   nucleus issued the driver through KOS_OP_SUBSCRIBE;
+ *                   the nucleus delivers it to the subscriber at a safe
+ *                   point, once that process runs again (4.10).
  *
  * There is no entry for paths, mounts, devices or file objects: those are
  * protocol payloads between drivers.
@@ -131,10 +135,24 @@ struct driver_api {
 	int8_t (*console_poll)(void);
 	int8_t (*console_getc)(void);
 
-	/* IRQ ownership: claim a source with a handler in this image. */
+	/* IRQ ownership: claim a source with a handler in this image.
+	 * One handler per source; a driver that owns more than one channel
+	 * (the timer) claims each. */
 	int8_t (*irq_claim)(uint8_t source, uint16_t handler,
 			    uint16_t context);
 	int8_t (*irq_release)(uint8_t source);
+
+	/* Device events (architecture 4.10): post one event for the
+	 * subscription id SYS_NOTIFY handed the driver.  ISR-safe, and meant
+	 * for the handler: the nucleus counts it as pending while the
+	 * subscribing process is the one the interrupted context runs for,
+	 * and drops it into that subscriber's `missed` otherwise (its child
+	 * running, another process being served).  Nothing is queued and
+	 * nothing is delivered here: the nucleus delivers on the
+	 * subscriber's next return to its own code.  An endpoint that
+	 * declared no events (MOD_EP_EVENTS) is never given a subscription
+	 * id, and a post with an id it did not issue is ignored. */
+	void (*event_post)(uint16_t sub);
 };
 
 /* The boot bundle the loader hands a driver's init: the nucleus table and

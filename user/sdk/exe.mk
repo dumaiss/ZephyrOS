@@ -56,7 +56,7 @@ $(EXE_RUNTIME): $(KOS_SDK_SRC)/runtime.asm
 	$(SDASZ80) $(EXE_ASFLAGS) -o $@ $<
 
 KOS_SDK_C_SRC := args.c fs.c ipc.c exec.c console_io.c \
-    xmem.c seg.c xload.c \
+    xmem.c seg.c xload.c event.c \
     console_proto.c timer.c \
     klibc/strlen.c klibc/strcmp.c klibc/strncmp.c klibc/strchr.c \
     klibc/strrchr.c klibc/memcpy.c klibc/memmove.c klibc/memset.c \
@@ -64,7 +64,7 @@ KOS_SDK_C_SRC := args.c fs.c ipc.c exec.c console_io.c \
     klibc/utoa.c klibc/ultoa.c klibc/itoa.c klibc/ltoa.c \
     klibc/printf.c klibc/sdcc_arith.c klibc/sdcc_arith_signed.c
 KOS_SDK_ASM_SRC := gate.asm ipcgate.asm diaggate.asm nsgate.asm \
-    xmemgate.asm bcall.asm sdcc_calls.asm \
+    xmemgate.asm bcall.asm sdcc_calls.asm event_entry.asm \
     klibc/sdcc_arith_entries.asm klibc/sdcc_arith_signed_entries.asm
 
 KOS_SDK_C_OBJS   := $(addprefix $(EXE_SDK_BUILD)/,$(patsubst %.c,%.rel,$(KOS_SDK_C_SRC)))

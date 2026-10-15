@@ -51,6 +51,7 @@
 #include "platform.h"
 #include "process.h"
 
+#include "kernel/event/event.h"
 #include "kernel/ipc/ipc.h"
 
 #include "kernel/irq/irq_private.h"
@@ -162,10 +163,13 @@ uint16_t ipc_copy_window;
 uint16_t ipc_copy_aperture;
 uint16_t ipc_copy_slow;
 
-/* IRQ ownership state (one driver handler per source). */
-static uint16_t irq_handler_entry;
-static uint16_t irq_handler_context;
-static uint8_t irq_handler_page;
+/* IRQ ownership state: one driver handler per source, the granularity the
+ * bootstrap interface documents (`irq_claim` claims *a* source).  The timer
+ * driver owns two channels - its tick and its event timer - and each needs
+ * its own in-image handler.  Every handler runs in bank 6, so the window
+ * selection is one constant for all of them. */
+static uint16_t irq_handler_entry[IRQ_SOURCE_COUNT];
+static uint16_t irq_handler_context[IRQ_SOURCE_COUNT];
 static uint8_t ipc_irq_active;
 
 /* --- copy path helpers -------------------------------------------------- */
@@ -794,6 +798,12 @@ int16_t ipc_nucleus_call_common(uint8_t handle, struct kos_ipc_frame *frame,
 
 /* --- the driver bootstrap interface ------------------------------------ */
 
+/* The entries below are the ones `struct driver_api` (drivers/include/
+ * driver.h) hands a resident driver.  They are global on purpose: a
+ * driver calls each of them from its own window, where bank 7 shows only
+ * the fixed core and the common region, and tools/mapcheck.py pins every
+ * exported `api_*` entry to one of those two areas by its map symbol. */
+
 static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t driver_addr,
 			uint16_t length, uint8_t dir)
 {
@@ -809,7 +819,7 @@ static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t driver_addr,
 	return copy_move(desc, driver_addr, offset, length, dir);
 }
 
-static int16_t api_call(uint8_t dependency_ref, uint8_t op,
+int16_t api_call(uint8_t dependency_ref, uint8_t op,
 			struct kos_ipc_frame *frame)
 {
 	if (ipc_irq_active) {
@@ -819,19 +829,19 @@ static int16_t api_call(uint8_t dependency_ref, uint8_t op,
 	return ipc_call_endpoint(dependency_ref, frame);
 }
 
-static int16_t api_copy_in(uint8_t desc, uint16_t offset, uint16_t dst,
+int16_t api_copy_in(uint8_t desc, uint16_t offset, uint16_t dst,
 			   uint16_t length)
 {
 	return api_copy(desc, offset, dst, length, KOS_IPC_DESC_IN);
 }
 
-static int16_t api_copy_out(uint8_t desc, uint16_t offset, uint16_t src,
+int16_t api_copy_out(uint8_t desc, uint16_t offset, uint16_t src,
 			    uint16_t length)
 {
 	return api_copy(desc, offset, src, length, KOS_IPC_DESC_OUT);
 }
 
-static int16_t api_move(uint16_t src, uint16_t dst, uint16_t length)
+int16_t api_move(uint16_t src, uint16_t dst, uint16_t length)
 {
 	if (ipc_irq_active) {
 		return -KOS_EBUSY;
@@ -853,7 +863,7 @@ static int16_t api_move(uint16_t src, uint16_t dst, uint16_t length)
  * mode-10 mapping over bank 6 (P = 0, so 0000h-DFFFh all show bank 6) and
  * runs one LDIR from the bulk extent into the caller's own window buffer,
  * through the same common-resident primitive path B uses. */
-static int16_t api_bulk_read(uint16_t offset, uint16_t dst, uint16_t length)
+int16_t api_bulk_read(uint16_t offset, uint16_t dst, uint16_t length)
 {
 	const struct ipc_endpoint *owner;
 	uint16_t src;
@@ -888,19 +898,19 @@ static int16_t api_bulk_read(uint16_t offset, uint16_t dst, uint16_t length)
 static __sfr __at KOS_SIO0B_CTRL ipc_sio_ctrl;
 static __sfr __at KOS_SIO0B_DATA ipc_sio_data;
 
-static void api_console_putc(uint8_t byte)
+void api_console_putc(uint8_t byte)
 {
 	/* The early console path stays nucleus-owned and common-resident. */
 	early_console_putc((char)byte);
 }
 
-static int8_t api_console_poll(void)
+int8_t api_console_poll(void)
 {
 	return (int8_t)((ipc_sio_ctrl & KOS_SIO_RR0_RX_AVAILABLE) != 0u
 			? 1 : 0);
 }
 
-static int8_t api_console_getc(void)
+int8_t api_console_getc(void)
 {
 	return (int8_t)ipc_sio_data;
 }
@@ -916,46 +926,59 @@ static int8_t api_console_getc(void)
  * call cannot corrupt the call's epilogue. */
 static void ipc_irq_trampoline(void *context)
 {
-	(void)context;
-	if (irq_handler_entry == 0u) {
+	uint8_t source = (uint8_t)(uint16_t)context;
+
+	if (source >= IRQ_SOURCE_COUNT || irq_handler_entry[source] == 0u) {
 		return;
 	}
 	ipc_irq_active = 1u;
-	ipc_domain_set(irq_handler_page);
-	((void (*)(void *))irq_handler_entry)((void *)irq_handler_context);
+	ipc_domain_set(IPC_DRIVER_PAGE_BITS);
+	((void (*)(void *))irq_handler_entry[source])(
+		(void *)irq_handler_context[source]);
 	ipc_domain_set(IPC_NUCLEUS_PAGE_BITS);
 	ipc_irq_active = 0u;
 }
 
-static int8_t api_irq_claim(uint8_t source, uint16_t handler,
+int8_t api_irq_claim(uint8_t source, uint16_t handler,
 			    uint16_t context)
 {
-	if (handler < KOS_REV13_WINDOW_BASE ||
+	if (source >= IRQ_SOURCE_COUNT ||
+	    handler < KOS_REV13_WINDOW_BASE ||
 	    handler >= KOS_BANK7_RUNTIME_END) {
 		return (int8_t)(-KOS_EINVAL);
 	}
-	if (irq_handler_entry != 0u) {
+	if (irq_handler_entry[source] != 0u) {
 		return (int8_t)(-KOS_EBUSY);
 	}
-	irq_handler_entry = handler;
-	irq_handler_context = context;
-	irq_handler_page = IPC_DRIVER_PAGE_BITS;
+	irq_handler_entry[source] = handler;
+	irq_handler_context[source] = context;
 	if (irq_claim((irq_source_t)source, ipc_irq_trampoline,
-		      (void *)0) != IRQ_OK) {
-		irq_handler_entry = 0u;
+		      (void *)(uint16_t)source) != IRQ_OK) {
+		irq_handler_entry[source] = 0u;
 		return (int8_t)(-KOS_EBUSY);
 	}
 	return 0;
 }
 
-static int8_t api_irq_release(uint8_t source)
+int8_t api_irq_release(uint8_t source)
 {
-	if (irq_release((irq_source_t)source) != IRQ_OK) {
+	if (source >= IRQ_SOURCE_COUNT ||
+	    irq_release((irq_source_t)source) != IRQ_OK) {
 		return (int8_t)(-KOS_ENOENT);
 	}
-	irq_handler_entry = 0u;
-	irq_handler_context = 0u;
+	irq_handler_entry[source] = 0u;
+	irq_handler_context[source] = 0u;
 	return 0;
+}
+
+/* Device events (architecture 4.10): the driver's ISR credits one event to
+ * the subscription the nucleus handed it.  The bank the post interrupts
+ * decides whether it counts as pending or as missed; see
+ * kernel/event/event_common.asm kos_event_post_bank. */
+void api_event_post(uint16_t sub)
+{
+	kos_event_post(sub, kos_event_post_bank(
+				     (uint8_t)(ipc_irq_active ? 1u : 0u)));
 }
 
 static const struct driver_api ipc_api = {
@@ -969,6 +992,7 @@ static const struct driver_api ipc_api = {
 	api_console_getc,
 	api_irq_claim,
 	api_irq_release,
+	api_event_post,
 };
 
 /* The boot bundle a driver init entry receives in HL.  Both halves live in

@@ -212,10 +212,16 @@ class TestIocFatIntegration(IocFatStaticBase):
 
     def test_acceptance_image_system_file(self):
         system = json.loads(read(IMAGE_SYSTEM))
+        # The acceptance image boots the timer driver and carries the
+        # device-event outcome program too: the event replay rides the
+        # filesystem image (its card, its child program) and the timer
+        # driver is the event source (`events.exe` in the store).
         self.assertEqual(system["drivers"],
-                         ["sio", "ioc", "console-serial", "iocfat"])
+                         ["sio", "ioc", "console-serial", "iocfat",
+                          "timer"])
         self.assertEqual(system["store"],
-                         ["monitor.exe", "fs_selftest.exe", "fs_child.exe"])
+                         ["monitor.exe", "fs_selftest.exe", "fs_child.exe",
+                          "events.exe"])
         self.assertEqual(system["boot"], "/system/fs_selftest.exe")
 
     def test_the_acceptance_seam_is_not_extended(self):

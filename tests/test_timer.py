@@ -223,10 +223,10 @@ class TestTimerContract(unittest.TestCase):
         # counter's remaining counts.
         self.assertIn("(ticks << 8) - (ticks << 2) - (ticks << 1)", body)
         self.assertIn("KOS_CTC2_TIME_CONSTANT - down", body)
-        # The read keeps the caller's interrupt state (correction 02):
+        # The read keeps the caller's interrupt state:
         # the token is saved before the loop and put back after it, and
         # the function carries no inline `ei`/`di` of its own.
-        read_now = body[body.index("uint32_t timer_counts_now"):]
+        read_now = body[body.index("uint32_t timer_counts_now(void)\n{"):]
         read_now = read_now[:read_now.index("\n}")]
         self.assertLess(read_now.index("state = timer_irq_save_enable()"),
                         read_now.index("before = timer_ticks"))
@@ -234,7 +234,8 @@ class TestTimerContract(unittest.TestCase):
                         read_now.index("timer_irq_restore(state)"))
         self.assertNotIn("__asm", read_now)
 
-        # The handler's whole body is the tick.
+        # The handler counts the tick (and services an armed event
+        # period, tests/test_events.py).
         handler = body[body.index("void timer_irq_handler"):]
         handler = handler[:handler.index("\n}")]
         self.assertIn("timer_ticks = timer_ticks + 1u", handler)
@@ -300,8 +301,8 @@ class TestTimerContract(unittest.TestCase):
 
     def test_the_interrupt_token_helpers_keep_the_callers_state(self):
         """`drivers/timer/timer_io.asm`: the read's save-enable/restore
-        pair.  A syscall body runs with the caller's interrupt state
-        (correction 01), so the driver opens for its critical read and
+        pair.  A syscall body runs with the caller's interrupt state,
+        so the driver opens for its critical read and
         puts that state back instead of forcing one."""
         text = re.sub(r"[ \t]+", " ", read(TIMER_IO_ASM))
         save = text[text.index("_timer_irq_save_enable::"):
@@ -389,10 +390,12 @@ class TestTimerContract(unittest.TestCase):
         self.assertEqual(segments["boot"]["entry"], "timer_boot_entry")
         self.assertEqual(segments["boot"]["image_areas"], ["_BOOT"])
         self.assertEqual(segments["hot"]["bss_areas"], ["_DRIVER_IO"])
+        # The event timer rides this endpoint: it serves
+        # subscriptions (`events`) and stops its channel on a release.
         self.assertEqual(manifest["endpoints"],
                          [{"class": 10, "instance": 0, "version": 1,
                            "dispatch": "timer_driver_dispatch",
-                           "flags": 0}])
+                           "flags": 0, "release": True, "events": True}])
         self.assertEqual(manifest["publishes"],
                          [{"path": "/dev/timer", "type": "TIMER",
                            "endpoint": {"class": 10, "instance": 0},
@@ -432,11 +435,11 @@ class TestTimerContract(unittest.TestCase):
         self.assertEqual([(publication["name"], publication["type"])
                           for publication in report["publications"]],
                          [("/timer", 10)])
-        # The tick count is the image's only run-time data, so the hot
-        # segment's BSS is exactly the u32 a replay reads.
+        # The tick count is the run-time data a replay reads; the event
+        # timer's deadline, period and flags sit beside it.
         hot = [segment for segment in report["segments"]
                if segment["role"] == "hot"][0]
-        self.assertEqual(hot["bss_size"], 4)
+        self.assertEqual(hot["bss_size"], 17)
         self.assertIn("_timer_ticks", report["symbol_segments"])
         store = json.loads(read(STORE))
         names = [item["name"] for item in store["files"]]
@@ -699,9 +702,8 @@ class TimerSession(HwtestReplay):
 
         A delivery whose SP is in common memory below the reservation
         and outside every declared common stack would have the gate's
-        save land on frames no stack owns - the shape of the boot-stack
-        overlap the package found (`docs/validation/2026-10-13-m12-timer.md`),
-        where a chain's frames and the reservation were the same bytes.
+        save land on frames no stack owns: a chain's frames and the
+        reservation would be the same bytes.
 
         Deliveries taken with SP on the gate stack are counted
         (`body_deliveries`): they are interrupts inside a syscall body,

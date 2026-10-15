@@ -104,7 +104,23 @@
  * `"release": true`) is sent RELEASE, so a driver that owns no restoreable
  * hardware state pays nothing for the contract.  ACQUIRE reaches every
  * endpoint, because the exclusive answer is the driver's own.
+ *
+ *   KOS_OP_SUBSCRIBE (FDh)  an application subscribes to the endpoint's
+ *                         events, or drops the subscription.  arg0 = the
+ *                         subscription id (1..4) the nucleus assigned, or
+ *                         0 when the subscription went away; the nucleus
+ *                         keeps the handler, so the call names the id
+ *                         only.  The driver reports 0, or a negative
+ *                         error: -KOS_EBUSY when its one event source is
+ *                         already subscribed, -KOS_EINVAL for an id it
+ *                         never issued.  Only an endpoint whose image
+ *                         declared MOD_EP_EVENTS (the manifest's
+ *                         `"events": true`) is ever sent SUBSCRIBE: the
+ *                         nucleus refuses SYS_NOTIFY on any other handle
+ *                         with KOS_ENOTSUP before the driver sees
+ *                         anything.
  */
+#define KOS_OP_SUBSCRIBE 0xFDu
 #define KOS_OP_ACQUIRE 0xFEu
 #define KOS_OP_RELEASE 0xFFu
 
@@ -311,7 +327,7 @@
  *
  * The monotonic clock: CTC channel 2 runs as a 156.25 Hz tick (250
  * counts of 25.6 µs) and the driver's handler counts the ticks.  A bound
- * handle is the clock; there is no per-instance state.  Both operations
+ * handle is the clock; the first two operations are stateless.  All three
  * are descriptor-less: a clock reading is four bytes of protocol data,
  * never a caller buffer.
  *
@@ -323,13 +339,25 @@
  *                       payload[0..3] = counts per 10 s and
  *                       payload[4..7] = counts per tick, both
  *                       little-endian.
+ *   KTIMER_OP_EVENT (2) arm the driver's event timer (CTC channel 3) or
+ *                       stop it: payload[0..3] = the period in counts,
+ *                       little-endian, 0 = stop.  One subscription at a
+ *                       time: a second subscribe, or an arm while the
+ *                       timer runs, is -KOS_EBUSY; arming without a
+ *                       subscription is -KOS_EINVAL.  The timer posts the
+ *                       event at absolute deadlines (the period is exact
+ *                       from count to count, whatever the count rate's
+ *                       granularity), so a subscriber sees no drift.  The
+ *                       channel stays off until an arm, and the handle's
+ *                       release stops it; see docs/devices.md.
  *
  * The two constants below are the clock's fixed values: the count rate is
  * the 10 MHz system clock through the 256 prescaler (39,062.5 counts per
  * second), the tick rate is 156.25 Hz.
  */
-#define KTIMER_OP_NOW  0u
-#define KTIMER_OP_INFO 1u
+#define KTIMER_OP_NOW   0u
+#define KTIMER_OP_INFO  1u
+#define KTIMER_OP_EVENT 2u
 
 #define KOS_TIMER_COUNTS_PER_10S  390625u
 #define KOS_TIMER_COUNTS_PER_TICK 250u

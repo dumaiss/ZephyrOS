@@ -39,9 +39,12 @@ build/process_exec.rel
 build/name.rel
 build/ipc_asm.rel
 build/ipc_common.rel
+build/event_common.rel
 build/driver_boot.rel
 build/ipc.rel
+build/event.rel
 build/driver_loader.rel
+build/event_syscall.rel
 build/bank7_end.rel
 build/rom_access.rel
 build/process_launch.rel

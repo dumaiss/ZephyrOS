@@ -15,6 +15,7 @@
 	.globl irq_isr_stack, irq_isr_stack_top
 	.globl _irq_arch_lock, _irq_arch_unlock
 	.globl _irq_kernel_code_end
+	.globl _kos_event_irq_exit
 
 	.area _COMMON
 
@@ -88,6 +89,14 @@ irq_common_entry::
 	ld	a,(irq_saved_latch)
 	out	(KOS_MEMCTL_PORT),a
 
+	; Device events (architecture 4.10): the interrupted latch is back, so
+	; the code about to return is the process the event belongs to.  The
+	; check either returns here - nothing deliverable - or hands the
+	; process its pending event and never returns through this path: the
+	; delivery moves SP to the frame it just built below irq_saved_sp and
+	; leaves through RETI to the libkos trampoline.
+	call	_kos_event_irq_exit
+
 	exx
 	pop	hl
 	pop	de
@@ -113,7 +122,16 @@ irq_common_entry::
 ; the same value: returning it only in L would leak I = FDh (left in A by
 ; LD A,I) into the unlock state of callers that read A.
 _irq_arch_lock::
+	; IFF2 is read up to three times: on the board an interrupt
+	; accepted right after LD A,I makes that read report 0 (the
+	; documented LD A,I behaviour), and the interrupt's own EI/RETI
+	; makes the next read true.
 	ld	a,i
+	jp	pe,entry_iff1
+	ld	a,i
+	jp	pe,entry_iff1
+	ld	a,i
+entry_iff1:
 	di
 	ld	l,#0
 	jp	po,100$

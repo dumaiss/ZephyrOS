@@ -389,6 +389,57 @@ when the wait was served, the negated error when a reading failed, and
 clock never hangs the caller. A build without the timer driver answers
 `-KOS_ENOENT` or `-KOS_ENODEV` from `timer_open`.
 
+### 6.9 Device events (`kos/event.h`)
+
+```c
+typedef void (*kos_event_handler_t)(unsigned int count,
+                                    unsigned int missed);
+int notify(int handle, kos_event_handler_t handler);
+int timer_event(int handle, uint32_t period_counts);
+```
+
+`notify` subscribes `handler` to the events of a bound device handle; a
+second call replaces the handler, and `notify(handle, 0)` unsubscribes
+(`docs/abi.md` section 6.7 has the whole contract). `timer_event` arms
+the timer driver's event timer with a period in 25.6 µs counts - 782 is
+20 ms - and 0 stops it. Both return 0 or a negated error; a handle that
+is not bound to an event-serving endpoint is `-KOS_ENOTSUP`, and the
+four subscription slots being taken is `-KOS_ENOSPC`.
+
+The handler runs on the program's own stack, not on an interrupt stack,
+and it runs *instead of* the interrupted code: what it leaves on the
+stack stays there when the interrupted code resumes. It may call the
+SDK - that is what a handler's own console write or clock read is - but
+each call and each delivery is one more frame below the 24-byte delivery
+frame, so the stack reservation (`EXE_STACK` bytes, 384 by default) has
+to carry the program's own depth plus the handler's. It must not return
+through a setjmp-style escape or long-jump out: the nucleus restores the
+state it suspended when the handler returns normally, and a handler that
+never returns leaves the delivery open.
+
+Events coalesce: `count` is how many arrived since the last delivery and
+`missed` how many were dropped (a child was running, or the subscription
+went away), both saturating at `FFFFh`, and both are *since the last
+delivery*: a program that wants a running total adds them up.  Nothing
+queues, so a handler that is slower than its period simply sees a larger
+`count`, and reading the clock in the handler is exact to the count - the
+delivery point is the only delay.
+
+The frame is built below the interrupted stack pointer and the handler
+runs below it, so the program's stack must not lie in the `8000h-BFFFh`
+aperture (the far link rule and the SDK's stack reservation already keep
+it out).  The trampoline and `EVENT_RETURN` live in `libkos`, which every
+program links; a program never writes its own.
+
+The trampoline also saves the SDK's fixed low argument-block area
+(`_KOS_SDK_DATA`, 93 bytes, section 7) into a per-program `_DATA` buffer
+before it calls the handler and restores it after.  Every SDK wrapper
+stages its request there and then does `RST 30h`, and that staging is
+exactly what a delivery can land on: without the snapshot a handler that
+calls the SDK would clobber the interrupted call's staged request - or
+the reply it is about to read.  Two 93-byte LDIRs per delivery, about
+1,970 T-states each, or 2% of the CPU at a 50 Hz period.
+
 ## 7. Memory layout
 
 ```text
@@ -398,7 +449,9 @@ clock never hangs the caller. A build without the timer driver answers
 ...             the program's code
 0100h+image     BSS: crt0's tail copy and argv, then the program's statics
 ...             free memory
-E000h-STACK     the stack, growing down from E000h
+E000h-STACK     the stack, growing down from E000h; a delivered device
+                event suspends the program 24 bytes below SP with the
+                handler running below that
 0100h-1FFFh     the syscall argument window: every gate-visible block is here
 8000h-BFFFh     with the aperture open: a far segment or a mapped object
 ```

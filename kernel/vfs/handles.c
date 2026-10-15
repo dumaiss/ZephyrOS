@@ -19,6 +19,7 @@
  * larger than 32 bytes (the gate stack is shared and small).
  */
 
+#include "kernel/event/event.h"
 #include "kernel/vfs/vfs.h"
 #include "process.h"
 
@@ -236,6 +237,11 @@ void vfs_process_exit(uint8_t pid)
 			vfs_ns_release_entry(&vfs_handles[fd]);
 		}
 	}
+	/* Device-event subscriptions die with their process as well: the
+	 * per-handle release above already told the drivers, and this frees
+	 * any row a handle-less path could have left and clears the
+	 * handler-running flag. */
+	kos_event_process_exit(pid);
 	for (i = 0; i < KOS_EXEC_MAX_DEPTH; ++i) {
 		if (vfs_cwd_owner[i] == pid) {
 			vfs_cwd_owner[i] = VFS_FD_NONE;
@@ -274,6 +280,12 @@ void vfs_ns_release_entry(struct vfs_handle_entry *entry)
 			(uint8_t)((entry->flags & VFS_HANDLE_EXCLUSIVE) != 0u
 					  ? 1u : 0u));
 	}
+	/* The binding the handle carried is what a device event was
+	 * subscribed through: the subscription goes with the handle.  The
+	 * driver was told through KOS_OP_RELEASE just above (when its image
+	 * declared MOD_EP_RELEASE), which is what stops an event source;
+	 * here the nucleus drops its own row. */
+	kos_event_handle_release(entry->owner, entry->number);
 	vfs_handle_release(entry);
 }
 

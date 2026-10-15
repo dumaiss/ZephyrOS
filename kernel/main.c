@@ -21,6 +21,8 @@
 #include "mod.h"
 #include "boot_program.h"
 
+#include "kernel/event/event.h"
+
 #include "kos/protocol.h"
 
 #include "kernel/ipc/ipc.h"
@@ -472,6 +474,18 @@ void kernel_main(void)
 #endif
 	kernel_assert_os_mode();
 	kernel_exercise_banking();
+	/* The common region arrives as the reset copier wrote it: FFh for
+	 * everything the ROM image does not carry, and the image carries no
+	 * _COMMON_DATA bytes, so the event table and the per-process flags
+	 * are invalid until they are cleared here.  The clear must happen
+	 * before interrupts can be enabled - the delivery checks in the
+	 * common region (kos_event_irq_exit, kos_event_syscall_exit) read
+	 * the table on every interrupt and syscall return, and a warm reboot
+	 * can leave the timer driver's channels requesting.  Nothing before
+	 * irq_init() unmasks interrupts (irq_init() itself runs `di`), so
+	 * this order is the warranty; the warm reboot stops the CTC channels
+	 * before it jumps to the reset vector (syscall_reboot). */
+	kos_event_init();
 	irq_init();
 
 	early_console_puts("KonaOS 0.0\r\n");
