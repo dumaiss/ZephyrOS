@@ -29,11 +29,21 @@ void exit(int status);
  * transfer up to `len` bytes (one descriptor-bearing call) and return the
  * count.  console_read() is a non-blocking drain: it returns 0 when no
  * byte is pending; console_poll() returns 0/1.  putchar() writes one byte
- * without a descriptor and returns that byte.  Errors are negative. */
+ * and returns that byte.  Errors are negative.
+ *
+ * Output is buffered: putchar, console_puts and printf collect into the
+ * program's output buffer and it is written out when it fills, at a
+ * '\n', before a console read, before `run` and at exit.  console_flush
+ * writes whatever is still buffered and returns 0 or the flush's
+ * negative error; the bytes it sent are gone either way.  console_write
+ * of more than the free space flushes first and then writes its bytes
+ * directly.  A program that faults loses the bytes it has not
+ * flushed. */
 int console_write(const char *buf, unsigned int len);
 int console_read(char *buf, unsigned int len);
 int console_poll(void);
 int putchar(int ch);
+int console_flush(void);
 
 /* Fill `record` with the six-byte v1 information record; returns 6 or a
  * negative error. */

@@ -14,7 +14,9 @@
 #include "kos/ipc.h"
 #include "kos/process.h"
 #include "kos/seg.h"
+#include "kos/stream.h"
 #include "kos/xmem.h"
+#include "klibc/stdio.h"
 #include "klibc/string.h"
 #include "klibc/fmt.h"
 

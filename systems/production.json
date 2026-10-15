@@ -22,10 +22,7 @@
     "xmem_child.exe",
     "xmem_far.exe",
     "fs_selftest.exe",
-    "fs_child.exe",
-    "far_data.exe",
-    "banks.exe",
-    "known.bin"
+    "fs_child.exe"
   ],
   "cflags": []
 }

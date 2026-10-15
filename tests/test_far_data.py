@@ -23,7 +23,7 @@ gets, not a copy of it.
   `bss_size` is the primary BSS the map reports (the loader zeroes
   exactly that, so a header of 0 would leave every static uninitialized).
 
-**Replay.**  The production image ships `/system/far_data.exe` (the
+**Replay.**  The filesystem image ships `/system/far_data.exe` (the
 outcome program in `tests/fardata/`) plus the `banks.exe` container that
 cannot fit in the machine's auxiliary banks, and `known.bin`, the store
 file the program reads.  Booted with a writable card, the monitor's `X`
@@ -63,20 +63,19 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import exepack  # noqa: E402
 import ihx  # noqa: E402
-from replay import SHELL_PROMPT, STEP_LIMIT, ConsoleReplay  # noqa: E402
+from replay import STEP_LIMIT, Replay  # noqa: E402
 from z80sim import IocCommandPeer  # noqa: E402
 
-IMAGE_SUBDIR = "build"
-IMAGE_NAME = "konaos.bin"
+IMAGE_SUBDIR = "build-fs-selftest"
+IMAGE_NAME = "konaos-fs-selftest.bin"
 
-RUN_LINE = "far_data"
-BEGIN = "far-data: begin\n"
+MONITOR_PROMPT = "Z80> "
+RUN_LINE = b"X /system/far_data.exe\r"
+BEGIN = "far-data: begin\r\n"
 PASS = "far-data: PASS"
 FAIL = "far-data: FAIL"
-# A status the shell must not report: it prints `[exit n]` only for a
-# child that left one, so the absence of the line is the zero-status
-# proof.
-NO_STATUS = "[exit "
+# The status the monitor reports for the child: the zero-status proof.
+EXEC_STATUS = "exec: exit status 0x0000"
 CHECKS = "far-data: 39 checks, 0 failures"
 
 # Every outcome line the program must report, in order.
@@ -307,8 +306,8 @@ class TestTheSpikeLayout(FarDataBuild):
                          [0, symbols["l__DATA1B"], symbols["l__DATA2B"]])
 
 
-class FarDataSim(ConsoleReplay, unittest.TestCase):
-    """The production image, the program run from the shell."""
+class FarDataSim(Replay, unittest.TestCase):
+    """The filesystem image, the program run from the monitor."""
 
     IMAGE_SUBDIR = IMAGE_SUBDIR
     IMAGE_NAME = IMAGE_NAME
@@ -316,7 +315,7 @@ class FarDataSim(ConsoleReplay, unittest.TestCase):
     def setUp(self):
         image = os.path.join(ROOT, IMAGE_SUBDIR, IMAGE_NAME)
         if not os.path.isfile(image):
-            self.skipTest("%s is missing; run make" % image)
+            self.skipTest("%s is missing; run make fs-selftest" % image)
         self.load_image()
 
     def make_cpu(self, **peer_kwargs):
@@ -326,22 +325,30 @@ class FarDataSim(ConsoleReplay, unittest.TestCase):
         z.ioc_peer = peer
         return z
 
-    def test_the_far_data_outcomes_in_the_production_image(self):
-        """`far_data` at the shell reports every far-data outcome, the
+    def boot_to_prompt(self, z, limit=STEP_LIMIT):
+        """Boot to the monitor's serial prompt (the image's boot program
+        runs first and hands the console over on exit)."""
+        self.start_kernel(z)
+        self.run_until(z, [MONITOR_PROMPT, b"PANIC"], limit=limit)
+        return z
+
+    def test_the_far_data_outcomes_in_the_filesystem_image(self):
+        """`far_data` at the monitor reports every far-data outcome, the
         pinned check count and the verdict, and exits 0."""
-        z = self.make_cpu()
-        self.boot_to_shell(z)
-        start = len(z.glyphs)
-        self.send_line(z, RUN_LINE, SHELL_PROMPT, limit=STEP_LIMIT)
-        text = "".join(z.glyphs[start:])
+        z = self.boot_to_prompt(self.make_cpu())
+        start = len(z.sio_tx)
+        z.sio_rx.extend(RUN_LINE)
+        self.run_until(z, [EXEC_STATUS, FAIL, b"PANIC"], since=start,
+                       limit=STEP_LIMIT)
+        text = bytes(z.sio_tx[start:]).decode("ascii", "replace")
 
         self.assertIn(BEGIN, text)
         for label in OUTCOMES:
-            self.assertIn("far-data: %s OK\n" % label, text)
+            self.assertIn("far-data: %s OK\r\n" % label, text)
         self.assertNotIn(FAIL, text)
         self.assertIn(CHECKS, text)
         self.assertIn(PASS, text)
-        self.assertNotIn(NO_STATUS, text)
+        self.assertIn(EXEC_STATUS, text)
 
 
 if __name__ == "__main__":

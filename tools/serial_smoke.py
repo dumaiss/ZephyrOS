@@ -16,16 +16,6 @@ captures output with a bounded timeout, and verifies the expected output:
                      the link and the mode finishes on `monitor: exit
                      status 0x`.  The boot log is printed once, so start
                      this tool first and reset the board.
-    --mode console-integration  the console integration acceptance image:
-                     banner, the driver report, the console version,
-                     the selected output/input lanes, the IOC PING
-                     controller level, the rejected-call invariants and
-                     "console integration: OK" over the direct early SIO,
-                     followed by the IOC, HID and V9958 device
-                     diagnostics' markers.  The interactive monitor
-                     session runs over the HID input and the V9958
-                     output and is the human gate; the image waits for
-                     the host sync sequence.
     --mode console-serial  the console-serial variant image: the
                      production driver set with the SERIAL
                      console, so the whole dynamic transcript - banner,
@@ -70,7 +60,7 @@ before they print anything, so those modes send that sequence once the
 port is open and repeat it until the first byte arrives.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|romfs-corrupt|ioc|hid|video|console|console-integration|console-serial|fs|hwtest|shell]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|console-serial|fs|hwtest|shell]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -120,21 +110,7 @@ MODULE_UNAVAILABLE = b": unavailable 0x"
 # takes that as a documented outcome rather than a failure.
 SUBSYS_EXIT = b"boot: /system/monitor.exe exit 0"
 
-# --- corrupt-store image -----------------------------------------------------
-INTEGRATION_DRIVERS_PREFIX = b"console integration: drivers "
-INTEGRATION_LANES_RE = re.compile(
-    rb"console integration: (output (video|serial)|input (hid|serial))\r\n")
-INTEGRATION_IOC_LEVEL_OK = b"console integration: ioc level 4A\r\n"
-INTEGRATION_REJECTED_OK = b"console integration: rejected calls OK\r\n"
-INTEGRATION_SELFTEST_OK = b"console integration: OK\r\n"
-INTEGRATION_FAIL = b"console integration: FAIL"
-# The three device diagnostics the integration image carries (their
-# transcripts follow the integration one on the same early-SIO lane).
-IOC_SELFTEST_OK = b"ioc selftest: OK\r\n"
-HID_SELFTEST_OK = b"hid selftest: OK\r\n"
-VIDEO_SELFTEST_OK = b"video selftest: OK\r\n"
-DEVICE_FAIL_ANY = (b"ioc selftest: FAIL", b"hid selftest: FAIL",
-                   b"video selftest: FAIL")
+# --- console-serial variant --------------------------------------------------
 CONSOLE_SERIAL_SYSINFO = \
     b"system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02\r\n"
 
@@ -183,33 +159,11 @@ def _production_result(data, quiet_elapsed):
     return BANNER in data and quiet_elapsed
 
 
-def _integration_result(data):
-    """True when the integration image's serial portion completed: the
-    driver report, the console composition, the PING level, the
-    rejected-call invariants and the three device diagnostics, with no
-    optional-module diagnostic and no failure marker."""
-    if (INTEGRATION_FAIL in data or b"PANIC" in data or
-            any(marker in data for marker in DEVICE_FAIL_ANY)):
-        return False
-    if (BANNER not in data or INTEGRATION_DRIVERS_PREFIX not in data or
-            INTEGRATION_IOC_LEVEL_OK not in data or
-            INTEGRATION_REJECTED_OK not in data or
-            INTEGRATION_SELFTEST_OK not in data):
-        return False
-    lanes = INTEGRATION_LANES_RE.findall(data)
-    if len(lanes) != 2:
-        return False
-    return (IOC_SELFTEST_OK in data and HID_SELFTEST_OK in data and
-            VIDEO_SELFTEST_OK in data)
-
-
 # Host sync the smoke image waits for before the banner (bench quirk: the
 # board's reset line also resets the USB bridge, so the board must not
 # print until the host has reopened its port).  Mirrors
 # KOS_SMOKE_HOST_SYNC_FIRST/SECOND in platform/zephyr80/public/
-# hardware.{h,inc};
-# modes ioc and hid send it on every open and repeat it until the
-# first byte.
+# hardware.{h,inc}).
 IOC_HOST_SYNC = b"\xaa\x55"
 
 
@@ -570,7 +524,6 @@ def main(argv):
         "--baud", type=int, default=int(os.environ.get("KOS_SERIAL_BAUD", "115200"))
     )
     parser.add_argument("--mode", choices=("normal", "subsystem",
-                                           "console-integration",
                                            "console-serial",
                                            "fs", "hwtest", "shell"),
                         default="normal")
@@ -634,21 +587,6 @@ def main(argv):
               "RESET now so the boot is captured; the tool sends Q once "
               "the Z80> prompt appears and finishes on the launcher's "
               "exit line")
-    if args.mode == "console-integration":
-        print("serial_smoke: mode console-integration checks the integration image's "
-              "serial portion (driver report, composition lanes, PING "
-              "level, rejected-call invariants, the IOC/HID/V9958 "
-              "diagnostics); power-cycle the board or press RESET now so "
-              "the boot is captured; the image waits for the host sync "
-              "sequence")
-        print("serial_smoke: operator step: type 'K41' then Enter on the "
-              "USB keyboard when the console lanes are reported - the "
-              "console composition read waits for it and reports the "
-              "typed line back")
-        print("serial_smoke: the interactive monitor session runs over "
-              "the HID input and the V9958 output; confirm the banner, "
-              "prompt and documented command pass on the physical "
-              "keyboard/display")
     if args.mode == "console-serial":
         print("serial_smoke: mode console-serial checks the console-serial "
               "variant boot log; power-cycle the board or press RESET now "
@@ -710,8 +648,7 @@ def main(argv):
                 print("serial_smoke: %s is back (drop %d); still capturing"
                       % (args.port, bridge_drops))
                 host_sync_at = 0.0
-            if (args.mode in ("console-integration",
-                              "console-serial") and
+            if (args.mode == "console-serial" and
                     BANNER not in data and
                     time.monotonic() >= host_sync_at):
                 # The smoke image holds the banner for this sequence; keep
@@ -751,9 +688,6 @@ def main(argv):
                         rx_byte_sent = True
                         print("serial_smoke: sent Q at the monitor prompt")
                     if _subsys_complete(data):
-                        break
-                elif args.mode == "console-integration":
-                    if _integration_result(data) or INTEGRATION_FAIL in data:
                         break
                 elif args.mode == "fs":
                     # Read past the verdict: the monitor prompt is part of
@@ -856,15 +790,6 @@ def main(argv):
                     "selftest: OK) with no FAIL/PANIC marker, and one "
                     "interactive monitor step ending on the launcher's "
                     "'boot: /system/monitor.exe exit 0' line")
-    elif args.mode == "console-integration":
-        ok = _integration_result(data)
-        expected = ("the banner, the driver report, the console "
-                    "composition lanes, the typed 'K41' line, the IOC "
-                    "PING level, the rejected-call invariants, the "
-                    "IOC/HID/V9958 device diagnostics and "
-                    "'console integration: OK'; the operator must also "
-                    "confirm the visible monitor session on the V9958 "
-                    "display with the USB keyboard")
     elif args.mode == "fs":
         ok = _fs_image_result(data)
         expected = ("the banner, one OK line per outcome (the /fs create, "
@@ -991,23 +916,6 @@ def _explain_wrong_image(mode, data):
             print("serial_smoke: hint: no boot log was captured.  Start "
                   "this tool first, then power-cycle the board or press "
                   "RESET while it waits, and rerun", file=sys.stderr)
-    elif mode == "console-integration":
-        if INTEGRATION_FAIL in data or any(marker in data
-                                           for marker in DEVICE_FAIL_ANY):
-            print("serial_smoke: hint: a diagnostic reported FAIL; the "
-                  "marker above names the phase", file=sys.stderr)
-        elif not BANNER in data:
-            print("serial_smoke: hint: no boot log was captured.  This "
-                  "image waits for the host sync sequence before the "
-                  "banner; start this tool first, then power-cycle the "
-                  "board or press RESET while it waits, and rerun",
-                  file=sys.stderr)
-        else:
-            print("serial_smoke: hint: the integration transcript is "
-                  "incomplete; the last marker above shows how far the "
-                  "boot got.  The interactive monitor session must be "
-                  "confirmed on the physical keyboard and display",
-                  file=sys.stderr)
     elif mode == "console-serial":
         if not BANNER in data:
             print("serial_smoke: hint: no boot log was captured.  This "

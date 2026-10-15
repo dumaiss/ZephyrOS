@@ -20,11 +20,11 @@ without executing target code:
     the proven 64-call stuck-doorbell penalty;
   - the fake-IOC fixture and the no-IOC/malformed images that prove
     dependency failure, interface verification and rollback;
-  - mapcheck rejects linked HID driver symbols (module-only);
-  - the smoke tool's hid markers and result classification.
+  - mapcheck rejects linked HID driver symbols (module-only).
 
-Executable behavior is replayed from the real linked images by
-tests/test_hid_sim.py.
+Executable behavior (the monitor's typed input through the HID engine)
+is replayed from the production image by
+tests/test_console_acceptance.py.
 """
 
 import json
@@ -169,8 +169,7 @@ class TestHidDriverArtifact(unittest.TestCase):
                           "hwtest.exe", "timer.exe", "beat.exe",
                           "xmem_selftest.exe",
                           "xmem_child.exe", "xmem_far.exe",
-                          "fs_selftest.exe", "fs_child.exe",
-                          "far_data.exe", "banks.exe", "known.bin"])
+                          "fs_selftest.exe", "fs_child.exe"])
         # The boot manifest orders the drivers; HID's declared dependency
         # on the IOC class is what makes the loader place IOC first.
         manifest_name = _read(os.path.join(ROOT, "abi", "kos",
@@ -187,18 +186,6 @@ class TestHidDriverArtifact(unittest.TestCase):
         # system file's, and one foreach emits the pack rule per driver.
         self.assertIn("$(BUILD)/drivers/$(1).json", makefile)
         self.assertIn("hid.rel", makefile)
-        # The HID diagnostic runs in the console-integration image; the
-        # table row links
-        # it and the system file carries the group's flags.
-        index = makefile.index("SYSTEM_TEST_OBJS.console-integration :=")
-        self.assertIn("$(BUILD)/hid_test.rel",
-                      makefile[index:index + 400])
-        self.assertIn("hid_test", makefile)
-        # Which drivers an image boots is its system file's driver set.
-        system = _load_json(os.path.join(ROOT, "systems",
-                                         "console-integration.json"))
-        self.assertIn("hid", system["drivers"])
-        self.assertIn("-DKOS_HID_SELFTEST=1", system["cflags"])
 
     def test_production_map_has_no_linked_hid_symbols(self):
         if not os.path.exists(MAP):

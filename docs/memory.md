@@ -192,8 +192,8 @@ and their frame primitives in common memory, the post path and the
 driver-API exports in the fixed core, and the syscall and teardown bodies
 in the cold half; `_WINDOW_DATA` starts at `C200h` because the linked
 cold code ends at `C198h` (the window-data base follows the code end,
-architecture 4.2).  One delivery costs 7,459 T-states, 3.7% of the CPU at
-50 Hz.
+architecture 4.2).  One delivery costs 8,407 T-states, 4.2% of the CPU at
+50 Hz (nucleus and trampoline; the handler's own body is outside it).
 
 The gate stack is 384 bytes; the deepest measured chain uses 275, and the
 worst case must stay at or below 360. The driver stack's measured

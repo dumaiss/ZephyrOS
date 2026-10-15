@@ -406,8 +406,8 @@ class TestTheRealSystems(unittest.TestCase):
                           "hwtest.exe", "timer.exe", "beat.exe",
                           "xmem_selftest.exe",
                           "xmem_child.exe",
-                          "xmem_far.exe", "fs_selftest.exe", "fs_child.exe",
-                          "far_data.exe", "banks.exe", "known.bin"])
+                          "xmem_far.exe", "fs_selftest.exe",
+                          "fs_child.exe"])
 
     def test_production_resolves_the_console_dependencies(self):
         self.assertEqual(self.generate("production"), 0)

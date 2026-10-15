@@ -384,25 +384,29 @@ class TestSdkBoundary(unittest.TestCase):
         # it execs (KOS_NS_SELFTEST); `fs_selftest` and `fs_child` are the
         # filesystem outcome programs (KOS_FS_SELFTEST); `xmem_selftest`
         # and `xmem_child` are the extended-memory outcome programs
-        # (KOS_XMEM_SELFTEST); `escc` is the
-        # ESC c display-reset check the console integration image boots
-        #; `exe2probe`, `exe2seg` and `exe2big` are the
+        # (KOS_XMEM_SELFTEST);
+        # `exe2probe`, `exe2seg` and `exe2big` are the
         # EXE v2 loader-outcome programs the subsystem process selftest
         # runs; `fardemo` is the SDK far-code demo and
         # `xmem_far` the far-code outcome program;
         # `events` is the device-event acceptance program the
         # KOS_EVENTS_SELFTEST configuration builds;
         # `beat` is the device-event board check the production store
-        # carries;
+        # carries; `iobench` is the I/O bench the filesystem image's
+        # store and a card copy carry;
         # `hwtest` is the production store's feature exerciser and the
         # runner of those outcome programs; `shell` is the native shell,
-        # the store's boot program.
+        # the store's boot program; `iomix`/`iomix_child` and `iostream`
+        # are the console-order and stream outcome programs the filesystem
+        # image's store carries (`tests/test_io_sim.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
-                         ["banks", "beat", "devtest", "escc", "events",
+                         ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
                           "far_data",
                           "fardemo", "fs_child", "fs_selftest", "hello",
-                          "hwtest", "ipc", "ipccopy", "monitor", "ns",
+                          "hwtest", "iobench", "iomix", "iomix_child",
+                          "iostream", "ipc", "ipccopy",
+                          "monitor", "ns",
                           "nschild", "shell", "timer", "xmem_child",
                           "xmem_far",
                           "xmem_selftest"])

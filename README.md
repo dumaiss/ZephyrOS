@@ -43,7 +43,6 @@ Acceptance images, each with its simulator replay:
 | `make ns-selftest` | the namespace, the standard handles and publications |
 | `make fs-selftest` | files on `/fs` and `/system`, nested exec, with and without a card |
 | `make xmem-selftest` | extended memory, far code and banked calls |
-| `make console-integration-selftest` | the full driver set: IOC, HID, V9958, the console |
 | `make console-serial-selftest` | the serial-console build, and the missing-driver boot failure |
 | `make helloworld-image` | the SDK demo image |
 

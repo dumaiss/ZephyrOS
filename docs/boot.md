@@ -206,7 +206,6 @@ timeout and checks the transcript of one image:
 | `make smoke-hardware` | production `build/konaos.bin` | banner, drivers, shell prompt |
 | `make smoke-hardware-hwtest` | production | types `hwtest` at the shell, checks every stage |
 | `make smoke-hardware-subsystem` | `subsystem-selftest` | the subsystem acceptance |
-| `make smoke-hardware-console-integration` | `console-integration-selftest` | the console integration acceptance |
 | `make smoke-hardware-console-serial` | `console-serial-selftest` | the serial console build |
 | `make smoke-hardware-fs` | `fs-selftest` | the file outcome image (needs a writable card) |
 | `make smoke-hardware-shell` | `console-serial-selftest` | `pwd`, `ls /system`, `hwtest`, `exit` at the shell |

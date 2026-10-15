@@ -64,6 +64,11 @@ TAIL = 0x6200
 OUT = 0x6400
 WORDS = 0x6600
 RECORDS = 0x7000
+# The buffered console's capture: `putchar` appends its byte here (the
+# console flushes a line at a time, so a host test cannot read the
+# messages out of a call).
+STREAM = 0x6800
+STREAM_LEN = 0x6A00
 
 
 def _symbols(rel_map):
@@ -125,6 +130,44 @@ class ShellImage(unittest.TestCase):
             if z.pc == RET:
                 return z.de
         raise AssertionError("%s did not return" % name)
+
+    # The console's buffered path, staged in the program's bank.  A flush
+    # succeeds without the IPC gate, and `putchar` appends its byte to the
+    # capture buffer and returns it (HL in, DE out: the SDK's convention).
+    FLUSH_STUB = bytes((0x11, 0x00, 0x00, 0xC9))   # ld de,#0 ; ret
+    PUTCHAR_STUB = bytes((
+        0xE5,                    # push hl
+        0x2A, STREAM_LEN & 0xFF, STREAM_LEN >> 8,     # ld hl,(STREAM_LEN)
+        0x11, STREAM & 0xFF, STREAM >> 8,             # ld de,#STREAM
+        0x19,                    # add hl,de          ; the slot
+        0xE3,                    # ex (sp),hl         ; hl = the byte
+        0x5D, 0x54,              # ld e,l ; ld d,h    ; the result
+        0x7D,                    # ld a,l
+        0xE1,                    # pop hl             ; the slot
+        0x77,                    # ld (hl),a
+        0xD5,                    # push de
+        0x2A, STREAM_LEN & 0xFF, STREAM_LEN >> 8,     # ld hl,(STREAM_LEN)
+        0x23,                    # inc hl
+        0x22, STREAM_LEN & 0xFF, STREAM_LEN >> 8,     # ld (STREAM_LEN),hl
+        0xD1,                    # pop de
+        0xC9,                    # ret
+    ))
+
+    def capture_console(self, z, bank):
+        """Stub the console's buffered path: `putchar` appends to the
+        capture buffer, the flush returns success, and nothing reaches a
+        gate.  `_console_write` is stubbed by the caller where its
+        "one call" shape matters."""
+        for name, code in (("_console_flush", self.FLUSH_STUB),
+                           ("_putchar", self.PUTCHAR_STUB)):
+            address = self.symbols[name]
+            bank[address:address + len(code)] = code
+        bank[STREAM_LEN:STREAM_LEN + 2] = b"\x00" * 2
+
+    def streamed(self, bank):
+        """The bytes the buffered console collected so far."""
+        length = bank[STREAM_LEN] | (bank[STREAM_LEN + 1] << 8)
+        return bytes(bank[STREAM:STREAM + length]).decode("ascii")
 
     def stage(self, bank, address, text):
         raw = text.encode("ascii")
@@ -423,6 +466,7 @@ class TestShellStartupCwd(ShellImage):
                            ("_console_write", self.WRITE_STUB)):
             address = self.symbols[name]
             bank[address:address + len(code)] = code
+        self.capture_console(z, bank)
         bank[RECORDS:RECORDS + 8] = b"\x00" * 8
 
         status = signed(self.call(z, "_main"))
@@ -515,6 +559,10 @@ class TestShellFileErrors(ShellImage):
         0xC9,                     # ret
     ))
 
+    def setUp(self):
+        super().setUp()
+        self.stream_len = 0
+
     def service(self, z, bank):
         for name in ("_stat", "_list", "_mkdir"):
             address = self.symbols[name]
@@ -522,31 +570,34 @@ class TestShellFileErrors(ShellImage):
                 self.ENODEV_STUB
         address = self.symbols["_console_write"]
         bank[address:address + len(self.CAPTURE_STUB)] = self.CAPTURE_STUB
+        self.capture_console(z, bank)
 
     def command(self, z, bank, words):
-        """`shell_file_command` over staged words; the positive status."""
+        """`shell_file_command` over staged words; the positive status.
+
+        The messages are formatted per byte through the buffered console
+        now, so the capture is read from where it stood before the call.
+        """
         bank[RECORDS:RECORDS + 4] = b"\x00" * 4
         argv = self.stage_argv(bank, list(words))
+        self.stream_len = bank[STREAM_LEN] | (bank[STREAM_LEN + 1] << 8)
         return signed(self.call(z, "_shell_file_command", hl=len(words),
                                 de=argv))
 
-    def message(self, z):
-        """The one captured console write, read through the memory map
+    def message(self, bank):
+        """The console bytes this command wrote, through the memory map
         (printf formats on the process stack, in the common bank)."""
-        pointer = z.rd(RECORDS) | (z.rd(RECORDS + 1) << 8)
-        length = z.rd(RECORDS + 2) | (z.rd(RECORDS + 3) << 8)
-        return "".join(chr(z.rd(pointer + index))
-                       for index in range(length))
+        return self.streamed(bank)[self.stream_len:]
 
     def test_no_card_reports_no_device(self):
         z, bank = self.load()
         self.service(z, bank)
 
         self.assertEqual(self.command(z, bank, ("ls", "/")), 0x03)
-        self.assertEqual(self.message(z), "ls: /: no device\r\n")
+        self.assertEqual(self.message(bank), "ls: /: no device\r\n")
 
         self.assertEqual(self.command(z, bank, ("mkdir", "/X")), 0x03)
-        self.assertEqual(self.message(z), "mkdir: /X: no device\r\n")
+        self.assertEqual(self.message(bank), "mkdir: /X: no device\r\n")
 
 
 class TestShellArtifact(unittest.TestCase):
@@ -593,9 +644,10 @@ class TestShellArtifact(unittest.TestCase):
         end = 0x100 + info["header"]["image_size"] + info["bss"]["size"]
         self.assertLess(end, LINE,
                         "the linked image reached the staging area")
-        self.assertLess(max(LINE, ARGV, TAIL, OUT, WORDS, RECORDS),
-                        info["stack"]["base"],
-                        "the staging area reached the program's stack")
+        self.assertLess(
+            max(LINE, ARGV, TAIL, OUT, WORDS, STREAM, STREAM_LEN, RECORDS),
+            info["stack"]["base"],
+            "the staging area reached the program's stack")
 
 
 if __name__ == "__main__":

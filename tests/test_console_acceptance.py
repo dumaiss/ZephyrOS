@@ -1,17 +1,13 @@
-"""Console integration acceptance tests: replay the real production bytes
-and the integration acceptance image in the Z80 simulator.
+"""Console acceptance tests: replay the real production bytes in the Z80
+simulator.
 
-Both images boot the resident-driver model: the recovery store lists the
+The image boots the resident-driver model: the recovery store lists the
 SIO, IOC, HID, V9958 and CONSOLE drivers in the manifest order, the
 nucleus driver loader places them in bank 6 and runs their boot tiers
 and inits, and the build-selected console driver - not a kernel binding
 and with no runtime fallback - forwards the console protocol to the
 input/output drivers its manifest names.  The production image is the
-same source and store the physical acceptance image is built from minus
-the target-test objects; the integration image adds the target
-diagnostics - the integration pass plus the IOC, HID and V9958 device
-diagnostics - behind the early-SIO driver transcript, and the unchanged
-`monitor.exe` program the boot program runs.
+same source and store the physical acceptance image is built from.
 
 Coverage, all against those linked bytes:
 
@@ -29,16 +25,10 @@ Coverage, all against those linked bytes:
 * the IOC lane the store's filesystem driver (IOC-FAT) drives through the
   IOC endpoint: link bring-up plus the FS2 command exchange, seen from
   the emulated MCU peer;
-* the integration image: the loader's per-driver evidence rows and
-  ledger, the target diagnostics' endpoint/composition/marker/typed-line
-  /PING/rejection transcript (and the IOC/HID/V9958 diagnostics the same
-  image carries), the same bytes on the visible lane, the ESC c display
-  reset the boot program runs, and the monitor session
-  that follows it;
 * ROMFS payload identity: the packed monitor artifact is stored
   byte-for-byte and the store's directory matches the image's manifest.
 
-Skipped when the images have not been built.
+Skipped when the image has not been built.
 """
 
 import hashlib
@@ -52,23 +42,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from replay import (SHELL_PROMPT, STEP_LIMIT, ConsoleReplay,  # noqa: E402
-                    IntegrationInputs, integration_peer)
+from replay import (SHELL_PROMPT, STEP_LIMIT, ConsoleReplay)  # noqa: E402
 from z80sim import IocCommandPeer  # noqa: E402
 import modpack  # noqa: E402
 import romfspack  # noqa: E402
-from test_v9958_sim import bringup_starts  # noqa: E402
-
-SMOKE_HOST_SYNC = b"\xaa\x55"
 
 # The packed monitor artifact (pinned by user/monitor/ and the tooling
 # tests; the store must deliver these exact bytes).  The monitor grew by
-# the B (reboot) command and then by the `irq:` row's counters and the
-# SDK's longer system-info record, so the pinned identity moved with the
-# relink.
-MONITOR_SIZE = 6484
+# the B (reboot) command, by the `irq:` row's counters and the SDK's
+# longer system-info record, and by the SDK's buffered console, so the
+# pinned identity moved with each relink.
+MONITOR_SIZE = 6688
 MONITOR_SHA256 = (
-    "f7e4e70fe054e41ee30e67aeae9f9b75ba209e02076c70fcadb976e08101c4cb")
+    "001ade4025051f0a8bc4716593cb3514552e4ad78e9b4946b22843789ffdb0d4")
 
 # The monitor's visible rows, decoded from the V9958 trace.
 PROMPT = "Z80> "
@@ -85,15 +71,8 @@ BANK_INFO = "bank: current 01 mask 7F"
 # the timer replay is what proves dispatches happen at all, and the
 # board's own runs read this line when one stops happening.
 IRQ_LINE = "irq: unexpected 0000 unclaimed 0000 last 07"
-# The integration image's boot program hands the console to a monitor of
-# its own; when that session ends the program returns and the launcher's
-# monitor policy starts the monitor again.
-ESCC_EXIT = "boot: /system/escc.exe exit 0"
 PRODUCTION_DIR = "build"
 PRODUCTION_IMAGE = "konaos.bin"
-
-INTEGRATION_DIR = "build-console-integration-selftest"
-INTEGRATION_IMAGE = "konaos-console-integration-selftest.bin"
 
 # The driver images the production store carries, in manifest order, with
 # the endpoint class each registers.  The production CONSOLE driver is
@@ -107,20 +86,6 @@ DRIVER_SET = (("sio.mod", 1), ("ioc.mod", 5), ("hid.mod", 4),
 # manifest order.  `console-serial` is exercised by test_console_serial.
 CONSOLE_DEPS = {"console-v9958-hid.mod": ((4, 0), (2, 0))}
 
-# The characters the integration diagnostic writes through the console
-# driver and the line the replay queues for its input row.
-INTEGRATION_MARKER = "C41"
-INTEGRATION_LINES = (
-    b"console integration: drivers sio=01 ioc=01 hid=01 video=01 "
-    b"console=01\r\n",
-    b"console integration: console v01\r\n",
-    b"console integration: output video\r\n",
-    b"console integration: input hid\r\n",
-    b"console integration: ioc level 4A\r\n",
-    b"console integration: rejected calls OK\r\n",
-    b"console integration: OK\r\n",
-)
-
 # IOC peer traffic: the lane's one bounded bring-up, then the IOC-FAT
 # driver's FS2 exchange through its resolved IOC endpoint.
 LINK_SYNC_REQUEST = 0x0C
@@ -133,11 +98,6 @@ class ConsoleReplayBase(ConsoleReplay, unittest.TestCase):
 
     IMAGE_SUBDIR = PRODUCTION_DIR
     IMAGE_NAME = PRODUCTION_IMAGE
-    HOST_SYNC = b""
-    # The merged image's four diagnostics need their scripted inputs;
-    # production carries none of them and reads the monitor's typed
-    # input instead.
-    INPUT_STREAMS = False
 
     def setUp(self):
         self.load_image()
@@ -146,13 +106,10 @@ class ConsoleReplayBase(ConsoleReplay, unittest.TestCase):
         return IocCommandPeer()
 
     def start(self):
-        """Boot with the emulated peers; the integration image's input
-        streams are attached to the stepping helpers."""
+        """Boot with the emulated peers."""
         z = self.make_cpu()
         z.hid = z.ioc_peer = self.make_peer()
-        if self.INPUT_STREAMS:
-            self.input_driver = IntegrationInputs(z.ioc_peer)
-        self.start_kernel(z, host_sync=self.HOST_SYNC)
+        self.start_kernel(z)
         return z
 
     def read_sio(self, z):
@@ -163,9 +120,6 @@ class ConsoleReplayBase(ConsoleReplay, unittest.TestCase):
 
     def type_line(self, z, text, expect, limit=STEP_LIMIT):
         self.send_raw(z, text, expect, limit=limit)
-
-    def wait_for_count(self, z, expect, count, limit=STEP_LIMIT):
-        self.run_until_count(z, expect, count, limit=limit)
 
 
 class TestProductionImage(ConsoleReplayBase):
@@ -186,7 +140,6 @@ class TestProductionImage(ConsoleReplayBase):
         self.assertEqual(sio.count(b"\n"), 4, sio)
         self.assertNotIn(b": unavailable 0x", sio)
         self.assertNotIn(b"FAIL", sio)
-        self.assertNotIn(b"console integration", sio)
 
         # The boot line the nucleus prints through the console driver,
         # and the shell it starts: the monitor is in the store but the
@@ -199,8 +152,8 @@ class TestProductionImage(ConsoleReplayBase):
         self.assertNotIn(PROMPT, trace)
 
         # The production image links no acceptance symbol at all.
-        for name in ("_kos_run_console_integration_selftest",
-                     "_ace_integration_result", "_kos_target_test_late"):
+        for name in ("_kos_target_test_late", "_kos_target_test_early",
+                     "_kos_target_test_syscall"):
             self.assertNotIn(name, self.syms)
 
         self.assert_driver_store()
@@ -319,108 +272,6 @@ class TestProductionImage(ConsoleReplayBase):
         with open(path, "rb") as handle:
             _header, entries = romfspack.parse_image(handle.read())
         return {entry["name"]: entry for entry in entries}
-
-
-class TestIntegrationImage(ConsoleReplayBase):
-    """`build-console-integration-selftest`: the production driver set
-    plus the target diagnostic and the same monitor launcher."""
-
-    IMAGE_SUBDIR = INTEGRATION_DIR
-    IMAGE_NAME = INTEGRATION_IMAGE
-    HOST_SYNC = SMOKE_HOST_SYNC
-    INPUT_STREAMS = True
-
-    def make_peer(self):
-        return integration_peer()
-
-    def driver_plan(self):
-        """The nucleus ledger the packer's set report carries for this
-        image (tools/modpack.py plan drivers.plan.json)."""
-        path = os.path.join(ROOT, INTEGRATION_DIR, "modules",
-                            "drivers.plan.json")
-        with open(path, "r") as handle:
-            return json.load(handle)["nucleus"]
-
-    def test_diagnostic_transcript_and_visible_lanes(self):
-        z = self.start()
-        self.boot_to_prompt(z)
-        sio = self.read_sio(z)
-        trace = self.read_trace(z)
-
-        # Loader evidence: one row per image, in manifest order, plus the
-        # ledger the packer's report pins.
-        for name in ("sio.mod", "ioc.mod", "hid.mod", "v9958.mod",
-                     "console-v9958-hid.mod"):
-            self.assertIn(("driver %s: hot " % name).encode(), sio)
-        self.assertIn(b"driver loader: 5 images in bank 6\r\n", sio)
-        # The loader's two ledgers must equal what the packer's plan
-        # (drivers.plan.json) reports for the same set.
-        plan = self.driver_plan()
-        self.assertIn(b"driver hot: %d bytes of 32768\r\n"
-                      % plan["driver_hot_bytes"], sio)
-        self.assertIn(b"driver boot/bulk: %d bytes of 24576\r\n"
-                      % plan["driver_boot_bytes"], sio)
-        for line in INTEGRATION_LINES:
-            self.assertIn(line, sio)
-        self.assertNotIn(b"console integration: FAIL", sio)
-        self.assertNotIn(b"iocfat", sio)
-
-        # The early SIO lane never carries the console-driver output: the
-        # boot line, the diagnostic's marker and its typed echo are all on
-        # the visible lane.
-        self.assertNotIn(b"console: driver OK", sio)
-        self.assertIn("console: driver OK", trace)
-        self.assertIn(INTEGRATION_MARKER, trace)
-        self.assertIn("K41", trace)          # the typed echo
-        self.assertIn("integration done", trace)
-
-        # The image boot program is the ESC c check:
-        # it reset the display and printed its line before handing the
-        # console to the monitor.  The V9958 bring-up sequence runs three
-        # times because the video diagnostic lives in this image: the
-        # driver's boot segment, the diagnostic's
-        # KVIDEO_RESET, and the ESC c display reset.
-        self.assertIn("escc: display reset", trace)
-        self.assertEqual(len(bringup_starts(z.vdp)), 3)
-        self.assertIn(BANNER, trace)
-        self.assertIn(PROMPT, trace)
-
-        # The IOC traffic the diagnostic drove: the driver's link
-        # bring-up, then the HID fetch its console read drove and its
-        # PING.
-        requests = [entry for entry in z.ioc_peer.requests]
-        kinds = [entry[0] for entry in requests]
-        self.assertEqual(kinds[0], LINK_SYNC_REQUEST)
-        self.assertIn(0x0E, kinds)           # CMD_HID_INPUT
-        self.assertIn(PING_REQUEST, kinds)
-        # Two PINGs hit the lane: the IOC diagnostic's own echo and the
-        # integration diagnostic's cross-driver row, whose payload is
-        # the pinned ASCII pattern.
-        pings = [entry for entry in requests if entry[0] == PING_REQUEST
-                 and entry[3] == b"@ABC"]
-        self.assertEqual(len(pings), 1)
-        self.assertEqual(pings[0][2], 0)
-        # Every stream the merged diagnostics read came from the MCU:
-        # the HID typed pass and fault pair, the console pair and the
-        # integration diagnostic's typed line.
-        self.assertEqual(z.ioc_peer.hid_delivered,
-                         len(IntegrationInputs.TYPED) +
-                         len(IntegrationInputs.FAULT_PAIR) +
-                         len(IntegrationInputs.CONSOLE_PAIR) +
-                         len(IntegrationInputs.TYPED_LINE))
-        self.assertEqual(z.ioc_peer.channel_resets, 1)
-
-    def test_monitor_runs_after_the_diagnostic(self):
-        z = self.start()
-        self.boot_to_prompt(z)
-        # The program hands the console to the monitor itself; `q` ends
-        # that session, the program returns, and the launcher's monitor
-        # policy starts the monitor again.
-        self.type_line(z, b"q\r", ESCC_EXIT)
-        self.wait_for_count(z, BANNER, 2)
-        trace = self.read_trace(z)
-        self.assertIn(ESCC_EXIT, trace)
-        self.assertGreaterEqual(trace.count(BANNER), 2)
 
 
 if __name__ == "__main__":

@@ -219,9 +219,13 @@ class TestIocFatIntegration(IocFatStaticBase):
         self.assertEqual(system["drivers"],
                          ["sio", "ioc", "console-serial", "iocfat",
                           "timer"])
+        # The far-data outcome program, the hand-written bank container
+        # and the DATA file they read are store files too.
         self.assertEqual(system["store"],
                          ["monitor.exe", "fs_selftest.exe", "fs_child.exe",
-                          "events.exe"])
+                          "events.exe", "far_data.exe", "banks.exe",
+                          "known.bin", "iobench.exe", "iomix.exe",
+                          "iomix_child.exe", "iostream.exe"])
         self.assertEqual(system["boot"], "/system/fs_selftest.exe")
 
     def test_the_acceptance_seam_is_not_extended(self):

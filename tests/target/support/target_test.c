@@ -11,8 +11,9 @@
  *   late   after console binding (ROMFS reader, process/EXE, loader)
  *
  * Each acceptance image selects exactly one group: the subsystem image
- * (subsystem mechanism selftests), the device/console images, or the
- * namespace, IPC, filesystem and extended-memory images.
+ * (the subsystem mechanism selftests), the nucleus image (the revision-13
+ * gate and upcall-shim surface) or the IPC image (the resident-driver
+ * substrate).
  */
 
 #include "kernel.h"
@@ -22,18 +23,6 @@
 #include "irq_selftest.h"
 #include "romfs_selftest.h"
 #include "process_selftest.h"
-#endif
-#if KOS_IOC_SELFTEST
-#include "ioc_selftest.h"
-#endif
-#if KOS_HID_SELFTEST
-#include "hid_selftest.h"
-#endif
-#if KOS_VIDEO_SELFTEST
-#include "video_selftest.h"
-#endif
-#if KOS_CONSOLE_INTEGRATION_SELFTEST
-#include "console_integration_selftest.h"
 #endif
 #if KOS_NUCLEUS_SELFTEST
 #include "nucleus_selftest.h"
@@ -60,22 +49,6 @@ void kos_target_test_late(void)
 	/* ROMFS reader, then the process/EXE lifecycle. */
 	kos_run_romfs_selftest();
 	kos_run_process_selftest();
-#endif
-#if KOS_IOC_SELFTEST
-	/* The console-integration image carries the device diagnostics
-	 *: IOC transport, HID input, V9958 video, then
-	 * the integration pass itself.  Each is a bank-7 client of the
-	 * resident drivers; the transcript runs on the early SIO. */
-	kos_run_ioc_selftest();
-#endif
-#if KOS_HID_SELFTEST
-	kos_run_hid_selftest();
-#endif
-#if KOS_VIDEO_SELFTEST
-	kos_run_video_selftest();
-#endif
-#if KOS_CONSOLE_INTEGRATION_SELFTEST
-	kos_run_console_integration_selftest();
 #endif
 #if KOS_IPC_SELFTEST
 	/* The six synthetic resident drivers are real driver images in

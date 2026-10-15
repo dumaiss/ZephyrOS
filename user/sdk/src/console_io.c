@@ -2,7 +2,10 @@
  *
  * All ordinary I/O goes through the console-driver wrappers
  * (console_proto.c); nothing here knows which driver a byte came from
- * or went to - the console driver composes that.  See kos/console.h.
+ * or went to - the console driver composes that.  The output buffer and
+ * its flush live there too; this file's reads flush it (getchar, and
+ * console_readline through it) so a prompt shows before input is read.
+ * See kos/console.h.
  */
 
 #include "kos.h"
@@ -35,6 +38,9 @@ int getchar(void)
 {
 	char ch;
 
+	/* The prompt (or the line so far) has to reach the console before
+	 * this waits for its answer. */
+	(void)console_flush();
 	for (;;) {
 		int result = console_read(&ch, 1);
 
@@ -58,6 +64,7 @@ int console_readline(char *buffer, unsigned int capacity)
 	if (capacity == 0) {
 		return -KOS_EINVAL;
 	}
+	(void)console_flush();
 	for (;;) {
 		int ch = getchar();
 		unsigned char byte;

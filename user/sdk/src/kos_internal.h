@@ -48,4 +48,10 @@ int kos_ipc_raw_call(struct kos_ipc_call_req *req);
  * error code; the block is always this program's low-window scratch. */
 int kos_ipc_raw(unsigned char number, void *block);
 
+/* The stream layer's exit hook, defined by the console client and set by
+ * `fopen`: `exit` flushes the console and, when the stream layer is
+ * linked, every open stream - while a program that never opens a stream
+ * links none of the stream code.  It is NULL until the first `fopen`. */
+extern void (*kos_stream_flush)(void);
+
 #endif /* KOS_SRC_INTERNAL_H */

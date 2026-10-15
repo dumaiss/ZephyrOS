@@ -9,6 +9,10 @@
 ; block is the shared low-window scratch (_kos_scratch in runtime.asm); a
 ; program stack near E000h is never used for it.
 ;
+; `exit` first flushes the console buffer and the open streams
+; (kos_exit_flush), so a program that returns or exits never loses the
+; bytes it wrote.
+;
 ; The syscall numbers below are pinned against abi/kos/syscall.h by
 ; tests/test_sdk.py.
 ; -----------------------------------------------------------------------------
@@ -19,6 +23,7 @@
 	.globl _getinfo
 	.globl _reboot
 	.globl _exe_runtime_error
+	.globl _kos_exit_flush
 	.globl _kos_scratch
 
 SYS_EXIT    = 0x00
@@ -30,6 +35,7 @@ SYS_REBOOT  = 0x0C
 ; void exit(unsigned int status);  HL = status; does not return.
 _exit::
 	ld	(_kos_scratch),hl
+	call	_kos_exit_flush
 	ld	a,#SYS_EXIT
 	ld	hl,#_kos_scratch
 	rst	0x30

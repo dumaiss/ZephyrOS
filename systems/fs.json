@@ -14,7 +14,14 @@
     "monitor.exe",
     "fs_selftest.exe",
     "fs_child.exe",
-    "events.exe"
+    "events.exe",
+    "far_data.exe",
+    "banks.exe",
+    "known.bin",
+    "iobench.exe",
+    "iomix.exe",
+    "iomix_child.exe",
+    "iostream.exe"
   ],
   "cflags": []
 }

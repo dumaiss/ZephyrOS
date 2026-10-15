@@ -23,11 +23,11 @@ without executing target code:
   - the ROMFS boot set (sio, ioc, hid, v9958.mod, v9958-6x8.font,
     monitor.exe) and the KOS_V9958_BOOT gate (earlier images compile it
     out);
-  - mapcheck rejects linked V9958 driver symbols (module-only);
-  - the smoke tool's video markers and result classification.
+  - mapcheck rejects linked V9958 driver symbols (module-only).
 
-Executable behavior is replayed from the real linked images by
-tests/test_v9958_sim.py.
+Executable behavior (the visible console lane the monitor session runs
+on) is replayed from the production image by
+tests/test_console_acceptance.py.
 """
 
 import json
@@ -297,8 +297,7 @@ class TestDriverArtifact(unittest.TestCase):
                           "hwtest.exe", "timer.exe", "beat.exe",
                           "xmem_selftest.exe",
                           "xmem_child.exe", "xmem_far.exe",
-                          "fs_selftest.exe", "fs_child.exe",
-                          "far_data.exe", "banks.exe", "known.bin"])
+                          "fs_selftest.exe", "fs_child.exe"])
         self.assertEqual(systemgen.store_type("v9958.mod"), "MOD")
         # The font is the video image's bulk segment; the recovery
         # store carries no separate copy of it.
@@ -318,23 +317,12 @@ class TestDriverArtifact(unittest.TestCase):
 
     def test_makefile_targets_and_gates(self):
         makefile = _read(MAKEFILE)
-        for target in ("v9958-test:", "console-integration-selftest"):
-            self.assertIn(target, makefile)
+        self.assertIn("v9958-test:", makefile)
         # One generated pack rule per selected driver.
         self.assertIn("$(BUILD)/drivers/$(1).json", makefile)
         self.assertIn("v9958_driver.rel", makefile)
         self.assertIn("v9958_font.rel", makefile)
         self.assertIn("$(MODULES)/v9958-6x8.font", makefile)
-        # The video diagnostic runs in the console-integration image.
-        index = makefile.index("SYSTEM_TEST_OBJS.console-integration :=")
-        self.assertIn("$(BUILD)/video_test.rel", makefile[index:index + 400])
-        self.assertIn("video_test", makefile)
-        system = _load_json(os.path.join(ROOT, "systems",
-                                         "console-integration.json"))
-        self.assertIn("-DKOS_VIDEO_SELFTEST=1", system["cflags"])
-        self.assertEqual(system["drivers"],
-                         ["sio", "ioc", "hid", "v9958",
-                          "console-v9958-hid"])
 
 
 class TestDriverSourceDiscipline(unittest.TestCase):

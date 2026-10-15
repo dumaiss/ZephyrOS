@@ -72,8 +72,8 @@ class Replay:
     IMAGE_SUBDIR = None
     IMAGE_NAME = None
     root = ROOT
-    # Optional per-instruction hook (e.g. IntegrationInputs) the stepping
-    # helpers call before every step; None for images that need none.
+    # Optional per-instruction hook the stepping helpers call before
+    # every step; None for images that need none.
     input_driver = None
 
     @classmethod
@@ -403,57 +403,6 @@ class ConsoleReplay(Replay):
         self.start_kernel(z)
         self.run_to(z, prompt, limit)
         return self.trace(z)
-
-
-class IntegrationInputs:
-    """The input streams the console-integration image's diagnostics
-    expect, queued into the emulated MCU at their transcript markers.
-
-    The IOC, HID, V9958 and console-integration diagnostics share one
-    image, so every replay of that image drives the
-    same four streams:
-
-    * the HID diagnostic's scripted typed pass (preloaded through the
-      peer's `hid_bytes`);
-    * the console pair its console phase reads back through the console
-      endpoint - this image's console input is the HID engine;
-    * the malformed-reply pair behind its fault row;
-    * the integration diagnostic's typed line, which its console read
-      delivers the same way.
-
-    Call one instance per instruction (as `run_until(on_step=...)`).
-    """
-
-    TYPED = bytes((0x61, 0x42, 0x33, 0x0D, 0x08, 0x18, 0x1B, 0x5B, 0x41))
-    CONSOLE_PAIR = bytes((0x4F, 0x4B))
-    FAULT_PAIR = bytes((0x71, 0x72))
-    TYPED_LINE = b"K41\r"
-    CONSOLE_MARKER = b"hid: console input\r\n"
-    FAULT_MARKER = b"hid: fault pass\r\n"
-    INTEGRATION_MARKER = b"console integration: console v01\r\n"
-
-    def __init__(self, peer):
-        self.peer = peer
-        self.done = set()
-
-    def __call__(self, cpu):
-        tx = bytes(cpu.sio_tx)
-        if "console" not in self.done and self.CONSOLE_MARKER in tx:
-            self.peer.hid_queue.extend(self.CONSOLE_PAIR)
-            self.done.add("console")
-        if "fault" not in self.done and self.FAULT_MARKER in tx:
-            self.peer.hid_queue.extend(self.FAULT_PAIR)
-            self.peer.hid_faults.append("short")
-            self.done.add("fault")
-        if "integration" not in self.done and self.INTEGRATION_MARKER in tx:
-            self.peer.hid_queue.extend(self.TYPED_LINE)
-            self.done.add("integration")
-
-
-def integration_peer():
-    """The console-integration image's command-lane peer, with the HID
-    diagnostic's scripted typed pass preloaded for the MCU."""
-    return IocCommandPeer(hid_bytes=IntegrationInputs.TYPED)
 
 
 if __name__ == "__main__":  # pragma: no cover - manual smoke check

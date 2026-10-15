@@ -58,6 +58,10 @@ int run(const char *path, const char *args)
 	if (n == 0xFFFFu || an == 0xFFFFu) {
 		return -KOS_EINVAL;
 	}
+	/* The child starts with its own console handles and its own output
+	 * buffer, so anything this program has written must be on the
+	 * console first: a child never prints ahead of its parent. */
+	(void)console_flush();
 	kos_scratch.exec.path = (unsigned int)path;
 	kos_scratch.exec.length = n;
 	kos_scratch.exec.args = (unsigned int)args;

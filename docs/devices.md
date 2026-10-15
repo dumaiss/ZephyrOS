@@ -409,9 +409,10 @@ The replay measures it (`tests/test_events.py`): in the run without the
 emulated card peer the driver's own posts sit on the grid - median error
 at or below 1 count, worst 16 - the handler's readings average out to an
 interval sum within 2 counts over 49 periods, and the nucleus's delivery
-costs 7,459 T-states per event, 3.7% of the CPU at 50 Hz, with the
-trampoline's argument-block snapshot included (the restore half is
-another ~1,970 T-states, putting the whole round trip near 4.7%).  The
+costs 8,407 T-states per event, 4.2% of the CPU at 50 Hz: the frame
+build and the hand-off (1,710), the trampoline's entry with its
+argument-block snapshot (2,568) and the restore with the return gate and
+the unwind (4,129).  The handler's own body is outside that figure.  The
 card peer's emulated lane is paced per byte, so on that machine a masked
 stretch can outlast a period and move a delivery's own reading without
 the driver's deadlines moving; the peer harness therefore asserts only
@@ -537,10 +538,10 @@ own constants.
 | test | covers |
 |---|---|
 | `tests/test_driver_images.py`, `tests/test_mod.py` | the image format, the plan, endpoint numbering, dependencies, publications, the loader's bounds |
-| `tests/test_ioc.py`, `tests/test_ioc_sim.py` | the IOC constants and a replay against the simulator's MCU peer: exact wire bytes, READY/DONE, Hunt, fault injection, recovery |
-| `tests/test_hid.py`, `tests/test_hid_sim.py` | the HID contract and a replay of scripted typing through the real fetch |
-| `tests/test_v9958.py`, `tests/test_v9958_sim.py` | the VIDEO contract, the font pipeline, and a register/VRAM-level replay |
-| `tests/test_console_acceptance.py` | the integration image: load order, IOC, HID, the `ESC c` reset, a scripted monitor session |
+| `tests/test_ioc.py` | the IOC constants, the packed driver container and the driver's lane discipline |
+| `tests/test_hid.py` | the HID contract, the packed driver container and the driver's fetch discipline |
+| `tests/test_v9958.py` | the VIDEO contract, the font pipeline and the driver's reset and register discipline |
+| `tests/test_console_acceptance.py` | the production image: load order, the IOC-FAT lane, and a scripted monitor session over the HID and V9958 lanes |
 | `tests/test_console_serial.py` | the serial console build, and the missing-image boot failure |
 | `tests/test_timer.py` | the TIMER contract and the production replay: the tick stream with the emulated CTC, interrupt cost, and IOC transfers under the timer |
 

@@ -1,9 +1,11 @@
 /* KonaOS klibc: printf / snprintf.
  *
  * A small output sink backs both entry points: snprintf appends to a
- * bounded caller buffer; printf flushes through the console wrapper in
- * 32-byte chunks.  Supported conversions: %s %c %d %u %x %ld %lu %lx %%
- * with an optional '0' zero-pad flag and a decimal width.
+ * bounded caller buffer, printf appends its output to the console's
+ * output buffer one character at a time (the buffer flushes on '\n',
+ * when it fills, before a read and at exit).  Supported conversions:
+ * %s %c %d %u %x %ld %lu %lx %% with an optional '0' zero-pad flag and a
+ * decimal width.
  */
 
 #include "klibc/fmt.h"
@@ -15,17 +17,7 @@ struct zout {
 	char *buf;                 /* NULL selects the console sink */
 	unsigned int size;
 	unsigned int count;
-	char cbuf[32];
-	unsigned char clen;
 };
-
-static void zout_flush(struct zout *o)
-{
-	if (o->buf == (char *)0 && o->clen != 0u) {
-		(void)console_write(o->cbuf, (unsigned int)o->clen);
-		o->clen = 0;
-	}
-}
 
 static void zout_putc(struct zout *o, char c)
 {
@@ -34,10 +26,7 @@ static void zout_putc(struct zout *o, char c)
 			o->buf[o->count] = c;
 		}
 	} else {
-		o->cbuf[o->clen++] = c;
-		if (o->clen == sizeof(o->cbuf)) {
-			zout_flush(o);
-		}
+		(void)putchar((int)(unsigned char)c);
 	}
 	o->count++;
 }
@@ -144,7 +133,6 @@ static int zfmt(struct zout *o, const char *fmt, va_list ap)
 			++fmt;
 		}
 	}
-	zout_flush(o);
 	return (int)o->count;
 }
 
@@ -157,7 +145,6 @@ int snprintf(char *dst, unsigned int size, const char *fmt, ...)
 	o.buf = dst;
 	o.size = size;
 	o.count = 0;
-	o.clen = 0;
 	va_start(ap, fmt);
 	r = zfmt(&o, fmt, ap);
 	va_end(ap);
@@ -180,7 +167,6 @@ int printf(const char *fmt, ...)
 	o.buf = (char *)0;
 	o.size = 0;
 	o.count = 0;
-	o.clen = 0;
 	va_start(ap, fmt);
 	r = zfmt(&o, fmt, ap);
 	va_end(ap);

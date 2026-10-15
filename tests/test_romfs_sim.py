@@ -31,13 +31,21 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 from replay import RET, Replay, STACK  # noqa: E402
+import mapcheck  # noqa: E402
 import modpack  # noqa: E402
 
 STEP_LIMIT = 60000000
-# The host scratch is the free window run above the linked image (derived
-# per image in setUp).  What the replays here put in it: a request
+# The host scratch is a free run of the cold half, derived per image in
+# setUp from the image's map.  What the replays here put in it: a request
 # structure at +0, its result at +0x40, and a lookup name at +0x100.
 SCRATCH_USE = 0x100 + 0x20
+# The scratch is the first run of this size inside 6000h-DFFFh, on this
+# alignment, that no linked area covers.  A run this size also carries
+# the replays' own uses (SCRATCH_USE).
+SCRATCH_SIZE = 512
+SCRATCH_ALIGN = 512
+WINDOW_BASE = 0x6000
+WINDOW_END = 0xE000
 
 ROMFS_PAGE_WINDOW = 0xC000
 ROMFS_FIRST_PAGE = 2
@@ -96,20 +104,60 @@ class RomfsSimBase(Replay, unittest.TestCase):
         self.scratch = self._derive_scratch()
 
     def _derive_scratch(self):
-        """The first free window byte above the linked cold data.
+        """The first SCRATCH_SIZE run of the cold half (6000h-DFFFh),
+        aligned to SCRATCH_ALIGN, that no linked area in the image's map
+        covers.
 
         The host scratch cannot use a fixed address: the window is
         derived, and the acceptance images fill it to within a few
         hundred bytes of the common boundary.  Nothing here needs an
-        aligned scratch (every access is byte-wise), so it starts at the
-        first free byte and the check covers the replays' own uses."""
-        geometry = self.geometry()
-        scratch = (geometry["KOS_WINDOW_DATA_BASE"] +
-                   geometry["KOS_WINDOW_DATA_SIZE"])
-        self.assertLessEqual(scratch + SCRATCH_USE, 0xE000,
-                             "scratch %04X does not fit the window"
-                             % scratch)
-        return scratch
+        aligned scratch (every access is byte-wise); the run is what the
+        replays' own uses need."""
+        self.assertGreaterEqual(SCRATCH_SIZE, SCRATCH_USE)
+        spans = self._linked_spans()
+        for scratch in range(WINDOW_BASE, WINDOW_END - SCRATCH_SIZE + 1,
+                             SCRATCH_ALIGN):
+            if not any(scratch < end and start < scratch + SCRATCH_SIZE
+                       for _name, start, end in spans):
+                return scratch
+        self.fail("no free %d-byte run in %04Xh-%04Xh; room left: %s"
+                  % (SCRATCH_SIZE, WINDOW_BASE, WINDOW_END - 1,
+                     self._cold_room(spans)))
+
+    def _linked_spans(self):
+        """The image's linked areas inside the cold half, as (name,
+        start, end) half-open spans, from the map."""
+        with open(os.path.join(self.root, self.subdir,
+                               "konaos.map")) as handle:
+            areas, _symbols = mapcheck.parse_map(handle.read())
+        spans = []
+        for name, (address, size) in areas.items():
+            if size == 0 or address == 0:
+                continue  # ABS areas report address 0; only size is real
+            start = max(address, WINDOW_BASE)
+            end = min(address + size, WINDOW_END)
+            if start < end:
+                spans.append((name, start, end))
+        return sorted(spans, key=lambda span: span[1])
+
+    def _cold_room(self, spans):
+        """The free bytes between the linked areas of the cold half,
+        named by the area each gap follows: the report when the image
+        leaves no scratch run."""
+        gaps = []
+        cursor = WINDOW_BASE
+        after = "the window base"
+        for name, start, end in spans:
+            if start > cursor:
+                gaps.append("%s: %04Xh-%04Xh (%d bytes)"
+                            % (after, cursor, start - 1, start - cursor))
+            cursor = max(cursor, end)
+            after = name
+        if cursor < WINDOW_END:
+            gaps.append("%s: %04Xh-%04Xh (%d bytes)"
+                        % (after, cursor, WINDOW_END - 1,
+                           WINDOW_END - cursor))
+        return "; ".join(gaps) if gaps else "none"
 
     def boot_kernel(self, z, on_step=None, stop_at=None):
         """__kos_crt0_init + kernel_main replay with the connect delay

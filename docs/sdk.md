@@ -77,9 +77,10 @@ sdcc -mz80 -c --nostdinc --Werror -I abi -I user/sdk/include -I <program dir>
 
 - `#include "kos.h"` is the only header a program needs. It pulls in
   `kos/console.h`, `kos/fs.h`, `kos/ipc.h`, `kos/process.h`, `kos/seg.h`,
-  `kos/xmem.h`, `klibc/string.h` and `klibc/fmt.h`. The diagnostic
-  wrappers are not included: a program that needs them includes
-  `kos/diag.h` itself, as the monitor does.
+  `kos/xmem.h`, `klibc/string.h`, `klibc/fmt.h` and `klibc/stdio.h`. The
+  diagnostic wrappers are not included: a program that needs them includes
+  `kos/diag.h` itself, as the monitor does. `kos/stream.h` is the same
+  deal for the stream measurement and planning calls (section 6.10).
 - The SDK's `kos/*.h` headers include the matching `abi/kos/*.h` header,
   so each ABI declaration exists once. SDCC resolves a quoted include in
   the including file's directory first, which is how `kos/fs.h` reaches
@@ -219,11 +220,58 @@ int  snprintf(char *dst, unsigned int size, const char *fmt, ...);
 ```
 
 `printf` supports `%s %c %d %u %x %ld %lu %lx %%` with an optional width
-and a `0` pad flag (`%05d`, `%4s`), and writes through `console_write`.
-`snprintf` uses the same formatter into a bounded buffer that is always
-NUL-terminated. Integer division and modulo helpers (`__divuint`,
+and a `0` pad flag (`%05d`, `%4s`), and writes through `putchar` - so its
+output is line-buffered with everything else on the console (section
+6.1). `snprintf` uses the same formatter into a bounded buffer that is
+always NUL-terminated. Integer division and modulo helpers (`__divuint`,
 `__moduint`, `__divulong`, ...) are provided in `klibc`, built from shifts
 and subtraction.
+
+`klibc/stdio.h` is the buffered file layer (an ISO C subset; no
+allocation):
+
+```c
+typedef struct kos_stream FILE;            /* four streams, one pool     */
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+#define EOF (-1)
+FILE  *fopen(const char *path, const char *mode);   /* "r" "w" "a", 'b' ok */
+int    fclose(FILE *stream);                        /* flush + close       */
+size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream);
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
+int    fgetc(FILE *stream);   int getc(FILE *stream);
+int    fputc(int c, FILE *stream);   int putc(int c, FILE *stream);
+char  *fgets(char *dst, int size, FILE *stream);
+int    fputs(const char *src, FILE *stream);
+int    fflush(FILE *stream);                        /* NULL: everything    */
+int    feof(FILE *stream);    int ferror(FILE *stream);
+int    fseek(FILE *stream, long offset, int whence);
+long   ftell(FILE *stream);   void rewind(FILE *stream);
+```
+
+`fopen` takes one of the four streams (`NULL` when the pool is full or
+the open failed); each carries its own 512-byte buffer, so a read is one
+card read per 512 bytes and a write leaves when the buffer fills, at
+`fclose`, at `fflush` and at exit. A read or write of a buffer or more
+bypasses the buffer and moves the bytes once, straight into or out of the
+caller's memory. `fseek` flushes pending writes and drops the read
+buffer, so the next read starts where it says; `ftell` is the logical
+position, counting the bytes still buffered either way. `feof`/`ferror`
+report the stream's state, and a call that cannot report an error through
+its ISO result returns the negated native code.
+
+A program that never calls `fopen` links none of these members; one that
+does gets the exit flush for free, because `exit` calls the console
+flush and that calls back into the stream layer when it is linked
+(section 8).
+
+One trap: the runtime provides *division* helpers, not a multiply. SDCC
+turns a variable or 32-bit product into a call to `__mulint`/`__mulong`,
+which no member defines, so such a program does not link. Products of a
+value and a small constant fit only when the low byte matters or the
+constant is a power of two (a shift); otherwise write the shift-and-add
+loop (the stream layer's `stream_plan` does, section 6.10).
 
 ## 6. The `libkos` API
 
@@ -239,7 +287,8 @@ int  getinfo(struct kos_info_record *record);
 int  console_write(const char *buf, unsigned int len);  /* CONSOLE WRITE   */
 int  console_read(char *buf, unsigned int len);         /* READ, no wait   */
 int  console_poll(void);                                /* POLL            */
-int  putchar(int ch);                                   /* PUTC; returns ch */
+int  putchar(int ch);                                   /* buffered; returns ch */
+int  console_flush(void);                               /* write it out now */
 int  getchar(void);                                     /* waits           */
 int  console_puts(const char *text);                    /* no newline added */
 int  console_readline(char *buffer, unsigned int capacity);
@@ -249,6 +298,20 @@ The console functions speak the `CONSOLE` protocol through the standard
 handle; a process without one gets `-KOS_EINVAL`. `console_readline` edits
 one line (backspace, DEL, CR/LF, a bell on overflow; `KOS_LINE_MAX` is 80);
 it is the monitor's input loop.
+
+Output is line-buffered: `putchar`, `console_puts` and `printf` collect
+into a 128-byte per-program buffer, and it is written out when it fills,
+at a `'\n'`, before every console read (`getchar`, `console_read`,
+`console_poll`, `console_readline`), before `run`, and at exit. So a
+prompt written without a newline still arrives before the input it asks
+for, and a child started by `run` never prints ahead of its parent's
+pending bytes. `console_write` of more than the free space flushes first
+and then sends its bytes directly (one call, not one per buffer). The
+error of a write that a flush made is returned by the call that flushed:
+`console_write` and `console_flush` return it, `putchar` keeps returning
+its byte. A program that faults loses the bytes it has not flushed;
+`console_flush` sends them on demand, and `fflush(NULL)` flushes both the
+console and every open stream (section 6.10).
 
 ### 6.2 Files (`kos/fs.h`)
 
@@ -440,6 +503,77 @@ calls the SDK would clobber the interrupted call's staged request - or
 the reply it is about to read.  Two 93-byte LDIRs per delivery, about
 1,970 T-states each, or 2% of the CPU at a 50 Hz period.
 
+### 6.10 Streams: measurement, planning and batching (`kos/stream.h`)
+
+A stream never needs the clock. `fmeasure(stream, timer)` opts one in;
+from then on every refill (the read that fills its buffer) is timed with
+the TIMER driver, and `fstats(stream, &stats)` reports the set: how many
+refills, and the fastest, mean and slowest in 25.6 µs counts.
+
+`stream_plan` turns that - or a figure the caller brings, such as a
+card's measured block time - into what a consumer needs to read a file
+without starving:
+
+```c
+struct kos_stream_need {            /* in */
+    unsigned long rate;  /* B, bytes per second the consumer needs */
+    unsigned int period; /* T, the period it must be served within, counts */
+    unsigned int chunk;  /* C, the refill size, bytes (512) */
+    unsigned int mean;   /* t_mean, mean refill time, counts */
+    unsigned int worst;  /* t_worst, worst-case refill time, counts */
+    unsigned int safety; /* factor for the pre-fetch; 0 selects 2 */
+};
+struct kos_stream_plan {            /* out */
+    unsigned long bytes_per_tick_millis;  /* b = B*T, in milli-bytes */
+    unsigned int  ticks_per_refill;       /* n = floor(C / b) */
+    unsigned long prefetch;               /* P = safety*B*t_worst + C */
+    unsigned long startup_ms;             /* P / R, R = C / t_mean */
+    unsigned int  utilisation_pct;        /* U = B / R, in percent */
+    unsigned char feasible;               /* U < 50 % */
+};
+int fmeasure(FILE *stream, int timer);
+int fstats(FILE *stream, struct kos_stream_stats *stats);
+int stream_plan(const struct kos_stream_need *need,
+                struct kos_stream_plan *plan);
+```
+
+Read the plan as: eat `n` ticks' worth of bytes, then refill in one
+`C`-byte read, right after the tick - a refill that runs longer than `T`
+makes the next tick late, never lost. `P` is what has to be in hand
+before the consumer starts, so the *worst* refill never starves it, and
+`startup_ms` is how long getting `P` together takes at the measured mean
+rate. A plan that is not feasible is not an error: it says this medium
+cannot serve this consumer with the safety asked for.
+
+Two fixtures, with the mean taken from the card benchmark this SDK was
+written against (512-byte reads at 18.5 ms mean, 150 ms worst; the TIMER's
+20 ms period is 782 counts, and 100 KiB over 180 s or over 30 s is
+570 B/s or 3 413 B/s):
+
+| consumer | b (milli-B/tick) | n | P | U | start-up |
+|---|---|---|---|---|---|
+| 100 KiB / 180 s | 11 370 | 45 | 1 024 B (2 chunks) | 2 % | 37 ms |
+| 100 KiB / 30 s | 68 325 | 7 | 1 536 B (3 chunks) | 12 % | 55 ms |
+
+The slower consumer is served a refill every 45 ticks and pre-fetches two
+chunks; the faster one needs three chunks in hand and gives the medium 12 %
+of its time. Ask for 20 000 B/s on the same card and the same arithmetic
+answers U = 72 %, `feasible` = 0, with a pre-fetch of 6 656 B - the honest
+answer for a consumer past what the card can do.
+
+**Batch your I/O.** The costs that matter are per *call*, not per byte:
+one console write costs about 15 000 T-states however few bytes it
+carries, and one card read costs about 30 000 plus the block. That is why
+`putchar` and `printf` buffer a line at a time, why a `read` of a block
+is worth much more than a byte loop, and why the buffered streams exist:
+`tests/bench/iobench.c` (run in the filesystem image by
+`tests/test_io_sim.py`'s bench replay, and on a card from the owner's
+copy) measures the patterns on the machine. Measured in the simulator,
+per byte: `putchar` about 1,330 T-states (one console call per 128-byte
+line), a one-byte `read` about 29,000, `getc` on a buffered stream about
+2,600, and 512-byte `read`s about 1,170 - a byte-at-a-time `read` pays
+the call overhead per byte, while `getc` pays it once per 512.
+
 ## 7. Memory layout
 
 ```text
@@ -461,6 +595,13 @@ before `_CODE`, so the gate-visible blocks stay in the argument window
 however large a program's BSS grows. A program with far code or far data
 keeps `8000h-BFFFh` free (the far link rule).
 
+Buffering is part of that BSS: every program that writes to the console
+carries the 128-byte output buffer (`console_proto`), and a program that
+calls `fopen` carries the stream pool - four streams of 512 bytes with
+their state, about 2.2 KiB. The pool is fixed, so a program's stream
+memory does not depend on how many files it opens; the fifth `fopen`
+returns `NULL`.
+
 A program linked with `NO_CRT0=1` still gets the low-data area. The IPC
 acceptance probe sets `LOWBASE=0x0300 CODEBASE=0x0344` to leave
 `0100h-02FFh` as a plain 512-byte buffer.
@@ -473,7 +614,7 @@ needed.
 | a program calls | members linked |
 |---|---|
 | anything | `kos_crt0`, `kos_runtime`, `args` |
-| `console_write`, `console_read`, `console_poll`, `putchar` | `console_proto`, `ipc`, `kos_ipcgate`, `nsgate` |
+| `console_write`, `console_read`, `console_poll`, `putchar`, `console_flush` | `console_proto`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `console_puts`, `getchar`, `console_readline` | `console_io`, plus the above |
 | `exit`, `getinfo`, `reboot` | `kos_gate` |
 | `open`, `read`, ... | `fs`, `ipc`, `kos_ipcgate`, `nsgate` |
@@ -488,7 +629,15 @@ needed.
 | `diag_*` | `kos_diaggate` |
 | `printf` | `printf`, `strlen`, `utoa`, `ultoa`, `itoa`, `ltoa` |
 | `/` or `%` on integers | `sdcc_arith` / `sdcc_arith_signed` and their entry stubs |
+| a product of two variables, or a 32-bit product | nothing: `__mullong`, which no member defines - the link fails (section 5) |
 | `strcmp`, `memset`, ... | that one member |
+| `fopen`, `fclose` | `stdio`, with `fs`, `timer`, `console_proto` and the IPC gates it calls into |
+| `fread`, `fgetc`, `getc`, `fgets` | `fread`, plus the `stdio` group |
+| `fwrite`, `fputc`, `putc`, `fputs` | `fwrite`, plus the `stdio` group (`klibc/strlen` for `fputs`) |
+| `fseek`, `ftell`, `rewind`, `fflush` | `fseek`, plus the `stdio` group |
+| `feof`, `ferror` | `feof` |
+| `fmeasure`, `fstats` | `stream`, plus the `stdio` group |
+| `stream_plan` | `stream` alone |
 
 `hello.exe` links exactly crt0, the runtime, `args`, the console client
 with its gates, `printf` with its formatters and the arithmetic helpers,
@@ -516,6 +665,17 @@ the list.
 `tests/test_bcall.py` checks the banked-call convention on a real SDCC
 build and runs the trampoline in the host Z80. `tests/test_far_data.py`
 checks the far-data rules and runs the far-data program.
+`tests/test_stdio.py` compiles the console client and the stream members
+with the SDK's own flags and runs the linked bytes in the host Z80, with
+the console driver and the file provider stubbed by the probe: the
+console's flush rules (a line at a `'\n'`, a full buffer, a flush before
+every read, a failed flush's error), the stream modes and pool, reading
+and writing through the buffer, and the plan arithmetic on the fixtures
+of section 6.10. `tests/test_io_sim.py` runs the outcome programs in the
+filesystem image from the monitor: `/system/iomix.exe` proves the console
+transcript is the one an unbuffered program produces, and
+`/system/iostream.exe` runs one card-file stream session and reports
+every outcome.
 `tests/test_sdk_package.py` checks the standalone SDK (section 11).
 
 ## 10. The demo image and the examples

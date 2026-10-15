@@ -144,7 +144,7 @@ def file_session():
         ("mkdir /SHTEST", "/> ", "/> ", False),
         ("ls /SHTEST", "/> ", "/> ", False),
         ("cp /SUB/ORIG.TXT /SHTEST", "/> ", "/> ", False),
-        ("cp /system/known.bin /SHTEST/KNOWN.BIN", "/> ", "/> ", False),
+        ("cp /system/drivers.man /SHTEST/MAN.TXT", "/> ", "/> ", False),
         ("cat /SHTEST/ORIG.TXT", "card/> ", "/> ", False),
         ("stat /SHTEST/ORIG.TXT",
          "/SHTEST/ORIG.TXT:\ntype: file\nattributes: 00\nsize: 4\n"
@@ -153,12 +153,12 @@ def file_session():
          "/SHTEST:\ntype: dir\nattributes: 00\nsize: 0\n"
          "mtime: 00000000\n/> ", "/> ", False),
         ("mv /SHTEST/ORIG.TXT /SHTEST/MOVED.TXT", "/> ", "/> ", False),
-        ("mv /system/known.bin /SHTEST/STORE.BIN",
-         "mv: /system/known.bin: read-only\n/> ", "/> ", False),
-        ("rm /SHTEST/MOVED.TXT /SHTEST/KNOWN.BIN /SHTEST/MISSING.TXT",
+        ("mv /system/drivers.man /SHTEST/STORE.MAN",
+         "mv: /system/drivers.man: read-only\n/> ", "/> ", False),
+        ("rm /SHTEST/MOVED.TXT /SHTEST/MAN.TXT /SHTEST/MISSING.TXT",
          "rm: /SHTEST/MISSING.TXT: not found\n/> ", "/> ", False),
         ("rmdir /SHTEST", "rmdir: /SHTEST: not empty\n/> ", "/> ", False),
-        ("rm /SHTEST/STORE.BIN", "/> ", "/> ", False),
+        ("rm /SHTEST/STORE.MAN", "/> ", "/> ", False),
         ("rmdir /SHTEST", "/> ", "/> ", False),
         ("cp /SUB/ORIG.TXT /system/X.TXT",
          "cp: /system/X.TXT: read-only\n/> ", "/> ", False),
@@ -269,10 +269,10 @@ class ShellSession(HwtestReplay):
 
         # `cp` to a name copied the store's file whole: the `cat` above
         # proves the text path, this proves the bytes.
-        known = store_entries()["known.bin"]["payload"]
+        man = store_entries()["drivers.man"]["payload"]
         self.assertEqual(
-            states["cp /system/known.bin /SHTEST/KNOWN.BIN"][0]
-            [("SHTEST", "KNOWN.BIN")], known)
+            states["cp /system/drivers.man /SHTEST/MAN.TXT"][0]
+            [("SHTEST", "MAN.TXT")], man)
 
         # `mv` inside `/fs` renamed: one name gone, the other there.
         renamed, _dirs = states["mv /SHTEST/ORIG.TXT /SHTEST/MOVED.TXT"]
@@ -282,8 +282,8 @@ class ShellSession(HwtestReplay):
         # `mv` from `/system` copied (the store is read-only, so the
         # source's unlink was refused) and kept the copy: same bytes, and
         # the row above reported `read-only`.
-        moved, _dirs = states["mv /system/known.bin /SHTEST/STORE.BIN"]
-        self.assertEqual(moved[("SHTEST", "STORE.BIN")], known)
+        moved, _dirs = states["mv /system/drivers.man /SHTEST/STORE.MAN"]
+        self.assertEqual(moved[("SHTEST", "STORE.MAN")], man)
 
         # The card is exactly as the session found it: `/SHTEST` and
         # everything in it is gone, and the source is untouched.

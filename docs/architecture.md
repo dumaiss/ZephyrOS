@@ -1145,6 +1145,14 @@ At 10 MHz (1 T-state = 0.1 µs):
 | `xread`/`xwrite`, slots 3-6 | about 21 T-states per byte |
 | `xread`/`xwrite`, slots 0-2 | about 287 T-states per byte |
 | null IPC call | about 15,500 T-states |
+| a 512-byte card read | about 87,000 T-states, about 170 T-states per byte |
+
+The per-call part is the whole story: a 512-byte read amortises one call
+and one block over 512 bytes, about 170 T-states each, while the same
+file read one byte per call pays the call - measured at about 29,000
+T-states per byte by `tests/bench/iobench.c` - every byte.  Everything
+the SDK does in quantity is built on that: the console's 128-byte line
+buffer and the stream's 512-byte refill (`docs/sdk.md` section 6.10).
 
 ---
 

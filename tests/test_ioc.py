@@ -21,9 +21,9 @@ without executing target code:
     write's terminating underrun sequence, bounded drains, and no SIO0 or
     kernel symbol use.
 
-Executable behavior (link bring-up, framing, faults, status sampling,
-bulk READY/DONE phases) is replayed from the real linked image by
-tests/test_ioc_sim.py.
+Executable behavior (the link bring-up and the FS2 command exchange over
+the resident driver) is replayed from the production image by
+tests/test_console_acceptance.py.
 """
 
 import json
@@ -232,10 +232,10 @@ class TestIocPlatformConstants(unittest.TestCase):
         self.assertIn("KOS_SMOKE_HOST_SYNC_SECOND", main)
         self.assertLess(main.index("kernel_host_sync_wait();"),
                         main.index('early_console_puts("KonaOS 0.0'))
-        # The four images the smoke targets drive carry the flag in their
+        # The images the smoke targets drive carry the flag in their
         # system file's cflags.
-        for name in ("console-integration", "console-serial",
-                     "console-serial-missing", "console-init-fail"):
+        for name in ("console-serial", "console-serial-missing",
+                     "console-init-fail"):
             system = _load_json(os.path.join(ROOT, "systems",
                                              "%s.json" % name))
             self.assertIn("-DKOS_SMOKE_HOST_SYNC=1", system["cflags"], name)
@@ -404,18 +404,6 @@ class TestIocDriverArtifact(unittest.TestCase):
         self.assertIn("$(MODULES)/$(1).mod: $(BUILD)/drivers/$(1).json",
                       makefile)
         self.assertIn("ioc_driver.rel", makefile)
-        # The IOC diagnostic runs in the console-integration image; the
-        # table row links
-        # it and the system file carries the group's flags.
-        index = makefile.index("SYSTEM_TEST_OBJS.console-integration :=")
-        self.assertIn("$(BUILD)/ioc_test.rel",
-                      makefile[index:index + 400])
-        self.assertIn("ioc_test", makefile)
-        system = _load_json(os.path.join(ROOT, "systems",
-                                         "console-integration.json"))
-        for flag in ("-DKOS_IOC_SELFTEST=1", "-DKOS_HID_SELFTEST=1",
-                     "-DKOS_VIDEO_SELFTEST=1"):
-            self.assertIn(flag, system["cflags"])
         # The declared driver set is the manifest's business: an image
         # boots the drivers its driver set lists.
         system = _load_json(PRODUCTION_SYSTEM)

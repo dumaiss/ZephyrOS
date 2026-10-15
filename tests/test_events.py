@@ -729,14 +729,25 @@ class EventsReplayMixin:
                 if "events: watch " in part][-1]
         return [int(value) for value in re.findall(r"\d+", line)]
 
-    def app_symbol(self, name):
+    def app_symbols(self):
+        """The program's linked map: {name: address}."""
+        table = {}
         with open(os.path.join(ROOT, EVENTS_MAP), "r",
                   encoding="utf-8") as handle:
             for line in handle:
                 fields = line.split()
-                if len(fields) >= 2 and fields[1] == name:
-                    return int(fields[0], 16)
-        raise AssertionError("%s is not in %s" % (name, EVENTS_MAP))
+                if len(fields) >= 2 and fields[0] and fields[1]:
+                    try:
+                        table[fields[1]] = int(fields[0], 16)
+                    except ValueError:
+                        continue
+        return table
+
+    def app_symbol(self, name):
+        table = self.app_symbols()
+        if name not in table:
+            raise AssertionError("%s is not in %s" % (name, EVENTS_MAP))
+        return table[name]
 
     def watch_log(self, z):
         """Run `events watch` and return (transcript, log).
@@ -744,7 +755,11 @@ class EventsReplayMixin:
         The log is the ordered trace of the delivery path: `deliver` and
         `check` are the two return-path checks, `post` the driver's own
         deadline post, `trampoline` and `unwind` the SDK trampoline's
-        entry and the EVENT_RETURN unwind.  Common-memory symbols are
+        entry and the EVENT_RETURN unwind, and `handler-enter` and
+        `handler-exit` the handler's own two ends - its entry, and the
+        trampoline's restore: the step it returned at (its return address,
+        read off the stack when it was entered).  Common-memory symbols
+        are
         unique; the program's own image shares its addresses with the
         nucleus (mode 11 shows bank 7 over 0000h-5FFFh), so those two are
         conditioned on the mapping the delivery itself selects: the
@@ -756,9 +771,25 @@ class EventsReplayMixin:
                   self.syms["_kos_event_unwind"]: "unwind"}
         trampoline = self.app_symbol("_kos_event_entry")
         post = self.syms["_kos_event_post"]
+        handler = self.app_symbols()["_events_on_timer"]
+        depth = 0
+        return_to = 0
         log = []
 
         def record(step):
+            nonlocal depth, return_to
+            if depth > 0 and step.pc == return_to:
+                # The instruction after the trampoline's call: this
+                # delivery's handler is done and the restore is next.  A
+                # delivery inside the handler nests, so the depth is what
+                # tells the two returns apart.
+                depth -= 1
+                log.append((step.tstates, "handler-exit"))
+            elif step.pc == handler:
+                if depth == 0:
+                    return_to = step.rd16(step.sp)
+                depth += 1
+                log.append((step.tstates, "handler-enter"))
             kind = common.get(step.pc)
             if kind is not None:
                 log.append((step.tstates, kind))
@@ -781,11 +812,15 @@ class EventsReplayMixin:
     def cost_per_delivery(self, log, deliveries):
         """The nucleus's own cost per delivery, in T-states.
 
-        One trampoline entry and one unwind per delivery; the handler sits
-        between the two and is not counted, so the figure is the
-        mechanism's, not the program's.  The two return-path checks are
-        entered on every interrupt and every syscall, which is what makes
-        them cheap to keep.
+        The mechanism's round trip less the handler itself: the frame
+        build and the hand-off into the trampoline (measured to the
+        handler's entry, so the trampoline's argument-block save is in),
+        then the trampoline's restore with the EVENT_RETURN gate and the
+        unwind.  The handler runs between those two spans and is not
+        counted, so neither is what it does after its last syscall -
+        formatting and a buffered console write, since the SDK buffers
+        them.  The two return-path checks are entered on every interrupt
+        and every syscall, which is what makes them cheap to keep.
         """
         self.assertEqual(sum(1 for _, kind in log
                              if kind == "trampoline"), deliveries)
@@ -794,24 +829,32 @@ class EventsReplayMixin:
         cost = 0.0
         seen = 0
         irq = check = None
+        frames = []
         for when, kind in log:
             if kind == "deliver":
                 irq = when
             elif kind == "check":
                 check = when
             elif kind == "trampoline":
-                self.assertIsNotNone(irq or check)
-                entry = irq if irq is not None and \
-                    (check is None or irq > check) else check
-                cost += when - entry
-                if entry == irq:
-                    irq = None
-                else:
-                    check = None
+                self.assertIsNotNone(irq)
+                # The hand-off up to the trampoline's first instruction.
+                cost += when - irq
+                irq = None
+                frames.append([when, None, None])
                 seen += 1
+            elif kind == "handler-enter":
+                # Everything from the trampoline's entry to the handler's
+                # is mechanism: its three pushes and the argument-block
+                # save.  The handler's own body runs from here to the
+                # restore.
+                frames[-1][1] = when - frames[-1][0]
+            elif kind == "handler-exit":
+                frames[-1][2] = when
             elif kind == "unwind":
-                self.assertIsNotNone(check)
-                cost += when - check
+                trampoline_when, save, exit_when = frames.pop()
+                self.assertIsNotNone(exit_when or check)
+                start = exit_when if exit_when is not None else check
+                cost += when - start + (save or 0.0)
                 check = None
         self.assertEqual(seen, deliveries)
         return cost / seen
@@ -865,17 +908,19 @@ class TestEventDeadlineReplay(EventsReplayMixin, FsSelftestSimBase):
                              "the median post is off its deadline")
         self.assertLessEqual(max(errors), 16.0)
 
-        # The mechanism's cost: the frame build and the hand-off through
-        # the trampoline (the trampoline's argument-block save included),
-        # then the return through the EVENT_RETURN gate to the unwind.  The
-        # handler sits between the two and is not counted, nor is the
-        # trampoline's restore, which runs after it - both halves of that
-        # snapshot are one 93-byte LDIR each, so the whole round trip is
-        # about 2,000 T-states above this figure (recorded in
-        # docs/validation).  The bound is the measured 7,459 plus a tenth.
+        # The mechanism's own cost per delivery, in its three spans: the
+        # frame build and the hand-off into the trampoline (1,710), the
+        # trampoline's entry - its pushes and the argument-block save
+        # (2,568) - and the restore with the EVENT_RETURN gate and the
+        # unwind (4,129).  The handler's own body sits between the last
+        # two and is not counted: the buffered console made it large
+        # (about 8,300 T-states per delivery), and the older reading
+        # carried it because it measured the return side from the
+        # handler's last syscall.  The bound is the measurement plus a
+        # tenth.
         per_delivery = self.cost_per_delivery(log, deliveries)
         share = per_delivery * 50.0 / TSTATES_PER_SECOND
-        self.assertLessEqual(per_delivery, 8205.0,
+        self.assertLessEqual(per_delivery, 9250.0,
                              "delivery costs %.0f T-states (%.1f%% at 50 Hz)"
                              % (per_delivery, share * 100.0))
         self.assertLessEqual(share, 0.05)
@@ -914,9 +959,9 @@ class TestEventDeliveryReplay(EventsReplayMixin, FsSelftestSimBase):
         # the one post that may still be waiting when the program stops.
         self.assertLessEqual(counts + missed, len(posts))
         self.assertLessEqual(len(posts), counts + missed + 1)
-        # The mechanism's cost, measured here like the record's figure
-        # (the spans do not depend on the peer's masking; the harness
-        # without it pins them against jitter).
+        # The mechanism's cost, with the same stamps as the deadline
+        # test's reading (the peer's masking does not move the spans; the
+        # harness without it is the one that pins them against jitter).
         per_delivery = self.cost_per_delivery(log, deliveries)
         self.assertGreaterEqual(per_delivery, 1000.0)
         self.assertLessEqual(per_delivery, 12000.0)

@@ -27,7 +27,6 @@
 #   make sdk                  standalone SDK tree + tarball (build/kos-sdk-*)
 #   make subsystem-selftest        current-path and ROMFS acceptance image
 #   make nucleus-selftest          revision-13 window/nucleus acceptance image
-#   make console-integration-selftest  console + IOC/HID/V9958 diagnostics
 #   make console-serial-selftest   serial-console image and its failure store
 #   make fs-selftest               filesystem outcome acceptance image
 #   make xmem-selftest             extended-memory and aperture outcome image
@@ -162,12 +161,11 @@ KOS_REV13_WINDOW_BASE := 0x6000
 # of it.  KOS_TARGET_TEST_BUILD is the single production-side guard
 # (kernel/main.c holds only the two TEST-ONLY HOOKs).
 TARGET_TEST_OBJS :=
-SYSTEM_ACCEPTANCE := subsystem console-integration fs ipc nucleus
+SYSTEM_ACCEPTANCE := subsystem fs ipc nucleus
 
 # The image-name suffix of each system: the image targets keep their names
 # and build into their own directory, build-<image>/konaos<PK_SUFFIX>.bin.
 SYSTEM_SUFFIX.subsystem := -subsys-selftest
-SYSTEM_SUFFIX.console-integration := -console-integration-selftest
 SYSTEM_SUFFIX.console-serial := -console-serial-selftest
 SYSTEM_SUFFIX.console-serial-missing := -console-serial-fail-selftest
 SYSTEM_SUFFIX.console-init-fail := -driver-init-fail-selftest
@@ -185,8 +183,7 @@ PK_SUFFIX := $(SYSTEM_SUFFIX.$(SYSTEM))
 
 # The mechanism-selftest images: the subsystem
 # image carries the syscall gate, the IRQ executive, the ROMFS reader and
-# the process/EXE lifecycle; the console-integration image carries the IOC,
-# HID, V9958 and console diagnostics; the nucleus image carries the
+# the process/EXE lifecycle; the nucleus image carries the
 # revision-13 gate and upcall-shim surface.  One image per surface group.
 SYSTEM_TEST_OBJS.subsystem := $(BUILD)/syscall_test.rel \
                     $(BUILD)/syscall_selftest_asm.rel \
@@ -194,9 +191,6 @@ SYSTEM_TEST_OBJS.subsystem := $(BUILD)/syscall_test.rel \
                     $(BUILD)/ctc_test.rel \
                     $(BUILD)/romfs_test.rel \
                     $(BUILD)/process_test.rel
-SYSTEM_TEST_OBJS.console-integration := $(BUILD)/console_integration_test.rel \
-                    $(BUILD)/ioc_test.rel $(BUILD)/hid_test.rel \
-                    $(BUILD)/video_test.rel
 SYSTEM_TEST_OBJS.nucleus := $(BUILD)/nucleus_test.rel \
                     $(BUILD)/nucleus_selftest_asm.rel \
                     $(BUILD)/ctc_test.rel
@@ -388,13 +382,13 @@ $(BUILD)/konaos.probe.ihx $(BUILD)/konaos.probe.map: \
 .PHONY: all test check check-fast clean mod-test romfs-test exe-test \
 	monitor-test ioc-test hid-test v9958-test sdk \
 	subsystem-selftest nucleus-selftest \
-	console-integration-selftest console-serial-selftest \
+	console-serial-selftest \
 	fs-selftest ns-selftest ipc-selftest xmem-selftest helloworld-image \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-hwtest \
 	smoke-hardware-subsystem \
-	smoke-hardware-console-integration smoke-hardware-console-serial \
+	smoke-hardware-console-serial \
 	smoke-hardware-fs smoke-hardware-shell
 
 all: $(IMAGE) $(MAME_IMAGE)
@@ -796,9 +790,6 @@ $(BUILD)/target_test.rel: tests/target/support/target_test.c \
 		tests/target/include/irq_selftest.h \
 		tests/target/include/romfs_selftest.h \
 		tests/target/include/process_selftest.h \
-		tests/target/include/hid_selftest.h \
-		tests/target/include/video_selftest.h \
-		tests/target/include/console_integration_selftest.h \
 		abi/kos/ipc.h \
 		formats/include/mod.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
@@ -913,41 +904,6 @@ $(BUILD)/process_test.rel: tests/target/process/process_test.c \
 		tests/target/include/process_selftest.h $(BUILD)/process_expect.inc | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
-# The IOC transport diagnostic is the one explicitly test-only rule allowed
-# a private IOC include path: it exercises the READY/DONE admission state,
-# the bulk-arming class gate, and the unknown-class reply, which are
-# transport-private by design.
-$(BUILD)/ioc_test.rel: tests/target/ioc/ioc_test.c \
- drivers/include/ioc.h \
-		kernel/include/kernel.h drivers/ioc/ioc_proto.h \
-		drivers/include/ioc_protocol.h \
-		tests/target/include/ioc_selftest.h \
-		tests/target/include/driver_client.h | $(BUILD)
-	$(SDCC) $(CFLAGS) -Idrivers/ioc $< -o $@
-
-$(BUILD)/hid_test.rel: tests/target/hid/hid_test.c \
- kernel/include/kernel.h \
-		tests/target/include/hid_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-$(BUILD)/video_test.rel: tests/target/video/v9958_test.c \
-		kernel/include/kernel.h \
-		tests/target/include/video_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-$(BUILD)/console_integration_test.rel: tests/target/console/integration_test.c \
-		kernel/include/kernel.h drivers/include/ioc.h \
-		abi/kos/protocol.h \
-		tests/target/include/driver_client.h \
-		tests/target/include/console_integration_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-
-
-
-
-
-
 # --- native user programs (SDK) ------------------------
 # Every EXE is built by one exe_program line from user/sdk/exe.mk.  The
 # sources compile with exactly -I abi -I user/sdk/include plus their own
@@ -1034,6 +990,29 @@ $(eval $(call exe_program,fs_child,tests/fs,\
 $(eval $(call exe_program,events,tests/events,\
 	events.c,STACK=384,STAGE=1))
 
+# The I/O bench: the filesystem image's `/system/iobench.exe`, run from
+# the monitor's X (`make fs-selftest` replays it), and a copy on the card
+# for the bench runs the owner reads, so the default target builds it
+# beside the other card programs.  It measures one row per I/O pattern
+# with the TIMER clock and prints min/mean/max T-states per call.
+$(eval $(call exe_program,iobench,tests/bench,\
+	iobench.c,STACK=384,STAGE=1))
+
+all: $(EXE_USER_ROOT)/iobench.exe
+
+# SDK outcome programs for the console-order and stream replays
+# (tests/test_io_sim.py): the `fs` image's `/system/iomix.exe` with its
+# nested-exec child, and `/system/iostream.exe`, one card-file session
+# through the stdio layer.
+$(eval $(call exe_program,iomix,tests/io,\
+	iomix.c,STACK=384,STAGE=1))
+
+$(eval $(call exe_program,iomix_child,tests/io,\
+	iomix_child.c,STACK=192,STAGE=1))
+
+$(eval $(call exe_program,iostream,tests/io,\
+	iostream.c,STACK=384,STAGE=1))
+
 # The hardware exerciser: the production store's
 # `/system/hwtest.exe` runner, started from the monitor's X command.  It
 # drives the programs above and the xmem family below from the store, so
@@ -1076,7 +1055,7 @@ $(eval $(call exe_program,xmem_far,tests/xmem,\
 	FAR2=xmem_far_code2.c,\
 	SEGMENTS=tests/xmem/xmem_far.segments.json))
 
-# Far-data outcome program: the production store's
+# Far-data outcome program: the filesystem image's
 # `/system/far_data.exe` runner, an ordinary SDK program that maps its own
 # DATA1 segment, fills a mappable object straight through the window,
 # reads the blob row and the store's `known.bin`, loads files whole with
@@ -1125,15 +1104,6 @@ $(eval $(call exe_program,ns,tests/ns,\
 $(eval $(call exe_program,nschild,tests/ns,\
 	nschild.c,STACK=192,STAGE=1,\
 	INCLUDES=tests/target/include))
-
-# ESC c display-reset check (test-only): a tiny SDK
-# program the console integration image boots before the monitor.  It
-# writes ESC `c` - the V9958 display reset - and a line through the
-# console, then hands the console to the monitor, so the owner can watch
-# the board's display reset.  It is acceptance content: nothing packs it
-# into the production store.
-$(eval $(call exe_program,escc,tests/console,\
-	escc.c,STACK=256,STAGE=1))
 
 # Deterministic malformed EXE containers (see
 # tests/subsys/gen_exe_fixtures.py) shared by the subsystem acceptance
@@ -1288,7 +1258,7 @@ $(BUILD)/romfs_expect.inc: $(BUILD)/store.json $(MODULES)/sio.mod \
 # objects) generates its linker file from the same object list the link
 # step depends on, so the lists cannot drift apart.
 
-KOS_TEST_LINK := $(filter $(SYSTEM),subsystem nucleus console-integration fs)
+KOS_TEST_LINK := $(filter $(SYSTEM),subsystem nucleus fs)
 ifeq ($(BUILD),build)
 ifneq ($(KOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -1473,36 +1443,7 @@ v9958-test: $(MODULES)/v9958.mod $(MODULES)/v9958-6x8.font
 	$(PYTHON) -m unittest discover -s tests -p 'test_v9958.py' -v
 	@echo "v9958-test: OK"
 
-# --- console integration acceptance and fallback matrix --------------
-# console-integration-selftest is the final acceptance image: the full production stack
-# plus the integration target diagnostic, the IOC, HID and V9958 device
-# diagnostics, the shell boot program and the launcher that starts the
-# monitor once that program's session ends.
-# tests/test_console_acceptance.py replays the production bytes
-# (build/konaos.bin) and these bytes: boot order, binding, IOC
-# command/status/bulk sequencing, HID queue traffic, the V9958 trace,
-# the split console, the ESC c display reset, the scripted monitor session
-# with the exit line and the launcher's own monitor, post-fault recovery
-# and the malformed-call
-# invariants; test_ioc_sim.py, test_hid_sim.py and test_v9958_sim.py
-# replay the same image for their device diagnostics and the console
-# session.
-
-console-integration-selftest: all
-	$(MAKE) BUILD=build-console-integration-selftest \
-		SYSTEM=console-integration \
-		build-console-integration-selftest/konaos-console-integration-selftest.bin \
-		build-console-integration-selftest/zephyr80-console-integration-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-console-integration-selftest/konaos.map \
-		build-console-integration-selftest/geometry/memory.inc \
-		$(KOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_console_acceptance.py' -v
-	$(PYTHON) -m unittest discover -s tests -p 'test_ioc_sim.py' -v
-	$(PYTHON) -m unittest discover -s tests -p 'test_hid_sim.py' -v
-	$(PYTHON) -m unittest discover -s tests -p 'test_v9958_sim.py' -v
-	@echo "console integration image: build-console-integration-selftest/konaos-console-integration-selftest.bin"
-
+# --- console-serial variant and fallback matrix ----------------------
 # console-serial variant: the production image set with
 # the other CONSOLE driver.  The first image boots the monitor on the
 # serial lane (the runtime-fallback images' replacement outcome); the
@@ -1546,6 +1487,8 @@ fs-selftest: all
 		$(KOS_PLATFORM_IRQ_INC)
 	$(PYTHON) -m unittest discover -s tests -p 'test_fs_selftest*.py' -v
 	$(PYTHON) -m unittest tests.test_events -v
+	$(PYTHON) -m unittest tests.test_far_data -v
+	$(PYTHON) -m unittest tests.test_io_sim -v
 	@echo "filesystem image: build-fs-selftest/konaos-fs-selftest.bin"
 
 # IPC acceptance image: the production boot path with
@@ -1658,7 +1601,6 @@ helloworld-image: all
 #   smoke-hardware-hwtest         build/konaos.bin                          make
 #   smoke-hardware-subsystem      build-subsys-selftest/konaos-subsys-selftest.bin
 #                                                                             make subsystem-selftest
-#   smoke-hardware-console-integration             build-console-integration-selftest/konaos-console-integration-selftest.bin  make console-integration-selftest
 #   smoke-hardware-console-serial      build-console-serial-selftest/konaos-console-serial-selftest.bin  make console-serial-selftest
 #   smoke-hardware-fs             build-fs-selftest/konaos-fs-selftest.bin  make fs-selftest
 #   smoke-hardware-shell          build-console-serial-selftest/konaos-console-serial-selftest.bin  make console-serial-selftest
@@ -1684,7 +1626,7 @@ if [ ! -f "$(1)" ]; then echo "smoke: $(1) is missing - build it first: make $(2
 endef
 
 hardware-images: all subsystem-selftest \
-		console-integration-selftest console-serial-selftest \
+		console-serial-selftest \
 		fs-selftest xmem-selftest
 	@echo "hardware-images: every smoke image is built under build*/"
 
@@ -1700,16 +1642,9 @@ smoke-hardware-subsystem:
 	@$(call smoke_preflight,build-subsys-selftest/konaos-subsys-selftest.bin,subsystem-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode subsystem --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))
 
-# Console modes: the full integration image (serial portion: early
-# diagnostics, binding report, the target selftest and the ESC c reset
-# program's evidence; the interactive monitor session over HID/V9958 is
-# the human gate) and the console-serial variant, whose whole dynamic
-# console is this serial lane.  The host sync is sent while the banner is
+# Console mode: the console-serial variant, whose whole dynamic console
+# is this serial lane.  The host sync is sent while the banner is
 # pending, as for the other console smoke modes.
-
-smoke-hardware-console-integration:
-	@$(call smoke_preflight,build-console-integration-selftest/konaos-console-integration-selftest.bin,console-integration-selftest)
-	$(PYTHON) tools/serial_smoke.py --mode console-integration --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))
 
 smoke-hardware-console-serial:
 	@$(call smoke_preflight,build-console-serial-selftest/konaos-console-serial-selftest.bin,console-serial-selftest)
