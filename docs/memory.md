@@ -145,7 +145,7 @@ uses it to run each driver's hot init.
 | region | tier | content |
 |---|---|---|
 | `6000h-DFFFh` | hot (32 KiB) | driver code and data used after boot; `8000h-BFFFh` holds the `DRIVER_IO` buffers first |
-| `0000h-5FFFh` | boot/bulk (24 KiB) | boot-only driver code and bulk data |
+| `0000h-5FFFh` | boot/bulk (24 KiB) | boot-only driver code and bulk data (the V9958 font, the IOC-FAT block cache) |
 | `E000h-FFFFh` | unused | common memory is mapped over it |
 
 The packer (`tools/modpack.py`) places every segment; the loader only
@@ -180,11 +180,11 @@ common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>
 Current production figures:
 
 ```text
-nucleus fixed: required 8760 bytes | overflow 2 bytes | stacks 768 | room 6854 bytes
-nucleus cold: code 24984 bytes end C198h | data 1527 bytes at C200h | room 6153 bytes
-driver hot: 23944 bytes of 32768
-driver boot/bulk: 2186 bytes of 24576
-common: used 2893 of 7424 bytes (code 1967, data 926) | ceiling 3072
+nucleus fixed: required 9141 bytes | overflow 2 bytes | stacks 768 | room 6473 bytes
+nucleus cold: code 24992 bytes end C1A0h | data 1527 bytes at C200h | room 6153 bytes
+driver hot: 27630 bytes of 32768
+driver boot/bulk: 19598 bytes of 24576
+common: used 3051 of 7424 bytes (code 2125, data 926) | ceiling 3072
 ```
 
 The device-event mechanism places the table, the two return-path checks

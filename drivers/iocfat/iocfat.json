@@ -3,6 +3,7 @@
   "name": "iocfat",
   "objects": [
     "iocfat.rel",
+    "iocfat_cache.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "iocfat_init",
@@ -17,6 +18,12 @@
       "role": "io",
       "bss_areas": [
         "_DRIVER_IO"
+      ]
+    },
+    {
+      "role": "bulk",
+      "bss_areas": [
+        "_FSCACHE"
       ]
     }
   ],

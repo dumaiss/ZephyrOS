@@ -322,6 +322,18 @@ reading it**: the firmware answers the root open from its mount context
 without touching the card, so only the first read proves the card is there.
 `KFS_OP_STAT` on the root proves it the same way.
 
+**Cache and read-ahead.** Reads go through a ring of four consecutive
+blocks in the driver's `DRIVER_IO`: the bulk receive fills it, and each run
+of consecutive blocks reaches the caller in one `copy_out`. A read that
+continues where the previous one ended fills the whole ring (read-ahead);
+any other fills only the blocks it needs. Blocks of files opened read-only
+that fit it whole are also kept in a 16 KiB cache (32 blocks) in the
+driver's bulk extent (a larger file is a stream and would only cycle
+through it),
+keyed by the path as opened and the size that open reported; a hit never
+touches the IOC link. Coherence is coarse and safe: an open for writing, a
+write, an unlink, a rename or a stale-media answer drops the whole cache.
+
 ## 9. TIMER (`drivers/timer/`)
 
 The monotonic clock.  CTC physical channel 2 - the port the board's

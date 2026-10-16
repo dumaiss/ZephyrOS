@@ -744,6 +744,7 @@ DRIVER_API_ENTRIES = (
     "_api_copy_out",
     "_api_move",
     "_api_bulk_read",
+    "_api_bulk_write",
     "_api_console_putc",
     "_api_console_poll",
     "_api_console_getc",

@@ -16,9 +16,10 @@
  * interrupt-masked transport window hides from the tick counter - a
  * result to read here, not an error for this program to fix.
  *
- * Three passes, each re-reading from the start, because the copy path of
- * a read is the nucleus's choice for the *caller's* buffer
- * (architecture 4.9):
+ * Three passes, each re-reading from the start with the provider's cache
+ * dropped and its read-ahead off (KFILE_PHASE_CTL_COLD, _SINGLE: one card
+ * transfer per missed block), because the copy path of a read is the
+ * nucleus's choice for the *caller's* buffer (architecture 4.9):
  *
  *   pass 1  512-byte reads into this program's static buffer, below
  *           8000h: the caller's own bank, clear of the aperture, so the
@@ -232,7 +233,8 @@ static const char path_letter[3] = { 'A', 'B', 'C' };
  * one always has the table's ENTERED bit set.  Returns -KOS_ENOTSUP for
  * that all-zero answer, -KOS_EINVAL or another refusal code from a
  * provider that refuses the operation itself. */
-static int fetch_phases(unsigned int handle, struct kfile_phases *out)
+static int fetch_phases(unsigned int handle, struct kfile_phases *out,
+			unsigned char control)
 {
 	struct kos_ipc_request req;
 	unsigned char *dst = (unsigned char *)out;
@@ -243,7 +245,7 @@ static int fetch_phases(unsigned int handle, struct kfile_phases *out)
 	req.frame.op = KFILE_OP_PHASES;
 	req.frame.flags = 0u;
 	req.frame.desc = KOS_IPC_DESC_NONE;
-	req.frame.arg0 = 0u;
+	req.frame.arg0 = control;
 	req.frame.arg1 = 0u;
 	req.buffer = (void *)0;
 	req.length = 0u;
@@ -367,6 +369,19 @@ static int run_pass(unsigned int pass, unsigned int size,
 	pass_size[pass] = size;
 	pass_buffer[pass] = (unsigned int)buffer;
 	pass_path[pass] = copy_path(buffer, size);
+	/* Every pass starts from the card: the provider's cache is dropped,
+	 * and each miss fetches only the block it needs. */
+	{
+		struct kfile_phases table;
+		int cold = fetch_phases((unsigned int)file_handle, &table,
+					KFILE_PHASE_CTL_COLD |
+					KFILE_PHASE_CTL_SINGLE);
+
+		if (cold != 0) {
+			pass_error[pass] = cold;
+			return -1;
+		}
+	}
 	for (i = 0u; i < reads; ++i) {
 		struct kfile_phases table;
 		uint32_t start = 0u;
@@ -392,7 +407,8 @@ static int run_pass(unsigned int pass, unsigned int size,
 		}
 		{
 			int fetched = fetch_phases((unsigned int)file_handle,
-						   &table);
+						   &table,
+						   KFILE_PHASE_CTL_SINGLE);
 
 			if (fetched != 0) {
 				pass_error[pass] = fetched;

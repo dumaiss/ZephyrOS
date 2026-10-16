@@ -587,10 +587,11 @@ class TestIocSourceDiscipline(unittest.TestCase):
 
     def test_busy_guard_covers_every_exec_pathed_exit(self):
         self.assertIn("KIOC_EBUSY", self.c)
-        # One guard acquisition per command exchange and per bulk phase;
-        # every one of those paths releases it exactly once.
+        # One guard acquisition per command exchange and per bulk phase,
+        # and one release each: the exchange's every wire outcome comes
+        # back from ioc_io_exchange through the one return path.
         self.assertEqual(self.c.count("state->busy = 1u;"), 3)
-        self.assertEqual(self.c.count("state->busy = 0u;"), 5)
+        self.assertEqual(self.c.count("state->busy = 0u;"), 3)
 
     def test_ready_done_interlock_state_machine(self):
         self.assertIn("IOC_PHASE_ADMITTED", self.c)

@@ -27,11 +27,25 @@ void ioc_hw_init(void);
  * KIOC_OK or KIOC_ETIMEDOUT. */
 int ioc_link_bringup(void);
 
+/* One command request as the exchange reads it: the header fields and
+ * where its DATA already is (the IPC frame's payload), so the DATA is
+ * copied once, into the wire packet. */
+struct ioc_request {
+	uint8_t type;
+	uint8_t status;
+	uint8_t length;
+	const uint8_t *data;
+};
+
 /* The class operation implementations (exposed for the descriptor and
- * for focused host tests). */
-int ioc_command(void *state, const struct kioc_frame *request,
+ * for focused host tests).  The reply is written in place: the caller
+ * hands over the frame it publishes. */
+int ioc_command(void *state, const struct ioc_request *request,
 		struct kioc_frame *reply);
 int ioc_bulk_read(void *state, void *dst, uint16_t length);
+/* The length of the MCU-to-Z80 bulk phase the last reply admitted, 0 when
+ * none is waiting (KIOC_OP_COMMAND_READ runs it in the same call). */
+uint16_t ioc_admitted_read(void *state);
 int ioc_bulk_write(void *state, const void *src, uint16_t length);
 uint16_t ioc_status(void *state);
 

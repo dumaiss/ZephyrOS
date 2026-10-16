@@ -188,6 +188,8 @@ struct iocfat_file {
 	uint32_t generation;
 	uint32_t offset; /* the bound instance's position */
 	uint32_t size;
+	uint8_t key;     /* cache identity: a file record, or uncached      */
+	uint32_t next;   /* where the previous read ended (read-ahead cue)  */
 };
 
 struct iocfat_dir {
@@ -196,18 +198,53 @@ struct iocfat_dir {
 	uint32_t generation;
 };
 
-struct iocfat_cache_slot {
-	void *owner;
-	uint32_t generation;
-	uint32_t offset;
+/* --- the block cache -------------------------------------------------
+ * Blocks of files opened read-only that fit it whole, kept in this
+ * driver's bulk extent
+ * (iocfat_cache.asm: bank 6's boot/bulk tier, reached only through the
+ * nucleus's bulk_read/bulk_write): IOCFAT_CACHE_SLOTS slots of one block,
+ * then IOCFAT_CACHE_FILES path records.  A file's identity is its path as
+ * opened; the record also keeps the size its last open reported, and a
+ * different size at a later open drops its blocks.  Every change made
+ * through this driver - an open for writing, a write, an unlink or rename
+ * - and every stale-media answer drops the whole cache, so an alias (the
+ * same file under another spelling) can never serve old bytes.  Reads go
+ * through the ring below, IOCFAT_RING_BLOCKS consecutive blocks of one
+ * file in DRIVER_IO, which the bulk receive fills and copy_out reads. */
+#if KOS_IOC_PHASES
+/* The measurement build carries its stamps in the same hot tier and reads
+ * one block per miss (KFILE_PHASE_CTL_SINGLE), so its ring is two. */
+#define IOCFAT_RING_BLOCKS    2u
+#else
+#define IOCFAT_RING_BLOCKS    4u
+#endif
+#define IOCFAT_CACHE_SLOTS    32u
+#define IOCFAT_CACHE_FILES    8u
+#define IOCFAT_CACHE_PATH     128u
+#define IOCFAT_CACHE_PATHS_AT ((uint16_t)(IOCFAT_CACHE_SLOTS * \
+					  IOCFAT_BLOCK_SIZE))
+/* Keys: 1..IOCFAT_CACHE_FILES a file record, IOCFAT_KEY_UNCACHED | slot an
+ * instance whose blocks stay in the ring only, 0 nothing. */
+#define IOCFAT_KEY_UNCACHED   0x80u
+#define IOCFAT_SLOT_NONE      0xFFu
+
+struct iocfat_cfile {
+	uint8_t length; /* the path's length; 0 = free */
+	uint16_t hash;
+	uint32_t size;
+	uint16_t stamp;
+};
+
+struct iocfat_cslot {
+	uint8_t key;    /* the file record's key; 0 = free */
 	uint16_t valid;
-	uint8_t data[IOCFAT_BLOCK_SIZE];
+	uint32_t block; /* the block's file offset */
+	uint16_t stamp;
 };
 
 struct iocfat_instance {
 	struct iocfat_file files[IOCFAT_FILE_HANDLES];
 	struct iocfat_dir dirs[IOCFAT_DIR_HANDLES];
-	struct iocfat_cache_slot cache[1];
 	uint32_t generation;
 	uint8_t mounted;
 	uint8_t read_only;
@@ -224,12 +261,28 @@ static struct kioc_frame iocfat_request;
 static struct kioc_frame iocfat_reply;
 static uint8_t iocfat_name[IOCFAT_NAME_LEN];
 static uint8_t iocfat_name2[IOCFAT_NAME_LEN];
-/* Transfer staging and the enumeration entry, in DRIVER_IO (8000h-BFFFh). */
-static uint8_t iocfat_batch[IOCFAT_BLOCK_SIZE];
-static uint16_t iocfat_batch_address;
-/* The cache block's address, captured once like the batch's: a read copies
- * from it straight to the caller. */
-static uint16_t iocfat_cache_address;
+/* The read-ahead ring, also the write and enumeration staging, in
+ * DRIVER_IO (8000h-BFFFh); its address and the path buffer's are captured
+ * once, as words. */
+static uint8_t iocfat_ring[IOCFAT_RING_BLOCKS * IOCFAT_BLOCK_SIZE];
+static uint16_t iocfat_ring_address;
+static uint16_t iocfat_ring_valid_table[IOCFAT_RING_BLOCKS];
+static uint16_t *iocfat_ring_valid; /* captured at init, as the tables below */
+static uint32_t iocfat_ring_first; /* the first block's file offset */
+static uint8_t iocfat_ring_count;
+static uint8_t iocfat_ring_key;    /* 0 = empty */
+static struct iocfat_cfile iocfat_cfile_table[IOCFAT_CACHE_FILES];
+static struct iocfat_cslot iocfat_cslot_table[IOCFAT_CACHE_SLOTS];
+static uint16_t iocfat_clock;
+static uint8_t iocfat_pathbuf_storage[IOCFAT_CACHE_PATH];
+static uint16_t iocfat_pathbuf_address;
+/* The tables through pointers captured at init: SDCC computes an indexed
+ * static array's element address a byte at a time, the relocation form
+ * the container packer refuses. */
+static struct iocfat_cfile *iocfat_cfiles;
+static struct iocfat_cslot *iocfat_cslots;
+static uint8_t *iocfat_pathbuf;
+static uint8_t *iocfat_ring_bytes;
 
 #if KOS_IOC_PHASES
 /* --- read-path phase instrument (drivers/include/ioc_phases.h) --------
@@ -243,6 +296,8 @@ static uint16_t iocfat_cache_address;
  * image compiles a byte of this. */
 static struct kfile_phases iocfat_phases;
 static uint16_t iocfat_phase_peer;
+/* KFILE_PHASE_CTL_SINGLE as the last fetch set it. */
+static uint8_t iocfat_phase_single;
 
 /* One stamp into this driver's table. */
 static void iocfat_phase_note(uint8_t phase)
@@ -317,30 +372,33 @@ static uint16_t iocfat_addr(const uint8_t *payload)
 			  ((uint16_t)payload[1] << 8));
 }
 
-/* One command exchange with the resident IOC driver.  The request travels
- * in the 32-byte protocol frame; the reply frame the driver staged is
- * bank-6 memory this driver reaches directly (one same-domain copy, 4.9).
- * Returns 0 or a negative transport error; the reply is left in
+/* One command exchange with the resident IOC driver, as operation `op`
+ * (KIOC_OP_COMMAND, or KIOC_OP_COMMAND_READ with the bulk receive in the
+ * same call).  The request travels in the 32-byte protocol frame; the
+ * reply frame the driver staged is bank-6 memory this driver reaches
+ * directly (one same-domain copy, 4.9).  Returns the call's value (0, or
+ * the bulk length) or a negative transport error; the reply is left in
  * `iocfat_reply`. */
-static int iocfat_exchange(uint8_t type, uint8_t length)
+static int iocfat_exchange_op(uint8_t op, uint8_t type, uint8_t length)
 {
 	const uint8_t *src;
 	uint16_t address;
+	int16_t called;
 
 	/* Own-array bound: `iocfat_request.data` is indexed with the request
 	 * length this driver passes (never above the frame field). */
 	if (length > (uint8_t)KIOC_PROTOCOL_REQUEST_MAX) {
 		return (-KOS_EINVAL);
 	}
-	iocfat_frame.op = KIOC_OP_COMMAND;
+	iocfat_frame.op = op;
 	iocfat_frame.flags = 0u;
 	iocfat_frame.desc = KOS_IPC_DESC_NONE;
 	iocfat_frame.arg0 = type;
 	iocfat_frame.arg1 = length;
 	iocfat_copy(iocfat_frame.payload, iocfat_request.data,
 		    (uint16_t)length);
-	if (iocfat_api->call(iocfat_ioc, KIOC_OP_COMMAND,
-			     &iocfat_frame) != 0) {
+	called = iocfat_api->call(iocfat_ioc, op, &iocfat_frame);
+	if (called < 0 || (op == KIOC_OP_COMMAND && called != 0)) {
 		return (-KOS_EIO);
 	}
 	/* The reply frame lives in the driver's staged slot: a plain bank-6
@@ -370,7 +428,13 @@ static int iocfat_exchange(uint8_t type, uint8_t length)
 	if (iocfat_reply.type != (uint8_t)(type | 0x80u)) {
 		return (-KOS_EIO);
 	}
-	return 0;
+	return (int)called;
+}
+
+/* A plain command exchange (KIOC_OP_COMMAND): 0 or a negative error. */
+static int iocfat_exchange(uint8_t type, uint8_t length)
+{
+	return iocfat_exchange_op(KIOC_OP_COMMAND, type, length);
 }
 
 static const uint8_t iocfat_status_table[] = {
@@ -409,37 +473,159 @@ static int iocfat_map_status(uint8_t status, uint8_t no_handle_emfile)
 
 /* --- cache ------------------------------------------------------------ */
 
-/* The one slot is a single static object, so it is indexed directly. */
-static void iocfat_cache_clear(void)
+/* Forget every cached block, every file record and the ring.  The open
+ * instances keep their place but read through the ring only until they
+ * are opened again. */
+static void iocfat_cache_drop_all(void)
 {
-	iocfat.cache[0].owner = (void *)0;
-	iocfat.cache[0].valid = 0u;
+	uint8_t i;
+
+	for (i = 0u; i < (uint8_t)IOCFAT_CACHE_FILES; ++i) {
+		iocfat_cfiles[i].length = 0u;
+	}
+	for (i = 0u; i < (uint8_t)IOCFAT_CACHE_SLOTS; ++i) {
+		iocfat_cslots[i].key = 0u;
+	}
+	for (i = 0u; i < (uint8_t)IOCFAT_FILE_HANDLES; ++i) {
+		iocfat.files[i].key = (uint8_t)(IOCFAT_KEY_UNCACHED | i);
+	}
+	iocfat_ring_key = 0u;
+	iocfat_ring_count = 0u;
 }
 
-static void iocfat_cache_invalidate_all(void)
+/* Forget one file record's blocks (its record stays). */
+static void iocfat_cache_drop_key(uint8_t key)
 {
-	if (iocfat.cache[0].owner != (void *)0) {
-		iocfat_cache_clear();
+	uint8_t i;
+
+	for (i = 0u; i < (uint8_t)IOCFAT_CACHE_SLOTS; ++i) {
+		if (iocfat_cslots[i].key == key) {
+			iocfat_cslots[i].key = 0u;
+		}
+	}
+	if (iocfat_ring_key == key) {
+		iocfat_ring_key = 0u;
 	}
 }
 
-/* Invalidate the slot when it is owned by `file` (write coherence). */
-static void iocfat_cache_invalidate_file(void *file)
+static uint16_t iocfat_tick(void)
 {
-	if (file != (void *)0 && iocfat.cache[0].owner == file) {
-		iocfat_cache_clear();
-	}
+	return ++iocfat_clock;
 }
 
-/* Invalidate the slot when it is owned by any file other than `keep`.
- * FS2 serves at most two open files, so this is the whole other-file rule. */
-static void iocfat_cache_invalidate_other(void *keep)
+/* The slot caching `block` of `key`, or IOCFAT_SLOT_NONE. */
+static uint8_t iocfat_cache_find(uint8_t key, uint32_t block)
 {
-	void *owner = iocfat.cache[0].owner;
+	uint8_t i;
 
-	if (owner != (void *)0 && owner != keep) {
-		iocfat_cache_clear();
+	for (i = 0u; i < (uint8_t)IOCFAT_CACHE_SLOTS; ++i) {
+		if (iocfat_cslots[i].key == key &&
+		    iocfat_cslots[i].block == block) {
+			return i;
+		}
 	}
+	return IOCFAT_SLOT_NONE;
+}
+
+/* A free slot, else the least recently used one. */
+static uint8_t iocfat_cache_victim(void)
+{
+	uint8_t i;
+	uint8_t best = 0u;
+
+	for (i = 0u; i < (uint8_t)IOCFAT_CACHE_SLOTS; ++i) {
+		if (iocfat_cslots[i].key == 0u) {
+			return i;
+		}
+		if ((uint16_t)(iocfat_clock - iocfat_cslots[i].stamp) >
+		    (uint16_t)(iocfat_clock - iocfat_cslots[best].stamp)) {
+			best = i;
+		}
+	}
+	return best;
+}
+
+/* The file record for `path` as a read-only open saw it (`size` bytes),
+ * found or made; its key, or an uncached key for `slot` when the path does
+ * not fit a record or the extent refuses it. */
+static uint8_t iocfat_cache_file(const char *path, uint32_t size, uint8_t slot)
+{
+	uint8_t length = 0u;
+	uint8_t i;
+	uint8_t pick = 0u;
+	uint16_t hash = 0u;
+
+	while (path[length] != '\0') {
+		if (++length == (uint8_t)IOCFAT_CACHE_PATH) {
+			return (uint8_t)(IOCFAT_KEY_UNCACHED | slot);
+		}
+	}
+	if (length == 0u) {
+		return (uint8_t)(IOCFAT_KEY_UNCACHED | slot);
+	}
+	kos_block_copy(iocfat_pathbuf, path, length);
+	for (i = 0u; i < length; ++i) {
+		hash = (uint16_t)((uint16_t)(hash << 5) + hash + iocfat_pathbuf[i]);
+	}
+	/* The candidate records are checked byte for byte: the stored path is
+	 * read into the ring's last block, so the ring is given up first. */
+	for (i = 0u; i < (uint8_t)IOCFAT_CACHE_FILES; ++i) {
+		struct iocfat_cfile *record = &iocfat_cfiles[i];
+		uint8_t j;
+
+		if (record->length != length || record->hash != hash) {
+			continue;
+		}
+		iocfat_ring_key = 0u;
+		if (iocfat_api->bulk_read((uint16_t)(IOCFAT_CACHE_PATHS_AT +
+						      (uint16_t)i *
+						      IOCFAT_CACHE_PATH),
+					  (uint16_t)(iocfat_ring_address +
+						     (IOCFAT_RING_BLOCKS - 1u) *
+						     IOCFAT_BLOCK_SIZE),
+					  length) < 0) {
+			continue;
+		}
+		for (j = 0u; j < length; ++j) {
+			if (iocfat_ring_bytes[(IOCFAT_RING_BLOCKS - 1u) *
+					      IOCFAT_BLOCK_SIZE + j] !=
+			    iocfat_pathbuf[j]) {
+				break;
+			}
+		}
+		if (j != length) {
+			continue;
+		}
+		if (record->size != size) {
+			iocfat_cache_drop_key((uint8_t)(i + 1u));
+			record->size = size;
+		}
+		record->stamp = iocfat_tick();
+		return (uint8_t)(i + 1u);
+	}
+	for (i = 0u; i < (uint8_t)IOCFAT_CACHE_FILES; ++i) {
+		if (iocfat_cfiles[i].length == 0u) {
+			pick = i;
+			break;
+		}
+		if ((uint16_t)(iocfat_clock - iocfat_cfiles[i].stamp) >
+		    (uint16_t)(iocfat_clock - iocfat_cfiles[pick].stamp)) {
+			pick = i;
+		}
+	}
+	iocfat_cache_drop_key((uint8_t)(pick + 1u));
+	iocfat_cfiles[pick].length = 0u;
+	if (iocfat_api->bulk_write((uint16_t)(IOCFAT_CACHE_PATHS_AT +
+					       (uint16_t)pick *
+					       IOCFAT_CACHE_PATH),
+				   iocfat_pathbuf_address, length) < 0) {
+		return (uint8_t)(IOCFAT_KEY_UNCACHED | slot);
+	}
+	iocfat_cfiles[pick].length = length;
+	iocfat_cfiles[pick].hash = hash;
+	iocfat_cfiles[pick].size = size;
+	iocfat_cfiles[pick].stamp = iocfat_tick();
+	return (uint8_t)(pick + 1u);
 }
 
 /* --- 8.3 codec -------------------------------------------------------- */
@@ -641,7 +827,7 @@ static struct iocfat_dir *iocfat_dir_alloc(void)
 static int iocfat_file_generation(struct iocfat_file *file)
 {
 	if (file->generation != iocfat.generation) {
-		iocfat_cache_invalidate_all();
+		iocfat_cache_drop_all();
 		return (-KOS_ESTALE);
 	}
 	return 0;
@@ -662,16 +848,30 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 {
 	uint16_t ready_len;
 	int result;
+	int bulk = 0;
 
 	iocfat_put16(&iocfat_request.data[FS2_OFF_TOKEN], token);
 	iocfat_put32(&iocfat_request.data[FS2_OFF_OFFSET], offset);
 	iocfat_put16(&iocfat_request.data[FS2_OFF_LENGTH], length);
-	result = iocfat_exchange(command, 8u);
+	if (command == FS2_CMD_READ) {
+		/* One IOC call: the command, and the bulk receive its READY
+		 * admits, straight into `data`.  The READY checks below then
+		 * judge the reply; a failed one reports EIO as before, the
+		 * bytes having landed in this driver's own ring. */
+		iocfat_frame.payload[KIOC_COMMAND_READ_BUFFER] =
+			(uint8_t)(uint16_t)data;
+		iocfat_frame.payload[KIOC_COMMAND_READ_BUFFER + 1u] =
+			(uint8_t)((uint16_t)data >> 8);
+		bulk = iocfat_exchange_op(KIOC_OP_COMMAND_READ, command, 8u);
+		result = (bulk < 0) ? bulk : 0;
+	} else {
+		result = iocfat_exchange(command, 8u);
+	}
 	if (result != 0) {
 		return result;
 	}
 	if (iocfat_reply.status == FS2_STATUS_STALE) {
-		iocfat_cache_invalidate_all();
+		iocfat_cache_drop_all();
 		return (-KOS_ESTALE);
 	}
 	if (iocfat_reply.status != FS2_STATUS_OK) {
@@ -681,34 +881,28 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 		return (-KOS_EIO);
 	}
 	ready_len = iocfat_get16(&iocfat_reply.data[FS2_OFF_READY_LEN]);
-	/* The direct form's buffer, named the same way for both directions. */
-	iocfat_frame.payload[0] = (uint8_t)(uint16_t)data;
-	iocfat_frame.payload[1] = (uint8_t)((uint16_t)data >> 8);
 	if (command == FS2_CMD_READ) {
 		if (ready_len == 0u) {
-			return 0; /* end of file: a successful short read */
+			/* End of file: a successful short read, and no bulk
+			 * phase was admitted for it. */
+			return (bulk == 0) ? 0 : (-KOS_EIO);
 		}
-		/* Own-array bound: the bulk read fills the caller's block. */
+		/* Own-array bound: the bulk read filled the caller's block. */
 		if (ready_len > length ||
 		    ready_len > (uint16_t)IOCFAT_BLOCK_SIZE ||
 		    iocfat_reply.data[FS2_OFF_READY_ID] == 0u ||
 		    iocfat_reply.data[FS2_OFF_READY_DIR] !=
 			    FS2_DIR_MCU_TO_Z80 ||
 		    iocfat_get32(&iocfat_reply.data[FS2_OFF_READY_OFF]) !=
-			    offset) {
-			return (-KOS_EIO);
-		}
-		iocfat_frame.op = KIOC_OP_BULK_READ;
-		iocfat_frame.flags = 0u;
-		iocfat_frame.desc = KOS_IPC_DESC_NONE;
-		iocfat_frame.arg0 = 0u;
-		iocfat_frame.arg1 = ready_len;
-		if (iocfat_api->call(iocfat_ioc, KIOC_OP_BULK_READ,
-				     &iocfat_frame) != (int16_t)ready_len) {
+			    offset ||
+		    bulk != (int)ready_len) {
 			return (-KOS_EIO);
 		}
 		return (int)ready_len;
 	}
+	/* The direct form's buffer for the write's bulk phase. */
+	iocfat_frame.payload[0] = (uint8_t)(uint16_t)data;
+	iocfat_frame.payload[1] = (uint8_t)((uint16_t)data >> 8);
 	if (ready_len != length ||
 	    ready_len > (uint16_t)IOCFAT_BLOCK_SIZE ||
 	    iocfat_reply.data[FS2_OFF_READY_ID] == 0u ||
@@ -738,23 +932,73 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 	return (int)length;
 }
 
-/* Read the 512-byte-aligned `block` of `file` into the cache slot.  Returns
- * 0 or a negative error; an EOF block fills with a zero valid count. */
-static int iocfat_cache_fill(struct iocfat_file *file, uint32_t block)
+/* Fill the ring with up to `count` consecutive blocks of `file` from the
+ * 512-byte-aligned offset `block`: each from its cache slot when it has
+ * one, else from the card, kept in a slot when the file is cached.  Stops
+ * after a short (end-of-file) block.  Returns 0 or a negative error; a
+ * failure after the first block keeps the blocks already in the ring. */
+static int iocfat_ring_fill(struct iocfat_file *file, uint32_t block,
+			    uint8_t count)
 {
-	int result;
+	uint8_t cached = (uint8_t)((file->key & IOCFAT_KEY_UNCACHED) == 0u);
+	uint8_t i;
+	uint32_t at = block;
+	uint16_t dst = iocfat_ring_address;
 
-	iocfat_cache_clear();
-	result = iocfat_transfer(FS2_CMD_READ, file->token, block,
-				 (uint16_t)IOCFAT_BLOCK_SIZE,
-				 iocfat.cache[0].data);
-	if (result < 0) {
-		return result;
+	iocfat_ring_key = 0u;
+	iocfat_ring_count = 0u;
+	for (i = 0u; i < count; ++i, at += IOCFAT_BLOCK_SIZE,
+	     dst = (uint16_t)(dst + IOCFAT_BLOCK_SIZE)) {
+		uint8_t slot = (cached != 0u) ? iocfat_cache_find(file->key, at)
+					      : IOCFAT_SLOT_NONE;
+		uint16_t valid = 0u;
+
+		if (slot != IOCFAT_SLOT_NONE) {
+			valid = iocfat_cslots[slot].valid;
+			if (iocfat_api->bulk_read((uint16_t)slot *
+						  IOCFAT_BLOCK_SIZE, dst,
+						  valid) < 0) {
+				iocfat_cslots[slot].key = 0u;
+				slot = IOCFAT_SLOT_NONE;
+			} else {
+				iocfat_cslots[slot].stamp = iocfat_tick();
+			}
+		}
+		if (slot == IOCFAT_SLOT_NONE) {
+			int result = iocfat_transfer(FS2_CMD_READ, file->token,
+						     at,
+						     (uint16_t)IOCFAT_BLOCK_SIZE,
+						     (uint8_t *)dst);
+
+			if (result < 0) {
+				if (i == 0u) {
+					return result;
+				}
+				break;
+			}
+			valid = (uint16_t)result;
+			if (cached != 0u && valid != 0u) {
+				slot = iocfat_cache_victim();
+				iocfat_cslots[slot].key = 0u;
+				if (iocfat_api->bulk_write((uint16_t)slot *
+							   IOCFAT_BLOCK_SIZE,
+							   dst, valid) >= 0) {
+					iocfat_cslots[slot].key = file->key;
+					iocfat_cslots[slot].block = at;
+					iocfat_cslots[slot].valid = valid;
+					iocfat_cslots[slot].stamp =
+						iocfat_tick();
+				}
+			}
+		}
+		iocfat_ring_valid[i] = valid;
+		iocfat_ring_count = (uint8_t)(i + 1u);
+		iocfat_ring_key = file->key;
+		iocfat_ring_first = block;
+		if (valid < (uint16_t)IOCFAT_BLOCK_SIZE) {
+			break;
+		}
 	}
-	iocfat.cache[0].owner = file;
-	iocfat.cache[0].generation = iocfat.generation;
-	iocfat.cache[0].offset = block;
-	iocfat.cache[0].valid = (uint16_t)result;
 	return 0;
 }
 
@@ -793,7 +1037,7 @@ static int iocfat_open_send(const char *path, uint8_t count, uint8_t entry,
 		return result;
 	}
 	if (iocfat_reply.status == FS2_STATUS_STALE) {
-		iocfat_cache_invalidate_all();
+		iocfat_cache_drop_all();
 		return (-KOS_ESTALE);
 	}
 	result = iocfat_map_status(iocfat_reply.status, 1u);
@@ -824,7 +1068,7 @@ static int iocfat_open_send(const char *path, uint8_t count, uint8_t entry,
 	}
 	if ((entry & FS2_OPENF_RO) == 0u) {
 		/* A create/truncate may have changed any cached block. */
-		iocfat_cache_invalidate_all();
+		iocfat_cache_drop_all();
 	}
 	*token_out = token;
 	*size_out = file_size;
@@ -887,6 +1131,18 @@ static int iocfat_file_open(const char *path, uint16_t flags, uint8_t *object,
 	slot->flags = (read_only != 0u) ? 0u : IOCFAT_H_WRITE;
 	slot->offset = 0u;
 	slot->size = file_size;
+	slot->next = 0u;
+	/* A read-only open of a file the cache can hold whole joins it
+	 * under its path.  A larger file would only cycle through the slots
+	 * (a stream is read once), paying the store and the slot scans on
+	 * every block for no later hit, so it reads through the ring alone,
+	 * as a writable open does - that one has just dropped the cache
+	 * (iocfat_open_send). */
+	slot->key = (read_only != 0u &&
+		     file_size <= (uint32_t)IOCFAT_CACHE_SLOTS *
+				  IOCFAT_BLOCK_SIZE)
+		? iocfat_cache_file(path, file_size, (uint8_t)(id - 1u))
+		: (uint8_t)(IOCFAT_KEY_UNCACHED | (uint8_t)(id - 1u));
 	*object = id;
 	*size = file_size;
 	return 0;
@@ -900,7 +1156,12 @@ static int iocfat_file_close(uint8_t object)
 	if (handle == (struct iocfat_file *)0) {
 		return (-KOS_EINVAL);
 	}
-	iocfat_cache_invalidate_file(handle);
+	/* A cached file's blocks outlive the instance; an uncached
+	 * instance's ring would be read by the next open of its slot. */
+	if (iocfat_ring_key == handle->key &&
+	    (handle->key & IOCFAT_KEY_UNCACHED) != 0u) {
+		iocfat_ring_key = 0u;
+	}
 	if (iocfat_file_generation(handle) != 0) {
 		handle->used = 0u;
 		return (-KOS_ESTALE);
@@ -918,14 +1179,17 @@ static int iocfat_file_close(uint8_t object)
 }
 
 /* Read `len` bytes at the instance's position into the caller's buffer
- * (descriptor `desc`, from offset `at`), straight out of the cache block,
- * and advance the position past what was delivered.  Returns the count or
- * a negative error. */
+ * (descriptor `desc`, from offset `at`) and advance the position past what
+ * was delivered.  The bytes come from the ring, one copy_out per run of
+ * consecutive blocks; a position the ring does not hold refills it - the
+ * blocks the request needs, or the whole ring when the read continues
+ * where the previous one ended (read-ahead).  Returns the count or a
+ * negative error. */
 static int iocfat_file_read(struct iocfat_file *handle, uint16_t len,
 			    uint8_t desc, uint16_t at)
 {
 	uint32_t offset = handle->offset;
-	uint32_t confirmed = 0u;
+	uint16_t confirmed = 0u;
 	uint16_t remaining = len;
 
 	if (iocfat_file_generation(handle) != 0) {
@@ -933,50 +1197,94 @@ static int iocfat_file_read(struct iocfat_file *handle, uint16_t len,
 	}
 	while (remaining != 0u) {
 		uint32_t block = offset & ~((uint32_t)IOCFAT_BLOCK_SIZE - 1uL);
-		uint16_t within = (uint16_t)(offset & 511uL);
-		uint16_t available;
+		uint16_t within = (uint16_t)offset & 511u;
+		/* The block's place in the ring, in 16 bits: the ring spans
+		 * IOCFAT_RING_BLOCKS blocks, so a held block is less than
+		 * 2 KiB past its first. */
+		uint32_t into = block - iocfat_ring_first;
+		uint8_t held = (uint8_t)(iocfat_ring_key == handle->key &&
+					 block >= iocfat_ring_first &&
+					 (uint16_t)(into >> 16) == 0u &&
+					 ((uint16_t)into >> 9) <
+						 (uint16_t)iocfat_ring_count);
+		uint8_t index;
+		uint16_t run;
 		uint16_t n;
 
 #if KOS_IOC_PHASES
-		/* The same test the block below branches on, stamped before
-		 * the fill so the phase is the decision, whatever it was. */
+		/* The same test the fill below branches on, stamped before
+		 * it so the phase is the decision, whatever it was. */
 		iocfat_phases.flags = (uint8_t)
-			(((iocfat.cache[0].owner == handle &&
-			   iocfat.cache[0].generation == iocfat.generation &&
-			   iocfat.cache[0].offset == block)
-			  ? KFILE_PHASE_FLAG_CACHE_HIT : 0u));
+			((held != 0u) ? KFILE_PHASE_FLAG_CACHE_HIT : 0u);
 		iocfat_phase_note(KFILE_PHASE_CACHE);
 #endif
-		if (iocfat.cache[0].owner != handle ||
-		    iocfat.cache[0].generation != iocfat.generation ||
-		    iocfat.cache[0].offset != block) {
-			int filled = iocfat_cache_fill(handle, block);
+		if (held == 0u) {
+			uint32_t left;
+			uint16_t need = (uint16_t)((uint16_t)(within + remaining +
+							      IOCFAT_BLOCK_SIZE -
+							      1u) >> 9);
+			uint8_t count = (need > (uint16_t)IOCFAT_RING_BLOCKS)
+				? (uint8_t)IOCFAT_RING_BLOCKS : (uint8_t)need;
+			int filled;
 
+			if (block == (handle->next &
+				      ~((uint32_t)IOCFAT_BLOCK_SIZE - 1uL)) ||
+			    block == ((handle->next +
+				       IOCFAT_BLOCK_SIZE) &
+				      ~((uint32_t)IOCFAT_BLOCK_SIZE - 1uL))) {
+				count = (uint8_t)IOCFAT_RING_BLOCKS;
+			}
+#if KOS_IOC_PHASES
+			if (iocfat_phase_single != 0u) {
+				count = (need > (uint16_t)IOCFAT_RING_BLOCKS)
+					? (uint8_t)IOCFAT_RING_BLOCKS
+					: (uint8_t)need;
+			}
+#endif
+			if (handle->size <= block) {
+				break; /* end of file */
+			}
+			/* Blocks left to the end of the file: a byte move and a
+			 * shift, not a 32-bit division. */
+			left = handle->size - block + IOCFAT_BLOCK_SIZE - 1u;
+			if ((uint16_t)(left >> 16) == 0u &&
+			    ((uint16_t)left >> 9) < (uint16_t)count) {
+				count = (uint8_t)((uint16_t)left >> 9);
+			}
+			filled = iocfat_ring_fill(handle, block, count);
 			if (filled != 0) {
 				handle->offset = offset;
 				return (confirmed != 0u) ? (int)confirmed
 							 : filled;
 			}
+			if (iocfat_ring_count == 0u) {
+				break;
+			}
 		}
-		available = iocfat.cache[0].valid;
-		if (within >= available) {
+		/* The run from `offset`: this block's bytes, then every
+		 * following full block the ring holds. */
+		into = block - iocfat_ring_first;
+		index = (uint8_t)((uint16_t)into >> 9);
+		if (within >= iocfat_ring_valid[index]) {
 			break; /* short read / end of file */
 		}
-		n = (uint16_t)(available - within);
-		if (n > remaining) {
-			n = remaining;
+		run = (uint16_t)(iocfat_ring_valid[index] - within);
+		while (run < remaining &&
+		       iocfat_ring_valid[index] == (uint16_t)IOCFAT_BLOCK_SIZE &&
+		       (uint8_t)(index + 1u) < iocfat_ring_count) {
+			++index;
+			run = (uint16_t)(run + iocfat_ring_valid[index]);
 		}
+		n = (run < remaining) ? run : remaining;
 #if KOS_IOC_PHASES
 		/* The payload is in this driver's buffer (the same bytes the
 		 * bulk phase above, or the cache, delivered). */
 		iocfat_phase_note(KFILE_PHASE_COPY);
 #endif
-		/* Own-array bound: the copy runs inside the cache block.
-		 * The chunk lands at `confirmed`: a run that crosses a
-		 * block boundary appends its next chunk. */
 		if (iocfat_api->copy_out(desc, (uint16_t)(at + confirmed),
-					 (uint16_t)(iocfat_cache_address +
-						    within), n) < 0) {
+					 (uint16_t)(iocfat_ring_address +
+						    (uint16_t)into + within),
+					 n) < 0) {
 			handle->offset = offset;
 			return (confirmed != 0u) ? (int)confirmed
 						 : (-KOS_EINVAL);
@@ -987,11 +1295,17 @@ static int iocfat_file_read(struct iocfat_file *handle, uint16_t len,
 		 * buffer is; the fetch op leaves that field to it. */
 		iocfat_phase_note(KFILE_PHASE_CALLER);
 #endif
-		confirmed += n;
+		confirmed = (uint16_t)(confirmed + n);
 		offset += n;
 		remaining = (uint16_t)(remaining - n);
+		if (n < run || iocfat_ring_valid[index] ==
+				       (uint16_t)IOCFAT_BLOCK_SIZE) {
+			continue;
+		}
+		break; /* the run ended in a short block: end of file */
 	}
 	handle->offset = offset;
+	handle->next = offset;
 	return (int)confirmed;
 }
 
@@ -1008,13 +1322,13 @@ static int iocfat_file_write(struct iocfat_file *handle, uint16_t chunk)
 		return (-KOS_EROFS);
 	}
 	result = iocfat_transfer(FS2_CMD_WRITE, handle->token,
-				 handle->offset, chunk, iocfat_batch);
+				 handle->offset, chunk, iocfat_ring);
+	/* Write-through, and the staging was the ring: whatever the DONE
+	 * said, no cached byte is trusted afterwards. */
+	iocfat_cache_drop_all();
 	if (result < 0) {
 		return result;
 	}
-	/* Write-through: only a confirmed DONE reaches here. */
-	iocfat_cache_invalidate_file(handle);
-	iocfat_cache_invalidate_other(handle);
 	handle->offset += chunk;
 	return 0;
 }
@@ -1106,7 +1420,7 @@ static int iocfat_dir_open(const char *path, uint8_t count,
 	}
 	if (iocfat_reply.status == FS2_STATUS_STALE) {
 		dir->used = 0u;
-		iocfat_cache_invalidate_all();
+		iocfat_cache_drop_all();
 		return (-KOS_ESTALE);
 	}
 	result = iocfat_map_status(iocfat_reply.status, 1u);
@@ -1148,7 +1462,7 @@ static int iocfat_dir_read(struct iocfat_dir *dir, struct kfs_dirent *out)
 	int result;
 
 	if (dir->generation != iocfat.generation) {
-		iocfat_cache_invalidate_all();
+		iocfat_cache_drop_all();
 		return (-KOS_ESTALE);
 	}
 	iocfat_put16(&iocfat_request.data[FS2_OFF_TOKEN], dir->token);
@@ -1160,7 +1474,7 @@ static int iocfat_dir_read(struct iocfat_dir *dir, struct kfs_dirent *out)
 		return 0;
 	}
 	if (iocfat_reply.status == FS2_STATUS_STALE) {
-		iocfat_cache_invalidate_all();
+		iocfat_cache_drop_all();
 		return (-KOS_ESTALE);
 	}
 	if (iocfat_reply.status != FS2_STATUS_OK) {
@@ -1238,7 +1552,7 @@ static int iocfat_leaf_op(const char *path, uint8_t count, uint8_t command)
 		return result;
 	}
 	if (iocfat_reply.status == FS2_STATUS_STALE) {
-		iocfat_cache_invalidate_all();
+		iocfat_cache_drop_all();
 		return (-KOS_ESTALE);
 	}
 	return iocfat_map_status(iocfat_reply.status, 0u);
@@ -1281,7 +1595,7 @@ static int iocfat_unlink_path(const char *path)
 	if (result == 0) {
 		/* FS2 closes every open handle on unlink; no cached byte can
 		 * be trusted afterwards. */
-		iocfat_cache_invalidate_all();
+		iocfat_cache_drop_all();
 	}
 	return result;
 }
@@ -1394,7 +1708,7 @@ static int iocfat_rename_path(const char *oldpath, const char *newpath)
 	if (result != 0) {
 		return result;
 	}
-	iocfat_cache_invalidate_all();
+	iocfat_cache_drop_all();
 	return iocfat_map_status(iocfat_reply.status, 0u);
 }
 
@@ -1450,9 +1764,10 @@ static int16_t iocfat_write_op(struct kos_ipc_frame *frame)
 		if (chunk > (uint16_t)IOCFAT_BLOCK_SIZE) {
 			chunk = (uint16_t)IOCFAT_BLOCK_SIZE;
 		}
+		iocfat_ring_key = 0u;
 		if (iocfat_api->copy_in(frame->desc,
 					(uint16_t)(offset + done),
-					iocfat_batch_address, chunk) < 0) {
+					iocfat_ring_address, chunk) < 0) {
 			return (done != 0u) ? (int16_t)done
 					    : (int16_t)-KOS_EINVAL;
 		}
@@ -1540,6 +1855,11 @@ static int16_t iocfat_phases_op(struct kos_ipc_frame *frame)
 	struct kfile_phases *merged = (struct kfile_phases *)frame->payload;
 	uint8_t i;
 
+	if ((frame->arg0 & KFILE_PHASE_CTL_COLD) != 0u) {
+		iocfat_cache_drop_all();
+	}
+	iocfat_phase_single = (uint8_t)((frame->arg0 &
+					 KFILE_PHASE_CTL_SINGLE) != 0u);
 	iocfat_copy(frame->payload, (const uint8_t *)&iocfat_phases,
 		    (uint16_t)sizeof(struct kfile_phases));
 	if (iocfat_phase_peer != 0u) {
@@ -1664,10 +1984,11 @@ static int16_t iocfat_enum_op(struct kos_ipc_frame *frame)
 			entry.name[i] = (i < (uint8_t)file.name_length)
 						? file.name[i] : '\0';
 		}
-		iocfat_copy(iocfat_batch, (const uint8_t *)&entry,
+		iocfat_ring_key = 0u;
+		iocfat_copy(iocfat_ring, (const uint8_t *)&entry,
 			    (uint16_t)KOS_NS_ENTRY_SIZE);
 		if (iocfat_api->copy_out(frame->desc, slot,
-					 iocfat_batch_address,
+					 iocfat_ring_address,
 					 (uint16_t)KOS_NS_ENTRY_SIZE) < 0) {
 			break;
 		}
@@ -1751,13 +2072,19 @@ uint8_t iocfat_init(const struct driver_boot *boot)
 
 	iocfat_api = boot->api;
 	iocfat_ioc = boot->deps[IOCFAT_DEP_IOC];
-	iocfat_batch_address = (uint16_t)iocfat_batch;
-	iocfat_cache_address = (uint16_t)iocfat.cache[0].data;
+	iocfat_ring_address = (uint16_t)iocfat_ring;
+	iocfat_ring_bytes = iocfat_ring;
+	iocfat_ring_valid = iocfat_ring_valid_table;
+	iocfat_cfiles = iocfat_cfile_table;
+	iocfat_cslots = iocfat_cslot_table;
+	iocfat_pathbuf = iocfat_pathbuf_storage;
+	iocfat_pathbuf_address = (uint16_t)iocfat_pathbuf_storage;
 	iocfat_ready = 0u;
 #if KOS_IOC_PHASES
 	iocfat_phase_peer = 0u;
 #endif
 	iocfat_zero_instance();
+	iocfat_cache_drop_all();
 	if (iocfat_ioc == 0u) {
 		/* A malformed bundle: the required IOC dependency is
 		 * missing, so the driver cannot serve even an absent card

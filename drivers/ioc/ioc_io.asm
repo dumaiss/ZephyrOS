@@ -96,6 +96,7 @@
 	.globl _ioc_io_irq_save_disable
 	.globl _ioc_io_irq_restore
 	.globl _ioc_crc16
+	.globl _ioc_io_exchange
 
 	.area _CODE
 
@@ -521,6 +522,235 @@ ioc_crc_byte:
 	ld	d,e
 	ld	e,a
 	djnz	ioc_crc_byte
+	ret
+
+; ---------------------------------------------------------------------------
+; Command exchange.
+; ---------------------------------------------------------------------------
+
+; uint8_t ioc_io_exchange(struct ioc_exchange *x);  HL = block.
+;   One whole command exchange: build the request packet, wait for
+;   COMMAND_READY, send it masked, receive and validate the reply, and
+;   deliver it into the caller's reply frame.  The C side keeps the busy
+;   guard, the sequence, the bulk admission and the DONE interlock.
+;   struct ioc_exchange {
+;       uint8_t  type;     0     request TYPE
+;       uint8_t  status;   1     request STATUS
+;       uint8_t  length;   2     request DATA length, 0..KOS_IOC_CMD_MAX_DATA
+;       const uint8_t *data; 3..4 request DATA
+;       uint8_t *reply;    5..6  struct kioc_frame: TYPE STATUS LENGTH DATA[26]
+;       uint8_t  seq;      7     this exchange's sequence
+;       uint8_t  hunt;     8     1 = arm the receiver with Enter Hunt
+;       uint8_t  unknown;  9     the reply TYPE accepted besides TYPE | 80h
+;   };
+;   Out: A = 0 reply delivered; 1 COMMAND_READY timeout; 2 send timeout;
+;   3 reply timeout; 4 bad frame (scan, length or type); 5 bad CRC;
+;   6 bad sequence.  The entry IFF is restored on every exit.  Clobbers
+;   AF, BC, DE, HL (IX and IY are untouched).
+; ---------------------------------------------------------------------------
+_ioc_io_exchange::
+	ld	(_ioc_x_block),hl
+	; Build A5 5A LEN 00 TYPE SEQ STATUS DATA... in the packet buffer.
+	ld	de,#_ioc_x_packet
+	ld	a,#KOS_IOC_PACKET_SYNC0
+	ld	(de),a
+	inc	de
+	ld	a,#KOS_IOC_PACKET_SYNC1
+	ld	(de),a
+	inc	de
+	inc	hl
+	inc	hl
+	ld	a,(hl)			; length
+	ld	(_ioc_x_length),a
+	add	a,#KOS_IOC_PACKET_FIXED_LEN
+	ld	(de),a			; LEN_LO
+	inc	de
+	xor	a
+	ld	(de),a			; LEN_HI
+	inc	de
+	ld	hl,(_ioc_x_block)
+	ld	a,(hl)			; type
+	ld	(de),a
+	inc	de
+	ld	bc,#7
+	add	hl,bc
+	ld	a,(hl)			; seq
+	ld	(de),a
+	inc	de
+	ld	hl,(_ioc_x_block)
+	inc	hl
+	ld	a,(hl)			; status
+	ld	(de),a
+	inc	de
+	inc	hl
+	inc	hl
+	ld	c,(hl)			; data pointer
+	inc	hl
+	ld	b,(hl)
+	ld	l,c
+	ld	h,b
+	ld	a,(_ioc_x_length)
+	or	a
+	jr	z,ioc_x_built
+	ld	c,a
+	ld	b,#0
+	ldir				; DATA (at most 26 bytes)
+ioc_x_built:
+	; CRC over LEN_LO through the last DATA byte, appended high first.
+	push	de
+	ld	a,(_ioc_x_length)
+	add	a,#2 + KOS_IOC_PACKET_FIXED_LEN
+	ld	e,a
+	ld	hl,#_ioc_x_packet + 2
+	call	_ioc_crc16		; DE = CRC
+	pop	hl
+	ld	(hl),d
+	inc	hl
+	ld	(hl),e
+
+	; Backpressure, before any lane traffic: COMMAND_READY.
+	call	_ioc_io_wait_ready
+	or	a
+	jr	z,ioc_x_ready
+	ld	a,#1
+	ret
+ioc_x_ready:
+	call	_ioc_io_irq_save_disable
+	ld	(_ioc_x_token),a
+	; The send block: the packet, its total length, the hunt flag.
+	ld	hl,#_ioc_x_packet
+	ld	(_ioc_x_io),hl
+	ld	a,(_ioc_x_length)
+	add	a,#2 + 2 + KOS_IOC_PACKET_FIXED_LEN + KOS_IOC_PACKET_CRC_BYTES
+	ld	(_ioc_x_io + 2),a
+	ld	hl,(_ioc_x_block)
+	ld	bc,#8
+	add	hl,bc
+	ld	a,(hl)			; hunt
+	ld	(_ioc_x_io + 3),a
+	xor	a
+	ld	(_ioc_x_io + 4),a
+	ld	hl,#_ioc_x_io
+	call	_ioc_io_tx
+	or	a
+	jr	z,ioc_x_sent
+	ld	a,(_ioc_x_token)
+	call	_ioc_io_irq_restore
+	ld	a,#2
+	ret
+ioc_x_sent:
+	; The reply: the receiver is armed; the long wait stays
+	; interruptible when the caller had interrupts on.
+	ld	hl,#_ioc_x_raw
+	ld	(_ioc_x_io),hl
+	ld	a,(_ioc_x_token)
+	ld	(_ioc_x_io + 4),a
+	ld	hl,#_ioc_x_io
+	call	_ioc_io_rx
+	push	af
+	ld	a,(_ioc_x_token)
+	call	_ioc_io_irq_restore
+	pop	af
+	or	a
+	jr	z,ioc_x_received
+	cp	#3			; marker scan exhausted
+	jp	z,ioc_x_bad_frame
+	cp	#5			; declared length out of range
+	jp	z,ioc_x_bad_frame
+	ld	a,#3
+	ret
+
+ioc_x_received:
+	; LEN within the command lane's bounds (the capture loop bounds it
+	; too; repeated so the checks below cannot be fooled).
+	ld	a,(_ioc_x_raw + 1)
+	or	a
+	jr	nz,ioc_x_bad_frame
+	ld	a,(_ioc_x_raw)
+	cp	#KOS_IOC_PACKET_FIXED_LEN
+	jr	c,ioc_x_bad_frame
+	cp	#KOS_IOC_PACKET_FIXED_LEN + KOS_IOC_CMD_MAX_DATA + 1
+	jr	nc,ioc_x_bad_frame
+	; CRC over LEN_LO through the last DATA byte.
+	add	a,#2
+	ld	e,a
+	ld	hl,#_ioc_x_raw
+	call	_ioc_crc16		; DE = CRC, HL = past the DATA
+	ld	a,(hl)
+	cp	d
+	jr	nz,ioc_x_bad_crc
+	inc	hl
+	ld	a,(hl)
+	cp	e
+	jr	nz,ioc_x_bad_crc
+	; The reply echoes this exchange's sequence.
+	ld	hl,(_ioc_x_block)
+	ld	bc,#7
+	add	hl,bc
+	ld	a,(_ioc_x_raw + 3)
+	cp	(hl)
+	jr	nz,ioc_x_bad_seq
+	; Its TYPE is the request's with bit 7 set, or the unknown class.
+	inc	hl
+	inc	hl			; block + 9 = unknown
+	ld	a,(_ioc_x_raw + 2)
+	cp	(hl)
+	jr	z,ioc_x_typed
+	ld	hl,(_ioc_x_block)
+	ld	a,(hl)
+	or	#0x80
+	ld	hl,#_ioc_x_raw + 2
+	cp	(hl)
+	jr	nz,ioc_x_bad_frame
+ioc_x_typed:
+	; Deliver TYPE STATUS LENGTH DATA, the rest of DATA zero.
+	ld	hl,(_ioc_x_block)
+	ld	bc,#5
+	add	hl,bc
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)			; DE = reply frame
+	ld	a,(_ioc_x_raw + 2)
+	ld	(de),a
+	inc	de
+	ld	a,(_ioc_x_raw + 4)
+	ld	(de),a
+	inc	de
+	ld	a,(_ioc_x_raw)
+	sub	#KOS_IOC_PACKET_FIXED_LEN
+	ld	(de),a			; LENGTH
+	inc	de
+	ld	c,a
+	ld	b,#0
+	ld	hl,#_ioc_x_raw + 5
+	or	a
+	jr	z,ioc_x_copied
+	ldir
+ioc_x_copied:
+	; DE is past the copied DATA; zero to the field's end.
+	ld	a,(_ioc_x_raw)
+	sub	#KOS_IOC_PACKET_FIXED_LEN
+	ld	c,a
+	ld	a,#KOS_IOC_CMD_MAX_DATA
+	sub	c
+	jr	z,ioc_x_done
+	ld	b,a
+	xor	a
+ioc_x_zero:
+	ld	(de),a
+	inc	de
+	djnz	ioc_x_zero
+ioc_x_done:
+	xor	a
+	ret
+ioc_x_bad_frame:
+	ld	a,#4
+	ret
+ioc_x_bad_crc:
+	ld	a,#5
+	ret
+ioc_x_bad_seq:
+	ld	a,#6
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -1185,6 +1415,15 @@ ioc_bulk_irq_restore:
 ; admission state serialize every operation).
 ; ---------------------------------------------------------------------------
 	.area _DRIVER_IO
+; The command exchange's scratch: its block pointer, the request length,
+; the entry IFF, the transmit/receive block and the two wire frames
+; (markers + LEN + header + DATA + CRC: 35 bytes).
+_ioc_x_block:		.ds 2
+_ioc_x_length:		.ds 1
+_ioc_x_token:		.ds 1
+_ioc_x_io:		.ds 5
+_ioc_x_packet:		.ds 2 + 2 + KOS_IOC_PACKET_FIXED_LEN + KOS_IOC_CMD_MAX_DATA + KOS_IOC_PACKET_CRC_BYTES
+_ioc_x_raw:		.ds 2 + KOS_IOC_PACKET_FIXED_LEN + KOS_IOC_CMD_MAX_DATA + KOS_IOC_PACKET_CRC_BYTES
 _ioc_bulk_block:	.ds 2
 _ioc_bulk_buf:		.ds 2
 _ioc_bulk_len:		.ds 2

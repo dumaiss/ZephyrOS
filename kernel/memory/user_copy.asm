@@ -33,6 +33,7 @@
 	.module user_copy
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/runtime/fastcopy.inc"
 
 	.globl _kos_bank_copy
 	.globl _kos_user_copy_staging
@@ -140,15 +141,13 @@ user_copy_iff1:
 	ld	bc,(kos_copy_length)
 	ld	de,(kos_copy_buffer)
 	ld	hl,(kos_copy_addr)
+	; READ: user -> buffer (HL = user, DE = buffer, BC = length);
+	; WRITE: buffer -> user (swapped to HL = buffer, DE = user).
 	cp	#KOS_COPY_OP_WRITE
-	jr	z,005$
-	; READ: user -> buffer (HL = user, DE = buffer, BC = length)
-	ldir
-	jr	007$
-005$:
-	; WRITE: buffer -> user (swap to HL = buffer, DE = user)
+	jr	nz,005$
 	ex	de,hl
-	ldir
+005$:
+	KOS_FASTCOPY
 	jr	007$
 006$:
 	; ZERO: fill the user range with zero bytes.

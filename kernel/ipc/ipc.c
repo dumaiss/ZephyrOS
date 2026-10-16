@@ -879,6 +879,20 @@ int16_t api_move(uint16_t src, uint16_t dst, uint16_t length)
  * mode-10 mapping over bank 6 (P = 0, so 0000h-DFFFh all show bank 6) and
  * runs one LDIR from the bulk extent into the caller's own window buffer,
  * through the same common-resident primitive path B uses. */
+/* One copy inside bank 6: mode 10 over it with P = 0 shows the bulk tier
+ * and the hot tier together, so one pass of the aperture primitive. */
+static int16_t bulk_transfer(uint16_t src, uint16_t dst, uint16_t length)
+{
+	ipc_ap_req[0] = (uint8_t)(KOS_MODE_APPLICATION | IPC_DRIVER_BANK);
+	ipc_ap_req[1] = (uint8_t)src;
+	ipc_ap_req[2] = (uint8_t)(src >> 8);
+	ipc_ap_req[3] = (uint8_t)dst;
+	ipc_ap_req[4] = (uint8_t)(dst >> 8);
+	ipc_ap_req[5] = (uint8_t)length;
+	ipc_ap_req[6] = (uint8_t)(length >> 8);
+	return (int16_t)ipc_ap_copy();
+}
+
 int16_t api_bulk_read(uint16_t offset, uint16_t dst, uint16_t length)
 {
 	const struct ipc_endpoint *owner;
@@ -901,14 +915,35 @@ int16_t api_bulk_read(uint16_t offset, uint16_t dst, uint16_t length)
 	if ((uint32_t)src + length > KOS_REV13_WINDOW_BASE) {
 		return -KOS_EINVAL;
 	}
-	ipc_ap_req[0] = (uint8_t)(KOS_MODE_APPLICATION | IPC_DRIVER_BANK);
-	ipc_ap_req[1] = (uint8_t)src;
-	ipc_ap_req[2] = (uint8_t)(src >> 8);
-	ipc_ap_req[3] = (uint8_t)dst;
-	ipc_ap_req[4] = (uint8_t)(dst >> 8);
-	ipc_ap_req[5] = (uint8_t)length;
-	ipc_ap_req[6] = (uint8_t)(length >> 8);
-	return (int16_t)ipc_ap_copy();
+	return bulk_transfer(src, dst, length);
+}
+
+/* The mirror of api_bulk_read: a buffer in the calling driver's window ->
+ * its own bulk extent, under the same owner binding and bounds.  A driver
+ * keeps run-time data there (the IOC-FAT block cache). */
+int16_t api_bulk_write(uint16_t offset, uint16_t src, uint16_t length)
+{
+	const struct ipc_endpoint *owner;
+	uint16_t dst;
+
+	if (ipc_irq_active) {
+		return -KOS_EBUSY;
+	}
+	if (call_depth == 0u) {
+		return -KOS_EINVAL;
+	}
+	owner = call_owner[call_depth - 1u];
+	if (owner->bulk_size == 0u || length == 0u ||
+	    offset > owner->bulk_size ||
+	    length > (uint16_t)(owner->bulk_size - offset) ||
+	    !in_driver_window(src, length)) {
+		return -KOS_EINVAL;
+	}
+	dst = (uint16_t)(owner->bulk_base + offset);
+	if ((uint32_t)dst + length > KOS_REV13_WINDOW_BASE) {
+		return -KOS_EINVAL;
+	}
+	return bulk_transfer(src, dst, length);
 }
 
 static __sfr __at KOS_SIO0B_CTRL ipc_sio_ctrl;
@@ -1003,6 +1038,7 @@ static const struct driver_api ipc_api = {
 	api_copy_out,
 	api_move,
 	api_bulk_read,
+	api_bulk_write,
 	api_console_putc,
 	api_console_poll,
 	api_console_getc,

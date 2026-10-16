@@ -453,11 +453,13 @@ $(BUILD)/process_launch.rel: kernel/process/launch.asm \
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/user_copy.rel: kernel/memory/user_copy.asm \
-		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+		platform/zephyr80/public/hardware.inc \
+		kernel/runtime/fastcopy.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/window_copy.rel: kernel/memory/window_copy.asm \
-		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+		platform/zephyr80/public/hardware.inc \
+		kernel/runtime/fastcopy.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/upcall.rel: kernel/memory/upcall.asm \
@@ -765,9 +767,8 @@ $(MODULES)/console-serial.rel: drivers/console/console_proto.c \
 		abi/kos/errno.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) -DKOS_CONSOLE_SERIAL=1 $< -o $@
 
-# The filesystem driver's hot image, bank-6 driver code.  Its FS2 transfer
-# staging,
-# the 512-byte cache and the handle pools are `_DRIVER_IO`; the IOC
+# The filesystem driver's hot image, bank-6 driver code.  Its read-ahead
+# ring, the cache bookkeeping and the handle pools are `_DRIVER_IO`; the IOC
 # dependency is host-resolved at pack time (`depends`).
 $(MODULES)/iocfat.rel: drivers/iocfat/iocfat.c \
 		drivers/include/ioc_phases.h \
@@ -776,6 +777,11 @@ $(MODULES)/iocfat.rel: drivers/iocfat/iocfat.c \
 		abi/kos/fs.h abi/kos/object.h abi/kos/protocol.h \
 		abi/kos/errno.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) $< -o $@
+
+# The block cache's storage: BSS in the driver's bulk segment (bank 6's
+# boot/bulk tier), reached only through the nucleus's bulk_read/bulk_write.
+$(MODULES)/iocfat_cache.rel: drivers/iocfat/iocfat_cache.asm | $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(MODULES)/sdcc_indirect_calls.rel: drivers/runtime/sdcc_indirect_calls.asm \
 		| $(MODULES)
@@ -853,11 +859,13 @@ $(BUILD)/ipc.rel: kernel/ipc/ipc.c kernel/ipc/ipc.h \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/ipc_asm.rel: kernel/ipc/ipc_asm.asm \
-		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+		platform/zephyr80/public/hardware.inc \
+		kernel/runtime/fastcopy.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/ipc_common.rel: kernel/ipc/ipc_common.asm \
-		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+		platform/zephyr80/public/hardware.inc \
+		kernel/runtime/fastcopy.inc $(ASM_MEMORY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 
@@ -1219,17 +1227,17 @@ $(BUILD)/recovery.romfs: $(BUILD)/store.json $(DRV_SET_MODS) \
 # (platform/zephyr80/private/irq.h) that the `irqx` driver programs CTC0
 # with; the production driver roots stay public-only.
 $(MODULES)/ipc_%.rel: tests/target/ipc/%.c tests/target/include/ipc_test.h \
-		| $(MODULES)
+		drivers/include/driver.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) --dataseg DRIVER_IO -Itests/target/include \
 		-Iplatform/zephyr80/private $< -o $@
 
 $(MODULES)/ipc_%_boot.rel: tests/target/ipc/%_boot.c \
-		tests/target/include/ipc_test.h | $(MODULES)
+		tests/target/include/ipc_test.h drivers/include/driver.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) --codeseg BOOT --dataseg BOOT_DATA \
 		-Itests/target/include $< -o $@
 
 $(MODULES)/ipc_con_slow.rel: tests/target/ipc/con_slow.c \
-		tests/target/include/ipc_test.h | $(MODULES)
+		tests/target/include/ipc_test.h drivers/include/driver.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) --dataseg HOT -Itests/target/include $< -o $@
 
 # The namespace acceptance synthetic publisher: one real
@@ -1240,7 +1248,7 @@ $(MODULES)/nsdev.rel: tests/target/ns/nsdev.c \
 	$(SDCC) $(DRV_HOT) -Itests/target/include $< -o $@
 
 $(MODULES)/nsdev_boot.rel: tests/target/ns/nsdev_boot.c \
-		tests/target/include/ns_test.h | $(MODULES)
+		tests/target/include/ns_test.h drivers/include/driver.h | $(MODULES)
 	$(SDCC) $(DRV_BOOT) -Itests/target/include $< -o $@
 
 # The required-driver init-failure acceptance driver: the

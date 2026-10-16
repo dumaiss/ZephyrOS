@@ -37,6 +37,9 @@
  *                   extent with each image it places, and only the
  *                   driver that owns the endpoint being dispatched may
  *                   read it.
+ *   bulk_write      the mirror: a window buffer -> the calling driver's
+ *                   own bulk extent, same binding and bounds (run-time
+ *                   data kept there, such as the IOC-FAT block cache).
  *   console_putc    the nucleus-owned early console, polled SIO0/B, which
  *   console_poll    is usable before the console driver exists and stays
  *   console_getc    for driver diagnostics and panic-time output (3.2).
@@ -128,6 +131,10 @@ struct driver_api {
 	 * when the extent, the offset/length pair or the destination is out
 	 * of bounds, -KOS_EBUSY while an interrupt is delivered. */
 	int16_t (*bulk_read)(uint16_t offset, uint16_t dst, uint16_t length);
+	/* The mirror: `length` bytes of `src`, a buffer in this driver's
+	 * window, into its own bulk extent at `offset`.  Same bounds and
+	 * refusals as bulk_read. */
+	int16_t (*bulk_write)(uint16_t offset, uint16_t src, uint16_t length);
 
 	/* Nucleus-owned early console (used before the console driver
 	 * exists and for driver diagnostics). */
@@ -172,7 +179,8 @@ struct driver_boot {
 typedef uint8_t (*driver_init_fn)(const struct driver_boot *boot);
 
 /* The drivers' block copy (drivers/runtime/sdcc_indirect_calls.asm, linked
- * into every driver image): one LDIR, 21 T-states a byte.  A data path
+ * into every driver image): an unrolled LDI run, 16.6 T-states a byte.
+ * A data path
  * copies with this, never with a C byte loop, which SDCC compiles to
  * several hundred T-states a byte.  `count` 0 copies nothing. */
 void kos_block_copy(void *dst, const void *src, uint16_t count);

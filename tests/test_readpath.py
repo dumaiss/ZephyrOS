@@ -394,7 +394,7 @@ class TestReadphaseProgram(unittest.TestCase):
 class ReadphaseReplay(ConsoleReplay, unittest.TestCase):
     """Both images, with the card carrying the program and its file."""
 
-    def start(self, image_subdir, image_name):
+    def start(self, image_subdir, image_name, extra_files=None):
         self.load_image(image_subdir, image_name)
         z = self.make_cpu()
         Ctc().attach(z)
@@ -421,8 +421,9 @@ class ReadphaseReplay(ConsoleReplay, unittest.TestCase):
         with open(PROGRAM, "rb") as handle:
             program = handle.read()
         data = bytes((index * 7 + 3) & 0xFF for index in range(DATA_BYTES))
-        z.hid = z.ioc_peer = IocCommandPeer(
-            fs2_files={PROGRAM_CARD_NAME: program, DATA_NAME: data})
+        files = {PROGRAM_CARD_NAME: program, DATA_NAME: data}
+        files.update(extra_files or {})
+        z.hid = z.ioc_peer = IocCommandPeer(fs2_files=files)
         self.boot_to_shell(z, prompt=SHELL_PROMPT)
         return z
 
@@ -657,6 +658,56 @@ class TestProductionRefusesTheFetch(ReadphaseReplay):
         # The refused fetch stopped the first pass before it could fold a
         # single read, so the report holds no pass at all.
         self.assertEqual(parse_report(trace), {}, trace)
+
+
+class TestTheCacheServesAReread(ReadphaseReplay):
+    """The block cache, seen from the card: a file read twice reaches the
+    card once, and a change made through the driver sends the next read
+    back to the card."""
+
+    NOTE = "NOTE.TXT"
+    # Three blocks of printable text, the last one short.
+    TEXT = "".join("line %04d of the cached note\r\n" % index
+                   for index in range(48))
+
+    def setUp(self):
+        if not os.path.exists(PRODUCTION_IMAGE):
+            self.skipTest("build the production image first (make)")
+
+    def card_reads(self, z):
+        return sum(1 for request in z.ioc_peer.requests
+                   if request[0] == IocCommandPeer.CMD_FS2_READ)
+
+    def cat(self, z, mark):
+        """The note's lines as `cat` printed them, and the card reads it
+        cost.  A unique `echo` after it marks the end, so the lines are
+        taken from between the two commands in the whole stream."""
+        before = self.card_reads(z)
+        z.hid.hid_queue.extend(("cat %s\r" % self.NOTE).encode("ascii"))
+        self.type_line(z, "echo %s" % mark, mark + "\n")
+        reads = self.card_reads(z) - before  # echo never reads the card
+        stream = "".join(z.glyphs)
+        end = stream.rindex("echo %s" % mark)
+        start = stream.rindex("cat %s" % self.NOTE, 0, end)
+        lines = re.findall(r"line \d{4} of the cached note",
+                           stream[start:end])
+        return lines, reads
+
+    def test_a_reread_stays_off_the_card_until_a_write(self):
+        z = self.start("build", PHASE_IMAGE,
+                       {self.NOTE: self.TEXT.encode("ascii")})
+        expected = re.findall(r"line \d{4} of the cached note", self.TEXT)
+        first, reads = self.cat(z, "MARK1")
+        self.assertEqual(first, expected)
+        self.assertGreater(reads, 0)
+        second, reads = self.cat(z, "MARK2")
+        self.assertEqual(reads, 0, "the second read reached the card")
+        self.assertEqual(second, expected)
+        # A copy opens its target for writing, which drops the cache.
+        self.type_line(z, "cp %s COPY.TXT" % self.NOTE, SHELL_PROMPT)
+        third, reads = self.cat(z, "MARK3")
+        self.assertGreater(reads, 0, "a read after a write used the cache")
+        self.assertEqual(third, expected)
 
 
 if __name__ == "__main__":  # pragma: no cover - manual smoke check

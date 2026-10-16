@@ -1,10 +1,12 @@
 /* KonaOS IOC command + bulk transport driver implementation (drivers/ioc/).
  *
  * The class surface lives in drivers/include/ioc.h.  This file owns the
- * command exchange (sequence stamping, exact common-packet construction
- * and CRC, reply capture/validation) and the READY/DONE bulk admission
- * state.  All SIO1 port I/O and the timing-critical streaming loops live
- * in ioc_io.asm; the descriptor and module entry live in ioc_module.c.
+ * command exchange's state (the busy guard, the rolling sequence, the
+ * lane sync flags) and the READY/DONE bulk admission state.  The wire
+ * work - the exact common packet and its CRC, the send, the reply's
+ * capture and validation, every SIO1 port access and the timing-critical
+ * streaming loops - lives in ioc_io.asm; the endpoint dispatch and init
+ * live in ioc_proto.c.
  *
  * Wire discipline (deployed host contract level 08h, never re-negotiated):
  *
@@ -58,15 +60,11 @@
 #error "IOC bulk driver expects the deployed pair's CRC bypass mode"
 #endif
 
-/* Largest raw wire frame: markers + LEN + fixed header + DATA + CRC. */
-#define IOC_WIRE_MAX (2u + 2u + KOS_IOC_PACKET_FIXED_LEN + \
-		      KOS_IOC_CMD_MAX_DATA + KOS_IOC_PACKET_CRC_BYTES)
-
-/* Reply capture outcomes reported by ioc_io.asm (command lane). */
-#define IOC_RX_CAPTURED     0u
-#define IOC_RX_TIMEOUT      1u
-#define IOC_RX_BAD_SCAN     3u
-#define IOC_RX_BAD_HEADER   5u
+/* Command exchange outcomes reported by ioc_io.asm (ioc_io_exchange). */
+#define IOC_X_OK            0u
+#define IOC_X_BAD_FRAME     4u
+#define IOC_X_BAD_CRC       5u
+#define IOC_X_BAD_SEQ       6u
 
 /* Bulk-lane outcomes reported by ioc_io.asm. */
 #define IOC_BULK_OK         0u
@@ -79,13 +77,17 @@
 #define IOC_PHASE_ADMITTED      1u
 #define IOC_PHASE_DONE_REQUIRED 2u
 
-/* Shared block for the assembly command transport routines (offsets
- * pinned by the comments in ioc_io.asm). */
-struct ioc_io_block {
-	uint8_t *buf;
-	uint8_t len;
+/* The command exchange's block (offsets pinned by the comment in
+ * ioc_io.asm). */
+struct ioc_exchange {
+	uint8_t type;
+	uint8_t status;
+	uint8_t length;
+	const uint8_t *data;
+	struct kioc_frame *reply;
+	uint8_t seq;
 	uint8_t hunt;
-	uint8_t resume;
+	uint8_t unknown;
 };
 
 /* Shared block for the assembly bulk-lane routines (offsets pinned by
@@ -98,26 +100,20 @@ struct ioc_bulk_block {
 	uint8_t header[5]; /* LEN_LO LEN_HI TYPE SEQ STATUS        */
 };
 
-extern uint8_t ioc_io_wait_ready(void);
 extern void ioc_io_ctrl_write(uint8_t value);
-extern uint8_t ioc_io_tx(struct ioc_io_block *io);
-extern uint8_t ioc_io_rx(struct ioc_io_block *io);
+extern uint8_t ioc_io_exchange(struct ioc_exchange *x);
 extern void ioc_io_bulk_init(void);
 extern uint8_t ioc_io_bulk_read(struct ioc_bulk_block *io);
 extern uint8_t ioc_io_bulk_write(struct ioc_bulk_block *io);
 extern uint8_t ioc_io_status_sample(void);
 extern uint8_t ioc_io_irq_save_disable(void);
 extern void ioc_io_irq_restore(uint8_t token);
-/* CRC-16-CCITT (1021h, preset 0, MSB-first, no final XOR) over 0..255
- * bytes: the command frames' wire CRC, byte-wise in assembly. */
-extern uint16_t ioc_crc16(const uint8_t *data, uint16_t count);
 
 struct ioc_state {
 	uint8_t busy;        /* foreground bus/serialization guard        */
 	uint8_t rx_synced;   /* command-lane character boundary proven    */
 	uint8_t bulk_synced; /* bulk-lane character boundary proven       */
 	uint8_t seq;         /* rolling transaction sequence              */
-	uint8_t irq_token;   /* entry IFF across the masked transaction   */
 	uint8_t phase;       /* IDLE / ADMITTED / DONE_REQUIRED           */
 	uint8_t admit_dir;   /* READY direction while admitted            */
 	uint8_t admit_id;    /* READY transfer id                         */
@@ -126,8 +122,6 @@ struct ioc_state {
 	uint8_t admit_rx_type; /* read: response TYPE the MCU armed       */
 	uint8_t admit_seq;   /* exchange sequence the packet is bound to  */
 	uint8_t recover;     /* whole-link recovery required before use   */
-	uint8_t packet[IOC_WIRE_MAX];
-	uint8_t raw[IOC_WIRE_MAX];
 	struct ioc_bulk_block bulk;
 };
 
@@ -163,32 +157,8 @@ static void ioc_phases_bulk_done(void)
 }
 #endif
 
-static struct ioc_io_block ioc_io;
+static struct ioc_exchange ioc_x;
 
-
-/* Build the exact common request packet and its wire CRC. */
-static void ioc_build_request(struct ioc_state *state,
-			      const struct kioc_frame *request)
-{
-	uint8_t *packet = state->packet;
-	uint8_t len = (uint8_t)(KOS_IOC_PACKET_FIXED_LEN + request->length);
-	uint16_t crc;
-	uint8_t i;
-
-	packet[0] = KOS_IOC_PACKET_SYNC0;
-	packet[1] = KOS_IOC_PACKET_SYNC1;
-	packet[2] = len;
-	packet[3] = 0;
-	packet[4] = request->type;
-	packet[5] = state->seq;
-	packet[6] = request->status;
-	for (i = 0; i < request->length; ++i) {
-		packet[7u + i] = request->data[i];
-	}
-	crc = ioc_crc16(&packet[2], (uint16_t)(2u + len));
-	packet[7u + request->length] = (uint8_t)(crc >> 8);
-	packet[8u + request->length] = (uint8_t)(crc & 0xFFu);
-}
 
 /* Is `type` a request class the pinned firmware can use to arm the bulk
  * lane?  READY has no independent tag on the wire, and immutable
@@ -220,7 +190,7 @@ static uint8_t ioc_bulk_arming_request(uint8_t type)
  * only adds the bulk-specific shape checks.  Returns 1 when a bulk phase
  * was admitted. */
 static uint8_t ioc_ready_admit(struct ioc_state *state,
-			       const struct kioc_frame *request,
+			       const struct ioc_request *request,
 			       const struct kioc_frame *reply)
 {
 	uint8_t id = reply->data[IOC_OFF_READY_XFER_ID];
@@ -254,13 +224,10 @@ static uint8_t ioc_ready_admit(struct ioc_state *state,
 /* One command exchange, including the READY/DONE admission state.
  * ioc_command() adds the whole-link recovery gate. */
 static int ioc_command_inner(struct ioc_state *state,
-			     const struct kioc_frame *request,
+			     const struct ioc_request *request,
 			     struct kioc_frame *reply)
 {
 	uint8_t result;
-	uint8_t data_len;
-	uint8_t i;
-	uint16_t crc;
 
 	if (request->length > KIOC_MAX_DATA) {
 		return KIOC_EINVAL;
@@ -281,80 +248,37 @@ static int ioc_command_inner(struct ioc_state *state,
 
 	/* Rolling sequence: the transport owns it; zero is not special. */
 	state->seq = (uint8_t)(state->seq + 1u);
-	ioc_build_request(state, request);
 #if KOS_IOC_PHASES
-	/* Stamped before the ready-wait and the masked send: the request's
-	 * own build time stays out of the transport and the pre-mask stamps
-	 * stay outside the window that loses ticks. */
+	/* Stamped before the exchange, which builds the request, waits for
+	 * the ready line and sends it masked: the pre-mask stamp stays
+	 * outside the window that loses ticks. */
 	ioc_phases_stamp(&ioc_phases, KFILE_PHASE_SENT);
 #endif
 
-	/* Backpressure: the MCU advertises COMMAND_READY only while it is
-	 * in command-idle.  Bounded; runs before any lane traffic. */
-	if (ioc_io_wait_ready() != 0u) {
-		state->busy = 0u;
-		return KIOC_ETIMEDOUT;
-	}
-
-	/* Interrupts off for the bounded send/arm segment.  The exact
-	 * entry state is restored on every exit below. */
-	ioc_io.buf = state->packet;
-	ioc_io.len = (uint8_t)(2u + 2u + KOS_IOC_PACKET_FIXED_LEN +
-			       request->length + KOS_IOC_PACKET_CRC_BYTES);
-	ioc_io.hunt = (state->rx_synced == 0u) ? 1u : 0u;
-	ioc_io.resume = 0u;
-
-	state->irq_token = ioc_io_irq_save_disable();
-	if (ioc_io_tx(&ioc_io) != 0u) {
-		ioc_io_irq_restore(state->irq_token);
-		state->busy = 0u;
-		return KIOC_ETIMEDOUT;
-	}
-
-	/* The receiver is armed and the MCU turnaround guard is running;
-	 * the long wait stays interruptible when the caller had them on. */
-	ioc_io.buf = state->raw;
-	ioc_io.resume = state->irq_token;
-	result = ioc_io_rx(&ioc_io);
-	ioc_io_irq_restore(state->irq_token);
+	/* The whole wire exchange is ioc_io_exchange: build, COMMAND_READY,
+	 * the masked send, the reply and its validation (length, CRC,
+	 * sequence, type binding), delivered into `reply`. */
+	ioc_x.type = request->type;
+	ioc_x.status = request->status;
+	ioc_x.length = request->length;
+	ioc_x.data = request->data;
+	ioc_x.reply = reply;
+	ioc_x.seq = state->seq;
+	ioc_x.hunt = (state->rx_synced == 0u) ? 1u : 0u;
+	ioc_x.unknown = IOC_RSP_UNKNOWN_CMD;
+	result = ioc_io_exchange(&ioc_x);
 	state->busy = 0u;
-
-	if (result == IOC_RX_TIMEOUT) {
-		return KIOC_ETIMEDOUT;
-	}
-	if (result == IOC_RX_BAD_SCAN || result == IOC_RX_BAD_HEADER) {
+	if (result == IOC_X_BAD_FRAME) {
 		return KIOC_EBADFRAME;
 	}
-	if (result != IOC_RX_CAPTURED) {
-		return KIOC_ETIMEDOUT;
-	}
-
-	/* The capture loop bounds LEN; repeat it here so the validation
-	 * below cannot be fooled by a future assembly change. */
-	if (state->raw[1] != 0u || state->raw[0] < KOS_IOC_PACKET_FIXED_LEN ||
-	    state->raw[0] > (uint8_t)(KOS_IOC_PACKET_FIXED_LEN +
-				      KOS_IOC_CMD_MAX_DATA)) {
-		return KIOC_EBADFRAME;
-	}
-	data_len = (uint8_t)(state->raw[0] - KOS_IOC_PACKET_FIXED_LEN);
-
-	/* CRC over LEN_LO through the final DATA byte. */
-	crc = ioc_crc16(state->raw, (uint16_t)(2u + state->raw[0]));
-	if (state->raw[2u + state->raw[0]] != (uint8_t)(crc >> 8) ||
-	    state->raw[3u + state->raw[0]] != (uint8_t)(crc & 0xFFu)) {
+	if (result == IOC_X_BAD_CRC) {
 		return KIOC_EBADCRC;
 	}
-
-	/* The reply must echo this exchange's sequence. */
-	if (state->raw[3] != state->seq) {
+	if (result == IOC_X_BAD_SEQ) {
 		return KIOC_EBADSEQ;
 	}
-
-	/* Exchange type binding: the deployed firmware answers the request
-	 * class with bit 7 set; RSP_UNKNOWN_COMMAND is its own class. */
-	if (state->raw[2] != (uint8_t)(request->type | 0x80u) &&
-	    state->raw[2] != IOC_RSP_UNKNOWN_CMD) {
-		return KIOC_EBADFRAME;
+	if (result != IOC_X_OK) {
+		return KIOC_ETIMEDOUT;
 	}
 
 #if KOS_IOC_PHASES
@@ -366,16 +290,6 @@ static int ioc_command_inner(struct ioc_state *state,
 	/* A CRC-verified reply is the proof that the persistent character
 	 * boundary is established: no Enter Hunt from here on. */
 	state->rx_synced = 1u;
-
-	reply->type = state->raw[2];
-	reply->status = state->raw[4];
-	reply->length = data_len;
-	for (i = 0; i < data_len; ++i) {
-		reply->data[i] = state->raw[5u + i];
-	}
-	for (i = data_len; i < KIOC_MAX_DATA; ++i) {
-		reply->data[i] = 0u;
-	}
 
 	/* DONE interlock: a completed write is complete only when the
 	 * matching DONE record reports the same transfer id and success.
@@ -409,13 +323,13 @@ static int ioc_command_inner(struct ioc_state *state,
 	return KIOC_OK;
 }
 
-int ioc_command(void *vstate, const struct kioc_frame *request,
+int ioc_command(void *vstate, const struct ioc_request *request,
 		struct kioc_frame *reply)
 {
 	struct ioc_state *state = (struct ioc_state *)vstate;
 
 	if (state == (struct ioc_state *)0 ||
-	    request == (const struct kioc_frame *)0 ||
+	    request == (const struct ioc_request *)0 ||
 	    reply == (struct kioc_frame *)0) {
 		return KIOC_EINVAL;
 	}
@@ -565,6 +479,17 @@ int ioc_bulk_write(void *vstate, const void *src, uint16_t length)
 	return KIOC_OK;
 }
 
+uint16_t ioc_admitted_read(void *vstate)
+{
+	struct ioc_state *state = (struct ioc_state *)vstate;
+
+	if (state->phase != IOC_PHASE_ADMITTED ||
+	    state->admit_dir != IOC_BULK_DIR_MCU_TO_Z80) {
+		return 0u;
+	}
+	return state->admit_len;
+}
+
 uint16_t ioc_status(void *vstate)
 {
 	struct ioc_state *state = (struct ioc_state *)vstate;
@@ -583,7 +508,7 @@ uint16_t ioc_status(void *vstate)
 
 int ioc_link_bringup(void)
 {
-	struct kioc_frame request;
+	struct ioc_request request;
 	struct kioc_frame reply;
 	uint8_t tries = KOS_IOC_LINK_BRINGUP_TRIES;
 	int result;
@@ -591,6 +516,7 @@ int ioc_link_bringup(void)
 	request.type = KOS_IOC_CMD_LINK_SYNC;
 	request.status = 0u;
 	request.length = 0u;
+	request.data = (const uint8_t *)0;
 
 	while (tries != 0u) {
 		--tries;

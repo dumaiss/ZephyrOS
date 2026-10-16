@@ -41,6 +41,7 @@
 	.module ipc_common
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/runtime/fastcopy.inc"
 
 	.globl _ipc_ap_copy
 	.globl _ipc_ap_req, _ipc_ap_saved_latch, _ipc_ap_saved_sp
@@ -63,11 +64,11 @@ _ipc_ap_copy::
 	ld	sp,#_ipc_ap_stack_top	; common: visible in mode 10, and
 					; the only place an ISR may push
 	ld	a,(_ipc_ap_req)
-	ld	hl,(_ipc_ap_req+1)	; LDIR moves (HL) -> (DE)
+	ld	hl,(_ipc_ap_req+1)	; the copy moves (HL) -> (DE)
 	ld	de,(_ipc_ap_req+3)
 	ld	bc,(_ipc_ap_req+5)
 	out	(KOS_MEMCTL_PORT),a	; aperture opens: bank 6 at 8000h
-	ldir
+	KOS_FASTCOPY			; in place: this stack has no room
 	ld	a,(_ipc_ap_saved_latch)
 	out	(KOS_MEMCTL_PORT),a	; restore before SP leaves common
 	ld	sp,(_ipc_ap_saved_sp)

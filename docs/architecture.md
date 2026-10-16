@@ -697,12 +697,14 @@ are not application ABI.
 
   | path | when | how |
   |---|---|---|
-  | A | caller buffer in `0000h-1FFFh` or in common, driver buffer in the hot tier | mode 11, one `LDIR` |
-  | B | driver buffer in bank 6 `8000h-BFFFh`, caller buffer in its bank outside `8000h-BFFFh` | a common stub selects mode 10 over the caller's bank with P = 1, one `LDIR`, latch restored; interruptible |
+  | A | caller buffer in `0000h-1FFFh` or in common, driver buffer in the hot tier | mode 11, one block copy |
+  | B | driver buffer in bank 6 `8000h-BFFFh`, caller buffer in its bank outside `8000h-BFFFh` | a common stub selects mode 10 over the caller's bank with P = 1, one block copy, latch restored; interruptible |
   | C | everything else | chunked through the common bank-copy gate |
 
   P = 1 is internal to the nucleus; no program ever receives a bank-6
-  token.
+  token. A block copy is an unrolled `LDI` run (16.6 T-states a byte,
+  `kernel/runtime/fastcopy.inc`), as are the bank copy gates
+  path C uses.
 - **Driver I/O rule:** driver buffers used with `copy_in`/`copy_out` live in
   bank 6 `8000h-BFFFh`, the `DRIVER_IO` area: a driver's io segment, which
   the planner places there. The packer refuses a manifest that puts
@@ -837,9 +839,11 @@ bank 6 E000h-FFFFh   unused (common is mapped over it)
   every path a user request can reach, including rare ones (for example the
   V9958 display reset behind `ESC c`).
 - The boot/bulk tier holds code that runs only during bring-up (font
-  upload, filesystem setup) and bulk data drivers read through nucleus
-  copies (for example the font). The loader runs boot code through the
-  mode-10 gate with Q = 6. Nothing there runs after boot.
+  upload, filesystem setup) and bulk data drivers reach through nucleus
+  copies: `bulk_read` and its mirror `bulk_write`, bound to the calling
+  driver's own extent (the V9958 font; the IOC-FAT block cache). The
+  loader runs boot code through the mode-10 gate with Q = 6. No code
+  there runs after boot.
 - While a driver runs in mode 11, `0000h-1FFFh` shows the caller's bank;
   drivers reach caller memory only through descriptors.
 

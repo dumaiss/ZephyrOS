@@ -9,7 +9,8 @@ source-layout facts that run depends on:
   interface: no SIO port access, no raw I/O and no `drivers/ioc` include;
 - the driver image packs inside the 13-granule ceiling and keeps the hot
   tier's 4,096-byte reserve;
-- the module keeps exactly one cache slot and carries no test-only counter;
+- the block cache's C geometry is the bulk segment the packer placed, and
+  the module carries no test-only counter;
 - production loads it as one of the drivers the boot manifest lists, and
   it publishes `/fs`;
 - the acceptance image, its store manifest and the SDK programs are wired;
@@ -99,11 +100,34 @@ class TestIocFatSourceLayout(IocFatStaticBase):
         self.assertNotIn("zioc" + "_ops", text)
         self.assertNotIn("KCAP_IOC_COMMAND", text)
 
-    def test_single_cache_slot_is_pinned(self):
+    def test_the_cache_geometry_is_the_bulk_segment(self):
+        # The C side addresses the bulk extent by offset (slots, then the
+        # path records); drivers/iocfat/iocfat_cache.asm reserves it.  The
+        # two must agree, or a slot or a path lands past the extent and
+        # the nucleus refuses the copy.
         text = read(MODULE_SRC)
-        # One cache slot in DRIVER_IO, one handle pool: the instance is a
-        # single static object with `cache[1]`.
-        self.assertIn("iocfat_cache_slot cache[1]", text)
+        value = {}
+        for name in ("IOCFAT_BLOCK_SIZE", "IOCFAT_CACHE_SLOTS",
+                     "IOCFAT_CACHE_FILES", "IOCFAT_CACHE_PATH"):
+            match = re.search(r"#define %s\s+(\d+)u" % name, text)
+            self.assertIsNotNone(match, name)
+            value[name] = int(match.group(1))
+        expected = (value["IOCFAT_CACHE_SLOTS"] * value["IOCFAT_BLOCK_SIZE"] +
+                    value["IOCFAT_CACHE_FILES"] * value["IOCFAT_CACHE_PATH"])
+        asm = read(os.path.join(MODULE_DIR, "iocfat_cache.asm"))
+        match = re.search(r"\.ds\s+(\d+)\s*\*\s*(\d+)\s*\+\s*(\d+)"
+                          r"\s*\*\s*(\d+)", asm)
+        self.assertIsNotNone(match)
+        a, b, c, d = (int(group) for group in match.groups())
+        self.assertEqual(a * b + c * d, expected)
+        if os.path.exists(BUILT_MOD):
+            with open(BUILT_MOD, "rb") as handle:
+                info = modpack.parse_container(handle.read(), "iocfat.mod")
+            bulk = [segment for segment in info["segments"]
+                    if segment["role"] == "bulk"][0]
+            self.assertEqual(bulk["image_size"] + bulk["bss_size"], expected)
+        # The path records hold any path the nucleus can hand over.
+        self.assertGreaterEqual(value["IOCFAT_CACHE_PATH"], 128)
 
     def test_no_test_only_hook_remains(self):
         for name, text in self.module_sources():
@@ -112,16 +136,6 @@ class TestIocFatSourceLayout(IocFatStaticBase):
             self.assertNotIn("selftest", text.lower(),
                              "%s carries acceptance code" % name)
 
-    def test_every_cache_rule_is_present(self):
-        # The cache is observed through host command counts, not
-        # driver-side counters, so the rules must be visible in the source.
-        text = read(MODULE_SRC)
-        for what in ("iocfat_cache_fill", "iocfat_cache_clear",
-                     "iocfat_cache_invalidate_file",
-                     "iocfat_cache_invalidate_other",
-                     "iocfat_cache_invalidate_all"):
-            self.assertIn(what, text, "%s is missing" % what)
-
 
 class TestIocFatManifest(IocFatStaticBase):
     def test_manifest_shape(self):
@@ -129,10 +143,11 @@ class TestIocFatManifest(IocFatStaticBase):
         self.assertEqual(manifest["name"], "iocfat")
         self.assertEqual(manifest["init"], "iocfat_init")
         self.assertEqual([segment["role"] for segment in manifest["segments"]],
-                         ["hot", "io"])
-        hot, io = manifest["segments"]
+                         ["hot", "io", "bulk"])
+        hot, io, bulk = manifest["segments"]
         self.assertIn("_CODE", hot["image_areas"])
         self.assertIn("_DRIVER_IO", io["bss_areas"])
+        self.assertEqual(bulk["bss_areas"], ["_FSCACHE"])
         self.assertEqual([(ep["class"], ep["instance"])
                           for ep in manifest["endpoints"]], [(7, 0)])
         # The filesystem-namespace publication: the nucleus FS provider
@@ -152,7 +167,7 @@ class TestIocFatManifest(IocFatStaticBase):
         info = modpack.parse_container(blob, "iocfat.mod")
         self.assertGreater(info["image_size"], 0)
         self.assertEqual([segment["role"] for segment in info["segments"]],
-                         ["hot", "io"])
+                         ["hot", "io", "bulk"])
         # The driver hot tier keeps at least 4,096 bytes
         # free after every image is placed.
         plan = json.loads(read(DRIVER_PLAN))

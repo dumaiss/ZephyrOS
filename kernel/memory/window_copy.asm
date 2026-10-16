@@ -38,6 +38,7 @@
 	.module window_copy
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/runtime/fastcopy.inc"
 
 	.globl _kos_window_copy
 	.globl kos_window_copy_end
@@ -145,15 +146,13 @@ window_copy_iff1:
 	ld	hl,(kos_window_addr)
 	ld	de,(kos_window_buffer)
 	ld	bc,(kos_window_length)
+	; READ: window -> buffer (HL = addr, DE = buffer, BC = length);
+	; WRITE: buffer -> window (swapped to HL = buffer, DE = addr).
 	cp	#KOS_COPY_OP_WRITE
-	jr	z,005$
-	; READ: window -> buffer (HL = addr, DE = buffer, BC = length)
-	ldir
-	jr	006$
-005$:
-	; WRITE: buffer -> window (swap to HL = buffer, DE = addr)
+	jr	nz,005$
 	ex	de,hl
-	ldir
+005$:
+	KOS_FASTCOPY
 006$:
 	ld	a,(kos_window_saved_latch)
 	out	(KOS_MEMCTL_PORT),a

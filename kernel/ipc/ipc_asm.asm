@@ -23,6 +23,7 @@
 	.module ipc_asm
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/runtime/fastcopy.inc"
 
 	.globl _ipc_latch
 	.globl _ipc_gate_latch
@@ -137,7 +138,7 @@ _ipc_copy_run::
 	ld	hl,(_ipc_src)
 	ld	de,(_ipc_dst)
 	ld	bc,(_ipc_len)
-	ldir
+	KOS_FASTCOPY
 	ld	de,(_ipc_len)
 	ret
 

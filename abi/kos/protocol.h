@@ -301,6 +301,14 @@
  *                            driver's init runs the bounded LINK_SYNC
  *                            bring-up once; the HID driver reports this
  *                            through KHID_OP_READY.
+ *   KIOC_OP_COMMAND_READ (6) a COMMAND (arg0, arg1 = 0..22, payload) and,
+ *                            when its reply admitted an MCU-to-Z80 bulk
+ *                            phase, that phase's receive in the same
+ *                            call, straight into the hot-tier buffer
+ *                            payload[22..23] names (the direct form).
+ *                            The reply is published as for COMMAND.
+ *                            Returns the bulk length, 0 when no bulk
+ *                            phase was admitted, or a negative KIOC_E*.
  *
  * The direct form (no descriptor) is the resident-domain convention:
  * every resident driver is mapped together in bank 6's hot tier
@@ -314,6 +322,10 @@
 #define KIOC_OP_BULK_WRITE 3u
 #define KIOC_OP_STATUS     4u
 #define KIOC_OP_READY      5u
+#define KIOC_OP_COMMAND_READ 6u
+/* KIOC_OP_COMMAND_READ: the buffer word's payload offset, below it the
+ * request DATA. */
+#define KIOC_COMMAND_READ_BUFFER 22u
 
 /* The native frame geometry the IOC protocol moves (drivers/include/
  * ioc.h): TYPE, STATUS, LENGTH, DATA[26]. */
@@ -391,8 +403,9 @@
  *                      `struct kfs_stat` (16 bytes, abi/kos/fs.h).
  *   KFILE_OP_SYNC (4)  no descriptor; flushes the instance (the file
  *                      close path is SYNC then unbind).
- *   KFILE_OP_PHASES (5) measurement-only read-only fetch: no descriptor,
- *                      arg0/arg1 zero; the reply payload holds a packed
+ *   KFILE_OP_PHASES (5) measurement-only fetch: no descriptor, arg0 the
+ *                      KFILE_PHASE_CTL_* bits, arg1 zero; the reply
+ *                      payload holds a packed
  *                      `struct kfile_phases` - the per-step timestamps
  *                      the last block read left in the provider.  Only a
  *                      provider built with the read-path instrument
@@ -439,6 +452,13 @@
 
 /* `flags` bits (valid with KFILE_PHASE_CACHE). */
 #define KFILE_PHASE_FLAG_CACHE_HIT 0x01u
+
+/* KFILE_OP_PHASES `arg0` bits.  COLD drops the provider's cache before the
+ * fetch answers, so the next read reaches the card; SINGLE (kept until a
+ * fetch without it) makes a read fill only the blocks it needs, so a miss
+ * is one transfer and its phases are that block's. */
+#define KFILE_PHASE_CTL_COLD   0x01u
+#define KFILE_PHASE_CTL_SINGLE 0x02u
 
 /* `path` values: the 4.9 copy path of the read's copy_out.  The provider
  * cannot see the caller's buffer (that is what a descriptor is for), so it

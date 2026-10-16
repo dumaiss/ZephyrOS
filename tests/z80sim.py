@@ -2935,6 +2935,18 @@ class Z80:
                 self.b, self.c = (bc >> 8) & 0xFF, bc & 0xFF
                 self.cycles += 1
             self.ZF = 0
+        elif op == 0xA0:  # ldi: (DE) <- (HL), HL++, DE++, BC--
+            self.wr((self.d << 8) | self.e, self.rd((self.h << 8) | self.l))
+            self.hl = (self.get_rr(2) + 1) & 0xFFFF
+            de = (((self.d << 8) | self.e) + 1) & 0xFFFF
+            self.d, self.e = de >> 8, de & 0xFF
+            bc = (((self.b << 8) | self.c) - 1) & 0xFFFF
+            self.b, self.c = bc >> 8, bc & 0xFF
+            # H and N reset, P/V set while BC is not zero; S, Z and C
+            # are kept (the unrolled copies loop on JP PE).
+            self._sf(0x10, 0)
+            self._sf(0x02, 0)
+            self._sf(0x04, bc != 0)
         elif op == 0x7B:  # ld sp,(nn)
             self.sp = self.rd16(self.fetch16())
         elif op == 0x73:  # ld (nn),sp

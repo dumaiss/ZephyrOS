@@ -38,8 +38,8 @@ ___sdcc_enter_ix::
 ; ---------------------------------------------------------------------------
 ; void kos_block_copy(void *dst, const void *src, uint16_t count);
 ;
-; The drivers' block copy: one LDIR (21 T-states a byte), where a C byte
-; loop compiles to several hundred.  sdcccall(1): HL = dst, DE = src,
+; The drivers' block copy: an unrolled LDI run, 16.6 T-states a byte (LDIR
+; costs 21, and a C byte loop compiles to several hundred).  sdcccall(1): HL = dst, DE = src,
 ; count on the stack, which the callee removes.  A count of 0 copies
 ; nothing.  Clobbers AF, BC, DE, HL (IX and IY are untouched).
 ; ---------------------------------------------------------------------------
@@ -52,10 +52,39 @@ _kos_block_copy::
 	ld	b,(hl)
 	pop	hl
 	ex	de,hl			; HL = src, DE = dst
+	; BC mod 16 byte by byte, then sixteen LDIs per JP PE (P/V is set
+	; while BC is not zero).
 	ld	a,b
 	or	c
 	jr	z,kos_block_copy_done
-	ldir
+	ld	a,c
+	and	#0x0F
+	jr	z,kos_block_copy_16
+kos_block_copy_1:
+	ldi
+	dec	a
+	jr	nz,kos_block_copy_1
+	ld	a,b
+	or	c
+	jr	z,kos_block_copy_done
+kos_block_copy_16:
+	ldi
+	ldi
+	ldi
+	ldi
+	ldi
+	ldi
+	ldi
+	ldi
+	ldi
+	ldi
+	ldi
+	ldi
+	ldi
+	ldi
+	ldi
+	ldi
+	jp	pe,kos_block_copy_16
 kos_block_copy_done:
 	pop	hl			; the return address
 	pop	bc			; drop count

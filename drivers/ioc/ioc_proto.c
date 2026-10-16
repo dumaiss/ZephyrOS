@@ -50,34 +50,30 @@ static uint8_t ioc_link_ready;
 
 static int16_t ioc_driver_command(struct kos_ipc_frame *frame)
 {
-	struct kioc_frame request;
-	struct kioc_frame reply;
+	struct ioc_request request;
+	/* The staged reply frame is the native frame's layout, so the
+	 * exchange writes the reply into it directly. */
+	struct kioc_frame *reply = (struct kioc_frame *)ioc_reply_address;
 	int result;
 
-	/* Own-array bound: the copy below fills request.data from
-	 * frame->payload with arg1 as the count. */
+	/* Own-array bound: the exchange copies arg1 bytes of the payload
+	 * into its wire packet. */
 	if (frame->arg1 > KIOC_PROTOCOL_REQUEST_MAX) {
 		return (int16_t)-KOS_EINVAL;
 	}
 	request.type = frame->arg0;
 	request.status = 0u;
 	request.length = frame->arg1;
-	kos_block_copy(request.data, frame->payload, frame->arg1);
-	result = ioc_command((void *)&ioc_state, &request, &reply);
+	request.data = frame->payload;
+	result = ioc_command((void *)&ioc_state, &request, reply);
 	if (result != KIOC_OK) {
 		return (int16_t)result;
 	}
-	/* Stage the whole native reply frame for the descriptor and staged
-	 * forms, then describe it in the reply words. */
-	ioc_reply_frame[0] = reply.type;
-	ioc_reply_frame[1] = reply.status;
-	ioc_reply_frame[2] = reply.length;
-	kos_block_copy(&ioc_reply_frame[3], reply.data, reply.length);
-	frame->arg0 = reply.type;
-	frame->arg1 = reply.length;
+	frame->arg0 = reply->type;
+	frame->arg1 = reply->length;
 	frame->payload[0] = (uint8_t)ioc_reply_address;
 	frame->payload[1] = (uint8_t)(ioc_reply_address >> 8);
-	frame->payload[2] = reply.status;
+	frame->payload[2] = reply->status;
 #if KOS_IOC_PHASES
 	/* The measurement build's handshake: where this
 	 * driver's read-path phase table is, so the IOC-FAT driver can read
@@ -105,18 +101,18 @@ static int16_t ioc_driver_reply(struct kos_ipc_frame *frame)
 }
 
 /* The direct form's buffer: a resident caller names a buffer of its own in
- * payload[0..1], and the bulk loop moves the bytes straight to or from it.
+ * a payload word (payload[0..1]; payload[22..23] for COMMAND_READ), and
+ * the bulk loop moves the bytes straight to or from it.
  * Every resident image is mapped together in bank 6's hot tier
  * (6000h-DFFFh, formats/include/mod.h), so the address is valid here as it
  * is in the caller; anything outside that tier is refused. */
 #define IOC_DIRECT_BASE 0x6000u
 #define IOC_DIRECT_END  0xE000u
 
-static uint8_t *ioc_direct_buffer(const struct kos_ipc_frame *frame,
-				  uint16_t length)
+static uint8_t *ioc_direct_at(const uint8_t *word, uint16_t length)
 {
-	uint16_t address = (uint16_t)((uint16_t)frame->payload[0] |
-				      ((uint16_t)frame->payload[1] << 8));
+	uint16_t address = (uint16_t)((uint16_t)word[0] |
+				      ((uint16_t)word[1] << 8));
 
 	if (address < IOC_DIRECT_BASE || length > IOC_DIRECT_END ||
 	    address > (uint16_t)(IOC_DIRECT_END - length)) {
@@ -124,6 +120,13 @@ static uint8_t *ioc_direct_buffer(const struct kos_ipc_frame *frame,
 	}
 	return (uint8_t *)address;
 }
+
+static uint8_t *ioc_direct_buffer(const struct kos_ipc_frame *frame,
+				  uint16_t length)
+{
+	return ioc_direct_at(frame->payload, length);
+}
+
 
 static int16_t ioc_driver_bulk_read(struct kos_ipc_frame *frame)
 {
@@ -181,6 +184,41 @@ static int16_t ioc_driver_bulk_write(struct kos_ipc_frame *frame)
 	return (int16_t)length;
 }
 
+/* KIOC_OP_COMMAND_READ: the command, then the bulk receive its READY
+ * admitted, in one call.  The buffer word is read before the reply
+ * reuses the payload. */
+static int16_t ioc_driver_command_read(struct kos_ipc_frame *frame)
+{
+	uint8_t word[2];
+	uint8_t *dst;
+	uint16_t length;
+	int16_t result;
+	int bulk;
+
+	if (frame->arg1 > KIOC_COMMAND_READ_BUFFER) {
+		return (int16_t)-KOS_EINVAL;
+	}
+	word[0] = frame->payload[KIOC_COMMAND_READ_BUFFER];
+	word[1] = frame->payload[KIOC_COMMAND_READ_BUFFER + 1u];
+	result = ioc_driver_command(frame);
+	if (result != 0) {
+		return result;
+	}
+	length = ioc_admitted_read((void *)&ioc_state);
+	if (length == 0u) {
+		return 0;
+	}
+	dst = ioc_direct_at(word, length);
+	if (dst == (uint8_t *)0) {
+		return (int16_t)-KOS_EINVAL;
+	}
+	bulk = ioc_bulk_read((void *)&ioc_state, dst, length);
+	if (bulk != KIOC_OK) {
+		return (int16_t)bulk;
+	}
+	return (int16_t)length;
+}
+
 int16_t ioc_driver_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
@@ -196,6 +234,8 @@ int16_t ioc_driver_dispatch(struct kos_ipc_frame *frame)
 		return (int16_t)ioc_status((void *)&ioc_state);
 	case KIOC_OP_READY:
 		return (int16_t)(ioc_link_ready != 0u ? 1 : 0);
+	case KIOC_OP_COMMAND_READ:
+		return ioc_driver_command_read(frame);
 	default:
 		return (int16_t)-KOS_EINVAL;
 	}

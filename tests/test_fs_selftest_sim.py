@@ -52,6 +52,13 @@ ABSENT_CHECKS = 8
 
 # kernel/vfs/vfs.h: 12 handles, `owner` is 0xFF when the slot is free,
 # and the kernel pins sizeof(struct vfs_handle_entry) at 21 bytes.
+# The driver's instance (drivers/iocfat/iocfat.c, `struct iocfat_instance`)
+# opens its DRIVER_IO data: two `struct iocfat_file` slots (used, flags,
+# token, generation, offset, size, the cache key and the read-ahead cue:
+# 21 bytes each), then the directory slot; `used` is each slot's first
+# byte.
+FILE_SLOT_SIZE = 21
+
 VFS_HANDLE_MAX = 12
 VFS_DESC_FREE = 0xFF
 VFS_DESC_STRIDE = 21
@@ -167,9 +174,9 @@ class TestFsSelftestWritableCard(FsSelftestSimBase):
         base = self.driver_base()
         bank = z.banks[6]
         for slot in range(2):
-            self.assertEqual(bank[base + 16 * slot], 0,
+            self.assertEqual(bank[base + FILE_SLOT_SIZE * slot], 0,
                              "driver file slot %d is still in use" % slot)
-        self.assertEqual(bank[base + 32], 0,
+        self.assertEqual(bank[base + 2 * FILE_SLOT_SIZE], 0,
                          "the driver's directory slot is still in use")
 
         # The kernel's handle table: only the two standard handles the
