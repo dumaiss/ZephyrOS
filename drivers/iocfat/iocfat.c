@@ -54,6 +54,10 @@
 #include "kos/object.h"
 #include "kos/protocol.h"
 
+/* The read-path phase instrument: defined only in a KOS_IOC_PHASES build
+ * (the measurement image), and the header's own note owns the clock. */
+#include "ioc_phases.h"
+
 /* --- FS2 protocol (private) ------------------------------------------- */
 
 #define FS2_CMD_CAPS        0x30u
@@ -223,6 +227,41 @@ static uint8_t iocfat_name2[IOCFAT_NAME_LEN];
 /* Transfer staging and the enumeration entry, in DRIVER_IO (8000h-BFFFh). */
 static uint8_t iocfat_batch[IOCFAT_BLOCK_SIZE];
 static uint16_t iocfat_batch_address;
+/* The cache block's address, captured once like the batch's: a read copies
+ * from it straight to the caller. */
+static uint16_t iocfat_cache_address;
+
+#if KOS_IOC_PHASES
+/* --- read-path phase instrument (drivers/include/ioc_phases.h) --------
+ * The measurement build's own table - the phases this driver owns (entry,
+ * cache answer, staging copy, the copy back to the caller, return) - and
+ * the IOC driver's table, whose bank-6 address every command reply carries
+ * in `payload[5..6]` beside the staged frame and the bulk buffer.  The
+ * delimiters are here: this driver knows when a read begins, so it clears
+ * both masks then (a cache hit then has no transport phases at all), and
+ * KFILE_OP_PHASES merges the peer's stamps into this one.  No shipped
+ * image compiles a byte of this. */
+static struct kfile_phases iocfat_phases;
+static uint16_t iocfat_phase_peer;
+
+/* One stamp into this driver's table. */
+static void iocfat_phase_note(uint8_t phase)
+{
+	ioc_phases_stamp(&iocfat_phases, phase);
+}
+
+/* A read begins: drop this driver's stamps and the peer's, so the table
+ * the fetch op reports holds this read's steps and no earlier one's.  The
+ * peer's table is bank-6 memory this driver reaches directly (it is the
+ * same mapping the staged reply frame arrives through). */
+static void iocfat_phase_begin(void)
+{
+	ioc_phases_clear(&iocfat_phases);
+	if (iocfat_phase_peer != 0u) {
+		((struct kfile_phases *)iocfat_phase_peer)->valid = 0u;
+	}
+}
+#endif
 
 static void iocfat_zero_instance(void);
 static int iocfat_leaf_op(const char *path, uint8_t count, uint8_t command);
@@ -263,25 +302,9 @@ static void iocfat_put32(uint8_t *p, uint32_t value)
 
 static void iocfat_copy(uint8_t *dst, const uint8_t *src, uint16_t n)
 {
-	uint16_t i;
-
-	for (i = 0; i < n; ++i) {
-		dst[i] = src[i];
-	}
+	kos_block_copy(dst, src, n);
 }
 
-/* Copy `n` bytes of `src` starting at `offset` into `dst` starting at
- * `at`.  Both bases arrive as parameters so SDCC emits a word relocation
- * for the global address instead of a byte-fragmented store. */
-static void iocfat_copy_range(const uint8_t *src, uint16_t offset,
-			      uint8_t *dst, uint16_t at, uint16_t n)
-{
-	uint16_t i;
-
-	for (i = 0; i < n; ++i) {
-		dst[at + i] = src[offset + i];
-	}
-}
 
 static uint16_t iocfat_addr(const uint8_t *payload);
 /* --- transport -------------------------------------------------------- */
@@ -324,6 +347,11 @@ static int iocfat_exchange(uint8_t type, uint8_t length)
 	 * access, because only bank 6 is mapped while this driver runs. */
 	address = iocfat_addr(iocfat_frame.payload);
 	src = (const uint8_t *)address;
+#if KOS_IOC_PHASES
+	/* The measurement build's handshake, beside the staged frame: where
+	 * the IOC driver's phase table is (drivers/include/ioc_phases.h). */
+	iocfat_phase_peer = iocfat_addr(&iocfat_frame.payload[5]);
+#endif
 	iocfat_reply.type = src[0];
 	iocfat_reply.status = src[1];
 	iocfat_reply.length = src[2];
@@ -625,15 +653,14 @@ static int iocfat_file_generation(struct iocfat_file *file)
  * (exact length for a write, at most `length` and non-empty for a read,
  * plus direction, nonzero transfer id and the echoed offset) and the
  * matching bulk phase.  A write also awaits its DONE.  `data` is this
- * driver's DRIVER_IO buffer (the cache slot or the transfer staging).
- * Returns the transferred byte count (0 for an end-of-file read), or a
- * negative error. */
+ * driver's DRIVER_IO buffer (the cache slot or the transfer staging), and
+ * the IOC driver's bulk loop moves the payload straight into or out of it
+ * (KIOC_OP_BULK_READ/WRITE's direct form): no staging copy.  Returns the
+ * transferred byte count (0 for an end-of-file read), or a negative error. */
 static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 			   uint16_t length, uint8_t *data)
 {
-	uint16_t bulk;
 	uint16_t ready_len;
-	uint16_t i;
 	int result;
 
 	iocfat_put16(&iocfat_request.data[FS2_OFF_TOKEN], token);
@@ -643,8 +670,6 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 	if (result != 0) {
 		return result;
 	}
-	/* The staged bulk slot the driver named in the COMMAND reply. */
-	bulk = iocfat_addr(&iocfat_frame.payload[3]);
 	if (iocfat_reply.status == FS2_STATUS_STALE) {
 		iocfat_cache_invalidate_all();
 		return (-KOS_ESTALE);
@@ -656,13 +681,14 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 		return (-KOS_EIO);
 	}
 	ready_len = iocfat_get16(&iocfat_reply.data[FS2_OFF_READY_LEN]);
+	/* The direct form's buffer, named the same way for both directions. */
+	iocfat_frame.payload[0] = (uint8_t)(uint16_t)data;
+	iocfat_frame.payload[1] = (uint8_t)((uint16_t)data >> 8);
 	if (command == FS2_CMD_READ) {
-		const uint8_t *src;
-
 		if (ready_len == 0u) {
 			return 0; /* end of file: a successful short read */
 		}
-		/* Own-array bound: the copy below fills the caller's block. */
+		/* Own-array bound: the bulk read fills the caller's block. */
 		if (ready_len > length ||
 		    ready_len > (uint16_t)IOCFAT_BLOCK_SIZE ||
 		    iocfat_reply.data[FS2_OFF_READY_ID] == 0u ||
@@ -681,11 +707,6 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 				     &iocfat_frame) != (int16_t)ready_len) {
 			return (-KOS_EIO);
 		}
-		bulk = iocfat_addr(iocfat_frame.payload);
-		src = (const uint8_t *)bulk;
-		for (i = 0u; i < ready_len; ++i) {
-			data[i] = src[i];
-		}
 		return (int)ready_len;
 	}
 	if (ready_len != length ||
@@ -694,15 +715,6 @@ static int iocfat_transfer(uint8_t command, uint16_t token, uint32_t offset,
 	    iocfat_reply.data[FS2_OFF_READY_DIR] != FS2_DIR_Z80_TO_MCU ||
 	    iocfat_get32(&iocfat_reply.data[FS2_OFF_READY_OFF]) != offset) {
 		return (-KOS_EIO);
-	}
-	/* The staged form: the driver reads what this driver placed in its
-	 * bulk buffer, which the COMMAND reply named. */
-	{
-		uint8_t *dst = (uint8_t *)bulk;
-
-		for (i = 0u; i < length; ++i) {
-			dst[i] = data[i];
-		}
 	}
 	/* The transfer length is the frame's `arg1`: the COMMAND exchange
 	 * left the command's own data length there, so it is set again for
@@ -905,10 +917,12 @@ static int iocfat_file_close(uint8_t object)
 	return result;
 }
 
-/* Read `len` bytes at the instance's position into this driver's
- * `iocfat_batch` staging and advance the position.  Returns the count or a
- * negative error. */
-static int iocfat_file_read(struct iocfat_file *handle, uint16_t len)
+/* Read `len` bytes at the instance's position into the caller's buffer
+ * (descriptor `desc`, from offset `at`), straight out of the cache block,
+ * and advance the position past what was delivered.  Returns the count or
+ * a negative error. */
+static int iocfat_file_read(struct iocfat_file *handle, uint16_t len,
+			    uint8_t desc, uint16_t at)
 {
 	uint32_t offset = handle->offset;
 	uint32_t confirmed = 0u;
@@ -923,12 +937,23 @@ static int iocfat_file_read(struct iocfat_file *handle, uint16_t len)
 		uint16_t available;
 		uint16_t n;
 
+#if KOS_IOC_PHASES
+		/* The same test the block below branches on, stamped before
+		 * the fill so the phase is the decision, whatever it was. */
+		iocfat_phases.flags = (uint8_t)
+			(((iocfat.cache[0].owner == handle &&
+			   iocfat.cache[0].generation == iocfat.generation &&
+			   iocfat.cache[0].offset == block)
+			  ? KFILE_PHASE_FLAG_CACHE_HIT : 0u));
+		iocfat_phase_note(KFILE_PHASE_CACHE);
+#endif
 		if (iocfat.cache[0].owner != handle ||
 		    iocfat.cache[0].generation != iocfat.generation ||
 		    iocfat.cache[0].offset != block) {
 			int filled = iocfat_cache_fill(handle, block);
 
 			if (filled != 0) {
+				handle->offset = offset;
 				return (confirmed != 0u) ? (int)confirmed
 							 : filled;
 			}
@@ -941,12 +966,27 @@ static int iocfat_file_read(struct iocfat_file *handle, uint16_t len)
 		if (n > remaining) {
 			n = remaining;
 		}
+#if KOS_IOC_PHASES
+		/* The payload is in this driver's buffer (the same bytes the
+		 * bulk phase above, or the cache, delivered). */
+		iocfat_phase_note(KFILE_PHASE_COPY);
+#endif
 		/* Own-array bound: the copy runs inside the cache block.
 		 * The chunk lands at `confirmed`: a run that crosses a
-		 * block boundary appends its next chunk instead of
-		 * overwriting the one before it. */
-		iocfat_copy_range(iocfat.cache[0].data, within, iocfat_batch,
-				  (uint16_t)confirmed, n);
+		 * block boundary appends its next chunk. */
+		if (iocfat_api->copy_out(desc, (uint16_t)(at + confirmed),
+					 (uint16_t)(iocfat_cache_address +
+						    within), n) < 0) {
+			handle->offset = offset;
+			return (confirmed != 0u) ? (int)confirmed
+						 : (-KOS_EINVAL);
+		}
+#if KOS_IOC_PHASES
+		/* The caller's bytes are in its buffer: the copy path itself
+		 * is the nucleus's (4.9), and the caller knows where its
+		 * buffer is; the fetch op leaves that field to it. */
+		iocfat_phase_note(KFILE_PHASE_CALLER);
+#endif
 		confirmed += n;
 		offset += n;
 		remaining = (uint16_t)(remaining - n);
@@ -1366,41 +1406,29 @@ static int iocfat_rename_path(const char *oldpath, const char *newpath)
 static int16_t iocfat_read_op(struct kos_ipc_frame *frame)
 {
 	struct iocfat_file *file = iocfat_file_get(frame->payload[0]);
-	uint16_t length = frame->arg1;
-	uint16_t offset = frame->arg0;
-	uint16_t done = 0u;
+	int result;
 
+#if KOS_IOC_PHASES
+	/* The read begins: this is the delimiter between one block's steps
+	 * and the previous operation's (drivers/include/ioc_phases.h). */
+	iocfat_phase_begin();
+	iocfat_phase_note(KFILE_PHASE_ENTERED);
+#endif
 	if (file == (struct iocfat_file *)0 ||
 	    frame->desc == KOS_IPC_DESC_NONE) {
 		return (-KOS_EINVAL);
 	}
-	while (done < length) {
-		uint16_t chunk = (uint16_t)(length - done);
-		int result;
-
-		if (chunk > (uint16_t)IOCFAT_BLOCK_SIZE) {
-			chunk = (uint16_t)IOCFAT_BLOCK_SIZE;
-		}
-		result = iocfat_file_read(file, chunk);
-		if (result < 0) {
-			return (done != 0u) ? (int16_t)done : (int16_t)result;
-		}
-		if (result == 0) {
-			break; /* end of file: a short successful read */
-		}
-		if (iocfat_api->copy_out(frame->desc,
-					 (uint16_t)(offset + done),
-					 iocfat_batch_address,
-					 (uint16_t)result) < 0) {
-			return (done != 0u) ? (int16_t)done
-					    : (int16_t)-KOS_EINVAL;
-		}
-		done = (uint16_t)(done + (uint16_t)result);
-		if ((uint16_t)result < chunk) {
-			break;
-		}
+	/* A short count is end of file or an error after some bytes. */
+	result = iocfat_file_read(file, frame->arg1, frame->desc,
+				  frame->arg0);
+#if KOS_IOC_PHASES
+	/* The call's own end (the success exit; an error return leaves the
+	 * steps it reached). */
+	if (result >= 0) {
+		iocfat_phase_note(KFILE_PHASE_RETURN);
 	}
-	return (int16_t)done;
+#endif
+	return (int16_t)result;
 }
 
 /* KFILE_OP_WRITE: `arg1` bytes from the caller's buffer at `arg0`. */
@@ -1471,8 +1499,6 @@ static int16_t iocfat_meta_op(struct kos_ipc_frame *frame)
 {
 	struct iocfat_file *file = iocfat_file_get(frame->payload[0]);
 	struct kfs_stat st;
-	const uint8_t *src;
-	uint8_t i;
 
 	if (file == (struct iocfat_file *)0) {
 		return (-KOS_EINVAL);
@@ -1483,10 +1509,7 @@ static int16_t iocfat_meta_op(struct kos_ipc_frame *frame)
 	st.size = file->size;
 	st.ctime = KFS_TIME_UNKNOWN;
 	st.mtime = KFS_TIME_UNKNOWN;
-	src = (const uint8_t *)&st;
-	for (i = 0u; i < (uint8_t)sizeof(st); ++i) {
-		frame->payload[i] = src[i];
-	}
+	kos_block_copy(frame->payload, &st, sizeof(st));
 	return 0;
 }
 
@@ -1500,6 +1523,42 @@ static int16_t iocfat_sync_op(struct kos_ipc_frame *frame)
 	}
 	return (int16_t)iocfat_file_sync(file);
 }
+
+#if KOS_IOC_PHASES
+/* KFILE_OP_PHASES: the last block read's stamps, this driver's own merged
+ * with the IOC driver's.  Each driver stamps the phases it owns, and the
+ * peer's mask was cleared when this read began, so a cache hit simply has
+ * no transport phases; the reply payload carries the packed struct, as for
+ * KFILE_OP_META.  Merging is idempotent, so the fetch may be repeated. */
+static int16_t iocfat_phases_op(struct kos_ipc_frame *frame)
+{
+	/* The merge runs on the reply payload itself, through pointers: the
+	 * two bases arrive as parameters (so SDCC emits word relocations for
+	 * the global addresses) and the per-phase accesses go through the payload copy, so SDCC never
+	 * computes the global table's address a byte at a time - the form
+	 * the container packer rejects. */
+	struct kfile_phases *merged = (struct kfile_phases *)frame->payload;
+	uint8_t i;
+
+	iocfat_copy(frame->payload, (const uint8_t *)&iocfat_phases,
+		    (uint16_t)sizeof(struct kfile_phases));
+	if (iocfat_phase_peer != 0u) {
+		const struct kfile_phases *peer =
+			(const struct kfile_phases *)iocfat_phase_peer;
+		uint16_t valid = merged->valid;
+
+		for (i = 0u; i < (uint8_t)KFILE_PHASE_COUNT; ++i) {
+			if ((peer->valid & (uint16_t)(1u << i)) != 0u) {
+				merged->elapsed_1[i] = peer->elapsed_1[i];
+				merged->elapsed_2[i] = peer->elapsed_2[i];
+				valid |= (uint16_t)(1u << i);
+			}
+		}
+		merged->valid = valid;
+	}
+	return 0;
+}
+#endif
 
 /* KFS_OP_OPEN: the path is a nucleus request buffer the FS provider staged
  * (`payload[0..1]`), the flags are `payload[2..3]`; the reply payload holds
@@ -1531,17 +1590,12 @@ static int16_t iocfat_stat_op(struct kos_ipc_frame *frame)
 {
 	const char *path = (const char *)iocfat_addr(frame->payload);
 	struct kfs_stat st;
-	const uint8_t *src;
-	uint8_t i;
 	int result = iocfat_stat_path(path, &st);
 
 	if (result != 0) {
 		return (int16_t)result;
 	}
-	src = (const uint8_t *)&st;
-	for (i = 0u; i < (uint8_t)sizeof(st); ++i) {
-		frame->payload[i] = src[i];
-	}
+	kos_block_copy(frame->payload, &st, sizeof(st));
 	return 0;
 }
 
@@ -1647,6 +1701,10 @@ int16_t iocfat_dispatch(struct kos_ipc_frame *frame)
 		return iocfat_meta_op(frame);
 	case KFILE_OP_SYNC:
 		return iocfat_sync_op(frame);
+#if KOS_IOC_PHASES
+	case KFILE_OP_PHASES:
+		return iocfat_phases_op(frame);
+#endif
 	case KFS_OP_OPEN:
 		return iocfat_open_op(frame);
 	case KFS_OP_CLOSE:
@@ -1694,7 +1752,11 @@ uint8_t iocfat_init(const struct driver_boot *boot)
 	iocfat_api = boot->api;
 	iocfat_ioc = boot->deps[IOCFAT_DEP_IOC];
 	iocfat_batch_address = (uint16_t)iocfat_batch;
+	iocfat_cache_address = (uint16_t)iocfat.cache[0].data;
 	iocfat_ready = 0u;
+#if KOS_IOC_PHASES
+	iocfat_phase_peer = 0u;
+#endif
 	iocfat_zero_instance();
 	if (iocfat_ioc == 0u) {
 		/* A malformed bundle: the required IOC dependency is

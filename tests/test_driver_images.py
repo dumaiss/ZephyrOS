@@ -203,6 +203,20 @@ class TestDriverFormat(unittest.TestCase):
             })
         self.assertIn("hot segment", str(caught.exception))
 
+    def test_driver_io_outside_the_io_segment_is_refused(self):
+        # The copy buffers must land inside 8000h-BFFFh, where the
+        # one-LDIR copy paths reach; only the io segment is placed there.
+        with self.assertRaises(modpack.ModError) as caught:
+            pack_driver(self.tmp.name, "hotio", {
+                "x.rel": ([("_CODE", 2), ("_DRIVER_IO", 8)],
+                          [("_x", 0, 0)], [(0, 0, [0xC9, 0x00], [])]),
+            }, {
+                "init": "_x",
+                "segments": [{"role": "hot", "image_areas": ["_CODE"],
+                              "bss_areas": ["_DRIVER_IO"]}],
+            })
+        self.assertIn("io segment", str(caught.exception))
+
     def test_only_the_boot_role_carries_an_entry(self):
         with self.assertRaises(modpack.ModError) as caught:
             pack_driver(self.tmp.name, "badent", {

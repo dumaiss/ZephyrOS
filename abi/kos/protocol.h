@@ -261,11 +261,13 @@
  *                              payload[0..1] = the 29-byte reply frame's
  *                                              driver-domain address
  *                              payload[2] = reply STATUS
- *                              payload[3..4] = this driver's bulk buffer
- *                                              address (the staging
- *                                              handshake for a caller
- *                                              that cannot hold a
- *                                              descriptor; see below)
+ *                              payload[5..6] = this driver's read-path
+ *                                              phase table address, in a
+ *                                              `KOS_IOC_PHASES` build
+ *                                              only (the instrument's
+ *                                              handshake, injected into
+ *                                              one payload slot no
+ *                                              shipped client reads)
  *                            Returns 0 or a negative KIOC_E*.
  *                            The full request frame is 29 bytes; no
  *                            deployed request class exceeds 24 DATA
@@ -278,19 +280,20 @@
  *                            reply frame slice KIOC_OP_COMMAND stored to
  *                            the caller's buffer; returns the count.
  *   KIOC_OP_BULK_READ   (2)  arg1 = length (1..512).  Completes the
- *                            admitted bulk read into the driver buffer.
- *                            With a desc OUT the driver also copies the
- *                            bytes to the caller (arg0 = offset);
- *                            without one the reply carries the buffer
- *                            address in payload[0..1], for the staged
- *                            form.  Returns the length or a negative
- *                            KIOC_E*.
+ *                            admitted bulk read.  With a desc OUT the
+ *                            driver receives into its own buffer and
+ *                            copies the bytes to the caller (arg0 =
+ *                            offset); without one it receives straight
+ *                            into the buffer payload[0..1] names (the
+ *                            direct form, below).  Returns the length or
+ *                            a negative KIOC_E*.
  *   KIOC_OP_BULK_WRITE  (3)  arg1 = length (1..512).  With a desc IN the
- *                            driver first stages the caller's bytes
+ *                            driver first copies the caller's bytes
  *                            (arg0 = offset) into its buffer, then writes
- *                            them to the lane; without one it writes what
- *                            the staged form left in the buffer.  Returns
- *                            the length or a negative KIOC_E*.
+ *                            them to the lane; without one it sends
+ *                            straight from the buffer payload[0..1] names
+ *                            (the direct form).  Returns the length or a
+ *                            negative KIOC_E*.
  *   KIOC_OP_STATUS      (4)  returns the semantic status word
  *                            (KIOC_STATUS_*).
  *   KIOC_OP_READY       (5)  returns 1 when the link is brought up and
@@ -299,14 +302,11 @@
  *                            bring-up once; the HID driver reports this
  *                            through KHID_OP_READY.
  *
- * The staged form (no descriptor) is the resident-domain convention:
- * the reply's payload names the driver buffer, and a driver client
- * stages with `move`.  A nucleus (bank-7) caller reaches the same
- * buffers through the nucleus copy gate because it cannot hold a
- * descriptor: it reads the
- * reply frame and the bulk payload out of the addresses the replies
- * name, places bulk-write bytes there, and then commits them with the
- * descriptor-less KIOC_OP_BULK_WRITE.
+ * The direct form (no descriptor) is the resident-domain convention:
+ * every resident driver is mapped together in bank 6's hot tier
+ * (6000h-DFFFh), so a driver client names a buffer of its own and the
+ * bulk loop moves the payload to or from it with no intermediate copy.
+ * A buffer outside the hot tier is refused with KOS_EINVAL.
  */
 #define KIOC_OP_COMMAND    0u
 #define KIOC_OP_REPLY      1u
@@ -391,12 +391,75 @@
  *                      `struct kfs_stat` (16 bytes, abi/kos/fs.h).
  *   KFILE_OP_SYNC (4)  no descriptor; flushes the instance (the file
  *                      close path is SYNC then unbind).
+ *   KFILE_OP_PHASES (5) measurement-only read-only fetch: no descriptor,
+ *                      arg0/arg1 zero; the reply payload holds a packed
+ *                      `struct kfile_phases` - the per-step timestamps
+ *                      the last block read left in the provider.  Only a
+ *                      provider built with the read-path instrument
+ *                      (`KOS_IOC_PHASES=1`, the `phase-image` make
+ *                      target) serves it; every other provider answers
+ *                      KOS_EINVAL (and KOS_ENODEV while it has no media,
+ *                      like every `/fs` operation).
  */
 #define KFILE_OP_READ  0u
 #define KFILE_OP_WRITE 1u
 #define KFILE_OP_SEEK  2u
 #define KFILE_OP_META  3u
 #define KFILE_OP_SYNC  4u
+#define KFILE_OP_PHASES 5u
+
+/* The steps of one block read the instrument stamps, in order.  Each is
+ * recorded as the reading of two free-running CTC channel counters, so no
+ * step is lost to a masked window: the delimiter between the provider's
+ * steps is the cache decision, between the transport's the reply.
+ *
+ * The counters are the timer driver's own clock (10 MHz / 256 prescaler,
+ * 25.6 us per count): channel 2, which the tick handler reloads every
+ * 250 counts, and channel 1, which the instrument programs once for 256.
+ * Each stamp stores one byte per channel that increases with time modulo
+ * that channel's cycle length; the three deltas between two stamps are
+ * then resolved to one count difference through the channel cycles'
+ * least common multiple (32,000 counts, 0.8192 s) - see the fetching
+ * program's `phase_counts`.  Raw counters, not a clock: one count is
+ * 25.6 us and a difference is valid while it stays inside the LCM window
+ * and no stamp is torn between the two reads (the reader retries while
+ * the longer channel moves).
+ */
+#define KFILE_PHASE_ENTERED 0u /* /fs read call entered                   */
+#define KFILE_PHASE_CACHE   1u /* cache answer decided (hit/miss)         */
+#define KFILE_PHASE_SENT    2u /* FS2 request built, handed to the lane   */
+#define KFILE_PHASE_REPLY   3u /* reply received and validated            */
+#define KFILE_PHASE_ADMIT   4u /* bulk lane admitted (/DCD seen)          */
+#define KFILE_PHASE_FIRST   5u /* packet marker's first byte captured     */
+#define KFILE_PHASE_LAST    6u /* last payload byte captured              */
+#define KFILE_PHASE_COPY    7u /* payload in the provider's buffer        */
+#define KFILE_PHASE_CALLER  8u /* copy_out to the caller done             */
+#define KFILE_PHASE_RETURN  9u /* provider's read call returned           */
+#define KFILE_PHASE_COUNT   10u
+
+/* `flags` bits (valid with KFILE_PHASE_CACHE). */
+#define KFILE_PHASE_FLAG_CACHE_HIT 0x01u
+
+/* `path` values: the 4.9 copy path of the read's copy_out.  The provider
+ * cannot see the caller's buffer (that is what a descriptor is for), so it
+ * reports KFILE_PHASE_PATH_UNKNOWN and a fetching program that knows the
+ * buffer it passed fills the field in for its own report. */
+#define KFILE_PHASE_PATH_A       0u
+#define KFILE_PHASE_PATH_B       1u
+#define KFILE_PHASE_PATH_C       2u
+#define KFILE_PHASE_PATH_UNKNOWN 0xFFu
+
+/* One block read's stamps: `elapsed_1`/`elapsed_2` hold one byte per
+ * channel per phase (KFILE_PHASE_*), each increasing with time modulo
+ * that channel's cycle length; `valid` marks the phases written since the
+ * read began.  Exactly the 24-byte frame payload. */
+struct kfile_phases {
+	uint8_t elapsed_1[KFILE_PHASE_COUNT];
+	uint8_t elapsed_2[KFILE_PHASE_COUNT];
+	uint16_t valid;
+	uint8_t flags;
+	uint8_t path;
+};
 
 /* --- filesystem-namespace protocol (type KOS_TYPE_FS) -------------------
  *

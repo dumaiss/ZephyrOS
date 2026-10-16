@@ -129,10 +129,10 @@ class TestIocFatManifest(IocFatStaticBase):
         self.assertEqual(manifest["name"], "iocfat")
         self.assertEqual(manifest["init"], "iocfat_init")
         self.assertEqual([segment["role"] for segment in manifest["segments"]],
-                         ["hot"])
-        hot = manifest["segments"][0]
+                         ["hot", "io"])
+        hot, io = manifest["segments"]
         self.assertIn("_CODE", hot["image_areas"])
-        self.assertIn("_DRIVER_IO", hot["bss_areas"])
+        self.assertIn("_DRIVER_IO", io["bss_areas"])
         self.assertEqual([(ep["class"], ep["instance"])
                           for ep in manifest["endpoints"]], [(7, 0)])
         # The filesystem-namespace publication: the nucleus FS provider
@@ -152,8 +152,8 @@ class TestIocFatManifest(IocFatStaticBase):
         info = modpack.parse_container(blob, "iocfat.mod")
         self.assertGreater(info["image_size"], 0)
         self.assertEqual([segment["role"] for segment in info["segments"]],
-                         ["hot"])
-        # Requirement 10: the driver hot tier keeps at least 4,096 bytes
+                         ["hot", "io"])
+        # The driver hot tier keeps at least 4,096 bytes
         # free after every image is placed.
         plan = json.loads(read(DRIVER_PLAN))
         hot = plan["nucleus"]

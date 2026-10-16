@@ -171,4 +171,10 @@ struct driver_boot {
  * stops on the early console (5.3). */
 typedef uint8_t (*driver_init_fn)(const struct driver_boot *boot);
 
+/* The drivers' block copy (drivers/runtime/sdcc_indirect_calls.asm, linked
+ * into every driver image): one LDIR, 21 T-states a byte.  A data path
+ * copies with this, never with a C byte loop, which SDCC compiles to
+ * several hundred T-states a byte.  `count` 0 copies nothing. */
+void kos_block_copy(void *dst, const void *src, uint16_t count);
+
 #endif /* KONAOS_IPC_H */

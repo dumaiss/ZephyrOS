@@ -47,7 +47,7 @@ IOC_PRIVATE_H = os.path.join(ROOT, "drivers", "ioc", "ioc_proto.h")
 DRIVER_H = os.path.join(ROOT, "drivers", "hid", "hid_driver.h")
 DRIVER_C = os.path.join(ROOT, "drivers", "hid", "hid.c")
 # HID is a bank-6 driver image - one hot segment (the whole driver plus
-# the protocol dispatch) and no boot segment.
+# the protocol dispatch), its io segment and no boot segment.
 MANIFEST = os.path.join(ROOT, "drivers", "hid", "hid.json")
 PRODUCTION_SYSTEM = os.path.join(ROOT, "systems", "production.json")
 TARGET_TEST_C = os.path.join(ROOT, "tests", "target", "hid",
@@ -112,10 +112,10 @@ class TestHidDriverArtifact(unittest.TestCase):
         self.assertEqual(manifest["objects"],
                          ["hid.rel", "sdcc_indirect_calls.rel"])
         self.assertEqual([segment["role"] for segment in manifest["segments"]],
-                         ["hot"])
-        hot = manifest["segments"][0]
+                         ["hot", "io"])
+        hot, io = manifest["segments"]
         self.assertEqual(hot["image_areas"], ["_CODE"])
-        self.assertEqual(hot["bss_areas"], ["_DRIVER_IO"])
+        self.assertEqual(io["bss_areas"], ["_DRIVER_IO"])
         self.assertEqual(manifest["endpoints"],
                          [{"class": 4, "instance": 0, "version": 1,
                            "dispatch": "hid_driver_dispatch", "flags": 0}])
@@ -138,14 +138,13 @@ class TestHidDriverArtifact(unittest.TestCase):
         self.assertGreater(info["image_size"], 0)
         self.assertGreater(info["bss_size"], 0)
         self.assertNotEqual(info["init_offset"], 0xFFFF)
-        # One hot segment: the ring and state are its only BSS, and the
-        # image stays inside the driver I/O window 8000h-BFFFh.
+        # The code and the io segment: the ring and state are its only
+        # BSS, placed inside the driver I/O window 8000h-BFFFh.
         self.assertEqual([segment["role"] for segment in info["segments"]],
-                         ["hot"])
-        hot = info["segments"][0]
-        # The loader places the segment inside the driver I/O window
-        # 8000h-BFFFh, so the resident footprint must fit in it.
-        self.assertLess(hot["image_size"] + hot["bss_size"], 0x4000)
+                         ["hot", "io"])
+        hot, io = info["segments"]
+        self.assertEqual(hot["bss_size"], 0)
+        self.assertLess(io["bss_size"], 0x4000)
         # Host-linked: the dispatch entry lies inside the hot image (the
         # flat plan carries no relocation records at all).
         endpoint = info["endpoints"][0]

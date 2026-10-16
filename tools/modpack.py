@@ -60,8 +60,8 @@ manifest dir):
       "init": "ioc_driver_init",    # hot-segment init, called with the
                                      # bootstrap table; optional
       "segments": [
-        {"role": "hot",  "image_areas": ["_CODE"],
-         "bss_areas": ["_DRIVER_IO"]},
+        {"role": "hot",  "image_areas": ["_CODE"]},
+        {"role": "io",   "bss_areas": ["_DRIVER_IO"]},
         {"role": "boot", "image_areas": ["_BOOT"],
          "entry": "ioc_boot_entry"}  # boot entry, run once; optional
       ],
@@ -146,6 +146,8 @@ HOT_TIER_BASE = 0x6000
 HOT_TIER_END = 0xE000
 IO_BASE = 0x8000
 IO_END = 0xC000
+# The area SDCC's `--dataseg DRIVER_IO` names: a driver's copy buffers.
+DRIVER_IO_AREA = "_DRIVER_IO"
 BOOT_TIER_BASE = 0x0000
 BOOT_TIER_END = 0x6000
 # The DEVICE provider's root (architecture 4.10): a manifest declares the
@@ -489,6 +491,12 @@ def load_driver_manifest(manifest, path, objdir):
                 raise ModError("%s: area %s is claimed twice"
                                 % (where, name))
             listed.append(name)
+        # Architecture 4.9's driver I/O rule: the buffers a driver copies
+        # with copy_in/copy_out are DRIVER_IO, and only the io segment is
+        # placed inside 8000h-BFFFh, where the one-LDIR copy paths reach.
+        if DRIVER_IO_AREA in image_areas + bss_areas and role != "io":
+            raise ModError("%s: %s belongs to the io segment"
+                            % (where, DRIVER_IO_AREA))
         entry = segment.get("entry")
         if entry is not None and role != "boot":
             raise ModError("%s: only the boot role carries an entry" % where)

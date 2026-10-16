@@ -165,7 +165,17 @@ int16_t vfs_ns_fs_call(uint8_t handle, uint8_t object,
 	    entry->endpoint != VFS_NS_FS_ENDPOINT) {
 		return -KOS_EINVAL;
 	}
-	if (args->op <= KFILE_OP_SYNC) {
+	if (args->op <= KFILE_OP_SYNC
+#if KOS_IOC_PHASES
+	    /* The measurement build's read-only fetch of the provider's
+	     * read-path phase table: forwarded like the other FILE
+	     * operations, and refused by the driver (KOS_EINVAL, or
+	     * KOS_ENODEV without media) unless the provider itself was
+	     * built with the instrument.  A shipped kernel does not
+	     * forward it at all, so no shipped image changes. */
+	    || args->op == KFILE_OP_PHASES
+#endif
+	) {
 		/* FILE protocol: the driver acts on the bound instance. */
 		if (entry->type != KOS_TYPE_FILE || vfs_ns_fs_endpoint == 0u) {
 			return -KOS_EINVAL;

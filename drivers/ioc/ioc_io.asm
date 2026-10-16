@@ -53,10 +53,34 @@
 ; bulk routines own their own save/mask and restore the exact entry IFF on
 ; every success and error path; the write routine restores them before the
 ; potentially long controller commit wait.
+;
+; Under the read-path measurement build (KOS_IOC_PHASES in the C sources,
+; `ioc_phase_build` here: see the include at the top) the bulk read stamps
+; its admission, first payload byte and payload end inline - two raw
+; counter INs each, no call, no loop, no retry.  The board is why: the
+; controller clocks this lane at about one byte per 250 T-states and the
+; receiver's FIFO holds three, so the whole cushion is about 750
+; T-states, while the call into C the stamps used to be cost the receiver
+; service gaps of 741 and 878 T-states at the two sites of the first
+; board run's failing transfer - every bulk transfer ended in EIO.  Twelve
+; instructions, 88 T-states, 15 T-states between the two counter reads, is
+; what fits.  Without the option none of it is assembled.
 ; -----------------------------------------------------------------------------
 
 	.module ioc_io
 	.include "hardware.inc"
+
+	; The read-path measurement build's switch.  sdasz80 has no command
+	; line to define a symbol, so the build materializes the flag as an
+	; assignment here (0 in every shipped image, and only the
+	; `phase-image` sub-make writes 1).
+	.include "ioc_phase_build.inc"
+.if ioc_phase_build
+	; The instrument's table, defined in ioc.c: the stamps below write
+	; it directly (an external symbol has to be declared here for the
+	; assembler to accept it in an expression).
+	.globl _ioc_phases
+.endif
 
 	.globl _ioc_io_ctrl_write
 	.globl _ioc_io_ctrl_read
@@ -71,6 +95,7 @@
 	.globl _ioc_io_status_sample
 	.globl _ioc_io_irq_save_disable
 	.globl _ioc_io_irq_restore
+	.globl _ioc_crc16
 
 	.area _CODE
 
@@ -446,6 +471,59 @@ ioc_gb_ready:
 	ret
 
 ; ---------------------------------------------------------------------------
+; Command-frame CRC.
+; ---------------------------------------------------------------------------
+
+; uint16_t ioc_crc16(const uint8_t *data, uint16_t count);
+; HL = data, E = count (0..255), result in DE.  CRC-16-CCITT (1021h,
+; preset 0, MSB-first, no final XOR), one byte per step without a table:
+;   x = (crc >> 8) ^ byte;  x ^= x >> 4;
+;   crc = (crc << 8) ^ (x << 12) ^ (x << 5) ^ x
+; so with r = x rotated right three times (x >> 3 in its low five bits,
+; x << 5 in its top three):
+;   hi = lo ^ ((x << 4) & F0h) ^ (r & 1Fh),  lo = (r & E0h) ^ x.
+_ioc_crc16::
+	ld	b,e
+	ld	de,#0
+	ld	a,b
+	or	a
+	ret	z
+ioc_crc_byte:
+	ld	a,(hl)
+	inc	hl
+	xor	d
+	ld	c,a
+	rrca
+	rrca
+	rrca
+	rrca
+	and	#0x0F
+	xor	c
+	ld	c,a			; C = x
+	rlca
+	rlca
+	rlca
+	rlca
+	and	#0xF0
+	xor	e
+	ld	e,a			; E = lo ^ (x << 4)
+	ld	a,c
+	rrca
+	rrca
+	rrca
+	ld	d,a			; D = r
+	and	#0x1F
+	xor	e
+	ld	e,a			; E = the new high byte
+	ld	a,d
+	and	#0xE0
+	xor	c			; A = the new low byte
+	ld	d,e
+	ld	e,a
+	djnz	ioc_crc_byte
+	ret
+
+; ---------------------------------------------------------------------------
 ; Interrupt tokens (module-private; the kernel equivalents are not part of
 ; the driver API).  Standard Z80 pattern: LD A,I exposes IFF2 in P/V.
 ; ---------------------------------------------------------------------------
@@ -540,6 +618,10 @@ _ioc_io_bulk_init::
 ;   five-byte header is published into io->header for C-side validation.
 ;   Out: A = 0 captured, 1 bounded timeout, 3 marker scan exhausted,
 ;   4 /CTSA never deasserted.  Clobbers AF, BC, DE, HL.
+;   In a measurement build three stamps are taken inside the masked window
+;   (admission, the marker's first byte, the payload's end), each inline
+;   at a point whose A, H and L are free, and each the two raw counter
+;   reads the receiver's FIFO budget allows (see the file note).
 ; ---------------------------------------------------------------------------
 _ioc_io_bulk_read::
 	; Preserve the block pointer before the IRQ helper: that helper
@@ -564,6 +646,26 @@ _ioc_io_bulk_read::
 	ld	(_ioc_bulk_len),de
 	ld	a,(hl)
 	ld	(_ioc_bulk_hunt),a
+
+	; The header and the payload arrive as one stream with no gap the
+	; three-byte FIFO could absorb, so they are captured as one: the
+	; five header bytes land in the five bytes below the payload buffer,
+	; which are saved here and put back once the header is copied out
+	; (interrupts are masked throughout, so nothing else sees them).
+	; The stream's counts are split here too, while nothing streams.
+	ld	hl,#5
+	add	hl,de
+	ld	a,l
+	ld	(_ioc_bulk_count),a
+	ld	a,h
+	ld	(_ioc_bulk_blocks),a
+	ld	hl,(_ioc_bulk_buf)
+	ld	de,#-5
+	add	hl,de
+	ld	(_ioc_bulk_dst),hl
+	ld	de,#_ioc_bulk_save
+	ld	bc,#5
+	ldir
 
 	; Clear the error latch without resetting the channel.
 	ld	a,#KOS_IOC_WR0_RESET_ERROR
@@ -615,21 +717,82 @@ ioc_br_dcd_wait:
 	jr	nz,ioc_br_dcd_wait
 	jp	ioc_br_timeout
 ioc_br_admitted:
+.if ioc_phase_build
+	; The read-path instrument's admission stamp, in the shape every
+	; stamp inside the receive has (see the note above and the byte
+	; table in ioc.c): two raw counter INs moved through H and L (free
+	; at every stamp point; B holds the marker scan's count) into the
+	; table's two elapsed arrays.  80 T-states total, 15 between the two
+	; counter reads, no call and no retry.
+	; The negations are the table's own direction (a CTC counts down,
+	; the elapsed bytes count up) and happen after both reads, so the
+	; window in which the pair can tear stays those 15 T-states.
+	; KFILE_PHASE_ADMIT = 4; elapsed_2 is KFILE_PHASE_COUNT = 10 bytes
+	; after elapsed_1 (abi/kos/protocol.h, pinned by the host test).
+	in	a,(KOS_CTC1_PORT)
+	ld	h,a
+	in	a,(KOS_CTC2_PORT)
+	ld	l,a
+	ld	a,h
+	neg
+	ld	(_ioc_phases + 4),a
+	ld	a,l
+	neg
+	ld	(_ioc_phases + 10 + 4),a
+.endif
 
 	; Locate the complete A5 5A marker.  A trailing fill byte from the
 	; preceding transaction can become FIFO-visible only under these
 	; clocks, so the first visible byte is not necessarily a frame start.
+	; The scan polls inline, like the header and payload loops: the
+	; controller streams from admission on at the wire rate, and a
+	; call per byte would leave the three-byte FIFO full before the
+	; payload begins.  DE is the scan's whole stall budget.
 	ld	b,#KOS_IOC_BULK_SCAN_LIMIT
+	ld	de,#0
 ioc_br_scan0:
-	call	ioc_bulk_get
-	jp	c,ioc_br_timeout
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_RR0_RX_AVAILABLE
+	jr	nz,ioc_br_scan0_got
+	dec	de
+	ld	a,d
+	or	e
+	jr	nz,ioc_br_scan0
+	jp	ioc_br_timeout
+ioc_br_scan0_got:
+	in	a,(KOS_SIO1A_DATA)
 	cp	#KOS_IOC_PACKET_SYNC0
 	jr	z,ioc_br_scan1
 	djnz	ioc_br_scan0
 	jp	ioc_br_marker_fail
 ioc_br_scan1:
-	call	ioc_bulk_get
-	jp	c,ioc_br_timeout
+.if ioc_phase_build
+	; The marker stamp: same shape, KFILE_PHASE_FIRST = 5, taken when
+	; the marker's first byte is in.  The six marker and header bytes
+	; still to come leave the controller at its slower fixed-byte pace,
+	; which gives the FIFO back these 80 T-states before the payload.
+	in	a,(KOS_CTC1_PORT)
+	ld	h,a
+	in	a,(KOS_CTC2_PORT)
+	ld	l,a
+	ld	a,h
+	neg
+	ld	(_ioc_phases + 5),a
+	ld	a,l
+	neg
+	ld	(_ioc_phases + 10 + 5),a
+.endif
+ioc_br_scan1_wait:
+	in	a,(KOS_SIO1A_CTRL)
+	and	#KOS_SIO_RR0_RX_AVAILABLE
+	jr	nz,ioc_br_scan1_got
+	dec	de
+	ld	a,d
+	or	e
+	jr	nz,ioc_br_scan1_wait
+	jp	ioc_br_timeout
+ioc_br_scan1_got:
+	in	a,(KOS_SIO1A_DATA)
 	cp	#KOS_IOC_PACKET_SYNC1
 	jr	z,ioc_br_header
 	cp	#KOS_IOC_PACKET_SYNC0
@@ -637,47 +800,25 @@ ioc_br_scan1:
 	djnz	ioc_br_scan0
 	jp	ioc_br_marker_fail
 
-	; Capture all five header bytes with the same INI-shaped loop as the
-	; payload: the controller is already streaming at the wire rate and
-	; five call/return pairs would overrun the three-byte FIFO.
 ioc_br_header:
-	ld	hl,#_ioc_bulk_hdr
-	ld	b,#5
+	; Header and payload: five bytes plus the admitted
+	; (READY-authoritative) length, never a length taken from the wire.
+	; INI forces the register budget: B is the counter, C the port, HL
+	; the destination (five below the payload buffer); DE carries on
+	; from the scan as the stall budget, and the 256-byte block count
+	; was split off before admission.
+	ld	hl,(_ioc_bulk_dst)
 	ld	c,#KOS_SIO1A_DATA
-	ld	de,#0
-ioc_br_hdr_wait:
-	in	a,(KOS_SIO1A_CTRL)
-	and	#KOS_SIO_RR0_RX_AVAILABLE
-	jr	nz,ioc_br_hdr_ready
-	dec	de
-	ld	a,d
-	or	e
-	jr	nz,ioc_br_hdr_wait
-	jp	ioc_br_timeout
-ioc_br_hdr_ready:
-	ini
-	jp	nz,ioc_br_hdr_wait
-
-	; Payload: the admitted (READY-authoritative) length, never a length
-	; taken from the wire.  INI forces the register budget: B is the
-	; counter, C the port, HL the destination; DE is a whole-transfer
-	; stall budget and the 256-byte block count lives on the stack.
-	ld	hl,(_ioc_bulk_buf)
-	ld	de,(_ioc_bulk_len)
-	ld	a,d
-	ld	b,e
-	push	af
-	ld	c,#KOS_SIO1A_DATA
-	ld	de,#0
-	ld	a,b
+	ld	a,(_ioc_bulk_count)
+	ld	b,a
 	or	a
 	jr	nz,ioc_br_poll
 ioc_br_chunk:
-	pop	af
+	ld	a,(_ioc_bulk_blocks)
 	or	a
-	jr	z,ioc_br_trailer	; popped, not re-pushed: stack balanced
+	jr	z,ioc_br_trailer
 	dec	a
-	push	af
+	ld	(_ioc_bulk_blocks),a
 	ld	b,#0			; B = 0 means 256 bytes
 ioc_br_poll:
 	in	a,(KOS_SIO1A_CTRL)
@@ -687,7 +828,6 @@ ioc_br_poll:
 	ld	a,d
 	or	e
 	jr	nz,ioc_br_poll
-	pop	af
 	jp	ioc_br_timeout
 ioc_br_got:
 	ini
@@ -698,6 +838,21 @@ ioc_br_got:
 	; bulk DATA CRC: the bytes are consumed so the next transfer starts
 	; clean, and deliberately never compared.
 ioc_br_trailer:
+.if ioc_phase_build
+	; The payload-end stamp: same shape, KFILE_PHASE_LAST = 6.  The two
+	; trailer bytes are still to come, so the FIFO holds what the
+	; payload left plus these 88 T-states - well inside three bytes.
+	in	a,(KOS_CTC1_PORT)
+	ld	h,a
+	in	a,(KOS_CTC2_PORT)
+	ld	l,a
+	ld	a,h
+	neg
+	ld	(_ioc_phases + 6),a
+	ld	a,l
+	neg
+	ld	(_ioc_phases + 10 + 6),a
+.endif
 	call	ioc_bulk_get
 	jp	c,ioc_br_timeout
 	call	ioc_bulk_get
@@ -717,6 +872,7 @@ ioc_br_cts_wait:
 	ld	a,d
 	or	e
 	jr	nz,ioc_br_cts_wait
+	call	ioc_br_unsave
 	call	ioc_bulk_irq_restore
 	ld	a,#4
 	ret
@@ -727,23 +883,34 @@ ioc_br_ok:
 	ld	de,#5
 	add	hl,de
 	ex	de,hl
-	ld	hl,#_ioc_bulk_hdr
+	ld	hl,(_ioc_bulk_dst)
 	ld	bc,#5
 	ldir
+	call	ioc_br_unsave
 	call	ioc_bulk_irq_restore
 	xor	a
 	ret
 
 ioc_br_marker_fail:
 	call	ioc_bulk_rts_off
+	call	ioc_br_unsave
 	call	ioc_bulk_irq_restore
 	ld	a,#3
 	ret
 
 ioc_br_timeout:
 	call	ioc_bulk_rts_off
+	call	ioc_br_unsave
 	call	ioc_bulk_irq_restore
 	ld	a,#1
+	ret
+
+; Put back the five bytes below the payload buffer the stream borrowed.
+ioc_br_unsave:
+	ld	hl,#_ioc_bulk_save
+	ld	de,(_ioc_bulk_dst)
+	ld	bc,#5
+	ldir
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -1021,6 +1188,9 @@ ioc_bulk_irq_restore:
 _ioc_bulk_block:	.ds 2
 _ioc_bulk_buf:		.ds 2
 _ioc_bulk_len:		.ds 2
+_ioc_bulk_count:	.ds 1
+_ioc_bulk_blocks:	.ds 1
+_ioc_bulk_dst:		.ds 2
+_ioc_bulk_save:		.ds 5
 _ioc_bulk_hunt:		.ds 1
 _ioc_bulk_token:	.ds 1
-_ioc_bulk_hdr:		.ds 5

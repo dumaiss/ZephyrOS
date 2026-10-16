@@ -15,7 +15,10 @@
       "role": "hot",
       "image_areas": [
         "_CODE"
-      ],
+      ]
+    },
+    {
+      "role": "io",
       "bss_areas": [
         "_DRIVER_IO"
       ]

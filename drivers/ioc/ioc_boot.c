@@ -9,11 +9,22 @@
  * LINK_SYNC handshake is not here: it needs no bootstrap interface, but
  * it is also the run-time whole-link recovery path, so it lives in the
  * hot segment with the rest of the transport.
+ *
+ * In a measurement build (KOS_IOC_PHASES) the segment also programs CTC
+ * channel 1, the read-path instrument's free-running reference channel: a
+ * boot segment is where a channel survives the warm reboot that stops
+ * every channel (platform_ctc_quiesce_all) and re-programs what the
+ * running image needs.
  */
 
 #include "hardware.h"
 
 #include "ioc_driver.h"
+
+/* The read-path instrument's second clock channel: only this build has
+ * anything to program here, and the boot segment wants the clock alone
+ * (drivers/include/ioc_phases_clock.h). */
+#include "ioc_phases_clock.h"
 
 extern uint8_t ioc_io_status_sample(void);
 extern void ioc_io_ctrl_write(uint8_t value);
@@ -53,6 +64,14 @@ void ioc_hw_init(void)
 	 * verified bulk read enters Hunt exactly once; after that the
 	 * boundary is never disturbed. */
 	ioc_io_bulk_init();
+
+#if KOS_IOC_PHASES
+	/* The read-path instrument's free-running reference channel.  It
+	 * belongs in a boot segment: the channel is the instrument's own
+	 * (no shipped image programs channel 1) and a warm reboot stops
+	 * every channel, and then re-runs this programming. */
+	ioc_phases_ctc1_init();
+#endif
 }
 
 void ioc_boot_entry(void)

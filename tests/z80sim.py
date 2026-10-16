@@ -189,6 +189,11 @@ class IocCommandPeer:
         self.bulk_sends = []     # wire bytes pushed to the host
         self.a_drain_reads = 0
         self.a_data_reads = 0
+        self.a_pending = None    # bytearray not yet released by the clock
+        self.a_next_at = None    # T-state the next release is due
+        self.a_released = 0      # packet bytes the clock has released
+        self.a_overruns = 0      # FIFO overruns the host caused
+        self.a_fifo_fault = False
         self.last_xfer_id = 0
         self.last_status = 0
         self.last_bulk_capture = b""
@@ -1065,8 +1070,56 @@ class IocCommandPeer:
         return self._fs2_reply(self.CMD_FS2_RENAME, seq, self.ST_FS2_OK)
 
     # -- SIO1/A bulk-lane port behaviour -------------------------------
-    def bulk_data_read(self):
+
+    # The receive path is real time the host cannot ignore: the controller
+    # clocks the lane and the SIO holds three bytes (hardware.h
+    # KOS_IOC_RX_FIFO_DEPTH), so a host that leaves the port longer than
+    # three byte times loses the rest of the packet - the fault the
+    # measurement build hit on the board, where its in-receive stamps
+    # called into C and cost the receiver 741 and 878 T-states of service
+    # in the transfer that failed.  The timing is the controller
+    # firmware's (Zephyr-80 `src/bulk_channel.c`) at 10 MHz: a 100 us
+    # guard after admission before the clock opens, the seven marker and
+    # header bytes through its per-byte helper (4 us of 2 MHz clocking
+    # plus a 2 us gap and the call, about 7 us), then the payload at its
+    # 6 us target.  Pacing is off when a caller does not supply the clock
+    # (`tstates=None`), which is how the port-level unit tests use this
+    # model.
+    BULK_FIFO_DEPTH = 3
+    BULK_ADMISSION_TSTATES = 1000
+    BULK_FIXED_BYTES = 7
+    BULK_FIXED_BYTE_TSTATES = 70
+    BULK_BYTE_TSTATES = 60
+
+    def bulk_pump(self, tstates):
+        """Release due bytes into the receive FIFO, flagging an overrun."""
+        if self.a_pending is None or tstates is None:
+            return
+        if self.a_next_at is None:
+            self.a_released = 0
+            self.a_next_at = (tstates + self.BULK_ADMISSION_TSTATES +
+                              self.BULK_FIXED_BYTE_TSTATES)
+        while self.a_pending and tstates >= self.a_next_at:
+            if len(self.a_rx) >= self.BULK_FIFO_DEPTH:
+                # The receiver's shift register has nowhere to put the
+                # byte: the deployed part drops the rest of the packet and
+                # loses synchronization, which is what the driver reports
+                # as a failed transfer.
+                self.a_overruns += 1
+                self.a_fifo_fault = True
+                self.a_pending = None
+                self.a_next_at = None
+                self.a_rx.clear()
+                return
+            self.a_rx.append(self.a_pending.pop(0))
+            self.a_released += 1
+            self.a_next_at += (self.BULK_FIXED_BYTE_TSTATES
+                               if self.a_released < self.BULK_FIXED_BYTES
+                               else self.BULK_BYTE_TSTATES)
+
+    def bulk_data_read(self, tstates=None):
         self._a_tick()
+        self.bulk_pump(tstates)
         if self.a_rx:
             self.a_data_reads += 1
             if not self.a_delivered:
@@ -1082,8 +1135,9 @@ class IocCommandPeer:
             if len(self.a_tx_window) >= length + 8:
                 self.tx_underrun = True
 
-    def bulk_ctrl_read(self):
+    def bulk_ctrl_read(self, tstates=None):
         self._a_tick()
+        self.bulk_pump(tstates)
         value = 0x04                 # TX buffer empty
         if self.a_rx:
             value |= 0x01            # RX character available
@@ -1112,6 +1166,8 @@ class IocCommandPeer:
             self.a_channel_resets += 1
             self.a_wr.clear()
             self.a_rx.clear()
+            self.a_pending = None
+            self.a_next_at = None
             self.a_rts = False
             self.a_tx_enabled = False
             self.dcd = False
@@ -1210,7 +1266,10 @@ class IocCommandPeer:
             if cut is None:
                 cut = 8 + (len(payload) // 2)
             packet = packet[:cut]
-        self.a_rx.extend(packet)
+        if self.a_pending is not None:
+            self.a_rx.extend(self.a_pending)
+        self.a_pending = bytearray(packet)
+        self.a_next_at = None
         self.bulk_sends.append(bytes(packet))
         self.a_delivered = True
 
@@ -2034,20 +2093,24 @@ ED_T = {64: 12,
  120: 12,
  121: 12,
  122: 15,
- 123: 20}
+ 123: 20,
+ 160: 16,
+ 161: 16,
+ 162: 16,
+ 163: 16,
+ 168: 16,
+ 169: 16,
+ 170: 16,
+ 171: 16}
 
 # Block instructions: the simulator executes the whole block in one step
 # and counts one step per byte iteration, so the repeat cost is 21 T with
-# 16 T for the last iteration.
-ED_BLOCK = (160,
- 161,
- 162,
- 163,
- 168,
- 169,
- 170,
- 171,
- 176,
+# 16 T for the last iteration.  These are the repeating forms only; the
+# one-shot LDI/CPI/INI/OUTI instructions (and their D-variants, 160h-171h)
+# run one iteration and are charged their own 16 T-states through ED_T
+# above - the IOC driver's payload read is a per-byte INI, so charging one
+# of them a whole BC run costs tens of thousands of T-states a byte.
+ED_BLOCK = (176,
  177,
  178,
  179,
@@ -2276,9 +2339,9 @@ class Z80:
             if port == 0x33:
                 return self.ioc_peer.ctrl_read()
             if port == 0x30:
-                return self.ioc_peer.bulk_data_read()
+                return self.ioc_peer.bulk_data_read(self.tstates)
             if port == 0x31:
-                return self.ioc_peer.bulk_ctrl_read()
+                return self.ioc_peer.bulk_ctrl_read(self.tstates)
         return 0xFF
 
     def io_out(self, port, value):

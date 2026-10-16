@@ -327,22 +327,25 @@ static int16_t copy_move(const struct ipc_desc *desc, uint16_t driver_addr,
 	}
 	caller_addr = (uint16_t)(desc->addr + offset);
 	caller_bank = desc_bank(desc);
-	if (in_driver_io(driver_addr, length)) {
-		if (in_caller_window(caller_addr, length) ||
-		    in_common(caller_addr, length)) {
-			/* Path A: both sides visible in the driver
-			 * mapping, which is mode 11 (one LDIR). */
-			if (dir == KOS_IPC_DESC_IN) {
-				ipc_copy_req[0] = caller_addr;
-				ipc_copy_req[1] = driver_addr;
-			} else {
-				ipc_copy_req[0] = driver_addr;
-				ipc_copy_req[1] = caller_addr;
-			}
-			ipc_copy_req[2] = length;
-			++ipc_copy_window;
-			return (int16_t)ipc_copy_run();
+	/* Path A: both sides visible in the driver mapping, which is mode
+	 * 11 - the whole hot tier, the caller window and common (one LDIR).
+	 * A common caller buffer may be the staging block path C bounces
+	 * through, so it must never take path C. */
+	if (in_driver_window(driver_addr, length) &&
+	    (in_caller_window(caller_addr, length) ||
+	     in_common(caller_addr, length))) {
+		if (dir == KOS_IPC_DESC_IN) {
+			ipc_copy_req[0] = caller_addr;
+			ipc_copy_req[1] = driver_addr;
+		} else {
+			ipc_copy_req[0] = driver_addr;
+			ipc_copy_req[1] = caller_addr;
 		}
+		ipc_copy_req[2] = length;
+		++ipc_copy_window;
+		return (int16_t)ipc_copy_run();
+	}
+	if (in_driver_io(driver_addr, length)) {
 		if (caller_bank == (uint8_t)(desc->latch & KOS_BANK_MASK) &&
 		    caller_addr >= KOS_USER_BUFFER_BASE &&
 		    (uint16_t)(caller_addr + length) <= KOS_USER_BUFFER_END &&
@@ -386,11 +389,14 @@ static int16_t copy_move(const struct ipc_desc *desc, uint16_t driver_addr,
 
 static void desc_release_all(void)
 {
-	uint8_t index;
+	struct ipc_desc *desc = descs;
+	uint8_t left = IPC_DESC_MAX;
 
-	for (index = 0u; index < IPC_DESC_MAX; ++index) {
-		descs[index].active = 0u;
-	}
+	/* A pointer walk: every syscall releases twice. */
+	do {
+		desc->active = 0u;
+		++desc;
+	} while (--left != 0u);
 }
 
 /* Capture one caller buffer from the saved execution latch.  The buffer
@@ -461,19 +467,29 @@ static struct ipc_desc *desc_lookup(uint8_t id)
  * the record. */
 static struct ipc_endpoint *endpoint_for(uint8_t handle)
 {
-	/* The table also holds the in-process provider endpoints, whose
-	 * reserved numbers live above the host range and break the
-	 * "slot == number - 1" rule, so it is scanned by the stored
-	 * number. */
-	uint8_t index;
+	/* A host number's slot is its index, confirmed by the stored
+	 * number.  The table also holds the in-process provider endpoints,
+	 * whose reserved numbers live above the host range and break that
+	 * rule, so a miss falls back to a scan by the stored number.  Every
+	 * call resolves an endpoint, so both forms walk pointers. */
+	struct ipc_endpoint *ep;
+	uint8_t left;
 
 	if (handle == 0u) {
 		return (struct ipc_endpoint *)0;
 	}
-	for (index = 0u; index < endpoint_count; ++index) {
-		if (endpoints[index].number == handle) {
-			return &endpoints[index];
+	if (handle <= endpoint_count) {
+		ep = &endpoints[(uint8_t)(handle - 1u)];
+		if (ep->number == handle) {
+			return ep;
 		}
+	}
+	ep = endpoints;
+	for (left = endpoint_count; left != 0u; --left) {
+		if (ep->number == handle) {
+			return ep;
+		}
+		++ep;
 	}
 	return (struct ipc_endpoint *)0;
 }

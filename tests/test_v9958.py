@@ -230,10 +230,10 @@ class TestDriverArtifact(unittest.TestCase):
         self.assertEqual(manifest["name"], "v9958")
         self.assertEqual(manifest["init"], "v9958_driver_init")
         self.assertEqual([segment["role"] for segment in manifest["segments"]],
-                         ["hot", "boot", "bulk"])
-        hot, boot, bulk = manifest["segments"]
+                         ["hot", "io", "boot", "bulk"])
+        hot, io, boot, bulk = manifest["segments"]
         self.assertEqual(hot["image_areas"], ["_CODE"])
-        self.assertEqual(hot["bss_areas"], ["_DRIVER_IO"])
+        self.assertEqual(io["bss_areas"], ["_DRIVER_IO"])
         self.assertEqual(boot["image_areas"], ["_BOOT"])
         self.assertEqual(boot["bss_areas"], ["_BOOT_DATA"])
         self.assertEqual(boot["entry"], "v9958_boot_entry")
@@ -259,11 +259,12 @@ class TestDriverArtifact(unittest.TestCase):
         self.assertGreater(info["image_size"], 0)
         self.assertGreater(info["bss_size"], 0)
         self.assertNotEqual(info["init_offset"], 0xFFFF)
-        hot, boot, bulk = info["segments"]
+        hot, io, boot, bulk = info["segments"]
         # The hot tier holds the core, the port layer and the renderer
-        # (the display reset shares the bring-up chain, 3.2); it must
-        # stay inside the driver I/O window.
-        self.assertLess(hot["image_size"] + hot["bss_size"], 0x4000)
+        # (the display reset shares the bring-up chain, 3.2); the copy
+        # buffers are the io segment, inside the driver I/O window.
+        self.assertLess(hot["image_size"], 0x4000)
+        self.assertLess(io["bss_size"], 0x4000)
         # The font is the bulk segment, byte for byte the pinned asset
         # (the same source tools/fontpack.py packs for the ROMFS copy).
         self.assertEqual(bulk["image_size"], 2048)

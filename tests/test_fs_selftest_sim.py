@@ -22,21 +22,20 @@ the store manifest and the two programs.
 Run with: `python3 -m unittest tests.test_fs_selftest_sim`.
 """
 
+import json
 import os
 import sys
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
-sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-import modpack  # noqa: E402
 from replay import STEP_LIMIT, Replay  # noqa: E402
 from z80sim import IocCommandPeer
 
 IMAGE_SUBDIR = "build-fs-selftest"
 IMAGE_NAME = "konaos-fs-selftest.bin"
-MOD = os.path.join("build-fs-selftest", "modules", "iocfat.mod")
+PLAN = os.path.join("build-fs-selftest", "modules", "drivers.plan.json")
 
 PASS = "fs-selftest: PASS\r\n"
 FAIL = "fs-selftest: FAIL"
@@ -114,11 +113,13 @@ class FsSelftestSimBase(Replay, unittest.TestCase):
         return z, z.sio_tx.decode("ascii", "replace")
 
     def driver_base(self):
-        """Base of the driver's data areas: its hot segment's image end."""
-        with open(os.path.join(ROOT, MOD), "rb") as handle:
-            info = modpack.parse_container(handle.read(), "iocfat.mod")
-        hot = [s for s in info["segments"] if s["role"] == "hot"][0]
-        return hot["base"] + hot["image_size"]
+        """Base of the driver's data areas: where the host placed its io
+        segment (DRIVER_IO, inside 8000h-BFFFh)."""
+        with open(os.path.join(ROOT, PLAN)) as handle:
+            plan = json.load(handle)
+        entry = [row for row in plan["drivers"]
+                 if row["name"] == "iocfat.mod"][0]
+        return entry["io_base"]
 
 
 class TestFsSelftestWritableCard(FsSelftestSimBase):

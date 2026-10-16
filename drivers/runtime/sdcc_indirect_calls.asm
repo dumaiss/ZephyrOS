@@ -17,6 +17,7 @@
 
 	.module sdcc_indirect_calls
 	.globl ___sdcc_call_iy, ___sdcc_call_hl, ___sdcc_enter_ix
+	.globl _kos_block_copy
 
 	.area _CODE
 
@@ -32,4 +33,30 @@ ___sdcc_enter_ix::
 	push	ix
 	ld	ix, #0
 	add	ix, sp
+	jp	(hl)
+
+; ---------------------------------------------------------------------------
+; void kos_block_copy(void *dst, const void *src, uint16_t count);
+;
+; The drivers' block copy: one LDIR (21 T-states a byte), where a C byte
+; loop compiles to several hundred.  sdcccall(1): HL = dst, DE = src,
+; count on the stack, which the callee removes.  A count of 0 copies
+; nothing.  Clobbers AF, BC, DE, HL (IX and IY are untouched).
+; ---------------------------------------------------------------------------
+_kos_block_copy::
+	push	hl			; dst
+	ld	hl,#4
+	add	hl,sp			; HL -> count (above dst and the return)
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	pop	hl
+	ex	de,hl			; HL = src, DE = dst
+	ld	a,b
+	or	c
+	jr	z,kos_block_copy_done
+	ldir
+kos_block_copy_done:
+	pop	hl			; the return address
+	pop	bc			; drop count
 	jp	(hl)

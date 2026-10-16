@@ -46,6 +46,11 @@
 #include "ioc_driver.h"
 #include "ioc_proto.h"
 
+/* The read-path phase instrument: everything below is compiled only in a
+ * KOS_IOC_PHASES build (the measurement image), and the header's own doc
+ * note owns what it does and when the counting runs. */
+#include "ioc_phases.h"
+
 /* The deployed pair bypasses bulk DATA CRC on both sides.  Fail the build
  * if the paired platform headers ever disagree with this driver's mode
  * instead of silently growing a one-sided check. */
@@ -103,6 +108,9 @@ extern uint8_t ioc_io_bulk_write(struct ioc_bulk_block *io);
 extern uint8_t ioc_io_status_sample(void);
 extern uint8_t ioc_io_irq_save_disable(void);
 extern void ioc_io_irq_restore(uint8_t token);
+/* CRC-16-CCITT (1021h, preset 0, MSB-first, no final XOR) over 0..255
+ * bytes: the command frames' wire CRC, byte-wise in assembly. */
+extern uint16_t ioc_crc16(const uint8_t *data, uint16_t count);
 
 struct ioc_state {
 	uint8_t busy;        /* foreground bus/serialization guard        */
@@ -125,27 +133,38 @@ struct ioc_state {
 
 struct ioc_state ioc_state;
 
+#if KOS_IOC_PHASES
+/* The stamps this driver's exchange contributed to the last block read
+ * (abi/kos/protocol.h KFILE_OP_PHASES).  The IOC-FAT driver reads the
+ * table from its own bank-6 mapping through the reply handshake this
+ * driver publishes, exactly as it reads the staged reply frame. */
+struct kfile_phases ioc_phases;
+
+/* The bulk receive's three stamps are inline in ioc_io.asm, and they are
+ * deliberately not the retaking stamp the phases outside the receive use:
+ * the receiver's three-byte FIFO is the whole budget there - the lane is
+ * clocked at about one byte per 250 T-states, so about 750 T-states in
+ * all - and the call into C that ran the retaking stamp cost the receiver
+ * service gaps of 741 and 878 T-states at the two sites of the first
+ * board run's failing transfer, which lost the byte the controller was
+ * sending (every bulk transfer ended in EIO).  Two raw counter reads cost
+ * 88 T-states instead.  What the assembly therefore does not do is mark
+ * its own work valid: the bits are set here, outside the masked window,
+ * and only for a transfer whose header validated, so a failed or short
+ * transfer reports its partial stamps as nothing rather than as a
+ * measurement.  A raw pair may be torn (the two reads are 15 T-states
+ * apart and either counter can reload between them); the fetching program
+ * rejects such a pair instead of resolving it. */
+static void ioc_phases_bulk_done(void)
+{
+	ioc_phases.valid |= (uint16_t)((1u << KFILE_PHASE_ADMIT) |
+				       (1u << KFILE_PHASE_FIRST) |
+				       (1u << KFILE_PHASE_LAST));
+}
+#endif
+
 static struct ioc_io_block ioc_io;
 
-/* CRC-16-CCITT (1021h, preset 0, MSB-first, no final XOR). */
-static uint16_t ioc_crc16(uint16_t crc, const uint8_t *data, uint8_t count)
-{
-	uint8_t i;
-
-	while (count != 0) {
-		crc ^= (uint16_t)((uint16_t)(*data++) << 8);
-		for (i = 0; i < 8u; ++i) {
-			if ((crc & 0x8000u) != 0u) {
-				crc = (uint16_t)((uint16_t)(crc << 1) ^
-						 0x1021u);
-			} else {
-				crc = (uint16_t)(crc << 1);
-			}
-		}
-		--count;
-	}
-	return crc;
-}
 
 /* Build the exact common request packet and its wire CRC. */
 static void ioc_build_request(struct ioc_state *state,
@@ -166,7 +185,7 @@ static void ioc_build_request(struct ioc_state *state,
 	for (i = 0; i < request->length; ++i) {
 		packet[7u + i] = request->data[i];
 	}
-	crc = ioc_crc16(0u, &packet[2], (uint8_t)(2u + len));
+	crc = ioc_crc16(&packet[2], (uint16_t)(2u + len));
 	packet[7u + request->length] = (uint8_t)(crc >> 8);
 	packet[8u + request->length] = (uint8_t)(crc & 0xFFu);
 }
@@ -263,6 +282,12 @@ static int ioc_command_inner(struct ioc_state *state,
 	/* Rolling sequence: the transport owns it; zero is not special. */
 	state->seq = (uint8_t)(state->seq + 1u);
 	ioc_build_request(state, request);
+#if KOS_IOC_PHASES
+	/* Stamped before the ready-wait and the masked send: the request's
+	 * own build time stays out of the transport and the pre-mask stamps
+	 * stay outside the window that loses ticks. */
+	ioc_phases_stamp(&ioc_phases, KFILE_PHASE_SENT);
+#endif
 
 	/* Backpressure: the MCU advertises COMMAND_READY only while it is
 	 * in command-idle.  Bounded; runs before any lane traffic. */
@@ -314,7 +339,7 @@ static int ioc_command_inner(struct ioc_state *state,
 	data_len = (uint8_t)(state->raw[0] - KOS_IOC_PACKET_FIXED_LEN);
 
 	/* CRC over LEN_LO through the final DATA byte. */
-	crc = ioc_crc16(0u, state->raw, (uint8_t)(2u + state->raw[0]));
+	crc = ioc_crc16(state->raw, (uint16_t)(2u + state->raw[0]));
 	if (state->raw[2u + state->raw[0]] != (uint8_t)(crc >> 8) ||
 	    state->raw[3u + state->raw[0]] != (uint8_t)(crc & 0xFFu)) {
 		return KIOC_EBADCRC;
@@ -331,6 +356,12 @@ static int ioc_command_inner(struct ioc_state *state,
 	    state->raw[2] != IOC_RSP_UNKNOWN_CMD) {
 		return KIOC_EBADFRAME;
 	}
+
+#if KOS_IOC_PHASES
+	/* The reply is received and validated (length, CRC, sequence and
+	 * type): the last step the instrument stamps on this lane. */
+	ioc_phases_stamp(&ioc_phases, KFILE_PHASE_REPLY);
+#endif
 
 	/* A CRC-verified reply is the proof that the persistent character
 	 * boundary is established: no Enter Hunt from here on. */
@@ -467,6 +498,9 @@ int ioc_bulk_read(void *vstate, void *dst, uint16_t length)
 		return KIOC_EBADFRAME;
 	}
 
+#if KOS_IOC_PHASES
+	ioc_phases_bulk_done();
+#endif
 	/* A fully validated bulk read is the only proof the bulk-lane
 	 * character boundary is real; from here the lane is left alone. */
 	state->bulk_synced = 1u;

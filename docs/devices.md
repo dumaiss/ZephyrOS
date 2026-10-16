@@ -158,10 +158,10 @@ guard refuses overlapping use with `KOS_EBUSY`.
 
 | op | number | frame | result |
 |---|---|---|---|
-| `KIOC_OP_COMMAND` | 0 | `arg0` request type, `arg1` DATA length (0-24), `payload` DATA | 0; reply: `arg0` type, `arg1` DATA length, `payload[0..1]` reply-frame address, `payload[2]` STATUS, `payload[3..4]` bulk buffer address |
+| `KIOC_OP_COMMAND` | 0 | `arg0` request type, `arg1` DATA length (0-24), `payload` DATA | 0; reply: `arg0` type, `arg1` DATA length, `payload[0..1]` reply-frame address, `payload[2]` STATUS |
 | `KIOC_OP_REPLY` | 1 | desc out, offset, length | bytes copied from the stored reply |
-| `KIOC_OP_BULK_READ` | 2 | `arg1` length (1-512); optional desc out | the length; without a descriptor, `payload[0..1]` names the driver's buffer |
-| `KIOC_OP_BULK_WRITE` | 3 | `arg1` length (1-512); optional desc in | the length |
+| `KIOC_OP_BULK_READ` | 2 | `arg1` length (1-512); desc out, or `payload[0..1]` a hot-tier buffer of the caller's | the length |
+| `KIOC_OP_BULK_WRITE` | 3 | `arg1` length (1-512); desc in, or `payload[0..1]` a hot-tier buffer of the caller's | the length |
 | `KIOC_OP_STATUS` | 4 | — | the semantic status word (`KIOC_STATUS_*`) |
 | `KIOC_OP_READY` | 5 | — | 1 when the link is up and no recovery is pending |
 

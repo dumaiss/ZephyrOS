@@ -398,7 +398,9 @@ class TestSdkBoundary(unittest.TestCase):
         # runner of those outcome programs; `shell` is the native shell,
         # the store's boot program; `iomix`/`iomix_child` and `iostream`
         # are the console-order and stream outcome programs the filesystem
-        # image's store carries (`tests/test_io_sim.py`).
+        # image's store carries (`tests/test_io_sim.py`); `readphase` is
+        # the read-path measurement program the phase image's card carries
+        # (`tests/test_readpath.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
@@ -407,7 +409,8 @@ class TestSdkBoundary(unittest.TestCase):
                           "hwtest", "iobench", "iomix", "iomix_child",
                           "iostream", "ipc", "ipccopy",
                           "monitor", "ns",
-                          "nschild", "shell", "timer", "xmem_child",
+                          "nschild", "readphase", "shell", "timer",
+                          "xmem_child",
                           "xmem_far",
                           "xmem_selftest"])
         for name, directory, _sources, _options in programs:

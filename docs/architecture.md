@@ -697,15 +697,16 @@ are not application ABI.
 
   | path | when | how |
   |---|---|---|
-  | A | caller buffer in `0000h-1FFFh` or in common | mode 11, one `LDIR` |
+  | A | caller buffer in `0000h-1FFFh` or in common, driver buffer in the hot tier | mode 11, one `LDIR` |
   | B | driver buffer in bank 6 `8000h-BFFFh`, caller buffer in its bank outside `8000h-BFFFh` | a common stub selects mode 10 over the caller's bank with P = 1, one `LDIR`, latch restored; interruptible |
   | C | everything else | chunked through the common bank-copy gate |
 
   P = 1 is internal to the nucleus; no program ever receives a bank-6
   token.
 - **Driver I/O rule:** driver buffers used with `copy_in`/`copy_out` live in
-  bank 6 `8000h-BFFFh`, the `DRIVER_IO` area. The loader refuses an image
-  whose `DRIVER_IO` data falls outside it.
+  bank 6 `8000h-BFFFh`, the `DRIVER_IO` area: a driver's io segment, which
+  the planner places there. The packer refuses a manifest that puts
+  `_DRIVER_IO` in any other segment.
 - **Validation lives in the nucleus only:** handle, endpoint, descriptor and
   frame bounds are checked once, at the boundary. Drivers trust what the
   nucleus hands them.

@@ -363,10 +363,10 @@ class TestIocDriverArtifact(unittest.TestCase):
         self.assertEqual(manifest["name"], "ioc")
         self.assertEqual(manifest["init"], "ioc_driver_init")
         roles = [segment["role"] for segment in manifest["segments"]]
-        self.assertEqual(roles, ["hot", "boot"])
-        hot, boot = manifest["segments"]
+        self.assertEqual(roles, ["hot", "io", "boot"])
+        hot, io, boot = manifest["segments"]
         self.assertEqual(hot["image_areas"], ["_CODE"])
-        self.assertEqual(hot["bss_areas"], ["_DRIVER_IO"])
+        self.assertEqual(io["bss_areas"], ["_DRIVER_IO"])
         self.assertEqual(boot["image_areas"], ["_BOOT"])
         self.assertEqual(boot["entry"], "ioc_boot_entry")
         self.assertEqual(manifest["objects"],

@@ -104,6 +104,14 @@ CFLAGS    := -mz80 -c --nostdinc --Werror $(KOS_SDCC_OPT) \
              -I . $(KOS_PLATFORM_CFLAGS)
 # The image's own flags, straight from its system file's `cflags` field.
 CFLAGS    += $(KOS_SYSTEM_CFLAGS)
+# The read-path phase instrument: empty in every shipped build, and the
+# `phase-image` target's sub-make sets it to -DKOS_IOC_PHASES=1, so the
+# kernel and driver compiles below see the option and every other build
+# compiles it out.  (The assembly's own switch is the generated
+# `ioc_phase_build.inc`: sdasz80 cannot take a symbol from its command
+# line.)  Nothing in a shipped image changes when the flag is empty.
+KOS_PHASE_FLAGS ?=
+CFLAGS    += $(KOS_PHASE_FLAGS)
 
 ASM_OBJS  := $(BUILD)/reset.rel $(BUILD)/start.rel $(BUILD)/banking.rel \
              $(BUILD)/page_zero.rel $(BUILD)/syscall_entry.rel \
@@ -384,6 +392,7 @@ $(BUILD)/konaos.probe.ihx $(BUILD)/konaos.probe.map: \
 	subsystem-selftest nucleus-selftest \
 	console-serial-selftest \
 	fs-selftest ns-selftest ipc-selftest xmem-selftest helloworld-image \
+	phase-image \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-hwtest \
@@ -637,6 +646,9 @@ $(MODULES):
 DRV_CFLAGS := -mz80 -c --nostdinc --Werror $(KOS_SDCC_OPT) \
               -I abi -I drivers/include -I platform/zephyr80/public \
               -I $(BUILD)
+# The phase instrument's C half: the same switch the kernel build gets
+# (KOS_PHASE_FLAGS is empty unless the phase-image sub-make sets it).
+DRV_CFLAGS += $(KOS_PHASE_FLAGS)
 DRV_HOT    := $(DRV_CFLAGS) --codeseg CODE --dataseg DRIVER_IO
 DRV_BOOT   := $(DRV_CFLAGS) --codeseg BOOT --dataseg BOOT_DATA
 
@@ -657,14 +669,27 @@ $(MODULES)/sio_boot.rel: drivers/sio/sio_boot.c drivers/sio/sio.h \
 	$(SDCC) $(DRV_BOOT) $< -o $@
 
 $(MODULES)/ioc.rel: drivers/ioc/ioc.c drivers/ioc/ioc_driver.h \
+		drivers/include/ioc_phases.h \
+		drivers/include/ioc_phases_clock.h \
 		drivers/ioc/ioc_proto.h drivers/include/ioc.h \
 		drivers/include/ioc_protocol.h \
  kernel/include/platform.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) $< -o $@
 
+# The read-path instrument's assembly switch.  sdasz80 is given no way to
+# define a symbol, so the build materializes KOS_PHASE_FLAGS as an
+# assignment the bulk loop's source includes (`.if ioc_phase_build`): 0
+# for every shipped build, 1 only in the sub-make `phase-image` runs.  The
+# value is derived from the same variable the C half consumes, so the two
+# halves of the instrument cannot be switched on separately.
+$(BUILD)/ioc_phase_build.inc:
+	@mkdir -p $(dir $@)
+	@printf 'ioc_phase_build = %s\n' $(if $(KOS_PHASE_FLAGS),1,0) > $@
+
 $(MODULES)/ioc_io.rel: drivers/ioc/ioc_io.asm \
-		platform/zephyr80/public/hardware.inc | $(MODULES)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
+		platform/zephyr80/public/hardware.inc \
+		$(BUILD)/ioc_phase_build.inc | $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -I$(BUILD) -o $@ $<
 
 $(MODULES)/ioc_driver.rel: drivers/ioc/ioc_proto.c \
 		drivers/ioc/ioc_driver.h drivers/ioc/ioc_proto.h \
@@ -673,6 +698,7 @@ $(MODULES)/ioc_driver.rel: drivers/ioc/ioc_proto.c \
 	$(SDCC) $(DRV_HOT) $< -o $@
 
 $(MODULES)/ioc_boot.rel: drivers/ioc/ioc_boot.c drivers/ioc/ioc_driver.h \
+		drivers/include/ioc_phases_clock.h \
 		drivers/include/driver.h $(DRV_PROTOCOL_H) | $(MODULES)
 	$(SDCC) $(DRV_BOOT) $< -o $@
 
@@ -744,6 +770,8 @@ $(MODULES)/console-serial.rel: drivers/console/console_proto.c \
 # the 512-byte cache and the handle pools are `_DRIVER_IO`; the IOC
 # dependency is host-resolved at pack time (`depends`).
 $(MODULES)/iocfat.rel: drivers/iocfat/iocfat.c \
+		drivers/include/ioc_phases.h \
+		drivers/include/ioc_phases_clock.h \
 		drivers/include/driver.h drivers/include/ioc.h \
 		abi/kos/fs.h abi/kos/object.h abi/kos/protocol.h \
 		abi/kos/errno.h | $(MODULES)
@@ -999,6 +1027,16 @@ $(eval $(call exe_program,iobench,tests/bench,\
 	iobench.c,STACK=384,STAGE=1))
 
 all: $(EXE_USER_ROOT)/iobench.exe
+
+# The read-path measurement program (`make phase-image` builds it beside
+# the instrumented image; the owner carries it on a card as READPH.EXE -
+# the FAT 8.3 namespace cannot hold the source's name - and runs
+# `readph BIG.BIN`).  It fetches the phase table the instrumented
+# provider keeps and prints min/mean/max per phase; see its own header.
+$(eval $(call exe_program,readphase,tests/perf,\
+	readphase.c,STACK=384))
+
+all: $(EXE_USER_ROOT)/readphase.exe
 
 # SDK outcome programs for the console-order and stream replays
 # (tests/test_io_sim.py): the `fs` image's `/system/iomix.exe` with its
@@ -1490,6 +1528,26 @@ fs-selftest: all
 	$(PYTHON) -m unittest tests.test_far_data -v
 	$(PYTHON) -m unittest tests.test_io_sim -v
 	@echo "filesystem image: build-fs-selftest/konaos-fs-selftest.bin"
+
+# Read-path measurement image (work/57-m13-read-path): the production
+# build with the phase instrument compiled in - KOS_IOC_PHASES=1 through
+# the kernel, every driver and the bulk loop's assembly switch - plus the
+# card program the owner runs (`readphase FILE`, on the card as
+# READPH.EXE).  It is a measurement build, not an acceptance image: the
+# simulator replay checks the report's shape, the board run produces the
+# numbers (the simulator cannot time the card lane honestly).  The shipped
+# targets never set KOS_PHASE_FLAGS, so nothing here changes them.
+phase-image: all
+	$(MAKE) BUILD=build-phase SYSTEM=production \
+		KOS_PHASE_FLAGS=-DKOS_IOC_PHASES=1 \
+		build-phase/konaos.bin build-phase/zephyr80.bin
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
+		build-phase/konaos.map \
+		build-phase/geometry/memory.inc \
+		$(KOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest tests.test_readpath -v
+	@echo "read-path image: build-phase/konaos.bin"
+	@echo "card program: build/user/readphase.exe (copy it to the card as READPH.EXE)"
 
 # IPC acceptance image: the production boot path with
 # the fixed-core substrate, the six synthetic bank-6 drivers placed by

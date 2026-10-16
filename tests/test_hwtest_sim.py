@@ -173,18 +173,15 @@ class HwtestReplay(ConsoleReplay, unittest.TestCase):
                   % (budget, z.pc, bytes(z.sio_tx)[start:][-300:],
                      "".join(z.glyphs)[-300:]))
 
-
-class TestExerciserWithACard(HwtestReplay):
-    """`hwtest` typed at the shell with the card in the drive."""
-
-    def test_it_passes_and_leaves_the_card_as_it_found_it(self):
-        z = self.start(card=True)
+    def assert_exerciser_passed(self, z, since, lane, reads=None):
+        """The card-present exerciser's whole outcome, in one place: the
+        store's runner reported every stage and the summary on its own
+        lane, the stages' console transcripts and their nested execs are
+        beside it, the card is as the run found it, and - when the clock
+        reads were tapped - the rate probe's constant matches the loop
+        the replay ran.  Shared by the production image and the
+        measurement image, whose run is the board check's host half."""
         peer = z.ioc_peer
-        since = len(z.glyphs)
-        reads = _clock_reads(z)
-        z.hid.hid_queue.extend(COMMAND)
-
-        lane = self.run_exerciser(z)
 
         # The store's runner reported every stage on its own lane.
         self.assertTrue(lane.startswith(BEGIN), lane[:48])
@@ -218,11 +215,51 @@ class TestExerciserWithACard(HwtestReplay):
         # two reads - must be the cost `TIMER_RATE_TSTATES` names.  A
         # constant that drifted from the compiled loop would make the
         # stage's factor-2 window meaningless.
-        loop = _busy_loop_tstates(reads, TIMER_RATE_TSTATES)
-        print("hwtest: timer rate probe, busy loop %d T-states "
-              "(constant %d)" % (loop, TIMER_RATE_TSTATES))
-        self.assertLess(abs(loop - TIMER_RATE_TSTATES),
-                        TIMER_RATE_TSTATES // 10)
+        if reads is not None:
+            loop = _busy_loop_tstates(reads, TIMER_RATE_TSTATES)
+            print("hwtest: timer rate probe, busy loop %d T-states "
+                  "(constant %d)" % (loop, TIMER_RATE_TSTATES))
+            self.assertLess(abs(loop - TIMER_RATE_TSTATES),
+                            TIMER_RATE_TSTATES // 10)
+
+
+class TestExerciserWithACard(HwtestReplay):
+    """`hwtest` typed at the shell with the card in the drive."""
+
+    def test_it_passes_and_leaves_the_card_as_it_found_it(self):
+        z = self.start(card=True)
+        since = len(z.glyphs)
+        reads = _clock_reads(z)
+        z.hid.hid_queue.extend(COMMAND)
+
+        lane = self.run_exerciser(z)
+
+        self.assert_exerciser_passed(z, since, lane, reads)
+
+
+class TestExerciserOnTheMeasurementImage(HwtestReplay):
+    """The same exerciser on `make phase-image`'s image.
+
+    This is the board check the read-path measurement's fix has to pass,
+    as far as the host model can hold it: every program load and file
+    read the stages do is a bulk transfer, so `4/4 PASS` here says the
+    lane still works with the instrument in it - and no receive overran
+    its three-byte FIFO, which is the fault the first board run hit
+    (docs/validation/2026-10-16-m13-read-path-measure.md, section 6).
+    Skipped when the measurement image has not been built."""
+
+    IMAGE_SUBDIR = "build-phase"
+
+    def test_it_passes_on_the_measurement_image(self):
+        z = self.start(card=True)
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(COMMAND)
+
+        lane = self.run_exerciser(z)
+
+        self.assert_exerciser_passed(z, since, lane)
+        self.assertEqual(z.ioc_peer.a_overruns, 0,
+                         "a bulk receive overran its FIFO")
 
 
 class TestExerciserWithoutACard(HwtestReplay):

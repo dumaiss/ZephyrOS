@@ -46,4 +46,15 @@ uint8_t ioc_driver_init(const struct driver_boot *boot);
 
 extern struct ioc_state ioc_state;
 
+#if KOS_IOC_PHASES
+/* Read-path phase instrument (drivers/include/ioc_phases.h): the IOC
+ * driver's own table and its address, which is published in the
+ * KIOC_OP_COMMAND reply's payload[5..6] so the IOC-FAT driver can follow
+ * it.  The bulk receive's three stamps are inline assembly in
+ * ioc_io.asm, and their validity bits are set by ioc.c once a transfer
+ * has validated.  Nothing here exists outside a measurement build. */
+#include "kos/protocol.h"
+extern struct kfile_phases ioc_phases;
+#endif
+
 #endif /* KONAOS_DRIVERS_IOC_DRIVER_H */

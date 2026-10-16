@@ -68,6 +68,24 @@ make hardware-images                                  # every acceptance image
 Each `smoke-hardware-*` target prints the image and SHA-256 it expects
 (`docs/boot.md` section 8).
 
+### Measuring the read path
+
+`make phase-image` builds a measurement image (`KOS_IOC_PHASES=1`) whose
+IOC driver records the clock at every step of a `/fs` block read, plus
+the card program that fetches and reports it.  The measurement is
+side-effect free and no shipped target defines the option:
+
+```sh
+make phase-image                     # build-phase/konaos.bin + build/user/readphase.exe
+# flash build-phase/konaos.bin, copy readphase.exe to the card as READPH.EXE
+readph BIG.BIN 256                   # a report per pass: min/mean/max per phase
+```
+
+The report's rows are the phases of one read (the transport, the cache,
+the staging copy, the caller copy) in 25.6 us counts, with the timer
+driver's own reading of the same read as a cross-check; `docs/validation/`
+has the replay that fixes the semantics.
+
 ## Tree
 
 ```text

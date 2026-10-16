@@ -386,10 +386,10 @@ class TestTimerContract(unittest.TestCase):
                           "timer_boot.rel", "sdcc_indirect_calls.rel"])
         segments = {segment["role"]: segment
                     for segment in manifest["segments"]}
-        self.assertEqual(sorted(segments), ["boot", "hot"])
+        self.assertEqual(sorted(segments), ["boot", "hot", "io"])
         self.assertEqual(segments["boot"]["entry"], "timer_boot_entry")
         self.assertEqual(segments["boot"]["image_areas"], ["_BOOT"])
-        self.assertEqual(segments["hot"]["bss_areas"], ["_DRIVER_IO"])
+        self.assertEqual(segments["io"]["bss_areas"], ["_DRIVER_IO"])
         # The event timer rides this endpoint: it serves
         # subscriptions (`events`) and stops its channel on a release.
         self.assertEqual(manifest["endpoints"],
@@ -437,9 +437,9 @@ class TestTimerContract(unittest.TestCase):
                          [("/timer", 10)])
         # The tick count is the run-time data a replay reads; the event
         # timer's deadline, period and flags sit beside it.
-        hot = [segment for segment in report["segments"]
-               if segment["role"] == "hot"][0]
-        self.assertEqual(hot["bss_size"], 17)
+        io = [segment for segment in report["segments"]
+              if segment["role"] == "io"][0]
+        self.assertEqual(io["bss_size"], 17)
         self.assertIn("_timer_ticks", report["symbol_segments"])
         store = json.loads(read(STORE))
         names = [item["name"] for item in store["files"]]

@@ -269,7 +269,8 @@ rebuilt alone still matches its siblings.  `validate` and `dump` both run
 `parse_container`, the host's authoritative validation.
 
 A manifest names its objects, its `init` entry, its `segments` (role,
-`image_areas`, `bss_areas`, optional boot `entry`), its `endpoints`
+`image_areas`, `bss_areas`, optional boot `entry`; `_DRIVER_IO`, the
+copy buffers, only in the io segment), its `endpoints`
 (`class`, `instance`, `version`, `dispatch` symbol, `flags` and the
 boolean `release` and `events`), its `publishes` rows and its symbolic
 `depends`:
@@ -281,8 +282,8 @@ boolean `release` and `events`), its `publishes` rows and its symbolic
   "objects": ["ioc.rel", "ioc_boot.rel", "sdcc_indirect_calls.rel"],
   "init": "ioc_driver_init",
   "segments": [
-    {"role": "hot",  "image_areas": ["_CODE"],
-     "bss_areas": ["_DRIVER_IO"]},
+    {"role": "hot",  "image_areas": ["_CODE"]},
+    {"role": "io",   "bss_areas": ["_DRIVER_IO"]},
     {"role": "boot", "image_areas": ["_BOOT"],
      "entry": "ioc_boot_entry"}
   ],

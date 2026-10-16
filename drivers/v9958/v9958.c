@@ -72,13 +72,8 @@ static int v9958_font_read(uint16_t offset, uint8_t *dst, uint16_t length)
 	if (v9958_font_base != 0u) {
 		/* Boot tier only: mode 10 maps the whole resident bank, so
 		 * the bulk bytes are directly addressable. */
-		const uint8_t *src = (const uint8_t *)
-			(uint16_t)(v9958_font_base + offset);
-		uint16_t index;
-
-		for (index = 0u; index < length; ++index) {
-			dst[index] = src[index];
-		}
+		kos_block_copy(dst, (const uint8_t *)
+			       (uint16_t)(v9958_font_base + offset), length);
 		return (int)length;
 	}
 	return (int)v9958_api->bulk_read(offset, (uint16_t)dst, length);
