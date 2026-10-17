@@ -76,7 +76,7 @@ PASS = "far-data: PASS"
 FAIL = "far-data: FAIL"
 # The status the monitor reports for the child: the zero-status proof.
 EXEC_STATUS = "exec: exit status 0x0000"
-CHECKS = "far-data: 39 checks, 0 failures"
+CHECKS = "far-data: 42 checks, 0 failures"
 
 # Every outcome line the program must report, in order.
 OUTCOMES = (
@@ -87,7 +87,8 @@ OUTCOMES = (
     "blob-read", "blob-bytes", "segment-untouched", "xload-plain",
     "xload-plain-read", "xload-plain-bytes", "xload-plain-free",
     "xload-mappable", "xload-mappable-bytes", "xload-mappable-free",
-    "big-write", "xload-over-mappable", "xload-over-plain",
+    "xload-mappable-full", "xload-mappable-full-bytes",
+    "xload-mappable-full-free", "big-write", "xload-over-mappable", "xload-over-plain",
     "xload-no-leak", "xload-no-leak-free", "exec-banks-refused",
     "exec-no-leak", "exec-no-leak-free", "far-segmap", "farmap-again",
     "farunmap-again", "banked-copy", "banked-latch",

@@ -4,9 +4,10 @@
  * can copy from, or map.  The size comes from `stat` (nothing is guessed
  * from reads), the object is one `xalloc`, and the bytes travel once:
  *
- *   - a mappable object is read straight into the open aperture: the
- *     provider writes the file into the far bank (the buffer-identity
- *     rule, 4.9), so no byte lands in the program's own window;
+ *   - a mappable object is read straight into the open aperture, in
+ *     reads of at most one descriptor (KOS_IPC_DESC_MAX): the provider
+ *     writes the file into the far bank (the buffer-identity rule, 4.9),
+ *     so no byte lands in the program's own window;
  *   - a plain object has no address, so it is filled through the 512-byte
  *     SDK buffer and `xwrite`.
  *
@@ -29,21 +30,34 @@ static unsigned char xload_buffer[XLOAD_CHUNK];
 static int xload_fill_mappable(int object, int file, unsigned int size)
 {
 	unsigned int address = 0u;
+	unsigned int offset = 0u;
 	unsigned char saved;
 	int token;
-	int count;
+	int count = 0;
 
 	token = xmap((unsigned int)object, &address);
 	if (token < 0) {
 		return token;
 	}
 	saved = aperture_open((unsigned char)token);
-	count = read((unsigned int)file, (void *)address, size);
+	while (offset < size) {
+		unsigned int chunk = size - offset;
+
+		if (chunk > KOS_IPC_DESC_MAX) {
+			chunk = KOS_IPC_DESC_MAX; /* one descriptor's worth */
+		}
+		count = read((unsigned int)file, (void *)(address + offset),
+			     chunk);
+		if (count <= 0) {
+			break;
+		}
+		offset += (unsigned int)count;
+	}
 	aperture_close(saved);
 	if (count < 0) {
 		return count;
 	}
-	if ((unsigned int)count != size) {
+	if (offset != size) {
 		return -KOS_EINVAL; /* the file changed under us */
 	}
 	return 0;

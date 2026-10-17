@@ -1113,7 +1113,9 @@ aperture slice, so their number is bounded by the free banks (`run` returns
   `/system`), and reports the child's status. Its built-ins are `cd pwd
   echo path help exit reboot` and the file commands `ls cat stat cp mv rm
   mkdir rmdir`; `/fs` is shown as `/` and `//` names the real namespace
-  root. It is an ordinary program (`user/shell/`): the image's store
+  root. Its line editor adds CTRL-L (clear the screen and redraw the
+  prompt and line) and a history of the last 5 lines on the up and down
+  arrows, kept for the session. It is an ordinary program (`user/shell/`): the image's store
   carries it, the launcher runs it, and the monitor it starts on request is
   a child like any other - the acceptance images' launcher starts the
   monitor instead, through `after_exit`.

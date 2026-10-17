@@ -231,6 +231,40 @@ class ShellSession(HwtestReplay):
                           ("CHILD.TMP",): b""})
         self.assertEqual(peer.fs2_dirs, {(), ("SUB",)})
 
+    def test_history_and_clear_screen(self):
+        """The line editor: the up arrow recalls the last lines (newest
+        first), the down arrow walks back to an empty line, and CTRL-L
+        redraws the prompt and the line typed so far."""
+        z = self.start(card=True)
+        up, down = b"\x1b[A", b"\x1b[B"
+        self.send(z, "echo first", "first\n/> ")
+        self.send(z, "echo second", "second\n/> ")
+        # Up twice: the older line, run again.
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(up + up + b"\r")
+        self.run_to(z, "first\n/> ", since=since)
+        # Now the newest is `echo first`: one up recalls it, a second the
+        # line before, and down brings the newer one back.  (The glyph
+        # model keeps what was drawn, so the lines browsed past show too;
+        # the last line drawn is the one that ran.)
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(up + up + down + b"\r")
+        self.run_to(z, "first\n/> ", since=since)
+        self.assertTrue(self.trace(z, since).endswith(
+            "echo first\nfirst\n/> "))
+        # Down past the newest is an empty line, which runs nothing.
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(up + down + b"echo third\r")
+        self.run_to(z, "third\n/> ", since=since)
+        self.assertTrue(self.trace(z, since).endswith(
+            "echo third\nthird\n/> "))
+        # CTRL-L mid-line: the screen clears, the prompt and the line so
+        # far are drawn again, and the rest of the line completes it.
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"echo fo\x0c" + b"urth\r")
+        self.run_to(z, "fourth\n/> ", since=since)
+        self.assertIn("/> echo fourth", self.trace(z, since))
+
     def test_file_commands(self):
         """`ls cat stat cp mv rm mkdir rmdir` on a card.
 

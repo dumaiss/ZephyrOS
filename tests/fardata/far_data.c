@@ -53,11 +53,13 @@
 #define KNOWN_SIZE    64u
 #define BLK           512u
 #define BIG_BLOCKS    96u      /* 48 KiB: over both xload limits        */
+#define FULL_BLOCKS   32u      /* 16 KiB: the mappable limit itself     */
 
 #define KNOWN_PATH  "/system/known.bin"
 #define BANKS_PATH  "/system/banks.exe"
 #define CARD_PATH   "/fs/far_data.tmp"
 #define BIG_PATH    "/fs/big.tmp"
+#define FULL_PATH   "/fs/full.tmp"
 
 /* The banking latch (port 00h): the mapping checks read it directly. */
 __sfr __at 0x00 latch_port;
@@ -275,6 +277,60 @@ int main(void)
 	}
 	status = handle >= 1 ? xfree((unsigned int)handle) : -1;
 	check("xload-mappable-free", status == 0);
+
+	/* A file at the mappable limit, 16 KiB from the card: more than one
+	 * read's descriptor, so the load takes several reads into the window.
+	 * Each block is its index XOR the byte's offset. */
+	status = -1;
+	{
+		int full = open(FULL_PATH, (unsigned char)(KFS_O_WRITE |
+							   KFS_O_CREATE |
+							   KFS_O_TRUNC));
+
+		if (full >= 0) {
+			status = 0;
+			for (i = 0u; i < FULL_BLOCKS; ++i) {
+				unsigned int k;
+
+				for (k = 0u; k < BLK; ++k) {
+					work[k] = (unsigned char)(k ^ i);
+				}
+				if (write((unsigned int)full, work, BLK) !=
+				    (int)BLK) {
+					status = -1;
+					break;
+				}
+			}
+			(void)close((unsigned int)full);
+		}
+	}
+	handle = status == 0 ? xload(FULL_PATH, MAPPABLE) : -1;
+	check("xload-mappable-full", handle >= 1);
+	address = 0u;
+	token = handle >= 1 ? xmap((unsigned int)handle, &address) : -1;
+	status = -1;
+	if (token >= 1) {
+		const unsigned char *at;
+
+		prev = aperture_open((unsigned char)token);
+		at = (const unsigned char *)address;
+		status = 0;
+		for (i = 0u; i < FULL_BLOCKS && status == 0; ++i) {
+			unsigned int k;
+
+			for (k = 0u; k < BLK; ++k) {
+				if (*at++ != (unsigned char)(k ^ i)) {
+					status = -1;
+					break;
+				}
+			}
+		}
+		aperture_close(prev);
+	}
+	check("xload-mappable-full-bytes", status == 0);
+	status = handle >= 1 ? xfree((unsigned int)handle) : -1;
+	check("xload-mappable-full-free", status == 0);
+	(void)unlink(FULL_PATH);
 
 	/* A file over the limit: 48 KiB is more than an object may hold,
 	 * mappable or not.  The write streams it to the card. */
