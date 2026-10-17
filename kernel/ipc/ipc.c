@@ -126,6 +126,23 @@ struct ipc_endpoint {
 
 static struct ipc_endpoint endpoints[IPC_ENDPOINT_MAX];
 static uint8_t endpoint_count;
+/* Each endpoint's table slot by number (index + 1; 0 = none): host
+ * numbers 1..IPC_ENDPOINT_MAX, in-process numbers from
+ * IPC_EP_NUCLEUS_BASE.  The two kinds are installed in any order, so the
+ * slot is not the number; without the map every lookup would scan. */
+#define IPC_NUCLEUS_SLOTS 4u
+static uint8_t host_slot[IPC_ENDPOINT_MAX + 1u];
+static uint8_t nucleus_slot[IPC_NUCLEUS_SLOTS];
+
+static void endpoint_map(uint8_t number, uint8_t slot)
+{
+	if (number <= (uint8_t)IPC_ENDPOINT_MAX) {
+		host_slot[number] = slot;
+	} else if ((uint8_t)(number - IPC_EP_NUCLEUS_BASE) <
+		   (uint8_t)IPC_NUCLEUS_SLOTS) {
+		nucleus_slot[(uint8_t)(number - IPC_EP_NUCLEUS_BASE)] = slot;
+	}
+}
 
 /* The boot bundle the loader hands a driver's init (fixed core, so the
  * driver's window always shows it): the API table and the resolved
@@ -144,14 +161,26 @@ struct ipc_desc {
 	uint8_t latch;  /* caller execution latch (bank and page) */
 	uint16_t addr;
 	uint16_t length;
+	uint8_t cls;    /* IPC_CLS_*: the copy path the whole buffer allows */
+	uint8_t bank;   /* desc_bank(), resolved once */
 };
+
+/* What a descriptor's whole caller buffer settles of the copy path, so a
+ * copy decides only its driver side (copy_move).  A: the buffer is wholly
+ * in the caller window or wholly in common; B: wholly in the caller's own
+ * bank between the window and common, clear of the aperture.  Anything
+ * else takes the full per-copy decision. */
+#define IPC_CLS_MIXED 0u
+#define IPC_CLS_A     1u
+#define IPC_CLS_B     2u
 
 static struct ipc_desc descs[IPC_DESC_MAX];
 
 /* The one nucleus-owned frame copy: the boundary buffer for the
- * outermost call, whose caller frame may live in bank 7's cold half (the
- * IOC-FAT class shim) or in the caller window (the syscall boundary).
- * Nested driver-to-driver calls pass their own frames by reference. */
+ * outermost call from bank 7's cold half, whose frames the driver mapping
+ * cannot show.  A syscall's frame is in the caller window, which it does
+ * show, so it is passed in place (ipc_syscall_call_object), and nested
+ * driver-to-driver calls pass their own frames by reference. */
 static struct kos_ipc_frame call_frame;
 
 static uint8_t call_depth;
@@ -237,6 +266,36 @@ static uint8_t desc_bank(const struct ipc_desc *desc)
 		return (uint8_t)(KOS_BANK_MASK - page);
 	}
 	return (uint8_t)(desc->latch & KOS_BANK_MASK);
+}
+
+/* The same predicates as in_caller_window, in_common, desc_bank and
+ * crosses_aperture, inline: desc_capture already holds the buffer to
+ * 1..KOS_IPC_DESC_MAX bytes from KOS_USER_BUFFER_BASE, ending at or
+ * below 10000h (`end` is 0 then). */
+static void desc_classify(struct ipc_desc *desc)
+{
+	uint16_t addr = desc->addr;
+	uint16_t end = (uint16_t)(addr + desc->length);
+	uint8_t latch = desc->latch;
+	uint8_t own = (uint8_t)(latch & KOS_BANK_MASK);
+	uint8_t page = (uint8_t)((latch & KOS_ROM_PAGE_MASK) >>
+				 KOS_ROM_PAGE_SHIFT);
+	uint8_t bank = own;
+
+	if (page != 0u && addr >= IPC_APERTURE_BASE &&
+	    addr < IPC_APERTURE_END) {
+		bank = (uint8_t)(KOS_BANK_MASK - page);
+	}
+	desc->bank = bank;
+	desc->cls = IPC_CLS_MIXED;
+	if ((addr < 0x2000u && end != 0u && end <= 0x2000u) ||
+	    addr >= KOS_USER_BUFFER_END) {
+		desc->cls = IPC_CLS_A;
+	} else if (bank == own && addr >= 0x2000u && end != 0u &&
+		   end <= KOS_USER_BUFFER_END &&
+		   !(addr < IPC_APERTURE_END && end > IPC_APERTURE_BASE)) {
+		desc->cls = IPC_CLS_B;
+	}
 }
 
 static uint8_t bank_transfer(uint8_t bank, uint8_t op, uint16_t addr,
@@ -326,7 +385,16 @@ static int16_t copy_move(const struct ipc_desc *desc, uint16_t driver_addr,
 		return -KOS_EINVAL;
 	}
 	caller_addr = (uint16_t)(desc->addr + offset);
-	caller_bank = desc_bank(desc);
+	caller_bank = desc->bank;
+	/* The buffer's class settles the caller side once (desc_classify):
+	 * only the driver side is decided here.  Each fast form is exactly
+	 * the branch the full decision below takes for such a buffer. */
+	if (desc->cls == IPC_CLS_A && in_driver_window(driver_addr, length)) {
+		goto path_a;
+	}
+	if (desc->cls == IPC_CLS_B && in_driver_io(driver_addr, length)) {
+		goto path_b;
+	}
 	/* Path A: both sides visible in the driver mapping, which is mode
 	 * 11 - the whole hot tier, the caller window and common (one LDIR).
 	 * A common caller buffer may be the staging block path C bounces
@@ -334,6 +402,7 @@ static int16_t copy_move(const struct ipc_desc *desc, uint16_t driver_addr,
 	if (in_driver_window(driver_addr, length) &&
 	    (in_caller_window(caller_addr, length) ||
 	     in_common(caller_addr, length))) {
+path_a:
 		if (dir == KOS_IPC_DESC_IN) {
 			ipc_copy_req[0] = caller_addr;
 			ipc_copy_req[1] = driver_addr;
@@ -350,6 +419,7 @@ static int16_t copy_move(const struct ipc_desc *desc, uint16_t driver_addr,
 		    caller_addr >= KOS_USER_BUFFER_BASE &&
 		    (uint16_t)(caller_addr + length) <= KOS_USER_BUFFER_END &&
 		    !crosses_aperture(caller_addr, length)) {
+path_b:
 			/* Path B: the caller buffer is in the primary
 			 * bank and clear of the aperture block, so mode 10
 			 * over that bank with P = 1 shows the caller
@@ -439,6 +509,7 @@ static int8_t desc_capture(uint8_t latch, uint16_t addr, uint16_t length,
 			descs[index].latch = latch;
 			descs[index].addr = addr;
 			descs[index].length = length;
+			desc_classify(&descs[index]);
 			return (int8_t)index;
 		}
 	}
@@ -467,19 +538,24 @@ static struct ipc_desc *desc_lookup(uint8_t id)
  * the record. */
 static struct ipc_endpoint *endpoint_for(uint8_t handle)
 {
-	/* A host number's slot is its index, confirmed by the stored
-	 * number.  The table also holds the in-process provider endpoints,
-	 * whose reserved numbers live above the host range and break that
-	 * rule, so a miss falls back to a scan by the stored number.  Every
-	 * call resolves an endpoint, so both forms walk pointers. */
+	/* The slot maps answer, confirmed by the stored number; a number
+	 * outside both ranges falls back to a scan.  Every call resolves an
+	 * endpoint. */
 	struct ipc_endpoint *ep;
+	uint8_t slot = 0u;
 	uint8_t left;
 
 	if (handle == 0u) {
 		return (struct ipc_endpoint *)0;
 	}
-	if (handle <= endpoint_count) {
-		ep = &endpoints[(uint8_t)(handle - 1u)];
+	if (handle <= (uint8_t)IPC_ENDPOINT_MAX) {
+		slot = host_slot[handle];
+	} else if ((uint8_t)(handle - IPC_EP_NUCLEUS_BASE) <
+		   (uint8_t)IPC_NUCLEUS_SLOTS) {
+		slot = nucleus_slot[(uint8_t)(handle - IPC_EP_NUCLEUS_BASE)];
+	}
+	if (slot != 0u) {
+		ep = &endpoints[(uint8_t)(slot - 1u)];
 		if (ep->number == handle) {
 			return ep;
 		}
@@ -533,6 +609,7 @@ int8_t ipc_install_endpoint(const struct ipc_endpoint_record *record)
 	ep->bulk_base = record->bulk_base;
 	ep->bulk_size = record->bulk_size;
 	++endpoint_count;
+	endpoint_map(record->number, endpoint_count);
 	return 0;
 }
 
@@ -663,6 +740,7 @@ int8_t ipc_install_nucleus_endpoint(uint8_t number, uint8_t flags,
 	ep->bulk_base = 0u;
 	ep->bulk_size = 0u;
 	++endpoint_count;
+	endpoint_map(number, endpoint_count);
 	return 0;
 }
 
@@ -1084,10 +1162,12 @@ int16_t ipc_syscall_call_object(struct kos_ipc_call_args *args,
 			return -KOS_EINVAL;
 		}
 	}
-	call_frame = args->frame;
-	call_frame.desc = (id >= 0) ? (uint8_t)id : KOS_IPC_DESC_NONE;
-	result = ipc_call_object(endpoint, object, args->handle, &call_frame);
-	args->frame = call_frame;
+	/* The block is in the caller window (the syscall body checked it),
+	 * which the driver mapping shows too, so the frame is passed in
+	 * place: the reply lands where the caller reads it, with no frame
+	 * copy in either direction. */
+	args->frame.desc = (id >= 0) ? (uint8_t)id : KOS_IPC_DESC_NONE;
+	result = ipc_call_object(endpoint, object, args->handle, &args->frame);
 	args->status = result;
 	desc_release_all();
 	return result;

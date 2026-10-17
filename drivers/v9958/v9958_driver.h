@@ -2,9 +2,11 @@
  *
  * v9958.c owns the GRAPHIC 6 display state, the ported initialization
  * and command sequencing, the font-atlas upload, and the output-only
- * 85x26 text terminal renderer; v9958_io.asm owns every port access and
- * the timing-critical streaming loops; v9958_boot.c owns the boot-tier
- * bring-up and v9958_proto.c the resident-driver protocol dispatch.
+ * 85x26 text terminal renderer; v9958_io.asm owns every port access,
+ * the timing-critical streaming loops and the renderer's hot path (the
+ * print run's glyph copies and the printable-byte fast path);
+ * v9958_boot.c owns the boot-tier bring-up and v9958_proto.c the
+ * resident-driver protocol dispatch.
  * The driver reaches the nucleus only through the driver bootstrap
  * interface (drivers/include/driver.h); its bulk font lives in bank 6's
  * boot/bulk tier and is re-read through the nucleus bulk copy.  Not a
@@ -204,6 +206,43 @@ struct v9958_state {
 	uint8_t exclusive;       /* a program holds the object      */
 	uint16_t dropped;        /* terminal bytes dropped while held */
 };
+
+/* The assembly renderer (v9958_io.asm) reads these fields by offset. */
+#if defined(__SDCC)
+_Static_assert(__builtin_offsetof(struct v9958_state, scroll_origin) == 1,
+	       "v9958_io.asm V9958_ST_ORIGIN");
+_Static_assert(__builtin_offsetof(struct v9958_state, term_state) == 2,
+	       "v9958_io.asm V9958_ST_TERM");
+_Static_assert(__builtin_offsetof(struct v9958_state, esc_count) == 3,
+	       "v9958_io.asm V9958_ST_ESC");
+_Static_assert(__builtin_offsetof(struct v9958_state, text_col) == 9,
+	       "v9958_io.asm V9958_ST_COL");
+_Static_assert(__builtin_offsetof(struct v9958_state, text_row) == 10,
+	       "v9958_io.asm V9958_ST_ROW");
+_Static_assert(__builtin_offsetof(struct v9958_state, current_attr) == 12,
+	       "v9958_io.asm V9958_ST_ATTR");
+_Static_assert(__builtin_offsetof(struct v9958_state, out_run_count) == 17,
+	       "v9958_io.asm V9958_ST_RUN_COUNT");
+_Static_assert(__builtin_offsetof(struct v9958_state, out_run_col) == 18,
+	       "v9958_io.asm V9958_ST_RUN_COL");
+_Static_assert(__builtin_offsetof(struct v9958_state, out_run_row) == 19,
+	       "v9958_io.asm V9958_ST_RUN_ROW");
+_Static_assert(V9958_OUT_RUN_SIZE == 64u && V9958_COLUMNS == 85u &&
+	       V9958_CELL_WIDTH == 6u && V9958_CELL_HEIGHT == 8u,
+	       "v9958_io.asm renderer constants");
+#endif /* __SDCC */
+
+/* The renderer's hot path (v9958_io.asm):
+ *   v9958_out_flush  renders the pending print run, one HMMM glyph copy
+ *                    per character, and empties it;
+ *   v9958_term_write appends the plain printable bytes of `buf` to the
+ *                    run while the parser is in its normal state and the
+ *                    run has room before the right margin, and passes
+ *                    every other byte to v9958_term_feed. */
+void v9958_out_flush(void);
+void v9958_term_write(const uint8_t *buf, uint16_t len);
+void v9958_term_feed(uint8_t byte);
+extern uint8_t *v9958_run_ptr;
 
 /* Internal result convention of the bring-up chain. */
 #define V9958_OK   0

@@ -59,13 +59,14 @@ KOS_SDK_C_SRC := args.c fs.c ipc.c exec.c console_io.c \
     xmem.c seg.c xload.c event.c \
     console_proto.c timer.c stream.c \
     stdio.c fread.c fwrite.c fseek.c feof.c \
-    klibc/strlen.c klibc/strcmp.c klibc/strncmp.c klibc/strchr.c \
-    klibc/strrchr.c klibc/memcpy.c klibc/memmove.c klibc/memset.c \
-    klibc/memcmp.c klibc/strlcpy.c klibc/strlcat.c \
+    klibc/strrchr.c klibc/strlcpy.c klibc/strlcat.c \
     klibc/utoa.c klibc/ultoa.c klibc/itoa.c klibc/ltoa.c \
     klibc/printf.c klibc/sdcc_arith.c klibc/sdcc_arith_signed.c
 KOS_SDK_ASM_SRC := gate.asm ipcgate.asm diaggate.asm nsgate.asm \
     xmemgate.asm bcall.asm sdcc_calls.asm event_entry.asm \
+    klibc/strlen.asm klibc/strcmp.asm klibc/strncmp.asm klibc/strchr.asm \
+    klibc/memcpy.asm klibc/memmove.asm klibc/memset.asm klibc/memcmp.asm \
+    klibc/divmod.asm klibc/sdcc_arith16.asm klibc/mul.asm \
     klibc/sdcc_arith_entries.asm klibc/sdcc_arith_signed_entries.asm
 
 KOS_SDK_C_OBJS   := $(addprefix $(EXE_SDK_BUILD)/,$(patsubst %.c,%.rel,$(KOS_SDK_C_SRC)))

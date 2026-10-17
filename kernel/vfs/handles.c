@@ -126,18 +126,34 @@ uint8_t vfs_owner_current(void)
 	return (pid == PROCESS_NO_PROCESS) ? VFS_OWNER_KERNEL : pid;
 }
 
+/* The entry the last lookup of each handle number found (by the number's
+ * low bits): one call resolves its handle more than once (the router, then
+ * the provider path) and a program alternates a few handles, so most
+ * lookups are a check of the remembered entry, not a scan.  The entry is
+ * re-validated on every use, so a release or a reuse of the slot is never
+ * trusted. */
+#define VFS_HANDLE_MEMO 8u
+static struct vfs_handle_entry *vfs_handle_memo[VFS_HANDLE_MEMO];
+
 struct vfs_handle_entry *vfs_handle_find(uint8_t pid, uint8_t number)
 {
+	struct vfs_handle_entry **memo =
+		&vfs_handle_memo[number & (VFS_HANDLE_MEMO - 1u)];
+	struct vfs_handle_entry *entry = *memo;
 	uint8_t i;
 
 	if (number == 0u || pid == VFS_FD_NONE) {
 		return (struct vfs_handle_entry *)0;
 	}
-	for (i = 0; i < VFS_HANDLE_MAX; ++i) {
-		struct vfs_handle_entry *entry = &vfs_handles[i];
-
+	if (entry != (struct vfs_handle_entry *)0 && entry->owner == pid &&
+	    entry->endpoint != 0u && entry->number == number) {
+		return entry;
+	}
+	entry = vfs_handles;
+	for (i = 0; i < VFS_HANDLE_MAX; ++i, ++entry) {
 		if (entry->owner == pid && entry->endpoint != 0u &&
 		    entry->number == number) {
+			*memo = entry;
 			return entry;
 		}
 	}

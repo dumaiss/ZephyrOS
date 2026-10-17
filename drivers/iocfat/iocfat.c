@@ -25,8 +25,10 @@
  *     traffic (the firmware's own name rules are mirrored here);
  *   - the resolver is stateless between operations: every operation sends
  *     ROOT and then one PUSH per directory component;
- *   - enumeration is stateless too: the cookie is the entry index, and a
- *     batch re-opens the directory and skips to it;
+ *   - the enumeration cookie is the entry index: a batch that stops before
+ *     the end keeps the directory open for the next batch at its cookie,
+ *     and any other batch re-opens the directory and skips to it (see the
+ *     listing memo at the enumeration operation);
  *   - FS2 tokens never escape the driver; a bound file's identity is its
  *     slot index plus one, which the nucleus records as the handle's object
  *     (`payload[0]` of every FILE operation).
@@ -1350,12 +1352,24 @@ static int iocfat_file_sync(struct iocfat_file *handle)
 
 /* --- metadata --------------------------------------------------------- */
 
+/* The listing memo's table, filling and lookup (iocfat_memo.asm; see the
+ * enumeration operation) and the generation it was filled in. */
+extern uint8_t iocfat_memo_count;
+void iocfat_memo_add(const struct kfs_dirent *file);
+uint8_t iocfat_memo_stat(const char *path, struct kfs_stat *out);
+static uint32_t iocfat_memo_generation;
+
 static int iocfat_stat_path(const char *path, struct kfs_stat *out)
 {
 	uint8_t count = 0u;
 	uint32_t size;
 	int result;
 
+	if (iocfat_memo_generation == iocfat.generation &&
+	    iocfat_memo_stat(path, out) != 0u) {
+		size = out->size;
+		goto filled;
+	}
 	result = iocfat_walk(path, 0xFFu, (uint8_t *)0, &count);
 	if (result != 0) {
 		return result;
@@ -1387,6 +1401,7 @@ static int iocfat_stat_path(const char *path, struct kfs_stat *out)
 			size = iocfat_get32(&iocfat_reply.data[FS2_OFF_STAT_SIZE]);
 		}
 	}
+filled:
 	out->attributes = 0u;
 	out->reserved = 0u;
 	out->size = size;
@@ -1397,13 +1412,69 @@ static int iocfat_stat_path(const char *path, struct kfs_stat *out)
 
 /* --- enumeration ------------------------------------------------------ */
 
+/* The listing memo.  A listing pages the directory in batches and stats
+ * each file it lists.  A batch that stops before the end of the directory
+ * keeps it open (parked) with the cookie it ends at, so the next batch for
+ * the same path at that cookie reads on instead of re-opening and skipping
+ * one READDIR per earlier entry; and the entries of the last batch are
+ * remembered (name, type, size from their READDIR reply), so a stat of
+ * one of them is answered without the card - once per entry.  Any other
+ * operation closes the parked directory and forgets the batch
+ * (iocfat_dispatch), and so does another generation. */
+#define IOCFAT_LIST_PATH    64u  /* a longer path gets no continuation */
+
+char iocfat_list_path_storage[IOCFAT_LIST_PATH]; /* read by the memo */
+static char *iocfat_list_path;           /* captured at init */
+static struct iocfat_dir *iocfat_parked; /* open between batches, or 0 */
+static uint16_t iocfat_parked_next;      /* the cookie it resumes at */
+static uint8_t iocfat_list_ended;        /* ...or where the listing ended */
+
+static void iocfat_unpark(void)
+{
+	if (iocfat_parked != (struct iocfat_dir *)0) {
+		(void)iocfat_dir_close(iocfat_parked);
+		iocfat_parked = (struct iocfat_dir *)0;
+	}
+}
+
+static void iocfat_list_forget(void)
+{
+	iocfat_unpark();
+	iocfat_memo_count = 0u;
+	iocfat_list_ended = 0u;
+}
+
+/* 1 when the first `length` bytes of `path` (or all of it, when shorter)
+ * are the listed directory. */
+static uint8_t iocfat_list_dir_is(const char *path, uint8_t length)
+{
+	const char *listed = iocfat_list_path;
+
+	while (length != 0u) {
+		if (*listed != *path) {
+			return 0u;
+		}
+		if (*listed == '\0') {
+			return 1u;
+		}
+		++listed;
+		++path;
+		--length;
+	}
+	return (uint8_t)(*listed == '\0');
+}
+
 /* Allocate the directory slot, resolve the directory, OPENDIR and store its
- * token.  Returns 0 or a negative error. */
+ * token.  A parked enumeration gives the slot up first.  Returns 0 or a
+ * negative error. */
 static int iocfat_dir_open(const char *path, uint8_t count,
 			   struct iocfat_dir **out)
 {
-	struct iocfat_dir *dir = iocfat_dir_alloc();
+	struct iocfat_dir *dir;
 	int result;
+
+	iocfat_unpark();
+	dir = iocfat_dir_alloc();
 
 	if (dir == (struct iocfat_dir *)0) {
 		return (-KOS_EMFILE);
@@ -1921,7 +1992,9 @@ static int16_t iocfat_stat_op(struct kos_ipc_frame *frame)
 
 /* KFS_OP_ENUM: batch entries into the caller's array (the call descriptor),
  * resuming at `payload[2..3]` (the cookie = entry index) and replying the
- * next cookie there. */
+ * next cookie there.  The parked directory continues a listing; a batch
+ * that fills before the end parks its directory, and the batch's entries
+ * become the listing memo. */
 static int16_t iocfat_enum_op(struct kos_ipc_frame *frame)
 {
 	const char *path = (const char *)iocfat_addr(frame->payload);
@@ -1935,12 +2008,36 @@ static int16_t iocfat_enum_op(struct kos_ipc_frame *frame)
 	uint16_t skip = 0u;
 	uint16_t written = 0u;
 	uint8_t count = 0u;
+	uint8_t more = 0u;   /* the batch filled before the end */
+	uint8_t ended = 0u;  /* ...or the stream ended cleanly */
+	uint8_t i;
 	int result;
 
 	if (frame->desc == KOS_IPC_DESC_NONE ||
 	    out_size < KOS_NS_ENTRY_SIZE) {
 		return (-KOS_EINVAL);
 	}
+	if (cookie == iocfat_parked_next &&
+	    iocfat_memo_generation == iocfat.generation &&
+	    iocfat_list_dir_is(path, IOCFAT_LIST_PATH) != 0u) {
+		if (iocfat_list_ended != 0u) {
+			/* Paging past the end the last batch reached. */
+			iocfat_list_ended = 0u;
+			return 0;
+		}
+		more = 1u; /* the same listing: resume a parked directory */
+	}
+	iocfat_list_ended = 0u;
+	iocfat_memo_count = 0u;
+	if (more != 0u && iocfat_parked != (struct iocfat_dir *)0) {
+		/* The listing continues where its last batch stopped. */
+		more = 0u;
+		dir = iocfat_parked;
+		iocfat_parked = (struct iocfat_dir *)0;
+		skip = cookie;
+		goto read_batch;
+	}
+	more = 0u;
 	result = iocfat_walk(path, 0xFFu, (uint8_t *)0, &count);
 	if (result != 0) {
 		return (int16_t)result;
@@ -1952,7 +2049,14 @@ static int16_t iocfat_enum_op(struct kos_ipc_frame *frame)
 	if (result != 0) {
 		return (int16_t)result;
 	}
-	/* The cookie is a stateless entry index: skip what the caller has. */
+	/* The listed path, for the continuation and the memo (a path that
+	 * does not fit gets neither). */
+	for (i = 0u; i < (uint8_t)(IOCFAT_LIST_PATH - 1u) && path[i] != '\0';
+	     ++i) {
+		iocfat_list_path[i] = path[i];
+	}
+	iocfat_list_path[(path[i] == '\0') ? i : 0u] = '\0';
+	/* Skip what the caller has: the cookie is an entry index. */
 	while (skip < cookie) {
 		struct kfs_dirent seen;
 		int read = iocfat_dir_read(dir, &seen);
@@ -1966,14 +2070,21 @@ static int16_t iocfat_enum_op(struct kos_ipc_frame *frame)
 		}
 		++skip;
 	}
-	while ((uint16_t)(slot + KOS_NS_ENTRY_SIZE) <= out_size) {
+read_batch:
+	iocfat_memo_generation = iocfat.generation;
+	for (;;) {
 		struct kfs_dirent file;
-		uint8_t i;
 
+		if ((uint16_t)(slot + KOS_NS_ENTRY_SIZE) > out_size) {
+			more = 1u;
+			break;
+		}
 		result = iocfat_dir_read(dir, &file);
 		if (result <= 0) {
-			break; /* end of stream */
+			ended = (uint8_t)(result == 0); /* end of stream */
+			break;
 		}
+		iocfat_memo_add(&file);
 		entry.type = (file.type == KFS_TYPE_DIR) ? 0u
 							 : KOS_TYPE_FILE;
 		entry.flags = (file.type == KFS_TYPE_DIR)
@@ -1997,7 +2108,15 @@ static int16_t iocfat_enum_op(struct kos_ipc_frame *frame)
 		++skip;
 		++cookie;
 	}
-	(void)iocfat_dir_close(dir);
+	if (more != 0u && iocfat_list_path[0] != '\0') {
+		iocfat_parked = dir;
+	} else {
+		(void)iocfat_dir_close(dir);
+		/* A clean end of the stream: the next page is known empty. */
+		iocfat_list_ended = (uint8_t)(ended != 0u &&
+					      iocfat_list_path[0] != '\0');
+	}
+	iocfat_parked_next = cookie;
 	frame->payload[2] = (uint8_t)cookie;
 	frame->payload[3] = (uint8_t)(cookie >> 8);
 	return (int16_t)written;
@@ -2010,6 +2129,9 @@ int16_t iocfat_dispatch(struct kos_ipc_frame *frame)
 	}
 	if (frame->flags != 0u) {
 		return (-KOS_EINVAL); /* the operations define no flags */
+	}
+	if (frame->op != KFS_OP_ENUM && frame->op != KFS_OP_STAT) {
+		iocfat_list_forget();
 	}
 	switch (frame->op) {
 	case KFILE_OP_READ:
@@ -2079,6 +2201,11 @@ uint8_t iocfat_init(const struct driver_boot *boot)
 	iocfat_cslots = iocfat_cslot_table;
 	iocfat_pathbuf = iocfat_pathbuf_storage;
 	iocfat_pathbuf_address = (uint16_t)iocfat_pathbuf_storage;
+	iocfat_list_path = iocfat_list_path_storage;
+	iocfat_list_path[0] = '\0';
+	iocfat_memo_count = 0u;
+	iocfat_list_ended = 0u;
+	iocfat_parked = (struct iocfat_dir *)0;
 	iocfat_ready = 0u;
 #if KOS_IOC_PHASES
 	iocfat_phase_peer = 0u;

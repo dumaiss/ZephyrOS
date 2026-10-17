@@ -4,6 +4,7 @@
   "objects": [
     "iocfat.rel",
     "iocfat_cache.rel",
+    "iocfat_memo.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "iocfat_init",

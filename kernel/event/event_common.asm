@@ -63,6 +63,7 @@
 	.globl _kos_event_frame_latch
 	.globl _kos_event_row
 	.globl _kos_event_latch
+	.globl _kos_event_maybe
 	.globl irq_saved_sp, irq_common_sp, irq_saved_latch
 	.globl kos_gate_saved_sp, kos_gate_saved_latch, kos_gate_saved_iff
 	.globl kos_gate_result_a, kos_gate_result_c, kos_gate_result_hl
@@ -118,12 +119,21 @@ _kos_event_pick_keep::
 	pop	bc
 	ret
 
-; The scan itself.  Clobbers: AF, BC, DE, HL, IX.
+; The scan itself.  Every syscall and interrupt exit runs it, so it ends
+; at once while kos_event_maybe is clear: a post sets it, and the scan
+; clears it first and sets it again for any row still holding pending
+; events (a post during the scan sets it too), so nothing is lost.
+; Clobbers: AF, BC, DE, HL, IX.
 _kos_event_pick_core::
 	ld	a,(_kos_event_latch)
 	and	#KOS_MODE_MASK
 	cp	#KOS_MODE_APPLICATION
 	jr	nz,event_pick_none
+	ld	a,(_kos_event_maybe)
+	or	a
+	jr	z,event_pick_none
+	xor	a
+	ld	(_kos_event_maybe),a
 	ld	a,(_kos_event_latch)
 	and	#KOS_BANK_MASK
 	ld	c,a
@@ -133,6 +143,11 @@ event_pick_row:
 	ld	a,0(ix)			; owner: 0 marks a free row
 	or	a
 	jr	z,event_pick_next
+	ld	a,EVENT_OFF_PENDING(ix)	; it needs pending events
+	or	EVENT_OFF_PENDING+1(ix)
+	jr	z,event_pick_next
+	ld	a,#1			; some row still holds pending events
+	ld	(_kos_event_maybe),a
 	ld	a,EVENT_OFF_BANK(ix)	; the owner's bank must be the latch's
 	cp	c
 	jr	nz,event_pick_next
@@ -143,9 +158,6 @@ event_pick_row:
 	ld	a,(hl)
 	or	a
 	jr	nz,event_pick_next
-	ld	a,EVENT_OFF_PENDING(ix)	; and it needs pending events
-	or	EVENT_OFF_PENDING+1(ix)
-	jr	z,event_pick_next
 	push	ix
 	pop	hl
 	ld	(_kos_event_row),hl
@@ -422,4 +434,6 @@ _kos_event_frame_latch::
 _kos_event_row::
 	.ds	2
 _kos_event_latch::
+	.ds	1
+_kos_event_maybe::		; 1 while some row may hold pending events
 	.ds	1

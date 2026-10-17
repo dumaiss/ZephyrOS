@@ -783,6 +783,10 @@ $(MODULES)/iocfat.rel: drivers/iocfat/iocfat.c \
 $(MODULES)/iocfat_cache.rel: drivers/iocfat/iocfat_cache.asm | $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
+# The listing memo: its table, filling and lookup.
+$(MODULES)/iocfat_memo.rel: drivers/iocfat/iocfat_memo.asm | $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
 $(MODULES)/sdcc_indirect_calls.rel: drivers/runtime/sdcc_indirect_calls.asm \
 		| $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<

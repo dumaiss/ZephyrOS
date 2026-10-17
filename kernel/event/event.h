@@ -71,6 +71,9 @@ extern uint8_t kos_event_frame_latch[KOS_EVENT_IN_HANDLER_SIZE];
  * set by the return-path checks, read by pick and enter. */
 extern uint16_t kos_event_row;
 extern uint8_t kos_event_latch;
+/* Set by every post that adds a pending event; the exit scan clears it
+ * when no row holds any (kernel/event/event_common.asm). */
+extern uint8_t kos_event_maybe;
 
 /* --- common primitives (kernel/event/event_common.asm) ------------------- */
 

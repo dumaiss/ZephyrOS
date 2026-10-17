@@ -11,7 +11,9 @@
 ;   - the native-WAIT register write (value, register|80h);
 ;   - the status-register read and the CE completion wait;
 ;   - the four port streams (control/data/palette/indirect) used for
-;     operations, VRAM addressing bytes, atlas rows and command blocks.
+;     operations, VRAM addressing bytes, atlas rows and command blocks;
+;   - the renderer's hot path: the print run's glyph copies and the
+;     printable-byte fast path in front of the C parser.
 ;
 ; Call convention (sdcccall(0), the default of this project's SDCC):
 ;   void   f(uint8_t value)              A = value
@@ -44,6 +46,27 @@
 	.globl _v9958_char_write
 	.globl _v9958_char_putc_worker
 	.globl _v9958_char_write_worker
+	.globl _v9958_out_flush
+	.globl _v9958_term_write
+	.globl _v9958_term_feed
+	.globl _v9958_state
+	.globl _v9958_run_ptr
+
+; struct v9958_state offsets and the renderer constants (pinned by the
+; _Static_asserts in v9958_driver.h).
+V9958_ST_ORIGIN    = 1
+V9958_ST_TERM      = 2
+V9958_ST_ESC       = 3
+V9958_ST_COL       = 9
+V9958_ST_ROW       = 10
+V9958_ST_ATTR      = 12
+V9958_ST_RUN_COUNT = 17
+V9958_ST_RUN_COL   = 18
+V9958_ST_RUN_ROW   = 19
+V9958_RUN_SIZE     = 64
+V9958_LAST_COLUMN  = 84
+V9958_CELL_WIDTH   = 6
+V9958_CMD_HMMM     = 0xD0
 
 	.area _CODE
 
@@ -193,6 +216,179 @@ v9958_indirect_loop:
 	ld	a,b
 	or	c
 	jr	nz,v9958_indirect_loop
+	ret
+
+; ===========================================================================
+; Renderer hot path
+; ===========================================================================
+
+; The glyph copy's command block, R#32..R#46: SX, SY, DX, DY, NX, NY,
+; colour, argument, command.  The fixed fields come from the template
+; once per run; each glyph patches SX, SY and DX before it waits for the
+; previous command, so building the next block overlaps the engine.
+	.area _DRIVER_IO
+v9958_glyph_cmd:
+	.ds	15
+
+	.area _CODE
+v9958_glyph_template:
+	.db	0, 0		; SX: per glyph (the low byte only, at most 186)
+	.db	0, 1		; SY: per glyph; the atlas lives in page one
+	.db	0, 0		; DX: per glyph
+	.db	0, 0		; DY: the run's row
+	.db	V9958_CELL_WIDTH, 0
+	.db	8, 0		; NY: one cell
+	.db	0, 0		; colour, argument
+	.db	V9958_CMD_HMMM
+
+; ---------------------------------------------------------------------------
+; void v9958_out_flush(void);
+;   Render the pending print run at (out_run_col, out_run_row) and empty
+;   it: per character one HMMM 6x8 copy from cell (ch & 1Fh, ch >> 5) of
+;   the normal atlas, or of the reverse one (40h lines lower) while SGR
+;   reverse is set; destination row y = row * 8 + the scroll origin.
+; ---------------------------------------------------------------------------
+_v9958_out_flush::
+	ld	a,(_v9958_state+V9958_ST_RUN_COUNT)
+	or	a
+	ret	z
+	ld	hl,#v9958_glyph_template
+	ld	de,#v9958_glyph_cmd
+	ld	bc,#KOS_V9958_CMD_REGISTER_COUNT
+	ldir
+	; DY = row * 8 + origin
+	ld	a,(_v9958_state+V9958_ST_RUN_ROW)
+	add	a,a
+	add	a,a
+	add	a,a
+	ld	hl,#_v9958_state+V9958_ST_ORIGIN
+	add	a,(hl)
+	ld	(v9958_glyph_cmd+6),a
+	; DX = column * 6
+	ld	a,(_v9958_state+V9958_ST_RUN_COL)
+	ld	l,a
+	ld	h,#0
+	add	hl,hl
+	ld	d,h
+	ld	e,l
+	add	hl,hl
+	add	hl,de
+	ld	(v9958_glyph_cmd+4),hl
+	; C = the atlas line offset: 40h for reverse video
+	ld	a,(_v9958_state+V9958_ST_ATTR)
+	rrca
+	and	#0x80
+	rrca
+	ld	c,a
+	ld	a,(_v9958_state+V9958_ST_RUN_COUNT)
+	ld	b,a
+	ld	de,(_v9958_run_ptr)
+v9958_glyph_loop:
+	ld	a,(de)
+	inc	de
+	ld	h,a
+	and	#0x1F
+	ld	l,a
+	add	a,a
+	add	a,l
+	add	a,a
+	ld	(v9958_glyph_cmd+0),a	; SX = (ch & 1Fh) * 6
+	ld	a,h
+	and	#0xE0
+	rrca
+	rrca
+	or	c
+	ld	(v9958_glyph_cmd+2),a	; SY = (ch >> 5) * 8 | reverse
+v9958_glyph_wait:
+	in	a,(KOS_V9958_CMD_PORT)
+	and	#KOS_V9958_STATUS2_CE
+	jr	nz,v9958_glyph_wait
+	ld	a,#KOS_V9958_CMD_REGISTER_BASE
+	out	(KOS_V9958_CMD_PORT),a
+	ld	a,#(KOS_V9958_REG_R17 | KOS_V9958_REG_SELECT)
+	out	(KOS_V9958_CMD_PORT),a
+	push	bc
+	ld	hl,#v9958_glyph_cmd
+	ld	bc,#(KOS_V9958_CMD_REGISTER_COUNT * 256 + KOS_V9958_INDIRECT_PORT)
+	otir				; R#46 last: starts the copy
+	ld	hl,(v9958_glyph_cmd+4)
+	ld	bc,#V9958_CELL_WIDTH
+	add	hl,bc
+	ld	(v9958_glyph_cmd+4),hl
+	pop	bc
+	djnz	v9958_glyph_loop
+	xor	a
+	ld	(_v9958_state+V9958_ST_RUN_COUNT),a
+	ret
+
+; ---------------------------------------------------------------------------
+; void v9958_term_write(const uint8_t *buf, uint16_t len);  HL=buf, DE=len
+;   The write path's byte loop.  A printable byte (20h and up) while the
+;   parser is in its normal state, with room in the run and the cursor
+;   left of the last column, is appended here exactly as
+;   v9958_put_printable appends it (the triple-ESC count cleared, the
+;   run's origin taken by its first byte, the cursor one cell right).
+;   Every other byte goes to v9958_term_feed (A = byte).
+; ---------------------------------------------------------------------------
+_v9958_term_write::
+	ld	a,d
+	or	e
+	ret	z
+v9958_tw_loop:
+	ld	a,(_v9958_state+V9958_ST_TERM)
+	or	a
+	jr	nz,v9958_tw_slow
+	ld	a,(hl)
+	cp	#0x20
+	jr	c,v9958_tw_slow
+	ld	a,(_v9958_state+V9958_ST_RUN_COUNT)
+	cp	#V9958_RUN_SIZE
+	jr	z,v9958_tw_slow
+	ld	c,a			; C = run count
+	ld	a,(_v9958_state+V9958_ST_COL)
+	cp	#V9958_LAST_COLUMN
+	jr	nc,v9958_tw_slow
+	ld	b,a			; B = column
+	xor	a
+	ld	(_v9958_state+V9958_ST_ESC),a
+	or	c
+	jr	nz,v9958_tw_append
+	ld	a,b
+	ld	(_v9958_state+V9958_ST_RUN_COL),a
+	ld	a,(_v9958_state+V9958_ST_ROW)
+	ld	(_v9958_state+V9958_ST_RUN_ROW),a
+v9958_tw_append:
+	push	de
+	push	bc
+	ld	a,(hl)
+	ex	de,hl			; DE = buf
+	ld	hl,(_v9958_run_ptr)
+	ld	b,#0
+	add	hl,bc
+	ld	(hl),a			; run[count] = byte
+	ex	de,hl			; HL = buf
+	pop	bc
+	pop	de
+	inc	c
+	ld	a,c
+	ld	(_v9958_state+V9958_ST_RUN_COUNT),a
+	inc	b
+	ld	a,b
+	ld	(_v9958_state+V9958_ST_COL),a
+	jr	v9958_tw_next
+v9958_tw_slow:
+	ld	a,(hl)
+	push	hl
+	push	de
+	call	_v9958_term_feed
+	pop	de
+	pop	hl
+v9958_tw_next:
+	inc	hl
+	dec	de
+	ld	a,d
+	or	e
+	jr	nz,v9958_tw_loop
 	ret
 
 ; ===========================================================================

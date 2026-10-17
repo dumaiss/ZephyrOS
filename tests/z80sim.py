@@ -2222,6 +2222,16 @@ def opcode_cost(z):
             count = (z.b << 8) | z.c
             if count == 0:
                 count = 0x10000
+            if second in (0xB2, 0xB3, 0xBA, 0xBB):  # inir/otir: B counts
+                count = z.b or 0x100
+            elif second in (0xB1, 0xB9):  # cpir/cpdr stop at the match
+                step = 1 if second == 0xB1 else 0xFFFF
+                hl = (z.h << 8) | z.l
+                for n in range(1, count + 1):
+                    if z.rd(hl) == z.a:
+                        count = n
+                        break
+                    hl = (hl + step) & 0xFFFF
             return 21 * count - 5
         return ED_T.get(second, 4)
     if op == 0xCB:
@@ -2935,6 +2945,37 @@ class Z80:
                 self.b, self.c = (bc >> 8) & 0xFF, bc & 0xFF
                 self.cycles += 1
             self.ZF = 0
+        elif op == 0xB8:  # lddr: (DE) <- (HL), HL--, DE--, BC-- to zero
+            bc = (self.b << 8) | self.c
+            while bc:
+                self.wr((self.d << 8) | self.e, self.rd((self.h << 8) | self.l))
+                self.hl = (self.get_rr(2) - 1) & 0xFFFF
+                de = (((self.d << 8) | self.e) - 1) & 0xFFFF
+                self.d, self.e = de >> 8, de & 0xFF
+                bc -= 1
+                self.b, self.c = (bc >> 8) & 0xFF, bc & 0xFF
+                self.cycles += 1
+            self._sf(0x10, 0)
+            self._sf(0x02, 0)
+            self._sf(0x04, 0)
+        elif op == 0xB1:  # cpir: compare A with (HL), HL++, BC--, until
+            # a match or BC = 0; Z on a match, P/V while BC is not zero
+            bc = (self.b << 8) | self.c
+            found = False
+            while True:
+                value = self.rd((self.h << 8) | self.l)
+                self.hl = (self.get_rr(2) + 1) & 0xFFFF
+                bc = (bc - 1) & 0xFFFF
+                self.cycles += 1
+                if value == self.a:
+                    found = True
+                    break
+                if bc == 0:
+                    break
+            self.b, self.c = bc >> 8, bc & 0xFF
+            self._sf(0x40, found)
+            self._sf(0x04, bc != 0)
+            self._sf(0x02, 1)
         elif op == 0xA0:  # ldi: (DE) <- (HL), HL++, DE++, BC--
             self.wr((self.d << 8) | self.e, self.rd((self.h << 8) | self.l))
             self.hl = (self.get_rr(2) + 1) & 0xFFFF
@@ -3003,6 +3044,18 @@ class Z80:
             self.SNF = (value & 0x80) != 0
             self._sf(0x02, 1)
             self.PV = self.parity(value)
+        elif op == 0xB3:  # otir: outi until B is zero, one step per byte
+            while True:
+                value = self.rd((self.h << 8) | self.l)
+                self.io_out(self.c, value)
+                self.hl = (self.hl + 1) & 0xFFFF
+                self.b = (self.b - 1) & 0xFF
+                self.cycles += 1
+                if self.b == 0:
+                    break
+            self.ZF = True
+            self.SNF = False
+            self._sf(0x02, 1)
         elif (op & 0xC7) == 0x40:  # in r,(c); op 70h reads and discards
             value = self.io_in(self.c)
             code = (op >> 3) & 7

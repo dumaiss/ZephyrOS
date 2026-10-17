@@ -117,9 +117,18 @@ meaning, creation, mutation, enumeration and the backend state below
   `KOS_EINVAL` before any IOC traffic. The native ABI allows 63-byte names;
   this driver does not.
 - Paths are resolved fresh for each operation: `ROOT`, then one `PUSH` per
-  directory component. The driver keeps no path state between operations.
-- Enumeration is stateless: the cookie is the entry index, and each batch
-  reopens the directory and skips to it.
+  directory component.
+- The enumeration cookie is the entry index. A batch that fills before the
+  end keeps the directory open, and the next batch for the same path at
+  that cookie reads on; one that reaches the end remembers it, so the
+  caller's last page costs nothing. Any other batch reopens the directory
+  and skips to its cookie.
+- The entries of the last batch are remembered (name, type, size), and a
+  `stat` of one of them is answered from that memo, once per entry. A
+  listing that stats what it lists (the shell's `ls`) touches the card
+  once per entry.
+- Any operation other than a batch or a `stat` closes the kept directory
+  and forgets the memo, and so does a new media generation.
 
 **FS2 commands** (private to the driver): `CAPS` 30h, `GENERATION` 31h,
 `RESET` 32h, `ROOT` 33h, `PUSH` 34h, `OPEN_RO` 35h, `READ` 36h, `CLOSE` 37h,

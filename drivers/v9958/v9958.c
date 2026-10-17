@@ -105,9 +105,10 @@ static uint8_t v9958_atlas_reverse;
  * SDCC otherwise folds variable indexing into `add a,#<sym` /
  * `adc a,#>sym` byte-fragmented address arithmetic, which the MOD v1
  * relocator cannot express.  The pointer is established by the terminal
- * defaults (cold init and every reset). */
+ * defaults (cold init and every reset); the assembly renderer reads the
+ * run through it too. */
 static uint8_t v9958_out_run[V9958_OUT_RUN_SIZE];
-static uint8_t *v9958_run_ptr;
+uint8_t *v9958_run_ptr;
 
 /* Real-card G6 baseline from the verified bring-up sequence (R#0..R#11);
  * R#1 deliberately keeps the display disabled until VRAM setup ends. */
@@ -506,31 +507,6 @@ static uint8_t v9958_fill_color(void)
 /* Defined below; used by the parser's reset paths. */
 static void v9958_term_set_defaults(void);
 
-/* One 6x8 glyph copy: source cell (ch & 1Fh, ch >> 5) in the selected
- * precolored atlas page, destination cell (col, row) in page zero. */
-static void v9958_render_char(uint8_t ch, uint8_t col, uint8_t row)
-{
-	uint16_t sx = (uint16_t)(ch & 0x1Fu) * V9958_CELL_WIDTH;
-	uint16_t dx = (uint16_t)col * V9958_CELL_WIDTH;
-	uint8_t sy = (uint8_t)((uint8_t)(ch >> 5) * V9958_CELL_HEIGHT);
-
-	if ((v9958_state.current_attr & 0x01u) != 0u) {
-		sy = (uint8_t)(sy + 0x40u); /* reverse atlas, page one */
-	}
-	v9958_cmd_reset();
-	v9958_cmd[V9958_CMD_SX_LO] = (uint8_t)(sx & 0xFFu);
-	v9958_cmd[V9958_CMD_SX_HI] = (uint8_t)(sx >> 8);
-	v9958_cmd[V9958_CMD_SY_LO] = sy;
-	v9958_cmd[V9958_CMD_SY_HI] = 0x01u; /* atlas lives in page one */
-	v9958_cmd[V9958_CMD_DX_LO] = (uint8_t)(dx & 0xFFu);
-	v9958_cmd[V9958_CMD_DX_HI] = (uint8_t)(dx >> 8);
-	v9958_cmd[V9958_CMD_DY_LO] = v9958_row_vram_y(row);
-	v9958_cmd[V9958_CMD_NX_LO] = V9958_CELL_WIDTH;
-	v9958_cmd[V9958_CMD_NY_LO] = V9958_CELL_HEIGHT;
-	v9958_cmd[V9958_CMD_CODE] = V9958_CMD_HMMM;
-	v9958_start_command(v9958_cmd);
-}
-
 /* Rectangle erase in cells: width x height cells at (col,row), filled
  * with the current background.  A rectangle crossing the end of the
  * circular page-zero bitmap is split at physical line 255 (the reference
@@ -603,26 +579,10 @@ static void v9958_copy_rows(uint8_t src_row, uint8_t dst_row,
 
 /* --- print run ------------------------------------------------------- */
 
-/* Render the pending run.  The run only spans one text row: appending a
- * character at the right margin flushes first (see v9958_put_printable). */
-static void v9958_out_flush(void)
-{
-	uint8_t i;
-	uint8_t col;
-	uint8_t row;
-	const uint8_t *run = v9958_run_ptr;
-
-	if (v9958_state.out_run_count == 0u) {
-		return;
-	}
-	col = v9958_state.out_run_col;
-	row = v9958_state.out_run_row;
-	for (i = 0u; i < v9958_state.out_run_count; ++i) {
-		v9958_render_char(run[i], col, row);
-		++col;
-	}
-	v9958_state.out_run_count = 0u;
-}
+/* The pending run is rendered by v9958_out_flush (v9958_io.asm): one
+ * HMMM glyph copy per character from the precolored atlas, the run only
+ * spanning one text row (appending at the right margin flushes first,
+ * see v9958_put_printable). */
 
 /* Make everything written so far visible: flush the run, write the
  * cursor SAT and wait for the command engine (present).  This is the
@@ -1337,8 +1297,10 @@ static void v9958_term_esc(uint8_t byte)
 	}
 }
 
-/* One byte through the ESC / CSI / charset state machine. */
-static void v9958_term_feed(uint8_t byte)
+/* One byte through the ESC / CSI / charset state machine.  The write
+ * path's plain printable bytes take the assembly fast path
+ * (v9958_term_write), which calls this for every other byte. */
+void v9958_term_feed(uint8_t byte)
 {
 	if (v9958_state.term_state == V9958_TERM_ESC) {
 		v9958_term_esc(byte);
@@ -1471,7 +1433,6 @@ int v9958_char_putc_worker(void *vstate, char ch)
 int v9958_char_write_worker(void *vstate, const char *buf, uint16_t len)
 {
 	struct v9958_state *state = (struct v9958_state *)vstate;
-	uint16_t i;
 
 	if (state == (struct v9958_state *)0) {
 		return (-KOS_ENODEV);
@@ -1487,9 +1448,7 @@ int v9958_char_write_worker(void *vstate, const char *buf, uint16_t len)
 	}
 	/* The whole 16-bit transfer is processed; the print run batches up
 	 * to 64 glyphs internally and one final sync makes it visible. */
-	for (i = 0u; i < len; ++i) {
-		v9958_term_feed((uint8_t)buf[i]);
-	}
+	v9958_term_write((const uint8_t *)buf, len);
 	v9958_term_sync();
 	return (int)len;
 }

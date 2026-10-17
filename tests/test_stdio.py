@@ -86,8 +86,12 @@ def _source(relative):
 
 # The entries that pair with the arithmetic members: the SDK's own
 # `__divuint`/`__modulong` wrappers are assembly, not C.
-ARITH_ASM = [_source(os.path.join("klibc", "sdcc_arith_entries.asm")),
+ARITH_ASM = [_source(os.path.join("klibc", "sdcc_arith16.asm")),
+             _source(os.path.join("klibc", "sdcc_arith_entries.asm")),
              _source(os.path.join("klibc", "sdcc_arith_signed_entries.asm"))]
+# The klibc string routines the stream probe links, in assembly.
+STRING_ASM = [_source(os.path.join("klibc", "strlen.asm")),
+              _source(os.path.join("klibc", "memcpy.asm"))]
 
 
 class SdkProbe:
@@ -849,10 +853,9 @@ class TestStreamProbe(ProbeTestBase):
         self.probe = SdkProbe(
             self.tmp,
             ["stdio.c", "fread.c", "fwrite.c", "fseek.c", "feof.c",
-             "klibc/strlen.c", "klibc/memcpy.c", "klibc/sdcc_arith.c",
-             "klibc/sdcc_arith_signed.c"],
+             "klibc/sdcc_arith.c", "klibc/sdcc_arith_signed.c"],
             STREAM_PROBE,
-            probe_asm=ARITH_ASM).build().run(limit=8000000)
+            probe_asm=ARITH_ASM + STRING_ASM).build().run(limit=8000000)
 
     def test_every_case_passes(self):
         self.assert_cases(

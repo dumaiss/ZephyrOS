@@ -60,6 +60,7 @@ void kos_event_post(uint16_t sub, uint8_t bank)
 		if (row->pending != 0xFFFFu) {
 			++row->pending;
 		}
+		kos_event_maybe = 1u;
 	} else if (row->missed != 0xFFFFu) {
 		++row->missed;
 	}

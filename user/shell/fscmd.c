@@ -128,22 +128,27 @@ static void fscmd_ls_entry(const char *dir, const struct kos_ns_entry *entry)
 	printf("%s\r\n", entry->name);
 }
 
-/* Page the namespace until it reports the end. */
+/* Page the namespace until it reports the end, a batch per call (the
+ * card's provider answers the stats of the batch it just listed from
+ * memory). */
+#define FSCMD_LS_BATCH 8u
+
+static struct kos_ns_entry fscmd_ls_batch[FSCMD_LS_BATCH];
+
 static int fscmd_ls_entries(const char *dir)
 {
-	struct kos_ns_entry entry;
 	unsigned int cookie = 0;
 	int status;
+	int i;
 
 	for (;;) {
-		status = list(dir, &cookie, &entry, 1);
-		if (status < 0) {
+		status = list(dir, &cookie, fscmd_ls_batch, FSCMD_LS_BATCH);
+		if (status <= 0) {
 			return status;
 		}
-		if (status == 0) {
-			return 0;
+		for (i = 0; i < status; ++i) {
+			fscmd_ls_entry(dir, &fscmd_ls_batch[i]);
 		}
-		fscmd_ls_entry(dir, &entry);
 	}
 }
 

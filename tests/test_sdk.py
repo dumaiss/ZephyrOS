@@ -81,8 +81,7 @@ KERNEL_INCLUDE_ROOTS = ("kernel", "drivers", "formats", "platform", "boot",
 HELLO_LIBRARY_MODULES = {
     "kos_crt0", "kos_runtime", "hello", "args", "console_proto", "ipc",
     "kos_gate", "kos_ipcgate", "nsgate", "printf",
-    "strlen", "utoa", "ultoa", "itoa", "ltoa", "sdcc_arith",
-    "kos_sdcc_arith_entries",
+    "kos_strlen", "utoa", "ultoa", "itoa", "ltoa", "kos_divmod",
 }
 
 # Kernel drivers a program must not link: the filesystem, the diagnostic

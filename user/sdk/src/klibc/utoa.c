@@ -1,5 +1,8 @@
 #include "klibc/fmt.h"
 
+/* Divide in place by `base`, return the remainder (divmod.asm). */
+unsigned int kos_divmod16(unsigned int *value, unsigned int base);
+
 void utoa(char *dst, unsigned int value, unsigned char base,
 	      unsigned char width, char pad)
 {
@@ -12,8 +15,7 @@ void utoa(char *dst, unsigned int value, unsigned char base,
 		base = 10u;
 	}
 	do {
-		tmp[n++] = digits[value % base];
-		value = (unsigned int)(value / base);
+		tmp[n++] = digits[kos_divmod16(&value, base)];
 	} while (value != 0u && n < sizeof(tmp));
 	while (n < width) {
 		tmp[n++] = pad;

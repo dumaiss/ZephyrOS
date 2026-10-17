@@ -137,15 +137,15 @@ OWNER_FILES = (
     "user/sdk/src/console_io.c",
     "user/sdk/src/timer.c",
     "user/sdk/src/kos_internal.h",
-    "user/sdk/src/klibc/strlen.c",
-    "user/sdk/src/klibc/strcmp.c",
-    "user/sdk/src/klibc/strncmp.c",
-    "user/sdk/src/klibc/strchr.c",
+    "user/sdk/src/klibc/strlen.asm",
+    "user/sdk/src/klibc/strcmp.asm",
+    "user/sdk/src/klibc/strncmp.asm",
+    "user/sdk/src/klibc/strchr.asm",
     "user/sdk/src/klibc/strrchr.c",
-    "user/sdk/src/klibc/memcpy.c",
-    "user/sdk/src/klibc/memmove.c",
-    "user/sdk/src/klibc/memset.c",
-    "user/sdk/src/klibc/memcmp.c",
+    "user/sdk/src/klibc/memcpy.asm",
+    "user/sdk/src/klibc/memmove.asm",
+    "user/sdk/src/klibc/memset.asm",
+    "user/sdk/src/klibc/memcmp.asm",
     "user/sdk/src/klibc/strlcpy.c",
     "user/sdk/src/klibc/strlcat.c",
     "user/sdk/src/klibc/utoa.c",
@@ -155,6 +155,9 @@ OWNER_FILES = (
     "user/sdk/src/klibc/printf.c",
     "user/sdk/src/klibc/sdcc_arith.c",
     "user/sdk/src/klibc/sdcc_arith_signed.c",
+    "user/sdk/src/klibc/sdcc_arith16.asm",
+    "user/sdk/src/klibc/divmod.asm",
+    "user/sdk/src/klibc/mul.asm",
     "user/sdk/src/klibc/sdcc_arith_entries.asm",
     "user/sdk/src/klibc/sdcc_arith_signed_entries.asm",
     "user/sdk/template/hello.c",
@@ -625,7 +628,7 @@ class TestProductionTestSeparation(unittest.TestCase):
              "timer_proto.c"])
         self.assertEqual(
             sorted(os.listdir(os.path.join(ROOT, "drivers", "iocfat"))),
-            ["iocfat.c", "iocfat.json", "iocfat_cache.asm"])
+            ["iocfat.c", "iocfat.json", "iocfat_cache.asm", "iocfat_memo.asm"])
         self.assertEqual(
             sorted(os.listdir(os.path.join(ROOT, "drivers", "runtime"))),
             ["sdcc_indirect_calls.asm"])

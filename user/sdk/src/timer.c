@@ -55,18 +55,24 @@ int timer_now(int handle, uint32_t *now)
 	if (result < 0) {
 		return result;
 	}
-	*now = (uint32_t)req.frame.payload[0] |
-	       ((uint32_t)req.frame.payload[1] << 8) |
-	       ((uint32_t)req.frame.payload[2] << 16) |
-	       ((uint32_t)req.frame.payload[3] << 24);
+	/* The count is little-endian, the Z80's own order: the four bytes
+	 * are the value (shifting each into place costs SDCC far more). */
+	{
+		uint8_t *out = (uint8_t *)now;
+
+		out[0] = req.frame.payload[0];
+		out[1] = req.frame.payload[1];
+		out[2] = req.frame.payload[2];
+		out[3] = req.frame.payload[3];
+	}
 	return 0;
 }
 
 uint32_t timer_us(uint32_t counts)
 {
-	/* 25.6 µs = 25 + 3/5.  The multiplies are shifts and adds: the
-	 * freestanding runtime has no multiply helper, and the shared
-	 * library provides the long division the last term needs. */
+	/* 25.6 µs = 25 + 3/5.  The multiplies are shifts and adds, cheaper
+	 * than a 32-bit multiply, and the shared library provides the long
+	 * division the last term needs. */
 	return (counts << 4) + (counts << 3) + counts +
 	       (((counts << 1) + counts) / 5u);
 }
