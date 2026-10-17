@@ -40,6 +40,10 @@
 /* Longest bulk DATA payload carried by one bulk_read()/bulk_write(). */
 #define KIOC_BULK_MAX 512u
 
+/* Longest run one FS2_READ_RUN READY admits: one KIOC_BULK_MAX packet per
+ * block, received back to back by KIOC_OP_COMMAND_READ. */
+#define KIOC_RUN_MAX 8192u
+
 /* Packed frame size: TYPE + STATUS + LENGTH + DATA. */
 #define KIOC_FRAME_SIZE (3u + KIOC_MAX_DATA)
 

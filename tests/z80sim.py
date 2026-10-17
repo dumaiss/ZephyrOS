@@ -99,7 +99,11 @@ class IocCommandPeer:
     CMD_FS2_RENAME = 0x42
     CMD_FS2_MKDIR = 0x43
     CMD_FS2_RMDIR = 0x44
+    CMD_FS2_READ_RUN = 0x45
+    FS2_CAP_READ_RUN = 0x1000
+    FS2_RUN_MAX = 2048
     RSP_FS2_READ = 0xB6
+    RSP_FS2_READ_RUN = 0xC5
     RSP_FS2_RESET = 0xB2
     RSP_FS2_WRITE = 0xBE
     ST_FS2_OK = 0x00
@@ -133,7 +137,8 @@ class IocCommandPeer:
                  fs2_media=True, fs2_read_only=False, fs2_files=None,
                  fs2_caps_fault=None, fs2_read_fault=None,
                  fs2_write_fault=None, fs2_generation=None,
-                 fs2_stale_path=None):
+                 fs2_stale_path=None, fs2_read_run=False,
+                 fs2_run_fault=None):
         self.ptr = 0
         self.wr = {}
         self.rx = collections.deque()
@@ -234,6 +239,14 @@ class IocCommandPeer:
                                       .split("/") if p))
                                if isinstance(fs2_stale_path, str)
                                else fs2_stale_path)
+        # FS2_READ_RUN (45h), the run read Zephyr-80 firmware adds: off
+        # models the deployed firmware, which drops the command unseen.
+        # `fs2_run_fault` = ("io", k) answers block k (1-based, k >= 2)
+        # with the error packet; `run_packets` queues the run's packets
+        # after the first, one per RTS.
+        self.fs2_read_run = fs2_read_run
+        self.fs2_run_fault = fs2_run_fault
+        self.run_packets = []
         self.fs2_counts = collections.Counter()
         self.fs2_resolver = []
         self.fs2_dirs = {()}
@@ -404,7 +417,8 @@ class IocCommandPeer:
             return self._ready_reply(rtype, seq, entry[0], entry[1], status)
         if rtype == self.CMD_HID_INPUT:
             return self._build_hid_reply(seq, data)
-        if self.CMD_FS2_CAPS <= rtype <= self.CMD_FS2_RMDIR:
+        if self.CMD_FS2_CAPS <= rtype <= self.CMD_FS2_RMDIR or (
+                rtype == self.CMD_FS2_READ_RUN and self.fs2_read_run):
             return self._build_fs2_reply(rtype, seq, data)
         if rtype in (self.CMD_FS_OPEN, self.CMD_FS_READ, self.CMD_FS_WRITE,
                      self.CMD_FS_CLOSE, self.CMD_FS_DELETE,
@@ -770,6 +784,8 @@ class IocCommandPeer:
             return self._fs2_open(seq, data, True)
         if rtype == self.CMD_FS2_READ:
             return self._fs2_read(seq, data)
+        if rtype == self.CMD_FS2_READ_RUN:
+            return self._fs2_read_run(seq, data)
         if rtype == self.CMD_FS2_WRITE:
             return self._fs2_write(seq, data)
         if rtype == self.CMD_FS2_CLOSE:
@@ -806,6 +822,8 @@ class IocCommandPeer:
             flags |= 0x0001
         else:
             flags |= 0x0FC0  # write/trunc/unlink/rename/mkdir/rmdir
+        if self.fs2_read_run:
+            flags |= self.FS2_CAP_READ_RUN
         out = bytearray(14)
         out[0] = 2 if self.fs2_caps_fault == "version" else 1
         out[1] = 1
@@ -893,6 +911,42 @@ class IocCommandPeer:
             self.armed_send = (ident, self.RSP_FS2_READ, seq,
                                bytes(content[offset:offset + got]))
         return self._fs2_reply(self.CMD_FS2_READ, seq, self.ST_FS2_OK, out)
+
+    def _fs2_read_run(self, seq, data):
+        """FS2_READ_RUN as work/64's FIRMWARE.md specifies it: READY for
+        the run's whole length, then one packet per block, each admitted
+        by its own RTS; a failing block k >= 2 goes out at its normal
+        length with an error STATUS and ends the run."""
+        rtype = self.CMD_FS2_READ_RUN
+        token = int.from_bytes(bytes(data[0:2]), "little")
+        offset = int.from_bytes(bytes(data[2:6]), "little")
+        length = int.from_bytes(bytes(data[6:8]), "little")
+        entry, status = self._fs2_file_for(token)
+        if entry is None:
+            return self._fs2_reply(rtype, seq, status)
+        if (length == 0 or length > self.FS2_RUN_MAX or offset % 512):
+            return self._fs2_reply(rtype, seq, self.ST_FS2_RANGE)
+        content = self.fs2_files.get(entry[0], bytearray())
+        total = max(0, min(length, len(content) - offset))
+        out = bytearray(8)
+        out[4:8] = offset.to_bytes(4, "little")
+        if total:
+            ident = self._next_xfer_id()
+            out[0] = ident
+            out[1] = self.DIR_MCU_TO_Z80
+            out[2:4] = total.to_bytes(2, "little")
+            packets = []
+            for k, at in enumerate(range(offset, offset + total, 512)):
+                block = bytes(content[at:min(at + 512, offset + total)])
+                fault = self.fs2_run_fault
+                if fault and fault[0] == "io" and k + 1 == fault[1]:
+                    packets.append((ident, self.RSP_FS2_READ_RUN, seq,
+                                    bytes(len(block)), self.ST_FS2_IO))
+                    break
+                packets.append((ident, self.RSP_FS2_READ_RUN, seq, block))
+            self.armed_send = packets[0]
+            self.run_packets = packets[1:]
+        return self._fs2_reply(rtype, seq, self.ST_FS2_OK, out)
 
     def _fs2_write(self, seq, data):
         if self.fs2_write_fault == "unknown":
@@ -1175,6 +1229,7 @@ class IocCommandPeer:
             self.tx_underrun = False
             self.armed_send = None
             self.armed_recv = None
+            self.run_packets = []
         # reset == 1/2/3 (Rx CRC, Tx CRC, EOM latch), ext-status and
         # error resets carry no separate modelled state here.
 
@@ -1216,6 +1271,8 @@ class IocCommandPeer:
                 self.dcd = False
                 self.cts = False
             self.armed_send = None
+            if self.run_packets:
+                self.armed_send = self.run_packets.pop(0)
             # The next drain counts as pre-delivery once again.
             self.a_delivered = False
         elif self.armed_recv is not None:
@@ -1244,12 +1301,12 @@ class IocCommandPeer:
                 self.cts = False
 
     def _start_send(self):
-        ident, rtype, seq, payload = self.armed_send
+        ident, rtype, seq, payload = self.armed_send[:4]
         length = 3 + len(payload)
         rtype_w = rtype
         seq_w = seq
         len_w = length
-        status_w = 0
+        status_w = self.armed_send[4] if len(self.armed_send) > 4 else 0
         if self.read_fault == "header_type":
             rtype_w = (rtype + 1) & 0xFF
         elif self.read_fault == "header_seq":

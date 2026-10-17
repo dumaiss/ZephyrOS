@@ -628,7 +628,8 @@ class TestProductionTestSeparation(unittest.TestCase):
              "timer_proto.c"])
         self.assertEqual(
             sorted(os.listdir(os.path.join(ROOT, "drivers", "iocfat"))),
-            ["iocfat.c", "iocfat.json", "iocfat_cache.asm", "iocfat_memo.asm"])
+            ["iocfat.c", "iocfat.json", "iocfat_cache.asm",
+             "iocfat_cfile.asm", "iocfat_memo.asm"])
         self.assertEqual(
             sorted(os.listdir(os.path.join(ROOT, "drivers", "runtime"))),
             ["sdcc_indirect_calls.asm"])

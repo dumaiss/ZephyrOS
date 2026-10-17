@@ -135,7 +135,8 @@ meaning, creation, mutation, enumeration and the backend state below
 `OPENDIR`
 38h, `READDIR` 39h, `CLOSEDIR` 3Ah, `STAT` 3Bh, `OPEN_RW` 3Dh, `WRITE` 3Eh,
 `SYNC` 3Fh, `TRUNCATE` 40h, `UNLINK` 41h, `RENAME` 42h, `MKDIR` 43h,
-`RMDIR` 44h, and `XFER_STATUS` 06h for bulk DONE. FS2 tokens never leave the
+`RMDIR` 44h, `READ_RUN` 45h (when CAPS offers it: flag `1000h`), and
+`XFER_STATUS` 06h for bulk DONE. FS2 tokens never leave the
 driver: a bound file's identity is its slot index plus one.
 
 **Bring-up resets the controller's contexts.** The MCU owns its file and

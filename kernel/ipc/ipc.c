@@ -1103,11 +1103,18 @@ int8_t api_irq_release(uint8_t source)
 /* Device events (architecture 4.10): the driver's ISR credits one event to
  * the subscription the nucleus handed it.  The bank the post interrupts
  * decides whether it counts as pending or as missed; see
- * kernel/event/event_common.asm kos_event_post_bank. */
+ * kernel/event/event_common.asm kos_event_post_bank.  An interrupt inside
+ * a driver's bulk copy finds mode 10 on the driver bank, which is no
+ * process: that copy serves the syscall in progress, as any nucleus work
+ * does, so the post takes the gate's latch. */
 void api_event_post(uint16_t sub)
 {
-	kos_event_post(sub, kos_event_post_bank(
-				     (uint8_t)(ipc_irq_active ? 1u : 0u)));
+	uint8_t bank = kos_event_post_bank((uint8_t)(ipc_irq_active ? 1u : 0u));
+
+	if (bank == IPC_DRIVER_BANK) {
+		bank = kos_event_post_bank(0u);
+	}
+	kos_event_post(sub, bank);
 }
 
 static const struct driver_api ipc_api = {

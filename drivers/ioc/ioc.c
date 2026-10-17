@@ -127,6 +127,25 @@ struct ioc_state {
 
 struct ioc_state ioc_state;
 
+/* ioc_io_run_read (ioc_io.asm) reads these fields by offset. */
+extern uint8_t ioc_io_run_read(struct ioc_state *state);
+#if defined(__SDCC)
+_Static_assert(__builtin_offsetof(struct ioc_state, bulk_synced) == 2,
+	       "ioc_io.asm IOC_ST_BULK_SYNCED");
+_Static_assert(__builtin_offsetof(struct ioc_state, admit_rx_type) == 10,
+	       "ioc_io.asm IOC_ST_RX_TYPE");
+_Static_assert(__builtin_offsetof(struct ioc_state, admit_seq) == 11,
+	       "ioc_io.asm IOC_ST_ADMIT_SEQ");
+_Static_assert(__builtin_offsetof(struct ioc_state, bulk) == 13,
+	       "ioc_io.asm IOC_ST_BULK");
+_Static_assert(__builtin_offsetof(struct ioc_bulk_block, len) == 2 &&
+	       __builtin_offsetof(struct ioc_bulk_block, hunt) == 4 &&
+	       __builtin_offsetof(struct ioc_bulk_block, header) == 5,
+	       "ioc_io.asm IOC_ST_LEN/HUNT/HEADER");
+_Static_assert(KIOC_BULK_MAX == 512u && IOC_BULK_BAD_FRAME == 3u,
+	       "ioc_io.asm IOC_RUN_PACKET/IOC_RUN_BAD_FRAME");
+#endif /* __SDCC */
+
 #if KOS_IOC_PHASES
 /* The stamps this driver's exchange contributed to the last block read
  * (abi/kos/protocol.h KFILE_OP_PHASES).  The IOC-FAT driver reads the
@@ -179,6 +198,7 @@ static uint8_t ioc_bulk_arming_request(uint8_t type)
 	case IOC_CMD_FS_WRITE:
 	case IOC_CMD_FS2_READ:
 	case IOC_CMD_FS2_WRITE:
+	case IOC_CMD_FS2_READ_RUN:
 		return 1u;
 	default:
 		return 0u;
@@ -198,11 +218,12 @@ static uint8_t ioc_ready_admit(struct ioc_state *state,
 	uint16_t len = (uint16_t)reply->data[IOC_OFF_READY_LEN_LO] |
 		       ((uint16_t)reply->data[IOC_OFF_READY_LEN_HI] << 8);
 
-	/* Nonzero transfer id, known direction, 1..512 bytes.  Anything
-	 * else is an ordinary successful reply that happens to be 8
-	 * bytes long. */
-	if (id == 0u || dir > IOC_BULK_DIR_Z80_TO_MCU ||
-	    len == 0u || len > KIOC_BULK_MAX) {
+	/* Nonzero transfer id, known direction, 1..512 bytes (a run:
+	 * up to KIOC_RUN_MAX, in 512-byte packets).  Anything else is an
+	 * ordinary successful reply that happens to be 8 bytes long. */
+	if (id == 0u || dir > IOC_BULK_DIR_Z80_TO_MCU || len == 0u ||
+	    len > ((request->type == IOC_CMD_FS2_READ_RUN) ? KIOC_RUN_MAX
+							  : KIOC_BULK_MAX)) {
 		return 0u;
 	}
 
@@ -354,14 +375,12 @@ int ioc_command(void *vstate, const struct ioc_request *request,
 int ioc_bulk_read(void *vstate, void *dst, uint16_t length)
 {
 	struct ioc_state *state = (struct ioc_state *)vstate;
-	struct ioc_bulk_block *bulk;
-	uint16_t wire_len;
 	uint8_t result;
 
 	if (state == (struct ioc_state *)0 || dst == (void *)0) {
 		return KIOC_EINVAL;
 	}
-	if (length == 0u || length > KIOC_BULK_MAX) {
+	if (length == 0u || length > KIOC_RUN_MAX) {
 		return KIOC_EINVAL;
 	}
 	if (state->busy != 0u) {
@@ -369,7 +388,7 @@ int ioc_bulk_read(void *vstate, void *dst, uint16_t length)
 	}
 	/* Invalid sequencing fails before any lane I/O: a bulk phase must
 	 * have been admitted by a READY, with the same direction and the
-	 * exact length. */
+	 * exact length (only a run's READY admits more than one packet). */
 	if (state->phase != IOC_PHASE_ADMITTED ||
 	    state->admit_dir != IOC_BULK_DIR_MCU_TO_Z80 ||
 	    state->admit_len != length) {
@@ -377,13 +396,11 @@ int ioc_bulk_read(void *vstate, void *dst, uint16_t length)
 	}
 	state->busy = 1u;
 
-	bulk = &state->bulk;
-	bulk->buf = (uint8_t *)dst;
-	bulk->len = length;
-	/* Enter Hunt only until the first verified bulk packet. */
-	bulk->hunt = (state->bulk_synced == 0u) ? 1u : 0u;
-
-	result = ioc_io_bulk_read(bulk);
+	/* The packets, each header validated against the READY after its
+	 * stream is safely in RAM (ioc_io_run_read). */
+	state->bulk.buf = (uint8_t *)dst;
+	state->bulk.len = length;
+	result = ioc_io_run_read(state);
 
 	state->busy = 0u;
 	state->phase = IOC_PHASE_IDLE;
@@ -398,26 +415,9 @@ int ioc_bulk_read(void *vstate, void *dst, uint16_t length)
 		}
 		return KIOC_EBADFRAME;
 	}
-
-	/* The captured header must be exactly the packet the READY
-	 * authorized: wire length, TYPE, sequence, and a zero STATUS.
-	 * Validation happens after the stream is safely in RAM. */
-	wire_len = (uint16_t)(length + KOS_IOC_PACKET_FIXED_LEN);
-	if (bulk->header[0] != (uint8_t)wire_len ||
-	    bulk->header[1] != (uint8_t)(wire_len >> 8) ||
-	    bulk->header[2] != state->admit_rx_type ||
-	    bulk->header[3] != state->admit_seq ||
-	    bulk->header[4] != 0u) {
-		state->recover = 1u;
-		return KIOC_EBADFRAME;
-	}
-
 #if KOS_IOC_PHASES
 	ioc_phases_bulk_done();
 #endif
-	/* A fully validated bulk read is the only proof the bulk-lane
-	 * character boundary is real; from here the lane is left alone. */
-	state->bulk_synced = 1u;
 	return KIOC_OK;
 }
 

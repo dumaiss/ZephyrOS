@@ -305,10 +305,13 @@
  *                            when its reply admitted an MCU-to-Z80 bulk
  *                            phase, that phase's receive in the same
  *                            call, straight into the hot-tier buffer
- *                            payload[22..23] names (the direct form).
- *                            The reply is published as for COMMAND.
- *                            Returns the bulk length, 0 when no bulk
- *                            phase was admitted, or a negative KIOC_E*.
+ *                            payload[22..23] names (the direct form);
+ *                            an FS2_READ_RUN run is received as its
+ *                            512-byte packets, back to back (all of them,
+ *                            or the error).  The reply is published as
+ *                            for COMMAND.  Returns the bulk length, 0
+ *                            when no bulk phase was admitted, or a
+ *                            negative KIOC_E*.
  *
  * The direct form (no descriptor) is the resident-domain convention:
  * every resident driver is mapped together in bank 6's hot tier

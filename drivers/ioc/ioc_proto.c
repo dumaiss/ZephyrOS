@@ -134,9 +134,13 @@ static int16_t ioc_driver_bulk_read(struct kos_ipc_frame *frame)
 	uint8_t *dst = (uint8_t *)ioc_bulk_address;
 	int result;
 
-	/* The transfer length is not re-validated here: ioc_bulk_read()
-	 * refuses 0 and anything above KIOC_BULK_MAX before any I/O, and
-	 * the copy below runs only on its success. */
+	/* One packet's length: the descriptor form stages it in the
+	 * 512-byte buffer (a run is KIOC_OP_COMMAND_READ's), so a longer one
+	 * becomes 0, which ioc_bulk_read() refuses before any I/O; the copy
+	 * below runs only on its success. */
+	if (length > KIOC_BULK_MAX) {
+		length = 0u;
+	}
 	if (frame->desc == KOS_IPC_DESC_NONE) {
 		dst = ioc_direct_buffer(frame, length);
 		if (dst == (uint8_t *)0) {
@@ -185,8 +189,9 @@ static int16_t ioc_driver_bulk_write(struct kos_ipc_frame *frame)
 }
 
 /* KIOC_OP_COMMAND_READ: the command, then the bulk receive its READY
- * admitted, in one call.  The buffer word is read before the reply
- * reuses the payload. */
+ * admitted, in one call - a run's packets back to back when it admitted
+ * more than one.  The buffer word is read before the reply reuses the
+ * payload. */
 static int16_t ioc_driver_command_read(struct kos_ipc_frame *frame)
 {
 	uint8_t word[2];

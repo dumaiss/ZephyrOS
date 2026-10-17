@@ -91,6 +91,7 @@
 	.globl _ioc_io_rx
 	.globl _ioc_io_bulk_init
 	.globl _ioc_io_bulk_read
+	.globl _ioc_io_run_read
 	.globl _ioc_io_bulk_write
 	.globl _ioc_io_status_sample
 	.globl _ioc_io_irq_save_disable
@@ -1151,6 +1152,104 @@ ioc_br_unsave:
 ;   Out: A = 0 sent and /CTSA deasserted, 1 bounded stall (RTS released),
 ;   2 sent but /CTSA never deasserted.  Clobbers AF, BC, DE, HL.
 ; ---------------------------------------------------------------------------
+; ---------------------------------------------------------------------------
+; uint8_t ioc_io_run_read(struct ioc_state *state);  HL = state.
+;   The admitted bulk phase's packets, one per 512 bytes (only a run's
+;   READY admits more than one): state->bulk.buf names the destination and
+;   state->bulk.len the whole length on entry.  Each packet goes through
+;   ioc_io_bulk_read and its captured header must be exactly the packet the
+;   READY authorized - wire length, the armed response TYPE, the sequence
+;   and a zero STATUS - before the next one; each verified packet proves
+;   the lane's boundary (bulk_synced).  Out: A = 0, or the failed packet's
+;   ioc_io_bulk_read code, or 3 for a header that does not match.  The
+;   packets land back to back.  Clobbers AF, BC, DE, HL; IX is preserved.
+;
+; struct ioc_state offsets (pinned by the _Static_asserts in ioc.c):
+IOC_ST_BULK_SYNCED = 2
+IOC_ST_RX_TYPE     = 10
+IOC_ST_ADMIT_SEQ   = 11
+IOC_ST_BULK        = 13		; struct ioc_bulk_block
+IOC_ST_BUF         = 13
+IOC_ST_LEN         = 15
+IOC_ST_HUNT        = 17
+IOC_ST_HEADER      = 18
+IOC_RUN_PACKET     = 512	; KIOC_BULK_MAX
+IOC_RUN_BAD_FRAME  = 3		; IOC_BULK_BAD_FRAME
+; ---------------------------------------------------------------------------
+_ioc_io_run_read::
+	push	ix
+	push	hl
+	pop	ix
+	ld	l,IOC_ST_LEN(ix)
+	ld	h,IOC_ST_LEN+1(ix)
+ioc_run_next:
+	push	hl			; remaining
+	ld	de,#IOC_RUN_PACKET
+	or	a
+	sbc	hl,de
+	jr	nc,ioc_run_full
+	add	hl,de			; the last packet: what remains
+	jr	ioc_run_len
+ioc_run_full:
+	ex	de,hl
+ioc_run_len:
+	ld	IOC_ST_LEN(ix),l
+	ld	IOC_ST_LEN+1(ix),h
+	; Enter Hunt only until the first verified packet.
+	ld	a,IOC_ST_BULK_SYNCED(ix)
+	sub	#1
+	ld	a,#0
+	adc	a,a
+	ld	IOC_ST_HUNT(ix),a
+	push	ix
+	pop	hl
+	ld	de,#IOC_ST_BULK
+	add	hl,de
+	call	_ioc_io_bulk_read
+	or	a
+	jr	nz,ioc_run_fail
+	ld	l,IOC_ST_LEN(ix)
+	ld	h,IOC_ST_LEN+1(ix)
+	ld	de,#KOS_IOC_PACKET_FIXED_LEN
+	add	hl,de			; the wire length
+	ld	a,IOC_ST_HEADER(ix)
+	cp	l
+	jr	nz,ioc_run_bad
+	ld	a,IOC_ST_HEADER+1(ix)
+	cp	h
+	jr	nz,ioc_run_bad
+	ld	a,IOC_ST_HEADER+2(ix)
+	cp	IOC_ST_RX_TYPE(ix)
+	jr	nz,ioc_run_bad
+	ld	a,IOC_ST_HEADER+3(ix)
+	cp	IOC_ST_ADMIT_SEQ(ix)
+	jr	nz,ioc_run_bad
+	ld	a,IOC_ST_HEADER+4(ix)
+	or	a
+	jr	nz,ioc_run_bad
+	ld	IOC_ST_BULK_SYNCED(ix),#1
+	; buf += n; remaining -= n
+	ld	e,IOC_ST_LEN(ix)
+	ld	d,IOC_ST_LEN+1(ix)
+	ld	l,IOC_ST_BUF(ix)
+	ld	h,IOC_ST_BUF+1(ix)
+	add	hl,de
+	ld	IOC_ST_BUF(ix),l
+	ld	IOC_ST_BUF+1(ix),h
+	pop	hl
+	or	a
+	sbc	hl,de
+	jr	nz,ioc_run_next
+	xor	a
+	pop	ix
+	ret
+ioc_run_bad:
+	ld	a,#IOC_RUN_BAD_FRAME
+ioc_run_fail:
+	pop	hl
+	pop	ix
+	ret
+
 _ioc_io_bulk_write::
 	; Preserve the block pointer before the IRQ helper: that helper
 	; returns the token in A and L (the standard Z80 pattern), so it

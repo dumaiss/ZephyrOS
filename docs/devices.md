@@ -325,8 +325,14 @@ without touching the card, so only the first read proves the card is there.
 **Cache and read-ahead.** Reads go through a ring of four consecutive
 blocks in the driver's `DRIVER_IO`: the bulk receive fills it, and each run
 of consecutive blocks reaches the caller in one `copy_out`. A read that
-continues where the previous one ended fills the whole ring (read-ahead);
-any other fills only the blocks it needs. Blocks of files opened read-only
+continues where the previous one ended fills the whole ring (read-ahead),
+unless a change dropped the ring since its last fill (reads between writes,
+as in a copy); any other fills only the blocks it needs. When the firmware
+offers `FS2_READ_RUN` (CAPS flag `1000h`), a fill of several blocks of an
+uncached file is one run: one command, then one 512-byte bulk packet per
+block, received back to back into the ring by `KIOC_OP_COMMAND_READ` (all
+of them, or the error; a failed packet re-syncs the link). Without the
+flag every block is its own `FS2_READ`. Blocks of files opened read-only
 that fit it whole are also kept in a 16 KiB cache (32 blocks) in the
 driver's bulk extent (a larger file is a stream and would only cycle
 through it),

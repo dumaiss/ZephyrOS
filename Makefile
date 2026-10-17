@@ -787,6 +787,10 @@ $(MODULES)/iocfat_cache.rel: drivers/iocfat/iocfat_cache.asm | $(MODULES)
 $(MODULES)/iocfat_memo.rel: drivers/iocfat/iocfat_memo.asm | $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
+# The block cache's file records: finding or making one per open.
+$(MODULES)/iocfat_cfile.rel: drivers/iocfat/iocfat_cfile.asm | $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
 $(MODULES)/sdcc_indirect_calls.rel: drivers/runtime/sdcc_indirect_calls.asm \
 		| $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<

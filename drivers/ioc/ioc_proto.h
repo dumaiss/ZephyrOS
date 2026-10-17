@@ -65,6 +65,7 @@
 #define IOC_CMD_FS_WRITE        0x24u
 #define IOC_CMD_FS2_READ        0x36u
 #define IOC_CMD_FS2_WRITE       0x3Eu
+#define IOC_CMD_FS2_READ_RUN    0x45u
 
 /* Status byte of the explicit unknown-class reply (RSP_UNKNOWN_COMMAND,
  * 0xFE): the deployed firmware's only documented "class not served"

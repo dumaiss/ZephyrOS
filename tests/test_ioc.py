@@ -601,9 +601,15 @@ class TestIocSourceDiscipline(unittest.TestCase):
         self.assertIn("IOC_OFF_DONE_XFER_ID", self.c)
         self.assertIn("IOC_OFF_DONE_STATUS", self.c)
         # A bulk failure always arms whole-link recovery, and only a
-        # fully validated read proves the bulk boundary.
+        # fully validated packet proves the bulk boundary: the packet loop
+        # sets it after the header checks, never before.
         self.assertIn("state->recover = 1u;", self.c)
-        self.assertIn("state->bulk_synced = 1u;", self.c)
+        run = self.asm.split("_ioc_io_run_read::")[1].split(
+            "_ioc_io_bulk_write::")[0]
+        self.assertLess(run.index("call\t_ioc_io_bulk_read"),
+                        run.index("ld\tIOC_ST_BULK_SYNCED(ix),#1"))
+        self.assertLess(run.index("cp\tIOC_ST_ADMIT_SEQ(ix)"),
+                        run.index("ld\tIOC_ST_BULK_SYNCED(ix),#1"))
 
     def test_bulk_limits_and_errors_stay_in_the_transport_vocabulary(self):
         header = _read(IOC_H)
