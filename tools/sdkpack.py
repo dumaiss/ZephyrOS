@@ -5,11 +5,12 @@
 
     build/kos-sdk-<version>/
       VERSION          "<version> abi <n>", n = EXE_ABI_VERSION
-      include/         kos.h, kos/*.h, klibc/*.h, and every abi/kos/
+      include/         kos.h, tui.h, kos/*.h, klibc/*.h, and every abi/kos/
                        header they include (copied with their include
                        paths: "kos/…" and "klibc/…" resolve inside the
                        tree, the ABI copies under include/abi/kos/*.h)
-      lib/             libkos.lib (the runtime object folded in), crt0.rel
+      lib/             libkos.lib (the runtime object folded in), libtui.lib,
+                       crt0.rel
       tools/           exepack.py, exemanifest.py, ihx.py
       mk/kos.mk        the standalone build rules
       template/        Makefile + hello.c
@@ -23,8 +24,8 @@ they are exempt), and the header closure is proved complete by resolving
 every quoted include the way SDCC will.
 
 Usage:
-    sdkpack.py --version V --libkos FILE --crt0 FILE [--root DIR] [--out DIR]
-               [--tar FILE]
+    sdkpack.py --version V --libkos FILE --libtui FILE --crt0 FILE
+               [--root DIR] [--out DIR] [--tar FILE]
 
 With --tar the tree is also written as a .tar.gz with pinned metadata
 (member order, mtimes, ownership), so the same tree always packs to the
@@ -73,7 +74,8 @@ def sdk_headers(root):
     `"kos/…"` or `"klibc/…"` include inside the tree resolves to it.
     """
     base = root / SDK_INCLUDE
-    copies = [("include/kos.h", base / "kos.h")]
+    copies = [("include/kos.h", base / "kos.h"),
+              ("include/tui.h", base / "tui.h")]
     for path in sorted((base / "kos").glob("*.h")):
         copies.append(("include/kos/%s" % path.name, path))
     for path in sorted((base / "klibc").glob("*.h")):
@@ -124,13 +126,14 @@ def abi_headers(root, headers):
     return abi
 
 
-def tree_files(root, headers, abi, libkos, crt0):
+def tree_files(root, headers, abi, libkos, libtui, crt0):
     """The complete (relative destination, source) list of the SDK tree."""
     files = []
     files += headers
     files += sorted(abi.items())
     files += [
         ("lib/libkos.lib", Path(libkos)),
+        ("lib/libtui.lib", Path(libtui)),
         ("lib/crt0.rel", Path(crt0)),
         ("mk/kos.mk", root / "mk" / "kos.mk"),
     ]
@@ -147,17 +150,18 @@ def tree_files(root, headers, abi, libkos, crt0):
     return files
 
 
-def build_tree(root, out, version, libkos, crt0):
+def build_tree(root, out, version, libkos, libtui, crt0):
     """Lay out the SDK tree under `out`; returns the destination list."""
     root = Path(root)
     out = Path(out)
-    for path in (root / "formats/include/exe.h", Path(libkos), Path(crt0)):
+    for path in (root / "formats/include/exe.h", Path(libkos), Path(libtui),
+                 Path(crt0)):
         if not path.is_file():
             raise PackError("%s is missing" % path)
     abi = abi_version((root / "formats/include/exe.h").read_text())
     headers = sdk_headers(root)
     files = tree_files(root, headers, abi_headers(root, headers), libkos,
-                       crt0)
+                       libtui, crt0)
     for _dest, source in files:
         if not Path(source).is_file():
             raise PackError("%s is missing" % source)
@@ -215,6 +219,7 @@ def main(argv):
     parser = argparse.ArgumentParser(prog="sdkpack.py")
     parser.add_argument("--version", required=True)
     parser.add_argument("--libkos", required=True)
+    parser.add_argument("--libtui", required=True)
     parser.add_argument("--crt0", required=True)
     parser.add_argument("--root", default=None,
                         help="the repository root (default: this tool's)")
@@ -229,7 +234,8 @@ def main(argv):
     out = Path(args.out) if args.out else \
         root / "build" / ("kos-sdk-%s" % args.version)
     try:
-        dests = build_tree(root, out, args.version, args.libkos, args.crt0)
+        dests = build_tree(root, out, args.version, args.libkos,
+                           args.libtui, args.crt0)
         if args.tar:
             pack_tar(out, args.tar)
     except (PackError, OSError) as exc:

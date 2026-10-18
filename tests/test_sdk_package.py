@@ -37,6 +37,7 @@ from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+TUI_FIXTURE = os.path.join(HERE, "tui", "out_of_tree")
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
@@ -74,6 +75,7 @@ BAD_ABI_NAME = "abi-probe.exe"
 SDK_FILES = {
     "VERSION",
     "include/kos.h",
+    "include/tui.h",
     "include/kos/console.h",
     "include/kos/diag.h",
     "include/kos/event.h",
@@ -101,6 +103,7 @@ SDK_FILES = {
     "include/abi/kos/types.h",
     "include/abi/kos/xmem.h",
     "lib/libkos.lib",
+    "lib/libtui.lib",
     "lib/crt0.rel",
     "tools/exepack.py",
     "tools/exemanifest.py",
@@ -283,9 +286,11 @@ class TestSdkPackage(unittest.TestCase):
             outputs = {}
             source = os.path.join(cls.tmp, "build-copy")
             shutil.copytree(cls.tree, source)
+            shutil.copytree(TUI_FIXTURE, os.path.join(source, "tui"))
             for directory, programs in (("template", ["hello"]),
                                         ("examples", ["hello", "fardemo",
-                                                      "files", "fardata"])):
+                                                      "files", "fardata"]),
+                                        ("tui", ["tui_sdkprobe"])):
                 workdir = os.path.join(source, directory)
                 output = _run_make(workdir)
                 if ROOT in output:
@@ -344,16 +349,18 @@ class TestSdkPackage(unittest.TestCase):
         self.assertEqual(_tree_files(self.tree), SDK_FILES)
 
     def test_the_shipped_library_carries_no_build_dates(self):
-        """lib/libkos.lib is packed with `sdar -rcD`: every member's date
-        and ids are zero, so the shipped library does not record when it
-        was built."""
-        members = list(_ar_members(os.path.join(self.tree, "lib",
-                                                "libkos.lib")))
-        self.assertGreater(len(members), 1)
-        for name, mtime, uid, gid in members:
-            # The long-name table's fields are blank, the rest zero.
-            for field in (mtime, uid, gid):
-                self.assertIn(field, ("", "0"), "%s: %r" % (name, field))
+        """lib/libkos.lib and lib/libtui.lib are packed with `sdar -rcD`:
+        every member's date and ids are zero, so the shipped libraries do
+        not record when they were built."""
+        for library in ("libkos.lib", "libtui.lib"):
+            members = list(_ar_members(os.path.join(self.tree, "lib",
+                                                    library)))
+            self.assertGreater(len(members), 1, library)
+            for name, mtime, uid, gid in members:
+                # The long-name table's fields are blank, the rest zero.
+                for field in (mtime, uid, gid):
+                    self.assertIn(field, ("", "0"),
+                                  "%s: %r: %r" % (library, name, field))
 
     def test_the_tarball_is_reproducible(self):
         """sdkpack pins member order, mtimes and ownership, so the shipped
@@ -367,6 +374,7 @@ class TestSdkPackage(unittest.TestCase):
         sdkpack.build_tree(
             ROOT, tree, self.version,
             os.path.join(self.tree, "lib", "libkos.lib"),
+            os.path.join(self.tree, "lib", "libtui.lib"),
             os.path.join(self.tree, "lib", "crt0.rel"))
         sdkpack.pack_tar(tree, again)
         # Same tree, same bytes: neither the member order nor the gzip
@@ -439,10 +447,11 @@ class TestSdkPackage(unittest.TestCase):
     # -- the out-of-tree build and its programs ----------------------------
 
     def test_template_and_examples_build_outside_the_tree(self):
-        """`make` in template/ and examples/ packs every program with the
-        SDK alone; no compile or link names the OS tree."""
+        """`make` in template/, examples/ and the TUI fixture packs every
+        program with the SDK alone; no compile or link names the OS tree."""
         self.assertEqual(sorted(self._build()),
-                         ["fardata", "fardemo", "files", "hello"])
+                         ["fardata", "fardemo", "files", "hello",
+                          "tui_sdkprobe"])
 
     def test_the_packed_program_runs_in_the_simulator(self):
         """The store carries the SDK-built hello.exe as /system/hello.exe;
@@ -452,6 +461,16 @@ class TestSdkPackage(unittest.TestCase):
         stream = self._pack_test_store([("hello.exe", hello)])
         replay, z = self._boot(stream)
         replay.send_line(z, "/system/hello.exe", GREETING)
+
+    def test_the_packed_tui_program_runs_in_the_simulator(self):
+        """The SDK-built TUI fixture starts, reports the logical geometry
+        through the shipped library, and reports PASS on the production
+        console."""
+        self._require_image()
+        program = self._build()["tui_sdkprobe"]
+        stream = self._pack_test_store([("tui_sdkprobe.exe", program)])
+        replay, z = self._boot(stream)
+        replay.send_line(z, "/system/tui_sdkprobe.exe", "TUI SDK PASS")
 
     def test_a_changed_abi_byte_is_refused_with_the_existing_error(self):
         """The template program with its ABI byte changed (offset 05h)

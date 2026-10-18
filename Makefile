@@ -1082,6 +1082,14 @@ $(eval $(call exe_program,sound,tests/sound,\
 
 all: $(EXE_USER_ROOT)/sound.exe
 
+# The TUI SDK outcome program: a card program the TUI replays run from the
+# shell, in no store.  `LIBS=tui` links the TUI archive after the program
+# objects and before libkos.
+$(eval $(call exe_program,tui_test,tests/tui,\
+	tui_test.c,STACK=256,LIBS=tui))
+
+all: $(EXE_USER_ROOT)/tui_test.exe
+
 # SDK outcome programs for the console-order and stream replays
 # (tests/test_io_sim.py): the `fs` image's `/system/iomix.exe` with its
 # nested-exec child, and `/system/iostream.exe`, one card-file session
@@ -1210,6 +1218,7 @@ KOS_SDK_TARBALL := $(BUILD)/kos-sdk-$(KOS_SDK_VERSION).tar.gz
 SDK_INPUTS := $(wildcard abi/kos/*.h) \
 	$(wildcard user/sdk/include/*.h) $(wildcard user/sdk/include/kos/*.h) \
 	$(wildcard user/sdk/include/klibc/*.h) \
+	$(wildcard user/sdk/tui/src/*) \
 	$(wildcard user/sdk/template/*) $(wildcard user/sdk/examples/*) \
 	docs/sdk.md docs/exe-format.md mk/kos.mk formats/include/exe.h \
 	tools/exepack.py tools/exemanifest.py tools/ihx.py tools/sdkpack.py
@@ -1218,9 +1227,11 @@ sdk: $(KOS_SDK_TARBALL)
 	@echo "sdk: $(KOS_SDK_DIR)"
 	@echo "sdk: $(KOS_SDK_TARBALL)"
 
-$(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_CRT0) $(SDK_INPUTS)
+$(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) $(EXE_CRT0) \
+		$(SDK_INPUTS)
 	$(PYTHON) tools/sdkpack.py --version $(KOS_SDK_VERSION) \
-		--libkos $(EXE_SDK_RELEASE_LIB) --crt0 $(EXE_CRT0) \
+		--libkos $(EXE_SDK_RELEASE_LIB) --libtui $(EXE_LIBTUI) \
+		--crt0 $(EXE_CRT0) \
 		--out $(KOS_SDK_DIR) --tar $@
 
 # --- ROMFS recovery store (ROM pages 2-7) ------------------------------------

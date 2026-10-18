@@ -74,6 +74,10 @@
 #                       (default: $(KOS_BUILD)/modules)
 #   INCLUDES=a:b        extra include roots (colon separated), for
 #                       program-owned headers only
+#   LIBS=a:b            optional SDK libraries in link order (colon
+#                       separated); each resolves to
+#                       $(EXE_LIB_DIR)/lib<name>.lib and is linked after
+#                       the program objects and before libkos
 #
 # The roots below are the only place the rule file touches a path; both
 # users set them to their own tree before including it, so nothing here
@@ -106,6 +110,9 @@ EXE_USER_ROOT := $(KOS_BUILD)/user
 # separate).
 EXE_CRT0   ?= $(KOS_LIB)/crt0.rel
 EXE_LIBKOS ?= $(KOS_LIB)/libkos.lib
+# Where a program's LIBS= names resolve.  The standalone SDK ships its
+# archives in lib/; the in-tree wrapper points this at the SDK build.
+EXE_LIB_DIR ?= $(KOS_LIB)
 EXE_RUNTIME ?=
 
 EXE_CFLAGS  := -mz80 -c --nostdinc --Werror -I$(EXE_ABI_ROOT) -I$(KOS_INCLUDE)
@@ -190,6 +197,8 @@ $(1)_NOCRT0 := $$(if $$(filter NO_CRT0=1,$$($(1)_OPTS)),1,)
 $(1)_STAGE  := $$(if $$(filter STAGE=1,$$($(1)_OPTS)),1,)
 $(1)_INC    := $$(if $$(filter INCLUDES=%,$$($(1)_OPTS)),$$(patsubst INCLUDES=%,%,$$(filter INCLUDES=%,$$($(1)_OPTS))),)
 $(1)_INCFLAGS := $$(patsubst %, -I%,$$(subst :, ,$$($(1)_INC)))
+$(1)_LIBS   := $$(if $$(filter LIBS=%,$$($(1)_OPTS)),$$(patsubst LIBS=%,%,$$(filter LIBS=%,$$($(1)_OPTS))),)
+$(1)_LIBFILES := $$(foreach name,$$(subst :, ,$$($(1)_LIBS)),$$(EXE_LIB_DIR)/lib$$(name).lib)
 $(1)_LINKOBJS := $$($(1)_ORDERREL) $$(if $$($(1)_NOCRT0),,$$(EXE_CRT0)) $$(EXE_RUNTIME) $$($(1)_OBJS) $$($(1)_FAROBJS) $$($(1)_DATAOBJS)
 $(1)_EXE    := $$(EXE_USER_ROOT)/$(1).exe
 
@@ -315,7 +324,8 @@ $$($(1)_SEGDECL): $$(KOS_RULES) | $$($(1)_OBJDIR)
 	@printf '%s\n' ']' >> $$@
 endif
 
-$$($(1)_OBJDIR)/$(1).lk: $$($(1)_LINKOBJS) $$(EXE_LIBKOS) $$(KOS_RULES) | $$($(1)_OBJDIR)
+$$($(1)_OBJDIR)/$(1).lk: $$($(1)_LINKOBJS) $$($(1)_LIBFILES) $$(EXE_LIBKOS) \
+		$$(KOS_RULES) | $$($(1)_OBJDIR)
 	{ \
 	  printf '%s\n' '-n' '-m' '-w'; \
 	  printf '%s\n' '-i $$($(1)_OBJDIR)/$(1).ihx'; \
@@ -324,6 +334,7 @@ $$($(1)_OBJDIR)/$(1).lk: $$($(1)_LINKOBJS) $$(EXE_LIBKOS) $$(KOS_RULES) | $$($(1
 	  $$(if $$($(1)_FARIDS),for n in $$($(1)_FARIDS); do printf '%s\n' "-b _FAR$$$$n = 0x8000"; done;,) \
 	  $$(if $$($(1)_DATAIDS),for n in $$($(1)_DATAIDS); do printf '%s\n' "-b _DATA$$$$n = 0x8000"; done;,) \
 	  printf '%s\n' $$($(1)_LINKOBJS); \
+	  $$(if $$($(1)_LIBFILES),for lib in $$($(1)_LIBFILES); do printf '%s\n' "-l $$$$lib"; done;,) \
 	  printf '%s\n' '-l $$(EXE_LIBKOS)'; \
 	  printf '%s\n' '-e'; \
 	} > $$@

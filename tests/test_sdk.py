@@ -401,7 +401,8 @@ class TestSdkBoundary(unittest.TestCase):
         # the read-path measurement program the phase image's card carries
         # (`tests/test_readpath.py`); `vblank` and `sound` are the card
         # programs the production replays run (`tests/test_vblank.py`,
-        # `tests/test_sound.py`).
+        # `tests/test_sound.py`); `tui_test` is the TUI SDK outcome
+        # program (`tests/test_tui.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
@@ -411,7 +412,7 @@ class TestSdkBoundary(unittest.TestCase):
                           "iostream", "ipc", "ipccopy",
                           "monitor", "ns",
                           "nschild", "readphase", "shell", "sound", "timer",
-                          "vblank",
+                          "tui_test", "vblank",
                           "xmem_child",
                           "xmem_far",
                           "xmem_selftest"])

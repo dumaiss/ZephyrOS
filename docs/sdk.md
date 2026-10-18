@@ -102,9 +102,10 @@ $(eval $(call exe_program,NAME,DIR,SOURCES[,OPTION=VALUE ...]))
 
 `SOURCES` are relative to `DIR`; `.c` goes through SDCC, `.asm` through
 `sdasz80`. The rule links crt0 and the runtime object, then the program,
-then `libkos.lib`; derives the manifest from the link map; and packs and
-validates `build/user/NAME.exe`. Intermediates go to `build/user/NAME/`, so
-programs build in parallel. Each declaration also defines a `NAME` target.
+then any `LIBS=` archives in their declared order, then `libkos.lib`;
+derives the manifest from the link map; and packs and validates
+`build/user/NAME.exe`. Intermediates go to `build/user/NAME/`, so programs
+build in parallel. Each declaration also defines a `NAME` target.
 
 | option | default | meaning |
 |---|---|---|
@@ -116,6 +117,7 @@ programs build in parallel. Each declaration also defines a `NAME` target.
 | `CODEBASE=ADDR` | `0x015D` | base of code, just after the low-data area |
 | `STAGE=1` | off | copy the packed program into the image's module directory so a system file's `store` can name it |
 | `INCLUDES=a:b` | empty | extra include roots, for program-owned headers |
+| `LIBS=a:b` | empty | optional SDK libraries in link order; each resolves to `lib/lib<name>.lib` (or the corresponding in-tree archive) |
 | `FAR1=SRC:SRC` … `FAR4=SRC:SRC` | none | far-code sources of segment n, linked at `8000h` (section 6.6) |
 | `DATA1=SRC:SRC` … `DATA4=SRC:SRC` | none | far-data sources of data segment n, linked at `8000h` (section 12) |
 | `BLOBS=a.bin:b.bin` | none | binary payloads bundled as plain data segments (at most 32 KiB each) |
@@ -793,8 +795,9 @@ order, times and ownership).
 ```text
 kos-sdk-<version>/
   VERSION          "<version> abi <n>", n = the loader's EXE_ABI_VERSION
-  include/         kos.h, kos/*.h, klibc/*.h, abi/kos/*.h
-  lib/             libkos.lib (the runtime object included), crt0.rel
+  include/         kos.h, tui.h, kos/*.h, klibc/*.h, abi/kos/*.h
+  lib/             libkos.lib (the runtime object included), libtui.lib,
+                   crt0.rel
   tools/           exepack.py, exemanifest.py, ihx.py (Python standard library only)
   mk/kos.mk        the program rule
   template/        Makefile and hello.c
@@ -819,9 +822,10 @@ line. A program built for another ABI version is refused by the loader.
 
 `tests/test_sdk_package.py` builds the tarball, unpacks it outside the
 repository, checks the file list, the header closure, the version and the
-archive's metadata, builds `template/` and `examples/` with the tree's
-paths absent, runs the result through the production image's monitor in
-the simulator, and checks that a copy with a changed ABI byte is refused.
+archive's metadata, builds `template/`, `examples/` and the TUI fixture
+with the tree's paths absent, runs the result through the production
+image's monitor in the simulator, and checks that a copy with a changed
+ABI byte is refused.
 
 ## 12. Far data
 

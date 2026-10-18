@@ -28,6 +28,9 @@ EXE_SDK_BUILD := $(KOS_BUILD)/user/sdk
 EXE_CRT0      := $(EXE_SDK_BUILD)/crt0.rel
 EXE_RUNTIME   := $(EXE_SDK_BUILD)/runtime.rel
 EXE_LIBKOS    := $(EXE_SDK_BUILD)/libkos.lib
+# LIBS= names resolve against the SDK build, where the in-tree archives
+# live, exactly as they resolve against lib/ in the standalone SDK.
+EXE_LIB_DIR   := $(EXE_SDK_BUILD)
 KOS_SDK_SRC   := $(KOS_SDK_ROOT)/src
 
 include mk/kos.mk
@@ -95,3 +98,28 @@ $(EXE_SDK_RELEASE_LIB): $(KOS_SDK_C_OBJS) $(KOS_SDK_ASM_OBJS) $(EXE_RUNTIME) \
 	@mkdir -p $(dir $@)
 	rm -f $@
 	sdar -rcD $@ $(KOS_SDK_C_OBJS) $(KOS_SDK_ASM_OBJS) $(EXE_RUNTIME)
+
+# --- libtui ------------------------------------------------------------
+# The TUI SDK is a separately linked library: one archive member per
+# coherent function group, so a program that calls only part of the
+# library does not link the rest.  The private state and declarations
+# stay in this directory.
+KOS_TUI_SRC     := $(KOS_SDK_ROOT)/tui/src
+KOS_TUI_PRIVATE := $(KOS_TUI_SRC)/tui_internal.h
+KOS_TUI_C_SRC   := tui_state.c tui_lifecycle.c tui_flush.c
+EXE_TUI_OBJS    := $(addprefix $(EXE_SDK_BUILD)/tui/,\
+	$(patsubst %.c,%.rel,$(KOS_TUI_C_SRC)))
+EXE_LIBTUI      := $(EXE_SDK_BUILD)/libtui.lib
+
+$(EXE_SDK_BUILD)/tui/%.rel: $(KOS_TUI_SRC)/%.c $(EXE_HEADERS) \
+		$(KOS_TUI_PRIVATE)
+	@mkdir -p $(dir $@)
+	$(SDCC) $(EXE_CFLAGS) -I $(KOS_TUI_SRC) -c $< -o $@
+
+# `-D` zeroes the members' dates and ids.  The in-tree programs link this
+# archive and the standalone SDK ships it, so the library never records
+# when it was built.
+$(EXE_LIBTUI): $(EXE_TUI_OBJS) $(KOS_RULES)
+	@mkdir -p $(dir $@)
+	rm -f $@
+	sdar -rcD $@ $(EXE_TUI_OBJS)
