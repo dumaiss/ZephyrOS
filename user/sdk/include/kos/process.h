@@ -33,6 +33,16 @@ struct kos_startup *startup(void);
  * of the tail.  See docs/exe-format.md section 5. */
 int splitargs(char *tail, char **argv, int max);
 
+/* Wait for the next interrupt (HALT).  A program waiting on input calls
+ * it between empty polls: it then polls once per interrupt - the timer
+ * tick at least, 156.25 Hz - and the CPU is halted in between, which
+ * keeps a polling loop's bus activity out of the audio band (the sound
+ * card picks it up).  Events are delivered at the interrupt's return as
+ * usual.  It halts only where an interrupt is sure to come - the system
+ * has the timer (`/dev/timer`, asked once) and interrupts are enabled -
+ * and returns at once otherwise. */
+void idle(void);
+
 /* Run `path` synchronously with the raw argument tail `args` (NULL or ""
  * for none; over 125 bytes is refused locally with -KOS_EINVAL).
  * Returns the child's u16 exit status or -errno (docs/abi.md). */

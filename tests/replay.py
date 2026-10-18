@@ -28,7 +28,7 @@ if os.path.join(ROOT, "tools") not in sys.path:
     sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import romfspack  # noqa: E402
-from z80sim import (Ctc0Injector, IocCommandPeer, V9958Peer,  # noqa: E402
+from z80sim import (Ctc, Ctc0Injector, IocCommandPeer, V9958Peer,  # noqa: E402
                     Z80, read_symbols, skip_serial_connect_delay)
 
 RET = 0x1234
@@ -111,6 +111,10 @@ class Replay:
         z.latch = latch
         z.sp = sp
         z.vdp_peer = V9958Peer()
+        # The board's CTC: the timer driver's tick runs on it, and a
+        # program idling between input polls (the SDK's idle) halts until
+        # the next tick.  A test that needs its own CTC attaches it after.
+        Ctc().attach(z)
         return z
 
     def skip_delay(self, z):

@@ -367,11 +367,25 @@ picks the copy path. Standard handles 1 and 2 exist before the first
 struct kos_startup *startup(void);
 int  splitargs(char *tail, char **argv, int max);
 int  run(const char *path, const char *args);
+void idle(void);
 ```
 
 `run` runs a child synchronously with a raw tail (NULL or empty for none)
 and returns the child's exit status or `-errno`. A path over 127 bytes or a
 tail over 125 is refused locally.
+
+`idle` waits for the next interrupt (`HALT`). A program waiting on input
+calls it between empty polls, as `getchar` (and with it
+`console_readline`) does:
+- **Why:** the program then polls once per interrupt (the timer's tick at
+  least, 156.25 Hz) with the CPU halted in between, instead of spinning
+  through system calls. A spinning loop's bus activity falls in the audio
+  band, and the sound card picks it up.
+- **Events:** they are delivered at the interrupt's return as usual, so
+  music driven by timer events keeps playing.
+- **When it halts:** only where an interrupt is sure to come, that is
+  where the system has the timer (`/dev/timer`, asked once) and
+  interrupts are enabled. Otherwise it returns at once.
 
 ### 6.5 Extended memory (`kos/xmem.h`)
 

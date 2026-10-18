@@ -59,11 +59,12 @@ DRIVER_SET = (("sio.mod", 1), ("ioc.mod", 5), ("hid.mod", 4),
 CONSOLE_DRIVER_OK = b"console: driver OK\r\n"
 SERIAL_SYSINFO = \
     b"system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02\r\n"
-# The executive's dispatch counters, one line below the platform rows.
-# This replay leaves the CTC unmodelled, so no interrupt has been
-# dispatched and `last` is the executive's "nothing yet" source.
+# The executive's dispatch counters, one line below the platform rows:
+# nothing unexpected or unclaimed, and the last source dispatched is the
+# timer driver's tick (IRQ_CTC2, 2), the one interrupt the image runs
+# while the monitor waits for its input.
 SERIAL_IRQ_LINE = \
-    b"irq: unexpected 0000 unclaimed 0000 last 07\r\n"
+    b"irq: unexpected 0000 unclaimed 0000 last 02\r\n"
 
 # The required driver's failure: the loader names the image it could not
 # find, the nucleus reports the manifest failure and stops.

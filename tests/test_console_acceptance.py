@@ -50,11 +50,12 @@ import romfspack  # noqa: E402
 # The packed monitor artifact (pinned by user/monitor/ and the tooling
 # tests; the store must deliver these exact bytes).  The monitor grew by
 # the B (reboot) command, by the `irq:` row's counters and the SDK's
-# longer system-info record, and by the SDK's buffered console, so the
-# pinned identity moved with each relink.
-MONITOR_SIZE = 6688
+# longer system-info record, by the SDK's buffered console and by the
+# idle wait between input polls, so the pinned identity moved with each
+# relink.
+MONITOR_SIZE = 6790
 MONITOR_SHA256 = (
-    "001ade4025051f0a8bc4716593cb3514552e4ad78e9b4946b22843789ffdb0d4")
+    "3f73f28b46ee928d08917045f68f9152b470339729da3264c6d6ea3f59bbce49")
 
 # The monitor's visible rows, decoded from the V9958 trace.
 PROMPT = "Z80> "
@@ -65,12 +66,10 @@ SYSINFO = "system: abi 01 app 10 os 18 common E000 kernel-bank 07 romfs 02"
 PROCESS = "process: pid 1 bank 1 flags 0000"
 BANK_INFO = "bank: current 01 mask 7F"
 # The executive's dispatch counters: nothing has been unexpected or
-# unclaimed, and no interrupt has been dispatched at all - this replay
-# leaves the CTC unmodelled, so the executive still reports its "nothing
-# yet" source (IRQ_SOURCE_COUNT, 7).  The counters are the row's point;
-# the timer replay is what proves dispatches happen at all, and the
-# board's own runs read this line when one stops happening.
-IRQ_LINE = "irq: unexpected 0000 unclaimed 0000 last 07"
+# unclaimed, and the last source dispatched is the timer driver's tick
+# (IRQ_CTC2, 2), the one interrupt the production image runs while the
+# monitor waits for its input.
+IRQ_LINE = "irq: unexpected 0000 unclaimed 0000 last 02"
 PRODUCTION_DIR = "build"
 PRODUCTION_IMAGE = "konaos.bin"
 
@@ -109,7 +108,9 @@ class ConsoleReplayBase(ConsoleReplay, unittest.TestCase):
         """Boot with the emulated peers."""
         z = self.make_cpu()
         z.hid = z.ioc_peer = self.make_peer()
-        self.start_kernel(z)
+        # A smoke image (KOS_SMOKE_HOST_SYNC) holds its first byte until
+        # the host's sync sequence arrives: preload it.
+        self.start_kernel(z, host_sync=getattr(self, "HOST_SYNC", b""))
         return z
 
     def read_sio(self, z):

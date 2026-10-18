@@ -139,6 +139,8 @@ OWNER_FILES = (
     "user/sdk/src/timer.c",
     "user/sdk/src/sound.c",
     "user/sdk/src/sound_out.asm",
+    "user/sdk/src/idle.c",
+    "user/sdk/src/idle_halt.asm",
     "user/sdk/src/kos_internal.h",
     "user/sdk/src/klibc/strlen.asm",
     "user/sdk/src/klibc/strcmp.asm",

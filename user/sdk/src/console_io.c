@@ -48,7 +48,11 @@ int getchar(void)
 			return (int)(unsigned char)ch;
 		}
 		if (result == 0 || result == -KOS_EAGAIN) {
-			continue; /* nothing pending yet: poll again */
+			/* Nothing pending yet: sleep to the next interrupt
+			 * (a key is in the controller's queue, never lost),
+			 * then poll again. */
+			idle();
+			continue;
 		}
 		if (result < 0) {
 			return result;
