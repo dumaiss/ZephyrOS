@@ -23,6 +23,13 @@ class SoundApiTests(unittest.TestCase):
         for port in range(0xE0, 0xE5):
             self.assertNotIn("0x%02X" % port, source)
 
+    def test_empty_console_poll_idles_until_an_interrupt(self):
+        source = (ROOT / "vgmplay.c").read_text()
+        self.assertIn("if (console_poll() > 0)", source)
+        self.assertIn("idle();", source)
+        self.assertNotIn("key_poll_due", source)
+        self.assertNotIn("key_poll_count", source)
+
 
 if __name__ == "__main__":
     unittest.main()

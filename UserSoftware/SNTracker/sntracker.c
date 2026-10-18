@@ -98,7 +98,6 @@ static void refresh_ui(unsigned char force)
 int main(int argc, char **argv)
 {
 	const char *path;
-	unsigned char key_poll_count;
 	int result;
 	int status = 0;
 
@@ -109,6 +108,10 @@ int main(int argc, char **argv)
 	}
 	path = argv[0];
 	console_puts("SNTRACK 0.2 - ZTR tracker player for KonaOS\r\n");
+	/* idle() probes /dev/timer through a temporary handle on its first call.
+	 * Do that before this process owns the timer's event subscription: release
+	 * of any timer handle currently stops the driver's single event source. */
+	idle();
 	result = psg_open();
 	if (result < 0) {
 		printf("sntrack: cannot acquire /dev/sound (%d)\r\n", result);
@@ -135,7 +138,6 @@ int main(int argc, char **argv)
 	queue_overrun_count = 0u;
 	aborted = 0u;
 	ui_refresh_wait = 0u;
-	key_poll_count = ztr_song.tick_rate;
 	player_start();
 	refresh_ui(1u);
 	if (player_playing == 0u) {
@@ -150,22 +152,22 @@ int main(int argc, char **argv)
 	}
 
 	while (player_playing != 0u) {
+		char key;
+
 		if (tick_consumed != tick_produced) {
-			char key;
 			tick_consumed = (unsigned char)(tick_consumed + 1u);
 			player_tick();
 			if (ui_refresh_wait != 0u) --ui_refresh_wait;
 			refresh_ui(0u);
-			if (--key_poll_count == 0u) {
-				key_poll_count = ztr_song.tick_rate;
-				if (console_poll() > 0) {
-					(void)console_read(&key, 1u);
-					if (key == 'q' || key == 'Q' || key == 27) {
-						aborted = 1u;
-						player_stop();
-					}
-				}
+		}
+		if (console_poll() > 0) {
+			(void)console_read(&key, 1u);
+			if (key == 'q' || key == 'Q' || key == 27) {
+				aborted = 1u;
+				player_stop();
 			}
+		} else if (tick_consumed == tick_produced && player_playing != 0u) {
+			idle();
 		}
 	}
 

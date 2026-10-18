@@ -29,6 +29,12 @@ class SoundApiTests(unittest.TestCase):
         self.assertNotIn("PSG_FIRST_PORT", source)
         self.assertNotIn("diag_io_out", source)
 
+    def test_empty_console_poll_idles_until_an_interrupt(self):
+        source = (ROOT / "sntracker.c").read_text()
+        self.assertIn("if (console_poll() > 0)", source)
+        self.assertIn("idle();", source)
+        self.assertNotIn("key_poll_count", source)
+
 
 if __name__ == "__main__":
     unittest.main()

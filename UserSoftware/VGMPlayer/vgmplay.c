@@ -79,9 +79,6 @@ static volatile uint32_t bad_offset;
 static volatile unsigned int wait_ticks;
 static volatile unsigned int tick_phase;
 static volatile unsigned char tick_rate;
-static volatile unsigned char key_poll_due;
-static volatile unsigned char key_poll_count;
-static volatile unsigned char key_poll_reload;
 static volatile unsigned int base_event_count;
 static volatile unsigned int playback_tick_count;
 static volatile unsigned int psg_write_count;
@@ -335,11 +332,6 @@ static int validate_header(uint32_t file_size)
 			stream_rate = 1ul;
 		}
 	}
-	key_poll_reload = (unsigned char)(((unsigned int)tick_rate + 9u) / 10u);
-	if (key_poll_reload == 0u) {
-		key_poll_reload = 1u;
-	}
-	key_poll_count = key_poll_reload;
 	return 0;
 }
 
@@ -576,10 +568,6 @@ static void on_timer_event(unsigned int count, unsigned int missed)
 		if (tick_phase >= TIMER_BASE_RATE) {
 			tick_phase = (unsigned int)(tick_phase - TIMER_BASE_RATE);
 			++playback_tick_count;
-			if (--key_poll_count == 0u) {
-				key_poll_count = key_poll_reload;
-				key_poll_due = 1u;
-			}
 			decoder_tick();
 		}
 	}
@@ -641,7 +629,6 @@ static void reset_player_state(void)
 	bad_offset = 0u;
 	wait_ticks = 0u;
 	tick_phase = 0u;
-	key_poll_due = 0u;
 	base_event_count = 0u;
 	playback_tick_count = 0u;
 	psg_write_count = 0u;
@@ -665,6 +652,10 @@ int main(int argc, char **argv)
 	}
 	path = argv[0];
 	console_puts("VGMPLAY 0.2 - streamed SN76489 player for KonaOS\r\n");
+	/* Prime idle()'s one-time /dev/timer probe before subscribing to timer
+	 * events. Releasing that temporary handle stops the driver's event source;
+	 * later idle() calls only HALT and cannot disturb playback. */
+	idle();
 
 	result = stat(path, &info);
 	if (result < 0 || info.type != KFS_TYPE_FILE) {
@@ -746,13 +737,12 @@ int main(int argc, char **argv)
 		producer_fill_ring();
 		service_refill();
 		producer_fill_ring();
-		if (key_poll_due != 0u) {
-			key_poll_due = 0u;
-			if (console_poll() > 0) {
-				(void)console_read(&key, 1u);
-				aborted = 1u;
-				playing = 0u;
-			}
+		if (console_poll() > 0) {
+			(void)console_read(&key, 1u);
+			aborted = 1u;
+			playing = 0u;
+		} else if (fill_active == 0u && playing != 0u) {
+			idle();
 		}
 	}
 

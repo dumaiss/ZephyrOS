@@ -71,6 +71,9 @@ silences all four PSG chips.
 - The handler performs no filesystem or console operations. Exclusive acquire
   starts from the driver's reset state and release resets the complete card,
   so unused PSGs cannot be left producing stray tones.
+- The foreground calls `idle()` after an empty console poll whenever no stream
+  refill is in progress. The CPU sleeps until the next interrupt instead of
+  busy-polling, while timer events continue to drive playback.
 
 The port reports base timer events, playback ticks, PSG writes, ring underruns
 and missed events when playback ends. A clean run has zero underruns and zero
