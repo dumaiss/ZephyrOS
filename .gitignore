@@ -3,7 +3,7 @@
 
 # Build output (all generated artifacts live under build* directories;
 # source directories never use a build prefix)
-/build/
+**/build/**
 /build-*/
 work/
 docs/validation/
