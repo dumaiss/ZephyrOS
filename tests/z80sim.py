@@ -1440,6 +1440,16 @@ class V9958Peer:
     def __init__(self, command_busy=400):
         self.now = 0
         self.command_busy = command_busy
+        # The frame interrupt, off unless a test sets `frame_period`
+        # (T-states): the frame flag (S#0 bit 7) rises once a period,
+        # reading S#0 clears it, and /INT is the flag while R#1's IE0 is
+        # set - level, so an unacknowledged frame interrupts again.  The
+        # VDP supplies no IM2 vector: the CPU reads FFh.
+        self.frame_period = 0
+        self.frame_clock = 0
+        self.frame_flag = False
+        self.frames = 0
+        self.frame_irqs = 0
         self.regs = [0x00] * 47
         self.addr = 0
         self.vram = bytearray(0x20000)
@@ -1476,6 +1486,12 @@ class V9958Peer:
     def status_read(self):
         ce = 1 if self.now < self.busy_until else 0
         self.status_reads.append((self.now, ce))
+        # Reading status resets the command port's two-byte latch.
+        self.cmd_first = True
+        if self.frame_period and (self.regs[15] & 0x0F) == 0:
+            value = 0x80 if self.frame_flag else 0x00
+            self.frame_flag = False
+            return value
         if (self.regs[15] & 0x0F) == self.STATUS2_SELECT:
             value = 0x00
             if ce:
@@ -1524,6 +1540,19 @@ class V9958Peer:
     def latch_write(self, value):
         self.latch = value & 0x03
         self.latch_writes.append((self.now, value))
+
+    def advance(self, tstates, cpu):
+        """The frame clock: raise the flag once a period, and offer the
+        interrupt (vector FFh) while the flag and IE0 are set."""
+        self.frame_clock += tstates
+        if self.frame_clock >= self.frame_period:
+            self.frame_clock -= self.frame_period
+            self.frame_flag = True
+            self.frames += 1
+        if (self.frame_flag and (self.regs[1] & 0x20) and cpu.iff1 and
+                not cpu.int_pending and cpu.im == 2 and not cpu.ei_delay):
+            cpu.assert_int(0xFF)
+            self.frame_irqs += 1
 
     # -- internal ------------------------------------------------------
     def _write_reg(self, reg, value):
@@ -2621,6 +2650,8 @@ class Z80:
         self.tstates += tstates
         if self.ctc is not None:
             self.ctc.advance(tstates)
+        if self.vdp_peer is not None and self.vdp_peer.frame_period:
+            self.vdp_peer.advance(tstates, self)
 
     def step(self):
         # HALT: only an accepted interrupt wakes the CPU; the clock keeps
@@ -3061,6 +3092,12 @@ class Z80:
             self.i = self.a
         elif op == 0x57:  # ld a,i (P/V reflects IFF2)
             self.a = self.i
+            self._sf(0x04, self.iff2)
+        elif op == 0x5F:  # ld a,r (refresh value; P/V reflects IFF2)
+            # The simulator does not otherwise expose the refresh register.
+            # Instruction count supplies the changing low seven bits needed
+            # by software that uses LD A,R as a cheap entropy source.
+            self.a = self.cycles & 0x7F
             self._sf(0x04, self.iff2)
         elif op in (0x46, 0x56, 0x5E):
             self.im = {0x46: 0, 0x56: 1, 0x5E: 2}[op]

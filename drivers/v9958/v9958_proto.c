@@ -10,7 +10,9 @@
  *                    chunks and stream it;
  *   KVIDEO_OP_WRITE  terminal bytes, fed through the renderer's private
  *                    stack wrapper;
- *   KVIDEO_OP_PUTC   one terminal byte.
+ *   KVIDEO_OP_PUTC   one terminal byte;
+ *   KOS_OP_SUBSCRIBE the vertical-blank event, for the program holding
+ *                    the VDP exclusively (below).
  *
  * The display reset (KVIDEO_RESET, ESC c, RIS) re-runs the whole
  * bring-up chain, including the font upload: this is exactly why the
@@ -37,6 +39,53 @@
 static const struct driver_api *v9958_driver_api;
 static uint8_t v9958_batch[V9958_DRIVER_BATCH];
 static uint16_t v9958_batch_address;
+
+/* --- the vertical-blank event ------------------------------------------
+ *
+ * The program holding the VDP exclusively may subscribe (SYS_NOTIFY on its
+ * handle) to the V9958's frame interrupt.  The interrupt reaches the CPU
+ * on /INT (the configuration latch's D0 = 0, which this driver keeps) as
+ * the source IRQ_VDP_FF, since the VDP supplies no IM2 vector.  The hold
+ * claims the source (an unclaimed one would not be acknowledged, and a
+ * holder may enable the interrupt without subscribing); the subscription
+ * selects status register 0, and the handler reads it, which clears the
+ * frame flag and releases /INT, and posts the event, delivered when the
+ * interrupt returns into the program.  The frame interrupt itself (IE0 in
+ * R#1) is the program's to enable, as on a ColecoVision: it writes R#1
+ * anyway.  The release runs the display init (IE0 off, status register 2
+ * selected) before it drops the claim.
+ *
+ * Reading status resets the command port's two-byte latch: a program's own
+ * register writes must not be split by the interrupt (write them from the
+ * event handler, or masked), as under a ColecoVision's VDP NMI. */
+extern void v9958_io_select_status0(void);
+extern void v9958_io_vblank_ack(void);
+extern uint8_t v9958_status0;
+
+static uint8_t v9958_vblank_sub;     /* the subscription id, 0 = none */
+
+static void v9958_vblank_irq(void *context)
+{
+	(void)context;
+	v9958_io_vblank_ack();
+	if (v9958_vblank_sub != 0u) {
+		v9958_driver_api->event_post(v9958_vblank_sub);
+	}
+}
+
+static int16_t v9958_vblank_subscribe(uint8_t sub)
+{
+	if (sub != 0u) {
+		if (v9958_state.exclusive == 0u || v9958_vblank_sub != 0u) {
+			return (int16_t)-KOS_EBUSY;
+		}
+		if (v9958_status0 == 0u) {
+			v9958_io_select_status0();
+		}
+	}
+	v9958_vblank_sub = sub; /* 0: the hold keeps the acknowledge */
+	return 0;
+}
 
 static int16_t v9958_driver_stream(struct kos_ipc_frame *frame)
 {
@@ -112,6 +161,11 @@ int16_t v9958_driver_dispatch(struct kos_ipc_frame *frame)
 		if (v9958_state.exclusive != 0u) {
 			return (int16_t)-KOS_EBUSY;
 		}
+		if (v9958_driver_api->irq_claim(KOS_IRQ_VDP_FF,
+						(uint16_t)v9958_vblank_irq,
+						0u) != 0) {
+			return (int16_t)-KOS_EBUSY;
+		}
 		v9958_state.exclusive = 1u;
 		v9958_state.dropped = 0u;
 		return 0;
@@ -119,11 +173,21 @@ int16_t v9958_driver_dispatch(struct kos_ipc_frame *frame)
 		if (frame->arg1 != 0u) {
 			/* The takeover ended: the program may have left the
 			 * VDP in any state, so the driver re-runs the whole
-			 * display init and the console draws again. */
+			 * display init and the console draws again.  The
+			 * init turns the frame interrupt off and selects
+			 * status register 2 before the claim is dropped. */
+			int16_t result;
+
 			v9958_state.exclusive = 0u;
-			return (int16_t)v9958_display_reset();
+			v9958_vblank_sub = 0u;
+			v9958_status0 = 0u;
+			result = (int16_t)v9958_display_reset();
+			(void)v9958_driver_api->irq_release(KOS_IRQ_VDP_FF);
+			return result;
 		}
 		return 0;
+	case KOS_OP_SUBSCRIBE:
+		return v9958_vblank_subscribe(frame->arg0);
 	case KVIDEO_OP_SEND:
 		if (frame->arg0 == KVIDEO_PRESENT ||
 		    frame->arg0 == KVIDEO_RESET) {

@@ -1054,6 +1054,13 @@ $(eval $(call exe_program,readphase,tests/perf,\
 
 all: $(EXE_USER_ROOT)/readphase.exe
 
+# The vertical-blank event outcome program: a card program the production
+# replay runs from the shell (tests/test_vblank.py), in no store.
+$(eval $(call exe_program,vblank,tests/vblank,\
+	vblank.c,STACK=256,STAGE=1))
+
+all: $(EXE_USER_ROOT)/vblank.exe
+
 # SDK outcome programs for the console-order and stream replays
 # (tests/test_io_sim.py): the `fs` image's `/system/iomix.exe` with its
 # nested-exec child, and `/system/iostream.exe`, one card-file session

@@ -15,6 +15,8 @@
  *   IOC       class 5, instance 0: the command/reply lane, the bulk
  *                                  lanes and the semantic status word
  *   timer     class 10, instance 0: the monotonic clock
+ *   sound     class 9, instance 0: the sound card's lifecycle, its
+ *                                  description and batched writes
  *
  * The FILE protocol (type KOS_TYPE_FILE) and the filesystem-namespace
  * protocol (type KOS_TYPE_FS) are the file language: the ROMFS
@@ -76,6 +78,7 @@
 #define KOS_CLASS_CONSOLE 6u
 #define KOS_CLASS_FILE    7u /* the file driver: FILE objects and the
                               * filesystem-namespace provider behind /fs */
+#define KOS_CLASS_SOUND   9u  /* the sound card (type KOS_TYPE_SOUND) */
 #define KOS_CLASS_TIMER   10u /* the timer: the monotonic clock (type
                                * KOS_TYPE_TIMER) */
 
@@ -376,6 +379,12 @@
 
 #define KOS_TIMER_COUNTS_PER_10S  390625u
 #define KOS_TIMER_COUNTS_PER_TICK 250u
+
+/* --- sound driver (class KOS_CLASS_SOUND, type KOS_TYPE_SOUND) ---------
+ *
+ * The SOUND protocol's operations, targets, capabilities and records are
+ * in kos/ksound.h, which the SDK ships with its sound client. */
+#include "kos/ksound.h"
 
 /* --- FILE protocol (type KOS_TYPE_FILE) --------------------------------
  *

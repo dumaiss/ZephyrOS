@@ -465,7 +465,10 @@ int timer_event(int handle, uint32_t period_counts);
 second call replaces the handler, and `notify(handle, 0)` unsubscribes
 (`docs/abi.md` section 6.7 has the whole contract). `timer_event` arms
 the timer driver's event timer with a period in 25.6 µs counts - 782 is
-20 ms - and 0 stops it. Both return 0 or a negated error; a handle that
+20 ms - and 0 stops it. A handle that holds `/dev/video` exclusively
+(`KOS_BIND_EXCLUSIVE`) receives the V9958's frame interrupt instead: the
+program enables it (IE0, R#1 bit 5) and gets one event per frame
+(`docs/devices.md`, section 6). Both return 0 or a negated error; a handle that
 is not bound to an event-serving endpoint is `-KOS_ENOTSUP`, and the
 four subscription slots being taken is `-KOS_ENOSPC`.
 
@@ -573,6 +576,40 @@ per byte: `putchar` about 1,330 T-states (one console call per 128-byte
 line), a one-byte `read` about 29,000, `getc` on a buffered stream about
 2,600, and 512-byte `read`s about 1,170 - a byte-at-a-time `read` pays
 the call overhead per byte, while `getc` pays it once per 512.
+
+### 6.11 The sound card (`kos/sound.h`)
+
+```c
+int sound_open(unsigned char exclusive);
+int sound_close(int handle);
+int sound_info(int handle, struct ksound_info *info);
+int sound_write(int handle, const struct ksound_write *writes,
+                unsigned int count);
+int sound_reset(int handle);
+void sound_out(unsigned char port, unsigned char value);
+```
+
+`/dev/sound` is the sound driver (`kos/ksound.h` has the protocol). Two
+ways to use it:
+
+- **Batched writes.** Build a sequence of `struct ksound_write`
+  `{target, value}` pairs (target 0-3 a PSG, 4 the DAC; the
+  `KSOUND_TARGET_*` names) and send it with `sound_write`: one call into
+  the driver for the whole sequence, which is the point, since a call
+  costs about 15,500 T-states. A music tick's register writes belong in
+  one call. A sequence longer than one descriptor (4 KiB) is split over
+  several calls; an unknown target is `-KOS_EINVAL` with nothing of that
+  call written. It returns the writes performed.
+- **Direct I/O.** `sound_open(1)` takes the card exclusively (a second
+  exclusive open is `-KOS_EBUSY`) and resets it. `sound_info` reports the
+  ports (`psg_ports[]`, `dac_port`), the PSG clock (`psg_clock_hz`) and
+  the capability flags. `sound_out` writes a port the program chose at
+  run time. `sound_close`, or the program's exit, resets the card.
+
+`sound_reset` silences the card on any handle. Timing is the program's:
+a write happens when it is sent, and the timer's events (6.9) pace music.
+A build without the sound driver answers `-KOS_ENOENT` or `-KOS_ENODEV`
+from `sound_open`.
 
 ## 7. Memory layout
 

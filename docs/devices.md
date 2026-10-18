@@ -238,6 +238,29 @@ re-runs the whole bring-up below. `KVIDEO_OP_RESET` (3) runs that same
 bring-up at any time, and `ESC c` and the triple-ESC reset reach it through
 the terminal parser.
 
+**Frame event.** The endpoint also declares `"events": true`: the program
+holding the VDP exclusively can `notify` its handle and receive the
+V9958's frame (vertical-blank) interrupt as a device event.
+- The interrupt reaches the CPU on `/INT` (the configuration latch's D0 =
+  0, which the driver keeps) as the source `IRQ_VDP_FF`, because the VDP
+  supplies no IM2 vector.
+- The exclusive hold claims that source. The subscription selects status
+  register 0, the TMS9918-style status the program reads.
+- The handler reads status register 0, which clears the frame flag and
+  releases `/INT`, then posts the event. The event is delivered when the
+  interrupt returns into the program, so a loop that never calls the OS
+  still receives every frame.
+- The program enables the interrupt itself (IE0, R#1 bit 5), as on a
+  ColecoVision. A second subscription, or one without the exclusive hold,
+  is `-KOS_EBUSY`.
+- Reading status resets the command port's two-byte latch, so the
+  program's own register writes must not be split by the interrupt: make
+  them from the event handler, or masked. While the frame event is on,
+  the driver masks its own register writes and selects status register 2
+  only around its command-engine polls.
+- The release runs the display bring-up, which turns IE0 off and selects
+  status register 2, before the claim is dropped.
+
 **Hardware** (ports `A0h-A4h`, constants in
 `platform/zephyr80/public/hardware.h`): the bring-up sets R#25 (WTE = 0,
 VDS = 0), R#8 = `08h` (64K×4 DRAM), stops any command, loads the GRAPHIC 6
@@ -246,8 +269,9 @@ register state (R#0 = `0Ah`, R#2 = `1Fh`, R#9 = `88h`, R#15 = 2, R#23 =
 programmed under WAIT; both atlases are uploaded, the bitmap is cleared to
 the `44h` background, the cursor set up, the frame presented and the
 display enabled. Status register 2 stays selected while the driver owns
-the VDP, and commands wait for CE. `/INT` stays disabled: the driver claims
-no IRQ.
+the VDP, and commands wait for CE. The bring-up leaves the frame interrupt
+off; `IRQ_VDP_FF` is claimed only during an exclusive hold (the frame
+event above).
 
 **Font.** The 2,048-byte CP850 6×8 font (`assets/font_cp850_6x8.inc`) is
 emitted by `tools/fontpack.py` into the driver's bulk segment, never into

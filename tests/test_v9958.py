@@ -245,7 +245,7 @@ class TestDriverArtifact(unittest.TestCase):
         self.assertEqual(manifest["endpoints"],
                          [{"class": 2, "instance": 0, "version": 1,
                            "dispatch": "v9958_driver_dispatch", "flags": 0,
-                           "release": True}])
+                           "release": True, "events": True}])
 
     def test_packed_container_and_the_bulk_font(self):
         if not os.path.exists(MOD):
@@ -375,13 +375,26 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.assertIn("driver_api", self.proto)
         self.assertIn("bulk_read", self.proto)
 
-    def test_no_vdp_interrupt_claim(self):
-        for body in self.sources + (self.asm,):
-            for needle in ("irq_claim", "irq_release", "KOS_IRQ",
-                           "IRQ_VDP"):
-                self.assertNotIn(needle, body,
-                                 "V9958 must keep /INT disabled: %r"
-                                 % needle)
+    def test_vdp_interrupt_is_the_exclusive_holders(self):
+        # The bring-up never enables a VDP interrupt; the frame interrupt
+        # source is claimed only by the exclusive hold (ACQUIRE) and
+        # dropped at its release, after the display init has turned the
+        # interrupt off and selected status register 2 again.
+        for body in (self.c, self.header, self.boot, self.asm):
+            for needle in ("irq_claim", "irq_release", "IRQ_VDP"):
+                self.assertNotIn(needle, body, needle)
+        acquire = self.proto.split("case KOS_OP_ACQUIRE:")[1].split(
+            "case KOS_OP_RELEASE:")[0]
+        self.assertIn("irq_claim(KOS_IRQ_VDP_FF", acquire)
+        release = self.proto.split("case KOS_OP_RELEASE:")[1].split(
+            "case KOS_OP_SUBSCRIBE:")[0]
+        self.assertLess(release.index("v9958_display_reset()"),
+                        release.index("irq_release(KOS_IRQ_VDP_FF)"))
+        # The acknowledge reads status register 0 (and handles a poll
+        # that has status register 2 selected).
+        ack = self.asm.split("_v9958_io_vblank_ack::")[1].split(
+            "_v9958_io_reg::")[0]
+        self.assertIn("in\ta,(KOS_V9958_CMD_PORT)", ack)
 
     def test_proven_initialization_order(self):
         # Porch off, paced R#25/R#8/stop/R#0..R#11, R#25 WTE on, porch

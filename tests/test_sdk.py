@@ -408,7 +408,7 @@ class TestSdkBoundary(unittest.TestCase):
                           "hwtest", "iobench", "iomix", "iomix_child",
                           "iostream", "ipc", "ipccopy",
                           "monitor", "ns",
-                          "nschild", "readphase", "shell", "timer",
+                          "nschild", "readphase", "shell", "timer", "vblank",
                           "xmem_child",
                           "xmem_far",
                           "xmem_selftest"])

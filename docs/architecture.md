@@ -914,6 +914,7 @@ console it selected. Programs cannot tell which implementation answers.
 | `console-v9958-hid`, `console-serial` | `CONSOLE` | the per-build console |
 | `iocfat` | `FILE`, `FS` | the filesystem behind `/fs` |
 | `timer` | `TIMER` | the monotonic clock: CTC physical channel 2 (port 41h), 156.25 Hz, `/dev/timer` |
+| `sound` | `SOUND` | the Afternoon Blend card (four SN76489 PSGs and a DAC); `/dev/sound` (the design below; the driver is the next one built) |
 
 - **IOC is transport only.** It owns SIO1 framing, the command and bulk
   lanes, the READY/DONE lifecycle, sequencing, timeouts, recovery and the
@@ -928,6 +929,38 @@ console it selected. Programs cannot tell which implementation answers.
   never reach programs. The deployed firmware limits card names to **8.3**.
 - Caching is the provider's policy. The VFS has no cache, and ROMFS needs
   none.
+- **Sound is lifecycle plus a coarse path.** The `sound` driver
+  (`KOS_CLASS_SOUND`, type `SOUND`, `kos/ksound.h`) owns the card's reset
+  and a batched write. It keeps no copy of the chips' registers, because a
+  program holding the device exclusively may write them directly, so one
+  reset routine recovers from any state:
+  - **The reset** writes `9Fh BFh DFh FFh` to each PSG, which silences all
+    four of its channels, and the DAC's neutral code to the DAC. It runs at
+    the driver's init, at `KOS_OP_ACQUIRE`, at `KSOUND_OP_RESET` and at the
+    release of an exclusive hold.
+  - **`KSOUND_OP_INFO`** returns `struct ksound_info` in the reply payload:
+    the PSG count and each PSG's port (listed one by one, `E0h-E3h` today;
+    the ABI does not assume they are contiguous), the DAC's port (`E4h`),
+    the PSG clock (3,579,545 Hz) and the capability flags (direct I/O,
+    batched write, DAC).
+  - **`KSOUND_OP_WRITE`** takes one IN descriptor holding `{target, value}`
+    pairs: target 0-3 a PSG, 4 the DAC. The driver walks them in order
+    through a 64-byte `DRIVER_IO` buffer and performs each `OUT`. One call
+    carries a whole music tick, because a call costs about 15,500
+    T-states (section 7.5) and one per register write would cost more than
+    the music. The targets are logical: the IPC path names no port, so
+    another card can serve the same protocol.
+  - **Direct I/O** is the exclusive holder's: it reads the ports from
+    `KSOUND_OP_INFO` and writes them itself (`sound_out` in the SDK),
+    with no call per byte. The hold's release resets the card, so the
+    next program never inherits a sounding PSG.
+  - **No timing in the protocol.** A write happens when it is sent; a
+    program paces its music with the timer's events.
+  - WRITE and RESET are served on any handle: one process runs at a time
+    and a child inherits no handle, so the hold protects the card's
+    lifecycle, not each call.
+
+  Sound programs use this driver, not diagnostic I/O (`SYS_DIAG_IO_OUT`).
 
 ---
 

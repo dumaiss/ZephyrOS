@@ -101,6 +101,14 @@
 #define V9958_CURSOR_COLORS      16u
 #define V9958_CURSOR_SAT_BYTES   8u
 
+/* v9958_write_vram addresses VRAM's upper 64 KiB only. */
+#if defined(__SDCC)
+_Static_assert(V9958_ATLAS_NORMAL_A16 == 1u && V9958_ATLAS_REVERSE_A16 == 1u &&
+	       V9958_CURSOR_PATTERN_A16 == 1u && V9958_CURSOR_COLOR_A16 == 1u &&
+	       V9958_CURSOR_SAT_A16 == 1u,
+	       "v9958_write_vram addresses VRAM's upper 64 KiB");
+#endif
+
 /* --- Command-engine register block (R#32..R#46 via the indirect port) -
  *
  * Offsets inside the 15-byte block; R#46 is last and starts the command.
@@ -158,7 +166,6 @@ _Static_assert(__builtin_offsetof(struct v9958_block, length) == 2,
 void v9958_io_bootstrap_delay(void);
 void v9958_io_reg_paced(uint8_t value, uint8_t reg);
 void v9958_io_reg(uint8_t value, uint8_t reg);
-uint8_t v9958_io_status_read(void);
 void v9958_io_wait_command(void);
 void v9958_io_latch_write(uint8_t value);
 void v9958_io_stream_ctrl(struct v9958_block *block);
@@ -227,6 +234,12 @@ _Static_assert(__builtin_offsetof(struct v9958_state, out_run_col) == 18,
 	       "v9958_io.asm V9958_ST_RUN_COL");
 _Static_assert(__builtin_offsetof(struct v9958_state, out_run_row) == 19,
 	       "v9958_io.asm V9958_ST_RUN_ROW");
+/* v9958_term_set_defaults zeroes term_state .. out_run_count as one run. */
+#define V9958_ST_DEFAULTS_END 18u
+_Static_assert(__builtin_offsetof(struct v9958_state, term_state) == 2 &&
+	       __builtin_offsetof(struct v9958_state, out_run_count) ==
+		       V9958_ST_DEFAULTS_END - 1u,
+	       "v9958_term_set_defaults field run");
 _Static_assert(V9958_OUT_RUN_SIZE == 64u && V9958_COLUMNS == 85u &&
 	       V9958_CELL_WIDTH == 6u && V9958_CELL_HEIGHT == 8u,
 	       "v9958_io.asm renderer constants");

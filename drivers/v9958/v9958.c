@@ -41,8 +41,9 @@
  * bounded 64-byte chunks through the nucleus bulk copy, because the
  * mode-11 driver window cannot show the boot/bulk tier.
  *
- * VDP interrupts stay disabled: nothing here selects an interrupt
- * enable, so the IRQ_VDP_FF source is not claimed.
+ * The bring-up leaves the VDP's interrupts off.  The frame interrupt is
+ * an exclusive holder's to enable; the hold claims IRQ_VDP_FF and turns
+ * it into a device event (v9958_proto.c).
  *
  * The buffers and state below live in the driver's DRIVER_IO data and
  * are relocated with the image.
@@ -187,25 +188,24 @@ static void v9958_porch_on(void)
 	v9958_io_latch_write(value);
 }
 
-/* Write one precolored atlases row / cursor block.  `addr` is the low
- * 16 address bits; `a16` is bit 16.  R#14 carries A16..A14, then the
- * two command-port address bytes select the VRAM destination and the
- * data stream follows.  A prior command always completes first. */
-static void v9958_write_vram(const uint8_t *src, uint16_t addr, uint8_t a16,
+/* Write one precolored atlas row / cursor block at `addr` in VRAM's upper
+ * 64 KiB (every atlas and cursor table lives there, A16 = 1).  R#14
+ * carries A16..A14, then the two command-port address bytes select the
+ * VRAM destination and the data stream follows.  A prior command always
+ * completes first. */
+static void v9958_write_vram(const uint8_t *src, uint16_t addr,
 			     uint8_t count)
 {
-	uint8_t r14 = (uint8_t)(((a16 & 1u) << 2) |
-				((uint8_t)(addr >> 14) & 0x03u));
-	uint8_t lo = (uint8_t)(addr & 0xFFu);
-	uint8_t hi = (uint8_t)(((uint8_t)(addr >> 8) & 0x3Fu) | 0x40u);
+	uint8_t address[2];
 	struct v9958_block block;
 
 	v9958_io_wait_command();
-	v9958_io_reg(r14, KOS_V9958_REG_R14);
-	block.src = &lo;
-	block.length = 1u;
-	v9958_io_stream_ctrl(&block);
-	block.src = &hi;
+	v9958_io_reg((uint8_t)(0x04u | ((uint8_t)(addr >> 14) & 0x03u)),
+		     KOS_V9958_REG_R14);
+	address[0] = (uint8_t)(addr & 0xFFu);
+	address[1] = (uint8_t)(((uint8_t)(addr >> 8) & 0x3Fu) | 0x40u);
+	block.src = address;
+	block.length = 2u;
 	v9958_io_stream_ctrl(&block);
 	block.src = src;
 	block.length = count;
@@ -228,11 +228,12 @@ static void v9958_start_command(const uint8_t *cmd)
 /* Zero the shared 15-byte command-engine block. */
 static void v9958_cmd_reset(void)
 {
-	uint8_t i;
+	uint8_t *cmd = v9958_cmd;
+	uint8_t n = KOS_V9958_CMD_REGISTER_COUNT;
 
-	for (i = 0u; i < KOS_V9958_CMD_REGISTER_COUNT; ++i) {
-		v9958_cmd[i] = 0x00u;
-	}
+	do {
+		*cmd++ = 0x00u;
+	} while (--n != 0u);
 }
 
 /* Physical page-zero scanline of logical text row `row`: one 8-line
@@ -264,8 +265,7 @@ static void v9958_cursor_write_sat(void)
 	sat[5] = 0x00u;
 	sat[6] = 0x00u;
 	sat[7] = 0x00u;
-	v9958_write_vram(sat, V9958_CURSOR_SAT_ADDR, V9958_CURSOR_SAT_A16,
-			 V9958_CURSOR_SAT_BYTES);
+	v9958_write_vram(sat, V9958_CURSOR_SAT_ADDR, V9958_CURSOR_SAT_BYTES);
 }
 
 /* Convert one font scanline byte (bits 7..2 = six pixels) into three
@@ -388,12 +388,10 @@ static int v9958_upload_atlas_chunk(uint8_t chunk, uint8_t reverse)
 		if (reverse != 0u) {
 			addr = (uint16_t)(addr + V9958_ATLAS_REVERSE_ADDR);
 			v9958_write_vram(v9958_atlas_row, addr,
-					 V9958_ATLAS_REVERSE_A16,
 					 V9958_ATLAS_SEG_BYTES);
 		} else {
 			addr = (uint16_t)(addr + V9958_ATLAS_NORMAL_ADDR);
 			v9958_write_vram(v9958_atlas_row, addr,
-					 V9958_ATLAS_NORMAL_A16,
 					 V9958_ATLAS_SEG_BYTES);
 		}
 	}
@@ -451,10 +449,9 @@ static void v9958_clear_screen(void)
  * cold bring-up and the runtime cursor updates share one writer. */
 static void v9958_cursor_init(void)
 {
-	v9958_write_vram(v9958_cursor_pattern, V9958_CURSOR_PATTERN_ADDR,
-			 V9958_CURSOR_PATTERN_A16, 8u);
+	v9958_write_vram(v9958_cursor_pattern, V9958_CURSOR_PATTERN_ADDR, 8u);
 	v9958_write_vram(v9958_cursor_colors, V9958_CURSOR_COLOR_ADDR,
-			 V9958_CURSOR_COLOR_A16, V9958_CURSOR_COLORS);
+			 V9958_CURSOR_COLORS);
 	v9958_cursor_write_sat();
 }
 
@@ -1367,22 +1364,16 @@ void v9958_term_feed(uint8_t byte)
  * visible at the home cell, no saved state. */
 static void v9958_term_set_defaults(void)
 {
-	v9958_state.term_state = V9958_TERM_NORMAL;
-	v9958_state.esc_count = 0u;
-	v9958_state.csi_private = 0u;
-	v9958_state.csi_param_count = 0u;
-	v9958_state.csi_accum = 0u;
-	v9958_state.csi_param0 = 0u;
-	v9958_state.csi_param1 = 0u;
-	v9958_state.text_col = 0u;
-	v9958_state.text_row = 0u;
+	/* term_state through out_run_count are contiguous (the offsets
+	 * v9958_driver.h pins): zero them, then the two that default on. */
+	uint8_t *field = &v9958_state.term_state;
+	uint8_t i;
+
+	for (i = 0u; i < (uint8_t)(V9958_ST_DEFAULTS_END - 2u); ++i) {
+		field[i] = 0u; /* V9958_TERM_NORMAL, home, normal video */
+	}
 	v9958_state.cursor_visible = 1u;
-	v9958_state.current_attr = 0u;
-	v9958_state.saved_col = 0u;
-	v9958_state.saved_row = 0u;
-	v9958_state.saved_attr = 0u;
 	v9958_state.auto_wrap = 1u;
-	v9958_state.out_run_count = 0u;
 	v9958_run_ptr = v9958_out_run;
 }
 

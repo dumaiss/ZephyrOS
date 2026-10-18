@@ -47,7 +47,8 @@
       "version": 1,
       "dispatch": "v9958_driver_dispatch",
       "flags": 0,
-      "release": true
+      "release": true,
+      "events": true
     }
   ],
   "publishes": [

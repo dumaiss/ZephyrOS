@@ -9,7 +9,7 @@
 ;   - the bounded bootstrap delay (software pacing while R#25.WTE=0);
 ;   - the paced register write (value, delay, register|80h, delay);
 ;   - the native-WAIT register write (value, register|80h);
-;   - the status-register read and the CE completion wait;
+;   - the CE completion wait and the frame interrupt's acknowledge;
 ;   - the four port streams (control/data/palette/indirect) used for
 ;     operations, VRAM addressing bytes, atlas rows and command blocks;
 ;   - the renderer's hot path: the print run's glyph copies and the
@@ -35,7 +35,6 @@
 	.globl _v9958_io_bootstrap_delay
 	.globl _v9958_io_reg_paced
 	.globl _v9958_io_reg
-	.globl _v9958_io_status_read
 	.globl _v9958_io_wait_command
 	.globl _v9958_io_latch_write
 	.globl _v9958_io_stream_ctrl
@@ -47,6 +46,9 @@
 	.globl _v9958_char_putc_worker
 	.globl _v9958_char_write_worker
 	.globl _v9958_out_flush
+	.globl _v9958_status0
+	.globl _v9958_io_select_status0
+	.globl _v9958_io_vblank_ack
 	.globl _v9958_term_write
 	.globl _v9958_term_feed
 	.globl _v9958_state
@@ -98,26 +100,117 @@ _v9958_io_reg_paced::
 	jp	_v9958_io_bootstrap_delay
 
 ; ---------------------------------------------------------------------------
+; The vertical-blank event (v9958_proto.c).  While a program holds the
+; VDP with the frame interrupt subscribed, status register 0 is selected
+; (`v9958_status0` = 1): the interrupt is released by reading it, and it is
+; the status a TMS9918-style program reads.  Reading status also resets the
+; command port's two-byte latch, so while the flag is set this driver's
+; register writes are masked, and its command-engine polls select status
+; register 2 around the poll (`v9958_poll_s2`), which the acknowledge
+; honours.
+; ---------------------------------------------------------------------------
+	.area _DRIVER_IO
+_v9958_status0::
+	.ds	1
+v9958_poll_s2:
+	.ds	1
+
+	.area _CODE
+
+; A = 1 when interrupts were enabled, then masked.  IFF2 is read up to
+; three times: on the board an interrupt accepted right after LD A,I makes
+; that read report 0, and the interrupt's own RETI makes the next one true.
+v9958_irq_off:
+	ld	a,i
+	jp	pe,v9958_irq_was_on
+	ld	a,i
+	jp	pe,v9958_irq_was_on
+	ld	a,i
+	jp	pe,v9958_irq_was_on
+	di
+	xor	a
+	ret
+v9958_irq_was_on:
+	di
+	ld	a,#1
+	ret
+
+; Unmask when A says interrupts were enabled.
+v9958_irq_on:
+	or	a
+	ret	z
+	ei
+	ret
+
+; R#15 = A, as one two-byte pair (the caller masks while it matters).
+v9958_select_status:
+	out	(KOS_V9958_CMD_PORT),a
+	ld	a,#(KOS_V9958_REG_R15 | KOS_V9958_REG_SELECT)
+	out	(KOS_V9958_CMD_PORT),a
+	ret
+
+; ---------------------------------------------------------------------------
+; void v9958_io_select_status0(void);
+;   Select status register 0 for the frame interrupt and set the flag,
+;   masked.  The display init selects status register 2 again.
+; ---------------------------------------------------------------------------
+_v9958_io_select_status0::
+	call	v9958_irq_off
+	push	af
+	xor	a
+	call	v9958_select_status
+	ld	a,#1
+	ld	(_v9958_status0),a
+	pop	af
+	jp	v9958_irq_on
+
+; ---------------------------------------------------------------------------
+; void v9958_io_vblank_ack(void);
+;   The frame interrupt's acknowledge (interrupt context, masked): read
+;   status register 0, which clears the frame flag and releases /INT.  A
+;   command-engine poll may have status register 2 selected: then status
+;   register 0 is selected for the read and 2 again after it.
+; ---------------------------------------------------------------------------
+_v9958_io_vblank_ack::
+	ld	a,(v9958_poll_s2)
+	or	a
+	jr	nz,v9958_ack_in_poll
+	in	a,(KOS_V9958_CMD_PORT)
+	ret
+v9958_ack_in_poll:
+	xor	a
+	call	v9958_select_status
+	in	a,(KOS_V9958_CMD_PORT)
+	ld	a,#KOS_V9958_R15_STATUS2
+	jp	v9958_select_status
+
+; ---------------------------------------------------------------------------
 ; void v9958_io_reg(uint8_t value, uint8_t reg);  A=value, L=reg
 ;   Native-WAIT register write: value, register | 80h.  Requires WTE=1
-;   and the U11 porch enabled; the hardware holds the I/O cycle.
+;   and the U11 porch enabled; the hardware holds the I/O cycle.  Masked
+;   while the frame interrupt's status read could split the pair.
 ; ---------------------------------------------------------------------------
 _v9958_io_reg::
+	ld	h,a
+	ld	a,(_v9958_status0)
+	or	a
+	jr	nz,v9958_reg_masked
+	ld	a,h
 	out	(KOS_V9958_CMD_PORT),a
 	ld	a,l
 	or	#KOS_V9958_REG_SELECT
 	out	(KOS_V9958_CMD_PORT),a
 	ret
-
-; ---------------------------------------------------------------------------
-; uint8_t v9958_io_status_read(void);  A = L = selected status register
-;   R#15 stays at 2 (command-engine status) while the driver owns the
-;   VDP: bit 0 is CE, "a command is active".
-; ---------------------------------------------------------------------------
-_v9958_io_status_read::
-	in	a,(KOS_V9958_CMD_PORT)
-	ld	l,a
-	ret
+v9958_reg_masked:
+	call	v9958_irq_off
+	ld	e,a
+	ld	a,h
+	out	(KOS_V9958_CMD_PORT),a
+	ld	a,l
+	or	#KOS_V9958_REG_SELECT
+	out	(KOS_V9958_CMD_PORT),a
+	ld	a,e
+	jp	v9958_irq_on
 
 ; ---------------------------------------------------------------------------
 ; void v9958_io_wait_command(void);
@@ -125,11 +218,36 @@ _v9958_io_status_read::
 ;   never completes is a hardware fault the driver cannot mask.
 ; ---------------------------------------------------------------------------
 _v9958_io_wait_command::
+	ld	a,(_v9958_status0)
+	or	a
+	jr	nz,v9958_wait_cmd_s0
 v9958_wait_cmd_loop:
 	in	a,(KOS_V9958_CMD_PORT)
 	and	#KOS_V9958_STATUS2_CE
 	jr	nz,v9958_wait_cmd_loop
 	ret
+	; Status register 0 is the frame interrupt's: select 2 for the poll,
+	; tell the acknowledge, and select 0 again after it.
+v9958_wait_cmd_s0:
+	call	v9958_irq_off
+	push	af
+	ld	a,#KOS_V9958_R15_STATUS2
+	call	v9958_select_status
+	ld	a,#1
+	ld	(v9958_poll_s2),a
+	pop	af
+	call	v9958_irq_on
+v9958_wait_cmd_s2:
+	in	a,(KOS_V9958_CMD_PORT)
+	and	#KOS_V9958_STATUS2_CE
+	jr	nz,v9958_wait_cmd_s2
+	call	v9958_irq_off
+	push	af
+	xor	a
+	ld	(v9958_poll_s2),a
+	call	v9958_select_status
+	pop	af
+	jp	v9958_irq_on
 
 ; ---------------------------------------------------------------------------
 ; void v9958_io_latch_write(uint8_t value);  A=value

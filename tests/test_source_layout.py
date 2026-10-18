@@ -123,6 +123,7 @@ OWNER_FILES = (
     "user/sdk/include/kos/process.h",
     "user/sdk/include/kos/diag.h",
     "user/sdk/include/kos/timer.h",
+    "user/sdk/include/kos/sound.h",
     "user/sdk/include/klibc/string.h",
     "user/sdk/include/klibc/fmt.h",
     "user/sdk/include/klibc/stdarg.h",
@@ -136,6 +137,8 @@ OWNER_FILES = (
     "user/sdk/src/exec.c",
     "user/sdk/src/console_io.c",
     "user/sdk/src/timer.c",
+    "user/sdk/src/sound.c",
+    "user/sdk/src/sound_out.asm",
     "user/sdk/src/kos_internal.h",
     "user/sdk/src/klibc/strlen.asm",
     "user/sdk/src/klibc/strcmp.asm",
@@ -1286,6 +1289,8 @@ class TestBuildOutputHygiene(unittest.TestCase):
             for pattern in patterns:
                 if pattern == "/%s/" % name or pattern == "/%s" % name:
                     return True
+                if pattern == "**/build/**" and name == "build":
+                    return True
                 if pattern == "/build-*/" and name.startswith("build-"):
                     return True
                 if pattern == "/build*/" and name.startswith("build"):
@@ -1305,14 +1310,30 @@ class TestBuildOutputHygiene(unittest.TestCase):
         self.assertIn("$(BUILD)", recipe)
         self.assertIn("build-*", recipe)
 
-    def test_build_ignore_patterns_are_root_anchored(self):
-        # Anchored patterns keep source directories (e.g. kernel/build/)
-        # out of the generated-output ignore rules.
+    def test_build_ignore_patterns_reach_only_build_output(self):
+        # `**/build/**` ignores every program's build directory, the tree's
+        # and each one under UserSoftware/, so no source may live in a
+        # directory named `build`; the `build-*` variants stay anchored at
+        # the root.
+        import subprocess
         for pattern in self._gitignore_patterns():
-            if "build" in pattern:
+            if "build" in pattern and pattern != "**/build/**":
                 self.assertTrue(pattern.startswith("/"),
                                 "build ignore pattern is not root-anchored: %r"
                                 % pattern)
+        try:
+            result = subprocess.run(
+                ["git", "ls-files"], cwd=ROOT, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True)
+        except OSError:
+            self.skipTest("git not available")
+        if result.returncode != 0:
+            self.skipTest("not a git work tree")
+        under_build = [path for path in result.stdout.splitlines()
+                       if "build" in path.split("/")[:-1]]
+        self.assertEqual(under_build, [],
+                         "tracked files under a directory named build: %s"
+                         % under_build)
 
     def test_no_tracked_files_under_build_directories(self):
         import subprocess
