@@ -22,6 +22,11 @@ Like the assembly implementation, timer code only publishes due ticks. Pattern
 decoding, macro/effect processing, UI updates and PSG writes happen in normal
 foreground context. A byte-sized producer/consumer tick queue avoids a shared
 read-modify-write counter between the KonaOS event callback and foreground.
+The player takes `/dev/sound` exclusively and batches every changed PSG
+register for a tracker tick into one `sound_write()` call. This replaces the
+old diagnostic-port call per byte and lets the driver validate and emit the
+whole four-chip update in order. Device reset and exclusive release silence
+all PSGs on startup and every exit path.
 ZTR files are loaded before playback in direct 4 KiB transfers, matching the
 current KonaOS SD-card transfer optimum; no storage operation occurs while a
 song is playing.
@@ -37,7 +42,7 @@ make
 The Makefile extracts and links against
 `ZephyrOS/build/kos-sdk-0.1.0.tar.gz`. Replacing that archive causes the local
 SDK copy to be refreshed and the application to be relinked automatically.
-The executable is `build/sntrack.exe`.
+The executable is `build/user/sntrack.exe`.
 
 `make test` runs the C loader and structural validator against both supplied
 ZTR songs, then validates the packed KonaOS executable.

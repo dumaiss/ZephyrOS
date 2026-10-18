@@ -269,9 +269,13 @@ class TestProductionBootPolicy(ProductionBootBase):
         self.assertIn("shell.exe  ", listing)
         self.assertIn("monitor.exe  ", listing)
         manifest = self.type_line(z, "cat /system/drivers.man",
-                                  NO_CARD_PROMPT)
+                                  "iocfat.mod")
         self.assertIn("sio.mod", manifest)
+        self.assertIn("sound.mod", manifest)
         self.assertIn("iocfat.mod", manifest)
+        # The manifest is longer than one display line: its trailing
+        # prompt wraps, so take a fresh one from an empty command.
+        self.type_line(z, "", NO_CARD_PROMPT)
         self.assertIn("ls: /: no device",
                       self.type_line(z, "ls /", NO_CARD_PROMPT))
         self.assertIn("mkdir: /X: no device",

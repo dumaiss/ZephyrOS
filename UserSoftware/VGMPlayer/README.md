@@ -13,7 +13,7 @@ make
 ```
 
 The first build unpacks
-`../../../../ZephyrOS/build/kos-sdk-0.1.0.tar.gz` beneath the ignored local
+`../../build/kos-sdk-0.1.0.tar.gz` beneath the ignored local
 `build/` directory. The packed application is:
 
 ```text
@@ -45,7 +45,8 @@ vgmplay /fs/MUSIC.ZVG
 ```
 
 Press any key to stop. Every exit path stops and releases the timer event,
-closes the file and silences all four voices on all four PSG chips.
+closes the file and releases `/dev/sound`; the driver's release resets and
+silences all four PSG chips.
 
 ## Native runtime design
 
@@ -63,14 +64,13 @@ closes the file and silences all four voices on all four PSG chips.
 - Timer events coalesce while a filesystem call is active. The handler replays
   the delivered count, which is the KonaOS equivalent of the original
   player's pending-CTC-tick mechanism.
-- At startup and shutdown, the player writes the four volume-off commands to
-  PSG0 through PSG3 (ports `E0h` through `E3h`). The chips have no hardware
-  reset and an undefined power-on state, so this prevents unused PSGs from
-  producing stray tones. Music playback itself remains routed to PSG0.
-- The handler performs no filesystem or console operations. PSG0 writes use
-  the SDK's `diag_io_out()` wrapper, the same application mechanism used by
-  KonaOS's `beat.exe` hardware diagnostic because KonaOS 0.1.0 does not yet
-  publish a sound driver.
+- The player takes `/dev/sound` exclusively. `sound_info()` supplies PSG0's
+  actual port and confirms direct-I/O support; the timer handler then uses
+  `sound_out()` for each already-packed VGM byte without paying for an IPC
+  round trip in the timing-sensitive path.
+- The handler performs no filesystem or console operations. Exclusive acquire
+  starts from the driver's reset state and release resets the complete card,
+  so unused PSGs cannot be left producing stray tones.
 
 The port reports base timer events, playback ticks, PSG writes, ring underruns
 and missed events when playback ends. A clean run has zero underruns and zero

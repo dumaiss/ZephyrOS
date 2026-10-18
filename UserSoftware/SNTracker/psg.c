@@ -1,8 +1,7 @@
 #include "sntracker.h"
-#include "diag.h"
+#include "kos/sound.h"
 
-#define PSG_FIRST_PORT        0xE0u
-#define PSG_COUNT             4u
+#define PSG_BATCH_WRITES      48u
 
 #define DIRTY_PITCH           0x01u
 #define DIRTY_VOLUME          0x02u
@@ -12,34 +11,65 @@
 #define CHANNEL_ACTIVE        0x01u
 #define CHANNEL_NOTATION_ARP  0x08u
 
-static int write_port(unsigned char port, unsigned char value)
+static struct ksound_write psg_batch[PSG_BATCH_WRITES];
+static unsigned char psg_batch_count;
+static int sound_handle;
+
+int psg_open(void)
 {
-	struct kos_diag_io_out_args request;
-	int result;
-	request.port = port;
-	request.value = value;
-	result = diag_io_out(&request);
-	if (result < 0) {
+	int result = sound_open(1u);
+
+	if (result < 0)
+		return result;
+	sound_handle = result;
+	return 0;
+}
+
+void psg_close(void)
+{
+	if (sound_handle > 0) {
+		(void)sound_close(sound_handle);
+		sound_handle = 0;
+	}
+}
+
+static void queue_write(unsigned char target, unsigned char value)
+{
+	if (psg_batch_count >= PSG_BATCH_WRITES) {
 		player_psg_error = 1u;
 		player_playing = 0u;
-	} else {
-		++player_psg_writes;
+		return;
 	}
-	return result;
+	psg_batch[psg_batch_count].target = target;
+	psg_batch[psg_batch_count].value = value;
+	++psg_batch_count;
+}
+
+static void flush_writes(void)
+{
+	int result;
+
+	if (psg_batch_count == 0u || player_psg_error != 0u)
+		return;
+	result = sound_write(sound_handle, psg_batch, psg_batch_count);
+	if (result != (int)psg_batch_count) {
+		player_psg_error = 1u;
+		player_playing = 0u;
+		return;
+	}
+	player_psg_writes = (unsigned int)(player_psg_writes + psg_batch_count);
 }
 
 int psg_mute_all(void)
 {
-	unsigned char chip;
-	int result = 0;
-	for (chip = 0u; chip < PSG_COUNT; ++chip) {
-		unsigned char value = 0x9Fu;
-		for (;;) {
-			int current = write_port((unsigned char)(PSG_FIRST_PORT + chip), value);
-			if (current < 0) result = current;
-			if (value == 0xFFu) break;
-			value = (unsigned char)(value + 0x20u);
-		}
+	int result;
+
+	if (sound_handle <= 0)
+		return -KOS_ENODEV;
+	result = sound_reset(sound_handle);
+	if (result < 0) {
+		player_psg_error = 1u;
+		player_playing = 0u;
 	}
 	return result;
 }
@@ -84,14 +114,14 @@ static unsigned int fine_pitch(unsigned int period, int pitch)
 static void render_tone(unsigned char number, struct tracker_channel *channel)
 {
 	unsigned char voice = number & 3u;
-	unsigned char port = (unsigned char)(PSG_FIRST_PORT + (number >> 2));
+	unsigned char target = number >> 2;
 	unsigned char note = effective_note(channel);
 	unsigned int period = ztr_u16(ztr_song.note_table + (unsigned int)note * 2u);
 	period = fine_pitch(period, channel->pitch_value);
 	if (period != channel->last_period) {
-		(void)write_port(port, (unsigned char)(0x80u | (voice << 5) |
-							(period & 0x0Fu)));
-		(void)write_port(port, (unsigned char)((period >> 4) & 0x3Fu));
+		queue_write(target, (unsigned char)(0x80u | (voice << 5) |
+						(period & 0x0Fu)));
+		queue_write(target, (unsigned char)((period >> 4) & 0x3Fu));
 		channel->last_period = period;
 	}
 	channel->dirty &= (unsigned char)~DIRTY_PITCH;
@@ -99,12 +129,12 @@ static void render_tone(unsigned char number, struct tracker_channel *channel)
 
 static void render_noise(unsigned char number, struct tracker_channel *channel)
 {
-	unsigned char port = (unsigned char)(PSG_FIRST_PORT + (number >> 2));
+	unsigned char target = number >> 2;
 	unsigned char control = effective_note(channel) & 3u;
 	if ((channel->duty_value & 1u) != 0u) control |= 4u;
 	if (control != channel->last_noise ||
 	    (channel->dirty & DIRTY_PHASE) != 0u) {
-		(void)write_port(port, (unsigned char)(0xE0u | control));
+		queue_write(target, (unsigned char)(0xE0u | control));
 		channel->last_noise = control;
 	}
 	channel->dirty &= (unsigned char)~(DIRTY_PITCH | DIRTY_NOISE | DIRTY_PHASE);
@@ -114,7 +144,7 @@ static void render_volume(unsigned char number, struct tracker_channel *channel)
 {
 	unsigned char loudness = 0u;
 	unsigned char voice = number & 3u;
-	unsigned char port = (unsigned char)(PSG_FIRST_PORT + (number >> 2));
+	unsigned char target = number >> 2;
 	if ((channel->flags & CHANNEL_ACTIVE) != 0u) {
 		int adjusted;
 		loudness = (unsigned char)(((unsigned int)channel->base_volume *
@@ -128,8 +158,8 @@ static void render_volume(unsigned char number, struct tracker_channel *channel)
 	}
 	loudness = (unsigned char)(15u - loudness);
 	if (loudness != channel->last_attenuation) {
-		(void)write_port(port, (unsigned char)(0x90u | (voice << 5) |
-							loudness));
+		queue_write(target, (unsigned char)(0x90u | (voice << 5) |
+						loudness));
 		channel->last_attenuation = loudness;
 	}
 	channel->dirty &= (unsigned char)~DIRTY_VOLUME;
@@ -138,6 +168,8 @@ static void render_volume(unsigned char number, struct tracker_channel *channel)
 void psg_render_all(void)
 {
 	unsigned char number;
+
+	psg_batch_count = 0u;
 	for (number = 0u; number < ZTR_CHANNELS && player_playing != 0u; ++number) {
 		struct tracker_channel *channel = &player_channels[number];
 		if ((channel->flags & CHANNEL_ACTIVE) == 0u) {
@@ -152,4 +184,5 @@ void psg_render_all(void)
 		}
 		if ((channel->dirty & DIRTY_VOLUME) != 0u) render_volume(number, channel);
 	}
+	flush_writes();
 }

@@ -133,7 +133,7 @@ def file_session():
         ("ls //", "fs/\nsystem/\ndev/\n/> ", "/> ", False),
         ("ls /", "KEEP.TXT  19\nSUB/\n/> ", "/> ", False),
         ("ls /system", store_listing() + "/> ", "/> ", False),
-        ("ls /dev", "serial/\nioc\ninput/\nvideo\nconsole\ntimer\n/> ",
+        ("ls /dev", "serial/\nioc\ninput/\nvideo\nconsole\ntimer\nsound\n/> ",
          "/> ", False),
         ("ls /dev/input", "keyboard\n/> ", "/> ", False),
         ("ls /SUB/ORIG.TXT", "ORIG.TXT  4\n/> ", "/> ", False),

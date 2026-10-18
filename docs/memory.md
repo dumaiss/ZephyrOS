@@ -180,11 +180,11 @@ common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>
 Current production figures:
 
 ```text
-nucleus fixed: required 9141 bytes | overflow 2 bytes | stacks 768 | room 6473 bytes
-nucleus cold: code 24992 bytes end C1A0h | data 1527 bytes at C200h | room 6153 bytes
-driver hot: 27630 bytes of 32768
+nucleus fixed: required 9506 bytes | overflow 2 bytes | stacks 768 | room 6108 bytes
+nucleus cold: code 25047 bytes end C1D7h | data 1543 bytes at C200h | room 6137 bytes
+driver hot: 29180 bytes of 32768
 driver boot/bulk: 19598 bytes of 24576
-common: used 3051 of 7424 bytes (code 2125, data 926) | ceiling 3072
+common: used 3067 of 7424 bytes (code 2140, data 927) | ceiling 3072
 ```
 
 The device-event mechanism places the table, the two return-path checks

@@ -721,6 +721,20 @@ $(MODULES)/timer_boot.rel: drivers/timer/timer_boot.c \
 		platform/zephyr80/public/hardware.h | $(MODULES)
 	$(SDCC) $(DRV_BOOT) $< -o $@
 
+# The sound card's hot image: protocol and lifecycle in C, every E0h-E4h
+# access (the reset and the write loop) in one assembly file.  Its 64-byte
+# DRIVER_IO batch is the copy_in target, so one write call carries up to
+# 32 pairs.
+$(MODULES)/sound_io.rel: drivers/sound/sound_io.asm \
+		platform/zephyr80/public/hardware.inc | $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
+$(MODULES)/sound_driver.rel: drivers/sound/sound_proto.c \
+		drivers/include/driver.h abi/kos/protocol.h abi/kos/ksound.h \
+		abi/kos/ipc.h abi/kos/errno.h \
+		platform/zephyr80/public/hardware.h | $(MODULES)
+	$(SDCC) $(DRV_HOT) $< -o $@
+
 $(MODULES)/hid.rel: drivers/hid/hid.c drivers/hid/hid_driver.h \
 		drivers/include/ioc_protocol.h \
 		drivers/include/ioc.h \
@@ -1060,6 +1074,13 @@ $(eval $(call exe_program,vblank,tests/vblank,\
 	vblank.c,STACK=256,STAGE=1))
 
 all: $(EXE_USER_ROOT)/vblank.exe
+
+# The sound-driver outcome program: a card program the production replay
+# runs from the shell (tests/test_sound.py), in no store.
+$(eval $(call exe_program,sound,tests/sound,\
+	sound.c,STACK=384,STAGE=1))
+
+all: $(EXE_USER_ROOT)/sound.exe
 
 # SDK outcome programs for the console-order and stream replays
 # (tests/test_io_sim.py): the `fs` image's `/system/iomix.exe` with its

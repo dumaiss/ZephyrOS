@@ -211,7 +211,11 @@ OWNER_FILES = (
     "drivers/timer/timer.c",
     "drivers/timer/timer_proto.c",
     "drivers/timer/timer_boot.c",
+    "drivers/sound/sound.json",
+    "drivers/sound/sound_io.asm",
+    "drivers/sound/sound_proto.c",
     "tests/timer/timer.c",
+    "tests/sound/sound.c",
     "drivers/sio/sio.c",
     "drivers/sio/sio.h",
     "drivers/sio/sio_proto.c",
@@ -267,14 +271,15 @@ REQUIRED_DIRS = (
     "kernel/vfs", "drivers/iocfat", "config",
     "drivers/sio", "drivers/ioc", "drivers/hid",
     "drivers/v9958", "drivers/console", "drivers/runtime",
-    "drivers/timer", "drivers/include", "kernel/include", "formats/include",
+    "drivers/timer", "drivers/sound", "drivers/include",
+    "kernel/include", "formats/include",
     "platform/zephyr80/public", "platform/zephyr80/private",
     "abi", "abi/kos",
     "user/sdk", "user/sdk/include", "user/sdk/src",
     "user/helloworld", "user/monitor", "user/shell",
     "recovery",
     "tests/subsys", "tests/console",
-    "tests/fs", "tests/bench", "tests/io",
+    "tests/fs", "tests/bench", "tests/io", "tests/sound",
     "tests/target/syscall", "tests/target/irq",
     "tests/target/romfs", "tests/target/process", "tests/target/support",
     "tests/target/ns",
@@ -630,6 +635,9 @@ class TestProductionTestSeparation(unittest.TestCase):
             ["timer.c", "timer.json", "timer_boot.c", "timer_io.asm",
              "timer_proto.c"])
         self.assertEqual(
+            sorted(os.listdir(os.path.join(ROOT, "drivers", "sound"))),
+            ["sound.json", "sound_io.asm", "sound_proto.c"])
+        self.assertEqual(
             sorted(os.listdir(os.path.join(ROOT, "drivers", "iocfat"))),
             ["iocfat.c", "iocfat.json", "iocfat_cache.asm",
              "iocfat_cfile.asm", "iocfat_memo.asm"])
@@ -651,6 +659,7 @@ class TestProductionTestSeparation(unittest.TestCase):
             "drivers/ioc/ioc.json",
             "drivers/iocfat/iocfat.json",
             "drivers/sio/sio.json",
+            "drivers/sound/sound.json",
             "drivers/timer/timer.json",
             "drivers/v9958/v9958.json",
         ])

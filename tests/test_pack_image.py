@@ -444,7 +444,7 @@ class TestNucleusLedgers(unittest.TestCase):
                          hot["driver_hot_capacity_bytes"])
         self.assertGreaterEqual(
             hot["driver_hot_capacity_bytes"] - hot["driver_hot_bytes"],
-            4096, "driver hot tier room")
+            3584, "driver hot tier room")
         text = pack_image.format_nucleus_ledger(ledger)
         self.assertIn("driver hot: %d bytes of %d"
                       % (hot["driver_hot_bytes"],

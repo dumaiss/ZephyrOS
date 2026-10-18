@@ -1392,6 +1392,38 @@ def ioc_crc16(data):
     return crc
 
 
+class SoundPeer:
+    """Write-recording model of the Afternoon Blend sound card.
+
+    The card's four SN76489 PSGs answer E0h-E3h and its DAC answers E4h.
+    Nothing on it is readable, so the model only records: every write
+    becomes `(port, value, T-state)` in `writes`, in issue order, which
+    is what a replay asserts the driver's OUT sequence against.  The
+    ports take the chips' conventional bytes; the card reverses the
+    SN76489 data bits in hardware.
+    """
+
+    FIRST_PORT = 0xE0
+    LAST_PORT = 0xE4
+
+    def __init__(self):
+        self.now = 0
+        self.writes = []       # (port, value, T-state)
+
+    def write(self, port, value):
+        self.writes.append((port & 0xFF, value & 0xFF, self.now))
+
+    def silence(self):
+        """The reset routine's sequence: 9Fh BFh DFh FFh to each PSG,
+        then the DAC's neutral 80h.  Returns (port, value) pairs."""
+        sequence = []
+        for port in range(self.FIRST_PORT, self.LAST_PORT):
+            for value in (0x9F, 0xBF, 0xDF, 0xFF):
+                sequence.append((port, value))
+        sequence.append((self.LAST_PORT, 0x80))
+        return sequence
+
+
 class V9958Peer:
     """Register/VRAM-level model of the LunchCrema V9958 (ports A0h-A4h).
 
@@ -2391,6 +2423,8 @@ class Z80:
         # refreshed with the instruction count before every access so
         # paced-bootstrap and WAIT-phase behaviour can be validated.
         self.vdp_peer = None
+        # Optional sound-card peer on E0h-E4h; it records every write.
+        self.sound_peer = None
 
     def accept_interrupt(self, vector):
         """Accept one maskable IM2 interrupt and fetch its linked target."""
@@ -2458,6 +2492,10 @@ class Z80:
                 self.vdp_peer.indirect_write(value)
             else:
                 self.vdp_peer.latch_write(value)
+        elif self.sound_peer is not None and \
+                SoundPeer.FIRST_PORT <= port <= SoundPeer.LAST_PORT:
+            self.sound_peer.now = self.tstates
+            self.sound_peer.write(port, value)
         elif port == 0x22:
             self.sio_tx.append(value)
         elif port == 0x23:

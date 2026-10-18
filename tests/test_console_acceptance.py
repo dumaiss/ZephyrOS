@@ -80,7 +80,7 @@ PRODUCTION_IMAGE = "konaos.bin"
 # the same shared source.
 DRIVER_SET = (("sio.mod", 1), ("ioc.mod", 5), ("hid.mod", 4),
                ("v9958.mod", 2), ("console-v9958-hid.mod", 6),
-               ("timer.mod", 10), ("iocfat.mod", 7))
+               ("timer.mod", 10), ("sound.mod", 9), ("iocfat.mod", 7))
 
 # The console image's required dependencies (class, instance), in
 # manifest order.  `console-serial` is exercised by test_console_serial.

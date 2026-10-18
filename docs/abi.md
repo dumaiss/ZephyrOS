@@ -206,7 +206,7 @@ No peripheral gets a hardware reset: a warm reboot is invisible to the
 V9958, the SIO, the CTC, the IOC and the keyboard controller. Each driver's
 bring-up therefore programs its device fully from any state rather than
 from power-on defaults, which is what makes the reboot indistinguishable
-from a cold start (`docs/devices.md` section 12).
+from a cold start (`docs/devices.md` section 14).
 
 The SDK wrapper is `void reboot(void)`; it does not return. The monitor's
 `B` command and the shell's `reboot` built-in call it.
@@ -395,7 +395,7 @@ through the standard handles.
 the input queue; a console whose output driver owns the display forwards
 the display reset to it. The kernel runs it before every start of the
 boot program, so no program inherits a terminal another program left
-behind (`docs/devices.md` section 12).
+behind (`docs/devices.md` section 14).
 
 `getchar`, `console_puts` and `console_readline` are built on these. A
 process without standard handles gets `-KOS_EINVAL`. The build decides which

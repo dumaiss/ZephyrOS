@@ -678,10 +678,12 @@ class TestBeatBoardCheck(unittest.TestCase):
         # tone.
         self.assertIn("beat_events += count;", body)
         self.assertIn("beat_missed += missed;", body)
-        # PSG0 at E0h through the diagnostic boundary, the board's port and
-        # byte order (docs/devices.md section 9).
-        self.assertIn("#define PSG0_PORT   0xE0u", body)
-        self.assertIn("diag_io_out(&req)", body)
+        # PSG0 through the sound driver, in the SN76489's byte order:
+        # one batched write for the tone program and one pair per tick.
+        self.assertIn('#include "kos/sound.h"', body)
+        self.assertIn("sound_open(0u)", body)
+        self.assertIn("sound_write(sound_handle, writes, 3u)", body)
+        self.assertNotIn("diag_io_out", body)
         # Every path out of the program silences the tone.
         self.assertGreaterEqual(body.count("tone_silence();"), 5)
         # `beat reboot` reboots while subscribed and armed: the call sits

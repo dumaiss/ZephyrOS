@@ -231,7 +231,7 @@ operations need a non-empty payload and stream the full 16-bit length;
 `PRESENT` and `RESET` need length 0; unknown operations are unsupported.
 
 The endpoint declares `"release": true`, so it also serves the common
-`KOS_OP_ACQUIRE` and `KOS_OP_RELEASE` (section 13). While an exclusive
+`KOS_OP_ACQUIRE` and `KOS_OP_RELEASE` (section 14). While an exclusive
 handle is held the console's output is dropped and counted instead of
 rendered (the caller still gets its whole length back), and the release
 re-runs the whole bring-up below. `KVIDEO_OP_RESET` (3) runs that same
@@ -317,7 +317,7 @@ queue, so nothing typed for the program that is going away reaches the one
 that starts, and the V9958 build then forwards `KVIDEO_OP_RESET` to its
 output dependency (the serial build has no video to reset and answers 0).
 The boot launcher runs it before every start of the boot program
-(section 13).
+(section 14).
 
 After the drivers load, the boot prints `console: driver OK` through it.
 
@@ -468,9 +468,9 @@ The board check is the production store's `/system/beat.exe`
 PSG0 at every delivery for ten seconds, prints `count/missed` once a
 second, and silences the tone before it exits.  A steady
 two-steps-per-second beat, a stopwatch on the ten seconds and a `missed`
-of 0 are the check; the PSG is written through `diag_io_out` on port
-`E0h` in conventional SN76489 byte order (the board's card reverses the
-data bits, not the software).  Each line also carries the tick clock's own
+of 0 are the check; the PSG is written through `/dev/sound` (one batched
+`sound_write` per delivery) in conventional SN76489 byte order (the
+card reverses the data bits, not the software).  Each line also carries the tick clock's own
 reading (`clock <counts>`), and a second with no delivery at all is marked
 ` gap`: a stall then says which half stopped - a running clock under a
 frozen count column is the delivery side, a frozen clock is the tick's.
@@ -485,7 +485,51 @@ generates it.  The simulator cannot stand in for any of this: a
 production replay never shows the program's console output, so the beat
 is the board's to confirm.
 
-## 10. The `/dev` publication table
+## 10. SOUND (`drivers/sound/`)
+
+The Afternoon Blend card: four SN76489 PSGs at `E0h-E3h` (input clock
+3,579,545 Hz) and a DAC at `E4h`, published as `/dev/sound` and serving
+the `SOUND` protocol (class 9, protocol type `SOUND`).  The driver owns
+the card's lifecycle and a batched write.  It keeps no copy of the chips'
+registers, because a program holding the device exclusively may write
+them directly, so one reset routine recovers from any register state:
+
+- **The reset** writes `9Fh BFh DFh FFh` to each PSG (attenuation 15 on
+  all three tone channels and the noise generator) and the DAC's neutral
+  code, `80h`.  It runs at the driver's init, at an exclusive acquire
+  (`KOS_OP_ACQUIRE`), at `KSOUND_OP_RESET` and at the release of an
+  exclusive hold (`KOS_OP_RELEASE`, `arg1` != 0).  An ordinary handle's
+  release changes nothing.
+- `KSOUND_OP_INFO` (0), descriptor-less: `payload[0..23]` is
+  `struct ksound_info` - version 1, the `DIRECT_IO`, `BATCH_WRITE` and
+  `DAC` capability flags, four PSGs at `E0h-E3h` (listed one by one), the
+  DAC at `E4h`, the PSG clock in little-endian 3,579,545 Hz, and zero
+  reserved bytes.
+- `KSOUND_OP_WRITE` (1), descriptor IN, `arg0` = 0, `arg1` = the byte
+  count: a sequence of `{target, value}` pairs, target 0-3 a PSG and 4
+  the DAC, performed in order.  The count must be non-zero and even, and
+  every target one the card has; otherwise the call is `-KOS_EINVAL`
+  **before any write**, because the driver validates the whole sequence,
+  chunk by chunk, before the first `OUT`.  It returns the bytes consumed.
+  The pairs pass through a 64-byte `DRIVER_IO` buffer, 32 pairs per
+  `copy_in`, and the write loop is assembly.
+- `KSOUND_OP_RESET` (2), descriptor-less: the reset.
+- `KOS_OP_ACQUIRE` takes the exclusive hold and resets the card; a second
+  hold is `-KOS_EBUSY`.  WRITE and RESET are served on any handle.
+- The exclusive holder reads the ports from `KSOUND_OP_INFO` and writes
+  them directly (`sound_out` in the SDK); the hold's release resets the
+  card, so the next program never inherits a sounding PSG.
+
+The endpoint declares `"release": true` and no events or interrupt.  The
+SN76489 bytes are conventional (a latch byte followed by its data byte);
+the card reverses the data bits itself.  `sound_io.asm` is the only file
+that touches `E0h-E4h`; `sound_proto.c` holds the dispatch, the INFO
+record and the lifecycle.  Timing is the program's: a write happens when
+it is sent, and the timer's events pace a music program.  The SDK
+(`kos/sound.h`, `docs/sdk.md` section 6.11) splits a sequence longer than
+one descriptor and checks the name's protocol type.
+
+## 11. The `/dev` publication table
 
 A driver manifest lists its publications: the name below `/dev`
 (`"/serial/0"`), the protocol type, the serving endpoint and the object
@@ -508,7 +552,7 @@ unbind(handle);
 A grouping name enumerates but refuses to bind (`-KOS_EISDIR`). Names are
 matched case-insensitively.
 
-## 11. Interrupts
+## 12. Interrupts
 
 A driver claims a logical source through `irq_claim` in its boot bundle
 and supplies a handler; the executive opens the driver's window around it
@@ -521,7 +565,7 @@ path against CTC channel 0. The production CTC code
 (`kernel/irq/ctc.c`) is `platform_irq_quiesce()`, which also stops
 channel 2, plus `platform_ctc_quiesce_all()` for the reboot path.
 
-## 12. Placement
+## 13. Placement
 
 A driver's hot segment and `DRIVER_IO` data live in bank 6 `6000h-DFFFh`
 (the `DRIVER_IO` part in `8000h-BFFFh`), its boot code and bulk data in
@@ -529,7 +573,7 @@ A driver's hot segment and `DRIVER_IO` data live in bank 6 `6000h-DFFFh`
 `tools/mapcheck.py` fails the build if a driver symbol links into the
 nucleus image, and `--production` rejects every acceptance-only symbol.
 
-## 13. Device takeovers and state restoration
+## 14. Device takeovers and state restoration
 
 The Z80 cannot stop a program from writing to ports, so a driver's protocol
 is not a fence: a program that wants to reprogram a device directly has to
@@ -575,7 +619,7 @@ boot init programs its device from any state rather than from power-on
 defaults, and a device a program reconfigured is rebuilt from the driver's
 own constants.
 
-## 14. Tests
+## 15. Tests
 
 | test | covers |
 |---|---|
@@ -586,6 +630,7 @@ own constants.
 | `tests/test_console_acceptance.py` | the production image: load order, the IOC-FAT lane, and a scripted monitor session over the HID and V9958 lanes |
 | `tests/test_console_serial.py` | the serial console build, and the missing-image boot failure |
 | `tests/test_timer.py` | the TIMER contract and the production replay: the tick stream with the emulated CTC, interrupt cost, and IOC transfers under the timer |
+| `tests/test_sound.py` | the SOUND contract and the production replay: INFO, batched writes, validation before any OUT, a sequence longer than one descriptor, the exclusive lifecycle, direct I/O and the resets |
 
 The simulator covers control flow and register-level behaviour. Serial
 timing, IOC lane timing, interrupt acknowledgement and real USB keyboards

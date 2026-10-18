@@ -42,6 +42,17 @@
 #define KOS_CTC1_PORT               0x42u
 #define KOS_CTC2_PORT               0x41u
 #define KOS_CTC3_PORT               0x43u
+/* Afternoon Blend sound card: four SN76489 PSGs at E0h-E3h and a DAC at
+ * E4h.  The PSGs take conventional SN76489 bytes (the card reverses the
+ * data bits itself); the DAC takes an unsigned sample, and 80h is its
+ * neutral (midscale) code. */
+#define KOS_SOUND_PSG0_PORT         0xE0u
+#define KOS_SOUND_PSG1_PORT         0xE1u
+#define KOS_SOUND_PSG2_PORT         0xE2u
+#define KOS_SOUND_PSG3_PORT         0xE3u
+#define KOS_SOUND_DAC_PORT          0xE4u
+#define KOS_SOUND_PSG_COUNT         4u
+#define KOS_SOUND_PSG_CLOCK_HZ      3579545u
 
 /* --- Memory/banking latch fields --- */
 

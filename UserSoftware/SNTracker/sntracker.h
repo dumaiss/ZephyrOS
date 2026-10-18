@@ -98,6 +98,8 @@ int ztr_load(const char *path);
 void player_start(void);
 void player_tick(void);
 void player_stop(void);
+int psg_open(void);
+void psg_close(void);
 int psg_mute_all(void);
 void psg_render_all(void);
 

@@ -73,7 +73,7 @@ flags are refused first). `bind("/system", 0)` yields the namespace handle
 the name operations use: `stat` works and every mutation is `-KOS_EROFS`.
 
 **`/dev`.** Names come from the publication table the loader installs
-(`docs/devices.md` section 9). The provider derives the grouping names
+(`docs/devices.md` section 11). The provider derives the grouping names
 (`/dev/input`, `/dev/serial`) from the names it holds; they enumerate as
 containers and refuse to bind with `-KOS_EISDIR`. Lookup is a table scan.
 
@@ -92,7 +92,7 @@ the bound mark and the bind flags
 
 - `bind` returns a handle of `KOS_HANDLE_FIRST_BOUND` (3) or more. A full
   table is `KOS_EMFILE`. `KOS_BIND_EXCLUSIVE` asks a DEVICE for a takeover
-  (`docs/devices.md` section 12): the flag is stored in the entry and the
+  (`docs/devices.md` section 14): the flag is stored in the entry and the
   provider is asked first, so a refused acquire leaves the table unchanged.
 - `call` and `unbind` accept only a bound handle the calling process owns;
   anything else is `KOS_EINVAL`.

@@ -1,0 +1,45 @@
+{
+  "schema": "kos-driver-1",
+  "name": "sound",
+  "objects": [
+    "sound_io.rel",
+    "sound_driver.rel"
+  ],
+  "init": "sound_driver_init",
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ]
+    },
+    {
+      "role": "io",
+      "bss_areas": [
+        "_DRIVER_IO"
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 9,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "sound_driver_dispatch",
+      "flags": 0,
+      "release": true
+    }
+  ],
+  "publishes": [
+    {
+      "path": "/dev/sound",
+      "type": "SOUND",
+      "endpoint": {
+        "class": 9,
+        "instance": 0
+      },
+      "object": 0
+    }
+  ],
+  "depends": []
+}

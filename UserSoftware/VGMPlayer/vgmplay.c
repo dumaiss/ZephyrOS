@@ -2,7 +2,7 @@
  *
  * Streams the ZVGC v1/v2 format produced by ../VGMPlayer/tools/compile_vgm.py
  * and writes conventional SN76489 bytes to Afternoon Blend PSG0.  Filesystem,
- * timer-event and diagnostic I/O access all go through the KonaOS 0.1.0 SDK.
+ * timer-event and sound-device access all go through the KonaOS 0.1.0 SDK.
  *
  * The TIMER driver posts a 180 Hz base event.  A phase accumulator derives
  * the file header's 1-180 Hz playback rate, matching the CP/M player's
@@ -11,14 +11,10 @@
  */
 
 #include "kos.h"
-#include "diag.h"
 #include "kos/event.h"
+#include "kos/sound.h"
 #include "kos/stream.h"
 #include "kos/timer.h"
-
-#define PSG_FIRST_PORT        0xE0u
-#define PSG_COUNT             4u
-#define PSG_MUTE_TONE0        0x9Fu
 
 #define TIMER_BASE_RATE       180u
 #define TIMER_BASE_PERIOD     217u  /* 217 * 25.6 us = 5.5552 ms */
@@ -73,12 +69,13 @@ static volatile unsigned char ring_head;
 static volatile unsigned char ring_tail;
 
 static int timer_handle;
+static int sound_handle;
+static unsigned char psg0_port;
 static volatile unsigned char playing;
 static volatile unsigned char aborted;
 static volatile unsigned char format_error;
 static volatile unsigned char bad_opcode;
 static volatile uint32_t bad_offset;
-static volatile unsigned char psg_error;
 static volatile unsigned int wait_ticks;
 static volatile unsigned int tick_phase;
 static volatile unsigned char tick_rate;
@@ -138,50 +135,45 @@ static unsigned char same(const char *left, const char *right)
 
 static void usage(void)
 {
-	console_puts("VGMPLAY 0.1 for KonaOS\r\n"
+	console_puts("VGMPLAY 0.2 for KonaOS\r\n"
 		     "Usage: vgmplay FILE.ZVG\r\n"
 		     "Press any key to stop playback.\r\n");
 }
 
-static int psg_port_write(unsigned char port, unsigned char value)
+static int open_sound(void)
 {
-	struct kos_diag_io_out_args request;
+	struct ksound_info info;
+	int result;
 
-	request.port = port;
-	request.value = value;
-	return diag_io_out(&request);
+	result = sound_open(1u);
+	if (result < 0)
+		return result;
+	sound_handle = result;
+	result = sound_info(sound_handle, &info);
+	if (result < 0 || info.version != KSOUND_INFO_VERSION ||
+	    (info.flags & KSOUND_CAP_DIRECT_IO) == 0u || info.psg_count == 0u) {
+		(void)sound_close(sound_handle);
+		sound_handle = 0;
+		return result < 0 ? result : -KOS_ENOTSUP;
+	}
+	psg0_port = info.psg_ports[0];
+	return 0;
+}
+
+static void close_sound(void)
+{
+	if (sound_handle > 0) {
+		(void)sound_close(sound_handle);
+		sound_handle = 0;
+	}
 }
 
 static int psg_write(unsigned char value)
 {
-	return psg_port_write(PSG_FIRST_PORT, value);
-}
-
-/* The four SN76489-compatible chips have no reset input and their power-on
- * state is undefined.  Initialize the card by silencing every voice on every
- * chip.  Music data remains routed to PSG0, matching the original player. */
-static int mute_all_psgs(void)
-{
-	unsigned char chip;
-	int result = 0;
-
-	for (chip = 0u; chip < PSG_COUNT; ++chip) {
-		unsigned char value = PSG_MUTE_TONE0;
-
-		for (;;) {
-			int write_result = psg_port_write(
-				(unsigned char)(PSG_FIRST_PORT + chip), value);
-
-			if (write_result < 0) {
-				result = write_result;
-			}
-			if (value == 0xFFu) {
-				break;
-			}
-			value = (unsigned char)(value + 0x20u);
-		}
-	}
-	return result;
+	if (sound_handle <= 0)
+		return -KOS_ENODEV;
+	sound_out(psg0_port, value);
+	return 0;
 }
 
 static void publish_fill(void)
@@ -547,12 +539,8 @@ static void decoder_tick(void)
 			unsigned char index;
 
 			for (index = 0u; index < writes; ++index) {
-				if (psg_write(ring_at(head,
-						      (unsigned char)(index + 1u))) < 0) {
-					psg_error = 1u;
-					playing = 0u;
-					return;
-				}
+				(void)psg_write(ring_at(head,
+						(unsigned char)(index + 1u)));
 				++psg_write_count;
 			}
 			ring_head = (unsigned char)(head + needed);
@@ -651,7 +639,6 @@ static void reset_player_state(void)
 	format_error = 0u;
 	bad_opcode = 0u;
 	bad_offset = 0u;
-	psg_error = 0u;
 	wait_ticks = 0u;
 	tick_phase = 0u;
 	key_poll_due = 0u;
@@ -677,11 +664,7 @@ int main(int argc, char **argv)
 		return argc == 1 ? 0 : 1;
 	}
 	path = argv[0];
-	console_puts("VGMPLAY 0.1 - streamed SN76489 player for KonaOS\r\n");
-	if (mute_all_psgs() < 0) {
-		console_puts("vgmplay: sound card is unavailable\r\n");
-		return 5;
-	}
+	console_puts("VGMPLAY 0.2 - streamed SN76489 player for KonaOS\r\n");
 
 	result = stat(path, &info);
 	if (result < 0 || info.type != KFS_TYPE_FILE) {
@@ -738,6 +721,12 @@ int main(int argc, char **argv)
 	}
 	report_stream_plan();
 	producer_fill_ring();
+	result = open_sound();
+	if (result < 0) {
+		printf("vgmplay: cannot acquire /dev/sound (%d)\r\n", result);
+		status = 5;
+		goto cleanup;
+	}
 
 	printf("File: %s  Size: %lu bytes  Rate: %u Hz\r\n",
 	       path, info.size, (unsigned int)tick_rate);
@@ -770,7 +759,7 @@ int main(int argc, char **argv)
 cleanup:
 	playing = 0u;
 	stop_timer();
-	(void)mute_all_psgs();
+	close_sound();
 	report_stream_stats();
 	if (file_stream != (FILE *)0) {
 		int close_result = fclose(file_stream);
@@ -787,9 +776,6 @@ cleanup:
 	} else if (file_error < 0) {
 		printf("Playback stopped by file error %d.\r\n", file_error);
 		status = 3;
-	} else if (psg_error != 0u) {
-		console_puts("Playback stopped by PSG output error.\r\n");
-		status = 5;
 	} else if (format_error != 0u) {
 		printf("Malformed ZVGC stream: opcode %02x at offset %lu.\r\n",
 		       (unsigned int)bad_opcode, bad_offset);

@@ -167,12 +167,14 @@ class DeviceReleaseHost(unittest.TestCase):
         with open(V9958_CONTAINER, "rb") as handle:
             endpoints = container_endpoints(handle.read())
         flags = [fields[3] for fields in endpoints]
-        self.assertEqual(flags, [modpack.EP_RELEASE], endpoints)
+        self.assertEqual(flags,
+                         [modpack.EP_RELEASE | modpack.EP_EVENTS],
+                         endpoints)
         with open(os.path.join(MODULE_DIR, "v9958.report.json"),
                   encoding="utf-8") as handle:
             report = json.load(handle)
         self.assertEqual(report["endpoints"][0]["flags"],
-                         modpack.EP_RELEASE)
+                         modpack.EP_RELEASE | modpack.EP_EVENTS)
 
     def test_release_key_validation_and_packing(self):
         objects, manifest = simple_image()

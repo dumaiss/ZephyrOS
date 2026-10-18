@@ -29,7 +29,7 @@ SYSTEMS = os.path.join(ROOT, "systems")
 # manifest that follows from it for the production image: six 24-byte
 # ROMFS name records, the field formats/include/mod.h defines.
 PRODUCTION_DRIVERS = ["sio", "ioc", "hid", "v9958", "console-v9958-hid",
-                      "timer", "iocfat"]
+                      "timer", "sound", "iocfat"]
 PRODUCTION_MAN = b"".join(
     name.encode("ascii") + bytes(24 - len(name))
     for name in [driver + ".mod" for driver in PRODUCTION_DRIVERS])

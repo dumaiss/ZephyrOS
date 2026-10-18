@@ -17,27 +17,20 @@
  *
  * The handler is entered from wherever the program was - including in the
  * middle of the console write the main loop makes - so it only touches its
- * own counters and one I/O port, and every line is `beat: ...`.
+ * own counters and one sound pair, and every line is `beat: ...`.
  *
- * The PSG ports and the SN76489 byte order are the board's: the card
- * selects the four chips at E0h-E3h and takes conventional SN76489 bit
- * order with no software data-bit reversal (`../Zephyr-80/Code/HOST/
- * CPM2.2/src/layout/platform.inc`, `SOUND_PSG0_PORT = 0xE0`;
- * `Code/HOST/SNTracker/src/sn76489.asm`, "the hardware data-bit reversal
- * is already accounted for on the card and must not be repeated in
- * software").
+ * The tone is written through `/dev/sound` on PSG0, in the SN76489's
+ * conventional byte order: a latch byte (`1RRRDDDD`: register and the low
+ * four data bits) followed by a data byte (`0DDDDDD`: the upper six).
+ * The card reverses the data bits itself.
  */
 
 #include "kos.h"
-#include "diag.h" /* the SDK diag wrappers (not in kos.h) */
 #include "kos/event.h"
 #include "kos/ipc.h"
+#include "kos/sound.h"
 #include "kos/timer.h"
 
-/* PSG0 at E0h, and the SN76489's two-byte writes: a latch byte
- * (`1RRRDDDD`: register and the low four data bits) followed by a data
- * byte (`0DDDDDD`: the upper six). */
-#define PSG0_PORT   0xE0u
 #define PSG_TONE0   0x80u /* register 0: tone generator 0's frequency */
 #define PSG_VOL0    0x90u /* register 8: tone generator 0's volume     */
 #define PSG_SILENT  0x0Fu /* attenuation 15 is off                    */
@@ -61,6 +54,7 @@
 #define REBOOT_AFTER  5u
 
 static int event_handle;
+static int sound_handle;
 static unsigned int beat_events;
 static unsigned int beat_missed;
 static unsigned char beat_loud;
@@ -113,26 +107,28 @@ static int list_once(const char *dir)
 	}
 }
 
-static void psg_write(unsigned char value)
-{
-	struct kos_diag_io_out_args req;
-
-	req.port = PSG0_PORT;
-	req.value = value;
-	(void)diag_io_out(&req);
-}
-
-/* One 440 Hz tone, silent until the first event. */
+/* One 440 Hz tone, silent until the first event: the tone generator's
+ * two frequency bytes and its volume in one write. */
 static void tone_program(void)
 {
-	psg_write((unsigned char)(PSG_TONE0 | (TONE_TICKS & 0x0Fu)));
-	psg_write((unsigned char)((TONE_TICKS >> 4) & 0x3Fu));
-	psg_write((unsigned char)(PSG_VOL0 | PSG_SILENT));
+	struct ksound_write writes[3];
+
+	writes[0].target = KSOUND_TARGET_PSG0;
+	writes[0].value = (unsigned char)(PSG_TONE0 | (TONE_TICKS & 0x0Fu));
+	writes[1].target = KSOUND_TARGET_PSG0;
+	writes[1].value = (unsigned char)((TONE_TICKS >> 4) & 0x3Fu);
+	writes[2].target = KSOUND_TARGET_PSG0;
+	writes[2].value = (unsigned char)(PSG_VOL0 | PSG_SILENT);
+	(void)sound_write(sound_handle, writes, 3u);
 }
 
 static void tone_silence(void)
 {
-	psg_write((unsigned char)(PSG_VOL0 | PSG_SILENT));
+	struct ksound_write pair;
+
+	pair.target = KSOUND_TARGET_PSG0;
+	pair.value = (unsigned char)(PSG_VOL0 | PSG_SILENT);
+	(void)sound_write(sound_handle, &pair, 1u);
 	beat_loud = 0u;
 }
 
@@ -161,11 +157,16 @@ beat_irq_on_yes:
 
 static void beat_on_event(unsigned int count, unsigned int missed)
 {
+	struct ksound_write pair;
+
 	beat_events += count;
 	beat_missed += missed;
 	beat_loud = (unsigned char)(beat_loud == 0u);
-	psg_write((unsigned char)(PSG_VOL0 |
-				  (beat_loud != 0u ? TONE_LEVEL : PSG_SILENT)));
+	pair.target = KSOUND_TARGET_PSG0;
+	pair.value = (unsigned char)(PSG_VOL0 |
+				     (beat_loud != 0u ? TONE_LEVEL
+						      : PSG_SILENT));
+	(void)sound_write(sound_handle, &pair, 1u);
 }
 
 int main(int argc, char **argv)
@@ -198,8 +199,14 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
+	sound_handle = sound_open(0u);
+	if (sound_handle < 0) {
+		printf("beat: FAIL sound %d\r\n", sound_handle);
+		return 1;
+	}
 	event_handle = timer_open();
 	if (event_handle < 0) {
+		(void)sound_close(sound_handle);
 		printf("beat: FAIL open %d\r\n", event_handle);
 		return 1;
 	}
@@ -243,9 +250,9 @@ int main(int argc, char **argv)
 				++passes;
 			}
 			/* A warm reboot while subscribed: the channels are
-			 * running and the subscription is live.  Only the tone
-			 * is stopped first - KonaOS owns no sound driver, so
-			 * nothing else would silence the chip across the reset. */
+			 * running and the subscription is live.  The tone is
+			 * stopped first, so the reset path starts from silence
+			 * whatever the driver's bring-up does. */
 			if (reboot_mode != 0u && beat_events >= REBOOT_AFTER) {
 				tone_silence();
 				printf("beat: reboot after %u events\r\n",
@@ -269,6 +276,7 @@ int main(int argc, char **argv)
 	(void)timer_event(event_handle, 0u);
 	(void)notify(event_handle, (kos_event_handler_t)0);
 	tone_silence();
+	(void)sound_close(sound_handle);
 	(void)unbind((unsigned char)event_handle);
 	event_handle = 0;
 	return 0;

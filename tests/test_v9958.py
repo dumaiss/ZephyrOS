@@ -290,7 +290,7 @@ class TestDriverArtifact(unittest.TestCase):
         system = _load_json(PRODUCTION_SYSTEM)
         self.assertEqual(system["drivers"],
                          ["sio", "ioc", "hid", "v9958", "console-v9958-hid",
-                          "timer", "iocfat"])
+                          "timer", "sound", "iocfat"])
         self.assertEqual(system["store"],
                          ["shell.exe", "monitor.exe",
                           # The production feature exerciser and the

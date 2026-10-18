@@ -31,7 +31,7 @@ static unsigned char same(const char *left, const char *right)
 
 static void usage(void)
 {
-	console_puts("SNTRACK 0.1 for KonaOS\r\n"
+	console_puts("SNTRACK 0.2 for KonaOS\r\n"
 		     "Usage: sntrack FILE.ZTR\r\n"
 		     "Q or Esc stops playback.\r\n");
 }
@@ -108,15 +108,16 @@ int main(int argc, char **argv)
 		return argc == 1 ? 0 : 1;
 	}
 	path = argv[0];
-	console_puts("SNTRACK 0.1 - ZTR tracker player for KonaOS\r\n");
-	result = psg_mute_all();
+	console_puts("SNTRACK 0.2 - ZTR tracker player for KonaOS\r\n");
+	result = psg_open();
 	if (result < 0) {
-		console_puts("sntrack: sound card is unavailable\r\n");
+		printf("sntrack: cannot acquire /dev/sound (%d)\r\n", result);
 		return 5;
 	}
 	result = ztr_load(path);
 	if (result < 0) {
 		printf("sntrack: cannot load %s: %s (%d)\r\n", path, ztr_error, result);
+		psg_close();
 		return 2;
 	}
 	printf("Playing: %s", ztr_song.title);
@@ -172,6 +173,7 @@ cleanup:
 	player_stop();
 	stop_timer();
 	(void)psg_mute_all();
+	psg_close();
 	if (player_psg_error != 0u) {
 		console_puts("\r\nPlayback stopped by PSG output error.\r\n");
 		status = 5;

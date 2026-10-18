@@ -8,6 +8,7 @@
     "v9958",
     "console-v9958-hid",
     "timer",
+    "sound",
     "iocfat"
   ],
   "boot": "/system/shell.exe",

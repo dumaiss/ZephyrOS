@@ -26,6 +26,15 @@ KOS_CTC0_PORT           = 0x40
 KOS_CTC1_PORT           = 0x42
 KOS_CTC2_PORT           = 0x41
 KOS_CTC3_PORT           = 0x43
+; --- Afternoon Blend sound card: four SN76489 PSGs at E0h-E3h and a
+;     DAC at E4h ---
+KOS_SOUND_PSG0_PORT     = 0xE0
+KOS_SOUND_PSG1_PORT     = 0xE1
+KOS_SOUND_PSG2_PORT     = 0xE2
+KOS_SOUND_PSG3_PORT     = 0xE3
+KOS_SOUND_DAC_PORT      = 0xE4
+KOS_SOUND_PSG_COUNT     = 4
+KOS_SOUND_PSG_CLOCK_HZ  = 3579545
 
 ; --- Memory/banking latch fields ---
 

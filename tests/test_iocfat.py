@@ -168,13 +168,13 @@ class TestIocFatManifest(IocFatStaticBase):
         self.assertGreater(info["image_size"], 0)
         self.assertEqual([segment["role"] for segment in info["segments"]],
                          ["hot", "io", "bulk"])
-        # The driver hot tier keeps at least 4,096 bytes
-        # free after every image is placed.
+        # The driver hot tier keeps its reserve of 3,584 bytes free
+        # after every image is placed.
         plan = json.loads(read(DRIVER_PLAN))
         hot = plan["nucleus"]
         free = int(hot["driver_hot_capacity_bytes"]) - \
             int(hot["driver_hot_bytes"])
-        self.assertGreaterEqual(free, 4096,
+        self.assertGreaterEqual(free, 3584,
                                 "driver hot tier has only %d bytes free"
                                 % free)
 

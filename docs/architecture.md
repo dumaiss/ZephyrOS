@@ -293,7 +293,7 @@ on a machine whose RAM is still whatever the program left in it. Nothing
 is inherited across the jump: no driver keeps a handle, no process keeps
 a bank, and no peripheral receives a hardware reset. A driver's bring-up
 must therefore program its device fully from any state
-(`docs/devices.md` section 12).
+(`docs/devices.md` section 14).
 
 ### 3.2 Boot sequence
 
@@ -347,7 +347,7 @@ at the monitor after one run instead of looping. The boot path reaches the
 kernel through a generated header, never a compiler `-D` flag.
 
 Every start of the boot program begins on a console reset
-(`KCONSOLE_OP_RESET`, `docs/devices.md` section 12): the terminal goes
+(`KCONSOLE_OP_RESET`, `docs/devices.md` section 14): the terminal goes
 back to its defaults on a clean screen and input the program that went
 away never read is dropped. The ordinary console path is used; the
 launcher has no second mechanism for display or input state.
@@ -747,7 +747,7 @@ component to one of three static nucleus providers:
   driver does (section 5.6).
 - **Device names** describe roles, never products: `/dev/console`,
   `/dev/video`, `/dev/input/keyboard`, `/dev/serial/0`, `/dev/ioc` and
-  `/dev/timer`, and later `/dev/sound`. One driver may publish several
+  `/dev/timer` and `/dev/sound`. One driver may publish several
   names and types.
 - **Handles:** one global table of 12 entries, each tagged with its owner
   process, its 8-bit protocol type, its endpoint and the provider's object
@@ -775,7 +775,7 @@ component to one of three static nucleus providers:
   notification answers `-KOS_ENOTSUP` before any call is made. A program
   writes a device's ports, or reprograms it beyond its protocol, only while
   it holds that device's exclusive handle; the contract and what each
-  driver restores are `docs/devices.md` section 12.
+  driver restores are `docs/devices.md` section 14.
 - **Standard handles:** every process starts with handles 1 (output) and 2
   (input) bound to `/dev/console`, bound fresh for that process, never
   inherited. `bind` never returns them. A build with no console driver
@@ -914,7 +914,7 @@ console it selected. Programs cannot tell which implementation answers.
 | `console-v9958-hid`, `console-serial` | `CONSOLE` | the per-build console |
 | `iocfat` | `FILE`, `FS` | the filesystem behind `/fs` |
 | `timer` | `TIMER` | the monotonic clock: CTC physical channel 2 (port 41h), 156.25 Hz, `/dev/timer` |
-| `sound` | `SOUND` | the Afternoon Blend card (four SN76489 PSGs and a DAC); `/dev/sound` (the design below; the driver is the next one built) |
+| `sound` | `SOUND` | the Afternoon Blend card (four SN76489 PSGs and a DAC); `/dev/sound` |
 
 - **IOC is transport only.** It owns SIO1 framing, the command and bulk
   lanes, the READY/DONE lifecycle, sequencing, timeouts, recovery and the
@@ -973,8 +973,8 @@ console it selected. Programs cannot tell which implementation answers.
 2. **The IPC envelope:** handle, operation, 32-byte frame, status, one
    optional descriptor.
 3. **Protocol types:** `FILE`, `FS` (filesystem namespace), `CONSOLE`,
-   `VIDEO`, `INPUT`, `SERIAL`, `IOC`, `TIMER`, and later `SOUND`. Each
-   defines its operations and frame meanings in `abi/kos/protocol.h`.
+   `VIDEO`, `INPUT`, `SERIAL`, `IOC`, `TIMER` and `SOUND`. Each defines
+   its operations and frame meanings in `abi/kos/protocol.h`.
 4. **The SDK:** typed client functions that bind names, check types and
    fill and decode frames (`docs/sdk.md`).
 
@@ -1266,7 +1266,7 @@ ledgers (`docs/memory.md` has the current values):
 |---|---|---:|---|
 | `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR and driver stacks) | 16,384 | keep ≥ 2,048 free |
 | `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | keep ≥ 4,096 free |
-| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 4,096 free |
+| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 3,584 free |
 | `driver boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
 | `common:` | packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | never raised |
 | gate stack | common | 384 | worst case ≤ 360 |
