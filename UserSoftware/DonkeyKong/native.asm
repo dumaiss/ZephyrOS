@@ -12,9 +12,9 @@
 	.globl _dk_video_shutdown
 	.globl _dk_run_game
 	.globl _dk_frame
-	.globl _dk_start_clock
 	.globl _dk_input_poll
 	.globl _dk_in_event
+	.globl _dk_quit_requested
 
 VDP_DATA        = 0xa0
 VDP_CTRL        = 0xa1
@@ -142,6 +142,31 @@ _dk_install_hooks::
 	ld      (0x02e7),hl
 	ld      hl,#native_freq_sweep
 	ld      (0x02ea),hl
+
+	; The retained OS-7 tail is not self-contained.  Seventeen of its
+	; public/internal routines call the parameter decoder at 0098h, inside
+	; KonaOS native page zero.  Calling 0098h therefore executes startup
+	; data instead of BIOS code (the first hit is INIT_TABLE at 0257h),
+	; before Donkey Kong can switch the display back on.  Redirect every
+	; call operand to the native relocation below.
+	ld      hl,#native_param_decoder
+	ld      (0x020a),hl
+	ld      (0x0258),hl
+	ld      (0x048f),hl
+	ld      (0x065c),hl
+	ld      (0x06ce),hl
+	ld      (0x0fa1),hl
+	ld      (0x0fbf),hl
+	ld      (0x104b),hl
+	ld      (0x10c6),hl
+	ld      (0x1b15),hl
+	ld      (0x1b93),hl
+	ld      (0x1c17),hl
+	ld      (0x1c61),hl
+	ld      (0x1c7d),hl
+	ld      (0x1cc3),hl
+	ld      (0x1cf4),hl
+	ld      (0x1d31),hl
 	ret
 
 install_jp:
@@ -158,14 +183,126 @@ install_jp:
 native_table_bases:
 	.dw     0x1b00,0x3800,0x1800,0x0000,0x2000
 
+; Relocation of OS-7 0098h-00FBh.  This is its generic parameter decoder:
+; callers put an inline descriptor after CALL 0098h, and the decoder moves
+; values between registers, pointed objects and result addresses before
+; returning after the descriptor.  The instruction flow is preserved, but
+; every internal absolute jump names a local label instead of native page
+; zero.
+native_param_decoder:
+	pop     hl
+	ex      (sp),hl
+	push    hl
+param_next:
+	ld      a,(bc)
+	ld      l,a
+	inc     bc
+	ld      a,(bc)
+	inc     bc
+	ld      h,a
+	ex      (sp),hl
+	push    de
+param_fetch:
+	ld      e,(hl)
+	inc     hl
+	ld      d,(hl)
+	inc     hl
+	push    hl
+	ld      a,e
+	or      d
+	jp      nz,param_have_value
+	pop     hl
+	ld      e,(hl)
+	inc     hl
+	ld      d,(hl)
+	inc     hl
+	push    hl
+	ex      de,hl
+	ld      e,(hl)
+	inc     hl
+	ld      d,(hl)
+param_have_value:
+	inc     bc
+	ld      a,(bc)
+	rlca
+	jp      nc,param_copy
+	inc     bc
+	pop     hl
+	ex      (sp),hl
+	ld      (hl),e
+	inc     hl
+	ld      (hl),d
+	inc     hl
+param_restore_de:
+	pop     de
+param_count:
+	ex      (sp),hl
+	dec     hl
+	xor     a
+	cp      h
+	jp      nz,param_more
+	cp      l
+	jp      z,param_done
+param_more:
+	ex      (sp),hl
+	push    hl
+	ex      de,hl
+	jp      param_fetch
+param_done:
+	pop     hl
+	ex      de,hl
+	ex      (sp),hl
+	jp      (hl)
+param_copy:
+	pop     hl
+	ex      (sp),hl
+	push    hl
+	rrca
+	ld      h,a
+	dec     bc
+	ld      a,(bc)
+	ld      l,a
+	ex      (sp),hl
+	inc     bc
+	inc     bc
+param_copy_byte:
+	ld      a,(de)
+	ld      (hl),a
+	inc     hl
+	inc     de
+	ex      (sp),hl
+	dec     hl
+	xor     a
+	cp      l
+	jp      nz,param_copy_more
+	cp      h
+	jp      z,param_copy_done
+param_copy_more:
+	ex      (sp),hl
+	jp      param_copy_byte
+param_copy_done:
+	pop     hl
+	jp      param_restore_de
+
 ; -------------------------------------------------------------------------
 ; V9958 GRAPHIC 4 initialization.  Page zero is the 256x212 16-colour
 ; bitmap.  Page one holds the 16 KiB TMS semantic shadow and the top of
 ; page one contains sprite-mode-2 tables.
 ; -------------------------------------------------------------------------
 _dk_video_init::
-	; Display off, G4, page zero, mode-2 sprite layout.
-	ld      a,#0x04
+	xor     a
+	ld      (frame_enabled),a
+	; Stop any console command that survived the exclusive takeover before
+	; changing modes.  R#46 = 0 is the V9958 command-engine abort.
+	xor     a
+	ld      b,#46
+	call    vdp_reg
+
+	; Display off, G4 (M4+M3), page zero, mode-2 sprite layout.  G3 is 04h;
+	; G4 is 06h.  Using 04h leaves the bitmap translator drawing into VRAM
+	; while the VDP interprets it as a tiled mode, which is effectively a
+	; black screen on the real card.
+	ld      a,#0x06
 	ld      b,#0
 	call    vdp_reg
 	ld      a,#0x02
@@ -200,6 +337,33 @@ _dk_video_init::
 	call    vdp_reg
 	ld      a,#0x03
 	ld      b,#11
+	call    vdp_reg
+	; Do not inherit address selectors, display adjustment or scroll state
+	; from the KonaOS console.  In particular R#23 changes whenever the
+	; console scrolls, so an exclusive bind alone is not a video baseline.
+	xor     a
+	ld      b,#14
+	call    vdp_reg
+	ld      a,#2
+	ld      b,#15
+	call    vdp_reg
+	xor     a
+	ld      b,#16
+	call    vdp_reg
+	xor     a
+	ld      b,#17
+	call    vdp_reg
+	xor     a
+	ld      b,#18
+	call    vdp_reg
+	xor     a
+	ld      b,#23
+	call    vdp_reg
+	xor     a
+	ld      b,#26
+	call    vdp_reg
+	xor     a
+	ld      b,#27
 	call    vdp_reg
 	ld      a,#0x04
 	ld      b,#25
@@ -241,6 +405,12 @@ _dk_video_init::
 	ret
 
 _dk_video_shutdown::
+	; Stop the physical frame interrupt before main unsubscribes the VDP.
+	xor     a
+	ld      (frame_enabled),a
+	ld      a,#0x02
+	ld      b,#1
+	call    vdp_reg
 	ld      a,#0x9f
 	out     (PSG_PORT),a
 	ld      a,#0xbf
@@ -259,6 +429,13 @@ native_palette:
 
 ; A=value, B=register.
 vdp_reg:
+	di
+	call    vdp_reg_unmasked
+	ei
+	ret
+
+; A=value, B=register, with interrupts already masked.
+vdp_reg_unmasked:
 	out     (VDP_CTRL),a
 	ld      a,b
 	or      #0x80
@@ -267,6 +444,7 @@ vdp_reg:
 
 ; A=A16, DE=low 16 bits.  Select a 17-bit VRAM write address.
 vdp_set_write:
+	di
 	add     a,a
 	add     a,a
 	ld      c,a
@@ -276,17 +454,19 @@ vdp_set_write:
 	and     #0x03
 	or      c
 	ld      b,#14
-	call    vdp_reg
+	call    vdp_reg_unmasked
 	ld      a,e
 	out     (VDP_CTRL),a
 	ld      a,d
 	and     #0x3f
 	or      #0x40
 	out     (VDP_CTRL),a
+	ei
 	ret
 
 ; A=A16, DE=low 16 bits.  Select a 17-bit VRAM read address.
 vdp_set_read:
+	di
 	add     a,a
 	add     a,a
 	ld      c,a
@@ -296,33 +476,40 @@ vdp_set_read:
 	and     #0x03
 	or      c
 	ld      b,#14
-	call    vdp_reg
+	call    vdp_reg_unmasked
 	ld      a,e
 	out     (VDP_CTRL),a
 	ld      a,d
 	and     #0x3f
 	out     (VDP_CTRL),a
+	ei
 	ret
 
 clear_bitmap:
-	; Status register 2 for command completion.
+	; Status register 2 for command completion.  Wait on both sides: the
+	; first wait serializes against an inherited command, and the second
+	; prevents the cartridge's first direct VRAM access from racing HMMV.
 	ld      a,#2
 	ld      b,#15
 	call    vdp_reg
-004$:
-	in      a,(VDP_CTRL)
-	and     #1
-	jr      nz,004$
+	call    vdp_wait_command
 	ld      a,#32
 	ld      b,#17
 	call    vdp_reg
 	ld      hl,#clear_command
 	ld      b,#15
-005$:
+004$:
 	ld      a,(hl)
 	out     (VDP_INDIRECT),a
 	inc     hl
-	djnz    005$
+	djnz    004$
+	call    vdp_wait_command
+	ret
+
+vdp_wait_command:
+	in      a,(VDP_CTRL)
+	and     #1
+	jr      nz,vdp_wait_command
 	ret
 
 clear_command:
@@ -382,6 +569,18 @@ native_poller:
 native_abort:
 	ld      sp,(game_saved_sp)
 	jp      dk_game_return
+
+; Cancellation may be latched by an event that interrupted a long foreground
+; renderer.  Only unwind after that event has returned; escaping from inside
+; the event handler would bypass libkos's EVENT_RETURN trampoline.
+abort_if_requested:
+	ld      a,(_dk_quit_requested)
+	or      a
+	ret     z
+	ld      a,(_dk_in_event)
+	or      a
+	ret     nz
+	jp      native_abort
 
 native_rand:
 	ld      hl,(BIOS_RANDOM)
@@ -496,13 +695,26 @@ native_reg_write:
 	bit     6,a
 	jr      z,011$
 	call    render_if_dirty
-	ld      a,#0x42               ; display on, 16x16, IRQ off
+	; The VDP driver's IRQ acknowledge reads status register 0.  Clear the
+	; command-engine selection before IE0, or /INT remains asserted forever.
+	xor     a
+	ld      b,#15
+	call    vdp_reg
+	ld      a,#0x62               ; display on, 16x16, IE0 on
 	ld      b,#1
 	call    vdp_reg
-	call    _dk_start_clock
+	ld      a,#1
+	ld      (frame_enabled),a
 	jr      014$
 011$:
-	ld      a,#0x02
+	; Before the first display-on request, leave IE0 off so no frame can
+	; enter a partly initialized cartridge.  Later blanking must retain it.
+	ld      a,(frame_enabled)
+	or      a
+	ld      a,#0x02               ; display off, 16x16, IE0 off
+	jr      z,013$
+	ld      a,#0x22               ; display off, 16x16, IE0 on
+013$:
 	ld      b,#1
 	call    vdp_reg
 	jr      014$
@@ -609,6 +821,7 @@ native_vram_write:
 019$:
 	xor     a
 	ld      (vdp_busy),a
+	call    abort_if_requested
 	pop     hl
 	pop     de
 	pop     bc
@@ -648,6 +861,7 @@ native_fill_vram:
 	ld      (full_dirty),a
 	xor     a
 	ld      (vdp_busy),a
+	call    abort_if_requested
 	pop     hl
 	pop     de
 	pop     bc
@@ -679,6 +893,7 @@ native_vram_read:
 023$:
 	xor     a
 	ld      (vdp_busy),a
+	call    abort_if_requested
 	pop     hl
 	pop     de
 	pop     bc
@@ -986,6 +1201,7 @@ native_write_sprites:
 	call    render_if_dirty
 	xor     a
 	ld      (vdp_busy),a
+	call    abort_if_requested
 	pop     iy
 	pop     ix
 	pop     hl
@@ -1069,6 +1285,7 @@ io_len:         .ds 2
 tile_offset:    .ds 2
 full_dirty:     .ds 1
 vdp_busy:       .ds 1
+frame_enabled:  .ds 1
 input_bits:     .ds 1
 fill_value:     .ds 1
 render_x:       .ds 1

@@ -1,7 +1,7 @@
 # DonkeyKongKos: native V9958 re-host of the 16 KiB ColecoVision cartridge.
 # Replacing the packaged SDK automatically refreshes the private copy.
 
-KOS_SDK_ARCHIVE ?= ../../../../ZephyrOS/build/kos-sdk-0.1.0.tar.gz
+KOS_SDK_ARCHIVE ?= ../../build/kos-sdk-0.1.0.tar.gz
 KOS_SDK_ROOT ?= build/kos-sdk-0.1.0
 KOS_SDK_HASH := $(shell sha256sum "$(KOS_SDK_ARCHIVE)" 2>/dev/null | cut -c1-64)
 KOS_SDK_STORED_HASH := $(shell sed -n '1p' build/.kos-sdk-sha256 2>/dev/null)

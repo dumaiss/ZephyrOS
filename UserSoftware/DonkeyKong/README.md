@@ -7,8 +7,8 @@ or a TMS9928/V9958 compatibility issue.
 
 This is not another `ColecoGoKos` takeover.  It remains a KonaOS process,
 loads the cartridge through the SDK's extended-memory API, owns `/dev/video`
-through an exclusive device handle, receives 60 Hz frames from `/dev/timer`,
-and returns to the shell cleanly.
+through an exclusive device handle, subscribes directly to the V9958
+vertical-blank event, and returns to the shell cleanly.
 
 ## What is native
 
@@ -23,6 +23,8 @@ and returns to the shell cleanly.
   Zephyr-80 port `E0h`.
 - Keyboard input is translated directly to the controller fields consumed by
   Donkey Kong.  `WASD` moves, Space jumps/acts, and `Q` exits.
+  Input bytes are ingested on every VDP event even when an expensive VRAM
+  translation temporarily skips the non-reentrant game frame.
 
 The standard Coleco BIOS is still required, but only as a source for its
 well-tested software object, timer, writer, and sound engines.  At load time
@@ -31,13 +33,34 @@ controller, random, and low-memory-conflicting entry is replaced by native
 assembly.  No Coleco interrupt, TMS display mode, controller port, or BIOS
 boot path is used.
 
+The cartridge's ordinary NMI is represented by the V9958 vertical-blank
+event.  DKKos subscribes through its exclusive `/dev/video` handle, selects
+status register 0, and enables IE0 in VDP R#1.  KonaOS acknowledges the
+physical interrupt and delivers the event callback, which invokes Donkey
+Kong's original `852Eh` frame/NMI routine.  The interrupt reaches KonaOS on
+`/INT`; it does not require the ColecoVision's NMI wiring.
+Because event callbacks enter with the far-page field cleared, the callback
+temporarily reopens the cartridge's `8000h` aperture before entering `852Eh`
+and restores the primary event mapping before returning to libkos.
+The retained OS-7 routines also depend on their low-memory parameter decoder
+at `0098h`; DKKos relocates that decoder and patches all 17 call sites because
+KonaOS owns native page zero.
+
+The video takeover establishes a complete V9958 baseline rather than
+inheriting the console's live state: it aborts any old command, selects the
+actual G4 mode bits (`R#0=06h`), clears scroll/adjust/select registers, and
+waits for the initial bitmap clear before allowing cartridge VRAM traffic.
+Before IE0 is enabled it restores R#15 to status 0, and every two-byte VDP
+control sequence is interrupt-atomic because the driver's status read resets
+the VDP command latch.
+
 ## Build
 
 The project is a sibling of the other KonaOS ports and builds only against
 the packaged application SDK:
 
 ```sh
-cd Zephyr-80/Code/HOST/DonkeyKongKos
+cd ZephyrOS/UserSoftware/DonkeyKong
 make
 make test
 ```
@@ -85,13 +108,15 @@ game logic and the 10 MHz CPU:
   stronger explanation.  The existing half-throw-rate cartridge patch can
   then be applied as a second, independent timing experiment.
 - If the display is stable but motion cadence is wrong, the port has isolated
-  a frame/timer issue from a sprite-rendering issue.
+  a frame-delivery issue from a sprite-rendering issue.
 
 ## Current validation boundary
 
 `make test` verifies the SDK-packed executable, the protected memory layout,
 the exact ROM revisions, every hardware hook, and the 1-bpp/colour to G4
-pixel expansion.  Emulator and real-card play-throughs are still required;
-in particular, sprite-mode-2 placement and the initial 60 Hz event handoff
+pixel expansion.  A production-image simulator replay has also exercised the
+physical VDP interrupt model, event delivery, far-aperture restoration, and a
+clean `Q` return through video release.  A real-card play-through is still
+required; in particular, sprite-mode-2 placement and sustained performance
 must be checked on the V9958 hardware before calling the diagnostic result
 conclusive.

@@ -1,13 +1,12 @@
 /* DonkeyKongKos -- KonaOS glue for the native V9958 assembly re-host.
  *
  * The game and the hot display path remain Z80 assembly.  C is deliberately
- * limited to the public KonaOS SDK boundary: files, xmem, handles, timer
+ * limited to the public KonaOS SDK boundary: files, xmem, handles, VDP
  * events, and translated keyboard input.
  */
 
 #include "kos.h"
 #include "kos/event.h"
-#include "kos/timer.h"
 
 #define BIOS_SIZE       0x2000u
 #define BIOS_COPY_BASE  0x015Du
@@ -15,8 +14,6 @@
 #define CART_SIZE       0x4000u
 #define DK_CRC16        0x0DC3u
 #define BIOS_CRC16      0x5351u
-#define FRAME_COUNTS    651ul       /* 651 * 25.6 us = 16.6656 ms */
-
 #define VIDEO_NAME      "/dev/video"
 #define DEFAULT_CART    "DK.ROM"
 #define DEFAULT_BIOS    "COLECO.ROM"
@@ -32,10 +29,32 @@ static unsigned char select_pending;
 static unsigned char held_direction;
 static unsigned char direction_life;
 static unsigned char fire_life;
-static unsigned char quit_requested;
+volatile unsigned char dk_quit_requested;
+static unsigned char cart_token;
 
-static int timer_handle;
-static unsigned char clock_started;
+/* Ingest bytes without consuming the translated controller state.  This is
+ * also called from the VDP event before dk_frame(): a long foreground VRAM
+ * translation sets vdp_busy and skips the game NMI, but Q must still latch
+ * and movement/fire must remain ready for the next real controller poll. */
+static void input_pump(void)
+{
+	int ch;
+
+	while (console_poll() > 0) {
+		ch = getchar();
+		if (ch < 0)
+			break;
+		switch ((unsigned char)ch) {
+		case 'd': case 'D': held_direction = 0x02u; direction_life = 3u; break;
+		case 'a': case 'A': held_direction = 0x08u; direction_life = 3u; break;
+		case 'w': case 'W': held_direction = 0x01u; direction_life = 3u; break;
+		case 's': case 'S': held_direction = 0x04u; direction_life = 3u; break;
+		case ' ': case '\r': fire_life = 2u; break;
+		case 'q': case 'Q': dk_quit_requested = 1u; break;
+		default: break;
+		}
+	}
+}
 
 static unsigned int crc16_ccitt(const unsigned char *data, unsigned int length)
 {
@@ -125,30 +144,23 @@ static int load_bios_tail(const char *path)
 
 static void on_frame(unsigned int count, unsigned int missed)
 {
+	unsigned char event_latch;
+
 	(void)missed;
 	/* Coalescing is intentional: running several expensive render frames
-	 * back-to-back only makes a late game later.  Timers inside OS-7 see one
-	 * tick and the next absolute KonaOS deadline catches up naturally. */
+	 * back-to-back only makes a late game later.  OS-7 sees one NMI tick and
+	 * resumes on the next physical VDP frame. */
 	if (count != 0u) {
+		input_pump();
+		/* Event delivery clears the far-page field so the handler starts in
+		 * the primary image.  Reopen DK.ROM before calling its 852Eh NMI
+		 * routine, then restore the event mapping for libkos's return. */
+		event_latch = aperture_open(cart_token);
 		dk_in_event = 1u;
 		dk_frame();
 		dk_in_event = 0u;
+		aperture_close(event_latch);
 	}
-}
-
-/* Called by the assembly WRITE_REGISTER replacement on the first display-on
- * request, after DK has initialized its workspace and video tables. */
-void dk_start_clock(void)
-{
-	if (clock_started != 0u || timer_handle == 0)
-		return;
-	if (notify(timer_handle, on_frame) < 0)
-		return;
-	if (timer_event(timer_handle, FRAME_COUNTS) < 0) {
-		(void)notify(timer_handle, (kos_event_handler_t)0);
-		return;
-	}
-	clock_started = 1u;
 }
 
 /* Result bits consumed by native_poller in native.asm (Coleco raw layout):
@@ -157,23 +169,9 @@ void dk_start_clock(void)
  *   three polls; this feels natural at 60 Hz and avoids sticky keys. */
 unsigned int dk_input_poll(void)
 {
-	int ch;
 	unsigned char result = 0u;
 
-	while (console_poll() > 0) {
-		ch = getchar();
-		if (ch < 0)
-			break;
-		switch ((unsigned char)ch) {
-		case 'd': case 'D': held_direction = 0x02u; direction_life = 3u; break;
-		case 'a': case 'A': held_direction = 0x08u; direction_life = 3u; break;
-		case 'w': case 'W': held_direction = 0x01u; direction_life = 3u; break;
-		case 's': case 'S': held_direction = 0x04u; direction_life = 3u; break;
-		case ' ': case '\r': fire_life = 2u; break;
-		case 'q': case 'Q': quit_requested = 1u; break;
-		default: break;
-		}
-	}
+	input_pump();
 	if (direction_life != 0u) {
 		result |= held_direction;
 		--direction_life;
@@ -186,7 +184,7 @@ unsigned int dk_input_poll(void)
 		select_pending = 0u;
 		result |= 0x40u;
 	}
-	if (quit_requested != 0u)
+	if (dk_quit_requested != 0u)
 		result |= 0x80u;
 	return result;
 }
@@ -208,7 +206,7 @@ int main(int argc, char **argv)
 	unsigned int aperture_address = 0u;
 	unsigned char saved_latch = 0u;
 	int cart_handle = -1;
-	int cart_token;
+	int map_token;
 	int video_handle = -1;
 	int result;
 	if (argc > 0)
@@ -216,7 +214,7 @@ int main(int argc, char **argv)
 	if (argc > 1)
 		bios_path = argv[1];
 
-	console_puts("DonkeyKongKos 0.1 - native V9958 G4 / sprite mode 2\r\n");
+	console_puts("DonkeyKongKos 0.4 - native V9958 G4 / sprite mode 2\r\n");
 	console_puts("WASD move, SPACE jump, Q returns to KonaOS\r\n");
 
 	result = file_size_is(cart_path, CART_SIZE);
@@ -234,33 +232,37 @@ int main(int argc, char **argv)
 		return fail("/dev/video has the wrong protocol type", 0);
 	}
 
-	timer_handle = timer_open();
-	if (timer_handle < 0) {
-		result = timer_handle;
+	result = notify(video_handle, on_frame);
+	if (result < 0) {
 		(void)unbind((unsigned char)video_handle);
-		return fail("cannot open /dev/timer", result);
+		return fail("cannot subscribe to VDP frames", result);
 	}
 
 	result = load_bios_tail(bios_path);
 	if (result < 0) {
+		(void)notify(video_handle, (kos_event_handler_t)0);
 		(void)unbind((unsigned char)video_handle);
 		return fail("unsupported or unreadable COLECO.ROM", result);
 	}
 	cart_handle = xload(cart_path, KOS_XMEM_FLAG_MAPPABLE);
 	if (cart_handle < 0) {
+		(void)notify(video_handle, (kos_event_handler_t)0);
 		(void)unbind((unsigned char)video_handle);
 		return fail("cannot load DK.ROM into extended memory", cart_handle);
 	}
-	cart_token = xmap((unsigned int)cart_handle, &aperture_address);
-	if (cart_token < 0 || aperture_address != 0x8000u) {
+	map_token = xmap((unsigned int)cart_handle, &aperture_address);
+	if (map_token < 0 || aperture_address != 0x8000u) {
 		(void)xfree((unsigned int)cart_handle);
+		(void)notify(video_handle, (kos_event_handler_t)0);
 		(void)unbind((unsigned char)video_handle);
-		return fail("cannot map DK.ROM at the far aperture", cart_token);
+		return fail("cannot map DK.ROM at the far aperture", map_token);
 	}
-	saved_latch = aperture_open((unsigned char)cart_token);
+	cart_token = (unsigned char)map_token;
+	saved_latch = aperture_open(cart_token);
 	if (crc16_ccitt((const unsigned char *)0x8000u, CART_SIZE) != DK_CRC16) {
 		aperture_close(saved_latch);
 		(void)xfree((unsigned int)cart_handle);
+		(void)notify(video_handle, (kos_event_handler_t)0);
 		(void)unbind((unsigned char)video_handle);
 		return fail("DK.ROM is not the supported 16 KiB revision", 0);
 	}
@@ -270,11 +272,9 @@ int main(int argc, char **argv)
 	dk_video_init();
 	dk_run_game();
 
-	if (clock_started != 0u) {
-		(void)timer_event(timer_handle, 0ul);
-		(void)notify(timer_handle, (kos_event_handler_t)0);
-	}
+	/* Disable IE0 before removing the driver's status-0 acknowledge. */
 	dk_video_shutdown();
+	(void)notify(video_handle, (kos_event_handler_t)0);
 	aperture_close(saved_latch);
 	(void)xfree((unsigned int)cart_handle);
 	(void)unbind((unsigned char)video_handle);
