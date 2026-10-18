@@ -287,6 +287,7 @@ class TestSdkPackage(unittest.TestCase):
             source = os.path.join(cls.tmp, "build-copy")
             shutil.copytree(cls.tree, source)
             shutil.copytree(TUI_FIXTURE, os.path.join(source, "tui"))
+            cls.build_copy = source
             for directory, programs in (("template", ["hello"]),
                                         ("examples", ["hello", "fardemo",
                                                       "files", "fardata"]),
@@ -461,6 +462,24 @@ class TestSdkPackage(unittest.TestCase):
         stream = self._pack_test_store([("hello.exe", hello)])
         replay, z = self._boot(stream)
         replay.send_line(z, "/system/hello.exe", GREETING)
+
+    def test_the_tui_fixture_links_only_the_members_it_uses(self):
+        """The out-of-tree fixture calls the lifecycle only: shutdown pulls
+        the flush member, while the screen and formatter stay out."""
+        self._build()
+        map_path = os.path.join(self.build_copy, "tui", "build", "user",
+                                "tui_sdkprobe", "tui_sdkprobe.map")
+        symbols = set()
+        pattern = re.compile(r"^\s*[0-9A-Fa-f]{8}\s+(\S+)\s*(\S*)\s*$")
+        for line in Path(map_path).read_text().splitlines():
+            match = pattern.match(line)
+            if match is not None and not match.group(1).startswith("."):
+                symbols.add(match.group(1))
+        self.assertIn("_tui_init", symbols)
+        self.assertIn("_tui_get_size", symbols)
+        self.assertIn("_tui_flush", symbols)
+        for absent in ("_tui_printf", "_tui_putc"):
+            self.assertNotIn(absent, symbols)
 
     def test_the_packed_tui_program_runs_in_the_simulator(self):
         """The SDK-built TUI fixture starts, reports the logical geometry

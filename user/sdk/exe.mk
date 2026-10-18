@@ -106,7 +106,8 @@ $(EXE_SDK_RELEASE_LIB): $(KOS_SDK_C_OBJS) $(KOS_SDK_ASM_OBJS) $(EXE_RUNTIME) \
 # stay in this directory.
 KOS_TUI_SRC     := $(KOS_SDK_ROOT)/tui/src
 KOS_TUI_PRIVATE := $(KOS_TUI_SRC)/tui_internal.h
-KOS_TUI_C_SRC   := tui_state.c tui_lifecycle.c tui_flush.c
+KOS_TUI_C_SRC   := tui_state.c tui_screen.c tui_lifecycle.c tui_flush.c \
+	tui_printf.c
 EXE_TUI_OBJS    := $(addprefix $(EXE_SDK_BUILD)/tui/,\
 	$(patsubst %.c,%.rel,$(KOS_TUI_C_SRC)))
 EXE_LIBTUI      := $(EXE_SDK_BUILD)/libtui.lib

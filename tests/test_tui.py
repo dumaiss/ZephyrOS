@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""TUI SDK foundation tests.
+"""TUI SDK screen-engine tests.
 
 `libtui` is a separately linked user-space library: the public header is the
 complete v1 core surface with fixed numeric values, the archive keeps one
 coherent function group per member, and a program opts in with `LIBS=tui`.
-These tests pin the foundation:
+These tests pin the screen engine:
 
 * `user/sdk/include/tui.h` declares the whole core surface, uses only public
   SDK headers, and carries the architecture's key, style and frame values;
-* `libtui.lib` contains exactly the state, lifecycle and transaction members
-  and is packed without build dates;
+* `libtui.lib` contains exactly the storage, screen, lifecycle, flush and
+  formatter members and is packed without build dates;
+* one static cell map and one static dirty bitmap back the screen engine,
+  and the formatter stays in its own member;
 * `tui_test.exe` links the TUI archive after its own objects and before
   `libkos`, and its link map carries the TUI members;
 * `hello.exe` links no TUI member or symbol.
@@ -99,7 +101,12 @@ TUI_KEYS = {
 
 # One archive member per coherent function group; later parts of the API
 # add their own members instead of growing these.
-TUI_MEMBERS = {"tui_state.rel", "tui_lifecycle.rel", "tui_flush.rel"}
+TUI_MEMBERS = {"tui_state.rel", "tui_screen.rel", "tui_lifecycle.rel",
+               "tui_flush.rel", "tui_printf.rel"}
+
+# The cell map and dirty bitmap live in the storage member; these are the
+# only two full-screen arrays.
+TUI_STORAGE_SYMBOLS = ("_tui_cells", "_tui_dirty")
 
 FORBIDDEN_INCLUDE_HEADS = ("kernel", "drivers", "formats", "platform",
                            "boot", "config", "linker")
@@ -267,8 +274,34 @@ class TestTuiLibrary(unittest.TestCase):
                     continue
                 self.assertIn(include, ("tui.h", "tui_internal.h",
                                         "kos/console.h", "kos/types.h",
-                                        "kos/errno.h"),
+                                        "kos/errno.h", "klibc/fmt.h",
+                                        "klibc/stdarg.h", "klibc/string.h"),
                               "%s includes %s" % (name, include))
+
+    def test_ansi_sequences_live_only_in_the_output_backend(self):
+        source_dir = os.path.join(ROOT, "user", "sdk", "tui", "src")
+        permitted = {"tui_lifecycle.c", "tui_flush.c"}
+        for name in sorted(os.listdir(source_dir)):
+            if not name.endswith((".c", ".h")):
+                continue
+            body = _read(os.path.join(source_dir, name))
+            if name in permitted:
+                continue
+            self.assertNotIn("\\033[", body,
+                             "%s carries a terminal sequence" % name)
+        self.assertNotIn("\\033[", _read(os.path.join(
+            ROOT, "tests", "tui", "tui_test.c")))
+        self.assertNotIn("console_write", _read(os.path.join(
+            source_dir, "tui_screen.c")))
+
+    def test_flush_groups_runs_by_attribute_and_emits_both_sgr_forms(self):
+        body = _read(os.path.join(ROOT, "user", "sdk", "tui", "src",
+                                  "tui_flush.c"))
+        self.assertIn("tui_cells[index].attr == attr", body)
+        self.assertIn('TUI_SGR_NORMAL "\\033[0m"', body)
+        self.assertIn('TUI_SGR_REVERSE "\\033[7m"', body)
+        self.assertIn("TUI_CURSOR_SHOW", body)
+        self.assertIn("TUI_CURSOR_HIDE", body)
 
 
 class TestTuiLink(unittest.TestCase):
@@ -293,13 +326,35 @@ class TestTuiLink(unittest.TestCase):
         self.assertLess(self.lk.index(object_line), self.lk.index(tui_line))
         self.assertLess(self.lk.index(tui_line), self.lk.index(kos_line))
 
-    def test_tui_test_links_the_foundation_members(self):
+    def test_tui_test_links_the_screen_members(self):
         modules = _linked_modules(self.symbols)
-        for member in ("tui_state", "tui_lifecycle", "tui_flush"):
+        for member in ("tui_state", "tui_screen", "tui_lifecycle",
+                       "tui_flush", "tui_printf"):
             self.assertIn(member, modules)
         self.assertIn("_tui_init", self.symbols)
         self.assertIn("_tui_get_size", self.symbols)
         self.assertIn("_tui_flush", self.symbols)
+        self.assertIn("_tui_putc", self.symbols)
+        self.assertIn("_tui_printf", self.symbols)
+
+    def test_one_cell_map_and_one_dirty_bitmap(self):
+        for name in TUI_STORAGE_SYMBOLS:
+            self.assertIn(name, self.symbols)
+        self.assertEqual(
+            len([name for name in self.symbols
+                 if name.startswith("_tui_cells")]), 1)
+        self.assertEqual(
+            len([name for name in self.symbols
+                 if name.startswith("_tui_dirty")]), 1)
+        cells = self.symbols["_tui_cells"][0]
+        dirty = self.symbols["_tui_dirty"][0]
+        run = self.symbols["_tui_run"][0]
+        self.assertEqual(dirty - cells, 85 * 26 * 2)
+        self.assertEqual(run - dirty, (85 * 26 + 7) // 8)
+
+    def test_the_formatter_is_its_own_member(self):
+        for name in ("_tui_printf", "_tui_printf_xy"):
+            self.assertEqual(self.symbols[name][1], "tui_printf")
 
     def test_hello_has_no_tui_member_or_symbol(self):
         for path in (HELLO_LK, HELLO_MAP):
