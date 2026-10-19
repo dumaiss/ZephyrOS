@@ -76,6 +76,7 @@ SDK_FILES = {
     "VERSION",
     "include/kos.h",
     "include/tui.h",
+    "include/tui_widgets.h",
     "include/kos/console.h",
     "include/kos/diag.h",
     "include/kos/event.h",
@@ -104,6 +105,7 @@ SDK_FILES = {
     "include/abi/kos/xmem.h",
     "lib/libkos.lib",
     "lib/libtui.lib",
+    "lib/libtui_widgets.lib",
     "lib/crt0.rel",
     "tools/exepack.py",
     "tools/exemanifest.py",
@@ -119,7 +121,11 @@ SDK_FILES = {
     "examples/fardata.c",
     "examples/fardata_far.c",
     "examples/levels.c",
+    "examples/tui_demo.c",
+    "examples/tui_keys.c",
+    "examples/tui_dialog.c",
     "docs/sdk.md",
+    "docs/tui.md",
     "docs/exe-format.md",
 }
 
@@ -234,6 +240,42 @@ class _PatchedReplay(ConsoleReplay):
         self.syms = read_symbols(IMAGE_MAP)
 
 
+class TestSdkSourceInputs(unittest.TestCase):
+    """Static package inputs: every published file must date the tarball."""
+
+    def test_every_packed_document_is_a_sdk_prerequisite(self):
+        """A guide sdkpack copies must be an SDK_INPUTS prerequisite.
+
+        Otherwise an edit to the source guide leaves make sdk reporting
+        success while it keeps publishing the bytes in the old tarball.
+        """
+        lines = _read(os.path.join(ROOT, "Makefile")).splitlines()
+        start = next((index for index, line in enumerate(lines)
+                      if re.match(r"^SDK_INPUTS\s*:=", line)), None)
+        self.assertIsNotNone(start, "Makefile defines no SDK_INPUTS")
+        block = [lines[start]]
+        for line in lines[start + 1:]:
+            if not line.startswith((" ", "\t")):
+                break
+            block.append(line)
+        prerequisites = "\n".join(block)
+        for name in sdkpack.DOC_FILES:
+            self.assertIn(
+                "docs/%s" % name, prerequisites,
+                "docs/%s is packed by sdkpack.py but is not a Makefile "
+                "SDK_INPUTS prerequisite" % name)
+        rule_start = next((index for index, line in enumerate(lines)
+                           if line.startswith("$(KOS_SDK_TARBALL):")), None)
+        self.assertIsNotNone(rule_start, "Makefile defines no tarball rule")
+        rule = [lines[rule_start]]
+        for line in lines[rule_start + 1:]:
+            if not rule[-1].rstrip().endswith("\\"):
+                break
+            rule.append(line)
+        self.assertIn("$(SDK_INPUTS)", "\n".join(rule),
+                      "the SDK tarball rule does not depend on SDK_INPUTS")
+
+
 class TestSdkPackage(unittest.TestCase):
     """The tarball: layout, closure, VERSION and an out-of-tree build."""
 
@@ -290,8 +332,11 @@ class TestSdkPackage(unittest.TestCase):
             cls.build_copy = source
             for directory, programs in (("template", ["hello"]),
                                         ("examples", ["hello", "fardemo",
-                                                      "files", "fardata"]),
-                                        ("tui", ["tui_sdkprobe"])):
+                                                      "files", "fardata",
+                                                      "tui_demo", "tui_keys",
+                                                      "tui_dialog"]),
+                                        ("tui", ["tui_sdkprobe",
+                                                 "widget_sdkprobe"])):
                 workdir = os.path.join(source, directory)
                 output = _run_make(workdir)
                 if ROOT in output:
@@ -353,7 +398,7 @@ class TestSdkPackage(unittest.TestCase):
         """lib/libkos.lib and lib/libtui.lib are packed with `sdar -rcD`:
         every member's date and ids are zero, so the shipped libraries do
         not record when they were built."""
-        for library in ("libkos.lib", "libtui.lib"):
+        for library in ("libkos.lib", "libtui.lib", "libtui_widgets.lib"):
             members = list(_ar_members(os.path.join(self.tree, "lib",
                                                     library)))
             self.assertGreater(len(members), 1, library)
@@ -376,6 +421,7 @@ class TestSdkPackage(unittest.TestCase):
             ROOT, tree, self.version,
             os.path.join(self.tree, "lib", "libkos.lib"),
             os.path.join(self.tree, "lib", "libtui.lib"),
+            os.path.join(self.tree, "lib", "libtui_widgets.lib"),
             os.path.join(self.tree, "lib", "crt0.rel"))
         sdkpack.pack_tar(tree, again)
         # Same tree, same bytes: neither the member order nor the gzip
@@ -452,7 +498,8 @@ class TestSdkPackage(unittest.TestCase):
         program with the SDK alone; no compile or link names the OS tree."""
         self.assertEqual(sorted(self._build()),
                          ["fardata", "fardemo", "files", "hello",
-                          "tui_sdkprobe"])
+                          "tui_demo", "tui_dialog", "tui_keys",
+                          "tui_sdkprobe", "widget_sdkprobe"])
 
     def test_the_packed_program_runs_in_the_simulator(self):
         """The store carries the SDK-built hello.exe as /system/hello.exe;
@@ -490,6 +537,26 @@ class TestSdkPackage(unittest.TestCase):
         stream = self._pack_test_store([("tui_sdkprobe.exe", program)])
         replay, z = self._boot(stream)
         replay.send_line(z, "/system/tui_sdkprobe.exe", "TUI SDK PASS")
+
+    def test_the_tui_examples_run_from_an_sdk_build(self):
+        """The SDK-built standalone examples run from the card: the core
+        demo/key report and the widget dialog produce their pass lines."""
+        self._require_image()
+        built = self._build()
+        dialog_keys = (b"f" b"\x1b[Fm\r" b"\x1b[B\r" b"\x1b[C\r")
+        cases = (
+            ("tui_demo.exe", built["tui_demo"], b"q", "TUI DEMO PASS"),
+            ("tui_keys.exe", built["tui_keys"], b"A\x1b", "TUI KEYS PASS"),
+            ("tuidlg.exe", built["tui_dialog"], dialog_keys,
+             "TUI DIALOG PASS name=Adam sel=2 checked=1 menu=10 "
+             "input=1 confirm=4"),
+        )
+        for card_name, path, keys, expected in cases:
+            stream = self._pack_test_store([(card_name, path)])
+            replay, z = self._boot(stream)
+            replay.send_raw(
+                z, ("/system/%s\r" % card_name).encode("ascii") + keys,
+                expected)
 
     def test_a_changed_abi_byte_is_refused_with_the_existing_error(self):
         """The template program with its ABI byte changed (offset 05h)

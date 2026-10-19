@@ -34,8 +34,11 @@ static void tui_reset_model(void)
 	tui_state.cursor_x = 0u;
 	tui_state.cursor_y = 0u;
 	tui_state.cursor_visible = 1u;
+	tui_state.style = TUI_STYLE_NORMAL;
 	tui_state.attr = 0u;
 	tui_state.transaction_depth = 0u;
+	tui_state.window_depth = 0u;
+	++tui_state.key_generation;
 	tui_state.phys_x = 0u;
 	tui_state.phys_y = 0u;
 	tui_state.phys_attr = 0u;

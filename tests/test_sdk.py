@@ -412,7 +412,9 @@ class TestSdkBoundary(unittest.TestCase):
                           "iostream", "ipc", "ipccopy",
                           "monitor", "ns",
                           "nschild", "readphase", "shell", "sound", "timer",
-                          "tui_test", "vblank",
+                          "tui_core_probe", "tui_demo", "tui_dialog",
+                          "tui_keys", "tui_test", "tui_widget_probe",
+                          "vblank",
                           "xmem_child",
                           "xmem_far",
                           "xmem_selftest"])

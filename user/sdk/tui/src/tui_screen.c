@@ -9,6 +9,76 @@
 
 #include "tui_internal.h"
 
+int tui_priv_clip_rect(const struct tui_rect *rect,
+		       struct tui_rect *clipped)
+{
+	uint8_t w;
+	uint8_t h;
+
+	if (rect == (const struct tui_rect *)0 ||
+	    clipped == (struct tui_rect *)0) {
+		return -KOS_EINVAL;
+	}
+	clipped->x = 0u;
+	clipped->y = 0u;
+	clipped->w = 0u;
+	clipped->h = 0u;
+	if (rect->w == 0u || rect->h == 0u) {
+		return 0;
+	}
+	if (rect->x >= tui_state.window.w || rect->y >= tui_state.window.h) {
+		return 0;
+	}
+	w = (uint8_t)(tui_state.window.w - rect->x);
+	if (rect->w < w) {
+		w = rect->w;
+	}
+	h = (uint8_t)(tui_state.window.h - rect->y);
+	if (rect->h < h) {
+		h = rect->h;
+	}
+	clipped->x = rect->x;
+	clipped->y = rect->y;
+	clipped->w = w;
+	clipped->h = h;
+	return 0;
+}
+
+void tui_priv_set_cell(uint8_t x, uint8_t y, uint8_t ch, uint8_t attr)
+{
+	uint16_t index;
+
+	if (x >= tui_state.window.w || y >= tui_state.window.h) {
+		return;
+	}
+	index = TUI_CELL_INDEX((uint8_t)(tui_state.window.x + x),
+			       (uint8_t)(tui_state.window.y + y));
+	if (tui_cells[index].ch != ch || tui_cells[index].attr != attr) {
+		tui_cells[index].ch = ch;
+		tui_cells[index].attr = attr;
+		TUI_DIRTY_SET(index);
+	}
+}
+
+void tui_priv_fill_clipped(const struct tui_rect *clipped, uint8_t ch,
+			   uint8_t attr)
+{
+	uint8_t x;
+	uint8_t y;
+
+	if (clipped == (const struct tui_rect *)0 || clipped->w == 0u ||
+	    clipped->h == 0u) {
+		return;
+	}
+	for (y = 0u; y < clipped->h; ++y) {
+		for (x = 0u; x < clipped->w; ++x) {
+			tui_priv_set_cell(
+				(uint8_t)(clipped->x + x),
+				(uint8_t)(clipped->y + y), ch, attr);
+		}
+	}
+}
+
 /* Move the local cursor one cell right, clamping at the window edge. */
 static void tui_advance(uint8_t *x)
 {
@@ -20,21 +90,10 @@ static void tui_advance(uint8_t *x)
 void tui_priv_put_byte(uint8_t *x, uint8_t *y, uint8_t ch)
 {
 	struct tui_rect *window = &tui_state.window;
-	uint16_t index;
 	uint8_t next;
 
 	if (ch >= 0x20u) {
-		if (*x < window->w && *y < window->h) {
-			index = TUI_CELL_INDEX(
-				(uint8_t)(window->x + *x),
-				(uint8_t)(window->y + *y));
-			if (tui_cells[index].ch != ch ||
-			    tui_cells[index].attr != tui_state.attr) {
-				tui_cells[index].ch = ch;
-				tui_cells[index].attr = tui_state.attr;
-				TUI_DIRTY_SET(index);
-			}
-		}
+		tui_priv_set_cell(*x, *y, ch, tui_state.attr);
 		tui_advance(x);
 		return;
 	}

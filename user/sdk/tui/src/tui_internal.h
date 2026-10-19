@@ -24,6 +24,9 @@
  * saturate, so a balanced pair still flushes at its outermost end. */
 #define TUI_TRANSACTION_MAX 8u
 
+/* Nested logical windows kept by push/pop. */
+#define TUI_WINDOW_STACK_MAX 4u
+
 struct tui_state {
 	uint8_t initialized;
 	struct tui_size screen;
@@ -31,8 +34,12 @@ struct tui_state {
 	uint8_t cursor_x;
 	uint8_t cursor_y;
 	uint8_t cursor_visible;
+	uint8_t style;
 	uint8_t attr;
 	uint8_t transaction_depth;
+	struct tui_rect window_stack[TUI_WINDOW_STACK_MAX];
+	uint8_t window_depth;
+	uint16_t key_generation;
 
 	/* What the terminal currently shows, for suppressing redundant
 	 * cursor, SGR and visibility sequences. */
@@ -63,5 +70,17 @@ extern uint8_t tui_run[TUI_RUN_MAX];
  * Control bytes move that cursor; printable bytes clip to the active
  * window. */
 void tui_priv_put_byte(uint8_t *x, uint8_t *y, uint8_t ch);
+
+/* Clip a window-relative rectangle to the active window.  Null pointers
+ * are -KOS_EINVAL; an empty clip is successful with w/h zero. */
+int tui_priv_clip_rect(const struct tui_rect *rect, struct tui_rect *clipped);
+
+/* Draw one cell at a window-relative coordinate, clipped to the window.
+ * The cell is dirtied only when its character or attribute changes. */
+void tui_priv_set_cell(uint8_t x, uint8_t y, uint8_t ch, uint8_t attr);
+
+/* Fill a rectangle already clipped by tui_priv_clip_rect(). */
+void tui_priv_fill_clipped(const struct tui_rect *clipped, uint8_t ch,
+			   uint8_t attr);
 
 #endif /* KONA_TUI_INTERNAL_H */

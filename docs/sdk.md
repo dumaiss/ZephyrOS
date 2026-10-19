@@ -123,6 +123,13 @@ build in parallel. Each declaration also defines a `NAME` target.
 | `BLOBS=a.bin:b.bin` | none | binary payloads bundled as plain data segments (at most 32 KiB each) |
 | `SEGMENTS=FILE` | none | a hand-written JSON segment table, instead of the generated one |
 
+The TUI libraries are optional SDK archives: `LIBS=tui` links the core
+`libtui`, and `LIBS=tui_widgets:tui` links the procedural widget archive
+before its core dependency.  Include `tui.h` for the core and
+`tui_widgets.h` for widgets.  The application guide is
+[tui.md](tui.md); a program that uses neither library pays no TUI code or
+data cost.
+
 There is no hand-written manifest: `tools/exemanifest.py` computes
 `image_size = s__DATA - 0100h`, `bss_size = l__DATA` and
 `entry_offset = ENTRY - 0100h` from the map, and `tools/exepack.py`
@@ -780,6 +787,11 @@ The examples:
   a banked call with values copied out of the table: the one-window rule in
   one program.
 - **`files`**: opens, reads and lists files.
+- **`tui_demo`**: core TUI panels, a nested window, styles, frames, a status
+  row and a key loop.
+- **`tui_keys`**: prints the symbolic name of every decoded TUI key.
+- **`tui_dialog`**: menu, list, input, checkbox, buttons and a modal
+  confirmation built on the optional widget archive.
 
 ## 11. The standalone SDK
 
@@ -795,14 +807,16 @@ order, times and ownership).
 ```text
 kos-sdk-<version>/
   VERSION          "<version> abi <n>", n = the loader's EXE_ABI_VERSION
-  include/         kos.h, tui.h, kos/*.h, klibc/*.h, abi/kos/*.h
+  include/         kos.h, tui.h, tui_widgets.h, kos/*.h, klibc/*.h,
+                   abi/kos/*.h
   lib/             libkos.lib (the runtime object included), libtui.lib,
-                   crt0.rel
+                   libtui_widgets.lib, crt0.rel
   tools/           exepack.py, exemanifest.py, ihx.py (Python standard library only)
   mk/kos.mk        the program rule
   template/        Makefile and hello.c
-  examples/        hello, fardemo, fardata, files
-  docs/            sdk.md, exe-format.md
+  examples/        hello, fardemo, fardata, files, tui_demo, tui_keys,
+                   tui_dialog
+  docs/            sdk.md, tui.md, exe-format.md
 ```
 
 The ABI headers sit under `include/abi/kos/` and the compile line keeps the

@@ -107,7 +107,7 @@ $(EXE_SDK_RELEASE_LIB): $(KOS_SDK_C_OBJS) $(KOS_SDK_ASM_OBJS) $(EXE_RUNTIME) \
 KOS_TUI_SRC     := $(KOS_SDK_ROOT)/tui/src
 KOS_TUI_PRIVATE := $(KOS_TUI_SRC)/tui_internal.h
 KOS_TUI_C_SRC   := tui_state.c tui_screen.c tui_lifecycle.c tui_flush.c \
-	tui_printf.c
+	tui_printf.c tui_window.c tui_style.c tui_key.c tui_region.c
 EXE_TUI_OBJS    := $(addprefix $(EXE_SDK_BUILD)/tui/,\
 	$(patsubst %.c,%.rel,$(KOS_TUI_C_SRC)))
 EXE_LIBTUI      := $(EXE_SDK_BUILD)/libtui.lib
@@ -124,3 +124,25 @@ $(EXE_LIBTUI): $(EXE_TUI_OBJS) $(KOS_RULES)
 	@mkdir -p $(dir $@)
 	rm -f $@
 	sdar -rcD $@ $(EXE_TUI_OBJS)
+
+# --- libtui_widgets ----------------------------------------------------
+# The optional procedural widget layer is a second deterministic archive.
+# It depends only on the public tui.h surface; the modal member is kept
+# separate so render-only programs do not pull its 60 x 16 save buffer.
+KOS_WIDGET_SRC     := $(KOS_SDK_ROOT)/widgets/src
+KOS_WIDGET_PRIVATE := $(KOS_WIDGET_SRC)/widget_internal.h
+KOS_WIDGET_C_SRC   := widget_common.c widget_render.c widget_menu.c \
+	widget_input.c widget_modal.c
+EXE_WIDGET_OBJS    := $(addprefix $(EXE_SDK_BUILD)/widgets/,\
+	$(patsubst %.c,%.rel,$(KOS_WIDGET_C_SRC)))
+EXE_LIBTUI_WIDGETS := $(EXE_SDK_BUILD)/libtui_widgets.lib
+
+$(EXE_SDK_BUILD)/widgets/%.rel: $(KOS_WIDGET_SRC)/%.c $(EXE_HEADERS) \
+		$(KOS_WIDGET_PRIVATE)
+	@mkdir -p $(dir $@)
+	$(SDCC) $(EXE_CFLAGS) -I $(KOS_WIDGET_SRC) -c $< -o $@
+
+$(EXE_LIBTUI_WIDGETS): $(EXE_WIDGET_OBJS) $(KOS_RULES)
+	@mkdir -p $(dir $@)
+	rm -f $@
+	sdar -rcD $@ $(EXE_WIDGET_OBJS)

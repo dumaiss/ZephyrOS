@@ -6,6 +6,8 @@ KOS_SDK_ROOT ?= ..
 include $(KOS_SDK_ROOT)/mk/kos.mk
 
 $(eval $(call exe_program,tui_sdkprobe,.,out_of_tree.c,STACK=256,LIBS=tui))
+$(eval $(call exe_program,widget_sdkprobe,.,widget_sdkprobe.c,STACK=256,\
+	LIBS=tui_widgets:tui))
 
 .DEFAULT_GOAL := all
-all: tui_sdkprobe
+all: tui_sdkprobe widget_sdkprobe

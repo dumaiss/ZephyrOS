@@ -1083,12 +1083,33 @@ $(eval $(call exe_program,sound,tests/sound,\
 all: $(EXE_USER_ROOT)/sound.exe
 
 # The TUI SDK outcome program: a card program the TUI replays run from the
-# shell, in no store.  `LIBS=tui` links the TUI archive after the program
-# objects and before libkos.
+# shell, in no store.  `LIBS=tui_widgets:tui` links the widget archive
+# before its core dependency and both after the program objects, before
+# libkos.  The core probe uses only `libtui`, so its map proves the key,
+# region and widget members stay out of a screen-only program.
 $(eval $(call exe_program,tui_test,tests/tui,\
-	tui_test.c,STACK=256,LIBS=tui))
+	tui_test.c,STACK=256,LIBS=tui_widgets:tui))
 
-all: $(EXE_USER_ROOT)/tui_test.exe
+$(eval $(call exe_program,tui_core_probe,tests/tui,\
+	tui_core_probe.c,STACK=256,LIBS=tui))
+
+$(eval $(call exe_program,tui_widget_probe,tests/tui,\
+	tui_widget_probe.c,STACK=256,LIBS=tui_widgets:tui))
+
+all: $(EXE_USER_ROOT)/tui_test.exe $(EXE_USER_ROOT)/tui_core_probe.exe \
+	$(EXE_USER_ROOT)/tui_widget_probe.exe
+
+# Standalone SDK TUI examples, built in-tree for the simulator acceptance
+# only.  They are not added to any store.
+$(eval $(call exe_program,tui_demo,user/sdk/examples,\
+	tui_demo.c,STACK=512,LIBS=tui))
+$(eval $(call exe_program,tui_keys,user/sdk/examples,\
+	tui_keys.c,STACK=512,LIBS=tui))
+$(eval $(call exe_program,tui_dialog,user/sdk/examples,\
+	tui_dialog.c,STACK=512,LIBS=tui_widgets:tui))
+
+all: $(EXE_USER_ROOT)/tui_demo.exe $(EXE_USER_ROOT)/tui_keys.exe \
+	$(EXE_USER_ROOT)/tui_dialog.exe
 
 # SDK outcome programs for the console-order and stream replays
 # (tests/test_io_sim.py): the `fs` image's `/system/iomix.exe` with its
@@ -1219,18 +1240,21 @@ SDK_INPUTS := $(wildcard abi/kos/*.h) \
 	$(wildcard user/sdk/include/*.h) $(wildcard user/sdk/include/kos/*.h) \
 	$(wildcard user/sdk/include/klibc/*.h) \
 	$(wildcard user/sdk/tui/src/*) \
+	$(wildcard user/sdk/widgets/src/*) \
 	$(wildcard user/sdk/template/*) $(wildcard user/sdk/examples/*) \
-	docs/sdk.md docs/exe-format.md mk/kos.mk formats/include/exe.h \
+	docs/sdk.md docs/tui.md docs/exe-format.md mk/kos.mk \
+	formats/include/exe.h \
 	tools/exepack.py tools/exemanifest.py tools/ihx.py tools/sdkpack.py
 
 sdk: $(KOS_SDK_TARBALL)
 	@echo "sdk: $(KOS_SDK_DIR)"
 	@echo "sdk: $(KOS_SDK_TARBALL)"
 
-$(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) $(EXE_CRT0) \
-		$(SDK_INPUTS)
+$(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) \
+		$(EXE_LIBTUI_WIDGETS) $(EXE_CRT0) $(SDK_INPUTS)
 	$(PYTHON) tools/sdkpack.py --version $(KOS_SDK_VERSION) \
 		--libkos $(EXE_SDK_RELEASE_LIB) --libtui $(EXE_LIBTUI) \
+		--libtui-widgets $(EXE_LIBTUI_WIDGETS) \
 		--crt0 $(EXE_CRT0) \
 		--out $(KOS_SDK_DIR) --tar $@
 

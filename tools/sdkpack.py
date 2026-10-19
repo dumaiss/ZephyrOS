@@ -10,13 +10,14 @@
                        paths: "kos/…" and "klibc/…" resolve inside the
                        tree, the ABI copies under include/abi/kos/*.h)
       lib/             libkos.lib (the runtime object folded in), libtui.lib,
-                       crt0.rel
+                       libtui_widgets.lib, crt0.rel
       tools/           exepack.py, exemanifest.py, ihx.py
       mk/kos.mk        the standalone build rules
       template/        Makefile + hello.c
       examples/        hello, fardemo (__banked), files (open/read/list),
-                       fardata (DATA1= + FAR1=, far data and a banked call)
-      docs/            sdk.md, exe-format.md
+                       fardata (DATA1= + FAR1=, far data and a banked call),
+                       tui_demo, tui_keys, tui_dialog
+      docs/            sdk.md, tui.md, exe-format.md
 
 Nothing in the tree names a path outside it: every copied file is checked
 (the docs are the tree's documentation and describe the OS tree too, so
@@ -42,7 +43,7 @@ import tarfile
 from pathlib import Path
 
 TOOL_FILES = ("exepack.py", "exemanifest.py", "ihx.py")
-DOC_FILES = ("sdk.md", "exe-format.md")
+DOC_FILES = ("sdk.md", "tui.md", "exe-format.md")
 SDK_INCLUDE = "user/sdk/include"
 SDK_TEMPLATE = "user/sdk/template"
 SDK_EXAMPLES = "user/sdk/examples"
@@ -75,7 +76,8 @@ def sdk_headers(root):
     """
     base = root / SDK_INCLUDE
     copies = [("include/kos.h", base / "kos.h"),
-              ("include/tui.h", base / "tui.h")]
+              ("include/tui.h", base / "tui.h"),
+              ("include/tui_widgets.h", base / "tui_widgets.h")]
     for path in sorted((base / "kos").glob("*.h")):
         copies.append(("include/kos/%s" % path.name, path))
     for path in sorted((base / "klibc").glob("*.h")):
@@ -126,7 +128,7 @@ def abi_headers(root, headers):
     return abi
 
 
-def tree_files(root, headers, abi, libkos, libtui, crt0):
+def tree_files(root, headers, abi, libkos, libtui, libtui_widgets, crt0):
     """The complete (relative destination, source) list of the SDK tree."""
     files = []
     files += headers
@@ -134,6 +136,7 @@ def tree_files(root, headers, abi, libkos, libtui, crt0):
     files += [
         ("lib/libkos.lib", Path(libkos)),
         ("lib/libtui.lib", Path(libtui)),
+        ("lib/libtui_widgets.lib", Path(libtui_widgets)),
         ("lib/crt0.rel", Path(crt0)),
         ("mk/kos.mk", root / "mk" / "kos.mk"),
     ]
@@ -144,24 +147,25 @@ def tree_files(root, headers, abi, libkos, libtui, crt0):
     files += [("examples/%s" % name, root / SDK_EXAMPLES / name)
               for name in ("Makefile", "hello.c", "fardemo.c",
                            "fardemo_far.c", "files.c", "fardata.c",
-                           "fardata_far.c", "levels.c")]
+                           "fardata_far.c", "levels.c", "tui_demo.c",
+                           "tui_keys.c", "tui_dialog.c")]
     files += [("docs/%s" % name, root / "docs" / name)
               for name in DOC_FILES]
     return files
 
 
-def build_tree(root, out, version, libkos, libtui, crt0):
+def build_tree(root, out, version, libkos, libtui, libtui_widgets, crt0):
     """Lay out the SDK tree under `out`; returns the destination list."""
     root = Path(root)
     out = Path(out)
     for path in (root / "formats/include/exe.h", Path(libkos), Path(libtui),
-                 Path(crt0)):
+                 Path(libtui_widgets), Path(crt0)):
         if not path.is_file():
             raise PackError("%s is missing" % path)
     abi = abi_version((root / "formats/include/exe.h").read_text())
     headers = sdk_headers(root)
     files = tree_files(root, headers, abi_headers(root, headers), libkos,
-                       libtui, crt0)
+                       libtui, libtui_widgets, crt0)
     for _dest, source in files:
         if not Path(source).is_file():
             raise PackError("%s is missing" % source)
@@ -220,6 +224,7 @@ def main(argv):
     parser.add_argument("--version", required=True)
     parser.add_argument("--libkos", required=True)
     parser.add_argument("--libtui", required=True)
+    parser.add_argument("--libtui-widgets", required=True)
     parser.add_argument("--crt0", required=True)
     parser.add_argument("--root", default=None,
                         help="the repository root (default: this tool's)")
@@ -235,7 +240,7 @@ def main(argv):
         root / "build" / ("kos-sdk-%s" % args.version)
     try:
         dests = build_tree(root, out, args.version, args.libkos,
-                           args.libtui, args.crt0)
+                           args.libtui, args.libtui_widgets, args.crt0)
         if args.tar:
             pack_tar(out, args.tar)
     except (PackError, OSError) as exc:

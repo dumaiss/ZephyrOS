@@ -115,6 +115,10 @@ int tui_window(uint8_t x, uint8_t y, uint8_t w, uint8_t h);
 /* Restore the full screen as the current window. */
 int tui_reset_window(void);
 
+/* Report the current logical window (a read-only convenience for layers
+ * such as widgets that own a row or edge of the active window). */
+int tui_get_window(struct tui_rect *out);
+
 /* Bounded nested-window helpers. */
 int tui_push_window(const struct tui_rect *rect);
 int tui_pop_window(void);
@@ -216,8 +220,8 @@ tui_key_t tui_pollkey(void);
 /*
  * Save/restore a rectangular cell region.
  *
- * Required bytes are:
- *     rect->w * rect->h * sizeof(struct tui_cell)
+ * Required bytes are the active-window-clipped rectangle's area times
+ * sizeof(struct tui_cell).  Use tui_saved_size() for the exact value.
  */
 uint16_t tui_saved_size(const struct tui_rect *rect);
 

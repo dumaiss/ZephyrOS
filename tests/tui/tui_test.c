@@ -9,11 +9,18 @@
  *   screen      deterministic cursor, text, clipping, control-byte,
  *               transaction and formatting rows;
  *   shutdown    dirty cells flushed by tui_shutdown() without an explicit
- *               tui_flush().
+ *               tui_flush();
+ *   windows     window stack, clipping, clear/line operations;
+ *   keys        key-decoder vocabulary, replay and standalone ESC;
+ *   styles      semantic styles, frames, fills and degenerate rectangles;
+ *   region      caller-buffered save/restore over mixed content;
+ *   widgets     a configuration form driven through menu, input, list,
+ *               buttons and modal dialogs.
  */
 
 #include "kos.h"
 #include "tui.h"
+#include "tui_widgets.h"
 
 /* The formatted row 8's expected text; it also pins the formatter's
  * conversion and width rules. */
@@ -41,6 +48,9 @@ static int foundation(void)
 	    tui_cursor_show() != -KOS_EINVAL ||
 	    tui_get_size(&size) != -KOS_EINVAL ||
 	    tui_flush() != -KOS_EINVAL ||
+	    tui_key_pending() != -KOS_EINVAL ||
+	    tui_pollkey() != TUI_KEY_NONE ||
+	    tui_getkey() != TUI_KEY_NONE ||
 	    tui_printf("%d", 1) != -KOS_EINVAL) {
 		printf("tui: FAIL before init\r\n");
 		return 1;
@@ -120,8 +130,11 @@ static int foundation(void)
 		printf("tui: FAIL end after shutdown %d\r\n", result);
 		return 1;
 	}
-	if (tui_putc('x') != -KOS_EINVAL) {
-		printf("tui: FAIL putc after shutdown\r\n");
+	if (tui_putc('x') != -KOS_EINVAL ||
+	    tui_key_pending() != -KOS_EINVAL ||
+	    tui_pollkey() != TUI_KEY_NONE ||
+	    tui_getkey() != TUI_KEY_NONE) {
+		printf("tui: FAIL released API after shutdown\r\n");
 		return 1;
 	}
 	result = tui_init();
@@ -469,6 +482,822 @@ static int shutdown_mode(void)
 	return 0;
 }
 
+
+static int windows_mode(void)
+{
+	struct tui_rect rect;
+	int result;
+	int i;
+
+	result = tui_init();
+	if (result < 0) {
+		printf("tui: windows FAIL init %d\r\n", result);
+		return 1;
+	}
+	if (tui_puts_xy(0, 0, "OUT") != 3 ||
+	    tui_puts_xy(0, 1, "S1") != 2 ||
+	    tui_puts_xy(0, 7, "S7") != 2 ||
+	    tui_puts_xy(12, 2, "R2") != 2) {
+		return fail("windows sentinels", 0);
+	}
+	if (tui_window(2, 2, 10, 6) != 0 ||
+	    tui_wherex() != 0u || tui_wherey() != 0u) {
+		return fail("windows install", 0);
+	}
+	if (tui_puts("ABCDEFGHIJ") != 10 ||
+	    tui_gotoxy(0, 1) != 0 ||
+	    tui_puts("KLMNOPQRST") != 10 ||
+	    tui_gotoxy(0, 2) != 0 ||
+	    tui_puts("UVWXYZ0123") != 10) {
+		return fail("windows rows", 0);
+	}
+	if (tui_gotoxy(10, 0) != -KOS_EINVAL) {
+		return fail("windows gotoxy clip", 0);
+	}
+	if (tui_puts_xy(8, 1, "XYZ") != 3) {
+		return fail("windows puts_xy", 0);
+	}
+	if (tui_wherex() != 10u || tui_wherey() != 2u ||
+	    tui_clreol() != 0) {
+		return fail("windows clreol", 0);
+	}
+	if (tui_gotoxy(0, 3) != 0 || tui_clrline() != 0) {
+		return fail("windows clrline", 0);
+	}
+	if (tui_gotoxy(3, 1) != 0 || tui_insert_line() != 0) {
+		return fail("windows insert", 0);
+	}
+	if (tui_gotoxy(3, 1) != 0 || tui_delete_line() != 0) {
+		return fail("windows delete", 0);
+	}
+	if (tui_push_window((const struct tui_rect *)0) != -KOS_EINVAL) {
+		return fail("windows null push", 0);
+	}
+	rect.x = 4u;
+	rect.y = 4u;
+	rect.w = 5u;
+	rect.h = 3u;
+	if (tui_push_window(&rect) != 0 ||
+	    tui_wherex() != 0u || tui_wherey() != 0u) {
+		return fail("windows push", 0);
+	}
+	if (tui_puts("IN") != 2 || tui_pop_window() != 0 ||
+	    tui_wherex() != 0u || tui_wherey() != 0u) {
+		return fail("windows pop", 0);
+	}
+	for (i = 0; i < 4; ++i) {
+		if (tui_push_window(&rect) != 0) {
+			return fail("windows depth", 0);
+		}
+	}
+	if (tui_push_window(&rect) != -KOS_EINVAL) {
+		return fail("windows overflow", 0);
+	}
+	for (i = 0; i < 4; ++i) {
+		if (tui_pop_window() != 0) {
+			return fail("windows unwind", 0);
+		}
+	}
+	if (tui_pop_window() != -KOS_EINVAL) {
+		return fail("windows underflow", 0);
+	}
+	if (tui_wherex() != 0u || tui_wherey() != 0u) {
+		return fail("windows restored cursor", 0);
+	}
+	if (tui_gotoxy(3, 3) != 0) {
+		return fail("windows cursor", 0);
+	}
+	if (tui_window(80, 2, 10, 6) != -KOS_EINVAL ||
+	    tui_window(2, 2, 0, 6) != -KOS_EINVAL) {
+		return fail("windows invalid", 0);
+	}
+	if (tui_wherex() != 3u || tui_wherey() != 3u) {
+		return fail("windows invalid kept", 0);
+	}
+	if (tui_reset_window() != 0 || tui_wherex() != 0u ||
+	    tui_wherey() != 0u) {
+		return fail("windows reset", 0);
+	}
+	/* Clear a separate window: the main window keeps the insert/delete
+	 * result for the replay model. */
+	if (tui_window(12, 8, 8, 4) != 0 ||
+	    tui_puts("CLRME") != 5 ||
+	    tui_clear() != 0 ||
+	    tui_wherex() != 0u || tui_wherey() != 0u) {
+		return fail("windows clear", 0);
+	}
+	if (tui_reset_window() != 0 || tui_wherex() != 0u ||
+	    tui_wherey() != 0u) {
+		return fail("windows reset two", 0);
+	}
+	if (tui_puts("END") != 3) {
+		return fail("windows end", 0);
+	}
+	if (tui_gotoxy(0, 22) != 0 || tui_flush() != 0) {
+		return fail("windows flush", 0);
+	}
+	printf("tui: windows pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+/* The expected transcript of keys_mode: ordinary and decoded keys, then
+ * the three malformed sequences and the standalone ESC with its tail. */
+static const tui_key_t key_expected[] = {
+	0x0041u,
+	TUI_KEY_UP, TUI_KEY_DOWN, TUI_KEY_RIGHT, TUI_KEY_LEFT,
+	TUI_KEY_HOME, TUI_KEY_END,
+	TUI_KEY_INSERT, TUI_KEY_DELETE, TUI_KEY_PGUP, TUI_KEY_PGDN,
+	TUI_KEY_F1, TUI_KEY_F2, TUI_KEY_F3, TUI_KEY_F4,
+	TUI_KEY_F5, TUI_KEY_F6, TUI_KEY_F7, TUI_KEY_F8,
+	TUI_KEY_F9, TUI_KEY_F10, TUI_KEY_F11, TUI_KEY_F12,
+	TUI_KEY_ESC, 0x005Bu, 0x005Au,
+	TUI_KEY_ESC, 0x005Bu, 0x0031u, 0x0041u,
+	TUI_KEY_ESC, 0x005Bu, 0x0031u, 0x0032u, 0x0033u, 0x0034u,
+	0x0035u, 0x0036u, 0x0037u, 0x0038u, 0x007Eu, 0x0059u,
+	TUI_KEY_ESC, 0x004Fu, 0x0058u,
+	TUI_KEY_ESC, 0x0058u
+};
+
+static int keys_mode(void)
+{
+	tui_key_t key;
+	uint16_t i;
+	int result;
+
+	result = tui_init();
+	if (result < 0) {
+		printf("tui: keys FAIL init %d\r\n", result);
+		return 1;
+	}
+	for (i = 0u; i < (uint16_t)(sizeof(key_expected) /
+				    sizeof(key_expected[0])); ++i) {
+		key = tui_getkey();
+		if (key != key_expected[i]) {
+			printf("tui: keys FAIL %u %04x\r\n",
+			       (unsigned int)i, (unsigned int)key);
+			tui_shutdown();
+			return 1;
+		}
+		printf("%04x ", (unsigned int)key);
+		if ((uint8_t)(i & 7u) == 7u) {
+			printf("\r\n");
+		}
+	}
+	if (tui_pollkey() != TUI_KEY_NONE || tui_key_pending() != 0) {
+		printf("\r\ntui: keys FAIL extra\r\n");
+		tui_shutdown();
+		return 1;
+	}
+	printf("\r\ntui: keys pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+static int styles_mode(void)
+{
+	struct tui_rect rect;
+	int result;
+
+	result = tui_init();
+	if (result < 0) {
+		printf("tui: styles FAIL init %d\r\n", result);
+		return 1;
+	}
+	if (tui_set_style((tui_style_t)TUI_STYLE_COUNT) != -KOS_EINVAL ||
+	    tui_get_style() != TUI_STYLE_NORMAL) {
+		return fail("styles invalid style", 0);
+	}
+	if (tui_set_attr(2u) != -KOS_EINVAL || tui_get_attr() != 0u) {
+		return fail("styles invalid attr", 0);
+	}
+
+	rect.x = 2u;
+	rect.y = 1u;
+	rect.w = 20u;
+	rect.h = 7u;
+	if (tui_frame_title(&rect, TUI_FRAME_SINGLE, TUI_STYLE_TITLE,
+			    "Single") != 0) {
+		return fail("styles single", 0);
+	}
+	rect.x = 30u;
+	if (tui_frame_title(&rect, TUI_FRAME_DOUBLE, TUI_STYLE_TITLE,
+			    "Double") != 0) {
+		return fail("styles double", 0);
+	}
+	rect.x = 60u;
+	rect.w = 10u;
+	rect.h = 5u;
+	if (tui_frame_title(&rect, TUI_FRAME_NONE, TUI_STYLE_TITLE,
+			    "LongTitle") != 0) {
+		return fail("styles none", 0);
+	}
+	if (tui_frame_title(&rect, (tui_frame_style_t)3,
+			    TUI_STYLE_NORMAL, "bad") != -KOS_EINVAL) {
+		return fail("styles invalid frame", 0);
+	}
+	if (tui_frame_title(&rect, TUI_FRAME_SINGLE, TUI_STYLE_NORMAL,
+			    (const char *)0) != -KOS_EINVAL) {
+		return fail("styles null title", 0);
+	}
+
+	/* One-cell, two-cell and flat degenerate rectangles. */
+	rect.x = 1u;
+	rect.y = 10u;
+	rect.w = 1u;
+	rect.h = 1u;
+	if (tui_frame(&rect, TUI_FRAME_SINGLE, TUI_STYLE_NORMAL) != 0) {
+		return fail("styles 1x1", 0);
+	}
+	rect.x = 3u;
+	rect.w = 2u;
+	rect.h = 2u;
+	if (tui_frame(&rect, TUI_FRAME_SINGLE, TUI_STYLE_NORMAL) != 0) {
+		return fail("styles 2x2", 0);
+	}
+	rect.x = 6u;
+	rect.w = 1u;
+	rect.h = 3u;
+	if (tui_frame(&rect, TUI_FRAME_DOUBLE, TUI_STYLE_NORMAL) != 0) {
+		return fail("styles 1x3", 0);
+	}
+	rect.x = 8u;
+	rect.w = 3u;
+	rect.h = 1u;
+	if (tui_frame(&rect, TUI_FRAME_SINGLE, TUI_STYLE_NORMAL) != 0) {
+		return fail("styles 3x1", 0);
+	}
+	rect.x = 12u;
+	rect.y = 10u;
+	rect.w = 0u;
+	rect.h = 4u;
+	if (tui_frame(&rect, TUI_FRAME_SINGLE, TUI_STYLE_NORMAL) != 0) {
+		return fail("styles empty frame", 0);
+	}
+
+	/* Empty titled frames are no-ops: the sentinel row must survive. */
+	if (tui_puts_xy(20, 19, "SENT") != 4) {
+		return fail("styles sentinel", 0);
+	}
+	rect.x = 20u;
+	rect.y = 19u;
+	rect.w = 5u;
+	rect.h = 0u;
+	if (tui_frame_title(&rect, TUI_FRAME_SINGLE, TUI_STYLE_NORMAL,
+			    "ZERO") != 0) {
+		return fail("styles 5x0 title", 0);
+	}
+	rect.w = 0u;
+	rect.h = 5u;
+	if (tui_frame_title(&rect, TUI_FRAME_SINGLE, TUI_STYLE_NORMAL,
+			    "ZERO") != 0) {
+		return fail("styles 0x5 title", 0);
+	}
+	rect.x = 70u;
+	rect.y = 10u;
+	rect.w = 1u;
+	rect.h = 1u;
+	if (tui_frame_title(&rect, TUI_FRAME_SINGLE, TUI_STYLE_NORMAL,
+			    "X") != 0) {
+		return fail("styles 1x1 title", 0);
+	}
+	rect.x = 80u;
+	rect.y = 15u;
+	rect.w = 10u;
+	rect.h = 5u;
+	if (tui_frame_title(&rect, TUI_FRAME_SINGLE, TUI_STYLE_NORMAL,
+			    "TITLE") != 0) {
+		return fail("styles clipped title", 0);
+	}
+
+	rect.x = 2u;
+	rect.y = 12u;
+	rect.w = 10u;
+	rect.h = 2u;
+	if (tui_fill(&rect, '#', TUI_STYLE_ERROR) != 0) {
+		return fail("styles fill", 0);
+	}
+	if (tui_hline(2, 15, 10, TUI_FRAME_SINGLE) != 0 ||
+	    tui_vline(2, 16, 5, TUI_FRAME_DOUBLE) != 0 ||
+	    tui_hline(2, 18, 10, TUI_FRAME_NONE) != 0 ||
+	    tui_vline(2, 18, 5, TUI_FRAME_NONE) != 0 ||
+	    tui_hline(2, 18, 0, TUI_FRAME_SINGLE) != 0) {
+		return fail("styles lines", 0);
+	}
+
+	/* Alternating attribute runs: one reverse word, one normal word and
+	 * a reverse status field on the same row. */
+	rect.x = 0u;
+	rect.y = 21u;
+	rect.w = 85u;
+	rect.h = 1u;
+	if (tui_fill(&rect, ' ', TUI_STYLE_STATUS) != 0) {
+		return fail("styles status fill", 0);
+	}
+	if (tui_set_style(TUI_STYLE_STATUS) != 0 ||
+	    tui_puts_xy(0, 21, "STATUS") != 6 ||
+	    tui_set_style(TUI_STYLE_NORMAL) != 0 ||
+	    tui_puts_xy(7, 21, "normal") != 6 ||
+	    tui_set_style(TUI_STYLE_SELECTED) != 0 ||
+	    tui_puts_xy(14, 21, "SELECTED") != 8 ||
+	    tui_set_style(TUI_STYLE_NORMAL) != 0) {
+		return fail("styles runs", 0);
+	}
+	if (tui_set_attr(1u) != 0 || tui_get_attr() != 1u ||
+	    tui_puts_xy(2, 20, "ATTR") != 4 ||
+	    tui_set_attr(0u) != 0) {
+		return fail("styles attr", 0);
+	}
+
+	/* A style change alone must not dirty an existing cell. */
+	if (tui_puts_xy(2, 22, "SAME") != 4 || tui_flush() != 0) {
+		return fail("styles same flush", 0);
+	}
+	if (tui_set_style(TUI_STYLE_TITLE) != 0 || tui_flush() != 0) {
+		return fail("styles silent style", 0);
+	}
+
+	if (tui_gotoxy(0, 22) != 0 || tui_flush() != 0) {
+		return fail("styles marker", 0);
+	}
+	printf("tui: styles pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+static struct tui_cell region_buffer[20u * 8u];
+
+static int region_mode(void)
+{
+	struct tui_rect rect;
+	struct tui_rect push;
+	uint16_t need;
+	int result;
+
+	result = tui_init();
+	if (result < 0) {
+		printf("tui: region FAIL init %d\r\n", result);
+		return 1;
+	}
+	rect.x = 10u;
+	rect.y = 5u;
+	rect.w = 20u;
+	rect.h = 8u;
+	if (tui_fill(&rect, '.', TUI_STYLE_NORMAL) != 0) {
+		return fail("region fill", 0);
+	}
+	if (tui_set_style(TUI_STYLE_SELECTED) != 0 ||
+	    tui_puts_xy(12, 6, "KEEP") != 4 ||
+	    tui_set_style(TUI_STYLE_NORMAL) != 0 ||
+	    tui_puts_xy(20, 9, "TEXT") != 4) {
+		return fail("region content", 0);
+	}
+	need = tui_saved_size(&rect);
+	if (need != (uint16_t)(20u * 8u * 2u)) {
+		return fail("region size", need);
+	}
+	if (tui_save(&rect, region_buffer, need) != 0) {
+		return fail("region save", 0);
+	}
+	/* Squeeze a popup over the saved region, then restore it exactly. */
+	rect.x = 12u;
+	rect.y = 7u;
+	rect.w = 12u;
+	rect.h = 4u;
+	if (tui_fill(&rect, 'P', TUI_STYLE_TITLE) != 0 ||
+	    tui_frame(&rect, TUI_FRAME_DOUBLE, TUI_STYLE_TITLE) != 0) {
+		return fail("region popup", 0);
+	}
+	rect.x = 10u;
+	rect.y = 5u;
+	rect.w = 20u;
+	rect.h = 8u;
+	if (tui_restore(&rect, region_buffer, need) != 0) {
+		return fail("region restore", 0);
+	}
+	if (tui_flush() != 0) {
+		return fail("region first flush", 0);
+	}
+	/* Restoring identical cells emits no cell run. */
+	if (tui_restore(&rect, region_buffer, need) != 0 ||
+	    tui_flush() != 0) {
+		return fail("region identical", 0);
+	}
+
+	/* Short and null buffers change neither the model nor the buffer. */
+	if (tui_save(&rect, region_buffer, (uint16_t)(need - 1u)) !=
+	    -KOS_EINVAL ||
+	    tui_save(&rect, (struct tui_cell *)0, need) != -KOS_EINVAL ||
+	    tui_restore(&rect, region_buffer, (uint16_t)(need - 1u)) !=
+	    -KOS_EINVAL ||
+	    tui_restore(&rect, (const struct tui_cell *)0, need) !=
+	    -KOS_EINVAL) {
+		return fail("region short", 0);
+	}
+	/* Empty clips have size zero and succeed without touching cells. */
+	rect.x = 90u;
+	rect.y = 5u;
+	rect.w = 5u;
+	rect.h = 5u;
+	if (tui_saved_size(&rect) != 0u ||
+	    tui_save(&rect, region_buffer, 0u) != 0 ||
+	    tui_restore(&rect, region_buffer, 0u) != 0 ||
+	    tui_save(&rect, (struct tui_cell *)0, 0u) != -KOS_EINVAL) {
+		return fail("region empty", 0);
+	}
+	if (tui_saved_size((const struct tui_rect *)0) != 0u) {
+		return fail("region null size", 0);
+	}
+
+	/* Nested-window relative save and restore. */
+	push.x = 20u;
+	push.y = 10u;
+	push.w = 20u;
+	push.h = 10u;
+	if (tui_push_window(&push) != 0) {
+		return fail("region push", 0);
+	}
+	rect.x = 2u;
+	rect.y = 2u;
+	rect.w = 10u;
+	rect.h = 4u;
+	need = tui_saved_size(&rect);
+	if (need != (uint16_t)(10u * 4u * 2u)) {
+		return fail("region nested size", need);
+	}
+	if (tui_fill(&rect, 'N', TUI_STYLE_ACCENT) != 0 ||
+	    tui_save(&rect, region_buffer, need) != 0 ||
+	    tui_fill(&rect, 'X', TUI_STYLE_ERROR) != 0 ||
+	    tui_restore(&rect, region_buffer, need) != 0) {
+		return fail("region nested", 0);
+	}
+	if (tui_pop_window() != 0) {
+		return fail("region pop", 0);
+	}
+
+	if (tui_gotoxy(0, 22) != 0 || tui_flush() != 0) {
+		return fail("region marker", 0);
+	}
+	printf("tui: region pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+
+static const struct tui_menu_item widget_menu[] = {
+	{"File", 'f', 10u},
+	{"Edit", 'e', 11u},
+	{"Help", 'h', 12u}
+};
+
+static const char * const widget_items[] = {"Red", "Green", "Blue"};
+static uint8_t widget_checked;
+
+static int widget_form_draw(char *name, uint8_t checked,
+			    struct tui_list *list, tui_id_t selected)
+{
+	struct tui_rect rect;
+	rect.x = 2u;
+	rect.y = 6u;
+	rect.w = 20u;
+	rect.h = 8u;
+	if (tui_statusbar("KonaOS Config") != 0 ||
+	    tui_menubar(widget_menu, 3u, &selected) != 0 ||
+	    tui_label(2, 2, "Name:") != 0 ||
+	    tui_input(10, 2, 20u, name, 16u) != 0 ||
+	    tui_checkbox(2, 4, "Enabled", &checked) != 0 ||
+	    tui_listbox(&rect, list) != 0 ||
+	    tui_button(2, 15, "OK", TUI_ID_OK, 1u) != 0 ||
+	    tui_button(12, 15, "Cancel", TUI_ID_CANCEL, 0u) != 0) {
+		return -1;
+	}
+	return 0;
+}
+
+static int flush_form(int variant)
+{
+	char name[4];
+	struct tui_list list;
+	tui_id_t selected = 10u;
+	uint8_t checked = 1u;
+	int result;
+
+	result = tui_init();
+	if (result < 0) {
+		printf("tui: flush FAIL init %d\r\n", result);
+		return 1;
+	}
+	name[0] = 'A';
+	name[1] = 'd';
+	name[2] = 'a';
+	name[3] = '\0';
+	list.items = widget_items;
+	list.count = 3u;
+	list.selected = 1u;
+	list.top = 0u;
+	if (widget_form_draw(name, checked, &list, selected) < 0 ||
+	    tui_flush() < 0) {
+		return fail("flush form", 0);
+	}
+	if (variant == 1) {
+		if (tui_flush() < 0) {
+			return fail("flush unchanged", 0);
+		}
+	}
+	if (variant == 2) {
+		if (tui_label(2, 2, "Name!") < 0 || tui_flush() < 0) {
+			return fail("flush changed", 0);
+		}
+	}
+	if (variant == 0) {
+		printf("tui: flushfull pass\r\n");
+	} else if (variant == 1) {
+		printf("tui: flushsame pass\r\n");
+	} else {
+		printf("tui: flushrow pass\r\n");
+	}
+	tui_shutdown();
+	return 0;
+}
+
+static int flushfull_mode(void)
+{
+	return flush_form(0);
+}
+
+static int flushsame_mode(void)
+{
+	return flush_form(1);
+}
+
+static int flushrow_mode(void)
+{
+	return flush_form(2);
+}
+
+static int widgets_mode(void)
+{
+	struct tui_rect rect;
+	struct tui_list list;
+	struct tui_list empty;
+	char name[16];
+	char tiny[3];
+	char long_label[60];
+	tui_id_t selected = 10u;
+	tui_id_t menu_result;
+	tui_id_t menu_shortcut;
+	tui_id_t menu_escape;
+	tui_id_t confirm_result;
+	tui_id_t message_result;
+	tui_key_t key;
+	uint16_t visible;
+	int input_result;
+	int input_cancel;
+	int tiny_result;
+	int result;
+	int i;
+
+	result = tui_init();
+	if (result < 0) {
+		printf("tui: widgets FAIL init %d\r\n", result);
+		return 1;
+	}
+	widget_checked = 1u;
+	name[0] = 'A';
+	name[1] = 'd';
+	name[2] = 'a';
+	name[3] = '\0';
+	tiny[0] = 'a';
+	tiny[1] = 'b';
+	tiny[2] = '\0';
+	for (i = 0; i < 59; ++i) {
+		long_label[i] = 'L';
+	}
+	long_label[59] = '\0';
+	list.items = widget_items;
+	list.count = 3u;
+	list.selected = 1u;
+	list.top = 0u;
+	empty.items = (const char * const *)0;
+	empty.count = 0u;
+	empty.selected = 0u;
+	empty.top = 0u;
+
+	if (tui_menu_run((const struct tui_menu_item *)0, 0u) !=
+	    TUI_ID_NONE ||
+	    tui_menubar(widget_menu, 3u, (tui_id_t *)0) != -KOS_EINVAL ||
+	    tui_message_box("X", "Y", 0u) != TUI_ID_NONE ||
+	    tui_message_box("X", "Y", 0x8000u) != TUI_ID_NONE ||
+	    tui_input(0, 0, 4u, (char *)0, 4u) != -KOS_EINVAL ||
+	    tui_input_run(0, 0, 4u, (char *)0, 4u) != -KOS_EINVAL ||
+	    tui_listbox((const struct tui_rect *)0, &list) != -KOS_EINVAL ||
+	    tui_listbox(&rect, (struct tui_list *)0) != -KOS_EINVAL) {
+		return fail("widgets invalid", 0);
+	}
+	rect.x = 2u;
+	rect.y = 6u;
+	rect.w = 2u;
+	rect.h = 2u;
+	if (tui_listbox(&rect, &list) != 0 ||
+	    tui_listbox(&rect, &empty) != 0) {
+		return fail("widgets minimal list", 0);
+	}
+	if (tui_label(60, 24, long_label) != 0) {
+		return fail("widgets long label", 0);
+	}
+	rect.x = 2u;
+	rect.y = 6u;
+	rect.w = 20u;
+	rect.h = 8u;
+	if (widget_form_draw(name, widget_checked, &list, selected) != 0) {
+		return fail("widgets form", 0);
+	}
+	if (tui_flush() != 0) {
+		return fail("widgets form flush", 0);
+	}
+
+	/* Menu: navigate right twice and ENTER, then a shortcut, then ESC. */
+	menu_result = tui_menu_run(widget_menu, 3u);
+	menu_shortcut = tui_menu_run(widget_menu, 3u);
+	menu_escape = tui_menu_run(widget_menu, 3u);
+
+	/* Input: append on commit, edit and commit, then cancel. */
+	input_result = tui_input_run(10, 2, 20u, name, 16u);
+	input_result = tui_input_run(10, 2, 20u, name, 16u);
+	input_cancel = tui_input_run(10, 2, 20u, name, 16u);
+
+	/* List policy: END, HOME, DOWN, UP, PGDN, PGUP, ENTER. */
+	visible = 6u;
+	for (;;) {
+		key = TUI_KEY_NONE;
+		if (tui_listbox(&rect, &list) != 0 || tui_flush() != 0) {
+			return fail("widgets list draw", 0);
+		}
+		key = tui_getkey();
+		if (key == 0x000Du || key == 0x000Au || key == TUI_KEY_ESC) {
+			break;
+		}
+		if (key == TUI_KEY_END) {
+			list.selected = (uint16_t)(list.count - 1u);
+		} else if (key == TUI_KEY_HOME) {
+			list.selected = 0u;
+		} else if (key == TUI_KEY_DOWN) {
+			if ((uint16_t)(list.selected + 1u) < list.count) {
+				++list.selected;
+			}
+		} else if (key == TUI_KEY_UP) {
+			if (list.selected > 0u) {
+				--list.selected;
+			}
+		} else if (key == TUI_KEY_PGDN) {
+			list.selected = (uint16_t)(list.selected + visible);
+			if (list.selected >= list.count) {
+				list.selected = (uint16_t)(list.count - 1u);
+			}
+		} else if (key == TUI_KEY_PGUP) {
+			if (list.selected > visible) {
+				list.selected = (uint16_t)(list.selected - visible);
+			} else {
+				list.selected = 0u;
+			}
+		}
+	}
+
+	confirm_result = tui_confirm("Confirm",
+				     "Apply all changes to the selected profile and close the editor now?");
+	message_result = tui_message_box("Information",
+					 "The configuration was saved.",
+					 (uint16_t)(TUI_BUTTON(TUI_ID_OK) |
+						    TUI_BUTTON(TUI_ID_CANCEL)));
+
+	/* A full buffer accepts no more printable input, including ENTER. */
+	tiny_result = tui_input_run(10, 18, 20u, tiny, 3u);
+
+	if (menu_result != 12u) {
+		return fail("widgets menu result", (int)menu_result);
+	}
+	if (menu_shortcut != 10u) {
+		return fail("widgets shortcut", (int)menu_shortcut);
+	}
+	if (menu_escape != TUI_ID_NONE) {
+		return fail("widgets menu escape", (int)menu_escape);
+	}
+	if (input_result != 1) {
+		return fail("widgets input result", input_result);
+	}
+	if (input_cancel != 0) {
+		return fail("widgets input cancel", input_cancel);
+	}
+	if (tiny_result != 1) {
+		return fail("widgets tiny", tiny_result);
+	}
+	if (strcmp(name, "dam") != 0) {
+		return fail("widgets edit buffer", 0);
+	}
+	if (strcmp(tiny, "ab") != 0) {
+		return fail("widgets full buffer", 0);
+	}
+	if (list.selected != 0u) {
+		return fail("widgets list selected", (int)list.selected);
+	}
+	if (list.top != 0u) {
+		return fail("widgets list top", (int)list.top);
+	}
+	if (widget_checked != 1u) {
+		return fail("widgets checked", (int)widget_checked);
+	}
+	if (confirm_result != TUI_ID_NO) {
+		return fail("widgets confirm", (int)confirm_result);
+	}
+	if (message_result != TUI_ID_CANCEL) {
+		return fail("widgets message", (int)message_result);
+	}
+	result = tui_gotoxy(0, 21);
+	if (result != 0) {
+		return fail("widgets transcript cursor", result);
+	}
+	result = tui_flush();
+	if (result != 0) {
+		return fail("widgets transcript flush", result);
+	}
+	printf("tui: widgets m=%u f=%u e=%u i=%d c=%d t=%d\r\n",
+	       (unsigned int)menu_result, (unsigned int)menu_shortcut,
+	       (unsigned int)menu_escape, input_result, input_cancel,
+	       tiny_result);
+	printf("tui: widgets n=%s s=%u cf=%u ms=%u\r\n", name,
+	       (unsigned int)list.selected,
+	       (unsigned int)confirm_result, (unsigned int)message_result);
+	printf("tui: widgets pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+
+static int loneesc_mode(void)
+{
+	tui_key_t key;
+	int result;
+
+	result = tui_init();
+	if (result < 0) {
+		printf("tui: loneesc FAIL init %d\r\n", result);
+		return 1;
+	}
+	key = tui_getkey();
+	if (key != TUI_KEY_ESC) {
+		printf("tui: loneesc FAIL key %04x\r\n", (unsigned int)key);
+		tui_shutdown();
+		return 1;
+	}
+	if (tui_pollkey() != TUI_KEY_NONE || tui_key_pending() != 0) {
+		printf("tui: loneesc FAIL tail\r\n");
+		tui_shutdown();
+		return 1;
+	}
+	printf("tui: loneesc pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+static int keyreset_mode(void)
+{
+	tui_key_t key;
+	int result;
+
+	result = tui_init();
+	if (result < 0) {
+		printf("tui: keyreset FAIL init %d\r\n", result);
+		return 1;
+	}
+	/* Consume ESC '[' and leave the parser in CSI with no final byte. */
+	if (tui_pollkey() != TUI_KEY_NONE) {
+		printf("tui: keyreset FAIL prime\r\n");
+		tui_shutdown();
+		return 1;
+	}
+	printf("tui: keyreset primed\r\n");
+	tui_shutdown();
+	result = tui_init();
+	if (result < 0) {
+		printf("tui: keyreset FAIL reinit %d\r\n", result);
+		return 1;
+	}
+	key = tui_getkey();
+	if (key != (tui_key_t)'A') {
+		printf("tui: keyreset FAIL key %04x\r\n", (unsigned int)key);
+		tui_shutdown();
+		return 1;
+	}
+	if (tui_pollkey() != TUI_KEY_NONE) {
+		printf("tui: keyreset FAIL tail\r\n");
+		tui_shutdown();
+		return 1;
+	}
+	printf("tui: keyreset pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	if (argc == 0 || (argc == 1 && strcmp(argv[0], "foundation") == 0)) {
@@ -482,6 +1311,36 @@ int main(int argc, char **argv)
 	}
 	if (argc == 1 && strcmp(argv[0], "shutdown") == 0) {
 		return shutdown_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "windows") == 0) {
+		return windows_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "keys") == 0) {
+		return keys_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "loneesc") == 0) {
+		return loneesc_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "keyreset") == 0) {
+		return keyreset_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "styles") == 0) {
+		return styles_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "region") == 0) {
+		return region_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "widgets") == 0) {
+		return widgets_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "flushfull") == 0) {
+		return flushfull_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "flushsame") == 0) {
+		return flushsame_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "flushrow") == 0) {
+		return flushrow_mode();
 	}
 	printf("tui: FAIL mode\r\n");
 	return 1;

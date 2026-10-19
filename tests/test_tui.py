@@ -8,12 +8,13 @@ These tests pin the screen engine:
 
 * `user/sdk/include/tui.h` declares the whole core surface, uses only public
   SDK headers, and carries the architecture's key, style and frame values;
-* `libtui.lib` contains exactly the storage, screen, lifecycle, flush and
-  formatter members and is packed without build dates;
+* `libtui.lib` contains the storage, screen, lifecycle, flush, formatter,
+  window, style, key and region members and is packed without build dates;
 * one static cell map and one static dirty bitmap back the screen engine,
-  and the formatter stays in its own member;
-* `tui_test.exe` links the TUI archive after its own objects and before
+  and the optional groups stay in their own members;
+* `tui_test.exe` links the widget archive before `libtui` and both before
   `libkos`, and its link map carries the TUI members;
+* a core-only probe omits the key, region, style, window and widget members;
 * `hello.exe` links no TUI member or symbol.
 
 Skipped when the artifacts have not been built.
@@ -30,12 +31,20 @@ ROOT = os.path.dirname(HERE)
 
 TUI_HEADER = os.path.join("user", "sdk", "include", "tui.h")
 LIBTUI = os.path.join("build", "user", "sdk", "libtui.lib")
+WIDGET_HEADER = os.path.join("user", "sdk", "include", "tui_widgets.h")
+LIBTUI_WIDGETS = os.path.join("build", "user", "sdk", "libtui_widgets.lib")
 TUI_TEST_DIR = os.path.join("build", "user", "tui_test")
 TUI_TEST_LK = os.path.join(TUI_TEST_DIR, "tui_test.lk")
 TUI_TEST_MAP = os.path.join(TUI_TEST_DIR, "tui_test.map")
 HELLO_DIR = os.path.join("build", "user", "hello")
 HELLO_LK = os.path.join(HELLO_DIR, "hello.lk")
 HELLO_MAP = os.path.join(HELLO_DIR, "hello.map")
+CORE_PROBE_DIR = os.path.join("build", "user", "tui_core_probe")
+CORE_PROBE_LK = os.path.join(CORE_PROBE_DIR, "tui_core_probe.lk")
+CORE_PROBE_MAP = os.path.join(CORE_PROBE_DIR, "tui_core_probe.map")
+WIDGET_PROBE_DIR = os.path.join("build", "user", "tui_widget_probe")
+WIDGET_PROBE_LK = os.path.join(WIDGET_PROBE_DIR, "tui_widget_probe.lk")
+WIDGET_PROBE_MAP = os.path.join(WIDGET_PROBE_DIR, "tui_widget_probe.map")
 
 # The complete core surface from the architecture's tui.h.
 TUI_FUNCTIONS = {
@@ -47,7 +56,8 @@ TUI_FUNCTIONS = {
     "tui_printf", "tui_printf_xy",
     "tui_clear", "tui_clreol", "tui_clrline",
     "tui_insert_line", "tui_delete_line",
-    "tui_window", "tui_reset_window", "tui_push_window", "tui_pop_window",
+    "tui_window", "tui_reset_window", "tui_get_window",
+    "tui_push_window", "tui_pop_window",
     "tui_set_style", "tui_get_style", "tui_set_attr", "tui_get_attr",
     "tui_fill", "tui_hline", "tui_vline", "tui_frame", "tui_frame_title",
     "tui_key_pending", "tui_getkey", "tui_pollkey",
@@ -102,7 +112,18 @@ TUI_KEYS = {
 # One archive member per coherent function group; later parts of the API
 # add their own members instead of growing these.
 TUI_MEMBERS = {"tui_state.rel", "tui_screen.rel", "tui_lifecycle.rel",
-               "tui_flush.rel", "tui_printf.rel"}
+               "tui_flush.rel", "tui_printf.rel", "tui_window.rel",
+               "tui_style.rel", "tui_key.rel", "tui_region.rel"}
+
+WIDGET_MEMBERS = {"widget_common.rel", "widget_render.rel",
+                  "widget_menu.rel", "widget_input.rel",
+                  "widget_modal.rel"}
+
+WIDGET_FUNCTIONS = {
+    "tui_statusbar", "tui_menubar", "tui_message_box", "tui_confirm",
+    "tui_button", "tui_label", "tui_input", "tui_checkbox",
+    "tui_listbox", "tui_menu_run", "tui_input_run",
+}
 
 # The cell map and dirty bitmap live in the storage member; these are the
 # only two full-screen arrays.
@@ -273,9 +294,10 @@ class TestTuiLibrary(unittest.TestCase):
                 if name.startswith("tui_") and include == "tui_internal.h":
                     continue
                 self.assertIn(include, ("tui.h", "tui_internal.h",
-                                        "kos/console.h", "kos/types.h",
-                                        "kos/errno.h", "klibc/fmt.h",
-                                        "klibc/stdarg.h", "klibc/string.h"),
+                                        "kos.h", "kos/console.h",
+                                        "kos/types.h", "kos/errno.h",
+                                        "klibc/fmt.h", "klibc/stdarg.h",
+                                        "klibc/string.h"),
                               "%s includes %s" % (name, include))
 
     def test_ansi_sequences_live_only_in_the_output_backend(self):
@@ -293,6 +315,19 @@ class TestTuiLibrary(unittest.TestCase):
             ROOT, "tests", "tui", "tui_test.c")))
         self.assertNotIn("console_write", _read(os.path.join(
             source_dir, "tui_screen.c")))
+
+    def test_cp850_box_bytes_live_only_in_the_style_member(self):
+        source_dir = os.path.join(ROOT, "user", "sdk", "tui", "src")
+        for name in sorted(os.listdir(source_dir)):
+            if not name.endswith((".c", ".h")) or name == "tui_style.c":
+                continue
+            body = _read(os.path.join(source_dir, name))
+            for glyph in ("0xC4u", "0xB3u", "0xDAu", "0xC9u", "0xCDu"):
+                self.assertNotIn(glyph, body,
+                                 "%s embeds CP850 byte %s" % (name, glyph))
+        test_body = _read(os.path.join(ROOT, "tests", "tui", "tui_test.c"))
+        for glyph in ("0xC4", "0xC9", "\\xC4", "\\xC9"):
+            self.assertNotIn(glyph, test_body)
 
     def test_flush_groups_runs_by_attribute_and_emits_both_sgr_forms(self):
         body = _read(os.path.join(ROOT, "user", "sdk", "tui", "src",
@@ -317,25 +352,39 @@ class TestTuiLink(unittest.TestCase):
         cls.symbols = _symbols(TUI_TEST_MAP)
         cls.lk = _read(TUI_TEST_LK).splitlines()
 
-    def test_program_objects_precede_the_named_archive_and_libkos(self):
+    def test_program_objects_precede_the_named_archives_and_libkos(self):
         object_line = "build/user/tui_test/tui_test.rel"
+        widget_line = "-l build/user/sdk/libtui_widgets.lib"
         tui_line = "-l build/user/sdk/libtui.lib"
         kos_line = "-l build/user/sdk/libkos.lib"
-        for line in (object_line, tui_line, kos_line):
+        for line in (object_line, widget_line, tui_line, kos_line):
             self.assertIn(line, self.lk)
-        self.assertLess(self.lk.index(object_line), self.lk.index(tui_line))
+        self.assertLess(self.lk.index(object_line),
+                        self.lk.index(widget_line))
+        self.assertLess(self.lk.index(widget_line), self.lk.index(tui_line))
         self.assertLess(self.lk.index(tui_line), self.lk.index(kos_line))
 
     def test_tui_test_links_the_screen_members(self):
         modules = _linked_modules(self.symbols)
         for member in ("tui_state", "tui_screen", "tui_lifecycle",
-                       "tui_flush", "tui_printf"):
+                       "tui_flush", "tui_printf", "tui_window",
+                       "tui_style", "tui_key", "tui_region"):
             self.assertIn(member, modules)
-        self.assertIn("_tui_init", self.symbols)
-        self.assertIn("_tui_get_size", self.symbols)
-        self.assertIn("_tui_flush", self.symbols)
-        self.assertIn("_tui_putc", self.symbols)
-        self.assertIn("_tui_printf", self.symbols)
+        for symbol in ("_tui_init", "_tui_get_size", "_tui_flush",
+                       "_tui_putc", "_tui_printf", "_tui_clear",
+                       "_tui_set_style", "_tui_getkey", "_tui_save",
+                       "_tui_restore", "_tui_statusbar", "_tui_menu_run",
+                       "_tui_input_run", "_tui_message_box",
+                       "_tui_confirm"):
+            self.assertIn(symbol, self.symbols)
+
+    def test_every_public_declaration_has_a_linked_definition(self):
+        for name in TUI_FUNCTIONS | WIDGET_FUNCTIONS:
+            self.assertIn("_" + name, self.symbols)
+        public = _read(os.path.join(ROOT, TUI_HEADER))
+        public += _read(os.path.join(ROOT, WIDGET_HEADER))
+        self.assertNotIn("tui_priv_", public)
+        self.assertNotIn("widget_", public)
 
     def test_one_cell_map_and_one_dirty_bitmap(self):
         for name in TUI_STORAGE_SYMBOLS:
@@ -371,6 +420,149 @@ class TestTuiLink(unittest.TestCase):
         self.assertFalse([name for name in symbols
                           if name.startswith("_tui_")],
                          "hello.exe links a TUI symbol")
+
+
+class TestWidgetHeader(unittest.TestCase):
+    """The optional widget header: exact v1 surface and pinned rules."""
+
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(ROOT, WIDGET_HEADER)
+        if not os.path.isfile(path):
+            raise unittest.SkipTest("%s is missing" % WIDGET_HEADER)
+        cls.text = _read(path)
+
+    def test_declares_the_v1_widget_surface(self):
+        declared = set(re.findall(r"\b(tui_[a-z0-9_]+)\s*\(", self.text))
+        self.assertEqual(declared, WIDGET_FUNCTIONS)
+
+    def test_includes_only_the_public_core_header(self):
+        self.assertEqual(_quoted_includes(os.path.join(ROOT, WIDGET_HEADER)),
+                         ["tui.h"])
+
+    def test_button_mask_and_ids_are_pinned(self):
+        for name in ("TUI_ID_NONE", "TUI_ID_OK", "TUI_ID_CANCEL",
+                     "TUI_ID_YES", "TUI_ID_NO"):
+            self.assertIn("#define %s" % name, self.text)
+        self.assertIn("#define TUI_BUTTON(id) ((uint16_t)(1u << (id)))",
+                      self.text)
+
+
+class TestWidgetLibrary(unittest.TestCase):
+    """libtui_widgets: deterministic members and public-only boundary."""
+
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(ROOT, LIBTUI_WIDGETS)
+        if not os.path.isfile(path):
+            raise unittest.SkipTest("%s has not been built" % LIBTUI_WIDGETS)
+        cls.members = _ar_members(path)
+        cls.path = path
+
+    def test_archive_holds_the_widget_members(self):
+        names = [name for name, _mtime, _uid, _gid in self.members]
+        self.assertEqual(sorted(names), sorted(WIDGET_MEMBERS))
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_archive_carries_no_build_dates(self):
+        for name, mtime, uid, gid in self.members:
+            for field in (mtime, uid, gid):
+                self.assertIn(field, ("", "0"), "%s: %r" % (name, field))
+
+    def test_every_source_is_its_own_member(self):
+        source_dir = os.path.join(ROOT, "user", "sdk", "widgets", "src")
+        sources = sorted(name[:-2] + ".rel"
+                         for name in os.listdir(source_dir)
+                         if name.endswith(".c"))
+        self.assertEqual(sorted(name for name, *_ in self.members), sources)
+
+    def test_widget_sources_use_only_public_headers_and_own_helpers(self):
+        source_dir = os.path.join(ROOT, "user", "sdk", "widgets", "src")
+        for name in sorted(os.listdir(source_dir)):
+            if not name.endswith((".c", ".h")):
+                continue
+            rel = os.path.join(source_dir, name)
+            for include in _quoted_includes(rel):
+                if name.endswith(".c") and include == "widget_internal.h":
+                    continue
+                if name == "widget_internal.h" and include == "tui_widgets.h":
+                    continue
+                self.assertIn(include, ("tui.h", "tui_widgets.h"),
+                              "%s includes %s" % (name, include))
+
+    def test_widgets_embed_no_terminal_cp850_or_os_knowledge(self):
+        source_dir = os.path.join(ROOT, "user", "sdk", "widgets", "src")
+        for name in sorted(os.listdir(source_dir)):
+            if not name.endswith((".c", ".h")):
+                continue
+            body = _read(os.path.join(source_dir, name))
+            self.assertNotIn("\\033[", body, name)
+            for glyph in ("0xC4", "0xB3", "0xDA", "0xC9", "0xCD",
+                          "0xBF", "0xD9", "0xBB", "0xBC"):
+                self.assertNotIn(glyph, body, "%s embeds %s" % (name, glyph))
+            for call in ("console_read", "console_write", "console_poll(",
+                         "idle(", "bind(", "call(", "malloc(", "free("):
+                self.assertNotIn(call, body, "%s calls %s" % (name, call))
+
+
+class TestTuiProbeLinks(unittest.TestCase):
+    """Core-only and render-only programs: no unused member or data cost."""
+
+    @classmethod
+    def setUpClass(cls):
+        for path in (CORE_PROBE_LK, CORE_PROBE_MAP,
+                     WIDGET_PROBE_LK, WIDGET_PROBE_MAP):
+            if not os.path.isfile(os.path.join(ROOT, path)):
+                raise unittest.SkipTest("%s has not been built" % path)
+        cls.core_symbols = _symbols(CORE_PROBE_MAP)
+        cls.widget_symbols = _symbols(WIDGET_PROBE_MAP)
+
+    def test_core_probe_omits_key_region_style_and_widget_members(self):
+        modules = _linked_modules(self.core_symbols)
+        for absent in ("tui_key", "tui_region", "tui_style", "tui_window",
+                       "tui_printf"):
+            self.assertNotIn(absent, modules)
+        for symbol in ("_tui_getkey", "_tui_pollkey", "_tui_key_pending",
+                       "_tui_save", "_tui_restore", "_tui_saved_size",
+                       "_tui_fill", "_tui_frame", "_tui_set_style",
+                       "_tui_window", "_tui_clear"):
+            self.assertNotIn(symbol, self.core_symbols)
+        for module in WIDGET_MEMBERS:
+            self.assertNotIn(module[:-4], modules)
+        self.assertNotIn("-l build/user/sdk/libtui_widgets.lib",
+                         _read(os.path.join(ROOT, CORE_PROBE_LK)).splitlines())
+
+    def test_widget_probe_links_only_render_members(self):
+        modules = _linked_modules(self.widget_symbols)
+        for present in ("widget_render", "widget_common"):
+            self.assertIn(present, modules)
+        for absent in ("widget_menu", "widget_input", "widget_modal"):
+            self.assertNotIn(absent, modules)
+        for symbol in ("_tui_statusbar", "_tui_label", "_tui_button"):
+            self.assertIn(symbol, self.widget_symbols)
+        for symbol in ("_tui_menu_run", "_tui_input_run", "_tui_message_box",
+                       "_tui_confirm"):
+            self.assertNotIn(symbol, self.widget_symbols)
+        lk = _read(os.path.join(ROOT, WIDGET_PROBE_LK)).splitlines()
+        self.assertLess(lk.index("-l build/user/sdk/libtui_widgets.lib"),
+                        lk.index("-l build/user/sdk/libtui.lib"))
+
+    def test_modal_member_has_a_measurable_data_cost(self):
+        def data_size(path):
+            for line in _read(os.path.join(ROOT, path)).splitlines():
+                match = re.match(r"^_DATA\s+([0-9A-Fa-f]+)\s+"
+                                 r"([0-9A-Fa-f]+)", line)
+                if match:
+                    return int(match.group(2), 16)
+            self.fail("no _DATA area in %s" % path)
+
+        core = data_size(CORE_PROBE_MAP)
+        render = data_size(WIDGET_PROBE_MAP)
+        with_modal = data_size(TUI_TEST_MAP)
+        self.assertEqual(core, render,
+                         "render-only widgets add static data")
+        self.assertGreaterEqual(with_modal - render, 60 * 16 * 2,
+                                "the modal save buffer is not in the map")
 
 
 if __name__ == "__main__":
