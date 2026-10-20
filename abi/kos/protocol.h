@@ -152,6 +152,9 @@
  *                          so the next program starts on a clean screen
  *                          with nothing typed for its predecessor left to
  *                          read.  Returns 0 or a negative error.
+ *   KCONSOLE_OP_RENDER (6) desc IN: arg0 = offset, arg1 = byte length.
+ *                          One kos/console_render.h command stream;
+ *                          returns its byte length or a negative error.
  */
 #define KCONSOLE_OP_WRITE 0u
 #define KCONSOLE_OP_READ  1u
@@ -159,6 +162,7 @@
 #define KCONSOLE_OP_POLL  3u
 #define KCONSOLE_OP_PUTC  4u
 #define KCONSOLE_OP_RESET 5u
+#define KCONSOLE_OP_RENDER 6u
 
 /* --- HID input driver (class KOS_CLASS_HID) -----------------------------
  *
@@ -206,6 +210,8 @@
  *                        register, selector, palette entry and VRAM asset
  *                        is rewritten from any state.  No payload;
  *                        returns 0 or a negative error.
+ *   KVIDEO_OP_RENDER (4) desc IN: the console render stream, forwarded
+ *                        unchanged by the V9958 console composition.
  *
  * KVIDEO_RESET re-establishes every driver-owned state, including the
  * font and atlas upload; the driver reads the font from its own bulk
@@ -216,6 +222,7 @@
 #define KVIDEO_OP_WRITE 1u
 #define KVIDEO_OP_PUTC  2u
 #define KVIDEO_OP_RESET 3u
+#define KVIDEO_OP_RENDER 4u
 
 /* The native VIDEO operations (the KVIDEO_OP_SEND argument; exact values,
  * not Virtual Drip packet numbers). */

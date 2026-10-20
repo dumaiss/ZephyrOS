@@ -231,6 +231,13 @@ static unsigned int read_queued;
 static unsigned char fail_write;
 static char long_text[300];
 
+/* idle() is part of the console client through getchar(), but this probe
+ * exercises buffering only; the real halt path is covered by the driver
+ * and timer suites. */
+void idle(void)
+{
+}
+
 char probe_log[512];
 unsigned int probe_log_len;
 

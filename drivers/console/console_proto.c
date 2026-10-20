@@ -43,6 +43,7 @@
 #define CONSOLE_IN_POLL   KHID_OP_POLL
 #define CONSOLE_OUT_WRITE KVIDEO_OP_WRITE
 #define CONSOLE_OUT_PUTC  KVIDEO_OP_PUTC
+#define CONSOLE_OUT_RENDER KVIDEO_OP_RENDER
 #endif
 
 static const struct driver_api *console_api;
@@ -113,6 +114,12 @@ int16_t console_driver_dispatch(struct kos_ipc_frame *frame)
 		return 0;
 #else
 		return console_forward(console_out, KVIDEO_OP_RESET, frame);
+#endif
+	case KCONSOLE_OP_RENDER:
+#if defined(KOS_CONSOLE_SERIAL)
+		return (int16_t)-KOS_ENOTSUP;
+#else
+		return console_forward(console_out, CONSOLE_OUT_RENDER, frame);
 #endif
 	default:
 		return (int16_t)-KOS_EINVAL;

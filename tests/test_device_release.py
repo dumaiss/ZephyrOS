@@ -85,10 +85,12 @@ PAYLOAD = (b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
            b"abcdefghijklmnopqrstuvwxyz,.!?")
 
 # One boot of the production image costs about 2.3 million emulated
-# instructions, so the waits below are budgeted in boots rather than in
-# STEP_LIMIT (which is a whole acceptance session): a wait that stops
-# matching fails in seconds instead of running for a quarter of an hour.
-BOOT_BUDGET = 4000000
+# instructions (a little over four million with the shell's startup
+# banner - its text and the logo LMMC), so the waits below are budgeted
+# in boots rather than in STEP_LIMIT (which is a whole acceptance
+# session): a wait that stops matching fails in seconds instead of
+# running for a quarter of an hour.
+BOOT_BUDGET = 6000000
 EXEC_BUDGET = 3 * BOOT_BUDGET
 
 # The VDP register numbers the console's bring-up owns and the snapshot

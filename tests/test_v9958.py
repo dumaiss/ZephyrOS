@@ -114,6 +114,7 @@ V9958_CONSTANTS = {
     "KOS_V9958_R6_SPRITE_PATTERN": 0x3F,
     "KOS_V9958_R7_BORDER": 0x04,
     "KOS_V9958_R8_64K_DRAM": 0x08,
+    "KOS_V9958_R8_SPRITES_OFF": 0x02,
     "KOS_V9958_R9_212_INTERLACE": 0x88,
     "KOS_V9958_R11_SPRITE_ATTR": 0x03,
     "KOS_V9958_R15_STATUS2": 0x02,
@@ -367,7 +368,7 @@ class TestDriverSourceDiscipline(unittest.TestCase):
     def test_no_ioc_or_hid_import_and_no_kernel_symbols(self):
         for body in self.sources:
             for needle in ("_ioc_", "_hid_", "_sio_", "_kernel_main",
-                           "register_ep", "console_",
+                           "register_ep", "_console_",
                            "device" + "_register"):
                 self.assertNotIn(needle, body,
                                  "v9958 must not reference %r" % needle)
@@ -425,6 +426,58 @@ class TestDriverSourceDiscipline(unittest.TestCase):
             cursor = index
         self.assertEqual(positions, sorted(positions),
                          "initialization order changed")
+
+    def test_cursor_sat_writes_are_cached_and_reset_invalidates_cache(self):
+        cursor = self.c.split("static void v9958_cursor_write_sat")[1].split(
+            "static void v9958_expand_row")[0]
+        init = self.c.split("static void v9958_cursor_init")[1].split(
+            "static int v9958_init_display")[0]
+        for field in ("cursor_sat_valid", "cursor_sat_visible",
+                      "cursor_sat_x", "cursor_sat_y"):
+            self.assertIn(field, self.header)
+            self.assertIn(field, cursor)
+        self.assertIn("v9958_state.cursor_visible == 0u", cursor)
+        self.assertLess(cursor.index("cursor_sat_valid != 0u"),
+                        cursor.index("v9958_write_vram"))
+        self.assertIn("v9958_state.cursor_sat_valid = 0u", init)
+        self.assertLess(init.index("cursor_sat_valid = 0u"),
+                        init.index("v9958_cursor_write_sat"))
+
+    def test_renderer_suppresses_sprites_and_coalesces_spans(self):
+        self.assertIn("KOS_V9958_R8_SPRITES_OFF", self.asm)
+        self.assertIn("v9958_sprites_off:", self.asm)
+        self.assertIn("v9958_sprites_restore:", self.asm)
+        putc = self.asm.split("_v9958_char_putc::")[1].split(
+            "_v9958_char_write::")[0]
+        write = self.asm.split("_v9958_char_write::")[1]
+        for entry in (putc, write):
+            self.assertLess(entry.index("call\tv9958_sprites_off"),
+                            entry.index("_worker"))
+            self.assertGreater(entry.index("call\tv9958_sprites_restore"),
+                               entry.index("_worker"))
+        self.assertIn("v9958_space_span:", self.asm)
+        self.assertIn("#V9958_CMD_HMMV", self.asm)
+        self.assertIn("#(V9958_CELL_WIDTH * 2)", self.asm)
+        self.assertIn("jp\tnz,v9958_span_loop", self.asm)
+
+    def test_render_transaction_validates_first_and_uses_lmmv_eor(self):
+        dispatch = self.proto.split("case KVIDEO_OP_RENDER:")[1].split(
+            "default:")[0]
+        self.assertLess(dispatch.index("v9958_render_validate"),
+                        dispatch.index("v9958_render_transaction"))
+        self.assertIn("KCONSOLE_RENDER_VERSION", self.proto)
+        self.assertIn("KCONSOLE_RENDER_STATE_SIZE", self.proto)
+        invert = self.c.split("void v9958_render_invert")[1].split(
+            "void v9958_render_finish_worker")[0]
+        for needle in ("v9958_out_flush();", "V9958_CMD_LMMV_EOR",
+                       "V9958_INVERT_COLOR", "V9958_CELL_WIDTH",
+                       "V9958_CELL_HEIGHT", "wrapped"):
+            self.assertIn(needle, invert)
+        self.assertIn("#define V9958_CMD_LMMV_EOR "
+                      "(V9958_CMD_LMMV | V9958_CMD_EOR)", self.header)
+        self.assertIn("#define V9958_INVERT_COLOR  "
+                      "(V9958_COLOR_NORMAL ^ V9958_COLOR_REVERSE)",
+                      self.header)
 
     def test_pacing_and_latch_shadow(self):
         # Paced helper used while WTE=0, non-paced after; D0 preserved.

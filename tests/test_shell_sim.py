@@ -45,6 +45,7 @@ while the shell itself lived on the card.
 """
 
 import os
+import re
 import sys
 import unittest
 
@@ -62,6 +63,16 @@ STORE_ROMFS = os.path.join(ROOT, "build", "recovery.romfs")
 
 # The launcher's line when the boot program exits with a status.
 SHELL_EXIT = "boot: /system/shell.exe exit %d\n"
+
+# The banner the shell prints at every start (the build date follows
+# SDCC's __DATE__, so it is pinned by the compile, not the replay).  The
+# ABI level is the kernel's system-info record's; the IOC level is the
+# emulated controller's PING answer (4Ah, the deployed firmware's).
+SHELL_BANNER_RE = (
+    r"KonaOS v1\.0 \(build date: \d{4}-\d{2}-\d{2}\)\n"
+    r"ABI version 1\n"
+    r"IOC version 74\n"
+    r"Copyright \(C\) Sebastien Dumais 2026\n")
 
 
 def store_entries():
@@ -123,7 +134,7 @@ SESSION = (
      "fs-child: PASS\n[exit 42]\n/> ", "/> ", False),
     ("path . /BIN /system", "/> ", "/> ", False),
     ("path", ".\n/BIN\n/system\n/> ", "/> ", False),
-    ("exit 3", "boot: /system/shell.exe exit 3\n/> ", "/> ", False),
+    ("exit 3", "boot: /system/shell.exe exit 3\n", "/> ", False),
 )
 
 # The file built-ins' session: one row per line.  Every write is under
@@ -162,7 +173,7 @@ def file_session():
         ("rmdir /SHTEST", "/> ", "/> ", False),
         ("cp /SUB/ORIG.TXT /system/X.TXT",
          "cp: /system/X.TXT: read-only\n/> ", "/> ", False),
-        ("exit 0", "boot: /system/shell.exe exit 0\n/> ", "/> ", False),
+        ("exit 0", "boot: /system/shell.exe exit 0\n", "/> ", False),
     )
 
 
@@ -202,6 +213,29 @@ class ShellSession(HwtestReplay):
         self.fail("%r reached no output in %u steps (PC=%04X)"
                   % (line, budget, z.pc))
 
+    def assert_logo(self, z, starts):
+        """The banner's logo: written straight into VRAM through the data
+        port, one 40-byte row per address, over the pinned 80 x 46
+        rectangle at (8, 10) - 1,840 bytes per shell start and no command
+        engine involved."""
+        lmmc = [cmd for cmd in z.vdp.commands if cmd["code"] == 0xB0]
+        self.assertEqual(lmmc, [], "the logo uses no LMMC")
+        in_logo = [addr for addr, _value in z.vdp.vram_writes
+                   if 10 * 256 <= addr < 56 * 256 and 4 <= addr % 256 < 44]
+        self.assertEqual(len(in_logo), starts * 1840,
+                         "logo bytes written per start")
+        # The rectangle holds the dump packed two pixels per byte.
+        with open(os.path.join(ROOT, "user", "shell",
+                               "konaos-logo-80x46.lmmc"), "rb") as handle:
+            dump = handle.read()
+        for row in range(46):
+            base = (10 + row) * 256 + 4
+            packed = bytes(((dump[row * 80 + col * 2] << 4) |
+                            dump[row * 80 + col * 2 + 1])
+                           for col in range(40))
+            self.assertEqual(bytes(z.vdp.vram[base:base + 40]), packed,
+                             "logo row %d" % row)
+
     def test_one_scripted_session(self):
         z = self.start(card=True, extra_files={SUB_NAME: SUB_CONTENT})
         peer = z.ioc_peer
@@ -219,6 +253,12 @@ class ShellSession(HwtestReplay):
         trace = self.trace(z)
         self.assertIn(SHELL_EXIT % 3, trace)
         self.assertEqual(trace.count("boot: "), 1)
+        # The relaunch starts on the banner, then the prompt.
+        self.assertRegex(trace,
+                         re.escape(SHELL_EXIT % 3) + SHELL_BANNER_RE +
+                         r"/> ")
+        # One LMMC logo per shell start: the boot and the relaunch.
+        self.assert_logo(z, 2)
         # The exerciser reached its own verdict: every nested stage ran.
         self.assertIn("hwtest: 4/4 PASS", trace)
 
@@ -295,6 +335,12 @@ class ShellSession(HwtestReplay):
         trace = self.trace(z)
         self.assertIn(SHELL_EXIT % 0, trace)
         self.assertEqual(trace.count("boot: "), 1)
+        # The relaunch starts on the banner, then the prompt.
+        self.assertRegex(trace,
+                         re.escape(SHELL_EXIT % 0) + SHELL_BANNER_RE +
+                         r"/> ")
+        # One LMMC logo per shell start: the boot and the relaunch.
+        self.assert_logo(z, 2)
 
         # `cat` read the copy of the card's text file back, byte for
         # byte (the row above holds its console output).

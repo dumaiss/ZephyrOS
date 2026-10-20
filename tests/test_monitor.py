@@ -66,7 +66,7 @@ MONITOR_MODULES = {
     "kos_crt0", "kos_runtime", "kos_gate", "kos_diaggate",
     "kos_ipcgate", "nsgate", "args", "console_io", "console_proto",
     "ipc", "monitor", "monitor_exec", "monitor_mem", "monitor_io",
-    "hexfmt", "hexdump", "status", "exec",
+    "hexfmt", "hexdump", "status", "exec", "idle", "idle_halt",
 }
 
 # Private kernel symbols that must never appear in a user EXE.  The

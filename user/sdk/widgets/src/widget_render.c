@@ -48,7 +48,6 @@ int tui_menubar(const struct tui_menu_item *items, uint8_t count,
 			return -KOS_EINVAL;
 		}
 	}
-	w_blank(0u, 0u, window.w, 1u, TUI_STYLE_NORMAL);
 	for (i = 0u; i < count && x < (uint16_t)window.w; ++i) {
 		tui_style_t style = items[i].id == *selected ?
 				    TUI_STYLE_SELECTED : TUI_STYLE_NORMAL;
@@ -71,6 +70,10 @@ int tui_menubar(const struct tui_menu_item *items, uint8_t count,
 			(void)tui_fill(&cell, ' ', TUI_STYLE_NORMAL);
 			++x;
 		}
+	}
+	if (x < (uint16_t)window.w) {
+		w_blank((uint8_t)x, 0u, (uint8_t)(window.w - x), 1u,
+			TUI_STYLE_NORMAL);
 	}
 	return 0;
 }

@@ -19,6 +19,7 @@
 /* One dirty horizontal run starts with a cursor sequence (at most nine
  * bytes) and may carry one SGR sequence (four bytes) and a whole row. */
 #define TUI_RUN_MAX (TUI_LOGICAL_COLS + 16u)
+#define TUI_RENDER_MAX TUI_RUN_MAX
 
 /* A bounded transaction nesting count; begin/end calls beyond the bound
  * saturate, so a balanced pair still flushes at its outermost end. */
@@ -47,12 +48,16 @@ struct tui_state {
 	uint8_t phys_y;
 	uint8_t phys_attr;
 	uint8_t phys_cursor_visible;
+	uint8_t render_support; /* 0 unknown, 1 RENDER, 2 ANSI fallback */
 };
 
 extern struct tui_state tui_state;
 extern struct tui_cell tui_cells[TUI_CELL_COUNT];
 extern uint8_t tui_dirty[TUI_DIRTY_BYTES];
+extern uint8_t tui_invert[TUI_DIRTY_BYTES];
 extern uint8_t tui_run[TUI_RUN_MAX];
+/* RENDER and ANSI fallback are mutually exclusive during a flush. */
+#define tui_render tui_run
 
 #define TUI_CELL_INDEX(x, y) \
 	((uint16_t)(((uint16_t)(y) * TUI_LOGICAL_COLS) + (uint16_t)(x)))
@@ -65,6 +70,17 @@ extern uint8_t tui_run[TUI_RUN_MAX];
 #define TUI_DIRTY_CLEAR(index) \
 	(tui_dirty[(uint16_t)(index) >> 3] &= \
 	 (uint8_t)~(1u << ((uint16_t)(index) & 7u)))
+#define TUI_INVERT_TEST(index) \
+	((tui_invert[(uint16_t)(index) >> 3] & \
+	  (uint8_t)(1u << ((uint16_t)(index) & 7u))) != 0u)
+#define TUI_INVERT_SET(index) \
+	(tui_invert[(uint16_t)(index) >> 3] |= \
+	 (uint8_t)(1u << ((uint16_t)(index) & 7u)))
+#define TUI_INVERT_CLEAR(index) \
+	(tui_invert[(uint16_t)(index) >> 3] &= \
+	 (uint8_t)~(1u << ((uint16_t)(index) & 7u)))
+#define TUI_PENDING_TEST(index) \
+	(TUI_DIRTY_TEST(index) || TUI_INVERT_TEST(index))
 
 /* Draw one byte with the window-relative cursor held in x and y.
  * Control bytes move that cursor; printable bytes clip to the active

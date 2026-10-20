@@ -212,6 +212,7 @@ int main(int argc, char **argv)
 	(void)argv;
 	shell_path_default();
 	shell_history = &shell_history_store[0][0];
+	shell_banner();
 	/* The display root is /fs; a machine with no card keeps /system,
 	 * the store every image carries. */
 	if (chdir("/fs") < 0) {

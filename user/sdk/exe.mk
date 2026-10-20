@@ -60,7 +60,7 @@ $(EXE_RUNTIME): $(KOS_SDK_SRC)/runtime.asm
 
 KOS_SDK_C_SRC := args.c fs.c ipc.c exec.c console_io.c \
     xmem.c seg.c xload.c event.c \
-    console_proto.c timer.c sound.c idle.c stream.c \
+    console_proto.c console_render.c timer.c sound.c idle.c stream.c \
     stdio.c fread.c fwrite.c fseek.c feof.c \
     klibc/strrchr.c klibc/strlcpy.c klibc/strlcat.c \
     klibc/utoa.c klibc/ultoa.c klibc/itoa.c klibc/ltoa.c \

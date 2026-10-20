@@ -251,14 +251,23 @@ static uint8_t v9958_row_vram_y(uint8_t row)
 static void v9958_cursor_write_sat(void)
 {
 	uint8_t sat[V9958_CURSOR_SAT_BYTES];
+	uint8_t x = (uint8_t)(v9958_state.text_col * 3u);
+	uint8_t y;
 
 	if (v9958_state.cursor_visible != 0u) {
-		sat[0] = (uint8_t)(v9958_row_vram_y(v9958_state.text_row) -
-				   1u);
+		y = (uint8_t)(v9958_row_vram_y(v9958_state.text_row) - 1u);
 	} else {
-		sat[0] = V9958_CURSOR_TERMINATOR;
+		y = V9958_CURSOR_TERMINATOR;
 	}
-	sat[1] = (uint8_t)(v9958_state.text_col * 3u);
+	if (v9958_state.cursor_sat_valid != 0u &&
+	    v9958_state.cursor_sat_visible == v9958_state.cursor_visible &&
+	    (v9958_state.cursor_visible == 0u ||
+	     (v9958_state.cursor_sat_x == x &&
+	      v9958_state.cursor_sat_y == y))) {
+		return;
+	}
+	sat[0] = y;
+	sat[1] = x;
 	sat[2] = 0x00u;
 	sat[3] = 0x00u;
 	sat[4] = V9958_CURSOR_TERMINATOR;
@@ -266,6 +275,10 @@ static void v9958_cursor_write_sat(void)
 	sat[6] = 0x00u;
 	sat[7] = 0x00u;
 	v9958_write_vram(sat, V9958_CURSOR_SAT_ADDR, V9958_CURSOR_SAT_BYTES);
+	v9958_state.cursor_sat_valid = 1u;
+	v9958_state.cursor_sat_visible = v9958_state.cursor_visible;
+	v9958_state.cursor_sat_x = x;
+	v9958_state.cursor_sat_y = y;
 }
 
 /* Convert one font scanline byte (bits 7..2 = six pixels) into three
@@ -452,6 +465,9 @@ static void v9958_cursor_init(void)
 	v9958_write_vram(v9958_cursor_pattern, V9958_CURSOR_PATTERN_ADDR, 8u);
 	v9958_write_vram(v9958_cursor_colors, V9958_CURSOR_COLOR_ADDR,
 			 V9958_CURSOR_COLORS);
+	/* A display reset rewrites VRAM, so the software cache cannot prove
+	 * that the SAT still contains its last remembered value. */
+	v9958_state.cursor_sat_valid = 0u;
 	v9958_cursor_write_sat();
 }
 
@@ -480,8 +496,9 @@ static int v9958_init_display(void)
  * ======================================================================
  *
  * The byte stream arrives exclusively through the terminal entries.  The
- * drawing algorithms are the reference ones: each glyph is one HMMM copy
- * from the precolored atlas page selected by the current SGR attribute,
+ * drawing algorithms use HMMM copies from the precolored atlas page selected
+ * by the current SGR attribute, merging atlas-contiguous glyphs into one
+ * wider copy and consecutive spaces into one HMMV background fill,
  * erases are HMMV fills in the current background, scrolling advances the
  * circular R#23 origin by one 8-line cell and repaints only the fixed
  * margin and the newly exposed bottom row, and the sprite SAT tracks the
@@ -503,6 +520,7 @@ static uint8_t v9958_fill_color(void)
 
 /* Defined below; used by the parser's reset paths. */
 static void v9958_term_set_defaults(void);
+static void v9958_put_printable(uint8_t ch);
 
 /* Rectangle erase in cells: width x height cells at (col,row), filled
  * with the current background.  A rectangle crossing the end of the
@@ -592,6 +610,55 @@ static void v9958_term_sync(void)
 	v9958_io_wait_command();
 }
 
+/* --- absolute render transactions ----------------------------------- */
+
+/* LMMV is a dot operation in GRAPHIC 6.  CLR is therefore the four-bit
+ * blue/white colour XOR, not the packed byte used by HMMV fills. */
+void v9958_render_text_data(const uint8_t *buf, uint16_t len)
+{
+	while (len-- != 0u) {
+		v9958_put_printable(*buf++);
+	}
+}
+
+void v9958_render_invert(uint8_t x, uint8_t y, uint8_t count)
+{
+	uint16_t dx = (uint16_t)x * V9958_CELL_WIDTH;
+	uint16_t nx = (uint16_t)count * V9958_CELL_WIDTH;
+	uint8_t dy = v9958_row_vram_y(y);
+	uint8_t ny = V9958_CELL_HEIGHT;
+
+	v9958_out_flush();
+	v9958_cmd_reset();
+	v9958_cmd[V9958_CMD_DX_LO] = (uint8_t)(dx & 0xFFu);
+	v9958_cmd[V9958_CMD_DX_HI] = (uint8_t)(dx >> 8);
+	v9958_cmd[V9958_CMD_DY_LO] = dy;
+	v9958_cmd[V9958_CMD_NX_LO] = (uint8_t)(nx & 0xFFu);
+	v9958_cmd[V9958_CMD_NX_HI] = (uint8_t)(nx >> 8);
+	v9958_cmd[V9958_CMD_NY_LO] = ny;
+	v9958_cmd[V9958_CMD_COLOR] = V9958_INVERT_COLOR;
+	v9958_cmd[V9958_CMD_CODE] = V9958_CMD_LMMV_EOR;
+
+	if ((uint8_t)(dy + ny) < dy) {
+		uint8_t wrapped = (uint8_t)(dy + ny);
+
+		v9958_cmd[V9958_CMD_NY_LO] = (uint8_t)(0u - dy);
+		v9958_start_command(v9958_cmd);
+		if (wrapped == 0u) {
+			return;
+		}
+		v9958_cmd[V9958_CMD_DY_LO] = 0u;
+		v9958_cmd[V9958_CMD_NY_LO] = wrapped;
+	}
+	v9958_start_command(v9958_cmd);
+}
+
+void v9958_render_finish_worker(void)
+{
+	v9958_term_sync();
+	v9958_state.render_active = 0u;
+}
+
 /* --- terminal cursor and text actions -------------------------------- */
 
 /* Scroll the circular bitmap by one cell: advance the R#23 origin,
@@ -674,7 +741,11 @@ static void v9958_put_printable(uint8_t ch)
 	uint8_t *run = v9958_run_ptr;
 
 	if (v9958_state.out_run_count == V9958_OUT_RUN_SIZE) {
-		v9958_term_sync();
+		if (v9958_state.render_active != 0u) {
+			v9958_out_flush();
+		} else {
+			v9958_term_sync();
+		}
 	}
 	if (v9958_state.out_run_count == 0u) {
 		v9958_state.out_run_col = v9958_state.text_col;
@@ -686,8 +757,10 @@ static void v9958_put_printable(uint8_t ch)
 
 	if (v9958_state.text_col == (V9958_COLUMNS - 1u)) {
 		v9958_out_flush();
-		v9958_advance_cursor();
-		v9958_term_sync();
+		if (v9958_state.render_active == 0u) {
+			v9958_advance_cursor();
+			v9958_term_sync();
+		}
 	} else {
 		v9958_advance_cursor();
 	}

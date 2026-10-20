@@ -1,4 +1,6 @@
 #include "kos.h"
+#include "tui.h"
+#include "tui_widgets.h"
 
 #include "kc_protocol.h"
 #include "kc_remote.h"
@@ -14,23 +16,77 @@
 #define VIEW_HISTORY   16u
 #define HISTORY_DEPTH  12u
 #define LOCAL_PATH_MAX 126u
+#define MENU_POPUP_WIDTH 20u
+#define MENU_POPUP_MAX_HEIGHT 6u
 
 #define PANEL_LOCAL     0u
 #define PANEL_REMOTE    1u
 #define ENTRY_SIZE_UNKNOWN 0x80u
 
-#define KEY_ESCAPE     0x100
-#define KEY_UP         0x101
-#define KEY_DOWN       0x102
-#define KEY_LEFT       0x103
-#define KEY_RIGHT      0x104
-#define KEY_PAGE_UP    0x105
-#define KEY_PAGE_DOWN  0x106
-#define KEY_F1         0x111
-#define KEY_F3         0x113
-#define KEY_F4         0x114
-#define KEY_F5         0x115
-#define KEY_F10        0x11a
+
+enum ui_focus {
+	FOCUS_MENU,
+	FOCUS_LEFT,
+	FOCUS_RIGHT,
+	FOCUS_HELP,
+	FOCUS_VIEW,
+	FOCUS_HEX,
+	FOCUS_COPY,
+	FOCUS_REFRESH,
+	FOCUS_QUIT,
+	FOCUS_COUNT
+};
+
+enum menu_id {
+	MENU_FILE = 10u,
+	MENU_EDIT,
+	MENU_VIEW,
+	MENU_HELP
+};
+
+enum action_id {
+	ACTION_NONE,
+	ACTION_OPEN,
+	ACTION_COPY,
+	ACTION_REFRESH,
+	ACTION_TEXT_VIEW,
+	ACTION_HEX_VIEW,
+	ACTION_HELP,
+	ACTION_QUIT
+};
+
+struct action_item {
+	const char *label;
+	unsigned char action;
+};
+
+static const struct tui_menu_item main_menu[] = {
+	{"File", 'f', MENU_FILE},
+	{"Edit", 'e', MENU_EDIT},
+	{"View", 'v', MENU_VIEW},
+	{"Help", 'h', MENU_HELP}
+};
+
+static const struct action_item file_actions[] = {
+	{"Open", ACTION_OPEN},
+	{"Copy", ACTION_COPY},
+	{"Refresh", ACTION_REFRESH},
+	{"Quit", ACTION_QUIT}
+};
+
+static const struct action_item edit_actions[] = {
+	{"Copy", ACTION_COPY}
+};
+
+static const struct action_item view_actions[] = {
+	{"View text", ACTION_TEXT_VIEW},
+	{"View hex", ACTION_HEX_VIEW},
+	{"Refresh", ACTION_REFRESH}
+};
+
+static const struct action_item help_actions[] = {
+	{"Help", ACTION_HELP}
+};
 
 struct panel {
 	unsigned char source;
@@ -43,18 +99,20 @@ struct panel {
 
 static struct panel panels[2];
 static unsigned char active_panel;
+static unsigned char ui_focus;
 static unsigned char remote_online;
 static unsigned char remote_capabilities;
+static tui_id_t menu_selected;
 static char server_name[64];
 static char status_text[SCREEN_COLUMNS + 1u];
-static char screen[4096];
-static unsigned int screen_used;
 static unsigned char view_data[VIEW_BUFFER];
 static char copy_source[KC_MAX_PATH + 1u];
 static char copy_destination[KC_MAX_PATH + 1u];
 static char copy_temporary[KC_MAX_PATH + 1u];
 static struct kos_ns_entry local_entries[PANEL_ROWS];
 static struct kos_ns_entry local_probe;
+static struct tui_cell menu_background[MENU_POPUP_WIDTH *
+				       MENU_POPUP_MAX_HEIGHT];
 
 static unsigned int bounded_length(const char *text, unsigned int limit)
 {
@@ -106,21 +164,17 @@ static void set_local_error(int error)
 
 static void out_char(char value)
 {
-	if (screen_used < sizeof(screen)) {
-		screen[screen_used++] = value;
-	}
+	(void)tui_putc(value);
 }
 
 static void out_bytes(const char *text, unsigned int length)
 {
-	while (length-- != 0u) {
-		out_char(*text++);
-	}
+	(void)tui_write(text, length);
 }
 
 static void out_text(const char *text)
 {
-	out_bytes(text, bounded_length(text, 1024u));
+	(void)tui_puts(text);
 }
 
 static void out_repeat(char value, unsigned int count)
@@ -148,39 +202,32 @@ static void line_end(unsigned char last)
 
 static void screen_start(void)
 {
-	screen_used = 0u;
-	out_text("\033[?7l\033[?25l\033[H");
+	tui_begin();
+	(void)tui_reset_window();
+	(void)tui_cursor_hide();
+	(void)tui_set_style(TUI_STYLE_NORMAL);
+	(void)tui_gotoxy(0u, 0u);
 }
 
 static void out_cursor(unsigned char row, unsigned char column)
 {
-	unsigned char tens = 0u;
-
-	out_text("\033[");
-	while (row >= 10u) { row = (unsigned char)(row - 10u); ++tens; }
-	if (tens != 0u) out_char((char)('0' + tens));
-	out_char((char)('0' + row));
-	out_char(';');
-	tens = 0u;
-	while (column >= 10u) { column = (unsigned char)(column - 10u); ++tens; }
-	if (tens != 0u) out_char((char)('0' + tens));
-	out_char((char)('0' + column));
-	out_char('H');
+	if (row != 0u && column != 0u) {
+		(void)tui_gotoxy((uint8_t)(column - 1u), (uint8_t)(row - 1u));
+	}
 }
 
 static void screen_finish(void)
 {
-	(void)console_write(screen, screen_used);
-	(void)console_flush();
+	(void)tui_end();
 }
 
 static void render_status(void)
 {
-	screen_used = 0u;
+	tui_begin();
 	out_cursor(24u, 1u);
-	out_text("\033[7m");
+	(void)tui_set_style(TUI_STYLE_STATUS);
 	out_fixed(status_text, SCREEN_COLUMNS);
-	out_text("\033[0m");
+	(void)tui_set_style(TUI_STYLE_NORMAL);
 	screen_finish();
 }
 
@@ -229,10 +276,11 @@ static void make_cell(const struct panel *panel, unsigned char row,
 		return;
 	}
 	entry = &panel->page.entries[row];
-	cell[0] = (entry->flags & KC_ENTRY_DIRECTORY) != 0u ? '/' : ' ';
-	length = bounded_length(entry->name, 29u);
+	cell[0] = ' ';
+	cell[1] = (entry->flags & KC_ENTRY_DIRECTORY) != 0u ? '/' : ' ';
+	length = bounded_length(entry->name, 28u);
 	for (i = 0u; i < length; ++i) {
-		cell[1u + i] = entry->name[i];
+		cell[2u + i] = entry->name[i];
 	}
 	if ((entry->flags & KC_ENTRY_DIRECTORY) != 0u) {
 		memcpy(cell + 34u, "<DIR>", 5u);
@@ -241,20 +289,42 @@ static void make_cell(const struct panel *panel, unsigned char row,
 	}
 }
 
-static void render_panel_row(const struct panel *panel, unsigned char pane,
-			     unsigned char row)
+static void render_panel_row(const struct panel *panel, unsigned char row)
 {
 	char cell[PANEL_COLUMNS];
 
 	make_cell(panel, row, cell);
-	if (pane == active_panel && row == panel->selected &&
-	    row < panel->page.count) {
-		out_text("\033[7m");
-		out_bytes(cell, PANEL_COLUMNS);
-		out_text("\033[0m");
-	} else {
-		out_bytes(cell, PANEL_COLUMNS);
+	if (row == panel->selected && row < panel->page.count) {
+		out_char('>');
+		out_bytes(cell + 1u, PANEL_COLUMNS - 1u);
+		return;
 	}
+	out_bytes(cell, PANEL_COLUMNS);
+}
+
+static void render_selection_marker(unsigned char pane, unsigned char row,
+				    unsigned char visible)
+{
+	uint8_t x = pane == 0u ? 0u : 43u;
+	uint8_t y = (uint8_t)(2u + row);
+
+	(void)tui_set_style(TUI_STYLE_NORMAL);
+	(void)tui_putc_xy(x, y, visible != 0u ? '>' : ' ');
+}
+
+static void render_pane_path(unsigned char pane)
+{
+	uint8_t x = pane == 0u ? 0u : 43u;
+	uint8_t focused = (uint8_t)((pane == 0u && ui_focus == FOCUS_LEFT) ||
+				    (pane == 1u && ui_focus == FOCUS_RIGHT));
+
+	(void)tui_gotoxy(x, 1u);
+	(void)tui_set_style(focused != 0u ? TUI_STYLE_SELECTED :
+			    TUI_STYLE_NORMAL);
+	out_char(pane == 0u ? 'L' : 'R');
+	(void)tui_set_style(TUI_STYLE_NORMAL);
+	out_char(':');
+	out_fixed(panels[pane].path, PANEL_COLUMNS - 2u);
 }
 
 static void make_detail(const struct panel *panel, char *detail)
@@ -265,6 +335,10 @@ static void make_detail(const struct panel *panel, char *detail)
 			&panel->page.entries[panel->selected];
 		unsigned int length = bounded_length(entry->name, 63u);
 
+		/* The list already shows ordinary names and sizes.  Reserve the
+		 * detail row for names that the 28-column list field truncates so
+		 * common Up/Down movement changes only the two selection marks. */
+		if (length <= 28u) return;
 		memcpy(detail, entry->name, length);
 		if ((entry->flags & (KC_ENTRY_DIRECTORY | ENTRY_SIZE_UNKNOWN)) == 0u &&
 		    length < 72u) {
@@ -275,123 +349,149 @@ static void make_detail(const struct panel *panel, char *detail)
 	}
 }
 
+static void render_menu_bar(void)
+{
+	tui_id_t shown_menu =
+		ui_focus == FOCUS_MENU ? menu_selected : TUI_ID_NONE;
+
+	(void)tui_menubar(main_menu,
+		(uint8_t)(sizeof(main_menu) / sizeof(main_menu[0])),
+		&shown_menu);
+}
+
+static void render_detail_row(void)
+{
+	char detail[SCREEN_COLUMNS + 1u];
+
+	make_detail(&panels[active_panel], detail);
+	(void)tui_gotoxy(0u, 22u);
+	(void)tui_set_style(TUI_STYLE_NORMAL);
+	out_fixed(detail, SCREEN_COLUMNS);
+}
+
+static void render_status_row(void)
+{
+	(void)tui_gotoxy(0u, 23u);
+	(void)tui_set_style(TUI_STYLE_STATUS);
+	out_fixed(status_text, SCREEN_COLUMNS);
+	(void)tui_set_style(TUI_STYLE_NORMAL);
+}
+
+static void render_button_focus(unsigned char focus)
+{
+	switch (focus) {
+	case FOCUS_HELP:
+		(void)tui_button(0u, 24u, "Help", 20u,
+				 ui_focus == FOCUS_HELP);
+		break;
+	case FOCUS_VIEW:
+		(void)tui_button(10u, 24u, "View", 21u,
+				 ui_focus == FOCUS_VIEW);
+		break;
+	case FOCUS_HEX:
+		(void)tui_button(20u, 24u, "Hex", 22u,
+				 ui_focus == FOCUS_HEX);
+		break;
+	case FOCUS_COPY:
+		(void)tui_button(29u, 24u, "Copy", 23u,
+				 ui_focus == FOCUS_COPY);
+		break;
+	case FOCUS_REFRESH:
+		(void)tui_button(39u, 24u, "Refresh", 24u,
+				 ui_focus == FOCUS_REFRESH);
+		break;
+	case FOCUS_QUIT:
+		(void)tui_button(53u, 24u, "Quit", 25u,
+				 ui_focus == FOCUS_QUIT);
+		break;
+	default:
+		break;
+	}
+}
+
+static void render_buttons(void)
+{
+	struct tui_rect button_row = {0u, 24u, SCREEN_COLUMNS, 1u};
+	unsigned char focus;
+
+	(void)tui_fill(&button_row, ' ', TUI_STYLE_NORMAL);
+	for (focus = FOCUS_HELP; focus <= FOCUS_QUIT; ++focus) {
+		render_button_focus(focus);
+	}
+	(void)tui_label(63u, 24u, "F1 Menu  Tab Next");
+}
+
+static void render_focus_change(unsigned char old_focus,
+				unsigned char old_active,
+				unsigned char status_changed)
+{
+	unsigned char pane;
+
+	tui_begin();
+	if (old_focus == FOCUS_MENU || ui_focus == FOCUS_MENU) {
+		render_menu_bar();
+	}
+	if ((old_focus >= FOCUS_LEFT && old_focus <= FOCUS_RIGHT) ||
+	    (ui_focus >= FOCUS_LEFT && ui_focus <= FOCUS_RIGHT)) {
+		for (pane = 0u; pane < 2u; ++pane) {
+			render_pane_path(pane);
+			if (panels[pane].page.count != 0u) {
+				render_selection_marker(pane,
+					panels[pane].selected, 1u);
+			}
+		}
+	}
+	if (old_focus >= FOCUS_HELP) render_button_focus(old_focus);
+	if (ui_focus >= FOCUS_HELP && ui_focus != old_focus)
+		render_button_focus(ui_focus);
+	if (active_panel != old_active) render_detail_row();
+	if (status_changed != 0u) render_status_row();
+	(void)tui_end();
+}
+
 static void render_navigation(unsigned char old_selected)
 {
 	struct panel *panel = &panels[active_panel];
-	char cell[PANEL_COLUMNS];
-	char detail[SCREEN_COLUMNS + 1u];
-	unsigned char column = active_panel == 0u ? 1u : 44u;
 
-	screen_used = 0u;
+	tui_begin();
 	if (old_selected < panel->page.count && old_selected != panel->selected) {
-		make_cell(panel, old_selected, cell);
-		out_cursor((unsigned char)(3u + old_selected), column);
-		out_text("\033[0m");
-		out_bytes(cell, PANEL_COLUMNS);
+		render_selection_marker(active_panel, old_selected, 0u);
 	}
 	if (panel->selected < panel->page.count) {
-		make_cell(panel, panel->selected, cell);
-		out_cursor((unsigned char)(3u + panel->selected), column);
-		out_text("\033[7m");
-		out_bytes(cell, PANEL_COLUMNS);
-		out_text("\033[0m");
+		render_selection_marker(active_panel, panel->selected, 1u);
 	}
-	make_detail(panel, detail);
-	out_cursor(23u, 1u);
-	out_fixed(detail, SCREEN_COLUMNS);
+	render_detail_row();
 	screen_finish();
 }
 
 static void render_commander(void)
 {
 	unsigned char row;
-	const struct panel *active = &panels[active_panel];
-	char detail[SCREEN_COLUMNS + 1u];
 
 	screen_start();
-	out_text("\033[7m");
-	out_fixed(" KonaCommander | LEFT: KonaOS | RIGHT: PC", SCREEN_COLUMNS);
-	out_text("\033[0m");
-	line_end(0u);
-	out_fixed(panels[0].path, PANEL_COLUMNS);
+	render_menu_bar();
+	render_pane_path(0u);
+	(void)tui_gotoxy(42u, 1u);
 	out_char('|');
-	out_fixed(panels[1].path, PANEL_COLUMNS);
+	render_pane_path(1u);
 	line_end(0u);
 	for (row = 0u; row < PANEL_ROWS; ++row) {
-		render_panel_row(&panels[0], 0u, row);
+		render_panel_row(&panels[0], row);
 		out_char('|');
-		render_panel_row(&panels[1], 1u, row);
+		render_panel_row(&panels[1], row);
 		line_end(0u);
 	}
-	make_detail(active, detail);
-	out_fixed(detail, SCREEN_COLUMNS);
-	line_end(0u);
-	out_text("\033[7m");
-	out_fixed(status_text, SCREEN_COLUMNS);
-	out_text("\033[0m");
-	line_end(0u);
-	out_fixed(" F1 Help   F3 View   F4 Hex   F5 Copy   R Refresh   Tab   F10 Quit",
-		  SCREEN_COLUMNS);
-	line_end(0u);
+	render_detail_row();
+	render_status_row();
+	render_buttons();
+	(void)tui_gotoxy(0u, 25u);
 	out_fixed(server_name, SCREEN_COLUMNS);
-	line_end(1u);
 	screen_finish();
-}
-
-static int follow_key(void)
-{
-	/* The HID driver fetches a whole keyboard packet into its ring, so the
-	 * remainder of a VT sequence is available after its ESC byte. */
-	return console_poll() > 0 ? getchar() : -1;
 }
 
 static int read_key(void)
 {
-	int first = getchar();
-	int second;
-	int third;
-
-	if (first != 27) {
-		return first;
-	}
-	second = follow_key();
-	if (second < 0) {
-		return KEY_ESCAPE;
-	}
-	if (second == 'O') {
-		third = follow_key();
-		if (third == 'P') return KEY_F1;
-		if (third == 'R') return KEY_F3;
-		if (third == 'S') return KEY_F4;
-		return KEY_ESCAPE;
-	}
-	if (second != '[') {
-		return KEY_ESCAPE;
-	}
-	third = follow_key();
-	if (third == 'A') return KEY_UP;
-	if (third == 'B') return KEY_DOWN;
-	if (third == 'C') return KEY_RIGHT;
-	if (third == 'D') return KEY_LEFT;
-	if (third >= '0' && third <= '9') {
-		unsigned int number = (unsigned int)(third - '0');
-		int value;
-
-		for (;;) {
-			value = follow_key();
-			if (value == '~' || value < 0) break;
-			if (value < '0' || value > '9') return KEY_ESCAPE;
-			number = (unsigned int)(number * 10u + value - '0');
-		}
-		if (number == 5u) return KEY_PAGE_UP;
-		if (number == 6u) return KEY_PAGE_DOWN;
-		if (number == 11u) return KEY_F1;
-		if (number == 13u) return KEY_F3;
-		if (number == 14u) return KEY_F4;
-		if (number == 15u) return KEY_F5;
-		if (number == 21u) return KEY_F10;
-	}
-	return KEY_ESCAPE;
+	return (int)tui_getkey();
 }
 
 static int local_list(const char *path, unsigned long cursor,
@@ -545,15 +645,18 @@ static void panel_previous(struct panel *panel)
 static void render_help(void)
 {
 	static const char * const lines[] = {
-		"KonaCommander help", "", "Arrow Up/Down     move selection",
+		"KonaCommander help", "", "F1                focus the menu bar",
+		"Left/Right       choose a menu; Enter opens it",
+		"Tab              move to the next pane or button",
+		"Arrow Up/Down    move the focused pane selection",
 		"PageUp/PageDown  previous/next directory page",
-		"Tab               switch active pane",
-		"Enter             enter directory or view file",
+		"Enter            activate the focused pane/button",
 		"Backspace         parent directory", "F3 or V           view file",
 		"F4 or X           toggle text/hex while viewing",
 		"F5                copy file to opposite pane",
 		"R                 refresh/reconnect", "F10 or Q          quit",
-		"", "PC upload requires host option --write. Transfers ask first.",
+		"", "Only the focused control is highlighted.",
+		"PC upload requires host option --write. Transfers ask first.",
 		"Host paths stay sandboxed below the directory selected by --root.", "",
 		"Press any key to return."
 	};
@@ -597,9 +700,9 @@ static unsigned int render_viewer(const char *path, unsigned long offset,
 	unsigned int row;
 
 	screen_start();
-	out_text("\033[7m");
+	(void)tui_set_style(TUI_STYLE_TITLE);
 	out_fixed(path, SCREEN_COLUMNS);
-	out_text("\033[0m");
+	(void)tui_set_style(TUI_STYLE_NORMAL);
 	line_end(0u);
 	if (hex_mode != 0u) {
 		for (row = 0u; row < 22u; ++row) {
@@ -651,12 +754,12 @@ static unsigned int render_viewer(const char *path, unsigned long offset,
 		}
 	}
 	out_repeat(' ', SCREEN_COLUMNS); line_end(0u);
-	out_text("\033[7m");
+	(void)tui_set_style(TUI_STYLE_STATUS);
 	out_fixed(hex_mode != 0u ? " HEX viewer" : " TEXT viewer", 14u);
 	out_text(" offset "); out_hex32(offset);
 	out_text(" / "); out_hex32(size);
 	out_repeat(' ', 44u);
-	out_text("\033[0m"); line_end(0u);
+	(void)tui_set_style(TUI_STYLE_NORMAL); line_end(0u);
 	out_fixed(" PgUp/PgDn or arrows: move   F4/X: text/hex   Esc/Q: return",
 		  SCREEN_COLUMNS);
 	line_end(1u);
@@ -749,14 +852,16 @@ static void view_file(unsigned char source, const char *path,
 
 		advance = render_viewer(path, offset, size, hex_mode, received);
 		key = read_key();
-		if (key == KEY_ESCAPE || key == KEY_F10 || key == 'q' || key == 'Q') {
+		if (key == TUI_KEY_ESC || key == TUI_KEY_F10 ||
+		    key == 'q' || key == 'Q') {
 			break;
 		}
-		if (key == KEY_F4 || key == 'x' || key == 'X') {
+		if (key == TUI_KEY_F4 || key == 'x' || key == 'X') {
 			hex_mode = (unsigned char)(hex_mode == 0u);
 			continue;
 		}
-		if (key == KEY_PAGE_DOWN || key == KEY_DOWN || key == KEY_RIGHT ||
+		if (key == TUI_KEY_PGDN || key == TUI_KEY_DOWN ||
+		    key == TUI_KEY_RIGHT ||
 		    key == ' ') {
 			if (advance != 0u && offset + advance < size) {
 				if (history_depth < VIEW_HISTORY)
@@ -764,7 +869,8 @@ static void view_file(unsigned char source, const char *path,
 				offset += advance;
 			}
 			else continue;
-		} else if (key == KEY_PAGE_UP || key == KEY_UP || key == KEY_LEFT) {
+		} else if (key == TUI_KEY_PGUP || key == TUI_KEY_UP ||
+			   key == TUI_KEY_LEFT) {
 			if (history_depth != 0u) offset = history[--history_depth];
 			else if (offset != 0ul) offset = 0ul;
 			else continue;
@@ -827,6 +933,7 @@ static unsigned char confirm_copy(const struct panel *source,
 {
 	unsigned int used;
 	const char *destination = source->source == PANEL_LOCAL ? "PC" : "KonaOS";
+	tui_id_t answer;
 
 	copy_text(status_text, "Copy ", sizeof(status_text));
 	used = bounded_length(status_text, sizeof(status_text));
@@ -839,13 +946,10 @@ static unsigned char confirm_copy(const struct panel *source,
 	copy_text(status_text + used, destination,
 		  (unsigned int)(sizeof(status_text) - used));
 	used = bounded_length(status_text, sizeof(status_text));
-	copy_text(status_text + used, "? Y=yes (replaces existing)",
+	copy_text(status_text + used, "? Existing destination will be replaced.",
 		  (unsigned int)(sizeof(status_text) - used));
-	render_status();
-	{
-		int key = read_key();
-		return (unsigned char)(key == 'y' || key == 'Y');
-	}
+	answer = tui_confirm("Copy file", status_text);
+	return (unsigned char)(answer == TUI_ID_YES);
 }
 
 static int local_temporary(const char *directory, int *handle)
@@ -1031,10 +1135,278 @@ static void copy_selected(struct panel *source)
 		(void)copy_pc_to_local(source, destination, entry);
 }
 
+static void focus_set(unsigned char focus)
+{
+	if (focus >= FOCUS_COUNT) {
+		focus = FOCUS_MENU;
+	}
+	ui_focus = focus;
+	if (focus == FOCUS_LEFT) {
+		active_panel = 0u;
+	} else if (focus == FOCUS_RIGHT) {
+		active_panel = 1u;
+	}
+}
+
+static void focus_next(void)
+{
+	unsigned char next = (unsigned char)(ui_focus + 1u);
+
+	if (next >= FOCUS_COUNT) {
+		next = FOCUS_MENU;
+	}
+	focus_set(next);
+}
+
+static void menu_move(int direction)
+{
+	if (direction < 0) {
+		if (menu_selected == MENU_FILE) menu_selected = MENU_HELP;
+		else --menu_selected;
+	} else {
+		if (menu_selected == MENU_HELP) menu_selected = MENU_FILE;
+		else ++menu_selected;
+	}
+}
+
+static const struct action_item *menu_actions(tui_id_t menu,
+					       unsigned char *count,
+					       const char **title,
+					       unsigned char *x)
+{
+	switch (menu) {
+	case MENU_FILE:
+		*count = (unsigned char)(sizeof(file_actions) /
+					 sizeof(file_actions[0]));
+		*title = "File";
+		*x = 0u;
+		return file_actions;
+	case MENU_EDIT:
+		*count = (unsigned char)(sizeof(edit_actions) /
+					 sizeof(edit_actions[0]));
+		*title = "Edit";
+		*x = 5u;
+		return edit_actions;
+	case MENU_VIEW:
+		*count = (unsigned char)(sizeof(view_actions) /
+					 sizeof(view_actions[0]));
+		*title = "View";
+		*x = 10u;
+		return view_actions;
+	default:
+		*count = (unsigned char)(sizeof(help_actions) /
+					 sizeof(help_actions[0]));
+		*title = "Help";
+		*x = 15u;
+		return help_actions;
+	}
+}
+
+static void menu_popup_rect(struct tui_rect *box, unsigned char count,
+			    unsigned char x)
+{
+	box->x = x;
+	box->y = 1u;
+	box->w = MENU_POPUP_WIDTH;
+	box->h = (uint8_t)(count + 2u);
+}
+
+static void render_popup_item(const struct action_item *items,
+			      unsigned char item, unsigned char selected,
+			      const struct tui_rect *box)
+{
+	struct tui_rect line;
+
+	line.x = (uint8_t)(box->x + 1u);
+	line.y = (uint8_t)(box->y + 1u + item);
+	line.w = (uint8_t)(box->w - 2u);
+	line.h = 1u;
+	(void)tui_fill(&line, ' ', item == selected ?
+			   TUI_STYLE_SELECTED : TUI_STYLE_NORMAL);
+	(void)tui_set_style(item == selected ? TUI_STYLE_SELECTED :
+			    TUI_STYLE_NORMAL);
+	(void)tui_puts_xy((uint8_t)(line.x + 1u), line.y,
+			 items[item].label);
+}
+
+static void draw_popup(const struct action_item *items,
+		       unsigned char count, unsigned char selected,
+		       const char *title, const struct tui_rect *box)
+{
+	unsigned char i;
+
+	(void)tui_fill(box, ' ', TUI_STYLE_NORMAL);
+	(void)tui_frame_title(box, TUI_FRAME_SINGLE, TUI_STYLE_TITLE, title);
+	for (i = 0u; i < count; ++i) {
+		render_popup_item(items, i, selected, box);
+	}
+	(void)tui_set_style(TUI_STYLE_NORMAL);
+}
+
+static void open_popup(const struct action_item *items,
+		       unsigned char count, unsigned char selected,
+		       const char *title, struct tui_rect *box,
+		       unsigned char x)
+{
+	menu_popup_rect(box, count, x);
+	tui_begin();
+	(void)tui_save(box, menu_background,
+		       (uint16_t)sizeof(menu_background));
+	draw_popup(items, count, selected, title, box);
+	(void)tui_end();
+}
+
+static void close_popup(const struct tui_rect *box)
+{
+	tui_begin();
+	(void)tui_restore(box, menu_background,
+			  (uint16_t)sizeof(menu_background));
+	(void)tui_end();
+}
+
+static void render_popup_selection(const struct action_item *items,
+				   unsigned char old_selected,
+				   unsigned char selected,
+				   const struct tui_rect *box)
+{
+	tui_begin();
+	render_popup_item(items, old_selected, selected, box);
+	if (selected != old_selected) {
+		render_popup_item(items, selected, selected, box);
+	}
+	(void)tui_set_style(TUI_STYLE_NORMAL);
+	(void)tui_end();
+}
+
+static unsigned char run_menu(void)
+{
+	unsigned char selected = 0u;
+	const struct action_item *items;
+	const char *title;
+	unsigned char count;
+	unsigned char x;
+	struct tui_rect box;
+
+	items = menu_actions(menu_selected, &count, &title, &x);
+	open_popup(items, count, selected, title, &box, x);
+	for (;;) {
+		int key;
+		unsigned char old_selected;
+
+		key = read_key();
+		if (key == '\t') {
+			close_popup(&box);
+			focus_next();
+			return ACTION_NONE;
+		}
+		if (key == TUI_KEY_ESC || key == TUI_KEY_F1) {
+			close_popup(&box);
+			return ACTION_NONE;
+		}
+		if (key == TUI_KEY_LEFT) {
+			close_popup(&box);
+			menu_move(-1);
+			selected = 0u;
+			items = menu_actions(menu_selected, &count, &title, &x);
+			render_menu_bar();
+			open_popup(items, count, selected, title, &box, x);
+		} else if (key == TUI_KEY_RIGHT) {
+			close_popup(&box);
+			menu_move(1);
+			selected = 0u;
+			items = menu_actions(menu_selected, &count, &title, &x);
+			render_menu_bar();
+			open_popup(items, count, selected, title, &box, x);
+		} else if (key == TUI_KEY_UP) {
+			old_selected = selected;
+			if (selected == 0u) selected = (unsigned char)(count - 1u);
+			else --selected;
+			render_popup_selection(items, old_selected, selected, &box);
+		} else if (key == TUI_KEY_DOWN) {
+			old_selected = selected;
+			++selected;
+			if (selected >= count) selected = 0u;
+			render_popup_selection(items, old_selected, selected, &box);
+		} else if (key == '\r' || key == '\n') {
+			close_popup(&box);
+			return items[selected].action;
+		}
+	}
+}
+
+static unsigned char focused_action(void)
+{
+	switch (ui_focus) {
+	case FOCUS_HELP:
+		return ACTION_HELP;
+	case FOCUS_VIEW:
+		return ACTION_TEXT_VIEW;
+	case FOCUS_HEX:
+		return ACTION_HEX_VIEW;
+	case FOCUS_COPY:
+		return ACTION_COPY;
+	case FOCUS_REFRESH:
+		return ACTION_REFRESH;
+	case FOCUS_QUIT:
+		return ACTION_QUIT;
+	default:
+		return ACTION_NONE;
+	}
+}
+
+static unsigned char perform_action(unsigned char action)
+{
+	struct panel *panel = &panels[active_panel];
+
+	switch (action) {
+	case ACTION_OPEN:
+		activate_entry(panel, 0u);
+		break;
+	case ACTION_COPY:
+		copy_selected(panel);
+		break;
+	case ACTION_REFRESH:
+		if (panel->source == PANEL_REMOTE && remote_online == 0u)
+			(void)connect_remote();
+		else
+			(void)panel_load(panel, panel->page.cursor, 0u);
+		break;
+	case ACTION_TEXT_VIEW:
+		activate_entry(panel, 1u);
+		break;
+	case ACTION_HEX_VIEW:
+		activate_entry(panel, 2u);
+		break;
+	case ACTION_HELP:
+		render_help();
+		break;
+	case ACTION_QUIT:
+		return 1u;
+	default:
+		break;
+	}
+	return 0u;
+}
+
 int kc_ui_run(void)
 {
 	struct panel *panel;
+	struct tui_size size;
+	unsigned char focus_before_menu = FOCUS_LEFT;
 	int key;
+	int result;
+
+	result = tui_init();
+	if (result < 0) {
+		printf("konacmd: TUI initialization failed %d\r\n", result);
+		return 1;
+	}
+	result = tui_get_size(&size);
+	if (result < 0 || size.cols < SCREEN_COLUMNS || size.rows < 26u) {
+		tui_shutdown();
+		printf("konacmd: an 85x26 console is required\r\n");
+		return 1;
+	}
 
 	copy_text(server_name, "PC offline - R reconnect", sizeof(server_name));
 	panels[0].source = PANEL_LOCAL;
@@ -1052,6 +1424,8 @@ int kc_ui_run(void)
 	panels[1].page.count = 0u;
 	panels[1].selected = 0u;
 	active_panel = 0u;
+	ui_focus = FOCUS_LEFT;
+	menu_selected = MENU_FILE;
 	remote_online = 0u;
 	remote_capabilities = 0u;
 	(void)panel_load(&panels[0], 0ul, 1u);
@@ -1061,40 +1435,90 @@ int kc_ui_run(void)
 	render_commander();
 	for (;;) {
 		unsigned char old_selected;
+		unsigned char action = ACTION_NONE;
+		unsigned char old_focus;
+		unsigned char old_active;
 
 		key = read_key();
 		panel = &panels[active_panel];
 		old_selected = panel->selected;
-		if (key == KEY_F10 || key == 'q' || key == 'Q') break;
+		if (key == TUI_KEY_F10 || key == 'q' || key == 'Q') break;
+		if (key == TUI_KEY_F1) {
+			old_focus = ui_focus;
+			old_active = active_panel;
+			if (ui_focus != FOCUS_MENU) focus_before_menu = ui_focus;
+			focus_set(FOCUS_MENU);
+			render_focus_change(old_focus, old_active, 0u);
+			continue;
+		}
 		if (key == '\t') {
-			active_panel = (unsigned char)(1u - active_panel);
+			old_focus = ui_focus;
+			old_active = active_panel;
+			focus_next();
+			render_focus_change(old_focus, old_active, 0u);
+			continue;
+		}
+		if (ui_focus == FOCUS_MENU) {
+			old_focus = ui_focus;
+			old_active = active_panel;
+			if (key == TUI_KEY_LEFT || key == TUI_KEY_RIGHT) {
+				menu_move(key == TUI_KEY_LEFT ? -1 : 1);
+				tui_begin();
+				render_menu_bar();
+				(void)tui_end();
+				continue;
+			}
+			else if (key == '\r' || key == '\n' || key == TUI_KEY_DOWN)
+				action = run_menu();
+			else if (key == TUI_KEY_ESC) {
+				focus_set(focus_before_menu);
+				render_focus_change(old_focus, old_active, 0u);
+				continue;
+			}
+			if (perform_action(action) != 0u) break;
 			render_commander();
 			continue;
 		}
-		if (key == KEY_F1 || key == 'h' || key == 'H') {
-			render_help();
+		if (key == TUI_KEY_F3 || key == 'v' || key == 'V') {
+			action = ACTION_TEXT_VIEW;
+		} else if (key == TUI_KEY_F4 || key == 'x' || key == 'X') {
+			action = ACTION_HEX_VIEW;
+		} else if (key == TUI_KEY_F5) {
+			action = ACTION_COPY;
+		} else if (key == 'h' || key == 'H') {
+			action = ACTION_HELP;
+		} else if (key == 'r' || key == 'R') {
+			action = ACTION_REFRESH;
+		} else if ((key == '\r' || key == '\n' || key == ' ') &&
+			   ui_focus >= FOCUS_HELP) {
+			action = focused_action();
+		}
+		if (action != ACTION_NONE) {
+			if (perform_action(action) != 0u) break;
 			render_commander();
 			continue;
 		}
-		if (key == KEY_F5) {
-			copy_selected(panel);
-			render_commander();
-			continue;
-		}
-		if (key == 'r' || key == 'R') {
-			if (panel->source == PANEL_REMOTE && remote_online == 0u)
-				(void)connect_remote();
-			else
-				(void)panel_load(panel, panel->page.cursor, 0u);
-			render_commander();
+		if (ui_focus >= FOCUS_HELP) {
+			old_focus = ui_focus;
+			old_active = active_panel;
+
+			if (key == TUI_KEY_LEFT) {
+				focus_set((unsigned char)(ui_focus == FOCUS_HELP ?
+						 FOCUS_QUIT : ui_focus - 1u));
+			} else if (key == TUI_KEY_RIGHT) {
+				focus_set((unsigned char)(ui_focus == FOCUS_QUIT ?
+						 FOCUS_HELP : ui_focus + 1u));
+			}
+			if (ui_focus != old_focus)
+				render_focus_change(old_focus, old_active, 0u);
 			continue;
 		}
 		if (panel->source == PANEL_REMOTE && remote_online == 0u) {
 			set_status("PC offline - start server/connect cable, press R");
-			render_commander();
+			render_status();
 			continue;
 		}
-		if (key == KEY_UP) {
+		if (key == TUI_KEY_UP) {
 			if (panel->selected != 0u) {
 				--panel->selected;
 				render_navigation(old_selected);
@@ -1102,7 +1526,7 @@ int kc_ui_run(void)
 				panel_previous(panel);
 				render_commander();
 			}
-		} else if (key == KEY_DOWN) {
+		} else if (key == TUI_KEY_DOWN) {
 			if (panel->selected + 1u < panel->page.count) {
 				++panel->selected;
 				render_navigation(old_selected);
@@ -1110,31 +1534,27 @@ int kc_ui_run(void)
 				panel_next(panel);
 				render_commander();
 			}
-		} else if (key == KEY_PAGE_UP) {
+		} else if (key == TUI_KEY_PGUP) {
 			panel_previous(panel);
 			render_commander();
-		} else if (key == KEY_PAGE_DOWN) {
+		} else if (key == TUI_KEY_PGDN) {
 			panel_next(panel);
 			render_commander();
-		} else if (key == 8 || key == 127 || key == KEY_LEFT) {
+		} else if (key == 8 || key == 127 || key == TUI_KEY_LEFT) {
 			panel_parent(panel);
 			render_commander();
-		} else if (key == 13 || key == 10 || key == KEY_RIGHT) {
+		} else if (key == 13 || key == 10 || key == TUI_KEY_RIGHT) {
 			activate_entry(panel, 0u);
-			render_commander();
-		} else if (key == KEY_F3 || key == 'v' || key == 'V') {
-			activate_entry(panel, 1u);
-			render_commander();
-		} else if (key == KEY_F4 || key == 'x' || key == 'X') {
-			activate_entry(panel, 2u);
 			render_commander();
 		}
 	}
-	{
-		static const char restore[] = "\033[0m\033[?7h\033[?25h\033[2J\033[H";
-		(void)console_write(restore, (unsigned int)(sizeof(restore) - 1u));
-	}
-	(void)console_flush();
+	tui_begin();
+	(void)tui_clear();
+	(void)tui_set_style(TUI_STYLE_NORMAL);
+	(void)tui_gotoxy(0u, 0u);
+	(void)tui_cursor_show();
+	(void)tui_end();
+	tui_shutdown();
 	return 0;
 }
 

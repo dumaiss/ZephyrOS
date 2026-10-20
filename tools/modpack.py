@@ -1526,7 +1526,8 @@ class DriverTierPlan:
     down, so the whole block [io_low, C000h) is known before any code is
     placed.  Pass two places the hot segments largest-first: each takes the
     lowest free run of the hot tier that does not cross the reserved io
-    block (below it when it fits, otherwise just above C000h).  A
+    block (below it when it fits, otherwise just above C000h).  Smaller
+    later images may still use the remaining run below the I/O block. A
     descending block starts its own size below the cursor, rounded *down*
     to an even address, so the block below it can never overlap.  The boot
     segments bump up from 0000h and the bulk data down from 6000h.  The
@@ -1536,6 +1537,7 @@ class DriverTierPlan:
     def __init__(self):
         self.io_cursor = IO_END
         self.hot_cursor = HOT_TIER_BASE
+        self.hot_upper_cursor = IO_END
         self.boot_cursor = BOOT_TIER_BASE
         self.bulk_cursor = BOOT_TIER_END
 
@@ -1555,14 +1557,16 @@ class DriverTierPlan:
         if size == 0:
             return None
         base = align2(self.hot_cursor)
-        if base + size > self.io_cursor and base < IO_END:
-            base = IO_END
+        if base + size <= self.io_cursor:
+            self.hot_cursor = base + size
+            return base
+        base = align2(self.hot_upper_cursor)
         if base + size > HOT_TIER_END:
             raise ModError(
                 "hot segments need %d more bytes; the tier %04Xh-%04Xh is "
                 "full" % (base + size - HOT_TIER_END, HOT_TIER_BASE,
                           HOT_TIER_END))
-        self.hot_cursor = base + size
+        self.hot_upper_cursor = base + size
         return base
 
     def place_boot(self, size):

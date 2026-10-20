@@ -1,8 +1,8 @@
 # KonaCommander for KonaOS.  The first build unpacks the standalone SDK from
 # the sibling ZephyrOS checkout and then re-enters this makefile.
 
-KOS_SDK_ARCHIVE ?= ../../../../ZephyrOS/build/kos-sdk-0.1.0.tar.gz
-KOS_SDK_ROOT ?= build/kos-sdk-0.1.0
+KOS_SDK_ARCHIVE ?= ../../build/kos-sdk-0.2.0.tar.gz
+KOS_SDK_ROOT ?= build/kos-sdk-0.2.0
 KOS_SDK_HASH := $(shell sha256sum "$(KOS_SDK_ARCHIVE)" 2>/dev/null | cut -c1-64)
 KOS_SDK_STORED_HASH := $(shell sed -n '1p' build/.kos-sdk-sha256 2>/dev/null)
 KOS_SDK_READY := $(and $(wildcard $(KOS_SDK_ROOT)/mk/kos.mk),$(filter $(KOS_SDK_HASH),$(KOS_SDK_STORED_HASH)))
@@ -35,7 +35,12 @@ else
 
 include $(KOS_SDK_ROOT)/mk/kos.mk
 
-$(eval $(call exe_program,konacmd,src,main.c kc_protocol.c kc_serial.c kc_remote.c kc_ui.c,STACK=1024))
+# KonaCommander is large enough that size-oriented SDCC allocation is part of
+# its build contract. Its 896-byte stack preserves substantial headroom while
+# leaving the fixed application window room for libtui's render transaction.
+EXE_CFLAGS += --opt-code-size --max-allocs-per-node 50000
+
+$(eval $(call exe_program,konacmd,src,main.c kc_protocol.c kc_serial.c kc_remote.c kc_ui.c,STACK=896,LIBS=tui_widgets:tui))
 
 .PHONY: all clean test
 .DEFAULT_GOAL := all
@@ -49,6 +54,7 @@ test: konacmd
 	build/tests/test_protocol
 	python3 -m unittest -v tests/test_host.py
 	python3 -m unittest -v tests/test_project.py
+	python3 -m unittest -v tests/test_ui_sim.py
 
 clean:
 	rm -rf build

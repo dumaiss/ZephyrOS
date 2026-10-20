@@ -43,8 +43,11 @@
 	.globl _v9958_io_stream_indirect
 	.globl _v9958_char_putc
 	.globl _v9958_char_write
+	.globl _v9958_render_transaction
 	.globl _v9958_char_putc_worker
 	.globl _v9958_char_write_worker
+	.globl _v9958_driver_render_worker
+	.globl _v9958_render_finish_worker
 	.globl _v9958_out_flush
 	.globl _v9958_status0
 	.globl _v9958_io_select_status0
@@ -68,7 +71,10 @@ V9958_ST_RUN_ROW   = 19
 V9958_RUN_SIZE     = 64
 V9958_LAST_COLUMN  = 84
 V9958_CELL_WIDTH   = 6
+V9958_CMD_HMMV     = 0xC0
 V9958_CMD_HMMM     = 0xD0
+V9958_FILL_NORMAL  = 0x44
+V9958_FILL_REVERSE = 0xFF
 
 	.area _CODE
 
@@ -340,10 +346,10 @@ v9958_indirect_loop:
 ; Renderer hot path
 ; ===========================================================================
 
-; The glyph copy's command block, R#32..R#46: SX, SY, DX, DY, NX, NY,
+; The renderer's command block, R#32..R#46: SX, SY, DX, DY, NX, NY,
 ; colour, argument, command.  The fixed fields come from the template
-; once per run; each glyph patches SX, SY and DX before it waits for the
-; previous command, so building the next block overlaps the engine.
+; once per run.  Each span patches its source/fill, width and destination
+; before waiting for the previous command, so preparation overlaps the VDP.
 	.area _DRIVER_IO
 v9958_glyph_cmd:
 	.ds	15
@@ -359,12 +365,33 @@ v9958_glyph_template:
 	.db	0, 0		; colour, argument
 	.db	V9958_CMD_HMMM
 
+; Sprite evaluation consumes VRAM cycles that the command engine can use.
+; Console entry wrappers bracket the entire terminal operation with these
+; helpers, so glyph copies, fills and scrolling all run with SPD set.  The
+; worker's final sync makes the command engine idle before restore.
+v9958_sprites_off:
+	ld	a,#(KOS_V9958_R8_64K_DRAM | KOS_V9958_R8_SPRITES_OFF)
+	ld	l,#KOS_V9958_REG_R8
+	jp	_v9958_io_reg
+
+v9958_sprites_restore:
+	ld	a,(_v9958_state+11)	; cursor_visible
+	or	a
+	ld	a,#(KOS_V9958_R8_64K_DRAM | KOS_V9958_R8_SPRITES_OFF)
+	jr	z,v9958_sprites_write
+	ld	a,#KOS_V9958_R8_64K_DRAM
+v9958_sprites_write:
+	ld	l,#KOS_V9958_REG_R8
+	jp	_v9958_io_reg
+
 ; ---------------------------------------------------------------------------
 ; void v9958_out_flush(void);
-;   Render the pending print run at (out_run_col, out_run_row) and empty
-;   it: per character one HMMM 6x8 copy from cell (ch & 1Fh, ch >> 5) of
-;   the normal atlas, or of the reverse one (40h lines lower) while SGR
-;   reverse is set; destination row y = row * 8 + the scroll origin.
+;   Render the pending print run at (out_run_col, out_run_row) and empty it.
+;   Adjacent character-code pairs that remain in one 32-glyph atlas row
+;   become one 12x8 HMMM.  Adjacent spaces become one 12x8 HMMV background
+;   fill.  Pairing halves command traffic on the common sequential and blank
+;   runs while keeping this fixed-tier driver compact.  Destination row y is
+;   row * 8 + the scroll origin.
 ; ---------------------------------------------------------------------------
 _v9958_out_flush::
 	ld	a,(_v9958_state+V9958_ST_RUN_COUNT)
@@ -401,10 +428,16 @@ _v9958_out_flush::
 	ld	a,(_v9958_state+V9958_ST_RUN_COUNT)
 	ld	b,a
 	ld	de,(_v9958_run_ptr)
-v9958_glyph_loop:
+v9958_span_loop:
+	ld	a,#V9958_CELL_WIDTH
+	ld	(v9958_glyph_cmd+8),a
 	ld	a,(de)
 	inc	de
 	ld	h,a
+	cp	#0x20
+	jr	z,v9958_space_span
+
+	; Set the source from the first glyph.
 	and	#0x1F
 	ld	l,a
 	add	a,a
@@ -417,10 +450,52 @@ v9958_glyph_loop:
 	rrca
 	or	c
 	ld	(v9958_glyph_cmd+2),a	; SY = (ch >> 5) * 8 | reverse
-v9958_glyph_wait:
+	ld	a,#V9958_CMD_HMMM
+	ld	(v9958_glyph_cmd+14),a
+	; Merge the next glyph when it is consecutive and still in this
+	; atlas row.  B includes the current glyph.
+	ld	a,b
+	cp	#1
+	jr	z,v9958_span_wait
+	ld	a,h
+	and	#0x1F
+	cp	#0x1F
+	jr	z,v9958_span_wait
+	ld	a,(de)
+	inc	h
+	cp	h
+	jr	nz,v9958_span_wait
+	inc	de
+	ld	a,#(V9958_CELL_WIDTH * 2)
+	ld	(v9958_glyph_cmd+8),a
+	dec	b
+	jr	v9958_span_wait
+
+v9958_space_span:
+	ld	a,#V9958_CMD_HMMV
+	ld	(v9958_glyph_cmd+14),a
+	ld	a,c
+	or	a
+	ld	a,#V9958_FILL_NORMAL
+	jr	z,v9958_space_color
+	ld	a,#V9958_FILL_REVERSE
+v9958_space_color:
+	ld	(v9958_glyph_cmd+12),a
+	; Pair adjacent blanks into one fill.
+	ld	a,b
+	cp	#1
+	jr	z,v9958_span_wait
+	ld	a,(de)
+	cp	#0x20
+	jr	nz,v9958_span_wait
+	inc	de
+	ld	a,#(V9958_CELL_WIDTH * 2)
+	ld	(v9958_glyph_cmd+8),a
+	dec	b
+v9958_span_wait:
 	in	a,(KOS_V9958_CMD_PORT)
 	and	#KOS_V9958_STATUS2_CE
-	jr	nz,v9958_glyph_wait
+	jr	nz,v9958_span_wait
 	ld	a,#KOS_V9958_CMD_REGISTER_BASE
 	out	(KOS_V9958_CMD_PORT),a
 	ld	a,#(KOS_V9958_REG_R17 | KOS_V9958_REG_SELECT)
@@ -428,13 +503,19 @@ v9958_glyph_wait:
 	push	bc
 	ld	hl,#v9958_glyph_cmd
 	ld	bc,#(KOS_V9958_CMD_REGISTER_COUNT * 256 + KOS_V9958_INDIRECT_PORT)
-	otir				; R#46 last: starts the copy
+	otir				; R#46 last: starts the span
+	; Advance DX by the one-byte (6 or 12 pixel) span width.
 	ld	hl,(v9958_glyph_cmd+4)
-	ld	bc,#V9958_CELL_WIDTH
-	add	hl,bc
+	ld	a,(v9958_glyph_cmd+8)
+	add	a,l
+	ld	l,a
+	jr	nc,v9958_dx_ready
+	inc	h
+v9958_dx_ready:
 	ld	(v9958_glyph_cmd+4),hl
 	pop	bc
-	djnz	v9958_glyph_loop
+	dec	b
+	jp	nz,v9958_span_loop
 	xor	a
 	ld	(_v9958_state+V9958_ST_RUN_COUNT),a
 	ret
@@ -558,11 +639,13 @@ _v9958_char_putc::
 	dec	sp			; back to the caller's stack level
 	ld	(_v9958_alt_saved_sp),sp
 	ld	sp,#_v9958_alt_stack_top
+	call	v9958_sprites_off
 	ld	hl,(_v9958_alt_state)
 	ld	bc,(_v9958_alt_word)
 	push	bc			; char argument (low byte)
 	call	_v9958_char_putc_worker
 	ld	(_v9958_alt_result),de
+	call	v9958_sprites_restore
 	ld	sp,(_v9958_alt_saved_sp)
 	ld	hl,(_v9958_alt_ret)
 	ld	de,(_v9958_alt_result)
@@ -578,12 +661,34 @@ _v9958_char_write::
 	pop	hl			; drop the consumed stack word
 	ld	(_v9958_alt_saved_sp),sp
 	ld	sp,#_v9958_alt_stack_top
+	call	v9958_sprites_off
 	ld	hl,(_v9958_alt_state)
 	ld	de,(_v9958_alt_buf)
 	ld	bc,(_v9958_alt_word)
 	push	bc			; 16-bit length argument
 	call	_v9958_char_write_worker
 	ld	(_v9958_alt_result),de
+	call	v9958_sprites_restore
+	ld	sp,(_v9958_alt_saved_sp)
+	ld	hl,(_v9958_alt_ret)
+	ld	de,(_v9958_alt_result)
+	jp	(hl)
+
+; int v9958_render_transaction(struct kos_ipc_frame *frame); frame in HL.
+; Validation ran before this entry.  One private-stack/sprites-off interval is
+; the transaction; the final cursor/present sync happens exactly once.
+_v9958_render_transaction::
+	pop	bc
+	ld	(_v9958_alt_ret),bc
+	ld	(_v9958_alt_buf),hl
+	ld	(_v9958_alt_saved_sp),sp
+	ld	sp,#_v9958_alt_stack_top
+	call	v9958_sprites_off
+	ld	hl,(_v9958_alt_buf)
+	call	_v9958_driver_render_worker
+	ld	(_v9958_alt_result),de
+	call	_v9958_render_finish_worker
+	call	v9958_sprites_restore
 	ld	sp,(_v9958_alt_saved_sp)
 	ld	hl,(_v9958_alt_ret)
 	ld	de,(_v9958_alt_result)

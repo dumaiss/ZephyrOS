@@ -224,6 +224,15 @@ Print runs batch up to 64 glyphs and flush before control operations. The
 renderer runs on a private 256-byte stack, because its call chain is deeper
 than the gate stack.
 
+`KVIDEO_OP_RENDER` accepts the versioned `kos/console_render.h` stream used
+by `libtui`. The driver validates the complete descriptor before touching
+the VDP, then executes all absolute TEXT, INVERT and final STATE records on
+the private stack with sprite evaluation disabled once. TEXT keeps the glyph
+atlas path. Attribute-only INVERT spans use LMMV/EOR (`CMD=83h`, `CLR=0Bh`)
+over the existing 6 x 8 cells, so moving reverse-video focus does not repaint
+glyphs. The final glyph run, cursor SAT and command wait are synchronized once
+at the transaction boundary.
+
 **Native operations** (through `KVIDEO_OP_SEND`): `KVIDEO_CTRL_WRITE` (1),
 `DATA_WRITE` (2), `DATA_BLOCK` (3), `PALETTE_WRITE` (4), `INDIRECT_WRITE`
 (5), `PRESENT` (6), `RESET` (7). Validation comes before any I/O: write
@@ -285,6 +294,7 @@ its hot image. The driver converts it into the two atlases in VRAM.
 | `KVIDEO_OP_WRITE` | 1 | desc in, offset, length: bytes for the terminal | bytes consumed |
 | `KVIDEO_OP_PUTC` | 2 | `arg0` = byte | 0 |
 | `KVIDEO_OP_RESET` | 3 | — | 0, or `-KOS_ENODEV` |
+| `KVIDEO_OP_RENDER` | 4 | desc in: one validated console render stream | bytes consumed |
 
 ## 7. Console (`drivers/console/`)
 
@@ -311,6 +321,7 @@ One source, two images, selected per build:
 | `KCONSOLE_OP_POLL` | 3 | — | 1 when input is pending |
 | `KCONSOLE_OP_PUTC` | 4 | `arg0` = byte | 1, or negative |
 | `KCONSOLE_OP_RESET` | 5 | — | 0 |
+| `KCONSOLE_OP_RENDER` | 6 | desc in, offset, length: one `kos/console_render.h` stream | bytes consumed, or `-KOS_ENOTSUP` |
 
 `KCONSOLE_OP_RESET` is the console's reset: it drains the input driver's
 queue, so nothing typed for the program that is going away reaches the one
@@ -318,6 +329,11 @@ that starts, and the V9958 build then forwards `KVIDEO_OP_RESET` to its
 output dependency (the serial build has no video to reset and answers 0).
 The boot launcher runs it before every start of the boot program
 (section 14).
+
+The V9958/HID composition forwards RENDER unchanged to VIDEO, preserving one
+application call as one driver-visible transaction. The serial composition
+returns `-KOS_ENOTSUP`; `libtui` remembers that result and uses its ANSI
+dirty-run renderer thereafter.
 
 After the drivers load, the boot prints `console: driver OK` through it.
 

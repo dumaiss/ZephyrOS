@@ -87,6 +87,7 @@ int console_flush(void)
 	return result;
 }
 
+
 /* Append one byte, flushing the buffer when the byte fills it and at a
  * line's end.  Returns 0 or the error of a flush this byte caused. */
 static int console_append(char c)

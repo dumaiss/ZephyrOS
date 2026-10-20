@@ -1143,7 +1143,16 @@ aperture slice, so their number is bounded by the free banks (`run` returns
 - **`shell.exe`** is the command interpreter and the production boot
   program: a read-run loop that splits one line with the shared splitter,
   resolves a built-in or a program through its command path (`.`, `/fs/BIN`,
-  `/system`), and reports the child's status. Its built-ins are `cd pwd
+  `/system`), and reports the child's status.  On every start it prints a
+  banner - the title, version and copyright lines plus the KonaOS logo,
+  a V9958 GRAPHIC 6 LMMC pixel stream
+  (`user/shell/konaos-logo-80x46.lmmc`, one pixel per byte in the low
+  nibble) drawn at (8, 10) with one LMMC through the video driver: the
+  command block carries the first pixel in R#44 and the rest of the
+  stream follows through R#44, paced by the hardware WAIT (a serial
+  build prints the text alone) - and leaves the cursor on the prompt's
+  row.  Its
+  built-ins are `cd pwd
   echo path help exit reboot` and the file commands `ls cat stat cp mv rm
   mkdir rmdir`; `/fs` is shown as `/` and `//` names the real namespace
   root. Its line editor adds CTRL-L (clear the screen and redraw the
@@ -1266,7 +1275,7 @@ ledgers (`docs/memory.md` has the current values):
 |---|---|---:|---|
 | `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR and driver stacks) | 16,384 | keep ≥ 2,048 free |
 | `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | keep ≥ 4,096 free |
-| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 3,584 free |
+| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 2,048 free |
 | `driver boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
 | `common:` | packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | never raised |
 | gate stack | common | 384 | worst case ≤ 360 |

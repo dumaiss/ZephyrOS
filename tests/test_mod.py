@@ -38,6 +38,15 @@ DEPENDENCY = modpack.DEPENDENCY_SIZE
 PUBLICATION = modpack.PUBLICATION_SIZE
 
 
+class TestDriverTierPlan(unittest.TestCase):
+    def test_smaller_hot_segment_backfills_below_driver_io(self):
+        plan = modpack.DriverTierPlan()
+        self.assertEqual(plan.reserve_io(0x1000), 0xB000)
+        self.assertEqual(plan.place_hot(0x4000), 0x6000)
+        self.assertEqual(plan.place_hot(0x1800), 0xC000)
+        self.assertEqual(plan.place_hot(0x1000), 0xA000)
+
+
 def rel_text(module, areas, symbols, chunks):
     """Build an XL4 .rel text file (the sdasz80 subset the packer reads).
 

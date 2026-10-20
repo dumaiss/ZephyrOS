@@ -6,6 +6,12 @@
  *   foundation  lifecycle, geometry, error and transaction rules;
  *   batch       one full dirty row, an unchanged redraw and transparent
  *               cursor synchronization;
+ *   invert      a normal/reverse-only text transition in both directions;
+ *   invertspan  two separate attribute-only spans in one render request;
+ *   renderboundary  a record header crossing the 64-byte staging chunk;
+ *   renderrows  a two-row flush split into two render requests;
+ *   renderbad   malformed streams rejected before any backend work;
+ *   rendermax   the maximum legal render stream length;
  *   screen      deterministic cursor, text, clipping, control-byte,
  *               transaction and formatting rows;
  *   shutdown    dirty cells flushed by tui_shutdown() without an explicit
@@ -21,6 +27,7 @@
 #include "kos.h"
 #include "tui.h"
 #include "tui_widgets.h"
+#include "kos/console_render.h"
 
 /* The formatted row 8's expected text; it also pins the formatter's
  * conversion and width rules. */
@@ -30,6 +37,10 @@ static const char format_row_xy[] = "0012|ok|!|-7";
 
 /* The 90-byte row 2 input: only its first 85 bytes may reach the map. */
 static char big_row[90];
+
+/* Raw render-transaction checks and the two-row split/boundary cases. */
+static uint8_t render_stream[KOS_IPC_DESC_MAX];
+static char render_row[86];
 
 static int fail(const char *where, int result)
 {
@@ -195,6 +206,255 @@ static int batch_mode(void)
 		return fail("batch marker flush", result);
 	}
 	printf("tui: batch pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+static int invert_mode(void)
+{
+	if (tui_init() < 0) {
+		printf("tui: invert FAIL init\r\n");
+		return 1;
+	}
+	if (tui_puts_xy(4, 3, "MENU") != 4 || tui_flush() != 0) {
+		return fail("invert text", 0);
+	}
+	if (tui_set_attr(1u) != 0 ||
+	    tui_puts_xy(4, 3, "MENU") != 4 || tui_flush() != 0) {
+		return fail("invert on", 0);
+	}
+	if (tui_set_attr(0u) != 0 ||
+	    tui_puts_xy(4, 3, "MENU") != 4 || tui_flush() != 0) {
+		return fail("invert off", 0);
+	}
+	if (tui_gotoxy(0, 22) != 0 || tui_flush() != 0) {
+		return fail("invert marker", 0);
+	}
+	printf("tui: invert pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+static int invertspan_mode(void)
+{
+	if (tui_init() < 0) {
+		printf("tui: invertspan FAIL init\r\n");
+		return 1;
+	}
+	if (tui_puts_xy(4, 3, "OLD") != 3 ||
+	    tui_puts_xy(20, 3, "NEW") != 3 || tui_flush() != 0) {
+		return fail("invertspan text", 0);
+	}
+	if (tui_set_attr(1u) != 0 ||
+	    tui_puts_xy(4, 3, "OLD") != 3 ||
+	    tui_puts_xy(20, 3, "NEW") != 3 || tui_flush() != 0) {
+		return fail("invertspan on", 0);
+	}
+	if (tui_set_attr(0u) != 0 ||
+	    tui_puts_xy(4, 3, "OLD") != 3 ||
+	    tui_puts_xy(20, 3, "NEW") != 3 || tui_flush() != 0) {
+		return fail("invertspan off", 0);
+	}
+	if (tui_gotoxy(0, 22) != 0 || tui_flush() != 0) {
+		return fail("invertspan marker", 0);
+	}
+	printf("tui: invertspan pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+static int renderboundary_mode(void)
+{
+	uint8_t i;
+	char ch = 'A';
+
+	for (i = 0u; i < 85u; ++i) {
+		render_row[i] = ch;
+		if (ch == 'Z') {
+			ch = 'A';
+		} else {
+			++ch;
+		}
+	}
+	render_row[85] = '\0';
+	render_row[52] = '\0';
+	if (tui_init() < 0) {
+		printf("tui: renderboundary FAIL init\r\n");
+		return 1;
+	}
+	if (tui_puts_xy(0, 0, render_row) != 52 ||
+	    tui_putc_xy(0, 1, 'Z') != 1 || tui_flush() != 0) {
+		return fail("renderboundary", 0);
+	}
+	if (tui_gotoxy(0, 22) != 0 || tui_flush() != 0) {
+		return fail("renderboundary marker", 0);
+	}
+	printf("tui: renderboundary pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+static int renderrows_mode(void)
+{
+	uint8_t i;
+	char ch = 'A';
+
+	for (i = 0u; i < 85u; ++i) {
+		render_row[i] = ch;
+		if (ch == 'Z') {
+			ch = 'A';
+		} else {
+			++ch;
+		}
+	}
+	render_row[85] = '\0';
+	if (tui_init() < 0) {
+		printf("tui: renderrows FAIL init\r\n");
+		return 1;
+	}
+	if (tui_puts_xy(0, 0, render_row) != 85 ||
+	    tui_puts_xy(0, 1, render_row) != 85 || tui_flush() != 0) {
+		return fail("renderrows", 0);
+	}
+	if (tui_gotoxy(0, 22) != 0 || tui_flush() != 0) {
+		return fail("renderrows marker", 0);
+	}
+	printf("tui: renderrows pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+static uint16_t render_add_span(uint16_t at, uint8_t count, uint8_t ch)
+{
+	uint8_t i;
+
+	render_stream[at++] = KCONSOLE_RENDER_TEXT;
+	render_stream[at++] = (uint8_t)(KCONSOLE_RENDER_SPAN_BASE + count);
+	render_stream[at++] = 0u;
+	render_stream[at++] = 0u;
+	render_stream[at++] = 0u;
+	render_stream[at++] = count;
+	for (i = 0u; i < count; ++i) {
+		render_stream[at++] = ch;
+	}
+	return at;
+}
+
+static int renderbad_mode(void)
+{
+	static const uint8_t bad_version[] = {
+		2u, 0u, KCONSOLE_RENDER_STATE_SIZE + 4u, 0u,
+		KCONSOLE_RENDER_STATE, KCONSOLE_RENDER_STATE_SIZE,
+		0u, 0u, 0u, 1u
+	};
+	static const uint8_t bad_flags[] = {
+		KCONSOLE_RENDER_VERSION, 1u, KCONSOLE_RENDER_STATE_SIZE + 4u, 0u,
+		KCONSOLE_RENDER_STATE, KCONSOLE_RENDER_STATE_SIZE,
+		0u, 0u, 0u, 1u
+	};
+	static const uint8_t bad_attr[] = {
+		KCONSOLE_RENDER_VERSION, 0u, KCONSOLE_RENDER_STATE_SIZE + 4u, 0u,
+		KCONSOLE_RENDER_STATE, KCONSOLE_RENDER_STATE_SIZE,
+		0u, 0u, 2u, 1u
+	};
+	static const uint8_t bad_x[] = {
+		KCONSOLE_RENDER_VERSION, 0u, KCONSOLE_RENDER_STATE_SIZE + 4u, 0u,
+		KCONSOLE_RENDER_STATE, KCONSOLE_RENDER_STATE_SIZE,
+		85u, 0u, 0u, 1u
+	};
+	static const uint8_t bad_op[] = {
+		KCONSOLE_RENDER_VERSION, 0u, KCONSOLE_RENDER_STATE_SIZE + 4u, 0u,
+		99u, KCONSOLE_RENDER_STATE_SIZE, 0u, 0u, 0u, 1u
+	};
+	static const uint8_t bad_count[] = {
+		KCONSOLE_RENDER_VERSION, 0u, KCONSOLE_RENDER_SPAN_BASE + 4u, 0u,
+		KCONSOLE_RENDER_TEXT, KCONSOLE_RENDER_SPAN_BASE,
+		0u, 0u, 0u, 0u
+	};
+	static const uint8_t header_only[] = {
+		KCONSOLE_RENDER_VERSION, 0u, 4u, 0u
+	};
+	static const uint8_t trailing[] = {
+		KCONSOLE_RENDER_VERSION, 0u, KCONSOLE_RENDER_STATE_SIZE + 5u, 0u,
+		KCONSOLE_RENDER_STATE, KCONSOLE_RENDER_STATE_SIZE,
+		0u, 0u, 0u, 1u, 0u
+	};
+	const uint8_t *bad[] = {
+		bad_version, bad_flags, bad_attr, bad_x, bad_op, bad_count,
+		header_only, trailing
+	};
+	const uint8_t lengths[] = {
+		(uint8_t)sizeof(bad_version), (uint8_t)sizeof(bad_flags),
+		(uint8_t)sizeof(bad_attr), (uint8_t)sizeof(bad_x),
+		(uint8_t)sizeof(bad_op), (uint8_t)sizeof(bad_count),
+		(uint8_t)sizeof(header_only), (uint8_t)sizeof(trailing)
+	};
+	uint16_t i;
+	int result;
+	int serial;
+
+	if (tui_init() < 0) {
+		printf("tui: renderbad FAIL init\r\n");
+		return 1;
+	}
+	result = console_render(bad[0], lengths[0]);
+	serial = result == -KOS_ENOTSUP;
+	if (serial == 0 && result != -KOS_EINVAL) {
+		return fail("renderbad version", result);
+	}
+	for (i = 0u; i < (uint16_t)(sizeof(bad) / sizeof(bad[0])); ++i) {
+		result = console_render(bad[i], lengths[i]);
+		if (serial != 0) {
+			if (result != -KOS_ENOTSUP) {
+				return fail("renderbad serial reject", result);
+			}
+		} else if (result != -KOS_EINVAL) {
+			return fail("renderbad malformed", result);
+		}
+	}
+	if (tui_gotoxy(0, 22) != 0 || tui_flush() != 0) {
+		return fail("renderbad marker", 0);
+	}
+	printf("tui: renderbad pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+static int rendermax_mode(void)
+{
+	uint16_t at;
+	uint16_t i;
+	int result;
+
+	if (tui_init() < 0) {
+		printf("tui: rendermax FAIL init\r\n");
+		return 1;
+	}
+	/* 582 one-cell TEXT records and one six-cell TEXT record fill a
+	 * 4096-byte stream exactly; STATE is the final six bytes. */
+	render_stream[0] = KCONSOLE_RENDER_VERSION;
+	render_stream[1] = 0u;
+	render_stream[2] = 0u;
+	render_stream[3] = 0x10u;
+	at = KCONSOLE_RENDER_HEADER_SIZE;
+	for (i = 0u; i < 582u; ++i) {
+		at = render_add_span(at, 1u, 'A');
+	}
+	at = render_add_span(at, 6u, 'B');
+	render_stream[at++] = KCONSOLE_RENDER_STATE;
+	render_stream[at++] = KCONSOLE_RENDER_STATE_SIZE;
+	render_stream[at++] = 0u;
+	render_stream[at++] = 0u;
+	render_stream[at++] = 0u;
+	render_stream[at++] = 1u;
+	if (at != KOS_IPC_DESC_MAX) {
+		return fail("rendermax length", at);
+	}
+	result = console_render(render_stream, at);
+	if (result != -KOS_ENOTSUP && result != (int)at) {
+		return fail("rendermax", result);
+	}
+	printf("tui: rendermax pass\r\n");
 	tui_shutdown();
 	return 0;
 }
@@ -1305,6 +1565,24 @@ int main(int argc, char **argv)
 	}
 	if (argc == 1 && strcmp(argv[0], "batch") == 0) {
 		return batch_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "invert") == 0) {
+		return invert_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "invertspan") == 0) {
+		return invertspan_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "renderboundary") == 0) {
+		return renderboundary_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "renderrows") == 0) {
+		return renderrows_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "renderbad") == 0) {
+		return renderbad_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "rendermax") == 0) {
+		return rendermax_mode();
 	}
 	if (argc == 1 && strcmp(argv[0], "screen") == 0) {
 		return screen_mode();

@@ -63,7 +63,9 @@ user/sdk/
 mk/kos.mk                 the program build rule (shipped in the SDK)
 user/monitor/             the monitor and its private helpers
 user/shell/               the native shell (main, parse, path, lookup,
-                          builtin)
+                          builtin, fscmd, banner, logo - the banner's
+                          logo lives in logo.c, generated from
+                          konaos-logo-80x46.lmmc by tools/g6pack.py)
 user/helloworld/          the demo image's Makefile and README
 ```
 
@@ -294,6 +296,7 @@ void exit(int status);                                  /* does not return */
 void reboot(void);                                      /* does not return */
 int  getinfo(struct kos_info_record *record);
 int  console_write(const char *buf, unsigned int len);  /* CONSOLE WRITE   */
+int  console_render(const void *stream, unsigned int len); /* one render txn */
 int  console_read(char *buf, unsigned int len);         /* READ, no wait   */
 int  console_poll(void);                                /* POLL            */
 int  putchar(int ch);                                   /* buffered; returns ch */
@@ -307,6 +310,11 @@ The console functions speak the `CONSOLE` protocol through the standard
 handle; a process without one gets `-KOS_EINVAL`. `console_readline` edits
 one line (backspace, DEL, CR/LF, a bell on overflow; `KOS_LINE_MAX` is 80);
 it is the monitor's input loop.
+
+`console_render` is the low-level entry used by `libtui`; its versioned byte
+layout is in `kos/console_render.h`. It flushes buffered console bytes first,
+then submits exactly one descriptor. A backend without the extension returns
+`-KOS_ENOTSUP`.
 
 Output is line-buffered: `putchar`, `console_puts` and `printf` collect
 into a 128-byte per-program buffer, and it is written out when it fills,
@@ -674,7 +682,7 @@ needed.
 | a program calls | members linked |
 |---|---|
 | anything | `kos_crt0`, `kos_runtime`, `args` |
-| `console_write`, `console_read`, `console_poll`, `putchar`, `console_flush` | `console_proto`, `ipc`, `kos_ipcgate`, `nsgate` |
+| `console_write`, `console_render`, `console_read`, `console_poll`, `putchar`, `console_flush` | `console_proto`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `console_puts`, `getchar`, `console_readline` | `console_io`, plus the above |
 | `exit`, `getinfo`, `reboot` | `kos_gate` |
 | `open`, `read`, ... | `fs`, `ipc`, `kos_ipcgate`, `nsgate` |

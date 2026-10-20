@@ -18,6 +18,7 @@
 #include "kos/types.h"
 #include "kos/errno.h"
 #include "kos/process.h"
+#include "kos/console_render.h"
 
 /* Line-editor capacity: at most KOS_LINE_MAX characters plus a NUL. */
 #define KOS_LINE_MAX 80
@@ -44,6 +45,10 @@ int console_read(char *buf, unsigned int len);
 int console_poll(void);
 int putchar(int ch);
 int console_flush(void);
+
+/* Submit one versioned kos/console_render.h stream as a single console
+ * transaction.  Pending buffered text is flushed first. */
+int console_render(const void *stream, unsigned int length);
 
 /* Fill `record` with the six-byte v1 information record; returns 6 or a
  * negative error. */

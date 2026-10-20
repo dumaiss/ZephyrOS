@@ -29,6 +29,10 @@ void shell_path_default(void);
  * own message; `exit` leaves through exit() and never returns. */
 int shell_builtin(int argc, char **argv);
 
+/* banner.c: print the startup banner (the text lines and, where a VIDEO
+ * driver is published, the logo dump) once, before the loop. */
+void shell_banner(void);
+
 /* fscmd.c: the file built-ins (`ls cat stat cp mv rm mkdir rmdir`), run
  * exactly like `shell_builtin`'s own: 0 or a positive KOS_E* code, or -1
  * when `argv[0]` names none of them. */

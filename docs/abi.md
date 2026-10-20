@@ -390,6 +390,7 @@ through the standard handles.
 | `console_poll()` | `KCONSOLE_OP_POLL` | none |
 | `putchar(ch)` | `KCONSOLE_OP_PUTC` | none |
 | — | `KCONSOLE_OP_RESET` (5) | none |
+| `console_render(stream, len)` | `KCONSOLE_OP_RENDER` (6) | in: one versioned render stream |
 
 `KCONSOLE_OP_RESET` puts the terminal back to its start state and empties
 the input queue; a console whose output driver owns the display forwards

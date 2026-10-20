@@ -1441,6 +1441,10 @@ class V9958Peer:
       - status register 2 (selected through R#15=2): CE stays set while a
         command executes;
       - HMMV fills execute into the modeled VRAM (HMMM is recorded);
+      - LMMC/HMMC transfer commands stream one pixel per byte (LMMC
+        through R#44 with the first pixel preloaded in the block's CLR
+        byte, HMMC through the data port) and stay busy until the
+        stream completes;
       - the configuration latch: D0 (interrupt route) and D1 (/WS_EN)
         are recorded for every write;
       - instruction-timestamped traces for paced-bootstrap and
@@ -1463,11 +1467,15 @@ class V9958Peer:
     STATUS2_SELECT = 2
     CE = 0x01
     REG_INDIRECT_PTR = 17
+    REG_CPUMOVE = 44
     REG_COMMAND = 46
     CMD_BLOCK_BASE = 32
     CMD_BLOCK_COUNT = 15
     OP_HMMV = 0xC0
     OP_HMMM = 0xD0
+    OP_LMMV = 0x80
+    OP_LMMC = 0xB0
+    OP_HMMC = 0xF0
 
     def __init__(self, command_busy=400):
         self.now = 0
@@ -1485,6 +1493,13 @@ class V9958Peer:
         self.regs = [0x00] * 47
         self.addr = 0
         self.vram = bytearray(0x20000)
+        # A CPU-to-VRAM transfer (HMMC/LMMC) awaiting its pixel bytes,
+        # or None.  LMMC streams through R#44 (the VDP redirects every
+        # indirect-port write there while the command runs, pacing each
+        # with the hardware WAIT); HMMC streams through the data port.
+        # A command whose stream never completes stays busy forever,
+        # exactly as on the hardware.
+        self.transfer = None
         self.cmd_first = True
         self.cmd_latch = 0
         self.busy_until = 0
@@ -1511,12 +1526,18 @@ class V9958Peer:
 
     def data_write(self, value):
         value &= 0xFF
+        if self.transfer is not None and self.transfer["port"] == "data":
+            # HMMC takes one pixel per data-port byte; the command ends
+            # with its last byte.
+            self._transfer_pixel(self.transfer, value)
+            return
         self.vram[self.addr] = value
         self.vram_writes.append((self.addr, value))
         self.addr = (self.addr + 1) & 0x1FFFF
 
     def status_read(self):
-        ce = 1 if self.now < self.busy_until else 0
+        ce = 1 if (self.now < self.busy_until or
+                   self.transfer is not None) else 0
         self.status_reads.append((self.now, ce))
         # Reading status resets the command port's two-byte latch.
         self.cmd_first = True
@@ -1551,6 +1572,13 @@ class V9958Peer:
 
     def indirect_write(self, value):
         value &= 0xFF
+        if self.transfer is not None and self.transfer["port"] == "r44":
+            # A running LMMC redirects every indirect-port write to
+            # R#44 regardless of R#17 and paces it with the hardware
+            # WAIT; each byte is one pixel.
+            self._transfer_pixel(self.transfer, value)
+            self.indirect_writes.append((self.now, self.REG_CPUMOVE))
+            return
         reg = self.regs[self.REG_INDIRECT_PTR] & 0x3F
         self.indirect_writes.append((self.now, reg))
         self.regs[reg] = value
@@ -1616,7 +1644,63 @@ class V9958Peer:
         elif (code & 0xF0) == self.OP_HMMM:
             entry["busy_until"] = self.now + self.command_busy
             self.busy_until = entry["busy_until"]
+        elif (code & 0xF0) == self.OP_LMMV:
+            dx = block[4] | (block[5] << 8)
+            dy = block[6] | (block[7] << 8)
+            nx = block[8] | (block[9] << 8)
+            ny = block[10] | (block[11] << 8)
+            color = block[12] & 0x0F
+            entry["logical_fill"] = (dx, dy, nx, ny, color, code & 0x0F)
+            if (code & 0x0F) == 0x03:  # EOR
+                self._xor_fill(dx, dy, nx, ny, color)
+            entry["busy_until"] = self.now + self.command_busy
+            self.busy_until = entry["busy_until"]
+        elif (code & 0xF0) == self.OP_LMMC or \
+                (code & 0xF0) == self.OP_HMMC:
+            # GRAPHIC 6 transfer, one pixel per byte in the low nibble,
+            # placed row by row at a 256-byte pitch.  LMMC takes the
+            # stream through R#44 (the first pixel preloaded in the
+            # block's CLR byte); HMMC takes it through the data port.
+            # The command only ever receives its bytes that way; an
+            # unfinished stream keeps it busy.
+            dx = block[4] | (block[5] << 8)
+            dy = block[6] | (block[7] << 8)
+            nx = block[8] | (block[9] << 8)
+            ny = block[10] | (block[11] << 8)
+            transfer = {
+                "need": nx * ny,
+                "have": 0,
+                "width": nx,
+                "port": "r44" if (code & 0xF0) == self.OP_LMMC
+                        else "data",
+                "base": (dy * 256 + dx // 2) & 0x1FFFF,
+            }
+            entry["transfer"] = transfer
+            if transfer["port"] == "r44" and transfer["need"] > 0:
+                self._transfer_pixel(transfer, block[12])
+            if transfer["have"] < transfer["need"]:
+                self.transfer = transfer
         self.commands.append(entry)
+
+    def _transfer_pixel(self, transfer, value):
+        """Place one pixel byte (low nibble) into a G6 transfer's
+        rectangle: two pixels per VRAM byte, high nibble on even
+        columns.  The command ends with its last pixel."""
+        have = transfer["have"]
+        width = transfer["width"]
+        row = have // width
+        col = have % width
+        address = (transfer["base"] + row * 256 + col // 2) & 0x1FFFF
+        if col % 2 == 0:
+            self.vram[address] = ((self.vram[address] & 0x0F) |
+                                  ((value & 0x0F) << 4))
+        else:
+            self.vram[address] = ((self.vram[address] & 0xF0) |
+                                  (value & 0x0F))
+        self.vram_writes.append((address, self.vram[address]))
+        transfer["have"] = have + 1
+        if transfer["have"] >= transfer["need"]:
+            self.transfer = None
 
     def _fill(self, dx, dy, nx, ny, color):
         if nx == 0 or ny == 0:
@@ -1628,8 +1712,22 @@ class V9958Peer:
             for offset in range(first, last):
                 self.vram[(base + offset) & 0x1FFFF] = color
 
+    def _xor_fill(self, dx, dy, nx, ny, color):
+        if nx == 0 or ny == 0:
+            return
+        for y in range(dy, dy + ny):
+            base = (y * 256) & 0x1FFFF
+            for x in range(dx, dx + nx):
+                address = (base + x // 2) & 0x1FFFF
+                value = self.vram[address]
+                if (x & 1) == 0:
+                    value ^= (color & 0x0F) << 4
+                else:
+                    value ^= color & 0x0F
+                self.vram[address] = value
+
     def busy(self):
-        return self.now < self.busy_until
+        return self.now < self.busy_until or self.transfer is not None
 
 
 class CtcChannel:

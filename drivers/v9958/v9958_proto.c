@@ -29,6 +29,7 @@
 #include "kos/errno.h"
 #include "driver.h"
 #include "kos/protocol.h"
+#include "kos/console_render.h"
 
 #include "v9958_driver.h"
 
@@ -38,7 +39,157 @@
 
 static const struct driver_api *v9958_driver_api;
 static uint8_t v9958_batch[V9958_DRIVER_BATCH];
+static uint8_t *v9958_batch_ptr;
 static uint16_t v9958_batch_address;
+
+static int16_t v9958_render_copy(const struct kos_ipc_frame *frame,
+				 uint16_t at, uint16_t length)
+{
+	if (v9958_driver_api->copy_in(frame->desc,
+			(uint16_t)((uint16_t)frame->arg0 + at),
+			v9958_batch_address, length) < 0) {
+		return (int16_t)-KOS_EINVAL;
+	}
+	return 0;
+}
+
+/* Validate the complete stream before the renderer touches VRAM. */
+static int16_t v9958_render_validate(const struct kos_ipc_frame *frame)
+{
+	uint16_t length = frame->arg1;
+	uint16_t at = KCONSOLE_RENDER_HEADER_SIZE;
+
+	if (frame->desc == KOS_IPC_DESC_NONE ||
+	    length < KCONSOLE_RENDER_HEADER_SIZE ||
+	    length > KOS_IPC_DESC_MAX ||
+	    (uint16_t)(frame->arg0 + length) < frame->arg0 ||
+	    v9958_render_copy(frame, 0u, KCONSOLE_RENDER_HEADER_SIZE) < 0) {
+		return (int16_t)-KOS_EINVAL;
+	}
+	if (v9958_batch_ptr[0] != KCONSOLE_RENDER_VERSION ||
+	    v9958_batch_ptr[1] != 0u ||
+	    (uint16_t)(v9958_batch_ptr[2] |
+	       ((uint16_t)v9958_batch_ptr[3] << 8)) !=
+		length) {
+		return (int16_t)-KOS_EINVAL;
+	}
+	while (at < length) {
+		uint8_t op;
+		uint8_t record_length;
+
+		if ((uint16_t)(length - at) < 2u ||
+		    v9958_render_copy(frame, at, 2u) < 0) {
+			return (int16_t)-KOS_EINVAL;
+		}
+		op = v9958_batch_ptr[0];
+		record_length = v9958_batch_ptr[1];
+		if (record_length < 2u ||
+		    (uint16_t)record_length > (uint16_t)(length - at)) {
+			return (int16_t)-KOS_EINVAL;
+		}
+		if (op == KCONSOLE_RENDER_TEXT ||
+		    op == KCONSOLE_RENDER_INVERT) {
+			uint8_t count;
+
+			if (record_length < KCONSOLE_RENDER_SPAN_BASE ||
+			    v9958_render_copy(frame, at,
+					       KCONSOLE_RENDER_SPAN_BASE) < 0) {
+				return (int16_t)-KOS_EINVAL;
+			}
+			count = v9958_batch_ptr[5];
+			if (count == 0u ||
+			    record_length !=
+				(uint8_t)(KCONSOLE_RENDER_SPAN_BASE + count) ||
+			    v9958_batch_ptr[2] >= KCONSOLE_RENDER_COLS ||
+			    v9958_batch_ptr[3] >= KCONSOLE_RENDER_ROWS ||
+			    v9958_batch_ptr[4] > 1u ||
+			    count > (uint8_t)(KCONSOLE_RENDER_COLS -
+					      v9958_batch_ptr[2])) {
+				return (int16_t)-KOS_EINVAL;
+			}
+		} else if (op == KCONSOLE_RENDER_STATE) {
+			if (record_length != KCONSOLE_RENDER_STATE_SIZE ||
+			    (uint16_t)(at + record_length) != length ||
+			    v9958_render_copy(frame, at,
+					       KCONSOLE_RENDER_STATE_SIZE) < 0 ||
+			    v9958_batch_ptr[2] >= KCONSOLE_RENDER_COLS ||
+			    v9958_batch_ptr[3] >= KCONSOLE_RENDER_ROWS ||
+			    v9958_batch_ptr[4] > 1u ||
+			    v9958_batch_ptr[5] > 1u) {
+				return (int16_t)-KOS_EINVAL;
+			}
+		} else {
+			return (int16_t)-KOS_EINVAL;
+		}
+		at = (uint16_t)(at + record_length);
+	}
+	return length == KCONSOLE_RENDER_HEADER_SIZE ?
+		(int16_t)-KOS_EINVAL : 0;
+}
+
+/* Second pass.  The assembly entry calls this on the renderer's private
+ * stack and brackets the whole walk with sprites disabled. */
+int v9958_driver_render_worker(struct kos_ipc_frame *frame)
+{
+	uint16_t length = frame->arg1;
+	uint16_t at = KCONSOLE_RENDER_HEADER_SIZE;
+
+	v9958_state.render_active = 1u;
+	if (v9958_state.exclusive != 0u) {
+		return (int)length;
+	}
+	while (at < length) {
+		uint8_t op;
+		uint8_t record_length;
+		uint8_t x;
+		uint8_t y;
+		uint8_t attr;
+		uint8_t count;
+
+		if (v9958_render_copy(frame, at, KCONSOLE_RENDER_SPAN_BASE) < 0) {
+			return -KOS_EINVAL;
+		}
+		op = v9958_batch_ptr[0];
+		record_length = v9958_batch_ptr[1];
+		x = v9958_batch_ptr[2];
+		y = v9958_batch_ptr[3];
+		attr = v9958_batch_ptr[4];
+		count = v9958_batch_ptr[5];
+		if (op == KCONSOLE_RENDER_TEXT) {
+			uint16_t data_at =
+				(uint16_t)(at + KCONSOLE_RENDER_SPAN_BASE);
+			uint8_t left = count;
+
+			v9958_out_flush();
+			v9958_state.text_col = x;
+			v9958_state.text_row = y;
+			v9958_state.current_attr = attr;
+			while (left != 0u) {
+				uint8_t chunk = left;
+
+				if (chunk > V9958_DRIVER_BATCH) {
+					chunk = V9958_DRIVER_BATCH;
+				}
+				if (v9958_render_copy(frame, data_at, chunk) < 0) {
+					return -KOS_EINVAL;
+				}
+				v9958_render_text_data(v9958_batch_ptr, chunk);
+				data_at = (uint16_t)(data_at + chunk);
+				left = (uint8_t)(left - chunk);
+			}
+		} else if (op == KCONSOLE_RENDER_INVERT) {
+			v9958_render_invert(x, y, count);
+		} else {
+			v9958_out_flush();
+			v9958_state.text_col = x;
+			v9958_state.text_row = y;
+			v9958_state.current_attr = attr;
+			v9958_state.cursor_visible = count;
+		}
+		at = (uint16_t)(at + record_length);
+	}
+	return (int)length;
+}
 
 /* --- the vertical-blank event ------------------------------------------
  *
@@ -202,6 +353,11 @@ int16_t v9958_driver_dispatch(struct kos_ipc_frame *frame)
 						(char)frame->arg0);
 	case KVIDEO_OP_RESET:
 		return (int16_t)v9958_display_reset();
+	case KVIDEO_OP_RENDER:
+		if (v9958_render_validate(frame) < 0) {
+			return (int16_t)-KOS_EINVAL;
+		}
+		return (int16_t)v9958_render_transaction(frame);
 	default:
 		return (int16_t)-KOS_EINVAL;
 	}
@@ -218,6 +374,7 @@ uint8_t v9958_driver_init(const struct driver_boot *boot)
 	/* From here every font read is the run-time nucleus bulk copy; the
 	 * boot segment's direct source has done its job. */
 	v9958_set_font_base(0u);
+	v9958_batch_ptr = v9958_batch;
 	(void)api->bulk_read(0u, (uint16_t)probe, V9958_FONT_CHUNK);
 	return 0u;
 }

@@ -18,7 +18,7 @@ The design intentionally stays small. It is closer to **Turbo Pascal `Crt` plus
 a small subset of Turbo Vision's conveniences** than to curses or a full UI
 framework.
 
-The initial implementation is entirely user-space. It requires **no new IOC,
+The original v1 implementation was entirely user-space. It required **no new IOC,
 HID, kernel, or V9958 driver ABI**.
 
 ---
@@ -247,8 +247,10 @@ or equivalently:
 tui_flush();
 ```
 
-The library may buffer logical cell changes and combine adjacent changed cells
-into larger console writes.
+The library buffers logical cell changes and combines adjacent changed cells
+into bounded render records. The V9958 console accepts a whole record stream
+as one transaction; consoles without that extension retain the ANSI
+horizontal-run path.
 
 This is important because KonaOS IPC is intentionally coarse-grained.
 
@@ -795,13 +797,16 @@ It continues delivering translated text bytes.
 
 ### Console driver
 
-Ideally **no ABI change required** for TUI v1.
-
-The TUI uses the existing console byte stream.
+The baseline TUI remains usable over the existing console byte stream. The
+V9958 optimization adds `KCONSOLE_OP_RENDER`: a versioned stream of absolute
+TEXT, attribute-only INVERT and final STATE records. Serial may reject it with
+`-KOS_ENOTSUP`, which `libtui` caches before falling back to ANSI writes.
 
 ### V9958 driver
 
-No required architectural change for TUI v1.
+The optimized path validates and executes one render stream as one hardware
+transaction. Attribute-only normal/reverse changes use LMMV/EOR over the
+existing pixels; ordinary glyph output continues to use the precolored atlas.
 
 Possible later improvement:
 

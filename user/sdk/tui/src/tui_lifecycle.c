@@ -24,6 +24,7 @@ static void tui_reset_model(void)
 	}
 	for (i = 0u; i < TUI_DIRTY_BYTES; ++i) {
 		tui_dirty[i] = 0u;
+		tui_invert[i] = 0u;
 	}
 	tui_state.screen.cols = TUI_LOGICAL_COLS;
 	tui_state.screen.rows = TUI_LOGICAL_ROWS;
@@ -43,6 +44,7 @@ static void tui_reset_model(void)
 	tui_state.phys_y = 0u;
 	tui_state.phys_attr = 0u;
 	tui_state.phys_cursor_visible = 1u;
+	tui_state.render_support = 0u;
 }
 
 int tui_init(void)

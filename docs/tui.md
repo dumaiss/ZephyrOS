@@ -130,12 +130,19 @@ if (tui_end() < 0) { /* error */ }
 
 `tui_begin()` has bounded nesting; `tui_end()` flushes only when it closes
 the outermost transaction.  An unmatched `tui_end()` is `-KOS_EINVAL`.
-`tui_flush()` always flushes, even inside a transaction.  A flush coalesces
-adjacent dirty cells of one attribute into horizontal runs, emits one cursor
-position per run, emits SGR only when the run's attribute differs from the
-terminal's last known attribute, synchronizes the logical cursor and
-visibility, and calls the console flush.  Dirty state and tracked physical
-state are retained on failure.  A redraw that changes no cell emits nothing.
+`tui_flush()` always flushes, even inside a transaction. On the V9958 route it
+coalesces adjacent changes into absolute TEXT records and attribute-only
+normal/reverse changes into INVERT records, then submits a bounded render
+stream as one console transaction. INVERT is performed in place, so moving
+selection focus does not redraw either label. If the console reports
+`-KOS_ENOTSUP`, as the serial console does, the library remembers that result
+and uses the ANSI dirty-run renderer: one cursor position per run, SGR only
+when the run's attribute differs from the tracked physical attribute.
+
+Successful split render requests commit only the cells carried by that
+request; uncommitted cells remain pending after a later failure. The ANSI
+fallback retains all pending state on failure. A redraw that changes no cell
+and no cursor state emits nothing.
 
 ## Styles, attributes and frames
 
@@ -278,8 +285,10 @@ count.
 ## Memory cost
 
 The core library uses static storage only: one 85 x 26 cell map (4,420
-bytes), one dirty bitmap (277 bytes), one run buffer (101 bytes) and a small
-state block.  The formatter and every optional function group are separate
+bytes), dirty and invert bitmaps (277 bytes each), one shared 101-byte
+render/ANSI run buffer and a small state block. The
+formatter and every
+optional function group are separate
 archive members, so a program that does not call them does not link their
 code.  The widget archive is separate; its modal member is the only hidden
 widget backing store (1,920 bytes) and is absent from render-only programs.

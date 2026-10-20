@@ -744,7 +744,7 @@ $(MODULES)/hid.rel: drivers/hid/hid.c drivers/hid/hid_driver.h \
 
 $(MODULES)/v9958.rel: drivers/v9958/v9958.c drivers/v9958/v9958_driver.h \
 		drivers/include/driver.h $(DRV_PROTOCOL_H) \
-		kernel/include/platform.h | $(MODULES)
+		abi/kos/console_render.h kernel/include/platform.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) $< -o $@
 
 $(MODULES)/v9958_io.rel: drivers/v9958/v9958_io.asm \
@@ -753,7 +753,8 @@ $(MODULES)/v9958_io.rel: drivers/v9958/v9958_io.asm \
 
 $(MODULES)/v9958_driver.rel: drivers/v9958/v9958_proto.c \
 		drivers/v9958/v9958_driver.h \
-		drivers/include/driver.h $(DRV_PROTOCOL_H) | $(MODULES)
+		drivers/include/driver.h $(DRV_PROTOCOL_H) \
+		abi/kos/console_render.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) $< -o $@
 
 $(MODULES)/v9958_boot.rel: drivers/v9958/v9958_boot.c \
@@ -773,12 +774,12 @@ $(MODULES)/v9958_font.rel: drivers/v9958/v9958_font.asm \
 # SERIAL image.  Each packed container names its own object.
 $(MODULES)/console-v9958-hid.rel: drivers/console/console_proto.c \
 		drivers/include/driver.h abi/kos/protocol.h \
-		abi/kos/errno.h | $(MODULES)
+		abi/kos/errno.h abi/kos/console_render.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) $< -o $@
 
 $(MODULES)/console-serial.rel: drivers/console/console_proto.c \
 		drivers/include/driver.h abi/kos/protocol.h \
-		abi/kos/errno.h | $(MODULES)
+		abi/kos/errno.h abi/kos/console_render.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) -DKOS_CONSOLE_SERIAL=1 $< -o $@
 
 # The filesystem driver's hot image, bank-6 driver code.  Its read-ahead
@@ -989,7 +990,8 @@ $(eval $(call exe_program,monitor,user/monitor,\
 # an ordinary SDK program with no far code.  STAGE=1 puts the packed
 # program where a system file's store consumes it, beside its monitor.
 $(eval $(call exe_program,shell,user/shell,\
-	main.c parse.c path.c lookup.c builtin.c fscmd.c,STACK=512,STAGE=1))
+	main.c parse.c path.c lookup.c builtin.c fscmd.c banner.c logo.c,\
+	STACK=512,STAGE=1,INCLUDES=user/sdk/include/kos))
 
 # The device-release outcome program: tests/test_device_release.py starts
 # it from the monitor or the shell with one mode tail.  It holds the card

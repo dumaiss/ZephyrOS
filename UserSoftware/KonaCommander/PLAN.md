@@ -7,15 +7,25 @@ phase-7/8 subset adds confirmed, bidirectional single-file copy.
 
 ## Current implementation state
 
-Phases 1-6 and bidirectional single-file copy are implemented as of
-2026-10-17.  `make test` passes the portable C codec vectors, Python
-protocol/service/security/write tests, stdio integration, and EXE layout
-checks.  `make` builds and validates
-`build/user/konacmd.exe` from SDK archive SHA-256
-`c092ea1a9c6f2fc936cca30a3737bf4e07ebcd3790b500665a259007a0e085eb`.
-The current EXE SHA-256 is
-`0c7b1bfb661c086a75cf199ab5999fd8ef566b953beaec5e3c212a9404c7cdcd`;
-its primary image plus BSS ends at `999Eh` and its stack is `DC00h-DFFFh`.
+Phases 1-6 and bidirectional single-file copy are implemented. On 2026-10-19
+the UI was ported from application-owned ANSI/key decoding to
+`libtui`/`libtui_widgets`. F1 focuses the menu, Left/Right traverses it, Tab
+cycles the menu, both panes and every action button, and only the focused
+control is highlighted.
+
+`make test` passes the portable C codec vector, 10 Python
+protocol/service/security/write tests, 6 EXE/UI structure checks, and a
+production-image simulator replay of F1/menu/Tab/clean-quit navigation. The
+standalone SDK 0.2.0 archive SHA-256 is
+`236f77c60b42f6f6d5fc65a0a9f7a3100b7ac4afcbe49c9e9e9631d77711f7b7`.
+The validated `build/user/konacmd.exe` SHA-256 is
+`b8cfdd74be98b51cea77c1eac01597082452fbda4b168b402d35253e83a8e95d`;
+its 36,277-byte primary image plus 18,063-byte BSS ends at `D544h`, leaving
+1,724 bytes below its `DC00h-DFFFh` stack. Post-port responsiveness work
+removed redundant logical-screen clears, full-row reverse-video selection,
+and status-line churn on focus keys. A production-image replay with two real
+`/fs` entries pins both an ordinary Down selection and a left-to-right Tab to
+exactly two V9958 glyph draws.
 
 No physical-board copy session has been performed in this environment.  The
 next action is the README hardware smoke test.
@@ -41,8 +51,7 @@ same physical SIO0/B byte stream in that configuration.
 
 ## Non-negotiable invariants
 
-- Use only the public SDK from
-  `../../../../ZephyrOS/build/kos-sdk-0.1.0.tar.gz`; never call kernel entry
+- Use only the public SDK from `../../build/kos-sdk-0.2.0.tar.gz`; never call kernel entry
   points or hardware ports directly.
 - Bind `/dev/serial/0`, verify `KOS_TYPE_SERIAL`, and use batched
   `KSIO_OP_WRITE`/`KSIO_OP_READ` calls.  No byte-at-a-time serial IPC.
@@ -101,7 +110,7 @@ README.md                   operator/build/key documentation
 src/kc_protocol.[ch]        portable CRC, COBS and frame validation
 src/kc_serial.[ch]          KonaOS SERIAL calls and retrying transaction layer
 src/kc_remote.[ch]          typed browse/read/write protocol client
-src/kc_ui.[ch]              85x26 renderer, key decoder, panes and viewer
+src/kc_ui.[ch]              TUI renderer, focus/menu policy, panes and viewer
 src/main.c                   startup, cleanup and top-level event loop
 host/kcommander_host.py      sandboxed host service and serial CLI
 tests/test_host.py           protocol/server/security/write tests
@@ -148,14 +157,16 @@ packer validates it; host tests cover payload parsing shared with the target.
 
 ### Phase 5 - Commander TUI and navigation
 
-Implement a stable 85x26 full-screen layout using the console driver's ANSI
-subset: title bar, one 42-column KonaOS pane, one 42-column PC pane,
-reverse-video active selection, status line, and key bar.  Each pane owns a
+Implement a stable 85x26 full-screen layout through the KonaOS TUI SDK: menu
+bar, one 42-column KonaOS pane, one 42-column PC pane, focused selection,
+status line, and action buttons. Each pane owns a
 path, page cursor, next cursor, selection, and one page of entries.  Support
-Up/Down, PageUp/PageDown, Tab, Enter, Backspace, refresh, help, and quit.
+F1 menu activation, Left/Right menu traversal, Up/Down, PageUp/PageDown, Tab
+focus traversal, Enter, Backspace, refresh, help, and quit.
 Enter on a directory descends; Backspace ascends toward the provider root.
-Ordinary selection movement updates only two cells and the detail row; it must
-not repaint the screen.  Gate: all screen writes are bounded, paths are
+Ordinary selection movement updates only its two one-character markers; the
+detail row changes only when a name is too long for the list field. It must
+not repaint the screen. Gate: all screen writes are bounded, paths are
 bounded, an empty/error directory remains navigable, and both panes update
 independently.
 

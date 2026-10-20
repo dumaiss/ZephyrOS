@@ -307,30 +307,43 @@ class ConsoleReplay(Replay):
     def pump(self, z):
         """Decode newly issued glyph copies into a positioned text model.
 
-        A 6x8 HMMM copy is a printable glyph; a glyph that does not
-        continue the previous copy starts a new model line.  CR/LF and
-        scrolling are handled by the renderer itself, so the model only
-        needs the printed characters."""
+        A 6/12x8 HMMM copy carries one/two atlas-contiguous glyphs, and a
+        6/12x8 HMMV in a terminal background color carries one/two blanks.
+        A cell that does not continue the previous command starts a new model
+        line.  CR/LF and scrolling are handled by the renderer itself, so the
+        model only needs the printed characters."""
         commands = z.vdp.commands
         while z.glyph_pos < len(commands):
             cmd = commands[z.glyph_pos]
             z.glyph_pos += 1
             block = cmd.get("block")
-            if (cmd.get("code") != 0xD0 or not block or
-                    (block[8] | (block[9] << 8)) != 6 or
-                    (block[10] | (block[11] << 8)) != 8):
+            if not block:
                 continue
-            sx = block[0] | (block[1] << 8)
-            sy = block[2]
             dx = block[4] | (block[5] << 8)
             dy = block[6] | (block[7] << 8)
-            glyph = ((sy & 0x3F) >> 3) * 32 + sx // 6
-            if 32 <= glyph < 127:
-                if z.glyph_last == [dy, dx - 6]:
-                    z.glyphs.append(chr(glyph))
-                else:
-                    z.glyphs.append("\n" + chr(glyph))
-                z.glyph_last = [dy, dx]
+            nx = block[8] | (block[9] << 8)
+            ny = block[10] | (block[11] << 8)
+            if nx not in (6, 12) or ny != 8:
+                continue
+            if cmd.get("code") == 0xD0:
+                sx = block[0] | (block[1] << 8)
+                sy = block[2]
+                cells = [((sy & 0x3F) >> 3) * 32 +
+                         (sx + offset) // 6
+                         for offset in range(0, nx, 6)]
+            elif (cmd.get("code") == 0xC0 and
+                  block[12] in (0x44, 0xFF)):
+                cells = [ord(" ")] * (nx // 6)
+            else:
+                continue
+            for offset, glyph in enumerate(cells):
+                at_x = dx + offset * 6
+                if 32 <= glyph < 127:
+                    if z.glyph_last == [dy, at_x - 6]:
+                        z.glyphs.append(chr(glyph))
+                    else:
+                        z.glyphs.append("\n" + chr(glyph))
+                    z.glyph_last = [dy, at_x]
 
     def trace(self, z, since=0):
         self.pump(z)

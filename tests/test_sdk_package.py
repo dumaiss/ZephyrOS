@@ -93,6 +93,7 @@ SDK_FILES = {
     "include/klibc/stdio.h",
     "include/klibc/string.h",
     "include/abi/kos/diag.h",
+    "include/abi/kos/console_render.h",
     "include/abi/kos/errno.h",
     "include/abi/kos/fs.h",
     "include/abi/kos/ipc.h",

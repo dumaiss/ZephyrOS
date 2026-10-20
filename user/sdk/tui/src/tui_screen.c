@@ -53,10 +53,28 @@ void tui_priv_set_cell(uint8_t x, uint8_t y, uint8_t ch, uint8_t attr)
 	}
 	index = TUI_CELL_INDEX((uint8_t)(tui_state.window.x + x),
 			       (uint8_t)(tui_state.window.y + y));
-	if (tui_cells[index].ch != ch || tui_cells[index].attr != attr) {
+	if (tui_cells[index].ch == ch && tui_cells[index].attr == attr) {
+		return;
+	}
+	if (TUI_DIRTY_TEST(index)) {
 		tui_cells[index].ch = ch;
 		tui_cells[index].attr = attr;
+		return;
+	}
+	if (tui_cells[index].ch != ch) {
+		tui_cells[index].ch = ch;
+		tui_cells[index].attr = attr;
+		TUI_INVERT_CLEAR(index);
 		TUI_DIRTY_SET(index);
+		return;
+	}
+	/* With the two-valued attribute model, an attr-only change is its own
+	 * inverse.  Two changes before a flush cancel without touching VRAM. */
+	tui_cells[index].attr = attr;
+	if (TUI_INVERT_TEST(index)) {
+		TUI_INVERT_CLEAR(index);
+	} else {
+		TUI_INVERT_SET(index);
 	}
 }
 

@@ -30,6 +30,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import exepack  # noqa: E402
+import g6pack  # noqa: E402
 import ihx  # noqa: E402
 from z80sim import Z80, read_symbols  # noqa: E402
 
@@ -52,23 +53,23 @@ SHELL_STAGED = os.path.join("build", "modules", "shell.exe")
 # diagnostic gate belong to later packages.  The file built-ins pull in
 # the SDK's FILE wrapper and the namespace wrapper's `list`.
 SHELL_MODULES = {"main", "parse", "path", "lookup", "builtin", "fscmd",
-                 "fs"}
+                 "banner", "logo", "fs"}
 UNUSED_MODULES = ("fsgate", "diaggate", "seg", "xmem", "xload",
                   "xmemgate")
 
 # Staging buffers inside the program's bank: above the image and BSS of
 # the linked shell, below its stack (the artifact test proves the gap).
-LINE = 0x6000
-ARGV = 0x6100
-TAIL = 0x6200
-OUT = 0x6400
-WORDS = 0x6600
-RECORDS = 0x7000
+LINE = 0x6800
+ARGV = 0x6900
+TAIL = 0x6A00
+OUT = 0x6C00
+WORDS = 0x6E00
+RECORDS = 0x7800
 # The buffered console's capture: `putchar` appends its byte here (the
 # console flushes a line at a time, so a host test cannot read the
 # messages out of a call).
-STREAM = 0x6800
-STREAM_LEN = 0x6A00
+STREAM = 0x7000
+STREAM_LEN = 0x7200
 
 
 def _symbols(rel_map):
@@ -427,7 +428,8 @@ class TestShellStartupCwd(ShellImage):
     program's bank, exactly the way the process would see them, and
     `main` runs its startup.  The stubs fail `chdir("/fs")` with
     `KOS_ENODEV` (no card), record every `chdir` path and the long
-    console write, then fail the console so the loop leaves.
+    console write, refuse the banner's `/dev/video` bind, then fail
+    the console so the loop leaves.
     """
 
     # Staged state at the shared record base: the last chdir path (2),
@@ -435,10 +437,10 @@ class TestShellStartupCwd(ShellImage):
     # ld (RECORDS+2),hl : the previous record moves to slot 2.
     CHDIR_STUB = bytes((
         0xE5,                    # push hl       ; the incoming path
-        0x2A, 0x02, 0x70,        # ld hl,(7002h) ; the previous record
-        0x22, 0x04, 0x70,        # ld (7004h),hl ; -> slot 2
+        0x2A, 0x02, 0x78,        # ld hl,(7802h) ; the previous record
+        0x22, 0x04, 0x78,        # ld (7804h),hl ; -> slot 2
         0xE1,                    # pop hl
-        0x22, 0x02, 0x70,        # ld (7002h),hl ; this call's path
+        0x22, 0x02, 0x78,        # ld (7802h),hl ; this call's path
         0x11, 0xFD, 0xFF,        # ld de,#FFF Dh ; -KOS_ENODEV: no card
         0xC9,                    # ret
     ))
@@ -453,7 +455,7 @@ class TestShellStartupCwd(ShellImage):
         0x7B,                    # ld a,e        ; the write length
         0xFE, 0x28,              # cp #40
         0x38, 0x03,              # jr c,+3       ; too short: skip
-        0x22, 0x06, 0x70,        # ld (7006h),hl ; record the buffer
+        0x22, 0x06, 0x78,        # ld (7806h),hl ; record the buffer
         0x11, 0x00, 0x00,        # ld de,#0      ; the write succeeded
         0xC9,                    # ret
     ))
@@ -463,7 +465,9 @@ class TestShellStartupCwd(ShellImage):
         for name, code in (("_chdir", self.CHDIR_STUB),
                            ("_getcwd", self.FAIL_STUB),
                            ("_console_read", self.FAIL_STUB),
-                           ("_console_write", self.WRITE_STUB)):
+                           ("_console_write", self.WRITE_STUB),
+                           ("_bind", self.FAIL_STUB),
+                           ("_diag_system_info", self.FAIL_STUB)):
             address = self.symbols[name]
             bank[address:address + len(code)] = code
         self.capture_console(z, bank)
@@ -648,6 +652,33 @@ class TestShellArtifact(unittest.TestCase):
             max(LINE, ARGV, TAIL, OUT, WORDS, STREAM, STREAM_LEN, RECORDS),
             info["stack"]["base"],
             "the staging area reached the program's stack")
+
+
+class TestShellLogoAsset(unittest.TestCase):
+    """The banner logo: the reviewable .lmmc pixel stream and the C
+    pair the shell links, generated from it by tools/g6pack.py."""
+
+    LMMC = os.path.join(ROOT, "user", "shell", "konaos-logo-80x46.lmmc")
+    LOGO_H = os.path.join(ROOT, "user", "shell", "logo.h")
+    LOGO_C = os.path.join(ROOT, "user", "shell", "logo.c")
+
+    def test_the_dump_is_the_pinned_lmmc_pixel_stream(self):
+        data = g6pack.parse_g6(self.LMMC)
+        self.assertEqual(len(data), g6pack.BYTES)
+        self.assertEqual(g6pack.verify(data, self.LMMC),
+                         g6pack.PINNED_SHA256)
+        # The logo is the G6 LMMC stream: 80 x 46 pixels, one per byte
+        # in the low nibble.
+        self.assertEqual(g6pack.BYTES, 80 * 46)
+        self.assertTrue(all(byte <= 0x0F for byte in data))
+
+    def test_the_committed_c_pair_regenerates_identically(self):
+        data = g6pack.parse_g6(self.LMMC)
+        g6pack.verify(data, self.LMMC)
+        with open(self.LOGO_H, encoding="ascii") as handle:
+            self.assertEqual(handle.read(), g6pack.HEADER)
+        with open(self.LOGO_C, encoding="ascii") as handle:
+            self.assertEqual(handle.read(), g6pack.render_source(data))
 
 
 if __name__ == "__main__":

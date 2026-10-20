@@ -5,12 +5,10 @@
 and `build-console-serial-selftest`.  The tests decode the visible screen from
 each backend and compare it with the same logical model:
 
-* the batch mode draws one 85-column row through 85 `tui_putc` calls.  The
-  serial byte trace must carry one cursor position and one 85-byte run, and
-  the console driver's WRITE dispatches between the program's init and its
-  PASS marker must be exactly the row run, the marker cursor sync, the PASS
-  line and shutdown.  The unchanged redraw between the row and the marker
-  emits nothing.
+* the batch mode draws one 85-column row through 85 `tui_putc` calls.  V9958
+  receives one render stream for that row and one state-only stream for the
+  marker; serial rejects the extension once and retains the legacy writes.
+  The unchanged redraw between the row and the marker emits nothing.
 * the screen mode covers cursor placement, full and clipped rows, control
   bytes, everything outside the right and bottom edges, nested transactions,
   an explicit flush inside a transaction, cursor visibility and formatting.
@@ -56,6 +54,7 @@ SCREEN_PASS = "tui: screen pass"
 ROWS = 26
 COLS = 85
 SCREEN_ROWS = 21
+RENDER_MAX = 4096
 
 FORMAT_ROW = "str Z -1234 54321 ABCD -123456 123456 BEEF 00042   ab %"
 FORMAT_ROW_XY = "0012|ok|!|-7"
@@ -136,6 +135,38 @@ def shutdown_screen():
     _put(screen, 2, 5, "xy")
     return screen
 
+
+
+def _cycle(count):
+    text = ""
+    ch = "A"
+    for _ in range(count):
+        text += ch
+        ch = chr(ord(ch) + 1)
+        if ch > "Z":
+            ch = "A"
+    return text
+
+
+def invertspan_screen():
+    screen = _blank_screen()
+    _put(screen, 3, 4, "OLD")
+    _put(screen, 3, 20, "NEW")
+    return screen
+
+
+def renderboundary_screen():
+    screen = _blank_screen()
+    _put(screen, 0, 0, _cycle(52))
+    _put(screen, 1, 0, "Z")
+    return screen
+
+
+def renderrows_screen():
+    screen = _blank_screen()
+    _put(screen, 0, 0, _cycle(COLS))
+    _put(screen, 1, 0, _cycle(COLS))
+    return screen
 
 
 def windows_screen():
@@ -389,6 +420,21 @@ def decode_v9958_screen(replay, z, command_start):
                     at_col = x // 6
                     if at_col < COLS:
                         screen[at_row][at_col] = (" ", attr)
+        elif command["code"] == 0x83:  # LMMV with EOR: normal/reverse
+            dx = block[4] | (block[5] << 8)
+            dy = block[6] | (block[7] << 8)
+            nx = block[8] | (block[9] << 8)
+            ny = block[10] | (block[11] << 8)
+            for scan in range(dy, dy + ny, 8):
+                offset = (scan - origin) & 0xFF
+                if offset >= ROWS * 8 or offset % 8 != 0:
+                    continue
+                at_row = offset // 8
+                for x in range(dx, dx + nx, 6):
+                    at_col = x // 6
+                    if at_col < COLS:
+                        ch, attr = screen[at_row][at_col]
+                        screen[at_row][at_col] = (ch, attr ^ 1)
         elif command["code"] == 0xD0:  # HMMM copy
             sx = block[0] | (block[1] << 8)
             sy = block[2] | (block[3] << 8)
@@ -396,17 +442,19 @@ def decode_v9958_screen(replay, z, command_start):
             dy = block[6] | (block[7] << 8)
             nx = block[8] | (block[9] << 8)
             ny = block[10] | (block[11] << 8)
-            if nx != 6 or ny != 8:
+            if nx == 0 or nx % 6 != 0 or ny != 8:
                 continue
             offset = (dy - origin) & 0xFF
             if offset >= ROWS * 8 or offset % 8 != 0:
                 continue
             at_row = offset // 8
-            at_col = dx // 6
-            glyph = ((sy & 0x3F) >> 3) * 32 + sx // 6
             attr = 1 if sy & 0x0040 else 0
-            if at_col < COLS:
-                screen[at_row][at_col] = (chr(glyph), attr)
+            for x_offset in range(0, nx, 6):
+                at_col = (dx + x_offset) // 6
+                glyph = (((sy & 0x3F) >> 3) * 32 +
+                         (sx + x_offset) // 6)
+                if at_col < COLS:
+                    screen[at_row][at_col] = (chr(glyph), attr)
     return screen
 
 
@@ -514,6 +562,19 @@ class TuiSimBase(unittest.TestCase):
             return None
         return z.rd16((z.hl + 4) & 0xFFFF)
 
+    def _render_length(self, z):
+        """The length of a console RENDER dispatch at the current PC."""
+        if z.pc != self.dispatch:
+            return None
+        try:
+            if z.bank_of(z.pc) != 6:
+                return None
+        except SystemExit:
+            return None
+        if z.rd(z.hl) != 6:  # KCONSOLE_OP_RENDER
+            return None
+        return z.rd16((z.hl + 4) & 0xFFFF)
+
     def _boot(self):
         replay = _Replay(self.image, self.SUBDIR)
         z = replay.make_cpu()
@@ -547,7 +608,9 @@ class TuiSimBase(unittest.TestCase):
         else:
             z.hid.hid_queue.extend(command)
         writes = []
+        renders = []
         armed = False
+        init_command_start = command_start
         late_sent = False
         if expected is None:
             if mode == "foundation":
@@ -561,6 +624,10 @@ class TuiSimBase(unittest.TestCase):
                     writes.append(length)
                 elif length == TUI_INIT_LENGTH:
                     armed = True
+                    init_command_start = len(z.vdp.commands)
+            render_length = self._render_length(z)
+            if render_length is not None and armed:
+                renders.append(render_length)
             replay.skip_delay(z)
             z.step()
             if step % 0x1FFF == 0:
@@ -604,8 +671,10 @@ class TuiSimBase(unittest.TestCase):
             "replay": replay,
             "z": z,
             "writes": writes,
+            "renders": renders,
             "lane": bytes(z.sio_tx[serial_start:]),
             "command_start": command_start,
+            "init_command_start": init_command_start,
             "glyphs": "".join(z.glyphs[glyph_start:]),
         }
 
@@ -676,12 +745,23 @@ class TuiModeChecks:
                       text)
 
     def test_widget_form_flush_counts(self):
-        full = self._run("flushfull")["writes"][:-1]
-        same = self._run("flushsame")["writes"][:-1]
-        row = self._run("flushrow")["writes"][:-1]
-        self.assertEqual(full, [126, 7, 112, 27, 53, 96, 6])
-        self.assertEqual(same, full)
-        self.assertEqual(row, full + [17])
+        full = self._run("flushfull")
+        same = self._run("flushsame")
+        row = self._run("flushrow")
+        if self.SERIAL:
+            full = full["writes"][:-1]
+            same = same["writes"][:-1]
+            row = row["writes"][:-1]
+            self.assertEqual(full, [126, 7, 112, 27, 53, 96, 6])
+            self.assertEqual(same, full)
+            self.assertEqual(row, full + [17])
+        else:
+            full = full["renders"]
+            same = same["renders"]
+            row = row["renders"]
+            self.assertEqual(full, [82, 96, 100, 100, 88])
+            self.assertEqual(same, full)
+            self.assertEqual(row, full + [17])
 
     def test_windows_clips_clears_and_shifts(self):
         run = self._assert_rows("windows", windows_screen())
@@ -717,6 +797,53 @@ class TuiModeChecks:
         self.assertIn("tui: widgets m=12 f=10 e=0 i=1 c=0 t=1", text)
         self.assertIn("tui: widgets n=dam s=0 cf=4 ms=2", text)
         self.assertIn("tui: widgets pass", text)
+
+    def test_invertspan_keeps_glyphs_and_uses_two_spans(self):
+        run = self._assert_rows("invertspan", invertspan_screen())
+        if self.SERIAL:
+            return
+        commands = run["z"].vdp.commands[run["command_start"]:]
+        inversions = [command for command in commands
+                      if command["code"] == 0x83]
+        self.assertEqual(len(inversions), 4)
+        first = commands.index(inversions[0])
+        last = commands.index(inversions[-1])
+        self.assertFalse([command for command in commands[first:last]
+                          if command["code"] == 0xD0],
+                         "an attribute-only transition repainted a glyph")
+        for command in inversions:
+            block = command["block"]
+            self.assertEqual(block[12], 0x0B)
+            self.assertEqual(block[10] | (block[11] << 8), 8)
+        self.assertEqual(run["renders"], [28, 28, 28, 10])
+
+    def test_record_header_crosses_the_staging_chunk(self):
+        run = self._assert_rows("renderboundary", renderboundary_screen())
+        if not self.SERIAL:
+            self.assertEqual(run["renders"][0], 75)
+
+    def test_two_dirty_rows_split_at_record_boundaries(self):
+        run = self._assert_rows("renderrows", renderrows_screen())
+        if not self.SERIAL:
+            self.assertEqual(run["renders"][:2], [101, 101])
+
+    def test_render_rejects_malformed_streams_before_backend_work(self):
+        run = self._run("renderbad")
+        self.assertIn("tui: renderbad pass", self._text(run))
+        if not self.SERIAL:
+            commands = run["z"].vdp.commands[run["init_command_start"]:]
+            self.assertFalse(
+                [command for command in commands
+                 if command["code"] == 0x83 or
+                 (command["code"] == 0xD0 and
+                  (command["block"][6] |
+                   (command["block"][7] << 8)) < 22 * 8)],
+                "a malformed stream drew glyphs or inverted cells")
+
+    def test_render_accepts_the_maximum_stream_length(self):
+        run = self._run("rendermax")
+        self.assertIn("tui: rendermax pass", self._text(run))
+        self.assertEqual(run["renders"], [RENDER_MAX])
 
 
 class TestTuiSerialScreen(TuiModeChecks, TuiSimBase):
@@ -789,13 +916,38 @@ class TestTuiV9958Screen(TuiModeChecks, TuiSimBase):
         writes = run["writes"]
         if len(TUI_SHUTDOWN) in writes:
             writes = writes[:writes.index(len(TUI_SHUTDOWN)) + 1]
-        self.assertEqual(writes, [91, 7, 17, 15])
+        self.assertEqual(writes, [17, 15])
+        self.assertEqual(run["renders"], [101, 10])
         screen = decode_v9958_screen(run["replay"], run["z"],
                                      run["command_start"])
         self.assertEqual("".join(ch for ch, _attr in screen[0]), batch_row())
         for row in range(1, 21):
             self.assertEqual("".join(ch for ch, _attr in screen[row]),
                              " " * COLS)
+        commands = run["z"].vdp.commands[run["command_start"]:]
+        wide_copies = [command for command in commands
+                       if command["code"] == 0xD0 and
+                       command["block"][8] == 12 and
+                       command["block"][9] == 0]
+        self.assertGreaterEqual(len(wide_copies), 40)
+        r8 = [value for value, register, _now in run["z"].vdp.reg_writes
+              if register == 8]
+        sprites_off = r8.index(0x0A)
+        self.assertIn(0x08, r8[sprites_off + 1:])
+
+    def test_attribute_only_changes_use_lmmv_eor(self):
+        run = self._run("invert")
+        commands = run["z"].vdp.commands[run["command_start"]:]
+        inversions = [command for command in commands
+                      if command["code"] == 0x83]
+        self.assertEqual(len(inversions), 2)
+        for command in inversions:
+            block = command["block"]
+            self.assertEqual(block[4] | (block[5] << 8), 4 * 6)
+            self.assertEqual(block[8] | (block[9] << 8), 4 * 6)
+            self.assertEqual(block[10] | (block[11] << 8), 8)
+            self.assertEqual(block[12], 0x0B)
+        self.assertEqual(run["renders"], [20, 20, 20, 10])
 
     def test_foundation_still_passes(self):
         run = self._run("foundation")
@@ -814,8 +966,8 @@ class TestTuiV9958Screen(TuiModeChecks, TuiSimBase):
     def test_shutdown_flushes_dirty_cells(self):
         run = self._run("shutdown")
         writes = run["writes"]
-        self.assertGreaterEqual(len(writes), 3)
-        self.assertEqual(writes[:3], [126, 15, 20])
+        self.assertEqual(writes[:2], [15, 20])
+        self.assertTrue(run["renders"])
         screen = decode_v9958_screen(run["replay"], run["z"],
                                      run["command_start"])
         expected = shutdown_screen()

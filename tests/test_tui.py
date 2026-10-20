@@ -10,7 +10,7 @@ These tests pin the screen engine:
   SDK headers, and carries the architecture's key, style and frame values;
 * `libtui.lib` contains the storage, screen, lifecycle, flush, formatter,
   window, style, key and region members and is packed without build dates;
-* one static cell map and one static dirty bitmap back the screen engine,
+* one static cell map, dirty bitmap and invert bitmap back the screen engine,
   and the optional groups stay in their own members;
 * `tui_test.exe` links the widget archive before `libtui` and both before
   `libkos`, and its link map carries the TUI members;
@@ -125,9 +125,8 @@ WIDGET_FUNCTIONS = {
     "tui_listbox", "tui_menu_run", "tui_input_run",
 }
 
-# The cell map and dirty bitmap live in the storage member; these are the
-# only two full-screen arrays.
-TUI_STORAGE_SYMBOLS = ("_tui_cells", "_tui_dirty")
+# The cell map and two classification bitmaps live in the storage member.
+TUI_STORAGE_SYMBOLS = ("_tui_cells", "_tui_dirty", "_tui_invert")
 
 FORBIDDEN_INCLUDE_HEADS = ("kernel", "drivers", "formats", "platform",
                            "boot", "config", "linker")
@@ -255,6 +254,36 @@ class TestTuiHeader(unittest.TestCase):
                             "struct tui_cell"):
             self.assertIn(declaration, self.text)
 
+    def test_render_abi_is_pinned(self):
+        protocol = _read(os.path.join("abi", "kos", "protocol.h"))
+        render = _read(os.path.join("abi", "kos", "console_render.h"))
+
+        def value(name):
+            match = re.search(r"(?m)^#define\s+%s\s+(\S+)" % name, render)
+            self.assertIsNotNone(match, name)
+            return int(match.group(1).rstrip("u"), 0)
+
+        self.assertEqual(
+            int(re.search(r"(?m)^#define\s+KCONSOLE_OP_RENDER\s+(\S+)",
+                          protocol).group(1).rstrip("u"), 0), 6)
+        self.assertEqual(
+            int(re.search(r"(?m)^#define\s+KVIDEO_OP_RENDER\s+(\S+)",
+                          protocol).group(1).rstrip("u"), 0), 4)
+        self.assertEqual(value("KCONSOLE_RENDER_VERSION"), 1)
+        self.assertEqual(value("KCONSOLE_RENDER_TEXT"), 1)
+        self.assertEqual(value("KCONSOLE_RENDER_INVERT"), 2)
+        self.assertEqual(value("KCONSOLE_RENDER_STATE"), 3)
+        self.assertEqual(value("KCONSOLE_RENDER_HEADER_SIZE"), 4)
+        self.assertEqual(value("KCONSOLE_RENDER_SPAN_BASE"), 6)
+        self.assertEqual(value("KCONSOLE_RENDER_STATE_SIZE"), 6)
+        self.assertEqual(value("KCONSOLE_RENDER_COLS"), 85)
+        self.assertEqual(value("KCONSOLE_RENDER_ROWS"), 26)
+        for field in ("uint8_t version;", "uint8_t flags;",
+                      "uint16_t total_length;"):
+            self.assertIn(field, render)
+        self.assertIn("console_render(const void *stream", _read(
+            os.path.join("user", "sdk", "include", "kos", "console.h")))
+
 
 class TestTuiLibrary(unittest.TestCase):
     """libtui: coherent members, deterministic archive, public boundary."""
@@ -294,7 +323,8 @@ class TestTuiLibrary(unittest.TestCase):
                 if name.startswith("tui_") and include == "tui_internal.h":
                     continue
                 self.assertIn(include, ("tui.h", "tui_internal.h",
-                                        "kos.h", "kos/console.h",
+                           "kos.h", "kos/console.h",
+                           "kos/console_render.h",
                                         "kos/types.h", "kos/errno.h",
                                         "klibc/fmt.h", "klibc/stdarg.h",
                                         "klibc/string.h"),
@@ -337,7 +367,6 @@ class TestTuiLibrary(unittest.TestCase):
         self.assertIn('TUI_SGR_REVERSE "\\033[7m"', body)
         self.assertIn("TUI_CURSOR_SHOW", body)
         self.assertIn("TUI_CURSOR_HIDE", body)
-
 
 class TestTuiLink(unittest.TestCase):
     """Opting in with LIBS=tui: archive order and link-map consequences."""
@@ -386,7 +415,7 @@ class TestTuiLink(unittest.TestCase):
         self.assertNotIn("tui_priv_", public)
         self.assertNotIn("widget_", public)
 
-    def test_one_cell_map_and_one_dirty_bitmap(self):
+    def test_one_cell_map_and_two_classification_bitmaps(self):
         for name in TUI_STORAGE_SYMBOLS:
             self.assertIn(name, self.symbols)
         self.assertEqual(
@@ -395,11 +424,17 @@ class TestTuiLink(unittest.TestCase):
         self.assertEqual(
             len([name for name in self.symbols
                  if name.startswith("_tui_dirty")]), 1)
+        self.assertEqual(
+            len([name for name in self.symbols
+                 if name.startswith("_tui_invert")]), 1)
         cells = self.symbols["_tui_cells"][0]
         dirty = self.symbols["_tui_dirty"][0]
+        invert = self.symbols["_tui_invert"][0]
         run = self.symbols["_tui_run"][0]
         self.assertEqual(dirty - cells, 85 * 26 * 2)
-        self.assertEqual(run - dirty, (85 * 26 + 7) // 8)
+        self.assertEqual(invert - dirty, (85 * 26 + 7) // 8)
+        self.assertEqual(run - invert, (85 * 26 + 7) // 8)
+        self.assertNotIn("_tui_render", self.symbols)
 
     def test_the_formatter_is_its_own_member(self):
         for name in ("_tui_printf", "_tui_printf_xy"):

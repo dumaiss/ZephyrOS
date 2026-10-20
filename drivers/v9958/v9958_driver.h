@@ -133,6 +133,9 @@ _Static_assert(V9958_ATLAS_NORMAL_A16 == 1u && V9958_ATLAS_REVERSE_A16 == 1u &&
 
 #define V9958_CMD_HMMV   0xC0u
 #define V9958_CMD_HMMM   0xD0u
+#define V9958_CMD_LMMV   0x80u
+#define V9958_CMD_EOR    0x03u
+#define V9958_CMD_LMMV_EOR (V9958_CMD_LMMV | V9958_CMD_EOR)
 
 /* Clear-screen fill: the full 256-line page-zero bitmap in the default
  * background (palette index 4, packed byte 44h). */
@@ -142,6 +145,9 @@ _Static_assert(V9958_ATLAS_NORMAL_A16 == 1u && V9958_ATLAS_REVERSE_A16 == 1u &&
 #define V9958_CLEAR_HEIGHT_HI 0x01u /* 256 lines                           */
 #define V9958_CLEAR_COLOR     0x44u
 #define V9958_FILL_COLOR_REVERSE 0xFFu /* white background (reverse video) */
+#define V9958_COLOR_NORMAL  0x04u
+#define V9958_COLOR_REVERSE 0x0Fu
+#define V9958_INVERT_COLOR  (V9958_COLOR_NORMAL ^ V9958_COLOR_REVERSE)
 
 /* --- Port-call ABI with v9958_io.asm ----------------------------------
  *
@@ -179,6 +185,7 @@ void v9958_io_stream_indirect(struct v9958_block *block);
  * sdcccall(1) shapes the driver dispatch calls. */
 int v9958_char_putc(void *state, char ch);
 int v9958_char_write(void *state, const char *buf, uint16_t len);
+int v9958_render_transaction(struct kos_ipc_frame *frame);
 
 /* Driver state: module BSS, relocated with the module image. */
 struct v9958_state {
@@ -212,6 +219,15 @@ struct v9958_state {
 	/* --- exclusive handle (the console's restore contract) --- */
 	uint8_t exclusive;       /* a program holds the object      */
 	uint16_t dropped;        /* terminal bytes dropped while held */
+
+	/* --- last cursor sprite state committed to VRAM --- */
+	uint8_t cursor_sat_valid;
+	uint8_t cursor_sat_visible;
+	uint8_t cursor_sat_x;
+	uint8_t cursor_sat_y;
+
+	/* Nonzero while KVIDEO_OP_RENDER owns the presentation boundary. */
+	uint8_t render_active;
 };
 
 /* The assembly renderer (v9958_io.asm) reads these fields by offset. */
@@ -246,8 +262,9 @@ _Static_assert(V9958_OUT_RUN_SIZE == 64u && V9958_COLUMNS == 85u &&
 #endif /* __SDCC */
 
 /* The renderer's hot path (v9958_io.asm):
- *   v9958_out_flush  renders the pending print run, one HMMM glyph copy
- *                    per character, and empties it;
+ *   v9958_out_flush  renders the pending print run, coalescing spaces into
+ *                    HMMV fills and atlas-contiguous glyphs into wider HMMM
+ *                    copies, and empties it;
  *   v9958_term_write appends the plain printable bytes of `buf` to the
  *                    run while the parser is in its normal state and the
  *                    run has room before the right margin, and passes
@@ -256,6 +273,11 @@ void v9958_out_flush(void);
 void v9958_term_write(const uint8_t *buf, uint16_t len);
 void v9958_term_feed(uint8_t byte);
 extern uint8_t *v9958_run_ptr;
+
+void v9958_render_invert(uint8_t x, uint8_t y, uint8_t count);
+void v9958_render_text_data(const uint8_t *buf, uint16_t len);
+void v9958_render_finish_worker(void);
+int v9958_driver_render_worker(struct kos_ipc_frame *frame);
 
 /* Internal result convention of the bring-up chain. */
 #define V9958_OK   0
