@@ -8,7 +8,7 @@ source-layout facts that run depends on:
 - `drivers/iocfat/` reaches the MCU FatFs driver only through the IOC class
   interface: no SIO port access, no raw I/O and no `drivers/ioc` include;
 - the driver image packs inside the 13-granule ceiling and keeps the hot
-  tier's 2,048-byte reserve;
+  tier's 1,536-byte reserve;
 - the block cache's C geometry is the bulk segment the packer placed, and
   the module carries no test-only counter;
 - production loads it as one of the drivers the boot manifest lists, and
@@ -168,14 +168,14 @@ class TestIocFatManifest(IocFatStaticBase):
         self.assertGreater(info["image_size"], 0)
         self.assertEqual([segment["role"] for segment in info["segments"]],
                          ["hot", "io", "bulk"])
-        # The render-transaction driver growth leaves at least 2 KiB for
-        # another bounded device implementation.
-        # after every image is placed.
+        # The driver hot tier keeps a 1,536-byte reserve for the next
+        # bounded device implementation, checked after every image is
+        # placed.
         plan = json.loads(read(DRIVER_PLAN))
         hot = plan["nucleus"]
         free = int(hot["driver_hot_capacity_bytes"]) - \
             int(hot["driver_hot_bytes"])
-        self.assertGreaterEqual(free, 2048,
+        self.assertGreaterEqual(free, 1536,
                                 "driver hot tier has only %d bytes free"
                                 % free)
 

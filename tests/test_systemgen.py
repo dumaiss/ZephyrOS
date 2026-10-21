@@ -417,7 +417,8 @@ class TestTheRealSystems(unittest.TestCase):
             console = json.load(handle)
         self.assertEqual(console["depends"],
                          [{"class": 4, "instance": 0},
-                          {"class": 2, "instance": 0}])
+                          {"class": 2, "instance": 0},
+                          {"class": 1, "instance": 0}])
 
     def test_the_missing_image_store_leaves_the_driver_out(self):
         self.assertEqual(self.generate("console-serial-missing",

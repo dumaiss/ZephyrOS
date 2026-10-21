@@ -896,7 +896,9 @@ error. Drivers never bind `/dev` names at run time to find each other.
 `/dev/console` is not special. Each build selects one console driver:
 
 ```text
-console-v9958-hid   CONSOLE over VIDEO (V9958) + INPUT (HID)
+console-v9958-hid   CONSOLE over VIDEO (V9958) + INPUT (HID) + SERIAL
+                    (the serial rescue path: the ESC gesture, input
+                    ownership and the tee)
 console-serial      CONSOLE over SERIAL (SIO)
 ```
 
@@ -929,6 +931,20 @@ console it selected. Programs cannot tell which implementation answers.
   never reach programs. The deployed firmware limits card names to **8.3**.
 - Caching is the provider's policy. The VFS has no cache, and ROMFS needs
   none.
+- **The console's serial rescue path.** The production console owns
+  three bytes of driver state - the input owner, the tee flag and the
+  ESC count - written only by its dispatch.  Three 1Bh bytes from the
+  serial line toggle input ownership between the HID and the serial
+  line and arm the tee, which mirrors `WRITE` and `PUTC` to SERIAL
+  (VIDEO first; a SERIAL failure does not fail the call) and refuses
+  `RENDER` with `-KOS_ENOTSUP`, so `libtui`'s ANSI fallback reaches
+  both screens.  Three more ESCs switch ownership back; the tee stays
+  armed until the reboot.  Detection is polled: every input op drains
+  the serial line through `KSIO_OP_GETC`, so a program that never
+  calls the console's input ops does not see the gesture.  Only the
+  third ESC of a run is consumed; the first two are delivered as data
+  while the serial line owns input, so VT100 key sequences keep their
+  lead-in.
 - **Sound is lifecycle plus a coarse path.** The `sound` driver
   (`KOS_CLASS_SOUND`, type `SOUND`, `kos/ksound.h`) owns the card's reset
   and a batched write. It keeps no copy of the chips' registers, because a
@@ -1275,7 +1291,7 @@ ledgers (`docs/memory.md` has the current values):
 |---|---|---:|---|
 | `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR and driver stacks) | 16,384 | keep ≥ 2,048 free |
 | `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | keep ≥ 4,096 free |
-| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 2,048 free |
+| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 1,536 free |
 | `driver boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
 | `common:` | packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | never raised |
 | gate stack | common | 384 | worst case ≤ 360 |

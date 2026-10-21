@@ -30,7 +30,7 @@ The production store carries the drivers below, loaded in this order:
 | `ioc` | `IOC` (5) | the Z80-to-MCU transport | `/dev/ioc` |
 | `hid` | `HID` (4), type `INPUT` | keyboard text over IOC | `/dev/input/keyboard` |
 | `v9958` | `VIDEO` (2) | the V9958, its terminal renderer | `/dev/video` |
-| `console-v9958-hid` | `CONSOLE` (6) | the console, over HID and V9958 | `/dev/console` |
+| `console-v9958-hid` | `CONSOLE` (6) | the console, over HID and V9958, with the serial rescue path | `/dev/console` |
 | `iocfat` | `FILE` (7), types `FILE` and `FS` | the filesystem over IOC | `/fs` |
 | `timer` | `TIMER` (10) | the monotonic clock, CTC physical channel 2 (port 41h) | `/dev/timer` |
 
@@ -302,13 +302,13 @@ One source, two images, selected per build:
 
 | image | input | output |
 |---|---|---|
-| `console-v9958-hid` | HID | VIDEO |
+| `console-v9958-hid` | HID | VIDEO (and SERIAL, as the rescue tee) |
 | `console-serial` | SERIAL | SERIAL |
 
 - The console forwards each operation as one call to the endpoint its
   build selected; a descriptor travels down unchanged, so nothing is
-  staged here. It owns no buffer, no IRQ and no state beyond its two
-  endpoint numbers.
+  staged here. It owns no IRQ; its state is its endpoint numbers, the
+  three rescue bytes below and the one-byte serial staging byte.
 - Its dependencies are required: a missing one fails its init, and a
   failed required driver is a boot failure. There is no run-time probe and
   no fallback.
@@ -327,8 +327,37 @@ One source, two images, selected per build:
 queue, so nothing typed for the program that is going away reaches the one
 that starts, and the V9958 build then forwards `KVIDEO_OP_RESET` to its
 output dependency (the serial build has no video to reset and answers 0).
-The boot launcher runs it before every start of the boot program
-(section 14).
+The V9958 build also drains the serial queue on reset (the gesture is
+still detected on the way); while the serial line owns input the HID
+queue is left alone, so keyboard bytes typed meanwhile are delivered once
+ownership returns. The boot launcher runs the reset before every start of
+the boot program (section 14).
+
+**The serial rescue path** (the V9958/HID build only): three 1Bh bytes
+from the serial line toggle input ownership between the HID and the
+serial line and arm the tee; three more switch ownership back, and the
+tee stays armed until the reboot. The state is three bytes in the
+driver I/O area - `input_owner`, `tee_armed` and `esc_count` - read and
+written only by the console dispatch, which names them.
+
+- Detection is polled: every input op drains the serial line through
+  `KSIO_OP_GETC`, consuming each byte. Three consecutive ESCs toggle
+  ownership and arm the tee (arming on takeover rescues a dark screen in
+  one gesture); any other byte resets the count. Only the third ESC of a
+  run is consumed: the first two are data, so a VT100 key sequence's
+  lead-in reaches the program while the serial line owns input. While
+  the HID owns input those bytes are dropped; while the serial line owns
+  input the first data byte is held in the one-byte staging byte and
+  served by the op: `READ` copies it out through that buffer and returns
+  one byte per call (a short read), `GETC` returns it, `POLL` answers 1.
+  The arming gesture's bytes never reach a program.
+- While armed, `WRITE` and `PUTC` go to VIDEO first and then to SERIAL
+  (the caller's descriptor travels on), and a SERIAL failure does not
+  fail the call. `RENDER` returns `-KOS_ENOTSUP` while armed, so
+  `libtui` falls back to its ANSI dirty-run renderer, which the tee
+  carries to both screens; unarmed, RENDER is forwarded unchanged.
+- The limit of polled detection: a program that never calls the
+  console's input ops does not see the gesture.
 
 The V9958/HID composition forwards RENDER unchanged to VIDEO, preserving one
 application call as one driver-visible transaction. The serial composition

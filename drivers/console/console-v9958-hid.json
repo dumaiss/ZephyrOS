@@ -42,6 +42,7 @@
   ],
   "depends": [
     "INPUT",
-    "VIDEO"
+    "VIDEO",
+    "SERIAL"
   ]
 }

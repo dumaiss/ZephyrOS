@@ -82,8 +82,9 @@ DRIVER_SET = (("sio.mod", 1), ("ioc.mod", 5), ("hid.mod", 4),
                ("timer.mod", 10), ("sound.mod", 9), ("iocfat.mod", 7))
 
 # The console image's required dependencies (class, instance), in
-# manifest order.  `console-serial` is exercised by test_console_serial.
-CONSOLE_DEPS = {"console-v9958-hid.mod": ((4, 0), (2, 0))}
+# manifest order: HID input, VIDEO output, SERIAL as the rescue path.
+# `console-serial` is exercised by test_console_serial.
+CONSOLE_DEPS = {"console-v9958-hid.mod": ((4, 0), (2, 0), (1, 0))}
 
 # IOC peer traffic: the lane's one bounded bring-up, then the IOC-FAT
 # driver's FS2 exchange through its resolved IOC endpoint.
@@ -244,7 +245,7 @@ class TestProductionImage(ConsoleReplayBase):
         is named symbolically: tools/systemgen.py resolves it against the
         selected set (tests/test_systemgen.py)."""
         expected = {
-            "console-v9958-hid": ["INPUT", "VIDEO"],
+            "console-v9958-hid": ["INPUT", "VIDEO", "SERIAL"],
             "console-serial": ["SERIAL"],
         }
         for name, deps in expected.items():
