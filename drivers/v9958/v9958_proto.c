@@ -15,15 +15,11 @@
  *                    the VDP exclusively (below).
  *
  * The display reset (KVIDEO_RESET, ESC c, RIS) re-runs the whole
- * bring-up chain, including the font upload: this is exactly why the
- * chain is hot, and why the font upload reads the bulk-tier font through
- * the nucleus bulk copy - the mode-11 window cannot show 0000h-5FFFh of
- * bank 6.
+ * bring-up chain: this is exactly why the chain is hot.
  *
- * The init entry (mode-11 window, bootstrap interface visible) performs
- * the run-time probe: one 64-byte font chunk through bulk_read, proving
- * the extent the loader registered with this image is readable before
- * any run-time reset can need it.
+ * The init entry (mode-11 window, bootstrap interface visible) builds the
+ * renderer's expansion pages in the mapped segment, inside a bulk-map
+ * span (v9958_expand_init).
  */
 
 #include "kos/errno.h"
@@ -35,7 +31,7 @@
 
 /* Staging block in the DRIVER_IO area (8000h-BFFFh): the fast copy
  * range the streaming operations and the terminal write copy into. */
-#define V9958_DRIVER_BATCH V9958_FONT_CHUNK
+#define V9958_DRIVER_BATCH 64u
 
 static const struct driver_api *v9958_driver_api;
 static uint8_t v9958_batch[V9958_DRIVER_BATCH];
@@ -366,16 +362,12 @@ int16_t v9958_driver_dispatch(struct kos_ipc_frame *frame)
 
 uint8_t v9958_driver_init(const struct driver_boot *boot)
 {
-	uint8_t probe[V9958_FONT_CHUNK];
 	const struct driver_api *api = boot->api;
 
 	v9958_driver_api = api;
 	v9958_set_api(api);
 	v9958_batch_address = (uint16_t)v9958_batch;
-	/* From here every font read is the run-time nucleus bulk copy; the
-	 * boot segment's direct source has done its job. */
-	v9958_set_font_base(0u);
 	v9958_batch_ptr = v9958_batch;
-	(void)api->bulk_read(0u, (uint16_t)probe, V9958_FONT_CHUNK);
+	v9958_expand_init();
 	return 0u;
 }

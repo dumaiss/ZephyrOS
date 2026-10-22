@@ -17,8 +17,10 @@ reports and the link maps.  The hand-written v9958_io.asm has no build
 listing, so the script generates one with sdasz80 (the build's own
 flags) and aligns it on `_v9958_io_wait_command` against the report.
 The shared `_v9958_io_stream_indirect` is attributed through the last
-CALL site: command setup when called from `_v9958_out_flush`, SAT
-writes when called from `v9958_cursor_write_sat`.
+CALL site, so a command block streamed for a fill or a scroll is charged
+to the code that started it.  `_v9958_out_flush` writes the glyphs
+itself (direct VRAM writes inside a bulk-map span); its bucket is the
+whole flush, its CE wait the shared `_v9958_io_wait_command`.
 
 The bench subtracts two full clock readings from every batch although
 only one falls inside the interval, so its printed totals underreport by
@@ -92,7 +94,7 @@ BUCKETS = [
     "wrapper (private stack, R#8)",
     "parser (term_feed)",
     "fast path (term_write)",
-    "command setup (out_flush)",
+    "glyph drawing (out_flush)",
     "CE wait",
     "SAT writes",
     "scroll",
@@ -224,7 +226,7 @@ def build_ranges():
     proto = parse_lst_functions(os.path.join(MODULES, "v9958_driver.lst"))
     asm = generate_io_listing()
 
-    for name in ("v9958_cursor_write_sat", "v9958_expand_row",
+    for name in ("v9958_cursor_write_sat", "v9958_init_g6",
                  "v9958_fill_cells", "v9958_copy_rows", "v9958_term_sync",
                  "v9958_scroll_up", "v9958_advance_cursor", "v9958_newline",
                  "v9958_put_printable", "v9958_term_cr", "v9958_term_feed",
@@ -232,8 +234,7 @@ def build_ranges():
                  "v9958_char_write_worker", "v9958_send"):
         if name not in c:
             die("v9958.lst has no %s" % name)
-    for name in ("v9958_sprites_off", "v9958_hold_restore",
-                 "v9958_span_wait"):
+    for name in ("v9958_sprites_off", "v9958_hold_restore"):
         if name not in asm:
             die("the asm listing has no %s" % name)
     for name in ("_v9958_out_flush", "_v9958_term_write",
@@ -254,9 +255,6 @@ def build_ranges():
     def region(lo, hi):
         return (at(lo), at(hi))
 
-    span_wait = at(asm["v9958_span_wait"])
-    span_wait_loop = (span_wait, span_wait + 6)
-
     # The proto part's shift: the report's dispatch offset minus the
     # listing's.
     proto_shift = (symbols["_v9958_driver_dispatch"] -
@@ -268,14 +266,13 @@ def build_ranges():
             (at(symbols["_v9958_char_write"]),
              at(symbols["_v9958_render_transaction"])),
         ],
-        "command setup (out_flush)": [
-            (at(symbols["_v9958_out_flush"]), span_wait_loop[0]),
-            (span_wait_loop[1], at(symbols["_v9958_term_write"])),
+        "glyph drawing (out_flush)": [
+            (at(symbols["_v9958_out_flush"]),
+             at(symbols["_v9958_term_write"])),
         ],
         "CE wait": [
             (at(symbols["_v9958_io_wait_command"]),
              at(symbols["_v9958_io_stream_ctrl"])),
-            span_wait_loop,
         ],
         "fast path (term_write)": [
             (at(symbols["_v9958_term_write"]),
@@ -285,7 +282,7 @@ def build_ranges():
             region(c["v9958_term_feed"], c["v9958_overtaken"]),
         ],
         "SAT writes": [
-            region(c["v9958_cursor_write_sat"], c["v9958_expand_row"]),
+            region(c["v9958_cursor_write_sat"], c["v9958_init_g6"]),
         ],
         "scroll": [
             region(c["v9958_scroll_up"], c["v9958_advance_cursor"]),
@@ -369,7 +366,7 @@ def classify(ranges, decoder, pc, latch):
     # The specific ranges first, the whole-module remainder last.
     for name in ("V9958 dispatch and staging", "wrapper (private stack, R#8)",
                  "parser (term_feed)", "fast path (term_write)",
-                 "command setup (out_flush)", "CE wait", "SAT writes",
+                 "glyph drawing (out_flush)", "CE wait", "SAT writes",
                  "scroll", "other: terminal glue (C)", "other: C worker",
                  "console driver", "other: timer driver (interrupt)",
                  "other: v9958 remainder"):

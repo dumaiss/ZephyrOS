@@ -43,6 +43,8 @@
 #define IPC_OP_ECHO_EXCHANGE 1u /* payload[1] = payload[0], result + 1    */
 #define IPC_OP_ECHO_SELF     2u /* calls its own endpoint (refused)       */
 #define IPC_OP_ECHO_DESC     3u /* returns the frame's descriptor id      */
+#define IPC_OP_ECHO_SPAN     4u /* bulk-map span probe: IPC_SPAN_* mask   */
+#define IPC_OP_ECHO_LEAK     5u /* returns with a span left open          */
 
 #define IPC_OP_CON_WRITE 0u /* arg0 = descriptor offset, arg1 = length */
 #define IPC_OP_CON_POLL  1u /* returns the early-console input flag    */
@@ -61,6 +63,7 @@
 #define IPC_OP_IRQX_CLAIM   1u
 #define IPC_OP_IRQX_RELEASE 2u
 #define IPC_OP_IRQX_COPY    3u /* arg1 = iterations; see the note below    */
+#define IPC_OP_IRQX_SPAN    4u /* arg1 = iterations: spin in a span      */
 
 /* IRQX_COPY: runs `arg1` descriptor copies (direction
  * IN, IRQX_COPY_BYTES long) into the driver's own I/O buffer with the
@@ -71,6 +74,37 @@
  * absolute-count checks start from zero afterwards. */
 #define IRQX_COPY_BYTES 512u
 #define IPC_IRQX_TC_APERTURE 0x08u /* short CTC0 period, inside a copy   */
+
+/* The bulk-map span probes (architecture 5.2).  Both test drivers carry a
+ * mapped segment holding IPC_SPAN_BYTES bytes of the pattern C0h + i.
+ *
+ * ECHO_SPAN takes one IN descriptor (any 16 bytes) and returns the mask of
+ * the checks that held, IPC_SPAN_ALL when every one did:
+ *   MAPPED  inside the span the pattern reads back at its linked address;
+ *   BSS     the mapped BSS takes a write and reads it back;
+ *   NEST    a second bulk_map answers -KOS_EBUSY;
+ *   CALL    call answers -KOS_EBUSY;
+ *   COPY    copy_in answers -KOS_EBUSY;
+ *   BULK    bulk_read answers -KOS_EBUSY;
+ *   LATCH   the latch bank field is 6 inside, the caller's after unmap;
+ *   AFTER   after bulk_unmap the same copy_in succeeds.
+ * ECHO_LEAK opens a span and returns without closing it; the endpoint
+ * return path must close it and count one fault (_ipc_bulk_faults).
+ * IRQX_SPAN arms CTC0, opens a span and spins with interrupts enabled
+ * until a delivery has happened (or arg1 runs out), checking the bank
+ * field and the pattern after the delivery; returns IPC_SPAN_IRQ_OK or a
+ * negated errno. */
+#define IPC_SPAN_BYTES 32u
+#define IPC_SPAN_MAPPED 0x01u
+#define IPC_SPAN_BSS    0x02u
+#define IPC_SPAN_NEST   0x04u
+#define IPC_SPAN_CALL   0x08u
+#define IPC_SPAN_COPY   0x10u
+#define IPC_SPAN_BULK   0x20u
+#define IPC_SPAN_LATCH  0x40u
+#define IPC_SPAN_AFTER  0x80u
+#define IPC_SPAN_ALL    0xFFu
+#define IPC_SPAN_IRQ_OK 0x5Au
 
 /* --- frame flags -------------------------------------------------------- */
 

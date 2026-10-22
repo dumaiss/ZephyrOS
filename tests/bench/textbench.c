@@ -37,7 +37,9 @@
 #include "kos.h"
 #include "kos/timer.h"
 
-#include "textbench.font.h"
+/* The pinned CP850 6x8 font (textbench_render.asm includes the asset):
+ * 8 bytes per glyph, bits 7..2 of a row byte are the six pixels. */
+extern const unsigned char textbench_font[2048];
 
 #define TEXT_CHARS  2000ul
 #define WRITE_CHUNK 256u

@@ -70,6 +70,11 @@ extern uint16_t ipc_ap_copy(void);
 extern uint8_t ipc_ap_req[7];
 extern int16_t ipc_invoke(uint16_t entry, struct kos_ipc_frame *frame);
 extern int16_t ipc_invoke_here(uint16_t entry, struct kos_ipc_frame *frame);
+/* The bulk-map span (ipc_asm.asm; architecture 5.2). */
+extern int16_t ipc_bulk_map(void);
+extern void ipc_bulk_unmap(void);
+extern uint8_t ipc_bulk_open;
+extern uint16_t ipc_bulk_faults;
 
 /* The common-resident application-bank copy gate and its staging buffer
  * (kernel/memory/user_copy.asm; declared with the syscall helpers). */
@@ -84,6 +89,8 @@ extern uint8_t kos_user_copy_staging[];
 	(uint8_t)(KOS_UPCALL_PAGE_DRIVER << KOS_ROM_PAGE_SHIFT)
 #define IPC_NUCLEUS_PAGE_BITS 0u
 #define IPC_DRIVER_BANK (KOS_BANK_MASK - KOS_UPCALL_PAGE_DRIVER)
+_Static_assert(IPC_DRIVER_BANK == 6u, "ipc_asm.asm IPC_ASM_DRIVER_BANK");
+_Static_assert(KOS_EBUSY == 4, "ipc_asm.asm IPC_ASM_EBUSY");
 
 /* The mode-10 far aperture (architecture 7.2): with a nonzero page the
  * caller's 8000h-BFFFh names bank 7 - P, not the primary bank. */
@@ -622,6 +629,16 @@ static int16_t ipc_call_endpoint(uint8_t number, struct kos_ipc_frame *frame);
 static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t driver_addr,
 			uint16_t length, uint8_t dir);
 
+/* A span never outlives the operation that opened it (architecture 5.2):
+ * a dispatch that returns with one open is closed here and counted. */
+static void ipc_span_close(void)
+{
+	if (ipc_bulk_open != 0u) {
+		ipc_bulk_unmap();
+		++ipc_bulk_faults;
+	}
+}
+
 /* Invoke one driver dispatch entry: open the owner's domain when crossing
  * into it, switch to the fixed driver stack at the outermost call, and run
  * the frame through the fixed primitive.  A nested call whose target is
@@ -655,11 +672,14 @@ static int16_t invoke_endpoint(const struct ipc_endpoint *ep,
 	if (!nested) {
 		ipc_domain_enter(page);
 		result = ipc_invoke(ep->dispatch, frame);
+		ipc_span_close();
 		ipc_domain_exit();
 		return result;
 	}
 	if ((ipc_latch() & KOS_ROM_PAGE_MASK) == page) {
-		return ipc_invoke_here(ep->dispatch, frame);
+		result = ipc_invoke_here(ep->dispatch, frame);
+		ipc_span_close();
+		return result;
 	}
 	/* Cross-domain nested call: the nucleus re-selects the target domain
 	 * around the call, but not through the save/restore primitive - the
@@ -669,6 +689,7 @@ static int16_t invoke_endpoint(const struct ipc_endpoint *ep,
 
 		ipc_domain_set(page);
 		result = ipc_invoke_here(ep->dispatch, frame);
+		ipc_span_close();
 		ipc_domain_set(saved);
 	}
 	return result;
@@ -903,7 +924,7 @@ static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t driver_addr,
 {
 	struct ipc_desc *desc;
 
-	if (ipc_irq_active) {
+	if (ipc_irq_active | ipc_bulk_open) {
 		return -KOS_EBUSY;
 	}
 	desc = desc_lookup(id);
@@ -916,7 +937,7 @@ static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t driver_addr,
 int16_t api_call(uint8_t dependency_ref, uint8_t op,
 			struct kos_ipc_frame *frame)
 {
-	if (ipc_irq_active) {
+	if (ipc_irq_active | ipc_bulk_open) {
 		return -KOS_EBUSY;
 	}
 	frame->op = op;
@@ -976,7 +997,7 @@ int16_t api_bulk_read(uint16_t offset, uint16_t dst, uint16_t length)
 	const struct ipc_endpoint *owner;
 	uint16_t src;
 
-	if (ipc_irq_active) {
+	if (ipc_irq_active | ipc_bulk_open) {
 		return -KOS_EBUSY;
 	}
 	if (call_depth == 0u) {
@@ -1004,7 +1025,7 @@ int16_t api_bulk_write(uint16_t offset, uint16_t src, uint16_t length)
 	const struct ipc_endpoint *owner;
 	uint16_t dst;
 
-	if (ipc_irq_active) {
+	if (ipc_irq_active | ipc_bulk_open) {
 		return -KOS_EBUSY;
 	}
 	if (call_depth == 0u) {
@@ -1109,12 +1130,30 @@ int8_t api_irq_release(uint8_t source)
  * does, so the post takes the gate's latch. */
 void api_event_post(uint16_t sub)
 {
-	uint8_t bank = kos_event_post_bank((uint8_t)(ipc_irq_active ? 1u : 0u));
+	uint8_t bank;
+
+	/* The span's own driver may not post; a handler that interrupted a
+	 * span posts as from anywhere else (the span is not its state). */
+	if (ipc_bulk_open != 0u && ipc_irq_active == 0u) {
+		return;
+	}
+	bank = kos_event_post_bank((uint8_t)(ipc_irq_active ? 1u : 0u));
 
 	if (bank == IPC_DRIVER_BANK) {
 		bank = kos_event_post_bank(0u);
 	}
 	kos_event_post(sub, bank);
+}
+
+/* The bulk-map span (architecture 5.2).  An interrupt handler cannot open
+ * one: the interrupt's exact-latch return would close the mapping and
+ * leave the span recorded open. */
+int16_t api_bulk_map(void)
+{
+	if (ipc_irq_active) {
+		return -KOS_EBUSY;
+	}
+	return ipc_bulk_map();
 }
 
 static const struct driver_api ipc_api = {
@@ -1130,6 +1169,8 @@ static const struct driver_api ipc_api = {
 	api_irq_claim,
 	api_irq_release,
 	api_event_post,
+	api_bulk_map,
+	ipc_bulk_unmap,
 };
 
 /* The boot bundle a driver init entry receives in HL.  Both halves live in

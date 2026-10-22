@@ -859,9 +859,10 @@ bank 6 E000h-FFFFh   unused (common is mapped over it)
   writes its **mapped segment** at its linked address (no translation,
   2.2); `bulk_unmap` restores the exact Q it replaced. Inside a span the
   driver touches only its own memory (hot tier, `DRIVER_IO`, its mapped
-  segment) and its device ports: `copy_in`, `copy_out`, `bulk_read`,
+  segment) and its device ports; the request frame, which a syscall
+  passes in the caller window, is out of reach too: `copy_in`, `copy_out`, `bulk_read`,
   `bulk_write`, `call` and `event_post` refuse, and `bulk_map` does not
-  nest. A span never outlives the operation that opened it: the driver
+  nest and is refused to interrupt handlers. A span never outlives the operation that opened it: the driver
   closes it before it returns, and the endpoint return path closes a span
   left open and counts it as a driver fault. Spans are for the hot path's
   read-mostly data (the V9958 font); one costs two primitive calls.

@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 import pack_image  # noqa: E402
 import romfspack  # noqa: E402
 from fontpack import parse_font  # noqa: E402
-from replay import ConsoleReplay, STEP_LIMIT  # noqa: E402
+from replay import ConsoleReplay, STEP_LIMIT, v9958_screen  # noqa: E402
 from test_tui_sim import ROWS, COLS  # noqa: E402
 from z80sim import Ctc, read_symbols  # noqa: E402
 
@@ -232,51 +232,9 @@ class TestDirectTextSpike(unittest.TestCase):
         return line, snapshot
 
     def _console_screen(self, snapshot):
-        """Decode the console row's final screen: every command's DY is
-        an absolute scanline (the console scrolls by moving the R#23
-        origin after drawing, so a fixed final origin maps cells; the
-        per-command origin decode of test_tui_sim only works when
-        nothing is drawn after a scroll)."""
-        final_origin = (snapshot["reg23"] + DISPLAY_OFFSET) & 0xFF
-        screen = [[(" ", 0) for _ in range(COLS)] for _ in range(ROWS)]
-        for command in snapshot["commands"][snapshot["commands_start"]:]:
-            block = command["block"]
-            code = command["code"]
-            if code == 0xC0:  # HMMV fill
-                dx = block[4] | (block[5] << 8)
-                dy = block[6] | (block[7] << 8)
-                nx = block[8] | (block[9] << 8)
-                ny = block[10] | (block[11] << 8)
-                attr = 1 if block[12] == 0xFF else 0
-                for scan in range(dy, dy + ny, 8):
-                    offset = (scan - final_origin) & 0xFF
-                    if offset >= ROWS * 8:
-                        continue
-                    at_row = offset // 8
-                    for x in range(dx, dx + nx, 6):
-                        at_col = x // 6
-                        if at_col < COLS:
-                            screen[at_row][at_col] = (" ", attr)
-            elif code == 0xD0:  # HMMM glyph copy
-                sx = block[0] | (block[1] << 8)
-                sy = block[2] | (block[3] << 8)
-                dx = block[4] | (block[5] << 8)
-                dy = block[6] | (block[7] << 8)
-                nx = block[8] | (block[9] << 8)
-                if nx == 0 or nx % 6 != 0 or block[10] != 8:
-                    continue
-                offset = (dy - final_origin) & 0xFF
-                if offset >= ROWS * 8:
-                    continue
-                at_row = offset // 8
-                attr = 1 if sy & 0x40 else 0
-                for x_offset in range(0, nx, 6):
-                    at_col = (dx + x_offset) // 6
-                    glyph = (((sy & 0x3F) >> 3) * 32 +
-                             (sx + x_offset) // 6)
-                    if at_col < COLS:
-                        screen[at_row][at_col] = (chr(glyph), attr)
-        return screen
+        """The console row's final screen, decoded from its VRAM snapshot
+        (the console renderer writes glyphs straight into VRAM too)."""
+        return v9958_screen(snapshot["vram"], snapshot["reg23"])
 
     def test_the_direct_rows_reproduce_the_console_pixels(self):
         """After every direct row the page-zero bitmap equals the

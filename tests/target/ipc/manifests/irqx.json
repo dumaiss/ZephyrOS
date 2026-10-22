@@ -4,6 +4,7 @@
   "objects": [
     "ipc_irqx.rel",
     "ipc_irqx_boot.rel",
+    "ipc_irqx_map.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "ipc_irqx_init",
@@ -28,6 +29,12 @@
       "role": "io",
       "bss_areas": [
         "_DRIVER_IO"
+      ]
+    },
+    {
+      "role": "mapped",
+      "image_areas": [
+        "_MAPPED"
       ]
     }
   ],

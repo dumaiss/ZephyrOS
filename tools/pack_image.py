@@ -103,6 +103,7 @@ IRQ_ISR_STACK_SIZE = 0x0100
 # reports zero bytes against these capacities.
 DRIVER_HOT_CAPACITY = 0x8000      # 6000h-DFFFh of bank 6
 DRIVER_BOOT_CAPACITY = 0x6000     # 0000h-5FFFh of bank 6
+DRIVER_MAPPED_CAPACITY = 0x1F00   # 0100h-1FFFh of bank 6 (inside boot/bulk)
 # Host-synthetic geometry defaults.  A real build always passes its
 # generated build/geometry/memory.inc, which must carry every derived
 # value; these literals only seed the synthetic path where no include is
@@ -247,6 +248,7 @@ NUCLEUS_COLD_LEDGER_LINE = (
     "room %d bytes")
 DRIVER_HOT_LEDGER_LINE = "driver hot: %d bytes of %d"
 DRIVER_BOOT_LEDGER_LINE = "driver boot/bulk: %d bytes of %d"
+DRIVER_MAPPED_LEDGER_LINE = "driver mapped: %d bytes of %d"
 COMMON_LEDGER_LINE = ("common: used %d of %d bytes (code %d, data %d) | "
                       "ceiling %d")
 
@@ -576,7 +578,7 @@ def load_driver_plan(build_dir):
 
 
 def nucleus_ledger(symbols, driver_plan=None):
-    """The five ledger lines of architecture 9 from a linked map.
+    """The six ledger lines of architecture 9 from a linked map.
 
     Returns None for synthetic host maps without the derived symbols.
     Every package reports these lines and its own bytes against them, so
@@ -606,7 +608,9 @@ def nucleus_ledger(symbols, driver_plan=None):
     driver = {"driver_hot_bytes": 0,
               "driver_hot_capacity_bytes": DRIVER_HOT_CAPACITY,
               "driver_boot_bytes": 0,
-              "driver_boot_capacity_bytes": DRIVER_BOOT_CAPACITY}
+              "driver_boot_capacity_bytes": DRIVER_BOOT_CAPACITY,
+              "driver_mapped_bytes": 0,
+              "driver_mapped_capacity_bytes": DRIVER_MAPPED_CAPACITY}
     if driver_plan is not None:
         driver.update(driver_plan["nucleus"])
     return dict(common_fields, **{
@@ -627,7 +631,7 @@ def nucleus_ledger(symbols, driver_plan=None):
 
 
 def format_nucleus_ledger(ledger):
-    """The budget lines (architecture 9): the four nucleus and driver
+    """The budget lines (architecture 9): the five nucleus and driver
     lines, plus the common-memory line for the permanently mapped
     window.  Byte-identical to tools/modpack.py (pinned by a host test)."""
     return "\n".join((
@@ -644,6 +648,9 @@ def format_nucleus_ledger(ledger):
         DRIVER_BOOT_LEDGER_LINE % (
             ledger["driver_boot_bytes"],
             ledger["driver_boot_capacity_bytes"]),
+        DRIVER_MAPPED_LEDGER_LINE % (
+            ledger["driver_mapped_bytes"],
+            ledger["driver_mapped_capacity_bytes"]),
         COMMON_LEDGER_LINE % (
             ledger["common_used_bytes"], ledger["common_capacity_bytes"],
             ledger["common_code_bytes"], ledger["common_data_bytes"],
@@ -853,9 +860,10 @@ def verify_no_banked_latch_writes(mem, symbols=None, production=True):
 
     Three fixed-core extents may select a window page: the upcall shim
     (which selects the page it opens), the IPC substrate's domain
-    enter/set/exit page selects (kernel/ipc/ipc_asm.asm writes mode 11 with
-    new page bits, which leaves the fixed core itself mapped, exactly as
-    the shim does), and the nucleus self-test's caller blob, which the
+    enter/set/exit page selects and the bulk-map span
+    (kernel/ipc/ipc_asm.asm writes mode 11 with new page bits or a new
+    bank field, which leaves the fixed core itself mapped, exactly as the
+    shim does), and the nucleus self-test's caller blob, which the
     harness copies into an application bank and runs there, so its
     caller-side selection happens in the caller window.  The fourth is the
     mode-11 window copy (kernel/memory/window_copy.asm): it

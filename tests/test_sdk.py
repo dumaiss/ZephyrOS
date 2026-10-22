@@ -402,7 +402,9 @@ class TestSdkBoundary(unittest.TestCase):
         # (`tests/test_readpath.py`); `vblank` and `sound` are the card
         # programs the production replays run (`tests/test_vblank.py`,
         # `tests/test_sound.py`); `tui_test` is the TUI SDK outcome
-        # program (`tests/test_tui.py`).
+        # program (`tests/test_tui.py`); `textbench` is the direct-text
+        # measurement program a card copy carries
+        # (`tests/test_textbench.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
@@ -411,7 +413,8 @@ class TestSdkBoundary(unittest.TestCase):
                           "hwtest", "iobench", "iomix", "iomix_child",
                           "iostream", "ipc", "ipccopy",
                           "monitor", "ns",
-                          "nschild", "readphase", "shell", "sound", "timer",
+                          "nschild", "readphase", "shell", "sound",
+                          "textbench", "timer",
                           "tui_core_probe", "tui_demo", "tui_dialog",
                           "tui_keys", "tui_test", "tui_widget_probe",
                           "vblank",

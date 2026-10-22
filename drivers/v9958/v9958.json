@@ -34,9 +34,13 @@
       "entry": "v9958_boot_entry"
     },
     {
-      "role": "bulk",
+      "role": "mapped",
+      "align": 256,
       "image_areas": [
-        "_BULK"
+        "_MAPPED"
+      ],
+      "bss_areas": [
+        "_MAPPED_BSS"
       ]
     }
   ],

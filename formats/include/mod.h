@@ -88,6 +88,8 @@
 #define MOD_SEGMENT_BOOT 2u
 #define MOD_SEGMENT_IO   3u
 #define MOD_SEGMENT_BULK 4u
+/* Directly readable inside a bulk-map span: bank 6 0100h-1FFFh. */
+#define MOD_SEGMENT_MAPPED 5u
 
 /* Endpoint flags: bit 0 is the re-entrancy declaration, the same bit the
  * endpoint table keeps (KOS_IPC_EP_REENTRANT, abi/kos/ipc.h); bit 1 asks

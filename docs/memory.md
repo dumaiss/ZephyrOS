@@ -145,7 +145,9 @@ uses it to run each driver's hot init.
 | region | tier | content |
 |---|---|---|
 | `6000h-DFFFh` | hot (32 KiB) | driver code and data used after boot; `8000h-BFFFh` holds the `DRIVER_IO` buffers first |
-| `0000h-5FFFh` | boot/bulk (24 KiB) | boot-only driver code and bulk data (the V9958 font, the IOC-FAT block cache) |
+| `0000h-5FFFh` | boot/bulk (24 KiB) | boot-only driver code, bulk data (the IOC-FAT block cache) and the mapped range |
+| `0000h-00FFh` | (reserved) | bank 6's page zero: nothing is placed there |
+| `0100h-1FFFh` | mapped (7,936 bytes, inside boot/bulk) | the drivers' mapped segments (the V9958 font and expansion pages), shown at `0000h-1FFFh` inside a bulk-map span |
 | `E000h-FFFFh` | unused | common memory is mapped over it |
 
 The packer (`tools/modpack.py`) places every segment; the loader only
@@ -159,31 +161,11 @@ emit them as JSON (`build/konaos.manifest.json` `nucleus`, and
 `drivers.plan.json`):
 
 ```text
-nucleus fixed: required <bytes> | overflow <bytes> | stacks <bytes> | room <bytes>
-nucleus cold: code <bytes> end <addr> | data <bytes> at <addr> | room <bytes>
-driver hot: <bytes> of <capacity>
-driver boot/bulk: <bytes> of <capacity>
-common: used <bytes> of <capacity> bytes (code <n>, data <n>) | ceiling <n>
-```
-
-- **fixed:** `required` is the fixed content of the `fixed-required`
-  objects, `overflow` the rest that links there, `stacks` the two stacks
-  (768), and `room = 16384 - required - overflow - stacks`.
-- **cold:** the cold code and its end, `_WINDOW_DATA` and its derived base,
-  and `room = 32768 - code - data`.
-- **driver hot, driver boot/bulk:** the bank-6 tiers, from the driver plan.
-- **common:** the packed `_COMMON` + `_COMMON_DATA` run. `capacity` is
-  `E000h-FCFFh` (7,424 bytes); `ceiling` is `KOS_COMMON_CEILING` (3,072),
-  which `used` may not exceed and which is never raised. The absolute IRQ
-  reservations at `FD00h-FE87h` are not part of the run.
-
-Current production figures:
-
-```text
-nucleus fixed: required 9506 bytes | overflow 2 bytes | stacks 768 | room 6108 bytes
-nucleus cold: code 25047 bytes end C1D7h | data 1543 bytes at C200h | room 6137 bytes
-driver hot: 29180 bytes of 32768
-driver boot/bulk: 19598 bytes of 24576
+nucleus fixed: required 9664 bytes | overflow 2 bytes | stacks 768 | room 5950 bytes
+nucleus cold: code 25074 bytes end C1F2h | data 1543 bytes at C200h | room 6137 bytes
+driver hot: 30471 bytes of 32768
+driver boot/bulk: 21128 bytes of 24576
+driver mapped: 3584 bytes of 7936
 common: used 3067 of 7424 bytes (code 2140, data 927) | ceiling 3072
 ```
 

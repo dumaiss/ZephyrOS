@@ -130,7 +130,7 @@ EP_FLAGS = EP_REENTRANT | EP_RELEASE | EP_EVENTS
 # dependency that no image in the set exports resolves to endpoint 0.
 DEP_OPTIONAL = 0x01
 # Segment roles (MOD_SEGMENT_*), in the loader's report order.
-ROLE_CODES = {"hot": 1, "boot": 2, "io": 3, "bulk": 4}
+ROLE_CODES = {"hot": 1, "boot": 2, "io": 3, "bulk": 4, "mapped": 5}
 ROLE_NAMES = {value: key for key, value in ROLE_CODES.items()}
 # Destination tiers of each segment role (address range, end exclusive).
 TIERS = {
@@ -138,6 +138,7 @@ TIERS = {
     "io": (0x8000, 0xC000),
     "boot": (0x0000, 0x6000),
     "bulk": (0x0000, 0x6000),
+    "mapped": (0x0100, 0x2000),
 }
 # Bank-6 destination geometry (architecture 5.2), mirrored by
 # kernel/driver/driver_loader.c: the hot tier 6000h-DFFFh (driver I/O
@@ -150,6 +151,14 @@ IO_END = 0xC000
 DRIVER_IO_AREA = "_DRIVER_IO"
 BOOT_TIER_BASE = 0x0000
 BOOT_TIER_END = 0x6000
+# The mapped range (architecture 5.2): inside the boot/bulk tier, above
+# bank 6's reserved page zero and below 2000h, the extent a bulk-map span
+# shows at 0000h-1FFFh.  Mapped segments come first, in load order; boot
+# code and bulk data are placed above them.
+MAPPED_BASE = 0x0100
+MAPPED_END = 0x2000
+# The roles that share the boot/bulk tier and must not overlap each other.
+BOOT_TIER_ROLES = ("mapped", "boot", "bulk")
 # The DEVICE provider's root (architecture 4.10): a manifest declares the
 # full namespace path and the container carries the provider-relative
 # remainder, which is what the provider resolves.
@@ -500,6 +509,14 @@ def load_driver_manifest(manifest, path, objdir):
         entry = segment.get("entry")
         if entry is not None and role != "boot":
             raise ModError("%s: only the boot role carries an entry" % where)
+        # A mapped segment may ask for an aligned base (a power of two up
+        # to 256): tables a driver indexes by their low address byte need
+        # page-aligned 256-byte pages.
+        align = segment.get("align", 2)
+        if align != 2 and (role != "mapped" or not isinstance(align, int)
+                           or align not in (4, 8, 16, 32, 64, 128, 256)):
+            raise ModError("%s: align %r (a mapped segment may ask for a "
+                            "power of two up to 256)" % (where, align))
         entries.append(entry)
     if "hot" not in roles:
         raise ModError("%s: a driver image needs a hot segment" % path)
@@ -859,9 +876,10 @@ def pack_driver_manifest(manifest):
                 # names the target segment (its second byte, reserved in
                 # driver containers).  Visibility decides which crossings
                 # are legal: hot code runs in the mode-11 window, where
-                # only the hot and io tiers are visible; boot code runs in
-                # mode 10 over the whole bank; bulk data is opaque and
-                # moved by nucleus copies, never executed or followed.
+                # only the hot and io tiers are visible (and the mapped
+                # range inside a bulk-map span); boot code runs in mode 10
+                # over the whole bank; bulk data is opaque and moved by
+                # nucleus copies, never executed or followed.
                 if patch_role == "hot" and target_role in ("boot", "bulk"):
                     raise ModError(
                         "%s: relocation at %04Xh reaches from the hot "
@@ -919,6 +937,7 @@ def pack_driver_manifest(manifest):
                                 % (where, segment["role"]))
         packed.segments.append({
             "role": segment["role"],
+            "align": manifest["segments"][index].get("align", 2),
             "image_size": segment["image_size"],
             "bss_size": segment["bss_size"],
             "entry_offset": entry_offset,
@@ -1529,8 +1548,10 @@ class DriverTierPlan:
     block (below it when it fits, otherwise just above C000h).  Smaller
     later images may still use the remaining run below the I/O block. A
     descending block starts its own size below the cursor, rounded *down*
-    to an even address, so the block below it can never overlap.  The boot
-    segments bump up from 0000h and the bulk data down from 6000h.  The
+    to an even address, so the block below it can never overlap.  The
+    mapped segments bump up from 0100h (bank 6's page zero stays free) and
+    must end at or below 2000h; the boot segments bump up from the end of
+    the mapped run and the bulk data down from 6000h.  The
     packer runs this policy so a set that packs always places; the loader
     is the runtime authority."""
 
@@ -1538,7 +1559,8 @@ class DriverTierPlan:
         self.io_cursor = IO_END
         self.hot_cursor = HOT_TIER_BASE
         self.hot_upper_cursor = IO_END
-        self.boot_cursor = BOOT_TIER_BASE
+        self.mapped_cursor = MAPPED_BASE
+        self.boot_cursor = MAPPED_BASE
         self.bulk_cursor = BOOT_TIER_END
 
     def reserve_io(self, size):
@@ -1567,6 +1589,20 @@ class DriverTierPlan:
                 "full" % (base + size - HOT_TIER_END, HOT_TIER_BASE,
                           HOT_TIER_END))
         self.hot_upper_cursor = base + size
+        return base
+
+    def place_mapped(self, size, align=2):
+        if size == 0:
+            return None
+        base = (self.mapped_cursor + align - 1) & ~(align - 1)
+        if base + size > MAPPED_END:
+            raise ModError(
+                "mapped segments need %d more bytes; the range "
+                "%04Xh-%04Xh holds %d"
+                % (base + size - MAPPED_END, MAPPED_BASE, MAPPED_END,
+                   MAPPED_END - MAPPED_BASE))
+        self.mapped_cursor = base + size
+        self.boot_cursor = self.mapped_cursor
         return base
 
     def place_boot(self, size):
@@ -1646,6 +1682,11 @@ def plan_driver_set(packs):
     for index in hot_order:
         segment = driver_segments(packs[index])["hot"]
         rows[index]["hot"] = plan.place_hot(segment_size(segment))
+    for row, pack in zip(rows, packs):
+        mapped = driver_segments(pack).get("mapped")
+        row["mapped"] = plan.place_mapped(
+            segment_size(mapped) if mapped else 0,
+            mapped.get("align", 2) if mapped else 2)
     for row, pack in zip(rows, packs):
         segments = driver_segments(pack)
         boot = segments.get("boot")
@@ -1745,7 +1786,7 @@ def _entry_segments(entry):
 def check_tier_overlap(rows, entries):
     """Every placed block must lie inside its tier and no two blocks may
     overlap (architecture 5.2, fixed driver-bank layout)."""
-    for role in ("hot", "io", "boot", "bulk"):
+    for role in ("hot", "io", "boot", "bulk", "mapped"):
         tier_base, tier_end = TIERS[role]
         blocks = []
         for row, entry in zip(rows, entries):
@@ -1766,6 +1807,21 @@ def check_tier_overlap(rows, entries):
                 raise ModError("%s: %s segment at %04Xh overlaps the "
                                 "previous block" % (name, role, base))
             end = base + size
+    # The boot/bulk tier is shared by three roles: no two of their blocks
+    # may overlap either.
+    blocks = []
+    for row, entry in zip(rows, entries):
+        for segment in _entry_segments(entry):
+            if segment["role"] in BOOT_TIER_ROLES:
+                blocks.append((row[segment["role"]], segment_size(segment),
+                               _entry_name(entry), segment["role"]))
+    blocks.sort()
+    end = BOOT_TIER_BASE
+    for base, size, name, role in blocks:
+        if base < end:
+            raise ModError("%s: %s segment at %04Xh overlaps the "
+                            "previous block" % (name, role, base))
+        end = base + size
 
 
 def driver_ledger(entries, rows):
@@ -1773,6 +1829,7 @@ def driver_ledger(entries, rows):
     the placed bytes of each tier, taken from the plan rows."""
     hot_used = 0
     boot_used = 0
+    mapped_used = 0
     for row, entry in zip(rows, entries):
         for segment in _entry_segments(entry):
             size = segment_size(segment)
@@ -1780,17 +1837,21 @@ def driver_ledger(entries, rows):
                 hot_used += size
             else:
                 boot_used += size
+            if segment["role"] == "mapped":
+                mapped_used += size
     return {
         "driver_hot_bytes": hot_used,
         "driver_hot_capacity_bytes": HOT_TIER_END - HOT_TIER_BASE,
         "driver_boot_bytes": boot_used,
         "driver_boot_capacity_bytes": BOOT_TIER_END - BOOT_TIER_BASE,
+        "driver_mapped_bytes": mapped_used,
+        "driver_mapped_capacity_bytes": MAPPED_END - MAPPED_BASE,
     }
 
 
 def format_driver_row(row):
     parts = []
-    for role in ("hot", "io", "boot", "bulk"):
+    for role in ("hot", "io", "boot", "bulk", "mapped"):
         if row.get(role) is not None:
             parts.append("%s %04Xh" % (role, row[role]))
     return "driver %s: %s" % (row["name"], " ".join(parts))
@@ -1870,6 +1931,9 @@ def cmd_plan(args):
         ledger["driver_hot_bytes"], ledger["driver_hot_capacity_bytes"])))
     print("modpack: %s" % (pack_image.DRIVER_BOOT_LEDGER_LINE % (
         ledger["driver_boot_bytes"], ledger["driver_boot_capacity_bytes"])))
+    print("modpack: %s" % (pack_image.DRIVER_MAPPED_LEDGER_LINE % (
+        ledger["driver_mapped_bytes"],
+        ledger["driver_mapped_capacity_bytes"])))
     print("modpack: %s: %d driver images, load order as listed"
           % (out_path, len(infos)))
 
@@ -1884,6 +1948,7 @@ def cmd_plan(args):
                 "io_base": row.get("io"),
                 "boot_base": row.get("boot"),
                 "bulk_base": row.get("bulk"),
+                "mapped_base": row.get("mapped"),
                 "endpoints": info["endpoints"],
                 "dependencies": info["dependencies"],
             }

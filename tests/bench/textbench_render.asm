@@ -624,3 +624,12 @@ _textbench_run_x::
 	.ds	1
 _textbench_run_len::
 	.ds	1
+
+; ---------------------------------------------------------------------------
+; The pinned CP850 6x8 font, assembled from the driver's reviewable asset
+; (drivers/v9958/assets/font_cp850_6x8.inc, the same source tools/fontpack.py
+; packs): 8 bytes per glyph.
+; ---------------------------------------------------------------------------
+	.area _CODE
+_textbench_font::
+	.include "font_cp850_6x8.inc"

@@ -202,9 +202,9 @@ The V9958 video core with an 85×26 terminal renderer, so the same hardware
 serves graphics clients and the text console.
 
 **Terminal.** 85 columns × 26 rows of 6×8 cells on a 208-line surface
-inside the circular 256-line page-zero bitmap, with precolored normal
-(`10000h`) and reverse (`14000h`) font atlases, circular scrolling by
-advancing R#23, and a sprite cursor. Printable bytes `20h-FFh` (CP850)
+inside the circular 256-line page-zero bitmap, glyphs written straight
+into VRAM (below), circular scrolling by advancing R#23, and a sprite
+cursor. Printable bytes `20h-FFh` (CP850)
 print. Control handling:
 
 - CR, LF/VT, BS, TAB (8-column stops), FF and `ESC[2J` (clear and home);
@@ -224,11 +224,22 @@ Print runs batch up to 64 glyphs and flush before control operations. The
 renderer runs on a private 256-byte stack, because its call chain is deeper
 than the gate stack.
 
+**Glyph drawing.** A run is drawn inside one bulk-map span (section 13):
+for each of its eight scanlines one VRAM address, then three bytes per
+glyph through the data port. A GRAPHIC 6 cell is three whole bytes, so
+nothing is read back and VRAM holds no font. Each byte comes from two
+page lookups: the character code in the font page of the scanline gives
+the row byte, and the row byte in one of three expansion pages gives the
+cell byte. The expansion pages carry the colour pair (normal or reverse,
+the run's attribute). A fill still running on the cells (a freshly exposed
+row) is waited for first. Fills, scrolling, line insertion and deletion
+and the attribute-only inversion stay on the command engine.
+
 `KVIDEO_OP_RENDER` accepts the versioned `kos/console_render.h` stream used
 by `libtui`. The driver validates the complete descriptor before touching
 the VDP, then executes all absolute TEXT, INVERT and final STATE records on
-the private stack with sprite evaluation disabled once. TEXT keeps the glyph
-atlas path. Attribute-only INVERT spans use LMMV/EOR (`CMD=83h`, `CLR=0Bh`)
+the private stack with sprite evaluation disabled once. TEXT draws through
+the print run. Attribute-only INVERT spans use LMMV/EOR (`CMD=83h`, `CLR=0Bh`)
 over the existing 6 x 8 cells, so moving reverse-video focus does not repaint
 glyphs. The final glyph run, cursor SAT and command wait are synchronized once
 at the transaction boundary.
@@ -275,18 +286,19 @@ V9958's frame (vertical-blank) interrupt as a device event.
 VDS = 0), R#8 = `08h` (64K×4 DRAM), stops any command, loads the GRAPHIC 6
 register state (R#0 = `0Ah`, R#2 = `1Fh`, R#9 = `88h`, R#15 = 2, R#23 =
 `100h - 4`, ...), then R#25 = `04h` and the porch. The palette is
-programmed under WAIT; both atlases are uploaded, the bitmap is cleared to
-the `44h` background, the cursor set up, the frame presented and the
+programmed under WAIT; the bitmap is cleared to the `44h` background, the cursor set up, the frame presented and the
 display enabled. Status register 2 stays selected while the driver owns
 the VDP, and commands wait for CE. The bring-up leaves the frame interrupt
 off; `IRQ_VDP_FF` is claimed only during an exclusive hold (the frame
 event above).
 
 **Font.** The 2,048-byte CP850 6×8 font (`assets/font_cp850_6x8.inc`) is
-emitted by `tools/fontpack.py` into the driver's bulk segment, never into
-its hot image. The driver converts it into the two atlases in VRAM.
-`KVIDEO_RESET` re-runs the whole bring-up, reading the font through
-`bulk_read`, because the boot/bulk tier is not mapped in the driver window.
+emitted by `tools/fontpack.py paged` in the renderer's layout into the
+driver's mapped segment (`v9958_font.asm`), page-aligned by the manifest's
+`"align": 256`: eight 256-byte pages, page `s` holding row `s` of every
+character. The six expansion pages (three per colour pair) are the
+segment's BSS, built at init from the console colours. Mapped: 3,584
+bytes. `KVIDEO_RESET` re-runs the bring-up; it touches no font.
 
 | op | number | frame | result |
 |---|---|---|---|
@@ -613,8 +625,28 @@ channel 2, plus `platform_ctc_quiesce_all()` for the reboot path.
 ## 13. Placement
 
 A driver's hot segment and `DRIVER_IO` data live in bank 6 `6000h-DFFFh`
-(the `DRIVER_IO` part in `8000h-BFFFh`), its boot code and bulk data in
-`0000h-5FFFh`. Nothing a driver owns enters common memory or bank 7.
+(the `DRIVER_IO` part in `8000h-BFFFh`), its boot code, bulk data and
+mapped data in `0100h-5FFFh` (the mapped data in `0100h-1FFFh`). Nothing
+a driver owns enters common memory or bank 7.
+
+**The bulk-map span** (architecture 5.2) is how a driver reads its mapped
+segment on the hot path. `bulk_map()` sets the latch's bank field to 6,
+so `0000h-1FFFh` shows bank 6's first 8 KiB and the segment is read and
+written at its linked address; `bulk_unmap()` restores the caller's bank
+field. Inside a span:
+
+- the request frame and every caller buffer are out of reach (a syscall's
+  frame lives in the caller window); copy what the operation needs into
+  locals or the hot tier before `bulk_map`;
+- `call`, `copy_in`, `copy_out`, `bulk_read` and `bulk_write` answer
+  `-KOS_EBUSY`, `event_post` ignores the post, and a second `bulk_map`
+  answers `-KOS_EBUSY`;
+- an interrupt returns to the span; its handler runs as anywhere else and
+  cannot open a span of its own (`bulk_map` refuses in a handler).
+
+A dispatch that returns with a span open is closed by the endpoint return
+path and counted in the fixed-data word `ipc_bulk_faults`, a driver fault
+that the IPC acceptance replay pins at its one deliberate case.
 `tools/mapcheck.py` fails the build if a driver symbol links into the
 nucleus image, and `--production` rejects every acceptance-only symbol.
 
@@ -651,8 +683,8 @@ What each driver does with a release:
 
 | device | held | released |
 |---|---|---|
-| `/dev/video` (`v9958`) | the console's output is dropped and counted; the driver touches no VDP register | the full display init runs again: mode registers, wait, palette, both font atlases, clear, cursor home |
-| `/dev/console` (composition) | — (no exclusive form) | `KCONSOLE_OP_RESET`: terminal defaults, both font atlases, clear, cursor home, input queue drained |
+| `/dev/video` (`v9958`) | the console's output is dropped and counted; the driver touches no VDP register | the full display init runs again: mode registers, wait, palette, clear, cursor home |
+| `/dev/console` (composition) | — (no exclusive form) | `KCONSOLE_OP_RESET`: terminal defaults, the display init, clear, cursor home, input queue drained |
 
 `KVIDEO_OP_RESET` (3) runs the same display init at any time, and
 `KCONSOLE_OP_RESET` (5) is the console's reset; the launcher uses the

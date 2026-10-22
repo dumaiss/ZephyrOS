@@ -4,6 +4,7 @@
   "objects": [
     "ipc_echo.rel",
     "ipc_echo_boot.rel",
+    "ipc_echo_map.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "ipc_echo_init",
@@ -28,6 +29,15 @@
       "role": "io",
       "bss_areas": [
         "_DRIVER_IO"
+      ]
+    },
+    {
+      "role": "mapped",
+      "image_areas": [
+        "_MAPPED"
+      ],
+      "bss_areas": [
+        "_MAPPED_BSS"
       ]
     }
   ],

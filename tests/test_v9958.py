@@ -231,14 +231,18 @@ class TestDriverArtifact(unittest.TestCase):
         self.assertEqual(manifest["name"], "v9958")
         self.assertEqual(manifest["init"], "v9958_driver_init")
         self.assertEqual([segment["role"] for segment in manifest["segments"]],
-                         ["hot", "io", "boot", "bulk"])
-        hot, io, boot, bulk = manifest["segments"]
+                         ["hot", "io", "boot", "mapped"])
+        hot, io, boot, mapped = manifest["segments"]
         self.assertEqual(hot["image_areas"], ["_CODE"])
         self.assertEqual(io["bss_areas"], ["_DRIVER_IO"])
         self.assertEqual(boot["image_areas"], ["_BOOT"])
         self.assertEqual(boot["bss_areas"], ["_BOOT_DATA"])
         self.assertEqual(boot["entry"], "v9958_boot_entry")
-        self.assertEqual(bulk["image_areas"], ["_BULK"])
+        # The mapped segment: the font pages (image) and the expansion
+        # pages (BSS), page-aligned (architecture 5.6).
+        self.assertEqual(mapped["image_areas"], ["_MAPPED"])
+        self.assertEqual(mapped["bss_areas"], ["_MAPPED_BSS"])
+        self.assertEqual(mapped["align"], 256)
         self.assertEqual(manifest["objects"],
                          ["v9958.rel", "v9958_io.rel", "v9958_driver.rel",
                           "v9958_font.rel", "v9958_boot.rel",
@@ -248,7 +252,7 @@ class TestDriverArtifact(unittest.TestCase):
                            "dispatch": "v9958_driver_dispatch", "flags": 0,
                            "release": True, "events": True}])
 
-    def test_packed_container_and_the_bulk_font(self):
+    def test_packed_container_and_the_mapped_font(self):
         if not os.path.exists(MOD):
             self.skipTest("build/modules/v9958.mod missing; build first")
         data = _read(MOD, "rb")
@@ -260,20 +264,25 @@ class TestDriverArtifact(unittest.TestCase):
         self.assertGreater(info["image_size"], 0)
         self.assertGreater(info["bss_size"], 0)
         self.assertNotEqual(info["init_offset"], 0xFFFF)
-        hot, io, boot, bulk = info["segments"]
+        hot, io, boot, mapped = info["segments"]
         # The hot tier holds the core, the port layer and the renderer
         # (the display reset shares the bring-up chain, 3.2); the copy
         # buffers are the io segment, inside the driver I/O window.
         self.assertLess(hot["image_size"], 0x4000)
         self.assertLess(io["bss_size"], 0x4000)
-        # The font is the bulk segment, byte for byte the pinned asset
-        # (the same source tools/fontpack.py packs for the ROMFS copy).
-        self.assertEqual(bulk["image_size"], 2048)
+        # The mapped segment's image is the pinned font, scanline-major
+        # (tools/fontpack.py paged), and its BSS the six expansion pages;
+        # the base is page-aligned inside the mapped range.
+        self.assertEqual(mapped["image_size"], 2048)
+        self.assertEqual(mapped["bss_size"], 6 * 256)
+        self.assertEqual(mapped["base"] & 0xFF, 0)
+        self.assertGreaterEqual(mapped["base"], 0x0100)
+        self.assertLessEqual(mapped["base"] + 2048 + 6 * 256, 0x2000)
         asset = fontpack.parse_font(FONT_INC)
-        at = bulk["payload_offset"]
+        at = mapped["payload_offset"]
         self.assertEqual(info["payload"][at:at + 2048],
-                         bytes(asset),
-                         "the bulk segment must carry the pinned font")
+                         fontpack.paged(asset),
+                         "the mapped segment must carry the paged font")
         # The boot tier is a bounded bring-up entry, not a second copy of
         # the driver: every path reachable after boot is hot.
         self.assertLess(boot["image_size"] + boot["bss_size"], 0x200)
@@ -301,21 +310,12 @@ class TestDriverArtifact(unittest.TestCase):
                           "xmem_child.exe", "xmem_far.exe",
                           "fs_selftest.exe", "fs_child.exe"])
         self.assertEqual(systemgen.store_type("v9958.mod"), "MOD")
-        # The font is the video image's bulk segment; the recovery
+        # The font is the video image's mapped segment; the recovery
         # store carries no separate copy of it.
         self.assertNotIn("v9958-6x8.font", system["store"])
         self.assertNotIn("v9958-6x8.font", system["drivers"])
         main = _read(MAIN_C)
         self.assertIn("driver_load_all(KOS_DRIVER_MANIFEST_NAME)", main)
-        # The image's own boot tier runs the bring-up (the endpoint and
-        # bulk extent are the loader's), and the reset path re-reads the
-        # font through the nucleus bulk copy because the window cannot
-        # show the bulk tier.
-        loader = _read(os.path.join(ROOT, "kernel", "driver",
-                                    "driver_loader.c"))
-        self.assertIn("bulk_base", loader)
-        self.assertIn("bulk_read", os.path.join(
-            _read(os.path.join(ROOT, "drivers", "v9958", "v9958_proto.c"))))
 
     def test_makefile_targets_and_gates(self):
         makefile = _read(MAKEFILE)
@@ -374,7 +374,6 @@ class TestDriverSourceDiscipline(unittest.TestCase):
                                  "v9958 must not reference %r" % needle)
         # The driver's own API table is the only kernel surface it uses.
         self.assertIn("driver_api", self.proto)
-        self.assertIn("bulk_read", self.proto)
 
     def test_vdp_interrupt_is_the_exclusive_holders(self):
         # The bring-up never enables a VDP interrupt; the frame interrupt
@@ -399,7 +398,7 @@ class TestDriverSourceDiscipline(unittest.TestCase):
 
     def test_proven_initialization_order(self):
         # Porch off, paced R#25/R#8/stop/R#0..R#11, R#25 WTE on, porch
-        # on, palette, atlases, clear, cursor, present, display on.
+        # on, palette, clear, cursor, present, display on.
         order = [
             "v9958_porch_off();",
             "KOS_V9958_R25_WAIT_OFF",
@@ -410,7 +409,6 @@ class TestDriverSourceDiscipline(unittest.TestCase):
             "KOS_V9958_R25_WAIT_ON",
             "v9958_porch_on();",
             "v9958_init_palette();",
-            "v9958_upload_font_atlas()",
             "v9958_clear_screen();",
             "v9958_cursor_init();",
             "v9958_io_wait_command();",
@@ -429,7 +427,7 @@ class TestDriverSourceDiscipline(unittest.TestCase):
 
     def test_cursor_sat_writes_are_cached_and_reset_invalidates_cache(self):
         cursor = self.c.split("static void v9958_cursor_write_sat")[1].split(
-            "static void v9958_expand_row")[0]
+            "/* --- display state")[0]
         init = self.c.split("static void v9958_cursor_init")[1].split(
             "static int v9958_init_display")[0]
         for field in ("cursor_sat_valid", "cursor_sat_visible",
@@ -443,7 +441,7 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.assertLess(init.index("cursor_sat_valid = 0u"),
                         init.index("v9958_cursor_write_sat"))
 
-    def test_renderer_suppresses_sprites_and_coalesces_spans(self):
+    def test_renderer_suppresses_sprites_and_writes_glyphs_directly(self):
         # The wrappers bracket the workers with the hold-aware sprite
         # helpers: sprites go off only when no program holds the VDP
         # (tests/test_tui_sim.py replays the hold behaviour).
@@ -466,10 +464,19 @@ class TestDriverSourceDiscipline(unittest.TestCase):
                         render.index("_v9958_driver_render_worker"))
         self.assertLess(render.index("call\tv9958_hold_finish"),
                         render.index("call\tv9958_hold_restore"))
-        self.assertIn("v9958_space_span:", self.asm)
-        self.assertIn("#V9958_CMD_HMMV", self.asm)
-        self.assertIn("#(V9958_CELL_WIDTH * 2)", self.asm)
-        self.assertIn("jp\tnz,v9958_span_loop", self.asm)
+        # The flush draws inside one bulk-map span with data-port writes
+        # and no command (architecture 5.6); the expansion pages are built
+        # once, at init.
+        flush = self.asm.split("_v9958_out_flush::")[1].split(
+            "_v9958_term_write::")[0]
+        self.assertLess(flush.index("call\t_v9958_io_wait_command"),
+                        flush.index("call\t_v9958_span_open"))
+        self.assertLess(flush.index("call\t_v9958_span_open"),
+                        flush.index("out\t(KOS_V9958_DATA_PORT),a"))
+        self.assertLess(flush.index("out\t(KOS_V9958_DATA_PORT),a"),
+                        flush.index("call\t_v9958_span_close"))
+        self.assertNotIn("KOS_V9958_INDIRECT_PORT", flush)
+        self.assertIn("v9958_expand_init();", self.proto)
 
     def test_render_transaction_validates_first_and_uses_lmmv_eor(self):
         dispatch = self.proto.split("case KVIDEO_OP_RENDER:")[1].split(
@@ -493,24 +500,6 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         # replays, not by source words: the boundary split is
         # tests/test_tui_sim.py (invertwrap), the one SAT write and one
         # final wait are (rendersync).
-
-    def test_asm_fill_colours_are_the_header_colours(self):
-        # The assembly names its fill bytes independently of the header;
-        # a palette change that moves one must fail this pin.
-        for asm_name, header_name in (
-                ("V9958_FILL_NORMAL", "V9958_CLEAR_COLOR"),
-                ("V9958_FILL_REVERSE", "V9958_FILL_COLOR_REVERSE")):
-            match = re.search(
-                r"(?m)^%s\s*=\s*(0x[0-9A-Fa-f]+|[0-9]+)$" % asm_name,
-                self.asm)
-            self.assertIsNotNone(match, asm_name)
-            value = int(match.group(1), 0)
-            header = re.search(
-                r"(?m)^#define\s+%s\s+(0x[0-9A-Fa-f]+[uU]?|[0-9]+[uU]?)"
-                % header_name, self.header)
-            self.assertIsNotNone(header, header_name)
-            self.assertEqual(value, int(header.group(1).rstrip("uU"), 0),
-                             "%s must equal %s" % (asm_name, header_name))
 
     def test_packed_colour_asserts_hold(self):
         # The packed fill bytes are the 4-bit pixel repeated in both
@@ -566,12 +555,7 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.assertIn("return (-KOS_ENOTSUP);", self.send)
         self.assertIn("return (-KOS_ENODEV);", self.send)
 
-    def test_font_is_streamed_not_resident(self):
-        # Bounded 64-byte resource reads, chunk-wise atlas conversion (one
-        # 8-glyph chunk and one 24-byte segment staged at a time).
-        self.assertIn("V9958_FONT_CHUNK", self.c)
-        self.assertIn("v9958_font_group", self.c)
-        self.assertIn("v9958_atlas_row", self.c)
+    def test_no_font_table_in_the_driver_c(self):
         # No font byte table: the driver C contains no data initializer
         # with hundreds of bytes.  The bounded size covers the video
         # core plus the ported terminal renderer.

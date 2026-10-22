@@ -31,7 +31,8 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import pack_image  # noqa: E402
 import romfspack  # noqa: E402
-from replay import ConsoleReplay, SHELL_PROMPT, STEP_LIMIT  # noqa: E402
+from replay import (ConsoleReplay, SHELL_PROMPT, STEP_LIMIT,  # noqa: E402
+                    v9958_screen)
 from z80sim import IocCommandPeer, read_symbols  # noqa: E402
 
 TUI_TEST_EXE = os.path.join(ROOT, "build", "user", "tui_test.exe")
@@ -389,73 +390,10 @@ def parse_serial_screen(data):
     return screen
 
 
-def decode_v9958_screen(replay, z, command_start):
-    """Decode the glyph and fill commands into the same 85x26 text map."""
-    screen = _blank_screen()
-    commands = z.vdp.commands[command_start:]
-    if not commands:
-        return screen
-    registers = sorted((now, value) for value, register, now
-                       in z.vdp.reg_writes if register == 23)
-    origin = 0
-    register_index = 0
-    for command in commands:
-        while (register_index < len(registers) and
-               registers[register_index][0] <= command["start"]):
-            origin = (registers[register_index][1] + 4) & 0xFF
-            register_index += 1
-        block = command["block"]
-        if command["code"] == 0xC0:  # HMMV fill
-            dx = block[4] | (block[5] << 8)
-            dy = block[6] | (block[7] << 8)
-            nx = block[8] | (block[9] << 8)
-            ny = block[10] | (block[11] << 8)
-            attr = 1 if block[12] == 0xFF else 0
-            for scan in range(dy, dy + ny):
-                offset = (scan - origin) & 0xFF
-                if offset >= ROWS * 8 or offset % 8 != 0:
-                    continue
-                at_row = offset // 8
-                for x in range(dx, dx + nx, 6):
-                    at_col = x // 6
-                    if at_col < COLS:
-                        screen[at_row][at_col] = (" ", attr)
-        elif command["code"] == 0x83:  # LMMV with EOR: normal/reverse
-            dx = block[4] | (block[5] << 8)
-            dy = block[6] | (block[7] << 8)
-            nx = block[8] | (block[9] << 8)
-            ny = block[10] | (block[11] << 8)
-            for scan in range(dy, dy + ny, 8):
-                offset = (scan - origin) & 0xFF
-                if offset >= ROWS * 8 or offset % 8 != 0:
-                    continue
-                at_row = offset // 8
-                for x in range(dx, dx + nx, 6):
-                    at_col = x // 6
-                    if at_col < COLS:
-                        ch, attr = screen[at_row][at_col]
-                        screen[at_row][at_col] = (ch, attr ^ 1)
-        elif command["code"] == 0xD0:  # HMMM copy
-            sx = block[0] | (block[1] << 8)
-            sy = block[2] | (block[3] << 8)
-            dx = block[4] | (block[5] << 8)
-            dy = block[6] | (block[7] << 8)
-            nx = block[8] | (block[9] << 8)
-            ny = block[10] | (block[11] << 8)
-            if nx == 0 or nx % 6 != 0 or ny != 8:
-                continue
-            offset = (dy - origin) & 0xFF
-            if offset >= ROWS * 8 or offset % 8 != 0:
-                continue
-            at_row = offset // 8
-            attr = 1 if sy & 0x0040 else 0
-            for x_offset in range(0, nx, 6):
-                at_col = (dx + x_offset) // 6
-                glyph = (((sy & 0x3F) >> 3) * 32 +
-                         (sx + x_offset) // 6)
-                if at_col < COLS:
-                    screen[at_row][at_col] = (chr(glyph), attr)
-    return screen
+def decode_v9958_screen(z):
+    """The 85x26 text map the V9958 shows: the peer's VRAM decoded cell
+    by cell through the font (tests/replay.py v9958_screen)."""
+    return v9958_screen(z.vdp.vram, z.vdp.regs[23])
 
 
 def _splice_store(image, stream):
@@ -658,8 +596,10 @@ class TuiSimBase(unittest.TestCase):
         return replay, z
 
     def _run(self, mode, keys=b"", late_keys=b"", late_marker=None,
-             program="tui_test", expected=None):
+             program="tui_test", expected=None, snapshot_codes=()):
         replay, z = self._boot()
+        if not self.SERIAL:
+            z.vdp.snapshot_codes = snapshot_codes
         glyph_start = len(z.glyphs)
         command_start = len(z.vdp.commands)
         serial_start = len(z.sio_tx)
@@ -676,6 +616,7 @@ class TuiSimBase(unittest.TestCase):
         renders = []
         armed = False
         init_command_start = command_start
+        init_write_start = len(z.vdp.vram_writes) if not self.SERIAL else 0
         late_sent = False
         if expected is None:
             if mode == "foundation":
@@ -690,6 +631,8 @@ class TuiSimBase(unittest.TestCase):
                 elif length == TUI_INIT_LENGTH:
                     armed = True
                     init_command_start = len(z.vdp.commands)
+                    if not self.SERIAL:
+                        init_write_start = len(z.vdp.vram_writes)
             render_length = self._render_length(z)
             if render_length is not None and armed:
                 renders.append(render_length)
@@ -740,6 +683,7 @@ class TuiSimBase(unittest.TestCase):
             "lane": bytes(z.sio_tx[serial_start:]),
             "command_start": command_start,
             "init_command_start": init_command_start,
+            "init_write_start": init_write_start,
             "glyphs": "".join(z.glyphs[glyph_start:]),
         }
 
@@ -751,8 +695,7 @@ class TuiModeChecks:
     def _screen(self, run):
         if self.SERIAL:
             return parse_serial_screen(run["lane"])
-        return decode_v9958_screen(run["replay"], run["z"],
-                                   run["command_start"])
+        return decode_v9958_screen(run["z"])
 
     def _assert_rows(self, mode, expected, keys=b"", rows=21):
         run = self._run(mode, keys)
@@ -871,10 +814,8 @@ class TuiModeChecks:
         inversions = [command for command in commands
                       if command["code"] == 0x83]
         self.assertEqual(len(inversions), 4)
-        first = commands.index(inversions[0])
-        last = commands.index(inversions[-1])
-        self.assertFalse([command for command in commands[first:last]
-                          if command["code"] == 0xD0],
+        self.assertEqual(inversions[0]["writes_at"],
+                         inversions[-1]["writes_at"],
                          "an attribute-only transition repainted a glyph")
         for command in inversions:
             block = command["block"]
@@ -896,14 +837,16 @@ class TuiModeChecks:
         run = self._run("renderbad")
         self.assertIn("tui: renderbad pass", self._text(run))
         if not self.SERIAL:
-            commands = run["z"].vdp.commands[run["init_command_start"]:]
+            vdp = run["z"].vdp
+            commands = vdp.commands[run["init_command_start"]:]
             self.assertFalse(
-                [command for command in commands
-                 if command["code"] == 0x83 or
-                 (command["code"] == 0xD0 and
-                  (command["block"][6] |
-                   (command["block"][7] << 8)) < 22 * 8)],
-                "a malformed stream drew glyphs or inverted cells")
+                [command for command in commands if command["code"] == 0x83],
+                "a malformed stream inverted cells")
+            self.assertFalse(
+                [address for address, _value
+                 in vdp.vram_writes[run["init_write_start"]:]
+                 if address < 0x10000 and (address >> 8) < 22 * 8],
+                "a malformed stream drew glyphs")
 
     def test_render_accepts_the_maximum_stream_length(self):
         run = self._run("rendermax")
@@ -926,7 +869,7 @@ class TuiModeChecks:
             for at, ch in enumerate("WRAP"):
                 self.assertEqual(screen[0][4 + at], (ch, 0))
             return
-        run = self._run("invertwrap")
+        run = self._run("invertwrap", snapshot_codes=(0x83,))
         commands = run["z"].vdp.commands[run["command_start"]:]
         inversions = [command for command in commands
                       if command["code"] == 0x83]
@@ -938,21 +881,12 @@ class TuiModeChecks:
             self.assertEqual(block[8] | (block[9] << 8), 4 * 6)
             self.assertEqual(block[10] | (block[11] << 8), 8)
             self.assertEqual(block[12], 0x0B)
-        replay, z = run["replay"], run["z"]
-        full = z.vdp.commands
-        on_index = full.index(inversions[0])
-        off_index = full.index(inversions[1])
-        # Both directions, decoded from the command stream: after the
-        # on-toggle the cells are reverse, after the off-toggle normal.
-        z.vdp.commands = full[:off_index]
-        screen = decode_v9958_screen(replay, z, run["command_start"])
-        for at, ch in enumerate("WRAP"):
-            self.assertEqual(screen[0][4 + at], (ch, 1))
-        z.vdp.commands = full[:off_index + 1]
-        screen = decode_v9958_screen(replay, z, run["command_start"])
-        for at, ch in enumerate("WRAP"):
-            self.assertEqual(screen[0][4 + at], (ch, 0))
-        z.vdp.commands = full
+        # Both directions, decoded from VRAM: after the on-toggle the
+        # cells are reverse, after the off-toggle normal.
+        for command, attr in zip(inversions, (1, 0)):
+            screen = v9958_screen(command["vram"], command["r23"])
+            for at, ch in enumerate("WRAP"):
+                self.assertEqual(screen[0][4 + at], (ch, attr))
 
     def test_multi_record_render_syncs_once(self):
         """TEXT + INVERT + a cursor-moving STATE in one RENDER: exactly
@@ -1167,18 +1101,11 @@ class TestTuiV9958Screen(TuiModeChecks, TuiSimBase):
             writes = writes[:writes.index(len(TUI_SHUTDOWN)) + 1]
         self.assertEqual(writes, [17, 15])
         self.assertEqual(run["renders"], [101, 10])
-        screen = decode_v9958_screen(run["replay"], run["z"],
-                                     run["command_start"])
+        screen = decode_v9958_screen(run["z"])
         self.assertEqual("".join(ch for ch, _attr in screen[0]), batch_row())
         for row in range(1, 21):
             self.assertEqual("".join(ch for ch, _attr in screen[row]),
                              " " * COLS)
-        commands = run["z"].vdp.commands[run["command_start"]:]
-        wide_copies = [command for command in commands
-                       if command["code"] == 0xD0 and
-                       command["block"][8] == 12 and
-                       command["block"][9] == 0]
-        self.assertGreaterEqual(len(wide_copies), 40)
         r8 = [value for value, register, _now in run["z"].vdp.reg_writes
               if register == 8]
         sprites_off = r8.index(0x0A)
@@ -1204,8 +1131,7 @@ class TestTuiV9958Screen(TuiModeChecks, TuiSimBase):
 
     def test_screen_matches_the_logical_model(self):
         run = self._run("screen")
-        screen = decode_v9958_screen(run["replay"], run["z"],
-                                     run["command_start"])
+        screen = decode_v9958_screen(run["z"])
         expected = expected_screen()
         for row in range(SCREEN_ROWS):
             self.assertEqual(screen[row], expected[row], "row %d" % row)
@@ -1217,8 +1143,7 @@ class TestTuiV9958Screen(TuiModeChecks, TuiSimBase):
         writes = run["writes"]
         self.assertEqual(writes[:2], [15, 20])
         self.assertTrue(run["renders"])
-        screen = decode_v9958_screen(run["replay"], run["z"],
-                                     run["command_start"])
+        screen = decode_v9958_screen(run["z"])
         expected = shutdown_screen()
         for row in range(SCREEN_ROWS):
             self.assertEqual(screen[row], expected[row], "row %d" % row)

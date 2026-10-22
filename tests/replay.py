@@ -27,6 +27,7 @@ if HERE not in sys.path:
 if os.path.join(ROOT, "tools") not in sys.path:
     sys.path.insert(0, os.path.join(ROOT, "tools"))
 
+import fontpack  # noqa: E402
 import romfspack  # noqa: E402
 from z80sim import (Ctc, Ctc0Injector, IocCommandPeer, V9958Peer,  # noqa: E402
                     Z80, read_symbols, skip_serial_connect_delay)
@@ -47,6 +48,68 @@ BANNER = "KonaOS 0.0"
 PROMPT = "Z80>"
 MONITOR_EXIT = "monitor: exit"
 SHELL_PROMPT = "/> "
+
+
+# --- the V9958 text screen, read back from VRAM ----------------------------
+#
+# The renderer writes each glyph straight into VRAM (drivers/v9958/
+# v9958_io.asm:_v9958_out_flush): a cell is 3 bytes on each of 8 scanlines,
+# 256 bytes apart, the six pixels of a font row through the console's pair
+# table (two pixels per byte, the left one in the high nibble; normal 44/4F/
+# F4/FF, reverse swapped).  A cell's 24 bytes therefore name its character
+# and attribute; this table maps them back.
+V9958_COLS = 85
+V9958_ROWS = 26
+V9958_DISPLAY_OFFSET = 4
+_V9958_PAIRS = ((0x44, 0x4F, 0xF4, 0xFF), (0xFF, 0xF4, 0x4F, 0x44))
+_V9958_CELLS = None
+
+
+def v9958_cell_table():
+    """{24-byte cell pattern: (character, attribute)} from the pinned
+    font.  Printable ASCII is entered first in both attributes, so it wins
+    over a later code with the same pixels (a reverse space and a normal
+    full block, DBh, are the same 24 bytes)."""
+    global _V9958_CELLS
+    if _V9958_CELLS is None:
+        font = fontpack.parse_font(os.path.join(
+            ROOT, "drivers", "v9958", "assets", "font_cp850_6x8.inc"))
+        table = {}
+        order = list(range(0x20, 0x7F)) + [code for code in range(256)
+                                            if not 0x20 <= code < 0x7F]
+        for code in order:
+            for attr, pairs in enumerate(_V9958_PAIRS):
+                cell = bytearray()
+                for row in range(8):
+                    bits = font[code * 8 + row]
+                    for shift in (6, 4, 2):
+                        cell.append(pairs[(bits >> shift) & 3])
+                table.setdefault(bytes(cell), (chr(code), attr))
+        _V9958_CELLS = table
+    return _V9958_CELLS
+
+
+def v9958_cell_bytes(vram, top, col):
+    """The 24 bytes of the cell whose first scanline is VRAM line
+    `top` (page zero) at column `col`."""
+    return bytes(vram[((top + line) & 0xFF) * 256 + col * 3 + offset]
+                 for line in range(8) for offset in range(3))
+
+
+def v9958_screen(vram, r23):
+    """The visible 85x26 screen as rows of (character, attribute) from a
+    VRAM image and its R#23 origin (the peer's `vram` and `regs[23]`, or
+    a command's snapshot); a cell that is no glyph of the font reads as
+    ('?', 0)."""
+    table = v9958_cell_table()
+    origin = (r23 + V9958_DISPLAY_OFFSET) & 0xFF
+    screen = []
+    for row in range(V9958_ROWS):
+        top = (origin + row * 8) & 0xFF
+        screen.append([table.get(v9958_cell_bytes(vram, top, col),
+                                 ("?", 0))
+                       for col in range(V9958_COLS)])
+    return screen
 
 
 def _load_image(root, subdir, image_name, map_name):
@@ -302,48 +365,53 @@ class ConsoleReplay(Replay):
         z.glyphs = []
         z.glyph_pos = 0
         z.glyph_last = None
+        z.glyph_cells = {}
+        z.glyph_next = None
+        z.glyph_burst = False
         return z
 
     def pump(self, z):
-        """Decode newly issued glyph copies into a positioned text model.
+        """Decode newly drawn glyphs into a positioned text model.
 
-        A 6/12x8 HMMM copy carries one/two atlas-contiguous glyphs, and a
-        6/12x8 HMMV in a terminal background color carries one/two blanks.
-        A cell that does not continue the previous command starts a new model
-        line.  CR/LF and scrolling are handled by the renderer itself, so the
-        model only needs the printed characters."""
-        commands = z.vdp.commands
-        while z.glyph_pos < len(commands):
-            cmd = commands[z.glyph_pos]
+        The renderer writes a print run scanline by scanline through the
+        data port; a cell's 24 bytes are collected from the write stream
+        (not read back from VRAM, which later drawing may already have
+        changed) and decoded when its last byte, scanline 7's third, is
+        written.  Only write bursts that start on a cell boundary are the
+        renderer's (it sets the address to column * 3 for every scanline of
+        a run); a program's own VRAM writes (the shell's logo) start
+        elsewhere and are not text.  A cell that does not continue the
+        previous one starts a new model line.  CR/LF and scrolling are handled by the renderer
+        itself, so the model only needs the printed characters."""
+        table = v9958_cell_table()
+        writes = z.vdp.vram_writes
+        cells = z.glyph_cells
+        while z.glyph_pos < len(writes):
+            address, value = writes[z.glyph_pos]
             z.glyph_pos += 1
-            block = cmd.get("block")
-            if not block:
+            if address != z.glyph_next:
+                z.glyph_burst = (address & 0xFF) % 3 == 0
+            z.glyph_next = (address + 1) & 0x1FFFF
+            if address >= 0x10000 or not z.glyph_burst:
                 continue
-            dx = block[4] | (block[5] << 8)
-            dy = block[6] | (block[7] << 8)
-            nx = block[8] | (block[9] << 8)
-            ny = block[10] | (block[11] << 8)
-            if nx not in (6, 12) or ny != 8:
+            line = address >> 8
+            col, offset = divmod(address & 0xFF, 3)
+            if col >= V9958_COLS:
                 continue
-            if cmd.get("code") == 0xD0:
-                sx = block[0] | (block[1] << 8)
-                sy = block[2]
-                cells = [((sy & 0x3F) >> 3) * 32 +
-                         (sx + offset) // 6
-                         for offset in range(0, nx, 6)]
-            elif (cmd.get("code") == 0xC0 and
-                  block[12] in (0x44, 0xFF)):
-                cells = [ord(" ")] * (nx // 6)
+            key = (line & 0xF8, col)
+            cell = cells.setdefault(key, bytearray(24))
+            cell[(line & 7) * 3 + offset] = value
+            if (line & 7) != 7 or offset != 2:
+                continue
+            del cells[key]
+            glyph, _attr = table.get(bytes(cell), ("\x00", 0))
+            if not " " <= glyph < "\x7f":
+                continue
+            if z.glyph_last == [key[0], col - 1]:
+                z.glyphs.append(glyph)
             else:
-                continue
-            for offset, glyph in enumerate(cells):
-                at_x = dx + offset * 6
-                if 32 <= glyph < 127:
-                    if z.glyph_last == [dy, at_x - 6]:
-                        z.glyphs.append(chr(glyph))
-                    else:
-                        z.glyphs.append("\n" + chr(glyph))
-                    z.glyph_last = [dy, at_x]
+                z.glyphs.append("\n" + glyph)
+            z.glyph_last = [key[0], col]
 
     def trace(self, z, since=0):
         self.pump(z)

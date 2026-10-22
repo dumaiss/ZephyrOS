@@ -1,23 +1,22 @@
 /* Internal interface of the V9958 video driver (drivers/v9958/).
  *
  * v9958.c owns the GRAPHIC 6 display state, the ported initialization
- * and command sequencing, the font-atlas upload, and the output-only
- * 85x26 text terminal renderer; v9958_io.asm owns every port access,
- * the timing-critical streaming loops and the renderer's hot path (the
- * print run's glyph copies and the printable-byte fast path);
- * v9958_boot.c owns the boot-tier bring-up and v9958_proto.c the
+ * and command sequencing, the expansion pages, and the output-only 85x26
+ * text terminal renderer; v9958_io.asm owns every port access, the
+ * timing-critical streaming loops and the renderer's hot path (the print
+ * run's direct VRAM writes and the printable-byte fast path);
+ * v9958_font.asm is the mapped segment (the font pages and the expansion
+ * pages); v9958_boot.c owns the boot-tier bring-up and v9958_proto.c the
  * resident-driver protocol dispatch.
  * The driver reaches the nucleus only through the driver bootstrap
- * interface (drivers/include/driver.h); its bulk font lives in bank 6's
- * boot/bulk tier and is re-read through the nucleus bulk copy.  Not a
- * kernel ABI.
+ * interface (drivers/include/driver.h); it reads its mapped segment
+ * inside a bulk-map span.  Not a kernel ABI.
  *
  * The ported behavior is the hardware-proven 85x26, 6x8 CP850 GRAPHIC 6
  * bring-up of the pinned Zephyr-80 reference (LunchCrema V9958,
  * commit 2c6b9650): software-paced bootstrap with the front porch
  * bypassed, native WAIT from R#25.WTE=1 on, palette programmed only
- * after the porch is enabled, both precolored font atlases uploaded
- * from the reference font, circular page-zero bitmap cleared, sprite
+ * after the porch is enabled, circular page-zero bitmap cleared, sprite
  * cursor initialized, then the display enabled.  The VDP interrupt is
  * never enabled.
  *
@@ -43,11 +42,6 @@
  * 18 are declared here; the character renderer/terminal arrives with the
  * console package. */
 
-#define V9958_ATLAS_SCANLINES   64u  /* 8 atlas rows x 8 glyph lines      */
-#define V9958_ATLAS_PITCH       256u /* one G6 scanline (512 px, 4bpp)    */
-#define V9958_ATLAS_GLYPHS      8u   /* glyphs per staged atlas segment   */
-#define V9958_ATLAS_SEG_BYTES   24u  /* 8 glyphs x 6 pixels / 2 per byte  */
-#define V9958_ATLAS_CHUNKS      32u  /* 256 glyphs / 8 per fetched chunk  */
 #define V9958_GLYPH_BYTES       8u   /* 6x8 font: 8 rows per glyph        */
 
 /* --- 85x26 6x8 output terminal (ported reference renderer) ------------
@@ -73,19 +67,14 @@
 #define V9958_TERM_ESC_HASH  3u  /* ESC # x: consume one final byte      */
 #define V9958_TERM_CHARSET   4u  /* ESC ( ) O x: consume one final byte  */
 
-/* Atlas placement in 128-KiB VRAM: normal at 10000h, reverse at 14000h,
- * each scanline one 256-byte pitch apart.  A scanline carries 32 glyphs
- * of 3 precolored bytes (96 meaningful bytes), written as four 24-byte
- * segments staged from one 8-glyph font chunk at a time. */
-#define V9958_ATLAS_NORMAL_A16  1u
-#define V9958_ATLAS_NORMAL_ADDR 0x0000u
-#define V9958_ATLAS_REVERSE_A16 1u
-#define V9958_ATLAS_REVERSE_ADDR 0x4000u
-
-/* Font resource carried as ROMFS DATA (never resident module storage). */
-#define V9958_FONT_NAME   "v9958-6x8.font"
-#define V9958_FONT_SIZE   2048u
-#define V9958_FONT_CHUNK  64u   /* one 8-glyph chunk per bounded read */
+/* The mapped segment (v9958_font.asm, architecture 5.6): the font
+ * scanline-major in eight 256-byte pages, and the expansion pages, three
+ * per colour pair (normal, then reverse).  Both are page-aligned (the
+ * manifest's "align": 256). */
+#define V9958_FONT_PAGES   8u
+#define V9958_EXPAND_PAGES 6u
+extern const uint8_t v9958_font_pages[V9958_FONT_PAGES * 256u];
+extern uint8_t v9958_expand[V9958_EXPAND_PAGES * 256u];
 
 /* --- Sprite-mode-2 cursor allocations (SAT + pattern + color) --------- */
 
@@ -103,8 +92,7 @@
 
 /* v9958_write_vram addresses VRAM's upper 64 KiB only. */
 #if defined(__SDCC)
-_Static_assert(V9958_ATLAS_NORMAL_A16 == 1u && V9958_ATLAS_REVERSE_A16 == 1u &&
-	       V9958_CURSOR_PATTERN_A16 == 1u && V9958_CURSOR_COLOR_A16 == 1u &&
+_Static_assert(V9958_CURSOR_PATTERN_A16 == 1u && V9958_CURSOR_COLOR_A16 == 1u &&
 	       V9958_CURSOR_SAT_A16 == 1u,
 	       "v9958_write_vram addresses VRAM's upper 64 KiB");
 #endif
@@ -295,8 +283,8 @@ int v9958_driver_render_worker(struct kos_ipc_frame *frame);
 #define V9958_OK   0
 #define V9958_FAIL (-1)
 
-/* The shared display bring-up (full initialization incl. the font
- * upload), used by the boot segment's initial pass.  Returns ZDRIVER_OK
+/* The shared display bring-up (the full initialization), used by the
+ * boot segment's initial pass.  Returns ZDRIVER_OK
  * or ZDRIVER_FAIL. */
 int v9958_display_bringup(void);
 
@@ -305,11 +293,13 @@ int v9958_display_bringup(void);
  * handle's release all run it.  Returns 0 or -KOS_ENODEV. */
 int v9958_display_reset(void);
 
-/* The boot-tier direct font source: the boot entry leaves the font's
- * bank-6 address here for the initial upload; the driver init clears it
- * so every later read goes through the nucleus bulk copy. */
-void v9958_set_font_base(uint16_t base);
 void v9958_set_api(const struct driver_api *api);
+
+/* The renderer's bulk-map span (v9958_out_flush), and the init's one-time
+ * build of the expansion pages inside its own span. */
+void v9958_span_open(void);
+void v9958_span_close(void);
+void v9958_expand_init(void);
 
 /* Boot segment: the initial bring-up, run once through the mode-10 gate. */
 void v9958_boot_entry(void);
@@ -321,8 +311,8 @@ uint8_t v9958_driver_init(const struct driver_boot *boot);
 
 /* The class operation implementation (exposed for the descriptor).  A
  * KVIDEO_RESET reinitializes the terminal parser, cursor/rendition
- * defaults, every VDP-owned register and selector, both font atlases,
- * the circular bitmap and the sprite cursor, then presents and leaves
+ * defaults, every VDP-owned register and selector, the circular bitmap
+ * and the sprite cursor, then presents and leaves
  * the display enabled. */
 int v9958_send(void *state, uint8_t operation, const void *payload,
 	       uint16_t length);

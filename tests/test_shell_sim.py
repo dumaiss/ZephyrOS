@@ -177,6 +177,9 @@ def file_session():
     )
 
 
+# The logo's 46 row addresses: (10 + row) * 256 + 4.
+LOGO_ROW_ADDRESSES = frozenset((10 + row) * 256 + 4 for row in range(46))
+
 class ShellSession(HwtestReplay):
     """The production image, the shell at boot and the emulated card."""
 
@@ -216,14 +219,15 @@ class ShellSession(HwtestReplay):
     def assert_logo(self, z, starts):
         """The banner's logo: written straight into VRAM through the data
         port, one 40-byte row per address, over the pinned 80 x 46
-        rectangle at (8, 10) - 1,840 bytes per shell start and no command
-        engine involved."""
+        rectangle at (8, 10) - 46 row addresses per shell start and no
+        command engine involved.  (Text is data-port writes too, at cell
+        boundaries, so the logo is counted by its row addresses.)"""
         lmmc = [cmd for cmd in z.vdp.commands if cmd["code"] == 0xB0]
         self.assertEqual(lmmc, [], "the logo uses no LMMC")
-        in_logo = [addr for addr, _value in z.vdp.vram_writes
-                   if 10 * 256 <= addr < 56 * 256 and 4 <= addr % 256 < 44]
-        self.assertEqual(len(in_logo), starts * 1840,
-                         "logo bytes written per start")
+        rows = [addr for _now, addr in z.vdp.addr_writes
+                if addr in LOGO_ROW_ADDRESSES]
+        self.assertEqual(len(rows), starts * 46,
+                         "logo rows addressed per start")
         # The rectangle holds the dump packed two pixels per byte.
         with open(os.path.join(ROOT, "user", "shell",
                                "konaos-logo-80x46.lmmc"), "rb") as handle:

@@ -806,7 +806,7 @@ TEXT, attribute-only INVERT and final STATE records. Serial may reject it with
 
 The optimized path validates and executes one render stream as one hardware
 transaction. Attribute-only normal/reverse changes use LMMV/EOR over the
-existing pixels; ordinary glyph output continues to use the precolored atlas.
+existing pixels; ordinary glyph output is written straight into VRAM.
 
 Possible later improvement:
 

@@ -71,8 +71,15 @@ segment  role:u8 0:u8 base:u16 image_size:u16 bss_size:u16
 | --- | --- | --- |
 | `hot` | bank 6 `6000h-DFFFh` | the mode-11 window (P = 1): all run-time code and data, plus the init entry |
 | `io` | bank 6 `8000h-BFFFh` | `DRIVER_IO` buffers, the sources and targets of `copy_in`/`copy_out` |
-| `boot` | bank 6 `0000h-5FFFh` | boot-only code, run once through the mode-10 gate with Q = 6, never again |
-| `bulk` | bank 6 `0000h-5FFFh` | bulk data, reached only by nucleus copies |
+| `boot` | bank 6 `0100h-5FFFh` | boot-only code, run once through the mode-10 gate with Q = 6, never again |
+| `bulk` | bank 6 `0100h-5FFFh` | bulk data, reached only by nucleus copies |
+| `mapped` | bank 6 `0100h-1FFFh` | data the driver reads and writes directly inside a bulk-map span (architecture 5.2) |
+
+Role codes: `hot` 1, `boot` 2, `io` 3, `bulk` 4, `mapped` 5. Bank 6's
+`0000h-00FFh` is a reserved page zero: no role is placed there. The
+packer places the mapped segments first, in load order from `0100h`
+(7,936 bytes in all), the boot segments after them and the bulk data
+down from `6000h`.
 
 `entry` is the absolute boot entry and only the `boot` role may carry one
 (`FFFFh` otherwise); `init_entry` in the header is the absolute hot
@@ -82,7 +89,8 @@ their own segment's image.
 Because every address in the payload is final, a segment may only
 reference addresses the mode-11 window can still see: hot code and data
 sit in bank 6 `6000h-DFFFh` and may not point into `boot` or `bulk` code.
-`bulk` carries no relocation records at all.  The `io` block is allocated
+They may point into `mapped` data, which they reach inside a bulk-map
+span. `bulk` carries no relocation records at all.  The `io` block is allocated
 first (see section 5), so the hot tier keeps its low addresses for code
 and its `8000h-BFFFh` window for buffers.
 
@@ -157,18 +165,19 @@ segment's `base` and size must leave the tier of its role, `entry` and
 inside the hot image and each dependency number inside what the nucleus
 has installed.
 
-Both sides report the same two ledgers:
+Both sides report the same three ledgers:
 
 ```text
 driver hot: <bytes> of 32768          hot + io bytes of the 6000h-DFFFh tier
-driver boot/bulk: <bytes> of 24576    boot + bulk bytes of the 0000h-5FFFh tier
+driver boot/bulk: <bytes> of 24576    boot + bulk + mapped bytes of the 0000h-5FFFh tier
+driver mapped: <bytes> of 7936        mapped bytes of the 0100h-1FFFh range
 ```
 
 The loader prints them in acceptance builds; production takes them from
 the packer's report (`drivers.plan.json`), which is what
 `tools/pack_image.py` folds into the bank-6 part of the image manifest.
 Each placed image is reported as `driver <name>: hot <addr> [io <addr>]
-[boot <addr>] [bulk <addr>]`, the same line `modpack.py plan` prints, and
+[boot <addr>] [bulk <addr>] [mapped <addr>]`, the same line `modpack.py plan` prints, and
 the run ends with
 `driver loader: <n> images in bank 6`.
 

@@ -4,9 +4,10 @@
  * direct-hardware core ported from the pinned Zephyr-80 reference
  * (LunchCrema V9958, commit 2c6b9650): the exact GRAPHIC 6
  * initialization discipline, the native VIDEO operation surface, the
- * 6x8 CP850 font-atlas setup, the low-level graphics/command primitives,
- * and the output-only 85x26 text terminal renderer (ANSI/VT100-light
- * parser, circular R#23 scrolling, sprite cursor).  The port deliberately
+ * low-level graphics/command primitives, and the output-only 85x26 text
+ * terminal renderer (ANSI/VT100-light parser, circular R#23 scrolling,
+ * sprite cursor) drawing glyphs straight into VRAM from the CP850 6x8
+ * font in the image's mapped segment.  The port deliberately
  * drops the reference's CP/M dispatch table, BIOS addressing, HID entry
  * points, VIDEO_SEND payload ceiling and CP/M build layout.
  *
@@ -15,11 +16,9 @@
  *        native operations, and the whole display bring-up chain - the
  *        KVIDEO_RESET path is reachable after boot and re-runs the same
  *        chain, so none of it is boot-only;
- *   boot v9958_boot.c: the boot-once marker and the direct font source
- *        of the initial upload (the boot-tier mapping shows the bulk
- *        data, the driver window does not);
- *   bulk the 2048-byte font itself, reached at run time through the
- *        nucleus bulk copy (api->bulk_read).
+ *   boot   v9958_boot.c: the boot-once marker and the initial bring-up;
+ *   mapped v9958_font.asm: the font pages and the expansion pages the
+ *          renderer reads inside a bulk-map span (architecture 5.6).
  *
  * Initialization discipline (hardware-validated; never reordered):
  *
@@ -31,15 +30,12 @@
  *   4. program the palette only here -- every byte under a real
  *      hardware WAIT (WTE=0 loading corrupted palette low bits on the
  *      physical card);
- *   5. upload the normal and reverse font atlases from the ROMFS font,
- *      clear G6, initialize the sprite cursor, present, and finally
+ *   5. clear G6, initialize the sprite cursor, present, and finally
  *      enable the display.
  *
- * The font is the image's bulk segment (2048 bytes, packed from the
- * pinned asset): the initial upload reads it directly in the boot
- * tier's mode-10 mapping, and the run-time display reset re-reads it in
- * bounded 64-byte chunks through the nucleus bulk copy, because the
- * mode-11 driver window cannot show the boot/bulk tier.
+ * VRAM holds no font: the renderer expands each glyph scanline through
+ * the expansion pages, which the init builds once from the console's two
+ * colours (v9958_build_expand).
  *
  * The bring-up leaves the VDP's interrupts off.  The frame interrupt is
  * an exclusive holder's to enable; the hold claims IRQ_VDP_FF and turns
@@ -60,44 +56,33 @@
 
 struct v9958_state v9958_state;
 
-/* The driver bootstrap table (set by the init entry) and the boot-tier
- * font source: the boot entry leaves the font's bank-6 address here for
- * the initial upload; the init clears it so every later (run-time) read
- * goes through the nucleus bulk copy. */
+/* The driver bootstrap table (set by the init entry). */
 static const struct driver_api *v9958_api;
-static uint16_t v9958_font_base;
-
-/* Copy `length` font bytes at `offset` into `dst`. */
-static int v9958_font_read(uint16_t offset, uint8_t *dst, uint16_t length)
-{
-	if (v9958_font_base != 0u) {
-		/* Boot tier only: mode 10 maps the whole resident bank, so
-		 * the bulk bytes are directly addressable. */
-		kos_block_copy(dst, (const uint8_t *)
-			       (uint16_t)(v9958_font_base + offset), length);
-		return (int)length;
-	}
-	return (int)v9958_api->bulk_read(offset, (uint16_t)dst, length);
-}
-
-void v9958_set_font_base(uint16_t base)
-{
-	v9958_font_base = base;
-}
 
 void v9958_set_api(const struct driver_api *api)
 {
 	v9958_api = api;
 }
 
-/* Bounded scratch (module BSS, reused for every read/atlas segment):
- * one 8-glyph font chunk and one expanded 24-byte atlas segment.
- * The reverse flag mirrors the reference driver: the second pass swaps
- * foreground/background in the pair table. */
-static uint8_t v9958_font_group[V9958_FONT_CHUNK];
-static uint8_t v9958_atlas_row[V9958_ATLAS_SEG_BYTES];
 static uint8_t v9958_cmd[KOS_V9958_CMD_REGISTER_COUNT];
-static uint8_t v9958_atlas_reverse;
+
+/* The renderer's bulk-map span (architecture 5.2): the font and the
+ * expansion pages are readable only inside it.  The flush opens one per
+ * print run; nothing inside touches the caller window. */
+void v9958_span_open(void)
+{
+	(void)v9958_api->bulk_map();
+}
+
+void v9958_span_close(void)
+{
+	v9958_api->bulk_unmap();
+}
+
+/* The expansion pages (v9958_font.asm), addressed through a pointer set
+ * at init: an array address taken into a local is stored byte by byte,
+ * which the MOD relocator cannot express. */
+static uint8_t *v9958_expand_base;
 
 /* Print-run buffer (module BSS, relocated with the module image): the
  * reference batches up to 64 same-row characters and defers the cursor
@@ -137,8 +122,10 @@ static const uint8_t v9958_palette[32] = {
 	0x00u, 0x05u, 0x67u, 0x00u, 0x55u, 0x05u, 0x77u, 0x07u
 };
 
-/* Sprite cursor assets and their precolored pair table.  The cursor
- * pattern is the six-pixel top bar of a text cell. */
+/* Sprite cursor assets and the console's colour pairs: two pixels of a
+ * font row (the left one in the high bit) to one GRAPHIC 6 byte, normal
+ * (white on blue) and reverse. The pattern is the six-pixel top bar of a
+ * text cell. */
 static const uint8_t v9958_cursor_pattern[8] = {
 	0xE0u, 0xE0u, 0xE0u, 0xE0u, 0xE0u, 0xE0u, 0xE0u, 0xE0u
 };
@@ -152,6 +139,36 @@ static const uint8_t v9958_pair_normal[4] = {
 static const uint8_t v9958_pair_reverse[4] = {
 	0xFFu, 0xF4u, 0x4Fu, 0x44u
 };
+
+/* Build the expansion pages: for each colour pair (normal, then reverse)
+ * three 256-byte pages, page b holding, for every font row byte, output
+ * byte b of the cell - font pixels 2b and 2b+1 (bits 7-2b and 6-2b)
+ * through the pair table.  Runs once, at init, inside a span. */
+void v9958_expand_init(void)
+{
+	uint8_t *dst;
+	uint8_t set;
+
+	v9958_expand_base = v9958_expand;
+	(void)v9958_api->bulk_map();
+	dst = v9958_expand_base;
+	for (set = 0u; set < 2u; ++set) {
+		const uint8_t *table = (set != 0u) ?
+			v9958_pair_reverse : v9958_pair_normal;
+		uint8_t shift = 6u;
+
+		do {
+			uint8_t row = 0u;
+
+			do {
+				*dst++ = table[(uint8_t)((uint8_t)(row >> shift) &
+							 0x03u)];
+			} while (++row != 0u);
+			shift = (uint8_t)(shift - 2u);
+		} while (shift != 0u);
+	}
+	v9958_api->bulk_unmap();
+}
 
 /* --- low-level helpers -------------------------------------------------- */
 
@@ -281,24 +298,11 @@ static void v9958_cursor_write_sat(void)
 	v9958_state.cursor_sat_y = y;
 }
 
-/* Convert one font scanline byte (bits 7..2 = six pixels) into three
- * precolored G6 bytes.  The reverse pass swaps foreground/background so
- * SGR reverse video stays a single glyph copy. */
-static void v9958_expand_row(uint8_t bits, uint8_t *dst)
-{
-	const uint8_t *table = (v9958_atlas_reverse != 0u) ?
-		v9958_pair_reverse : v9958_pair_normal;
-
-	dst[0] = table[(uint8_t)((bits >> 6) & 0x03u)];
-	dst[1] = table[(uint8_t)((bits >> 4) & 0x03u)];
-	dst[2] = table[(uint8_t)((bits >> 2) & 0x03u)];
-}
-
 /* --- display state ------------------------------------------------------ */
 
 /* Step 2: the non-negotiable hardware state before any accelerated
- * access.  The display stays off until the bitmap, atlases and cursor
- * are initialized. */
+ * access.  The display stays off until the bitmap and the cursor are
+ * initialized. */
 static void v9958_init_g6(void)
 {
 	uint8_t i;
@@ -354,84 +358,6 @@ static void v9958_init_palette(void)
 	}
 }
 
-/* Convert one 8-glyph chunk of the resident font into eight 24-byte
- * atlas segments and stream them to VRAM.  Four chunks form one
- * 32-glyph atlas row; the bytes written are identical to the previous
- * 32-glyph staging, only split into four smaller segments per scanline. */
-static int v9958_upload_atlas_chunk(uint8_t chunk, uint8_t reverse)
-{
-	uint8_t scanline;
-	uint8_t glyph;
-	uint8_t row = (uint8_t)(chunk >> 2);      /* chunks per atlas row    */
-	uint8_t segment = (uint8_t)(chunk & 3u);  /* segment within the row  */
-	uint16_t addr;
-	int rc;
-
-	rc = v9958_font_read((uint16_t)((uint16_t)chunk * V9958_FONT_CHUNK),
-			     v9958_font_group, V9958_FONT_CHUNK);
-	if (rc != (int)V9958_FONT_CHUNK) {
-		return V9958_FAIL;
-	}
-
-	if (reverse != 0u) {
-		v9958_atlas_reverse = 1u;
-	} else {
-		v9958_atlas_reverse = 0u;
-	}
-	for (scanline = 0u; scanline < V9958_GLYPH_BYTES; ++scanline) {
-		uint8_t s = (uint8_t)((uint8_t)(row << 3) | scanline);
-		uint8_t *dst = &v9958_atlas_row[0];
-
-		for (glyph = 0u; glyph < V9958_ATLAS_GLYPHS; ++glyph) {
-			/* Address the chunk through a 16-bit base: an 8-bit
-			 * `symbol + offset` makes the size optimizer emit
-			 * byte-fragmented address relocations MOD v1
-			 * cannot express. */
-			uint8_t bits = *(const uint8_t *)(uint16_t)
-				((uint16_t)v9958_font_group +
-				 (uint16_t)((uint16_t)glyph *
-					    V9958_GLYPH_BYTES) + scanline);
-
-			v9958_expand_row(bits, dst);
-			dst += 3u;
-		}
-		addr = (uint16_t)((uint16_t)s * V9958_ATLAS_PITCH +
-				  (uint16_t)((uint16_t)segment *
-					     V9958_ATLAS_SEG_BYTES));
-		if (reverse != 0u) {
-			addr = (uint16_t)(addr + V9958_ATLAS_REVERSE_ADDR);
-			v9958_write_vram(v9958_atlas_row, addr,
-					 V9958_ATLAS_SEG_BYTES);
-		} else {
-			addr = (uint16_t)(addr + V9958_ATLAS_NORMAL_ADDR);
-			v9958_write_vram(v9958_atlas_row, addr,
-					 V9958_ATLAS_SEG_BYTES);
-		}
-	}
-	return V9958_OK;
-}
-
-/* Step 5a: the exact 2048-byte font is streamed through the resource
- * imports in bounded 64-byte chunks (one 8-glyph chunk per read).  The
- * size is validated up front (before any port I/O) so a missing or
- * wrong-sized resource cannot leave the VDP half-initialized. */
-static int v9958_upload_font_atlas(void)
-{
-	uint8_t chunk;
-
-	for (chunk = 0u; chunk < V9958_ATLAS_CHUNKS; ++chunk) {
-		if (v9958_upload_atlas_chunk(chunk, 0u) != V9958_OK) {
-			return V9958_FAIL;
-		}
-	}
-	for (chunk = 0u; chunk < V9958_ATLAS_CHUNKS; ++chunk) {
-		if (v9958_upload_atlas_chunk(chunk, 1u) != V9958_OK) {
-			return V9958_FAIL;
-		}
-	}
-	return V9958_OK;
-}
-
 /* Step 5b: clear all 256 lines of the circular page-zero bitmap and
  * restore its origin.  The fill uses the current SGR background so a
  * runtime clear (ESC [ 2 J, ESC c) repaints reverse video correctly; at
@@ -473,7 +399,7 @@ static void v9958_cursor_init(void)
 
 /* The complete bring-up in the proven order.  Re-establishing this on
  * the KVIDEO_RESET operation is exactly the reference reset path: every
- * owned register, selector, palette entry and VRAM asset is rewritten,
+ * owned register, selector, palette entry and VRAM table is rewritten,
  * the latch shadow (and therefore D0) is preserved, and the display is
  * left enabled. */
 static int v9958_init_display(void)
@@ -481,9 +407,6 @@ static int v9958_init_display(void)
 	v9958_init_g6();
 	v9958_enable_hardware_wait();
 	v9958_init_palette();
-	if (v9958_upload_font_atlas() != V9958_OK) {
-		return V9958_FAIL;
-	}
 	v9958_clear_screen();
 	v9958_cursor_init();
 	v9958_io_wait_command(); /* present */
@@ -496,9 +419,8 @@ static int v9958_init_display(void)
  * ======================================================================
  *
  * The byte stream arrives exclusively through the terminal entries.  The
- * drawing algorithms use HMMM copies from the precolored atlas page selected
- * by the current SGR attribute, merging atlas-contiguous glyphs into one
- * wider copy and consecutive spaces into one HMMV background fill,
+ * print run is drawn by direct VRAM writes (v9958_out_flush: the font
+ * pages expanded through the current SGR attribute's colour pair),
  * erases are HMMV fills in the current background, scrolling advances the
  * circular R#23 origin by one 8-line cell and repaints only the fixed
  * margin and the newly exposed bottom row, and the sprite SAT tracks the
@@ -594,10 +516,10 @@ static void v9958_copy_rows(uint8_t src_row, uint8_t dst_row,
 
 /* --- print run ------------------------------------------------------- */
 
-/* The pending run is rendered by v9958_out_flush (v9958_io.asm): one
- * HMMM glyph copy per character from the precolored atlas, the run only
- * spanning one text row (appending at the right margin flushes first,
- * see v9958_put_printable). */
+/* The pending run is rendered by v9958_out_flush (v9958_io.asm): direct
+ * VRAM writes through the expansion pages, the run only spanning one text
+ * row (appending at the right margin flushes first, see
+ * v9958_put_printable). */
 
 /* Make everything written so far visible: flush the run, write the
  * cursor SAT and wait for the command engine (present).  This is the

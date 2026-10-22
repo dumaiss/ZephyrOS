@@ -24,6 +24,8 @@ that one run:
 * the loader's placement report matches the packer's plan, each driver
   boot segment ran exactly once, and `con`'s slow buffer sits in the hot
   tier;
+* the one deliberately leaked bulk-map span was closed by the endpoint
+  return path and counted as the only fault;
 * the run ends with the caller's own mapping restored (mode 10, page bits
   clear), so the copy gate's aperture window was closed by the code that
   opened it.
@@ -366,6 +368,16 @@ class TestIpcOutcomes(IpcSim):
         print("ipc: copy-path counters %s, %d CTC0 deliveries"
               % (totals, self.ctc0.injections))
 
+    def test_the_endpoint_return_closes_a_leaked_span(self):
+        """ECHO_LEAK returns with a bulk-map span open: the return path
+        closes it and counts exactly that one fault (architecture 5.2);
+        every other span the run opened was closed by its driver."""
+        z = self.boot()
+        self.assertEqual(self.read16(z, "_ipc_bulk_faults"), 1)
+        self.assertEqual(self.read16(z, "_ipc_bulk_open") & 0xFF, 0)
+        print("ipc: bulk-map span faults %d (the one deliberate leak)"
+              % self.read16(z, "_ipc_bulk_faults"))
+
     def test_probe_passes_the_caller_buffer_matrix(self):
         tx = self.transcript()
         self.assertIn(APERTURE_PASS, tx)
@@ -430,6 +442,8 @@ class TestIpcDriverImages(IpcSim):
                 line += " boot %04Xh" % entry["boot_base"]
             if entry["bulk_base"] is not None:
                 line += " bulk %04Xh" % entry["bulk_base"]
+            if entry["mapped_base"] is not None:
+                line += " mapped %04Xh" % entry["mapped_base"]
             self.assertIn(line.encode() + b"\r\n", tx, line)
         nucleus = plan["nucleus"]
         self.assertIn(("driver hot: %d bytes of %d\r\n"
@@ -439,6 +453,10 @@ class TestIpcDriverImages(IpcSim):
         self.assertIn(("driver boot/bulk: %d bytes of %d\r\n"
                        % (nucleus["driver_boot_bytes"],
                           nucleus["driver_boot_capacity_bytes"])).encode(),
+                      tx)
+        self.assertIn(("driver mapped: %d bytes of %d\r\n"
+                       % (nucleus["driver_mapped_bytes"],
+                          nucleus["driver_mapped_capacity_bytes"])).encode(),
                       tx)
         print("ipc: six driver images placed from the manifest, "
               "driver hot %d/%d, driver boot/bulk %d/%d"

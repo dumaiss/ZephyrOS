@@ -73,13 +73,13 @@ TAKEN_R7 = 0x0E
 TAKEN_PALETTE = [0x77, 0x77]
 SCRIBBLE = 0x5A
 SCRIBBLE_LEN = 16
-ATLAS_BASE = 0x10000            # A16=1, address 0: the normal font atlas
+PAGE_ONE_BASE = 0x10000         # A16=1, address 0: the upper VRAM page
 VISIBLE_BASE = 0x0000           # A16=0, address 0: the visible bitmap
 
-# The whole display re-init writes both atlases (49152 bytes each), so a
-# reset that re-uploaded the font is visible as tens of thousands of VRAM
-# writes; a bare screen clear is a few hundred.
-RESET_WRITE_FLOOR = 4096
+# The display re-init rewrites the sprite cursor's tables in the upper
+# page (drivers/v9958/v9958_driver.h): its 8-byte pattern at 1F800h, so a
+# reset that ran is visible as those writes after the release.
+CURSOR_PATTERN = range(0x1F800, 0x1F808)
 
 # The bytes the transfer mode writes to the card before the reboot: the
 # test holds the same literal, so a partial or duplicated transfer fails.
@@ -291,7 +291,6 @@ class DeviceReplay(HwtestReplay):
         return {
             "regs": list(peer.regs),
             "palette": [list(entry) for entry in peer.palette],
-            "atlas": bytes(peer.vram[ATLAS_BASE:ATLAS_BASE + SCRIBBLE_LEN]),
             "visible": bytes(peer.vram[VISIBLE_BASE:VISIBLE_BASE +
                                        SCRIBBLE_LEN]),
             "writes": len(peer.vram_writes),
@@ -300,27 +299,28 @@ class DeviceReplay(HwtestReplay):
 
     def assert_restored(self, z, before, state=None):
         """The display reset rewrote every owned register, palette entry,
-        VRAM page and both font atlases."""
+        the visible page and the cursor tables."""
         peer = z.vdp
         for reg in OWNED_REGS:
             self.assertEqual(peer.regs[reg], before["regs"][reg],
                              "R#%u was not restored" % reg)
         self.assertEqual(peer.palette, before["palette"],
                          "the palette was not restored")
-        self.assertEqual(bytes(peer.vram[ATLAS_BASE:ATLAS_BASE +
-                                         SCRIBBLE_LEN]), before["atlas"],
-                         "the font atlas was not re-uploaded")
         self.assertNotEqual(
             bytes(peer.vram[VISIBLE_BASE:VISIBLE_BASE + SCRIBBLE_LEN]),
             bytes([SCRIBBLE]) * SCRIBBLE_LEN,
             "the takeover scribble is still on screen")
-        clear = bytes(peer.vram[VISIBLE_BASE + 0x800:VISIBLE_BASE + 0x810])
+        # Line 160 (text row 20): below anything drawn after the reset.
+        clear = bytes(peer.vram[VISIBLE_BASE + 0xA000:VISIBLE_BASE + 0xA010])
         self.assertEqual(len(set(clear)), 1,
                          "the screen below the text is not a cleared field")
         uploaded = len(peer.vram_writes) - before["writes"]
-        self.assertGreaterEqual(uploaded, RESET_WRITE_FLOOR,
-                                "the reset wrote only %d VRAM bytes"
-                                % uploaded)
+        pattern = [address for address, _value
+                   in peer.vram_writes[before["writes"]:]
+                   if address in CURSOR_PATTERN]
+        self.assertGreaterEqual(len(pattern), len(CURSOR_PATTERN),
+                                "the reset did not rewrite the cursor "
+                                "pattern")
         self.assertEqual(peer.protocol_errors, [],
                          "the takeover left protocol errors behind")
         if state is not None:
@@ -330,15 +330,13 @@ class DeviceReplay(HwtestReplay):
         return uploaded
 
     def first_glyph_after(self, z, index):
-        """The destination of the first 6x8 glyph copy after `index`."""
-        for command in z.vdp.commands[index:]:
-            block = command.get("block")
-            if (command.get("code") != 0xD0 or not block or
-                    (block[8] | (block[9] << 8)) != 6 or
-                    (block[10] | (block[11] << 8)) != 8):
-                continue
-            return (block[4] | (block[5] << 8), block[6] | (block[7] << 8))
-        self.fail("no glyph copy after command %d" % index)
+        """The pixel position of the first glyph the renderer draws after
+        data-port write `index`: its first page-zero byte, written at a
+        cell boundary (column * 3) on the cell's first scanline."""
+        for address, _value in z.vdp.vram_writes[index:]:
+            if address < 0x10000 and (address & 0xFF) % 3 == 0:
+                return ((address & 0xFF) // 3 * 6, address >> 8)
+        self.fail("no glyph drawn after write %d" % index)
 
     def taken_up(self, z):
         """The peer state a held takeover must produce."""
@@ -347,7 +345,7 @@ class DeviceReplay(HwtestReplay):
         self.assertEqual(peer.regs[7], TAKEN_R7, "R#7 keeps the border")
         self.assertEqual(peer.palette[0], TAKEN_PALETTE, "palette entry 0")
         self.assertEqual(peer.palette[15], TAKEN_PALETTE, "palette entry 15")
-        for base in (VISIBLE_BASE, ATLAS_BASE):
+        for base in (VISIBLE_BASE, PAGE_ONE_BASE):
             chunk = bytes(peer.vram[base:base + SCRIBBLE_LEN])
             self.assertEqual(chunk, bytes([SCRIBBLE]) * SCRIBBLE_LEN,
                              "the scribble at %05Xh is missing" % base)
@@ -386,7 +384,7 @@ class DeviceReplay(HwtestReplay):
         self.assertEqual(
             [entry[0] for entry in tail],
             [VISIBLE_BASE + at for at in range(SCRIBBLE_LEN)] +
-            [ATLAS_BASE + at for at in range(SCRIBBLE_LEN)],
+            [PAGE_ONE_BASE + at for at in range(SCRIBBLE_LEN)],
             "the scribbles are not the last VRAM writes")
         self.assertEqual([entry[1] for entry in tail],
                          [SCRIBBLE] * 2 * SCRIBBLE_LEN)
@@ -404,7 +402,7 @@ class TestExclusiveTakeover(DeviceReplay):
         z.hid.hid_queue.extend((START + " claim\r").encode())
         self.run_lane(z, TAKEN_SUMMARY, lane)
         # Nothing is drawn between this point and the release.
-        held_commands = len(z.vdp.commands)
+        held_writes = len(z.vdp.vram_writes)
         held = self.snapshot(z)
         self.taken_up(z)
         self.assert_no_console_vdp_traffic(z)
@@ -435,7 +433,7 @@ class TestExclusiveTakeover(DeviceReplay):
         # and the cursor went home.
         self.assertIn("\n" + SHELL_PROMPT, "".join(z.glyphs)[trace:],
                       "the prompt did not start on a clean row")
-        dx, dy = self.first_glyph_after(z, held_commands)
+        dx, dy = self.first_glyph_after(z, held_writes)
         self.assertEqual((dx, dy % 8), (0, 0),
                          "the first glyph after the reset is not at home")
 

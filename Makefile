@@ -762,12 +762,16 @@ $(MODULES)/v9958_boot.rel: drivers/v9958/v9958_boot.c \
 		$(DRV_PROTOCOL_H) | $(MODULES)
 	$(SDCC) $(DRV_BOOT) $< -o $@
 
-# The font bulk segment: the pinned CP850 6x8 bitmap, assembled straight
-# from the reviewable .inc asset (the same source tools/fontpack.py packs
-# as the ROMFS DATA copy).
+# The V9958 mapped segment: the pinned CP850 6x8 font in the renderer's
+# scanline-major page layout (tools/fontpack.py paged, from the same
+# reviewable .inc asset as the ROMFS DATA copy) and the expansion pages.
+$(MODULES)/v9958_font_pages.inc: drivers/v9958/assets/font_cp850_6x8.inc \
+		tools/fontpack.py | $(MODULES)
+	$(PYTHON) tools/fontpack.py paged $< $@
+
 $(MODULES)/v9958_font.rel: drivers/v9958/v9958_font.asm \
-		drivers/v9958/assets/font_cp850_6x8.inc | $(MODULES)
-	$(SDASZ80) $(ASFLAGS) -Idrivers/v9958/assets -o $@ $<
+		$(MODULES)/v9958_font_pages.inc | $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -I$(MODULES) -o $@ $<
 
 # The two build-selected CONSOLE drivers are one source compiled twice
 #: the production HID-input/VIDEO-output image and the
@@ -1064,14 +1068,11 @@ $(eval $(call exe_program,iobench,tests/bench,\
 # store; the owner carries TEXTBENCH.EXE on a card next to the image.
 $(eval $(call exe_program,textbench,tests/bench,\
 	textbench.c textbench_render.asm,STACK=384,STAGE=1))
-# The font header the program includes is generated into the object
-# directory from the pinned asset (one source for the font).
-textbench_INCFLAGS := -I$(EXE_USER_ROOT)/textbench
-$(EXE_USER_ROOT)/textbench/textbench.rel: \
-		$(EXE_USER_ROOT)/textbench/textbench.font.h
-$(EXE_USER_ROOT)/textbench/textbench.font.h: \
-		drivers/v9958/assets/font_cp850_6x8.inc tests/bench/font2c.py
-	$(PYTHON) tests/bench/font2c.py $< $@
+# The renderers' assembly includes the pinned font asset (one source for
+# the font).
+textbench_INCFLAGS := -Idrivers/v9958/assets
+$(EXE_USER_ROOT)/textbench/textbench_render.rel: \
+		drivers/v9958/assets/font_cp850_6x8.inc
 
 all: $(EXE_USER_ROOT)/iobench.exe
 
@@ -1322,6 +1323,14 @@ $(MODULES)/ipc_%.rel: tests/target/ipc/%.c tests/target/include/ipc_test.h \
 $(MODULES)/ipc_%_boot.rel: tests/target/ipc/%_boot.c \
 		tests/target/include/ipc_test.h drivers/include/driver.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) --codeseg BOOT --dataseg BOOT_DATA \
+		-Itests/target/include $< -o $@
+
+# The `echo` and `irqx` mapped segments (architecture 5.2): the const
+# pattern is the segment image, echo's scratch area its BSS.
+$(MODULES)/ipc_echo_map.rel $(MODULES)/ipc_irqx_map.rel: \
+		$(MODULES)/ipc_%_map.rel: tests/target/ipc/%_map.c \
+		tests/target/include/ipc_test.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) --constseg MAPPED --dataseg MAPPED_BSS \
 		-Itests/target/include $< -o $@
 
 $(MODULES)/ipc_con_slow.rel: tests/target/ipc/con_slow.c \

@@ -460,6 +460,18 @@ int main(int argc, char **argv)
 	check("irq-driver", irq_op(IPC_OP_IRQX_SPIN, 0x0800u) == 1);
 	check("irq-count", irq_op(IPC_OP_IRQX_SPIN, 0x0800u) == 2);
 
+	/* The bulk-map span (architecture 5.2): the probe's checks inside
+	 * one span, a span left open that the endpoint return closes, and a
+	 * delivery taken inside a span (4.5). */
+	check("span-probe", ipc_call(echo_handle, IPC_OP_ECHO_SPAN, 0u,
+				     source, 16u, KOS_IPC_DESC_IN) ==
+	      IPC_SPAN_ALL);
+	check("span-leak", ipc_call(echo_handle, IPC_OP_ECHO_LEAK, 0u,
+				    (void *)0, 0u, 0u) == 0);
+	check("span-after-leak", op_echo_null() == KOS_IPC_FRAME_SIZE);
+	check("span-irq", irq_op(IPC_OP_IRQX_SPAN, 0x0800u) ==
+	      IPC_SPAN_IRQ_OK);
+
 	/* The client survived the IRQ-during-call, so the interrupted
 	 * call's latch and stack were restored: prove it by using the
 	 * substrate again after the deliveries. */

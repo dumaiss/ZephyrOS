@@ -1440,7 +1440,10 @@ class V9958Peer:
         auto-advancing after every entry;
       - status register 2 (selected through R#15=2): CE stays set while a
         command executes;
-      - HMMV fills execute into the modeled VRAM (HMMM is recorded);
+      - HMMV fills and HMMM copies execute into the modeled VRAM, byte
+        by byte in the block's DIX/DIY directions (the V9958's high-speed
+        commands move whole bytes, two GRAPHIC 6 pixels);
+      - LMMV with the EOR operation executes into the modeled VRAM;
       - LMMC/HMMC transfer commands stream one pixel per byte (LMMC
         through R#44 with the first pixel preloaded in the block's CLR
         byte, HMMC through the data port) and stay busy until the
@@ -1516,6 +1519,10 @@ class V9958Peer:
         self.status_reads = []     # (now, ce)
         self.indirect_writes = []  # (now, register)
         self.commands = []         # dict per command-engine start
+        # Command codes after whose start the VRAM and R#23 are copied
+        # into the command's entry ("vram", "r23"), for a test that needs
+        # the screen between two commands.
+        self.snapshot_codes = ()
         self.protocol_errors = []  # (now, kind, value)
 
     # -- driver-visible port behaviour ---------------------------------
@@ -1630,7 +1637,9 @@ class V9958Peer:
         block = list(self.regs[self.CMD_BLOCK_BASE:
                                self.CMD_BLOCK_BASE + self.CMD_BLOCK_COUNT])
         entry = {"code": code, "block": block, "start": self.now,
-                 "busy_until": None}
+                 "busy_until": None,
+                 # data-port writes issued before this command started
+                 "writes_at": len(self.vram_writes)}
         if (code & 0xF0) == self.OP_HMMV:
             dx = block[4] | (block[5] << 8)
             dy = block[6] | (block[7] << 8)
@@ -1642,6 +1651,7 @@ class V9958Peer:
             entry["busy_until"] = self.now + self.command_busy
             self.busy_until = entry["busy_until"]
         elif (code & 0xF0) == self.OP_HMMM:
+            self._copy(block)
             entry["busy_until"] = self.now + self.command_busy
             self.busy_until = entry["busy_until"]
         elif (code & 0xF0) == self.OP_LMMV:
@@ -1680,6 +1690,9 @@ class V9958Peer:
                 self._transfer_pixel(transfer, block[12])
             if transfer["have"] < transfer["need"]:
                 self.transfer = transfer
+        if code in self.snapshot_codes:
+            entry["vram"] = bytes(self.vram)
+            entry["r23"] = self.regs[23]
         self.commands.append(entry)
 
     def _transfer_pixel(self, transfer, value):
@@ -1711,6 +1724,28 @@ class V9958Peer:
             base = (y * 256) & 0x1FFFF
             for offset in range(first, last):
                 self.vram[(base + offset) & 0x1FFFF] = color
+
+    def _copy(self, block):
+        """HMMM in GRAPHIC 6: NX pixels (NX / 2 bytes) by NY lines from
+        (SX, SY) to (DX, DY), stepping left when ARG's DIX is set and up
+        when DIY is set, one byte at a time in that order."""
+        sx = block[0] | (block[1] << 8)
+        sy = block[2] | (block[3] << 8)
+        dx = block[4] | (block[5] << 8)
+        dy = block[6] | (block[7] << 8)
+        nx = (block[8] | (block[9] << 8)) // 2
+        ny = block[10] | (block[11] << 8)
+        arg = block[13]
+        step_x = -1 if arg & 0x04 else 1
+        step_y = -1 if arg & 0x08 else 1
+        for line in range(ny):
+            src = ((sy + line * step_y) & 0x1FF) * 256
+            dst = ((dy + line * step_y) & 0x1FF) * 256
+            for index in range(nx):
+                src_x = (sx // 2 + index * step_x) & 0xFF
+                dst_x = (dx // 2 + index * step_x) & 0xFF
+                self.vram[(dst + dst_x) & 0x1FFFF] = \
+                    self.vram[(src + src_x) & 0x1FFFF]
 
     def _xor_fill(self, dx, dy, nx, ny, color):
         if nx == 0 or ny == 0:

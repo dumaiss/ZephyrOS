@@ -148,6 +148,51 @@ static int16_t irqx_copies(struct kos_ipc_frame *frame)
 	return 0;
 }
 
+extern const uint8_t irqx_mapped[IPC_SPAN_BYTES];
+static __sfr __at 0x00 irqx_latch;
+static const uint8_t *irqx_pattern; /* set at init (echo.c's note) */
+
+/* IPC_OP_IRQX_SPAN (ipc_test.h): deliveries inside a bulk-map span return
+ * to it (architecture 4.5), so the pattern still reads back afterwards. */
+static int16_t irqx_span(struct kos_ipc_frame *frame)
+{
+	uint16_t iterations = frame->arg1;
+	uint8_t runs = (uint8_t)irq_runs;
+	uint8_t ok = 1u;
+	uint8_t i;
+	const uint8_t *pattern;
+
+	if (api->bulk_map() != 0) {
+		return -KOS_EIO;
+	}
+	irq_flag = 0u;
+	irqx_timer_start();
+	__asm
+		ei
+	__endasm;
+	while (iterations != 0u && irq_flag == 0u) {
+		--iterations;
+	}
+	__asm
+		di
+	__endasm;
+	irqx_timer_stop();
+	if ((irqx_latch & 0x07u) != 6u) {
+		ok = 0u;
+	}
+	pattern = irqx_pattern;
+	for (i = 0u; i < IPC_SPAN_BYTES; ++i) {
+		if (*pattern++ != (uint8_t)(0xC0u + i)) {
+			ok = 0u;
+		}
+	}
+	api->bulk_unmap();
+	if ((uint8_t)irq_runs == runs) {
+		return -KOS_ETIMEDOUT;
+	}
+	return ok ? (int16_t)IPC_SPAN_IRQ_OK : -KOS_EIO;
+}
+
 /* The endpoint dispatch entry the manifest names: a module-global
  * symbol so the packer can resolve its hot-image offset. */
 int16_t irqx_dispatch(struct kos_ipc_frame *frame)
@@ -157,6 +202,8 @@ int16_t irqx_dispatch(struct kos_ipc_frame *frame)
 		return irqx_copies(frame);
 	case IPC_OP_IRQX_SPIN:
 		return irqx_spin(frame);
+	case IPC_OP_IRQX_SPAN:
+		return irqx_span(frame);
 	case IPC_OP_IRQX_CLAIM:
 		return api->irq_claim(IPC_IRQ_CTC0, (uint16_t)irqx_handler, 0u);
 	case IPC_OP_IRQX_RELEASE:
@@ -170,6 +217,7 @@ uint8_t ipc_irqx_init(const struct driver_boot *boot)
 {
 	api = boot->api;
 	irqx_buffer_address = (uint16_t)irqx_buffer;
+	irqx_pattern = irqx_mapped;
 	/* The endpoint is installed by the resident loader from the image
 	 * metadata; the IRQ claim is the driver's own bring-up step, run
 	 * here in the mode-11 window where the fixed core (and so the

@@ -56,6 +56,8 @@
 	.globl _v9958_term_feed
 	.globl _v9958_state
 	.globl _v9958_run_ptr
+	.globl _v9958_span_open, _v9958_span_close
+	.globl _v9958_font_pages, _v9958_expand
 
 ; struct v9958_state offsets and the renderer constants (pinned by the
 ; _Static_asserts in v9958_driver.h).
@@ -71,11 +73,7 @@ V9958_ST_RUN_ROW   = 19
 V9958_ST_EXCLUSIVE = 20
 V9958_RUN_SIZE     = 64
 V9958_LAST_COLUMN  = 84
-V9958_CELL_WIDTH   = 6
-V9958_CMD_HMMV     = 0xC0
-V9958_CMD_HMMM     = 0xD0
-V9958_FILL_NORMAL  = 0x44
-V9958_FILL_REVERSE = 0xFF
+V9958_CELL_LINES   = 8
 
 	.area _CODE
 
@@ -347,25 +345,6 @@ v9958_indirect_loop:
 ; Renderer hot path
 ; ===========================================================================
 
-; The renderer's command block, R#32..R#46: SX, SY, DX, DY, NX, NY,
-; colour, argument, command.  The fixed fields come from the template
-; once per run.  Each span patches its source/fill, width and destination
-; before waiting for the previous command, so preparation overlaps the VDP.
-	.area _DRIVER_IO
-v9958_glyph_cmd:
-	.ds	15
-
-	.area _CODE
-v9958_glyph_template:
-	.db	0, 0		; SX: per glyph (the low byte only, at most 186)
-	.db	0, 1		; SY: per glyph; the atlas lives in page one
-	.db	0, 0		; DX: per glyph
-	.db	0, 0		; DY: the run's row
-	.db	V9958_CELL_WIDTH, 0
-	.db	8, 0		; NY: one cell
-	.db	0, 0		; colour, argument
-	.db	V9958_CMD_HMMM
-
 ; Sprite evaluation consumes VRAM cycles that the command engine can use.
 ; Console entry wrappers bracket the entire terminal operation with these
 ; helpers, so glyph copies, fills and scrolling all run with SPD set.  The
@@ -394,158 +373,125 @@ v9958_sprites_write:
 ; read the same value.
 ; ---------------------------------------------------------------------------
 v9958_hold_off:
-	ld	hl,(_v9958_alt_state)
-	ld	de,#V9958_ST_EXCLUSIVE
-	add	hl,de
-	ld	a,(hl)
+	ld	a,(_v9958_state+V9958_ST_EXCLUSIVE)
 	or	a
 	ret	nz				; held: nothing is written
 	jp	v9958_sprites_off
 
 v9958_hold_restore:
-	ld	hl,(_v9958_alt_state)
-	ld	de,#V9958_ST_EXCLUSIVE
-	add	hl,de
-	ld	a,(hl)
+	ld	a,(_v9958_state+V9958_ST_EXCLUSIVE)
 	or	a
 	ret	nz				; held: nothing was written
 	jp	v9958_sprites_restore
 
 ; ---------------------------------------------------------------------------
 ; void v9958_out_flush(void);
-;   Render the pending print run at (out_run_col, out_run_row) and empty it.
-;   Adjacent character-code pairs that remain in one 32-glyph atlas row
-;   become one 12x8 HMMM.  Adjacent spaces become one 12x8 HMMV background
-;   fill.  Pairing halves command traffic on the common sequential and blank
-;   runs while keeping this fixed-tier driver compact.  Destination row y is
-;   row * 8 + the scroll origin.
+;   Render the pending print run at (out_run_col, out_run_row) and empty it
+;   (architecture 5.6).  The glyph bytes go straight to VRAM through the
+;   data port, scanline by scanline: one VRAM address per scanline, then
+;   three bytes per glyph.  Inside one bulk-map span the font pages and the
+;   expansion pages of the mapped segment are readable at their linked
+;   addresses: H selects a 256-byte page, L the index, so a glyph scanline
+;   is the character code into the font page (C = its high byte) and the
+;   font row byte into the three expansion pages of the run's attribute.
+;   The expansion set's page is patched into the loop once per run (the
+;   hot tier is RAM), because no register is left for it.
+;
+;   A GRAPHIC 6 cell is three whole bytes, so nothing is read back.  The
+;   cell row y = row * 8 + the scroll origin is a multiple of 8, so the
+;   eight scanlines never cross a 64-line R#14 page and R#14 is written
+;   once.  A command still running on these cells (the fill of a freshly
+;   exposed row) is waited for first.
 ; ---------------------------------------------------------------------------
 _v9958_out_flush::
 	ld	a,(_v9958_state+V9958_ST_RUN_COUNT)
 	or	a
 	ret	z
-	ld	hl,#v9958_glyph_template
-	ld	de,#v9958_glyph_cmd
-	ld	bc,#KOS_V9958_CMD_REGISTER_COUNT
-	ldir
-	; DY = row * 8 + origin
+	call	_v9958_io_wait_command
+	; The expansion set: the normal pair, or the reverse pair 3 pages on.
+	ld	hl,#_v9958_expand
+	ld	a,(_v9958_state+V9958_ST_ATTR)
+	and	#0x01
+	ld	a,h
+	jr	z,v9958_flush_set
+	add	a,#3
+v9958_flush_set:
+	ld	(v9958_flush_expand+1),a
+	; y = row * 8 + origin, x = column * 3
 	ld	a,(_v9958_state+V9958_ST_RUN_ROW)
 	add	a,a
 	add	a,a
 	add	a,a
 	ld	hl,#_v9958_state+V9958_ST_ORIGIN
 	add	a,(hl)
-	ld	(v9958_glyph_cmd+6),a
-	; DX = column * 6
+	ld	(v9958_flush_y),a
 	ld	a,(_v9958_state+V9958_ST_RUN_COL)
-	ld	l,a
-	ld	h,#0
-	add	hl,hl
-	ld	d,h
-	ld	e,l
-	add	hl,hl
-	add	hl,de
-	ld	(v9958_glyph_cmd+4),hl
-	; C = the atlas line offset: 40h for reverse video
-	ld	a,(_v9958_state+V9958_ST_ATTR)
-	rrca
-	and	#0x80
-	rrca
-	ld	c,a
+	ld	b,a
+	add	a,a
+	add	a,b
+	ld	(v9958_flush_x),a
+	call	_v9958_span_open
+	; R#14 = y >> 6: page zero, the 16 KiB block of this cell row.
+	ld	a,(v9958_flush_y)
+	rlca
+	rlca
+	and	#0x03
+	out	(KOS_V9958_CMD_PORT),a
+	ld	a,#(KOS_V9958_REG_R14 | KOS_V9958_REG_SELECT)
+	out	(KOS_V9958_CMD_PORT),a
+	ld	hl,#_v9958_font_pages
+	ld	c,h			; C = the font page of scanline 0
+	ld	a,#V9958_CELL_LINES
+	ld	(v9958_flush_lines),a
+v9958_flush_scan:
+	ld	a,(v9958_flush_x)
+	out	(KOS_V9958_CMD_PORT),a
+	ld	a,(v9958_flush_y)
+	and	#0x3F
+	or	#0x40			; write
+	out	(KOS_V9958_CMD_PORT),a
 	ld	a,(_v9958_state+V9958_ST_RUN_COUNT)
 	ld	b,a
 	ld	de,(_v9958_run_ptr)
-v9958_span_loop:
-	ld	a,#V9958_CELL_WIDTH
-	ld	(v9958_glyph_cmd+8),a
+v9958_flush_glyph:
 	ld	a,(de)
 	inc	de
-	ld	h,a
-	cp	#0x20
-	jr	z,v9958_space_span
-
-	; Set the source from the first glyph.
-	and	#0x1F
 	ld	l,a
-	add	a,a
-	add	a,l
-	add	a,a
-	ld	(v9958_glyph_cmd+0),a	; SX = (ch & 1Fh) * 6
-	ld	a,h
-	and	#0xE0
-	rrca
-	rrca
-	or	c
-	ld	(v9958_glyph_cmd+2),a	; SY = (ch >> 5) * 8 | reverse
-	ld	a,#V9958_CMD_HMMM
-	ld	(v9958_glyph_cmd+14),a
-	; Merge the next glyph when it is consecutive and still in this
-	; atlas row.  B includes the current glyph.
-	ld	a,b
-	cp	#1
-	jr	z,v9958_span_wait
-	ld	a,h
-	and	#0x1F
-	cp	#0x1F
-	jr	z,v9958_span_wait
-	ld	a,(de)
-	inc	h
-	cp	h
-	jr	nz,v9958_span_wait
-	inc	de
-	ld	a,#(V9958_CELL_WIDTH * 2)
-	ld	(v9958_glyph_cmd+8),a
-	dec	b
-	jr	v9958_span_wait
-
-v9958_space_span:
-	ld	a,#V9958_CMD_HMMV
-	ld	(v9958_glyph_cmd+14),a
-	ld	a,c
-	or	a
-	ld	a,#V9958_FILL_NORMAL
-	jr	z,v9958_space_color
-	ld	a,#V9958_FILL_REVERSE
-v9958_space_color:
-	ld	(v9958_glyph_cmd+12),a
-	; Pair adjacent blanks into one fill.
-	ld	a,b
-	cp	#1
-	jr	z,v9958_span_wait
-	ld	a,(de)
-	cp	#0x20
-	jr	nz,v9958_span_wait
-	inc	de
-	ld	a,#(V9958_CELL_WIDTH * 2)
-	ld	(v9958_glyph_cmd+8),a
-	dec	b
-v9958_span_wait:
-	in	a,(KOS_V9958_CMD_PORT)
-	and	#KOS_V9958_STATUS2_CE
-	jr	nz,v9958_span_wait
-	ld	a,#KOS_V9958_CMD_REGISTER_BASE
-	out	(KOS_V9958_CMD_PORT),a
-	ld	a,#(KOS_V9958_REG_R17 | KOS_V9958_REG_SELECT)
-	out	(KOS_V9958_CMD_PORT),a
-	push	bc
-	ld	hl,#v9958_glyph_cmd
-	ld	bc,#(KOS_V9958_CMD_REGISTER_COUNT * 256 + KOS_V9958_INDIRECT_PORT)
-	otir				; R#46 last: starts the span
-	; Advance DX by the one-byte (6 or 12 pixel) span width.
-	ld	hl,(v9958_glyph_cmd+4)
-	ld	a,(v9958_glyph_cmd+8)
-	add	a,l
+	ld	h,c
+	ld	a,(hl)			; the glyph's row byte
 	ld	l,a
-	jr	nc,v9958_dx_ready
+v9958_flush_expand:
+	ld	h,#0			; patched: the expansion set's first page
+	ld	a,(hl)
+	out	(KOS_V9958_DATA_PORT),a
 	inc	h
-v9958_dx_ready:
-	ld	(v9958_glyph_cmd+4),hl
-	pop	bc
-	dec	b
-	jp	nz,v9958_span_loop
+	ld	a,(hl)
+	out	(KOS_V9958_DATA_PORT),a
+	inc	h
+	ld	a,(hl)
+	out	(KOS_V9958_DATA_PORT),a
+	djnz	v9958_flush_glyph
+	inc	c
+	ld	hl,#v9958_flush_y
+	inc	(hl)
+	ld	hl,#v9958_flush_lines
+	dec	(hl)
+	jr	nz,v9958_flush_scan
+	call	_v9958_span_close
 	xor	a
 	ld	(_v9958_state+V9958_ST_RUN_COUNT),a
 	ret
+
+; The flush's working cells (driver I/O data: visible inside the span).
+	.area _DRIVER_IO
+v9958_flush_x:
+	.ds	1
+v9958_flush_y:
+	.ds	1
+v9958_flush_lines:
+	.ds	1
+
+	.area _CODE
 
 ; ---------------------------------------------------------------------------
 ; void v9958_term_write(const uint8_t *buf, uint16_t len);  HL=buf, DE=len
@@ -725,10 +671,7 @@ _v9958_render_transaction::
 ; worker above already dropped and counted the whole stream, and no
 ; cursor/SAT or command wait may run during a hold.
 v9958_hold_finish:
-	ld	hl,(_v9958_alt_state)
-	ld	de,#V9958_ST_EXCLUSIVE
-	add	hl,de
-	ld	a,(hl)
+	ld	a,(_v9958_state+V9958_ST_EXCLUSIVE)
 	or	a
 	ret	nz				; held: nothing was drawn
 	jp	_v9958_render_finish_worker

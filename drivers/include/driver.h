@@ -160,6 +160,18 @@ struct driver_api {
 	 * declared no events (MOD_EP_EVENTS) is never given a subscription
 	 * id, and a post with an id it did not issue is ignored. */
 	void (*event_post)(uint16_t sub);
+
+	/* The bulk-map span (architecture 5.2): bulk_map shows bank 6's
+	 * first 8 KiB at 0000h-1FFFh, so the driver reads and writes its
+	 * mapped segment at its linked address; bulk_unmap restores the
+	 * caller window.  bulk_map returns 0, or -KOS_EBUSY when a span is
+	 * already open or from an interrupt handler.  Inside a span the caller window is not the
+	 * caller's: the request frame and every caller buffer are out of
+	 * reach, and call, copy_in, copy_out, bulk_read and bulk_write
+	 * refuse (-KOS_EBUSY) and event_post ignores the post.  A span
+	 * never outlives the operation that opened it. */
+	int16_t (*bulk_map)(void);
+	void (*bulk_unmap)(void);
 };
 
 /* The boot bundle the loader hands a driver's init: the nucleus table and

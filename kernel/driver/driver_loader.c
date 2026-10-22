@@ -73,6 +73,10 @@
 #define DRIVER_HOT_BASE  KOS_REV13_WINDOW_BASE /* 6000h */
 #define DRIVER_HOT_END   KOS_BANK7_RUNTIME_END /* E000h */
 #define DRIVER_BOOT_END  KOS_REV13_WINDOW_BASE /* 6000h */
+/* The mapped range (5.2): what a bulk-map span shows at 0000h-1FFFh, above
+ * bank 6's reserved page zero. */
+#define DRIVER_MAPPED_BASE 0x0100u
+#define DRIVER_MAPPED_END  0x2000u
 
 /* The boot gate (kernel/driver/driver_boot.asm) and the upcall shim's
  * fixed-core request block and entry point (kernel/memory/upcall.h). */
@@ -88,10 +92,11 @@ static uint8_t driver_loader_ran;
 #if KOS_DRIVER_TEST_EVIDENCE
 static uint16_t driver_hot_ledger;
 static uint16_t driver_boot_ledger;
+static uint16_t driver_mapped_ledger;
 /* MOD_SEGMENT_* - 1.  The sentinel and not 0 marks an absent role: a
  * boot or bulk segment may legitimately be placed at 0000h. */
 #define DRIVER_ROLE_ABSENT 0xFFFFu
-static uint16_t driver_role_base[4];
+static uint16_t driver_role_base[5];
 static const uint8_t *driver_report_name;
 #endif
 
@@ -232,19 +237,19 @@ static int driver_place(const romfs_file_t *file, uint16_t offset,
 #if KOS_DRIVER_TEST_EVIDENCE
 static void driver_report(void)
 {
-	static const uint8_t order[4] = {
+	static const uint8_t order[5] = {
 		MOD_SEGMENT_HOT, MOD_SEGMENT_IO,
-		MOD_SEGMENT_BOOT, MOD_SEGMENT_BULK
+		MOD_SEGMENT_BOOT, MOD_SEGMENT_BULK, MOD_SEGMENT_MAPPED
 	};
-	static const char *const names[4] = {
-		" hot ", " boot ", " io ", " bulk "
+	static const char *const names[5] = {
+		" hot ", " boot ", " io ", " bulk ", " mapped "
 	};
 	uint8_t index;
 
 	driver_puts("driver ");
 	driver_puts((const char *)driver_report_name);
 	driver_puts(":");
-	for (index = 0u; index < 4u; ++index) {
+	for (index = 0u; index < 5u; ++index) {
 		uint8_t role = order[index];
 		uint16_t base = driver_role_base[role - 1u];
 
@@ -280,7 +285,7 @@ static int driver_load_image(const romfs_file_t *file,
 	uint16_t bulk_size = 0u;
 
 #if KOS_DRIVER_TEST_EVIDENCE
-	for (index = 0u; index < 4u; ++index) {
+	for (index = 0u; index < 5u; ++index) {
 		driver_role_base[index] = DRIVER_ROLE_ABSENT;
 	}
 #endif
@@ -295,7 +300,7 @@ static int driver_load_image(const romfs_file_t *file,
 				   MOD_SEGMENT_SIZE) != MOD_OK) {
 			return MOD_EFORMAT;
 		}
-		if (segment.role == 0u || segment.role > MOD_SEGMENT_BULK) {
+		if (segment.role == 0u || segment.role > MOD_SEGMENT_MAPPED) {
 			return MOD_EINVAL;
 		}
 		/* The whole allocation must sit in the segment's tier: this
@@ -306,6 +311,11 @@ static int driver_load_image(const romfs_file_t *file,
 		if (end < segment.base ||
 		    end > ((segment.base >= DRIVER_HOT_BASE)
 			   ? DRIVER_HOT_END : DRIVER_BOOT_END)) {
+			return MOD_EFORMAT;
+		}
+		if (segment.role == MOD_SEGMENT_MAPPED &&
+		    (segment.base < DRIVER_MAPPED_BASE ||
+		     end > DRIVER_MAPPED_END)) {
 			return MOD_EFORMAT;
 		}
 		if (segment.role == MOD_SEGMENT_HOT) {
@@ -353,6 +363,11 @@ static int driver_load_image(const romfs_file_t *file,
 		} else {
 			driver_boot_ledger = (uint16_t)(
 				driver_boot_ledger + segment.image_size +
+				segment.bss_size);
+		}
+		if (segment.role == MOD_SEGMENT_MAPPED) {
+			driver_mapped_ledger = (uint16_t)(
+				driver_mapped_ledger + segment.image_size +
 				segment.bss_size);
 		}
 		driver_role_base[segment.role - 1u] = segment.base;
@@ -582,6 +597,9 @@ int driver_load_all(const char *manifest_name)
 	driver_puts("driver boot/bulk: ");
 	driver_put_dec16(driver_boot_ledger);
 	driver_puts(" bytes of 24576\r\n");
+	driver_puts("driver mapped: ");
+	driver_put_dec16(driver_mapped_ledger);
+	driver_puts(" bytes of 7936\r\n");
 #endif
 	return MOD_OK;
 }

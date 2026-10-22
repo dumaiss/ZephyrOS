@@ -31,10 +31,17 @@
 	.globl _ipc_copy_req, _ipc_copy_run
 	.globl _ipc_invoke, _ipc_invoke_here
 	.globl _ipc_saved_latch
+	.globl _ipc_bulk_map, _ipc_bulk_unmap
+	.globl _ipc_bulk_open, _ipc_bulk_faults
 	.globl kos_gate_saved_latch
 	.globl kos_driver_stack, kos_driver_stack_top
 	.globl ipc_asm_begin, ipc_asm_end
 	.globl ipc_domain_switch_end
+
+; Bank 6, the resident driver domain (architecture 2.3), and the busy
+; answer of a nested span (abi/kos/errno.h KOS_EBUSY).
+IPC_ASM_DRIVER_BANK = 6
+IPC_ASM_EBUSY       = 4
 
 	.area _CODE
 
@@ -102,10 +109,59 @@ _ipc_domain_exit::
 	out	(KOS_MEMCTL_PORT),a
 	ret
 
-; The three page selects above are the fixed core's only mapping changes:
-; each one writes mode 11 with new window page bits, which leaves the fixed
-; core (2000h-5FFFh) itself mapped - the instruction after the OUT is
-; fetched from the same place.  The extent is exported so the layout check
+; ---------------------------------------------------------------------------
+; int16_t ipc_bulk_map(void);         open a bulk-map span (architecture 5.2)
+;
+; Writes Q = 6, keeping the mode and the page: 0000h-1FFFh then shows bank
+; 6's first 8 KiB, where the planner put the drivers' mapped segments.
+; The span state is one byte: 0 when closed, 80h | the replaced Q when
+; open.  Returns 0 in DE, or -KOS_EBUSY with nothing changed when a span
+; is already open (spans do not nest).  The state is recorded before the
+; OUT, so an interrupt between the two finds the span already open - and
+; its exact-latch restore returns to Q = 6.
+; ---------------------------------------------------------------------------
+_ipc_bulk_map::
+	ld	a,(_ipc_bulk_open)
+	or	a
+	jr	nz,010$
+	in	a,(KOS_MEMCTL_PORT)
+	ld	b,a
+	and	#KOS_BANK_MASK
+	or	#0x80
+	ld	(_ipc_bulk_open),a
+	ld	a,b
+	and	#~KOS_BANK_MASK
+	or	#IPC_ASM_DRIVER_BANK
+	out	(KOS_MEMCTL_PORT),a
+	ld	de,#0
+	ret
+010$:
+	ld	de,#-IPC_ASM_EBUSY
+	ret
+
+; ---------------------------------------------------------------------------
+; void ipc_bulk_unmap(void);          close the span: restore the saved Q
+;
+; Outside a span it changes nothing.
+; ---------------------------------------------------------------------------
+_ipc_bulk_unmap::
+	ld	a,(_ipc_bulk_open)
+	or	a
+	ret	z
+	and	#KOS_BANK_MASK
+	ld	b,a
+	in	a,(KOS_MEMCTL_PORT)
+	and	#~KOS_BANK_MASK
+	or	b
+	out	(KOS_MEMCTL_PORT),a
+	xor	a
+	ld	(_ipc_bulk_open),a
+	ret
+
+; The page selects and the span above are the fixed core's only mapping
+; changes: each one writes mode 11 with new window page bits or a new bank
+; field, which leaves the fixed core (2000h-5FFFh) itself mapped - the
+; instruction after the OUT is fetched from the same place.  The extent is exported so the layout check
 ; can allow exactly these writes (the mode-10 aperture change lives in the
 ; common-resident ipc_common.asm).
 ipc_domain_switch_end::
@@ -203,6 +259,13 @@ ipc_asm_end::
 	.area _DATA
 _ipc_saved_latch::
 	.ds	1
+; The bulk-map span: 0 when closed, 80h | the replaced bank field when
+; open; and the count of spans the endpoint return path had to close (a
+; driver fault).
+_ipc_bulk_open::
+	.ds	1
+_ipc_bulk_faults::
+	.ds	2
 _ipc_entry::
 	.ds	2
 _ipc_saved_sp::

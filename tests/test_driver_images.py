@@ -438,9 +438,10 @@ class TestDriverSet(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def image(self, name, export=None, depends=None, io_size=16,
-              hot_bss=2, boot=False, bulk=0):
+              hot_bss=2, boot=False, bulk=0, mapped=0, align=None):
         """One synthetic image: a hot segment (init plus an optional
-        dispatch entry), an optional io segment, boot and bulk data."""
+        dispatch entry), an optional io segment, boot, bulk and mapped
+        data."""
         data = [0xC9, 0x00]
         symbols = [("_%s_init" % name, 0, 0)]
         chunks = [(0, 0, data, [])]
@@ -470,6 +471,12 @@ class TestDriverSet(unittest.TestCase):
             segments.append({"role": "bulk", "image_areas": ["_BULK"]})
             objects["%s_bulk.rel" % name] = (
                 [("_BULK", bulk)], [], [(0, 0, [0x22] * bulk, [])])
+        if mapped:
+            segments.append({"role": "mapped", "image_areas": ["_MAPPED"]})
+            if align is not None:
+                segments[-1]["align"] = align
+            objects["%s_mapped.rel" % name] = (
+                [("_MAPPED", mapped)], [], [(0, 0, [0x33] * mapped, [])])
         manifest = {
             "init": "_%s_init" % name,
             "segments": segments,
@@ -651,11 +658,57 @@ class TestDriverSet(unittest.TestCase):
         info = modpack.parse_container(containers[0])
         boot = [s for s in info["segments"] if s["role"] == "boot"][0]
         bulk = [s for s in info["segments"] if s["role"] == "bulk"][0]
-        self.assertEqual(boot["base"], 0x0000)
+        # Bank 6's page zero (0000h-00FFh) stays free (architecture 5.2).
+        self.assertEqual(boot["base"], 0x0100)
         self.assertEqual(bulk["base"] + bulk["image_size"] +
                          bulk["bss_size"], 0x6000)
         self.assertLessEqual(boot["base"] + boot["image_size"] +
                              boot["bss_size"], bulk["base"])
+
+    def segment(self, container, role):
+        info = modpack.parse_container(container)
+        return [s for s in info["segments"] if s["role"] == role][0]
+
+    def test_mapped_segments_come_first_in_load_order(self):
+        containers, _ = self.pack(
+            self.image("one", export=(10, 0), boot=True, mapped=100),
+            self.image("two", export=(11, 0), mapped=40))
+        one = self.segment(containers[0], "mapped")
+        two = self.segment(containers[1], "mapped")
+        boot = self.segment(containers[0], "boot")
+        self.assertEqual(one["base"], 0x0100)
+        self.assertEqual(two["base"], 0x0100 + 100)
+        # Boot code is placed above the whole mapped run.
+        self.assertEqual(boot["base"], 0x0100 + 140)
+
+    def test_a_mapped_segment_may_ask_for_page_alignment(self):
+        containers, _ = self.pack(
+            self.image("one", export=(10, 0), mapped=40),
+            self.image("two", export=(11, 0), mapped=512, align=256))
+        self.assertEqual(self.segment(containers[1], "mapped")["base"],
+                         0x0200)
+        with self.assertRaisesRegex(modpack.ModError, "align"):
+            self.pack(self.image("one", export=(10, 0), mapped=40,
+                                 align=3))
+
+    def test_the_mapped_range_holds_7936_bytes(self):
+        containers, _ = self.pack(
+            self.image("one", export=(10, 0), mapped=7936))
+        mapped = self.segment(containers[0], "mapped")
+        self.assertEqual(mapped["base"] + mapped["image_size"], 0x2000)
+        with self.assertRaisesRegex(modpack.ModError, "mapped segments"):
+            self.pack(self.image("one", export=(10, 0), mapped=7900),
+                      self.image("two", export=(11, 0), mapped=40))
+
+    def test_the_plan_reports_the_mapped_ledger(self):
+        containers, _ = self.pack(
+            self.image("one", export=(10, 0), mapped=64, bulk=32))
+        report = self.plan([self.write("one.mod", containers[0])])
+        self.assertEqual(report["drivers"][0]["mapped_base"], 0x0100)
+        self.assertEqual(report["nucleus"]["driver_mapped_bytes"], 64)
+        self.assertEqual(report["nucleus"]["driver_mapped_capacity_bytes"],
+                         7936)
+        self.assertEqual(report["nucleus"]["driver_boot_bytes"], 96)
 
 
 if __name__ == "__main__":
