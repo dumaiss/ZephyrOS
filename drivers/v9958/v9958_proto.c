@@ -128,16 +128,17 @@ static int16_t v9958_render_validate(const struct kos_ipc_frame *frame)
 }
 
 /* Second pass.  The assembly entry calls this on the renderer's private
- * stack and brackets the whole walk with sprites disabled. */
+ * stack and brackets the whole walk with sprites disabled (skipped while
+ * a program holds the VDP exclusively). */
 int v9958_driver_render_worker(struct kos_ipc_frame *frame)
 {
 	uint16_t length = frame->arg1;
 	uint16_t at = KCONSOLE_RENDER_HEADER_SIZE;
 
-	v9958_state.render_active = 1u;
-	if (v9958_state.exclusive != 0u) {
+	if (v9958_overtaken(&v9958_state, length) != 0u) {
 		return (int)length;
 	}
+	v9958_state.render_active = 1u;
 	while (at < length) {
 		uint8_t op;
 		uint8_t record_length;

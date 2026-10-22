@@ -1058,6 +1058,21 @@ $(eval $(call exe_program,events,tests/events,\
 $(eval $(call exe_program,iobench,tests/bench,\
 	iobench.c,STACK=384,STAGE=1))
 
+# The direct-text spike: the same mixed text through the console and
+# through four direct-write renderers (font in CPU RAM, glyph bytes OUT
+# to the data port).  Like READPH below it is not part of the default
+# store; the owner carries TEXTBENCH.EXE on a card next to the image.
+$(eval $(call exe_program,textbench,tests/bench,\
+	textbench.c textbench_render.asm,STACK=384,STAGE=1))
+# The font header the program includes is generated into the object
+# directory from the pinned asset (one source for the font).
+textbench_INCFLAGS := -I$(EXE_USER_ROOT)/textbench
+$(EXE_USER_ROOT)/textbench/textbench.rel: \
+		$(EXE_USER_ROOT)/textbench/textbench.font.h
+$(EXE_USER_ROOT)/textbench/textbench.font.h: \
+		drivers/v9958/assets/font_cp850_6x8.inc tests/bench/font2c.py
+	$(PYTHON) tests/bench/font2c.py $< $@
+
 all: $(EXE_USER_ROOT)/iobench.exe
 
 # The read-path measurement program (`make phase-image` builds it beside

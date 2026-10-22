@@ -148,6 +148,16 @@ _Static_assert(V9958_ATLAS_NORMAL_A16 == 1u && V9958_ATLAS_REVERSE_A16 == 1u &&
 #define V9958_COLOR_NORMAL  0x04u
 #define V9958_COLOR_REVERSE 0x0Fu
 #define V9958_INVERT_COLOR  (V9958_COLOR_NORMAL ^ V9958_COLOR_REVERSE)
+/* The packed fill bytes are the 4-bit pixel repeated in both nibbles;
+ * a palette change must change all four names together. */
+#if defined(__SDCC)
+_Static_assert(V9958_CLEAR_COLOR ==
+	       ((V9958_COLOR_NORMAL << 4) | V9958_COLOR_NORMAL),
+	       "the clear colour packs the normal pixel twice");
+_Static_assert(V9958_FILL_COLOR_REVERSE ==
+	       ((V9958_COLOR_REVERSE << 4) | V9958_COLOR_REVERSE),
+	       "the reverse fill packs the reverse pixel twice");
+#endif
 
 /* --- Port-call ABI with v9958_io.asm ----------------------------------
  *
@@ -250,6 +260,8 @@ _Static_assert(__builtin_offsetof(struct v9958_state, out_run_col) == 18,
 	       "v9958_io.asm V9958_ST_RUN_COL");
 _Static_assert(__builtin_offsetof(struct v9958_state, out_run_row) == 19,
 	       "v9958_io.asm V9958_ST_RUN_ROW");
+_Static_assert(__builtin_offsetof(struct v9958_state, exclusive) == 20,
+	       "v9958_io.asm V9958_ST_EXCLUSIVE");
 /* v9958_term_set_defaults zeroes term_state .. out_run_count as one run. */
 #define V9958_ST_DEFAULTS_END 18u
 _Static_assert(__builtin_offsetof(struct v9958_state, term_state) == 2 &&
@@ -317,5 +329,9 @@ int v9958_send(void *state, uint8_t operation, const void *payload,
 
 extern struct v9958_state v9958_state;
 extern volatile uint8_t v9958_boot_runs;
+
+/* The takeover drop check: returns 1 and counts `amount` while a program
+ * holds the object exclusively (the RENDER worker shares it). */
+int v9958_overtaken(struct v9958_state *state, uint16_t amount);
 
 #endif /* KONAOS_DRIVERS_V9958_DRIVER_H */

@@ -151,10 +151,20 @@ BENCH_RUN = b"X /system/iobench.exe\r"
 BENCH_BEGIN = "iobench: begin\r\n"
 BENCH_END = "iobench: end\r\n"
 # The rows that need no card, and the ones that report SKIP without one.
-BENCH_ROWS = ("ipc.null", "con.putchar", "con.printf", "con.write")
+BENCH_ROWS = ("ipc.null", "con.putchar", "con.printf", "con.write",
+              "con.mixed", "con.space")
+# The rows that need the video driver: this image's console is serial,
+# so they report SKIP here; the production-image replay runs them for
+# real.
+BENCH_VIDEO_ROWS = ("con.held", "vdp.hmmm6", "vdp.hmmm12",
+                    "vdp.direct.on", "vdp.direct.off")
 BENCH_ROW_RE = (r"iobench: %s ops \d+ bytes \d+ min \d+ "
                 r"mean \d+ max \d+ per-byte \d+\r\n")
 BENCH_SKIP_RE = re.compile(r"iobench: file\.\w+ SKIP no card \(-\d+\)\r\n")
+BENCH_VIDEO_SKIP_RE = re.compile(
+    r"iobench: (?:con\.held|vdp\.hmmm6|vdp\.hmmm12|vdp\.direct\.on|"
+    r"vdp\.direct\.off) "
+    r"SKIP no video \(-\d+\)\r\n")
 
 
 class TestTheBenchRows(IoSdkBase):
@@ -173,7 +183,20 @@ class TestTheBenchRows(IoSdkBase):
         self.assertIn(BENCH_BEGIN, text)
         for row in BENCH_ROWS:
             self.assertRegex(text, BENCH_ROW_RE % re.escape(row))
+        self.assertEqual(len(BENCH_VIDEO_SKIP_RE.findall(text)),
+                         len(BENCH_VIDEO_ROWS))
+        for row in BENCH_VIDEO_ROWS:
+            self.assertRegex(text, r"iobench: %s SKIP no video \(-\d+\)\r\n"
+                             % re.escape(row))
         self.assertEqual(len(BENCH_SKIP_RE.findall(text)), 3)
+        # The closing summary repeats every row in one screen.
+        summary = text[text.index("iobench: summary\r\n"):]
+        for row in BENCH_ROWS:
+            self.assertRegex(summary, r"sum: %s mean \d+ per-byte \d+\r\n"
+                             % re.escape(row))
+        for row in BENCH_VIDEO_ROWS + ("file.byte", "file.getc",
+                                       "file.block"):
+            self.assertIn("sum: %s SKIP\r\n" % row, summary)
         self.assertIn(BENCH_END, text)
         self.assertIn(EXEC_STATUS, text)
 

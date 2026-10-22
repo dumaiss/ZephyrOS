@@ -495,7 +495,10 @@ how `call` adds a second result channel.
   past its nominal base saves into the reservation and never into the
   interrupted chain's frames.
 - IRQ delivery never disturbs a latch saved by the code it interrupts; the
-  executive keeps its own save slot.
+  executive keeps its own save slot. An interrupt inside a bulk-map span
+  (5.2) returns to Q = 6; handlers never use the caller window, and no
+  event is delivered there, because the interrupted code is not a
+  program's.
 - **Handlers** are bounded, service their own device condition, never
   busy-wait, never call IPC, and return to the executive. Nested maskable
   interrupts are not allowed.
@@ -709,6 +712,8 @@ are not application ABI.
   bank 6 `8000h-BFFFh`, the `DRIVER_IO` area: a driver's io segment, which
   the planner places there. The packer refuses a manifest that puts
   `_DRIVER_IO` in any other segment.
+- **No copies inside a bulk-map span:** the caller window shows bank 6
+  there (5.2), so every copy primitive refuses until `bulk_unmap`.
 - **Validation lives in the nucleus only:** handle, endpoint, descriptor and
   frame bounds are checked once, at the boundary. Drivers trust what the
   nucleus hands them.
@@ -832,6 +837,9 @@ restart, no hot replacement.
 bank 6 6000h-DFFFh   hot tier (32 KiB): everything a driver runs after boot,
                      and its run-time data; 8000h-BFFFh holds DRIVER_IO first
 bank 6 0000h-5FFFh   boot/bulk tier (24 KiB): boot-only code and bulk data
+  0000h-00FFh          reserved page zero
+  0100h-1FFFh          mapped range (7,936 bytes): data a driver reads and
+                       writes directly inside a bulk-map span
 bank 6 E000h-FFFFh   unused (common is mapped over it)
 ```
 
@@ -846,6 +854,22 @@ bank 6 E000h-FFFFh   unused (common is mapped over it)
   there runs after boot.
 - While a driver runs in mode 11, `0000h-1FFFh` shows the caller's bank;
   drivers reach caller memory only through descriptors.
+- **The bulk-map span** is the one exception. `bulk_map` sets Q = 6, so
+  `0000h-1FFFh` shows bank 6's own first 8 KiB and a driver reads and
+  writes its **mapped segment** at its linked address (no translation,
+  2.2); `bulk_unmap` restores the exact Q it replaced. Inside a span the
+  driver touches only its own memory (hot tier, `DRIVER_IO`, its mapped
+  segment) and its device ports: `copy_in`, `copy_out`, `bulk_read`,
+  `bulk_write`, `call` and `event_post` refuse, and `bulk_map` does not
+  nest. A span never outlives the operation that opened it: the driver
+  closes it before it returns, and the endpoint return path closes a span
+  left open and counts it as a driver fault. Spans are for the hot path's
+  read-mostly data (the V9958 font); one costs two primitive calls.
+- **Mapped segments** (manifest role `mapped`, image and BSS) are placed
+  by the host planner in `0100h-1FFFh`, in load order; the total may not
+  exceed 7,936 bytes. Boot code and bulk data are placed above them. The
+  reserved page zero keeps bank 6's `0000h-00FFh` free for the page-zero
+  contract every bank meets (4.3).
 
 ### 5.3 The driver image
 
@@ -878,6 +902,7 @@ table it may use and its resolved dependency array. The table holds:
 - `call(dependency_ref, op, frame)`: a near-direct call to a resolved
   dependency;
 - `copy_in`, `copy_out` and the bulk-data reader;
+- `bulk_map`, `bulk_unmap`: the bulk-map span (5.2);
 - `irq_claim`, `irq_release`;
 - the few other primitives a driver needs, each named in
   `drivers/include/driver.h`.
@@ -945,6 +970,30 @@ console it selected. Programs cannot tell which implementation answers.
   third ESC of a run is consumed; the first two are delivered as data
   while the serial line owns input, so VT100 key sequences keep their
   lead-in.
+- **The V9958 text renderer writes glyphs directly.** Glyph bytes go to
+  VRAM through the data port; the command engine does only the fills
+  (blanks, erase), scrolling (the R#23 origin) and the attribute-only
+  inversion (LMMV/EOR). A GRAPHIC 6 cell is three whole bytes, so no VRAM
+  is read and VRAM holds no font. The driver's mapped segment holds:
+  - the 1-bit 6×8 font, scanline-major: eight 256-byte pages, page `s`
+    holding row `s` of every character, indexed by the character code;
+  - the expansion pages, which carry the colours: three 256-byte pages per
+    foreground/background pair, page `b` mapping a font row byte to output
+    byte `b` of the cell (two pixels). The normal and the reverse pair are
+    resident (1,536 bytes); another pair is a rebuilt set of pages.
+
+  A print run (up to 64 glyphs on one row) is drawn scanline by scanline,
+  one VRAM address per scanline and three bytes per glyph, inside one
+  bulk-map span. The font asset is built from
+  `drivers/v9958/assets/font_cp850_6x8.inc` into this layout on the host.
+- **Console geometry is reported, not fixed.** `KCONSOLE_OP_INFO` returns
+  the text grid (columns, rows) and the attribute bits the console
+  supports; the V9958 console forwards it to `KVIDEO_OP_INFO`, and the
+  serial console reports the grid its programs draw (85 × 26). The render
+  stream is bounded by the reported grid. `libtui` reads it at init and
+  refuses a grid above its compiled capacity. `attr` is a bit field
+  (bit 0 reverse; the other bits reserved and refused), and INVERT is the
+  normal/reverse exchange only, so a colour change is a TEXT redraw.
 - **Sound is lifecycle plus a coarse path.** The `sound` driver
   (`KOS_CLASS_SOUND`, type `SOUND`, `kos/ksound.h`) owns the card's reset
   and a batched write. It keeps no copy of the chips' registers, because a
@@ -1293,6 +1342,7 @@ ledgers (`docs/memory.md` has the current values):
 | `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | keep ≥ 4,096 free |
 | `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 1,536 free |
 | `driver boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
+| `driver mapped:` | bank 6 `0100h-1FFFh`, inside boot/bulk | 7,936 | — |
 | `common:` | packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | never raised |
 | gate stack | common | 384 | worst case ≤ 360 |
 
@@ -1464,46 +1514,18 @@ aperture page otherwise.
 Planned work, in order. None of it changes the contracts above unless it
 says so.
 
-1. **The native shell.** `/system/shell.exe`, an ordinary program that
-   becomes the boot program:
-   - one argument splitter shared by the shell and every program's startup
-     (single and double quotes, backslash escapes), so arguments survive
-     into a child's tail;
-   - `/fs` is shown as `/`; any other absolute path gains `/fs` in front;
-     `//` names the real namespace root; `/system` and `/dev` stay as they
-     are;
-   - a command path (`.`, `/fs/BIN`, `/system`), with or without `.exe`;
-   - built-ins: `cd pwd echo path help exit ls cat stat cp mv rm mkdir
-     rmdir`; `mv` renames, or copies and unlinks across providers;
-   - the boot launcher gains a policy: a failed boot program falls back to
-     `/system/monitor.exe`, and `KOS_BOOT_AFTER_EXIT` chooses between
-     relaunching the boot program and ending at the monitor (test images
-     end at the monitor instead of looping).
-2. **Device state and warm reboot.**
-   - Drivers that ask for it are told when a handle on their object is
-     released (`KOS_OP_RELEASE`). A program takes a device over only
-     through an exclusive bind (`KOS_BIND_EXCLUSIVE`, `KOS_OP_ACQUIRE`):
-     it reprograms a device only while it holds that handle. The video
-     driver restores the text screen when the handle goes.
-   - The launcher resets the console before every start of the boot
-     program.
-   - Warm reboot (`SYS_REBOOT`, `reboot`, the monitor's `B`):
-     latch `00h`, `JP 0`, and the ROM copy runs as at power-on. Every
-     driver init must program its device fully from any state, because no
-     device receives a hardware reset.
-3. **The diagnostic suite.** `/system/diag.exe`, run from the shell, built
-   from far segments:
-   - every test reports `PASS`, `FAIL` or `SKIP`; `diag all` aggregates,
-     never destroys data and exits non-zero only on a failure;
-   - families: system, memory, timer, irq, serial, video, hid, ioc,
-     storage, sound;
-   - benchmarks of the SD card, the IOC bulk lane (the controller's ramp
-     test) and the command lane, with per-call minimum, mean, maximum and
-     a latency histogram;
-   - one read-only nucleus addition, `SYS_DIAG_ENUM`, returning value
-     records (banks, interrupt sources, drivers, interrupt totals) and no
-     pointers.
-4. **After that:** compatibility personalities, starting with CP/M.
+1. **The direct text renderer.** The bulk-map span and mapped segments
+   (5.2, 5.4), the V9958 direct renderer and reported console geometry
+   (5.6): the contract above, which the tree implements next.
+2. **Mouse and game controllers** in the HID driver: `/dev/input/mouse`,
+   `/dev/input/controller/0` and `/1`. They grow the driver tier inside
+   its reserve and need nothing from the nucleus. The mouse pointer is a
+   sprite, which the console's sprites-off drawing bracket must not hide
+   while a mouse is open.
+3. **After that:** compatibility personalities, starting with CP/M.
+
+Diagnostics and benchmarks are user programs; the nucleus gains a
+diagnostic interface only where a program cannot measure without it.
 
 ---
 

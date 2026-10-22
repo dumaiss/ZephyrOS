@@ -53,12 +53,14 @@ SHELL_EXIT = "boot: /system/shell.exe exit 0"
 
 # The lines the takeover program prints, with the lengths the drop
 # counter must grow by: five console copies, all of them while the
-# exclusive handle is held.
+# exclusive handle is held, plus the 10-byte render stream the held
+# program submits (its whole length is dropped and answered).
 TAKEN_LINES = (("dev: claim ok", 15), ("dev: hidden", 13),
                ("dev: hold", 11), ("dev: ", 7), ("dev: leaked", 13))
-TAKEN_TOTAL = sum(length for _text, length in TAKEN_LINES)
+RENDER_LENGTH = 10
+TAKEN_TOTAL = sum(length for _text, length in TAKEN_LINES) + RENDER_LENGTH
 TAKEN_SUMMARY = "dev: took %s\r\n" % " ".join(
-    str(length) for _text, length in TAKEN_LINES)
+    [str(length) for _text, length in TAKEN_LINES] + [str(RENDER_LENGTH)])
 DRAWN_LINE = "dev: drawn"
 POKED_LINE = "dev: poked\r\n"
 RELEASED_TRACE = "dev: drawn"
@@ -350,6 +352,46 @@ class DeviceReplay(HwtestReplay):
             self.assertEqual(chunk, bytes([SCRIBBLE]) * SCRIBBLE_LEN,
                              "the scribble at %05Xh is missing" % base)
 
+    def assert_no_console_vdp_traffic(self, z):
+        """While the takeover held the VDP, the console entries (the
+        dropped lines and the render stream) touched no VDP port: after
+        the holder's own R#8 write - the takeover's last port access -
+        nothing was written, read or started until the release reset."""
+        peer = z.vdp
+        r8 = [(value, reg, now) for value, reg, now in peer.reg_writes
+              if reg == 8 and value == 0]
+        self.assertEqual(len(r8), 1, "the takeover wrote no holder R#8")
+        boundary = r8[0][2]
+        self.assertEqual(
+            [entry for entry in peer.reg_writes if entry[2] > boundary],
+            [], "a console entry wrote a register during the hold")
+        self.assertEqual(
+            [entry for entry in peer.status_reads if entry[0] > boundary],
+            [], "a console entry read status during the hold")
+        self.assertEqual(
+            [entry for entry in peer.indirect_writes
+             if entry[0] > boundary],
+            [], "a console entry wrote R#17+ during the hold")
+        self.assertEqual(
+            [entry for entry in peer.palette_writes if entry[0] > boundary],
+            [], "a console entry wrote the palette during the hold")
+        self.assertEqual(
+            [command for command in peer.commands
+             if command["start"] > boundary],
+            [], "a console entry started a command during the hold")
+        # VRAM writes carry no timestamp: the takeover's scribbles are
+        # the last VRAM writes before the release reset, so a console
+        # entry wrote nothing after them.
+        tail = list(peer.vram_writes[-2 * SCRIBBLE_LEN:])
+        self.assertEqual(
+            [entry[0] for entry in tail],
+            [VISIBLE_BASE + at for at in range(SCRIBBLE_LEN)] +
+            [ATLAS_BASE + at for at in range(SCRIBBLE_LEN)],
+            "the scribbles are not the last VRAM writes")
+        self.assertEqual([entry[1] for entry in tail],
+                         [SCRIBBLE] * 2 * SCRIBBLE_LEN)
+        self.assertEqual(peer.regs[8], 0, "the holder's R#8 changed")
+
 
 class TestExclusiveTakeover(DeviceReplay):
     """A program that holds the display, and what its release restores."""
@@ -365,6 +407,7 @@ class TestExclusiveTakeover(DeviceReplay):
         held_commands = len(z.vdp.commands)
         held = self.snapshot(z)
         self.taken_up(z)
+        self.assert_no_console_vdp_traffic(z)
         self.assertEqual(self.exclusive(z), 1,
                          "the takeover did not hold the object")
         self.assertEqual(self.dropped(z), TAKEN_TOTAL,
@@ -404,6 +447,7 @@ class TestExclusiveTakeover(DeviceReplay):
         z.hid.hid_queue.extend((START + " release\r").encode())
         self.run_lane(z, TAKEN_SUMMARY, lane)
         self.taken_up(z)
+        self.assert_no_console_vdp_traffic(z)
         self.run_lane(z, RELEASED_TRACE, lane, limit=EXEC_BUDGET)
         self.run_to(z, SHELL_PROMPT, since=trace, limit=EXEC_BUDGET)
         self.assertEqual(self.exclusive(z), 0)

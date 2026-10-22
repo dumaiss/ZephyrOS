@@ -12,6 +12,12 @@
  *   renderrows  a two-row flush split into two render requests;
  *   renderbad   malformed streams rejected before any backend work;
  *   rendermax   the maximum legal render stream length;
+ *   invertwrap  31 scrolls put the bitmap origin on scanline 248; an
+ *               INVERT on logical row zero runs the circular-Y split;
+ *   rendersync  one flush with TEXT, INVERT and a cursor-moving STATE:
+ *               one SAT write and one final command wait;
+ *   renderflip  RENDER succeeds, the tee arms, the next flush falls
+ *               back to a full ANSI repaint;
  *   screen      deterministic cursor, text, clipping, control-byte,
  *               transaction and formatting rows;
  *   shutdown    dirty cells flushed by tui_shutdown() without an explicit
@@ -455,6 +461,103 @@ static int rendermax_mode(void)
 		return fail("rendermax", result);
 	}
 	printf("tui: rendermax pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+/* The circular-bitmap boundary: 31 single-line scrolls put the bitmap
+ * origin on scanline 248, so logical row zero occupies physical
+ * scanlines 248..255 and an INVERT there runs the split path.  The
+ * scrolls go through the ordinary console WRITE path (a render record
+ * never advances the cursor at the last column).  tui_init homes the
+ * cursor to row zero, so 56 newlines walk to the bottom row in 25 and
+ * scroll 31 times. */
+static int invertwrap_mode(void)
+{
+	static const char scroll_lfs[] =
+		"\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+		"\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n";
+
+	if (tui_init() < 0) {
+		printf("tui: invertwrap FAIL init\r\n");
+		return 1;
+	}
+	console_write(scroll_lfs, sizeof(scroll_lfs) - 1u);
+	if (tui_puts_xy(4, 0, "WRAP") != 4 || tui_flush() != 0) {
+		return fail("invertwrap text", 0);
+	}
+	if (tui_set_attr(1u) != 0 ||
+	    tui_puts_xy(4, 0, "WRAP") != 4 || tui_flush() != 0) {
+		return fail("invertwrap on", 0);
+	}
+	if (tui_set_attr(0u) != 0 ||
+	    tui_puts_xy(4, 0, "WRAP") != 4 || tui_flush() != 0) {
+		return fail("invertwrap off", 0);
+	}
+	if (tui_gotoxy(0, 22) != 0 || tui_flush() != 0) {
+		return fail("invertwrap marker", 0);
+	}
+	printf("tui: invertwrap pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+/* One flush with three records - TEXT, INVERT and a STATE whose cursor
+ * moves - so the replay can pin the transaction boundary: one SAT write
+ * and one final command wait. */
+static int rendersync_mode(void)
+{
+	if (tui_init() < 0) {
+		printf("tui: rendersync FAIL init\r\n");
+		return 1;
+	}
+	if (tui_puts_xy(0, 0, "AB") != 2 ||
+	    tui_puts_xy(5, 0, "CD") != 2 || tui_flush() != 0) {
+		return fail("rendersync text", 0);
+	}
+	if (tui_set_attr(1u) != 0 ||
+	    tui_puts_xy(5, 0, "CD") != 2 ||
+	    tui_puts_xy(0, 0, "XY") != 2 ||
+	    tui_gotoxy(10, 5) != 0 || tui_flush() != 0) {
+		return fail("rendersync move", 0);
+	}
+	if (tui_gotoxy(0, 22) != 0 || tui_flush() != 0) {
+		return fail("rendersync marker", 0);
+	}
+	printf("tui: rendersync pass\r\n");
+	tui_shutdown();
+	return 0;
+}
+
+/* The RENDER-to-ANSI fallback after a successful RENDER: the program
+ * draws through RENDER (support 1), waits on one key while the replay
+ * arms the serial tee, dirties one cell and flushes.  The console now
+ * answers -KOS_ENOTSUP, so libtui repaints the whole screen through
+ * ANSI and the flush returns that path's result. */
+static int renderflip_mode(void)
+{
+	char ch;
+
+	if (tui_init() < 0) {
+		printf("tui: renderflip FAIL init\r\n");
+		return 1;
+	}
+	if (tui_puts_xy(0, 0, "FLIP") != 4 ||
+	    tui_puts_xy(0, 20, "TAIL") != 4 || tui_flush() != 0) {
+		return fail("renderflip draw", 0);
+	}
+	for (;;) {
+		int result = console_read(&ch, 1);
+
+		if (result == 1) {
+			break;
+		}
+		idle();
+	}
+	if (tui_puts_xy(4, 1, "Z") != 1 || tui_flush() != 0) {
+		return fail("renderflip flush", 0);
+	}
+	printf("tui: renderflip pass\r\n");
 	tui_shutdown();
 	return 0;
 }
@@ -1583,6 +1686,15 @@ int main(int argc, char **argv)
 	}
 	if (argc == 1 && strcmp(argv[0], "rendermax") == 0) {
 		return rendermax_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "invertwrap") == 0) {
+		return invertwrap_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "rendersync") == 0) {
+		return rendersync_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "renderflip") == 0) {
+		return renderflip_mode();
 	}
 	if (argc == 1 && strcmp(argv[0], "screen") == 0) {
 		return screen_mode();

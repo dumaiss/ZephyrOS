@@ -1463,8 +1463,9 @@ static void v9958_term_set_defaults(void)
 /* 1 while a program holds the object exclusively.  The console must not
  * draw over the screen the holder owns, so its terminal bytes are dropped
  * and counted; the count is the takeover's evidence, not a protocol
- * answer. */
-static uint8_t v9958_overtaken(struct v9958_state *state, uint16_t amount)
+ * answer.  The RENDER worker (v9958_proto.c) counts its stream length
+ * through the same check. */
+int v9958_overtaken(struct v9958_state *state, uint16_t amount)
 {
 	if (state->exclusive == 0u) {
 		return 0u;

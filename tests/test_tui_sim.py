@@ -549,6 +549,71 @@ class TuiSimBase(unittest.TestCase):
                 return driver["endpoints"][0]["dispatch"]
         raise AssertionError("the plan carries no console driver")
 
+    @classmethod
+    def _dispatches(cls):
+        """(console, video) endpoint dispatch addresses."""
+        path = os.path.join(ROOT, cls.SUBDIR, "modules",
+                            "drivers.plan.json")
+        plan = json.loads(Path(path).read_text())
+        console = video = None
+        for driver in plan["drivers"]:
+            for endpoint in driver["endpoints"]:
+                if endpoint["class"] == 6:
+                    console = endpoint["dispatch"]
+                elif endpoint["class"] == 2:
+                    video = endpoint["dispatch"]
+        assert console and video
+        return console, video
+
+    def _render_interval(self, replay, z, console, video, index):
+        """The VDP events observed between console RENDER dispatch entry
+        `index` (1-based) and the next console dispatch entry: command
+        starts, status reads, register writes and SAT VRAM writes, in
+        order (consecutive SAT bytes collapse into one write)."""
+        seen = 0
+        collecting = False
+        events = []
+        for _step in range(STEP_LIMIT):
+            commands = len(z.vdp.commands)
+            status = len(z.vdp.status_reads)
+            registers = len(z.vdp.reg_writes)
+            vram = len(z.vdp.vram_writes)
+            replay.skip_delay(z)
+            z.step()
+            if z.pc == console:
+                try:
+                    if z.bank_of(z.pc) != 6 or z.rd(z.hl) != 6:
+                        continue
+                except SystemExit:
+                    continue
+                seen += 1
+                if seen == index:
+                    collecting = True
+                    continue
+                if collecting:
+                    break
+            if not collecting:
+                continue
+            if len(z.vdp.commands) > commands:
+                events.append(("command",))
+            if len(z.vdp.status_reads) > status:
+                events.append(("status", z.vdp.status_reads[-1][1]))
+            if len(z.vdp.reg_writes) > registers:
+                events.append(("reg", z.vdp.reg_writes[-1][0],
+                               z.vdp.reg_writes[-1][1]))
+            if len(z.vdp.vram_writes) > vram:
+                added = [address for address, _value
+                         in z.vdp.vram_writes[vram:]]
+                # The cursor SAT lives at VRAM 1F200h (the driver's
+                # 0xF200 address constant encodes to it through R#14).
+                if (any(0x1F200 <= address < 0x1F208
+                        for address in added) and
+                        (not events or events[-1][0] != "sat")):
+                    events.append(("sat",))
+        else:
+            self.fail("render dispatch %d never completed" % index)
+        return events
+
     def _write_length(self, z):
         """The length of a console WRITE dispatch at the current PC."""
         if z.pc != self.dispatch:
@@ -844,6 +909,190 @@ class TuiModeChecks:
         run = self._run("rendermax")
         self.assertIn("tui: rendermax pass", self._text(run))
         self.assertEqual(run["renders"], [RENDER_MAX])
+
+    def test_invert_at_the_circular_boundary_stays_in_page_zero(self):
+        """Origin 248 puts logical row zero on scanlines 248..255: the
+        split path fires, its one page-zero half is the whole cell, and
+        both directions decode correctly.  On the serial console RENDER
+        is refused from the first flush, so both directions travel as
+        ANSI SGR and must still invert then restore the cell."""
+        if self.SERIAL:
+            run = self._run("invertwrap")
+            self.assertEqual(len(run["renders"]), 1, run["renders"])
+            lane = run["lane"]
+            self.assertIn(b"\x1b[7mWRAP", lane, "on-state lost SGR 7")
+            self.assertIn(b"\x1b[0mWRAP", lane, "off-state kept SGR 7")
+            screen = parse_serial_screen(lane)
+            for at, ch in enumerate("WRAP"):
+                self.assertEqual(screen[0][4 + at], (ch, 0))
+            return
+        run = self._run("invertwrap")
+        commands = run["z"].vdp.commands[run["command_start"]:]
+        inversions = [command for command in commands
+                      if command["code"] == 0x83]
+        self.assertEqual(len(inversions), 2)
+        for command in inversions:
+            block = command["block"]
+            self.assertEqual(block[4] | (block[5] << 8), 4 * 6)
+            self.assertEqual(block[6], 248)
+            self.assertEqual(block[8] | (block[9] << 8), 4 * 6)
+            self.assertEqual(block[10] | (block[11] << 8), 8)
+            self.assertEqual(block[12], 0x0B)
+        replay, z = run["replay"], run["z"]
+        full = z.vdp.commands
+        on_index = full.index(inversions[0])
+        off_index = full.index(inversions[1])
+        # Both directions, decoded from the command stream: after the
+        # on-toggle the cells are reverse, after the off-toggle normal.
+        z.vdp.commands = full[:off_index]
+        screen = decode_v9958_screen(replay, z, run["command_start"])
+        for at, ch in enumerate("WRAP"):
+            self.assertEqual(screen[0][4 + at], (ch, 1))
+        z.vdp.commands = full[:off_index + 1]
+        screen = decode_v9958_screen(replay, z, run["command_start"])
+        for at, ch in enumerate("WRAP"):
+            self.assertEqual(screen[0][4 + at], (ch, 0))
+        z.vdp.commands = full
+
+    def test_multi_record_render_syncs_once(self):
+        """TEXT + INVERT + a cursor-moving STATE in one RENDER: exactly
+        one cursor SAT write and one final command wait.  The serial
+        console refuses RENDER outright: the first dispatch is the last,
+        and the multi-record flush travels as ANSI."""
+        if self.SERIAL:
+            run = self._run("rendersync")
+            self.assertEqual(len(run["renders"]), 1, run["renders"])
+            screen = parse_serial_screen(run["lane"])
+            # XY is drawn while the attribute is reverse, so the
+            # refused RENDER's later records repaint it inverse.
+            self.assertEqual(screen[0][0], ("X", 1))
+            self.assertEqual(screen[0][1], ("Y", 1))
+            for at, ch in enumerate("CD"):
+                self.assertEqual(screen[0][5 + at], (ch, 1))
+            return
+        replay, z = self._boot()
+        console, video = self._dispatches()
+        glyph_start = len(z.glyphs)
+        z.hid.hid_queue.extend(b"/system/tui_test.exe rendersync\r")
+        events = self._render_interval(replay, z, console, video, 2)
+        for _step in range(STEP_LIMIT):
+            replay.skip_delay(z)
+            z.step()
+            if _step % 0x1FFF == 0:
+                replay.pump(z)
+                text = "".join(z.glyphs[glyph_start:])
+                if "FAIL" in text:
+                    self.fail("rendersync reported FAIL: %r" % text[-200:])
+                if "tui: rendersync pass" in text:
+                    break
+        else:
+            self.fail("rendersync did not finish")
+        sat = [index for index, event in enumerate(events)
+               if event[0] == "sat"]
+        self.assertEqual(len(sat), 1, events)
+        tail = events[sat[0] + 1:]
+        self.assertTrue(tail, "nothing followed the SAT write")
+        self.assertEqual([event[0] for event in tail[:-1]],
+                         ["status"] * (len(tail) - 1),
+                         "non-wait activity after the SAT write")
+        self.assertEqual(tail[-1][0], "reg", tail)
+        self.assertEqual(tail[-1][1], 8, "the trailing write is R#8")
+        waits = [event for event in tail if event[0] == "status"]
+        self.assertGreaterEqual(len(waits), 1)
+        self.assertEqual(waits[-1][1], 0, "the final wait did not settle")
+        self.assertTrue(all(event[0] != "command" for event in tail),
+                        "a command started after the final sync")
+
+    def test_render_flip_repaints_the_whole_screen_through_ansi(self):
+        """One program: RENDER succeeds (support 1), the serial tee arms
+        while the program waits for a key, and the next flush falls back
+        to a full ANSI repaint on both lanes.  On the serial console the
+        very first RENDER is refused, so the fallback repaint happens
+        right away and the later flush never dispatches again."""
+        if self.SERIAL:
+            replay, z = self._boot()
+            renders = []
+            writes = []
+            serial_start = len(z.sio_tx)
+            armed = False
+            z.sio_rx.extend(b"/system/tui_test.exe renderflip\r")
+            for _step in range(STEP_LIMIT):
+                render_length = self._render_length(z)
+                if render_length is not None and render_length > 0:
+                    renders.append(render_length)
+                write_length = self._write_length(z)
+                if write_length is not None and write_length > 0:
+                    writes.append(write_length)
+                replay.skip_delay(z)
+                z.step()
+                if _step % 0x1FFF == 0:
+                    replay.pump(z)
+                    lane = bytes(z.sio_tx[serial_start:])
+                    if (not armed and b"FLIP" in lane and
+                            len(renders) == 1):
+                        z.sio_rx.extend(b"x")
+                        armed = True
+                    if b"FAIL" in lane:
+                        self.fail("renderflip reported FAIL: %r"
+                                  % lane[-200:])
+                    if b"tui: renderflip pass" in lane:
+                        break
+            else:
+                self.fail("renderflip did not finish")
+            replay.pump(z)
+            self.assertEqual(len(renders), 1, renders)
+            # Support never reached 1 here, so the fallback repaints
+            # only the pending cells (the full-screen repaint is the
+            # support==1 signature asserted on the V9958 backend).
+            lane = bytes(z.sio_tx[serial_start:])
+            self.assertIn(b"FLIP", lane)
+            self.assertIn(b"TAIL", lane)
+            self.assertIn(b"\x1b[", lane)
+            screen = parse_serial_screen(lane)
+            self.assertEqual(screen[1][4], ("Z", 0))
+            return
+        replay, z = self._boot()
+        console, video = self._dispatches()
+        renders = []
+        writes = []
+        glyph_start = len(z.glyphs)
+        serial_start = len(z.sio_tx)
+        armed = False
+        z.hid.hid_queue.extend(b"/system/tui_test.exe renderflip\r")
+        for _step in range(STEP_LIMIT):
+            render_length = self._render_length(z)
+            if render_length is not None and render_length > 0:
+                renders.append(render_length)
+            write_length = self._write_length(z)
+            if write_length is not None and write_length > 0:
+                writes.append(write_length)
+            replay.skip_delay(z)
+            z.step()
+            if _step % 0x1FFF == 0:
+                replay.pump(z)
+                text = "".join(z.glyphs[glyph_start:])
+                if not armed and "FLIP" in text and len(renders) == 1:
+                    # The first RENDER is done: arm the tee and deliver
+                    # the key the program's read waits for.
+                    z.sio_rx.extend(b"\x1b\x1b\x1bx")
+                    armed = True
+                if "FAIL" in text:
+                    self.fail("renderflip reported FAIL: %r" % text[-200:])
+                if "tui: renderflip pass" in text:
+                    break
+        else:
+            self.fail("renderflip did not finish")
+        replay.pump(z)
+        # The refused stream is the second (and last) RENDER dispatch;
+        # the full ANSI repaint travelled as ordinary WRITEs of whole
+        # rows.
+        self.assertEqual(len(renders), 2, renders)
+        self.assertGreaterEqual(max(writes), 90, writes)
+        lane = bytes(z.sio_tx[serial_start:])
+        self.assertIn(b"FLIP", lane)
+        self.assertIn(b"TAIL", lane)
+        self.assertIn(b"\x1b[", lane)
+        self.assertIn("Z", "".join(z.glyphs[glyph_start:]))
 
 
 class TestTuiSerialScreen(TuiModeChecks, TuiSimBase):

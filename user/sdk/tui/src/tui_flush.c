@@ -112,6 +112,19 @@ static void tui_clear_dirty(void)
 	}
 }
 
+/* Mark every logical cell dirty (and none invert-only): the ANSI
+ * backend has never seen a screen the RENDER backend owned, so the
+ * first ANSI flush repaints the whole screen. */
+static void tui_dirty_all(void)
+{
+	uint16_t i;
+
+	for (i = 0u; i < TUI_DIRTY_BYTES; ++i) {
+		tui_dirty[i] = 0xFFu;
+		tui_invert[i] = 0u;
+	}
+}
+
 static void tui_physical_cursor(uint8_t *x, uint8_t *y)
 {
 	uint8_t col = tui_state.cursor_x;
@@ -297,9 +310,9 @@ static int tui_render_send(uint8_t at)
 
 	result = console_render(tui_render, at);
 	if (result < 0) {
-		if (result == -KOS_ENOTSUP && tui_state.render_support == 0u) {
-			tui_state.render_support = 2u;
-		}
+		/* The console's answer changed at run time: tui_flush owns
+		 * the switch to the ANSI path (and the full repaint that
+		 * follows a 1 -> 2 transition). */
 		return result;
 	}
 	if (result != at) {
@@ -326,38 +339,62 @@ static int tui_flush_render(void)
 
 	/* Ordinary redraws first, then attribute-only toggles.  The records are
 	 * absolute and non-overlapping, so ordering between the two sets is not
-	 * observable; keeping INVERT spans together makes a menu move one call. */
+	 * observable; keeping INVERT spans together makes a menu move one call.
+	 *
+	 * The walk keeps two invariants: `bits` is the bitmap byte that holds
+	 * the current cell, and `mask` is that cell's bit within it (the
+	 * bitmap is linear over the cells, so both step with the cell).  A
+	 * whole clean byte skips eight cells at once. */
 	for (kind = KCONSOLE_RENDER_TEXT;
 	     kind <= KCONSOLE_RENDER_INVERT; ++kind) {
 		for (row = 0u; row < tui_state.screen.rows; ++row) {
+			uint8_t *map = kind == KCONSOLE_RENDER_TEXT ?
+					tui_dirty : tui_invert;
+			uint16_t index = TUI_CELL_INDEX(0u, row);
+			uint8_t bits = map[(uint16_t)(index >> 3)];
+			uint8_t mask = (uint8_t)(1u <<
+						 (uint8_t)(index & 7u));
+
 			col = 0u;
 			while (col < tui_state.screen.cols) {
-				uint16_t index = TUI_CELL_INDEX(col, row);
-				uint8_t active =
-					kind == KCONSOLE_RENDER_TEXT ?
-					TUI_DIRTY_TEST(index) :
-					TUI_INVERT_TEST(index);
 				uint8_t start;
 				uint8_t attr;
 				uint8_t count;
 
-				if (active == 0u) {
+				if (mask == 1u && bits == 0u) {
+					/* Eight clean cells: the next
+					 * byte is eight cells on. */
+					col = (uint8_t)(col + 8u);
+					index = TUI_CELL_INDEX(col, row);
+					bits = map[(uint16_t)(index >> 3)];
+					continue;
+				}
+				if ((bits & mask) == 0u) {
 					++col;
+					index = (uint16_t)(index + 1u);
+					mask = (uint8_t)(mask << 1);
+					if (mask == 0u) {
+						mask = 1u;
+						bits = map[(uint16_t)(
+							index >> 3)];
+					}
 					continue;
 				}
 				start = col;
 				attr = tui_cells[index].attr;
 				do {
 					++col;
+					index = (uint16_t)(index + 1u);
+					mask = (uint8_t)(mask << 1);
+					if (mask == 0u) {
+						mask = 1u;
+						bits = map[(uint16_t)(
+							index >> 3)];
+					}
 					if (col >= tui_state.screen.cols) {
 						break;
 					}
-					index = TUI_CELL_INDEX(col, row);
-					active =
-						kind == KCONSOLE_RENDER_TEXT ?
-						TUI_DIRTY_TEST(index) :
-						TUI_INVERT_TEST(index);
-				} while (active != 0u &&
+				} while ((bits & mask) != 0u &&
 					 tui_cells[index].attr == attr);
 				count = (uint8_t)(col - start);
 				if ((uint8_t)(at + KCONSOLE_RENDER_SPAN_BASE +
@@ -399,7 +436,15 @@ int tui_flush(void)
 		return tui_flush_ansi();
 	}
 	result = tui_flush_render();
-	if (result == -KOS_ENOTSUP && tui_state.render_support == 2u) {
+	if (result == -KOS_ENOTSUP) {
+		/* RENDER is gone: switch for good.  When it answered
+		 * before, the ANSI backend has not seen this screen, so
+		 * mark every cell dirty before it repaints. */
+		if (tui_state.render_support == 1u) {
+			tui_dirty_all();
+		}
+		tui_state.render_support = 2u;
+		/* The flush's answer is the ANSI path's answer. */
 		return tui_flush_ansi();
 	}
 	return result;

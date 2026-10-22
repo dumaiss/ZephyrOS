@@ -444,17 +444,28 @@ class TestDriverSourceDiscipline(unittest.TestCase):
                         init.index("v9958_cursor_write_sat"))
 
     def test_renderer_suppresses_sprites_and_coalesces_spans(self):
+        # The wrappers bracket the workers with the hold-aware sprite
+        # helpers: sprites go off only when no program holds the VDP
+        # (tests/test_tui_sim.py replays the hold behaviour).
         self.assertIn("KOS_V9958_R8_SPRITES_OFF", self.asm)
         self.assertIn("v9958_sprites_off:", self.asm)
         self.assertIn("v9958_sprites_restore:", self.asm)
+        self.assertIn("v9958_hold_off:", self.asm)
+        self.assertIn("v9958_hold_restore:", self.asm)
         putc = self.asm.split("_v9958_char_putc::")[1].split(
             "_v9958_char_write::")[0]
-        write = self.asm.split("_v9958_char_write::")[1]
+        write = self.asm.split("_v9958_char_write::")[1].split(
+            "; int v9958_render_transaction")[0]
         for entry in (putc, write):
-            self.assertLess(entry.index("call\tv9958_sprites_off"),
+            self.assertLess(entry.index("call\tv9958_hold_off"),
                             entry.index("_worker"))
-            self.assertGreater(entry.index("call\tv9958_sprites_restore"),
+            self.assertGreater(entry.index("call\tv9958_hold_restore"),
                                entry.index("_worker"))
+        render = self.asm.split("_v9958_render_transaction::")[1]
+        self.assertLess(render.index("call\tv9958_hold_off"),
+                        render.index("_v9958_driver_render_worker"))
+        self.assertLess(render.index("call\tv9958_hold_finish"),
+                        render.index("call\tv9958_hold_restore"))
         self.assertIn("v9958_space_span:", self.asm)
         self.assertIn("#V9958_CMD_HMMV", self.asm)
         self.assertIn("#(V9958_CELL_WIDTH * 2)", self.asm)
@@ -471,13 +482,56 @@ class TestDriverSourceDiscipline(unittest.TestCase):
             "void v9958_render_finish_worker")[0]
         for needle in ("v9958_out_flush();", "V9958_CMD_LMMV_EOR",
                        "V9958_INVERT_COLOR", "V9958_CELL_WIDTH",
-                       "V9958_CELL_HEIGHT", "wrapped"):
+                       "V9958_CELL_HEIGHT"):
             self.assertIn(needle, invert)
         self.assertIn("#define V9958_CMD_LMMV_EOR "
                       "(V9958_CMD_LMMV | V9958_CMD_EOR)", self.header)
         self.assertIn("#define V9958_INVERT_COLOR  "
                       "(V9958_COLOR_NORMAL ^ V9958_COLOR_REVERSE)",
                       self.header)
+        # The circular-Y split and the final synchronization are pinned by
+        # replays, not by source words: the boundary split is
+        # tests/test_tui_sim.py (invertwrap), the one SAT write and one
+        # final wait are (rendersync).
+
+    def test_asm_fill_colours_are_the_header_colours(self):
+        # The assembly names its fill bytes independently of the header;
+        # a palette change that moves one must fail this pin.
+        for asm_name, header_name in (
+                ("V9958_FILL_NORMAL", "V9958_CLEAR_COLOR"),
+                ("V9958_FILL_REVERSE", "V9958_FILL_COLOR_REVERSE")):
+            match = re.search(
+                r"(?m)^%s\s*=\s*(0x[0-9A-Fa-f]+|[0-9]+)$" % asm_name,
+                self.asm)
+            self.assertIsNotNone(match, asm_name)
+            value = int(match.group(1), 0)
+            header = re.search(
+                r"(?m)^#define\s+%s\s+(0x[0-9A-Fa-f]+[uU]?|[0-9]+[uU]?)"
+                % header_name, self.header)
+            self.assertIsNotNone(header, header_name)
+            self.assertEqual(value, int(header.group(1).rstrip("uU"), 0),
+                             "%s must equal %s" % (asm_name, header_name))
+
+    def test_packed_colour_asserts_hold(self):
+        # The packed fill bytes are the 4-bit pixel repeated in both
+        # nibbles; the header's _Static_asserts tie them together, and
+        # this pin checks the same relation on the values.
+        def value(name):
+            match = re.search(
+                r"(?m)^#define\s+%s\s+(0x[0-9A-Fa-f]+[uU]?|[0-9]+[uU]?)"
+                % name, self.header)
+            self.assertIsNotNone(match, name)
+            return int(match.group(1).rstrip("uU"), 0)
+
+        normal = value("V9958_COLOR_NORMAL")
+        reverse = value("V9958_COLOR_REVERSE")
+        self.assertEqual(value("V9958_CLEAR_COLOR"),
+                         (normal << 4) | normal)
+        self.assertEqual(value("V9958_FILL_COLOR_REVERSE"),
+                         (reverse << 4) | reverse)
+        for needle in ("the clear colour packs the normal pixel twice",
+                       "the reverse fill packs the reverse pixel twice"):
+            self.assertIn(needle, self.header)
 
     def test_pacing_and_latch_shadow(self):
         # Paced helper used while WTE=0, non-paced after; D0 preserved.

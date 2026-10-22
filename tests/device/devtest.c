@@ -44,10 +44,15 @@
 #define VDP_PORT_PALETTE 0xA2u
 #define VDP_REG_R0       0x00u
 #define VDP_REG_R7       0x07u
+#define VDP_REG_R8       0x08u
 #define VDP_REG_R14      0x0Eu
 #define VDP_REG_R16      0x10u
 #define VDP_MODE_GRAPHIC4 0x04u
 #define VDP_BORDER_TAKEN 0x0Eu
+/* The holder's R#8: sprites on and 16K DRAM, unlike the console's own
+ * 08h/0Ah (sprites off while the cursor is hidden), so a console entry
+ * that wrote R#8 during the hold is visible in the peer. */
+#define VDP_R8_HOLDER 0x00u
 
 /* The scribbles: the visible bitmap (page 0, address 0) and the font
  * atlas (page 1, address 0), both rewritten by the display reset. */
@@ -175,18 +180,26 @@ static void vdp_takeover(void)
 	}
 	vdp_scribble(0u, VISIBLE_ADDR);
 	vdp_scribble(1u, ATLAS_ADDR);
+	/* R#8 last: everything after this write is the console's doing,
+	 * and while the hold lasts it must touch no VDP port. */
+	vdp_reg(VDP_REG_R8, VDP_R8_HOLDER);
 }
 
 /* --- modes ------------------------------------------------------------ */
 
 /* The takeover every held mode runs: bind exclusive, report, take the
- * display over, drop two console copies of different lengths, report the
- * end of the takeover, and then either release the handle or exit while
- * still holding it. */
+ * display over, drop two console copies of different lengths, submit one
+ * console render stream, report the end of the takeover, and then
+ * either release the handle or exit while still holding it. */
 static int dev_hold(unsigned char explicit_release)
 {
+	static const unsigned char render_stream[10] = {
+		KCONSOLE_RENDER_VERSION, 0u, 10u, 0u,
+		KCONSOLE_RENDER_STATE, KCONSOLE_RENDER_STATE_SIZE,
+		0u, 0u, 0u, 1u,
+	};
 	unsigned char type = 0u;
-	int results[5];
+	int results[6];
 	int handle = bind(VIDEO_NAME, KOS_BIND_EXCLUSIVE, &type);
 
 	if (handle < (int)KOS_HANDLE_FIRST_BOUND) {
@@ -201,9 +214,13 @@ static int dev_hold(unsigned char explicit_release)
 	results[2] = dev_send(HOLD_LINE);
 	results[3] = dev_send(SHORT_LINE);
 	results[4] = dev_send(LEAKED_LINE);
+	/* A render stream during the hold: dropped and counted, the whole
+	 * length answered, and no VDP port touched. */
+	results[5] = console_render(render_stream, sizeof(render_stream));
 	(void)snprintf(dev_line, sizeof(dev_line),
-		       "dev: took %d %d %d %d %d\r\n", results[0], results[1],
-		       results[2], results[3], results[4]);
+		       "dev: took %d %d %d %d %d %d\r\n", results[0],
+		       results[1], results[2], results[3], results[4],
+		       results[5]);
 	dev_lane_write(dev_line, (unsigned int)strlen(dev_line));
 	if (explicit_release != 0u) {
 		if (unbind((unsigned char)handle) != 0) {

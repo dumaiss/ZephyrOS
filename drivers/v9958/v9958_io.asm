@@ -68,6 +68,7 @@ V9958_ST_ATTR      = 12
 V9958_ST_RUN_COUNT = 17
 V9958_ST_RUN_COL   = 18
 V9958_ST_RUN_ROW   = 19
+V9958_ST_EXCLUSIVE = 20
 V9958_RUN_SIZE     = 64
 V9958_LAST_COLUMN  = 84
 V9958_CELL_WIDTH   = 6
@@ -385,6 +386,32 @@ v9958_sprites_write:
 	jp	_v9958_io_reg
 
 ; ---------------------------------------------------------------------------
+; The hold-aware bracket.  While a program holds the VDP exclusively
+; (state offset V9958_ST_EXCLUSIVE), no console entry may touch a port:
+; hold_off skips the R#8 sprites-off write, hold_restore skips its
+; restore, and the worker itself drops and counts the bytes.  The flag
+; cannot change during the synchronous call, so the entry and the exit
+; read the same value.
+; ---------------------------------------------------------------------------
+v9958_hold_off:
+	ld	hl,(_v9958_alt_state)
+	ld	de,#V9958_ST_EXCLUSIVE
+	add	hl,de
+	ld	a,(hl)
+	or	a
+	ret	nz				; held: nothing is written
+	jp	v9958_sprites_off
+
+v9958_hold_restore:
+	ld	hl,(_v9958_alt_state)
+	ld	de,#V9958_ST_EXCLUSIVE
+	add	hl,de
+	ld	a,(hl)
+	or	a
+	ret	nz				; held: nothing was written
+	jp	v9958_sprites_restore
+
+; ---------------------------------------------------------------------------
 ; void v9958_out_flush(void);
 ;   Render the pending print run at (out_run_col, out_run_row) and empty it.
 ;   Adjacent character-code pairs that remain in one 32-glyph atlas row
@@ -639,13 +666,13 @@ _v9958_char_putc::
 	dec	sp			; back to the caller's stack level
 	ld	(_v9958_alt_saved_sp),sp
 	ld	sp,#_v9958_alt_stack_top
-	call	v9958_sprites_off
+	call	v9958_hold_off
 	ld	hl,(_v9958_alt_state)
 	ld	bc,(_v9958_alt_word)
 	push	bc			; char argument (low byte)
 	call	_v9958_char_putc_worker
 	ld	(_v9958_alt_result),de
-	call	v9958_sprites_restore
+	call	v9958_hold_restore
 	ld	sp,(_v9958_alt_saved_sp)
 	ld	hl,(_v9958_alt_ret)
 	ld	de,(_v9958_alt_result)
@@ -661,14 +688,14 @@ _v9958_char_write::
 	pop	hl			; drop the consumed stack word
 	ld	(_v9958_alt_saved_sp),sp
 	ld	sp,#_v9958_alt_stack_top
-	call	v9958_sprites_off
+	call	v9958_hold_off
 	ld	hl,(_v9958_alt_state)
 	ld	de,(_v9958_alt_buf)
 	ld	bc,(_v9958_alt_word)
 	push	bc			; 16-bit length argument
 	call	_v9958_char_write_worker
 	ld	(_v9958_alt_result),de
-	call	v9958_sprites_restore
+	call	v9958_hold_restore
 	ld	sp,(_v9958_alt_saved_sp)
 	ld	hl,(_v9958_alt_ret)
 	ld	de,(_v9958_alt_result)
@@ -683,13 +710,25 @@ _v9958_render_transaction::
 	ld	(_v9958_alt_buf),hl
 	ld	(_v9958_alt_saved_sp),sp
 	ld	sp,#_v9958_alt_stack_top
-	call	v9958_sprites_off
+	call	v9958_hold_off
 	ld	hl,(_v9958_alt_buf)
 	call	_v9958_driver_render_worker
 	ld	(_v9958_alt_result),de
-	call	_v9958_render_finish_worker
-	call	v9958_sprites_restore
+	call	v9958_hold_finish
+	call	v9958_hold_restore
 	ld	sp,(_v9958_alt_saved_sp)
 	ld	hl,(_v9958_alt_ret)
 	ld	de,(_v9958_alt_result)
 	jp	(hl)
+
+; The transaction's finish worker (final sync), skipped while held: the
+; worker above already dropped and counted the whole stream, and no
+; cursor/SAT or command wait may run during a hold.
+v9958_hold_finish:
+	ld	hl,(_v9958_alt_state)
+	ld	de,#V9958_ST_EXCLUSIVE
+	add	hl,de
+	ld	a,(hl)
+	or	a
+	ret	nz				; held: nothing was drawn
+	jp	_v9958_render_finish_worker
