@@ -992,7 +992,9 @@ console it selected. Programs cannot tell which implementation answers.
   supports; the V9958 console forwards it to `KVIDEO_OP_INFO`, and the
   serial console reports the grid its programs draw (85 × 26). The render
   stream is bounded by the reported grid. `libtui` reads it at init and
-  refuses a grid above its compiled capacity. `attr` is a bit field
+  clamps it to the program's capacity, a build option (`TUI_GRID`:
+  85 × 26 by default, 128 × 35), so a program on a larger console uses
+  the top-left part. `attr` is a bit field
   (bit 0 reverse; the other bits reserved and refused), and INVERT is the
   normal/reverse exchange only, so a colour change is a TEXT redraw.
 - **Sound is lifecycle plus a coarse path.** The `sound` driver
@@ -1515,15 +1517,12 @@ aperture page otherwise.
 Planned work, in order. None of it changes the contracts above unless it
 says so.
 
-1. **The direct text renderer.** The bulk-map span and mapped segments
-   (5.2, 5.4), the V9958 direct renderer and reported console geometry
-   (5.6): the contract above, which the tree implements next.
-2. **Mouse and game controllers** in the HID driver: `/dev/input/mouse`,
+1. **Mouse and game controllers** in the HID driver: `/dev/input/mouse`,
    `/dev/input/controller/0` and `/1`. They grow the driver tier inside
    its reserve and need nothing from the nucleus. The mouse pointer is a
    sprite, which the console's sprites-off drawing bracket must not hide
    while a mouse is open.
-3. **After that:** compatibility personalities, starting with CP/M.
+2. **After that:** compatibility personalities, starting with CP/M.
 
 Diagnostics and benchmarks are user programs; the nucleus gains a
 diagnostic interface only where a program cannot measure without it.

@@ -55,7 +55,8 @@ int tui_save(const struct tui_rect *rect, struct tui_cell *buffer,
 			uint16_t index = TUI_CELL_INDEX(
 				(uint8_t)(tui_state.window.x + clipped.x + x),
 				(uint8_t)(tui_state.window.y + clipped.y + y));
-			buffer[at] = tui_cells[index];
+			buffer[at].ch = tui_chars[index];
+			buffer[at].attr = tui_priv_attr(index);
 			++at;
 		}
 	}

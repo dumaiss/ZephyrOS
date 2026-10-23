@@ -96,10 +96,10 @@ static int16_t v9958_render_validate(const struct kos_ipc_frame *frame)
 			if (count == 0u ||
 			    record_length !=
 				(uint8_t)(KCONSOLE_RENDER_SPAN_BASE + count) ||
-			    v9958_batch_ptr[2] >= KCONSOLE_RENDER_COLS ||
-			    v9958_batch_ptr[3] >= KCONSOLE_RENDER_ROWS ||
-			    v9958_batch_ptr[4] > 1u ||
-			    count > (uint8_t)(KCONSOLE_RENDER_COLS -
+			    v9958_batch_ptr[2] >= V9958_COLUMNS ||
+			    v9958_batch_ptr[3] >= V9958_ROWS ||
+			    (v9958_batch_ptr[4] & (uint8_t)~KCONSOLE_ATTR_REVERSE) != 0u ||
+			    count > (uint8_t)(V9958_COLUMNS -
 					      v9958_batch_ptr[2])) {
 				return (int16_t)-KOS_EINVAL;
 			}
@@ -108,9 +108,9 @@ static int16_t v9958_render_validate(const struct kos_ipc_frame *frame)
 			    (uint16_t)(at + record_length) != length ||
 			    v9958_render_copy(frame, at,
 					       KCONSOLE_RENDER_STATE_SIZE) < 0 ||
-			    v9958_batch_ptr[2] >= KCONSOLE_RENDER_COLS ||
-			    v9958_batch_ptr[3] >= KCONSOLE_RENDER_ROWS ||
-			    v9958_batch_ptr[4] > 1u ||
+			    v9958_batch_ptr[2] >= V9958_COLUMNS ||
+			    v9958_batch_ptr[3] >= V9958_ROWS ||
+			    (v9958_batch_ptr[4] & (uint8_t)~KCONSOLE_ATTR_REVERSE) != 0u ||
 			    v9958_batch_ptr[5] > 1u) {
 				return (int16_t)-KOS_EINVAL;
 			}
@@ -350,6 +350,21 @@ int16_t v9958_driver_dispatch(struct kos_ipc_frame *frame)
 						(char)frame->arg0);
 	case KVIDEO_OP_RESET:
 		return (int16_t)v9958_display_reset();
+	case KVIDEO_OP_INFO: {
+		/* The terminal's grid and attributes (KCONSOLE_OP_INFO); the
+		 * reserved bytes are zero. */
+		uint8_t *info = frame->payload;
+		uint8_t left = KCONSOLE_INFO_SIZE - 4u;
+
+		*info++ = V9958_COLUMNS;
+		*info++ = V9958_ROWS;
+		*info++ = KCONSOLE_ATTR_REVERSE;
+		*info++ = KCONSOLE_INFO_RENDER;
+		do {
+			*info++ = 0u;
+		} while (--left != 0u);
+		return 0;
+	}
 	case KVIDEO_OP_RENDER:
 		if (v9958_render_validate(frame) < 0) {
 			return (int16_t)-KOS_EINVAL;

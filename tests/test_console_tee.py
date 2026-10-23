@@ -58,6 +58,7 @@ KEYS_BYTE = "0041 BYTE"
 KEYS_PASS = b"TUI KEYS PASS\r\n"
 BATCH_COMMAND = b"/system/tui_test.exe batch\r"
 BATCH_PASS = "tui: batch pass"
+GRID_COMMAND = b"/system/tui_test.exe grid\r"
 
 
 class TestConsoleTee(ConsoleReplayBase):
@@ -207,6 +208,21 @@ class TestConsoleTeeTui(_TuiTeeBase):
         z.sio_rx.extend(b"\x1b\x1b\x1b" + BATCH_COMMAND)
         self.run_until(z, [b"tui: batch pass\r\n"], since=sio_at)
         self.assertIn(BATCH_PASS, self.read_trace(z)[trace_at:])
+
+    def test_info_withdraws_render_while_armed(self):
+        """KCONSOLE_OP_INFO reports RENDER unarmed and withdraws it while
+        the tee is armed (the RENDER refusal above), with the same grid."""
+        z = self.start()
+        self.boot_to_shell(z)
+        trace_at = len(z.glyphs)
+        self.type_line(z, GRID_COMMAND, "tui: grid pass")
+        self.assertIn("tui: grid console 85x26 attr 1 flags 1",
+                      self.read_trace(z)[trace_at:])
+        sio_at = len(z.sio_tx)
+        z.sio_rx.extend(b"\x1b\x1b\x1b" + GRID_COMMAND)
+        self.run_until(z, [b"tui: grid pass\r\n"], since=sio_at)
+        self.assertIn(b"tui: grid console 85x26 attr 1 flags 0",
+                      bytes(z.sio_tx[sio_at:]))
 
     def test_gesture_bytes_reach_no_program(self):
         z = self.start()

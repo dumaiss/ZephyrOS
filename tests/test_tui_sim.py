@@ -39,6 +39,7 @@ TUI_TEST_EXE = os.path.join(ROOT, "build", "user", "tui_test.exe")
 TUI_DEMO_EXE = os.path.join(ROOT, "build", "user", "tui_demo.exe")
 TUI_KEYS_EXE = os.path.join(ROOT, "build", "user", "tui_keys.exe")
 TUI_DIALOG_EXE = os.path.join(ROOT, "build", "user", "tui_dialog.exe")
+TUI_WIDE_EXE = os.path.join(ROOT, "build", "user", "tui_wide.exe")
 PRODUCTION = ("build", "konaos.bin")
 SERIAL = ("build-console-serial-selftest",
           "konaos-console-serial-selftest.bin")
@@ -463,7 +464,8 @@ class TuiSimBase(unittest.TestCase):
         extras = (("tui_test.exe", TUI_TEST_EXE),
                   ("tui_demo.exe", TUI_DEMO_EXE),
                   ("tui_keys.exe", TUI_KEYS_EXE),
-                  ("tui_dialog.exe", TUI_DIALOG_EXE))
+                  ("tui_dialog.exe", TUI_DIALOG_EXE),
+                  ("tui_wide.exe", TUI_WIDE_EXE))
         for name, path in extras:
             manifest["files"] = [entry for entry in manifest["files"]
                                  if entry["name"].lower() != name.lower()]
@@ -595,9 +597,32 @@ class TuiSimBase(unittest.TestCase):
         replay.boot_to_shell(z)
         return replay, z
 
+    def _grid_hook(self, z, grid):
+        """With `grid` = (cols, rows), make the console's INFO answer that
+        grid: at a console dispatch of KCONSOLE_OP_INFO the frame and the
+        return address are noted, and at the return the reply's first two
+        payload bytes (frame + 6) are overwritten.  A test console that
+        reports another grid, built from the real one."""
+        pending = self._grid_pending
+        if pending is None:
+            if z.pc != self.dispatch:
+                return
+            try:
+                if z.bank_of(z.pc) != 6 or z.rd(z.hl) != 7:
+                    return
+            except SystemExit:
+                return
+            self._grid_pending = (z.hl, z.rd16(z.sp))
+        elif z.pc == pending[1]:
+            z.wr((pending[0] + 6) & 0xFFFF, grid[0])
+            z.wr((pending[0] + 7) & 0xFFFF, grid[1])
+            self._grid_pending = None
+
     def _run(self, mode, keys=b"", late_keys=b"", late_marker=None,
-             program="tui_test", expected=None, snapshot_codes=()):
+             program="tui_test", expected=None, snapshot_codes=(),
+             grid=None, args=""):
         replay, z = self._boot()
+        self._grid_pending = None
         if not self.SERIAL:
             z.vdp.snapshot_codes = snapshot_codes
         glyph_start = len(z.glyphs)
@@ -606,7 +631,9 @@ class TuiSimBase(unittest.TestCase):
         if program == "tui_test":
             command = ("/system/tui_test.exe %s\r" % mode).encode("ascii")
         else:
-            command = ("/system/%s.exe\r" % program).encode("ascii")
+            command = ("/system/%s.exe%s\r"
+                       % (program, " " + args if args else "")).encode(
+                           "ascii")
         command += keys
         if self.SERIAL:
             z.sio_rx.extend(command)
@@ -636,6 +663,8 @@ class TuiSimBase(unittest.TestCase):
             render_length = self._render_length(z)
             if render_length is not None and armed:
                 renders.append(render_length)
+            if grid is not None:
+                self._grid_hook(z, grid)
             replay.skip_delay(z)
             z.step()
             if step % 0x1FFF == 0:
@@ -805,6 +834,54 @@ class TuiModeChecks:
         self.assertIn("tui: widgets m=12 f=10 e=0 i=1 c=0 t=1", text)
         self.assertIn("tui: widgets n=dam s=0 cf=4 ms=2", text)
         self.assertIn("tui: widgets pass", text)
+
+    def _grid_rows(self, run, cols, rows):
+        """Rows 3.. of the screen (rows 0 and 1 hold the closing lines and
+        row 2 may already hold the shell's next prompt): '#' inside the
+        grid, nothing outside it."""
+        screen = self._screen(run)
+        for row in range(3, len(screen)):
+            text = "".join(ch for ch, _attr in screen[row])
+            if row < rows:
+                self.assertEqual(text[:cols], "#" * cols, "row %d" % row)
+                self.assertNotIn("#", text[cols:], "row %d" % row)
+            else:
+                self.assertNotIn("#", text, "row %d" % row)
+
+    def test_the_screen_is_the_reported_grid(self):
+        run = self._run("grid")
+        text = self._text(run)
+        self.assertIn("tui: grid console 85x26 attr 1 flags %d"
+                      % (0 if self.SERIAL else 1), text)
+        self.assertIn("tui: grid size 85x26", text)
+        self._grid_rows(run, 85, 26)
+
+    def test_a_smaller_reported_grid_bounds_the_screen(self):
+        run = self._run("grid", grid=(80, 24))
+        text = self._text(run)
+        self.assertIn("tui: grid console 80x24", text)
+        self.assertIn("tui: grid size 80x24", text)
+        self._grid_rows(run, 80, 24)
+
+    def test_a_grid_above_the_capacity_is_clamped(self):
+        """A 90 x 30 console: the 85 x 26 build uses the top-left 85 x 26
+        of it."""
+        run = self._run("grid", grid=(90, 30))
+        text = self._text(run)
+        self.assertIn("tui: grid console 90x30", text)
+        self.assertIn("tui: grid size 85x26", text)
+        self._grid_rows(run, 85, 26)
+
+    def test_the_wide_build_adopts_a_wide_grid(self):
+        """TUI_GRID=128x35 links the 128 x 35 archive: a 128 x 35 console
+        is adopted whole, and a 90 x 30 one too (no drawing: no console
+        displays 128 columns)."""
+        for grid, expected in (((128, 35), "128x35"), ((90, 30), "90x30")):
+            run = self._run("gridsize", program="tui_wide",
+                            expected=b"tui: gridsize pass", grid=grid,
+                            args="gridsize")
+            self.assertIn("tui: gridsize console %dx%d screen %s"
+                          % (grid[0], grid[1], expected), self._text(run))
 
     def test_invertspan_keeps_glyphs_and_uses_two_spans(self):
         run = self._assert_rows("invertspan", invertspan_screen())

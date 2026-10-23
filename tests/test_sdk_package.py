@@ -106,6 +106,7 @@ SDK_FILES = {
     "include/abi/kos/xmem.h",
     "lib/libkos.lib",
     "lib/libtui.lib",
+    "lib/libtui_128x35.lib",
     "lib/libtui_widgets.lib",
     "lib/crt0.rel",
     "tools/exepack.py",
@@ -399,7 +400,8 @@ class TestSdkPackage(unittest.TestCase):
         """lib/libkos.lib and lib/libtui.lib are packed with `sdar -rcD`:
         every member's date and ids are zero, so the shipped libraries do
         not record when they were built."""
-        for library in ("libkos.lib", "libtui.lib", "libtui_widgets.lib"):
+        for library in ("libkos.lib", "libtui.lib", "libtui_128x35.lib",
+                        "libtui_widgets.lib"):
             members = list(_ar_members(os.path.join(self.tree, "lib",
                                                     library)))
             self.assertGreater(len(members), 1, library)
@@ -422,6 +424,7 @@ class TestSdkPackage(unittest.TestCase):
             ROOT, tree, self.version,
             os.path.join(self.tree, "lib", "libkos.lib"),
             os.path.join(self.tree, "lib", "libtui.lib"),
+            os.path.join(self.tree, "lib", "libtui_128x35.lib"),
             os.path.join(self.tree, "lib", "libtui_widgets.lib"),
             os.path.join(self.tree, "lib", "crt0.rel"))
         sdkpack.pack_tar(tree, again)

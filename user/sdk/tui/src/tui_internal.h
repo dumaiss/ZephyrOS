@@ -10,15 +10,25 @@
 
 #include "tui.h"
 
-/* The logical terminal surface: the V9958 console's text geometry. */
-#define TUI_LOGICAL_COLS 85u
-#define TUI_LOGICAL_ROWS 26u
-#define TUI_CELL_COUNT ((uint16_t)TUI_LOGICAL_COLS * TUI_LOGICAL_ROWS)
+/* The compiled capacity of the logical surface: 85 x 26, or the grid the
+ * archive is built for (TUI_GRID_COLS/ROWS, a program's TUI_GRID option).
+ * The screen itself is the grid the console reports (tui_init), clamped to
+ * this; the cell map is indexed with the capacity's stride whatever the
+ * grid. */
+#ifndef TUI_GRID_COLS
+#define TUI_GRID_COLS 85u
+#define TUI_GRID_ROWS 26u
+#endif
+#define TUI_MAX_COLS TUI_GRID_COLS
+#define TUI_MAX_ROWS TUI_GRID_ROWS
+#define TUI_CELL_COUNT ((uint16_t)TUI_MAX_COLS * TUI_MAX_ROWS)
+/* The attribute store: 4 bits per cell, two cells per byte. */
+#define TUI_ATTR_BYTES ((uint16_t)(TUI_CELL_COUNT + 1u) / 2u)
 #define TUI_DIRTY_BYTES ((uint16_t)(TUI_CELL_COUNT + 7u) / 8u)
 
 /* One dirty horizontal run starts with a cursor sequence (at most nine
  * bytes) and may carry one SGR sequence (four bytes) and a whole row. */
-#define TUI_RUN_MAX (TUI_LOGICAL_COLS + 16u)
+#define TUI_RUN_MAX (TUI_MAX_COLS + 16u)
 #define TUI_RENDER_MAX TUI_RUN_MAX
 
 /* A bounded transaction nesting count; begin/end calls beyond the bound
@@ -52,7 +62,13 @@ struct tui_state {
 };
 
 extern struct tui_state tui_state;
-extern struct tui_cell tui_cells[TUI_CELL_COUNT];
+/* The cell map: one byte per character, one 4-bit attribute per cell
+ * (the even cell in the low nibble).  Read and write through the
+ * accessors; `struct tui_cell` is only the save/restore format. */
+extern uint8_t tui_chars[TUI_CELL_COUNT];
+extern uint8_t tui_attrs[TUI_ATTR_BYTES];
+uint8_t tui_priv_attr(uint16_t index);
+void tui_priv_store(uint16_t index, uint8_t ch, uint8_t attr);
 extern uint8_t tui_dirty[TUI_DIRTY_BYTES];
 extern uint8_t tui_invert[TUI_DIRTY_BYTES];
 extern uint8_t tui_run[TUI_RUN_MAX];
@@ -60,7 +76,7 @@ extern uint8_t tui_run[TUI_RUN_MAX];
 #define tui_render tui_run
 
 #define TUI_CELL_INDEX(x, y) \
-	((uint16_t)(((uint16_t)(y) * TUI_LOGICAL_COLS) + (uint16_t)(x)))
+	((uint16_t)(((uint16_t)(y) * TUI_MAX_COLS) + (uint16_t)(x)))
 #define TUI_DIRTY_TEST(index) \
 	((tui_dirty[(uint16_t)(index) >> 3] & \
 	  (uint8_t)(1u << ((uint16_t)(index) & 7u))) != 0u)

@@ -60,7 +60,7 @@ $(EXE_RUNTIME): $(KOS_SDK_SRC)/runtime.asm
 
 KOS_SDK_C_SRC := args.c fs.c ipc.c exec.c console_io.c \
     xmem.c seg.c xload.c event.c \
-    console_proto.c console_render.c timer.c sound.c idle.c stream.c \
+    console_proto.c console_render.c console_info.c timer.c sound.c idle.c stream.c \
     stdio.c fread.c fwrite.c fseek.c feof.c \
     klibc/strrchr.c klibc/strlcpy.c klibc/strlcat.c \
     klibc/utoa.c klibc/ultoa.c klibc/itoa.c klibc/ltoa.c \
@@ -124,6 +124,23 @@ $(EXE_LIBTUI): $(EXE_TUI_OBJS) $(KOS_RULES)
 	@mkdir -p $(dir $@)
 	rm -f $@
 	sdar -rcD $@ $(EXE_TUI_OBJS)
+
+# The wide capacity (a program's TUI_GRID=128x35, mk/kos.mk): the same
+# sources built for a 128 x 35 cell map, `libtui_128x35.lib`.
+EXE_TUI_WIDE_OBJS := $(addprefix $(EXE_SDK_BUILD)/tui_128x35/,\
+	$(patsubst %.c,%.rel,$(KOS_TUI_C_SRC)))
+EXE_LIBTUI_WIDE   := $(EXE_SDK_BUILD)/libtui_128x35.lib
+
+$(EXE_SDK_BUILD)/tui_128x35/%.rel: $(KOS_TUI_SRC)/%.c $(EXE_HEADERS) \
+		$(KOS_TUI_PRIVATE)
+	@mkdir -p $(dir $@)
+	$(SDCC) $(EXE_CFLAGS) -DTUI_GRID_COLS=128u -DTUI_GRID_ROWS=35u \
+		-I $(KOS_TUI_SRC) -c $< -o $@
+
+$(EXE_LIBTUI_WIDE): $(EXE_TUI_WIDE_OBJS) $(KOS_RULES)
+	@mkdir -p $(dir $@)
+	rm -f $@
+	sdar -rcD $@ $(EXE_TUI_WIDE_OBJS)
 
 # --- libtui_widgets ----------------------------------------------------
 # The optional procedural widget layer is a second deterministic archive.

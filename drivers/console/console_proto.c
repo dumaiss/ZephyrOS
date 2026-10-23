@@ -30,6 +30,7 @@
 #include "kos/errno.h"
 #include "driver.h"
 #include "kos/protocol.h"
+#include "kos/console_render.h"
 
 /* Manifest dependency order, one entry per build. */
 #if defined(KOS_CONSOLE_SERIAL)
@@ -41,6 +42,10 @@
 #define CONSOLE_IN_POLL   KSIO_OP_POLL
 #define CONSOLE_OUT_WRITE KSIO_OP_WRITE
 #define CONSOLE_OUT_PUTC  KSIO_OP_PUTC
+/* The grid the serial console's programs draw: the V9958 console's, so a
+ * program looks the same on either. */
+#define CONSOLE_SERIAL_COLS 85u
+#define CONSOLE_SERIAL_ROWS 26u
 #else
 /* console-v9958-hid.json: HID input, VIDEO output, SERIAL as the
  * rescue path (dependency position 2). */
@@ -213,6 +218,34 @@ static int16_t console_input_op(struct kos_ipc_frame *frame, uint8_t hid_op)
 
 #endif
 
+/* KCONSOLE_OP_INFO: the grid programs draw.  The serial console answers
+ * itself; the V9958 console asks VIDEO, which fills the caller's own
+ * frame (the call names the operation in it; it is put back), and while
+ * the tee is armed it withdraws RENDER, which it refuses then. */
+static int16_t console_info(struct kos_ipc_frame *frame)
+{
+#if defined(KOS_CONSOLE_SERIAL)
+	uint8_t *info = frame->payload;
+	uint8_t left = KCONSOLE_INFO_SIZE - 3u;
+
+	*info++ = CONSOLE_SERIAL_COLS;
+	*info++ = CONSOLE_SERIAL_ROWS;
+	*info++ = KCONSOLE_ATTR_REVERSE;
+	do {
+		*info++ = 0u;
+	} while (--left != 0u);
+	return 0;
+#else
+	int16_t result = console_api->call(console_out, KVIDEO_OP_INFO, frame);
+
+	frame->op = KCONSOLE_OP_INFO;
+	if (console_rescue.tee_armed != 0u) {
+		frame->payload[3] &= (uint8_t)~KCONSOLE_INFO_RENDER;
+	}
+	return result;
+#endif
+}
+
 int16_t console_driver_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
@@ -286,6 +319,8 @@ int16_t console_driver_dispatch(struct kos_ipc_frame *frame)
 		 * cursor belong to the video driver, which is not here. */
 		return 0;
 #endif
+	case KCONSOLE_OP_INFO:
+		return console_info(frame);
 	case KCONSOLE_OP_RENDER:
 #if defined(KOS_CONSOLE_SERIAL)
 		return (int16_t)-KOS_ENOTSUP;

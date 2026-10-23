@@ -391,6 +391,7 @@ through the standard handles.
 | `putchar(ch)` | `KCONSOLE_OP_PUTC` | none |
 | — | `KCONSOLE_OP_RESET` (5) | none |
 | `console_render(stream, len)` | `KCONSOLE_OP_RENDER` (6) | in: one versioned render stream |
+| `console_info(&info)` | `KCONSOLE_OP_INFO` (7) | none; the reply payload is `struct kconsole_info` |
 
 `KCONSOLE_OP_RESET` puts the terminal back to its start state and empties
 the input queue; a console whose output driver owns the display forwards

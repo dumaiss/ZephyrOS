@@ -153,8 +153,16 @@
  *                          with nothing typed for its predecessor left to
  *                          read.  Returns 0 or a negative error.
  *   KCONSOLE_OP_RENDER (6) desc IN: arg0 = offset, arg1 = byte length.
- *                          One kos/console_render.h command stream;
- *                          returns its byte length or a negative error.
+ *                          One kos/console_render.h command stream, bounded
+ *                          by the reported grid; returns its byte length
+ *                          or a negative error.
+ *   KCONSOLE_OP_INFO  (7)  no descriptor: the reply payload is a struct
+ *                          kconsole_info (kos/console_render.h), the text
+ *                          grid and what the console supports.  Returns 0.
+ *
+ * The grid is the console's, not an ABI constant: a program asks.  The
+ * attribute bits are the `attr` values a render record may use (bit 0
+ * reverse); INVERT is the normal/reverse exchange only.
  */
 #define KCONSOLE_OP_WRITE 0u
 #define KCONSOLE_OP_READ  1u
@@ -163,6 +171,9 @@
 #define KCONSOLE_OP_PUTC  4u
 #define KCONSOLE_OP_RESET 5u
 #define KCONSOLE_OP_RENDER 6u
+#define KCONSOLE_OP_INFO  7u
+
+/* The reply payload, struct kconsole_info, is kos/console_render.h's. */
 
 /* --- HID input driver (class KOS_CLASS_HID) -----------------------------
  *
@@ -212,17 +223,18 @@
  *                        returns 0 or a negative error.
  *   KVIDEO_OP_RENDER (4) desc IN: the console render stream, forwarded
  *                        unchanged by the V9958 console composition.
+ *   KVIDEO_OP_INFO  (5)  no descriptor: the reply payload is the terminal's
+ *                        struct kconsole_info (KCONSOLE_OP_INFO above).
  *
- * KVIDEO_RESET re-establishes every driver-owned state, including the
- * font and atlas upload; the driver reads the font from its own bulk
- * data through the nucleus bulk copy (the boot/bulk tier is not mapped
- * in the driver window).  It is the same chain KVIDEO_OP_RESET runs.
+ * KVIDEO_RESET re-establishes every driver-owned state; it is the same
+ * chain KVIDEO_OP_RESET runs.
  */
 #define KVIDEO_OP_SEND  0u
 #define KVIDEO_OP_WRITE 1u
 #define KVIDEO_OP_PUTC  2u
 #define KVIDEO_OP_RESET 3u
 #define KVIDEO_OP_RENDER 4u
+#define KVIDEO_OP_INFO  5u
 
 /* The native VIDEO operations (the KVIDEO_OP_SEND argument; exact values,
  * not Virtual Drip packet numbers). */

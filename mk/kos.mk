@@ -78,6 +78,9 @@
 #                       separated); each resolves to
 #                       $(EXE_LIB_DIR)/lib<name>.lib and is linked after
 #                       the program objects and before libkos
+#   TUI_GRID=CxR        the libtui capacity: `tui` in LIBS links the
+#                       archive built for that grid (KOS_TUI_GRIDS);
+#                       without it, 85x26 (libtui.lib)
 #
 # The roots below are the only place the rule file touches a path; both
 # users set them to their own tree before including it, so nothing here
@@ -85,6 +88,9 @@
 # -----------------------------------------------------------------------------
 
 KOS_SDK_ROOT ?= ..
+# The libtui capacities: 85x26 is lib/libtui.lib (the default), every
+# other one lib/libtui_<grid>.lib.
+KOS_TUI_GRIDS := 85x26 128x35
 KOS_BUILD    ?= build
 KOS_PYTHON   ?= python3
 KOS_TOOLS    ?= $(KOS_SDK_ROOT)/tools
@@ -197,8 +203,10 @@ $(1)_NOCRT0 := $$(if $$(filter NO_CRT0=1,$$($(1)_OPTS)),1,)
 $(1)_STAGE  := $$(if $$(filter STAGE=1,$$($(1)_OPTS)),1,)
 $(1)_INC    := $$(if $$(filter INCLUDES=%,$$($(1)_OPTS)),$$(patsubst INCLUDES=%,%,$$(filter INCLUDES=%,$$($(1)_OPTS))),)
 $(1)_INCFLAGS := $$(patsubst %, -I%,$$(subst :, ,$$($(1)_INC)))
+$(1)_GRID   := $$(patsubst TUI_GRID=%,%,$$(filter TUI_GRID=%,$$($(1)_OPTS)))
+$$(if $$($(1)_GRID),$$(if $$(filter $$($(1)_GRID),$$(KOS_TUI_GRIDS)),,$$(error $(1): TUI_GRID=$$($(1)_GRID) is not one of $$(KOS_TUI_GRIDS))))
 $(1)_LIBS   := $$(if $$(filter LIBS=%,$$($(1)_OPTS)),$$(patsubst LIBS=%,%,$$(filter LIBS=%,$$($(1)_OPTS))),)
-$(1)_LIBFILES := $$(foreach name,$$(subst :, ,$$($(1)_LIBS)),$$(EXE_LIB_DIR)/lib$$(name).lib)
+$(1)_LIBFILES := $$(foreach name,$$(subst :, ,$$($(1)_LIBS)),$$(EXE_LIB_DIR)/lib$$(if $$(and $$(filter tui,$$(name)),$$(filter-out 85x26,$$($(1)_GRID))),tui_$$($(1)_GRID),$$(name)).lib)
 $(1)_LINKOBJS := $$($(1)_ORDERREL) $$(if $$($(1)_NOCRT0),,$$(EXE_CRT0)) $$(EXE_RUNTIME) $$($(1)_OBJS) $$($(1)_FAROBJS) $$($(1)_DATAOBJS)
 $(1)_EXE    := $$(EXE_USER_ROOT)/$(1).exe
 

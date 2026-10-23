@@ -1,7 +1,8 @@
 # The KonaOS TUI SDK
 
 `libtui` is the optional text-screen layer of the KonaOS SDK.  It owns a
-logical 85 x 26 cell map, decodes the console's VT100 key vocabulary, and
+logical cell map of the grid the console reports, up to the capacity the
+program is built for, decodes the console's VT100 key vocabulary, and
 renders only when the application flushes.  `libtui_widgets` is a second,
 optional archive of procedural controls built on the same public core.
 Applications never write terminal escape sequences or CP850 box bytes.
@@ -10,6 +11,11 @@ Build a core program with `LIBS=tui` and include `tui.h`.  Build a widget
 program with `LIBS=tui_widgets:tui` and include `tui_widgets.h`; the widget
 archive comes first because it depends on `libtui`.  See the [SDK
 guide](sdk.md) for `exe_program` and the standalone package.
+
+A program's capacity is a build option: `TUI_GRID=128x35` in its
+`exe_program` options links `libtui_128x35.lib` instead of the 85 x 26
+`libtui.lib` (`TUI_GRID=85x26`, the default).  Choose the largest grid the
+program wants to use; a larger capacity costs static storage (below).
 
 ```make
 $(eval $(call exe_program,my_ui,.,my_ui.c,STACK=512,LIBS=tui))
@@ -44,8 +50,12 @@ Before initialization, and after shutdown until the next successful init:
 
 ## Geometry and coordinates
 
-`tui_get_size()` reports the fixed logical geometry.  Query it instead of
-hard-coding numbers; v1 is 85 columns by 26 rows.
+`tui_get_size()` reports the screen: the text grid the console reports
+(`KCONSOLE_OP_INFO`, asked once by `tui_init`), clamped to the program's
+capacity - 85 columns by 26 rows on both of today's consoles.  Query it
+instead of hard-coding numbers.  On a console larger than the capacity
+the program uses the top-left part of the screen; a smaller grid is used
+as reported.
 
 ```c
 struct tui_size size;
@@ -284,12 +294,19 @@ count.
 
 ## Memory cost
 
-The core library uses static storage only: one 85 x 26 cell map (4,420
-bytes), dirty and invert bitmaps (277 bytes each), one shared 101-byte
-render/ANSI run buffer and a small state block. The
-formatter and every
-optional function group are separate
-archive members, so a program that does not call them does not link their
+The core library uses static storage only, sized by the capacity: one
+byte per cell for the characters and four bits per cell for the
+attributes, dirty and invert bitmaps (one bit per cell each), one shared
+render/ANSI run buffer (the capacity's columns plus 16) and a small state
+block.
+
+| capacity | characters | attributes | bitmaps | run buffer |
+|---|---:|---:|---:|---:|
+| 85 x 26 (`libtui.lib`) | 2,210 | 1,105 | 2 x 277 | 101 |
+| 128 x 35 (`libtui_128x35.lib`) | 4,480 | 2,240 | 2 x 560 | 144 |
+
+The formatter and every optional function group are separate archive
+members, so a program that does not call them does not link their
 code.  The widget archive is separate; its modal member is the only hidden
 widget backing store (1,920 bytes) and is absent from render-only programs.
 Application save/restore buffers and widget lists/values belong to the

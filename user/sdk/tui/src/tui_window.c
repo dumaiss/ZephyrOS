@@ -180,8 +180,8 @@ int tui_insert_line(void)
 			uint16_t source = TUI_CELL_INDEX(
 				(uint8_t)(tui_state.window.x + x),
 				(uint8_t)(tui_state.window.y + y - 1u));
-			tui_priv_set_cell(x, y, tui_cells[source].ch,
-					  tui_cells[source].attr);
+			tui_priv_set_cell(x, y, tui_chars[source],
+					  tui_priv_attr(source));
 		}
 		--y;
 	}
@@ -206,8 +206,8 @@ int tui_delete_line(void)
 			uint16_t source = TUI_CELL_INDEX(
 				(uint8_t)(tui_state.window.x + x),
 				(uint8_t)(tui_state.window.y + y + 1u));
-			tui_priv_set_cell(x, y, tui_cells[source].ch,
-					  tui_cells[source].attr);
+			tui_priv_set_cell(x, y, tui_chars[source],
+					  tui_priv_attr(source));
 		}
 		++y;
 	}

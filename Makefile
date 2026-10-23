@@ -1107,6 +1107,10 @@ all: $(EXE_USER_ROOT)/sound.exe
 # region and widget members stay out of a screen-only program.
 $(eval $(call exe_program,tui_test,tests/tui,\
 	tui_test.c,STACK=256,LIBS=tui_widgets:tui))
+# The same outcome program built for the wide capacity (TUI_GRID=128x35):
+# its `gridsize` mode proves the archive the option selects.
+$(eval $(call exe_program,tui_wide,tests/tui,\
+	tui_test.c,STACK=256,LIBS=tui_widgets:tui,TUI_GRID=128x35))
 
 $(eval $(call exe_program,tui_core_probe,tests/tui,\
 	tui_core_probe.c,STACK=256,LIBS=tui))
@@ -1115,7 +1119,7 @@ $(eval $(call exe_program,tui_widget_probe,tests/tui,\
 	tui_widget_probe.c,STACK=256,LIBS=tui_widgets:tui))
 
 all: $(EXE_USER_ROOT)/tui_test.exe $(EXE_USER_ROOT)/tui_core_probe.exe \
-	$(EXE_USER_ROOT)/tui_widget_probe.exe
+	$(EXE_USER_ROOT)/tui_widget_probe.exe $(EXE_USER_ROOT)/tui_wide.exe
 
 # Standalone SDK TUI examples, built in-tree for the simulator acceptance
 # only.  They are not added to any store.
@@ -1268,10 +1272,11 @@ sdk: $(KOS_SDK_TARBALL)
 	@echo "sdk: $(KOS_SDK_DIR)"
 	@echo "sdk: $(KOS_SDK_TARBALL)"
 
-$(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) \
+$(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) $(EXE_LIBTUI_WIDE) \
 		$(EXE_LIBTUI_WIDGETS) $(EXE_CRT0) $(SDK_INPUTS)
 	$(PYTHON) tools/sdkpack.py --version $(KOS_SDK_VERSION) \
 		--libkos $(EXE_SDK_RELEASE_LIB) --libtui $(EXE_LIBTUI) \
+		--libtui-wide $(EXE_LIBTUI_WIDE) \
 		--libtui-widgets $(EXE_LIBTUI_WIDGETS) \
 		--crt0 $(EXE_CRT0) \
 		--out $(KOS_SDK_DIR) --tar $@

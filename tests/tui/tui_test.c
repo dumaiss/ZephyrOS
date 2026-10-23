@@ -368,6 +368,12 @@ static int renderbad_mode(void)
 		KCONSOLE_RENDER_STATE, KCONSOLE_RENDER_STATE_SIZE,
 		85u, 0u, 0u, 1u
 	};
+	/* A row outside the console's reported grid (26 rows). */
+	static const uint8_t bad_y[] = {
+		KCONSOLE_RENDER_VERSION, 0u, KCONSOLE_RENDER_STATE_SIZE + 4u, 0u,
+		KCONSOLE_RENDER_STATE, KCONSOLE_RENDER_STATE_SIZE,
+		0u, 26u, 0u, 1u
+	};
 	static const uint8_t bad_op[] = {
 		KCONSOLE_RENDER_VERSION, 0u, KCONSOLE_RENDER_STATE_SIZE + 4u, 0u,
 		99u, KCONSOLE_RENDER_STATE_SIZE, 0u, 0u, 0u, 1u
@@ -386,13 +392,14 @@ static int renderbad_mode(void)
 		0u, 0u, 0u, 1u, 0u
 	};
 	const uint8_t *bad[] = {
-		bad_version, bad_flags, bad_attr, bad_x, bad_op, bad_count,
-		header_only, trailing
+		bad_version, bad_flags, bad_attr, bad_x, bad_y, bad_op,
+		bad_count, header_only, trailing
 	};
 	const uint8_t lengths[] = {
 		(uint8_t)sizeof(bad_version), (uint8_t)sizeof(bad_flags),
 		(uint8_t)sizeof(bad_attr), (uint8_t)sizeof(bad_x),
-		(uint8_t)sizeof(bad_op), (uint8_t)sizeof(bad_count),
+		(uint8_t)sizeof(bad_y), (uint8_t)sizeof(bad_op),
+		(uint8_t)sizeof(bad_count),
 		(uint8_t)sizeof(header_only), (uint8_t)sizeof(trailing)
 	};
 	uint16_t i;
@@ -1393,6 +1400,77 @@ static int flushsame_mode(void)
 	return flush_form(1);
 }
 
+/* grid: the screen is the grid the console reports (KCONSOLE_OP_INFO),
+ * clamped to libtui's capacity.  Prints the console's answer, adopts it
+ * through tui_init and fills the whole screen; a refused grid (a zero
+ * dimension) prints the error instead.  The lines after the shutdown land on rows 0
+ * and 1, where the cursor is, and the shell's prompt follows on row 2. */
+static int grid_mode(void)
+{
+	struct kconsole_info info;
+	struct tui_size size;
+	struct tui_rect rect;
+	int result = console_info(&info);
+
+	if (result != 0) {
+		return fail("grid info", result);
+	}
+	printf("tui: grid console %ux%u attr %u flags %u\r\n",
+	       (unsigned int)info.cols, (unsigned int)info.rows,
+	       (unsigned int)info.attr_bits, (unsigned int)info.flags);
+	result = tui_init();
+	if (result < 0) {
+		printf("tui: grid init %d\r\n", result);
+		printf("tui: grid pass\r\n");
+		return 0;
+	}
+	if (tui_get_size(&size) != 0) {
+		tui_shutdown();
+		return fail("grid size", 0);
+	}
+	rect.x = 0u;
+	rect.y = 0u;
+	rect.w = size.cols;
+	rect.h = size.rows;
+	if (tui_fill(&rect, '#', TUI_STYLE_NORMAL) != 0 ||
+	    tui_gotoxy(0, 0) != 0 || tui_flush() != 0) {
+		tui_shutdown();
+		return fail("grid fill", 0);
+	}
+	tui_shutdown();
+	printf("tui: grid size %ux%u\r\n", (unsigned int)size.cols,
+	       (unsigned int)size.rows);
+	printf("tui: grid pass\r\n");
+	return 0;
+}
+
+/* gridsize: the console's answer and the screen libtui adopts, without
+ * drawing (the wide build's check: no console displays 128 columns). */
+static int gridsize_mode(void)
+{
+	struct kconsole_info info;
+	struct tui_size size;
+	int result = console_info(&info);
+
+	if (result != 0) {
+		return fail("gridsize info", result);
+	}
+	result = tui_init();
+	if (result < 0) {
+		return fail("gridsize init", result);
+	}
+	result = tui_get_size(&size);
+	tui_shutdown();
+	if (result != 0) {
+		return fail("gridsize size", result);
+	}
+	printf("tui: gridsize console %ux%u screen %ux%u\r\n",
+	       (unsigned int)info.cols, (unsigned int)info.rows,
+	       (unsigned int)size.cols, (unsigned int)size.rows);
+	printf("tui: gridsize pass\r\n");
+	return 0;
+}
+
 static int flushrow_mode(void)
 {
 	return flush_form(2);
@@ -1731,6 +1809,12 @@ int main(int argc, char **argv)
 	}
 	if (argc == 1 && strcmp(argv[0], "flushrow") == 0) {
 		return flushrow_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "grid") == 0) {
+		return grid_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "gridsize") == 0) {
+		return gridsize_mode();
 	}
 	printf("tui: FAIL mode\r\n");
 	return 1;

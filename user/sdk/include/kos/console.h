@@ -50,6 +50,10 @@ int console_flush(void);
  * transaction.  Pending buffered text is flushed first. */
 int console_render(const void *stream, unsigned int length);
 
+/* The console's text grid and capabilities (KCONSOLE_OP_INFO,
+ * kos/protocol.h): returns 0 and fills `out`, or a negative error. */
+int console_info(struct kconsole_info *out);
+
 /* Fill `record` with the six-byte v1 information record; returns 6 or a
  * negative error. */
 int getinfo(struct kos_info_record *record);

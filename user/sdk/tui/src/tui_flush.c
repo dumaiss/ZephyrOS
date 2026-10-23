@@ -22,16 +22,26 @@
 #define TUI_CURSOR_SHOW "\033[?25h"
 #define TUI_CURSOR_HIDE "\033[?25l"
 
-/* Append a small decimal value (row or column, at most two digits). */
+/* Append a decimal row or column (1..255: a 128-column grid's columns
+ * have three digits). */
 static uint8_t tui_append_dec(uint8_t at, uint8_t value)
 {
+	uint8_t hundreds = 0u;
 	uint8_t tens = 0u;
 
+	while (value >= 100u) {
+		value = (uint8_t)(value - 100u);
+		++hundreds;
+	}
 	while (value >= 10u) {
 		value = (uint8_t)(value - 10u);
 		++tens;
 	}
-	if (tens != 0u) {
+	if (hundreds != 0u) {
+		tui_run[at] = (uint8_t)('0' + hundreds);
+		++at;
+	}
+	if (hundreds != 0u || tens != 0u) {
 		tui_run[at] = (uint8_t)('0' + tens);
 		++at;
 	}
@@ -86,7 +96,7 @@ static int tui_emit_run(uint8_t row, uint8_t col, uint8_t length,
 		*phys_attr = attr;
 	}
 	for (i = 0u; i < length; ++i) {
-		tui_run[at] = tui_cells[index].ch;
+		tui_run[at] = tui_chars[index];
 		++at;
 		++index;
 	}
@@ -95,8 +105,8 @@ static int tui_emit_run(uint8_t row, uint8_t col, uint8_t length,
 		return result;
 	}
 	*phys_x = (uint8_t)(col + length);
-	if (*phys_x >= TUI_LOGICAL_COLS) {
-		*phys_x = TUI_LOGICAL_COLS - 1u;
+	if (*phys_x >= tui_state.screen.cols) {
+		*phys_x = (uint8_t)(tui_state.screen.cols - 1u);
 	}
 	*phys_y = row;
 	return 0;
@@ -170,7 +180,7 @@ static int tui_flush_ansi(void)
 				++col;
 				continue;
 			}
-			attr = tui_cells[index].attr;
+			attr = tui_priv_attr(index);
 			start = col;
 			do {
 				++col;
@@ -179,7 +189,7 @@ static int tui_flush_ansi(void)
 				}
 				index = TUI_CELL_INDEX(col, row);
 			} while (TUI_PENDING_TEST(index) &&
-				 tui_cells[index].attr == attr);
+				 tui_priv_attr(index) == attr);
 			result = tui_emit_run(row, start,
 					      (uint8_t)(col - start), attr,
 					      &phys_x, &phys_y, &phys_attr);
@@ -258,7 +268,7 @@ static uint8_t tui_render_add_span(uint8_t at, uint8_t op, uint8_t row,
 	tui_render[at++] = attr;
 	tui_render[at++] = count;
 	for (i = 0u; i < count; ++i) {
-		tui_render[at++] = tui_cells[index++].ch;
+		tui_render[at++] = tui_chars[index++];
 	}
 	return at;
 }
@@ -381,7 +391,7 @@ static int tui_flush_render(void)
 					continue;
 				}
 				start = col;
-				attr = tui_cells[index].attr;
+				attr = tui_priv_attr(index);
 				do {
 					++col;
 					index = (uint16_t)(index + 1u);
@@ -395,7 +405,7 @@ static int tui_flush_render(void)
 						break;
 					}
 				} while ((bits & mask) != 0u &&
-					 tui_cells[index].attr == attr);
+					 tui_priv_attr(index) == attr);
 				count = (uint8_t)(col - start);
 				if ((uint8_t)(at + KCONSOLE_RENDER_SPAN_BASE +
 					      count + KCONSOLE_RENDER_STATE_SIZE) >

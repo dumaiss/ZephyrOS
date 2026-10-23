@@ -236,7 +236,9 @@ row) is waited for first. Fills, scrolling, line insertion and deletion
 and the attribute-only inversion stay on the command engine.
 
 `KVIDEO_OP_RENDER` accepts the versioned `kos/console_render.h` stream used
-by `libtui`. The driver validates the complete descriptor before touching
+by `libtui`, bounded by the terminal's grid (`KVIDEO_OP_INFO` (5) reports
+it: 85 x 26, attribute bit 0, RENDER). The driver validates the complete
+descriptor before touching
 the VDP, then executes all absolute TEXT, INVERT and final STATE records on
 the private stack with sprite evaluation disabled once. TEXT draws through
 the print run. Attribute-only INVERT spans use LMMV/EOR (`CMD=83h`, `CLR=0Bh`)
@@ -334,6 +336,16 @@ One source, two images, selected per build:
 | `KCONSOLE_OP_PUTC` | 4 | `arg0` = byte | 1, or negative |
 | `KCONSOLE_OP_RESET` | 5 | — | 0 |
 | `KCONSOLE_OP_RENDER` | 6 | desc in, offset, length: one `kos/console_render.h` stream | bytes consumed, or `-KOS_ENOTSUP` |
+| `KCONSOLE_OP_INFO` | 7 | — | 0; the reply payload is `struct kconsole_info` |
+
+`KCONSOLE_OP_INFO` reports the console's text grid and capabilities in
+`struct kconsole_info` (`kos/console_render.h`): `cols`, `rows`,
+`attr_bits` (the `attr` values a render record may use; bit 0 reverse) and
+`flags` (bit 0: `KCONSOLE_OP_RENDER` is served). The V9958 build forwards
+it to `KVIDEO_OP_INFO` (85 x 26, reverse, RENDER) in the caller's own
+frame and clears the RENDER flag while the serial tee is armed; the serial
+build answers 85 x 26, reverse, no RENDER, itself. A render stream is
+bounded by the reported grid.
 
 `KCONSOLE_OP_RESET` is the console's reset: it drains the input driver's
 queue, so nothing typed for the program that is going away reaches the one

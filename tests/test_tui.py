@@ -126,7 +126,7 @@ WIDGET_FUNCTIONS = {
 }
 
 # The cell map and two classification bitmaps live in the storage member.
-TUI_STORAGE_SYMBOLS = ("_tui_cells", "_tui_dirty", "_tui_invert")
+TUI_STORAGE_SYMBOLS = ("_tui_chars", "_tui_attrs", "_tui_dirty", "_tui_invert")
 
 FORBIDDEN_INCLUDE_HEADS = ("kernel", "drivers", "formats", "platform",
                            "boot", "config", "linker")
@@ -276,13 +276,29 @@ class TestTuiHeader(unittest.TestCase):
         self.assertEqual(value("KCONSOLE_RENDER_HEADER_SIZE"), 4)
         self.assertEqual(value("KCONSOLE_RENDER_SPAN_BASE"), 6)
         self.assertEqual(value("KCONSOLE_RENDER_STATE_SIZE"), 6)
-        self.assertEqual(value("KCONSOLE_RENDER_COLS"), 85)
-        self.assertEqual(value("KCONSOLE_RENDER_ROWS"), 26)
         for field in ("uint8_t version;", "uint8_t flags;",
                       "uint16_t total_length;"):
             self.assertIn(field, render)
-        self.assertIn("console_render(const void *stream", _read(
-            os.path.join("user", "sdk", "include", "kos", "console.h")))
+        console = _read(os.path.join("user", "sdk", "include", "kos",
+                                     "console.h"))
+        self.assertIn("console_render(const void *stream", console)
+        # The grid is reported, not fixed: the info operations and their
+        # reply record, and no grid constant in the render ABI.
+        self.assertEqual(
+            int(re.search(r"(?m)^#define\s+KCONSOLE_OP_INFO\s+(\S+)",
+                          protocol).group(1).rstrip("u"), 0), 7)
+        self.assertEqual(
+            int(re.search(r"(?m)^#define\s+KVIDEO_OP_INFO\s+(\S+)",
+                          protocol).group(1).rstrip("u"), 0), 5)
+        self.assertEqual(value("KCONSOLE_INFO_SIZE"), 8)
+        self.assertEqual(value("KCONSOLE_ATTR_REVERSE"), 1)
+        self.assertEqual(value("KCONSOLE_INFO_RENDER"), 1)
+        for field in ("uint8_t cols;", "uint8_t rows;", "uint8_t attr_bits;",
+                      "uint8_t reserved[4];"):
+            self.assertIn(field, render)
+        self.assertNotIn("KCONSOLE_RENDER_COLS", render)
+        self.assertIn("int console_info(struct kconsole_info *out);",
+                      console)
 
 
 class TestTuiLibrary(unittest.TestCase):
@@ -362,7 +378,7 @@ class TestTuiLibrary(unittest.TestCase):
     def test_flush_groups_runs_by_attribute_and_emits_both_sgr_forms(self):
         body = _read(os.path.join(ROOT, "user", "sdk", "tui", "src",
                                   "tui_flush.c"))
-        self.assertIn("tui_cells[index].attr == attr", body)
+        self.assertIn("tui_priv_attr(index) == attr", body)
         self.assertIn('TUI_SGR_NORMAL "\\033[0m"', body)
         self.assertIn('TUI_SGR_REVERSE "\\033[7m"', body)
         self.assertIn("TUI_CURSOR_SHOW", body)
@@ -416,22 +432,27 @@ class TestTuiLink(unittest.TestCase):
         self.assertNotIn("widget_", public)
 
     def test_one_cell_map_and_two_classification_bitmaps(self):
+        """The 85 x 26 cell map: one byte per character and four bits per
+        attribute, then the two classification bitmaps."""
         for name in TUI_STORAGE_SYMBOLS:
             self.assertIn(name, self.symbols)
-        self.assertEqual(
-            len([name for name in self.symbols
-                 if name.startswith("_tui_cells")]), 1)
+        for prefix in ("_tui_chars", "_tui_attrs"):
+            self.assertEqual(
+                len([name for name in self.symbols
+                     if name.startswith(prefix)]), 1)
         self.assertEqual(
             len([name for name in self.symbols
                  if name.startswith("_tui_dirty")]), 1)
         self.assertEqual(
             len([name for name in self.symbols
                  if name.startswith("_tui_invert")]), 1)
-        cells = self.symbols["_tui_cells"][0]
+        chars = self.symbols["_tui_chars"][0]
+        attrs = self.symbols["_tui_attrs"][0]
         dirty = self.symbols["_tui_dirty"][0]
         invert = self.symbols["_tui_invert"][0]
         run = self.symbols["_tui_run"][0]
-        self.assertEqual(dirty - cells, 85 * 26 * 2)
+        self.assertEqual(attrs - chars, 85 * 26)
+        self.assertEqual(dirty - attrs, (85 * 26 + 1) // 2)
         self.assertEqual(invert - dirty, (85 * 26 + 7) // 8)
         self.assertEqual(run - invert, (85 * 26 + 7) // 8)
         self.assertNotIn("_tui_render", self.symbols)

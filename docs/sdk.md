@@ -120,6 +120,7 @@ build in parallel. Each declaration also defines a `NAME` target.
 | `STAGE=1` | off | copy the packed program into the image's module directory so a system file's `store` can name it |
 | `INCLUDES=a:b` | empty | extra include roots, for program-owned headers |
 | `LIBS=a:b` | empty | optional SDK libraries in link order; each resolves to `lib/lib<name>.lib` (or the corresponding in-tree archive) |
+| `TUI_GRID=CxR` | `85x26` | the libtui capacity: `tui` in `LIBS` links `lib/libtui_<C>x<R>.lib` (`128x35`), or `libtui.lib` for `85x26`; any other grid is a build error |
 | `FAR1=SRC:SRC` … `FAR4=SRC:SRC` | none | far-code sources of segment n, linked at `8000h` (section 6.6) |
 | `DATA1=SRC:SRC` … `DATA4=SRC:SRC` | none | far-data sources of data segment n, linked at `8000h` (section 12) |
 | `BLOBS=a.bin:b.bin` | none | binary payloads bundled as plain data segments (at most 32 KiB each) |
@@ -297,6 +298,7 @@ void reboot(void);                                      /* does not return */
 int  getinfo(struct kos_info_record *record);
 int  console_write(const char *buf, unsigned int len);  /* CONSOLE WRITE   */
 int  console_render(const void *stream, unsigned int len); /* one render txn */
+int  console_info(struct kconsole_info *out);           /* grid, capabilities */
 int  console_read(char *buf, unsigned int len);         /* READ, no wait   */
 int  console_poll(void);                                /* POLL            */
 int  putchar(int ch);                                   /* buffered; returns ch */
@@ -314,7 +316,10 @@ it is the monitor's input loop.
 `console_render` is the low-level entry used by `libtui`; its versioned byte
 layout is in `kos/console_render.h`. It flushes buffered console bytes first,
 then submits exactly one descriptor. A backend without the extension returns
-`-KOS_ENOTSUP`.
+`-KOS_ENOTSUP`. `console_info` returns the console's text grid and
+capabilities (`struct kconsole_info`, also in `kos/console_render.h`):
+columns, rows, the attribute bits a render record may use and whether
+RENDER is served.
 
 Output is line-buffered: `putchar`, `console_puts` and `printf` collect
 into a 128-byte per-program buffer, and it is written out when it fills,
@@ -682,7 +687,9 @@ needed.
 | a program calls | members linked |
 |---|---|
 | anything | `kos_crt0`, `kos_runtime`, `args` |
-| `console_write`, `console_render`, `console_read`, `console_poll`, `putchar`, `console_flush` | `console_proto`, `ipc`, `kos_ipcgate`, `nsgate` |
+| `console_write`, `console_read`, `console_poll`, `putchar`, `console_flush` | `console_proto`, `ipc`, `kos_ipcgate`, `nsgate` |
+| `console_render` | `console_render`, plus the above |
+| `console_info` | `console_info`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `console_puts`, `getchar`, `console_readline` | `console_io`, plus the above |
 | `exit`, `getinfo`, `reboot` | `kos_gate` |
 | `open`, `read`, ... | `fs`, `ipc`, `kos_ipcgate`, `nsgate` |
@@ -818,7 +825,7 @@ kos-sdk-<version>/
   include/         kos.h, tui.h, tui_widgets.h, kos/*.h, klibc/*.h,
                    abi/kos/*.h
   lib/             libkos.lib (the runtime object included), libtui.lib,
-                   libtui_widgets.lib, crt0.rel
+                   libtui_128x35.lib, libtui_widgets.lib, crt0.rel
   tools/           exepack.py, exemanifest.py, ihx.py (Python standard library only)
   mk/kos.mk        the program rule
   template/        Makefile and hello.c
