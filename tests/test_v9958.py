@@ -478,13 +478,14 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.assertNotIn("KOS_V9958_INDIRECT_PORT", flush)
         self.assertIn("v9958_expand_init();", self.proto)
 
-    def test_render_transaction_validates_first_and_uses_lmmv_eor(self):
+    def test_render_transaction_validates_first_and_uses_vdp_commands(self):
         dispatch = self.proto.split("case KVIDEO_OP_RENDER:")[1].split(
             "default:")[0]
         self.assertLess(dispatch.index("v9958_render_validate"),
                         dispatch.index("v9958_render_transaction"))
         self.assertIn("KCONSOLE_RENDER_VERSION", self.proto)
         self.assertIn("KCONSOLE_RENDER_STATE_SIZE", self.proto)
+        self.assertIn("KCONSOLE_RENDER_SCROLL_SIZE", self.proto)
         invert = self.c.split("void v9958_render_invert")[1].split(
             "void v9958_render_finish_worker")[0]
         for needle in ("v9958_out_flush();", "V9958_CMD_LMMV_EOR",
@@ -496,6 +497,13 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.assertIn("#define V9958_INVERT_COLOR  "
                       "(V9958_COLOR_NORMAL ^ V9958_COLOR_REVERSE)",
                       self.header)
+        scroll = self.c.split("void v9958_render_scroll")[1].split(
+            "void v9958_render_finish_worker")[0]
+        for needle in ("KCONSOLE_SCROLL_UP", "v9958_copy_rows",
+                       "v9958_fill_cells", "KOS_V9958_REG_R23"):
+            self.assertIn(needle, scroll)
+        self.assertLess(scroll.index("v9958_copy_rows"),
+                        scroll.index("R#23 exposes four scanlines"))
         # The circular-Y split and the final synchronization are pinned by
         # replays, not by source words: the boundary split is
         # tests/test_tui_sim.py (invertwrap), the one SAT write and one

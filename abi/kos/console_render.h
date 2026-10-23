@@ -16,6 +16,10 @@
 #define KCONSOLE_RENDER_TEXT   1u
 #define KCONSOLE_RENDER_INVERT 2u
 #define KCONSOLE_RENDER_STATE  3u
+#define KCONSOLE_RENDER_SCROLL 4u
+
+#define KCONSOLE_SCROLL_UP   0u
+#define KCONSOLE_SCROLL_DOWN 1u
 
 /* The console's grid (KCONSOLE_OP_INFO and KVIDEO_OP_INFO,
  * kos/protocol.h): struct kconsole_info's attr_bits and flags. */
@@ -40,6 +44,7 @@ _Static_assert(sizeof(struct kconsole_info) == KCONSOLE_INFO_SIZE,
 #define KCONSOLE_RENDER_HEADER_SIZE 4u
 #define KCONSOLE_RENDER_SPAN_BASE   6u
 #define KCONSOLE_RENDER_STATE_SIZE  6u
+#define KCONSOLE_RENDER_SCROLL_SIZE 6u
 
 struct kconsole_render_header {
 	uint8_t version;
@@ -65,6 +70,18 @@ struct kconsole_render_state {
 	uint8_t visible;
 };
 
+/* Scroll one full-width logical row region by one cell. The renderer blanks
+ * the exposed row with attr. A bitmap backend may implement this by moving its
+ * circular display origin and restoring the rows outside the region. */
+struct kconsole_render_scroll {
+	uint8_t op;
+	uint8_t record_length;
+	uint8_t top;
+	uint8_t height;
+	uint8_t direction;
+	uint8_t attr;
+};
+
 #if defined(__SDCC)
 _Static_assert(sizeof(struct kconsole_render_header) ==
 	       KCONSOLE_RENDER_HEADER_SIZE, "render header size");
@@ -72,6 +89,8 @@ _Static_assert(sizeof(struct kconsole_render_span) ==
 	       KCONSOLE_RENDER_SPAN_BASE, "render span size");
 _Static_assert(sizeof(struct kconsole_render_state) ==
 	       KCONSOLE_RENDER_STATE_SIZE, "render state size");
+_Static_assert(sizeof(struct kconsole_render_scroll) ==
+	       KCONSOLE_RENDER_SCROLL_SIZE, "render scroll size");
 #endif
 
 #endif /* KOS_CONSOLE_RENDER_H */

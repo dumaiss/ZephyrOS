@@ -108,14 +108,21 @@ KOS_TUI_SRC     := $(KOS_SDK_ROOT)/tui/src
 KOS_TUI_PRIVATE := $(KOS_TUI_SRC)/tui_internal.h
 KOS_TUI_C_SRC   := tui_state.c tui_screen.c tui_lifecycle.c tui_flush.c \
 	tui_printf.c tui_window.c tui_style.c tui_key.c tui_region.c
+KOS_TUI_ASM_SRC := tui_scroll.asm
 EXE_TUI_OBJS    := $(addprefix $(EXE_SDK_BUILD)/tui/,\
-	$(patsubst %.c,%.rel,$(KOS_TUI_C_SRC)))
+	$(patsubst %.c,%.rel,$(KOS_TUI_C_SRC)) \
+	$(patsubst %.asm,%.rel,$(KOS_TUI_ASM_SRC)))
 EXE_LIBTUI      := $(EXE_SDK_BUILD)/libtui.lib
 
 $(EXE_SDK_BUILD)/tui/%.rel: $(KOS_TUI_SRC)/%.c $(EXE_HEADERS) \
 		$(KOS_TUI_PRIVATE)
 	@mkdir -p $(dir $@)
 	$(SDCC) $(EXE_CFLAGS) -I $(KOS_TUI_SRC) -c $< -o $@
+
+$(EXE_SDK_BUILD)/tui/%.rel: $(KOS_TUI_SRC)/%.asm $(EXE_HEADERS) \
+		$(KOS_TUI_PRIVATE)
+	@mkdir -p $(dir $@)
+	$(SDASZ80) $(EXE_ASFLAGS) -o $@ $<
 
 # `-D` zeroes the members' dates and ids.  The in-tree programs link this
 # archive and the standalone SDK ships it, so the library never records
@@ -128,7 +135,8 @@ $(EXE_LIBTUI): $(EXE_TUI_OBJS) $(KOS_RULES)
 # The wide capacity (a program's TUI_GRID=128x35, mk/kos.mk): the same
 # sources built for a 128 x 35 cell map, `libtui_128x35.lib`.
 EXE_TUI_WIDE_OBJS := $(addprefix $(EXE_SDK_BUILD)/tui_128x35/,\
-	$(patsubst %.c,%.rel,$(KOS_TUI_C_SRC)))
+	$(patsubst %.c,%.rel,$(KOS_TUI_C_SRC)) \
+	$(patsubst %.asm,%.rel,$(KOS_TUI_ASM_SRC)))
 EXE_LIBTUI_WIDE   := $(EXE_SDK_BUILD)/libtui_128x35.lib
 
 $(EXE_SDK_BUILD)/tui_128x35/%.rel: $(KOS_TUI_SRC)/%.c $(EXE_HEADERS) \
@@ -136,6 +144,11 @@ $(EXE_SDK_BUILD)/tui_128x35/%.rel: $(KOS_TUI_SRC)/%.c $(EXE_HEADERS) \
 	@mkdir -p $(dir $@)
 	$(SDCC) $(EXE_CFLAGS) -DTUI_GRID_COLS=128u -DTUI_GRID_ROWS=35u \
 		-I $(KOS_TUI_SRC) -c $< -o $@
+
+$(EXE_SDK_BUILD)/tui_128x35/%.rel: $(KOS_TUI_SRC)/%.asm $(EXE_HEADERS) \
+		$(KOS_TUI_PRIVATE)
+	@mkdir -p $(dir $@)
+	$(SDASZ80) $(EXE_ASFLAGS) -o $@ $<
 
 $(EXE_LIBTUI_WIDE): $(EXE_TUI_WIDE_OBJS) $(KOS_RULES)
 	@mkdir -p $(dir $@)

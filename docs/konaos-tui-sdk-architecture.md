@@ -799,14 +799,17 @@ It continues delivering translated text bytes.
 
 The baseline TUI remains usable over the existing console byte stream. The
 V9958 optimization adds `KCONSOLE_OP_RENDER`: a versioned stream of absolute
-TEXT, attribute-only INVERT and final STATE records. Serial may reject it with
+TEXT, attribute-only INVERT, full-width one-row SCROLL and final STATE records.
+Serial may reject it with
 `-KOS_ENOTSUP`, which `libtui` caches before falling back to ANSI writes.
 
 ### V9958 driver
 
 The optimized path validates and executes one render stream as one hardware
 transaction. Attribute-only normal/reverse changes use LMMV/EOR over the
-existing pixels; ordinary glyph output is written straight into VRAM.
+existing pixels; ordinary glyph output is written straight into VRAM. SCROLL
+uses the circular R#23 origin as the retained-row cache, restores only rows
+outside the requested region with HMMM, and clears the exposed row.
 
 Possible later improvement:
 

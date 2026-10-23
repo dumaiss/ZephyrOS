@@ -50,6 +50,7 @@ static void tui_reset_model(uint8_t cols, uint8_t rows)
 	tui_state.phys_attr = 0u;
 	tui_state.phys_cursor_visible = 1u;
 	tui_state.render_support = 0u;
+	tui_state.model_only = 0u;
 }
 
 int tui_init(void)

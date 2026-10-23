@@ -51,6 +51,7 @@
 #include "hardware.h"
 
 #include "kos/protocol.h"
+#include "kos/console_render.h"
 
 #include "v9958_driver.h"
 
@@ -573,6 +574,60 @@ void v9958_render_invert(uint8_t x, uint8_t y, uint8_t count)
 		v9958_cmd[V9958_CMD_NY_LO] = wrapped;
 	}
 	v9958_start_command(v9958_cmd);
+}
+
+/* Scroll a full-width logical row region by one cell. R#23 moves the circular
+ * bitmap without copying the document body. Rows outside the region are then
+ * restored from their still-resident old positions with HMMM, and only the
+ * exposed row is cleared. */
+void v9958_render_scroll(uint8_t top, uint8_t height, uint8_t direction,
+			 uint8_t attr)
+{
+	uint8_t bottom = (uint8_t)(top + height - 1u);
+	uint8_t below = (uint8_t)(V9958_ROWS - bottom - 1u);
+	uint8_t saved_attr = v9958_state.current_attr;
+	uint8_t origin;
+
+	v9958_out_flush();
+	if (direction == KCONSOLE_SCROLL_UP)
+		origin = (uint8_t)(v9958_state.scroll_origin + V9958_CELL_HEIGHT);
+	else
+		origin = (uint8_t)(v9958_state.scroll_origin - V9958_CELL_HEIGHT);
+	v9958_state.scroll_origin = origin;
+
+	if (direction == KCONSOLE_SCROLL_UP) {
+		if (top != 0u) v9958_copy_rows(0xffu, 0u, top, 1u);
+		if (below != 0u)
+			v9958_copy_rows(bottom, (uint8_t)(bottom + 1u),
+					 below, 1u);
+	} else {
+		if (top != 0u) v9958_copy_rows(1u, 0u, top, 0u);
+		if (below != 0u)
+			v9958_copy_rows((uint8_t)(bottom + 2u),
+					 (uint8_t)(bottom + 1u), below, 0u);
+	}
+	v9958_state.current_attr = attr;
+	v9958_fill_cells(0u,
+		direction == KCONSOLE_SCROLL_UP ? bottom : top,
+		V9958_COLUMNS, 1u);
+	v9958_state.current_attr = saved_attr;
+
+	/* R#23 exposes four scanlines before logical row zero. Clear that
+	 * margin only after restoring fixed rows: on an upward move the new
+	 * margin overlaps the lower half of old logical row zero, which is the
+	 * source used to preserve a menu row. */
+	v9958_cmd_reset();
+	v9958_cmd[V9958_CMD_DY_LO] =
+		(uint8_t)(origin - V9958_DISPLAY_OFFSET);
+	v9958_cmd[V9958_CMD_NX_LO] = V9958_CLEAR_WIDTH_LO;
+	v9958_cmd[V9958_CMD_NX_HI] = V9958_CLEAR_WIDTH_HI;
+	v9958_cmd[V9958_CMD_NY_LO] = V9958_DISPLAY_OFFSET;
+	v9958_cmd[V9958_CMD_COLOR] = V9958_CLEAR_COLOR;
+	v9958_cmd[V9958_CMD_CODE] = V9958_CMD_HMMV;
+	v9958_start_command(v9958_cmd);
+	v9958_io_wait_command();
+	v9958_io_reg((uint8_t)(origin - V9958_DISPLAY_OFFSET),
+		     KOS_V9958_REG_R23);
 }
 
 void v9958_render_finish_worker(void)

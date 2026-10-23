@@ -59,6 +59,7 @@ struct tui_state {
 	uint8_t phys_attr;
 	uint8_t phys_cursor_visible;
 	uint8_t render_support; /* 0 unknown, 1 RENDER, 2 ANSI fallback */
+	uint8_t model_only;     /* update cells without scheduling output */
 };
 
 extern struct tui_state tui_state;

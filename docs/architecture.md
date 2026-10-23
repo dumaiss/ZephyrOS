@@ -996,7 +996,11 @@ console it selected. Programs cannot tell which implementation answers.
   85 × 26 by default, 128 × 35), so a program on a larger console uses
   the top-left part. `attr` is a bit field
   (bit 0 reverse; the other bits reserved and refused), and INVERT is the
-  normal/reverse exchange only, so a colour change is a TEXT redraw.
+  normal/reverse exchange only, so a colour change is a TEXT redraw. SCROLL
+  moves one full-width logical row region by one cell: the V9958 changes the
+  circular R#23 origin, restores fixed rows outside that region with HMMM and
+  clears only the exposed row. The circular bitmap itself retains the nearby
+  rows, so no separate application-side half-screen cache is required.
 - **Sound is lifecycle plus a coarse path.** The `sound` driver
   (`KOS_CLASS_SOUND`, type `SOUND`, `kos/ksound.h`) owns the card's reset
   and a batched write. It keeps no copy of the chips' registers, because a
@@ -1517,12 +1521,16 @@ aperture page otherwise.
 Planned work, in order. None of it changes the contracts above unless it
 says so.
 
-1. **Mouse and game controllers** in the HID driver: `/dev/input/mouse`,
+1. **The graphics SDK** (`docs/gfx-sdk.md`): `libgfx`, a user-space
+   graphics library over the exclusively held VIDEO device, plus one
+   resident addition, `KVIDEO_OP_DIRECT_INFO`; the card picture viewer
+   `pview` is its first application.
+2. **Mouse and game controllers** in the HID driver: `/dev/input/mouse`,
    `/dev/input/controller/0` and `/1`. They grow the driver tier inside
    its reserve and need nothing from the nucleus. The mouse pointer is a
    sprite, which the console's sprites-off drawing bracket must not hide
    while a mouse is open.
-2. **After that:** compatibility personalities, starting with CP/M.
+3. **After that:** compatibility personalities, starting with CP/M.
 
 Diagnostics and benchmarks are user programs; the nucleus gains a
 diagnostic interface only where a program cannot measure without it.

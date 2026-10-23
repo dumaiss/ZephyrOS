@@ -114,6 +114,19 @@ static int16_t v9958_render_validate(const struct kos_ipc_frame *frame)
 			    v9958_batch_ptr[5] > 1u) {
 				return (int16_t)-KOS_EINVAL;
 			}
+		} else if (op == KCONSOLE_RENDER_SCROLL) {
+			if (record_length != KCONSOLE_RENDER_SCROLL_SIZE ||
+			    v9958_render_copy(frame, at,
+					       KCONSOLE_RENDER_SCROLL_SIZE) < 0 ||
+			    v9958_batch_ptr[2] >= V9958_ROWS ||
+			    v9958_batch_ptr[3] == 0u ||
+			    v9958_batch_ptr[3] >
+				(uint8_t)(V9958_ROWS - v9958_batch_ptr[2]) ||
+			    v9958_batch_ptr[4] > KCONSOLE_SCROLL_DOWN ||
+			    (v9958_batch_ptr[5] &
+				(uint8_t)~KCONSOLE_ATTR_REVERSE) != 0u) {
+				return (int16_t)-KOS_EINVAL;
+			}
 		} else {
 			return (int16_t)-KOS_EINVAL;
 		}
@@ -176,6 +189,8 @@ int v9958_driver_render_worker(struct kos_ipc_frame *frame)
 			}
 		} else if (op == KCONSOLE_RENDER_INVERT) {
 			v9958_render_invert(x, y, count);
+		} else if (op == KCONSOLE_RENDER_SCROLL) {
+			v9958_render_scroll(x, y, attr, count);
 		} else {
 			v9958_out_flush();
 			v9958_state.text_col = x;

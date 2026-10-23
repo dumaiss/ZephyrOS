@@ -122,10 +122,16 @@ tui_clreol();      /* cursor through the window's right edge */
 tui_clrline();     /* the cursor's whole window row */
 tui_insert_line(); /* shift rows inside the window, blank at the cursor row */
 tui_delete_line(); /* shift rows up inside the window, blank the last row */
+tui_scroll_rows(top, height, TUI_SCROLL_UP); /* absolute full-width region */
 ```
 
 Insert/delete shift only rows inside the window.  Blank cells use the
-current resolved attribute.
+current resolved attribute. `tui_scroll_rows` is the hardware-assisted form:
+it flushes pending changes, moves an absolute full-width screen region by one
+row, blanks the exposed row, and shifts the logical cell map without dirtying
+the retained rows. The current window and cursor are preserved. A console
+without semantic scroll support returns `-KOS_ENOTSUP` without changing the
+logical map, so an application can repaint its viewport as the fallback.
 
 ## Transactions and flushing
 
@@ -144,7 +150,10 @@ the outermost transaction.  An unmatched `tui_end()` is `-KOS_EINVAL`.
 coalesces adjacent changes into absolute TEXT records and attribute-only
 normal/reverse changes into INVERT records, then submits a bounded render
 stream as one console transaction. INVERT is performed in place, so moving
-selection focus does not redraw either label. If the console reports
+selection focus does not redraw either label. A semantic SCROLL record moves
+one full-width row region up or down; the V9958 changes its circular display
+origin, restores only rows outside the region, and clears the exposed row.
+If the console reports
 `-KOS_ENOTSUP`, as the serial console does, the library remembers that result
 and uses the ANSI dirty-run renderer: one cursor position per run, SGR only
 when the run's attribute differs from the tracked physical attribute.

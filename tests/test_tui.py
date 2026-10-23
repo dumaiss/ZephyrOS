@@ -55,7 +55,7 @@ TUI_FUNCTIONS = {
     "tui_putc", "tui_puts", "tui_write", "tui_putc_xy", "tui_puts_xy",
     "tui_printf", "tui_printf_xy",
     "tui_clear", "tui_clreol", "tui_clrline",
-    "tui_insert_line", "tui_delete_line",
+    "tui_insert_line", "tui_delete_line", "tui_scroll_rows",
     "tui_window", "tui_reset_window", "tui_get_window",
     "tui_push_window", "tui_pop_window",
     "tui_set_style", "tui_get_style", "tui_set_attr", "tui_get_attr",
@@ -113,7 +113,8 @@ TUI_KEYS = {
 # add their own members instead of growing these.
 TUI_MEMBERS = {"tui_state.rel", "tui_screen.rel", "tui_lifecycle.rel",
                "tui_flush.rel", "tui_printf.rel", "tui_window.rel",
-               "tui_style.rel", "tui_key.rel", "tui_region.rel"}
+               "tui_style.rel", "tui_key.rel", "tui_region.rel",
+               "tui_scroll.rel"}
 
 WIDGET_MEMBERS = {"widget_common.rel", "widget_render.rel",
                   "widget_menu.rel", "widget_input.rel",
@@ -273,9 +274,11 @@ class TestTuiHeader(unittest.TestCase):
         self.assertEqual(value("KCONSOLE_RENDER_TEXT"), 1)
         self.assertEqual(value("KCONSOLE_RENDER_INVERT"), 2)
         self.assertEqual(value("KCONSOLE_RENDER_STATE"), 3)
+        self.assertEqual(value("KCONSOLE_RENDER_SCROLL"), 4)
         self.assertEqual(value("KCONSOLE_RENDER_HEADER_SIZE"), 4)
         self.assertEqual(value("KCONSOLE_RENDER_SPAN_BASE"), 6)
         self.assertEqual(value("KCONSOLE_RENDER_STATE_SIZE"), 6)
+        self.assertEqual(value("KCONSOLE_RENDER_SCROLL_SIZE"), 6)
         for field in ("uint8_t version;", "uint8_t flags;",
                       "uint16_t total_length;"):
             self.assertIn(field, render)
@@ -324,9 +327,9 @@ class TestTuiLibrary(unittest.TestCase):
 
     def test_every_source_is_its_own_member(self):
         source_dir = os.path.join(ROOT, "user", "sdk", "tui", "src")
-        sources = sorted(name[:-2] + ".rel"
+        sources = sorted(name.rsplit(".", 1)[0] + ".rel"
                          for name in os.listdir(source_dir)
-                         if name.endswith(".c"))
+                         if name.endswith((".c", ".asm")))
         self.assertEqual(sorted(name for name, *_ in self.members), sources)
 
     def test_sources_include_only_the_public_sdk_and_their_private_header(self):

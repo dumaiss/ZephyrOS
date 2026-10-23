@@ -65,6 +65,7 @@ static int foundation(void)
 	    tui_cursor_show() != -KOS_EINVAL ||
 	    tui_get_size(&size) != -KOS_EINVAL ||
 	    tui_flush() != -KOS_EINVAL ||
+	    tui_scroll_rows(0u, 1u, TUI_SCROLL_UP) != -KOS_EINVAL ||
 	    tui_key_pending() != -KOS_EINVAL ||
 	    tui_pollkey() != TUI_KEY_NONE ||
 	    tui_getkey() != TUI_KEY_NONE ||

@@ -103,6 +103,19 @@ int tui_clrline(void);
 int tui_insert_line(void);
 int tui_delete_line(void);
 
+/*
+ * Move a full-width absolute screen region by one row without repainting
+ * every retained cell.  The exposed row is filled with the current
+ * attribute.  A console without semantic render scrolling returns
+ * -KOS_ENOTSUP and leaves the logical screen unchanged.
+ */
+enum {
+	TUI_SCROLL_UP = 0,
+	TUI_SCROLL_DOWN
+};
+
+int tui_scroll_rows(uint8_t top, uint8_t height, uint8_t direction);
+
 /* ---- window / clipping --------------------------------------------- */
 
 /*

@@ -239,12 +239,15 @@ and the attribute-only inversion stay on the command engine.
 by `libtui`, bounded by the terminal's grid (`KVIDEO_OP_INFO` (5) reports
 it: 85 x 26, attribute bit 0, RENDER). The driver validates the complete
 descriptor before touching
-the VDP, then executes all absolute TEXT, INVERT and final STATE records on
+the VDP, then executes all absolute TEXT, INVERT, SCROLL and final STATE records on
 the private stack with sprite evaluation disabled once. TEXT draws through
 the print run. Attribute-only INVERT spans use LMMV/EOR (`CMD=83h`, `CLR=0Bh`)
 over the existing 6 x 8 cells, so moving reverse-video focus does not repaint
-glyphs. The final glyph run, cursor SAT and command wait are synchronized once
-at the transaction boundary.
+glyphs. SCROLL advances or reverses the circular R#23 origin by eight
+scanlines, restores only fixed rows outside the full-width region with HMMM,
+and clears the exposed row with HMMV; the retained body rows are not copied or
+redrawn. The final glyph run, cursor SAT and command wait are synchronized
+once at the transaction boundary.
 
 **Native operations** (through `KVIDEO_OP_SEND`): `KVIDEO_CTRL_WRITE` (1),
 `DATA_WRITE` (2), `DATA_BLOCK` (3), `PALETTE_WRITE` (4), `INDIRECT_WRITE`

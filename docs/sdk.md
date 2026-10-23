@@ -319,7 +319,9 @@ then submits exactly one descriptor. A backend without the extension returns
 `-KOS_ENOTSUP`. `console_info` returns the console's text grid and
 capabilities (`struct kconsole_info`, also in `kos/console_render.h`):
 columns, rows, the attribute bits a render record may use and whether
-RENDER is served.
+RENDER is served. Render streams contain absolute TEXT spans, in-place INVERT
+spans, cursor/attribute STATE, and a full-width one-row SCROLL region; every
+record is validated against the reported grid before the backend changes it.
 
 Output is line-buffered: `putchar`, `console_puts` and `printf` collect
 into a 128-byte per-program buffer, and it is written out when it fills,

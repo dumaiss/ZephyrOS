@@ -276,6 +276,8 @@ extern uint8_t *v9958_run_ptr;
 
 void v9958_render_invert(uint8_t x, uint8_t y, uint8_t count);
 void v9958_render_text_data(const uint8_t *buf, uint16_t len);
+void v9958_render_scroll(uint8_t top, uint8_t height, uint8_t direction,
+			 uint8_t attr);
 void v9958_render_finish_worker(void);
 int v9958_driver_render_worker(struct kos_ipc_frame *frame);
 

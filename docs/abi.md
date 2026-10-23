@@ -393,6 +393,12 @@ through the standard handles.
 | `console_render(stream, len)` | `KCONSOLE_OP_RENDER` (6) | in: one versioned render stream |
 | `console_info(&info)` | `KCONSOLE_OP_INFO` (7) | none; the reply payload is `struct kconsole_info` |
 
+The version-1 render stream (`kos/console_render.h`) carries absolute TEXT,
+INVERT and STATE records plus SCROLL. SCROLL moves one full-width region by
+one logical row (`UP` or `DOWN`) and blanks the exposed row with its supplied
+attribute. A backend validates the complete descriptor before changing the
+display.
+
 `KCONSOLE_OP_RESET` puts the terminal back to its start state and empties
 the input queue; a console whose output driver owns the display forwards
 the display reset to it. The kernel runs it before every start of the
