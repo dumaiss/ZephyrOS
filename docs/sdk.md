@@ -156,6 +156,20 @@ KIMG v1 format (`kos/kimg.h`) carries a header, an optional palette and
 the payload in the mode's packing, `tools/kimg.py` converts
 PNG/JPEG to it on the host, and `pview.exe` (UserSoftware/PView)
 displays a picture file; the design is gfx-sdk.md sections 10-17.
+The packings are the V9958's own:
+
+- **16-colour (G6):** two palette indices per byte, the left pixel in
+  the high nibble.
+- **256-colour (G7):** one byte per pixel, green in bits 7-5, red in
+  4-2, blue in 1-0.
+- **YJK:** one byte per pixel, the pixel's 5-bit luminance Y in bits
+  7-3.
+  - **Shared colour:** each run of four pixels (x a multiple of 4)
+    shares two signed 6-bit colour differences in bits 2-0: K in the
+    first byte (low bits) and the second (high), J in the third (low)
+    and the fourth (high).
+  - **Display:** the chip shows R = Y + J, G = Y + K and
+    B = (5Y - 2J - K) / 4, clamped to 0-31.
 
 There is no hand-written manifest: `tools/exemanifest.py` computes
 `image_size = s__DATA - 0100h`, `bss_size = l__DATA` and

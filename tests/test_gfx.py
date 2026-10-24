@@ -290,11 +290,13 @@ class GfxReplay(HwtestReplay):
                           PACKED[mode]))
         # One rectangle, DY 0, NY 212 + 256: every row the HMMV covers -
         # page 0's 256 and page 1's first 212 - holds the colour.
-        row = bytes([PACKED[mode]]) * (WIDTH[mode] // 2)
+        # A row is 256 bytes in both modes (512 dots of 4 bits, 256 of
+        # 8): the whole row holds the colour.
+        row = bytes([PACKED[mode]]) * 256
         for line in range(CLEAR_LINES):
             base = line * 256
-            self.assertEqual(peer.vram[base:base + WIDTH[mode] // 2],
-                             row, "row %u" % line)
+            self.assertEqual(peer.vram[base:base + 256], row,
+                             "row %u" % line)
 
     # -- restore --------------------------------------------------------
     def settle(self, z, until, limit=100000):
@@ -568,6 +570,17 @@ class TestPView(GfxReplay):
         self.assertEqual(self.exclusive(z), 0,
                          "the exclusive flag survived the run")
 
+    def assert_cleared(self, peer, row_bytes, rect, value, where):
+        """Every visible byte of page 0 outside `rect` (x, y, width,
+        height in bytes and rows) holds `value`."""
+        x, y, width, height = rect
+        for row in range(212):
+            line = peer.vram[row * row_bytes:(row + 1) * row_bytes]
+            if y <= row < y + height:
+                line = line[:x] + line[x + width:]
+            self.assertEqual(set(line), {value},
+                             "%s: row %u not cleared" % (where, row))
+
     def test_pictures_centered_palette_and_bad_header(self):
         with open(os.path.join(FIXTURES, "parrot-64x32-g7.kimg"),
                   "rb") as handle:
@@ -599,6 +612,9 @@ class TestPView(GfxReplay):
         self.assertEqual(peer.regs[0], 0x0E, "g7 R#0")
         self.assertEqual([list(entry) for entry in peer.palette],
                          before["palette"], "no palette for a g7 file")
+        # Around the picture the screen is cleared (byte 0, black): no
+        # console bitmap shows through.
+        self.assert_cleared(peer, 256, (96, 90, 64, 32), 0x00, "g7")
         self.pview_done(z, ops, since, before)
 
         # The 16-colour picture: centred at x 224, y 90, with the
@@ -619,6 +635,12 @@ class TestPView(GfxReplay):
                              payload[row * 32:(row + 1) * 32],
                              "g6 row %u" % row)
         self.assertEqual(peer.regs[0], 0x0A, "g6 R#0")
+        # Cleared to the palette's darkest entry, two pixels a byte.
+        levels = [palette_bytes[i * 3] * 2 + palette_bytes[i * 3 + 1] * 4 +
+                  palette_bytes[i * 3 + 2] for i in range(16)]
+        dark = levels.index(min(levels))
+        self.assert_cleared(peer, 256, (112, 90, 32, 32),
+                            (dark << 4) | dark, "g6")
         self.pview_done(z, ops, since, before)
 
         # The bad header: the error line, and no video dispatch at all.

@@ -82,7 +82,8 @@ int gfx_set_palette(uint8_t first, uint8_t count,
 /* Begin a streaming pixel upload into the rectangle (x, y, width,
  * height): the geometry is pixels, y may target the off-screen page
  * (256-511), and the rectangle must lie inside the 512-line space and
- * the mode's width (x and width even in the 16-colour mode).  The byte
+ * the mode's width (x and width even in the 16-colour mode, multiples
+ * of 4 in YJK, where four pixels share one J/K pair).  The byte
  * stream follows the mode's packing; the transfer takes exactly
  * bytes(width, height), position is kept across gfx_upload_write
  * calls, and a pending drawing batch is flushed first.  Not nestable.

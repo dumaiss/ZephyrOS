@@ -57,6 +57,11 @@ int gfx_upload_begin(uint16_t x, uint16_t y, uint16_t width,
 	    ((x | width) & 1u) != 0u) {
 		return -KOS_EINVAL;
 	}
+	/* Four YJK pixels share one J/K pair: x and width keep the runs. */
+	if (gfx_state.mode == (uint8_t)GFX_MODE_256x212_YJK &&
+	    ((x | width) & 3u) != 0u) {
+		return -KOS_EINVAL;
+	}
 	/* A pending drawing batch flushes here (a no-op until batching). */
 	gfx_state.upload_active = 1u;
 	gfx_state.upload_full_width = (x == 0u && width == full_width) ? 1u

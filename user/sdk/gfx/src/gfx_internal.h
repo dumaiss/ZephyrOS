@@ -101,13 +101,6 @@ void gfx_v9958_io_palette_byte(uint8_t value);
 #define GFX_V9958_R25_WAIT_ON  0x04u
 #define GFX_V9958_R25_YJK      0x08u /* R#25 bit 3; bit 4 (10h) is YAE */
 
-/* The YJK mode's shared luminance: on the V9958 the YJK pixel carries
- * J and K (3 bits each) and Y comes from palette entry 0, so the mode
- * setup programmes entry 0 to this grey and tools/kimg.py encodes
- * against the same value. */
-#define GFX_V9958_YJK_Y   24u
-#define GFX_V9958_YJK_Y3  (GFX_V9958_YJK_Y >> 2)
-
 /* The VRAM address's second command-port byte sets A16's home in R#14
  * (the 64Kx4 DRAM page). */
 #define GFX_V9958_VRAM_ADDR_HI 0x40u

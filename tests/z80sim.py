@@ -1442,8 +1442,11 @@ class V9958Peer:
       - status register 2 (selected through R#15=2): CE stays set while a
         command executes;
       - HMMV fills and HMMM copies execute into the modeled VRAM, byte
-        by byte in the block's DIX/DIY directions (the V9958's high-speed
-        commands move whole bytes, two GRAPHIC 6 pixels);
+        by byte in the block's DIX/DIY directions.  The V9958's
+        high-speed commands move whole bytes, so their dot coordinates
+        divide by the mode's dots per byte (R#0's M5-M3): two in
+        GRAPHIC 6, one in GRAPHIC 7 (V9958 Technical Data Book, the
+        high-speed move commands); both modes use a 256-byte row;
       - LMMV with the EOR operation executes into the modeled VRAM;
       - LMMC/HMMC transfer commands stream one pixel per byte (LMMC
         through R#44 with the first pixel preloaded in the block's CLR
@@ -1716,25 +1719,32 @@ class V9958Peer:
         if transfer["have"] >= transfer["need"]:
             self.transfer = None
 
+    def _dots_per_byte(self):
+        """GRAPHIC 7 (R#0 M5-M3 = 111) holds one dot per byte; GRAPHIC
+        6, the console's mode, two."""
+        return 1 if ((self.regs[0] >> 1) & 0x07) == 0x07 else 2
+
     def _fill(self, dx, dy, nx, ny, color):
         if nx == 0 or ny == 0:
             return
-        first = dx // 2
-        last = (dx + nx) // 2
+        dots = self._dots_per_byte()
+        first = dx // dots
+        last = (dx + nx) // dots
         for y in range(dy, dy + ny):
             base = (y * 256) & 0x1FFFF
             for offset in range(first, last):
                 self.vram[(base + offset) & 0x1FFFF] = color
 
     def _copy(self, block):
-        """HMMM in GRAPHIC 6: NX pixels (NX / 2 bytes) by NY lines from
+        """HMMM: NX dots (NX / dots-per-byte bytes) by NY lines from
         (SX, SY) to (DX, DY), stepping left when ARG's DIX is set and up
         when DIY is set, one byte at a time in that order."""
-        sx = block[0] | (block[1] << 8)
+        dots = self._dots_per_byte()
+        sx = (block[0] | (block[1] << 8)) // dots
         sy = block[2] | (block[3] << 8)
-        dx = block[4] | (block[5] << 8)
+        dx = (block[4] | (block[5] << 8)) // dots
         dy = block[6] | (block[7] << 8)
-        nx = (block[8] | (block[9] << 8)) // 2
+        nx = (block[8] | (block[9] << 8)) // dots
         ny = block[10] | (block[11] << 8)
         arg = block[13]
         step_x = -1 if arg & 0x04 else 1
@@ -1743,8 +1753,8 @@ class V9958Peer:
             src = ((sy + line * step_y) & 0x1FF) * 256
             dst = ((dy + line * step_y) & 0x1FF) * 256
             for index in range(nx):
-                src_x = (sx // 2 + index * step_x) & 0xFF
-                dst_x = (dx // 2 + index * step_x) & 0xFF
+                src_x = (sx + index * step_x) & 0xFF
+                dst_x = (dx + index * step_x) & 0xFF
                 self.vram[(dst + dst_x) & 0x1FFFF] = \
                     self.vram[(src + src_x) & 0x1FFFF]
 

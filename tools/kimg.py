@@ -9,12 +9,16 @@ the mode's size and packs the payload:
     g6   GRAPHIC 6, 512 x 212, 4 bpp: an adaptive 16-colour palette
          (Pillow's median cut, no dither) written before the payload,
          which packs two palette indices per byte (high nibble first);
-    g7   GRAPHIC 7, 256 x 212, 8 bpp: one RGB332 byte per pixel;
-    yjk  GRAPHIC 7 + YJK, 256 x 212: one YJK byte per pixel - J in
-         bits 2-0, K in bits 5-3, against the shared luminance Y = 24,
-         the value libgfx's YJK mode sets in palette entry 0.  J and K
-         are clamped, so YJK reproduces reds and greens fully and
-         blues through the mode's fixed decode.
+    g7   GRAPHIC 7, 256 x 212, 8 bpp: one byte per pixel, green in bits
+         7-5, red in bits 4-2, blue in bits 1-0 (the V9958's GRB 3-3-2);
+    yjk  GRAPHIC 7 + YJK, 256 x 212, the width a multiple of 4: each
+         byte carries its pixel's 5-bit luminance Y in bits 7-3; each
+         run of four pixels shares two 6-bit signed colour differences,
+         K (bits 2-0 of the first byte low, of the second high) and J
+         (third low, fourth high).  The V9958 shows R = Y + J,
+         G = Y + K, B = (5Y - 2J - K) / 4 (5-bit, clamped).  J and K
+         come from the run's average colour; each pixel's Y is the one
+         whose decoded colour is nearest its own.
 
 Usage:
     kimg.py convert SOURCE OUTPUT --mode {g6,g7,yjk} [--size WxH]
@@ -48,8 +52,8 @@ MODES = {
     "yjk": (2, 256, 212),
 }
 
-# The YJK mode's shared luminance (libgfx sets palette entry 0 to it).
-YJK_Y = 24
+# Each YJK colour difference pair covers this many pixels.
+YJK_RUN = 4
 
 
 def require_pillow():
@@ -91,19 +95,52 @@ def _pack_g7(rgb, size):
     raw = rgb.tobytes()
     for offset in range(0, len(raw), 3):
         r, g, b = raw[offset], raw[offset + 1], raw[offset + 2]
-        payload.append((((r >> 5) & 0x07) << 5) |
-                       (((g >> 5) & 0x07) << 2) | ((b >> 6) & 0x03))
+        payload.append(((g >> 5) << 5) | ((r >> 5) << 2) | (b >> 6))
     return [], bytes(payload)
 
 
+def yjk_decode(y, j, k):
+    """The V9958's YJK to 5-bit RGB, clamped (J and K signed)."""
+    def clamp(value):
+        return 0 if value < 0 else 31 if value > 31 else value
+    return (clamp(y + j), clamp(y + k), clamp((5 * y - 2 * j - k) // 4))
+
+
+def _yjk_run(pixels):
+    """Four 5-bit (r, g, b) pixels -> their four YJK bytes."""
+    count = len(pixels)
+    r = sum(p[0] for p in pixels) / count
+    g = sum(p[1] for p in pixels) / count
+    b = sum(p[2] for p in pixels) / count
+    y = b / 2 + r / 4 + g / 8
+    j = max(-32, min(31, round(r - y)))
+    k = max(-32, min(31, round(g - y)))
+    lows = (k & 7, (k >> 3) & 7, j & 7, (j >> 3) & 7)
+    out = bytearray()
+    for (pr, pg, pb), low in zip(pixels, lows):
+        start = round(pb / 2 + pr / 4 + pg / 8)
+        best = None
+        for candidate in range(max(0, start - 4), min(31, start + 4) + 1):
+            dr, dg, db = yjk_decode(candidate, j, k)
+            error = (dr - pr) ** 2 + (dg - pg) ** 2 + (db - pb) ** 2
+            if best is None or error < best[0]:
+                best = (error, candidate)
+        out.append((best[1] << 3) | low)
+    return out
+
+
 def _pack_yjk(rgb, size):
-    payload = bytearray()
+    width, height = size
     raw = rgb.tobytes()
-    for offset in range(0, len(raw), 3):
-        r, g = raw[offset], raw[offset + 1]
-        j = max(0, min(7, r - YJK_Y))
-        k = max(0, min(7, g - YJK_Y))
-        payload.append((k << 3) | j)
+    payload = bytearray()
+    for row in range(height):
+        base = row * width * 3
+        for x in range(0, width, YJK_RUN):
+            run = []
+            for pixel in range(x, x + YJK_RUN):
+                at = base + pixel * 3
+                run.append((raw[at] >> 3, raw[at + 1] >> 3, raw[at + 2] >> 3))
+            payload += _yjk_run(run)
     return [], bytes(payload)
 
 
@@ -115,7 +152,8 @@ def convert(source, output, mode, size=None):
     mode_value, width, height = MODES[mode]
     if size is not None:
         width, height = size
-    if width <= 0 or height <= 0 or (mode == "g6" and width % 2):
+    if width <= 0 or height <= 0 or (mode == "g6" and width % 2) or \
+            (mode == "yjk" and width % YJK_RUN):
         raise SystemExit("kimg: bad geometry %dx%d for %s"
                          % (width, height, mode))
     rgb = Image.open(source).convert("RGB")

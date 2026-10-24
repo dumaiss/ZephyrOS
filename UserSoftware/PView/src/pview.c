@@ -76,10 +76,37 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
+	/* Clear both pages first: the console's bitmap would otherwise show
+	 * around a smaller picture.  Byte 0 is black in GRAPHIC 7 and in
+	 * YJK; a 16-colour byte is a palette index, so that mode clears to
+	 * the picture palette's darkest entry. */
+	{
+		gfx_color_t background = 0u;
+
+		if (header.palette_count != 0u) {
+			unsigned int darkest = 0xFFFFu;
+			uint8_t i;
+
+			for (i = 0u; i < header.palette_count; ++i) {
+				unsigned int level =
+					(unsigned int)pview_palette[i].r * 2u +
+					(unsigned int)pview_palette[i].g * 4u +
+					(unsigned int)pview_palette[i].b;
+
+				if (level < darkest) {
+					darkest = level;
+					background = i;
+				}
+			}
+		}
+		(void)gfx_clear(background);
+	}
 	(void)gfx_get_info(&info);
 	x = (uint16_t)((info.width - header.width) / 2u);
 	if (header.mode == (uint8_t)GFX_MODE_512x212_16) {
 		x = (uint16_t)(x & ~1u);
+	} else if (header.mode == (uint8_t)GFX_MODE_256x212_YJK) {
+		x = (uint16_t)(x & ~3u);      /* the four-pixel J/K runs */
 	}
 	y = (uint16_t)((info.height - header.height) / 2u);
 	result = gfx_upload_begin(x, y, header.width, header.height);

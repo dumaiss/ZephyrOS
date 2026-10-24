@@ -55,6 +55,29 @@ def parse_header(path):
             "payload": data[16 + palette_count * 3:]}
 
 
+def decode_yjk(payload, width):
+    """The V9958's YJK display of `payload`, as 5-bit (r, g, b): each
+    byte's bits 7-3 are its pixel's Y; per four pixels, K is bits 2-0 of
+    the first byte (low) and the second (high), J of the third and the
+    fourth; R = Y + J, G = Y + K, B = (5Y - 2J - K) / 4, clamped."""
+    def signed6(value):
+        return value - 64 if value & 0x20 else value
+
+    def clamp(value):
+        return max(0, min(31, value))
+
+    shown = []
+    for run in range(0, len(payload), 4):
+        quad = payload[run:run + 4]
+        k = signed6((quad[0] & 7) | ((quad[1] & 7) << 3))
+        j = signed6((quad[2] & 7) | ((quad[3] & 7) << 3))
+        for byte in quad:
+            y = byte >> 3
+            shown.append((clamp(y + j), clamp(y + k),
+                          clamp((5 * y - 2 * j - k) // 4)))
+    return shown
+
+
 def synthetic_path(directory, width, height, pixels):
     """A solid-colour RGB source image, deterministic and tiny."""
     image = Image.new("RGB", (width, height), pixels)
@@ -117,7 +140,7 @@ class KimgConverterTests(unittest.TestCase):
         kimg.convert(source, output, mode, size)
         return parse_header(output)
 
-    def test_g7_rgb332_payload(self):
+    def test_g7_payload_is_the_chip_grb_byte(self):
         with tempfile.TemporaryDirectory() as directory:
             header = self.convert(directory, "g7", (8, 4), (0xA0, 0xC0,
                                                             0xE0))
@@ -127,19 +150,56 @@ class KimgConverterTests(unittest.TestCase):
             self.assertEqual(header["palette_count"], 0)
             self.assertEqual((header["width"], header["height"]), (8, 4))
             self.assertEqual(header["payload_size"], 32)
-            # One RGB332 byte per pixel: R 5, G 6, B 3 -> 0xBB.
-            self.assertEqual(header["payload"],
-                             bytes([0xBB]) * 32)
+            # GRAPHIC 7 is green 7-5, red 4-2, blue 1-0: G 6, R 5, B 3.
+            self.assertEqual(header["payload"], bytes([0xD7]) * 32)
 
-    def test_yjk_jk_payload(self):
+    def test_yjk_solid_colours_show_their_colour(self):
+        """Each colour, encoded and decoded as the chip decodes it,
+        is within one 5-bit step of the source."""
+        for colour in ((255, 0, 0), (0, 255, 0), (0, 0, 255),
+                       (128, 128, 128), (200, 120, 40), (0, 0, 0),
+                       (255, 255, 255)):
+            with tempfile.TemporaryDirectory() as directory:
+                header = self.convert(directory, "yjk", (8, 2), colour)
+                self.assertEqual(header["mode"], 2)
+                self.assertEqual(header["palette_count"], 0)
+                self.assertEqual(header["payload_size"], 16)
+                want = tuple(value >> 3 for value in colour)
+                for shown in decode_yjk(header["payload"], 8):
+                    for got, source in zip(shown, want):
+                        self.assertLessEqual(abs(got - source), 1,
+                                             (colour, shown))
+
+    def test_yjk_picture_round_trip(self):
+        """A picture whose colour changes inside the four-pixel runs:
+        the decoded image stays close to the source (the runs share J
+        and K, each pixel keeps its own Y)."""
+        width, height = 32, 8
+        image = Image.new("RGB", (width, height))
+        for y in range(height):
+            for x in range(width):
+                image.putpixel((x, y), ((x * 8) & 0xFF, (y * 32) & 0xFF,
+                                        255 - x * 8))
         with tempfile.TemporaryDirectory() as directory:
-            # r = 24 + 3, g = 24 + 2: J 3, K 2 -> 0x13.
-            header = self.convert(directory, "yjk", (6, 3), (0x1B, 0x1A,
-                                                              0x10))
-            self.assertEqual(header["mode"], 2)
-            self.assertEqual(header["palette_count"], 0)
-            self.assertEqual(header["payload_size"], 18)
-            self.assertEqual(header["payload"], bytes([0x13]) * 18)
+            source = os.path.join(directory, "gradient.png")
+            image.save(source)
+            output = os.path.join(directory, "gradient.kimg")
+            kimg.convert(source, output, "yjk", (width, height))
+            header = parse_header(output)
+        shown = decode_yjk(header["payload"], width)
+        error = 0
+        for index, pixel in enumerate(shown):
+            source = image.getpixel((index % width, index // width))
+            error += sum(abs(got - (value >> 3))
+                         for got, value in zip(pixel, source))
+        self.assertLess(error / (3 * len(shown)), 1.5)
+
+    def test_yjk_width_is_a_multiple_of_four(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = synthetic_path(directory, 8, 8, (0, 0, 0))
+            with self.assertRaises(SystemExit):
+                kimg.convert(source, os.path.join(directory, "o.kimg"),
+                             "yjk", (6, 4))
 
     def test_g6_palette_and_packed_indices(self):
         with tempfile.TemporaryDirectory() as directory:

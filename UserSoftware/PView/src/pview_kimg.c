@@ -47,7 +47,8 @@ int pview_kimg_check(const uint8_t *raw)
 			return -KOS_EINVAL;
 		}
 	} else {
-		if (width > 256u || raw[7] != 0u) {
+		if (width > 256u || raw[7] != 0u ||
+		    (mode == PVIEW_MODE_YJK && (width & 3u) != 0u)) {
 			return -KOS_EINVAL;
 		}
 		if (payload != (unsigned long)width * height) {

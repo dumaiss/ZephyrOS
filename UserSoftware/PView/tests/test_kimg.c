@@ -68,6 +68,9 @@ int main(void)
 	expect(raw, 0);
 	header(raw, PVIEW_MODE_YJK, 64, 32, 0);
 	expect(raw, 0);
+	/* YJK runs are four pixels wide. */
+	header(raw, PVIEW_MODE_YJK, 62, 32, 0);
+	expect(raw, -KOS_EINVAL);
 
 	/* Geometry bounds: the 16-colour mode to 512 even pixels, the
 	 * byte modes to 256, every mode to 212 lines. */

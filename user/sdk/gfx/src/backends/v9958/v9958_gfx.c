@@ -85,15 +85,6 @@ void v9958_set_mode(struct gfx_state *state, enum gfx_mode mode)
 				 v9958_common_regs[i][1]);
 	}
 	gfx_v9958_io_reg(r25, GFX_V9958_REG_R25);
-	if (mode == GFX_MODE_256x212_YJK) {
-		/* The YJK pixel carries J and K; its Y is palette entry 0,
-		 * so the mode establishes the shared luminance the host
-		 * encoder uses (tools/kimg.py). */
-		gfx_v9958_io_reg(0x00u, GFX_V9958_REG_R16);
-		gfx_v9958_io_palette_byte((uint8_t)((GFX_V9958_YJK_Y3 << 4) |
-						    GFX_V9958_YJK_Y3));
-		gfx_v9958_io_palette_byte((uint8_t)GFX_V9958_YJK_Y3);
-	}
 }
 
 void v9958_display_enable(struct gfx_state *state, uint8_t enabled)
