@@ -754,7 +754,8 @@ $(MODULES)/v9958_io.rel: drivers/v9958/v9958_io.asm \
 $(MODULES)/v9958_driver.rel: drivers/v9958/v9958_proto.c \
 		drivers/v9958/v9958_driver.h \
 		drivers/include/driver.h $(DRV_PROTOCOL_H) \
-		abi/kos/console_render.h | $(MODULES)
+		abi/kos/console_render.h abi/kos/kvideo.h \
+		platform/zephyr80/public/hardware.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) $< -o $@
 
 $(MODULES)/v9958_boot.rel: drivers/v9958/v9958_boot.c \
@@ -1100,6 +1101,14 @@ $(eval $(call exe_program,sound,tests/sound,\
 
 all: $(EXE_USER_ROOT)/sound.exe
 
+# The graphics foundation outcome program: a card program the graphics
+# replays run from the shell (tests/test_gfx.py), in no store.
+# `LIBS=gfx` links libgfx after the program objects, before libkos.
+$(eval $(call exe_program,gfxtest,tests/gfx,\
+	gfxtest.c,STACK=384,LIBS=gfx))
+
+all: $(EXE_USER_ROOT)/gfxtest.exe
+
 # The TUI SDK outcome program: a card program the TUI replays run from the
 # shell, in no store.  `LIBS=tui_widgets:tui` links the widget archive
 # before its core dependency and both after the program objects, before
@@ -1271,6 +1280,8 @@ SDK_INPUTS := $(wildcard abi/kos/*.h) \
 	$(wildcard user/sdk/include/klibc/*.h) \
 	$(wildcard user/sdk/tui/src/*) \
 	$(wildcard user/sdk/widgets/src/*) \
+	$(wildcard user/sdk/gfx/src/*) \
+	$(wildcard user/sdk/gfx/src/backends/v9958/*) \
 	$(wildcard user/sdk/template/*) $(wildcard user/sdk/examples/*) \
 	docs/sdk.md docs/tui.md docs/exe-format.md mk/kos.mk \
 	formats/include/exe.h \
@@ -1281,11 +1292,12 @@ sdk: $(KOS_SDK_TARBALL)
 	@echo "sdk: $(KOS_SDK_TARBALL)"
 
 $(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) $(EXE_LIBTUI_WIDE) \
-		$(EXE_LIBTUI_WIDGETS) $(EXE_CRT0) $(SDK_INPUTS)
+		$(EXE_LIBTUI_WIDGETS) $(EXE_LIBGFX) $(EXE_CRT0) $(SDK_INPUTS)
 	$(PYTHON) tools/sdkpack.py --version $(KOS_SDK_VERSION) \
 		--libkos $(EXE_SDK_RELEASE_LIB) --libtui $(EXE_LIBTUI) \
 		--libtui-wide $(EXE_LIBTUI_WIDE) \
 		--libtui-widgets $(EXE_LIBTUI_WIDGETS) \
+		--libgfx $(EXE_LIBGFX) \
 		--crt0 $(EXE_CRT0) \
 		--out $(KOS_SDK_DIR) --tar $@
 

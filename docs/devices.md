@@ -263,6 +263,15 @@ re-runs the whole bring-up below. `KVIDEO_OP_RESET` (3) runs that same
 bring-up at any time, and `ESC c` and the triple-ESC reset reach it through
 the terminal parser.
 
+**Direct graphics information.** `KVIDEO_OP_DIRECT_INFO` (6) is served
+only to the exclusive holder of `/dev/video` (any other caller gets
+`-KOS_EBUSY`): the reply payload is the struct `kvideo_direct_info`
+(`abi/kos/kvideo.h`) — version 1, the V9958 backend, the capability
+flags (direct I/O, hardware WAIT, palette, YJK), 128 KiB of VRAM, the
+five ports `A0h-A4h` listed one by one and the console's configuration
+latch value. `libgfx` (docs/gfx-sdk.md) consumes the record; the driver
+touches no VDP register to answer it.
+
 **Frame event.** The endpoint also declares `"events": true`: the program
 holding the VDP exclusively can `notify` its handle and receive the
 V9958's frame (vertical-blank) interrupt as a device event.
@@ -312,6 +321,8 @@ bytes. `KVIDEO_RESET` re-runs the bring-up; it touches no font.
 | `KVIDEO_OP_PUTC` | 2 | `arg0` = byte | 0 |
 | `KVIDEO_OP_RESET` | 3 | — | 0, or `-KOS_ENODEV` |
 | `KVIDEO_OP_RENDER` | 4 | desc in: one validated console render stream | bytes consumed |
+| `KVIDEO_OP_INFO` | 5 | — | 0 |
+| `KVIDEO_OP_DIRECT_INFO` | 6 | —, only to the exclusive holder | 0, or `-KOS_EBUSY` |
 
 ## 7. Console (`drivers/console/`)
 

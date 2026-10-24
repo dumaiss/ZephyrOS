@@ -401,7 +401,9 @@ class TestSdkBoundary(unittest.TestCase):
         # the read-path measurement program the phase image's card carries
         # (`tests/test_readpath.py`); `vblank` and `sound` are the card
         # programs the production replays run (`tests/test_vblank.py`,
-        # `tests/test_sound.py`); `tui_test` is the TUI SDK outcome
+        # `tests/test_sound.py`); `gfxtest` is the graphics foundation
+        # outcome program the production replays run
+        # (`tests/test_gfx.py`); `tui_test` is the TUI SDK outcome
         # program (`tests/test_tui.py`) and `tui_wide` the same source
         # built with TUI_GRID=128x35, `tui_putwide` its put_text
         # equivalence mode on that capacity; `textbench` is the direct-text
@@ -411,7 +413,8 @@ class TestSdkBoundary(unittest.TestCase):
                          ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
                           "far_data",
-                          "fardemo", "fs_child", "fs_selftest", "hello",
+                          "fardemo", "fs_child", "fs_selftest", "gfxtest",
+                          "hello",
                           "hwtest", "iobench", "iomix", "iomix_child",
                           "iostream", "ipc", "ipccopy",
                           "monitor", "ns",

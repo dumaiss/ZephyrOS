@@ -565,6 +565,22 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.assertIn("return (-KOS_ENOTSUP);", self.send)
         self.assertIn("return (-KOS_ENODEV);", self.send)
 
+    def test_direct_info_is_answered_only_to_the_holder(self):
+        # The record is the takeover's contract: the exclusive check runs
+        # before anything touches the payload, and the payload is the
+        # kvideo_direct_info fields, not a hardware probe.
+        direct = self.proto.split(
+            "static int16_t v9958_direct_info")[1].split(
+            "int16_t v9958_driver_dispatch")[0]
+        self.assertLess(direct.index("v9958_state.exclusive == 0u"),
+                        direct.index("*dst++ = "
+                                     "KVIDEO_DIRECT_INFO_VERSION"))
+        self.assertIn("-KOS_EBUSY", direct)
+        for needle in ("KVIDEO_DIRECT_INFO_VERSION", "KVIDEO_BACKEND_V9958",
+                       "KVIDEO_YJK", "KOS_V9958_DATA_PORT",
+                       "KOS_V9958_CONFIG_PORT"):
+            self.assertIn(needle, direct, needle)
+
     def test_no_font_table_in_the_driver_c(self):
         # No font byte table: the driver C contains no data initializer
         # with hundreds of bytes.  The bounded size covers the video
@@ -579,7 +595,8 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         self.assertIn("kos/protocol.h", self.proto)
         protocol = _read(os.path.join(ROOT, "abi", "kos", "protocol.h"))
         self.assertIn("KOS_CLASS_VIDEO", protocol)
-        for op in ("KVIDEO_OP_SEND", "KVIDEO_OP_WRITE", "KVIDEO_OP_PUTC"):
+        for op in ("KVIDEO_OP_SEND", "KVIDEO_OP_WRITE", "KVIDEO_OP_PUTC",
+                   "KVIDEO_OP_DIRECT_INFO"):
             self.assertIn(op, self.proto, op)
         # KVIDEO_OP_SEND carries any native VIDEO operation, so the five
         # streaming forms take a descriptor and the two control forms do

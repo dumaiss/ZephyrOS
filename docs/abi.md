@@ -232,6 +232,13 @@ holds exclusively answers `-KOS_EBUSY`. The takeover contract is
 `docs/devices.md` section 2. Files and the other providers define no
 exclusive flag, so `KOS_BIND_EXCLUSIVE` there is `-KOS_EINVAL`.
 
+What a takeover permits is the device's protocol answer: the video driver
+serves `KVIDEO_OP_DIRECT_INFO` (6, `abi/kos/protocol.h`) only to its
+exclusive holder, replying with the struct `kvideo_direct_info`
+(`abi/kos/kvideo.h`) — the backend, the capability flags, the VRAM size
+and the ports the holder writes directly. `libgfx` consumes it
+(`docs/gfx-sdk.md`).
+
 Paths are routed by the first component, case-insensitively, to the three
 roots: `/fs` (the filesystem driver), `/system` (ROMFS) and `/dev` (the
 publication table). `/` itself lists the three roots and is not bindable.

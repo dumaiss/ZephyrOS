@@ -31,7 +31,7 @@ abi/kos/                  the public ABI (one copy for every build)
 user/sdk/
   include/kos.h           the umbrella header a program includes
   include/kos/            console.h fs.h ipc.h process.h diag.h seg.h
-                          xmem.h timer.h
+                          xmem.h timer.h sound.h gfx.h
   include/klibc/          string.h fmt.h stdarg.h
   src/crt0.asm            startup: the startup block, argv, main, exit
   src/runtime.asm         the fixed low-data area, the shared scratch, the error mapper
@@ -57,6 +57,13 @@ user/sdk/
   src/kos_internal.h      SDK-private glue (not for programs)
   exe.mk                  the in-tree wrapper: sets the in-tree roots, builds
                           libkos from src/, includes mk/kos.mk
+  tui/                    the TUI SDK: libtui and libtui_widgets (tui.md)
+  widgets/                the widget layer's sources (part of the TUI SDK)
+  gfx/                    the graphics SDK: libgfx (gfx-sdk.md)
+    src/gfx.c             gfx_open, gfx_close, gfx_get_info, the state
+    src/gfx_mode.c        gfx_set_mode, gfx_display_enable
+    src/gfx_draw.c        gfx_clear
+    src/backends/v9958/   the V9958 backend: mode/command C and port I/O
   template/               the copyable minimal program (Makefile, hello.c)
   examples/               hello, fardemo, fardata, files
 
@@ -132,6 +139,11 @@ before its core dependency.  Include `tui.h` for the core and
 `tui_widgets.h` for widgets.  The application guide is
 [tui.md](tui.md); a program that uses neither library pays no TUI code or
 data cost.
+
+The graphics SDK is the same deal: `LIBS=gfx` links `libgfx`, whose
+program includes `kos/gfx.h` and calls `gfx_open` to take `/dev/video`
+exclusively.  The design is [gfx-sdk.md](gfx-sdk.md); a program that
+uses no graphics pays no gfx code or data cost.
 
 There is no hand-written manifest: `tools/exemanifest.py` computes
 `image_size = s__DATA - 0100h`, `bss_size = l__DATA` and
@@ -716,6 +728,19 @@ needed.
 | `fmeasure`, `fstats` | `stream`, plus the `stdio` group |
 | `stream_plan` | `stream` alone |
 
+`libgfx` follows the same member rule; its members call into `ipc` and
+the gates the same way any client does:
+
+| a program calls | gfx members linked |
+|---|---|
+| `gfx_open`, `gfx_close`, `gfx_get_info` | `gfx`, `ipc`, `kos_ipcgate`, `nsgate` |
+| `gfx_set_mode`, `gfx_display_enable` | `gfx_mode`, `v9958_gfx`, `gfx_v9958_io` |
+| `gfx_clear` | `gfx_draw`, `v9958_gfx`, `gfx_v9958_io` |
+
+The backend's assembly member is pulled only through the backend C
+member, so a program that calls none of the drawing entry points links
+no V9958 port code.
+
 `hello.exe` links exactly crt0, the runtime, `args`, the console client
 with its gates, `printf` with its formatters and the arithmetic helpers,
 and no filesystem, exec or diagnostic member; `tests/test_sdk.py` checks
@@ -827,7 +852,8 @@ kos-sdk-<version>/
   include/         kos.h, tui.h, tui_widgets.h, kos/*.h, klibc/*.h,
                    abi/kos/*.h
   lib/             libkos.lib (the runtime object included), libtui.lib,
-                   libtui_128x35.lib, libtui_widgets.lib, crt0.rel
+                   libtui_128x35.lib, libtui_widgets.lib, libgfx.lib,
+                   crt0.rel
   tools/           exepack.py, exemanifest.py, ihx.py (Python standard library only)
   mk/kos.mk        the program rule
   template/        Makefile and hello.c

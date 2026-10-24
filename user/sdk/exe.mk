@@ -176,3 +176,35 @@ $(EXE_LIBTUI_WIDGETS): $(EXE_WIDGET_OBJS) $(KOS_RULES)
 	@mkdir -p $(dir $@)
 	rm -f $@
 	sdar -rcD $@ $(EXE_WIDGET_OBJS)
+
+# --- libgfx -------------------------------------------------------------
+# The graphics SDK is a separately linked archive: one member per
+# function group, so a program that calls only part of the library does
+# not link the rest.  The public surface is kos/gfx.h; the private state
+# and the backend interface stay in this directory.
+KOS_GFX_SRC     := $(KOS_SDK_ROOT)/gfx/src
+KOS_GFX_PRIVATE := $(KOS_GFX_SRC)/gfx_internal.h
+KOS_GFX_C_SRC   := gfx.c gfx_mode.c gfx_draw.c backends/v9958/v9958_gfx.c
+KOS_GFX_ASM_SRC := backends/v9958/v9958_io.asm
+EXE_GFX_OBJS    := $(addprefix $(EXE_SDK_BUILD)/gfx/,\
+	$(patsubst %.c,%.rel,$(KOS_GFX_C_SRC)) \
+	$(patsubst %.asm,%.rel,$(KOS_GFX_ASM_SRC)))
+EXE_LIBGFX      := $(EXE_SDK_BUILD)/libgfx.lib
+
+$(EXE_SDK_BUILD)/gfx/%.rel: $(KOS_GFX_SRC)/%.c $(EXE_HEADERS) \
+		$(KOS_GFX_PRIVATE)
+	@mkdir -p $(dir $@)
+	$(SDCC) $(EXE_CFLAGS) -I $(KOS_GFX_SRC) -c $< -o $@
+
+$(EXE_SDK_BUILD)/gfx/%.rel: $(KOS_GFX_SRC)/%.asm $(EXE_HEADERS) \
+		$(KOS_GFX_PRIVATE)
+	@mkdir -p $(dir $@)
+	$(SDASZ80) $(EXE_ASFLAGS) -o $@ $<
+
+# `-D` zeroes the members' dates and ids.  The in-tree programs link
+# this archive and the standalone SDK ships it, so the library never
+# records when it was built.
+$(EXE_LIBGFX): $(EXE_GFX_OBJS) $(KOS_RULES)
+	@mkdir -p $(dir $@)
+	rm -f $@
+	sdar -rcD $@ $(EXE_GFX_OBJS)

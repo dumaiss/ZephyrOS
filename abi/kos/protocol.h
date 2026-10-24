@@ -225,6 +225,13 @@
  *                        unchanged by the V9958 console composition.
  *   KVIDEO_OP_INFO  (5)  no descriptor: the reply payload is the terminal's
  *                        struct kconsole_info (KCONSOLE_OP_INFO above).
+ *   KVIDEO_OP_DIRECT_INFO (6) no descriptor: the reply payload is a
+ *                        struct kvideo_direct_info (kos/kvideo.h): the
+ *                        backend, the capability flags and the ports the
+ *                        program holding the object exclusively uses to
+ *                        drive the hardware directly.  Served only to
+ *                        the exclusive holder; any other caller gets
+ *                        -KOS_EBUSY.  Returns 0.
  *
  * KVIDEO_RESET re-establishes every driver-owned state; it is the same
  * chain KVIDEO_OP_RESET runs.
@@ -235,6 +242,7 @@
 #define KVIDEO_OP_RESET 3u
 #define KVIDEO_OP_RENDER 4u
 #define KVIDEO_OP_INFO  5u
+#define KVIDEO_OP_DIRECT_INFO 6u
 
 /* The native VIDEO operations (the KVIDEO_OP_SEND argument; exact values,
  * not Virtual Drip packet numbers). */

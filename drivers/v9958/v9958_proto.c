@@ -11,6 +11,8 @@
  *   KVIDEO_OP_WRITE  terminal bytes, fed through the renderer's private
  *                    stack wrapper;
  *   KVIDEO_OP_PUTC   one terminal byte;
+ *   KVIDEO_OP_DIRECT_INFO the direct-graphics record (abi/kos/kvideo.h),
+ *                    served only while the object is held exclusively;
  *   KOS_OP_SUBSCRIBE the vertical-blank event, for the program holding
  *                    the VDP exclusively (below).
  *
@@ -26,6 +28,9 @@
 #include "driver.h"
 #include "kos/protocol.h"
 #include "kos/console_render.h"
+#include "kos/kvideo.h"
+
+#include "hardware.h"
 
 #include "v9958_driver.h"
 
@@ -314,6 +319,39 @@ static int16_t v9958_driver_write(struct kos_ipc_frame *frame)
 	return (int16_t)done;
 }
 
+/* Served only to the exclusive holder: the record is the takeover's
+ * contract, not a general hardware query.  The reply payload is the
+ * struct kvideo_direct_info (the layout is pinned in kos/kvideo.h): the
+ * V9958 backend, the four capabilities, 128 KiB, the five ports
+ * A0h-A4h and the console's latch value - 0, the value the bring-up
+ * always establishes, so it needs no write.  The reserved bytes and the
+ * frame's trailing bytes are cleared in one tail run. */
+static int16_t v9958_direct_info(struct kos_ipc_frame *frame)
+{
+	uint8_t *dst = frame->payload;
+	uint8_t left = KOS_IPC_PAYLOAD_SIZE - 11u;
+
+	if (v9958_state.exclusive == 0u) {
+		return (int16_t)-KOS_EBUSY;
+	}
+	*dst++ = KVIDEO_DIRECT_INFO_VERSION;
+	*dst++ = KVIDEO_BACKEND_V9958;
+	*dst++ = (uint8_t)(KVIDEO_DIRECT_IO | KVIDEO_HW_WAIT |
+			   KVIDEO_PALETTE | KVIDEO_YJK);
+	*dst++ = 0u; /* the flags' high byte */
+	*dst++ = 128u;
+	*dst++ = 0u; /* vram_kib's high byte */
+	*dst++ = KOS_V9958_DATA_PORT;
+	*dst++ = KOS_V9958_CMD_PORT;
+	*dst++ = KOS_V9958_PALETTE_PORT;
+	*dst++ = KOS_V9958_INDIRECT_PORT;
+	*dst++ = KOS_V9958_CONFIG_PORT;
+	do {
+		*dst++ = 0u;
+	} while (--left != 0u);
+	return 0;
+}
+
 int16_t v9958_driver_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
@@ -385,6 +423,8 @@ int16_t v9958_driver_dispatch(struct kos_ipc_frame *frame)
 			return (int16_t)-KOS_EINVAL;
 		}
 		return (int16_t)v9958_render_transaction(frame);
+	case KVIDEO_OP_DIRECT_INFO:
+		return v9958_direct_info(frame);
 	default:
 		return (int16_t)-KOS_EINVAL;
 	}
