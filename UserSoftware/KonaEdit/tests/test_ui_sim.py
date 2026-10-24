@@ -482,8 +482,9 @@ class KonaEditViewBudgets(KonaEditTuiSmoke):
             press(key)
         self.assertEqual(self.body(z), before)
 
-        # Go To Line 40 (Search > Go To Line).
-        for key in (F1, RIGHT, RIGHT, DOWN, DOWN, b"\r", b"\x08",
+        # Go To Line 40 (Search > Go To Line, below Find, Find Next and
+        # Replace).
+        for key in (F1, RIGHT, RIGHT, DOWN, DOWN, DOWN, DOWN, b"\r", b"\x08",
                     b"4", b"0", b"\r"):
             press(key)
         self.assertIn("Ln 40 ", self.status(z))

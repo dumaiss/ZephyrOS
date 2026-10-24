@@ -7,8 +7,11 @@
 struct ke_view ke_view;
 
 /* One row's glyphs, and its selected cells [select_from, select_to): a
- * selection is contiguous, so a row shows at most one selected span. */
-static uint8_t row_cells[128];
+ * selection is contiguous, so a row shows at most one selected span.  The
+ * row buffer is shared scratch: each user fills it and writes it out at
+ * once (the status row too). */
+uint8_t ke_view_cells[128];
+#define row_cells ke_view_cells
 static uint8_t select_from;
 static uint8_t select_to;
 

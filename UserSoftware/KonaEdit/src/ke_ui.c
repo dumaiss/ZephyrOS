@@ -98,7 +98,8 @@ static char dialog_name[KE_PATH_MAX];
 static char recovery_path[KE_PATH_MAX];
 static char find_text[96];
 static char replace_text[96];
-static char status_text[129];
+/* The status row is built in the view's row scratch. */
+#define status_text ((char *)ke_view_cells)
 /* What the status row shows: rebuilt only when one of these changes. */
 static uint32_t status_line;
 static uint32_t status_column;
@@ -457,12 +458,27 @@ static void parent_path(char *path)
 	else if (slash != (char *)0) *slash = '\0';
 }
 
+/* The parent entry's type: a ".." row on a directory's first page. */
+#define KE_DIR_PARENT 0xFFu
+
+/* One page of `path`.  The first page (cookie 0) of any directory but the
+ * root starts with a ".." row that goes up one level. */
 static int load_directory(const char *path, uint16_t *cookie, uint8_t *count)
 {
-	int result = ke_fs_list(path, cookie, directory_entries, KE_DIR_PAGE);
+	uint8_t first = 0u;
+	int result;
 
+	if (*cookie == 0u && strcmp(path, "/") != 0) {
+		directory_entries[0].type = KE_DIR_PARENT;
+		directory_entries[0].container = 1u;
+		set_text(directory_entries[0].name, "..",
+			 sizeof(directory_entries[0].name));
+		first = 1u;
+	}
+	result = ke_fs_list(path, cookie, directory_entries + first,
+			    (uint16_t)(KE_DIR_PAGE - first));
 	if (result < 0) return result;
-	*count = (uint8_t)result;
+	*count = (uint8_t)(result + first);
 	return 0;
 }
 
@@ -563,6 +579,10 @@ static int file_dialog(uint8_t saving, char *result_path)
 			redraw = 2u;
 		}
 		if (focus == 0u) {
+			/* Enter on ".." is Backspace: up one level. */
+			if ((key == 13u || key == 10u) && count != 0u &&
+			    directory_entries[selected_entry].type == KE_DIR_PARENT)
+				key = 8u;
 			if (key == TUI_KEY_PGDN && count != 0u) {
 				selected_entry = (uint8_t)(count - 1u);
 				key = TUI_KEY_DOWN;
@@ -683,22 +703,30 @@ static void popup_items(uint8_t menu, const struct ke_action_item **items,
 	else { *items = help_menu; *count = 2u; }
 }
 
+/* A disabled item shows its gaps as middle dots (CP850 FAh): the console
+ * has only normal and reverse, so it cannot be greyed. */
 static void draw_popup_row(const struct tui_rect *box,
 			   const struct ke_action_item *item, uint8_t row,
 			   uint8_t selected_row)
 {
-	struct tui_rect line;
-	tui_style_t style = row == selected_row ? TUI_STYLE_SELECTED :
-			    (action_enabled(item->action) ? TUI_STYLE_NORMAL :
-			     TUI_STYLE_DISABLED);
+	char label[KE_POPUP_WIDTH];
+	uint8_t width = (uint8_t)(box->w - 2u);
+	uint8_t enabled = action_enabled(item->action);
+	uint8_t i;
 
-	line.x = (uint8_t)(box->x + 1u);
-	line.y = (uint8_t)(box->y + 1u + row);
-	line.w = (uint8_t)(box->w - 2u);
-	line.h = 1u;
-	(void)tui_fill(&line, ' ', style);
-	(void)tui_set_style(style);
-	(void)tui_puts_xy(line.x, line.y, item->label);
+	for (i = 0u; i < width; ++i) {
+		char ch = item->label[i];
+
+		if (ch == '\0') {
+			for (; i < width; ++i) label[i] = ' ';
+			break;
+		}
+		label[i] = ch == ' ' && !enabled ? (char)0xFA : ch;
+	}
+	(void)tui_set_style(row == selected_row ? TUI_STYLE_SELECTED :
+			    TUI_STYLE_NORMAL);
+	(void)tui_put_text((uint8_t)(box->x + 1u), (uint8_t)(box->y + 1u + row),
+			   label, width, tui_get_attr());
 }
 
 static uint8_t run_popup(uint8_t menu)
@@ -710,8 +738,6 @@ static uint8_t run_popup(uint8_t menu)
 	uint16_t need;
 
 	popup_items(menu, &items, &count);
-	while (selected_row < count && !action_enabled(items[selected_row].action))
-		++selected_row;
 	box.x = (uint8_t)(menu * 8u);
 	box.y = 1u;
 	box.w = KE_POPUP_WIDTH;
@@ -736,13 +762,13 @@ static uint8_t run_popup(uint8_t menu)
 		if (key == TUI_KEY_LEFT) { selected_row = ACT_MENU_LEFT; break; }
 		if (key == TUI_KEY_RIGHT) { selected_row = ACT_MENU_RIGHT; break; }
 		if (key == TUI_KEY_UP || key == TUI_KEY_DOWN) {
-			do {
-				if (key == TUI_KEY_UP)
-					selected_row = selected_row == 0u ?
-						(uint8_t)(count - 1u) :
-						(uint8_t)(selected_row - 1u);
-				else selected_row = (uint8_t)((selected_row + 1u) % count);
-			} while (!action_enabled(items[selected_row].action));
+			/* Every item can be reached; a disabled one does
+			 * nothing on Enter. */
+			if (key == TUI_KEY_UP)
+				selected_row = selected_row == 0u ?
+					(uint8_t)(count - 1u) :
+					(uint8_t)(selected_row - 1u);
+			else selected_row = (uint8_t)((selected_row + 1u) % count);
 			tui_begin();
 			draw_popup_row(&box, &items[old], old, selected_row);
 			draw_popup_row(&box, &items[selected_row], selected_row,
@@ -1275,6 +1301,19 @@ int ke_ui_run(const char *initial_path)
 					  old_row < row ? row : old_row);
 		}
 		show_cursor(row);
+		(void)tui_end();
+	}
+	{
+		/* Leave the shell a clear screen with the cursor home, as
+		 * KonaCommander does. */
+		struct tui_rect all;
+
+		all.x = 0u; all.y = 0u; all.w = screen.cols; all.h = screen.rows;
+		tui_begin();
+		(void)tui_fill(&all, ' ', TUI_STYLE_NORMAL);
+		(void)tui_set_style(TUI_STYLE_NORMAL);
+		(void)tui_gotoxy(0u, 0u);
+		(void)tui_cursor_show();
 		(void)tui_end();
 	}
 	ke_history_dispose(&history);

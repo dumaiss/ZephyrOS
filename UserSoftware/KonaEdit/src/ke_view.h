@@ -29,6 +29,8 @@ struct ke_view {
 };
 
 extern struct ke_view ke_view;
+/* A row's worth of scratch, filled and written out at once. */
+extern uint8_t ke_view_cells[128];
 
 void ke_view_setup(struct ke_store *store, uint8_t first_row, uint8_t rows,
 		   uint8_t cols);

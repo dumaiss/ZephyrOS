@@ -25,16 +25,21 @@ int ke_menubar(const struct tui_menu_item *items, uint8_t count,
 	uint8_t i;
 
 	if (tui_get_size(&size) < 0) return -KOS_EINVAL;
+	/* The bar is reverse, like the status line; the chosen menu is the
+	 * one name in normal video. */
 	row.x = 0u; row.y = 0u; row.w = size.cols; row.h = 1u;
-	(void)tui_fill(&row, ' ', TUI_STYLE_NORMAL);
+	(void)tui_fill(&row, ' ', TUI_STYLE_STATUS);
 	for (i = 0u; i < count && x < size.cols; ++i) {
 		uint8_t room = (uint8_t)(size.cols - x);
 		uint8_t used = draw_text(x, 0u, items[i].label, room,
-			items[i].id == selected ? TUI_STYLE_SELECTED :
-			TUI_STYLE_NORMAL);
+			items[i].id == selected ? TUI_STYLE_NORMAL :
+			TUI_STYLE_STATUS);
 		x = (uint8_t)(x + used);
 		if (x < size.cols) ++x;
 	}
+	/* Back to normal: a later scroll blanks its exposed row in the
+	 * current attribute. */
+	(void)tui_set_style(TUI_STYLE_NORMAL);
 	return 0;
 }
 
