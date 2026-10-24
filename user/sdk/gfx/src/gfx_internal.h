@@ -80,7 +80,7 @@ void gfx_v9958_io_start_command(const uint8_t *cmd);
 #define GFX_V9958_R9_212       0x80u
 #define GFX_V9958_R15_STATUS2  0x02u
 #define GFX_V9958_R25_WAIT_ON  0x04u
-#define GFX_V9958_R25_YJK      0x10u
+#define GFX_V9958_R25_YJK      0x08u /* R#25 bit 3; bit 4 (10h) is YAE */
 
 /* The command engine. */
 #define GFX_V9958_CMD_REGISTER_BASE 32u

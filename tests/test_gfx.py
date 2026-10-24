@@ -55,7 +55,8 @@ MODE_REGS = {
               "r25": 0x04},
     "mode7": {"r0": 0x0E, "r1": 0x40, "r8": 0x0A, "r9": 0x80,
               "r25": 0x04},
-    "yjk": {"r0": 0x0E, "r1": 0x40, "r8": 0x0A, "r9": 0x80, "r25": 0x14},
+    # R#25 is 0 CMD VDS YAE YJK WTE MSK SP2: WTE (04h) plus YJK (08h).
+    "yjk": {"r0": 0x0E, "r1": 0x40, "r8": 0x0A, "r9": 0x80, "r25": 0x0C},
 }
 
 # The clear colours gfxtest uses, and the VRAM byte each mode's clear
